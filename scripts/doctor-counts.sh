@@ -12,7 +12,8 @@
 doctor_counts_write() {
     local dir="${1:-}" f="${2:-}" w="${3:-}" tmp
     [ -n "$dir" ] || return 2
-    case "$f$w" in ''|*[!0-9]*) return 2 ;; esac
+    case "$f" in ''|*[!0-9]*) return 2 ;; esac
+    case "$w" in ''|*[!0-9]*) return 2 ;; esac
     mkdir -p "$dir" || return 1
     tmp="$(mktemp "$dir/.counts.XXXXXX")" || return 1
     if printf 'fail=%s warn=%s\n' "$f" "$w" > "$tmp" && mv -f "$tmp" "$dir/counts"; then

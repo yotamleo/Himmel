@@ -117,9 +117,10 @@ check "segment prints nothing on a malformed state file" "" "$(seg)"
 # 9b. HIMMEL-4363: a counts file older than 24 h shows its age; a fresh one does not.
 echo "fail=1 warn=12" > "$SEG_STATE/counts"
 check "fresh counts show no age" "doctor  1 FAIL  12 WARN" "$(seg)"
-touch -d '3 days ago' "$SEG_STATE/counts"
+age_file() { perl -e 'utime $ARGV[0], $ARGV[0], $ARGV[1]' "$(($(date +%s) - $1))" "$2"; }
+age_file 259200 "$SEG_STATE/counts"
 check "counts over 24h old show the age in days" "doctor  1 FAIL  12 WARN (3d old)" "$(seg)"
-touch -d '30 hours ago' "$SEG_STATE/counts"
+age_file 108000 "$SEG_STATE/counts"
 check "counts 30h old show the age in hours" "doctor  1 FAIL  12 WARN (30h old)" "$(seg)"
 # the shared writer: atomic (no tmp left behind), creates the dir, exact format.
 # shellcheck source=doctor-counts.sh
