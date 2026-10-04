@@ -1,8 +1,8 @@
-// HIMMEL-4254 P3: thin DOM glue. All markup comes from render.js.
+// HIMMEL-4254 P3/P4: thin DOM glue. All markup comes from render.js.
 import { render, renderNav } from "/render.js";
 
 const $ = (s) => document.querySelector(s);
-const state = { open: new Set(), filt: { health: null, kind: null, q: "" } };
+const state = { open: new Set(), filt: { health: null, kind: null, q: "" }, plans: {} };
 let feed = null;
 let current = "triage";
 
@@ -30,6 +30,39 @@ function toast(t) {
   toast.t = setTimeout(() => { el.hidden = true; }, 2600);
 }
 
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "X-Himmel-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let j = {};
+  try { j = await r.json(); } catch (_) { j = { error: `${path} failed (${r.status})` }; }
+  return { ok: r.ok, status: r.status, j };
+}
+
+async function loadFeed() {
+  const r = await fetch("/api/feed", { headers: { "X-Himmel-Token": token } });
+  if (r.ok) { feed = await r.json(); paint(); }
+}
+
+// Two-step write: the dry-run binds a preview id; only confirm runs it.
+async function preview(b) {
+  const k = b.dataset.k;
+  const req = { action: b.dataset.action, target: b.dataset.target };
+  if (b.dataset.value) req.value = b.dataset.value;
+  state.plans[k] = { stage: "loading" }; paint();
+  const { ok, j } = await post("/api/preview", req);
+  state.plans[k] = ok ? { stage: "plan", req, typed: "", ...j } : { stage: "error", error: j.error || "preview failed", output: j.output };
+  paint();
+}
+
+async function run(k) {
+  const p = state.plans[k];
+  if (!p || p.stage !== "plan") return;
+  state.plans[k] = { stage: "running", command: p.command }; paint();
+  const { ok, j } = await post("/api/run", { previewId: p.previewId, ...p.req, consent: p.typed });
+  state.plans[k] = ok ? { stage: "done", ...j } : { stage: "error", error: j.error || "run failed", output: j.output };
+  paint();
+  if (ok) loadFeed();
+}
+
 function go(id) {
   current = id;
   document.getElementById(id).scrollIntoView({ block: "start" });
@@ -47,13 +80,26 @@ document.addEventListener("click", (e) => {
     try { navigator.clipboard.writeText(t).then(() => toast("Copied: " + t), () => toast(t)); } catch (_) { toast(t); }
     return;
   }
+  if (b.dataset.act === "plan") { e.stopPropagation(); return void preview(b); }
+  if (b.dataset.act === "run") return void run(b.dataset.k);
+  if (b.dataset.act === "close") { delete state.plans[b.dataset.k]; return paint(); }
   if (b.dataset.act === "toggle" && !e.target.closest(".slot")) {
     const k = b.dataset.k;
     state.open.has(k) ? state.open.delete(k) : state.open.add(k);
     paint();
   }
 });
-document.addEventListener("input", (e) => { if (e.target.id === "q") { state.filt.q = e.target.value; paint(); } });
+document.addEventListener("input", (e) => {
+  if (e.target.id === "q") { state.filt.q = e.target.value; paint(); return; }
+  if (e.target.dataset.act === "consent") {
+    // No repaint: keep the caret; only flip the confirm button.
+    const p = state.plans[e.target.dataset.k];
+    if (!p) return;
+    p.typed = e.target.value;
+    const btn = e.target.closest(".plan").querySelector('[data-act="run"]');
+    if (btn) btn.disabled = p.typed !== p.consent.expect;
+  }
+});
 document.addEventListener("keydown", (e) => {
   if (!feed || e.target.matches("input")) return;
   if (["1", "2", "3"].includes(e.key)) return go(["triage", "controls", "inventory"][Number(e.key) - 1]);

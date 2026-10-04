@@ -1,6 +1,7 @@
-// HIMMEL-4254 P3: pure rendering, no DOM. render(feed, state) → HTML string.
-// state: { open: Set<string>, filt: { health, kind, q } }. P3 is read-only:
-// toggles render disabled with "available in P4".
+// HIMMEL-4254 P3/P4: pure rendering, no DOM. render(feed, state) → HTML string.
+// state: { open: Set<string>, filt: { health, kind, q }, plans: { [k]: plan } }.
+// A toggle in Controls opens a plan: preview (dry-run) → consent → run →
+// before/after. Confirm stays disabled until a typed consent matches.
 const ST = { ok: "● ok", warn: "◐ warn", fail: "✕ fail", off: "○ off", info: "· info" };
 const GROUPS = ["core", "vault", "cadence", "bridge", "lane", "guard"];
 const READ_ONLY = {
@@ -22,7 +23,11 @@ function slot(r, where) {
   if (c.class === "toggle") {
     if (where !== "controls") return `<span class="ro">control ↗</span>`;
     const on = r.installed && r.installed.state === "present";
-    return `<button class="sw" role="switch" aria-checked="${on}" disabled>${on ? "on" : "off"} <span class="t"></span></button> <span class="ro">available in P4</span>`;
+    const a = (v) => `data-act="plan" data-k="${esc(`${where}|${r.id}`)}" data-action="${esc(c.action)}" data-target="${esc(c.target)}"${v ? ` data-value="${v}"` : ""}`;
+    // The feed does not know a lane's current value, so a lane offers both.
+    if (c.action === "config.lanes") return `<button class="btn" ${a("on")}>on</button> <button class="btn" ${a("off")}>off</button>`;
+    const v = c.action === "config.initiative" ? (on ? "off" : "on") : "";
+    return `<button class="sw" role="switch" aria-checked="${on}" ${a(v)}>${on ? "on" : "off"} <span class="t"></span></button>`;
   }
   if (isCopy(r)) return `<button class="btn" data-act="copy" data-cmd="${esc(remedyOf(r))}">copy · runs in your terminal</button>`;
   return `<span class="ro">⊘ read-only · ${esc(READ_ONLY[c.reason] || c.reason || "probe")}</span>`;
@@ -31,6 +36,30 @@ function slot(r, where) {
 function firesText(f) {
   if (!f) return "unverified";
   return f.state === "yes" ? `yes · ${esc(f.at)} · ${esc(f.evidence)}` : esc(f.state);
+}
+
+function planHtml(k, p) {
+  const dk = `data-k="${esc(k)}"`;
+  const cancel = `<button class="btn" data-act="close" ${dk}>${p.stage === "done" || p.stage === "error" ? "close" : "cancel"}</button>`;
+  if (p.stage === "loading") return `<div class="plan"><span class="ro">running dry-run…</span></div>`;
+  if (p.stage === "running") return `<div class="plan"><span class="ro">running ${esc(p.command)}…</span></div>`;
+  if (p.stage === "error") return `<div class="plan"><b>${esc(p.error)}</b>${p.output ? `<pre>${esc(p.output)}</pre>` : ""}${cancel}</div>`;
+  if (p.stage === "plan") {
+    const typed = p.consent && p.consent.kind === "typed";
+    const ok = !typed || p.typed === p.consent.expect;
+    return `<div class="plan"><div class="ro">dry-run · nothing has changed</div><pre>$ ${esc(p.command)}\n${esc(p.output)}</pre>
+      ${p.bank && p.bank !== "none" ? `<div class="ro">bank: ${esc(p.bank)}</div>` : ""}<div class="ro">takes effect: ${esc(p.effect)}</div>
+      ${typed ? `<label>type <b>${esc(p.consent.expect)}</b> to confirm <input data-act="consent" ${dk} value="${esc(p.typed)}" autocomplete="off"></label>` : ""}
+      <button class="btn primary" data-act="run" ${dk}${ok ? "" : " disabled"}>confirm</button>${cancel}
+      <span class="ro">preview id expires in 5 min</span></div>`;
+  }
+  const ids = [...new Set([...Object.keys(p.before || {}), ...Object.keys(p.after || {})])];
+  const ba = ids.map((id) => {
+    const b = (p.before || {})[id] || {}, a = (p.after || {})[id] || {};
+    return `<div class="ba"><b>${esc(id)}</b><span>installed ${esc(b.installed)} → ${esc(a.installed)}</span><span>health ${esc(b.health)} → ${esc(a.health)}</span></div>`;
+  }).join("");
+  return `<div class="plan"><div>${p.rc === 0 ? "✓" : "✕"} ran ${esc(p.command)} · rc=${esc(p.rc)}${p.timedOut ? " · timed out" : ""}</div>${ba}
+    ${p.output ? `<pre>${esc(p.output)}</pre>` : ""}<div class="ro">${p.reprobe === "ok" ? "re-probed" : esc(p.reprobe)} · logged to actions.jsonl</div>${cancel}</div>`;
 }
 
 function rowHtml(r, where, state) {
@@ -42,6 +71,8 @@ function rowHtml(r, where, state) {
     <span class="st ${esc(r.health)}">${ST[r.health] || esc(r.health)}</span><span class="kind">[${esc(kindOf(r))}]</span>
     <span class="id" title="${esc(r.id)}">${esc(r.id)}</span><span class="det">${esc(i.detail)}</span>
     <span class="slot">${slot(r, where)}</span></div>`;
+  const plan = state.plans && state.plans[k];
+  if (plan) h += planHtml(k, plan);
   if (open) {
     h += `<div class="body">
       <div class="f"><b>declared</b><span>${esc(d.where)}${d.desired ? ` · ${esc(d.desired)}` : ""}${d.profile ? ` · profile ${esc(d.profile)}` : ""}</span></div>
@@ -90,7 +121,7 @@ export function render(feed, state) {
 </section>
 <section id="controls" aria-labelledby="h-controls">
   <h2 id="h-controls">Controls</h2>
-  <p class="sub">Everything that can be switched. Read-only in this version: switching arrives in P4.</p>
+  <p class="sub">Everything that can be switched. Every switch previews its dry-run first; nothing changes until you confirm.</p>
   ${grouped(controls, "controls", state)}
 </section>
 <section id="inventory" aria-labelledby="h-inv">
