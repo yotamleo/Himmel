@@ -14,7 +14,7 @@ import { scrubProviderKeys } from "../fleet-control/server";
 import { redactDeep, envValues } from "../himmelctl/lib/redact.js";
 import { parseDotEnv } from "../himmelctl/lib/probes.js";
 import { ActionError, buildTable, loadRegistries, resolveAction, type Resolved } from "./actions";
-import { acquireLock, runChild } from "./lock";
+import { acquireLock, runChild, type Lock } from "./lock";
 import { appendAudit } from "./audit";
 
 const LOOPBACK = "127.0.0.1";
@@ -95,7 +95,8 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     try { raw = readFileSync(join(root, ".env"), "utf8"); } catch { /* no .env */ }
     return redactDeep(v, { literals: envValues(raw, parseDotEnv, env) });
   };
-  const childOpts = (p: Resolved) => ({ cwd: p.cwd, env, timeoutMs: opts.actionTimeoutMs ?? p.timeoutMs });
+  // The child's process group is recorded in the lock, so the lock outlives a server crash while it runs.
+  const childOpts = (p: Resolved, lock: Lock) => ({ cwd: p.cwd, env, timeoutMs: opts.actionTimeoutMs ?? p.timeoutMs, onSpawn: lock.setGroup });
 
   async function reprobe(rowIds: string[]): Promise<{ probe: Probe | null; state: string }> {
     if (rowIds.length === 0) return { probe: {}, state: "ok" };
@@ -114,10 +115,10 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     let p: Resolved;
     try { p = resolveAction(table, b.action, b.target, b.value); }
     catch (e) { if (e instanceof ActionError) return json({ error: e.message }, 400); throw e; }
-    const release = acquireLock(lockPath);
-    if (!release) return json({ error: "another action is running" }, 409);
+    const lock = acquireLock(lockPath);
+    if ("busy" in lock) return json({ error: lock.busy }, 409);
     let r;
-    try { r = await runChild(p.dryArgv, childOpts(p)); } finally { release(); }
+    try { r = await runChild(p.dryArgv, childOpts(p, lock)); } finally { lock.release(); }
     const output = r.stdout + r.stderr;
     if (r.rc !== 0) return json(redactOut({ error: r.timedOut ? "dry-run timed out" : "dry-run failed", rc: r.rc, output }), 422);
     for (const [k, v] of previews) if (v.expires <= now()) previews.delete(k);
@@ -132,15 +133,15 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     if (!p || p.expires <= now()) { previews.delete(id); return json({ error: "preview id missing, expired or used" }, 409); }
     if (b.action !== p.action || b.target !== p.target || (b.value ?? null) !== p.value) return json({ error: "preview id is bound to a different action" }, 409);
     if (p.consent.kind === "typed" && b.consent !== p.consent.expect) return json({ error: "typed consent does not match" }, 403);
-    const release = acquireLock(lockPath);
-    if (!release) return json({ error: "another action is running" }, 409);
+    const lock = acquireLock(lockPath);
+    if ("busy" in lock) return json({ error: lock.busy }, 409);
     previews.delete(id); // single-use from here on
     let before, r, after;
     try {
       before = await reprobe(p.rowIds);
-      r = await runChild(p.argv, childOpts(p));
+      r = await runChild(p.argv, childOpts(p, lock));
       after = await reprobe(p.rowIds);
-    } finally { release(); }
+    } finally { lock.release(); }
     // The action has already run: a failed append must not hide that behind a 500.
     let audit = "ok";
     try { appendAudit(auditPath, { time: new Date(now()).toISOString(), action: p.action, target: p.target, value: p.value, argv: p.argv, rc: r.rc, before: healthOf(before.probe), after: healthOf(after.probe) }); }

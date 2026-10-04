@@ -1,5 +1,5 @@
 import { test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -216,6 +216,22 @@ test("a lock file holding a dead pid is replaced and the run succeeds", async ()
   const id = await previewId(port);
   expect((await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" })).status).toBe(200);
   expect(existsSync(lockPath())).toBe(false);
+});
+
+test("a crashed server's orphaned action group keeps the lock live: 409 until the group is gone", async () => {
+  const dead = spawnSync("true").pid!;
+  const orphan = spawn("sleep", ["30"], { detached: true, stdio: "ignore" }); // its own group, pgid = pid
+  try {
+    mkdirSync(join(lockPath(), ".."), { recursive: true });
+    writeFileSync(lockPath(), `${dead} crashed-token ${orphan.pid}`);
+    const port = boot();
+    expect((await preview(port)).status).toBe(409);
+    expect(readFileSync(lockPath(), "utf8")).toBe(`${dead} crashed-token ${orphan.pid}`);
+    process.kill(-orphan.pid!, "SIGKILL");
+    await new Promise((r) => orphan.once("exit", r));
+    const id = await previewId(port);
+    expect((await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" })).status).toBe(200);
+  } finally { try { process.kill(-orphan.pid!, "SIGKILL"); } catch { /* gone */ } }
 });
 
 test("a live foreign lock is 409", async () => {

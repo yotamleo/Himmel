@@ -1,41 +1,92 @@
 import { test, expect, beforeEach, afterEach } from "bun:test";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acquireLock, runChild } from "../lock";
+import { acquireLock, runChild, type Lock } from "../lock";
 
 // Scratch dir only: no real ~/.himmel lock is touched.
 let dir = "";
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "cfgui-lock-")); });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
+const take = (p: string) => { const l = acquireLock(p); if ("busy" in l) throw new Error(l.busy); return l as Lock; };
+const deadPid = () => spawnSync("true").pid!;
 
 test("an acquired lock holds this pid and leaves no temp files behind", () => {
   const p = join(dir, "write.lock");
-  const release = acquireLock(p)!;
-  expect(readFileSync(p, "utf8")).toBe(String(process.pid));
+  const l = take(p);
+  expect(readFileSync(p, "utf8").split(" ")[0]).toBe(String(process.pid));
   expect(readdirSync(dir)).toEqual(["write.lock"]);
-  release();
+  l.release();
   expect(existsSync(p)).toBe(false);
 });
 
 test("release does not remove a lock another owner has taken since", () => {
   const p = join(dir, "write.lock");
-  const release = acquireLock(p)!;
+  const l = take(p);
   rmSync(p);
   writeFileSync(p, "1"); // pid 1 is always alive
-  release();
+  l.release();
   expect(readFileSync(p, "utf8")).toBe("1");
 });
 
 test("a stale lock is taken over; a live one is left in place", () => {
   const p = join(dir, "write.lock");
   writeFileSync(p, "");  // empty: a crash before the pid landed
-  const release = acquireLock(p)!;
-  expect(release).not.toBeNull();
-  release();
+  take(p).release();
   writeFileSync(p, "1");
-  expect(acquireLock(p)).toBeNull();
+  expect("busy" in acquireLock(p)).toBe(true);
   expect(readFileSync(p, "utf8")).toBe("1");
+});
+
+test("a dead owner whose action group still runs keeps the lock live", async () => {
+  const p = join(dir, "write.lock");
+  const orphan = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  try {
+    writeFileSync(p, `${deadPid()} tok ${orphan.pid}`);
+    expect("busy" in acquireLock(p)).toBe(true);
+    process.kill(-orphan.pid!, "SIGKILL");
+    await new Promise((r) => orphan.once("exit", r));
+    take(p).release();
+  } finally { try { process.kill(-orphan.pid!, "SIGKILL"); } catch { /* gone */ } }
+});
+
+test("three concurrent takers on a stale lock: exactly one wins, every round", async () => {
+  const p = join(dir, "write.lock");
+  const taker = join(import.meta.dir, "lock-taker.ts");
+  for (let round = 0; round < 20; round++) {
+    writeFileSync(p, String(deadPid()));
+    const startAt = Date.now() + 500;
+    const outs = await Promise.all([0, 1, 2].map(() => new Promise<string>((res) => {
+      const c = spawn(process.execPath, [taker, p, String(startAt)], { stdio: ["ignore", "pipe", "inherit"] });
+      let o = ""; c.stdout!.on("data", (d) => (o += d)); c.on("close", () => res(o.trim()));
+    })));
+    expect(outs.filter((o) => o === "won").length).toBe(1);
+    rmSync(p, { force: true });
+  }
+}, 120_000);
+
+test("a stale breaker left by a dead taker fails closed with a remedy, never a takeover", () => {
+  const p = join(dir, "write.lock");
+  writeFileSync(p, String(deadPid()));
+  writeFileSync(`${p}.break`, String(deadPid()));
+  const l = acquireLock(p);
+  expect("busy" in l && l.busy).toContain(`remove ${p}.break`);
+});
+
+test("runChild resolves only once the whole process group is gone", async () => {
+  const r = await runChild(["sh", "-c", "echo $$; sleep 30 0</dev/null 1>/dev/null 2>&1 &"], { cwd: dir, env: process.env, timeoutMs: 60_000 });
+  const pgid = Number(r.stdout.trim());
+  expect(pgid).toBeGreaterThan(0);
+  let code = "";
+  try { process.kill(-pgid, 0); } catch (e) { code = String((e as NodeJS.ErrnoException).code); }
+  expect(code).toBe("ESRCH");
+});
+
+test("onSpawn reports the child's pgid so the lock can record it", async () => {
+  let seen = 0;
+  const r = await runChild(["sh", "-c", "echo $$"], { cwd: dir, env: process.env, timeoutMs: 5000, onSpawn: (pg) => { seen = pg; } });
+  expect(seen).toBe(Number(r.stdout.trim()));
 });
 
 test("output written after the leader exits is kept (finish on close, not exit)", async () => {
