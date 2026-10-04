@@ -34,6 +34,11 @@ def _resolve_vboxmanage():
     """
     override = os.environ.get("VBOXMANAGE_PATH")
     if override:
+        # A relative path must resolve now: _run() runs it under cwd=$HOME.
+        # (A drive-qualified `C:/..` value is absolute on Windows already.)
+        if (("/" in override or os.sep in override) and override[1:2] != ":"
+                and not os.path.isabs(override)):
+            return os.path.abspath(override)
         return override
     return shutil.which("VBoxManage") or _WINDOWS_DEFAULT
 

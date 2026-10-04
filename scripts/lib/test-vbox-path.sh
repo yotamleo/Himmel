@@ -86,6 +86,13 @@ got=$(cd "$T4_CALLER" && HOME="$T4_HOME" VBOXMANAGE_PATH="$T4_FAKE" "$PYTHON3" -
     "import sys; sys.path.insert(0, sys.argv[1]); import vbox; print(vbox._run('list')[1].strip())" "$LIB_DIR_NATIVE")
 assert_eq "T4 VBoxManage runs with cwd HOME, not the caller's cwd" "$(cd "$T4_HOME" && pwd -P)" "$got"
 
+# T5 (HIMMEL-4334 panel): a RELATIVE VBOXMANAGE_PATH is resolved against the
+# caller's cwd at import, so it still runs after the cwd=$HOME change.
+printf '#!/bin/sh\necho relative-ok\n' > "$T4_CALLER/rel-vbm"; chmod +x "$T4_CALLER/rel-vbm"
+got=$(cd "$T4_CALLER" && HOME="$T4_HOME" VBOXMANAGE_PATH="./rel-vbm" "$PYTHON3" -c \
+    "import sys; sys.path.insert(0, sys.argv[1]); import vbox; print(vbox._run('list')[1].strip())" "$LIB_DIR_NATIVE")
+assert_eq "T5 relative VBOXMANAGE_PATH still runs under cwd HOME" "relative-ok" "$got"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

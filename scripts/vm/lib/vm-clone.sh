@@ -73,7 +73,7 @@ vm_env_init() {
     # A relative path (`./stub`) must resolve here: the VBoxManage calls run
     # under `cd "$HOME"` (HIMMEL-4334), where it would no longer exist.
     case "$VBOXMANAGE" in
-        /*) ;;
+        /*|[A-Za-z]:*) ;;
         */*) VBOXMANAGE="$PWD/$VBOXMANAGE" ;;
     esac
     export VBOXMANAGE_PATH="$VBOXMANAGE"
