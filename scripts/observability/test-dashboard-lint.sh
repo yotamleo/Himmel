@@ -30,7 +30,7 @@ FAIL=0
 pass() { echo "  PASS: $1"; PASS=$((PASS+1)); }
 fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FAIL=$((FAIL+1)); }
 
-TMP="$(mktemp -d)" || exit 1
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/dashboard-lint.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 # lint <dashboard.json> — prints one line per violation, exits 1 on any.
@@ -115,7 +115,7 @@ else
         local name="$1" want="$2" mut="$3" f="$TMP/$1.json" out rc
         node -e 'const fs=require("fs");const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));const all=[];(function w(l){for(const p of l||[]){all.push(p);w(p.panels);}})(d.panels);const withExpr=all.find(p=>(p.targets||[]).length);'"$mut"';fs.writeFileSync(process.argv[2],JSON.stringify(d));' "$DASH" "$f"
         out="$(lint "$f")"; rc=$?
-        if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF "$want"; then pass "rejects $name"; else fail "rejects $name" "rc=$rc out=$out"; fi
+        if [ "$rc" -ne 0 ] && grep -qF "$want" <<< "$out"; then pass "rejects $name"; else fail "rejects $name" "rc=$rc out=$out"; fi
     }
     control unknown-metric 'unknown metric "himmel_made_up_total"' 'withExpr.targets[0].expr="sum(himmel_made_up_total)"'
     control duplicate-id 'duplicate panel id' 'all[1].id=all[0].id'
@@ -125,7 +125,7 @@ else
     control wrong-uid 'want "himmel-health"' 'd.uid="war-room"'
     printf '{"uid":' > "$TMP/broken.json"
     out="$(lint "$TMP/broken.json")"; rc=$?
-    if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qF 'invalid JSON'; then pass "rejects invalid JSON"; else fail "rejects invalid JSON" "rc=$rc out=$out"; fi
+    if [ "$rc" -ne 0 ] && grep -qF 'invalid JSON' <<< "$out"; then pass "rejects invalid JSON"; else fail "rejects invalid JSON" "rc=$rc out=$out"; fi
 fi
 
 echo "== dashboard provider ships inert"
@@ -134,8 +134,21 @@ if [ -f "$PROV_DASH_DIR/himmel-dashboards.yaml.tmpl" ] && grep -qF '@HIMMEL_DASH
 else
     fail "provider template carries the @HIMMEL_DASHBOARDS_DIR@ token" "missing or untokenised: $PROV_DASH_DIR/himmel-dashboards.yaml.tmpl"
 fi
-active="$(find "$PROV_DASH_DIR" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) | sort)"
-if [ -z "$active" ]; then pass "no active provider yaml under provisioning/dashboards/"; else fail "no active provider yaml under provisioning/dashboards/" "$active"; fi
+# active_yaml <dir> — prints each *.yaml/*.yml in <dir>; exits 2 if <dir> is
+# not a readable directory, so a failed scan never reads as "none found".
+active_yaml() {
+    local f
+    [ -d "$1" ] && [ -r "$1" ] || return 2
+    for f in "$1"/*.yaml "$1"/*.yml; do [ -e "$f" ] && echo "$f"; done
+    return 0
+}
+active="$(active_yaml "$PROV_DASH_DIR")"; rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$active" ]; then pass "no active provider yaml under provisioning/dashboards/"; else fail "no active provider yaml under provisioning/dashboards/" "rc=$rc $active"; fi
+# Positive controls: an active provider is found, a missing dir is an error.
+mkdir "$TMP/prov" && : > "$TMP/prov/himmel-dashboards.yaml"
+active="$(active_yaml "$TMP/prov")"; rc=$?
+if [ "$rc" -eq 0 ] && [ -n "$active" ]; then pass "detects an active provider yaml"; else fail "detects an active provider yaml" "rc=$rc"; fi
+if active_yaml "$TMP/no-such-dir" >/dev/null; then fail "a missing provisioning dir is an error"; else pass "a missing provisioning dir is an error"; fi
 
 echo
 echo "===================================="

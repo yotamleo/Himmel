@@ -45,7 +45,7 @@
       "type": "stat",
       "id": 2,
       "title": "Is himmel healthy?",
-      "description": "The worst firing alert decides: Act now (a page alert), Needs a look (a warn alert), or All clear. No data means Prometheus is not answering, so nothing below is current.",
+      "description": "The worst firing alert decides: Act now (a page alert, or the flow exporter is down or missing, so alerts cannot be trusted), Needs a look (a warn alert), or All clear. No data means Prometheus is not answering, so nothing below is current.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -62,7 +62,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max((2 * ALERTS{alertstate=\"firing\",severity=\"page\"}) or (ALERTS{alertstate=\"firing\",severity=\"warn\"}) or vector(0))",
+          "expr": "max((2 * ALERTS{alertstate=\"firing\",severity=\"page\"}) or (ALERTS{alertstate=\"firing\",severity=\"warn\"}) or (2 * (up{job=\"flow-exporter\"} == bool 0)) or (2 * absent(up{job=\"flow-exporter\"})) or vector(0))",
           "refId": "A",
           "instant": true,
           "range": false
@@ -886,7 +886,7 @@
                     "type": "range",
                     "options": {
                       "from": 2,
-                      "to": null,
+                      "to": 1000000000,
                       "result": {
                         "text": "✕ Overdue",
                         "color": "#d6352f",
