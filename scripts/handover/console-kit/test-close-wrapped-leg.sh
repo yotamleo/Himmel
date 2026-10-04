@@ -763,6 +763,7 @@ RP_SID=55555555-5555-5555-5555-555555555555; RP_OTHER=66666666-6666-6666-6666-66
 mkdir -p "$RP_CL/j2a" "$RP_CL/j2b" "$RP_CL/j1a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER" "$RP_ROOT/mog-run.old" "$W/reap-proc/1" "$W/reap-sessions"
 ln -s / "$W/reap-proc/1/cwd"
 for d in "$RP_CL/j2a" "$RP_CL/j1a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER"; do printf '{"a":1}\n' > "$d/corpus-x.jsonl"; done
+touch -t 200001010000 "$RP_CL/j2a" "$RP_CL/j2b"   # an idle judge: the scoped reap keeps a 1 h floor
 touch -t 200001010000 "$RP_ROOT/mog-run.old"
 RP_PROJ="$W/reap-projects/p"; mkdir -p "$RP_PROJ"
 printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\"}" > "$RP_PROJ/$RP_SID.jsonl"

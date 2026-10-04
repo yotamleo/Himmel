@@ -201,9 +201,13 @@ absent "11. old fixture reaped despite cwd files" "$ROOT/mog-run.old"
 
 echo "== 12. scoped to one leg (HIMMEL-4235): --judge / --session =="
 build_tree
+touch -t 200001010000 "$ROOT/claude-$(id -u)/j9001"
 out="$(reap --apply --judge 9001)"; rc=$?
 check "scoped --judge rc 0" "$rc" 0
-absent "12. the named leg's young judge dir is reaped with no age floor" "$ROOT/claude-$(id -u)/j9001"
+absent "12. the named PR's idle judge dir is reaped" "$ROOT/claude-$(id -u)/j9001"
+mkdir -p "$ROOT/claude-$(id -u)/j9003"; : > "$ROOT/claude-$(id -u)/j9003/f"
+out="$(reap --apply --judge 9003)"; rc=$?
+exists "12. a just-touched judge dir (maybe still running) is kept even when named" "$ROOT/claude-$(id -u)/j9003"
 exists "12. another leg's old judge dir untouched" "$ROOT/claude-$(id -u)/j9002"
 exists "12. fixture untouched by a scoped run" "$ROOT/mog-run.old"
 exists "12. dead session untouched by a judge-only scope" "$CL/$DEAD"
