@@ -80,8 +80,18 @@ cmd_run() {
     return 0
 }
 
+# "no crontab for <user>" is an empty table; any other read failure is an error
+# (installing over it would drop the operator's other jobs).
 cron_read() {
-    CRON_TAB="$(LC_ALL=C "$CRONTAB_BIN" -l 2>/dev/null)" || CRON_TAB=""
+    local err
+    CRON_TAB=""
+    command -v "$CRONTAB_BIN" >/dev/null 2>&1 || return 0
+    if CRON_TAB="$(LC_ALL=C "$CRONTAB_BIN" -l 2>&1)"; then return 0; fi
+    err="$CRON_TAB"; CRON_TAB=""
+    case "$err" in
+        *"no crontab"*) return 0 ;;
+        *) echo "ERR doctor-cadence: cannot read the crontab: $err" >&2; return 1 ;;
+    esac
 }
 cron_entry() { printf '%s\n' "$CRON_TAB" | grep -F "# $TASK_NAME" || true; }
 
@@ -89,7 +99,8 @@ cmd_arm() {
     local time="05:30" force=0 dry=0 root runner bash_bin entry
     while [ $# -gt 0 ]; do
         case "$1" in
-            --time) time="${2:-}"; shift 2 ;;
+            --time) [ $# -ge 2 ] || { echo "ERR doctor-cadence: --time needs a value" >&2; return 1; }
+                    time="$2"; shift 2 ;;
             --force) force=1; shift ;;
             --dry-run) dry=1; shift ;;
             *) echo "ERR doctor-cadence: unknown arg: $1" >&2; return 1 ;;
@@ -100,13 +111,13 @@ cmd_arm() {
     command -v "$CRONTAB_BIN" >/dev/null 2>&1 || { echo "ERR doctor-cadence: '$CRONTAB_BIN' not on PATH" >&2; return 2; }
     root="$(resolve_primary)" || { echo "ERR doctor-cadence: cannot resolve the primary checkout" >&2; return 2; }
     bash_bin="$(command -v bash)"
-    cron_read
+    cron_read || return 4
     if [ -n "$(cron_entry)" ] && [ "$force" -eq 0 ]; then
         echo "ERR doctor-cadence: already armed: $TASK_NAME (use --force to replace)" >&2
         return 3
     fi
     runner="$RUNNER_DIR/doctor-cadence.sh"
-    entry="${time#*:} ${time%:*} * * * $runner # $TASK_NAME"
+    entry="${time#*:} ${time%:*} * * * \"$runner\" # $TASK_NAME"
     if [ "$dry" -eq 1 ]; then
         echo "DRY doctor-cadence: would write $runner and install: $entry"
         return 0
@@ -127,7 +138,7 @@ cmd_arm() {
 }
 
 cmd_status() {
-    cron_read
+    cron_read || return 1
     if [ -n "$(cron_entry)" ]; then echo "ARMED      $TASK_NAME ($(cron_entry | awk '{print $1, $2, $3, $4, $5}'))"
     else echo "not armed  $TASK_NAME"; fi
     [ -f "$STATE_DIR/counts" ] && echo "  last run   $(cat "$STATE_DIR/counts") ($(date -r "$STATE_DIR/counts" '+%Y-%m-%d %H:%M' 2>/dev/null))"
@@ -137,7 +148,7 @@ cmd_status() {
 cmd_disarm() {
     local dry=0
     [ "${1:-}" = "--dry-run" ] && dry=1
-    cron_read
+    cron_read || return 4
     if [ -z "$(cron_entry)" ]; then echo "doctor-cadence: nothing armed — disarm is a no-op"; return 0; fi
     if [ "$dry" -eq 1 ]; then echo "DRY doctor-cadence: would remove the $TASK_NAME crontab entry"; return 0; fi
     { printf '%s\n' "$CRON_TAB" | grep -vF "# $TASK_NAME" || true; } | "$CRONTAB_BIN" - || return 4

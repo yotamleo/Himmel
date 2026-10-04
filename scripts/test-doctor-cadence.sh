@@ -16,7 +16,7 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 # check <label> <expected> <actual>
 check() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (want '$2', got '$3')"; fi; }
 
-W="$(mktemp -d)"
+W="$(mktemp -d)" || exit 1
 trap 'rm -rf "$W"' EXIT
 export HOME="$W/home"; mkdir -p "$HOME"
 unset HIMMEL_DOCTOR_STATE_DIR CADENCE_ALERT_FILE CADENCE_ALERT_DEDUPE_DIR
@@ -128,6 +128,25 @@ st="$(bash "$P/scripts/doctor-cadence.sh" status 2>&1)"
 case "$st" in ARMED*) pass "status reports ARMED" ;; *) fail "status reports ARMED ($st)" ;; esac
 bash "$P/scripts/doctor-cadence.sh" disarm >/dev/null 2>&1; check "disarm exits 0" 0 $?
 grep -q 'HIMMEL-Doctor' "$FAKE_CRON" && fail "disarm removes the entry" || pass "disarm removes the entry"
+
+# 11. hardening (CR round 1): a dangling --time fails fast instead of looping;
+# a runner dir with a space is quoted in the crontab line; an unreadable
+# crontab is never mistaken for an empty one.
+timeout 5 bash "$P/scripts/doctor-cadence.sh" arm --time >/dev/null 2>&1; rc=$?
+check "arm --time with no value fails fast (no hang)" 1 "$rc"
+SP="$W/run ner"
+DOCTORCAD_RUNNER_DIR="$SP" bash "$P/scripts/doctor-cadence.sh" arm --force >/dev/null 2>&1
+grep -qF "\"$SP/doctor-cadence.sh\"" "$FAKE_CRON" && pass "runner path with a space is quoted in the crontab line" || fail "runner path with a space is quoted in the crontab line"
+DOCTORCAD_RUNNER_DIR="$SP" bash "$P/scripts/doctor-cadence.sh" disarm >/dev/null 2>&1
+printf '0 1 * * * keepme\n' > "$FAKE_CRON"
+cat > "$W/crontab-broken" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-l" ]; then echo "crontab: temporary read failure" >&2; exit 1; fi
+cat > "$FAKE_CRON"
+SH
+chmod +x "$W/crontab-broken"
+DOCTORCAD_CRONTAB="$W/crontab-broken" bash "$P/scripts/doctor-cadence.sh" arm >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ] && grep -q keepme "$FAKE_CRON"; then pass "a failed crontab read does not overwrite existing jobs"; else fail "a failed crontab read does not overwrite existing jobs (rc=$rc)"; fi
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "test-doctor-cadence: all passed"; exit 0; fi
