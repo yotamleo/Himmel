@@ -53,6 +53,17 @@ start="$(pstart "$holder")" || start="-"
 [ -n "$start" ] || start="-"
 
 mkdir -p "$DIR" 2>/dev/null && [ -d "$DIR" ] || die "cannot create $DIR"
+# a dir someone else pre-created, or a symlinked holder, would turn the write below
+# into a write through their link
+[ -O "$DIR" ] && [ ! -L "$DIR" ] && [ ! -L "$DIR/.holder" ] || die "refusing $DIR: not ours or a symlink"
+# a live judge of another process already holds this dir: pick another suffix
+if [ -s "$DIR/.holder" ]; then
+    read -r op os < "$DIR/.holder" 2>/dev/null
+    case "$op" in ''|*[!0-9]*) ;; *)
+        [ "$op" != "$holder" ] && [ "$os" != "-" ] && [ "$(pstart "$op")" = "$os" ] \
+            && die "$DIR is held by live pid $op; use another suffix"
+    ;; esac
+fi
 printf '%s %s\n' "$holder" "$start" > "$DIR/.holder" 2>/dev/null || die "cannot write $DIR/.holder"
 [ -s "$DIR/.holder" ] || die "holder file empty: $DIR/.holder"
 printf '%s\n' "$DIR"

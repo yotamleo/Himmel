@@ -271,6 +271,17 @@ d="$(jd 9a 2>/dev/null)"; rc=$?; check "14. non-numeric PR refused" "$rc" 2; che
 d="$(jd 9201 B 2>/dev/null)"; rc=$?; check "14. suffix outside [a-z] refused" "$rc" 2; check "14. ... and prints no dir" "$d" ""
 d="$(jd 9201 ab 2>/dev/null)"; rc=$?; check "14. multi-char suffix refused" "$rc" 2
 d="$(jd 2>/dev/null)"; rc=$?; check "14. no PR refused" "$rc" 2
+rm -rf "$JD"; build_tree
+sleep 300 & OTHER=$!
+mkdir -p "$JD/j9301"; echo "$OTHER $(pstart "$OTHER")" > "$JD/j9301/.holder"
+d="$(jd 9301 2>/dev/null)"; rc=$?; check "14. a live other holder is not overwritten" "$rc" 1; check "14. ... and prints no dir" "$d" ""
+check "14. ... holder file untouched" "$(cat "$JD/j9301/.holder")" "$OTHER $(pstart "$OTHER")"
+kill "$OTHER" 2>/dev/null; wait "$OTHER" 2>/dev/null
+d="$(jd 9301 2>/dev/null)"; rc=$?; check "14. a dead other holder is taken over" "$rc" 0
+check "14. ... holder rewritten" "$(cat "$JD/j9301/.holder")" "$$ $(pstart $$)"
+mkdir -p "$JD/j9302"; ln -s "$ROOT/victim" "$JD/j9302/.holder"; : > "$ROOT/victim"
+d="$(jd 9302 2>/dev/null)"; rc=$?; check "14. a symlinked .holder is refused" "$rc" 1
+check "14. ... and its target is not written" "$(wc -c < "$ROOT/victim" | tr -d ' ')" 0
 rm -rf "$JD"; chmod 555 "$ROOT"
 if [ -w "$ROOT" ]; then echo "ok - 14. (writable despite chmod, e.g. root: unwritable-root case skipped)"; else
     d="$(jd 9202 2>/dev/null)"; rc=$?; check "14. mkdir failure fails loudly" "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero; check "14. ... and prints no dir" "$d" ""
