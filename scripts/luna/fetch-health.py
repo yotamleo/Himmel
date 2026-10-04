@@ -217,6 +217,11 @@ def probe_instagram_embed(env: dict[str, str], http: Callable[..., HttpResult]) 
     return classify_http(result, auth_required=False, valid_body=lambda body: b"Caption" in body)
 
 
+IG_SESSION_REJECTED_REMEDY = (
+    "instagram rejected the session (redirect to home page): log the burner account into instagram.com "
+    "(clear any challenge), Cookie-Editor Export Netscape over ~/.luna/cookies/instagram.txt, chmod 600 it, "
+    "then re-run: python3 scripts/luna/fetch-health.py --probe instagram-media"
+)
 STDERR_TAIL_CHARS = 200
 # `name=value`, `name: value`, `Bearer value` for the secret-bearing names, then
 # any long opaque run (a token with no name in front of it).
@@ -290,7 +295,12 @@ def probe_gallery_dl(
         )
     except (OSError, subprocess.TimeoutExpired):
         return ProbeResult("transport-fail", "gallery-dl invocation failed")
-    return classify_command(completed.returncode, completed.stderr)
+    result = classify_command(completed.returncode, completed.stderr)
+    if source == "instagram-media" and completed.returncode != 0 and "redirect to home page" in (completed.stderr or "").lower():
+        # HIMMEL-4374: Instagram bounced a live public post to the home page, so it
+        # is not honouring the exported session. Not a rate limit, not ours to fix.
+        return ProbeResult("auth-or-cookie-expired", f"{IG_SESSION_REJECTED_REMEDY} [{result.reason}]")
+    return result
 
 
 def twitter_cookie_credentials(env: dict[str, str]) -> tuple[str, str]:

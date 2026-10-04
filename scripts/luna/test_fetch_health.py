@@ -917,6 +917,14 @@ class InstagramGuardTests(unittest.TestCase):
             for secret in secrets:
                 self.assertNotIn(secret, blob)
 
+    def test_a_login_redirect_is_a_rejected_session_with_a_remedy(self):
+        r = self.probe("instagram-media", command=self.command(4, "[instagram][error] HTTP redirect to home page (https://www.instagram.com/)"))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
+        self.assertIn("rc=4", r.reason)
+        self.assertIn("redirect to home page", r.reason)
+        self.assertIn("Cookie-Editor", r.reason)
+        self.assertIn("~/.luna/cookies/instagram.txt", r.reason)
+
     def test_the_stderr_tail_is_bounded(self):
         r = self.probe("instagram-media", command=self.command(1, "x " * 5000 + "the-end"))
         self.assertLess(len(r.reason), 400)
