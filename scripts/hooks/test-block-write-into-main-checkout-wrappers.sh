@@ -154,6 +154,28 @@ _subst_row "102w chroot fixture-root rm /jlnk/README.md, cwd /tmp" block "chroot
 _subst_row "102x chroot primary/somedir touch /../../x (.. clamps at a root inside the primary), cwd /tmp" block "chroot $FIX/primary/somedir touch /../../x" /tmp
 _subst_row "102y chroot fixture-root touch /../../../primary/f (.. clamps at an ancestor root), cwd /tmp" block "chroot $FIX touch /../../../primary/f" /tmp
 _subst_row "102z chroot unrelated-jail touch /jlnk/f (ALLOW), cwd /tmp" allow "chroot $FIX/jail touch /jlnk/f" /tmp
+# CR round 2 codex-2: tee behind a chroot (or any wrapper arm (a) does not
+# anchor) and a git write behind a chroot escaped the root model.
+_r4213 "103a chroot primary tee /f"                                    block 'echo x | chroot @P@ tee /f'
+_r4213 "103b chroot primary tee -a /f"                                 block 'chroot @P@ tee -a /f'
+_r4213 "103c sudo -R primary tee /f"                                   block 'echo x | sudo -R @P@ tee /f'
+_r4213 "103d sudo --chroot=primary tee /f"                             block 'echo x | sudo --chroot=@P@ tee /f'
+_r4213 "103e /usr/sbin/chroot primary tee /f"                          block 'echo x | /usr/sbin/chroot @P@ tee /f'
+_r4213 "103f chroot primary nice tee /f"                               block 'echo x | chroot @P@ nice tee /f'
+_r4213 "103g chroot primary timeout 5 tee /f"                          block 'echo x | chroot @P@ timeout 5 tee /f'
+_r4213 "103h chroot primary /usr/bin/tee /f"                           block 'echo x | chroot @P@ /usr/bin/tee /f'
+_subst_row "103i chroot fixture-root tee /primary/f, cwd /tmp"          block "echo x | chroot $FIX tee /primary/f" /tmp
+_subst_row "103j sudo -R fixture-root tee -a /primary/f, cwd /tmp"      block "echo x | sudo -R $FIX tee -a /primary/f" /tmp
+_r4213 "103k nice tee primary (host)"                                  block 'echo x | nice tee @P@/f'
+_r4213 "103l /usr/bin/tee primary (host)"                              block 'echo x | /usr/bin/tee @P@/f'
+_r4213 "103m chroot primary git -C / add ."                            block 'chroot @P@ git -C / add .'
+_subst_row "103n chroot fixture-root git -C /primary add ., cwd /tmp"   block "chroot $FIX git -C /primary add ." /tmp
+_r4213 "103o sudo -R primary git push"                                 block 'sudo -R @P@ git push origin x'
+_r4213 "103p chroot worktree tee /f (ALLOW)"                           allow 'echo x | chroot @W@ tee /f'
+_r4213 "103q chroot /srv/x tee /f (ALLOW)"                             allow 'echo x | chroot /srv/himmel-4329-x tee /f'
+_r4213 "103r chroot primary git status (read, ALLOW)"                  allow 'chroot @P@ git status'
+_r4213 "103s chroot / git status (ALLOW)"                              allow 'chroot / git status'
+_r4213 "103t nice tee /tmp (ALLOW)"                                    allow 'echo x | nice tee /tmp/himmel-4329-f'
 }
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

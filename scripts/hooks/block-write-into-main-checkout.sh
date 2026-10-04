@@ -1697,6 +1697,7 @@ _bwimc_deny() {
         shell-ambiguous) why="bash and zsh (or bash versions) read a \$'…' span in it differently, so its target cannot be classified (failing closed, HIMMEL-4138)" ;;
         unclosed-expansion) why="a \${…} or \$[…] span never closes and a separator follows it, so the command after it cannot be read (failing closed)" ;;
         unresolved-chroot) why="it runs behind a chroot (chroot DIR, sudo -R/--chroot) whose new root could not be resolved, so its targets cannot be classified (failing closed, HIMMEL-4329)" ;;
+        chroot-git) why="it runs a git write behind a chroot (chroot DIR, sudo -R/--chroot) other than /: its -C, --git-dir, --work-tree and GIT_* paths are not mapped into the new root, so its repo cannot be classified (failing closed, HIMMEL-4329)" ;;
         unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
     {
@@ -2110,11 +2111,12 @@ _bwimc_chdir_model() {
 # must not pass as its /tmp spelling), to "" for `/`, and to `$` (unknown, fail
 # closed) for a non-literal RAW, one that does not resolve, or a relative RAW
 # beside another wrapper chdir (which dir it is relative to is ambiguous).
-# ponytail: only the verb-loop targets (_bwimc_check_abs) read the root, so a
-# `tee` behind a wrapper or chroot (arm (a)) is still read on the host only;
-# upgrade path = route arm (a) through _bwimc_strip_prefix (the tee-behind-
-# wrapper leftover named in HIMMEL-4329's PR). An abbreviated `--chr=DIR` is an
-# unknown option, so it already fails closed.
+# Only the verb-loop targets (_bwimc_check_abs) read the root: a `tee` behind
+# a chroot is read by the verb loop's tee arm, and a git behind one fails
+# closed in _bwimc_git_clause's jail mode (CR codex-2). A redirect behind a
+# chroot (`chroot R echo x > /f`) is opened by the host shell, so arm (a)
+# rightly reads it on the host. An abbreviated `--chr=DIR` is an unknown
+# option, so it already fails closed.
 _bwimc_root_model() {
     local raw="$1" r
     _bwimc_chroot='$'
@@ -3920,6 +3922,32 @@ _bwimc_git_clause() {
     local e_cfgglobal="$_bwimc_genv_cfgglobal" e_cfgsystem="$_bwimc_genv_cfgsystem"
     local cfg="$_bwimc_genv_cfg"
     local cwd="$_bwimc_gcwd"
+    # HIMMEL-4329 CR codex-2: a git behind a chroot (`chroot P git -C / add .`,
+    # `sudo -R P git …`) runs inside the new root, and none of git's paths
+    # are mapped into it, so the prefix loop below cannot see it at all. A
+    # root other than `/` (unresolved included) reads the clause behind the
+    # wrappers in jail mode: a git write there fails closed (chroot-git); a
+    # read still passes. Only this arm calls itself, before the verb loop
+    # reads the _BWIMC_SP* globals.
+    if [ "$_bwimc_g_jail" = 0 ]; then
+        _bwimc_strip_prefix "$1"
+        if [ -n "$_BWIMC_SPROOT" ]; then
+            local jroot='$' jsp="$_BWIMC_SP"
+            case "$_BWIMC_SPROOT" in
+                *'$'*|*'`'*|*[*?[]*|*\\*) ;;
+                *)
+                    case "$_BWIMC_SPROOT:$_bwimc_gcwd_unres" in /*|*:0)
+                        r=$(_bwimc_resolve_abs "$_BWIMC_SPROOT" "$cwd") && r=$(guard_canon_path "$r" 2>/dev/null) && jroot="$r" ;;
+                    esac ;;
+            esac
+            if [ "$jroot" != / ]; then
+                _bwimc_g_jail=1
+                _bwimc_git_clause "$jsp"
+                _bwimc_g_jail=0
+                return 0
+            fi
+        fi
+    fi
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
     # Grouping punctuation and compound-command keywords the clause splitter
@@ -4157,6 +4185,7 @@ _bwimc_git_clause() {
     fi
 
     if [ "$sub" = push ]; then
+        [ "$_bwimc_g_jail" = 0 ] || _bwimc_deny "chroot-git" "$1" "$dir" ""
         _BWIMC_GIT_SUB=push
         [ "$_bwimc_gcwd_unres" = 1 ] && unres=1
         if [ "${#args[@]}" -gt 0 ]; then
@@ -4178,6 +4207,7 @@ _bwimc_git_clause() {
                 _bwimc_git_sub_is_read "$sub" && return 0
             fi ;;
     esac
+    [ "$_bwimc_g_jail" = 0 ] || _bwimc_deny "chroot-git" "$1" "$dir" ""
 
     _BWIMC_GIT_SUB="$sub"
     [ -n "$gitdir" ] || gitdir="$e_dir"
@@ -4572,6 +4602,7 @@ _bwimc_genv_cfgsystem=""
 _bwimc_genv_cfg=0
 _bwimc_g_repoint=0
 _bwimc_g_netop=0
+_bwimc_g_jail=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     # HIMMEL-4010: substitution bodies arrive as their own clauses; the
@@ -5381,6 +5412,38 @@ while IFS= read -r _bwimc_clause; do
                 -*) : ;;
                 *) _bwimc_cd_guard "$_bwimc_t" "$_bwimc_mode"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" "$_bwimc_mode" ;;
             esac
+            _bwimc_i=$((_bwimc_i+1))
+        done
+
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?tee(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-4329 CR codex-2: arm (a) reads `tee` on the host only and
+        # only behind its own short wrapper list, so `chroot P tee /f`,
+        # `sudo -R P tee /f`, `nice tee`, `timeout 5 tee` and `/usr/bin/tee`
+        # wrote into the primary unseen. Here tee is read behind every
+        # stripped wrapper, its FILE operands (FOLLOW) through
+        # _bwimc_check_target, which maps them into a chroot root. Arm (a)
+        # still runs, so this can only add denials. tee takes no option with
+        # a separate value; `--` ends option parsing.
+        _bwimc_toks=()
+        while IFS= read -r _bwimc_t; do _bwimc_toks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_clause_sp")
+        _bwimc_dd=0
+        _bwimc_i=1
+        while [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ]; do
+            _bwimc_t="${_bwimc_toks[$_bwimc_i]}"
+            if _bwimc_redirect_op_of "$_bwimc_t"; then
+                _bwimc_i=$(_bwimc_skip_redirect_at "$_bwimc_i")
+                continue
+            fi
+            if [ "$_bwimc_dd" = 0 ] && [ "$_bwimc_t" = "--" ]; then
+                _bwimc_dd=1
+            elif [ "$_bwimc_dd" = 1 ]; then
+                _bwimc_cd_guard "$_bwimc_t"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd"
+            else
+                case "$_bwimc_t" in
+                    -*) : ;;
+                    *) _bwimc_cd_guard "$_bwimc_t"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" ;;
+                esac
+            fi
             _bwimc_i=$((_bwimc_i+1))
         done
 
