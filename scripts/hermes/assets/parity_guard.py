@@ -1147,6 +1147,8 @@ def _ansi_c_decode(s: str) -> str:
             out.append(chr(v) if 0 < v < 128 else "#")
         streams.append("".join(out))
     streams.append(_bash_words(s))
+    streams.append(_bash_words(s, 1))
+    streams.append(_bash_words(s, 2))
     return ";".join(streams)
 
 
@@ -1175,14 +1177,23 @@ def _ansi_c_one(s: str, i: int):
     return (chr(v) if 0 < v < 128 else "#"), i, v == 0
 
 
-def _bash_words(s: str) -> str:
+def _bash_words(s: str, regions: int = 0) -> str:
     """HIMMEL-4032, the quote-aware fourth stream: bash decodes escapes ONLY inside a
     dollar-quote body; outside one a backslash quotes the next char (`ns\\teadOf` is
     `nsteadOf`, not a TAB) and a backslash-newline is deleted. A NUL ends the dollar-quote
-    body. Added beside the flat streams, never instead of them: deny-only."""
+    body. Added beside the flat streams, never instead of them: deny-only.
+    HIMMEL-4225: `regions=1` (the fifth stream) also reads a # comment at word start and
+    a heredoc body as text that opens no quote, kept verbatim, so a stray apostrophe there
+    cannot desync the rest. A delimiter it cannot classify ($-expansion, backtick, escape in
+    a double or dollar quote, open quote) reads no body; no heredoc inside (( )).
+    `regions=2` (the sixth) resets the quote state at every newline, the backstop for any
+    region the fifth misreads. Beside the fourth stream, never instead of it."""
     out, i, n, st = [], 0, len(s), 0  # st 0 bare, 1 single, 2 double, 3 dollar-quote
+    hd, ar, hb = [], 0, False  # pending heredocs (delimiter, strip tabs); (( depth; bad delimiter
     while i < n:
         c = s[i]
+        if regions == 2 and c == "\n":
+            st = 0
         if st == 1:
             if c == "'":
                 st = 0
@@ -1227,6 +1238,73 @@ def _bash_words(s: str) -> str:
             else:
                 out.append(c)
             i += 1
+            continue
+        if regions == 1 and c == "#" and (i == 0 or s[i - 1] in " \t\n;&|()<>"):
+            j = s.find("\n", i)
+            j = n if j < 0 else j
+            out.append(s[i:j])
+            i = j
+            continue
+        if regions == 1 and s[i:i + 2] == "((":
+            ar, i = ar + 1, i + 2
+            out.append("((")
+            continue
+        if regions == 1 and s[i:i + 2] == "))" and ar:
+            ar, i = ar - 1, i + 2
+            out.append("))")
+            continue
+        if regions == 1 and not ar and s[i:i + 2] == "<<" and s[i + 2:i + 3] != "<" and (i == 0 or s[i - 1] != "<"):
+            strip = s[i + 2:i + 3] == "-"
+            j, d, uc = i + 2 + strip, [], False
+            while j < n and s[j] in " \t":
+                j += 1
+            w = j
+            while j < n and s[j] not in " \t\n;&|()<>":
+                dl = False
+                if s[j] == "$":
+                    if s[j + 1:j + 2] in ("'", '"'):
+                        dl, j = True, j + 1
+                    else:
+                        uc = True
+                if s[j] == "`":
+                    uc = True
+                if s[j] in "'\"":
+                    k = s.find(s[j], j + 1)
+                    if k < 0:
+                        uc, k = True, n
+                    if "\\" in s[j + 1:k] and (s[j] == '"' or dl):
+                        uc = True
+                    d.append(s[j + 1:k])
+                    j = k + 1
+                elif s[j] == "\\":
+                    if s[j + 1:j + 2] != "\n":
+                        d.append(s[j + 1:j + 2])
+                    j += 2
+                else:
+                    d.append(s[j])
+                    j += 1
+            out.append(s[i:j])
+            i = j
+            if uc:
+                hb = True
+            elif j > w:
+                hd.append(("".join(d), strip))
+            continue
+        if regions == 1 and c == "\n" and hb:
+            hd, hb = [], False
+        if regions == 1 and c == "\n" and hd:
+            out.append(c)
+            i += 1
+            for d, strip in hd:
+                while i < n:
+                    j = s.find("\n", i)
+                    j = n if j < 0 else j
+                    ln = s[i:j]
+                    out.append(ln + "\n")
+                    i = j + 1
+                    if (ln.lstrip("\t") if strip else ln) == d:
+                        break
+            hd = []
             continue
         if c == "'":
             st = 1
