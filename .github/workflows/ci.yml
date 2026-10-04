@@ -76,6 +76,24 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/run-unchecked-mktemp-under-bwk.sh
 
+  # HIMMEL-4301: the unchecked-mktemp gate (scripts/hooks/check-unchecked-mktemp.sh)
+  # was pre-commit only (stages: [pre-commit]), so a commit made with the hook
+  # skipped or bypassed (UNCHECKED_MKTEMP_OK=1, --no-verify) reached main
+  # (#1747, #1771). This re-runs its added-lines scan over the PR's net diff,
+  # like plugin-version-bump does for its pre-commit twin. --merge-ref: CI's
+  # refs/pull/N/merge has the CURRENT base tip as HEAD^1, so lines main gained
+  # since the PR forked are never the PR's. fetch-depth: 0 → HEAD^1 reachable.
+  unchecked-mktemp-range:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: No unchecked mktemp capture added anywhere in the PR range
+        run: bash scripts/hooks/check-unchecked-mktemp.sh --range --merge-ref "${{ github.event.pull_request.base.sha }}"
+
   # Commit-time / pre-commit backstop for the 5 leak classes (HIMMEL-2561 /
   # HIMMEL-2705 step 2): catches anything that slipped past the pre-commit
   # hook (a --no-verify commit, a merge, a stale clone) by re-scanning the
