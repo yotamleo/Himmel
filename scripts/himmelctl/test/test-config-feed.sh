@@ -39,7 +39,7 @@ node_bin=$(command -v node)
 fail() { echo "FAIL: $1" >&2; exit 1; }
 pass() { echo "PASS: $1"; }
 
-work=$(mktemp -d) || exit 1
+work=$(mktemp -d "${TMPDIR:-/tmp}/config-feed.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 
 # ── fixture repo root ───────────────────────────────────────────────────────
