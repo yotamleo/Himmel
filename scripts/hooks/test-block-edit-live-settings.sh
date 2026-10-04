@@ -2567,6 +2567,138 @@ assert_rc "615 nested worktree /usr/bin/cat <<'EOF' to /tmp/notes.md naming ~/.c
 the hook folds ~/.cl\$(printf a)ude now
 EOF" HOME="$FAKEHOME")"
 
+# 630-683 (HIMMEL-4298): the 1773 out-of-scope gaps. rows_both FIRST WANT
+# LABEL reads one command per line and asserts it from the nested worktree
+# AND the primary. @P@ is the primary checkout, @H@ the fake home, and a
+# literal two-character \n is a newline (the heredoc rows).
+rows_both() {
+    local n=$1 cmd
+    while IFS= read -r cmd; do
+        cmd=${cmd//@P@/$PRIMARY}
+        cmd=${cmd//@H@/$FAKEHOME}
+        cmd=${cmd//\\n/$'\n'}
+        assert_rc "$n/wt $3: $cmd" "$2" "$(bash_rc_of "$NESTED_WT" "$cmd" HOME="$FAKEHOME")"
+        assert_rc "$n/prim $3: $cmd" "$2" "$(bash_rc_of "$PRIMARY" "$cmd" HOME="$FAKEHOME")"
+        n=$((n + 1))
+    done
+}
+# 630-642: a ${HOME…} operator form or a command substitution printing $HOME
+# right before /.claude names the live dir; it fails closed.
+rows_both 630 2 "HOME parameter/substitution form denies" <<'ROWS'
+echo x > ${HOME:-/x}/.claude/settings.json
+echo x > ${HOME%/}/.claude/settings.json
+echo x > ${HOME-/x}/.claude/settings.json
+echo x > ${HOME:+$HOME}/.claude/settings.json
+echo x > ${HOME#/nope}/.claude/settings.json
+echo x > ${HOME//q/q}/.claude/settings.json
+echo x > "${HOME:-/x}/.claude/settings.json"
+echo x > $(echo ~)/.claude/settings.json
+echo x > $(printenv HOME)/.claude/settings.json
+echo x > `printenv HOME`/.claude/settings.json
+echo x > "$(printenv HOME)"/.claude/settings.json
+echo x > $(cd ~; pwd)/.claude/settings.json
+echo x > $(dirname ~/x)/.claude/settings.json
+ROWS
+# 643-654: an interpreter that reads the home dir through its own API and
+# writes a file builds the path at run time; the pair is denied.
+rows_both 643 2 "interpreter home API + write API denies" <<'ROWS'
+python3 -c "import os; open(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json','w').write('x')"
+python3 -c "import os; open(os.environ['HOME']+'/.cl'+'aude/sett'+'ings.json','w').write('x')"
+python3 -c "import os; open(os.path.expanduser('~/.claude/sett\x69ngs.json'),'w')"
+python3 -c "import os; open(os.path.expanduser('~/.claude/')+'sett'+'ings.json','w')"
+python3 -c "import pathlib; (pathlib.Path.home()/'.claude'/'settings.json').write_text('x')"
+python3 -c "import os; open(os.path.join(os.environ['HOME'],'.claude','settings.json'),'w')"
+python3 -c "import os; open(os.path.expanduser('~/\x2eclaude/settings.json'),'w')"
+node -e "require('fs').writeFileSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
+node -e "const p=require('path'),o=require('os');require('fs').writeFileSync(p.join(o.homedir(),'.claude','settings.json'),'x')"
+perl -e 'open(F,">",$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
+ruby -e 'File.write(Dir.home+"/.cl"+"aude/sett"+"ings.json","x")'
+python3 - <<'E'\nimport os\nopen(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json','w')\nE
+ROWS
+# 655: fail-closed by design: a node body that reads process.env.HOME and
+# writes ANY file is the same shape as 650, so it denies even when the write
+# lands in /tmp (the one ALLOW->DENY in the 79k history differential).
+rows_both 655 2 "interpreter home read + write elsewhere denies (fail-closed)" <<'ROWS'
+node -e "const h=process.env.HOME;require('fs').writeFileSync('/tmp/x.json',h)"
+ROWS
+# ponytail (HIMMEL-4317): a body the text does not hold names no API, so
+# `echo <base64> | base64 -d | python3` and `python3 /tmp/x.py` still allow.
+# 656-669 (J1773b): filename-axis splices of the live name stay denied.
+rows_both 656 2 "filename-axis splice denies" <<'ROWS'
+echo x > ~/.claude/sett$"ings".json
+echo x > ~/.claude/sett\ings.js$"o"n
+echo x | tee -a ~/.claude/sett$"ings.local".json
+echo x > ~/.claude/sett$'ings'.json
+echo x > ~/.claude/settings$'.json'
+echo x > ~/.claude/s$"e"tt'i'n\gs.json
+echo x > @P@/.claude/sett$"ings".json
+cp /tmp/a ~/.claude/sett$"ings".json
+sed -i s/a/b/ ~/.claude/sett$"ings".json
+echo x > ~/$".claude"/sett$"ings".json
+echo x > @H@/$".cla"ude/se$"tt"ings.json
+echo x > $"@H@"/.claude/settings.json
+echo x > @H@$"/.claude"/settings.json
+git -C ~/.claude checkout -- settings.json
+ROWS
+# 670-675: over-denies that now allow. A quoted jq/awk program's braces are
+# not a brace expansion, `git -C <dir> diff|log` is a read, and a python
+# heredoc whose TEXT mentions $HOME or homedir edits a doc, not home.
+rows_both 670 0 "read-only over-deny allows" <<'ROWS'
+grep -h '"x"' @P@/.git/cr-critic-scores.jsonl | jq -r '(.title//.text|tostring)'
+grep -h '"x"' @P@/.git/cr-critic-scores.jsonl | jq -c '{h:(.head//"")[0:8],v:.verdict}'
+git -C @P@ diff main -- .claude/settings.json | grep -E '^\+'
+git -C @P@ log --format='=== %h%n%B' -3 | grep -vE '^\s*$'
+awk '{gsub(/\.md$/,""); print}' /tmp/a.txt > /tmp/b.txt
+python3 - <<'EOF'\np='/tmp/n.md'\ns=open(p).read().replace('$HOME/x','import { homedir }')\nopen(p,'w').write(s)\nEOF
+ROWS
+# 676-678: controls: the same readers still deny once they write live.
+rows_both 676 2 "reader writing live settings denies (control)" <<'ROWS'
+jq '{a:1}' /tmp/a.json > ~/.claude/settings.json
+awk '{print}' /tmp/a > ~/.claude/settings.json
+git -C @P@ diff main | tee ~/.claude/settings.json
+ROWS
+# 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
+# heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
+# 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
+if command -v node >/dev/null 2>&1; then
+    timed_rc() { # timed_rc LABEL WANT CMD
+        local t0 rc ms
+        t0=$(now_ms)
+        rc=$(bash_rc_of "$PRIMARY" "$3" HOME="$FAKEHOME")
+        ms=$(( $(now_ms) - t0 ))
+        echo "  $1 timing: ${#3} bytes, ${ms} ms"
+        assert_rc "$1 rc" "$2" "$rc"
+        if [ "$ms" -lt "$TIMING_BUDGET_MS" ]; then
+            echo "PASS $1 within ${TIMING_BUDGET_MS} ms"
+        else
+            echo "FAIL $1 took ${ms} ms (budget ${TIMING_BUDGET_MS} ms)"
+            FAILED=$((FAILED + 1))
+        fi
+    }
+    # 680 stops at 3000 words: 6000 of them (162 KB) pass the kernel's
+    # 128 KiB single-argument cap that bash_rc_of's jq --arg hits.
+    # shellcheck disable=SC2088 # literal ~ is payload text the hook must see
+    for nw in 1500 3000 6000; do
+        timed_rc "679/$nw $nw ~/.cl\$\"a\"ude words echoed to /tmp" 0 \
+            "echo $(rep "$nw" '~/.cl$"a"ude/x ')> /tmp/out.txt"
+        [ "$nw" -lt 6000 ] || continue
+        timed_rc "680/$nw $nw ~/.c\$\"l\"aude/settings.json words denies" 2 \
+            "echo $(rep "$nw" '~/.c$"l"aude/settings.json ')> /tmp/out.txt"
+    done
+    PYU='d = {"k": '\''v'\'', "n": (x or {}).get("a", "b")}; print(f"{d['\''k'\'']}")'$'\n'
+    QU='say "a" and '\''b'\'' with "$x" `y` "z"'$'\n'
+    for sz in 1300 4000; do
+        timed_rc "681/$sz quote-heavy python heredoc" 0 \
+            "$(pad_to "python3 - <<'EOF'"$'\n' "$PYU" 'EOF' "$sz")"
+        timed_rc "682/$sz quote-heavy doc heredoc to /tmp" 0 \
+            "$(pad_to "cat > /tmp/n.md <<'EOF'"$'\n' "$QU" 'EOF' "$sz")"
+        timed_rc "683/$sz quote-heavy heredoc into live settings denies" 2 \
+            "$(pad_to "cat <<'EOF' > ~/.claude/settings.json"$'\n' "$QU" 'EOF' "$sz")"
+    done
+else
+    echo "SKIP 679-683 (node not installed)"
+fi
+
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
 git -C "$SANDBOX/primary" worktree remove --force "$SANDBOX/primary/.claude/worktrees/feat+x" 2>/dev/null || true
