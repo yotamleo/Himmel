@@ -134,7 +134,8 @@ It also carries, for the terminal lint (HIMMEL-4375):
   - how each non-owner is folded, delegated or removed.
 
   Build it by grepping the repo, never from memory. Self-answer mode does not
-  exempt it.
+  exempt it. The lint detects the surface from the H1 and the first section,
+  so name it there.
 
 **HALT it before its auto-handoff to writing-plans.** When brainstorming has
 written + self-reviewed the spec and the design is approved, return HERE

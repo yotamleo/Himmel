@@ -83,6 +83,14 @@ expect_refuse "none beside an I<n> line" "I1" "$td/none-plus.md" "$td/plan-untra
 sed 's/| the feed | doctor delegates/|  | doctor delegates/' "$td/green.md" >"$td/no-owner.md"
 expect_refuse "row without an owner" "names no owner" "$td/no-owner.md" "$td/plan.md"
 
+# an unnumbered invariant bullet beside an I<n> line is refused
+sed 's/^- I1 — /- every row has one owner.\n- I1 — /' "$td/green.md" >"$td/unnumbered.md"
+expect_refuse "unnumbered invariant bullet" "not an I<n> line" "$td/unnumbered.md" "$td/plan.md"
+
+# an incomplete grep record does not exempt the row
+sed 's/none (grep: `cadence-state`)/none (grep:/' "$td/green.md" >"$td/half-grep.md"
+expect_refuse "incomplete grep record" "cadence state" "$td/half-grep.md" "$td/plan.md"
+
 # a non-surface spec needs Invariants (may be none) but no matrix
 printf '# Rename a flag\n\n## 1. Goal\n\nRename the flag.\n\n## Invariants\n\nnone\n' >"$td/plain.md"
 expect_pass "non-surface spec with Invariants: none passes" "$td/plain.md" "$td/plan.md"

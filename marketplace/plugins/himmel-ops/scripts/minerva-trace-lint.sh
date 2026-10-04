@@ -54,7 +54,9 @@ if printf '%s\n' "$head_text" | grep -qiwE "$surface_words"; then
   else
     while IFS="$(printf '\t')" read -r fact cell; do
       [ "$fact" = "!" ] && { add "fact ownership: row '$cell' names no owner"; continue; }
-      case "$cell" in *"none (grep:"*) continue;; esac
+      # a grep record is complete only with a backticked pattern: none (grep: `pat`)
+      # shellcheck disable=SC2016  # the backticks are literal delimiters
+      printf '%s\n' "$cell" | grep -qE 'none \(grep: *`[^`]+`' && continue
       # shellcheck disable=SC2016  # the backticks are literal delimiters
       toks="$(printf '%s\n' "$cell" | grep -oE '`[^`]+`' | tr -d '`')"
       if [ -z "$toks" ]; then
@@ -77,6 +79,8 @@ if [ -z "$inv" ]; then
 elif printf '%s\n' "$inv" | grep -qvixE '[[:space:]]*none[[:space:].]*'; then  # none only as the sole content
   ids="$(printf '%s\n' "$inv" | sed -nE 's/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?(I[0-9]+)([^0-9].*)?$/\3/p' | sort -u)"
   [ -n "$ids" ] || add "invariants: section lists no I<n> lines"
+  stray="$(printf '%s\n' "$inv" | grep -E '^[[:space:]]*[-*][[:space:]]' | grep -vE '^[[:space:]]*[-*][[:space:]]+(\*\*)?I[0-9]+([^0-9]|$)' || true)"
+  [ -z "$stray" ] || add "invariants: a bullet is not an I<n> line, so no test can trace it: $(printf '%s\n' "$stray" | head -n1)"
   for id in $ids; do
     grep -wE "$id" "$plan" | grep -qE 'test-|\.test\.|[Tt]est:' \
       || add "invariants: $id has no plan line naming its acceptance test (test-*, *.test.*, or Test:)"
