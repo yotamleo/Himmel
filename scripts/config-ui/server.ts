@@ -227,7 +227,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "bad json" }, 400);
       if (path === "/api/preview") return previewRoute(b as Record<string, unknown>);
       const res = await runRoute(b as Record<string, unknown>);
-      if (feedRun?.done) feedRun = null; // an action changed the station: the next feed must re-probe, not serve the cache
+      feedRun = null; // an action changed the station: the next feed re-probes, never reusing a cached or in-flight (pre-action) report
       return res;
     }
     const file = STATIC[path];
