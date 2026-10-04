@@ -5542,9 +5542,26 @@ async function cmdEnsure(args) {
   // some of those same items would be an outright false claim, not just
   // noise. This is also what makes reconcileTarget()'s profileSource stamp
   // meaningful ACROSS runs: the one run that sets it never fights it.
-  const additive = args.profile
+  //
+  // HIMMEL-4267: ALSO skipped under --items. A scoped run converges only the
+  // named items; turning other items on (and persisting them) is a profile
+  // decision that belongs to bare `ensure` / `install` / `update`, not to a
+  // one-item repair like himmel-update's `ensure --items pre-commit-hooks`.
+  const additive = (args.profile || args.items)
     ? { changed: false, added: [] }
     : stateLib.additiveReconcile(target, manifest, cachedAnswers);
+  if (args.items && !args.profile) {
+    // The named items still need the recorded profile's say on whether they
+    // are wanted — applied IN MEMORY only (a --items run never saves state),
+    // so a repair of a recorded-but-not-yet-enabled item still converges.
+    for (const id of args.items) {
+      const entry = target.items[id];
+      const item = manifest.items.find((i) => i.id === id);
+      if (entry && !entry.enabled && item && stateLib.recordedDesired(target, entry, item, cachedAnswers)) {
+        entry.enabled = true;
+      }
+    }
+  }
   if (additive.changed) {
     stateChanged = true;
     console.log(`himmelctl: recorded install-profile enables ${additive.added.length} item(s) this target hadn't turned on: ${additive.added.join(', ')} (persisting; this never disables anything)`);
@@ -5625,6 +5642,17 @@ async function cmdEnsure(args) {
           const decided = /^\s*n/i.test(ans) ? 'no' : 'yes';
           itemState.overrides.consent = decided;
           stateChanged = true;
+          if (args.items) {
+            // HIMMEL-4267: a scoped run saves no derive/reconcile bookkeeping,
+            // but the operator's own answer about the requested item is
+            // theirs to keep — write that one field into a fresh state.
+            const fresh = stateLib.load();
+            const freshTarget = fresh.targets[targetKey] || stateLib.ensureTarget(fresh, manifest, cachedAnswers);
+            const freshItem = freshTarget.items['guardrail-block-global'] || (freshTarget.items['guardrail-block-global'] = { enabled: false, overrides: {} });
+            if (!freshItem.overrides || typeof freshItem.overrides !== 'object' || Array.isArray(freshItem.overrides)) freshItem.overrides = {};
+            freshItem.overrides.consent = decided;
+            stateLib.save(fresh);
+          }
           console.log(`himmelctl: recorded guardrail-block-global consent = ${decided}`);
         } else if (consent !== 'yes' && consent !== 'no') {
           // No recorded answer, and this run cannot ask right now
@@ -6088,7 +6116,7 @@ async function cmdEnsure(args) {
     // Nothing is about to be consented to — no install/unwire will run, so
     // it's correct (and the one intentional exception to the deferred-save
     // rule below) to persist the derive/reconcile bookkeeping right here.
-    if (stateChanged && !args.dryRun) stateLib.save(state);
+    if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
     // CR fix: "already at the desired state" is FALSE when hints remain —
     // those items still need manual convergence. Say so instead.
     console.log(hints.length > 0
@@ -6150,7 +6178,10 @@ async function cmdEnsure(args) {
   // behind !args.dryRun (dry-run's zero-mutation guarantee is unconditional).
   provOpen(args); // HIMMEL-3332 S5: past every no-op/refusal return, before the first mutation
   provStep = 'ensure';
-  if (stateChanged && !args.dryRun) stateLib.save(state);
+  // HIMMEL-4267: a scoped (--items) run never persists derive/migrate
+  // bookkeeping — the recorded target stays byte-identical (the requested
+  // item's own consent answer is written separately where it is asked).
+  if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
 
   // Step 4: toward-disabled dispatch (A5b) — per-item `removable` check.
   // CR fix: dispatched in REVERSE dependency order (a dependent, B deps on
@@ -6355,6 +6386,18 @@ async function cmdEnsure(args) {
   // unrelated pre-existing green) read as a false success. A failed/nonzero
   // install must never yield a successful ensure, independent of what the
   // probe says afterward.
+  // HIMMEL-4267: under --items the requested item is judged by its OWN
+  // post-check. A failed primitive whose item probes green (a coalesced
+  // installer's unrelated step failing after the item was placed) is a
+  // warning, not a failure of the item asked for.
+  if (args.items && failed.length > 0) {
+    const stillIds = new Set(stillNotConverged.map((r) => r.id));
+    const benign = failed.filter((f) => !stillIds.has(f.id));
+    for (const f of benign) {
+      console.error(`himmelctl: warning: ${f.id}'s installer reported a failure (${f.reason}) but ${f.id} post-checks green — treating as converged`);
+    }
+    failed = failed.filter((f) => stillIds.has(f.id));
+  }
   if (stillNotConverged.length > 0 || disableErrors.length > 0 || failed.length > 0 || pruneRejected) {
     if (stillNotConverged.length > 0) {
       console.error(`himmelctl: ${stillNotConverged.length} item(s) still not converged: ${stillNotConverged.map((r) => r.id).join(', ')}`);

@@ -117,6 +117,14 @@ re-auth, a leaked `url.*.insteadOf` in the repo's local git config (WARN with th
 unset command, never auto-deleted), a codex `plugin-unregistered` that the
 installer did not fix — in a loud **DRIFT** block with a remedy line.
 
+`ensure --items <id>` (HIMMEL-4267) is scoped to exactly those items: it does not
+run the additive recorded-profile reconcile (that belongs to bare `ensure`,
+`install` and `update`, which converge the whole profile), never writes other
+items into the target's `state.json`, and for `pre-commit-hooks` runs
+`adopt.sh --only-hooks` (git gate hooks only: no settings, plugin, marketplace,
+statusline or `CLAUDE.md` changes). A requested item whose own post-check is green
+is not failed by an unrelated installer step; it prints a warning instead.
+
 `scripts/himmel-update.sh` (HIMMEL-893), in **apply mode** (no `--check`),
 refuses to run against a **dirty checkout** (uncommitted changes) — commit or
 stash first, then re-run. (The read-only `--check` mode does not reject a dirty
