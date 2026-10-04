@@ -178,6 +178,8 @@ def acquire(env=None, *, now=time.time, sleep=time.sleep, rng=random.uniform, wa
         again = status(env, now=now)
         if again["state"] == "cooldown" and again["reason"] != "daily-cap":
             return Decision(False, again["reason"], delay)
+        if again["backoff_until"] > now():   # a failure recorded meanwhile postpones us
+            return Decision(False, "backoff", delay)
     return Decision(True, "", delay)
 
 
@@ -206,7 +208,7 @@ def status(env=None, *, now=time.time) -> dict:
     cfg, path = config(env), state_path(env)
     t = now()
     data = _load(path, t)
-    out = {"state": "ok", "count": data["count"], "cap": cfg["cap"]}
+    out = {"state": "ok", "count": data["count"], "cap": cfg["cap"], "backoff_until": data["backoff_until"]}
     if data["cooldown_until"] > t:
         out.update(state="cooldown", until_epoch=data["cooldown_until"],
                    reason=data.get("cooldown_reason", "cooldown"))

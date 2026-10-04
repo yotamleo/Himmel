@@ -136,6 +136,7 @@ export async function acquire(env = process.env, { now = nowSeconds, sleep = sle
     if (again.state === "cooldown" && again.reason !== "daily-cap") {
       return { ok: false, reason: again.reason, waited: wait };
     }
+    if (again.backoff_until > now()) return { ok: false, reason: "backoff", waited: wait }; // a failure recorded meanwhile postpones us
   }
   return { ok: true, reason: "", waited: wait };
 }
@@ -164,7 +165,7 @@ export function status(env = process.env, { now = nowSeconds } = {}) {
   const cfg = config(env);
   const t = now();
   const data = load(statePath(env), t);
-  const out = { state: "ok", count: data.count, cap: cfg.cap };
+  const out = { state: "ok", count: data.count, cap: cfg.cap, backoff_until: data.backoff_until };
   if (data.cooldown_until > t) {
     Object.assign(out, { state: "cooldown", until_epoch: data.cooldown_until, reason: data.cooldown_reason || "cooldown" });
   } else if (data.count >= cfg.cap) {

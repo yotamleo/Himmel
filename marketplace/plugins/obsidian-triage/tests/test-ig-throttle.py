@@ -175,6 +175,17 @@ class ThrottleTests(unittest.TestCase):
         self.assertFalse(d.ok)
         self.assertEqual(d.reason, "http-429")
 
+    def test_a_failure_recorded_while_we_sleep_postpones_the_request(self):
+        self.acquire()
+
+        def sleep_then_fail(s):
+            self.clock.sleep(s)
+            ig_throttle.record(self.env, ok=False, now=self.clock.now)
+
+        d = ig_throttle.acquire(self.env, now=self.clock.now, sleep=sleep_then_fail, rng=lambda a, b: 0.0)
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason, "backoff")
+
     def test_non_finite_knobs_fall_back_to_the_default(self):
         for bad in ("nan", "inf", "-inf"):
             cfg = ig_throttle.config({"HIMMEL_IG_DAILY_CAP": bad, "HIMMEL_IG_MIN_GAP_S": bad})
