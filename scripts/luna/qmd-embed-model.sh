@@ -442,7 +442,7 @@ cmd_swap() {
     fi
     if [ -f "$cfg" ]; then cp -p "$cfg" "$cfg.pre-swap-$ts"; fi
     # a daemon that slipped in before the lock was visible to its start path
-    if daemon_running; then
+    if daemon_running; then # t13b-ok: read-only liveness check, starts nothing
         die 2 "a qmd process started during the swap; the live index is unchanged. Stop it and re-run swap"
     fi
     mv -f "$copy" "$live" || die 5 "the rename failed; the live index is unchanged (backup at $backup)"

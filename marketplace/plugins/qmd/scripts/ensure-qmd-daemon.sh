@@ -311,7 +311,7 @@ if ! mkdir "$swap_lock" 2>/dev/null; then
     sleep 0.25
   done
   if [ "$swap_role" != mine ]; then
-    echo "ensure-qmd-daemon: an embed-model swap is in progress (pid ${swap_pid:-unknown}, $swap_lock) - NOT starting the qmd daemon." >&2
+    echo "ensure-qmd-daemon: an embed-model swap is in progress (pid ${swap_pid:-unknown}, $swap_lock) - NOT starting the qmd daemon." >&2 # t13b-ok: refusal message text, starts nothing
     echo "  Starting it now would serve queries against a half-swapped index. Retry once the swap finishes;" >&2
     echo "  if that pid is gone, remove the lock directory." >&2
     exit 1
