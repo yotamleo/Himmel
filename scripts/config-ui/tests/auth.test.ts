@@ -7,8 +7,10 @@ const TOKEN = "t".repeat(64);
 let stop: (() => void) | null = null;
 afterEach(() => { stop?.(); stop = null; });
 
-// seams: CONFIG_UI_HIMMELCTL (stub feed script), CONFIG_UI_IDLE_MS (long, never fires here)
-const baseEnv = (): Record<string, string | undefined> => ({ CONFIG_UI_HIMMELCTL: STUB, CONFIG_UI_IDLE_MS: "60000" });
+// seams: CONFIG_UI_HIMMELCTL (stub feed script), CONFIG_UI_IDLE_MS (long, never fires here).
+// PATH is passed through: the server shells `node`, which a PATH-less env finds only where it
+// lives in the default search path (not on a runner that installs node via setup-node).
+const baseEnv = (): Record<string, string | undefined> => ({ PATH: process.env.PATH, CONFIG_UI_HIMMELCTL: STUB, CONFIG_UI_IDLE_MS: "60000" });
 function boot(env: Record<string, string | undefined> = baseEnv()) {
   const s = startServer({ port: 0, token: TOKEN, env });
   stop = () => s.stop();
