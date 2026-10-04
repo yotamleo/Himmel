@@ -465,6 +465,19 @@ with contextlib.redirect_stderr(io.StringIO()):
         pass
 check("stealth: omitted creditsUsed counts 5, tripping a ceiling of 4", len(fc_lines()) == 1)
 
+# the parse-failure path books the known cost too, so it must honour the ceiling as well
+reset()
+stub_urlopen(["<html>not json</html>", FC_OK])
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1",
+                            "HARVEST_FIRECRAWL_MAX_CREDITS": "4"}, 20)
+with contextlib.redirect_stderr(io.StringIO()):
+    for u in ("https://example.com/a", "https://example.com/b"):
+        try:
+            c.scrape(u)
+        except Exception:
+            pass
+check("ceiling: a stealth parse failure (cost 5) trips a ceiling of 4", len(fc_lines()) == 1)
+
 # no key: jina alone, silently
 err = io.StringIO()
 with contextlib.redirect_stderr(err):

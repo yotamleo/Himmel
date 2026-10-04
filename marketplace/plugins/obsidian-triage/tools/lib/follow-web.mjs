@@ -538,7 +538,9 @@ export function makeWebFn(env = process.env) {
   const apiKey = (env.FIRECRAWL_API_KEY || "").trim();
   const baseUrl = (env.FIRECRAWL_BASE_URL || "").trim() || undefined;
   // FOLLOW_WEB_BUDGET (this tool's own knob) wins, then the shared harvest cap.
-  const fcBudget = envNonNegInt(env, "FOLLOW_WEB_BUDGET", envNonNegInt(env, "HARVEST_FIRECRAWL_BUDGET", FIRECRAWL_DEFAULT_BUDGET));
+  const fcBudget = (env.FOLLOW_WEB_BUDGET || "").trim()
+    ? envNonNegInt(env, "FOLLOW_WEB_BUDGET", FIRECRAWL_DEFAULT_BUDGET)
+    : envNonNegInt(env, "HARVEST_FIRECRAWL_BUDGET", FIRECRAWL_DEFAULT_BUDGET);
   const maxCredits = envNonNegInt(env, "HARVEST_FIRECRAWL_MAX_CREDITS", FIRECRAWL_DEFAULT_MAX_CREDITS);
 
   // Kill switch shared with the scrape path: firecrawl is the only paid

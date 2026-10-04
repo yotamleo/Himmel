@@ -697,8 +697,10 @@ class FirecrawlClient:
             data = json.loads(raw.decode("utf-8"))
         except Exception:
             # transport succeeded, so the call was made and billed: count it
-            ledger_append("harvest-clip-body-batch", "/v2/scrape",
-                          self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST, ok=False)
+            cost = self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST
+            ledger_append("harvest-clip-body-batch", "/v2/scrape", cost, ok=False)
+            if cost > self.max_credits:
+                self.remaining = 0
             raise
         # a valid-JSON body of the wrong shape still spent the call: ledger it once
         body = data.get("data") if isinstance(data, dict) else None
