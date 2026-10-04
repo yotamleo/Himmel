@@ -372,7 +372,7 @@ const PRESENCE_SOURCES = {
 function envFileHasKey(file, key) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return false; }
-  return new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=\\s*(?!["']{0,2}\\s*(?:#.*)?$)\\S`, 'm').test(raw);
+  return new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=[ \\t]*(?!["']{0,2}[ \\t]*(?:#.*)?$)\\S`, 'm').test(raw);
 }
 function expandHome(p) {
   return /^~[\\/]/.test(p) ? path.join(homeDir(), p.slice(2)) : p;
@@ -471,4 +471,4 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
   return redactLib.redactDeep(feed, { literals });
 }
 
-module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, PRESENCE_SOURCES, remedyFromDetail };
+module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, PRESENCE_SOURCES, envFileHasKey, remedyFromDetail };

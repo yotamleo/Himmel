@@ -295,11 +295,20 @@ case "$o" in *"is ab12 "*) fail "h1 a 4-char secret value was not scrubbed: $o";
 case "$o" in *ab12xyz*) :;; *) fail "h1 a short literal shredded a longer word: $o";; esac
 pass "h1 short secret values scrubbed on word boundaries"
 # h2: a multiline quoted value is scrubbed line by line, unbalanced leading quote included
-o=$(rj 'const raw="API_SECRET=\"firstlinesecret\nsecondlinesecret\"\nOTHER_TOKEN=\"danglingquote\n";const l=r.envValues(raw,p.parseDotEnv);process.stdout.write(r.redact("a firstlinesecret b secondlinesecret c danglingquote d",{literals:l}))')
+o=$(rj 'const raw="API_SECRET=\"firstlinesecret\nsecondlinesecret\"\nOTHER_TOKEN=\"danglingquote\n";const l=r.envValues(raw,p.parseDotEnv);process.stdout.write(r.redact("a firstlinesecret b secondlinesecret c danglingquote d",{literals:l}))') || fail "h2 node redaction run failed"
 for v in firstlinesecret secondlinesecret danglingquote; do
   case "$o" in *"$v"*) fail "h2 multiline/unbalanced-quote value leaked ($v): $o";; esac
 done
 pass "h2 multiline and unbalanced-quote .env values scrubbed"
+# h2b: an escaped quote on the first line does not close a multiline value
+o=$(rj 'const raw="API_SECRET=\"say \\\"hi\nescapedtailsecret\"\n";const l=r.envValues(raw,p.parseDotEnv);process.stdout.write(r.redact("x escapedtailsecret y",{literals:l}))') || fail "h2b node redaction run failed"
+case "$o" in *escapedtailsecret*) fail "h2b escaped-quote multiline value leaked its tail: $o";; esac
+pass "h2b escaped quote does not end a multiline value"
+# h2c: an empty assignment is absent even when the next line has a value
+printf 'BITBUCKET_API_TOKEN=\nOTHER=value\n' > "$work/empty-assign.env"
+o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/empty-assign.env") || fail "h2c node run failed"
+[ "$o" = false ] || fail "h2c empty assignment read as present (got $o)"
+pass "h2c empty assignment is not present"
 # h3: an unreadable .env is stated in the envelope; a readable one says ok
 unreadRepo="$work/unread-repo"; mkdir -p "$unreadRepo/scripts/install" "$unreadRepo/scripts/lanes" "$unreadRepo/.env"
 cp "$fixtureRepo/scripts/install/manifest.json" "$unreadRepo/scripts/install/"; cp "$fixtureRepo/scripts/lanes/lanes.json" "$unreadRepo/scripts/lanes/"
@@ -327,7 +336,7 @@ printf '{"flags":[]}\n' > "$emptyRoot/scripts/himmelctl/lib/bypass-flags.json"
 if "$node_bin" "$lint" --root "$emptyRoot" >/dev/null 2>"$work/lint4.err"; then fail "h5 lint passed vacuously with no scripts/hooks"; fi
 grep -q 'scripts/hooks' "$work/lint4.err" || fail "h5 lint failure does not name scripts/hooks"
 lint_job=$(awk '/^  lint:/{f=1;next} /^  [a-z-]+:$/{f=0} f' "$repo_root/.github/workflows/ci.yml")
-printf '%s\n' "$lint_job" | grep -q "actions/setup-node" || fail "h5 CI lint job runs flag-registry-lint without setup-node (unpinned node)"
+case "$lint_job" in *actions/setup-node*) :;; *) fail "h5 CI lint job runs flag-registry-lint without setup-node (unpinned node)";; esac
 pass "h5 flag-registry-lint fails on a missing hooks dir; CI pins node"
 
 echo "ALL PASS"

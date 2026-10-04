@@ -53,15 +53,23 @@ function secretValues(obj) {
 }
 // The continuation lines of a quoted value that spans lines (the parser reads
 // only the first). Every line of such a secret-named value is a literal.
+// Index of the closing quote q in str; a backslash-escaped double quote does not close.
+function closeIdx(str, q) {
+  for (let i = 0; i < str.length; i++) {
+    if (q === '"' && str[i] === '\\') { i++; continue; }
+    if (str[i] === q) return i;
+  }
+  return -1;
+}
 function multilineValues(raw) {
   const out = [];
   const lines = String(raw).split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
     const m = /^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=\s*(["'])(.*)$/.exec(lines[i]);
-    if (!m || !SECRET_KEY.test(m[1]) || m[3].includes(m[2])) continue;
+    if (!m || !SECRET_KEY.test(m[1]) || closeIdx(m[3], m[2]) !== -1) continue;
     out.push(m[3]);
     for (let j = i + 1; j < lines.length; j++) {
-      const end = lines[j].indexOf(m[2]);
+      const end = closeIdx(lines[j], m[2]);
       out.push(end === -1 ? lines[j] : lines[j].slice(0, end));
       if (end !== -1) { i = j; break; }
     }
