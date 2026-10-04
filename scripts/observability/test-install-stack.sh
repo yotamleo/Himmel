@@ -164,6 +164,23 @@ run uninstall
 assert_eq "mac uninstall rc on bootout failure" 1 "$RC"
 if [ -e "$HOME_DIR/$PLIST_REL" ]; then pass "plist kept when bootout failed"; else fail "plist kept when bootout failed"; fi
 
+echo "case 13: plist XML-escapes <, > and & in paths"
+setup Darwin 200 200 1
+HOME_DIR="$HOME_DIR/a<b>&c"; mkdir -p "$HOME_DIR"
+run install
+assert_eq "xml-escape install rc" 0 "$RC"
+plist="$(cat "$HOME_DIR/$PLIST_REL" 2>/dev/null)"
+assert_contains "log path escaped" "a&lt;b&gt;&amp;c/Library/Logs" "$plist"
+
+echo "case 14: uninstall fails when the unit file cannot be removed"
+setup Linux 200 200 1
+run install
+chmod a-w "$HOME_DIR/.config/systemd/user"
+run uninstall
+chmod u+w "$HOME_DIR/.config/systemd/user"
+if [ "$(id -u)" = 0 ]; then pass "rm failure case skipped as root"
+else assert_eq "uninstall rc on rm failure" 1 "$RC"; fi
+
 echo
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"

@@ -57,7 +57,8 @@ find_bun() {
     [ -x "$HOME/.bun/bin/bun" ] && echo "$HOME/.bun/bin/bun"
 }
 
-xml_escape() { local s="${1//&/&amp;}"; s="${s//</&lt;}"; printf '%s' "${s//>/&gt;}"; }
+# sed, not ${s//x/&y}: bash 5.2 patsub_replacement treats a bare & in the replacement as the match
+xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
 # probe: one pass over /healthz, then /metrics if /healthz is a 404.
 # Sets HEALTH_URL to the URL that answered 200.
@@ -166,13 +167,13 @@ cmd_uninstall() {
         if [ -f "$UNIT_DIR/$UNIT" ]; then
             systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || die "systemctl disable --now failed; unit file left in place"
         fi
-        rm -f "$UNIT_DIR/$UNIT"
+        rm -f "$UNIT_DIR/$UNIT" || die "cannot remove $UNIT_DIR/$UNIT"
         systemctl --user daemon-reload >/dev/null 2>&1 || true
     else
         if launchctl print "gui/$UID_N/$NAME" >/dev/null 2>&1; then
             launchctl bootout "gui/$UID_N/$NAME" >/dev/null 2>&1 || die "launchctl bootout failed; plist left in place"
         fi
-        rm -f "$PLIST"
+        rm -f "$PLIST" || die "cannot remove $PLIST"
     fi
     echo "$NAME uninstalled"
 }
