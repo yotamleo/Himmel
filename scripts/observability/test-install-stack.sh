@@ -120,6 +120,26 @@ assert_eq "uninstall rc" 0 "$RC"
 if [ -e "$HOME_DIR/$UNIT_REL" ]; then fail "unit removed"; else pass "unit removed"; fi
 assert_contains "disable" "systemctl --user disable --now himmel-flow-exporter.service" "$(cat "$LOG")"
 
+echo "case 7b: a % in the root or bun path is escaped as %% in the unit (HIMMEL-4342)"
+setup Linux 200 200 1
+PCT_ROOT="$TMP_ROOT/r%t"
+mkdir -p "$PCT_ROOT/scripts/observability" "$PCT_ROOT/b%n"
+cp "$SCRIPT" "$PCT_ROOT/scripts/observability/install-stack.sh"
+printf '#!/bin/sh\nexit 0\n' > "$PCT_ROOT/b%n/bun"; chmod +x "$PCT_ROOT/b%n/bun"
+OUT="$(env -u XDG_CONFIG_HOME HOME="$HOME_DIR" PATH="$PCT_ROOT/b%n:$BIN:/usr/bin:/bin" bash "$PCT_ROOT/scripts/observability/install-stack.sh" install 2>&1)"; RC=$?
+assert_eq "percent install rc" 0 "$RC"
+unit="$(cat "$HOME_DIR/$UNIT_REL" 2>/dev/null)"
+assert_contains "WorkingDirectory escapes %" "WorkingDirectory=$TMP_ROOT/r%%t" "$unit"
+assert_contains "ExecStart escapes %" "ExecStart=\"$TMP_ROOT/r%%t/b%%n/bun\" run \"$TMP_ROOT/r%%t/scripts/observability/flow-exporter.ts\"" "$unit"
+
+echo "case 7c: status never enables, starts or restarts the unit (read-only)"
+setup Linux 200 200 1
+run status
+calls="$(cat "$LOG")"
+for verb in enable start restart; do
+    case "$calls" in *"systemctl --user $verb "*) fail "status must not $verb" "$calls" ;; *) pass "status does not $verb" ;; esac
+done
+
 echo "case 8: Windows shells are pointed at install-stack.ps1"
 setup MINGW64_NT-10.0 200 200 1
 run install

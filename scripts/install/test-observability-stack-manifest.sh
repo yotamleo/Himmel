@@ -51,6 +51,7 @@
 #      (never a cmd/args spawn shape at all) naming the win32-only gap and
 #      HIMMEL-2333 on posix — asserted on the returned descriptor, not on
 #      side effects.
+# shellcheck disable=SC2016  # case k's stub scripts expand $* / $OBS_* when THEY run, not here
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
@@ -71,6 +72,13 @@ node_bin=$(command -v node)
 work=$(mktemp -d "${TMPDIR:-/tmp}/himmel-obs-stack-test.XXXXXX") || fail "mktemp -d failed"
 [ -n "$work" ] || fail "mktemp -d produced an empty path"
 trap 'rm -rf "$work"' EXIT
+
+# HIMMEL-4341: posix is opt-in via observability.enabled in the luna config.
+# Pin BOTH fixtures so no case ever reads the operator's real config file.
+cfg_off="$work/config-off.json"   # absent file = defaults = not opted in
+cfg_on="$work/config-on.json"
+printf '{"version":1,"observability":{"enabled":true}}\n' > "$cfg_on"
+export HIMMEL_LUNA_CONFIG_PATH="$cfg_off"
 
 # winpath <path> — MSYS/Git-Bash paths confuse node's own path resolution
 # when handed straight through; convert to a Windows-form path there, pass
@@ -163,8 +171,8 @@ degradedDetail_disabledMatch=$(printf '%s' "$degradedDetail" | grep -E "Disabled
   || fail "case d: zero registered tasks must probe 'absent', got: $outD"
 echo "ok: case d — probeObservabilityStack returns present/degraded/absent for the three fixture states, naming which task(s) are the problem when degraded"
 
-# ── case e: on a non-win32 platform, the probe reads absent and names the
-# Phase-A-is-win32-only reason — never present, never degraded ───────────
+# ── case e: on posix NOT opted in, the probe reads a CLEAN absence naming
+# the opt-in key — never present, never degraded (HIMMEL-4341) ──────────────
 outE=$("$node_bin" -e "
 const { runProbe } = require(process.argv[1]);
 const item = { probe: { type: 'observability-stack' } };
@@ -172,12 +180,12 @@ const ctx = { repoRoot: process.cwd(), targetPath: process.cwd(), scope: 'user',
 console.log(JSON.stringify(runProbe(item, ctx)));
 " "$(winpath "$probes_lib")")
 [ "$(echo "$outE" | jq -r '.actual')" = "absent" ] \
-  || fail "case e: a non-win32 platform must probe 'absent' (Phase A is win32-only), got: $outE"
-outE_detail=$(echo "$outE" | jq -r '.detail')
-outE_match=$(printf '%s' "$outE_detail" | grep -iE "windows-only" || true)
-[ -n "$outE_match" ] \
-  || fail "case e: the posix detail must name the win32-only reason, got: $outE"
-echo "ok: case e — non-win32 platform reads absent, honestly naming the Phase-A-win32-only reason"
+  || fail "case e: posix not opted in must probe 'absent', got: $outE"
+[ "$(echo "$outE" | jq -r '.cleanAbsence')" = "true" ] \
+  || fail "case e: posix not opted in must carry cleanAbsence:true, got: $outE"
+printf '%s' "$outE" | grep -q 'observability.enabled' \
+  || fail "case e: the detail must name observability.enabled, got: $outE"
+echo "ok: case e — posix not opted in reads a clean absence naming observability.enabled"
 
 # ── cases f/g/h: status-report.js's severity mapping for observability-stack
 # (HIMMEL-2326 RETASK) — runs the REAL statusReport() end to end, filtered
@@ -240,15 +248,13 @@ outF=$(status_report_probe "$stubAbsent" win32)
   || fail "case f: win32 + probe.actual:absent must stay severity:red (a true, convergeable alarm — this item has a real install descriptor), got: $outF"
 echo "ok: case f — status-report.js: win32 + absent stays severity:red"
 
-# ── case g: posix + absent -> n/a ────────────────────────────────────────
+# ── case g: posix + not opted in -> n/a, remedy names the key ────────────
 outG=$(status_report_probe "$stubAbsent" posix)
 [ "$(echo "$outG" | jq -r '.severity')" = "n/a" ] \
-  || fail "case g: posix + probe.actual:absent must downgrade to severity:n/a (operator can never converge this on posix — HIMMEL-2326 false-red class), got: $outG"
-outG_detail=$(echo "$outG" | jq -r '.detail')
-outG_match=$(printf '%s' "$outG_detail" | grep -E "HIMMEL-2333" || true)
-[ -n "$outG_match" ] \
-  || fail "case g: the n/a detail must cite HIMMEL-2333 (the tracked posix gap), got: $outG"
-echo "ok: case g — status-report.js: posix + absent downgrades to severity:n/a, citing HIMMEL-2333"
+  || fail "case g: posix not opted in must read severity:n/a (never nag every adopter), got: $outG"
+echo "$outG" | jq -r '.detail' | grep -q '"observability": {"enabled": true}' \
+  || fail "case g: the n/a remedy must show how to set observability.enabled, got: $outG"
+echo "ok: case g — status-report.js: posix not opted in reads severity:n/a with the opt-in remedy"
 
 # ── case h: degraded stays degraded on BOTH platforms — the n/a downgrade
 # never swallows a real partial-install warning. The REAL probe can never
@@ -340,15 +346,66 @@ echo "ok: case j (win32) — install-engine.js dispatches install.type:observabi
 
 posixUnrunnable=$(echo "$outJ" | jq -r '.posix.unrunnable // empty')
 [ -n "$posixUnrunnable" ] \
-  || fail "case j: posix plan entry must be unrunnable (Phase A is win32-only), got: $outJ"
-echo "$posixUnrunnable" | grep -qiE 'windows-only' \
-  || fail "case j: posix unrunnable reason must name the win32-only gap, got: $posixUnrunnable"
-echo "$posixUnrunnable" | grep -qE 'HIMMEL-2333' \
-  || fail "case j: posix unrunnable reason must cite HIMMEL-2333, got: $posixUnrunnable"
+  || fail "case j: posix plan entry must be unrunnable when not opted in, got: $outJ"
+echo "$posixUnrunnable" | grep -q 'observability.*enabled' \
+  || fail "case j: posix unrunnable reason must name the opt-in key, got: $posixUnrunnable"
 [ "$(echo "$outJ" | jq -r '.posix.cmd // empty')" = "" ] \
-  || fail "case j: posix plan entry must carry NO cmd (never spawns install-stack.sh), got: $outJ"
-[ "$(echo "$outJ" | jq -r '.posix.args // empty')" = "" ] \
-  || fail "case j: posix plan entry must carry NO args (never spawns install-stack.sh), got: $outJ"
-echo "ok: case j (posix) — install-engine.js returns unrunnable naming the win32-only gap + HIMMEL-2333, never a cmd/args spawn shape"
+  || fail "case j: posix not opted in must carry NO cmd (ensure never enables a service unasked), got: $outJ"
+echo "ok: case j (posix, not opted in) — install-engine.js returns unrunnable naming the opt-in key, no cmd"
+
+outJ2=$(HIMMEL_LUNA_CONFIG_PATH="$cfg_on" "$node_bin" -e "
+const ie = require(process.argv[1]);
+const item = { id: 'observability-stack', deps: [], install: { type: 'observability', target: 'stack' } };
+const ctx = { repoRoot: process.cwd(), scope: 'user', profile: 'core', targetPath: process.cwd(), platform: 'linux', env: process.env };
+console.log(JSON.stringify(ie.planInstall([item], ctx)[0]));
+" "$(winpath "$install_engine_lib")")
+[ "$(echo "$outJ2" | jq -r '.cmd')" = "bash" ] \
+  || fail "case j: posix opted in must plan a bash cmd, got: $outJ2"
+printf '%s' "$outJ2" | jq -r '.args | join(" ")' | grep -qE 'observability/install-stack\.sh install$' \
+  || fail "case j: posix opted in must run install-stack.sh install, got: $outJ2"
+echo "ok: case j (posix, opted in) — install-engine.js plans bash install-stack.sh install"
+
+# ── case k: opted-in posix probe against a fixture repo, systemctl/curl/
+# doctor-cadence stubbed (never a real service, never the network). Also
+# asserts the probe is read-only (no enable/start/restart) and bounded ───
+fake="$work/fakerepo"; fbin="$work/fbin"; fcalls="$work/calls.log"
+mkdir -p "$fake/scripts/observability" "$fbin"
+cp "$repo_root/scripts/observability/install-stack.sh" "$fake/scripts/observability/"
+printf '#!/bin/sh\necho Linux\n' > "$fbin/uname"
+printf '#!/bin/sh\necho "systemctl $*" >> "%s"\n[ -z "$OBS_SVC_DOWN" ]\n' "$fcalls" > "$fbin/systemctl"
+printf '#!/bin/sh\necho "launchctl $*" >> "%s"\n[ -z "$OBS_SVC_DOWN" ]\n' "$fcalls" > "$fbin/launchctl"
+printf '#!/bin/sh\nif [ -n "$OBS_HEALTH_DOWN" ]; then printf 000; else printf 200; fi\n' > "$fbin/curl"
+printf '#!/bin/sh\nif [ -n "$OBS_CADENCE_DOWN" ]; then echo NOT-ARMED; else echo ARMED; fi\n' > "$fake/scripts/doctor-cadence.sh"
+chmod +x "$fbin"/*
+k_probe() {
+  # $@ = VAR=1 overrides for the stubs
+  : > "$fcalls"
+  env "$@" HIMMEL_LUNA_CONFIG_PATH="$cfg_on" PATH="$fbin:$PATH" HOME="$work" "$node_bin" -e "
+const { runProbe } = require(process.argv[1]);
+console.log(JSON.stringify(runProbe({ probe: { type: 'observability-stack' } }, { repoRoot: process.argv[2], targetPath: process.cwd(), scope: 'user', env: process.env, platform: 'linux' })));
+" "$(winpath "$probes_lib")" "$(winpath "$fake")"
+}
+[ "$(k_probe X=1 | jq -r '.actual')" = "present" ] || fail "case k: registered + healthy + cadence armed must probe present"
+! grep -qE 'systemctl --user (enable|start|restart|daemon-reload|disable)|launchctl (bootstrap|enable|bootout|kickstart)' "$fcalls" \
+  || fail "case k: the probe must be read-only, saw: $(cat "$fcalls")"
+[ "$(k_probe OBS_SVC_DOWN=1 OBS_HEALTH_DOWN=1 | jq -r '.actual')" = "absent" ] || fail "case k: service + health down must probe absent (not installed)"
+outK=$(k_probe OBS_CADENCE_DOWN=1)
+[ "$(echo "$outK" | jq -r '.actual')" = "degraded" ] || fail "case k: cadence unarmed must probe degraded, got: $outK"
+printf '%s' "$outK" | grep -q 'doctor-cadence' || fail "case k: degraded detail must name doctor-cadence, got: $outK"
+[ "$(k_probe OBS_HEALTH_DOWN=1 | jq -r '.actual')" = "degraded" ] || fail "case k: service up but exporter unhealthy must probe degraded"
+# bounded: a hanging status script reads degraded within the probe timeout
+printf '#!/bin/sh\nsleep 30\n' > "$fbin/curl"; chmod +x "$fbin/curl"
+outT=$(k_probe HIMMELCTL_PROBE_TIMEOUT_SECS=1 X=1)
+[ "$(echo "$outT" | jq -r '.actual')" = "degraded" ] || fail "case k: a hanging status must read degraded, got: $outT"
+printf '%s' "$outT" | grep -q 'timed out' || fail "case k: the hanging-status detail must say 'timed out', got: $outT"
+echo "ok: case k — opted-in posix probe: present/absent/degraded from install-stack.sh status, read-only, bounded"
+
+# ── case l: himmel-update never converges it (DRIFT_CONVERGE_IDS allow-list) ─
+convergeIds=$(grep -E '^DRIFT_CONVERGE_IDS=' "$repo_root/scripts/himmel-update.sh" || true)
+[ -n "$convergeIds" ] || fail "case l: could not find DRIFT_CONVERGE_IDS in himmel-update.sh"
+if printf '%s' "$convergeIds" | grep -q 'observability-stack'; then
+  fail "case l: himmel-update must never auto-converge observability-stack, saw: $convergeIds"
+fi
+echo "ok: case l — observability-stack is not in himmel-update's DRIFT_CONVERGE_IDS"
 
 echo "PASS"

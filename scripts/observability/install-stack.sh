@@ -60,6 +60,9 @@ find_bun() {
 # sed, not ${s//x/&y}: bash 5.2 patsub_replacement treats a bare & in the replacement as the match
 xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
+# systemd expands % specifiers in unit values, even inside quotes (HIMMEL-4342)
+unit_escape() { printf '%s' "$1" | sed -e 's/%/%%/g'; }
+
 # probe: one pass over /healthz, then /metrics if /healthz is a 404.
 # Sets HEALTH_URL to the URL that answered 200.
 probe() {
@@ -92,8 +95,8 @@ Description=himmel flow exporter (HIMMEL-922)
 
 [Service]
 Type=simple
-WorkingDirectory=$ROOT
-ExecStart="$BUN" run "$ROOT/scripts/observability/flow-exporter.ts"
+WorkingDirectory=$(unit_escape "$ROOT")
+ExecStart="$(unit_escape "$BUN")" run "$(unit_escape "$ROOT")/scripts/observability/flow-exporter.ts"
 Restart=on-failure
 RestartSec=5
 
