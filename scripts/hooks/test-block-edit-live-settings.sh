@@ -2375,6 +2375,32 @@ assert_rc "583 nested worktree git commit -m \"\$(cat <<'EOF'\" body allows" 0 \
 x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
 EOF
 )\"" HOME="$FAKEHOME")"
+# a locale string `$"…"` expands like `"…"` and `$""` to nothing, so the `$`
+# is not part of the name the shell writes (J1773a)
+assert_rc "584 nested worktree echo x to ~/.cl\$\"\"aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > ~/.cl$""aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "585 nested worktree echo x to ~/.cl\$\"a\"ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > ~/.cl$"a"ude/settings.json' HOME="$FAKEHOME")"
+assert_rc "586 nested worktree echo x to ~/\$\".cl\"aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > ~/$".cl"aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "587 nested worktree echo x to ~/\$\".c\"laude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > ~/$".c"laude/settings.json' HOME="$FAKEHOME")"
+assert_rc "588 nested worktree echo x to \$HOME/.cl\$\"\"aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > $HOME/.cl$""aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "589 primary echo x to ~/.cl\$\"\"aude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'echo x > ~/.cl$""aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "590 primary echo x to ~/.claude/sett\$\"\"ings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'echo x > ~/.claude/sett$""ings.json' HOME="$FAKEHOME")"
+assert_rc "591 nested worktree echo x to ~/.claude/sett\$\"\"ings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > ~/.claude/sett$""ings.json' HOME="$FAKEHOME")"
+assert_rc "592 primary cp /tmp/a ~/.cl\$\"\"aude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'cp /tmp/a ~/.cl$""aude/' HOME="$FAKEHOME")"
+assert_rc "593 nested worktree cp /tmp/a ~/.cl\$\"\"aude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'cp /tmp/a ~/.cl$""aude/' HOME="$FAKEHOME")"
+assert_rc "594 nested worktree echo \$\"hello\" to /tmp/x allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'echo $"hello" > /tmp/x' HOME="$FAKEHOME")"
+assert_rc "595 nested worktree cp a ~/.con\$\"\"fig/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp a ~/.con$""fig/' HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

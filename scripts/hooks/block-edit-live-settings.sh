@@ -2546,6 +2546,12 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     else
         cmd_n=${cmd_n//$'\\\r\n'/}
         cmd_n=${cmd_n//$'\\\n'/}
+        # bash's locale string `$"…"` expands like `"…"` (`$""` to nothing),
+        # so a `$` right before a `"` can vanish from the name the shell
+        # writes (`~/.cl$""aude`). Which `$` does depends on quoting this text
+        # no longer shows, so the command is read again with every such `$`
+        # dropped, as a second line (J1773a).
+        case "$cmd_n" in *'$"'*) cmd_n=$cmd_n$'\n'${cmd_n//\$\"/\"} ;; esac
         cmd_n=$(printf '%s' "$cmd_n" | tr -d "\"'\\\\")
     fi
     # `//` and `/./` name the same path as `/`, so they are collapsed before
