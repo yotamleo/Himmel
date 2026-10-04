@@ -369,7 +369,7 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
   if (wants('flag:')) rows = rows.concat(flagRows(ctx));
   if (wants('secret:')) rows = rows.concat(secretRows(ctx));
   // doctor:run reports a dead or timed-out doctor; an --items filter must not hide it.
-  if (itemIds) rows = rows.filter((r) => itemIds.includes(r.id) || r.id === 'doctor:run');
+  if (itemIds) rows = rows.filter((r) => itemIds.includes(r.id) || r.id === 'doctor:run' || r.id === 'plugin:run');
 
   const summary = { total: rows.length, ok: 0, warn: 0, fail: 0, off: 0, info: 0 };
   for (const r of rows) summary[r.health] = (summary[r.health] || 0) + 1;

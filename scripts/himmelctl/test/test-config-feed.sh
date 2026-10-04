@@ -210,6 +210,7 @@ envDoctor="$work/env-doctor.sh"
 cat > "$envDoctor" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' '{"sev":"FAIL","id":"C8-envleak","msg":"saw plainsecretvalue99 here","remedy":""}'
+printf '%s\n' '{"sev":"OK","id":"C9-plainsecretvalue99","msg":"ok","remedy":""}'
 STUB
 chmod +x "$envDoctor"
 DOCTOR_STUB="$envDoctor" HIMMEL_TEST_API_TOKEN=plainsecretvalue99 run_report > "$work/env.json" 2> "$work/env.err" || fail "report exited non-zero (env-secret case)"

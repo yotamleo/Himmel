@@ -58,19 +58,21 @@ function redact(input, opts) {
     s = s.replace(new RegExp(escapeRe(v), 'g'), REDACTED);
   }
   for (const re of TOKEN_SHAPES) s = s.replace(re, REDACTED);
+  if (opts && opts.idKey) return s;
   s = s.replace(SECRET_ASSIGN, (_m, name, sep) => `${name}${sep}${REDACTED}`);
   s = s.replace(LONG_RUN, (m) => (/^[0-9a-f]+$/i.test(m) || !(/[A-Za-z]/.test(m) && /[0-9]/.test(m)) ? m : REDACTED));
   return s;
 }
 
-// Deep-redact every string in a JSON-shaped value. `id` is a row key our own
-// code mints (`secret:NAME` would otherwise read as `secret: value`).
+// Deep-redact every string in a JSON-shaped value. An `id` is a row key we
+// mint (`secret:NAME` would otherwise read as `secret: value`), but part of it
+// comes from subprocess output, so it still gets literal + token-shape redaction.
 function redactDeep(v, opts) {
   if (typeof v === 'string') return redact(v, opts);
   if (Array.isArray(v)) return v.map((x) => redactDeep(x, opts));
   if (v && typeof v === 'object') {
     const out = {};
-    for (const k of Object.keys(v)) out[k] = k === 'id' ? v[k] : redactDeep(v[k], opts);
+    for (const k of Object.keys(v)) out[k] = k === 'id' && typeof v[k] === 'string' ? redact(v[k], Object.assign({}, opts, { idKey: true })) : redactDeep(v[k], opts);
     return out;
   }
   return v;
