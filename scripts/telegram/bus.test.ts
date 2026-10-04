@@ -369,3 +369,9 @@ test("streamEmit: drainPeerInbox commits the cursor only after the stream write 
   cbs[0](null);
   expect(await p).toBe(1);
 });
+
+test("framePeerLine bounds ts so a hostile timestamp cannot inflate the event line", async () => {
+  const { framePeerLine } = await import("./bus");
+  const line = framePeerLine(JSON.stringify({ from: "a", to: "b", ts: "9".repeat(50000), text: "x" }));
+  expect(line.length).toBeLessThan(500);
+});
