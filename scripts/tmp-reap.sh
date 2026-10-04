@@ -97,13 +97,18 @@ $1
 # hide a live dir, so --apply refuses; other-uid ones only warn. A zombie holds no cwd.
 CENSUS_WARNED=0
 census() {
-    local proc="${TMP_REAP_PROC:-/proc}" me="${TMP_REAP_UID:-$(id -u)}" raw same other
+    local proc="${TMP_REAP_PROC:-/proc}" me="${TMP_REAP_UID:-$(id -u)}" raw same other o
+    if [ ! -d "$proc" ]; then   # no census root = no liveness snapshot at all
+        echo "tmp-reap: census root $proc is not a directory; refusing" >&2
+        [ "$APPLY" = 1 ] && exit 2
+    fi
     raw="$(
         for p in "$proc"/[0-9]*; do
             if ! readlink "$p/cwd" 2>/dev/null; then
                 [ -d "$p" ] || continue   # exited mid-walk
                 case "$(cat "$p/stat" 2>/dev/null)" in *") Z "*) continue ;; esac
-                if [ "$(owner "$p")" = "$me" ]; then echo '@@unread same'; else echo '@@unread other'; fi
+                o="$(owner "$p")"   # an unknown owner counts as same-uid: unknown is never safe
+                if [ -z "$o" ] || [ "$o" = "$me" ]; then echo '@@unread same'; else echo '@@unread other'; fi
             fi
             for fd in "$p"/fd/*; do [ -e "$fd" ] && readlink "$fd" 2>/dev/null; done
         done

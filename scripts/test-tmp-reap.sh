@@ -156,6 +156,16 @@ check "readable fake proc: --apply rc 0" "$rc" 0
 case "$out" in *WARN*) echo "FAIL - readable fake proc printed a WARN"; fails=$((fails+1)) ;; *) echo "ok - readable fake proc prints no WARN" ;; esac
 absent "readable fake proc: fixture reaped" "$ROOT/mog-run.old"
 
+build_tree
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$T/no-such-proc" reap --apply)"; rc=$?
+check "missing census root: --apply rc 2" "$rc" 2
+exists "missing census root reaps nothing" "$ROOT/mog-run.old"
+mkdir -p "$T/bin2"; printf '#!/bin/sh\nexit 1\n' > "$T/bin2/stat"; chmod +x "$T/bin2/stat"
+rm -rf "$FP/200"; mkdir -p "$FP/200"
+out="$(PATH="$T/bin2:$PATH" TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "unknown owner of an unreadable entry: --apply rc 2" "$rc" 2
+exists "unknown owner reaps nothing" "$ROOT/mog-run.old"
+
 echo "== 11. FAMILIES does not glob against the caller's cwd =="
 build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/himmel-fixture.zzz"
 out="$(cd "$CWD" && reap --apply)"; rc=$?
