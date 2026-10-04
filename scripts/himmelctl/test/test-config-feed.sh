@@ -314,7 +314,10 @@ o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String
 printf 'BITBUCKET_API_TOKEN=""\r\n' > "$work/crlf-empty.env"
 o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/crlf-empty.env") || fail "h2c node run failed"
 [ "$o" = false ] || fail "h2c CRLF empty quoted assignment read as present (got $o)"
-pass "h2c empty assignment is not present (LF and CRLF); multiline quoted one is"
+printf 'BITBUCKET_API_TOKEN="\n\nmultilinevalue"\n' > "$work/ml-blank.env"
+o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/ml-blank.env") || fail "h2c node run failed"
+[ "$o" = true ] || fail "h2c multiline quoted assignment with a blank first line read as absent (got $o)"
+pass "h2c empty assignment is not present (LF and CRLF); multiline quoted one is, blank first line included"
 # h3: an unreadable .env is stated in the envelope; a readable one says ok
 unreadRepo="$work/unread-repo"; mkdir -p "$unreadRepo/scripts/install" "$unreadRepo/scripts/lanes" "$unreadRepo/.env"
 cp "$fixtureRepo/scripts/install/manifest.json" "$unreadRepo/scripts/install/"; cp "$fixtureRepo/scripts/lanes/lanes.json" "$unreadRepo/scripts/lanes/"

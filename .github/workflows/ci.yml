@@ -175,6 +175,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # HIMMEL-4332: flag-registry-lint ran on the runner's unpinned default node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
       # HIMMEL-4265: run the SAME pre-commit shellcheck hook the local gate runs
       # (pinned shellcheck-py version, default severity, .shellcheckrc, and the
       # hook's own vendored/fixture excludes), so nothing the hook refuses can
@@ -364,7 +368,11 @@ jobs:
       run:
         shell: bash
     steps:
+      # HIMMEL-4350: this job holds issues:write; the issue steps use gh with
+      # GH_TOKEN env and never git, so the persisted checkout token is not needed.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version

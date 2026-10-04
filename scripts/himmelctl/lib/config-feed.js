@@ -375,7 +375,7 @@ function envFileHasKey(file, key) {
   const head = `^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=[ \\t]*`;
   // a quote opening a multiline value, with the value on the next line, is present too
   return new RegExp(`${head}(?!["']{0,2}[ \\t]*(?:#.*)?\\r?$)\\S`, 'm').test(raw)
-    || new RegExp(`${head}["'][ \\t]*\\r?\\n[ \\t]*[^\\s"']`, 'm').test(raw);
+    || new RegExp(`${head}["'](?:[ \\t]*\\r?\\n)+[ \\t]*[^\\s"']`, 'm').test(raw);
 }
 function expandHome(p) {
   return /^~[\\/]/.test(p) ? path.join(homeDir(), p.slice(2)) : p;
