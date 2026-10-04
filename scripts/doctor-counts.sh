@@ -22,3 +22,21 @@ doctor_counts_write() {
     rm -f "$tmp"
     return 1
 }
+
+# doctor_state_publish <state-dir> <keys-file> <fail> <warn>   (HIMMEL-4382)
+# One run's published state: last.tsv ("<SEV> <id>" per FAIL/WARN, sorted
+# unique, atomic) and the counts file, written together so they always come
+# from the same run. Callers: a full himmel-doctor run on the primary
+# checkout, and doctor-cadence.
+doctor_state_publish() {
+    local dir="${1:-}" keys="${2:-}" f="${3:-}" w="${4:-}" tmp
+    [ -n "$dir" ] && [ -f "$keys" ] || return 2
+    mkdir -p "$dir" || return 1
+    tmp="$(mktemp "$dir/.last.XXXXXX")" || return 1
+    if sed '/^$/d' "$keys" | sort -u > "$tmp" && mv -f "$tmp" "$dir/last.tsv"; then
+        doctor_counts_write "$dir" "$f" "$w"
+        return $?
+    fi
+    rm -f "$tmp"
+    return 1
+}

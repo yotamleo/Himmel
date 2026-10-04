@@ -3,7 +3,7 @@
 # severity-grouped report with remediation, and (on request) file ONE
 # consolidated GitHub issue. Read-only except `--fix` (heals C1-guardrail wiring).
 #
-#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json]
+#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json] [--root <path>]
 #
 # Exit 0 unless a FAIL finding is present (then 1) — so `--fix` re-checks are
 # scriptable. WARN/INFO never fail the exit. See the /himmel-doctor command md.
@@ -12,8 +12,22 @@
 # stderr. Same checks, same exit code. Needs jq.
 set -uo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-[ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/himmel-doctor.sh" ] || REPO_ROOT="${HIMMEL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+# HIMMEL-4382: the doctor judges the STATION (primary) checkout, resolved via
+# git-common-dir like doctor-cadence, so a run from a leg worktree reports what
+# the primary reports. `--root <path>` / HIMMEL_DOCTOR_ROOT judges another
+# checkout (a leg testing its own branch); a run whose root is not the station
+# publishes no state.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+common="$(git -C "$SELF_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+STATION_ROOT=""
+[ -n "$common" ] && STATION_ROOT="$(cd "$(dirname "$common")" 2>/dev/null && pwd)"
+[ -n "$STATION_ROOT" ] && [ -f "$STATION_ROOT/scripts/himmel-doctor.sh" ] || STATION_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$STATION_ROOT" ] && [ -f "$STATION_ROOT/scripts/himmel-doctor.sh" ] || STATION_ROOT="${HIMMEL_REPO:-$(cd "$SELF_DIR/.." && pwd)}"
+ROOT_OVERRIDE="${HIMMEL_DOCTOR_ROOT:-}"
+prev_arg=""
+for arg in "$@"; do [ "$prev_arg" = --root ] && ROOT_OVERRIDE="$arg"; prev_arg="$arg"; done
+REPO_ROOT="$STATION_ROOT"
+[ -n "$ROOT_OVERRIDE" ] && REPO_ROOT="$(cd "$ROOT_OVERRIDE" 2>/dev/null && pwd || printf '%s' "$ROOT_OVERRIDE")"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/lib/resolve-node.sh"
 # shellcheck source=/dev/null
@@ -47,6 +61,8 @@ while [ $# -gt 0 ]; do
         --json) DO_JSON=1 ;;
         --file-issue) DO_FILE=1 ;;
         --repo) shift; REPO_FLAG="${1:-}" ;;
+        --root) [ -n "${2:-}" ] || { echo "himmel-doctor: --root needs a path" >&2; exit 2; }
+                shift ;; # the value was read by the pre-scan above
         --no-color) USE_COLOR=0 ;;
         -h|--help) sed -n '2,/^set /p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
         *) echo "himmel-doctor: unknown arg '$1'" >&2; exit 2 ;;
@@ -68,7 +84,8 @@ else C_RED=""; C_YEL=""; C_GRN=""; C_DIM=""; C_0=""; fi
 
 n_fail=0; n_warn=0; n_info=0
 BODY="$(mktemp)"
-trap 'rm -f "$BODY"' EXIT
+KEYS="$(mktemp "${TMPDIR:-/tmp}/himmel-doctor-keys.XXXXXX")" || { echo "himmel-doctor: mktemp failed" >&2; exit 2; }
+trap 'rm -f "$BODY" "$KEYS"' EXIT
 printf '## himmel-doctor findings (%s)\n\n' "$(uname -s 2>/dev/null || echo ?)" >> "$BODY"
 
 # emit <SEV> <id> <msg> <remedy>
@@ -87,6 +104,7 @@ emit() {
         printf '%s%-4s%s %s: %s\n' "$col" "$sev" "$C_0" "$id" "$msg"
         [ -n "$remedy" ] && printf '       %s→ %s%s\n' "$C_DIM" "$remedy" "$C_0"
     fi
+    case "$sev" in FAIL|WARN) printf '%s %s\n' "$sev" "$id" >> "$KEYS" ;; esac
     if [ "$sev" != OK ]; then printf -- '- **%s** %s: %s\n  - → %s\n' "$sev" "$id" "$msg" "$remedy" >> "$BODY"; fi
 }
 
@@ -190,7 +208,7 @@ check_c4() {
 
 # --- C5: cwd repo not registered for handover-resume ----------------------------
 check_c5() {
-    local top; top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    local top="$REPO_ROOT"
     [ -n "$top" ] || return
     [ -f "$REGISTRY" ] || { emit INFO C5-handover "no handover registry yet" "/handover-setup to enable handover-resume"; return; }
     # Case-insensitive (Windows registry stores lowercased paths) + accept a
@@ -3494,11 +3512,13 @@ printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C
 
 # HIMMEL-4363: a full run refreshes the statusline counts. There is no subset
 # flag; the two *_SKIP seams skip checks, so a run with either set is a subset
-# and never writes (it would publish a falsely low count).
-if [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" != 1 ] && [ "${DOCTOR_ORPHAN_SCAN_SKIP:-0}" != 1 ]; then
+# and never writes (it would publish a falsely low count). HIMMEL-4382: a
+# run judging a non-station root never writes either; counts and
+# last.tsv are published together by doctor_state_publish.
+if [ "$REPO_ROOT" = "$STATION_ROOT" ] && [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" != 1 ] && [ "${DOCTOR_ORPHAN_SCAN_SKIP:-0}" != 1 ]; then
     # shellcheck source=doctor-counts.sh
-    . "$REPO_ROOT/scripts/doctor-counts.sh"
-    doctor_counts_write "${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}" "$n_fail" "$n_warn" || true
+    . "$SELF_DIR/doctor-counts.sh"
+    doctor_state_publish "${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}" "$KEYS" "$n_fail" "$n_warn" || true
 fi
 
 if [ "$DO_FILE" = 1 ] && [ $((n_fail+n_warn+n_info)) -gt 0 ]; then
