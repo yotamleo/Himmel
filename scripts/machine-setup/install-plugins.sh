@@ -303,6 +303,7 @@ SOURCES=$(echo "$EXPANDED" | jq -r '
       end)
 ' | tr -d '\r')
 FAILED_MARKETPLACES=()
+MKT_DRIFT=()
 # HIMMEL-3541: the settings-file pre-state, read before any CLI write. The
 # autoUpdate patch below never touches an entry that was already in the file,
 # and a scope entry the CLI adds for a marketplace that already existed
@@ -319,6 +320,28 @@ while IFS= read -r MKT_LINE; do
   MKT_PRE=false; marketplace_preexisted "$MKT_NAME" && MKT_PRE=true
   if [[ "$MKT_PRE" == true ]] && ! settings_declares extraKnownMarketplaces "$MKT_NAME"; then
     MKT_SCOPE_ENTRY_NAMES+=("$MKT_NAME")
+  fi
+  # HIMMEL-4270: an entry already in the scope's settings whose source differs from
+  # the template's makes `marketplace add` fail — that is drift, not an install
+  # failure. Report both sides and the reconcile command, leave the entry alone,
+  # and carry on (no provenance row: we registered nothing).
+  EXISTING_SRC=$(jq -r --arg n "$MKT_NAME" '
+    (.extraKnownMarketplaces // {})[$n].source // empty
+    | if type != "object" then empty
+      elif .source == "github"    then .repo
+      elif .source == "directory" then .path
+      elif .source == "url"       then .url
+      else empty end' "$PROV_SETTINGS_FILE" 2>/dev/null | tr -d '\r') || EXISTING_SRC=""
+  if [[ -n "$EXISTING_SRC" && "$EXISTING_SRC" != "$SRC" ]]; then
+    MKT_DRIFT+=("$MKT_NAME")
+    RECONCILE="claude plugin marketplace remove $(printf '%q' "$MKT_NAME") --scope $SCOPE && claude plugin marketplace add $(printf '%q' "$SRC") --scope $SCOPE"
+    echo "  DRIFT: marketplace '$MKT_NAME' source mismatch — settings has '$EXISTING_SRC', template wants '$SRC' ($PROV_SETTINGS_FILE)" >&2
+    if [[ "$MKT_NAME" == himmel ]]; then
+      echo "         himmel's own manifest is right; reconcile: $RECONCILE" >&2
+    else
+      echo "         third-party marketplace: keeping the settings source is recommended, so set the template's entry to '$EXISTING_SRC'; to adopt the template's source instead: $RECONCILE" >&2
+    fi
+    continue
   fi
   echo "  marketplace add: $SRC"
   if ! run_step claude plugin marketplace add "$SRC" --scope "$SCOPE"; then
