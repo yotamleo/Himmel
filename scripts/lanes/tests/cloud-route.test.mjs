@@ -39,12 +39,17 @@ test('exactly 3 asks is still cloud-eligible', () => {
   assert.equal(classifyTicket(tk({ description: d }), ctx()).class, 'CLOUD-OK');
 });
 
-test('LOCAL-NATIVE: run-time need (qmd / Jira / luna / graphify / handover state)', () => {
-  for (const need of ['It calls qmd query at run time.', 'It reads the luna vault.', 'It runs graphify update.', 'It reads handover state.', 'It posts a Jira comment.']) {
+test('LOCAL-NATIVE: run-time need (qmd / luna / graphify / handover state)', () => {
+  for (const need of ['It calls qmd query at run time.', 'It reads the luna vault.', 'It runs graphify update.', 'It reads handover state.']) {
     const v = classifyTicket(tk({ description: `Edit scripts/a.sh. ${need}` }), ctx());
     assert.equal(v.class, 'LOCAL-NATIVE', need);
     assert.match(v.reason, /run-time/);
   }
+});
+
+test('CLOUD-OK: a Jira need no longer routes local (Atlassian MCP is connected in the cloud)', () => {
+  const v = classifyTicket(tk({ description: 'Edit scripts/a.sh. It posts a Jira comment and files a Jira issue.' }), ctx());
+  assert.equal(v.class, 'CLOUD-OK');
 });
 
 test('LOCAL-NATIVE: a trust path (scripts/ci) needs a trust-reviewed GO', () => {
@@ -118,6 +123,8 @@ test('brief carries every template section, in order', () => {
   const b = buildBrief(t, { consoleId: 'AD', change: 'Do the thing.', date: '2026-10-04', completes: 'yes' });
   const order = [
     'You are working in a cloud clone of the GitHub repo yotamleo/Himmel.',
+    'Atlassian MCP connector (the local jira CLI is absent in the cloud)',
+    'context7 MCP',
     '## Ticket HIMMEL-9001 (verbatim from Jira)',
     raw,
     '## The change',

@@ -1,5 +1,5 @@
 ---
-description: Classify tickets for the cloud credit lane (CLOUD-OK / LOCAL-NATIVE / HOOK-BYPASS / BLOCKED), write the cloud brief, print the operator launch line. Never launches.
+description: Classify tickets for the cloud lane, write the cloud brief, print the operator launch line. Never launches.
 argument-hint: HIMMEL-<n> [HIMMEL-<n> ...]
 ---
 
@@ -44,7 +44,7 @@ so the operator runs it.
 |---|---|
 | BLOCKED | ticket not To Do; a touched file is held by an open PR (`gh pr diff --name-only`) or the console list; or `gh` failed, so freedom is unproven |
 | HOOK-BYPASS | touches `scripts/hooks/`: hooks do not run in the cloud and edits need the integrity bypass |
-| LOCAL-NATIVE | touches a trust path (`scripts/ci/ci-trust-paths.txt`, read as data); needs Jira, qmd, graphify, luna or handover state at run time; more than 3 asks; or names no file |
+| LOCAL-NATIVE | touches a trust path (`scripts/ci/ci-trust-paths.txt`, read as data); needs qmd, graphify, luna or handover state at run time; more than 3 asks; or names no file |
 | CLOUD-OK | none of the above |
 
 Files come from the ticket text (repo paths) unless the spec supplies them.

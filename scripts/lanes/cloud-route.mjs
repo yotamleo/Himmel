@@ -28,7 +28,7 @@ const REPO = resolve(HERE, '..', '..');
 const MAX_ASKS = 3;
 const REPO_SLUG = 'yotamleo/Himmel';
 const HOOKS = /^scripts\/hooks\//;
-const NEEDS = /\bqmd\b|\bgraphify\b|\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bjira (cli|api|write|comment|transition|issue|ticket)/i;
+const NEEDS = /\bqmd\b|\bgraphify\b|\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR/i;
 const FILE_RE = /(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|\.claude|\.github|\.codex)\/[\w.+@-]+(?:\/[\w.+@-]+)*\/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)/g;
 
 // The trust list is read as data, one extended regex per line (ci-trust-paths.txt).
@@ -82,7 +82,7 @@ export function classifyTicket(t, ctx) {
   const trust = files.find((f) => (ctx.trust ?? []).some((re) => re.test(f)));
   if (trust) return v('LOCAL-NATIVE', `touches trust path ${trust} — needs a trust-reviewed GO`);
   const need = `${t.title}\n${t.description}`.match(NEEDS);
-  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — the cloud has no Jira, qmd, graphify, luna or handover state`);
+  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — the cloud has no qmd, graphify, luna or handover state`);
   if (asks > MAX_ASKS) return v('LOCAL-NATIVE', `${asks} asks (more than ${MAX_ASKS}) — cloud sessions drop second asks`);
   if (ctx.heldUnknown) return v('BLOCKED', 'open-PR file list unavailable (gh failed) — cannot prove the files are free');
   return v('CLOUD-OK', `${files.length} file(s), ${asks} ask(s), no hook, trust path or run-time need, none held`);
@@ -104,7 +104,7 @@ export function buildBrief(t, o = {}) {
   const coverage = asks.length ? asks.map((a) => `- ${a.replace(/^\d+[.)]\s*/, '')} — done`).join('\n') : `- ${t.title} — done`;
   const completes = o.completes ?? 'yes';
   const change = o.change ?? "Implement the ticket's asks above, in the named files only.";
-  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief: you cannot reach Jira or any local state.
+  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief and the repo. You have no local state. Jira is reachable through the Atlassian MCP connector (the local jira CLI is absent in the cloud): read the ticket, comment, file follow-ups with the fixVersion this brief names, and cite the ticket key in your commits and the PR. Use the context7 MCP for current library docs.
 
 ## Ticket ${t.key} (verbatim from Jira)
 
