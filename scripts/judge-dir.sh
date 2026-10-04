@@ -4,8 +4,8 @@
 # live judge from a dead one. Prints the dir on stdout; on ANY failure prints
 # nothing on stdout, a reason on stderr, and exits non-zero.
 #   .holder = "<pid> <starttime>": pid = the nearest ancestor with a
-#   ~/.claude/sessions/<pid>.json (the judge's claude process; falls back to the
-#   parent shell), starttime = /proc/<pid>/stat field 22, or "-" when /proc is
+#   ~/.claude/sessions/<pid>.json (the judge's claude process; none found: "-", unknown),
+#   starttime = /proc/<pid>/stat field 22, or "-" when /proc is
 #   unreadable (macOS): tmp-reap reads that as unknown, never as dead.
 # Overrides (tests): TMP_REAP_TMP_ROOT, TMP_REAP_SESSIONS_DIR.
 # Platform guard: POSIX bash 3.2+.
@@ -41,14 +41,14 @@ ppid_of() { # parent pid, empty when unreadable
     echo "$2"
 }
 
-# nearest ancestor that is a registered claude session; else the parent shell
+# nearest ancestor that is a registered claude session; else "-" (unknown, not the parent shell)
 holder=""; p="$PPID"; n=0
 while [ -n "$p" ] && [ "$p" -gt 1 ] && [ "$n" -lt 32 ]; do
     if [ -f "$SESSIONS/$p.json" ]; then holder="$p"; break; fi
     p="$(ppid_of "$p")" || break
     n=$((n+1))
 done
-[ -n "$holder" ] || holder="$PPID"
+[ -n "$holder" ] || holder="-"   # no session ancestor: unknown (kept by the 6 h floor), never the short-lived parent shell
 start="$(pstart "$holder")" || start="-"
 [ -n "$start" ] || start="-"
 

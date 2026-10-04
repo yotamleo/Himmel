@@ -282,6 +282,8 @@ check "14. ... holder rewritten" "$(cat "$JD/j9301/.holder")" "$$ $(pstart $$)"
 mkdir -p "$JD/j9302"; ln -s "$ROOT/victim" "$JD/j9302/.holder"; : > "$ROOT/victim"
 d="$(jd 9302 2>/dev/null)"; rc=$?; check "14. a symlinked .holder is refused" "$rc" 1
 check "14. ... and its target is not written" "$(wc -c < "$ROOT/victim" | tr -d ' ')" 0
+d="$(TMP_REAP_TMP_ROOT="$ROOT" TMP_REAP_SESSIONS_DIR="$ROOT/no-sessions" bash "$JDS" 9303)"; check "14. no session ancestor: holder is unknown, not the parent shell" "$(cat "$JD/j9303/.holder")" "- -"
+out="$(reap --apply --judge 9303)"; exists "14. ... and tmp-reap keeps the fresh dir (unknown holder, 6 h floor)" "$JD/j9303"
 rm -rf "$JD"; chmod 555 "$ROOT"
 if [ -w "$ROOT" ]; then echo "ok - 14. (writable despite chmod, e.g. root: unwritable-root case skipped)"; else
     d="$(jd 9202 2>/dev/null)"; rc=$?; check "14. mkdir failure fails loudly" "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero; check "14. ... and prints no dir" "$d" ""
