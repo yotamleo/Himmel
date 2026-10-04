@@ -1064,7 +1064,8 @@ pobf_exp() {
     printf '%s' "$x"
 }
 
-# Every command name pobf_relief gives relief to; a function may not shadow one.
+# Every command name pobf_relief gives relief to (plus sed/awk, which lost
+# theirs); a function may not shadow one.
 POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du jq basename dirname realpath readlink test tr column nl tac rev fold fmt paste rm find git bash sh zsh dash ksh mksh gh printf sort rg sed gsed awk gawk mawk python python3 node perl ruby command builtin time'
 
 # pobf_relief <raw text> -- HIMMEL-4157 over-deny relief (judge J1685d: the
@@ -1080,12 +1081,16 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # at $( ( ) and backticks; the text after a substitution continues the stage
 # it interrupted. Per stage, by its command word:
 #   - a read-only program (ls cat grep head tail wc echo diff cut stat jq rm
-#     ..., printf without -v, sort without --compress, rg without --pre, sed
-#     without e, awk without system/getline/a pipe, find without -exec/-ok/
-#     -fprint, git grep/log/show/status/ls-files/rev-parse, a shell running a
-#     LITERAL script file) skips its words and tokens;
-#   - gh (no extension/codespace/ssh/browse) and python/node/perl/ruby with no
-#     exec, import or spawn word skip only their tokens;
+#     ..., test without -v, printf without -v, sort without --compress, rg
+#     without --pre, find without -exec/-ok/-fprint, git grep/log/show/status/
+#     ls-files/rev-parse without -O/--ext-diff/--textconv/--output, a shell
+#     running a LITERAL script file) skips its words and tokens;
+#   - gh (no extension/codespace/ssh/browse/alias/config) and python/node/
+#     perl/ruby with no exec, import or spawn word skip only their tokens;
+#   - an assignment prefix voids a stage's relief unless it runs a shell on
+#     a literal script (PAGER=, GIT_PAGER=, GH_BROWSER= name a program);
+#   - sed and awk get NO relief: their scripts run programs (sed e, awk
+#     system/getline/pipes) in forms only a parse could rule out (HIMMEL-3930);
 #   - anything else is scanned like the old split, tokens included
 #     (bash -c 'g?.sh', eval, cat <<EOF | sh).
 # Inside $( ) or backticks a read-only stage still has its words scanned, and
@@ -1105,7 +1110,7 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # '$(' and '\' below are literal case patterns, not missed expansions.
 # shellcheck disable=SC2016,SC1003
 pobf_relief() {
-    local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' hasSh=0
+    local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' hasSh=0 ap
     local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO
     local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' TAB=$'\t'
     local re_sq="^([^${SQ}]*)${SQ}(.*)\$"
@@ -1121,7 +1126,6 @@ pobf_relief() {
     local re_dw="(^|[^[:alnum:]_])(alias|unalias|function|hash|enable|disable|zmodload|autoload)([^[:alnum:]_]|\$)"
     local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
     local re_sh="(^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source|exec|eval|chmod|install)([^[:alnum:]_.-]|\$)|(^|[;|&(${NL}])[[:blank:]]*\\.[[:blank:]]"
-    local re_se="(^|[;{}[:space:]])e([[:space:];}]|\$)|/[gpiImM0-9]*e[gpiImM0-9]*([[:space:];}]|\$)"
     local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
     case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
     t=${t//\\$NL/}
@@ -1259,13 +1263,13 @@ pobf_relief() {
     j=0
     while [ "$j" -lt "$i" ]; do
         s=${ST[j]//[<>]/ }
-        c=''; c2=''
+        c=''; c2=''; ap=0
         for w in $s; do
             [ -n "$c" ] && { c2=$w; break; }
             case "$w" in
                 if|then|do|else|elif|while|until|'!'|'{'|'}'|time|command|builtin) continue ;;
             esac
-            [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]] && continue
+            [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]] && { ap=1; continue; }
             c=$w
         done
         case "$c" in /bin/*|/usr/bin/*) c=${c##*/} ;; esac
@@ -1278,11 +1282,15 @@ pobf_relief() {
         cls=0
         FL[j]=0
         case "$c" in
-            ls|cat|grep|egrep|fgrep|head|tail|wc|echo|diff|uniq|cut|stat|file|du|jq|basename|dirname|realpath|readlink|test|'['|tr|column|nl|tac|rev|fold|fmt|paste|rm) cls=2 ;;
+            ls|cat|grep|egrep|fgrep|head|tail|wc|echo|diff|uniq|cut|stat|file|du|jq|basename|dirname|realpath|readlink|tr|column|nl|tac|rev|fold|fmt|paste|rm) cls=2 ;;
+            # test -v 'a[$(cmd)]' expands the subscript.
+            test|'[') case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
             find) case "$x" in *-exec*|*-ok*|*-fprint*|*-fls*) ;; *) cls=2 ;; esac ;;
             git) case "$c2" in
                      grep|log|show|status|ls-files|rev-parse)
-                         case "$x" in *--ext-diff*|*--textconv*|*--output*) ;; *) cls=2 ;; esac ;;
+                         case "$x" in *--ext-diff*|*--textconv*|*--output*|*--open-files-in-pager*) ;;
+                             *) [[ $x =~ (^|[[:space:]])-[[:alnum:]]*O ]] || cls=2 ;;
+                         esac ;;
                  esac ;;
             # A shell running a LITERAL script file (no metachar, no option, no
             # -c, not /dev or /proc) takes its args and stdin as data, like any
@@ -1290,14 +1298,16 @@ pobf_relief() {
             # which no text layer sees anyway (header: posture, not exploit).
             bash|sh|zsh|dash|ksh|mksh)
                 case "$c2" in -*|''|/dev/*|/proc/*) ;; *) [[ $c2 =~ ^[A-Za-z0-9_./+-]+$ ]] && cls=2 ;; esac ;;
-            gh) [[ $x =~ extension|ext[[:space:]]|codespace|ssh|browse ]] || cls=1 ;;
+            gh) [[ $x =~ extension|ext[[:space:]]|codespace|ssh|browse|alias|config ]] || cls=1 ;;
             printf) case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
             sort) case "$x" in *--compress*) ;; *) cls=2 ;; esac ;;
             rg) case "$x" in *--pre*) ;; *) cls=2 ;; esac ;;
-            sed|gsed) [[ $x =~ $re_se ]] || cls=2 ;;
-            awk|gawk|mawk) case "$x" in *system*|*getline*|*'|'[[:blank:]]*'"'*|*'|"'*|*'|&'*) ;; *) cls=2 ;; esac ;;
             python|python3|node|perl|ruby) [[ $x =~ $re_ix ]] || cls=1 ;;
         esac
+        # An assignment prefix (PAGER=, GIT_PAGER=, GH_BROWSER=, ...) can name a
+        # program the command then runs; only a shell on a literal script keeps
+        # its relief (BASH_ENV/ENV/PATH are refused above).
+        [ "$ap" = 1 ] && case "$c" in bash|sh|zsh|dash|ksh|mksh) ;; *) cls=0 ;; esac
         if [ "${CO[j]-}" -ge 0 ] 2>/dev/null && [ "${CO[j]}" -lt "$j" ]; then
             cls=${CL[CO[j]]}; c=${CW[CO[j]]}; c2=${C2[CO[j]]}
         fi

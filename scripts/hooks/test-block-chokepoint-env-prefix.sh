@@ -1347,16 +1347,18 @@ for F in "bash -eo errexit g?.sh" "bash +eo errexit g?.sh" "bash -Oe extglob g?.
 done
 assert_allow "4157 clustered -o value on a plain basename" "$(j "export FOO=1; bash -eo errexit go.sh")"
 # J1685d: a glob word that cannot run (an inert reader's argument, a quoted
-# sed/awk/rg script) beside a seam name is everyday text, not a hidden anchor.
-assert_allow "4157 queue-lock sweep piped to a sed regex" "$(j "HANDOVER_DIR=/home/u/handovers bash /home/u/himmel/scripts/handover/queue-lock.sh status --sweep /home/u/handovers | sed 's/.*session=//'")"
+# rg script) beside a seam name is everyday text, not a hidden anchor. A sed
+# or awk script gets no relief (it can run a program; a parse that tells the
+# inert ones apart is HIMMEL-3930), so these still deny as on main.
+assert_deny "4157 queue-lock sweep piped to a sed regex (HIMMEL-3930)" "$(j "HANDOVER_DIR=/home/u/handovers bash /home/u/himmel/scripts/handover/queue-lock.sh status --sweep /home/u/handovers | sed 's/.*session=//'")"
 assert_allow "4157 export seam then ls glob" "$(j 'export HANDOVER_DIR=/tmp/h; ls docs/*.md')"
 # shellcheck disable=SC2016 # $HIMMEL_CONSOLE_LEG is probe text, not an expansion
 assert_allow "4157 echo the leg marker then ls glob" "$(j 'echo $HIMMEL_CONSOLE_LEG; ls src/*.ts')"
 assert_allow "4157 grep the leg marker, grep -v a quoted pattern" "$(j "grep -rn HIMMEL_CONSOLE_LEG docs/ | grep -v '^./docs/'")"
-assert_allow "4157 awk program with a path regex" "$(j "unset HIMMEL_CONSOLE_LEG; awk '/x\\/(y|z)*/ {print}' f")"
+assert_deny "4157 awk program with a path regex (HIMMEL-3930)" "$(j "unset HIMMEL_CONSOLE_LEG; awk '/x\\/(y|z)*/ {print}' f")"
 SWEEP="HANDOVER_DIR=/home/u/handovers bash /home/u/himmel/scripts/handover/queue-lock.sh status --sweep /home/u/handovers"
 assert_allow "4157 sweep, grep -oE a quoted alternation" "$(j "$SWEEP 2>&1 | grep -oE 'N1(4[89]|5[0-4])[^ ]* session=[^ ]+'")"
-assert_allow "4157 sweep, sed -E capture groups" "$(j "$SWEEP | sed -E 's/.*(N2[0-9]+).*session=([^ ]*).*/\\1 \\2/'")"
+assert_deny "4157 sweep, sed -E capture groups (HIMMEL-3930)" "$(j "$SWEEP | sed -E 's/.*(N2[0-9]+).*session=([^ ]*).*/\\1 \\2/'")"
 assert_allow "4157 sweep beside an unquoted ls glob" "$(j "ls /tmp/s/N27[67].launch.log; $SWEEP")"
 assert_allow "4157 sweep inside a function definition" "$(j "S() { $SWEEP 2>&1; }; S | grep -E 'N27[67]'")"
 assert_allow "4157 heredoc prose append beside the sweep" "$(j "cat >> /tmp/h.md <<'EOF'
@@ -1390,6 +1392,24 @@ EOF" "python3 -c 'import os; os.system(\"/r/w/scrip?s/$CK/g?.sh\")'" \
          "grep() { bash \"\$@\"; }; grep /r/w/scrip?s/$CK/g?.sh" "PATH=/t:\$PATH; ls /r/w/scrip?s/$CK/g?.sh" \
          "find /r/w -path '/r/w/scrip?s/$CK/g?.sh' -exec sh {} \\;" "/usr/bin/env /r/w/scrip?s/$CK/g?.sh"; do
     assert_deny "4157 inert-reader exemption does not reach: $F" "$(j "$UL true; $F")"
+done
+# CR round on 51d82af1: a relief entry that can run a program gets none.
+# sed/awk lose relief outright (sed e, awk pipes); git -O and gh alias/config
+# name a program; an assignment prefix can name a pager or browser.
+for F in "sed 's|.*|/r/w/scrip?s/$CK/g?.sh|e' f" \
+         "awk 'BEGIN { c=\"/r/w/scrip?s/$CK/g?.sh\"; print \"\" | c }'" \
+         "sed '1e/r/w/scrip?s/$CK/g?.sh' f" "gsed 'e /r/w/scrip?s/$CK/g?.sh' f" \
+         "ls x | sed 's|.*|/r/w/scrip?s/$CK/g?.sh|e'" "sed -f /r/w/scrip?s/$CK/g?.sed f" \
+         "awk -f /r/w/scrip?s/$CK/g?.awk f" "gawk -l /r/w/scrip?s/$CK/g?.so 'BEGIN{}'" \
+         "mawk 'BEGIN{print \"x\" > \"/r/w/scrip?s/$CK/g?.sh\"}'" \
+         "git grep -O/r/w/scrip?s/$CK/g?.sh x" "git grep -nO /r/w/scrip?s/$CK/g?.sh x" \
+         "git grep --open-files-in-pager=/r/w/scrip?s/$CK/g?.sh x" \
+         "git -c core.pager=/r/w/scrip?s/$CK/g?.sh log" \
+         "gh alias set x '!/r/w/scrip?s/$CK/g?.sh'" "gh config set pager /r/w/scrip?s/$CK/g?.sh" \
+         "GIT_PAGER=/r/w/scrip?s/$CK/g?.sh git log" "PAGER='/r/w/scrip?s/$CK/g?.sh' git show" \
+         "GH_BROWSER=/r/w/scrip?s/$CK/g?.sh gh pr view" \
+         "test -v 'a[\$(/r/w/scrip?s/$CK/g?.sh)]'" "[ -v 'a[\$(/r/w/scrip?s/$CK/g?.sh)]' ]"; do
+    assert_deny "4157 exec-capable relief entry refused: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
 done
 # A keyword, precommand, assignment prefix or $( also puts source/. in
 # command position (CR on #1685: then source g*.sh).
