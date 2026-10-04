@@ -905,8 +905,8 @@ interp_home_write() {
     local LC_ALL=C
     # shellcheck disable=SC2016 # literal `$` text in the home-API pattern
     local ri='(^|[^a-z0-9_.-])(python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|perl[0-9.]*|ruby[0-9.]*)([^a-z0-9_.-]|$)' \
-        rh='expanduser[[:space:]]*\(|expandvars[[:space:]]*\(|expand_path[[:space:]]*\(|homedir[[:space:]]*\(|(path|dir)\.home([^a-z0-9_]|$)|env\.home([^a-z0-9_]|$)|(environ|env|getenv)(\.get|\.fetch)?[[:space:]]*[[({][[:space:]]*['\''"]?home['\''"]?[[:space:]]*[])},]' \
-        rw='write_text|write_bytes|\.write\(|writefile|appendfile|createwritestream|copyfile|cpsync|renamesync|symlink|hardlink|syswrite|json\.dump\(|shutil\.|fileutils\.|io\.write|os\.(replace|rename|link)|\.rename\(|\.touch\(|open\([^;]*,[[:space:]]*(mode=)?['\''"][rbt]*[wax+][rbt+]*['\''"]|open[[:space:]]*\(?[^;]*['\''"]\+?>'
+        rh='expanduser[[:space:]]*\(|expandvars[[:space:]]*\(|expand_path[[:space:]]*\(|homedir[[:space:]]*\(|(path|dir)[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|env[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|(environ|env|getenv)([[:space:]]*\.[[:space:]]*(get|fetch))?[[:space:]]*[[({][[:space:]]*['\''"]?home['\''"]?[[:space:]]*[])},]' \
+        rw='write_text|write_bytes|\.[[:space:]]*write([[:space:]]*\(|[[:space:]])|writefile|appendfile|createwritestream|copyfile|cpsync|renamesync|symlink|hardlink|syswrite|json[[:space:]]*\.[[:space:]]*dump[[:space:]]*\(|shutil[[:space:]]*\.|fileutils[[:space:]]*\.|io[[:space:]]*\.[[:space:]]*write|os[[:space:]]*\.[[:space:]]*(replace|rename|link)|\.[[:space:]]*rename([[:space:]]*\(|[[:space:]])|\.[[:space:]]*touch[[:space:]]*\(|o_(wronly|rdwr|creat|trunc|append)|open(sync)?[[:space:]]*\(([^;]*,)?[[:space:]]*(mode=)?['\''"][rbt]*[wax+][rbt+]*['\''"]|open[[:space:]]*\(?[^;]*['\''"]\+?>'
     [[ $1 =~ $ri ]] || return 1
     [[ $1 =~ $rh ]] || return 1
     [[ $1 =~ $rw ]]

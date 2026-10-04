@@ -2577,6 +2577,7 @@ rows_both() {
         cmd=${cmd//@P@/$PRIMARY}
         cmd=${cmd//@H@/$FAKEHOME}
         cmd=${cmd//\\n/$'\n'}
+        cmd=${cmd//\\t/$'\t'}
         assert_rc "$n/wt $3: $cmd" "$2" "$(bash_rc_of "$NESTED_WT" "$cmd" HOME="$FAKEHOME")"
         assert_rc "$n/prim $3: $cmd" "$2" "$(bash_rc_of "$PRIMARY" "$cmd" HOME="$FAKEHOME")"
         n=$((n + 1))
@@ -2656,6 +2657,37 @@ rows_both 676 2 "reader writing live settings denies (control)" <<'ROWS'
 jq '{a:1}' /tmp/a.json > ~/.claude/settings.json
 awk '{print}' /tmp/a > ~/.claude/settings.json
 git -C @P@ diff main | tee ~/.claude/settings.json
+ROWS
+# 684-705 (HIMMEL-4298 /pr-check codex-1): the interpreter write and home
+# APIs stay matched when the call has whitespace before `(` or around `.`
+# (python, node, perl and ruby all allow it), when ruby calls without parens,
+# and for the os.open/sysopen/openSync and Path.open('w') write forms.
+rows_both 684 2 "write API with whitespace before the paren denies" <<'ROWS'
+python3 -c "from pathlib import Path; open (str(Path.home())+'/.cl'+'aude/sett'+'ings.json','w')"
+python3 -c "from pathlib import Path; open\t(str(Path.home())+'/.cl'+'aude/sett'+'ings.json','w')"
+python3 -c "import os,io; io.FileIO(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json','w').write ('x')"
+python3 -c "import json; from pathlib import Path; json.dump ({}, (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).open('w'))"
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).open ('w')"
+python3 -c "from pathlib import Path; Path('/tmp/x').rename (Path.home()/('.cl'+'aude')/('sett'+'ings.json'))"
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).touch ()"
+python3 -c "import os; os.ftruncate(os.open (os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json',os.O_WRONLY),0)"
+python3 -c "from pathlib import Path; (Path . home()/('.cl'+'aude')/('sett'+'ings.json')).write_text('x')"
+python3 -c "import os; open(os.environ . get ('HOME')+'/.cl'+'aude/sett'+'ings.json','w')"
+python3 -c "import os; os . replace('/tmp/x', os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+node -e "const fs=require('fs');fs.writeSync(fs.openSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','w'),'x')"
+node -e "const fs=require('fs');fs.open (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','w',()=>{})"
+perl -e 'use Fcntl; sysopen (F, $ENV{HOME}."/.cl"."aude/sett"."ings.json", O_WRONLY|O_TRUNC)'
+ruby -e 'File.write (Dir.home+"/.cl"+"aude/sett"+"ings.json","x")'
+ruby -e 'File.write Dir.home+"/.cl"+"aude/sett"+"ings.json", "x"'
+ruby -e 'File.open (Dir.home+"/.cl"+"aude/sett"+"ings.json", "w")'
+ROWS
+# 701-705: names that never needed the paren; pinned so a regex edit keeps them.
+rows_both 701 2 "paren-free write API names with whitespace deny" <<'ROWS'
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).write_bytes (b'x')"
+python3 -c "import os,shutil; shutil.copy ('/tmp/x', os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').writeFileSync (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
+node -e "require('fs').appendFileSync (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
+perl -e 'open (F,">",$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
 ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
