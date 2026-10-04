@@ -1797,16 +1797,31 @@ _bwimc_check_canon() {
 #            than being deleted for lack of a current caller.
 #
 # HIMMEL-4329: behind a chroot (_bwimc_chroot, set per clause by
-# _bwimc_root_model) the write lands at ROOT + ABS, so that reading is checked
-# too; the host reading stays (deny-only). An unknown root fails closed.
+# _bwimc_root_model) the write lands inside ROOT. Every reading is checked
+# (deny-only): the host reading as before; ROOT itself, so a root that IS the
+# primary or lies inside it denies any write whatever the target; ROOT + ABS
+# lexically; and ROOT + ABS resolved the way the jail resolves it
+# (_bwimc_jail_canon: an absolute symlink restarts at ROOT, `..` stops at
+# ROOT), so a root that is an ANCESTOR of the primary cannot reach it through
+# a link the host would resolve elsewhere (`chroot ~/github touch /lnk/f`,
+# lnk -> /himmel). An unknown root fails closed.
+# ponytail: a chroot into an UNRELATED root allows. That is safe on the
+# filesystem alone, since in-jail resolution never leaves ROOT, but a bind
+# mount or mount namespace can expose the primary inside an unrelated jail,
+# and this host-side check cannot see it (chroot also needs CAP_SYS_CHROOT,
+# which an agent session rarely has); upgrade path = fail closed on any write
+# behind a chroot, or read /proc/self/mountinfo for mounts under ROOT.
 _bwimc_check_abs() {
     local abs="$1" raw="$2" mode="${3:-follow}"
-    local lc canon root="${_bwimc_chroot:-}"
+    local lc canon root="${_bwimc_chroot:-}" jc
     if [ -n "$root" ]; then
         [ "$root" != '$' ] || _bwimc_deny "unresolved-chroot" "$raw" "$abs" ""
         case "$abs" in
             /*) _bwimc_chroot=""
+                _bwimc_check_abs "$root" "$raw" follow
                 _bwimc_check_abs "${root%/}$abs" "$raw" "$mode"
+                jc=$(_bwimc_jail_canon "${root%/}" "$abs") || _bwimc_deny "unresolved-chroot" "$raw" "$abs" ""
+                _bwimc_check_abs "${root%/}$jc" "$raw" "$mode"
                 _bwimc_chroot="$root" ;;
         esac
     fi
@@ -2114,6 +2129,33 @@ _bwimc_root_model() {
         /) _bwimc_chroot="" ;;
         /*) _bwimc_chroot="$r" ;;
     esac
+}
+# _bwimc_jail_canon ROOT ABS — HIMMEL-4329: prints ABS resolved the way a
+# process chrooted at ROOT (canonical, no trailing /) resolves it: `.` drops,
+# `..` stops at the jail's `/`, an absolute symlink target restarts at the
+# jail's `/`, a relative one resolves from its own dir. Every symlink is
+# followed, the last one included; more than 40 links fails (rc 1).
+_bwimc_jail_canon() {
+    local root="$1" rest="$2" cur="" comp l hops=0
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
+            *) comp="$rest"; rest="" ;;
+        esac
+        case "$comp" in
+            ''|.) continue ;;
+            ..) cur="${cur%/*}"; continue ;;
+        esac
+        if [ -L "$root$cur/$comp" ]; then
+            hops=$((hops+1)); [ "$hops" -le 40 ] || return 1
+            l=$(readlink "$root$cur/$comp") || return 1
+            case "$l" in /*) cur="" ;; esac
+            rest="$l/$rest"
+        else
+            cur="$cur/$comp"
+        fi
+    done
+    printf '%s\n' "${cur:-/}"
 }
 _bwimc_ecwd_track() {
     local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
