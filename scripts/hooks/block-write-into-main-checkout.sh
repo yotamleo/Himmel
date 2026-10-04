@@ -752,13 +752,16 @@ _bwimc_strip_assign() {
 # unchanged (no extra reading, today's behaviour).
 # HIMMEL-4228: a `${…}` or `$[…]` span holding a separator (`|;&()<>` or a
 # newline) becomes `$_`, which stays a dynamic word, so `x=${y:-a|b} touch
-# P/f` shows its verb and `cp a ${HOME}/x` is not re-read as a cwd path. An
-# unclosed one is left as it is.
+# P/f` shows its verb and `cp a ${HOME}/x` is not re-read as a cwd path. A
+# bash 5.3 `${ cmd; }`/`${| cmd; }` becomes `$( cmd; )`, so its body is read
+# as a command. An unclosed one with a separator after it denies.
 _BWIMC_BSNL=$'\\\n'
 # _bwimc_brace_end TEXT START OPEN — sets _BWIMC_PEND to the index of the `}`
-# (OPEN `{`) or `]` (OPEN `[`) closing the span whose body begins at START,
-# counting active nested OPENs; a `$(…)` is skipped whole. TEXT length when
-# it never closes. Clobbers the shared scanner state — callers save/restore it.
+# (OPEN `{`) or `]` (OPEN `[`) closing the span whose body begins at START;
+# a `$(…)` is skipped whole. Like bash, a `$[` counts active nested `[`, a
+# `${` only active nested `${` (a bare `{` does not nest: `${y:-a{|b}` ends at
+# its first `}`). TEXT length when it never closes. Clobbers the shared
+# scanner state — callers save/restore it.
 _bwimc_brace_end() {
     local text="$1" j="$2" len=${#1} op="$3" cl=']' d=1 ch sq se sa
     [ "$op" != '{' ] || cl='}'
@@ -775,8 +778,12 @@ _bwimc_brace_end() {
         _bwimc_scan_step "$ch"
         if [ "$_BWIMC_ACT" = 1 ]; then
             case "$ch" in
-                "$op") d=$((d+1)) ;;
                 "$cl") d=$((d-1)); [ "$d" -gt 0 ] || break ;;
+                '[') [ "$op" != '[' ] || d=$((d+1)) ;;
+                '$')
+                    if [ "$op" = '{' ] && [ "$_BWIMC_DL" = 1 ] && [ "${text:$((j+1)):1}" = '{' ]; then
+                        _bwimc_scan_step '{'; d=$((d+1)); j=$((j+2)); continue
+                    fi ;;
             esac
         fi
         j=$((j+1))
@@ -814,9 +821,26 @@ _bwimc_assign_flat() {
                 _bwimc_brace_end "$t" $((i+2)) "${t:$((i+1)):1}"
                 _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0
                 if [ "$_BWIMC_PEND" -lt "$n" ]; then
+                    # a bash 5.3 `${ cmd; }`/`${| cmd; }` runs its body: read it as `$(…)`
+                    # shellcheck disable=SC2016
+                    case "${t:$i:3}" in
+                        '${ '|'${'$'\t'|'${'"$_BWIMC_NL"|'${|')
+                            st=$((i+2)); [ "${t:$st:1}" != '|' ] || st=$((st+1))
+                            o="${o}\$(${t:$st:$((_BWIMC_PEND - st))})"; i=$((_BWIMC_PEND+1)); continue ;;
+                    esac
                     case "${t:$i:$((_BWIMC_PEND - i + 1))}" in
                         *[\|\;\&\(\)\<\>]*|*"$_BWIMC_NL"*)
                             o="${o}\$_"; i=$((_BWIMC_PEND+1)); continue ;;
+                    esac
+                else
+                    # unclosed with a separator after it: no reading of the rest
+                    # is safe, fail closed (bash cannot parse it either). Not in
+                    # a comment — the comment-free reading gets its own pass.
+                    case "${t:$i}" in
+                        *[\|\;\&\(\)\<\>]*|*"$_BWIMC_NL"*)
+                            _bwimc_strip_comments "$t"
+                            [ "$_BWIMC_NC" != "$t" ] || _bwimc_deny "unclosed-expansion" "${t:$i:40}" "" ""
+                            _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0 ;;
                     esac
                 fi
             fi
@@ -839,18 +863,26 @@ _bwimc_assign_flat() {
 # closed by reading from the first later word a verb arm matches
 # (`sudo -Z v touch P/f` reads `touch P/f`). `command -v`, `env -S`, `sudo -l`
 # and the like stop the strip there (nothing runs, or today's residual).
-# ponytail: `env -C DIR`/`sudo -D DIR` run the command elsewhere, so a
-# relative target behind them is still read against the clause's cwd; model
-# the chdir in the strip if a real command hits it (HIMMEL-4213).
+# `env -C DIR`/`--chdir`, `sudo -D DIR`/`--chdir` run the command in DIR: the
+# operand lands in _BWIMC_SPDIR for the verb loop to model (_bwimc_chdir_model);
+# `sudo -i`/`--login`, a second chdir, or an unknown wrapper option record `$`
+# (dir unknown, fail closed). No other stripped wrapper changes directory.
 _BWIMC_ARMVERB_RE='^([^[:space:]]*/)?(sed|eval|bash|sh|zsh|dash|ksh|install|rsync|dd|cp|mv|rm|touch|ln|git)(\.exe)?$'
 # _bwimc_sp_word — trims _BWIMC_SPT's leading blanks; _BWIMC_SPW = its first word.
 _bwimc_sp_word() {
     _BWIMC_SPT="${_BWIMC_SPT#"${_BWIMC_SPT%%[![:space:]]*}"}"
     _BWIMC_SPW="${_BWIMC_SPT%%[[:space:]]*}"
 }
-# _bwimc_sp_opts SHORTVAL SHORTFLAG SHORTSTOP LONGVAL LONGFLAG LONGSTOP — eats
-# the options after a wrapper word from _BWIMC_SPT. Returns 0 at the command
-# word, 1 at a stop option (left in place), 2 at an unknown option.
+# _bwimc_sp_dir WORD — records a wrapper's chdir operand in _BWIMC_SPDIR; a
+# second one reads as unknown (`$`).
+_bwimc_sp_dir() {
+    if [ -z "$_BWIMC_SPDIR" ]; then _BWIMC_SPDIR="$1"; else _BWIMC_SPDIR='$'; fi
+}
+# _bwimc_sp_opts SHORTVAL SHORTFLAG SHORTSTOP LONGVAL LONGFLAG LONGSTOP
+# [DIRSHORT DIRLONG DYNSHORT DYNLONG] — eats the options after a wrapper word from _BWIMC_SPT,
+# recording the DIRSHORT/DIRLONG value (`env -C`, `sudo -D`) via
+# _bwimc_sp_dir; a DYNSHORT/DYNLONG flag (`sudo -i`) records `$`. Returns 0 at the command word, 1 at a stop option (left in
+# place), 2 at an unknown option.
 _bwimc_sp_opts() {
     local w nm k ch
     while :; do
@@ -860,10 +892,18 @@ _bwimc_sp_opts() {
             --*)
                 nm="${w#--}"; nm="${nm%%=*}"
                 case " $6 " in *" $nm "*) return 1 ;; esac
-                case " $5 " in *" $nm "*) _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; continue ;; esac
+                case " $5 " in
+                    *" $nm "*)
+                        [ "$nm" != "${10:-}" ] || _bwimc_sp_dir '$'
+                        _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; continue ;;
+                esac
                 case " $4 " in *" $nm "*) ;; *) return 2 ;; esac
                 _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
-                case "$w" in *=*) ;; *) _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;; esac
+                case "$w" in
+                    *=*) [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "${w#*=}" ;;
+                    *) _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
+                       [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "$_BWIMC_SPW" ;;
+                esac
                 ;;
             -?*)
                 k=1
@@ -874,10 +914,14 @@ _bwimc_sp_opts() {
                         *"$ch"*)
                             if [ "$((k+1))" -eq "${#w}" ]; then
                                 _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_word; w="$_BWIMC_SPW"
+                                [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "$w"
+                            else
+                                [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "${w:$((k+1))}"
                             fi
                             break ;;
                     esac
                     case "$2" in *"$ch"*) ;; *) return 2 ;; esac
+                    [ "$ch" != "${9:-}" ] || _bwimc_sp_dir '$'
                     k=$((k+1))
                 done
                 _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
@@ -889,7 +933,7 @@ _bwimc_sp_opts() {
 _bwimc_strip_prefix() {
     local n=${#1} w wl r
     _bwimc_strip_assign "$1"
-    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"
+    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"; _BWIMC_SPDIR=''
     while :; do
         _bwimc_sp_word; w="$_BWIMC_SPW"
         _tolower_ascii "$w"; wl="$_TOLOWER_OUT"
@@ -921,9 +965,9 @@ _bwimc_strip_prefix() {
                 _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
                 while :; do
                     if [ "$wl" = env ]; then
-                        _bwimc_sp_opts uCa i0v S 'unset chdir argv0' 'ignore-environment null debug block-signal default-signal ignore-signal list-signal-handling' 'split-string help version' || r=$?
+                        _bwimc_sp_opts uCa i0v S 'unset chdir argv0' 'ignore-environment null debug block-signal default-signal ignore-signal list-signal-handling' 'split-string help version' C chdir || r=$?
                     else
-                        _bwimc_sp_opts ugpChDrRtTU AbEHiKknPSsB lVve 'user group host prompt close-from chdir role type command-timeout other-user chroot' 'askpass background preserve-env set-home login non-interactive preserve-groups stdin shell reset-timestamp bell' 'list version validate remove-timestamp edit help' || r=$?
+                        _bwimc_sp_opts ugpChDrRtTU AbEHiKknPSsB lVve 'user group host prompt close-from chdir role type command-timeout other-user chroot' 'askpass background preserve-env set-home login non-interactive preserve-groups stdin shell reset-timestamp bell' 'list version validate remove-timestamp edit help' D chdir i login || r=$?
                     fi
                     [ "$r" = 0 ] || break
                     _bwimc_sp_word
@@ -938,6 +982,8 @@ _bwimc_strip_prefix() {
         if [ "$r" = 1 ]; then
             break
         elif [ "$r" = 2 ]; then
+            # an unknown env/sudo option may be a chdir: the dir is unknown
+            case "$wl" in env|sudo) _bwimc_sp_dir '$' ;; esac
             # fail closed: the first later word a verb arm matches (none: as is)
             w="$_BWIMC_SPT"
             while _bwimc_sp_word; [ -n "$_BWIMC_SPW" ]; do
@@ -1476,6 +1522,7 @@ _bwimc_deny() {
         unresolved-cd) why="a cd/pushd target in this command could not be resolved (failing closed — a later relative write cannot be classified against an unknown cwd, HIMMEL-3648)" ;;
         marker-byte) why="the command carries a raw control byte (0x01-0x06 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
         shell-ambiguous) why="bash and zsh (or bash versions) read a \$'…' span in it differently, so its target cannot be classified (failing closed, HIMMEL-4138)" ;;
+        unclosed-expansion) why="a \${…} or \$[…] span never closes and a separator follows it, so the command after it cannot be read (failing closed)" ;;
         unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
     {
@@ -1835,6 +1882,27 @@ _bwimc_unq() {
 # pass. Called as a plain statement once per clause, BEFORE that clause's own
 # scan runs — never via `$(…)`, which would discard the global updates in a
 # subshell.
+# _bwimc_chdir_model RAW — HIMMEL-4213: a wrapper chdir operand (`env -C RAW`)
+# moves _bwimc_ecwd like a `cd RAW` would. A non-literal operand (`$`, a
+# backtick, a glob, a backslash, an odd quote) or one that does not resolve
+# marks the cwd unresolved, so a relative write target behind it denies.
+_bwimc_chdir_model() {
+    local raw="$1" carg r q="${1//[!\"]/}" a="${1//[!\']/}"
+    case "$raw" in
+        ''|*'$'*|*'`'*|*[*?[]*|*\\*) _bwimc_ecwd_unres=1; return 0 ;;
+    esac
+    if [ $(( ${#q} % 2 )) = 1 ] || [ $(( ${#a} % 2 )) = 1 ]; then _bwimc_ecwd_unres=1; return 0; fi
+    carg=$(_bwimc_unq "$raw")
+    case "$carg" in
+        /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;;
+        *) [ "$_bwimc_ecwd_unres" = 0 ] || return 0 ;;
+    esac
+    if r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
+        _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
+    else
+        _bwimc_ecwd_unres=1
+    fi
+}
 _bwimc_ecwd_track() {
     local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
@@ -4255,8 +4323,14 @@ done < <(_bwimc_verb_clauses "$_bwimc_ghb")
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
 _bwimc_ecwd_pushn=0
+_bwimc_spd_on=0
 _bwimc_sub_ecwd=(); _bwimc_sub_unres=(); _bwimc_sub_pushn=(); _bwimc_sub_d=0
 while IFS= read -r _bwimc_clause; do
+    # HIMMEL-4213: a wrapper chdir (`env -C DIR`) moved the cwd for its own
+    # clause only — restore the cwd the clause before it left
+    if [ "$_bwimc_spd_on" = 1 ]; then
+        _bwimc_ecwd="$_bwimc_spd_ecwd"; _bwimc_ecwd_unres="$_bwimc_spd_unres"; _bwimc_spd_on=0
+    fi
     case "$_bwimc_clause" in
         "$_BWIMC_SUBOPEN")
             _bwimc_sub_ecwd[_bwimc_sub_d]="$_bwimc_ecwd"
@@ -4301,6 +4375,10 @@ while IFS= read -r _bwimc_clause; do
         _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SP0")
     fi
     _bwimc_wrap_lc="$_bwimc_clause_lc"; _bwimc_wrap_sp="$_bwimc_clause_sp"
+    if [ -n "$_BWIMC_SPDIR" ]; then
+        _bwimc_spd_ecwd="$_bwimc_ecwd"; _bwimc_spd_unres="$_bwimc_ecwd_unres"; _bwimc_spd_on=1
+        _bwimc_chdir_model "$_BWIMC_SPDIR"
+    fi
     if [ "$_BWIMC_SP" != "$_BWIMC_SP0" ]; then
         _bwimc_clause_lc="${_bwimc_clause_lc:$((${#_BWIMC_SP0} - ${#_BWIMC_SP}))}"
         _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SP")

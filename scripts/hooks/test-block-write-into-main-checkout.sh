@@ -3457,6 +3457,42 @@ _r4213 "94l x=\${y:-a|b} touch worktree (ALLOW)"                       allow 'x=
 _r4213 "94m x=\$[1|2] touch worktree (ALLOW)"                          allow 'x=$[1|2] touch @W@/f'
 _r4213 "94n cp worktree file to \${HOME}/x (ALLOW)"                    allow 'cp @W@/README.md ${HOME}/x'
 _r4213 "94o echo '\${y:-a|b} touch primary' is text (ALLOW)"           allow 'echo '"'"'x=${y:-a|b} touch @P@/f'"'"''
+# A `${…}` closes at its first active `}` — only a nested `${` nests, a bare
+# `{` does not (bash). An unclosed span holding a separator fails closed, and
+# a bash 5.3 `${ cmd; }` / `${| cmd; }` body is read as a command.
+_r4213 "95a x=\${y:-a{|b} touch primary (bare { does not nest)"       block 'x=${y:-a{|b} touch @P@/f'
+_r4213 "95b x=\${y:-\"{\"|b} touch primary (quoted brace)"             block 'x=${y:-"{"|b} touch @P@/f'
+_r4213 "95c x=\${y:-a\\{|b} touch primary (escaped brace)"             block 'x=${y:-a\{|b} touch @P@/f'
+_r4213 "95d x=\${y:-a|b touch primary (unclosed)"                      block 'x=${y:-a|b touch @P@/f'
+_r4213 "95e x=\$[1|2 touch primary (unclosed)"                         block 'x=$[1|2 touch @P@/f'
+_r4213 "95f x=\$[a[1]|2] touch primary (nested [)"                     block 'x=$[a[1]|2] touch @P@/f'
+_r4213 "95g x=\${ touch primary; } (funsub)"                           block 'x=${ touch @P@/f; }'
+_r4213 "95h echo \${ touch primary; } (funsub)"                        block 'echo ${ touch @P@/f; }'
+_r4213 "95i x=\${y:-a{|b} touch worktree (ALLOW)"                      allow 'x=${y:-a{|b} touch @W@/f'
+_r4213 "95j an unclosed \${ in a comment (ALLOW)"                      allow 'echo x # ${ y | z'
+_r4213 "95k echo '\${y|z' (ALLOW)"                                     allow 'echo '"'"'${y|z'"'"''
+# `env -C DIR` / `sudo -D DIR` run the command in DIR: a relative target is
+# read against a literal DIR, and against an unknown one fails closed.
+_r4213 "96a env -C primary touch f"                                    block 'env -C @P@ touch f'
+_r4213 "96b env --chdir=primary touch f"                               block 'env --chdir=@P@ touch f'
+_r4213 "96c env --chdir primary touch f"                               block 'env --chdir @P@ touch f'
+_r4213 "96d sudo -D primary touch f"                                   block 'sudo -D @P@ touch f'
+_r4213 "96e sudo --chdir=primary touch f"                              block 'sudo --chdir=@P@ touch f'
+_r4213 "96f env -iC primary rm f"                                      block 'env -iC @P@ rm f'
+_r4213 "96g env -Cprimary touch f"                                     block 'env -C@P@ touch f'
+_r4213 "96h env -C primary/sub touch ../f"                             block 'env -C @P@/sub touch ../f'
+_r4213 "96i env -C \$HOME/x touch f (dynamic dir)"                     block 'env -C $HOME/x touch f'
+_r4213 "96k env -C \$HOME touch /tmp abs (ALLOW)"                      allow 'env -C $HOME touch /tmp/himmel-4213-h'
+# from cwd the primary these still deny: like a `cd`, the chdir only adds a
+# reading beside the real cwd (_bwimc_cd_guard)
+_subst_row "96j env -C worktree touch f (ALLOW), cwd /tmp"             allow "env -C $_WR touch f" /tmp
+_subst_row "96l sudo -D worktree touch f (ALLOW), cwd /tmp"            allow "sudo -D $_WR touch f" /tmp
+_r4213 "96m env -C primary cat f (ALLOW)"                              allow 'env -C @P@ cat f'
+_subst_row "96n env -C primary true; touch f (chdir ends with its command), cwd /tmp" allow "env -C $_PR true; touch f" /tmp
+_subst_row "96o sudo -i touch f (login shell: dir unknown), cwd /tmp"    block "sudo -i touch f" /tmp
+_subst_row "96p sudo --login touch f (dir unknown), cwd /tmp"           block "sudo --login touch f" /tmp
+_subst_row "96q env -Z -C primary touch f (unknown option), cwd /tmp"   block "env -Z -C $_PR touch f" /tmp
+_subst_row "96r env -C /tmp touch f (ALLOW), cwd /tmp"                  allow "env -C /tmp touch f" /tmp
 }
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
