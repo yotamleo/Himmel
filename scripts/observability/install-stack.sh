@@ -156,7 +156,7 @@ cmd_status() {
     if probe; then echo "OK   health  $HEALTH_URL"
     else echo "FAIL health  no 200 from http://$HOST:$PORT/healthz or /metrics"; bad=1; fi
     out="$(bash "$SCRIPT_DIR/../doctor-cadence.sh" status 2>&1)"
-    if printf '%s\n' "$out" | grep -q '^ARMED'; then echo "OK   doctor-cadence  armed"
+    if grep -q '^ARMED' <<< "$out"; then echo "OK   doctor-cadence  armed"
     else echo "FAIL doctor-cadence  not armed (bash scripts/doctor-cadence.sh arm)"; bad=1; fi
     return "$bad"
 }
