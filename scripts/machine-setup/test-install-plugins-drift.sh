@@ -11,7 +11,7 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 SUT="${SUT:-$SCRIPT_DIR/install-plugins.sh}"
-TMP="$(mktemp -d)" || exit 1
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/install-plugins-drift.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 export HIMMEL_PROVENANCE_DIR="$TMP/provenance"
 export CLAUDE_CONFIG_DIR="$TMP/cfg"
