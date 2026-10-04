@@ -91,6 +91,50 @@ test("a slow /api/run (over 10 s) still returns its result to the client", async
   expect(feedRuns.length).toBe(2);
 }, 40_000);
 
+test("a /api/run rejected before it starts leaves the shared feed run alone", async () => {
+  const count = join(mkdtempSync(join(tmpdir(), "cfgui-cnt-")), "n");
+  dirs.push(join(count, ".."));
+  const { port } = boot({ CONFIG_UI_HIMMELCTL: STUB, STUB_FEED_SLEEP: "300", STUB_FEED_COUNT: count });
+  expect((await feed(port)).status).toBe(200);
+  const r = await fetch(`http://127.0.0.1:${port}/api/run`, { method: "POST", body: JSON.stringify({ previewId: "nope", action: "cadence.arm", target: "graphmap" }),
+    headers: { ...H, Origin: `http://127.0.0.1:${port}`, "Content-Type": "application/json" } });
+  expect(r.status).toBe(409);
+  expect((await feed(port)).status).toBe(200); // still the cached run
+  expect(readFileSync(count, "utf8").split("\n").filter(Boolean).length).toBe(1);
+});
+
+// app.js is a browser module; run it against stubs and drive loadFeed directly.
+test("page: a slower, older feed load never repaints over a newer one", async () => {
+  const src = readFileSync(join(import.meta.dir, "../public/app.js"), "utf8")
+    .replace(/^import .*$/m, "").concat("\nglobalThis.__loadFeed = loadFeed;\n");
+  const painted: string[] = [];
+  const el = () => ({ textContent: "", innerHTML: "", hidden: false, focus() {}, setSelectionRange() {} });
+  const waiting: ((b: string) => void)[] = [];
+  let first = true;
+  const g = globalThis as Record<string, unknown>;
+  const names = ["render", "renderNav", "document", "location", "history", "fetch", "__loadFeed"];
+  const saved = Object.fromEntries(names.map((n) => [n, g[n]]));
+  Object.assign(g, {
+    render: (f: { id?: string } | null) => { if (f) painted.push(f.id ?? "?"); return ""; }, renderNav: () => "",
+    document: { querySelector: el, querySelectorAll: () => [], getElementById: el, activeElement: null, addEventListener() {} },
+    location: { hash: "", pathname: "/", search: "" }, history: { replaceState() {} },
+    fetch: () => new Promise((res) => {
+      const ok = (b: string) => res({ status: 200, ok: true, json: async () => ({ id: b }) });
+      if (first) { first = false; ok("initial"); } else waiting.push(ok);
+    }),
+  });
+  try {
+    new Function(src)();
+    await sleep(20);
+    const load = g.__loadFeed as () => Promise<void>;
+    const a = load(), b = load(); // two actions each start a re-probe
+    await sleep(20);
+    waiting[1]("newer"); await b;
+    waiting[0]("older"); await a; // the older report lands last
+  } finally { for (const n of names) { if (saved[n] === undefined) delete g[n]; else g[n] = saved[n]; } }
+  expect(painted).toEqual(["initial", "newer"]);
+});
+
 test("the server refuses to start when a route budget would outlast idleTimeout", () => {
   const env = { PATH: process.env.PATH, HOME: tmpdir() };
   expect(() => startServer({ port: 0, token: TOKEN, env, reprobeBudgetMs: 120_000 } as never)).toThrow(/idleTimeout/);

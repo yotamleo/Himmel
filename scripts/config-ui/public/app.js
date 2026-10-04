@@ -51,12 +51,15 @@ async function fetchFeed(onWait) {
   }
 }
 
+// Only the newest call may paint: an older report can land after a newer one.
+let feedGen = 0;
 async function loadFeed() {
+  const gen = ++feedGen;
   try {
-    const r = await fetchFeed((s) => toast(`re-probing… ${s}s`));
-    if (r.ok) { feed = await r.json(); paint(); }
-    else toast(`re-probe failed (${r.status})`);
-  } catch (_) { toast("re-probe failed: server unreachable"); }
+    const r = await fetchFeed((s) => { if (gen === feedGen) toast(`re-probing… ${s}s`); });
+    if (r.ok) { const f = await r.json(); if (gen === feedGen) { feed = f; paint(); } }
+    else if (gen === feedGen) toast(`re-probe failed (${r.status})`);
+  } catch (_) { if (gen === feedGen) toast("re-probe failed: server unreachable"); }
 }
 
 // Two-step write: the dry-run binds a preview id; only confirm runs it.

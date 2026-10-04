@@ -149,7 +149,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     return json({ previewId, ...redactOut({ command: p.dryArgv.join(" "), output, consent: p.consent, effect: p.effect, bank: p.bank }), expiresInMs: PREVIEW_TTL_MS });
   }
 
-  async function runRoute(b: Record<string, unknown>): Promise<Response> {
+  async function runRoute(b: Record<string, unknown>, onStart: () => void): Promise<Response> {
     const id = typeof b.previewId === "string" ? b.previewId : "";
     const p = previews.get(id);
     if (!p || p.expires <= now()) { previews.delete(id); return json({ error: "preview id missing, expired or used" }, 409); }
@@ -161,6 +161,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     let before, r, after, failed = false;
     try {
       before = await reprobe(p.rowIds);
+      onStart(); // the station is about to change; a request rejected earlier leaves the feed alone
       r = await runChild(p.argv, childOpts(p, lock));
       after = await reprobe(p.rowIds);
     } catch { failed = true; } finally { lock.release(); }
@@ -226,8 +227,9 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       try { b = JSON.parse(text); } catch { return json({ error: "bad json" }, 400); }
       if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "bad json" }, 400);
       if (path === "/api/preview") return previewRoute(b as Record<string, unknown>);
-      const res = await runRoute(b as Record<string, unknown>);
-      feedRun = null; // an action changed the station: the next feed re-probes, never reusing a cached or in-flight (pre-action) report
+      let started = false;
+      const res = await runRoute(b as Record<string, unknown>, () => { started = true; });
+      if (started) feedRun = null; // an action ran: the next feed re-probes, never reusing a cached or in-flight (pre-action) report
       return res;
     }
     const file = STATIC[path];
