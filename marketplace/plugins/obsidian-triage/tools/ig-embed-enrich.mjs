@@ -182,6 +182,8 @@ async function fetchEmbed(url) {
       signal: ctrl.signal,
     });
     if (!r.ok) return { ok: false, error: `http_${r.status}`, status: r.status };
+    // A 200 that redirected to a checkpoint/challenge page is a block, not an embed.
+    if (/\/(challenge|checkpoint)(\/|\?|$)/i.test(r.url || "")) return { ok: false, error: "challenge", challenge: true };
     const html = await r.text();
     if (html.length > 2_000_000) return { ok: false, error: "response_too_large" };
     return { ok: true, html };
@@ -411,7 +413,7 @@ async function processClip(clipPath, vault, dryRun) {
     return { glyph: "t", message: `${rel} -- instagram throttle (${slot.reason}); stopping, clip stays pending` };
   }
   const fetched = await fetchEmbed(url);
-  await igRecord(process.env, fetched.ok ? { ok: true } : fetched.status ? { httpStatus: fetched.status } : { ok: false });
+  await igRecord(process.env, fetched.ok ? { ok: true } : fetched.challenge ? { text: "challenge" } : fetched.status ? { httpStatus: fetched.status } : { ok: false });
   if (!fetched.ok) {
     return writeFailure({ clipPath, rel, text, baselineSha, fmRaw, body, error: fetched.error });
   }

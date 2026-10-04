@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import math
 import os
 import random
 import re
@@ -59,9 +60,10 @@ class Decision:
 
 def _num(env, key: str, default: float) -> float:
     try:
-        return float(env.get(key, default))
+        value = float(env.get(key, default))
     except (TypeError, ValueError):
         return float(default)
+    return value if math.isfinite(value) else float(default)
 
 
 def config(env) -> dict:
@@ -95,9 +97,11 @@ def _next_midnight(now: float) -> float:
 def _locked(path: Path):
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = path.with_name(path.name + ".lock")
+    held = False
     for _ in range(100):
         try:
             os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+            held = True
             break
         except FileExistsError:
             try:
@@ -108,12 +112,13 @@ def _locked(path: Path):
                 pass
             time.sleep(0.1)
     try:
-        yield
+        yield held
     finally:
-        try:
-            lock.unlink()
-        except OSError:
-            pass
+        if held:   # never unlink a lock another caller owns
+            try:
+                lock.unlink()
+            except OSError:
+                pass
 
 
 def _load(path: Path, now: float) -> dict:
@@ -148,7 +153,9 @@ def acquire(env=None, *, now=time.time, sleep=time.sleep, rng=random.uniform, wa
     "spacing" and reserves nothing (the health probe uses this)."""
     env = os.environ if env is None else env
     cfg, path = config(env), state_path(env)
-    with _locked(path):
+    with _locked(path) as held:
+        if not held:
+            return Decision(False, "lock-busy")   # fail closed: never share a budget unlocked
         t = now()
         data = _load(path, t)
         if data["cooldown_until"] > t:
@@ -167,6 +174,10 @@ def acquire(env=None, *, now=time.time, sleep=time.sleep, rng=random.uniform, wa
     delay = max(0.0, slot - t)
     if delay > 0:
         sleep(delay)
+        # A 429/challenge recorded by another caller while we slept still stops us.
+        again = status(env, now=now)
+        if again["state"] == "cooldown" and again["reason"] != "daily-cap":
+            return Decision(False, again["reason"], delay)
     return Decision(True, "", delay)
 
 

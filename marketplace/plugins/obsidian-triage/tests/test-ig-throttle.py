@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 TOOLS = Path(__file__).resolve().parent.parent / "tools"
 sys.path.insert(0, str(TOOLS / "lib"))
@@ -152,6 +153,33 @@ class ThrottleTests(unittest.TestCase):
         self.assertEqual(data["version"], 1)
         self.assertEqual(data["day"], "2026-10-04")
         self.assertEqual(data["count"], 1)
+
+    def test_a_lock_that_stays_held_denies_and_is_not_stolen(self):
+        lock = Path(self.env["HIMMEL_IG_THROTTLE_STATE"] + ".lock")
+        lock.write_text("")
+        with mock.patch.object(ig_throttle.time, "sleep"):
+            d = self.acquire()
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason, "lock-busy")
+        self.assertTrue(lock.exists())   # another caller's lock is left alone
+        self.assertFalse(Path(self.env["HIMMEL_IG_THROTTLE_STATE"]).exists())
+
+    def test_a_cooldown_recorded_while_we_sleep_stops_the_request(self):
+        self.acquire()
+
+        def sleep_then_429(s):
+            self.clock.sleep(s)
+            ig_throttle.record(self.env, http_status=429, now=self.clock.now)
+
+        d = ig_throttle.acquire(self.env, now=self.clock.now, sleep=sleep_then_429, rng=lambda a, b: 0.0)
+        self.assertFalse(d.ok)
+        self.assertEqual(d.reason, "http-429")
+
+    def test_non_finite_knobs_fall_back_to_the_default(self):
+        for bad in ("nan", "inf", "-inf"):
+            cfg = ig_throttle.config({"HIMMEL_IG_DAILY_CAP": bad, "HIMMEL_IG_MIN_GAP_S": bad})
+            self.assertEqual(cfg["cap"], 30)
+            self.assertEqual(cfg["gap"], 45)
 
 
 @unittest.skipUnless(NODE, "node not on PATH")

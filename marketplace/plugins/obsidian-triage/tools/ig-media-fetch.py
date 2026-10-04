@@ -289,6 +289,9 @@ def download_media(ig: dict, cf: Path):
     if not gallery_dl:
         return None, "gallery_dl_missing"
     cmd = [gallery_dl, "--cookies", str(cf), "-D", str(dest), url]
+    if not os.environ.get("IG_MEDIA_NO_SLEEP"):
+        # one throttle slot covers one run; space the run's own requests too
+        cmd[1:1] = ["--sleep-request", "4-9"]
     slot = ig_throttle.acquire()
     if not slot.ok:
         return None, f"throttled:{slot.reason}"   # nothing sent; caller stops the batch

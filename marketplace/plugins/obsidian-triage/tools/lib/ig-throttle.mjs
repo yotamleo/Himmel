@@ -57,9 +57,11 @@ const nowSeconds = () => Date.now() / 1000;
 async function withLock(path, fn) {
   mkdirSync(dirname(path), { recursive: true });
   const lock = join(dirname(path), basename(path) + ".lock");
+  let held = false;
   for (let i = 0; i < 100; i++) {
     try {
       closeSync(openSync(lock, "wx"));
+      held = true;
       break;
     } catch (e) {
       if (e.code !== "EEXIST") throw e;
@@ -73,9 +75,10 @@ async function withLock(path, fn) {
     }
   }
   try {
-    return await fn();
+    return await fn(held);
   } finally {
-    try { unlinkSync(lock); } catch { /* already gone */ }
+    // never unlink a lock another caller owns
+    if (held) try { unlinkSync(lock); } catch { /* already gone */ }
   }
 }
 
@@ -110,7 +113,8 @@ export async function acquire(env = process.env, { now = nowSeconds, sleep = sle
   const path = statePath(env);
   let t;
   let slot;
-  const denied = await withLock(path, () => {
+  const denied = await withLock(path, (held) => {
+    if (!held) return "lock-busy"; // fail closed: never share a budget unlocked
     t = now();
     const data = load(path, t);
     if (data.cooldown_until > t) return "cooldown";
@@ -125,7 +129,14 @@ export async function acquire(env = process.env, { now = nowSeconds, sleep = sle
   });
   if (denied) return { ok: false, reason: denied, waited: 0 };
   const wait = Math.max(0, slot - t);
-  if (wait > 0) await sleep(wait * 1000);
+  if (wait > 0) {
+    await sleep(wait * 1000);
+    // A 429/challenge recorded by another caller while we slept still stops us.
+    const again = status(env, { now });
+    if (again.state === "cooldown" && again.reason !== "daily-cap") {
+      return { ok: false, reason: again.reason, waited: wait };
+    }
+  }
   return { ok: true, reason: "", waited: wait };
 }
 
