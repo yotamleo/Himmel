@@ -175,22 +175,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # --severity=warning makes the gate deterministic across shellcheck
-      # versions: SC2329 (note-level, "function never invoked") is the only
-      # check newer shellchecks add over the pre-commit-pinned 0.10.x, and it
-      # only fires on pre-existing files. pre-commit stays the strict
-      # style-level local gate; CI catches warnings+errors regardless of the
-      # runner's shellcheck version.
-      # git pathspec `*` crosses `/`, so 'scripts/*.sh' matches every depth
-      # (top-level setup.sh/adopt.sh/… included). 'scripts/**/*.sh' would NOT —
-      # in a git pathspec `**/` requires an intervening directory, silently
-      # dropping the 34 top-level scripts. xargs -r: no files -> don't run
-      # shellcheck on stdin.
-      # scripts/lanes/bench/fixtures/ holds benchmark INPUT scripts — sample
-      # shell fed to the lane bench as the thing being measured. Adding
-      # shellcheck directives to them would change the artifact under
-      # measurement, so they're excluded the same way scripts/statusline/ is.
-      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | grep -zv '^scripts/lanes/bench/fixtures/' | xargs -0 -r shellcheck --severity=warning
+      # HIMMEL-4265: run the SAME pre-commit shellcheck hook the local gate runs
+      # (pinned shellcheck-py version, default severity, .shellcheckrc, and the
+      # hook's own vendored/fixture excludes), so nothing the hook refuses can
+      # reach main. The old `shellcheck --severity=warning` over a hand-kept
+      # file list let info-level findings (SC2119) through CI and fail locally.
+      - run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
+      - run: pre-commit run shellcheck --all-files --show-diff-on-failure
 
   node-suites:
     runs-on: ubuntu-latest
