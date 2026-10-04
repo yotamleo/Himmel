@@ -245,8 +245,6 @@ for fam in $FAMILIES; do
     kb="$(printf '%s' "$list" | tr '\n' '\0' | xargs -0 du -sck 2>/dev/null | tail -1 | cut -f1)"
     fix_total=$((fix_total + ${kb:-0}))
     if [ "$APPLY" = 1 ]; then
-        # a fixture can leave a non-writable sub/ dir; same uid (find -user above), so make it writable first
-        printf '%s' "$list" | tr '\n' '\0' | xargs -0 chmod -R u+rwX -- 2>/dev/null || :
         if printf '%s' "$list" | tr '\n' '\0' | xargs -0 rm -rf --; then
             fix_reaped=$((fix_reaped + n))
             printf 'REAP fixture  %s: %d dir(s), %sK; %d kept\n' "$fam" "$n" "${kb:-0}" "$kept"

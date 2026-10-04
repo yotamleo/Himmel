@@ -17,7 +17,6 @@
 #      other-uid only warns (TMP_REAP_UID), dry-run warns, a readable proc is quiet;
 #      an empty census root refuses
 #  11. FAMILIES does not glob against the caller's cwd
-#  12. a fixture with a non-writable sub/ dir is still reaped (chmod before rm)
 # Platform guard: POSIX bash 3.2+.
 set -uo pipefail
 
@@ -199,22 +198,6 @@ build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/him
 out="$(cd "$CWD" && reap --apply)"; rc=$?
 check "apply from a cwd with family-named files rc 0" "$rc" 0
 absent "11. old fixture reaped despite cwd files" "$ROOT/mog-run.old"
-
-echo "== 12. a fixture with a non-writable sub/ dir is reaped =="
-build_tree; mkdir -p "$ROOT/clean-sandbox.old/sub"; printf 'x\n' > "$ROOT/clean-sandbox.old/sub/x.sh"
-chmod 555 "$ROOT/clean-sandbox.old/sub"; old "$ROOT/clean-sandbox.old"
-REAL_RM="$(command -v rm)"; mkdir -p "$T/bin"
-# a stand-in for Permission denied that also bites as root, where a real 555 dir is deletable
-cat > "$T/bin/rm" <<SHIM
-#!/bin/sh
-for a in "\$@"; do case "\$a" in -*) ;; *) [ -n "\$(find "\$a" -type d ! -perm -200 2>/dev/null)" ] && exit 1 ;; esac; done
-exec "$REAL_RM" "\$@"
-SHIM
-chmod +x "$T/bin/rm"
-out="$(PATH="$T/bin:$PATH" reap --apply)"; rc=$?
-check "non-writable fixture: apply rc 0" "$rc" 0
-absent "12. clean-sandbox.old reaped" "$ROOT/clean-sandbox.old"
-chmod -R u+w "$ROOT" 2>/dev/null
 
 echo
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILURE(S)"; exit 1; }
