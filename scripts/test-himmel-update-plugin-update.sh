@@ -189,6 +189,18 @@ assert_not_contains "uninstalled ghost@nowhere never updated" "plugin update gho
 assert_not_contains "uninstalled watch@claude-video never updated" "plugin update watch@claude-video" "$log_ni_content"
 assert_contains "skipped plugins are counted on one line" "2 enabled plugin(s) not installed, skipped" "$out_ni"
 
+echo "Test: a registry with a malformed .plugins filters nothing (HIMMEL-4380)"
+make_mock_clone
+printf '%s\n' '{"version":2,"plugins":[]}' > "$fake_home_ni/.claude/plugins/installed_plugins.json"
+: > "$log_ni"
+rc=0
+out_ni=$(USERPROFILE='' HOME="$fake_home_ni" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_ni" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_ni/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+log_ni_content="$(cat "$log_ni")"
+assert_contains "unreadable registry: ghost still attempted (old behaviour)" "plugin update ghost@nowhere" "$log_ni_content"
+assert_not_contains "unreadable registry: no skip line" "not installed, skipped" "$out_ni"
+
 echo "Test: --check mode reports what would update, invokes nothing"
 make_mock_clone
 fake_home_check="$TMP/fake-home-check"
