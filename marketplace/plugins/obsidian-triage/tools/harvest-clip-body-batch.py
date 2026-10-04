@@ -377,8 +377,9 @@ def _norm_host(host: str) -> str:
     return ".".join(labels)
 
 
-def _norm_path(path: str) -> str:
-    """Percent-decode (to a fixed point), resolve dot-segments, empty -> `/`.
+def _norm_path(path: str) -> tuple[str, str]:
+    """(path, query): percent-decode the path (to a fixed point), resolve
+    dot-segments keeping a trailing `/` after `.`/`..`/empty, empty -> `/`.
     The query is split off first: its slashes and dots are not path segments."""
     path, qsep, query = path.partition("?")
     # ponytail: 4 decode passes, raise if a backend is seen decoding deeper (HIMMEL-4355)
@@ -387,21 +388,25 @@ def _norm_path(path: str) -> str:
         if dec == path:
             break
         path = dec
+    segs = path.split("/")[1:]
     out = []
-    for seg in path.split("/")[1:]:
+    for seg in segs:
         if seg == "..":
             if out:
                 out.pop()
         elif seg != ".":
             out.append(seg)
-    return "/" + "/".join(out) + qsep + query
+    joined = "/" + "/".join(out)
+    if segs and segs[-1] in (".", "..") and out and out[-1] != "":
+        joined += "/"
+    return joined, qsep + query
 
 
 def _norm_target(text: str, is_pattern: bool = False) -> list[str]:
     """`host[:port]/path` for a URL or glob line, scheme dropped. A pattern
-    with no `/` is a host-only rule and covers every path. A URL yields a
-    second candidate without the port so a deny line written for the host
-    still holds on another port."""
+    with no `/` is a host-only rule and covers every path. A URL yields every
+    candidate a rule could mean: with and without the port, with and without
+    the query (a path rule must hold whatever the query says)."""
     rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", text.strip())
     cut = re.search(r"[/?#]", rest)
     hostport, tail = (rest, "") if cut is None else (rest[: cut.start()], rest[cut.start():])
@@ -414,10 +419,12 @@ def _norm_target(text: str, is_pattern: bool = False) -> list[str]:
     hostport = hostport.rsplit("@", 1)[-1]
     host, sep, port = hostport.partition(":")
     host = _norm_host(host)
-    path = _norm_path(tail or "/")
-    cands = [f"{host}{sep}{port}{path}"]
-    if sep and not is_pattern:
-        cands.append(f"{host}{path}")
+    path, query = _norm_path(tail or "/")
+    if is_pattern:
+        return [f"{host}{sep}{port}{path}{query}"]
+    cands = []
+    for hp in ([f"{host}{sep}{port}", host] if sep else [host]):
+        cands += [f"{hp}{path}", f"{hp}{path}{query}"]
     return cands
 
 
