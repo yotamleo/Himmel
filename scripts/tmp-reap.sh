@@ -98,8 +98,13 @@ $1
 CENSUS_WARNED=0
 census() {
     local proc="${TMP_REAP_PROC:-/proc}" me="${TMP_REAP_UID:-$(id -u)}" raw same other o st
-    if [ ! -d "$proc" ] || [ ! -r "$proc" ] || [ ! -x "$proc" ]; then   # no readable census root = no liveness snapshot at all
-        echo "tmp-reap: census root $proc is not a readable directory; refusing" >&2
+    if [ ! -d "$proc" ]; then   # no census root = no liveness snapshot at all
+        echo "tmp-reap: census root $proc is not a directory; refusing" >&2
+        [ "$APPLY" = 1 ] && exit 2
+    fi
+    set -- "$proc"/[0-9]*   # census takes no arguments; reuse the positionals
+    if [ -d "$proc" ] && { [ ! -r "$proc" ] || [ ! -x "$proc" ] || [ ! -e "$1" ]; }; then
+        echo "tmp-reap: census root $proc lists no process (unreadable or empty); refusing" >&2
         [ "$APPLY" = 1 ] && exit 2
     fi
     raw="$(
@@ -108,9 +113,8 @@ census() {
                 [ -d "$p" ] || continue   # exited mid-walk
                 st="$(cat "$p/stat" 2>/dev/null)"; st="${st##*) }"   # state follows the LAST ')' (a comm may hold ') Z ')
                 case "$st" in "Z "*) continue ;; esac
-                o="$(owner "$p")"
-                [ -n "$o" ] || [ -d "$p" ] || continue   # exited between the checks
-                # an unknown owner counts as same-uid: unknown is never safe
+                o="$(owner "$p")"   # an unknown owner counts as same-uid: unknown is never safe
+                [ -n "$o" ] || [ -d "$p" ] || continue   # exited between the checks: not unknown, just gone
                 case "$o" in ''|*[!0-9]*) o="$me" ;; esac   # non-numeric (a stat -f fallback's fs report) is unknown too
                 if [ "$o" = "$me" ]; then echo '@@unread same'; else echo '@@unread other'; fi
             fi
