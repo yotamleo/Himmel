@@ -166,14 +166,18 @@ pass "d canary absent, row shows ‹redacted›"
 # a non-secret .env value (HIMMEL_INITIATIVE=execute,pr) must stay readable
 jq -e '.rows[]|select(.id=="doctor:C3-luna")|.title|contains("execute,pr")' "$out" >/dev/null || fail "non-secret .env value was redacted from a title"
 pass "d3 non-secret .env values are not redacted"
-# RED control: with redaction disabled the canary MUST leak (proves the check can fail)
+# RED control: a canary that is NOT a known .env value cannot be matched by shape, so it
+# MUST leak (proves the check can fail). No production kill-switch is needed for this.
+redRepo="$work/red-repo"; mkdir -p "$redRepo/scripts/install" "$redRepo/scripts/lanes"
+cp "$fixtureRepo/scripts/install/manifest.json" "$redRepo/scripts/install/"; cp "$fixtureRepo/scripts/lanes/lanes.json" "$redRepo/scripts/lanes/"
+printf 'HIMMEL_INITIATIVE=execute,pr\n' > "$redRepo/.env"
 # shellcheck disable=SC2015
-leak=$( cd "$target" && HIMMEL_REPORT_NO_REDACT=1 HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
-      HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" \
+leak=$( cd "$target" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
+      HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$redRepo")" \
       HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
       HIMMEL_REPORT_DOCTOR="$(winpath "$stubDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
       PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json | grep -c "$CANARY" || true )
-[ "$leak" -ge 1 ] || fail "RED control: redaction off did not leak the canary (check is vacuous)"
+[ "$leak" -ge 1 ] || fail "RED control: a canary absent from .env did not leak (check is vacuous)"
 pass "d2 RED control leaks with redaction off"
 
 # ── e. --items skips the doctor for a cadence-only request ──────────────────
@@ -253,5 +257,91 @@ printf '{"flags":[{"name":"FAKE_THING_OK","hooks":["scripts/hooks/block-fake.sh"
 if "$node_bin" "$lint" --root "$lintRoot" >/dev/null 2>"$work/lint3.err"; then fail "lint passed an entry naming no hook"; fi
 grep -q GHOST_OK "$work/lint3.err" || fail "lint failure does not name GHOST_OK"
 pass "f2 lint fails on an unregistered flag and on a ghost entry"
+
+# ── g. secret presence comes from each secret's own source, never the repo .env
+# HIMMEL-4327 (spec A7). The repo-root .env carries a same-named TELEGRAM_BOT_TOKEN
+# (the nudge relay's DIFFERENT bot) and a FIRECRAWL_API_KEY the tools never read.
+printf 'TELEGRAM_BOT_TOKEN=repo-root-other-bot-aaaa\nFIRECRAWL_API_KEY=repo-env-firecrawl-bbbb\nBITBUCKET_API_TOKEN=bb-fixture-token-cccc\n' >> "$fixtureRepo/.env"
+mkdir -p "$homeDir/.claude/channels/telegram" "$homeDir/.luna/cookies"
+sec() { jq -r --arg n "secret:$1" '.rows[]|select(.id==$n)|.installed.state' "$2"; }
+WHISPER_MODEL='' WHISPER_DIR='' FIRECRAWL_API_KEY='' TELEGRAM_ENV='' run_report --items secret:TELEGRAM_BOT_TOKEN,secret:FIRECRAWL_API_KEY,secret:BITBUCKET_API_TOKEN,secret:INSTAGRAM_COOKIE_FILE,secret:WHISPER_MODEL > "$work/g1.json" 2>/dev/null || fail "g report exited non-zero"
+[ "$(sec TELEGRAM_BOT_TOKEN "$work/g1.json")" = absent ] || fail "g1 TELEGRAM_BOT_TOKEN read as present from the repo-root .env (bridge file absent)"
+[ "$(sec FIRECRAWL_API_KEY "$work/g1.json")" = absent ] || fail "g1 FIRECRAWL_API_KEY (process-env only) read as present from the repo-root .env"
+[ "$(sec BITBUCKET_API_TOKEN "$work/g1.json")" = present ] || fail "g1 BITBUCKET_API_TOKEN (repo .env is its source) not present"
+[ "$(sec INSTAGRAM_COOKIE_FILE "$work/g1.json")" = absent ] || fail "g1 INSTAGRAM_COOKIE_FILE present with no cookie file"
+[ "$(sec WHISPER_MODEL "$work/g1.json")" = absent ] || fail "g1 WHISPER_MODEL present with no model file"
+printf 'TELEGRAM_BOT_TOKEN=bridge-own-token-dddd\n' > "$homeDir/.claude/channels/telegram/.env"
+printf '# Netscape\n.instagram.com\tTRUE\t/\tTRUE\t0\tsessionid\tx\n' > "$homeDir/.luna/cookies/instagram.txt"
+mkdir -p "$homeDir/.himmel/whisper"; printf 'model' > "$homeDir/.himmel/whisper/ggml-small.bin"
+WHISPER_MODEL='' WHISPER_DIR='' FIRECRAWL_API_KEY=process-env-key-eeee TELEGRAM_ENV='' run_report --items secret:TELEGRAM_BOT_TOKEN,secret:FIRECRAWL_API_KEY,secret:INSTAGRAM_COOKIE_FILE,secret:WHISPER_MODEL > "$work/g2.json" 2>/dev/null || fail "g2 report exited non-zero"
+for n in TELEGRAM_BOT_TOKEN FIRECRAWL_API_KEY INSTAGRAM_COOKIE_FILE WHISPER_MODEL; do
+  [ "$(sec "$n" "$work/g2.json")" = present ] || fail "g2 $n not present from its own source"
+done
+for v in bridge-own-token-dddd process-env-key-eeee repo-root-other-bot-aaaa; do
+  if grep -q "$v" "$work/g1.json" "$work/g2.json"; then fail "g3 a secret value ($v) reached the feed"; fi
+done
+# every manifest secret must have a declared presence source (a new secret fails here, not silently absent)
+node_missing=$("$node_bin" -e 'const f=require(process.argv[1]);const m=require(process.argv[2]);const miss=m.secrets.map(s=>s.name).filter(n=>!(f.PRESENCE_SOURCES||{})[n]);process.stdout.write(miss.join(","))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$repo_root/scripts/himmelctl/lib/secrets-manifest.json" 2>&1)
+[ -z "$node_missing" ] || fail "g4 manifest secrets with no presence source: $node_missing"
+pass "g secret presence per consumer source, no values emitted, manifest fully covered"
+
+# ── h. redactor hardening (HIMMEL-4327) ─────────────────────────────────────
+redact_js="$repo_root/scripts/himmelctl/lib/redact.js"
+probes_js="$repo_root/scripts/himmelctl/lib/probes.js"
+rj() { "$node_bin" -e "const r=require(process.argv[1]);const p=require(process.argv[2]);$1" "$redact_js" "$probes_js"; }
+# h1: short secret values are scrubbed; a short literal must not shred a longer word
+o=$(rj 'const l=r.envValues("DB_PASSWORD=ab12\n",p.parseDotEnv);process.stdout.write(r.redact("pw is ab12 and ab12xyz",{literals:l}))')
+case "$o" in *"is ab12 "*) fail "h1 a 4-char secret value was not scrubbed: $o";; esac
+case "$o" in *ab12xyz*) :;; *) fail "h1 a short literal shredded a longer word: $o";; esac
+pass "h1 short secret values scrubbed on word boundaries"
+# h2: a multiline quoted value is scrubbed line by line, unbalanced leading quote included
+o=$(rj 'const raw="API_SECRET=\"firstlinesecret\nsecondlinesecret\"\nOTHER_TOKEN=\"danglingquote\n";const l=r.envValues(raw,p.parseDotEnv);process.stdout.write(r.redact("a firstlinesecret b secondlinesecret c danglingquote d",{literals:l}))') || fail "h2 node redaction run failed"
+for v in firstlinesecret secondlinesecret danglingquote; do
+  case "$o" in *"$v"*) fail "h2 multiline/unbalanced-quote value leaked ($v): $o";; esac
+done
+pass "h2 multiline and unbalanced-quote .env values scrubbed"
+# h2b: an escaped quote on the first line does not close a multiline value
+o=$(rj 'const raw="API_SECRET=\"say \\\"hi\nescapedtailsecret\"\n";const l=r.envValues(raw,p.parseDotEnv);process.stdout.write(r.redact("x escapedtailsecret y",{literals:l}))') || fail "h2b node redaction run failed"
+case "$o" in *escapedtailsecret*) fail "h2b escaped-quote multiline value leaked its tail: $o";; esac
+pass "h2b escaped quote does not end a multiline value"
+# h2c: an empty assignment is absent even when the next line has a value
+printf 'BITBUCKET_API_TOKEN=\nOTHER=value\n' > "$work/empty-assign.env"
+o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/empty-assign.env") || fail "h2c node run failed"
+[ "$o" = false ] || fail "h2c empty assignment read as present (got $o)"
+printf 'BITBUCKET_API_TOKEN="\nmultilinevalue"\n' > "$work/ml-assign.env"
+o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/ml-assign.env") || fail "h2c node run failed"
+[ "$o" = true ] || fail "h2c multiline quoted assignment read as absent (got $o)"
+printf 'BITBUCKET_API_TOKEN=""\r\n' > "$work/crlf-empty.env"
+o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/crlf-empty.env") || fail "h2c node run failed"
+[ "$o" = false ] || fail "h2c CRLF empty quoted assignment read as present (got $o)"
+pass "h2c empty assignment is not present (LF and CRLF); multiline quoted one is"
+# h3: an unreadable .env is stated in the envelope; a readable one says ok
+unreadRepo="$work/unread-repo"; mkdir -p "$unreadRepo/scripts/install" "$unreadRepo/scripts/lanes" "$unreadRepo/.env"
+cp "$fixtureRepo/scripts/install/manifest.json" "$unreadRepo/scripts/install/"; cp "$fixtureRepo/scripts/lanes/lanes.json" "$unreadRepo/scripts/lanes/"
+( cd "$target" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
+    HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$unreadRepo")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
+    HIMMEL_REPORT_DOCTOR="$(winpath "$stubDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
+    PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json ) > "$work/unread.json" 2>/dev/null || fail "h3 report exited non-zero on an unreadable .env"
+[ "$(jq -r '.redaction.env' "$work/unread.json")" = unreadable ] || fail "h3 unreadable .env not reported in the envelope (got $(jq -c '.redaction' "$work/unread.json"))"
+[ "$(jq -r '.redaction.env' "$out")" = ok ] || fail "h3 readable .env not reported ok"
+pass "h3 an unreadable .env is stated in the envelope"
+# h4: HIMMEL_REPORT_NO_REDACT is gone from production code: setting it changes nothing
+( cd "$target" && HIMMEL_REPORT_NO_REDACT=1 HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
+      HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" \
+      HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
+      HIMMEL_REPORT_DOCTOR="$(winpath "$stubDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
+      PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json ) > "$work/h4.json" || fail "h4 report run failed"
+[ -s "$work/h4.json" ] || fail "h4 report produced no output"
+leak4=$(grep -c "$CANARY" "$work/h4.json" || true)
+[ "$leak4" -eq 0 ] || fail "h4 HIMMEL_REPORT_NO_REDACT=1 still disables redaction in production code"
+if grep -rq NO_REDACT "$repo_root/scripts/himmelctl/lib"; then fail "h4 NO_REDACT still referenced under scripts/himmelctl/lib"; fi
+pass "h4 no production redaction kill-switch"
+# h5: flag-registry-lint fails when scripts/hooks is missing
+emptyRoot="$work/lint-nohooks"; mkdir -p "$emptyRoot/scripts/himmelctl/lib"
+printf '{"flags":[]}\n' > "$emptyRoot/scripts/himmelctl/lib/bypass-flags.json"
+if "$node_bin" "$lint" --root "$emptyRoot" >/dev/null 2>"$work/lint4.err"; then fail "h5 lint passed vacuously with no scripts/hooks"; fi
+grep -q 'scripts/hooks' "$work/lint4.err" || fail "h5 lint failure does not name scripts/hooks"
+pass "h5 flag-registry-lint fails on a missing hooks dir (node pin deferred to HIMMEL-4332)"
 
 echo "ALL PASS"

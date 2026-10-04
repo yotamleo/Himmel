@@ -81,6 +81,10 @@ export function lint(root) {
     return [`cannot read ${REGISTRY_REL}: ${e.message}`];
   }
   const flags = Array.isArray(registry.flags) ? registry.flags : [];
+  // A missing hooks dir scans nothing and would pass vacuously (HIMMEL-4327).
+  if (scannedFiles(root).length === 0) {
+    return [`scripts/hooks/ holds no hook files under ${root}: nothing to lint, refusing to pass vacuously`];
+  }
   const named = new Set(flags.map((f) => f.name));
   for (const [name, files] of [...scanFlags(root)].sort()) {
     if (!named.has(name)) errors.push(`${name} is read by ${files.join(', ')} but has no entry in ${REGISTRY_REL}`);
