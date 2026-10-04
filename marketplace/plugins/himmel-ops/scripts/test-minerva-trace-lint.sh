@@ -71,6 +71,18 @@ expect_refuse "cited path missing" "no-such-file" "$td/dangling.md" "$td/plan.md
 sed "s#\`$repo_path\`#\`*\`#" "$td/green.md" >"$td/glob.md"
 expect_refuse "glob token not expanded" "cites *," "$td/glob.md" "$td/plan.md"
 
+# a surface word only in the first H2 heading still makes the spec surface-shaped
+printf '# Feed rework\n\n## Health\n\nRework it.\n\n## Invariants\n\nnone\n' >"$td/h2-only.md"
+expect_refuse "surface word in first H2 heading" "fact ownership" "$td/h2-only.md" "$td/plan.md"
+
+# a stray `none` line does not exempt I<n> lines beside it
+sed 's/^- I1 — /none\n- I1 — /' "$td/green.md" >"$td/none-plus.md"
+expect_refuse "none beside an I<n> line" "I1" "$td/none-plus.md" "$td/plan-untraced.md"
+
+# a matrix row with an empty owner cell
+sed 's/| the feed | doctor delegates/|  | doctor delegates/' "$td/green.md" >"$td/no-owner.md"
+expect_refuse "row without an owner" "names no owner" "$td/no-owner.md" "$td/plan.md"
+
 # a non-surface spec needs Invariants (may be none) but no matrix
 printf '# Rename a flag\n\n## 1. Goal\n\nRename the flag.\n\n## Invariants\n\nnone\n' >"$td/plain.md"
 expect_pass "non-surface spec with Invariants: none passes" "$td/plain.md" "$td/plan.md"
