@@ -29,7 +29,7 @@
 # shellcheck disable=SC2086  # word-splitting a /proc line and a jq row into positionals is the point
 set -u
 
-usage() { echo "usage: tmp-reap.sh [--dry-run|--apply] [--judge <leg-number>] [--session <uuid>]" ; }
+usage() { echo "usage: tmp-reap.sh [--dry-run|--apply] [--judge <pr-number>] [--session <uuid>]" ; }
 APPLY=0; SCOPE_JUDGE=""; SCOPE_SESSION=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -44,7 +44,7 @@ while [ "$#" -gt 0 ]; do
     esac
     shift
 done
-# Scoped (HIMMEL-4235): only the named leg's judge dirs (j<N>, j<N>[a-z]) and the one
+# Scoped (HIMMEL-4235): only the judged PR's judge dirs (j<N>, j<N>[a-z]) and the one
 # session dir; no fixtures, no cache-break copy, and no age floor on what was named
 # (liveness and the census still apply). Never a fleet-wide sweep.
 SCOPED=0; [ -n "$SCOPE_JUDGE$SCOPE_SESSION" ] && SCOPED=1

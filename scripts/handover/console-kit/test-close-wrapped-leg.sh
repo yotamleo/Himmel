@@ -754,36 +754,36 @@ pgrep_x_stub 210
 SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
 
 # --- 27: the wrapped leg's own /tmp scratch is archived (HIMMEL-4235) --------
-# A judge dir of THIS leg (N1 -> j1*) and the leg's session scratch dir are
-# archived then reaped after the TERM; another leg's judge dir, another
+# A judge dir of THIS leg's PR (leg N1, READY PR 2 -> j2*) and the leg's session scratch dir are
+# archived then reaped after the TERM; the label-named j1a (another PR's judge), another
 # session's dir and a root fixture in the same tree are untouched. Real
 # tmp-reap.sh against a scratch root: the real /tmp is never reached.
 RP_ROOT="$W/reap-tmp"; RP_ARCH="$W/reap-arch"; RP_CL="$RP_ROOT/claude-$(id -u)"
 RP_SID=55555555-5555-5555-5555-555555555555; RP_OTHER=66666666-6666-6666-6666-666666666666
-mkdir -p "$RP_CL/j1a" "$RP_CL/j1b" "$RP_CL/j2a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER" "$RP_ROOT/mog-run.old" "$W/reap-proc/1" "$W/reap-sessions"
+mkdir -p "$RP_CL/j2a" "$RP_CL/j2b" "$RP_CL/j1a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER" "$RP_ROOT/mog-run.old" "$W/reap-proc/1" "$W/reap-sessions"
 ln -s / "$W/reap-proc/1/cwd"
-for d in "$RP_CL/j1a" "$RP_CL/j2a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER"; do printf '{"a":1}\n' > "$d/corpus-x.jsonl"; done
+for d in "$RP_CL/j2a" "$RP_CL/j1a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER"; do printf '{"a":1}\n' > "$d/corpus-x.jsonl"; done
 touch -t 200001010000 "$RP_ROOT/mog-run.old"
 RP_PROJ="$W/reap-projects/p"; mkdir -p "$RP_PROJ"
 printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\"}" > "$RP_PROJ/$RP_SID.jsonl"
 rm -rf "$W/proc"; mkdir -p "$W/proc"
 mkcmdline 210 claude -n "$SESSION_NAME" work
 pgrep_x_stub 210
-mkdoc "- 10:00 WRAPPED - done"
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 2 abc GREEN"
 reset_calls
 rc=0; out=$(CWL_KILL_REMOVES_PROC=1 TMP_REAP_TMP_ROOT="$RP_ROOT" TMP_REAP_ARCHIVE_ROOT="$RP_ARCH" TMP_REAP_SESSIONS_DIR="$W/reap-sessions" TMP_REAP_PROC="$W/reap-proc" \
     CWL_REAP_BIN="$HERE/../../tmp-reap.sh" CWL_PROJECTS_DIR="$W/reap-projects" run "$DOC" 2>&1) || rc=$?
 check "reap: rc 0" "$rc" "0"
-check "reap: this leg's judge dir reaped" "$([ -e "$RP_CL/j1a" ] && echo present || echo absent)" "absent"
-check "reap: this leg's empty judge dir reaped" "$([ -e "$RP_CL/j1b" ] && echo present || echo absent)" "absent"
+check "reap: this leg's judge dir reaped" "$([ -e "$RP_CL/j2a" ] && echo present || echo absent)" "absent"
+check "reap: this leg's empty judge dir reaped" "$([ -e "$RP_CL/j2b" ] && echo present || echo absent)" "absent"
 check "reap: this leg's session scratch reaped" "$([ -e "$RP_CL/-proj/$RP_SID" ] && echo present || echo absent)" "absent"
-check "reap: judge corpus archived first" "$(find "$RP_ARCH" -name corpus-x.jsonl 2>/dev/null | grep -c 'j1a')" "1"
-check "reap: another leg's judge dir untouched" "$([ -e "$RP_CL/j2a/corpus-x.jsonl" ] && echo present || echo absent)" "present"
+check "reap: judge corpus archived first" "$(find "$RP_ARCH" -name corpus-x.jsonl 2>/dev/null | grep -c 'j2a')" "1"
+check "reap: another leg's judge dir untouched" "$([ -e "$RP_CL/j1a/corpus-x.jsonl" ] && echo present || echo absent)" "present"
 check "reap: another session's dir untouched" "$([ -e "$RP_CL/-proj/$RP_OTHER/corpus-x.jsonl" ] && echo present || echo absent)" "present"
 check "reap: no fleet-wide fixture sweep" "$([ -e "$RP_ROOT/mog-run.old" ] && echo present || echo absent)" "present"
 
 # --- 28: a reap failure never fails the wrap; a failed dry-run never applies --
-mkdoc "- 10:00 WRAPPED - done"
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 7 abc GREEN"
 rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work; pgrep_x_stub 210
 reset_calls
 rc=0; out=$(CWL_KILL_REMOVES_PROC=1 CWL_REAP_STUB_RC=1 run "$DOC" 2>&1) || rc=$?
@@ -794,11 +794,18 @@ not_contains "reap-fail: no apply after a failed dry-run" "$(cat "$CALLS.reap")"
 rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work
 reset_calls
 rc=0; out=$(CWL_KILL_REMOVES_PROC=1 run "$DOC" 2>&1) || rc=$?
-contains "reap-ok: dry-run is scoped to the leg's judge number" "$(cat "$CALLS.reap")" "tmp-reap --judge 1"
+contains "reap-ok: dry-run is scoped to the leg's PR number (never the leg label)" "$(cat "$CALLS.reap")" "tmp-reap --judge 7"
 contains "reap-ok: apply follows a clean dry-run" "$(cat "$CALLS.reap")" "--apply"
+# a leg with no PR in its doc reaps no judge dir: session half only, never a guess
+mkdoc "- 10:00 WRAPPED - done"
+rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work
+reset_calls
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 run "$DOC" 2>&1) || rc=$?
+not_contains "reap-nopr: no judge scope without a PR" "$(cat "$CALLS.reap")" "--judge"
+contains "reap-nopr: says why" "$out" "no PR"
 
 # --- 29: a session that outlives the TERM keeps its scratch (never reaped live) -
-mkdoc "- 10:00 WRAPPED - done"
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 7 abc GREEN"
 rm -rf "$W/proc"; mkdir -p "$W/proc"
 mkcmdline 210 claude -n "$SESSION_NAME" work
 pgrep_x_stub 210

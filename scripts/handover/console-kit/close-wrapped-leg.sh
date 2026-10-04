@@ -303,13 +303,16 @@ echo "close-wrapped-leg: sent TERM to pid $matched (leg $(leg_label "$DOC"))"
 
 # ---------- Wrapped leg's own /tmp scratch (HIMMEL-4235) ----------------------
 # Archive-then-reap THIS leg's judge dirs (j<N>, j<N>[a-z]) and its session
-# scratch dir, scoped through tmp-reap.sh --judge/--session: never a fleet-wide
+# scratch dir, scoped through tmp-reap.sh --judge <pr>/--session: never a fleet-wide
 # sweep (other legs are live). Dry-run first; apply only after a clean dry-run.
 # Never fatal: any failure WARNs and the close carries on.
 reap_leg_scratch() {
-    local label digits sid args=() i PROC_ROOT="${CLAUDE_SESSIONS_PROC:-/proc}"
-    label="$(leg_label "$DOC")"; digits="${label#N}"; digits="${digits%%[!0-9]*}"
-    case "$label" in N[0-9]*) args+=(--judge "$digits") ;; esac
+    local pr sid args=() i PROC_ROOT="${CLAUDE_SESSIONS_PROC:-/proc}"
+    # judge dirs are named for the PR they judged, never the leg label: take the
+    # PR from the doc's newest READY/MERGED bullet; no PR means no judge scope
+    pr="$(grep -E '^- [0-9:]+ (READY|MERGED)' "$DOC" | grep -oE '(READY|MERGED)[ #-]+(PR[ #]+)?[0-9]+' | tail -n 1 | grep -oE '[0-9]+$')"
+    if [ -n "$pr" ]; then args+=(--judge "$pr")
+    else echo "close-wrapped-leg: no PR in the leg doc - reaping no judge dir, never guessing"; fi
     if [ -n "$TRANSCRIPT" ]; then
         sid="$(basename "$TRANSCRIPT" .jsonl)"
         case "$sid" in
