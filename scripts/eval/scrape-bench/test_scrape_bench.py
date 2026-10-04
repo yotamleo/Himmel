@@ -69,6 +69,17 @@ class ScoreTests(unittest.TestCase):
         self.assertGreaterEqual(len(body), 1500)
         self.assertTrue(score.score(body, "x", "y")["success"])
 
+    def test_long_article_discussing_marker_near_start_is_success(self):
+        intro = "Notes on the web. " * 20 + "Why every captcha annoys readers: a short history. "
+        body = intro + GOOD * 6
+        self.assertGreater(len(body), score.SHORT_BODY)
+        self.assertLess(body.lower().find("captcha"), 1500)
+        self.assertTrue(score.score(body, "x", "y")["success"])
+
+    def test_short_marker_dominated_challenge_page_is_not_success(self):
+        body = "# Just a moment...\n\nEnable JavaScript and cookies to continue.\n" * 6
+        self.assertFalse(score.score(body, "x", "y")["success"])
+
     def test_empty_is_not_success(self):
         self.assertFalse(score.score("", "x", "y")["success"])
 
@@ -174,7 +185,7 @@ class FirecrawlTests(unittest.TestCase):
         self.assertEqual([r["credits_known"] for r in rows], [True, True, True])
 
     def test_ledger_write_failure_warns_with_class_only(self):
-        with mock.patch.dict(os.environ, {"HIMMEL_FIRECRAWL_LEDGER": "/proc/nope/ledger.jsonl"}):
+        with mock.patch("builtins.open", side_effect=OSError("/secret/nope/ledger.jsonl")):
             with mock.patch("sys.stderr", io.StringIO()) as err:
                 providers.ledger_append(1, True)
         self.assertRegex(err.getvalue(), r"^warning: firecrawl ledger write failed \(\w+\)\n$")

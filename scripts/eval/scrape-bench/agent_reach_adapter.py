@@ -78,7 +78,7 @@ def main(url):
 
 
 def route(url):
-    host =(urlparse(url).hostname or "").lower()
+    host = (urlparse(url).hostname or "").lower()
     def on(*domains):
         return any(host == d or host.endswith("." + d) for d in domains)
     if on("youtube.com", "youtu.be"):
