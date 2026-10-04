@@ -613,6 +613,18 @@ function marketplaceSource(entry) {
   return typeof val === 'string' ? val : '';
 }
 
+// HIMMEL-4333: a github `owner/repo` shorthand and an https github.com url are
+// the same source (the template is https for HIMMEL-2837's hermetic guard, live
+// settings use the shorthand). directory and other types compare as themselves.
+function marketplaceIdentity(entry) {
+  const src = entry && entry.source;
+  const val = marketplaceSource(entry);
+  if (!src || !val) return '';
+  const m = src.source === 'url' ? /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(val) : null;
+  if (src.source === 'github') return 'github:' + val.toLowerCase();
+  return m ? 'github:' + m[1].toLowerCase() : src.source + ':' + val;
+}
+
 // Quote a token for the printed shell command only when it needs it.
 function shq(s) {
   return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
@@ -627,6 +639,7 @@ function marketplaceSourceDrift(settings, template, ctx) {
     const wantSrc = marketplaceSource(want[name]).replace(/<himmel-path>/g, ctx.repoRoot);
     const haveSrc = marketplaceSource(have[name]);
     if (!wantSrc || !haveSrc || wantSrc === haveSrc) continue;
+    if (name !== 'himmel' && marketplaceIdentity(want[name]) === marketplaceIdentity(have[name])) continue;
     const reconcile = `claude plugin marketplace remove ${shq(name)} --scope ${scope} && claude plugin marketplace add ${shq(wantSrc)} --scope ${scope}`;
     out.push(name === 'himmel'
       ? `marketplace 'himmel' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — the himmel manifest is right; reconcile: ${reconcile}`
