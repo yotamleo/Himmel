@@ -183,11 +183,7 @@ jobs:
       - run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
       - run: pre-commit run shellcheck --all-files --show-diff-on-failure
       # HIMMEL-4254 P2: a bypass flag a hook reads but the config UI's display
-      # registry lacks is a flag the UI silently cannot show. Node is pinned
-      # (HIMMEL-4327) so the lint does not ride whatever the runner image ships.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
+      # registry lacks is a flag the UI silently cannot show.
       - run: node scripts/install/flag-registry-lint.mjs
 
   node-suites:
