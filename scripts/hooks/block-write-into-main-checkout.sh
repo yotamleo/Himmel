@@ -828,7 +828,13 @@ _bwimc_assign_flat() {
                 sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
                 _bwimc_brace_end "$t" $((i+2)) "${t:$((i+1)):1}"
                 _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0
-                if [ "$_BWIMC_PEND" -lt "$n" ]; then
+                if [ "$_BWIMC_PEND" -lt "$n" ] && [ "$sq" = '"' ] \
+                   && case "${t:$i:$((_BWIMC_PEND - i + 1))}" in *[\'\"\`]*) true ;; *) false ;; esac; then
+                    # a `${` inside "…" holding a quote: _bwimc_brace_end scans it
+                    # from the unquoted state, so its end may be wrong. Fail closed:
+                    # no flattening, the span reads as written (HIMMEL-4228)
+                    _BWIMC_AF_CLEAN=0
+                elif [ "$_BWIMC_PEND" -lt "$n" ]; then
                     # a bash 5.3 `${ cmd; }`/`${| cmd; }` runs its body: read it as `$(…)`
                     # shellcheck disable=SC2016
                     case "${t:$i:3}" in
