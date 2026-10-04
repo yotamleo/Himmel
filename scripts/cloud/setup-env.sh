@@ -26,27 +26,41 @@
 # never has). node, bun, python, git, gh, jq are preinstalled.
 #
 # Usage:
-#   setup-env.sh [--dry-run] [--with-plugins]
+#   setup-env.sh [--dry-run] [--with-plugins | --plugins <a,b,...>]
 #     --dry-run       print one `step=<name> action=<...>` line per step and
 #                     change nothing
-#     --with-plugins  slice-7 EXPERIMENT: try to install the himmel plugins into
-#                     the VM's ~/.claude. Undocumented by Anthropic; treat a
-#                     silent no-load in the session as "no". Off by default.
+#     --with-plugins  install the lean cloud profile (himmel-ops,lean-skills)
+#                     into the VM's ~/.claude. Off by default.
+#     --plugins <a,b,...>  (also --plugins=<list>) install exactly that comma
+#                     list (the cloud profile); names must be plugins under
+#                     marketplace/plugins, unknown or malformed names are
+#                     skipped with a warning.
+# The plugin step is NON-fatal: a failure prints a warning and keeps rc 0,
+# because a non-zero setup script stops the cloud session from starting. Plugins
+# install from the clone the script runs in (/tmp/himmel-setup in the paste),
+# which the platform caches with the environment, so they refresh only when the
+# setup script changes or the cache expires (~7 days). Probed 2026-10-04
+# (HIMMEL-4273): skills load and plugin hooks fire in the session.
 # Test seam: HIMMEL_CLOUD_ROOT (default: this script's repo) is the tree to act
 # on; scripts/cloud/test-setup-env.sh points it at a fixture.
+# HIMMEL_CLOUD_PROFILE_D (default /etc/profile.d) is where step 6 persists the
+# timeouts.
 #
-# ponytail: BASH_DEFAULT_TIMEOUT_MS is persisted via /etc/profile.d, which only
+# ponytail: BASH_DEFAULT_TIMEOUT_MS is persisted via $PROFILE_D, which only
 # reaches shells that source it; the environment's own "Environment variables"
 # field is the documented route and wins, upgrade = drop the profile.d write once
 # a cloud session proves that field alone sets it (HIMMEL-4206).
 set -uo pipefail
 
 DRY=0
-PLUGINS=0
+PLUGINS=""   # comma list; empty = no plugin step (HIMMEL-4273)
+LEAN_PLUGINS="himmel-ops,lean-skills"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --dry-run) DRY=1 ;;
-    --with-plugins) PLUGINS=1 ;;
+    --with-plugins) PLUGINS="$LEAN_PLUGINS" ;;
+    --plugins) [ "$#" -ge 2 ] || { echo "setup-env: --plugins needs a comma list (try --help)" >&2; exit 2; }; PLUGINS="$2"; shift ;;
+    --plugins=*) PLUGINS="${1#--plugins=}" ;;
     -h|--help) sed -n '2,/^set -uo/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "setup-env: unknown argument '$1' (try --help)" >&2; exit 2 ;;
   esac
@@ -54,7 +68,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 ROOT="${HIMMEL_CLOUD_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-TIMEOUT_MS=600000   # the cloud's Bash maximum; the default is 2 minutes
+PROFILE_D="${HIMMEL_CLOUD_PROFILE_D:-/etc/profile.d}"
+TIMEOUT_MS=600000  # the cloud's Bash maximum; the default is 2 minutes
 failed=0
 TMO=timeout   # gnu-ok: runs only on the Ubuntu 24.04 cloud VM (GNU coreutils, apt)
 
@@ -67,6 +82,15 @@ run_step() {
   plan "$name" "$action" "$detail"
   [ "$DRY" -eq 1 ] && return 0
   "$@" || { echo "setup-env: step $name FAILED" >&2; failed=$((failed + 1)); }
+}
+
+# soft_step: run_step for an optional step — a failure warns but never fails the
+# run (a non-zero setup script stops the cloud session from starting).
+soft_step() {
+  local name="$1" action="$2" detail="$3"; shift 4
+  plan "$name" "$action" "$detail"
+  [ "$DRY" -eq 1 ] && return 0
+  "$@" || echo "setup-env: step $name FAILED (non-fatal, session still starts)" >&2
 }
 
 apt_install() { # apt_install <pkg>: plain install first, refresh only on failure
@@ -108,20 +132,28 @@ fi
 # 6. environment: Bash timeouts. Exported for this script, persisted for later shells.
 export BASH_DEFAULT_TIMEOUT_MS="$TIMEOUT_MS" BASH_MAX_TIMEOUT_MS="$TIMEOUT_MS"
 plan env export "BASH_DEFAULT_TIMEOUT_MS=$TIMEOUT_MS BASH_MAX_TIMEOUT_MS=$TIMEOUT_MS"
-if [ "$DRY" -eq 0 ] && [ -d /etc/profile.d ] && [ -w /etc/profile.d ]; then
-  printf 'export BASH_DEFAULT_TIMEOUT_MS=%s\nexport BASH_MAX_TIMEOUT_MS=%s\n' "$TIMEOUT_MS" "$TIMEOUT_MS" > /etc/profile.d/himmel-cloud.sh \
-    || { echo "setup-env: could not persist the Bash timeouts to /etc/profile.d" >&2; failed=$((failed + 1)); }
+if [ "$DRY" -eq 0 ] && [ -d "$PROFILE_D" ] && [ -w "$PROFILE_D" ]; then
+  printf 'export BASH_DEFAULT_TIMEOUT_MS=%s\nexport BASH_MAX_TIMEOUT_MS=%s\n' "$TIMEOUT_MS" "$TIMEOUT_MS" > "$PROFILE_D/himmel-cloud.sh" \
+    || { echo "setup-env: could not persist the Bash timeouts to $PROFILE_D" >&2; failed=$((failed + 1)); }
 fi
 
-# 7. EXPERIMENT (slice 7): plugins into ~/.claude. Off unless asked.
-if [ "$PLUGINS" -eq 1 ]; then
-  if have claude; then
-    run_step plugins experiment "marketplace add + install" -- sh -c "
-      $TMO 120 claude plugin marketplace add '$ROOT/marketplace' &&
-      $TMO 120 claude plugin install himmel-ops@himmel &&
-      $TMO 120 claude plugin install lean-skills@himmel"
+# 7. plugin cloud profile (HIMMEL-4273): install exactly $PLUGINS. Non-fatal.
+if [ -n "$PLUGINS" ]; then
+  if have claude || [ "$DRY" -eq 1 ]; then
+    soft_step plugins-marketplace add "$ROOT/marketplace" -- $TMO 120 claude plugin marketplace add "$ROOT/marketplace"
+    IFS=, read -r -a plugin_list <<< "$PLUGINS"
+    for p in "${plugin_list[@]}"; do
+      case "$p" in
+        ''|*[!a-z0-9-]*) plan "plugin:$p" skip "invalid name"; echo "setup-env: plugin name '$p' is invalid, skipped" >&2 ;;
+        *) if [ -d "$ROOT/marketplace/plugins/$p" ]; then
+             soft_step "plugin:$p" install "$p@himmel" -- $TMO 120 claude plugin install "$p@himmel"
+           else
+             plan "plugin:$p" skip "not in marketplace/plugins"; echo "setup-env: plugin '$p' not in the marketplace, skipped" >&2
+           fi ;;
+      esac
+    done
   else
-    plan plugins experiment "claude CLI absent in the setup VM: result is NO"
+    plan plugins skip "claude CLI absent in the setup VM"
   fi
 fi
 
