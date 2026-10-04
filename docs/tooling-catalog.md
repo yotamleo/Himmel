@@ -64,7 +64,7 @@ truth for presence; named profiles can still opt in. Full detail:
 | `frontend-design` | Anthropic's frontend-design skill (official marketplace, local-path entry) | ON-DEMAND — `design` profile only (HIMMEL-4012); already cached; activation remains per profile |
 | `ui-ux-pro-max` | UI/UX design intelligence (7 skills), himmel entry pinned to upstream tag `v2.15.0` over HTTPS (replaces the old `ui-ux-pro-max@ui-ux-pro-max-skill` install; the operator script removes it) | ON-DEMAND, `design` core (HIMMEL-4012); catalog id `ui-ux-pro-max@himmel` |
 | `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.5.0` over HTTPS as a `git-subdir` source on `plugin/` (HIMMEL-3069 precedent; a `url`+`path` source caches the whole repo and loses the agents/hooks) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
-| `obsidian-second-brain` | Obsidian vault memory: 47 slash commands plus a `vault` MCP server (uv), himmel marketplace entry pinned to upstream tag `v0.17.0` over HTTPS (HIMMEL-4018; replaces the user-scope `~/.claude/skills/obsidian-second-brain` copy, which loaded ~2.2k tok into every session and ignored `enabledPlugins`) | ON-DEMAND — no named profile enables it; the operator profile and `/profile enable` do; catalog id `obsidian-second-brain@himmel` |
+| `obsidian-second-brain` | Obsidian vault memory: 47 slash commands plus a `vault` MCP server (uv), himmel marketplace entry pinned to upstream commit `87fe5437c44fffafb5188566d458891651536d4e` (tag `v0.17.0`) over HTTPS (HIMMEL-4018; replaces the user-scope `~/.claude/skills/obsidian-second-brain` copy, which loaded ~2.2k tok into every session and ignored `enabledPlugins`). Install: `claude plugin install obsidian-second-brain@himmel` | ON-DEMAND — `user`, `lane-content` and `telegram` profiles (plus the operator profile); off in lean legs and the console; catalog id `obsidian-second-brain@himmel` |
 | `emilkowalski-skills` | Emil Kowalski's design-engineering/animation skills: all 13 upstream skills load (a marketplace `skills` list never restricts anything, so animate-expo, mobile-native and write-swift cannot be excluded without a fork, HIMMEL-4068). MIT, sha-pinned, `strict:false`, no skills list | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `taste-skill-core` | Leonxlnx/taste-skill, all 13 upstream skills in ONE plugin (sha-pinned, `strict:true`; the former imagegen and styles split never restricted anything, HIMMEL-4067) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
 | `shadcn-mcp` | himmel wrapper plugin for the shadcn/ui registry MCP (`npx shadcn@4.21.0 mcp`, no API key; upstream ships no plugin) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
@@ -338,11 +338,11 @@ README's fork-delta section).
 > research-toolkit decision below still stands.
 
 **Repo:** `eugeniughelbur/obsidian-second-brain`
-**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream tag `v0.17.0`)
-**Enable:** opt-in. No named profile enables it; `/profile enable` or the operator profile does
+**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream commit `87fe5437c44fffafb5188566d458891651536d4e`, tag `v0.17.0`)
+**Enable:** the `user`, `lane-content` and `telegram` profiles (plus the operator profile, once installed); off in every other named profile
 **Commands:** 47 slash commands from the plugin (5 research-toolkit
 commands are NOT adopted — see Research toolkit line below)
-**Update:** bump the tag pin in `marketplace/.claude-plugin/marketplace.json`, then `claude plugin marketplace update himmel` and `claude plugin update obsidian-second-brain@himmel` (it is url-sourced, so the marketplace refresh alone leaves the installed copy on the old tag)
+**Update:** bump the `sha` pin in `marketplace/.claude-plugin/marketplace.json` to the new upstream commit, then `claude plugin marketplace update himmel` and `claude plugin update obsidian-second-brain@himmel` (it is url-sourced, so the marketplace refresh alone leaves the installed copy on the old commit)
 **Research toolkit:** NOT ADOPTED (proposed 2026-07-29, pending ADR sign-off) —
 operator confirmed no active XAI/Grok or Perplexity subscription. A
 `~/.config/obsidian-second-brain/.env`
