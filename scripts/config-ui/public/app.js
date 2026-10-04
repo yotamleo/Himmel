@@ -31,15 +31,19 @@ function toast(t) {
 }
 
 async function post(path, body) {
-  const r = await fetch(path, { method: "POST", headers: { "X-Himmel-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let r;
+  try { r = await fetch(path, { method: "POST", headers: { "X-Himmel-Token": token, "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+  catch (_) { return { ok: false, status: 0, j: { error: `${path} unreachable (is the server still running?)` } }; }
   let j = {};
   try { j = await r.json(); } catch (_) { j = { error: `${path} failed (${r.status})` }; }
   return { ok: r.ok, status: r.status, j };
 }
 
 async function loadFeed() {
-  const r = await fetch("/api/feed", { headers: { "X-Himmel-Token": token } });
-  if (r.ok) { feed = await r.json(); paint(); }
+  try {
+    const r = await fetch("/api/feed", { headers: { "X-Himmel-Token": token } });
+    if (r.ok) { feed = await r.json(); paint(); }
+  } catch (_) { toast("re-probe failed: server unreachable"); }
 }
 
 // Two-step write: the dry-run binds a preview id; only confirm runs it.
