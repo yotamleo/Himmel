@@ -3,7 +3,8 @@
 # case runs --dry-run or a stubbed PATH, so nothing is installed and no network
 # is touched. The script is a paste-in for a claude.ai cloud environment, so the
 # contract worth pinning is: it plans every step, skips what is already present,
-# changes nothing in dry-run, and rejects flags it does not know.
+# changes nothing in dry-run, rejects flags it does not know, and never lets the
+# plugin step fail the run.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -61,10 +62,37 @@ if [ ! -e "$FAKE/scripts/jira/dist" ] && [ ! -e "$FAKE/scripts/jira/node_modules
 # 5. the timeout export is part of the plan and carries a number.
 case "$OUT" in *"BASH_DEFAULT_TIMEOUT_MS=600000"*) ok "plans BASH_DEFAULT_TIMEOUT_MS=600000" ;; *) bad "no BASH_DEFAULT_TIMEOUT_MS in plan: $OUT" ;; esac
 
-# 6. plugin experiment is OFF by default, planned only with --with-plugins.
-case "$OUT" in *"step=plugins "*) bad "plugins step planned without --with-plugins" ;; *) ok "plugins step off by default" ;; esac
+# 6. plugin profile (HIMMEL-4273): OFF by default; --with-plugins installs the
+# lean set; --plugins <list> installs exactly that list; a bad name is skipped.
+mkdir -p "$FAKE/marketplace/plugins/himmel-ops" "$FAKE/marketplace/plugins/lean-skills" "$FAKE/marketplace/plugins/qmd"
+case "$OUT" in *"step=plugin"*) bad "plugin step planned without a profile" ;; *) ok "plugins step off by default" ;; esac
 run "$EMPTY" --dry-run --with-plugins
-case "$OUT" in *"step=plugins action=experiment"*) ok "--with-plugins plans the experiment" ;; *) bad "--with-plugins not planned: $OUT" ;; esac
+case "$OUT" in *"step=plugins-marketplace action=add"*) ok "--with-plugins plans the marketplace add" ;; *) bad "--with-plugins no marketplace add: $OUT" ;; esac
+case "$OUT" in *"step=plugin:himmel-ops action=install"*"step=plugin:lean-skills action=install"*) ok "--with-plugins plans the lean set" ;; *) bad "--with-plugins not the lean set: $OUT" ;; esac
+case "$OUT" in *"step=plugin:qmd "*) bad "--with-plugins installs beyond the lean set" ;; *) ok "--with-plugins stays lean" ;; esac
+run "$EMPTY" --dry-run --plugins qmd,himmel-ops
+case "$OUT" in *"step=plugin:qmd action=install"*"step=plugin:himmel-ops action=install"*) ok "--plugins installs the named list" ;; *) bad "--plugins list not planned: $OUT" ;; esac
+case "$OUT" in *"step=plugin:lean-skills "*) bad "--plugins installs an unlisted plugin" ;; *) ok "--plugins installs only the list" ;; esac
+run "$EMPTY" --dry-run --plugins='nosuch,bad;name'
+if [ "$RC" -eq 0 ]; then ok "bad plugin names do not fail the run"; else bad "bad plugin names rc=$RC: $OUT"; fi
+case "$OUT" in *"step=plugin:nosuch action=skip"*) ok "unknown plugin is skipped" ;; *) bad "unknown plugin not skipped: $OUT" ;; esac
+case "$OUT" in *"action=skip"*"invalid"*) ok "invalid plugin name is skipped" ;; *) bad "invalid plugin name not skipped: $OUT" ;; esac
+run "$EMPTY" --plugins
+if [ "$RC" -eq 2 ]; then ok "--plugins without a list exits 2"; else bad "--plugins without a list rc=$RC"; fi
+
+# 6b. a failing plugin install is NON-fatal: a non-zero setup script stops the
+# cloud session from starting. Real (non-dry) run, every other step present.
+mkdir -p "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tools/node_modules"
+: > "$FAKE/scripts/jira/dist/index.js"
+FAILC="$TMP/failclaude"; mkdir -p "$FAILC"
+cp "$HAVE"/* "$FAILC/"
+printf '#!/bin/sh\necho "$@" >> "%s/claude.log"\nexit 1\n' "$TMP" > "$FAILC/claude"; chmod +x "$FAILC/claude"
+ln -s "$(command -v timeout)" "$FAILC/timeout"
+OUT="$(env -i PATH="$FAILC" HIMMEL_CLOUD_ROOT="$FAKE" HIMMEL_CLOUD_PROFILE_D="$TMP/profile.d" "$BASH_BIN" "$SETUP" --with-plugins 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then ok "failing plugin install keeps rc 0"; else bad "failing plugin install rc=$RC: $OUT"; fi
+if grep -q 'install lean-skills@himmel' "$TMP/claude.log" 2>/dev/null; then ok "one failed install does not stop the next"; else bad "lean-skills install not attempted: $(cat "$TMP/claude.log" 2>/dev/null)"; fi
+case "$OUT" in *"plugin:himmel-ops"*"non-fatal"*) ok "failed plugin install is reported" ;; *) bad "failed plugin install silent: $OUT" ;; esac
+rm -rf "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tools/node_modules"
 
 # 7. an unknown flag is refused (rc 2) rather than silently ignored.
 run "$EMPTY" --nope
