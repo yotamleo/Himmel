@@ -29,7 +29,7 @@ in the index, whatever the dimensions:
 |---|---|
 | `qmd-embed-model.sh check` | exit 3, with the configured model, the index's models, the dimension and the fix |
 | `qmd-reindex.sh` (and so the qmd cadence) | refuses before `qmd update` (exit 7); an unreadable index only WARNs |
-| `himmel-doctor` row `C48-qmd-embed-model` | WARN |
+| `himmel-doctor` row `C49-qmd-embed-model` | WARN |
 
 ## Capability classes
 

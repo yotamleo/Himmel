@@ -71,12 +71,14 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - name: Install obsidian-triage tool deps (marketplace suites)
         shell: bash
         run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
       - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
         shell: bash
-        run: python -m pip install --disable-pip-version-check pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
       # Explicit `bash`: windows-latest defaults to pwsh, but Git Bash is on
       # PATH. SUITE_TIER_MODE=all so an impacted extended-tier suite still runs
       # (the runner's default is already all; spelled so it cannot drift).

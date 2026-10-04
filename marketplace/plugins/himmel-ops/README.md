@@ -155,3 +155,22 @@ asking to spawn further, or (the specific defect that produced the ticket) a
 shows the validated plan and confirms before dispatching, one `Agent` call per
 item, each brief carrying the context/why/done-looks-like triple, a RETASK
 block, the concurrency discipline, and the attestation-trailer requirement.
+
+## cloud-route — classify tickets for the cloud lane (`/cloud-route`)
+
+`/cloud-route HIMMEL-<n> ...` labels each ticket CLOUD-OK / LOCAL-NATIVE /
+HOOK-BYPASS / BLOCKED (HIMMEL-4262), writes `cloud-brief-HIMMEL-<n>.md` for each
+CLOUD-OK one from [`docs/handover/cloud-brief-template.md`](../../../docs/handover/cloud-brief-template.md),
+and prints ONE operator launch line per brief. It never launches: `claude --cloud`
+needs a TTY and spends credit. A sibling of `/fanout`, not an extension: that is a
+pure type-to-tier router, this reads live Jira and open-PR files and writes into
+the console bucket.
+
+The classifier (`scripts/lanes/cloud-route.mjs`, first match wins): BLOCKED for a
+ticket not To Do or a file held by an open PR or the console's list; HOOK-BYPASS
+for `scripts/hooks/`; LOCAL-NATIVE for a trust path (`scripts/ci/ci-trust-paths.txt`),
+a Jira/qmd/graphify/luna/handover-state need, more than 3 asks, or no named file.
+Every verdict carries a one-line reason, and one record per ticket (ticket, class,
+reason, brief path, time) is appended to `cloud-route.jsonl` in the bucket.
+Tests: `node --test scripts/lanes/tests/cloud-route.test.mjs` (fixture tickets,
+stubbed Jira and `gh`).

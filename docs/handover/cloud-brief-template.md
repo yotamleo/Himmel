@@ -1,10 +1,14 @@
 # Cloud brief template
 
 The brief a console hands to `claude --cloud` for a small, well-scoped ticket
-(HIMMEL-4206). A cloud session sees the repo clone and nothing else: no Jira, no
+(HIMMEL-4206). A cloud session sees the repo clone plus the claude.ai MCP
+connectors (Atlassian for Jira, context7 for library docs) and nothing else: no
 handover state, no plugins, no `~/.claude`, no console inbox. The brief is its
-whole world, so it is self-contained. For a local leg, use
+working world, so it is self-contained. For a local leg, use
 [`leg-brief-template.md`](leg-brief-template.md) instead.
+
+`/cloud-route` (`scripts/lanes/cloud-route.mjs`) generates this brief for a
+CLOUD-OK ticket and prints the launch line.
 
 ## What a cloud session has
 
@@ -12,7 +16,7 @@ whole world, so it is self-contained. For a local leg, use
 |---|---|
 | The clone's `CLAUDE.md`, `.claude/{skills,agents,commands,rules}`, `.mcp.json` (single-repo session only) | Plugins and marketplaces (himmel-ops, lean-skills, qmd, handover) |
 | The repo's `.claude/settings.json` hooks and permissions | Anything under `~/.claude`; `settings.local.json` |
-| Skills enabled on claude.ai | Jira, qmd, graphify, luna, the console inbox |
+| Skills enabled on claude.ai; the Atlassian MCP (full Jira scope: read, comment, file follow-ups, transition) and context7 MCP connectors | The local jira CLI, qmd, graphify, luna, the console inbox |
 | The environment setup script's installs; `CLAUDE_CODE_REMOTE=true` | Plugin-provided hooks (see [`cloud-hooks-proposal.md`](../internals/cloud-hooks-proposal.md)) |
 
 So the local shepherd stays mandatory: it runs `/pr-check`, the CR gate and the
@@ -53,8 +57,12 @@ merge. The cloud session ships a PR and stops.
 ## Brief sections (reproduce in order)
 
 1. **Opening.** `You are working in a cloud clone of the GitHub repo
-   yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief:
-   you cannot reach Jira or any local state.`
+   yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief
+   and the repo. You have no local state. Jira is reachable through the Atlassian
+   MCP connector (the local jira CLI is absent in the cloud): read the ticket,
+   comment, file follow-ups with the fixVersion this brief names, and cite the
+   ticket key in your commits and the PR. Use the context7 MCP for current
+   library docs.`
 2. **`## Ticket HIMMEL-<n> (verbatim from Jira)`** — key, type, status, title,
    then the description unedited, then `Fix versions:`.
 3. **`## The change`** — what to do, "verified against main on <date>", with line
@@ -104,13 +112,14 @@ completes-ticket: yes|no
 
 - **One line per ask** of each cited ticket, each `done` or `deferred → HIMMEL-<n>`
   (HIMMEL-4207: the console's ready-check fails a missing section, a deferred key
-  that does not exist and one already Done). The cloud session cannot reach Jira,
-  so the console files a follow-up ticket for every ask the brief scopes out
-  BEFORE writing the brief and names each key in `## The change`; the session
-  writes it as `deferred → HIMMEL-<n>`. An ask is never silently dropped: no
-  key to name means the ask belongs in the brief, not outside it. An ask the
-  session finds mid-task and cannot finish is reported in its closing summary
-  and the shepherd files the key before GO.
+  that does not exist and one already Done). The console files a follow-up
+  ticket for every ask the brief scopes out BEFORE writing the brief and names
+  each key in `## The change`; the session writes it as `deferred → HIMMEL-<n>`.
+  An ask is never silently dropped: no key to name means the ask belongs in the
+  brief, not outside it. An ask the session finds mid-task and cannot finish is
+  filed by the session itself through the Atlassian MCP connector (with the
+  fixVersion the brief names) and written as `deferred → HIMMEL-<n>`; the
+  shepherd confirms the key before GO.
 - `completes-ticket: yes` only when every ask is either `done` or `deferred →`
   an open follow-up key the shepherd confirms before passing
   `--jira-transition`; otherwise `no`.

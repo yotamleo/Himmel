@@ -51,10 +51,12 @@ jobs:
         with:
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - name: Install obsidian-triage tool deps (marketplace suites)
         run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
       - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
-        run: python -m pip install --disable-pip-version-check pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
       # SUITE_TIER_MODE=all: the whole corpus, extended tier included -- the
       # coverage the nightly's macOS legs had.
       - id: tests

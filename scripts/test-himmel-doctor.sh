@@ -171,7 +171,10 @@ export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
 # Same for C47-runaway-procs (HIMMEL-3959): never scan the operator's real
 # process table; an absent ps seam makes C47 silent, dedicated cases stub it.
 export HIMMEL_DOCTOR_RUNAWAY_PS="$FAKEROOT/no-such-ps"
-# Same for C48-qmd-embed-model (HIMMEL-4232): never read the operator's real
+# Same for C48-tmp-usage (HIMMEL-4224): never read the operator's real /tmp
+# fill level; an absent df seam makes C48 silent, dedicated cases stub it.
+export HIMMEL_DOCTOR_TMP_DF="$FAKEROOT/no-such-df"
+# Same for C49-qmd-embed-model (HIMMEL-4232): never read the operator's real
 # qmd index; an absent index makes C48 silent, dedicated cases point at a fixture.
 export HIMMEL_DOCTOR_QMD_INDEX="$FAKEROOT/no-such-index.sqlite"
 
@@ -5402,50 +5405,83 @@ else
 fi
 rm -rf "$c47_t"
 
-# --- C48-qmd-embed-model (HIMMEL-4232): index vectors vs the configured model --
+# --- C48-tmp-usage (HIMMEL-4224): /tmp at 80 % or more -> WARN naming tmp-reap.sh ---
+c48_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c48.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c48_t/home" "$c48_t/claude"
+# shellcheck disable=SC2016 # the stub expands C48_PCT at ITS run time
+printf '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\\ntmpfs 100 %%s 20 %%s%%%% /tmp\\n" "${C48_PCT:-0}" "${C48_PCT:-0}"\n' > "$c48_t/df"
+chmod +x "$c48_t/df"
+c48_run() { # <pct>
+PATH="$FAKEBIN:$PATH" C48_PCT="$1" HIMMEL_DOCTOR_TMP_DF="$c48_t/df" \
+CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1
+}
+echo "== C48: /tmp at 80 % or more -> WARN naming scripts/tmp-reap.sh =="
+for c48_pct in 80 93; do
+out="$(c48_run "$c48_pct")"
+if grepq "$out" "WARN C48-tmp-usage" && grepq "$out" -F "${c48_pct}% full" && grepq "$out" -F 'scripts/tmp-reap.sh'; then
+    pass "C48 ${c48_pct}% -> WARN with the tmp-reap.sh remedy"
+else
+    fail "C48 ${c48_pct}% -> $(printf '%s' "$out" | grep -A1 C48)"
+fi
+done
+echo "== C48: /tmp below 80 % -> OK, no WARN =="
+out="$(c48_run 79)"
+if grepq "$out" 'OK   C48-tmp-usage' && ! grepq "$out" 'WARN C48'; then
+    pass "C48 79% -> OK"
+else
+    fail "C48 79% -> $(printf '%s' "$out" | grep -A1 C48)"
+fi
+out="$(PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_TMP_DF="$c48_t/no-such-df" CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'C48-tmp-usage'; then
+    pass "C48 absent df seam -> silent"
+else
+    fail "C48 absent df -> $(printf '%s' "$out" | grep C48)"
+fi
+rm -rf "$c48_t"
+# --- C49-qmd-embed-model (HIMMEL-4232): index vectors vs the configured model --
 # A configured embed model that differs from the model the index's vectors came
 # from returns garbage on vec search (or fails on a dimension change). The row
 # WARNs; qmd-reindex.sh refuses. Seam: HIMMEL_DOCTOR_QMD_INDEX (the index file);
 # the configured model comes from the fixture HOME's ~/.config/qmd/index.yml.
 if command -v sqlite3 >/dev/null 2>&1; then
-    c48_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c48.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
-    mkdir -p "$c48_t/home/.config/qmd" "$c48_t/claude"
-    sqlite3 "$c48_t/index.sqlite" "CREATE TABLE content_vectors(hash TEXT, seq INT, model TEXT); INSERT INTO content_vectors VALUES('h',0,'hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf');"
-    c48_run() { # <configured embed uri, empty = default>
-        if [ -n "$1" ]; then printf 'models:\n  embed: %s\n' "$1" > "$c48_t/home/.config/qmd/index.yml"
-        else rm -f "$c48_t/home/.config/qmd/index.yml"; fi
+    c49_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c49.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+    mkdir -p "$c49_t/home/.config/qmd" "$c49_t/claude"
+    sqlite3 "$c49_t/index.sqlite" "CREATE TABLE content_vectors(hash TEXT, seq INT, model TEXT); INSERT INTO content_vectors VALUES('h',0,'hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf');"
+    c49_run() { # <configured embed uri, empty = default>
+        if [ -n "$1" ]; then printf 'models:\n  embed: %s\n' "$1" > "$c49_t/home/.config/qmd/index.yml"
+        else rm -f "$c49_t/home/.config/qmd/index.yml"; fi
         # CI runners export XDG_CONFIG_HOME, which would point past the fixture HOME.
         env -u QMD_CONFIG_DIR -u XDG_CONFIG_HOME -u QMD_EMBED_MODEL \
-            PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_INDEX="$c48_t/index.sqlite" \
-            CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1
+            PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_INDEX="$c49_t/index.sqlite" \
+            CLAUDE_DIR="$c49_t/claude" HOME="$c49_t/home" bash "$DOC" --no-color 2>&1
     }
 
-    echo "== C48-qmd-embed-model: index model matches the default -> OK (RED) =="
-    out="$(c48_run '')"
-    if grepq "$out" 'OK   C48-qmd-embed-model' && grepq "$out" -F 'embeddinggemma'; then
-        pass "C48 matching model -> OK naming the model"
+    echo "== C49-qmd-embed-model: index model matches the default -> OK (RED) =="
+    out="$(c49_run '')"
+    if grepq "$out" 'OK   C49-qmd-embed-model' && grepq "$out" -F 'embeddinggemma'; then
+        pass "C49 matching model -> OK naming the model"
     else
-        fail "C48 match -> $(printf '%s' "$out" | grep -A1 C48)"
+        fail "C49 match -> $(printf '%s' "$out" | grep -A1 C49)"
     fi
 
-    echo "== C48-qmd-embed-model: configured qwen over a gemma index -> WARN =="
-    out="$(c48_run 'hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf')"
-    if grepq "$out" 'WARN C48-qmd-embed-model' && grepq "$out" -F 'qmd-embed-model.sh'; then
-        pass "C48 mismatch -> WARN naming the fix script"
+    echo "== C49-qmd-embed-model: configured qwen over a gemma index -> WARN =="
+    out="$(c49_run 'hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf')"
+    if grepq "$out" 'WARN C49-qmd-embed-model' && grepq "$out" -F 'qmd-embed-model.sh'; then
+        pass "C49 mismatch -> WARN naming the fix script"
     else
-        fail "C48 mismatch -> $(printf '%s' "$out" | grep -A1 C48)"
+        fail "C49 mismatch -> $(printf '%s' "$out" | grep -A1 C49)"
     fi
 
-    echo "== C48-qmd-embed-model: no index -> silent =="
-    out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1)"
-    if grepq "$out" 'C48-qmd-embed-model'; then
-        fail "C48 no index -> $(printf '%s' "$out" | grep -A1 C48)"
+    echo "== C49-qmd-embed-model: no index -> silent =="
+    out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c49_t/claude" HOME="$c49_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'C49-qmd-embed-model'; then
+        fail "C49 no index -> $(printf '%s' "$out" | grep -A1 C49)"
     else
-        pass "C48 no index -> silent"
+        pass "C49 no index -> silent"
     fi
-    rm -rf "$c48_t"
+    rm -rf "$c49_t"
 else
-    pass "C48 skipped: sqlite3 not installed"
+    pass "C49 skipped: sqlite3 not installed"
 fi
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"

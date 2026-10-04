@@ -4724,6 +4724,20 @@ assert_rc "1640 leg E (no frontmatter, two body --- rules around a ticket) arms 
 assert_contains "1640 leg E arm banner printed" "RESUME ARMED" "$out"
 assert_not_contains "1640 leg E not refused as a ticket dup" "already has another armed resume slot" "$out"
 assert_not_contains "1640 leg E not refused as unclosed frontmatter" "unclosed YAML frontmatter" "$out"
+
+# Leg F (HIMMEL-1654): a UTF-8 BOM before the line-1 `---` opener. The BOM strip
+# must work in mawk too (an `\xHH` awk escape is a gawk extension and silently
+# skips there). The BOM'd frontmatter carries HIMMEL-9999, the ticket leg A
+# armed, so it must parse as a STRICT ticket and the mutex refuse it (rc 13).
+# A skipped strip leaves line 1 as `<BOM>---`, no frontmatter is entered, no
+# ticket is inferred and the handover arms (rc 0) past the mutex.
+HO_1640_F="$R1640/leg-f-bom.md"
+printf -- '\357\273\277---\nticket: HIMMEL-9999\nresume_cwd: %s\n---\n\n# HIMMEL-9999 leg F (BOM frontmatter)\n' \
+    "$R1640/repo" > "$HO_1640_F"
+_a1640 "$HO_1640_F" --cwd "$R1640/repo"; rc=$?
+assert_rc "1654 leg F (BOM before frontmatter) parses the ticket and is refused as a dup (rc=13)" 13 "$rc"
+assert_contains "1654 leg F refused by the ticket mutex" "already has another armed resume slot" "$out"
+assert_not_contains "1654 leg F did not arm" "RESUME ARMED" "$out"
 fi
 
 # ---------------------------------------------------------------------------

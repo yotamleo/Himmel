@@ -2,7 +2,7 @@
 # smoke-consult-sandbox.sh (HIMMEL-4066) - OPT-IN live check of the --consult Bash sandbox.
 #
 # The suite (test-headed-arm-leg.sh) asserts the GENERATED settings JSON; it cannot
-# prove Claude Code honours the sandbox block. This runs headless `claude -p` from the
+# prove Claude Code honours the sandbox block. This runs headless `claude -p` from the # headless-claude-ok: prose mention only; the live calls below carry their own markers (HIMMEL-4243)
 # primary checkout (whose committed settings grant additionalDirectories on the luna
 # vault, HIMMEL-4069) through the REAL shim (leg-claude-launcher.sh) with the settings and
 # env headed-arm-leg.sh really generates, and checks the ARTIFACTS on disk:

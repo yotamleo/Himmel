@@ -536,6 +536,149 @@ report_guardrail_block() {
     return 0
 }
 
+# ─── installer-drift pass (HIMMEL-4246) ──────────────────────────────────────
+# `himmelctl status` already knew about drift the updater never looked at (a
+# repo with no pre-commit/commit-msg hook sat degraded for 9 days, HIMMEL-4243).
+# This pass runs at the END of an update: converge what `himmelctl ensure` can
+# fix safely and idempotently (DRIFT_CONVERGE_IDS, an explicit allow-list — never
+# "everything red"), re-check, and print every red/degraded item it could not
+# converge in a loud DRIFT block with a remedy. `check` mode only reports.
+# Advisory; never fails the update. HIMMEL_DRIFT_CTL overrides the himmelctl
+# command (test seam). Never auto-deletes git config: a leaked url.*.insteadOf
+# is WARN + the unset command only.
+DRIFT_CONVERGE_IDS="pre-commit-hooks"
+DRIFT_LINES=""
+
+_drift_ctl() {
+    if [ -n "${HIMMEL_DRIFT_CTL:-}" ]; then "$HIMMEL_DRIFT_CTL" "$@"
+    else node "$ROOT/scripts/himmelctl/bin.js" "$@"; fi
+}
+
+# _drift_rows: stdin = status --json; one `id<TAB>severity<TAB>desired<TAB>actual<TAB>detail`
+# line per red/degraded item, plus any item that is armed though the profile wants it off.
+_drift_rows() {
+    node -e '
+const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+if (!r || !Array.isArray(r.items)) process.exit(1);
+for (const i of r.items) {
+  const bad = i.severity === "red" || i.severity === "degraded";
+  const armedOff = i.id === "graphmap-cadence" && i.desired === false && i.actual === "present";
+  if (bad || armedOff) console.log([i.id, armedOff ? "armed-off" : i.severity, i.desired, i.actual, String(i.detail || "").replace(/\s+/g, " ").slice(0, 240)].join("\t"));
+}' 2>/dev/null
+}
+
+_drift_add() { DRIFT_LINES="${DRIFT_LINES}$1
+        remedy: $2
+"; }
+
+# Captured, not piped: under pipefail `grep -q` closing early can SIGPIPE the producer.
+# 0 = plugin-unregistered reported; 1 = health exited 0 without it (registered);
+# 2 = health failed without the marker (cannot tell — never claim a fix on it).
+_codex_unregistered() {
+    local out rc=0; out="$(bash "$1" 2>/dev/null)" || rc=$?
+    case "$out" in *plugin-unregistered*) return 0 ;; esac
+    [ "$rc" -eq 0 ] && return 1
+    return 2
+}
+
+report_drift() {
+    local mode="${1:-apply}" json rows id sev detail
+    DRIFT_LINES=""
+    echo ""
+    echo "==> installer drift (HIMMEL-4246)"
+    if ! command -v node >/dev/null 2>&1; then
+        echo "    skip: node not on PATH."; return 0
+    fi
+    if json="$(_drift_ctl status --json 2>/dev/null)" && rows="$(printf '%s' "$json" | _drift_rows)"; then
+        local pending="$rows" converged=""
+        for id in $DRIFT_CONVERGE_IDS; do
+            grep -q "^$id	" <<< "$rows" || continue
+            if [ "$mode" = "check" ]; then
+                echo "    would converge $id: himmelctl ensure --items $id --yes"
+                continue
+            fi
+            echo "    converging $id: himmelctl ensure --items $id --yes"
+            _drift_ctl ensure --items "$id" --yes >/dev/null 2>&1 || true
+            # A failed re-check keeps the last valid rows (never clears them).
+            local rejson renew
+            if rejson="$(_drift_ctl status --json 2>/dev/null)" && renew="$(printf '%s' "$rejson" | _drift_rows)"; then
+                pending="$renew"
+                if grep -q "^$id	" <<< "$pending"; then
+                    echo "    $id still drifted after ensure" >&2
+                else
+                    echo "    converged $id"
+                    converged="$converged $id"
+                fi
+            else
+                echo "    $id: re-check after ensure failed — not claiming convergence" >&2
+            fi
+        done
+        while IFS="$(printf '\t')" read -r id sev _ _ detail; do
+            [ -n "$id" ] || continue
+            if [ "$sev" = "armed-off" ]; then
+                if [ "$mode" = "check" ]; then
+                    echo "    would disarm graphmap-cadence (armed, but the install profile says off)"
+                else
+                    echo "    disarming graphmap-cadence (armed, but the install profile says off)"
+                    bash "$ROOT/scripts/luna/graphmap-cadence.sh" disarm >/dev/null 2>&1 \
+                        || _drift_add "graphmap-cadence: armed but the profile says off; disarm failed" "bash scripts/luna/graphmap-cadence.sh disarm"
+                fi
+                continue
+            fi
+            # Converged ids drop out of $pending in apply mode; in check mode
+            # they are reported above as "would converge", not as drift.
+            case " $DRIFT_CONVERGE_IDS " in *" $id "*) [ "$mode" = "check" ] && continue; esac
+            case "$id" in
+                luna-sources) _drift_add "$id ($sev): $detail" "ensure cannot fix credentials — repair the source itself (re-auth), then: himmelctl status --items $id" ;;
+                *)            _drift_add "$id ($sev): $detail" "himmelctl status --items $id  (then: himmelctl ensure --items $id)" ;;
+            esac
+        done <<EOF
+$pending
+EOF
+    else
+        echo "    skip: himmelctl status --json unavailable (no install profile? run himmelctl install)."
+    fi
+
+    # (3a) a url.*.insteadOf in the LOCAL config that no himmel installer wrote
+    # (the HIMMEL-4243 test-fixture leak) rewrites every remote URL. WARN only.
+    local key
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        _drift_add "leaked git config $key in the repo local config (no himmel installer writes it)" "git -C $ROOT config --local --unset-all $key"
+    done <<EOF
+$(git -C "$ROOT" config --local --name-only --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true)
+EOF
+
+    # (3c) the codex himmel plugin registration (startup-health plugin-unregistered).
+    local health="$ROOT/scripts/codex/startup-health.sh" cinstaller="$ROOT/scripts/codex/install-himmel-codex.sh"
+    if [ -f "$health" ] && { [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN:-}" ] || command -v codex >/dev/null 2>&1; } \
+        && _codex_unregistered "$health"; then
+        if [ "$mode" = "check" ]; then
+            echo "    would run scripts/codex/install-himmel-codex.sh (codex plugin-unregistered)"
+        else
+            echo "    codex plugin-unregistered — running scripts/codex/install-himmel-codex.sh"
+            if [ -f "$cinstaller" ]; then bash "$cinstaller" >/dev/null 2>&1 || true; fi
+            local crc=0; _codex_unregistered "$health" || crc=$?
+            case "$crc" in
+                0) _drift_add "codex plugin-unregistered persists after install-himmel-codex.sh" "bash scripts/codex/install-himmel-codex.sh, then restart codex" ;;
+                1) echo "    converged codex plugin registration" ;;
+                *) _drift_add "codex registration not verified after install-himmel-codex.sh (startup-health failed without a plugin verdict)" "bash scripts/codex/startup-health.sh, then restart codex" ;;
+            esac
+        fi
+    fi
+
+    if [ -z "$DRIFT_LINES" ]; then
+        echo "    no unconverged drift."
+        return 0
+    fi
+    echo ""
+    echo "================================================================"
+    echo "==> DRIFT — needs attention (NOT auto-fixed)"
+    printf '%s' "$DRIFT_LINES" | sed 's/^\([^ ]\)/    ✗ \1/'
+    echo "================================================================"
+    return 0
+}
+
 
 # ─── statusLine hud migration (HIMMEL-718) ──────────────────────────────────
 # Existing installs wired to the bash bar need one best-effort re-wire after the
@@ -2365,6 +2508,7 @@ Modes:
                       3 none behind but some could not be determined
   --only <item>       run ONE step: pull marketplace jira_cli qmd_fork hermes
                       luna_template graphify cli_proxy marketplaces toolchain tools
+                      drift drift-check (installer-drift pass; -check is read-only)
   --plugins-check     just the plugin install-state report; no git, no network
   -h, --help          this text
 
@@ -2479,7 +2623,7 @@ fi
 if [ "${1:-}" = "--only" ]; then
     only_item="${2:-}"
     if [ -z "$only_item" ]; then
-        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools" >&2
+        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools drift drift-check" >&2
         exit 2
     fi
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
@@ -2512,8 +2656,10 @@ if [ "${1:-}" = "--only" ]; then
         marketplaces)  sync_marketplaces ;;
         toolchain)     report_toolchain apply ;;
         tools)         sync_probe_tools apply || only_rc=1 ;;
+        drift)         report_drift apply ;;
+        drift-check)   report_drift check ;;
         *)
-            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools" >&2
+            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools drift drift-check" >&2
             exit 2 ;;
     esac
     report_qmd_daemon_restart
@@ -2598,6 +2744,7 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     report_toolchain check
     sync_probe_tools check || true
     report_guardrail_block
+    report_drift check
     print_status_table
     exit 0
 fi
@@ -2781,6 +2928,7 @@ report_guardrail_block
 report_dependency_readiness
 backfill_user_claude_md
 report_qmd_daemon_restart
+report_drift apply
 
 print_status_table
 

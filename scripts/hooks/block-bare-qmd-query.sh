@@ -36,8 +36,15 @@
 # ponytail: the verb in a variable (`v=query; qmd "$v" x`) is still a miss —
 # nothing is expanded; closing it needs value tracking (HIMMEL-4178).
 # ponytail: nested strings (`-c`, eval) are decoded and re-read to depth four
-# (HIMMEL-4151), but only for sh/bash/zsh/dash/ksh and eval; other shells and
-# launchers (`su -c`, `env -S`, stdin-fed shells) are HIMMEL-4166. A heredoc
+# (HIMMEL-4151), for every shell the hook names, the launchers that take a
+# string (`su -c`, `script -c`, `flock -c`, `env -S`, watch, parallel) and a
+# shell's here-string (HIMMEL-4166); what a shell reads from a pipe or a
+# process substitution, and an alias for qmd, cannot be read and fail closed
+# on naming qmd and a verb. A shell fed by a file (`sh <f`) is unread.
+# ponytail: the launcher set above is not complete — sg, tmux, screen, at,
+# `builtin exec`, setpriv, unshare, nsenter, chroot, firejail, bwrap, strace
+# and other prefix wrappers, and elvish/nu/xonsh/pwsh `-c`, run qmd
+# unguarded; residual launchers → HIMMEL-4244. A heredoc
 # makes qmd_words decline and the coarser fallback readings below decide; the
 # shared tokenizer (scripts/hooks/lib/shell-tokenize.sh, HIMMEL-912) models
 # heredocs and can replace qmd_words once a third inlined copy is wired into
@@ -346,8 +353,10 @@ SEP='([[:space:]]|\\[[:space:]]*;+)+[[:space:]]*'
 # A run of options, each optionally taking ONE non-dash value (`-n 10`, `-k 5`).
 OPTV='([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*'
 # Wrappers that run their argument as a program. timeout takes its duration.
-WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|eval|coproc|time|xargs|(ba|z|da|k)?sh(\.exe)?)'"$OPTV"
-WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
+# HIMMEL-4218: watch, unbuffer, parallel and systemd-run too; flock takes its
+# lock file first.
+WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|eval|coproc|time|xargs|watch|unbuffer|parallel|systemd-run|su|runuser|script|fish|(r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh(\.exe)?)'"$OPTV"
+WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|flock${OPTV}[[:space:]]+[^-[:space:]][^[:space:]]*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
 # A case arm's `)` is a command position too, and zsh runs `=qmd` as the
 # qmd its PATH finds (HIMMEL-4140).
 # ponytail: any `)` opens a command, so `echo "$(x)"qmd query` over-denies;
@@ -431,14 +440,48 @@ AQ_WORD="${CMDPOS}${AQ_PROG}[[:space:]][^;&|]*("$'\002'"|${QMDVERB})"
 SUBPROG='(^|[|;&)`{])'"$CMDREST"'(\$\(|`)'
 SUBTOP='(^|[|;&{])'"$CMDREST"'(\$\(|`)'
 CASEWORD='(^|[^[:alnum:]_])case[[:space:]]'
+# HIMMEL-4166: a positional parameter ("$@", $1) as the program or as qmd's
+# verb is refused when the command names qmd and a verb (`set -- qmd query
+# x; "$@"`).
+POSPROG='(^|[|;&()`{])'"$CMDREST"'\$\{?[@*0-9]'
+POSVERB="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'\$\{?[@*0-9]'
 NESTSEP=' '$'\t'';&|()`<>'
-NESTWORD='(^|[^[:alnum:]_.-])(sh|bash|zsh|dash|ksh|eval)(\.exe)?([^[:alnum:]_.-]|$)'
+NESTWORD='(^|[^[:alnum:]_.-])((r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh|fish|su|runuser|script|flock|source|eval|watch|parallel|env|alias)(\.exe)?([^[:alnum:]_.-]|$)|<<<|<\('
+# HIMMEL-4166 / HIMMEL-4218: what each word that runs a nested string does
+# with the words after it. sh: a shell, or a launcher taking `-c STRING`
+# (su, runuser, script, flock); it also runs a here-string, a process
+# substitution or, after a `|`, its stdin. src: source and `.`, which run
+# those three but take no -c. eval: its words joined. run: watch and
+# parallel, which join their words into one command too. env: its -S string
+# and the words after it. alias: a definition naming qmd.
+ENVSPLIT='^(-[[:alpha:]]*S|--split-string(=|$))'
+# nest_mode WORD — set mode for WORD, or return 1 when it runs nothing nested.
+nest_mode() {
+    case "${1%.exe}" in
+        sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish|su|runuser|script|flock) mode='sh' ;;
+        source|.) mode='src' ;;
+        eval) mode='eval' ;;
+        watch|parallel) mode='run' ;;
+        env) mode='env' ;;
+        alias) mode='alias' ;;
+        *) return 1 ;;
+    esac
+}
+# names_verb TEXT — succeed when TEXT, quotes and backslashes removed, names
+# qmd and a search verb anywhere: the fail-closed test for text a shell
+# will run that cannot be read as words (a pipe's output, a substitution).
+names_verb() {
+    local s
+    # shellcheck disable=SC1003 # a literal backslash in the tr set
+    s=$(printf '%s' "$1" | LC_ALL=C tr -d '"'\''\\' | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    [[ $s == *qmd* ]] && [[ $s == *query* || $s == *search* ]]
+}
 # qmd_nested WORDS DEC DEPTH — run qmd_check on what each nested shell or
 # eval in WORDS (qmd_words' first line, lower-cased) would run, spelled as in
 # DEC (its decoded line). Sets deny=1 on the first refusal.
 # shellcheck disable=SC2016 # literal $ and ` bytes
 qmd_nested() {
-    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd
+    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd rdop k piped
     n=${#w}
     # bash copies $w on every index below, so the scan is quadratic in its
     # length: a long command holding a shell or eval word is refused, not
@@ -447,8 +490,36 @@ qmd_nested() {
         if [[ $w =~ $NESTWORD ]]; then deny=1; fi
         return 0
     fi
+    # lb is the last command boundary seen; pipe, while set, is the offset of
+    # the lone `|` (or `|&`) that feeds the current command, and pfrom the
+    # boundary before the pipeline's first command, so the producer is every
+    # stage before the pipe, dec[pfrom+1, pipe) (`echo … | cat | sh`).
+    local lb=-1 pipe='' pfrom=-1
     while [ "$i" -lt "$n" ]; do
-        case "$NESTSEP" in *"${w:i:1}"*) i=$((i + 1)); continue ;; esac
+        c=${w:i:1}
+        case "$NESTSEP" in
+            *"$c"*)
+                # The byte before, never a negative offset (bash 4 reads one
+                # from the end).
+                k=''
+                [ "$i" -eq 0 ] || k=${w:i-1:1}
+                case "$c" in
+                    '|')
+                        if [ "${w:i+1:1}" != '|' ] && [ "$k" != '|' ]; then
+                            [ -n "$pipe" ] || pfrom=$lb
+                            pipe=$i
+                        else
+                            pipe=''
+                        fi
+                        lb=$i
+                        ;;
+                    '&') [ "$k" = '|' ] || { pipe=''; lb=$i; } ;;
+                    ';'|'('|')'|'`') pipe='' lb=$i ;;
+                esac
+                i=$((i + 1))
+                continue
+                ;;
+        esac
         j=$i
         while [ "$j" -lt "$n" ]; do
             case "$NESTSEP" in *"${w:j:1}"*) break ;; esac
@@ -458,11 +529,8 @@ qmd_nested() {
         i=$j
         t=${t#=}
         t=${t##*/}
-        case "$t" in
-            sh|bash|zsh|dash|ksh|sh.exe|bash.exe|zsh.exe|dash.exe|ksh.exe) mode='sh' ;;
-            eval) mode='eval' ;;
-            *) continue ;;
-        esac
+        nest_mode "$t" || continue
+        piped=$pipe
         # The words that follow, to the end of the simple command. A word
         # keeps a `$(…)` or backtick substitution in it whole, blanks and all.
         e=$i hasc=0 scr='' rd=0
@@ -475,9 +543,27 @@ qmd_nested() {
             # the words: step over its operator and drop its target word,
             # after checking any substitution in it.
             if [[ ${w:e:2} == '&>' ]] || [[ ${w:e:1} == [\<\>] ]]; then
+                k=$e
                 while [ "$e" -lt "$n" ]; do
                     case "${w:e:1}" in '<'|'>'|'&'|'|') e=$((e + 1)) ;; *) break ;; esac
                 done
+                rdop=${w:k:e-k}
+                # A process substitution handed to a shell or source runs
+                # its output, which cannot be read: refuse one naming a verb.
+                if [ "$rdop" = '<' ] && [ "${w:e:1}" = '(' ] &&
+                    { [ "$mode" = sh ] || [ "$mode" = src ]; }; then
+                    k=$e pd=0
+                    while [ "$k" -lt "$n" ]; do
+                        case "${w:k:1}" in
+                            '(') pd=$((pd + 1)) ;;
+                            ')') pd=$((pd - 1)); [ "$pd" -gt 0 ] || break ;;
+                        esac
+                        k=$((k + 1))
+                    done
+                    if names_verb "${dec:e:k-e}"; then deny=1; return 0; fi
+                    e=$((k + 1))
+                    continue
+                fi
                 rd=1
                 continue
             fi
@@ -503,35 +589,61 @@ qmd_nested() {
             e=$j
             if [ "$rd" = 1 ]; then
                 rd=0
-                if [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; then
+                if [ "$rdop" = '<<<' ] && { [ "$mode" = sh ] || [ "$mode" = src ]; }; then
+                    # A here-string is what a shell reading stdin runs.
+                    qmd_check "$v" $((depth + 1))
+                    if [ "$deny" = 1 ]; then return 0; fi
+                elif [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; then
                     qmd_check "$t" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
                 fi
             elif [[ ${w:e:1} == [\<\>] ]] && [[ $t =~ ^([0-9]+|\{[[:alpha:]_][[:alnum:]_]*\})$ ]]; then
                 # The fd of a redirection (`2>f`, `{fd}<f`), not a word.
                 :
-            elif [ "$mode" = eval ]; then
+            elif [ "$mode" = eval ] || [ "$mode" = run ]; then
                 # eval takes one option, the `--` that ends its options.
-                if [ -n "$scr" ] || [ "$t" != '--' ]; then scr="$scr $v"; fi
+                if [ -n "$scr" ] || [ "$mode" = run ] || [ "$t" != '--' ]; then scr="$scr $v"; fi
+            elif [ "$mode" = alias ]; then
+                # A definition whose value names qmd, in a command that
+                # names a verb (`alias q=qmd; q query x`), fails closed.
+                c=$(printf '%s' "${v#*=}" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+                if [[ $v == *=* ]] && [[ ${c//[\"\'\\]/} == *qmd* ]] && names_verb "qmd $w"; then
+                    deny=1
+                    return 0
+                fi
+            elif [ "$mode" = env ] && [[ $v =~ $ENVSPLIT ]]; then
+                # env -S: the rest of the word and every word after it are
+                # one command line, split by env's own quote rules.
+                mode=run
+                scr=" ${v#"${BASH_REMATCH[0]}"}"
             elif [ "$hasc" = 0 ]; then
                 # The string is the first word after an option cluster
-                # holding c (`-c`, `-ec`, `-lc`); the later words ($0 and its
-                # arguments) are read too — more reading only adds denials.
-                if [[ $t =~ ^-[[:alpha:]]*c[[:alpha:]]*$ ]]; then
+                # holding c or su's C (`-c`, `-ec`, `-lc`, `-C`) or a
+                # `--command` / su's `--session-command`; the later
+                # words ($0 and its arguments) are read too — more reading
+                # only adds denials.
+                if [ "$mode" = sh ] && [[ $t =~ ^-[[:alpha:]]*[cC][[:alpha:]]*$ || $t =~ ^--(session-)?command$ ]]; then
                     hasc=1
-                elif [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; then
+                elif [ "$mode" = sh ] && [[ $t =~ ^--(session-)?command= ]]; then
+                    hasc=1
+                    qmd_check "${v#*=}" $((depth + 1))
+                    if [ "$deny" = 1 ]; then return 0; fi
+                elif [ "$mode" != env ] && { [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; }; then
                     # A substitution runs in the outer shell: check its text.
+                    # env without -S runs its words as the outer shell would,
+                    # and the top level already read them.
                     qmd_check "$t" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
                 else
-                    # Another shell or eval word before any -c: hand it back
-                    # to the outer loop, so no word is scanned twice.
-                    c=${t#=}
-                    case "${c##*/}" in
-                        sh|bash|zsh|dash|ksh|sh.exe|bash.exe|zsh.exe|dash.exe|ksh.exe|eval)
-                            e=$((j - ${#t}))
-                            break ;;
-                    esac
+                    # Another word that runs a nested string, before any -c:
+                    # hand it back to the outer loop, so no word is scanned
+                    # twice.
+                    c=${t#=} k=$mode
+                    if nest_mode "${c##*/}"; then
+                        mode=$k
+                        e=$((j - ${#t}))
+                        break
+                    fi
                 fi
             else
                 # A word with no q, `$` or backtick cannot spell qmd.
@@ -544,7 +656,19 @@ qmd_nested() {
         # Every word to here was read above (eval's in $scr): resume after
         # them, so the scan stays linear in the length of the command.
         i=$e
+        # A shell or source with no -c string, fed by a pipe, runs the
+        # producer's output: refuse a producer naming a verb.
+        # ponytail: a shell word anywhere in the consumer counts (`… | grep -v
+        # sh` is over-denied), consumer-program-only matching → HIMMEL-4245.
+        if [ -n "$piped" ] && [ "$hasc" = 0 ] && { [ "$mode" = sh ] || [ "$mode" = src ]; } &&
+            names_verb "${dec:pfrom+1:piped-pfrom-1}"; then
+            deny=1
+            return 0
+        fi
         if [ -n "$scr" ]; then
+            # watch, parallel and env -S run their words as a program: read
+            # them behind a plain wrapper so their options are stepped over.
+            if [ "$mode" = run ]; then scr="exec$scr"; fi
             qmd_check "$scr" $((depth + 1))
             if [ "$deny" = 1 ]; then return 0; fi
         fi
@@ -601,6 +725,8 @@ qmd_check() {
             deny=1
         elif [[ $crude == *qmd* ]] && { [[ $words_lc =~ $SUBTOP ]] ||
             { [[ $words_lc =~ $CASEWORD ]] && [[ $words_lc =~ $SUBPROG ]]; }; }; then
+            deny=1
+        elif { [[ $words_lc =~ $POSPROG ]] || [[ $words_lc =~ $POSVERB ]]; } && names_verb "$words_lc"; then
             deny=1
         else
             qmd_nested "$words_lc" "$dec" "$depth"

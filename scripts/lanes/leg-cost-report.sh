@@ -33,7 +33,7 @@ command -v jq >/dev/null 2>&1 || { echo "leg-cost-report: jq is required" >&2; e
 
 # shellcheck source=scripts/lanes/lib/leg-cost-row.sh
 . "$HERE/lib/leg-cost-row.sh" || exit 1
-LEDGER=$(leg_cost_ledger_path) || exit 1
+LEDGER=$(leg_cost_ledger_path "") || exit 1
 [ -r "$LEDGER" ] || { echo "leg-cost-report: no ledger at $LEDGER" >&2; exit 1; }
 
 jq -R 'fromjson? | select(type == "object" and (.cost_eq | type) == "number")' "$LEDGER" \

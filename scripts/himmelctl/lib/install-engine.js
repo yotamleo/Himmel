@@ -68,6 +68,11 @@ const INSTALL_TARGETS = {
 // core bundle in one shot (adopt.sh/setup.sh are monolithic installers), so
 // planning two adopt-type items still yields exactly one `adopt.sh` entry.
 const COALESCE_TYPES = new Set(['adopt', 'setup']);
+// HIMMEL-4267: adopt-type items whose whole job is covered by `adopt.sh
+// --only-hooks`. A plan whose adopt group holds ONLY these runs the hooks-only
+// mode instead of the monolithic adopt (settings wiring, plugins,
+// marketplaces) — a hooks repair must not re-adopt the user scope.
+const ADOPT_ONLY_HOOKS_ITEMS = new Set(['pre-commit-hooks']);
 
 // win32 has no bare-name package-manager fallback (unlike brew/apt) — mirror
 // bin.js's own WINGET_IDS map for the 5 tools it documents a winget id for;
@@ -444,6 +449,9 @@ function planInstall(items, ctx) {
     const install = representative.install;
     const built = buildEntry(representative, ctx, diagnosticState);
     const depIds = (groupDeps.get(groupId) || []).map((g) => groupRepresentativeId.get(g)).filter(Boolean);
+    if (install.type === 'adopt' && built.args && groupItems.every((it) => ADOPT_ONLY_HOOKS_ITEMS.has(it.id))) {
+      built.args = [...built.args, '--only-hooks'];
+    }
     const entry = { id: representative.id, type: install.type, deps: depIds, ...built };
     if (COALESCE_TYPES.has(install.type)) entry.coalesceKey = install.type;
     plan.push(entry);

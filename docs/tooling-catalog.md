@@ -129,11 +129,24 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 > Fail-open when gh is absent; exit 2 on drift (cadence-armable). Run it on
 > demand or arm it like `pipeline-cadence`. Since HIMMEL-3807 it also scans
 > every third-party pin in the repo (`scripts/upstreams/pin-scan.py`): npm/bun
-> dependencies at their lockfile version, pre-commit revs, workflow `uses:`, the
-> gitleaks `ver=` literal and `OXLINT_VERSION=` in `scripts/hooks`. Discovery is
-> by scanning, so a new pin is watched with no registry edit; a bump held back on
-> purpose goes in `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream
-> ships something newer than the release reviewed).
+> dependencies at their lockfile version, pre-commit revs, the gitleaks `ver=`
+> literal, workflow `pip install pkg==ver` pins and `OXLINT_VERSION=` in
+> `scripts/hooks`. Discovery is by scanning, so a new pin is watched with no
+> registry edit; a bump held back on purpose goes in
+> `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream ships
+> something newer than the release reviewed).
+>
+> **CI tool pins (HIMMEL-4258):** every CI tool version is exact, with one owner
+> per pin. CI's bun is the repo-root `.bun-version` (every `setup-bun` step uses
+> `bun-version-file`, so setup-bun builds the release URL instead of listing bun's
+> tags through api.github.com, whose 503 killed jobs before any test ran); the
+> `bun-ci` row in `scripts/upstreams.json` (`tag_prefix: bun-v`) lets the nightly
+> `/drift-fix` bump it. Dependabot owns npm manifests and workflow `uses:`
+> (`.github/dependabot.yml` records the split), so pin-scan no longer reports
+> actions. Left floating on purpose: `setup-node` `'22'` (an LTS line, not an
+> exact version, with no drift row able to track a major line), `npm i -g npm@^11`
+> (a deliberate floor, HIMMEL-2573), `apt-get install at` and the runner-image
+> shellcheck/pwsh (the image owns them).
 
 > **Boundary ownership:** which optimizer owns which token boundary (rtk vs
 > MCP-output vs cache vs routing) is governed by
@@ -480,7 +493,7 @@ Astra surfaces (`~/.codex/config.toml`, `scripts/cr/critics.json`) are already a
 **Tier:** ALWAYS — installed + enabled on every himmel machine; one of the three harness-operational plugins `plugin-profile.sh disable` refuses (HIMMEL-2733).
 **What:** Harness-meta operational skills for himmel.
 **Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (grill→brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428; the one front door for grill / stress-test / brainstorm, HIMMEL-2039), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569), `himmel-ops:effort-assess` (PILOT reference-class effort record with a DoD refusal and a version tail check, HIMMEL-3995).
-**Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829).
+**Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829); `/cloud-route` — classifies tickets for the cloud credit lane, writes the cloud brief and prints the operator launch line without launching (HIMMEL-4262).
 **Hook:** `hooks/hooks.json` wires a PreToolUse(`matcher: "Skill"`) hook `inject-minerva-critic.sh` (HIMMEL-429) — injects the minerva critic loop when `lean-skills:brainstorming`/`lean-skills:writing-plans` fires without `/minerva`, and routes `lean-skills:grilling` into minerva Stage 1a (HIMMEL-2039). The match is namespace-agnostic (substring on `brainstorming`/`writing-plans`), so retained `superpowers:` aliases still trigger it. Advisory, fail-open; kill switch `MINERVA_HOOK_DISABLE=1`.
 **Plugin path:** `marketplace/plugins/himmel-ops/`
 
@@ -1868,6 +1881,20 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   a dormant flag, since the launch surface (mission-doc generation, model pin,
   workspace pre-trust) is real scope for an already-sized leg. Arming is
   operator-invoked: `bash scripts/upstreams/upstream-watch-cadence.sh arm`.
+- `scripts/doctor-cadence.sh run|arm|status|disarm` (HIMMEL-4251) — the daily
+  `himmel-doctor` run, so a standing FAIL is seen in a day, not nine
+  (HIMMEL-4243). `run` executes the doctor from the **primary** checkout
+  (resolved through git-common-dir; a worktree run gives false C16 reds) and
+  keeps `last.tsv` / `prev.tsv` / `counts` under
+  `~/.himmel/state/doctor-cadence/`. A FAIL, or a WARN id absent from the
+  previous run, goes to Telegram through `scripts/luna/cadence-alert.sh`; the
+  first-ever run is a baseline (FAILs only); a doctor that prints no Summary
+  line alerts too. `hud-custom-lines.sh` shows `doctor  N FAIL  M WARN` from
+  `counts` (read-only, silent when absent or clean). Registered in
+  `cadence-registry.json` as `doctor`; cron only (Windows is parked).
+  Report-only: repair is `himmel-update`'s drift pass (HIMMEL-4246). Arming is
+  operator-invoked: `bash scripts/doctor-cadence.sh arm`. Test:
+  `scripts/test-doctor-cadence.sh`.
 
 ---
 
