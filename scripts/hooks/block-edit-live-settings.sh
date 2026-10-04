@@ -2073,6 +2073,9 @@ _dc_data_bodies() {
         case "${line##*<<}" in *'|'*) continue ;; esac
         case "$line" in *'>('*|*/dev/fd/*|*/proc/*/fd*) continue ;; esac
         [[ ! $line =~ $fdre ]] || continue
+        # a second heredoc on the line has a body of its own before this one
+        # (`cat <<LIVE <<'DATA'`), which blanking up to this name would hide
+        case "${line%<<*}" in *'<<'*) continue ;; esac
         seg=${line%<<*}
         pre=${seg%"${seg##*[;\&|(]}"}
         seg=${seg#"$pre"}
@@ -2556,9 +2559,18 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # bash's locale string `$"…"` expands like `"…"` (`$""` to nothing),
         # so a `$` right before a `"` can vanish from the name the shell
         # writes (`~/.cl$""aude`). Which `$` does depends on quoting this text
-        # no longer shows, so the command is read again with every such `$`
-        # dropped, as a second line (J1773a).
-        case "$cmd_n" in *'$"'*) cmd_n=$cmd_n$'\n'${cmd_n//\$\"/\"} ;; esac
+        # no longer shows, so each line holding one is read again with every
+        # such `$` dropped, as an extra line (J1773a). Only those lines: a
+        # copy of the whole command would quadruple the quadratic passes.
+        case "$cmd_n" in
+            *'$"'*)
+                dq=''
+                while IFS= read -r dql || [ -n "$dql" ]; do
+                    case "$dql" in *'$"'*) dq=$dq$'\n'${dql//\$\"/\"} ;; esac
+                done <<< "$cmd_n"
+                cmd_n=$cmd_n$dq
+                ;;
+        esac
         cmd_n=$(printf '%s' "$cmd_n" | tr -d "\"'\\\\")
     fi
     # `//` and `/./` name the same path as `/`, so they are collapsed before

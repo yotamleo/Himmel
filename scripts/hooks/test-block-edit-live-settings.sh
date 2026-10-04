@@ -2435,6 +2435,12 @@ assert_rc "604 nested worktree cat <<'EOF' >&2 naming ~/.cl\$(printf a)ude allow
     "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' >&2
 the hook folds ~/.cl\$(printf a)ude now ; cp a b
 EOF" HOME="$FAKEHOME")"
+assert_rc "605 nested worktree cat <<LIVE <<'DATA' unquoted first body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<LIVE <<'DATA'
+\$(cp /tmp/a ~/.cl\$(printf a)ude/settings.json)
+LIVE
+plain
+DATA" HOME="$FAKEHOME")"
 assert_rc "600 nested worktree cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /tmp/notes.md
 the hook folds ~/.cl\$(printf a)ude now
