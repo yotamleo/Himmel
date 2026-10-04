@@ -61,7 +61,8 @@ while [ $# -gt 0 ]; do
         --json) DO_JSON=1 ;;
         --file-issue) DO_FILE=1 ;;
         --repo) shift; REPO_FLAG="${1:-}" ;;
-        --root) shift ;; # consumed by the pre-scan above
+        --root) [ -n "${2:-}" ] || { echo "himmel-doctor: --root needs a path" >&2; exit 2; }
+                shift ;; # the value was read by the pre-scan above
         --no-color) USE_COLOR=0 ;;
         -h|--help) sed -n '2,/^set /p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
         *) echo "himmel-doctor: unknown arg '$1'" >&2; exit 2 ;;
