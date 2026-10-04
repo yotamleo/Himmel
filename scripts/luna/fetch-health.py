@@ -217,15 +217,37 @@ def probe_instagram_embed(env: dict[str, str], http: Callable[..., HttpResult]) 
     return classify_http(result, auth_required=False, valid_body=lambda body: b"Caption" in body)
 
 
+STDERR_TAIL_CHARS = 200
+# `name=value`, `name: value`, `Bearer value` for the secret-bearing names, then
+# any long opaque run (a token with no name in front of it).
+_SECRET_PAIR = re.compile(
+    r"(?i)\b((?:set-)?cookie|sessionid|csrftoken|ds_user_id|auth_token|ct0|token|authorization|bearer|password)\b(\s*[=:]\s*|\s+)(?:bearer\s+)?[^\s;,'\"]+"
+)
+_LONG_OPAQUE = re.compile(r"[A-Za-z0-9%_\-+/=.]{24,}")
+
+
+def redacted_tail(stderr: str) -> str:
+    """Last STDERR_TAIL_CHARS of stderr with secret values masked (HIMMEL-4374)."""
+    text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", stderr or "")
+    text = _LONG_OPAQUE.sub("<redacted>", text)
+    return " ".join(text.split())[-STDERR_TAIL_CHARS:]
+
+
+def _detail(returncode: int, stderr: str) -> str:
+    tail = redacted_tail(stderr)
+    return f"{returncode}" + (f"; stderr tail: {tail}" if tail else "; no stderr")
+
+
 def classify_command(returncode: int, stderr: str) -> ProbeResult:
     if returncode == 0:
         return ProbeResult("ok", "command probe succeeded")
     text = stderr.lower()
+    detail = f" (rc={_detail(returncode, stderr)})"
     if re.search(r"429|rate.?limit|too many requests|temporarily blocked|challenge", text):
-        return ProbeResult("blocked-or-rate-limited", "command reported block or rate limit")
+        return ProbeResult("blocked-or-rate-limited", "command reported block or rate limit" + detail)
     if re.search(r"401|403|auth|login|cookie|credential|unauthorized|forbidden", text):
-        return ProbeResult("auth-or-cookie-expired", "command reported authentication failure")
-    return ProbeResult("transport-fail", "command probe failed")
+        return ProbeResult("auth-or-cookie-expired", "command reported authentication failure" + detail)
+    return ProbeResult("transport-fail", "command probe failed" + detail)
 
 
 def run_command(args: list[str], *, env: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:

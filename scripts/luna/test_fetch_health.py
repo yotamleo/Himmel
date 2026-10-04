@@ -888,6 +888,40 @@ class InstagramGuardTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(buf.getvalue())["status"], "cooldown")
 
+    def test_a_failed_probe_surfaces_rc_and_a_stderr_tail(self):
+        # HIMMEL-4374: "command probe failed" hid the real error behind the cache.
+        r = self.probe("instagram-media", command=self.command(3, "[instagram][error] HttpError: '560 Server Error' for url"))
+        self.assertEqual(r.status, "transport-fail")
+        self.assertIn("rc=3", r.reason)
+        self.assertIn("560 Server Error", r.reason)
+        cached = self.probe("instagram-media")
+        self.assertIn("560 Server Error", cached.reason)
+
+    def test_the_stderr_tail_never_carries_a_cookie_value(self):
+        secrets = ("SECRETSESSION0123456789abcdef", "csrfSECRET9876543210", "tok_AbCdEf0123456789XYZ")  # gitleaks:allow
+        stderr = (
+            f"error: Cookie: sessionid={secrets[0]}; csrftoken={secrets[1]}\n"
+            f"Authorization: Bearer {secrets[2]}\nsessionid: {secrets[0]} connection reset"
+        )
+        r = self.probe("instagram-media", command=self.command(1, stderr))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
+        self.assertIn("rc=1", r.reason)
+        blobs = [r.reason, Path(self.env["HIMMEL_IG_PROBE_CACHE"]).read_text(encoding="utf-8"),
+                 Path(self.env["HIMMEL_IG_THROTTLE_STATE"]).read_text(encoding="utf-8")]
+        with patch.dict(os.environ, self.env, clear=False), patch.object(fetch_health, "primary_repo_root", return_value=self.tmp):
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+                fetch_health.main(["--probe", "instagram-media"])
+        blobs.append(buf.getvalue())
+        for blob in blobs:
+            for secret in secrets:
+                self.assertNotIn(secret, blob)
+
+    def test_the_stderr_tail_is_bounded(self):
+        r = self.probe("instagram-media", command=self.command(1, "x " * 5000 + "the-end"))
+        self.assertLess(len(r.reason), 400)
+        self.assertIn("the-end", r.reason)
+
     def test_other_sources_are_not_throttled_or_cached(self):
         for _ in range(2):
             fetch_health.run_single_probe("x-fxtwitter", self.env, http=self.http(200, b'{"code":200,"tweet":{"id":"20"}}'),
