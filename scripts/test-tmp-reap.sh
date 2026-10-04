@@ -169,6 +169,16 @@ printf '#!/bin/sh\necho "File: junk"\nexit 0\n' > "$T/bin2/stat"
 out="$(PATH="$T/bin2:$PATH" TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "non-numeric owner output: --apply rc 2" "$rc" 2
 exists "non-numeric owner reaps nothing" "$ROOT/mog-run.old"
+printf '#!/bin/sh\nrmdir "%s/200"\nexit 1\n' "$FP" > "$T/bin2/stat"
+out="$(PATH="$T/bin2:$PATH" TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "pid dir vanished before the owner read is skipped: --apply rc 0" "$rc" 0
+mkdir -p "$FP/200"
+FPX="$T/procx"; mkdir -p "$FPX"; chmod 000 "$FPX"
+build_tree
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FPX" reap --apply)"; rc=$?
+chmod 755 "$FPX"
+check "existing but unreadable census root: --apply rc 2" "$rc" 2
+exists "unreadable census root reaps nothing" "$ROOT/mog-run.old"
 
 rm -rf "$FP/200"; mkdir -p "$FP/300"; printf '300 (x) Z b) S 1 2 3\n' > "$FP/300/stat"
 out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
