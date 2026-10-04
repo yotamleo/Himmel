@@ -945,6 +945,30 @@ check_c19() {
         return
     fi
 
+    # HIMMEL-4287: gate on whether the observability item is DESIRED and
+    # applicable on this host (himmelctl status: observability-stack /
+    # observability-grafana, desired and not n/a), never on the OS. Unknown
+    # (no node/profile/jq) stays quiet rather than WARNing on a guess.
+    # Seams: DOCTOR_OBSERVABILITY_DESIRED=1|0, DOCTOR_STATUS_JSON=<file>.
+    local want="${DOCTOR_OBSERVABILITY_DESIRED:-}"
+    if [ -z "$want" ]; then
+        local sj="" node_bin=""
+        if [ -n "${DOCTOR_STATUS_JSON:-}" ]; then
+            sj="$(cat "$DOCTOR_STATUS_JSON" 2>/dev/null)"
+        elif node_bin="$(resolve_node 2>/dev/null)" && [ -f "$REPO_ROOT/scripts/himmelctl/bin.js" ]; then
+            sj="$("$node_bin" "$REPO_ROOT/scripts/himmelctl/bin.js" status --json 2>/dev/null)"
+        fi
+        if ! command -v jq >/dev/null 2>&1 || [ -z "$sj" ]; then
+            emit INFO C19-observability "could not read himmelctl status -- observability not checked (cannot tell whether it is desired here)"
+            return
+        fi
+        want="$(printf '%s' "$sj" | jq -r '[.items[]? | select((.id == "observability-stack" or .id == "observability-grafana") and .desired == true and .severity != "n/a")] | if length > 0 then "1" else "0" end' 2>/dev/null)"
+    fi
+    if [ "$want" != 1 ]; then
+        emit INFO C19-observability "observability stack not desired on this host (himmelctl status: n/a or not wanted) -- not checked"
+        return
+    fi
+
     local install_dir="${DOCTOR_OBSERVABILITY_INSTALL_DIR:-${LOCALAPPDATA:-${HOME:-}/AppData/Local}/himmel/observability}"
     local source_dir="$REPO_ROOT/scripts/observability"
     local drift=""
@@ -1179,7 +1203,7 @@ check_c21() {
 # visible without grepping session transcripts. No log = nothing has been
 # starved yet — OK, not a finding.
 check_c22() {
-    local log="$REPO_ROOT/.claude/logs/hook-chain-skips.jsonl"
+    local log="${HIMMEL_DOCTOR_CHAIN_SKIPS_LOG:-$REPO_ROOT/.claude/logs/hook-chain-skips.jsonl}"
     [ -f "$log" ] || { emit OK C22-chain-skips "no hook-chain-skips.jsonl — no starved chain member recorded"; return; }
     command -v jq >/dev/null 2>&1 || { emit INFO C22-chain-skips "hook-chain-skips.jsonl present but jq missing — counts not checked"; return; }
     local summary jq_rc=0
@@ -1187,7 +1211,10 @@ check_c22() {
     # is an output-buffer overflow (a chatty hook), not budget starvation —
     # folding both into one "starved" label made the remedy text below
     # misleading for a box that is only seeing chatty-hook overflows.
-    summary="$(jq -rs 'group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
+    # HIMMEL-4287: the log also records the hook suites' own fixture members
+    # (hang/hog/flood and anything under a test or fixtures path); only a real
+    # hook's starvation is a finding, so those rows are dropped before counting.
+    summary="$(jq -rs 'map(select((.member // "") | test("^(hang[0-9]*|hog[0-9]*|flood[0-9]*)\\.sh$|(^|/)(tests?|fixtures?)/") | not)) | group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
     # A malformed/partially-written row makes the WHOLE `jq -s` slurp fail
     # (HIMMEL-2060 CR round 1, codex-2) — distinguish that from a genuinely
     # empty log rather than reporting both as the same clean OK.
@@ -3117,8 +3144,9 @@ check_c41_mcp_argv_key() {
         emit INFO C41-mcp-argv-key "jq not found -- MCP argv-credential scan skipped"
         return
     fi
-    local root="${HIMMEL_DOCTOR_MCP_ROOT:-$REPO_ROOT}" f shown out rc name what n=0 hits=0 bad=0
-    local remedy="move the key into the server's env block (mcpServers.<name>.env) or a file the server reads, never an args element; then rotate the exposed key"
+    local root="${HIMMEL_DOCTOR_MCP_ROOT:-$REPO_ROOT}" f shown out rc name what n=0 hits=0 bad=0 acked=0
+    local ack_file="${HIMMEL_DOCTOR_ACK_FILE:-${HOME:-}/.claude/himmel/doctor-ack.txt}"
+    local remedy="move the key into the server's env block (mcpServers.<name>.env) or a file the server reads, never an args element; then rotate the exposed key. Do NOT swap in \${VAR} inside args: the expanded value is still on the child's argv, and Claude Code documents expansion for .mcp.json only. Use the server's env field (mcpServers.<name>.env, \${VAR} expands there), if the server reads the key from its environment; the key you put there must be the one the server was signed in with (a sign-in key and a .env key may differ -- never assume they match). To accept the exposure, add the line 'C41-mcp-argv-key <server>' to $ack_file"
     # The jq program is deliberately single-quoted: its $vars are jq's, not the shell's.
     # shellcheck disable=SC2016
     local program='
@@ -3170,11 +3198,16 @@ check_c41_mcp_argv_key() {
         n=$((n+1))
         while IFS=$'\t' read -r name what; do
             [ -n "$name" ] || continue
+            if [ -f "$ack_file" ] && grep -qxF "C41-mcp-argv-key $name" "$ack_file" 2>/dev/null; then
+                acked=$((acked+1))
+                emit INFO C41-mcp-argv-key "MCP server '$name' ($shown) passes a credential on its command line ($what) -- acknowledged by the operator in $ack_file"
+                continue
+            fi
             hits=$((hits+1))
             emit WARN C41-mcp-argv-key "MCP server '$name' ($shown) passes a credential on its command line ($what) -- readable by any local user via ps and /proc/<pid>/cmdline" "$remedy"
         done <<< "$out"
     done
-    if [ "$hits" -gt 0 ] || [ "$bad" -gt 0 ]; then
+    if [ "$hits" -gt 0 ] || [ "$bad" -gt 0 ] || [ "$acked" -gt 0 ]; then
         return
     fi
     if [ "$n" -eq 0 ]; then

@@ -1371,7 +1371,7 @@ case "$url" in
 esac
 EOF
 chmod +x "$t/bin/curl"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
     GRAFANA_TELEGRAM_BOT_TOKEN="" GRAFANA_TELEGRAM_CHAT_ID="" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -1409,7 +1409,7 @@ case "$url" in
 esac
 EOF
 chmod +x "$t/bin/curl"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
     GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -1464,7 +1464,7 @@ case "$url" in
 esac
 EOF
     chmod +x "$t/bin/curl"
-    out="$(PATH="$NOCMPDIFF" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+    out="$(PATH="$NOCMPDIFF" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
         GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
         DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
         CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -5559,6 +5559,55 @@ echo "== C50-qmd-fork-stamp: --json carries the row =="
 c50_json="$(QMD_FORK_DIR="$c50_t/fork" QMD_FORK_REF="$c50_a" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c50_t/claude" HOME="$c50_t/home" bash "$DOC" --json 2>/dev/null)"
 if grepq "$c50_json" 'C50-qmd-fork-stamp'; then pass "C50 in --json"; else fail "C50 not in --json"; fi
 rm -rf "$c50_t"
+
+# --- HIMMEL-4333 / HIMMEL-4287: C41 operator ack, C22 fixture exclusion, C19 desired gate, C21 record ---
+n_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-n1200.XXXXXX")" || { fail "N1200 setup: mktemp -d failed"; exit 1; }
+mkdir -p "$n_t/home" "$n_t/root" "$n_t/claude"
+cat > "$n_t/home/.claude.json" <<'EOF'
+{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp","--api-key","NOT-A-REAL-VALUE-zq81x"]},"other":{"command":"npm","args":["exec","x","--","--api-key","NOT-A-REAL-VALUE-q9"]}}}
+EOF
+printf '# operator acks\nC41-mcp-argv-key context7\n' > "$n_t/ack.txt"
+
+echo "== C41 ack: acknowledged server reports INFO, an unacknowledged one still WARNs, value withheld =="
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_ACK_FILE="$n_t/ack.txt" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C41-mcp-argv-key.*context7.*acknowledged' && ! grepq "$out" "WARN C41-mcp-argv-key.*'context7'" \
+    && grepq "$out" "WARN C41-mcp-argv-key.*'other'" && ! grepq "$out" -F 'NOT-A-REAL-VALUE'; then
+    pass "C41 ack -> INFO for the acked server only"
+else
+    fail "C41 ack -> $(printf '%s' "$out" | grep C41)"
+fi
+
+echo "== C22: fixture-only chain members (hang/hog/flood) -> no WARN =="
+cat > "$n_t/skips-fixture.jsonl" <<'EOF'
+{"action":"skip","member":"hang.sh","reason":"ETIMEDOUT"}
+{"action":"skip","member":"hang2.sh","reason":"ETIMEDOUT"}
+{"action":"skip","member":"hog3.sh","reason":"ETIMEDOUT"}
+{"action":"skip","member":"flood.sh","reason":"ENOBUFS"}
+{"action":"skip","member":"/x/scripts/hooks/test/fixtures/slow.sh","reason":"ETIMEDOUT"}
+EOF
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-fixture.jsonl" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'WARN C22-chain-skips' && grepq "$out" 'C22-chain-skips'; then pass "C22 fixture-only -> no WARN"; else fail "C22 fixture-only -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C22: fixtures + a real member -> WARN names only the real member =="
+cp "$n_t/skips-fixture.jsonl" "$n_t/skips-mixed.jsonl"
+printf '%s\n' '{"action":"skip","member":"block-read-secrets.sh","reason":"ETIMEDOUT"}' >> "$n_t/skips-mixed.jsonl"
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-mixed.jsonl" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh' && ! grepq "$out" 'WARN C22-chain-skips.*(hang|hog|flood)'; then pass "C22 mixed -> real member only"; else fail "C22 mixed -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C19: observability not desired on this host -> INFO, no WARN =="
+printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"n/a"},{"id":"observability-grafana","desired":false,"severity":"n/a"}]}' > "$n_t/status-na.json"
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-na.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C19-observability.*not desired' && ! grepq "$out" 'WARN C19-observability'; then pass "C19 not desired -> INFO"; else fail "C19 not desired -> $(printf '%s' "$out" | grep C19)"; fi
+
+echo "== C19: observability desired and applicable -> checks still run (WARN on missing install) =="
+printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"red"}]}' > "$n_t/status-on.json"
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-on.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" DOCTOR_CURL_BIN="$n_t/nocurl" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C19-observability.*stack stale'; then pass "C19 desired -> checks run"; else fail "C19 desired -> $(printf '%s' "$out" | grep C19)"; fi
+
+echo "== C21 record: lanes.json hermes rows match the live hermes profile default =="
+c21_rows="$(jq -r '[.lanes[] | select(.id=="hermes-oneshot" or .id=="hermes-critics") | .profileDefaultModel] | unique | join(",")' "$REPO_ROOT/scripts/lanes/lanes.json")"
+if [ "$c21_rows" = "gpt-6.1-sol" ]; then pass "C21 rows record gpt-6.1-sol"; else fail "C21 rows -> '$c21_rows'"; fi
+rm -rf "$n_t"
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
