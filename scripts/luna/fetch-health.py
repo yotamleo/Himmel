@@ -223,8 +223,8 @@ IG_SESSION_REJECTED_REMEDY = (
     "then re-run: python3 scripts/luna/fetch-health.py --probe instagram-media"
 )
 STDERR_LINE_CHARS = 200
-# Allowlist, not a redactor (HIMMEL-4374): only a gallery-dl `[module][error] message`
-# line is ever surfaced; any other stderr is dropped, so it cannot leak a secret.
+# Allowlist, not a redactor (HIMMEL-4374): only gallery-dl `[module][error]` lines are
+# surfaced; their text is gallery-dl's own message, with scheme URLs replaced.
 _ERROR_LINE = re.compile(r"^\[[A-Za-z0-9_.-]+\]\[error\] (.+)$")
 # A whole URL (userinfo, query and fragment included) is replaced, never trimmed.
 _URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S*")
