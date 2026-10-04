@@ -8,7 +8,7 @@
   "impeccable": {
     "upstream_repo": "pbakaus/impeccable",
     "track": "release",
-    "synced_base": "skill-v4.3.1",
+    "synced_base": "skill-v4.5.0",
     "tag_prefix": "skill-v"
   },
   "obsidian-second-brain": {
@@ -59,7 +59,7 @@
     "standalone": true,
     "upstream_repo": "DietrichGebert/ponytail",
     "track": "release",
-    "synced_base": "v4.10.0",
-    "ref": "1d95ff7d39de12d87014ea40d4e22201bddc501b"
+    "synced_base": "v4.10.3",
+    "ref": "ef8ca48fed2321ab6668b2a954f23b1af97d7f6d"
   }
 }
