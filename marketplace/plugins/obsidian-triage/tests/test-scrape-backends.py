@@ -246,17 +246,17 @@ class FakeChain:
 
 p = make_clip(THIN)
 fk = FakeChain()
-glyph, msg, _ = mod.process_clip(p, False, fk)
+glyph, msg, _ = mod.process_clip(p, False, fk, mod.UrlRules())
 check("process_clip: thin eligible clip harvested via the serving backend",
       glyph == "v" and "harvest_skill: jina" in p.read_text() and "via jina" in msg)
 
 p = make_clip("---\ntype: article\nsource: http://wiki.corp.internal/x\n---\nshort.\n")
 fk = FakeChain()
-mod.process_clip(p, False, fk)
+mod.process_clip(p, False, fk, mod.UrlRules())
 check("process_clip: G-1 privacy gate holds on the chain (private host not sent)", fk.calls == [])
 p = make_clip("---\ntype: article\nsource: https://x.com/a/status/1\n---\nshort.\n")
 fk = FakeChain()
-mod.process_clip(p, False, fk)
+mod.process_clip(p, False, fk, mod.UrlRules())
 check("process_clip: skip-host list holds on the chain", fk.calls == [])
 
 print(f"\n{passed} passed, {failed} failed")

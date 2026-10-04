@@ -46,7 +46,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
 
 # Force UTF-8 stdout on Windows so clip filenames + URLs containing
 # non-ASCII (en-dash, arrow, emoji) don't crash the print() pipeline
@@ -364,6 +364,58 @@ class UrlRules:
         self.error = error
 
 
+def _norm_host(host: str) -> str:
+    """Lowercase, drop a trailing dot, IDNA-encode (so IDN == punycode)."""
+    host = host.lower().rstrip(".")
+    if "*" in host:
+        return host
+    try:
+        return host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return host
+
+
+def _norm_path(path: str) -> str:
+    """Percent-decode (to a fixed point), resolve dot-segments, empty -> `/`."""
+    for _ in range(4):
+        dec = unquote(path)
+        if dec == path:
+            break
+        path = dec
+    out = []
+    for seg in path.split("/")[1:]:
+        if seg == "..":
+            if out:
+                out.pop()
+        elif seg != ".":
+            out.append(seg)
+    return "/" + "/".join(out)
+
+
+def _norm_target(text: str, is_pattern: bool = False) -> list[str]:
+    """`host[:port]/path` for a URL or glob line, scheme dropped. A pattern
+    with no `/` is a host-only rule and covers every path. A URL yields a
+    second candidate without the port so a deny line written for the host
+    still holds on another port."""
+    rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", text.strip())
+    cut = re.search(r"[/?#]", rest)
+    hostport, tail = (rest, "") if cut is None else (rest[: cut.start()], rest[cut.start():])
+    if not is_pattern:
+        tail = tail.split("#", 1)[0]
+    if tail.startswith("?"):
+        tail = "/" + tail
+    if is_pattern and not tail:
+        tail = "/**"
+    hostport = hostport.rsplit("@", 1)[-1]
+    host, sep, port = hostport.partition(":")
+    host = _norm_host(host)
+    path = _norm_path(tail or "/")
+    cands = [f"{host}{sep}{port}{path}"]
+    if sep and not is_pattern:
+        cands.append(f"{host}{path}")
+    return cands
+
+
 def _glob_to_regex(pattern: str):
     """`*` = zero-or-more non-`/` chars, `**` = across path segments."""
     out = []
@@ -384,7 +436,7 @@ def _glob_to_regex(pattern: str):
 def load_url_rules(vault: Path) -> UrlRules:
     """Read <vault>/.harvest-deny and .harvest-allow (one glob per line, `#`
     starts a comment). A missing file is no constraint; an unreadable one fails
-    closed with a stderr line."""
+    closed with a stderr line. Patterns are normalised like URLs (_norm_target)."""
     lists = {}
     error = None
     for name in (".harvest-deny", ".harvest-allow"):
@@ -403,15 +455,15 @@ def load_url_rules(vault: Path) -> UrlRules:
         for ln in text.splitlines():
             ln = ln.split("#", 1)[0].strip()
             if ln:
-                pats.append((ln, _glob_to_regex(ln)))
+                pats.append((ln, _glob_to_regex(_norm_target(ln, True)[0])))
         lists[name] = pats
     return UrlRules(lists[".harvest-deny"], lists[".harvest-allow"], error)
 
 
 def _rule_match(pats, url: str):
-    bare = re.sub(r"^https?://", "", url)
+    cands = _norm_target(url)
     for text, rx in pats:
-        if rx.fullmatch(url) or rx.fullmatch(bare):
+        if any(rx.fullmatch(c) for c in cands):
             return text
     return None
 
@@ -419,9 +471,10 @@ def _rule_match(pats, url: str):
 def url_gate(canonical: str, rules) -> str | None:
     """The ONE vault-list gate for every scrape backend (jina, firecrawl, the
     local-headless slot). Returns the reason a URL must not be sent to a
-    scraper, or None. A .harvest-allow match overrides a .harvest-deny match."""
+    scraper, or None. A .harvest-allow match overrides a .harvest-deny match.
+    No rules loaded at all fails closed."""
     if rules is None:
-        return None
+        return "vault deny/allow lists not loaded; refusing scrape (fail closed)"
     if rules.error:
         return rules.error
     hit = _rule_match(rules.deny, canonical)
@@ -798,6 +851,23 @@ def persist_flag_only(path: Path, text: str, fm_raw: str, body: str, hits: list)
     return True
 
 
+def _stamp_refused(path: Path, text: str, fm_raw: str, body: str, canonical: str, dry_run: bool) -> str:
+    """harvest-clips.md Phase 2: a G-1 deny sets harvest_status: refused_sensitivity
+    + harvest_url_canonical in the frontmatter. Frontmatter-only (harvested_at stays
+    unset, so editing the lists lets a later run retry); G-3 body check, reverts on
+    mismatch. Returns a message suffix."""
+    if dry_run:
+        return " [dry-run]"
+    pairs = [("harvest_status", "harvest_status: refused_sensitivity"),
+             ("harvest_url_canonical", f'harvest_url_canonical: "{canonical}"')]
+    path.write_text(f"---\n{insert_frontmatter_pairs(fm_raw, pairs)}\n---\n{body}", encoding="utf-8", newline="\n")
+    _d, _r, disk_body, disk_ok = parse_frontmatter(path.read_text(encoding="utf-8"))
+    if not disk_ok or disk_body != body:
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return " [status-write failed (G-3); reverted]"
+    return " [harvest_status: refused_sensitivity written]"
+
+
 def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None) -> tuple[str, str, list]:
     """Return (glyph, message, injection_hits) per logging contract.
 
@@ -863,7 +933,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None) -> t
     if firecrawl is not None and firecrawl_eligible(canonical) and is_thin_body(body):
         denied = url_gate(canonical, url_rules)
         if denied:
-            return ("o", f"skipped (sensitivity): {denied}", injection_hits)
+            return flagged_early("o", f"skipped (sensitivity): {denied}{_stamp_refused(path, text, fm_raw, body, canonical, dry_run)}")
         if dry_run:
             # Never spend a credit on a dry-run — report the plan only.
             return ("v", f"would harvest via firecrawl (thin-body escalation): {canonical} [dry-run]{flag_suffix}", injection_hits)
