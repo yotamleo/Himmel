@@ -177,6 +177,10 @@ export HIMMEL_DOCTOR_TMP_DF="$FAKEROOT/no-such-df"
 # Same for C49-qmd-embed-model (HIMMEL-4232): never read the operator's real
 # qmd index; an absent index makes C48 silent, dedicated cases point at a fixture.
 export HIMMEL_DOCTOR_QMD_INDEX="$FAKEROOT/no-such-index.sqlite"
+# Same for C50-qmd-fork-stamp (HIMMEL-4268): never read the operator's real qmd
+# fork clone or QMD_FORK_REF; an unset dir resolves to a nonexistent fixture path.
+export QMD_FORK_DIR="$FAKEROOT/no-such-qmd-fork"
+unset QMD_FORK_REF
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -5502,6 +5506,59 @@ if command -v sqlite3 >/dev/null 2>&1; then
 else
     pass "C49 skipped: sqlite3 not installed"
 fi
+
+# --- C50-qmd-fork-stamp (HIMMEL-4268): build stamp vs deployed HEAD vs pin ------
+# Fixture fork clone (a throwaway git repo: commit A older, B newer), a fixture
+# stamp file and a fixture QMD_FORK_REF; the live station fork is never read.
+c50_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c50.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c50_t/fork" "$c50_t/home" "$c50_t/claude"
+git -C "$c50_t/fork" init -q
+git -C "$c50_t/fork" -c user.name=t -c user.email=t@t commit -q --allow-empty -m a
+c50_a="$(git -C "$c50_t/fork" rev-parse HEAD)"
+git -C "$c50_t/fork" -c user.name=t -c user.email=t@t commit -q --allow-empty -m b
+c50_b="$(git -C "$c50_t/fork" rev-parse HEAD)"
+c50_run() { # <stamp content, empty = no stamp> <pin> [fork dir]
+    if [ -n "$1" ]; then printf '%s\n' "$1" > "$c50_t/fork/.himmel-build-ok"; else rm -f "$c50_t/fork/.himmel-build-ok"; fi
+    QMD_FORK_DIR="${3:-$c50_t/fork}" QMD_FORK_REF="$2" PATH="$FAKEBIN:$PATH" \
+        CLAUDE_DIR="$c50_t/claude" HOME="$c50_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C50-qmd-fork-stamp: stamp == HEAD == pin -> OK (RED) =="
+out="$(c50_run "$c50_b" "$c50_b")"
+if grepq "$out" 'OK   C50-qmd-fork-stamp'; then pass "C50 all three agree -> OK"; else fail "C50 agree -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: abbreviated pin naming HEAD -> OK, not drift =="
+out="$(c50_run "$c50_b" "${c50_b:0:10}")"
+if grepq "$out" 'OK   C50-qmd-fork-stamp'; then pass "C50 short pin == HEAD -> OK"; else fail "C50 short pin -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: stamp != HEAD -> WARN stale build =="
+out="$(c50_run "$c50_a" "$c50_b")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -i 'stale build'; then pass "C50 stale build -> WARN"; else fail "C50 stale -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: HEAD ahead of the pin -> WARN names HEAD ahead =="
+out="$(c50_run "$c50_b" "$c50_a")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -F 'HEAD is ahead of the pin'; then pass "C50 HEAD ahead -> WARN"; else fail "C50 head ahead -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: pin ahead of HEAD -> WARN names pin ahead =="
+git -C "$c50_t/fork" checkout -q "$c50_a"
+out="$(c50_run "$c50_a" "$c50_b")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -F 'pin is ahead of HEAD'; then pass "C50 pin ahead -> WARN"; else fail "C50 pin ahead -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: read-only (HEAD and stamp unchanged by the check) =="
+if [ "$(git -C "$c50_t/fork" rev-parse HEAD)" = "$c50_a" ] && [ "$(cat "$c50_t/fork/.himmel-build-ok")" = "$c50_a" ]; then pass "C50 read-only"; else fail "C50 mutated the fork"; fi
+
+echo "== C50-qmd-fork-stamp: no stamp -> WARN, no crash =="
+out="$(c50_run '' "$c50_a")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -i 'no build stamp'; then pass "C50 missing stamp -> WARN"; else fail "C50 no stamp -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: no fork clone -> WARN, no crash =="
+out="$(c50_run "$c50_b" "$c50_b" "$c50_t/absent")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -i 'no qmd fork'; then pass "C50 missing fork -> WARN"; else fail "C50 no fork -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: --json carries the row =="
+c50_json="$(QMD_FORK_DIR="$c50_t/fork" QMD_FORK_REF="$c50_a" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c50_t/claude" HOME="$c50_t/home" bash "$DOC" --json 2>/dev/null)"
+if grepq "$c50_json" 'C50-qmd-fork-stamp'; then pass "C50 in --json"; else fail "C50 not in --json"; fi
+rm -rf "$c50_t"
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
