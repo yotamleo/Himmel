@@ -25,6 +25,10 @@
     NOT a community ADOPT/REJECT decision, and NOT committed to ship.
   - `provisional` is a fifth label: not yet a rubric decision state — an
     ADR exists but awaits operator sign-off. The row must name the ADR.
+  - A re-audited row adds its re-audit state in brackets, e.g.
+    `rejected (KEEP-REMOVED)` ([rubric §5](rubric.md#5-per-sprint-re-audit-himmel-3883));
+    the [re-audit ledger](#re-audit-ledger-himmel-3883) holds the
+    measured-on models.
 - **KPI** is the desired outcome-per-session, never %-tokens
   ([rubric §1](rubric.md#1-goal-articulation) — the vanity-metric trap).
 - **Measuring `in-use` rows** — the before/after protocol only applies to
@@ -85,6 +89,17 @@ additive, competing within a layer is substitutive.
 | caveman (`JuliusBrussee/caveman`) | A (prompt / response shape) | HIMMEL-3883 sprint-1 re-audit (2026-09-30, `claude-sonnet-5-5`); removal trail HIMMEL-2033 | rejected (KEEP-REMOVED) | (terse-output style) — upstream is alive again, but `skills_guard` (`ec5f441`) still flags `caveman-compress` dangerous, and a 3-prompt A/B showed -10% output tokens, roughly cost-neutral once the skill text is paid for; ponytail holds the terse-mode slot | `source-read-mandatory` (its compress skill rewrites `CLAUDE.md`) | `docs/tool-adoption/reaudit-2026-09-sprint1.md` |
 | agent-skills (`addyosmani/agent-skills`) | skills | HIMMEL-3883 sprint-1 re-audit (2026-09-30) | rejected (SKIP) | (engineering-workflow skill pack) — no himmel problem named; overlaps lean-skills/superpowers-derived skills and `test-audit`; scan criticals are false positives on defensive prose, but it ships PreToolUse-path hooks | `source-read-mandatory` if revisited (hooks) | `docs/tool-adoption/reaudit-2026-09-sprint1.md` |
 | Understand-Anything (`Egonex-AI/Understand-Anything`) | C (setup / scaffolding) | HIMMEL-3883 sprint-1 re-audit (2026-09-30) | rejected (SKIP) | (LLM-built codebase knowledge graph + dashboard) — duplicates graphify at comparable token cost, no himmel workflow consumes a dashboard | `community-active → validate-before-adopt` | `docs/tool-adoption/reaudit-2026-09-sprint1.md` |
+
+## Re-audit ledger (HIMMEL-3883)
+
+One row per re-audited verdict ([rubric §5](rubric.md#5-per-sprint-re-audit-himmel-3883)).
+Each sprint's re-audit item re-checks every row whose **Measured on** model
+has since changed, plus up to 2 new candidates; it updates the row in place
+and links the new evidence file.
+
+| Tool | Verdict | Measured on | Date | Upstream alive | Scanner (`skills_guard`) | Tokens (fixed task set) | Quality for legs / review panel | Re-open trigger | Evidence |
+|------|---------|-------------|------|----------------|--------------------------|-------------------------|---------------------------------|-----------------|----------|
+| caveman | KEEP-REMOVED (removed HIMMEL-2033; `caveman-statusline` stays opt-in per HIMMEL-2874) | `claude-sonnet-5-5`, Claude Code 2.1.286; Hermes `ec5f441` | 2026-09-30 | yes (the "dead upstream" premise no longer holds) | still trips: `caveman-compress` dangerous (rewrites `CLAUDE.md`) | -10% output tokens over 3 prompts, about cost-neutral once its ~2.6k-token skill text is paid; n=1 per cell | gate lines (`FINDING:`, `READY`) intact; diff review dropped 2 of 7 findings and downgraded a Critical (n=1) | `caveman-compress` split out and the rest scans `safe`, AND a measure-during shows an outcome gain; or the measured-on model changes | [`reaudit-2026-09-sprint1.md`](reaudit-2026-09-sprint1.md#caveman--keep-removed) |
 
 ## Dynamic index — our own items
 
