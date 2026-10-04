@@ -103,7 +103,7 @@ if ls.returncode != 0:
     print("FAIL test-ledgers-registry")
     sys.exit(1)
 tracked = ls.stdout.split("\n")
-pat = re.compile(r"\.himmel/((?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(?:jsonl|log))")
+pat = re.compile(r"\.himmel/((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:jsonl|log))")
 for rel in tracked:
     base = os.path.basename(rel)
     if not rel or base.startswith("test-") or ".test." in base or "/tests/" in rel:
