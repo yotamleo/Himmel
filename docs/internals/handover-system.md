@@ -277,7 +277,7 @@ what a leg checks, not something it idle-waits or gets pasted. See
 [`lane-calibration.md`](lane-calibration.md#non-claude-lane-calibration)'s
 "claudex console reachability" note for the delivery mechanism itself.
 
-`scripts/handover/leg-resume-brief.sh <leg-doc> [--branch <name>] [--dry-run]`
+`scripts/handover/leg-resume-brief.sh <leg-doc> [--branch <name>] [--repo <path>] [--dry-run]`
 is the console-side half of that clause: it reconstructs everything about a
 leg's state that git already knows (worktree path, `git status --short`,
 merge-base + head SHAs and their subjects, dirty paths) and appends a
@@ -285,7 +285,8 @@ merge-base + head SHAs and their subjects, dirty paths) and appends a
 never rewriting or truncating it. The branch is read from `--branch` or
 inferred from a single `feat/`|`fix/`|`chore/`|`docs/`|`refactor/`|`test/`
 token in the doc body (ambiguous or absent → exit 2, pass `--branch`
-explicitly). The ordered remaining steps are deliberately NOT filled in —
+explicitly). `--repo` overrides the script's own repo, for a leg that
+lives in another repository. The ordered remaining steps are deliberately NOT filled in —
 they live only in the leg's own reasoning, so the script emits a TODO block
 instead of inventing them.
 

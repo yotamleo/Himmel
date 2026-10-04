@@ -33,16 +33,20 @@
 # returns hex digits for them, so there is nothing to sanitize or escape.
 #
 # USAGE:
-#   bash scripts/handover/leg-resume-brief.sh <leg-doc> [--branch <name>] [--dry-run]
+#   bash scripts/handover/leg-resume-brief.sh <leg-doc> [--branch <name>] [--repo <path>] [--dry-run]
 #
 #   <leg-doc>        path to the leg's markdown handover doc (required).
 #   --branch <name>  branch to report on. Omitted -> inferred from the doc
 #                     body (a feat/|fix/|chore/|docs/|refactor/|test/ token).
 #                     Exactly one distinct branch name must appear, or pass
 #                     --branch explicitly.
+#   --repo <path>    repo to inspect. Omitted -> the repo containing this
+#                     script. Not a git repo -> exit 1; a branch absent from
+#                     it still exits 2 naming it.
 #   --dry-run        print the brief to stdout; do not modify the doc.
 #
-# Collected purely from git (in the repo containing this script -- worktrees
+# Collected purely from git (in the repo containing this script, or the
+# --repo path when given -- worktrees
 # of one repo share refs/objects, so this sees every worktree and branch):
 # worktree path (git worktree list), git status --short in that worktree,
 # merge-base(branch, origin/main -- falls back to main) + its subject, the
@@ -56,7 +60,7 @@ set -uo pipefail
 
 _lrb_usage() {
     cat <<'EOF'
-Usage: leg-resume-brief.sh <leg-doc> [--branch <name>] [--dry-run]
+Usage: leg-resume-brief.sh <leg-doc> [--branch <name>] [--repo <path>] [--dry-run]
 
 Appends a "## RESUME BRIEF" section to <leg-doc>, reconstructed from git
 alone: worktree path, git status, base/head SHAs + subjects, dirty paths.
@@ -67,6 +71,8 @@ console/operator to fill in, never invented.
   --branch <name>  branch to report on (else inferred from the doc body;
                     exactly one distinct feat/fix/chore/docs/refactor/test
                     branch token must appear, or this flag is required).
+  --repo <path>     repo to inspect (else the repo containing this script;
+                    not a git repo -> exit 1).
   --dry-run         print the brief to stdout; do not modify the doc.
 EOF
 }
@@ -180,12 +186,19 @@ _lrb_find_worktree() {
 }
 
 _lrb_main() {
-    local leg_doc="" branch="" dry_run=0
+    local leg_doc="" branch="" dry_run=0 repo="" repo_set=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --branch)
                 [ $# -ge 2 ] || { echo "leg-resume-brief: --branch requires a value" >&2; _lrb_usage >&2; return 1; }
                 branch="$2"; shift 2 ;;
+            --repo)
+                [ $# -ge 2 ] || {
+                    echo "leg-resume-brief: --repo requires a value" >&2
+                    _lrb_usage >&2
+                    return 1
+                }
+                repo="$2"; repo_set=1; shift 2 ;;
             --dry-run) dry_run=1; shift ;;
             -h|--help) _lrb_usage; return 0 ;;
             -*)
@@ -224,21 +237,31 @@ _lrb_main() {
     fi
 
     local script_dir root
-    # codex-1 (round 4): an unresolved script_dir must never flow into the
-    # git call below silently. A failed `cd` here would leave script_dir="",
-    # and `git -C ""` is a documented no-op that falls back to the CURRENT
-    # working directory -- if that cwd happens to be a different repo with a
-    # same-named branch, the script would confidently brief the WRONG repo.
-    # Wildly unlikely (needs this script's own directory to vanish
-    # mid-execution) but silent, unlike the resolve-failure paths elsewhere
-    # in this file, which all already fail loudly.
-    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || {
-        echo "leg-resume-brief: could not resolve this script's own directory" >&2
-        return 1
-    }
-    if ! root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null); then
-        echo "leg-resume-brief: could not resolve the git repo containing this script" >&2
-        return 1
+    # HIMMEL-2403: --repo overrides the self-discovery below (a leg whose
+    # branch lives in a different repo). An empty --repo "" is an error, not
+    # a fallback: `git -C ""` would silently use the cwd (see codex-1 round 4).
+    if [ "$repo_set" -eq 1 ]; then
+        if [ -z "$repo" ] || ! root=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null); then
+            echo "leg-resume-brief: --repo '$repo' is not a git repository" >&2
+            return 1
+        fi
+    else
+        # codex-1 (round 4): an unresolved script_dir must never flow into the
+        # git call below silently. A failed `cd` here would leave script_dir="",
+        # and `git -C ""` is a documented no-op that falls back to the CURRENT
+        # working directory -- if that cwd happens to be a different repo with a
+        # same-named branch, the script would confidently brief the WRONG repo.
+        # Wildly unlikely (needs this script's own directory to vanish
+        # mid-execution) but silent, unlike the resolve-failure paths elsewhere
+        # in this file, which all already fail loudly.
+        script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || {
+            echo "leg-resume-brief: could not resolve this script's own directory" >&2
+            return 1
+        }
+        if ! root=$(git -C "$script_dir" rev-parse --show-toplevel 2>/dev/null); then
+            echo "leg-resume-brief: could not resolve the git repo containing this script" >&2
+            return 1
+        fi
     fi
     # round-5 CR (codex-1): $root is a filesystem path REPORTED by git, not
     # our own literal -- render the DISPLAY copy only; every functional use
