@@ -3506,6 +3506,15 @@ check_c50_qmd_fork_stamp
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
+# HIMMEL-4363: a full run refreshes the statusline counts. There is no subset
+# flag; the two *_SKIP seams skip checks, so a run with either set is a subset
+# and never writes (it would publish a falsely low count).
+if [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" != 1 ] && [ "${DOCTOR_ORPHAN_SCAN_SKIP:-0}" != 1 ]; then
+    # shellcheck source=doctor-counts.sh
+    . "$REPO_ROOT/scripts/doctor-counts.sh"
+    doctor_counts_write "${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}" "$n_fail" "$n_warn" || true
+fi
+
 if [ "$DO_FILE" = 1 ] && [ $((n_fail+n_warn+n_info)) -gt 0 ]; then
     echo; echo "Filing a consolidated GitHub issue:"; file_issue
 elif [ $((n_fail+n_warn)) -gt 0 ] && [ "$DO_JSON" = 0 ] && [ -t 1 ]; then

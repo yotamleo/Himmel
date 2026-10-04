@@ -26,6 +26,7 @@ P="$W/primary"; WT="$W/wt"
 mkdir -p "$P/scripts/luna"
 git init -q "$P"
 cp "$DIR/doctor-cadence.sh" "$P/scripts/doctor-cadence.sh" 2>/dev/null || true
+cp "$DIR/doctor-counts.sh" "$P/scripts/doctor-counts.sh" 2>/dev/null || true
 cp "$REAL_ROOT/scripts/luna/cadence-alert.sh" "$P/scripts/luna/cadence-alert.sh"
 # The stub doctor: prints $STUB_OUT, records where it ran.
 cat > "$P/scripts/himmel-doctor.sh" <<'SH'
@@ -112,6 +113,21 @@ echo "fail=0 warn=0" > "$SEG_STATE/counts"
 check "segment prints nothing when the doctor is clean" "" "$(seg)"
 echo "garbage" > "$SEG_STATE/counts"
 check "segment prints nothing on a malformed state file" "" "$(seg)"
+
+# 9b. HIMMEL-4363: a counts file older than 24 h shows its age; a fresh one does not.
+echo "fail=1 warn=12" > "$SEG_STATE/counts"
+check "fresh counts show no age" "doctor  1 FAIL  12 WARN" "$(seg)"
+touch -d '3 days ago' "$SEG_STATE/counts"
+check "counts over 24h old show the age in days" "doctor  1 FAIL  12 WARN (3d old)" "$(seg)"
+touch -d '30 hours ago' "$SEG_STATE/counts"
+check "counts 30h old show the age in hours" "doctor  1 FAIL  12 WARN (30h old)" "$(seg)"
+# the shared writer: atomic (no tmp left behind), creates the dir, exact format.
+# shellcheck source=doctor-counts.sh
+. "$DIR/doctor-counts.sh" 2>/dev/null
+WSTATE="$W/wstate/nested"
+doctor_counts_write "$WSTATE" 4 7 2>/dev/null
+check "shared writer writes fail=/warn=" "fail=4 warn=7" "$(cat "$WSTATE/counts" 2>/dev/null)"
+check "shared writer leaves no tmp file" "counts" "$(ls "$WSTATE" 2>/dev/null)"
 
 # 10. cron arm / status / disarm through a stub crontab; never the real one.
 cat > "$W/crontab" <<'SH'

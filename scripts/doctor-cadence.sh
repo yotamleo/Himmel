@@ -35,6 +35,8 @@ set -uo pipefail
 TASK_NAME="HIMMEL-Doctor"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}"
+# shellcheck source=doctor-counts.sh
+. "$SCRIPT_DIR/doctor-counts.sh"
 CRONTAB_BIN="${DOCTORCAD_CRONTAB:-crontab}"
 RUNNER_DIR="${DOCTORCAD_RUNNER_DIR:-${HOME:-}/.claude/doctor-cadence}"
 
@@ -62,8 +64,8 @@ cmd_run() {
     [ -f "$STATE_DIR/last.tsv" ] || first=1
     if [ "$first" -eq 0 ]; then cp -f "$STATE_DIR/last.tsv" "$STATE_DIR/prev.tsv"; else : > "$STATE_DIR/prev.tsv"; fi
     printf '%s\n' "$keys" | sed '/^$/d' > "$STATE_DIR/last.tsv"
-    printf 'fail=%s warn=%s\n' \
-        "$(grep -c '^FAIL ' "$STATE_DIR/last.tsv")" "$(grep -c '^WARN ' "$STATE_DIR/last.tsv")" > "$STATE_DIR/counts"
+    doctor_counts_write "$STATE_DIR" \
+        "$(grep -c '^FAIL ' "$STATE_DIR/last.tsv")" "$(grep -c '^WARN ' "$STATE_DIR/last.tsv")" || true
     while IFS= read -r k; do
         [ -n "$k" ] || continue
         grep -qxF "$k" "$STATE_DIR/prev.tsv" && continue

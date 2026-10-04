@@ -291,6 +291,17 @@ if [ "$rc" -eq 0 ]; then pass "clean -> rc0"; else fail "clean -> rc=$rc; $(prin
 if grepq "$out" 'OK   C1-guardrail'; then pass "clean -> C1-guardrail OK (no guardrail block)"; else fail "clean -> $(printf '%s' "$out" | grep C1-guardrail)"; fi
 rm -rf "$t"
 
+# HIMMEL-4363: a full doctor run refreshes the statusline counts; a subset run
+# (a *_SKIP seam set) never does. State dir pinned to a temp dir.
+echo "== counts file: full run writes it, subset run does not =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-counts.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }; write_settings "$t/claude" "$WRAPPER"
+RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/sub" bash "$DOC" --no-color >/dev/null 2>&1
+if [ ! -e "$t/sub/counts" ]; then pass "subset run (SKIP seams set) writes no counts"; else fail "subset run wrote counts"; fi
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/full" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$DOC" --no-color 2>&1)"
+want="$(printf '%s\n' "$out" | sed -n -E 's/^Summary: ([0-9]+) FAIL +([0-9]+) WARN.*/fail=\1 warn=\2/p')"
+if [ -n "$want" ] && [ "$(cat "$t/full/counts" 2>/dev/null)" = "$want" ]; then pass "full run writes counts matching its Summary ($want)"; else fail "full run counts '$(cat "$t/full/counts" 2>/dev/null)' != '$want'"; fi
+rm -rf "$t"
+
 # HIMMEL-4254 P1: --json is the config UI's status feed. stdout must carry
 # ONLY one JSON object per emit() call (everything else goes to stderr), and
 # the row count and exit code must match a text run of the same fixture.

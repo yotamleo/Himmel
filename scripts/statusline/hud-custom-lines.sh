@@ -428,7 +428,19 @@ case "$doc_counts" in
         doc_warn="${doc_counts##*warn=}"
         case "$doc_fail$doc_warn" in
             *[!0-9]*) ;;
-            *) [ "$((10#$doc_fail + 10#$doc_warn))" -gt 0 ] && append "$(printf 'doctor  %s FAIL  %s WARN' "$doc_fail" "$doc_warn")" ;;
+            *) if [ "$((10#$doc_fail + 10#$doc_warn))" -gt 0 ]; then
+                   # HIMMEL-4363: the file's mtime is the run time; over 24 h old shows its age.
+                   doc_f="${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}/counts"
+                   doc_m="$(stat -c %Y "$doc_f" 2>/dev/null || stat -f %m "$doc_f" 2>/dev/null || true)"
+                   doc_age=""
+                   case "$doc_m" in
+                       ''|*[!0-9]*) ;;
+                       *) doc_h=$(( ($(date +%s) - doc_m) / 3600 ))
+                          if [ "$doc_h" -ge 48 ]; then doc_age=" ($((doc_h / 24))d old)"
+                          elif [ "$doc_h" -ge 24 ]; then doc_age=" (${doc_h}h old)"; fi ;;
+                   esac
+                   append "$(printf 'doctor  %s FAIL  %s WARN%s' "$doc_fail" "$doc_warn" "$doc_age")"
+               fi ;;
         esac ;;
 esac
 
