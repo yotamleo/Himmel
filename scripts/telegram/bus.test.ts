@@ -275,3 +275,82 @@ test("repairCursorBeyondEof after the append loses it — why the poller repairs
     expect(got).toEqual([]);
   } finally { console.error = origErr; }
 });
+
+// HIMMEL-1854: coms layer — peer-send / peer-recv between seats over this bus.
+import { peerSend, drainPeerInbox, peerInbox, peerLedger } from "./bus";
+
+test("peerSend appends ONE line to the target inbox and to a ledger that survives truncation", async () => {
+  const r = root();
+  await peerSend(r, "console", "leg-1", "hello\nworld");
+  const inbox = peerInbox(r, "leg-1");
+  const lines = readFileSync(inbox, "utf8").split("\n").filter(Boolean);
+  expect(lines.length).toBe(1);
+  expect(JSON.parse(lines[0])).toMatchObject({ from: "console", to: "leg-1", text: "hello\nworld" });
+  await drainPeerInbox(r, "leg-1", () => {});                   // consumes + reclaims the inbox
+  expect(readFileSync(inbox, "utf8")).toBe("");
+  const ledger = readFileSync(peerLedger(r), "utf8").split("\n").filter(Boolean);
+  expect(ledger.length).toBe(1);                                 // forensic record kept
+  expect(JSON.parse(ledger[0])).toMatchObject({ from: "console", to: "leg-1" });
+});
+
+test("peerSend names exactly one seat: no broadcast, no path escape", async () => {
+  const r = root();
+  for (const bad of ["*", "all", "a,b", "a b", "../x", "..", "", "a/b"]) {
+    await expect(peerSend(r, "console", bad, "x")).rejects.toThrow();
+  }
+  await expect(peerSend(r, "../x", "leg-1", "x")).rejects.toThrow();
+});
+
+test("drainPeerInbox frames each message as ONE clipped JSON line; embedded newlines cannot forge events", async () => {
+  const r = root();
+  await peerSend(r, "console", "leg-1", "a\nFAKE EVENT\r\nb\u{2028}c");
+  await peerSend(r, "console", "leg-1", "y".repeat(10000));
+  const out: string[] = [];
+  const n = await drainPeerInbox(r, "leg-1", (l) => { out.push(l); });
+  expect(n).toBe(2);
+  expect(out.length).toBe(2);
+  for (const l of out) { expect(l).not.toMatch(/[\n\r\u{2028}\u{2029}]/u); expect(l.length).toBeLessThan(5000); }
+  expect(JSON.parse(out[0]).text).toBe("a\nFAKE EVENT\r\nb\u{2028}c");
+  expect(JSON.parse(out[1]).clipped).toBe(true);
+  expect(await drainPeerInbox(r, "leg-1", (l) => { out.push(l); })).toBe(0);   // cursor advanced
+});
+
+test("drainPeerInbox holds a partial line and frames a malformed one instead of dropping it", async () => {
+  const r = root();
+  await peerSend(r, "console", "leg-1", "first");
+  const inbox = peerInbox(r, "leg-1");
+  writeFileSync(inbox, readFileSync(inbox, "utf8") + "not json\n" + '{"text":"part');
+  const out: string[] = [];
+  await drainPeerInbox(r, "leg-1", (l) => { out.push(l); });
+  expect(out.length).toBe(2);
+  expect(JSON.parse(out[1])).toMatchObject({ malformed: true, text: "not json" });
+  writeFileSync(inbox, readFileSync(inbox, "utf8") + 'ial"}\n');
+  await drainPeerInbox(r, "leg-1", (l) => { out.push(l); });
+  expect(JSON.parse(out[2]).text).toBe("partial");
+});
+
+test("bus.ts peer-recv drains the backlog and keeps following in ONE command", async () => {
+  const r = root();
+  const bus = join(import.meta.dir, "bus.ts");
+  const env = { ...process.env, BRIDGE_ROOT: r };
+  await peerSend(r, "console", "leg-1", "before");
+  const proc = Bun.spawn(["bun", bus, "peer-recv", "leg-1", "--interval-ms", "50"], { env, stdout: "pipe" });
+  try {
+    const reader = proc.stdout.getReader();
+    let buf = "";
+    const deadline = Date.now() + 10000;
+    let sent = false;
+    while (buf.split("\n").filter(Boolean).length < 2 && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += new TextDecoder().decode(value);
+      if (!sent && buf.includes("before")) {
+        sent = true;
+        const s = Bun.spawnSync(["bun", bus, "peer-send", "console", "leg-1", "after"], { env });
+        expect(s.exitCode).toBe(0);
+      }
+    }
+    const got = buf.split("\n").filter(Boolean).map((l) => JSON.parse(l).text);
+    expect(got).toEqual(["before", "after"]);
+  } finally { proc.kill(); }
+}, 15000);
