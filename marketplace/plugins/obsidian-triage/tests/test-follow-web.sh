@@ -460,6 +460,61 @@ grep -q 'CEIL_REPORTED=true' <<<"$out11" && r=yes || r=no; assert "ceiling: the 
 grep -q 'CEIL_AT_LIMIT_FETCHES=2' <<<"$out11" && r=yes || r=no; assert "ceiling: a call AT the ceiling (5) does not trip it" yes "$r"
 grep -q 'CEIL_PARSE_FAIL_FETCHES=1' <<<"$out11" && r=yes || r=no; assert "ceiling: an unparseable billed response trips it too" yes "$r"
 
+# -- Test 11b: HIMMEL-4370 / HIMMEL-4368 hardening on the search path ---------------
+echo "Test 11b: makeWebFn — non-integer creditsUsed, strict env ints, deny=all drops hermes, parse-failure notice"
+
+cat > "$tmpdir/harden.mjs" <<EOF
+import { makeWebFn } from "$lib_url";
+
+process.env.HIMMEL_FIRECRAWL_LEDGER = process.env.LEDGER_PATH;
+const errs = [];
+console.error = (...a) => errs.push(a.join(" "));
+let fetches = 0;
+const KEYED = { FIRECRAWL_API_KEY: "k" };
+const okData = { web: [{ url: "https://x.example/a", title: "T", description: "d" }] };
+
+// (A) a present but non-integer creditsUsed is over the ceiling
+for (const [label, val] of [["STR", "30"], ["FLOAT", 2.5], ["BOOL", true], ["NULL", null]]) {
+  fetches = 0; errs.length = 0;
+  globalThis.fetch = async () => { fetches += 1; return { ok: true, json: async () => ({ success: true, creditsUsed: val, data: okData }) }; };
+  const fn = makeWebFn(KEYED);
+  const first = await fn("q1"); await fn("q2");
+  console.log("NONINT_" + label + "=" + (first.found === true && fetches === 1 && errs.some((e) => e.includes("ceiling"))));
+}
+// an ABSENT creditsUsed still books the documented cost of 1 and does not trip
+fetches = 0;
+globalThis.fetch = async () => { fetches += 1; return { ok: true, json: async () => ({ success: true, data: okData }) }; };
+let fn = makeWebFn(KEYED);
+await fn("q1"); await fn("q2");
+console.log("ABSENT_OK=" + (fetches === 2));
+
+// (C) strict ASCII-digit integer env, same as the python side
+for (const [label, key, bad] of [["PLUS", "HARVEST_FIRECRAWL_MAX_CREDITS", "+5"], ["UNDERSCORE", "HARVEST_FIRECRAWL_BUDGET", "1_0"], ["FULLWIDTH", "HARVEST_FIRECRAWL_MAX_CREDITS", "５"]]) {
+  try { makeWebFn({ ...KEYED, [key]: bad }); console.log("STRICT_" + label + "=no-throw"); }
+  catch (e) { console.log("STRICT_" + label + "=" + e.message.includes(key)); }
+}
+
+// (D) HARVEST_SCRAPE_DENY=all also drops the hermes rung; a named deny of another backend leaves it
+errs.length = 0;
+console.log("DENY_ALL_NO_HERMES=" + (makeWebFn({ FOLLOW_WEB_HERMES: "1", HARVEST_SCRAPE_DENY: "all" }) === null));
+console.log("DENY_ALL_HERMES_REPORTED=" + errs.some((e) => e.includes("hermes") && e.includes("HARVEST_SCRAPE_DENY")));
+console.log("DENY_JINA_KEEPS_HERMES=" + (typeof makeWebFn({ FOLLOW_WEB_HERMES: "1", HARVEST_SCRAPE_DENY: "jina" }) === "function"));
+errs.length = 0;
+console.log("DENY_ALL_QUIET_WITHOUT_HERMES=" + (makeWebFn({ HARVEST_SCRAPE_DENY: "all" }) === null && !errs.some((e) => e.includes("hermes"))));
+
+// (4368) a parse failure that trips the ceiling prints the same notice as the valid-JSON path
+errs.length = 0; fetches = 0;
+globalThis.fetch = async () => { fetches += 1; return { ok: true, json: async () => { throw new SyntaxError("bad json"); } }; };
+fn = makeWebFn({ ...KEYED, HARVEST_FIRECRAWL_MAX_CREDITS: "0" });
+await fn("q1"); await fn("q2");
+console.log("PARSE_FAIL_NOTICE=" + (fetches === 1 && errs.some((e) => e === "follow-web: search unavailable: a firecrawl search cost 1 credits (ceiling 0); firecrawl search disabled for the rest of this run")));
+EOF
+out11b="$(LEDGER_PATH="$tmpdir/ledger11b.jsonl" node "$tmpdir/harden.mjs" 2>&1)"
+for k in NONINT_STR NONINT_FLOAT NONINT_BOOL NONINT_NULL ABSENT_OK STRICT_PLUS STRICT_UNDERSCORE STRICT_FULLWIDTH DENY_ALL_NO_HERMES DENY_ALL_HERMES_REPORTED DENY_JINA_KEEPS_HERMES DENY_ALL_QUIET_WITHOUT_HERMES PARSE_FAIL_NOTICE; do
+    grep -q "^$k=true" <<<"$out11b" && r=yes || r=no
+    assert "hardening: $k" yes "$r"
+done
+
 # -- Test 12: firecrawl unavailable (402 / 429) parks queries (HIMMEL-4371) -----
 echo "Test 12: makeFirecrawlWebFn — a 402 disables search after one call and parks the queries"
 

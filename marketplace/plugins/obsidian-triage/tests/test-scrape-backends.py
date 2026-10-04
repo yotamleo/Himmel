@@ -457,31 +457,82 @@ reset()
 stub_urlopen([FC_OK])
 mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1"}, 5).scrape("https://example.com/a")
 check("stealth: HARVEST_FIRECRAWL_STEALTH=1 sends proxy=stealth", json.loads(SEEN[0].data.decode()).get("proxy") == "stealth")
-# a stealth response without creditsUsed is booked at the stealth cost (5), so a lower ceiling still trips
+# HIMMEL-4370 (B): stealth costs 5, so a ceiling below 5 refuses stealth before any call
 reset()
-stub_urlopen([OSError("j"), FC_OK, OSError("j"), FC_OK])
-c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "jina,firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1",
+stub_urlopen([FC_OK])
+try:
+    mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1",
                             "HARVEST_FIRECRAWL_MAX_CREDITS": "4"}, 20)
-with contextlib.redirect_stderr(io.StringIO()):
-    c.scrape("https://example.com/a")
-    try:
-        c.scrape("https://example.com/b")
-    except Exception:
-        pass
-check("stealth: omitted creditsUsed counts 5, tripping a ceiling of 4", len(fc_lines()) == 1)
+    refused = False
+except ValueError as e:
+    refused = "HARVEST_FIRECRAWL_MAX_CREDITS" in str(e) and "stealth" in str(e)
+check("stealth: a ceiling below 5 refuses stealth at config time, naming both knobs", refused)
+try:
+    mod.FirecrawlClient("k", stealth=True, max_credits=4)
+    refused = False
+except ValueError:
+    refused = True
+check("stealth: a client built with stealth and a ceiling below 5 is refused", refused)
+check("stealth: the refusal made no HTTP call and no ledger row", not SEEN and not fc_lines())
+reset()
+stub_urlopen([FC_OK])
+mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1",
+                        "HARVEST_FIRECRAWL_MAX_CREDITS": "5"}, 20).scrape("https://example.com/a")
+check("stealth: a ceiling of exactly 5 allows stealth", len(fc_lines()) == 1)
 
 # the parse-failure path books the known cost too, so it must honour the ceiling as well
 reset()
 stub_urlopen(["<html>not json</html>", FC_OK])
-c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1",
-                            "HARVEST_FIRECRAWL_MAX_CREDITS": "4"}, 20)
-with contextlib.redirect_stderr(io.StringIO()):
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_MAX_CREDITS": "0"}, 20)
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
     for u in ("https://example.com/a", "https://example.com/b"):
         try:
             c.scrape(u)
         except Exception:
             pass
-check("ceiling: a stealth parse failure (cost 5) trips a ceiling of 4", len(fc_lines()) == 1)
+check("ceiling: a parse failure (cost 1) trips a ceiling of 0", len(fc_lines()) == 1)
+# HIMMEL-4368: the same stderr line as the valid-JSON path
+check("ceiling: the parse-failure trip prints the same stderr line as the valid-JSON path",
+      "harvest-clip-body-batch: firecrawl call cost 1 credits (ceiling 0); firecrawl disabled for the rest of this run"
+      in err.getvalue())
+
+# HIMMEL-4370 (A): a present but non-integer creditsUsed counts as over the ceiling
+for label, val in (("float 30.0", 30.0), ("string '30'", "30"), ("bool true", True), ("null", None), ("float 2.5", 2.5)):
+    reset()
+    stub_urlopen([OSError("j"), json.dumps({"success": True, "data": {"markdown": "# From fc\n\nbody",
+                                                                    "metadata": {"creditsUsed": val}}}),
+                  OSError("j"), FC_OK])
+    c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "jina,firecrawl"}, 20)
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        c.scrape("https://example.com/a")
+        try:
+            c.scrape("https://example.com/b")
+        except Exception:
+            pass
+    check(f"ceiling: creditsUsed {label} is over the ceiling (firecrawl stops, line logged)",
+          len(fc_lines()) == 1 and "disabled for the rest of this run" in err.getvalue())
+
+# HIMMEL-4370 (C): strict integer env parsing, identical to the JS side (ASCII digits only)
+for bad in ("+5", "1_0", "５", "-1", "5.0", "0x5"):
+    for key in ("HARVEST_FIRECRAWL_MAX_CREDITS", "HARVEST_FIRECRAWL_BUDGET"):
+        try:
+            mod._env_int({key: bad}, key, 7)
+            ok = False
+        except ValueError:
+            ok = True
+        check(f"env int: {key}={bad!r} is rejected", ok)
+check("env int: surrounding whitespace and leading zeros are accepted", mod._env_int({"K": " 007 "}, "K", 1) == 7)
+check("env int: unset or blank falls back", mod._env_int({}, "K", 3) == 3 and mod._env_int({"K": "  "}, "K", 3) == 3)
+
+# HIMMEL-4370 (E): the JS side's name list stays in sync with BACKEND_REGISTRY
+import re
+mjs = (TOOL.parent / "lib" / "follow-web.mjs").read_text(encoding="utf-8")
+m = re.search(r"export const SCRAPE_BACKEND_NAMES = \[([^\]]*)\]", mjs)
+js_names = re.findall(r'"([^"]+)"', m.group(1)) if m else None
+check("sync: SCRAPE_BACKEND_NAMES (follow-web.mjs) equals list(BACKEND_REGISTRY), same order",
+      js_names == list(mod.BACKEND_REGISTRY))
 
 # no key: jina alone, silently
 err = io.StringIO()

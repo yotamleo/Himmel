@@ -279,6 +279,12 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
     parkedAppend("parked", { call_site: "follow-web", item, reason: unavailable });
   };
 
+  // The call is already billed and cannot be refunded: this only stops the next searches.
+  const tripCeiling = (what) => {
+    remaining = 0;
+    console.error(`follow-web: search unavailable: ${what} (ceiling ${maxCredits}); firecrawl search disabled for the rest of this run`);
+  };
+
   return async function firecrawlWebFn(query) {
     if (unavailable) { park(query); return { found: false }; }
     if (remaining <= 0) return { found: false };
@@ -320,17 +326,17 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         // transport succeeded, so the call was billed: book the known cost and honour the ceiling
         ledgered = true;
         ledgerAppend("follow-web", "/v2/search", FIRECRAWL_SEARCH_COST, false);
-        if (FIRECRAWL_SEARCH_COST > maxCredits) remaining = 0;
+        if (FIRECRAWL_SEARCH_COST > maxCredits) tripCeiling(`a firecrawl search cost ${FIRECRAWL_SEARCH_COST} credits`);
         return { found: false };
       }
       ledgered = true;
+      // A creditsUsed that is present but not an integer ("30", 2.5, true, null) cannot be
+      // trusted to be under the ceiling, so it trips it, like the scrape path.
+      const unreadable = !!data && typeof data === "object" && "creditsUsed" in data && !Number.isInteger(data.creditsUsed);
       const credits = data && Number.isInteger(data.creditsUsed) ? data.creditsUsed : FIRECRAWL_SEARCH_COST;
       ledgerAppend("follow-web", "/v2/search", credits, !!data && data.success !== false);
-      if (credits > maxCredits) {
-        // Already billed, cannot be refunded: this only stops the next searches.
-        remaining = 0;
-        console.error(`follow-web: search unavailable: a firecrawl search cost ${credits} credits (ceiling ${maxCredits}); firecrawl search disabled for the rest of this run`);
-      }
+      if (unreadable) tripCeiling("a firecrawl search reported a non-integer creditsUsed");
+      else if (credits > maxCredits) tripCeiling(`a firecrawl search cost ${credits} credits`);
       if (data && data.success === false) {
         const reason = classifyUnavailable(null, JSON.stringify(data).slice(0, 500));
         if (reason) {
@@ -589,7 +595,7 @@ export function makeFixtureWebFn(raw) {
 function envNonNegInt(env, key, fallback) {
   const raw = (env[key] || "").trim();
   if (!raw) return fallback;
-  if (!/^\d+$/.test(raw)) throw new Error(`${key} must be a non-negative integer, got '${raw}'`);
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${key} must be a non-negative integer, got '${raw}'`);
   return parseInt(raw, 10);
 }
 
@@ -638,10 +644,17 @@ export function makeWebFn(env = process.env) {
     console.error("follow-web: search unavailable: firecrawl is denied by HARVEST_SCRAPE_DENY");
   }
 
+  // `all` is the whole-run kill switch, so it also drops the hermes rung (a paid agent
+  // fan-out); the free local qmd and CLI rungs spend nothing and stay.
+  const hermesDenied = denied.includes("all");
+  if (hermesDenied && (env.FOLLOW_WEB_HERMES || "").trim()) {
+    console.error("follow-web: search unavailable: the hermes rung is denied by HARVEST_SCRAPE_DENY=all");
+  }
+
   const chain = [
     makeQmdWebFn(env),
     makeCliWebFn(env),
-    makeHermesWebFn(env),
+    hermesDenied ? null : makeHermesWebFn(env),
     fcDenied ? null : makeFirecrawlWebFn({ apiKey, baseUrl, budget: fcBudget, maxCredits }),
   ].filter(Boolean);
 

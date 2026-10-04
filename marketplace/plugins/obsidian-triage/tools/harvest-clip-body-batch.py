@@ -749,6 +749,11 @@ class FirecrawlClient:
         self.timeout = timeout
         self.max_credits = max_credits
         self.stealth = stealth
+        if stealth and max_credits < self.STEALTH_SCRAPE_COST:
+            # a stealth call is billed 5, so it would trip the ceiling on its first call
+            raise ValueError(f"HARVEST_FIRECRAWL_STEALTH=1 needs HARVEST_FIRECRAWL_MAX_CREDITS of at least "
+                             f"{self.STEALTH_SCRAPE_COST} (a stealth call costs {self.STEALTH_SCRAPE_COST}), "
+                             f"got {max_credits}")
         self.unavailable = None  # reason once a 402/429/auth/probe-0 disabled it for this run
         self.reset = None
         self.served = 0
@@ -789,6 +794,12 @@ class FirecrawlClient:
         print(f"harvest-clip-body-batch: firecrawl unavailable ({reason}{when}); disabled for the rest of "
               "this run, affected items parked (deferred: firecrawl-unavailable)", file=sys.stderr)
         parked_append("unavailable", call_site="harvest-clip-body-batch", reason=reason, reset=self.reset)
+
+    def _trip_ceiling(self, what):
+        """The call is already billed and cannot be refunded; this only stops the next ones."""
+        self.remaining = 0
+        print(f"harvest-clip-body-batch: {what} (ceiling {self.max_credits}); "
+              "firecrawl disabled for the rest of this run", file=sys.stderr)
 
     def scrape(self, url: str) -> str:
         """POST /v2/scrape, return data.markdown. Raises on any failure
@@ -836,7 +847,7 @@ class FirecrawlClient:
             cost = self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST
             ledger_append("harvest-clip-body-batch", "/v2/scrape", cost, ok=False)
             if cost > self.max_credits:
-                self.remaining = 0
+                self._trip_ceiling(f"firecrawl call cost {cost} credits")
             raise
         # a valid-JSON body of the wrong shape still spent the call: ledger it once
         body = data.get("data") if isinstance(data, dict) else None
@@ -844,15 +855,16 @@ class FirecrawlClient:
         meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
         used = meta.get("creditsUsed")
         ok = isinstance(data, dict) and bool(data.get("success"))
-        credits = used if isinstance(used, int) else (
-            self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST)
+        default_cost = self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST
+        # `type is int` keeps True out. A creditsUsed that is present but not an integer
+        # (30.0, "30", true, null) cannot be trusted to be under the ceiling, so it trips it.
+        unreadable = "creditsUsed" in meta and type(used) is not int
+        credits = used if type(used) is int else default_cost
         ledger_append("harvest-clip-body-batch", "/v2/scrape", credits, ok=ok)
-        if credits > self.max_credits:
-            # The call is already billed and cannot be refunded; this only stops the next ones.
-            self.remaining = 0
-            print(f"harvest-clip-body-batch: firecrawl call cost {credits} credits "
-                  f"(ceiling {self.max_credits}); firecrawl disabled for the rest of this run",
-                  file=sys.stderr)
+        if unreadable:
+            self._trip_ceiling(f"firecrawl call reported a non-integer creditsUsed ({type(used).__name__})")
+        elif credits > self.max_credits:
+            self._trip_ceiling(f"firecrawl call cost {credits} credits")
         if not ok:
             reason = classify_firecrawl_unavailable(None, str(data)[:500])
             if reason:
@@ -901,13 +913,10 @@ def _env_int(env, key, default):
     raw = (env.get(key) or "").strip()
     if not raw:
         return default
-    try:
-        val = int(raw)
-    except ValueError:
-        val = -1
-    if val < 0:
+    # ASCII digits only, like follow-web.mjs: int() alone takes +5, 1_0 and non-ASCII digits
+    if not re.fullmatch(r"[0-9]+", raw):
         raise ValueError(f"{key} must be a non-negative integer, got {raw!r}")
-    return val
+    return int(raw)
 
 
 def resolve_firecrawl_budget(flag, env):
