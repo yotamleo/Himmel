@@ -22,6 +22,7 @@ const { spawnSync } = require('child_process');
 const statusReportLib = require('./status-report.js');
 const probesLib = require('./probes.js');
 const redactLib = require('./redact.js');
+const { resolveBash } = require('../../hooks/run-hook-with-bash.js');
 
 const SCHEMA = 'himmel-config-feed/1';
 
@@ -149,7 +150,7 @@ const DOCTOR_HEALTH = { FAIL: 'fail', WARN: 'warn', INFO: 'info', OK: 'ok' };
 function doctorRows(ctx) {
   const { probedAt } = ctx;
   const doc = doctorPath();
-  const r = spawnSync('bash', [doc, '--json', '--no-color'], { encoding: 'utf8', timeout: REPROBE_BUDGET_MS, maxBuffer: 32 * 1024 * 1024 });
+  const r = spawnSync(resolveBash({ env: process.env }), [doc, '--json', '--no-color'], { encoding: 'utf8', timeout: REPROBE_BUDGET_MS, maxBuffer: 32 * 1024 * 1024 });
   // A check row proves nothing about a schedule firing (A9): only the
   // doctor-cadence row reads last.tsv.
   const fires = { state: 'unverified', evidence: null, at: null };
@@ -212,7 +213,7 @@ function cadenceRow(c, ctx) {
     });
   }
   const script = path.join(scriptRoot(), c.script);
-  const r = spawnSync('bash', [script, 'status'], { encoding: 'utf8', timeout: CADENCE_STATUS_TIMEOUT_MS });
+  const r = spawnSync(resolveBash({ env: process.env }), [script, 'status'], { encoding: 'utf8', timeout: CADENCE_STATUS_TIMEOUT_MS });
   const out = String(r.stdout || '');
   const armed = /^ARMED\b/m.test(out);
   const broken = r.error || (r.status !== 0 && !armed && !/^not armed\b/m.test(out));
@@ -246,7 +247,7 @@ function cadenceRows(ctx) {
 function pluginRows(ctx) {
   const script = path.join(scriptRoot(), 'scripts', 'machine-setup', 'plugin-profile.sh');
   if (!fs.existsSync(script)) return [];
-  const r = spawnSync('bash', [script, 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
+  const r = spawnSync(resolveBash({ env: process.env }), [script, 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
   let data;
   try { data = JSON.parse(r.stdout); } catch { return []; }
   return (data.onDemand || []).map((p) => mkRow({
