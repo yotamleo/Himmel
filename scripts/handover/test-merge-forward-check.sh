@@ -188,6 +188,29 @@ runcov "covering sweep was itself cancelled: REFUSE" 1 'REFUSE.*covering sweep.*
   --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
 printf 'a\tfailure\n' > "$tmp/cover"
 runcov "--base-cover without its shas: usage" 2 'usage' --base-cover "$tmp/cover"
+# the range start is the merge-base under another spelling: (S, C] does not contain S
+runcov "cover-from is a short sha of the merge-base: REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "${CS:0:8}"
+runcov "cover-from is S^0: REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CS^0"
+runcov "cover-from is HEAD~1 (resolves to the merge-base): REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "HEAD~1"
+runcov "cover-from does not resolve: REFUSE" 1 'REFUSE.*cannot resolve' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from nosuchref
+runcov "cover-sha does not resolve: REFUSE" 1 'REFUSE.*cannot resolve' \
+  --base-cover "$tmp/cover" --base-cover-sha nosuchref --base-cover-from "$CP"
+runcov "cover-sha given as origin/main: ALLOW names the resolved sha, not the ref" 0 "ALLOW.*covering sweep at $CT.*range $CP\.\.$CT" \
+  --base-cover "$tmp/cover" --base-cover-sha origin/main --base-cover-from "$CP"
+# a non-regular file reads as empty, i.e. cancelled: it must never open the cover path
+runcov "--main-base /dev/null with a cover: usage, not ALLOW" 2 'usage' \
+  --main-base /dev/null --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "--main-base a directory with a cover: usage, not ALLOW" 2 'usage' \
+  --main-base "$tmp" --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "--main-base a green run via process substitution: usage, not ALLOW" 2 'usage' \
+  --main-base <(printf 'a\tsuccess\n') --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "--main-latest /dev/null: usage" 2 'usage' --main-latest /dev/null
+runcov "--base-cover /dev/null: usage" 2 'usage' \
+  --base-cover /dev/null --base-cover-sha "$CC" --base-cover-from "$CP"
 printf 'a\tfailure\n' > "$tmp/base"
 runcov "merge-base run completed: its own verdict stands, a cover is a usage error" 2 'usage.*not cancelled' \
   --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"

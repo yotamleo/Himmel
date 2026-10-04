@@ -75,12 +75,12 @@ while [ $# -gt 0 ]; do
     *) bad=1; break ;;
   esac
 done
-if [ "$bad" -eq 1 ] || [ ! -f "$pr" ] || [ ! -r "$pr" ] || [ ! -r "$base" ] || [ ! -r "$latest" ] \
+if [ "$bad" -eq 1 ] || [ ! -f "$pr" ] || [ ! -r "$pr" ] || [ ! -f "$base" ] || [ ! -r "$base" ] || [ ! -f "$latest" ] || [ ! -r "$latest" ] \
    || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ] || [ -z "$psha" ]; then
   echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>] (all but the --base-cover trio required, shas non-empty)" >&2
   exit 2
 fi
-if [ -n "$cover$csha$cfrom" ] && { [ ! -r "$cover" ] || [ -z "$csha" ] || [ -z "$cfrom" ]; }; then
+if [ -n "$cover$csha$cfrom" ] && { [ ! -f "$cover" ] || [ ! -r "$cover" ] || [ -z "$csha" ] || [ -z "$cfrom" ]; }; then
   echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>] (all but the --base-cover trio required, shas non-empty; the trio is all-or-none)" >&2
   exit 2
 fi
@@ -146,16 +146,22 @@ if is_cancelled "$base"; then
     echo "REFUSE — the covering sweep at $csha was cancelled too: it proves nothing about the base. Use the next COMPLETED push sweep; do not merge forward."
     exit 1
   fi
-  if ! git merge-base --is-ancestor "$csha" "$tip" 2>/dev/null; then
-    echo "REFUSE — the covering sweep at $csha is not on origin/main ($tip): only a main push sweep can stand in for the base. Do not merge forward."
+  # resolve both range ends to full shas: --is-ancestor is reflexive, so a short sha, S^0 or HEAD~1
+  # naming the merge-base must not slip past a string compare; the ALLOW line names the resolved sha too
+  if ! rcsha="$(git rev-parse --verify --quiet "$csha^{commit}")" || ! rcfrom="$(git rev-parse --verify --quiet "$cfrom^{commit}")"; then
+    echo "REFUSE — cannot resolve --base-cover-sha $csha or --base-cover-from $cfrom to a commit: a covering range that cannot be read proves nothing. Do not merge forward."
     exit 1
   fi
-  if [ "$cfrom" = "$bsha" ] || ! git merge-base --is-ancestor "$cfrom" "$bsha" 2>/dev/null || ! git merge-base --is-ancestor "$bsha" "$csha" 2>/dev/null; then
-    echo "REFUSE — the covering sweep's range ($cfrom, $csha] does not cover the merge-base $bsha: it is not the next completed sweep after the cancelled run. Do not merge forward."
+  if ! git merge-base --is-ancestor "$rcsha" "$tip" 2>/dev/null; then
+    echo "REFUSE — the covering sweep at $rcsha is not on origin/main ($tip): only a main push sweep can stand in for the base. Do not merge forward."
+    exit 1
+  fi
+  if [ "$rcfrom" = "$bsha" ] || ! git merge-base --is-ancestor "$rcfrom" "$bsha" 2>/dev/null || ! git merge-base --is-ancestor "$bsha" "$rcsha" 2>/dev/null; then
+    echo "REFUSE — the covering sweep's range ($rcfrom, $rcsha] does not cover the merge-base $bsha: it is not the next completed sweep after the cancelled run. Do not merge forward."
     exit 1
   fi
   base="$cover"
-  base_note=" — base verdict from the next completed covering sweep at $csha (range $cfrom..$csha), since the merge-base run at $bsha was cancelled"
+  base_note=" — base verdict from the next completed covering sweep at $rcsha (range $rcfrom..$rcsha), since the merge-base run at $bsha was cancelled"
 elif [ -n "$cover" ]; then
   echo "usage: the merge-base run at $bsha is not cancelled: its own verdict stands; drop --base-cover" >&2
   exit 2
