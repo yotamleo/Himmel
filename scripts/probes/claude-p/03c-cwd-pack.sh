@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# headless-claude-ok: HIMMEL-2179 probe the operator runs by hand; the comment below names the claude -p config it measures
 # launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 3c (HIMMEL-2179, RETASK RTK-2179-8f3a1c): project-tier skill
 # discovery. cwd = a directory whose own ./.claude/skills/ holds the skill,
