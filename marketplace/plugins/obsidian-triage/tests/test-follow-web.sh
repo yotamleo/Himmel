@@ -476,7 +476,8 @@ let mode = "402";
 globalThis.fetch = async () => {
   fetches += 1;
   if (mode === "402") return { ok: false, status: 402, text: async () => '{"success":false,"error":"Insufficient credits to perform this request."}' };
-  if (mode === "429") return { ok: false, status: 429, text: async () => '{"error":"Rate limit exceeded"}' };
+  if (mode === "429") return { ok: false, status: 429, text: async () => '{"error":"Rate limit exceeded for your request quota"}' };
+  if (mode === "200fail") return { ok: true, json: async () => ({ success: false, error: "Insufficient credits to perform this request." }) };
   return { ok: true, json: async () => ({ success: true, creditsUsed: 1, data: { web: [{ url: "https://x.example/a", title: "T", description: "d" }] } }) };
 };
 const rows = () => (existsSync(process.env.PARKED_PATH) ? readFileSync(process.env.PARKED_PATH, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -508,9 +509,17 @@ fn = makeFirecrawlWebFn({ apiKey: "k", budget: 10 });
 await fn("q429");
 const u = rows().filter((r) => r.kind === "unavailable").pop();
 console.log("RATE_LIMITED=" + (u.reason === "rate-limited" && !u.reset));
+
+// HTTP 200 with success:false and an insufficient-credits body: classified, disabled, parked
+mode = "200fail"; fetches = 0;
+fn = makeFirecrawlWebFn({ apiKey: "k", budget: 10 });
+await fn("q200a"); await fn("q200b");
+const u2 = rows().filter((r) => r.kind === "unavailable").pop();
+console.log("FAIL200_CLASSIFIED=" + (fetches === 1 && u2.reason === "exhausted"));
+console.log("FAIL200_PARKED=" + (rows().filter((r) => r.kind === "parked").length >= 5));
 EOF
 out12="$(LEDGER_PATH="$tmpdir/ledger12.jsonl" PARKED_PATH="$tmpdir/parked12.jsonl" node "$tmpdir/unavail.mjs" 2>&1)"
-for k in FETCHES_ONE MISS ONE_STDERR PARKED3 NO_QUERY_TEXT UNAVAIL_ROW LEDGER_REASON NO_DUP RECOVER_FOUND AVAILABLE_ROW RATE_LIMITED; do
+for k in FETCHES_ONE MISS ONE_STDERR PARKED3 NO_QUERY_TEXT UNAVAIL_ROW LEDGER_REASON NO_DUP RECOVER_FOUND AVAILABLE_ROW RATE_LIMITED FAIL200_CLASSIFIED FAIL200_PARKED; do
     grep -q "^$k=true" <<<"$out12" && r=yes || r=no
     assert "unavailable: $k" yes "$r"
 done

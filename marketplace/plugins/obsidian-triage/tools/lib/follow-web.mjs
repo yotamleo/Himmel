@@ -219,8 +219,8 @@ const UNAVAILABLE_BODY = /insufficient credits|out of credits|credits? (?:have b
 
 export function classifyUnavailable(status, body) {
   if (status === 401 || status === 403) return "auth";
+  if (status === 429) return "rate-limited"; // before the body match: a rate-limit text may mention "quota"
   if (UNAVAILABLE_BODY.test(body || "") || status === 402) return "exhausted";
-  if (status === 429) return "rate-limited";
   return null;
 }
 
@@ -330,6 +330,16 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         // Already billed, cannot be refunded: this only stops the next searches.
         remaining = 0;
         console.error(`follow-web: search unavailable: a firecrawl search cost ${credits} credits (ceiling ${maxCredits}); firecrawl search disabled for the rest of this run`);
+      }
+      if (data && data.success === false) {
+        const reason = classifyUnavailable(null, JSON.stringify(data).slice(0, 500));
+        if (reason) {
+          unavailable = reason;
+          remaining = 0;
+          console.error(`follow-web: firecrawl unavailable (${reason}); search disabled for the rest of this run, queries parked (deferred: firecrawl-unavailable)`);
+          parkedAppend("unavailable", { call_site: "follow-web", reason });
+          park(query);
+        }
       }
       if (!data || data.success === false) return { found: false };
       if (wasUnavailable) { wasUnavailable = false; parkedAppend("available", { call_site: "follow-web" }); }

@@ -606,10 +606,10 @@ def classify_firecrawl_unavailable(status, body):
     date is claimed); 401/403 is auth."""
     if status in (401, 403):
         return "auth"
+    if status == 429:
+        return "rate-limited"  # before the body match: a rate-limit text may mention "quota"
     if _UNAVAILABLE_BODY.search(body or "") or status == 402:
         return "exhausted"
-    if status == 429:
-        return "rate-limited"
     return None
 
 

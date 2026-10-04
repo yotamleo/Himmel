@@ -526,7 +526,7 @@ def net_open(req, timeout=None):
     if url.endswith("/v2/scrape"):
         Net.scrape_calls += 1
         if Net.scrape in ("402", "429"):
-            body = b'{"success":false,"error":"Insufficient credits to perform this request."}' if Net.scrape == "402" else b'{"success":false,"error":"Rate limit exceeded"}'
+            body = b'{"success":false,"error":"Insufficient credits to perform this request."}' if Net.scrape == "402" else b'{"success":false,"error":"Rate limit exceeded for your request quota"}'
             raise urllib.error.HTTPError(url, int(Net.scrape), "x", {}, io.BytesIO(body))
         return Resp(json.dumps({"success": True, "data": {"markdown": "# FC\n\nfirecrawl body", "metadata": {"creditsUsed": 1}}}).encode())
     raise AssertionError("unexpected url " + url)
