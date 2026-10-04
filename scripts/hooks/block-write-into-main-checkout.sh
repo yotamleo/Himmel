@@ -939,17 +939,57 @@ _bwimc_flat_mask() {
 # one of these words, so the stripped text can only add denials. An option a
 # wrapper is not known to take hides where the command word starts: fail
 # closed by reading from the first later word a verb arm matches
-# (`sudo -Z v touch P/f` reads `touch P/f`). `command -v`, `env -S`, `sudo -l`
+# (`sudo -Z v touch P/f` reads `touch P/f`); chrt, taskset and ionice always
+# read that way. `command -v`, `env -S`, `sudo -l`
 # and the like stop the strip there (nothing runs, or today's residual).
 # `env -C DIR`/`--chdir`, `sudo -D DIR`/`--chdir` run the command in DIR: the
 # operand lands in _BWIMC_SPDIR for the verb loop to model (_bwimc_chdir_model);
 # `sudo -i`/`--login`, a second chdir, or an unknown wrapper option record `$`
 # (dir unknown, fail closed). No other stripped wrapper changes directory.
 _BWIMC_ARMVERB_RE='^([^[:space:]]*/)?(sed|eval|bash|sh|zsh|dash|ksh|install|rsync|dd|cp|mv|rm|touch|ln|git)(\.exe)?$'
-# _bwimc_sp_word — trims _BWIMC_SPT's leading blanks; _BWIMC_SPW = its first word.
+# _bwimc_sp_word — trims _BWIMC_SPT's leading blanks; _BWIMC_SPW = its first
+# shell word as written ('..', "..", $'..' and backslash honoured, so
+# `exec -a "two words" touch` is three words before `touch`), _BWIMC_SPU = that
+# word with its quotes removed (a $'..' holding a backslash reads `$`,
+# unknown). A quote left open sets _BWIMC_SPBAD (fail closed in the caller).
 _bwimc_sp_word() {
     _BWIMC_SPT="${_BWIMC_SPT#"${_BWIMC_SPT%%[![:space:]]*}"}"
     _BWIMC_SPW="${_BWIMC_SPT%%[[:space:]]*}"
+    _BWIMC_SPU="$_BWIMC_SPW"
+    case "$_BWIMC_SPW" in *[\'\"\\]*) ;; *) return 0 ;; esac
+    local t="$_BWIMC_SPT" n=${#_BWIMC_SPT} i=0 j c u="" q
+    while [ "$i" -lt "$n" ]; do
+        c="${t:$i:1}"
+        case "$c" in
+            [[:space:]]) break ;;
+            \\) u="$u${t:$((i+1)):1}"; i=$((i+2)); continue ;;
+            \')
+                q="${t:$((i+1))}"
+                case "$q" in *\'*) ;; *) _BWIMC_SPBAD=1; i=$n; break ;; esac
+                q="${q%%\'*}"; u="$u$q"; i=$((i+2+${#q})); continue ;;
+            \"|\$)
+                if [ "$c" = '$' ]; then
+                    [ "${t:$((i+1)):1}" = "'" ] || { u="$u$c"; i=$((i+1)); continue; }
+                    i=$((i+1)); q="'"
+                else
+                    q='"'
+                fi
+                j=$((i+1))
+                while [ "$j" -lt "$n" ]; do
+                    c="${t:$j:1}"
+                    if [ "$c" = "\\" ]; then
+                        if [ "$q" = "'" ]; then u="$u\$"; else u="$u${t:$((j+1)):1}"; fi
+                        j=$((j+2)); continue
+                    fi
+                    [ "$c" != "$q" ] || break
+                    u="$u$c"; j=$((j+1))
+                done
+                if [ "$j" -ge "$n" ]; then _BWIMC_SPBAD=1; i=$n; break; fi
+                i=$((j+1)); continue ;;
+        esac
+        u="$u$c"; i=$((i+1))
+    done
+    _BWIMC_SPW="${t:0:$i}"; _BWIMC_SPU="$u"
 }
 # _bwimc_sp_dir WORD — records a wrapper's chdir operand in _BWIMC_SPDIR; a
 # second one reads as unknown (`$`).
@@ -962,25 +1002,26 @@ _bwimc_sp_dir() {
 # _bwimc_sp_dir; a DYNSHORT/DYNLONG flag (`sudo -i`) records `$`. Returns 0 at the command word, 1 at a stop option (left in
 # place), 2 at an unknown option.
 _bwimc_sp_opts() {
-    local w nm k ch
+    local w wr nm k ch
     while :; do
-        _bwimc_sp_word; w="$_BWIMC_SPW"
+        # w: the word unquoted (matched); wr: as written (its length is sliced)
+        _bwimc_sp_word; w="$_BWIMC_SPU"; wr="$_BWIMC_SPW"
         case "$w" in
-            --) _BWIMC_SPT="${_BWIMC_SPT:2}"; return 0 ;;
+            --) _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"; return 0 ;;
             --*)
                 nm="${w#--}"; nm="${nm%%=*}"
                 case " $6 " in *" $nm "*) return 1 ;; esac
                 case " $5 " in
                     *" $nm "*)
                         [ "$nm" != "${10:-}" ] || _bwimc_sp_dir '$'
-                        _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; continue ;;
+                        _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"; continue ;;
                 esac
                 case " $4 " in *" $nm "*) ;; *) return 2 ;; esac
-                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"
                 case "$w" in
                     *=*) [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "${w#*=}" ;;
                     *) _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
-                       [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "$_BWIMC_SPW" ;;
+                       [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU" ;;
                 esac
                 ;;
             -?*)
@@ -991,8 +1032,8 @@ _bwimc_sp_opts() {
                     case "$1" in
                         *"$ch"*)
                             if [ "$((k+1))" -eq "${#w}" ]; then
-                                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_word; w="$_BWIMC_SPW"
-                                [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "$w"
+                                _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"; _bwimc_sp_word; wr="$_BWIMC_SPW"
+                                [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU"
                             else
                                 [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "${w:$((k+1))}"
                             fi
@@ -1002,7 +1043,7 @@ _bwimc_sp_opts() {
                     [ "$ch" != "${9:-}" ] || _bwimc_sp_dir '$'
                     k=$((k+1))
                 done
-                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"
                 ;;
             *) return 0 ;;
         esac
@@ -1011,10 +1052,11 @@ _bwimc_sp_opts() {
 _bwimc_strip_prefix() {
     local n=${#1} w wl r
     _bwimc_strip_assign "$1"
-    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"; _BWIMC_SPDIR=''
+    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"; _BWIMC_SPDIR=''; _BWIMC_SPBAD=0
     while :; do
         _bwimc_sp_word; w="$_BWIMC_SPW"
-        _tolower_ascii "$w"; wl="$_TOLOWER_OUT"
+        # a quoted command name still runs (`"sudo"`); a quoted keyword is no keyword
+        _tolower_ascii "$_BWIMC_SPU"; wl="$_TOLOWER_OUT"
         r=0
         case "$w" in
             '{'|'!'|if|then|elif|else|while|until|do)
@@ -1028,19 +1070,21 @@ _bwimc_strip_prefix() {
                 _bwimc_strip_assign "$_BWIMC_SPT"; _BWIMC_SPT="$_BWIMC_SA"; continue ;;
         esac
         case "$wl" in
-            command) _BWIMC_SPT="${_BWIMC_SPT:7}"; _bwimc_sp_opts '' p vV '' '' '' || r=$? ;;
-            exec) _BWIMC_SPT="${_BWIMC_SPT:4}"; _bwimc_sp_opts a cl '' '' '' '' || r=$? ;;
-            nohup) _BWIMC_SPT="${_BWIMC_SPT:5}"; _bwimc_sp_opts '' '' '' '' '' 'help version' || r=$? ;;
+            command) _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_opts '' p vV '' '' '' || r=$? ;;
+            exec) _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_opts a cl '' '' '' '' || r=$? ;;
+            nohup) _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_opts '' '' '' '' '' 'help version' || r=$? ;;
+            # option + operand grammar not modeled: read from the first verb word
+            chrt|taskset|ionice) _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; r=2 ;;
             nice)
-                _BWIMC_SPT="${_BWIMC_SPT:4}"; _bwimc_sp_word
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_word
                 case "$_BWIMC_SPW" in -[0-9]*|--[0-9]*) _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;; esac
                 _bwimc_sp_opts n '' '' adjustment '' 'help version' || r=$? ;;
             timeout)
-                _BWIMC_SPT="${_BWIMC_SPT:7}"
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
                 _bwimc_sp_opts ks fpv '' 'kill-after signal' 'foreground preserve-status verbose' 'help version' || r=$?
                 # the DURATION operand
                 if [ "$r" = 0 ]; then _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"; fi ;;
-            stdbuf) _BWIMC_SPT="${_BWIMC_SPT:6}"; _bwimc_sp_opts ioe '' '' 'input output error' '' 'help version' || r=$? ;;
+            stdbuf) _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_opts ioe '' '' 'input output error' '' 'help version' || r=$? ;;
             env|sudo)
                 _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
                 while :; do
@@ -1051,15 +1095,17 @@ _bwimc_strip_prefix() {
                     fi
                     [ "$r" = 0 ] || break
                     _bwimc_sp_word
-                    case "$_BWIMC_SPW" in
-                        -) _BWIMC_SPT="${_BWIMC_SPT:1}" ;;
+                    case "$_BWIMC_SPU" in
+                        -) _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;;
                         [A-Za-z_]*=*) _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;;
                         *) break ;;
                     esac
                 done ;;
             *) break ;;
         esac
-        if [ "$r" = 1 ]; then
+        if [ "$_BWIMC_SPBAD" = 1 ]; then
+            break
+        elif [ "$r" = 1 ]; then
             break
         elif [ "$r" = 2 ]; then
             # an unknown env/sudo option may be a chdir: the dir is unknown
@@ -1067,7 +1113,7 @@ _bwimc_strip_prefix() {
             # fail closed: the first later word a verb arm matches (none: as is)
             w="$_BWIMC_SPT"
             while _bwimc_sp_word; [ -n "$_BWIMC_SPW" ]; do
-                _tolower_ascii "$_BWIMC_SPW"
+                _tolower_ascii "$_BWIMC_SPU"
                 [[ "$_TOLOWER_OUT" =~ $_BWIMC_ARMVERB_RE ]] && break
                 _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
             done
@@ -1075,6 +1121,20 @@ _bwimc_strip_prefix() {
             break
         fi
     done
+    if [ "$_BWIMC_SPBAD" = 1 ]; then
+        # a quote left open: the word bounds are unknown. Fail closed: read
+        # from the first blank-split word (quotes dropped) a verb arm matches.
+        _BWIMC_SPT="$_BWIMC_SP0"
+        while :; do
+            _BWIMC_SPT="${_BWIMC_SPT#"${_BWIMC_SPT%%[![:space:]]*}"}"
+            w="${_BWIMC_SPT%%[[:space:]]*}"
+            [ -n "$w" ] || { _BWIMC_SPT="$_BWIMC_SP0"; break; }
+            wl="${w//[\'\"\\]/}"; wl="${wl#\$}"
+            _tolower_ascii "$wl"
+            [[ "$_TOLOWER_OUT" =~ $_BWIMC_ARMVERB_RE ]] && break
+            _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+        done
+    fi
     _BWIMC_SP="${1:$((n - ${#_BWIMC_SPT}))}"
 }
 # _bwimc_split_clauses TEXT [skel] — with `skel` (TEXT is a _bwimc_subst_split

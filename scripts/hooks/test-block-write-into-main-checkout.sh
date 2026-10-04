@@ -3515,6 +3515,35 @@ _r4213 "98h x=\${y:-a;b} git -C primary log; touch primary"             block 'x
 _r4213 "98i x=\${y:-a|b} true; nice touch primary"                      block 'x=${y:-a|b} true; nice touch @P@/f'
 _r4213 "98j x=\${y:-a|b} true; git -C primary log | head (ALLOW)"       allow 'x=${y:-a|b} true; git -C @P@ log --oneline -1 | head -n 1'
 _r4213 "98k x=\${y:-a|b} true; echo ok (ALLOW)"                         allow 'x=${y:-a|b} true; echo ok'
+# HIMMEL-4213 round 3: a quoted wrapper operand holding a blank is one word
+# (_bwimc_sp_word honours '..', "..", $'..' and backslash); chrt, taskset and
+# ionice read from the first verb word; an unclosed quote fails closed
+_r4213 "99a exec -a dq-two-words touch primary"                            block 'exec -a "two words" touch @P@/f'
+_r4213 "99b exec -a sq-two-words touch primary"                            block 'exec -a '\''two words'\'' touch @P@/f'
+_r4213 "99c exec -a ansi-two-words touch primary"                          block 'exec -a $'\''two words'\'' touch @P@/f'
+_r4213 "99d sudo -u dq-a-b touch primary"                                  block 'sudo -u "a b" touch @P@/f'
+_r4213 "99e sudo --user=sq-a-b touch primary"                              block 'sudo --user='\''a b'\'' touch @P@/f'
+_r4213 "99f sudo -g ansi-a-b touch primary"                                block 'sudo -g $'\''a b'\'' touch @P@/f'
+_r4213 "99g sudo -E -u dq-a-b -- touch primary"                            block 'sudo -E -u "a b" -- touch @P@/f'
+_r4213 "99h env dq-assignment touch primary"                               block 'env "A=b c" touch @P@/f'
+_r4213 "99i env A=sq touch primary"                                        block 'env A='\''b c'\'' touch @P@/f'
+_r4213 "99j env -u ansi touch primary"                                     block 'env -u $'\''A B'\'' touch @P@/f'
+_r4213 "99k timeout -s dq 5 touch primary"                                 block 'timeout -s "KILL now" 5 touch @P@/f'
+_r4213 "99l timeout dq-duration touch primary"                             block 'timeout "5 " touch @P@/f'
+_r4213 "99m nice -n sq touch primary"                                      block 'nice -n '\''5 '\'' touch @P@/f'
+_r4213 "99n stdbuf -o dq touch primary"                                    block 'stdbuf -o "L " touch @P@/f'
+_r4213 "99o chrt 5 touch primary"                                          block 'chrt 5 touch @P@/f'
+_r4213 "99p taskset -c dq touch primary"                                   block 'taskset -c "0 1" touch @P@/f'
+_r4213 "99q ionice -c 3 touch primary"                                     block 'ionice -c 3 touch @P@/f'
+_r4213 "99r quoted sudo -u x touch primary"                                block '"sudo" -u x touch @P@/f'
+_r4213 "99s exec -a backslash-space touch primary"                         block 'exec -a a\ b touch @P@/f'
+_r4213 "99t exec -a dq-with-escaped-quote touch primary"                   block 'exec -a "a \" b" touch @P@/f'
+_r4213 "99u env -C dq-primary touch f"                                     block 'env -C "@P@" touch f'
+_r4213 "99v sudo -D ansi-primary touch f"                                  block 'sudo -D $'\''@P@'\'' touch f'
+_r4213 "99w exec -a unclosed-quote touch primary"                          block 'exec -a "two words touch @P@/f'
+_r4213 "99x exec -a dq-two-words cat primary (ALLOW)"                      allow 'exec -a "two words" cat @P@/f'
+_r4213 "99y env dq-assignment ls primary (ALLOW)"                          allow 'env "A=b c" ls @P@'
+_r4213 "99z env -C dq-tmp touch tmp (ALLOW)"                               allow 'env -C "/tmp" touch /tmp/f'
 }
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
