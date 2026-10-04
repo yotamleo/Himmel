@@ -244,9 +244,10 @@ commands:
   ui [--port N]           read-only config UI on 127.0.0.1 (needs bun): serves the
                           report feed as one page and prints a URL carrying a
                           per-launch token. The OPERATOR runs this from a
-                          terminal; agents must not. Runs in the foreground,
+                          terminal; agents must not (refused under a Claude
+                          session env unless --allow-agent-session). Runs in the foreground,
                           Ctrl-C or 30 min idle exits
-  gaps                   read-only report: what does THIS setup not get from
+  gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
                           docs/setup/profiles/operator.install-profile.json)
@@ -319,7 +320,7 @@ const ALLOWED_OPTIONS = {
   // never a `status` mode — status --json is a golden-tested contract.
   report: ['items', 'json'],
   // HIMMEL-4254 P3: the read-only config UI server.
-  ui: ['port'],
+  ui: ['port', 'allowAgentSession'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
   // `scope` takes its OWN positional verbs/targets (set|get|status, then
   // project|user for set) — parsed in parseArgs's scope cases, not as --flags.
@@ -361,6 +362,7 @@ const OPTION_FLAGS = {
   preset: '--preset',
   purgeState: '--purge-state',
   port: '--port',
+  allowAgentSession: '--allow-agent-session',
 };
 const OPTION_DEFAULTS = {
   fromProfile: null, defaultScope: null, scope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
@@ -370,6 +372,7 @@ const OPTION_DEFAULTS = {
   preset: null,
   purgeState: false,
   port: null,
+  allowAgentSession: false,
 };
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
@@ -400,6 +403,7 @@ function parseArgs(argv) {
     preset: null,      // gaps: --preset <name> (null = default 'operator' reference)
     purgeState: false, // uninstall: --purge-state (also remove operator state; default keeps it — HIMMEL-3058)
     port: null,        // ui: --port N (null = ephemeral, HIMMEL-4254)
+    allowAgentSession: false, // ui: --allow-agent-session (operator override of the agent-session refusal, HIMMEL-4350)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -583,6 +587,9 @@ function parseArgs(argv) {
       }
       case '--json':
         args.json = true;
+        break;
+      case '--allow-agent-session':
+        args.allowAgentSession = true;
         break;
       case '--from-profile':
         args.fromProfile = argv[++i];
@@ -5186,6 +5193,10 @@ function cmdReport(args) {
 // foreground. The server prints the tokened URL itself; this verb only locates
 // it, refuses a missing bun, and forwards the exit code.
 function cmdUi(args) {
+  if (!args.allowAgentSession && Object.keys(process.env).some((k) => (k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')) && process.env[k])) {
+    console.error('himmelctl: ui: operator-only; refused inside a Claude session (CLAUDECODE / CLAUDE_CODE_* is set). Run it from your own terminal, or pass --allow-agent-session to override.');
+    return 2;
+  }
   const server = path.join(repoRoot(), 'scripts', 'config-ui', 'server.ts');
   if (!fs.existsSync(server)) {
     console.error(`himmelctl: ui: ${displayPath(server)} not found (needs a himmel checkout)`);
