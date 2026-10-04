@@ -222,27 +222,24 @@ IG_SESSION_REJECTED_REMEDY = (
     "(clear any challenge), Cookie-Editor Export Netscape over ~/.luna/cookies/instagram.txt, chmod 600 it, "
     "then re-run: python3 scripts/luna/fetch-health.py --probe instagram-media"
 )
-STDERR_TAIL_CHARS = 200
-# `name=value`, `name: value`, `Bearer value` for the secret-bearing names, then
-# any long opaque run (a token with no name in front of it).
-_SECRET_PAIR = re.compile(
-    r"(?i)\b((?:set-)?cookie|sessionid|csrftoken|ds_user_id|auth_token|ct0|token|authorization|bearer|password)\b(['\"]?\s*[=:]\s*|\s+)(?:bearer\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s;,'\"]+)"
-)
-_SECRET_HEADER = re.compile(r"(?i)\b((?:set-)?cookie)\b(\s*:\s*)[^\n]*")
-_LONG_OPAQUE = re.compile(r"[A-Za-z0-9%_\-+/=.]{24,}")
+STDERR_LINE_CHARS = 200
+# Allowlist, not a redactor (HIMMEL-4374): only a gallery-dl `[module][error] message`
+# line is ever surfaced; any other stderr is dropped, so it cannot leak a secret.
+_ERROR_LINE = re.compile(r"^\[[A-Za-z0-9_.-]+\]\[error\] (.+)$")
 
 
-def redacted_tail(stderr: str) -> str:
-    """Last STDERR_TAIL_CHARS of stderr with secret values masked (HIMMEL-4374)."""
-    text = _SECRET_HEADER.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", stderr or "")
-    text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", text)
-    text = _LONG_OPAQUE.sub("<redacted>", text)
-    return " ".join(text.split())[-STDERR_TAIL_CHARS:]
+def error_line(stderr: str) -> str:
+    """The last `[module][error] message` line, query strings dropped, capped."""
+    for line in reversed((stderr or "").splitlines()):
+        m = _ERROR_LINE.match(line.strip())
+        if m:
+            return re.sub(r"\?\S*", "", m.group(1))[:STDERR_LINE_CHARS]
+    return ""
 
 
 def _detail(returncode: int, stderr: str) -> str:
-    tail = redacted_tail(stderr)
-    return f"{returncode}" + (f"; stderr tail: {tail}" if tail else "; no stderr")
+    line = error_line(stderr)
+    return f"{returncode}; {line}" if line else f"{returncode}; no error line"
 
 
 def classify_command(returncode: int, stderr: str) -> ProbeResult:

@@ -905,8 +905,8 @@ class InstagramGuardTests(unittest.TestCase):
         )
         r = self.probe("instagram-media", command=self.command(1, stderr))
         self.assertEqual(r.status, "auth-or-cookie-expired")
-        self.assertIn("rc=1", r.reason)
-        blobs = [r.reason, Path(self.env["HIMMEL_IG_PROBE_CACHE"]).read_text(encoding="utf-8"),
+        self.assertIn("rc=1; no error line", r.reason)
+        blobs =[r.reason, Path(self.env["HIMMEL_IG_PROBE_CACHE"]).read_text(encoding="utf-8"),
                  Path(self.env["HIMMEL_IG_THROTTLE_STATE"]).read_text(encoding="utf-8")]
         with patch.dict(os.environ, self.env, clear=False), patch.object(fetch_health, "primary_repo_root", return_value=self.tmp):
             buf = io.StringIO()
@@ -925,31 +925,28 @@ class InstagramGuardTests(unittest.TestCase):
         self.assertIn("Cookie-Editor", r.reason)
         self.assertIn("~/.luna/cookies/instagram.txt", r.reason)
 
-    def test_a_quoted_short_secret_value_is_masked(self):
-        err = "bad password=\"short secret\" token='abc' end"  # gitleaks:allow
+    def test_only_a_gallery_dl_error_line_is_surfaced_never_other_stderr(self):
+        # Allowlist, not a redactor: a secret in any non-error line cannot reach the reason.
+        err = (  # gitleaks:allow
+            "bad password=\"short secret\" token='abc'\n"
+            "Cookie: a=one; sid=secret\nSet-Cookie: x=y; k=v\n"
+            "{'sessionid': 'short-secret', \"csrftoken\": \"tiny\"}\n"
+            "Authorization: Basic dXNlcjpwYXNz\n"
+        )
         r = self.probe("instagram-media", command=self.command(1, err))
-        self.assertNotIn("short", r.reason)
-        self.assertNotIn("abc", r.reason)
-        self.assertIn("end", r.reason)
-
-    def test_a_cookie_header_is_masked_to_the_end_of_the_line(self):
-        err = "bad\nCookie: a=one; sid=secret\nSet-Cookie: x=y; k=v\nend"  # gitleaks:allow
-        r = self.probe("instagram-media", command=self.command(1, err))
-        for leaked in ("one", "secret", "k=v", "x=y"):
+        self.assertIn("rc=1; no error line", r.reason)
+        for leaked in ("short", "abc", "one", "secret", "k=v", "x=y", "tiny", "dXNlcjpwYXNz", "Basic"):
             self.assertNotIn(leaked, r.reason)
-        self.assertIn("end", r.reason)
 
-    def test_a_quoted_key_is_masked(self):
-        err = "bad {'sessionid': 'short-secret', \"csrftoken\": \"tiny\"} end"  # gitleaks:allow
+    def test_an_error_line_drops_its_query_string(self):
+        err = "[instagram][error] HttpError: '401' for url: https://x/y?sessionid=SECRETVALUE&a=b"  # gitleaks:allow
         r = self.probe("instagram-media", command=self.command(1, err))
-        for leaked in ("short-secret", "tiny"):
-            self.assertNotIn(leaked, r.reason)
-        self.assertIn("end", r.reason)
+        self.assertIn("HttpError: '401'", r.reason)
+        self.assertNotIn("SECRETVALUE", r.reason)
 
-    def test_the_stderr_tail_is_bounded(self):
-        r = self.probe("instagram-media", command=self.command(1, "x " * 5000 + "the-end"))
+    def test_the_error_line_is_bounded(self):
+        r = self.probe("instagram-media", command=self.command(1, "[instagram][error] " + "x" * 5000))
         self.assertLess(len(r.reason), 400)
-        self.assertIn("the-end", r.reason)
 
     def test_other_sources_are_not_throttled_or_cached(self):
         for _ in range(2):
