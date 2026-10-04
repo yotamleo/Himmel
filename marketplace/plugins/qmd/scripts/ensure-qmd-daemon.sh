@@ -263,15 +263,34 @@ fi
 # its own liveness checks. Holding it makes the two mutually exclusive; a swap
 # that starts meanwhile is refused, and its final re-check sees a started daemon.
 swap_lock="$qmd_state_dir/embed-swap.lock"
+swap_lock_stale() {
+  local p
+  p="$(cat "$1/pid" 2>/dev/null)"
+  case "$p" in
+    ''|*[!0-9]*) [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+    *) ! kill -0 "$p" 2>/dev/null ;;
+  esac
+}
+# Clearing a stale lock is itself serialized (a second mkdir lock, "<lock>.reclaim"),
+# and staleness is re-checked inside it: two contenders that both saw a dead holder
+# must not let the slower one delete the faster one's freshly taken lock. A guard
+# a minute old belongs to a reclaimer that died and is cleared.
+swap_lock_reclaim() {
+  if [ -n "$(find "$swap_lock.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+    rmdir "$swap_lock.reclaim" 2>/dev/null
+  fi
+  mkdir "$swap_lock.reclaim" 2>/dev/null || return 0
+  if swap_lock_stale "$swap_lock"; then
+    rm -rf "$swap_lock"
+  fi
+  rmdir "$swap_lock.reclaim" 2>/dev/null
+  return 0
+}
 mkdir -p "$qmd_state_dir" 2>/dev/null
 if ! mkdir "$swap_lock" 2>/dev/null; then
   swap_pid="$(cat "$swap_lock/pid" 2>/dev/null)"
-  case "$swap_pid" in
-    ''|*[!0-9]*) [ -n "$(find "$swap_lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && swap_stale=1 || swap_stale=0 ;;
-    *) kill -0 "$swap_pid" 2>/dev/null && swap_stale=0 || swap_stale=1 ;;
-  esac
-  if [ "$swap_stale" -eq 1 ]; then
-    rm -rf "$swap_lock"
+  if swap_lock_stale "$swap_lock"; then
+    swap_lock_reclaim
   fi
   if ! mkdir "$swap_lock" 2>/dev/null; then
     echo "ensure-qmd-daemon: an embed-model swap is in progress (pid ${swap_pid:-unknown}, $swap_lock) - NOT starting the qmd daemon." >&2

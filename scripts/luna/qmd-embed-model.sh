@@ -226,6 +226,23 @@ swap_lock_stale() {
     esac
 }
 
+# Clearing a stale lock is itself serialized (a second mkdir lock, "<lock>.reclaim"),
+# and staleness is re-checked inside it: two contenders that both saw a dead holder
+# must not let the slower one delete the faster one's freshly taken lock. A guard
+# a minute old belongs to a reclaimer that died and is cleared.
+swap_lock_reclaim() {
+    local d="$1"
+    if [ -n "$(find "$d.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+        rmdir "$d.reclaim" 2>/dev/null
+    fi
+    mkdir "$d.reclaim" 2>/dev/null || return 0
+    if swap_lock_stale "$d"; then
+        rm -rf "$d"
+    fi
+    rmdir "$d.reclaim" 2>/dev/null
+    return 0
+}
+
 swap_lock_release() {
     local d
     d="$(swap_lock_dir)"
@@ -240,7 +257,7 @@ swap_lock_acquire() {
     if ! mkdir "$d" 2>/dev/null; then
         if swap_lock_stale "$d"; then
             warn "clearing a stale swap lock (holder $(cat "$d/pid" 2>/dev/null || echo unknown) is gone)"
-            rm -rf "$d"
+            swap_lock_reclaim "$d"
         fi
         mkdir "$d" 2>/dev/null \
             || die 2 "another qmd-embed-model swap holds $d (pid $(cat "$d/pid" 2>/dev/null || echo unknown)); wait for it, or remove the directory if that pid is gone"

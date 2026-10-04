@@ -259,7 +259,7 @@ echo "ok (f): start-ok-but-never-alive exhausts the wait loop with start output 
 rbin="$work/rbin"
 mkdir -p "$rbin"
 real_bash="$(command -v bash)"
-for t in bash grep sed sleep touch mkdir cat rm find; do
+for t in bash grep sed sleep touch mkdir cat rm find rmdir; do
   real="$(command -v "$t")"
   printf '#!%s\nexec "%s" "$@"\n' "$real_bash" "$real" > "$rbin/$t"
   chmod +x "$rbin/$t"
@@ -655,6 +655,14 @@ echo "ok (r): a live swap lock refuses the daemon start, qmd not invoked, lock k
 kill "$holder_pid" 2>/dev/null || true
 wait "$holder_pid" 2>/dev/null || true
 rm -f "$state/alive"
+# another contender is mid-reclaim (its guard is fresh): do not clear under it,
+# or both could win the lock
+mkdir "$swap_lock.reclaim"
+run_ensure sentinel "$bin:$safe"
+[ "$rc" -ne 0 ] || fail "(s) reclaim in flight: expected a refusal, got rc 0 ($out)"
+[ -d "$swap_lock" ] || fail "(s) reclaim in flight: the stale lock was cleared under another reclaimer"
+[ ! -f "$state/qmd-argv.log" ] || fail "(s) reclaim in flight: qmd was invoked"
+rmdir "$swap_lock.reclaim"
 run_ensure sentinel "$bin:$safe"
 [ "$rc" -eq 0 ] || fail "(s) stale swap lock: expected rc 0, got $rc ($out)"
 [ ! -d "$swap_lock" ] || fail "(s) stale swap lock: not cleared"

@@ -280,8 +280,16 @@ if [ -d "$LOCK" ]; then pass "a live holder's lock is left alone"; else fail "a 
 # a dead holder's lock is stale: the swap clears it and proceeds
 kill "$HOLDER" 2>/dev/null || true
 wait "$HOLDER" 2>/dev/null || true
+# another contender is mid-reclaim (its guard is fresh): do not clear under it,
+# or both could win the lock
+mkdir "$LOCK.reclaim"
+rc=0; out=$(run bash "$SCRIPT" swap --copy "$H/.cache/qmd/index.reembed-qwen.sqlite" 2>&1) || rc=$?
+assert_rc "swap yields to a reclaim already in flight" 2 "$rc"
+if [ -d "$LOCK" ]; then pass "the stale lock is left to the reclaimer"; else fail "the stale lock is left to the reclaimer"; fi
+rmdir "$LOCK.reclaim"
 rc=0; out=$(run bash "$SCRIPT" swap --copy "$H/.cache/qmd/index.reembed-qwen.sqlite" 2>&1) || rc=$?
 assert_rc "swap recovers a stale lock" 0 "$rc"
+if [ ! -e "$LOCK.reclaim" ]; then pass "the reclaim guard is released"; else fail "the reclaim guard is released"; fi
 if [ ! -e "$LOCK" ]; then pass "the recovered lock is released again"; else fail "the recovered lock is released again"; fi
 
 echo
