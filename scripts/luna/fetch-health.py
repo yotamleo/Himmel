@@ -228,12 +228,14 @@ STDERR_TAIL_CHARS = 200
 _SECRET_PAIR = re.compile(
     r"(?i)\b((?:set-)?cookie|sessionid|csrftoken|ds_user_id|auth_token|ct0|token|authorization|bearer|password)\b(\s*[=:]\s*|\s+)(?:bearer\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s;,'\"]+)"
 )
+_SECRET_HEADER = re.compile(r"(?i)\b((?:set-)?cookie)\b(\s*:\s*)[^\n]*")
 _LONG_OPAQUE = re.compile(r"[A-Za-z0-9%_\-+/=.]{24,}")
 
 
 def redacted_tail(stderr: str) -> str:
     """Last STDERR_TAIL_CHARS of stderr with secret values masked (HIMMEL-4374)."""
-    text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", stderr or "")
+    text = _SECRET_HEADER.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", stderr or "")
+    text = _SECRET_PAIR.sub(lambda m: f"{m.group(1)}{m.group(2)}<redacted>", text)
     text = _LONG_OPAQUE.sub("<redacted>", text)
     return " ".join(text.split())[-STDERR_TAIL_CHARS:]
 

@@ -932,6 +932,13 @@ class InstagramGuardTests(unittest.TestCase):
         self.assertNotIn("abc", r.reason)
         self.assertIn("end", r.reason)
 
+    def test_a_cookie_header_is_masked_to_the_end_of_the_line(self):
+        err = "bad\nCookie: a=one; sid=secret\nSet-Cookie: x=y; k=v\nend"  # gitleaks:allow
+        r = self.probe("instagram-media", command=self.command(1, err))
+        for leaked in ("one", "secret", "k=v", "x=y"):
+            self.assertNotIn(leaked, r.reason)
+        self.assertIn("end", r.reason)
+
     def test_the_stderr_tail_is_bounded(self):
         r = self.probe("instagram-media", command=self.command(1, "x " * 5000 + "the-end"))
         self.assertLess(len(r.reason), 400)
