@@ -24,7 +24,7 @@
 #   f. flag-registry-lint: passes on the real tree, fails on a fixture hook
 #      reading FAKE_THING_OK, fails on an entry naming no hook
 
-set -euo pipefail
+set -uo pipefail
 
 repo_root=$(git rev-parse --show-toplevel)
 # shellcheck disable=SC1091
@@ -216,6 +216,27 @@ chmod +x "$envDoctor"
 DOCTOR_STUB="$envDoctor" HIMMEL_TEST_API_TOKEN=plainsecretvalue99 run_report > "$work/env.json" 2> "$work/env.err" || fail "report exited non-zero (env-secret case)"
 if grep -q plainsecretvalue99 "$work/env.json"; then fail "process.env-only secret leaked into the report"; fi
 pass "e5 a secret known only from process.env is redacted"
+
+# ── e6. --items matches the id the report shows (post-redaction) ────────────
+DOCTOR_STUB="$envDoctor" HIMMEL_TEST_API_TOKEN=plainsecretvalue99 run_report --items 'doctor:C9-‹redacted›' > "$work/env2.json" 2> "$work/env2.err" || fail "report exited non-zero (redacted --items)"
+jq -e '[.rows[]|select(.source=="doctor")]|length==1' "$work/env2.json" >/dev/null || fail "--items did not match a row by its redacted id"
+pass "e6 --items finds a row by the redacted id the report prints"
+
+# ── e7. a cadence that prints ARMED then exits non-zero is a failed probe ───
+badScripts="$work/bad-scripts-root"; cp -R "$scriptRoot" "$badScripts"
+printf '#!/usr/bin/env bash\necho "ARMED      HIMMEL-Stub (cron: 30 01 * * *)"\nexit 3\n' > "$badScripts/scripts/doctor-cadence.sh"
+chmod +x "$badScripts/scripts/doctor-cadence.sh"
+( cd "$target" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
+    HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
+    HIMMEL_REPORT_DOCTOR="$(winpath "$stubDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$badScripts")" \
+    PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json --items doctor-cadence ) > "$work/bad-cad.json" 2>/dev/null || fail "report exited non-zero (bad cadence)"
+jq -e '.rows[]|select(.id=="doctor-cadence")|.health!="ok"' "$work/bad-cad.json" >/dev/null || fail "ARMED + non-zero exit still reads healthy"
+pass "e7 a cadence probe exiting non-zero after ARMED is not healthy"
+
+# ── e8. a required secret of an unselected feature is off, not fail ─────────
+jq -e '.rows[]|select(.id=="secret:TELEGRAM_BOT_TOKEN")|.health=="off"' "$out" >/dev/null || fail "required secret of an unselected feature reads fail"
+pass "e8 required secret outside the selected features is off"
 
 # ── f. flag-registry-lint ───────────────────────────────────────────────────
 "$node_bin" "$lint" --root "$repo_root" >/dev/null 2>"$work/lint.err" || { cat "$work/lint.err" >&2; fail "lint fails on the real tree"; }

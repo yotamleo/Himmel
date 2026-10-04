@@ -22,6 +22,7 @@ const { spawnSync } = require('child_process');
 const statusReportLib = require('./status-report.js');
 const probesLib = require('./probes.js');
 const redactLib = require('./redact.js');
+const adopterProfileLib = require('./adopter-profile.js');
 const { resolveBash } = require('../../hooks/run-hook-with-bash.js');
 
 const SCHEMA = 'himmel-config-feed/1';
@@ -216,7 +217,9 @@ function cadenceRow(c, ctx) {
   const r = spawnSync(resolveBash({ env: process.env }), [script, 'status'], { encoding: 'utf8', timeout: CADENCE_STATUS_TIMEOUT_MS });
   const out = String(r.stdout || '');
   const armed = /^ARMED\b/m.test(out);
-  const broken = r.error || (r.status !== 0 && !armed && !/^not armed\b/m.test(out));
+  // A non-zero exit is a failed probe whatever it printed; only a documented
+  // "not armed" line is a non-zero status that means something else.
+  const broken = r.error || r.signal || (r.status !== 0 && !/^not armed\b/m.test(out));
   let fires = { state: 'unverified', evidence: null, at: null };
   if (c.evidence === 'doctor-last') {
     const at = mtimeIso(path.join(homeDir(), '.himmel', 'state', 'doctor-cadence', 'last.tsv'));
@@ -331,13 +334,17 @@ function featureGroup(feature) {
 function secretRows(ctx) {
   const man = readJson(path.join(__dirname, 'secrets-manifest.json'));
   const env = probesLib.parseDotEnv(readDotEnv());
+  // A required secret of a feature this profile never selected is not a failure
+  // (same scoping the wizard's secrets walk uses); null = no profile, scope nothing.
+  const active = adopterProfileLib.resolveActiveFeatures(ctx.answers);
   return ((man && man.secrets) || []).map((s) => {
     const present = Boolean(env[s.name]) || Boolean(process.env[s.name]);
+    const inScope = active === null || active.has(s.feature);
     return mkRow({
       id: `secret:${s.name}`, source: 'secret', group: featureGroup(s.feature || ''), title: s.name,
       declared: { where: `scripts/himmelctl/lib/secrets-manifest.json#${s.name}`, desired: s.required, profile: s.feature || '' },
       installed: { state: present ? 'present' : 'absent', detail: present ? 'set' : 'not set' },
-      health: present ? 'ok' : s.required === 'required' ? 'fail' : 'off',
+      health: present ? 'ok' : s.required === 'required' && inScope ? 'fail' : 'off',
       fix: { remedy: present ? '' : (s.obtain || ''), owner: 'user' },
       probedAt: ctx.probedAt,
       control: { class: 'display-only', reason: 'secrets are presence-only' },
@@ -369,7 +376,13 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
   if (wants('flag:')) rows = rows.concat(flagRows(ctx));
   if (wants('secret:')) rows = rows.concat(secretRows(ctx));
   // doctor:run reports a dead or timed-out doctor; an --items filter must not hide it.
-  if (itemIds) rows = rows.filter((r) => itemIds.includes(r.id) || r.id === 'doctor:run' || r.id === 'plugin:run');
+  // Ids are shown redacted, so --items matches on the redacted form of both sides.
+  const literals = process.env.HIMMEL_REPORT_NO_REDACT === '1' ? null : redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env);
+  const shown = (id) => (literals ? redactLib.redactDeep({ id }, { literals }).id : id);
+  if (itemIds) {
+    const wanted = itemIds.map(shown);
+    rows = rows.filter((r) => wanted.includes(shown(r.id)) || r.id === 'doctor:run' || r.id === 'plugin:run');
+  }
 
   const summary = { total: rows.length, ok: 0, warn: 0, fail: 0, off: 0, info: 0 };
   for (const r of rows) summary[r.health] = (summary[r.health] || 0) + 1;
@@ -384,7 +397,7 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
     summary,
   };
   if (process.env.HIMMEL_REPORT_NO_REDACT === '1') return feed;
-  return redactLib.redactDeep(feed, { literals: redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env) });
+  return redactLib.redactDeep(feed, { literals });
 }
 
 module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, remedyFromDetail };
