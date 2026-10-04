@@ -41,11 +41,66 @@ test("Triage lists fail then warn rows and omits off, ok and info rows", () => {
   for (const id of ["r-off", "r-ok", "cadence-x", "F_OK"]) expect(t).not.toContain(id);
 });
 
-test("right slot: toggle is disabled and says available in P4", () => {
+test("right slot: a toggle in Controls is an enabled switch that opens a plan", () => {
   const c = region("controls");
   expect(c).toContain("cadence-x");
-  expect(c).toMatch(/<button[^>]*role="switch"[^>]*disabled/);
-  expect(c).toContain("available in P4");
+  expect(c).toMatch(/<button[^>]*role="switch"[^>]*data-act="plan"/);
+  expect(c).not.toMatch(/<button[^>]*role="switch"[^>]*disabled/);
+  expect(c).not.toContain("available in P4");
+});
+
+// T4.7: preview → typed consent → run → before/after.
+const K = "controls|cadence-x";
+const withPlan = (plan: Record<string, unknown>) => {
+  const out: string = render(feed, { open: new Set([K]), filt: { health: null, kind: null, q: "" }, plans: { [K]: plan } });
+  return out.slice(out.indexOf('<div class="plan"'), out.indexOf("</section>", out.indexOf('<div class="plan"')));
+};
+const planned = { stage: "plan", previewId: "p", command: "bash /c/x-cadence.sh arm --dry-run", output: "would arm x", consent: { kind: "typed", expect: "x" }, bank: "draws the bank", effect: "at the next scheduled fire" };
+const confirm = (h: string) => /<button[^>]*data-act="run"[^>]*>/.exec(h)![0];
+
+test("plan: the dry-run command and output are shown, with the bank cost", () => {
+  const h = withPlan({ ...planned, typed: "" });
+  expect(h).toContain("bash /c/x-cadence.sh arm --dry-run");
+  expect(h).toContain("would arm x");
+  expect(h).toContain("draws the bank");
+});
+
+test("plan: an empty or wrong typed consent leaves confirm disabled", () => {
+  expect(confirm(withPlan({ ...planned, typed: "" }))).toContain("disabled");
+  expect(confirm(withPlan({ ...planned, typed: "y" }))).toContain("disabled");
+});
+
+test("plan: the matching typed consent enables confirm", () => {
+  expect(confirm(withPlan({ ...planned, typed: "x" }))).not.toContain("disabled");
+});
+
+test("plan: plain consent needs no typing", () => {
+  const h = withPlan({ ...planned, consent: { kind: "plain", expect: null }, typed: "" });
+  expect(h).not.toContain("<input");
+  expect(confirm(h)).not.toContain("disabled");
+});
+
+test("done: renders the before → after text from the re-probe", () => {
+  const h = withPlan({ stage: "done", command: "bash /c/x-cadence.sh arm", rc: 0, reprobe: "ok",
+    before: { "cadence-x": { installed: "absent", health: "off" } }, after: { "cadence-x": { installed: "present", health: "ok" } } });
+  expect(h).toContain("rc=0");
+  expect(h).toContain("absent → present");
+  expect(h).toContain("off → ok");
+});
+
+test("done: a timed-out re-probe says so", () => {
+  const h = withPlan({ stage: "done", command: "c", rc: 0, reprobe: "re-probe timed out", before: null, after: null });
+  expect(h).toContain("re-probe timed out");
+});
+
+test("done: a failed audit append is shown, never `logged`", () => {
+  const h = withPlan({ stage: "done", command: "c", rc: 0, reprobe: "ok", audit: "failed", before: {}, after: {} });
+  expect(h).toContain("audit log append FAILED");
+  expect(h).not.toContain("logged to actions.jsonl");
+});
+
+test("plan text from the server is escaped", () => {
+  expect(withPlan({ ...planned, output: "<img src=x onerror=1>", typed: "" })).not.toContain("<img");
 });
 
 test("right slot: fix rows say copy · runs in your terminal", () => {
