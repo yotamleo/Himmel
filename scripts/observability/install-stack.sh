@@ -162,11 +162,16 @@ cmd_status() {
 
 cmd_uninstall() {
     if [ "$PLATFORM" = linux ]; then
-        systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || true
+        # nothing installed = nothing to stop; a registered unit that will not stop is an error
+        if [ -f "$UNIT_DIR/$UNIT" ]; then
+            systemctl --user disable --now "$UNIT" >/dev/null 2>&1 || die "systemctl disable --now failed; unit file left in place"
+        fi
         rm -f "$UNIT_DIR/$UNIT"
         systemctl --user daemon-reload >/dev/null 2>&1 || true
     else
-        launchctl bootout "gui/$UID_N/$NAME" >/dev/null 2>&1 || true
+        if launchctl print "gui/$UID_N/$NAME" >/dev/null 2>&1; then
+            launchctl bootout "gui/$UID_N/$NAME" >/dev/null 2>&1 || die "launchctl bootout failed; plist left in place"
+        fi
         rm -f "$PLIST"
     fi
     echo "$NAME uninstalled"

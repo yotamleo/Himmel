@@ -53,7 +53,7 @@ EOF
 }
 
 run() {
-    OUT="$(env -u XDG_CONFIG_HOME HOME="$HOME_DIR" PATH="$BIN:/usr/bin:/bin" bash "$SCRIPT" "$@" 2>&1)"
+    OUT="$(env -u XDG_CONFIG_HOME HOME="$HOME_DIR" PATH="$BIN:${RUN_PATH:-/usr/bin:/bin}" bash "$SCRIPT" "$@" 2>&1)"
     RC=$?
 }
 
@@ -129,9 +129,40 @@ assert_contains "points at ps1" "install-stack.ps1" "$OUT"
 echo "case 9: missing bun fails before writing anything"
 setup Linux 200 200 1
 rm -f "$BIN/bun"
-run install
+# a system-installed bun must not rescue the negative control: expose every
+# system tool except bun through a private dir
+SYSBIN="$BIN/../sysbin"; mkdir -p "$SYSBIN"
+for f in /usr/bin/* /bin/*; do
+    [ "${f##*/}" = bun ] || ln -sf "$f" "$SYSBIN/${f##*/}" 2>/dev/null
+done
+RUN_PATH="$SYSBIN" run install
+unset RUN_PATH
 assert_eq "no-bun rc" 1 "$RC"
 if [ -e "$HOME_DIR/$UNIT_REL" ]; then fail "no unit without bun"; else pass "no unit without bun"; fi
+
+echo "case 10: uninstall fails loudly when the service manager cannot stop a registered unit"
+setup Linux 200 200 1
+run install
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncase "$2" in disable) exit 1;; esac\n' > "$BIN/systemctl"
+run uninstall
+assert_eq "linux uninstall rc on disable failure" 1 "$RC"
+if [ -e "$HOME_DIR/$UNIT_REL" ]; then pass "unit kept when disable failed"; else fail "unit kept when disable failed"; fi
+
+echo "case 11: uninstall with nothing installed is a clean no-op"
+setup Linux 200 200 1
+printf '#!/bin/sh\nexit 1\n' > "$BIN/systemctl"
+run uninstall
+assert_eq "uninstall nothing rc" 0 "$RC"
+
+echo "case 12: macOS uninstall fails loudly when bootout fails on a loaded agent"
+setup Darwin 200 200 1
+run install
+# shellcheck disable=SC2016
+printf '#!/bin/sh\ncase "$1" in bootout) exit 1;; esac\nexit 0\n' > "$BIN/launchctl"
+run uninstall
+assert_eq "mac uninstall rc on bootout failure" 1 "$RC"
+if [ -e "$HOME_DIR/$PLIST_REL" ]; then pass "plist kept when bootout failed"; else fail "plist kept when bootout failed"; fi
 
 echo
 echo "===================================="
