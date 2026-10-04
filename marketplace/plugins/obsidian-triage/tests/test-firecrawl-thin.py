@@ -236,5 +236,86 @@ check("body-mismatch → glyph x (failed)", glyph == "x")
 check("body-mismatch → message notes credit spent", "credit spent" in msg)
 check("body-mismatch → clip reverted (unchanged)", p.read_text(encoding="utf-8") == before)
 
+# 13. HIMMEL-4351 — G-1 vault deny/allow lists gate EVERY scrape backend.
+import io as _io
+import urllib.request
+
+
+def make_vault(deny=None, allow=None):
+    v = Path(tempfile.mkdtemp(dir=os.environ.get("HIMMEL_TEST_TMP") or None))
+    if deny is not None:
+        (v / ".harvest-deny").write_text(deny, encoding="utf-8")
+    if allow is not None:
+        (v / ".harvest-allow").write_text(allow, encoding="utf-8")
+    return v
+
+
+def src_clip(url):
+    return make_clip(f"---\ntype: article\nsource: {url}\n---\nshort.\n")
+
+
+# no files -> unchanged behaviour (a missing file is no constraint)
+rules = mod.load_url_rules(make_vault())
+fc = FakeFirecrawl()
+g, m, _ = mod.process_clip(src_clip("https://example.com/post"), dry_run=False, firecrawl=fc, url_rules=rules)
+check("no deny/allow files -> scrapes as before", g == "v" and len(fc.calls) == 1)
+
+# denied host skipped (the fake stands in for any backend chain)
+rules = mod.load_url_rules(make_vault(deny="# comment\n\nhttps://example.com/**\n"))
+fc = FakeFirecrawl()
+g, m, _ = mod.process_clip(src_clip("https://example.com/post/a"), dry_run=False, firecrawl=fc, url_rules=rules)
+check("deny glob -> skipped (sensitivity), no fetch", g == "o" and "sensitivity" in m and fc.calls == [])
+g, m, _ = mod.process_clip(src_clip("https://example.com/post/a"), dry_run=True, firecrawl=fc, url_rules=rules)
+check("deny glob also holds in dry-run (no 'would harvest')", g == "o" and "would harvest" not in m)
+
+# glob semantics: * stops at /, ** crosses it
+r = mod.load_url_rules(make_vault(deny="https://a.test/*\nhttps://b.test/**\n"))
+check("'*' does not cross '/'", mod.url_gate("https://a.test/x/y", r) is None and mod.url_gate("https://a.test/x", r) is not None)
+check("'**' crosses '/'", mod.url_gate("https://b.test/x/y/z", r) is not None)
+check("scheme-less pattern matches", mod.url_gate("https://c.test/p", mod.load_url_rules(make_vault(deny="c.test/*\n"))) is not None)
+
+# allow overrides a matching deny (harvest-clips.md Phase 2 is the spec)
+r = mod.load_url_rules(make_vault(deny="https://example.com/**\n", allow="https://example.com/public/*\n"))
+check("allow glob overrides matching deny", mod.url_gate("https://example.com/public/a", r) is None)
+check("deny still holds outside the allow glob", mod.url_gate("https://example.com/private/a", r) is not None)
+r = mod.load_url_rules(make_vault(allow="https://only.test/*\n"))
+check("allow-only list does NOT exclude unlisted hosts", mod.url_gate("https://other.test/x", r) is None)
+
+# an unreadable list fails CLOSED with a stderr line
+v = make_vault(deny="https://ok.test/**\n")
+(v / ".harvest-allow").mkdir()  # a directory: read_text raises
+_err = _io.StringIO()
+_se = sys.stderr
+sys.stderr = _err
+try:
+    r = mod.load_url_rules(v)
+finally:
+    sys.stderr = _se
+check("unreadable list -> stderr line", ".harvest-allow" in _err.getvalue())
+check("unreadable list -> nothing eligible", mod.url_gate("https://example.com/post", r) is not None)
+fc = FakeFirecrawl()
+g, m, _ = mod.process_clip(src_clip("https://example.com/post"), dry_run=False, firecrawl=fc, url_rules=r)
+check("unreadable list -> no fetch", g == "o" and fc.calls == [])
+
+# the real jina + firecrawl clients with urlopen stubbed: a denied URL never reaches the network
+_calls = []
+_orig_uo = urllib.request.urlopen
+
+
+def _no_net(*a, **k):
+    _calls.append(a)
+    raise AssertionError("network touched")
+
+
+urllib.request.urlopen = _no_net
+try:
+    for backend in ("jina", "jina,firecrawl"):
+        chain = mod.build_scrape_chain({"HARVEST_SCRAPE_BACKEND": backend, "FIRECRAWL_API_KEY": "k"}, 5)
+        rules = mod.load_url_rules(make_vault(deny="https://example.com/**\n"))
+        g, m, _ = mod.process_clip(src_clip("https://example.com/post"), dry_run=False, firecrawl=chain, url_rules=rules)
+        check(f"denied host on backend chain '{backend}' -> no network", g == "o" and _calls == [])
+finally:
+    urllib.request.urlopen = _orig_uo
+
 print(f"\nResults: {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

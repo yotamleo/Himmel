@@ -131,6 +131,29 @@ try:
 except RuntimeError:
     check("jina: empty markdown raises", True)
 
+# HIMMEL-4351 item 4: a 200 whose preamble reports the target's own error is
+# an error page, not content — raise instead of writing it into the clip.
+reset()
+stub_urlopen(["Title: Just a moment\n\nURL Source: https://example.com/post\n\nWarning: Target URL returned error 403: Forbidden\n\nMarkdown Content:\nEnable JavaScript and cookies to continue\n"])
+try:
+    mod.JinaReaderClient().scrape("https://example.com/post")
+    check("jina: 200 carrying a target-error warning raises", False)
+except RuntimeError:
+    check("jina: 200 carrying a target-error warning raises", True)
+check("jina: that fetch is still ledgered (the call happened)", len(ledger_lines()) == 1)
+
+# HIMMEL-4351 item 2: a 200 whose body does not parse as JSON still spent the
+# call — ledger it at the documented cost, ok=false, not as a free transport error.
+reset()
+stub_urlopen(["<html>not json</html>"])
+try:
+    mod.FirecrawlClient("k", budget=5).scrape(URL)
+except Exception:
+    pass
+row = (ledger_lines() or [{}])[0]
+check("ledger: transport ok + parse failure counts the credit, ok=false",
+      row.get("credits") == mod.FirecrawlClient.SCRAPE_COST and row.get("ok") is False)
+
 # --- local-headless slot: named, not implemented ----------------------------
 try:
     mod.LocalHeadlessClient().scrape("https://example.com/")
