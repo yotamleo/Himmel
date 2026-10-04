@@ -383,3 +383,14 @@ test("framePeerLine frames a record whose fields cannot be coerced as malformed 
   expect(o.malformed).toBe(true);
   expect(JSON.parse(framePeerLine("not json")).malformed).toBe(true);
 });
+
+test("framePeerLine bounds the ESCAPED text: a raw-fitting run of escapable chars cannot exceed the bound", async () => {
+  const { framePeerLine, PEER_TEXT_MAX } = await import("./bus");
+  const line = framePeerLine(JSON.stringify({ from: "a", to: "b", ts: "t", text: '"'.repeat(PEER_TEXT_MAX) }));
+  const o = JSON.parse(line);
+  expect(JSON.stringify(o.text).length - 2).toBeLessThanOrEqual(PEER_TEXT_MAX);
+  expect(o.clipped).toBe(true);
+  expect(line.length).toBeLessThan(PEER_TEXT_MAX + 200);
+  const mal = framePeerLine("\n".repeat(PEER_TEXT_MAX) + "{");
+  expect(mal.length).toBeLessThan(PEER_TEXT_MAX + 200);
+});

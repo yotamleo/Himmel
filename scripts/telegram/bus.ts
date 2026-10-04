@@ -239,6 +239,17 @@ export async function peerSend(root: string, from: string, to: string, text: str
   await appendLine(peerInbox(root, to), line);
 }
 
+// Clip s so its ESCAPED form (JSON escapes; U+2028/9 count as 6 chars) fits PEER_TEXT_MAX.
+function clipEscaped(s: string): { text: string; clipped: boolean } {
+  let used = 0, end = 0;
+  for (const ch of s) {
+    used += ch === "\u2028" || ch === "\u2029" ? 6 : JSON.stringify(ch).length - 2;
+    if (used > PEER_TEXT_MAX) return { text: s.slice(0, end), clipped: true };
+    end += ch.length;
+  }
+  return { text: s, clipped: false };
+}
+
 // Receiver-side framing: built HERE from the parsed record, never echoing
 // sender bytes raw. JSON.stringify escapes \n and \r; U+2028/U+2029 are
 // escaped explicitly. Malformed lines are framed, not dropped.
@@ -248,15 +259,15 @@ export function framePeerLine(raw: string): string {
   let out: Record<string, unknown>;
   if (o && typeof o === "object" && !Array.isArray(o)) {
     try {
-      const text = String(o.text ?? "");
+      const { text, clipped } = clipEscaped(String(o.text ?? ""));
       out = { from: String(o.from ?? "").slice(0, PEER_SEAT_MAX), to: String(o.to ?? "").slice(0, PEER_SEAT_MAX),
-        ts: String(o.ts ?? "").slice(0, PEER_SEAT_MAX), text: text.slice(0, PEER_TEXT_MAX) };
-      if (text.length > PEER_TEXT_MAX) out.clipped = true;
+        ts: String(o.ts ?? "").slice(0, PEER_SEAT_MAX), text };
+      if (clipped) out.clipped = true;
     } catch {
-      out = { malformed: true, text: raw.slice(0, PEER_TEXT_MAX) };
+      out = { malformed: true, text: clipEscaped(raw).text };
     }
   } else {
-    out = { malformed: true, text: raw.slice(0, PEER_TEXT_MAX) };
+    out = { malformed: true, text: clipEscaped(raw).text };
   }
   return JSON.stringify(out).replace(/\u{2028}/gu, "\\" + "u2028").replace(/\u{2029}/gu, "\\" + "u2029");
 }
