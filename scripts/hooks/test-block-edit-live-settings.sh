@@ -2820,6 +2820,21 @@ assert_rc "814 bash -c redirect into worktree .claude/sett*s.json allows" 0 \
     "$(bash_rc_of "$WT2" 'bash -c "echo x > .claude/sett*s.json"')"
 assert_rc "815 sh -c redirect into worktree .claude/s?ttings.json allows" 0 \
     "$(bash_rc_of "$WT2" "sh -c 'echo x > .claude/s?ttings.json'")"
+# 816-817 (CR round 1): an unterminated heredoc in one body must not swallow a
+# later body's write; each body is judged in its own run.
+rows_both 816 2 "an open heredoc in one interpreter body does not hide a later body's write" <<'ROWS'
+bash -c 'cat <<EOF'; bash -c 'echo x > ~/.claude/sett*s.json'
+eval 'cat <<EOF'; eval "echo x > ~/.claude/sett*s.json"
+bash -c "cat <<'EOF'"; bash -c 'echo x > ~/.claude/sett*s.json'
+eval "cat <<'EOF'"; eval "echo x > ~/.claude/sett*s.json"
+sh -c "cat <<'EOF'"; sh -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -c "cat <<'EOF' > /tmp/x"; bash -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -c "cat <<'EOF' > /tmp/x"; bash -c 'echo x > ~/.cl[a]ude/settings.json'
+bash -c "cat <<'EOF' > /tmp/x"; bash -c 'echo x > ~/.c?aude/settings.json'
+eval "cat <<'EOF' > /tmp/x"; eval 'cp /tmp/a ~/.cl*/settings.json'
+eval "cat <<'EOF' > /tmp/x"; eval 'echo x > ~/.cl[a]ude/settings.json'
+eval "cat <<'EOF' > /tmp/x"; eval 'echo x > ~/.c?aude/settings.json'
+ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.

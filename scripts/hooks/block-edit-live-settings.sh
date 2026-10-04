@@ -2726,9 +2726,11 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # quoted word to the tokenizer, so its words never carry their own
         # glob flag (ST_G) and the glob/brace leaf and `.claude` fold checks
         # below never see `~/.claude/sett*s.json` inside it. The shell reads
-        # that body as a command of its own, so this hook judges it as one: the
-        # bodies, one per line, go through this same hook (same cwd, same env)
-        # before anything below can allow. Nesting recurses one level per
+        # that body as a command of its own, so this hook judges it as one:
+        # each body goes through this same hook in a run of its own (same cwd,
+        # same env) before anything below can allow. Bodies are never joined,
+        # so an open heredoc in one cannot swallow the next (CR round 1).
+        # Nesting recurses one level per
         # body; each level is a strict substring of the last, so it ends. A
         # command the tokenizer could not vouch for (TOK=0) needs none of
         # this: its fallback splits the quote-stripped text and treats every
@@ -2738,7 +2740,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # `watch '…'` bodies stay one word. Upgrade path: add the name when a
         # bypass report names one.
         if [ "$TOK" = 1 ]; then
-            ib='' ii=0
+            ii=0
             while [ "$ii" -lt "$ST_N" ]; do
                 ij=$((ii + 1)) ibw=''
                 case "${ST_LW[ii]##*/}" in
@@ -2765,16 +2767,15 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                         done
                         ;;
                 esac
-                [ -z "$ibw" ] || ib="${ib:+$ib$'\n'}$ibw"
+                if [ -n "$ibw" ] \
+                    && ! jq -n --arg cmd "$ibw" --arg cwd "$cwd" \
+                        '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+                        | bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
+                    echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c or eval in: $cmd" >&2
+                    exit 2
+                fi
                 ii=$((ii + 1))
             done
-            if [ -n "$ib" ] \
-                && ! jq -n --arg cmd "$ib" --arg cwd "$cwd" \
-                    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
-                    | bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
-                echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c or eval in: $cmd" >&2
-                exit 2
-            fi
         fi
     fi
     # The shell drops quotes and escapes inside a word (`c\p`, `c""p` and
