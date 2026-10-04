@@ -51,6 +51,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 
 
@@ -157,7 +158,10 @@ _CMDPOS = r"(?:^|[;&|(\n])\s*"
 # documented limits are intentional.
 # Bounded executable-path prefix: optional quote + optional drive letter +
 # one slash-terminated segment run. "/" only — norm() folds "\" to "/".
-_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&`\"']*/)?"
+# The run stops at "(" and at ")" before "{": both are command-position anchors,
+# so a "((((…" or "){){){…" run otherwise rescans the rest of the run from every
+# anchor (quadratic, HIMMEL-4190).
+_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:(?:[^\s|;&(`\"')]|\)(?!\{))*/)?"
 # Quote-aware assignment (CR r5): FOO='a b' / FOO="a b" / FOO=bare. Shared by
 # the env-prefix assignment tolerance and the leading env-assignment prefix so
 # a quoted value's space does not drop the verb out of command position.
@@ -213,20 +217,32 @@ _CMDPOS_WRAPS = tuple(
     for heads, steps, exits in _WRAPPERS)
 
 
-def _cmdpos_destructive(text: str) -> bool:
-    """True when a _CMDPOS_VERBS atom sits in command position: after an
+# The hermes hook times out at 10s and fails OPEN, so a slow scan turns a deny
+# into an allow. Every walk carries a budget and answers "match" (deny) once it
+# is spent: whatever quadratic shape a later regex change reintroduces degrades
+# to a refusal, never to an allow (HIMMEL-4190).
+_SCAN_BUDGET = 2.0
+
+
+def _cmdpos_match(text: str, verbs, deadline=None) -> bool:
+    """True when a `verbs` atom sits in command position: after an
     anchor and any run of assignments, keywords and wrappers (with their
-    flags). The same grammar the .sh CMDPOS spells as one ERE."""
+    flags). The same grammar the .sh CMDPOS spells as one ERE. True as well
+    once `deadline` (a time.monotonic() value) has passed."""
+    if deadline is None:
+        deadline = time.monotonic() + _SCAN_BUDGET
     todo = [(-1, m.end()) for m in _CMDPOS_ANCHOR.finditer(text)]
     seen = set()
     while todo:
+        if time.monotonic() > deadline:
+            return True
         state = todo.pop()
         if state in seen:
             continue
         seen.add(state)
         w, p = state
         if w < 0:
-            if _CMDPOS_VERBS.match(text, p):
+            if verbs.match(text, p):
                 return True
             todo += [(-1, m.end()) for u in _CMDPOS_UNITS if (m := u.match(text, p))]
             todo += [(i, m.end()) for i, (heads, _, _) in enumerate(_CMDPOS_WRAPS)
@@ -236,6 +252,10 @@ def _cmdpos_destructive(text: str) -> bool:
             todo += [(w, m.end()) for st in steps if (m := st.match(text, p))]
             todo += [(-1, m.end()) for x in exits if (m := x.match(text, p))]
     return False
+
+
+def _cmdpos_destructive(text: str) -> bool:
+    return _cmdpos_match(text, _CMDPOS_VERBS)
 
 
 # ScheduledTasks module WRITE verbs (HIMMEL-1821). Shared by the two anchors
@@ -253,6 +273,13 @@ _CMDPOS_VERBS = re.compile(
     + r"|(?:icacls|takeown)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r")"
 )
+# HIMMEL-4190: `find -delete` is a recursive delete of its own. Twin of the .sh
+# FIND_DELETE_PAT: the gap is unbounded (a `;` in it too), so a quoted `;`
+# cannot hide the flag. Linear here: find the last -delete once, then ask for a
+# bounded `find` verb at command position in the text up to it (an unbounded
+# gap re-scanned at every anchor was quadratic and ran the 10s hook timeout out).
+_DELETE_FLAG = re.compile(r"\s-delete(?=[^A-Za-z0-9_-]|$)")
+_FIND_VERB = re.compile(_EXE_PREFIX + r"find(?:\.exe)?(?=\s)")
 
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
@@ -309,6 +336,28 @@ TERMINAL_DESTRUCTIVE = re.compile(
     + r"|\bgit\s+(reset\s+--hard|clean\s+-\w*f|filter-branch)\b"
     + r"|\bcurl[^|;&]*\|\s*(ba)?sh|\bwget[^|;&]*\|\s*(ba)?sh"
 )
+
+
+def _find_delete(raw: str) -> bool:
+    """HIMMEL-4190, twin of the .sh rm scans: newlines fold to `;`, a
+    backslash-newline pair is dropped on a second copy, and each copy is read
+    with its quotes and backslashes kept and dropped, so `"find" d '-delete'`
+    reads as `find d -delete`."""
+    low = raw.lower()
+    texts = {}  # identical readings are walked once
+    for src in (low, _join_continuations(low)):
+        src = re.sub(r"[\r\n]", ";", src)
+        bare = re.sub(r"[\"'\\]", "", re.sub(r"\$([\"'])", r"\1", src)).replace("\t", " ")
+        bare = re.sub(r" {2,}", " ", bare)
+        texts[src] = texts[bare] = None
+    deadline = time.monotonic() + _SCAN_BUDGET  # one budget for every reading
+    for text in texts:
+        last = None
+        for last in _DELETE_FLAG.finditer(text):
+            pass
+        if last and _cmdpos_match(text[:last.start() + 1], _FIND_VERB, deadline):
+            return True
+    return False
 
 
 def _terminal_destructive(text: str) -> bool:
@@ -1504,7 +1553,7 @@ def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
               "Code's home is forbidden — use the file tools for those.")
     # HIMMEL-4158: norm() turns `\` into `/`, which hides a shell escape in a
     # wrapper value (`sudo -u a\ b reboot`); also read the raw text then.
-    if _terminal_destructive(cmd) or (
+    if _terminal_destructive(cmd) or _find_delete(raw_cmd) or (
             "\\" in raw_cmd and _terminal_destructive(raw_cmd.strip().lower())):
         block("Catastrophic command class refused (recursive deletion, "
               "disk/scheduler/process/registry mutation, force-push, "
