@@ -607,10 +607,10 @@ function isDirectory(p) {
 function marketplaceSource(entry) {
   const src = entry && entry.source;
   if (!src || typeof src !== 'object') return '';
-  if (src.source === 'github') return src.repo || '';
-  if (src.source === 'directory') return src.path || '';
-  if (src.source === 'url') return src.url || '';
-  return '';
+  const val = src.source === 'github' ? src.repo
+    : src.source === 'directory' ? src.path
+    : src.source === 'url' ? src.url : '';
+  return typeof val === 'string' ? val : '';
 }
 
 // Quote a token for the printed shell command only when it needs it.

@@ -69,7 +69,8 @@ grepq "$out" -F 'marketplace add /new\ checkout/marketplace --scope user' || fai
 grepq "$out" "keeping the settings source" || fail "third-party must recommend the settings side: $out"
 grepq "$out" "himmel's own manifest is right" || fail "himmel-owned marketplace must say the manifest wins: $out"
 ! grepq "$out" "marketplace registration failed" || fail "still reports a registration failure: $out"
-! grepq "$(cat "$STUB_LOG")" "marketplace add" || fail "must not call marketplace add for a drifted entry"
+[ -f "$STUB_LOG" ] || fail "stub log missing: the no-add check would be vacuous"
+! grep -q "marketplace add" "$STUB_LOG" || fail "must not call marketplace add for a drifted entry"
 echo "ok: source mismatch reports DRIFT with both sources + remedy and exits 0"
 
 # A matching entry still goes through `marketplace add` (idempotent path).
