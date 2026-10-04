@@ -2553,6 +2553,15 @@ assert_rc "627 nested worktree exec >/dev/fd/5 on its own line, then cat <<'EOF'
 cat <<'EOF'
 $DC_RUN
 EOF" HOME="$FAKEHOME")"
+assert_rc "628 nested worktree PATH[0]=/tmp; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "PATH[0]=/tmp; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "629 nested worktree eval\"\$f\" (no space) then cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "eval\"\$f\"
+cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
 assert_rc "615 nested worktree /usr/bin/cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "/usr/bin/cat <<'EOF' > /tmp/notes.md
 the hook folds ~/.cl\$(printf a)ude now

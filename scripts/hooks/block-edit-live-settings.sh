@@ -2113,7 +2113,9 @@ _dc_data_bodies() {
     [[ ! $out =~ (^|[;\&[:space:]])(\}|\)|done|fi|esac)[[:space:]]*([0-9]*[\<\>]|\|) ]] || return 1
     [[ ! $out =~ (^|[^a-z0-9_])(alias|hash|enable|function|exec|coproc)([^a-z0-9_]|$) ]] || return 1
     case "$out" in *'>('*|*/dev/fd/*|*/proc/*/fd*) return 1 ;; esac
-    u='(^|[^-a-z0-9_./{$])(path|source|eval)([+]?=|[[:space:];&|)]|$)'
+    # ponytail: a name spelled through an expansion (`PA$'T'H=`,
+    # `declare -n p=…`) reads as data, as on main; HIMMEL-4304
+    u='(^|[^-a-z0-9_./{$])(path|source|eval)([^-a-z0-9_./]|$)'
     [[ ! $out =~ $u ]] || return 1
     u='(^|[;&|({[:space:]])\.[[:space:]]+[^=!<>|&[:space:]]'
     [[ ! $out =~ $u ]] || return 1
