@@ -6,6 +6,9 @@ handover state, no plugins, no `~/.claude`, no console inbox. The brief is its
 whole world, so it is self-contained. For a local leg, use
 [`leg-brief-template.md`](leg-brief-template.md) instead.
 
+`/cloud-route` (`scripts/lanes/cloud-route.mjs`) generates this brief for a
+CLOUD-OK ticket and prints the launch line.
+
 ## What a cloud session has
 
 | Has | Does not have |
