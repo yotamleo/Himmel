@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regression guard for HIMMEL-3608: the deterministic ship tail
 # (merge-on-green.sh, ready-check.sh, tick.sh, check-ci.sh) must never gain a
+# headless-claude-ok: comment text only; this test asserts the ship tail never gains such a call
 # headless `claude -p`/`--print`/`--bg` call. See docs/internals/ship-tail-model-free.md
 # for the ruling this test encodes.
 #

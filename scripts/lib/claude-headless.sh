@@ -428,6 +428,7 @@ STDOUT_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stdout.XXXXXX")"
 # claude session (the most likely time to be interrupted) never reached
 # finalize_on_exit, leaving the dispatch row permanently "dispatched". A
 # background job + `wait "$pid"` IS promptly interruptible.
+# headless-claude-ok: comment text only; the claude call it describes is marked at its launch site
 # HIMMEL-3640: dedupe PATH before the nested `claude -p` launch — Claude
 # Code prepends each enabled plugin's bin/ dir at startup without checking
 # for an existing copy, so handing it an already-duplicated inherited PATH
