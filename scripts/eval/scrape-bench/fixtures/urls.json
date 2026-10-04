@@ -1,0 +1,46 @@
+[
+  {"id": "static-1", "category": "static-article", "url": "https://paulgraham.com/greatwork.html", "title": "How to Do Great Work", "phrase": "intersection look like"},
+  {"id": "static-2", "category": "static-article", "url": "https://danluu.com/file-consistency/", "title": "Files are hard", "phrase": "file systems"},
+  {"id": "static-3", "category": "static-article", "url": "https://www.gnu.org/philosophy/free-sw.html", "title": "What is free software", "phrase": "four essential freedoms"},
+  {"id": "static-4", "category": "static-article", "url": "https://matklad.github.io/2021/02/06/ARCHITECTURE.md.html", "title": "ARCHITECTURE.md", "phrase": "ARCHITECTURE document next to"},
+  {"id": "static-5", "category": "static-article", "url": "https://en.wikipedia.org/wiki/Markdown", "title": "Markdown", "phrase": "lightweight markup language"},
+
+  {"id": "spa-1", "category": "js-spa", "url": "https://todomvc.com/examples/react/dist/", "title": "TodoMVC", "phrase": "React is a JavaScript library"},
+  {"id": "spa-2", "category": "js-spa", "url": "https://www.npmjs.com/package/react", "title": "react", "phrase": "0 Dependencies"},
+  {"id": "spa-3", "category": "js-spa", "url": "https://hub.docker.com/_/python", "title": "python", "phrase": "Python is an interpreted"},
+  {"id": "spa-4", "category": "js-spa", "url": "https://squoosh.app/", "title": "Squoosh", "phrase": "Smaller images mean faster load times"},
+  {"id": "spa-5", "category": "js-spa", "url": "https://play.google.com/store/apps/details?id=com.spotify.music", "title": "Spotify", "phrase": "music"},
+
+  {"id": "docs-1", "category": "docs-site", "url": "https://docs.python.org/3/library/json.html", "title": "json", "phrase": "JSON (JavaScript Object Notation)"},
+  {"id": "docs-2", "category": "docs-site", "url": "https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API", "title": "Fetch API", "phrase": "fetch()"},
+  {"id": "docs-3", "category": "docs-site", "url": "https://kubernetes.io/docs/concepts/overview/", "title": "Overview", "phrase": "What Kubernetes is not"},
+  {"id": "docs-4", "category": "docs-site", "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html", "title": "What Is Ownership", "phrase": "Ownership is a set of rules"},
+  {"id": "docs-5", "category": "docs-site", "url": "https://docs.github.com/en/get-started/start-your-journey/about-github-and-git", "title": "About GitHub and Git", "phrase": "version control"},
+
+  {"id": "wall-1", "category": "paywall-login", "url": "https://www.nytimes.com/section/technology", "title": "Technology", "phrase": "Technology"},
+  {"id": "wall-2", "category": "paywall-login", "url": "https://www.ft.com/technology", "title": "Technology", "phrase": "Technology"},
+  {"id": "wall-3", "category": "paywall-login", "url": "https://www.linkedin.com/company/anthropicresearch", "title": "Anthropic", "phrase": "Anthropic"},
+  {"id": "wall-4", "category": "paywall-login", "url": "https://www.instagram.com/instagram/", "title": "Instagram", "phrase": "Instagram"},
+  {"id": "wall-5", "category": "paywall-login", "url": "https://www.quora.com/What-is-the-meaning-of-life", "title": "meaning of life", "phrase": "meaning of life"},
+
+  {"id": "x-1", "category": "x-post", "url": "https://x.com/jack/status/20", "title": "jack", "phrase": "just setting up my twttr"},
+  {"id": "x-2", "category": "x-post", "url": "https://x.com/BarackObama/status/266031293945503744", "title": "Barack Obama", "phrase": "Four more years"},
+  {"id": "x-3", "category": "x-post", "url": "https://x.com/TheEllenShow/status/440322224407314432", "title": "Ellen DeGeneres", "phrase": "Best photo ever"},
+  {"id": "x-4", "category": "x-post", "url": "https://x.com/elonmusk/status/1519480761749016577", "title": "Elon Musk", "phrase": "Coca-Cola"},
+
+  {"id": "reddit-1", "category": "reddit-thread", "url": "https://www.reddit.com/r/IAmA/comments/z1c9z/i_am_barack_obama_president_of_the_united_states/", "title": "I am Barack Obama", "phrase": "President of the United States"},
+  {"id": "reddit-2", "category": "reddit-thread", "url": "https://old.reddit.com/r/IAmA/comments/z1c9z/i_am_barack_obama_president_of_the_united_states/", "title": "I am Barack Obama", "phrase": "President of the United States"},
+  {"id": "reddit-3", "category": "reddit-thread", "url": "https://www.reddit.com/r/rust/", "title": "rust", "phrase": "Rust"},
+  {"id": "reddit-4", "category": "reddit-thread", "url": "https://www.reddit.com/r/programming/", "title": "programming", "phrase": "programming"},
+
+  {"id": "yt-1", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "title": "Never Gonna Give You Up", "phrase": "Rick Astley"},
+  {"id": "yt-2", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=jNQXAC9IJRw", "title": "Me at the zoo", "phrase": "elephants"},
+  {"id": "yt-3", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=9bZkp7q19f0", "title": "Gangnam Style", "phrase": "PSY"},
+  {"id": "yt-4", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "title": "Big Buck Bunny", "phrase": "Big Buck Bunny"},
+
+  {"id": "gh-1", "category": "github", "url": "https://github.com/torvalds/linux", "title": "linux", "phrase": "Linux kernel"},
+  {"id": "gh-2", "category": "github", "url": "https://github.com/rust-lang/rust/blob/master/README.md", "title": "Rust", "phrase": "main source code repository for Rust"},
+  {"id": "gh-3", "category": "github", "url": "https://github.com/torvalds/linux/pull/17", "title": "Linux", "phrase": "pull request"},
+  {"id": "gh-4", "category": "github", "url": "https://github.com/Panniantong/Agent-Reach", "title": "Agent-Reach", "phrase": "Agent"},
+  {"id": "gh-5", "category": "github", "url": "https://github.com/rust-lang/rust/issues/1", "title": "rust", "phrase": "issue"}
+]
