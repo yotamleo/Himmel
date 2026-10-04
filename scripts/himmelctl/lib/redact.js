@@ -37,12 +37,16 @@ function escapeRe(s) {
 // step list must stay readable in titles and remedies). `parseDotEnv` is
 // probes.js's parser, passed in.
 const SECRET_KEY = /TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|COOKIE|CREDENTIAL/i;
-function envValues(raw, parseDotEnv) {
-  let parsed = {};
-  try { parsed = parseDotEnv(raw) || {}; } catch { return []; }
-  return Object.entries(parsed)
+function secretValues(obj) {
+  return Object.entries(obj || {})
     .filter(([k, v]) => SECRET_KEY.test(k) && typeof v === 'string' && v.length >= 6)
     .map(([, v]) => v);
+}
+// raw: .env text; extraEnv: optional object (process.env) whose secret-named values count too.
+function envValues(raw, parseDotEnv, extraEnv) {
+  let parsed = {};
+  try { parsed = parseDotEnv(raw) || {}; } catch { parsed = {}; }
+  return secretValues(parsed).concat(secretValues(extraEnv));
 }
 
 function redact(input, opts) {

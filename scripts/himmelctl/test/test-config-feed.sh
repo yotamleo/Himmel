@@ -201,6 +201,20 @@ DOCTOR_STUB="$deadDoctor" run_report > "$work/dead.json" 2> "$work/dead.err" || 
 jq -e '[.rows[]|select(.id=="doctor:C1-guardrail")]|length==1' "$work/dead.json" >/dev/null || fail "partial doctor row dropped"
 jq -e '.rows[]|select(.id=="doctor:run")|.health=="warn" and .installed.state=="degraded"' "$work/dead.json" >/dev/null || fail "killed doctor emitted no doctor:run failure row"
 pass "e3 killed doctor adds a doctor:run failure row beside the partial rows"
+DOCTOR_STUB="$deadDoctor" run_report --items doctor:C1-guardrail > "$work/dead2.json" 2> "$work/dead2.err" || fail "--items report exited non-zero on a killed doctor"
+jq -e '[.rows[]|select(.id=="doctor:run")]|length==1' "$work/dead2.json" >/dev/null || fail "--items filter hid the doctor:run failure row"
+pass "e4 an --items filter keeps the doctor:run failure row"
+
+# ── e5. a secret present only in process.env is redacted ────────────────────
+envDoctor="$work/env-doctor.sh"
+cat > "$envDoctor" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"sev":"FAIL","id":"C8-envleak","msg":"saw plainsecretvalue99 here","remedy":""}'
+STUB
+chmod +x "$envDoctor"
+DOCTOR_STUB="$envDoctor" HIMMEL_TEST_API_TOKEN=plainsecretvalue99 run_report > "$work/env.json" 2> "$work/env.err" || fail "report exited non-zero (env-secret case)"
+if grep -q plainsecretvalue99 "$work/env.json"; then fail "process.env-only secret leaked into the report"; fi
+pass "e5 a secret known only from process.env is redacted"
 
 # ── f. flag-registry-lint ───────────────────────────────────────────────────
 "$node_bin" "$lint" --root "$repo_root" >/dev/null 2>"$work/lint.err" || { cat "$work/lint.err" >&2; fail "lint fails on the real tree"; }

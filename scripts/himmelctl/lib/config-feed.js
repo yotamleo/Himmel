@@ -249,7 +249,15 @@ function pluginRows(ctx) {
   if (!fs.existsSync(script)) return [];
   const r = spawnSync(resolveBash({ env: process.env }), [script, 'list', '--json'], { encoding: 'utf8', timeout: 30000 });
   let data;
-  try { data = JSON.parse(r.stdout); } catch { return []; }
+  try { data = JSON.parse(r.stdout); } catch {
+    return [mkRow({
+      id: 'plugin:run', source: 'plugin', group: 'core', title: 'plugin profile probe',
+      declared: { where: 'scripts/machine-setup/plugin-profile.sh', desired: 'readable', profile: 'all' },
+      installed: { state: 'n/a', detail: r.error ? String(r.error.message) : `no JSON (exit ${r.status})` },
+      health: 'warn', fix: { remedy: '', owner: 'user' }, probedAt: ctx.probedAt,
+      control: { class: 'display-only', reason: 'probe failure' },
+    })];
+  }
   return (data.onDemand || []).map((p) => mkRow({
     id: `plugin:${p.spec}`, source: 'plugin', group: 'core', title: p.spec,
     declared: { where: 'scripts/lanes/plugin-profiles.json (onDemand)', desired: 'opt-in', profile: 'all' },
@@ -360,7 +368,8 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
   if (wants('initiative:')) rows = rows.concat(initiativeRows(ctx));
   if (wants('flag:')) rows = rows.concat(flagRows(ctx));
   if (wants('secret:')) rows = rows.concat(secretRows(ctx));
-  if (itemIds) rows = rows.filter((r) => itemIds.includes(r.id));
+  // doctor:run reports a dead or timed-out doctor; an --items filter must not hide it.
+  if (itemIds) rows = rows.filter((r) => itemIds.includes(r.id) || r.id === 'doctor:run');
 
   const summary = { total: rows.length, ok: 0, warn: 0, fail: 0, off: 0, info: 0 };
   for (const r of rows) summary[r.health] = (summary[r.health] || 0) + 1;
@@ -375,7 +384,7 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
     summary,
   };
   if (process.env.HIMMEL_REPORT_NO_REDACT === '1') return feed;
-  return redactLib.redactDeep(feed, { literals: redactLib.envValues(readDotEnv(), probesLib.parseDotEnv) });
+  return redactLib.redactDeep(feed, { literals: redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env) });
 }
 
 module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, remedyFromDetail };
