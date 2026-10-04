@@ -258,8 +258,13 @@ fi
 # pid is dead is stale: clear it and carry on; with no pid file it is stale once
 # a minute old. Same path and rule as swap_lock_* in qmd-embed-model.sh, which
 # this plugin copy cannot source.
+# The start TAKES the lock (released on exit) rather than only checking it: a
+# check-then-start leaves a window in which a swap could take the lock and pass
+# its own liveness checks. Holding it makes the two mutually exclusive; a swap
+# that starts meanwhile is refused, and its final re-check sees a started daemon.
 swap_lock="$qmd_state_dir/embed-swap.lock"
-if [ -d "$swap_lock" ]; then
+mkdir -p "$qmd_state_dir" 2>/dev/null
+if ! mkdir "$swap_lock" 2>/dev/null; then
   swap_pid="$(cat "$swap_lock/pid" 2>/dev/null)"
   case "$swap_pid" in
     ''|*[!0-9]*) [ -n "$(find "$swap_lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && swap_stale=1 || swap_stale=0 ;;
@@ -268,13 +273,16 @@ if [ -d "$swap_lock" ]; then
   if [ "$swap_stale" -eq 1 ]; then
     rm -rf "$swap_lock"
   fi
-  if [ -d "$swap_lock" ]; then
+  if ! mkdir "$swap_lock" 2>/dev/null; then
     echo "ensure-qmd-daemon: an embed-model swap is in progress (pid ${swap_pid:-unknown}, $swap_lock) - NOT starting the qmd daemon." >&2
     echo "  Starting it now would serve queries against a half-swapped index. Retry once the swap finishes;" >&2
     echo "  if that pid is gone, remove the lock directory." >&2
     exit 1
   fi
 fi
+echo "$$" > "$swap_lock/pid"
+# shellcheck disable=SC2064 # expand now: the lock path is fixed for this run
+trap "[ \"\$(cat '$swap_lock/pid' 2>/dev/null)\" = \"$$\" ] && rm -rf '$swap_lock'" EXIT
 
 # ---- Dead: start the daemon ------------------------------------------------
 if ! resolve_qmd; then

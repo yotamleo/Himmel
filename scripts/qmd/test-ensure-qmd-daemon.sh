@@ -134,6 +134,9 @@ if [ "$*" = "mcp --http --daemon" ]; then
   if [ "${QMD_MOCK_HANG:-0}" = "1" ]; then
     exec sleep 60
   fi
+  if [ -n "${QMD_MOCK_LOCK_DIR:-}" ]; then
+    if [ -d "$QMD_MOCK_LOCK_DIR" ]; then echo held >> "$QMD_MOCK_STATE/lock-at-start"; else echo free >> "$QMD_MOCK_STATE/lock-at-start"; fi
+  fi
   touch "$QMD_MOCK_STATE/alive"
   echo "Started qmd HTTP daemon (PID 4242)."
 fi
@@ -256,7 +259,7 @@ echo "ok (f): start-ok-but-never-alive exhausts the wait loop with start output 
 rbin="$work/rbin"
 mkdir -p "$rbin"
 real_bash="$(command -v bash)"
-for t in bash grep sed sleep touch; do
+for t in bash grep sed sleep touch mkdir cat rm find; do
   real="$(command -v "$t")"
   printf '#!%s\nexec "%s" "$@"\n' "$real_bash" "$real" > "$rbin/$t"
   chmod +x "$rbin/$t"
@@ -657,5 +660,18 @@ run_ensure sentinel "$bin:$safe"
 [ ! -d "$swap_lock" ] || fail "(s) stale swap lock: not cleared"
 grep -qx 'mcp --http --daemon' "$state/qmd-argv.log" || fail "(s) stale swap lock: the daemon was not started"
 echo "ok (s): a swap lock whose holder is dead is cleared and the daemon starts"
+
+# ---- (t) the start itself holds the lock, so a swap cannot slip in (HIMMEL-4314) --
+# Checking the lock and then starting leaves a window: a swap could take the lock
+# between the two and pass its own liveness checks. The start path takes the same
+# lock around the start, so a swap started meanwhile is refused, and releases it.
+rm -f "$state/alive" "$state/lock-at-start"
+export QMD_MOCK_LOCK_DIR="$swap_lock"
+run_ensure sentinel "$bin:$safe"
+unset QMD_MOCK_LOCK_DIR
+[ "$rc" -eq 0 ] || fail "(t) start: expected rc 0, got $rc ($out)"
+grep -qx held "$state/lock-at-start" 2>/dev/null || fail "(t) start: the swap lock was not held while the daemon started ($(cat "$state/lock-at-start" 2>/dev/null))"
+[ ! -d "$swap_lock" ] || fail "(t) start: the lock was not released after the start"
+echo "ok (t): the daemon start holds the swap lock and releases it"
 
 echo "PASS: all ensure-qmd-daemon cases"

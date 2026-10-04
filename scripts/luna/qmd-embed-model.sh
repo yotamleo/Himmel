@@ -214,7 +214,7 @@ daemon_running() {
 # are inlined in marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh, which
 # cannot source this repo. A lock whose pid is dead is stale; one with no pid
 # file is stale once a minute old (the holder died between mkdir and the write).
-# ponytail: pid liveness is POSIX kill -0 only (Git Bash pids do not map), and a start path that cleared a stale lock can race a brand-new swap, upgrade in HIMMEL-4314 follow-ups if either bites.
+# ponytail: pid liveness is POSIX kill -0 only (Git Bash pids do not map), and the daemon start takes this same lock but a hand-typed `qmd mcp --http --daemon` does not, so the second daemon check just before the commit is the only guard against it; upgrade in HIMMEL-4314 follow-ups if either bites.
 swap_lock_dir() { printf '%s/qmd/embed-swap.lock\n' "${XDG_CACHE_HOME:-$HOME/.cache}"; }
 
 swap_lock_stale() {
