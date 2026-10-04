@@ -2332,9 +2332,11 @@ assert_rc "575 primary node <<'EOF' child_process near ~/.cl\$(printf a)ude deni
     "$(bash_rc_of "$PRIMARY" "node <<'EOF'
 require('child_process').execSync('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
 EOF" HOME="$FAKEHOME")"
-assert_rc "576 nested worktree python3 <<'EOF' print naming ~/.cl\$(printf a)ude allows" 0 \
+# any interpreter body: a shell-out can hide behind an alias (CR round 5)
+assert_rc "576 nested worktree python3 <<'EOF' aliased system near ~/.cl\$(printf a)ude denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "python3 <<'EOF'
-print('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
+from os import system as run
+run('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
 EOF" HOME="$FAKEHOME")"
 # an unquoted heredoc sharing a quoted one's delimiter name is not data, and
 # a multibyte character ahead of the name does not cut the quote-aware scan
@@ -2348,6 +2350,31 @@ cat > /tmp/b.md <<EOF
 EOF" HOME="$FAKEHOME")"
 assert_rc "578 nested worktree UTF-8 text before cp \$SJ \"\$HOME\"/.cl(a|x)ude/settings.json denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "echo 'éééééééééééééééééééééééééééééééééééééééééééé' ; cp $SJ \"\$HOME\"/.cl(a|x)ude/settings.json" HOME="$FAKEHOME" LC_ALL=en_US.UTF-8)"
+# only a reader that never runs its stdin keeps a body as data: a git alias,
+# a pipe on, `eval "$(cat …)"` or `<(cat …)` may run it (CR round 5)
+assert_rc "579 nested worktree git -c alias.x='!bash' x <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "git -c alias.x='!bash' x <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "580 nested worktree cat <<'EOF' | bash body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' | bash
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "581 primary eval \"\$(cat <<'EOF'\" body denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "eval \"\$(cat <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF
+)\"" HOME="$FAKEHOME")"
+assert_rc "582 nested worktree bash <(cat <<'EOF') body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "bash <(cat <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF
+)" HOME="$FAKEHOME")"
+assert_rc "583 nested worktree git commit -m \"\$(cat <<'EOF'\" body allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "git commit -m \"\$(cat <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF
+)\"" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

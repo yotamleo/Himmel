@@ -1982,19 +1982,41 @@ _dc_name_fold() {
     _DCF=$out$t$keep
 }
 
-# _dc_data_bodies TEXT RAW — _DCNB is TEXT (the lowercased, quote-stripped
-# RAW) with the lines of each quoted heredoc body read by a data command
-# (`cat`, `tee`, `python3 -`, `git commit -F -`) blanked, and _DCBD is those
-# body lines with every other line blanked: the shell never globs such a
-# body, so only main's spellings are folded in it. Returns 1 when there is
-# no such body. A line misread as body only falls back to main's reading.
-# An interpreter body (`python`, `node`) that names a shell-out call hands
-# its text to a shell, so it is folded in full like any other line.
-_dc_data_bodies() {
-    local d=' ' s=$2 line l2 end='' dash='' w seg rcv out='' bd='' hre
-    local bo='' bb='' interp=0 u ure ore
-    local shre='system[[:space:]]*\(|popen|subprocess|exec[a-z]*[[:space:]]*\(|spawn|child_process|getoutput'
+# _dc_receiver SEG — 0 when the command SEG (leading assignments skipped)
+# only reads its stdin as data: `cat`, `tee`, `git commit`, `gh pr|issue|
+# release|api`. rcv is its command word. An interpreter, or a git alias
+# (`git -c alias.x='!bash' x`), may run the text, so it is not data.
+_dc_receiver() {
     local -a ws
+    local i=0
+    read -r -a ws <<< "$1"
+    rcv=''
+    while [ "$i" -lt "${#ws[@]}" ]; do
+        case "${ws[i]}" in [a-z_]*=*) i=$((i + 1)) ;; *) break ;; esac
+    done
+    [ "$i" -lt "${#ws[@]}" ] || return 1
+    rcv=${ws[i]##*/}
+    case "$rcv" in
+        cat|tee) return 0 ;;
+        git) [ "${ws[i + 1]-}" = commit ] ;;
+        gh) case "${ws[i + 1]-}" in pr|issue|release|api) return 0 ;; esac
+            return 1 ;;
+        *) return 1 ;;
+    esac
+}
+
+# _dc_data_bodies TEXT RAW — _DCNB is TEXT (the lowercased, quote-stripped
+# RAW) with the lines of each quoted heredoc body read as data (see
+# _dc_receiver; also `"$(cat <<'X'` inside such a command) blanked, and
+# _DCBD is those body lines with every other line blanked: the shell never
+# globs such a body, so only main's spellings are folded in it. Returns 1
+# when there is no such body. A line misread as body only falls back to
+# main's reading. A body piped on, or read by anything else (an
+# interpreter, `<(…)`, `eval "$(cat …)"`), may be run, so it is folded in
+# full like any other line.
+_dc_data_bodies() {
+    local d=' ' s=$2 line l2 end='' dash='' w seg pre rcv out='' bd='' hre
+    local bb='' bo='' u ure ore
     hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
     while [[ $s =~ $hre ]]; do
         d="$d${BASH_REMATCH[1]} "
@@ -2030,11 +2052,7 @@ _dc_data_bodies() {
             l2=$line
             [ -z "$dash" ] || l2=${l2#"${l2%%[!$'\t']*}"}
             if [ "$l2" = "$end" ]; then
-                if [ "$interp" = 1 ] && [[ $bb =~ $shre ]]; then
-                    out=$out$bb bd=$bd$bo
-                elif [ -n "$bb" ]; then
-                    out=$out$bo bd=$bd$bb _DCNB=x
-                fi
+                [ -z "$bb" ] || { out=$out$bo bd=$bd$bb _DCNB=x; }
                 bo='' bb='' end='' out=$out$line$'\n' bd=$bd$'\n'
             else
                 bo=$bo$'\n' bb=$bb$line$'\n'
@@ -2046,23 +2064,24 @@ _dc_data_bodies() {
         dash=${BASH_REMATCH[1]} w=${BASH_REMATCH[2]}
         case "$d" in *" $w "*) ;; *) continue ;; esac
         case "$u" in *" $w "*) continue ;; esac
+        # a body piped on (`| bash`) is not data
+        case "${line##*<<}" in *'|'*) continue ;; esac
         seg=${line%<<*}
-        seg=${seg##*[;\&|(]}
-        read -r -a ws <<< "$seg"
-        rcv=''
-        for rcv in "${ws[@]}"; do
-            case "$rcv" in [a-z_]*=*) rcv='' ;; *) break ;; esac
-        done
-        case "${rcv##*/}" in
-            cat|tee|git|gh) end=$w interp=0 ;;
-            python|python3|node) end=$w interp=1 ;;
-        esac
+        pre=${seg%"${seg##*[;\&|(]}"}
+        seg=${seg#"$pre"}
+        _dc_receiver "$seg" || continue
+        # a `$(cat <<'X'` body is the text of the command it sits in
+        if [ "${pre%\$\(}" != "$pre" ]; then
+            pre=${pre%\$\(}
+            pre=${pre##*[;\&|(]}
+            _dc_receiver "$pre" || continue
+            [ "$rcv" != cat ] || continue
+        else
+            case "$pre" in *'(') continue ;; esac
+        fi
+        end=$w
     done <<< "$1"
-    if [ "$interp" = 1 ] && [[ $bb =~ $shre ]]; then
-        out=$out$bb bd=$bd$bo
-    elif [ -n "$bb" ]; then
-        out=$out$bo bd=$bd$bb _DCNB=x
-    fi
+    [ -z "$bb" ] || { out=$out$bo bd=$bd$bb _DCNB=x; }
     [ -n "$_DCNB" ] || return 1
     _DCNB=$out _DCBD=$bd
 }
