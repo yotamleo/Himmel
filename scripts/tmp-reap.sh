@@ -45,7 +45,7 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 # Scoped (HIMMEL-4235): only the judged PR's judge dirs (j<N>, j<N>[a-z]) and the one
-# session dir; no fixtures, no cache-break copy, a 1 h (not 6 h) floor on judge dirs, none on the session
+# session dir; no fixtures, no cache-break copy, the same 6 h floor on judge dirs as the unscoped sweep, none on the session
 # (liveness and the census still apply). Never a fleet-wide sweep.
 SCOPED=0; [ -n "$SCOPE_JUDGE$SCOPE_SESSION" ] && SCOPED=1
 command -v jq >/dev/null 2>&1 || { echo "tmp-reap: jq is required" >&2; exit 2; }
@@ -64,7 +64,7 @@ MAX_BYTES=5242880
 NOW="$(date +%s)"
 MONTH="$(date +%Y-%m)"
 FAMILIES="mog-run.* mog-home.* himmel-git-empty-template.* himmel-fixture.* himmel-prov.* capguard-* poller-* cr-floor-probe-* clean-sandbox.* rt-tarball-out.*"
-if [ "$SCOPED" = 1 ]; then FAMILIES=""; JUDGE_AGE=3600; SESSION_AGE=0; fi   # a judge is not in the liveness census: a just-touched one may still be running
+if [ "$SCOPED" = 1 ]; then FAMILIES=""; SESSION_AGE=0; fi   # judge floor stays 6 h: a judge is not in the liveness census, a just-wrapped leg's judge dirs wait for a later sweep
 
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo "$NOW"; }
 sha() { # sha256 hex of a file, non-zero when neither tool can read it

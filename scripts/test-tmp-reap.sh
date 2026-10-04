@@ -208,6 +208,9 @@ absent "12. the named PR's idle judge dir is reaped" "$ROOT/claude-$(id -u)/j900
 mkdir -p "$ROOT/claude-$(id -u)/j9003"; : > "$ROOT/claude-$(id -u)/j9003/f"
 out="$(reap --apply --judge 9003)"; rc=$?
 exists "12. a just-touched judge dir (maybe still running) is kept even when named" "$ROOT/claude-$(id -u)/j9003"
+mkdir -p "$ROOT/claude-$(id -u)/j9004"; : > "$ROOT/claude-$(id -u)/j9004/f"; touch -d '2 hours ago' "$ROOT/claude-$(id -u)/j9004"
+out="$(reap --apply --judge 9004)"; rc=$?
+exists "12. a judge dir under the 6 h floor is kept in scoped mode too" "$ROOT/claude-$(id -u)/j9004"
 exists "12. another leg's old judge dir untouched" "$ROOT/claude-$(id -u)/j9002"
 exists "12. fixture untouched by a scoped run" "$ROOT/mog-run.old"
 exists "12. dead session untouched by a judge-only scope" "$CL/$DEAD"
