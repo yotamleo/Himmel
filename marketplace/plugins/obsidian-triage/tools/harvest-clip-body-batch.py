@@ -46,7 +46,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
 
 # Force UTF-8 stdout on Windows so clip filenames + URLs containing
 # non-ASCII (en-dash, arrow, emoji) don't crash the print() pipeline
@@ -353,6 +353,170 @@ def firecrawl_eligible(canonical: str) -> bool:
     return not _is_private_host(host)
 
 
+class UrlRules:
+    """The vault's G-1 deny/allow globs (harvest-clips.md Phase 2). `error` is
+    set when a list exists but cannot be read: the gate then refuses every URL
+    (fail closed) rather than send a possibly-denied URL to a scraper."""
+
+    def __init__(self, deny=(), allow=(), error=None):
+        self.deny = list(deny)
+        self.allow = list(allow)
+        self.error = error
+
+
+def _norm_host(host: str) -> str:
+    """Lowercase, drop a trailing dot, IDNA-encode (so IDN == punycode)."""
+    labels = []
+    for label in host.lower().rstrip(".").split("."):
+        if "*" not in label:
+            try:
+                label = label.encode("idna").decode("ascii")
+            except UnicodeError:
+                pass
+        labels.append(label)
+    return ".".join(labels)
+
+
+def _norm_path(path: str, is_pattern: bool = False) -> tuple[str, str]:
+    """(path, query): percent-decode the path (to a fixed point), resolve
+    dot-segments keeping a trailing `/` after `.`/`..`/empty, empty -> `/`.
+    The query is split off first: its slashes and dots are not path segments."""
+    path, qsep, query = path.partition("?")
+    # ponytail: 4 decode passes, raise if a backend is seen decoding deeper (HIMMEL-4355)
+    for _ in range(4):
+        if is_pattern:  # an encoded `*` at any layer stays literal, never a wildcard
+            path = re.sub(r"%2[aA]", "\x00", path)
+        dec = unquote(path)
+        if dec == path:
+            break
+        path = dec
+    segs = path.split("/")[1:]
+    out = []
+    for seg in segs:
+        if seg == "..":
+            if out:
+                out.pop()
+        elif seg != ".":
+            out.append(seg)
+    joined = "/" + "/".join(out)
+    if segs and segs[-1] in (".", "..") and out and out[-1] != "":
+        joined += "/"
+    return joined, qsep + query
+
+
+def _norm_target(text: str, is_pattern: bool = False) -> list[str]:
+    """`host[:port]/path` for a URL or glob line, scheme dropped. A pattern
+    with no `/` is a host-only rule and covers every path. A URL yields every
+    candidate a rule could mean: with and without the port, with and without
+    the query (a path rule must hold whatever the query says)."""
+    rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", text.strip())
+    cut = re.search(r"[/?#]", rest)
+    hostport, tail = (rest, "") if cut is None else (rest[: cut.start()], rest[cut.start():])
+    if not is_pattern:
+        tail = tail.split("#", 1)[0]
+    if tail.startswith("?"):
+        tail = "/" + tail
+    if is_pattern and not tail:
+        tail = "/**"
+    hostport = hostport.rsplit("@", 1)[-1]
+    host, sep, port = hostport.partition(":")
+    host = _norm_host(host)
+    path, query = _norm_path(tail or "/", is_pattern)
+    if is_pattern:
+        return [f"{host}{sep}{port}{path}{query}"]
+    cands = []
+    for hp in ([f"{host}{sep}{port}", host] if sep else [host]):
+        cands += [f"{hp}{path}", f"{hp}{path}{query}"]
+    return cands
+
+
+def _glob_to_regex(pattern: str):
+    """`*` = zero-or-more non-`/` chars, `**` = across path segments."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        else:
+            out.append(re.escape("*" if pattern[i] == "\x00" else pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def load_url_rules(vault: Path) -> UrlRules:
+    """Read <vault>/.harvest-deny and .harvest-allow (one glob per line, `#`
+    starts a comment). A missing file is no constraint; an unreadable one fails
+    closed with a stderr line. Patterns are normalised like URLs (_norm_target)."""
+    lists = {}
+    error = None
+    for name in (".harvest-deny", ".harvest-allow"):
+        path = vault / name
+        if not path.exists() and not path.is_symlink():
+            lists[name] = []
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            error = f"{name} unreadable ({type(e).__name__}); refusing every scrape (fail closed)"
+            print(f"harvest-clip-body-batch: {error}", file=sys.stderr)
+            lists[name] = []
+            continue
+        pats = []
+        for ln in text.splitlines():
+            ln = ln.split("#", 1)[0].strip()
+            if ln:
+                pats.append((ln, _glob_to_regex(_norm_target(ln, True)[0])))
+        lists[name] = pats
+    return UrlRules(lists[".harvest-deny"], lists[".harvest-allow"], error)
+
+
+def _rule_match(pats, url: str):
+    cands = _norm_target(url)
+    for text, rx in pats:
+        if any(rx.fullmatch(c) for c in cands):
+            return text
+    return None
+
+
+def _odd_host(url: str) -> str:
+    """The URL (or its authority) when it cannot be matched safely, else "":
+    a backslash anywhere (WHATWG reads it as `/`), `%XX` in the authority, a
+    bracketed IPv6 literal, or a host that is not plain `[a-z0-9.-]`. A scraper
+    may read these as a different host or path than this matcher does, so such
+    a URL is refused outright, never decoded or repaired."""
+    if "\\" in url:
+        return url
+    rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", url.strip())
+    auth = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    if "%" in auth:
+        return auth
+    host = auth.rsplit("@", 1)[-1]
+    host = _norm_host(host.partition(":")[0])
+    return "" if re.fullmatch(r"[a-z0-9.-]*", host) else auth
+
+
+def url_gate(canonical: str, rules) -> str | None:
+    """The ONE vault-list gate for every scrape backend (jina, firecrawl, the
+    local-headless slot). Returns the reason a URL must not be sent to a
+    scraper, or None. A .harvest-allow match overrides a .harvest-deny match.
+    No rules loaded at all fails closed."""
+    if rules is None:
+        return "vault deny/allow lists not loaded; refusing scrape (fail closed)"
+    if rules.error:
+        return rules.error
+    bad = _odd_host(canonical)
+    if bad:
+        return f"URL host {bad!r} has characters a scraper may decode differently; refusing scrape (fail closed)"
+    hit = _rule_match(rules.deny, canonical)
+    if hit is None or _rule_match(rules.allow, canonical) is not None:
+        return None
+    return f"URL matched .harvest-deny pattern {hit}"
+
+
 def _revert(path: Path, original: str) -> None:
     """Best-effort restore of a clip to its pre-write content. Swallows a
     revert-time write error (nothing more we can do — the failure is already
@@ -444,6 +608,10 @@ class JinaReaderClient:
         ledger_append("harvest-clip-body-batch", "/reader", 0, source="jina-reader")
         marker = "Markdown Content:"
         idx = text.find(marker)
+        # A 200 whose preamble reports the target's own error (403/404 page,
+        # bot wall) is an error page, not content.
+        if re.search(r"(?m)^Warning: Target URL returned error", text[:idx] if idx >= 0 else text[:500]):
+            raise RuntimeError("jina: target URL returned an error page")
         md = text[idx + len(marker):] if idx >= 0 else text
         if not md.strip():
             raise RuntimeError("jina returned empty markdown")
@@ -494,9 +662,15 @@ class FirecrawlClient:
         )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+                raw = resp.read()
         except Exception:
             ledger_append("harvest-clip-body-batch", "/v2/scrape", 0, ok=False)
+            raise
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            # transport succeeded, so the call was made and billed: count it
+            ledger_append("harvest-clip-body-batch", "/v2/scrape", self.SCRAPE_COST, ok=False)
             raise
         # a valid-JSON body of the wrong shape still spent the call: ledger it once
         body = data.get("data") if isinstance(data, dict) else None
@@ -711,7 +885,24 @@ def persist_flag_only(path: Path, text: str, fm_raw: str, body: str, hits: list)
     return True
 
 
-def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, list]:
+def _stamp_refused(path: Path, text: str, fm_raw: str, body: str, canonical: str, dry_run: bool) -> str:
+    """harvest-clips.md Phase 2: a G-1 deny sets harvest_status: refused_sensitivity
+    + harvest_url_canonical in the frontmatter. Frontmatter-only (harvested_at stays
+    unset, so editing the lists lets a later run retry); G-3 body check, reverts on
+    mismatch. Returns a message suffix."""
+    if dry_run:
+        return " [dry-run]"
+    pairs = [("harvest_status", "harvest_status: refused_sensitivity"),
+             ("harvest_url_canonical", f'harvest_url_canonical: "{canonical}"')]
+    path.write_text(f"---\n{insert_frontmatter_pairs(fm_raw, pairs)}\n---\n{body}", encoding="utf-8", newline="\n")
+    _d, _r, disk_body, disk_ok = parse_frontmatter(path.read_text(encoding="utf-8"))
+    if not disk_ok or disk_body != body:
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return " [status-write failed (G-3); reverted]"
+    return " [harvest_status: refused_sensitivity written]"
+
+
+def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None) -> tuple[str, str, list]:
     """Return (glyph, message, injection_hits) per logging contract.
 
     injection_hits is returned STRUCTURALLY (not just embedded in the
@@ -774,6 +965,9 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
     # exhausted / fetch-failed clips return a retryable partial WITHOUT
     # marking harvested_at, so a later run retries them.
     if firecrawl is not None and firecrawl_eligible(canonical) and is_thin_body(body):
+        denied = url_gate(canonical, url_rules)
+        if denied:
+            return flagged_early("o", f"skipped (sensitivity): {denied}{_stamp_refused(path, text, fm_raw, body, canonical, dry_run)}")
         if dry_run:
             # Never spend a credit on a dry-run — report the plan only.
             return ("v", f"would harvest via firecrawl (thin-body escalation): {canonical} [dry-run]{flag_suffix}", injection_hits)
@@ -1015,8 +1209,10 @@ def main():
         sys.exit(run_rescan_flags(clips, args.vault, args.dry_run))
 
     firecrawl = None
+    url_rules = None
     if args.firecrawl_thin:
         import os
+        url_rules = load_url_rules(args.vault)
         try:
             firecrawl = build_scrape_chain(os.environ, args.firecrawl_budget)
         except ValueError as e:
@@ -1038,7 +1234,7 @@ def main():
     for clip in clips:
         if args.limit > 0 and processed_count >= args.limit:
             break
-        glyph, msg, injection_hits = process_clip(clip, args.dry_run, firecrawl)
+        glyph, msg, injection_hits = process_clip(clip, args.dry_run, firecrawl, url_rules)
         relpath = clip.relative_to(args.vault).as_posix()
         if injection_hits:
             # Structural flag state — flagged clips reach the report even
