@@ -183,7 +183,7 @@ console.log(JSON.stringify(runProbe(item, ctx)));
   || fail "case e: posix not opted in must probe 'absent', got: $outE"
 [ "$(echo "$outE" | jq -r '.cleanAbsence')" = "true" ] \
   || fail "case e: posix not opted in must carry cleanAbsence:true, got: $outE"
-printf '%s' "$outE" | grep -q 'observability.enabled' \
+grep -q 'observability.enabled' <<< "$outE" \
   || fail "case e: the detail must name observability.enabled, got: $outE"
 echo "ok: case e — posix not opted in reads a clean absence naming observability.enabled"
 
@@ -252,7 +252,8 @@ echo "ok: case f — status-report.js: win32 + absent stays severity:red"
 outG=$(status_report_probe "$stubAbsent" posix)
 [ "$(echo "$outG" | jq -r '.severity')" = "n/a" ] \
   || fail "case g: posix not opted in must read severity:n/a (never nag every adopter), got: $outG"
-echo "$outG" | jq -r '.detail' | grep -q '"observability": {"enabled": true}' \
+detailG=$(echo "$outG" | jq -r '.detail')
+grep -q '"observability": {"enabled": true}' <<< "$detailG" \
   || fail "case g: the n/a remedy must show how to set observability.enabled, got: $outG"
 echo "ok: case g — status-report.js: posix not opted in reads severity:n/a with the opt-in remedy"
 
@@ -347,7 +348,7 @@ echo "ok: case j (win32) — install-engine.js dispatches install.type:observabi
 posixUnrunnable=$(echo "$outJ" | jq -r '.posix.unrunnable // empty')
 [ -n "$posixUnrunnable" ] \
   || fail "case j: posix plan entry must be unrunnable when not opted in, got: $outJ"
-echo "$posixUnrunnable" | grep -q 'observability.*enabled' \
+grep -q 'observability.*enabled' <<< "$posixUnrunnable" \
   || fail "case j: posix unrunnable reason must name the opt-in key, got: $posixUnrunnable"
 [ "$(echo "$outJ" | jq -r '.posix.cmd // empty')" = "" ] \
   || fail "case j: posix not opted in must carry NO cmd (ensure never enables a service unasked), got: $outJ"
@@ -361,7 +362,8 @@ console.log(JSON.stringify(ie.planInstall([item], ctx)[0]));
 " "$(winpath "$install_engine_lib")")
 [ "$(echo "$outJ2" | jq -r '.cmd')" = "bash" ] \
   || fail "case j: posix opted in must plan a bash cmd, got: $outJ2"
-printf '%s' "$outJ2" | jq -r '.args | join(" ")' | grep -qE 'observability/install-stack\.sh install$' \
+argsJ2=$(echo "$outJ2" | jq -r '.args | join(" ")')
+grep -qE 'observability/install-stack\.sh install$' <<< "$argsJ2" \
   || fail "case j: posix opted in must run install-stack.sh install, got: $outJ2"
 echo "ok: case j (posix, opted in) — install-engine.js plans bash install-stack.sh install"
 
@@ -386,24 +388,28 @@ console.log(JSON.stringify(runProbe({ probe: { type: 'observability-stack' } }, 
 " "$(winpath "$probes_lib")" "$(winpath "$fake")"
 }
 [ "$(k_probe X=1 | jq -r '.actual')" = "present" ] || fail "case k: registered + healthy + cadence armed must probe present"
-! grep -qE 'systemctl --user (enable|start|restart|daemon-reload|disable)|launchctl (bootstrap|enable|bootout|kickstart)' "$fcalls" \
-  || fail "case k: the probe must be read-only, saw: $(cat "$fcalls")"
+mutating_re='systemctl --user (enable|start|restart|daemon-reload|disable)|launchctl (bootstrap|enable|bootout|kickstart)'
+# positive control: the matcher must hit a planted mutating call, or "no match" below proves nothing
+grep -qE "$mutating_re" <<< "systemctl --user enable himmel-flow-exporter.service" \
+  || fail "case k: the read-only matcher failed to match a planted mutating command"
+rc_ro=0; grep -qE "$mutating_re" "$fcalls" || rc_ro=$?
+[ "$rc_ro" = 1 ] || fail "case k: the probe must be read-only (grep rc=$rc_ro; 0=mutation seen, 2=grep error), saw: $(cat "$fcalls")"
 [ "$(k_probe OBS_SVC_DOWN=1 OBS_HEALTH_DOWN=1 | jq -r '.actual')" = "absent" ] || fail "case k: service + health down must probe absent (not installed)"
 outK=$(k_probe OBS_CADENCE_DOWN=1)
 [ "$(echo "$outK" | jq -r '.actual')" = "degraded" ] || fail "case k: cadence unarmed must probe degraded, got: $outK"
-printf '%s' "$outK" | grep -q 'doctor-cadence' || fail "case k: degraded detail must name doctor-cadence, got: $outK"
+grep -q 'doctor-cadence' <<< "$outK" || fail "case k: degraded detail must name doctor-cadence, got: $outK"
 [ "$(k_probe OBS_HEALTH_DOWN=1 | jq -r '.actual')" = "degraded" ] || fail "case k: service up but exporter unhealthy must probe degraded"
 # bounded: a hanging status script reads degraded within the probe timeout
 printf '#!/bin/sh\nsleep 30\n' > "$fbin/curl"; chmod +x "$fbin/curl"
 outT=$(k_probe HIMMELCTL_PROBE_TIMEOUT_SECS=1 X=1)
 [ "$(echo "$outT" | jq -r '.actual')" = "degraded" ] || fail "case k: a hanging status must read degraded, got: $outT"
-printf '%s' "$outT" | grep -q 'timed out' || fail "case k: the hanging-status detail must say 'timed out', got: $outT"
+grep -q 'timed out' <<< "$outT" || fail "case k: the hanging-status detail must say 'timed out', got: $outT"
 echo "ok: case k — opted-in posix probe: present/absent/degraded from install-stack.sh status, read-only, bounded"
 
 # ── case l: himmel-update never converges it (DRIFT_CONVERGE_IDS allow-list) ─
 convergeIds=$(grep -E '^DRIFT_CONVERGE_IDS=' "$repo_root/scripts/himmel-update.sh" || true)
 [ -n "$convergeIds" ] || fail "case l: could not find DRIFT_CONVERGE_IDS in himmel-update.sh"
-if printf '%s' "$convergeIds" | grep -q 'observability-stack'; then
+if grep -q 'observability-stack' <<< "$convergeIds"; then
   fail "case l: himmel-update must never auto-converge observability-stack, saw: $convergeIds"
 fi
 echo "ok: case l — observability-stack is not in himmel-update's DRIFT_CONVERGE_IDS"
