@@ -347,8 +347,14 @@ per service:
 ```bash
 bun playwright-auth-save.mjs x
 # Browser opens. Log in normally. Script auto-detects success + saves state.
-bun playwright-auth-save.mjs youtube
 ```
+
+**YouTube: use the Chrome converter first (HIMMEL-4271).** Google usually
+blocks the Playwright login, so from the himmel checkout run
+`python3 scripts/luna/youtube-state-from-chrome.py --profile Default` — it
+exports the signed-in Chrome profile's cookies into the same
+`~/.luna/playwright-state/youtube.json`. `bun playwright-auth-save.mjs youtube`
+remains as a fallback that Google usually blocks.
 
 Storage state lands at `~/.luna/playwright-state/<service>.json`
 (gitignored at the home-dir level — never under the repo).
