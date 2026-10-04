@@ -247,10 +247,14 @@ export function framePeerLine(raw: string): string {
   try { o = JSON.parse(raw); } catch { o = undefined; }
   let out: Record<string, unknown>;
   if (o && typeof o === "object" && !Array.isArray(o)) {
-    const text = String(o.text ?? "");
-    out = { from: String(o.from ?? "").slice(0, PEER_SEAT_MAX), to: String(o.to ?? "").slice(0, PEER_SEAT_MAX),
-      ts: String(o.ts ?? "").slice(0, PEER_SEAT_MAX), text: text.slice(0, PEER_TEXT_MAX) };
-    if (text.length > PEER_TEXT_MAX) out.clipped = true;
+    try {
+      const text = String(o.text ?? "");
+      out = { from: String(o.from ?? "").slice(0, PEER_SEAT_MAX), to: String(o.to ?? "").slice(0, PEER_SEAT_MAX),
+        ts: String(o.ts ?? "").slice(0, PEER_SEAT_MAX), text: text.slice(0, PEER_TEXT_MAX) };
+      if (text.length > PEER_TEXT_MAX) out.clipped = true;
+    } catch {
+      out = { malformed: true, text: raw.slice(0, PEER_TEXT_MAX) };
+    }
   } else {
     out = { malformed: true, text: raw.slice(0, PEER_TEXT_MAX) };
   }

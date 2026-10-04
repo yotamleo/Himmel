@@ -375,3 +375,11 @@ test("framePeerLine bounds ts so a hostile timestamp cannot inflate the event li
   const line = framePeerLine(JSON.stringify({ from: "a", to: "b", ts: "9".repeat(50000), text: "x" }));
   expect(line.length).toBeLessThan(500);
 });
+
+test("framePeerLine frames a record whose fields cannot be coerced as malformed instead of throwing", async () => {
+  const { framePeerLine } = await import("./bus");
+  const poison = '{"from":"a","to":"b","text":{"toString":null}}';
+  const o = JSON.parse(framePeerLine(poison));
+  expect(o.malformed).toBe(true);
+  expect(JSON.parse(framePeerLine("not json")).malformed).toBe(true);
+});
