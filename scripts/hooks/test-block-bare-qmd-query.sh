@@ -452,6 +452,12 @@ deny 'hash -p /bin/sh grep; echo qmd query x | grep -v sh'
 deny '. ./defs.sh; echo qmd query x | grep -v sh'
 deny "bash -c 'source f; echo qmd query x | grep -v sh'"
 deny 'echo qmd query x | xargs -a f grep -v sh'
+# HIMMEL-4244: a pipe continues across a newline, so a stage span holding a
+# newline or CR is never a filter (the next line's shell goes unclassified).
+deny $'echo qmd query x | grep -v sh |\nsh'
+deny $'echo qmd query x | grep -v sh | \nsh'
+deny $'echo qmd query x |& grep -v sh |&\nsh'
+deny $'echo qmd query x | grep -v sh |\r\nsh'
 deny 'echo qmd query x | sort --compress-program sh'
 deny 'echo qmd query x | rg --pre sh x'
 deny 'echo qmd query x | sed e sh'
