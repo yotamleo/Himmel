@@ -127,7 +127,8 @@ bash "$P/scripts/doctor-cadence.sh" arm >/dev/null 2>&1; check "re-arm without -
 st="$(bash "$P/scripts/doctor-cadence.sh" status 2>&1)"
 case "$st" in ARMED*) pass "status reports ARMED" ;; *) fail "status reports ARMED ($st)" ;; esac
 bash "$P/scripts/doctor-cadence.sh" disarm >/dev/null 2>&1; check "disarm exits 0" 0 $?
-grep -q 'HIMMEL-Doctor' "$FAKE_CRON" && fail "disarm removes the entry" || pass "disarm removes the entry"
+grep -q 'HIMMEL-Doctor' "$FAKE_CRON"; rc=$?
+check "disarm removes the entry (grep: 1 = absent from a readable file)" 1 "$rc"
 
 # 11. hardening (CR round 1): a dangling --time fails fast instead of looping;
 # a runner dir with a space is quoted in the crontab line; an unreadable
