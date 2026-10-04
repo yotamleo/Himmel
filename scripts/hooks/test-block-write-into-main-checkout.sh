@@ -3399,6 +3399,222 @@ _r4138 "88b dq \$(echo lowercase-esacs; cat <<E it's E); touch primary" block 'x
 _r4138 "88c dq \$(echo showcase; cat <<E it's E); touch worktree (ALLOW)" allow 'x="$(echo showcase; cat <<E\nit'"'"'s\nE\n)"; touch @W@/f'
 }
 
+echo "== HIMMEL-4213/4228 prefix words before the verb, \${…}/\$[…] assignment values =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# _r4213 runs a row from cwd /tmp AND from the primary checkout.
+_r4213() { # label verdict template
+    local c="$3"
+    c="${c//@P@/$_PR}"; c="${c//@W@/$_WR}"
+    _subst_row "$1, cwd /tmp" "$2" "$c" /tmp
+    _subst_row "$1, cwd the primary" "$2" "$c" "$_PR"
+}
+# HIMMEL-4213: a leading `{`, `!`, reserved word, `time [-p]` or wrapper
+# command is skipped before the verb arms read the command word.
+_r4213 "93a { touch primary; }"                                        block '{ touch @P@/f; }'
+_r4213 "93b ! touch primary"                                           block '! touch @P@/f'
+_r4213 "93c ! x=1 touch primary"                                       block '! x=1 touch @P@/f'
+_r4213 "93d if true; then touch primary; fi"                           block 'if true; then touch @P@/f; fi'
+_r4213 "93e while false; do touch primary; done"                       block 'while false; do touch @P@/f; done'
+_r4213 "93f nice touch primary"                                        block 'nice touch @P@/f'
+_r4213 "93g command touch primary"                                     block 'command touch @P@/f'
+_r4213 "93h exec touch primary"                                        block 'exec touch @P@/f'
+_r4213 "93i time touch primary"                                        block 'time touch @P@/f'
+_r4213 "93j time -p ! nice -n 5 nohup touch primary"                   block 'time -p ! nice -n 5 nohup touch @P@/f'
+_r4213 "93k timeout -k 1 5 cp into the primary"                        block 'timeout -k 1 5 cp @W@/README.md @P@/f'
+_r4213 "93l env -u X FOO=1 rm in the primary"                          block 'env -u X FOO=1 rm @P@/README.md'
+_r4213 "93m sudo -u root -E stdbuf -oL touch primary"                  block 'sudo -u root -E stdbuf -oL touch @P@/f'
+_r4213 "93n exec -a n sed -i in the primary"                           block 'exec -a n sed -i s/a/b/ @P@/README.md'
+_r4213 "93o until false; do x=1 ln -s into the primary"                block 'until false; do x=1 ln -s @W@/README.md @P@/l; done'
+_r4213 "93p nice --bogus touch primary (unknown option: fail closed)"  block 'nice --bogus touch @P@/f'
+_r4213 "93q sudo -Z v touch primary (unknown option: fail closed)"     block 'sudo -Z v touch @P@/f'
+_r4213 "93r { touch worktree; } (ALLOW)"                               allow '{ touch @W@/f; }'
+_r4213 "93s nice touch worktree (ALLOW)"                               allow 'nice touch @W@/f'
+_r4213 "93t time touch /tmp (ALLOW)"                                   allow 'time touch /tmp/himmel-4213-f'
+_r4213 "93u time make (ALLOW)"                                         allow 'time make -n'
+_r4213 "93v nice grep in the primary (ALLOW)"                          allow 'nice grep x @P@/README.md'
+_r4213 "93w command -v touch (ALLOW)"                                  allow 'command -v touch'
+_r4213 "93x git -C primary log and status (ALLOW)"                     allow 'git -C @P@ log --oneline -1; git -C @P@ status --short'
+_r4213 "93y queue-lock status piped to sed (ALLOW)"                    allow 'bash scripts/queue-lock.sh status | sed -n 1p'
+_r4213 "93z if grep -q x primary; then echo y; fi (ALLOW)"             allow 'if grep -q x @P@/README.md; then echo y; fi'
+# the wrapper check after the chain still reads the unstripped clause
+_r4213 "93za exec -a sh -c 'touch primary' stays denied"              block "exec -a sh -c 'touch @P@/f'"
+_r4213 "93zb sudo -u \$'\\x62ash' -c 'touch primary' stays denied"     block "sudo -u \$'\\x62ash' -c 'touch @P@/f'"
+# HIMMEL-4228: a `${…}` or `$[…]` value holding a separator no longer hides
+# the write verb after it.
+_r4213 "94a x=\${y:-a|b} touch primary"                                block 'x=${y:-a|b} touch @P@/f'
+_r4213 "94b x=\${y:-a;b} touch primary"                                block 'x=${y:-a;b} touch @P@/f'
+_r4213 "94c x=\${y:-a&b} touch primary"                                block 'x=${y:-a&b} touch @P@/f'
+_r4213 "94d x=\${y:-(a)} touch primary"                                block 'x=${y:-(a)} touch @P@/f'
+_r4213 "94e x=\${y:-a|b} cp into the primary"                          block 'x=${y:-a|b} cp @W@/README.md @P@/f'
+_r4213 "94f x=\$[1|2] touch primary"                                   block 'x=$[1|2] touch @P@/f'
+_r4213 "94g x=\${y:-\${z:-a|b}} touch primary (nested)"                block 'x=${y:-${z:-a|b}} touch @P@/f'
+_r4213 "94h x=\${y:-\"}|\"} touch primary (quoted brace)"              block 'x=${y:-"}|"} touch @P@/f'
+_r4213 "94i x=\${y:-a} touch primary (control)"                        block 'x=${y:-a} touch @P@/f'
+_r4213 "94j x=\"\${y:-a|b}\" touch primary (control)"                  block 'x="${y:-a|b}" touch @P@/f'
+_r4213 "94k x=\$[1+2] touch primary (control)"                         block 'x=$[1+2] touch @P@/f'
+_r4213 "94l x=\${y:-a|b} touch worktree (ALLOW)"                       allow 'x=${y:-a|b} touch @W@/f'
+_r4213 "94m x=\$[1|2] touch worktree (ALLOW)"                          allow 'x=$[1|2] touch @W@/f'
+_r4213 "94n cp worktree file to \${HOME}/x (ALLOW)"                    allow 'cp @W@/README.md ${HOME}/x'
+_r4213 "94o echo '\${y:-a|b} touch primary' is text (ALLOW)"           allow 'echo '"'"'x=${y:-a|b} touch @P@/f'"'"''
+# A `${…}` closes at its first active `}` — only a nested `${` nests, a bare
+# `{` does not (bash). An unclosed span holding a separator fails closed, and
+# a bash 5.3 `${ cmd; }` / `${| cmd; }` body is read as a command.
+_r4213 "95a x=\${y:-a{|b} touch primary (bare { does not nest)"       block 'x=${y:-a{|b} touch @P@/f'
+_r4213 "95b x=\${y:-\"{\"|b} touch primary (quoted brace)"             block 'x=${y:-"{"|b} touch @P@/f'
+_r4213 "95c x=\${y:-a\\{|b} touch primary (escaped brace)"             block 'x=${y:-a\{|b} touch @P@/f'
+_r4213 "95d x=\${y:-a|b touch primary (unclosed)"                      block 'x=${y:-a|b touch @P@/f'
+_r4213 "95e x=\$[1|2 touch primary (unclosed)"                         block 'x=$[1|2 touch @P@/f'
+_r4213 "95f x=\$[a[1]|2] touch primary (nested [)"                     block 'x=$[a[1]|2] touch @P@/f'
+_r4213 "95g x=\${ touch primary; } (funsub)"                           block 'x=${ touch @P@/f; }'
+_r4213 "95h echo \${ touch primary; } (funsub)"                        block 'echo ${ touch @P@/f; }'
+_r4213 "95i x=\${y:-a{|b} touch worktree (ALLOW)"                      allow 'x=${y:-a{|b} touch @W@/f'
+_r4213 "95j an unclosed \${ in a comment (ALLOW)"                      allow 'echo x # ${ y | z'
+_r4213 "95k echo '\${y|z' (ALLOW)"                                     allow 'echo '"'"'${y|z'"'"''
+# `env -C DIR` / `sudo -D DIR` run the command in DIR: a relative target is
+# read against a literal DIR, and against an unknown one fails closed.
+_r4213 "96a env -C primary touch f"                                    block 'env -C @P@ touch f'
+_r4213 "96b env --chdir=primary touch f"                               block 'env --chdir=@P@ touch f'
+_r4213 "96c env --chdir primary touch f"                               block 'env --chdir @P@ touch f'
+_r4213 "96d sudo -D primary touch f"                                   block 'sudo -D @P@ touch f'
+_r4213 "96e sudo --chdir=primary touch f"                              block 'sudo --chdir=@P@ touch f'
+_r4213 "96f env -iC primary rm f"                                      block 'env -iC @P@ rm f'
+_r4213 "96g env -Cprimary touch f"                                     block 'env -C@P@ touch f'
+_r4213 "96h env -C primary/sub touch ../f"                             block 'env -C @P@/sub touch ../f'
+_r4213 "96i env -C \$HOME/x touch f (dynamic dir)"                     block 'env -C $HOME/x touch f'
+_r4213 "96k env -C \$HOME touch /tmp abs (ALLOW)"                      allow 'env -C $HOME touch /tmp/himmel-4213-h'
+# from cwd the primary these still deny: like a `cd`, the chdir only adds a
+# reading beside the real cwd (_bwimc_cd_guard)
+_subst_row "96j env -C worktree touch f (ALLOW), cwd /tmp"             allow "env -C $_WR touch f" /tmp
+_subst_row "96l sudo -D worktree touch f (ALLOW), cwd /tmp"            allow "sudo -D $_WR touch f" /tmp
+_r4213 "96m env -C primary cat f (ALLOW)"                              allow 'env -C @P@ cat f'
+_subst_row "96n env -C primary true; touch f (chdir ends with its command), cwd /tmp" allow "env -C $_PR true; touch f" /tmp
+_subst_row "96o sudo -i touch f (login shell: dir unknown), cwd /tmp"    block "sudo -i touch f" /tmp
+_subst_row "96p sudo --login touch f (dir unknown), cwd /tmp"           block "sudo --login touch f" /tmp
+_subst_row "96q env -Z -C primary touch f (unknown option), cwd /tmp"   block "env -Z -C $_PR touch f" /tmp
+_subst_row "96r env -C /tmp touch f (ALLOW), cwd /tmp"                  allow "env -C /tmp touch f" /tmp
+# HIMMEL-4213 CR round 2: every wrapper end-of-options `--` (bash `time [-p] [--]`)
+_r4213 "97a time -p -- touch primary"                                   block 'time -p -- touch @P@/f'
+_r4213 "97b time -p -- nice -- env -- sudo -- touch primary"            block 'time -p -- nice -- env -- sudo -- touch @P@/f'
+_r4213 "97c nice -- nohup -- timeout -- 5 time -p -- touch primary"     block 'nice -- nohup -- timeout -- 5 time -p -- touch @P@/f'
+_r4213 "97d timeout -k 1 -s 9 -- 5 touch primary"                       block 'timeout -k 1 -s 9 -- 5 touch @P@/f'
+_r4213 "97e exec -cl -a x -- touch primary"                             block 'exec -cl -a x -- touch @P@/f'
+_r4213 "97f sudo -EH -u root -- touch primary"                          block 'sudo -EH -u root -- touch @P@/f'
+_r4213 "97g command -- exec -- stdbuf -oL -- touch primary"             block 'command -- exec -- stdbuf -oL -- touch @P@/f'
+_r4213 "97h time -p -- cat primary (ALLOW)"                             allow 'time -p -- cat @P@/f'
+# HIMMEL-4213 latency: the flattened reading masks plain commands to `:`
+# (_bwimc_flat_mask); a write beside a flattened span must still deny
+_r4213 "98a x=\${y:-a|b} echo; touch primary (masked)"                  block 'x=${y:-a|b} echo; touch @P@/f'
+_r4213 "98b x=\${y:-a|b} touch primary; echo ok"                        block 'x=${y:-a|b} touch @P@/f; echo ok'
+_r4213 "98c x=\${y:-a|b} cd primary; touch f (cd: no mask)"             block 'x=${y:-a|b} cd @P@; touch f'
+_r4213 "98d env -C primary touch f; x=\${y:-a|b} true"                  block 'env -C @P@ touch f; x=${y:-a|b} true'
+_r4213 "98e x=\${y:-a|b} true; env -C primary touch f"                  block 'x=${y:-a|b} true; env -C @P@ touch f'
+_r4213 "98f x=\${y:-a|b} true && rm primary"                            block 'x=${y:-a|b} true && rm @P@/README.md'
+_r4213 "98g x=\${y:-a|b} true; git -C primary checkout main"            block 'x=${y:-a|b} true; git -C @P@ checkout main'
+_r4213 "98h x=\${y:-a;b} git -C primary log; touch primary"             block 'x=${y:-a;b} git -C @P@ log; touch @P@/f'
+_r4213 "98i x=\${y:-a|b} true; nice touch primary"                      block 'x=${y:-a|b} true; nice touch @P@/f'
+_r4213 "98j x=\${y:-a|b} true; git -C primary log | head (ALLOW)"       allow 'x=${y:-a|b} true; git -C @P@ log --oneline -1 | head -n 1'
+_r4213 "98k x=\${y:-a|b} true; echo ok (ALLOW)"                         allow 'x=${y:-a|b} true; echo ok'
+# HIMMEL-4213 round 3: a quoted wrapper operand holding a blank is one word
+# (_bwimc_sp_word honours '..', "..", $'..' and backslash); chrt, taskset and
+# ionice read from the first verb word; an unclosed quote fails closed
+_r4213 "99a exec -a dq-two-words touch primary"                            block 'exec -a "two words" touch @P@/f'
+_r4213 "99b exec -a sq-two-words touch primary"                            block 'exec -a '\''two words'\'' touch @P@/f'
+_r4213 "99c exec -a ansi-two-words touch primary"                          block 'exec -a $'\''two words'\'' touch @P@/f'
+_r4213 "99d sudo -u dq-a-b touch primary"                                  block 'sudo -u "a b" touch @P@/f'
+_r4213 "99e sudo --user=sq-a-b touch primary"                              block 'sudo --user='\''a b'\'' touch @P@/f'
+_r4213 "99f sudo -g ansi-a-b touch primary"                                block 'sudo -g $'\''a b'\'' touch @P@/f'
+_r4213 "99g sudo -E -u dq-a-b -- touch primary"                            block 'sudo -E -u "a b" -- touch @P@/f'
+_r4213 "99h env dq-assignment touch primary"                               block 'env "A=b c" touch @P@/f'
+_r4213 "99i env A=sq touch primary"                                        block 'env A='\''b c'\'' touch @P@/f'
+_r4213 "99j env -u ansi touch primary"                                     block 'env -u $'\''A B'\'' touch @P@/f'
+_r4213 "99k timeout -s dq 5 touch primary"                                 block 'timeout -s "KILL now" 5 touch @P@/f'
+_r4213 "99l timeout dq-duration touch primary"                             block 'timeout "5 " touch @P@/f'
+_r4213 "99m nice -n sq touch primary"                                      block 'nice -n '\''5 '\'' touch @P@/f'
+_r4213 "99n stdbuf -o dq touch primary"                                    block 'stdbuf -o "L " touch @P@/f'
+_r4213 "99o chrt 5 touch primary"                                          block 'chrt 5 touch @P@/f'
+_r4213 "99p taskset -c dq touch primary"                                   block 'taskset -c "0 1" touch @P@/f'
+_r4213 "99q ionice -c 3 touch primary"                                     block 'ionice -c 3 touch @P@/f'
+_r4213 "99r quoted sudo -u x touch primary"                                block '"sudo" -u x touch @P@/f'
+_r4213 "99s exec -a backslash-space touch primary"                         block 'exec -a a\ b touch @P@/f'
+_r4213 "99t exec -a dq-with-escaped-quote touch primary"                   block 'exec -a "a \" b" touch @P@/f'
+_r4213 "99u env -C dq-primary touch f"                                     block 'env -C "@P@" touch f'
+_r4213 "99v sudo -D ansi-primary touch f"                                  block 'sudo -D $'\''@P@'\'' touch f'
+_r4213 "99w exec -a unclosed-quote touch primary"                          block 'exec -a "two words touch @P@/f'
+_r4213 "99x exec -a dq-two-words cat primary (ALLOW)"                      allow 'exec -a "two words" cat @P@/f'
+_r4213 "99y env dq-assignment ls primary (ALLOW)"                          allow 'env "A=b c" ls @P@'
+_r4213 "99z env -C dq-tmp touch tmp (ALLOW)"                               allow 'env -C "/tmp" touch /tmp/f'
+# HIMMEL-4228 (J1790i): a `${` opened inside "…" whose span holds a quote is
+# not flattened (_bwimc_brace_end scans from the unquoted state), so the
+# `$((` flattening cannot erase the real write after it
+_r4228q() { # label verdict template — cwd the primary only (a relative target)
+    local c="$3"
+    c="${c//@P@/$_PR}"
+    _subst_row "$1, cwd the primary" "$2" "$c" "$_PR"
+}
+_r4213 "100-dash-sq-touch-abs"                    block $'echo "${y:-\'}" ; x=$((1|2)) touch @P@/f ; : \'}\''
+_r4213 "100-dash-sq-bsnl-touch-abs"               block $'echo "${y:-\'}" ; x=$((1|2)) tou\\\nch @P@/f ; : \'}\''
+_r4228q "100-dash-sq-touch-rel"                    block $'echo "${y:-\'}" ; x=$((1|2)) touch f ; : \'}\''
+_r4228q "100-dash-sq-cp-rel"                       block $'echo "${y:-\'}" ; x=$((1|2)) cp /etc/hosts f ; : \'}\''
+_r4228q "100-dash-sq-sed-i-rel"                    block $'echo "${y:-\'}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : \'}\''
+_r4213 "100-dash-bt-touch-abs"                    block $'echo "${y:-`}" ; x=$((1|2)) touch @P@/f ; : `}`'
+_r4213 "100-dash-bt-bsnl-touch-abs"               block $'echo "${y:-`}" ; x=$((1|2)) tou\\\nch @P@/f ; : `}`'
+_r4228q "100-dash-bt-touch-rel"                    block $'echo "${y:-`}" ; x=$((1|2)) touch f ; : `}`'
+_r4228q "100-dash-bt-cp-rel"                       block $'echo "${y:-`}" ; x=$((1|2)) cp /etc/hosts f ; : `}`'
+_r4228q "100-dash-bt-sed-i-rel"                    block $'echo "${y:-`}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : `}`'
+_r4213 "100-dash-dq-touch-abs"                    block $'echo "${y:-"}" ; x=$((1|2)) touch @P@/f ; : "}"'
+_r4213 "100-dash-dq-bsnl-touch-abs"               block $'echo "${y:-"}" ; x=$((1|2)) tou\\\nch @P@/f ; : "}"'
+_r4228q "100-dash-dq-touch-rel"                    block $'echo "${y:-"}" ; x=$((1|2)) touch f ; : "}"'
+_r4228q "100-dash-dq-cp-rel"                       block $'echo "${y:-"}" ; x=$((1|2)) cp /etc/hosts f ; : "}"'
+_r4228q "100-dash-dq-sed-i-rel"                    block $'echo "${y:-"}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : "}"'
+_r4213 "100-hash-sq-touch-abs"                    block $'echo "${y#\'}" ; x=$((1|2)) touch @P@/f ; : \'}\''
+_r4213 "100-hash-sq-bsnl-touch-abs"               block $'echo "${y#\'}" ; x=$((1|2)) tou\\\nch @P@/f ; : \'}\''
+_r4228q "100-hash-sq-touch-rel"                    block $'echo "${y#\'}" ; x=$((1|2)) touch f ; : \'}\''
+_r4228q "100-hash-sq-cp-rel"                       block $'echo "${y#\'}" ; x=$((1|2)) cp /etc/hosts f ; : \'}\''
+_r4228q "100-hash-sq-sed-i-rel"                    block $'echo "${y#\'}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : \'}\''
+_r4213 "100-hash-bt-touch-abs"                    block $'echo "${y#`}" ; x=$((1|2)) touch @P@/f ; : `}`'
+_r4213 "100-hash-bt-bsnl-touch-abs"               block $'echo "${y#`}" ; x=$((1|2)) tou\\\nch @P@/f ; : `}`'
+_r4228q "100-hash-bt-touch-rel"                    block $'echo "${y#`}" ; x=$((1|2)) touch f ; : `}`'
+_r4228q "100-hash-bt-cp-rel"                       block $'echo "${y#`}" ; x=$((1|2)) cp /etc/hosts f ; : `}`'
+_r4228q "100-hash-bt-sed-i-rel"                    block $'echo "${y#`}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : `}`'
+_r4213 "100-hash-dq-touch-abs"                    block $'echo "${y#"}" ; x=$((1|2)) touch @P@/f ; : "}"'
+_r4213 "100-hash-dq-bsnl-touch-abs"               block $'echo "${y#"}" ; x=$((1|2)) tou\\\nch @P@/f ; : "}"'
+_r4228q "100-hash-dq-touch-rel"                    block $'echo "${y#"}" ; x=$((1|2)) touch f ; : "}"'
+_r4228q "100-hash-dq-cp-rel"                       block $'echo "${y#"}" ; x=$((1|2)) cp /etc/hosts f ; : "}"'
+_r4228q "100-hash-dq-sed-i-rel"                    block $'echo "${y#"}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : "}"'
+_r4213 "100-slash-sq-touch-abs"                   block $'echo "${y/\'/x}" ; x=$((1|2)) touch @P@/f ; : \'}\''
+_r4213 "100-slash-sq-bsnl-touch-abs"              block $'echo "${y/\'/x}" ; x=$((1|2)) tou\\\nch @P@/f ; : \'}\''
+_r4228q "100-slash-sq-touch-rel"                   block $'echo "${y/\'/x}" ; x=$((1|2)) touch f ; : \'}\''
+_r4228q "100-slash-sq-cp-rel"                      block $'echo "${y/\'/x}" ; x=$((1|2)) cp /etc/hosts f ; : \'}\''
+_r4228q "100-slash-sq-sed-i-rel"                   block $'echo "${y/\'/x}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : \'}\''
+_r4213 "100-slash-bt-touch-abs"                   block $'echo "${y/`/x}" ; x=$((1|2)) touch @P@/f ; : `}`'
+_r4213 "100-slash-bt-bsnl-touch-abs"              block $'echo "${y/`/x}" ; x=$((1|2)) tou\\\nch @P@/f ; : `}`'
+_r4228q "100-slash-bt-touch-rel"                   block $'echo "${y/`/x}" ; x=$((1|2)) touch f ; : `}`'
+_r4228q "100-slash-bt-cp-rel"                      block $'echo "${y/`/x}" ; x=$((1|2)) cp /etc/hosts f ; : `}`'
+_r4228q "100-slash-bt-sed-i-rel"                   block $'echo "${y/`/x}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : `}`'
+_r4213 "100-slash-dq-touch-abs"                   block $'echo "${y/"/x}" ; x=$((1|2)) touch @P@/f ; : "}"'
+_r4213 "100-slash-dq-bsnl-touch-abs"              block $'echo "${y/"/x}" ; x=$((1|2)) tou\\\nch @P@/f ; : "}"'
+_r4228q "100-slash-dq-touch-rel"                   block $'echo "${y/"/x}" ; x=$((1|2)) touch f ; : "}"'
+_r4228q "100-slash-dq-cp-rel"                      block $'echo "${y/"/x}" ; x=$((1|2)) cp /etc/hosts f ; : "}"'
+_r4228q "100-slash-dq-sed-i-rel"                   block $'echo "${y/"/x}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : "}"'
+_r4213 "100-pct-sq-touch-abs"                     block $'echo "${y%\'}" ; x=$((1|2)) touch @P@/f ; : \'}\''
+_r4213 "100-pct-sq-bsnl-touch-abs"                block $'echo "${y%\'}" ; x=$((1|2)) tou\\\nch @P@/f ; : \'}\''
+_r4228q "100-pct-sq-touch-rel"                     block $'echo "${y%\'}" ; x=$((1|2)) touch f ; : \'}\''
+_r4228q "100-pct-sq-cp-rel"                        block $'echo "${y%\'}" ; x=$((1|2)) cp /etc/hosts f ; : \'}\''
+_r4228q "100-pct-sq-sed-i-rel"                     block $'echo "${y%\'}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : \'}\''
+_r4213 "100-pct-bt-touch-abs"                     block $'echo "${y%`}" ; x=$((1|2)) touch @P@/f ; : `}`'
+_r4213 "100-pct-bt-bsnl-touch-abs"                block $'echo "${y%`}" ; x=$((1|2)) tou\\\nch @P@/f ; : `}`'
+_r4228q "100-pct-bt-touch-rel"                     block $'echo "${y%`}" ; x=$((1|2)) touch f ; : `}`'
+_r4228q "100-pct-bt-cp-rel"                        block $'echo "${y%`}" ; x=$((1|2)) cp /etc/hosts f ; : `}`'
+_r4228q "100-pct-bt-sed-i-rel"                     block $'echo "${y%`}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : `}`'
+_r4213 "100-pct-dq-touch-abs"                     block $'echo "${y%"}" ; x=$((1|2)) touch @P@/f ; : "}"'
+_r4213 "100-pct-dq-bsnl-touch-abs"                block $'echo "${y%"}" ; x=$((1|2)) tou\\\nch @P@/f ; : "}"'
+_r4228q "100-pct-dq-touch-rel"                     block $'echo "${y%"}" ; x=$((1|2)) touch f ; : "}"'
+_r4228q "100-pct-dq-cp-rel"                        block $'echo "${y%"}" ; x=$((1|2)) cp /etc/hosts f ; : "}"'
+_r4228q "100-pct-dq-sed-i-rel"                     block $'echo "${y%"}" ; x=$((1|2)) sed -i s/a/b/ README.md ; : "}"'
+_r4213 "100z dq-span with quote, ls primary (ALLOW)"           allow $'echo "${y:-\'}" ; x=$((1|2)) ls @P@ ; : \'}\''
+}
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
