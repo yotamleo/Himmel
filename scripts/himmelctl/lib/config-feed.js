@@ -511,12 +511,12 @@ function foldDoctorRows(rows, probedAt) {
     if (owned.length === 0) { out.push(r); continue; } // no owner row in this report: nothing to fold into
     const ownerRank = Math.max(...owned.map((x) => HEALTH_RANK[x.health] || 0));
     const docRank = HEALTH_RANK[r.health] || 0;
-    if (docRank > ownerRank && !(disagree.has(did) && HEALTH_RANK[disagree.get(did).health] >= docRank)) disagree.set(did, r);
+    if (docRank > ownerRank && !(disagree.has(did) && HEALTH_RANK[disagree.get(did).r.health] >= docRank)) disagree.set(did, { r, ownerRank });
   }
-  for (const [did, r] of disagree) {
+  for (const [did, { r, ownerRank }] of disagree) {
     const owner = DOCTOR_OWNER[did];
     const ownerLabel = owner === null ? 'status' : owner;
-    const ownerHealth = owner === null ? 'ok' : rows.find((x) => x.id === owner).health;
+    const ownerHealth = ownerRank === 2 ? 'fail' : ownerRank === 1 ? 'warn' : 'ok';
     const msg = `probes disagree: doctor ${did} says ${r.health}, status ${ownerLabel} says ${ownerHealth}`;
     out.push(mkRow({
       id: `probe-disagree:${did}`, source: 'doctor', group: 'core', title: msg,

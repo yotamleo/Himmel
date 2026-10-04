@@ -408,7 +408,7 @@ wtOut="$work/wt.json"
     HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
     HIMMEL_REPORT_DOCTOR="$(winpath "$foldDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
     PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json ) > "$wtOut" 2>/dev/null || fail "i3 report from a worktree exited non-zero"
-[ "$(jq -r .base "$wtOut")" = "$anchor" ] || fail "i3 base is $(jq -r .base "$wtOut"), expected the anchor $anchor"
+[ "$(jq -r .base "$wtOut")" = "$(winpath "$anchor")" ] || fail "i3 base is $(jq -r .base "$wtOut"), expected the anchor $(winpath "$anchor")"
 wtLeaks=$(jq -r --arg wt "$work/wt" '.rows[]|select(((.installed.detail//"")+(.title//"")+(.fix.remedy//""))|contains($wt))|.id' "$wtOut")
 [ -z "$wtLeaks" ] || fail "i3 rows judged the worktree, not the anchor: $wtLeaks"
 [ "$(jq -r '.rows[]|select(.id=="jira-cli-dist-build")|.installed.detail' "$wtOut" | grep -c "$work/wt" || true)" -eq 0 ] || fail "i3 jira-cli-dist-build names the worktree"
