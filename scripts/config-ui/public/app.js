@@ -49,7 +49,9 @@ async function loadFeed() {
 // Two-step write: the dry-run binds a preview id; only confirm runs it.
 async function preview(b) {
   const k = b.dataset.k;
-  const req = { action: b.dataset.action, target: b.dataset.target };
+  const busy = state.plans[k];
+  if (busy && (busy.stage === "loading" || busy.stage === "running")) return; // one request per row at a time
+  const req ={ action: b.dataset.action, target: b.dataset.target };
   if (b.dataset.value) req.value = b.dataset.value;
   state.plans[k] = { stage: "loading" }; paint();
   const { ok, j } = await post("/api/preview", req);

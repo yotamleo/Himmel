@@ -21,6 +21,7 @@ const rows = ids.map((id) => {
     probedAt: "2026-10-04T14:02:00Z", control: { class: "display-only" }, sensitive: false,
   };
 });
-const out = () => process.stdout.write(JSON.stringify({ schema: "himmel-config-feed/1", rows }) + "\n");
+// STUB_REPORT_RC: valid JSON on stdout, but a failing exit code.
+const out = () => { process.stdout.write(JSON.stringify({ schema: "himmel-config-feed/1", rows }) + "\n"); process.exitCode = Number(process.env.STUB_REPORT_RC || 0); };
 const wait = Number(process.env.STUB_REPROBE_SLEEP || 0);
 if (wait > 0) setTimeout(out, wait); else out();

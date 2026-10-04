@@ -101,6 +101,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     if (rowIds.length === 0) return { probe: {}, state: "ok" };
     const r = await runChild(["node", himmelctl, "report", "--json", "--items", rowIds.join(",")], { cwd: root, env, timeoutMs: reprobeMs });
     if (r.timedOut) return { probe: null, state: "re-probe timed out" };
+    if (r.rc !== 0) return { probe: null, state: "re-probe failed" };
     try {
       const probe: Probe = {};
       for (const row of JSON.parse(r.stdout).rows || []) if (rowIds.includes(row.id)) probe[row.id] = { installed: String(row.installed?.state ?? ""), health: String(row.health ?? "") };

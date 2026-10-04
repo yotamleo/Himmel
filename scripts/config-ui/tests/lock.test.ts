@@ -44,10 +44,13 @@ test("output written after the leader exits is kept (finish on close, not exit)"
   expect(r.stdout).toBe("early\nlate\n");
 });
 
-test("a descendant holding the pipe open past the grace period does not hang the result", async () => {
+test("a descendant holding the pipe open past the grace period does not hang the result, and is killed", async () => {
   const t0 = Date.now();
-  const r = await runChild(["sh", "-c", "sleep 30 & echo early"], { cwd: dir, env: process.env, timeoutMs: 60_000 });
+  const r = await runChild(["sh", "-c", "sleep 30 & echo $!"], { cwd: dir, env: process.env, timeoutMs: 60_000 });
   expect(r.rc).toBe(0);
-  expect(r.stdout).toBe("early\n");
   expect(Date.now() - t0).toBeLessThan(10_000);
+  const gc = Number(r.stdout.trim());
+  const alive = () => { try { process.kill(gc, 0); return !readFileSync(`/proc/${gc}/stat`, "utf8").includes(") Z "); } catch { return false; } };
+  for (let i = 0; i < 20 && alive(); i++) await Bun.sleep(50);
+  expect(alive()).toBe(false); // the lock must not be released while it still runs
 });

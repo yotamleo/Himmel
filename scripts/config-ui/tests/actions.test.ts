@@ -262,6 +262,14 @@ test("a slow re-probe returns `re-probe timed out`", async () => {
   expect(b.reprobe).toBe("re-probe timed out");
 });
 
+test("a re-probe that exits non-zero is `re-probe failed`, even with valid JSON", async () => {
+  const port = boot({ env: { STUB_REPORT_RC: "2" } });
+  const id = await previewId(port);
+  const b = await (await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" })).json();
+  expect(b.reprobe).toBe("re-probe failed");
+  expect(b.before).toBeNull();
+});
+
 test("each run appends one audit line with an exact key set, table argv and no output", async () => {
   const port = boot({ env: { STUB_LEAK: CANARY } });
   const id = await previewId(port);

@@ -81,8 +81,9 @@ export function runChild(argv: string[], o: { cwd: string; env: Record<string, s
     c.on("error", (e) => { stderr += String(e.message); finish(null); });
     // "close" fires once stdout/stderr are drained. A descendant that keeps a
     // pipe open would delay it forever, so after the leader exits wait at most
-    // CLOSE_GRACE_MS (none after a timeout kill) before cutting the pipes.
+    // CLOSE_GRACE_MS (none after a timeout kill), then kill what is left of the
+    // group: the lock must not be released while a descendant still writes.
     c.on("close", (code) => finish(timedOut ? null : code));
-    c.on("exit", (code) => { grace = setTimeout(() => finish(timedOut ? null : code), timedOut ? 0 : CLOSE_GRACE_MS); });
+    c.on("exit", (code) => { grace = setTimeout(() => { killGroup(); finish(timedOut ? null : code); }, timedOut ? 0 : CLOSE_GRACE_MS); });
   });
 }
