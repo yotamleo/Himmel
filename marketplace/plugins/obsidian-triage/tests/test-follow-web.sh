@@ -438,6 +438,11 @@ fetches = 0; credits = 5;
 fn = makeWebFn(KEYED);
 await fn("q1"); await fn("q2");
 console.log("CEIL_AT_LIMIT_FETCHES=" + fetches);
+fetches = 0;
+globalThis.fetch = async () => { fetches += 1; return { ok: true, json: async () => { throw new SyntaxError("bad json"); } }; };
+fn = makeWebFn({ ...KEYED, HARVEST_FIRECRAWL_MAX_CREDITS: "0" });
+await fn("q1"); await fn("q2");
+console.log("CEIL_PARSE_FAIL_FETCHES=" + fetches);
 EOF
 out11="$(LEDGER_PATH="$tmpdir/ledger11.jsonl" node "$tmpdir/ks.mjs" 2>&1)"
 grep -q 'DENY_FC_NULL=true' <<<"$out11" && r=yes || r=no; assert "kill switch: HARVEST_SCRAPE_DENY=firecrawl turns firecrawl search off" yes "$r"
@@ -453,6 +458,7 @@ grep -q 'SEARCH_BODY=true' <<<"$out11" && r=yes || r=no; assert "search body car
 grep -q 'CEIL_TRIP_RETURNS=true CEIL_FETCHES=1' <<<"$out11" && r=yes || r=no; assert "ceiling: a call over it is returned, then firecrawl search stops for the run" yes "$r"
 grep -q 'CEIL_REPORTED=true' <<<"$out11" && r=yes || r=no; assert "ceiling: the trip is reported as 'search unavailable'" yes "$r"
 grep -q 'CEIL_AT_LIMIT_FETCHES=2' <<<"$out11" && r=yes || r=no; assert "ceiling: a call AT the ceiling (5) does not trip it" yes "$r"
+grep -q 'CEIL_PARSE_FAIL_FETCHES=1' <<<"$out11" && r=yes || r=no; assert "ceiling: an unparseable billed response trips it too" yes "$r"
 
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))

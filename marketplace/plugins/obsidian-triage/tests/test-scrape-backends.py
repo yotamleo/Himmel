@@ -385,6 +385,11 @@ try:
     check("kill switch: unknown name errors naming the valid set", False)
 except ValueError as e:
     check("kill switch: unknown name errors naming the valid set", "HARVEST_SCRAPE_DENY" in str(e) and "jina" in str(e))
+try:
+    mod.build_scrape_chain({"HARVEST_SCRAPE_DENY": "all,bogus"}, 5)
+    check("kill switch: `all` does not mask an unknown name", False)
+except ValueError:
+    check("kill switch: `all` does not mask an unknown name", True)
 
 # (b) per-run call cap: env sets it, the flag wins, default unchanged
 check("cap: default is today's value", mod.resolve_firecrawl_budget(None, {}) == mod.FIRECRAWL_DEFAULT_BUDGET == 20)

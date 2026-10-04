@@ -890,7 +890,8 @@ def build_scrape_chain(env, budget):
     names = list(dict.fromkeys(names))  # a repeated name must not mint a second client (and a second firecrawl budget)
     resolve_backend_names(names, "HARVEST_SCRAPE_BACKEND")
     killed = [n.strip() for n in (env.get("HARVEST_SCRAPE_DENY") or "").split(",") if n.strip()]
-    killed = set(BACKEND_REGISTRY) if "all" in killed else set(resolve_backend_names(killed, "HARVEST_SCRAPE_DENY"))
+    named = resolve_backend_names([n for n in killed if n != "all"], "HARVEST_SCRAPE_DENY")
+    killed = set(BACKEND_REGISTRY) if "all" in killed else set(named)
     backends = []
     for n in names:
         if n in killed:

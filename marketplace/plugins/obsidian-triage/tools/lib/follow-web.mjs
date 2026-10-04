@@ -246,7 +246,16 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         ledgerAppend("follow-web", "/v2/search", 0, false);
         return { found: false };
       }
-      const data = await r.json();
+      let data;
+      try {
+        data = await r.json();
+      } catch {
+        // transport succeeded, so the call was billed: book the known cost and honour the ceiling
+        ledgered = true;
+        ledgerAppend("follow-web", "/v2/search", FIRECRAWL_SEARCH_COST, false);
+        if (FIRECRAWL_SEARCH_COST > maxCredits) remaining = 0;
+        return { found: false };
+      }
       ledgered = true;
       const credits = data && Number.isInteger(data.creditsUsed) ? data.creditsUsed : FIRECRAWL_SEARCH_COST;
       ledgerAppend("follow-web", "/v2/search", credits, !!data && data.success !== false);
