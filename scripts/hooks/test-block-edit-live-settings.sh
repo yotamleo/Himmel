@@ -2312,6 +2312,16 @@ assert_rc "570 nested worktree cp \$SJ ~/+(.claude)/settings.json denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "shopt -s extglob; cp $SJ ~/+(.claude)/settings.json" HOME="$FAKEHOME")"
 assert_rc "571 primary cp \$SJ ~/?(.)claude/settings.json denies" 2 \
     "$(bash_rc_of "$PRIMARY" "cp $SJ ~/?(.)claude/settings.json" HOME="$FAKEHOME")"
+# a quoted heredoc body a data command reads keeps main's spellings only (AI
+# ruling); a body a shell runs is folded in full
+assert_rc "572 nested worktree cat <<'EOF' body naming ~/.cl\$(printf a)ude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cat > /tmp/n.md <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "573 nested worktree bash <<'EOF' body cp near ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "bash <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

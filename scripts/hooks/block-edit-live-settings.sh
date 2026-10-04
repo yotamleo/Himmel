@@ -1871,6 +1871,13 @@ _dc_name_fold() {
     local re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])(([.{*?]|\[[^]/[:space:]]*\]|[@+!]?\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\)|\$\(([^()]|\([^()]*\))*\)|\$\{[^}/]*\}|`[^`]*`)([^/[:space:];&|<>()`]|\[[^]/[:space:]]*\]|\$\(([^()]|\([^()]*\))*\)|`[^`]*`|\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\))*)'
     # shellcheck disable=SC2016 # a literal `$(` in a regex bracket, not expansion
     local pre='[.{][^/[:space:]]*[][*?{}$(#^~`]|[*?[`]|\$[({]|/[@+!]?\('
+    # _DC_MAIN: main's spellings only, a component led by `.` or `{`
+    if [ "${_DC_MAIN:-0}" = 1 ]; then
+        # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
+        re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])([.{]([^/[:space:];&|<>()`]|\[[^]/[:space:]]*\]|\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\))*)'
+        # shellcheck disable=SC2016 # a literal `$(` in a regex bracket, not expansion
+        pre='[.{][^/[:space:]]*[][*?{}$(#^~]'
+    fi
     _DCF=$1
     [[ $t =~ $pre ]] || return 0
     while [[ $t =~ $re ]]; do
@@ -1973,6 +1980,53 @@ _dc_name_fold() {
         [ -n "$m" ] || break
     done
     _DCF=$out$t$keep
+}
+
+# _dc_data_bodies TEXT RAW — _DCNB is TEXT (the lowercased, quote-stripped
+# RAW) with the lines of each quoted heredoc body read by a data command
+# (`cat`, `tee`, `python3 -`, `git commit -F -`) blanked, and _DCBD is those
+# body lines with every other line blanked: the shell never globs such a
+# body, so only main's spellings are folded in it. Returns 1 when there is
+# no such body. A line misread as body only falls back to main's reading.
+_dc_data_bodies() {
+    local d=' ' s=$2 line l2 end='' dash='' w seg rcv out='' bd='' hre
+    local -a ws
+    hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
+    while [[ $s =~ $hre ]]; do
+        d="$d${BASH_REMATCH[1]} "
+        s=${s#*"${BASH_REMATCH[0]}"}
+    done
+    [ "$d" != ' ' ] || return 1
+    d=$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')
+    _DCNB=''
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -n "$end" ]; then
+            l2=$line
+            [ -z "$dash" ] || l2=${l2#"${l2%%[!$'\t']*}"}
+            if [ "$l2" = "$end" ]; then
+                end='' out=$out$line$'\n' bd=$bd$'\n'
+            else
+                out=$out$'\n' bd=$bd$line$'\n' _DCNB=x
+            fi
+            continue
+        fi
+        out=$out$line$'\n' bd=$bd$'\n'
+        [[ $line =~ \<\<(-?)[[:space:]]*([a-z0-9_]+)[^\<]*$ ]] || continue
+        dash=${BASH_REMATCH[1]} w=${BASH_REMATCH[2]}
+        case "$d" in *" $w "*) ;; *) continue ;; esac
+        seg=${line%<<*}
+        seg=${seg##*[;\&|(]}
+        read -r -a ws <<< "$seg"
+        rcv=''
+        for rcv in "${ws[@]}"; do
+            case "$rcv" in [a-z_]*=*) rcv='' ;; *) break ;; esac
+        done
+        case "${rcv##*/}" in
+            cat|tee|python|python3|node|git|gh) end=$w ;;
+        esac
+    done <<< "$1"
+    [ -n "$_DCNB" ] || return 1
+    _DCNB=$out _DCBD=$bd
 }
 
 # _dc_unquoted TEXT — _DCU is TEXT with each quoted span ('…', "…" and a
@@ -2511,8 +2565,21 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         done
     fi
     if [ "$dc_fold" = 1 ]; then
-        _dc_name_fold "$cmd_lc"
-        cmd_lc=$_DCF
+        # a quoted heredoc body read as data keeps main's reading (main's
+        # spellings), the other lines are folded in full, and the two are
+        # joined line by line; a fold never spans a line (AI ruling)
+        if [ "$TOK" = 0 ] && [ "$tool_name" = Bash ] \
+            && _dc_data_bodies "$cmd_lc" "$cmd"; then
+            _DC_MAIN=1
+            _dc_name_fold "$_DCBD"
+            _DC_MAIN=0
+            dc_mf=$_DCF
+            _dc_name_fold "$_DCNB"
+            cmd_lc=$(paste -d '\0' <(printf '%s\n' "$dc_mf") <(printf '%s\n' "$_DCF"))
+        else
+            _dc_name_fold "$cmd_lc"
+            cmd_lc=$_DCF
+        fi
     fi
     # cmd_lc has its quotes stripped, so a quoted `(` or `)` inside a span
     # (`~/.cl$(printf a; : '(')ude`) unbalances it there; the quote-aware
