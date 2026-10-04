@@ -193,7 +193,7 @@ worktree_in_use() {
             inuse_walk_pid="$inuse_ppid"
         done
 
-        local inuse_entry inuse_pid inuse_cwd inuse_found_cwd=0
+        local inuse_entry inuse_pid inuse_cwd inuse_comm inuse_found_cwd=0
         for inuse_entry in /proc/[0-9]*; do
             inuse_pid="${inuse_entry#/proc/}"
             # Gated on /proc/self above, i.e. Linux only.

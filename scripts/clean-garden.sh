@@ -428,8 +428,13 @@ EOF
 # rows still show pr-state=unknown there, but that is a display-only gap, not
 # a stuck-worktree regression.
 NON_GITHUB_PRUNE_DEGRADED_WARNED=0
+# HIMMEL-4334: 1 = the leg-scratch arms of is_ignorable_stray apply (the
+# branch's work is merged); 0 only while is_branch_mergeable_for_prune has
+# accepted a never-merged branch under --only-allow-unmerged.
+LEG_SCRATCH_OK=1
 is_branch_mergeable_for_prune() {
     local branch="$1" tip
+    LEG_SCRATCH_OK=1
     tip=$(git -C "$PRIMARY_WORKTREE" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null) || return 1
     if [ "$HAVE_FORGE" -eq 1 ] && [ "$FORGE_KIND" != "github" ]; then
         if [ "$NON_GITHUB_PRUNE_DEGRADED_WARNED" -eq 0 ]; then
@@ -460,6 +465,7 @@ is_branch_mergeable_for_prune() {
             closed|none) ;;
             *) return 1 ;;
         esac
+        LEG_SCRATCH_OK=0
         local ahead remote_sha head_on_remote=0
         ahead=$(commits_not_on_main "$tip")
         remote_sha=$(git -C "$PRIMARY_WORKTREE" ls-remote origin "refs/heads/$branch" 2>/dev/null | awk '{print $1}')
@@ -507,14 +513,21 @@ is_ignorable_stray() {
         # HIMMEL-4334: leg ship scratch at the worktree ROOT only (no */ forms:
         # the same name nested below the root is real work). Directory shapes
         # match as "<dir>/*" because --untracked-files=all lists their files.
-        .scratch/*|.himmel-scratch/*|.os-verify-logs-*/*) return 0 ;;
+        # git lists an untracked NESTED REPO as one collapsed entry ending in
+        # "/" (`.scratch/nested/`), which `.scratch/*` would match: never a
+        # stray, its unpushed commits would be force-removed uncheckpointed.
+        */) return 1 ;;
+        # LEG_SCRATCH_OK=0 on the --only-allow-unmerged path (the branch never
+        # merged): a no-commit leg's scratch may be its only copy, so only
+        # the tool churn above stays discardable there.
+        .scratch/*|.himmel-scratch/*|.os-verify-logs-*/*) [ "$LEG_SCRATCH_OK" -eq 1 ] && return 0; return 1 ;;
         # A case `*` matches "/", so the filename shapes below need an
         # explicit no-slash guard or `.pr-body-notes/design.md` would match.
         */*) return 1 ;;
-        .pr-body*|.pr-title*|.git-pr-body*|.git-pr-title*) return 0 ;;
-        .commit-msg-*.tmp)                     return 0 ;;
-        panel-stdout*.log|panel-stderr*.log)   return 0 ;;
-        .suite-verdicts*.txt|.suites*.txt|.verdicts-*.txt|.msg-*.txt) return 0 ;;
+        .pr-body*|.pr-title*|.git-pr-body*|.git-pr-title*) [ "$LEG_SCRATCH_OK" -eq 1 ] && return 0; return 1 ;;
+        .commit-msg-*.tmp)                     [ "$LEG_SCRATCH_OK" -eq 1 ] && return 0; return 1 ;;
+        panel-stdout*.log|panel-stderr*.log)   [ "$LEG_SCRATCH_OK" -eq 1 ] && return 0; return 1 ;;
+        .suite-verdicts*.txt|.suites*.txt|.verdicts-*.txt|.msg-*.txt) [ "$LEG_SCRATCH_OK" -eq 1 ] && return 0; return 1 ;;
     esac
     return 1
 }
@@ -1297,6 +1310,7 @@ if [ "$NO_PRUNE" -eq 0 ]; then
             FAILED=$((FAILED+1))
         fi
     done
+    LEG_SCRATCH_OK=1
     echo "clean-garden: prune summary — $PRUNED pruned, $PARTIAL partial, $SKIPPED skipped, $FAILED failed"
 
     # HIMMEL-3297 — --only is a one-worktree prune: report and exit here so the

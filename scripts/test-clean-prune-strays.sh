@@ -155,6 +155,23 @@ mkdir -p "$WT_SCRNEST/pkg"; printf 'x\n' > "$WT_SCRNEST/pkg/.pr-body.txt"
 mkdir -p "$WT_SCRPFX/.pr-body-notes"; printf 'x\n' > "$WT_SCRPFX/.pr-body-notes/design.md"
 printf 'x\n' > "$WT_SCRWIP/.pr-body.txt"; printf 'changed\n' >> "$WT_SCRWIP/README"
 
+# HIMMEL-4334 (judge NO-GO): git lists an untracked NESTED REPO as one collapsed
+# entry ending in "/" (`.scratch/nested/`), which the `<dir>/*` scratch arms
+# would match -- a force-prune would destroy its unpushed commits.
+mk_nested_repo() {
+    git init -q "$1"
+    printf 'x\n' > "$1/f"
+    git -C "$1" add f
+    git -C "$1" -c user.email=t@test.com -c user.name=t commit -q -m "unpushed"
+}
+WT_NEST1=$(mk_wt wt-nest1 feat/nest1)   # case 20: nested repo under .scratch/ -> kept
+WT_NEST2=$(mk_wt wt-nest2 feat/nest2)   # case 21: nested repo under .himmel-scratch/ -> kept
+WT_NEST3=$(mk_wt wt-nest3 feat/nest3)   # case 22: nested repo under .os-verify-logs-*/ -> kept
+mkdir -p "$WT_NEST1/.scratch" "$WT_NEST2/.himmel-scratch" "$WT_NEST3/.os-verify-logs-1"
+mk_nested_repo "$WT_NEST1/.scratch/nested"
+mk_nested_repo "$WT_NEST2/.himmel-scratch/nested"
+mk_nested_repo "$WT_NEST3/.os-verify-logs-1/nested"
+
 run_clean() {
     (
         export PATH="${STUB_DIR}:${PATH}"
@@ -324,6 +341,10 @@ if [ -d "$WT_SCRNEST" ]; then pass "17: nested .pr-body.txt worktree kept"; else
 if [ -d "$WT_SCRWIP" ]; then pass "18: tracked-WIP + root scratch worktree kept"; else fail "18: tracked-WIP + root scratch worktree was pruned" "$out"; fi
 # case 19: a directory merely PREFIXED like a scratch file is real work -> kept (codex-1)
 if [ -d "$WT_SCRPFX" ]; then pass "19: .pr-body-notes/ dir worktree kept"; else fail "19: .pr-body-notes/ dir worktree was pruned" "$out"; fi
+# cases 20-22: a nested repo under each scratch-dir arm is never a stray
+if [ -d "$WT_NEST1/.scratch/nested/.git" ]; then pass "20: nested repo under .scratch/ kept"; else fail "20: nested repo under .scratch/ was pruned" "$out"; fi
+if [ -d "$WT_NEST2/.himmel-scratch/nested/.git" ]; then pass "21: nested repo under .himmel-scratch/ kept"; else fail "21: nested repo under .himmel-scratch/ was pruned" "$out"; fi
+if [ -d "$WT_NEST3/.os-verify-logs-1/nested/.git" ]; then pass "22: nested repo under .os-verify-logs-1/ kept"; else fail "22: nested repo under .os-verify-logs-1/ was pruned" "$out"; fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo

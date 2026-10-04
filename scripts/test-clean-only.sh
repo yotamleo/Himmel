@@ -293,6 +293,20 @@ git -C "$REPO" push -q origin "none/pushed:refs/heads/none/pushed"
 out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_PUSHED" --only-allow-unmerged)
 expect "9e: ahead-of-main but head pushed to origin pruned WITH the flag" "$out" is_gone "$WT_UA_PUSHED"
 
+# 9g (HIMMEL-4334): a never-merged branch's leg scratch may be its only copy,
+# so the root-scratch arms do NOT apply under --only-allow-unmerged; only tool
+# churn (package-lock.json) stays discardable.
+WT_UA_SCRATCH=$(mk_wt wt-ua-scratch none/scratch)
+printf 'x\n' > "$WT_UA_SCRATCH/.pr-body.txt"
+mkdir -p "$WT_UA_SCRATCH/.scratch"; printf 'x\n' > "$WT_UA_SCRATCH/.scratch/a.txt"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_SCRATCH" --only-allow-unmerged)
+expect "9g: unmerged branch with root scratch refused WITH the flag" "$out" rc_nonzero "$out"
+expect "9g: unmerged scratch worktree kept" "$out" is_dir "$WT_UA_SCRATCH"
+WT_UA_CHURN=$(mk_wt wt-ua-churn none/churn)
+printf 'lock\n' > "$WT_UA_CHURN/package-lock.json"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_CHURN" --only-allow-unmerged)
+expect "9g control: tool churn alone still pruned WITH the flag" "$out" is_gone "$WT_UA_CHURN"
+
 WT_UA_NOTPUSHED=$(mk_wt wt-ua-notpushed none/notpushed)
 printf 'extra\n' > "$WT_UA_NOTPUSHED/extra.txt"
 git -C "$WT_UA_NOTPUSHED" add extra.txt

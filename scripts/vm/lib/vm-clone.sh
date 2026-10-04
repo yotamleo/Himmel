@@ -70,6 +70,12 @@ vm_env_init() {
         _vm_fail "VBOXMANAGE_PATH is unset and HIMMEL_VM_AR_LIVE is not '1' — refusing to fall through to a real VBoxManage (HIMMEL-2623 incident hardening). Set VBOXMANAGE_PATH explicitly (a real path, or a stub for testing), or HIMMEL_VM_AR_LIVE=1 to run for real."
     fi
     VBOXMANAGE="${VBOXMANAGE_PATH:-$HIMMEL_VM_AR_VBOXMANAGE_DEFAULT}"
+    # A relative path (`./stub`) must resolve here: the VBoxManage calls run
+    # under `cd "$HOME"` (HIMMEL-4334), where it would no longer exist.
+    case "$VBOXMANAGE" in
+        /*) ;;
+        */*) VBOXMANAGE="$PWD/$VBOXMANAGE" ;;
+    esac
     export VBOXMANAGE_PATH="$VBOXMANAGE"
     command -v "$VBOXMANAGE" >/dev/null 2>&1 || [ -x "$VBOXMANAGE" ] \
         || _vm_fail "VBoxManage not found at '$VBOXMANAGE' (set VBOXMANAGE_PATH)"
