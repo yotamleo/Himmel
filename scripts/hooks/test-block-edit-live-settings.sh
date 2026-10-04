@@ -2495,6 +2495,19 @@ assert_rc "614 nested worktree alias cat=bash; cat <<'EOF' body denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "alias cat=bash; cat <<'EOF'
 $DC_RUN
 EOF" HOME="$FAKEHOME")"
+assert_rc "616 nested worktree quoted body line ending in a backslash, then a write, denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF'
+x \\
+EOF
+cp /tmp/a ~/\$(printf .cl)aude/settings.json
+: <<'EOF'
+EOF" HOME="$FAKEHOME")"
+assert_rc "617 nested worktree doc body with a \\-continued line before its end allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /tmp/notes.md
+for c in \\
+  a; do :; done
+the hook folds ~/.cl\$(printf a)ude now
+EOF" HOME="$FAKEHOME")"
 assert_rc "615 nested worktree /usr/bin/cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "/usr/bin/cat <<'EOF' > /tmp/notes.md
 the hook folds ~/.cl\$(printf a)ude now

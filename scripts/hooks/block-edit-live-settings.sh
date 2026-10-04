@@ -2018,7 +2018,7 @@ _dc_receiver() {
 # full like any other line.
 _dc_data_bodies() {
     local d=' ' s=$2 line l2 end='' dash='' w seg pre rcv out='' bd='' hre
-    local bb='' bo='' u ure ore lre fdre
+    local bb='' bo='' bs='' u ure ore lre fdre
     fdre='>&[[:space:]]*([^12[:space:]-]|[12][^[:space:];&|)<>])'
     hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
     while [[ $s =~ $hre ]]; do
@@ -2039,7 +2039,11 @@ _dc_data_bodies() {
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -n "$end" ]; then
             l2=${line#"${line%%[!$'\t']*}"}
-            [ "$l2" != "$end" ] || end=''
+            # TEXT has `\`-newlines joined, which a quoted body keeps, so a
+            # body line ending in `\` swallows the end line after it there
+            [ "$l2" != "$end" ] || { [ -z "$bs" ] || return 1; end=''; }
+            bs=''
+            case "$line" in *\\) bs=1 ;; esac
             continue
         fi
         s=$line
@@ -2047,7 +2051,7 @@ _dc_data_bodies() {
             u="$u${BASH_REMATCH[1]} "
             s=${s#*"${BASH_REMATCH[0]}"}
         done
-        l2=${line//[\'\"\\]/}
+        l2=${line//[\'\"\\]/} bs=''
         [[ ! $l2 =~ $ore ]] || end=${BASH_REMATCH[2]}
     done <<< "$2"
     end=''
