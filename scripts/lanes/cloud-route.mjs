@@ -19,6 +19,7 @@
 //   CLOUD-OK     everything else
 import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { gitClean } from './git-clean.mjs';
 import { dirname, join, resolve, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -148,7 +149,7 @@ export function launchLine(briefPath) {
 
 // ---- I/O (CLI only) ----
 function primaryCheckout() {
-  const common = execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: REPO, encoding: 'utf8' }).trim();
+  const common = gitClean(['rev-parse', '--path-format=absolute', '--git-common-dir'], { cwd: REPO, encoding: 'utf8' }).trim();
   return dirname(common);
 }
 
