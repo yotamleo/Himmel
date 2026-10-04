@@ -2737,12 +2737,41 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # word as a glob already.
         # ponytail: only shells named here (any path, any wrapper before them)
         # and `eval` have their body re-judged; `su -c`, `ssh host '…'`,
-        # `watch '…'` bodies stay one word. Upgrade path: add the name when a
+        # `watch '…'` bodies stay one word, and an `eval` behind a construct
+        # the command-word walk below does not know (a `case` pattern, an
+        # unlisted wrapper) is not a body. Upgrade path: add the name when a
         # bypass report names one.
+        # The scan stays linear (J1818a): `eval` is a body only as a segment's
+        # command word (after assignments, `if`/`then`/`do`/`!`/`{` and exec
+        # wrappers with their options), and its body's words are not scanned
+        # again here, so `echo eval eval …` is no body at all. A shell's body
+        # is one word, so it is matched anywhere (`find -exec sh -c`, `xargs
+        # bash -c`). Nesting is capped: a body found HIMMEL_LSB_DEPTH (the
+        # child count above this run) 3 levels down is refused fail-closed.
         if [ "$TOK" = 1 ]; then
-            ii=0
+            idepth=${HIMMEL_LSB_DEPTH:-0}
+            case "$idepth" in '' | *[!0-9]*) idepth=0 ;; esac
+            ii=0 iseg=-1 icmd=0 iwr=0 iwn='' ioa=0
             while [ "$ii" -lt "$ST_N" ]; do
-                ij=$((ii + 1)) ibw=''
+                ij=$((ii + 1)) ibw='' icw=0
+                if [ "${ST_S[ii]}" != "$iseg" ]; then
+                    iseg=${ST_S[ii]} icmd=1 iwr=0 ioa=0
+                fi
+                if [ "$icmd" = 1 ] && [ -z "${ST_RO[ii]}" ]; then
+                    il=${ST_LW[ii]}
+                    if [ "$ioa" = 1 ]; then
+                        ioa=0
+                    elif [ "$iwr" = 1 ] && case "$il" in -* | [0-9]*) true ;; *) false ;; esac; then
+                        ! _wrapper_opt_arg "$iwn" "$il" || ioa=1
+                    elif [ "${ST_A[ii]}" != 1 ]; then
+                        case "${il##*/}" in
+                            if | then | else | elif | do | while | until | '!' | '{') ;;
+                            env | sudo | doas | xargs | command | builtin | exec | nohup | nice | ionice | timeout | stdbuf | setsid | taskset | chrt | unbuffer | time | noglob | nocorrect)
+                                iwr=1 iwn=${il##*/} ;;
+                            *) icmd=0 icw=1 ;;
+                        esac
+                    fi
+                fi
                 case "${ST_LW[ii]##*/}" in
                     bash|sh|zsh|dash|ksh|mksh|ash|fish)
                         ic=0 iskip=0
@@ -2752,7 +2781,7 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                             [ -z "${ST_RO[ij-1]}" ] || continue
                             if [ "$iskip" = 1 ]; then iskip=0; continue; fi
                             case "$iw" in
-                                -o|+o|-O|+O) iskip=1 ;;
+                                -o|+o|-O|+O|--rcfile|--init-file) iskip=1 ;;
                                 --*|+*) : ;;
                                 -*c*) ic=1 ;;
                                 -*) : ;;
@@ -2761,16 +2790,25 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                         done
                         ;;
                     eval)
-                        while [ "$ij" -lt "$ST_N" ] && [ "${ST_S[ij]}" = "${ST_S[ii]}" ]; do
-                            [ -n "${ST_RO[ij]}" ] || ibw="${ibw:+$ibw }${ST_W[ij]}"
-                            ij=$((ij + 1))
-                        done
+                        if [ "$icw" = 1 ]; then
+                            while [ "$ij" -lt "$ST_N" ] && [ "${ST_S[ij]}" = "${ST_S[ii]}" ]; do
+                                [ -n "${ST_RO[ij]}" ] || ibw="${ibw:+$ibw }${ST_W[ij]}"
+                                ij=$((ij + 1))
+                            done
+                            ii=$((ij - 1))
+                        fi
                         ;;
                 esac
-                if [ -n "$ibw" ] \
-                    && ! jq -n --arg cmd "$ibw" --arg cwd "$cwd" \
-                        '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
-                        | bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
+                if [ -z "$ibw" ]; then
+                    :
+                elif [ "$idepth" -ge 3 ]; then
+                    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
+                        deny_message "a $tool_name command" "$cmd" "interpreter bodies (eval, bash -c) nested more than 3 deep are not judged, so they are refused fail-closed; run the innermost command directly"
+                        exit 2
+                    fi
+                elif ! jq -n --arg cmd "$ibw" --arg cwd "$cwd" \
+                    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
                     echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c or eval in: $cmd" >&2
                     exit 2
                 fi

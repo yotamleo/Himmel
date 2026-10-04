@@ -2835,6 +2835,20 @@ eval "cat <<'EOF' > /tmp/x"; eval 'cp /tmp/a ~/.cl*/settings.json'
 eval "cat <<'EOF' > /tmp/x"; eval 'echo x > ~/.cl[a]ude/settings.json'
 eval "cat <<'EOF' > /tmp/x"; eval 'echo x > ~/.c?aude/settings.json'
 ROWS
+# 827-828 (J1818a): an option that takes a file (`--rcfile F`, `--init-file F`)
+# does not hide the `-c` body after it.
+rows_both 827 2 "a shell's --rcfile/--init-file argument does not hide its -c body" <<'ROWS'
+bash --rcfile /tmp/rc -c "echo x > ~/.claude/sett*s.json"
+bash --init-file /tmp/rc -c 'cp /tmp/a ~/.cl*/settings.json'
+ROWS
+# 829-830 (J1818a): body nesting is capped. Three nested evals are judged in
+# full; a fourth level is refused fail-closed.
+rows_both 829 2 "interpreter bodies nested past the depth cap deny" <<'ROWS'
+eval eval eval eval 'echo x'
+ROWS
+rows_both 830 0 "interpreter bodies nested within the depth cap allow" <<'ROWS'
+eval eval eval 'echo x'
+ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
@@ -2873,6 +2887,16 @@ if command -v node >/dev/null 2>&1; then
         timed_rc "683/$sz quote-heavy heredoc into live settings denies" 2 \
             "$(pad_to "cat <<'EOF' > ~/.claude/settings.json"$'\n' "$QU" 'EOF' "$sz")"
     done
+    # 831-832 (HIMMEL-4353, J1818a): each eval re-judged every later eval in
+    # its segment, so the cost doubled per eval word (8 words 2.7 s, 10 words
+    # 22 s). An eval word that is not the command is not a body, and nesting
+    # stops at the depth cap; each must finish well inside 3 s.
+    ob=$TIMING_BUDGET_MS TIMING_BUDGET_MS=3000
+    for ne in 8 10 12; do
+        timed_rc "831/$ne echo with $ne eval words allows" 0 "echo $(rep "$ne" 'eval ')"
+    done
+    timed_rc "832 twelve nested evals deny at the depth cap" 2 "$(rep 12 'eval ')'echo x'"
+    TIMING_BUDGET_MS=$ob
 else
     echo "SKIP 679-683 (node not installed)"
 fi
