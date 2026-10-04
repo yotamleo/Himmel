@@ -394,6 +394,93 @@ allow "tmux new -d 'qmd status'"
 allow 'strace -f qmd status'
 allow "sg users -c 'qmd status'"
 allow "echo 'qmd status' | at now"
+# HIMMEL-4245 (judge J1784g): a consumer stage is cleared of its shell word
+# only when its program is a known non-executing filter. Every other launcher
+# — modelled or not, with operands or not — keeps the shell word fail-closed.
+deny 'echo qmd query x | chrt 10 sh'
+deny 'echo qmd query x | taskset 0x1 sh'
+deny 'echo qmd query x | fakeroot sh'
+deny 'echo qmd query x | eatmydata sh'
+deny 'echo qmd query x | proot sh'
+deny 'echo qmd query x | dbus-run-session sh'
+deny 'echo qmd query x | caffeinate sh'
+deny 'echo qmd query x | torsocks sh'
+deny 'echo qmd query x | faketime now sh'
+deny 'echo qmd query x | chronic sh'
+deny 'echo qmd query x | ifne sh'
+deny 'echo qmd query x | sshpass -p pw ssh host sh'
+deny 'echo qmd query x | lxc exec c -- sh'
+deny 'echo qmd query x | incus exec c -- sh'
+deny 'echo qmd query x | nerdctl exec -i c sh'
+deny 'echo qmd query x | oc exec -i p -- sh'
+deny 'echo qmd query x | ionice -c 3 sh'
+deny 'echo qmd query x | prlimit --nofile=64 sh'
+deny 'echo qmd query x | numactl -N 0 sh'
+deny 'echo qmd query x | flatpak-spawn --host sh'
+deny 'echo qmd query x | distrobox enter c -- sh'
+deny 'echo qmd query x | toolbox run sh'
+deny 'echo qmd query x | lxc-attach -n c -- sh'
+deny 'echo qmd query x | systemd-nspawn -D d sh'
+deny 'echo qmd query x | valgrind sh'
+deny 'echo qmd query x | rlwrap sh'
+# A subshell, a group, a loop or a substitution in the consumer stage
+# inherits the pipe; so does a process substitution's reader.
+deny 'echo qmd query x | (sh)'
+deny 'echo qmd query x | tee >(sh)'
+deny 'echo qmd query x | grep "$(sh)"'
+deny 'echo qmd query x | grep `sh`'
+deny 'echo qmd query x | (cat) | sh'
+deny '(echo qmd query x) | sh'
+deny '(echo qmd query x; true) | sh'
+deny 'echo qmd query x | { grep -q x; sh; }'
+deny 'echo qmd query x | while read l; do sh; done'
+# A filter reached through a wrapper, decorated, redefined, or given an
+# option that runs a program or a script that executes.
+deny 'echo qmd query x | command grep -v sh'
+deny 'echo qmd query x | env grep -v sh'
+deny 'echo qmd query x | nice grep -v sh'
+deny 'echo qmd query x | "grep" -v sh'
+deny 'echo qmd query x | \grep -v sh'
+deny 'echo qmd query x | $g -v sh'
+deny 'echo qmd query x | ./grep -v sh'
+deny 'echo qmd query x | /tmp/grep -v sh'
+deny 'echo qmd query x | =grep -v sh'
+deny 'alias grep=sh; echo qmd query x | grep -v sh'
+deny 'grep() { sh; }; echo qmd query x | grep -v sh'
+deny 'PATH=/tmp/x:$PATH; echo qmd query x | grep -v sh'
+deny 'hash -p /bin/sh grep; echo qmd query x | grep -v sh'
+deny '. ./defs.sh; echo qmd query x | grep -v sh'
+deny "bash -c 'source f; echo qmd query x | grep -v sh'"
+deny 'echo qmd query x | xargs -a f grep -v sh'
+deny 'echo qmd query x | sort --compress-program sh'
+deny 'echo qmd query x | rg --pre sh x'
+deny 'echo qmd query x | sed e sh'
+deny 'echo qmd query x | sed s/x/y/w sh'
+deny 'echo qmd query x | sed -f f.sed sh'
+deny "echo qmd query x | awk '{system(\$0)}' sh"
+deny "echo qmd query x | awk '{print | \"cat\"}' sh"
+deny "echo qmd query x | awk 'BEGIN{\"date\" | getline d}' sh"
+deny 'echo qmd query x | awk -f p.awk sh'
+deny 'echo qmd query x | less sh'
+deny 'echo qmd query x | more sh'
+# The grep-operand class 4245 opened stays allowed, through plain filters.
+allow 'grep -rn "qmd search" docs | /usr/bin/grep -v sh'
+allow 'grep -rn "qmd search" docs |& grep -v sh'
+allow 'grep -rn "qmd search" docs | grep -v -e sh -e bash'
+allow 'grep -rn "qmd search" docs | rg -v zsh'
+allow 'grep -rn "qmd search" docs | head -n 5 | grep -c sh'
+allow "grep -rn 'qmd search' docs | awk -F: '{print \$1}' | sort | uniq -c | grep -v bash"
+allow 'grep -rn "qmd search" docs | cut -d: -f1 | grep zsh'
+allow 'grep -rn "qmd search" docs | sed -n /x/p sh'
+allow 'grep -rln "qmd search" docs | xargs -0 -n 1 grep -c sh'
+allow "grep -rn 'qmd query' . | awk '{print \$1}' | grep -v source"
+# ponytail: a filter that runs its input with no shell word in the stage
+# (sed e, awk system, sort --compress-program=PROG), and a consumer redefined
+# as a function, are unread; residual launchers → HIMMEL-4305.
+allow 'echo qmd query x | sed e'
+allow "echo qmd query x | awk '{system(\$0)}'"
+allow 'echo qmd query x | sort --compress-program=sh'
+allow 'cat() { sh; }; echo qmd query x | cat'
 # ... while the same launchers running anything else stay allowed.
 allow "fish -c 'qmd status'"
 allow "su -c 'qmd status'"

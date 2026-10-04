@@ -462,12 +462,48 @@ NESTWORD='(^|[^[:alnum:]_.-])((r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh|fish|el
 # joined. run: watch and parallel, which join their words into one command
 # too; tmux: the words after its session-starting subcommand.
 # env: its -S string and the words after it. alias: a definition naming qmd.
-# HIMMEL-4245: a pipe consumer stage whose last word is its program.
-PIPEPROG='^&?[[:space:]]*(('"$ASSIGN"'|\{|!|[0-9]*[<>][<>&|]*[[:space:]]*[^[:space:]<>]*|=?'"$EXEPFX$WRAP"')[[:space:]]+)*=?'"$EXEPFX"'[^[:space:]]+$'
-# A remote or container launcher consumer (`| ssh host sh`, `| docker exec
-# -i c sh`, `| kubectl exec -i p -- sh`) hands the pipe on to a shell word
-# anywhere among its words: that stage stays fail-closed, as before 4245.
-PIPELNCH='^&?[[:space:]]*(('"$ASSIGN"'|\{|!|[0-9]*[<>][<>&|]*[[:space:]]*[^[:space:]<>]*|=?'"$EXEPFX$WRAP"')[[:space:]]+)*=?'"$EXEPFX"'(ssh|docker|podman|kubectl)(\.exe)?[[:space:]]'
+# HIMMEL-4245: a pipe consumer stage that is a plain non-executing filter
+# reads a shell word as an operand (`… | grep -v sh`), not as a program. Its
+# program word is bare or /usr/bin- or /bin-prefixed, behind no wrapper but
+# xargs with plain flag or count options, and no assignment or redirection. Every other stage — any launcher, modelled or
+# not — keeps a shell word anywhere in it fail-closed. less and more are no
+# filter: `+`/`!` commands and $LESS run a shell.
+FILTPROG='^&?[[:space:]]*(xargs([[:space:]]+-([0rtx]+|[nlps][[:space:]]*[0-9]+))*[[:space:]]+)?(/usr/bin/|/bin/)?(grep|egrep|fgrep|rg|sed|awk|gawk|mawk|nawk|head|tail|wc|sort|uniq|cut|tr|cat|column|jq)([[:space:]]|$)'
+# A command that could make a filter name run something else — a quoted,
+# escaped or spliced consumer program (raw text), an alias, a function, a
+# hash or enable entry, a PATH assignment or a sourced file — clears no stage.
+FILTDECO='\|&?[[:space:]]*[^[:space:]|;&()<>]*["'\''\\]'
+FILTREDEF='(^|[^[:alnum:]_])(alias|function|hash|enable|path=)|(^|[;&|({][[:space:]]*|(builtin|command|eval|exec)[[:space:]]+)(source|\.)([[:space:]]|$)|\([[:space:]]*\)'
+SEDOPT='(^|[[:space:]])-[^[:space:]]*[^nEersuz[:space:]]'
+SEDEXEC='(^|[[:space:]])([ewW]|[^-[:space:]][^[:space:]]*[ewW])'
+AWKOPT='(^|[[:space:]])-[^Fv[:space:]]'
+# pipe_filter STAGE DEC — succeed when the consumer stage STAGE (qmd_words'
+# text, DEC its decoded bytes) is a plain filter. sed holds no e, w or W
+# outside its -n/-E/-e/-r/-s/-u/-z options; awk no system, getline, `|` or
+# @-directive and only -F/-v options; no stage holds a long option (rg --pre,
+# sort --compress-program), a substitution, subshell, group or list.
+# shellcheck disable=SC2016 # literal ` bytes
+pipe_filter() {
+    local s=$1 d=$2 p
+    [ "$nofilt" = 0 ] || return 1
+    [[ $s =~ $FILTPROG ]] || return 1
+    p=${BASH_REMATCH[5]}
+    d=${d:${#BASH_REMATCH[0]}}
+    d=${d//$'\n'/ }
+    case "${s#&}" in *'('*|*')'*|*'`'*|*';'*|*'&'*|*'|'*|*'{'*|*'}'*|*[[:space:]]--*) return 1 ;; esac
+    case "$p" in
+        sed)
+            if [[ $d =~ $SEDOPT ]] || [[ $d =~ $SEDEXEC ]]; then
+                return 1
+            fi
+            ;;
+        awk|gawk|mawk|nawk)
+            case "$d" in *system*|*getline*|*'|'*|*'@'*) return 1 ;; esac
+            if [[ $d =~ $AWKOPT ]]; then return 1; fi
+            ;;
+    esac
+    return 0
+}
 ENVSPLIT='^(-[[:alpha:]]*S|--split-string(=|$))'
 # nest_mode WORD — set mode for WORD, or return 1 when it runs nothing nested.
 nest_mode() {
@@ -496,7 +532,7 @@ names_verb() {
 # DEC (its decoded line). Sets deny=1 on the first refusal.
 # shellcheck disable=SC2016 # literal $ and ` bytes
 qmd_nested() {
-    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd rdop k piped ptxt sgw
+    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd rdop k piped sgw
     n=${#w}
     # bash copies $w on every index below, so the scan is quadratic in its
     # length: a long command holding a shell or eval word is refused, not
@@ -509,7 +545,16 @@ qmd_nested() {
     # the lone `|` (or `|&`) that feeds the current command, and pfrom the
     # boundary before the pipeline's first command, so the producer is every
     # stage before the pipe, dec[pfrom+1, pipe) (`echo … | cat | sh`).
-    local lb=-1 pipe='' pfrom=-1
+    # HIMMEL-4245: a subshell, substitution or backtick opened in a piped
+    # stage inherits its stdin, so it pushes a frame (lb, pipe and fb, the
+    # pipe a list in the frame falls back to) that its close pops; a group or
+    # loop keyword in a piped stage makes the pipe the frame's fallback. A
+    # popped frame restores the boundary before its opener, so `(a) | sh`
+    # reads `(a)` as the producer.
+    # ponytail: the fallback outlives the group or loop it came from, so a
+    # bare shell after it (`echo qmd query x | { cat; }; sh`) is over-denied;
+    # match the closing keyword if one is hit.
+    local lb=-1 pipe='' pfrom=-1 fs='' fb='' fr
     while [ "$i" -lt "$n" ]; do
         c=${w:i:1}
         case "$NESTSEP" in
@@ -524,12 +569,30 @@ qmd_nested() {
                             [ -n "$pipe" ] || pfrom=$lb
                             pipe=$i
                         else
-                            pipe=''
+                            pipe=$fb
                         fi
                         lb=$i
                         ;;
-                    '&') [ "$k" = '|' ] || { pipe=''; lb=$i; } ;;
-                    ';'|'('|')'|'`') pipe='' lb=$i ;;
+                    '&') [ "$k" = '|' ] || { pipe=$fb; lb=$i; } ;;
+                    ';') pipe=$fb lb=$i ;;
+                    '('|')'|'`')
+                        if [ "$c" = ')' ] || { [ "$c" = '`' ] && [ "${fs##*,}" = b ]; }; then
+                            if [ -n "$fs" ]; then
+                                fr=${fs##*/} fs=${fs%/*}
+                                lb=${fr%%,*} fr=${fr#*,}
+                                pipe=${fr%%,*} fr=${fr#*,}
+                                fb=${fr%%,*}
+                            else
+                                pipe=$fb lb=$i
+                            fi
+                        else
+                            k=p
+                            [ "$c" != '`' ] || k=b
+                            fs="$fs/$lb,$pipe,$fb,$k"
+                            [ -z "$pipe" ] || fb=$pipe
+                            lb=$i
+                        fi
+                        ;;
                 esac
                 i=$((i + 1))
                 continue
@@ -542,12 +605,13 @@ qmd_nested() {
         done
         t=${w:i:j-i}
         i=$j
+        if [ -n "$pipe" ]; then
+            case "$t" in '{'|while|until|for|if|case|select) fb=$pipe ;; esac
+        fi
         t=${t#=}
         t=${t##*/}
         nest_mode "$t" || continue
         piped=$pipe
-        # The consumer stage up to the end of this word (`|&`'s `&` kept).
-        [ -z "$piped" ] || ptxt=${w:piped+1:i-piped-1}
         # The words that follow, to the end of the simple command. A word
         # keeps a `$(…)` or backtick substitution in it whole, blanks and all.
         e=$i hasc=0 scr='' rd=0
@@ -685,11 +749,10 @@ qmd_nested() {
         i=$e
         # A shell or source with no -c string, fed by a pipe, runs the
         # producer's output: refuse a producer naming a verb. HIMMEL-4245:
-        # only when the word is the consumer's program, behind its wrappers,
-        # assignments and redirections (`| xargs bash`, `| 2>/dev/null sh`),
-        # so `… | grep -v sh` is no shell.
+        # unless the consumer stage, to the end of this command, is a plain
+        # filter (`… | grep -v sh` is no shell).
         if [ -n "$piped" ] && [ "$hasc" = 0 ] && { [ "$mode" = sh ] || [ "$mode" = src ]; } &&
-            { [[ $ptxt =~ $PIPEPROG ]] || [[ $ptxt =~ $PIPELNCH ]]; } &&
+            ! pipe_filter "${w:piped+1:e-piped-1}" "${dec:piped+1:e-piped-1}" &&
             names_verb "${dec:pfrom+1:piped-pfrom-1}"; then
             deny=1
             return 0
@@ -742,6 +805,11 @@ qmd_check() {
         *qmd*|*\$\'*|*\$\"*) ;;
         *) return 0 ;;
     esac
+    # Whether a filter can clear a piped stage (pipe_filter) is read from the
+    # raw text of every level, and once refused stays refused.
+    if [[ $cmd =~ $FILTDECO ]] || [[ $cmd_lc =~ $FILTREDEF ]]; then
+        nofilt=1
+    fi
     # Nested strings share one byte budget, so four levels of a long string
     # cannot each pay a full scan.
     if [ "$depth" -gt 0 ]; then
@@ -785,7 +853,7 @@ qmd_check() {
     return 0
 }
 
-deny=0 checks=0 nested=0
+deny=0 checks=0 nested=0 nofilt=0
 qmd_check "$cmd" 0
 
 if [ "$deny" = 1 ]; then
