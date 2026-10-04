@@ -295,8 +295,8 @@ rm -rf "$t"
 # (a *_SKIP seam set) never does. State dir pinned to a temp dir.
 echo "== counts file: full run writes it, subset run does not =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-counts.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }; write_settings "$t/claude" "$WRAPPER"
-RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/sub" bash "$DOC" --no-color >/dev/null 2>&1
-if [ ! -e "$t/sub/counts" ]; then pass "subset run (SKIP seams set) writes no counts"; else fail "subset run wrote counts"; fi
+sub_out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/sub" bash "$DOC" --no-color 2>&1)"
+if grepq "$sub_out" 'Summary:' && [ ! -e "$t/sub/counts" ]; then pass "subset run (SKIP seams set) reaches its Summary and writes no counts"; else fail "subset run: no Summary or wrote counts: $(printf '%s' "$sub_out" | tail -3)"; fi
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/full" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$DOC" --no-color 2>&1)"
 want="$(printf '%s\n' "$out" | sed -n -E 's/^Summary: ([0-9]+) FAIL +([0-9]+) WARN.*/fail=\1 warn=\2/p')"
 if [ -n "$want" ] && [ "$(cat "$t/full/counts" 2>/dev/null)" = "$want" ]; then pass "full run writes counts matching its Summary ($want)"; else fail "full run counts '$(cat "$t/full/counts" 2>/dev/null)' != '$want'"; fi
