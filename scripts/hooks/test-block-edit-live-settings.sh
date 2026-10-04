@@ -2578,6 +2578,7 @@ rows_both() {
         cmd=${cmd//@H@/$FAKEHOME}
         cmd=${cmd//\\n/$'\n'}
         cmd=${cmd//\\t/$'\t'}
+        cmd=${cmd//\\r/$'\r'}
         assert_rc "$n/wt $3: $cmd" "$2" "$(bash_rc_of "$NESTED_WT" "$cmd" HOME="$FAKEHOME")"
         assert_rc "$n/prim $3: $cmd" "$2" "$(bash_rc_of "$PRIMARY" "$cmd" HOME="$FAKEHOME")"
         n=$((n + 1))
@@ -2688,6 +2689,18 @@ python3 -c "import os,shutil; shutil.copy ('/tmp/x', os.path.expanduser('~')+'/.
 node -e "require('fs').writeFileSync (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
 node -e "require('fs').appendFileSync (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
 perl -e 'open (F,">",$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
+ROWS
+# 706-711 (HIMMEL-4298 /pr-check round 2): blanks around `mode =`, a `;`
+# inside a string literal, and a backslash line continuation (LF or CRLF;
+# the row's literal \\n / \\r\n decode to backslash + LF / CRLF) do not end
+# the open-mode match.
+rows_both 706 2 "open-mode span: mode blanks, string semicolon, continuation denies" <<'ROWS'
+python3 -c "from pathlib import Path; open(str(Path.home())+'/.cl'+'aude/sett'+'ings.json', mode = 'w')"
+python3 -c "from pathlib import Path; open(str(Path.home())+'/.cl'+'aude/sett'+'ings.json', mode= 'w')"
+python3 -c "from pathlib import Path; open(str(Path.home())+'/.cl'+'aude/sett'+'ings.json', mode ='a')"
+python3 -c "from pathlib import Path; open(str(Path.home())+'/.cl'+'aude/sett'+'ings.json'+';'[:0],'w')"
+python3 -c "from pathlib import Path; open \\n(str(Path.home())+'/.cl'+'aude/sett'+'ings.json','w')"
+python3 -c "from pathlib import Path; open \\r\n(str(Path.home())+'/.cl'+'aude/sett'+'ings.json','w')"
 ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over

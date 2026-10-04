@@ -896,7 +896,9 @@ mentions_primary_or_home() {
 # home file and writes elsewhere is denied too. Only the API in use counts
 # (a call, an index, an attribute): a python heredoc that edits a doc whose
 # TEXT mentions `homedir` or `$HOME` is not a home read, and the history
-# corpus is full of those.
+# corpus is full of those. The open-mode span crosses `;` (a `';'` string
+# literal must not end it), so it can over-deny a body that opens one file
+# and passes 'w' to another call; ri + rh bound that, fail-closed.
 # ponytail: a body the text does not hold (`base64 -d | python3`, `python3
 # x.py`, `-c "$(cat f)"`) is not seen, it names no API; a shell `$HOME` spliced
 # into the body is the variable-built path the header ponytail already names
@@ -906,10 +908,15 @@ interp_home_write() {
     # shellcheck disable=SC2016 # literal `$` text in the home-API pattern
     local ri='(^|[^a-z0-9_.-])(python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|perl[0-9.]*|ruby[0-9.]*)([^a-z0-9_.-]|$)' \
         rh='expanduser[[:space:]]*\(|expandvars[[:space:]]*\(|expand_path[[:space:]]*\(|homedir[[:space:]]*\(|(path|dir)[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|env[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|(environ|env|getenv)([[:space:]]*\.[[:space:]]*(get|fetch))?[[:space:]]*[[({][[:space:]]*['\''"]?home['\''"]?[[:space:]]*[])},]' \
-        rw='write_text|write_bytes|\.[[:space:]]*write([[:space:]]*\(|[[:space:]])|writefile|appendfile|createwritestream|copyfile|cpsync|renamesync|symlink|hardlink|syswrite|json[[:space:]]*\.[[:space:]]*dump[[:space:]]*\(|shutil[[:space:]]*\.|fileutils[[:space:]]*\.|io[[:space:]]*\.[[:space:]]*write|os[[:space:]]*\.[[:space:]]*(replace|rename|link)|\.[[:space:]]*rename([[:space:]]*\(|[[:space:]])|\.[[:space:]]*touch[[:space:]]*\(|o_(wronly|rdwr|creat|trunc|append)|open(sync)?[[:space:]]*\(([^;]*,)?[[:space:]]*(mode=)?['\''"][rbt]*[wax+][rbt+]*['\''"]|open[[:space:]]*\(?[^;]*['\''"]\+?>'
-    [[ $1 =~ $ri ]] || return 1
-    [[ $1 =~ $rh ]] || return 1
-    [[ $1 =~ $rw ]]
+        rw='write_text|write_bytes|\.[[:space:]]*write([[:space:]]*\(|[[:space:]])|writefile|appendfile|createwritestream|copyfile|cpsync|renamesync|symlink|hardlink|syswrite|json[[:space:]]*\.[[:space:]]*dump[[:space:]]*\(|shutil[[:space:]]*\.|fileutils[[:space:]]*\.|io[[:space:]]*\.[[:space:]]*write|os[[:space:]]*\.[[:space:]]*(replace|rename|link)|\.[[:space:]]*rename([[:space:]]*\(|[[:space:]])|\.[[:space:]]*touch[[:space:]]*\(|o_(wronly|rdwr|creat|trunc|append)|open(sync)?[[:space:]]*\((.*,)?[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?['\''"][rbt]*[wax+][rbt+]*['\''"]|open[[:space:]]*\(?[^;]*['\''"]\+?>'
+    # A backslash line continuation (LF or CRLF) splits nothing in the
+    # interpreter's own parse, so it is folded away before matching.
+    local t bc=$'\\\r\n' bn=$'\\\n'
+    t=${1//"$bc"/}
+    t=${t//"$bn"/}
+    [[ $t =~ $ri ]] || return 1
+    [[ $t =~ $rh ]] || return 1
+    [[ $t =~ $rw ]]
 }
 
 # is_readonly_allowlisted CMD_LC — the rule 1 exception: a short list of
