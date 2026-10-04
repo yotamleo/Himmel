@@ -347,6 +347,40 @@ echo "$out9" | grep -q 'HANDLE_ONLY=unverified' && r=yes || r=no; assert "corrob
 echo "$out9" | grep -q 'NO_URL=unverified' && r=yes || r=no; assert "corroborates: found:true with empty url -> unverified" yes "$r"
 echo "$out9" | grep -q 'NO_ANCHOR=unverified' && r=yes || r=no; assert "corroborates: no salient claim token -> unverified (fail-safe)" yes "$r"
 
+# -- Test 10: Firecrawl search ledger (HIMMEL-4335) ----------------------------
+echo "Test 10: makeFirecrawlWebFn — one ledger line per call, no secrets"
+
+cat > "$tmpdir/ledger.mjs" <<EOF
+import { makeFirecrawlWebFn } from "$lib_url";
+import { readFileSync, existsSync } from "node:fs";
+
+process.env.HIMMEL_FIRECRAWL_LEDGER = process.env.LEDGER_PATH;
+let n = 0;
+globalThis.fetch = async () => {
+  n += 1;
+  if (n === 2) throw new Error("boom");
+  return { ok: true, json: async () => ({ success: true, creditsUsed: 2, data: { web: [{ url: "https://x.example/a", title: "T", description: "d" }] } }) };
+};
+const fn = makeFirecrawlWebFn({ apiKey: "KEY-xyz987", budget: 5 });
+await fn("secret-claim-text about SomeCorp");
+await fn("another query");
+const lines = existsSync(process.env.LEDGER_PATH)
+  ? readFileSync(process.env.LEDGER_PATH, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+  : [];
+const raw = existsSync(process.env.LEDGER_PATH) ? readFileSync(process.env.LEDGER_PATH, "utf8") : "";
+console.log("LEDGER_COUNT=" + lines.length);
+console.log("LEDGER_SHAPE=" + (lines[0] && lines[0].call_site === "follow-web" && lines[0].endpoint === "/v2/search" && !!lines[0].ts));
+console.log("LEDGER_CREDITS=" + (lines[0] && lines[0].credits));
+console.log("LEDGER_FAIL=" + (lines[1] && lines[1].credits === 0 && lines[1].ok === false));
+console.log("LEDGER_CLEAN=" + (!raw.includes("KEY-xyz987") && !raw.includes("secret-claim-text") && !raw.includes("x.example")));
+EOF
+out10="$(LEDGER_PATH="$tmpdir/ledger.jsonl" node "$tmpdir/ledger.mjs" 2>&1)"
+echo "$out10" | grep -q 'LEDGER_COUNT=2' && r=yes || r=no; assert "ledger: one line per search call (success + failure)" yes "$r"
+echo "$out10" | grep -q 'LEDGER_SHAPE=true' && r=yes || r=no; assert "ledger: call_site follow-web, endpoint /v2/search, ts present" yes "$r"
+echo "$out10" | grep -q 'LEDGER_CREDITS=2' && r=yes || r=no; assert "ledger: credits read from the response" yes "$r"
+echo "$out10" | grep -q 'LEDGER_FAIL=true' && r=yes || r=no; assert "ledger: failed call logged with credits 0" yes "$r"
+echo "$out10" | grep -q 'LEDGER_CLEAN=true' && r=yes || r=no; assert "ledger: no key, query text or result url" yes "$r"
+
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))
 echo ""

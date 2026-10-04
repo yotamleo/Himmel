@@ -1491,9 +1491,11 @@ on demand; nothing here runs automatically.
   (`GRAPHIFY_LEDGER`); `deepseek`/`codex` use OpenAI chat/completions, `glm` (via z.ai anthropic-compat)/`claude` use the Anthropic Messages API. DeepSeek off-peak advisory. `--dry-run` first.
 - `scripts/luna/fetch-health.py` — Daily no-LLM health probes for luna
   clip-source fetch integrations. The registry (`build_probe_registry`) carries
-  **ten** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
+  **eleven** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
   `x-twitter-cli`, `instagram-embed`, `instagram-media`, `youtube-playwright`,
-  `github`, `bitbucket`, `firecrawl`. The full run (armed by `pipeline-cadence.sh`'s
+  `github`, `bitbucket`, `firecrawl` (HIMMEL-4335: probes the free
+  `/v2/team/credit-usage`, spends no credit, and ledgers credits 0 to
+  `firecrawl-ledger.jsonl`), `jina-reader` (keyless). The full run (armed by `pipeline-cadence.sh`'s
   fetch-health leg) probes every source, writes `~/.himmel/fetch-health.json`
   (`last_success_timestamp` preserved per source across runs), and exits 0 iff
   every source is `ok`. `--probe <source>` (HIMMEL-2176 Task 2) runs exactly

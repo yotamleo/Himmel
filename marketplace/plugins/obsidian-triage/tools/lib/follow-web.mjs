@@ -25,10 +25,10 @@
 // github/headFn/account rungs are passed through untouched (no downgrade),
 // and repo/followers claims (owned by other rungs) are never web-checked.
 
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -187,6 +187,25 @@ export function chainWebFns(fns) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-call Firecrawl ledger (HIMMEL-4335) — same JSONL file and shape as
+ * harvest-clip-body-batch.py's ledger_append. One line: ts, call_site,
+ * endpoint (path only), credits, ok. Never the key, the query or any result.
+ * HIMMEL_FIRECRAWL_LEDGER overrides the ~/.himmel/state/ default; a write
+ * failure never breaks the search.
+ */
+export function ledgerAppend(callSite, endpoint, credits, ok = true, env = process.env) {
+  try {
+    const lp = (env.HIMMEL_FIRECRAWL_LEDGER || "").trim() ||
+      join(env.HOME || homedir(), ".himmel", "state", "firecrawl-ledger.jsonl");
+    mkdirSync(dirname(lp), { recursive: true });
+    const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    appendFileSync(lp, JSON.stringify({ ts, call_site: callSite, endpoint, credits, ok }) + "\n");
+  } catch { /* ledger is best-effort */ }
+}
+
+const FIRECRAWL_SEARCH_COST = 1; // documented cost when the response omits creditsUsed
+
+/**
  * Build a firecrawl-backed `webFn(query) -> {found,url,title,snippet}`.
  * Returns null when `apiKey` is falsy (web rung disabled). Budget-capped:
  * after `budget` searches it returns `{found:false}` without spending a
@@ -214,8 +233,17 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         body: JSON.stringify({ query, limit: 3 }),
         signal: ctrl.signal,
       });
-      if (!r.ok) return { found: false };
+      if (!r.ok) {
+        ledgerAppend("follow-web", "/v2/search", 0, false);
+        return { found: false };
+      }
       const data = await r.json();
+      ledgerAppend(
+        "follow-web",
+        "/v2/search",
+        data && Number.isInteger(data.creditsUsed) ? data.creditsUsed : FIRECRAWL_SEARCH_COST,
+        !!data && data.success !== false,
+      );
       if (!data || data.success === false) return { found: false };
       // firecrawl /v2/search returns either `data: [ ... ]` or, when sources
       // are split, `data: { web: [ ... ], ... }`. Handle both defensively.
@@ -233,6 +261,7 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         snippet: top.description || top.snippet || top.markdown || "",
       };
     } catch {
+      ledgerAppend("follow-web", "/v2/search", 0, false);
       return { found: false }; // network/abort/parse — grounded no-op
     } finally {
       clearTimeout(t);

@@ -31,7 +31,9 @@
     "zai-glm": { "region": "CN", "note": "DE-LISTED 2026-08-29 (HIMMEL-2224, landing HIMMEL-1749's DROP): dropped from vault + handover-state egress — the GLM Coding Plan auto-renew was cancelled 2026-08-12 and the plan lapsed 2026-08-17, so the lane is gone. Prior ratifications (HIMMEL-1122 extraction, HIMMEL-1167 enrichment, the luna-clippings §4.2 exception and the handover-state brief-scoped cell) reversed; the cells below are explicit deny. himmel-code wildcard unaffected (public code — the `--backend glm` remap in refresh-graph-map.sh still serves it)." },
     "openrouter": { "region": "US", "note": "OpenRouter metered aggregation (scripts/claude-openrouter — Claude 1M tier on the metered path, HIMMEL-1774). Declared as its OWN provider, same capability slot as the other cloud engines but a DIFFERENT provider and trust boundary: content transits OpenRouter before the model vendor, so reaching a Claude model through it is NOT covered by the anthropic cell. The launcher consults this matrix as a HARD gate (no --force bypass) and requires an EXPLICIT provider:\"openrouter\" rule — a wildcard allow does not authorize the lane" },
     "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): not pursuing the HIMMEL-765 pilot — bad results. Vault/handover cells demoted to explicit deny; himmel-code wildcard unaffected (public code)." },
-    "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" }
+    "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" },
+    "firecrawl": { "region": "US", "note": "HIMMEL-4335: web scrape/search API (api.firecrawl.dev, or a self-hosted FIRECRAWL_BASE_URL). Receives the URL (scrape) or the search query. Metered free plan; every call is ledgered in ~/.himmel/state/firecrawl-ledger.jsonl" },
+    "jina-reader": { "region": "US", "note": "HIMMEL-4335: keyless Jina Reader scrape (r.jina.ai/<url>). Receives the URL being fetched; no key, no metering" }
   },
   "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment", "stt", "tts"],
   "rules": [
@@ -144,6 +146,16 @@
     {
       "corpus": "luna-clippings", "provider": "anthropic", "purpose": "*",
       "verdict": "allow", "why": "operating substrate"
+    },
+    {
+      "corpus": "luna-clippings", "provider": "firecrawl", "purpose": "enrichment",
+      "verdict": "allow+log",
+      "why": "HIMMEL-4335: the thin-body clip escalation sends a clip's own public source URL to Firecrawl. Only URLs that pass the harvest G-1 privacy gate and skip-host list are sent (no private hosts, no basic-auth URLs). The ledger obligation is met by ~/.himmel/state/firecrawl-ledger.jsonl (tool = call_site; corpus and purpose are fixed per call site). Extraction, embedding and every other purpose stay default-deny."
+    },
+    {
+      "corpus": "luna-clippings", "provider": "jina-reader", "purpose": "enrichment",
+      "verdict": "allow+log",
+      "why": "HIMMEL-4335: same thin-body clip escalation and same G-1 gate / skip-host list as the Firecrawl row, sent to r.jina.ai (keyless). Jina calls cost no credits and write no firecrawl-ledger line; the verdict is allow+log to match the Firecrawl class. Every other purpose stays default-deny."
     },
     {
       "corpus": "luna-clippings", "provider": "deepseek", "purpose": "extraction",
