@@ -19,12 +19,13 @@
 //   CLOUD-OK     everything else
 import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..', '..');
 const MAX_ASKS = 3;
+const REPO_SLUG = 'yotamleo/Himmel';
 const HOOKS = /^scripts\/hooks\//;
 const NEEDS = /\bqmd\b|\bgraphify\b|\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bjira (cli|api|write|comment|transition|issue|ticket)/i;
 const FILE_RE = /(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|\.claude|\.github|\.codex)\/[\w.+@-]+(?:\/[\w.+@-]+)*\/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)/g;
@@ -50,14 +51,14 @@ export function extractFiles(text) {
   return out;
 }
 
-// Ask lines: the numbered lines under an "Asks:" header, else any numbered
-// line; a ticket with none is one ask.
+// Ask lines: the numbered or bulleted lines under an "Asks:" header, else any
+// numbered line; a ticket with none is one ask.
 export function askLines(description) {
   const lines = description.split('\n');
-  const numbered = (ls) => ls.filter((l) => /^\s*\d+[.)]\s/.test(l)).map((l) => l.trim());
+  const pick = (ls, re) => ls.filter((l) => re.test(l)).map((l) => l.trim());
   const at = lines.findIndex((l) => /^\s*asks?\s*:/i.test(l));
-  const under = at >= 0 ? numbered(lines.slice(at + 1)) : [];
-  return under.length ? under : numbered(lines);
+  const under = at >= 0 ? pick(lines.slice(at + 1), /^\s*(\d+[.)]|[-*])\s/) : [];
+  return under.length ? under : pick(lines, /^\s*\d+[.)]\s/);
 }
 
 const overlaps = (a, b) => a === b || (b.endsWith('/') && a.startsWith(b)) || (a.endsWith('/') && b.startsWith(a));
@@ -65,7 +66,7 @@ const overlaps = (a, b) => a === b || (b.endsWith('/') && a.startsWith(b)) || (a
 // classifyTicket(ticket, {trust, held, heldUnknown}) -> {class, reason, files, asks}. Pure.
 // held is [{file, why}]; ticket.files (console-supplied) overrides text extraction.
 export function classifyTicket(t, ctx) {
-  const files = t.files?.length ? t.files : extractFiles(`${t.title}\n${t.description}`);
+  const files = (t.files?.length ? t.files : extractFiles(`${t.title}\n${t.description}`)).map((f) => posix.normalize(f));
   const asks = Math.max(1, askLines(t.description).length);
   const v = (cls, reason) => ({ class: cls, reason, files, asks });
 
@@ -160,9 +161,10 @@ function fetchTicket(key) {
 function openPrFiles() {
   const gh = process.env.CLOUD_ROUTE_GH_CMD || 'gh';
   const out = [];
-  const nums = execFileSync(gh, ['pr', 'list', '--state', 'open', '--limit', '200', '--json', 'number', '--jq', '.[].number'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  const nums = execFileSync(gh, ['pr', 'list', '--repo', REPO_SLUG, '--state', 'open', '--limit', '200', '--json', 'number', '--jq', '.[].number'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  if (nums.length >= 200) throw new Error('200 open PRs listed — the list may be truncated');
   for (const num of nums) {
-    for (const f of execFileSync(gh, ['pr', 'diff', num, '--name-only'], { encoding: 'utf8' }).split('\n').filter(Boolean)) out.push({ file: f, why: `open PR ${num}` });
+    for (const f of execFileSync(gh, ['pr', 'diff', num, '--repo', REPO_SLUG, '--name-only'], { encoding: 'utf8' }).split('\n').filter(Boolean)) out.push({ file: f, why: `open PR ${num}` });
   }
   return out;
 }
@@ -197,6 +199,7 @@ function main(argv) {
     const t = { ...fetchTicket(key), ...(s.files ? { files: s.files } : {}) };
     const v = classifyTicket(t, ctx);
     process.stdout.write(`${key}\t${v.class}\t${v.reason}\n`);
+    if (v.class === 'CLOUD-OK') held.push(...v.files.map((file) => ({ file, why: `routed ${key} this run` })));
     let brief = null;
     if (!opt.classifyOnly) {
       if (v.class === 'CLOUD-OK') {

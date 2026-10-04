@@ -88,6 +88,16 @@ test('LOCAL-NATIVE: no file named, so no brief can be scoped', () => {
   assert.match(v.reason, /no file/);
 });
 
+test('a dotted spec path is normalized, so it cannot dodge the hook class', () => {
+  const v = classifyTicket(tk({ files: ['scripts/lanes/../hooks/x.sh'] }), ctx());
+  assert.equal(v.class, 'HOOK-BYPASS');
+});
+
+test('bulleted asks under an Asks: header count toward the 3-ask limit', () => {
+  const d = 'Asks:\n- one in scripts/a.sh\n- two\n- three\n- four';
+  assert.equal(classifyTicket(tk({ description: d }), ctx()).class, 'LOCAL-NATIVE');
+});
+
 test('explicit files override text extraction', () => {
   const v = classifyTicket(tk({ description: 'Make it better.', files: ['docs/x.md'] }), ctx());
   assert.equal(v.class, 'CLOUD-OK');
@@ -189,6 +199,15 @@ test('CLI: routes four tickets, writes one brief, one launch line, one JSONL rec
   assert.equal(recs[1].brief, null);
   for (const x of recs) { assert.ok(x.reason); assert.ok(!Number.isNaN(Date.parse(x.time))); }
   assert.match(readFileSync(brief, 'utf8'), /cloud-pilot: HIMMEL-9001 \(console AD\)/);
+});
+
+test('CLI: a CLOUD-OK ticket holds its files, so a second ticket on them is BLOCKED', () => {
+  const { bucket, jira, gh } = setup();
+  const r = spawnSync(process.execPath, [CLI, '--classify-only', '--bucket', bucket, '--console', 'AD', 'HIMMEL-9001', 'HIMMEL-9001'], {
+    encoding: 'utf8', env: { ...process.env, CLOUD_ROUTE_JIRA_CMD: jira, CLOUD_ROUTE_GH_CMD: gh },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.stdout.split('\n').filter(Boolean).map((l) => l.split('\t')[1]), ['CLOUD-OK', 'BLOCKED']);
 });
 
 test('CLI: --held file blocks without gh, and --classify-only writes nothing', () => {
