@@ -962,7 +962,11 @@ check_c19() {
             emit INFO C19-observability "could not read himmelctl status -- observability not checked (cannot tell whether it is desired here)"
             return
         fi
-        want="$(printf '%s' "$sj" | jq -r '[.items[]? | select((.id == "observability-stack" or .id == "observability-grafana") and .desired == true and .severity != "n/a")] | if length > 0 then "1" else "0" end' 2>/dev/null)"
+        want="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select((.id == "observability-stack" or .id == "observability-grafana") and .desired == true and .severity != "n/a")] | if length > 0 then "1" else "0" end' 2>/dev/null)" || want=""
+        if [ -z "$want" ]; then
+            emit INFO C19-observability "himmelctl status output unreadable -- observability not checked (cannot tell whether it is desired here)"
+            return
+        fi
     fi
     if [ "$want" != 1 ]; then
         emit INFO C19-observability "observability stack not desired on this host (himmelctl status: n/a or not wanted) -- not checked"

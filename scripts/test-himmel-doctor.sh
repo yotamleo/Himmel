@@ -5604,6 +5604,11 @@ printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"
 out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-on.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" DOCTOR_CURL_BIN="$n_t/nocurl" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C19-observability.*stack stale'; then pass "C19 desired -> checks run"; else fail "C19 desired -> $(printf '%s' "$out" | grep C19)"; fi
 
+echo "== C19: malformed status payload -> unreadable INFO, never 'not desired' =="
+printf '%s\n' '{"items":"nope"}' > "$n_t/status-bad.json"
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-bad.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C19-observability.*unreadable' && ! grepq "$out" 'not desired on this host'; then pass "C19 malformed status -> unreadable INFO"; else fail "C19 malformed status -> $(printf '%s' "$out" | grep C19)"; fi
+
 echo "== C21 record: lanes.json hermes rows match the live hermes profile default =="
 c21_rows="$(jq -r '[.lanes[] | select(.id=="hermes-oneshot" or .id=="hermes-critics") | .profileDefaultModel] | unique | join(",")' "$REPO_ROOT/scripts/lanes/lanes.json")"
 if [ "$c21_rows" = "gpt-6.1-sol" ]; then pass "C21 rows record gpt-6.1-sol"; else fail "C21 rows -> '$c21_rows'"; fi
