@@ -53,7 +53,10 @@ function sameToken(a: string | null, b: string): boolean {
   return d === 0;
 }
 
-// Test seam CONFIG_UI_HIMMELCTL: the himmelctl entry the server shells.
+// Operator override CONFIG_UI_HIMMELCTL (HIMMEL-4354): replaces the himmelctl
+// entry the server shells for the feed, the re-probe and every himmelctl action.
+// Deliberately read from the production env, not gated: ci.yml and the
+// subprocess tests (ui-verb, idle) launch the real server and can only pass env.
 function himmelctlBin(env: Env): string {
   return env.CONFIG_UI_HIMMELCTL ?? resolve(import.meta.dir, "../himmelctl/bin.js");
 }
@@ -82,8 +85,10 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
   const lockPath = join(stateDir, "write.lock");
   const auditPath = join(stateDir, "actions.jsonl");
   const reprobeMs = opts.reprobeBudgetMs ?? REPROBE_BUDGET_MS;
-  // Test seam HIMMEL_REPORT_CADENCE_ROOT (shared with `report`): a tree of stub
-  // cadence scripts. In use the cadences run from the checkout.
+  // Operator override HIMMEL_REPORT_CADENCE_ROOT (HIMMEL-4354; shared with
+  // `report`, so the feed and the actions agree): the tree the cadence scripts
+  // run from, the checkout by default. Read from the production env, not gated:
+  // the action tests and ci.yml rely on it (a stub tree).
   const table = buildTable({ root, cadenceRoot: env.HIMMEL_REPORT_CADENCE_ROOT ?? root, himmelctl, platform: process.platform, ...loadRegistries(root) });
   const previews = new Map<string, Preview>();
   const publicRoot = join(import.meta.dir, "public");
@@ -136,24 +141,31 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     const lock = acquireLock(lockPath);
     if ("busy" in lock) return json({ error: lock.busy }, 409);
     previews.delete(id); // single-use from here on
-    let before, r, after;
+    let before, r, after, failed = false;
     try {
       before = await reprobe(p.rowIds);
       r = await runChild(p.argv, childOpts(p, lock));
       after = await reprobe(p.rowIds);
-    } finally { lock.release(); }
-    // The action has already run: a failed append must not hide that behind a 500.
+    } catch { failed = true; } finally { lock.release(); }
+    // The action has already run (or was started): a failed append must not hide that behind a 500.
     let audit = "ok";
-    try { appendAudit(auditPath, { time: new Date(now()).toISOString(), action: p.action, target: p.target, value: p.value, argv: p.argv, rc: r.rc, before: healthOf(before.probe), after: healthOf(after.probe) }); }
+    try { appendAudit(auditPath, { time: new Date(now()).toISOString(), action: p.action, target: p.target, value: p.value, argv: p.argv, rc: r?.rc ?? null, before: healthOf(before?.probe ?? null), after: healthOf(after?.probe ?? null), ...(failed ? { outcome: "error" as const } : {}) }); }
     catch { audit = "failed"; }
+    if (failed || !r || !before || !after) return json({ error: "internal error", audit }, 500);
     const reprobeState = before.state !== "ok" ? before.state : after.state;
     return json(redactOut({ rc: r.rc, timedOut: r.timedOut, command: p.argv.join(" "), output: r.stdout + r.stderr, before: before.probe, after: after.probe, reprobe: reprobeState, audit }));
   }
 
   let idle: ReturnType<typeof setTimeout> | undefined;
+  // HIMMEL-4354: the idle window never shuts the server down mid-request; the
+  // timer re-arms once the last in-flight request ends.
+  let active = 0, deferred = false;
   const bump = () => {
     clearTimeout(idle);
-    idle = setTimeout(() => (opts.onIdle ?? (() => process.exit(0)))(), idleMs);
+    idle = setTimeout(() => {
+      if (active > 0) { deferred = true; return; }
+      (opts.onIdle ?? (() => process.exit(0)))();
+    }, idleMs);
   };
   async function route(req: Request): Promise<Response> {
     const origin = `http://${LOOPBACK}:${server.port}`;
@@ -187,7 +199,9 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     maxRequestBodySize: MAX_BODY, // bounds buffering before req.text(); the length check below stays
     async fetch(req) {
       let res: Response;
+      active++;
       try { res = await route(req); } catch { res = json({ error: "internal error" }, 500); }
+      finally { active--; if (deferred && active === 0) { deferred = false; bump(); } }
       for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.headers.set(k, v);
       return res;
     },

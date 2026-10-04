@@ -1,6 +1,6 @@
 import { test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
@@ -41,11 +41,11 @@ beforeEach(() => {
 });
 afterEach(() => { while (stops.length) stops.pop()!(); rmSync(dir, { recursive: true, force: true }); });
 
-type Extra = { env?: Record<string, string>; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number };
+type Extra = { env?: Record<string, string>; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; onIdle?: () => void };
 function boot(x: Extra = {}) {
   const env = { PATH: process.env.PATH, HOME: home, CONFIG_UI_HIMMELCTL: join(import.meta.dir, "stub-recorder.js"),
     HIMMEL_REPORT_CADENCE_ROOT: cad, STUB_ARGV: argvFile, STUB_STATE: state, CONFIG_UI_IDLE_MS: "60000", ...x.env };
-  const s = startServer({ port: 0, token: TOKEN, env, root: repo, now: x.now, actionTimeoutMs: x.actionTimeoutMs, reprobeBudgetMs: x.reprobeBudgetMs } as never);
+  const s = startServer({ port: 0, token: TOKEN, env, root: repo, now: x.now, actionTimeoutMs: x.actionTimeoutMs, reprobeBudgetMs: x.reprobeBudgetMs, onIdle: x.onIdle } as never);
   stops.push(() => s.stop());
   return s.port;
 }
@@ -319,6 +319,36 @@ test("each run appends one audit line with an exact key set, table argv and no o
   expect(Object.keys(a).sort()).toEqual(["action", "after", "argv", "before", "rc", "target", "time", "value"]);
   expect(a.argv).toEqual(["bash", join(cad, "scripts/luna/graphmap-cadence.sh"), "arm"]);
   expect(a).toMatchObject({ action: "cadence.arm", target: "graphmap", value: null, rc: 0, before: { "graphmap-cadence": "off" }, after: { "graphmap-cadence": "ok" } });
+});
+
+// ── HIMMEL-4354 ──────────────────────────────────────────────────────────
+test("a run whose runChild rejects (onSpawn cannot write the lock) is still audited as an error with the real argv, and answers 500", async () => {
+  const stateDir = join(home, ".himmel/state/config-ui");
+  mkdirSync(stateDir, { recursive: true });
+  writeFileSync(join(stateDir, "actions.jsonl"), ""); // exists, so the append still works in a read-only dir
+  const port = boot({ env: { STUB_RO_DIR: stateDir } }); // the before re-probe flips the dir read-only
+  const id = await previewId(port);
+  try {
+    const r = await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" });
+    expect(r.status).toBe(500);
+    expect((await r.json()).audit).toBe("ok");
+    const lines = readFileSync(join(stateDir, "actions.jsonl"), "utf8").trim().split("\n");
+    expect(lines.length).toBe(1);
+    const a = JSON.parse(lines[0]);
+    expect(a).toMatchObject({ action: "cadence.arm", target: "graphmap", rc: null, outcome: "error" });
+    expect(a.argv).toEqual(["bash", join(cad, "scripts/luna/graphmap-cadence.sh"), "arm"]);
+  } finally { chmodSync(stateDir, 0o755); }
+});
+
+test("the idle window does not shut the server down mid-action; it re-arms when the request ends", async () => {
+  let idled = false;
+  const port = boot({ env: { STUB_SLOW: "1", CONFIG_UI_IDLE_MS: "300" }, onIdle: () => { idled = true; } });
+  const id = await previewId(port);
+  const r = await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" });
+  expect(r.status).toBe(200);
+  expect(idled).toBe(false); // the 300 ms window elapsed during the ~1 s action
+  await Bun.sleep(700);
+  expect(idled).toBe(true);
 });
 
 // ── HIMMEL-4350 item 3: security headers on every response ────────────────

@@ -57,11 +57,14 @@ test("three concurrent takers on a stale lock: exactly one wins, every round", a
   for (let round = 0; round < 20; round++) {
     writeFileSync(p, String(deadPid()));
     const startAt = Date.now() + 500;
-    const outs = await Promise.all([0, 1, 2].map(() => new Promise<string>((res) => {
+    const runs = await Promise.all([0, 1, 2].map(() => new Promise<{ out: string; code: number | null }>((res) => {
       const c = spawn(process.execPath, [taker, p, String(startAt)], { stdio: ["ignore", "pipe", "inherit"] });
-      let o = ""; c.stdout!.on("data", (d) => (o += d)); c.on("close", () => res(o.trim()));
+      let o = ""; c.stdout!.on("data", (d) => (o += d)); c.on("close", (code) => res({ out: o.trim(), code }));
     })));
+    const outs = runs.map((r) => r.out);
     expect(outs.filter((o) => o === "won").length).toBe(1);
+    expect(outs.filter((o) => o === "lost").length).toBe(2);
+    expect(runs.map((r) => r.code)).toEqual([0, 0, 0]);
     rmSync(p, { force: true });
   }
 }, 120_000);
@@ -72,6 +75,42 @@ test("a stale breaker left by a dead taker fails closed with a remedy, never a t
   writeFileSync(`${p}.break`, String(deadPid()));
   const l = acquireLock(p);
   expect("busy" in l && l.busy).toContain(`remove ${p}.break`);
+});
+
+test("a busy answer on a live lock names the lock path and the remedy for a reused pid", () => {
+  const p = join(dir, "write.lock");
+  writeFileSync(p, "1"); // pid 1 is always alive, as a reused pid would be
+  const l = acquireLock(p);
+  expect("busy" in l && l.busy).toContain(p);
+  expect("busy" in l && l.busy).toContain("if no config-ui server is running");
+});
+
+test("release keeps the lock while the action's group still runs (a group that outlives the reap wait)", () => {
+  const p = join(dir, "write.lock");
+  const orphan = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+  try {
+    const l = take(p);
+    l.setGroup(orphan.pid!);
+    l.release();
+    expect(existsSync(p)).toBe(true);
+    expect("busy" in acquireLock(p)).toBe(true);
+  } finally { try { process.kill(-orphan.pid!, "SIGKILL"); } catch { /* gone */ } }
+});
+
+test("an onSpawn that throws kills and reaps the group, then rejects: the child never runs unsupervised", async () => {
+  let pgid = 0;
+  const err = await runChild(["sh", "-c", "sleep 30"], { cwd: dir, env: process.env, timeoutMs: 60_000, onSpawn: (pg) => { pgid = pg; throw new Error("lock write failed"); } }).then(() => null, (e) => e);
+  expect(String(err)).toContain("lock write failed");
+  expect(pgid).toBeGreaterThan(0);
+  let code = "";
+  try { process.kill(-pgid, 0); } catch (e) { code = String((e as NodeJS.ErrnoException).code); }
+  expect(code).toBe("ESRCH");
+});
+
+test("a UTF-8 character split across two output chunks is decoded whole", async () => {
+  const r = await runChild(["sh", "-c", "printf '\\303'; sleep 0.3; printf '\\251'; printf '\\303' >&2; sleep 0.3; printf '\\251' >&2"], { cwd: dir, env: process.env, timeoutMs: 5000 });
+  expect(r.stdout).toBe("é");
+  expect(r.stderr).toBe("é");
 });
 
 test("runChild resolves only once the whole process group is gone", async () => {

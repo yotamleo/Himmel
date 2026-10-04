@@ -3,7 +3,10 @@
 // cadence row is ok/present when the cadence stub left a marker file there).
 const { appendFileSync, existsSync } = require("node:fs");
 const { join } = require("node:path");
+const { chmodSync } = require("node:fs");
 const args = process.argv.slice(2);
+// STUB_RO_DIR: make that directory read-only, so the lock's setGroup write fails after the spawn.
+if (process.env.STUB_RO_DIR) chmodSync(process.env.STUB_RO_DIR, 0o555);
 appendFileSync(process.env.STUB_ARGV, `himmelctl ${args.join(" ")}\n`);
 const leak = process.env.STUB_LEAK ? ` ${process.env.STUB_LEAK}` : "";
 if (args[0] !== "report") {

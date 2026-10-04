@@ -11,6 +11,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { linkSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 
 const alive = (pid: number) => {
   if (!Number.isInteger(pid) || pid <= 0) return false;
@@ -47,7 +48,8 @@ export function acquireLock(path: string): Lock | Busy {
       if (link(tmp, path)) return held(path, mine);
       const seen = read(path);
       if (seen === null) continue; // released in between: retry
-      if (live(seen)) return BUSY;
+      // A reused owner pid reads as live, so the remedy is in the answer.
+      if (live(seen)) return { busy: `another action is running: if no config-ui server is running, remove ${path}` };
       // Stale. Only the breaker holder may replace it: no other taker can,
       // and its dead owner cannot release it, so the re-read below is final.
       const breaker = `${path}.break`;
@@ -102,15 +104,18 @@ const REAP_WAIT_MS = 5000;
 // execFile semantics (argv array, no shell) plus detached: the child leads its
 // own process group, so a timeout kills every descendant with kill(-pgid)
 // (taskkill /T on Windows, which has no process groups). onSpawn gets the
-// pgid (= the leader's pid) so the caller can record it in the lock.
-// ponytail: a server crash between spawn and onSpawn leaves that one orphan unrecorded, upgrade path is spawning through a wrapper that writes its own pgid first, HIMMEL-4354
+// pgid (= the leader's pid) so the caller can record it in the lock. If onSpawn
+// throws, the group is killed and reaped and the promise rejects: the child
+// never runs unsupervised.
+// ponytail: a server crash between spawn and onSpawn leaves that one orphan unrecorded (the window is spawn-to-onSpawn only), upgrade path is spawning through a wrapper that writes its own pgid first, HIMMEL-4354
 export function runChild(argv: string[], o: { cwd: string; env: Record<string, string | undefined>; timeoutMs: number; onSpawn?: (pgid: number) => void }): Promise<ChildResult> {
-  return new Promise((done) => {
+  return new Promise((done, fail) => {
     const c = spawn(argv[0], argv.slice(1), { cwd: o.cwd, env: o.env as NodeJS.ProcessEnv, detached: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
-    if (c.pid !== undefined) o.onSpawn?.(c.pid);
     let stdout = "", stderr = "", timedOut = false, finished = false;
-    c.stdout!.on("data", (d) => { if (stdout.length < MAX_OUT) stdout += d; });
-    c.stderr!.on("data", (d) => { if (stderr.length < MAX_OUT) stderr += d; });
+    // Streaming decoders: a character split across two chunks stays whole.
+    const outDec = new StringDecoder("utf8"), errDec = new StringDecoder("utf8");
+    c.stdout!.on("data", (d) => { if (stdout.length < MAX_OUT) stdout += outDec.write(d); });
+    c.stderr!.on("data", (d) => { if (stderr.length < MAX_OUT) stderr += errDec.write(d); });
     const killGroup = () => {
       if (c.pid === undefined) return;
       if (process.platform === "win32") {
@@ -127,6 +132,15 @@ export function runChild(argv: string[], o: { cwd: string; env: Record<string, s
       if (c.pid === undefined) return;
       for (const end = Date.now() + REAP_WAIT_MS; groupAlive(c.pid) && Date.now() < end;) await Bun.sleep(20);
     };
+    if (c.pid !== undefined) {
+      try { o.onSpawn?.(c.pid); } catch (e) {
+        c.on("error", () => { /* spawn already failed the caller */ });
+        c.stdout!.destroy(); c.stderr!.destroy();
+        killGroup();
+        void reaped().then(() => fail(e));
+        return;
+      }
+    }
     let grace: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => { timedOut = true; killGroup(); }, o.timeoutMs);
     const finish = (rc: number | null) => {
@@ -138,7 +152,7 @@ export function runChild(argv: string[], o: { cwd: string; env: Record<string, s
       // write lock must not be released while it still runs.
       killGroup();
       c.stdout!.destroy(); c.stderr!.destroy();
-      void reaped().then(() => done({ rc, stdout, stderr, timedOut }));
+      void reaped().then(() => done({ rc, stdout: stdout + outDec.end(), stderr: stderr + errDec.end(), timedOut }));
     };
     c.on("error", (e) => { stderr += String(e.message); finish(null); });
     // "close" fires once stdout/stderr are drained. A descendant that keeps a
