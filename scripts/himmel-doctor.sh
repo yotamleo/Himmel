@@ -3,10 +3,13 @@
 # severity-grouped report with remediation, and (on request) file ONE
 # consolidated GitHub issue. Read-only except `--fix` (heals C1-guardrail wiring).
 #
-#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color]
+#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json]
 #
 # Exit 0 unless a FAIL finding is present (then 1) — so `--fix` re-checks are
 # scriptable. WARN/INFO never fail the exit. See the /himmel-doctor command md.
+# --json (HIMMEL-4254): stdout carries ONLY one {sev,id,msg,remedy} object per
+# finding (one per emit() call, OK rows included); every other line goes to
+# stderr. Same checks, same exit code. Needs jq.
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -36,11 +39,12 @@ SETTINGS="$CLAUDE_DIR_R/settings.json"
 REGISTRY="$CLAUDE_DIR_R/handover/registry.json"
 
 # --- args ---
-DO_FIX=0; DO_FILE=0; REPO_FLAG=""; USE_COLOR=1
+DO_FIX=0; DO_FILE=0; DO_JSON=0; REPO_FLAG=""; USE_COLOR=1
 [ -t 1 ] || USE_COLOR=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --fix) DO_FIX=1 ;;
+        --json) DO_JSON=1 ;;
         --file-issue) DO_FILE=1 ;;
         --repo) shift; REPO_FLAG="${1:-}" ;;
         --no-color) USE_COLOR=0 ;;
@@ -49,6 +53,15 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# --json: keep the real stdout on fd 3 for emit()'s JSON lines and point fd 1
+# at stderr, so every other print (headers, detail lines, the Summary, child
+# processes) leaves stdout without a per-call-site edit.
+if [ "$DO_JSON" = 1 ]; then
+    command -v jq >/dev/null 2>&1 || { echo "himmel-doctor: --json needs jq on PATH" >&2; exit 2; }
+    USE_COLOR=0
+    exec 3>&1 1>&2
+fi
 
 if [ "$USE_COLOR" = 1 ]; then C_RED=$'\033[31m'; C_YEL=$'\033[33m'; C_GRN=$'\033[32m'; C_DIM=$'\033[2m'; C_0=$'\033[0m'
 else C_RED=""; C_YEL=""; C_GRN=""; C_DIM=""; C_0=""; fi
@@ -67,8 +80,13 @@ emit() {
         INFO) col="$C_DIM"; n_info=$((n_info+1)) ;;
         OK)   col="$C_GRN" ;;
     esac
-    printf '%s%-4s%s %s: %s\n' "$col" "$sev" "$C_0" "$id" "$msg"
-    [ -n "$remedy" ] && printf '       %s→ %s%s\n' "$C_DIM" "$remedy" "$C_0"
+    if [ "$DO_JSON" = 1 ]; then
+        jq -cn --arg sev "$sev" --arg id "$id" --arg msg "$msg" --arg remedy "$remedy" \
+            '{sev: $sev, id: $id, msg: $msg, remedy: $remedy}' >&3
+    else
+        printf '%s%-4s%s %s: %s\n' "$col" "$sev" "$C_0" "$id" "$msg"
+        [ -n "$remedy" ] && printf '       %s→ %s%s\n' "$C_DIM" "$remedy" "$C_0"
+    fi
     if [ "$sev" != OK ]; then printf -- '- **%s** %s: %s\n  - → %s\n' "$sev" "$id" "$msg" "$remedy" >> "$BODY"; fi
 }
 
@@ -3407,7 +3425,7 @@ printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C
 
 if [ "$DO_FILE" = 1 ] && [ $((n_fail+n_warn+n_info)) -gt 0 ]; then
     echo; echo "Filing a consolidated GitHub issue:"; file_issue
-elif [ $((n_fail+n_warn)) -gt 0 ] && [ -t 1 ]; then
+elif [ $((n_fail+n_warn)) -gt 0 ] && [ "$DO_JSON" = 0 ] && [ -t 1 ]; then
     echo; printf 'File a consolidated GitHub issue? [y/N] '; read -r ans
     case "$ans" in y|Y|yes) file_issue ;; *) echo "  (skipped — re-run with --file-issue to file)";; esac
 fi

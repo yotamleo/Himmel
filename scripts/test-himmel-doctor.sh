@@ -287,6 +287,25 @@ if [ "$rc" -eq 0 ]; then pass "clean -> rc0"; else fail "clean -> rc=$rc; $(prin
 if grepq "$out" 'OK   C1-guardrail'; then pass "clean -> C1-guardrail OK (no guardrail block)"; else fail "clean -> $(printf '%s' "$out" | grep C1-guardrail)"; fi
 rm -rf "$t"
 
+# HIMMEL-4254 P1: --json is the config UI's status feed. stdout must carry
+# ONLY one JSON object per emit() call (everything else goes to stderr), and
+# the row count and exit code must match a text run of the same fixture.
+echo "== --json -> stdout is one JSON object per emit, nothing else =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-json.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }; write_settings "$t/claude" "$WRAPPER"
+txt="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>/dev/null)"; rc_txt=$?
+js="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --json --no-color 2>/dev/null)"; rc_js=$?
+n_txt="$(grep -cE '^(FAIL|WARN|INFO|OK) ' <<< "$txt")"
+n_js="$(grep -c . <<< "$js")"
+if jq -e -s 'length > 0 and all(.[]; (keys == ["id","msg","remedy","sev"]) and (.sev | IN("FAIL","WARN","INFO","OK")))' <<< "$js" >/dev/null 2>&1; then
+    pass "--json -> every stdout line is a {sev,id,msg,remedy} object"
+else
+    fail "--json -> stdout is not JSON lines: $(head -3 <<< "$js")"
+fi
+if [ "$n_js" -eq "$n_txt" ] && [ "$n_txt" -gt 0 ]; then pass "--json -> $n_js rows = $n_txt text emits"; else fail "--json -> $n_js rows vs $n_txt text emits"; fi
+if [ "$rc_js" -eq "$rc_txt" ]; then pass "--json -> exit code matches text run ($rc_js)"; else fail "--json -> rc=$rc_js vs text rc=$rc_txt"; fi
+if grepq "$js" 'Summary:'; then fail "--json -> Summary line leaked to stdout"; else pass "--json -> Summary line kept off stdout"; fi
+rm -rf "$t"
+
 echo "== --file-issue with gh stub -> creates with resolved repo =="
 t="$(mktemp -d)"; write_guardrail_settings "$t/claude" "$t/gone/node"; make_gh "$t/gh" create
 out="$(PATH="$t/gh:$PATH" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --file-issue --repo me/repo --no-color 2>&1)"
