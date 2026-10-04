@@ -363,7 +363,7 @@ console.log(JSON.stringify(ie.planInstall([item], ctx)[0]));
 [ "$(echo "$outJ2" | jq -r '.cmd')" = "bash" ] \
   || fail "case j: posix opted in must plan a bash cmd, got: $outJ2"
 argsJ2=$(echo "$outJ2" | jq -r '.args | join(" ")')
-grep -qE 'observability/install-stack\.sh install$' <<< "$argsJ2" \
+grep -qE 'observability[/\\]install-stack\.sh install$' <<< "$argsJ2" \
   || fail "case j: posix opted in must run install-stack.sh install, got: $outJ2"
 echo "ok: case j (posix, opted in) — install-engine.js plans bash install-stack.sh install"
 
