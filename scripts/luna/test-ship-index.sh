@@ -106,6 +106,19 @@ case "$*" in
       printf "  Pattern:  **/*.md\r\n"
       printf "  Files:    14155\r\n"
       printf "  Updated:  22h ago\r\n" ;;
+  *"qmd status"*)
+      # The receiver configured embed model (HIMMEL-4232), as qmd status
+      # prints it: an org/repo link, not the full hf: URI. CRs: over ssh.
+      if [ -e "$STATE/no-remote-status" ]; then exit 1; fi
+      printf "Models\r\n"
+      if [ -e "$STATE/remote-qwen" ]; then
+          printf "  Embedding:   https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF\r\n"
+      else
+          printf "  Embedding:   https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF\r\n"
+      fi
+      printf "  Reranking:   https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF\r\n" ;;
+  *TotalPhysicalMemory*)
+      if [ -e "$STATE/remote-lowram" ]; then printf "2147483648\r\n"; else printf "17179869184\r\n"; fi ;;
   *"cmd /c del"*)
       # per-run artifact cleanup — always succeeds, never the ship result
       exit 0 ;;
@@ -151,7 +164,10 @@ case "$*" in
           if [ "$prev" = "--out" ]; then : > "$a"; fi
           prev="$a"
       done
-      echo '{"ok":true,"after":{"documents":14782,"vectors":50698}}'
+      case "$*" in
+        *--strip-vectors*) echo '{"ok":true,"after":{"documents":14782,"vectors":0,"models":[]}}' ;;
+        *) echo '{"ok":true,"after":{"documents":14782,"vectors":50698,"models":["hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf"]}}' ;;
+      esac
       exit 0 ;;
 esac
 # ABSOLUTE path, never `env node` — see the REAL_NODE comment above.
@@ -172,7 +188,8 @@ run_ship() {
 # three later cases and made them fail for the wrong reason).
 reset_calls() {
     : > "$STATE/calls"
-    rm -f "$STATE"/*-fail "$STATE/no-remote-collections" "$STATE/no-remote-home" "$STATE/prepare-badjson" 2>/dev/null || true
+    rm -f "$STATE"/*-fail "$STATE/no-remote-collections" "$STATE/no-remote-home" "$STATE/prepare-badjson" \
+        "$STATE/remote-qwen" "$STATE/remote-lowram" "$STATE/no-remote-status" 2>/dev/null || true
 }
 calls() { cat "$STATE/calls" 2>/dev/null || true; }
 
@@ -837,6 +854,7 @@ if (-not (Check 'vector count mismatch is fatal' (Get-ShipVerdict -Docs 100 -Vec
 if (-not (Check 'doc count mismatch is fatal' (Get-ShipVerdict -Docs 90 -Vecs 100 -Pending 0 -ExpectDocs 100 -ExpectVectors -1) 5)) { $ok = $false }
 if (-not (Check 'live regression (14844 vs 15189) is now FATAL, not tolerated' (Get-ShipVerdict -Docs 14844 -Vecs 52967 -Pending 0 -ExpectDocs 15189 -ExpectVectors 52967) 5)) { $ok = $false }
 if (-not (Check 'same-predicate counts equal -> clean verify' (Get-ShipVerdict -Docs 100 -Vecs 100 -Pending 0 -ExpectDocs 100 -ExpectVectors 100) 0)) { $ok = $false }
+if (-not (Check 'lexical-only ship: pending is expected, not fatal (HIMMEL-4232)' (Get-ShipVerdict -Docs 100 -Vecs 0 -Pending 100 -ExpectDocs 100 -ExpectVectors 0 -LexicalOnly) 0)) { $ok = $false }
 if ($ok) { exit 0 } else { exit 1 }
 VERDICT_EOF
     } > "$VERDICT_PROBE"
@@ -1360,5 +1378,49 @@ PROBE_H_EOF
     assert_contains "(h) reports skipped-no-ensure-script" "http_daemon_restored=skipped-no-ensure-script" "$h_out"
     assert_contains "(h) the verify stage itself still reported ok" "verified=ok" "$h_out"
 fi
+
+# ============================================================================
+echo "TEST: a receiver on another embed model is refused BEFORE upload (HIMMEL-4232)"
+# ============================================================================
+reset_calls
+touch "$STATE/remote-qwen"
+rc=0; out=$(run_ship --no-reindex --no-graph 2>&1) || rc=$?
+assert_rc "model mismatch rc 9" 9 "$rc"
+assert_contains "names the mismatch" "EMBED MODEL MISMATCH" "$out"
+assert_contains "offers switching a query-capable receiver" "qmd-embed-model.sh set gemma" "$out"
+assert_contains "offers the lexical-only ship" "--lexical-only" "$out"
+assert_not_contains "nothing uploaded on a mismatch" "scp " "$(calls)"
+
+echo "TEST: a receiver too small to query-embed is offered lexical-only alone"
+reset_calls
+touch "$STATE/remote-qwen" "$STATE/remote-lowram"
+rc=0; out=$(run_ship --no-reindex --no-graph 2>&1) || rc=$?
+assert_rc "low-RAM mismatch rc 9" 9 "$rc"
+assert_contains "low-RAM: lexical-only offered" "--lexical-only" "$out"
+assert_not_contains "low-RAM: no switch offered" "qmd-embed-model.sh set" "$out"
+
+echo "TEST: an unreadable receiver model fails closed"
+reset_calls
+touch "$STATE/no-remote-status"
+rc=0; out=$(run_ship --no-reindex --no-graph 2>&1) || rc=$?
+assert_rc "unreadable receiver model rc 9" 9 "$rc"
+assert_contains "says it could not read the model" "could not read the embed model" "$out"
+assert_not_contains "nothing uploaded when unverifiable" "scp " "$(calls)"
+
+echo "TEST: --lexical-only strips vectors and tells the receiver"
+reset_calls
+touch "$STATE/remote-qwen"
+rc=0; out=$(run_ship --no-reindex --no-graph --lexical-only 2>&1) || rc=$?
+assert_rc "lexical-only rc 0" 0 "$rc"
+assert_contains "prepare told to strip vectors" "--strip-vectors" "$(calls)"
+assert_contains "receiver told lexical-only" "-LexicalOnly" "$(calls)"
+assert_contains "receiver expects zero vectors" "-ExpectVectors 0" "$(calls)"
+assert_contains "lexical-only is announced, never silent" "LEXICAL-ONLY" "$out"
+
+echo "TEST: dry-run names the lexical-only plan"
+reset_calls
+rc=0; out=$(run_ship --dry-run --lexical-only 2>&1) || rc=$?
+assert_rc "dry-run lexical-only rc 0" 0 "$rc"
+assert_contains "dry-run shows the strip" "--strip-vectors" "$out"
 
 summary

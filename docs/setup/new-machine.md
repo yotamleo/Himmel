@@ -1304,6 +1304,12 @@ qmd pull
 qmd collection add /path/to/himmel          --name himmel
 qmd collection add ~/Documents/luna         --name luna     # your luna vault
 
+# 3b. Optional: choose the embed model BEFORE the first embed. gemma is the
+#     default; Qwen3-Embedding-0.6B retrieves better but needs a build-capable
+#     host (GPU) to embed a corpus. See docs/internals/qmd-embed-model.md.
+bash scripts/luna/qmd-embed-model.sh capability
+bash scripts/luna/qmd-embed-model.sh set qwen     # only on a build-capable host
+
 # 4. Index + embed. `qmd update` ingests new/changed docs (fast); `qmd embed`
 #    builds the vector embeddings — CPU-intensive on a big vault (the luna vault
 #    can take tens of minutes on first embed; subsequent runs are incremental).
