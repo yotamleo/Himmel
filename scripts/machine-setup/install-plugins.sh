@@ -339,7 +339,7 @@ while IFS= read -r MKT_LINE; do
     if [[ "$MKT_NAME" == himmel ]]; then
       echo "         himmel's own manifest is right; reconcile: $RECONCILE" >&2
     else
-      echo "         third-party marketplace: keeping the settings source ('$EXISTING_SRC') is recommended; to adopt the template's instead: $RECONCILE" >&2
+      echo "         third-party marketplace: keeping the settings source is recommended, so set the template's entry to '$EXISTING_SRC'; to adopt the template's source instead: $RECONCILE" >&2
     fi
     continue
   fi

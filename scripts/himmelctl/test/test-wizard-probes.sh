@@ -834,6 +834,18 @@ console.log(JSON.stringify(runProbe(item, ctx)));
       || fail "settings-key verifyPluginSet: a matching marketplace source must stay present (got: $outSK2d)"
   fi
 done
+# A missing install must not hide the drift remedy (CR: drift is checked before
+# the not-installed return).
+outSK2dn=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_otherproject_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_drift_repo")', targetPath: '$(winpath "$sk2_drift")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK2dn" | jq -e '.actual == "degraded" and (.detail | contains("not installed") and contains("source drift") and contains("claude plugin marketplace remove obsidian-skills"))' >/dev/null \
+  || fail "settings-key verifyPluginSet: a not-installed plugin plus a marketplace drift must report both (got: $outSK2dn)"
 echo "ok: settings-key simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) — present/absent, mismatch + not-installed degrade, stale installPath + wrong-project scope degrade"
 
 # ── settings-key: verifyPluginSet path normalization, directory-only

@@ -5,7 +5,7 @@
 # exits 0 instead of aborting with "marketplace registration failed". A genuine
 # add failure still exits 1. Stubs `claude` on PATH. (HIMMEL-4270.)
 # SUT=<path> overrides the script under test (used to show the RED run).
-set -euo pipefail
+set -uo pipefail
 
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; echo "$(basename "$0"): SKIPPED — 0 cases ran (jq not on PATH)"; exit 0; }
 
@@ -56,10 +56,8 @@ STUB
 chmod +x "$STUB_DIR/claude"
 export STUB_LOG="$TMP/claude.log"; : > "$STUB_LOG"
 
-set +e
-out=$(PATH="$STUB_DIR:$PATH" bash "$SUT" --scope user --template "$TMP/template.json" --himmel-path '/new checkout' 2>&1)
-rc=$?
-set -e
+rc=0
+out=$(PATH="$STUB_DIR:$PATH" bash "$SUT" --scope user --template "$TMP/template.json" --himmel-path '/new checkout' 2>&1) || rc=$?
 [ "$rc" -eq 0 ] || fail "source mismatch must not abort the adopt (rc=$rc): $out"
 grepq "$out" "DRIFT: marketplace 'obsidian-skills'" || fail "no drift line for obsidian-skills: $out"
 grepq "$out" "DRIFT: marketplace 'openai-codex'" || fail "no drift line for openai-codex: $out"
@@ -81,10 +79,8 @@ cat > "$TMP/template1.json" <<'JSON'
 { "extraKnownMarketplaces": { "obsidian-skills": { "source": { "source": "url", "url": "https://github.com/kepano/obsidian-skills.git" } } }, "enabledPlugins": {} }
 JSON
 : > "$STUB_LOG"
-set +e
-out=$(PATH="$STUB_DIR:$PATH" STUB_NET_FAIL=1 bash "$SUT" --scope user --template "$TMP/template1.json" 2>&1)
-rc=$?
-set -e
+rc=0
+out=$(PATH="$STUB_DIR:$PATH" STUB_NET_FAIL=1 bash "$SUT" --scope user --template "$TMP/template1.json" 2>&1) || rc=$?
 [ "$rc" -eq 1 ] || fail "a genuine add failure on a matching source must still exit 1 (rc=$rc): $out"
 grepq "$out" "marketplace registration failed" || fail "genuine failure must still be reported: $out"
 echo "ok: genuine add failure (matching source) still exits 1"

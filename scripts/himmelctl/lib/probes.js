@@ -630,7 +630,7 @@ function marketplaceSourceDrift(settings, template, ctx) {
     const reconcile = `claude plugin marketplace remove ${shq(name)} --scope ${scope} && claude plugin marketplace add ${shq(wantSrc)} --scope ${scope}`;
     out.push(name === 'himmel'
       ? `marketplace 'himmel' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — the himmel manifest is right; reconcile: ${reconcile}`
-      : `marketplace '${name}' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — keeping the settings source is recommended; to adopt the template's: ${reconcile}`);
+      : `marketplace '${name}' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — keeping the settings source is recommended, so set the template's entry to '${haveSrc}'; to adopt the template's source instead: ${reconcile}`);
   }
   return out;
 }
@@ -675,13 +675,14 @@ function verifyPluginSet(enabledPlugins, ctx, settings) {
     const entries = Array.isArray(installed[k]) ? installed[k] : [];
     return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && isDirectory(e.installPath));
   });
-  if (notInstalled.length > 0) {
-    return { problem: `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}` };
-  }
   // HIMMEL-4270: a marketplace registered under a different source than the
   // template's makes `claude plugin marketplace add` fail — drift (degraded),
-  // not an install failure. Same remedy text as install-plugins.sh.
+  // not an install failure. Same remedy text as install-plugins.sh. Computed
+  // before the not-installed return so that missing plugin keeps its remedy.
   const drift = marketplaceSourceDrift(settings, template, ctx);
+  if (notInstalled.length > 0) {
+    return { problem: [`not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}`].concat(drift).join('; ') };
+  }
   if (drift.length > 0) return { problem: drift.join('; ') };
   if (extra.length > 0) {
     return { note: `extra (not in the recorded set): ${extra.join(', ')}` };
