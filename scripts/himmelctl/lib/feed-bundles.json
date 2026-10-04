@@ -1,0 +1,115 @@
+{
+  "$comment": "HIMMEL-4379: the ONE table mapping every config-feed row id to exactly one user-facing bundle. Order = display order. An entry is an exact row id or a prefix ending in '*'. scripts/install/bundle-registry-lint.mjs fails when a row id the feed can emit matches zero or more than one entry, or an entry matches nothing.",
+  "bundles": [
+    {
+      "id": "search",
+      "title": "Search & graph",
+      "rows": [
+        "qmd-binary", "qmd-index", "qmd-cadence", "graphify", "graphify-mcp", "graphmap-cadence",
+        "doctor:C33-graph-stale", "doctor:C38-uv-graphify", "doctor:C40-qmd-vec", "doctor:C44-skill-index",
+        "doctor:C45-qmd-daemon", "doctor:C49-qmd-embed-model", "doctor:C50-qmd-fork-stamp"
+      ]
+    },
+    {
+      "id": "vault",
+      "title": "Vault & capture",
+      "rows": [
+        "luna-vault-scaffold", "luna-sources", "obsidian-second-brain", "pipeline-cadence",
+        "doctor:C3-luna", "doctor:C26-salus-marker", "doctor:C51-firecrawl-parked",
+        "plugin:claude-obsidian@himmel", "plugin:luna-correlate@himmel", "plugin:obsidian-triage@himmel",
+        "secret:FIRECRAWL_*", "secret:INSTAGRAM_COOKIE_FILE", "secret:REDDIT_COOKIE_FILE",
+        "secret:TWITTER_*", "secret:WHISPER_MODEL", "secret:YOUTUBE_STORAGE_STATE"
+      ]
+    },
+    {
+      "id": "bridge",
+      "title": "Telegram bridge",
+      "rows": [
+        "telegram-bridge", "bridge-health", "bridge-persistence",
+        "doctor:C30-bridge-liveness", "probe-disagree:C30-bridge-liveness",
+        "plugin:telegram-himmel@himmel", "secret:TELEGRAM_BOT_TOKEN"
+      ]
+    },
+    {
+      "id": "workflow",
+      "title": "Ship workflow",
+      "rows": [
+        "initiative:*", "handover-wiring", "jira-cli-dist-build", "jira-env-keys", "bitbucket-cli-build",
+        "secret:BITBUCKET_*", "doctor:C4-forge", "doctor:C5-handover", "doctor:C7-shipped",
+        "doctor:C10-propagation", "doctor:C23-unlanded", "doctor:C29-child-session", "doctor:C42-sweep-health"
+      ]
+    },
+    {
+      "id": "guards",
+      "title": "Guards & safety",
+      "rows": [
+        "wiring-pretooluse", "wiring-statusline", "guardrail-scope", "guardrail-block-global", "pre-commit-hooks",
+        "doc-guard-map", "engine-allowlist", "phi-coherence",
+        "doctor:C1-guardrail", "doctor:C6-hooks", "doctor:C13-plugin-hooks", "doctor:C14-ollama-no-cloud",
+        "doctor:C22-chain-skips", "doctor:C27-guard-signals", "doctor:C28-guardrail-consent",
+        "probe-disagree:C28-guardrail-consent", "doctor:C32-main-ref-guard", "doctor:C34-cost-guards",
+        "doctor:C41-mcp-argv-key", "doctor:C43-rtk-hook"
+      ]
+    },
+    {
+      "id": "bypass",
+      "title": "Bypass flags",
+      "rows": ["flag:*"]
+    },
+    {
+      "id": "lanes",
+      "title": "Lanes & models",
+      "rows": [
+        "lane:*", "hermes-checkout", "hermes-lanes", "codex-cli", "gemini-cli", "codex-sweep-cadence",
+        "plugin:codex@openai-codex", "doctor:C11-glm-seed", "doctor:C12-codex", "doctor:C21-hermes-profile",
+        "doctor:C31-tokensave-dropped"
+      ]
+    },
+    {
+      "id": "plugins",
+      "title": "Plugins & skills",
+      "rows": [
+        "claude-plugins-pluginSet", "himmel-ops-plugin", "plugin:run",
+        "plugin:context7@claude-plugins-official", "plugin:typescript-lsp@claude-plugins-official",
+        "plugin:playwright@claude-plugins-official",
+        "plugin:plannotator-effective-html@himmel", "plugin:impeccable@himmel", "plugin:ui-ux-pro-max@himmel",
+        "plugin:taste-skill-core@himmel", "plugin:animejs-skills@himmel", "plugin:gsap-skills@himmel",
+        "plugin:lottie-motion-design@himmel", "plugin:motion-lexicon@himmel", "plugin:threejs-skills@himmel",
+        "plugin:ai-image-prompts@himmel", "plugin:platform-design-skills@himmel", "plugin:diagram-design@himmel",
+        "plugin:builder-visual@himmel", "plugin:frontend-slides@himmel", "plugin:design-dna@himmel",
+        "plugin:anydesign@himmel", "plugin:anthropic-design-skills@himmel", "plugin:hallmark@himmel",
+        "plugin:shadcn-mcp@himmel", "plugin:emilkowalski-skills@himmel",
+        "doctor:C2-obsidian", "doctor:C6-mcp", "doctor:C15-plugins", "doctor:C15-plugins-ondemand",
+        "doctor:C17-dep-readiness", "doctor:C18-skill-usage", "doctor:C37-vendored-skill-dupes",
+        "doctor:C46-plugin-enabled-missing"
+      ]
+    },
+    {
+      "id": "schedules",
+      "title": "Schedules",
+      "rows": [
+        "scheduler-backend", "cadence-armed", "doctor-cadence",
+        "doctor:C8-cadence", "doctor:C9-scheduler", "probe-disagree:C9-scheduler",
+        "doctor:C24-cadence-registry"
+      ]
+    },
+    {
+      "id": "host",
+      "title": "Host & observability",
+      "rows": [
+        "observability-stack", "doctor:C19-observability", "probe-disagree:C19-observability",
+        "doctor:run", "doctor:C16-status", "probe-disagree:C16-status",
+        "doctor:C25-orphans", "doctor:C35-vm-ar", "doctor:C36-stray-tmp-git", "doctor:C47-runaway-procs",
+        "doctor:C48-tmp-usage"
+      ]
+    },
+    {
+      "id": "toolchain",
+      "title": "Install & toolchain",
+      "rows": [
+        "node", "npm-less-node", "bun", "jq", "git", "python3", "uv", "shellcheck", "gitleaks", "pre-commit",
+        "gh", "rtk", "doctor:C20-node", "probe-disagree:C20-node", "doctor:C39-gtimeout-darwin"
+      ]
+    }
+  ]
+}

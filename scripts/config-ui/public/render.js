@@ -1,9 +1,8 @@
 // HIMMEL-4254 P3/P4: pure rendering, no DOM. render(feed, state) → HTML string.
-// state: { open: Set<string>, filt: { health, kind, q }, plans: { [k]: plan } }.
+// state: { open: Set<string>, bundles: { "<region>|<bundle>": { open, rank } }, filt: { health, kind, q, problems }, plans: { [k]: plan } }.
 // A toggle in Controls opens a plan: preview (dry-run) → consent → run →
 // before/after. Confirm stays disabled until a typed consent matches.
 const ST = { ok: "● ok", warn: "◐ warn", fail: "✕ fail", off: "○ off", info: "· info" };
-const GROUPS = ["core", "vault", "cadence", "bridge", "lane", "guard"];
 const READ_ONLY = {
   "launch-shell variable": "set in launching shell",
   "secrets are presence-only": "presence probe",
@@ -84,10 +83,53 @@ function rowHtml(r, where, state) {
   return h + `</div>`;
 }
 
-function grouped(list, where, state) {
-  return GROUPS.map((g) => {
-    const rs = list.filter((r) => r.group === g);
-    return rs.length ? `<div class="grp">${g} · ${rs.length}</div>` + rs.map((r) => rowHtml(r, where, state)).join("") : "";
+// HIMMEL-4379: bundles. Rank is worse-is-higher: fail > warn > ok > off > info
+// (ok outranks off: an opt-in left off must not make a working bundle read off).
+const ORDER = ["fail", "warn", "ok", "off", "info"];
+const RANK = { fail: 4, warn: 3, ok: 2, off: 1, info: 0 };
+
+export function rollup(rows) {
+  const r = { fail: 0, warn: 0, ok: 0, off: 0, info: 0, total: rows.length };
+  for (const x of rows) if (x.health in RANK) r[x.health]++;
+  r.headline = ORDER.find((h) => r[h] > 0) || "info";
+  r.rank = RANK[r.headline];
+  return r;
+}
+
+// The one open/closed decision: Unsorted and a live search force open; else a
+// non-stale click override; else open when the base set has a fail or warn.
+// A stale override (the bundle got worse since the click) is deleted.
+export function isOpen(region, bundleId, baseRows, state, q) {
+  if (bundleId === "unsorted" || q) return true;
+  const r = rollup(baseRows);
+  const bundles = state.bundles || {};
+  const k = `${region}|${bundleId}`;
+  const o = bundles[k];
+  if (o && r.rank > o.rank) delete bundles[k];
+  else if (o) return o.open;
+  return r.fail + r.warn > 0;
+}
+
+function bundleHead(where, b, open, r, shown) {
+  const counts = ORDER.filter((h) => r[h] > 0).map((h) => `${r[h]} ${h}`).join(" · ");
+  return `<div class="bhead" role="button" tabindex="0" aria-expanded="${open}" data-act="bundle" data-b="${esc(`${where}|${b.id}`)}" data-rank="${r.rank}">
+    <span class="chev">${open ? "▾" : "▸"}</span><span class="st ${r.headline}">${ST[r.headline].split(" ")[0]}</span>
+    <span class="bt">${esc(b.title)}</span><span class="bc">${counts}</span><span class="bn">${shown === r.total ? r.total : `${shown} of ${r.total}`}</span></div>`;
+}
+
+// list = rows the filters let through; base = the region's whole set (rollups
+// and default-open read the base, never the filtered view).
+function bundled(list, base, where, state, feed, q) {
+  const known = feed.bundles ? feed.bundles.filter((b) => b.id !== "unsorted") : [{ id: "all", title: "All rows" }];
+  const ids = new Set(known.map((b) => b.id));
+  const of = (r) => (feed.bundles ? (ids.has(r.bundle) ? r.bundle : "unsorted") : "all");
+  const order = feed.bundles && base.some((r) => of(r) === "unsorted") ? known.concat({ id: "unsorted", title: "Unsorted" }) : known;
+  return order.map((b) => {
+    const rs = list.filter((r) => of(r) === b.id);
+    if (!rs.length) return "";
+    const bs = base.filter((r) => of(r) === b.id);
+    const open = isOpen(where, b.id, bs, state, q);
+    return `<div class="bundle">${bundleHead(where, b, open, rollup(bs), rs.length)}${open ? rs.map((r) => rowHtml(r, where, state)).join("") : ""}</div>`;
   }).join("");
 }
 
@@ -109,7 +151,9 @@ export function render(feed, state) {
   const nf = triage.filter((r) => r.health === "fail").length;
   const okOf = (src) => { const l = rows.filter((r) => r.source === src); return `${l.filter((r) => r.health === "ok").length}/${l.length}`; };
   const q = (filt.q || "").toLowerCase();
-  const inv = rows.filter((r) => (!filt.health || r.health === filt.health) && (!filt.kind || kindOf(r) === filt.kind) && (!q || r.id.toLowerCase().includes(q)));
+  const inv = rows.filter((r) => (!filt.health || r.health === filt.health) && (!filt.kind || kindOf(r) === filt.kind) && (!q || r.id.toLowerCase().includes(q)) && (!filt.problems || isTriage(r)));
+  const empty = !q && filt.problems && !filt.health && !filt.kind ? "Nothing failing or drifting." : "No rows match these filters.";
+  const prob = `<button class="sw" role="switch" aria-checked="${filt.problems === true}" data-act="problems">show only problems <span class="t"></span></button>`;
   const kinds = [...new Set(rows.map(kindOf))];
   const chips = ["fail", "warn", "ok", "off", "info"].map((h) => `<button class="chip" data-f="health" data-v="${h}" aria-pressed="${filt.health === h}">${h}</button>`)
     .concat(kinds.map((k) => `<button class="chip" data-f="kind" data-v="${esc(k)}" aria-pressed="${filt.kind === k}">${esc(k)}</button>`)).join("");
@@ -122,12 +166,12 @@ export function render(feed, state) {
 <section id="controls" aria-labelledby="h-controls">
   <h2 id="h-controls">Controls</h2>
   <p class="sub">Everything that can be switched. Every switch previews its dry-run first; nothing changes until you confirm.</p>
-  ${grouped(controls, "controls", state)}
+  ${bundled(controls, controls, "controls", state, feed, "")}
 </section>
 <section id="inventory" aria-labelledby="h-inv">
   <h2 id="h-inv">Inventory</h2>
   <p class="sub">Every item, check, flag and secret, grouped by feature.</p>
-  <div class="filters"><input id="q" placeholder="filter by id" value="${esc(filt.q || "")}" aria-label="Filter by id">${chips}</div>
-  ${inv.length ? grouped(inv, "inventory", state) : `<div class="empty">No rows match these filters.</div>`}
+  <div class="filters"><input id="q" placeholder="filter by id" value="${esc(filt.q || "")}" aria-label="Filter by id">${prob}${chips}</div>
+  ${inv.length ? bundled(inv, rows, "inventory", state, feed, q) : `<div class="empty">${empty}</div>`}
 </section>`;
 }
