@@ -3048,6 +3048,49 @@ check_c49_qmd_embed_model() {
     esac
 }
 
+# --- C50-qmd-fork-stamp: build stamp vs deployed HEAD vs the pin (HIMMEL-4268) ---
+# `himmelctl update` once rolled the station's qmd fork back to the pin with
+# nothing reporting it. Three values must agree: the fork clone's build-success
+# stamp (.himmel-build-ok, the SHA the artifacts were BUILT from), the clone's
+# HEAD, and the QMD_FORK_REF pin in scripts/lib/qmd-bin.sh. Stamp != HEAD is a
+# stale build; HEAD != pin is drift, either direction. Read-only: it never
+# rebuilds, checks out or updates anything. Dir and pin resolve through
+# qmd-bin.sh itself (QMD_FORK_DIR / QMD_FORK_REF honoured), which is the test seam.
+check_c50_qmd_fork_stamp() {
+    local lib="$REPO_ROOT/scripts/lib/qmd-bin.sh" dir pin stamp head stamp_file
+    [ -f "$lib" ] || return 0
+    # shellcheck disable=SC1090
+    dir="$( . "$lib" >/dev/null 2>&1; _qmd_fork_dir )"
+    # shellcheck disable=SC1090
+    pin="$( . "$lib" >/dev/null 2>&1; _qmd_fork_ref )"
+    stamp_file="$dir/.himmel-build-ok"
+    if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        emit WARN C50-qmd-fork-stamp "no qmd fork checkout at $dir -- nothing to compare against the pin ${pin:0:8}" \
+            "bash scripts/lib/qmd-bin.sh install   # builds the pinned fork"
+        return 0
+    fi
+    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)"
+    stamp="$(head -n1 "$stamp_file" 2>/dev/null)"
+    if [ -z "$stamp" ]; then
+        emit WARN C50-qmd-fork-stamp "qmd fork at $dir has no build stamp (.himmel-build-ok) -- HEAD ${head:0:8} was never confirmed built" \
+            "bash scripts/lib/qmd-bin.sh install   # rebuilds and re-stamps"
+    elif [ "$stamp" != "$head" ]; then
+        emit WARN C50-qmd-fork-stamp "qmd fork stale build: stamp ${stamp:0:8} but HEAD is ${head:0:8} -- the running qmd is not the checked-out code" \
+            "bash scripts/lib/qmd-bin.sh install   # rebuilds and re-stamps"
+    elif [ "$head" = "$pin" ]; then
+        emit OK C50-qmd-fork-stamp "qmd fork stamp, HEAD and pin all ${pin:0:8}"
+    elif git -C "$dir" merge-base --is-ancestor "$pin" "$head" 2>/dev/null; then
+        emit WARN C50-qmd-fork-stamp "qmd fork HEAD is ahead of the pin: HEAD ${head:0:8}, QMD_FORK_REF ${pin:0:8} -- the next update rolls the fork back" \
+            "bump QMD_FORK_REF in scripts/lib/qmd-bin.sh to ${head:0:8} (reviewed PR), or reset the fork to the pin"
+    elif git -C "$dir" merge-base --is-ancestor "$head" "$pin" 2>/dev/null; then
+        emit WARN C50-qmd-fork-stamp "qmd fork pin is ahead of HEAD: HEAD ${head:0:8}, QMD_FORK_REF ${pin:0:8} -- the deployed fork is behind" \
+            "bash scripts/lib/qmd-bin.sh install   # moves the fork to the pin"
+    else
+        emit WARN C50-qmd-fork-stamp "qmd fork HEAD ${head:0:8} and QMD_FORK_REF ${pin:0:8} differ and are not ancestors of each other (or the pin is not in the local clone)" \
+            "bash scripts/lib/qmd-bin.sh install   # converges the fork on the pin"
+    fi
+}
+
 # --- C41: MCP server credential on the command line (HIMMEL-2762) ---------------
 # An MCP server entry launched as `npm exec <server> --api-key <key>` puts the key
 # in argv, so any local user reads it via ps or /proc/<pid>/cmdline, and it lands
@@ -3420,6 +3463,7 @@ check_c46_plugin_enabled_missing
 check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
 check_c48_tmp_usage
 check_c49_qmd_embed_model
+check_c50_qmd_fork_stamp
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
