@@ -241,7 +241,12 @@ commands:
                           leg, bypass flag and secret as one row grammar, for
                           the config UI. --items re-probes only those row ids.
                           Secrets show presence, never values.
-  gaps                    read-only report: what does THIS setup not get from
+  ui [--port N]           read-only config UI on 127.0.0.1 (needs bun): serves the
+                          report feed as one page and prints a URL carrying a
+                          per-launch token. The OPERATOR runs this from a
+                          terminal; agents must not. Runs in the foreground,
+                          Ctrl-C or 30 min idle exits
+  gaps                   read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
                           docs/setup/profiles/operator.install-profile.json)
@@ -313,6 +318,8 @@ const ALLOWED_OPTIONS = {
   // HIMMEL-4254 P2: the config UI's feed (himmel-config-feed/1). Its own verb,
   // never a `status` mode — status --json is a golden-tested contract.
   report: ['items', 'json'],
+  // HIMMEL-4254 P3: the read-only config UI server.
+  ui: ['port'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
   // `scope` takes its OWN positional verbs/targets (set|get|status, then
   // project|user for set) — parsed in parseArgs's scope cases, not as --flags.
@@ -353,6 +360,7 @@ const OPTION_FLAGS = {
   prune: '--prune',
   preset: '--preset',
   purgeState: '--purge-state',
+  port: '--port',
 };
 const OPTION_DEFAULTS = {
   fromProfile: null, defaultScope: null, scope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
@@ -361,6 +369,7 @@ const OPTION_DEFAULTS = {
   prune: false,
   preset: null,
   purgeState: false,
+  port: null,
 };
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
@@ -390,6 +399,7 @@ function parseArgs(argv) {
     prune: false,      // ensure: --prune (opt-in — disable/unwire candidates require this; HIMMEL-2349)
     preset: null,      // gaps: --preset <name> (null = default 'operator' reference)
     purgeState: false, // uninstall: --purge-state (also remove operator state; default keeps it — HIMMEL-3058)
+    port: null,        // ui: --port N (null = ephemeral, HIMMEL-4254)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -458,6 +468,19 @@ function parseArgs(argv) {
       case 'report':
         if (!setSubcommand('report')) return args;
         break;
+      case 'ui':
+        if (!setSubcommand('ui')) return args;
+        break;
+      case '--port': {
+        const raw = argv[++i];
+        if (raw === undefined || !/^\d+$/.test(raw) || Number(raw) > 65535) {
+          console.error('himmelctl: --port requires a port number 0-65535');
+          process.exitCode = 2;
+          return args;
+        }
+        args.port = Number(raw);
+        break;
+      }
       case 'scope':
         if (!setSubcommand('scope')) return args;
         break;
@@ -5159,6 +5182,28 @@ function cmdReport(args) {
   return 0;
 }
 
+// HIMMEL-4254 P3: `ui` runs scripts/config-ui/server.ts under bun in the
+// foreground. The server prints the tokened URL itself; this verb only locates
+// it, refuses a missing bun, and forwards the exit code.
+function cmdUi(args) {
+  const server = path.join(repoRoot(), 'scripts', 'config-ui', 'server.ts');
+  if (!fs.existsSync(server)) {
+    console.error(`himmelctl: ui: ${displayPath(server)} not found (needs a himmel checkout)`);
+    return 1;
+  }
+  if (!which('bun')) {
+    console.error('himmelctl: ui: bun is required (https://bun.sh)');
+    return 1;
+  }
+  return new Promise((resolve) => {
+    const child = require('child_process').spawn('bun', [server, '--port', String(args.port === null ? 0 : args.port)], { stdio: 'inherit' });
+    // A signal to this wrapper must reach the server, never orphan it.
+    for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => child.kill(sig));
+    child.on('error', (e) => { console.error(`himmelctl: ui: ${e.message}`); resolve(1); });
+    child.on('exit', (code, sig) => resolve(sig ? 0 : code === null ? 1 : code));
+  });
+}
+
 // HIMMEL-3312 S13 item 7 ("himmelctl doctor"): the health-check surface for
 // a machine that already deleted its clone is `himmelctl status` — there is
 // no separate `doctor` verb in this CLI. A bundle whose ledger-recorded
@@ -7900,6 +7945,9 @@ async function main() {
   }
   if (args.subcommand === 'report') {
     return cmdReport(args);
+  }
+  if (args.subcommand === 'ui') {
+    return await cmdUi(args);
   }
   if (args.subcommand === 'scope') {
     return await cmdScope(args);

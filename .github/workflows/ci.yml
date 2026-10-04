@@ -391,6 +391,14 @@ jobs:
       - name: Vault tests (ubuntu only)
         if: matrix.os == 'ubuntu-latest'
         run: bun test scripts/vault/tests --dots
+      # HIMMEL-4254 P3: the read-only config UI (auth/Host/redaction, idle exit,
+      # render, the real `himmelctl ui` verb). Repo-root cwd like the suites
+      # above; hermetic (stub feed via CONFIG_UI_HIMMELCTL, loopback only).
+      # Ubuntu only: it spawns node/bun children with POSIX signal semantics,
+      # which the non-gating Windows nightly (parked) would only turn red.
+      - name: Config UI tests (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: bun test scripts/config-ui --dots
       # --frozen-lockfile fails if bun.lock has drifted from package.json. Catches
       # the class of bug where a dep range is bumped in package.json but the
       # lockfile is never regenerated (HIMMEL-553). HIMMEL-2620 wired the test
