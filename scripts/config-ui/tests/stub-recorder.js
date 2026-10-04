@@ -11,7 +11,8 @@ if (args[0] !== "report") {
   process.exit(0);
 }
 const ids = (args[args.indexOf("--items") + 1] || "").split(",").filter(Boolean);
-const rows = ids.map((id) => {
+// STUB_REPORT_DROP: answer with no rows at all.
+const rows = process.env.STUB_REPORT_DROP ? [] : ids.map((id) => {
   const on = existsSync(join(process.env.STUB_STATE, id));
   return {
     id, source: "cadence", group: "cadence", title: id, health: on ? "ok" : "off",

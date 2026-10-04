@@ -234,7 +234,11 @@ test("a timed-out child's whole process group is killed before the lock is relea
   expect((await r.json()).timedOut).toBe(true);
   expect(existsSync(lockPath())).toBe(false);
   const gc = Number(readFileSync(join(state, "grandchild"), "utf8"));
-  const alive = () => { try { process.kill(gc, 0); return !readFileSync(`/proc/${gc}/stat`, "utf8").includes(") Z "); } catch { return false; } };
+  // with no /proc (off Linux) the kill(0) answer stands, so this is not vacuous
+  const alive = () => {
+    try { process.kill(gc, 0); } catch { return false; }
+    try { return !readFileSync(`/proc/${gc}/stat`, "utf8").includes(") Z "); } catch { return true; }
+  };
   for (let i = 0; i < 20 && alive(); i++) await Bun.sleep(50);
   expect(alive()).toBe(false);
 });
@@ -268,6 +272,24 @@ test("a re-probe that exits non-zero is `re-probe failed`, even with valid JSON"
   const b = await (await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" })).json();
   expect(b.reprobe).toBe("re-probe failed");
   expect(b.before).toBeNull();
+});
+
+test("a re-probe that omits a requested row is `re-probe incomplete`", async () => {
+  const port = boot({ env: { STUB_REPORT_DROP: "1" } });
+  const id = await previewId(port);
+  const b = await (await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" })).json();
+  expect(b.reprobe).toBe("re-probe incomplete");
+});
+
+test("an audit append that fails after the action ran still answers 200, flagged `audit: failed`", async () => {
+  mkdirSync(join(home, ".himmel/state/config-ui/actions.jsonl"), { recursive: true }); // a directory: append fails
+  const port = boot();
+  const id = await previewId(port);
+  const r = await post(port, "/api/run", { previewId: id, ...ARM, consent: "graphmap" });
+  expect(r.status).toBe(200);
+  const b = await r.json();
+  expect(b.rc).toBe(0);
+  expect(b.audit).toBe("failed");
 });
 
 test("each run appends one audit line with an exact key set, table argv and no output", async () => {

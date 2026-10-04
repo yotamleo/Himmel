@@ -59,7 +59,7 @@ function planHtml(k, p) {
     return `<div class="ba"><b>${esc(id)}</b><span>installed ${esc(b.installed)} → ${esc(a.installed)}</span><span>health ${esc(b.health)} → ${esc(a.health)}</span></div>`;
   }).join("");
   return `<div class="plan"><div>${p.rc === 0 ? "✓" : "✕"} ran ${esc(p.command)} · rc=${esc(p.rc)}${p.timedOut ? " · timed out" : ""}</div>${ba}
-    ${p.output ? `<pre>${esc(p.output)}</pre>` : ""}<div class="ro">${p.reprobe === "ok" ? "re-probed" : esc(p.reprobe)} · logged to actions.jsonl</div>${cancel}</div>`;
+    ${p.output ? `<pre>${esc(p.output)}</pre>` : ""}<div class="ro">${p.reprobe === "ok" ? "re-probed" : esc(p.reprobe)} · ${p.audit === "failed" ? "<b>audit log append FAILED</b>" : "logged to actions.jsonl"}</div>${cancel}</div>`;
 }
 
 function rowHtml(r, where, state) {

@@ -65,7 +65,12 @@ export function runChild(argv: string[], o: { cwd: string; env: Record<string, s
     c.stderr!.on("data", (d) => { if (stderr.length < MAX_OUT) stderr += d; });
     const killGroup = () => {
       if (c.pid === undefined) return;
-      if (process.platform === "win32") { spawnSync("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore" }); return; }
+      if (process.platform === "win32") {
+        // Only while the leader lives: an exited pid can be reused on Windows.
+        // ponytail: Windows cannot reap a descendant that outlives the leader, upgrade path is a Job Object if Windows actions leave orphans (Windows parked, epic HIMMEL-4102)
+        if (c.exitCode === null && c.signalCode === null) spawnSync("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore" });
+        return;
+      }
       try { process.kill(-c.pid, "SIGKILL"); } catch { try { c.kill("SIGKILL"); } catch { /* already gone */ } }
     };
     let grace: ReturnType<typeof setTimeout> | undefined;
@@ -74,16 +79,18 @@ export function runChild(argv: string[], o: { cwd: string; env: Record<string, s
       if (finished) return;
       finished = true;
       clearTimeout(timer); clearTimeout(grace);
-      if (timedOut) killGroup(); // a grandchild may have outlived the leader's kill
+      // Always reap the group: a descendant may outlive the leader (timed out,
+      // holding the pipe, or with its stdio redirected away from it), and the
+      // write lock must not be released while it still runs.
+      killGroup();
       c.stdout!.destroy(); c.stderr!.destroy();
       done({ rc, stdout, stderr, timedOut });
     };
     c.on("error", (e) => { stderr += String(e.message); finish(null); });
     // "close" fires once stdout/stderr are drained. A descendant that keeps a
     // pipe open would delay it forever, so after the leader exits wait at most
-    // CLOSE_GRACE_MS (none after a timeout kill), then kill what is left of the
-    // group: the lock must not be released while a descendant still writes.
+    // CLOSE_GRACE_MS (none after a timeout kill) before finishing anyway.
     c.on("close", (code) => finish(timedOut ? null : code));
-    c.on("exit", (code) => { grace = setTimeout(() => { killGroup(); finish(timedOut ? null : code); }, timedOut ? 0 : CLOSE_GRACE_MS); });
+    c.on("exit", (code) => { grace = setTimeout(() => finish(timedOut ? null : code), timedOut ? 0 : CLOSE_GRACE_MS); });
   });
 }

@@ -44,13 +44,26 @@ test("output written after the leader exits is kept (finish on close, not exit)"
   expect(r.stdout).toBe("early\nlate\n");
 });
 
-test("a descendant holding the pipe open past the grace period does not hang the result, and is killed", async () => {
-  const t0 = Date.now();
-  const r = await runChild(["sh", "-c", "sleep 30 & echo $!"], { cwd: dir, env: process.env, timeoutMs: 60_000 });
-  expect(r.rc).toBe(0);
-  expect(Date.now() - t0).toBeLessThan(10_000);
-  const gc = Number(r.stdout.trim());
-  const alive = () => { try { process.kill(gc, 0); return !readFileSync(`/proc/${gc}/stat`, "utf8").includes(") Z "); } catch { return false; } };
-  for (let i = 0; i < 20 && alive(); i++) await Bun.sleep(50);
-  expect(alive()).toBe(false); // the lock must not be released while it still runs
-});
+// Alive unless kill(0) fails or Linux /proc shows a zombie; with no /proc the
+// kill(0) answer stands, so the check is not vacuous off Linux.
+const alive = (pid: number) => {
+  try { process.kill(pid, 0); } catch { return false; }
+  try { return !readFileSync(`/proc/${pid}/stat`, "utf8").includes(") Z "); } catch { return true; }
+};
+
+// The lock must never be released while a descendant of the action still runs.
+for (const [name, script] of [
+  ["holding the pipe open past the grace period", "sleep 30 & echo $!"],
+  ["with its stdio redirected away from the pipe", "sleep 30 0</dev/null 1>/dev/null 2>&1 & echo $!"],
+] as const) {
+  test(`a descendant ${name} does not hang the result, and is killed`, async () => {
+    const t0 = Date.now();
+    const r = await runChild(["sh", "-c", script], { cwd: dir, env: process.env, timeoutMs: 60_000 });
+    expect(r.rc).toBe(0);
+    expect(Date.now() - t0).toBeLessThan(10_000);
+    const gc = Number(r.stdout.trim());
+    expect(gc).toBeGreaterThan(0);
+    for (let i = 0; i < 20 && alive(gc); i++) await Bun.sleep(50);
+    expect(alive(gc)).toBe(false);
+  });
+}

@@ -105,7 +105,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     try {
       const probe: Probe = {};
       for (const row of JSON.parse(r.stdout).rows || []) if (rowIds.includes(row.id)) probe[row.id] = { installed: String(row.installed?.state ?? ""), health: String(row.health ?? "") };
-      return { probe, state: "ok" };
+      return { probe, state: rowIds.every((id) => id in probe) ? "ok" : "re-probe incomplete" };
     } catch { return { probe: null, state: "re-probe failed" }; }
   }
   const healthOf = (p: Probe | null) => p && Object.fromEntries(Object.entries(p).map(([k, v]) => [k, v.health]));
@@ -141,9 +141,12 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       r = await runChild(p.argv, childOpts(p));
       after = await reprobe(p.rowIds);
     } finally { release(); }
-    appendAudit(auditPath, { time: new Date(now()).toISOString(), action: p.action, target: p.target, value: p.value, argv: p.argv, rc: r.rc, before: healthOf(before.probe), after: healthOf(after.probe) });
+    // The action has already run: a failed append must not hide that behind a 500.
+    let audit = "ok";
+    try { appendAudit(auditPath, { time: new Date(now()).toISOString(), action: p.action, target: p.target, value: p.value, argv: p.argv, rc: r.rc, before: healthOf(before.probe), after: healthOf(after.probe) }); }
+    catch { audit = "failed"; }
     const reprobeState = before.state !== "ok" ? before.state : after.state;
-    return json(redactOut({ rc: r.rc, timedOut: r.timedOut, command: p.argv.join(" "), output: r.stdout + r.stderr, before: before.probe, after: after.probe, reprobe: reprobeState }));
+    return json(redactOut({ rc: r.rc, timedOut: r.timedOut, command: p.argv.join(" "), output: r.stdout + r.stderr, before: before.probe, after: after.probe, reprobe: reprobeState, audit }));
   }
 
   let idle: ReturnType<typeof setTimeout> | undefined;
@@ -180,6 +183,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
   const server = Bun.serve({
     hostname: LOOPBACK, // hard-coded: never configurable
     port: opts.port ?? 0,
+    maxRequestBodySize: MAX_BODY, // bounds buffering before req.text(); the length check below stays
     async fetch(req) {
       let res: Response;
       try { res = await route(req); } catch { res = json({ error: "internal error" }, 500); }

@@ -93,6 +93,12 @@ test("done: a timed-out re-probe says so", () => {
   expect(h).toContain("re-probe timed out");
 });
 
+test("done: a failed audit append is shown, never `logged`", () => {
+  const h = withPlan({ stage: "done", command: "c", rc: 0, reprobe: "ok", audit: "failed", before: {}, after: {} });
+  expect(h).toContain("audit log append FAILED");
+  expect(h).not.toContain("logged to actions.jsonl");
+});
+
 test("plan text from the server is escaped", () => {
   expect(withPlan({ ...planned, output: "<img src=x onerror=1>", typed: "" })).not.toContain("<img");
 });
