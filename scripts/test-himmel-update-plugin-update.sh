@@ -159,6 +159,36 @@ else
     assert_fail "plugin update catch-up runs before the lean-floor reconcile — out: $out"
 fi
 
+echo "Test: a plugin that is enabled in settings but NOT installed is never updated (HIMMEL-4380)"
+make_mock_clone
+fake_home_ni="$TMP/fake-home-notinstalled"
+mkdir -p "$fake_home_ni/.claude/plugins"
+cat > "$fake_home_ni/.claude/settings.json" <<'EOF'
+{
+  "enabledPlugins": {
+    "ponytail@ponytail": true,
+    "ghost@nowhere": true,
+    "watch@claude-video": false
+  }
+}
+EOF
+cat > "$fake_home_ni/.claude/plugins/installed_plugins.json" <<'EOF'
+{"version":2,"plugins":{"ponytail@ponytail":[{"scope":"user","version":"1.0.0"}]}}
+EOF
+log_ni="$TMP/claude-invocations-ni.log"
+: > "$log_ni"
+claude_stub_ni="$TMP/claude-logging-stub-ni"
+make_claude_logging_stub "$claude_stub_ni" "$log_ni"
+rc=0
+out_ni=$(USERPROFILE='' HOME="$fake_home_ni" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_ni" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_ni/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+log_ni_content="$(cat "$log_ni")"
+assert_contains "installed plugin still updated" "plugin update ponytail@ponytail" "$log_ni_content"
+assert_not_contains "uninstalled ghost@nowhere never updated" "plugin update ghost@nowhere" "$log_ni_content"
+assert_not_contains "uninstalled watch@claude-video never updated" "plugin update watch@claude-video" "$log_ni_content"
+assert_contains "skipped plugins are counted on one line" "2 enabled plugin(s) not installed, skipped" "$out_ni"
+
 echo "Test: --check mode reports what would update, invokes nothing"
 make_mock_clone
 fake_home_check="$TMP/fake-home-check"
