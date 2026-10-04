@@ -652,6 +652,14 @@ _bwimc_split_emit() {
 }
 # _bwimc_clause_unpipe VARNAME — strips the sentinel from the clause held in
 # VARNAME and sets _bwimc_clause_piped to 1 or 0.
+# _bwimc_is_colon CLAUSE — true for a bare `:` clause (a no-op, and what
+# _bwimc_flat_mask leaves), which every per-clause arm skips without its
+# subshells: nothing in it can write, change the cwd or carry git state.
+_bwimc_is_colon() {
+    local v="${1#"$_BWIMC_PIPE"}"
+    v="${v//[[:space:]]/}"
+    [ "$v" = ':' ]
+}
 _bwimc_clause_unpipe() {
     local _v="${!1}"
     case "$_v" in
@@ -792,7 +800,7 @@ _bwimc_brace_end() {
 }
 _bwimc_assign_flat() {
     local t="$1" n=${#1} i=0 c o="" sq se sa st
-    _BWIMC_AF="$t"
+    _BWIMC_AF="$t"; _BWIMC_AF_CLEAN=1
     # shellcheck disable=SC2016  # literal `$((` is the glob pattern
     case "$t" in *'$(('*|*'=('*|*'${'*|*'$['*|*"$_BWIMC_BSNL"*) ;; *) return 0 ;; esac
     _bwimc_scan_init
@@ -800,7 +808,7 @@ _bwimc_assign_flat() {
         c="${t:$i:1}"
         if [ "$_BWIMC_ESC" != 1 ] && [ "$_BWIMC_Q" != "'" ] && [ "$_BWIMC_Q" != A ]; then
             if [ "$c" = "\\" ] && [ "${t:$((i+1)):1}" = "$_BWIMC_NL" ]; then
-                i=$((i+2)); continue
+                _BWIMC_AF_CLEAN=0; i=$((i+2)); continue
             fi
             st=-1
             if [ "$c" = '$' ] && [ "${t:$((i+1)):2}" = '((' ]; then
@@ -814,7 +822,7 @@ _bwimc_assign_flat() {
                 _bwimc_subst_paren_end "$t" "$st"
                 _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0
                 [ "$_BWIMC_PEND" -lt "$n" ] || return 0
-                o="${o}0"; i=$((_BWIMC_PEND+1)); continue
+                _BWIMC_AF_CLEAN=0; o="${o}0"; i=$((_BWIMC_PEND+1)); continue
             fi
             if [ "$c" = '$' ] && [ "$_BWIMC_DL" != 1 ] && { [ "${t:$((i+1)):1}" = '{' ] || [ "${t:$((i+1)):1}" = '[' ]; }; then
                 sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
@@ -826,13 +834,20 @@ _bwimc_assign_flat() {
                     case "${t:$i:3}" in
                         '${ '|'${'$'\t'|'${'"$_BWIMC_NL"|'${|')
                             st=$((i+2)); [ "${t:$st:1}" != '|' ] || st=$((st+1))
+                            _BWIMC_AF_CLEAN=0
                             o="${o}\$(${t:$st:$((_BWIMC_PEND - st))})"; i=$((_BWIMC_PEND+1)); continue ;;
                     esac
                     case "${t:$i:$((_BWIMC_PEND - i + 1))}" in
                         *[\|\;\&\(\)\<\>]*|*"$_BWIMC_NL"*)
+                            # a quote, paren, `#` or backslash inside can scan differently
+                            # in the unflattened reading: no masking (_bwimc_flat_mask)
+                            case "${t:$i:$((_BWIMC_PEND - i + 1))}" in
+                                *[\'\"\\\(\)\#\`]*|*"$_BWIMC_NL"*) _BWIMC_AF_CLEAN=0 ;;
+                            esac
                             o="${o}\$_"; i=$((_BWIMC_PEND+1)); continue ;;
                     esac
                 else
+                    _BWIMC_AF_CLEAN=0
                     # unclosed with a separator after it: no reading of the rest
                     # is safe, fail closed (bash cannot parse it either). Not in
                     # a comment — the comment-free reading gets its own pass.
@@ -847,6 +862,69 @@ _bwimc_assign_flat() {
         fi
         _bwimc_scan_step "$c"
         o="$o$c"; i=$((i+1))
+    done
+    _BWIMC_AF="$o"
+}
+# _bwimc_flat_mask ORIG — HIMMEL-4213 (latency): the flattened reading
+# (_BWIMC_AF) is scanned in full a second time, which doubled the hook's cost.
+# When every change was a quote-, paren-, `#`- and backslash-free `${…}`/`$[…]`
+# span (_BWIMC_AF_CLEAN) and ORIG has no `#`, `<<`, backtick, cd, pushd or popd,
+# every plain-word command (letters, digits, `_./:,+@%-` only, no reserved
+# word or shell-state builtin, and `git` only as `git [-C DIR|--no-pager|-P]
+# <read-only subcommand>`, which sets no git-arm state) between two active
+# separators scans with the same quote, comment, heredoc, cwd and git state
+# in both readings — the unflattened reading already read it. Such a command
+# becomes `:` in _BWIMC_AF (skipped by every arm: _bwimc_is_colon); every
+# other command, separator and redirect stays as it was.
+_BWIMC_FM_RE='^[[:space:]]*[A-Za-z0-9_./:,+@%-]+([[:space:]]+[A-Za-z0-9_./:,+@%-]+)*[[:space:]]*$'
+_BWIMC_FM_RW=' if then else elif fi do done case esac while until for select function in coproc export unset declare typeset readonly local alias unalias set shopt source . eval exec builtin enable hash trap '
+_BWIMC_FM_GITRO=' log status diff show rev-parse ls-files describe blame shortlog cat-file rev-list '
+_bwimc_flat_mask() {
+    local t="$_BWIMC_AF" n=${#_BWIMC_AF} i=0 c o="" seg="" prev="" w sl keep g
+    [ "$_BWIMC_AF_CLEAN" = 1 ] || return 0
+    _tolower_ascii "$1"
+    # shellcheck disable=SC2016
+    case "$_TOLOWER_OUT" in *'#'*|*'<<'*|*'`'*|*cd*|*pushd*|*popd*) return 0 ;; esac
+    _bwimc_scan_init
+    while [ "$i" -le "$n" ]; do
+        c="${t:$i:1}"
+        if [ "$i" -lt "$n" ]; then
+            _bwimc_scan_step "$c"
+            if [ "$_BWIMC_ACT" != 1 ] || [ -n "$_BWIMC_Q" ]; then
+                seg="$seg$c"; i=$((i+1)); continue
+            fi
+            case "$c$prev" in
+                ';'*|'&'[!\<\>]|'&'|'|'[!\>]|'|'|"$_BWIMC_NL"*) ;;
+                *) [[ "$c" =~ [[:space:]] ]] || prev="$c"; seg="$seg$c"; i=$((i+1)); continue ;;
+            esac
+        fi
+        # end of a command: mask it when plain
+        keep=1
+        if [[ "$seg" =~ $_BWIMC_FM_RE ]]; then
+            _tolower_ascii "$seg"; sl="$_TOLOWER_OUT"; keep=0
+            g=0
+            case "$sl" in *git*) g=1 ;; esac
+            for w in $sl; do
+                case "$_BWIMC_FM_RW" in *" $w "*) keep=1 ;; esac
+            done
+            if [ "$g" = 1 ]; then
+                # the git words as written: `-C DIR` is not `-c NAME`
+                for w in $seg; do
+                    case "$g" in
+                        1) _tolower_ascii "$w"; [ "$_TOLOWER_OUT" = git ] && g=2 || keep=1 ;;
+                        2) case "$w" in
+                               -C) g=3 ;;
+                               --no-pager|-P|-p) ;;
+                               *) case "$_BWIMC_FM_GITRO" in *" $w "*) g=4 ;; *) keep=1 ;; esac ;;
+                           esac ;;
+                        3) g=2 ;;
+                    esac
+                done
+            fi
+            [ "$g" = 0 ] || [ "$g" = 4 ] || keep=1
+        fi
+        if [ "$keep" = 1 ]; then o="$o$seg"; else o="$o :"; fi
+        o="$o$c"; seg=""; prev="$c"; i=$((i+1))
     done
     _BWIMC_AF="$o"
 }
@@ -944,7 +1022,9 @@ _bwimc_strip_prefix() {
                 _bwimc_strip_assign "$_BWIMC_SPT"; _BWIMC_SPT="$_BWIMC_SA"; continue ;;
             time)
                 _BWIMC_SPT="${_BWIMC_SPT:4}"; _bwimc_sp_word
-                case "$_BWIMC_SPW" in -p|--) _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;; esac
+                # bash's `time [-p] [--]`: one -p, then an optional `--`
+                case "$_BWIMC_SPW" in -p) _BWIMC_SPT="${_BWIMC_SPT:2}"; _bwimc_sp_word ;; esac
+                case "$_BWIMC_SPW" in --) _BWIMC_SPT="${_BWIMC_SPT:2}" ;; esac
                 _bwimc_strip_assign "$_BWIMC_SPT"; _BWIMC_SPT="$_BWIMC_SA"; continue ;;
         esac
         case "$wl" in
@@ -2973,6 +3053,7 @@ case "$1" in
         ;;
 esac
 while IFS= read -r _bwimc_rclause; do
+    ! _bwimc_is_colon "$_bwimc_rclause" || continue
     [ -n "$(printf '%s' "$_bwimc_rclause" | tr -d '[:space:]')" ] || continue
     _bwimc_clause_unpipe _bwimc_rclause
     _bwimc_rclause_piped="$_bwimc_clause_piped"
@@ -3126,6 +3207,7 @@ done < <(_bwimc_split_clauses "$_bwimc_skel" skel)
 # and continuations joined, so the verb after `x=$((1|2))` or `x=(a b)` shows.
 for _bwimc_afi in "${!_bwimc_readings[@]}"; do
     _bwimc_assign_flat "${_bwimc_readings[$_bwimc_afi]}"
+    _bwimc_flat_mask "${_bwimc_readings[$_bwimc_afi]}"
     [ "$_BWIMC_AF" = "${_bwimc_readings[$_bwimc_afi]}" ] \
         || { _bwimc_readings+=("$_BWIMC_AF"); _bwimc_rmodes+=("${_bwimc_rmodes[$_bwimc_afi]}"); }
 done
@@ -4306,6 +4388,7 @@ while IFS= read -r _bwimc_clause; do
     # brackets only matter to the (b)/(e) cwd tracker, and this arm keeps
     # every cwd it has seen anyway, so a body's cd can only add denies.
     case "$_bwimc_clause" in "$_BWIMC_SUBOPEN"|"$_BWIMC_SUBCLOSE") continue ;; esac
+    ! _bwimc_is_colon "$_bwimc_clause" || continue
     # HIMMEL-3685: this arm's own tracker already keeps every cwd a cd left
     # behind (_bwimc_gcwd_alts), so a `|`/`||`-reached cd needs no extra flag.
     _bwimc_clause_unpipe _bwimc_clause
@@ -4347,6 +4430,7 @@ while IFS= read -r _bwimc_clause; do
             fi
             continue ;;
     esac
+    ! _bwimc_is_colon "$_bwimc_clause" || continue
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     _bwimc_clause_unpipe _bwimc_clause
     _tolower_ascii "$_bwimc_clause"

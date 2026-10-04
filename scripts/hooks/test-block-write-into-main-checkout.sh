@@ -3493,6 +3493,28 @@ _subst_row "96o sudo -i touch f (login shell: dir unknown), cwd /tmp"    block "
 _subst_row "96p sudo --login touch f (dir unknown), cwd /tmp"           block "sudo --login touch f" /tmp
 _subst_row "96q env -Z -C primary touch f (unknown option), cwd /tmp"   block "env -Z -C $_PR touch f" /tmp
 _subst_row "96r env -C /tmp touch f (ALLOW), cwd /tmp"                  allow "env -C /tmp touch f" /tmp
+# HIMMEL-4213 CR round 2: every wrapper end-of-options `--` (bash `time [-p] [--]`)
+_r4213 "97a time -p -- touch primary"                                   block 'time -p -- touch @P@/f'
+_r4213 "97b time -p -- nice -- env -- sudo -- touch primary"            block 'time -p -- nice -- env -- sudo -- touch @P@/f'
+_r4213 "97c nice -- nohup -- timeout -- 5 time -p -- touch primary"     block 'nice -- nohup -- timeout -- 5 time -p -- touch @P@/f'
+_r4213 "97d timeout -k 1 -s 9 -- 5 touch primary"                       block 'timeout -k 1 -s 9 -- 5 touch @P@/f'
+_r4213 "97e exec -cl -a x -- touch primary"                             block 'exec -cl -a x -- touch @P@/f'
+_r4213 "97f sudo -EH -u root -- touch primary"                          block 'sudo -EH -u root -- touch @P@/f'
+_r4213 "97g command -- exec -- stdbuf -oL -- touch primary"             block 'command -- exec -- stdbuf -oL -- touch @P@/f'
+_r4213 "97h time -p -- cat primary (ALLOW)"                             allow 'time -p -- cat @P@/f'
+# HIMMEL-4213 latency: the flattened reading masks plain commands to `:`
+# (_bwimc_flat_mask); a write beside a flattened span must still deny
+_r4213 "98a x=\${y:-a|b} echo; touch primary (masked)"                  block 'x=${y:-a|b} echo; touch @P@/f'
+_r4213 "98b x=\${y:-a|b} touch primary; echo ok"                        block 'x=${y:-a|b} touch @P@/f; echo ok'
+_r4213 "98c x=\${y:-a|b} cd primary; touch f (cd: no mask)"             block 'x=${y:-a|b} cd @P@; touch f'
+_r4213 "98d env -C primary touch f; x=\${y:-a|b} true"                  block 'env -C @P@ touch f; x=${y:-a|b} true'
+_r4213 "98e x=\${y:-a|b} true; env -C primary touch f"                  block 'x=${y:-a|b} true; env -C @P@ touch f'
+_r4213 "98f x=\${y:-a|b} true && rm primary"                            block 'x=${y:-a|b} true && rm @P@/README.md'
+_r4213 "98g x=\${y:-a|b} true; git -C primary checkout main"            block 'x=${y:-a|b} true; git -C @P@ checkout main'
+_r4213 "98h x=\${y:-a;b} git -C primary log; touch primary"             block 'x=${y:-a;b} git -C @P@ log; touch @P@/f'
+_r4213 "98i x=\${y:-a|b} true; nice touch primary"                      block 'x=${y:-a|b} true; nice touch @P@/f'
+_r4213 "98j x=\${y:-a|b} true; git -C primary log | head (ALLOW)"       allow 'x=${y:-a|b} true; git -C @P@ log --oneline -1 | head -n 1'
+_r4213 "98k x=\${y:-a|b} true; echo ok (ALLOW)"                         allow 'x=${y:-a|b} true; echo ok'
 }
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
