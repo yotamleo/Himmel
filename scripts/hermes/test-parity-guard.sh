@@ -164,6 +164,16 @@ for opener in '(' '$('; do
   if [ $((SECONDS - t0)) -gt 3 ]; then
     echo "  FAIL: ${opener}x10000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
 done
+# ") {" is a second anchor kind ("){" x6000 took 12.3s at head, 2.5s at base).
+for spec in '){:6000' '){/:4000'; do
+  opener=${spec%:*}; count=${spec#*:}
+  t0=$SECONDS
+  pad="echo "; i=0
+  while [ "$i" -lt "$count" ]; do pad="$pad$opener"; i=$((i + 1)); done
+  g "${opener}x${count} -delete then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + " -delete; docker run --privileged alpine"}}))' "$pad")"
+  if [ $((SECONDS - t0)) -gt 3 ]; then
+    echo "  FAIL: ${opener}x${count} took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
 g "-delete before find"     allow '{"tool_name":"terminal","tool_input":{"command":"echo -delete; find d -print"}}'
 g "echo do shutdown"      allow '{"tool_name":"terminal","tool_input":{"command":"echo do shutdown"}}'
 g "jq {format}"           allow '{"tool_name":"terminal","tool_input":{"command":"jq {format: .x} f"}}'

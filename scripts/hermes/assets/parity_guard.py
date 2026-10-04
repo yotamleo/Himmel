@@ -51,6 +51,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 
 
@@ -157,9 +158,10 @@ _CMDPOS = r"(?:^|[;&|(\n])\s*"
 # documented limits are intentional.
 # Bounded executable-path prefix: optional quote + optional drive letter +
 # one slash-terminated segment run. "/" only — norm() folds "\" to "/".
-# The run stops at "(": "(" is a command-position anchor, so a "((((…" run
-# otherwise rescans the rest of the run from every anchor (quadratic, HIMMEL-4190).
-_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&(`\"']*/)?"
+# The run stops at "(" and at ")" before "{": both are command-position anchors,
+# so a "((((…" or "){){){…" run otherwise rescans the rest of the run from every
+# anchor (quadratic, HIMMEL-4190).
+_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:(?:[^\s|;&(`\"')]|\)(?!\{))*/)?"
 # Quote-aware assignment (CR r5): FOO='a b' / FOO="a b" / FOO=bare. Shared by
 # the env-prefix assignment tolerance and the leading env-assignment prefix so
 # a quoted value's space does not drop the verb out of command position.
@@ -215,13 +217,25 @@ _CMDPOS_WRAPS = tuple(
     for heads, steps, exits in _WRAPPERS)
 
 
-def _cmdpos_match(text: str, verbs) -> bool:
+# The hermes hook times out at 10s and fails OPEN, so a slow scan turns a deny
+# into an allow. Every walk carries a budget and answers "match" (deny) once it
+# is spent: whatever quadratic shape a later regex change reintroduces degrades
+# to a refusal, never to an allow (HIMMEL-4190).
+_SCAN_BUDGET = 2.0
+
+
+def _cmdpos_match(text: str, verbs, deadline=None) -> bool:
     """True when a `verbs` atom sits in command position: after an
     anchor and any run of assignments, keywords and wrappers (with their
-    flags). The same grammar the .sh CMDPOS spells as one ERE."""
+    flags). The same grammar the .sh CMDPOS spells as one ERE. True as well
+    once `deadline` (a time.monotonic() value) has passed."""
+    if deadline is None:
+        deadline = time.monotonic() + _SCAN_BUDGET
     todo = [(-1, m.end()) for m in _CMDPOS_ANCHOR.finditer(text)]
     seen = set()
     while todo:
+        if time.monotonic() > deadline:
+            return True
         state = todo.pop()
         if state in seen:
             continue
@@ -330,16 +344,19 @@ def _find_delete(raw: str) -> bool:
     with its quotes and backslashes kept and dropped, so `"find" d '-delete'`
     reads as `find d -delete`."""
     low = raw.lower()
+    texts = {}  # identical readings are walked once
     for src in (low, _join_continuations(low)):
         src = re.sub(r"[\r\n]", ";", src)
         bare = re.sub(r"[\"'\\]", "", re.sub(r"\$([\"'])", r"\1", src)).replace("\t", " ")
         bare = re.sub(r" {2,}", " ", bare)
-        for text in (src, bare):
-            last = None
-            for last in _DELETE_FLAG.finditer(text):
-                pass
-            if last and _cmdpos_match(text[:last.start() + 1], _FIND_VERB):
-                return True
+        texts[src] = texts[bare] = None
+    deadline = time.monotonic() + _SCAN_BUDGET  # one budget for every reading
+    for text in texts:
+        last = None
+        for last in _DELETE_FLAG.finditer(text):
+            pass
+        if last and _cmdpos_match(text[:last.start() + 1], _FIND_VERB, deadline):
+            return True
     return False
 
 
