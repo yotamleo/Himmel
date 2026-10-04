@@ -106,6 +106,18 @@ test('buildCtx installed.hermes accepts only a real interpreter, matching resolv
   assert.equal(shimCtx.pathHas('hermes'), true, 'fixture must really put a shim on PATH');
   assert.equal(shimCtx.installed.hermes, false, 'a PATH shim is not an interpreter');
 });
+test('buildCtx installed.hermes accepts a PM-managed install (.hermes/bin/hermes launcher, no venv) (HIMMEL-4307)', () => {
+  const repo = makeTmpDir('lanes-repo-');
+  const home = makeTmpDir('lanes-hermes-pm-');
+  const bin = join(home, 'hermes-agent', '.hermes', 'bin');
+  mkdirSync(bin, { recursive: true });
+  assert.equal(buildCtx(repo, { HERMES_HOME: home }).installed.hermes, false, 'no launcher yet');
+  const launcher = join(bin, 'hermes');
+  writeFileSync(launcher, '#!/bin/sh');
+  chmodSync(launcher, 0o755);
+  assert.equal(buildCtx(repo, { HERMES_HOME: home }).installed.hermes, true,
+    'resolve-hermes-py.sh resolves through the launcher, so the lane is available');
+});
 test('every "installed" probe names a tool buildCtx actually populates (HIMMEL-780 lockstep guard)', () => {
   const populated = Object.keys(buildCtx(makeTmpDir('lanes-ctx-'), {}).installed);
   for (const l of REG.lanes) {

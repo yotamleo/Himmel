@@ -286,6 +286,29 @@ PYEOF
     echo "  ok" >&2
 fi
 
+# 6b. PM-managed layout (HIMMEL-4307): no HERMES_PY; the interpreter comes from the
+# launcher's --print-runtime-command and the embedded script must put the checkout
+# on sys.path and import hermes_bootstrap (a legacy venv got both from its editable
+# install). Fake hermes modules + a real python3; skipped when none exists.
+real_py="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+if [ -n "$real_py" ] && "$real_py" -c 'import sys' >/dev/null 2>&1; then
+    echo "test: PM-managed layout resolves via the launcher and bootstraps" >&2
+    pm="$stub_dir/pm-home"
+    mkdir -p "$pm/hermes-agent/hermes_cli" "$pm/hermes-agent/.hermes/bin"
+    : > "$pm/hermes-agent/hermes_cli/__init__.py"
+    printf 'import os\nos.environ["PM_BOOTSTRAPPED"] = "1"\n' > "$pm/hermes-agent/hermes_bootstrap.py"
+    printf 'def get_default_hermes_root():\n    return "/nonexistent"\n' > "$pm/hermes-agent/hermes_constants.py"
+    printf 'import os, sys\ndef main():\n    print("PM-MAIN bootstrapped=" + os.environ.get("PM_BOOTSTRAPPED", "no") + " argv=" + " ".join(sys.argv[1:]))\n' > "$pm/hermes-agent/hermes_cli/main.py"
+    printf '#!/bin/sh\nprintf '"'"'["%s", "-I"]\\n'"'"' "%s"\n' '%s' "$real_py" > "$pm/hermes-agent/.hermes/bin/hermes"
+    chmod +x "$pm/hermes-agent/.hermes/bin/hermes"
+    out="$(HERMES_PY="" HERMES_HOME="$pm" bash "$INVOKE" "ping" 2>"$stub_dir/pm.err")" \
+        || fail "PM layout: non-zero exit ($(cat "$stub_dir/pm.err"))"
+    case "$out" in
+        *"PM-MAIN bootstrapped=1"*"-z ping"*) echo "  ok: launcher interpreter + bootstrap + checkout on sys.path" >&2 ;;
+        *) fail "PM layout: hermes_cli.main did not run bootstrapped (got: $out)" ;;
+    esac
+fi
+
 # 7. Optional live smoke (one NIM free-tier call) — opt-in only.
 if [ "${HERMES_LIVE_TEST:-0}" = "1" ]; then
     echo "test: LIVE one-shot (nemotron nano)" >&2

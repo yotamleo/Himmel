@@ -216,6 +216,7 @@ function hermesInstalled(env) {
   const root  = env.HERMES_HOME || join(local, 'hermes');
   for (const src of [join(root, 'hermes-agent'), root]) {                     // tolerate venv/ at root
     if (isExe(join(src, 'venv', 'Scripts', 'python.exe')) || isExe(join(src, 'venv', 'bin', 'python'))) return true;
+    if (isExe(join(src, '.hermes', 'bin', 'hermes'))) return true;            // PM-managed install (HIMMEL-4307): the launcher names the runtime
   }
   return false;
 }
