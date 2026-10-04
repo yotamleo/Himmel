@@ -77,6 +77,15 @@ got=$(unset VBOXMANAGE_PATH; PATH="$EMPTY_BIN_DIR" resolve)
 assert_eq "T3 falls back to Windows default when PATH has nothing" \
     'C:\Program Files\Oracle\VirtualBox\VBoxManage.exe' "$got"
 
+# T4 (HIMMEL-4334): VBoxManage runs with cwd $HOME, not the caller's cwd, so
+# the VBoxSVC it may spawn cannot pin a worktree. The fake prints its cwd.
+T4_HOME="$TMP/t4-home"; T4_CALLER="$TMP/t4-caller"; mkdir -p "$T4_HOME" "$T4_CALLER"
+T4_FAKE="$TMP/t4-fake-vboxmanage"
+printf '#!/bin/sh\npwd -P\n' > "$T4_FAKE"; chmod +x "$T4_FAKE"
+got=$(cd "$T4_CALLER" && HOME="$T4_HOME" VBOXMANAGE_PATH="$T4_FAKE" "$PYTHON3" -c \
+    "import sys; sys.path.insert(0, sys.argv[1]); import vbox; print(vbox._run('list')[1].strip())" "$LIB_DIR_NATIVE")
+assert_eq "T4 VBoxManage runs with cwd HOME, not the caller's cwd" "$(cd "$T4_HOME" && pwd -P)" "$got"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
     exit 0

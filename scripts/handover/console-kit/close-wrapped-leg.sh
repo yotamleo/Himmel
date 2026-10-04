@@ -350,8 +350,22 @@ if [ "$wt_count" -ne 1 ]; then
 fi
 WT="$worktrees"
 
-out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
-rc=$?
+# HIMMEL-4334: the TERM'd session may still be inside the worktree when the
+# first prune runs ("in use"). Retry quietly a bounded number of times (a few
+# seconds in all) so a leg that exits promptly is pruned now, not left for a
+# manual --only later. Only the "in use" skip retries; every other outcome is
+# final on the first pass.
+prune_tries=${CLOSE_WRAPPED_LEG_PRUNE_RETRIES:-3}
+prune_try=0
+while :; do
+    out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
+    rc=$?
+    case "$out" in *'in use'*) ;; *) break ;; esac
+    [ "$rc" -ne 0 ] || break
+    [ "$prune_try" -lt "$prune_tries" ] || break
+    prune_try=$((prune_try + 1))
+    sleep "${CLOSE_WRAPPED_LEG_PRUNE_WAIT:-1}"
+done
 echo "$out"
 if [ "$rc" -ne 0 ]; then
     # clean-garden.sh's own --only failure text always contains "not a prune

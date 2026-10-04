@@ -94,6 +94,9 @@ WT_PYCACHE=$(mk_wt wt-pycache feat/pycache) # case 12: pinned-worktree __pycache
 WT_PYSRC=$(mk_wt wt-pysrc   feat/pysrc)    # case 13: untracked .py source (allowlist boundary)
 WT_PYNEW=$(mk_wt wt-pynew   feat/pynew)    # case 14: untracked .py source + its .pyc together
 WT_VITEST=$(mk_wt wt-vitest feat/vitest)   # case 15: untracked .vitest/ reporter output (HIMMEL-3754)
+WT_SCRATCH=$(mk_wt wt-scratch feat/scratch)   # case 16: root-level leg ship scratch (HIMMEL-4334)
+WT_SCRNEST=$(mk_wt wt-scrnest feat/scrnest)   # case 17: same shape NESTED -> still forgotten
+WT_SCRWIP=$(mk_wt wt-scrwip feat/scrwip)      # case 18: root scratch + tracked mod -> still refuses
 
 printf 'lock\n' > "$WT_LOCK/package-lock.json"
 mkdir -p "$WT_CODEX/.codex"; printf 'x\n' > "$WT_CODEX/.codex/config.toml"; printf 'x\n' > "$WT_CODEX/AGENTS.md"
@@ -134,6 +137,21 @@ printf 'x\n' > "$WT_PYNEW/scripts/__pycache__/newthing.cpython-314.pyc"
 # a worktree pinned before the .gitignore fix, same as WT_PYCACHE above).
 mkdir -p "$WT_VITEST/scripts/jira/.vitest/json"
 printf '{}\n' > "$WT_VITEST/scripts/jira/.vitest/json/output.json"
+
+# HIMMEL-4334: leg ship scratch at the worktree ROOT (PR body/title, commit
+# msg tmp, panel logs, suite verdicts, scratch dirs) is discardable; the same
+# names nested below the root are not.
+for f in .pr-body.txt .pr-body-3.md .pr-title.txt .git-pr-body.md .git-pr-title.txt \
+         .commit-msg-1.tmp panel-stdout.log panel-stderr-2.log .suite-verdicts.txt \
+         .suites5.txt .verdicts-empty.txt .msg-5k1.txt; do
+    printf 'x\n' > "$WT_SCRATCH/$f"
+done
+mkdir -p "$WT_SCRATCH/.scratch" "$WT_SCRATCH/.himmel-scratch" "$WT_SCRATCH/.os-verify-logs-9"
+printf 'x\n' > "$WT_SCRATCH/.scratch/a.txt"
+printf 'x\n' > "$WT_SCRATCH/.himmel-scratch/b.txt"
+printf 'x\n' > "$WT_SCRATCH/.os-verify-logs-9/c.log"
+mkdir -p "$WT_SCRNEST/pkg"; printf 'x\n' > "$WT_SCRNEST/pkg/.pr-body.txt"
+printf 'x\n' > "$WT_SCRWIP/.pr-body.txt"; printf 'changed\n' >> "$WT_SCRWIP/README"
 
 run_clean() {
     (
@@ -290,6 +308,18 @@ if grepq "$(printf '%s\n' "$out" | grep -F "feat/vitest")" "discarding untracked
 else
     fail "15: expected strays NOTE naming .vitest/json/output.json for feat/vitest" "$out"
 fi
+
+# case 16: root-level leg scratch only -> pruned + NOTE
+if [ ! -d "$WT_SCRATCH" ]; then pass "16: root-scratch worktree pruned"; else fail "16: root-scratch worktree NOT pruned" "$out"; fi
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/scratch")" "discarding untracked strays:.*\.pr-body\.txt"; then
+    pass "16: NOTE names the root .pr-body.txt stray"
+else
+    fail "16: expected strays NOTE naming .pr-body.txt for feat/scratch" "$out"
+fi
+# case 17: the same name nested under pkg/ is NOT leg scratch -> kept
+if [ -d "$WT_SCRNEST" ]; then pass "17: nested .pr-body.txt worktree kept"; else fail "17: nested .pr-body.txt worktree was pruned" "$out"; fi
+# case 18: a tracked modification still refuses even with root scratch
+if [ -d "$WT_SCRWIP" ]; then pass "18: tracked-WIP + root scratch worktree kept"; else fail "18: tracked-WIP + root scratch worktree was pruned" "$out"; fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo

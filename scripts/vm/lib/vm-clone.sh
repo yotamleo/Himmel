@@ -200,8 +200,10 @@ vm_clone_ensure() {
         vm_lock_release "himmel-vm-registry"
         _vm_fail "port allocation failed"
     fi
-    if ! "$VBOXMANAGE" clonevm "$SOURCE_VM" --snapshot "$snapshot" --options link \
-            --name "$CLONE_NAME" --register; then
+    # (cd "$HOME" ...) on both VBoxManage calls (HIMMEL-4334): VBoxManage may
+    # spawn the long-lived VBoxSVC, which inherits cwd and would pin a worktree.
+    if ! (cd "$HOME" && "$VBOXMANAGE" clonevm "$SOURCE_VM" --snapshot "$snapshot" --options link \
+            --name "$CLONE_NAME" --register); then
         vm_lock_release "himmel-vm-registry"
         _vm_fail "clonevm $SOURCE_VM -> $CLONE_NAME failed"
     fi
@@ -209,7 +211,7 @@ vm_clone_ensure() {
         vm_lock_release "himmel-vm-registry"
         _vm_fail "could not set the persistent NAT forward on $CLONE_NAME (port $PORT)"
     fi
-    if ! "$VBOXMANAGE" snapshot "$CLONE_NAME" take "$snapshot"; then
+    if ! (cd "$HOME" && "$VBOXMANAGE" snapshot "$CLONE_NAME" take "$snapshot"); then
         vm_lock_release "himmel-vm-registry"
         _vm_fail "could not take the baseline '$snapshot' snapshot on the new clone $CLONE_NAME"
     fi

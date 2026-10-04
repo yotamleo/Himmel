@@ -151,3 +151,5 @@ __pycache__/
 # commit.
 scripts/bitbucket/bun.lock
 .claude/plugins/claude-hud/config.json
+# HIMMEL-4334: leg ship scratch (PR body/title, logs) lives here, never at the worktree root.
+/.himmel-scratch/
