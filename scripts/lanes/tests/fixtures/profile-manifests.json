@@ -12,6 +12,7 @@
   },
   "design": {
     "enabled": [
+      "builder-visual@himmel",
       "context7@claude-plugins-official",
       "frontend-design@claude-plugins-official",
       "handover@himmel",

@@ -178,11 +178,15 @@ Three pre-launch checks that each cost a console a dead leg when skipped:
   hyphen in place of the em-dash, `headed-arm-leg.sh` refuses: no launch log,
   nothing in `pgrep`. `--dry-run` an Opus or Fable launch first and look for
   `refusing` in its output.
-- **Design-profile legs may need interactive MCP auth.** A leg launched on the
-  composed `design` profiles can stop on a by-hand auth prompt for the
-  `agent-native` and `context7` MCP servers. Unattended, that looks like a hung
-  leg. Do not arm a design-profile leg unattended (`--arm`, at-jobs, overnight)
-  until you have confirmed the auth persists.
+- **Design-profile legs need a one-time interactive OAuth login.** The `design`
+  profile enables `builder-visual@himmel`, whose `.mcp.json` registers the hosted
+  `agent-native-dispatch` MCP server (`https://dispatch.agent-native.com/mcp`,
+  OAuth). Until the operator has logged in once (`/mcp`, pick
+  `agent-native-dispatch`), the server needs auth and a leg cannot answer the
+  prompt, which looks like a hung leg. Tool arguments go to Builder.io servers:
+  never use it on salus/PHI work. `context7` needs no login. Do not arm a
+  design-profile leg unattended (`--arm`, at-jobs, overnight) until a fresh
+  session has been checked to keep the token.
 
 Pass **`--profile leg-impl`** (HIMMEL-2830) on a native-lane leg: it narrows
 the leg's plugin set, appends the standing rules from

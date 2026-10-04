@@ -141,6 +141,7 @@
         "impeccable@himmel",
         "taste-skill-core@himmel",
         "shadcn-mcp@himmel",
+        "builder-visual@himmel",
         "context7@claude-plugins-official"
       ],
       "contextBudget": 50000,
