@@ -297,6 +297,17 @@ fc = FakeFirecrawl()
 g, m, _ = mod.process_clip(src_clip("https://example.com/post"), dry_run=False, firecrawl=fc, url_rules=r)
 check("unreadable list -> no fetch", g == "o" and fc.calls == [])
 
+# a dangling symlink in place of a list is present-but-unreadable, not absent
+v = make_vault()
+(v / ".harvest-deny").symlink_to(v / "no-such-target")
+_err = _io.StringIO()
+sys.stderr = _err
+try:
+    r = mod.load_url_rules(v)
+finally:
+    sys.stderr = _se
+check("dangling symlink list -> fails closed", mod.url_gate("https://example.com/post", r) is not None)
+
 # the real jina + firecrawl clients with urlopen stubbed: a denied URL never reaches the network
 _calls = []
 _orig_uo = urllib.request.urlopen

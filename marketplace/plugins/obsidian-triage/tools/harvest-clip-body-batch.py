@@ -389,7 +389,7 @@ def load_url_rules(vault: Path) -> UrlRules:
     error = None
     for name in (".harvest-deny", ".harvest-allow"):
         path = vault / name
-        if not path.exists():
+        if not path.exists() and not path.is_symlink():
             lists[name] = []
             continue
         try:
