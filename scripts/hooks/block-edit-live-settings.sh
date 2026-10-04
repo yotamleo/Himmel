@@ -2016,7 +2016,7 @@ _dc_receiver() {
 # full like any other line.
 _dc_data_bodies() {
     local d=' ' s=$2 line l2 end='' dash='' w seg pre rcv out='' bd='' hre
-    local bb='' bo='' u ure ore fdre
+    local bb='' bo='' u ure ore lre fdre
     fdre='>&[[:space:]]*([^12[:space:]-]|[12][^[:space:];&|)<>])'
     hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
     while [[ $s =~ $hre ]]; do
@@ -2030,7 +2030,10 @@ _dc_data_bodies() {
     # its name, tabs stripped or not, which only ever ends it early)
     u=' '
     ure='<<-?[[:space:]]*([A-Za-z0-9_]+)'
-    ore='(^|[^<])<<-?[[:space:]]*['"'"'"\\]?([A-Za-z0-9_]+)[^<]*$'
+    # a name counts only when it is the whole delimiter word, read with its
+    # quotes stripped (`'EOF'-X` is `EOF-X`, never `EOF`)
+    ore='(^|[^<])<<-?[[:space:]]*([A-Za-z0-9_]+)([[:space:];&|)>][^<]*)?$'
+    lre='<<(-?)[[:space:]]*([a-z0-9_]+)([[:space:];&|)>][^<]*)?$'
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -n "$end" ]; then
             l2=${line#"${line%%[!$'\t']*}"}
@@ -2042,7 +2045,8 @@ _dc_data_bodies() {
             u="$u${BASH_REMATCH[1]} "
             s=${s#*"${BASH_REMATCH[0]}"}
         done
-        [[ ! $line =~ $ore ]] || end=${BASH_REMATCH[2]}
+        l2=${line//[\'\"\\]/}
+        [[ ! $l2 =~ $ore ]] || end=${BASH_REMATCH[2]}
     done <<< "$2"
     end=''
     d=$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')
@@ -2061,7 +2065,7 @@ _dc_data_bodies() {
             continue
         fi
         out=$out$line$'\n' bd=$bd$'\n'
-        [[ $line =~ \<\<(-?)[[:space:]]*([a-z0-9_]+)[^\<]*$ ]] || continue
+        [[ $line =~ $lre ]] || continue
         dash=${BASH_REMATCH[1]} w=${BASH_REMATCH[2]}
         case "$d" in *" $w "*) ;; *) continue ;; esac
         case "$u" in *" $w "*) continue ;; esac
