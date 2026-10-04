@@ -303,6 +303,7 @@ else
     # above (codex-15), just missed here. An apostrophe in either value
     # breaks the string literal, and a crafted value injects python
     # statements. Both now travel through sys.argv instead.
+    # shellcheck disable=SC2034  # read by vm_ssh/vm_scp in the sourced lib
     GUEST_USER=$("$HIMMEL_VM_PYTHON" -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -678,6 +679,11 @@ $(printf ' RAN-IN: VM clone %s (HIMMEL-2623 — a separate host, not this machin
 else
     summary_block=$(printf 'DIED-BEFORE-SUMMARY: the guest run exited (rc=%s) before printing its own "== Summary ==" — no PASS/SKIP/FAIL verdict exists for this run.\n head: %s\n scope: %s\n RAN-IN: VM clone %s (HIMMEL-2623)' \
         "$SUITE_RC" "$REPORT_HEAD" "scripts" "$CLONE_NAME")
+    # HIMMEL-2689: no verdict is a failure of the run, whatever EXITCODE the
+    # guest captured — "could not determine a verdict" must never share an
+    # exit code with "the verdict was pass". Folded into SUITE_RC so the one
+    # `exit "$SUITE_RC"` below (and the cleanup trap's rc capture) carries it.
+    [ "$SUITE_RC" -ne 0 ] || SUITE_RC=1
 fi
 
 if command -v "${GH_CMD:-gh}" >/dev/null 2>&1; then

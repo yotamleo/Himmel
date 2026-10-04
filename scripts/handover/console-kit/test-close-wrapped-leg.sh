@@ -202,7 +202,7 @@ run() { # run <doc> - runs the script under test with every stub wired
     # <repo-root>/handovers, creating REAL handovers/.locks/ state in
     # whatever checkout this suite runs from (HIMMEL-3667).
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
-        HANDOVER_DIR="$W/handover-root" \
+        HANDOVER_DIR="${CWL_HANDOVER_DIR-$W/handover-root}" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
         WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
@@ -533,6 +533,14 @@ FRESH4="$PROJDIR4/sess-fresh.jsonl"
     printf '%s\n' "{\"timestamp\":\"2026-06-17T00:00:00Z\",\"cwd\":\"$ESW_SB4/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\"}]}}"
     yes '{"padding":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}' 2>/dev/null | head -c 1000000 || true
 } > "$FRESH4"
+# the `|| true` above only absorbs `yes`'s SIGPIPE; assert the fixtures were
+# genuinely generated, else this case passes without exercising scale (HIMMEL-3740).
+fixture_ok=yes
+[ "$(wc -c < "$FRESH4")" -ge 1000000 ] || fixture_ok=no
+for stale in "$PROJDIR4"/stale-*.jsonl; do
+    [ -s "$stale" ] || fixture_ok=no
+done
+check "timing-guard: padded fresh transcript (>=1MB) and stale decoys generated" "$fixture_ok" "yes"
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
 start_ts=$(date +%s)
@@ -635,6 +643,102 @@ out=$(HOME="$ESW_SB7/home" LUNA_VAULT_PATH="$ESW_SB7/vault" OBSIDIAN_API_KEY="" 
 check "fallback-head-window: rc 0 (still closes)" "$rc" "0"
 note_count23=$(find "$ESW_SB7/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 check "fallback-head-window: exactly one note written (customTitle past the head window is still found by the unbounded all-time fallback)" "$note_count23" "1"
+
+# --- 25: leg cost ledger (HIMMEL-4217) ---------------------------------------
+# A wrapped leg's transcript is metered by leg-burn.sh --raw and ONE JSONL row
+# lands in <handover root>/.ledger/leg-cost.jsonl before the TERM. A meter or
+# ledger failure only WARNs - the close still succeeds.
+LC_PROJ="$W/lc-projects"
+mkdir -p "$LC_PROJ"
+LC_T="$LC_PROJ/sess-lc1.jsonl"
+asst() { # asst <id> <input> <cache-read> <cache-create> <out>
+    printf '{"type":"assistant","message":{"id":"%s","model":"claude-sonnet-5-5","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"output_tokens":%s}}}\n' "$1" "$2" "$3" "$4" "$5"
+}
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\",\"timestamp\":\"2026-10-03T00:00:00Z\"}"
+    asst m1 10 1000 2000 100
+    asst m2 20 3000 0 200
+    asst m2 20 3000 0 200
+    printf '%s\n' '{"type":"system","subtype":"compact_boundary"}'
+    asst m3 5 4000 500 50
+} > "$LC_T"
+LC_LEDGER="$W/handover-root/.ledger/leg-cost.jsonl"
+rm -f "$LC_LEDGER"
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 4321 abc GREEN"
+{ printf -- '---\nclass: impl\nprofile: leg-impl\n---\n'; cat "$DOC"; } > "$DOC.fm" && mv "$DOC.fm" "$DOC"
+reset_calls
+rc=0; out=$(CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger: rc 0" "$rc" "0"
+check "ledger: exactly one row" "$(grep -c . "$LC_LEDGER" 2>/dev/null)" "1"
+lc_row() { jq -r ".$1" "$LC_LEDGER" 2>/dev/null | head -1; }
+check "ledger: calls deduped by message id" "$(lc_row calls)" "3"
+check "ledger: input" "$(lc_row input)" "35"
+check "ledger: cache_read" "$(lc_row cache_read)" "8000"
+check "ledger: cache_create" "$(lc_row cache_create)" "2500"
+check "ledger: out" "$(lc_row out)" "350"
+check "ledger: cost_eq is exact (35 + 8000*0.1 + 2500*1.25 + 350*5)" "$(lc_row cost_eq)" "5710"
+check "ledger: compactions" "$(lc_row compactions)" "1"
+check "ledger: model from the transcript" "$(lc_row model)" "claude-sonnet-5-5"
+check "ledger: leg label" "$(lc_row leg)" "N1"
+check "ledger: ticket key" "$(lc_row ticket)" "HIMMEL-9"
+check "ledger: class from front matter" "$(lc_row class)" "impl"
+check "ledger: profile from front matter" "$(lc_row profile)" "leg-impl"
+check "ledger: PR from the READY bullet" "$(lc_row pr)" "4321"
+check "ledger: date is today" "$(lc_row date)" "$(date +%F)"
+# a retried close (same transcript) never writes a second row
+mkdoc "- 10:00 WRAPPED - done"
+rc=0; out=$(CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger: retried close still one row" "$(grep -c . "$LC_LEDGER")" "1"
+# class from the doc name; no front matter
+DOC_SHEP="$W/HIMMEL-9-N1-demo-cloud-shepherd-2026-01-01-RESUME.md"
+SESSION_SAVE="$SESSION_NAME"; DOC_SAVE="$DOC"
+SESSION_NAME="HIMMEL-9-N1-demo-cloud-shepherd-2026-01-01"; DOC="$DOC_SHEP"
+mkcmdline 210 claude -n "$SESSION_NAME" work
+sed "s/$SESSION_SAVE/$SESSION_NAME/" "$LC_T" > "$LC_PROJ/sess-lc2.jsonl"; rm -f "$LC_T"
+mkdoc "- 10:00 WRAPPED - done"
+rc=0; out=$(CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-class: rc 0" "$rc" "0"
+check "ledger-class: shepherd derived from the doc name" "$(jq -r .class "$LC_LEDGER" | tail -1)" "shepherd"
+check "ledger-class: profile unknown without front matter" "$(jq -r .profile "$LC_LEDGER" | tail -1)" "unknown"
+# a broken meter still closes, with a WARN and no row
+LC_BAD="$W/bin/leg-burn-broken.sh"
+printf '#!/usr/bin/env bash\necho boom >&2\nexit 2\n' > "$LC_BAD"; chmod +x "$LC_BAD"
+rm -f "$LC_LEDGER"; reset_calls
+rc=0; out=$(LEG_BURN_BIN="$LC_BAD" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-fail: close still rc 0 when leg-burn fails" "$rc" "0"
+contains "ledger-fail: WARNs" "$out" "WARN"
+exact_count "ledger-fail: TERM still sent" "$(cat "$CALLS")" "kill -TERM 210" "1"
+check "ledger-fail: no row written" "$([ -e "$LC_LEDGER" ] && { wc -l < "$LC_LEDGER" | tr -d ' '; } || echo 0)" "0"
+# an unwritable ledger location also only WARNs
+reset_calls
+rc=0; out=$(LEG_COST_LEDGER="/proc/no-such-dir/x.jsonl" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-unwritable: close still rc 0" "$rc" "0"
+contains "ledger-unwritable: WARNs" "$out" "WARN"
+SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
+
+# --- 26: ledger root follows the DOC, not the cwd (HIMMEL-4231) ---------------
+# HANDOVER_DIR unset and cwd a repo with its own handovers/ stub (a console
+# running from the himmel checkout): the row must land under the handover root
+# that holds the leg doc, never in the cwd repo's stub.
+LR_STATE="$W/lr-state"; LR_STUB="$W/lr-stub"
+mkdir -p "$LR_STATE/handovers/u/himmel" "$LR_STUB/handovers"
+git -C "$LR_STUB" init -q 2>/dev/null || { echo "FAIL: case 26 setup: git init in $LR_STUB"; exit 1; }
+printf '{"repos":{"state":{"path":"%s","user":"u"}}}\n' "$LR_STATE" > "$W/lr-registry.json"
+LR_STEM="HIMMEL-9-N7-rootcase-2026-01-01"
+DOC_SAVE="$DOC"; SESSION_SAVE="$SESSION_NAME"
+DOC="$LR_STATE/handovers/u/himmel/$LR_STEM.md"; SESSION_NAME="$LR_STEM"
+mkcmdline 211 claude -n "$SESSION_NAME" work
+pgrep_x_stub 211
+printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\",\"timestamp\":\"2026-10-03T00:00:00Z\"}" > "$LC_PROJ/sess-lr1.jsonl"
+asst m1 10 1000 2000 100 >> "$LC_PROJ/sess-lr1.jsonl"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(cd "$LR_STUB" && CWL_HANDOVER_DIR="" HANDOVER_REGISTRY="$W/lr-registry.json" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-root: rc 0" "$rc" "0"
+check "ledger-root: row lands under the doc's handover root" "$(grep -c sess-lr1 "$LR_STATE/handovers/.ledger/leg-cost.jsonl" 2>/dev/null)" "1"
+check "ledger-root: nothing in the cwd repo's stub" "$([ -e "$LR_STUB/handovers/.ledger" ] && echo present || echo absent)" "absent"
+pgrep_x_stub 210
+SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
 post_handovers=absent

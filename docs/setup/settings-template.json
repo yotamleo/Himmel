@@ -104,6 +104,7 @@
     "himmel-ops@himmel": true,
     "pr-review-toolkit-himmel@himmel": true,
     "claude-obsidian@himmel": false,
+    "obsidian-second-brain@himmel": true,
     "luna-correlate@himmel": false,
     "obsidian-triage@himmel": false,
     "telegram-himmel@himmel": false

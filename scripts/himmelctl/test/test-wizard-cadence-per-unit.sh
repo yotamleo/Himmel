@@ -333,7 +333,7 @@ INPUT
 ); rcD=$?
 set -e
 [ "$rcD" -eq 0 ] || fail "case d: vault=none + codex lane run should succeed (got rc=$rcD): $outD"
-grepq "$outD" -F -- '? cadences — recurring scheduled jobs to arm now [codex-sweep,drift-fix,upstream-watch,repo-sync|none] (default: none)' \
+grepq "$outD" -F -- '? cadences — recurring scheduled jobs to arm now [codex-sweep,drift-fix,upstream-watch,doctor,repo-sync|none] (default: none)' \
   || fail "case d: vault=none + codex should still ask cadences, offering codex-sweep + the three requires:'none' rows (got: $outD)"
 grepq "$outD" -F -- '"codex-sweep": "armed"' \
   || fail "case d: selecting codex-sweep should record it armed (got: $outD)"
@@ -376,7 +376,7 @@ INPUT
 ); rcD2=$?
 set -e
 [ "$rcD2" -eq 0 ] || fail "case d2: vault=none + codex lane run on linux should succeed (got rc=$rcD2): $outD2"
-grepq "$outD2" -F -- '? cadences — recurring scheduled jobs to arm now [codex-sweep,drift-fix,upstream-watch|none] (default: none)' \
+grepq "$outD2" -F -- '? cadences — recurring scheduled jobs to arm now [codex-sweep,drift-fix,upstream-watch,doctor|none] (default: none)' \
   || fail "case d2: on linux, vault=none + codex should offer codex-sweep + drift-fix + upstream-watch but NOT repo-sync (got: $outD2)"
 grepq "$outD2" -F -- '"codex-sweep": "armed"' \
   || fail "case d2: selecting codex-sweep should record it armed (got: $outD2)"
@@ -417,7 +417,7 @@ INPUT
 ); rcE=$?
 set -e
 [ "$rcE" -eq 0 ] || fail "case e: vault=none without codex run should succeed (got rc=$rcE): $outE"
-grepq "$outE" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch,repo-sync|none] (default: none)' \
+grepq "$outE" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch,doctor,repo-sync|none] (default: none)' \
   || fail "case e: vault=none with no codex lane should still ask cadences, offering ONLY the three requires:'none' rows (got: $outE)"
 grepq "$outE" -F -- '"drift-fix": "off"' \
   || fail "case e: declining drift-fix (Enter, no recommended default) should record off (got: $outE)"
@@ -465,12 +465,12 @@ INPUT
   set -e
   [ "$rcE2" -eq 0 ] || fail "case e2($platE2): run should succeed (got rc=$rcE2): $outE2"
   if [ "$platE2" = "win32" ]; then
-    grepq "$outE2" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch,repo-sync|none] (default: none)' \
+    grepq "$outE2" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch,doctor,repo-sync|none] (default: none)' \
       || fail "case e2(win32): a Windows host must be offered repo-sync (got: $outE2)"
     grepq "$outE2" -F -- '"repo-sync": "off"' \
       || fail "case e2(win32): declining repo-sync should record off (got: $outE2)"
   else
-    grepq "$outE2" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch|none] (default: none)' \
+    grepq "$outE2" -F -- '? cadences — recurring scheduled jobs to arm now [drift-fix,upstream-watch,doctor|none] (default: none)' \
       || fail "case e2($platE2): a non-Windows host must NOT be offered repo-sync (got: $outE2)"
     grepq "$outE2" -F -- 'repo-sync' \
       && fail "case e2($platE2): repo-sync must be genuinely absent (menu and answers) on a non-Windows host (got: $outE2)"

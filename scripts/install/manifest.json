@@ -90,7 +90,7 @@
       "scopes": ["project", "user"],
       "profiles": ["luna", "all"],
       "deps": ["qmd-binary"],
-      "probe": { "type": "qmd-index", "collections": ["himmel", "luna"] },
+      "probe": { "type": "qmd-index", "collections": ["himmel", "luna", "skills"] },
       "install": { "type": "qmd" },
       "removable": "full-offboard-only",
       "provenance": { "kinds": ["collection"] }

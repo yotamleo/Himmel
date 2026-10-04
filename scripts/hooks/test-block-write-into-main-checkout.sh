@@ -3187,6 +3187,218 @@ check_both "92c fromW: cd wt || exit; echo x > a.txt still allows (control)" all
 check_both "92d fromW: cd wt; echo x 2>&1 > a.txt still allows (redirect & is not a background &)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x 2>&1 > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# HIMMEL-4138: four gaps J1661 execution-verified on #1661, plus a fifth found
+# alongside (an ANSI-C NUL ends the name early). Every DENY row writes into the
+# primary under real bash or zsh (zsh is Claude Code's own Bash-tool shell).
+# Where the shells disagree the hook denies when EITHER reading writes, so a
+# few rows aimed at the worktree deny too — that is the fail-closed rule, not
+# an accident. Templates: @P@ = the primary, @W@ = the worktree, \n = newline.
+_r4138() { # label verdict template
+    local c="$3"
+    c="${c//@P@/$_PR}"; c="${c//@W@/$_WR}"; c="${c//\\n/$'\n'}"; c="${c//\\t/$'\t'}"
+    _subst_row "$1" "$2" "$c"
+}
+echo "== HIMMEL-4138 zsh \$\$', comments in substitutions, wrapped shells, \\x{…} and NUL =="
+# shellcheck disable=SC2016,SC1003  # row templates are literal shell text
+{
+# (1) zsh opens ANSI-C at a `'` right after `$`, even the second `$` of `$$`.
+_r4138 "77a echo \$\$'\\'' then a redirect into the primary"          block 'echo $$'"'"'\'"'"''"'"' > @P@/f'
+_r4138 "77b x=\$\$\$\$'\\''; touch primary"                            block 'x=$$$$'"'"'\'"'"''"'"'; touch @P@/f'
+_r4138 "77c \$\$'\\'' inside a dq-quoted body"                         block 'x="$(echo $$'"'"'\'"'"''"'"' > @P@/f)"'
+_r4138 "77d \$\$'\\'' aimed at the worktree (ambiguous: fail closed)"  block 'echo $$'"'"'\'"'"''"'"' > @W@/f'
+_r4138 "77e \$\$'\\'' inside bash -c"                                  block 'bash -c "echo \$\$'"'"'\\'"'"''"'"' > @W@/f; touch @P@/f"'
+_r4138 "77f \$\$'abc' with no backslash reads the same (ALLOW)"        allow 'echo $$'"'"'abc'"'"' > @W@/f'
+_r4138 "77g \$\$\$'\\'' is ANSI-C in both shells (ALLOW)"               allow 'echo $$$'"'"'\'"'"''"'"' > @W@/f'
+# (2) A comment inside a command substitution hides a quote from the scan.
+_r4138 "78a comment with a quote inside \$(…)"                         block 'x=$(echo hi # it'"'"'s\n); touch @P@/f'
+_r4138 "78b comment with a quote inside a dq-quoted \$(…)"             block 'x="$(echo hi # it'"'"'s\n)"; touch @P@/f'
+_r4138 "78c comment with a quote inside backticks"                     block 'x=`echo hi # it'"'"'s\n`; touch @P@/f'
+_r4138 "78d top-level comments pairing a quote around a write"         block ': # '"'"'\necho x > @P@/f\n: # '"'"''
+# 78e (a comment in $(…) in a multi-line bash -c body) sits with the
+# HIMMEL-4143 rows below. 78p: the body newline now reaches the body scan as a
+# real newline, which splits the body there.
+_r4138 "78p bash -c body with a newline before a write (HIMMEL-4143)"  block 'bash -c "echo hi\ntouch @P@/f"'
+# The strip copies a heredoc body through verbatim (speed); a shift is no opener.
+_r4138 "78q ((x<<2)) is a shift, comment pair still stripped"            block '((x<<2))\n# '"'"'\necho x > @P@/f\n# '"'"'\n2'
+_r4138 "78r \$[x<<2] is a shift, comment pair still stripped"            block 'echo $[1<<2]\n# '"'"'\necho x > @P@/f\n# '"'"'\n2'
+_r4138 "78s heredoc body with a commented quote in \$(…), then a write"  block 'x=$(cat <<E\n# it'"'"'s\nE\n); touch @P@/f'
+_r4138 "78u quoted heredoc terminator, then a write"                     block 'x=$(cat <<'"'"'E'"'"'\n# '"'"'\nE\n); echo x > @P@/f'
+_r4138 "78v backslashed heredoc terminator, then a write"                block 'x=$(cat <<\E\n# '"'"'\nE\n); echo x > @P@/f'
+_r4138 "78w <<- heredoc with tab-indented terminator, then a write"     block 'x=$(cat <<-E\n\t# it'"'"'s\n\tE\n); touch @P@/f'
+_r4138 "78x near-miss terminator line, then a write"                     block 'x=$(cat <<E\n# '"'"'\nEE\n); echo x > @P@/f'
+_r4138 "78y comment after the opener, then a write"                      block 'x=$(cat <<E # c\n# '"'"'\nE\n); echo x > @P@/f'
+_r4138 "78t worktree heredoc commit with # and quotes (ALLOW)"           allow 'git -C @W@ commit -m "$(cat <<'"'"'EOF'"'"'\nfix: x\n\n# it'"'"'s (#12) done\nEOF\n)"'
+_r4138 "78f comment inside \$(…), worktree target (ALLOW)"             allow 'x=$(echo hi # it'"'"'s\n); touch @W@/f'
+_r4138 "78g a write inside a comment still denies (either reading)"    block 'echo hi # > @P@/f'
+_r4138 "78h \$(true)#a is a word, not a comment"                       block 'echo $(true)#a > @P@/f'
+_r4138 "78i \${x:- #} is a word, not a comment"                        block 'echo ${x:- #} > @P@/f'
+_r4138 "78j a#b is a word (ALLOW)"                                     allow 'echo a#b > @W@/f'
+_r4138 "78k \${#x} and \$((16#1f)) are not comments (ALLOW)"           allow 'echo ${#x} $((16#1f)) > @W@/f'
+# (3) A wrapper before the shell or eval used to skip the body scan.
+for _w in 'nice' 'timeout 5' 'nohup' 'env FOO=1' 'FOO=1' 'sudo -n' 'setsid' 'xargs' 'stdbuf -o0' 'ionice -c3' 'command' 'exec'; do
+    _r4138 "79-$_w bash -c write into the primary"                    block "$_w bash -c 'echo x > @P@/f'"
+    _r4138 "79-$_w bash -c write into the worktree (ALLOW)"           allow "$_w bash -c 'echo x > @W@/f'"
+done
+_r4138 "79a command eval write into the primary"                       block "command eval 'echo x > @P@/f'"
+_r4138 "79b flock -c write into the primary"                           block "flock /tmp/l -c 'echo x > @P@/f'"
+_r4138 "79c su -c write into the primary"                              block "su -c 'echo x > @P@/f'"
+_r4138 "79d builtin eval write into the worktree (ALLOW)"              allow "builtin eval 'echo x > @W@/f'"
+_r4138 "79e a quoted 'nice bash -c' in a commit message (ALLOW)"       allow "git -C @W@ commit --allow-empty -m 'nice bash -c x'"
+_r4138 "79f nice 'bash' -c (a quoted shell name) into the primary"     block "nice 'bash' -c 'echo x > @P@/f'"
+_r4138 "79g nice ba''sh -c into the primary"                           block "nice ba''sh -c 'echo x > @P@/f'"
+_r4138 "79h nice b\\ash -c into the primary"                           block "nice b\\ash -c 'echo x > @P@/f'"
+_r4138 "79i 'bash' -c with no wrapper into the primary"                block "'bash' -c 'echo x > @P@/f'"
+_r4138 "79j nice 'eval' into the primary"                              block "nice 'eval' 'echo x > @P@/f'"
+_r4138 "79k nice 'bash' -c into the worktree (ALLOW)"                  allow "nice 'bash' -c 'echo x > @W@/f'"
+# J1672: a \$'…' or \$\"…\" spelling of the shell name (bash and zsh decode it).
+_r4138 "79l nice \$'bash' -c into the primary"                         block "nice \$'bash' -c 'touch @P@/x'"
+_r4138 "79m env \$'sh' -c into the primary"                            block "env \$'sh' -c 'touch @P@/x'"
+_r4138 "79n timeout 5 \$'bash' -c into the primary"                    block "timeout 5 \$'bash' -c 'touch @P@/x'"
+_r4138 "79o nice ba\$'sh' -c into the primary"                         block "nice ba\$'sh' -c 'touch @P@/x'"
+_r4138 "79p nice /bin/\$'bash' -c into the primary"                    block "nice /bin/\$'bash' -c 'touch @P@/x'"
+_r4138 "79q nice \$''bash -c into the primary"                         block "nice \$''bash -c 'touch @P@/x'"
+_r4138 "79r \$'bash' -c with no wrapper into the primary"              block "\$'bash' -c 'touch @P@/x'"
+_r4138 "79s \$'eval' into the primary"                                 block "\$'eval' 'touch @P@/x'"
+_r4138 "79t nice \$'\\x62ash' -c (a hex escape) into the primary"      block "nice \$'\\x62ash' -c 'touch @P@/x'"
+_r4138 "79u nice \$\"bash\" -c into the primary"                       block "nice \$\"bash\" -c 'touch @P@/x'"
+_r4138 "79v command \$'eval' into the primary"                         block "command \$'eval' 'touch @P@/x'"
+_r4138 "79w nice \$'bash' -c into the worktree (ALLOW)"                allow "nice \$'bash' -c 'touch @W@/x'"
+_r4138 "79x nice \$'\\x62ash' -c into the worktree (ALLOW)"            allow "nice \$'\\x62ash' -c 'touch @W@/x'"
+# J1672: the comment reading blanks heredoc bodies, so a delimiter spelling
+# the first reading's blanker misses cannot carry a quote past the body.
+_r4138 "78z <<\\E body with a commented quote, then touch"            block 'x=$(cat <<\E\n# '"'"'\nE\n); touch @P@/x'
+_r4138 "78za <<\$E body with a commented quote, then touch"           block 'x=$(cat <<$E\n# '"'"'\n$E\n); touch @P@/x'
+_r4138 "78zb <<\${x} body with a commented quote, then touch"         block 'x=$(cat <<${x}\n# '"'"'\n${x}\n); touch @P@/x'
+_r4138 "78zc <<'#' body with a commented quote, then touch"           block 'x=$(cat <<'"'"'#'"'"'\n# '"'"'\n#\n); touch @P@/x'
+_r4138 "78zd <<\\E body with a commented quote, worktree (ALLOW)"     allow 'x=$(cat <<\E\n# '"'"'\nE\n); touch @W@/x'
+# (4) bash 5.3 decodes \x{2f} as /, bash 5.2 keeps \x{ and zsh reads NUL.
+_r4138 "80a \$'\\x{2f}' prefix of a primary path"                        block "echo > \$'\\x{2f}'@P@/f"
+_r4138 "80b \$'\\x{2f}' aimed at the worktree (ambiguous: fail closed)"  block "echo > \$'\\x{2f}'@W@/f"
+_r4138 "80c \$'\\x2f' has one reading (ALLOW)"                          allow "echo > \$'\\x2f'@W@/f"
+# (5) An ANSI-C NUL ends the name (bash: the rest of the span, zsh: the word).
+_r4138 "81a \\x00 ends the name inside the primary"                     block "echo x > \$'@P@/f\\x00/../../zz'"
+_r4138 "81b \\0 ends the name inside the primary"                       block "echo x > \$'@P@/f\\0/../../zz'"
+_r4138 "81c NUL at the span end, word continues"                       block "echo x > \$'@P@/f\\0'/../../zz"
+_r4138 "81d read -d \$'\\0' stays allowed (ALLOW)"                      allow "while IFS= read -r -d \$'\\0' f; do :; done < /dev/null"
+# CR codex-1: octal wraps mod 256 and bash masks \c to 5 bits, so these are NUL too.
+_r4138 "81e \\400 ends the name inside the primary"                     block "echo x > \$'@P@/f\\400/../../zz'"
+_r4138 "81f \\c\` ends the name inside the primary"                     block "echo x > \$'@P@/f\\c\`/../../zz'"
+_r4138 "81g \\c<space> ends the name inside the primary"                block "echo x > \$'@P@/f\\c /../../zz'"
+_r4138 "81h \\377 stays a byte, worktree write (ALLOW)"                 allow "echo x > \$'@W@/f\\377/../zz'"
+}
+
+echo "== HIMMEL-4153/4145/4143 assignment prefix, nested heredoc bodies, quoted newlines =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# HIMMEL-4153: leading NAME=value / NAME[…]=value words are skipped before the
+# verb arms read the command word, and a plain `$((…))` no longer splits.
+_r4138 "82a x=1 touch primary"                                         block 'x=1 touch @P@/x'
+_r4138 "82b x=\$((1<<2)) touch primary"                                block 'x=$((1<<2)) touch @P@/x'
+_r4138 "82c a[1<<2]=1 touch primary"                                   block 'a[1<<2]=1 touch @P@/x'
+_r4138 "82d x=\$(echo hi) touch primary"                               block 'x=$(echo hi) touch @P@/x'
+_r4138 "82e x=\"a b\" touch primary"                                   block 'x="a b" touch @P@/x'
+_r4138 "82f x=1 y=2 touch primary"                                     block 'x=1 y=2 touch @P@/x'
+_r4138 "82g x+=1 touch primary"                                        block 'x+=1 touch @P@/x'
+_r4138 "82h x=1 cp into the primary"                                   block 'x=1 cp @W@/README.md @P@/x'
+_r4138 "82i x=1 rm in the primary"                                     block 'x=1 rm @P@/README.md'
+_r4138 "82j a[\$((1<<2))]=1 touch primary"                             block 'a[$((1<<2))]=1 touch @P@/x'
+_r4138 "82k x=\`echo hi\` touch primary"                               block 'x=`echo hi` touch @P@/x'
+_r4138 "82l x=1 sed -i in the primary"                                 block 'x=1 sed -i s/a/b/ @P@/README.md'
+_r4138 "82m x=1 git -C primary commit"                                 block 'x=1 git -C @P@ commit --allow-empty -m m'
+_r4138 "82n \$((touch …) ) is a subshell, still split"                 block 'echo $((touch @P@/x) )'
+_r4138 "82o \$((echo a); touch …) is a subshell, still split"          block 'echo $((echo a); touch @P@/x)'
+_r4138 "82p x=1 touch worktree (ALLOW)"                                allow 'x=1 touch @W@/x'
+_r4138 "82q x=\$((1<<2)) touch worktree (ALLOW)"                       allow 'x=$((1<<2)) touch @W@/x'
+_r4138 "82r a[1<<2]=1 touch worktree (ALLOW)"                          allow 'a[1<<2]=1 touch @W@/x'
+_r4138 "82s bare assignment (ALLOW)"                                   allow 'x=1'
+_r4138 "82t FOO=1 git -C worktree commit (ALLOW)"                      allow 'FOO=1 git -C @W@ commit --allow-empty -m m'
+# Only `(` and `${` nest in an assignment value; a bare `[` or `{` is a
+# literal, so the value ends at the next blank and the verb is read.
+_r4138 "85a x=[ touch primary (bare [ is literal)"                     block 'x=[ touch @P@/x'
+_r4138 "85b x={ touch primary (bare { is literal)"                     block 'x={ touch @P@/x'
+_r4138 "85c x=a[b touch primary"                                       block 'x=a[b touch @P@/x'
+_r4138 "85d x=\\\${ touch primary (escaped \$ is literal)"             block 'x=\${ touch @P@/x'
+_r4138 "85e x=\$\${ touch primary (PID then literal {)"                block 'x=$${ touch @P@/x'
+_r4138 "85f x=\${a:- b} touch primary (\${ nests)"                     block 'x=${a:- b} touch @P@/x'
+_r4138 "85g x=\$(echo }) touch primary"                                block 'x=$(echo }) touch @P@/x'
+_r4138 "85i x=[ touch worktree (ALLOW)"                                allow 'x=[ touch @W@/x'
+_r4138 "85j x=\${a:- b} git -C worktree commit (ALLOW)"                allow 'x=${a:- b} git -C @W@ commit --allow-empty -m m'
+# HIMMEL-4145: a heredoc body inside a dq-quoted `$(…)` is blanked in an
+# extra reading, so a body apostrophe cannot swallow a later write.
+_r4138 "83a dq \$(cat <<E it's E); touch primary"                      block 'x="$(cat <<E\nit'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "83b dq \$(cat <<E # it's E); touch primary"                    block 'x="$(cat <<E\n# it'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "83c commit idiom with it's, then touch primary"                block 'git -C @W@ commit --allow-empty -m "$(cat <<'"'"'EOF'"'"'\nfix: it'"'"'s done\nEOF\n)"; touch @P@/f'
+_r4138 "83d dq <<- tab body with it's; touch primary"                  block 'x="$(cat <<-E\n\tit'"'"'s\n\tE\n)"; touch @P@/f'
+_r4138 "83e dq body with a backtick; touch primary"                    block 'x="$(cat <<E\nuse `x\nE\n)"; touch @P@/f'
+_r4138 "83f dq body with a dquote; touch primary"                      block 'x="$(cat <<E\nsay "hi\nE\n)"; touch @P@/f'
+_r4138 "83g write inside \$(…) after the heredoc"                      block 'x="$(cat <<E\nhi\nE\necho x > @P@/f\n)"'
+_r4138 "83h nested dq \$(…) twice, it's; touch primary"                block 'x="$(echo "$(cat <<E\nit'"'"'s\nE\n)")"; touch @P@/f'
+_r4138 "83j \\\$( in dq is text, a body never opens"                   block 'x="\$(cat <<E"; touch @P@/f; echo "E"'
+_r4138 "83k commit idiom with it's (ALLOW)"                            allow 'git -C @W@ commit --allow-empty -m "$(cat <<'"'"'EOF'"'"'\nfix: it'"'"'s done\nEOF\n)"'
+_r4138 "83l dq it's, then touch worktree (ALLOW)"                      allow 'x="$(cat <<E\nit'"'"'s\nE\n)"; touch @W@/f'
+_r4138 "83m redirect text in the body stays denied (flat reading, pin)" block 'x="$(cat <<E\na > @P@/f\nE\n)"'
+# HIMMEL-4143: a newline inside a quoted span travels as \006, so a clause is
+# never split mid-word (and the raw byte is a marker, denied).
+_r4138 "84a echo 'a NL' > primary"                                     block 'echo '"'"'a\n'"'"' > @P@/f'
+_r4138 "84b echo \"a NL b\" > primary"                                 block 'echo "a\nb" > @P@/f'
+_r4138 "84c bash -c \"echo 'hi NL'; touch primary\""              block 'bash -c "echo '"'"'hi\n'"'"'; touch @P@/f"'
+_r4138 "84d bash -c 'x=\$(echo hi NL); touch primary'"                 block 'bash -c '"'"'x=$(echo hi\n); touch @P@/f'"'"''
+_r4138 "78e comment with a quote in \$(…) in a multi-line bash -c"     block 'bash -c "x=\$(echo hi # it'"'"'s\n); touch @P@/f"'
+_r4138 "84e touch 'primary/a NL b'"                                    block 'touch '"'"'@P@/a\nb'"'"''
+_r4138 "84f a raw 0x06 byte is a marker"                               block 'echo x > @W@/a'$'\006''b'
+_r4138 "84g echo 'a NL' > worktree (ALLOW)"                            allow 'echo '"'"'a\n'"'"' > @W@/f'
+_r4138 "84h bash -c \"echo 'hi NL'; touch worktree\" (ALLOW)"     allow 'bash -c "echo '"'"'hi\n'"'"'; touch @W@/f"'
+_r4138 "84i commit -m 'a NL touch primary' stays denied (raw reading, pin)" block 'git -C @W@ commit --allow-empty -m '"'"'a\ntouch @P@/f'"'"''
+_r4138 "84j git commit -m multi-line message (ALLOW)"                  allow 'git -C @W@ commit --allow-empty -m '"'"'fix: x\n\nbody it is\n'"'"''
+}
+
+echo "== HIMMEL-4198/4174/4177 non-plain \$((…)), array values, continuations, case/esac tokens =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# HIMMEL-4198: a `$((…))` value holding `|`, `&`, `&&`, `$(…)` or a backtick,
+# and a backslash-newline in a value, no longer hide the write verb after it.
+_r4138 "86a x=\$((1|2)) touch primary"                                 block 'x=$((1|2)) touch @P@/f'
+_r4138 "86b x=\$(( \$(echo 1) )) touch primary"                        block 'x=$(( $(echo 1) )) touch @P@/f'
+_r4138 "86c x=\$((1&2)) cp into the primary"                           block 'x=$((1&2)) cp @W@/README.md @P@/f'
+_r4138 "86d x=\$((1 && 2)) touch primary"                              block 'x=$((1 && 2)) touch @P@/f'
+_r4138 "86e x=\$((\`echo 1\`)) touch primary"                          block 'x=$((`echo 1`)) touch @P@/f'
+_r4138 "86f x=\\ NL 1 touch primary (line continuation)"              block 'x=\\n1 touch @P@/f'
+_r4138 "86g x=\$((1|2)) rm in the primary"                             block 'x=$((1|2)) rm @P@/README.md'
+_r4138 "86h x=\$((1|2)) sed -i in the primary"                         block 'x=$((1|2)) sed -i s/a/b/ @P@/README.md'
+_r4138 "86i x=\"\$((1|2))\" touch primary"                             block 'x="$((1|2))" touch @P@/f'
+_r4138 "86j x=\$((1|2)) y=\$((3&4)) touch primary"                     block 'x=$((1|2)) y=$((3&4)) touch @P@/f'
+_r4138 "86k x=1\\ NL y=2 touch primary"                               block 'x=1 \\ny=2 touch @P@/f'
+_subst_row "86l x=\$((1|2)) touch primary, cwd /tmp"                   block "x=\$((1|2)) touch $_PR/f" /tmp
+_subst_row "86m x=\$(( \$(echo 1) )) touch ./f, cwd the primary"       block 'x=$(( $(echo 1) )) touch ./f' "$_PR"
+_subst_row "86n x=\$((1&2)) cp into the primary, cwd /tmp"             block "x=\$((1&2)) cp /tmp/a $_PR/f" /tmp
+_subst_row "86o x=\\ NL 1 touch primary, cwd /tmp"                    block "x=\\"$'\n'"1 touch $_PR/f" /tmp
+_subst_row "86p x=\$((1|2)) touch ./f, cwd the primary"                block 'x=$((1|2)) touch ./f' "$_PR"
+_r4138 "86q x=\$((1|2)) touch worktree (ALLOW)"                        allow 'x=$((1|2)) touch @W@/f'
+_r4138 "86r x=\\ NL 1 touch worktree (ALLOW)"                         allow 'x=\\n1 touch @W@/f'
+_r4138 "86s echo '\$((1|2)) touch primary' is text (ALLOW)"            allow 'echo '"'"'x=$((1|2)) touch @P@/f'"'"''
+# The same join reaches a continuation anywhere in the command, not only in
+# an assignment value: bash removes every unquoted backslash-newline.
+_r4138 "86t cp a \\ NL primary/f"                                     block 'cp @W@/README.md \\n@P@/f'
+_r4138 "86u tou\\ NL ch primary/f"                                    block 'tou\\nch @P@/f'
+_r4138 "86v touch \\ NL primary/f"                                    block 'touch \\n@P@/f'
+_r4138 "86w echo x >\\ NL primary/f"                                  block 'echo x >\\n@P@/f'
+_r4138 "86x sed -i \\ NL s/a/b/ primary/README.md"                    block 'sed -i \\ns/a/b/ @P@/README.md'
+_r4138 "86y touch \\ NL worktree/f (ALLOW)"                           allow 'touch \\n@W@/f'
+_r4138 "86z echo '\\ NL' touch primary stays text (ALLOW)"            allow 'echo '"'"'a\\n'"'"'touch @P@/f'
+# HIMMEL-4174: an array value `(…)` is one word, not a subshell break.
+_r4138 "87a x=(a b) touch primary"                                     block 'x=(a b) touch @P@/x'
+_r4138 "87b x+=(a b) touch primary"                                    block 'x+=(a b) touch @P@/x'
+_r4138 "87c x=(a) y=\$((1|2)) touch primary"                           block 'x=(a) y=$((1|2)) touch @P@/x'
+_subst_row "87d x=(a b) touch primary, cwd /tmp"                       block "x=(a b) touch $_PR/x" /tmp
+_subst_row "87e x=(a b) touch ./x, cwd the primary"                    block 'x=(a b) touch ./x' "$_PR"
+_r4138 "87f x=(a b) touch worktree (ALLOW)"                            allow 'x=(a b) touch @W@/x'
+# HIMMEL-4177: only a case/esac TOKEN makes the nested reading fall back,
+# so `showcase` no longer lets a body apostrophe hide a later write.
+_r4138 "88a dq \$(echo showcase; cat <<E it's E); touch primary"       block 'x="$(echo showcase; cat <<E\nit'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "88b dq \$(echo lowercase-esacs; cat <<E it's E); touch primary" block 'x="$(echo lowercase esacs; cat <<E\nit'"'"'s\nE\n)"; touch @P@/f'
+_r4138 "88c dq \$(echo showcase; cat <<E it's E); touch worktree (ALLOW)" allow 'x="$(echo showcase; cat <<E\nit'"'"'s\nE\n)"; touch @W@/f'
+}
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

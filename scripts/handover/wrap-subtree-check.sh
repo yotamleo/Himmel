@@ -76,9 +76,9 @@
 # GH #1337 also reported a `claude-hud` statusline tree false WITHHELD. A loose
 # by-path exemption (`^([^ ]*/)?(node|bun) [^ ]*/claude-hud/[^ ]*`) was rejected
 # on that PR's re-judge: it exempted ANY node/bun script under any directory
-# merely named claude-hud. HIMMEL-4139 fixed it with the tight anchor in hud_re:
-# exactly `node <abs>/marketplace/plugins/claude-hud/dist/index.js`, no args, no
-# `/..` — the real statusLine launch shape (see hud_re below).
+# merely named claude-hud. HIMMEL-4139 fixed it with a tight anchor on the real
+# statusLine launch shape; HIMMEL-4161 widened that to the whole per-render chain
+# (see chain_re below).
 #
 # READ-ONLY: this script never signals a process. Bash 3.2-compatible.
 # WRAP_SUBTREE_SELF overrides the pid treated as "this script" (test seam).
@@ -109,13 +109,20 @@ case "$window" in
 esac
 harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z]+)? mcp)( |\$)|^([^ ]*/)?caffeinate( -[a-z]+( [0-9]+)?)*\$}"
 
-# HIMMEL-4139: the claude-hud statusLine refresh. Its real launch is `sh -c [ -f P ]
-# && exec node P || true`, so argv is exactly `node <abs>/marketplace/plugins/
-# claude-hud/dist/index.js` (no args); everything it spawns inherits the ignore by
-# the walk-up. Anchored to that install shape, plus a `/..` check in awk
-# (isharness) — a directory merely named claude-hud is NOT exempt (HIMMEL-3723).
+# HIMMEL-4139 / HIMMEL-4161: the per-render statusline chain. claude-hud's real
+# launch is `sh -c [ -f P ] && exec node P || true`, so argv is exactly `node
+# <abs>/marketplace/plugins/claude-hud/dist/index.js`; it runs `bash <abs>/scripts/
+# statusline/hud-custom-lines.sh`, which runs `[timeout N] bash <abs>/scripts/
+# where-are-we/statusline-segment.sh --cwd <dir>`, which runs `[timeout N] node
+# <abs>/scripts/where-are-we/provision.mjs slice …` — all re-spawned each render
+# at etime 00:00 (a bash `$(…)` subshell shares its parent's argv). A process is
+# chain-exempt only when it AND every ancestor up to the session match one of
+# these four anchored shapes (awk ischain), so a non-chain child, or a chain
+# member beneath a non-chain parent, still withholds. A directory merely named
+# claude-hud, or a script merely named statusline-segment.sh elsewhere, is NOT
+# exempt (HIMMEL-3723), and a `/..` anywhere in the argv disqualifies.
 # No backslashes: the value crosses awk -v.
-hud_re='^([^ ]*/)?node /[^ ]*/marketplace/plugins/claude-hud/dist/index[.]js$'
+chain_re='^([^ ]*/)?node /[^ ]*/marketplace/plugins/claude-hud/dist/index[.]js$|^([^ ]*/)?(bash|sh) /[^ ]*/scripts/statusline/hud-custom-lines[.]sh$|^(timeout [0-9]+ )?([^ ]*/)?(bash|sh) /[^ ]*/scripts/where-are-we/statusline-segment[.]sh( --cwd [^ ].*)?$|^(timeout [0-9]+ )?([^ ]*/)?node /[^ ]*/scripts/where-are-we/provision[.]mjs slice( .*)?$'
 
 ps_out="$(ps -eo pid=,ppid=,etime=,args= 2>/dev/null)" || ps_out=""
 if [ -z "$ps_out" ]; then
@@ -123,7 +130,7 @@ if [ -z "$ps_out" ]; then
     exit 2
 fi
 
-result="$(printf '%s\n' "$ps_out" | awk -v root="$root" -v self="$self" -v hre="$harness_re" -v hud="$hud_re" -v win="$window" '
+result="$(printf '%s\n' "$ps_out" | awk -v root="$root" -v self="$self" -v hre="$harness_re" -v chainpat="$chain_re" -v win="$window" '
 function iswrap(a) {
     return a ~ /^[^ ]*(bash|zsh|sh) -c (source|\.) [^ ]*shell-snapshots\/snapshot-(bash|zsh)-/
 }
@@ -134,8 +141,10 @@ function isclaude(a,   t, n, b) {
 }
 function isharness(p) {
     if (iswrap(arg[p])) return 0
-    if (arg[p] ~ hud && index(arg[p], "/..") == 0) return 1
     return arg[p] ~ hre
+}
+function ischain(p) {
+    return arg[p] ~ chainpat && index(arg[p], "/..") == 0
 }
 # [[DD-]HH:]MM:SS -> seconds; -1 for anything else (fails closed in isearly)
 function secs(e,   x, t, n, s, k, d) {
@@ -181,9 +190,10 @@ END {
     for (i = 1; i <= np; i++) {
         pid = order[i]
         if (pid == root) continue
-        p = pid; under = 0; skip = (pid in chain); harness = 0; why = ""; via = ""
+        p = pid; under = 0; skip = (pid in chain); harness = 0; why = ""; via = ""; allchain = 1
         for (h = 0; h < maxh; h++) {
             if (p == self) skip = 1
+            if (!ischain(p)) allchain = 0
             if (!harness && isharness(p)) { harness = 1; why = "name-match"; via = p }
             q = ppid[p]
             if (q == root && !harness && isearly(p)) { harness = 1; why = "session-start"; via = p }
@@ -195,6 +205,7 @@ END {
         # process is outside the subtree, so count it (fail closed).
         if (h >= maxh) under = 1
         if (!under || skip) continue
+        if (!harness && allchain) { harness = 1; why = "statusline-chain"; via = pid }
         cmd = substr(arg[pid], 1, 100)
         if (harness) {
             m++

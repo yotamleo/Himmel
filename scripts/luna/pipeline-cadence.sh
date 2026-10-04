@@ -131,11 +131,19 @@ BANK_PREFLIGHT="$HIMMEL_ROOT/scripts/lib/bank-preflight.sh"
 # from the filesystem so a night with no newly triaged clips costs no session.
 SYNTH_GATE="$HIMMEL_ROOT/scripts/luna/synth-input-check.sh"
 
+# HIMMEL-4181: the shared failure sink. Every generated runner calls it on a
+# failed leg (alert-file line + one deduped Telegram DM) and on a completed one
+# (clears the dedupe). Baked by absolute path at arm time like the libs above.
+CADENCE_ALERT="$HIMMEL_ROOT/scripts/luna/cadence-alert.sh"
+
 # The marker line a runner writes to its log when a gate refused the leg. The
 # sibling of LEG_DONE_MARKER: DONE means the session ran and finished, SKIPPED
 # means no session was ever launched. Distinct words on purpose — a skipped
 # night must not read as a parked one.
 LEG_SKIPPED_MARKER="PIPELINE-LEG-SKIPPED"
+# HIMMEL-4181: the log line a runner writes when a launched leg failed: a
+# non-zero rc, or a zero rc without LEG_DONE_MARKER (a no-op is not green).
+LEG_FAILED_MARKER="PIPELINE-LEG-FAILED"
 
 # HIMMEL-2044 / CLAUDE.md § billing: every scheduled claude launch declares an
 # explicit --permission-mode instead of inheriting the operator's saved default
@@ -212,7 +220,7 @@ DRY_RUN=0
 
 # Prompts are ASCII-only on purpose: the .bat is parsed by cmd.exe under
 # the OEM codepage, where UTF-8 punctuation mojibakes into the prompt.
-DAILY_CHAIN="/harvest-clips + /triage-clips + /ig-media-enrich"
+DAILY_CHAIN="/harvest-clips + /triage-clips + /ig-media-enrich + /x-media-enrich"
 # The bare completion marker the leg prompt asks for; flow_run_classify treats
 # a zero exit WITHOUT this line in the log tail as `parked` (HIMMEL-1716).
 LEG_DONE_MARKER="PIPELINE-LEG-DONE"
@@ -320,7 +328,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-HARVEST_PROMPT="Run /harvest-clips to completion, then run /triage-clips, then run /ig-media-enrich --limit $IG_LIMIT --include-evidence. The /ig-media-enrich step uses --limit $IG_LIMIT --include-evidence (triage moves finished clips into Clippings/_evidence/, which the default selection skips); 0 means unlimited, otherwise one night's batch is bounded and the ig_media_pending backlog drains across nights. If /ig-media-enrich fails due to missing ffmpeg/whisper, expired IG cookies, or media download errors, report the failure but it must not abort or fail the harvest+triage leg; finish the session normally. This is the scheduled daily pipeline cadence run (HIMMEL-357/HIMMEL-798) - fully autonomous, no user prompts; report results and exit. $COMPLETION_INSTRUCTIONS"
+HARVEST_PROMPT="Run /harvest-clips to completion, then run /triage-clips, then run /ig-media-enrich --limit $IG_LIMIT --include-evidence. The /ig-media-enrich step uses --limit $IG_LIMIT --include-evidence (triage moves finished clips into Clippings/_evidence/, which the default selection skips); 0 means unlimited, otherwise one night's batch is bounded and the ig_media_pending backlog drains across nights. If /ig-media-enrich fails due to missing ffmpeg/whisper, expired IG cookies, or media download errors, report the failure but it must not abort or fail the harvest+triage leg; finish the session normally. Then run /x-media-enrich --limit $IG_LIMIT --include-evidence. If /x-media-enrich fails due to missing ffmpeg/whisper, expired X cookies or credentials, or media download errors, report the failure but it must not abort or fail the harvest+triage leg; finish the session normally. This is the scheduled daily pipeline cadence run (HIMMEL-357/HIMMEL-798) - fully autonomous, no user prompts; report results and exit. $COMPLETION_INSTRUCTIONS"
 
 # Platform detect (same matrix as arm-resume.sh).
 case "${OSTYPE:-$(uname -s 2>/dev/null || echo unknown)}" in
@@ -970,10 +978,26 @@ emit_settings_fragment() {
     # same reason (a checkout under a spaced path would otherwise split), which
     # is the convention himmel's own .claude/settings.json hook wiring uses for
     # every argument.
+    # HIMMEL-4181: a headless cadence session cannot answer a permission ask,
+    # so the 2026-10-03 harvest's Skill call came back user-rejected and the
+    # whole chain no-oped. Allow exactly the obsidian-triage commands the leg
+    # prompts name, plus Read of the plugin's command files as the fallback.
     cat <<JSON
 {
   "enabledPlugins": {
     "obsidian-triage@himmel": true
+  },
+  "permissions": {
+    "allow": [
+      "Skill(obsidian-triage:harvest-clips)",
+      "Skill(obsidian-triage:triage-clips)",
+      "Skill(obsidian-triage:ig-media-enrich)",
+      "Skill(obsidian-triage:x-media-enrich)",
+      "Skill(obsidian-triage:synthesize-clips)",
+      "Skill(obsidian-triage:archive-clips)",
+      "Skill(obsidian-triage:vault-lint)",
+      "Read(~/.claude/plugins/cache/himmel/obsidian-triage/*/commands/*.md)"
+    ]
   },
   "hooks": {
     "PreToolUse": [
@@ -1773,7 +1797,7 @@ runner_path_snapshot() {
 # arrive pre-quoted with printf %q.
 # shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh to expand at fire time
 emit_runner() {
-    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_path="${7:-}" q_model="${8:-}" flow="${9:-}" q_flow_lib="${10:-}" q_bank_lib="${11:-}" q_gate_lib="${12:-}"
+    local name="$1" q_vault="$2" q_claude="$3" q_prompt="$4" q_log="$5" q_settings="$6" q_path="${7:-}" q_model="${8:-}" flow="${9:-}" q_flow_lib="${10:-}" q_bank_lib="${11:-}" q_gate_lib="${12:-}" q_alert_lib="${13:-}" q_timeline="${14:-}"
     local q_task q_flow
     q_task=$(printf '%q' "$name")
     q_flow=$(printf '%q' "$flow")
@@ -1819,6 +1843,11 @@ emit_runner() {
         printf '    _bank=$(CADENCE_BANK_LEG=%s %s) || _bank=\n' "$q_flow" "$q_bank_lib"
         printf '    if [ "$_bank" = SKIPPED-BANK ]; then\n'
         printf '        echo "[%s bank-at-threshold]"\n' "$LEG_SKIPPED_MARKER"
+        # HIMMEL-4181: one skipped night is the guard working; two running is
+        # a leg that has silently stopped. The previous night's log is $log.prev.
+        if [ -n "$q_alert_lib" ]; then
+            printf '        if grep -qF "[%s bank-at-threshold]" "$log.prev" 2>/dev/null; then %s fail %s bank-skip-2-nights "$log" || true; fi\n' "$LEG_SKIPPED_MARKER" "$q_alert_lib" "$q_flow"
+        fi
         printf '        _sid=$(%s --append-start %s "" "" claude %s %s "$log" "$$" 2>/dev/null) || _sid=\n' "$q_flow_lib" "$q_flow" "$q_model" "$q_task"
         printf '        test "$_sid" != "" && %s --append-end %s "$_sid" "" 0 skipped 0 bank-at-threshold >/dev/null 2>&1 || true\n' "$q_flow_lib" "$q_flow"
         printf '        exit 0\n'
@@ -1855,21 +1884,38 @@ emit_runner() {
     printf '        _attempt=$((_attempt + 1))\n'
     printf '    done\n'
     printf '    echo "[exit rc=$_rc]"\n'
+    # HIMMEL-4181: a failed leg says so in its log and in the alert sink; a
+    # completed one re-arms the sink's dedupe.
+    printf '    if [ "$_rc" != 0 ]; then _fail="rc-$_rc"; echo "[%s rc=$_rc]"\n' "$LEG_FAILED_MARKER"
+    printf '    elif [ "$_flow_outcome" != complete ]; then _fail=no-completion-marker; echo "[%s no-completion-marker]"\n' "$LEG_FAILED_MARKER"
+    printf '    else _fail=; fi\n'
+    if [ -n "$q_alert_lib" ]; then
+        printf '    if [ "$_fail" != "" ]; then %s fail %s "$_fail" "$log" || true; else %s clear %s || true; fi\n' "$q_alert_lib" "$q_flow" "$q_alert_lib" "$q_flow"
+    fi
     # HIMMEL-2045 completion stamp — the POSIX twin; `complete` only, for the
     # reason emit_bat documents.
     if [ -n "$q_gate_lib" ]; then
         printf '    { [ "$_flow_outcome" = complete ] && %s --stamp .; } || true\n' "$q_gate_lib"
     fi
+    # HIMMEL-4182: refresh the day note's `## Clip pipeline` + `## Daily report`
+    # sections after the leg. Must-not-abort: it runs after _rc / _flow_outcome
+    # are final and writes only its own _tl_rc, so a failing timeline logs and
+    # the runner's exit code and the LEG-FAILED logic above are untouched.
+    if [ -n "$q_timeline" ]; then
+        printf '    _tl_rc=0; node %s --vault %s --date "$(date +%%Y-%%m-%%d)" || _tl_rc=$?\n' "$q_timeline" "$q_vault"
+        printf '    if [ "$_tl_rc" != 0 ]; then echo "[daily-timeline failed rc=$_tl_rc - continuing]"; fi\n'
+    fi
     printf '} >> "$log" 2>&1\n'
     # HIMMEL-1716: parked (zero rc, no marker) exits 3 so cron/the operator
-    # sees a failure, mirroring the .bat runner.
-    printf 'if [ "$_flow_outcome" = parked ] && [ "$_rc" = 0 ]; then exit 3; fi\n'
+    # sees a failure, mirroring the .bat runner. HIMMEL-4181 widens it to any
+    # zero-rc outcome short of complete (truncated too): a no-op is not green.
+    printf 'if [ "$_rc" = 0 ] && [ "$_flow_outcome" != complete ]; then exit 3; fi\n'
     printf 'exit "$_rc"\n'
 }
 
 # shellcheck disable=SC2016  # single-quoted $log/$(date)/_rc are emitted literally for the runner's own /bin/sh to expand at fire time
 emit_fetch_health_runner() {
-    local q_python="$1" q_script="$2" q_log="$3" q_path="$4" q_env_file="$5" q_flow_lib="$6"
+    local q_python="$1" q_script="$2" q_log="$3" q_path="$4" q_env_file="$5" q_flow_lib="$6" q_alert_lib="${7:-}"
     local q_task q_flow
     q_task=$(printf '%q' "$TASK_FETCH_HEALTH")
     q_flow=$(printf '%q' "pipeline-fetch-health")
@@ -1897,6 +1943,10 @@ emit_fetch_health_runner() {
     printf '    _flow_outcome=complete; [ "$_rc" = 0 ] || _flow_outcome=error\n'
     printf '    test "$_flow_run_id" != "" && %s --append-end %s "$_flow_run_id" "" "$_rc" "$_flow_outcome" "" "" >/dev/null 2>&1 || true\n' "$q_flow_lib" "$q_flow"
     printf '    echo "[exit rc=$_rc]"\n'
+    # HIMMEL-4181: a probe going bad is a cadence failure like any other.
+    if [ -n "$q_alert_lib" ]; then
+        printf '    if [ "$_rc" != 0 ]; then %s fail %s probe-bad "$log" || true; else %s clear %s || true; fi\n' "$q_alert_lib" "$q_flow" "$q_alert_lib" "$q_flow"
+    fi
     printf '    exit "$_rc"\n'
     printf '} >> "$log" 2>&1\n'
 }
@@ -2023,7 +2073,7 @@ cron_arm() {
         fi
     fi
 
-    local q_vault q_claude q_python q_fetch_script q_runner_path q_flow_lib q_bank_lib q_gate_lib q_harvest_prompt q_synth_prompt q_health_prompt q_log_fetch_health q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
+    local q_vault q_claude q_python q_fetch_script q_runner_path q_flow_lib q_bank_lib q_gate_lib q_alert_lib q_timeline q_harvest_prompt q_synth_prompt q_health_prompt q_log_fetch_health q_log_harvest q_log_synth q_log_health q_harvest_model q_synth_model q_health_model
     q_vault=$(printf '%q' "$VAULT")
     q_claude=$(printf '%q' "$claude_bin")
     q_python=$(printf '%q' "$python_bin")
@@ -2031,6 +2081,8 @@ cron_arm() {
     q_flow_lib=$(printf '%q' "$HIMMEL_ROOT/scripts/lib/flow-run-ledger.sh")
     q_bank_lib=$(printf '%q' "$BANK_PREFLIGHT")
     q_gate_lib=$(printf '%q' "$SYNTH_GATE")
+    q_alert_lib=$(printf '%q' "$CADENCE_ALERT")
+    q_timeline=$(printf '%q' "$HIMMEL_ROOT/marketplace/plugins/obsidian-triage/tools/daily-timeline.mjs")
     # Shared arm-time PATH snapshot (HIMMEL-2840) — one helper, both emitters,
     # so they can no longer disagree about what a cadence runner's PATH is.
     q_runner_path=$(runner_path_snapshot "$PATH" "$node_dir")
@@ -2085,13 +2137,13 @@ cron_arm() {
         echo "DRY pipeline-cadence: would write $SETTINGS_FRAGMENT:"
         emit_settings_fragment "$AUTO_APPROVE_HOOK" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_FETCH_HEALTH:"
-        emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_runner_path" "$q_env_file" "$q_flow_lib" | sed 's/^/    /'
+        emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_runner_path" "$q_env_file" "$q_flow_lib" "$q_alert_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HARVEST:"
-        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" | sed 's/^/    /'
+        emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" "$q_timeline" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_SYNTH:"
-        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_runner_path" "$q_synth_model" "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" | sed 's/^/    /'
+        emit_runner "$TASK_SYNTH" "$q_vault" "$q_claude" "$q_synth_prompt" "$q_log_synth" "$q_settings" "$q_runner_path" "$q_synth_model" "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" "$q_alert_lib" "$q_timeline" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would write $CRON_RUNNER_HEALTH:"
-        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_runner_path" "$q_health_model" "pipeline-health" "$q_flow_lib" "$q_bank_lib" | sed 's/^/    /'
+        emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_runner_path" "$q_health_model" "pipeline-health" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" | sed 's/^/    /'
         echo "DRY pipeline-cadence: would add crontab entries:"
         echo "    $entry_fetch_health"
         echo "    $entry_harvest"
@@ -2115,10 +2167,10 @@ cron_arm() {
     local tmp_fetch_health="$CRON_RUNNER_FETCH_HEALTH.tmp.$$" tmp_harvest="$CRON_RUNNER_HARVEST.tmp.$$" tmp_synth="$CRON_RUNNER_SYNTH.tmp.$$" tmp_health="$CRON_RUNNER_HEALTH.tmp.$$"
     local tmp_settings="$SETTINGS_FRAGMENT.tmp.$$"
     emit_settings_fragment "$AUTO_APPROVE_HOOK" > "$tmp_settings"
-    emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_runner_path" "$q_env_file" "$q_flow_lib" > "$tmp_fetch_health"
-    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" > "$tmp_harvest"
-    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_runner_path" "$q_synth_model"   "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" > "$tmp_synth"
-    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_runner_path" "$q_health_model"  "pipeline-health" "$q_flow_lib" "$q_bank_lib" > "$tmp_health"
+    emit_fetch_health_runner "$q_python" "$q_fetch_script" "$q_log_fetch_health" "$q_runner_path" "$q_env_file" "$q_flow_lib" "$q_alert_lib" > "$tmp_fetch_health"
+    emit_runner "$TASK_HARVEST" "$q_vault" "$q_claude" "$q_harvest_prompt" "$q_log_harvest" "$q_settings" "$q_runner_path" "$q_harvest_model" "pipeline-harvest" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" "$q_timeline" > "$tmp_harvest"
+    emit_runner "$TASK_SYNTH"  "$q_vault" "$q_claude" "$q_synth_prompt"  "$q_log_synth"  "$q_settings" "$q_runner_path" "$q_synth_model"   "pipeline-synthesize" "$q_flow_lib" "$q_bank_lib" "$q_gate_lib" "$q_alert_lib" "$q_timeline" > "$tmp_synth"
+    emit_runner "$TASK_HEALTH" "$q_vault" "$q_claude" "$q_health_prompt" "$q_log_health" "$q_settings" "$q_runner_path" "$q_health_model"  "pipeline-health" "$q_flow_lib" "$q_bank_lib" "" "$q_alert_lib" > "$tmp_health"
     chmod +x "$tmp_fetch_health" "$tmp_harvest" "$tmp_synth" "$tmp_health"
 
     # Single atomic rewrite: everything that isn't ours, then all four

@@ -52,6 +52,7 @@ chmod +x "$W/bin/tick-stub"
 # `pr view` state from files.
 cat > "$W/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+[ -z "${GH_CWD_LOG:-}" ] || pwd -P >> "$GH_CWD_LOG"
 case "$*" in
     "pr view "*) [ -f "$GH_VIEW/$3.json" ] && cat "$GH_VIEW/$3.json" || exit 1 ;;
     *"--state open"*) cat "$GH_OPEN" ;;
@@ -227,6 +228,16 @@ contains 'a READY-TO-OPEN leg awaits the console' "$html" 'data-need="N6"'
 # tail === 'FINDING' before lostLock, so the lock text never rendered.
 contains 'a FINDING leg with a lost lock still shows the lock (issue #1336)' "$html" '<b>N12</b> FINDING — needs a ruling · lock STALE — lost or stale'
 contains 'the Live-state decisions: line renders as open operator decisions' "$html" 'widen the fleet cap to 20?'
+# HIMMEL-3944: a ';' inside parentheses does not split a decision.
+DOCD="$B/HIMMEL-nextleg-2026-09-21V-console-d.md"
+sed 's/^decisions: .*/decisions: A (x; y); B?/' "$DOC" > "$DOCD"  # gnu-ok: console kit is Linux-only
+PATH="$W/bin:$PATH" BOARD_TICK="$W/bin/tick-stub" TICK_ARGV_LOG="$W/argv-d.log" \
+    BOARD_SESSIONS="$W/bin/sessions-empty.sh" \
+    GH_OPEN="$W/open.json" GH_MERGED="$W/merged.json" GH_EPIC="$W/epic.json" GH_VIEW="$W/view" \
+    node "$SUT" --doc "$DOCD" --repo "$W/repo" --out "$W/d-board.html" >/dev/null 2>"$W/stderr.log"
+dpanel="$(sed -n '/Open operator decisions/,/<\/section>/p' "$W/d-board.html")"
+same 'a parenthetical ; keeps one decision whole: exactly two items (HIMMEL-3944)' "$(printf '%s\n' "$dpanel" | grep -c '<li>')" '2'
+contains 'the parenthetical decision renders whole (HIMMEL-3944)' "$dpanel" '<li>A (x; y)</li>'
 
 # --- epics: merged/total from the declared total + the merged PRs citing the key
 contains 'a declared epic shows merged/total' "$html" 'data-epic="HIMMEL-3332" data-merged="2" data-total="4"'
@@ -516,6 +527,65 @@ printf '%s\n' 'not json' > "$MFLEET"
 mrun >/dev/null; rc=$?
 contains 'an invalid manifest falls back to the scan, rc 0' "rc=$rc" 'rc=0'
 contains 'an invalid manifest is reported on stderr, not silently ignored' "$(cat "$W/stderr.log")" 'fleet manifest'
+
+# --- cost today (HIMMEL-4217): one line from the leg cost ledger, never fatal
+LC="$W/leg-cost.jsonl"
+lcrow() { printf '{"date":"%s","leg":"N1","ticket":"HIMMEL-1","class":"%s","cost_eq":%s}\n' "$1" "$2" "$3"; }
+TODAY="$(date +%F)"
+{
+    lcrow "$TODAY" shepherd 100000
+    lcrow "$TODAY" shepherd 300000
+    lcrow "$TODAY" impl 2000000
+    lcrow 2020-01-01 shepherd 99999999
+    printf 'not json\n'
+} > "$LC"
+LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
+same 'cost line: render still succeeds, rc 0' "$rc" "0"
+costhtml="$(cat "$M/board.html")"
+contains 'cost line: counts only today legs (3, not the 2020 row)' "$costhtml" 'data-cost-legs="3"'
+contains 'cost line: total cost-eq' "$costhtml" '2.4M cost-eq'
+contains 'cost line: median per class (even n is the mean of the middle two)' "$costhtml" 'shepherd 200k'
+contains 'cost line: second class' "$costhtml" 'impl 2.0M'
+LEG_COST_LEDGER="$W/no-such-ledger.jsonl" mrun >/dev/null; rc=$?
+same 'cost line: absent ledger, rc 0' "$rc" "0"
+lacks 'cost line: absent ledger renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+mkdir -p "$W/ledger-is-a-dir.jsonl"
+LEG_COST_LEDGER="$W/ledger-is-a-dir.jsonl" mrun >/dev/null; rc=$?
+same 'cost line: unreadable ledger, rc 0' "$rc" "0"
+lacks 'cost line: unreadable ledger renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+{ lcrow "$TODAY" constructor 5000; lcrow "$TODAY" __proto__ 7000; } > "$LC"
+LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
+contains 'cost line: class names like constructor/__proto__ do not suppress the line' "$(cat "$M/board.html")" 'data-cost-legs="2"'
+printf 'not json\n' > "$LC"
+LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
+lacks 'cost line: a ledger with no usable row today renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+
+# --- a console FOR another checkout shows that checkout's PRs, not himmel's.
+# console.sh records the project on the doc's project line; every gh call must
+# run there. `none — ...` (a himmel console) keeps --repo. A recorded path that
+# is gone reads gh unavailable, never --repo's PRs.
+mkdir -p "$W/project"
+proj_real="$(cd "$W/project" && pwd -P)"
+repo_real="$(cd "$W/repo" && pwd -P)"
+DOCP="$B/HIMMEL-nextleg-2026-09-21V-console-p.md"
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+{ printf '%s\n' '> The project this console is FOR is **`'"$W/project"'`** — you'; cat "$DOC"; } > "$DOCP"
+: > "$W/gh-cwd.log"
+GH_CWD_LOG="$W/gh-cwd.log" run --doc "$DOCP" --out "$W/p-board.html" >/dev/null
+same 'a foreign console runs every gh call in its project' "$(sort -u "$W/gh-cwd.log")" "$proj_real"
+contains 'and lists the project PRs' "$(cat "$W/p-board.html")" '<b>#2001</b>'
+contains 'tick still gets --repo (himmel), not the project' "$(cat "$W/argv.log")" "--repo $W/repo "
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+{ printf '%s\n' '> The project this console is FOR is **`none — this console runs in the himmel checkout itself`** — you'; cat "$DOC"; } > "$DOCP"
+: > "$W/gh-cwd.log"
+GH_CWD_LOG="$W/gh-cwd.log" run --doc "$DOCP" --out "$W/p-board.html" >/dev/null
+same 'a himmel console (project line reads none) runs gh in --repo' "$(sort -u "$W/gh-cwd.log")" "$repo_real"
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+{ printf '%s\n' '> The project this console is FOR is **`'"$W/gone"'`** — you'; cat "$DOC"; } > "$DOCP"
+: > "$W/gh-cwd.log"
+GH_CWD_LOG="$W/gh-cwd.log" run --doc "$DOCP" --out "$W/p-board.html" >/dev/null
+same 'a recorded project that is gone never falls back to --repo' "$(cat "$W/gh-cwd.log")" ''
+contains 'and reads gh unavailable' "$(cat "$W/p-board.html")" 'gh unavailable'
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?

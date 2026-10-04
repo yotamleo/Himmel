@@ -8,6 +8,9 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$DIR/pr-check-context.sh"
+# HIMMEL-4297 — a leg shell's FORCE_COLOR=3 makes node's console.log colour a
+# bare boolean/number (T13); pin it on so the suite catches a regression.
+export FORCE_COLOR=3
 
 fail=0
 check() { [ "$1" = "$2" ] || { echo "FAIL: $3 - got '$1' want '$2'"; fail=1; }; }
@@ -442,7 +445,7 @@ check "$(grep -c "\"kind\":\"delegation\".*\"head\":\"$head13\"" "$ledger13" 2>/
 # the ` delegate=` field (the anchor is asserted by basename either way). The delegate
 # itself is pinned by himmel_dir + head above. Upgrade path: shorten the fixture
 # root or log the basenames first in the detail.
-check "$(L="$ledger13" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="delegation");console.log(o.detail.includes(process.argv[1])&&(o.detail.includes(process.argv[2])||(o.detail.length===200&&o.detail.includes(" delegate="))))' "$(basename "$anchor13")" "$(basename "$wt13_toplevel")")" "true" "T13 delegation detail names both the anchor and the delegate (by basename, MSYS-mangling-proof)"
+check "$(L="$ledger13" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="delegation");console.log(String(o.detail.includes(process.argv[1])&&(o.detail.includes(process.argv[2])||(o.detail.length===200&&o.detail.includes(" delegate=")))))' "$(basename "$anchor13")" "$(basename "$wt13_toplevel")")" "true" "T13 delegation detail names both the anchor and the delegate (by basename, MSYS-mangling-proof)"
 
 # T14. himmel lane, diff does NOT touch scripts/cr/ -> the anchor's own path
 # runs: delegated=no, ZERO delegation rows. Positive control for this "zero"
@@ -944,17 +947,31 @@ wt25="$tmp/fake-himmel-wt-large"
   git add -A
   git commit -q -m "touch scripts/cr for T25"
   blob="$(git hash-object -w --stdin < /dev/null)"
+  # HIMMEL-3878: every plumbing step fails loudly here - an unchecked failure
+  # used to surface only downstream as "fixture diff is only 27 bytes".
+  case "$blob" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "FAIL: T25 fixture blob id empty/invalid ('$blob')"; exit 1 ;;
+  esac
+  # Input goes to a file first so a failing mktree cannot SIGPIPE the printf
+  # loop, and mktree's own rc is checked rather than lost in a pipeline.
   {
     git ls-tree HEAD
     for i in $(seq 1 300); do
       long_name="zzz_filler_$(printf '%03d' "$i")_$(printf 'x%.0s' $(seq 1 230))"
       printf '100644 blob %s\t%s\n' "$blob" "$long_name"
     done
-  } | git mktree > "$tmp/t25-tree.txt"
+  } > "$tmp/t25-mktree-in.txt"
+  git mktree < "$tmp/t25-mktree-in.txt" > "$tmp/t25-tree.txt" || { echo "FAIL: T25 fixture git mktree failed (rc=$?)"; exit 1; }
   new_tree="$(cat "$tmp/t25-tree.txt")"
+  case "$new_tree" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+    *) echo "FAIL: T25 fixture tree id empty/invalid ('$new_tree')"; exit 1 ;;
+  esac
   new_commit="$(git commit-tree "$new_tree" -p HEAD -m "T25 large diff, never checked out")"
+  [ -n "$new_commit" ] || { echo "FAIL: T25 fixture git commit-tree produced no commit id"; exit 1; }
   git update-ref refs/heads/t25-large "$new_commit"
-)
+) || fail=1
 head25="$(cd "$wt25" && git rev-parse HEAD)"
 diff_bytes="$(cd "$wt25" && git diff --name-only main...HEAD | wc -c)"
 if [ "$diff_bytes" -le 65536 ]; then

@@ -119,8 +119,8 @@ if [ "${1:-}" = api ]; then
   printf '%b' "${STUB_GQL_OUT-HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 4321\r\nX-Ratelimit-Reset: 1790000000\r\n\r\n}"
   exit "${STUB_GQL_RC:-0}"
 fi
-if [ "$PWD" != "$REPO" ]; then
-  printf 'gh stub: expected cwd=%s, got %s\n' "$REPO" "$PWD" >&2
+if [ "$PWD" != "${GH_STUB_CWD:-$REPO}" ]; then
+  printf 'gh stub: expected cwd=%s, got %s\n' "${GH_STUB_CWD:-$REPO}" "$PWD" >&2
   exit 9
 fi
 printf '%s\n' 2247 2250
@@ -208,6 +208,23 @@ fi
 contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
 contains '--verbose labels leg models (HIMMEL-2976, HIMMEL-3145)' "$verbose" 'leg models: sonnet:1'
+
+# --- a console FOR another checkout lists that checkout's PRs, not himmel's.
+# console.sh records the project on the doc's project line; the gh stub answers
+# only from GH_STUB_CWD, so prs= is populated only when gh ran in that checkout.
+mkdir -p "$W/project"
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '> the repo you ship from is **`x`**. The project this console is FOR is **`'"$W/project"'`** — you' \
+    > "$W/handover/console-project.md"
+proj_out="$(TOKEN='' GH_STUB_CWD="$W/project" bash "$SUT" --doc "$W/handover/console-project.md")"
+contains 'a foreign console lists its project PRs (gh runs in the project)' "$proj_out" ' prs=#2247,#2250 '
+proj_out="$(TOKEN='' bash "$SUT" --doc "$W/handover/console-project.md")"
+contains 'a foreign console never lists the himmel REPO PRs' "$proj_out" ' prs=none '
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '> The project this console is FOR is **`none — this console runs in the himmel checkout itself`** — you' \
+    > "$W/handover/console-himmel.md"
+proj_out="$(TOKEN='' bash "$SUT" --doc "$W/handover/console-himmel.md")"
+contains 'a himmel console (project line reads none) lists the REPO PRs' "$proj_out" ' prs=#2247,#2250 '
 
 # --- HIMMEL-3130: a comma-separated --legs is equivalent to space-separated -
 # `for leg in $LEGS` word-splits on IFS whitespace only, so a comma-joined
@@ -347,7 +364,7 @@ esac
 # WITHOUT rotating its token, and the leg accepted and wrote its bullet. The
 # Live-state nonce still carries J, and that is correct -- not an incident.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results (newest at the bottom)' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
 relayed_out="$(DOC="$kdoc" bash "$SUT")"
 contains 'an unrotated leg that accepted this console reads nonces=RELAYED (relay without rotation is valid)' "$relayed_out" 'nonces=RELAYED:N61'
@@ -359,36 +376,53 @@ contains 'the tails census is unchanged by the acceptance bullet' "$relayed_out"
 
 # A bullet that names ANOTHER console does not confirm THIS one.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-19J-console` replaces `HIMMEL-nextleg-2026-09-18I-console`' > "$n61doc"
 contains 'an acceptance bullet naming a different console does not confirm this one' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 
 # Only the INCOMING session counts: a leg that accepted a LATER console L (which
 # replaces K) names K after `replaces`, and that must not confirm K.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20L-console` replaces `HIMMEL-nextleg-2026-09-20K-console`' > "$n61doc"
 contains 'a stem after the word replaces is the OUTGOING console and confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 
 # The LATEST acceptance wins: accepted K, then moved on to L -> not K's leg.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' \
     '- 05:02 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20L-console` replaces `HIMMEL-nextleg-2026-09-20K-console`' > "$n61doc"
 contains 'a later acceptance of another console supersedes an earlier one' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 
 # A handover root whose path contains a space keeps its leg doc whole.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
 ln -s "$W/handover" "$W/hand over"
 contains 'a leg doc path containing a space is read whole (RELAYED, not UNCONFIRMED)' "$(HANDOVER_DIR="$W/hand over" DOC="$kdoc" bash "$SUT")" 'nonces=RELAYED:N61'
 rm -f "$W/hand over"
 
 # Prose that merely mentions the phrase (not a Results bullet) confirms nothing.
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     'note: SUCCESSION accepted: HIMMEL-nextleg-2026-09-20K-console replaces J (prose, not a bullet)' > "$n61doc"
 contains 'a non-bullet line mentioning SUCCESSION accepted confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+# HIMMEL-3264: only the leg doc's `## Results` section is read. An
+# acceptance-shaped bullet quoted ABOVE Results (e.g. an example in a brief)
+# naming this console must not upgrade UNCONFIRMED to RELAYED, and neither
+# must one under a later `## ` section.
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '## Brief' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' \
+    '## Results (newest at the bottom)' '- LIVE — working' > "$n61doc"
+contains 'an acceptance bullet above ## Results confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '## Results' '- LIVE — working' '## Notes' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
+contains 'an acceptance bullet under a section after ## Results confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '## ResultsArchive' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
+contains 'a heading that merely starts with Results is not the Results section' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 printf '%s\n' '# leg' '- LIVE — working' > "$n61doc"
 
 # shellcheck disable=SC2016  # backtick leg span, literal fixture text

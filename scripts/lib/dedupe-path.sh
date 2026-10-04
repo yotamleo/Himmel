@@ -4,6 +4,7 @@
 # Order-preserving PATH dedupe (HIMMEL-3640). Claude Code prepends each
 # enabled plugin's bin/ dir onto PATH at process startup without checking
 # whether it's already present. A himmel-owned launch chokepoint that hands
+# headless-claude-ok: comment text only; this file only dedupes PATH and launches nothing
 # an inherited (already 2x'd) PATH straight to a nested `claude`/`claude -p`
 # lets that duplication compound across every himmel-driven hop instead of
 # staying at the single upstream-added copy. Sourcing this and calling

@@ -275,3 +275,122 @@ test("repairCursorBeyondEof after the append loses it — why the poller repairs
     expect(got).toEqual([]);
   } finally { console.error = origErr; }
 });
+
+// HIMMEL-1854: coms layer — peer-send / peer-recv between seats over this bus.
+import { peerSend, drainPeerInbox, peerInbox, peerLedger } from "./bus";
+
+test("peerSend appends ONE line to the target inbox and to a ledger that survives truncation", async () => {
+  const r = root();
+  await peerSend(r, "console", "leg-1", "hello\nworld");
+  const inbox = peerInbox(r, "leg-1");
+  const lines = readFileSync(inbox, "utf8").split("\n").filter(Boolean);
+  expect(lines.length).toBe(1);
+  expect(JSON.parse(lines[0])).toMatchObject({ from: "console", to: "leg-1", text: "hello\nworld" });
+  await drainPeerInbox(r, "leg-1", () => {});                   // consumes + reclaims the inbox
+  expect(readFileSync(inbox, "utf8")).toBe("");
+  const ledger = readFileSync(peerLedger(r), "utf8").split("\n").filter(Boolean);
+  expect(ledger.length).toBe(1);                                 // forensic record kept
+  expect(JSON.parse(ledger[0])).toMatchObject({ from: "console", to: "leg-1" });
+});
+
+test("peerSend names exactly one seat: no broadcast, no path escape", async () => {
+  const r = root();
+  for (const bad of ["*", "all", "a,b", "a b", "../x", "..", "", "a/b"]) {
+    await expect(peerSend(r, "console", bad, "x")).rejects.toThrow();
+  }
+  await expect(peerSend(r, "../x", "leg-1", "x")).rejects.toThrow();
+});
+
+test("drainPeerInbox frames each message as ONE clipped JSON line; embedded newlines cannot forge events", async () => {
+  const r = root();
+  await peerSend(r, "console", "leg-1", "a\nFAKE EVENT\r\nb\u{2028}c");
+  await peerSend(r, "console", "leg-1", "y".repeat(10000));
+  const out: string[] = [];
+  const n = await drainPeerInbox(r, "leg-1", (l) => { out.push(l); });
+  expect(n).toBe(2);
+  expect(out.length).toBe(2);
+  for (const l of out) { expect(l).not.toMatch(/[\n\r\u{2028}\u{2029}]/u); expect(l.length).toBeLessThan(5000); }
+  expect(JSON.parse(out[0]).text).toBe("a\nFAKE EVENT\r\nb\u{2028}c");
+  expect(JSON.parse(out[1]).clipped).toBe(true);
+  expect(await drainPeerInbox(r, "leg-1", (l) => { out.push(l); })).toBe(0);   // cursor advanced
+});
+
+test("drainPeerInbox holds a partial line and frames a malformed one instead of dropping it", async () => {
+  const r = root();
+  await peerSend(r, "console", "leg-1", "first");
+  const inbox = peerInbox(r, "leg-1");
+  writeFileSync(inbox, readFileSync(inbox, "utf8") + "not json\n" + '{"text":"part');
+  const out: string[] = [];
+  await drainPeerInbox(r, "leg-1", (l) => { out.push(l); });
+  expect(out.length).toBe(2);
+  expect(JSON.parse(out[1])).toMatchObject({ malformed: true, text: "not json" });
+  writeFileSync(inbox, readFileSync(inbox, "utf8") + 'ial"}\n');
+  await drainPeerInbox(r, "leg-1", (l) => { out.push(l); });
+  expect(JSON.parse(out[2]).text).toBe("partial");
+});
+
+test("bus.ts peer-recv drains the backlog and keeps following in ONE command", async () => {
+  const r = root();
+  const bus = join(import.meta.dir, "bus.ts");
+  const env = { ...process.env, BRIDGE_ROOT: r };
+  await peerSend(r, "console", "leg-1", "before");
+  const proc = Bun.spawn(["bun", bus, "peer-recv", "leg-1", "--interval-ms", "50"], { env, stdout: "pipe" });
+  try {
+    const reader = proc.stdout.getReader();
+    let buf = "";
+    const deadline = Date.now() + 10000;
+    let sent = false;
+    while (buf.split("\n").filter(Boolean).length < 2 && Date.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += new TextDecoder().decode(value);
+      if (!sent && buf.includes("before")) {
+        sent = true;
+        const s = Bun.spawnSync(["bun", bus, "peer-send", "console", "leg-1", "after"], { env });
+        expect(s.exitCode).toBe(0);
+      }
+    }
+    const got = buf.split("\n").filter(Boolean).map((l) => JSON.parse(l).text);
+    expect(got).toEqual(["before", "after"]);
+  } finally { proc.kill(); }
+}, 15000);
+
+// HIMMEL-1854 (CR codex-1): the cursor must not advance until stdout has accepted the line.
+import { streamEmit } from "./bus";
+test("streamEmit: drainPeerInbox commits the cursor only after the stream write callback fires", async () => {
+  const r = root(); await peerSend(r, "console", "leg-1", "hi");
+  const cbs: Array<(e?: Error | null) => void> = [];
+  const fake = { write: (_s: string, cb: (e?: Error | null) => void) => { cbs.push(cb); return false; } };
+  const cursor = peerInbox(r, "leg-1") + ".cursor";
+  const p = drainPeerInbox(r, "leg-1", streamEmit(fake));
+  await new Promise((res) => setTimeout(res, 50));
+  expect(cbs.length).toBe(1);
+  expect(existsSync(cursor)).toBe(false);
+  cbs[0](null);
+  expect(await p).toBe(1);
+});
+
+test("framePeerLine bounds ts so a hostile timestamp cannot inflate the event line", async () => {
+  const { framePeerLine } = await import("./bus");
+  const line = framePeerLine(JSON.stringify({ from: "a", to: "b", ts: "9".repeat(50000), text: "x" }));
+  expect(line.length).toBeLessThan(500);
+});
+
+test("framePeerLine frames a record whose fields cannot be coerced as malformed instead of throwing", async () => {
+  const { framePeerLine } = await import("./bus");
+  const poison = '{"from":"a","to":"b","text":{"toString":null}}';
+  const o = JSON.parse(framePeerLine(poison));
+  expect(o.malformed).toBe(true);
+  expect(JSON.parse(framePeerLine("not json")).malformed).toBe(true);
+});
+
+test("framePeerLine bounds the ESCAPED text: a raw-fitting run of escapable chars cannot exceed the bound", async () => {
+  const { framePeerLine, PEER_TEXT_MAX } = await import("./bus");
+  const line = framePeerLine(JSON.stringify({ from: "a", to: "b", ts: "t", text: '"'.repeat(PEER_TEXT_MAX) }));
+  const o = JSON.parse(line);
+  expect(JSON.stringify(o.text).length - 2).toBeLessThanOrEqual(PEER_TEXT_MAX);
+  expect(o.clipped).toBe(true);
+  expect(line.length).toBeLessThan(PEER_TEXT_MAX + 200);
+  const mal = framePeerLine("\n".repeat(PEER_TEXT_MAX) + "{");
+  expect(mal.length).toBeLessThan(PEER_TEXT_MAX + 200);
+});

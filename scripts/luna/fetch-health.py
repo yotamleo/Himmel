@@ -22,11 +22,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+# HIMMEL-4306: the Instagram throttle lives with the obsidian-triage tools.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "marketplace" / "plugins" / "obsidian-triage" / "tools" / "lib"))
+try:
+    import ig_throttle
+except ImportError:  # fail closed: no throttle module, no Instagram request
+    ig_throttle = None
+
 STATUSES = (
     "ok",
     "auth-or-cookie-expired",
     "blocked-or-rate-limited",
     "transport-fail",
+    # HIMMEL-4306: the Instagram throttle is holding requests back. Not a fault.
+    "cooldown",
 )
 TIMEOUT_SECONDS = 30
 USER_AGENT = "himmel-fetch-health/1.0"
@@ -339,14 +348,23 @@ def probe_twitter_cli(
     return classify_command(completed.returncode, completed.stderr)
 
 
+# HIMMEL-4271: the working rebuild route. Google usually refuses the
+# Playwright login (playwright-auth-save.mjs youtube), so every expired-state
+# reason names the signed-in-Chrome cookie converter instead.
+YOUTUBE_REMEDY = "rebuild: python3 scripts/luna/youtube-state-from-chrome.py --profile Default"
+
+
 def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
+    result = _probe_youtube(env, http)
+    if result.status == "auth-or-cookie-expired":
+        return ProbeResult(result.status, f"{result.reason} ({YOUTUBE_REMEDY})")
+    return result
+
+
+def _probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
     state_file = resolve_home(env) / ".luna" / "playwright-state" / "youtube.json"
     if not state_file.is_file():
-        return ProbeResult(
-            "auth-or-cookie-expired",
-            "youtube Playwright storage state missing "
-            "(rebuild: yt-dlp --cookies-from-browser 'chrome:<profile>' -> Netscape -> storageState)",
-        )
+        return ProbeResult("auth-or-cookie-expired", "youtube Playwright storage state missing")
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
         cookies = []
@@ -358,11 +376,7 @@ def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> Probe
         if not cookies:
             return ProbeResult("auth-or-cookie-expired", "youtube storage state has no matching cookies")
     except (OSError, ValueError, KeyError, TypeError):
-        return ProbeResult(
-            "auth-or-cookie-expired",
-            "youtube Playwright storage state unreadable "
-            "(rebuild: yt-dlp --cookies-from-browser 'chrome:<profile>' -> Netscape -> storageState)",
-        )
+        return ProbeResult("auth-or-cookie-expired", "youtube Playwright storage state unreadable")
     url = env.get("FETCH_HEALTH_YOUTUBE_URL", DEFAULT_URLS["youtube-playwright"])
     try:
         result = http(
@@ -555,6 +569,84 @@ def probe_firecrawl(env: dict[str, str], http: Callable[..., HttpResult]) -> Pro
     return classify_http(result, auth_required=True, valid_body=valid)
 
 
+IG_PROBE_SOURCES = ("instagram-embed", "instagram-media")
+IG_OK_TTL_S = 24 * 3600
+IG_BAD_TTL_S = 3600
+
+
+def _ig_cache_path(env: dict[str, str]) -> Path:
+    override = (env.get("HIMMEL_IG_PROBE_CACHE") or "").strip()
+    if override:
+        return Path(override)
+    return resolve_home(env) / ".himmel" / "state" / "instagram-probe-cache.json"
+
+
+def _ig_cache_read(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _ig_cooldown(reason: str) -> ProbeResult:
+    return ProbeResult("cooldown", f"instagram cooldown ({reason}); probe skipped, no request sent")
+
+
+def guarded_instagram_probe(
+    source: str, env: dict[str, str], probe: Callable[[], ProbeResult], now: Callable[[], float] | None = None
+) -> ProbeResult:
+    """Throttle + cache an Instagram probe (HIMMEL-4306). Never sleeps: a probe
+    that cannot send right now reports `cooldown` instead of waiting."""
+    import time
+
+    t = (now or time.time)()
+    if ig_throttle is None:
+        return _ig_cooldown("throttle module unavailable")
+    st = ig_throttle.status(env, now=lambda: t)
+    if st["state"] == "cooldown":
+        until = datetime.fromtimestamp(st["until_epoch"], timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+        return _ig_cooldown(f"{st.get('reason', 'cooldown')} until {until}")
+
+    cache_path = _ig_cache_path(env)
+    cache = _ig_cache_read(cache_path)
+    entry = cache.get(source)
+    if isinstance(entry, dict) and isinstance(entry.get("checked_epoch"), (int, float)):
+        age = t - entry["checked_epoch"]
+        ttl = IG_BAD_TTL_S
+        if entry.get("status") == "ok":
+            try:
+                ttl = float(env.get("HIMMEL_IG_PROBE_TTL_S", IG_OK_TTL_S))
+            except ValueError:
+                ttl = IG_OK_TTL_S
+        try:
+            relogin = (resolve_home(env) / ".luna" / "cookies" / "instagram.txt").stat().st_mtime > entry["checked_epoch"]
+        except OSError:
+            relogin = False
+        if 0 <= age < ttl and not relogin and entry.get("status") in STATUSES:
+            return ProbeResult(entry["status"], f"{entry.get('reason', '')} (cached {int(age // 3600)}h ago)")
+
+    decision = ig_throttle.acquire(env, now=lambda: t, wait=False)
+    if not decision.ok:
+        return _ig_cooldown(decision.reason)
+    result = probe()
+    if result.status == "ok":
+        ig_throttle.record(env, ok=True)
+    elif result.status == "blocked-or-rate-limited":
+        ig_throttle.record(env, http_status=429)
+    else:
+        ig_throttle.record(env, ok=False)
+    cache[source] = {"status": result.status, "reason": result.reason, "checked_epoch": t}
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache_path.with_name(cache_path.name + f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(cache, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, cache_path)
+    except OSError:
+        pass
+    return result
+
+
 def build_probe_registry(
     env: dict[str, str],
     http: Callable[..., HttpResult],
@@ -579,7 +671,7 @@ def build_probe_registry(
     # actually needs, injected by probe_twitter_cli itself.
     effective = load_repo_env(env, repo_root)
     child_env = env
-    return {
+    registry = {
         "reddit": lambda: probe_reddit(effective, http),
         "x-fxtwitter": lambda: probe_fxtwitter(effective, http),
         "instagram-embed": lambda: probe_instagram_embed(effective, http),
@@ -591,6 +683,9 @@ def build_probe_registry(
         "bitbucket": lambda: probe_bitbucket(effective, http),
         "firecrawl": lambda: probe_firecrawl(effective, http),
     }
+    for source in IG_PROBE_SOURCES:
+        registry[source] = (lambda s, p: lambda: guarded_instagram_probe(s, effective, p))(source, registry[source])
+    return registry
 
 
 def run_probes(
@@ -683,14 +778,14 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as error:
             parser.error(str(error))
         print(json.dumps({"status": result.status, "reason": result.reason}))
-        return 0 if result.status == "ok" else 1
+        return 0 if result.status in ("ok", "cooldown") else 1
 
     path = Path(args.state) if args.state else state_path(env)
     results = run_probes(env)
     write_state(path, results, utc_now())
     for source, result in sorted(results.items()):
         print(f"{source}: {result.status} ({result.reason})")
-    return 0 if all(result.status == "ok" for result in results.values()) else 1
+    return 0 if all(result.status in ("ok", "cooldown") for result in results.values()) else 1
 
 
 if __name__ == "__main__":

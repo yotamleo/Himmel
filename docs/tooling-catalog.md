@@ -63,8 +63,8 @@ truth for presence; named profiles can still opt in. Full detail:
 | `plannotator-effective-html` | HTML design/UI artifact kit (design-artifact, html, html-diagram/-plan/-prototype/-wireframe) | ON-DEMAND — `design` profile only (HIMMEL-3064): measured 1 invocation in 1628 transcripts against ~630 tok/session cost, so it opts in per-dispatch instead of riding the ALWAYS tier |
 | `frontend-design` | Anthropic's frontend-design skill (official marketplace, local-path entry) | ON-DEMAND — `design` profile only (HIMMEL-4012); already cached; activation remains per profile |
 | `ui-ux-pro-max` | UI/UX design intelligence (7 skills), himmel entry pinned to upstream tag `v2.15.0` over HTTPS (replaces the old `ui-ux-pro-max@ui-ux-pro-max-skill` install; the operator script removes it) | ON-DEMAND, `design` core (HIMMEL-4012); catalog id `ui-ux-pro-max@himmel` |
-| `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.3.1` over HTTPS as a `git-subdir` source on `plugin/` (HIMMEL-3069 precedent; a `url`+`path` source caches the whole repo and loses the agents/hooks) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
-| `obsidian-second-brain` | Obsidian vault memory: 47 slash commands plus a `vault` MCP server (uv), himmel marketplace entry pinned to upstream tag `v0.17.0` over HTTPS (HIMMEL-4018; replaces the user-scope `~/.claude/skills/obsidian-second-brain` copy, which loaded ~2.2k tok into every session and ignored `enabledPlugins`) | ON-DEMAND — no named profile enables it; the operator profile and `/profile enable` do; catalog id `obsidian-second-brain@himmel` |
+| `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.5.0` over HTTPS as a `git-subdir` source on `plugin/` (HIMMEL-3069 precedent; a `url`+`path` source caches the whole repo and loses the agents/hooks) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
+| `obsidian-second-brain` | Obsidian vault memory: 47 slash commands plus a `vault` MCP server (uv), himmel marketplace entry pinned to upstream commit `87fe5437c44fffafb5188566d458891651536d4e` (tag `v0.17.0`) over HTTPS (HIMMEL-4018; replaces the user-scope `~/.claude/skills/obsidian-second-brain` copy, which loaded ~2.2k tok into every session and ignored `enabledPlugins`). Install: `claude plugin install obsidian-second-brain@himmel` | ON-DEMAND — `user`, `lane-content` and `telegram` profiles (plus the operator profile); off in lean legs and the console; catalog id `obsidian-second-brain@himmel` |
 | `emilkowalski-skills` | Emil Kowalski's design-engineering/animation skills: all 13 upstream skills load (a marketplace `skills` list never restricts anything, so animate-expo, mobile-native and write-swift cannot be excluded without a fork, HIMMEL-4068). MIT, sha-pinned, `strict:false`, no skills list | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `taste-skill-core` | Leonxlnx/taste-skill, all 13 upstream skills in ONE plugin (sha-pinned, `strict:true`; the former imagegen and styles split never restricted anything, HIMMEL-4067) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
 | `shadcn-mcp` | himmel wrapper plugin for the shadcn/ui registry MCP (`npx shadcn@4.21.0 mcp`, no API key; upstream ships no plugin) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
@@ -106,7 +106,7 @@ drift report; no marketplace install source or live setting is changed.
 | `superpowers@claude-plugins-official` | Available, off by default | `workflow-full` — upstream workflow kit, alternative to lean-skills | `obra/superpowers` `v6.4.2` (`8ca22dba9a94f28898bbce59f2537ff4d87c747d`) |
 | `mattpocock-skills@claude-plugins-official` | Available, off by default | `typescript-coach` — TypeScript/workflow coaching | `mattpocock/skills` HEAD `d81f3a183412e71a5b1e84ca21bc1a35eea03a60` |
 | `coderabbit@claude-plugins-official` | Available, off by default | `review-coderabbit` — optional keyed review skills; credential decision remains HIMMEL-4015 | `coderabbitai/skills` HEAD `59945da347a93f9937d3fb09f5ba81a16010351f` |
-| `ponytail@ponytail` | Available, off by default | `honesty-audit` — deliberate-simplification audit | `DietrichGebert/ponytail` `v4.10.0` (`1d95ff7d39de12d87014ea40d4e22201bddc501b`) |
+| `ponytail@ponytail` | Available, off by default | `honesty-audit` — deliberate-simplification audit | `DietrichGebert/ponytail` `v4.10.3` (`ef8ca48fed2321ab6668b2a954f23b1af97d7f6d`) |
 
 `scroll-world@scroll-world` also remains installed and off by default.
 
@@ -129,11 +129,24 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 > Fail-open when gh is absent; exit 2 on drift (cadence-armable). Run it on
 > demand or arm it like `pipeline-cadence`. Since HIMMEL-3807 it also scans
 > every third-party pin in the repo (`scripts/upstreams/pin-scan.py`): npm/bun
-> dependencies at their lockfile version, pre-commit revs, workflow `uses:`, the
-> gitleaks `ver=` literal and `OXLINT_VERSION=` in `scripts/hooks`. Discovery is
-> by scanning, so a new pin is watched with no registry edit; a bump held back on
-> purpose goes in `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream
-> ships something newer than the release reviewed).
+> dependencies at their lockfile version, pre-commit revs, the gitleaks `ver=`
+> literal, workflow `pip install pkg==ver` pins and `OXLINT_VERSION=` in
+> `scripts/hooks`. Discovery is by scanning, so a new pin is watched with no
+> registry edit; a bump held back on purpose goes in
+> `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream ships
+> something newer than the release reviewed).
+>
+> **CI tool pins (HIMMEL-4258):** every CI tool version is exact, with one owner
+> per pin. CI's bun is the repo-root `.bun-version` (every `setup-bun` step uses
+> `bun-version-file`, so setup-bun builds the release URL instead of listing bun's
+> tags through api.github.com, whose 503 killed jobs before any test ran); the
+> `bun-ci` row in `scripts/upstreams.json` (`tag_prefix: bun-v`) lets the nightly
+> `/drift-fix` bump it. Dependabot owns npm manifests and workflow `uses:`
+> (`.github/dependabot.yml` records the split), so pin-scan no longer reports
+> actions. Left floating on purpose: `setup-node` `'22'` (an LTS line, not an
+> exact version, with no drift row able to track a major line), `npm i -g npm@^11`
+> (a deliberate floor, HIMMEL-2573), `apt-get install at` and the runner-image
+> shellcheck/pwsh (the image owns them).
 
 > **Boundary ownership:** which optimizer owns which token boundary (rtk vs
 > MCP-output vs cache vs routing) is governed by
@@ -325,11 +338,11 @@ README's fork-delta section).
 > research-toolkit decision below still stands.
 
 **Repo:** `eugeniughelbur/obsidian-second-brain`
-**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream tag `v0.17.0`)
-**Enable:** opt-in. No named profile enables it; `/profile enable` or the operator profile does
+**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream commit `87fe5437c44fffafb5188566d458891651536d4e`, tag `v0.17.0`)
+**Enable:** the `user`, `lane-content` and `telegram` profiles (plus the operator profile, once installed); off in every other named profile
 **Commands:** 47 slash commands from the plugin (5 research-toolkit
 commands are NOT adopted — see Research toolkit line below)
-**Update:** bump the tag pin in `marketplace/.claude-plugin/marketplace.json`, then `claude plugin marketplace update himmel` and `claude plugin update obsidian-second-brain@himmel` (it is url-sourced, so the marketplace refresh alone leaves the installed copy on the old tag)
+**Update:** bump the `sha` pin in `marketplace/.claude-plugin/marketplace.json` to the new upstream commit, then `claude plugin marketplace update himmel` and `claude plugin update obsidian-second-brain@himmel` (it is url-sourced, so the marketplace refresh alone leaves the installed copy on the old commit)
 **Research toolkit:** NOT ADOPTED (proposed 2026-07-29, pending ADR sign-off) —
 operator confirmed no active XAI/Grok or Perplexity subscription. A
 `~/.config/obsidian-second-brain/.env`
@@ -480,7 +493,7 @@ Astra surfaces (`~/.codex/config.toml`, `scripts/cr/critics.json`) are already a
 **Tier:** ALWAYS — installed + enabled on every himmel machine; one of the three harness-operational plugins `plugin-profile.sh disable` refuses (HIMMEL-2733).
 **What:** Harness-meta operational skills for himmel.
 **Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (grill→brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428; the one front door for grill / stress-test / brainstorm, HIMMEL-2039), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569), `himmel-ops:effort-assess` (PILOT reference-class effort record with a DoD refusal and a version tail check, HIMMEL-3995).
-**Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829).
+**Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829); `/cloud-route` — classifies tickets for the cloud credit lane, writes the cloud brief and prints the operator launch line without launching (HIMMEL-4262).
 **Hook:** `hooks/hooks.json` wires a PreToolUse(`matcher: "Skill"`) hook `inject-minerva-critic.sh` (HIMMEL-429) — injects the minerva critic loop when `lean-skills:brainstorming`/`lean-skills:writing-plans` fires without `/minerva`, and routes `lean-skills:grilling` into minerva Stage 1a (HIMMEL-2039). The match is namespace-agnostic (substring on `brainstorming`/`writing-plans`), so retained `superpowers:` aliases still trigger it. Advisory, fail-open; kill switch `MINERVA_HOOK_DISABLE=1`.
 **Plugin path:** `marketplace/plugins/himmel-ops/`
 
@@ -1868,6 +1881,20 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   a dormant flag, since the launch surface (mission-doc generation, model pin,
   workspace pre-trust) is real scope for an already-sized leg. Arming is
   operator-invoked: `bash scripts/upstreams/upstream-watch-cadence.sh arm`.
+- `scripts/doctor-cadence.sh run|arm|status|disarm` (HIMMEL-4251) — the daily
+  `himmel-doctor` run, so a standing FAIL is seen in a day, not nine
+  (HIMMEL-4243). `run` executes the doctor from the **primary** checkout
+  (resolved through git-common-dir; a worktree run gives false C16 reds) and
+  keeps `last.tsv` / `prev.tsv` / `counts` under
+  `~/.himmel/state/doctor-cadence/`. A FAIL, or a WARN id absent from the
+  previous run, goes to Telegram through `scripts/luna/cadence-alert.sh`; the
+  first-ever run is a baseline (FAILs only); a doctor that prints no Summary
+  line alerts too. `hud-custom-lines.sh` shows `doctor  N FAIL  M WARN` from
+  `counts` (read-only, silent when absent or clean). Registered in
+  `cadence-registry.json` as `doctor`; cron only (Windows is parked).
+  Report-only: repair is `himmel-update`'s drift pass (HIMMEL-4246). Arming is
+  operator-invoked: `bash scripts/doctor-cadence.sh arm`. Test:
+  `scripts/test-doctor-cadence.sh`.
 
 ---
 

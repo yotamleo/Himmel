@@ -725,8 +725,9 @@ node <plugin>/tools/daily-timeline.mjs --vault "$VAULT" --date "$TODAY"
 **File-level single-writer (plan-critic #4):** Phase 5 already wrote
 `## Actions from clips` to this same note in this run; run this AFTER Phase 5 has
 finished so the two writes are sequential full read-modify-writes, never
-interleaved. A missing daily note is a no-op (the tool never creates a phantom —
-Phase 5 owns creation). Skip when `DRY_RUN=1`.
+interleaved. A missing daily note is created from `_Templates/Daily-Note.md`
+(HIMMEL-4182), and the same run upserts the `## Daily report` section (sources,
+suggested actions, carry-over). Skip when `DRY_RUN=1`.
 
 ### Tracking
 

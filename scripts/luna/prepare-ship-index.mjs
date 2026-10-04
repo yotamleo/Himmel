@@ -78,7 +78,7 @@ function die(code, msg) {
 
 // --- args -------------------------------------------------------------------
 const args = process.argv.slice(2);
-let src = '', out = '', collectionsArg = null, vec0Path = '', asJson = false;
+let src = '', out = '', collectionsArg = null, vec0Path = '', asJson = false, stripVectors = false;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   const need = (name) => {
@@ -93,10 +93,12 @@ for (let i = 0; i < args.length; i++) {
     case '--collections': collectionsArg = need('--collections'); break;
     case '--vec0': vec0Path = need('--vec0'); break;
     case '--json': asJson = true; break;
+    // HIMMEL-4232: a lexical-only artifact for a receiver on another embed model.
+    case '--strip-vectors': stripVectors = true; break;
     case '-h': case '--help':
       process.stdout.write(
         'Usage: prepare-ship-index.mjs --src <index.sqlite> --out <staging.sqlite> ' +
-        '--collections a,b [--vec0 <vec0.dll>] [--json]\n');
+        '--collections a,b [--vec0 <vec0.dll>] [--strip-vectors] [--json]\n');
       process.exit(0);
     default: die(1, `unknown arg: ${a}`);
   }
@@ -223,7 +225,13 @@ if (!hasAd) {
          'documents. Refusing to ship.');
 }
 
-const srcCollections = source.prepare('select name from store_collections order by name').all().map(r => r.name);
+let srcCollections = source.prepare('select name from store_collections order by name').all().map(r => r.name);
+// qmd's CLI keeps collections in index.yml and can leave store_collections
+// empty (HIMMEL-4232). Only then, the documents table names the collections.
+if (srcCollections.length === 0) {
+  srcCollections = source.prepare(
+    'select distinct collection c from documents where collection is not null order by c').all().map(r => r.c);
+}
 stats.sourceCollections = srcCollections;
 
 // Refuse to invent collections on the receiver. If the receiver asks for a
@@ -308,10 +316,23 @@ try {
   //    NULL, so one such row makes `hash_seq NOT IN (...)` NULL for every row
   //    and the orphan GC deletes nothing — silently, with the convergence
   //    self-check below then failing for a reason that points elsewhere.
-  db.prepare(
-    'DELETE FROM vectors_vec WHERE NOT EXISTS (' +
-    "SELECT 1 FROM content_vectors cv WHERE cv.hash IS NOT NULL AND cv.seq IS NOT NULL " +
-    "AND cv.hash || '_' || cv.seq = vectors_vec.hash_seq)").run();
+  //    Skipped under --strip-vectors, which drops the whole table below: the
+  //    concatenated key cannot use an index, so on a full index this GC alone
+  //    runs for most of an hour.
+  if (!stripVectors) {
+    db.prepare(
+      'DELETE FROM vectors_vec WHERE NOT EXISTS (' +
+      "SELECT 1 FROM content_vectors cv WHERE cv.hash IS NOT NULL AND cv.seq IS NOT NULL " +
+      "AND cv.hash || '_' || cv.seq = vectors_vec.hash_seq)").run();
+  }
+  // 6. --strip-vectors (HIMMEL-4232): a receiver on a different embed model
+  //    gets BM25 only. The vec0 TABLE goes, not just its rows: it is declared
+  //    float[<source dims>], and qmd refuses to embed into a table of another
+  //    dimension, while it recreates a missing one at the receiver's own size.
+  if (stripVectors) {
+    db.prepare('DELETE FROM content_vectors').run();
+    db.exec('DROP TABLE vectors_vec');
+  }
   db.exec('COMMIT');
 } catch (e) {
   try { db.exec('ROLLBACK'); } catch { /* already rolled back */ }
@@ -341,8 +362,12 @@ stats.after = {
   documents: count('select count(*) c from documents where active = 1'),
   content: count('select count(*) c from content'),
   contentVectors: count('select count(*) c from content_vectors'),
-  vectors: count('select count(*) c from vectors_vec'),
+  vectors: stripVectors ? 0 : count('select count(*) c from vectors_vec'),
+  // The embed model(s) the shipped vectors came from (HIMMEL-4232). ship-index.sh
+  // compares this with the receiver's configured model before uploading.
+  models: db.prepare('select distinct model from content_vectors order by model').all().map(r => r.model),
 };
+stats.stripVectors = stripVectors;
 
 // --- self-check: never hand the transport a known-inconsistent artifact ------
 // This is the local half of "verify, don't assume". The remote half (does the
@@ -372,6 +397,12 @@ if (strayCols !== 0) problems.push(`${strayCols} collection row(s) outside the k
 const orphanContent = count(
   'select count(*) c from content where not exists (select 1 from documents d where d.hash = content.hash)');
 if (orphanContent !== 0) problems.push(`${orphanContent} orphan content row(s) survived`);
+// qmd searches vectors without filtering by model, so two vector spaces in one
+// artifact return garbage on the receiver (HIMMEL-4232).
+if (stats.after.models.length > 1) {
+  problems.push(`vectors from more than one embed model (${stats.after.models.join(', ')}) — ` +
+    're-embed the source with one model, or ship --strip-vectors');
+}
 
 stats.sizeBytes = statSync(workPath).size;
 db.close();

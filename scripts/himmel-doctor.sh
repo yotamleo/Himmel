@@ -3,10 +3,13 @@
 # severity-grouped report with remediation, and (on request) file ONE
 # consolidated GitHub issue. Read-only except `--fix` (heals C1-guardrail wiring).
 #
-#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color]
+#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json]
 #
 # Exit 0 unless a FAIL finding is present (then 1) — so `--fix` re-checks are
 # scriptable. WARN/INFO never fail the exit. See the /himmel-doctor command md.
+# --json (HIMMEL-4254): stdout carries ONLY one {sev,id,msg,remedy} object per
+# finding (one per emit() call, OK rows included); every other line goes to
+# stderr. Same checks, same exit code. Needs jq.
 set -uo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
@@ -36,11 +39,12 @@ SETTINGS="$CLAUDE_DIR_R/settings.json"
 REGISTRY="$CLAUDE_DIR_R/handover/registry.json"
 
 # --- args ---
-DO_FIX=0; DO_FILE=0; REPO_FLAG=""; USE_COLOR=1
+DO_FIX=0; DO_FILE=0; DO_JSON=0; REPO_FLAG=""; USE_COLOR=1
 [ -t 1 ] || USE_COLOR=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --fix) DO_FIX=1 ;;
+        --json) DO_JSON=1 ;;
         --file-issue) DO_FILE=1 ;;
         --repo) shift; REPO_FLAG="${1:-}" ;;
         --no-color) USE_COLOR=0 ;;
@@ -49,6 +53,15 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+# --json: keep the real stdout on fd 3 for emit()'s JSON lines and point fd 1
+# at stderr, so every other print (headers, detail lines, the Summary, child
+# processes) leaves stdout without a per-call-site edit.
+if [ "$DO_JSON" = 1 ]; then
+    command -v jq >/dev/null 2>&1 || { echo "himmel-doctor: --json needs jq on PATH" >&2; exit 2; }
+    USE_COLOR=0
+    exec 3>&1 1>&2
+fi
 
 if [ "$USE_COLOR" = 1 ]; then C_RED=$'\033[31m'; C_YEL=$'\033[33m'; C_GRN=$'\033[32m'; C_DIM=$'\033[2m'; C_0=$'\033[0m'
 else C_RED=""; C_YEL=""; C_GRN=""; C_DIM=""; C_0=""; fi
@@ -67,8 +80,13 @@ emit() {
         INFO) col="$C_DIM"; n_info=$((n_info+1)) ;;
         OK)   col="$C_GRN" ;;
     esac
-    printf '%s%-4s%s %s: %s\n' "$col" "$sev" "$C_0" "$id" "$msg"
-    [ -n "$remedy" ] && printf '       %s→ %s%s\n' "$C_DIM" "$remedy" "$C_0"
+    if [ "$DO_JSON" = 1 ]; then
+        jq -cn --arg sev "$sev" --arg id "$id" --arg msg "$msg" --arg remedy "$remedy" \
+            '{sev: $sev, id: $id, msg: $msg, remedy: $remedy}' >&3
+    else
+        printf '%s%-4s%s %s: %s\n' "$col" "$sev" "$C_0" "$id" "$msg"
+        [ -n "$remedy" ] && printf '       %s→ %s%s\n' "$C_DIM" "$remedy" "$C_0"
+    fi
     if [ "$sev" != OK ]; then printf -- '- **%s** %s: %s\n  - → %s\n' "$sev" "$id" "$msg" "$remedy" >> "$BODY"; fi
 }
 
@@ -3005,6 +3023,31 @@ check_c45_qmd_daemon() {  # t13b-ok: doctor row that reads ps only, starts nothi
     fi
 }
 
+# --- C49-qmd-embed-model: index vectors vs the configured embed model (HIMMEL-4232)
+# qmd stores the embed model per vector but searches without filtering by it, so
+# a configured model that differs from the index's returns errors (a dimension
+# change) or silent garbage (same dimension). This row WARNs; qmd-reindex.sh
+# refuses to run on a mismatch. Silent when there is no index (qmd unused here).
+# Reads the index read-only through scripts/luna/qmd-embed-model.sh check.
+# Test seam: HIMMEL_DOCTOR_QMD_INDEX (default INDEX_PATH, else
+# ${XDG_CACHE_HOME:-~/.cache}/qmd/index.sqlite, where qmd keeps it).
+check_c49_qmd_embed_model() {
+    local idx="${HIMMEL_DOCTOR_QMD_INDEX:-${INDEX_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/qmd/index.sqlite}}"
+    local tool out rc=0 want have
+    tool="$(dirname "${BASH_SOURCE[0]}")/luna/qmd-embed-model.sh"
+    [ -f "$idx" ] && [ -f "$tool" ] || return 0
+    out="$(bash "$tool" check --index "$idx" 2>&1)" || rc=$?
+    case "$rc" in
+        0) emit OK C49-qmd-embed-model "${out#qmd-embed-model: }" ;;
+        3)
+            want="$(printf '%s\n' "$out" | sed -n 's/^ *configured : //p')"
+            have="$(printf '%s\n' "$out" | sed -n 's/^ *index has  : *//p')"
+            emit WARN C49-qmd-embed-model "qmd index vectors come from '$have' but the configured embed model is '$want' -- vector search returns errors or garbage" \
+                "bash scripts/luna/qmd-embed-model.sh check   # then reembed + swap, or set the config back (docs/internals/qmd-embed-model.md)" ;;
+        *) emit INFO C49-qmd-embed-model "could not verify the qmd index's embed model (rc $rc) -- check skipped" ;;
+    esac
+}
+
 # --- C41: MCP server credential on the command line (HIMMEL-2762) ---------------
 # An MCP server entry launched as `npm exec <server> --api-key <key>` puts the key
 # in argv, so any local user reads it via ps or /proc/<pid>/cmdline, and it lands
@@ -3212,7 +3255,7 @@ check_c44_skill_index() {
     if [ -z "$count" ] || [ "$count" -eq 0 ]; then
         emit FAIL C44-skill-index \
             "the 'skills' qmd collection is missing or empty -- /skill-find silently reverts to guessing skill/command names (HIMMEL-2222)" \
-            "bash scripts/skill-index/build-skill-index.sh && bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd ingest --collection skills \"\$HOME/.claude/skill-index\"'"
+            "bash scripts/skill-index/ensure-skill-index.sh   (or: himmelctl ensure)"
         return
     fi
     emit OK C44-skill-index "'skills' qmd collection present ($count files)"
@@ -3309,6 +3352,22 @@ check_c47_runaway_procs() {  # t13b-ok: doctor row that reads ps only, kills not
     fi
 }
 
+# --- C48-tmp-usage: /tmp at 80 % or more (HIMMEL-4224) --------------------------
+# On 2026-10-03 the /tmp tmpfs filled and fleet Bash hit ENOSPC. WARN at >= 80 % used
+# and name scripts/tmp-reap.sh (dry-run by default) as the remedy. Report only.
+# Seam: HIMMEL_DOCTOR_TMP_DF (a df stand-in printing `df -P /tmp` output).
+check_c48_tmp_usage() {
+    local df_bin="${HIMMEL_DOCTOR_TMP_DF:-df}" pct
+    command -v "$df_bin" >/dev/null 2>&1 || return 0
+    pct="$("$df_bin" -P /tmp 2>/dev/null | awk 'NR==2 {gsub("%","",$5); print $5}')"
+    case "$pct" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$((10#$pct))" -ge 80 ]; then
+        emit WARN C48-tmp-usage "/tmp is ${pct}% full (warn at 80%)" "run: bash $REPO_ROOT/scripts/tmp-reap.sh (dry-run lists what it would archive and reap), then re-run it with --apply"
+    else
+        emit OK C48-tmp-usage "/tmp is ${pct}% full (warn at 80%)"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3359,12 +3418,14 @@ check_c44_skill_index
 check_c45_qmd_daemon  # t13b-ok: doctor row that reads ps only, starts nothing
 check_c46_plugin_enabled_missing
 check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
+check_c48_tmp_usage
+check_c49_qmd_embed_model
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
 if [ "$DO_FILE" = 1 ] && [ $((n_fail+n_warn+n_info)) -gt 0 ]; then
     echo; echo "Filing a consolidated GitHub issue:"; file_issue
-elif [ $((n_fail+n_warn)) -gt 0 ] && [ -t 1 ]; then
+elif [ $((n_fail+n_warn)) -gt 0 ] && [ "$DO_JSON" = 0 ] && [ -t 1 ]; then
     echo; printf 'File a consolidated GitHub issue? [y/N] '; read -r ans
     case "$ans" in y|Y|yes) file_issue ;; *) echo "  (skipped — re-run with --file-issue to file)";; esac
 fi

@@ -89,9 +89,11 @@ const isTestFile = (f) => /(^|\/)test-[^/]*\.(sh|ps1)$|\.test\.[a-z]+$|(^|\/)tes
 const baseName = (f) => f.split("/").pop();
 
 if (MODE === "list") {
+  // Paste-safe markdown cells (HIMMEL-2450): escape | and collapse newlines.
+  const cell = (v) => String(v ?? "").replace(/\r?\n/g, " ").replace(/\|/g, "\\|");
   console.log("| id | kind | source | detector | title |");
   console.log("|---|---|---|---|---|");
-  for (const c of classes) console.log(`| \`${c.id}\` | ${c.kind} | ${c.source} | ${c.detector ? c.detector.type : "—"} | ${c.title} |`);
+  for (const c of classes) console.log(`| \`${cell(c.id)}\` | ${cell(c.kind)} | ${cell(c.source)} | ${cell(c.detector ? c.detector.type : "—")} | ${cell(c.title)} |`);
   process.exit(0);
 }
 

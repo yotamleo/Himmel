@@ -175,6 +175,7 @@ fi
 # have. 0 or >1 matching transcripts: say so on stderr and still close -
 # never guess which one. The hook itself dedups by session_id (HIMMEL-3629),
 # so it is harmless if the leg's own SessionEnd ALSO manages to fire.
+TRANSCRIPT=""
 END_SESSION_WIKI="${END_SESSION_WIKI_BIN:-$HERE/../../hooks/end-session-wiki.sh}"
 PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
 if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
@@ -267,6 +268,26 @@ if [ "$subtree_rc" -ne 0 ]; then
     echo "$subtree_out"
     echo "close-wrapped-leg: refusing to signal pid $matched - wrap-subtree-check.sh did not report CLOSABLE (see above); retry shortly" >&2
     exit 6
+fi
+
+# ---------- Leg cost ledger (HIMMEL-4217) ----------------------------------------
+# One JSONL row per wrapped leg, from the transcript resolved above. Never
+# fatal: a meter or ledger failure WARNs and the close proceeds. A retry of the
+# same transcript (a refused or failed close re-run) never writes a second row.
+if [ -n "$TRANSCRIPT" ]; then
+    if ! . "$HERE/../../lanes/lib/leg-cost-row.sh"; then
+        echo "close-wrapped-leg: WARN cannot load leg-cost-row.sh - no cost ledger row" >&2
+    elif ! ledger=$(leg_cost_ledger_path "$DOC"); then
+        echo "close-wrapped-leg: WARN cannot resolve the cost ledger path - no cost ledger row" >&2
+    elif [ -f "$ledger" ] && grep -qF "\"session\":\"$(basename "$TRANSCRIPT" .jsonl)\"" "$ledger"; then
+        echo "close-wrapped-leg: cost ledger already has a row for this transcript"
+    elif ! row=$(leg_cost_row "$TRANSCRIPT" "$DOC"); then
+        echo "close-wrapped-leg: WARN leg-burn failed - no cost ledger row" >&2
+    elif mkdir -p "$(dirname "$ledger")" 2>/dev/null && printf '%s\n' "$row" >> "$ledger" 2>/dev/null; then
+        echo "close-wrapped-leg: cost ledger row appended to $ledger"
+    else
+        echo "close-wrapped-leg: WARN cannot write $ledger - no cost ledger row" >&2
+    fi
 fi
 
 if ! "$KILL" -TERM "$matched"; then

@@ -266,7 +266,7 @@ sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_* (node: 
 const fs=require("fs");
 const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
-if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) delete j.env[k];
+if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0 || k.toUpperCase()==="CLAUDE_CODE_AUTO_MODE_SERVER") delete j.env[k];
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 ' "$1" "$2"
 }

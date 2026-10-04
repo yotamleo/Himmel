@@ -288,6 +288,7 @@ Notes a future reader needs:
   *faster* than the 600K one, which is what compaction upstream of the model
   looks like. `context.overflow` for this lane is already `compact-continue`;
   900000 stays the declared operating window on that basis, unchanged — it was already an operator ruling/measurement (HIMMEL-1833) before ox-alpha, and these probes establish ACCEPTANCE at that size, not a verified usable window.
+- **Turns compacted by `compact-continue` lose their thinking** (HIMMEL-3875 preserved-thinking change; reported by the ticket, not independently verified) — no thinking blocks survive compaction, so later turns may re-think that work at token cost.
 - **`--toolsets fs` is not a hermes toolset** — it exits 2 in ~1s with
   `ignoring unknown --toolsets entries: fs`. Use `coding`.
 - **Recommended `CRITIC_TIMEOUT_SECS` for a hermes critic row: 180s**
@@ -680,16 +681,21 @@ not edit — passes for that one exec, and it switches the internal
 to the resolved `auto`. The arm log and the `--dry-run` report both record
 `context=1m (operator-ruling)` plus the reason text.
 
-**Leg handover is whichever limit arrives first: 45% context fill OR 90,000
-total input tokens on the latest turn.** The absolute turn count is
+**Leg handover is at 75% context fill (150,000 input tokens of the 200k
+window), with the leg's `--autocompact` ceiling as the backstop (HIMMEL-4089).**
+Measured 2026-09-27..10-03 over 399 leg sessions: 349 compacted, 309 of those
+still reached WRAPPED after their last compaction, and every compaction fired
+between 157k and 176k, so 75% hands off before any of them and the earlier
+60% hand-off only added relaunches. The absolute turn count is
 `message.usage.input_tokens + cache_read_input_tokens +
 cache_creation_input_tokens` from the last assistant message in that session's
 own transcript; it excludes output tokens and is not cumulative spend.
 `scripts/context-fill.sh` prints that count alongside fill, keeps `--percent`
 as the bare integer compatibility surface, and interprets `--warn-at 1..100`
-as percent versus values above 100 as token counts. The handover skill's task
-leg template tells a leg to check both `--warn-at 45` and `--warn-at 90000`
-after substantial turns.
+as percent versus values above 100 as token counts. A console leg checks
+`--warn-at 75` after every completed step (`docs/handover/leg-preface.md`). The
+handover skill's generic task template still checks `--warn-at 45`; it serves
+general handover sessions, not console legs.
 
 ### Fleet-size cap — a provisional 4, grounded in the incident (HIMMEL-2765)
 

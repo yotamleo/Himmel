@@ -235,6 +235,12 @@ commands:
   deps upgrade            bump present declared toolchain deps toward latest;
                           qmd's model pull (~2.1 GB) is gated behind a prompt
                           or --with-models
+  report [--items <id,..>] --json
+                          read-only config feed (himmel-config-feed/1): every
+                          item, doctor check, cadence, plugin, lane, initiative
+                          leg, bypass flag and secret as one row grammar, for
+                          the config UI. --items re-probes only those row ids.
+                          Secrets show presence, never values.
   gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
@@ -304,6 +310,9 @@ const ALLOWED_OPTIONS = {
   uninstall: ['dryRun', 'yes', 'purgeState'],
   update: ['dryRun'],
   status: ['items', 'json'],
+  // HIMMEL-4254 P2: the config UI's feed (himmel-config-feed/1). Its own verb,
+  // never a `status` mode — status --json is a golden-tested contract.
+  report: ['items', 'json'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
   // `scope` takes its OWN positional verbs/targets (set|get|status, then
   // project|user for set) — parsed in parseArgs's scope cases, not as --flags.
@@ -445,6 +454,9 @@ function parseArgs(argv) {
         break;
       case 'gaps':
         if (!setSubcommand('gaps')) return args;
+        break;
+      case 'report':
+        if (!setSubcommand('report')) return args;
         break;
       case 'scope':
         if (!setSubcommand('scope')) return args;
@@ -5127,6 +5139,26 @@ async function cmdStatus(args) {
   return 0;
 }
 
+// HIMMEL-4254 P2: `report --json`. Read-only; composes the existing engines
+// (lib/config-feed.js). Row ids are free-form (doctor:C24-x, flag:NAME), so
+// --items is NOT validated against the manifest here — an unknown id yields no
+// row. No install profile is not an error: the feed says profileCache:false.
+function cmdReport(args) {
+  if (!args.json) {
+    console.error('himmelctl: report requires --json');
+    return 2;
+  }
+  const configFeed = require('./lib/config-feed.js');
+  const manifest = loadManifest();
+  const profilePath = cachePath();
+  const answers = fs.existsSync(profilePath) ? loadProfile(profilePath) : null;
+  const scope = answers ? answers.scope : 'user';
+  const targetPath = scope === 'user' ? repoRoot() : path.resolve(process.cwd());
+  const feed = configFeed.buildFeed({ manifest, scope, targetPath, answers, items: args.items });
+  process.stdout.write(JSON.stringify(feed) + '\n');
+  return 0;
+}
+
 // HIMMEL-3312 S13 item 7 ("himmelctl doctor"): the health-check surface for
 // a machine that already deleted its clone is `himmelctl status` — there is
 // no separate `doctor` verb in this CLI. A bundle whose ledger-recorded
@@ -5542,9 +5574,26 @@ async function cmdEnsure(args) {
   // some of those same items would be an outright false claim, not just
   // noise. This is also what makes reconcileTarget()'s profileSource stamp
   // meaningful ACROSS runs: the one run that sets it never fights it.
-  const additive = args.profile
+  //
+  // HIMMEL-4267: ALSO skipped under --items. A scoped run converges only the
+  // named items; turning other items on (and persisting them) is a profile
+  // decision that belongs to bare `ensure` / `install` / `update`, not to a
+  // one-item repair like himmel-update's `ensure --items pre-commit-hooks`.
+  const additive = (args.profile || args.items)
     ? { changed: false, added: [] }
     : stateLib.additiveReconcile(target, manifest, cachedAnswers);
+  if (args.items && !args.profile) {
+    // The named items still need the recorded profile's say on whether they
+    // are wanted — applied IN MEMORY only (a --items run never saves state),
+    // so a repair of a recorded-but-not-yet-enabled item still converges.
+    for (const id of args.items) {
+      const entry = target.items[id];
+      const item = manifest.items.find((i) => i.id === id);
+      if (entry && !entry.enabled && item && stateLib.recordedDesired(target, entry, item, cachedAnswers)) {
+        entry.enabled = true;
+      }
+    }
+  }
   if (additive.changed) {
     stateChanged = true;
     console.log(`himmelctl: recorded install-profile enables ${additive.added.length} item(s) this target hadn't turned on: ${additive.added.join(', ')} (persisting; this never disables anything)`);
@@ -5625,6 +5674,17 @@ async function cmdEnsure(args) {
           const decided = /^\s*n/i.test(ans) ? 'no' : 'yes';
           itemState.overrides.consent = decided;
           stateChanged = true;
+          if (args.items) {
+            // HIMMEL-4267: a scoped run saves no derive/reconcile bookkeeping,
+            // but the operator's own answer about the requested item is
+            // theirs to keep — write that one field into a fresh state.
+            const fresh = stateLib.load();
+            const freshTarget = fresh.targets[targetKey] || stateLib.ensureTarget(fresh, manifest, cachedAnswers);
+            const freshItem = freshTarget.items['guardrail-block-global'] || (freshTarget.items['guardrail-block-global'] = { enabled: false, overrides: {} });
+            if (!freshItem.overrides || typeof freshItem.overrides !== 'object' || Array.isArray(freshItem.overrides)) freshItem.overrides = {};
+            freshItem.overrides.consent = decided;
+            stateLib.save(fresh);
+          }
           console.log(`himmelctl: recorded guardrail-block-global consent = ${decided}`);
         } else if (consent !== 'yes' && consent !== 'no') {
           // No recorded answer, and this run cannot ask right now
@@ -6088,7 +6148,7 @@ async function cmdEnsure(args) {
     // Nothing is about to be consented to — no install/unwire will run, so
     // it's correct (and the one intentional exception to the deferred-save
     // rule below) to persist the derive/reconcile bookkeeping right here.
-    if (stateChanged && !args.dryRun) stateLib.save(state);
+    if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
     // CR fix: "already at the desired state" is FALSE when hints remain —
     // those items still need manual convergence. Say so instead.
     console.log(hints.length > 0
@@ -6150,7 +6210,10 @@ async function cmdEnsure(args) {
   // behind !args.dryRun (dry-run's zero-mutation guarantee is unconditional).
   provOpen(args); // HIMMEL-3332 S5: past every no-op/refusal return, before the first mutation
   provStep = 'ensure';
-  if (stateChanged && !args.dryRun) stateLib.save(state);
+  // HIMMEL-4267: a scoped (--items) run never persists derive/migrate
+  // bookkeeping — the recorded target stays byte-identical (the requested
+  // item's own consent answer is written separately where it is asked).
+  if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
 
   // Step 4: toward-disabled dispatch (A5b) — per-item `removable` check.
   // CR fix: dispatched in REVERSE dependency order (a dependent, B deps on
@@ -6355,6 +6418,18 @@ async function cmdEnsure(args) {
   // unrelated pre-existing green) read as a false success. A failed/nonzero
   // install must never yield a successful ensure, independent of what the
   // probe says afterward.
+  // HIMMEL-4267: under --items the requested item is judged by its OWN
+  // post-check. A failed primitive whose item probes green (a coalesced
+  // installer's unrelated step failing after the item was placed) is a
+  // warning, not a failure of the item asked for.
+  if (args.items && failed.length > 0) {
+    const stillIds = new Set(stillNotConverged.map((r) => r.id));
+    const benign = failed.filter((f) => !stillIds.has(f.id));
+    for (const f of benign) {
+      console.error(`himmelctl: warning: ${f.id}'s installer reported a failure (${f.reason}) but ${f.id} post-checks green — treating as converged`);
+    }
+    failed = failed.filter((f) => stillIds.has(f.id));
+  }
   if (stillNotConverged.length > 0 || disableErrors.length > 0 || failed.length > 0 || pruneRejected) {
     if (stillNotConverged.length > 0) {
       console.error(`himmelctl: ${stillNotConverged.length} item(s) still not converged: ${stillNotConverged.map((r) => r.id).join(', ')}`);
@@ -7822,6 +7897,9 @@ async function main() {
   }
   if (args.subcommand === 'gaps') {
     return await cmdGaps(args);
+  }
+  if (args.subcommand === 'report') {
+    return cmdReport(args);
   }
   if (args.subcommand === 'scope') {
     return await cmdScope(args);

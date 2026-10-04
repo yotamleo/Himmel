@@ -1822,6 +1822,29 @@ LEG_CLAUDE_BIN="$shim_argv" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_P
   bash "$SHIM" --setting-sources user "load doc" || true
 check "shim: no marker, a caller --setting-sources passes through" \
   "$(cat "$tmp/shim-argv" 2>/dev/null || true)" "[--setting-sources][user][load doc]"
+# HIMMEL-4152: under =1 the caller's PATH (and HOME) must not pick which claude runs: a fake
+# early on PATH, or in $HOME/.local/bin, never execs. The shim resolves claude from a pinned
+# PATH instead, or refuses when none is there (a CI runner). --version keeps a real one inert.
+fake4152="$tmp/fake4152"; mkdir -p "$fake4152/bin" "$fake4152/home/.local/bin"
+# shellcheck disable=SC2016 # literal $0 belongs to the stub script, not this one
+printf '%s\n' '#!/usr/bin/env bash' ': > "$(dirname "$0")/ran"' > "$fake4152/bin/claude"
+cp "$fake4152/bin/claude" "$fake4152/home/.local/bin/claude"
+chmod 755 "$fake4152/bin/claude" "$fake4152/home/.local/bin/claude"
+rm -f "$fake4152/bin/ran" "$fake4152/home/.local/bin/ran"
+rc=0; out="$(unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" HOME="$fake4152/home" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES=1 \
+  bash "$SHIM" --version 2>&1)" || rc=$?
+# HIMMEL-4154: a broken launcher also runs no fake, so assert the outcome too: the pinned
+# claude's own rc 0, or the specific no-pinned-claude refusal (rc 2), nothing else.
+check "shim 4152: =1 outcome is the pinned claude (rc 0) or the no-pinned-claude refusal (rc 2)" \
+  "$({ [ "$rc" = 0 ] || { [ "$rc" = 2 ] && grepq "$out" -F -e "no claude on the pinned PATH"; }; } && echo ok || echo "rc=$rc")" "ok"
+check "shim 4152: =1 never execs a claude placed early on the caller's PATH" "$([ -e "$fake4152/bin/ran" ] && echo ran || echo not-run)" "not-run"
+check "shim 4152: =1 never execs a claude in the caller's \$HOME/.local/bin" "$([ -e "$fake4152/home/.local/bin/ran" ] && echo ran || echo not-run)" "not-run"
+# Counter-example: without the consult marker the caller's PATH claude still runs, unchanged.
+rm -f "$fake4152/bin/ran"
+rc=0; (unset LEG_CLAUDE_BIN; PATH="$fake4152/bin:$PATH" LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES='' \
+  bash "$SHIM" --version) >/dev/null 2>&1 || rc=$?
+check "shim 4152: no marker, the shim exits with the PATH claude's rc 0" "$rc" "0"
+check "shim 4152: no marker, the caller's PATH claude still runs" "$([ -e "$fake4152/bin/ran" ] && echo ran || echo not-run)" "ran"
 
 # 18-resolve. A tiny fixture registry exercises all four allowlist shapes
 # (empty/named/unknown/absent) without touching the shipped leg-impl entry.
@@ -3333,9 +3356,196 @@ shim_canon41="$(cd -P "$HERE/../../lanes" && pwd -P)/leg-claude-launcher.sh"
 target_canon41="$(cd -P "$HERE/.." && pwd -P)/headed-arm.sh"
 rc=0; out="$(HEADED_ARM_LEG_SHIM="$tmp/lanes-link41/leg-claude-launcher.sh" HEADED_ARM_LEG_TARGET="$tmp/handover-link41/headed-arm.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4142-s2 "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 check "41i-4142 a consult with symlinked-dir overrides naming the real files passes (exit 0)" "$rc" "0"
-contains "41i-4142 the exported launcher is the canonical shim" "$out" "launcher=$shim_canon41 "
+contains "41i-4142 the exported launcher is the canonical consult entry beside the shim" "$out" "launcher=${shim_canon41%/*}/leg-claude-launcher-consult.sh "
 not_contains "41i-4142 the exported launcher is not the symlinked spelling" "$out" "launcher=$tmp/lanes-link41"
 contains "41i-4142 the exec target is the canonical headed-arm.sh" "$out" "would exec: $target_canon41 "
+# HIMMEL-4152: a PATH token in the launcher env would pick which claude the shim runs, so a
+# consult refuses it; a non-consult launch keeps passing it through (unchanged).
+rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 PATH=$tmp/fake4152/bin:/usr/bin:/bin" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4152-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4152 a consult with a PATH token in HEADED_ARM_LAUNCHER_ENV refuses (exit 2)" "$rc" "2"
+contains "41i-4152 the PATH-token refusal names it" "$out" "refuses a PATH token"
+rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 PATH=$tmp/fake4152/bin:/usr/bin:/bin" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4152-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4152 a non-consult launch with a PATH token still passes (exit 0)" "$rc" "0"
+# HIMMEL-4152: with HEADED_ARM_LEG_TARGET unset, a consult's default target is canonicalised
+# too, so a script reached through a symlinked kit directory still execs the real headed-arm.sh.
+ln -sfn "$(cd -P "$HERE" && pwd -P)" "$tmp/kit-link4152"
+rc=0; out="$(unset HEADED_ARM_LEG_TARGET; LEG_REPO="$tmp/repo41c" bash "$tmp/kit-link4152/headed-arm-leg.sh" --dry-run --consult --profile design-motion HIMMEL-4152-t "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4152 a consult via a symlinked kit dir passes (exit 0)" "$rc" "0"
+contains "41i-4152 the default exec target is the canonical headed-arm.sh" "$out" "would exec: $target_canon41 "
+# HIMMEL-4152 (J1678): bash startup tokens in the launcher env would run caller code before
+# the shim, so a consult refuses each; a non-consult launch passes them through (unchanged).
+for tok4152 in "BASH_ENV=$tmp/x.sh" "ENV=$tmp/x.sh" "BASH_FUNC_command%%=() { :; }" "SHELLOPTS=xtrace" "BASHOPTS=extglob"; do
+  rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 $tok4152" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4152-b "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4152 a consult with a '${tok4152%%=*}' token in HEADED_ARM_LAUNCHER_ENV refuses (exit 2)" "$rc" "2"
+  contains "41i-4152 the '${tok4152%%=*}' refusal names a startup token" "$out" "refuses a bash startup token"
+done
+rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 BASH_ENV=$tmp/x.sh" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4152-b "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4152 a non-consult launch with a startup token still passes (exit 0)" "$rc" "0"
+# HIMMEL-4152 (J1678): a real consult launch with a hostile caller runtime: a fake bash first
+# on PATH, a BASH_ENV file defining command(), an exported command function and ENV. None of
+# them may run inside headed-arm.sh or the launcher, the konsole env carries none of them,
+# and the PATH handed to the launcher is the pinned one. Each hook logs only when $0 (or the
+# fake bash's script operand) is headed-arm.sh or a launcher: headed-arm-leg.sh itself is the
+# caller's own process and is not confined.
+atk4152="$tmp/atk4152"; rm -rf "$atk4152"; mkdir -p "$atk4152/bin"
+cat > "$atk4152/konsole" <<'KONSOLE4152_EOF'
+#!/bin/bash
+printf '%s\n' "$@" > "$(dirname "$0")/argv-record"
+env > "$(dirname "$0")/env-full"
+: > "$(dirname "$0")/record"
+: > "$(dirname "$0")/confirmable"
+sleep 5
+KONSOLE4152_EOF
+cat > "$atk4152/bin/bash" <<'FAKEBASH4152_EOF'
+#!/bin/sh
+case "$*" in */headed-arm.sh*|*leg-claude-launcher*) printf '%s\n' "$*" >> "$ATK4152/bash-log" ;; esac
+exec /usr/bin/bash "$@"
+FAKEBASH4152_EOF
+# shellcheck disable=SC2016 # literal $ATK4152 belongs to the stub script
+printf '%s\n' '#!/bin/sh' ': > "$ATK4152/claude-ran"' > "$atk4152/bin/claude"
+cat > "$atk4152/startup.sh" <<'STARTUP4152_EOF'
+case "$0" in */headed-arm.sh|*leg-claude-launcher*) printf '%s\n' "$0" >> "$ATK4152/startup-log" ;; esac
+command() { case "$0" in */headed-arm.sh|*leg-claude-launcher*) printf '%s\n' "$0" >> "$ATK4152/startup-cmd-log" ;; esac; builtin command "$@"; }
+STARTUP4152_EOF
+chmod 755 "$atk4152/konsole" "$atk4152/bin/bash" "$atk4152/bin/claude"
+pin4152="$(. "$HERE/../../lanes/consult-env.sh" && consult_pin_path)"
+# atk4152_env <startup|fn>: arm one hostile runtime in the calling subshell. The two run
+# apart, because the startup file's own command() would mask an imported one.
+atk4152_env() {
+  export ATK4152="$atk4152"
+  if [ "$1" = fn ]; then
+    # shellcheck disable=SC2317,SC2329 # exported, invoked by the child shells under test
+    command() { case "$0" in */headed-arm.sh|*leg-claude-launcher*) printf '%s\n' "$0" >> "$ATK4152/fn-log" ;; esac; builtin command "$@"; }
+    export -f command
+  else
+    export BASH_ENV="$atk4152/startup.sh" ENV="$atk4152/startup.sh" PATH="$atk4152/bin:$PATH"
+  fi
+}
+for m4152 in startup fn; do
+  d4152="$tmp/c4152-$m4152"; mk_launch_stubs "$d4152" "HIMMEL-4152-$m4152"
+  cp "$atk4152/konsole" "$d4152/konsole"
+  rm -f "$atk4152"/*-log "$atk4152/claude-ran"
+  rc=0
+  (
+    atk4152_env "$m4152"
+    IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' \
+    HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+    KONSOLE_CMD="$d4152/konsole" PGREP_CMD="$d4152/pgrep" \
+    LEG_REPO="$tmp/repo41c" HEADED_ARM_LOCK_DIR="$d4152/locks" HEADED_ARM_PROC="$d4152/proc" \
+      /usr/bin/bash "$SCRIPT" --consult --profile design-motion --console HIMMEL-4014-console "HIMMEL-4152-$m4152" "$some_doc" "$d4152/signal-never" "$PAST" "$d4152/log" >/dev/null 2>&1
+  ) || rc=$?
+  wait_record "$d4152" || true
+  check "41k-4152 [$m4152] hostile-runtime consult launch: exit 0" "$rc" "0"
+  argv4152="$(cat "$d4152/argv-record" 2>/dev/null || true)"
+  envf4152="$(cat "$d4152/env-full" 2>/dev/null || true)"
+  check "41k-4152 [$m4152] no hook ran in headed-arm.sh (fake bash, startup file, its command(), exported function)" \
+    "$(cat "$atk4152"/*-log 2>/dev/null || true)" ""
+  check "41k-4152 [$m4152] the konsole env carries no exported function" "$(printf '%s\n' "$envf4152" | grep -c '^BASH_FUNC_')" "0"
+  check "41k-4152 [$m4152] the konsole env carries no startup file variable" "$(printf '%s\n' "$envf4152" | grep -cE '^(BASH_ENV|ENV)=')" "0"
+  contains "41k-4152 [$m4152] the launcher gets the pinned PATH" "$argv4152" "PATH=$pin4152"
+  not_contains "41k-4152 [$m4152] the caller's fake dir never reaches the launcher PATH" "$argv4152" "$atk4152/bin"
+  contains "41k-4152 [$m4152] the launcher is the consult entry" "$argv4152" "/leg-claude-launcher-consult.sh"
+  # Direct entry: run the recorded launcher the way headed-arm.sh's `env ... "$LAUNCHER"` does,
+  # but with the hostile runtime (and PATH) the old exec site passed. It must end in the real
+  # pinned claude (--version, inert) or a refusal, never in any hook or the caller's claude.
+  launcher4152="$(printf '%s\n' "$argv4152" | grep '/leg-claude-launcher' | head -n 1)"
+  rm -f "$atk4152"/*-log "$atk4152/claude-ran"
+  rc=0
+  out="$(
+    atk4152_env "$m4152"
+    unset LEG_CLAUDE_BIN
+    LEG_PROFILE_SETTINGS='' LEG_PROFILE_PREFACE='' LEG_PROFILE_MCP_CONFIG='' LEG_PROFILE_NO_SETTING_SOURCES=1 \
+      /usr/bin/env "$launcher4152" --version 2>&1
+  )" || rc=$?
+  check "41k-4152 [$m4152] direct entry: no hook ran in the launcher" "$(cat "$atk4152"/*-log 2>/dev/null || true)" ""
+  check "41k-4152 [$m4152] direct entry: the caller's PATH claude never ran" "$([ -e "$atk4152/claude-ran" ] && echo ran || echo not-run)" "not-run"
+  case "$rc:$out" in
+    0:*[0-9].[0-9]*|2:*"no claude on the pinned PATH"*) check "41k-4152 [$m4152] direct entry ends in the pinned claude or a refusal" ok ok ;;
+    *) check "41k-4152 [$m4152] direct entry ends in the pinned claude or a refusal (rc=$rc out=$out)" bad ok ;;
+  esac
+done
+# HIMMEL-4159 (J1678b): loader and node preload tokens in the launcher env would run caller
+# code inside the consult's process tree, so a consult refuses each; a non-consult launch
+# passes them through (unchanged).
+for tok4159 in "LD_PRELOAD=$tmp/x.so" "LD_LIBRARY_PATH=$tmp" "LD_AUDIT=$tmp/x.so" "NODE_OPTIONS=--require=$tmp/x.js"; do
+  rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 $tok4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4159-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4159 a consult with a '${tok4159%%=*}' token in HEADED_ARM_LAUNCHER_ENV refuses (exit 2)" "$rc" "2"
+  contains "41i-4159 the '${tok4159%%=*}' refusal names a preload token" "$out" "refuses a loader or node preload token"
+  rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="FOO=1 $tok4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4159-p "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4159 a non-consult launch with a '${tok4159%%=*}' token still passes (exit 0)" "$rc" "0"
+done
+# HIMMEL-4159 (J1678b): a token that is not NAME=VALUE becomes `env`'s command operand at the
+# launch site, so a consult refuses it; a non-consult dry run is unchanged.
+for tok4159 in "$tmp/evil4159" "1X=1" "FOO-BAR=1" "=1" "-i"; do
+  rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="X=1 $tok4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --consult --profile design-motion HIMMEL-4159-s "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+  check "41i-4159 a consult with the non-NAME=VALUE token '$tok4159' refuses (exit 2)" "$rc" "2"
+  contains "41i-4159 the '$tok4159' refusal names the token shape" "$out" "refuses a token that is not NAME=VALUE"
+done
+rc=0; out="$(HEADED_ARM_LAUNCHER_ENV="X=1 $tmp/evil4159" LEG_REPO="$tmp/repo41c" bash "$SCRIPT" --dry-run --profile design-motion HIMMEL-4159-s "$some_doc" /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "41i-4159 a non-consult dry run with a non-NAME=VALUE token still passes (exit 0)" "$rc" "0"
+# HIMMEL-4159: a real consult launch (stub konsole) with a no-`=` token naming a fake binary
+# refuses before anything runs: no konsole, and the fake binary never runs.
+atk4159="$tmp/atk4159"; rm -rf "$atk4159"; mkdir -p "$atk4159"
+# shellcheck disable=SC2016 # literal $0 belongs to the stub script
+printf '%s\n' '#!/bin/sh' ': > "$(dirname "$0")/evil-ran"' > "$atk4159/evil"
+chmod 755 "$atk4159/evil"
+d4159="$tmp/c4159-shape"; mk_launch_stubs "$d4159" "HIMMEL-4159-shape"
+rc=0
+(
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' HEADED_ARM_LAUNCHER_ENV="X=1 $atk4159/evil" \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d4159/konsole" PGREP_CMD="$d4159/pgrep" \
+  LEG_REPO="$tmp/repo41c" HEADED_ARM_LOCK_DIR="$d4159/locks" HEADED_ARM_PROC="$d4159/proc" \
+    /usr/bin/bash "$SCRIPT" --consult --profile design-motion --console HIMMEL-4014-console "HIMMEL-4159-shape" "$some_doc" "$d4159/signal-never" "$PAST" "$d4159/log" >/dev/null 2>&1
+) || rc=$?
+wait_record "$d4159" || true
+check "41k-4159 [shape] a consult launch with a no-'=' token refuses (exit 2)" "$rc" "2"
+check "41k-4159 [shape] the konsole never ran" "$([ -e "$d4159/record" ] && echo ran || echo not-run)" "not-run"
+not_contains "41k-4159 [shape] the fake binary never reaches a launch line" "$(cat "$d4159/record" 2>/dev/null || true)" "$atk4159/evil"
+check "41k-4159 [shape] the fake binary never ran" "$([ -e "$atk4159/evil-ran" ] && echo ran || echo not-run)" "not-run"
+# HIMMEL-4159: a real consult launch with a hostile caller loader/node runtime: NODE_OPTIONS
+# requiring a marker module, an LD_PRELOAD and an LD_LIBRARY_PATH. None reaches the konsole env
+# (headed-arm.sh's own environment), and the marker never runs in headed-arm.sh's node: it logs
+# only when its parent is headed-arm.sh or a launcher, since headed-arm-leg.sh is the caller's
+# own process. The preload is libc (already mapped, so a no-op): a lib that cannot load makes
+# the loader warn on stderr, which headed-arm-leg.sh's own 2>&1 captures read as JSON, so the
+# caller refuses before any launch. LD_AUDIT has no loadable no-op, so the token rows above and
+# the scrub row below carry it.
+# shellcheck disable=SC2016 # literal JS for the marker module
+printf '%s\n' 'const fs=require("fs");let p="";try{p=fs.readFileSync("/proc/"+process.ppid+"/cmdline","utf8")}catch(e){}' \
+  'if(/\/headed-arm\.sh|leg-claude-launcher/.test(p))fs.appendFileSync(process.env.ATK4159+"/node-log",p+"\n")' > "$atk4159/marker.js"
+d4159="$tmp/c4159-ld"; mk_launch_stubs "$d4159" "HIMMEL-4159-ld"
+cp "$atk4152/konsole" "$d4159/konsole"
+rm -f "$atk4159/node-log"
+rc=0
+(
+  # shellcheck disable=SC2030 # the hostile runtime is subshell-local by design
+  export ATK4159="$atk4159" NODE_OPTIONS="--require=$atk4159/marker.js" LD_PRELOAD=libc.so.6 LD_LIBRARY_PATH="$atk4159"
+  IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' \
+  HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+  KONSOLE_CMD="$d4159/konsole" PGREP_CMD="$d4159/pgrep" \
+  LEG_REPO="$tmp/repo41c" HEADED_ARM_LOCK_DIR="$d4159/locks" HEADED_ARM_PROC="$d4159/proc" \
+    /usr/bin/bash "$SCRIPT" --consult --profile design-motion --console HIMMEL-4014-console "HIMMEL-4159-ld" "$some_doc" "$d4159/signal-never" "$PAST" "$d4159/log" >/dev/null 2>&1
+) || rc=$?
+wait_record "$d4159" || true
+check "41k-4159 [ld] hostile loader/node runtime consult launch: exit 0" "$rc" "0"
+envf4159="$(cat "$d4159/env-full" 2>/dev/null || true)"
+check "41k-4159 [ld] the konsole ran (the env check below is not vacuous)" "$([ -e "$d4159/record" ] && echo ran || echo not-run)" "ran"
+for v4159 in LD_PRELOAD LD_LIBRARY_PATH NODE_OPTIONS; do
+  check "41k-4159 [ld] the konsole env carries no $v4159" "$(printf '%s\n' "$envf4159" | grep -c "^$v4159=")" "0"
+done
+check "41k-4159 [ld] the NODE_OPTIONS marker never ran in headed-arm.sh's node" "$(cat "$atk4159/node-log" 2>/dev/null || true)" ""
+# HIMMEL-4159: the scrub list both consult entries use drops all four from a child's env.
+scrub4159="$(
+  # shellcheck disable=SC2031 # a fresh subshell-local hostile runtime, not the one above
+  export LD_PRELOAD="$atk4159/nonexistent-preload.so" LD_AUDIT="$atk4159/nonexistent-audit.so" LD_LIBRARY_PATH="$atk4159" NODE_OPTIONS="--require=$atk4159/marker.js" KEEP4159=kept
+  . "$HERE/../../lanes/consult-env.sh" && consult_scrub_args && /usr/bin/env "${CONSULT_SCRUB[@]}" /usr/bin/env 2>/dev/null
+)"
+# The child env was captured (a failed source or env leaves it empty, which the check below would pass).
+check "41k-4159 the scrubbed child env was captured (a kept variable survives)" \
+  "$(printf '%s\n' "$scrub4159" | grep -c '^KEEP4159=kept$')" "1"
+check "41k-4159 consult_scrub_args drops LD_PRELOAD, LD_LIBRARY_PATH, LD_AUDIT and NODE_OPTIONS" \
+  "$(printf '%s\n' "$scrub4159" | grep -cE '^(LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|NODE_OPTIONS)=')" "0"
 # (b) the ponytail text no longer claims one writable file.
 check "41i ponytail no longer says 'one writable file'" "$(grep -c 'one writable file' "$SCRIPT")" "0"
 # (c) HIMMEL-4069: the consult launches with `--setting-sources ""`, so a user, project or

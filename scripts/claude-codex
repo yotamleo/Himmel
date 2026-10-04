@@ -50,7 +50,8 @@ CONFIG_DIR="${HOME}/.claude-codex"
 # already-seeded machine would silently keep the old seeded content forever. A
 # mismatch forces exactly one re-seed.
 # v1 = initial version (HIMMEL-1927: the claudex model-identity stanza).
-SEED_VERSION="1"
+# v2 = sanitize_settings also strips env.CLAUDE_CODE_AUTO_MODE_SERVER (HIMMEL-4098).
+SEED_VERSION="2"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/load-dotenv.sh
@@ -270,12 +271,12 @@ let s=process.argv[1], j;
 try { j=JSON.parse(s.trim().charAt(0)==="{" ? s : fs.readFileSync(s,"utf8")); } catch (e) { process.exit(2); }
 for (const k of Object.keys((j&&j.env)||{})) {
   const u=k.toUpperCase();
-  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) process.exit(3);
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0 || u==="CLAUDE_CODE_AUTO_MODE_SERVER") process.exit(3);
 }
 process.exit(0);
 ' "$1"; _ss_rc=$?
   if [ "$_ss_rc" -ne 0 ]; then
-    echo "claude-codex: REFUSED - --settings payload sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* (or is unparseable, rc=$_ss_rc); it would defeat the proxy trust boundary." >&2
+    echo "claude-codex: REFUSED - --settings payload sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* / CLAUDE_CODE_AUTO_MODE_SERVER (or is unparseable, rc=$_ss_rc); it would defeat the proxy trust boundary." >&2
     exit 3
   fi
 }
@@ -322,12 +323,12 @@ let j;
 try { j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); } catch (e) { process.exit(2); }
 for (const k of Object.keys((j&&j.env)||{})) {
   const u=k.toUpperCase();
-  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) process.exit(3);
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0 || u==="CLAUDE_CODE_AUTO_MODE_SERVER") process.exit(3);
 }
 process.exit(0);
 ' "$1"; _sf_rc=$?
   if [ "$_sf_rc" -ne 0 ]; then
-    echo "claude-codex: REFUSED - $1 sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* (or is unparseable, rc=$_sf_rc); a project-level backend override defeats the proxy trust boundary. Remove those env keys to launch this lane here." >&2
+    echo "claude-codex: REFUSED - $1 sets env.ANTHROPIC_* / CLAUDE_CODE_USE_* / CLAUDE_CODE_AUTO_MODE_SERVER (or is unparseable, rc=$_sf_rc); a project-level backend override defeats the proxy trust boundary. Remove those env keys to launch this lane here." >&2
     exit 3
   fi
 }
@@ -346,7 +347,7 @@ sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_*/CLAUDE_
 const fs=require("fs");
 const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
-if (j.env) for (const k of Object.keys(j.env)) { const u=k.toUpperCase(); if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0) delete j.env[k]; }
+if (j.env) for (const k of Object.keys(j.env)) { const u=k.toUpperCase(); if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0 || u==="CLAUDE_CODE_AUTO_MODE_SERVER") delete j.env[k]; }
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 ' "$1" "$2"
 }

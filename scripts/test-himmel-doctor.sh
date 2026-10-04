@@ -171,6 +171,12 @@ export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
 # Same for C47-runaway-procs (HIMMEL-3959): never scan the operator's real
 # process table; an absent ps seam makes C47 silent, dedicated cases stub it.
 export HIMMEL_DOCTOR_RUNAWAY_PS="$FAKEROOT/no-such-ps"
+# Same for C48-tmp-usage (HIMMEL-4224): never read the operator's real /tmp
+# fill level; an absent df seam makes C48 silent, dedicated cases stub it.
+export HIMMEL_DOCTOR_TMP_DF="$FAKEROOT/no-such-df"
+# Same for C49-qmd-embed-model (HIMMEL-4232): never read the operator's real
+# qmd index; an absent index makes C48 silent, dedicated cases point at a fixture.
+export HIMMEL_DOCTOR_QMD_INDEX="$FAKEROOT/no-such-index.sqlite"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -279,6 +285,25 @@ if [ "$rc" -eq 0 ]; then pass "clean -> rc0"; else fail "clean -> rc=$rc; $(prin
 # write_settings' fixture carries no PreToolUse block at all -> guardrail-block.mjs
 # detects mode=project -> C1-guardrail has nothing to check (HIMMEL-2013).
 if grepq "$out" 'OK   C1-guardrail'; then pass "clean -> C1-guardrail OK (no guardrail block)"; else fail "clean -> $(printf '%s' "$out" | grep C1-guardrail)"; fi
+rm -rf "$t"
+
+# HIMMEL-4254 P1: --json is the config UI's status feed. stdout must carry
+# ONLY one JSON object per emit() call (everything else goes to stderr), and
+# the row count and exit code must match a text run of the same fixture.
+echo "== --json -> stdout is one JSON object per emit, nothing else =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-json.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }; write_settings "$t/claude" "$WRAPPER"
+txt="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>/dev/null)"; rc_txt=$?
+js="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --json --no-color 2>/dev/null)"; rc_js=$?
+n_txt="$(grep -cE '^(FAIL|WARN|INFO|OK) ' <<< "$txt")"
+n_js="$(grep -c . <<< "$js")"
+if jq -e -s 'length > 0 and all(.[]; (keys == ["id","msg","remedy","sev"]) and (.sev | IN("FAIL","WARN","INFO","OK")))' <<< "$js" >/dev/null 2>&1; then
+    pass "--json -> every stdout line is a {sev,id,msg,remedy} object"
+else
+    fail "--json -> stdout is not JSON lines: $(head -3 <<< "$js")"
+fi
+if [ "$n_js" -eq "$n_txt" ] && [ "$n_txt" -gt 0 ]; then pass "--json -> $n_js rows = $n_txt text emits"; else fail "--json -> $n_js rows vs $n_txt text emits"; fi
+if [ "$rc_js" -eq "$rc_txt" ]; then pass "--json -> exit code matches text run ($rc_js)"; else fail "--json -> rc=$rc_js vs text rc=$rc_txt"; fi
+if grepq "$js" 'Summary:'; then fail "--json -> Summary line leaked to stdout"; else pass "--json -> Summary line kept off stdout"; fi
 rm -rf "$t"
 
 echo "== --file-issue with gh stub -> creates with resolved repo =="
@@ -5281,7 +5306,7 @@ exit 2
 STUB
 chmod 755 "$t/qmd"
 out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
-if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'build-skill-index.sh'; then
+if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'ensure-skill-index.sh'; then
     pass "C44 missing collection -> FAIL"
 else
     fail "C44 missing collection -> $(printf '%s' "$out" | grep -A1 C44)"
@@ -5398,6 +5423,85 @@ else
     fail "C47 real loop -> alive=$c47_alive $(printf '%s' "$out" | grep -A1 C47)"
 fi
 rm -rf "$c47_t"
+
+# --- C48-tmp-usage (HIMMEL-4224): /tmp at 80 % or more -> WARN naming tmp-reap.sh ---
+c48_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c48.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c48_t/home" "$c48_t/claude"
+# shellcheck disable=SC2016 # the stub expands C48_PCT at ITS run time
+printf '#!/usr/bin/env bash\nprintf "Filesystem 1024-blocks Used Available Capacity Mounted on\\ntmpfs 100 %%s 20 %%s%%%% /tmp\\n" "${C48_PCT:-0}" "${C48_PCT:-0}"\n' > "$c48_t/df"
+chmod +x "$c48_t/df"
+c48_run() { # <pct>
+PATH="$FAKEBIN:$PATH" C48_PCT="$1" HIMMEL_DOCTOR_TMP_DF="$c48_t/df" \
+CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1
+}
+echo "== C48: /tmp at 80 % or more -> WARN naming scripts/tmp-reap.sh =="
+for c48_pct in 80 93; do
+out="$(c48_run "$c48_pct")"
+if grepq "$out" "WARN C48-tmp-usage" && grepq "$out" -F "${c48_pct}% full" && grepq "$out" -F 'scripts/tmp-reap.sh'; then
+    pass "C48 ${c48_pct}% -> WARN with the tmp-reap.sh remedy"
+else
+    fail "C48 ${c48_pct}% -> $(printf '%s' "$out" | grep -A1 C48)"
+fi
+done
+echo "== C48: /tmp below 80 % -> OK, no WARN =="
+out="$(c48_run 79)"
+if grepq "$out" 'OK   C48-tmp-usage' && ! grepq "$out" 'WARN C48'; then
+    pass "C48 79% -> OK"
+else
+    fail "C48 79% -> $(printf '%s' "$out" | grep -A1 C48)"
+fi
+out="$(PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_TMP_DF="$c48_t/no-such-df" CLAUDE_DIR="$c48_t/claude" HOME="$c48_t/home" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'C48-tmp-usage'; then
+    pass "C48 absent df seam -> silent"
+else
+    fail "C48 absent df -> $(printf '%s' "$out" | grep C48)"
+fi
+rm -rf "$c48_t"
+# --- C49-qmd-embed-model (HIMMEL-4232): index vectors vs the configured model --
+# A configured embed model that differs from the model the index's vectors came
+# from returns garbage on vec search (or fails on a dimension change). The row
+# WARNs; qmd-reindex.sh refuses. Seam: HIMMEL_DOCTOR_QMD_INDEX (the index file);
+# the configured model comes from the fixture HOME's ~/.config/qmd/index.yml.
+if command -v sqlite3 >/dev/null 2>&1; then
+    c49_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c49.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+    mkdir -p "$c49_t/home/.config/qmd" "$c49_t/claude"
+    sqlite3 "$c49_t/index.sqlite" "CREATE TABLE content_vectors(hash TEXT, seq INT, model TEXT); INSERT INTO content_vectors VALUES('h',0,'hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf');"
+    c49_run() { # <configured embed uri, empty = default>
+        if [ -n "$1" ]; then printf 'models:\n  embed: %s\n' "$1" > "$c49_t/home/.config/qmd/index.yml"
+        else rm -f "$c49_t/home/.config/qmd/index.yml"; fi
+        # CI runners export XDG_CONFIG_HOME, which would point past the fixture HOME.
+        env -u QMD_CONFIG_DIR -u XDG_CONFIG_HOME -u QMD_EMBED_MODEL \
+            PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_INDEX="$c49_t/index.sqlite" \
+            CLAUDE_DIR="$c49_t/claude" HOME="$c49_t/home" bash "$DOC" --no-color 2>&1
+    }
+
+    echo "== C49-qmd-embed-model: index model matches the default -> OK (RED) =="
+    out="$(c49_run '')"
+    if grepq "$out" 'OK   C49-qmd-embed-model' && grepq "$out" -F 'embeddinggemma'; then
+        pass "C49 matching model -> OK naming the model"
+    else
+        fail "C49 match -> $(printf '%s' "$out" | grep -A1 C49)"
+    fi
+
+    echo "== C49-qmd-embed-model: configured qwen over a gemma index -> WARN =="
+    out="$(c49_run 'hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf')"
+    if grepq "$out" 'WARN C49-qmd-embed-model' && grepq "$out" -F 'qmd-embed-model.sh'; then
+        pass "C49 mismatch -> WARN naming the fix script"
+    else
+        fail "C49 mismatch -> $(printf '%s' "$out" | grep -A1 C49)"
+    fi
+
+    echo "== C49-qmd-embed-model: no index -> silent =="
+    out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c49_t/claude" HOME="$c49_t/home" bash "$DOC" --no-color 2>&1)"
+    if grepq "$out" 'C49-qmd-embed-model'; then
+        fail "C49 no index -> $(printf '%s' "$out" | grep -A1 C49)"
+    else
+        pass "C49 no index -> silent"
+    fi
+    rm -rf "$c49_t"
+else
+    pass "C49 skipped: sqlite3 not installed"
+fi
 
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 

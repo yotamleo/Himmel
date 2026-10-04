@@ -230,6 +230,16 @@ export CADENCE_WSH_POWERSHELL="$FAKE_WSH_POWERSHELL"
 # mutate the operator's real ~/.claude.json.
 export WORKSPACE_TRUST_CONFIG="$TMP_ROOT/claude-trust.json"
 export HIMMEL_FLOW_RUNS_LEDGER="$TMP_ROOT/flow-runs.jsonl"
+# HIMMEL-4181: a failing fired runner appends to the cadence alert file and
+# sends one deduped Telegram DM through cadence-alert.sh. Every seam points into
+# the temp tree, and the sender is a recorder, so no fire here ever writes
+# ~/.himmel/state or reaches the real bridge.
+export CADENCE_ALERT_FILE="$TMP_ROOT/cadence-alerts.log"
+export CADENCE_ALERT_DEDUPE_DIR="$TMP_ROOT/cadence-alert-sent"
+ALERT_SENDS="$TMP_ROOT/alert-sends.log"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$ALERT_SENDS" > "$TMP_ROOT/alert-send-rec"
+chmod +x "$TMP_ROOT/alert-send-rec"
+export CADENCE_ALERT_SEND_CMD="$TMP_ROOT/alert-send-rec"
 
 VAULT="$TMP_ROOT/vault"
 mkdir -p "$VAULT"
@@ -590,6 +600,10 @@ assert_contains "harvest runner chains /ig-media-enrich default limit" "/ig-medi
 assert_contains "harvest runner passes --include-evidence to /ig-media-enrich (HIMMEL-3174)" "/ig-media-enrich --limit 10 --include-evidence" "$harvest_sh_plain"
 assert_contains "harvest runner names --include-evidence on the step sentence too (HIMMEL-3174)" "step uses --limit 10 --include-evidence" "$harvest_sh_plain"
 assert_contains "harvest runner fail-opens ig-media-enrich" "must not abort" "$harvest_sh_plain"
+# HIMMEL-4181 / HIMMEL-4108 item 1: x-media-enrich runs nightly beside
+# ig-media, bounded by the same --ig-limit, and fail-opens the same way.
+assert_contains "harvest runner chains /x-media-enrich (HIMMEL-4181)" "/x-media-enrich --limit 10 --include-evidence" "$harvest_sh_plain"
+assert_contains "harvest runner fail-opens x-media-enrich (HIMMEL-4181)" "If /x-media-enrich fails" "$harvest_sh_plain"
 assert_contains "harvest runner bounded run"         "< /dev/null"    "$harvest_sh"
 assert_contains "synth runner cds into vault" "cd $VAULT || exit 1" "$synth_sh"
 assert_contains "synth runner runs /synthesize-clips" "/synthesize-clips" "$synth_sh"
@@ -839,6 +853,28 @@ if command -v jq >/dev/null 2>&1; then
 else
     assert_contains "fragment force-enables obsidian-triage (HIMMEL-1036)" "obsidian-triage@himmel" "$frag_body"
 fi
+
+# HIMMEL-4181: the 2026-10-03 harvest's Skill call came back
+# toolDenialKind=user-rejected. A headless cadence session has nobody to answer
+# a permission ask, so every obsidian-triage command a leg prompt names needs an
+# explicit allow, plus Read of the plugin's command files as the fallback.
+for _allow in \
+    'Skill(obsidian-triage:harvest-clips)' 'Skill(obsidian-triage:triage-clips)' \
+    'Skill(obsidian-triage:ig-media-enrich)' 'Skill(obsidian-triage:x-media-enrich)' \
+    'Skill(obsidian-triage:synthesize-clips)' 'Skill(obsidian-triage:archive-clips)' \
+    'Skill(obsidian-triage:vault-lint)' \
+    'Read(~/.claude/plugins/cache/himmel/obsidian-triage/*/commands/*.md)'
+do
+    if command -v jq >/dev/null 2>&1; then
+        if printf '%s' "$frag_body" | jq -e --arg a "$_allow" '.permissions.allow | index($a)' >/dev/null 2>&1; then
+            pass "fragment allows $_allow (HIMMEL-4181)"
+        else
+            fail "fragment does not allow $_allow (HIMMEL-4181)" "$frag_body"
+        fi
+    else
+        assert_contains "fragment allows $_allow (HIMMEL-4181)" "\"$_allow\"" "$frag_body"
+    fi
+done
 
 # Test C4d: readability warnings for the two S2a/S2b cadence-scoped hooks ----
 # HIMMEL-1682 RETASK (CodeRabbit Major, judge-verified AGREED): AUTO_APPROVE_HOOK
@@ -1353,6 +1389,165 @@ else
     assert_contains "a failing probe run closes as outcome=error" '"outcome":"error"' "$fh_ledger"
     assert_contains "the failing end row carries the true exit code" '"exit_code":3' "$fh_ledger"
 fi
+
+# Test C15e: a failed leg is never silent (HIMMEL-4181) ----------------------
+# Each pipeline family, forced to fail through stubs, must land exactly one
+# `<iso-ts> <leg> <reason> <log>` line in the alert file and exactly one send
+# through the recorder; a repeat of the same failure appends again but does not
+# re-send; a completed leg clears the dedupe so the next failure sends again.
+echo "TEST: failed cadence legs alert once, through seams (HIMMEL-4181)"
+reset_alerts() { rm -rf "$CADENCE_ALERT_DEDUPE_DIR"; : > "$CADENCE_ALERT_FILE"; : > "$ALERT_SENDS"; }
+count_lines() { grep -c . "$1" 2>/dev/null || true; }
+cat >"$TMP_ROOT/bin-rec/claude-parked" <<'STUB'
+#!/usr/bin/env bash
+echo "claude-stub-ran"
+echo "Skill obsidian-triage:harvest-clips errored, nothing harvested"
+STUB
+cat >"$TMP_ROOT/bin-rec/claude-ok" <<'STUB'
+#!/usr/bin/env bash
+echo "claude-stub-ran"
+echo "PIPELINE-LEG-DONE"
+STUB
+cat >"$TMP_ROOT/bin-rec/claude-rc5" <<'STUB'
+#!/usr/bin/env bash
+echo "claude-stub-ran"
+exit 5
+STUB
+chmod +x "$TMP_ROOT/bin-rec/claude-parked" "$TMP_ROOT/bin-rec/claude-ok" "$TMP_ROOT/bin-rec/claude-rc5"
+use_claude() { cp "$TMP_ROOT/bin-rec/claude-$1" "$TMP_ROOT/bin-rec/claude"; }
+for _leg in harvest synthesize health; do
+    _runner="$FIRE_DIR/pipeline-$_leg.sh"
+    grep -q "bin-rec" "$_runner" || { fail "$_leg runner must reference the claude STUB"; continue; }
+    reset_alerts
+    use_claude parked
+    rc=0; sh "$_runner" || rc=$?
+    assert_rc "$_leg: a zero-rc leg without the marker exits non-zero" 3 "$rc"
+    assert_contains "$_leg: log names the no-op" "[PIPELINE-LEG-FAILED no-completion-marker]" "$(cat "$FIRE_DIR/pipeline-$_leg.log")"
+    assert_rc "$_leg: exactly one alert line" 1 "$(count_lines "$CADENCE_ALERT_FILE")"
+    assert_contains "$_leg: alert line is <ts> <leg> <reason> <log>" "pipeline-$_leg no-completion-marker $FIRE_DIR/pipeline-$_leg.log" "$(cat "$CADENCE_ALERT_FILE")"
+    if grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z ' "$CADENCE_ALERT_FILE"; then
+        pass "$_leg: alert line starts with a UTC ISO timestamp"
+    else
+        fail "$_leg: alert line has no ISO timestamp" "$(cat "$CADENCE_ALERT_FILE")"
+    fi
+    assert_rc "$_leg: exactly one Telegram send" 1 "$(count_lines "$ALERT_SENDS")"
+    assert_contains "$_leg: the send names leg and reason" "pipeline-$_leg no-completion-marker" "$(cat "$ALERT_SENDS")"
+done
+# Dedupe and clear, on the harvest runner.
+reset_alerts
+use_claude parked
+sh "$FIRE_DIR/pipeline-harvest.sh" || true
+sh "$FIRE_DIR/pipeline-harvest.sh" || true
+assert_rc "repeat failure appends a second alert line" 2 "$(count_lines "$CADENCE_ALERT_FILE")"
+assert_rc "repeat failure does not re-send" 1 "$(count_lines "$ALERT_SENDS")"
+use_claude ok
+rc=0; sh "$FIRE_DIR/pipeline-harvest.sh" || rc=$?
+assert_rc "a completed leg exits 0" 0 "$rc"
+assert_rc "a completed leg appends no alert" 2 "$(count_lines "$CADENCE_ALERT_FILE")"
+assert_not_contains "a completed leg logs no FAILED line" "PIPELINE-LEG-FAILED" "$(cat "$FIRE_DIR/pipeline-harvest.log")"
+use_claude parked
+sh "$FIRE_DIR/pipeline-harvest.sh" || true
+assert_rc "after a completed leg the next failure sends again" 2 "$(count_lines "$ALERT_SENDS")"
+# A non-zero rc (no transient signature, so no retry).
+reset_alerts
+use_claude rc5
+rc=0; sh "$FIRE_DIR/pipeline-harvest.sh" || rc=$?
+assert_rc "a non-zero leg keeps its rc" 5 "$rc"
+assert_contains "non-zero rc is logged as FAILED" "[PIPELINE-LEG-FAILED rc=5]" "$(cat "$FIRE_DIR/pipeline-harvest.log")"
+assert_contains "non-zero rc alerts with reason rc-5" "pipeline-harvest rc-5 " "$(cat "$CADENCE_ALERT_FILE")"
+assert_rc "non-zero rc sends once" 1 "$(count_lines "$ALERT_SENDS")"
+# A bank skip alerts only on the SECOND night running: the runner rotates the
+# previous night's log to .log.prev, and that is where the first skip lives.
+printf '#!/bin/sh\necho SKIPPED-BANK\n' > "$TMP_ROOT/bank-skip-stub.sh"
+chmod +x "$TMP_ROOT/bank-skip-stub.sh"
+sed "s#[^ ]*bank-preflight\\.sh#$TMP_ROOT/bank-skip-stub.sh#" "$FIRE_DIR/pipeline-harvest.sh" > "$FIRE_DIR/pipeline-harvest-bankskip.sh"
+reset_alerts
+use_claude ok
+sh "$FIRE_DIR/pipeline-harvest.sh" || true
+rc=0; sh "$FIRE_DIR/pipeline-harvest-bankskip.sh" || rc=$?
+assert_rc "a bank skip still exits 0" 0 "$rc"
+assert_rc "one bank skip does not alert" 0 "$(count_lines "$CADENCE_ALERT_FILE")"
+sh "$FIRE_DIR/pipeline-harvest-bankskip.sh" || true
+assert_rc "two bank skips running alert once" 1 "$(count_lines "$CADENCE_ALERT_FILE")"
+assert_contains "the bank alert names its reason" "pipeline-harvest bank-skip-2-nights " "$(cat "$CADENCE_ALERT_FILE")"
+assert_rc "two bank skips running send once" 1 "$(count_lines "$ALERT_SENDS")"
+# The fetch-health probe going bad.
+reset_alerts
+rc=0; FETCH_HEALTH_STUB_RC=3 sh "$FIRE_DIR/pipeline-fetch-health.sh" || rc=$?
+assert_rc "fetch-health still propagates its rc" 3 "$rc"
+assert_rc "fetch-health failure: one alert line" 1 "$(count_lines "$CADENCE_ALERT_FILE")"
+assert_contains "fetch-health alert reason is probe-bad" "pipeline-fetch-health probe-bad $FIRE_DIR/pipeline-fetch-health.log" "$(cat "$CADENCE_ALERT_FILE")"
+assert_rc "fetch-health failure: one send" 1 "$(count_lines "$ALERT_SENDS")"
+sh "$FIRE_DIR/pipeline-fetch-health.sh" || true
+FETCH_HEALTH_STUB_RC=3 sh "$FIRE_DIR/pipeline-fetch-health.sh" || true
+assert_rc "a clean probe clears the dedupe, so the next bad probe sends" 2 "$(count_lines "$ALERT_SENDS")"
+use_claude ok
+
+# HIMMEL-4182: harvest and synthesize refresh the day note's timeline after the
+# leg, must-not-abort. `node` is stubbed AFTER arm (the runner's PATH snapshot
+# already carries bin-rec), so no fire here touches a real vault note.
+echo "TEST: runners run daily-timeline.mjs, must-not-abort (HIMMEL-4182)"
+REAL_NODE=$(command -v node || true)
+TL_REC="$TMP_ROOT/timeline-record"
+cat >"$TMP_ROOT/bin-rec/node" <<STUB
+#!/bin/sh
+case "\$1" in
+    *daily-timeline.mjs) printf '%s\\n' "\$*" >> "$TL_REC"; echo "timeline-stub-ran"; exit "\${TIMELINE_STUB_RC:-0}" ;;
+esac
+exec "$REAL_NODE" "\$@"
+STUB
+chmod +x "$TMP_ROOT/bin-rec/node"
+for _leg in harvest synthesize; do
+    _runner="$FIRE_DIR/pipeline-$_leg.sh"
+    assert_contains "$_leg runner calls the daily timeline" "obsidian-triage/tools/daily-timeline.mjs" "$(cat "$_runner")"
+    reset_alerts; : > "$TL_REC"; use_claude ok
+    rc=0; sh "$_runner" || rc=$?
+    assert_rc "$_leg: a completed leg with a good timeline exits 0" 0 "$rc"
+    assert_contains "$_leg: timeline gets --vault and today's --date" "--vault $FIRE_VAULT --date $(date +%Y-%m-%d)" "$(cat "$TL_REC")"
+    # A failing timeline changes nothing about rc, outcome or alerts.
+    reset_alerts; : > "$TL_REC"
+    rc=0; TIMELINE_STUB_RC=1 sh "$_runner" || rc=$?
+    assert_rc "$_leg: a failing timeline leaves rc 0" 0 "$rc"
+    assert_contains "$_leg: the failure is logged" "[daily-timeline failed rc=1 - continuing]" "$(cat "$FIRE_DIR/pipeline-$_leg.log")"
+    assert_not_contains "$_leg: a failing timeline is not a LEG-FAILED" "PIPELINE-LEG-FAILED" "$(cat "$FIRE_DIR/pipeline-$_leg.log")"
+    assert_rc "$_leg: a failing timeline raises no alert" 0 "$(count_lines "$CADENCE_ALERT_FILE")"
+    use_claude parked
+    rc=0; TIMELINE_STUB_RC=1 sh "$_runner" || rc=$?
+    assert_rc "$_leg: a parked leg still exits 3 beside a failing timeline" 3 "$rc"
+    assert_contains "$_leg: a parked leg still logs LEG-FAILED" "[PIPELINE-LEG-FAILED no-completion-marker]" "$(cat "$FIRE_DIR/pipeline-$_leg.log")"
+    use_claude rc5
+    rc=0; TIMELINE_STUB_RC=1 sh "$_runner" || rc=$?
+    assert_rc "$_leg: a failed leg keeps its own rc beside a failing timeline" 5 "$rc"
+done
+: > "$TL_REC"; use_claude ok
+sh "$FIRE_DIR/pipeline-health.sh" || true
+assert_rc "the health runner never runs the timeline" 0 "$(count_lines "$TL_REC")"
+assert_not_contains "health runner has no timeline call" "daily-timeline.mjs" "$(cat "$FIRE_DIR/pipeline-health.sh")"
+rm -f "$TMP_ROOT/bin-rec/node"
+use_claude ok
+
+# The helper itself: an unwritable dedupe dir must not swallow the send, and
+# the dedupe sentinel is written only after a delivered send, so a send that
+# fails or is interrupted leaves nothing behind to suppress the next alert.
+reset_alerts
+: > "$TMP_ROOT/not-a-dir"
+CADENCE_ALERT_DEDUPE_DIR="$TMP_ROOT/not-a-dir/sent" bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+assert_rc "unwritable dedupe dir still sends" 1 "$(count_lines "$ALERT_SENDS")"
+reset_alerts
+printf '#!/bin/sh\nls "%s" | wc -l | tr -d " " >> "%s"\n' "$CADENCE_ALERT_DEDUPE_DIR" "$ALERT_SENDS" > "$TMP_ROOT/alert-send-peek"
+chmod +x "$TMP_ROOT/alert-send-peek"
+CADENCE_ALERT_SEND_CMD="$TMP_ROOT/alert-send-peek" bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+assert_rc "no dedupe sentinel exists while the send is in flight" 0 "$(cat "$ALERT_SENDS")"
+reset_alerts
+CADENCE_ALERT_SEND_CMD=false bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+bash "$SCRIPT_DIR/cadence-alert.sh" fail pipeline-harvest rc-1 /x.log
+assert_rc "a failed send leaves no sentinel, so the next failure retries" 1 "$(count_lines "$ALERT_SENDS")"
+# Clearing leg `a` must not re-arm leg `a.b`: `.` is the leg/reason delimiter.
+reset_alerts
+bash "$SCRIPT_DIR/cadence-alert.sh" fail a.b rc-1 /x.log
+bash "$SCRIPT_DIR/cadence-alert.sh" clear a
+bash "$SCRIPT_DIR/cadence-alert.sh" fail a.b rc-1 /x.log
+assert_rc "clearing one leg leaves a dotted sibling's dedupe intact" 1 "$(count_lines "$ALERT_SENDS")"
 
 # Test C15d: bounded retry/resume for a transient upstream API error (HIMMEL-1152)
 # The 2026-07-17 harvest died 48 minutes in on `API Error: Server error
@@ -1958,7 +2153,8 @@ for what in harvest synth health; do
     assert_contains "$what runner fails closed when the classifier is silent" 'if [ "$_flow_outcome" = "" ]; then if [ "$_rc" = 0 ]; then _flow_outcome=parked; else _flow_outcome=error; fi; fi' "$body"
     assert_not_contains "$what runner has no complete-by-default fallback" '_flow_outcome=complete' "$body"
     # shellcheck disable=SC2016  # the runner's own $_flow_outcome/$_rc, asserted as literal emitted text
-    assert_contains "$what runner raises a parked leg to exit 3" 'if [ "$_flow_outcome" = parked ] && [ "$_rc" = 0 ]; then exit 3; fi' "$body"
+    # HIMMEL-4181 widened parked-only to any zero-rc outcome short of complete.
+    assert_contains "$what runner raises a no-op leg (rc 0, not complete) to exit 3" 'if [ "$_rc" = 0 ] && [ "$_flow_outcome" != complete ]; then exit 3; fi' "$body"
 done
 for what in harvest synth health; do
     body=$(eval "printf '%s' \"\$${what}_bat\"")

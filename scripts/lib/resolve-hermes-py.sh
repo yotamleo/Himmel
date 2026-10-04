@@ -15,7 +15,10 @@
 # CHECKOUT_DIR is the hermes-agent checkout that owns venv/ (optional). When
 # omitted it is derived from HERMES_HOME, else %LOCALAPPDATA%/hermes on Windows
 # and $HOME/.hermes on POSIX (HIMMEL-2582), tolerating HERMES_HOME pointing
-# straight at the checkout (venv/ at the root). Prints the absolute path on stdout + returns 0 on success; returns
+# straight at the checkout (venv/ or .hermes/bin/ at the root). Since HIMMEL-4307
+# a PM-managed install (.hermes/bin/hermes, Python 3.14 dependency generations)
+# resolves through the launcher's `--print-runtime-command`; the legacy venv is
+# the fallback. Prints the absolute path on stdout + returns 0 on success; returns
 # 1 + empty stdout when no executable interpreter is found. bash 3.2-safe.
 
 resolve_hermes_py() {
@@ -27,7 +30,49 @@ resolve_hermes_py() {
         return 0
     fi
 
-    # 2) Derive the checkout dir that owns venv/.
+    # 2) Derive the checkout dir that owns the launcher / venv/.
+    local src
+    src="$(_hermes_src_dir "${1:-}")"
+
+    # 3) PM-managed layout (HIMMEL-4307): upstream's launcher prints the exact
+    #    runtime argv; argv[0] is the interpreter that can load the dependency
+    #    generation (Python 3.14 under ~/.hermes/tools). The legacy venv python
+    #    cannot, so this beats the venv probe — which stays as the fallback for
+    #    old installs and for a launcher whose reported interpreter is gone.
+    #    The launcher call is bounded (5s) where `timeout` exists, so a stalled
+    #    launcher cannot hang resolution before invoke.sh starts its watchdog.
+    local launcher rt out
+    if launcher="$(hermes_pm_launcher "$src")"; then
+        if command -v timeout >/dev/null 2>&1; then
+            out="$(timeout 5 "$launcher" --print-runtime-command 2>/dev/null)" || out=""
+        else
+            out="$("$launcher" --print-runtime-command 2>/dev/null)" || out=""
+        fi
+        rt="$(printf '%s\n' "$out" | sed -n '1s/^\["\(\([^"\\]\|\\.\)*\)".*/\1/p' | sed 's/\\\\/\\/g')"
+        if [ -n "$rt" ] && [ -x "$rt" ]; then printf '%s\n' "$rt"; return 0; fi
+    fi
+
+    # 4) Probe both venv layouts (Windows Scripts/, POSIX bin/).
+    if   [ -x "$src/venv/Scripts/python.exe" ]; then printf '%s\n' "$src/venv/Scripts/python.exe"; return 0
+    elif [ -x "$src/venv/bin/python" ];        then printf '%s\n' "$src/venv/bin/python";        return 0
+    fi
+    return 1
+}
+
+# hermes_pm_launcher [CHECKOUT_DIR] — print the upstream launcher path and return
+# 0 when this install is the PM-managed layout; return 1 + empty stdout for a
+# legacy venv-only install (HIMMEL-4307). Callers use it to know that pip-managing
+# the interpreter would fight hermes' own dependency manager.
+hermes_pm_launcher() {
+    local src
+    src="$(_hermes_src_dir "${1:-}")"
+    if [ -x "$src/.hermes/bin/hermes" ]; then printf '%s\n' "$src/.hermes/bin/hermes"; return 0; fi
+    return 1
+}
+
+# _hermes_src_dir [CHECKOUT_DIR] — the hermes-agent checkout: the argument, else
+# derived from HERMES_HOME / the per-platform default (see the header).
+_hermes_src_dir() {
     local src="${1:-}"
     if [ -z "$src" ]; then
         local root="${HERMES_HOME:-}"
@@ -47,12 +92,8 @@ resolve_hermes_py() {
         fi
         src="$root/hermes-agent"
         # Tolerate HERMES_HOME pointing straight at the checkout (venv/ at root).
-        [ -d "$src/venv" ] || { [ -d "$root/venv" ] && src="$root"; }
+        [ -d "$src/venv" ] || [ -x "$src/.hermes/bin/hermes" ] \
+            || { { [ -d "$root/venv" ] || [ -x "$root/.hermes/bin/hermes" ]; } && src="$root"; }
     fi
-
-    # 3) Probe both venv layouts (Windows Scripts/, POSIX bin/).
-    if   [ -x "$src/venv/Scripts/python.exe" ]; then printf '%s\n' "$src/venv/Scripts/python.exe"; return 0
-    elif [ -x "$src/venv/bin/python" ];        then printf '%s\n' "$src/venv/bin/python";        return 0
-    fi
-    return 1
+    printf '%s\n' "$src"
 }

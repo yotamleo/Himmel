@@ -76,6 +76,24 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/run-unchecked-mktemp-under-bwk.sh
 
+  # HIMMEL-4301: the unchecked-mktemp gate (scripts/hooks/check-unchecked-mktemp.sh)
+  # was pre-commit only (stages: [pre-commit]), so a commit made with the hook
+  # skipped or bypassed (UNCHECKED_MKTEMP_OK=1, --no-verify) reached main
+  # (#1747, #1771). This re-runs its added-lines scan over the PR's net diff,
+  # like plugin-version-bump does for its pre-commit twin. --merge-ref: CI's
+  # refs/pull/N/merge has the CURRENT base tip as HEAD^1, so lines main gained
+  # since the PR forked are never the PR's. fetch-depth: 0 → HEAD^1 reachable.
+  unchecked-mktemp-range:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: No unchecked mktemp capture added anywhere in the PR range
+        run: bash scripts/hooks/check-unchecked-mktemp.sh --range --merge-ref "${{ github.event.pull_request.base.sha }}"
+
   # Commit-time / pre-commit backstop for the 5 leak classes (HIMMEL-2561 /
   # HIMMEL-2705 step 2): catches anything that slipped past the pre-commit
   # hook (a --no-verify commit, a merge, a stale clone) by re-scanning the
@@ -157,22 +175,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # --severity=warning makes the gate deterministic across shellcheck
-      # versions: SC2329 (note-level, "function never invoked") is the only
-      # check newer shellchecks add over the pre-commit-pinned 0.10.x, and it
-      # only fires on pre-existing files. pre-commit stays the strict
-      # style-level local gate; CI catches warnings+errors regardless of the
-      # runner's shellcheck version.
-      # git pathspec `*` crosses `/`, so 'scripts/*.sh' matches every depth
-      # (top-level setup.sh/adopt.sh/… included). 'scripts/**/*.sh' would NOT —
-      # in a git pathspec `**/` requires an intervening directory, silently
-      # dropping the 34 top-level scripts. xargs -r: no files -> don't run
-      # shellcheck on stdin.
-      # scripts/lanes/bench/fixtures/ holds benchmark INPUT scripts — sample
-      # shell fed to the lane bench as the thing being measured. Adding
-      # shellcheck directives to them would change the artifact under
-      # measurement, so they're excluded the same way scripts/statusline/ is.
-      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | grep -zv '^scripts/lanes/bench/fixtures/' | xargs -0 -r shellcheck --severity=warning
+      # HIMMEL-4265: run the SAME pre-commit shellcheck hook the local gate runs
+      # (pinned shellcheck-py version, default severity, .shellcheckrc, and the
+      # hook's own vendored/fixture excludes), so nothing the hook refuses can
+      # reach main. The old `shellcheck --severity=warning` over a hand-kept
+      # file list let info-level findings (SC2119) through CI and fail locally.
+      - run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
+      - run: pre-commit run shellcheck --all-files --show-diff-on-failure
+      # HIMMEL-4254 P2: a bypass flag a hook reads but the config UI's display
+      # registry lacks is a flag the UI silently cannot show.
+      - run: node scripts/install/flag-registry-lint.mjs
 
   node-suites:
     runs-on: ubuntu-latest
@@ -244,6 +256,8 @@ jobs:
       # keeps the retry-cap / resume / mid-batch-abort contract under a runner
       # check; SKIP-guarding them instead would exit 0 with nothing exercised.
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: node --test "scripts/lanes/tests/**/*.test.mjs"
       # HIMMEL-1529: same shape — a zero-dependency node:test suite outside any
       # package.json. Listed explicitly because nothing globs for it; an
@@ -352,6 +366,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: cd scripts/luna-vitals && bun install --frozen-lockfile && bun test
       # Must run from the repo root, not scripts/telegram/ — these suites pin
       # their fixtures repo-root-relative, so running them from their own
@@ -546,6 +562,8 @@ jobs:
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
 
       # gitleaks: pinned to the SAME version as the pre-commit hook
       # (.pre-commit-config.yaml → gitleaks rev v8.30.1) and reuses .gitleaks.toml,
@@ -710,6 +728,8 @@ jobs:
       # bun") without it. Installing bun keeps that hermetic PATH-scrub case
       # under a runner check; a self-skip would exit 0 with nothing exercised.
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       # HIMMEL-3193: the run step below now covers marketplace/ (root `.`), where
       # the obsidian-triage suites need js-yaml + playwright from
       # tools/node_modules. ensure-deps.sh installs them and exits non-zero on
@@ -726,7 +746,7 @@ jobs:
       # above: python -m pip works identically on every OS in this matrix.
       - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
         shell: bash
-        run: python -m pip install --disable-pip-version-check pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
       # Explicit `bash` prefix: on windows-latest the default run shell is pwsh,
       # but Git Bash is preinstalled + on PATH, so `bash …` runs under MSYS2.
       # FAIL_LOG_DIR: full failed-suite logs land there and upload as an
@@ -800,7 +820,7 @@ jobs:
       # - name: Install pre-commit (Windows)
       #   if: runner.os == 'Windows'
       #   shell: bash
-      #   run: python -m pip install --disable-pip-version-check pre-commit
+      #   run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
       #
       # - name: Vault sweeper suite (Windows only)
       #   if: runner.os == 'Windows'
@@ -897,7 +917,7 @@ jobs:
           echo "OK: every gating shell-unit shard passed."
       - name: Download shard manifests
         if: ${{ !cancelled() }}
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: shell-unit-manifest-ubuntu-latest-shard*
           path: shard-manifest/

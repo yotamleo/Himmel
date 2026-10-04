@@ -109,7 +109,15 @@ template_version: 3
 >    run `leg-burn.sh` by hand (HIMMEL-3572). **`completes-ticket: yes|no`** — does this PR finish the
 >    cited ticket? `yes` → the leg merges with `--jira-transition`; `no` (the
 >    ticket spans further PRs, sibling slices, or work owed outside any PR) →
->    it omits the flag. <Anything else unusual: a PR body that must carry other
+>    it omits the flag. **The PR body carries a `## Ticket coverage` section**
+>    (HIMMEL-4207): one list line per ask of each cited ticket, each ending
+>    `done` or `deferred → HIMMEL-<n>` (`->` also accepted), e.g.
+>    `- ask one: done` / `- ask two: deferred → HIMMEL-1234`. A deferred key
+>    must exist and still be open; `ready-check.sh` item 7 FAILs a missing
+>    section, an unmarked line, or a deferral to a nonexistent or Done/Closed
+>    ticket, so file the follow-up before you write the line. The marker is
+>    LAST with nothing after it; lint it yourself before READY with
+>    `ready-check.sh --only 7 <pr>` (HIMMEL-4300). <Anything else unusual: a PR body that must carry other
 >    specific numbers, a public-CI wait, a second ticket to comment on but
 >    leave open.>
 
@@ -137,9 +145,10 @@ template_version: 3
 ## What the console must also do (2026-09-13)
 
 - (a) One plan task per leg, plus the stage-worker rule: run the context-fill
-  probe after every completed step (ruling A1) — at ≥60 % fill, or on noticing
-  a compaction, the leg commits what is done and hands off to a `b`-suffixed
-  successor brief rather than continuing.
+  probe after every completed step (ruling A1) — at ≥75 % fill the leg commits
+  what is done and hands off to a `b`-suffixed successor brief rather than
+  continuing. A compaction alone is not a hand-off: the leg's `--autocompact`
+  ceiling is the backstop (HIMMEL-4089).
 - (b) The console creates the leg's worktree before arming it, never after.
 - (c) Holding for the console's `GO` ends the leg's turn — never a Bash sleep
   loop; a leg that blocks in one never wakes to receive it.

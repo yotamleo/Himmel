@@ -152,7 +152,7 @@ make_template() {
     mkdir -p "$d/marketplace/.claude-plugin" "$d/scripts/hooks" "$d/.obsidian/plugins/calendar" "$d/_Templates" "$d/docs" "$d/50-Journal"
     printf '{"metadata":{"version":"%s"}}\n' "$ver" > "$d/marketplace/.claude-plugin/marketplace.json"
     printf '# Operating Manual\n\nline-a\nline-b\nline-c\n' > "$d/_CLAUDE.md"
-    printf '#!/usr/bin/env bash\necho "template commit-msg vTEMPLATE"\n' > "$d/scripts/hooks/check-commit-msg.sh"
+    printf '#!/usr/bin/env bash\necho "template no-force-push vTEMPLATE"\n' > "$d/scripts/hooks/check-no-force-push.sh"
     printf '%s\n' '["dataview","calendar","new"]' > "$d/.obsidian/community-plugins.json"
     printf '{"weekStart":"locale","wordsPerDot":250}\n' > "$d/.obsidian/plugins/calendar/data.json"
     printf 'CALENDAR-MAIN-JS-TEMPLATE\n' > "$d/.obsidian/plugins/calendar/main.js"
@@ -181,17 +181,17 @@ assert_eq "T1 equal-version rc" "0" "$rc"
 case "$out" in *already*current*) pass "T1 equal-version reports already-current" ;; *) fail "T1 equal-version reports already-current" "got: $out" ;; esac
 
 T="$TMP/t1b-tmpl"; V="$TMP/t1b-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.9.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 run_upgrade --yes >/dev/null 2>&1; rc=$?
 assert_eq "T1b behind-version rc" "0" "$rc"
-assert_eq "T1b behind-version ran (hook updated)" "$(sha_of "$T/scripts/hooks/check-commit-msg.sh")" "$(sha_of "$V/scripts/hooks/check-commit-msg.sh")"
+assert_eq "T1b behind-version ran (hook updated)" "$(sha_of "$T/scripts/hooks/check-no-force-push.sh")" "$(sha_of "$V/scripts/hooks/check-no-force-push.sh")"
 
 # ---------------------------------------------------------------------------
 # T2: overwrite-safe — a user-diverged template-owned script is restored.
 T="$TMP/t2-tmpl"; V="$TMP/t2-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
-printf '#!/usr/bin/env bash\necho "USER HACKED THIS"\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf '#!/usr/bin/env bash\necho "USER HACKED THIS"\n' > "$V/scripts/hooks/check-no-force-push.sh"
 run_upgrade --yes >/dev/null 2>&1
-assert_eq "T2 diverged script restored to template" "$(sha_of "$T/scripts/hooks/check-commit-msg.sh")" "$(sha_of "$V/scripts/hooks/check-commit-msg.sh")"
+assert_eq "T2 diverged script restored to template" "$(sha_of "$T/scripts/hooks/check-no-force-push.sh")" "$(sha_of "$V/scripts/hooks/check-no-force-push.sh")"
 
 # ---------------------------------------------------------------------------
 # T3: community-plugins.json add-only merge — never drop a user-added id.
@@ -264,7 +264,7 @@ case "$out" in *already*current*) pass "T8 second run is a no-op" ;; *) fail "T8
 # ---------------------------------------------------------------------------
 # T9: --dry-run mutates nothing.
 T="$TMP/t9-tmpl"; V="$TMP/t9-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 run_upgrade --dry-run >/dev/null 2>&1; rc=$?
 after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
@@ -274,7 +274,7 @@ assert_eq "T9 dry-run made zero changes" "$before" "$after"
 # ---------------------------------------------------------------------------
 # T10: pre-versioning vault (no stamp) => full pass + stamp written at end.
 T="$TMP/t10-tmpl"; V="$TMP/t10-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 [ ! -f "$V/.vault-template.json" ] || rm -f "$V/.vault-template.json"
 run_upgrade --yes >/dev/null 2>&1; rc=$?
 assert_eq "T10 pre-versioning rc" "0" "$rc"
@@ -297,17 +297,17 @@ printf '# MY EDITED JOURNAL INDEX\n' > "$V/50-Journal/_index.md"
 printf 'my private daily note body\n' > "$V/50-Journal/Daily/2026-06-19.md"
 printf 'SECRET=should-never-be-touched\n' > "$V/.env"
 # Give it a real reason to run (a diverged owned file).
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 ut_before=$( { sha_of "$V/index.md"; sha_of "$V/50-Journal/_index.md"; sha_of "$V/50-Journal/Daily/2026-06-19.md"; sha_of "$V/.env"; } )
 run_upgrade --yes >/dev/null 2>&1
 ut_after=$( { sha_of "$V/index.md"; sha_of "$V/50-Journal/_index.md"; sha_of "$V/50-Journal/Daily/2026-06-19.md"; sha_of "$V/.env"; } )
 assert_eq "T12 user content (shipped-skip + never-shipped + .env) untouched" "$ut_before" "$ut_after"
-assert_eq "T12 the run still applied the owned file" "$(sha_of "$T/scripts/hooks/check-commit-msg.sh")" "$(sha_of "$V/scripts/hooks/check-commit-msg.sh")"
+assert_eq "T12 the run still applied the owned file" "$(sha_of "$T/scripts/hooks/check-no-force-push.sh")" "$(sha_of "$V/scripts/hooks/check-no-force-push.sh")"
 
 # ---------------------------------------------------------------------------
 # T13: vault AHEAD of template => no-op (downgrade protection), zero mutations.
 T="$TMP/t13-tmpl"; V="$TMP/t13-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "2.0.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 out=$(run_upgrade --yes 2>&1); rc=$?
 after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
@@ -347,7 +347,7 @@ assert_eq "T15 write-failure does not advance stamp" "0.1.0" "$got_ver"
 # $HOME at a temp tree that holds github/himmel/templates/luna-second-brain.
 T16HOME="$TMP/t16-home"; T="$T16HOME/github/himmel/templates/luna-second-brain"; make_template "$T" "1.0.0"
 V="$TMP/t16-vault"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 out=$(env -u HIMMEL_DIR HOME="$T16HOME" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
 assert_eq "T16 candidate-path rc" "0" "$rc"
 case "$out" in *"t16-home/github/himmel/templates/luna-second-brain"*) pass "T16 resolves via generic candidate path" ;; *) fail "T16 resolves via generic candidate path" "got: $out" ;; esac
@@ -436,7 +436,7 @@ case "$out" in *"(v6.6.6)"*) fail "T22 must not pick the later glob match zzz-hi
 # T23: --check on a BEHIND vault prints the upgrade-available nudge, exits 0, and
 # mutates nothing (HIMMEL-423 Phase 3).
 T="$TMP/t23-tmpl"; V="$TMP/t23-vault"; make_template "$T" "2.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "1.0.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 out=$(run_upgrade --check 2>&1); rc=$?
 after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
@@ -1849,9 +1849,9 @@ assert_eq "T68 stamp NOT advanced" "1.2.0" "$(t53_stamp_version)"
 # it, so the buggy loop re-matched --keep forever. Bounded so a regression
 # here fails the suite instead of hanging it. Resolves `timeout` or (macOS
 # with brew coreutils) `gtimeout` inline rather than sourcing himmel's
-# scripts/lib/timeout-bin.sh: this template is a self-contained repo that
-# propagates to the public luna-brain repo, which has no scripts/lib/ of
-# its own to source.
+# scripts/lib/timeout-bin.sh: this template is self-contained — it ships
+# inside the public Himmel repo but is copied out standalone, so it must
+# not source himmel's scripts/lib/.
 t69_timeout_bin=""
 for t69_bin in timeout gtimeout; do
     if command -v "$t69_bin" >/dev/null 2>&1; then

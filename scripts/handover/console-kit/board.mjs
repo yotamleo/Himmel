@@ -152,7 +152,20 @@ const epicsDeclared = liveField('epics').split(/[,\s]+/).filter(Boolean).map((e)
 }).filter(Boolean);
 // A version name lands inside a JQL string: only a plain release token is accepted.
 const versionsDeclared = liveField('versions').split(/[,\s]+/).filter((v) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v));
-const decisions = liveField('decisions').split(';').map((d) => d.trim()).filter((d) => d && d !== 'none');
+// Split on ';' only at parenthesis depth 0, so "A (x; y); B?" -> ["A (x; y)", "B?"] (HIMMEL-3944).
+const splitTopLevel = (s) => {
+    const out = [];
+    let depth = 0;
+    let cur = '';
+    for (const ch of s) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth = Math.max(0, depth - 1);
+        if (ch === ';' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+    }
+    out.push(cur);
+    return out;
+};
+const decisions = splitTopLevel(liveField('decisions')).map((d) => d.trim()).filter((d) => d && d !== 'none');
 const queueLine = liveField('queue');
 const lastGo = liveField('last GO').replace(/`/g, '');
 const consoleResults = section('## Results').filter((l) => l.startsWith('- ')).slice(-8);
@@ -273,9 +286,16 @@ const fleetOk = Number.isFinite(fleetLive) && Number.isFinite(fleetCap) && fleet
 const idle = fleetOk ? Math.max(0, fleetCap - fleetLive) : 0;
 
 // ---------------------------------------------------------------- gh
+// A console always runs in himmel; the checkout it is FOR is recorded on the
+// doc's project line (console.sh writes it, `none — ...` for himmel itself).
+// Its PRs are the ones the board shows, so gh asks that checkout. A recorded
+// path that is gone reads `gh unavailable`, never himmel's PRs. tick.sh reads
+// the same line for prs=, so the board fingerprint stays in step.
+const projectLine = /The project this console is FOR is \*\*`([^`]*)`\*\*/.exec(docText);
+const prRepo = projectLine && projectLine[1].startsWith('/') ? projectLine[1] : repo;
 const ghJson = (ghArgs) => {
     try {
-        return JSON.parse(execFileSync('gh', ghArgs, { cwd: repo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] }));
+        return JSON.parse(execFileSync('gh', ghArgs, { cwd: prRepo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] }));
     } catch { return null; }
 };
 const gh = (ghArgs) => {
@@ -454,6 +474,36 @@ const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(
 const logRows = consoleResults.map((l) => `<li>${safe(l.slice(2), 200)}</li>`).join('\n');
 const panel = (title, body, empty) => `<section><h2>${title}</h2>${body ? `<ul>${body}</ul>` : `<p class="none">${empty}</p>`}</section>`;
 
+// Cost today (HIMMEL-4217): one line from the leg cost ledger close-wrapped-leg.sh
+// appends to (LEG_COST_LEDGER, else $HANDOVER_DIR/.ledger/leg-cost.jsonl). An absent
+// or unreadable ledger, or no usable row dated today, renders nothing and never fails
+// the render. Not part of the fingerprint: --changed does not move on a new ledger row.
+const costSection = (() => {
+    try {
+        const ledger = process.env.LEG_COST_LEDGER
+            || (process.env.HANDOVER_DIR ? join(process.env.HANDOVER_DIR, '.ledger', 'leg-cost.jsonl') : '');
+        if (!ledger) return '';
+        const d = new Date();
+        const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const byClass = Object.create(null);
+        let n = 0;
+        let total = 0;
+        for (const line of readFileSync(ledger, 'utf8').split('\n')) {
+            let r;
+            try { r = JSON.parse(line); } catch { continue; }
+            if (!r || r.date !== today || typeof r.cost_eq !== 'number') continue;
+            (byClass[r.class || 'unknown'] ||= []).push(r.cost_eq);
+            n += 1;
+            total += r.cost_eq;
+        }
+        if (!n) return '';
+        const fmt = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}k` : String(Math.round(v)));
+        const median = (a) => { const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+        const per = Object.keys(byClass).sort().map((c) => `${safe(c, 20)} ${fmt(median(byClass[c]))}`).join(', ');
+        return `<section data-cost-legs="${n}"><h2>Cost today</h2><p class="sub">${n} leg${n === 1 ? '' : 's'} · ${fmt(total)} cost-eq · median ${per}</p></section>`;
+    } catch { return ''; }
+})();
+
 const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -503,6 +553,7 @@ ${fleetOk ? `<div class="fleet" data-fleet="${fleetLive}/${fleetCap}">${fleetLiv
 ${ladder}
 </ul>
 </section>
+${costSection}
 ${panel('Needs the console', needRows, 'nothing waiting on the console')}
 ${panel('Open operator decisions', decisions.map((d) => `<li>${safe(d)}</li>`).join('\n'), 'none recorded (Live state decisions:)')}
 ${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}${releases.map((r) => `\n${releasePanel(r)}`).join('')}

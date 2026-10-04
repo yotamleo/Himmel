@@ -466,9 +466,11 @@ if [ "$CONSULT" -eq 1 ]; then
     for _consult_pair in "HEADED_ARM_LEG_TARGET ../headed-arm.sh" "HEADED_ARM_LEG_PROFILES ../../lanes/plugin-profiles.mjs"; do
         _consult_var="${_consult_pair%% *}"; _consult_rel="${_consult_pair#* }"
         _consult_val="${!_consult_var:-}"
-        [ -n "$_consult_val" ] || continue
-        _consult_got="$(cd -P "$(dirname "$_consult_val")" 2>/dev/null && pwd -P)/$(basename "$_consult_val")"
         _consult_want="$(cd -P "$_consult_kit/$(dirname "$_consult_rel")" && pwd -P)/$(basename "$_consult_rel")"
+        # (HIMMEL-4152) Unset = the in-repo default, pinned to the same canonical
+        # path: the default spelling is built from $0, which a symlink can reach.
+        _consult_got="$_consult_want"
+        [ -z "$_consult_val" ] || _consult_got="$(cd -P "$(dirname "$_consult_val")" 2>/dev/null && pwd -P)/$(basename "$_consult_val")"
         if [ "$_consult_got" != "$_consult_want" ]; then
             echo "headed-arm-leg: --consult refuses $_consult_var=$_consult_val: only $_consult_want is the in-repo file a consult may run" >&2
             exit 2
@@ -476,6 +478,50 @@ if [ "$CONSULT" -eq 1 ]; then
         printf -v "$_consult_var" '%s' "$_consult_want"
     done
     unset -v _consult_kit _consult_pair _consult_var _consult_rel _consult_val _consult_got _consult_want
+    # (HIMMEL-4152) A PATH token reaches the shim's environment and would pick
+    # which claude it runs; the shim pins its own PATH under a consult, and the
+    # token refuses here too rather than ride along. A bash startup token (the
+    # startup files, the option imports, the xtrace prompt, an exported
+    # function) would run caller code inside the launcher's bash; the consult
+    # entry strips them anyway, and they refuse here so the intent is visible.
+    # (HIMMEL-4159) A loader or node preload token (LD_PRELOAD, LD_LIBRARY_PATH,
+    # LD_AUDIT, NODE_OPTIONS) would load caller code into every binary the
+    # consult runs; same treatment. A token that is not NAME=VALUE becomes
+    # `env`'s command operand (or an option) at headed-arm.sh's launch site, so
+    # it would run as the session command: it refuses too.
+    set -f
+    for _consult_tok in ${HEADED_ARM_LAUNCHER_ENV:-}; do
+        case "$_consult_tok" in
+            PATH=*)
+                set +f
+                echo "headed-arm-leg: --consult refuses a PATH token in HEADED_ARM_LAUNCHER_ENV ($_consult_tok): a consult's claude comes from a pinned PATH, never the caller's" >&2
+                exit 2
+                ;;
+            BASH_ENV=*|ENV=*|SHELLOPTS=*|BASHOPTS=*|PS4=*|CDPATH=*|GLOBIGNORE=*|BASH_FUNC_*)
+                set +f
+                echo "headed-arm-leg: --consult refuses a bash startup token in HEADED_ARM_LAUNCHER_ENV (${_consult_tok%%=*}): a consult's launcher runs on a clean bash" >&2
+                exit 2
+                ;;
+            LD_PRELOAD=*|LD_LIBRARY_PATH=*|LD_AUDIT=*|NODE_OPTIONS=*)
+                set +f
+                echo "headed-arm-leg: --consult refuses a loader or node preload token in HEADED_ARM_LAUNCHER_ENV (${_consult_tok%%=*}): a consult's binaries load no caller code" >&2
+                exit 2
+                ;;
+        esac
+        # Spelled-out classes, not ranges: a range is locale-dependent in a glob.
+        case "${_consult_tok%%=*}" in
+            "$_consult_tok"|''|[0123456789]*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*)
+                set +f
+                echo "headed-arm-leg: --consult refuses a token that is not NAME=VALUE in HEADED_ARM_LAUNCHER_ENV ($_consult_tok): the launch site would run it as a command" >&2
+                exit 2
+                ;;
+        esac
+    done
+    set +f
+    unset -v _consult_tok
+    # (HIMMEL-4152) The recorder's `script -c` runs the launch line in a shell
+    # it finds through PATH. A consult is native-lane only and never records.
+    unset -v HEADED_ARM_RECORDER
 fi
 
 [ "$JUDGE" -eq 1 ] || [ "$CONSULT" -eq 1 ] && READONLY_ROLE=1
@@ -1670,6 +1716,12 @@ EOF_CS_FILES
     # `--setting-sources ""`, which only narrows. Its hooks, deny/ask and env were carried above.
     [ "$CONSULT" -eq 1 ] && leg_propagate_env LEG_PROFILE_NO_SETTING_SOURCES 1
     export HEADED_ARM_LAUNCHER="$LEG_SHIM"
+    # (HIMMEL-4152) A consult's launcher is the entry beside the canonical shim:
+    # an absolute `#!/bin/bash -p` that strips the bash startup variables and
+    # exported functions, then runs the shim on the pinned PATH. headed-arm.sh
+    # execs its launcher through `env`, where the shim's `#!/usr/bin/env bash`
+    # would let PATH pick the interpreter.
+    [ "$CONSULT" -eq 1 ] && export HEADED_ARM_LAUNCHER="${LEG_SHIM%/*}/leg-claude-launcher-consult.sh"
     # Lean SessionStart (HIMMEL-2830): the three advisory hooks go quiet. Only
     # the exact value 1 leans - the hooks are fail-open by construction.
     leg_propagate_env HIMMEL_LEAN_LEG 1
@@ -1954,10 +2006,32 @@ fi
 
 # Paired with this exec's PID: headed-arm.sh ignores stale ambient values.
 export HEADED_ARM_CONTEXT_PID="$$" HEADED_ARM_LEG_PROFILES="$PROFILES_MJS"
+# (HIMMEL-4152) A consult runs headed-arm.sh on the pinned runtime: an absolute
+# `bash -p` (no PATH lookup of its `#!/usr/bin/env bash`, no startup file, no
+# exported function), the bash startup variables stripped, and the pinned PATH
+# already set, so the PATH headed-arm.sh hands its own exec of the launcher is
+# the pinned one. Every other launch keeps the plain exec below.
+HA_RUN=("$HEADED_ARM")
+HA_SH=(bash)
+if [ "$CONSULT" -eq 1 ]; then
+    # shellcheck source=../../lanes/consult-env.sh
+    if ! . "${LEG_SHIM%/*}/consult-env.sh"; then
+        echo "headed-arm-leg: --consult cannot load ${LEG_SHIM%/*}/consult-env.sh: refusing" >&2
+        exit 2
+    fi
+    if ! _consult_bash="$(consult_pin_bash)"; then
+        echo "headed-arm-leg: --consult needs /usr/bin/bash or /bin/bash: refusing" >&2
+        exit 2
+    fi
+    consult_scrub_args
+    HA_RUN=(/usr/bin/env "${CONSULT_SCRUB[@]}" PATH="$(consult_pin_path)" "$_consult_bash" -p "$HEADED_ARM")
+    # The --fleet hand-off below starts its own bash first: same absolute -p one.
+    HA_SH=("$_consult_bash" -p)
+fi
 if [ -n "$FLEET_MANIFEST" ]; then
     # Keep headed-arm.sh's profile/context handoff paired to its own exec PID.
-    bash -c 'export HEADED_ARM_CONTEXT_PID="$$"; exec "$@"' bash \
-        "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
+    "${HA_SH[@]}" -c 'export HEADED_ARM_CONTEXT_PID="$$"; exec "$@"' bash \
+        "${HA_RUN[@]}" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
     launch_rc=$?
     [ "$launch_rc" -eq 0 ] || exit "$launch_rc"
     if ! bash "$HERE/fleet-manifest.sh" add "$FLEET_MANIFEST" "$DOC"; then
@@ -1966,4 +2040,4 @@ if [ -n "$FLEET_MANIFEST" ]; then
     fi
     exit 0
 fi
-exec "$HEADED_ARM" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"
+exec "${HA_RUN[@]}" "$NAME" "$DOC" "$SIGNAL" "$DEADLINE" "$LOG" "$MODEL" "$CONTEXT"

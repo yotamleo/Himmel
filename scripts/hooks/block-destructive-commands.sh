@@ -232,7 +232,7 @@ esac
 # This bounded grammar is intentionally NOT an arms race: further wrapper
 # permutations belong to the HIMMEL-912 shared-tokenizer follow-up, and this
 # CC-hook + the auto-mode classifier remain the outer defense layers. Mirrors
-# parity_guard.py's _CMDPOS_DESTRUCTIVE (shared contract).
+# parity_guard.py's _cmdpos_destructive (shared contract).
 # Assignment VALUE is quote-aware (CR r5): FOO='a b' / FOO="a b" would
 # otherwise break prefix consumption at the space and drop the verb out of
 # command position. Factored into ASSIGN so the env-prefix (CR r6) reuses it.
@@ -637,7 +637,9 @@ done
 if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_norm =~ $RM_OPT_DOLLAR_PAT ]]; then
     deny "recursive rm (quote/escape-normalised)"
 fi
-if [[ $rm_norm =~ $FIND_DELETE_PAT ]]; then
+# HIMMEL-4158: rm_norm splits a quoted wrapper value (`nice -n '1 0' find`)
+# into two words, so also read the text with its quotes kept.
+if [[ $rm_norm =~ $FIND_DELETE_PAT ]] || [[ $_rm_src =~ $FIND_DELETE_PAT ]]; then
     deny "recursive delete (find -delete)"
 fi
 done

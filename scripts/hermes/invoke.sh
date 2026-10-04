@@ -109,7 +109,8 @@ Usage: invoke.sh [--model <name>] [--profile <name>] [--toolsets <list>]
 
 Environment:
   HERMES_PY          Override the python interpreter used to run hermes
-                     (default: %LOCALAPPDATA%/hermes/hermes-agent/venv python;
+                     (default: the interpreter named by the PM-managed launcher's
+                     `--print-runtime-command`, else hermes-agent/venv python;
                      tests inject a stub through this).
 EOF
 }
@@ -237,6 +238,10 @@ if [ -z "$py" ]; then
     echo "invoke.sh: hermes interpreter not found (set HERMES_PY or install hermes)" >&2
     exit 3
 fi
+# HIMMEL-4307: a PM-managed install's interpreter (Python 3.14) is not a venv with
+# an editable hermes install, so the checkout must be put on sys.path and
+# hermes_bootstrap imported (what upstream's launcher does) before hermes_cli.
+hermes_src="$(_hermes_src_dir)"
 
 # Watchdog (HIMMEL-2025): the run-shell-tests.sh/codex timeout convention —
 # see scripts/codex/dispatch-codex-exec.sh Invariant 8.
@@ -348,7 +353,7 @@ if [ -n "$profile" ]; then
 fi
 
 run_hermes() {
-    HERMES_PROMPT_FILE="$pf_native" HERMES_ONESHOT_MODEL="$model" HERMES_ONESHOT_PROVIDER="$provider" HERMES_ONESHOT_PROFILE="$profile_arg" HERMES_ONESHOT_TOOLSETS="$toolsets" \
+    HERMES_PROMPT_FILE="$pf_native" HERMES_ONESHOT_MODEL="$model" HERMES_ONESHOT_PROVIDER="$provider" HERMES_ONESHOT_PROFILE="$profile_arg" HERMES_ONESHOT_TOOLSETS="$toolsets" HIMMEL_HERMES_SRC="$hermes_src" \
     "$py" -c '
 import os, sys, io
 with io.open(os.environ["HERMES_PROMPT_FILE"], encoding="utf-8") as fh:
@@ -360,6 +365,20 @@ with io.open(os.environ["HERMES_PROMPT_FILE"], encoding="utf-8") as fh:
 # Hand it the checkout launcher by absolute path instead; fall back to the
 # bare name when the layout is not the expected one.
 import importlib.util
+# HIMMEL-4307: same bootstrap as the upstream launcher (.hermes/bin/hermes) -- when
+# hermes_cli is not already importable (a PM-managed interpreter is not a venv with
+# an editable install) put the checkout on sys.path, then import hermes_bootstrap
+# (adds the PM dependency generation site-packages) and default HERMES_HOME.
+# All no-ops on a legacy venv install.
+src = os.environ.get("HIMMEL_HERMES_SRC", "")
+if src and importlib.util.find_spec("hermes_cli") is None and os.path.isdir(os.path.join(src, "hermes_cli")):
+    sys.path.insert(0, src)
+try:
+    import hermes_bootstrap
+    from hermes_constants import get_default_hermes_root
+    os.environ["HERMES_HOME"] = os.environ.get("HERMES_HOME") or str(get_default_hermes_root())
+except ImportError:
+    pass
 spec = importlib.util.find_spec("hermes_cli")
 entry = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(spec.origin))), "hermes") if spec and spec.origin else ""
 argv = [entry if os.path.isfile(entry) else "hermes", "--cli"]

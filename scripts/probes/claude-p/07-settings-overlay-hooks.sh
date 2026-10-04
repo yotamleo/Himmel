@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# headless-claude-ok: HIMMEL-2179 probe the operator runs by hand; the comment below names the claude -p config it measures
 # launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # 07-settings-overlay-hooks.sh — probe 3e (HIMMEL-2178, Chain 2a).
 #

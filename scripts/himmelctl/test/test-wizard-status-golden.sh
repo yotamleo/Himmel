@@ -178,7 +178,7 @@ qmdFullStub="$work/qmd-full-stub"; mkdir -p "$qmdFullStub"
 cat > "$qmdFullStub/qmd" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "collection" ] && [ "$2" = "list" ]; then
-  printf 'himmel\nluna\n'
+  printf 'himmel\nluna\nskills\n'
   exit 0
 fi
 exit 0

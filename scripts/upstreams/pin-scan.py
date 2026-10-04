@@ -7,8 +7,9 @@ or action is watched from the day it lands:
   npm     every package.json dependency, at the version its lockfile resolves
           (package-lock.json or bun.lock); the OXLINT_VERSION= literal in
           scripts/hooks/*.sh is also an npm pin (oxlint)
-  gh      every pre-commit `repo:`/`rev:` pair, every workflow `uses: o/r@ref`,
-          and the gitleaks `ver=` literal a workflow downloads
+  gh      every pre-commit `repo:`/`rev:` pair and the gitleaks `ver=` literal
+          a workflow downloads (workflow `uses:` is Dependabot's, not scanned)
+  pypi    every `pip install <pkg>==<ver>` literal in a workflow
 
 Latest comes from the npm registry (`curl`) or `gh api` — both looked up via
 PATH so the test harness can stub them. Prints one verdict line per pin and
@@ -104,8 +105,12 @@ def discover(root):
                 add("gh", m.group(1), m.group(2), r)
         elif r.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
             text = open(p).read()
-            for m in re.finditer(r"uses:\s*([\w.-]+/[\w.-]+)(?:/[^@\s]*)?@(\S+)", text):
-                add("gh", m.group(1), m.group(2), r)
+            # `uses: o/r@ref` is deliberately NOT scanned: Dependabot's
+            # github-actions ecosystem owns action bumps (one owner per pin,
+            # HIMMEL-4258).
+            for pm in re.finditer(r"pip install\b[^\n]*", text):
+                for m in re.finditer(r"(?<![\w.=-])([A-Za-z0-9_.-]+)==(\d+(?:\.\d+)*)(?![\w.+!-])", pm.group(0)):
+                    add("pypi", m.group(1), m.group(2), r)
             if "gitleaks/gitleaks/releases/download" in text:
                 for m in re.finditer(r"^\s*ver=(\d+\.\d+\.\d+)\s*$", text, re.M):
                     add("gh", "gitleaks/gitleaks", "v" + m.group(1), r)
@@ -125,6 +130,16 @@ def latest_npm(pkg):
         return None
     try:
         return json.loads(out.stdout).get("version")
+    except ValueError:
+        return None
+
+
+def latest_pypi(pkg):
+    out = run(["curl", "-fsS", "--max-time", "20", f"https://pypi.org/pypi/{pkg}/json"])
+    if out.returncode != 0:
+        return None
+    try:
+        return json.loads(out.stdout).get("info", {}).get("version")
     except ValueError:
         return None
 
@@ -166,7 +181,7 @@ def main():
 
     def check(item):
         (eco, key, current), where = item
-        latest = latest_npm(key) if eco == "npm" else latest_gh(key)
+        latest = {"npm": latest_npm, "pypi": latest_pypi}.get(eco, latest_gh)(key)
         return eco, key, current, sorted(where), latest
 
     with ThreadPoolExecutor(8) as ex:

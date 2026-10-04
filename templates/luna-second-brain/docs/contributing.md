@@ -18,8 +18,8 @@ guardrails are welcome.
    git switch -c feat/<slug>
    ```
 4. **Conventional commits.** Format:
-   `type(scope): [TICKET-N ]message`. Validated by
-   `scripts/hooks/check-commit-msg.sh`. Types: `feat`, `fix`,
+   `type(scope): [TICKET-N ]message`. A convention, not hook-enforced
+   (the vault's automated commits use their own subjects). Types: `feat`, `fix`,
    `chore`, `docs`, `refactor`, `test`, `style`, `perf`, `ci`,
    `build`, `revert`. Ticket prefix is optional.
 5. **Pre-commit + pre-push hooks** must pass:

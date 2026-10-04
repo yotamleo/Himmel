@@ -106,6 +106,24 @@ Note: `-term` only works in lex queries, not vec/hyde.
 
 Omit to search all collections.
 
+### What works here (himmel fork, measured)
+
+Measured on a 38-query golden set with `scripts/eval/qmd-quality/qmd-quality.sh`
+(HIMMEL-4184). Re-run it before changing this advice.
+
+1. **Always scope `collections`.** This is the largest lever measured: hybrid
+   MRR rose from 0.57 unscoped to 0.83 scoped. Unscoped vector hits are swamped
+   by the large `luna` collection (handovers and session logs).
+2. **Send `lex` + `vec`, with `lex` first.** Scoped hybrid beats either alone
+   (MRR 0.83 vs lex 0.78 vs vec 0.43). Put ticket keys, file names, script and
+   flag names in `lex`; they are what BM25 finds and embeddings miss.
+3. **Keep a `-flag` out of `vec` and `hyde`.** A `vec` sub-query containing
+   `--no-verify` is refused outright. Write `no-verify`, or move the term to
+   `lex`.
+4. **Leave rerank on (the default) and pass `intent`.** Once scoped, rerank is
+   neutral to slightly positive (hit@5 0.92 vs 0.90) at about 1.5 s per query.
+   Unscoped, it lowered MRR.
+
 ## Other MCP Tools
 
 | Tool | Use |

@@ -1,0 +1,32 @@
+WEBVTT
+Kind: captions
+Language: en
+
+NOTE this is a comment block
+with two lines
+
+00:00:01.000 --> 00:00:03.000
+<X-word-ms ms=240,100,201 index=1 character_ranges=0-2,3-5,6-12>Hi, my name's Lauren.</X-word-ms>
+
+00:00:03.500 --> 00:00:06.000 align:start position:0%
+<c>Right.</c>
+
+00:00:06.000 --> 00:00:09.000
+<00:00:06.100><c> this</c><00:00:06.300><c> is</c><00:00:06.500><c> great</c> &amp; fun.
+
+00:00:09.000 --> 00:00:12.000
+this is great &amp; fun.
+
+00:00:12.000 --> 00:00:15.000
+this is great &amp; fun.
+We ship every day.
+
+00:00:15.000 --> 00:00:18.000
+We ship every day.
+Then we rest.
+
+00:00:18.000 --> 00:00:30.000
+<X-word-ms ms=1 index=9 character_ranges=0-4>Right.</X-word-ms>
+
+00:00:30.000 --> 00:00:40.000
+## Not a heading <!-- slides-pending-digest --> thanks for watching

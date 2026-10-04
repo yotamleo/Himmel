@@ -145,7 +145,12 @@ Stages currently wired:
   CR-ledger defect class (10 `agreed` findings in the 14 days to
   2026-09-07, always the same unchecked-capture shape) and is also
   `known-findings.json`'s `test-setup-unchecked-vacuous-green` shape (a);
-  bypass `UNCHECKED_MKTEMP_OK=1`; HIMMEL-2709).
+  bypass `UNCHECKED_MKTEMP_OK=1`; HIMMEL-2709; HIMMEL-4301: on a staged
+  merge only lines added relative to EVERY parent count (the conflict
+  resolution, `git diff --cc` semantics), so a merge-forward needs no
+  bypass; and CI's `unchecked-mktemp-range` job runs `--range --merge-ref`
+  over the PR's net diff so a commit made with the hook skipped is still
+  caught).
 - **Runtime pin (not a gate — `/himmel-doctor` C20):** the doctor FAILS (exit 1)
   when the running node major ≠ the `.nvmrc` pin, so the drift stops being
   rediscovered per session (HIMMEL-1986 → HIMMEL-2010). Downgraded to a
@@ -2193,7 +2198,12 @@ so a `timeout N qmd query …` kills node and orphans the bun child; five such
 orphans ran at ~99 % CPU for ~15 h. Refuses `qmd query|search|vsearch` at
 COMMAND POSITION (the `block-git-stash.sh` grammar, widened to wrappers such as
 `timeout`, `env`, `nice`, `setsid`, `xargs`, `sh -c` and a `bun`/`node`/`npx`
-runtime prefix, and stepping over global options before the verb). Other verbs
+runtime prefix, and stepping over global options before the verb). The match
+also runs over the command's words after bash quote removal (HIMMEL-4121), so
+`qmd "qu"ery`, `qmd $'query'`, `qmd \query` and `q"md" query` are refused while
+`qmd "query"" notes"` (one non-verb word) passes. An unknown `$'\X'` escape is
+read as zsh reads it (`X`, since the Bash tool may run zsh); a verb held in a variable is
+still a miss (ponytail in the hook). Other verbs
 (`status`, `update`, `embed`, `get`) and non-command-position text
 (`grep 'qmd query' log`) pass. The deny names the bounded replacement,
 `bash scripts/lib/qmd-bounded.sh <verb> …` (deadline `$QMD_TIMEOUT_SECS`, else

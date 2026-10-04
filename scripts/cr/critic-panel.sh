@@ -1036,7 +1036,13 @@ outdir=""
 # Each member writes only its own file (a member is processed once, so its own
 # file is never written concurrently); _append_panel_ledger globs them all, and
 # bash sorts pathname expansion so the read order is deterministic.
-PANEL_SPOOL_DIR="$(mktemp -d -t critic-panel-spool.XXXXXX)"
+# HIMMEL-3492: an empty spool dir would send avail./finding. rows to /. The
+# EXIT trap below is not installed yet, so drop $tmp here before exiting.
+PANEL_SPOOL_DIR="$(mktemp -d -t critic-panel-spool.XXXXXX)" || {
+    rm -f "$tmp"
+    echo "critic-panel: mktemp failed" >&2
+    exit 2
+}
 trap 'rm -f "$tmp"; [ -n "$_seq_out" ] && rm -f "$_seq_out"; [ -n "${_seq_err:-}" ] && rm -f "$_seq_err"; [ -n "$outdir" ] && rm -rf "$outdir"; [ -n "${PANEL_SPOOL_DIR:-}" ] && rm -rf "$PANEL_SPOOL_DIR"; [ -n "$_MERGED_REG" ] && rm -f "$_MERGED_REG"' EXIT
 printf '%s' "$diff_in" > "$tmp"
 

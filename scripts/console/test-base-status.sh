@@ -387,6 +387,28 @@ else
     fail "trailing-slash fence arg" "rc=$rc out='$out' err='$(cat "$TMP_ROOT/err15")'"
 fi
 
+# HIMMEL-2421: a fence arg with a leading ./ must still match (gh lists
+# paths without one), and a bare . is the repo root — it matches every path.
+echo "TEST: a fence arg with a leading ./ still matches"
+out=$(GH_CMD="$GH_STUB14" "$BASE_STATUS" ./scripts/hooks 2>"$TMP_ROOT/err21")
+rc=$?
+m801=$(printf '%s\n' "$out" | grep -F "PENDING PR 801 fence=scripts/hooks ")
+if [ "$rc" -eq 0 ] && [ -n "$m801" ]; then
+    pass "leading-./ fence arg matches"
+else
+    fail "leading-./ fence arg" "rc=$rc out='$out' err='$(cat "$TMP_ROOT/err21")'"
+fi
+
+echo "TEST: a bare . fence arg matches every path (repo root)"
+out=$(GH_CMD="$GH_STUB14" "$BASE_STATUS" . 2>"$TMP_ROOT/err22")
+rc=$?
+m801=$(printf '%s\n' "$out" | grep -F "PENDING PR 801 fence=. ")
+if [ "$rc" -eq 0 ] && [ -n "$m801" ]; then
+    pass "bare-. fence arg matches the repo root"
+else
+    fail "bare-. fence arg" "rc=$rc out='$out' err='$(cat "$TMP_ROOT/err22")'"
+fi
+
 # HIMMEL-2383 CR finding codex-1 (round 12): a SUMMARY with no scope line at
 # all (an older-format report) must read PENDING, not clean — missing scope
 # means "coverage unknown", not "assume covered".

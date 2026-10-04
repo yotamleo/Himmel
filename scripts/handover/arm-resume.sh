@@ -548,6 +548,7 @@ EOF
 # Arg parsing — accept --flag <value> or --flag=<value>, any order,
 # unknown flags are rejected loudly. Avoids the v1 "$3 == --force"
 # positional trap.
+ARGC_AT_START=$#
 while [ $# -gt 0 ]; do
     case "$1" in
         --time)        RESUME_TIME="${2:-}"; _TIME_GIVEN=1; shift 2 ;;
@@ -747,7 +748,14 @@ fi
 # clears the seam, HIMMEL-4118 F2), so a re-armed consult would start unconfined.
 # Fail closed: a session carrying the consult marker never arms. A consult is a
 # short question; the console relaunches one with headed-arm-leg.sh if it must.
-if [ -n "${LEG_PROFILE_NO_SETTING_SOURCES:-}" ]; then
+# HIMMEL-4163: the read-only --list-temp-arms sweep arms nothing, so it alone passes,
+# and only as the SOLE argument (the flag beside any other mode or arm arg still refuses).
+# ponytail: the consult is identified by this env var alone, so a consult that unsets
+# LEG_PROFILE_NO_SETTING_SOURCES is not recognised here; the consult's deny rules and
+# sandbox bound that, upgrade path = a process-ancestry check or a consult-workdir
+# token file, trigger = an exploit beyond the sandbox (HIMMEL-4163).
+if [ -n "${LEG_PROFILE_NO_SETTING_SOURCES:-}" ] \
+    && ! { [ "${LIST_TEMP_ARMS:-0}" -eq 1 ] && [ "$ARGC_AT_START" -eq 1 ]; }; then
     echo "ERR arm-resume: refusing to arm from inside a consult (LEG_PROFILE_NO_SETTING_SOURCES is set): no arm-resume launch carries the consult's --setting-sources confinement; relaunch it with headed-arm-leg.sh --consult" >&2
     exit 2
 fi
@@ -2376,7 +2384,7 @@ _infer_ticket_strict() {
     # a well-formed YAML block -- one that OPENS at line 1 of the document
     # (optionally after a UTF-8 BOM) and CLOSES at a later `---`. The opening
     # delimiter is anchored to the document start (codex-adv r3): only NR==1
-    # matching `^---[[:space:]]*$` -- after `sub(/^\xef\xbb\xbf/,"")` strips an
+    # matching `^---[[:space:]]*$` -- after `sub(/^\357\273\277/,"")` strips an
     # optional leading BOM -- enters frontmatter mode (c==1). A file whose first
     # line is anything else NEVER enters frontmatter mode, so a `---` horizontal
     # rule in the BODY of a plain-markdown handover is ordinary text: it can
@@ -2393,10 +2401,13 @@ _infer_ticket_strict() {
     # the three shapes by exit code: no frontmatter at all (c==0) and a closed
     # block (c==2, set before `exit` so END's c==1 check is false) are fine;
     # EOF with c==1 (opened, never closed) exits 3 and the arm refuses loudly
-    # BEFORE any scheduler mutation. POSIX awk (string concat, printf,
-    # exit-to-END).
+    # BEFORE any scheduler mutation. Any other awk exit code stays fail-soft
+    # (no ticket, like the old `|| true`). The BOM is the octal escape
+    # \357\273\277, not `\xef\xbb\xbf`: `\xHH` is a gawk extension that mawk
+    # (Ubuntu's default awk) silently skips (HIMMEL-1654); the rest is plain
+    # POSIX awk (string concat, printf, exit-to-END).
     _fm_rc=0
-    _fm=$(awk 'NR==1{sub(/^\xef\xbb\xbf/,"")} NR==1 && /^---[[:space:]]*$/{c=1; next} c==1 && /^---[[:space:]]*$/{printf "%s",b; c=2; exit} c==1{b=b $0 "\n"} END{if(c==1) exit 3}' "$_ho") || _fm_rc=$?
+    _fm=$(awk 'NR==1{sub(/^\357\273\277/,"")} NR==1 && /^---[[:space:]]*$/{c=1; next} c==1 && /^---[[:space:]]*$/{printf "%s",b; c=2; exit} c==1{b=b $0 "\n"} END{if(c==1) exit 3}' "$_ho") || _fm_rc=$?
     if [ "$_fm_rc" -eq 3 ]; then
         echo "ERR arm-resume: unclosed YAML frontmatter in $_ho -- an opening --- with no closing ---. Refusing to arm: a truncated frontmatter ticket would silently bypass the ticket mutex (HIMMEL-1329/HIMMEL-1640). Close the frontmatter block (or remove the stray opening ---) and re-arm." >&2
         exit 1

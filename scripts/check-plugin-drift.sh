@@ -50,6 +50,9 @@
 #           API instead of the highest semver tag — for upstreams whose tags are
 #           NON-MONOTONIC (a stale higher-semver tag would otherwise be a phantom
 #           "latest"; graphify's months-old v1.0.0 vs its current v0.9.x line).
+#           `tag_prefix` (with latest_source: release) strips a tag stream's prefix
+#           from the release tag before comparing — bun tags `bun-v1.4.3`, so the
+#           entry keeps a bare synced_base and a bare BEHIND version (HIMMEL-4258).
 #      Installed marketplaces (obsidian-skills, openai-codex,
 #      claude-video, claude-plugins-official, …) are NOT listed in the registry:
 #      they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json
@@ -545,14 +548,14 @@ def expand(p):
     p = re.sub(r'%([A-Za-z_][A-Za-z0-9_]*)%', lambda m: os.environ.get(m.group(1), ''), p)
     return os.path.expanduser(p).replace('\\', '/')
 
-def line(name, kind, repo, mode, v1, v2, tier, extra=''):
+def line(name, kind, repo, mode, v1, v2, tier, extra='', prefix=''):
     # \x1f (ASCII unit separator), not '|': version_regex (v2, probe mode) can
     # legitimately contain '|' for regex alternation, which would misalign a
     # pipe-delimited record. `extra` (8th field) carries the tag_release
     # `latest_source` ('release' -> read the maintainer's latest-non-prerelease
     # via the Releases API instead of the highest semver tag, for upstreams
     # whose tags are non-monotonic); empty for every other record.
-    print('\x1f'.join([name, kind, repo, mode, v1 or '', v2 or '', tier or '', extra or '']))
+    print('\x1f'.join([name, kind, repo, mode, v1 or '', v2 or '', tier or '', extra or '', prefix or '']))
 
 if os.path.exists(reg_path) and os.path.getsize(reg_path) > 0:
     d = json.load(open(reg_path))   # malformed -> raises -> class UNCHECKED
@@ -566,7 +569,7 @@ if os.path.exists(reg_path) and os.path.getsize(reg_path) > 0:
         elif kind == 'commit_head' and mode == 'checkout':
             line(e['name'], 'commit_head', repo, 'checkout', expand(e.get('checkout_path', '')), '', tier)
         elif kind == 'tag_release' and mode == 'base':
-            line(e['name'], 'tag_release', repo, 'base', e.get('synced_base', ''), '', tier, e.get('latest_source', ''))
+            line(e['name'], 'tag_release', repo, 'base', e.get('synced_base', ''), '', tier, e.get('latest_source', ''), e.get('tag_prefix', ''))
         elif kind == 'tag_release' and mode == 'probe':
             line(e['name'], 'tag_release', repo, 'probe', e.get('version_command', ''), e.get('version_regex', ''), tier, e.get('latest_source', ''))
         else:
@@ -600,7 +603,7 @@ PY
     echo "  ? upstreams.json / known_marketplaces.json parse failed (python3 error) — carried-upstreams class UNCHECKED."
     incomplete=1
   else
-    while IFS=$'\x1f' read -r name kind repo mode v1 v2 tier latest_src; do
+    while IFS=$'\x1f' read -r name kind repo mode v1 v2 tier latest_src tag_pfx; do
       [ -n "$name" ] || continue
       tier_note=""
       if [ -n "$tier" ]; then tier_note="  [$tier]"; fi
@@ -777,6 +780,9 @@ PY
             # BEHIND. Opt into the maintainer's own latest-non-prerelease
             # designation (the Releases API), which reflects real recency.
             latest="$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null)"; api_rc=$?
+            # tag_prefix (HIMMEL-4258): bun tags its releases `bun-v1.4.3`; strip the
+            # stream prefix so synced_base and the BEHIND line stay bare versions.
+            [ -z "$tag_pfx" ] || latest="${latest#"$tag_pfx"}"
             if [ "$api_rc" -ne 0 ] || ! printf '%s' "$latest" | grep -qE '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
               echo "  $name: ? no parseable latest release on $repo (latest_source=release) — UNCHECKED"
               incomplete=1; continue

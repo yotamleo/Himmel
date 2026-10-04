@@ -358,6 +358,17 @@ _vm_lock_wait_brand() {
     esac
 }
 
+# _vm_lock_claim_contended <claim> — HIMMEL-2674: after losing a takeover
+# race on <claim>, is someone else holding it? 0 = contention: the rival's
+# owner is completely branded, OR present but still in flight when the
+# grace expired (the "appeared but never finished" outcome
+# _vm_lock_wait_brand's header says not to conflate with "never appeared").
+# 1 = no owner at all after the grace — an operational failure, not a race.
+_vm_lock_claim_contended() {
+    _vm_lock_wait_brand "$1" && return 0
+    [ -f "$1/owner" ]
+}
+
 # _vm_lock_claim <dir> <extra-fields...> — mkdir, then brand the owner
 # file (set -C is the real arbiter, not the mkdir — see the header
 # divergence note on uutils). CR finding codex-5 (round 4): "atomically
@@ -397,9 +408,9 @@ _vm_lock_claim() {
 # protocol as the suite lock: mkdir a `.claim` sibling (exclusive right to
 # take over), re-verify the lock's generation is still the one judged
 # abandoned, and only then drop + reclaim. rc 0 = now ours; rc 1 = confirmed
-# contention (another taker won, or the lock changed hands under us — an
-# ordinary race, retry later); rc 2 = an operational failure (reason printed
-# to stderr, prefixed RECLAIM ERROR).
+# contention (another taker won — even one still mid-brand — or the lock
+# changed hands under us — an ordinary race, retry later); rc 2 = an
+# operational failure (reason printed to stderr, prefixed RECLAIM ERROR).
 _vm_lock_reclaim() {
     local dir="$1" expected="$2" claim="${1}.claim" rc=1
 
@@ -432,14 +443,14 @@ _vm_lock_reclaim() {
             return 2
         fi
         if ! mkdir "$claim" 2>/dev/null; then
-            _vm_lock_wait_brand "$claim" && return 1
+            _vm_lock_claim_contended "$claim" && return 1
             echo "RECLAIM ERROR: could not create a takeover claim at $claim" >&2
             return 2
         fi
     fi
     if ! ( set -C; printf 'pid=%s\nhost=%s\nstarted=%s\n' "$$" "$(_vm_lock_host)" "$(date +%s)" \
             > "$claim/owner" ) 2>/dev/null; then
-        [ -f "$claim/owner" ] && return 1
+        _vm_lock_claim_contended "$claim" && return 1
         rmdir "$claim" 2>/dev/null
         echo "RECLAIM ERROR: could not brand the takeover claim at $claim" >&2
         return 2

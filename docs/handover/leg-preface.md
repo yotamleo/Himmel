@@ -197,6 +197,8 @@ for a relay that is not coming.
 - **Do the work yourself** unless your brief says otherwise. Delegate only what
   is genuinely independent and sizeable; never spawn a subagent to verify your
   own work.
+- **No unrequested features, tests or files** — keep the diff to what the
+  brief asks.
 - **Token discipline.** Batch every independent tool call of a step into ONE
   turn. Never emit a text-only turn between tool calls. Read files by line
   range, not whole. Your fixed context is re-paid on every API call of a
@@ -305,6 +307,15 @@ by design.
   background (`run_in_background`) poll loop against GitHub: wait on CI with
   `scripts/check-ci.sh` in the foreground (its shared cache and rate-limit
   backoff exist so the fleet stays under one API quota).
+- **Lint your own `## Ticket coverage` before `READY` (HIMMEL-4300).** The
+  console's ready-check bounces a PR body whose coverage line has any text after
+  its marker (`done pending review`, `deferred → HIMMEL-9 (see thread)`). Run
+  `bash scripts/handover/console-kit/ready-check.sh --only 7 <pr>` once the PR
+  is open — it is item 7 of the console's own check, same code, and prints each
+  failing line with the accepted shape (`- <ask>: done` / `- <ask>: deferred →
+  HIMMEL-<n>`, marker LAST, nothing after it). Fix the body
+  (`bash scripts/lanes/leg-pr-open.sh <title-file> <body-file>`) until it prints
+  `COVERAGE-LINT PASS`, then send `READY`.
 - **A red CI job on your PR is yours to triage (HIMMEL-4071) — and you never
   tell the console about it, unless it is not the PR's fault.** The moment ONE
   required job fails, do not wait for the run to end and do not report the red.
@@ -354,7 +365,20 @@ by design.
   bullet. Exit 1 `REFUSE` (a job green or absent at the base, or a failing case
   the base did not fail, is your own red; a job red or absent on latest main,
   or a latest run that is not origin/main's tip, is unproven) = do NOT merge forward; fix it, or
-  report `BLOCKED` / `MAIN-RED` per the rule above. Exit 3 = nothing red. Once
+  report `BLOCKED` / `MAIN-RED` per the rule above. If your merge-base's main
+  run was cancelled (0 jobs, or only cancelled/skipped rows — a pending sweep
+  superseded by a newer push), a bare check REFUSEs; add the all-or-none trio
+  `--base-cover <f> --base-cover-sha <sha> --base-cover-from <sha>`. The cover is
+  the next COMPLETED push run on origin/main whose range (from, cover] contains
+  your merge-base (`gh run list -b main`): `--base-cover` its job file,
+  `--base-cover-sha` its headSha, `--base-cover-from` the previous completed
+  sweep's headSha (a strict ancestor of the merge-base). `--base-cases` are then
+  the cover's failing cases, and every file arg must be a regular file. Polarity
+  is unchanged: the job red on the cover with the same failing cases AND green on
+  latest = `ALLOW`; green on the cover = `REFUSE`. Two accepted ceilings: the
+  script takes "next" from you and cannot see another completed sweep inside
+  (from, cover], and a red cover proves the failure existed somewhere in that
+  range, not at the merge-base itself (green on latest bounds it). Exit 3 = nothing red. Once
   per PR: a second merge-forward goes to the console. After it, `/pr-check` and
   CI run again at the new head.
 - **Never write "CI verifies" for a suite you have not looked up
@@ -429,9 +453,13 @@ for you). The closable-window banner is the output of
 `WITHHELD:` lists the pids still alive — TaskStop them and re-run; never type
 the banner by hand, and never send `WRAPPED` on a `WITHHELD:` result.
 
-**Context ≥ 60 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
+**Context ≥ 75 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
 Run the context-fill probe after **every** completed step, not only when you
-notice growth (ruling A1) — that is what catches the ≥60 % threshold in time.
+notice growth (ruling A1) — that is what catches the ≥75 % threshold in time.
+Your launch always carries an `--autocompact` ceiling, so a compaction is a
+backstop, not lost work: if one fires first, re-read this doc and your
+handover doc and carry on (HIMMEL-4089: 309 of 349 compacted legs still
+wrapped, and no observed compaction fired below 157k of 200k).
 
 ## How your turns end
 
@@ -461,7 +489,7 @@ The stops that are wanted are the ones where nothing can move without the
 console, or where the thing blocking you is deliberately protected from you:
 holding for the console's `GO` after `READY`; a `BLOCKED`, or a `FINDING` whose
 ruling every remaining step depends on, already sent; `WRAPPED` and exit; the
-≥ 60 % context hand-off. None of this overrides the need for confirmation on
+≥ 75 % context hand-off. None of this overrides the need for confirmation on
 risky or destructive actions.
 
 **The GO-hold is the only permitted hold (HIMMEL-3095).** A blocker owned by

@@ -601,7 +601,41 @@ function isDirectory(p) {
 // HIMMEL-3441); it is still subject to the installed-ledger check below like
 // every other enabled plugin, and is named in the detail as information.
 // ~/.claude/plugins/installed_plugins.json is that ledger.
-function verifyPluginSet(enabledPlugins, ctx) {
+// HIMMEL-4270: per-marketplace source comparison, settings entry vs template.
+// The himmel-owned marketplace's manifest wins; for a third-party one the
+// settings side is recommended. Entries absent from settings are not drift.
+function marketplaceSource(entry) {
+  const src = entry && entry.source;
+  if (!src || typeof src !== 'object') return '';
+  const val = src.source === 'github' ? src.repo
+    : src.source === 'directory' ? src.path
+    : src.source === 'url' ? src.url : '';
+  return typeof val === 'string' ? val : '';
+}
+
+// Quote a token for the printed shell command only when it needs it.
+function shq(s) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function marketplaceSourceDrift(settings, template, ctx) {
+  const have = (settings && typeof settings.extraKnownMarketplaces === 'object' && settings.extraKnownMarketplaces) || {};
+  const want = (template && typeof template.extraKnownMarketplaces === 'object' && template.extraKnownMarketplaces) || {};
+  const scope = ctx.scope === 'project' ? 'project' : 'user';
+  const out = [];
+  for (const name of Object.keys(want)) {
+    const wantSrc = marketplaceSource(want[name]).replace(/<himmel-path>/g, ctx.repoRoot);
+    const haveSrc = marketplaceSource(have[name]);
+    if (!wantSrc || !haveSrc || wantSrc === haveSrc) continue;
+    const reconcile = `claude plugin marketplace remove ${shq(name)} --scope ${scope} && claude plugin marketplace add ${shq(wantSrc)} --scope ${scope}`;
+    out.push(name === 'himmel'
+      ? `marketplace 'himmel' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — the himmel manifest is right; reconcile: ${reconcile}`
+      : `marketplace '${name}' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — keeping the settings source is recommended, so set the template's entry to '${haveSrc}'; to adopt the template's source instead: ${reconcile}`);
+  }
+  return out;
+}
+
+function verifyPluginSet(enabledPlugins, ctx, settings) {
   const templatePath = path.join(ctx.repoRoot, 'docs', 'setup', 'settings-template.json');
   let template;
   try {
@@ -641,9 +675,15 @@ function verifyPluginSet(enabledPlugins, ctx) {
     const entries = Array.isArray(installed[k]) ? installed[k] : [];
     return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && isDirectory(e.installPath));
   });
+  // HIMMEL-4270: a marketplace registered under a different source than the
+  // template's makes `claude plugin marketplace add` fail — drift (degraded),
+  // not an install failure. Same remedy text as install-plugins.sh. Computed
+  // before the not-installed return so that missing plugin keeps its remedy.
+  const drift = marketplaceSourceDrift(settings, template, ctx);
   if (notInstalled.length > 0) {
-    return { problem: `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}` };
+    return { problem: [`not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}`].concat(drift).join('; ') };
   }
+  if (drift.length > 0) return { problem: drift.join('; ') };
   if (extra.length > 0) {
     return { note: `extra (not in the recorded set): ${extra.join(', ')}` };
   }
@@ -699,7 +739,7 @@ function probeSettingsKey(item, ctx) {
       if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
     }
     if (item.probe.verifyPluginSet) {
-      const result = verifyPluginSet(getVal(item.probe.key), ctx);
+      const result = verifyPluginSet(getVal(item.probe.key), ctx, data);
       if (result.problem) return { actual: 'degraded', detail: `${filePath}: ${result.problem}` };
       if (result.note) return { actual: 'present', detail: `${filePath} (${result.note})` };
     }
@@ -1318,7 +1358,7 @@ function probeCmdHasHermes(item, ctx) {
   const r = spawnBashProbe(['-c', '. "$HIMMEL_PROBE_RESOLVER" || exit 3; resolve_hermes_py >/dev/null'], { env });
   if (r.timedOut) return { actual: 'degraded', detail: `cmd:has_hermes probe timed out after ${probeTimeoutSecs(r)}s` };
   if (r.error) return { actual: 'degraded', detail: `spawn error: ${r.error.message}` };
-  if (r.status === 0) return { actual: 'present', detail: 'hermes venv python resolved (resolve_hermes_py rc=0)' };
+  if (r.status === 0) return { actual: 'present', detail: 'hermes runtime python resolved (resolve_hermes_py rc=0)' };
   if (r.status === 1) return { actual: 'absent', detail: 'resolve_hermes_py rc=1 — hermes not installed' };
   if (r.status === 3) return { actual: 'degraded', detail: `cannot source resolver ${resolverPath} — cmd:has_hermes probe wiring broken` };
   return { actual: 'degraded', detail: `resolve_hermes_py: unexpected rc=${r.status} (not the documented 0/1 — probe wiring likely broken, e.g. the resolver sourced but never defined resolve_hermes_py)` };
@@ -2489,6 +2529,7 @@ function probeLunaSources(item, ctx) {
   const problems = [];
   const unrecognized = [];
   const unconfigured = [];
+  const cooling = [];
   let evaluated = 0;
   for (const source of sources) {
     const envForSpawn = Object.assign({}, env, {
@@ -2521,7 +2562,12 @@ function probeLunaSources(item, ctx) {
     if (!parsed || parsed.status !== 'ok') {
       const status = parsed && parsed.status;
       const reason = parsed && parsed.reason;
-      if (status === 'auth-or-cookie-expired' && UNCONFIGURED_REASON_RE.test(reason || '')) {
+      if (status === 'cooldown') {
+        // HIMMEL-4306: the Instagram throttle is deliberately holding requests
+        // (a 429/challenge, the daily cap, or a spacing/backoff window) — a wait,
+        // not a fault, so it never joins `problems`.
+        cooling.push(`${source} (${reason || 'cooldown'})`);
+      } else if (status === 'auth-or-cookie-expired' && UNCONFIGURED_REASON_RE.test(reason || '')) {
         unconfigured.push(`${source} (${reason})`);
       } else {
         problems.push(`${source}: ${status || 'unknown status'}${reason ? ` (${reason})` : ''}`);
@@ -2542,6 +2588,7 @@ function probeLunaSources(item, ctx) {
     if (unconfigured.length > 0) {
       parts.push(`${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}`);
     }
+    if (cooling.length > 0) parts.push(`${cooling.length} on cooldown, waiting (no action needed): ${cooling.join('; ')}`);
     return { actual: 'degraded', detail: parts.join(' | ') };
   }
   // HIMMEL-2176 CR round 3 fix (retask stage1-build-6d2e): evaluated === 0
@@ -2567,13 +2614,13 @@ function probeLunaSources(item, ctx) {
   // turns 'absent' into a warn, 'degraded' into a fail — see that file's
   // luna-sources block). Covers both "some configured, some not" and "every
   // named source unconfigured" — both benign, both warn.
-  if (unconfigured.length > 0) {
-    const healthy = evaluated - unconfigured.length;
+  if (unconfigured.length > 0 || cooling.length > 0) {
+    const healthy = evaluated - unconfigured.length - cooling.length;
     const healthyNote = healthy > 0 ? `; ${healthy} other configured source(s) healthy` : '';
-    return {
-      actual: 'absent',
-      detail: `${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}${healthyNote}`,
-    };
+    const parts = [];
+    if (unconfigured.length > 0) parts.push(`${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}`);
+    if (cooling.length > 0) parts.push(`${cooling.length} on cooldown, waiting (no action needed): ${cooling.join('; ')}`);
+    return { actual: 'absent', detail: `${parts.join(' | ')}${healthyNote}` };
   }
   return { actual: 'present', detail: `all ${evaluated} configured luna source(s) healthy` };
 }

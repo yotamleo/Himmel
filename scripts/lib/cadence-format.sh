@@ -157,8 +157,17 @@
 # keeps firing the old prompt; re-arm with `pipeline-cadence.sh arm --force`. The
 # other cadences are unaffected but stamp v18 too, so one version still answers
 # "is this runner current".
+# v19 (HIMMEL-4181): the pipeline POSIX runners log `[PIPELINE-LEG-FAILED ...]`,
+# exit 3 on any zero-rc outcome short of complete, and call
+# scripts/luna/cadence-alert.sh on a failure; the harvest prompt adds
+# /x-media-enrich; the settings fragment allows the obsidian-triage commands.
+# Re-arm with `pipeline-cadence.sh arm --force`.
+# v20 (HIMMEL-4182): the pipeline-harvest and pipeline-synthesize POSIX runners
+# run obsidian-triage's daily-timeline.mjs after the leg (must-not-abort: a
+# failure logs and never changes the runner's exit code). Re-arm with
+# `pipeline-cadence.sh arm --force`.
 # shellcheck disable=SC2034  # consumed by sourcing scripts (pipeline-cadence/doctor/update)
-CADENCE_RUNNER_FORMAT_VERSION=18
+CADENCE_RUNNER_FORMAT_VERSION=20
 
 # Marker line stamped into each generated runner
 # (.bat: `rem <marker> N`; .sh: `# <marker> N`).

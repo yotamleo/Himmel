@@ -72,6 +72,13 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: flag-registry-lint
+        name: every *_OK/*_BYPASS flag a hook reads has an entry in bypass-flags.json
+        entry: node scripts/install/flag-registry-lint.mjs
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: marketplace-source-hermetic
         name: settings-template marketplace sources stay hermetic (url/directory, never github shorthand)
         entry: bash scripts/check-marketplace-source-hermetic.sh

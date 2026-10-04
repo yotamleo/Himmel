@@ -807,6 +807,45 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outSK2otherproject" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "settings-key verifyPluginSet: a project-scope ledger entry for a DIFFERENT project must NOT satisfy this one (got: $outSK2otherproject)"
+# HIMMEL-4270: a marketplace registered under a different source than the
+# template's (the station's obsidian-skills case) reads degraded with the
+# remedy, not green and not absent; a matching source stays present.
+sk2_drift_repo="$work/sk2-drift-repo"; mkdir -p "$sk2_drift_repo/docs/setup"
+printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"url","url":"https://github.com/kepano/obsidian-skills.git"}}}}' > "$sk2_drift_repo/docs/setup/settings-template.json"
+sk2_drift="$work/sk2-drift"; mkdir -p "$sk2_drift/.claude"
+printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"github","repo":"kepano/obsidian-skills"}}}}' > "$sk2_drift/.claude/settings.json"
+sk2_nodrift="$work/sk2-nodrift"; mkdir -p "$sk2_nodrift/.claude"
+printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"url","url":"https://github.com/kepano/obsidian-skills.git"}}}}' > "$sk2_nodrift/.claude/settings.json"
+for sk2_case in drift nodrift; do
+  sk2_case_target="$work/sk2-$sk2_case"
+  outSK2d=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_drift_repo")', targetPath: '$(winpath "$sk2_case_target")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+  if [ "$sk2_case" = drift ]; then
+    echo "$outSK2d" | jq -e '.actual == "degraded" and (.detail | contains("obsidian-skills") and contains("source drift") and contains("claude plugin marketplace remove obsidian-skills"))' >/dev/null \
+      || fail "settings-key verifyPluginSet: a marketplace source mismatch must read degraded with the remedy (got: $outSK2d)"
+  else
+    echo "$outSK2d" | jq -e '.actual == "present"' >/dev/null \
+      || fail "settings-key verifyPluginSet: a matching marketplace source must stay present (got: $outSK2d)"
+  fi
+done
+# A missing install must not hide the drift remedy (CR: drift is checked before
+# the not-installed return).
+outSK2dn=$("$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const item = manifest.items.find((i) => i.id === 'claude-plugins-pluginSet');
+const env = Object.assign({}, process.env, { HOME: '$sk2_home_otherproject_w' });
+const ctx = { repoRoot: '$(winpath "$sk2_drift_repo")', targetPath: '$(winpath "$sk2_drift")', scope: 'project', env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outSK2dn" | jq -e '.actual == "degraded" and (.detail | contains("not installed") and contains("source drift") and contains("claude plugin marketplace remove obsidian-skills"))' >/dev/null \
+  || fail "settings-key verifyPluginSet: a not-installed plugin plus a marketplace drift must report both (got: $outSK2dn)"
 echo "ok: settings-key simple non-dotted key + verifyPluginSet (claude-plugins-pluginSet) — present/absent, mismatch + not-installed degrade, stale installPath + wrong-project scope degrade"
 
 # ── settings-key: verifyPluginSet path normalization, directory-only
@@ -1125,7 +1164,7 @@ pathQIpresent=$(build_path "$qi_present_stub" bash git jq -- bun)
 cat > "$qi_present_stub/qmd" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "collection" ] && [ "$2" = "list" ]; then
-  printf 'himmel\nluna\n'
+  printf 'himmel\nluna\nskills\n'
   exit 0
 fi
 exit 0
@@ -2653,6 +2692,10 @@ case "$source_name" in
     printf '{"status":"auth-or-cookie-expired","reason":"reddit cookie file missing"}\n'
     exit 1
     ;;
+  cooldown-source)
+    printf '{"status":"cooldown","reason":"instagram cooldown (http-429) until 2026-10-05T00:00:00Z; probe skipped"}\n'
+    exit 0
+    ;;
   ghost-source)
     echo "fetch-health.py: error: unknown probe source: 'ghost-source' (valid sources: bitbucket, firecrawl, github, reddit, ...)" >&2
     exit 2
@@ -2713,6 +2756,21 @@ echo "$outLunaOneUnconfigured" | jq -e '.detail | contains("cookie-missing-sourc
 echo "$outLunaOneUnconfigured" | jq -e '.detail | test("unhealthy"; "i") | not' >/dev/null \
   || fail "luna-sources: an unconfigured source must not be worded like a broken/unhealthy one (got: $outLunaOneUnconfigured)"
 echo "ok: luna-sources — one unconfigured source among others ok reads absent (warn), distinguishable from a configured-but-broken source"
+
+# HIMMEL-4306: a source on COOLDOWN (the Instagram throttle after a 429 or a
+# challenge) is deliberately waiting, not broken — it must warn (absent), never
+# fail (degraded), and say so in its own words.
+outLunaCooldown=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['reddit', 'cooldown-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaCooldown" | jq -e '.actual == "absent"' >/dev/null \
+  || fail "luna-sources: a source on cooldown must read absent (warn), not degraded (fail): (got: $outLunaCooldown)"
+echo "$outLunaCooldown" | jq -e '.detail | contains("cooldown-source") and test("cooldown"; "i") and (test("unhealthy"; "i") | not)' >/dev/null \
+  || fail "luna-sources: cooldown detail should name the source and say cooldown, never unhealthy (got: $outLunaCooldown)"
+echo "ok: luna-sources — a source on cooldown reads absent (warn), never degraded"
 
 # Nothing configured at all: every named source is unconfigured (no problems,
 # no healthy sources either) — still warn (absent), same tier as the mixed
