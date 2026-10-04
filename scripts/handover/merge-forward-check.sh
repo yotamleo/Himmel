@@ -50,6 +50,10 @@
 # ponytail: the script cannot see whether another completed sweep lies inside
 # (from, cover], so "next" is taken from the caller; upgrade path is listing the
 # push runs with gh here if a wrong cover ever bites.
+# ponytail: a red cover proves the failure existed somewhere in (from, cover], not
+# at the merge-base itself, so a case introduced and fixed inside that range can
+# read as inherited; ALLOW also needs it green on latest, which bounds this, and
+# the upgrade path is per-commit main runs (or the gh push-run listing above).
 set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/git-clean.sh
