@@ -291,17 +291,21 @@ _FIND_VERB = re.compile(_EXE_PREFIX + r"find(?:\.exe)?(?=\s)")
 # ponytail: the widening covers the mass-delete family only, not
 # _cmdpos_destructive's atoms (`bash -c 'shutdown'` still passes), upgrade
 # path HIMMEL-912's word-level tokenizer.
-_X_WRAPS = _CMDPOS_WRAPS + tuple(
-    ((re.compile(_EXE_PREFIX + h),),
+# Every head here takes an optional .exe, and xargs does too in this set only
+# (the .sh twin's _xwrap adds xargs.exe to lib.sh's xargs).
+_XARGS = next(i for i, (heads, _, _) in enumerate(_WRAPPERS) if heads == ("xargs",))
+_X_WRAPS = tuple(
+    ((re.compile(_EXE_PREFIX + r"xargs(?:\.exe)?"),),) + w[1:] if i == _XARGS else w
+    for i, w in enumerate(_CMDPOS_WRAPS)) + tuple(
+    ((re.compile(_EXE_PREFIX + h + r"(?:\.exe)?"),),
      tuple(re.compile(r"\s+" + st) for st in steps),
      tuple(re.compile(x + r"\s+") for x in (exits or ("",))))
     for h, steps, exits in (
         ("busybox", (), ()),
         ("command", (r"-[-a-z0-9]*",), ()),
         ("eval", (), ()),
-        (r"(?:(?:ba|da|k|mk|z|a)?sh|fish)(?:\.exe)?", _FLG_VALS, (r"\s+-[a-z0-9]*c[a-z0-9]*",)),
+        (r"(?:(?:ba|da|k|mk|z|a)?sh|fish)", _FLG_VALS, (r"\s+-[a-z0-9]*c[a-z0-9]*",)),
     ))
-_XARGS = next(i for i, (heads, _, _) in enumerate(_WRAPPERS) if heads == ("xargs",))
 # HIMMEL-4255: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
 # --exec/--exec-batch) runs, or that xargs runs, deletes every match, with or
 # without -r. Twin of the .sh FIND_RM_PAT / XARGS_RM_PAT: the exec flag is not

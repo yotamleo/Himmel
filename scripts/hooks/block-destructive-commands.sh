@@ -283,7 +283,9 @@ fi
 # ponytail: this widening covers the mass-delete family only, not the
 # CMDPOS atoms (`bash -c 'rm -rf d'` still passes this hook, the Python twin
 # denies it), upgrade path HIMMEL-912's word-level tokenizer.
-_xwrap='(busybox|command([[:space:]]+-[-[:alnum:]]*)*|eval|((ba|da|k|mk|z|a)?sh|fish)(\.exe)?([[:space:]]+'"${CMDFLG}"'('"${CMDVAL}"')?)*[[:space:]]+-[[:alnum:]]*c[[:alnum:]]*)[[:space:]]+'
+# Every head here takes an optional .exe, and xargs.exe joins lib.sh's xargs
+# (which has no .exe), with the same flags.
+_xwrap='(busybox(\.exe)?|command(\.exe)?([[:space:]]+-[-[:alnum:]]*)*|eval(\.exe)?|xargs\.exe([[:space:]]+(-[adeilnps]'"${CMDVAL}"'|--[admp][a-z-]*'"${CMDVAL}"'|'"${CMDFLG}"'))*|((ba|da|k|mk|z|a)?sh|fish)(\.exe)?([[:space:]]+'"${CMDFLG}"'('"${CMDVAL}"')?)*[[:space:]]+-[[:alnum:]]*c[[:alnum:]]*)[[:space:]]+'
 MASS_PFX="${CMDPOS_PFX}(${_xwrap}${CMDPOS_PFX})*"
 MASS_CMDPOS="${CMDPOS}(${_xwrap}${CMDPOS_PFX})*"
 # HIMMEL-4255: the old single pattern (CMDPOS find .* -delete) was quadratic,
@@ -310,7 +312,7 @@ _find_delete() {
 FIND_RM_PAT='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${MASS_PFX}"'rm(\.exe)?([^[:alnum:]_.-]|$)'
 # HIMMEL-4255: so does an rm that xargs runs (`ls | xargs -0 rm`), with
 # xargs's own options and any launcher between them.
-XARGS_RM_PAT="${MASS_CMDPOS}"'xargs([[:space:]]+(-[adeilnps]'"${CMDVAL}"'|--[admp][a-z-]*'"${CMDVAL}"'|'"${CMDFLG}"'))*[[:space:]]+'"${MASS_PFX}"'rm(\.exe)?([^[:alnum:]_.-]|$)'
+XARGS_RM_PAT="${MASS_CMDPOS}"'xargs(\.exe)?([[:space:]]+(-[adeilnps]'"${CMDVAL}"'|--[admp][a-z-]*'"${CMDVAL}"'|'"${CMDFLG}"'))*[[:space:]]+'"${MASS_PFX}"'rm(\.exe)?([^[:alnum:]_.-]|$)'
 # HIMMEL-2834: the three rm checks below run against rm_scrub, not cmd_lc.
 # The old anchor was a bare word boundary `(^|[^[:alnum:]_.-])`, which matches
 # the literal ANYWHERE in the command string, not just where a command is

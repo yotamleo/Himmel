@@ -207,6 +207,28 @@ gc "xargs nice rm"                block 'ls | xargs nice rm'
 gc "xargs busybox rm"             block 'ls | xargs busybox rm'
 gc "xargs sh -c 'rm'"             block "ls | xargs sh -c 'rm \"\$@\"' _"
 gc "bash -c 'ls | xargs rm'"      block "bash -c 'ls | xargs rm'"
+# PR 1799 CR (codex-1): every head word the mass-delete patterns match takes
+# an optional .exe and a path prefix, xargs included.
+gc 'ls | xargs.exe rm' block 'ls | xargs.exe rm'
+gc 'ls | /usr/bin/xargs rm' block 'ls | /usr/bin/xargs rm'
+gc 'ls | /usr/bin/xargs.exe -0 rm' block 'ls | /usr/bin/xargs.exe -0 rm'
+gc 'ls | xargs.exe -0 -n 1 rm' block 'ls | xargs.exe -0 -n 1 rm'
+gc 'ls | sudo xargs.exe rm' block 'ls | sudo xargs.exe rm'
+gc 'ls | xargs.exe busybox.exe rm' block 'ls | xargs.exe busybox.exe rm'
+gc 'ls | xargs.exe find d -delete' block 'ls | xargs.exe find d -delete'
+gc 'busybox.exe find d -delete' block 'busybox.exe find d -delete'
+gc '/bin/busybox.exe find d -delete' block '/bin/busybox.exe find d -delete'
+gc 'command.exe find d -delete' block 'command.exe find d -delete'
+gc 'eval.exe find d -delete' block 'eval.exe find d -delete'
+gc 'find d -exec busybox.exe rm {} +' block 'find d -exec busybox.exe rm {} +'
+gc 'ls | busybox.exe xargs rm' block 'ls | busybox.exe xargs rm'
+gc 'ls | command.exe xargs rm' block 'ls | command.exe xargs rm'
+gc 'find.exe d -delete' block 'find.exe d -delete'
+gc 'fd.exe x -X rm' block 'fd.exe x -X rm'
+gc 'find d -exec rm.exe {} +' block 'find d -exec rm.exe {} +'
+gc 'ls | xargs.exe rmdir' allow 'ls | xargs.exe rmdir'
+gc 'ls | xargs.exe grep rm' allow 'ls | xargs.exe grep rm'
+gc 'echo xargs.exe rm' allow 'echo xargs.exe rm'
 # Lookalikes stay allowed: no find/xargs at command position, no rm word.
 gc "echo busybox find -delete ok" allow 'echo busybox find d -delete'
 gc 'commit "bash -c find" ok'     allow "git commit -m \"use bash -c 'find d -delete'\""
@@ -224,11 +246,11 @@ gc 'commit "a xargs rm b" ok'     allow 'git commit -m "a xargs rm b"'
 gc "find -exec rm {} \\; -prune"   block 'find . -name x -exec rm {} \; -prune'
 gc "find -exec ls {} \\; -prune ok" allow 'find . -name x -exec ls {} \; -prune'
 # The new anchors (xargs, -exec) stay linear on a 100 KB command.
+# The payload is built before the clock starts, so only the guard is timed.
 for unit in '; xargs -0 x' ' -exec x'; do
+  payload=$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": "echo hi" + sys.argv[1] * 8000 + "; docker run --privileged alpine"}}))' "$unit")
   t0=$SECONDS
-  pad="echo hi"; i=0
-  while [ "$i" -lt 8000 ]; do pad="$pad$unit"; i=$((i + 1)); done
-  g "${unit}x8000 then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + "; docker run --privileged alpine"}}))' "$pad")"
+  g "${unit}x8000 then docker (linear)" block "$payload"
   if [ $((SECONDS - t0)) -gt 3 ]; then
     echo "  FAIL: ${unit}x8000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
 done
