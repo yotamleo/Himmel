@@ -168,6 +168,30 @@ run_bridge --head headt6 --branch b --notes "$NOTES"
 assert_contains "T6 uncitable finding recorded (dedup marker present)" "$(cat "$NOTES")" "<!-- cr:headt6:codex-6 -->"
 assert_contains "T6 uncitable finding title present" "$(cat "$NOTES")" "no citation available"
 
+# -- T16 (HIMMEL-2430): a re-run at the same head dedupes every finding, and
+# the relayed summary must say so instead of claiming a fresh write. --
+new_item t16
+CR_LEDGER="$TMP/ledger-t16.jsonl"
+cat > "$CR_LEDGER" <<'EOF'
+{"kind":"finding","head":"headt16","branch":"b","model":"codex","finding_id":"codex-16","severity":"imp","file":"a.py","line":1,"verdict":"","artifact":"diff","perspective":"off","text":"recorded once"}
+EOF
+run_bridge --head headt16 --branch b --notes "$NOTES"
+assert_contains "T16 first run reports the write" "$OUT" "1 finding(s) -> reviewer-notes"
+assert_not_contains "T16 first run reports nothing already present" "$OUT" "already present"
+run_bridge --head headt16 --branch b --notes "$NOTES"
+assert_eq "T16 re-run rc" "0" "$RC"
+assert_contains "T16 re-run reports 0 written, 1 already present" "$OUT" "0 finding(s) -> reviewer-notes (1 already present)"
+assert_not_contains "T16 a dedupe is not a failure" "$OUT" "FAILED"
+assert_not_contains "T16 a dedupe writes no stderr noise" "$ERR" "append-cr-findings.sh failed"
+assert_eq "T16 the row is still recorded exactly once" "1" "$(grep -c 'cr:headt16:codex-16' "$NOTES")"
+
+# T16b mixed: one new finding plus one already present at the same head.
+cat >> "$CR_LEDGER" <<'EOF'
+{"kind":"finding","head":"headt16","branch":"b","model":"codex","finding_id":"codex-17","severity":"sug","file":"b.py","line":2,"verdict":"","artifact":"diff","perspective":"off","text":"new this run"}
+EOF
+run_bridge --head headt16 --branch b --notes "$NOTES"
+assert_contains "T16b mixed run: 1 written, 1 already present" "$OUT" "1 finding(s) -> reviewer-notes (1 already present)"
+
 # -- T7: argument errors -> exit 2 --
 run_bridge --branch b --notes "$TMP/x.md"
 assert_eq "T7a missing --head -> rc" "2" "$RC"
@@ -271,6 +295,7 @@ run_bridge --head headt11 --branch b --notes "$TMP/no-such-dir-t11/reviewer-note
 assert_eq "T11 rc still 0 (best effort)" "0" "$RC"
 assert_contains "T11 the failed write is reported as FAILED, not as delivered" "$OUT" "(1 FAILED)"
 assert_contains "T11 summary does not claim the finding reached reviewer-notes" "$OUT" "0 finding(s) -> reviewer-notes"
+assert_not_contains "T11 a failed append is not reported as already present" "$OUT" "already present"
 
 # -- t13: avail rows are NOT branch-scoped (gate identity is (head, model),
 # HIMMEL-1613/1640). clear-cr-marker.sh (the gate) selects avail rows by
