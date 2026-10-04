@@ -783,7 +783,10 @@ assert_rc 'curl -o f \<NL>x allowed'     0 "$(run_case "$(j_bash 'curl -o f '"$B
 assert_rc 'rm -f a \<NL>  b allowed'     0 "$(run_case "$(j_bash 'rm -f a '"$BSNL"'  b')")"
 assert_rc 'rm -f \<NL>"report.txt" allowed' 0 "$(run_case "$(j_bash 'rm -f '"$BSNL"'"report.txt"')")"
 assert_rc 'ls \<NL>-"r" allowed'         0 "$(run_case "$(j_bash 'ls '"$BSNL"'-"r"')")"
-assert_rc 'find -exec rm {} \; -prune allowed' 0 "$(run_case "$(j_bash 'find . -name x -exec rm {} \; -prune')")"
+# HIMMEL-4255: find running rm is a mass delete now, so the `\;` row keeps its
+# point (the escaped `;` is no continuation) with ls instead.
+assert_rc 'find -exec rm {} \; -prune denied (HIMMEL-4255)' 2 "$(run_case "$(j_bash 'find . -name x -exec rm {} \; -prune')")"
+assert_rc 'find -exec ls {} \; -prune allowed' 0 "$(run_case "$(j_bash 'find . -name x -exec ls {} \; -prune')")"
 assert_rc 'heredoc body rm -rf \<NL> allowed' 0 "$(run_case "$(j_bash 'cat <<'\''EOF'\'' > f.sh'$'\n''rm -rf build '"$BSNL"'  dist'$'\n''EOF')")"
 
 # HIMMEL-3983: rm inside a compound-statement keyword is at command position.
@@ -854,7 +857,8 @@ assert_rc 'timeout 5 ls allowed'         0 "$(run_case "$(j_bash 'timeout 5 ls')
 assert_rc 'timeout 5 rm -f x allowed'    0 "$(run_case "$(j_bash 'timeout 5 rm -f x')")"
 assert_rc 'find . -name x allowed'       0 "$(run_case "$(j_bash 'find . -name x')")"
 assert_rc 'find . -exec ls -r allowed'   0 "$(run_case "$(j_bash 'find . -exec ls -r {} +')")"
-assert_rc 'find -exec rm -f {} + allowed' 0 "$(run_case "$(j_bash 'find . -name x -exec rm -f {} +')")"
+# HIMMEL-4255: a non-recursive rm that find runs is a mass delete too.
+assert_rc 'find -exec rm -f {} + denied' 2 "$(run_case "$(j_bash 'find . -name x -exec rm -f {} +')")"
 assert_rc 'find -name deleted allowed'   0 "$(run_case "$(j_bash 'find . -name deleted')")"
 # HIMMEL-4134: -exec/-x is text only in a lone echo, printf or : with plain
 # words (the allowlist). Every other command keeps the unanchored flag check.
@@ -891,6 +895,100 @@ assert_rc "then exec -a 'a b' rm -r"     2 "$(run_case "$(j_bash "if true; then 
 # so a quoted wrapper value stays one word.
 assert_rc "nice -n '1 0' find -delete"   2 "$(run_case "$(j_bash "nice -n '1 0' find d -delete")")"
 assert_rc "exec -a 'a b' find -delete"   2 "$(run_case "$(j_bash "exec -a 'a b' find d -delete")")"
+# HIMMEL-4255: the find-family deletes the parity_guard.py twin denies too.
+# A launcher that runs its argument as a command (busybox, command, eval, a
+# shell's -c) keeps find at command position.
+assert_rc 'busybox find -delete'         2 "$(run_case "$(j_bash 'busybox find d -delete')")"
+assert_rc '/bin/busybox find -delete'    2 "$(run_case "$(j_bash '/bin/busybox find d -delete')")"
+assert_rc 'command find -delete'         2 "$(run_case "$(j_bash 'command find d -delete')")"
+assert_rc 'command -p find -delete'      2 "$(run_case "$(j_bash 'command -p find d -delete')")"
+assert_rc 'command -- find -delete'      2 "$(run_case "$(j_bash 'command -- find d -delete')")"
+assert_rc "bash -c 'find -delete'"       2 "$(run_case "$(j_bash "bash -c 'find d -delete'")")"
+assert_rc "sh -c 'find -delete'"         2 "$(run_case "$(j_bash "sh -c 'find d -delete'")")"
+assert_rc 'zsh -c "find -delete"'        2 "$(run_case "$(j_bash 'zsh -c "find d -delete"')")"
+assert_rc "dash -c 'find -delete'"       2 "$(run_case "$(j_bash "dash -c 'find d -delete'")")"
+assert_rc "bash -lc 'find -delete'"      2 "$(run_case "$(j_bash "bash -lc 'find d -delete'")")"
+assert_rc "bash -o pipefail -c 'find'"   2 "$(run_case "$(j_bash "bash -o pipefail -c 'find d -delete'")")"
+assert_rc "/bin/bash -c 'find -delete'"  2 "$(run_case "$(j_bash "/bin/bash -c 'find d -delete'")")"
+assert_rc 'eval find -delete'            2 "$(run_case "$(j_bash 'eval find d -delete')")"
+assert_rc 'eval "find -delete"'          2 "$(run_case "$(j_bash 'eval "find d -delete"')")"
+assert_rc 'find -exec rm {} +'           2 "$(run_case "$(j_bash 'find d -exec rm {} +')")"
+assert_rc 'find -exec rm {} \;'          2 "$(run_case "$(j_bash 'find d -exec rm {} \;')")"
+assert_rc 'find -execdir rm {} +'        2 "$(run_case "$(j_bash 'find d -execdir rm {} +')")"
+assert_rc 'find -execdir rm {} \;'       2 "$(run_case "$(j_bash 'find d -execdir rm {} \;')")"
+assert_rc 'find -ok rm {} \;'            2 "$(run_case "$(j_bash 'find d -ok rm {} \;')")"
+assert_rc 'find -okdir rm {} \;'         2 "$(run_case "$(j_bash 'find d -okdir rm {} \;')")"
+assert_rc 'find -exec /bin/rm {} +'      2 "$(run_case "$(j_bash 'find d -exec /bin/rm {} +')")"
+assert_rc 'find -exec /usr/bin/rm {} \;' 2 "$(run_case "$(j_bash 'find d -exec /usr/bin/rm {} \;')")"
+assert_rc 'find -okdir /usr/bin/rm {} +' 2 "$(run_case "$(j_bash 'find d -okdir /usr/bin/rm {} +')")"
+assert_rc "find -exec 'rm' {} +"         2 "$(run_case "$(j_bash "find d -exec 'rm' {} +")")"
+assert_rc 'find -exec sudo rm {} +'      2 "$(run_case "$(j_bash 'find d -exec sudo rm {} +')")"
+assert_rc 'find -exec busybox rm {} +'   2 "$(run_case "$(j_bash 'find d -exec busybox rm {} +')")"
+assert_rc "find -exec sh -c 'rm' {} +"   2 "$(run_case "$(j_bash "find d -exec sh -c 'rm \"\$@\"' _ {} +")")"
+assert_rc 'fd -X rm'                     2 "$(run_case "$(j_bash 'fd x -X rm')")"
+assert_rc 'fd -x rm'                     2 "$(run_case "$(j_bash 'fd x -x rm')")"
+assert_rc 'fd --exec rm'                 2 "$(run_case "$(j_bash 'fd x --exec rm')")"
+assert_rc 'fd --exec-batch rm'           2 "$(run_case "$(j_bash 'fd x --exec-batch rm')")"
+assert_rc 'fd -X /bin/rm'                2 "$(run_case "$(j_bash 'fd x -X /bin/rm')")"
+assert_rc 'xargs rm'                     2 "$(run_case "$(j_bash 'ls | xargs rm')")"
+assert_rc 'xargs -0 rm'                  2 "$(run_case "$(j_bash 'ls | xargs -0 rm')")"
+assert_rc 'xargs -0 -n 1 rm'             2 "$(run_case "$(j_bash 'ls | xargs -0 -n 1 rm')")"
+assert_rc 'xargs -r -P4 rm'              2 "$(run_case "$(j_bash 'ls | xargs -r -P4 rm')")"
+assert_rc 'xargs -I {} rm {}'            2 "$(run_case "$(j_bash 'ls | xargs -I {} rm {}')")"
+assert_rc 'xargs --null rm'              2 "$(run_case "$(j_bash 'ls | xargs --null rm')")"
+assert_rc 'xargs -0 /bin/rm'             2 "$(run_case "$(j_bash 'ls | xargs -0 /bin/rm')")"
+assert_rc 'xargs < list rm'              2 "$(run_case "$(j_bash 'xargs rm < list')")"
+# The same forms behind the wrappers CMDPOS already models.
+assert_rc 'sudo busybox find -delete'    2 "$(run_case "$(j_bash 'sudo busybox find d -delete')")"
+assert_rc 'env busybox find -delete'     2 "$(run_case "$(j_bash 'env busybox find d -delete')")"
+assert_rc 'nice command find -delete'    2 "$(run_case "$(j_bash 'nice command find d -delete')")"
+assert_rc 'nohup busybox find -delete'   2 "$(run_case "$(j_bash 'nohup busybox find d -delete')")"
+assert_rc 'timeout 5 busybox find'       2 "$(run_case "$(j_bash 'timeout 5 busybox find d -delete')")"
+assert_rc 'time eval find -delete'       2 "$(run_case "$(j_bash 'time eval find d -delete')")"
+assert_rc 'exec busybox find -delete'    2 "$(run_case "$(j_bash 'exec busybox find d -delete')")"
+assert_rc "sudo bash -c 'find -delete'"  2 "$(run_case "$(j_bash "sudo bash -c 'find d -delete'")")"
+assert_rc "env sh -c 'find -delete'"     2 "$(run_case "$(j_bash "env sh -c 'find d -delete'")")"
+assert_rc "nohup sh -c 'find -delete'"   2 "$(run_case "$(j_bash "nohup sh -c 'find d -delete'")")"
+assert_rc "timeout 5 sh -c 'find'"       2 "$(run_case "$(j_bash "timeout 5 sh -c 'find d -delete'")")"
+assert_rc "bash -c 'sudo find -delete'"  2 "$(run_case "$(j_bash "bash -c 'sudo find d -delete'")")"
+assert_rc 'command busybox find'         2 "$(run_case "$(j_bash 'command busybox find d -delete')")"
+assert_rc 'sudo find -exec rm {} +'      2 "$(run_case "$(j_bash 'sudo find d -exec rm {} +')")"
+assert_rc 'busybox find -exec rm {} +'   2 "$(run_case "$(j_bash 'busybox find d -exec rm {} +')")"
+assert_rc "bash -c 'find -exec rm'"      2 "$(run_case "$(j_bash "bash -c 'find d -exec rm {} +'")")"
+assert_rc 'nice fd -X rm'                2 "$(run_case "$(j_bash 'nice fd x -X rm')")"
+assert_rc 'sudo xargs rm'                2 "$(run_case "$(j_bash 'ls | sudo xargs rm')")"
+assert_rc 'nice xargs rm'                2 "$(run_case "$(j_bash 'ls | nice xargs rm')")"
+assert_rc 'env xargs rm'                 2 "$(run_case "$(j_bash 'ls | env xargs rm')")"
+assert_rc 'busybox xargs rm'             2 "$(run_case "$(j_bash 'ls | busybox xargs rm')")"
+assert_rc 'xargs sudo rm'                2 "$(run_case "$(j_bash 'ls | xargs sudo rm')")"
+assert_rc 'xargs nice rm'                2 "$(run_case "$(j_bash 'ls | xargs nice rm')")"
+assert_rc 'xargs busybox rm'             2 "$(run_case "$(j_bash 'ls | xargs busybox rm')")"
+assert_rc "xargs sh -c 'rm'"             2 "$(run_case "$(j_bash "ls | xargs sh -c 'rm \"\$@\"' _")")"
+assert_rc "bash -c 'ls | xargs rm'"      2 "$(run_case "$(j_bash "bash -c 'ls | xargs rm'")")"
+# Lookalikes stay allowed: no find/xargs at command position, no rm word.
+assert_rc 'echo busybox find -delete ok' 0 "$(run_case "$(j_bash 'echo busybox find d -delete')")"
+assert_rc 'commit "bash -c find" ok'     0 "$(run_case "$(j_bash "git commit -m \"use bash -c 'find d -delete'\"")")"
+assert_rc 'command -v find ok'           0 "$(run_case "$(j_bash 'command -v find')")"
+assert_rc "bash -c 'find -name' ok"      0 "$(run_case "$(j_bash "bash -c 'find d -name x'")")"
+assert_rc 'eval ls ok'                   0 "$(run_case "$(j_bash 'eval ls -la')")"
+assert_rc 'busybox ls ok'                0 "$(run_case "$(j_bash 'busybox ls d')")"
+assert_rc 'find -exec ls {} + ok'        0 "$(run_case "$(j_bash 'find d -exec ls {} +')")"
+assert_rc 'find -exec rmdir {} + ok'     0 "$(run_case "$(j_bash 'find d -exec rmdir {} +')")"
+assert_rc 'fd -x rmate ok'               0 "$(run_case "$(j_bash 'fd x -x rmate')")"
+assert_rc 'xargs rmdir ok'               0 "$(run_case "$(j_bash 'ls | xargs rmdir')")"
+assert_rc 'xargs grep rm ok'             0 "$(run_case "$(j_bash 'ls | xargs grep rm')")"
+assert_rc 'echo x -exec rm y ok'         0 "$(run_case "$(j_bash 'echo x -exec rm y')")"
+assert_rc 'commit "a xargs rm b" ok'     0 "$(run_case "$(j_bash 'git commit -m "a xargs rm b"')")"
+# HIMMEL-4255: the find -delete scan is linear. 12,500 `find` anchors with no
+# -delete (100 KB) took 21.8s at base (26s under suite load), quadratic;
+# then a late shutdown. Head: 0.7-0.8s under suite load, so the budget is 4s.
+# The pad is built before the clock starts (a concat loop takes 3s itself).
+# shellcheck disable=SC2046 # one word per repeat is the point
+printf -v pad '; find x%.0s' $(seq 1 12500)
+t0=$SECONDS
+assert_rc 'find anchors x12500 then shutdown (linear)' 2 "$(run_case "$(j_bash "echo hi$pad; shutdown now")")"
+if [ $((SECONDS - t0)) -gt 4 ]; then
+    echo "FAIL find anchors x12500 took $((SECONDS - t0))s (budget 4s)"; FAILED=$((FAILED + 1)); fi
 # HIMMEL-4158: a value word may be built from quoted ('…', "…", $'…'),
 # escaped and bare segments; a flag word may carry a quoted value too.
 assert_rc "sudo -u 'a b'c rm -rf"        2 "$(run_case "$(j_bash "sudo -u 'a b'c rm -rf /x")")"
@@ -964,7 +1062,7 @@ assert_rc 'commit "echo x -exec rm -rf" denied' 2 "$(run_case "$(j_bash 'git com
 assert_rc 'commit "find -delete" allowed' 0 "$(run_case "$(j_bash 'git commit -m "docs: find -delete is now refused"')")"
 assert_rc 'commit "xargs rm -rf" allowed' 0 "$(run_case "$(j_bash 'git commit -m "a xargs rm -rf b"')")"
 assert_rc 'xargs echo allowed'           0 "$(run_case "$(j_bash 'ls | xargs echo')")"
-assert_rc 'xargs rm -f allowed'          0 "$(run_case "$(j_bash 'ls | xargs rm -f')")"
+assert_rc 'xargs rm -f denied (HIMMEL-4255)' 2 "$(run_case "$(j_bash 'ls | xargs rm -f')")"
 assert_rc 'for; do echo allowed'         0 "$(run_case "$(j_bash 'for f in x; do echo; done')")"
 assert_rc 'for; do rm -f allowed'        0 "$(run_case "$(j_bash 'for f in x; do rm -f "x"; done')")"
 assert_rc 'if; then echo rm -r allowed'  0 "$(run_case "$(j_bash 'if true; then echo rm -r d; fi')")"

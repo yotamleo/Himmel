@@ -273,7 +273,44 @@ else
 fi
 # HIMMEL-3984: `find -delete` is a recursive delete of its own. The gap is
 # unbounded, like RM_RECURSIVE_PAT's, so a quoted `;` cannot hide the flag.
-FIND_DELETE_PAT="${CMDPOS}"'find(\.exe)?([[:space:]].*)?[[:space:]]-delete([^[:alnum:]_-]|$)'
+# HIMMEL-4255: the mass-delete family (find -delete, find/fd running rm,
+# xargs running rm) also sees through the launchers CMDPOS leaves out:
+# busybox, command [-p|--|-v ...], eval, and a shell's -c (bash/sh/dash/zsh/
+# ksh/mksh/ash/fish, own flags first: `bash -o pipefail -c`). The quoted
+# payload is read as text, so `bash -c 'find d -delete'` matches like the bare
+# form. Over-deny only: `command -v find; ls -delete` denies.
+# parity_guard.py's _X_WRAPS is the twin.
+# ponytail: this widening covers the mass-delete family only, not the
+# CMDPOS atoms (`bash -c 'rm -rf d'` still passes this hook, the Python twin
+# denies it), upgrade path HIMMEL-912's word-level tokenizer.
+_xwrap='(busybox|command([[:space:]]+-[-[:alnum:]]*)*|eval|((ba|da|k|mk|z|a)?sh|fish)(\.exe)?([[:space:]]+'"${CMDFLG}"'('"${CMDVAL}"')?)*[[:space:]]+-[[:alnum:]]*c[[:alnum:]]*)[[:space:]]+'
+MASS_PFX="${CMDPOS_PFX}(${_xwrap}${CMDPOS_PFX})*"
+MASS_CMDPOS="${CMDPOS}(${_xwrap}${CMDPOS_PFX})*"
+# HIMMEL-4255: the old single pattern (CMDPOS find .* -delete) was quadratic,
+# about 22s on a 100 KB command of `; find x` words. _find_delete cuts the
+# text at its LAST -delete flag with a glob (linear) and looks for a
+# command-position find in what is before it, which is the same set: any find
+# before any -delete is before the last one.
+FIND_VERB_PAT="${MASS_CMDPOS}"'find(\.exe)?[[:space:]]'
+_find_delete() {
+    local s=$1 pre
+    if [[ $s == *[[:space:]]-delete ]]; then
+        pre=${s%-delete}
+    else
+        pre=${s%[[:space:]]-delete[![:alnum:]_-]*}
+        [ "${#pre}" -lt "${#s}" ] || return 1
+        pre="$pre "
+    fi
+    [[ $pre =~ $FIND_VERB_PAT ]]
+}
+# HIMMEL-4255: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
+# --exec/--exec-batch) runs deletes every match, so it denies with or without
+# -r. Like _rmpos_flag, the flag is not tied to find or fd: over-deny only
+# (`grep -x rm f` denies), and the echo/printf allowlist skips it.
+FIND_RM_PAT='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${MASS_PFX}"'rm(\.exe)?([^[:alnum:]_.-]|$)'
+# HIMMEL-4255: so does an rm that xargs runs (`ls | xargs -0 rm`), with
+# xargs's own options and any launcher between them.
+XARGS_RM_PAT="${MASS_CMDPOS}"'xargs([[:space:]]+(-[adeilnps]'"${CMDVAL}"'|--[admp][a-z-]*'"${CMDVAL}"'|'"${CMDFLG}"'))*[[:space:]]+'"${MASS_PFX}"'rm(\.exe)?([^[:alnum:]_.-]|$)'
 # HIMMEL-2834: the three rm checks below run against rm_scrub, not cmd_lc.
 # The old anchor was a bare word boundary `(^|[^[:alnum:]_.-])`, which matches
 # the literal ANYWHERE in the command string, not just where a command is
@@ -639,8 +676,17 @@ if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_
 fi
 # HIMMEL-4158: rm_norm splits a quoted wrapper value (`nice -n '1 0' find`)
 # into two words, so also read the text with its quotes kept.
-if [[ $rm_norm =~ $FIND_DELETE_PAT ]] || [[ $_rm_src =~ $FIND_DELETE_PAT ]]; then
+if _find_delete "$rm_norm" || _find_delete "$_rm_src"; then
     deny "recursive delete (find -delete)"
+fi
+if [[ ! $cmd_lc =~ $_rmpos_text ]] && { [[ $rm_norm =~ $FIND_RM_PAT ]] || [[ $_rm_src =~ $FIND_RM_PAT ]]; }; then
+    deny "mass delete (find/fd running rm)"
+fi
+# The glob is a cheap pre-check (the pattern needs both words in this order,
+# and rm_norm only drops characters, so it holds every word _rm_src does):
+# CMDPOS is slow on long `((` runs, HIMMEL-4321.
+if [[ $rm_norm == *xargs*rm* ]] && { [[ $rm_norm =~ $XARGS_RM_PAT ]] || [[ $_rm_src =~ $XARGS_RM_PAT ]]; }; then
+    deny "mass delete (xargs rm)"
 fi
 done
 # HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no

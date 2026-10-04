@@ -134,6 +134,104 @@ g "find -print"             allow '{"tool_name":"terminal","tool_input":{"comman
 g "echo find -delete"       allow '{"tool_name":"terminal","tool_input":{"command":"echo find d -delete"}}'
 g "grep find -delete"       allow '{"tool_name":"terminal","tool_input":{"command":"grep find -delete notes.txt"}}'
 g "findx -delete"           allow '{"tool_name":"terminal","tool_input":{"command":"findx d -delete"}}'
+# HIMMEL-4255: the find-family deletes the .sh hook denies too. A launcher that
+# runs its argument as a command (busybox, command, eval, a shell's -c) keeps
+# find at command position. gc builds the payload from the raw command.
+gc() { g "$1" "$2" "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1]}}))' "$3")"; }
+gc "busybox find -delete"         block 'busybox find d -delete'
+gc "/bin/busybox find -delete"    block '/bin/busybox find d -delete'
+gc "command find -delete"         block 'command find d -delete'
+gc "command -p find -delete"      block 'command -p find d -delete'
+gc "command -- find -delete"      block 'command -- find d -delete'
+gc "bash -c 'find -delete'"       block "bash -c 'find d -delete'"
+gc "sh -c 'find -delete'"         block "sh -c 'find d -delete'"
+gc 'zsh -c "find -delete"'        block 'zsh -c "find d -delete"'
+gc "dash -c 'find -delete'"       block "dash -c 'find d -delete'"
+gc "bash -lc 'find -delete'"      block "bash -lc 'find d -delete'"
+gc "bash -o pipefail -c 'find'"   block "bash -o pipefail -c 'find d -delete'"
+gc "/bin/bash -c 'find -delete'"  block "/bin/bash -c 'find d -delete'"
+gc "eval find -delete"            block 'eval find d -delete'
+gc 'eval "find -delete"'          block 'eval "find d -delete"'
+gc "find -exec rm {} +"           block 'find d -exec rm {} +'
+gc "find -exec rm {} \\;"         block 'find d -exec rm {} \;'
+gc "find -execdir rm {} +"        block 'find d -execdir rm {} +'
+gc "find -execdir rm {} \\;"      block 'find d -execdir rm {} \;'
+gc "find -ok rm {} \\;"           block 'find d -ok rm {} \;'
+gc "find -okdir rm {} \\;"        block 'find d -okdir rm {} \;'
+gc "find -exec /bin/rm {} +"      block 'find d -exec /bin/rm {} +'
+gc "find -exec /usr/bin/rm {} \\;" block 'find d -exec /usr/bin/rm {} \;'
+gc "find -okdir /usr/bin/rm {} +" block 'find d -okdir /usr/bin/rm {} +'
+gc "find -exec 'rm' {} +"         block "find d -exec 'rm' {} +"
+gc "find -exec rm -f {} +"        block 'find . -name x -exec rm -f {} +'
+gc "find -exec sudo rm {} +"      block 'find d -exec sudo rm {} +'
+gc "find -exec busybox rm {} +"   block 'find d -exec busybox rm {} +'
+gc "find -exec sh -c 'rm' {} +"   block "find d -exec sh -c 'rm \"\$@\"' _ {} +"
+gc "fd -X rm"                     block 'fd x -X rm'
+gc "fd -x rm"                     block 'fd x -x rm'
+gc "fd --exec rm"                 block 'fd x --exec rm'
+gc "fd --exec-batch rm"           block 'fd x --exec-batch rm'
+gc "fd -X /bin/rm"                block 'fd x -X /bin/rm'
+gc "xargs rm"                     block 'ls | xargs rm'
+gc "xargs -0 rm"                  block 'ls | xargs -0 rm'
+gc "xargs -0 -n 1 rm"             block 'ls | xargs -0 -n 1 rm'
+gc "xargs -r -P4 rm"              block 'ls | xargs -r -P4 rm'
+gc "xargs -I {} rm {}"            block 'ls | xargs -I {} rm {}'
+gc "xargs --null rm"              block 'ls | xargs --null rm'
+gc "xargs -0 /bin/rm"             block 'ls | xargs -0 /bin/rm'
+gc "xargs rm -f"                  block 'ls | xargs rm -f'
+gc "xargs < list rm"              block 'xargs rm < list'
+# The same forms behind the wrappers the command-position grammar models.
+gc "sudo busybox find -delete"    block 'sudo busybox find d -delete'
+gc "env busybox find -delete"     block 'env busybox find d -delete'
+gc "nice command find -delete"    block 'nice command find d -delete'
+gc "nohup busybox find -delete"   block 'nohup busybox find d -delete'
+gc "timeout 5 busybox find"       block 'timeout 5 busybox find d -delete'
+gc "time eval find -delete"       block 'time eval find d -delete'
+gc "exec busybox find -delete"    block 'exec busybox find d -delete'
+gc "sudo bash -c 'find -delete'"  block "sudo bash -c 'find d -delete'"
+gc "env sh -c 'find -delete'"     block "env sh -c 'find d -delete'"
+gc "nohup sh -c 'find -delete'"   block "nohup sh -c 'find d -delete'"
+gc "timeout 5 sh -c 'find'"       block "timeout 5 sh -c 'find d -delete'"
+gc "bash -c 'sudo find -delete'"  block "bash -c 'sudo find d -delete'"
+gc "command busybox find"         block 'command busybox find d -delete'
+gc "sudo find -exec rm {} +"      block 'sudo find d -exec rm {} +'
+gc "busybox find -exec rm {} +"   block 'busybox find d -exec rm {} +'
+gc "bash -c 'find -exec rm'"      block "bash -c 'find d -exec rm {} +'"
+gc "nice fd -X rm"                block 'nice fd x -X rm'
+gc "sudo xargs rm"                block 'ls | sudo xargs rm'
+gc "nice xargs rm"                block 'ls | nice xargs rm'
+gc "env xargs rm"                 block 'ls | env xargs rm'
+gc "busybox xargs rm"             block 'ls | busybox xargs rm'
+gc "xargs sudo rm"                block 'ls | xargs sudo rm'
+gc "xargs nice rm"                block 'ls | xargs nice rm'
+gc "xargs busybox rm"             block 'ls | xargs busybox rm'
+gc "xargs sh -c 'rm'"             block "ls | xargs sh -c 'rm \"\$@\"' _"
+gc "bash -c 'ls | xargs rm'"      block "bash -c 'ls | xargs rm'"
+# Lookalikes stay allowed: no find/xargs at command position, no rm word.
+gc "echo busybox find -delete ok" allow 'echo busybox find d -delete'
+gc 'commit "bash -c find" ok'     allow "git commit -m \"use bash -c 'find d -delete'\""
+gc "command -v find ok"           allow 'command -v find'
+gc "bash -c 'find -name' ok"      allow "bash -c 'find d -name x'"
+gc "eval ls ok"                   allow 'eval ls -la'
+gc "busybox ls ok"                allow 'busybox ls d'
+gc "find -exec ls {} + ok"        allow 'find d -exec ls {} +'
+gc "find -exec rmdir {} + ok"     allow 'find d -exec rmdir {} +'
+gc "fd -x rmate ok"               allow 'fd x -x rmate'
+gc "xargs rmdir ok"               allow 'ls | xargs rmdir'
+gc "xargs grep rm ok"             allow 'ls | xargs grep rm'
+gc "echo x -exec rm y ok"         allow 'echo x -exec rm y'
+gc 'commit "a xargs rm b" ok'     allow 'git commit -m "a xargs rm b"'
+gc "find -exec rm {} \\; -prune"   block 'find . -name x -exec rm {} \; -prune'
+gc "find -exec ls {} \\; -prune ok" allow 'find . -name x -exec ls {} \; -prune'
+# The new anchors (xargs, -exec) stay linear on a 100 KB command.
+for unit in '; xargs -0 x' ' -exec x'; do
+  t0=$SECONDS
+  pad="echo hi"; i=0
+  while [ "$i" -lt 8000 ]; do pad="$pad$unit"; i=$((i + 1)); done
+  g "${unit}x8000 then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + "; docker run --privileged alpine"}}))' "$pad")"
+  if [ $((SECONDS - t0)) -gt 3 ]; then
+    echo "  FAIL: ${unit}x8000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
 # HIMMEL-4158: overlapping readings of one flag run stay linear; a backtracking
 # regex took minutes on these (the hermes hook timeout is 10s).
 for rep in "-u 'a' " '-u"x ' '-u "x -u " ' "-u 'x -u ' "; do
