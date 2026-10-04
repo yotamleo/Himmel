@@ -6,6 +6,7 @@
 # the real station, never arms anything, never sends a message.
 # Exit: 0 = all pass, 1 = a case failed.
 set -uo pipefail
+# shellcheck disable=SC2015  # `A && pass || fail`: pass always succeeds
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 REAL_ROOT="$(cd "$DIR/.." && pwd)"
