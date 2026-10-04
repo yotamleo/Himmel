@@ -87,6 +87,22 @@ expect_refuse "row without an owner" "names no owner" "$td/no-owner.md" "$td/pla
 sed 's/^- I1 — /- every row has one owner.\n- I1 — /' "$td/green.md" >"$td/unnumbered.md"
 expect_refuse "unnumbered invariant bullet" "not an I<n> line" "$td/unnumbered.md" "$td/plan.md"
 
+# an unnumbered prose rule at column 0 is refused; an indented continuation is not
+sed 's/^- I1 — /Never let two surfaces own a fact.\n- I1 — /' "$td/green.md" >"$td/prose-rule.md"
+expect_refuse "unnumbered prose rule" "not an I<n> line" "$td/prose-rule.md" "$td/plan.md"
+sed 's/^- I1 — .*/&\n  whichever surfaces compute it./' "$td/green.md" >"$td/continued.md"
+expect_pass "indented continuation of an I<n> line passes" "$td/continued.md" "$td/plan.md"
+
+# a Non-owners column alone is not an owner column
+sed 's/| Owner after |/| After |/' "$td/green.md" >"$td/non-owners-only.md"
+expect_refuse "Non-owners column is not an owner column" "no '## Fact ownership' table" "$td/non-owners-only.md" "$td/plan.md"
+
+# a cited path outside the repo does not count, even when it exists
+sed "s#\`$repo_path\`#\`/etc/hosts\`#" "$td/green.md" >"$td/abs.md"
+expect_refuse "absolute path refused" "/etc/hosts" "$td/abs.md" "$td/plan.md"
+sed "s#\`$repo_path\`#\`../../../../etc/hosts\`#" "$td/green.md" >"$td/dotdot.md"
+expect_refuse "path escaping the repo refused" "etc/hosts" "$td/dotdot.md" "$td/plan.md"
+
 # an incomplete grep record does not exempt the row
 sed 's/none (grep: `cadence-state`)/none (grep:/' "$td/green.md" >"$td/half-grep.md"
 expect_refuse "incomplete grep record" "cadence state" "$td/half-grep.md" "$td/plan.md"

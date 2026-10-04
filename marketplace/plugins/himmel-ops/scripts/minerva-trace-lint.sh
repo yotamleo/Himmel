@@ -5,10 +5,11 @@
 #   1. A surface-shaped spec (its H1 or first H2 section names status, report,
 #      doctor, health, probe, check or inventory) carries a `## Fact ownership`
 #      table with an owner column. Each row's existing-surfaces cell (column 2)
-#      cites backticked repo paths that exist, or reads `none (grep: <pattern>)`
+#      cites backticked repo-relative paths that exist, or reads `none (grep: <pattern>)`
 #      — the grep is the mechanical inventory step, which self-answer mode
 #      cannot skip.
-#   2. Every spec carries `## Invariants`: `none`, or lines opening with I<n>.
+#   2. Every spec carries `## Invariants`: `none`, or lines opening with I<n>
+#      (an indented continuation line may follow one).
 #   3. Every I<n> appears in plan.md on a line that names a test (`test-`,
 #      `.test.` or `Test:`).
 # Paths resolve against the cwd's git top level. Every miss is named on stderr.
@@ -44,7 +45,7 @@ if printf '%s\n' "$head_text" | grep -qiwE "$surface_words"; then
   # one "fact<TAB>surfaces" line per data row under a header carrying an owner column
   rows="$(printf '%s\n' "$fo" | awk -F'|' '
     /^[[:space:]]*\|/ {
-      if (!hdr) { for (i = 2; i < NF; i++) if (tolower($i) ~ /owner/) { oc = i; break }; if (oc) hdr = 1; next }
+      if (!hdr) { for (i = 2; i < NF; i++) if (tolower($i) ~ /owner/ && tolower($i) !~ /non-?owner/) { oc = i; break }; if (oc) hdr = 1; next }
       if ($0 ~ /^[[:space:]]*\|[-:| ]+\|[[:space:]]*$/) next
       f = $2; s = $3; o = $oc; gsub(/^[[:space:]]+|[[:space:]]+$/, "", f); gsub(/[[:space:]]/, "", o)
       if (o == "") print "!\t" f; else print f "\t" s
@@ -64,8 +65,10 @@ if printf '%s\n' "$head_text" | grep -qiwE "$surface_words"; then
         continue
       fi
       for t in $toks; do
-        case "$t" in /*) p="$t";; *) p="$root/$t";; esac
-        [ -e "$p" ] || add "fact ownership: row '$fact' cites $t, which does not exist under $root"
+        case "$t" in /*|..|../*|*/..|*/../*)
+          add "fact ownership: row '$fact' cites $t, which is not a path inside the repo"; continue;;
+        esac
+        [ -e "$root/$t" ] || add "fact ownership: row '$fact' cites $t, which does not exist under $root"
       done
     done <<EOF
 $rows
@@ -79,8 +82,9 @@ if [ -z "$inv" ]; then
 elif printf '%s\n' "$inv" | grep -qvixE '[[:space:]]*none[[:space:].]*'; then  # none only as the sole content
   ids="$(printf '%s\n' "$inv" | sed -nE 's/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?(I[0-9]+)([^0-9].*)?$/\3/p' | sort -u)"
   [ -n "$ids" ] || add "invariants: section lists no I<n> lines"
-  stray="$(printf '%s\n' "$inv" | grep -E '^[[:space:]]*[-*][[:space:]]' | grep -vE '^[[:space:]]*[-*][[:space:]]+(\*\*)?I[0-9]+([^0-9]|$)' || true)"
-  [ -z "$stray" ] || add "invariants: a bullet is not an I<n> line, so no test can trace it: $(printf '%s\n' "$stray" | head -n1)"
+  # every rule line is an I<n> line; only an indented, unbulleted continuation may sit beside one
+  stray="$(printf '%s\n' "$inv" | grep -vE '^[[:space:]]*([-*][[:space:]]+)?(\*\*)?I[0-9]+([^0-9]|$)' | grep -E '^[[:space:]]*[-*][[:space:]]|^[^[:space:]]' || true)"
+  [ -z "$stray" ] || add "invariants: a line is not an I<n> line, so no test can trace it: $(printf '%s\n' "$stray" | head -n1)"
   for id in $ids; do
     grep -wE "$id" "$plan" | grep -qE 'test-|\.test\.|[Tt]est:' \
       || add "invariants: $id has no plan line naming its acceptance test (test-*, *.test.*, or Test:)"
