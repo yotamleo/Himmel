@@ -108,7 +108,8 @@ census() {
                 [ -d "$p" ] || continue   # exited mid-walk
                 case "$(cat "$p/stat" 2>/dev/null)" in *") Z "*) continue ;; esac
                 o="$(owner "$p")"   # an unknown owner counts as same-uid: unknown is never safe
-                if [ -z "$o" ] || [ "$o" = "$me" ]; then echo '@@unread same'; else echo '@@unread other'; fi
+                case "$o" in ''|*[!0-9]*) o="$me" ;; esac   # non-numeric (a stat -f fallback's fs report) is unknown too
+                if [ "$o" = "$me" ]; then echo '@@unread same'; else echo '@@unread other'; fi
             fi
             for fd in "$p"/fd/*; do [ -e "$fd" ] && readlink "$fd" 2>/dev/null; done
         done

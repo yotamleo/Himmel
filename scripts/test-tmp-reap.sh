@@ -165,6 +165,10 @@ rm -rf "$FP/200"; mkdir -p "$FP/200"
 out="$(PATH="$T/bin2:$PATH" TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "unknown owner of an unreadable entry: --apply rc 2" "$rc" 2
 exists "unknown owner reaps nothing" "$ROOT/mog-run.old"
+printf '#!/bin/sh\necho "File: junk"\nexit 0\n' > "$T/bin2/stat"
+out="$(PATH="$T/bin2:$PATH" TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "non-numeric owner output: --apply rc 2" "$rc" 2
+exists "non-numeric owner reaps nothing" "$ROOT/mog-run.old"
 
 echo "== 11. FAMILIES does not glob against the caller's cwd =="
 build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/himmel-fixture.zzz"
