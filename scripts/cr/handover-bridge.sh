@@ -161,7 +161,7 @@ node -e '
     const parts=[];
 
     if (e.NOTES) {
-      let notesN=0, notesFailed=0;
+      let notesN=0, notesDeduped=0, notesFailed=0;
       for (const f of findings) {
         const args=["--notes",e.NOTES,"--head",e.TARGET_HEAD];
         if (e.DATE_) args.push("--date",e.DATE_);
@@ -178,16 +178,19 @@ node -e '
         // is relayed verbatim into the /pr-check report, so a failed append
         // counted as a success is the report claiming a finding reached
         // reviewer-notes when it did not - the same false-evidence class the
-        // gate exists to prevent.
+        // gate exists to prevent. A dedupe (exit 9: row already present at
+        // this head) is not a write either - counted apart, never as FAILED
+        // (HIMMEL-2430).
         try {
           cp.execFileSync("bash",[e.FINDINGS_BRIDGE,...args],{stdio:["ignore","ignore","inherit"]});
           notesN++;
         } catch(err) {
+          if (err.status===9) { notesDeduped++; continue; }
           notesFailed++;
           process.stderr.write("handover-bridge: append-cr-findings.sh failed for "+(f.finding_id||"?")+": "+err.message+"\n");
         }
       }
-      parts.push(notesN+" finding(s) -> reviewer-notes"+(notesFailed?" ("+notesFailed+" FAILED)":""));
+      parts.push(notesN+" finding(s) -> reviewer-notes"+(notesDeduped?" ("+notesDeduped+" already present)":"")+(notesFailed?" ("+notesFailed+" FAILED)":""));
     }
 
     if (e.BUGS) {
