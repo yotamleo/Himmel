@@ -14,7 +14,7 @@ case "$name" in
   *) echo "unknown provider: $name" >&2; exit 2 ;;
 esac
 mem() { awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo; }
-samples=$(mktemp) || exit 1
+samples=$(mktemp "${TMPDIR:-/tmp}/scrape-bench-ram.XXXXXX") || exit 1
 base=$(mem)
 ( while :; do mem >> "$samples"; sleep 0.5; done ) &
 sampler=$!
