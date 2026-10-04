@@ -925,6 +925,13 @@ class InstagramGuardTests(unittest.TestCase):
         self.assertIn("Cookie-Editor", r.reason)
         self.assertIn("~/.luna/cookies/instagram.txt", r.reason)
 
+    def test_a_quoted_short_secret_value_is_masked(self):
+        err = "bad password=\"short secret\" token='abc' end"  # gitleaks:allow
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertNotIn("short", r.reason)
+        self.assertNotIn("abc", r.reason)
+        self.assertIn("end", r.reason)
+
     def test_the_stderr_tail_is_bounded(self):
         r = self.probe("instagram-media", command=self.command(1, "x " * 5000 + "the-end"))
         self.assertLess(len(r.reason), 400)

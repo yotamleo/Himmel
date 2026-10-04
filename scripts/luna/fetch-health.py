@@ -226,7 +226,7 @@ STDERR_TAIL_CHARS = 200
 # `name=value`, `name: value`, `Bearer value` for the secret-bearing names, then
 # any long opaque run (a token with no name in front of it).
 _SECRET_PAIR = re.compile(
-    r"(?i)\b((?:set-)?cookie|sessionid|csrftoken|ds_user_id|auth_token|ct0|token|authorization|bearer|password)\b(\s*[=:]\s*|\s+)(?:bearer\s+)?[^\s;,'\"]+"
+    r"(?i)\b((?:set-)?cookie|sessionid|csrftoken|ds_user_id|auth_token|ct0|token|authorization|bearer|password)\b(\s*[=:]\s*|\s+)(?:bearer\s+)?(?:\"[^\"]*\"|'[^']*'|[^\s;,'\"]+)"
 )
 _LONG_OPAQUE = re.compile(r"[A-Za-z0-9%_\-+/=.]{24,}")
 
