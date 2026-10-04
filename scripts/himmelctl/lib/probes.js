@@ -3873,10 +3873,38 @@ function probeObservabilityStack(item, ctx) {
   const env = ctx.env || process.env;
   const platform = ctx.platform || process.platform;
   if (platform !== 'win32') {
-    return {
-      actual: 'absent',
-      detail: 'observability install-stack is Windows-only in Phase A (HIMMEL-922) — install-stack.sh is a loud placeholder that exits 2; cross-platform packaging is tracked as HIMMEL-2333, so this reads absent on every non-Windows host, never present or a repairable-looking degraded',
-    };
+    // HIMMEL-4341: posix runs the exporter-only user service HIMMEL-4288 ships
+    // (install-stack.sh). Opt-in via observability.enabled in
+    // ~/.himmel/config.json: every profile desires this item, but a
+    // systemd/launchd service is never enabled unasked. Not opted in is a
+    // CLEAN absence, never degraded.
+    let config;
+    try {
+      config = scopeConfigPathToCtx(ctx, () => lunaConfig.load());
+    } catch (e) {
+      return { actual: 'degraded', detail: `cannot read luna config: ${e.message}` };
+    }
+    if (!(config.observability && config.observability.enabled === true)) {
+      return {
+        actual: 'absent',
+        detail: 'observability.enabled is not true in ~/.himmel/config.json — the exporter service is opt-in',
+        cleanAbsence: true,
+      };
+    }
+    // Read-only: `status` only runs systemctl is-enabled / launchctl print,
+    // curls the exporter and reads doctor-cadence status; spawnProbeSync bounds it.
+    const script = path.join(ctx.repoRoot, 'scripts', 'observability', 'install-stack.sh');
+    const r = spawnBashProbe([script, 'status'], { env, encoding: 'utf8' });
+    if (r.timedOut) return { actual: 'degraded', detail: `install-stack.sh status timed out after ${probeTimeoutSecs(r)}s — exporter state could not be determined` };
+    if (r.error) return { actual: 'degraded', detail: `install-stack.sh status failed to spawn: ${r.error.message} — exporter state could not be determined` };
+    const out = String(r.stdout || '').trim();
+    if (r.status === 0) return { actual: 'present', detail: 'flow exporter service registered, healthy, doctor-cadence armed' };
+    const fails = out.split(/\r?\n/).filter((l) => l.startsWith('FAIL'));
+    if (fails.length === 0) return { actual: 'degraded', detail: `install-stack.sh status exited rc=${r.status} — ${String(r.stderr || out).trim().slice(0, 200)}` };
+    // service + health both failing = never installed (cadence aside); anything else = partial.
+    const svcFail = fails.some((l) => l.startsWith('FAIL service'));
+    const healthFail = fails.some((l) => l.startsWith('FAIL health'));
+    return { actual: svcFail && healthFail ? 'absent' : 'degraded', detail: fails.join('; ') };
   }
   const psBin = resolvePowershell(env);
   // The WILDCARD TaskName is load-bearing, and is why -ErrorAction Stop is safe
@@ -3994,4 +4022,4 @@ function runProbe(item, ctx) {
 // parseDotEnv is also exported for reuse (HIMMEL-755): install-engine.js's
 // HIMMELCTL_SUDO_PASSWORD resolution reads the primary checkout's .env with
 // this SAME minimal parser rather than writing a second one.
-module.exports = { runProbe, parseDotEnv };
+module.exports = { runProbe, parseDotEnv, scopeConfigPathToCtx };
