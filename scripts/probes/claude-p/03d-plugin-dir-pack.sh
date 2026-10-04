@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# headless-claude-ok: HIMMEL-2179 probe the operator runs by hand; the comment below names the claude -p config it measures
 # launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 3d (HIMMEL-2179, RETASK RTK-2179-8f3a1c): --plugin-dir as the pack
 # mechanism. A minimal plugin (.claude-plugin/plugin.json + skills/) loaded
