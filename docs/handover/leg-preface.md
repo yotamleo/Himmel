@@ -242,7 +242,7 @@ for a relay that is not coming.
   the command the classifier reads.
 - **Ship scratch never lands in the worktree root (HIMMEL-4334).** PR title and
   body files, commit-message temp files, logs and verdict lists go in your
-  session scratchpad, or under the gitignored `.himmel-scratch/` if you have no
+  session scratchpad, or under `.himmel-scratch/` if you have no
   scratchpad. A stray at the root pins the worktree as "possible forgotten
   work" and the merged worktree is never pruned.
 - Never use bare `git stash` / `git stash pop`: the stash stack is shared with

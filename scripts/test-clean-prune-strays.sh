@@ -167,6 +167,16 @@ mk_nested_repo() {
 WT_NEST1=$(mk_wt wt-nest1 feat/nest1)   # case 20: nested repo under .scratch/ -> kept
 WT_NEST2=$(mk_wt wt-nest2 feat/nest2)   # case 21: nested repo under .himmel-scratch/ -> kept
 WT_NEST3=$(mk_wt wt-nest3 feat/nest3)   # case 22: nested repo under .os-verify-logs-*/ -> kept
+# case 23 (judge J1806u): same as 21 but the worktree carries the REAL repo
+# .gitignore; an ignored .himmel-scratch/ would hide the nested repo from the
+# scan and `git worktree remove` would delete it. Case 24: the file does not
+# ignore .himmel-scratch at all.
+WT_NEST4=$(mk_wt wt-nest4 feat/nest4)
+cp "$SCRIPT_DIR/../.gitignore" "$WT_NEST4/.gitignore"
+git -C "$WT_NEST4" add .gitignore
+git -C "$WT_NEST4" -c user.email=t@test.com -c user.name=t commit -q -m "carry the real repo .gitignore"
+mkdir -p "$WT_NEST4/.himmel-scratch"
+mk_nested_repo "$WT_NEST4/.himmel-scratch/nested"
 mkdir -p "$WT_NEST1/.scratch" "$WT_NEST2/.himmel-scratch" "$WT_NEST3/.os-verify-logs-1"
 mk_nested_repo "$WT_NEST1/.scratch/nested"
 mk_nested_repo "$WT_NEST2/.himmel-scratch/nested"
@@ -345,6 +355,9 @@ if [ -d "$WT_SCRPFX" ]; then pass "19: .pr-body-notes/ dir worktree kept"; else 
 if [ -d "$WT_NEST1/.scratch/nested/.git" ]; then pass "20: nested repo under .scratch/ kept"; else fail "20: nested repo under .scratch/ was pruned" "$out"; fi
 if [ -d "$WT_NEST2/.himmel-scratch/nested/.git" ]; then pass "21: nested repo under .himmel-scratch/ kept"; else fail "21: nested repo under .himmel-scratch/ was pruned" "$out"; fi
 if [ -d "$WT_NEST3/.os-verify-logs-1/nested/.git" ]; then pass "22: nested repo under .os-verify-logs-1/ kept"; else fail "22: nested repo under .os-verify-logs-1/ was pruned" "$out"; fi
+if [ -d "$WT_NEST4/.himmel-scratch/nested/.git" ]; then pass "23: nested repo under .himmel-scratch/ kept with the REAL .gitignore"; else fail "23: nested repo under .himmel-scratch/ was pruned with the REAL .gitignore" "$out"; fi
+ign_rc=0; git -C "$WT_NEST4" check-ignore -q .himmel-scratch/notes.md || ign_rc=$?
+if [ "$ign_rc" -eq 1 ]; then pass "24: the repo .gitignore does not ignore .himmel-scratch"; else fail "24: the repo .gitignore ignores .himmel-scratch (check-ignore rc=$ign_rc)"; fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo
