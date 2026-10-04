@@ -320,7 +320,7 @@ cmd_reembed() {
     # qmd reads models.embed from the config BEFORE QMD_EMBED_MODEL, so the
     # override needs its own config dir: a copy of the real one with only
     # models.embed changed. The live config is never touched.
-    SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/qmd-reembed.XXXXXX")"
+    SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/qmd-reembed.XXXXXX")" || die 5 "mktemp -d failed; cannot stage the qmd config copy"
     trap 'rm -rf "$SCRATCH"' EXIT
     local scratch="$SCRATCH"
     [ -f "$(config_file)" ] && cp "$(config_file)" "$scratch/index.yml"
