@@ -613,6 +613,11 @@ function marketplaceSource(entry) {
   return '';
 }
 
+// Quote a token for the printed shell command only when it needs it.
+function shq(s) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
 function marketplaceSourceDrift(settings, template, ctx) {
   const have = (settings && typeof settings.extraKnownMarketplaces === 'object' && settings.extraKnownMarketplaces) || {};
   const want = (template && typeof template.extraKnownMarketplaces === 'object' && template.extraKnownMarketplaces) || {};
@@ -622,7 +627,7 @@ function marketplaceSourceDrift(settings, template, ctx) {
     const wantSrc = marketplaceSource(want[name]).replace(/<himmel-path>/g, ctx.repoRoot);
     const haveSrc = marketplaceSource(have[name]);
     if (!wantSrc || !haveSrc || wantSrc === haveSrc) continue;
-    const reconcile = `claude plugin marketplace remove ${name} --scope ${scope} && claude plugin marketplace add ${wantSrc} --scope ${scope}`;
+    const reconcile = `claude plugin marketplace remove ${shq(name)} --scope ${scope} && claude plugin marketplace add ${shq(wantSrc)} --scope ${scope}`;
     out.push(name === 'himmel'
       ? `marketplace 'himmel' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — the himmel manifest is right; reconcile: ${reconcile}`
       : `marketplace '${name}' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — keeping the settings source is recommended; to adopt the template's: ${reconcile}`);

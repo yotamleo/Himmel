@@ -334,11 +334,12 @@ while IFS= read -r MKT_LINE; do
       else empty end' "$PROV_SETTINGS_FILE" 2>/dev/null | tr -d '\r') || EXISTING_SRC=""
   if [[ -n "$EXISTING_SRC" && "$EXISTING_SRC" != "$SRC" ]]; then
     MKT_DRIFT+=("$MKT_NAME")
+    RECONCILE="claude plugin marketplace remove $(printf '%q' "$MKT_NAME") --scope $SCOPE && claude plugin marketplace add $(printf '%q' "$SRC") --scope $SCOPE"
     echo "  DRIFT: marketplace '$MKT_NAME' source mismatch — settings has '$EXISTING_SRC', template wants '$SRC' ($PROV_SETTINGS_FILE)" >&2
     if [[ "$MKT_NAME" == himmel ]]; then
-      echo "         himmel's own manifest is right; reconcile: claude plugin marketplace remove $MKT_NAME --scope $SCOPE && claude plugin marketplace add $SRC --scope $SCOPE" >&2
+      echo "         himmel's own manifest is right; reconcile: $RECONCILE" >&2
     else
-      echo "         third-party marketplace: keeping the settings source ('$EXISTING_SRC') is recommended; to adopt the template's instead: claude plugin marketplace remove $MKT_NAME --scope $SCOPE && claude plugin marketplace add $SRC --scope $SCOPE" >&2
+      echo "         third-party marketplace: keeping the settings source ('$EXISTING_SRC') is recommended; to adopt the template's instead: $RECONCILE" >&2
     fi
     continue
   fi

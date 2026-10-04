@@ -57,7 +57,7 @@ chmod +x "$STUB_DIR/claude"
 export STUB_LOG="$TMP/claude.log"; : > "$STUB_LOG"
 
 set +e
-out=$(PATH="$STUB_DIR:$PATH" bash "$SUT" --scope user --template "$TMP/template.json" --himmel-path /new/checkout 2>&1)
+out=$(PATH="$STUB_DIR:$PATH" bash "$SUT" --scope user --template "$TMP/template.json" --himmel-path '/new checkout' 2>&1)
 rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "source mismatch must not abort the adopt (rc=$rc): $out"
@@ -65,6 +65,7 @@ grepq "$out" "DRIFT: marketplace 'obsidian-skills'" || fail "no drift line for o
 grepq "$out" "DRIFT: marketplace 'openai-codex'" || fail "no drift line for openai-codex: $out"
 grepq "$out" "settings has 'kepano/obsidian-skills', template wants 'https://github.com/kepano/obsidian-skills.git'" || fail "drift line must name both sources: $out"
 grepq "$out" "claude plugin marketplace remove obsidian-skills --scope user" || fail "no reconcile command: $out"
+grepq "$out" -F 'marketplace add /new\ checkout/marketplace --scope user' || fail "reconcile command must shell-quote a path with a space: $out"
 grepq "$out" "keeping the settings source" || fail "third-party must recommend the settings side: $out"
 grepq "$out" "himmel's own manifest is right" || fail "himmel-owned marketplace must say the manifest wins: $out"
 ! grepq "$out" "marketplace registration failed" || fail "still reports a registration failure: $out"
