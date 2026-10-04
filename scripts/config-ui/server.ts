@@ -225,7 +225,10 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       let b: unknown;
       try { b = JSON.parse(text); } catch { return json({ error: "bad json" }, 400); }
       if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "bad json" }, 400);
-      return path === "/api/preview" ? previewRoute(b as Record<string, unknown>) : runRoute(b as Record<string, unknown>);
+      if (path === "/api/preview") return previewRoute(b as Record<string, unknown>);
+      const res = await runRoute(b as Record<string, unknown>);
+      if (feedRun?.done) feedRun = null; // an action changed the station: the next feed must re-probe, not serve the cache
+      return res;
     }
     const file = STATIC[path];
     if (req.method === "GET" && file) return new Response(readFileSync(join(publicRoot, file[0])), { headers: { "content-type": file[1], "cache-control": "no-store" } });

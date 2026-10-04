@@ -80,10 +80,15 @@ test("a slow /api/run (over 10 s) still returns its result to the client", async
   const post = (path: string, body: unknown) => fetch(`http://127.0.0.1:${s.port}${path}`, { method: "POST", body: JSON.stringify(body),
     headers: { ...H, Origin: `http://127.0.0.1:${s.port}`, "Content-Type": "application/json" } });
   const ARM = { action: "cadence.arm", target: "graphmap" };
+  expect((await feed(s.port)).status).toBe(200);
   const pv = await (await post("/api/preview", ARM)).json();
   const r = await post("/api/run", { previewId: pv.previewId, ...ARM, consent: "graphmap" });
   expect(r.status).toBe(200);
   expect((await r.json()).rc).toBe(0);
+  // The action changed the station: the next feed re-probes instead of serving the 30 s cache.
+  expect((await feed(s.port)).status).toBe(200);
+  const feedRuns = readFileSync(argv, "utf8").split("\n").filter((l) => /^himmelctl report\b/.test(l) && !l.includes("--items"));
+  expect(feedRuns.length).toBe(2);
 }, 40_000);
 
 test("the server refuses to start when a route budget would outlast idleTimeout", () => {
