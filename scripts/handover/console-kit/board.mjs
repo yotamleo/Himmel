@@ -286,9 +286,16 @@ const fleetOk = Number.isFinite(fleetLive) && Number.isFinite(fleetCap) && fleet
 const idle = fleetOk ? Math.max(0, fleetCap - fleetLive) : 0;
 
 // ---------------------------------------------------------------- gh
+// A console always runs in himmel; the checkout it is FOR is recorded on the
+// doc's project line (console.sh writes it, `none — ...` for himmel itself).
+// Its PRs are the ones the board shows, so gh asks that checkout. A recorded
+// path that is gone reads `gh unavailable`, never himmel's PRs. tick.sh reads
+// the same line for prs=, so the board fingerprint stays in step.
+const projectLine = /The project this console is FOR is \*\*`([^`]*)`\*\*/.exec(docText);
+const prRepo = projectLine && projectLine[1].startsWith('/') ? projectLine[1] : repo;
 const ghJson = (ghArgs) => {
     try {
-        return JSON.parse(execFileSync('gh', ghArgs, { cwd: repo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] }));
+        return JSON.parse(execFileSync('gh', ghArgs, { cwd: prRepo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] }));
     } catch { return null; }
 };
 const gh = (ghArgs) => {

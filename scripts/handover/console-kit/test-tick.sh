@@ -119,8 +119,8 @@ if [ "${1:-}" = api ]; then
   printf '%b' "${STUB_GQL_OUT-HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 4321\r\nX-Ratelimit-Reset: 1790000000\r\n\r\n}"
   exit "${STUB_GQL_RC:-0}"
 fi
-if [ "$PWD" != "$REPO" ]; then
-  printf 'gh stub: expected cwd=%s, got %s\n' "$REPO" "$PWD" >&2
+if [ "$PWD" != "${GH_STUB_CWD:-$REPO}" ]; then
+  printf 'gh stub: expected cwd=%s, got %s\n' "${GH_STUB_CWD:-$REPO}" "$PWD" >&2
   exit 9
 fi
 printf '%s\n' 2247 2250
@@ -208,6 +208,23 @@ fi
 contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
 contains '--verbose labels leg models (HIMMEL-2976, HIMMEL-3145)' "$verbose" 'leg models: sonnet:1'
+
+# --- a console FOR another checkout lists that checkout's PRs, not himmel's.
+# console.sh records the project on the doc's project line; the gh stub answers
+# only from GH_STUB_CWD, so prs= is populated only when gh ran in that checkout.
+mkdir -p "$W/project"
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '> the repo you ship from is **`x`**. The project this console is FOR is **`'"$W/project"'`** — you' \
+    > "$W/handover/console-project.md"
+proj_out="$(TOKEN='' GH_STUB_CWD="$W/project" bash "$SUT" --doc "$W/handover/console-project.md")"
+contains 'a foreign console lists its project PRs (gh runs in the project)' "$proj_out" ' prs=#2247,#2250 '
+proj_out="$(TOKEN='' bash "$SUT" --doc "$W/handover/console-project.md")"
+contains 'a foreign console never lists the himmel REPO PRs' "$proj_out" ' prs=none '
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '> The project this console is FOR is **`none — this console runs in the himmel checkout itself`** — you' \
+    > "$W/handover/console-himmel.md"
+proj_out="$(TOKEN='' bash "$SUT" --doc "$W/handover/console-himmel.md")"
+contains 'a himmel console (project line reads none) lists the REPO PRs' "$proj_out" ' prs=#2247,#2250 '
 
 # --- HIMMEL-3130: a comma-separated --legs is equivalent to space-separated -
 # `for leg in $LEGS` word-splits on IFS whitespace only, so a comma-joined
