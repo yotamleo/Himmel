@@ -325,6 +325,68 @@ deny "alias q='qmd'; q search x"
 deny 'source <(echo qmd query x)'
 deny '. <(echo qmd query x)'
 deny 'bash <(echo qmd query x)'
+# HIMMEL-4244: the residual launchers. A -c string, a group operand, a
+# detached session, a job read from stdin, and prefix wrappers.
+deny "sg users -c 'qmd query x'"
+deny "sg users 'qmd \"qu\"ery x'"
+deny 'sg users qmd query x'
+deny "elvish -c 'qmd query x'"
+deny "nu -c 'qmd query x'"
+deny "xonsh -c 'qmd query x'"
+deny "pwsh -c 'qmd query x'"
+deny "pwsh -Command 'qmd \"qu\"ery x'"
+deny "tmux new -d 'qmd query x'"
+deny "tmux new-session -d -s s 'qmd \"qu\"ery x'"
+deny 'tmux new -d qmd query x'
+deny 'tmux -L sock new-window qmd search x'
+deny 'screen -dm qmd query x'
+deny 'screen -dmS s qmd query x'
+deny "echo 'qmd query x' | at now"
+deny "echo 'qmd query x' | batch"
+deny "at now <<< 'qmd query x'"
+deny 'builtin exec qmd query x'
+deny 'setpriv qmd query x'
+deny 'setpriv --reuid 1000 --init-groups qmd query x'
+deny 'unshare -r qmd query x'
+deny 'nsenter -t 1 qmd query x'
+deny 'nsenter -t 1 -m -u qmd query x'
+deny 'chroot / qmd query x'
+deny 'chroot --userspec=u:g / qmd query x'
+deny 'firejail qmd query x'
+deny 'firejail --noprofile -- qmd query x'
+deny 'bwrap --bind / / qmd query x'
+deny 'bwrap --ro-bind / / --dev /dev qmd query x'
+deny 'xvfb-run qmd query x'
+deny 'xvfb-run -a -s "-screen 0 1x1x8" qmd query x'
+deny 'strace -f qmd query x'
+deny 'strace -f -o /tmp/t qmd query x'
+deny 'ltrace qmd query x'
+deny 'chpst -u u qmd query x'
+deny 'cgexec -g cpu:x qmd query x'
+deny 'systemd-inhibit qmd query x'
+deny 'systemd-inhibit --what=idle qmd query x'
+deny 'pkexec qmd query x'
+deny 'pkexec --user root qmd query x'
+deny '/usr/bin/strace -f qmd query x'
+deny "bwrap --bind / / sh -c 'qmd query x'"
+# HIMMEL-4245: a shell that is the consumer's program, behind a wrapper.
+deny "echo 'qmd query x' | xargs bash"
+deny "echo 'qmd query x' | env sh"
+deny "echo 'qmd query x' | nice bash"
+deny "echo 'qmd query x' | 2>/dev/null sh"
+deny "echo 'qmd query x' | { sh; }"
+deny "echo 'qmd query x' | /bin/sh"
+deny "echo 'qmd query x' | busybox sh"
+deny "echo 'qmd query x' | sg users sh"
+deny "echo 'qmd query x' | sudo -u u sh"
+# ... while a shell named as a later operand of the consumer is no program.
+allow 'grep -rn "qmd search" docs | grep -v sh'
+allow 'grep -rn "qmd search" docs | grep -c bash'
+allow 'grep -rln "qmd search" docs | xargs grep -n "search" .'
+allow "tmux new -d 'qmd status'"
+allow 'strace -f qmd status'
+allow "sg users -c 'qmd status'"
+allow "echo 'qmd status' | at now"
 # ... while the same launchers running anything else stay allowed.
 allow "fish -c 'qmd status'"
 allow "su -c 'qmd status'"

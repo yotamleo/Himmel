@@ -41,14 +41,15 @@
 # shell's here-string (HIMMEL-4166); what a shell reads from a pipe or a
 # process substitution, and an alias for qmd, cannot be read and fail closed
 # on naming qmd and a verb. A shell fed by a file (`sh <f`) is unread.
-# ponytail: the launcher set above is not complete — sg, tmux, screen, at,
-# `builtin exec`, setpriv, unshare, nsenter, chroot, firejail, bwrap, strace
-# and other prefix wrappers, and elvish/nu/xonsh/pwsh `-c`, run qmd
-# unguarded; residual launchers → HIMMEL-4244. A heredoc
-# makes qmd_words decline and the coarser fallback readings below decide; the
-# shared tokenizer (scripts/hooks/lib/shell-tokenize.sh, HIMMEL-912) models
-# heredocs and can replace qmd_words once a third inlined copy is wired into
-# its sync suite.
+# HIMMEL-4244 adds sg, tmux, screen, at/batch, `builtin`, the prefix
+# wrappers (setpriv … pkexec) and elvish/nu/xonsh/pwsh `-c`.
+# ponytail: a launcher that types or ships its command elsewhere — tmux
+# send-keys, screen -X stuff, pwsh -EncodedCommand, ssh/docker/kubectl exec
+# (`… | ssh host sh` too) — is unread; residual launchers → HIMMEL-4305.
+# A heredoc makes qmd_words decline and the coarser fallback readings below
+# decide; the shared tokenizer (scripts/hooks/lib/shell-tokenize.sh,
+# HIMMEL-912) models heredocs and can replace qmd_words once a third inlined
+# copy is wired into its sync suite.
 #
 # ponytail: Bash only — a PowerShell `qmd query` is unguarded; wire a
 # PowerShell twin if a Windows station starts running qmd ad hoc (HIMMEL-3960).
@@ -355,8 +356,14 @@ OPTV='([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*'
 # Wrappers that run their argument as a program. timeout takes its duration.
 # HIMMEL-4218: watch, unbuffer, parallel and systemd-run too; flock takes its
 # lock file first.
-WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|exec|eval|coproc|time|xargs|watch|unbuffer|parallel|systemd-run|su|runuser|script|fish|(r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh(\.exe)?)'"$OPTV"
-WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|flock${OPTV}[[:space:]]+[^-[:space:]][^[:space:]]*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
+# HIMMEL-4244: builtin, the privilege, namespace, sandbox, tracing and
+# session wrappers, and the -c shells elvish, nu, xonsh and pwsh. chroot and
+# sg take one operand before the program, a bwrap option up to two values,
+# and tmux runs the command of a session-starting subcommand.
+TMUXSUB='(new(-session|-window)?|neww|split(-window|w)|respawn(-pane|-window|p|w)|run(-shell)?)'
+TMUXREST="[[:space:]]${TMUXSUB}([[:space:]].*)?\$"
+WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|builtin|busybox|exec|eval|coproc|time|xargs|watch|unbuffer|parallel|systemd-run|systemd-inhibit|su|runuser|script|setpriv|unshare|nsenter|firejail|xvfb-run|strace|ltrace|chpst|cgexec|pkexec|screen|elvish|nu|xonsh|pwsh(\.exe)?|fish|(r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh(\.exe)?)'"$OPTV"
+WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|(flock|chroot|sg)${OPTV}[[:space:]]+[^-[:space:]][^[:space:]]*|bwrap([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?)?)*|tmux${OPTV}[[:space:]]+${TMUXSUB}${OPTV}|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
 # A case arm's `)` is a command position too, and zsh runs `=qmd` as the
 # qmd its PATH finds (HIMMEL-4140).
 # ponytail: any `)` opens a command, so `echo "$(x)"qmd query` over-denies;
@@ -446,22 +453,26 @@ CASEWORD='(^|[^[:alnum:]_])case[[:space:]]'
 POSPROG='(^|[|;&()`{])'"$CMDREST"'\$\{?[@*0-9]'
 POSVERB="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'\$\{?[@*0-9]'
 NESTSEP=' '$'\t'';&|()`<>'
-NESTWORD='(^|[^[:alnum:]_.-])((r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh|fish|su|runuser|script|flock|source|eval|watch|parallel|env|alias)(\.exe)?([^[:alnum:]_.-]|$)|<<<|<\('
+NESTWORD='(^|[^[:alnum:]_.-])((r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh|fish|elvish|nu|xonsh|pwsh|sg|su|runuser|script|flock|source|at|batch|eval|watch|parallel|tmux|env|alias)(\.exe)?([^[:alnum:]_.-]|$)|<<<|<\('
 # HIMMEL-4166 / HIMMEL-4218: what each word that runs a nested string does
 # with the words after it. sh: a shell, or a launcher taking `-c STRING`
-# (su, runuser, script, flock); it also runs a here-string, a process
-# substitution or, after a `|`, its stdin. src: source and `.`, which run
-# those three but take no -c. eval: its words joined. run: watch and
-# parallel, which join their words into one command too. env: its -S string
-# and the words after it. alias: a definition naming qmd.
+# (su, runuser, script, flock, sg); it also runs a here-string, a process
+# substitution or, after a `|`, its stdin. src: source and `.`, and at and
+# batch (HIMMEL-4244), which run those three but take no -c. eval: its words
+# joined. run: watch and parallel, which join their words into one command
+# too; tmux: the words after its session-starting subcommand.
+# env: its -S string and the words after it. alias: a definition naming qmd.
+# HIMMEL-4245: a pipe consumer stage whose last word is its program.
+PIPEPROG='^&?[[:space:]]*(('"$ASSIGN"'|\{|!|[0-9]*[<>][<>&|]*[[:space:]]*[^[:space:]<>]*|=?'"$EXEPFX$WRAP"')[[:space:]]+)*=?'"$EXEPFX"'[^[:space:]]+$'
 ENVSPLIT='^(-[[:alpha:]]*S|--split-string(=|$))'
 # nest_mode WORD — set mode for WORD, or return 1 when it runs nothing nested.
 nest_mode() {
     case "${1%.exe}" in
-        sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish|su|runuser|script|flock) mode='sh' ;;
-        source|.) mode='src' ;;
+        sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish|elvish|nu|xonsh|pwsh|sg|su|runuser|script|flock) mode='sh' ;;
+        source|.|at|batch) mode='src' ;;
         eval) mode='eval' ;;
         watch|parallel) mode='run' ;;
+        tmux) mode='tmux' ;;
         env) mode='env' ;;
         alias) mode='alias' ;;
         *) return 1 ;;
@@ -481,7 +492,7 @@ names_verb() {
 # DEC (its decoded line). Sets deny=1 on the first refusal.
 # shellcheck disable=SC2016 # literal $ and ` bytes
 qmd_nested() {
-    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd rdop k piped
+    local LC_ALL=C w=$1 dec=$2 depth=$3 n i=0 j e c t v mode hasc pd bq scr rd rdop k piped ptxt sgw
     n=${#w}
     # bash copies $w on every index below, so the scan is quadratic in its
     # length: a long command holding a shell or eval word is refused, not
@@ -531,9 +542,15 @@ qmd_nested() {
         t=${t##*/}
         nest_mode "$t" || continue
         piped=$pipe
+        # The consumer stage up to the end of this word (`|&`'s `&` kept).
+        [ -z "$piped" ] || ptxt=${w:piped+1:i-piped-1}
         # The words that follow, to the end of the simple command. A word
         # keeps a `$(…)` or backtick substitution in it whole, blanks and all.
         e=$i hasc=0 scr='' rd=0
+        # sg runs its operand after the group as a string, with or without
+        # -c: read each word that is not handed back.
+        sgw=0
+        [ "$t" != sg ] || sgw=1
         while :; do
             while [ "$e" -lt "$n" ]; do
                 case "${w:e:1}" in ' '|$'\t') e=$((e + 1)) ;; *) break ;; esac
@@ -600,9 +617,9 @@ qmd_nested() {
             elif [[ ${w:e:1} == [\<\>] ]] && [[ $t =~ ^([0-9]+|\{[[:alpha:]_][[:alnum:]_]*\})$ ]]; then
                 # The fd of a redirection (`2>f`, `{fd}<f`), not a word.
                 :
-            elif [ "$mode" = eval ] || [ "$mode" = run ]; then
+            elif [ "$mode" = eval ] || [ "$mode" = run ] || [ "$mode" = tmux ]; then
                 # eval takes one option, the `--` that ends its options.
-                if [ -n "$scr" ] || [ "$mode" = run ] || [ "$t" != '--' ]; then scr="$scr $v"; fi
+                if [ -n "$scr" ] || [ "$mode" != eval ] || [ "$t" != '--' ]; then scr="$scr $v"; fi
             elif [ "$mode" = alias ]; then
                 # A definition whose value names qmd, in a command that
                 # names a verb (`alias q=qmd; q query x`), fails closed.
@@ -644,6 +661,12 @@ qmd_nested() {
                         e=$((j - ${#t}))
                         break
                     fi
+                    if [ "$sgw" = 1 ]; then
+                        case "$v" in
+                            *[qQ]*|*'$'*|*'`'*) qmd_check "$v" $((depth + 1)) ;;
+                        esac
+                        if [ "$deny" = 1 ]; then return 0; fi
+                    fi
                 fi
             else
                 # A word with no q, `$` or backtick cannot spell qmd.
@@ -657,10 +680,12 @@ qmd_nested() {
         # them, so the scan stays linear in the length of the command.
         i=$e
         # A shell or source with no -c string, fed by a pipe, runs the
-        # producer's output: refuse a producer naming a verb.
-        # ponytail: a shell word anywhere in the consumer counts (`… | grep -v
-        # sh` is over-denied), consumer-program-only matching → HIMMEL-4245.
+        # producer's output: refuse a producer naming a verb. HIMMEL-4245:
+        # only when the word is the consumer's program, behind its wrappers,
+        # assignments and redirections (`| xargs bash`, `| 2>/dev/null sh`),
+        # so `… | grep -v sh` is no shell.
         if [ -n "$piped" ] && [ "$hasc" = 0 ] && { [ "$mode" = sh ] || [ "$mode" = src ]; } &&
+            [[ $ptxt =~ $PIPEPROG ]] &&
             names_verb "${dec:pfrom+1:piped-pfrom-1}"; then
             deny=1
             return 0
@@ -669,6 +694,15 @@ qmd_nested() {
             # watch, parallel and env -S run their words as a program: read
             # them behind a plain wrapper so their options are stepped over.
             if [ "$mode" = run ]; then scr="exec$scr"; fi
+            # tmux: the words after its first session-starting subcommand,
+            # read the same way; with none it runs nothing nested.
+            if [ "$mode" = tmux ]; then
+                if [[ $scr =~ $TMUXREST ]]; then
+                    scr="exec${BASH_REMATCH[0]#*"${BASH_REMATCH[1]}"}"
+                else
+                    scr=''
+                fi
+            fi
             qmd_check "$scr" $((depth + 1))
             if [ "$deny" = 1 ]; then return 0; fi
         fi
