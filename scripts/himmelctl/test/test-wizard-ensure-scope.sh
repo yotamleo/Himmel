@@ -29,7 +29,7 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required" >&2; exit 1; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
 node_bin=$(command -v node)
 
-work=$(mktemp -d) || exit 1
+work=$(mktemp -d "${TMPDIR:-/tmp}/ensure-scope.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 
 fixture_repo="$work/repo"

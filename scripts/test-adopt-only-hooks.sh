@@ -27,7 +27,7 @@ snapshot_dir() {
     done )
 }
 
-work=$(mktemp -d) || exit 1
+work=$(mktemp -d "${TMPDIR:-/tmp}/adopt-only-hooks.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 export HIMMEL_PROVENANCE_DIR="$work/prov"
 
