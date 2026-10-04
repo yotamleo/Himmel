@@ -2336,6 +2336,18 @@ assert_rc "576 nested worktree python3 <<'EOF' print naming ~/.cl\$(printf a)ude
     "$(bash_rc_of "$NESTED_WT" "python3 <<'EOF'
 print('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
 EOF" HOME="$FAKEHOME")"
+# an unquoted heredoc sharing a quoted one's delimiter name is not data, and
+# a multibyte character ahead of the name does not cut the quote-aware scan
+# short (CR round 4)
+assert_rc "577 nested worktree <<'EOF' then unquoted <<EOF body \$(ls ~/.cl\$(printf a)ude/) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat > /tmp/a.md <<'EOF'
+note
+EOF
+cat > /tmp/b.md <<EOF
+\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "578 nested worktree UTF-8 text before cp \$SJ \"\$HOME\"/.cl(a|x)ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo 'éééééééééééééééééééééééééééééééééééééééééééé' ; cp $SJ \"\$HOME\"/.cl(a|x)ude/settings.json" HOME="$FAKEHOME" LC_ALL=en_US.UTF-8)"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

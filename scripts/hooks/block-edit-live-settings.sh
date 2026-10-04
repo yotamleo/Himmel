@@ -1992,7 +1992,7 @@ _dc_name_fold() {
 # its text to a shell, so it is folded in full like any other line.
 _dc_data_bodies() {
     local d=' ' s=$2 line l2 end='' dash='' w seg rcv out='' bd='' hre
-    local bo='' bb='' interp=0
+    local bo='' bb='' interp=0 u ure ore
     local shre='system[[:space:]]*\(|popen|subprocess|exec[a-z]*[[:space:]]*\(|spawn|child_process|getoutput'
     local -a ws
     hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
@@ -2001,7 +2001,29 @@ _dc_data_bodies() {
         s=${s#*"${BASH_REMATCH[0]}"}
     done
     [ "$d" != ' ' ] || return 1
+    # a name also used by an unquoted heredoc is never read as data: the
+    # quote-stripped TEXT cannot tell the two occurrences apart. Names are
+    # taken from every line of RAW outside a heredoc body (a body ends at
+    # its name, tabs stripped or not, which only ever ends it early)
+    u=' '
+    ure='<<-?[[:space:]]*([A-Za-z0-9_]+)'
+    ore='(^|[^<])<<-?[[:space:]]*['"'"'"\\]?([A-Za-z0-9_]+)[^<]*$'
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -n "$end" ]; then
+            l2=${line#"${line%%[!$'\t']*}"}
+            [ "$l2" != "$end" ] || end=''
+            continue
+        fi
+        s=$line
+        while [[ $s =~ $ure ]]; do
+            u="$u${BASH_REMATCH[1]} "
+            s=${s#*"${BASH_REMATCH[0]}"}
+        done
+        [[ ! $line =~ $ore ]] || end=${BASH_REMATCH[2]}
+    done <<< "$2"
+    end=''
     d=$(printf '%s' "$d" | tr '[:upper:]' '[:lower:]')
+    u=$(printf '%s' "$u" | tr '[:upper:]' '[:lower:]')
     _DCNB=''
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -n "$end" ]; then
@@ -2023,6 +2045,7 @@ _dc_data_bodies() {
         [[ $line =~ \<\<(-?)[[:space:]]*([a-z0-9_]+)[^\<]*$ ]] || continue
         dash=${BASH_REMATCH[1]} w=${BASH_REMATCH[2]}
         case "$d" in *" $w "*) ;; *) continue ;; esac
+        case "$u" in *" $w "*) continue ;; esac
         seg=${line%<<*}
         seg=${seg##*[;\&|(]}
         read -r -a ws <<< "$seg"
@@ -2050,7 +2073,9 @@ _dc_data_bodies() {
 # a name it is part of can still fold. A quoted `"$home"`/`"${home}"` is
 # written `$home`, the home parent it is (HIMMEL-4188).
 _dc_unquoted() {
-    local LC_ALL=C s=$1 i=0 n=${#1} ch q='' qs=0 sp
+    # LC_ALL first, on its own: `n` is a byte count only once it is in force
+    local LC_ALL=C
+    local s=$1 i=0 n=${#1} ch q='' qs=0 sp
     _DCU=''
     while [ "$i" -lt "$n" ]; do
         ch=${s:i:1}
