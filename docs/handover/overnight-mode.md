@@ -53,9 +53,10 @@ For work that will need mid-flight decisions or will outlive one context window,
    PostToolUse hook (`queue-lock.sh self-heartbeat`) that refreshes the
    locks THIS session acquired, throttled by
    `QUEUE_LOCK_SELF_HEARTBEAT_SECONDS` (default 300), and records the
-   session's transcript path in the lock. Wire the hook once per checkout
-   with `node scripts/observability/wire-session-telemetry-hooks.mjs`
-   (`--check` reports whether it is wired; `--off` removes it). Even
+   session's transcript path in the lock. Operator: wire the self-heartbeat
+   hook VM-first (`wire-session-telemetry-hooks.mjs` rewrites
+   `settings.json`; `--check` reports whether it is wired, `--off` removes
+   it); never from a leg. Even
    un-refreshed, a lock whose holder's transcript on the SAME host was
    written within the TTL is LIVE regardless of heartbeat age: `status`
    reports FRESH and `acquire` refuses (`QUEUE_LOCK_TAKEOVER=1` still

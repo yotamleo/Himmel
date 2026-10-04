@@ -1909,7 +1909,7 @@ queue_lock_heartbeat() {
         echo "queue-lock: heartbeat FAILED -- owner.json could not be rewritten atomically (the previous heartbeat stays in effect)" >&2
         return 1
     fi
-    _ql_warn_aging "$hb_prev_age" "$hb_ttl" "it was AGING until this refresh; heartbeat more often on long sessions (the PostToolUse self-heartbeat hook does this: node scripts/observability/wire-session-telemetry-hooks.mjs)"
+    _ql_warn_aging "$hb_prev_age" "$hb_ttl" "it was AGING until this refresh; heartbeat more often on long sessions (the PostToolUse self-heartbeat hook does this; operator: wire the self-heartbeat hook VM-first (wire-session-telemetry-hooks.mjs rewrites settings.json); never from a leg)"
     return 0
 }
 
@@ -2148,7 +2148,7 @@ queue_lock_release() {
         echo "queue-lock: failed to remove lock dir '$lockdir' -- it still exists (open handle on Windows? permission?); NOT released" >&2
         return 1
     fi
-    _ql_warn_aging "$rel_age" "$rel_ttl" "the lock was AGING when released: the leg outran half its TTL without a heartbeat and was takeable meanwhile (wire the self-heartbeat hook: node scripts/observability/wire-session-telemetry-hooks.mjs)"
+    _ql_warn_aging "$rel_age" "$rel_ttl" "the lock was AGING when released: the leg outran half its TTL without a heartbeat and was takeable meanwhile (operator: wire the self-heartbeat hook VM-first (wire-session-telemetry-hooks.mjs rewrites settings.json); never from a leg)"
     _ql_token_forget "$ho" "$session"
     [ "$ho_raw" = "$ho" ] || _ql_token_forget "$ho_raw" "$session"
     _ql_emit_close_evidence
