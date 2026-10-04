@@ -149,6 +149,14 @@ chmod +x "$W/crontab-broken"
 DOCTORCAD_CRONTAB="$W/crontab-broken" bash "$P/scripts/doctor-cadence.sh" arm >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ] && grep -q keepme "$FAKE_CRON"; then pass "a failed crontab read does not overwrite existing jobs"; else fail "a failed crontab read does not overwrite existing jobs (rc=$rc)"; fi
 
+# an unwritable runner dir must fail arm BEFORE any crontab is installed.
+printf '0 1 * * * keepme\n' > "$FAKE_CRON"
+: > "$W/notadir"
+DOCTORCAD_RUNNER_DIR="$W/notadir/sub" bash "$P/scripts/doctor-cadence.sh" arm >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ] && ! grep -q 'HIMMEL-Doctor' "$FAKE_CRON"; then pass "an unwritable runner dir fails arm without installing the crontab"; else fail "an unwritable runner dir fails arm without installing the crontab (rc=$rc)"; fi
+DOCTORCAD_RUNNER_DIR="$W/runner2" bash "$P/scripts/doctor-cadence.sh" arm >/dev/null 2>&1
+head -1 "$W/runner2/doctor-cadence.sh" | grep -qx '#!/usr/bin/env bash' && pass "the runner uses a bash shebang" || fail "the runner uses a bash shebang"
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "test-doctor-cadence: all passed"; exit 0; fi
 echo "test-doctor-cadence: $FAILED failed"; exit 1
