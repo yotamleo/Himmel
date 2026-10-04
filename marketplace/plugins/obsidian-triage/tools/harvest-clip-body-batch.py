@@ -382,10 +382,10 @@ def _norm_path(path: str, is_pattern: bool = False) -> tuple[str, str]:
     dot-segments keeping a trailing `/` after `.`/`..`/empty, empty -> `/`.
     The query is split off first: its slashes and dots are not path segments."""
     path, qsep, query = path.partition("?")
-    if is_pattern:
-        path = re.sub(r"%2[aA]", "\x00", path)  # an encoded `*` stays literal, never a wildcard
     # ponytail: 4 decode passes, raise if a backend is seen decoding deeper (HIMMEL-4355)
     for _ in range(4):
+        if is_pattern:  # an encoded `*` at any layer stays literal, never a wildcard
+            path = re.sub(r"%2[aA]", "\x00", path)
         dec = unquote(path)
         if dec == path:
             break
