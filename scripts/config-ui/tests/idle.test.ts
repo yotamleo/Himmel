@@ -27,6 +27,17 @@ test("no requests: the process exits within 1 s of the idle window", async () =>
   } finally { p.kill(); }
 });
 
+test("a request with a foreign Host does not reset the idle timer", async () => {
+  const { p, url, started } = await launch();
+  try {
+    const base = url.split("/#")[0];
+    await sleep(Math.max(0, 200 - (Date.now() - started)));
+    expect((await fetch(`${base}/`, { headers: { host: "evil.example" } })).status).toBe(403);
+    const code = await Promise.race([p.exited, sleep(Math.max(1, 440 - (Date.now() - started))).then(() => "alive")]);
+    expect(code).toBe(0); // exits ~300 ms; a reset by the rejected request would push it to ~500
+  } finally { p.kill(); }
+});
+
 test("a request resets the idle timer (not a fixed lifetime)", async () => {
   const { p, url, started } = await launch();
   try {

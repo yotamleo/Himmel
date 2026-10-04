@@ -61,8 +61,8 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     hostname: LOOPBACK, // hard-coded: never configurable
     port: opts.port ?? 0,
     async fetch(req) {
-      bump();
       if (req.headers.get("host") !== `${LOOPBACK}:${server.port}`) return new Response("bad host", { status: 403 });
+      bump(); // only an accepted Host keeps the server alive
       const path = new URL(req.url).pathname;
       if (path.startsWith("/api/")) {
         if (!sameToken(req.headers.get("x-himmel-token"), token)) return new Response("unauthorized", { status: 401 });

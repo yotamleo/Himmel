@@ -14,10 +14,12 @@ if (m) history.replaceState(null, "", location.pathname + location.search);
 
 function paint() {
   const keep = document.activeElement && document.activeElement.id === "q" ? document.activeElement.selectionStart : null;
+  const focusK = document.activeElement && document.activeElement.matches && document.activeElement.matches(".row-head") ? document.activeElement.dataset.k : null;
   $("#main").innerHTML = render(feed, state);
   $("#nav").innerHTML = renderNav(feed, current);
   $("#probed").textContent = "probed " + String(feed.generatedAt || "").replace("T", " ").slice(0, 16);
   $("#where").textContent = `${location.host} · ${feed.target ? feed.target.scope : "?"} scope`;
+  if (focusK !== null) { for (const h of document.querySelectorAll(".row-head")) if (h.dataset.k === focusK) { h.focus(); break; } }
   if (keep !== null) { const q = $("#q"); q.focus(); q.setSelectionRange(keep, keep); }
 }
 
