@@ -41,6 +41,10 @@ except Exception as e:
 REQUIRED = ["id", "default_path", "override_env", "writer", "readers", "format",
             "rotation", "retention", "schema_version", "envelope", "grandfathered"]
 MIN_ENVELOPE = {"v", "ts", "host", "source", "kind"}
+# The ten ledgers that pre-date the registry; only these may be grandfathered.
+LEGACY = {"flow-runs", "quota-gauge", "ci-queue", "session-runs", "tool-call-census",
+          "hermes-egress", "classifier-denials", "cadence-bank", "cadence-alerts",
+          "hook-chain-skips"}
 
 rows = doc.get("ledgers")
 if not isinstance(rows, list) or not rows:
@@ -83,13 +87,15 @@ for i, r in enumerate(rows):
             fails.append(f"{tag}: {role} {rel} does not exist")
         elif not hit:
             fails.append(f"{tag}: {role} {rel} references neither {needles[0]} nor {needles[1]}")
+    if r["grandfathered"] and r["id"] not in LEGACY:
+        fails.append(f"{tag}: only the pre-registry ledgers may be grandfathered")
     if not r["grandfathered"]:
         lacking = MIN_ENVELOPE - set(r["envelope"])
         if lacking:
             fails.append(f"{tag}: new (non-grandfathered) ledger lacks envelope field(s) {sorted(lacking)}")
 
 # Completeness: every ~/.himmel ledger literal in tracked non-test scripts is registered.
-registered = {os.path.basename(p) for p in paths}
+registered = {p.split(".himmel/", 1)[1] for p in paths if ".himmel/" in p}
 ls = subprocess.run(["git", "-C", repo, "ls-files", "scripts"],
                     capture_output=True, text=True)
 if ls.returncode != 0:
@@ -97,7 +103,7 @@ if ls.returncode != 0:
     print("FAIL test-ledgers-registry")
     sys.exit(1)
 tracked = ls.stdout.split("\n")
-pat = re.compile(r"\.himmel/(?:state/)?([A-Za-z0-9_-]+\.(?:jsonl|log))")
+pat = re.compile(r"\.himmel/((?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(?:jsonl|log))")
 for rel in tracked:
     base = os.path.basename(rel)
     if not rel or base.startswith("test-") or ".test." in base or "/tests/" in rel:
