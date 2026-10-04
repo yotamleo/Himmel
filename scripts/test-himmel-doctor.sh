@@ -291,7 +291,7 @@ rm -rf "$t"
 # ONLY one JSON object per emit() call (everything else goes to stderr), and
 # the row count and exit code must match a text run of the same fixture.
 echo "== --json -> stdout is one JSON object per emit, nothing else =="
-t="$(mktemp -d)" || { echo "FAIL: mktemp -d failed"; exit 1; }; write_settings "$t/claude" "$WRAPPER"
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-json.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }; write_settings "$t/claude" "$WRAPPER"
 txt="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>/dev/null)"; rc_txt=$?
 js="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --json --no-color 2>/dev/null)"; rc_js=$?
 n_txt="$(grep -cE '^(FAIL|WARN|INFO|OK) ' <<< "$txt")"
