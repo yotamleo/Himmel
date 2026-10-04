@@ -482,6 +482,22 @@ def _rule_match(pats, url: str):
     return None
 
 
+def _odd_host(url: str) -> str:
+    """The authority of `url` when its host is not plain `[a-z0-9.-]` (a
+    bracketed IPv6 literal is allowed), else "". A backslash or `%XX` in the
+    authority is read differently by WHATWG/Node scrapers than by this matcher,
+    so such a URL is refused outright, never decoded or repaired."""
+    rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", url.strip())
+    auth = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    if "\\" in auth or "%" in auth:
+        return auth
+    host = auth.rsplit("@", 1)[-1]
+    if host.startswith("["):
+        return "" if re.fullmatch(r"\[[0-9A-Fa-f:.]+\](:\d*)?", host) else auth
+    host = _norm_host(host.partition(":")[0])
+    return "" if re.fullmatch(r"[a-z0-9.-]*", host) else auth
+
+
 def url_gate(canonical: str, rules) -> str | None:
     """The ONE vault-list gate for every scrape backend (jina, firecrawl, the
     local-headless slot). Returns the reason a URL must not be sent to a
@@ -491,6 +507,9 @@ def url_gate(canonical: str, rules) -> str | None:
         return "vault deny/allow lists not loaded; refusing scrape (fail closed)"
     if rules.error:
         return rules.error
+    bad = _odd_host(canonical)
+    if bad:
+        return f"URL host {bad!r} has characters a scraper may decode differently; refusing scrape (fail closed)"
     hit = _rule_match(rules.deny, canonical)
     if hit is None or _rule_match(rules.allow, canonical) is not None:
         return None
