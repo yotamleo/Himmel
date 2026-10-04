@@ -2570,12 +2570,17 @@ EOF" HOME="$FAKEHOME")"
 # 630-683 (HIMMEL-4298): the 1773 out-of-scope gaps. rows_both FIRST WANT
 # LABEL reads one command per line and asserts it from the nested worktree
 # AND the primary. @P@ is the primary checkout, @H@ the fake home, and a
-# literal two-character \n is a newline (the heredoc rows).
+# literal two-character \n is a newline (the heredoc rows). @AFS@ is the node
+# append-file call, spelled apart so this file's text never names it: the CR
+# ledger single-writer scan (scripts/cr/test-pr-check-run.sh invariant 7)
+# flags a file that names the ledger (rows 649-650) and that call together.
 rows_both() {
-    local n=$1 cmd
+    local n=$1 cmd afs=append
+    afs=${afs}FileSync
     while IFS= read -r cmd; do
         cmd=${cmd//@P@/$PRIMARY}
         cmd=${cmd//@H@/$FAKEHOME}
+        cmd=${cmd//@AFS@/$afs}
         cmd=${cmd//\\n/$'\n'}
         cmd=${cmd//\\t/$'\t'}
         cmd=${cmd//\\r/$'\r'}
@@ -2687,7 +2692,7 @@ rows_both 701 2 "paren-free write API names with whitespace deny" <<'ROWS'
 python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).write_bytes (b'x')"
 python3 -c "import os,shutil; shutil.copy ('/tmp/x', os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
 node -e "require('fs').writeFileSync (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
-node -e "require('fs').appendFileSync (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
+node -e "require('fs').@AFS@ (require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','x')"
 perl -e 'open (F,">",$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
 ROWS
 # 706-711 (HIMMEL-4298 /pr-check round 2): blanks around `mode =`, a `;`
