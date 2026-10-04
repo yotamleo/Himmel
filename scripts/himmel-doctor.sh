@@ -3237,7 +3237,7 @@ check_c44_skill_index() {
     if [ -z "$count" ] || [ "$count" -eq 0 ]; then
         emit FAIL C44-skill-index \
             "the 'skills' qmd collection is missing or empty -- /skill-find silently reverts to guessing skill/command names (HIMMEL-2222)" \
-            "bash scripts/skill-index/build-skill-index.sh && bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd ingest --collection skills \"\$HOME/.claude/skill-index\"'"
+            "bash scripts/skill-index/ensure-skill-index.sh   (or: himmelctl ensure)"
         return
     fi
     emit OK C44-skill-index "'skills' qmd collection present ($count files)"

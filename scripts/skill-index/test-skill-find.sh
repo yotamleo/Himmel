@@ -54,7 +54,7 @@ unset QMD_STUB_SKILLS_FILES
 out="$(bash "$TARGET" 'read a post from X' 2>&1)"; rc=$?
 check "missing collection: exit code" "$rc" "3"
 case "$out" in
-    *"build-skill-index.sh"*"skills"*) ;;
+    *"build-skill-index.sh"*"ensure-skill-index.sh"*) ;;
     *) echo "FAIL - missing collection: remedy text absent from output"; fail=1 ;;
 esac
 case "$out" in
@@ -86,7 +86,7 @@ out="$(SKILL_INDEX_DIR="$custom" bash "$TARGET" 'read a post from X' 2>&1)"; rc=
 check "custom SKILL_INDEX_DIR: exit code" "$rc" "3"
 q="$(printf '%q' "$custom")"
 case "$out" in
-    *"build-skill-index.sh --out $q"*"ingest --collection skills"*"_ $q"*) echo "ok - custom SKILL_INDEX_DIR: remedy uses it" ;;
+    *"build-skill-index.sh --out $q"*"SKILL_INDEX_DIR=$q bash scripts/skill-index/ensure-skill-index.sh"*) echo "ok - custom SKILL_INDEX_DIR: remedy uses it" ;;
     *) echo "FAIL - custom SKILL_INDEX_DIR: remedy does not print [$q]: $out"; fail=1 ;;
 esac
 

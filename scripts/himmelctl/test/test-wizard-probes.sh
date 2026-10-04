@@ -1164,7 +1164,7 @@ pathQIpresent=$(build_path "$qi_present_stub" bash git jq -- bun)
 cat > "$qi_present_stub/qmd" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1" = "collection" ] && [ "$2" = "list" ]; then
-  printf 'himmel\nluna\n'
+  printf 'himmel\nluna\nskills\n'
   exit 0
 fi
 exit 0

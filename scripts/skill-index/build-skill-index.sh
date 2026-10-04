@@ -57,7 +57,7 @@ Optional:
   --dry-run     Print summary; touch nothing.
 
 After running:
-  qmd ingest --collection skills "$SKILL_INDEX_DIR"
+  bash scripts/skill-index/ensure-skill-index.sh
 
 To query:
   qmd query --collection skills 'how do I review a PR'
@@ -210,5 +210,5 @@ while IFS='|' read -r kind plugin qname src; do
 done < "$tmp_list"
 
 echo "build-skill-index: wrote $written item files to $OUT_DIR"
-echo "Next: qmd ingest --collection skills \"$OUT_DIR\""
+echo "Next: bash scripts/skill-index/ensure-skill-index.sh   (registers the 'skills' qmd collection)"
 exit 0

@@ -47,7 +47,7 @@ print_rebuild_remedy() {
 skill-find: the 'skills' qmd collection is missing or empty — /skill-find
 would otherwise silently fall back to guessing skill/command names. Rebuild it:
   bash scripts/skill-index/build-skill-index.sh --out $q
-  bash -c 'source scripts/lib/qmd-bin.sh; qmd_cmd ingest --collection skills "\$1"' _ $q
+  SKILL_INDEX_DIR=$q bash scripts/skill-index/ensure-skill-index.sh
 EOF
 }
 
