@@ -482,7 +482,7 @@ AWKOPT='(^|[[:space:]])-[^Fv[:space:]]'
 # no other word holds an e, w or W (`-ee` is `-e e`, run the pattern space);
 # awk no system, getline, `|` or @-directive and only -F/-v options; no stage
 # holds a long option (rg --pre, sort --compress-program), a substitution,
-# subshell, group or list. Behind xargs the producer's bytes become the
+# subshell, group, list or expansion. Behind xargs the producer's bytes become the
 # filter's ARGUMENTS (`-e e`, `--pre=sh`), so only filters with no executing
 # option at all qualify there.
 # shellcheck disable=SC2016 # literal ` bytes
@@ -498,6 +498,10 @@ pipe_filter() {
     d=${d:${#BASH_REMATCH[0]}}
     d=${d//$'\n'/ }
     case "${s#&}" in *'('*|*')'*|*'`'*|*';'*|*'&'*|*'|'*|*'{'*|*'}'*|*[[:space:]]--*) return 1 ;; esac
+    # Any expansion ($X, "$X", ${…}, $(…), $'…', `…`, <(…), >(…)) — in the
+    # text or the decoded bytes — hides the word the checks below read
+    # (`X=e; … | sed $X - sh`), so the stage is no filter.
+    case "$s$d" in *'$'*|*'`'*|*'<('*|*'>('*) return 1 ;; esac
     case "$p" in
         sed)
             read -r -a ws <<<"$d"
@@ -824,8 +828,11 @@ qmd_check() {
         *) return 0 ;;
     esac
     # Whether a filter can clear a piped stage (pipe_filter) is read from the
-    # raw text of every level, and once refused stays refused.
-    if [[ $cmd =~ $FILTDECO ]] || [[ $cmd_lc =~ $FILTREDEF ]]; then
+    # raw text of every level, and once refused stays refused. qmd_words
+    # decodes `$'…'` and `$"…"` and drops their `$`, so pipe_filter's
+    # expansion check cannot see them: their raw `$` refuses here.
+    if [[ $cmd =~ $FILTDECO ]] || [[ $cmd_lc =~ $FILTREDEF ]] ||
+        [[ $cmd == *"\$'"* ]] || [[ $cmd == *'$"'* ]]; then
         nofilt=1
     fi
     # Nested strings share one byte budget, so four levels of a long string

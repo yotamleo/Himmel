@@ -486,6 +486,23 @@ deny 'echo qmd query x | xargs sort sh'
 # A case-folded name is no filter.
 deny 'echo qmd query x | SED -n p sh'
 deny 'echo qmd query x | GREP -v sh'
+# An expansion hides the word the filter checks read: no filter.
+deny 'X=e; echo qmd query x | sed $X - sh'
+deny "P='{system(\$0)}'; echo qmd query x | awk \$P - sh"
+deny 'echo qmd query x | sed "$X" - sh'
+deny 'echo qmd query x | sed -n -e p -e $X - sh'
+deny "echo qmd query x | sed 's/^/x/'\$X - sh"
+deny 'echo qmd query x | sed -n $1 - sh'
+deny 'echo qmd query x |& sed $X - sh'
+deny 'echo qmd query x | head -1 | sed $X - sh'
+deny 'echo qmd query x | awk "$P" - sh'
+deny 'echo qmd query x | grep -v $X sh'
+deny 'echo qmd query x | grep -v ${X} sh'
+deny "echo qmd query x | grep -v \$'\\x73' sh"
+deny 'echo qmd query x | grep -v "\$X" sh'
+deny 'echo qmd query x | jq -r $X sh'
+deny "echo qmd query x | grep -v \$\"x\" sh"
+deny 'echo qmd query x | grep -v <(true) sh'
 # The grep-operand class 4245 opened stays allowed, through plain filters.
 allow 'grep -rn "qmd search" docs | /usr/bin/grep -v sh'
 allow 'grep -rn "qmd search" docs |& grep -v sh'
