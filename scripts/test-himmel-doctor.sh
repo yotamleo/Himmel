@@ -5592,21 +5592,21 @@ echo "== C22: fixtures + a real member -> WARN names only the real member =="
 cp "$n_t/skips-fixture.jsonl" "$n_t/skips-mixed.jsonl"
 printf '%s\n' '{"action":"skip","member":"block-read-secrets.sh","reason":"ETIMEDOUT"}' >> "$n_t/skips-mixed.jsonl"
 out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-mixed.jsonl" bash "$DOC" --no-color 2>&1)"
-if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh' && ! grepq "$out" 'WARN C22-chain-skips.*(hang|hog|flood)'; then pass "C22 mixed -> real member only"; else fail "C22 mixed -> $(printf '%s' "$out" | grep C22)"; fi
+if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh' && ! grepq "$out" -E 'WARN C22-chain-skips.*(hang|hog|flood)'; then pass "C22 mixed -> real member only"; else fail "C22 mixed -> $(printf '%s' "$out" | grep C22)"; fi
 
 echo "== C19: observability not desired on this host -> INFO, no WARN =="
 printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"n/a"},{"id":"observability-grafana","desired":false,"severity":"n/a"}]}' > "$n_t/status-na.json"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-na.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+out="$(DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-na.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'INFO C19-observability.*not desired' && ! grepq "$out" 'WARN C19-observability'; then pass "C19 not desired -> INFO"; else fail "C19 not desired -> $(printf '%s' "$out" | grep C19)"; fi
 
 echo "== C19: observability desired and applicable -> checks still run (WARN on missing install) =="
 printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"red"}]}' > "$n_t/status-on.json"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-on.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" DOCTOR_CURL_BIN="$n_t/nocurl" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+out="$(DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-on.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" DOCTOR_CURL_BIN="$n_t/nocurl" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C19-observability.*stack stale'; then pass "C19 desired -> checks run"; else fail "C19 desired -> $(printf '%s' "$out" | grep C19)"; fi
 
 echo "== C19: malformed status payload -> unreadable INFO, never 'not desired' =="
 printf '%s\n' '{"items":"nope"}' > "$n_t/status-bad.json"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-bad.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+out="$(DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-bad.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'INFO C19-observability.*unreadable' && ! grepq "$out" 'not desired on this host'; then pass "C19 malformed status -> unreadable INFO"; else fail "C19 malformed status -> $(printf '%s' "$out" | grep C19)"; fi
 
 echo "== C21 record: lanes.json hermes rows match the live hermes profile default =="
