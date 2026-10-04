@@ -889,7 +889,12 @@ mentions_primary_or_home() {
 # a home-directory API (`expanduser`, `homedir()`, `Path.home()`, `Dir.home`,
 # `$ENV{HOME}`, `os.environ['HOME']`, `process.env.HOME`) and a file-write API (`open(…,
 # 'w')`, `write_text`, `writeFileSync`, `File.write`, `open(F, ">…")`,
-# `shutil.*`, a rename or symlink). The body builds its path at run time
+# `shutil.*`, a rename or symlink, and every file-mutating API whose name
+# holds no write/open token: io.FileIO/os.fdopen/File.new with a write mode,
+# os.truncate/remove/unlink/chmod/makedirs, Path.unlink/chmod/mkdir and a
+# one-argument Path.replace (str.replace takes two), fs.rm/unlink/truncate/cp
+# and their Sync or promises forms, File.delete/truncate, IO.binwrite and
+# copy_stream, perl unlink/truncate/rename/chmod and `+<`, Deno.*). The body builds its path at run time
 # (`expanduser('~')+'/.cl'+'aude/sett'+'ings.json'`), so no text match on
 # the path can see it; the pair is judged instead, whatever the path, -c/-e
 # body or heredoc alike (HIMMEL-4298). Fail-closed: a script that reads a
@@ -908,7 +913,7 @@ interp_home_write() {
     # shellcheck disable=SC2016 # literal `$` text in the home-API pattern
     local ri='(^|[^a-z0-9_.-])(python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|perl[0-9.]*|ruby[0-9.]*)([^a-z0-9_.-]|$)' \
         rh='expanduser[[:space:]]*\(|expandvars[[:space:]]*\(|expand_path[[:space:]]*\(|homedir[[:space:]]*\(|(path|dir)[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|env[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|(environ|env|getenv)([[:space:]]*\.[[:space:]]*(get|fetch))?[[:space:]]*[[({][[:space:]]*['\''"]?home['\''"]?[[:space:]]*[])},]' \
-        rw='write_text|write_bytes|\.[[:space:]]*write([[:space:]]*\(|[[:space:]])|writefile|appendfile|createwritestream|copyfile|cpsync|renamesync|symlink|hardlink|syswrite|json[[:space:]]*\.[[:space:]]*dump[[:space:]]*\(|shutil[[:space:]]*\.|fileutils[[:space:]]*\.|io[[:space:]]*\.[[:space:]]*write|os[[:space:]]*\.[[:space:]]*(replace|rename|link)|\.[[:space:]]*rename([[:space:]]*\(|[[:space:]])|\.[[:space:]]*touch[[:space:]]*\(|o_(wronly|rdwr|creat|trunc|append)|open(sync)?[[:space:]]*\((.*,)?[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?['\''"][rbt]*[wax+][rbt+]*['\''"]|open[[:space:]]*\(?[^;]*['\''"]\+?>'
+        rw='write_text|write_bytes|\.[[:space:]]*write(r|v|lines)?([[:space:]]*\(|[[:space:]])|writefile|appendfile|createwritestream|copyfile|cpsync|renamesync|symlink|hardlink|syswrite|json[[:space:]]*\.[[:space:]]*dump[[:space:]]*\(|shutil[[:space:]]*\.|fileutils[[:space:]]*\.|io[[:space:]]*\.[[:space:]]*write|os[[:space:]]*\.[[:space:]]*(replace|rename|link)|\.[[:space:]]*rename([[:space:]]*\(|[[:space:]])|\.[[:space:]]*touch[[:space:]]*\(|o_(wronly|rdwr|creat|trunc|append)|(open|fileio|fdopen|new|zipfile)(sync)?[[:space:]]*\((.*,)?[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?['\''"][rbt]*[wax+][rbt+]*['\''"]|open[[:space:]]*\(?[^;]*['\''"](\+?>|\+<)|os[[:space:]]*\.[[:space:]]*(f?truncate|remove|unlink|rmdir|[lf]?chmod|l?chown|mkdir|makedirs|mknod|mkfifo)|\.[[:space:]]*(unlink|rmdir|[lf]?chmod|l?chown|mkdir|makedirs|f?truncate|rm|cp|link|mknod)(sync)?[[:space:]]*\(|\.[[:space:]]*replace[[:space:]]*\(([^,()]|\(([^()]|\(([^()]|\([^()]*\))*\))*\))*\)|(file|dir|pathname)[[:space:]]*\.[[:space:]]*(delete|unlink|truncate|l?chmod|l?chown|rename|mkfifo|mkdir|rmdir)|(f?truncate|unlink|rm|rmdir|link|[lf]?chmod|l?chown|mkdir|cp|write|writev)sync|(^|[^a-z0-9_.])(unlink|f?truncate|rename|chmod|chown|rmdir|mkdir|rm|cp|link|symlink|copy|move|rmtree|remove_tree|make_path|mkpath)[[:space:]]*\(|(^|[^a-z0-9_.])(unlink|f?truncate|rename)[[:space:]]+[$'\''"]|(^|[^a-z0-9_.])chmod[[:space:]]+[0-7]+[[:space:]]*,|file[[:space:]]*\.[[:space:]]*(open|new)[[:space:]]+[^;]*,[[:space:]]*['\''"][rbt]*[wax+]|inplace[[:space:]]*=[[:space:]]*(true|1)|\$\^i[[:space:]]*=|copy_stream|binwrite|::(wronly|rdwr|creat|trunc|append)|deno[[:space:]]*\.[[:space:]]*(write[a-z]*|remove|f?truncate|rename|copyfile|create|symlink|link|chmod|chown|mkdir)'
     # A backslash line continuation (LF or CRLF) splits nothing in the
     # interpreter's own parse, so it is folded away before matching.
     local t bc=$'\\\r\n' bn=$'\\\n'

@@ -2702,6 +2702,79 @@ python3 -c "from pathlib import Path; open(str(Path.home())+'/.cl'+'aude/sett'+'
 python3 -c "from pathlib import Path; open \\n(str(Path.home())+'/.cl'+'aude/sett'+'ings.json','w')"
 python3 -c "from pathlib import Path; open \\r\n(str(Path.home())+'/.cl'+'aude/sett'+'ings.json','w')"
 ROWS
+# 712-749 (HIMMEL-4298 /pr-check round 3): a file-mutating API whose name
+# carries no write/open token (io.FileIO, os.truncate/remove/chmod/makedirs,
+# Path.unlink/replace, fs.rm/unlink/truncate/cp, File.delete/new, IO.binwrite,
+# perl unlink/truncate/rename/chmod/+<) still pairs with the home API.
+rows_both 712 2 "file-mutating API with no write/open name denies" <<'ROWS'
+python3 -c "import os,io; io.FileIO(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json','w')"
+python3 -c "import os; os.fdopen(os.open(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json',1),'w')"
+python3 -c "import os; os.truncate(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json',0)"
+python3 -c "import os; os.remove(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+python3 -c "import os; os.unlink(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+python3 -c "import os; os.chmod(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json',0)"
+python3 -c "import os; os.makedirs(os.path.expanduser('~')+'/.cl'+'aude',exist_ok=True)"
+python3 -c "import os; os.rmdir(os.path.expanduser('~')+'/.cl'+'aude')"
+python3 -c "import os; os.mknod(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).unlink()"
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).chmod(0)"
+python3 -c "from pathlib import Path; Path('/tmp/x').replace((Path.home()/('.cl'+'aude')/('sett'+'ings.json')))"
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')).mkdir()"
+python3 -c "import os,fileinput; [print(l) for l in fileinput.input(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json',inplace=True)]"
+python3 -c "import os,zipfile; zipfile.ZipFile(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json','w')"
+node -e "require('fs').truncateSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',0)"
+node -e "require('fs').truncate(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',0,()=>{})"
+node -e "require('fs').rmSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').rm(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',()=>{})"
+node -e "require('fs').unlinkSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').unlink(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',()=>{})"
+node -e "require('fs').cp('/tmp/x',require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',()=>{})"
+node -e "const fs=require('fs');fs.writeSync(fs.openSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',1),'q')"
+node -e "require('fs/promises').truncate(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',0)"
+node -e "require('fs').promises.rm(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+node -e "const {unlinkSync}=require('fs');unlinkSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').chmodSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json',0)"
+ruby -e 'File.new(Dir.home+"/.cl"+"aude/sett"+"ings.json","w")'
+ruby -e 'File.delete(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
+ruby -e 'File.unlink Dir.home+"/.cl"+"aude/sett"+"ings.json"'
+ruby -e 'File.truncate(Dir.home+"/.cl"+"aude/sett"+"ings.json",0)'
+ruby -e 'IO.binwrite(Dir.home+"/.cl"+"aude/sett"+"ings.json","x")'
+ruby -e 'IO.copy_stream("/tmp/x",Dir.home+"/.cl"+"aude/sett"+"ings.json")'
+perl -e 'unlink $ENV{HOME}."/.cl"."aude/sett"."ings.json"'
+perl -e 'truncate($ENV{HOME}."/.cl"."aude/sett"."ings.json",0)'
+perl -e 'rename("/tmp/x",$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
+perl -e 'chmod(0,$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
+perl -e 'open(my $f,"+<",$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
+ROWS
+# 750-762: members the regex already named; pinned so the sweep keeps them.
+rows_both 750 2 "already-matched mutating API stays denied" <<'ROWS'
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).symlink_to('/tmp/x')"
+python3 -c "from pathlib import Path; (Path.home()/('.cl'+'aude')/('sett'+'ings.json')).hardlink_to('/tmp/x')"
+python3 -c "import os; os.symlink('/tmp/x',os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+python3 -c "import os; os.replace('/tmp/x',os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+python3 -c "import os,shutil; shutil.move('/tmp/x',os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').copyFileSync('/tmp/x',require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').createWriteStream(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').symlinkSync('/tmp/x',require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+node -e "require('fs').renameSync('/tmp/x',require('os').homedir()+'/.cl'+'aude/sett'+'ings.json')"
+ruby -e 'File.symlink("/tmp/x",Dir.home+"/.cl"+"aude/sett"+"ings.json")'
+ruby -e 'IO.write(Dir.home+"/.cl"+"aude/sett"+"ings.json","x")'
+ruby -e 'require "fileutils"; FileUtils.rm(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
+perl -e 'symlink("/tmp/x",$ENV{HOME}."/.cl"."aude/sett"."ings.json")'
+ROWS
+# 763-771: read controls: a home API with only reads (incl. str.replace and a
+# JS Map.delete) stays allowed.
+rows_both 763 0 "home API with reads only allows" <<'ROWS'
+python3 -c "import os; print(os.stat(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json'))"
+python3 -c "from pathlib import Path; print((Path.home()/('.cl'+'aude')/('sett'+'ings.json')).exists())"
+python3 -c "import os; print(open(os.path.expanduser('~')+'/.cl'+'aude/sett'+'ings.json').read().replace('a','b'))"
+python3 -c "import os; print(os.listdir(os.path.expanduser('~')))"
+node -e "console.log(require('fs').readFileSync(require('os').homedir()+'/.cl'+'aude/sett'+'ings.json','utf8'))"
+node -e "const m=new Map();m.delete(1);console.log(require('os').homedir())"
+ruby -e 'puts File.read(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
+ruby -e 'puts File.exist?(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
+perl -e 'open(my $f,"<",$ENV{HOME}."/.cl"."aude/sett"."ings.json"); print <$f>'
+ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
