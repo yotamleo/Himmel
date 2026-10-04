@@ -2105,10 +2105,15 @@ _dc_data_bodies() {
     [ -n "$_DCNB" ] || return 1
     # outside the bodies: a group or loop closed and then piped or
     # redirected (`} | bash`, `done >&3`) may run a body inside it, and a
-    # receiver rebound by name (`PATH=`, an alias, `hash`, `enable`, a
-    # function) is not the receiver, so nothing is read as data then
+    # receiver rebound by name (any PATH mention, an alias, `hash`,
+    # `enable`, a function, or code pulled in by `.`, `source` or `eval`)
+    # is not the receiver, so nothing is read as data then
     [[ ! $out =~ (^|[;\&[:space:]])(\}|\)|done|fi|esac)[[:space:]]*([0-9]*[\<\>]|\|) ]] || return 1
-    [[ ! $out =~ (^|[^a-z0-9_])(path=|(alias|hash|enable|function)([^a-z0-9_]|$)) ]] || return 1
+    [[ ! $out =~ (^|[^a-z0-9_])(alias|hash|enable|function)([^a-z0-9_]|$) ]] || return 1
+    u='(^|[^-a-z0-9_./{$])(path|source|eval)([+]?=|[[:space:];&|)]|$)'
+    [[ ! $out =~ $u ]] || return 1
+    u='(^|[;&|({[:space:]])\.[[:space:]]+[^=!<>|&[:space:]]'
+    [[ ! $out =~ $u ]] || return 1
     [[ ! $out =~ (^|[^a-z0-9_])(cat|tee|git|gh)[[:space:]]*\([[:space:]]*\) ]] || return 1
     _DCNB=$out _DCBD=$bd
 }

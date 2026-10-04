@@ -2508,6 +2508,31 @@ for c in \\
   a; do :; done
 the hook folds ~/.cl\$(printf a)ude now
 EOF" HOME="$FAKEHOME")"
+assert_rc "618 nested worktree unset PATH; PATH+=/tmp; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "unset PATH; PATH+=/tmp; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "619 nested worktree . /tmp/defs; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" ". /tmp/defs; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "620 nested worktree source /tmp/defs; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "source /tmp/defs; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "621 nested worktree eval \"\$f\"; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "eval \"\$f\"; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "622 nested worktree export PATH=/tmp; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "export PATH=/tmp; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "623 nested worktree doc body then grep handover-path and jq select(. != 1) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /tmp/notes.md
+the hook folds ~/.cl\$(printf a)ude now
+EOF
+grep -n handover-path /tmp/notes.md; jq 'select(. != 1)' /tmp/n.json" HOME="$FAKEHOME")"
 assert_rc "615 nested worktree /usr/bin/cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "/usr/bin/cat <<'EOF' > /tmp/notes.md
 the hook folds ~/.cl\$(printf a)ude now
