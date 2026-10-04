@@ -1053,28 +1053,38 @@ resolve_vault_deletions() {
     local ours="$1" base="$2" theirs="$3" out="$4" report="$5"
     [ -n "$PYTHON" ] || return 1
     local diff3; diff3="$(mktemp)"
-    git merge-file -p --diff3 "$ours" "$base" "$theirs" > "$diff3" 2>/dev/null
+    # HIMMEL-4386: a long marker size, so manual text (a setext `=======`
+    # underline, a documented conflict example) is never taken for a marker.
+    git merge-file -p --diff3 --marker-size 31 "$ours" "$base" "$theirs" > "$diff3" 2>/dev/null
     local rc=$?
     if [ "$rc" -lt 1 ] || [ "$rc" -gt 127 ]; then rm -f "$diff3"; return 1; fi
     "$PYTHON" - "$diff3" "$out" "$report" <<'PY'
 import sys
 src, out, report = sys.argv[1:4]
+M = 31
+OPEN, BASE, SEP, CLOSE = ("<" * M, "|" * M, "=" * M, ">" * M)
+def is_marker(line, m):
+    # the exact marker run, then a space or end of line: a longer run never matches
+    t = line.rstrip("\r\n")
+    return t == m or t.startswith(m + " ")
 lines = open(src, encoding="utf-8", newline="").read().splitlines(keepends=True)
 res, dropped, i = [], [], 0
 while i < len(lines):
-    if not lines[i].startswith("<<<<<<< "):
+    if not is_marker(lines[i], OPEN):
         res.append(lines[i]); i += 1; continue
     ours, base, theirs = [], [], []
-    cur = ours
+    cur, stage = ours, 0  # 0 ours, 1 base, 2 theirs, 3 closed
     i += 1
-    while i < len(lines) and not lines[i].startswith(">>>>>>> "):
+    while i < len(lines):
         l = lines[i]
-        if l.startswith("||||||| "): cur = base
-        elif l.rstrip("\r\n") == "=======": cur = theirs
-        else: cur.append(l)
         i += 1
-    i += 1
-    if ours or not base:
+        if stage == 0 and is_marker(l, BASE): cur, stage = base, 1
+        elif stage == 1 and is_marker(l, SEP): cur, stage = theirs, 2
+        elif stage == 2 and is_marker(l, CLOSE): stage = 3; break
+        elif is_marker(l, OPEN) or is_marker(l, BASE) or is_marker(l, SEP) or is_marker(l, CLOSE):
+            sys.exit(1)  # out-of-order marker: malformed hunk
+        else: cur.append(l)
+    if stage != 3 or ours or not base:
         sys.exit(1)
     changed = [t for t in theirs if t not in base]
     dropped.append((base, changed))

@@ -280,6 +280,30 @@ for variant in unchanged modified; do
     assert_eq "T6s-$variant second run section still deleted" "$(sha_of_str "$(sec_gone)")" "$(sha_of_str "$(cat "$V/_CLAUDE.md")")"
 done
 
+# T6d/T6e (HIMMEL-4386): the vault-deletion resolver must not mistake manual text
+# for diff3 markers. T6d: a vault hunk that OPENS with a setext `=======`
+# underline is vault text, not an empty side — it must conflict to the sidecar
+# and the vault text must survive. T6e: literal marker lines in the manual (as
+# a documented conflict example) must not hijack an unrelated deletion hunk.
+T="$TMP/t6d-tmpl"; V="$TMP/t6d-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+printf '# Operating Manual\n\nfoo\nbar\n\n## Tail\n\nline-z\n' > "$V/.vault-template.base/_CLAUDE.md"
+printf '# Operating Manual\n\n=======\nvault-text\n\n## Tail\n\nline-z\n' > "$V/_CLAUDE.md"
+printf '# Operating Manual\n\nx\ny\n\n## Tail\n\nline-z\n' > "$T/_CLAUDE.md"
+out=$(run_upgrade --yes 2>&1); rc=$?
+if grep -q 'vault-text' "$V/_CLAUDE.md"; then pass "T6d setext ======= hunk keeps the vault text"; else fail "T6d setext ======= hunk keeps the vault text" "vault text dropped"; fi
+if [ -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6d setext ======= hunk conflicts to the sidecar"; else fail "T6d setext ======= hunk conflicts to the sidecar" "no sidecar"; fi
+if [ "$rc" -ne 0 ]; then pass "T6d setext ======= hunk exits non-zero"; else fail "T6d setext ======= hunk exits non-zero" "rc=0"; fi
+
+lit_base() { printf '# Operating Manual\n\n<<<<<<< example\nyours\n=======\ntheirs\n>>>>>>> example\n\n## Repo conventions\n\n- never edit on main\n\n## Tail\n\nline-z\n'; }
+T="$TMP/t6e-tmpl"; V="$TMP/t6e-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+lit_base > "$V/.vault-template.base/_CLAUDE.md"
+lit_base | sed '/^## Repo conventions$/,/^- never edit on main$/d' > "$V/_CLAUDE.md"
+lit_base | sed 's/never edit on main/never edit on trunk/' > "$T/_CLAUDE.md"
+out=$(run_upgrade --yes 2>&1); rc=$?
+assert_eq "T6e literal markers in the manual: deletion resolves, exits 0" "0" "$rc"
+if grep -q '^<<<<<<< example$' "$V/_CLAUDE.md" && grep -q '^>>>>>>> example$' "$V/_CLAUDE.md" && ! grep -q 'Repo conventions' "$V/_CLAUDE.md"; then pass "T6e literal marker lines kept, deleted section stays deleted"; else fail "T6e literal marker lines kept, deleted section stays deleted" "got: $(cat "$V/_CLAUDE.md")"; fi
+if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6e no sidecar"; else fail "T6e no sidecar" "sidecar present"; fi
+
 # ---------------------------------------------------------------------------
 # T7: PLUGINS-SETUP.md reprint fires when the manual-install table changed.
 T="$TMP/t7-tmpl"; V="$TMP/t7-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.obsidian"; stamp_vault "$V" "0.1.0"
