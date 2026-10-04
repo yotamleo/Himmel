@@ -19,7 +19,18 @@ import { appendAudit } from "./audit";
 
 const LOOPBACK = "127.0.0.1";
 const DEFAULT_IDLE_MS = 30 * 60 * 1000;
-const FEED_TIMEOUT_MS = 120_000;
+// HIMMEL-4369: Bun cuts any request idle past 10 s. The feed runs in the
+// background (FEED_TIMEOUT_MS, the station took 124 s) and a request waits at
+// most FEED_WAIT_MS (under 10 s) before answering 202 for the page to poll.
+// The routes that really hold a request: /api/run = re-probe + action + re-probe
+// (60 + 120 + 60 = 240 s with today's table); /api/preview = one action.
+// startServer refuses to start unless IDLE_TIMEOUT_S covers the worst route
+// (computed from the live table) plus IDLE_MARGIN_S; Bun's maximum is 255 s.
+const FEED_TIMEOUT_MS = 300_000;
+const FEED_WAIT_MS = 8_000;
+const FEED_CACHE_MS = 30_000;
+export const IDLE_TIMEOUT_S = 255;
+const IDLE_MARGIN_S = 10;
 const PREVIEW_TTL_MS = 5 * 60 * 1000;
 export const REPROBE_BUDGET_MS = 60_000;
 const MAX_BODY = 16 * 1024;
@@ -37,7 +48,7 @@ type Env = Record<string, string | undefined>;
 // only; the CLI entry below never sets them.
 export type ServerOpts = {
   port?: number; token?: string; hostname?: string; env?: Env; onIdle?: () => void;
-  root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number;
+  root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; feedWaitMs?: number; feedTimeoutMs?: number;
 };
 type Preview = Resolved & { expires: number };
 type Probe = Record<string, { installed: string; health: string }>;
@@ -61,9 +72,9 @@ function himmelctlBin(env: Env): string {
   return env.CONFIG_UI_HIMMELCTL ?? resolve(import.meta.dir, "../himmelctl/bin.js");
 }
 
-function runFeed(env: Env): Promise<string> {
+function runFeed(env: Env, timeoutMs: number): Promise<string> {
   return new Promise((ok, fail) => {
-    execFile("node", [himmelctlBin(env), "report", "--json"], { env: env as NodeJS.ProcessEnv, timeout: FEED_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
+    execFile("node", [himmelctlBin(env), "report", "--json"], { env: env as NodeJS.ProcessEnv, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
       if (err) return fail(err);
       try { ok(JSON.stringify(redactDeep(JSON.parse(stdout)))); } catch (e) { fail(e); }
     });
@@ -92,6 +103,12 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
   const table = buildTable({ root, cadenceRoot: env.HIMMEL_REPORT_CADENCE_ROOT ?? root, himmelctl, platform: process.platform, ...loadRegistries(root) });
   const previews = new Map<string, Preview>();
   const publicRoot = join(import.meta.dir, "public");
+  let actionWorst = 0;
+  for (const [, spec] of table) actionWorst = Math.max(actionWorst, opts.actionTimeoutMs ?? spec.timeoutMs);
+  const worstRouteMs = 2 * reprobeMs + actionWorst;
+  if (IDLE_TIMEOUT_S * 1000 < worstRouteMs + IDLE_MARGIN_S * 1000) {
+    throw new Error(`config-ui: idleTimeout ${IDLE_TIMEOUT_S}s does not cover the worst route budget ${worstRouteMs}ms plus ${IDLE_MARGIN_S}s`);
+  }
 
   // Every child output passes the same redactor as the feed, with the
   // checkout's .env values and the server env's secret values as literals.
@@ -132,7 +149,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     return json({ previewId, ...redactOut({ command: p.dryArgv.join(" "), output, consent: p.consent, effect: p.effect, bank: p.bank }), expiresInMs: PREVIEW_TTL_MS });
   }
 
-  async function runRoute(b: Record<string, unknown>): Promise<Response> {
+  async function runRoute(b: Record<string, unknown>, onStart: () => void): Promise<Response> {
     const id = typeof b.previewId === "string" ? b.previewId : "";
     const p = previews.get(id);
     if (!p || p.expires <= now()) { previews.delete(id); return json({ error: "preview id missing, expired or used" }, 409); }
@@ -144,6 +161,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     let before, r, after, failed = false;
     try {
       before = await reprobe(p.rowIds);
+      onStart(); // the station is about to change; a request rejected earlier leaves the feed alone
       r = await runChild(p.argv, childOpts(p, lock));
       after = await reprobe(p.rowIds);
     } catch { failed = true; } finally { lock.release(); }
@@ -167,6 +185,28 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       (opts.onIdle ?? (() => process.exit(0)))();
     }, idleMs);
   };
+
+  // The feed: ONE background report shared by every request, cached briefly.
+  // A failure is terminal for that run and never cached, so the next request retries.
+  type FeedRun = { startedAt: number; done: boolean; body?: string; error?: string; at: number; promise: Promise<void> };
+  let feedRun: FeedRun | null = null;
+  function feedStart(): FeedRun {
+    if (feedRun && (!feedRun.done || (feedRun.body !== undefined && now() - feedRun.at < FEED_CACHE_MS))) return feedRun;
+    const run: FeedRun = { startedAt: now(), done: false, at: 0, promise: Promise.resolve() };
+    active++; // a running report keeps the idle timer from shutting the server down
+    run.promise = runFeed(env, opts.feedTimeoutMs ?? FEED_TIMEOUT_MS).then((b) => { run.body = b; }, () => { run.error = "himmelctl report --json failed or timed out"; })
+      .finally(() => { run.done = true; run.at = now(); active--; if (deferred && active === 0) { deferred = false; bump(); } });
+    return feedRun = run;
+  }
+  async function feedRoute(): Promise<Response> {
+    const run = feedStart();
+    let t: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([run.promise, new Promise((r) => { t = setTimeout(r, opts.feedWaitMs ?? FEED_WAIT_MS); })]);
+    clearTimeout(t);
+    if (!run.done) return json({ state: "running", startedAt: run.startedAt, elapsedMs: now() - run.startedAt }, 202);
+    if (run.body !== undefined) return new Response(run.body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    return json({ state: "error", reason: run.error }, 502);
+  }
   async function route(req: Request): Promise<Response> {
     const origin = `http://${LOOPBACK}:${server.port}`;
     if (req.headers.get("host") !== `${LOOPBACK}:${server.port}`) return new Response("bad host", { status: 403 });
@@ -175,8 +215,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       if (!sameToken(req.headers.get("x-himmel-token"), token)) return new Response("unauthorized", { status: 401 });
       bump(); // HIMMEL-4350: only an authenticated request keeps the server alive
       if (req.method === "GET" && path === "/api/feed") {
-        try { return new Response(await runFeed(env), { headers: { "content-type": "application/json", "cache-control": "no-store" } }); }
-        catch { return json({ error: "feed failed" }, 502); }
+        return feedRoute();
       }
       if (path !== "/api/preview" && path !== "/api/run") return new Response("not found", { status: 404 });
       if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
@@ -187,7 +226,11 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       let b: unknown;
       try { b = JSON.parse(text); } catch { return json({ error: "bad json" }, 400); }
       if (!b || typeof b !== "object" || Array.isArray(b)) return json({ error: "bad json" }, 400);
-      return path === "/api/preview" ? previewRoute(b as Record<string, unknown>) : runRoute(b as Record<string, unknown>);
+      if (path === "/api/preview") return previewRoute(b as Record<string, unknown>);
+      let started = false;
+      const res = await runRoute(b as Record<string, unknown>, () => { started = true; });
+      if (started) feedRun = null; // an action ran: the next feed re-probes, never reusing a cached or in-flight (pre-action) report
+      return res;
     }
     const file = STATIC[path];
     if (req.method === "GET" && file) return new Response(readFileSync(join(publicRoot, file[0])), { headers: { "content-type": file[1], "cache-control": "no-store" } });
@@ -195,6 +238,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
   }
   const server = Bun.serve({
     hostname: LOOPBACK, // hard-coded: never configurable
+    idleTimeout: IDLE_TIMEOUT_S,
     port: opts.port ?? 0,
     maxRequestBodySize: MAX_BODY, // bounds buffering before req.text(); the length check below stays
     async fetch(req) {
