@@ -1483,6 +1483,49 @@ FETCH_HEALTH_STUB_RC=3 sh "$FIRE_DIR/pipeline-fetch-health.sh" || true
 assert_rc "a clean probe clears the dedupe, so the next bad probe sends" 2 "$(count_lines "$ALERT_SENDS")"
 use_claude ok
 
+# HIMMEL-4182: harvest and synthesize refresh the day note's timeline after the
+# leg, must-not-abort. `node` is stubbed AFTER arm (the runner's PATH snapshot
+# already carries bin-rec), so no fire here touches a real vault note.
+echo "TEST: runners run daily-timeline.mjs, must-not-abort (HIMMEL-4182)"
+REAL_NODE=$(command -v node || true)
+TL_REC="$TMP_ROOT/timeline-record"
+cat >"$TMP_ROOT/bin-rec/node" <<STUB
+#!/bin/sh
+case "\$1" in
+    *daily-timeline.mjs) printf '%s\\n' "\$*" >> "$TL_REC"; echo "timeline-stub-ran"; exit "\${TIMELINE_STUB_RC:-0}" ;;
+esac
+exec "$REAL_NODE" "\$@"
+STUB
+chmod +x "$TMP_ROOT/bin-rec/node"
+for _leg in harvest synthesize; do
+    _runner="$FIRE_DIR/pipeline-$_leg.sh"
+    assert_contains "$_leg runner calls the daily timeline" "obsidian-triage/tools/daily-timeline.mjs" "$(cat "$_runner")"
+    reset_alerts; : > "$TL_REC"; use_claude ok
+    rc=0; sh "$_runner" || rc=$?
+    assert_rc "$_leg: a completed leg with a good timeline exits 0" 0 "$rc"
+    assert_contains "$_leg: timeline gets --vault and today's --date" "--vault $FIRE_VAULT --date $(date +%Y-%m-%d)" "$(cat "$TL_REC")"
+    # A failing timeline changes nothing about rc, outcome or alerts.
+    reset_alerts; : > "$TL_REC"
+    rc=0; TIMELINE_STUB_RC=1 sh "$_runner" || rc=$?
+    assert_rc "$_leg: a failing timeline leaves rc 0" 0 "$rc"
+    assert_contains "$_leg: the failure is logged" "[daily-timeline failed rc=1 - continuing]" "$(cat "$FIRE_DIR/pipeline-$_leg.log")"
+    assert_not_contains "$_leg: a failing timeline is not a LEG-FAILED" "PIPELINE-LEG-FAILED" "$(cat "$FIRE_DIR/pipeline-$_leg.log")"
+    assert_rc "$_leg: a failing timeline raises no alert" 0 "$(count_lines "$CADENCE_ALERT_FILE")"
+    use_claude parked
+    rc=0; TIMELINE_STUB_RC=1 sh "$_runner" || rc=$?
+    assert_rc "$_leg: a parked leg still exits 3 beside a failing timeline" 3 "$rc"
+    assert_contains "$_leg: a parked leg still logs LEG-FAILED" "[PIPELINE-LEG-FAILED no-completion-marker]" "$(cat "$FIRE_DIR/pipeline-$_leg.log")"
+    use_claude rc5
+    rc=0; TIMELINE_STUB_RC=1 sh "$_runner" || rc=$?
+    assert_rc "$_leg: a failed leg keeps its own rc beside a failing timeline" 5 "$rc"
+done
+: > "$TL_REC"; use_claude ok
+sh "$FIRE_DIR/pipeline-health.sh" || true
+assert_rc "the health runner never runs the timeline" 0 "$(count_lines "$TL_REC")"
+assert_not_contains "health runner has no timeline call" "daily-timeline.mjs" "$(cat "$FIRE_DIR/pipeline-health.sh")"
+rm -f "$TMP_ROOT/bin-rec/node"
+use_claude ok
+
 # The helper itself: an unwritable dedupe dir must not swallow the send, and
 # the dedupe sentinel is written only after a delivered send, so a send that
 # fails or is interrupted leaves nothing behind to suppress the next alert.
