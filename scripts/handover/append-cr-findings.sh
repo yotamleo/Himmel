@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # scripts/handover/append-cr-findings.sh — append one CR-panel finding into a
 # handover item's reviewer-notes.md, deduped per (head,id) (HIMMEL-416 F2 / C2).
+# Exit: 0 = appended, 9 = already present (deduped), 2 = error (HIMMEL-2430).
 set -uo pipefail
 
 notes="" head="" date="" pr="" id="" severity="" file="" line="" title="" verdict=""
@@ -38,7 +39,7 @@ EOF
 fi
 
 marker="cr:${head}:${id}"
-grep -qF "<!-- ${marker} -->" "$notes" 2>/dev/null && exit 0   # already recorded (anchored, so id prefixes don't collide)
+grep -qF "<!-- ${marker} -->" "$notes" 2>/dev/null && exit 9   # already recorded (anchored, so id prefixes don't collide)
 
 case "$severity" in
   crit) emoji="🔴"; label="Critical";;

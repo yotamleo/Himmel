@@ -681,5 +681,75 @@ case "$bt_subject_out" in
     *) ko "codex-1 (round 6) REGRESSION: a commit subject with a backtick was not safely fenced -- it can escape its code span" ;;
 esac
 
+# --- HIMMEL-2403: --repo overrides the self-discovery. A leg whose branch
+# lives in a SECOND, genuinely separate repo must be briefable via --repo,
+# while the default (the script's own repo) and a wrong --repo still fail
+# loudly (exit 2, naming the repo searched). A single-repo fixture cannot
+# tell the fix from the status quo, so REPO2 is its own `git init`. ---
+REPO2="$TMP/repo2"
+OTHER_BRANCH="feat/himmel-2403-other"
+mkdir -p "$REPO2"
+(
+    cd "$REPO2" || exit 1
+    git init -q -b main .
+    git config user.email t@t.t
+    git config user.name t
+    echo other > g.txt
+    git add g.txt
+    git commit -qm "other repo base"
+    git update-ref refs/remotes/origin/main refs/heads/main
+    git branch "$OTHER_BRANCH" main
+) >/dev/null 2>&1
+# positive controls: the branch exists in REPO2 and is genuinely ABSENT
+# from REPO -- or the assertions below would be vacuous.
+if git -C "$REPO2" rev-parse --verify -q "refs/heads/$OTHER_BRANCH" >/dev/null 2>&1; then
+    ok "positive control: $OTHER_BRANCH exists in the second repo"
+else
+    ko "positive control: $OTHER_BRANCH missing from the second repo -- HIMMEL-2403 assertions below would be vacuous"
+fi
+if git -C "$REPO" rev-parse --verify -q "refs/heads/$OTHER_BRANCH" >/dev/null 2>&1; then
+    ko "positive control: $OTHER_BRANCH unexpectedly exists in the default repo -- HIMMEL-2403 assertions below would be vacuous"
+else
+    ok "positive control: $OTHER_BRANCH is absent from the default repo"
+fi
+DOC2="$FIX/leg-doc-other-repo.md"
+# shellcheck disable=SC2016
+# Literal markdown backticks in a fixture doc, not command substitution --
+# same rationale as the REMOVED_DOC fixture above.
+printf '# doc\nWorking on `branch %s` today.\n' "$OTHER_BRANCH" > "$DOC2"
+
+repo_out=$(bash "$SCRIPT_COPY" "$DOC2" --repo "$REPO2" --dry-run 2>&1)
+repo_rc=$?
+if [ "$repo_rc" -eq 0 ] && [[ "$repo_out" == *"$OTHER_BRANCH"* ]]; then
+    ok "HIMMEL-2403: --repo <other repo> briefs a branch that exists only there (exit 0, branch named)"
+else
+    ko "HIMMEL-2403: --repo <other repo> did not brief the branch (rc=$repo_rc): $repo_out"
+fi
+
+default_err=$(bash "$SCRIPT_COPY" "$DOC2" --dry-run 2>&1 >/dev/null)
+default_rc=$?
+if [ "$default_rc" -eq 2 ] && [[ "$default_err" == *"$REPO"* ]]; then
+    ok "HIMMEL-2403: without --repo the script's own repo is searched and the miss exits 2 naming it"
+else
+    ko "HIMMEL-2403: default-repo miss did not exit 2 naming the repo (rc=$default_rc): $default_err"
+fi
+
+wrong_err=$(bash "$SCRIPT_COPY" "$DOC2" --repo "$REPO" --dry-run 2>&1 >/dev/null)
+wrong_rc=$?
+if [ "$wrong_rc" -eq 2 ] && [[ "$wrong_err" == *"$REPO"* ]]; then
+    ok "HIMMEL-2403: a wrong --repo still exits 2 naming the repo searched"
+else
+    ko "HIMMEL-2403: a wrong --repo did not exit 2 naming the repo (rc=$wrong_rc): $wrong_err"
+fi
+
+mkdir -p "$TMP/not-a-repo"
+bash "$SCRIPT_COPY" "$DOC2" --repo "$TMP/not-a-repo" --dry-run >/dev/null 2>&1
+notrepo_rc=$?
+if [ "$notrepo_rc" -eq 1 ]; then
+    ok "HIMMEL-2403: --repo pointing at a non-git directory exits 1"
+else
+    ko "HIMMEL-2403: --repo pointing at a non-git directory exited $notrepo_rc, expected 1"
+fi
+
 echo "Total: pass=$pass fail=$fail"
 [ "$fail" -eq 0 ]

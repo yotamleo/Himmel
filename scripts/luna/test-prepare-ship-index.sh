@@ -181,6 +181,18 @@ if (mode === 'nullhash') {
   insDoc.run(id++, 'luna', 'nullish.md', 'T nullish', null);
 }
 
+if (mode === 'mixed') {
+  // HIMMEL-4232: one kept chunk embedded by a SECOND model. qmd searches without
+  // filtering by model, so an artifact mixing two vector spaces is wrong.
+  db.prepare("UPDATE content_vectors SET model = 'm2' WHERE hash = 'h_himmel' AND seq = 1").run();
+}
+
+if (mode === 'nocols') {
+  // HIMMEL-4232: qmd's CLI keeps collections in index.yml and can leave
+  // store_collections EMPTY; the documents table still names each collection.
+  db.exec('DELETE FROM store_collections');
+}
+
 if (mode === 'orphans') {
   // Pre-existing vec0 orphans with NO content_vectors row — the 22,895-row
   // situation that was GC'd by hand on 2026-07-23. These must be gone after.
@@ -399,5 +411,47 @@ if ! compgen -G "$PREV.building.*" >/dev/null; then
 else
     fail "work file litter left" "$(ls "$TMP_ROOT")"
 fi
+
+# ============================================================================
+echo "TEST: --json reports the artifact's embed model(s) (HIMMEL-4232)"
+# ============================================================================
+models_of() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(JSON.parse(s).after.models)))'; }
+OUT_M="$TMP_ROOT/out-models.sqlite"
+rc=0; out=$(node "$SCRIPT" --src "$SRC" --out "$OUT_M" --collections himmel,luna --json 2>&1) || rc=$?
+assert_rc "models json rc 0" 0 "$rc"
+assert_eq "after.models names the one model" '["m"]' "$(printf '%s' "$out" | models_of)"
+
+echo "TEST: an artifact mixing two embed models is refused"
+SRC_MIX="$TMP_ROOT/src-mixed.sqlite"
+mkfix "$SRC_MIX" mixed
+rc=0; out=$(node "$SCRIPT" --src "$SRC_MIX" --out "$TMP_ROOT/out-mixed.sqlite" --collections himmel,luna 2>&1) || rc=$?
+assert_rc "mixed models rc 5" 5 "$rc"
+assert_contains "names the mixed models" "more than one embed model" "$out"
+
+echo "TEST: --strip-vectors ships a lexical-only artifact"
+OUT_LEX="$TMP_ROOT/out-lexical.sqlite"
+rc=0; out=$(node "$SCRIPT" --src "$SRC_MIX" --out "$OUT_LEX" --collections himmel,luna --strip-vectors --json 2>&1) || rc=$?
+assert_rc "strip-vectors rc 0 (even from a mixed source)" 0 "$rc"
+assert_eq "no content_vectors left" "0" "$(q "$OUT_LEX" 'select count(*) c from content_vectors')"
+assert_eq "vec0 table dropped (a receiver on another dimension recreates it)" "0" "$(q "$OUT_LEX" "select count(*) c from sqlite_master where name = 'vectors_vec'")"
+assert_eq "documents kept" "2" "$(q "$OUT_LEX" 'select count(*) c from documents')"
+assert_eq "after.models is empty" '[]' "$(printf '%s' "$out" | models_of)"
+assert_eq "SOURCE vectors untouched" "8" "$(q "$SRC_MIX" 'select count(*) c from content_vectors')"
+
+# ============================================================================
+echo "TEST: an empty store_collections falls back to the documents' collections"
+# ============================================================================
+SRC_NOCOL="$TMP_ROOT/src-nocols.sqlite"
+OUT_NOCOL="$TMP_ROOT/out-nocols.sqlite"
+mkfix "$SRC_NOCOL" nocols
+rc=0; out=$(node "$SCRIPT" --src "$SRC_NOCOL" --out "$OUT_NOCOL" --collections himmel,luna 2>&1) || rc=$?
+assert_rc "empty store_collections: reconcile rc 0" 0 "$rc"
+assert_eq "empty store_collections: only kept documents survive" "0" \
+  "$(q "$OUT_NOCOL" "select count(*) c from documents where collection not in ('himmel','luna')")"
+assert_eq "empty store_collections: kept documents present" "2" "$(q "$OUT_NOCOL" 'select count(*) c from documents')"
+rm -f "$OUT_NOCOL"
+rc=0; out=$(node "$SCRIPT" --src "$SRC_NOCOL" --out "$OUT_NOCOL" --collections himmel,nosuch 2>&1) || rc=$?
+assert_rc "empty store_collections: a collection in neither source still refuses" 1 "$rc"
+assert_contains "empty store_collections: names the missing collection" "nosuch" "$out"
 
 summary

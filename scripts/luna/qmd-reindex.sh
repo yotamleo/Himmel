@@ -113,6 +113,8 @@
 #   5  embed INCOMPLETE — vectors still pending after the embed pass
 #   6  completeness assert could not READ its verifier (qmd reworded its
 #      output) — distinct from 5 on purpose; see the sentinel note below
+#   7  MODEL MISMATCH — the index holds vectors from an embed model other
+#      than the configured one (HIMMEL-4232); nothing was run
 set -euo pipefail
 
 QMD_BIN=""
@@ -164,6 +166,7 @@ Flags:
 Exit: 0 ok | 1 usage | 2 qmd unusable | 3 update failed | 4 embed failed
       5 embed incomplete (vectors still pending)
       6 completeness assert could not read its verifier (qmd output reworded)
+      7 model mismatch (index vectors from another embed model; nothing run)
 EOF
 }
 
@@ -353,6 +356,19 @@ echo "qmd-reindex: start $(stamp) (qmd: $(qmd_desc))"
 # state must not survive to be read as this run's freshness. write_refresh_stamp()
 # re-installs it only once this run itself reaches verified-complete.
 rm -f "$QMD_REFRESH_STAMP" 2>/dev/null || true
+
+# --- 0. embed-model precheck (HIMMEL-4232) ------------------------------------
+# An embed pass with a configured model other than the index's would fail on a
+# dimension change, or on the same dimension silently mix two vector spaces.
+# Refuse BEFORE touching the index; an unreadable index only WARNs.
+model_rc=0
+bash "$(dirname "${BASH_SOURCE[0]}")/qmd-embed-model.sh" check --index "$QMD_INDEX_PATH" >&2 || model_rc=$?
+case "$model_rc" in
+    0) ;;
+    3) echo "ERR qmd-reindex: MODEL MISMATCH — index NOT refreshed; see docs/internals/qmd-embed-model.md." >&2
+       exit 7 ;;
+    *) echo "WARN qmd-reindex: could not verify the index's embed model (rc $model_rc); continuing." >&2 ;;
+esac
 
 # --- 1. re-index changed files across every configured collection -----------
 echo "qmd-reindex: [1/3] qmd update"

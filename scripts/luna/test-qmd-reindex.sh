@@ -180,6 +180,9 @@ export HOME="$TMP_ROOT/home"
 mkdir -p "$HOME"
 export USERPROFILE="$HOME"
 export BUN_INSTALL="$TMP_ROOT/bun-none"
+# The embed-model precheck resolves qmd's config the way qmd does; CI runners
+# export XDG_CONFIG_HOME, which would point it past the fixture HOME.
+unset QMD_CONFIG_DIR XDG_CONFIG_HOME XDG_CACHE_HOME INDEX_PATH QMD_EMBED_MODEL
 
 # ============================================================================
 # Argument handling
@@ -501,6 +504,31 @@ if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
     pass "failing verify pass writes no refresh stamp"
 else
     fail "failing verify pass writes no refresh stamp" "stamp exists after a failing verify pass"
+fi
+
+# HIMMEL-4232: a configured embed model that differs from the index's vectors
+# must FAIL loud before `qmd update`, never embed a mixed index.
+echo "TEST: an index embedded with another model exits 7 BEFORE qmd update"
+if command -v sqlite3 >/dev/null 2>&1; then
+    reset_state
+    rm -rf "$HOME/.cache/qmd" "$HOME/.config/qmd" 2>/dev/null || true
+    mkdir -p "$HOME/.cache/qmd" "$HOME/.config/qmd"
+    sqlite3 "$HOME/.cache/qmd/index.sqlite" "CREATE TABLE content_vectors(hash TEXT, seq INT, model TEXT); INSERT INTO content_vectors VALUES('h',0,'hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf');"
+    printf 'models:\n  embed: hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf\n' > "$HOME/.config/qmd/index.yml"
+    rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+    assert_rc "model mismatch rc 7" 7 "$rc"
+    assert_contains "names the mismatch" "MODEL MISMATCH" "$out"
+    assert_not_contains "never runs qmd update on a mismatched index" "update" "$(calls)"
+
+    echo "TEST: a matching model passes the precheck"
+    reset_state
+    printf 'models:\n  embed: hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf\n' > "$HOME/.config/qmd/index.yml"
+    rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+    assert_rc "matching model rc 0" 0 "$rc"
+    assert_not_contains "matching model is not a mismatch" "MODEL MISMATCH" "$out"
+    rm -rf "$HOME/.cache/qmd" "$HOME/.config/qmd" 2>/dev/null || true
+else
+    pass "model precheck skipped: sqlite3 not installed"
 fi
 
 summary

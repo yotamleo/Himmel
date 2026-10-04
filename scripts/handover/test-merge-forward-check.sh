@@ -141,6 +141,81 @@ printf '01\tfailure\n' > "$tmp/pr"; printf '1\tfailure\n' > "$tmp/base"; printf 
 printf '01\tc1\n' > "$tmp/pr-cases"; printf '1\tc1\n' > "$tmp/base-cases"
 run "PR job 01 vs base job 1: REFUSE (string compare)" 1 'REFUSE.*01'
 
+# HIMMEL-4260: the merge-base run was cancelled (a newer merge replaced the pending
+# sweep), so the verdict comes from the next completed sweep covering it. History
+# P -- S -- C -- T on main: P the previous completed sweep, S the merge-base
+# (cancelled run), C the covering sweep, T the tip; HEAD is a leg branch off S.
+git init -q --bare -b main "$tmp/cov-origin.git"
+git init -q -b main "$tmp/cov"
+cc() { git -C "$tmp/cov" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$1"; git -C "$tmp/cov" rev-parse HEAD; }
+CP="$(cc p)"; CS="$(cc s)"; CC="$(cc c)"; CT="$(cc t)"
+git -C "$tmp/cov" remote add origin "$tmp/cov-origin.git"
+git -C "$tmp/cov" push -q origin main 2>/dev/null
+git -C "$tmp/cov" checkout -q -b leg "$CS"
+CH="$(cc leg)"
+# runcov <desc> <rc> <ere> [args] -- the cov repo, valid sha flags for S and T
+runcov() {
+  local d="$1" want="$2" re="$3" out rc
+  shift 3
+  out=$(cd "$tmp/cov" && bash "$MF" --pr "$tmp/pr" --main-base "$tmp/base" --main-latest "$tmp/latest" --pr-cases "$tmp/pr-cases" --base-cases "$tmp/base-cases" --base-sha "$CS" --main-base-sha "$CS" --latest-sha "$CT" --pr-sha "$CH" "$@" 2>&1); rc=$?
+  if [ "$rc" -eq "$want" ] && grep -Eq -- "$re" <<< "$out"; then ok "$d"; else bad "$d (rc=$rc, want $want)" "$out"; fi
+}
+# the cancelled exact run has 0 jobs; the covering sweep's jobs go in $tmp/cover
+set3 'a\tfailure\n' '' 'a\tsuccess\n'
+printf 'a\tfailure\n' > "$tmp/cover"; printf 'a\tc1\n' > "$tmp/base-cases"
+runcov "cancelled merge-base run + red covering sweep (same case) + green latest: ALLOW, says so" 0 "ALLOW.*a.*covering sweep at $CC.*cancelled" \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+printf 'a\tcancelled\n' > "$tmp/base"
+runcov "merge-base run cancelled mid-flight (jobs cancelled) + red covering sweep: ALLOW" 0 "ALLOW.*covering sweep" \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+: > "$tmp/base"
+printf 'a\tsuccess\n' > "$tmp/cover"; : > "$tmp/base-cases"
+runcov "cancelled merge-base run + GREEN covering sweep: REFUSE (the PR's own red)" 1 'REFUSE.*a.*not inherited' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+printf 'a\tfailure\n' > "$tmp/cover"; printf 'a\tc1\n' > "$tmp/base-cases"; printf 'a\tfailure\n' > "$tmp/latest"
+runcov "cancelled merge-base run + red covering sweep + red latest: REFUSE" 1 'REFUSE.*a.*not proven fixed' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+printf 'a\tsuccess\n' > "$tmp/latest"
+runcov "cancelled merge-base run, no covering sweep given: REFUSE" 1 'REFUSE.*cancelled.*no completed sweep covering'
+runcov "covering sweep range starts AT the merge-base (does not cover it): REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CS"
+runcov "covering sweep sha is before the merge-base: REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CP" --base-cover-from "$CP"
+runcov "covering sweep sha not on origin/main: REFUSE" 1 'REFUSE.*not on origin/main' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CH" --base-cover-from "$CP"
+: > "$tmp/cover"
+runcov "covering sweep was itself cancelled: REFUSE" 1 'REFUSE.*covering sweep.*cancelled' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+printf 'a\tfailure\n' > "$tmp/cover"
+runcov "--base-cover without its shas: usage" 2 'usage' --base-cover "$tmp/cover"
+# the range start is the merge-base under another spelling: (S, C] does not contain S
+runcov "cover-from is a short sha of the merge-base: REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "${CS:0:8}"
+runcov "cover-from is S^0: REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CS^0"
+runcov "cover-from is HEAD~1 (resolves to the merge-base): REFUSE" 1 'REFUSE.*does not cover' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "HEAD~1"
+runcov "cover-from does not resolve: REFUSE" 1 'REFUSE.*cannot resolve' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from nosuchref
+runcov "cover-sha does not resolve: REFUSE" 1 'REFUSE.*cannot resolve' \
+  --base-cover "$tmp/cover" --base-cover-sha nosuchref --base-cover-from "$CP"
+runcov "cover-sha given as origin/main: ALLOW names the resolved sha, not the ref" 0 "ALLOW.*covering sweep at $CT.*range $CP\.\.$CT" \
+  --base-cover "$tmp/cover" --base-cover-sha origin/main --base-cover-from "$CP"
+# a non-regular file reads as empty, i.e. cancelled: it must never open the cover path
+runcov "--main-base /dev/null with a cover: usage, not ALLOW" 2 'usage' \
+  --main-base /dev/null --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "--main-base a directory with a cover: usage, not ALLOW" 2 'usage' \
+  --main-base "$tmp" --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "--main-base a green run via process substitution: usage, not ALLOW" 2 'usage' \
+  --main-base <(printf 'a\tsuccess\n') --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "--main-latest /dev/null: usage" 2 'usage' --main-latest /dev/null
+runcov "--base-cover /dev/null: usage" 2 'usage' \
+  --base-cover /dev/null --base-cover-sha "$CC" --base-cover-from "$CP"
+printf 'a\tfailure\n' > "$tmp/base"
+runcov "merge-base run completed: its own verdict stands, a cover is a usage error" 2 'usage.*not cancelled' \
+  --base-cover "$tmp/cover" --base-cover-sha "$CC" --base-cover-from "$CP"
+runcov "merge-base run completed red, no cover: ALLOW as before" 0 'ALLOW.*a'
+
 # input errors
 set3 'a\tfailure\n' 'a\tfailure\n' 'a\tsuccess\n'
 rm -f "$tmp/base"

@@ -339,14 +339,23 @@ def probe_twitter_cli(
     return classify_command(completed.returncode, completed.stderr)
 
 
+# HIMMEL-4271: the working rebuild route. Google usually refuses the
+# Playwright login (playwright-auth-save.mjs youtube), so every expired-state
+# reason names the signed-in-Chrome cookie converter instead.
+YOUTUBE_REMEDY = "rebuild: python3 scripts/luna/youtube-state-from-chrome.py --profile Default"
+
+
 def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
+    result = _probe_youtube(env, http)
+    if result.status == "auth-or-cookie-expired":
+        return ProbeResult(result.status, f"{result.reason} ({YOUTUBE_REMEDY})")
+    return result
+
+
+def _probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
     state_file = resolve_home(env) / ".luna" / "playwright-state" / "youtube.json"
     if not state_file.is_file():
-        return ProbeResult(
-            "auth-or-cookie-expired",
-            "youtube Playwright storage state missing "
-            "(rebuild: yt-dlp --cookies-from-browser 'chrome:<profile>' -> Netscape -> storageState)",
-        )
+        return ProbeResult("auth-or-cookie-expired", "youtube Playwright storage state missing")
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
         cookies = []
@@ -358,11 +367,7 @@ def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> Probe
         if not cookies:
             return ProbeResult("auth-or-cookie-expired", "youtube storage state has no matching cookies")
     except (OSError, ValueError, KeyError, TypeError):
-        return ProbeResult(
-            "auth-or-cookie-expired",
-            "youtube Playwright storage state unreadable "
-            "(rebuild: yt-dlp --cookies-from-browser 'chrome:<profile>' -> Netscape -> storageState)",
-        )
+        return ProbeResult("auth-or-cookie-expired", "youtube Playwright storage state unreadable")
     url = env.get("FETCH_HEALTH_YOUTUBE_URL", DEFAULT_URLS["youtube-playwright"])
     try:
         result = http(

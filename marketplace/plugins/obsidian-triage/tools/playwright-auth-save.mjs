@@ -13,6 +13,12 @@
  *   bun marketplace/plugins/obsidian-triage/tools/playwright-auth-save.mjs x
  *   bun marketplace/plugins/obsidian-triage/tools/playwright-auth-save.mjs youtube
  *
+ * YouTube caveat (HIMMEL-4271): Google usually blocks this login route for
+ * `youtube` (automated-browser sign-in is refused or times out). The primary
+ * route is `python3 scripts/luna/youtube-state-from-chrome.py --profile Default`
+ * (run from the himmel checkout), which converts the signed-in Chrome profile's
+ * cookies into the same storage-state file. Use this script only as a fallback.
+ *
  * Exit codes:
  *   0 — storage_state saved
  *   1 — bad usage / unknown service
@@ -126,6 +132,12 @@ async function main() {
     } catch (e) {
       console.error(`[auth-save] timeout reached without login signal.`);
       console.error(`[auth-save] re-run the script and complete the login flow in the browser.`);
+      if (service === "youtube") {
+        console.error(
+          `[auth-save] Google usually blocks this login (HIMMEL-4271); fix: run from the himmel checkout:`,
+        );
+        console.error(`[auth-save]   python3 scripts/luna/youtube-state-from-chrome.py --profile Default`);
+      }
       exitCode = 3;
       return;
     }

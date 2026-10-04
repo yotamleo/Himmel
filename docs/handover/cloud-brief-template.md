@@ -2,9 +2,12 @@
 
 The brief a console hands to `claude --cloud` for a small, well-scoped ticket
 (HIMMEL-4206). A cloud session sees the repo clone plus the claude.ai MCP
-connectors (Atlassian for Jira, context7 for library docs) and nothing else: no
-handover state, no plugins, no `~/.claude`, no console inbox. The brief is its
-working world, so it is self-contained. For a local leg, use
+connectors (Atlassian for Jira, context7 for library docs), plus whatever
+plugins the environment's setup script installs (see below). It has no handover
+state and no console inbox. A plugin uploaded on claude.ai (Customize, Plugins)
+does NOT load in a cloud session: it only syncs as `<name>@synced`, and it also
+syncs into every local terminal session, so do not use that route. The brief is
+its working world, so it is self-contained. For a local leg, use
 [`leg-brief-template.md`](leg-brief-template.md) instead.
 
 `/cloud-route` (`scripts/lanes/cloud-route.mjs`) generates this brief for a
@@ -14,13 +17,43 @@ CLOUD-OK ticket and prints the launch line.
 
 | Has | Does not have |
 |---|---|
-| The clone's `CLAUDE.md`, `.claude/{skills,agents,commands,rules}`, `.mcp.json` (single-repo session only) | Plugins and marketplaces (himmel-ops, lean-skills, qmd, handover) |
-| The repo's `.claude/settings.json` hooks and permissions | Anything under `~/.claude`; `settings.local.json` |
+| The clone's `CLAUDE.md`, `.claude/{skills,agents,commands,rules}`, `.mcp.json` (single-repo session only) | Plugins not in the environment's profile; claude.ai-uploaded plugins (sync as `@synced` only) |
+| The repo's `.claude/settings.json` hooks and permissions | Your local `~/.claude` state; `settings.local.json` |
+| Plugins the environment setup script installs (`--with-plugins` / `--plugins <list>`) and their hooks | Plugin hooks of plugins outside the profile (see [`cloud-hooks-proposal.md`](../internals/cloud-hooks-proposal.md)) |
 | Skills enabled on claude.ai; the Atlassian MCP (full Jira scope: read, comment, file follow-ups, transition) and context7 MCP connectors | The local jira CLI, qmd, graphify, luna, the console inbox |
-| The environment setup script's installs; `CLAUDE_CODE_REMOTE=true` | Plugin-provided hooks (see [`cloud-hooks-proposal.md`](../internals/cloud-hooks-proposal.md)) |
+| The environment setup script's installs; `CLAUDE_CODE_REMOTE=true` | Handover state |
 
 So the local shepherd stays mandatory: it runs `/pr-check`, the CR gate and the
 merge. The cloud session ships a PR and stops.
+
+## Plugin hooks in the cloud (probed 2026-10-04, HIMMEL-4273)
+
+Probed from a cloud session started in a `--with-plugins` environment:
+`CLAUDE_CODE_REMOTE=true`, `HOME=/root`, `CLAUDE_PROJECT_DIR=/home/user/Himmel`,
+`HIMMEL_REPO` unset. Plugins install at user scope (`/root/.claude/plugins`,
+himmel-ops 0.4.22, lean-skills 0.2.2).
+
+- **SessionStart plugin hooks fire.** `record-hook-integrity` and
+  `record-primary-baseline` wrote
+  `~/.claude/himmel/{hook-integrity,primary-baseline}/<session-id>.*`.
+- **PreToolUse plugin hooks fire and block.** A probe `true || docker run
+  --privileged ...` was refused by `block-docker-privesc` ("This hook comes from
+  the himmel-ops@himmel plugin"). The runner path is
+  `/tmp/himmel-setup/marketplace/plugins/himmel-ops/hooks/...`.
+- **Paths behave.** The hook scripts resolve via
+  `$CLAUDE_PROJECT_DIR/scripts/hooks/` in the session clone.
+- **Repo hooks fire too, and the cloud clone counts as a PRIMARY checkout.**
+  `block-edit-on-main` denies Edit/Write and `block-write-into-main-checkout`
+  denies `git checkout` there, even on a feature branch. A cloud session must
+  `git worktree add -b <type/slug> .claude/worktrees/<name> origin/main` and work
+  inside it. This settles the open question in
+  [`cloud-hooks-proposal.md`](../internals/cloud-hooks-proposal.md).
+  `require-quiet-run` also refuses a bare suite run: wrap it as
+  `bash scripts/quiet-run.sh suite -- <cmd>`.
+- **Consequence.** In a plugin-profile environment the three guard-value plugin
+  hooks (`block-docker-privesc`, `block-merged-pr-commit`,
+  `block-unresolved-cr-merge`) are live, so option (b) of
+  `cloud-hooks-proposal.md` is needed only for plugin-free environments.
 
 ## One-time operator setup
 
@@ -49,10 +82,30 @@ merge. The cloud session ships a PR and stops.
    and `unslop` already ship under the repo `.claude/skills` and load from the
    clone, so they are not bundled. Verify once: start a cloud session and ask it
    to list its skills.
-3. **Plugin experiment (optional, undocumented).** `setup-env.sh --with-plugins`
-   tries `claude plugin marketplace add` plus `claude plugin install` into the
-   VM's `~/.claude`. Run it on one session; if the session does not list the
-   plugin skills, the answer is "no" and the flag stays off.
+3. **Plugin profile (dedicated environment).** Create a SEPARATE cloud
+   environment for plugin sessions; the plain one stays plugin-free. Paste the
+   setup script with the flag:
+
+   ```bash
+   #!/bin/bash
+   rm -rf /tmp/himmel-setup \
+     && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
+     && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh --with-plugins
+   ```
+
+   `--with-plugins` installs the lean set (himmel-ops, lean-skills). To control
+   exactly which load, use `--plugins himmel-ops,lean-skills,<more>` instead.
+   - The step is non-fatal: a failed install warns and the session still starts
+     (a non-zero setup script would block the session).
+   - Cache refresh: plugins install from `/tmp/himmel-setup`, a clone frozen into
+     the environment cache. They refresh only when the setup script text changes
+     or the cache expires (about 7 days). To force a refresh, edit the script
+     (for example bump a `# rev:` comment line). Plugin hook runners resolve
+     `${CLAUDE_PLUGIN_ROOT}` to that frozen clone while the hook scripts come
+     from the session clone (`$CLAUDE_PROJECT_DIR/scripts/hooks/`), so a stale
+     cache can pair an old runner with new scripts.
+   - Verified 2026-10-04 (HIMMEL-4273): 10 `himmel-ops:` and 13 `lean-skills:`
+     skills listed.
 
 ## Brief sections (reproduce in order)
 
@@ -69,8 +122,10 @@ merge. The cloud session ships a PR and stops.
    numbers marked approximate ("find the code by its text"). Name the files.
 4. **`## How to do it`** — numbered:
    1. Read `CLAUDE.md` and the named files in full before editing.
-   2. Create branch `<type>/himmel-<n>-<slug>` from `main` BEFORE any edit (the
-      repo's edit-on-main guard denies edits on `main`).
+   2. Create the branch as a worktree BEFORE any edit:
+      `git worktree add -b <type>/himmel-<n>-<slug> .claude/worktrees/<name> origin/main`,
+      and work there (the repo's edit-on-main guard denies edits in the cloud's
+      primary clone, even on a feature branch).
    3. Edit ONLY the named files; keep the diff minimal and in the surrounding style.
    4. Write the new or changed test FIRST and show it RED without the fix, then
       green. Run `shellcheck` on every `.sh` file touched.

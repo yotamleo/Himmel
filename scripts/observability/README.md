@@ -649,6 +649,49 @@ Import `dashboards/war-room-system.json` into Grafana. As of HIMMEL-924 the
 datasource (`provisioning/datasources/prometheus.yaml`, fixed `uid:
 prometheus`) — no manual bind step.
 
+## Health dashboard (HIMMEL-4292)
+
+`dashboards/himmel-health.json` (uid `himmel-health`) is the operator-facing
+dashboard. It answers, in this order: is himmel healthy, what is failing and
+what to do, are the scheduled jobs on time, sessions and the usage bank,
+search and graph freshness, the Luna vault, and 7-day trends. `war-room-system.json`
+stays the engineer's view (Windows host series included).
+
+It reads only series that exist: the `flow-exporter.ts` families, plus the
+Prometheus built-ins `ALERTS` (from `alerts.rules.yml`) and `up`. Every
+datasource reference is the provisioned uid `prometheus`. Status colours are
+colour-blind safe and always come with a word and an icon: blue `#1f78c8`
+for good, amber `#e69f00` for warn, red-orange `#d6352f` for critical, grey
+`#8a8f98` for no data. The firing-alerts table maps each `alertname` to a
+plain "what to do" sentence. An alert without one shows its raw name.
+
+**Provisioning is inert until an installer renders it.**
+`provisioning/dashboards/himmel-dashboards.yaml.tmpl` carries a
+`@HIMMEL_DASHBOARDS_DIR@` path. Grafana loads only `*.yaml`/`*.yml`, so the
+template does nothing as shipped. `restart-stack.sh` copies `provisioning/`
+wholesale, and a provider whose path is missing would break Grafana on the
+station. The Linux Grafana installer (HIMMEL-4289) copies `dashboards/` to a
+machine-local dir, then renders the template into the machine-local
+provisioning copy. Until then, import the JSON by hand.
+
+`test-dashboard-lint.sh` guards it. It checks that the file is valid JSON,
+that panel ids are unique, that every PromQL metric is an exporter family,
+`ALERTS` or `up`, and that the datasource uid matches
+`provisioning/datasources/prometheus.yaml`. It also fails if an active
+provider `*.yaml` appears under `provisioning/dashboards/`.
+
+**Not shown yet (gaps; listed, never faked):**
+
+| Gap | Wanted | Where it goes |
+|---|---|---|
+| G1 | Console legs and their cost | HIMMEL-4290 makes it machine-readable; `/obs-report` (HIMMEL-4291) shows it |
+| G4 | Advice per alert in the rules | The advice lives in the dashboard's `alertname` mapping instead |
+| G5 | Usage bank reset time | The exporter does not keep the usage cache's `resets_at` |
+| G6 | Windows auto-provisioning of this dashboard | `install-stack.ps1` copies only `provisioning/`; Windows is parked (HIMMEL-4102), Linux via HIMMEL-4289 |
+| G7 | Daily health check (himmel-doctor results) | `/obs-report`, HIMMEL-4291 |
+| G8 | Machine setup (`himmelctl status`) | `/obs-report`, HIMMEL-4291 |
+| G9 | qmd search index age | `/obs-report`, HIMMEL-4291 |
+
 ## Alerting (HIMMEL-1199 — a boundary change)
 
 The flow exporter above stays a pure Prometheus reader — no alerting lives

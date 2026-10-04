@@ -18,6 +18,7 @@
 # nodes. Each run appends one line to <out>/semantic-runs.jsonl (nodes/edges
 # added and removed, backlog, runtime, tokens, cost equivalent).
 #
+# headless-claude-ok: comment text only, no call here; graphify shells claude -p and bank-preflight gates it (HIMMEL-128)
 # BILLING: --backend claude-cli makes graphify shell `claude -p` once per chunk,
 # which draws the SAME subscription 5h/weekly bank as interactive use
 # (HIMMEL-128); hence the bank-preflight gate and the --max-files cap. Changed

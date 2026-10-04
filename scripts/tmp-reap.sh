@@ -10,7 +10,9 @@
 #   <root>/<fixture family>.*                      leaked test fixtures
 # Overrides (tests use them and never touch the real paths):
 #   TMP_REAP_TMP_ROOT, TMP_REAP_ARCHIVE_ROOT (default ~/.himmel/eval/archive),
-#   TMP_REAP_SESSIONS_DIR (default ~/.claude/sessions).
+#   TMP_REAP_SESSIONS_DIR (default ~/.claude/sessions),
+#   TMP_REAP_PROC (default /proc, the census walk root),
+#   TMP_REAP_UID (default $(id -u), the uid census compares /proc owners against).
 #
 # Preserve first: a whitelist copy (self-eval corpora and per-PR verdicts, under
 # 5 MB, never a checkout dir) into <archive>/<YYYY-MM>/<kind>/<id>/ plus one
@@ -18,10 +20,12 @@
 # manifest row is never reaped. Never guess: when unsure, keep.
 # Delete order: fixtures, then judge dirs, then dead-session scratch by size.
 #
-# ponytail: liveness sees same-uid processes only (/proc of other users is
-# unreadable), and the whitelist is name-based; widen if a kind goes missing
-# (HIMMEL-4224 follow-ups). Fixture names with whitespace are not handled (the
-# families are mktemp names); session/judge dirs still cost a du and stat each.
+# ponytail: a dir held only by an other-uid process (e.g. root) is still invisible
+# to the census (an unreadable same-uid /proc entry refuses --apply, other-uid ones
+# only warn); add a privileged census if a root-held dir is ever reaped. The
+# whitelist is name-based; widen if a kind goes missing (HIMMEL-4224 follow-ups).
+# Fixture names with whitespace are not handled (the families are mktemp names);
+# session/judge dirs still cost a du and stat each.
 # shellcheck disable=SC2086  # word-splitting a /proc line and a jq row into positionals is the point
 set -u
 
@@ -56,6 +60,7 @@ sha() { # sha256 hex of a file, non-zero when neither tool can read it
     s="$(sha256sum "$1" 2>/dev/null)" || s="$(shasum -a 256 "$1" 2>/dev/null)" || return 1
     printf '%s\n' "${s%% *}"
 }
+owner() { stat -c %u "$1" 2>/dev/null || stat -f %u "$1" 2>/dev/null; }
 size_kb() { du -sk "$1" 2>/dev/null | cut -f1; }
 
 # /proc/<pid>/stat field 22 (starttime), taken after the last ')' so a comm with spaces cannot shift it.
@@ -87,14 +92,49 @@ session_live() { case "$LIVE_IDS
 $1
 "*) return 0 ;; esac; return 1; }
 
-# Every cwd / open-fd path of a process, filtered to the scanned roots once.
+# Every cwd / open-fd path of a process, filtered to the scanned roots once. A pid
+# whose cwd cannot be read is counted by owner: an unreadable same-uid entry could
+# hide a live dir, so --apply refuses; other-uid ones only warn. A zombie holds no cwd.
+CENSUS_WARNED=0
 census() {
-    OPEN_PATHS="$(
-        for p in /proc/[0-9]*; do
-            readlink "$p/cwd" 2>/dev/null
+    local proc="${TMP_REAP_PROC:-/proc}" me="${TMP_REAP_UID:-$(id -u)}" raw same other o st
+    if [ ! -d "$proc" ]; then   # no census root = no liveness snapshot at all
+        echo "tmp-reap: census root $proc is not a directory; refusing" >&2
+        [ "$APPLY" = 1 ] && exit 2
+    fi
+    set -- "$proc"/[0-9]*   # census takes no arguments; reuse the positionals
+    if [ -d "$proc" ] && { [ ! -r "$proc" ] || [ ! -x "$proc" ] || [ ! -e "$1" ]; }; then
+        echo "tmp-reap: census root $proc lists no process (unreadable or empty); refusing" >&2
+        [ "$APPLY" = 1 ] && exit 2
+    fi
+    raw="$(
+        for p in "$proc"/[0-9]*; do
+            if ! readlink "$p/cwd" 2>/dev/null; then
+                [ -d "$p" ] || continue   # exited mid-walk
+                st="$(cat "$p/stat" 2>/dev/null)"; st="${st##*) }"   # state follows the LAST ')' (a comm may hold ') Z ')
+                case "$st" in "Z "*) continue ;; esac
+                o="$(owner "$p")"   # an unknown owner counts as same-uid: unknown is never safe
+                [ -n "$o" ] || [ -d "$p" ] || continue   # exited between the checks: not unknown, just gone
+                case "$o" in ''|*[!0-9]*) o="$me" ;; esac   # non-numeric (a stat -f fallback's fs report) is unknown too
+                if [ "$o" = "$me" ]; then echo '@@unread same'; else echo '@@unread other'; fi
+            fi
             for fd in "$p"/fd/*; do [ -e "$fd" ] && readlink "$fd" 2>/dev/null; done
-        done | grep -F "$TMP_ROOT/" | sort -u
+        done
     )"
+    same="$(printf '%s\n' "$raw" | grep -c '^@@unread same$')"
+    other="$(printf '%s\n' "$raw" | grep -c '^@@unread other$')"
+    OPEN_PATHS="$(printf '%s\n' "$raw" | grep -v '^@@unread ' | grep -F "$TMP_ROOT/" | sort -u)"
+    if [ "$other" -gt 0 ] && [ "$CENSUS_WARNED" = 0 ]; then
+        echo "WARN tmp-reap: $other other-uid /proc entries unreadable (expected on a multi-user host; not checked)" >&2
+    fi
+    if [ "$same" -gt 0 ]; then
+        if [ "$APPLY" = 1 ]; then
+            echo "tmp-reap: $same same-uid /proc entr(ies) unreadable: a live dir could be held by one; refusing --apply" >&2
+            exit 2
+        fi
+        [ "$CENSUS_WARNED" = 1 ] || echo "WARN tmp-reap: $same same-uid /proc entr(ies) unreadable; --apply would refuse" >&2
+    fi
+    CENSUS_WARNED=1
 }
 census
 in_use() { # a process cwd or open fd at or under $1
@@ -185,6 +225,8 @@ fi
 # fixture with a process cwd/fd under it is kept.
 [ "$APPLY" = 1 ] && census   # fresh view: session classification above may have taken a while
 fix_total=0; fix_reaped=0; fix_failed=0
+# no pathname expansion: a family like mog-run.* must not glob against the caller's cwd
+set -f
 for fam in $FAMILIES; do
     list=""; n=0
     # shellcheck disable=SC2044  # mktemp family names carry no whitespace (see ponytail above)
@@ -214,6 +256,7 @@ for fam in $FAMILIES; do
         printf 'REAP fixture  %s: %d dir(s), %sK; %d kept (dry-run)\n' "$fam" "$n" "${kb:-0}" "$kept"
     fi
 done
+set +f
 
 # fixtures, then judge dirs, then session scratch; biggest first inside a tier
 SORTED="$(printf '%s\n' "$CANDS" | grep -v '^$' | sort -k1,1n -k2,2nr)"

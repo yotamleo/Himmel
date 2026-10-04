@@ -30,6 +30,16 @@ HERMETIC_HOME="$WS/hermetic-home"; mkdir -p "$HERMETIC_HOME/.claude"
 printf 'test-subscription-auth\n' > "$HERMETIC_HOME/.claude/.credentials.json"
 printf '{}\n' > "$HERMETIC_HOME/.claude/settings.json"
 export HOME="$HERMETIC_HOME"
+# HIMMEL-2701 preamble pin: keep every run-path case hermetic w.r.t. the LIVE
+# bank. refresh-graph-map.sh runs bank-preflight.sh for claude/claude-cli, which
+# otherwise refreshes and reads the operator's ambient usage cache — at the 85 %
+# weekly ceiling every run-path case read SKIPPED-BANK and went red. A missing
+# cache gives the fail-open BANK-UNKNOWN; T-bank-skip asserts the SKIP path
+# deliberately against a fixture cache.
+export CADENCE_BANK_SKIP_REFRESH=1
+export CADENCE_BANK_CACHE="$WS/no-bank-cache.json"
+unset CLAUDE_USAGE_CACHE CLAUDE_ACCOUNT_CONFIG
+# HIMMEL-2701 end pin
 export GIT_AUTHOR_NAME="himmel test" GIT_AUTHOR_EMAIL="test@himmel.invalid"
 export GIT_COMMITTER_NAME="himmel test" GIT_COMMITTER_EMAIL="test@himmel.invalid"
 CORPUS="$WS/vault"; mkdir -p "$CORPUS/notes"; printf '# n\ncontent\n' > "$CORPUS/notes/a.md"
@@ -4085,6 +4095,46 @@ out=$( GRAPHIFY_MAP_BIN="$GOBIN/graphify" bash "$SCRIPT" \
 [ "$rc" -eq 2 ] && grep -q "REFUSING --out-root=<corpus root>" <<< "$out" \
   && pass "T53h a not-yet-existing --out-root that collapses via .. to the corpus root is refused rc=2" \
   || fail "T53h .. traversal into the corpus root should be refused rc=2 (rc=$rc): $out"
+
+# T-bank-skip (HIMMEL-2701): the preamble pin makes the suite blind to the live
+# bank, so the SKIPPED-BANK path is asserted here deliberately against a FIXTURE
+# cache (account-stamped, fresh) at 85 % weekly, with a 10 % positive control.
+mkdir -p "$WS/bank85"
+bank_cfg="$WS/bank85/claude.json"
+printf '{"oauthAccount":{"accountUuid":"uuid-graphmap-bank-test"}}\n' > "$bank_cfg"
+bank_acct=$( . "$HERE/../lib/usage-cache-identity.sh"; current_account_hash "$bank_cfg" )
+if [ -z "$bank_acct" ]; then
+  skip "T-bank-skip no account hash derivable (jq/sha tool missing)"
+else
+  bank_write_cache() {
+    printf '{"five_hour":{"utilization":10},"seven_day":{"utilization":%s},"primaries_refreshed_at":%s,"account":"%s"}\n' \
+      "$1" "$(date +%s)" "$bank_acct" > "$WS/bank85/cache.json"
+  }
+  bank_run() { # <name> <corpus> <maps>
+    CLAUDE_ACCOUNT_CONFIG="$bank_cfg" CADENCE_BANK_CACHE="$WS/bank85/cache.json" CADENCE_BANK_SKIP_REFRESH=1 \
+      GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" --name "$1" --corpus-root "$2" \
+      --backend claude-cli --maps-dir "$3" --title "Bank $1" --slug "$1-map" 2>&1
+  }
+  BSCORPUS="$WS/bank85-corpus"; BSMAPS="$WS/bank85-maps"; mkdir -p "$BSCORPUS/notes" "$BSMAPS"
+  printf '# n\ncontent\n' > "$BSCORPUS/notes/a.md"
+  bank_write_cache 85
+  out=$( bank_run bankskip "$BSCORPUS" "$BSMAPS" ); rc=$?
+  if [ "$rc" -eq 3 ] && grep -q "bank at/over threshold" <<< "$out" \
+     && [ ! -e "$BSCORPUS/graphify-out/graph.json" ]; then
+    pass "T-bank-skip a fixture bank cache at 85 % weekly skips extraction rc=3, no graph promoted"
+  else
+    fail "T-bank-skip 85 % fixture should skip rc=3 with no graph.json (rc=$rc): $out"
+  fi
+  BCCORPUS="$WS/bank10-corpus"; BCMAPS="$WS/bank10-maps"; mkdir -p "$BCCORPUS/notes" "$BCMAPS"
+  printf '# n\ncontent\n' > "$BCCORPUS/notes/a.md"
+  bank_write_cache 10
+  out=$( bank_run bankctl "$BCCORPUS" "$BCMAPS" ); rc=$?
+  if [ "$rc" -eq 0 ] && [ -f "$BCCORPUS/graphify-out/graph.json" ]; then
+    pass "T-bank-skip control: the same fixture at 10 % runs and promotes graph.json (the 85 % causes the skip)"
+  else
+    fail "T-bank-skip control 10 % fixture should run rc=0 and promote graph.json (rc=$rc): $out"
+  fi
+fi
 
 if [ "$FAILS" -ne 0 ]; then echo "$FAILS FAILURES"; exit 1; fi
 if [ "$SKIPS" -ne 0 ]; then echo "ALL PASS ($SKIPS skipped)"; else echo "ALL PASS"; fi

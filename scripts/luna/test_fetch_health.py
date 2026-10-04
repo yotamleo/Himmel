@@ -77,6 +77,7 @@ class FetchHealthTests(unittest.TestCase):
             self.assertEqual(fetch_health.probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", env, forbidden_command).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_twitter_cli(env, forbidden_command).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_youtube(env, forbidden_http).status, "auth-or-cookie-expired")
+            self.assertIn("youtube-state-from-chrome.py --profile Default", fetch_health.probe_youtube(env, forbidden_http).reason)
             self.assertEqual(fetch_health.probe_bitbucket(env, forbidden_http).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_firecrawl(env, forbidden_http).status, "auth-or-cookie-expired")
 
@@ -197,6 +198,12 @@ class FetchHealthTests(unittest.TestCase):
             false_marker = b'<html><title>known video</title><script>ytcfg.set({"LOGGED_IN":false});</script></html>'
             self.assertEqual(fetch_health.probe_youtube({"HOME": tmp}, http_with(no_marker)).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_youtube({"HOME": tmp}, http_with(false_marker)).status, "auth-or-cookie-expired")
+            # HIMMEL-4271: the expired-state reason names the working remedy
+            # (the Chrome-cookie converter), not the Playwright login Google blocks.
+            self.assertIn(
+                "python3 scripts/luna/youtube-state-from-chrome.py --profile Default",
+                fetch_health.probe_youtube({"HOME": tmp}, http_with(no_marker)).reason,
+            )
 
     def test_github_uses_gh_api(self):
         seen = []

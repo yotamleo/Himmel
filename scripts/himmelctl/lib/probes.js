@@ -601,7 +601,41 @@ function isDirectory(p) {
 // HIMMEL-3441); it is still subject to the installed-ledger check below like
 // every other enabled plugin, and is named in the detail as information.
 // ~/.claude/plugins/installed_plugins.json is that ledger.
-function verifyPluginSet(enabledPlugins, ctx) {
+// HIMMEL-4270: per-marketplace source comparison, settings entry vs template.
+// The himmel-owned marketplace's manifest wins; for a third-party one the
+// settings side is recommended. Entries absent from settings are not drift.
+function marketplaceSource(entry) {
+  const src = entry && entry.source;
+  if (!src || typeof src !== 'object') return '';
+  const val = src.source === 'github' ? src.repo
+    : src.source === 'directory' ? src.path
+    : src.source === 'url' ? src.url : '';
+  return typeof val === 'string' ? val : '';
+}
+
+// Quote a token for the printed shell command only when it needs it.
+function shq(s) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function marketplaceSourceDrift(settings, template, ctx) {
+  const have = (settings && typeof settings.extraKnownMarketplaces === 'object' && settings.extraKnownMarketplaces) || {};
+  const want = (template && typeof template.extraKnownMarketplaces === 'object' && template.extraKnownMarketplaces) || {};
+  const scope = ctx.scope === 'project' ? 'project' : 'user';
+  const out = [];
+  for (const name of Object.keys(want)) {
+    const wantSrc = marketplaceSource(want[name]).replace(/<himmel-path>/g, ctx.repoRoot);
+    const haveSrc = marketplaceSource(have[name]);
+    if (!wantSrc || !haveSrc || wantSrc === haveSrc) continue;
+    const reconcile = `claude plugin marketplace remove ${shq(name)} --scope ${scope} && claude plugin marketplace add ${shq(wantSrc)} --scope ${scope}`;
+    out.push(name === 'himmel'
+      ? `marketplace 'himmel' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — the himmel manifest is right; reconcile: ${reconcile}`
+      : `marketplace '${name}' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — keeping the settings source is recommended, so set the template's entry to '${haveSrc}'; to adopt the template's source instead: ${reconcile}`);
+  }
+  return out;
+}
+
+function verifyPluginSet(enabledPlugins, ctx, settings) {
   const templatePath = path.join(ctx.repoRoot, 'docs', 'setup', 'settings-template.json');
   let template;
   try {
@@ -641,9 +675,15 @@ function verifyPluginSet(enabledPlugins, ctx) {
     const entries = Array.isArray(installed[k]) ? installed[k] : [];
     return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && isDirectory(e.installPath));
   });
+  // HIMMEL-4270: a marketplace registered under a different source than the
+  // template's makes `claude plugin marketplace add` fail — drift (degraded),
+  // not an install failure. Same remedy text as install-plugins.sh. Computed
+  // before the not-installed return so that missing plugin keeps its remedy.
+  const drift = marketplaceSourceDrift(settings, template, ctx);
   if (notInstalled.length > 0) {
-    return { problem: `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}` };
+    return { problem: [`not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}`].concat(drift).join('; ') };
   }
+  if (drift.length > 0) return { problem: drift.join('; ') };
   if (extra.length > 0) {
     return { note: `extra (not in the recorded set): ${extra.join(', ')}` };
   }
@@ -699,7 +739,7 @@ function probeSettingsKey(item, ctx) {
       if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
     }
     if (item.probe.verifyPluginSet) {
-      const result = verifyPluginSet(getVal(item.probe.key), ctx);
+      const result = verifyPluginSet(getVal(item.probe.key), ctx, data);
       if (result.problem) return { actual: 'degraded', detail: `${filePath}: ${result.problem}` };
       if (result.note) return { actual: 'present', detail: `${filePath} (${result.note})` };
     }
