@@ -69,7 +69,7 @@ cat > "$stubDoctor" <<STUB
 #!/usr/bin/env bash
 echo called >> "$doctorLog"
 printf '%s\n' '{"sev":"OK","id":"C1-guardrail","msg":"guardrail ok","remedy":""}'
-printf '%s\n' '{"sev":"WARN","id":"C3-luna","msg":"luna dirty","remedy":"commit it"}'
+printf '%s\n' '{"sev":"WARN","id":"C3-luna","msg":"luna dirty (execute,pr)","remedy":"commit it"}'
 printf '%s\n' '{"sev":"FAIL","id":"C9-leak","msg":"token is $CANARY here","remedy":"rotate"}'
 STUB
 chmod +x "$stubDoctor"
@@ -107,7 +107,7 @@ run_report() {
   ( cd "$target" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
       HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" \
       HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
-      HIMMEL_REPORT_DOCTOR="$(winpath "$stubDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
+      HIMMEL_REPORT_DOCTOR="$(winpath "${DOCTOR_STUB:-$stubDoctor}")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
       PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json "$@" )
 }
 
@@ -163,6 +163,9 @@ pass "c fires: doctor yes, pipeline unverified, nothing else yes"
 if grep -q "$CANARY" "$out"; then fail "canary leaked into report output"; fi
 jq -e '.rows[]|select(.id=="doctor:C9-leak")|(.installed.detail//"")+(.fix.remedy//"")+(.title//"")|contains("‹redacted›")' "$out" >/dev/null || fail "canary row not marked ‹redacted›"
 pass "d canary absent, row shows ‹redacted›"
+# a non-secret .env value (HIMMEL_INITIATIVE=execute,pr) must stay readable
+jq -e '.rows[]|select(.id=="doctor:C3-luna")|.title|contains("execute,pr")' "$out" >/dev/null || fail "non-secret .env value was redacted from a title"
+pass "d3 non-secret .env values are not redacted"
 # RED control: with redaction disabled the canary MUST leak (proves the check can fail)
 # shellcheck disable=SC2015
 leak=$( cd "$target" && HIMMEL_REPORT_NO_REDACT=1 HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
@@ -185,6 +188,19 @@ pass "e --items re-probe skips the doctor unless a doctor row is asked for"
 
 [ ! -e "$cronLog" ] || fail "the report called crontab"
 pass "e2 crontab never called"
+
+# ── e3. a doctor killed part-way must not read as a complete report ─────────
+deadDoctor="$work/dead-doctor.sh"
+cat > "$deadDoctor" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"sev":"OK","id":"C1-guardrail","msg":"guardrail ok","remedy":""}'
+kill -KILL $$
+STUB
+chmod +x "$deadDoctor"
+DOCTOR_STUB="$deadDoctor" run_report > "$work/dead.json" 2> "$work/dead.err" || fail "report exited non-zero on a killed doctor"
+jq -e '[.rows[]|select(.id=="doctor:C1-guardrail")]|length==1' "$work/dead.json" >/dev/null || fail "partial doctor row dropped"
+jq -e '.rows[]|select(.id=="doctor:run")|.health=="warn" and .installed.state=="degraded"' "$work/dead.json" >/dev/null || fail "killed doctor emitted no doctor:run failure row"
+pass "e3 killed doctor adds a doctor:run failure row beside the partial rows"
 
 # ── f. flag-registry-lint ───────────────────────────────────────────────────
 "$node_bin" "$lint" --root "$repo_root" >/dev/null 2>"$work/lint.err" || { cat "$work/lint.err" >&2; fail "lint fails on the real tree"; }

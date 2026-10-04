@@ -32,12 +32,17 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Literals to scrub: every .env value of 6+ chars (shorter ones would shred
-// ordinary words). `parseDotEnv` is probes.js's parser, passed in.
+// Literals to scrub: the .env values of secret-bearing keys, 6+ chars (shorter
+// ones would shred ordinary words; plain config such as a project key or a
+// step list must stay readable in titles and remedies). `parseDotEnv` is
+// probes.js's parser, passed in.
+const SECRET_KEY = /TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|PRIVATE_?KEY|COOKIE|CREDENTIAL/i;
 function envValues(raw, parseDotEnv) {
   let parsed = {};
   try { parsed = parseDotEnv(raw) || {}; } catch { return []; }
-  return Object.values(parsed).filter((v) => typeof v === 'string' && v.length >= 6);
+  return Object.entries(parsed)
+    .filter(([k, v]) => SECRET_KEY.test(k) && typeof v === 'string' && v.length >= 6)
+    .map(([, v]) => v);
 }
 
 function redact(input, opts) {

@@ -172,14 +172,17 @@ function doctorRows(ctx) {
       probedAt,
     }));
   }
-  if (rows.length === 0) {
+  // No rows, or the run died part-way (timeout / signal / spawn error): a
+  // partial report must not read as a complete one. A plain non-zero exit is
+  // the doctor reporting FAIL rows and is not an error here.
+  if (rows.length === 0 || r.error || r.signal) {
     rows.push(mkRow({
       id: 'doctor:run',
       source: 'doctor',
       group: 'core',
       title: 'himmel-doctor did not produce a report',
       declared: { where: 'scripts/himmel-doctor.sh', desired: 'check', profile: 'all' },
-      installed: { state: 'degraded', detail: r.error ? String(r.error.message) : `exit ${r.status}` },
+      installed: { state: 'degraded', detail: r.error ? String(r.error.message) : (r.signal ? `killed by ${r.signal}` : `exit ${r.status}`) },
       health: 'warn',
       fix: { remedy: 'bash scripts/himmel-doctor.sh', owner: 'user' },
       probedAt,
