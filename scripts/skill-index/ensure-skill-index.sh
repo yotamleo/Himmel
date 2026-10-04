@@ -22,7 +22,8 @@ fi
 out_dir="${SKILL_INDEX_DIR:-$HOME/.claude/skill-index}"
 bash "$SCRIPT_DIR/build-skill-index.sh" --out "$out_dir" || exit $?
 
-if ! find "$out_dir" -maxdepth 1 -name '*.md' 2>/dev/null | grep -q .; then
+first_item=$(find "$out_dir" -maxdepth 1 -name '*.md' 2>/dev/null | head -n 1)
+if [ -z "$first_item" ]; then
     echo "ensure-skill-index: no skill items found under $out_dir -- not registering"
     exit 0
 fi

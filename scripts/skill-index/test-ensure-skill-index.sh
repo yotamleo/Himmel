@@ -62,7 +62,8 @@ check "no skills at all: rc" "$rc" "0"
 check "no skills at all: nothing registered" "$([ -f "$td/log" ] && echo registered || echo none)" "none"
 
 # qmd unresolvable -> clean skip.
-PATH="/usr/bin:/bin" bash "$TARGET" >/dev/null 2>&1; rc=$?
+out=$(PATH="/usr/bin:/bin" bash "$TARGET" 2>&1); rc=$?
 check "no qmd: rc" "$rc" "0"
+check "no qmd: skip message" "$(printf '%s' "$out" | grep -c 'qmd not resolvable')" "1"
 
 exit "$fail"
