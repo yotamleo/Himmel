@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -53,7 +54,7 @@ DEFAULT_URLS = {
     "instagram-media": "https://www.instagram.com/p/CG0UU3ylXnv/",
     "x-media": "https://x.com/Twitter/status/1354143047324299264",
     "youtube-playwright": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
-    "firecrawl": "https://example.com/",
+    "jina-reader": "https://example.com/",
 }
 
 
@@ -537,6 +538,31 @@ def probe_bitbucket(env: dict[str, str], http: Callable[..., HttpResult]) -> Pro
     return classify_http(result, auth_required=True, valid_body=valid)
 
 
+def firecrawl_ledger_append(env: dict[str, str], endpoint: str, credits: int, ok: bool = True) -> None:
+    """One line in the shared per-call Firecrawl ledger (HIMMEL-4335): same
+    file and shape as harvest-clip-body-batch.py. Never the key or any body;
+    a write failure never fails the probe."""
+    override = env.get("HIMMEL_FIRECRAWL_LEDGER", "").strip()
+    path = Path(override) if override else resolve_home(env) / ".himmel" / "state" / "firecrawl-ledger.jsonl"
+    row = {
+        "v": 1,
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host": socket.gethostname(),
+        "source": "firecrawl",
+        "kind": "call",
+        "call_site": "fetch-health",
+        "endpoint": endpoint,
+        "credits": credits,
+        "ok": ok,
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except OSError:
+        pass
+
+
 def probe_firecrawl(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
     api_key = env.get("FIRECRAWL_API_KEY", "").strip()
     if not api_key:
@@ -545,28 +571,44 @@ def probe_firecrawl(env: dict[str, str], http: Callable[..., HttpResult]) -> Pro
     # set WITH a /v2 suffix composing /v2/v2/scrape. Drop a trailing /v2 (then any
     # newly-exposed slash) before appending the /v2 path ourselves.
     base_url = re.sub(r"/v2$", "", env.get("FIRECRAWL_BASE_URL", "").strip().rstrip("/")) or "https://api.firecrawl.dev"
-    url = env.get("FETCH_HEALTH_FIRECRAWL_URL", DEFAULT_URLS["firecrawl"])
-    payload = json.dumps({"url": url, "formats": ["markdown"]}).encode()
     api_host = (urllib.parse.urlparse(base_url).hostname or "").lower()
+    # HIMMEL-4335: probe the FREE credit-usage endpoint — a scrape probe cost a
+    # credit every night. A valid response proves the key and the API are live.
+    endpoint = "/v2/team/credit-usage"
     try:
         result = http(
-            f"{base_url}/v2/scrape",
-            method="POST",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": USER_AGENT},
-            data=payload,
+            f"{base_url}{endpoint}",
+            headers={"Authorization": f"Bearer {api_key}", "User-Agent": USER_AGENT},
             allowed_auth_hosts={api_host},
         )
     except (OSError, urllib.error.URLError, TimeoutError):
+        firecrawl_ledger_append(env, endpoint, 0, ok=False)
         return ProbeResult("transport-fail", "Firecrawl request failed")
+    firecrawl_ledger_append(env, endpoint, 0, ok=200 <= result.status < 300)
 
     def valid(body: bytes) -> bool:
         try:
             data = _json(body)
-            return data.get("success") is True and bool((data.get("data") or {}).get("markdown", "").strip())
+            return data.get("success") is True and isinstance(data.get("data"), dict)
         except (ValueError, AttributeError):
             return False
 
     return classify_http(result, auth_required=True, valid_body=valid)
+
+
+def probe_jina_reader(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
+    # Keyless Jina Reader scrape rung (HIMMEL-4335): fetch a known public page
+    # through r.jina.ai and check the page text comes back.
+    url = env.get("FETCH_HEALTH_JINA_URL", DEFAULT_URLS["jina-reader"])
+    try:
+        result = http(f"https://r.jina.ai/{url}", headers={"User-Agent": USER_AGENT})
+    except (OSError, urllib.error.URLError, TimeoutError):
+        return ProbeResult("transport-fail", "Jina Reader request failed")
+
+    def valid(body: bytes) -> bool:
+        return b"Example Domain" in body
+
+    return classify_http(result, auth_required=False, valid_body=valid)
 
 
 IG_PROBE_SOURCES = ("instagram-embed", "instagram-media")
@@ -682,6 +724,7 @@ def build_probe_registry(
         "github": lambda: probe_github(effective, command, child_env=child_env),
         "bitbucket": lambda: probe_bitbucket(effective, http),
         "firecrawl": lambda: probe_firecrawl(effective, http),
+        "jina-reader": lambda: probe_jina_reader(effective, http),
     }
     for source in IG_PROBE_SOURCES:
         registry[source] = (lambda s, p: lambda: guarded_instagram_probe(s, effective, p))(source, registry[source])

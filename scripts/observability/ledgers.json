@@ -132,6 +132,19 @@
       "schema_version": 1,
       "envelope": ["ts"],
       "grandfathered": true
+    },
+    {
+      "id": "firecrawl-ledger",
+      "default_path": "~/.himmel/state/firecrawl-ledger.jsonl",
+      "override_env": "HIMMEL_FIRECRAWL_LEDGER",
+      "writer": "marketplace/plugins/obsidian-triage/tools/harvest-clip-body-batch.py",
+      "readers": ["marketplace/plugins/obsidian-triage/tools/lib/follow-web.mjs", "scripts/luna/fetch-health.py"],
+      "format": "jsonl",
+      "rotation": "none",
+      "retention": "unbounded",
+      "schema_version": 1,
+      "envelope": ["v", "ts", "host", "source", "kind"],
+      "grandfathered": false
     }
   ]
 }

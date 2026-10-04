@@ -377,11 +377,97 @@ def insert_harvested_section(body: str, section_md: str):
     return before + block + after, (before + after == body)
 
 
+def ledger_path():
+    """Per-call Firecrawl ledger (HIMMEL-4335). Same ~/.himmel/state/ root the
+    other luna tools keep state under; HIMMEL_FIRECRAWL_LEDGER overrides it
+    (tests always point it at a scratch file)."""
+    import os
+    override = os.environ.get("HIMMEL_FIRECRAWL_LEDGER", "").strip()
+    if override:
+        return Path(override)
+    return Path(os.environ.get("HOME") or Path.home()) / ".himmel" / "state" / "firecrawl-ledger.jsonl"
+
+
+def ledger_append(call_site, endpoint, credits, ok=True, source="firecrawl"):
+    """Append one JSONL line: ts, call_site, endpoint (path only), credits.
+    Never the key, the URL (or its query string) or the page body. A ledger
+    write failure never breaks the scrape that triggered it."""
+    import datetime
+    import json
+    import socket
+    row = {
+        "v": 1,
+        "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host": socket.gethostname(),
+        "source": source,
+        "kind": "call",
+        "call_site": call_site,
+        "endpoint": endpoint,
+        "credits": credits,
+        "ok": ok,
+    }
+    try:
+        lp = ledger_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        with open(lp, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
+class BackendNotImplemented(Exception):
+    """A named backend slot with no implementation yet — the chain skips it
+    silently (never an error, never a log line)."""
+
+
+class JinaReaderClient:
+    """Jina Reader (https://r.jina.ai/<url>) — keyless, free scrape rung."""
+
+    name = "jina"
+    BASE = "https://r.jina.ai/"
+
+    def __init__(self, timeout=45):
+        self.timeout = timeout
+
+    def scrape(self, url: str) -> str:
+        import urllib.request
+        req = urllib.request.Request(self.BASE + url, method="GET",
+                                     headers={"Accept": "text/plain"})
+        # egress-matrix jina-reader is allow+log: one ledger line per fetch;
+        # the endpoint is the fixed reader path, never the target URL.
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            ledger_append("harvest-clip-body-batch", "/reader", 0, ok=False, source="jina-reader")
+            raise
+        ledger_append("harvest-clip-body-batch", "/reader", 0, source="jina-reader")
+        marker = "Markdown Content:"
+        idx = text.find(marker)
+        md = text[idx + len(marker):] if idx >= 0 else text
+        if not md.strip():
+            raise RuntimeError("jina returned empty markdown")
+        return md.strip() + "\n"
+
+
+class LocalHeadlessClient:
+    """Cookie-backed local headless fetch — reserved backend slot, not built
+    yet (needs a browser + cookie read not in the tree). Follow-up ticket."""
+
+    name = "local-headless"
+
+    def scrape(self, url: str) -> str:
+        raise BackendNotImplemented("local-headless backend is not implemented")
+
+
 class FirecrawlClient:
     """Thin firecrawl /v2/scrape client (stdlib urllib — no new deps).
     Injectable for tests: override `scrape`. `base_url` defaults to the
     hosted API but honors FIRECRAWL_BASE_URL so self-hosted firecrawl
     instances (open source, AGPL) work for operators with more budget."""
+
+    name = "firecrawl"
+    SCRAPE_COST = 1  # documented /v2/scrape cost when the response omits it
 
     def __init__(self, api_key, base_url=None, budget=FIRECRAWL_DEFAULT_BUDGET, timeout=45):
         self.api_key = api_key
@@ -392,7 +478,8 @@ class FirecrawlClient:
     def scrape(self, url: str) -> str:
         """POST /v2/scrape, return data.markdown. Raises on any failure
         (HTTP error, success=false, empty markdown) — the caller routes a
-        failed scrape to a retryable partial outcome."""
+        failed scrape to a retryable partial outcome. Every call that
+        reaches the API appends one ledger line."""
         import json
         import urllib.request
         payload = json.dumps({"url": url, "formats": ["markdown"]}).encode("utf-8")
@@ -405,14 +492,81 @@ class FirecrawlClient:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if not data.get("success"):
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            ledger_append("harvest-clip-body-batch", "/v2/scrape", 0, ok=False)
+            raise
+        # a valid-JSON body of the wrong shape still spent the call: ledger it once
+        body = data.get("data") if isinstance(data, dict) else None
+        body = body if isinstance(body, dict) else {}
+        meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        used = meta.get("creditsUsed")
+        ok = isinstance(data, dict) and bool(data.get("success"))
+        ledger_append("harvest-clip-body-batch", "/v2/scrape",
+                      used if isinstance(used, int) else self.SCRAPE_COST, ok=ok)
+        if not ok:
             raise RuntimeError(f"firecrawl success=false: {str(data)[:200]}")
-        md = (data.get("data") or {}).get("markdown")
-        if not md or not md.strip():
+        md = body.get("markdown")
+        if not md or not isinstance(md, str) or not md.strip():
             raise RuntimeError("firecrawl returned empty markdown")
         return md
+
+
+DEFAULT_SCRAPE_BACKENDS = ("local-headless", "jina", "firecrawl")
+
+
+class ScrapeChain:
+    """Tries each backend in order; a not-implemented backend is skipped
+    silently, a failing one falls through to the next. `remaining` is the
+    per-run cap on thin-body scrapes (process_clip decrements it); firecrawl
+    additionally keeps its own cap, decremented per attempt."""
+
+    def __init__(self, backends, budget):
+        self.backends = list(backends)
+        self.remaining = budget
+        self.last_backend = None
+
+    def scrape(self, url: str) -> str:
+        errors = []
+        for b in self.backends:
+            if b.name == "firecrawl":
+                if b.remaining <= 0:
+                    continue
+                b.remaining -= 1
+            try:
+                md = b.scrape(url)
+            except BackendNotImplemented:
+                continue
+            except Exception as e:
+                errors.append(f"{b.name}: {type(e).__name__}: {str(e)[:80]}")
+                continue
+            self.last_backend = b.name
+            return md
+        raise RuntimeError("all scrape backends failed" + (f" ({'; '.join(errors)})" if errors else ""))
+
+
+def build_scrape_chain(env, budget):
+    """Build the chain from HARVEST_SCRAPE_BACKEND (comma list, default
+    local-headless,jina,firecrawl). firecrawl needs FIRECRAWL_API_KEY and is
+    left out of the chain without one."""
+    raw = (env.get("HARVEST_SCRAPE_BACKEND") or "").strip()
+    names = [n.strip() for n in raw.split(",") if n.strip()] or list(DEFAULT_SCRAPE_BACKENDS)
+    names = list(dict.fromkeys(names))  # a repeated name must not mint a second client (and a second firecrawl budget)
+    unknown = [n for n in names if n not in DEFAULT_SCRAPE_BACKENDS]
+    if unknown:
+        raise ValueError(f"unknown HARVEST_SCRAPE_BACKEND {','.join(unknown)} (valid: {', '.join(DEFAULT_SCRAPE_BACKENDS)})")
+    api_key = (env.get("FIRECRAWL_API_KEY") or "").strip()
+    backends = []
+    for n in names:
+        if n == "local-headless":
+            backends.append(LocalHeadlessClient())
+        elif n == "jina":
+            backends.append(JinaReaderClient())
+        elif n == "firecrawl" and api_key:
+            backends.append(FirecrawlClient(api_key, base_url=(env.get("FIRECRAWL_BASE_URL") or "").strip() or None, budget=budget))
+    return ScrapeChain(backends, budget)
 
 
 def parse_frontmatter(text: str):
@@ -630,9 +784,10 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
         except Exception as e:
             return ("~", f"partial (thin-body): firecrawl fetch failed ({type(e).__name__}: {str(e)[:120]}); re-run to retry", injection_hits)
         firecrawl.remaining -= 1
+        served_by = getattr(firecrawl, "last_backend", None) or "firecrawl"
         section = (
             f"## Harvested content\n"
-            f"<!-- harvest-clips {TODAY} via firecrawl ({canonical}) -->\n\n"
+            f"<!-- harvest-clips {TODAY} via {served_by} ({canonical}) -->\n\n"
             f"{md.strip()}\n\n"
         )
         new_body, insert_ok = insert_harvested_section(body, section)
@@ -647,7 +802,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
         merged_hits = injection_hits + [h for h in fc_hits if h not in injection_hits]
         markers = {
             "harvested_at": TODAY,
-            "harvest_skill": "firecrawl",
+            "harvest_skill": served_by,
             "harvest_url_canonical": canonical,
             "harvest_status": "ok",
         }
@@ -686,7 +841,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
             _revert(path, text)
             return ("x", f"failed (frontmatter-yaml-write, credit spent): {e}; reverted", merged_hits)
         fc_suffix = f" [injection-suspect: {', '.join(merged_hits)}]" if merged_hits else ""
-        return ("v", f"harvested via firecrawl, {len(md.encode('utf-8'))}b fetched (thin-body escalation), harvest_status=ok{fc_suffix}", merged_hits)
+        return ("v", f"harvested via {served_by}, {len(md.encode('utf-8'))}b fetched (thin-body escalation), harvest_status=ok{fc_suffix}", merged_hits)
 
     if is_thin_body(body):
         gap_host = enricher_gap_host(canonical)
@@ -822,7 +977,7 @@ def main():
                          "harvest_flag/_detail on hits.")
     ap.add_argument("--firecrawl-thin", action="store_true",
                     help="Escalation: fetch clean markdown via firecrawl for "
-                         "thin-body article/web clips (needs FIRECRAWL_API_KEY). "
+                         "thin-body article/web clips (keyless Jina first; the firecrawl rung needs FIRECRAWL_API_KEY). "
                          "Off by default — conserves the free-tier credits.")
     ap.add_argument("--firecrawl-budget", type=int, default=FIRECRAWL_DEFAULT_BUDGET,
                     help="Max firecrawl scrape calls per run (~1 credit each). "
@@ -862,15 +1017,17 @@ def main():
     firecrawl = None
     if args.firecrawl_thin:
         import os
-        api_key = os.environ.get("FIRECRAWL_API_KEY", "").strip()
-        if not api_key:
+        try:
+            firecrawl = build_scrape_chain(os.environ, args.firecrawl_budget)
+        except ValueError as e:
+            print(f"harvest-clip-body-batch: {e}", file=sys.stderr)
+            sys.exit(2)
+        if not any(b.name != "local-headless" for b in firecrawl.backends):
             print(
-                "harvest-clip-body-batch: --firecrawl-thin requires FIRECRAWL_API_KEY "
-                "in the environment.", file=sys.stderr,
+                "harvest-clip-body-batch: --firecrawl-thin has no usable scrape backend "
+                "(needs jina, or firecrawl with FIRECRAWL_API_KEY).", file=sys.stderr,
             )
             sys.exit(2)
-        base_url = os.environ.get("FIRECRAWL_BASE_URL", "").strip() or None
-        firecrawl = FirecrawlClient(api_key, base_url=base_url, budget=args.firecrawl_budget)
 
     if args.limit > 0:
         clips = clips[: args.limit * 4]  # over-fetch; filter below cuts to limit

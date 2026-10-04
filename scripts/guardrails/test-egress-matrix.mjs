@@ -338,6 +338,26 @@ for (const corpus of ["luna-personal", "luna-clippings", "salus", "voice-audio"]
     `${corpus} DeepSeek inference stays denied`);
 }
 
+// HIMMEL-4335: the scrape backends (Firecrawl, Jina Reader) are declared
+// providers. Public clipped URLs may be sent for `enrichment` with a ledger
+// obligation (allow+log, via their own explicit rows); every other corpus x
+// purpose stays denied, and salus / voice-audio stay HARD-denied.
+for (const p of ["firecrawl", "jina-reader"]) {
+  assert(providers.includes(p), `provider ${p} must be declared`);
+  const { effective, rule } = evaluate("luna-clippings", p, "enrichment");
+  assert(effective === "allow" && rule?.verdict === "allow+log" &&
+    rule.corpus === "luna-clippings" && rule.provider === p && rule.purpose === "enrichment",
+    `luna-clippings x ${p} x enrichment must be allow+log via its OWN row, got ${effective}/${rule?.verdict}`);
+  for (const u of purposes.filter(x => x !== "enrichment")) {
+    assert(evaluate("luna-clippings", p, u).effective === "deny", `luna-clippings x ${p} x ${u} must deny`);
+  }
+  for (const c of ["luna-personal", "handover-state", "salus", "voice-audio"]) {
+    for (const u of purposes) {
+      assert(evaluate(c, p, u).effective === "deny", `${c} x ${p} x ${u} must deny`);
+    }
+  }
+}
+
 if (failures > 0) {
   console.error(`egress-matrix: ${failures} invariant failure(s)`);
   process.exit(1);
