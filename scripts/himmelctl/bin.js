@@ -4969,6 +4969,7 @@ function applyHimmelctlPathShim(args) {
     if (platform === 'win32') {
       const cmdBody = `@echo off\r\nREM ${launcherLib.SHIM_MARKER}\r\nnode "%~dp0himmelctl.js" %*\r\n`;
       if (!launcherLib.writeMarkedLauncher(path.join(binDir, 'himmelctl.cmd'), cmdBody)) return false;
+      launcherLib.writeMarkedLauncher(path.join(binDir, 'himmel.cmd'), cmdBody); // HIMMEL-4380 alias, best-effort
       // No himmelctl.ps1 (codex-adv-1): a stale marked .ps1 from a prior install
       // is removed; an unmarked/symlinked one is left untouched. Removal is a
       // best-effort cleanup of a LEGACY artifact, not part of writing the PATH
@@ -4984,6 +4985,11 @@ function applyHimmelctlPathShim(args) {
       const launcher = path.join(binDir, 'himmelctl');
       const shBody = `#!/usr/bin/env sh\n# ${launcherLib.SHIM_MARKER}\nexec node "$(dirname "$0")/himmelctl.js" "$@"\n`;
       if (!launcherLib.writeMarkedLauncher(launcher, shBody, 0o755)) return false;
+      // HIMMEL-4380: a `himmel` alias beside himmelctl, so `himmel update` works
+      // in any shell (fish included) without shell config. Best-effort: a
+      // third-party `himmel` is refused by writeMarkedLauncher (with its own
+      // message) and must not fail the himmelctl launcher.
+      launcherLib.writeMarkedLauncher(path.join(binDir, 'himmel'), shBody, 0o755);
     }
   } catch (e) {
     console.error(`himmelctl: failed to write PATH launcher in ${binDir}: ${e.message}`);

@@ -8,6 +8,17 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.67] — 2026-10-04
+
+### Changed
+- `scripts/upgrade.sh`: a `_CLAUDE.md` section the vault deliberately deleted
+  stays deleted. The upgrade resolves the deletion once (reporting any template
+  change it drops) and advances the base, so the next upgrade is clean instead
+  of re-conflicting. A hunk where the vault kept text still goes to the
+  `.template-merge` sidecar.
+- `_CLAUDE.md`: "Repo conventions" now says single-writer vaults skip the
+  PR/worktree bullets (HIMMEL-4380).
+
 ## [0.4.66] — 2026-10-04
 
 ### Removed

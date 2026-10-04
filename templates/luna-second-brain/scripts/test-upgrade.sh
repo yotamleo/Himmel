@@ -171,6 +171,8 @@ stamp_vault() {
     printf '{"template":"luna-second-brain","version":"%s","upgraded_at":"2026-01-01T00:00:00Z"}\n' "$ver" > "$d/.vault-template.json"
 }
 
+sha_of_str() { printf '%s\n' "$1" | "${SHA256[@]}" | cut -d' ' -f1; }
+
 run_upgrade() { bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" "$@"; }
 
 # ---------------------------------------------------------------------------
@@ -243,6 +245,40 @@ case "$out" in *_CLAUDE.md.template-merge*|*conflict*|*CONFLICT*) pass "T6 confl
 if [ "$rc" -ne 0 ]; then pass "T6 conflict exits non-zero"; else fail "T6 conflict exits non-zero" "rc=0"; fi
 got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
 assert_eq "T6 conflict does not advance the stamp" "0.1.0" "$got_ver"
+
+# ---------------------------------------------------------------------------
+# T6b/T6c (HIMMEL-4380): a section the VAULT deliberately deleted stays deleted.
+# T6b: template left the section unchanged. T6c: template MODIFIED it — mine-
+# deleted vs template-changed is a conflict hunk that used to recur forever
+# (a conflict never advances the stamp or base). Resolve once: vault deletion
+# wins, a report line names the dropped template change, the base advances, and
+# the next upgrade is clean. A genuine overlapping edit (T6) still conflicts.
+sec_base() { printf '# Operating Manual\n\nline-a\n\n## Repo conventions\n\n- never edit on main\n- all changes via PR\n\n## Tail\n\nline-z\n'; }
+sec_gone() { printf '# Operating Manual\n\nline-a\n\n## Tail\n\nline-z\n'; }
+for variant in unchanged modified; do
+    T="$TMP/t6s-$variant-tmpl"; V="$TMP/t6s-$variant-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+    sec_base > "$V/.vault-template.base/_CLAUDE.md"
+    sec_gone > "$V/_CLAUDE.md"
+    if [ "$variant" = unchanged ]; then sec_base > "$T/_CLAUDE.md"
+    else sec_base | sed 's/all changes via PR/all changes via reviewed PR/' > "$T/_CLAUDE.md"; fi
+    out=$(run_upgrade --yes 2>&1); rc=$?
+    assert_eq "T6s-$variant first run exits 0" "0" "$rc"
+    assert_eq "T6s-$variant section stays deleted" "$(sha_of_str "$(sec_gone)")" "$(sha_of_str "$(cat "$V/_CLAUDE.md")")"
+    if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6s-$variant no sidecar"; else fail "T6s-$variant no sidecar" "sidecar present"; fi
+    assert_eq "T6s-$variant base advanced to theirs" "$(sha_of "$T/_CLAUDE.md")" "$(sha_of "$V/.vault-template.base/_CLAUDE.md")"
+    got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
+    assert_eq "T6s-$variant stamp advanced" "1.0.0" "$got_ver"
+    if [ "$variant" = modified ]; then
+        case "$out" in *"deleted by the vault"*"all changes via reviewed PR"*) pass "T6s-modified report names the dropped template change" ;; *) fail "T6s-modified report names the dropped template change" "got: $out" ;; esac
+    fi
+    # Second run, template bumped but section content unchanged => clean, no conflict.
+    make_template_ver_bump() { printf '{"metadata":{"version":"1.0.1"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"; }
+    make_template_ver_bump
+    run_upgrade --yes >/dev/null 2>&1; rc2=$?
+    assert_eq "T6s-$variant second run exits 0" "0" "$rc2"
+    if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6s-$variant second run no sidecar"; else fail "T6s-$variant second run no sidecar" "sidecar present"; fi
+    assert_eq "T6s-$variant second run section still deleted" "$(sha_of_str "$(sec_gone)")" "$(sha_of_str "$(cat "$V/_CLAUDE.md")")"
+done
 
 # ---------------------------------------------------------------------------
 # T7: PLUGINS-SETUP.md reprint fires when the manual-install table changed.

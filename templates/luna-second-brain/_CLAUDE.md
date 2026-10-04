@@ -228,6 +228,10 @@ must apply this contract itself.
 
 ## Repo conventions (inherited from luna-brain skeleton)
 
+- **Single-writer vaults:** if this vault has a `.single-writer` marker at
+  its root, it commits straight to `main` by design — the two bullets below
+  (PR workflow, worktree isolation) do not apply to it; delete them from your
+  copy if you like (the upgrade keeps a deletion).
 - **Git workflow:** all changes via PR. main is protected. Conventional
   commit format `type(scope): [TICKET-N ]message` is a convention, not
   enforced by a hook (automated vault commits use their own subjects).
