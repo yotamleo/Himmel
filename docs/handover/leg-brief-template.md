@@ -115,7 +115,9 @@ template_version: 3
 >    `- ask one: done` / `- ask two: deferred → HIMMEL-1234`. A deferred key
 >    must exist and still be open; `ready-check.sh` item 7 FAILs a missing
 >    section, an unmarked line, or a deferral to a nonexistent or Done/Closed
->    ticket, so file the follow-up before you write the line. <Anything else unusual: a PR body that must carry other
+>    ticket, so file the follow-up before you write the line. The marker is
+>    LAST with nothing after it; lint it yourself before READY with
+>    `ready-check.sh --only 7 <pr>` (HIMMEL-4300). <Anything else unusual: a PR body that must carry other
 >    specific numbers, a public-CI wait, a second ticket to comment on but
 >    leave open.>
 
