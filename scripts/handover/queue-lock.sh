@@ -848,6 +848,8 @@ _ql_holder_live() {
     lv_host=$(sed -n 's/^host=//p' "$lk/liveness" 2>/dev/null | head -n 1)
     lv_tr=$(sed -n 's/^transcript=//p' "$lk/liveness" 2>/dev/null | head -n 1)
     [ -n "$lv_host" ] && [ "$lv_host" = "$(_ql_hostname)" ] || return 1
+    # HIMMEL-2318: a marker that does not describe the recorded holder proves nothing about it.
+    [ "$lv_host" = "$(_ql_json_field "$lk/owner.json" host)" ] || return 1
     [ -n "$lv_tr" ] && [ -f "$lv_tr" ] || return 1
     m=$(py_armor_mtime "$lv_tr") || m=""
     case "$m" in ''|*[!0-9]*) return 1 ;; esac

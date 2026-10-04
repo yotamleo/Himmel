@@ -2914,6 +2914,17 @@ if [ "$rc" -eq 12 ]; then
 else
     fail "T94: foreign-host liveness marker kept the lock alive (rc=$rc)"
 fi
+# A marker for this host, fresh transcript, but owner.json records another host:
+# the marker does not describe the recorded holder, so it proves nothing.
+touch "$A_TR"
+printf 'host=%s\ntranscript=%s\n' "$(hostname 2>/dev/null)" "$A_TR" > "$A_LK/liveness"
+sed -i.bak 's/"host":"[^"]*"/"host":"other-host"/' "$A_LK/owner.json" && rm -f "$A_LK/owner.json.bak"
+bash "$LIB" status "$A_DOC" >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 12 ]; then
+    pass "T94: a liveness marker not matching owner.json's host is not probed (STALE, rc 12)"
+else
+    fail "T94: marker/owner host mismatch kept the lock alive (rc=$rc)"
+fi
 
 # T95: release drops the lock, and a self-heartbeat with nothing registered, a
 # garbage payload, or no scope at all is a silent rc 0 (it runs as a hook).
