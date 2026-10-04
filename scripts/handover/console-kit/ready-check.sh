@@ -9,6 +9,9 @@
 # and the script says so on its last line.
 #
 # Usage: ready-check.sh <pr-number> <full-40-hex-head-sha>
+#        ready-check.sh --only 7 <pr-number>
+#   --only 7 runs ONLY check 7 (HIMMEL-4300) — a leg's own pre-READY lint of its
+#   PR body, the same code the console runs. Prints COVERAGE-LINT PASS|FAIL.
 #
 # Checks:
 #   1. gh pr view: headRefOid == <head-sha> (full 40 chars); mergeStateStatus
@@ -67,13 +70,24 @@ set -u
 
 usage() {
     echo "usage: ready-check.sh <pr-number> <full-40-hex-head-sha>" >&2
+    echo "       ready-check.sh --only 7 <pr-number>   (ticket-coverage lint, for a leg before READY)" >&2
 }
 
-if [ "$#" -ne 2 ]; then
+ONLY7=0
+if [ "${1:-}" = "--only" ]; then
+    if [ "$#" -ne 3 ] || [ "$2" != "7" ]; then
+        usage
+        echo "ready-check: --only takes exactly '7 <pr-number>' (the only check a leg can run alone)" >&2
+        exit 2
+    fi
+    ONLY7=1
+    PR="$3"; SHA=""
+elif [ "$#" -ne 2 ]; then
     usage
     exit 2
+else
+    PR="$1"; SHA="$2"
 fi
-PR="$1"; SHA="$2"
 
 case "$PR" in
     ''|0*|*[!0123456789]*)
@@ -85,7 +99,7 @@ case "$SHA" in
     *[!0123456789abcdef]*) SHA_OK=0 ;;
     *) SHA_OK=1 ;;
 esac
-if [ "$SHA_OK" -ne 1 ] || [ "${#SHA}" -ne 40 ]; then
+if [ "$ONLY7" -eq 0 ] && { [ "$SHA_OK" -ne 1 ] || [ "${#SHA}" -ne 40 ]; }; then
     usage
     echo "ready-check: head sha must be the full 40-char lowercase hex sha (got '$SHA')" >&2
     exit 2
@@ -111,6 +125,8 @@ repo="${nwo#*/}"
 
 RESULT=0
 mark_fail() { RESULT=1; }
+
+if [ "$ONLY7" -eq 0 ]; then
 
 # ── 1. head + mergeStateStatus ──────────────────────────────────────────────
 attempt=0
@@ -368,6 +384,7 @@ else
         mark_fail
     fi
 fi
+fi  # ONLY7 == 0: checks 1-6
 
 # ── 7. ticket coverage (HIMMEL-4207) ────────────────────────────────────────
 # A PR can close its ticket Done with asks undone (HIMMEL-4202/4204/4196). The
@@ -386,6 +403,13 @@ jira_get() {
     fi
 }
 
+cov_shape_help() {
+    echo "       accepted shape, one line per ask, marker LAST with nothing after it (no trailing prose, parentheses or links):"
+    echo "         - <ask>: done"
+    echo "         - <ask>: deferred → HIMMEL-<n>"
+    echo "       (-> is accepted for →; a trailing . or bold is fine). Put any explanation BEFORE the marker."
+}
+
 cov_body=$("$GH" pr view "$PR" --repo "$nwo" --json body --jq '.body' 2>/dev/null | tr -d '\r')
 cov_section=$(printf '%s\n' "$cov_body" | awk '
     /^##[ \t]+[Tt]icket [Cc]overage[ \t]*$/ { f = 1; next }
@@ -394,9 +418,10 @@ cov_section=$(printf '%s\n' "$cov_body" | awk '
 cov_lines=$(printf '%s\n' "$cov_section" | grep -E '^[[:space:]]*([-*]|[0-9]+[.)])[[:space:]]' || true)
 if [ -z "$cov_lines" ]; then
     echo "[FAIL] 7. PR body has no '## Ticket coverage' section with list lines (one per ask: done | deferred → HIMMEL-<n>)"
+    cov_shape_help
     mark_fail
 else
-    cov_bad=""
+    cov_bad=""; cov_shape=0
     while IFS= read -r cov_line; do
         [ -n "$cov_line" ] || continue
         cov_def=$(printf '%s\n' "$cov_line" | grep -ioE 'deferred[[:space:]]*(→|->)[^[:alnum:]]*[A-Za-z][A-Za-z0-9]*-[0-9]+[^[:alnum:]]*$' || true)
@@ -416,7 +441,8 @@ else
             fi
         elif ! printf '%s\n' "$cov_line" | grep -qiE '(^|[^[:alnum:]])done[^[:alnum:]]*$' \
             || printf '%s\n' "$cov_line" | grep -qiE '(not|n.t)[[:space:]]+done'; then
-            cov_bad="$cov_bad; unmarked line: $(printf '%s' "$cov_line" | cut -c1-60)"
+            cov_bad="$cov_bad; unmarked line: $(printf '%s' "$cov_line" | cut -c1-160)"
+            cov_shape=1
         fi
     done <<EOF
 $cov_lines
@@ -425,8 +451,15 @@ EOF
         echo "[PASS] 7. ticket coverage: every ask is done or deferred to an open ticket"
     else
         echo "[FAIL] 7. ticket coverage:${cov_bad#;}"
+        [ "$cov_shape" -eq 1 ] && cov_shape_help
         mark_fail
     fi
+fi
+
+if [ "$ONLY7" -eq 1 ]; then
+    if [ "$RESULT" -eq 0 ]; then echo "COVERAGE-LINT PASS"; exit 0; fi
+    echo "COVERAGE-LINT FAIL"
+    exit 1
 fi
 
 echo "---"
