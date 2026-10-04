@@ -939,6 +939,13 @@ class InstagramGuardTests(unittest.TestCase):
             self.assertNotIn(leaked, r.reason)
         self.assertIn("end", r.reason)
 
+    def test_a_quoted_key_is_masked(self):
+        err = "bad {'sessionid': 'short-secret', \"csrftoken\": \"tiny\"} end"  # gitleaks:allow
+        r = self.probe("instagram-media", command=self.command(1, err))
+        for leaked in ("short-secret", "tiny"):
+            self.assertNotIn(leaked, r.reason)
+        self.assertIn("end", r.reason)
+
     def test_the_stderr_tail_is_bounded(self):
         r = self.probe("instagram-media", command=self.command(1, "x " * 5000 + "the-end"))
         self.assertLess(len(r.reason), 400)
