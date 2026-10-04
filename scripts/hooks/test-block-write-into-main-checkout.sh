@@ -3615,6 +3615,54 @@ _r4228q "100-pct-dq-sed-i-rel"                     block $'echo "${y%"}" ; x=$((
 _r4213 "100z dq-span with quote, ls primary (ALLOW)"           allow $'echo "${y:-\'}" ; x=$((1|2)) ls @P@ ; : \'}\''
 }
 
+echo "== HIMMEL-4329 path-qualified wrapper names, chroot readings =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# A wrapper name matches on its basename, any case, `.exe` dropped (the
+# HIMMEL-4138 interp-body treatment): `/usr/bin/nice` strips like `nice`.
+# One row per wrapper _bwimc_strip_prefix knows, bare / path / .exe.
+for _w4329 in 'command|' 'exec|' 'nohup|' 'chrt|5' 'taskset|-c 0' 'ionice|-c 3' 'nice|-n 5' \
+    'timeout|5' 'stdbuf|-oL' 'env|FOO=1' 'sudo|-u root' 'chroot|/'; do
+    _n4329="${_w4329%%|*}"; _a4329="${_w4329#*|}"
+    for _f4329 in "$_n4329" "/usr/bin/$_n4329" "$_n4329.exe"; do
+        _r4213 "101 $_f4329 $_a4329 touch primary" block "$_f4329 $_a4329 touch @P@/f"
+    done
+    _r4213 "101 /usr/bin/$_n4329 $_a4329 touch worktree (ALLOW)" allow "/usr/bin/$_n4329 $_a4329 touch @W@/f"
+done
+_r4213 "101a /usr/bin/env -C primary touch f"                          block '/usr/bin/env -C @P@ touch f'
+_r4213 "101b /usr/bin/nice touch primary"                              block '/usr/bin/nice touch @P@/f'
+_r4213 "101c /usr/bin/sudo -D primary touch f"                         block '/usr/bin/sudo -D @P@ touch f'
+_r4213 "101d /USR/BIN/NICE.EXE touch primary"                          block '/USR/BIN/NICE.EXE touch @P@/f'
+_r4213 "101e /usr/bin/nice /usr/bin/env -C primary rm f"               block '/usr/bin/nice /usr/bin/env -C @P@ rm f'
+_subst_row "101f /usr/bin/env -C /tmp touch f (ALLOW), cwd /tmp"       allow "/usr/bin/env -C /tmp touch f" /tmp
+_r4213 "101g /usr/bin/nice touch /tmp (ALLOW)"                         allow '/usr/bin/nice touch /tmp/himmel-4329-f'
+_r4213 "101h /usr/bin/env FOO=1 ls (ALLOW)"                            allow '/usr/bin/env FOO=1 ls'
+_subst_row "101i /usr/bin/env -C worktree touch f (ALLOW), cwd /tmp"   allow "/usr/bin/env -C $_WR touch f" /tmp
+# chroot DIR / sudo -R DIR / sudo --chroot=DIR: the command's / is DIR, so a
+# write target is also read as DIR + target; an unknown DIR fails closed.
+_r4213 "102a sudo -R primary -D / touch /f"                            block 'sudo -R @P@ -D / touch /f'
+_r4213 "102b sudo --chroot=primary touch /f"                           block 'sudo --chroot=@P@ touch /f'
+_r4213 "102c chroot primary touch /f"                                  block 'chroot @P@ touch /f'
+_r4213 "102d sudo --chroot primary touch /f"                           block 'sudo --chroot @P@ touch /f'
+_r4213 "102e sudo -Rprimary touch /f"                                  block 'sudo -R@P@ touch /f'
+_r4213 "102f /usr/sbin/chroot primary touch /f"                        block '/usr/sbin/chroot @P@ touch /f'
+_r4213 "102g chroot --userspec=u:g primary rm /README.md"              block 'chroot --userspec=u:g @P@ rm /README.md'
+# the chroot's /tmp is <primary>/tmp, which is_temp_or_devnull exempts by its
+# `*/tmp/*` pattern exactly as it exempts `touch <primary>/tmp/f` (parity)
+_r4213 "102h chroot primary touch /tmp/f (parity with <primary>/tmp, ALLOW)" allow 'chroot @P@ touch /tmp/f'
+_subst_row "102i chroot primary touch f (relative: the chroot's /), cwd /tmp" block "chroot $_PR touch f" /tmp
+_r4213 "102j chroot primary cp to /f"                                  block 'chroot @P@ cp /etc/hosts /f'
+_r4213 "102k chroot \$X touch /f (unknown root)"                       block 'chroot $X touch /f'
+_r4213 "102l chroot --bogus primary touch /f (unknown option)"         block 'chroot --bogus @P@ touch /f'
+_subst_row "102m chroot fixture-root touch /primary/f (root above the primary), cwd /tmp" block "chroot $FIX touch /primary/f" /tmp
+_subst_row "102n chroot rel-root touch /f (relative root), cwd the primary's parent" block "chroot primary touch /f" "$FIX"
+_r4213 "102o chroot /srv/x touch /f (ALLOW)"                           allow 'chroot /srv/himmel-4329-x touch /f'
+_r4213 "102p sudo -R /srv/x touch /f (ALLOW)"                          allow 'sudo -R /srv/himmel-4329-x touch /f'
+_r4213 "102q chroot primary ls (no write, ALLOW)"                      allow 'chroot @P@ ls /'
+_r4213 "102r chroot worktree touch /f (ALLOW)"                         allow 'chroot @W@ touch /f'
+_r4213 "102s chroot / touch /tmp (ALLOW)"                              allow 'chroot / touch /tmp/himmel-4329-f'
+}
+
 echo "== HIMMEL-4253 (a ~/ redirect target is cwd-independent; the cd guard must not read it as relative) =="
 # `echo done` is an accepted HIMMEL-3685 taint, so the cd below leaves the
 # modelled cwd UNRESOLVED. A `~/…` target names the same file whatever the cwd,

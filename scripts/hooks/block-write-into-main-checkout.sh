@@ -952,6 +952,10 @@ _bwimc_flat_mask() {
 # operand lands in _BWIMC_SPDIR for the verb loop to model (_bwimc_chdir_model);
 # `sudo -i`/`--login`, a second chdir, or an unknown wrapper option record `$`
 # (dir unknown, fail closed). No other stripped wrapper changes directory.
+# HIMMEL-4329: a wrapper name matches on its basename (`/usr/bin/env`,
+# `nice.exe`). `chroot [opts] DIR` and `sudo -R DIR`/`--chroot` change the
+# root: DIR lands in _BWIMC_SPROOT for the verb loop (_bwimc_root_model), and
+# chroot also chdirs to the new `/`.
 _BWIMC_ARMVERB_RE='^([^[:space:]]*/)?(sed|eval|bash|sh|zsh|dash|ksh|install|rsync|dd|cp|mv|rm|touch|ln|git)(\.exe)?$'
 # _bwimc_sp_word — trims _BWIMC_SPT's leading blanks; _BWIMC_SPW = its first
 # shell word as written ('..', "..", $'..' and backslash honoured, so
@@ -1002,10 +1006,16 @@ _bwimc_sp_word() {
 _bwimc_sp_dir() {
     if [ -z "$_BWIMC_SPDIR" ]; then _BWIMC_SPDIR="$1"; else _BWIMC_SPDIR='$'; fi
 }
+# _bwimc_sp_root WORD — HIMMEL-4329: records a chroot's new root (`chroot
+# DIR`, `sudo -R DIR`) in _BWIMC_SPROOT; a second one reads as unknown (`$`).
+_bwimc_sp_root() {
+    if [ -z "$_BWIMC_SPROOT" ]; then _BWIMC_SPROOT="$1"; else _BWIMC_SPROOT='$'; fi
+}
 # _bwimc_sp_opts SHORTVAL SHORTFLAG SHORTSTOP LONGVAL LONGFLAG LONGSTOP
-# [DIRSHORT DIRLONG DYNSHORT DYNLONG] — eats the options after a wrapper word from _BWIMC_SPT,
+# [DIRSHORT DIRLONG DYNSHORT DYNLONG ROOTSHORT ROOTLONG] — eats the options after a wrapper word from _BWIMC_SPT,
 # recording the DIRSHORT/DIRLONG value (`env -C`, `sudo -D`) via
-# _bwimc_sp_dir; a DYNSHORT/DYNLONG flag (`sudo -i`) records `$`. Returns 0 at the command word, 1 at a stop option (left in
+# _bwimc_sp_dir and the ROOTSHORT/ROOTLONG value (`sudo -R`) via _bwimc_sp_root;
+# a DYNSHORT/DYNLONG flag (`sudo -i`) records `$`. Returns 0 at the command word, 1 at a stop option (left in
 # place), 2 at an unknown option.
 _bwimc_sp_opts() {
     local w wr nm k ch
@@ -1025,9 +1035,11 @@ _bwimc_sp_opts() {
                 case " $4 " in *" $nm "*) ;; *) return 2 ;; esac
                 _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"
                 case "$w" in
-                    *=*) [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "${w#*=}" ;;
+                    *=*) [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "${w#*=}"
+                         [ "$nm" != "${12:-}" ] || _bwimc_sp_root "${w#*=}" ;;
                     *) _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
-                       [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU" ;;
+                       [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU"
+                       [ "$nm" != "${12:-}" ] || _bwimc_sp_root "$_BWIMC_SPU" ;;
                 esac
                 ;;
             -?*)
@@ -1040,8 +1052,10 @@ _bwimc_sp_opts() {
                             if [ "$((k+1))" -eq "${#w}" ]; then
                                 _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"; _bwimc_sp_word; wr="$_BWIMC_SPW"
                                 [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU"
+                                [ "$ch" != "${11:-}" ] || _bwimc_sp_root "$_BWIMC_SPU"
                             else
                                 [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "${w:$((k+1))}"
+                                [ "$ch" != "${11:-}" ] || _bwimc_sp_root "${w:$((k+1))}"
                             fi
                             break ;;
                     esac
@@ -1058,11 +1072,13 @@ _bwimc_sp_opts() {
 _bwimc_strip_prefix() {
     local n=${#1} w wl r
     _bwimc_strip_assign "$1"
-    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"; _BWIMC_SPDIR=''; _BWIMC_SPBAD=0
+    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"; _BWIMC_SPDIR=''; _BWIMC_SPROOT=''; _BWIMC_SPBAD=0
     while :; do
         _bwimc_sp_word; w="$_BWIMC_SPW"
-        # a quoted command name still runs (`"sudo"`); a quoted keyword is no keyword
-        _tolower_ascii "$_BWIMC_SPU"; wl="$_TOLOWER_OUT"
+        # a quoted command name still runs (`"sudo"`); a quoted keyword is no keyword.
+        # HIMMEL-4329: a wrapper matches on its basename, `.exe` dropped
+        # (`/usr/bin/nice`, `nice.exe`), as _bwimc_check_interp_body does
+        _tolower_ascii "${_BWIMC_SPU##*/}"; wl="${_TOLOWER_OUT%.exe}"
         r=0
         case "$w" in
             '{'|'!'|if|then|elif|else|while|until|do)
@@ -1097,7 +1113,7 @@ _bwimc_strip_prefix() {
                     if [ "$wl" = env ]; then
                         _bwimc_sp_opts uCa i0v S 'unset chdir argv0' 'ignore-environment null debug block-signal default-signal ignore-signal list-signal-handling' 'split-string help version' C chdir || r=$?
                     else
-                        _bwimc_sp_opts ugpChDrRtTU AbEHiKknPSsB lVve 'user group host prompt close-from chdir role type command-timeout other-user chroot' 'askpass background preserve-env set-home login non-interactive preserve-groups stdin shell reset-timestamp bell' 'list version validate remove-timestamp edit help' D chdir i login || r=$?
+                        _bwimc_sp_opts ugpChDrRtTU AbEHiKknPSsB lVve 'user group host prompt close-from chdir role type command-timeout other-user chroot' 'askpass background preserve-env set-home login non-interactive preserve-groups stdin shell reset-timestamp bell' 'list version validate remove-timestamp edit help' D chdir i login R chroot || r=$?
                     fi
                     [ "$r" = 0 ] || break
                     _bwimc_sp_word
@@ -1107,6 +1123,15 @@ _bwimc_strip_prefix() {
                         *) break ;;
                     esac
                 done ;;
+            # HIMMEL-4329: `chroot [opts] NEWROOT cmd` runs cmd from NEWROOT's
+            # `/` (`--skip-chdir`: the dir is unknown)
+            chroot)
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                _bwimc_sp_opts '' '' '' 'groups userspec' 'skip-chdir' 'help version' '' '' '' skip-chdir || r=$?
+                if [ "$r" = 0 ]; then
+                    _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
+                    _bwimc_sp_root "$_BWIMC_SPU"; _bwimc_sp_dir /
+                fi ;;
             *) break ;;
         esac
         if [ "$_BWIMC_SPBAD" = 1 ]; then
@@ -1114,8 +1139,10 @@ _bwimc_strip_prefix() {
         elif [ "$r" = 1 ]; then
             break
         elif [ "$r" = 2 ]; then
-            # an unknown env/sudo option may be a chdir: the dir is unknown
-            case "$wl" in env|sudo) _bwimc_sp_dir '$' ;; esac
+            # an unknown env/sudo/chroot option may be a chdir: the dir is
+            # unknown; an unknown sudo/chroot one may be a new root (HIMMEL-4329)
+            case "$wl" in env|sudo|chroot) _bwimc_sp_dir '$' ;; esac
+            case "$wl" in sudo|chroot) _bwimc_sp_root '$' ;; esac
             # fail closed: the first later word a verb arm matches (none: as is)
             w="$_BWIMC_SPT"
             while _bwimc_sp_word; [ -n "$_BWIMC_SPW" ]; do
@@ -1669,6 +1696,7 @@ _bwimc_deny() {
         marker-byte) why="the command carries a raw control byte (0x01-0x06 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
         shell-ambiguous) why="bash and zsh (or bash versions) read a \$'…' span in it differently, so its target cannot be classified (failing closed, HIMMEL-4138)" ;;
         unclosed-expansion) why="a \${…} or \$[…] span never closes and a separator follows it, so the command after it cannot be read (failing closed)" ;;
+        unresolved-chroot) why="it runs behind a chroot (chroot DIR, sudo -R/--chroot) whose new root could not be resolved, so its targets cannot be classified (failing closed, HIMMEL-4329)" ;;
         unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
     {
@@ -1767,9 +1795,21 @@ _bwimc_check_canon() {
 #            caller of `both` here. `both` stays as a documented mode in the
 #            contract — the suite may still exercise it directly — rather
 #            than being deleted for lack of a current caller.
+#
+# HIMMEL-4329: behind a chroot (_bwimc_chroot, set per clause by
+# _bwimc_root_model) the write lands at ROOT + ABS, so that reading is checked
+# too; the host reading stays (deny-only). An unknown root fails closed.
 _bwimc_check_abs() {
     local abs="$1" raw="$2" mode="${3:-follow}"
-    local lc canon
+    local lc canon root="${_bwimc_chroot:-}"
+    if [ -n "$root" ]; then
+        [ "$root" != '$' ] || _bwimc_deny "unresolved-chroot" "$raw" "$abs" ""
+        case "$abs" in
+            /*) _bwimc_chroot=""
+                _bwimc_check_abs "${root%/}$abs" "$raw" "$mode"
+                _bwimc_chroot="$root" ;;
+        esac
+    fi
     _tolower_ascii "$abs"
     lc="$_TOLOWER_OUT"
     is_temp_or_devnull "$lc" && return 0
@@ -2048,6 +2088,32 @@ _bwimc_chdir_model() {
     else
         _bwimc_ecwd_unres=1
     fi
+}
+# _bwimc_root_model RAW — HIMMEL-4329: a chroot's new root (`chroot RAW`,
+# `sudo -R RAW`) for _bwimc_check_abs. Sets _bwimc_chroot to RAW resolved
+# against the cwd and canonicalised (a root that is a symlink into the primary
+# must not pass as its /tmp spelling), to "" for `/`, and to `$` (unknown, fail
+# closed) for a non-literal RAW, one that does not resolve, or a relative RAW
+# beside another wrapper chdir (which dir it is relative to is ambiguous).
+# ponytail: only the verb-loop targets (_bwimc_check_abs) read the root, so a
+# `tee` behind a wrapper or chroot (arm (a)) is still read on the host only;
+# upgrade path = route arm (a) through _bwimc_strip_prefix (the tee-behind-
+# wrapper leftover named in HIMMEL-4329's PR). An abbreviated `--chr=DIR` is an
+# unknown option, so it already fails closed.
+_bwimc_root_model() {
+    local raw="$1" r
+    _bwimc_chroot='$'
+    case "$raw" in *'$'*|*'`'*|*[*?[]*|*\\*) return 0 ;; esac
+    case "$raw" in
+        /*) ;;
+        *) [ "$_bwimc_ecwd_unres" = 0 ] && { [ -z "$_BWIMC_SPDIR" ] || [ "$_BWIMC_SPDIR" = / ]; } || return 0 ;;
+    esac
+    r=$(_bwimc_resolve_abs "$raw" "$_bwimc_ecwd") || return 0
+    r=$(guard_canon_path "$r" 2>/dev/null) || return 0
+    case "$r" in
+        /) _bwimc_chroot="" ;;
+        /*) _bwimc_chroot="$r" ;;
+    esac
 }
 _bwimc_ecwd_track() {
     local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
@@ -4491,6 +4557,8 @@ _bwimc_ecwd_pushn=0
 _bwimc_spd_on=0
 _bwimc_sub_ecwd=(); _bwimc_sub_unres=(); _bwimc_sub_pushn=(); _bwimc_sub_d=0
 while IFS= read -r _bwimc_clause; do
+    # HIMMEL-4329: a chroot root holds for its own clause only
+    _bwimc_chroot=""
     # HIMMEL-4213: a wrapper chdir (`env -C DIR`) moved the cwd for its own
     # clause only — restore the cwd the clause before it left
     if [ "$_bwimc_spd_on" = 1 ]; then
@@ -4541,6 +4609,8 @@ while IFS= read -r _bwimc_clause; do
         _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SP0")
     fi
     _bwimc_wrap_lc="$_bwimc_clause_lc"; _bwimc_wrap_sp="$_bwimc_clause_sp"
+    # HIMMEL-4329: a chroot root, read against the cwd before its own chdir
+    [ -z "$_BWIMC_SPROOT" ] || _bwimc_root_model "$_BWIMC_SPROOT"
     if [ -n "$_BWIMC_SPDIR" ]; then
         _bwimc_spd_ecwd="$_bwimc_ecwd"; _bwimc_spd_unres="$_bwimc_ecwd_unres"; _bwimc_spd_on=1
         _bwimc_chdir_model "$_BWIMC_SPDIR"
@@ -5484,6 +5554,7 @@ while IFS= read -r _bwimc_clause; do
         _bwimc_check_interp_body "$_bwimc_wrap_sp" wrap
     fi
 done < <(_bwimc_verb_clauses "$_bwimc_hb")
+_bwimc_chroot=""
 done  # HIMMEL-4138 readings
 
 if [ "$_bwimc_sourced" = 1 ]; then
