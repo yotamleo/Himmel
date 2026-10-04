@@ -48,8 +48,26 @@ const CADENCES = [
   { name: 'doctor', script: 'scripts/doctor-cadence.sh', evidence: 'doctor-last', cost: 'none' },
 ];
 
-function repoRoot() {
+function checkoutRoot() {
   return process.env.HIMMELCTL_REPO_ROOT || path.resolve(__dirname, '..', '..', '..');
+}
+// The STATION anchor (HIMMEL-4373): the primary checkout behind a worktree
+// (git-common-dir), else the checkout itself. The report answers "how is this
+// station", so checkout-relative probes judge the anchor, never whichever
+// worktree's bin.js happens to be running. Idempotent: the anchor of an anchor
+// is itself.
+const anchorCache = new Map();
+function repoRoot() {
+  const root = checkoutRoot();
+  if (anchorCache.has(root)) return anchorCache.get(root);
+  let anchor = root;
+  if (fs.existsSync(path.join(root, '.git'))) {
+    const r = spawnSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', timeout: 5000 });
+    const common = r.status === 0 ? r.stdout.trim() : '';
+    if (common && path.basename(common) === '.git') anchor = path.dirname(common);
+  }
+  anchorCache.set(root, anchor);
+  return anchor;
 }
 function scriptRoot() {
   return process.env.HIMMEL_REPORT_CADENCE_ROOT || repoRoot();
@@ -95,7 +113,28 @@ function mtimeIso(p) {
   try { return fs.statSync(p).mtime.toISOString(); } catch { return null; }
 }
 
+// A FAIL/WARN row always tells the operator what to run next (HIMMEL-4373).
+// Used only when the row's own source (detail text, doctor remedy, secrets
+// `obtain`) supplied nothing.
+function fallbackRemedy(o) {
+  const ctl = 'node scripts/himmelctl/bin.js';
+  switch (o.source) {
+    case 'item':
+      return o.id === 'luna-sources'
+        ? `${ctl} status --items luna-sources   # then fix the failing source itself`
+        : `${ctl} ensure --items ${o.id}`;
+    case 'doctor': return `bash scripts/himmel-doctor.sh   # see ${String(o.id).replace(/^doctor:/, '')}`;
+    case 'plugin': return 'bash scripts/machine-setup/plugin-profile.sh list --json';
+    case 'secret': return `set ${String(o.id).replace(/^secret:/, '')} in the environment or the repo .env (see scripts/himmelctl/lib/secrets-manifest.json)`;
+    default: return `${ctl} status`;
+  }
+}
+
 function mkRow(o) {
+  const fix = o.fix || { remedy: '', owner: 'user' };
+  if ((o.health === 'fail' || o.health === 'warn') && !String(fix.remedy || '').trim()) {
+    return mkRow({ ...o, fix: { ...fix, remedy: fallbackRemedy(o) } });
+  }
   return {
     id: o.id,
     source: o.source,
@@ -105,7 +144,7 @@ function mkRow(o) {
     installed: o.installed,
     fires: o.fires || { state: 'unverified', evidence: null, at: null },
     health: o.health,
-    fix: o.fix || { remedy: '', owner: 'user' },
+    fix,
     probedAt: o.probedAt,
     control: o.control || { class: 'display-only' },
     sensitive: o.sensitive === true,
@@ -245,7 +284,7 @@ function cadenceRow(c, ctx) {
     installed: { state, detail: broken ? (String(r.stderr || out).split('\n')[0] || 'status failed') : out.split('\n')[0] },
     fires,
     health: broken ? 'warn' : armed ? 'ok' : 'off',
-    fix: { remedy: armed || broken ? '' : `bash ${c.script} arm`, owner: 'user' },
+    fix: { remedy: broken ? `bash ${c.script} status` : armed ? '' : `bash ${c.script} arm`, owner: 'user' },
     probedAt,
     control: { class: 'toggle', action: armed ? 'cadence.disarm' : 'cadence.arm', target: c.name, consent: 'typed', cost: c.cost },
   });
@@ -431,7 +470,67 @@ function secretRows(ctx) {
 //   are then skipped and the envelope says profileCache:false)
 //   items:   optional row-id list (the --items re-probe); the doctor runs only
 //   when a requested row comes from it.
-function buildFeed({ manifest, scope, targetPath, answers, items }) {
+function buildFeed(args) {
+  // status-report.js and the probes resolve their checkout from this seam, so
+  // pointing it at the station anchor makes every checkout-relative probe judge
+  // the station. Restored even if a probe throws.
+  const prev = process.env.HIMMELCTL_REPO_ROOT;
+  process.env.HIMMELCTL_REPO_ROOT = repoRoot();
+  try {
+    return composeFeed(args);
+  } finally {
+    if (prev === undefined) delete process.env.HIMMELCTL_REPO_ROOT;
+    else process.env.HIMMELCTL_REPO_ROOT = prev;
+  }
+}
+
+// ── one owner per finding (HIMMEL-4373) ──────────────────────────────────
+// A doctor check that restates a fact the status engine owns is dropped from
+// the feed (plain doctor CLI output is unchanged). owner null = the whole
+// status report (C16 summarises every status finding). When the doctor's
+// verdict is WORSE than its owner's, the fold must not mask it: ONE
+// probe-disagree row names both probes and their verdicts.
+const DOCTOR_OWNER = {
+  'C16-status': null,
+  'C19-observability': 'observability-stack',
+  'C28-guardrail-consent': 'guardrail-block-global',
+  'C9-scheduler': 'scheduler-backend',
+  'C30-bridge-liveness': 'bridge-health',
+  'C20-node': 'node',
+};
+const HEALTH_RANK = { fail: 2, warn: 1 };
+
+function foldDoctorRows(rows, probedAt) {
+  const out = [];
+  const disagree = new Map();
+  for (const r of rows) {
+    const did = r.source === 'doctor' ? r.id.replace(/^doctor:/, '') : null;
+    if (!did || !Object.prototype.hasOwnProperty.call(DOCTOR_OWNER, did)) { out.push(r); continue; }
+    const owner = DOCTOR_OWNER[did];
+    const owned = rows.filter((x) => (owner === null ? (x.source === 'item' || x.source === 'cadence') : x.id === owner && x.source === 'item'));
+    if (owned.length === 0) { out.push(r); continue; } // no owner row in this report: nothing to fold into
+    const ownerRank = Math.max(...owned.map((x) => HEALTH_RANK[x.health] || 0));
+    const docRank = HEALTH_RANK[r.health] || 0;
+    if (docRank > ownerRank && !(disagree.has(did) && HEALTH_RANK[disagree.get(did).health] >= docRank)) disagree.set(did, r);
+  }
+  for (const [did, r] of disagree) {
+    const owner = DOCTOR_OWNER[did];
+    const ownerLabel = owner === null ? 'status' : owner;
+    const ownerHealth = owner === null ? 'ok' : rows.find((x) => x.id === owner).health;
+    const msg = `probes disagree: doctor ${did} says ${r.health}, status ${ownerLabel} says ${ownerHealth}`;
+    out.push(mkRow({
+      id: `probe-disagree:${did}`, source: 'doctor', group: 'core', title: msg,
+      declared: { where: `scripts/himmel-doctor.sh#${did}`, desired: 'agree', profile: 'all' },
+      installed: { state: 'degraded', detail: `${msg} (${r.title})` },
+      health: 'warn',
+      fix: { remedy: owner === null ? 'node scripts/himmelctl/bin.js status   # and: bash scripts/himmel-doctor.sh' : `node scripts/himmelctl/bin.js status --items ${owner}   # compare with: bash scripts/himmel-doctor.sh`, owner: 'user' },
+      probedAt,
+    }));
+  }
+  return out;
+}
+
+function composeFeed({ manifest, scope, targetPath, answers, items }) {
   const probedAt = new Date().toISOString();
   const itemIds = items && items.length > 0 ? items : null;
   const foldedIds = new Set(CADENCES.map((c) => `${c.name}-cadence`));
@@ -447,13 +546,15 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
   if (wants('initiative:')) rows = rows.concat(initiativeRows(ctx));
   if (wants('flag:')) rows = rows.concat(flagRows(ctx));
   if (wants('secret:')) rows = rows.concat(secretRows(ctx));
+  rows = foldDoctorRows(rows, probedAt);
   // doctor:run reports a dead or timed-out doctor; an --items filter must not hide it.
   // Ids are shown redacted, so --items matches on the redacted form of both sides.
   const literals = redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env);
   const shown = (id) => redactLib.redactDeep({ id }, { literals }).id;
   if (itemIds) {
     const wanted = itemIds.map(shown);
-    rows = rows.filter((r) => wanted.includes(shown(r.id)) || r.id === 'doctor:run' || r.id === 'plugin:run');
+    rows = rows.filter((r) => wanted.includes(shown(r.id)) || r.id === 'doctor:run' || r.id === 'plugin:run'
+      || (r.id.startsWith('probe-disagree:') && wanted.includes(shown(`doctor:${r.id.slice('probe-disagree:'.length)}`))));
   }
 
   const summary = { total: rows.length, ok: 0, warn: 0, fail: 0, off: 0, info: 0 };
