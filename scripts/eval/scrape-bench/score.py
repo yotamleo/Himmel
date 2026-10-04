@@ -5,7 +5,8 @@ import re
 ERROR_MARKERS = ("access denied", "enable javascript", "just a moment", "captcha",
                  "log in to continue", "sign in to continue", "403 forbidden",
                  "404 not found", "page not found", "are you a robot", "blocked by network security")
-LINK_ONLY = re.compile(r"^\s*(?:[-*+]\s*)?!?\[[^\]]*\]\([^)]*\)\s*$")
+ERROR_WINDOW = 1500
+LINK_ONLY =re.compile(r"^\s*(?:[-*+]\s*)?!?\[[^\]]*\]\([^)]*\)\s*$")
 
 
 MD_LINK = re.compile(r"!?\[([^\]]*)\]\([^)]*\)")
@@ -30,7 +31,9 @@ def boilerplate_ratio(md):
 def score(md, expected_title, phrase):
     md = md or ""
     low = norm(md)
-    error_page = len(md) < 1500 and any(m in low for m in ERROR_MARKERS)
+    # Head window only: a challenge or login page announces itself up front, while
+    # a long article may mention "captcha" or "404 not found" deep in its body.
+    error_page = any(m in low[:ERROR_WINDOW] for m in ERROR_MARKERS)
     return {
         "success": len(md.strip()) >= 200 and not error_page,
         "title_match": norm(expected_title) in low[:5000] if expected_title else False,

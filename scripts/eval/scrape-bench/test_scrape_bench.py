@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sys
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -10,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import agent_reach_adapter  # noqa: E402
 import bench  # noqa: E402
 import local_adapters  # noqa: E402
 import providers  # noqa: E402
@@ -56,6 +58,16 @@ class ScoreTests(unittest.TestCase):
 
     def test_short_error_page_is_not_success(self):
         self.assertFalse(score.score("Access Denied " * 30, "x", "y")["success"])
+
+    def test_long_challenge_page_is_not_success(self):
+        body = "Just a moment...\n\n" + "Checking your browser before accessing the site. " * 80
+        self.assertGreaterEqual(len(body), 1500)
+        self.assertFalse(score.score(body, "x", "y")["success"])
+
+    def test_long_article_with_late_marker_is_success(self):
+        body = GOOD * 6 + "\nA footnote about a 404 not found page.\n"
+        self.assertGreaterEqual(len(body), 1500)
+        self.assertTrue(score.score(body, "x", "y")["success"])
 
     def test_empty_is_not_success(self):
         self.assertFalse(score.score("", "x", "y")["success"])
@@ -149,6 +161,26 @@ class FirecrawlTests(unittest.TestCase):
         self.assertEqual(sum(r["credits"] for r in rows), 0)
 
 
+    def test_transport_error_is_unknown_credits_not_zero(self):
+        p = providers.FirecrawlProvider(5)
+        with mock.patch("urllib.request.urlopen", side_effect=OSError("boom")):
+            rows, _ = RunTests().run_bench(p)
+        self.assertEqual({r["credits_known"] for r in rows}, {False})
+
+    def test_answered_call_and_cap_skip_are_confirmed(self):
+        p = providers.FirecrawlProvider(1)
+        with mock.patch("urllib.request.urlopen", side_effect=lambda *a, **k: fc_response()):
+            rows, _ = RunTests().run_bench(p)
+        self.assertEqual([r["credits_known"] for r in rows], [True, True, True])
+
+    def test_ledger_write_failure_warns_with_class_only(self):
+        with mock.patch.dict(os.environ, {"HIMMEL_FIRECRAWL_LEDGER": "/proc/nope/ledger.jsonl"}):
+            with mock.patch("sys.stderr", io.StringIO()) as err:
+                providers.ledger_append(1, True)
+        self.assertRegex(err.getvalue(), r"^warning: firecrawl ledger write failed \(\w+\)\n$")
+        self.assertNotIn("nope", err.getvalue())
+
+
 class CommandProviderTests(unittest.TestCase):
     def test_stdout_is_markdown(self):
         p = providers.CommandProvider("echoer", "echo {url}")
@@ -180,6 +212,30 @@ class LocalAdapterTests(unittest.TestCase):
         rows, _ = RunTests().run_bench(p)
         self.assertEqual({r["error"] for r in rows}, {"CommandError"})
 
+    def test_command_error_records_err_class(self):
+        p = providers.CommandProvider("h", "sh -c 'echo err=Timeout >&2; exit 1'")
+        rows, _ = RunTests().run_bench(p)
+        self.assertEqual({r["error"] for r in rows}, {"CommandError:Timeout"})
+
+    def test_err_label_is_sanitized(self):
+        p = providers.CommandProvider("h", "sh -c 'echo err=bad/path:secret >&2; exit 1'")
+        rows, _ = RunTests().run_bench(p)
+        self.assertEqual({r["error"] for r in rows}, {"CommandError"})
+
+    def test_adapter_timeout_and_missing_binary_labels(self):
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 1)), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            self.assertEqual(local_adapters.main("lightpanda", "https://x.test/a"), 1)
+        self.assertEqual(err.getvalue(), "err=Timeout\n")
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("x")), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            self.assertEqual(local_adapters.main("scrapling-static", "https://x.test/a"), 1)
+        self.assertEqual(err.getvalue(), "err=MissingBinary\n")
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 1)), \
+                mock.patch("sys.stderr", io.StringIO()) as err:
+            self.assertEqual(agent_reach_adapter.main("https://www.youtube.com/watch?v=x"), 1)
+        self.assertEqual(err.getvalue(), "err=Timeout\n")
+
     def test_scrapling_status_takes_last_fetched_line(self):
         log = "INFO: Fetched (301) <GET a>\nINFO: Fetched (404) <GET b>\n"
         self.assertEqual(local_adapters.scrapling_status(log), 404)
@@ -209,6 +265,12 @@ class RenderTests(unittest.TestCase):
         ]
         out = render.render(rows)
         self.assertIn("| c1 | p | 2 | 50% | 50% | 0% | 0.3 | 500.0 | 2.0 | 2 | 1 needs-auth |", out)
+
+    def test_unknown_credits_render_with_marker(self):
+        rows = [{"category": "c1", "provider": "p", "status": "error", "credits": 0, "credits_known": False,
+                 "success": False, "title_match": False, "phrase_hit": False,
+                 "boilerplate_ratio": 1.0, "length": 0, "latency_s": 1.0}]
+        self.assertIn("| 0+? |", render.render(rows))
 
 
 if __name__ == "__main__":

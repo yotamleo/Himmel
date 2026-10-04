@@ -8,6 +8,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import urllib.request
 from pathlib import Path
 
@@ -28,6 +29,10 @@ class CommandError(RuntimeError):
         super().__init__("exit %d" % returncode)
         m = re.search(r"^http=(\d{3})$", stderr or "", re.M)
         self.code = int(m.group(1)) if m else None
+        # `err=<ClassName>` is the adapters' fixed diagnostic label; the pattern
+        # keeps anything else a stderr line could carry out of the row.
+        m = re.search(r"^err=([a-z][a-z0-9]{0,39})$", stderr or "", re.M | re.I)
+        self.label = m.group(1) if m else None
 
 
 class Provider:
@@ -78,8 +83,8 @@ def ledger_append(credits, ok):
         lp.parent.mkdir(parents=True, exist_ok=True)
         with open(lp, "a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(row) + "\n")
-    except Exception:
-        pass
+    except Exception as e:  # class name only: a message could echo a path
+        sys.stderr.write("warning: firecrawl ledger write failed (%s)\n" % type(e).__name__)
 
 
 class FirecrawlProvider(Provider):
@@ -102,6 +107,7 @@ class FirecrawlProvider(Provider):
         if self.calls >= self.max_calls:
             raise CapReached()
         self.calls += 1
+        self.last_credits = None  # unknown until the API answers: a failed call may still have billed
         req = urllib.request.Request(
             self.BASE + "/v2/scrape",
             data=json.dumps({"url": url, "formats": ["markdown"]}).encode("utf-8"), method="POST",
@@ -146,5 +152,5 @@ class CommandProvider(Provider):
         if p.returncode != 0:
             if "cookie" in err or "login required" in err:
                 raise NeedsAuth()
-            raise CommandError(p.returncode, err)
+            raise CommandError(p.returncode, p.stderr)
         return p.stdout.strip()

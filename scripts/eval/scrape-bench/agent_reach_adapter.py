@@ -68,7 +68,17 @@ def web(url):
 
 
 def main(url):
-    host = (urlparse(url).hostname or "").lower()
+    try:
+        return route(url)
+    except subprocess.TimeoutExpired:
+        sys.stderr.write("err=Timeout\n")
+    except FileNotFoundError:
+        sys.stderr.write("err=MissingBinary\n")
+    return 1
+
+
+def route(url):
+    host =(urlparse(url).hostname or "").lower()
     def on(*domains):
         return any(host == d or host.endswith("." + d) for d in domains)
     if on("youtube.com", "youtu.be"):

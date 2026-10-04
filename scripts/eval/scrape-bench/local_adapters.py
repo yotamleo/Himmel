@@ -7,9 +7,9 @@ Run through the bench's command provider:
 Modes: scrapling-static, scrapling-stealth, lightpanda, camofox. Each prints
 markdown to stdout. On failure it exits 1 and writes one stderr line:
 `http=<code>` (an HTTP status >= 400), which the bench records in the row's
-error field as CommandError:<code>, or `err=<ClassName>`, a diagnostic for a
-human reading stderr that the bench does not record (a timeout or a missing
-binary surfaces as a traceback and a plain CommandError). Binaries come from env (SCRAPLING_BIN,
+error field as CommandError:<code>, or `err=<ClassName>`, which the bench
+records as CommandError:<ClassName> (Timeout, MissingBinary, ScraplingExitN, ...).
+Binaries come from env (SCRAPLING_BIN,
 LIGHTPANDA_BIN, CAMOFOX_URL); nothing here reads a key, cookie or proxy.
 Stdlib only."""
 import json
@@ -103,12 +103,17 @@ def camofox(url):
 
 
 def main(mode, url):
-    if mode.startswith("scrapling-"):
-        return scrapling(mode, url)
-    if mode == "lightpanda":
-        return lightpanda(url)
-    if mode == "camofox":
-        return camofox(url)
+    try:
+        if mode.startswith("scrapling-"):
+            return scrapling(mode, url)
+        if mode == "lightpanda":
+            return lightpanda(url)
+        if mode == "camofox":
+            return camofox(url)
+    except subprocess.TimeoutExpired:
+        return fail(err="Timeout")
+    except FileNotFoundError:
+        return fail(err="MissingBinary")
     return fail(err="UnknownMode")
 
 

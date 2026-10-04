@@ -46,8 +46,12 @@ def run(provider, fixture, out_path, delay=0.0, categories=None, ids=None, sleep
                 row["error"] = type(e).__name__
                 if isinstance(getattr(e, "code", None), int):  # HTTP status, never the message
                     row["error"] += ":%d" % e.code
+                elif getattr(e, "label", None):  # adapter's err=<Class> label, already sanitized
+                    row["error"] += ":" + e.label
             row["latency_s"] = round(clock() - t0, 2)
-            row["credits"] = 0 if row["status"] == "skipped-cap" else getattr(provider, "last_credits", 0)
+            used = 0 if row["status"] == "skipped-cap" else getattr(provider, "last_credits", 0)
+            row["credits_known"] = used is not None  # None = the call may have billed, usage unknown
+            row["credits"] = used or 0
             rows.append(row)
             fh.write(json.dumps(row) + "\n")
             fh.flush()
