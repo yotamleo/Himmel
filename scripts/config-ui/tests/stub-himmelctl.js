@@ -14,7 +14,12 @@ const rows = [
   row("stub-row-three", "ok", "item"),
   row("stub-row-off", "off", "item"),
 ];
-process.stdout.write(JSON.stringify({
+const out = () => process.stdout.write(JSON.stringify({
   schema: "himmel-config-feed/1", generatedAt: "2026-10-04T14:02:00Z", target: { scope: "user", path: "/x" },
   base: "/b", profileCache: true, rows, summary: { total: 4, ok: 1, warn: 1, fail: 1, off: 1, info: 0 },
 }) + "\n");
+// STUB_FEED_SLEEP (ms): answer late, like the real report (~2 min on the station).
+// STUB_FEED_COUNT (file): one line appended per invocation, to count coalescing.
+if (process.env.STUB_FEED_COUNT) require("node:fs").appendFileSync(process.env.STUB_FEED_COUNT, "run\n");
+const wait = Number(process.env.STUB_FEED_SLEEP || 0);
+if (wait > 0) setTimeout(out, wait); else out();

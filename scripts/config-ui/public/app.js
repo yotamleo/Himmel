@@ -39,10 +39,23 @@ async function post(path, body) {
   return { ok: r.ok, status: r.status, j };
 }
 
+// The server answers 202 while its one background report runs (it can take
+// minutes); keep asking, with the token each time, until a terminal answer.
+async function fetchFeed(onWait) {
+  for (;;) {
+    const r = await fetch("/api/feed", { headers: { "X-Himmel-Token": token } });
+    if (r.status !== 202) return r;
+    let j = {};
+    try { j = await r.json(); } catch (_) { /* progress text only */ }
+    onWait(Math.round((j.elapsedMs || 0) / 1000));
+  }
+}
+
 async function loadFeed() {
   try {
-    const r = await fetch("/api/feed", { headers: { "X-Himmel-Token": token } });
+    const r = await fetchFeed((s) => toast(`re-probing… ${s}s`));
     if (r.ok) { feed = await r.json(); paint(); }
+    else toast(`re-probe failed (${r.status})`);
   } catch (_) { toast("re-probe failed: server unreachable"); }
 }
 
@@ -119,9 +132,14 @@ document.addEventListener("keydown", (e) => {
 
 (async () => {
   try {
-    const r = await fetch("/api/feed", { headers: { "X-Himmel-Token": token } });
+    const r = await fetchFeed((s) => { $("#status").textContent = `probing the station… ${s}s (the first report can take a couple of minutes)`; });
     if (r.status === 401) { $("#status").textContent = "Not authorised: open the URL printed by `himmelctl ui` (it carries the session token)."; return; }
-    if (!r.ok) { $("#status").textContent = `Feed failed (${r.status}).`; return; }
+    if (!r.ok) {
+      let why = "";
+      try { why = (await r.json()).reason || ""; } catch (_) { /* status only */ }
+      $("#status").textContent = `Feed failed (${r.status})${why ? ": " + why : ""}. Reload to retry.`;
+      return;
+    }
     feed = await r.json();
     paint();
   } catch (_) { $("#status").textContent = "Server unreachable (it exits after 30 min idle)."; }
