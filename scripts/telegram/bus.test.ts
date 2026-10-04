@@ -354,3 +354,18 @@ test("bus.ts peer-recv drains the backlog and keeps following in ONE command", a
     expect(got).toEqual(["before", "after"]);
   } finally { proc.kill(); }
 }, 15000);
+
+// HIMMEL-1854 (CR codex-1): the cursor must not advance until stdout has accepted the line.
+import { streamEmit } from "./bus";
+test("streamEmit: drainPeerInbox commits the cursor only after the stream write callback fires", async () => {
+  const r = root(); await peerSend(r, "console", "leg-1", "hi");
+  const cbs: Array<(e?: Error | null) => void> = [];
+  const fake = { write: (_s: string, cb: (e?: Error | null) => void) => { cbs.push(cb); return false; } };
+  const cursor = peerInbox(r, "leg-1") + ".cursor";
+  const p = drainPeerInbox(r, "leg-1", streamEmit(fake));
+  await new Promise((res) => setTimeout(res, 50));
+  expect(cbs.length).toBe(1);
+  expect(existsSync(cursor)).toBe(false);
+  cbs[0](null);
+  expect(await p).toBe(1);
+});

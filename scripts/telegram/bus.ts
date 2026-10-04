@@ -279,6 +279,11 @@ export async function drainPeerInbox(root: string, seat: string, emit: (line: st
   return n;
 }
 
+// Resolve only once the stream has accepted the line, so drainPeerInbox's
+// cursor commit never runs ahead of stdout (backpressure, HIMMEL-1854).
+export const streamEmit = (out: { write(s: string, cb: (e?: Error | null) => void): unknown }) =>
+  (line: string) => new Promise<void>((res, rej) => { out.write(line + "\n", (e) => (e ? rej(e) : res())); });
+
 // ponytail: polls the cursor in-process instead of `tail -c +N -F` — the cursor
 // must be committed by the same code that prints (a tail pipe can't advance it
 // at print time, and tail -F around truncateFullyConsumed's rename is fragile);
@@ -288,6 +293,7 @@ export async function drainPeerInbox(root: string, seat: string, emit: (line: st
 // behaviour is a ticket precondition still open (HIMMEL-1854).
 export async function followPeerInbox(root: string, seat: string, emit: (line: string) => void | Promise<void>,
     intervalMs = 1000, signal?: AbortSignal): Promise<void> {
+  // oxlint-disable-next-line eslint/no-unmodified-loop-condition -- signal.aborted is flipped by the caller's AbortController
   while (!signal?.aborted) {
     await drainPeerInbox(root, seat, emit);
     await Bun.sleep(intervalMs);
@@ -308,7 +314,7 @@ if (import.meta.main) {
     const once = rest.includes("--once");
     const i = rest.indexOf("--interval-ms");
     const ms = i >= 0 ? Number(rest[i + 1]) : 1000;
-    const emit = (line: string) => { process.stdout.write(line + "\n"); };
+    const emit = streamEmit(process.stdout);
     try {
       if (once) await drainPeerInbox(defaultRoot(), target, emit);
       else await followPeerInbox(defaultRoot(), target, emit, Number.isFinite(ms) && ms > 0 ? ms : 1000);
