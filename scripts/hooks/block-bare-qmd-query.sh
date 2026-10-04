@@ -475,9 +475,9 @@ FILTPROG='^&?[[:space:]]*(xargs([[:space:]]+-([0rtx]+|[nlps][[:space:]]*[0-9]+))
 FILTDECO='\|&?[[:space:]]*[^[:space:]|;&()<>]*["'\''\\]'
 FILTREDEF='(^|[^[:alnum:]_])(alias|function|hash|enable|path=)|(^|[;&|({][[:space:]]*|(builtin|command|eval|exec)[[:space:]]+)(source|\.)([[:space:]]|$)|\([[:space:]]*\)'
 AWKOPT='(^|[[:space:]])-[^Fv[:space:]]'
-# The rest of a command that opens with a `|` (or `|&`) and then a newline,
-# which qmd_words prints as `;` (a CR before it is a blank).
-PIPENL='^\|&?[[:space:]]*;'
+# A `|` (or `|&`) and then a newline anywhere in the rest of the command; the
+# newline prints as `;` (a CR before it is a blank).
+PIPENL='\|&?[[:space:]]*;'
 # pipe_filter STAGE DEC — succeed when the consumer stage STAGE (qmd_words'
 # text, DEC its decoded bytes) is a plain filter. Its program is matched in
 # DEC too, so a case-folded name (`SED`, `GREP`) is no filter. sed takes only
@@ -776,8 +776,8 @@ qmd_nested() {
         # producer's output: refuse a producer naming a verb. HIMMEL-4245:
         # unless the consumer stage, to the end of this command, is a plain
         # filter (`… | grep -v sh` is no shell).
-        # HIMMEL-4244: a stage another `|` then a newline (printed `;`) follows
-        # runs on into the next line, so it is no filter.
+        # HIMMEL-4244: a stage run on by a later `|` then a newline (printed
+        # `;`) reaches the next line, so it is no filter.
         if [ -n "$piped" ] && [ "$hasc" = 0 ] && { [ "$mode" = sh ] || [ "$mode" = src ]; } &&
             { [[ ${w:e} =~ $PIPENL ]] || ! pipe_filter "${w:piped+1:e-piped-1}" "${dec:piped+1:e-piped-1}"; } &&
             names_verb "${dec:pfrom+1:piped-pfrom-1}"; then
