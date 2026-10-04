@@ -938,11 +938,13 @@ class InstagramGuardTests(unittest.TestCase):
         for leaked in ("short", "abc", "one", "secret", "k=v", "x=y", "tiny", "dXNlcjpwYXNz", "Basic"):
             self.assertNotIn(leaked, r.reason)
 
-    def test_an_error_line_drops_its_query_string(self):
-        err = "[instagram][error] HttpError: '401' for url: https://x/y?sessionid=SECRETVALUE&a=b"  # gitleaks:allow
+    def test_an_error_line_never_carries_a_url_part(self):
+        err = ("[instagram][error] HttpError: '401' for url: https://user:SECRETUSERINFO@x/y?sessionid=SECRETQUERY&a=b#SECRETFRAG"  # gitleaks:allow
+               " and http://z/p")
         r = self.probe("instagram-media", command=self.command(1, err))
         self.assertIn("HttpError: '401'", r.reason)
-        self.assertNotIn("SECRETVALUE", r.reason)
+        for leaked in ("SECRETUSERINFO", "SECRETQUERY", "SECRETFRAG", "http"):
+            self.assertNotIn(leaked, r.reason)
 
     def test_the_error_line_is_bounded(self):
         r = self.probe("instagram-media", command=self.command(1, "[instagram][error] " + "x" * 5000))

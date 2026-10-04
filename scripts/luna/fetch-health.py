@@ -226,14 +226,16 @@ STDERR_LINE_CHARS = 200
 # Allowlist, not a redactor (HIMMEL-4374): only a gallery-dl `[module][error] message`
 # line is ever surfaced; any other stderr is dropped, so it cannot leak a secret.
 _ERROR_LINE = re.compile(r"^\[[A-Za-z0-9_.-]+\]\[error\] (.+)$")
+# A whole URL (userinfo, query and fragment included) is replaced, never trimmed.
+_URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S*")
 
 
 def error_line(stderr: str) -> str:
-    """The last `[module][error] message` line, query strings dropped, capped."""
+    """The last `[module][error] message` line, every URL replaced, capped."""
     for line in reversed((stderr or "").splitlines()):
         m = _ERROR_LINE.match(line.strip())
         if m:
-            return re.sub(r"\?\S*", "", m.group(1))[:STDERR_LINE_CHARS]
+            return _URL.sub("<url>", m.group(1))[:STDERR_LINE_CHARS]
     return ""
 
 
