@@ -1346,6 +1346,51 @@ for F in "bash -eo errexit g?.sh" "bash +eo errexit g?.sh" "bash -Oe extglob g?.
     assert_deny "4157 cd then clustered -o value, slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
 done
 assert_allow "4157 clustered -o value on a plain basename" "$(j "export FOO=1; bash -eo errexit go.sh")"
+# J1685d: a glob word that cannot run (an inert reader's argument, a quoted
+# sed/awk/rg script) beside a seam name is everyday text, not a hidden anchor.
+assert_allow "4157 queue-lock sweep piped to a sed regex" "$(j "HANDOVER_DIR=/home/u/handovers bash /home/u/himmel/scripts/handover/queue-lock.sh status --sweep /home/u/handovers | sed 's/.*session=//'")"
+assert_allow "4157 export seam then ls glob" "$(j 'export HANDOVER_DIR=/tmp/h; ls docs/*.md')"
+# shellcheck disable=SC2016 # $HIMMEL_CONSOLE_LEG is probe text, not an expansion
+assert_allow "4157 echo the leg marker then ls glob" "$(j 'echo $HIMMEL_CONSOLE_LEG; ls src/*.ts')"
+assert_allow "4157 grep the leg marker, grep -v a quoted pattern" "$(j "grep -rn HIMMEL_CONSOLE_LEG docs/ | grep -v '^./docs/'")"
+assert_allow "4157 awk program with a path regex" "$(j "unset HIMMEL_CONSOLE_LEG; awk '/x\\/(y|z)*/ {print}' f")"
+SWEEP="HANDOVER_DIR=/home/u/handovers bash /home/u/himmel/scripts/handover/queue-lock.sh status --sweep /home/u/handovers"
+assert_allow "4157 sweep, grep -oE a quoted alternation" "$(j "$SWEEP 2>&1 | grep -oE 'N1(4[89]|5[0-4])[^ ]* session=[^ ]+'")"
+assert_allow "4157 sweep, sed -E capture groups" "$(j "$SWEEP | sed -E 's/.*(N2[0-9]+).*session=([^ ]*).*/\\1 \\2/'")"
+assert_allow "4157 sweep beside an unquoted ls glob" "$(j "ls /tmp/s/N27[67].launch.log; $SWEEP")"
+assert_allow "4157 sweep inside a function definition" "$(j "S() { $SWEEP 2>&1; }; S | grep -E 'N27[67]'")"
+assert_allow "4157 heredoc prose append beside the sweep" "$(j "cat >> /tmp/h.md <<'EOF'
+- ran \`x*.sh\` (gr(ouping)) and \$(y?)
+EOF
+$SWEEP")"
+assert_allow "4157 python reading quoted globs beside a seam" "$(j "unset HIMMEL_CONSOLE_LEG; python3 -c 'print(\"a/*.md\")'")"
+assert_allow "4157 bash on a literal script with a backtick message" "$(j "HANDOVER_DIR=/h bash /r/w/scripts/handover/auto-commit.sh \"x: \`N38\` merged (y) a/*\"")"
+assert_allow "4157 a log written then grepped beside a shell" "$(j "HANDOVER_DIR=/h bash /r/x.sh > /t/out.log 2>&1; grep -E 'a|b*' /t/out.log")"
+assert_allow "4157 find with quoted -name patterns" "$(j "unset HIMMEL_CONSOLE_LEG; find /r -path '*.locks/go*' -iname '*.md'")"
+assert_allow "4157 git grep with a quoted alternation" "$(j "unset HIMMEL_CONSOLE_LEG; git grep -n -iE 'a|/home/[a-z]+' -- docs")"
+# ... but an inert reader's output that becomes code still counts, as does
+# a hidden-anchor word in command position or an unquoted sed/rg operand.
+for F in "echo /r/w/scrip?s/$CK/g?.sh | sh" "printf %s /r/w/scrip?s/$CK/g?.sh | env bash" \
+         "\$(echo /r/w/scrip?s/$CK/g?.sh)" "\`ls /r/w/scrip?s/$CK/g?.sh\`" "eval \$(echo /r/w/scrip?s/$CK/g?.sh)" \
+         "source <(cat /r/w/scrip?s/$CK/g?.sh)" "ls /r/w/scrip?s/$CK/g?.sh | xargs bash" \
+         "rg --pre /r/w/scrip?s/$CK/g?.sh x ." "(/r/w/scrip?s/$CK/g?.sh)" "nohup /r/w/scrip?s/$CK/g?.sh" \
+         "true && /r/w/scrip?s/$CK/g?.sh" "cat x; FOO=1 /r/w/scr(ipts)/$CK/g(o).sh" \
+         "(ls /r/w/scrip?s/$CK/g?.sh) | sh" "{ echo /r/w/scrip?s/$CK/g?.sh; } | sh" \
+         "for f in x; do echo /r/w/scrip?s/$CK/g?.sh; done | sh" "ls /r/w/scrip?s/$CK/g?.sh | while read f; do \$f; done" \
+         "printf -v c %s /r/w/scrip?s/$CK/g?.sh; \$c" "bash -c '/r/w/scrip?s/$CK/g?.sh'" \
+         "echo /r/w/scrip?s/$CK/g?.sh > /t/r.sh; bash /t/r.sh" "echo /r/w/scrip?s/$CK/g?.sh > /t/r.sh; . /t/r.sh" \
+         "echo /r/w/scrip?s/$CK/g?.sh > /t/r.sh; chmod +x /t/r.sh; /t/r.sh" \
+         "sed 's|^|/r/w/scrip?s/$CK/|;e' f" "awk 'BEGIN{system(\"/r/w/scrip?s/$CK/g?.sh\")}'" \
+         "T=\$(ls /r/w/scrip?s/$CK/g?.sh); \$T" "x=\$(echo '/r/w/scrip?s/$CK/g?.sh'); \$x" \
+         "cat <<EOF | bash /dev/stdin
+/r/w/scrip?s/$CK/g?.sh
+EOF" "cat <<EOF | sh
+/r/w/scrip?s/$CK/g?.sh
+EOF" "python3 -c 'import os; os.system(\"/r/w/scrip?s/$CK/g?.sh\")'" \
+         "grep() { bash \"\$@\"; }; grep /r/w/scrip?s/$CK/g?.sh" "PATH=/t:\$PATH; ls /r/w/scrip?s/$CK/g?.sh" \
+         "find /r/w -path '/r/w/scrip?s/$CK/g?.sh' -exec sh {} \\;" "/usr/bin/env /r/w/scrip?s/$CK/g?.sh"; do
+    assert_deny "4157 inert-reader exemption does not reach: $F" "$(j "$UL true; $F")"
+done
 # A keyword, precommand, assignment prefix or $( also puts source/. in
 # command position (CR on #1685: then source g*.sh).
 for F in "source g*.sh" ". g?.sh" "if true; then source g*.sh; fi" "while :; do . g?.sh; done" \

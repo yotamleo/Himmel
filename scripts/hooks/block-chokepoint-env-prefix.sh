@@ -1033,6 +1033,340 @@ seam_assigned() {
     return 1
 }
 
+# pobf_word <text> -- rc 0 when <text> holds a path word (one with a `/`) with a
+# glob, grouping or extendedglob metachar in any segment: the HIMMEL-4157
+# anchor-less test. Only a leading `~` (home) or `#` (comment) is exempt, and
+# `$(` / `${` are expansions, not groupings. Caller holds `set -f`.
+pobf_word() {
+    local w
+    for w in ${1//[;|&<>]/ }; do
+        case "$w" in */*) ;; *) continue ;; esac
+        w=${w//\$\(/}
+        w=${w//\$\{/}
+        case "${w#[#~]}" in *[\*\?\[\{\(\#^\~]*) return 0 ;; esac
+    done
+    return 1
+}
+
+# pobf_tok -- pobf_relief's helper: close the quoted body into a token.
+pobf_tok() {
+    if [ -n "$body" ]; then TOK[n]=$body; F="$F$T1$n$T1"; n=$((n + 1)); fi
+    body=''
+}
+
+# pobf_exp -- pobf_relief's helper: put the token bodies back into $1.
+pobf_exp() {
+    local x=$1 k=0
+    while [ "$k" -lt "$n" ]; do
+        case "$x" in *"$T1$k$T1"*) x=${x//"$T1$k$T1"/"${TOK[k]}"} ;; esac
+        k=$((k + 1))
+    done
+    printf '%s' "$x"
+}
+
+# Every command name pobf_relief gives relief to; a function may not shadow one.
+POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du jq basename dirname realpath readlink test tr column nl tac rev fold fmt paste rm find git bash sh zsh dash ksh mksh gh printf sort rg sed gsed awk gawk mawk python python3 node perl ruby command builtin time'
+
+# pobf_relief <raw text> -- HIMMEL-4157 over-deny relief (judge J1685d: the
+# anchor-less arm denied 134 of 164 HANDOVER_DIR history rows, because its
+# quote-blind word split counted quoted sed/grep regexes, python programs and
+# heredoc prose as path words). Runs ONLY when that arm is about to deny and
+# only when the shell-operand form did not match, so it costs nothing on the
+# common path. rc 0 (relief: allow) when no path word with a metachar stands
+# where something can run or glob-expand it into a command; rc 1 (no relief:
+# deny as before) on anything it cannot model.
+# It reads quotes and heredocs: each '..', "..", $'..' body and each heredoc
+# body becomes a token. The text is split into stages at ; && || | & NL and
+# at $( ( ) and backticks; the text after a substitution continues the stage
+# it interrupted. Per stage, by its command word:
+#   - a read-only program (ls cat grep head tail wc echo diff cut stat jq rm
+#     ..., printf without -v, sort without --compress, rg without --pre, sed
+#     without e, awk without system/getline/a pipe, find without -exec/-ok/
+#     -fprint, git grep/log/show/status/ls-files/rev-parse, a shell running a
+#     LITERAL script file) skips its words and tokens;
+#   - gh (no extension/codespace/ssh/browse) and python/node/perl/ruby with no
+#     exec, import or spawn word skip only their tokens;
+#   - anything else is scanned like the old split, tokens included
+#     (bash -c 'g?.sh', eval, cat <<EOF | sh).
+# Inside $( ) or backticks a read-only stage still has its words scanned, and
+# echo/printf/cat its tokens too: that output may become a command word.
+# Every stage is scanned (no relief anywhere) when a stage pipes into
+# anything but a read-only program (| sh, | xargs, | while read, a
+# compound's `done | sh`), or when a file written by a redirect is run again:
+# a command word ending in its name, or its name beside a shell, source, `.`,
+# exec, eval, xargs, env, nohup, setsid or timeout word.
+# No relief at all on: an unquoted heredoc body with $( or a backtick,
+# <( >( =(, a paren glued to a word (zsh grouping, extglob), alias, function,
+# hash, enable, a `name() {` that shadows a relief name, a PATH/LD_*/IFS/
+# BASH_ENV/ENV/ZDOTDIR assignment, or an unterminated quote or heredoc.
+# ponytail: an allowed interpreter can still assemble a path with no
+# metachar, and the read-only set is a closed list a new exec-capable
+# option would slip past; the HIMMEL-3930 structural parse replaces this.
+# '$(' and '\' below are literal case patterns, not missed expansions.
+# shellcheck disable=SC2016,SC1003
+pobf_relief() {
+    local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' hasSh=0
+    local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO
+    local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' TAB=$'\t'
+    local re_sq="^([^${SQ}]*)${SQ}(.*)\$"
+    local re_dq="^([^${DQ}\\\\\$${BQ}]*)(.*)\$"
+    local re_an="^(([^${SQ}\\\\]|\\\\.)*)${SQ}(.*)\$"
+    local re_uq="^([^${SQ}${DQ}\\\\\$#<()${BQ}]*)(.*)\$"
+    local re_hd="^<<(-?)[[:blank:]]*(${SQ}([^${SQ}]*)${SQ}|${DQ}([^${DQ}]*)${DQ}|\\\\?([^][:blank:];|&<>()${SQ}${DQ}\\\\]+))(.*)\$"
+    local re_sp="^([^\$();&|${BQ}${NL}]*)(.*)\$"
+    local re_wr=">[>|]?[[:blank:]]*([^[:blank:];|&()<>${NL}]*)"
+    local re_pa="[^][:blank:];|&()\$<>${BQ}=${NL}]\\(|\\)[^][:blank:];|&()<>${BQ}${NL}]"
+    local re_eq="(^|[[:blank:];|&(${NL}])=\\("
+    local re_fn="(^|[[:blank:];|&${NL}])([A-Za-z_][A-Za-z0-9_-]*)\\(\\)[[:blank:]]*\\{"
+    local re_dw="(^|[^[:alnum:]_])(alias|unalias|function|hash|enable|disable|zmodload|autoload)([^[:alnum:]_]|\$)"
+    local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
+    local re_sh="(^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source|exec|eval|chmod|install)([^[:alnum:]_.-]|\$)|(^|[;|&(${NL}])[[:blank:]]*\\.[[:blank:]]"
+    local re_se="(^|[;{}[:space:]])e([[:space:];}]|\$)|/[gpiImM0-9]*e[gpiImM0-9]*([[:space:];}]|\$)"
+    local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
+    case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
+    t=${t//\\$NL/}
+    while IFS= read -r L; do
+        if [ "$hi" -lt "$hn" ]; then
+            cmp=$L
+            [ "${HDASH[hi]}" = - ] && cmp=${L#"${L%%[!"$TAB"]*}"}
+            if [ "$cmp" = "${HD[hi]}" ]; then
+                TOK[HIX[hi]]=$hb; hb=''; hi=$((hi + 1))
+                continue
+            fi
+            if [ "${HQ[hi]}" = 0 ]; then
+                case "$L" in *'$('*|*"$BQ"*) return 1 ;; esac
+            fi
+            hb="$hb$L$NL"
+            continue
+        fi
+        rest=$L
+        while [ -n "$rest" ]; do
+            q=${md#"${md%?}"}
+            case "$q" in
+                S)
+                    if [[ $rest =~ $re_sq ]]; then
+                        body="$body${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}; md=${md%?}; pobf_tok
+                    else body="$body$rest"; rest=''; fi
+                    continue ;;
+                A)
+                    if [[ $rest =~ $re_an ]]; then
+                        body="$body${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[3]}; md=${md%?}; pobf_tok
+                    else body="$body$rest"; rest=''; fi
+                    continue ;;
+                D)
+                    [[ $rest =~ $re_dq ]]
+                    body="$body${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}
+                    case "$rest" in
+                        '') ;;
+                        "$DQ"*) md=${md%?}; pobf_tok; rest=${rest#?} ;;
+                        '\'*) body="$body${rest:0:2}"; rest=${rest#??} ;;
+                        '$('*) pobf_tok; md="${md}C"; F="$F \$("; rest=${rest#??} ;;
+                        "$BQ"*) pobf_tok; md="${md}B"; F="$F $BQ"; rest=${rest#?} ;;
+                        *) body="$body${rest:0:1}"; rest=${rest#?} ;;
+                    esac
+                    continue ;;
+            esac
+            # Unquoted: U top level, C inside $( ), P a ( inside it, B backticks.
+            [[ $rest =~ $re_uq ]]
+            F="$F${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}
+            case "$rest" in
+                '') ;;
+                "$SQ"*) md="${md}S"; rest=${rest#?} ;;
+                "$DQ"*) md="${md}D"; rest=${rest#?} ;;
+                '$'"$SQ"*) md="${md}A"; rest=${rest#??} ;;
+                '$('*) md="${md}C"; F="$F\$("; rest=${rest#??} ;;
+                '$'*) F="$F\$"; rest=${rest#?} ;;
+                '\'*) F="$F${rest:0:2}"; rest=${rest#??} ;;
+                '#'*)
+                    case "$F" in
+                        ''|*[[:blank:]\;\|\&\(\)]|*"$NL"|*"$BQ") rest='' ;;
+                        *) F="$F#"; rest=${rest#?} ;;
+                    esac ;;
+                '('*) case "$q" in C|P) md="${md}P" ;; esac; F="$F("; rest=${rest#?} ;;
+                ')'*)
+                    F="$F)"; rest=${rest#?}
+                    case "$q" in C|P) md=${md%?}; case "$md" in *D) F="$F " ;; esac ;; esac ;;
+                "$BQ"*)
+                    F="$F$BQ"; rest=${rest#?}
+                    if [ "$q" = B ]; then
+                        md=${md%?}; case "$md" in *D) F="$F " ;; esac
+                    else md="${md}B"; fi ;;
+                '<<<'*) F="$F<<<"; rest=${rest#???} ;;
+                '<<'*)
+                    [[ $rest =~ $re_hd ]] || return 1
+                    HDASH[hn]=${BASH_REMATCH[1]}
+                    HD[hn]="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
+                    case "${BASH_REMATCH[2]}" in "$SQ"*|"$DQ"*|'\'*) HQ[hn]=1 ;; *) HQ[hn]=0 ;; esac
+                    rest=${BASH_REMATCH[6]}
+                    HIX[hn]=$n; TOK[n]=''; F="$F $T1$n$T1 "; n=$((n + 1)); hn=$((hn + 1)) ;;
+                *) F="$F${rest:0:1}"; rest=${rest#?} ;;
+            esac
+        done
+        [ "$hi" -lt "$hn" ] && [ "$md" != U ] && return 1
+        case "$md" in
+            *[SDA]) body="$body$NL" ;;
+            *) F="$F$NL" ;;
+        esac
+    done <<< "$t"
+    [ "$md" = U ] && [ "$hi" = "$hn" ] || return 1
+    case "$F" in *'<('*|*'>('*) return 1 ;; esac
+    # A `name() {` definition is no grouping; it is dropped (a call to it is
+    # then an unknown command, scanned), unless it shadows a relief name.
+    while [[ $F =~ $re_fn ]]; do
+        case " $POBF_NAMES " in *" ${BASH_REMATCH[2]} "*) return 1 ;; esac
+        F=${F/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}{"}
+    done
+    [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
+    [[ $F =~ $re_sh ]] && hasSh=1
+    F=${F//[0-9]>&[0-9]/ }
+    F=${F//>&[0-9]/ }
+    F=${F//[0-9]>&-/ }
+    F=${F//>&-/ }
+    F=${F//<&[0-9]/ }
+    F=${F//&>/>}
+    F=${F//|&/|}
+    # Split into stages: ST text, SP 1 when it pipes into the next stage, SS 1
+    # inside $( ) or backticks (its output may become a command word), CO the
+    # stage a substitution interrupted (the text after it continues that one).
+    rest=$F; s=''; i=0; ostk=''; bqi=0
+    while :; do
+        [[ $rest =~ $re_sp ]]
+        s="$s${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}
+        case "$rest" in '$'[!\(]*|'$') s="$s\$"; rest=${rest#?}; continue ;; esac
+        sub=0; case "$stack" in *S*) sub=1 ;; esac
+        [ "$bq" = 1 ] && sub=1
+        ST[i]=$s; SS[i]=$sub; SP[i]=0; s=''
+        [ -z "${CO[i]-}" ] && CO[i]=-1
+        case "$rest" in
+            '') i=$((i + 1)); break ;;
+            '$(('*) stack="PP$stack"; ostk="- - $ostk"; rest=${rest#???} ;;
+            '$('*) stack="S$stack"; ostk="$i $ostk"; rest=${rest#??} ;;
+            '('*) stack="P$stack"; ostk="- $ostk"; rest=${rest#?} ;;
+            ')'*)
+                stack=${stack#?}; w=${ostk%% *}; ostk=${ostk#* }
+                case "$w" in -|'') ;; *) CO[i + 1]=$w ;; esac
+                rest=${rest#?} ;;
+            "$BQ"*)
+                if [ "$bq" = 0 ]; then bqi=$i; else CO[i + 1]=$bqi; fi
+                bq=$((1 - bq)); rest=${rest#?} ;;
+            '||'*|'&&'*|';;'*) rest=${rest#??} ;;
+            '|'*) SP[i]=1; rest=${rest#?} ;;
+            *) rest=${rest#?} ;;
+        esac
+        i=$((i + 1))
+    done
+    # Class per stage: 2 = skip words and tokens, 1 = skip tokens, 0 = scan.
+    j=0
+    while [ "$j" -lt "$i" ]; do
+        s=${ST[j]//[<>]/ }
+        c=''; c2=''
+        for w in $s; do
+            [ -n "$c" ] && { c2=$w; break; }
+            case "$w" in
+                if|then|do|else|elif|while|until|'!'|'{'|'}'|time|command|builtin) continue ;;
+            esac
+            [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]] && continue
+            c=$w
+        done
+        case "$c" in /bin/*|/usr/bin/*) c=${c##*/} ;; esac
+        x=${ST[j]}
+        k=0
+        while [ "$k" -lt "$n" ]; do
+            case "$x" in *"$T1$k$T1"*) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;; esac
+            k=$((k + 1))
+        done
+        cls=0
+        FL[j]=0
+        case "$c" in
+            ls|cat|grep|egrep|fgrep|head|tail|wc|echo|diff|uniq|cut|stat|file|du|jq|basename|dirname|realpath|readlink|test|'['|tr|column|nl|tac|rev|fold|fmt|paste|rm) cls=2 ;;
+            find) case "$x" in *-exec*|*-ok*|*-fprint*|*-fls*) ;; *) cls=2 ;; esac ;;
+            git) case "$c2" in
+                     grep|log|show|status|ls-files|rev-parse)
+                         case "$x" in *--ext-diff*|*--textconv*|*--output*) ;; *) cls=2 ;; esac ;;
+                 esac ;;
+            # A shell running a LITERAL script file (no metachar, no option, no
+            # -c, not /dev or /proc) takes its args and stdin as data, like any
+            # program; a script that runs its args is a self-authored wrapper,
+            # which no text layer sees anyway (header: posture, not exploit).
+            bash|sh|zsh|dash|ksh|mksh)
+                case "$c2" in -*|''|/dev/*|/proc/*) ;; *) [[ $c2 =~ ^[A-Za-z0-9_./+-]+$ ]] && cls=2 ;; esac ;;
+            gh) [[ $x =~ extension|ext[[:space:]]|codespace|ssh|browse ]] || cls=1 ;;
+            printf) case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
+            sort) case "$x" in *--compress*) ;; *) cls=2 ;; esac ;;
+            rg) case "$x" in *--pre*) ;; *) cls=2 ;; esac ;;
+            sed|gsed) [[ $x =~ $re_se ]] || cls=2 ;;
+            awk|gawk|mawk) case "$x" in *system*|*getline*|*'|'[[:blank:]]*'"'*|*'|"'*|*'|&'*) ;; *) cls=2 ;; esac ;;
+            python|python3|node|perl|ruby) [[ $x =~ $re_ix ]] || cls=1 ;;
+        esac
+        if [ "${CO[j]-}" -ge 0 ] 2>/dev/null && [ "${CO[j]}" -lt "$j" ]; then
+            cls=${CL[CO[j]]}; c=${CW[CO[j]]}; c2=${C2[CO[j]]}
+        fi
+        CL[j]=$cls; CW[j]=$c; C2[j]=$c2
+        [ "$cls" = 2 ] && FL[j]=1
+        j=$((j + 1))
+    done
+    # Global: a pipe into anything but a read-only filter (sh, xargs, while,
+    # tee, a compound's `done | sh`), or a file written and named again beside
+    # a shell word (bash f, . f, ./f), voids every stage's relief.
+    nf=0
+    j=1
+    while [ "$j" -lt "$i" ]; do
+        [ "${SP[j - 1]}" = 1 ] && [ "${FL[j]}" = 0 ] && nf=1
+        j=$((j + 1))
+    done
+    if [ "$hasSh" = 1 ]; then
+        x=$F
+        while [[ $x =~ $re_wr ]]; do
+            w=${BASH_REMATCH[1]}
+            x=${x/>/ }
+            case "$w" in /dev/null|/dev/stderr|/dev/stdout|/dev/tty) continue ;; esac
+            w=$(pobf_exp "$w"); w=${w##*/}
+            [ -z "$w" ] && { nf=1; break; }
+            j=0
+            while [ "$j" -lt "$i" ]; do
+                c=$(pobf_exp "${CW[j]}")
+                case "$c" in
+                    *"$w") nf=1 ;;
+                    bash|sh|zsh|dash|ksh|mksh|source|.|exec|eval|xargs|env|nohup|setsid|timeout)
+                        # A literal script's later words are its data.
+                        s=${ST[j]}
+                        [ "${CL[j]}" = 2 ] && s=${C2[j]}
+                        while [[ $s =~ $re_wr ]]; do s=${s/"${BASH_REMATCH[0]}"/ }; done
+                        case "$(pobf_exp "$s")" in *"$w"*) nf=1 ;; esac ;;
+                esac
+                j=$((j + 1))
+            done
+        done
+    fi
+    j=0
+    while [ "$j" -lt "$i" ]; do
+        cls=${CL[j]}
+        [ "$nf" = 1 ] && cls=0
+        # Inside $( ) or backticks the output may become a command word: an
+        # unquoted word is scanned; so is an echo/printf/cat token, whose text
+        # IS the output.
+        if [ "${SS[j]}" = 1 ] && [ "$cls" = 2 ]; then
+            cls=1
+            case "${CW[j]}" in echo|printf|cat) cls=0 ;; esac
+        fi
+        x=${ST[j]}
+        case "$cls" in
+            2) ;;
+            1) k=0
+               while [ "$k" -lt "$n" ]; do x=${x//"$T1$k$T1"/ }; k=$((k + 1)); done
+               pobf_word "$x" && return 1 ;;
+            *) k=0
+               while [ "$k" -lt "$n" ]; do
+                   case "$x" in *"$T1$k$T1"*) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;; esac
+                   k=$((k + 1))
+               done
+               pobf_word "$x" && return 1 ;;
+        esac
+        j=$((j + 1))
+    done
+    return 0
+}
+
 # raw_obfuscated <raw text> -- HIMMEL-3921 text layer, run on the UNTOUCHED
 # command. Deny-leaning and parse-free on purpose: every special-case parse
 # rule in a guard became a bypass (PR 1494/1501/1508), so this is a plain scan.
@@ -1052,7 +1386,7 @@ seam_assigned() {
 # -i) beside an anchor-less path, and zsh <-> numeric ranges (the tr splits
 # at <); close them with the structural guard once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d u kw ov cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 SQ="'"
+    local t="$1" w rest v wv clr d u kw ov cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 so=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
@@ -1136,7 +1470,7 @@ raw_obfuscated() {
     # An option value may be quoted, blanks and all (-o "errexit"); each
     # o/O in a short cluster takes its own value (-eo errexit, -oo a b).
     ov="(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ}|[^[:blank:]\"$SQ]+)+"
-    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][^-c[:blank:]]*[oO][^c[:blank:]]*([[:blank:]]+${ov})+|--(rcfile|init-file)[[:blank:]]+${ov}|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && pobf=1
+    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][^-c[:blank:]]*[oO][^c[:blank:]]*([[:blank:]]+${ov})+|--(rcfile|init-file)[[:blank:]]+${ov}|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && so=1 && pobf=1
     [ "$obf$pobf" = 00 ] && return 0
     clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     if [ "$obf" = 0 ]; then
@@ -1179,6 +1513,13 @@ raw_obfuscated() {
             [[ $u =~ ${nl}(unset|export|read|declare|typeset|local|readonly|let|mapfile|readarray|getopts|for|select|-[[:alnum:]]*[vun]|--unset)([=[:blank:]]${seg})?[^[:alnum:]_]${v}([^[:alnum:]_]|$) ]] && write=1
         done
         [ "$write" = 1 ] || return 0
+        # HIMMEL-4157 (J1685d): a glob handed to a shell or source gets no
+        # relief; a glob path word only where pobf_relief cannot clear it.
+        if [ "$so" = 0 ]; then
+            set -f
+            pobf_relief "$t" && { set +f; return 0; }
+            set +f
+        fi
         deny_text_layer "names a seam or clears the environment beside a path with a glob or grouping in a segment"
     fi
     # ponytail: the verb scan also matches inside a quoted argument value
