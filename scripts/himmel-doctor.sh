@@ -3450,6 +3450,53 @@ check_c48_tmp_usage() {
     fi
 }
 
+# --- C51-firecrawl-parked (HIMMEL-4371) ------------------------------------------
+# Items parked because Firecrawl was unavailable (credits exhausted, rate-limited).
+# Folds the enveloped state file the harvest tool and follow-web write: `parked`
+# adds, `resolved` removes, `available` clears the status and follow-web rows.
+# A harvest item whose vault file is gone no longer counts. doctor-cadence diffs
+# this WARN between runs and DMs once for a new one (HIMMEL-4251).
+# Seam: HIMMEL_FIRECRAWL_PARKED (the state file).
+check_c51_firecrawl_parked() {
+    local f="${HIMMEL_FIRECRAWL_PARKED:-$HOME/.himmel/state/firecrawl-parked.jsonl}" now
+    if [ ! -f "$f" ] || ! command -v jq >/dev/null 2>&1; then
+        emit OK C51-firecrawl-parked "no Firecrawl-parked items"
+        return 0
+    fi
+    local parked status reason reset n=0 vault item site
+    # parked: unresolved rows as tab lines (site, vault, item); status: last unavailable/available row.
+    parked="$(jq -rRs '
+        [split("\n")[] | (try fromjson catch empty) | select(type == "object")] as $rows
+        | reduce $rows[] as $r ({items: {}, st: null};
+            if   $r.kind == "parked"      then .items[(($r.vault // "") + "\u0000" + ($r.item // ""))] = $r
+            elif $r.kind == "resolved"    then del(.items[(($r.vault // "") + "\u0000" + ($r.item // ""))])
+            elif $r.kind == "unavailable" then .st = $r
+            elif $r.kind == "available"   then .st = null | .items |= with_entries(select(.value.call_site != "follow-web"))
+            else . end)
+        | (.items | to_entries[] | .value | [(.call_site // ""), (.vault // ""), (.item // "")] | @tsv),
+          "STATUS\t" + (.st.reason // "") + "\t" + (.st.reset // "")
+    ' "$f" 2>/dev/null)"
+    status="$(printf '%s\n' "$parked" | awk -F'\t' '$1=="STATUS" {print $2 "\t" $3}' | tail -1)"
+    reason="${status%%$'\t'*}"; reset="${status#*$'\t'}"
+    while IFS=$'\t' read -r site vault item; do
+        if [ -z "$site" ] || [ "$site" = STATUS ]; then continue; fi
+        # a harvest item whose clip file is gone is resolved by the next harvest as `gone`
+        if [ "$site" = follow-web ] || [ -f "$vault/$item" ]; then n=$((n+1)); fi
+    done <<< "$parked"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ "$n" -eq 0 ]; then
+        # unavailable with nothing parked: only worth a WARN while the reset is still ahead
+        if [ -n "$reason" ] && [ -n "$reset" ] && [[ "$reset" > "$now" ]]; then
+            emit WARN C51-firecrawl-parked "Firecrawl unavailable ($reason), no items parked yet" "credits return around ${reset%%T*}; harvests skip Firecrawl until then"
+        else
+            emit OK C51-firecrawl-parked "no Firecrawl-parked items"
+        fi
+        return 0
+    fi
+    local rd="${reset%%T*}"
+    emit WARN C51-firecrawl-parked "$n item(s) parked: Firecrawl unavailable (${reason:-unknown})" "parked items retry automatically on the next harvest once credits return (reset ${rd:-unknown})"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3503,6 +3550,7 @@ check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
 check_c48_tmp_usage
 check_c49_qmd_embed_model
 check_c50_qmd_fork_stamp
+check_c51_firecrawl_parked
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

@@ -26,6 +26,7 @@
 // and repo/followers claims (owned by other rungs) are never web-checked.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
@@ -197,7 +198,7 @@ export function chainWebFns(fns) {
  * HIMMEL_FIRECRAWL_LEDGER overrides the ~/.himmel/state/ default; a write
  * failure never breaks the search.
  */
-export function ledgerAppend(callSite, endpoint, credits, ok = true, env = process.env) {
+export function ledgerAppend(callSite, endpoint, credits, ok = true, env = process.env, reason = null) {
   try {
     const lp = (env.HIMMEL_FIRECRAWL_LEDGER || "").trim() ||
       join(env.HOME || homedir(), ".himmel", "state", "firecrawl-ledger.jsonl");
@@ -205,9 +206,52 @@ export function ledgerAppend(callSite, endpoint, credits, ok = true, env = proce
     const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
     appendFileSync(lp, JSON.stringify({
       v: 1, ts, host: hostname(), source: "firecrawl", kind: "call",
-      call_site: callSite, endpoint, credits, ok,
+      call_site: callSite, endpoint, credits, ok, ...(reason ? { reason } : {}),
     }) + "\n");
   } catch { /* ledger is best-effort */ }
+}
+
+// Firecrawl-unavailable parking (HIMMEL-4371): same state file and envelope as
+// harvest-clip-body-batch.py's parked_append (`firecrawl-parked` in
+// scripts/observability/ledgers.json). A search that hit a 402 / quota / 429 /
+// auth response is parked as a query hash (never the query text).
+const UNAVAILABLE_BODY = /insufficient credits|out of credits|credits? (?:have been )?exhausted|quota|payment required|upgrade your plan/i;
+
+export function classifyUnavailable(status, body) {
+  if (status === 401 || status === 403) return "auth";
+  if (UNAVAILABLE_BODY.test(body || "") || status === 402) return "exhausted";
+  if (status === 429) return "rate-limited";
+  return null;
+}
+
+function parkedPath(env) {
+  return (env.HIMMEL_FIRECRAWL_PARKED || "").trim() ||
+    join(env.HOME || homedir(), ".himmel", "state", "firecrawl-parked.jsonl");
+}
+
+export function parkedAppend(kind, fields = {}, env = process.env) {
+  try {
+    const pp = parkedPath(env);
+    mkdirSync(dirname(pp), { recursive: true });
+    const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    appendFileSync(pp, JSON.stringify({ v: 1, ts, host: hostname(), source: "firecrawl", kind, ...fields }) + "\n");
+  } catch { /* best-effort */ }
+}
+
+// { unavailable: bool, webItems: Set } folded from the state file, like parked_load().
+function parkedFold(env) {
+  const out = { unavailable: false, webItems: new Set() };
+  let lines = [];
+  try { lines = readFileSync(parkedPath(env), "utf8").split("\n"); } catch { return out; }
+  for (const line of lines) {
+    let r;
+    try { r = JSON.parse(line); } catch { continue; }
+    if (!r || typeof r !== "object") continue;
+    if (r.kind === "unavailable") out.unavailable = true;
+    else if (r.kind === "available") { out.unavailable = false; out.webItems.clear(); }
+    else if (r.kind === "parked" && r.call_site === "follow-web") out.webItems.add(r.item);
+  }
+  return out;
 }
 
 const FIRECRAWL_SEARCH_COST = 1; // documented cost when the response omits creditsUsed
@@ -223,10 +267,23 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
   if (!apiKey) return null;
   const base = (baseUrl || FIRECRAWL_DEFAULT_BASE_URL).replace(/\/+$/, "");
   let remaining = budget;
+  let unavailable = null; // reason once a 402/quota/429/auth response disabled search for this run
+  let wasUnavailable; // state-file status when this run first needed it (undefined = not read yet)
+  const parkedSeen = new Set();
+
+  const park = (query) => {
+    const item = createHash("sha256").update(query).digest("hex").slice(0, 12);
+    if (parkedSeen.has(item)) return;
+    parkedSeen.add(item);
+    if (parkedFold(process.env).webItems.has(item)) return;
+    parkedAppend("parked", { call_site: "follow-web", item, reason: unavailable });
+  };
 
   return async function firecrawlWebFn(query) {
+    if (unavailable) { park(query); return { found: false }; }
     if (remaining <= 0) return { found: false };
     remaining -= 1;
+    if (wasUnavailable === undefined) wasUnavailable = parkedFold(process.env).unavailable;
 
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), FIRECRAWL_TIMEOUT_MS);
@@ -243,7 +300,17 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
       });
       if (!r.ok) {
         ledgered = true;
-        ledgerAppend("follow-web", "/v2/search", 0, false);
+        let errBody = "";
+        try { errBody = String(await r.text()).slice(0, 500); } catch { /* body is best-effort */ }
+        const reason = classifyUnavailable(r.status, errBody);
+        ledgerAppend("follow-web", "/v2/search", 0, false, process.env, reason);
+        if (reason) {
+          unavailable = reason;
+          remaining = 0;
+          console.error(`follow-web: firecrawl unavailable (${reason}); search disabled for the rest of this run, queries parked (deferred: firecrawl-unavailable)`);
+          parkedAppend("unavailable", { call_site: "follow-web", reason });
+          park(query);
+        }
         return { found: false };
       }
       let data;
@@ -265,6 +332,7 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         console.error(`follow-web: search unavailable: a firecrawl search cost ${credits} credits (ceiling ${maxCredits}); firecrawl search disabled for the rest of this run`);
       }
       if (!data || data.success === false) return { found: false };
+      if (wasUnavailable) { wasUnavailable = false; parkedAppend("available", { call_site: "follow-web" }); }
       // firecrawl /v2/search returns either `data: [ ... ]` or, when sources
       // are split, `data: { web: [ ... ], ... }`. Handle both defensively.
       const results = Array.isArray(data.data)
