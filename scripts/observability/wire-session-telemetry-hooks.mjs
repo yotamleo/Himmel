@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // wire-session-telemetry-hooks.mjs — HIMMEL-1635: install/remove the
 // HIMMEL-1052 session-telemetry writer's four hook entries in
-// `.claude/settings.json`.
+// `.claude/settings.json` -- plus (HIMMEL-2318) a fifth, the queue lock's
+// self-heartbeat.
 //
 // WHY THIS EXISTS
 // session-run-hook.ts shipped with its wiring documented in README.md's
@@ -19,11 +20,26 @@
 // an agent's free-form Edit is not. That distinction only holds while the
 // assertions below hold, so they are unconditional.
 //
+// WHY A FIFTH ENTRY (HIMMEL-2318)
+// scripts/handover/queue-lock.sh's `self-heartbeat` verb keeps a long leg's
+// queue lock alive (and records its transcript as a liveness marker) from a
+// PostToolUse hook, so a leg that acquires at step 0 and releases at wrap no
+// longer goes silently STALE after one TTL. It rides this sanctioned writer
+// rather than a new one: same shared settings lock, same reviewable
+// assertions, same install/--off/--check reversibility. It is the one entry
+// whose command is NOT the bun session-run-hook.ts writer, so each spec may
+// carry its own `runner` and `script` (defaults: bun + session-run-hook.ts);
+// writer recognition and the install-time "script exists" precondition are
+// per-script. Its matcher is null (no matcher key) so it fires after EVERY
+// tool call -- the throttle lives in queue-lock.sh, not here.
+//
 // COEXISTENCE WITH OTHER SANCTIONED WRITERS
 // wire-hook-bash.mjs (HIMMEL-1516/1552) owns PreToolUse/PostToolUse/
 // SessionStart, but only commands matching its own `scripts/hooks/*.sh`
-// routing pattern — a `bun .../session-run-hook.ts` command never matches
-// that pattern, so it is invisible to wire-hook-bash's owned-inventory count
+// routing pattern — a `bun .../session-run-hook.ts` command (and the
+// `bash .../scripts/handover/queue-lock.sh` one, which is not under
+// scripts/hooks/ either) never matches that pattern, so there is no ownership
+// collision and both stay invisible to wire-hook-bash's owned-inventory count
 // (own-only validation, HIMMEL-1552 style) and the two writers never
 // disagree about it. wire-trust-hooks.mjs owns its own `shadow-ledger.mjs`
 // commands the same way. All three hold the SAME shared lock
@@ -67,24 +83,33 @@ const TIMEOUT = 10;
 // unquoted expansion word-splits on a project path containing a space, and
 // the hook then fails open — losing observations silently, which is the one
 // failure mode a measurement tool must not have.
-const WRITER_PATH = '"$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts"';
+const DEFAULT_RUNNER = 'bun';
+const DEFAULT_SCRIPT = 'scripts/observability/session-run-hook.ts';
 
-// The four entries, exactly as documented in README.md's "Wiring the
+// The first four entries, exactly as documented in README.md's "Wiring the
 // writer" (HIMMEL-1052). `matcher: null` means no matcher key is emitted —
 // SessionStart/SessionEnd fire on every session lifecycle event regardless
 // of which tool (if any) is involved, so narrowing with a matcher would open
-// a gap.
+// a gap. The fifth (HIMMEL-2318) is the queue lock's self-heartbeat: a
+// matcher-less PostToolUse hook, because the lock must be refreshed whatever
+// tool the leg is busy with.
 export const ENTRIES = [
   { event: 'SessionStart', matcher: null, verb: 'session-start' },
   { event: 'SessionEnd', matcher: null, verb: 'session-end' },
   { event: 'PreToolUse', matcher: 'Agent', verb: 'subagent-start' },
   { event: 'PostToolUse', matcher: 'Agent', verb: 'subagent-end' },
+  {
+    event: 'PostToolUse', matcher: null, verb: 'self-heartbeat', runner: 'bash', script: 'scripts/handover/queue-lock.sh',
+  },
 ];
 
-const commandFor = (verb) => `bun ${WRITER_PATH} ${verb}`;
+const runnerOf = (spec) => spec.runner ?? DEFAULT_RUNNER;
+const scriptOf = (spec) => spec.script ?? DEFAULT_SCRIPT;
+
+const commandFor = (spec) => `${runnerOf(spec)} "$CLAUDE_PROJECT_DIR/${scriptOf(spec)}" ${spec.verb}`;
 
 function hookFor(spec) {
-  return { type: 'command', command: commandFor(spec.verb), timeout: TIMEOUT };
+  return { type: 'command', command: commandFor(spec), timeout: TIMEOUT };
 }
 
 // Two recognition layers, deliberately separate (mirrors wire-trust-hooks'
@@ -100,14 +125,14 @@ function hookFor(spec) {
 // than "canonical" is exactly what lets install converge a near-variant IN
 // PLACE instead of appending a duplicate (both would fire, every event twice),
 // and lets --off strip the variant too instead of stranding it.
-const isWriterCommand = (cmd) => typeof cmd === 'string' && cmd.includes('/scripts/observability/session-run-hook.ts');
+const isWriterCommand = (cmd, spec) => typeof cmd === 'string' && cmd.includes(`/${scriptOf(spec)}`);
 
 // Does this hook object belong to THIS spec — our writer, invoked with this
 // spec's verb? The verb is the writer's argument and is matched as a
 // whitespace-delimited token, so the four verbs never cross-match. This is NOT
 // a canonical check: a near-variant shape still counts as ours.
 function isOurs(hook, spec) {
-  if (!hook || !isWriterCommand(hook.command)) return false;
+  if (!hook || !isWriterCommand(hook.command, spec)) return false;
   return hook.command.trim().split(/\s+/).includes(spec.verb);
 }
 
@@ -397,22 +422,25 @@ function defaultSettingsPath() {
   return join(own, '.claude', 'settings.json');
 }
 
-// The hooks resolve `$CLAUDE_PROJECT_DIR/scripts/observability/session-run-
-// hook.ts` AT RUNTIME against whatever project the session is rooted in.
-// Existence is a precondition on install (never on --off/--check — removing
-// dead wiring, or reporting on it, must still work against a project that
-// never had the writer).
-function writerPathFor(settingsPath) {
-  return join(dirname(dirname(settingsPath)), 'scripts', 'observability', 'session-run-hook.ts');
-}
+// The hooks resolve `$CLAUDE_PROJECT_DIR/<script>` AT RUNTIME against
+// whatever project the session is rooted in -- session-run-hook.ts for the
+// four telemetry entries, scripts/handover/queue-lock.sh for the HIMMEL-2318
+// self-heartbeat. Existence of EVERY distinct script is a precondition on
+// install (never on --off/--check — removing dead wiring, or reporting on it,
+// must still work against a project that never had the writer).
+const distinctScripts = () => [...new Set(ENTRIES.map(scriptOf))];
+const scriptPathFor = (settingsPath, script) => join(dirname(dirname(settingsPath)), ...script.split('/'));
+const missingScripts = (settingsPath) => distinctScripts()
+  .map((script) => scriptPathFor(settingsPath, script))
+  .filter((path) => !existsSync(path));
 
 function assertWriterPresent(settingsPath) {
-  const writer = writerPathFor(settingsPath);
-  if (!existsSync(writer)) {
+  const missing = missingScripts(settingsPath);
+  if (missing.length > 0) {
     fail(
-      `no writer at ${writer} — these hooks would resolve to a file this project `
+      `no writer at ${missing[0]} — these hooks would resolve to a file this project `
       + 'does not have, and would record nothing while reporting as wired. '
-      + 'Run this from a checkout with scripts/observability/session-run-hook.ts, '
+      + `Run this from a checkout with ${distinctScripts().join(' and ')}, `
       + 'or pass that checkout\'s settings path.',
     );
   }
@@ -488,8 +516,8 @@ async function main() {
           ? `  ⚠ ${dupes} DUPLICATE owned entr${dupes === 1 ? 'y' : 'ies'} — each records the same `
             + 'event twice. Run `install` to converge.\n'
           : '')
-        + (!args.off && !existsSync(writerPathFor(settingsPath))
-          ? `  ⚠ no writer at ${writerPathFor(settingsPath)} — install would REFUSE here; `
+        + (!args.off && missingScripts(settingsPath).length > 0
+          ? `  ⚠ no writer at ${missingScripts(settingsPath)[0]} — install would REFUSE here; `
             + 'these hooks would record nothing while reporting as wired.\n'
           : ''),
       );
