@@ -52,3 +52,11 @@ that kills its whole process group — `qmd_bounded` from
 `scripts/lib/qmd-bounded.sh`, or Python `Popen(start_new_session=True)` plus
 `os.killpg` — and give it a stdin, never a closed one. `subprocess.run(timeout=)`
 kills only the direct child and orphans a looping subshell (HIMMEL-3956).
+
+If a check needs a PR-keyed scratch tree under `/tmp/claude-<uid>/j<PR>`, create
+it with `bash <primary checkout>/scripts/judge-dir.sh <PR> [suffix a-z]`
+(the primary checkout's copy, never a worktree's: the directory holding the `.git`
+that `git rev-parse --path-format=absolute --git-common-dir` prints; the leak gate
+forbids a literal home path here) and use the dir it prints; it
+writes the holder file `scripts/tmp-reap.sh` needs to tell your dir from a dead
+judge's (HIMMEL-4325). Never `mkdir` such a dir yourself.
