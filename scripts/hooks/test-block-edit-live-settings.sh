@@ -2322,6 +2322,20 @@ assert_rc "573 nested worktree bash <<'EOF' body cp near ~/.cl\$(printf a)ude de
     "$(bash_rc_of "$NESTED_WT" "bash <<'EOF'
 x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
 EOF" HOME="$FAKEHOME")"
+# an interpreter body that shells out hands its text to a shell (CR round 3)
+assert_rc "574 nested worktree python3 <<'EOF' os.system near ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "python3 <<'EOF'
+import os
+os.system('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
+EOF" HOME="$FAKEHOME")"
+assert_rc "575 primary node <<'EOF' child_process near ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node <<'EOF'
+require('child_process').execSync('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
+EOF" HOME="$FAKEHOME")"
+assert_rc "576 nested worktree python3 <<'EOF' print naming ~/.cl\$(printf a)ude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "python3 <<'EOF'
+print('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
+EOF" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).

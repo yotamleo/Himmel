@@ -1988,8 +1988,12 @@ _dc_name_fold() {
 # body lines with every other line blanked: the shell never globs such a
 # body, so only main's spellings are folded in it. Returns 1 when there is
 # no such body. A line misread as body only falls back to main's reading.
+# An interpreter body (`python`, `node`) that names a shell-out call hands
+# its text to a shell, so it is folded in full like any other line.
 _dc_data_bodies() {
     local d=' ' s=$2 line l2 end='' dash='' w seg rcv out='' bd='' hre
+    local bo='' bb='' interp=0
+    local shre='system[[:space:]]*\(|popen|subprocess|exec[a-z]*[[:space:]]*\(|spawn|child_process|getoutput'
     local -a ws
     hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
     while [[ $s =~ $hre ]]; do
@@ -2004,9 +2008,14 @@ _dc_data_bodies() {
             l2=$line
             [ -z "$dash" ] || l2=${l2#"${l2%%[!$'\t']*}"}
             if [ "$l2" = "$end" ]; then
-                end='' out=$out$line$'\n' bd=$bd$'\n'
+                if [ "$interp" = 1 ] && [[ $bb =~ $shre ]]; then
+                    out=$out$bb bd=$bd$bo
+                elif [ -n "$bb" ]; then
+                    out=$out$bo bd=$bd$bb _DCNB=x
+                fi
+                bo='' bb='' end='' out=$out$line$'\n' bd=$bd$'\n'
             else
-                out=$out$'\n' bd=$bd$line$'\n' _DCNB=x
+                bo=$bo$'\n' bb=$bb$line$'\n'
             fi
             continue
         fi
@@ -2022,9 +2031,15 @@ _dc_data_bodies() {
             case "$rcv" in [a-z_]*=*) rcv='' ;; *) break ;; esac
         done
         case "${rcv##*/}" in
-            cat|tee|python|python3|node|git|gh) end=$w ;;
+            cat|tee|git|gh) end=$w interp=0 ;;
+            python|python3|node) end=$w interp=1 ;;
         esac
     done <<< "$1"
+    if [ "$interp" = 1 ] && [[ $bb =~ $shre ]]; then
+        out=$out$bb bd=$bd$bo
+    elif [ -n "$bb" ]; then
+        out=$out$bo bd=$bd$bb _DCNB=x
+    fi
     [ -n "$_DCNB" ] || return 1
     _DCNB=$out _DCBD=$bd
 }
