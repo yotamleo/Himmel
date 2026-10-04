@@ -322,7 +322,9 @@ test("each run appends one audit line with an exact key set, table argv and no o
 });
 
 // ── HIMMEL-4354 ──────────────────────────────────────────────────────────
-test("a run whose runChild rejects (onSpawn cannot write the lock) is still audited as an error with the real argv, and answers 500", async () => {
+// A read-only dir only blocks writes where permissions are enforced (not root, not Windows).
+const enforcesModes = process.platform !== "win32" && process.getuid?.() !== 0;
+(enforcesModes ? test : test.skip)("a run whose runChild rejects (onSpawn cannot write the lock) is still audited as an error with the real argv, and answers 500", async () => {
   const stateDir = join(home, ".himmel/state/config-ui");
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(join(stateDir, "actions.jsonl"), ""); // exists, so the append still works in a read-only dir
