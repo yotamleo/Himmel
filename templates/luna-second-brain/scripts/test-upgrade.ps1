@@ -28,12 +28,12 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $T 'scripts\hooks') | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $V 'scripts\hooks') | Out-Null
     Set-Content -NoNewline -Path (Join-Path $T 'marketplace\.claude-plugin\marketplace.json') -Value '{"metadata":{"version":"1.0.0"}}'
-    Set-Content -NoNewline -Path (Join-Path $T 'scripts\hooks\check-commit-msg.sh') -Value "TEMPLATE-VERSION`n"
+    Set-Content -NoNewline -Path (Join-Path $T 'scripts\hooks\check-no-force-push.sh') -Value "TEMPLATE-VERSION`n"
     Set-Content -NoNewline -Path (Join-Path $T '_CLAUDE.md') -Value "# Manual`n"
     Set-Content -NoNewline -Path (Join-Path $V '.vault-template.json') -Value '{"template":"luna-second-brain","version":"0.9.0","upgraded_at":"2026-01-01T00:00:00Z"}'
-    Set-Content -NoNewline -Path (Join-Path $V 'scripts\hooks\check-commit-msg.sh') -Value "STALE`n"
+    Set-Content -NoNewline -Path (Join-Path $V 'scripts\hooks\check-no-force-push.sh') -Value "STALE`n"
 
-    $hook = Join-Path $V 'scripts\hooks\check-commit-msg.sh'
+    $hook = Join-Path $V 'scripts\hooks\check-no-force-push.sh'
     $before = (Get-FileHash $hook -Algorithm SHA256).Hash
 
     # Dry-run: exit 0, prints the banner, mutates nothing.
@@ -45,7 +45,7 @@ try {
     # Apply: the diverged hook is restored to the template version.
     & pwsh -NoProfile -File $ps1 --template-dir $T --vault-dir $V --yes *> $null
     Assert 'apply exit 0' ($LASTEXITCODE -eq 0) "rc=$LASTEXITCODE"
-    $tmplHash = (Get-FileHash (Join-Path $T 'scripts\hooks\check-commit-msg.sh') -Algorithm SHA256).Hash
+    $tmplHash = (Get-FileHash (Join-Path $T 'scripts\hooks\check-no-force-push.sh') -Algorithm SHA256).Hash
     Assert 'apply restores hook to template' ((Get-FileHash $hook -Algorithm SHA256).Hash -eq $tmplHash)
 }
 finally {

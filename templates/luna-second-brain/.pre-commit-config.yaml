@@ -115,11 +115,3 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [pre-push]
-
-      - id: conventional-commit-msg
-        name: Conventional commit message (TICKET-N optional)
-        language: system
-        entry: bash scripts/hooks/check-commit-msg.sh
-        pass_filenames: false
-        always_run: true
-        stages: [commit-msg]
