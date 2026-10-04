@@ -888,6 +888,76 @@ class InstagramGuardTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(json.loads(buf.getvalue())["status"], "cooldown")
 
+    def test_a_failed_probe_surfaces_rc_and_a_stderr_tail(self):
+        # HIMMEL-4374: "command probe failed" hid the real error behind the cache.
+        r = self.probe("instagram-media", command=self.command(3, "[instagram][error] HttpError: '560 Server Error' for url: https://www.instagram.com/p/x/"))
+        self.assertEqual(r.status, "transport-fail")
+        self.assertIn("rc=3", r.reason)
+        self.assertIn("560 Server Error", r.reason)
+        cached = self.probe("instagram-media")
+        self.assertIn("560 Server Error", cached.reason)
+
+    def test_the_stderr_tail_never_carries_a_cookie_value(self):
+        secrets = ("SECRETSESSION0123456789abcdef", "csrfSECRET9876543210", "tok_AbCdEf0123456789XYZ")  # gitleaks:allow
+        stderr = (
+            f"error: Cookie: sessionid={secrets[0]}; csrftoken={secrets[1]}\n"
+            f"Authorization: Bearer {secrets[2]}\nsessionid: {secrets[0]} connection reset"
+        )
+        r = self.probe("instagram-media", command=self.command(1, stderr))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
+        self.assertIn("rc=1; no error line", r.reason)
+        blobs =[r.reason, Path(self.env["HIMMEL_IG_PROBE_CACHE"]).read_text(encoding="utf-8"),
+                 Path(self.env["HIMMEL_IG_THROTTLE_STATE"]).read_text(encoding="utf-8")]
+        with patch.dict(os.environ, self.env, clear=False), patch.object(fetch_health, "primary_repo_root", return_value=self.tmp):
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+                fetch_health.main(["--probe", "instagram-media"])
+        blobs.append(buf.getvalue())
+        for blob in blobs:
+            for secret in secrets:
+                self.assertNotIn(secret, blob)
+
+    def test_a_login_redirect_is_a_rejected_session_with_a_remedy(self):
+        r = self.probe("instagram-media", command=self.command(4, "[instagram][error] HTTP redirect to home page (https://www.instagram.com/)"))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
+        self.assertIn("rc=4", r.reason)
+        self.assertIn("redirect to home page", r.reason)
+        self.assertIn("Cookie-Editor", r.reason)
+        self.assertIn("~/.luna/cookies/instagram.txt", r.reason)
+
+    def test_only_a_gallery_dl_error_line_is_surfaced_never_other_stderr(self):
+        # Allowlist, not a redactor: a secret in any non-error line cannot reach the reason.
+        err = (  # gitleaks:allow
+            "bad password=\"short secret\" token='abc'\n"
+            "Cookie: a=one; sid=secret\nSet-Cookie: x=y; k=v\n"
+            "{'sessionid': 'short-secret', \"csrftoken\": \"tiny\"}\n"
+            "Authorization: Basic dXNlcjpwYXNz\n"
+        )
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertIn("rc=1; no error line", r.reason)
+        for leaked in ("short", "abc", "one", "secret", "k=v", "x=y", "tiny", "dXNlcjpwYXNz", "Basic"):
+            self.assertNotIn(leaked, r.reason)
+
+    def test_an_error_line_never_carries_a_url_part(self):
+        err = ("[instagram][error] HttpError: '401' for url: https://user:SECRETUSERINFO@x/y?sessionid=SECRETQUERY&a=b#SECRETFRAG"  # gitleaks:allow
+               " and http://z/p")
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertIn("HttpError: '401'", r.reason)
+        for leaked in ("SECRETUSERINFO", "SECRETQUERY", "SECRETFRAG", "http"):
+            self.assertNotIn(leaked, r.reason)
+
+    def test_an_unrecognised_error_message_is_withheld(self):
+        # Only known-safe message shapes are surfaced; free text could carry a credential.
+        err = "[instagram][error] login failed sessionid=SECRETSESSION0123 password hunter2 csrf SECRETCSRF"  # gitleaks:allow
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertIn("rc=1; error message withheld", r.reason)
+        for leaked in ("SECRETSESSION0123", "hunter2", "SECRETCSRF", "login failed"):
+            self.assertNotIn(leaked, r.reason)
+
+    def test_the_error_line_is_bounded(self):
+        r = self.probe("instagram-media", command=self.command(1, "[instagram][error] " + "x" * 5000))
+        self.assertLess(len(r.reason), 400)
+
     def test_other_sources_are_not_throttled_or_cached(self):
         for _ in range(2):
             fetch_health.run_single_probe("x-fxtwitter", self.env, http=self.http(200, b'{"code":200,"tweet":{"id":"20"}}'),
