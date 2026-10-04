@@ -58,7 +58,7 @@ default_repo="$(env -u QMD_FORK_REPO bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _q
 assert "default QMD_FORK_REPO is the carried fork yotamleo/qmd" \
   test "$default_repo" = "https://github.com/yotamleo/qmd.git"
 assert "default QMD_FORK_REF is the fix/launcher-forward-signals commit" \
-  test "$default_ref" = "17a6da8281d7efa4e702080e630787ed9f89ed2b"
+  test "$default_ref" = "932839a2a4cc4b894b1fd5fb2a86758321985c56"
 
 echo "[test-qmd-bin] qmd_cmd resolver — prefer bun"
 tmpdir="$(mktemp -d)"
