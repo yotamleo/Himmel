@@ -219,7 +219,7 @@ function buildEntry(item, ctx, diagnosticState) {
       if (!lunaPath) {
         return { unrunnable: "no luna vault path configured — configure one via 'himmelctl install', then re-run" };
       }
-      return { cmd: 'bash', args: ['-c', '. "$1" && qmd_install && qmd_register_collection "$2" himmel && qmd_register_collection "$3" luna', 'himmel-qmd', resolverPath, himmelPath, lunaPath] };
+      return { cmd: 'bash', args: ['-c', '. "$1" && qmd_install && qmd_register_collection "$2" himmel && qmd_register_collection "$3" luna && bash "$4"', 'himmel-qmd', resolverPath, himmelPath, lunaPath, path.join(scriptsDir, 'skill-index', 'ensure-skill-index.sh')] };
     }
     case 'build': {
       // Same positional-arg fix as 'qmd' above, for the build dir.

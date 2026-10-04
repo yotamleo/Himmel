@@ -5287,7 +5287,7 @@ exit 2
 STUB
 chmod 755 "$t/qmd"
 out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
-if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'build-skill-index.sh'; then
+if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'ensure-skill-index.sh'; then
     pass "C44 missing collection -> FAIL"
 else
     fail "C44 missing collection -> $(printf '%s' "$out" | grep -A1 C44)"

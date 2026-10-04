@@ -385,6 +385,14 @@ qmd_register_collection() {
   [ -n "${QMD_REG_LOG_C:-}" ] && echo "$2" >> "$QMD_REG_LOG_C"
 }
 SH
+# HIMMEL-4302: the qmd install flow also runs scripts/skill-index/ensure-skill-index.sh
+# (registers the 'skills' collection); this stub spies that it ran.
+mkdir -p "$repoC/scripts/skill-index"
+cat > "$repoC/scripts/skill-index/ensure-skill-index.sh" <<'SH'
+#!/usr/bin/env bash
+[ -n "${QMD_REG_LOG_C:-}" ] && echo skills >> "$QMD_REG_LOG_C"
+exit 0
+SH
 targetC="$work/targetC"; mkdir -p "$targetC"
 cacheC="$work/cacheC"; mkdir -p "$cacheC"
 # CR fix (CodeRabbit round 20): vault.mode=existing + a REAL vault path so
@@ -415,6 +423,7 @@ set -e
 # red). The stub spy recorded each qmd_register_collection NAME.
 grep -qxF 'himmel' "$qmdRegLogC" || fail "case c: qmd install should register the himmel collection (spy log: $(cat "$qmdRegLogC"))"
 grep -qxF 'luna' "$qmdRegLogC" || fail "case c: qmd install should register the luna collection (spy log: $(cat "$qmdRegLogC"))"
+grep -qxF 'skills' "$qmdRegLogC" || fail "case c: qmd install should run ensure-skill-index.sh (spy log: $(cat "$qmdRegLogC"))"
 
 outC2=$( cd "$targetC" && HIMMELCTL_REPO_ROOT="$(winpath "$repoC")" HIMMELCTL_CACHE_DIR="$(winpath "$cacheC")" HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheC")-luna-config.json" HOME="$work/home" USERPROFILE="$(winpath "$work/home")" \
     "$node_bin" "$wizard" status --json </dev/null )
@@ -572,6 +581,9 @@ qmd_install() {
 # assertion (qmd_install logging "qmd-a" 4th of 6) is what this case proves.
 qmd_register_collection() { :; }
 SH
+# HIMMEL-4302: the qmd flow also runs ensure-skill-index.sh; a silent no-op here.
+mkdir -p "$repoE/scripts/skill-index"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$repoE/scripts/skill-index/ensure-skill-index.sh"
 
 targetE="$work/targetE"; mkdir -p "$targetE"
 cacheE="$work/cacheE"; mkdir -p "$cacheE"
