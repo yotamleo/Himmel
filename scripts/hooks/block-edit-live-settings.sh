@@ -2064,8 +2064,12 @@ _dc_data_bodies() {
         dash=${BASH_REMATCH[1]} w=${BASH_REMATCH[2]}
         case "$d" in *" $w "*) ;; *) continue ;; esac
         case "$u" in *" $w "*) continue ;; esac
-        # a body piped on (`| bash`) is not data
+        # a body piped on (`| bash`), or written into a process substitution
+        # or a file descriptor (`> >(bash)`, `>&3`), is not data
+        # ponytail: a body written to a file the command then runs
+        # (`> x.sh` … `bash x.sh`) still reads as data, as on main; HIMMEL-4299
         case "${line##*<<}" in *'|'*) continue ;; esac
+        case "$line" in *'>('*|*'>&'[3-9]*|*/dev/fd/*|*/proc/*/fd*) continue ;; esac
         seg=${line%<<*}
         pre=${seg%"${seg##*[;\&|(]}"}
         seg=${seg#"$pre"}

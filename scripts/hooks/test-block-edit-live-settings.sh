@@ -2401,6 +2401,28 @@ assert_rc "594 nested worktree echo \$\"hello\" to /tmp/x allows" 0 \
     "$(bash_rc_of "$NESTED_WT" 'echo $"hello" > /tmp/x' HOME="$FAKEHOME")"
 assert_rc "595 nested worktree cp a ~/.con\$\"\"fig/ allows" 0 \
     "$(bash_rc_of "$NESTED_WT" 'cp a ~/.con$""fig/' HOME="$FAKEHOME")"
+# a body written into a process substitution or a file descriptor may be run,
+# like a body piped on (CR round 7)
+assert_rc "596 nested worktree cat <<'EOF' > >(bash) body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > >(bash)
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "597 nested worktree cat > >(sh -s) <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat > >(sh -s) <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "598 nested worktree cat <<'EOF' >&3 body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' >&3
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "599 nested worktree cat <<'EOF' > /dev/fd/3 body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /dev/fd/3
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "600 nested worktree cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /tmp/notes.md
+the hook folds ~/.cl\$(printf a)ude now
+EOF" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
