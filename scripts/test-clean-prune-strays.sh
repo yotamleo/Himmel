@@ -97,6 +97,7 @@ WT_VITEST=$(mk_wt wt-vitest feat/vitest)   # case 15: untracked .vitest/ reporte
 WT_SCRATCH=$(mk_wt wt-scratch feat/scratch)   # case 16: root-level leg ship scratch (HIMMEL-4334)
 WT_SCRNEST=$(mk_wt wt-scrnest feat/scrnest)   # case 17: same shape NESTED -> still forgotten
 WT_SCRWIP=$(mk_wt wt-scrwip feat/scrwip)      # case 18: root scratch + tracked mod -> still refuses
+WT_SCRPFX=$(mk_wt wt-scrpfx feat/scrpfx)      # case 19: root-prefixed DIR (.pr-body-notes/) is real work -> kept
 
 printf 'lock\n' > "$WT_LOCK/package-lock.json"
 mkdir -p "$WT_CODEX/.codex"; printf 'x\n' > "$WT_CODEX/.codex/config.toml"; printf 'x\n' > "$WT_CODEX/AGENTS.md"
@@ -151,6 +152,7 @@ printf 'x\n' > "$WT_SCRATCH/.scratch/a.txt"
 printf 'x\n' > "$WT_SCRATCH/.himmel-scratch/b.txt"
 printf 'x\n' > "$WT_SCRATCH/.os-verify-logs-9/c.log"
 mkdir -p "$WT_SCRNEST/pkg"; printf 'x\n' > "$WT_SCRNEST/pkg/.pr-body.txt"
+mkdir -p "$WT_SCRPFX/.pr-body-notes"; printf 'x\n' > "$WT_SCRPFX/.pr-body-notes/design.md"
 printf 'x\n' > "$WT_SCRWIP/.pr-body.txt"; printf 'changed\n' >> "$WT_SCRWIP/README"
 
 run_clean() {
@@ -320,6 +322,8 @@ fi
 if [ -d "$WT_SCRNEST" ]; then pass "17: nested .pr-body.txt worktree kept"; else fail "17: nested .pr-body.txt worktree was pruned" "$out"; fi
 # case 18: a tracked modification still refuses even with root scratch
 if [ -d "$WT_SCRWIP" ]; then pass "18: tracked-WIP + root scratch worktree kept"; else fail "18: tracked-WIP + root scratch worktree was pruned" "$out"; fi
+# case 19: a directory merely PREFIXED like a scratch file is real work -> kept (codex-1)
+if [ -d "$WT_SCRPFX" ]; then pass "19: .pr-body-notes/ dir worktree kept"; else fail "19: .pr-body-notes/ dir worktree was pruned" "$out"; fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo

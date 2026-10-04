@@ -507,11 +507,14 @@ is_ignorable_stray() {
         # HIMMEL-4334: leg ship scratch at the worktree ROOT only (no */ forms:
         # the same name nested below the root is real work). Directory shapes
         # match as "<dir>/*" because --untracked-files=all lists their files.
+        .scratch/*|.himmel-scratch/*|.os-verify-logs-*/*) return 0 ;;
+        # A case `*` matches "/", so the filename shapes below need an
+        # explicit no-slash guard or `.pr-body-notes/design.md` would match.
+        */*) return 1 ;;
         .pr-body*|.pr-title*|.git-pr-body*|.git-pr-title*) return 0 ;;
         .commit-msg-*.tmp)                     return 0 ;;
         panel-stdout*.log|panel-stderr*.log)   return 0 ;;
         .suite-verdicts*.txt|.suites*.txt|.verdicts-*.txt|.msg-*.txt) return 0 ;;
-        .scratch/*|.himmel-scratch/*|.os-verify-logs-*/*) return 0 ;;
     esac
     return 1
 }
