@@ -87,6 +87,8 @@ row = lines[0] if lines else {}
 check("ledger: call_site/endpoint recorded", row.get("call_site") == "harvest-clip-body-batch" and row.get("endpoint") == "/v2/scrape")
 check("ledger: credits read from response creditsUsed", row.get("credits") == 3)
 check("ledger: ts present", bool(row.get("ts")))
+check("ledger: registry min_envelope v/ts/host/source/kind present",
+      all(row.get(k) not in (None, "") for k in ("v", "ts", "host", "source", "kind")))
 raw = LEDGER.read_text() if LEDGER.exists() else ""
 check("ledger: no key, query string, token or page body", all(s not in raw for s in ("KEY-abc123", "SECRET123", "token=", BODY_MARK)))
 

@@ -370,16 +370,18 @@ const lines = existsSync(process.env.LEDGER_PATH)
 const raw = existsSync(process.env.LEDGER_PATH) ? readFileSync(process.env.LEDGER_PATH, "utf8") : "";
 console.log("LEDGER_COUNT=" + lines.length);
 console.log("LEDGER_SHAPE=" + (lines[0] && lines[0].call_site === "follow-web" && lines[0].endpoint === "/v2/search" && !!lines[0].ts));
+console.log("LEDGER_ENVELOPE=" + (!!lines[0] && lines[0].v === 1 && !!lines[0].host && lines[0].source === "firecrawl" && lines[0].kind === "call"));
 console.log("LEDGER_CREDITS=" + (lines[0] && lines[0].credits));
 console.log("LEDGER_FAIL=" + (lines[1] && lines[1].credits === 0 && lines[1].ok === false));
 console.log("LEDGER_CLEAN=" + (!raw.includes("KEY-xyz987") && !raw.includes("secret-claim-text") && !raw.includes("x.example")));
 EOF
 out10="$(LEDGER_PATH="$tmpdir/ledger.jsonl" node "$tmpdir/ledger.mjs" 2>&1)"
-echo "$out10" | grep -q 'LEDGER_COUNT=2' && r=yes || r=no; assert "ledger: one line per search call (success + failure)" yes "$r"
-echo "$out10" | grep -q 'LEDGER_SHAPE=true' && r=yes || r=no; assert "ledger: call_site follow-web, endpoint /v2/search, ts present" yes "$r"
-echo "$out10" | grep -q 'LEDGER_CREDITS=2' && r=yes || r=no; assert "ledger: credits read from the response" yes "$r"
-echo "$out10" | grep -q 'LEDGER_FAIL=true' && r=yes || r=no; assert "ledger: failed call logged with credits 0" yes "$r"
-echo "$out10" | grep -q 'LEDGER_CLEAN=true' && r=yes || r=no; assert "ledger: no key, query text or result url" yes "$r"
+grep -q 'LEDGER_COUNT=2' <<<"$out10" && r=yes || r=no; assert "ledger: one line per search call (success + failure)" yes "$r"
+grep -q 'LEDGER_SHAPE=true' <<<"$out10" && r=yes || r=no; assert "ledger: call_site follow-web, endpoint /v2/search, ts present" yes "$r"
+grep -q 'LEDGER_ENVELOPE=true' <<<"$out10" && r=yes || r=no; assert "ledger: envelope v/host/source/kind present" yes "$r"
+grep -q 'LEDGER_CREDITS=2' <<<"$out10" && r=yes || r=no; assert "ledger: credits read from the response" yes "$r"
+grep -q 'LEDGER_FAIL=true' <<<"$out10" && r=yes || r=no; assert "ledger: failed call logged with credits 0" yes "$r"
+grep -q 'LEDGER_CLEAN=true' <<<"$out10" && r=yes || r=no; assert "ledger: no key, query text or result url" yes "$r"
 
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))

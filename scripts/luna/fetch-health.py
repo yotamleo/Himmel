@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -544,7 +545,11 @@ def firecrawl_ledger_append(env: dict[str, str], endpoint: str, credits: int, ok
     override = env.get("HIMMEL_FIRECRAWL_LEDGER", "").strip()
     path = Path(override) if override else resolve_home(env) / ".himmel" / "state" / "firecrawl-ledger.jsonl"
     row = {
+        "v": 1,
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host": socket.gethostname(),
+        "source": "firecrawl",
+        "kind": "call",
         "call_site": "fetch-health",
         "endpoint": endpoint,
         "credits": credits,

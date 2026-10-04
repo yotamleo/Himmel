@@ -27,7 +27,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -199,7 +199,10 @@ export function ledgerAppend(callSite, endpoint, credits, ok = true, env = proce
       join(env.HOME || homedir(), ".himmel", "state", "firecrawl-ledger.jsonl");
     mkdirSync(dirname(lp), { recursive: true });
     const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-    appendFileSync(lp, JSON.stringify({ ts, call_site: callSite, endpoint, credits, ok }) + "\n");
+    appendFileSync(lp, JSON.stringify({
+      v: 1, ts, host: hostname(), source: "firecrawl", kind: "call",
+      call_site: callSite, endpoint, credits, ok,
+    }) + "\n");
   } catch { /* ledger is best-effort */ }
 }
 

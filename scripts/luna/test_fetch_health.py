@@ -319,6 +319,11 @@ class FetchHealthTests(unittest.TestCase):
             self.assertEqual(rows[0]["call_site"], "fetch-health")
             self.assertEqual(rows[0]["endpoint"], "/v2/team/credit-usage")
             self.assertEqual(rows[0]["credits"], 0)
+            self.assertEqual(rows[0]["v"], 1)
+            self.assertEqual(rows[0]["source"], "firecrawl")
+            self.assertEqual(rows[0]["kind"], "call")
+            self.assertTrue(rows[0]["host"])
+            self.assertTrue(rows[0]["ts"])
             self.assertNotIn("secret", ledger.read_text())
 
     def test_firecrawl_credit_usage_rejects_bad_body(self):

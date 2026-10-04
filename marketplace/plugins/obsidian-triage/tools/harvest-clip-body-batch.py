@@ -394,8 +394,13 @@ def ledger_append(call_site, endpoint, credits, ok=True):
     write failure never breaks the scrape that triggered it."""
     import datetime
     import json
+    import socket
     row = {
+        "v": 1,
         "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host": socket.gethostname(),
+        "source": "firecrawl",
+        "kind": "call",
         "call_site": call_site,
         "endpoint": endpoint,
         "credits": credits,
