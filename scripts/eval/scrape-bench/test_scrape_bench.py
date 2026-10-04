@@ -190,6 +190,14 @@ class LocalAdapterTests(unittest.TestCase):
         self.assertEqual(local_adapters.lightpanda_result(raw), ("# Hi", 200, None))
 
 
+    def test_lightpanda_nonzero_exit_with_content_is_a_failure(self):
+        raw = json.dumps({"url": "u", "http_status": 200, "content": "# Hi", "error": None})
+        done = mock.Mock(returncode=2, stdout=raw, stderr="")
+        with mock.patch("subprocess.run", return_value=done), mock.patch("sys.stderr", io.StringIO()) as err:
+            self.assertEqual(local_adapters.lightpanda("https://x.test/a"), 1)
+        self.assertEqual(err.getvalue(), "err=LightpandaExit2\n")
+
+
 class RenderTests(unittest.TestCase):
     def test_table_per_category_and_provider(self):
         rows = [

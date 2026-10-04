@@ -5,9 +5,11 @@ Run through the bench's command provider:
   bench.py --provider cmd --name scrapling-static --cmd 'python3 local_adapters.py scrapling-static {url}'
 
 Modes: scrapling-static, scrapling-stealth, lightpanda, camofox. Each prints
-markdown to stdout. On failure it exits 1 and writes one stderr line
-`http=<code>` (an HTTP status >= 400) or `err=<ClassName>`, which the bench
-records in the row's error field. Binaries come from env (SCRAPLING_BIN,
+markdown to stdout. On failure it exits 1 and writes one stderr line:
+`http=<code>` (an HTTP status >= 400), which the bench records in the row's
+error field as CommandError:<code>, or `err=<ClassName>`, a diagnostic for a
+human reading stderr that the bench does not record (a timeout or a missing
+binary surfaces as a traceback and a plain CommandError). Binaries come from env (SCRAPLING_BIN,
 LIGHTPANDA_BIN, CAMOFOX_URL); nothing here reads a key, cookie or proxy.
 Stdlib only."""
 import json
@@ -66,6 +68,8 @@ def lightpanda(url):
         return fail(http=status)
     if error:
         return fail(err="LightpandaNav")
+    if p.returncode != 0:
+        return fail(err="LightpandaExit%d" % p.returncode)
     print(md)
     return 0
 
