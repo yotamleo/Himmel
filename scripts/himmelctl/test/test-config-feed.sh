@@ -375,7 +375,8 @@ for pair in C19-observability:INFO:observability-stack C28-guardrail-consent:OK:
   n=$(jq "[.rows[]|select(.id==\"probe-disagree:$did\")]|length" "$foldOut")
   if [ "$(srank "$dsev")" -gt "$(rank "$oh")" ]; then
     [ "$n" -eq 1 ] || fail "i1 doctor $dsev vs $owner $oh: expected one probe-disagree:$did, got $n"
-    jq -e ".rows[]|select(.id==\"probe-disagree:$did\")|.health==\"warn\" and ((.installed.detail+.title)|contains(\"$did\") and contains(\"$owner\")) and (.fix.remedy|length>0)" "$foldOut" >/dev/null || fail "i1 probe-disagree:$did must be warn, name both probes, carry a remedy"
+    want=$(printf '%s' "$dsev" | tr '[:upper:]' '[:lower:]')
+    jq -e ".rows[]|select(.id==\"probe-disagree:$did\")|.health==\"$want\" and ((.installed.detail+.title)|contains(\"$did\") and contains(\"$owner\")) and (.fix.remedy|length>0)" "$foldOut" >/dev/null || fail "i1 probe-disagree:$did must keep the doctor's $want, name both probes, carry a remedy"
     disagree=$((disagree+1))
   else
     [ "$n" -eq 0 ] || fail "i1 probe-disagree:$did emitted though doctor $dsev does not exceed $owner $oh"
@@ -388,7 +389,7 @@ pass "i1 folded doctor rows leave the feed; a worse doctor verdict becomes one p
 
 # i2: every fail/warn row carries a runnable-looking remedy
 for f in "$foldOut" "$out"; do
-  bad=$(jq -r '.rows[]|select(.health=="fail" or .health=="warn")|select((.fix.remedy|type)!="string" or (.fix.remedy|test("^\\s*$")) or (.fix.remedy|test("^(tbd|todo|n/a|none|-+|\\.+)$";"i")) or (.source!="doctor" and ((.fix.remedy|length)<8 or (.fix.remedy|test("\\s")|not))))|.id' "$f")
+  bad=$(jq -r '.rows[]|select(.health=="fail" or .health=="warn")|select((.fix.remedy|type)!="string" or (.fix.remedy|test("^\\s*$")) or (.fix.remedy|test("^(tbd|todo|n/a|none|-+|\\.+)$";"i")) or (.source!="doctor" and ((.fix.remedy|length)<8 or (.fix.remedy|test("\\s")|not))))|.id' "$f") || fail "i2 jq failed on $f"
   [ -z "$bad" ] || fail "i2 fail/warn rows without a usable remedy: $bad"
 done
 pass "i2 every fail/warn row has a non-empty, non-placeholder remedy"

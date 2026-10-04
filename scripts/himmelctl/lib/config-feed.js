@@ -522,7 +522,7 @@ function foldDoctorRows(rows, probedAt) {
       id: `probe-disagree:${did}`, source: 'doctor', group: 'core', title: msg,
       declared: { where: `scripts/himmel-doctor.sh#${did}`, desired: 'agree', profile: 'all' },
       installed: { state: 'degraded', detail: `${msg} (${r.title})` },
-      health: 'warn',
+      health: r.health,
       fix: { remedy: owner === null ? 'node scripts/himmelctl/bin.js status   # and: bash scripts/himmel-doctor.sh' : `node scripts/himmelctl/bin.js status --items ${owner}   # compare with: bash scripts/himmel-doctor.sh`, owner: 'user' },
       probedAt,
     }));
