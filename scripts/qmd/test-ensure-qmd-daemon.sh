@@ -630,4 +630,32 @@ kill "$fake_pid" 2>/dev/null || true
 wait "$fake_pid" 2>/dev/null || true
 echo "ok (q): a stale lock is cleared, and the next session recycles"
 
+# ---- (r) an embed-model swap in progress: the daemon is NOT started (HIMMEL-4314) --
+# qmd-embed-model.sh swap holds <cache>/qmd/embed-swap.lock (holder pid inside)
+# from its liveness check to its commit/rollback. A daemon relaunched in that
+# window served gemma query embeddings against qwen vectors. Every start path
+# refuses while the holder is alive; a dead holder's lock is stale and cleared.
+swap_lock="$home/.cache/qmd/embed-swap.lock"
+rm -f "$state/alive"
+mkdir -p "$swap_lock"
+sleep 30 &
+holder_pid=$!
+echo "$holder_pid" > "$swap_lock/pid"
+run_ensure sentinel "$bin:$safe"
+[ "$rc" -ne 0 ] || fail "(r) swap held: expected a refusal, got rc 0 ($out)"
+grep -q "swap" <<< "$out" || fail "(r) swap held: refusal does not name the swap (got: $out)"
+[ ! -f "$state/qmd-argv.log" ] || fail "(r) swap held: qmd was invoked ($(cat "$state/qmd-argv.log"))"
+[ -d "$swap_lock" ] || fail "(r) swap held: a LIVE holder's lock was removed"
+echo "ok (r): a live swap lock refuses the daemon start, qmd not invoked, lock kept"
+
+# ---- (s) the swap's holder died: stale lock cleared, daemon starts -----------
+kill "$holder_pid" 2>/dev/null || true
+wait "$holder_pid" 2>/dev/null || true
+rm -f "$state/alive"
+run_ensure sentinel "$bin:$safe"
+[ "$rc" -eq 0 ] || fail "(s) stale swap lock: expected rc 0, got $rc ($out)"
+[ ! -d "$swap_lock" ] || fail "(s) stale swap lock: not cleared"
+grep -qx 'mcp --http --daemon' "$state/qmd-argv.log" || fail "(s) stale swap lock: the daemon was not started"
+echo "ok (s): a swap lock whose holder is dead is cleared and the daemon starts"
+
 echo "PASS: all ensure-qmd-daemon cases"

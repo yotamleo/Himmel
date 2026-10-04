@@ -205,6 +205,50 @@ daemon_running() {
     pgrep -f 'qmd(\.js)? (mcp|update|embed)' >/dev/null 2>&1
 }
 
+# --- swap lock (HIMMEL-4314) -------------------------------------------------
+# A daemon relaunched mid-swap (the SessionStart hook ensure-qmd-daemon.sh does
+# it for any new Claude session) served the OLD model's query embeddings against
+# the NEW vectors. `swap` holds this lock from its liveness check to its commit
+# or rollback, and the daemon start path refuses while it is held. A mkdir lock
+# (atomic) in qmd's cache dir, holder pid inside; the same path and stale rule
+# are inlined in marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh, which
+# cannot source this repo. A lock whose pid is dead is stale; one with no pid
+# file is stale once a minute old (the holder died between mkdir and the write).
+# ponytail: pid liveness is POSIX kill -0 only (Git Bash pids do not map), and a start path that cleared a stale lock can race a brand-new swap, upgrade in HIMMEL-4314 follow-ups if either bites.
+swap_lock_dir() { printf '%s/qmd/embed-swap.lock\n' "${XDG_CACHE_HOME:-$HOME/.cache}"; }
+
+swap_lock_stale() {
+    local pid
+    pid="$(cat "$1/pid" 2>/dev/null)" || pid=""
+    case "$pid" in
+        ''|*[!0-9]*) [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+        *) ! kill -0 "$pid" 2>/dev/null ;;
+    esac
+}
+
+swap_lock_release() {
+    local d
+    d="$(swap_lock_dir)"
+    [ "$(cat "$d/pid" 2>/dev/null)" = "$$" ] && rm -rf "$d"
+    return 0
+}
+
+swap_lock_acquire() {
+    local d
+    d="$(swap_lock_dir)"
+    mkdir -p "$(dirname "$d")" || die 5 "cannot create $(dirname "$d")"
+    if ! mkdir "$d" 2>/dev/null; then
+        if swap_lock_stale "$d"; then
+            warn "clearing a stale swap lock (holder $(cat "$d/pid" 2>/dev/null || echo unknown) is gone)"
+            rm -rf "$d"
+        fi
+        mkdir "$d" 2>/dev/null \
+            || die 2 "another qmd-embed-model swap holds $d (pid $(cat "$d/pid" 2>/dev/null || echo unknown)); wait for it, or remove the directory if that pid is gone"
+    fi
+    printf '%s\n' "$$" >"$d/pid"
+    trap swap_lock_release EXIT
+}
+
 # --- subcommands -------------------------------------------------------------
 cmd_capability() {
     capability
@@ -362,6 +406,7 @@ cmd_swap() {
     n="$(printf '%s\n' "$models" | grep -c . || true)"
     [ "$n" -eq 1 ] || die 2 "the copy must hold vectors from exactly one model (found $n)"
     uri="$models"
+    swap_lock_acquire
     if daemon_running; then
         die 2 "a qmd process (mcp daemon, update or embed) is running; it holds the live index open. Stop it first (qmd mcp stop, any MCP client, and wait out a scheduled reindex), then re-run swap"
     fi
@@ -376,8 +421,14 @@ cmd_swap() {
         ln "$live" "$backup" 2>/dev/null || cp -p "$live" "$backup" || die 5 "could not keep a backup of the live index"
     fi
     if [ -f "$cfg" ]; then cp -p "$cfg" "$cfg.pre-swap-$ts"; fi
+    # a daemon that slipped in before the lock was visible to its start path
+    if daemon_running; then
+        die 2 "a qmd process started during the swap; the live index is unchanged. Stop it and re-run swap"
+    fi
     mv -f "$copy" "$live" || die 5 "the rename failed; the live index is unchanged (backup at $backup)"
     rm -f "$copy-wal" "$copy-shm" "$live-shm"
+    # test seam (test-qmd-embed-model.sh): stands in for a daemon relaunch mid-swap
+    if [ -n "${QMD_EMBED_SWAP_MID_HOOK:-}" ]; then bash -c "$QMD_EMBED_SWAP_MID_HOOK" || true; fi
     write_yml_embed "$cfg" "$uri" \
         || die 5 "the index was swapped but the config write failed. Roll back: mv -f '$backup' '$live' && cp -p '$cfg.pre-swap-$ts' '$cfg'"
     local rc=0

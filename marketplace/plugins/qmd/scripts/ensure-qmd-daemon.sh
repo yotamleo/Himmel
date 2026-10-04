@@ -250,6 +250,32 @@ if [ -n "$body" ]; then
   exit 1
 fi
 
+# ---- Embed-model swap in progress: do NOT start (HIMMEL-4314) --------------
+# scripts/luna/qmd-embed-model.sh swap holds this mkdir lock (holder pid inside)
+# from its liveness check to its commit or rollback. A daemon started in that
+# window serves the OLD model's query embeddings against the NEW vectors (a
+# dimension mismatch, or silent garbage when the dimensions match). A lock whose
+# pid is dead is stale: clear it and carry on; with no pid file it is stale once
+# a minute old. Same path and rule as swap_lock_* in qmd-embed-model.sh, which
+# this plugin copy cannot source.
+swap_lock="$qmd_state_dir/embed-swap.lock"
+if [ -d "$swap_lock" ]; then
+  swap_pid="$(cat "$swap_lock/pid" 2>/dev/null)"
+  case "$swap_pid" in
+    ''|*[!0-9]*) [ -n "$(find "$swap_lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && swap_stale=1 || swap_stale=0 ;;
+    *) kill -0 "$swap_pid" 2>/dev/null && swap_stale=0 || swap_stale=1 ;;
+  esac
+  if [ "$swap_stale" -eq 1 ]; then
+    rm -rf "$swap_lock"
+  fi
+  if [ -d "$swap_lock" ]; then
+    echo "ensure-qmd-daemon: an embed-model swap is in progress (pid ${swap_pid:-unknown}, $swap_lock) - NOT starting the qmd daemon." >&2
+    echo "  Starting it now would serve queries against a half-swapped index. Retry once the swap finishes;" >&2
+    echo "  if that pid is gone, remove the lock directory." >&2
+    exit 1
+  fi
+fi
+
 # ---- Dead: start the daemon ------------------------------------------------
 if ! resolve_qmd; then
   echo "ensure-qmd-daemon: ERROR - qmd is not installed / not on PATH." >&2

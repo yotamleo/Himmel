@@ -238,6 +238,51 @@ else
 fi
 rc=0; out=$(run bash "$SCRIPT" check 2>&1) || rc=$?
 assert_rc "check passes after the swap" 0 "$rc"
+if [ ! -e "$H/.cache/qmd/embed-swap.lock" ]; then pass "the swap lock is released after the commit"; else fail "the swap lock is released after the commit"; fi
+
+echo "== swap lock (HIMMEL-4314)"
+# A relaunched daemon mid-swap served the old model's query embeddings against
+# the new vectors. The swap holds <cache>/qmd/embed-swap.lock from its liveness
+# check to its commit or rollback; a daemon start path must see it.
+new_home 12
+make_index "$(IDX)" 768 "$GEMMA"
+printf 'models:\n  embed: %s\n' "$GEMMA" >"$(CFG)"
+make_index "$H/.cache/qmd/index.reembed-qwen.sqlite" 1024 "$QWEN"
+LOCK="$H/.cache/qmd/embed-swap.lock"
+# the hook stands in for the relauncher: it runs between the rename and the
+# config flip and records whether the lock is held and by which pid.
+rc=0; out=$(run env QMD_EMBED_SWAP_MID_HOOK="cat '$LOCK/pid' >'$H/mid-pid'; ls -d '$LOCK' >'$H/mid-lock'" \
+    bash "$SCRIPT" swap --copy "$H/.cache/qmd/index.reembed-qwen.sqlite" 2>&1) || rc=$?
+assert_rc "swap with a mid-swap hook succeeds" 0 "$rc"
+if [ -s "$H/mid-lock" ]; then pass "the lock is held mid-swap"; else fail "the lock is held mid-swap"; fi
+if [ -s "$H/mid-pid" ]; then pass "the lock records its holder pid"; else fail "the lock records its holder pid"; fi
+if [ ! -e "$LOCK" ]; then pass "the lock is released after a committed swap"; else fail "the lock is released after a committed swap"; fi
+
+# a failed swap still releases the lock (rollback path: the post-swap check fails)
+new_home 13
+make_index "$(IDX)" 768 "$GEMMA"
+make_index "$H/.cache/qmd/index.reembed-qwen.sqlite" 1024 "$QWEN"
+LOCK="$H/.cache/qmd/embed-swap.lock"
+rc=0; out=$(run env FAKE_DAEMON=1 bash "$SCRIPT" swap --copy "$H/.cache/qmd/index.reembed-qwen.sqlite" 2>&1) || rc=$?
+assert_rc "swap refused for a running daemon" 2 "$rc"
+if [ ! -e "$LOCK" ]; then pass "a refused swap releases the lock"; else fail "a refused swap releases the lock"; fi
+
+# a second swap while the first is live is refused; the first's lock survives
+mkdir -p "$LOCK"
+sleep 30 &
+HOLDER=$!
+echo "$HOLDER" >"$LOCK/pid"
+rc=0; out=$(run bash "$SCRIPT" swap --copy "$H/.cache/qmd/index.reembed-qwen.sqlite" 2>&1) || rc=$?
+assert_rc "swap refuses while another swap holds the lock" 2 "$rc"
+assert_contains "the refusal names the holder" "$HOLDER" "$out"
+if [ -d "$LOCK" ]; then pass "a live holder's lock is left alone"; else fail "a live holder's lock is left alone"; fi
+
+# a dead holder's lock is stale: the swap clears it and proceeds
+kill "$HOLDER" 2>/dev/null || true
+wait "$HOLDER" 2>/dev/null || true
+rc=0; out=$(run bash "$SCRIPT" swap --copy "$H/.cache/qmd/index.reembed-qwen.sqlite" 2>&1) || rc=$?
+assert_rc "swap recovers a stale lock" 0 "$rc"
+if [ ! -e "$LOCK" ]; then pass "the recovered lock is released again"; else fail "the recovered lock is released again"; fi
 
 echo
 echo "===================================="
