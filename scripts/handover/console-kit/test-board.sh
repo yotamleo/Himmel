@@ -52,6 +52,7 @@ chmod +x "$W/bin/tick-stub"
 # `pr view` state from files.
 cat > "$W/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+[ -z "${GH_CWD_LOG:-}" ] || pwd -P >> "$GH_CWD_LOG"
 case "$*" in
     "pr view "*) [ -f "$GH_VIEW/$3.json" ] && cat "$GH_VIEW/$3.json" || exit 1 ;;
     *"--state open"*) cat "$GH_OPEN" ;;
@@ -558,6 +559,33 @@ contains 'cost line: class names like constructor/__proto__ do not suppress the 
 printf 'not json\n' > "$LC"
 LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
 lacks 'cost line: a ledger with no usable row today renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+
+# --- a console FOR another checkout shows that checkout's PRs, not himmel's.
+# console.sh records the project on the doc's project line; every gh call must
+# run there. `none — ...` (a himmel console) keeps --repo. A recorded path that
+# is gone reads gh unavailable, never --repo's PRs.
+mkdir -p "$W/project"
+proj_real="$(cd "$W/project" && pwd -P)"
+repo_real="$(cd "$W/repo" && pwd -P)"
+DOCP="$B/HIMMEL-nextleg-2026-09-21V-console-p.md"
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+{ printf '%s\n' '> The project this console is FOR is **`'"$W/project"'`** — you'; cat "$DOC"; } > "$DOCP"
+: > "$W/gh-cwd.log"
+GH_CWD_LOG="$W/gh-cwd.log" run --doc "$DOCP" --out "$W/p-board.html" >/dev/null
+same 'a foreign console runs every gh call in its project' "$(sort -u "$W/gh-cwd.log")" "$proj_real"
+contains 'and lists the project PRs' "$(cat "$W/p-board.html")" '<b>#2001</b>'
+contains 'tick still gets --repo (himmel), not the project' "$(cat "$W/argv.log")" "--repo $W/repo "
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+{ printf '%s\n' '> The project this console is FOR is **`none — this console runs in the himmel checkout itself`** — you'; cat "$DOC"; } > "$DOCP"
+: > "$W/gh-cwd.log"
+GH_CWD_LOG="$W/gh-cwd.log" run --doc "$DOCP" --out "$W/p-board.html" >/dev/null
+same 'a himmel console (project line reads none) runs gh in --repo' "$(sort -u "$W/gh-cwd.log")" "$repo_real"
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+{ printf '%s\n' '> The project this console is FOR is **`'"$W/gone"'`** — you'; cat "$DOC"; } > "$DOCP"
+: > "$W/gh-cwd.log"
+GH_CWD_LOG="$W/gh-cwd.log" run --doc "$DOCP" --out "$W/p-board.html" >/dev/null
+same 'a recorded project that is gone never falls back to --repo' "$(cat "$W/gh-cwd.log")" ''
+contains 'and reads gh unavailable' "$(cat "$W/p-board.html")" 'gh unavailable'
 
 # --- usage
 PATH="$W/bin:$PATH" node "$SUT" >/dev/null 2>&1; rc=$?
