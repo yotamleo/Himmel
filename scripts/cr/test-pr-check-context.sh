@@ -8,6 +8,9 @@
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="$DIR/pr-check-context.sh"
+# HIMMEL-4297 — a leg shell's FORCE_COLOR=3 makes node's console.log colour a
+# bare boolean/number (T13); pin it on so the suite catches a regression.
+export FORCE_COLOR=3
 
 fail=0
 check() { [ "$1" = "$2" ] || { echo "FAIL: $3 - got '$1' want '$2'"; fail=1; }; }
@@ -442,7 +445,7 @@ check "$(grep -c "\"kind\":\"delegation\".*\"head\":\"$head13\"" "$ledger13" 2>/
 # the ` delegate=` field (the anchor is asserted by basename either way). The delegate
 # itself is pinned by himmel_dir + head above. Upgrade path: shorten the fixture
 # root or log the basenames first in the detail.
-check "$(L="$ledger13" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="delegation");console.log(o.detail.includes(process.argv[1])&&(o.detail.includes(process.argv[2])||(o.detail.length===200&&o.detail.includes(" delegate="))))' "$(basename "$anchor13")" "$(basename "$wt13_toplevel")")" "true" "T13 delegation detail names both the anchor and the delegate (by basename, MSYS-mangling-proof)"
+check "$(L="$ledger13" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="delegation");console.log(String(o.detail.includes(process.argv[1])&&(o.detail.includes(process.argv[2])||(o.detail.length===200&&o.detail.includes(" delegate=")))))' "$(basename "$anchor13")" "$(basename "$wt13_toplevel")")" "true" "T13 delegation detail names both the anchor and the delegate (by basename, MSYS-mangling-proof)"
 
 # T14. himmel lane, diff does NOT touch scripts/cr/ -> the anchor's own path
 # runs: delegated=no, ZERO delegation rows. Positive control for this "zero"
