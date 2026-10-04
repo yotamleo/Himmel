@@ -42,6 +42,43 @@ is allowed everywhere.
 | `query` | no such GPU, at least 4 GiB of RAM | embed one short query per search on CPU, so it can search a Qwen index shipped to it, but should not build one |
 | `none` | under 4 GiB of RAM | nothing; `set qwen` refuses without `--force` |
 
+The gate only runs in `set`. `reembed`, `swap`, `qmd-reindex.sh`, the cadence and
+the doctor never call it, so an incremental `qmd embed` (new and changed
+documents only) keeps working on a `query`-class host.
+
+### Measured cost (HIMMEL-4232, 2026-10-04)
+
+These are CPU-only figures (`QMD_FORCE_CPU=1`). They come from a 32-thread x86 host
+under load (load average about 22, nice 19). Queries are synthetic, and the
+document chunks are about 900 tokens.
+
+| Model | Query embed p50 / p90 | Document chunks per minute | Peak RSS |
+|---|---|---|---|
+| embeddinggemma-300M | 12 / 18 ms | about 370 | 2.8 GB |
+| Qwen3-Embedding-0.6B | 59 / 65 ms | about 67 | 4.2 GB |
+
+On an RTX 4090, a full build of about 140k chunks ran at roughly 1,300 to 2,000
+chunks per minute for either model, at nice 19. The bottleneck was the host side,
+not the GPU. A query-class host can afford Qwen's per-query cost. At its CPU rate,
+a daily delta of a few hundred chunks takes minutes, but a full corpus takes days.
+
+### Measured quality (HIMMEL-4184 harness, 38-query golden set)
+
+The table compares Qwen against gemma on the same four-collection corpus. It
+gives MRR, with hit@1 and hit@5 in brackets. Unscoped means a search over every
+collection; scoped means a search limited to the golden collections.
+
+| Mode | gemma unscoped | Qwen unscoped | gemma scoped | Qwen scoped |
+|---|---|---|---|---|
+| vec | 0.256 (0.18 / 0.34) | 0.515 (0.42 / 0.66) | 0.432 (0.32 / 0.61) | 0.726 (0.63 / 0.84) |
+| hybrid | 0.575 (0.37 / 0.87) | 0.701 (0.58 / 0.87) | 0.831 (0.76 / 0.89) | 0.894 (0.84 / 0.95) |
+| hybrid + rerank | 0.526 (0.37 / 0.79) | 0.712 (0.58 / 0.92) | 0.820 (0.76 / 0.89) | 0.891 (0.84 / 0.95) |
+
+Lexical search scores the same under both models: 0.588 unscoped, 0.781 scoped.
+Qwen wins every vector-bearing cell. The reranker lowers gemma's unscoped score,
+and it is neutral (±0.01 MRR) under Qwen. It adds about 2.2 s at p50 unscoped,
+and the HIMMEL-4216 rerank timeout never fired.
+
 ## Switching a machine (copy, then swap)
 
 Never re-embed the live index in place: `qmd embed --force` drops every vector
