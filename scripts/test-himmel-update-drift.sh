@@ -26,7 +26,8 @@ export CLAUDE_CONFIG_DIR="$TMP/no-claude-config"
 export HERMES_HOME="$TMP/no-hermes"
 export HIMMELCTL_CACHE_DIR="$TMP/himmelctl-cache"
 export CODEX_HOME="$TMP/codex-home"
-mkdir -p "$HOME" "$HIMMELCTL_CACHE_DIR" || exit 1
+export XDG_CACHE_HOME="$TMP/xdg-cache"
+mkdir -p "$HOME" "$HIMMELCTL_CACHE_DIR" "$XDG_CACHE_HOME/qmd" || exit 1
 unset HIMMEL_UPDATE_CHANNEL
 # Keep git from reading the operator's global/system config.
 export GIT_CONFIG_GLOBAL="$TMP/gitconfig-global" GIT_CONFIG_NOSYSTEM=1
@@ -71,10 +72,16 @@ case "$1" in
       [ -n "$items" ] && items="$items,"
       items="$items"'{"id":"luna-sources","kind":"vault","desired":true,"actual":"degraded","severity":"red","detail":"1 unhealthy (fix credentials/config on the source itself): youtube-playwright: auth-or-cookie-expired"}'
     fi
+    if [ -f "$FIX/qmd-drift" ]; then
+      [ -n "$items" ] && items="$items,"
+      items="$items"'{"id":"qmd-index","kind":"vault","desired":true,"actual":"degraded","severity":"degraded","detail":"2/3 collections registered (missing: skills)"}'
+    fi
     printf '{"schemaVersion":1,"items":[%s]}\n' "$items" ;;
   ensure)
     echo "$*" >> "$FIX/ensure.log"
-    case "$*" in *pre-commit-hooks*) : > "$FIX/hooks/pre-commit" ;; esac ;;
+    case "$*" in *pre-commit-hooks*) : > "$FIX/hooks/pre-commit" ;; esac
+    # The real qmd flow registers collections via `qmd collection add`.
+    case "$*" in *qmd-index*) qmd collection add skills; rm -f "$FIX/qmd-drift" ;; esac ;;
 esac
 exit 0
 STUB
@@ -85,7 +92,7 @@ run_update() { # run_update <only-item>; sets OUT / RC
     OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="/usr/bin:/bin:$PATH" \
         bash scripts/himmel-update.sh --only "$1" 2>&1)" || RC=$?
 }
-reset_fix() { rm -f "$FIX/hooks/pre-commit" "$FIX/ensure.log" "$FIX/no-cred" "$FIX/bad-recheck" "$FIX/empty-recheck"; }
+reset_fix() { rm -rf "$XDG_CACHE_HOME/qmd/embed-swap.lock"; rm -f "$FIX/qmd-drift" "$FIX/qmd.log" "$FIX/hooks/pre-commit" "$FIX/ensure.log" "$FIX/no-cred" "$FIX/bad-recheck" "$FIX/empty-recheck"; }
 
 echo "drift pass: allow-listed item converges, credential red is reported (HIMMEL-4246)"
 reset_fix
@@ -202,6 +209,51 @@ run_update drift
 if grep -q 'converged pre-commit-hooks' <<< "$OUT"; then assert_fail "claimed convergence on a {} re-check: $OUT"; else assert_pass "no convergence claim on a {} re-check"; fi
 grep -q 'luna-sources' <<< "$OUT" && assert_pass "drift rows survive a {} re-check" || assert_fail "drift rows lost on {}: $OUT"
 rm -f "$FIX/empty-recheck"
+
+echo "qmd-index drift (skills collection missing) converges via ensure, never embeds (HIMMEL-4313)"
+mkdir -p "$TMP/qmdbin" || exit 1
+cat > "$TMP/qmdbin/qmd" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$FIX/qmd.log"
+STUB
+chmod +x "$TMP/qmdbin/qmd"
+run_update_qmd() { # run_update_qmd <only-item>
+    RC=0
+    OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="$TMP/qmdbin:/usr/bin:/bin:$PATH" \
+        bash scripts/himmel-update.sh --only "$1" 2>&1)" || RC=$?
+}
+qmd_clean() { reset_fix; : > "$FIX/hooks/pre-commit"; : > "$FIX/no-cred"; : > "$FIX/qmd-drift"; }
+qmd_clean
+run_update_qmd drift
+grep -q -- '--items qmd-index --yes' "$FIX/ensure.log" 2>/dev/null \
+    && assert_pass "ensure called with --items qmd-index --yes" || assert_fail "qmd-index not handed to ensure: $OUT"
+grep -q 'converged qmd-index' <<< "$OUT" && assert_pass "output reports qmd-index converged" || assert_fail "no converged line: $OUT"
+if grep -q 'DRIFT' <<< "$OUT"; then assert_fail "converged qmd-index still in a DRIFT block: $OUT"; else assert_pass "no DRIFT block after convergence"; fi
+if grep -Eq '^(embed|update)' "$FIX/qmd.log" 2>/dev/null; then assert_fail "convergence ran qmd embed/update: $(cat "$FIX/qmd.log")"; else assert_pass "convergence made no qmd embed/update call"; fi
+
+qmd_clean
+run_update_qmd drift-check
+[ ! -s "$FIX/ensure.log" ] && assert_pass "check: ensure not called" || assert_fail "check called ensure"
+grep -q 'would converge qmd-index' <<< "$OUT" && assert_pass "check: would converge qmd-index" || assert_fail "check: no would-converge line: $OUT"
+
+echo "an embed-model swap in progress keeps qmd-index in the DRIFT block (HIMMEL-4314)"
+for item in drift drift-check; do
+    qmd_clean
+    mkdir -p "$XDG_CACHE_HOME/qmd/embed-swap.lock"
+    echo swap > "$XDG_CACHE_HOME/qmd/embed-swap.lock/role"; echo "$$" > "$XDG_CACHE_HOME/qmd/embed-swap.lock/pid"
+    run_update_qmd "$item"
+    [ ! -s "$FIX/ensure.log" ] && assert_pass "$item: ensure not called during a swap" || assert_fail "$item: ensure ran during a swap: $(cat "$FIX/ensure.log")"
+    [ ! -s "$FIX/qmd.log" ] && assert_pass "$item: no qmd call during a swap" || assert_fail "$item: qmd called during a swap"
+    grep -q 'DRIFT' <<< "$OUT" && grep -q 'qmd-index' <<< "$OUT" && grep -qi 'swap' <<< "$OUT" \
+        && assert_pass "$item: qmd-index listed in DRIFT with the swap reason" || assert_fail "$item: swap drift not surfaced: $OUT"
+done
+echo "a stale swap lock (dead holder) does not block convergence"
+qmd_clean
+mkdir -p "$XDG_CACHE_HOME/qmd/embed-swap.lock"
+echo swap > "$XDG_CACHE_HOME/qmd/embed-swap.lock/role"; echo 2999999 > "$XDG_CACHE_HOME/qmd/embed-swap.lock/pid"
+run_update_qmd drift
+grep -q 'converged qmd-index' <<< "$OUT" && assert_pass "stale lock: qmd-index converged" || assert_fail "stale lock blocked convergence: $OUT"
+reset_fix
 
 echo ""
 echo "Results: $pass passed, $fail failed"

@@ -551,7 +551,12 @@ report_guardrail_block() {
 # Advisory; never fails the update. HIMMEL_DRIFT_CTL overrides the himmelctl
 # command (test seam). Never auto-deletes git config: a leaked url.*.insteadOf
 # is WARN + the unset command only.
-DRIFT_CONVERGE_IDS="pre-commit-hooks"
+# qmd-index (HIMMEL-4313): ensure registers any missing himmel/luna/skills
+# collection (idempotent qmd_install + collection add + ensure-skill-index.sh;
+# it never embeds or reindexes). It does not honour the embed-model swap lock
+# (HIMMEL-4314), so _qmd_swap_held keeps qmd-index in the DRIFT block while a
+# swap holds it.
+DRIFT_CONVERGE_IDS="pre-commit-hooks qmd-index"
 DRIFT_LINES=""
 
 _drift_ctl() {
@@ -570,6 +575,19 @@ for (const i of r.items) {
   const armedOff = i.id === "graphmap-cadence" && i.desired === false && i.actual === "present";
   if (bad || armedOff) console.log([i.id, armedOff ? "armed-off" : i.severity, i.desired, i.actual, String(i.detail || "").replace(/\s+/g, " ").slice(0, 240)].join("\t"));
 }' 2>/dev/null
+}
+
+# 0 = a live embed-model swap holds the lock (same path and stale rule as
+# scripts/luna/qmd-embed-model.sh: dead pid, or no pid and a minute old).
+_qmd_swap_held() {
+    local d="${XDG_CACHE_HOME:-$HOME/.cache}/qmd/embed-swap.lock" pid
+    [ -d "$d" ] || return 1
+    [ "$(cat "$d/role" 2>/dev/null)" = "swap" ] || return 1
+    pid="$(cat "$d/pid" 2>/dev/null)" || pid=""
+    case "$pid" in
+        ''|*[!0-9]*) [ -z "$(find "$d" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+        *) kill -0 "$pid" 2>/dev/null ;;
+    esac
 }
 
 _drift_add() { DRIFT_LINES="${DRIFT_LINES}$1
@@ -599,9 +617,15 @@ report_drift() {
         echo "    skip: node not on PATH."; return 0
     fi
     if json="$(_drift_ctl status --json 2>/dev/null)" && rows="$(printf '%s' "$json" | _drift_rows)"; then
-        local pending="$rows" converged=""
+        local pending="$rows" converged="" swap_held=0
         for id in $DRIFT_CONVERGE_IDS; do
             grep -q "^$id	" <<< "$rows" || continue
+            # Left in $pending: it lands in the DRIFT block below with the swap remedy.
+            if [ "$id" = "qmd-index" ] && _qmd_swap_held; then
+                echo "    not converging qmd-index: an embed-model swap holds the qmd lock"
+                swap_held=1
+                continue
+            fi
             if [ "$mode" = "check" ]; then
                 echo "    would converge $id: himmelctl ensure --items $id --yes"
                 continue
@@ -636,8 +660,15 @@ report_drift() {
             fi
             # Converged ids drop out of $pending in apply mode; in check mode
             # they are reported above as "would converge", not as drift.
-            case " $DRIFT_CONVERGE_IDS " in *" $id "*) [ "$mode" = "check" ] && continue; esac
+            case " $DRIFT_CONVERGE_IDS " in *" $id "*)
+                [ "$mode" = "check" ] && ! { [ "$id" = "qmd-index" ] && [ "$swap_held" = 1 ]; } && continue ;;
+            esac
             case "$id" in
+                qmd-index) if [ "$swap_held" = 1 ]; then
+                        _drift_add "$id ($sev): $detail (not converged: an embed-model swap holds the qmd lock)" "wait for qmd-embed-model.sh swap to finish, then: himmelctl ensure --items qmd-index"
+                    else
+                        _drift_add "$id ($sev): $detail" "himmelctl status --items $id  (then: himmelctl ensure --items $id)"
+                    fi ;;
                 luna-sources) _drift_add "$id ($sev): $detail" "ensure cannot fix credentials — repair the source itself (re-auth), then: himmelctl status --items $id" ;;
                 *)            _drift_add "$id ($sev): $detail" "himmelctl status --items $id  (then: himmelctl ensure --items $id)" ;;
             esac
