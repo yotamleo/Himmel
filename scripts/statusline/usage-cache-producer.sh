@@ -336,6 +336,18 @@ if [ -z "$fetched" ] || ! printf '%s' "$fetched" | jq -e 'type=="object"' >/dev/
   exit 0
 fi
 
+# HIMMEL-3729 (panel round 10, codex-1 on HIMMEL-1712): the pre-fetch guard
+# above leaves a window -- the identity can flip DURING the fetch. Re-check
+# with the same rule (changed or unreadable both skip) right before the write
+# and discard the fetched numbers rather than stamp them under $account_hash.
+if [ -n "$account_hash" ]; then
+  live_account_hash=$(current_account_hash)
+  if [ "$live_account_hash" != "$account_hash" ]; then
+    echo "WARN usage-cache-producer: on-disk account identity changed during the OAuth fetch; discarding the fetched usage to avoid mislabeling" >&2
+    exit 0
+  fi
+fi
+
 # HIMMEL-1712 item 5: same newest-write-wins policy as the rates path
 # (operator ruling) -- visibility-only WARN, no behavior change.
 prev_account=$(printf '%s' "$prev" | jq -r '.account // empty' 2>/dev/null)
