@@ -34,13 +34,13 @@
   {"id": "reddit-4", "category": "reddit-thread", "url": "https://www.reddit.com/r/programming/", "title": "programming", "phrase": "programming"},
 
   {"id": "yt-1", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "title": "Never Gonna Give You Up", "phrase": "Rick Astley"},
-  {"id": "yt-2", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=jNQXAC9IJRw", "title": "Me at the zoo", "phrase": "elephants"},
+  {"id": "yt-2", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "title": "Me at the zoo", "phrase": "elephants"},
   {"id": "yt-3", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=9bZkp7q19f0", "title": "Gangnam Style", "phrase": "PSY"},
   {"id": "yt-4", "category": "youtube-video", "url": "https://www.youtube.com/watch?v=aqz-KE-bpKQ", "title": "Big Buck Bunny", "phrase": "Big Buck Bunny"},
 
   {"id": "gh-1", "category": "github", "url": "https://github.com/torvalds/linux", "title": "linux", "phrase": "Linux kernel"},
   {"id": "gh-2", "category": "github", "url": "https://github.com/rust-lang/rust/blob/master/README.md", "title": "Rust", "phrase": "main source code repository for Rust"},
-  {"id": "gh-3", "category": "github", "url": "https://github.com/torvalds/linux/pull/17", "title": "Linux", "phrase": "pull request"},
+  {"id": "gh-3", "category": "github", "url": "https://github.com/torvalds/linux/pull/17", "title": "Linux", "phrase": "pull request", "control": "negative: torvalds/linux has pull requests disabled, so this URL is a 404 by design"},
   {"id": "gh-4", "category": "github", "url": "https://github.com/Panniantong/Agent-Reach", "title": "Agent-Reach", "phrase": "Agent"},
   {"id": "gh-5", "category": "github", "url": "https://github.com/rust-lang/rust/issues/1", "title": "rust", "phrase": "issue"}
 ]
