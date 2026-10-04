@@ -3615,6 +3615,57 @@ _r4228q "100-pct-dq-sed-i-rel"                     block $'echo "${y%"}" ; x=$((
 _r4213 "100z dq-span with quote, ls primary (ALLOW)"           allow $'echo "${y:-\'}" ; x=$((1|2)) ls @P@ ; : \'}\''
 }
 
+echo "== HIMMEL-4253 (a ~/ redirect target is cwd-independent; the cd guard must not read it as relative) =="
+# `echo done` is an accepted HIMMEL-3685 taint, so the cd below leaves the
+# modelled cwd UNRESOLVED. A `~/…` target names the same file whatever the cwd,
+# so the unresolved-cd guard must not deny it; the target is still checked
+# against the primary after ~ expansion. HOME=$FIX for this block, so
+# `~/primary/…` is the primary and `~/.cache/…` is outside every checkout.
+_r4253() {  # _r4253 <label> <block|allow> <command> <payload-cwd>
+    check_both "4253 $1" "$2" \
+        "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$3" | jq -Rs .),\"cwd\":\"$4\"}}"
+}
+_SAVED_HOME_4253="$HOME"
+export HOME="$FIX"
+# ALLOW: the ticket's command (outside every checkout), and its minimal shapes.
+_r4253 "a ticket command, ~/.cache target, cwd=wt allows" allow \
+    "mkdir -p ~/.cache/himmel && cd $FIX/wt && timeout 550 pre-commit run --all-files > ~/.cache/himmel/4243-audit.txt 2>&1; echo done" "$FIX/wt"
+_r4253 "b cd wt && ls > ~/.cache/x; echo done allows" allow \
+    "cd $FIX/wt && ls > ~/.cache/x; echo done" "$FIX/wt"
+_r4253 "c cd wt && ls >> ~/.cache/x 2>&1; echo done allows" allow \
+    "cd $FIX/wt && ls >> ~/.cache/x 2>&1; echo done" "$FIX/wt"
+_r4253 "d cd primary && ls > ~/.cache/x; echo done allows (twin of the allowed > /tmp/x)" allow \
+    "cd $FIX/primary && ls > ~/.cache/x; echo done" "$FIX/wt"
+# DENY: a redirect into the primary, in every spelling, with and without a cd.
+_r4253 "e echo > ~/primary/x denies" block "echo hi > ~/primary/x" "$FIX/wt"
+_r4253 "f echo > \$HOME/primary/x denies" block "echo hi > \$HOME/primary/x" "$FIX/wt"
+_r4253 "g echo >> \${HOME}/primary/x denies" block "echo hi >> \${HOME}/primary/x" "$FIX/wt"
+_r4253 "h ticket command into ~/primary denies" block \
+    "mkdir -p ~/.cache/himmel && cd $FIX/wt && timeout 550 pre-commit run --all-files > ~/primary/4243-audit.txt 2>&1; echo done" "$FIX/wt"
+_r4253 "i ticket command into \$HOME/primary denies" block \
+    "mkdir -p ~/.cache/himmel && cd $FIX/wt && timeout 550 pre-commit run --all-files > \$HOME/primary/4243-audit.txt 2>&1; echo done" "$FIX/wt"
+_r4253 "j ticket command into \${HOME}/primary (>>) denies" block \
+    "mkdir -p ~/.cache/himmel && cd $FIX/wt && timeout 550 pre-commit run --all-files >> \${HOME}/primary/4243-audit.txt 2>&1; echo done" "$FIX/wt"
+_r4253 "k cd primary && ls > ~/primary/x; echo done denies" block \
+    "cd $FIX/primary && ls > ~/primary/x; echo done" "$FIX/wt"
+_r4253 "l cd primary && ls > \$HOME/primary/x; echo done denies" block \
+    "cd $FIX/primary && ls > \$HOME/primary/x; echo done" "$FIX/wt"
+_r4253 "m cd primary && ls >> \${HOME}/primary/x; echo done denies" block \
+    "cd $FIX/primary && ls >> \${HOME}/primary/x; echo done" "$FIX/wt"
+_r4253 "n cd ~/primary && ls > ~/primary/x; echo done denies" block \
+    "cd ~/primary && ls > ~/primary/x; echo done" "$FIX/wt"
+_r4253 "o cd ~/primary && ls > x denies" block "cd ~/primary && ls > x" "$FIX/wt"
+_r4253 "p cd primary && timeout 5 pre-commit run > ~/primary/a.txt 2>&1; echo done denies" block \
+    "cd $FIX/primary && timeout 5 pre-commit run > ~/primary/a.txt 2>&1; echo done" "$FIX/wt"
+# Still fail closed: tilde forms that do not name \$HOME, and a quoted ~ (literal, relative).
+_r4253 "q ~user target behind an unresolved cd denies" block "cd $FIX/wt && ls > ~root/x; echo done" "$FIX/wt"
+_r4253 "r ~+ target behind an unresolved cd denies" block "cd $FIX/wt && ls > ~+/x; echo done" "$FIX/wt"
+_r4253 "s ~- target behind an unresolved cd denies" block "cd $FIX/wt && ls > ~-/x; echo done" "$FIX/wt"
+_r4253 "t quoted \"~\"/x (a literal relative ~ dir) behind an unresolved cd denies" block \
+    "cd $FIX/wt && ls > \"~\"/x; echo done" "$FIX/wt"
+_r4253 "u quoted '~/x' behind an unresolved cd denies" block "cd $FIX/wt && ls > '~/x'; echo done" "$FIX/wt"
+export HOME="$_SAVED_HOME_4253"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

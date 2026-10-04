@@ -2201,9 +2201,22 @@ _bwimc_ecwd_track() {
 # Callers that never write through their own operand at all (a `cp` source,
 # for instance — cp never checks its source as a destination) pass nothing
 # and get the harmless "follow" default, since main never contradicts it.
+#
+# HIMMEL-4253: an unquoted leading `~` or `~/` is not relative either — bash
+# expands it to $HOME whatever the cwd, so it is base-independent like an
+# absolute path, and the call site's own check still resolves it (via
+# _bwimc_expand_token) and denies a target inside the primary. Only those two
+# spellings, and only with HOME set: `~user`, `~+`, `~-` and a quoted `"~"`
+# stay relative here and keep failing closed behind an unresolved cd.
+# ponytail: an `=`-value `~/` (`--opt=~/x`, or `of=~/x` under zsh) stays
+# literal in the shell but is read as $HOME here, the reading
+# _bwimc_expand_token already gives it; revisit if a literal `~` directory
+# ever appears inside a checkout.
 _bwimc_cd_guard() {
+    # shellcheck disable=SC2088
     case "$1" in
         /*|[A-Za-z]:/*|[A-Za-z]:\\*|*'$'*|*'`'*) return 0 ;;
+        '~'|'~/'*) [ -z "${HOME:-}" ] || return 0 ;;
     esac
     [ "$_bwimc_ecwd_unres" = 1 ] && _bwimc_deny "unresolved-cd" "$1" "" ""
     [ "$_bwimc_ecwd" != "$_bwimc_cwd" ] && _bwimc_check_target "$1" "$_bwimc_cwd" "${2:-follow}"
