@@ -548,6 +548,20 @@ if grepq "$out" '^scripts/test-cm-chain\.sh$'; then pass "a chained '; . x' sour
 if grepq "$out" '^scripts/test-cm-var\.sh$'; then pass "an indented variable-sourcing file is still followed"; else fail "indented var-source missed: $out"; fi
 if grepq "$out" '^scripts/test-cm-sub\.sh$'; then pass "a subshell '(source x)' is still followed"; else fail "subshell source missed: $out"; fi
 
+# --- 31. HIMMEL-4256: the PR-1734 shape. A NEW file under a tree that a suite
+# walks (lint-fail-open scans scripts/lanes/) lists that suite, though no suite
+# names the file; a new file outside every declared tree does not. -----------
+mkf scripts/guardrails/test-lint-fail-open.sh 'bash "$d/lint-fail-open.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: scan-roots fixtures"
+mkdir -p "$FX/scripts/lanes/lib" "$FX/docs/scan-31"
+change scripts/lanes/lib/leg-cost-row.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/guardrails/test-lint-fail-open\.sh$'; then pass "a new file under scripts/lanes/ -> test-lint-fail-open.sh (scan root)"; else fail "scan-root miss on the PR-1734 shape: $out"; fi
+change docs/scan-31/new.sh
+out="$(run_is "$range")"
+if ! grepq "$out" 'test-lint-fail-open'; then pass "a new file outside every scan root does not list the scanning suite"; else fail "scan root over-selected: $out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"

@@ -633,6 +633,97 @@ while IFS= read -r f; do
     done < <(content_rules)
 done <<< "$changed"
 
+# scan_roots — one `<glob> <suite>` row per suite that WALKS a repo tree
+# (HIMMEL-4256): a file added, changed or deleted under the tree changes the
+# suite's result though no suite names it (PR 1734 added
+# scripts/lanes/lib/leg-cost-row.sh; lint-fail-open scans scripts/lanes/ and
+# main went red, HIMMEL-4242). <glob> is a `case` pattern on the repo-relative
+# path, and its `*` crosses `/`. Add a row, not a new mechanism.
+# ponytail: whole-repo walkers are left out on purpose — scripts/test-adopt.sh
+# and scripts/himmelctl/test/test-versioned-layout.sh copy the whole tree (a
+# `*` row would run 554s+19s on every PR, against HIMMEL-3815);
+# scripts/ci/test-run-shell-tests.sh 23c only reacts to a NEW top-level tree;
+# scripts/lib/test-vm-guest-excludes.sh only to a secret-named file. Upgrade
+# path: a row here once a --selector-miss ledger row names one of them.
+scan_roots() {
+    cat <<'EOF'
+scripts/guardrails/*.sh scripts/guardrails/test-lint-fail-open.sh
+scripts/hooks/*.sh scripts/guardrails/test-lint-fail-open.sh
+scripts/lanes/*.sh scripts/guardrails/test-lint-fail-open.sh
+scripts/lanes/*.mjs scripts/guardrails/test-lint-fail-open.sh
+scripts/lanes/*.ts scripts/guardrails/test-lint-fail-open.sh
+scripts/hooks/* scripts/lib/test-override-env.sh
+scripts/guardrails/* scripts/lib/test-override-env.sh
+scripts/lib/* scripts/lib/test-override-env.sh
+marketplace/plugins/himmel-ops/hooks/* scripts/lib/test-override-env.sh
+scripts/*test-*.sh scripts/lib/test-red-control-extraction-lint.sh
+scripts/*.sh scripts/cr/test-pr-check-run.sh
+scripts/*.mjs scripts/cr/test-pr-check-run.sh
+scripts/*.js scripts/cr/test-pr-check-run.sh
+scripts/cr/* scripts/cr/test-cr-guarded-closure.sh
+*package.json scripts/test-check-plugin-drift.sh
+marketplace/plugins/*/UPSTREAM_PIN scripts/test-check-plugin-drift.sh
+*.ps1 scripts/parity/test-ps-twin-oem-encoding.sh
+scripts/claude-*.ps1 scripts/parity/test-launcher-twin-parity.sh
+scripts/handover/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/handover/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/handover/*.js scripts/guardrails/test-check-git-env-scrub.sh
+scripts/lanes/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/lanes/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/lanes/*.js scripts/guardrails/test-check-git-env-scrub.sh
+scripts/hooks/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/hooks/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/hooks/*.js scripts/guardrails/test-check-git-env-scrub.sh
+scripts/cr/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/cr/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/cr/*.js scripts/guardrails/test-check-git-env-scrub.sh
+docs/*.md scripts/ci/test-check-cr-terminology.sh
+docs/*.html scripts/ci/test-check-cr-terminology.sh
+.claude/commands/*.md scripts/ci/test-check-cr-terminology.sh
+marketplace/*.md scripts/ci/test-check-cr-terminology.sh
+marketplace/*.html scripts/ci/test-check-cr-terminology.sh
+README.md scripts/ci/test-check-cr-terminology.sh
+CLAUDE.md scripts/ci/test-check-cr-terminology.sh
+*/SKILL.md scripts/lint/test-skill-lint.sh
+scripts/*.sh scripts/lanes/test-launch-site-profiles.sh
+scripts/*.ts scripts/lanes/test-launch-site-profiles.sh
+scripts/*.mjs scripts/lanes/test-launch-site-profiles.sh
+scripts/*.js scripts/lanes/test-launch-site-profiles.sh
+scripts/*.ps1 scripts/lanes/test-launch-site-profiles.sh
+scripts/telegram/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/himmelctl/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/hooks/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/lanes/* scripts/hooks/run-hook-with-bash.test.mjs
+marketplace/plugins/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/lanes/bench/* scripts/lanes/tests/bench-no-ledger-write.test.mjs
+scripts/lanes/bench/* scripts/lanes/tests/bench-no-telegram-spawner-grep.test.mjs
+marketplace/plugins/claude-hud/dist/* marketplace/plugins/claude-hud/tests/build-output.test.js
+scripts/hooks/*.sh scripts/hooks/test-check-hook-file-parse.sh
+scripts/hooks/*.sh scripts/hooks/test-crlf-boundary.sh
+scripts/hooks/*.sh scripts/lint/test-shell-lint.sh
+scripts/himmelctl/test/*.sh scripts/himmelctl/test/test-suite-hermeticity.sh
+.github/workflows/*.yml scripts/upstreams/test-ci-tool-pins.sh
+.github/workflows/*.yaml scripts/upstreams/test-ci-tool-pins.sh
+marketplace/plugins/lean-skills/skills/* marketplace/plugins/lean-skills/hooks/test-note-superpowers-prefix.sh
+marketplace/plugins/handover/templates/*-next-session.md marketplace/plugins/handover/scripts/test-skill-e2e.sh
+marketplace/plugins/*/hooks/hooks.json scripts/codex/test-codex-hook-parity.sh
+EOF
+}
+scan_roots > "$work/scan-roots" || io_fail "writing the scan-roots map"
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    while read -r glob rule_suite; do
+        [ -n "$glob" ] || continue
+        # $glob unquoted on purpose: it is the case pattern.
+        # shellcheck disable=SC2254
+        case "$f" in
+            $glob) if grep -Fxq -- "$rule_suite" <<< "$suites"; then
+                       printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a scan-root suite"
+                   fi ;;
+        esac
+    done < "$work/scan-roots"
+done <<< "$changed"
+
 if [ -s "$pats" ]; then
     # git grep on the resolved <head> tree, not the working tree: the answer is
     # about the PR as pushed. -l prefixes each path with "<head_sha>:".
