@@ -170,6 +170,14 @@ out="$(PATH="$T/bin2:$PATH" TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --a
 check "non-numeric owner output: --apply rc 2" "$rc" 2
 exists "non-numeric owner reaps nothing" "$ROOT/mog-run.old"
 
+rm -rf "$FP/200"; mkdir -p "$FP/300"; printf '300 (x) Z b) S 1 2 3\n' > "$FP/300/stat"
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "comm containing ') Z ' is not a zombie: --apply rc 2" "$rc" 2
+exists "spoofed zombie comm reaps nothing" "$ROOT/mog-run.old"
+printf '300 (x y) Z 1 2 3\n' > "$FP/300/stat"
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "a real zombie is skipped: --apply rc 0" "$rc" 0
+
 echo "== 11. FAMILIES does not glob against the caller's cwd =="
 build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/himmel-fixture.zzz"
 out="$(cd "$CWD" && reap --apply)"; rc=$?
