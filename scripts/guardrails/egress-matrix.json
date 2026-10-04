@@ -150,12 +150,12 @@
     {
       "corpus": "luna-clippings", "provider": "firecrawl", "purpose": "enrichment",
       "verdict": "allow+log",
-      "why": "HIMMEL-4335: the thin-body clip escalation sends a clip's own public source URL to Firecrawl. Only URLs that pass the harvest G-1 privacy gate and skip-host list are sent (no private hosts, no basic-auth URLs). The ledger obligation is met by ~/.himmel/state/firecrawl-ledger.jsonl (tool = call_site; corpus and purpose are fixed per call site). Extraction, embedding and every other purpose stay default-deny."
+      "why": "HIMMEL-4335: the thin-body clip escalation sends a clip's own public source URL to Firecrawl. Only URLs that pass the tool's own checks are sent: http(s) scheme, no basic-auth, not on the skip-host list, not a private host. The vault's .harvest-deny and .harvest-allow lists are NOT enforced by the tool (follow-up). The ledger obligation is met by ~/.himmel/state/firecrawl-ledger.jsonl (tool = call_site; corpus and purpose are fixed per call site). Extraction, embedding and every other purpose stay default-deny."
     },
     {
       "corpus": "luna-clippings", "provider": "jina-reader", "purpose": "enrichment",
       "verdict": "allow+log",
-      "why": "HIMMEL-4335: same thin-body clip escalation and same G-1 gate / skip-host list as the Firecrawl row, sent to r.jina.ai (keyless). Jina calls cost no credits and write no firecrawl-ledger line; the verdict is allow+log to match the Firecrawl class. Every other purpose stays default-deny."
+      "why": "HIMMEL-4335: same thin-body clip escalation and same partial G-1 checks as the Firecrawl row (scheme, basic-auth, skip-host list, private hosts; not .harvest-deny/.harvest-allow), sent to r.jina.ai (keyless). Jina calls cost no credits and each writes a firecrawl-ledger line with source jina-reader and credits 0; the verdict is allow+log to match the Firecrawl class. Every other purpose stays default-deny."
     },
     {
       "corpus": "luna-clippings", "provider": "deepseek", "purpose": "extraction",
