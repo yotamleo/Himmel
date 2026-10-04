@@ -1358,7 +1358,7 @@ function probeCmdHasHermes(item, ctx) {
   const r = spawnBashProbe(['-c', '. "$HIMMEL_PROBE_RESOLVER" || exit 3; resolve_hermes_py >/dev/null'], { env });
   if (r.timedOut) return { actual: 'degraded', detail: `cmd:has_hermes probe timed out after ${probeTimeoutSecs(r)}s` };
   if (r.error) return { actual: 'degraded', detail: `spawn error: ${r.error.message}` };
-  if (r.status === 0) return { actual: 'present', detail: 'hermes venv python resolved (resolve_hermes_py rc=0)' };
+  if (r.status === 0) return { actual: 'present', detail: 'hermes runtime python resolved (resolve_hermes_py rc=0)' };
   if (r.status === 1) return { actual: 'absent', detail: 'resolve_hermes_py rc=1 — hermes not installed' };
   if (r.status === 3) return { actual: 'degraded', detail: `cannot source resolver ${resolverPath} — cmd:has_hermes probe wiring broken` };
   return { actual: 'degraded', detail: `resolve_hermes_py: unexpected rc=${r.status} (not the documented 0/1 — probe wiring likely broken, e.g. the resolver sourced but never defined resolve_hermes_py)` };

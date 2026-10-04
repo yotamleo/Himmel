@@ -354,7 +354,12 @@ update_hermes() {
     # venv (or a stale HERMES_PY) re-resolves instead of breaking the refresh.
     local py
     py="$(resolve_hermes_py "$src")" || py=""
-    if [ -n "$py" ] && [ -x "$py" ]; then
+    if hermes_pm_launcher "$src" >/dev/null; then
+        # PM-managed install (HIMMEL-4307): hermes owns its dependency generations
+        # (Python 3.14 under ~/.hermes/tools); pip-installing into that interpreter
+        # would fight the package manager. Code is pulled; hermes refreshes its own deps.
+        echo "    note: hermes is PM-managed (.hermes/bin/hermes) — code pulled; dependencies are refreshed by hermes itself, no pip editable refresh."
+    elif [ -n "$py" ] && [ -x "$py" ]; then
         # uv-created venvs ship WITHOUT pip (uv venv default), so a plain
         # `$py -m pip install` fails with "No module named pip". Bootstrap pip
         # via stdlib ensurepip first — best-effort, harmless if pip is present.

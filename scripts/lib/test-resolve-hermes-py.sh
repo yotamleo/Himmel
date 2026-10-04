@@ -119,5 +119,67 @@ else
 fi
 rm -rf "$tmp"
 
+# HIMMEL-4307: the 2026-10-04 hermes update moved to PM-managed dependency
+# generations (Python 3.14, cpython-314 wheels) under ~/.hermes/tools. The legacy
+# venv python (3.11) cannot load them. Upstream's launcher prints the exact
+# runtime argv (`hermes --print-runtime-command`); the resolver must prefer it.
+make_launcher() {  # $1 = launcher path, $2 = python path it reports in argv[0]
+    mkdir -p "$(dirname "$1")"
+    # shellcheck disable=SC2016  # the generated launcher expands its own $1
+    printf '#!/bin/sh\n[ "$1" = "--print-runtime-command" ] || exit 9\nprintf '"'"'["%s", "-I", "-c", "import sys"]\\n'"'"' "%s"\n' '%s' "$2" > "$1"
+    chmod +x "$1"
+}
+
+echo "== PM-managed layout: launcher's argv[0] beats the legacy venv =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+make_fake_py "$tmp/home/.hermes/tools/python-3.14/bin/python3"
+make_launcher "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes" "$tmp/home/.hermes/tools/python-3.14/bin/python3"
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"   # legacy 3.11 left behind
+out="$( base_env; HOME="$tmp/home" resolve_hermes_py )"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/home/.hermes/tools/python-3.14/bin/python3" ]; then
+    pass "PM launcher -> '$out'"
+else
+    fail "PM launcher -> rc=$rc out='$out' (want the tools/python-3.14 interpreter, not the legacy venv)"
+fi
+echo "== PM launcher present: hermes_pm_launcher names it =="
+out="$( base_env; HOME="$tmp/home" hermes_pm_launcher )"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes" ]; then pass "hermes_pm_launcher -> '$out'"; else fail "hermes_pm_launcher -> rc=$rc out='$out'"; fi
+rm -rf "$tmp"
+
+echo "== PM launcher reporting a missing interpreter falls back to the legacy venv =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+make_launcher "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes" "$tmp/gone/python3"
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"
+out="$( base_env; HOME="$tmp/home" resolve_hermes_py )"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/home/.hermes/hermes-agent/venv/bin/python" ]; then pass "dead launcher argv -> legacy venv"; else fail "dead launcher argv -> rc=$rc out='$out'"; fi
+rm -rf "$tmp"
+
+echo "== a hung PM launcher is bounded and falls back to the legacy venv =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+mkdir -p "$tmp/home/.hermes/hermes-agent/.hermes/bin"
+printf '#!/bin/sh\nexec sleep 60\n' > "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes"
+chmod +x "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes"
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"
+t0=$SECONDS
+out="$( base_env; HOME="$tmp/home" resolve_hermes_py )"; rc=$?
+dt=$((SECONDS - t0))
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/home/.hermes/hermes-agent/venv/bin/python" ] && [ "$dt" -lt 30 ]; then pass "hung launcher -> legacy venv in ${dt}s"; else fail "hung launcher -> rc=$rc out='$out' after ${dt}s (want venv inside the launcher timeout)"; fi
+rm -rf "$tmp"
+
+echo "== PM launcher + HERMES_PY: executable HERMES_PY still wins =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+make_fake_py "$tmp/py/python"; make_fake_py "$tmp/home/.hermes/tools/p/bin/python3"
+make_launcher "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes" "$tmp/home/.hermes/tools/p/bin/python3"
+out="$( base_env; HOME="$tmp/home" HERMES_PY="$tmp/py/python" resolve_hermes_py )"; rc=$?
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/py/python" ]; then pass "HERMES_PY wins over launcher"; else fail "HERMES_PY over launcher -> rc=$rc out='$out'"; fi
+rm -rf "$tmp"
+
+echo "== legacy-only install: hermes_pm_launcher rc1, empty =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"
+out="$( base_env; HOME="$tmp/home" hermes_pm_launcher )"; rc=$?
+if [ "$rc" -eq 1 ] && [ -z "$out" ]; then pass "legacy-only -> rc1 empty"; else fail "legacy-only -> rc=$rc out='$out'"; fi
+rm -rf "$tmp"
+
 echo
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi
