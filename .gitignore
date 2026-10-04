@@ -89,7 +89,8 @@ handovers/overnight-recovery-*.md
 # `git add -A`.
 /.claude/settings.json.lock
 /.playwright-mcp
-# /improve disk artifacts — Mode A inline path. Mode B writes under HANDOVER_DIR.
+# Legacy /improve disk artifacts (command removed, HIMMEL-4381). Kept so a
+# clone that still holds saved drafts never sweeps them up with `git add -A`.
 /.improve/
 # /gemini-bg background-run output sink (HIMMEL-158)
 logs/gemini/

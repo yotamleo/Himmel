@@ -875,66 +875,6 @@ check_c17() {
     printf '%s\n' "$out" | grep '^READY-DRIFT doc-disabled ' | awk '{print "       · "$3" is enabled+keyed but a doc still marks its toolkit disabled"}'
 }
 
-# --- C18: monitored zero-usage command cluster (2026-07-29 skill-hygiene spec) --
-# WARN-only, "flag but don't auto-fix" like C15. That survey found five
-# project-scope commands with WEAK evidence (no supersession found anywhere,
-# "never used" is the only signal) and disposed them KEEP-monitor rather than
-# removed. No persistent usage-tracking mechanism exists yet (the survey's own
-# open question, §4 Q5) -- so this check applies the survey's own age/cost
-# thresholds (never-used AND age>60d, OR never-used AND age>30d AND cost>50
-# tok) to a STATIC declared table rather than a live usage counter. A command
-# dropping out of `.claude/commands/` (disabled/removed) silently drops out of
-# this check too -- nothing to update there. Update/remove an entry once a
-# fresh usage signal actually resolves it; don't let this table go stale.
-DOCTOR_C18_MONITORED='
-quiet-run|2026-05-18|17
-retitle|2026-06-22|37
-improve|2026-05-25|40
-guardrail-sim|2026-06-21|71
-cr-scores|2026-06-19|21
-'
-
-# portable YYYY-MM-DD -> epoch seconds; GNU date first (Git Bash/Linux), then
-# BSD date -j (macOS). Echoes nothing (rc=1) on an unparsable/foreign date --
-# callers must treat that as "skip", never crash.
-_c18_epoch() {
-    date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
-}
-
-check_c18() {
-    local cmds_dir="${DOCTOR_C18_COMMANDS_DIR:-$REPO_ROOT/.claude/commands}"
-    # Test seam only (default unset -- production always uses the built-in
-    # table above): lets the hermetic test supply landed-dates relative to
-    # its own run time instead of asserting against a live-clock threshold
-    # crossing on the real, fixed 2026-xx-xx dates.
-    local monitored="${DOCTOR_C18_MONITORED_OVERRIDE:-$DOCTOR_C18_MONITORED}"
-    local now; now="$(date +%s)"
-    local name landed cost added_epoch age_days hits hit_n
-    hits=""; hit_n=0
-    while IFS='|' read -r name landed cost; do
-        [ -n "$name" ] || continue
-        [ -f "$cmds_dir/$name.md" ] || continue   # already disabled/removed -- nothing to flag
-        added_epoch="$(_c18_epoch "$landed")"
-        case "$added_epoch" in ''|*[!0-9]*) continue ;; esac   # unparsable date -- skip, never crash
-        age_days=$(( (now - added_epoch) / 86400 ))
-        if [ "$age_days" -gt 60 ] || { [ "$age_days" -gt 30 ] && [ "${cost:-0}" -gt 50 ]; }; then
-            hits="${hits}${name} (${age_days}d old, ~${cost} tok)
-"
-            hit_n=$((hit_n + 1))
-        fi
-    done <<EOF
-$monitored
-EOF
-    if [ "$hit_n" -eq 0 ]; then
-        emit OK C18-skill-usage "no monitored zero-usage command has crossed its staleness threshold"
-        return
-    fi
-    emit WARN C18-skill-usage \
-        "$hit_n monitored command(s) from the 2026-07-29 skill-hygiene survey are still zero-usage past their threshold" \
-        "re-confirm real usage; disable/remove if still unused, or clear the entry in check_c18 if it's now in active use"
-    printf '%s' "$hits" | sed '/^$/d' | sed 's/^/       · /'
-}
-
 # --- C19: observability stack drift + endpoint readiness (read-only advisory) ---
 # HIMMEL-1676: the alerting assets existed in-repo while the installed stack had
 # no rule groups. Compare the installed copies and query the two local endpoints;
@@ -2560,9 +2500,8 @@ check_c32() {
 DOCTOR_C33_CADENCE_INTERVAL_S=$((6 * 3600))
 
 # portable ISO8601 UTC ("...Z") -> epoch seconds; GNU date first (Git Bash/
-# Linux), then BSD date -j (macOS) -- same fallback shape as check_c18's
-# _c18_epoch. Echoes nothing (rc=1) on an unparsable timestamp; callers treat
-# that as "can't determine age", never crash.
+# Linux), then BSD date -j (macOS). Echoes nothing (rc=1) on an unparsable
+# timestamp; callers treat that as "can't determine age", never crash.
 _c33_epoch() {
     date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null  # gnu-ok: GNU date -d is paired with the BSD date -j fallback on this same line
 }
@@ -3517,7 +3456,6 @@ check_c14
 check_c15
 check_c16
 check_c17
-check_c18
 check_c19
 check_c20
 check_c21

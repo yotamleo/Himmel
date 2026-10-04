@@ -76,7 +76,7 @@ export const REPO_ROOT = fileURLToPath(new URL("../..", import.meta.url));
 // no C: drive at all: it exits 127 on BOTH `C:\...` (backslashes eaten by the
 // WSL argv translation, hence the "C:UsersyotamDocuments..." in supervisor.log)
 // and `C:/...`. POSIX-ifying the path does NOT help — resolving the interpreter
-// does. Same candidate order as scripts/setup-hooks.sh, preflight-sim.sh and
+// does. Same candidate order as scripts/setup-hooks.sh and
 // scripts/ci-orchestrator/tests/*.ts; see docs/internals/environment-gotchas.md.
 const WIN_BASH_CANDIDATES = ["C:/Program Files/Git/bin/bash.exe", "C:/Program Files (x86)/Git/bin/bash.exe"];
 export function resolveBash(): string {

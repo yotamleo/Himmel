@@ -62,7 +62,6 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 | /cr-learnings-refresh | Refresh known-findings.json evidence from the CR ledger + a CodeRabbit learnings export; lists new-class candidates |  |
 | /claude-md-audit | Audit changed CLAUDE.md files against the claude-md-improver rubric before PR — audit-only, applies no edits on its own |  |
 | /shell-lint | Advisory shell lint (shellcheck + BOM + errexit-leak) on staged shell BEFORE the commit attempt, not after it. | Pre-emptive advisory shell lint — run shellcheck + UTF-8 BOM + errexit-leak checks on staged shell (or named files) BEFORE the commit attempt, so the loop fixes issues instead of bouncing off the pre-commit gate (HIMMEL-478). |
-| /guardrail-sim | Pre-flight guardrail simulator — feed planned Bash commands on stdin; flags/rewrites predictable guardrail hits. | Pre-flight guardrail simulator — feed planned Bash commands on stdin and it flags/rewrites the predictable himmel guardrail collisions (compound→single, WSL-bash→Git Bash, destructive-git, on-main-write) + a curated learnings file, before they stall a run (HIMMEL-475). |
 | /backlog-reconcile | Classify the open Jira backlog against merged commits and propose batched closes. Read-only until the operator approves. | Lean-invoke wrapper over `scripts/jira/reconcile-backlog.mjs` (HIMMEL-374's pure-code classifier) — runs its default `--dry-run` mode, groups the CLOSE/RESCOPE candidates into the batched-close shape from HIMMEL-378 (A shipped / D rescope partial; B superseded and C stale have no automated trigger in this engine and stay a manual call), and only re-invokes with `--apply --only <keys> --max-close <n> --hygiene-doc <path>` on explicit operator approval. Revives HIMMEL-378's surface, not its ~7-agent fan-out (HIMMEL-3127). |
 
 ## Handover
@@ -101,7 +100,6 @@ and their rows are paraphrased one-liners rather than verbatim frontmatter
 
 | Command | Description | Notes |
 |---|---|---|
-| /improve | Refine a draft prompt via a hybrid clarifying-Q workflow; writes an audit artifact and returns the refined prompt. | Refine a draft prompt via hybrid clarifying-Q workflow. Writes an audit artifact to .improve/ + returns the refined prompt for resubmission. HIMMEL-127. |
 | /skill-find | Embedding-indexed lookup over installed skills/commands/agents — eliminates wrong-namespace mistakes. |  |
 | /luna-backfill | Backfill old Claude session transcripts into the luna vault as session notes. TOKEN-INTENSIVE — --dry-run first. | Backfill old Claude session transcripts into the luna vault as structured session notes. TOKEN-INTENSIVE — warns before running and recommends --dry-run first. |
 | /luna-ingest | Chain-following triage for a github repo URL. Thin wrapper over the obsidian-triage:luna-ingest skill. | Chain-following triage for a github repo URL. Thin wrapper that delegates to the obsidian-triage:luna-ingest skill (LUNA-9 skill conversion — see marketplace/plugins/obsidian-triage/skills/luna-ingest/SKILL.md for the runbook). |
