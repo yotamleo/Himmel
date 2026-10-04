@@ -2774,19 +2774,35 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                 fi
                 case "${ST_LW[ii]##*/}" in
                     bash|sh|zsh|dash|ksh|mksh|ash|fish)
-                        ic=0 iskip=0
+                        ic=0 iskip=0 iunc=0
                         while [ "$ij" -lt "$ST_N" ] && [ "${ST_S[ij]}" = "${ST_S[ii]}" ]; do
                             iw=${ST_W[ij]}
                             ij=$((ij + 1))
                             [ -z "${ST_RO[ij-1]}" ] || continue
                             if [ "$iskip" = 1 ]; then iskip=0; continue; fi
                             case "$iw" in
-                                -o|+o|-O|+O|--rcfile|--init-file) iskip=1 ;;
-                                --*|+*) : ;;
-                                -*c*) ic=1 ;;
-                                -*) : ;;
+                                -o|+o|-O|+O|--rcfile|--init-file) iskip=1 iunc=$ic ;;
+                                -|--|+c) iunc=1 ;;
+                                --*) iunc=$ic ;;
+                                -c) iunc=$ic ic=1 ;;
+                                [-+]?) iunc=$ic ;;
+                                [-+]*) iunc=1 ;;
                                 *) [ "$ic" = 0 ] || ibw=$iw; break ;;
                             esac
+                            # J1818b: an option run this scan cannot read with
+                            # certainty (`--`, `-`, `+c`, a combined flag, any
+                            # option after `-c`, a body that starts with `-` or
+                            # `+`) leaves the body undetermined, so the rest of
+                            # the segment, one word per line, is judged as the
+                            # body: fail-closed, the parser does not grow.
+                            if [ "$iunc" = 1 ]; then
+                                ibw='' ix=$((ii + 1))
+                                while [ "$ix" -lt "$ST_N" ] && [ "${ST_S[ix]}" = "${ST_S[ii]}" ]; do
+                                    [ -n "${ST_RO[ix]}" ] || ibw="${ibw:+$ibw$'\n'}${ST_W[ix]}"
+                                    ix=$((ix + 1))
+                                done
+                                break
+                            fi
                         done
                         ;;
                     eval)

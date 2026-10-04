@@ -2849,6 +2849,37 @@ ROWS
 rows_both 830 0 "interpreter bodies nested within the depth cap allow" <<'ROWS'
 eval eval eval 'echo x'
 ROWS
+# 833-855 (J1818b): a shell's option run that this hook does not parse with
+# certainty (`--`, `-`, a combined flag, an option after `-c`, a body that
+# starts with `-` or `+`) does not hide the `-c` body: the rest of the
+# segment is judged as one undeterminable body.
+rows_both 833 2 "an option form the scan cannot parse with certainty does not hide a -c body" <<'ROWS'
+bash -c -- '-not-a-command; echo x > ~/.claude/sett*s.json'
+bash -c -- 'cp /tmp/a ~/.cl*/settings.json'
+bash -c - 'echo x > ~/.claude/sett*s.json'
+bash -c '-x; echo x > ~/.claude/sett*s.json'
+bash -c '+x; cp /tmp/a ~/.cl*/settings.json'
+bash -o pipefail -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -O extglob -c 'cp /tmp/a ~/.cl*/settings.json'
+bash +O extglob -c 'cp /tmp/a ~/.cl*/settings.json'
+bash +x -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -ec 'cp /tmp/a ~/.cl*/settings.json'
+bash -xc 'echo x > ~/.claude/sett*s.json'
+bash -co pipefail 'cp /tmp/a ~/.cl*/settings.json'
+bash -xo pipefail -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -c -x 'cp /tmp/a ~/.cl*/settings.json'
+bash +c 'cp /tmp/a ~/.cl*/settings.json'
+sh -c -- '-n; cp /tmp/a ~/.cl*/settings.json'
+zsh -c - 'echo x > ~/.claude/sett*s.json'
+dash -ec 'cp /tmp/a ~/.cl*/settings.json'
+sh -c -e 'echo x > ~/.claude/sett*s.json'
+ROWS
+rows_both 852 0 "an undeterminable -c body that names no live settings allows" <<'ROWS'
+bash -c -- 'echo hi'
+bash -ec 'echo hi > /tmp/x'
+bash -co pipefail 'ls | wc -l'
+sh -c -e 'echo hi'
+ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
