@@ -230,12 +230,21 @@ _ERROR_LINE = re.compile(r"^\[[A-Za-z0-9_.-]+\]\[error\] (.+)$")
 _URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S*")
 
 
+# Only these message shapes are surfaced; free text could carry a credential (HIMMEL-4374).
+_SAFE_MESSAGE = re.compile(
+    r"^(?:HTTP redirect to home page|HttpError: '\d{3}(?: [A-Za-z ]{1,40})?'|Login required)"
+    r"(?: (?:for|and)(?: url:)? <url>| \(<url>\))*$"
+)
+ERROR_WITHHELD = "error message withheld"
+
+
 def error_line(stderr: str) -> str:
-    """The last `[module][error] message` line, every URL replaced, capped."""
+    """The last `[module][error] message` line if its message is a known-safe shape, else withheld."""
     for line in reversed((stderr or "").splitlines()):
         m = _ERROR_LINE.match(line.strip())
         if m:
-            return _URL.sub("<url>", m.group(1))[:STDERR_LINE_CHARS]
+            msg = _URL.sub("<url>", m.group(1))[:STDERR_LINE_CHARS]
+            return msg if _SAFE_MESSAGE.match(msg) else ERROR_WITHHELD
     return ""
 
 

@@ -890,7 +890,7 @@ class InstagramGuardTests(unittest.TestCase):
 
     def test_a_failed_probe_surfaces_rc_and_a_stderr_tail(self):
         # HIMMEL-4374: "command probe failed" hid the real error behind the cache.
-        r = self.probe("instagram-media", command=self.command(3, "[instagram][error] HttpError: '560 Server Error' for url"))
+        r = self.probe("instagram-media", command=self.command(3, "[instagram][error] HttpError: '560 Server Error' for url: https://www.instagram.com/p/x/"))
         self.assertEqual(r.status, "transport-fail")
         self.assertIn("rc=3", r.reason)
         self.assertIn("560 Server Error", r.reason)
@@ -944,6 +944,14 @@ class InstagramGuardTests(unittest.TestCase):
         r = self.probe("instagram-media", command=self.command(1, err))
         self.assertIn("HttpError: '401'", r.reason)
         for leaked in ("SECRETUSERINFO", "SECRETQUERY", "SECRETFRAG", "http"):
+            self.assertNotIn(leaked, r.reason)
+
+    def test_an_unrecognised_error_message_is_withheld(self):
+        # Only known-safe message shapes are surfaced; free text could carry a credential.
+        err = "[instagram][error] login failed sessionid=SECRETSESSION0123 password hunter2 csrf SECRETCSRF"  # gitleaks:allow
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertIn("rc=1; error message withheld", r.reason)
+        for leaked in ("SECRETSESSION0123", "hunter2", "SECRETCSRF", "login failed"):
             self.assertNotIn(leaked, r.reason)
 
     def test_the_error_line_is_bounded(self):
