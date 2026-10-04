@@ -83,6 +83,21 @@ If `gh auth status` is non-zero AND the batch contains any github URL: abort wit
 
 **Scrape backend order (HIMMEL-4335).** The thin-body escalation tries backends in the order set by `HARVEST_SCRAPE_BACKEND` (comma list of `local-headless`, `jina`, `firecrawl`; default `local-headless,jina,firecrawl`). `local-headless` is a named slot that is not implemented yet (silently skipped; follow-up ticket); `jina` is Jina Reader (`https://r.jina.ai/<url>`, no key, no credits); `firecrawl` is the capped last rung (`--firecrawl-budget`, dropped from the chain when `FIRECRAWL_API_KEY` is unset). A backend that fails falls through to the next. The skip-host list and the G-1 privacy gate run before any backend. The clip's `harvest_skill` records which backend served it. Every Firecrawl call (harvest, follow-web, fetch-health) appends one line (`v, ts, host, source, kind, call_site, endpoint, credits, ok`; never the key, URL query or page body) to `~/.himmel/state/firecrawl-ledger.jsonl` (override `HIMMEL_FIRECRAWL_LEDGER`).
 
+**Scrape routing and caps (HIMMEL-4361).** Every backend name (env, routing file, chain) resolves through one table, `BACKEND_REGISTRY` in `tools/harvest-clip-body-batch.py` (name, client class, `needs_key`, cap, `egress_host`); an unknown name is an error naming the valid set.
+
+- **Per-site routing, `<vault>/.harvest-backends`.** One line per rule: `<url-glob> skip=a,b` (drop those backends for matching URLs) or `<url-glob> only=a` (restrict to those). `#` starts a comment. Globs are matched exactly like `.harvest-deny` (same canonicalisation and `*` / `**`). **The first matching line wins**, so put the narrow rules first. A missing file is no constraint. An unreadable file, a malformed line or an unknown backend name fails closed: nothing is scraped. A starter template is `tools/templates/harvest-backends.template`.
+- **Precedence, highest first:** the odd-host refusal and `.harvest-deny` (a denied URL reaches no backend; `.harvest-allow` overrides a deny as before), then the `HARVEST_SCRAPE_DENY` kill switch, then `.harvest-backends`, then the `HARVEST_SCRAPE_BACKEND` order. A routing line can never re-add a killed backend or one with no key.
+- **`HARVEST_SCRAPE_DENY=<b,...>`** (or `all`) removes those backends for the whole run. `follow-web` honours it too: denying `firecrawl` turns its search off and reports `search unavailable`. There is no keyless search fallback; the qmd, CLI and hermes rungs are unchanged.
+- **Call cap:** `--firecrawl-budget N` wins, then `HARVEST_FIRECRAWL_BUDGET`, default 20. `follow-web` takes `FOLLOW_WEB_BUDGET` first, then the same variable.
+- **Credit ceiling:** `HARVEST_FIRECRAWL_MAX_CREDITS` (default 5; the benchmark saw one X post cost 30). When a call reports more credits than that, firecrawl is disabled for the rest of the run and a line is logged to stderr. The ceiling cannot refund the call that tripped it; it only stops the next ones. A stealth call costs 5, so it passes the default.
+- **Stealth/proxy:** never sent unless `HARVEST_FIRECRAWL_STEALTH=1` (scrape payload `proxy: stealth`, 5x credits). The search path never sends it.
+- **No `FIRECRAWL_API_KEY`:** firecrawl is left out and the chain runs on Jina alone, silently.
+
+**Adding a scrape backend.** Three steps, no change to the chain, routing or deny gate:
+1. A client class with `name`, `scrape(url) -> markdown` and `from_env(env, budget)` (return `None` when its key is missing).
+2. One `BACKEND_REGISTRY` row (`BackendSpec(cls, needs_key, cap, egress_host)`); also add the name to `SCRAPE_BACKEND_NAMES` in `tools/lib/follow-web.mjs` so the kill switch accepts it.
+3. One `scripts/guardrails/egress-matrix.json` row for its `egress_host`, plus a RED row in `tests/test-scrape-backends.py` (serves a URL, falls through on failure, honours `skip=`/`only=` and the kill switch).
+
 ### G-2 — Lockfile + obsidian-github-sync race guard
 
 Before processing any clip:

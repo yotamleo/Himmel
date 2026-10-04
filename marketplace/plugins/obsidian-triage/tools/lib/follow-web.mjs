@@ -45,6 +45,10 @@ export const WEB_VERIFIABLE_KINDS = new Set(["course", "role", "product", "tool"
 
 export const FIRECRAWL_DEFAULT_BASE_URL = "https://api.firecrawl.dev";
 export const FIRECRAWL_DEFAULT_BUDGET = 20; // max searches per run (~1 credit each)
+export const FIRECRAWL_DEFAULT_MAX_CREDITS = 5; // per-call ceiling; above it firecrawl search stops for the run
+// Names HARVEST_SCRAPE_DENY accepts: the scrape-backend registry in
+// tools/harvest-clip-body-batch.py (BACKEND_REGISTRY), which owns the list.
+export const SCRAPE_BACKEND_NAMES = ["local-headless", "jina", "firecrawl"];
 const FIRECRAWL_TIMEOUT_MS = 20000;
 
 // qmd local-vault rung (FREE — a BM25 lookup against the operator's already-
@@ -215,7 +219,7 @@ const FIRECRAWL_SEARCH_COST = 1; // documented cost when the response omits cred
  * credit. Any HTTP/parse failure resolves to `{found:false}` (never throws
  * into verifyWebClaims — which would only be caught as `unverified` anyway).
  */
-export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT_BUDGET } = {}) {
+export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT_BUDGET, maxCredits = FIRECRAWL_DEFAULT_MAX_CREDITS } = {}) {
   if (!apiKey) return null;
   const base = (baseUrl || FIRECRAWL_DEFAULT_BASE_URL).replace(/\/+$/, "");
   let remaining = budget;
@@ -244,12 +248,13 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
       }
       const data = await r.json();
       ledgered = true;
-      ledgerAppend(
-        "follow-web",
-        "/v2/search",
-        data && Number.isInteger(data.creditsUsed) ? data.creditsUsed : FIRECRAWL_SEARCH_COST,
-        !!data && data.success !== false,
-      );
+      const credits = data && Number.isInteger(data.creditsUsed) ? data.creditsUsed : FIRECRAWL_SEARCH_COST;
+      ledgerAppend("follow-web", "/v2/search", credits, !!data && data.success !== false);
+      if (credits > maxCredits) {
+        // Already billed, cannot be refunded: this only stops the next searches.
+        remaining = 0;
+        console.error(`follow-web: search unavailable: a firecrawl search cost ${credits} credits (ceiling ${maxCredits}); firecrawl search disabled for the rest of this run`);
+      }
       if (!data || data.success === false) return { found: false };
       // firecrawl /v2/search returns either `data: [ ... ]` or, when sources
       // are split, `data: { web: [ ... ], ... }`. Handle both defensively.
@@ -493,6 +498,25 @@ export function makeFixtureWebFn(raw) {
   return (query) => (query in map ? map[query] : { found: false });
 }
 
+// Non-negative integer env var; unset -> fallback, malformed -> a clear error.
+function envNonNegInt(env, key, fallback) {
+  const raw = (env[key] || "").trim();
+  if (!raw) return fallback;
+  if (!/^\d+$/.test(raw)) throw new Error(`${key} must be a non-negative integer, got '${raw}'`);
+  return parseInt(raw, 10);
+}
+
+// HARVEST_SCRAPE_DENY as a validated list (`all` allowed); an unknown name is
+// an error naming the valid set, like the scrape path's registry lookup.
+function scrapeDenyList(env) {
+  const names = (env.HARVEST_SCRAPE_DENY || "").split(",").map((n) => n.trim()).filter(Boolean);
+  const unknown = names.filter((n) => n !== "all" && !SCRAPE_BACKEND_NAMES.includes(n));
+  if (unknown.length) {
+    throw new Error(`unknown HARVEST_SCRAPE_DENY ${unknown.join(",")} (valid: ${SCRAPE_BACKEND_NAMES.join(", ")}, all)`);
+  }
+  return names;
+}
+
 /**
  * Resolve the webFn the CLI should use, fixture-first, then a FREE-FIRST
  * fallback chain (mirrors follow-list-score.mjs's makeFetchFn precedence):
@@ -513,13 +537,23 @@ export function makeWebFn(env = process.env) {
 
   const apiKey = (env.FIRECRAWL_API_KEY || "").trim();
   const baseUrl = (env.FIRECRAWL_BASE_URL || "").trim() || undefined;
-  const fcBudget = parseInt(env.FOLLOW_WEB_BUDGET || "", 10) || FIRECRAWL_DEFAULT_BUDGET;
+  // FOLLOW_WEB_BUDGET (this tool's own knob) wins, then the shared harvest cap.
+  const fcBudget = parseInt(env.FOLLOW_WEB_BUDGET || "", 10) || envNonNegInt(env, "HARVEST_FIRECRAWL_BUDGET", FIRECRAWL_DEFAULT_BUDGET);
+  const maxCredits = envNonNegInt(env, "HARVEST_FIRECRAWL_MAX_CREDITS", FIRECRAWL_DEFAULT_MAX_CREDITS);
+
+  // Kill switch shared with the scrape path: firecrawl is the only paid
+  // search rung, so denying it (or `all`) removes it whatever else is set.
+  const denied = scrapeDenyList(env);
+  const fcDenied = denied.includes("all") || denied.includes("firecrawl");
+  if (fcDenied && apiKey) {
+    console.error("follow-web: search unavailable: firecrawl is denied by HARVEST_SCRAPE_DENY");
+  }
 
   const chain = [
     makeQmdWebFn(env),
     makeCliWebFn(env),
     makeHermesWebFn(env),
-    makeFirecrawlWebFn({ apiKey, baseUrl, budget: fcBudget }),
+    fcDenied ? null : makeFirecrawlWebFn({ apiKey, baseUrl, budget: fcBudget, maxCredits }),
   ].filter(Boolean);
 
   if (chain.length === 0) return null;

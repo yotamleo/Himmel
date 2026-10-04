@@ -259,5 +259,206 @@ fk = FakeChain()
 mod.process_clip(p, False, fk, mod.UrlRules())
 check("process_clip: skip-host list holds on the chain", fk.calls == [])
 
+# --- HIMMEL-4361: registry, per-site routing, kill switch, caps -------------
+import contextlib
+
+FC_OK = json.dumps({"success": True, "data": {"markdown": "# From fc\n\nbody"}})
+
+
+def fc_credits(n):
+    return json.dumps({"success": True, "data": {"markdown": "# From fc\n\nbody",
+                                                 "metadata": {"creditsUsed": n}}})
+
+
+def vault_with(routing_text):
+    v = Path(tempfile.mkdtemp(dir=str(SCRATCH)))
+    (v / ".harvest-backends").write_text(routing_text, encoding="utf-8")
+    return v
+
+
+def names(chain, url):
+    return [b.name for b in chain.backends_for(url)]
+
+
+KEYED = {"FIRECRAWL_API_KEY": "k"}
+
+# registry: one table, every lookup resolves through it
+reg = mod.BACKEND_REGISTRY
+check("registry: local-headless, jina, firecrawl registered", set(reg) == {"local-headless", "jina", "firecrawl"})
+check("registry: rows carry needs_key, cap and egress_host",
+      all(hasattr(r, a) for r in reg.values() for a in ("cls", "needs_key", "cap", "egress_host")))
+check("registry: only firecrawl needs a key and has a cap",
+      [n for n, r in reg.items() if r.needs_key] == ["firecrawl"] and [n for n, r in reg.items() if r.cap] == ["firecrawl"])
+check("registry: DEFAULT_SCRAPE_BACKENDS is the registry's order", tuple(reg) == mod.DEFAULT_SCRAPE_BACKENDS)
+try:
+    mod.build_scrape_chain({"HARVEST_SCRAPE_BACKEND": "bogus"}, 5)
+    check("registry: unknown env name error names the valid set", False)
+except ValueError as e:
+    check("registry: unknown env name error names the valid set", "bogus" in str(e) and "jina" in str(e) and "firecrawl" in str(e))
+
+# (a) per-site routing
+v = vault_with(
+    "# comment\n"
+    "example.com/** skip=jina\n"
+    "docs.example.org/** only=jina  # trailing comment\n"
+    "**.example.net/** skip=jina\n"
+    "first.test/** only=firecrawl\n"
+    "first.test/** only=jina\n")
+routes = mod.load_backend_routes(v)
+chain = mod.build_scrape_chain(KEYED, 5)
+chain.routes = routes
+check("routing: skip= removes a backend for a matching URL", names(chain, "https://example.com/a") == ["local-headless", "firecrawl"])
+check("routing: non-matching URL keeps the global order", names(chain, "https://other.com/a") == ["local-headless", "jina", "firecrawl"])
+check("routing: only= restricts to the named backend", names(chain, "https://docs.example.org/a") == ["jina"])
+check("routing: first matching line wins", names(chain, "https://first.test/a") == ["firecrawl"])
+check("routing: no routing file is no constraint",
+      names(mod.build_scrape_chain(KEYED, 5), "https://example.com/a") == ["local-headless", "jina", "firecrawl"])
+check("routing: globs normalise like .harvest-deny (case, trailing dot, dot-segments)",
+      names(chain, "https://EXAMPLE.com./x/../a") == ["local-headless", "firecrawl"])
+_c = mod.build_scrape_chain({}, 5)
+_c.routes = mod.load_backend_routes(vault_with("x.test/** only=firecrawl\n"))
+check("routing: only= never re-adds a backend the key gate dropped", names(_c, "https://x.test/") == [])
+
+# routing file fails closed
+for label, text in (("unknown backend name", "example.com/** skip=bogus\n"),
+                    ("malformed line", "example.com/**\n"),
+                    ("neither skip nor only", "example.com/** prefer=jina\n"),
+                    ("empty name list", "example.com/** only=\n")):
+    r = mod.load_backend_routes(vault_with(text))
+    reset()
+    stub_urlopen(["Markdown Content:\n# x\n\nbody\n"])
+    c = mod.build_scrape_chain(KEYED, 5)
+    c.routes = r
+    try:
+        c.scrape("https://other.com/a")
+        sent = True
+    except Exception:
+        sent = bool(SEEN)
+    check(f"routing: {label} fails closed (nothing sent, even for a non-matching URL)", r.error and not sent)
+dv = Path(tempfile.mkdtemp(dir=str(SCRATCH)))
+(dv / ".harvest-backends").mkdir()
+r = mod.load_backend_routes(dv)
+reset()
+stub_urlopen(["Markdown Content:\n# x\n\nbody\n"])
+c = mod.build_scrape_chain(KEYED, 5)
+c.routes = r
+try:
+    c.scrape("https://other.com/a")
+except Exception:
+    pass
+check("routing: unreadable file fails closed (nothing sent)", r.error and not SEEN)
+
+# deny and odd-host precedence over routing
+RULES = mod.UrlRules(deny=[("example.com/**", mod._glob_to_regex(mod._norm_target("example.com/**", True)[0]))])
+reset()
+stub_urlopen(["Markdown Content:\n# x\n\nbody\n"])
+c = mod.build_scrape_chain(KEYED, 5)
+c.routes = mod.load_backend_routes(vault_with("example.com/** only=jina\n"))
+p = make_clip(THIN)
+glyph, msg, _ = mod.process_clip(p, False, c, RULES)
+check("precedence: .harvest-deny wins over an only= line (no backend called)", glyph == "o" and not SEEN)
+reset()
+stub_urlopen(["Markdown Content:\n# x\n\nbody\n"])
+c = mod.build_scrape_chain(KEYED, 5)
+c.routes = mod.load_backend_routes(vault_with("**/** only=jina\n"))
+p = make_clip("---\ntype: article\nsource: https://ex%41mple.com/post\n---\nshort.\n")
+glyph, msg, _ = mod.process_clip(p, False, c, mod.UrlRules())
+check("precedence: odd-host refusal wins over an only= line (no backend called)", glyph == "o" and not SEEN)
+
+# (b) global kill switch
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_DENY": "firecrawl"}, 5)
+check("kill switch: HARVEST_SCRAPE_DENY removes the backend", [b.name for b in c.backends] == ["local-headless", "jina"])
+c.routes = mod.load_backend_routes(vault_with("example.com/** only=firecrawl\n"))
+check("kill switch: beats a routing only= line", names(c, "https://example.com/a") == [])
+reset()
+try:
+    c.scrape("https://example.com/a")
+except Exception:
+    pass
+check("kill switch: a killed backend is never called", not SEEN)
+check("kill switch: all removes every backend",
+      mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_DENY": "all"}, 5).backends == [])
+check("kill switch: beats HARVEST_SCRAPE_BACKEND order",
+      [b.name for b in mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl,jina", "HARVEST_SCRAPE_DENY": "firecrawl"}, 5).backends] == ["jina"])
+try:
+    mod.build_scrape_chain({"HARVEST_SCRAPE_DENY": "bogus"}, 5)
+    check("kill switch: unknown name errors naming the valid set", False)
+except ValueError as e:
+    check("kill switch: unknown name errors naming the valid set", "HARVEST_SCRAPE_DENY" in str(e) and "jina" in str(e))
+
+# (b) per-run call cap: env sets it, the flag wins, default unchanged
+check("cap: default is today's value", mod.resolve_firecrawl_budget(None, {}) == mod.FIRECRAWL_DEFAULT_BUDGET == 20)
+check("cap: HARVEST_FIRECRAWL_BUDGET sets it", mod.resolve_firecrawl_budget(None, {"HARVEST_FIRECRAWL_BUDGET": "3"}) == 3)
+check("cap: --firecrawl-budget flag wins over env", mod.resolve_firecrawl_budget(7, {"HARVEST_FIRECRAWL_BUDGET": "3"}) == 7)
+for bad in ("abc", "-1"):
+    try:
+        mod.resolve_firecrawl_budget(None, {"HARVEST_FIRECRAWL_BUDGET": bad})
+        check(f"cap: invalid env {bad!r} errors", False)
+    except ValueError:
+        check(f"cap: invalid env {bad!r} errors", True)
+reset()
+stub_urlopen([OSError("j"), FC_OK, OSError("j"), FC_OK])
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "jina,firecrawl"}, mod.resolve_firecrawl_budget(None, {"HARVEST_FIRECRAWL_BUDGET": "1"}))
+c.scrape("https://example.com/a")
+try:
+    c.scrape("https://example.com/b")
+except Exception:
+    pass
+check("cap: a budget of 1 allows exactly one firecrawl call", len(fc_lines()) == 1)
+
+# (b) per-call credit ceiling
+reset()
+stub_urlopen([OSError("j"), fc_credits(30), OSError("j"), FC_OK])
+err = io.StringIO()
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "jina,firecrawl"}, 20)
+with contextlib.redirect_stderr(err):
+    first = c.scrape("https://example.com/a")
+    try:
+        c.scrape("https://example.com/b")
+    except Exception:
+        pass
+check("ceiling: the call that tripped it is still returned (cannot be refunded)", "From fc" in first)
+check("ceiling: a call over the ceiling stops firecrawl for the rest of the run", len(fc_lines()) == 1)
+check("ceiling: the trip is logged to stderr", "firecrawl" in err.getvalue() and "30" in err.getvalue())
+reset()
+stub_urlopen([OSError("j"), fc_credits(5), OSError("j"), FC_OK])
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "jina,firecrawl"}, 20)
+c.scrape("https://example.com/a")
+c.scrape("https://example.com/b")
+check("ceiling: a call AT the default ceiling (5, a stealth call) does not trip it", len(fc_lines()) == 2)
+reset()
+stub_urlopen([OSError("j"), fc_credits(3), OSError("j"), FC_OK])
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "jina,firecrawl", "HARVEST_FIRECRAWL_MAX_CREDITS": "2"}, 20)
+with contextlib.redirect_stderr(io.StringIO()):
+    c.scrape("https://example.com/a")
+    try:
+        c.scrape("https://example.com/b")
+    except Exception:
+        pass
+check("ceiling: HARVEST_FIRECRAWL_MAX_CREDITS overrides the default", len(fc_lines()) == 1)
+try:
+    mod.build_scrape_chain({**KEYED, "HARVEST_FIRECRAWL_MAX_CREDITS": "x"}, 5)
+    check("ceiling: invalid env errors", False)
+except ValueError:
+    check("ceiling: invalid env errors", True)
+
+# stealth/proxy only when explicitly enabled
+reset()
+stub_urlopen([FC_OK])
+mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl"}, 5).scrape("https://example.com/a")
+sent = json.loads(SEEN[0].data.decode())
+check("stealth: default payload carries no proxy/stealth option", set(sent) == {"url", "formats"})
+reset()
+stub_urlopen([FC_OK])
+mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1"}, 5).scrape("https://example.com/a")
+check("stealth: HARVEST_FIRECRAWL_STEALTH=1 sends proxy=stealth", json.loads(SEEN[0].data.decode()).get("proxy") == "stealth")
+
+# no key: jina alone, silently
+err = io.StringIO()
+with contextlib.redirect_stderr(err):
+    c = mod.build_scrape_chain({}, 5)
+check("no key: jina-only chain, nothing on stderr",
+      [b.name for b in c.backends] == ["local-headless", "jina"] and err.getvalue() == "")
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
