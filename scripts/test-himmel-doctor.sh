@@ -312,10 +312,13 @@ if [ -e "$t/full/last.tsv" ]; then
 else fail "full run did not write last.tsv"; fi
 WTD="$t/wt"
 if git -C "$REPO_ROOT" worktree add -q --detach "$WTD" HEAD 2>/dev/null; then
+    # the fixture checks out HEAD; overlay the doctor under test so an
+    # uncommitted change is what the worktree run executes.
+    cp "$REPO_ROOT/scripts/himmel-doctor.sh" "$REPO_ROOT/scripts/doctor-counts.sh" "$WTD/scripts/"
     (cd "$WTD" && RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/wtstate" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$WTD/scripts/himmel-doctor.sh" --no-color >/dev/null 2>&1)
     if [ -n "$want" ] && [ "$(cat "$t/wtstate/counts" 2>/dev/null)" = "$want" ] && cmp -s "$t/full/last.tsv" "$t/wtstate/last.tsv"; then pass "a worktree run publishes the same counts and last.tsv as the primary run"; else fail "worktree run state differs from the primary run: '$(cat "$t/wtstate/counts" 2>/dev/null)' vs '$want'"; fi
-    (cd "$WTD" && RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/rootstate" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$WTD/scripts/himmel-doctor.sh" --no-color --root "$WTD" >/dev/null 2>&1)
-    if [ ! -e "$t/rootstate/counts" ] && [ ! -e "$t/rootstate/last.tsv" ]; then pass "a --root run publishes no counts and no last.tsv"; else fail "a --root run wrote state"; fi
+    root_out="$(cd "$WTD" && RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/rootstate" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$WTD/scripts/himmel-doctor.sh" --no-color --root "$WTD" 2>&1)"
+    if grepq "$root_out" 'Summary:' && [ ! -e "$t/rootstate/counts" ] && [ ! -e "$t/rootstate/last.tsv" ]; then pass "a --root run completes its report and publishes no counts and no last.tsv"; else fail "a --root run: no Summary or wrote state"; fi
     git -C "$REPO_ROOT" worktree remove --force "$WTD" >/dev/null 2>&1; git -C "$REPO_ROOT" worktree prune
 else fail "could not create the worktree fixture"; fi
 rm -rf "$t"
