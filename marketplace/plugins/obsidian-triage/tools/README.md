@@ -278,7 +278,7 @@ For each Instagram clip with no `enriched_at:`, the script:
 1. Matches `source:` against `instagram.com/(p|reel|reels|tv)/<shortcode>`;
    normalises `reels` → `reel` in the embed URL.
 2. Fetches `https://www.instagram.com/<kind>/<shortcode>/embed/captioned/`
-   with a plain `Mozilla/5.0` User-Agent (800ms rate-limit).
+   with a plain `Mozilla/5.0` User-Agent (shared Instagram throttle, see Caveats).
 3. Parses author (`CaptionUsername`), caption (`Caption` div), and
    optional poster image URL (`EmbeddedMediaImage`).
 4. Adds frontmatter:
@@ -317,7 +317,16 @@ fxtwitter enricher contract. Re-runs skip clips with `enriched_at:`.
   if the `Caption` / `CaptionUsername` class names change, the extractor
   will start returning `embed_no_caption` on all posts. Check those class
   names if the enricher starts mass-failing.
-- **Rate-limit is 800ms per call.** Be polite. 100 clips ≈ 1.5 min wall-clock.
+- **Every Instagram request is throttled (HIMMEL-4306).** `ig-embed-enrich.mjs`,
+  `ig-media-fetch.py` and the `instagram-*` health probes share one budget in
+  `~/.himmel/state/instagram-throttle.json` (`lib/ig_throttle.py` / `lib/ig-throttle.mjs`):
+  `HIMMEL_IG_MIN_GAP_S` (45) + `HIMMEL_IG_JITTER_S` (30) between requests,
+  `HIMMEL_IG_DAILY_CAP` (30/UTC day), exponential backoff
+  (`HIMMEL_IG_BACKOFF_BASE_S`, 60) after a failure, and a cooldown to UTC
+  midnight after a 429 or checkpoint/challenge. A denied run stops with `HOLD`
+  and leaves clips unmarked; the next day resumes. The health probe is cached
+  (24 h ok / 1 h otherwise, `HIMMEL_IG_PROBE_CACHE`) and reports `cooldown`,
+  not red, while the throttle holds. 100 clips no longer run in one burst.
 - **Poster URL is a CDN URL with short expiry.** It works as a link at
   write-time but may 403 days later (CDN token expires). The clip body
   records it as a plain link, not an embedded image, intentionally.

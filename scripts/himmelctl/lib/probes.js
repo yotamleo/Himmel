@@ -2529,6 +2529,7 @@ function probeLunaSources(item, ctx) {
   const problems = [];
   const unrecognized = [];
   const unconfigured = [];
+  const cooling = [];
   let evaluated = 0;
   for (const source of sources) {
     const envForSpawn = Object.assign({}, env, {
@@ -2561,7 +2562,12 @@ function probeLunaSources(item, ctx) {
     if (!parsed || parsed.status !== 'ok') {
       const status = parsed && parsed.status;
       const reason = parsed && parsed.reason;
-      if (status === 'auth-or-cookie-expired' && UNCONFIGURED_REASON_RE.test(reason || '')) {
+      if (status === 'cooldown') {
+        // HIMMEL-4306: the Instagram throttle is deliberately holding requests
+        // (a 429/challenge, the daily cap, or a spacing/backoff window) — a wait,
+        // not a fault, so it never joins `problems`.
+        cooling.push(`${source} (${reason || 'cooldown'})`);
+      } else if (status === 'auth-or-cookie-expired' && UNCONFIGURED_REASON_RE.test(reason || '')) {
         unconfigured.push(`${source} (${reason})`);
       } else {
         problems.push(`${source}: ${status || 'unknown status'}${reason ? ` (${reason})` : ''}`);
@@ -2582,6 +2588,7 @@ function probeLunaSources(item, ctx) {
     if (unconfigured.length > 0) {
       parts.push(`${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}`);
     }
+    if (cooling.length > 0) parts.push(`${cooling.length} on cooldown, waiting (no action needed): ${cooling.join('; ')}`);
     return { actual: 'degraded', detail: parts.join(' | ') };
   }
   // HIMMEL-2176 CR round 3 fix (retask stage1-build-6d2e): evaluated === 0
@@ -2607,13 +2614,13 @@ function probeLunaSources(item, ctx) {
   // turns 'absent' into a warn, 'degraded' into a fail — see that file's
   // luna-sources block). Covers both "some configured, some not" and "every
   // named source unconfigured" — both benign, both warn.
-  if (unconfigured.length > 0) {
-    const healthy = evaluated - unconfigured.length;
+  if (unconfigured.length > 0 || cooling.length > 0) {
+    const healthy = evaluated - unconfigured.length - cooling.length;
     const healthyNote = healthy > 0 ? `; ${healthy} other configured source(s) healthy` : '';
-    return {
-      actual: 'absent',
-      detail: `${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}${healthyNote}`,
-    };
+    const parts = [];
+    if (unconfigured.length > 0) parts.push(`${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}`);
+    if (cooling.length > 0) parts.push(`${cooling.length} on cooldown, waiting (no action needed): ${cooling.join('; ')}`);
+    return { actual: 'absent', detail: `${parts.join(' | ')}${healthyNote}` };
   }
   return { actual: 'present', detail: `all ${evaluated} configured luna source(s) healthy` };
 }

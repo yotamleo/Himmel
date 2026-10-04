@@ -385,7 +385,13 @@ class FetchHealthTests(unittest.TestCase):
             registry = fetch_health.build_probe_registry(env, http, command, root)
             self.assertEqual(set(registry), set(full))
             for source in registry:
-                single = fetch_health.run_single_probe(source, env, http=http, command=command, repo_root=root)
+                # HIMMEL-4306: Instagram probes share throttle + cache state, so
+                # each comparison starts from the same fresh state the full run had.
+                fresh = dict(env, HIMMEL_IG_THROTTLE_STATE=str(root / f"{source}-t.json"),
+                             HIMMEL_IG_PROBE_CACHE=str(root / f"{source}-c.json"))
+                single = fetch_health.run_single_probe(source, fresh, http=http, command=command, repo_root=root)
+                if source in fetch_health.IG_PROBE_SOURCES and full[source].status == "cooldown":
+                    continue  # an earlier Instagram probe in the same run opened the shared cooldown
                 self.assertEqual(single, full[source], source)
 
     def test_probe_unknown_source_is_a_usage_error(self):
@@ -717,6 +723,134 @@ class FetchHealthTests(unittest.TestCase):
             result = fetch_health.probe_twitter_cli({"HOME": tmp, "PATH": ""}, forbidden_command)
             self.assertEqual(result.status, "auth-or-cookie-expired")
             self.assertIn("TWITTER_AUTH_TOKEN", result.reason)
+
+
+class InstagramGuardTests(unittest.TestCase):
+    """HIMMEL-4306: the Instagram probes share the throttle and cache their
+    verdict, so status/doctor runs stop hitting the operator's account."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        cookie = self.tmp / ".luna" / "cookies" / "instagram.txt"
+        cookie.parent.mkdir(parents=True)
+        cookie.write_text("cookie", encoding="utf-8")
+        os.utime(cookie, (1, 1))  # old: a re-login (newer cookie) is tested separately
+        self.cookie = cookie
+        binary = self.tmp / "bin" / "gallery-dl"
+        binary.parent.mkdir()
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        self.env = {
+            "HOME": str(self.tmp),
+            "PATH": str(binary.parent),
+            "HIMMEL_IG_THROTTLE_STATE": str(self.tmp / "throttle.json"),
+            "HIMMEL_IG_PROBE_CACHE": str(self.tmp / "probe-cache.json"),
+            "HIMMEL_IG_MIN_GAP_S": "0",
+            "HIMMEL_IG_JITTER_S": "0",
+        }
+        self.calls = 0
+
+    def command(self, returncode=0, stderr=""):
+        def run(*args, **kwargs):
+            self.calls += 1
+            return subprocess.CompletedProcess(args, returncode, "", stderr)
+        return run
+
+    def http(self, status=200, body=b'<div class="Caption">hi</div>'):
+        def get(*args, **kwargs):
+            self.calls += 1
+            return fetch_health.HttpResult(status, body)
+        return get
+
+    def probe(self, source, *, command=None, http=None):
+        return fetch_health.run_single_probe(
+            source, self.env, http=http or self.http(), command=command or self.command(), repo_root=self.tmp)
+
+    def age_cache(self, source, seconds):
+        path = Path(self.env["HIMMEL_IG_PROBE_CACHE"])
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data[source]["checked_epoch"] -= seconds
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_cooldown_is_a_status(self):
+        self.assertIn("cooldown", fetch_health.STATUSES)
+
+    def test_second_media_probe_is_served_from_the_cache(self):
+        first = self.probe("instagram-media")
+        second = self.probe("instagram-media")
+        self.assertEqual(first.status, "ok")
+        self.assertEqual(second.status, "ok")
+        self.assertEqual(self.calls, 1)
+        self.assertIn("cached", second.reason)
+
+    def test_embed_probe_is_cached_too(self):
+        self.probe("instagram-embed")
+        self.probe("instagram-embed")
+        self.assertEqual(self.calls, 1)
+
+    def test_an_ok_verdict_expires_after_24h(self):
+        self.probe("instagram-media")
+        self.age_cache("instagram-media", 24 * 3600 + 60)
+        self.probe("instagram-media")
+        self.assertEqual(self.calls, 2)
+
+    def test_a_failed_verdict_is_only_cached_for_an_hour(self):
+        self.env["HIMMEL_IG_BACKOFF_BASE_S"] = "0"  # isolate the cache TTL from the throttle backoff
+        bad = self.command(returncode=1, stderr="connection reset")
+        self.assertEqual(self.probe("instagram-media", command=bad).status, "transport-fail")
+        self.probe("instagram-media", command=bad)
+        self.assertEqual(self.calls, 1)
+        self.age_cache("instagram-media", 3600 + 60)
+        self.probe("instagram-media", command=bad)
+        self.assertEqual(self.calls, 2)
+
+    def test_a_cookie_newer_than_the_cache_forces_a_fresh_probe(self):
+        self.probe("instagram-media")
+        os.utime(self.cookie, None)  # re-login: the cookie file is now newer
+        self.age_cache("instagram-media", 10)
+        self.probe("instagram-media")
+        self.assertEqual(self.calls, 2)
+
+    def test_429_starts_a_cooldown_and_later_probes_send_nothing(self):
+        r = self.probe("instagram-embed", http=self.http(429, b""))
+        self.assertEqual(r.status, "blocked-or-rate-limited")
+        self.calls = 0
+        media = self.probe("instagram-media")
+        self.assertEqual(media.status, "cooldown")
+        self.assertIn("cooldown", media.reason)
+        embed = self.probe("instagram-embed")
+        self.assertEqual(embed.status, "cooldown")
+        self.assertEqual(self.calls, 0)
+
+    def test_a_gallery_dl_challenge_starts_a_cooldown(self):
+        r = self.probe("instagram-media", command=self.command(1, "challenge_required"))
+        self.assertEqual(r.status, "blocked-or-rate-limited")
+        self.assertEqual(self.probe("instagram-embed").status, "cooldown")
+
+    def test_a_probe_never_waits_for_a_slot_it_reports_cooldown(self):
+        self.env["HIMMEL_IG_MIN_GAP_S"] = "600"
+        self.probe("instagram-embed")  # takes the slot
+        r = self.probe("instagram-media")
+        self.assertEqual(r.status, "cooldown")
+        self.assertEqual(self.calls, 1)
+
+    def test_a_cooldown_run_exits_zero_and_is_not_a_failure(self):
+        import contextlib
+        self.env["HIMMEL_IG_DAILY_CAP"] = "0"
+        with patch.dict(os.environ, self.env, clear=False), patch.object(fetch_health, "primary_repo_root", return_value=self.tmp):
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+                rc = fetch_health.main(["--probe", "instagram-media"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(buf.getvalue())["status"], "cooldown")
+
+    def test_other_sources_are_not_throttled_or_cached(self):
+        for _ in range(2):
+            fetch_health.run_single_probe("x-fxtwitter", self.env, http=self.http(200, b'{"code":200,"tweet":{"id":"20"}}'),
+                                          command=self.command(), repo_root=self.tmp)
+        self.assertEqual(self.calls, 2)
 
 
 if __name__ == "__main__":

@@ -248,6 +248,9 @@ chmod 600 "$HOME/.luna/cookies/instagram.txt"
 
 # Set IG_MEDIA_NO_SLEEP to skip rate limit in test
 export IG_MEDIA_NO_SLEEP=1
+# HIMMEL-4306: the shared Instagram throttle (state under $HOME) counts every
+# gallery-dl stub run; lift the daily cap so the suite is not budget-limited.
+export HIMMEL_IG_DAILY_CAP=100000
 
 # Fresh isolated vault (the gallery-dl stub emits image-1.jpg + image-2.jpg).
 VD="$tmp/vault-dl"
