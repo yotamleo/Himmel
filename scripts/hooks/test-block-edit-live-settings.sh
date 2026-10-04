@@ -2780,6 +2780,46 @@ ruby -e 'puts File.read(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
 ruby -e 'puts File.exist?(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
 perl -e 'open(my $f,"<",$ENV{HOME}."/.cl"."aude/sett"."ings.json"); print <$f>'
 ROWS
+# 790-811 (HIMMEL-4353): a bash/sh/zsh/dash -c or eval body is one quoted word
+# to the tokenizer, so its glob and brace targets carried no glob flag and the
+# leaf/`.claude` fold checks never saw them. The body is now judged as a
+# command of its own.
+rows_both 790 2 "interpreter body writing live settings via a glob or brace denies" <<'ROWS'
+bash -c "echo x > ~/.claude/sett*s.json"
+eval "echo x > ~/.claude/s?ttings.json"
+bash -c "echo x > ~/.claude/settings.{json,bak}"
+sh -c 'cp /tmp/a ~/.cl*/settings.json'
+zsh -c 'echo x >> ~/.claude/sett*s.json'
+dash -c "echo x | tee ~/.claude/settings.js?n"
+command eval 'mv /tmp/a $HOME/.claude/sett*.json'
+bash -c 'install -m 644 /tmp/a $HOME/.claude/settings.{json,x}'
+sh -c "ln -sf /tmp/a ~/.claude/s*ings.local.json"
+eval 'dd if=/tmp/a of=$HOME/.claude/settings.j*'
+bash -lc 'echo x > ~/.claude/sett*s.json'
+bash -c 'echo x > @P@/.claude/sett*s.json'
+sh -c "cp /tmp/a @P@/.claude/settings.local.{json,x}"
+eval "echo x >> @P@/.cl*/settings.json"
+zsh -c "tee @P@/.claude/s?ttings.json < /tmp/a"
+command eval "dd if=/tmp/a of=@P@/.claude/sett*s.json"
+dash -c 'mv /tmp/a @P@/.claude/settings.js[o]n'
+bash -c "bash -c 'echo x > ~/.claude/sett*s.json'"
+ROWS
+# 808-813: controls; a glob or brace in an interpreter body that names no live
+# settings file, or only reads one, stays allowed.
+rows_both 808 0 "interpreter body glob/brace with a non-live target or a read allows" <<'ROWS'
+bash -c "echo x > /tmp/sett*s.json"
+bash -c "ls ~/.claude/*.md"
+eval "echo x > /tmp/s?ttings.json"
+zsh -c 'ls @P@/.claude/sett*'
+eval "cat ~/.claude/*.md"
+bash -c "echo x > /tmp/x.{json,bak}"
+ROWS
+# 814-815: the worktree's OWN copy through an interpreter body stays allowed,
+# as row 11 and row 273 allow it at top level.
+assert_rc "814 bash -c redirect into worktree .claude/sett*s.json allows" 0 \
+    "$(bash_rc_of "$WT2" 'bash -c "echo x > .claude/sett*s.json"')"
+assert_rc "815 sh -c redirect into worktree .claude/s?ttings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "sh -c 'echo x > .claude/s?ttings.json'")"
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
