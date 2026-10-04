@@ -14,7 +14,8 @@
 #   8. a failed preserve (unwritable archive root) means no reap
 #   9. an archive target with different content keeps the dir
 #  10. an unreadable same-uid /proc entry refuses --apply (fake TMP_REAP_PROC);
-#      other-uid only warns (TMP_REAP_UID), dry-run warns, a readable proc is quiet
+#      other-uid only warns (TMP_REAP_UID), dry-run warns, a readable proc is quiet;
+#      an empty census root refuses
 #  11. FAMILIES does not glob against the caller's cwd
 #  12. a fixture with a non-writable sub/ dir is still reaped (chmod before rm)
 # Platform guard: POSIX bash 3.2+.
@@ -160,6 +161,11 @@ build_tree
 out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$T/no-such-proc" reap --apply)"; rc=$?
 check "missing census root: --apply rc 2" "$rc" 2
 exists "missing census root reaps nothing" "$ROOT/mog-run.old"
+mkdir -p "$T/empty-proc"; build_tree
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$T/empty-proc" reap --apply)"; rc=$?
+check "census root listing no process: --apply rc 2" "$rc" 2
+contains "empty census root is reported" "$out" "lists no process"
+exists "empty census root reaps nothing" "$ROOT/mog-run.old"
 mkdir -p "$T/bin2"; printf '#!/bin/sh\nexit 1\n' > "$T/bin2/stat"; chmod +x "$T/bin2/stat"
 rm -rf "$FP/200"; mkdir -p "$FP/200"
 out="$(PATH="$T/bin2:$PATH" TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
