@@ -8,6 +8,19 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.66] — 2026-10-04
+
+### Removed
+- `.pre-commit-config.yaml`: the `conventional-commit-msg` hook and its script
+  `scripts/hooks/check-commit-msg.sh`. The hook ran with `pass_filenames: false`,
+  so it never saw a commit message and validated nothing; turning it on would
+  reject the vault's own automated commits (obsidian-git, pipeline subjects).
+  The conventional format stays a convention. `/luna-upgrade` overwrites the
+  config; an already-installed vault keeps an unreferenced
+  `scripts/hooks/check-commit-msg.sh` that can be deleted by hand. The
+  `commit-msg` git shim stays and is harmless with no commit-msg-stage hook
+  (HIMMEL-3642).
+
 ## [0.4.64] — 2026-10-02
 
 ### Fixed

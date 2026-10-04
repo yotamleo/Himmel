@@ -229,8 +229,8 @@ must apply this contract itself.
 ## Repo conventions (inherited from luna-brain skeleton)
 
 - **Git workflow:** all changes via PR. main is protected. Conventional
-  commit format `type(scope): [TICKET-N ]message` enforced by
-  `scripts/hooks/check-commit-msg.sh`.
+  commit format `type(scope): [TICKET-N ]message` is a convention, not
+  enforced by a hook (automated vault commits use their own subjects).
 - **Worktree isolation:** never edit on `main`. Pre-commit hook refuses
   commits when `HEAD == main`. Create a worktree branch first
   (`git switch -c feat/<slug>`).

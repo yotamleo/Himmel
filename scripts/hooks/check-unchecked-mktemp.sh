@@ -126,6 +126,68 @@ fi
 # shellcheck disable=SC1091
 . "$UNCHECKED_MKTEMP_LIB"
 
+# Scan mode. Default = staged (pre-commit). `--range [--merge-ref] <base>` =
+# the CI range gate (HIMMEL-4301): the same added-lines scan over the PR's net
+# diff, so a capture that reached the branch past a skipped/bypassed pre-commit
+# is still caught. Range = merge-base(<base>, HEAD)..HEAD; with --merge-ref and
+# a merge HEAD (CI's refs/pull/N/merge) it is HEAD^1..HEAD, the PR's own net
+# change against the CURRENT base tip (a stale <base> is ignored, as in
+# scripts/ci/check-commit-range.sh). A net diff never contains lines a
+# merge-forward inherited, and a capture added then fixed inside the range
+# never lands and is not flagged.
+MODE=staged
+MERGE_REF=0
+RANGE_BASE=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --range) MODE=range ;;
+        --merge-ref) MERGE_REF=1 ;;
+        -*) echo "FAIL: check-unchecked-mktemp: unknown option $1 (usage: [--range [--merge-ref] <base>])" >&2; exit 1 ;;
+        *) RANGE_BASE="$1" ;;
+    esac
+    shift
+done
+if [ "$MODE" = staged ] && { [ "$MERGE_REF" -eq 1 ] || [ -n "$RANGE_BASE" ]; }; then
+    echo "FAIL: check-unchecked-mktemp: --merge-ref / <base> need --range" >&2
+    exit 1
+fi
+
+# DIFF_REV = what `git diff` compares; OLD_REV = the old side's tree-ish (the
+# no-hunk blob check); blob_spec = the new-side blob for a path.
+DIFF_REV=(--cached)
+OLD_REV=HEAD
+MERGE_PARENTS=""
+if [ "$MODE" = range ]; then
+    if [ "$MERGE_REF" -eq 1 ] && git rev-parse --verify -q 'HEAD^2' >/dev/null 2>&1; then
+        range_old="$(git rev-parse --verify -q 'HEAD^1')" || range_old=""
+    elif [ -n "$RANGE_BASE" ]; then
+        range_old="$(git merge-base "$RANGE_BASE" HEAD 2>/dev/null)" || range_old=""
+    else
+        range_old=""
+    fi
+    if [ -z "$range_old" ]; then
+        echo "FAIL: check-unchecked-mktemp: cannot resolve the range base '${RANGE_BASE:-<none>}' (fail-closed)" >&2
+        exit 1
+    fi
+    DIFF_REV=("$range_old" HEAD)
+    OLD_REV="$range_old"
+else
+    # A merge in progress: the index vs HEAD (first parent) also holds every
+    # line the other parent(s) brought in. Collect them so only the merge's own
+    # lines are judged (merge_own_lines).
+    merge_head_file="$(git rev-parse --git-path MERGE_HEAD)" || merge_head_file=""
+    if [ -n "$merge_head_file" ] && [ -f "$merge_head_file" ]; then
+        MERGE_PARENTS="$(cat "$merge_head_file")" || MERGE_PARENTS=""
+        if [ -z "$MERGE_PARENTS" ]; then
+            echo "FAIL: check-unchecked-mktemp: cannot read $merge_head_file (merge in progress, fail-closed)" >&2
+            exit 1
+        fi
+    fi
+fi
+blob_spec() {
+    if [ "$MODE" = range ]; then printf 'HEAD:%s' "$1"; else printf ':%s' "$1"; fi
+}
+
 scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/check-unchecked-mktemp.XXXXXX")" || {
     echo "FAIL: check-unchecked-mktemp: mktemp -d failed" >&2
     exit 1
@@ -141,10 +203,10 @@ trap 'rm -rf "$scratch_dir"' EXIT
 # not NUL-delimited, and merging the two streams would corrupt both).
 diff_status_file="$scratch_dir/diff-status.nul"
 diff_err_file="$scratch_dir/diff-status.err"
-if ! git diff --no-color --cached -M -l0 -z --diff-filter=AMRT --name-status \
+if ! git diff --no-color "${DIFF_REV[@]}" -M -l0 -z --diff-filter=AMRT --name-status \
         >"$diff_status_file" 2>"$diff_err_file"; then
     diff_err="$(cat "$diff_err_file" 2>/dev/null)"
-    echo "FAIL: check-unchecked-mktemp: git diff --cached --name-status failed: $diff_err" >&2
+    echo "FAIL: check-unchecked-mktemp: git diff ${DIFF_REV[*]} --name-status failed: $diff_err" >&2
     exit 1
 fi
 
@@ -189,6 +251,64 @@ while IFS= read -r -d '' status_field; do
     esac
 done < "$diff_status_file"
 
+# Added-line numbers from a -U0 diff on stdin (new-file numbering): each
+# `@@ -a,b +c,d @@` header -> c..c+d-1; `+c` alone is one line; `+c,0` none.
+hunk_linenos() {
+    awk '
+        /^@@ / {
+            if (!match($0, /\+[0-9]+(,[0-9]+)?/)) next
+            spec = substr($0, RSTART + 1, RLENGTH - 1)
+            n = split(spec, parts, ",")
+            start = parts[1] + 0
+            count = (n > 1) ? parts[2] + 0 : 1
+            for (i = 0; i < count; i++) print start + i
+        }
+    '
+}
+
+# Narrow $2 (a file of added line numbers vs the first parent) to the lines the
+# merge itself introduced (HIMMEL-4301): a line a merge inherits from another
+# parent is that parent's, already judged on its own PR -- only a line added
+# relative to EVERY parent (the conflict resolution) is the merge's own, i.e.
+# combined-diff (`git diff --cc`) semantics. Each other parent's added lines
+# come from `git diff --cached -U0 <parent> -- <path>` (the path alone, no
+# rename pairing: a file renamed on the other side then reads as wholly added
+# there, which keeps its lines flagged -- the fail-closed direction).
+# ponytail: a rename on the other parent's side is not paired, so a merge
+# resolving a rename conflict may be over-flagged, upgrade path = pair
+# renames per parent if it ever blocks a real merge.
+merge_own_lines() {
+    local path="$1" out="$2" parent hunks p_added narrowed rc
+    [ -n "$MERGE_PARENTS" ] || return 0
+    while IFS= read -r parent; do
+        [ -n "$parent" ] || continue
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 --cached -U0 "$parent" -- "$path" 2>&1)"; then
+            echo "FAIL: check-unchecked-mktemp: git diff --cached -U0 $parent -- $path failed: $hunks (merge scoping, fail-closed)" >&2
+            return 1
+        fi
+        p_added="$out.vs-parent"
+        if ! printf '%s\n' "$hunks" | hunk_linenos > "$p_added"; then
+            echo "FAIL: check-unchecked-mktemp: added-lines awk scan failed for $path against merge parent $parent (fail-closed)" >&2
+            return 1
+        fi
+        narrowed="$out.narrowed"
+        rc=0
+        grep -Fxf "$p_added" "$out" > "$narrowed" || rc=$?
+        # grep rc 1 = no common line (the merge owns none); >1 is an error.
+        if [ "$rc" -gt 1 ]; then
+            echo "FAIL: check-unchecked-mktemp: merge scoping grep failed for $path (rc=$rc, fail-closed)" >&2
+            return 1
+        fi
+        mv "$narrowed" "$out" || {
+            echo "FAIL: check-unchecked-mktemp: cannot write the merge-scoped line list for $path (fail-closed)" >&2
+            return 1
+        }
+    done <<EOF
+$MERGE_PARENTS
+EOF
+    return 0
+}
+
 # Added-line numbers (new-file numbering) for one staged file, from its own
 # -U0 hunk headers -- `@@ -a,b +c,d @@` -> lines c..c+d-1. `+c` alone (no
 # `,d`) is a single added line. A hunk that only removes (`+c,0`) contributes
@@ -199,13 +319,13 @@ done < "$diff_status_file"
 added_lines_for() {
     local path="$1" src_path="$2" out="$3" hunks rc
     if [ -n "$src_path" ]; then
-        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 --cached -M -l0 -U0 -- "$src_path" "$path" 2>&1)"; then
-            echo "FAIL: check-unchecked-mktemp: git diff --cached -M -U0 -- $src_path $path failed: $hunks" >&2
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 "${DIFF_REV[@]}" -M -l0 -U0 -- "$src_path" "$path" 2>&1)"; then
+            echo "FAIL: check-unchecked-mktemp: git diff ${DIFF_REV[*]} -M -U0 -- $src_path $path failed: $hunks" >&2
             return 1
         fi
     else
-        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 --cached -U0 -- "$path" 2>&1)"; then
-            echo "FAIL: check-unchecked-mktemp: git diff --cached -U0 -- $path failed: $hunks" >&2
+        if ! hunks="$(git diff --no-color --no-ext-diff --text --no-textconv --inter-hunk-context=0 "${DIFF_REV[@]}" -U0 -- "$path" 2>&1)"; then
+            echo "FAIL: check-unchecked-mktemp: git diff ${DIFF_REV[*]} -U0 -- $path failed: $hunks" >&2
             return 1
         fi
     fi
@@ -222,11 +342,11 @@ added_lines_for() {
     n_hunks="$(printf '%s\n' "$hunks" | grep -c '^@@ ')" || :
     if [ "${n_hunks:-0}" -eq 0 ]; then
         local new_oid old_oid empty_oid
-        if ! new_oid="$(git rev-parse --verify -q ":$path")"; then
+        if ! new_oid="$(git rev-parse --verify -q "$(blob_spec "$path")")"; then
             echo "FAIL: check-unchecked-mktemp: cannot resolve the staged blob of $path (fail-closed)" >&2
             return 1
         fi
-        old_oid="$(git rev-parse --verify -q "HEAD:${src_path:-$path}" 2>/dev/null)" || old_oid=""
+        old_oid="$(git rev-parse --verify -q "$OLD_REV:${src_path:-$path}" 2>/dev/null)" || old_oid=""
         if ! empty_oid="$(git hash-object -t blob --stdin </dev/null)"; then
             echo "FAIL: check-unchecked-mktemp: git hash-object failed (fail-closed)" >&2
             return 1
@@ -243,22 +363,13 @@ added_lines_for() {
     # unwritable "$out") would silently yield an empty added-line list, and
     # every violation on that file would go unreported -- the exact
     # fail-open hole the caller's fail-closed contract exists to prevent.
-    printf '%s\n' "$hunks" | awk '
-        /^@@ / {
-            if (!match($0, /\+[0-9]+(,[0-9]+)?/)) next
-            spec = substr($0, RSTART + 1, RLENGTH - 1)
-            n = split(spec, parts, ",")
-            start = parts[1] + 0
-            count = (n > 1) ? parts[2] + 0 : 1
-            for (i = 0; i < count; i++) print start + i
-        }
-    ' > "$out"
+    printf '%s\n' "$hunks" | hunk_linenos > "$out"
     rc=$?
     if [ "$rc" -ne 0 ]; then
         echo "FAIL: check-unchecked-mktemp: added-lines awk scan failed for $path (rc=$rc) (fail-closed)" >&2
         return 1
     fi
-    return 0
+    merge_own_lines "$path" "$out"
 }
 
 fail=0
@@ -288,7 +399,7 @@ while IFS= read -r -d '' sh_path && IFS= read -r -d '' src_path; do
     n_scanned=$((n_scanned + 1))
 
     stage_sh="$scratch_dir/$n_seen-$(basename "$sh_path")"
-    if ! git show ":$sh_path" > "$stage_sh" 2>/dev/null; then
+    if ! git show "$(blob_spec "$sh_path")" > "$stage_sh" 2>/dev/null; then
         fail=1
         echo "⛔ check-unchecked-mktemp: cannot read the staged content of $sh_path (fail-closed)." >&2
         continue

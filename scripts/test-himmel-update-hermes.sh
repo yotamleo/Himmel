@@ -822,6 +822,44 @@ if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: Windows
 uh=$(USERPROFILE='' HOME="$tmp/fake-home" cadence_user_home)
 if [ "$uh" = "$tmp/fake-home" ]; then echo "ok: cadence_user_home falls back to HOME"; else echo "FAIL: cadence_user_home got '$uh'"; fail=1; fi
 
+# HIMMEL-4307: a PM-managed install (.hermes/bin/hermes) owns its dependency
+# generations — apply must NOT pip-install into its interpreter. A legacy venv
+# install keeps the editable refresh. Both cases pull nothing (heads equal), so
+# they add no gateway restart to the suite-stub count asserted above.
+bareP="$tmp/bareP/NousResearch/hermes-agent.git"
+mkdir -p "$bareP"; git init -q --bare "$bareP"
+seedP="$tmp/seedP"
+git clone -q "$bareP" "$seedP"
+git -C "$seedP" config user.email "test@test.test"; git -C "$seedP" config user.name "Test"
+printf 'v1\n' > "$seedP/f.txt"; git -C "$seedP" add f.txt; git -C "$seedP" commit --quiet -m v1
+git -C "$seedP" push --quiet origin HEAD:release
+for layoutP in pm legacy; do
+  homeP="$tmp/layout-$layoutP"; srcP="$homeP/hermes-agent"
+  git init -q "$srcP"
+  git -C "$srcP" remote add upstream "$bareP"
+  git -C "$srcP" fetch -q upstream refs/heads/release
+  git -C "$srcP" checkout -q -b local-work --track upstream/release
+  git -C "$srcP" remote add origin "$tmp/no-such-origin/NousResearch/hermes-agent"
+  pipP="$homeP/pip-calls.log"
+  mkdir -p "$srcP/venv/bin"
+  printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$pipP" > "$srcP/venv/bin/python"
+  chmod +x "$srcP/venv/bin/python"
+  if [ "$layoutP" = pm ]; then
+    mkdir -p "$srcP/.hermes/bin"
+    printf '#!/bin/sh\nexit 1\n' > "$srcP/.hermes/bin/hermes"; chmod +x "$srcP/.hermes/bin/hermes"
+  fi
+  rc=0
+  out=$(HERMES_HOME="$homeP" update_hermes apply 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "ok: $layoutP layout apply -> exit 0"; else echo "FAIL: $layoutP layout apply -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
+  if [ "$layoutP" = pm ]; then
+    check "PM-managed layout: noted, dependencies left to hermes" "PM-managed" "$out"
+    if [ ! -s "$pipP" ]; then echo "ok: PM-managed layout ran no pip"; else echo "FAIL: PM-managed layout ran pip: $(cat "$pipP")"; fail=1; fi
+  else
+    check "legacy venv layout: editable refresh kept" "refreshing editable install" "$out"
+    if grep -q 'install -e' "$pipP" 2>/dev/null; then echo "ok: legacy layout ran pip install -e"; else echo "FAIL: legacy layout did not run pip install -e"; fail=1; fi
+  fi
+done
+
 if [ "$fail" -eq 0 ]; then
   echo "PASS: himmel-update hermes smoke test"
 else

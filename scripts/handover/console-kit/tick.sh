@@ -876,7 +876,16 @@ for lock_dir in "$suite_tmp"/himmel-shell-suite-*.lock; do
 done
 suites="${suite_alive}alive/${suite_dead}dead"
 
-pr_out="$(cd "$REPO" 2>/dev/null && gh pr list --json number --jq '.[].number' 2>/dev/null)" || pr_out=""
+# Open PRs are the project's, not himmel's: a console always runs in himmel, and
+# console.sh records the checkout it is FOR on the doc's project line (`none --
+# ...` for himmel itself). board.mjs reads the same line, so board-fp stays in step.
+pr_repo="$REPO"
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    # shellcheck disable=SC2016  # single-quoted sed pattern; no expansion wanted
+    doc_project="$(sed -n 's/.*The project this console is FOR is \*\*`\([^`]*\)`\*\*.*/\1/p' "$console_doc" | head -n 1)"
+    case "$doc_project" in /*) pr_repo="$doc_project" ;; esac
+fi
+pr_out="$(cd "$pr_repo" 2>/dev/null && gh pr list --json number --jq '.[].number' 2>/dev/null)" || pr_out=""
 prs=""
 while IFS= read -r pr; do
     case "$pr" in ''|*[!0-9]*) continue ;; esac

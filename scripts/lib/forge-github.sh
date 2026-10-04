@@ -54,6 +54,7 @@ _gh_trigger_cr() {
     # honours CR_PROFILE=none and stays silent on a clone with no CodeRabbit App.
     # This seam runs inside SHIPPED scripts an adopter executes, so an unarmed
     # repo must not collect stray @coderabbitai comments on every PR it opens.
+    # shellcheck disable=SC2119 # optional [<dir>] arg; "$@" would pass the PR ref as the dir
     cr_app_configured || return 0
 
     local meta num sha url repo
