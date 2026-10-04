@@ -142,6 +142,9 @@ mkdir -p "$CLONE/scripts/codex" "$TMP/stubbin" || exit 1
 printf '#!/bin/sh\nexit 0\n' > "$TMP/stubbin/codex"; chmod +x "$TMP/stubbin/codex"
 cat > "$CLONE/scripts/codex/startup-health.sh" <<'STUB'
 #!/usr/bin/env bash
+if [ -f "$FIX/codex-nologs" ]; then echo "startup-health: no codex logs" >&2; exit 2; fi
+if [ -f "$FIX/codex-unchecked" ]; then echo "WARN plugin-presence-unchecked: cannot read the plugin set"; exit 1; fi
+if [ -f "$FIX/codex-degraded" ]; then echo "WARN hook-failure: ignoring hooks"; exit 1; fi
 if [ -f "$FIX/codex-registered" ]; then exit 0; fi
 if [ -f "$FIX/codex-broken" ]; then echo "boom"; exit 3; fi
 echo "WARN plugin-unregistered: telegram-himmel@himmel missing"; exit 1
@@ -166,6 +169,24 @@ if grep -q 'converged codex' <<< "$OUT"; then assert_fail "claimed codex converg
 grep -q 'not verified' <<< "$OUT" && assert_pass "unverified codex state is reported" || assert_fail "no not-verified note: $OUT"
 if grep -q 'no unconverged drift' <<< "$OUT"; then assert_fail "unverified codex state concluded no drift: $OUT"; else assert_pass "unverified codex state stays in the DRIFT block"; fi
 rm -f "$FIX/codex-install-breaks" "$FIX/codex-broken"
+
+echo "codex: an indeterminate initial health result is listed, a degraded-but-registered one is not (HIMMEL-4248)"
+for mode in codex-nologs codex-unchecked; do
+    for item in drift drift-check; do
+        reset_fix; : > "$FIX/hooks/pre-commit"; : > "$FIX/no-cred"; rm -f "$FIX/codex-install.log"; : > "$FIX/$mode"
+        RC=0; OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="$TMP/stubbin:/usr/bin:/bin:$PATH" bash scripts/himmel-update.sh --only "$item" 2>&1)" || RC=$?
+        [ ! -f "$FIX/codex-install.log" ] && assert_pass "$mode/$item: installer not run on an unknown state" || assert_fail "$mode/$item: ran the installer on an unknown state"
+        grep -q 'DRIFT' <<< "$OUT" && grep -q 'codex registration indeterminate' <<< "$OUT" \
+            && assert_pass "$mode/$item: indeterminate codex state in the DRIFT block" || assert_fail "$mode/$item: indeterminate state not surfaced: $OUT"
+        if grep -q 'no unconverged drift' <<< "$OUT"; then assert_fail "$mode/$item: concluded no drift: $OUT"; else assert_pass "$mode/$item: no 'no unconverged drift'"; fi
+        rm -f "$FIX/$mode"
+    done
+done
+reset_fix; : > "$FIX/hooks/pre-commit"; : > "$FIX/no-cred"; rm -f "$FIX/codex-install.log"; : > "$FIX/codex-degraded"
+RC=0; OUT="$(cd "$CLONE" && HIMMEL_DRIFT_CTL="$CTL" PATH="$TMP/stubbin:/usr/bin:/bin:$PATH" bash scripts/himmel-update.sh --only drift 2>&1)" || RC=$?
+if grep -q 'DRIFT' <<< "$OUT"; then assert_fail "unrelated degraded signal produced a DRIFT block: $OUT"; else assert_pass "unrelated degraded signal adds no drift noise"; fi
+[ ! -f "$FIX/codex-install.log" ] && assert_pass "degraded-but-registered: installer not run" || assert_fail "degraded-but-registered ran the installer"
+rm -f "$FIX/codex-degraded"
 
 echo "malformed status after ensure: prior drift rows are kept, no convergence claim"
 reset_fix; : > "$FIX/bad-recheck"
