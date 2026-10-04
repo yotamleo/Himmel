@@ -2077,7 +2077,7 @@ EOF
             if jq -e --arg k "$spec_i" '(.plugins // {}) | has($k)' "$installed" >/dev/null 2>&1; then
                 kept="$kept$spec_i
 "
-            elif jq -e '(.plugins // {}) | type == "object"' "$installed" >/dev/null 2>&1; then
+            elif jq -e '.plugins | type == "object"' "$installed" >/dev/null 2>&1; then
                 n_skipped=$((n_skipped + 1))
             else
                 kept="$kept$spec_i

@@ -200,6 +200,14 @@ out_ni=$(USERPROFILE='' HOME="$fake_home_ni" HIMMEL_UPDATE_CLAUDE_BIN="$claude_s
 log_ni_content="$(cat "$log_ni")"
 assert_contains "unreadable registry: ghost still attempted (old behaviour)" "plugin update ghost@nowhere" "$log_ni_content"
 assert_not_contains "unreadable registry: no skip line" "not installed, skipped" "$out_ni"
+printf '%s\n' '{"version":2}' > "$fake_home_ni/.claude/plugins/installed_plugins.json"
+: > "$log_ni"
+rc=0
+out_ni=$(USERPROFILE='' HOME="$fake_home_ni" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_ni" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_ni/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" 2>&1) || rc=$?
+log_ni_content="$(cat "$log_ni")"
+assert_contains "registry without .plugins: ghost still attempted" "plugin update ghost@nowhere" "$log_ni_content"
 
 echo "Test: --check mode reports what would update, invokes nothing"
 make_mock_clone
