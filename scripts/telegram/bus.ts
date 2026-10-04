@@ -211,13 +211,120 @@ export async function appendContext(root: string, s: string, note: string, budge
   const tmp = p + ".tmp"; await writeFile(tmp, cur, "utf8"); await rename(tmp, p);
 }
 
-// CLI: `bun bus.ts send <target> <text...>` — A→B inter-session message.
+// HIMMEL-1854: coms layer — live seat-to-seat messaging over this file bus,
+// received through Claude Code's Monitor tool (one stdout line = one event).
+// Layout: <root>/peers/<seat>/inbox.jsonl (+ .cursor); <root>/peers/ledger.jsonl.
+// No server/port/token/daemon/encryption; no broadcast verb — ONE named target.
+export const peerInbox = (root: string, seat: string) => join(root, "peers", seat, "inbox.jsonl");
+export const peerLedger = (root: string) => join(root, "peers", "ledger.jsonl");
+export const PEER_TEXT_MAX = 2000;
+const PEER_SEAT_MAX = 64;
+
+// A seat is a path component AND a target name: reject separators/globs/lists
+// (path escape) and the broadcast words (no fan-out verb).
+function checkSeat(seat: string): void {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(seat) || ["all", "everyone", "broadcast"].includes(seat.toLowerCase()))
+    throw new Error(`invalid seat name: ${JSON.stringify(seat)}`);
+}
+
+// Send ledger is append-only and never truncated: truncateFullyConsumed erases
+// the inbox once drained, which would destroy the forensic record. Ledger
+// first, so a crash between the two appends leaves a record, never a ghost msg.
+export async function peerSend(root: string, from: string, to: string, text: string): Promise<void> {
+  checkSeat(from); checkSeat(to);
+  const rec = { from, to, ts: new Date().toISOString(), text };
+  await mkdir(join(root, "peers", to), { recursive: true });
+  const line = JSON.stringify(rec);
+  await appendLine(peerLedger(root), line);
+  await appendLine(peerInbox(root, to), line);
+}
+
+// Receiver-side framing: built HERE from the parsed record, never echoing
+// sender bytes raw. JSON.stringify escapes \n and \r; U+2028/U+2029 are
+// escaped explicitly. Malformed lines are framed, not dropped.
+export function framePeerLine(raw: string): string {
+  let o: any;
+  try { o = JSON.parse(raw); } catch { o = undefined; }
+  let out: Record<string, unknown>;
+  if (o && typeof o === "object" && !Array.isArray(o)) {
+    try {
+      const text = String(o.text ?? "");
+      out = { from: String(o.from ?? "").slice(0, PEER_SEAT_MAX), to: String(o.to ?? "").slice(0, PEER_SEAT_MAX),
+        ts: String(o.ts ?? "").slice(0, PEER_SEAT_MAX), text: text.slice(0, PEER_TEXT_MAX) };
+      if (text.length > PEER_TEXT_MAX) out.clipped = true;
+    } catch {
+      out = { malformed: true, text: raw.slice(0, PEER_TEXT_MAX) };
+    }
+  } else {
+    out = { malformed: true, text: raw.slice(0, PEER_TEXT_MAX) };
+  }
+  return JSON.stringify(out).replace(/\u{2028}/gu, "\\" + "u2028").replace(/\u{2029}/gu, "\\" + "u2029");
+}
+
+// Drain from the byte cursor: only '\n'-terminated lines (a trailing partial is
+// held). At-least-once: emit everything, THEN commit the cursor, then reclaim
+// the inbox. Returns the number emitted.
+export async function drainPeerInbox(root: string, seat: string, emit: (line: string) => void | Promise<void>): Promise<number> {
+  checkSeat(seat);
+  const inbox = peerInbox(root, seat), cursor = inbox + ".cursor";
+  await repairCursorBeyondEof(inbox, cursor);
+  let start = 0;
+  try { start = Number(await readFile(cursor, "utf8")) || 0; } catch {}
+  let bytes: Buffer;
+  try { bytes = await readFile(inbox); } catch { return 0; }
+  const slice = bytes.subarray(start);
+  const lastNl = slice.lastIndexOf(10);
+  if (lastNl < 0) return 0;
+  const complete = slice.subarray(0, lastNl).toString("utf8");
+  let n = 0;
+  for (const ln of complete.split("\n")) if (ln.trim()) { await emit(framePeerLine(ln)); n++; }
+  await atomicWrite(cursor, String(start + lastNl + 1));
+  await truncateFullyConsumed(inbox, cursor);
+  return n;
+}
+
+// Resolve only once the stream has accepted the line, so drainPeerInbox's
+// cursor commit never runs ahead of stdout (backpressure, HIMMEL-1854).
+export const streamEmit = (out: { write(s: string, cb: (e?: Error | null) => void): unknown }) =>
+  (line: string) => new Promise<void>((res, rej) => { out.write(line + "\n", (e) => (e ? rej(e) : res())); });
+
+// ponytail: polls the cursor in-process instead of `tail -c +N -F` — the cursor
+// must be committed by the same code that prints (a tail pipe can't advance it
+// at print time, and tail -F around truncateFullyConsumed's rename is fragile);
+// ceiling = up to intervalMs latency per message; upgrade path = fs.watch
+// wakeup if latency matters (HIMMEL-1854).
+// NOTE: a flooded seat can hit Monitor's event rate limit — documenting that
+// behaviour is a ticket precondition still open (HIMMEL-1854).
+export async function followPeerInbox(root: string, seat: string, emit: (line: string) => void | Promise<void>,
+    intervalMs = 1000, signal?: AbortSignal): Promise<void> {
+  // oxlint-disable-next-line eslint/no-unmodified-loop-condition -- signal.aborted is flipped by the caller's AbortController
+  while (!signal?.aborted) {
+    await drainPeerInbox(root, seat, emit);
+    await Bun.sleep(intervalMs);
+  }
+}
+
+// CLI: `bun bus.ts send <target> <text...>` — A→B inter-session message;
+// `peer-send <from> <to> <text...>` / `peer-recv <seat> [--once] [--interval-ms N]` — coms layer.
 if (import.meta.main) {
-  const [verb, target, ...rest] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  const [verb, target, ...rest] = argv;
   if (verb === "send" && target && rest.length) {
     await sendToSession(defaultRoot(), target, rest.join(" "));
+  } else if (verb === "peer-send" && target && rest.length >= 2) {
+    try { await peerSend(defaultRoot(), target, rest[0], rest.slice(1).join(" ")); }
+    catch (e: any) { console.error(e?.message ?? String(e)); process.exit(1); }
+  } else if (verb === "peer-recv" && target) {
+    const once = rest.includes("--once");
+    const i = rest.indexOf("--interval-ms");
+    const ms = i >= 0 ? Number(rest[i + 1]) : 1000;
+    const emit = streamEmit(process.stdout);
+    try {
+      if (once) await drainPeerInbox(defaultRoot(), target, emit);
+      else await followPeerInbox(defaultRoot(), target, emit, Number.isFinite(ms) && ms > 0 ? ms : 1000);
+    } catch (e: any) { console.error(e?.message ?? String(e)); process.exit(1); }
   } else {
-    console.error("usage: bun bus.ts send <target> <text>");
+    console.error("usage: bun bus.ts send <target> <text>\n       bun bus.ts peer-send <from> <to> <text...>\n       bun bus.ts peer-recv <seat> [--once] [--interval-ms N]");
     process.exit(1);
   }
 }
