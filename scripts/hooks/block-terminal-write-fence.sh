@@ -219,11 +219,15 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
         # words(): the quote-aware stream. st 0 = bare, 1 = single, 2 = double, 3 = dollar-quote.
         # HIMMEL-4225: words(1) also reads a # comment at word start and a heredoc body as text
         # that opens no quote, kept verbatim, so a stray apostrophe there cannot desync the rest.
-        # A fifth stream beside words(0), never instead of it: a misread region only adds text.
-        function words(rg,   i, out, c, e, r, st, j, d, dq, hs, nh, k, ln) {
-            i = 1; out = ""; st = 0; nh = 0
+        # A delimiter it cannot classify ($-expansion, backtick, escape in a double or dollar quote, open
+        # quote) reads no body; no heredoc inside (( )). words(2) resets the quote state at every
+        # newline, the backstop for any region words(1) misreads. Streams five and six sit beside
+        # words(0), never instead of it: a misread region only adds text.
+        function words(rg,   i, out, c, e, r, st, j, d, dq, hs, nh, k, ln, w, uc, ar, hb) {
+            i = 1; out = ""; st = 0; nh = 0; ar = 0; hb = 0
             while (i <= n) {
                 c = substr(s, i, 1)
+                if (rg == 2 && c == "\n") st = 0
                 if (st == 1) { if (c == q) st = 0; else out = out c; i++; continue }
                 if (st == 3) {
                     if (c == q) { st = 0; i++; continue }
@@ -239,31 +243,42 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
                     out = out e; i += 2; continue
                 }
                 if (st == 2) { if (c == "\"") st = 0; else out = out c; i++; continue }
-                if (rg && c == "#" && (i == 1 || index(" \t\n;&|()<>", substr(s, i - 1, 1)))) {
+                if (rg == 1 && c == "#" && (i == 1 || index(" \t\n;&|()<>", substr(s, i - 1, 1)))) {
                     while (i <= n && substr(s, i, 1) != "\n") { out = out substr(s, i, 1); i++ }
                     continue
                 }
-                if (rg && c == "<" && substr(s, i + 1, 1) == "<" && substr(s, i + 2, 1) != "<" &&
+                if (rg == 1 && c == "(" && substr(s, i + 1, 1) == "(") { ar++; out = out "(("; i += 2; continue }
+                if (rg == 1 && c == ")" && substr(s, i + 1, 1) == ")" && ar) { ar--; out = out "))"; i += 2; continue }
+                if (rg == 1 && !ar && c == "<" && substr(s, i + 1, 1) == "<" && substr(s, i + 2, 1) != "<" &&
                     (i == 1 || substr(s, i - 1, 1) != "<")) {
-                    j = i + 2; hs = 0; d = ""
+                    j = i + 2; hs = 0; d = ""; uc = 0
                     if (substr(s, j, 1) == "-") { hs = 1; j++ }
                     while (substr(s, j, 1) ~ /[ \t]/) j++
+                    w = j
                     while (j <= n) {
                         c = substr(s, j, 1)
                         if (c ~ /[ \t\n;&|()<>]/) break
+                        e = 0
+                        if (c == "$") { c = substr(s, j + 1, 1); if (c == q || c == "\"") { e = 1; j++ } else { uc = 1; c = "$" } }
+                        if (c == "`") uc = 1
                         if (c == q || c == "\"") {
                             dq = c; j++
-                            while (j <= n && substr(s, j, 1) != dq) { d = d substr(s, j, 1); j++ }
+                            while (j <= n && substr(s, j, 1) != dq) {
+                                if (substr(s, j, 1) == "\\" && (dq != q || e)) uc = 1
+                                d = d substr(s, j, 1); j++
+                            }
+                            if (j > n) uc = 1
                             j++; continue
                         }
-                        if (c == "\\") { d = d substr(s, j + 1, 1); j += 2; continue }
+                        if (c == "\\") { if (substr(s, j + 1, 1) != "\n") d = d substr(s, j + 1, 1); j += 2; continue }
                         d = d c; j++
                     }
                     out = out substr(s, i, j - i); i = j
-                    if (d != "") { hd[++nh] = d; hx[nh] = hs }
+                    if (uc) hb = 1; else if (j > w) { hd[++nh] = d; hx[nh] = hs }
                     continue
                 }
-                if (rg && c == "\n" && nh) {
+                if (rg == 1 && c == "\n" && hb) { nh = 0; hb = 0 }
+                if (rg == 1 && c == "\n" && nh) {
                     out = out c; i++
                     for (k = 1; k <= nh; k++)
                         while (i <= n) {
@@ -285,7 +300,7 @@ if [ "${CODEX_EXTERNAL_WRITES_OK:-0}" != "1" ]; then
             return out
         }
         { s = (NR > 1 ? s "\n" : "") $0 }
-        END { q = "\047"; n = length(s); printf "%s\n%s\n%s\n%s\n%s", s, flat(0), flat(1), words(0), words(1) }'
+        END { q = "\047"; n = length(s); printf "%s\n%s\n%s\n%s\n%s\n%s", s, flat(0), flat(1), words(0), words(1), words(2) }'
     }
     cmd_dq=$(printf '%s' "$cmd" | ansic_decode | LC_ALL=C tr '[:upper:]' '[:lower:]' | LC_ALL=C tr '\n\r' ';;' | LC_ALL=C tr -d "'\"\\\\")
     # Blunt rule: decoded + dequoted + lowercased text containing `git` AND `insteadof`.

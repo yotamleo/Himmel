@@ -136,6 +136,19 @@ check "HIMMEL-4032 harmless echo continuation allowed" allow '{"tool_name":"Bash
 check "HIMMEL-4225 apostrophe in a comment, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"# don'"'"'t panic\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
 check "HIMMEL-4225 apostrophe in a heredoc body, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<EOF\ndon'"'"'t panic\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
 check "HIMMEL-4225 apostrophe in a comment, no insteadOf, allowed" allow '{"tool_name":"Bash","tool_input":{"command":"# don'"'"'t panic\necho hi","cwd":"'"$SWR"'"}}'
+# HIMMEL-4225 CR round 1: empty and unusual heredoc delimiters (bash ends `<<''` at an empty
+# line) and an arithmetic `<<` must not desync the decoder either.
+check "HIMMEL-4225 empty single-quoted heredoc delimiter <<'', then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<'"'"''"'"'\ndon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty double-quoted heredoc delimiter <<\"\", then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<\"\"\ndon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty <<-'' delimiter, tab-only terminator, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<-'"'"''"'"'\n\tdon'"'"'t panic\n\t\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty <<-\"\" delimiter, empty terminator, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<-\"\"\n\tdon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 backslash-newline inside the heredoc delimiter, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<\\\nEOF\ndon'"'"'t\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+# shellcheck disable=SC2016  # literal $ is the payload
+check "HIMMEL-4225 ANSI-C heredoc delimiter \$'E\\x4fF', then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<$'"'"'E\\x4fF'"'"'\n$E\\x4fF\ndon'"'"'t\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 escaped quote inside a double-quoted heredoc delimiter, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<\"E\\\"F\"\ndon'"'"'t\nE\"F\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+# shellcheck disable=SC2016  # literal $ is the payload
+check "HIMMEL-4225 arithmetic << is not a heredoc, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"echo $((1<<2))\n# don'"'"'t\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty heredoc delimiter, no insteadOf, allowed" allow '{"tool_name":"Bash","tool_input":{"command":"cat <<'"'"''"'"'\nit'"'"'s fine\n\necho ok","cwd":"'"$SWR"'"}}'
 # round 11: a 50 KB pad must not make grep hit E2BIG and skip the set-url deny (fail-open vs main)
 PAD=$(head -c 50000 /dev/zero | tr "\0" a)
 check "round 11 padded set-url still denied (E2BIG)" block '{"tool_name":"Bash","tool_input":{"command":"git remote set-url origin https://evil.example/x.git ; echo '"$PAD"'","cwd":"'"$SWR"'"}}'
