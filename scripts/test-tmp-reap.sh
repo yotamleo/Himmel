@@ -199,5 +199,31 @@ out="$(cd "$CWD" && reap --apply)"; rc=$?
 check "apply from a cwd with family-named files rc 0" "$rc" 0
 absent "11. old fixture reaped despite cwd files" "$ROOT/mog-run.old"
 
+echo "== 12. scoped to one leg (HIMMEL-4235): --judge / --session =="
+build_tree
+touch -t 200001010000 "$ROOT/claude-$(id -u)/j9001"
+out="$(reap --apply --judge 9001)"; rc=$?
+check "scoped --judge rc 0" "$rc" 0
+absent "12. the named PR's idle judge dir is reaped" "$ROOT/claude-$(id -u)/j9001"
+mkdir -p "$ROOT/claude-$(id -u)/j9003"; : > "$ROOT/claude-$(id -u)/j9003/f"
+out="$(reap --apply --judge 9003)"; rc=$?
+exists "12. a just-touched judge dir (maybe still running) is kept even when named" "$ROOT/claude-$(id -u)/j9003"
+mkdir -p "$ROOT/claude-$(id -u)/j9004"; : > "$ROOT/claude-$(id -u)/j9004/f"; touch -d '2 hours ago' "$ROOT/claude-$(id -u)/j9004"
+out="$(reap --apply --judge 9004)"; rc=$?
+exists "12. a judge dir under the 6 h floor is kept in scoped mode too" "$ROOT/claude-$(id -u)/j9004"
+exists "12. another leg's old judge dir untouched" "$ROOT/claude-$(id -u)/j9002"
+exists "12. fixture untouched by a scoped run" "$ROOT/mog-run.old"
+exists "12. dead session untouched by a judge-only scope" "$CL/$DEAD"
+build_tree
+out="$(reap --apply --session "$DEAD")"; rc=$?
+check "scoped --session rc 0" "$rc" 0
+absent "12. the named dead session is reaped" "$CL/$DEAD"
+exists "12. another session untouched" "$CL/$STALE"
+exists "12. judge dir untouched by a session-only scope" "$ROOT/claude-$(id -u)/j9002"
+out="$(reap --judge 9a)"; rc=$?
+check "non-numeric --judge rc 2" "$rc" 2
+out="$(reap --session nope)"; rc=$?
+check "malformed --session rc 2" "$rc" 2
+
 echo
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILURE(S)"; exit 1; }
