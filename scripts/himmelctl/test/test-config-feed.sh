@@ -308,7 +308,10 @@ pass "h2b escaped quote does not end a multiline value"
 printf 'BITBUCKET_API_TOKEN=\nOTHER=value\n' > "$work/empty-assign.env"
 o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/empty-assign.env") || fail "h2c node run failed"
 [ "$o" = false ] || fail "h2c empty assignment read as present (got $o)"
-pass "h2c empty assignment is not present"
+printf 'BITBUCKET_API_TOKEN="\nmultilinevalue"\n' > "$work/ml-assign.env"
+o=$("$node_bin" -e 'const c=require(process.argv[1]);process.stdout.write(String(c.envFileHasKey(process.argv[2],"BITBUCKET_API_TOKEN")))' "$repo_root/scripts/himmelctl/lib/config-feed.js" "$work/ml-assign.env") || fail "h2c node run failed"
+[ "$o" = true ] || fail "h2c multiline quoted assignment read as absent (got $o)"
+pass "h2c empty assignment is not present; multiline quoted one is"
 # h3: an unreadable .env is stated in the envelope; a readable one says ok
 unreadRepo="$work/unread-repo"; mkdir -p "$unreadRepo/scripts/install" "$unreadRepo/scripts/lanes" "$unreadRepo/.env"
 cp "$fixtureRepo/scripts/install/manifest.json" "$unreadRepo/scripts/install/"; cp "$fixtureRepo/scripts/lanes/lanes.json" "$unreadRepo/scripts/lanes/"
@@ -321,12 +324,13 @@ cp "$fixtureRepo/scripts/install/manifest.json" "$unreadRepo/scripts/install/"; 
 [ "$(jq -r '.redaction.env' "$out")" = ok ] || fail "h3 readable .env not reported ok"
 pass "h3 an unreadable .env is stated in the envelope"
 # h4: HIMMEL_REPORT_NO_REDACT is gone from production code: setting it changes nothing
-# shellcheck disable=SC2015
-leak4=$( cd "$target" && HIMMEL_REPORT_NO_REDACT=1 HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
+( cd "$target" && HIMMEL_REPORT_NO_REDACT=1 HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
       HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" \
       HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
       HIMMEL_REPORT_DOCTOR="$(winpath "$stubDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
-      PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json | grep -c "$CANARY" || true )
+      PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json ) > "$work/h4.json" || fail "h4 report run failed"
+[ -s "$work/h4.json" ] || fail "h4 report produced no output"
+leak4=$(grep -c "$CANARY" "$work/h4.json" || true)
 [ "$leak4" -eq 0 ] || fail "h4 HIMMEL_REPORT_NO_REDACT=1 still disables redaction in production code"
 if grep -rq NO_REDACT "$repo_root/scripts/himmelctl/lib"; then fail "h4 NO_REDACT still referenced under scripts/himmelctl/lib"; fi
 pass "h4 no production redaction kill-switch"

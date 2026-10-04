@@ -372,7 +372,10 @@ const PRESENCE_SOURCES = {
 function envFileHasKey(file, key) {
   let raw;
   try { raw = fs.readFileSync(file, 'utf8'); } catch { return false; }
-  return new RegExp(`^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=[ \\t]*(?!["']{0,2}[ \\t]*(?:#.*)?$)\\S`, 'm').test(raw);
+  const head = `^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=[ \\t]*`;
+  // a quote opening a multiline value, with the value on the next line, is present too
+  return new RegExp(`${head}(?!["']{0,2}[ \\t]*(?:#.*)?$)\\S`, 'm').test(raw)
+    || new RegExp(`${head}["'][ \\t]*\\r?\\n[ \\t]*[^\\s"']`, 'm').test(raw);
 }
 function expandHome(p) {
   return /^~[\\/]/.test(p) ? path.join(homeDir(), p.slice(2)) : p;
