@@ -172,7 +172,7 @@
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-diagram` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable diagram-design@himmel`."
     },
     "builder-visual@himmel": {
-      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-diagram` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable builder-visual@himmel`."
+      "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design` core (HIMMEL-4326: ships the OAuth-hosted `agent-native-dispatch` MCP) and the `design-diagram` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable builder-visual@himmel`."
     },
     "frontend-slides@himmel": {
       "neededBy": "Design kit (HIMMEL-4012 PR2b) via the `design-slides` lane profile (scripts/lanes/plugin-profiles.json). Installed but disabled by default - reachable via `/profile enable frontend-slides@himmel`."

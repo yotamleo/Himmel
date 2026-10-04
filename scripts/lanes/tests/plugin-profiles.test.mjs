@@ -616,7 +616,7 @@ test('obsidian-second-brain@himmel is enabled exactly in the vault profiles (HIM
 // core), so an unproven manifest-less shape in an add-on cannot break
 // `--profile design`.
 const DESIGN_CORE = ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
-  'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel',
+  'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel', 'builder-visual@himmel',
   'context7@claude-plugins-official'];
 const DESIGN_ADDONS = {
   'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
@@ -630,7 +630,7 @@ const DESIGN_ADDONS = {
   'design-trial': ['hallmark@himmel'],
 };
 
-test('design profile enables exactly the 7-member core on top of base (HIMMEL-4012 PR2b)', () => {
+test('design profile enables exactly the 8-member core on top of base (HIMMEL-4012 PR2b)', () => {
   assert.deepEqual([...REG.profiles.design.enable].sort(), [...DESIGN_CORE].sort());
 });
 
@@ -646,7 +646,7 @@ test('each design add-on profile enables its set on base, never the design core 
 });
 
 test('no add-on id leaks into the design core and the superseded ui-ux-pro-max id is gone (HIMMEL-4012 PR2b)', () => {
-  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official' && i !== 'taste-skill-core@himmel'); // taste-skill-core is deliberately in the core AND the imagegen/reference add-ons (HIMMEL-4067)
+  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official' && i !== 'taste-skill-core@himmel' && i !== 'builder-visual@himmel'); // taste-skill-core is deliberately in the core AND the imagegen/reference add-ons (HIMMEL-4067)
   for (const id of addonIds) assert.ok(!REG.profiles.design.enable.includes(id), `${id} must stay out of the design core`);
   assert.ok(!REG.catalog.includes('ui-ux-pro-max@ui-ux-pro-max-skill'), 'old ui-ux-pro-max id replaced by the pinned himmel entry');
 });
