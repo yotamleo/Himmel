@@ -377,11 +377,13 @@ def _norm_host(host: str) -> str:
     return ".".join(labels)
 
 
-def _norm_path(path: str) -> tuple[str, str]:
+def _norm_path(path: str, is_pattern: bool = False) -> tuple[str, str]:
     """(path, query): percent-decode the path (to a fixed point), resolve
     dot-segments keeping a trailing `/` after `.`/`..`/empty, empty -> `/`.
     The query is split off first: its slashes and dots are not path segments."""
     path, qsep, query = path.partition("?")
+    if is_pattern:
+        path = re.sub(r"%2[aA]", "\x00", path)  # an encoded `*` stays literal, never a wildcard
     # ponytail: 4 decode passes, raise if a backend is seen decoding deeper (HIMMEL-4355)
     for _ in range(4):
         dec = unquote(path)
@@ -419,7 +421,7 @@ def _norm_target(text: str, is_pattern: bool = False) -> list[str]:
     hostport = hostport.rsplit("@", 1)[-1]
     host, sep, port = hostport.partition(":")
     host = _norm_host(host)
-    path, query = _norm_path(tail or "/")
+    path, query = _norm_path(tail or "/", is_pattern)
     if is_pattern:
         return [f"{host}{sep}{port}{path}{query}"]
     cands = []
@@ -440,7 +442,7 @@ def _glob_to_regex(pattern: str):
             out.append("[^/]*")
             i += 1
         else:
-            out.append(re.escape(pattern[i]))
+            out.append(re.escape("*" if pattern[i] == "\x00" else pattern[i]))
             i += 1
     return re.compile("".join(out))
 
