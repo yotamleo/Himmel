@@ -8,6 +8,7 @@
 #                          --pr-cases <file> --base-cases <file>
 #                          --base-sha <sha> --main-base-sha <sha> --latest-sha <sha>
 #                          --pr-sha <sha>
+#                          [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>]
 #
 # Each job file is one run's job list, one `<job name><TAB><conclusion>` per line
 # (e.g. from `gh run view <id> --json jobs`):
@@ -35,15 +36,28 @@
 # Exit 0 = ALLOW  1 = REFUSE  2 = usage / unreadable input
 #      3 = nothing red on the PR; no merge-forward needed
 # Red = failure | timed_out | startup_failure.
+# HIMMEL-4260: ci.yml's serialised push concurrency replaces a pending main sweep
+# with a 0-job cancelled run, so when --main-base is a cancelled run the base
+# verdict comes from the next completed push sweep covering the merge-base — the
+# same contiguous-range attribution main-sweep-red uses: --base-cover-from (the
+# previous completed sweep's headSha) must be a strict ancestor of the merge-base,
+# the merge-base an ancestor of --base-cover-sha, and that sha on origin/main;
+# --base-cases are then the covering sweep's failing cases. Without the trio
+# (--base-cover, --base-cover-sha, --base-cover-from) a cancelled base REFUSEs.
 # ponytail: the case lists are extracted from logs by the caller and taken as
 # given, so a wrong list can still mislead; upgrade path is parsing the failed
 # job logs here if that ever bites.
+# ponytail: the script cannot see whether another completed sweep lies inside
+# (from, cover], so "next" is taken from the caller; upgrade path is listing the
+# push runs with gh here if a wrong cover ever bites.
 set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/git-clean.sh
 . "$SCRIPT_DIR/../lib/git-clean.sh"
 git_env_scrub
-pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; psha=""; bad=0
+# a run with no job rows, or only cancelled/skipped rows and at least one cancelled, was cancelled (a superseded pending sweep has 0 jobs)
+is_cancelled() { awk -F'\t' 'NF {n++} NF && $2=="cancelled" {c++} NF && $2!="cancelled" && $2!="skipped" {o=1} END {exit !(n==0 || (!o && c))}' "$1"; }
+pr=""; base=""; latest=""; prc=""; bc=""; bsha=""; msha=""; lsha=""; psha=""; cover=""; csha=""; cfrom=""; bad=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --pr) [ $# -ge 2 ] || { bad=1; break; }; pr="$2"; shift 2 ;;
@@ -55,12 +69,19 @@ while [ $# -gt 0 ]; do
     --main-base-sha) [ $# -ge 2 ] || { bad=1; break; }; msha="$2"; shift 2 ;;
     --latest-sha) [ $# -ge 2 ] || { bad=1; break; }; lsha="$2"; shift 2 ;;
     --pr-sha) [ $# -ge 2 ] || { bad=1; break; }; psha="$2"; shift 2 ;;
+    --base-cover) [ $# -ge 2 ] || { bad=1; break; }; cover="$2"; shift 2 ;;
+    --base-cover-sha) [ $# -ge 2 ] || { bad=1; break; }; csha="$2"; shift 2 ;;
+    --base-cover-from) [ $# -ge 2 ] || { bad=1; break; }; cfrom="$2"; shift 2 ;;
     *) bad=1; break ;;
   esac
 done
 if [ "$bad" -eq 1 ] || [ ! -f "$pr" ] || [ ! -r "$pr" ] || [ ! -r "$base" ] || [ ! -r "$latest" ] \
    || [ ! -r "$prc" ] || [ ! -r "$bc" ] || [ -z "$bsha" ] || [ -z "$msha" ] || [ -z "$lsha" ] || [ -z "$psha" ]; then
-  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> (all required, shas non-empty)" >&2
+  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>] (all but the --base-cover trio required, shas non-empty)" >&2
+  exit 2
+fi
+if [ -n "$cover$csha$cfrom" ] && { [ ! -r "$cover" ] || [ -z "$csha" ] || [ -z "$cfrom" ]; }; then
+  echo "usage: merge-forward-check.sh --pr <file> --main-base <file> --main-latest <file> --pr-cases <file> --base-cases <file> --base-sha <sha> --main-base-sha <sha> --latest-sha <sha> --pr-sha <sha> [--base-cover <file> --base-cover-sha <sha> --base-cover-from <sha>] (all but the --base-cover trio required, shas non-empty; the trio is all-or-none)" >&2
   exit 2
 fi
 if [ "$bsha" != "$msha" ]; then
@@ -68,7 +89,7 @@ if [ "$bsha" != "$msha" ]; then
   exit 1
 fi
 
-for f in "$pr" "$base" "$latest"; do
+for f in "$pr" "$base" "$latest" ${cover:+"$cover"}; do
   if awk -F'\t' 'NF && (NF != 2 || $1 == "" || $2 !~ /^(success|failure|cancelled|skipped|neutral|timed_out|startup_failure|action_required|stale)$/) {exit 1}' "$f"; then :; else
     echo "usage: $f has a malformed row (want <job><TAB><conclusion>): a skipped or misread row could hide a red" >&2
     exit 2
@@ -115,6 +136,31 @@ if [ "$psha" != "$head" ]; then
   exit 1
 fi
 
+base_note=""
+if is_cancelled "$base"; then
+  if [ -z "$cover" ]; then
+    echo "REFUSE — the merge-base run at $bsha was cancelled and no completed sweep covering it was given (--base-cover, --base-cover-sha, --base-cover-from): a cancelled run proves nothing about the base. Report BLOCKED; do not merge forward."
+    exit 1
+  fi
+  if is_cancelled "$cover"; then
+    echo "REFUSE — the covering sweep at $csha was cancelled too: it proves nothing about the base. Use the next COMPLETED push sweep; do not merge forward."
+    exit 1
+  fi
+  if ! git merge-base --is-ancestor "$csha" "$tip" 2>/dev/null; then
+    echo "REFUSE — the covering sweep at $csha is not on origin/main ($tip): only a main push sweep can stand in for the base. Do not merge forward."
+    exit 1
+  fi
+  if [ "$cfrom" = "$bsha" ] || ! git merge-base --is-ancestor "$cfrom" "$bsha" 2>/dev/null || ! git merge-base --is-ancestor "$bsha" "$csha" 2>/dev/null; then
+    echo "REFUSE — the covering sweep's range ($cfrom, $csha] does not cover the merge-base $bsha: it is not the next completed sweep after the cancelled run. Do not merge forward."
+    exit 1
+  fi
+  base="$cover"
+  base_note=" — base verdict from the next completed covering sweep at $csha (range $cfrom..$csha), since the merge-base run at $bsha was cancelled"
+elif [ -n "$cover" ]; then
+  echo "usage: the merge-base run at $bsha is not cancelled: its own verdict stands; drop --base-cover" >&2
+  exit 2
+fi
+
 blocked=""
 while IFS= read -r job; do
   # a job name may repeat: base counts if ANY row is red, latest only if EVERY row is success
@@ -143,8 +189,8 @@ while IFS= read -r job; do
 done <<< "$reds"
 
 if [ -n "$blocked" ]; then
-  echo "REFUSE — red not proven inherited-and-fixed: $blocked. Report BLOCKED; do not merge forward."
+  echo "REFUSE — red not proven inherited-and-fixed: $blocked$base_note. Report BLOCKED; do not merge forward."
   exit 1
 fi
-echo "ALLOW — every red job was red on the merge-base run with the same failing cases and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g'). One 'git merge $tip' (the origin/main tip just validated and fetched; never 'origin/main' again, it may have moved; merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
+echo "ALLOW — every red job was red on the merge-base run with the same failing cases and is green on latest main: $(paste -sd, - <<< "$reds" | sed 's/,/, /g')$base_note. One 'git merge $tip' (the origin/main tip just validated and fetched; never 'origin/main' again, it may have moved; merge commit; never rebase or force-push), citing both main run ids in a Results bullet."
 exit 0
