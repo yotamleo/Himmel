@@ -2016,7 +2016,8 @@ _dc_receiver() {
 # full like any other line.
 _dc_data_bodies() {
     local d=' ' s=$2 line l2 end='' dash='' w seg pre rcv out='' bd='' hre
-    local bb='' bo='' u ure ore
+    local bb='' bo='' u ure ore fdre
+    fdre='>&[[:space:]]*([^12[:space:]-]|[12][^[:space:];&|)<>])'
     hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
     while [[ $s =~ $hre ]]; do
         d="$d${BASH_REMATCH[1]} "
@@ -2065,11 +2066,13 @@ _dc_data_bodies() {
         case "$d" in *" $w "*) ;; *) continue ;; esac
         case "$u" in *" $w "*) continue ;; esac
         # a body piped on (`| bash`), or written into a process substitution
-        # or a file descriptor (`> >(bash)`, `>&3`), is not data
+        # or a file descriptor other than stdout/stderr (`> >(bash)`, `>&3`,
+        # `>&10`, `>&$fd`), is not data
         # ponytail: a body written to a file the command then runs
         # (`> x.sh` … `bash x.sh`) still reads as data, as on main; HIMMEL-4299
         case "${line##*<<}" in *'|'*) continue ;; esac
-        case "$line" in *'>('*|*'>&'[3-9]*|*/dev/fd/*|*/proc/*/fd*) continue ;; esac
+        case "$line" in *'>('*|*/dev/fd/*|*/proc/*/fd*) continue ;; esac
+        [[ ! $line =~ $fdre ]] || continue
         seg=${line%<<*}
         pre=${seg%"${seg##*[;\&|(]}"}
         seg=${seg#"$pre"}

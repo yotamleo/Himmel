@@ -2419,6 +2419,22 @@ assert_rc "599 nested worktree cat <<'EOF' > /dev/fd/3 body denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /dev/fd/3
 x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
 EOF" HOME="$FAKEHOME")"
+assert_rc "601 nested worktree cat <<'EOF' >&10 body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' >&10
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "602 nested worktree cat <<'EOF' >&\$fd body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' >&\$fd
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "603 nested worktree cat <<'EOF' >& 4 body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' >& 4
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "604 nested worktree cat <<'EOF' >&2 naming ~/.cl\$(printf a)ude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' >&2
+the hook folds ~/.cl\$(printf a)ude now ; cp a b
+EOF" HOME="$FAKEHOME")"
 assert_rc "600 nested worktree cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /tmp/notes.md
 the hook folds ~/.cl\$(printf a)ude now
