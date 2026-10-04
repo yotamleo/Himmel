@@ -1134,7 +1134,7 @@ claude</pre>
         an arbitrary folder of notes is not enough (see
         <button class="textlink" data-detail="vault">what a vault must
         be</button>). Then
-        pick which of the eight <b>cadences</b> to arm — the recurring
+        pick which of the nine <b>cadences</b> to arm — the recurring
         scheduled jobs defined at the top of this page: the content
         pipeline (harvest, synthesize, health), the search reindex, the
         knowledge-graph refresh, a cleanup sweep (if you took the codex
@@ -1146,7 +1146,7 @@ claude</pre>
           <ul class="chips">
             <li><button class="chip" data-detail="obsidian-triage">obsidian-triage
             skills</button></li>
-            <li><button class="chip" data-detail="cadences">Cadences (8,
+            <li><button class="chip" data-detail="cadences">Cadences (9,
             pick-list)</button></li>
             <li><button class="chip" data-detail="cadence-graphmap">Graph
             refresh cadence</button></li>
@@ -1576,17 +1576,18 @@ claude</pre>
       '<p>The bundled vault template — notes structure, a clipper inbox, maps of content, and a daily flow — also published as a standalone repository. Start from it; a vault made from it can be connected again later as an existing vault.</p>' },
     'obsidian-triage': { t: 'obsidian-triage skills', s: 'ship', h:
       '<p>Bundled vault skills: triage new clippings, harvest links, synthesize themes across notes, run vault health checks. They are what the nightly cadences execute.</p>' },
-    'cadences': { t: 'Cadences (8, pick-list)', s: 'ship', h:
-      '<p>The wizard offers a <b>per-cadence pick-list</b> read from the real registry — eight rows:</p><ul>' +
+    'cadences': { t: 'Cadences (9, pick-list)', s: 'ship', h:
+      '<p>The wizard offers a <b>per-cadence pick-list</b> read from the real registry — nine rows:</p><ul>' +
       '<li><b>pipeline</b> — harvest, synthesize, health and fetch-health are all <b>steps of this one cadence</b>, armed together by a single call</li>' +
       '<li><b>qmd</b> — the nightly search reindex, armed separately</li>' +
       '<li><b>graphmap</b> — the graphify graph refresh</li>' +
       '<li><b>codex-sweep</b> — a cleanup sweep, offered only if you took the codex lane</li>' +
       '<li><b>drift-fix</b> — a nightly upstream-drift pass: bumps auto-bumpable pins into an ordinary PR and audits your forks; it never merges</li>' +
       '<li><b>upstream-watch</b> — a daily scan of himmel’s open upstream PRs and issues, notifying you only when something changed</li>' +
+      '<li><b>doctor</b> — a daily himmel-doctor health check; a failure or a new warning is sent to Telegram and the statusline shows the counts; it reports only and fixes nothing</li>' +
       '<li><b>repo-sync</b> — a daily fast-forward-only pull of your git repos plus stale-worktree cleanup; Windows only</li>' +
       '<li><b>pull-cadence</b> — a daily Google Health pull, offered only once its refresh token is configured</li></ul>' +
-      '<p>pipeline, qmd and graphmap need a vault (codex-sweep needs the codex lane instead); drift-fix and upstream-watch are always offered. Declining any is recorded as declined, and you are then asked whether to disarm anything already running — a no leaves it armed and the summary says so, per unit.</p>' },
+      '<p>pipeline, qmd and graphmap need a vault (codex-sweep needs the codex lane instead); drift-fix, upstream-watch and doctor are always offered. Declining any is recorded as declined, and you are then asked whether to disarm anything already running — a no leaves it armed and the summary says so, per unit.</p>' },
     'cadence-graphmap': { t: 'Graph refresh cadence', s: 'ship', h:
       '<p>One of the cadences: it keeps the graphify graph current on a schedule, instead of only when you run <span class="mono">graphify update</span> by hand. It also arms a separate six-hourly task that refreshes and publishes himmel’s own graph as a pull request.</p>' },
     'cadence-codex-sweep': { t: 'Codex sweep cadence', s: 'ship', h:
