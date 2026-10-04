@@ -347,4 +347,79 @@ if "$node_bin" "$lint" --root "$emptyRoot" >/dev/null 2>"$work/lint4.err"; then 
 grep -q 'scripts/hooks' "$work/lint4.err" || fail "h5 lint failure does not name scripts/hooks"
 pass "h5 flag-registry-lint fails on a missing hooks dir (node pin deferred to HIMMEL-4332)"
 
+# ── i. HIMMEL-4373: one owner per finding, a remedy on every fail/warn row ──
+foldDoctor="$work/stub-doctor-fold.sh"
+cat > "$foldDoctor" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"sev":"OK","id":"C1-guardrail","msg":"guardrail ok","remedy":""}'
+printf '%s\n' '{"sev":"WARN","id":"C3-luna","msg":"luna dirty","remedy":"commit it"}'
+printf '%s\n' '{"sev":"WARN","id":"C16-status","msg":"2 himmelctl install/wiring finding(s)","remedy":"node scripts/himmelctl/bin.js status"}'
+printf '%s\n' '{"sev":"INFO","id":"C19-observability","msg":"observability not desired","remedy":""}'
+printf '%s\n' '{"sev":"OK","id":"C28-guardrail-consent","msg":"guardrail-block-global is wired","remedy":""}'
+printf '%s\n' '{"sev":"FAIL","id":"C9-scheduler","msg":"no scheduler backend","remedy":"install cron"}'
+printf '%s\n' '{"sev":"FAIL","id":"C30-bridge-liveness","msg":"bridge down","remedy":"restart the bridge"}'
+printf '%s\n' '{"sev":"WARN","id":"C20-node","msg":"node mismatch","remedy":"nvm use"}'
+STUB
+chmod +x "$foldDoctor"
+foldOut="$work/fold.json"
+DOCTOR_STUB="$foldDoctor" run_report > "$foldOut" 2>/dev/null || fail "i1 report exited non-zero"
+rank() { case "$1" in fail) echo 2 ;; warn) echo 1 ;; *) echo 0 ;; esac; }
+srank() { case "$1" in FAIL) echo 2 ;; WARN) echo 1 ;; *) echo 0 ;; esac; }
+disagree=0
+for pair in C19-observability:INFO:observability-stack C28-guardrail-consent:OK:guardrail-block-global \
+            C9-scheduler:FAIL:scheduler-backend C30-bridge-liveness:FAIL:bridge-health C20-node:WARN:node; do
+  did=${pair%%:*}; rest=${pair#*:}; dsev=${rest%%:*}; owner=${rest#*:}
+  [ "$(jq "[.rows[]|select(.id==\"doctor:$did\")]|length" "$foldOut")" -eq 0 ] || fail "i1 doctor:$did still a row (owner $owner)"
+  oh=$(jq -r ".rows[]|select(.id==\"$owner\")|.health" "$foldOut")
+  [ -n "$oh" ] || fail "i1 owner row $owner missing"
+  n=$(jq "[.rows[]|select(.id==\"probe-disagree:$did\")]|length" "$foldOut")
+  if [ "$(srank "$dsev")" -gt "$(rank "$oh")" ]; then
+    [ "$n" -eq 1 ] || fail "i1 doctor $dsev vs $owner $oh: expected one probe-disagree:$did, got $n"
+    want=$(printf '%s' "$dsev" | tr '[:upper:]' '[:lower:]')
+    jq -e ".rows[]|select(.id==\"probe-disagree:$did\")|.health==\"$want\" and ((.installed.detail+.title)|contains(\"$did\") and contains(\"$owner\")) and (.fix.remedy|length>0)" "$foldOut" >/dev/null || fail "i1 probe-disagree:$did must keep the doctor's $want, name both probes, carry a remedy"
+    disagree=$((disagree+1))
+  else
+    [ "$n" -eq 0 ] || fail "i1 probe-disagree:$did emitted though doctor $dsev does not exceed $owner $oh"
+  fi
+done
+[ "$disagree" -ge 1 ] || fail "i1 no disagreement exercised (vacuous)"
+[ "$(jq '[.rows[]|select(.id=="doctor:C16-status")]|length' "$foldOut")" -eq 0 ] || fail "i1 doctor:C16-status duplicates the status rows"
+jq -e '[.rows[]|select(.id=="doctor:C1-guardrail" or .id=="doctor:C3-luna")]|length==2' "$foldOut" >/dev/null || fail "i1 unfolded doctor rows were dropped"
+pass "i1 folded doctor rows leave the feed; a worse doctor verdict becomes one probe-disagree row ($disagree)"
+
+# i2: every fail/warn row carries a runnable-looking remedy
+for f in "$foldOut" "$out"; do
+  bad=$(jq -r '.rows[]|select(.health=="fail" or .health=="warn")|select((.fix.remedy|type)!="string" or (.fix.remedy|test("^\\s*$")) or (.fix.remedy|test("^(tbd|todo|n/a|none|-+|\\.+)$";"i")) or (.source!="doctor" and ((.fix.remedy|length)<8 or (.fix.remedy|test("\\s")|not))))|.id' "$f") || fail "i2 jq failed on $f"
+  [ -z "$bad" ] || fail "i2 fail/warn rows without a usable remedy: $bad"
+done
+pass "i2 every fail/warn row has a non-empty, non-placeholder remedy"
+
+# i3: run from a git worktree, the report judges the station anchor, not the worktree
+anchor="$work/anchor"; mkdir -p "$anchor/scripts/install" "$anchor/scripts/lanes"
+cp "$fixtureRepo/scripts/install/manifest.json" "$anchor/scripts/install/"; cp "$fixtureRepo/scripts/lanes/lanes.json" "$anchor/scripts/lanes/"
+g() { git -C "$anchor" -c user.name=t -c user.email=t@t.invalid -c commit.gpgsign=false "$@"; }
+git init -q "$anchor" || fail "i3 fixture git init"
+g add -A || fail "i3 fixture add"
+g commit -q -m init || fail "i3 fixture commit"
+g worktree add -q -b wt "$work/wt" || fail "i3 fixture worktree"
+mkdir -p "$anchor/scripts/jira/dist"; echo '// built' > "$anchor/scripts/jira/dist/index.js"   # untracked: the worktree lacks it
+wtOut="$work/wt.json"
+( cd "$target" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
+    HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$work/wt")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
+    HIMMEL_REPORT_DOCTOR="$(winpath "$foldDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
+    PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json ) > "$wtOut" 2>/dev/null || fail "i3 report from a worktree exited non-zero"
+[ "$(jq -r .base "$wtOut")" = "$(winpath "$anchor")" ] || fail "i3 base is $(jq -r .base "$wtOut"), expected the anchor $(winpath "$anchor")"
+wtLeaks=$(jq -r --arg wt "$work/wt" '.rows[]|select(((.installed.detail//"")+(.title//"")+(.fix.remedy//""))|contains($wt))|.id' "$wtOut")
+[ -z "$wtLeaks" ] || fail "i3 rows judged the worktree, not the anchor: $wtLeaks"
+[ "$(jq -r '.rows[]|select(.id=="jira-cli-dist-build")|.installed.detail' "$wtOut" | grep -c "$work/wt" || true)" -eq 0 ] || fail "i3 jira-cli-dist-build names the worktree"
+pass "i3 from a worktree the report resolves the station anchor"
+# i4: the anchor export does not leak past buildFeed, even when it throws
+leak=$( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" "$node_bin" -e '
+  const f = require(process.argv[1]);
+  try { f.buildFeed({ manifest: null, scope: "user", targetPath: ".", answers: {} }); } catch (e) {}
+  process.stdout.write(process.env.HIMMELCTL_REPO_ROOT);' "$repo_root/scripts/himmelctl/lib/config-feed.js" ) || true
+[ "$leak" = "$(winpath "$fixtureRepo")" ] || fail "i4 HIMMELCTL_REPO_ROOT leaked/changed after a throwing buildFeed: $leak"
+pass "i4 HIMMELCTL_REPO_ROOT restored after buildFeed throws"
+
 echo "ALL PASS"
