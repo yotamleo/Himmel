@@ -12,6 +12,11 @@
 #   6. a young judge dir is kept, an old one is archived then reaped
 #   7. an old root fixture is reaped, a young one is kept
 #   8. a failed preserve (unwritable archive root) means no reap
+#   9. an archive target with different content keeps the dir
+#  10. an unreadable same-uid /proc entry refuses --apply (fake TMP_REAP_PROC);
+#      other-uid only warns (TMP_REAP_UID), dry-run warns, a readable proc is quiet
+#  11. FAMILIES does not glob against the caller's cwd
+#  12. a fixture with a non-writable sub/ dir is still reaped (chmod before rm)
 # Platform guard: POSIX bash 3.2+.
 set -uo pipefail
 
@@ -126,6 +131,50 @@ exists "colliding judge dir is kept" "$ROOT/claude-$(id -u)/j9002"
 exists "its source file is kept" "$ROOT/claude-$(id -u)/j9002/corpus-b.jsonl"
 check "earlier archive copy is byte-identical" "$(sha256sum "$pre" | cut -d' ' -f1)" "$want"
 contains "collision is reported as a failed preserve" "$out" "preserve failed"
+
+echo "== 10. unreadable /proc entries: same-uid refuses --apply, other-uid warns =="
+FP="$T/proc"; rm -rf "$FP"; mkdir -p "$FP/100" "$FP/200"; ln -s "$T" "$FP/100/cwd"
+build_tree; rm -rf "$ARCH"   # section 9 left a colliding j9002 archive copy behind
+out="$(TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "same-uid unreadable entry: --apply rc 2" "$rc" 2
+contains "same-uid refusal is reported" "$out" "1 same-uid /proc entr(ies) unreadable: a live dir could be held by one; refusing --apply"
+exists "refusal reaps no fixture" "$ROOT/mog-run.old"
+exists "refusal reaps no dead session dir" "$CL/$DEAD"
+out="$(TMP_REAP_PROC="$FP" reap)"; rc=$?
+check "same-uid unreadable entry: dry-run rc 0" "$rc" 0
+contains "dry-run warns that --apply would refuse" "$out" "--apply would refuse"
+out="$(TMP_REAP_PROC="$FP" TMP_REAP_UID=99999 reap --apply)"; rc=$?
+check "other-uid unreadable entry: --apply rc 0" "$rc" 0
+contains "other-uid entry only warns" "$out" "WARN tmp-reap: 1 other-uid /proc entries unreadable (expected on a multi-user host; not checked)"
+absent "other-uid entry: fixture reaped" "$ROOT/mog-run.old"
+absent "other-uid entry: dead session dir reaped" "$CL/$DEAD"
+rm -rf "$FP/200"; build_tree
+out="$(TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "readable fake proc: --apply rc 0" "$rc" 0
+case "$out" in *WARN*) echo "FAIL - readable fake proc printed a WARN"; fails=$((fails+1)) ;; *) echo "ok - readable fake proc prints no WARN" ;; esac
+absent "readable fake proc: fixture reaped" "$ROOT/mog-run.old"
+
+echo "== 11. FAMILIES does not glob against the caller's cwd =="
+build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/himmel-fixture.zzz"
+out="$(cd "$CWD" && reap --apply)"; rc=$?
+check "apply from a cwd with family-named files rc 0" "$rc" 0
+absent "11. old fixture reaped despite cwd files" "$ROOT/mog-run.old"
+
+echo "== 12. a fixture with a non-writable sub/ dir is reaped =="
+build_tree; mkdir -p "$ROOT/clean-sandbox.old/sub"; printf 'x\n' > "$ROOT/clean-sandbox.old/sub/x.sh"
+chmod 555 "$ROOT/clean-sandbox.old/sub"; old "$ROOT/clean-sandbox.old"
+REAL_RM="$(command -v rm)"; mkdir -p "$T/bin"
+# a stand-in for Permission denied that also bites as root, where a real 555 dir is deletable
+cat > "$T/bin/rm" <<SHIM
+#!/bin/sh
+for a in "\$@"; do case "\$a" in -*) ;; *) [ -n "\$(find "\$a" -type d ! -perm -200 2>/dev/null)" ] && exit 1 ;; esac; done
+exec "$REAL_RM" "\$@"
+SHIM
+chmod +x "$T/bin/rm"
+out="$(PATH="$T/bin:$PATH" reap --apply)"; rc=$?
+check "non-writable fixture: apply rc 0" "$rc" 0
+absent "12. clean-sandbox.old reaped" "$ROOT/clean-sandbox.old"
+chmod -R u+w "$ROOT" 2>/dev/null
 
 echo
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILURE(S)"; exit 1; }
