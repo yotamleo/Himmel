@@ -452,6 +452,18 @@ reset()
 stub_urlopen([FC_OK])
 mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1"}, 5).scrape("https://example.com/a")
 check("stealth: HARVEST_FIRECRAWL_STEALTH=1 sends proxy=stealth", json.loads(SEEN[0].data.decode()).get("proxy") == "stealth")
+# a stealth response without creditsUsed is booked at the stealth cost (5), so a lower ceiling still trips
+reset()
+stub_urlopen([OSError("j"), FC_OK, OSError("j"), FC_OK])
+c = mod.build_scrape_chain({**KEYED, "HARVEST_SCRAPE_BACKEND": "jina,firecrawl", "HARVEST_FIRECRAWL_STEALTH": "1",
+                            "HARVEST_FIRECRAWL_MAX_CREDITS": "4"}, 20)
+with contextlib.redirect_stderr(io.StringIO()):
+    c.scrape("https://example.com/a")
+    try:
+        c.scrape("https://example.com/b")
+    except Exception:
+        pass
+check("stealth: omitted creditsUsed counts 5, tripping a ceiling of 4", len(fc_lines()) == 1)
 
 # no key: jina alone, silently
 err = io.StringIO()

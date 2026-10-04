@@ -419,6 +419,10 @@ fetches = 0;
 fn = makeWebFn({ ...KEYED, HARVEST_FIRECRAWL_BUDGET: "1", FOLLOW_WEB_BUDGET: "2" });
 await fn("q1"); await fn("q2"); await fn("q3");
 console.log("CAP_FOLLOW_WINS=" + fetches);
+fetches = 0;
+fn = makeWebFn({ ...KEYED, FOLLOW_WEB_BUDGET: "0" });
+await fn("q1");
+console.log("CAP_ZERO=" + fetches);
 console.log("SEARCH_BODY=" + (Object.keys(lastBody).sort().join(",") === "limit,query"));
 
 fetches = 0; errs.length = 0; credits = 30;
@@ -439,6 +443,7 @@ grep -q 'DENY_JINA_KEEPS_FC=true' <<<"$out11" && r=yes || r=no; assert "kill swi
 grep -q 'DENY_UNKNOWN=true' <<<"$out11" && r=yes || r=no; assert "kill switch: unknown name throws naming the valid set" yes "$r"
 grep -q 'CAP_ENV=1' <<<"$out11" && r=yes || r=no; assert "cap: HARVEST_FIRECRAWL_BUDGET caps searches" yes "$r"
 grep -q 'CAP_FOLLOW_WINS=2' <<<"$out11" && r=yes || r=no; assert "cap: FOLLOW_WEB_BUDGET wins over HARVEST_FIRECRAWL_BUDGET" yes "$r"
+grep -q 'CAP_ZERO=0' <<<"$out11" && r=yes || r=no; assert "cap: an explicit FOLLOW_WEB_BUDGET=0 allows no paid search" yes "$r"
 grep -q 'SEARCH_BODY=true' <<<"$out11" && r=yes || r=no; assert "search body carries no stealth/proxy option" yes "$r"
 grep -q 'CEIL_TRIP_RETURNS=true CEIL_FETCHES=1' <<<"$out11" && r=yes || r=no; assert "ceiling: a call over it is returned, then firecrawl search stops for the run" yes "$r"
 grep -q 'CEIL_REPORTED=true' <<<"$out11" && r=yes || r=no; assert "ceiling: the trip is reported as 'search unavailable'" yes "$r"

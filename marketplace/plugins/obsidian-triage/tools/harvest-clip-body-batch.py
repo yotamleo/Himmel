@@ -646,6 +646,7 @@ class FirecrawlClient:
 
     name = "firecrawl"
     SCRAPE_COST = 1  # documented /v2/scrape cost when the response omits it
+    STEALTH_SCRAPE_COST = 5  # same, for a `proxy: stealth` call
 
     def __init__(self, api_key, base_url=None, budget=FIRECRAWL_DEFAULT_BUDGET, timeout=45,
                  max_credits=FIRECRAWL_DEFAULT_MAX_CREDITS, stealth=False):
@@ -696,7 +697,8 @@ class FirecrawlClient:
             data = json.loads(raw.decode("utf-8"))
         except Exception:
             # transport succeeded, so the call was made and billed: count it
-            ledger_append("harvest-clip-body-batch", "/v2/scrape", self.SCRAPE_COST, ok=False)
+            ledger_append("harvest-clip-body-batch", "/v2/scrape",
+                          self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST, ok=False)
             raise
         # a valid-JSON body of the wrong shape still spent the call: ledger it once
         body = data.get("data") if isinstance(data, dict) else None
@@ -704,7 +706,8 @@ class FirecrawlClient:
         meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
         used = meta.get("creditsUsed")
         ok = isinstance(data, dict) and bool(data.get("success"))
-        credits = used if isinstance(used, int) else self.SCRAPE_COST
+        credits = used if isinstance(used, int) else (
+            self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST)
         ledger_append("harvest-clip-body-batch", "/v2/scrape", credits, ok=ok)
         if credits > self.max_credits:
             # The call is already billed and cannot be refunded; this only stops the next ones.
