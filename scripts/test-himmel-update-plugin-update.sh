@@ -360,6 +360,11 @@ rc=0
 USERPROFILE='' HOME="$fake_home_ver" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_ver" HERMES_HOME="$TMP/no-hermes" \
       CLAUDE_USER_SETTINGS="$fake_home_ver/.claude/settings.json" \
       bash "$CHECKOUT_DIR/scripts/himmel-update.sh" >/dev/null 2>&1 || rc=$?
+if [ "$rc" -eq 0 ]; then
+    assert_pass "version-bump run completed (rc=$rc)"
+else
+    assert_fail "version-bump run completed (rc=$rc)"
+fi
 log_ver_content="$(cat "$log_ver")"
 assert_contains "updates the version-bumped checkout plugin" "plugin update telegram-himmel@himmel" "$log_ver_content"
 assert_not_contains "never updates a checkout plugin already at its plugin.json version" "plugin update qmd@himmel" "$log_ver_content"
