@@ -338,11 +338,11 @@ README's fork-delta section).
 > research-toolkit decision below still stands.
 
 **Repo:** `eugeniughelbur/obsidian-second-brain`
-**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream tag `v0.17.0`)
-**Enable:** opt-in. No named profile enables it; `/profile enable` or the operator profile does
+**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream commit `87fe5437c44fffafb5188566d458891651536d4e`, tag `v0.17.0`)
+**Enable:** the `user`, `lane-content` and `telegram` profiles (plus the operator profile, once installed); off in every other named profile
 **Commands:** 47 slash commands from the plugin (5 research-toolkit
 commands are NOT adopted — see Research toolkit line below)
-**Update:** bump the tag pin in `marketplace/.claude-plugin/marketplace.json`, then `claude plugin marketplace update himmel` and `claude plugin update obsidian-second-brain@himmel` (it is url-sourced, so the marketplace refresh alone leaves the installed copy on the old tag)
+**Update:** bump the `sha` pin in `marketplace/.claude-plugin/marketplace.json` to the new upstream commit, then `claude plugin marketplace update himmel` and `claude plugin update obsidian-second-brain@himmel` (it is url-sourced, so the marketplace refresh alone leaves the installed copy on the old commit)
 **Research toolkit:** NOT ADOPTED (proposed 2026-07-29, pending ADR sign-off) —
 operator confirmed no active XAI/Grok or Perplexity subscription. A
 `~/.config/obsidian-second-brain/.env`
