@@ -1967,7 +1967,8 @@ sync_marketplaces() {
 # installed non-@himmel plugin. A checkout-sourced @himmel plugin (marketplace
 # `source` is a "./plugins/x" string) is excluded — its content is this
 # checkout, already re-read by `claude plugin marketplace update himmel`
-# (chain item 2), so a separate `plugin update` there is redundant. A
+# (chain item 2), so a separate `plugin update` there is redundant — unless
+# its plugin.json version moved past the installed one (HIMMEL-4295). A
 # url/git-subdir-sourced @himmel plugin (marketplace `source` is an object,
 # e.g. obsidian-second-brain) is NOT the checkout and is updated like any
 # other remote plugin (HIMMEL-4127).
@@ -2002,6 +2003,28 @@ update_installed_plugins() {
         echo "    skip: could not read enabledPlugins from $settings."
         return 0
     }
+    # The marketplace re-read does not move an installed checkout plugin off
+    # its cached OLD version: Claude Code keeps serving
+    # plugins/cache/himmel/<name>/<old-version> until `plugin update` runs.
+    # So a checkout plugin whose user-scope installed version differs from its
+    # plugin.json version is updated too (HIMMEL-4295).
+    local installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+    local bumped="" name src want have
+    if [ -f "$manifest" ] && [ -f "$installed" ]; then
+        while IFS=' ' read -r name src; do
+            [ -n "$name" ] || continue
+            want="$(jq -r '.version // empty' "$ROOT/marketplace/$src/.claude-plugin/plugin.json" 2>/dev/null)" || want=""
+            have="$(jq -r --arg k "$name@himmel" '[.plugins[$k][]? | select(.scope == "user") | .version][0] // empty' "$installed" 2>/dev/null)" || have=""
+            if [ -n "$want" ] && [ -n "$have" ] && [ "$want" != "$have" ]; then
+                bumped="$bumped
+$name@himmel"
+            fi
+        done <<EOF
+$(jq -r --slurpfile s "$settings" '.plugins[]? | select(.source | type == "string") | .name as $n
+    | select(($s[0].enabledPlugins // {}) | has($n + "@himmel")) | "\($n) \(.source)"' "$manifest" 2>/dev/null)
+EOF
+    fi
+    specs="$(printf '%s%s\n' "$specs" "$bumped" | sed '/^$/d')"
     if [ -z "$specs" ]; then
         echo "    no remote-sourced plugins installed."
         return 0

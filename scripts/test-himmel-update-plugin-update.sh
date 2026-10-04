@@ -305,6 +305,74 @@ out_url_check=$(USERPROFILE='' HOME="$fake_home_url" HIMMEL_UPDATE_CLAUDE_BIN="$
 assert_contains "check mode lists the url-sourced @himmel plugin" "obsidian-second-brain@himmel" "$out_url_check"
 assert_not_contains "check mode does not list the checkout-sourced plugin as would-update" "      qmd@himmel" "$out_url_check"
 
+echo "Test: a checkout-sourced @himmel plugin updates only when its installed version lags plugin.json (HIMMEL-4295)"
+make_mock_clone
+mkdir -p "$CHECKOUT_DIR/marketplace/.claude-plugin"
+cat > "$CHECKOUT_DIR/marketplace/.claude-plugin/marketplace.json" <<'EOF'
+{
+  "name": "himmel",
+  "plugins": [
+    { "name": "qmd", "source": "./plugins/qmd" },
+    { "name": "telegram-himmel", "source": "./plugins/telegram-himmel" },
+    { "name": "no-manifest", "source": "./plugins/no-manifest" },
+    { "name": "not-installed", "source": "./plugins/not-installed" }
+  ]
+}
+EOF
+for _p in qmd:1.0.0 telegram-himmel:0.0.11 not-installed:2.0.0; do
+    mkdir -p "$CHECKOUT_DIR/marketplace/plugins/${_p%%:*}/.claude-plugin"
+    printf '{"name":"%s","version":"%s"}\n' "${_p%%:*}" "${_p#*:}" \
+        > "$CHECKOUT_DIR/marketplace/plugins/${_p%%:*}/.claude-plugin/plugin.json"
+done
+fake_home_ver="$TMP/fake-home-ver"
+mkdir -p "$fake_home_ver/.claude/plugins"
+cat > "$fake_home_ver/.claude/settings.json" <<'EOF'
+{
+  "enabledPlugins": {
+    "qmd@himmel": true,
+    "telegram-himmel@himmel": true,
+    "no-manifest@himmel": true,
+    "not-installed@himmel": true
+  }
+}
+EOF
+# telegram-himmel's USER-scope install lags plugin.json; a project-scope row
+# already at the new version must not mask that. qmd is current.
+cat > "$fake_home_ver/.claude/plugins/installed_plugins.json" <<'EOF'
+{
+  "version": 2,
+  "plugins": {
+    "qmd@himmel": [ { "scope": "user", "version": "1.0.0" } ],
+    "telegram-himmel@himmel": [
+      { "scope": "project", "projectPath": "/x", "version": "0.0.11" },
+      { "scope": "user", "version": "0.0.10" }
+    ],
+    "no-manifest@himmel": [ { "scope": "user", "version": "0.1.0" } ]
+  }
+}
+EOF
+log_ver="$TMP/claude-invocations-ver.log"
+: > "$log_ver"
+claude_stub_ver="$TMP/claude-logging-stub-ver"
+make_claude_logging_stub "$claude_stub_ver" "$log_ver"
+
+rc=0
+USERPROFILE='' HOME="$fake_home_ver" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_ver" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_ver/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" >/dev/null 2>&1 || rc=$?
+log_ver_content="$(cat "$log_ver")"
+assert_contains "updates the version-bumped checkout plugin" "plugin update telegram-himmel@himmel" "$log_ver_content"
+assert_not_contains "never updates a checkout plugin already at its plugin.json version" "plugin update qmd@himmel" "$log_ver_content"
+assert_not_contains "never updates a checkout plugin with no plugin.json" "plugin update no-manifest@himmel" "$log_ver_content"
+assert_not_contains "never updates a checkout plugin with no install record" "plugin update not-installed@himmel" "$log_ver_content"
+
+: > "$log_ver"
+out_ver_check=$(USERPROFILE='' HOME="$fake_home_ver" HIMMEL_UPDATE_CLAUDE_BIN="$claude_stub_ver" HERMES_HOME="$TMP/no-hermes" \
+      CLAUDE_USER_SETTINGS="$fake_home_ver/.claude/settings.json" \
+      bash "$CHECKOUT_DIR/scripts/himmel-update.sh" --check 2>&1) || true
+assert_contains "check mode lists the version-bumped checkout plugin" "      telegram-himmel@himmel" "$out_ver_check"
+assert_not_contains "check mode does not list the current checkout plugin" "      qmd@himmel" "$out_ver_check"
+
 echo ""
 echo "=== $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]
