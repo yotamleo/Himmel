@@ -266,6 +266,59 @@ else
     printf '%s\n' "$t11_out" | sed 's/^/    /'
 fi
 
+# --- T12/T13 (HIMMEL-2674): the SECOND-mkdir race in _vm_lock_reclaim.
+# Seeds the lock dir and its `.claim` sibling both EMPTY (a stranded claim:
+# no owner after the grace, so the contender drops it), then wraps
+# _vm_lock_drop so that dropping the claim is immediately followed by a
+# rival recreating it — the contender's second `mkdir "$claim"` loses
+# deterministically. Calls _vm_lock_reclaim DIRECTLY: vm_lock_acquire
+# re-runs a reclaim rc 2 on an empty lock dir, which would hide the rc. --
+# _t1213_run <case-dir> <recreate-cmd> — run the wrapped reclaim; the
+# recreate command sees the claim path as $1.
+_t1213_run() {
+    # shellcheck disable=SC2016  # the inner script expands in the child bash
+    HIMMEL_VM_LOCK_DIR="$1" bash -c '. "'"$LOCKLIB"'"
+eval "_orig_drop() $(declare -f _vm_lock_drop | tail -n +2)"
+_vm_lock_drop() {
+    _orig_drop "$@"; local r=$?
+    case "$1" in *.claim) _recreate "$1" ;; esac
+    return "$r"
+}
+_recreate() { '"$2"'; }
+_vm_lock_reclaim "$HIMMEL_VM_LOCK_DIR/himmel-vm-lock-x" ""; echo rc=$?' 2>&1
+}
+
+# T12: the rival is MID-BRAND (owner present, no `started=` yet) — ordinary
+# contention, rc 1, no RECLAIM ERROR, and the rival's owner left untouched.
+d=$(next_dir t12)
+mkdir -p "$d/himmel-vm-lock-x" "$d/himmel-vm-lock-x.claim"
+# shellcheck disable=SC2016  # $1 expands inside the child bash
+t12_out=$(_t1213_run "$d" 'mkdir "$1" && printf "pid=424242\n" > "$1/owner"')
+t12_claim_owner=$(cat "$d/himmel-vm-lock-x.claim/owner" 2>/dev/null || echo MISSING)
+if grep -q '^rc=1$' <<< "$t12_out" \
+   && ! grep -q "RECLAIM ERROR" <<< "$t12_out" \
+   && [ "$t12_claim_owner" = "pid=424242" ]; then
+    pass "T12 (HIMMEL-2674) losing the second-mkdir takeover race to a mid-brand winner is contention (rc 1), not RECLAIM ERROR"
+else
+    fail_case "T12 — claim_owner='$t12_claim_owner' out:"
+    printf '%s\n' "$t12_out" | sed 's/^/    /'
+fi
+
+# T13: the claim path is genuinely uncreatable (a regular FILE sits there,
+# so mkdir fails and no owner can ever exist — root-proof, unlike chmod)
+# — still an operational failure, rc 2 with RECLAIM ERROR.
+d=$(next_dir t13)
+mkdir -p "$d/himmel-vm-lock-x" "$d/himmel-vm-lock-x.claim"
+# shellcheck disable=SC2016  # $1 expands inside the child bash
+t13_out=$(_t1213_run "$d" ': > "$1"')
+if grep -q '^rc=2$' <<< "$t13_out" \
+   && grep -q "RECLAIM ERROR: could not create a takeover claim" <<< "$t13_out"; then
+    pass "T13 (HIMMEL-2674) a takeover claim path that cannot be created still returns rc 2 with RECLAIM ERROR"
+else
+    fail_case "T13 — out:"
+    printf '%s\n' "$t13_out" | sed 's/^/    /'
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "ALL PASS"
