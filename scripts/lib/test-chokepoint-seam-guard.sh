@@ -194,6 +194,7 @@ mkproc "$F9" 10 1 2.1.285 /home/u/.local/share/claude/versions/2.1.285 2.1.285 d
 mkproc "$F9" 20 10 bash /usr/bin/bash bash
 assert_eq "P12 a native versioned exe whose argv[0] is the version string matches" "0|10" "$(walk "$F9" 20)"
 mkproc "$F9" 30 1 node /usr/bin/node node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js daemon run
+# headless-claude-ok: test fixture string for a fake process table; never executed
 mkproc "$F9" 40 1 claude /opt/claude/versions/2.1.285 claude -p "daemon run"
 mkproc "$F9" 50 1 claude /opt/claude/versions/2.1.285 claude --model x daemon run
 dm=""

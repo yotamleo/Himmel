@@ -321,6 +321,7 @@ run_claude_review() {
         echo "hermes-critic.sh: native-auth pin unavailable — refusing the claude route" >&2
         return 1
     fi
+    # headless-claude-ok: comment text only; the claude call it describes is marked at its launch site below
     # HIMMEL-3640: dedupe PATH before this direct `claude -p` launch — Claude
     # Code prepends each enabled plugin's bin/ dir at startup without
     # checking for an existing copy, so an already-duplicated inherited PATH

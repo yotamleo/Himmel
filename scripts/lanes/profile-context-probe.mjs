@@ -205,6 +205,7 @@ export function roleCoverageProblems(initEvent, requiredIds, runtimeNames) {
   return requiredIds.filter((id) => !exposed.has(pluginName(id, runtimeNames))).map((id) => `role-required plugin ${id} exposes no skill, command, agent or MCP server (enabled but not loaded)`);
 }
 
+// headless-claude-ok: comment text only; the real spawn is marked at its launch site
 // HIMMEL-4036: `claude -p /context` replies with an assistant event carrying
 // context_usage, whose skills[] is the POST-cap listing (what the model is sent).
 export function findContextUsage(events) {
@@ -442,8 +443,8 @@ export function resolveLedgerTarget({ ledgerFlag, noLedger }, env) {
 function spawnClaude(extraArgs, prompt) {
   const args = ['-p', '--model', 'haiku', '--max-turns', '1', '--permission-mode', 'dontAsk',
     '--output-format', 'stream-json', '--verbose', ...extraArgs, prompt];
-  // headless-claude-ok: HIMMEL-2189 measured profile probe
   // launch-profile-ok: the probe passes the profile under test via extraArgs (--settings per run)
+  // headless-claude-ok: HIMMEL-2189 measured profile probe
   return spawnSync('claude', args, {
     cwd: REPO_ROOT,
     encoding: 'utf8',
