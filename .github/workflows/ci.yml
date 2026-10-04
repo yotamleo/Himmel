@@ -905,7 +905,7 @@ jobs:
           echo "OK: every gating shell-unit shard passed."
       - name: Download shard manifests
         if: ${{ !cancelled() }}
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: shell-unit-manifest-ubuntu-latest-shard*
           path: shard-manifest/
