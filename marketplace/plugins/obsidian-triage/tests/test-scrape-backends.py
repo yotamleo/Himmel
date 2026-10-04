@@ -66,6 +66,10 @@ def ledger_lines():
     return [json.loads(l) for l in LEDGER.read_text().splitlines() if l.strip()]
 
 
+def fc_lines():
+    return [r for r in ledger_lines() if r.get("source") == "firecrawl"]
+
+
 def reset():
     SEEN.clear()
     if LEDGER.exists():
@@ -115,7 +119,11 @@ md = mod.JinaReaderClient().scrape("https://example.com/post")
 check("jina: GET https://r.jina.ai/<url>", SEEN and SEEN[0].full_url == "https://r.jina.ai/https://example.com/post" and SEEN[0].get_method() == "GET")
 check("jina: sends no Authorization header", not SEEN[0].has_header("Authorization"))
 check("jina: preamble stripped, markdown kept", md.startswith("# Hello") and "URL Source" not in md)
-check("jina: spends no firecrawl ledger line", ledger_lines() == [])
+check("jina: spends no firecrawl ledger line", fc_lines() == [])
+jl = ledger_lines()
+check("jina: one jina-reader ledger line, 0 credits, endpoint /reader, no target url",
+      len(jl) == 1 and jl[0]["source"] == "jina-reader" and jl[0]["credits"] == 0
+      and jl[0]["endpoint"] == "/reader" and "example.com" not in LEDGER.read_text())
 stub_urlopen(["Title: x\n\nMarkdown Content:\n   \n"])
 try:
     mod.JinaReaderClient().scrape("https://example.com/post")
@@ -148,14 +156,14 @@ stub_urlopen(["Markdown Content:\n# From jina\n\nbody\n"])
 chain = mod.build_scrape_chain({"FIRECRAWL_API_KEY": "k"}, 5)
 md = chain.scrape("https://example.com/post")
 check("chain: not-implemented local-headless falls through silently to jina", "From jina" in md and chain.last_backend == "jina")
-check("chain: jina success never touches firecrawl", ledger_lines() == [] and len(SEEN) == 1)
+check("chain: jina success never touches firecrawl", fc_lines() == [] and len(SEEN) == 1)
 
 reset()
 stub_urlopen([OSError("jina down"), json.dumps({"success": True, "data": {"markdown": "# From fc\n\nbody"}})])
 chain = mod.build_scrape_chain({"FIRECRAWL_API_KEY": "k"}, 5)
 md = chain.scrape("https://example.com/post")
 check("chain: jina failure falls to firecrawl", "From fc" in md and chain.last_backend == "firecrawl")
-check("chain: firecrawl hop is ledgered", len(ledger_lines()) == 1)
+check("chain: firecrawl hop is ledgered", len(fc_lines()) == 1)
 
 reset()
 stub_urlopen([OSError("jina down")])
@@ -176,7 +184,7 @@ try:
     chain.scrape("https://example.com/b")
 except Exception:
     pass
-check("chain: firecrawl capped at its budget (second run call spends nothing)", len(ledger_lines()) == 1)
+check("chain: firecrawl capped at its budget (second run call spends nothing)", len(fc_lines()) == 1)
 
 # --- process_clip: gate + marker with the chain -----------------------------
 THIN = "---\ntype: article\nsource: https://example.com/post\n---\nshort.\n"

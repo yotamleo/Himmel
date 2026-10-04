@@ -226,6 +226,7 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
 
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), FIRECRAWL_TIMEOUT_MS);
+    let ledgered = false;
     try {
       const r = await fetch(`${base}/v2/search`, {
         method: "POST",
@@ -237,10 +238,12 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         signal: ctrl.signal,
       });
       if (!r.ok) {
+        ledgered = true;
         ledgerAppend("follow-web", "/v2/search", 0, false);
         return { found: false };
       }
       const data = await r.json();
+      ledgered = true;
       ledgerAppend(
         "follow-web",
         "/v2/search",
@@ -264,7 +267,7 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         snippet: top.description || top.snippet || top.markdown || "",
       };
     } catch {
-      ledgerAppend("follow-web", "/v2/search", 0, false);
+      if (!ledgered) ledgerAppend("follow-web", "/v2/search", 0, false);
       return { found: false }; // network/abort/parse — grounded no-op
     } finally {
       clearTimeout(t);

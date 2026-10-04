@@ -388,7 +388,7 @@ def ledger_path():
     return Path(os.environ.get("HOME") or Path.home()) / ".himmel" / "state" / "firecrawl-ledger.jsonl"
 
 
-def ledger_append(call_site, endpoint, credits, ok=True):
+def ledger_append(call_site, endpoint, credits, ok=True, source="firecrawl"):
     """Append one JSONL line: ts, call_site, endpoint (path only), credits.
     Never the key, the URL (or its query string) or the page body. A ledger
     write failure never breaks the scrape that triggered it."""
@@ -399,7 +399,7 @@ def ledger_append(call_site, endpoint, credits, ok=True):
         "v": 1,
         "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host": socket.gethostname(),
-        "source": "firecrawl",
+        "source": source,
         "kind": "call",
         "call_site": call_site,
         "endpoint": endpoint,
@@ -433,8 +433,15 @@ class JinaReaderClient:
         import urllib.request
         req = urllib.request.Request(self.BASE + url, method="GET",
                                      headers={"Accept": "text/plain"})
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            text = resp.read().decode("utf-8", errors="replace")
+        # egress-matrix jina-reader is allow+log: one ledger line per fetch;
+        # the endpoint is the fixed reader path, never the target URL.
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            ledger_append("harvest-clip-body-batch", "/reader", 0, ok=False, source="jina-reader")
+            raise
+        ledger_append("harvest-clip-body-batch", "/reader", 0, source="jina-reader")
         marker = "Markdown Content:"
         idx = text.find(marker)
         md = text[idx + len(marker):] if idx >= 0 else text

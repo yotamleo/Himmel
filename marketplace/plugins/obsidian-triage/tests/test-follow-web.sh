@@ -359,11 +359,13 @@ let n = 0;
 globalThis.fetch = async () => {
   n += 1;
   if (n === 2) throw new Error("boom");
+  if (n === 3) return { ok: true, json: async () => ({ success: true, creditsUsed: 1, data: { get web() { throw new Error("parse"); } } }) };
   return { ok: true, json: async () => ({ success: true, creditsUsed: 2, data: { web: [{ url: "https://x.example/a", title: "T", description: "d" }] } }) };
 };
 const fn = makeFirecrawlWebFn({ apiKey: "KEY-xyz987", budget: 5 });
 await fn("secret-claim-text about SomeCorp");
 await fn("another query");
+await fn("parse failure after ledgering");
 const lines = existsSync(process.env.LEDGER_PATH)
   ? readFileSync(process.env.LEDGER_PATH, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
   : [];
@@ -376,7 +378,7 @@ console.log("LEDGER_FAIL=" + (lines[1] && lines[1].credits === 0 && lines[1].ok 
 console.log("LEDGER_CLEAN=" + (!raw.includes("KEY-xyz987") && !raw.includes("secret-claim-text") && !raw.includes("x.example")));
 EOF
 out10="$(LEDGER_PATH="$tmpdir/ledger.jsonl" node "$tmpdir/ledger.mjs" 2>&1)"
-grep -q 'LEDGER_COUNT=2' <<<"$out10" && r=yes || r=no; assert "ledger: one line per search call (success + failure)" yes "$r"
+grep -q 'LEDGER_COUNT=3' <<<"$out10" && r=yes || r=no; assert "ledger: exactly one line per call (success, failure, parse error after ledgering)" yes "$r"
 grep -q 'LEDGER_SHAPE=true' <<<"$out10" && r=yes || r=no; assert "ledger: call_site follow-web, endpoint /v2/search, ts present" yes "$r"
 grep -q 'LEDGER_ENVELOPE=true' <<<"$out10" && r=yes || r=no; assert "ledger: envelope v/host/source/kind present" yes "$r"
 grep -q 'LEDGER_CREDITS=2' <<<"$out10" && r=yes || r=no; assert "ledger: credits read from the response" yes "$r"
