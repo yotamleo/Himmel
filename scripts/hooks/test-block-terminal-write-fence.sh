@@ -131,6 +131,11 @@ check "HIMMEL-4032 unjoined gh after a continuation stays denied" block '{"tool_
 check "HIMMEL-4032 dollar-quote + plain key, user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.$'"'"'\\x6e'"'"'ame x","cwd":"'"$SWR"'"}}'
 check "HIMMEL-4032 continuation inside user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.na\\\nme x","cwd":"'"$SWR"'"}}'
 check "HIMMEL-4032 harmless echo continuation allowed" allow '{"tool_name":"Bash","tool_input":{"command":"echo a \\\nb","cwd":"'"$SWR"'"}}'
+# HIMMEL-4225: a stray apostrophe in a # comment or a heredoc body opens no quote in bash, so it
+# must not desync the quote-aware stream and hide evasion 1 on the next line.
+check "HIMMEL-4225 apostrophe in a comment, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"# don'"'"'t panic\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 apostrophe in a heredoc body, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<EOF\ndon'"'"'t panic\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 apostrophe in a comment, no insteadOf, allowed" allow '{"tool_name":"Bash","tool_input":{"command":"# don'"'"'t panic\necho hi","cwd":"'"$SWR"'"}}'
 # round 11: a 50 KB pad must not make grep hit E2BIG and skip the set-url deny (fail-open vs main)
 PAD=$(head -c 50000 /dev/zero | tr "\0" a)
 check "round 11 padded set-url still denied (E2BIG)" block '{"tool_name":"Bash","tool_input":{"command":"git remote set-url origin https://evil.example/x.git ; echo '"$PAD"'","cwd":"'"$SWR"'"}}'

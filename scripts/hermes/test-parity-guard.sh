@@ -694,6 +694,11 @@ g "HIMMEL-4032 unjoined gh after a continuation stays denied" block '{"tool_name
 g "HIMMEL-4032 dollar-quote + plain key, user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.$'"'"'\\x6e'"'"'ame x"}}'
 g "HIMMEL-4032 continuation inside user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.na\\\nme x"}}'
 g "HIMMEL-4032 harmless echo continuation allowed" allow '{"tool_name":"terminal","tool_input":{"command":"echo a \\\nb"}}'
+# HIMMEL-4225: a stray apostrophe in a # comment or a heredoc body opens no quote in bash, so it
+# must not desync the quote-aware stream and hide evasion 1 on the next line.
+g "HIMMEL-4225 apostrophe in a comment, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"# don'"'"'t panic\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 apostrophe in a heredoc body, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<EOF\ndon'"'"'t panic\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 apostrophe in a comment, no insteadOf, allowed" allow '{"tool_name":"terminal","tool_input":{"command":"# don'"'"'t panic\necho hi"}}'
 g "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'"}}'
 g "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'"}}'
 g "config user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.name x"}}'
