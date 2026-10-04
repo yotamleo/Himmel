@@ -113,10 +113,13 @@ test('buildCtx installed.hermes accepts a PM-managed install (.hermes/bin/hermes
   mkdirSync(bin, { recursive: true });
   assert.equal(buildCtx(repo, { HERMES_HOME: home }).installed.hermes, false, 'no launcher yet');
   const launcher = join(bin, 'hermes');
-  writeFileSync(launcher, '#!/bin/sh');
+  writeFileSync(launcher, `#!/bin/sh\necho '${JSON.stringify([process.execPath, 'run'])}'\n`);
   chmodSync(launcher, 0o755);
   assert.equal(buildCtx(repo, { HERMES_HOME: home }).installed.hermes, true,
     'resolve-hermes-py.sh resolves through the launcher, so the lane is available');
+  writeFileSync(launcher, `#!/bin/sh\necho '${JSON.stringify([join(home, 'gone', 'python3'), 'run'])}'\n`);
+  assert.equal(buildCtx(repo, { HERMES_HOME: home }).installed.hermes, false,
+    'a launcher whose runtime interpreter is gone, with no venv, is not installed (resolver would exit 1)');
 });
 test('every "installed" probe names a tool buildCtx actually populates (HIMMEL-780 lockstep guard)', () => {
   const populated = Object.keys(buildCtx(makeTmpDir('lanes-ctx-'), {}).installed);
