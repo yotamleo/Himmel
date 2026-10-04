@@ -61,8 +61,15 @@ for (const marker of ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"]) {
 test("himmelctl ui --allow-agent-session starts under a Claude session env", async () => {
   const p = Bun.spawn(["node", BIN, "ui", "--port", "0", "--allow-agent-session"], { env: { ...cleanEnv(), CLAUDECODE: "1" }, stdout: "pipe", stderr: "pipe" });
   try {
-    const url = new TextDecoder().decode((await p.stdout.getReader().read()).value).trim();
-    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/#t=[0-9a-f]{64}$/);
+    const reader = p.stdout.getReader();
+    const dec = new TextDecoder();
+    let out = "";
+    while (!out.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      out += dec.decode(value);
+    }
+    expect(out.trim()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/#t=[0-9a-f]{64}$/);
   } finally {
     p.kill("SIGTERM");
     await p.exited;
