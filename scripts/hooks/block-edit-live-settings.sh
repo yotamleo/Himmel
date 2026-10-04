@@ -1995,7 +1995,9 @@ _dc_receiver() {
         case "${ws[i]}" in [a-z_]*=*) i=$((i + 1)) ;; *) break ;; esac
     done
     [ "$i" -lt "${#ws[@]}" ] || return 1
-    rcv=${ws[i]##*/}
+    # only the system copy: `/tmp/cat` may be anything
+    rcv=${ws[i]}
+    case "$rcv" in /bin/*|/usr/bin/*) rcv=${rcv#/usr} rcv=${rcv#/bin/} ;; esac
     case "$rcv" in
         cat|tee) return 0 ;;
         git) [ "${ws[i + 1]-}" = commit ] ;;
@@ -2097,6 +2099,13 @@ _dc_data_bodies() {
     done <<< "$1"
     [ -z "$bb" ] || { out=$out$bo bd=$bd$bb _DCNB=x; }
     [ -n "$_DCNB" ] || return 1
+    # outside the bodies: a group or loop closed and then piped or
+    # redirected (`} | bash`, `done >&3`) may run a body inside it, and a
+    # receiver rebound by name (`PATH=`, an alias, `hash`, `enable`, a
+    # function) is not the receiver, so nothing is read as data then
+    [[ ! $out =~ (^|[;\&[:space:]])(\}|\)|done|fi|esac)[[:space:]]*([0-9]*[\<\>]|\|) ]] || return 1
+    [[ ! $out =~ (^|[^a-z0-9_])(path=|(alias|hash|enable|function)([^a-z0-9_]|$)) ]] || return 1
+    [[ ! $out =~ (^|[^a-z0-9_])(cat|tee|git|gh)[[:space:]]*\([[:space:]]*\) ]] || return 1
     _DCNB=$out _DCBD=$bd
 }
 

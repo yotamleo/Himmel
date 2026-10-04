@@ -2460,6 +2460,45 @@ assert_rc "600 nested worktree cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(print
     "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' > /tmp/notes.md
 the hook folds ~/.cl\$(printf a)ude now
 EOF" HOME="$FAKEHOME")"
+# a body is data only for the real receiver, and only when nothing pipes
+# or redirects the group it sits in (CR round 11)
+DC_RUN='$(cp /tmp/a ~/.cl$(printf a)ude/settings.json)'
+assert_rc "608 nested worktree /tmp/cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "/tmp/cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "609 nested worktree { :; cat <<'EOF' … } | bash denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "{ :; cat <<'EOF'
+$DC_RUN
+EOF
+} | bash" HOME="$FAKEHOME")"
+assert_rc "610 nested worktree { on its own line, cat <<'EOF' … } | bash denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "{
+cat <<'EOF'
+$DC_RUN
+EOF
+} | bash" HOME="$FAKEHOME")"
+assert_rc "611 nested worktree for … do :; cat <<'EOF' … done | bash denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "for i in 1; do :; cat <<'EOF'
+$DC_RUN
+EOF
+done | bash" HOME="$FAKEHOME")"
+assert_rc "612 nested worktree cat() { bash; }; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat() { bash; }; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "613 nested worktree PATH=/tmp cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "PATH=/tmp cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "614 nested worktree alias cat=bash; cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "alias cat=bash; cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "615 nested worktree /usr/bin/cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "/usr/bin/cat <<'EOF' > /tmp/notes.md
+the hook folds ~/.cl\$(printf a)ude now
+EOF" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
