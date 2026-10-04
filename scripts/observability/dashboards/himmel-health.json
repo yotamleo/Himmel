@@ -113,6 +113,17 @@
                   "index": 2
                 }
               }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data: Prometheus is not answering",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
             }
           ]
         },
@@ -198,6 +209,17 @@
                   "index": 1
                 }
               }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
             }
           ]
         },
@@ -268,7 +290,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -337,7 +371,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -412,7 +458,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1160,7 +1218,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1229,7 +1299,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1443,7 +1525,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1512,7 +1606,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1656,7 +1762,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1795,7 +1913,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1864,7 +1994,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
@@ -1933,7 +2075,19 @@
               }
             ]
           },
-          "mappings": []
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 9
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },

@@ -135,10 +135,11 @@ else
     fail "provider template carries the @HIMMEL_DASHBOARDS_DIR@ token" "missing or untokenised: $PROV_DASH_DIR/himmel-dashboards.yaml.tmpl"
 fi
 # active_yaml <dir> — prints each *.yaml/*.yml in <dir>; exits 2 if <dir> is
-# not a readable directory, so a failed scan never reads as "none found".
+# not a readable, searchable directory, so a failed scan never reads as "none
+# found".
 active_yaml() {
     local f
-    [ -d "$1" ] && [ -r "$1" ] || return 2
+    [ -d "$1" ] && [ -r "$1" ] && [ -x "$1" ] || return 2
     for f in "$1"/*.yaml "$1"/*.yml; do [ -e "$f" ] && echo "$f"; done
     return 0
 }
