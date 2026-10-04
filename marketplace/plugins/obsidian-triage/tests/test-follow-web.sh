@@ -385,6 +385,81 @@ grep -q 'LEDGER_CREDITS=2' <<<"$out10" && r=yes || r=no; assert "ledger: credits
 grep -q 'LEDGER_FAIL=true' <<<"$out10" && r=yes || r=no; assert "ledger: failed call logged with credits 0" yes "$r"
 grep -q 'LEDGER_CLEAN=true' <<<"$out10" && r=yes || r=no; assert "ledger: no key, query text or result url" yes "$r"
 
+# -- Test 11: kill switch, caps, credit ceiling on the search path (HIMMEL-4361)
+echo "Test 11: makeWebFn — HARVEST_SCRAPE_DENY, call cap, per-call credit ceiling"
+
+cat > "$tmpdir/ks.mjs" <<EOF
+import { makeWebFn } from "$lib_url";
+
+process.env.HIMMEL_FIRECRAWL_LEDGER = process.env.LEDGER_PATH;
+const errs = [];
+console.error = (...a) => errs.push(a.join(" "));
+let fetches = 0;
+let credits = 1;
+let lastBody = null;
+globalThis.fetch = async (_u, init) => {
+  fetches += 1;
+  lastBody = JSON.parse(init.body);
+  return { ok: true, json: async () => ({ success: true, creditsUsed: credits, data: { web: [{ url: "https://x.example/a", title: "T", description: "d" }] } }) };
+};
+const KEYED = { FIRECRAWL_API_KEY: "k" };
+
+console.log("DENY_FC_NULL=" + (makeWebFn({ ...KEYED, HARVEST_SCRAPE_DENY: "firecrawl" }) === null));
+console.log("DENY_FC_REPORTED=" + errs.some((e) => e.includes("search unavailable")));
+console.log("DENY_ALL_NULL=" + (makeWebFn({ ...KEYED, HARVEST_SCRAPE_DENY: "all" }) === null));
+console.log("DENY_JINA_KEEPS_FC=" + (typeof makeWebFn({ ...KEYED, HARVEST_SCRAPE_DENY: "jina" }) === "function"));
+try { makeWebFn({ ...KEYED, HARVEST_SCRAPE_DENY: "bogus" }); console.log("DENY_UNKNOWN=no-throw"); }
+catch (e) { console.log("DENY_UNKNOWN=" + (/bogus/.test(e.message) && /firecrawl/.test(e.message) && /jina/.test(e.message))); }
+
+fetches = 0;
+let fn = makeWebFn({ ...KEYED, HARVEST_FIRECRAWL_BUDGET: "1" });
+await fn("q1"); await fn("q2");
+console.log("CAP_ENV=" + fetches);
+fetches = 0;
+fn = makeWebFn({ ...KEYED, HARVEST_FIRECRAWL_BUDGET: "1", FOLLOW_WEB_BUDGET: "2" });
+await fn("q1"); await fn("q2"); await fn("q3");
+console.log("CAP_FOLLOW_WINS=" + fetches);
+fetches = 0;
+fn = makeWebFn({ ...KEYED, FOLLOW_WEB_BUDGET: "0" });
+await fn("q1");
+console.log("CAP_ZERO=" + fetches);
+fetches = 0;
+fn = makeWebFn({ ...KEYED, FOLLOW_WEB_BUDGET: "2", HARVEST_FIRECRAWL_BUDGET: "junk" });
+await fn("q1"); await fn("q2"); await fn("q3");
+console.log("CAP_FOLLOW_IGNORES_BAD_SHARED=" + fetches);
+console.log("SEARCH_BODY=" + (Object.keys(lastBody).sort().join(",") === "limit,query"));
+
+fetches = 0; errs.length = 0; credits = 30;
+fn = makeWebFn(KEYED);
+const first = await fn("q1"); await fn("q2");
+console.log("CEIL_TRIP_RETURNS=" + first.found + " CEIL_FETCHES=" + fetches);
+console.log("CEIL_REPORTED=" + errs.some((e) => e.includes("search unavailable") && e.includes("30")));
+fetches = 0; credits = 5;
+fn = makeWebFn(KEYED);
+await fn("q1"); await fn("q2");
+console.log("CEIL_AT_LIMIT_FETCHES=" + fetches);
+fetches = 0;
+globalThis.fetch = async () => { fetches += 1; return { ok: true, json: async () => { throw new SyntaxError("bad json"); } }; };
+fn = makeWebFn({ ...KEYED, HARVEST_FIRECRAWL_MAX_CREDITS: "0" });
+await fn("q1"); await fn("q2");
+console.log("CEIL_PARSE_FAIL_FETCHES=" + fetches);
+EOF
+out11="$(LEDGER_PATH="$tmpdir/ledger11.jsonl" node "$tmpdir/ks.mjs" 2>&1)"
+grep -q 'DENY_FC_NULL=true' <<<"$out11" && r=yes || r=no; assert "kill switch: HARVEST_SCRAPE_DENY=firecrawl turns firecrawl search off" yes "$r"
+grep -q 'DENY_FC_REPORTED=true' <<<"$out11" && r=yes || r=no; assert "kill switch: reports 'search unavailable' clearly" yes "$r"
+grep -q 'DENY_ALL_NULL=true' <<<"$out11" && r=yes || r=no; assert "kill switch: all turns it off" yes "$r"
+grep -q 'DENY_JINA_KEEPS_FC=true' <<<"$out11" && r=yes || r=no; assert "kill switch: denying another backend leaves firecrawl search on" yes "$r"
+grep -q 'DENY_UNKNOWN=true' <<<"$out11" && r=yes || r=no; assert "kill switch: unknown name throws naming the valid set" yes "$r"
+grep -q 'CAP_ENV=1' <<<"$out11" && r=yes || r=no; assert "cap: HARVEST_FIRECRAWL_BUDGET caps searches" yes "$r"
+grep -q 'CAP_FOLLOW_WINS=2' <<<"$out11" && r=yes || r=no; assert "cap: FOLLOW_WEB_BUDGET wins over HARVEST_FIRECRAWL_BUDGET" yes "$r"
+grep -q 'CAP_ZERO=0' <<<"$out11" && r=yes || r=no; assert "cap: an explicit FOLLOW_WEB_BUDGET=0 allows no paid search" yes "$r"
+grep -q 'CAP_FOLLOW_IGNORES_BAD_SHARED=2' <<<"$out11" && r=yes || r=no; assert "cap: a malformed shared budget is ignored when FOLLOW_WEB_BUDGET is set" yes "$r"
+grep -q 'SEARCH_BODY=true' <<<"$out11" && r=yes || r=no; assert "search body carries no stealth/proxy option" yes "$r"
+grep -q 'CEIL_TRIP_RETURNS=true CEIL_FETCHES=1' <<<"$out11" && r=yes || r=no; assert "ceiling: a call over it is returned, then firecrawl search stops for the run" yes "$r"
+grep -q 'CEIL_REPORTED=true' <<<"$out11" && r=yes || r=no; assert "ceiling: the trip is reported as 'search unavailable'" yes "$r"
+grep -q 'CEIL_AT_LIMIT_FETCHES=2' <<<"$out11" && r=yes || r=no; assert "ceiling: a call AT the ceiling (5) does not trip it" yes "$r"
+grep -q 'CEIL_PARSE_FAIL_FETCHES=1' <<<"$out11" && r=yes || r=no; assert "ceiling: an unparseable billed response trips it too" yes "$r"
+
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))
 echo ""
