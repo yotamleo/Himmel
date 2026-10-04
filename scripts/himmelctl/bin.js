@@ -5519,9 +5519,6 @@ async function cmdEnsure(args) {
   // as a brand-new derive, so the migrated items get persisted rather than
   // silently staying in-memory-only for this one run.
   let stateChanged = !existedBefore || Object.keys(target.items).length !== itemCountBefore;
-  // HIMMEL-4267: an answer the operator gives about the requested item itself
-  // (guardrail consent) is the one write a scoped (--items) run may persist.
-  let consentRecorded = false;
 
   // HIMMEL-2349 root-cause fix: the recorded install-profile (cachedAnswers)
   // is loaded above for every `ensure` run, but until now nothing ever fed
@@ -5645,7 +5642,17 @@ async function cmdEnsure(args) {
           const decided = /^\s*n/i.test(ans) ? 'no' : 'yes';
           itemState.overrides.consent = decided;
           stateChanged = true;
-          consentRecorded = true;
+          if (args.items) {
+            // HIMMEL-4267: a scoped run saves no derive/reconcile bookkeeping,
+            // but the operator's own answer about the requested item is
+            // theirs to keep — write that one field into a fresh state.
+            const fresh = stateLib.load();
+            const freshTarget = fresh.targets[targetKey] || stateLib.ensureTarget(fresh, manifest, cachedAnswers);
+            const freshItem = freshTarget.items['guardrail-block-global'] || (freshTarget.items['guardrail-block-global'] = { enabled: false, overrides: {} });
+            if (!freshItem.overrides || typeof freshItem.overrides !== 'object' || Array.isArray(freshItem.overrides)) freshItem.overrides = {};
+            freshItem.overrides.consent = decided;
+            stateLib.save(fresh);
+          }
           console.log(`himmelctl: recorded guardrail-block-global consent = ${decided}`);
         } else if (consent !== 'yes' && consent !== 'no') {
           // No recorded answer, and this run cannot ask right now
@@ -6109,7 +6116,7 @@ async function cmdEnsure(args) {
     // Nothing is about to be consented to — no install/unwire will run, so
     // it's correct (and the one intentional exception to the deferred-save
     // rule below) to persist the derive/reconcile bookkeeping right here.
-    if (stateChanged && !args.dryRun && (!args.items || consentRecorded)) stateLib.save(state);
+    if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
     // CR fix: "already at the desired state" is FALSE when hints remain —
     // those items still need manual convergence. Say so instead.
     console.log(hints.length > 0
@@ -6172,9 +6179,9 @@ async function cmdEnsure(args) {
   provOpen(args); // HIMMEL-3332 S5: past every no-op/refusal return, before the first mutation
   provStep = 'ensure';
   // HIMMEL-4267: a scoped (--items) run never persists derive/migrate
-  // bookkeeping — the recorded target stays byte-identical, except for a
-  // consent answer recorded about the requested item itself.
-  if (stateChanged && !args.dryRun && (!args.items || consentRecorded)) stateLib.save(state);
+  // bookkeeping — the recorded target stays byte-identical (the requested
+  // item's own consent answer is written separately where it is asked).
+  if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
 
   // Step 4: toward-disabled dispatch (A5b) — per-item `removable` check.
   // CR fix: dispatched in REVERSE dependency order (a dependent, B deps on
