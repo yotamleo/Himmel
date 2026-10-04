@@ -303,6 +303,21 @@ if grepq "$sub_out" 'Summary:' && [ ! -e "$t/sub/counts" ]; then pass "subset ru
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/full" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$DOC" --no-color 2>&1)"
 want="$(printf '%s\n' "$out" | sed -n -E 's/^Summary: ([0-9]+) FAIL +([0-9]+) WARN.*/fail=\1 warn=\2/p')"
 if [ -n "$want" ] && [ "$(cat "$t/full/counts" 2>/dev/null)" = "$want" ]; then pass "full run writes counts matching its Summary ($want)"; else fail "full run counts '$(cat "$t/full/counts" 2>/dev/null)' != '$want'"; fi
+# HIMMEL-4382: last.tsv is written with the counts from the same run, and a run
+# from a linked worktree judges the station (primary) checkout, so it publishes
+# the same state; a --root run judges another checkout and publishes nothing.
+if [ -e "$t/full/last.tsv" ]; then
+    nl="$(grep -c '^FAIL \|^WARN ' "$t/full/last.tsv")"; wl="$(sed -n -E 's/^fail=([0-9]+) warn=([0-9]+)$/\1 \2/p' "$t/full/counts" | awk '{print $1+$2}')"
+    if [ "$nl" = "$wl" ]; then pass "full run writes last.tsv matching the counts ($nl findings)"; else fail "last.tsv has $nl findings but counts say $wl"; fi
+else fail "full run did not write last.tsv"; fi
+WTD="$t/wt"
+if git -C "$REPO_ROOT" worktree add -q --detach "$WTD" HEAD 2>/dev/null; then
+    (cd "$WTD" && RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/wtstate" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$WTD/scripts/himmel-doctor.sh" --no-color >/dev/null 2>&1)
+    if [ -n "$want" ] && [ "$(cat "$t/wtstate/counts" 2>/dev/null)" = "$want" ] && cmp -s "$t/full/last.tsv" "$t/wtstate/last.tsv"; then pass "a worktree run publishes the same counts and last.tsv as the primary run"; else fail "worktree run state differs from the primary run: '$(cat "$t/wtstate/counts" 2>/dev/null)' vs '$want'"; fi
+    (cd "$WTD" && RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/rootstate" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$WTD/scripts/himmel-doctor.sh" --no-color --root "$WTD" >/dev/null 2>&1)
+    if [ ! -e "$t/rootstate/counts" ] && [ ! -e "$t/rootstate/last.tsv" ]; then pass "a --root run publishes no counts and no last.tsv"; else fail "a --root run wrote state"; fi
+    git -C "$REPO_ROOT" worktree remove --force "$WTD" >/dev/null 2>&1; git -C "$REPO_ROOT" worktree prune
+else fail "could not create the worktree fixture"; fi
 rm -rf "$t"
 
 # HIMMEL-4254 P1: --json is the config UI's status feed. stdout must carry
@@ -1111,7 +1126,7 @@ process.stdout.write(JSON.stringify({ items: [] }));
 JS
 }
 c16_run() {  # c16_run [extra env assignments...] -> the doctor's stdout
-    (cd "$c16_t" && env HIMMEL_REPO="$c16_t" HIMMELCTL_CACHE_DIR="$c16_t/cache" CLAUDE_DIR="$c16_t/claude" HOME="$c16_t/home" \
+    (cd "$c16_t" && env HIMMEL_REPO="$c16_t" HIMMEL_DOCTOR_ROOT="$c16_t" HIMMELCTL_CACHE_DIR="$c16_t/cache" CLAUDE_DIR="$c16_t/claude" HOME="$c16_t/home" \
         DOCTOR_OBSERVABILITY_SKIP=1 "$@" "$BASH" "$DOC" --no-color 2>/dev/null)
 }
 c16_warn() { printf '%s\n' "$1" | sed -n 's/^Summary: .* \([0-9][0-9]*\) WARN .*/\1/p'; }
@@ -3842,7 +3857,7 @@ c32_fixture_base() {
 }
 run_doctor_fake_repo() {
     # run_doctor_fake_repo <fake-repo-root> <home-scratch-dir>
-    (cd "$1" && HIMMEL_REPO="$1" CLAUDE_DIR="$2/claude" HOME="$2" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null)
+    (cd "$1" && HIMMEL_REPO="$1" HIMMEL_DOCTOR_ROOT="$1" CLAUDE_DIR="$2/claude" HOME="$2" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null)
 }
 
 echo "== C34: everything wired (real copies of the 3 target files) -> all three rows OK =="
@@ -4201,7 +4216,7 @@ c37_detector_rc() {  # rc the detector itself gives this fixture (precondition p
     echo $?
 }
 c37_run() {  # c37_run [extra env assignments...] -> the doctor's stdout
-    (cd "$c37_t" && env HIMMEL_REPO="$c37_t" CLAUDE_DIR="$c37_t/claude" HOME="$c37_t/home" DOCTOR_OBSERVABILITY_SKIP=1 \
+    (cd "$c37_t" && env HIMMEL_REPO="$c37_t" HIMMEL_DOCTOR_ROOT="$c37_t" CLAUDE_DIR="$c37_t/claude" HOME="$c37_t/home" DOCTOR_OBSERVABILITY_SKIP=1 \
         VENDORED_DUPES_HOME="$c37_t/home" VENDORED_DUPES_CWD="" VENDORED_DUPES_CONFIG_DIR="$c37_t/cfg" \
         "$@" "$BASH" "$DOC" --no-color 2>/dev/null)
 }
@@ -5217,13 +5232,13 @@ cat > "$t/claude-here" <<'EOF'
 cat "$(dirname "$0")/list-here.json"
 EOF
 chmod +x "$t/claude-other" "$t/claude-here"
-out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-other" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+out="$(HIMMEL_DOCTOR_ROOT="$c46_root" HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-other" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'scoped@himmel'; then
     pass "C46 install at another project path -> WARN"
 else
     fail "C46 install at another project path -> $(printf '%s' "$out" | grep -A1 C46)"
 fi
-out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-here" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+out="$(HIMMEL_DOCTOR_ROOT="$c46_root" HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-here" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'OK   C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
     pass "C46 install at this checkout's project path -> OK"
 else

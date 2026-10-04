@@ -81,7 +81,23 @@ check "a WARN that disappears sends no alert" 2 "$(sent_n)"
 
 # 5. state: counts file + previous run kept for diffing.
 check "counts file reflects the last run" "fail=1 warn=0" "$(cat "$STATE/counts" 2>/dev/null)"
-[ -s "$STATE/prev.tsv" ] && pass "previous run kept" || fail "previous run kept"
+[ -s "$STATE/alerted.tsv" ] && pass "alert baseline kept" || fail "alert baseline kept"
+check "last.tsv and counts come from the same run" "FAIL C16-hooks" "$(cat "$STATE/last.tsv" 2>/dev/null)"
+
+# 5b. HIMMEL-4382: an ad-hoc doctor run that introduces a new finding must not
+# swallow the cadence alert (the baseline is the cadence's own, not last.tsv).
+: > "$SENT"; doctor_out "C16-hooks" ""; run_cad
+n0="$(sent_n)"
+# shellcheck source=doctor-counts.sh
+. "$DIR/doctor-counts.sh" 2>/dev/null
+printf 'FAIL C16-hooks\nFAIL C77-adhoc\n' > "$W/adhoc.keys"
+doctor_state_publish "$STATE" "$W/adhoc.keys" 2 0
+check "doctor_state_publish writes last.tsv and counts together" "fail=2 warn=0" "$(cat "$STATE/counts")"
+doctor_out "C16-hooks C77-adhoc" ""; run_cad
+check "a finding first seen by an ad-hoc run still alerts the cadence once" "$((n0 + 1))" "$(sent_n)"
+tail -1 "$SENT" | grep -q 'C77-adhoc' && pass "that alert names the ad-hoc finding" || fail "that alert names the ad-hoc finding"
+run_cad
+check "the next identical cadence run does not alert again" "$((n0 + 1))" "$(sent_n)"
 
 # 6. a first-ever run with only WARNs is a baseline: no alert.
 rm -rf "$STATE"; : > "$SENT"

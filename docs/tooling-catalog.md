@@ -1887,9 +1887,12 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   `himmel-doctor` run, so a standing FAIL is seen in a day, not nine
   (HIMMEL-4243). `run` executes the doctor from the **primary** checkout
   (resolved through git-common-dir; a worktree run gives false C16 reds) and
-  keeps `last.tsv` / `prev.tsv` / `counts` under
-  `~/.himmel/state/doctor-cadence/`. A FAIL, or a WARN id absent from the
-  previous run, goes to Telegram through `scripts/luna/cadence-alert.sh`; the
+  keeps `last.tsv` / `alerted.tsv` / `counts` under
+  `~/.himmel/state/doctor-cadence/` (HIMMEL-4382: `himmel-doctor.sh` itself
+  judges the primary checkout from any cwd and a full run there writes
+  `last.tsv` + `counts` together; `--root <path>` judges another checkout and
+  writes nothing). A FAIL, or a WARN id absent from `alerted.tsv` (the set this
+  script last alerted on; an ad-hoc doctor run never moves it), goes to Telegram through `scripts/luna/cadence-alert.sh`; the
   first-ever run is a baseline (FAILs only); a doctor that prints no Summary
   line alerts too. `hud-custom-lines.sh` shows `doctor  N FAIL  M WARN` from
   `counts` (read-only, silent when absent or clean). Registered in
