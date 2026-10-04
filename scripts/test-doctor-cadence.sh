@@ -95,7 +95,8 @@ doctor_state_publish "$STATE" "$W/adhoc.keys" 2 0
 check "doctor_state_publish writes last.tsv and counts together" "fail=2 warn=0" "$(cat "$STATE/counts")"
 doctor_out "C16-hooks C77-adhoc" ""; run_cad
 check "a finding first seen by an ad-hoc run still alerts the cadence once" "$((n0 + 1))" "$(sent_n)"
-tail -1 "$SENT" | grep -q 'C77-adhoc' && pass "that alert names the ad-hoc finding" || fail "that alert names the ad-hoc finding"
+last_alert="$(tail -1 "$SENT")"
+case "$last_alert" in *C77-adhoc*) pass "that alert names the ad-hoc finding" ;; *) fail "that alert names the ad-hoc finding" ;; esac
 run_cad
 check "the next identical cadence run does not alert again" "$((n0 + 1))" "$(sent_n)"
 

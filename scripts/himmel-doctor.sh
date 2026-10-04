@@ -83,7 +83,7 @@ else C_RED=""; C_YEL=""; C_GRN=""; C_DIM=""; C_0=""; fi
 
 n_fail=0; n_warn=0; n_info=0
 BODY="$(mktemp)"
-KEYS="$(mktemp)" || { echo "himmel-doctor: mktemp failed" >&2; exit 2; }
+KEYS="$(mktemp "${TMPDIR:-/tmp}/himmel-doctor-keys.XXXXXX")" || { echo "himmel-doctor: mktemp failed" >&2; exit 2; }
 trap 'rm -f "$BODY" "$KEYS"' EXIT
 printf '## himmel-doctor findings (%s)\n\n' "$(uname -s 2>/dev/null || echo ?)" >> "$BODY"
 
