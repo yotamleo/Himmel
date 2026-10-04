@@ -307,7 +307,7 @@ echo "close-wrapped-leg: sent TERM to pid $matched (leg $(leg_label "$DOC"))"
 # sweep (other legs are live). Dry-run first; apply only after a clean dry-run.
 # Never fatal: any failure WARNs and the close carries on.
 reap_leg_scratch() {
-    local label digits sid args=() i
+    local label digits sid args=() i PROC_ROOT="${CLAUDE_SESSIONS_PROC:-/proc}"
     label="$(leg_label "$DOC")"; digits="${label#N}"; digits="${digits%%[!0-9]*}"
     case "$label" in N[0-9]*) args+=(--judge "$digits") ;; esac
     if [ -n "$TRANSCRIPT" ]; then
@@ -322,9 +322,14 @@ reap_leg_scratch() {
     fi
     # the TERM is asynchronous: give the session a moment to exit so its scratch is not "live"
     for ((i = 0; i < ${CLOSE_WRAPPED_LEG_REAP_WAIT:-5}; i++)); do
-        [ -d "/proc/$matched" ] || break
+        [ -d "$PROC_ROOT/$matched" ] || break
         sleep 1
     done
+    # a session that outlives the TERM still owns its scratch: reap nothing now
+    if [ -d "$PROC_ROOT/$matched" ]; then
+        echo "close-wrapped-leg: pid $matched still running after TERM - leaving its /tmp scratch for a later reap"
+        return 0
+    fi
     if ! bash "$TMP_REAP" "${args[@]}"; then
         echo "close-wrapped-leg: WARN tmp-reap dry-run failed for ${args[*]} - not applying; close continues" >&2
         return 0

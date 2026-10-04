@@ -101,6 +101,8 @@ echo "kill $*" >> "$CALLS_LOG"
 if [ "${CWL_KILL_FAIL:-0}" = "1" ]; then
     exit 1
 fi
+# a TERMed session exits only when the case asks (the fleet cases re-use one fake pid)
+if [ "$1" = "-TERM" ] && [ "${CWL_KILL_REMOVES_PROC:-0}" = "1" ]; then rm -rf "${CLAUDE_SESSIONS_PROC:?}/${!#}"; fi
 exit 0
 STUB
 chmod +x "$KILL_STUB"
@@ -769,7 +771,7 @@ mkcmdline 210 claude -n "$SESSION_NAME" work
 pgrep_x_stub 210
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
-rc=0; out=$(TMP_REAP_TMP_ROOT="$RP_ROOT" TMP_REAP_ARCHIVE_ROOT="$RP_ARCH" TMP_REAP_SESSIONS_DIR="$W/reap-sessions" TMP_REAP_PROC="$W/reap-proc" \
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 TMP_REAP_TMP_ROOT="$RP_ROOT" TMP_REAP_ARCHIVE_ROOT="$RP_ARCH" TMP_REAP_SESSIONS_DIR="$W/reap-sessions" TMP_REAP_PROC="$W/reap-proc" \
     CWL_REAP_BIN="$HERE/../../tmp-reap.sh" CWL_PROJECTS_DIR="$W/reap-projects" run "$DOC" 2>&1) || rc=$?
 check "reap: rc 0" "$rc" "0"
 check "reap: this leg's judge dir reaped" "$([ -e "$RP_CL/j1a" ] && echo present || echo absent)" "absent"
@@ -782,16 +784,29 @@ check "reap: no fleet-wide fixture sweep" "$([ -e "$RP_ROOT/mog-run.old" ] && ec
 
 # --- 28: a reap failure never fails the wrap; a failed dry-run never applies --
 mkdoc "- 10:00 WRAPPED - done"
+rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work; pgrep_x_stub 210
 reset_calls
-rc=0; out=$(CWL_REAP_STUB_RC=1 run "$DOC" 2>&1) || rc=$?
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 CWL_REAP_STUB_RC=1 run "$DOC" 2>&1) || rc=$?
 check "reap-fail: close still rc 0" "$rc" "0"
 contains "reap-fail: WARNs" "$out" "WARN"
 exact_count "reap-fail: kill still called once" "$(cat "$CALLS")" "kill -TERM 210" "1"
 not_contains "reap-fail: no apply after a failed dry-run" "$(cat "$CALLS.reap")" "--apply"
+rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work
 reset_calls
-rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 run "$DOC" 2>&1) || rc=$?
 contains "reap-ok: dry-run is scoped to the leg's judge number" "$(cat "$CALLS.reap")" "tmp-reap --judge 1"
 contains "reap-ok: apply follows a clean dry-run" "$(cat "$CALLS.reap")" "--apply"
+
+# --- 29: a session that outlives the TERM keeps its scratch (never reaped live) -
+mkdoc "- 10:00 WRAPPED - done"
+rm -rf "$W/proc"; mkdir -p "$W/proc"
+mkcmdline 210 claude -n "$SESSION_NAME" work
+pgrep_x_stub 210
+reset_calls
+rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+check "reap-alive: close still rc 0" "$rc" "0"
+contains "reap-alive: says it skipped" "$out" "still running"
+check "reap-alive: tmp-reap never called" "$(wc -c < "$CALLS.reap" | tr -d ' ')" "0"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
 post_handovers=absent
