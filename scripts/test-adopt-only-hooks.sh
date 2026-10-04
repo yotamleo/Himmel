@@ -58,6 +58,9 @@ for scope in project user; do
     [ -x "$t/.git/hooks/$h" ] || fail "$scope: git hook $h not placed: $out"
   done
   [ "$before" = "$(snapshot_dir "$home")" ] || fail "$scope: --only-hooks changed the sandbox HOME"
+  # The hook scripts themselves land under scripts/ (user scope); nothing else
+  # (no .claude/, settings, CLAUDE.md) may appear in the target.
+  [ -z "$(find "$t" \( -path "$t/.git" -o -path "$t/scripts" \) -prune -o -type f -print)" ] || fail "$scope: --only-hooks wrote files outside .git and scripts/ into the target"
   [ ! -e "$work/claude-calls" ] || fail "$scope: --only-hooks invoked claude: $(cat "$work/claude-calls")"
   echo "ok: $scope scope — hooks placed, HOME byte-identical, claude never invoked"
 done
