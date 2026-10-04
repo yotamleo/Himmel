@@ -463,6 +463,29 @@ deny "echo qmd query x | awk 'BEGIN{\"date\" | getline d}' sh"
 deny 'echo qmd query x | awk -f p.awk sh'
 deny 'echo qmd query x | less sh'
 deny 'echo qmd query x | more sh'
+# A sed script bundled into or after an option word: `-ee` is `-e e`.
+deny "echo 'qmd query x' | sed -ee - sh"
+deny 'echo qmd query x | sed -ne e sh'
+deny 'echo qmd query x | sed -Ee sh'
+deny 'echo qmd query x | sed -nEe sh'
+deny 'echo qmd query x | sed -e e sh'
+deny 'echo qmd query x | sed -e 1e sh'
+deny 'echo qmd query x | sed -n sh -e'
+deny 'echo qmd query x | sed -fp.sed sh'
+deny 'echo qmd query x | sed -i e sh'
+deny 'echo qmd query x | sed -l 5 sh'
+deny 'echo qmd query x | sed -s -e w sh'
+deny 'echo qmd query x | awk -fp.awk sh'
+deny 'echo qmd query x | awk -e 1 sh'
+deny 'echo qmd query x | gawk -E p.awk sh'
+# Behind xargs the producer's bytes become the filter's options.
+deny 'echo qmd query x | xargs sed -n p sh'
+deny 'echo qmd query x | xargs awk 1 sh'
+deny 'echo qmd query x | xargs rg -v sh'
+deny 'echo qmd query x | xargs sort sh'
+# A case-folded name is no filter.
+deny 'echo qmd query x | SED -n p sh'
+deny 'echo qmd query x | GREP -v sh'
 # The grep-operand class 4245 opened stays allowed, through plain filters.
 allow 'grep -rn "qmd search" docs | /usr/bin/grep -v sh'
 allow 'grep -rn "qmd search" docs |& grep -v sh'
@@ -472,6 +495,8 @@ allow 'grep -rn "qmd search" docs | head -n 5 | grep -c sh'
 allow "grep -rn 'qmd search' docs | awk -F: '{print \$1}' | sort | uniq -c | grep -v bash"
 allow 'grep -rn "qmd search" docs | cut -d: -f1 | grep zsh'
 allow 'grep -rn "qmd search" docs | sed -n /x/p sh'
+allow 'grep -rn "qmd search" docs | sed -nE /x/p sh'
+allow 'grep -rn "qmd search" docs | sed -n -e /x/p - sh'
 allow 'grep -rln "qmd search" docs | xargs -0 -n 1 grep -c sh'
 allow "grep -rn 'qmd query' . | awk '{print \$1}' | grep -v source"
 # ponytail: a filter that runs its input with no shell word in the stage

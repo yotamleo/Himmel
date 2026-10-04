@@ -474,28 +474,46 @@ FILTPROG='^&?[[:space:]]*(xargs([[:space:]]+-([0rtx]+|[nlps][[:space:]]*[0-9]+))
 # hash or enable entry, a PATH assignment or a sourced file — clears no stage.
 FILTDECO='\|&?[[:space:]]*[^[:space:]|;&()<>]*["'\''\\]'
 FILTREDEF='(^|[^[:alnum:]_])(alias|function|hash|enable|path=)|(^|[;&|({][[:space:]]*|(builtin|command|eval|exec)[[:space:]]+)(source|\.)([[:space:]]|$)|\([[:space:]]*\)'
-SEDOPT='(^|[[:space:]])-[^[:space:]]*[^nEersuz[:space:]]'
-SEDEXEC='(^|[[:space:]])([ewW]|[^-[:space:]][^[:space:]]*[ewW])'
 AWKOPT='(^|[[:space:]])-[^Fv[:space:]]'
 # pipe_filter STAGE DEC — succeed when the consumer stage STAGE (qmd_words'
-# text, DEC its decoded bytes) is a plain filter. sed holds no e, w or W
-# outside its -n/-E/-e/-r/-s/-u/-z options; awk no system, getline, `|` or
-# @-directive and only -F/-v options; no stage holds a long option (rg --pre,
-# sort --compress-program), a substitution, subshell, group or list.
+# text, DEC its decoded bytes) is a plain filter. Its program is matched in
+# DEC too, so a case-folded name (`SED`, `GREP`) is no filter. sed takes only
+# option words made of n/E/r/s/u/z, or a bare -e whose next word is script;
+# no other word holds an e, w or W (`-ee` is `-e e`, run the pattern space);
+# awk no system, getline, `|` or @-directive and only -F/-v options; no stage
+# holds a long option (rg --pre, sort --compress-program), a substitution,
+# subshell, group or list. Behind xargs the producer's bytes become the
+# filter's ARGUMENTS (`-e e`, `--pre=sh`), so only filters with no executing
+# option at all qualify there.
 # shellcheck disable=SC2016 # literal ` bytes
 pipe_filter() {
-    local s=$1 d=$2 p
+    local s=$1 d=$2 p x nxt=0 ws
     [ "$nofilt" = 0 ] || return 1
     [[ $s =~ $FILTPROG ]] || return 1
+    [[ $d =~ $FILTPROG ]] || return 1
     p=${BASH_REMATCH[5]}
+    if [ -n "${BASH_REMATCH[1]}" ]; then
+        case "$p" in sed|awk|gawk|mawk|nawk|rg|sort) return 1 ;; esac
+    fi
     d=${d:${#BASH_REMATCH[0]}}
     d=${d//$'\n'/ }
     case "${s#&}" in *'('*|*')'*|*'`'*|*';'*|*'&'*|*'|'*|*'{'*|*'}'*|*[[:space:]]--*) return 1 ;; esac
     case "$p" in
         sed)
-            if [[ $d =~ $SEDOPT ]] || [[ $d =~ $SEDEXEC ]]; then
-                return 1
-            fi
+            read -r -a ws <<<"$d"
+            for x in ${ws[@]+"${ws[@]}"}; do
+                if [ "$nxt" = 1 ]; then
+                    nxt=0
+                    case "$x" in *[ewW]*) return 1 ;; esac
+                    continue
+                fi
+                case "$x" in
+                    -e) nxt=1 ;;
+                    -|-[nErsuz]|-[nErsuz][nErsuz]|-[nErsuz][nErsuz][nErsuz]) ;;
+                    -*|*[ewW]*) return 1 ;;
+                esac
+            done
+            [ "$nxt" = 0 ] || return 1
             ;;
         awk|gawk|mawk|nawk)
             case "$d" in *system*|*getline*|*'|'*|*'@'*) return 1 ;; esac
