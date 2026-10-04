@@ -292,13 +292,32 @@ if ! mkdir "$swap_lock" 2>/dev/null; then
   if swap_lock_stale "$swap_lock"; then
     swap_lock_reclaim
   fi
-  if ! mkdir "$swap_lock" 2>/dev/null; then
+  # Contended. WHO holds it decides: role=ensure is another session's start already
+  # on it (sessions launch together), so this one exits quietly; role=swap refuses.
+  # The role file is written before the pid, so a holder with neither is brand new:
+  # poll briefly (SessionStart must stay fast); one that never names a role is
+  # treated as a swap.
+  swap_role=""
+  swap_i=0
+  while :; do
+    swap_role="$(cat "$swap_lock/role" 2>/dev/null)"
+    case "$swap_role" in
+      ensure) exit 0 ;;
+      swap) break ;;
+    esac
+    if mkdir "$swap_lock" 2>/dev/null; then swap_role=mine; break; fi
+    swap_i=$((swap_i + 1))
+    if [ "$swap_i" -ge 8 ]; then break; fi
+    sleep 0.25
+  done
+  if [ "$swap_role" != mine ]; then
     echo "ensure-qmd-daemon: an embed-model swap is in progress (pid ${swap_pid:-unknown}, $swap_lock) - NOT starting the qmd daemon." >&2
     echo "  Starting it now would serve queries against a half-swapped index. Retry once the swap finishes;" >&2
     echo "  if that pid is gone, remove the lock directory." >&2
     exit 1
   fi
 fi
+echo ensure > "$swap_lock/role"
 echo "$$" > "$swap_lock/pid"
 # shellcheck disable=SC2064 # expand now: the lock path is fixed for this run
 trap "[ \"\$(cat '$swap_lock/pid' 2>/dev/null)\" = \"$$\" ] && rm -rf '$swap_lock'" EXIT

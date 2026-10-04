@@ -137,6 +137,7 @@ if [ "$*" = "mcp --http --daemon" ]; then
   if [ -n "${QMD_MOCK_LOCK_DIR:-}" ]; then
     if [ -d "$QMD_MOCK_LOCK_DIR" ]; then echo held >> "$QMD_MOCK_STATE/lock-at-start"; else echo free >> "$QMD_MOCK_STATE/lock-at-start"; fi
   fi
+  if [ -n "${QMD_MOCK_SLOW:-}" ]; then sleep "$QMD_MOCK_SLOW"; fi
   touch "$QMD_MOCK_STATE/alive"
   echo "Started qmd HTTP daemon (PID 4242)."
 fi
@@ -644,6 +645,7 @@ mkdir -p "$swap_lock"
 sleep 30 &
 holder_pid=$!
 echo "$holder_pid" > "$swap_lock/pid"
+echo swap > "$swap_lock/role"
 run_ensure sentinel "$bin:$safe"
 [ "$rc" -ne 0 ] || fail "(r) swap held: expected a refusal, got rc 0 ($out)"
 grep -q "swap" <<< "$out" || fail "(r) swap held: refusal does not name the swap (got: $out)"
@@ -681,5 +683,48 @@ unset QMD_MOCK_LOCK_DIR
 grep -qx held "$state/lock-at-start" 2>/dev/null || fail "(t) start: the swap lock was not held while the daemon started ($(cat "$state/lock-at-start" 2>/dev/null))"
 [ ! -d "$swap_lock" ] || fail "(t) start: the lock was not released after the start"
 echo "ok (t): the daemon start holds the swap lock and releases it"
+
+# ---- (u) two sessions start together: neither is told a swap is running -------
+# The console launches several legs within a second, so two SessionStart hooks
+# race for the lock. The loser sees an ENSURE holder, not a swap: it exits 0
+# quietly (the other start is already on it), never "swap in progress".
+rm -f "$state/alive" "$state/qmd-argv.log"
+export QMD_MOCK_SLOW=2
+u_pids=""
+for n in 1 2; do
+  (
+    set +e
+    QMD_CURL="$mock_curl" QMD_MOCK_CURL_MODE=sentinel QMD_MOCK_STATE="$state" \
+      QMD_START_TIMEOUT=20 QMD_MCP_URL="$test_url" HOME="$home" PATH="$bin:$safe" \
+      bash "$script" > "$state/u$n.out" 2>&1
+    echo "$?" > "$state/u$n.rc"
+  ) &
+  u_pids="$u_pids $!"
+  sleep 0.3
+done
+# shellcheck disable=SC2086 # word-split the pid list on purpose
+wait $u_pids
+unset QMD_MOCK_SLOW
+for n in 1 2; do
+  [ "$(cat "$state/u$n.rc")" = "0" ] || fail "(u) concurrent start $n: expected rc 0, got $(cat "$state/u$n.rc") ($(cat "$state/u$n.out"))"
+  if grep -q "swap" "$state/u$n.out"; then fail "(u) concurrent start $n: told a swap is in progress ($(cat "$state/u$n.out"))"; fi
+done
+[ "$(grep -c '^mcp --http --daemon$' "$state/qmd-argv.log")" = "1" ] || fail "(u) concurrent starts: expected exactly one daemon start ($(cat "$state/qmd-argv.log"))"
+[ ! -d "$swap_lock" ] || fail "(u) concurrent starts: the lock was not released"
+echo "ok (u): two concurrent starts both exit 0, no swap message, one daemon start"
+
+# ---- (v) a live holder with no role yet is treated as a swap (conservative) ---
+rm -f "$state/alive"
+mkdir -p "$swap_lock"
+sleep 30 &
+holder_pid=$!
+echo "$holder_pid" > "$swap_lock/pid"
+run_ensure sentinel "$bin:$safe"
+[ "$rc" -ne 0 ] || fail "(v) role-less live holder: expected a refusal, got rc 0 ($out)"
+[ ! -f "$state/qmd-argv.log" ] || fail "(v) role-less live holder: qmd was invoked"
+kill "$holder_pid" 2>/dev/null || true
+wait "$holder_pid" 2>/dev/null || true
+rm -rf "$swap_lock"
+echo "ok (v): a live holder with no role is refused like a swap"
 
 echo "PASS: all ensure-qmd-daemon cases"

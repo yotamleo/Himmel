@@ -251,11 +251,12 @@ make_index "$H/.cache/qmd/index.reembed-qwen.sqlite" 1024 "$QWEN"
 LOCK="$H/.cache/qmd/embed-swap.lock"
 # the hook stands in for the relauncher: it runs between the rename and the
 # config flip and records whether the lock is held and by which pid.
-rc=0; out=$(run env QMD_EMBED_SWAP_MID_HOOK="cat '$LOCK/pid' >'$H/mid-pid'; ls -d '$LOCK' >'$H/mid-lock'" \
+rc=0; out=$(run env QMD_EMBED_SWAP_MID_HOOK="cat '$LOCK/pid' >'$H/mid-pid'; cat '$LOCK/role' >'$H/mid-role'; ls -d '$LOCK' >'$H/mid-lock'" \
     bash "$SCRIPT" swap --copy "$H/.cache/qmd/index.reembed-qwen.sqlite" 2>&1) || rc=$?
 assert_rc "swap with a mid-swap hook succeeds" 0 "$rc"
 if [ -s "$H/mid-lock" ]; then pass "the lock is held mid-swap"; else fail "the lock is held mid-swap"; fi
 if [ -s "$H/mid-pid" ]; then pass "the lock records its holder pid"; else fail "the lock records its holder pid"; fi
+if [ "$(cat "$H/mid-role" 2>/dev/null)" = swap ]; then pass "the lock records the swap role"; else fail "the lock records the swap role"; fi
 if [ ! -e "$LOCK" ]; then pass "the lock is released after a committed swap"; else fail "the lock is released after a committed swap"; fi
 
 # a failed swap still releases the lock (rollback path: the post-swap check fails)

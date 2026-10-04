@@ -210,7 +210,9 @@ daemon_running() {
 # it for any new Claude session) served the OLD model's query embeddings against
 # the NEW vectors. `swap` holds this lock from its liveness check to its commit
 # or rollback, and the daemon start path refuses while it is held. A mkdir lock
-# (atomic) in qmd's cache dir, holder pid inside; the same path and stale rule
+# (atomic) in qmd's cache dir, holder pid and role (swap or ensure) inside. A
+# swap refuses on ANY live holder, a running daemon start included; the start
+# refuses only on role=swap and defers quietly to another start. The same path and stale rule
 # are inlined in marketplace/plugins/qmd/scripts/ensure-qmd-daemon.sh, which
 # cannot source this repo. A lock whose pid is dead is stale; one with no pid
 # file is stale once a minute old (the holder died between mkdir and the write).
@@ -262,6 +264,7 @@ swap_lock_acquire() {
         mkdir "$d" 2>/dev/null \
             || die 2 "another qmd-embed-model swap holds $d (pid $(cat "$d/pid" 2>/dev/null || echo unknown)); wait for it, or remove the directory if that pid is gone"
     fi
+    printf '%s\n' swap >"$d/role"
     printf '%s\n' "$$" >"$d/pid"
     trap swap_lock_release EXIT
 }
