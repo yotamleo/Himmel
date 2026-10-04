@@ -3064,6 +3064,8 @@ check_c50_qmd_fork_stamp() {
     # shellcheck disable=SC1090
     pin="$( . "$lib" >/dev/null 2>&1; _qmd_fork_ref )"
     stamp_file="$dir/.himmel-build-ok"
+    # An abbreviated or symbolic QMD_FORK_REF names the same commit as a full SHA; compare resolved.
+    pin="$(git -C "$dir" rev-parse --verify --quiet "$pin^{commit}" 2>/dev/null || printf '%s' "$pin")"
     if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
         emit WARN C50-qmd-fork-stamp "no qmd fork checkout at $dir -- nothing to compare against the pin ${pin:0:8}" \
             "bash scripts/lib/qmd-bin.sh install   # builds the pinned fork"

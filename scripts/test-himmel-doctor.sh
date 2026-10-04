@@ -5527,6 +5527,10 @@ echo "== C50-qmd-fork-stamp: stamp == HEAD == pin -> OK (RED) =="
 out="$(c50_run "$c50_b" "$c50_b")"
 if grepq "$out" 'OK   C50-qmd-fork-stamp'; then pass "C50 all three agree -> OK"; else fail "C50 agree -> $(printf '%s' "$out" | grep -A1 C50)"; fi
 
+echo "== C50-qmd-fork-stamp: abbreviated pin naming HEAD -> OK, not drift =="
+out="$(c50_run "$c50_b" "${c50_b:0:10}")"
+if grepq "$out" 'OK   C50-qmd-fork-stamp'; then pass "C50 short pin == HEAD -> OK"; else fail "C50 short pin -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
 echo "== C50-qmd-fork-stamp: stamp != HEAD -> WARN stale build =="
 out="$(c50_run "$c50_a" "$c50_b")"
 if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -i 'stale build'; then pass "C50 stale build -> WARN"; else fail "C50 stale -> $(printf '%s' "$out" | grep -A1 C50)"; fi
