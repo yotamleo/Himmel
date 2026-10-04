@@ -1216,9 +1216,9 @@ check_c22() {
     # folding both into one "starved" label made the remedy text below
     # misleading for a box that is only seeing chatty-hook overflows.
     # HIMMEL-4287: the log also records the hook suites' own fixture members
-    # (hang/hog/flood and anything under a test or fixtures path); only a real
+    # (hang/hog/flood and anything under a scripts/**/test or fixtures dir); only a real
     # hook's starvation is a finding, so those rows are dropped before counting.
-    summary="$(jq -rs 'map(select((.member // "") | test("^(hang[0-9]*|hog[0-9]*|flood[0-9]*)\\.sh$|(^|/)(tests?|fixtures?)/") | not)) | group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
+    summary="$(jq -rs 'map(select((.member // "") | test("^(hang[0-9]*|hog[0-9]*|flood[0-9]*)\\.sh$|(^|/)scripts/([^/]+/)*(tests?|fixtures?)/") | not)) | group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
     # A malformed/partially-written row makes the WHOLE `jq -s` slurp fail
     # (HIMMEL-2060 CR round 1, codex-2) — distinguish that from a genuinely
     # empty log rather than reporting both as the same clean OK.

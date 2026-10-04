@@ -5591,8 +5591,9 @@ if ! grepq "$out" 'WARN C22-chain-skips' && grepq "$out" 'C22-chain-skips'; then
 echo "== C22: fixtures + a real member -> WARN names only the real member =="
 cp "$n_t/skips-fixture.jsonl" "$n_t/skips-mixed.jsonl"
 printf '%s\n' '{"action":"skip","member":"block-read-secrets.sh","reason":"ETIMEDOUT"}' >> "$n_t/skips-mixed.jsonl"
+printf '%s\n' '{"action":"skip","member":"/home/test/himmel/scripts/hooks/real-guard.sh","reason":"ETIMEDOUT"}' >> "$n_t/skips-mixed.jsonl"
 out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-mixed.jsonl" bash "$DOC" --no-color 2>&1)"
-if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh' && ! grepq "$out" -E 'WARN C22-chain-skips.*(hang|hog|flood)'; then pass "C22 mixed -> real member only"; else fail "C22 mixed -> $(printf '%s' "$out" | grep C22)"; fi
+if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh' && grepq "$out" 'WARN C22-chain-skips.*real-guard.sh' && ! grepq "$out" -E 'WARN C22-chain-skips.*(hang|hog|flood)'; then pass "C22 mixed -> real member only"; else fail "C22 mixed -> $(printf '%s' "$out" | grep C22)"; fi
 
 echo "== C19: observability not desired on this host -> INFO, no WARN =="
 printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"n/a"},{"id":"observability-grafana","desired":false,"severity":"n/a"}]}' > "$n_t/status-na.json"
