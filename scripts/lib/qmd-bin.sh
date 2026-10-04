@@ -73,7 +73,7 @@ _QMDBIN_LIB_DIR="${BASH_SOURCE[0]%/*}"
 # The pin is the tip of origin/fix/launcher-forward-signals (the fork's pin
 # branch), not fork main.
 _qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
-_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-17a6da8281d7efa4e702080e630787ed9f89ed2b}"; }
+_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-932839a2a4cc4b894b1fd5fb2a86758321985c56}"; }
 _qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
 # An owned clone's origin may be either known qmd remote -- upstream tobi/qmd
 # or the himmel fork yotamleo/qmd -- in the forms seen in the wild (with or
