@@ -1944,9 +1944,10 @@ assert_rc "408 primary /opt/t/plant x ./.c?aude/ denies" 2 \
     "$(bash_rc_of "$PRIMARY" '/opt/t/plant x ./.c?aude/' HOME="$FAKEHOME")"
 assert_rc "409 heredoc, then nested worktree ln -sf \$SJ ~/.c?aude denies" 2 \
     "$(bash_rc_of "$NESTED_WT" "$(printf 'cat <<EOF\nhi\nEOF\nln -sf %s ~/.c?aude' "$SJ")" HOME="$FAKEHOME")"
-# A glob never matching a dot-name, a quoted glob, regex text and JSON braces
-# are not `.claude`, and reads through a glob name stay reads.
-assert_rc "410 nested worktree ln -sf a ~/?claude/ (leading ? skips dot-names) allows" 0 \
+# A quoted glob, regex text and JSON braces are not `.claude`, and reads through
+# a glob name stay reads. A leading `?` fails closed: dotglob can be on in the
+# shell the command runs in (HIMMEL-4165).
+assert_rc "410 nested worktree ln -sf a ~/?claude/ (leading ? under dotglob) denies" 2 \
     "$(bash_rc_of "$NESTED_WT" 'ln -sf a ~/?claude/' HOME="$FAKEHOME")"
 assert_rc "411 nested worktree cp a '~/.c?aude/' (quoted, literal) allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "cp a '~/.c?aude/'" HOME="$FAKEHOME")"
@@ -2162,6 +2163,218 @@ assert_rc "505 sudo -H root /opt/t/plant x ~/.claude/ denies" 2 \
     "$(bash_rc_of "$NESTED_WT" 'sudo -H root /opt/t/plant x ~/.claude/' HOME="$FAKEHOME")"
 assert_rc "506 sudo -Hu root cat ~/.claude/x allows" 0 \
     "$(bash_rc_of "$PRIMARY" 'sudo -Hu root cat ~/.claude/x' HOME="$FAKEHOME")"
+# HIMMEL-4171/4188/4189/4165/4167/4173: every component spelling that can expand
+# to `.claude` fails closed, from the nested worktree and the primary alike.
+# 4171: a command substitution or a backtick span inside the name.
+assert_rc "507 nested worktree ln -sf \$SJ ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl\$(printf a)ude" HOME="$FAKEHOME")"
+assert_rc "508 primary cp \$SJ ~/.cl\$(printf a)ude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp $SJ ~/.cl\$(printf a)ude/" HOME="$FAKEHOME")"
+assert_rc "509 nested worktree ln -sf \$SJ ~/.cl\`printf a\`ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl\`printf a\`ude" HOME="$FAKEHOME")"
+assert_rc "510 nested worktree cp \$SJ ~/.cl\$(printf \"%s\" \$(echo a))ude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/.cl\$(printf \"%s\" \$(echo a))ude/" HOME="$FAKEHOME")"
+assert_rc "511 nested worktree ln -sf \$SJ ~/.cl\$(cd /tmp; printf a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl\$(cd /tmp; printf a)ude" HOME="$FAKEHOME")"
+assert_rc "512 nested worktree cp \$SJ ~/.cl\`cat /etc/hostname\`ude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/.cl\`cat /etc/hostname\`ude/" HOME="$FAKEHOME")"
+assert_rc "513 nested worktree ln -sf \$SJ ~/\${X}laude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/\${X}laude" HOME="$FAKEHOME")"
+assert_rc "514 nested worktree ln -sf \$SJ ~/\$(printf .cl)aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/\$(printf .cl)aude" HOME="$FAKEHOME")"
+assert_rc "515 primary ln -sf \$SJ ~/\`printf .c\`laude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/\`printf .c\`laude" HOME="$FAKEHOME")"
+# 4188: a quoted "$HOME" parent is the home parent, not a relative `*/`.
+assert_rc "516 nested worktree cp /etc/hostname \"\$HOME\"/.cl(a|x)ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'cp /etc/hostname "$HOME"/.cl(a|x)ude/settings.json' HOME="$FAKEHOME")"
+assert_rc "517 nested worktree echo x to \"\$HOME\"/.c(l|x)aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > "$HOME"/.c(l|x)aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "518 nested worktree dd of=\"\$HOME\"/.c(l|x)aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'dd if=/etc/hostname of="$HOME"/.c(l|x)aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "519 nested worktree chmod 777 \"\$HOME\"/.c(l|x)aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'chmod 777 "$HOME"/.c(l|x)aude/settings.json' HOME="$FAKEHOME")"
+assert_rc "520 primary cp settings.json \"\${HOME}\"/.cl(a|x)ude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'cp settings.json "${HOME}"/.cl(a|x)ude' HOME="$FAKEHOME")"
+# 4189: a trailing zsh glob qualifier is not a group.
+assert_rc "521 nested worktree cp settings.json ~/.cl*(N) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'cp settings.json ~/.cl*(N)' HOME="$FAKEHOME")"
+assert_rc "522 nested worktree cp settings.json ~/.cl*(D) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'cp settings.json ~/.cl*(D)' HOME="$FAKEHOME")"
+assert_rc "523 nested worktree cp settings.json \"\$HOME\"/.cl*(/) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'cp settings.json "$HOME"/.cl*(/)' HOME="$FAKEHOME")"
+assert_rc "524 nested worktree cp settings.json ~/.cl*(#qN) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'cp settings.json ~/.cl*(#qN)' HOME="$FAKEHOME")"
+assert_rc "525 primary cp settings.json ~/.cl*(N)/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'cp settings.json ~/.cl*(N)/settings.json' HOME="$FAKEHOME")"
+# 4165: a leading glob can match a dot-name under dotglob/GLOB_DOTS.
+assert_rc "526 nested worktree ln -sf \$SJ ~/*claude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/*claude" HOME="$FAKEHOME")"
+assert_rc "527 nested worktree cp \$SJ ~/[.]claude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/[.]claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "528 nested worktree setopt globdots; echo x to ~/*/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'setopt globdots; echo x > ~/*/settings.json' HOME="$FAKEHOME")"
+assert_rc "529 nested worktree shopt -s dotglob; tee ~/?*/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'shopt -s dotglob; tee ~/?*/settings.json' HOME="$FAKEHOME")"
+assert_rc "530 primary setopt GLOB_DOTS; cp /etc/hostname ~/*/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" 'setopt GLOB_DOTS; cp /etc/hostname ~/*/settings.json' HOME="$FAKEHOME")"
+assert_rc "531 nested worktree GLOBIGNORE=x; echo x to ~/*/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'GLOBIGNORE=x; echo x > ~/*/settings.json' HOME="$FAKEHOME")"
+assert_rc "532 nested worktree cp settings.json ~/*(D)/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" 'cp settings.json ~/*(D)/settings.json' HOME="$FAKEHOME")"
+assert_rc "533 nested worktree setopt globdots; ln -sf \$SJ ~/* denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "setopt globdots; ln -sf $SJ ~/*" HOME="$FAKEHOME")"
+# 4167: a quote-led zsh group.
+assert_rc "534 nested worktree ln -sf \$SJ ~/'.c'l(a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/'.c'l(a)ude" HOME="$FAKEHOME")"
+assert_rc "535 nested worktree cp \$SJ ~/\".c\"l(a)ude/ denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/\".c\"l(a)ude/" HOME="$FAKEHOME")"
+assert_rc "536 primary cp \$SJ ~/'.c'l(a)ude/ denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp $SJ ~/'.c'l(a)ude/" HOME="$FAKEHOME")"
+# 4173: a zsh negation or exclusion inside a group.
+assert_rc "537 nested worktree ln -sf \$SJ ~/.c(^x)aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c(^x)aude" HOME="$FAKEHOME")"
+assert_rc "538 nested worktree ln -sf \$SJ ~/.cl(^x)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.cl(^x)ude" HOME="$FAKEHOME")"
+assert_rc "539 nested worktree ln -sf \$SJ ~/.c(x~y)laude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c(x~y)laude" HOME="$FAKEHOME")"
+assert_rc "540 nested worktree ln -sf \$SJ ~/.c(a|^x)aude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c(a|^x)aude" HOME="$FAKEHOME")"
+assert_rc "541 primary ln -sf \$SJ ~/.c(^x) denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.c(^x)" HOME="$FAKEHOME")"
+# Controls: names that cannot be `.claude`, and globs with no dotglob in reach.
+assert_rc "542 nested worktree ln -sf \$SJ ~/.c(^x)onfig allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "ln -sf $SJ ~/.c(^x)onfig" HOME="$FAKEHOME")"
+assert_rc "543 nested worktree cp src/settings.json ~/.config/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp src/settings.json ~/.config/' HOME="$FAKEHOME")"
+assert_rc "544 nested worktree cp src/* dst/ allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp src/* dst/' HOME="$FAKEHOME")"
+assert_rc "545 nested worktree echo x to ~/*/settings.json (no dotglob) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'echo x > ~/*/settings.json' HOME="$FAKEHOME")"
+assert_rc "546 nested worktree cp a.txt b/* allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp a.txt b/*' HOME="$FAKEHOME")"
+assert_rc "547 nested worktree cp a \$(pwd)/x allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp a $(pwd)/x' HOME="$FAKEHOME")"
+# 4171 codex-1: a quoted `(`/`)` inside a span is literal, so it must not end
+# or open a group there.
+assert_rc "548 nested worktree cp \$SJ ~/.cl\$(printf a; : '(')ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/.cl\$(printf a; : '(')ude/settings.json" HOME="$FAKEHOME")"
+assert_rc "549 nested worktree cp \$SJ ~/.cl\$(printf a; : \")\")ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/.cl\$(printf a; : \")\")ude/settings.json" HOME="$FAKEHOME")"
+assert_rc "550 nested worktree cp \$SJ ~/\$(printf .cl; : '(')aude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/\$(printf .cl; : '(')aude/settings.json" HOME="$FAKEHOME")"
+assert_rc "551 nested worktree cp \$SJ \"\$HOME\"/.cl\$(printf a; : '(')ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ \"\$HOME\"/.cl\$(printf a; : '(')ude/settings.json" HOME="$FAKEHOME")"
+assert_rc "552 primary ln -sf \$SJ ~/.cl\$(printf a; : '(')ude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "ln -sf $SJ ~/.cl\$(printf a; : '(')ude" HOME="$FAKEHOME")"
+assert_rc "553 nested worktree cp a.txt \"\$(pwd)/x (1).txt\" allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp a.txt "$(pwd)/x (1).txt"' HOME="$FAKEHOME")"
+# 4171: a name led by a span that does not fold is read again inside the span,
+# so a glob name in it still folds.
+assert_rc "554 nested worktree cp \$SJ \$(echo ~/.cl*)/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ \$(echo ~/.cl*)/settings.json" HOME="$FAKEHOME")"
+assert_rc "555 nested worktree cp \$SJ \`echo ~/.c?aude\`/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ \`echo ~/.c?aude\`/settings.json" HOME="$FAKEHOME")"
+assert_rc "556 nested worktree cp \$SJ \"\$(echo ~/.cl*)/settings.json\" denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ \"\$(echo ~/.cl*)/settings.json\"" HOME="$FAKEHOME")"
+assert_rc "562 nested worktree cp \$SJ .\$(echo ~/.cl*)/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ .\$(echo ~/.cl*)/settings.json" HOME="$FAKEHOME")"
+# a glob-led name (`*$b`) needs dotglob/GLOB_DOTS to match a dot-name
+assert_rc "557 nested worktree cp a ~/*\$b/settings.json (no dotglob) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp a ~/*$b/settings.json' HOME="$FAKEHOME")"
+assert_rc "558 nested worktree case pattern *\"\$b\"*) allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'case "$a" in *"$b"*) cat settings.json;; esac' HOME="$FAKEHOME")"
+# a command past the tokenizer's 8192-byte cap still gets the quote-aware
+# reading, so padding cannot skip it
+PAD=$(printf '%9000s' '' | tr ' ' a)
+assert_rc "559 nested worktree padded cp \$SJ ~/.cl\$(printf a; : '(')ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" ": $PAD; cp $SJ ~/.cl\$(printf a; : '(')ude/settings.json" HOME="$FAKEHOME")"
+assert_rc "560 primary padded cp \$SJ ~/.cl\$(printf a; : '(')ude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" ": $PAD; cp $SJ ~/.cl\$(printf a; : '(')ude/settings.json" HOME="$FAKEHOME")"
+assert_rc "561 nested worktree padded cp a.txt b.txt allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" ": $PAD; cp a.txt b.txt" HOME="$FAKEHOME")"
+# a zsh group can lead the name too (`~/(.c|x)laude`, `~/(|.)claude`)
+assert_rc "563 nested worktree cp \$SJ ~/(.c|x)laude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/(.c|x)laude/settings.json" HOME="$FAKEHOME")"
+assert_rc "564 nested worktree cp \$SJ ~/(|.)claude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/(|.)claude/settings.json" HOME="$FAKEHOME")"
+assert_rc "565 nested worktree cp \$SJ \"\$HOME\"/(.claude|x)/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ \"\$HOME\"/(.claude|x)/settings.json" HOME="$FAKEHOME")"
+assert_rc "566 nested worktree cp \$SJ ~/(#i).CLAUDE/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ ~/(#i).CLAUDE/settings.json" HOME="$FAKEHOME")"
+assert_rc "567 nested worktree cp a ~/(a|b)/settings.json allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" 'cp a ~/(a|b)/settings.json' HOME="$FAKEHOME")"
+assert_rc "568 nested worktree cp \$SJ (.c|x)laude/settings.json allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp $SJ (.c|x)laude/settings.json" HOME="$FAKEHOME")"
+# and so can a bash/ksh extglob group
+assert_rc "569 nested worktree cp \$SJ ~/@(.c|x)laude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "shopt -s extglob; cp $SJ ~/@(.c|x)laude/settings.json" HOME="$FAKEHOME")"
+assert_rc "570 nested worktree cp \$SJ ~/+(.claude)/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "shopt -s extglob; cp $SJ ~/+(.claude)/settings.json" HOME="$FAKEHOME")"
+assert_rc "571 primary cp \$SJ ~/?(.)claude/settings.json denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp $SJ ~/?(.)claude/settings.json" HOME="$FAKEHOME")"
+# a quoted heredoc body a data command reads keeps main's spellings only (AI
+# ruling); a body a shell runs is folded in full
+assert_rc "572 nested worktree cat <<'EOF' body naming ~/.cl\$(printf a)ude allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cat > /tmp/n.md <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "573 nested worktree bash <<'EOF' body cp near ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "bash <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+# an interpreter body that shells out hands its text to a shell (CR round 3)
+assert_rc "574 nested worktree python3 <<'EOF' os.system near ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "python3 <<'EOF'
+import os
+os.system('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
+EOF" HOME="$FAKEHOME")"
+assert_rc "575 primary node <<'EOF' child_process near ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "node <<'EOF'
+require('child_process').execSync('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
+EOF" HOME="$FAKEHOME")"
+# any interpreter body: a shell-out can hide behind an alias (CR round 5)
+assert_rc "576 nested worktree python3 <<'EOF' aliased system near ~/.cl\$(printf a)ude denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "python3 <<'EOF'
+from os import system as run
+run('x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b')
+EOF" HOME="$FAKEHOME")"
+# an unquoted heredoc sharing a quoted one's delimiter name is not data, and
+# a multibyte character ahead of the name does not cut the quote-aware scan
+# short (CR round 4)
+assert_rc "577 nested worktree <<'EOF' then unquoted <<EOF body \$(ls ~/.cl\$(printf a)ude/) denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat > /tmp/a.md <<'EOF'
+note
+EOF
+cat > /tmp/b.md <<EOF
+\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "578 nested worktree UTF-8 text before cp \$SJ \"\$HOME\"/.cl(a|x)ude/settings.json denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "echo 'éééééééééééééééééééééééééééééééééééééééééééé' ; cp $SJ \"\$HOME\"/.cl(a|x)ude/settings.json" HOME="$FAKEHOME" LC_ALL=en_US.UTF-8)"
+# only a reader that never runs its stdin keeps a body as data: a git alias,
+# a pipe on, `eval "$(cat …)"` or `<(cat …)` may run it (CR round 5)
+assert_rc "579 nested worktree git -c alias.x='!bash' x <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "git -c alias.x='!bash' x <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "580 nested worktree cat <<'EOF' | bash body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "cat <<'EOF' | bash
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF" HOME="$FAKEHOME")"
+assert_rc "581 primary eval \"\$(cat <<'EOF'\" body denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "eval \"\$(cat <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF
+)\"" HOME="$FAKEHOME")"
+assert_rc "582 nested worktree bash <(cat <<'EOF') body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "bash <(cat <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF
+)" HOME="$FAKEHOME")"
+assert_rc "583 nested worktree git commit -m \"\$(cat <<'EOF'\" body allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "git commit -m \"\$(cat <<'EOF'
+x=\$(ls ~/.cl\$(printf a)ude/) ; cp a b
+EOF
+)\"" HOME="$FAKEHOME")"
 
 # Clean up worktree registrations before removing the sandbox (avoids
 # dangling `git worktree` admin records under SANDBOX/primary).
