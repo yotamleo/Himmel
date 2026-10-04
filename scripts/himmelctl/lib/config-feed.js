@@ -13,7 +13,6 @@
 //   HIMMEL_REPORT_DOCTOR        path of the doctor script to run
 //   HIMMEL_REPORT_CADENCE_ROOT  tree holding the cadence scripts and
 //                               plugin-profile.sh (default: the checkout)
-//   HIMMEL_REPORT_NO_REDACT=1   disables redaction (the RED control only)
 
 const fs = require('fs');
 const os = require('os');
@@ -78,8 +77,19 @@ function doctorPath() {
 function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
+// The repo-root .env as text. envStatus records whether it could be read: 'ok',
+// 'absent' (no such file, normal) or 'unreadable' (exists but cannot be read, so
+// the redactor has no .env values to match; the envelope says so, HIMMEL-4327).
+let envStatus = 'ok';
 function readDotEnv() {
-  try { return fs.readFileSync(path.join(repoRoot(), '.env'), 'utf8'); } catch { return ''; }
+  try {
+    const raw = fs.readFileSync(path.join(repoRoot(), '.env'), 'utf8');
+    envStatus = 'ok';
+    return raw;
+  } catch (e) {
+    envStatus = e && e.code === 'ENOENT' ? 'absent' : 'unreadable';
+    return '';
+  }
 }
 function mtimeIso(p) {
   try { return fs.statSync(p).mtime.toISOString(); } catch { return null; }
@@ -329,16 +339,75 @@ function featureGroup(feature) {
   return 'vault';
 }
 
-// Presence only (A7): the value is never read into a row — only whether the
-// key is set (non-empty) in the checkout's .env or the environment.
+// Presence only (A7): never a value. Each secret is checked where its own
+// consumer reads it (the manifest's `storage` text, mirrored here), never by a
+// blanket read of the repo-root .env: that file carries a DIFFERENT bot's
+// TELEGRAM_BOT_TOKEN, and the process-env-only keys are never read from it.
+//   repo-env     key set in the repo-root .env (the tool loads it itself)
+//   process-env  key set in the environment
+//   bridge-env   key set in the Telegram bridge's own file (TELEGRAM_ENV, else
+//                ~/.claude/channels/telegram/.env)
+//   file         a non-empty file: `override` names an env var holding the path,
+//                `dirVar` one holding the directory (file `name` inside it),
+//                else the `home`-relative default
+// A manifest secret with no entry reads absent (and the test fails), so a new
+// secret cannot silently inherit the wrong source.
+const PRESENCE_SOURCES = {
+  BITBUCKET_API_TOKEN: { kind: 'repo-env' },
+  BITBUCKET_EMAIL: { kind: 'repo-env' },
+  FIRECRAWL_API_KEY: { kind: 'process-env' },
+  FIRECRAWL_BASE_URL: { kind: 'process-env' },
+  INSTAGRAM_COOKIE_FILE: { kind: 'file', home: '.luna/cookies/instagram.txt' },
+  REDDIT_COOKIE_FILE: { kind: 'file', home: '.luna/cookies/reddit.txt', override: 'REDDIT_COOKIE_FILE' },
+  TELEGRAM_BOT_TOKEN: { kind: 'bridge-env' },
+  TWITTER_AUTH_TOKEN: { kind: 'process-env' },
+  TWITTER_CT0: { kind: 'process-env' },
+  TWITTER_COOKIE_FILE: { kind: 'file', home: '.luna/cookies/twitter.txt' },
+  WHISPER_MODEL: { kind: 'file', home: '.himmel/whisper/ggml-small.bin', override: 'WHISPER_MODEL', dirVar: 'WHISPER_DIR', name: 'ggml-small.bin' },
+  YOUTUBE_STORAGE_STATE: { kind: 'file', home: '.luna/playwright-state/youtube.json' },
+};
+
+// True when `KEY=` has a non-empty value in .env-shaped text. A line regex, so
+// no value is parsed or kept.
+function envFileHasKey(file, key) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return false; }
+  return new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=\\s*(?!["']{0,2}\\s*(?:#.*)?$)\\S`, 'm').test(raw);
+}
+function expandHome(p) {
+  return /^~[\\/]/.test(p) ? path.join(homeDir(), p.slice(2)) : p;
+}
+function nonEmptyFile(p) {
+  try { const st = fs.statSync(p); return st.isFile() && st.size > 0; } catch { return false; }
+}
+
+function secretPresent(name) {
+  const src = PRESENCE_SOURCES[name];
+  if (!src) return false;
+  const env = process.env;
+  if (src.kind === 'repo-env') return envFileHasKey(path.join(repoRoot(), '.env'), name);
+  if (src.kind === 'process-env') return Boolean(env[name]);
+  if (src.kind === 'bridge-env') {
+    const file = env.TELEGRAM_ENV ? expandHome(env.TELEGRAM_ENV) : path.join(homeDir(), '.claude', 'channels', 'telegram', '.env');
+    return envFileHasKey(file, name);
+  }
+  if (src.kind === 'file') {
+    let p;
+    if (src.override && env[src.override]) p = expandHome(env[src.override]);
+    else if (src.dirVar && env[src.dirVar]) p = path.join(expandHome(env[src.dirVar]), src.name);
+    else p = path.join(homeDir(), ...src.home.split('/'));
+    return nonEmptyFile(p);
+  }
+  return false;
+}
+
 function secretRows(ctx) {
   const man = readJson(path.join(__dirname, 'secrets-manifest.json'));
-  const env = probesLib.parseDotEnv(readDotEnv());
   // A required secret of a feature this profile never selected is not a failure
   // (same scoping the wizard's secrets walk uses); null = no profile, scope nothing.
   const active = adopterProfileLib.resolveActiveFeatures(ctx.answers);
   return ((man && man.secrets) || []).map((s) => {
-    const present = Boolean(env[s.name]) || Boolean(process.env[s.name]);
+    const present = secretPresent(s.name);
     const inScope = active === null || active.has(s.feature);
     return mkRow({
       id: `secret:${s.name}`, source: 'secret', group: featureGroup(s.feature || ''), title: s.name,
@@ -377,8 +446,8 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
   if (wants('secret:')) rows = rows.concat(secretRows(ctx));
   // doctor:run reports a dead or timed-out doctor; an --items filter must not hide it.
   // Ids are shown redacted, so --items matches on the redacted form of both sides.
-  const literals = process.env.HIMMEL_REPORT_NO_REDACT === '1' ? null : redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env);
-  const shown = (id) => (literals ? redactLib.redactDeep({ id }, { literals }).id : id);
+  const literals = redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env);
+  const shown = (id) => redactLib.redactDeep({ id }, { literals }).id;
   if (itemIds) {
     const wanted = itemIds.map(shown);
     rows = rows.filter((r) => wanted.includes(shown(r.id)) || r.id === 'doctor:run' || r.id === 'plugin:run');
@@ -393,11 +462,13 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
     target: { scope, path: targetPath },
     base: repoRoot(),
     profileCache: Boolean(answers),
+    // 'unreadable' = the .env exists but could not be read, so the redactor had
+    // no .env values to match and only shape-based scrubbing applied.
+    redaction: { env: envStatus },
     rows,
     summary,
   };
-  if (process.env.HIMMEL_REPORT_NO_REDACT === '1') return feed;
   return redactLib.redactDeep(feed, { literals });
 }
 
-module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, remedyFromDetail };
+module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, PRESENCE_SOURCES, remedyFromDetail };
