@@ -366,17 +366,22 @@ class UrlRules:
 
 def _norm_host(host: str) -> str:
     """Lowercase, drop a trailing dot, IDNA-encode (so IDN == punycode)."""
-    host = host.lower().rstrip(".")
-    if "*" in host:
-        return host
-    try:
-        return host.encode("idna").decode("ascii")
-    except UnicodeError:
-        return host
+    labels = []
+    for label in host.lower().rstrip(".").split("."):
+        if "*" not in label:
+            try:
+                label = label.encode("idna").decode("ascii")
+            except UnicodeError:
+                pass
+        labels.append(label)
+    return ".".join(labels)
 
 
 def _norm_path(path: str) -> str:
-    """Percent-decode (to a fixed point), resolve dot-segments, empty -> `/`."""
+    """Percent-decode (to a fixed point), resolve dot-segments, empty -> `/`.
+    The query is split off first: its slashes and dots are not path segments."""
+    path, qsep, query = path.partition("?")
+    # ponytail: 4 decode passes, raise if a backend is seen decoding deeper (HIMMEL-4355)
     for _ in range(4):
         dec = unquote(path)
         if dec == path:
@@ -389,7 +394,7 @@ def _norm_path(path: str) -> str:
                 out.pop()
         elif seg != ".":
             out.append(seg)
-    return "/" + "/".join(out)
+    return "/" + "/".join(out) + qsep + query
 
 
 def _norm_target(text: str, is_pattern: bool = False) -> list[str]:
