@@ -125,6 +125,15 @@ gathering, per the rule below.>
 > froze the vault). Not `/tmp` either — it can be tmpfs, so a full tree sits in RAM.
 > Only your verdict file belongs under `verdicts/<qid>/`.
 
+> **A PR-keyed `/tmp` dir (`j<PR>`) is made by the helper, never by `mkdir`
+> (HIMMEL-4325).** If you judge a PR and need a short-lived tree under
+> `/tmp/claude-<uid>/j<PR>`, create it with
+> `bash <primary checkout>/scripts/judge-dir.sh <PR> [suffix a-z]` — the absolute path
+> from the primary checkout, never a worktree's copy — and use the dir it prints.
+> It writes the `.holder` file `scripts/tmp-reap.sh` reads: a live judge's dir is
+> never reaped, a dead one's is reaped at once. A dir made any other way
+> falls back to the 6 h age floor.
+
 > **Per-child scratch subdirectory.** If this question needs bulk
 > evidence-gathering and you spawn subagents to do it, give each one its own
 > scratch subdirectory under `~/.cache/himmel/verdicts/<qid>/<child-n>/`,
