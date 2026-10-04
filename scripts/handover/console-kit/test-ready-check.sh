@@ -20,6 +20,7 @@ fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 contains() { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)); }; }
+notcontains() { grepq "$2" -F -e "$3" && { echo "FAIL - $1: output contains [$3]"; fails=$((fails+1)); } || echo "ok - $1"; }
 
 SHA=0123456789abcdef0123456789abcdef01234567
 PR=77
@@ -415,6 +416,50 @@ STUB_BODY='## Ticket coverage\n- ask one: deferred -> HIMMEL-55\n'
 rc=0; out="$(run)" || rc=$?
 check "coverage malformed jira reply: exit 1" "$rc" "1"
 contains "coverage malformed jira reply: reads UNKNOWN" "$out" "UNKNOWN"
+
+# --- 7b. HIMMEL-4300: `--only 7 <pr>` runs just the coverage check, so a leg
+# lints its own PR body before READY with item 7's exact logic (no second copy).
+run7() {
+    (cd "$REPO" && env -u TICKET_ID_PATTERN \
+        JIRA_PROJECT_KEY=HIMMEL STUB_NWO="$NWO" \
+        STUB_BODY="${STUB_BODY-$GREEN_BODY}" \
+        JIRA_CMD="$tmp/bin/jira-stub" STUB_JIRA_DB="$JIRA_DB" \
+        PATH="$PATH" GH_LOG="$GH_LOG" \
+        bash "$SCRIPT" --only 7 "$PR")
+}
+
+reset_stubs
+rc=0; out="$(run7)" || rc=$?
+check "only 7 clean body: exit 0" "$rc" "0"
+contains "only 7 clean body: check 7 passes" "$out" "[PASS] 7."
+contains "only 7 clean body: says PASS" "$out" "COVERAGE-LINT PASS"
+notcontains "only 7 clean body: runs no other check" "$out" "[PASS] 1."
+
+# checks 1-6 must not gate it: a head the stub does not know is irrelevant here
+reset_stubs
+STUB_HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef STUB_UNRESOLVED=3
+rc=0; out="$(run7)" || rc=$?
+check "only 7 ignores items 1-6: exit 0" "$rc" "0"
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done\n- ask two: done pending verification\n- ask three: deferred -> HIMMEL-50 (see thread)\n'
+rc=0; out="$(run7)" || rc=$?
+check "only 7 trailing text: exit 1" "$rc" "1"
+contains "only 7 trailing text: names the failing line" "$out" "ask two: done pending verification"
+contains "only 7 trailing text: names the second failing line" "$out" "ask three: deferred -> HIMMEL-50 (see thread)"
+contains "only 7 trailing text: prints the done shape" "$out" "- <ask>: done"
+contains "only 7 trailing text: prints the deferred shape" "$out" "- <ask>: deferred → HIMMEL-<n>"
+contains "only 7 trailing text: says marker LAST" "$out" "marker LAST"
+contains "only 7 trailing text: says FAIL" "$out" "COVERAGE-LINT FAIL"
+
+# the full run prints the same shape message on the same failure
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done pending verification\n'
+rc=0; out="$(run)" || rc=$?
+contains "full run trailing text: prints the accepted shape" "$out" "- <ask>: done"
+
+rc=0; out="$(cd "$REPO" && bash "$SCRIPT" --only 6 "$PR" 2>&1)" || rc=$?
+check "only 6 refused: exit 2" "$rc" "2"
 
 # --- 8. HIMMEL-3533: TICKET_ID_PATTERN / JIRA_PROJECT_KEY must resolve from
 # ready-check.sh's OWN checkout, never the caller's CWD repo. Fixture mirrors

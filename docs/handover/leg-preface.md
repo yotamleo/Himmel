@@ -307,6 +307,15 @@ by design.
   background (`run_in_background`) poll loop against GitHub: wait on CI with
   `scripts/check-ci.sh` in the foreground (its shared cache and rate-limit
   backoff exist so the fleet stays under one API quota).
+- **Lint your own `## Ticket coverage` before `READY` (HIMMEL-4300).** The
+  console's ready-check bounces a PR body whose coverage line has any text after
+  its marker (`done pending review`, `deferred → HIMMEL-9 (see thread)`). Run
+  `bash scripts/handover/console-kit/ready-check.sh --only 7 <pr>` once the PR
+  is open — it is item 7 of the console's own check, same code, and prints each
+  failing line with the accepted shape (`- <ask>: done` / `- <ask>: deferred →
+  HIMMEL-<n>`, marker LAST, nothing after it). Fix the body
+  (`bash scripts/lanes/leg-pr-open.sh <title-file> <body-file>`) until it prints
+  `COVERAGE-LINT PASS`, then send `READY`.
 - **A red CI job on your PR is yours to triage (HIMMEL-4071) — and you never
   tell the console about it, unless it is not the PR's fault.** The moment ONE
   required job fails, do not wait for the run to end and do not report the red.
