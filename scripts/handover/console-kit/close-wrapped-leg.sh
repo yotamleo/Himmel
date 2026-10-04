@@ -24,7 +24,11 @@
 # TERM goes to that one pid only - it never signals a non-matching pid, and
 # 0 or >1 matches is a refusal, not a best guess.
 #
-# After the signal, if the doc names exactly one worktree path (a
+# After the signal, the leg's own /tmp scratch (its judge dirs, and its session
+# scratch dir) is archived then reaped via tmp-reap.sh, scoped to this leg only
+# (HIMMEL-4235); a reap failure warns and never fails the close.
+#
+# Then, if the doc names exactly one worktree path (a
 # `.claude/worktrees/...` path appearing once), runs
 # `scripts/clean.sh --only <worktree> --only-allow-unmerged` and reports (not
 # fails) a "not pruned" skip. That flag (HIMMEL-3747) makes clean-garden.sh
@@ -64,6 +68,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 KILL="${KILL_BIN:-kill}"
 CLEAN_SH="${CLEAN_SH_BIN:-$HERE/../../clean.sh}"
 WRAP_SUBTREE_CHECK="${WRAP_SUBTREE_CHECK_BIN:-$HERE/../wrap-subtree-check.sh}"
+TMP_REAP="${TMP_REAP_BIN:-$HERE/../../tmp-reap.sh}"
 
 usage() {
     echo "usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>" >&2
@@ -295,6 +300,39 @@ if ! "$KILL" -TERM "$matched"; then
     exit 1
 fi
 echo "close-wrapped-leg: sent TERM to pid $matched (leg $(leg_label "$DOC"))"
+
+# ---------- Wrapped leg's own /tmp scratch (HIMMEL-4235) ----------------------
+# Archive-then-reap THIS leg's judge dirs (j<N>, j<N>[a-z]) and its session
+# scratch dir, scoped through tmp-reap.sh --judge/--session: never a fleet-wide
+# sweep (other legs are live). Dry-run first; apply only after a clean dry-run.
+# Never fatal: any failure WARNs and the close carries on.
+reap_leg_scratch() {
+    local label digits sid args=() i
+    label="$(leg_label "$DOC")"; digits="${label#N}"; digits="${digits%%[!0-9]*}"
+    case "$label" in N[0-9]*) args+=(--judge "$digits") ;; esac
+    if [ -n "$TRANSCRIPT" ]; then
+        sid="$(basename "$TRANSCRIPT" .jsonl)"
+        case "$sid" in
+            ????????-????-????-????-????????????) args+=(--session "$sid") ;;
+        esac
+    fi
+    if [ "${#args[@]}" -eq 0 ]; then
+        echo "close-wrapped-leg: no judge number or session id for this leg - skipping the /tmp reap, never guessing"
+        return 0
+    fi
+    # the TERM is asynchronous: give the session a moment to exit so its scratch is not "live"
+    for ((i = 0; i < ${CLOSE_WRAPPED_LEG_REAP_WAIT:-5}; i++)); do
+        [ -d "/proc/$matched" ] || break
+        sleep 1
+    done
+    if ! bash "$TMP_REAP" "${args[@]}"; then
+        echo "close-wrapped-leg: WARN tmp-reap dry-run failed for ${args[*]} - not applying; close continues" >&2
+        return 0
+    fi
+    bash "$TMP_REAP" --apply "${args[@]}" || echo "close-wrapped-leg: WARN tmp-reap --apply failed for ${args[*]} - close continues" >&2
+    return 0
+}
+reap_leg_scratch || echo "close-wrapped-leg: WARN /tmp reap errored - close continues" >&2
 
 worktrees=$(grep -oE "/[^\` ]*/\.claude/worktrees/[^\`) ]+" "$DOC" | sort -u)
 wt_count=$(printf '%s\n' "$worktrees" | grep -c . || true)

@@ -29,14 +29,25 @@
 # shellcheck disable=SC2086  # word-splitting a /proc line and a jq row into positionals is the point
 set -u
 
-usage() { echo "usage: tmp-reap.sh [--dry-run|--apply]" ; }
-APPLY=0
-case "${1:-}" in
-    ''|--dry-run) ;;
-    --apply) APPLY=1 ;;
-    -h|--help) usage; exit 0 ;;
-    *) usage >&2; exit 2 ;;
-esac
+usage() { echo "usage: tmp-reap.sh [--dry-run|--apply] [--judge <leg-number>] [--session <uuid>]" ; }
+APPLY=0; SCOPE_JUDGE=""; SCOPE_SESSION=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --dry-run) ;;
+        --apply) APPLY=1 ;;
+        -h|--help) usage; exit 0 ;;
+        --judge)   shift; SCOPE_JUDGE="${1:-}"
+                   case "$SCOPE_JUDGE" in ''|*[!0-9]*) usage >&2; exit 2 ;; esac ;;
+        --session) shift; SCOPE_SESSION="${1:-}"
+                   printf '%s\n' "$SCOPE_SESSION" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || { usage >&2; exit 2; } ;;
+        *) usage >&2; exit 2 ;;
+    esac
+    shift
+done
+# Scoped (HIMMEL-4235): only the named leg's judge dirs (j<N>, j<N>[a-z]) and the one
+# session dir; no fixtures, no cache-break copy, and no age floor on what was named
+# (liveness and the census still apply). Never a fleet-wide sweep.
+SCOPED=0; [ -n "$SCOPE_JUDGE$SCOPE_SESSION" ] && SCOPED=1
 command -v jq >/dev/null 2>&1 || { echo "tmp-reap: jq is required" >&2; exit 2; }
 # liveness is read from /proc: without it nothing can be proven dead, so never apply
 if [ "$APPLY" = 1 ] && [ ! -r /proc/self/stat ]; then echo "tmp-reap: /proc is unreadable, refusing --apply" >&2; exit 2; fi
@@ -53,6 +64,7 @@ MAX_BYTES=5242880
 NOW="$(date +%s)"
 MONTH="$(date +%Y-%m)"
 FAMILIES="mog-run.* mog-home.* himmel-git-empty-template.* himmel-fixture.* himmel-prov.* capguard-* poller-* cr-floor-probe-* clean-sandbox.* rt-tarball-out.*"
+if [ "$SCOPED" = 1 ]; then FAMILIES=""; JUDGE_AGE=0; SESSION_AGE=0; fi
 
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo "$NOW"; }
 sha() { # sha256 hex of a file, non-zero when neither tool can read it
@@ -214,10 +226,14 @@ if [ -d "$CLAUDE_ROOT" ]; then
         [ -d "$d" ] || continue
         id="${d##*/}"
         printf '%s\n' "$id" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || continue
+        [ "$SCOPED" = 0 ] || [ "$id" = "$SCOPE_SESSION" ] || continue
         live=0; session_live "$id" && live=1
         consider 3 session "$id" "$d" "$SESSION_AGE" "$live"
     done
-    for d in "$CLAUDE_ROOT"/j[0-9]*; do
+    if [ "$SCOPED" = 0 ]; then set -- "$CLAUDE_ROOT"/j[0-9]*
+    elif [ -n "$SCOPE_JUDGE" ]; then set -- "$CLAUDE_ROOT/j$SCOPE_JUDGE" "$CLAUDE_ROOT/j$SCOPE_JUDGE"[a-z]
+    else set --; fi
+    for d in "$@"; do
         consider 2 judge "${d##*/}" "$d" "$JUDGE_AGE" 0
     done
 fi
@@ -290,7 +306,7 @@ $SORTED
 EOF
 
 # cache-break state is tiny and has no uuid dir: copy-only, never reaped
-if [ "$APPLY" = 1 ] && [ -d "$CLAUDE_ROOT" ]; then
+if [ "$APPLY" = 1 ] && [ "$SCOPED" = 0 ] && [ -d "$CLAUDE_ROOT" ]; then
     for f in "$CLAUDE_ROOT"/cache-break-state-*.json; do
         [ -f "$f" ] || continue
         id="${f##*/cache-break-state-}"; id="${id%.json}"

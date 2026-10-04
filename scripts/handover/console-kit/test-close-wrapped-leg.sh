@@ -172,6 +172,16 @@ exit 0
 STUB
 chmod +x "$SUBTREE_STUB"
 
+# Stub tmp-reap.sh (HIMMEL-4235): logs its argv and succeeds, so the cases
+# that do not opt in can never reap anything (least of all the real /tmp).
+REAP_STUB="$W/bin/tmp-reap-stub.sh"
+cat > "$REAP_STUB" <<'STUB'
+#!/usr/bin/env bash
+echo "tmp-reap $*" >> "$CALLS_LOG.reap"
+exit "${CWL_REAP_STUB_RC:-0}"
+STUB
+chmod +x "$REAP_STUB"
+
 DOC="$W/HIMMEL-9-N1-demo-2026-01-01-RESUME.md"
 SESSION_NAME="HIMMEL-9-N1-demo-2026-01-01"
 WT="$W/wt/one"
@@ -204,7 +214,8 @@ run() { # run <doc> - runs the script under test with every stub wired
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
         HANDOVER_DIR="${CWL_HANDOVER_DIR-$W/handover-root}" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
-        WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" \
+        WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" TMP_REAP_BIN="${CWL_REAP_BIN:-$REAP_STUB}" \
+        CLOSE_WRAPPED_LEG_REAP_WAIT=0 \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
         CWL_SUBTREE_MODE="${CWL_SUBTREE_MODE:-closable}" \
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
@@ -212,7 +223,7 @@ run() { # run <doc> - runs the script under test with every stub wired
         CLOSE_WRAPPED_LEG_PROJECTS_DIR="${CWL_PROJECTS_DIR:-$W/no-such-projects-dir}" \
         bash "$SCRIPT" "$@"
 }
-reset_calls() { : > "$CALLS"; }
+reset_calls() { : > "$CALLS"; : > "$CALLS.reap"; }
 unset CWL_PR_STATE CWL_CLEAN_MODE CWL_PR_VIEW_FAIL CWL_KILL_FAIL CWL_SUBTREE_MODE
 
 # --- 1. usage ----------------------------------------------------------------
@@ -739,6 +750,48 @@ check "ledger-root: row lands under the doc's handover root" "$(grep -c sess-lr1
 check "ledger-root: nothing in the cwd repo's stub" "$([ -e "$LR_STUB/handovers/.ledger" ] && echo present || echo absent)" "absent"
 pgrep_x_stub 210
 SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
+
+# --- 27: the wrapped leg's own /tmp scratch is archived (HIMMEL-4235) --------
+# A judge dir of THIS leg (N1 -> j1*) and the leg's session scratch dir are
+# archived then reaped after the TERM; another leg's judge dir, another
+# session's dir and a root fixture in the same tree are untouched. Real
+# tmp-reap.sh against a scratch root: the real /tmp is never reached.
+RP_ROOT="$W/reap-tmp"; RP_ARCH="$W/reap-arch"; RP_CL="$RP_ROOT/claude-$(id -u)"
+RP_SID=55555555-5555-5555-5555-555555555555; RP_OTHER=66666666-6666-6666-6666-666666666666
+mkdir -p "$RP_CL/j1a" "$RP_CL/j1b" "$RP_CL/j2a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER" "$RP_ROOT/mog-run.old" "$W/reap-proc/1" "$W/reap-sessions"
+ln -s / "$W/reap-proc/1/cwd"
+for d in "$RP_CL/j1a" "$RP_CL/j2a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER"; do printf '{"a":1}\n' > "$d/corpus-x.jsonl"; done
+touch -t 200001010000 "$RP_ROOT/mog-run.old"
+RP_PROJ="$W/reap-projects/p"; mkdir -p "$RP_PROJ"
+printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\"}" > "$RP_PROJ/$RP_SID.jsonl"
+rm -rf "$W/proc"; mkdir -p "$W/proc"
+mkcmdline 210 claude -n "$SESSION_NAME" work
+pgrep_x_stub 210
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(TMP_REAP_TMP_ROOT="$RP_ROOT" TMP_REAP_ARCHIVE_ROOT="$RP_ARCH" TMP_REAP_SESSIONS_DIR="$W/reap-sessions" TMP_REAP_PROC="$W/reap-proc" \
+    CWL_REAP_BIN="$HERE/../../tmp-reap.sh" CWL_PROJECTS_DIR="$W/reap-projects" run "$DOC" 2>&1) || rc=$?
+check "reap: rc 0" "$rc" "0"
+check "reap: this leg's judge dir reaped" "$([ -e "$RP_CL/j1a" ] && echo present || echo absent)" "absent"
+check "reap: this leg's empty judge dir reaped" "$([ -e "$RP_CL/j1b" ] && echo present || echo absent)" "absent"
+check "reap: this leg's session scratch reaped" "$([ -e "$RP_CL/-proj/$RP_SID" ] && echo present || echo absent)" "absent"
+check "reap: judge corpus archived first" "$(find "$RP_ARCH" -name corpus-x.jsonl 2>/dev/null | grep -c 'j1a')" "1"
+check "reap: another leg's judge dir untouched" "$([ -e "$RP_CL/j2a/corpus-x.jsonl" ] && echo present || echo absent)" "present"
+check "reap: another session's dir untouched" "$([ -e "$RP_CL/-proj/$RP_OTHER/corpus-x.jsonl" ] && echo present || echo absent)" "present"
+check "reap: no fleet-wide fixture sweep" "$([ -e "$RP_ROOT/mog-run.old" ] && echo present || echo absent)" "present"
+
+# --- 28: a reap failure never fails the wrap; a failed dry-run never applies --
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(CWL_REAP_STUB_RC=1 run "$DOC" 2>&1) || rc=$?
+check "reap-fail: close still rc 0" "$rc" "0"
+contains "reap-fail: WARNs" "$out" "WARN"
+exact_count "reap-fail: kill still called once" "$(cat "$CALLS")" "kill -TERM 210" "1"
+not_contains "reap-fail: no apply after a failed dry-run" "$(cat "$CALLS.reap")" "--apply"
+reset_calls
+rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+contains "reap-ok: dry-run is scoped to the leg's judge number" "$(cat "$CALLS.reap")" "tmp-reap --judge 1"
+contains "reap-ok: apply follows a clean dry-run" "$(cat "$CALLS.reap")" "--apply"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
 post_handovers=absent
