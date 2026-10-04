@@ -1866,17 +1866,17 @@ _dc_can_be_claude() {
 # ponytail: DC_DOTS reads only the command text, so a dotglob/GLOB_DOTS left
 # on by the shell profile is unseen and `~/*/x` passes. Upgrade path: HIMMEL-4222.
 _dc_name_fold() {
-    local t=$1 out='' m c pw keep=''
+    local t=$1 out='' m c pw pf r keep=''
     # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
-    local re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])(([.{*?]|\[[^]/[:space:]]*\]|\$\(([^()]|\([^()]*\))*\)|\$\{[^}/]*\}|`[^`]*`)([^/[:space:];&|<>()`]|\[[^]/[:space:]]*\]|\$\(([^()]|\([^()]*\))*\)|`[^`]*`|\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\))*)'
+    local re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])(([.{*?]|\[[^]/[:space:]]*\]|[@+!]?\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\)|\$\(([^()]|\([^()]*\))*\)|\$\{[^}/]*\}|`[^`]*`)([^/[:space:];&|<>()`]|\[[^]/[:space:]]*\]|\$\(([^()]|\([^()]*\))*\)|`[^`]*`|\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\))*)'
     # shellcheck disable=SC2016 # a literal `$(` in a regex bracket, not expansion
-    local pre='[.{][^/[:space:]]*[][*?{}$(#^~`]|[*?[`]|\$[({]'
+    local pre='[.{][^/[:space:]]*[][*?{}$(#^~`]|[*?[`]|\$[({]|/[@+!]?\('
     _DCF=$1
     [[ $t =~ $pre ]] || return 0
     while [[ $t =~ $re ]]; do
         m=${BASH_REMATCH[0]}
-        c=${BASH_REMATCH[2]}
-        out=$out${t%%"$m"*}${BASH_REMATCH[1]}
+        c=${BASH_REMATCH[2]} pf=${BASH_REMATCH[1]}
+        out=$out${t%%"$m"*}$pf
         t=${t#*"$m"}
         # a literal `.claude` already reads as `.claude`; a span after it
         # ends it as before, so doc text (`$HOME/.claude`, `~/.claude`) keeps
@@ -1889,13 +1889,28 @@ _dc_name_fold() {
         # never the home or primary `.claude`; a `/`, `~`, `$` or `.` root
         # or a `..` climb can be
         pw=x
-        if [ "${BASH_REMATCH[1]}" = / ]; then
+        if [ "$pf" = / ]; then
             pw=${out##*[[:space:]=:<>|;&(\`]}
             case "$pw" in [/~\$.*]*|*../*) pw=x ;; esac
         fi
-        # a bare `*`/`?` run (also what a quoted span reads as) matches a
-        # dot-name only once the command turns on dotglob/GLOB_DOTS (DC_DOTS)
-        case "$c" in
+        # a glob-led name matches a dot-name only under dotglob/GLOB_DOTS.
+        # One with name text (`*claude`, `[.]claude`) fails closed, as the
+        # shell profile may have it on; one with none, only globs, brackets
+        # and variables (`*$b*`, `*[!0-9]*`, a case pattern), waits for
+        # DC_DOTS like a bare `*`/`?` run. In _dc_unquoted's text (_DC_QU) a
+        # `*` may be a quoted span (`'.cl'(a)ude`), so there only the bare
+        # run waits
+        r=$c
+        if [ "${_DC_QU:-0}" = 0 ]; then
+            case "$r" in
+                [*?[]*)
+                    while [[ $r =~ \$\{[^}]*\}|\$[A-Za-z_0-9]+|\[[^]]*\] ]]; do
+                        r=${r/"${BASH_REMATCH[0]}"/}
+                    done
+                    ;;
+            esac
+        fi
+        case "$r" in
             *[!*?]*) ;;
             *) [ "${DC_DOTS:-0}" = 1 ] || pw= ;;
         esac
@@ -1912,16 +1927,47 @@ _dc_name_fold() {
         case "$c" in
             [*?[]*/*) [ "${DC_DOTS:-0}" = 1 ] || pw= ;;
         esac
+        # a zsh group or an extglob one (`@(…)`, `+(…)`) leading the name
+        # (`~/(.c|x)laude`, `~/@(.c|x)laude`) is judged under a `/` parent
+        # only; a relative one (`(.c|x)laude`) is the cwd's own name, and a
+        # bare `(` is a subshell
+        case "$pf:$c" in
+            /:*) ;;
+            *:'('*|*:[@+!]'('*) pw= ;;
+        esac
         # a bare `-` with no option letter is not an attached option value
         # (`grep -e -*c*`), so a glob-led name after it is no dot-name
-        case "${BASH_REMATCH[1]}:$c" in
+        case "$pf:$c" in
             *-:[*?[]*) pw= ;;
         esac
         if [ "$pw" = x ] && _dc_can_be_claude "$c"; then
             # a span may hold a `/` (`.cl`cat /etc/x`ude`), and text in it
-            # (`**`.claude/settings.json`**`) is kept on a line of its own
-            case "$c" in */*) keep=$keep$'\n'$c ;; esac
+            # (`**`.claude/settings.json`**`) is kept on a line of its own,
+            # folded too (`.$(echo ~/.cl*)/x`)
+            case "$c" in
+                */*)
+                    _dc_name_fold "${c#?}"
+                    keep=$keep$'\n'$_DCF
+                    ;;
+            esac
             c=.claude
+        else
+            # a name that does not fold is not passed over whole: a span in
+            # it is read again from its opening, so a name inside it
+            # (`$(echo ~/.cl*)/x`) is still folded
+            # shellcheck disable=SC2016 # literal `$(`/`${` pattern bytes, not expansion
+            case "$c" in
+                '('*|[@+!]'('*)
+                    # a group's alternatives are names too (`(.*)`)
+                    pw=${c%%'('*}'('
+                    t=${c#"$pw"}$t c=$pw
+                    ;;
+                *'$('*|*'${'*|*'`'*)
+                    pw=${c%%[\$\`]*}
+                    case "${c#"$pw"}" in '`'*) pw=$pw'`' ;; *) pw=$pw${c:${#pw}:2} ;; esac
+                    t=${c#"$pw"}$t c=$pw
+                    ;;
+            esac
         fi
         out=$out$c
         [ -n "$m" ] || break
@@ -1932,26 +1978,44 @@ _dc_name_fold() {
 # _dc_unquoted TEXT — _DCU is TEXT with each quoted span ('…', "…" and a
 # backslash-escaped character) written as `*`: it is literal to the shell,
 # but it may sit inside a name (`.c'l'(a)ude`), so it stands for any text and
-# a name it is part of can still fold.
+# a name it is part of can still fold. A quoted `"$home"`/`"${home}"` is
+# written `$home`, the home parent it is (HIMMEL-4188).
 _dc_unquoted() {
-    local s=$1 i=0 n=${#1} ch q=''
+    local LC_ALL=C s=$1 i=0 n=${#1} ch q='' qs=0 sp
     _DCU=''
     while [ "$i" -lt "$n" ]; do
         ch=${s:i:1}
         i=$((i + 1))
         case "$q" in
-            "'")
-                [ "$ch" = "'" ] && q='' && _DCU=$_DCU'*'
-                ;;
-            '"')
-                case "$ch" in
-                    \\) i=$((i + 1)) ;;
-                    '"') q='' _DCU=$_DCU'*' ;;
+            "'"|'"')
+                case "$q$ch" in
+                    \"\\) i=$((i + 1)) ;;
+                    "''"|'""')
+                        sp=${s:qs:i-1-qs} q=''
+                        # a span that leads a name and starts with neither a
+                        # `.` nor (in `"…"`) an expansion is no dot-name:
+                        # `_`, so `"## "$(x)` is not read as one
+                        # shellcheck disable=SC2016 # the literal `$home` text
+                        case "$ch:$sp" in
+                            '":$home'|'":${home}') _DCU=$_DCU'$home' ;;
+                            *)
+                                case "${_DCU: -1}" in
+                                    ''|[[:space:]/=:\<\>\|\;\&\(\`])
+                                        case "$ch:$sp" in
+                                            *:|*:.*|'":$'*|'":`'*) _DCU=$_DCU'*' ;;
+                                            *) _DCU=$_DCU'_' ;;
+                                        esac
+                                        ;;
+                                    *) _DCU=$_DCU'*' ;;
+                                esac
+                                ;;
+                        esac
+                        ;;
                 esac
                 ;;
             *)
                 case "$ch" in
-                    "'"|'"') q=$ch ;;
+                    "'"|'"') q=$ch qs=$i ;;
                     \\) i=$((i + 1)) _DCU=$_DCU'*' ;;
                     *) _DCU=$_DCU$ch ;;
                 esac
@@ -2394,10 +2458,12 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # words, so a component led by one with name text after it
     # (`~/$(printf .cl)aude`) is judged the same way (HIMMEL-4171).
     # Only unquoted text counts: a quoted `(` is literal in both shells, so a
-    # quoted regex (`grep -E 'cp .*(a|b)'`) is not a group.
+    # quoted regex (`grep -E 'cp .*(a|b)'`) is not a group. A group leading
+    # the name (`~/(.c|x)laude`) counts under a `/` parent only, as in the
+    # fold: `$((n+1))` and `args=()` are arithmetic and arrays.
     # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
-    dc_zre='(^|[/[:space:]=:<>|;&(`])([.{*?[][^/[:space:];&|<>()`]*[(#^~`]|\$\(([^()]|\([^()]*\))*\)[^/[:space:];&|<>()`$])'
-    DC_ZFLIP=0
+    dc_zre='(^|[/[:space:]=:<>|;&(`])([.{*?[][^/[:space:];&|<>()`]*[(#^~`]|\$\(([^()]|\([^()]*\))*\)[^/[:space:];&|<>()`$])|/[@+!]?\([^/[:space:];&<>()`]*[|)#^~]'
+    DC_ZFLIP=0 dc_zf=''
     # A bare `*`/`?` name matches a dot-name only under dotglob/GLOB_DOTS
     # (HIMMEL-4165). zsh ignores `_` and case in an option name
     # (`GLOB_DOTS`), bash's GLOBIGNORE turns dotglob on, and any option
@@ -2407,11 +2473,26 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     case "${cmd_lc//_/}" in
         *dotglob*|*globdots*|*globignore*|*setopt*|*shopt*|*emulate*|*options\[*|*[[:space:]+-]o[[:space:]]*) DC_DOTS=1 ;;
     esac
-    if [ "$TOK" = 1 ] && [[ $cmd_lc =~ $dc_zre ]]; then
+    # a quote inside a span is gone from cmd_lc, so a span the quote
+    # unbalances there (`~/$(printf .cl; : '(')aude`) is read unquoted too
+    dc_zq=0
+    [[ $cmd_lc =~ $dc_zre ]] && dc_zq=1
+    # shellcheck disable=SC2016 # a literal `$(`, not expansion
+    case "${ST_LOWER-}" in *'$('*[\'\"\\]*) dc_zq=1 ;; esac
+    # TOK=0 too, unless a heredoc or `$'…'` caused it: a command past the
+    # tokenizer's size cap (8192 bytes) still gets the quote-aware reading,
+    # so padding cannot skip it.
+    # ponytail: a heredoc body is read as code, and a `"…"` around a `$(…)`
+    # with its own quotes is mis-paired, so the heredoc case is left to the
+    # text layer as on main. Upgrade path: HIMMEL-4229.
+    if [ "$tool_name" = Bash ] && [ "$dc_zq" = 1 ] \
+        && [ "$ST_HEREDOC" = 0 ] && [ "$ST_ANSIC" = 0 ]; then
         _dc_unquoted "$ST_LOWER"
         if [[ $_DCU =~ $dc_zre ]]; then
+            _DC_QU=1
             _dc_name_fold "$_DCU"
-            [ "$_DCF" = "$_DCU" ] || TOK=0 DC_ZFLIP=1
+            _DC_QU=0
+            [ "$_DCF" = "$_DCU" ] || TOK=0 DC_ZFLIP=1 dc_zf=$_DCF
         fi
     fi
     dc_fold=1
@@ -2433,6 +2514,10 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         _dc_name_fold "$cmd_lc"
         cmd_lc=$_DCF
     fi
+    # cmd_lc has its quotes stripped, so a quoted `(` or `)` inside a span
+    # (`~/.cl$(printf a; : '(')ude`) unbalances it there; the quote-aware
+    # fold is judged too (HIMMEL-4171 codex-1)
+    [ "$DC_ZFLIP" = 0 ] || cmd_lc=$cmd_lc$'\n'$dc_zf
 
     mentions_settings=0
     case "$cmd_lc" in
