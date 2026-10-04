@@ -183,7 +183,7 @@ debt ledger → [`docs/internals/ponytail-convention.md`](docs/internals/ponytai
 ### Where artifacts land
 - **Reference docs operators consume** → the owning repo's `docs/` (plugin specs
   → `plugins/<plugin>/README.md`). `templates/luna-second-brain/` is
-  OSS-quality — it propagates to the public `luna-brain` repo.
+  OSS-quality — it ships publicly as part of the public Himmel repo.
 - **Internal specs, plans, decision records** → the state repo bucket
   `<state-repo>/handovers/<USER_SLUG>/<repo-bucket>/specs/<type>/`, **never**
   himmel `docs/` (reference + OSS-public only).
