@@ -356,7 +356,20 @@ by design.
   bullet. Exit 1 `REFUSE` (a job green or absent at the base, or a failing case
   the base did not fail, is your own red; a job red or absent on latest main,
   or a latest run that is not origin/main's tip, is unproven) = do NOT merge forward; fix it, or
-  report `BLOCKED` / `MAIN-RED` per the rule above. Exit 3 = nothing red. Once
+  report `BLOCKED` / `MAIN-RED` per the rule above. If your merge-base's main
+  run was cancelled (0 jobs, or only cancelled/skipped rows — a pending sweep
+  superseded by a newer push), a bare check REFUSEs; add the all-or-none trio
+  `--base-cover <f> --base-cover-sha <sha> --base-cover-from <sha>`. The cover is
+  the next COMPLETED push run on origin/main whose range (from, cover] contains
+  your merge-base (`gh run list -b main`): `--base-cover` its job file,
+  `--base-cover-sha` its headSha, `--base-cover-from` the previous completed
+  sweep's headSha (a strict ancestor of the merge-base). `--base-cases` are then
+  the cover's failing cases, and every file arg must be a regular file. Polarity
+  is unchanged: the job red on the cover with the same failing cases AND green on
+  latest = `ALLOW`; green on the cover = `REFUSE`. Two accepted ceilings: the
+  script takes "next" from you and cannot see another completed sweep inside
+  (from, cover], and a red cover proves the failure existed somewhere in that
+  range, not at the merge-base itself (green on latest bounds it). Exit 3 = nothing red. Once
   per PR: a second merge-forward goes to the console. After it, `/pr-check` and
   CI run again at the new head.
 - **Never write "CI verifies" for a suite you have not looked up
