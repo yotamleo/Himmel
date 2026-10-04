@@ -2798,6 +2798,135 @@ else
     fail "T87: pre-988-style takeover not fenced on release: a_rc=$a_rc out=$(cat "$F_P.out") owner.json=$(cat "$F_LK/owner.json" 2>/dev/null)"
 fi
 
+# --- T88-T95 (HIMMEL-2318): a live leg must not silently outrun the TTL. The
+# AGING warning used to live in `status` alone, which a leg never calls between
+# acquire and release; the harness now self-heartbeats the session's own locks
+# (PostToolUse hook -> `self-heartbeat`), and a lock whose holder's transcript
+# is still being written on this host is LIVE, not stale, whatever its age.
+A_HO="$TMPDIR_ROOT/handovers/HIMMEL-2318-test"
+mkdir -p "$A_HO"
+a_lockdir() { printf '%s/.locks/queue/HIMMEL-2318-test__%s.lock' "$TMPDIR_ROOT/handovers" "$1"; }
+# a_backdate <lockdir> <iso> -- rewrite owner.json's heartbeat in place.
+a_backdate() { sed -i.bak "s/\"heartbeat\":\"[^\"]*\"/\"heartbeat\":\"$2\"/" "$1/owner.json" && rm -f "$1/owner.json.bak"; }
+a_hb() { _hp_json_field "$(cat "$1/owner.json" 2>/dev/null)" heartbeat; printf '%s' "$_HP_FIELD"; }
+OLD_HB="2020-01-01T00:00:00Z"
+
+# T88: heartbeat on an AGING lock says so (it was aging until this refresh).
+A_DOC="$A_HO/aging-hb.md"; : > "$A_DOC"; A_LK="$(a_lockdir aging-hb)"
+bash "$LIB" acquire "$A_DOC" ager88 >/dev/null 2>&1
+a_backdate "$A_LK" "$OLD_HB"
+err="$(QUEUE_LOCK_TTL_SECONDS=300000000 bash "$LIB" heartbeat "$A_DOC" ager88 2>&1 1>/dev/null)"; rc=$?
+if [ "$rc" -eq 0 ] && grepq "$err" 'AGING' && [ "$(a_hb "$A_LK")" != "$OLD_HB" ]; then
+    pass "T88: heartbeat on a lock past half-TTL warns AGING and still refreshes"
+else
+    fail "T88: heartbeat aging warning (rc=$rc err=$err hb=$(a_hb "$A_LK"))"
+fi
+
+# T89: release of an AGING lock says so -- the leg outran half its TTL unseen.
+a_backdate "$A_LK" "$OLD_HB"
+err="$(QUEUE_LOCK_TTL_SECONDS=300000000 bash "$LIB" release "$A_DOC" ager88 2>&1 1>/dev/null)"; rc=$?
+if [ "$rc" -eq 0 ] && grepq "$err" 'AGING' && [ ! -d "$A_LK" ]; then
+    pass "T89: release of a lock past half-TTL warns AGING and still releases"
+else
+    fail "T89: release aging warning (rc=$rc err=$err)"
+fi
+
+# T90: self-heartbeat (the hook verb) refreshes THIS session's own lock,
+# silently, rc 0 -- and never a lock another session acquired.
+A_DOC="$A_HO/self-hb.md"; : > "$A_DOC"; A_LK="$(a_lockdir self-hb)"
+A_DOC_B="$A_HO/self-hb-other.md"; : > "$A_DOC_B"; A_LK_B="$(a_lockdir self-hb-other)"
+QUEUE_LOCK_SESSION_SCOPE=scope-mine bash "$LIB" acquire "$A_DOC" mine90 >/dev/null 2>&1
+QUEUE_LOCK_SESSION_SCOPE=scope-other bash "$LIB" acquire "$A_DOC_B" other90 >/dev/null 2>&1
+a_backdate "$A_LK" "$OLD_HB"; a_backdate "$A_LK_B" "$OLD_HB"
+out="$(printf '{"session_id":"scope-mine"}' | QUEUE_LOCK_SESSION_SCOPE=scope-mine bash "$LIB" self-heartbeat 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ] && [ "$(a_hb "$A_LK")" != "$OLD_HB" ]; then
+    pass "T90: self-heartbeat refreshes the session's own lock, silent, rc 0"
+else
+    fail "T90: self-heartbeat own lock (rc=$rc out=$out hb=$(a_hb "$A_LK"))"
+fi
+if [ "$(a_hb "$A_LK_B")" = "$OLD_HB" ]; then
+    pass "T90: self-heartbeat never touches another session's lock"
+else
+    fail "T90: self-heartbeat refreshed a foreign session's lock (hb=$(a_hb "$A_LK_B"))"
+fi
+
+# T91: with no scope in the env (a hook process), the scope comes from the
+# hook payload's session_id.
+a_backdate "$A_LK" "$OLD_HB"
+out="$(printf '{"session_id":"scope-mine","hook_event_name":"PostToolUse"}' \
+    | env -u QUEUE_LOCK_SESSION_SCOPE -u CLAUDE_CODE_SESSION_ID bash "$LIB" self-heartbeat 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ] && [ "$(a_hb "$A_LK")" != "$OLD_HB" ]; then
+    pass "T91: self-heartbeat takes its session scope from the hook payload's session_id"
+else
+    fail "T91: payload-scoped self-heartbeat (rc=$rc out=$out hb=$(a_hb "$A_LK"))"
+fi
+
+# T92: throttled -- a heartbeat younger than QUEUE_LOCK_SELF_HEARTBEAT_SECONDS
+# (default 300) is left alone, so a hook firing on every tool call does not
+# rewrite owner.json every time.
+RECENT_HB="$(_t_date_at "$(( $(date -u +%s) - 60 ))" +%Y-%m-%dT%H:%M:%SZ)"
+a_backdate "$A_LK" "$RECENT_HB"
+printf '{"session_id":"scope-mine"}' | QUEUE_LOCK_SESSION_SCOPE=scope-mine bash "$LIB" self-heartbeat >/dev/null 2>&1
+if [ "$(a_hb "$A_LK")" = "$RECENT_HB" ]; then
+    pass "T92: self-heartbeat skips a lock heartbeated within the throttle window"
+else
+    fail "T92: self-heartbeat rewrote a 60s-old heartbeat (hb=$(a_hb "$A_LK"))"
+fi
+
+# T93: self-heartbeat records the hook's transcript_path as the lock's
+# liveness marker.
+A_TR="$TMPDIR_ROOT/transcript-93.jsonl"; : > "$A_TR"
+a_backdate "$A_LK" "$OLD_HB"
+printf '{"session_id":"scope-mine","transcript_path":"%s"}' "$A_TR" \
+    | QUEUE_LOCK_SESSION_SCOPE=scope-mine bash "$LIB" self-heartbeat >/dev/null 2>&1
+if grep -qF "transcript=$A_TR" "$A_LK/liveness" 2>/dev/null && grep -q "^host=" "$A_LK/liveness" 2>/dev/null; then
+    pass "T93: self-heartbeat records host + transcript_path in the lock's liveness marker"
+else
+    fail "T93: liveness marker missing/incomplete ($(cat "$A_LK/liveness" 2>/dev/null || echo MISSING))"
+fi
+
+# T94: staleness is a liveness probe -- a heartbeat past the TTL whose holder's
+# transcript on THIS host is fresh is LIVE: status FRESH (rc 11), acquire
+# refused (rc 2). Once the transcript itself ages past the TTL, or the marker
+# names another host, the lock is STALE again.
+a_backdate "$A_LK" "$OLD_HB"
+touch "$A_TR"
+err="$(bash "$LIB" status "$A_DOC" 2>&1 1>/dev/null)"; rc=$?
+out="$(bash "$LIB" acquire "$A_DOC" taker94 2>&1)"; a_rc=$?
+if [ "$rc" -eq 11 ] && grepq "$err" -i 'transcript' && [ "$a_rc" -eq 2 ] \
+    && grep -q '"session":"mine90"' "$A_LK/owner.json"; then
+    pass "T94: stale heartbeat + fresh holder transcript on this host -> LIVE (status 11, acquire refused)"
+else
+    fail "T94: liveness probe (status rc=$rc err=$err acquire rc=$a_rc out=$out)"
+fi
+_t_touch_at "$(( $(date -u +%s) - 30000 ))" "$A_TR"
+bash "$LIB" status "$A_DOC" >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 12 ]; then
+    pass "T94: a transcript older than the TTL does not keep the lock alive (STALE, rc 12)"
+else
+    fail "T94: aged transcript still kept the lock alive (rc=$rc)"
+fi
+touch "$A_TR"
+printf 'host=some-other-host\ntranscript=%s\n' "$A_TR" > "$A_LK/liveness"
+bash "$LIB" status "$A_DOC" >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 12 ]; then
+    pass "T94: a liveness marker naming another host is not probed (STALE, rc 12)"
+else
+    fail "T94: foreign-host liveness marker kept the lock alive (rc=$rc)"
+fi
+
+# T95: release drops the lock, and a self-heartbeat with nothing registered, a
+# garbage payload, or no scope at all is a silent rc 0 (it runs as a hook).
+bash "$LIB" release "$A_DOC" mine90 >/dev/null 2>&1
+QUEUE_LOCK_FORCE_RELEASE=1 bash "$LIB" release "$A_DOC_B" >/dev/null 2>&1
+out="$(printf 'not json' | QUEUE_LOCK_SESSION_SCOPE=scope-mine bash "$LIB" self-heartbeat 2>&1)"; rc=$?
+out2="$(env -u QUEUE_LOCK_SESSION_SCOPE -u CLAUDE_CODE_SESSION_ID bash "$LIB" self-heartbeat </dev/null 2>&1)"; rc2=$?
+if [ "$rc" -eq 0 ] && [ -z "$out" ] && [ "$rc2" -eq 0 ] && [ -z "$out2" ] && [ ! -d "$A_LK" ]; then
+    pass "T95: self-heartbeat with nothing to do (or a garbage payload / no scope) is a silent rc 0"
+else
+    fail "T95: idle self-heartbeat (rc=$rc out=$out rc2=$rc2 out2=$out2)"
+fi
+
 echo "---"
 echo "PASSED=$PASSED FAILED=$FAILED"
 [ "$FAILED" = 0 ]

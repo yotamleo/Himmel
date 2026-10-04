@@ -18,6 +18,7 @@
 #   bash queue-lock.sh release   <handover-path> <session-token>
 #   bash queue-lock.sh status    <handover-path>
 #   bash queue-lock.sh status --sweep [<handover-dir>]
+#   bash queue-lock.sh self-heartbeat        (hook verb; hook JSON on stdin)
 #
 # TOKEN CONTRACT (HIMMEL-856 CR, C1): `acquire` records a session token in
 # owner.json (the given session-id, or a generated "<hostname>-pid<pid>")
@@ -78,15 +79,30 @@
 #
 # TTL / STALE TAKEOVER: a lock whose heartbeat is older than
 # QUEUE_LOCK_TTL_SECONDS (default 21600 = 6 h -- sized to cover the 3-4 h
-# overnight-run budget with margin, HIMMEL-856 CR C2; heartbeat refreshes
-# are the future tightening lever once wired into the long-session flow)
-# is STALE. `acquire` against a stale lock SUPERSEDES automatically (armed
+# overnight-run budget with margin, HIMMEL-856 CR C2) is STALE. `acquire` against a stale lock SUPERSEDES automatically (armed
 # sessions die, machines sleep -- the design's "fail open with a loud
 # trail" principle). `acquire` against a FRESH foreign lock refuses (rc=2)
 # unless QUEUE_LOCK_TAKEOVER=1 forces the takeover anyway. Every takeover
 # (stale or forced) appends one line to the lock's takeovers.log naming
-# the previous and new holder, so the next reader sees the trail. `status`
-# warns when a FRESH lock's heartbeat age exceeds half the TTL (aging).
+# the previous and new holder, so the next reader sees the trail. `status`,
+# `heartbeat` and `release` warn when a lock's heartbeat age exceeds half the
+# TTL (aging).
+#
+# SELF-HEARTBEAT + LIVENESS PROBE (HIMMEL-2318): a long leg acquires at step 0
+# and releases at wrap and never heartbeats in between, so after one TTL its
+# lock was silently STALE and takeable under a LIVE holder. Two closures, both
+# driven by the harness rather than by the leg remembering anything:
+#   - `self-heartbeat` runs as a PostToolUse hook (wired by
+#     scripts/observability/wire-session-telemetry-hooks.mjs). It finds the
+#     locks THIS session acquired (the .doc sidecars next to the HIMMEL-2813
+#     token files, scoped by the session digest), refreshes any whose heartbeat
+#     is older than QUEUE_LOCK_SELF_HEARTBEAT_SECONDS (default 300), and
+#     records the hook payload's transcript_path in <lock>/liveness. It is
+#     silent and always exits 0 -- a hook must never block a tool call.
+#   - staleness is a liveness probe: a heartbeat past the TTL whose holder's
+#     transcript, on THIS host, was written within the last TTL seconds is a
+#     LIVE holder, not a stale one (status reports FRESH, acquire refuses).
+#     QUEUE_LOCK_TAKEOVER=1 still forces.
 #
 # ARMS REGISTRY LIFECYCLE (HIMMEL-882): arm-resume.sh (HIMMEL-856) records a
 # PENDING record in <handover-root>/.locks/arms.jsonl every time it arms a
@@ -144,6 +160,9 @@
 #                 lock dir -- owner.json missing/unreadable -- also
 #                 reports 11, fail-closed, and SAYS it is corrupt)
 #              12 held, STALE -- eligible for takeover (owner.json printed)
+#   self-heartbeat (HIMMEL-2318): ALWAYS 0, and silent on stdout and stderr --
+#              it is a hook, so every failure (no scope, no registered lock,
+#              a refused heartbeat, garbage stdin) degrades to a no-op
 #   status --sweep (HIMMEL-2369): a SEPARATE code path/exit table, one line
 #              per held lock under <root>/.locks/queue/*.lock -- see the
 #              queue_lock_status_sweep header comment for the line shape.
@@ -213,6 +232,7 @@ Usage: queue-lock.sh acquire   <handover-path> [session-id]
        queue-lock.sh release   <handover-path> <session-token>
        queue-lock.sh status    <handover-path>
        queue-lock.sh status --sweep [<handover-dir>]
+       queue-lock.sh self-heartbeat   (PostToolUse hook; reads hook JSON on stdin)
 
 acquire prints "release-token: `<token>`" (backticked -- HIMMEL-2910) on
 success -- capture it and pass it to heartbeat/release (both refuse without
@@ -233,6 +253,11 @@ status --sweep (HIMMEL-2369) enumerates every held lock under a handover
 ROOT's .locks/queue/ in one shot, flagging any whose heartbeat exceeds
 QUEUE_LOCK_IDLE_WARN_SECONDS (default 2700s, HIMMEL-2381) as IDLE-HELD?.
 Exit 20 if anything is flagged, 0 otherwise (including "no held locks").
+
+self-heartbeat (HIMMEL-2318) is the hook verb: it refreshes the heartbeat of
+the locks the calling session acquired (throttled by
+QUEUE_LOCK_SELF_HEARTBEAT_SECONDS, default 300), records the session's
+transcript as the lock's liveness marker, prints nothing and always exits 0.
 EOF
 }
 
@@ -776,8 +801,68 @@ EOF
     printf '%s' "$pick"
 }
 
+# _ql_warn_aging <age> <ttl> [suffix] -- HIMMEL-2318: the AGING warning
+# (heartbeat age >= half the TTL), hoisted out of `status` so `heartbeat` and
+# `release` -- the two verbs a long leg DOES call -- say it too. A leg that
+# acquires at step 0 and releases at wrap never calls `status`, so the warning
+# used to be unreachable for exactly the legs it exists for. stderr only,
+# never changes an exit code; a non-numeric <age> (unparsable heartbeat) is
+# silent. The status wording is load-bearing (tests grep AGING).
+_ql_warn_aging() {
+    local age="$1" ttl="$2" sfx="${3:-}"
+    case "$age" in ''|*[!0-9]*) return 0 ;; esac
+    case "$ttl" in ''|*[!0-9]*) ttl=21600 ;; esac
+    if [ "$age" -ge $(( ttl / 2 )) ]; then
+        echo "WARN queue-lock: heartbeat age ${age}s exceeds half the TTL (${ttl}s) -- the lock is AGING toward stale; ${sfx:-refresh it (queue-lock.sh heartbeat) on long sessions}" >&2
+    fi
+    return 0
+}
+
+# _ql_hb_age <lockdir> -- print the lock's current heartbeat age in seconds
+# (negative skew clamped to 0), or nothing when it cannot be parsed.
+_ql_hb_age() {
+    local hb hb_epoch now_epoch age
+    hb=$(_ql_json_field "$1/owner.json" heartbeat)
+    hb_epoch=$(_ql_epoch_of_iso "$hb")
+    now_epoch=$(_ql_now_epoch)
+    [ -n "$hb_epoch" ] && [ -n "$now_epoch" ] || return 0
+    age=$(( now_epoch - hb_epoch ))
+    [ "$age" -lt 0 ] && age=0
+    printf '%s' "$age"
+}
+
+# _ql_holder_live <lockdir> <ttl> -- HIMMEL-2318: rc 0 when the holder is
+# provably still working, whatever its heartbeat says: <lockdir>/liveness
+# (written by `self-heartbeat` from the hook payload) names THIS host and a
+# transcript file whose mtime is younger than <ttl> seconds. Any failure --
+# no marker, another host, a missing transcript, an unreadable mtime -- is rc 1
+# (not live), so the probe can only ever KEEP a lock alive on positive
+# evidence, never invent one. On success the transcript's age is left in
+# $_QL_LIVE_AGE for the caller's message.
+# ponytail: transcript-mtime liveness only, same host only, no holder-pid probe (the acquiring shell's pid dies with the Bash call), upgrade path: record the claude process pid when the harness exposes it
+_ql_holder_live() {
+    local lk="$1" ttl="$2" lv_host lv_tr m now age
+    _QL_LIVE_AGE=""
+    [ -f "$lk/liveness" ] || return 1
+    case "$ttl" in ''|*[!0-9]*) ttl=21600 ;; esac
+    lv_host=$(sed -n 's/^host=//p' "$lk/liveness" 2>/dev/null | head -n 1)
+    lv_tr=$(sed -n 's/^transcript=//p' "$lk/liveness" 2>/dev/null | head -n 1)
+    [ -n "$lv_host" ] && [ "$lv_host" = "$(_ql_hostname)" ] || return 1
+    [ -n "$lv_tr" ] && [ -f "$lv_tr" ] || return 1
+    m=$(py_armor_mtime "$lv_tr") || m=""
+    case "$m" in ''|*[!0-9]*) return 1 ;; esac
+    now=$(_ql_now_epoch)
+    case "$now" in ''|*[!0-9]*) return 1 ;; esac
+    age=$(( now - m ))
+    [ "$age" -lt 0 ] && age=0
+    [ "$age" -lt "$ttl" ] || return 1
+    _QL_LIVE_AGE="$age"
+    return 0
+}
+
 # _ql_lock_is_fresh <lockdir> -- rc 0 when the lock's heartbeat is inside the
-# TTL. An unparsable heartbeat is FRESH (fail-closed), as in `status`.
+# TTL, or (HIMMEL-2318) its holder is provably live (_ql_holder_live). An
+# unparsable heartbeat is FRESH (fail-closed), as in `status`.
 _ql_lock_is_fresh() {
     local ttl="${QUEUE_LOCK_TTL_SECONDS:-21600}" hb hb_epoch now_epoch
     case "$ttl" in ''|*[!0-9]*) ttl=21600 ;; esac
@@ -785,7 +870,8 @@ _ql_lock_is_fresh() {
     hb_epoch=$(_ql_epoch_of_iso "$hb")
     now_epoch=$(_ql_now_epoch)
     [ -n "$hb_epoch" ] && [ -n "$now_epoch" ] || return 0
-    [ $((now_epoch - hb_epoch)) -lt "$ttl" ]
+    [ $((now_epoch - hb_epoch)) -lt "$ttl" ] && return 0
+    _ql_holder_live "$1" "$ttl"
 }
 
 # _ql_scan_pick <canonical-doc> [skip-lockdir] -- print the lock dir that
@@ -984,15 +1070,22 @@ _ql_token_file() {
     printf '%s/%s.%s' "$dir" "$h" "$suf"
 }
 
-# _ql_token_persist <handover-path> <token> -- best-effort ON PURPOSE: a
-# failure here costs the compaction safety net, never the acquire, which by
-# then holds a valid lock releasable with the printed token exactly as
-# before.
+# _ql_token_persist <handover-path> <token> [<lockdir>] -- best-effort ON
+# PURPOSE: a failure here costs the compaction safety net, never the acquire,
+# which by then holds a valid lock releasable with the printed token exactly as
+# before. HIMMEL-2318: with <lockdir> it also writes a `<file>.doc` sidecar
+# (line 1 the canonical doc path, line 2 the lock dir) -- the registration
+# `self-heartbeat` enumerates to find the locks this session holds. Same
+# directory, same 0600, same session digest in the filename, so another
+# session's hook never sees it as its own.
 _ql_token_persist() {
     local f
     _ql_token_dir_ensure "$(_ql_token_dir)" || return 0
     f=$(_ql_token_file "$1" "$2") || return 0
     ( umask 077; printf '%s\n' "$2" > "$f" ) 2>/dev/null || true
+    if [ -n "${3:-}" ]; then
+        ( umask 077; printf '%s\n%s\n' "$1" "$3" > "$f.doc" ) 2>/dev/null || true
+    fi
     return 0
 }
 
@@ -1011,6 +1104,8 @@ _ql_token_recall() {
     newest=""
     for f in "$dir/$h".*; do
         [ -f "$f" ] || continue
+        # HIMMEL-2318: a .doc sidecar is registration data, never a token.
+        case "$f" in *.doc) continue ;; esac
         if [ -z "$newest" ] || [ "$f" -nt "$newest" ]; then
             newest="$f"
         fi
@@ -1031,7 +1126,7 @@ _ql_token_recall() {
 _ql_token_forget() {
     local f
     f=$(_ql_token_file "$1" "$2") || return 0
-    rm -f "$f" 2>/dev/null || true
+    rm -f "$f" "$f.doc" 2>/dev/null || true
     return 0
 }
 
@@ -1466,7 +1561,8 @@ queue_lock_acquire() {
                 return 1
             fi
             _ql_write_root_marker "$lockdir" "$lock_root"
-            _ql_token_persist "$ho" "$session"
+            _ql_token_persist "$ho" "$session" "$lockdir"
+            _ql_acquire_liveness "$lockdir"
             echo "queue-lock: acquired (session=$session host=$host)"
             _ql_arms_retire_both "$ho" "$ho_raw" "$_QL_ROOT"
             echo "release-token: \`$session\`"
@@ -1523,6 +1619,16 @@ queue_lock_acquire() {
         [ "$age" -ge "$ttl" ] && stale=1
     else
         echo "WARN queue-lock: could not parse heartbeat '$o_heartbeat' -- treating as FRESH (fail-closed on unparsable timestamps)" >&2
+    fi
+    # HIMMEL-2318: a heartbeat past the TTL is only STALE if the holder is not
+    # provably still working -- a leg that never heartbeated but whose
+    # transcript on this host is still being written is LIVE. The existing
+    # "held (FRESH)" refusal below then applies; QUEUE_LOCK_TAKEOVER=1 forces.
+    local holder_live=0
+    if [ "$stale" -eq 1 ] && _ql_holder_live "$lockdir" "$ttl"; then
+        stale=0
+        holder_live=1
+        echo "WARN queue-lock: heartbeat age ${age}s is past the TTL (${ttl}s) but the holder's transcript on this host was written ${_QL_LIVE_AGE}s ago -- the holder is LIVE, not stale" >&2
     fi
 
     if [ "$stale" -eq 1 ] || [ "${QUEUE_LOCK_TAKEOVER:-}" = "1" ]; then
@@ -1671,7 +1777,8 @@ queue_lock_acquire() {
                 "$now" "$o_session" "$o_host" "$o_started" "$o_heartbeat" "$reason" "$session" "$host" \
                 >> "$lockdir/takeovers.log"
             _ql_write_root_marker "$lockdir" "$lock_root"
-            _ql_token_persist "$ho" "$session"
+            _ql_token_persist "$ho" "$session" "$lockdir"
+            _ql_acquire_liveness "$lockdir"
             _ql_takeover_claim_release "$claim" "$claim_token" || true
             echo "queue-lock: took over ($reason) -- previous holder: session=$o_session host=$o_host" >&2
             echo "queue-lock: acquired (session=$session host=$host)"
@@ -1694,7 +1801,11 @@ queue_lock_acquire() {
     fi
 
     {
-        echo "queue-lock: held (FRESH) by session=$o_session host=$o_host started=$o_started heartbeat=$o_heartbeat (age ${age}s < ttl ${ttl}s)"
+        if [ "$holder_live" -eq 1 ]; then
+            echo "queue-lock: held (FRESH) by session=$o_session host=$o_host started=$o_started heartbeat=$o_heartbeat (age ${age}s >= ttl ${ttl}s, but the holder is LIVE: transcript written ${_QL_LIVE_AGE}s ago)"
+        else
+            echo "queue-lock: held (FRESH) by session=$o_session host=$o_host started=$o_started heartbeat=$o_heartbeat (age ${age}s < ttl ${ttl}s)"
+        fi
         echo "Work is owned elsewhere. Pick a different queue, or override with QUEUE_LOCK_TAKEOVER=1."
     } >&2
     return 2
@@ -1779,6 +1890,12 @@ queue_lock_heartbeat() {
         return 2
     fi
     session="$o_session"
+    # HIMMEL-2318: the age of the PREVIOUS heartbeat, read before the rewrite
+    # below replaces it -- a refresh that arrives past half the TTL means the
+    # lock was AGING (possibly takeable) until this very call.
+    local hb_prev_age hb_ttl="${QUEUE_LOCK_TTL_SECONDS:-21600}"
+    case "$hb_ttl" in ''|*[!0-9]*) hb_ttl=21600 ;; esac
+    hb_prev_age=$(_ql_hb_age "$lockdir")
     _ql_test_pause heartbeat-verified
     _ql_write_owner "$lockdir" "$o_session" "$o_host" "$ho" "$o_started" "$(_ql_now_iso)" "$hb_gen" "$hb_arbiter"
     hb_rc=$?
@@ -1790,6 +1907,104 @@ queue_lock_heartbeat() {
         echo "queue-lock: heartbeat FAILED -- owner.json could not be rewritten atomically (the previous heartbeat stays in effect)" >&2
         return 1
     fi
+    _ql_warn_aging "$hb_prev_age" "$hb_ttl" "it was AGING until this refresh; heartbeat more often on long sessions (the PostToolUse self-heartbeat hook does this: node scripts/observability/wire-session-telemetry-hooks.mjs)"
+    return 0
+}
+
+# _ql_write_liveness <lockdir> <transcript> -- HIMMEL-2318: record this host
+# and the holder's transcript path as <lockdir>/liveness (the input of
+# _ql_holder_live). Best-effort and silent: atomic tmp+mv like owner.json, and
+# the file is only rewritten when its content differs so a hook firing on
+# every tool call does not churn the lock dir. Writes ONLY inside <lockdir>.
+_ql_write_liveness() {
+    local lk="$1" tr="$2" want have tmp
+    [ -n "$tr" ] && [ -d "$lk" ] || return 0
+    want=$(printf 'host=%s\ntranscript=%s\n' "$(_ql_hostname)" "$tr")
+    have=$(cat "$lk/liveness" 2>/dev/null) || have=""
+    [ "$want" = "$have" ] && return 0
+    tmp="$lk/liveness.tmp.$$"
+    if printf '%s\n' "$want" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$lk/liveness" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    else
+        rm -f "$tmp" 2>/dev/null
+    fi
+    return 0
+}
+
+# _ql_acquire_liveness <lockdir> -- HIMMEL-2318: on acquire, record the
+# acquiring session's own transcript as the liveness marker when it can be
+# found: the first ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/*/<session>.jsonl.
+# Cheap (one glob), silent, best-effort; the PostToolUse self-heartbeat hook
+# is the primary writer and overwrites this with the payload's exact
+# transcript_path. A no-op without CLAUDE_CODE_SESSION_ID (tests, non-Claude
+# callers).
+_ql_acquire_liveness() {
+    local sid="${CLAUDE_CODE_SESSION_ID:-}" cand
+    [ -n "$sid" ] || return 0
+    case "$sid" in *[!A-Za-z0-9_-]*) return 0 ;; esac
+    for cand in "${CLAUDE_CONFIG_DIR:-${HOME:-/nonexistent}/.claude}"/projects/*/"$sid".jsonl; do
+        [ -f "$cand" ] || continue
+        _ql_write_liveness "$1" "$cand"
+        break
+    done
+    return 0
+}
+
+# queue_lock_self_heartbeat -- HIMMEL-2318: the PostToolUse hook verb. Reads
+# the hook payload from stdin and keeps THIS session's own queue locks alive
+# without the leg having to remember to `heartbeat`. CONTRACT: always rc 0 and
+# no output on stdout or stderr -- it runs on every tool call, so it must be
+# silent and fail-open; every failure path is a plain `return 0`.
+#
+# Which locks are "ours": acquire registered each one as a `<token file>.doc`
+# sidecar (see _ql_token_persist) under a filename that starts with the
+# session-scoped digest of the doc path. A sidecar whose name does not start
+# with the digest computed from THIS session's scope belongs to another
+# session and is skipped, and the token inside is checked against owner.json
+# (_ql_owner_matches) before anything is written -- the same ownership proof a
+# manual heartbeat needs. The heartbeat itself is the unchanged
+# queue_lock_heartbeat, run in a subshell with HANDOVER_DIR pinned to the
+# lock's root so its generation fence and cross-root search behave exactly as
+# for a manual call.
+queue_lock_self_heartbeat() {
+    local raw="" session_id="" transcript="" dir sidecar doc lk tokfile h token
+    local iv="${QUEUE_LOCK_SELF_HEARTBEAT_SECONDS:-300}" age root
+    case "$iv" in ''|*[!0-9]*) iv=300 ;; esac
+    [ -t 0 ] || raw=$(cat 2>/dev/null) || raw=""
+    if [ -n "$raw" ]; then
+        _hp_json_field "$raw" session_id; session_id="$_HP_FIELD"
+        _hp_json_field "$raw" transcript_path; transcript="$_HP_FIELD"
+    fi
+    if ! _ql_session_scope >/dev/null 2>&1; then
+        [ -n "$session_id" ] || return 0
+        QUEUE_LOCK_SESSION_SCOPE="$session_id"
+        export QUEUE_LOCK_SESSION_SCOPE
+    fi
+    _ql_session_scope >/dev/null 2>&1 || return 0
+    dir=$(_ql_token_dir)
+    _ql_token_dir_ensure "$dir" || return 0
+    for sidecar in "$dir"/*.doc; do
+        [ -f "$sidecar" ] || continue
+        doc=$(sed -n 1p "$sidecar" 2>/dev/null) || continue
+        lk=$(sed -n 2p "$sidecar" 2>/dev/null) || continue
+        [ -n "$doc" ] || continue
+        [ -n "$lk" ] || continue
+        tokfile="${sidecar%.doc}"
+        h=$(_ql_token_digest "$doc") || continue
+        [ -n "$h" ] || continue
+        case "${tokfile##*/}" in "$h".*) ;; *) continue ;; esac
+        token=$(cat "$tokfile" 2>/dev/null) || continue
+        [ -n "$token" ] || continue
+        _ql_owner_matches "$lk" "$token" || continue
+        [ -z "$transcript" ] || _ql_write_liveness "$lk" "$transcript"
+        age=$(_ql_hb_age "$lk")
+        case "$age" in
+            ''|*[!0-9]*) ;;
+            *) [ "$age" -lt "$iv" ] && continue ;;
+        esac
+        root=$(dirname "$(dirname "$(dirname "$lk")")")
+        ( HANDOVER_DIR="$root"; export HANDOVER_DIR; queue_lock_heartbeat "$doc" "$token" ) >/dev/null 2>&1
+    done
     return 0
 }
 
@@ -1920,11 +2135,18 @@ queue_lock_release() {
         echo "queue-lock: release refused -- the lock was taken over after this release verified it (ownership changed; now held by session=$(_ql_json_field "$lockdir/owner.json" session)); nothing was released" >&2
         return 2
     fi
+    # HIMMEL-2318: the age at release time, read before the dir goes away. A
+    # leg that held its lock past half the TTL without a single heartbeat
+    # outran its own safety margin unseen -- say so now, while it still can.
+    local rel_age rel_ttl="${QUEUE_LOCK_TTL_SECONDS:-21600}"
+    case "$rel_ttl" in ''|*[!0-9]*) rel_ttl=21600 ;; esac
+    rel_age=$(_ql_hb_age "$lockdir")
     rm -rf "$lockdir" 2>/dev/null
     if [ -d "$lockdir" ]; then
         echo "queue-lock: failed to remove lock dir '$lockdir' -- it still exists (open handle on Windows? permission?); NOT released" >&2
         return 1
     fi
+    _ql_warn_aging "$rel_age" "$rel_ttl" "the lock was AGING when released: the leg outran half its TTL without a heartbeat and was takeable meanwhile (wire the self-heartbeat hook: node scripts/observability/wire-session-telemetry-hooks.mjs)"
     _ql_token_forget "$ho" "$session"
     [ "$ho_raw" = "$ho" ] || _ql_token_forget "$ho_raw" "$session"
     _ql_emit_close_evidence
@@ -2025,16 +2247,21 @@ queue_lock_status() {
     else
         echo "WARN queue-lock: could not parse heartbeat '$o_heartbeat' -- treating as FRESH (fail-closed on unparsable timestamps)" >&2
     fi
+    # HIMMEL-2318: a heartbeat past the TTL is STALE only if the holder is not
+    # provably still working (transcript on this host written within the TTL).
+    if [ "$stale" -eq 1 ] && _ql_holder_live "$lockdir" "$ttl"; then
+        stale=0
+        echo "WARN queue-lock: heartbeat age ${age}s is past the TTL (${ttl}s) but the holder's transcript on this host was written ${_QL_LIVE_AGE}s ago -- the holder is LIVE, reporting FRESH" >&2
+    fi
     if [ "$stale" -eq 1 ]; then
         echo "status: STALE (age ${age}s >= ttl ${ttl}s)"
         return 12
     fi
-    # Aging warning (C2): heartbeat is not yet wired into the long-session
-    # flow, so a FRESH lock past half the TTL is drifting toward a stale
-    # takeover window -- surface it before it becomes one.
-    if [ "$age" -ge 0 ] && [ "$age" -ge $(( ttl / 2 )) ]; then
-        echo "WARN queue-lock: heartbeat age ${age}s exceeds half the TTL (${ttl}s) -- the lock is AGING toward stale; refresh it (queue-lock.sh heartbeat) on long sessions" >&2
-    fi
+    # Aging warning (C2): a FRESH lock past half the TTL is drifting toward a
+    # stale takeover window -- surface it before it becomes one. HIMMEL-2318:
+    # the PostToolUse self-heartbeat hook keeps a wired session's lock young;
+    # heartbeat and release carry the same warning (_ql_warn_aging).
+    _ql_warn_aging "$age" "$ttl"
     # HIMMEL-2381: the TTL/aging thresholds above are sized for the overnight
     # BUDGET (hours) -- too coarse to catch a leg hung on an interactive
     # permission prompt (nobody unattended to answer it), which stalls its
@@ -2308,6 +2535,7 @@ _ql_main() {
         heartbeat) queue_lock_heartbeat "$@" ;;
         release)   queue_lock_release "$@" ;;
         status)    queue_lock_status "$@" ;;
+        self-heartbeat) queue_lock_self_heartbeat 2>/dev/null; return 0 ;;
         *)
             _ql_usage >&2
             return 1

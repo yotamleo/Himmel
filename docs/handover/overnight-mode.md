@@ -44,11 +44,26 @@ For work that will need mid-flight decisions or will outlive one context window,
    is the failure this step exists to prevent. Release the lock at wrap
    (Phase 11, with the captured token) or via `/stop`; an un-released lock
    is covered by the TTL (default **6 h** — sized to cover the 3-4 h
-   overnight budget; `QUEUE_LOCK_TTL_SECONDS` tunes it, and wiring periodic
-   `queue-lock.sh heartbeat <handover-path> <token>` refreshes into long
-   sessions is the future lever for tightening it back down — TTL sizing
+   overnight budget; `QUEUE_LOCK_TTL_SECONDS` tunes it — TTL sizing
    is an open operator question on the HIMMEL-856 design) so a crashed
-   session never strands the queue.
+   session never strands the queue. **A live leg does not have to remember
+   to heartbeat (HIMMEL-2318).** A leg acquires here and releases at Phase
+   11 and calls nothing in between, so after one TTL its lock used to go
+   silently STALE and takeable. The lock now self-heartbeats from a
+   PostToolUse hook (`queue-lock.sh self-heartbeat`) that refreshes the
+   locks THIS session acquired, throttled by
+   `QUEUE_LOCK_SELF_HEARTBEAT_SECONDS` (default 300), and records the
+   session's transcript path in the lock. Wire the hook once per checkout
+   with `node scripts/observability/wire-session-telemetry-hooks.mjs`
+   (`--check` reports whether it is wired; `--off` removes it). Even
+   un-refreshed, a lock whose holder's transcript on the SAME host was
+   written within the TTL is LIVE regardless of heartbeat age: `status`
+   reports FRESH and `acquire` refuses (`QUEUE_LOCK_TAKEOVER=1` still
+   forces). `heartbeat` and `release` now emit the same `AGING` warning
+   `status` always did (heartbeat age past half the TTL), so a leg that
+   outran its margin unseen finds out at its next refresh or at wrap.
+   Without the hook, a manual `queue-lock.sh heartbeat <handover-path>
+   <token>` on long sessions is still the lever.
 1. **Plan** — `superpowers:writing-plans` on the active brief; commit to `<plans-root>/YYYY-MM-DD-<slug>.md` where `<plans-root>` resolves as:
    - `$HANDOVER_DIR/plans/` when `HANDOVER_DIR` is set (Mode B — plans live with handover state in `<state-repo>/handovers/plans/`).
    - `<repo>/docs/superpowers/plans/` otherwise (Mode A default — backwards-compat;
