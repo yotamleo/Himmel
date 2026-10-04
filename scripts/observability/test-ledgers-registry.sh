@@ -90,8 +90,13 @@ for i, r in enumerate(rows):
 
 # Completeness: every ~/.himmel ledger literal in tracked non-test scripts is registered.
 registered = {os.path.basename(p) for p in paths}
-tracked = subprocess.run(["git", "-C", repo, "ls-files", "scripts"],
-                         capture_output=True, text=True).stdout.split("\n")
+ls = subprocess.run(["git", "-C", repo, "ls-files", "scripts"],
+                    capture_output=True, text=True)
+if ls.returncode != 0:
+    print(f"FAIL: git ls-files failed (rc={ls.returncode}): {ls.stderr.strip()}")
+    print("FAIL test-ledgers-registry")
+    sys.exit(1)
+tracked = ls.stdout.split("\n")
 pat = re.compile(r"\.himmel/(?:state/)?([A-Za-z0-9_-]+\.(?:jsonl|log))")
 for rel in tracked:
     base = os.path.basename(rel)
