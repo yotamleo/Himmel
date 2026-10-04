@@ -3664,6 +3664,12 @@ _r4253 "s ~- target behind an unresolved cd denies" block "cd $FIX/wt && ls > ~-
 _r4253 "t quoted \"~\"/x (a literal relative ~ dir) behind an unresolved cd denies" block \
     "cd $FIX/wt && ls > \"~\"/x; echo done" "$FIX/wt"
 _r4253 "u quoted '~/x' behind an unresolved cd denies" block "cd $FIX/wt && ls > '~/x'; echo done" "$FIX/wt"
+# A relative HOME makes ~ cwd-dependent again (bash expands it after the cd), so
+# the exemption must not apply and the unresolved cd must still fail closed.
+export HOME=.
+_r4253 "v HOME=. : cd \"\$D\" && ls > ~/x; echo done denies" block "cd \"\$D\" && ls > ~/x; echo done" "$FIX/wt"
+export HOME=home
+_r4253 "w HOME=home : cd \"\$D\" && ls > ~; echo done denies" block "cd \"\$D\" && ls > ~; echo done" "$FIX/wt"
 export HOME="$_SAVED_HOME_4253"
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
