@@ -43,9 +43,9 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { createHash } from "node:crypto";
+import { acquire as igAcquire, record as igRecord } from "./lib/ig-throttle.mjs";
 
 const TODAY = new Date().toISOString().slice(0, 10);
-const RATE_LIMIT_MS = 800;
 const FETCH_TIMEOUT_MS = 15000;
 const FM_KEYS = [
   "enriched_at",
@@ -83,10 +83,6 @@ function parseArgs(argv) {
   }
   if (!out.vault) usage(1);
   return out;
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 function sha256(s) {
@@ -185,7 +181,7 @@ async function fetchEmbed(url) {
       redirect: "follow",
       signal: ctrl.signal,
     });
-    if (!r.ok) return { ok: false, error: `http_${r.status}` };
+    if (!r.ok) return { ok: false, error: `http_${r.status}`, status: r.status };
     const html = await r.text();
     if (html.length > 2_000_000) return { ok: false, error: "response_too_large" };
     return { ok: true, html };
@@ -409,10 +405,13 @@ async function processClip(clipPath, vault, dryRun) {
 
   if (dryRun) return { glyph: "v", message: `${rel} -- would enrich via ${url} [dry-run]` };
 
-  // Rate-limit BEFORE the network call.
-  await sleep(RATE_LIMIT_MS);
-
+  // HIMMEL-4306: spend the shared Instagram budget BEFORE the network call.
+  const slot = await igAcquire();
+  if (!slot.ok) {
+    return { glyph: "t", message: `${rel} -- instagram throttle (${slot.reason}); stopping, clip stays pending` };
+  }
   const fetched = await fetchEmbed(url);
+  await igRecord(process.env, fetched.ok ? { ok: true } : fetched.status ? { httpStatus: fetched.status } : { ok: false });
   if (!fetched.ok) {
     return writeFailure({ clipPath, rel, text, baselineSha, fmRaw, body, error: fetched.error });
   }
@@ -582,9 +581,11 @@ async function main() {
       res.glyph === "v" ? "OK  " :
       res.glyph === "o" ? "SKIP" :
       res.glyph === "~" ? "PART" :
+      res.glyph === "t" ? "HOLD" :
       "FAIL";
     const target = res.glyph === "x" ? process.stderr : process.stdout;
     target.write(`${prefix} ${res.message}\n`);
+    if (res.glyph === "t") break; // throttled: nothing more may be sent today
     if (res.glyph === "v") { enriched++; processed++; }
     else if (res.glyph === "~") { partial++; processed++; }
     else if (res.glyph === "x") { failed++; processed++; }

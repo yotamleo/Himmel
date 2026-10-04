@@ -40,6 +40,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+# HIMMEL-4306: every Instagram request spends the shared throttle budget.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import ig_throttle  # noqa: E402
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
@@ -285,13 +289,23 @@ def download_media(ig: dict, cf: Path):
     if not gallery_dl:
         return None, "gallery_dl_missing"
     cmd = [gallery_dl, "--cookies", str(cf), "-D", str(dest), url]
+    slot = ig_throttle.acquire()
+    if not slot.ok:
+        return None, f"throttled:{slot.reason}"   # nothing sent; caller stops the batch
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
                               timeout=DOWNLOAD_TIMEOUT)
     except subprocess.TimeoutExpired:
+        ig_throttle.record(ok=False)
         return None, "download_timeout"
+    blob = (proc.stderr + proc.stdout).lower()
+    if proc.returncode == 0:
+        ig_throttle.record(ok=True)
+    elif "404" in blob or "not found" in blob or "removed" in blob:
+        ig_throttle.record(ok=True)         # Instagram answered; the post is gone
+    else:
+        ig_throttle.record(ok=False, text=blob)   # a 429/challenge starts the cooldown
     if proc.returncode != 0:
-        blob = (proc.stderr + proc.stdout).lower()
         if "404" in blob or "not found" in blob or "removed" in blob:
             return None, "removed"          # permanent
         if "login" in blob or "challenge" in blob or "403" in blob:
@@ -776,6 +790,12 @@ def enrich_batch(args, selected, matched_total, remaining):
                 time.sleep(RATE_LIMIT_S)
             # Download media
             files, error = download_media(ig, cf)
+            if error and error.startswith("throttled:"):
+                # HIMMEL-4306: budget spent or cooldown - the clip is NOT failed,
+                # it stays pending for the next run once the throttle lifts.
+                print(f"~ {relpath}: instagram throttle ({error.split(':', 1)[1]}) - "
+                      f"stopping the batch; clips stay pending")
+                break
             if error:
                 text, has_crlf = read_clip(p)
                 fm, fm_raw, body, present = parse_frontmatter(text)
