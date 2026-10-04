@@ -235,6 +235,12 @@ commands:
   deps upgrade            bump present declared toolchain deps toward latest;
                           qmd's model pull (~2.1 GB) is gated behind a prompt
                           or --with-models
+  report [--items <id,..>] --json
+                          read-only config feed (himmel-config-feed/1): every
+                          item, doctor check, cadence, plugin, lane, initiative
+                          leg, bypass flag and secret as one row grammar, for
+                          the config UI. --items re-probes only those row ids.
+                          Secrets show presence, never values.
   gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
@@ -304,6 +310,9 @@ const ALLOWED_OPTIONS = {
   uninstall: ['dryRun', 'yes', 'purgeState'],
   update: ['dryRun'],
   status: ['items', 'json'],
+  // HIMMEL-4254 P2: the config UI's feed (himmel-config-feed/1). Its own verb,
+  // never a `status` mode — status --json is a golden-tested contract.
+  report: ['items', 'json'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
   // `scope` takes its OWN positional verbs/targets (set|get|status, then
   // project|user for set) — parsed in parseArgs's scope cases, not as --flags.
@@ -445,6 +454,9 @@ function parseArgs(argv) {
         break;
       case 'gaps':
         if (!setSubcommand('gaps')) return args;
+        break;
+      case 'report':
+        if (!setSubcommand('report')) return args;
         break;
       case 'scope':
         if (!setSubcommand('scope')) return args;
@@ -5127,6 +5139,26 @@ async function cmdStatus(args) {
   return 0;
 }
 
+// HIMMEL-4254 P2: `report --json`. Read-only; composes the existing engines
+// (lib/config-feed.js). Row ids are free-form (doctor:C24-x, flag:NAME), so
+// --items is NOT validated against the manifest here — an unknown id yields no
+// row. No install profile is not an error: the feed says profileCache:false.
+function cmdReport(args) {
+  if (!args.json) {
+    console.error('himmelctl: report requires --json');
+    return 2;
+  }
+  const configFeed = require('./lib/config-feed.js');
+  const manifest = loadManifest();
+  const profilePath = cachePath();
+  const answers = fs.existsSync(profilePath) ? loadProfile(profilePath) : null;
+  const scope = answers ? answers.scope : 'user';
+  const targetPath = scope === 'user' ? repoRoot() : path.resolve(process.cwd());
+  const feed = configFeed.buildFeed({ manifest, scope, targetPath, answers, items: args.items });
+  process.stdout.write(JSON.stringify(feed) + '\n');
+  return 0;
+}
+
 // HIMMEL-3312 S13 item 7 ("himmelctl doctor"): the health-check surface for
 // a machine that already deleted its clone is `himmelctl status` — there is
 // no separate `doctor` verb in this CLI. A bundle whose ledger-recorded
@@ -7865,6 +7897,9 @@ async function main() {
   }
   if (args.subcommand === 'gaps') {
     return await cmdGaps(args);
+  }
+  if (args.subcommand === 'report') {
+    return cmdReport(args);
   }
   if (args.subcommand === 'scope') {
     return await cmdScope(args);

@@ -173,6 +173,9 @@ jobs:
       # shellcheck directives to them would change the artifact under
       # measurement, so they're excluded the same way scripts/statusline/ is.
       - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | grep -zv '^scripts/lanes/bench/fixtures/' | xargs -0 -r shellcheck --severity=warning
+      # HIMMEL-4254 P2: a bypass flag a hook reads but the config UI's display
+      # registry lacks is a flag the UI silently cannot show.
+      - run: node scripts/install/flag-registry-lint.mjs
 
   node-suites:
     runs-on: ubuntu-latest
