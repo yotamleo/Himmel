@@ -120,6 +120,10 @@ dispatch step from `docs/handover/overnight-mode.md`.
    - `description`: `Implement <KEY>` (3-5 words).
    - `subagent_type`: `general-purpose` (the default). For architecture-heavy
      tickets, run the built-in `Plan` agent first to design the implementation plan.
+     A ticket that adds or aggregates a status, report, doctor, health, probe,
+     check or inventory surface is routed through `/minerva` instead. It needs
+     a lint-clean Fact ownership matrix before dispatch (HIMMEL-4375; the
+     leg-brief-template's item (g)).
    - `model`: the `model` `fanout-plan.mjs` resolved for this ticket's item id.
    - `isolation`: `worktree` (each subagent gets its own copy of the
      repo on the target branch).

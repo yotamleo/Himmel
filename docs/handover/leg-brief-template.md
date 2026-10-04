@@ -174,3 +174,13 @@ template_version: 3
   in a commit still goes to codex-exec. Put the routing in the brief's Contract so the
   leg does not have to infer it; the full rule and its evidence live in
   [`../internals/lane-calibration.md`](../internals/lane-calibration.md#bank-scarcity-routing-rule-himmel-2772).
+- (g) **Surface tickets route through minerva (HIMMEL-4375).** Before briefing a
+  leg on a ticket that adds or aggregates a status, report, doctor, health,
+  probe, check or inventory surface, the console needs a minerva spec and plan
+  that pass `marketplace/plugins/himmel-ops/scripts/minerva-trace-lint.sh`. At
+  minimum it needs the spec's grepped `## Fact ownership` matrix. The brief
+  cites that spec. This is the routing point: one config UI shipped a single
+  fact as two findings because no one asked which existing surface already
+  computed it. ponytail: brief-template prose is the first layer; on its first
+  drift, escalate to a structural check in `headed-arm-leg.sh` that refuses a
+  surface ticket's launch without a lint-clean spec path.
