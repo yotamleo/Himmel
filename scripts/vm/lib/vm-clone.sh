@@ -70,6 +70,12 @@ vm_env_init() {
         _vm_fail "VBOXMANAGE_PATH is unset and HIMMEL_VM_AR_LIVE is not '1' — refusing to fall through to a real VBoxManage (HIMMEL-2623 incident hardening). Set VBOXMANAGE_PATH explicitly (a real path, or a stub for testing), or HIMMEL_VM_AR_LIVE=1 to run for real."
     fi
     VBOXMANAGE="${VBOXMANAGE_PATH:-$HIMMEL_VM_AR_VBOXMANAGE_DEFAULT}"
+    # A relative path (`./stub`) must resolve here: the VBoxManage calls run
+    # under `cd "$HOME"` (HIMMEL-4334), where it would no longer exist.
+    case "$VBOXMANAGE" in
+        /*|[A-Za-z]:*) ;;
+        */*) VBOXMANAGE="$PWD/$VBOXMANAGE" ;;
+    esac
     export VBOXMANAGE_PATH="$VBOXMANAGE"
     command -v "$VBOXMANAGE" >/dev/null 2>&1 || [ -x "$VBOXMANAGE" ] \
         || _vm_fail "VBoxManage not found at '$VBOXMANAGE' (set VBOXMANAGE_PATH)"
@@ -200,8 +206,10 @@ vm_clone_ensure() {
         vm_lock_release "himmel-vm-registry"
         _vm_fail "port allocation failed"
     fi
-    if ! "$VBOXMANAGE" clonevm "$SOURCE_VM" --snapshot "$snapshot" --options link \
-            --name "$CLONE_NAME" --register; then
+    # (cd "$HOME" ...) on both VBoxManage calls (HIMMEL-4334): VBoxManage may
+    # spawn the long-lived VBoxSVC, which inherits cwd and would pin a worktree.
+    if ! (cd "$HOME" && "$VBOXMANAGE" clonevm "$SOURCE_VM" --snapshot "$snapshot" --options link \
+            --name "$CLONE_NAME" --register); then
         vm_lock_release "himmel-vm-registry"
         _vm_fail "clonevm $SOURCE_VM -> $CLONE_NAME failed"
     fi
@@ -209,7 +217,7 @@ vm_clone_ensure() {
         vm_lock_release "himmel-vm-registry"
         _vm_fail "could not set the persistent NAT forward on $CLONE_NAME (port $PORT)"
     fi
-    if ! "$VBOXMANAGE" snapshot "$CLONE_NAME" take "$snapshot"; then
+    if ! (cd "$HOME" && "$VBOXMANAGE" snapshot "$CLONE_NAME" take "$snapshot"); then
         vm_lock_release "himmel-vm-registry"
         _vm_fail "could not take the baseline '$snapshot' snapshot on the new clone $CLONE_NAME"
     fi

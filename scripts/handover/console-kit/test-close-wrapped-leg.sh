@@ -129,7 +129,11 @@ CLEAN_STUB="$W/bin/clean.sh"
 cat > "$CLEAN_STUB" <<'STUB'
 #!/usr/bin/env bash
 echo "clean.sh $*" >> "$CALLS_LOG"
-if [ "${CWL_CLEAN_MODE:-ok}" = "in-use" ]; then
+if [ "${CWL_CLEAN_MODE:-ok}" = "in-use-once" ] && [ "$(grep -c '^clean.sh' "$CALLS_LOG")" -ge 2 ]; then
+    echo "clean-garden: prune summary — 1 pruned, 0 partial, 0 skipped, 0 failed"
+    exit 0
+fi
+if [ "${CWL_CLEAN_MODE:-ok}" = "in-use" ] || [ "${CWL_CLEAN_MODE:-ok}" = "in-use-once" ]; then
     echo "worktree is in use, skipping"
     echo "clean-garden: prune summary — 0 pruned, 0 partial, 1 skipped, 0 failed"
     exit 1
@@ -217,7 +221,7 @@ run() { # run <doc> - runs the script under test with every stub wired
         HANDOVER_DIR="${CWL_HANDOVER_DIR-$W/handover-root}" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
         WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" TMP_REAP_BIN="${CWL_REAP_BIN:-$REAP_STUB}" \
-        CLOSE_WRAPPED_LEG_REAP_WAIT=0 \
+        CLOSE_WRAPPED_LEG_REAP_WAIT=0 CLOSE_WRAPPED_LEG_PRUNE_WAIT=0 \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
         CWL_SUBTREE_MODE="${CWL_SUBTREE_MODE:-closable}" \
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
@@ -382,6 +386,14 @@ reset_calls
 rc=0; out=$(CWL_CLEAN_MODE="in-use" run "$DOC" 2>&1) || rc=$?
 check "clean-in-use: rc 0 (non-fatal)" "$rc" "0"
 contains "clean-in-use: names it" "$out" "in use"
+exact_count "clean-in-use: retried a bounded 3 times after the first pass (4 calls)" "$(cat "$CALLS")" "clean.sh --only $WT/.claude/worktrees/demo --only-allow-unmerged" "4"
+
+# --- 11b. in use at first, free on the retry (HIMMEL-4334) ----------------------
+reset_calls
+rc=0; out=$(CWL_CLEAN_MODE="in-use-once" run "$DOC" 2>&1) || rc=$?
+check "clean-in-use-once: rc 0" "$rc" "0"
+exact_count "clean-in-use-once: pruned on the second call, no more retries" "$(cat "$CALLS")" "clean.sh --only $WT/.claude/worktrees/demo --only-allow-unmerged" "2"
+contains "clean-in-use-once: final output is the successful prune" "$out" "1 pruned"
 
 # --- 12. clean.sh fails for another reason --------------------------------------
 reset_calls

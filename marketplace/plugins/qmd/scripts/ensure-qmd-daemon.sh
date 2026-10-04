@@ -372,6 +372,11 @@ done
 # absent (rare platform), degrade to an unbounded start.
 # ${QMD_BIN_ARG1:+"$QMD_BIN_ARG1"} expands to the quoted qmd.js path on the
 # bun-js resolution and to NOTHING (no empty argv slot) otherwise.
+# The daemon outlives this session, so start it from $HOME (HIMMEL-4334): a
+# daemon that inherits a worktree cwd pins that worktree ("in use") long after
+# its PR merges. A failed cd falls back to the filesystem root, never the
+# caller's cwd.
+cd "$HOME" 2>/dev/null || cd / || exit 1
 start_rc=0
 if command -v timeout >/dev/null 2>&1; then
   start_out="$(timeout -k 5 "$QMD_START_TIMEOUT" "$QMD_BIN" ${QMD_BIN_ARG1:+"$QMD_BIN_ARG1"} mcp --http --daemon 2>&1)" || start_rc=$?

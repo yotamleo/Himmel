@@ -186,6 +186,13 @@ case "$(uname -s)" in
             else
                 fail "T6: detail did not name pid $T6_HOLDER: $WORKTREE_INUSE_DETAIL"
             fi
+            # HIMMEL-4334: the detail names the holder's command so a daemon
+            # (VBoxSVC, qmd.js mcp) can be told from a live leg.
+            if grepq "$WORKTREE_INUSE_DETAIL" -F "(sleep"; then
+                pass "T6: detail names the holder command"
+            else
+                fail "T6: detail did not name the holder command (sleep): $WORKTREE_INUSE_DETAIL"
+            fi
             if [ -d "$t6_dir" ]; then
                 pass "T6: the held directory survives the probe (no rename was attempted)"
             else

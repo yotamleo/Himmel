@@ -131,6 +131,7 @@ cat > "$mock_qmd" <<'EOF'
 #!/usr/bin/env bash
 echo "$*" >> "$QMD_MOCK_STATE/qmd-argv.log"
 if [ "$*" = "mcp --http --daemon" ]; then
+  pwd -P >> "$QMD_MOCK_STATE/qmd-cwd.log"
   if [ "${QMD_MOCK_HANG:-0}" = "1" ]; then
     exec sleep 60
   fi
@@ -192,6 +193,20 @@ run_ensure sentinel "$bin:$safe"
 grep -qx 'mcp --http --daemon' "$state/qmd-argv.log" || \
   fail "(b) dead->alive: qmd not called with 'mcp --http --daemon' (got: $(cat "$state/qmd-argv.log"))"
 echo "ok (b): dead endpoint starts daemon (qmd mcp --http --daemon) then goes alive"
+
+# ---- (b2) daemon cwd is $HOME, never the caller's cwd (HIMMEL-4334) ----------
+# The daemon outlives the session that started it; inheriting a worktree cwd
+# pinned that worktree ("in use") long after its PR merged.
+rm -f "$state/alive" "$state/qmd-cwd.log"
+mkdir -p "$work/caller-wt"
+pushd "$work/caller-wt" >/dev/null
+run_ensure sentinel "$bin:$safe"
+popd >/dev/null
+[ "$rc" -eq 0 ] || fail "(b2) daemon cwd: expected rc 0, got $rc ($out)"
+want_cwd="$(cd "$home" && pwd -P)"
+[ "$(cat "$state/qmd-cwd.log" 2>/dev/null)" = "$want_cwd" ] || \
+  fail "(b2) daemon cwd: expected $want_cwd, got '$(cat "$state/qmd-cwd.log" 2>/dev/null)'"
+echo "ok (b2): daemon starts with cwd \$HOME, not the caller's cwd"
 
 # ---- (c) qmd missing entirely ----------------------------------------------
 # PATH without the mock bin dir -> PATH lookup and the bun-bin fallback
