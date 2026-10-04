@@ -431,7 +431,7 @@ ledger="$git_dir/cr-critic-scores.jsonl"
 # so an unknown roster never turns silence into an unlock.
 panel_empty=$(CRITICS="$SCRIPT_DIR/critics.json" node -e '
   try { const p = JSON.parse(require("fs").readFileSync(process.env.CRITICS, "utf8")).panel;
-        console.log(Array.isArray(p) && p.length === 0 ? 1 : 0); } catch (_) { console.log(0); }' 2>/dev/null)
+        console.log(String(Array.isArray(p) && p.length === 0 ? 1 : 0)); } catch (_) { console.log("0"); }' 2>/dev/null)
 # shellcheck disable=SC2016  # $-refs below are JS inside a single-quoted node script, not shell
 verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANCH="$branch" node -e '
   const fs = require("fs"), e = process.env;
