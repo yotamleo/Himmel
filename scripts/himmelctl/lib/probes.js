@@ -601,7 +601,36 @@ function isDirectory(p) {
 // HIMMEL-3441); it is still subject to the installed-ledger check below like
 // every other enabled plugin, and is named in the detail as information.
 // ~/.claude/plugins/installed_plugins.json is that ledger.
-function verifyPluginSet(enabledPlugins, ctx) {
+// HIMMEL-4270: per-marketplace source comparison, settings entry vs template.
+// The himmel-owned marketplace's manifest wins; for a third-party one the
+// settings side is recommended. Entries absent from settings are not drift.
+function marketplaceSource(entry) {
+  const src = entry && entry.source;
+  if (!src || typeof src !== 'object') return '';
+  if (src.source === 'github') return src.repo || '';
+  if (src.source === 'directory') return src.path || '';
+  if (src.source === 'url') return src.url || '';
+  return '';
+}
+
+function marketplaceSourceDrift(settings, template, ctx) {
+  const have = (settings && typeof settings.extraKnownMarketplaces === 'object' && settings.extraKnownMarketplaces) || {};
+  const want = (template && typeof template.extraKnownMarketplaces === 'object' && template.extraKnownMarketplaces) || {};
+  const scope = ctx.scope === 'project' ? 'project' : 'user';
+  const out = [];
+  for (const name of Object.keys(want)) {
+    const wantSrc = marketplaceSource(want[name]).replace(/<himmel-path>/g, ctx.repoRoot);
+    const haveSrc = marketplaceSource(have[name]);
+    if (!wantSrc || !haveSrc || wantSrc === haveSrc) continue;
+    const reconcile = `claude plugin marketplace remove ${name} --scope ${scope} && claude plugin marketplace add ${wantSrc} --scope ${scope}`;
+    out.push(name === 'himmel'
+      ? `marketplace 'himmel' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — the himmel manifest is right; reconcile: ${reconcile}`
+      : `marketplace '${name}' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — keeping the settings source is recommended; to adopt the template's: ${reconcile}`);
+  }
+  return out;
+}
+
+function verifyPluginSet(enabledPlugins, ctx, settings) {
   const templatePath = path.join(ctx.repoRoot, 'docs', 'setup', 'settings-template.json');
   let template;
   try {
@@ -644,6 +673,11 @@ function verifyPluginSet(enabledPlugins, ctx) {
   if (notInstalled.length > 0) {
     return { problem: `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}` };
   }
+  // HIMMEL-4270: a marketplace registered under a different source than the
+  // template's makes `claude plugin marketplace add` fail — drift (degraded),
+  // not an install failure. Same remedy text as install-plugins.sh.
+  const drift = marketplaceSourceDrift(settings, template, ctx);
+  if (drift.length > 0) return { problem: drift.join('; ') };
   if (extra.length > 0) {
     return { note: `extra (not in the recorded set): ${extra.join(', ')}` };
   }
@@ -699,7 +733,7 @@ function probeSettingsKey(item, ctx) {
       if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
     }
     if (item.probe.verifyPluginSet) {
-      const result = verifyPluginSet(getVal(item.probe.key), ctx);
+      const result = verifyPluginSet(getVal(item.probe.key), ctx, data);
       if (result.problem) return { actual: 'degraded', detail: `${filePath}: ${result.problem}` };
       if (result.note) return { actual: 'present', detail: `${filePath} (${result.note})` };
     }
