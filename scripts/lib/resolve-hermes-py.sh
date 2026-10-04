@@ -39,9 +39,16 @@ resolve_hermes_py() {
     #    generation (Python 3.14 under ~/.hermes/tools). The legacy venv python
     #    cannot, so this beats the venv probe — which stays as the fallback for
     #    old installs and for a launcher whose reported interpreter is gone.
-    local launcher rt
+    #    The launcher call is bounded (5s) where `timeout` exists, so a stalled
+    #    launcher cannot hang resolution before invoke.sh starts its watchdog.
+    local launcher rt out
     if launcher="$(hermes_pm_launcher "$src")"; then
-        rt="$("$launcher" --print-runtime-command 2>/dev/null | sed -n '1s/^\["\(\([^"\\]\|\\.\)*\)".*/\1/p' | sed 's/\\\\/\\/g')" || rt=""
+        if command -v timeout >/dev/null 2>&1; then
+            out="$(timeout 5 "$launcher" --print-runtime-command 2>/dev/null)" || out=""
+        else
+            out="$("$launcher" --print-runtime-command 2>/dev/null)" || out=""
+        fi
+        rt="$(printf '%s\n' "$out" | sed -n '1s/^\["\(\([^"\\]\|\\.\)*\)".*/\1/p' | sed 's/\\\\/\\/g')"
         if [ -n "$rt" ] && [ -x "$rt" ]; then printf '%s\n' "$rt"; return 0; fi
     fi
 

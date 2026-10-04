@@ -154,6 +154,18 @@ out="$( base_env; HOME="$tmp/home" resolve_hermes_py )"; rc=$?
 if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/home/.hermes/hermes-agent/venv/bin/python" ]; then pass "dead launcher argv -> legacy venv"; else fail "dead launcher argv -> rc=$rc out='$out'"; fi
 rm -rf "$tmp"
 
+echo "== a hung PM launcher is bounded and falls back to the legacy venv =="
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
+mkdir -p "$tmp/home/.hermes/hermes-agent/.hermes/bin"
+printf '#!/bin/sh\nexec sleep 60\n' > "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes"
+chmod +x "$tmp/home/.hermes/hermes-agent/.hermes/bin/hermes"
+make_fake_py "$tmp/home/.hermes/hermes-agent/venv/bin/python"
+t0=$SECONDS
+out="$( base_env; HOME="$tmp/home" resolve_hermes_py )"; rc=$?
+dt=$((SECONDS - t0))
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/home/.hermes/hermes-agent/venv/bin/python" ] && [ "$dt" -lt 30 ]; then pass "hung launcher -> legacy venv in ${dt}s"; else fail "hung launcher -> rc=$rc out='$out' after ${dt}s (want venv inside the launcher timeout)"; fi
+rm -rf "$tmp"
+
 echo "== PM launcher + HERMES_PY: executable HERMES_PY still wins =="
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/hermes-py-test.XXXXXX")" || { echo "FAIL: mktemp"; exit 1; }
 make_fake_py "$tmp/py/python"; make_fake_py "$tmp/home/.hermes/tools/p/bin/python3"
