@@ -2107,9 +2107,12 @@ _dc_data_bodies() {
     # redirected (`} | bash`, `done >&3`) may run a body inside it, and a
     # receiver rebound by name (any PATH mention, an alias, `hash`,
     # `enable`, a function, or code pulled in by `.`, `source` or `eval`)
-    # is not the receiver, so nothing is read as data then
+    # is not the receiver, and stdout rerouted for the rest of the command
+    # (`exec >&3`, `coproc`, a process substitution or fd path) may reach a
+    # shell, so nothing is read as data then
     [[ ! $out =~ (^|[;\&[:space:]])(\}|\)|done|fi|esac)[[:space:]]*([0-9]*[\<\>]|\|) ]] || return 1
-    [[ ! $out =~ (^|[^a-z0-9_])(alias|hash|enable|function)([^a-z0-9_]|$) ]] || return 1
+    [[ ! $out =~ (^|[^a-z0-9_])(alias|hash|enable|function|exec|coproc)([^a-z0-9_]|$) ]] || return 1
+    case "$out" in *'>('*|*/dev/fd/*|*/proc/*/fd*) return 1 ;; esac
     u='(^|[^-a-z0-9_./{$])(path|source|eval)([+]?=|[[:space:];&|)]|$)'
     [[ ! $out =~ $u ]] || return 1
     u='(^|[;&|({[:space:]])\.[[:space:]]+[^=!<>|&[:space:]]'

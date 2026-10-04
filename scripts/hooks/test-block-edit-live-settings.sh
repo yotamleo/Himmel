@@ -2533,6 +2533,26 @@ assert_rc "623 nested worktree doc body then grep handover-path and jq select(. 
 the hook folds ~/.cl\$(printf a)ude now
 EOF
 grep -n handover-path /tmp/notes.md; jq 'select(. != 1)' /tmp/n.json" HOME="$FAKEHOME")"
+assert_rc "624 nested worktree exec > >(bash) on its own line, then cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "exec > >(bash)
+cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "625 nested worktree exec 1>&3 on its own line, then cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "exec 1>&3
+cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "626 nested worktree coproc bash then cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "coproc bash
+cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
+assert_rc "627 nested worktree exec >/dev/fd/5 on its own line, then cat <<'EOF' body denies" 2 \
+    "$(bash_rc_of "$NESTED_WT" "exec >/dev/fd/5
+cat <<'EOF'
+$DC_RUN
+EOF" HOME="$FAKEHOME")"
 assert_rc "615 nested worktree /usr/bin/cat <<'EOF' to /tmp/notes.md naming ~/.cl\$(printf a)ude allows" 0 \
     "$(bash_rc_of "$NESTED_WT" "/usr/bin/cat <<'EOF' > /tmp/notes.md
 the hook folds ~/.cl\$(printf a)ude now
