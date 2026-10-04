@@ -379,6 +379,13 @@ deny "echo 'qmd query x' | /bin/sh"
 deny "echo 'qmd query x' | busybox sh"
 deny "echo 'qmd query x' | sg users sh"
 deny "echo 'qmd query x' | sudo -u u sh"
+# A remote or container launcher consumer stays fail-closed on a shell word.
+deny "echo 'qmd query x' | ssh host sh"
+deny "echo 'qmd query x' | docker exec -i c sh"
+deny "echo 'qmd query x' | podman exec -i c bash"
+deny "echo 'qmd query x' | kubectl exec -i p -- sh"
+deny "echo 'qmd query x' | docker run -i img sh"
+deny "echo 'qmd query x' | /usr/bin/ssh -p 22 host bash"
 # ... while a shell named as a later operand of the consumer is no program.
 allow 'grep -rn "qmd search" docs | grep -v sh'
 allow 'grep -rn "qmd search" docs | grep -c bash'

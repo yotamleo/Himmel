@@ -45,7 +45,7 @@
 # wrappers (setpriv … pkexec) and elvish/nu/xonsh/pwsh `-c`.
 # ponytail: a launcher that types or ships its command elsewhere — tmux
 # send-keys, screen -X stuff, pwsh -EncodedCommand, ssh/docker/kubectl exec
-# (`… | ssh host sh` too) — is unread; residual launchers → HIMMEL-4305.
+# with a command string — is unread; residual launchers → HIMMEL-4305.
 # A heredoc makes qmd_words decline and the coarser fallback readings below
 # decide; the shared tokenizer (scripts/hooks/lib/shell-tokenize.sh,
 # HIMMEL-912) models heredocs and can replace qmd_words once a third inlined
@@ -464,6 +464,10 @@ NESTWORD='(^|[^[:alnum:]_.-])((r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh|fish|el
 # env: its -S string and the words after it. alias: a definition naming qmd.
 # HIMMEL-4245: a pipe consumer stage whose last word is its program.
 PIPEPROG='^&?[[:space:]]*(('"$ASSIGN"'|\{|!|[0-9]*[<>][<>&|]*[[:space:]]*[^[:space:]<>]*|=?'"$EXEPFX$WRAP"')[[:space:]]+)*=?'"$EXEPFX"'[^[:space:]]+$'
+# A remote or container launcher consumer (`| ssh host sh`, `| docker exec
+# -i c sh`, `| kubectl exec -i p -- sh`) hands the pipe on to a shell word
+# anywhere among its words: that stage stays fail-closed, as before 4245.
+PIPELNCH='^&?[[:space:]]*(('"$ASSIGN"'|\{|!|[0-9]*[<>][<>&|]*[[:space:]]*[^[:space:]<>]*|=?'"$EXEPFX$WRAP"')[[:space:]]+)*=?'"$EXEPFX"'(ssh|docker|podman|kubectl)(\.exe)?[[:space:]]'
 ENVSPLIT='^(-[[:alpha:]]*S|--split-string(=|$))'
 # nest_mode WORD — set mode for WORD, or return 1 when it runs nothing nested.
 nest_mode() {
@@ -685,7 +689,7 @@ qmd_nested() {
         # assignments and redirections (`| xargs bash`, `| 2>/dev/null sh`),
         # so `… | grep -v sh` is no shell.
         if [ -n "$piped" ] && [ "$hasc" = 0 ] && { [ "$mode" = sh ] || [ "$mode" = src ]; } &&
-            [[ $ptxt =~ $PIPEPROG ]] &&
+            { [[ $ptxt =~ $PIPEPROG ]] || [[ $ptxt =~ $PIPELNCH ]]; } &&
             names_verb "${dec:pfrom+1:piped-pfrom-1}"; then
             deny=1
             return 0
