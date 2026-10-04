@@ -498,14 +498,18 @@ class FirecrawlClient:
         except Exception:
             ledger_append("harvest-clip-body-batch", "/v2/scrape", 0, ok=False)
             raise
-        used = ((data.get("data") or {}).get("metadata") or {}).get("creditsUsed")
+        # a valid-JSON body of the wrong shape still spent the call: ledger it once
+        body = data.get("data") if isinstance(data, dict) else None
+        body = body if isinstance(body, dict) else {}
+        meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        used = meta.get("creditsUsed")
+        ok = isinstance(data, dict) and bool(data.get("success"))
         ledger_append("harvest-clip-body-batch", "/v2/scrape",
-                      used if isinstance(used, int) else self.SCRAPE_COST,
-                      ok=bool(data.get("success")))
-        if not data.get("success"):
+                      used if isinstance(used, int) else self.SCRAPE_COST, ok=ok)
+        if not ok:
             raise RuntimeError(f"firecrawl success=false: {str(data)[:200]}")
-        md = (data.get("data") or {}).get("markdown")
-        if not md or not md.strip():
+        md = body.get("markdown")
+        if not md or not isinstance(md, str) or not md.strip():
             raise RuntimeError("firecrawl returned empty markdown")
         return md
 
@@ -549,6 +553,7 @@ def build_scrape_chain(env, budget):
     left out of the chain without one."""
     raw = (env.get("HARVEST_SCRAPE_BACKEND") or "").strip()
     names = [n.strip() for n in raw.split(",") if n.strip()] or list(DEFAULT_SCRAPE_BACKENDS)
+    names = list(dict.fromkeys(names))  # a repeated name must not mint a second client (and a second firecrawl budget)
     unknown = [n for n in names if n not in DEFAULT_SCRAPE_BACKENDS]
     if unknown:
         raise ValueError(f"unknown HARVEST_SCRAPE_BACKEND {','.join(unknown)} (valid: {', '.join(DEFAULT_SCRAPE_BACKENDS)})")
@@ -972,7 +977,7 @@ def main():
                          "harvest_flag/_detail on hits.")
     ap.add_argument("--firecrawl-thin", action="store_true",
                     help="Escalation: fetch clean markdown via firecrawl for "
-                         "thin-body article/web clips (needs FIRECRAWL_API_KEY). "
+                         "thin-body article/web clips (keyless Jina first; the firecrawl rung needs FIRECRAWL_API_KEY). "
                          "Off by default — conserves the free-tier credits.")
     ap.add_argument("--firecrawl-budget", type=int, default=FIRECRAWL_DEFAULT_BUDGET,
                     help="Max firecrawl scrape calls per run (~1 credit each). "

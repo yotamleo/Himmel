@@ -186,6 +186,20 @@ except Exception:
     pass
 check("chain: firecrawl capped at its budget (second run call spends nothing)", len(fc_lines()) == 1)
 
+# repeated backend names mint one client (one firecrawl budget)
+check("chain: duplicate backend names collapse",
+      [b.name for b in mod.build_scrape_chain({"FIRECRAWL_API_KEY": "k", "HARVEST_SCRAPE_BACKEND": "firecrawl,firecrawl"}, 5).backends] == ["firecrawl"])
+
+# wrong-shaped but valid JSON is ledgered once and raises cleanly
+reset()
+stub_urlopen([json.dumps({"success": True, "data": "not-an-object"})])
+try:
+    mod.FirecrawlClient("k", budget=5).scrape(URL)
+    check("firecrawl: wrong-shape response raises", False)
+except RuntimeError:
+    check("firecrawl: wrong-shape response raises", True)
+check("firecrawl: wrong-shape response ledgered exactly once", len(fc_lines()) == 1)
+
 # --- process_clip: gate + marker with the chain -----------------------------
 THIN = "---\ntype: article\nsource: https://example.com/post\n---\nshort.\n"
 

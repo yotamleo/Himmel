@@ -79,7 +79,7 @@ Detection variable list may grow; refine during calibration cycle 1. Smoke-test 
 
 If `gh auth status` is non-zero AND the batch contains any github URL: abort with `harvest-clips: gh not authenticated (needed for obsidian-triage:luna-ingest on github URLs); run 'gh auth login' and re-run.` Exit 2. (Skip the check if the batch has no github URLs.)
 
-`FIRECRAWL_API_KEY` is required ONLY when `--firecrawl-thin` is passed (the batch tool exits 2 with a clear message if the flag is set but the key is absent). Default runs never need it.
+`--firecrawl-thin` turns the escalation on; `FIRECRAWL_API_KEY` is needed only for the `firecrawl` rung (keyless Jina Reader works without it; the batch tool exits 2 only when no backend in `HARVEST_SCRAPE_BACKEND` is usable). Default runs never need it.
 
 **Scrape backend order (HIMMEL-4335).** The thin-body escalation tries backends in the order set by `HARVEST_SCRAPE_BACKEND` (comma list of `local-headless`, `jina`, `firecrawl`; default `local-headless,jina,firecrawl`). `local-headless` is a named slot that is not implemented yet (silently skipped; follow-up ticket); `jina` is Jina Reader (`https://r.jina.ai/<url>`, no key, no credits); `firecrawl` is the capped last rung (`--firecrawl-budget`, dropped from the chain when `FIRECRAWL_API_KEY` is unset). A backend that fails falls through to the next. The skip-host list and the G-1 privacy gate run before any backend. The clip's `harvest_skill` records which backend served it. Every Firecrawl call (harvest, follow-web, fetch-health) appends one line (`v, ts, host, source, kind, call_site, endpoint, credits, ok`; never the key, URL query or page body) to `~/.himmel/state/firecrawl-ledger.jsonl` (override `HIMMEL_FIRECRAWL_LEDGER`).
 
