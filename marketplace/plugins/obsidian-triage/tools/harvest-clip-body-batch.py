@@ -483,17 +483,18 @@ def _rule_match(pats, url: str):
 
 
 def _odd_host(url: str) -> str:
-    """The authority of `url` when its host is not plain `[a-z0-9.-]` (a
-    bracketed IPv6 literal is allowed), else "". A backslash or `%XX` in the
-    authority is read differently by WHATWG/Node scrapers than by this matcher,
-    so such a URL is refused outright, never decoded or repaired."""
+    """The URL (or its authority) when it cannot be matched safely, else "":
+    a backslash anywhere (WHATWG reads it as `/`), `%XX` in the authority, a
+    bracketed IPv6 literal, or a host that is not plain `[a-z0-9.-]`. A scraper
+    may read these as a different host or path than this matcher does, so such
+    a URL is refused outright, never decoded or repaired."""
+    if "\\" in url:
+        return url
     rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", url.strip())
     auth = re.split(r"[/?#]", rest, maxsplit=1)[0]
-    if "\\" in auth or "%" in auth:
+    if "%" in auth:
         return auth
     host = auth.rsplit("@", 1)[-1]
-    if host.startswith("["):
-        return "" if re.fullmatch(r"\[[0-9A-Fa-f:.]+\](:\d*)?", host) else auth
     host = _norm_host(host.partition(":")[0])
     return "" if re.fullmatch(r"[a-z0-9.-]*", host) else auth
 
