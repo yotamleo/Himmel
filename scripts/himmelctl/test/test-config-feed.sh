@@ -498,7 +498,9 @@ bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","doctor:
 bl_expect DUPLICATE 'DUPLICATE all'
 bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","doctor:*","probe-disagree:*","plugin:*","lane:*","flag:*","secret:*","initiative:*","pipeline-cadence","qmd-cadence","graphmap-cadence","codex-sweep-cadence","doctor-cadence"]},{"id":"unsorted","title":"Unsorted","rows":[]}]}'
 bl_expect RESERVED 'RESERVED unsorted'
-pass "k2 bundle lint fails on UNMAPPED / MULTI / DEAD / DUPLICATE / RESERVED"
+bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","doctor:*","probe-disagree:*","plugin:*","lane:*","flag:*","secret:*","initiative:*","pipeline-cadence","qmd-cadence","graphmap-cadence","codex-sweep-cadence","doctor-cadence"]},{"id":"bare","title":"No rows"}]}'
+bl_expect MALFORMED 'bare'
+pass "k2 bundle lint fails on UNMAPPED / MULTI / DEAD / DUPLICATE / RESERVED / malformed"
 # k3: a root with nothing to enumerate must not pass vacuously
 bl_root
 printf '{"items":[]}\n' > "$work/blr/scripts/install/manifest.json"

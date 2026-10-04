@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { CADENCES, INITIATIVE_LEGS, DOCTOR_OWNER } = require(path.join(here, '..', 'himmelctl', 'lib', 'config-feed.js'));
-const { matches, UNSORTED } = require(path.join(here, '..', 'himmelctl', 'lib', 'feed-bundles.js'));
+const { loadBundles, matches, UNSORTED } = require(path.join(here, '..', 'himmelctl', 'lib', 'feed-bundles.js'));
 
 const TABLE_REL = 'scripts/himmelctl/lib/feed-bundles.json';
 // `emit` after line start, whitespace, ';' or ')' (many emits sit in case arms)
@@ -56,8 +56,7 @@ export function lint(root) {
   let bundles;
   let found;
   try {
-    bundles = readJson(root, TABLE_REL).bundles;
-    if (!Array.isArray(bundles)) throw new Error('no bundles array');
+    bundles = loadBundles(path.join(root, TABLE_REL));
   } catch (e) {
     return [`cannot read ${TABLE_REL}: ${e.message}`];
   }
@@ -82,7 +81,7 @@ export function lint(root) {
   for (const id of [...ids].sort()) {
     const hit = []; // one bundle id per matching entry
     for (const b of bundles) {
-      for (const e of b.rows || []) {
+      for (const e of b.rows) {
         if (!matches(e, id)) continue;
         used.add(`${b.id}\n${e}`);
         hit.push(b.id);
@@ -92,7 +91,7 @@ export function lint(root) {
     else if (hit.length > 1) errors.push(`MULTI ${id} ${hit.join(',')}`);
   }
   for (const b of bundles) {
-    for (const e of b.rows || []) {
+    for (const e of b.rows) {
       if (!used.has(`${b.id}\n${e}`)) errors.push(`DEAD ${b.id} ${e}`);
     }
   }

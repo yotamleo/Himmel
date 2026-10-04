@@ -13,6 +13,11 @@ const UNSORTED = 'unsorted';
 function loadBundles(file) {
   const t = JSON.parse(fs.readFileSync(file || TABLE, 'utf8'));
   if (!t || !Array.isArray(t.bundles)) throw new Error(`${file || TABLE}: no bundles array`);
+  for (const b of t.bundles) {
+    const ok = b && typeof b.id === 'string' && typeof b.title === 'string' &&
+      Array.isArray(b.rows) && b.rows.every((e) => typeof e === 'string');
+    if (!ok) throw new Error(`${file || TABLE}: malformed bundle ${JSON.stringify(b && b.id)} (needs string id, title and a rows array of strings)`);
+  }
   return t.bundles;
 }
 
