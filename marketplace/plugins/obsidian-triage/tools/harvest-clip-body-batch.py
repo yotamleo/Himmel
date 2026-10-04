@@ -554,7 +554,7 @@ def ledger_path():
     return Path(os.environ.get("HOME") or Path.home()) / ".himmel" / "state" / "firecrawl-ledger.jsonl"
 
 
-def ledger_append(call_site, endpoint, credits, ok=True, source="firecrawl"):
+def ledger_append(call_site, endpoint, credits, ok=True, source="firecrawl", reason=None):
     """Append one JSONL line: ts, call_site, endpoint (path only), credits.
     Never the key, the URL (or its query string) or the page body. A ledger
     write failure never breaks the scrape that triggered it."""
@@ -572,6 +572,8 @@ def ledger_append(call_site, endpoint, credits, ok=True, source="firecrawl"):
         "credits": credits,
         "ok": ok,
     }
+    if reason:
+        row["reason"] = reason
     try:
         lp = ledger_path()
         lp.parent.mkdir(parents=True, exist_ok=True)
@@ -579,6 +581,97 @@ def ledger_append(call_site, endpoint, credits, ok=True, source="firecrawl"):
             fh.write(json.dumps(row) + "\n")
     except Exception:
         pass
+
+
+# Firecrawl-unavailable parking (HIMMEL-4371). An item that needed Firecrawl
+# while it was unavailable (402 / credits exhausted, 429, auth) is parked in an
+# enveloped JSONL state file, registered in scripts/observability/ledgers.json
+# as `firecrawl-parked`, so it is neither lost nor marked failed. Row kinds:
+# parked / resolved (per item), unavailable / available (global status).
+# himmel-doctor C51 reads it; follow-web.mjs appends to it for searches.
+class FirecrawlUnavailable(RuntimeError):
+    def __init__(self, reason):
+        super().__init__(f"firecrawl unavailable ({reason})")
+        self.reason = reason
+
+
+_UNAVAILABLE_BODY = re.compile(
+    r"insufficient credits|out of credits|credits? (?:have been )?exhausted|quota|payment required|upgrade your plan",
+    re.I)
+
+
+def classify_firecrawl_unavailable(status, body):
+    """'exhausted' | 'rate-limited' | 'auth' | None. 402 and a quota /
+    insufficient-credits body mean exhausted; 429 is a rate limit (no reset
+    date is claimed); 401/403 is auth."""
+    if status in (401, 403):
+        return "auth"
+    if status == 429:
+        return "rate-limited"  # before the body match: a rate-limit text may mention "quota"
+    if _UNAVAILABLE_BODY.search(body or "") or status == 402:
+        return "exhausted"
+    return None
+
+
+def parked_path():
+    import os
+    override = os.environ.get("HIMMEL_FIRECRAWL_PARKED", "").strip()
+    if override:
+        return Path(override)
+    return Path(os.environ.get("HOME") or Path.home()) / ".himmel" / "state" / "firecrawl-parked.jsonl"
+
+
+def parked_append(kind, **fields):
+    """Append one enveloped row (v, ts, host, source, kind + fields). Never the
+    key, a URL or a page body. A write failure never breaks the harvest."""
+    import datetime
+    import json
+    import socket
+    row = {
+        "v": 1,
+        "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host": socket.gethostname(),
+        "source": "firecrawl",
+        "kind": kind,
+    }
+    row.update({k: v for k, v in fields.items() if v is not None})
+    try:
+        pp = parked_path()
+        pp.parent.mkdir(parents=True, exist_ok=True)
+        with open(pp, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
+def parked_load():
+    """Fold the state file: ({(vault, item): parked row} still unresolved,
+    latest `unavailable` row, or None once an `available` row follows it).
+    `available` also clears follow-web query rows (queries are not addressable)."""
+    import json
+    items, status = {}, None
+    try:
+        lines = parked_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return items, status
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict):
+            continue
+        kind = r.get("kind")
+        if kind == "parked":
+            items[(r.get("vault"), r.get("item"))] = r
+        elif kind == "resolved":
+            items.pop((r.get("vault"), r.get("item")), None)
+        elif kind == "unavailable":
+            status = r
+        elif kind == "available":
+            status = None
+            items = {k: v for k, v in items.items() if v.get("call_site") != "follow-web"}
+    return items, status
 
 
 class BackendNotImplemented(Exception):
@@ -656,6 +749,10 @@ class FirecrawlClient:
         self.timeout = timeout
         self.max_credits = max_credits
         self.stealth = stealth
+        self.unavailable = None  # reason once a 402/429/auth/probe-0 disabled it for this run
+        self.reset = None
+        self.served = 0
+        self.probed_ok = False
 
     @classmethod
     def from_env(cls, env, budget):
@@ -667,12 +764,40 @@ class FirecrawlClient:
                    max_credits=_env_int(env, "HARVEST_FIRECRAWL_MAX_CREDITS", FIRECRAWL_DEFAULT_MAX_CREDITS),
                    stealth=(env.get("HARVEST_FIRECRAWL_STEALTH") or "").strip() == "1")
 
+    def credit_usage(self):
+        """GET /v2/team/credit-usage (free): the `data` dict, or None on any failure."""
+        import json
+        import urllib.request
+        req = urllib.request.Request(f"{self.base_url}/v2/team/credit-usage", method="GET",
+                                     headers={"Authorization": f"Bearer {self.api_key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            body = data.get("data") if isinstance(data, dict) else None
+            ledger_append("harvest-clip-body-batch", "/v2/team/credit-usage", 0, ok=isinstance(body, dict))
+            return body if isinstance(body, dict) else None
+        except Exception:
+            ledger_append("harvest-clip-body-batch", "/v2/team/credit-usage", 0, ok=False)
+            return None
+
+    def mark_unavailable(self, reason, reset=None):
+        """Disable firecrawl for the rest of the run: ONE stderr line, one state row."""
+        if reason == "exhausted" and reset is None:
+            reset = (self.credit_usage() or {}).get("billingPeriodEnd")
+        self.unavailable, self.reset, self.remaining = reason, (reset if reason == "exhausted" else None), 0
+        when = f", resets {self.reset}" if self.reset else ""
+        print(f"harvest-clip-body-batch: firecrawl unavailable ({reason}{when}); disabled for the rest of "
+              "this run, affected items parked (deferred: firecrawl-unavailable)", file=sys.stderr)
+        parked_append("unavailable", call_site="harvest-clip-body-batch", reason=reason, reset=self.reset)
+
     def scrape(self, url: str) -> str:
         """POST /v2/scrape, return data.markdown. Raises on any failure
         (HTTP error, success=false, empty markdown) — the caller routes a
         failed scrape to a retryable partial outcome. Every call that
-        reaches the API appends one ledger line."""
+        reaches the API appends one ledger line. A 402/quota/429/auth
+        response raises FirecrawlUnavailable and disables the client."""
         import json
+        import urllib.error
         import urllib.request
         opts = {"url": url, "formats": ["markdown"]}
         if self.stealth:  # 5x credits: only on an explicit HARVEST_FIRECRAWL_STEALTH=1
@@ -690,6 +815,17 @@ class FirecrawlClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 raw = resp.read()
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                err_body = ""
+            reason = classify_firecrawl_unavailable(e.code, err_body)
+            ledger_append("harvest-clip-body-batch", "/v2/scrape", 0, ok=False, reason=reason)
+            if reason:
+                self.mark_unavailable(reason)
+                raise FirecrawlUnavailable(reason) from e
+            raise
         except Exception:
             ledger_append("harvest-clip-body-batch", "/v2/scrape", 0, ok=False)
             raise
@@ -718,10 +854,15 @@ class FirecrawlClient:
                   f"(ceiling {self.max_credits}); firecrawl disabled for the rest of this run",
                   file=sys.stderr)
         if not ok:
+            reason = classify_firecrawl_unavailable(None, str(data)[:500])
+            if reason:
+                self.mark_unavailable(reason)
+                raise FirecrawlUnavailable(reason)
             raise RuntimeError(f"firecrawl success=false: {str(data)[:200]}")
         md = body.get("markdown")
         if not md or not isinstance(md, str) or not md.strip():
             raise RuntimeError("firecrawl returned empty markdown")
+        self.served += 1
         return md
 
 
@@ -863,8 +1004,12 @@ class ScrapeChain:
         usable = self.backends_for(url)
         if not usable:
             raise RuntimeError("no scrape backend permitted for this URL (kill switch, .harvest-backends or no key)")
+        fc_reason = None
         for b in usable:
             if b.name == "firecrawl":
+                if getattr(b, "unavailable", None):
+                    fc_reason = b.unavailable
+                    continue
                 if b.remaining <= 0:
                     continue
                 b.remaining -= 1
@@ -872,11 +1017,16 @@ class ScrapeChain:
                 md = b.scrape(url)
             except BackendNotImplemented:
                 continue
+            except FirecrawlUnavailable as e:
+                fc_reason = e.reason
+                continue
             except Exception as e:
                 errors.append(f"{b.name}: {type(e).__name__}: {str(e)[:80]}")
                 continue
             self.last_backend = b.name
             return md
+        if fc_reason:
+            raise FirecrawlUnavailable(fc_reason)  # the chain reached firecrawl and it was unavailable: park, do not fail
         raise RuntimeError("all scrape backends failed" + (f" ({'; '.join(errors)})" if errors else ""))
 
 
@@ -1061,7 +1211,7 @@ def _stamp_refused(path: Path, text: str, fm_raw: str, body: str, canonical: str
     return " [harvest_status: refused_sensitivity written]"
 
 
-def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None) -> tuple[str, str, list]:
+def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park=None) -> tuple[str, str, list]:
     """Return (glyph, message, injection_hits) per logging contract.
 
     injection_hits is returned STRUCTURALLY (not just embedded in the
@@ -1134,6 +1284,10 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None) -> t
             return ("~", "partial (thin-body): firecrawl budget exhausted this run; re-run to retry", injection_hits)
         try:
             md = firecrawl.scrape(canonical)
+        except FirecrawlUnavailable as e:
+            if park is not None:
+                park(path, e.reason)
+            return ("~", f"partial (thin-body): deferred: firecrawl-unavailable ({e.reason}); parked, retried first once credits return", injection_hits)
         except Exception as e:
             return ("~", f"partial (thin-body): firecrawl fetch failed ({type(e).__name__}: {str(e)[:120]}); re-run to retry", injection_hits)
         firecrawl.remaining -= 1
@@ -1385,17 +1539,62 @@ def main():
             )
             sys.exit(2)
 
+    # HIMMEL-4371: items parked while Firecrawl was unavailable are retried FIRST.
+    vault_key = str(args.vault)
+    mine, status, fc = {}, None, None
+    if firecrawl is not None and not args.dry_run:
+        items, status = parked_load()
+        mine = {it: r for (vp, it), r in items.items() if vp == vault_key}
+        for it in list(mine):
+            if not (args.vault / it).exists():
+                parked_append("resolved", call_site="harvest-clip-body-batch", vault=vault_key, item=it, via="gone")
+                del mine[it]
+        fc = next((b for b in firecrawl.backends if b.name == "firecrawl"), None)
+        if mine and fc is not None and fc.remaining > 0:
+            # Free credit-usage probe before spending: 0 remaining keeps the items parked
+            # without a scrape call; a failed probe falls back to ONE attempt.
+            usage = fc.credit_usage()
+            if usage is None:
+                fc.remaining = min(fc.remaining, 1)
+            elif isinstance(usage.get("remainingCredits"), int) and usage["remainingCredits"] <= 0:
+                reset = usage.get("billingPeriodEnd")
+                fc.unavailable, fc.reset, fc.remaining = "exhausted", reset, 0
+                print(f"harvest-clip-body-batch: firecrawl credits still exhausted"
+                      f"{f' (resets {reset})' if reset else ''}; {len(mine)} parked item(s) stay parked, no scrape call",
+                      file=sys.stderr)
+                if not (status and status.get("reason") == "exhausted" and status.get("reset") == reset):
+                    parked_append("unavailable", call_site="harvest-clip-body-batch", reason="exhausted", reset=reset)
+            else:
+                fc.probed_ok = True
+        clips = sorted(clips, key=lambda p: p.relative_to(args.vault).as_posix() not in mine)
+
     if args.limit > 0:
         clips = clips[: args.limit * 4]  # over-fetch; filter below cuts to limit
 
+    def park(path, reason):
+        it = path.relative_to(args.vault).as_posix()
+        if it not in mine:
+            mine[it] = {}
+            parked_append("parked", call_site="harvest-clip-body-batch", vault=vault_key, item=it, reason=reason)
+            newly_parked.append(it)
+
+    newly_parked = []
     ok = partial = failed = skipped = 0
     processed_count = 0
     flagged = []  # injection-suspect clips (HIMMEL-256) for the run report
     for clip in clips:
         if args.limit > 0 and processed_count >= args.limit:
             break
-        glyph, msg, injection_hits = process_clip(clip, args.dry_run, firecrawl, url_rules)
         relpath = clip.relative_to(args.vault).as_posix()
+        was_parked = relpath in mine
+        if firecrawl is not None:
+            firecrawl.last_backend = None
+        glyph, msg, injection_hits = process_clip(clip, args.dry_run, firecrawl, url_rules, park)
+        if was_parked and glyph in ("v", "o") and not args.dry_run:
+            # ANY success (jina, local, firecrawl) or a clip that no longer waits resolves it.
+            via = (getattr(firecrawl, "last_backend", None) or "other") if glyph == "v" else "skipped"
+            parked_append("resolved", call_site="harvest-clip-body-batch", vault=vault_key, item=relpath, via=via)
+            mine.pop(relpath, None)
         if injection_hits:
             # Structural flag state — flagged clips reach the report even
             # when the harvest write failed (any glyph).
@@ -1419,6 +1618,11 @@ def main():
         f"\nharvest-clip-body-batch: {ok} ok, {partial} partial, "
         f"{failed} failed, {skipped} skipped. (dry_run={args.dry_run})"
     )
+    if fc is not None and fc.unavailable is None and status is not None and (fc.served or fc.probed_ok):
+        parked_append("available", call_site="harvest-clip-body-batch")
+    if newly_parked:
+        print(f"harvest-clip-body-batch: {len(newly_parked)} item(s) parked (deferred: firecrawl-unavailable); "
+              "they retry first on the next run once credits return")
     if flagged:
         print(
             f"harvest-clip-body-batch: {len(flagged)} flagged "

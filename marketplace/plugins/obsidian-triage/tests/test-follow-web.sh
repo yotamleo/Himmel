@@ -460,6 +460,70 @@ grep -q 'CEIL_REPORTED=true' <<<"$out11" && r=yes || r=no; assert "ceiling: the 
 grep -q 'CEIL_AT_LIMIT_FETCHES=2' <<<"$out11" && r=yes || r=no; assert "ceiling: a call AT the ceiling (5) does not trip it" yes "$r"
 grep -q 'CEIL_PARSE_FAIL_FETCHES=1' <<<"$out11" && r=yes || r=no; assert "ceiling: an unparseable billed response trips it too" yes "$r"
 
+# -- Test 12: firecrawl unavailable (402 / 429) parks queries (HIMMEL-4371) -----
+echo "Test 12: makeFirecrawlWebFn — a 402 disables search after one call and parks the queries"
+
+cat > "$tmpdir/unavail.mjs" <<EOF
+import { makeFirecrawlWebFn } from "$lib_url";
+import { readFileSync, existsSync } from "node:fs";
+
+process.env.HIMMEL_FIRECRAWL_LEDGER = process.env.LEDGER_PATH;
+process.env.HIMMEL_FIRECRAWL_PARKED = process.env.PARKED_PATH;
+const errs = [];
+console.error = (...a) => errs.push(a.join(" "));
+let fetches = 0;
+let mode = "402";
+globalThis.fetch = async () => {
+  fetches += 1;
+  if (mode === "402") return { ok: false, status: 402, text: async () => '{"success":false,"error":"Insufficient credits to perform this request."}' };
+  if (mode === "429") return { ok: false, status: 429, text: async () => '{"error":"Rate limit exceeded for your request quota"}' };
+  if (mode === "200fail") return { ok: true, json: async () => ({ success: false, error: "Insufficient credits to perform this request." }) };
+  return { ok: true, json: async () => ({ success: true, creditsUsed: 1, data: { web: [{ url: "https://x.example/a", title: "T", description: "d" }] } }) };
+};
+const rows = () => (existsSync(process.env.PARKED_PATH) ? readFileSync(process.env.PARKED_PATH, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+
+let fn = makeFirecrawlWebFn({ apiKey: "k", budget: 10 });
+const r1 = await fn("secret query one"); await fn("secret query two"); await fn("secret query three");
+console.log("FETCHES_ONE=" + (fetches === 1));
+console.log("MISS=" + (r1.found === false));
+console.log("ONE_STDERR=" + (errs.filter((e) => e.includes("firecrawl unavailable")).length === 1));
+const parked = rows().filter((r) => r.kind === "parked");
+console.log("PARKED3=" + (parked.length === 3 && parked.every((r) => r.call_site === "follow-web" && /^[0-9a-f]{12}$/.test(r.item) && r.reason === "exhausted")));
+console.log("NO_QUERY_TEXT=" + (!readFileSync(process.env.PARKED_PATH, "utf8").includes("secret query")));
+console.log("UNAVAIL_ROW=" + rows().some((r) => r.kind === "unavailable" && r.reason === "exhausted" && r.v === 1 && r.host && r.ts && r.source === "firecrawl"));
+console.log("LEDGER_REASON=" + readFileSync(process.env.LEDGER_PATH, "utf8").includes('"reason":"exhausted"'));
+// the same query again does not append a second parked row
+await fn("secret query one");
+console.log("NO_DUP=" + (rows().filter((r) => r.kind === "parked").length === 3));
+
+// recovery: a successful search clears the status with an available row
+mode = "ok"; fetches = 0;
+fn = makeFirecrawlWebFn({ apiKey: "k", budget: 10 });
+const r2 = await fn("secret query one");
+console.log("RECOVER_FOUND=" + (r2.found === true));
+console.log("AVAILABLE_ROW=" + rows().some((r) => r.kind === "available"));
+
+// 429: parks, no reset date claimed
+mode = "429";
+fn = makeFirecrawlWebFn({ apiKey: "k", budget: 10 });
+await fn("q429");
+const u = rows().filter((r) => r.kind === "unavailable").pop();
+console.log("RATE_LIMITED=" + (u.reason === "rate-limited" && !u.reset));
+
+// HTTP 200 with success:false and an insufficient-credits body: classified, disabled, parked
+mode = "200fail"; fetches = 0;
+fn = makeFirecrawlWebFn({ apiKey: "k", budget: 10 });
+await fn("q200a"); await fn("q200b");
+const u2 = rows().filter((r) => r.kind === "unavailable").pop();
+console.log("FAIL200_CLASSIFIED=" + (fetches === 1 && u2.reason === "exhausted"));
+console.log("FAIL200_PARKED=" + (rows().filter((r) => r.kind === "parked").length >= 5));
+EOF
+out12="$(LEDGER_PATH="$tmpdir/ledger12.jsonl" PARKED_PATH="$tmpdir/parked12.jsonl" node "$tmpdir/unavail.mjs" 2>&1)"
+for k in FETCHES_ONE MISS ONE_STDERR PARKED3 NO_QUERY_TEXT UNAVAIL_ROW LEDGER_REASON NO_DUP RECOVER_FOUND AVAILABLE_ROW RATE_LIMITED FAIL200_CLASSIFIED FAIL200_PARKED; do
+    grep -q "^$k=true" <<<"$out12" && r=yes || r=no
+    assert "unavailable: $k" yes "$r"
+done
+
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))
 echo ""

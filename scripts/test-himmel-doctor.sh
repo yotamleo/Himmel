@@ -181,6 +181,9 @@ export HIMMEL_DOCTOR_QMD_INDEX="$FAKEROOT/no-such-index.sqlite"
 # fork clone or QMD_FORK_REF; an unset dir resolves to a nonexistent fixture path.
 export QMD_FORK_DIR="$FAKEROOT/no-such-qmd-fork"
 unset QMD_FORK_REF
+# Same for C51-firecrawl-parked (HIMMEL-4371): never read the operator's real
+# parked-items state; an absent file is OK, dedicated cases point at a fixture.
+export HIMMEL_FIRECRAWL_PARKED="$FAKEROOT/no-such-parked.jsonl"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -5639,4 +5642,56 @@ rm -rf "$HIMMEL_DOCTOR_PROC_BASE"
 # cleanup.
 rm -rf "$HIMMEL_DOCTOR_SYSTEMCTL_BASE"
 echo
+# --- C51-firecrawl-parked (HIMMEL-4371): parked items + unavailable status ------
+c51_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c51.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c51_t/home" "$c51_t/claude" "$c51_t/vault"
+: > "$c51_t/vault/a.md"
+c51_row() { printf '{"v":1,"ts":"2026-10-04T00:00:00Z","host":"h","source":"t","kind":"%s",%s}\n' "$1" "$2"; }
+c51_run() { # <state file>
+    HIMMEL_FIRECRAWL_PARKED="$1" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c51_t/claude" HOME="$c51_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C51-firecrawl-parked: no state file -> OK (RED) =="
+out="$(c51_run "$c51_t/none.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 no state -> OK"; else fail "C51 no state -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: unavailable + parked item -> WARN naming count, reason, reset, remedy =="
+{ c51_row unavailable '"call_site":"harvest-clip-body-batch","reason":"exhausted","reset":"2099-01-01T00:00:00Z"'
+  c51_row parked "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"a.md\",\"reason\":\"exhausted\""; } > "$c51_t/s1.jsonl"
+out="$(c51_run "$c51_t/s1.jsonl")"
+if grepq "$out" 'WARN C51-firecrawl-parked' && grepq "$out" -F '1 item' && grepq "$out" -F 'exhausted' \
+   && grepq "$out" -F 'parked items retry automatically on the next harvest once credits return (reset 2099-01-01'; then
+    pass "C51 parked -> WARN with remedy"
+else fail "C51 parked -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: 429 without a reset -> WARN says reset unknown =="
+{ c51_row unavailable '"call_site":"harvest-clip-body-batch","reason":"rate-limited","reset":null'
+  c51_row parked "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"a.md\",\"reason\":\"rate-limited\""; } > "$c51_t/s2.jsonl"
+out="$(c51_run "$c51_t/s2.jsonl")"
+if grepq "$out" 'WARN C51-firecrawl-parked' && grepq "$out" -F '(reset unknown)'; then pass "C51 no reset -> unknown"; else fail "C51 429 -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: resolved item -> OK =="
+{ cat "$c51_t/s1.jsonl"
+  c51_row resolved "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"a.md\",\"via\":\"jina\""
+  c51_row available '"call_site":"harvest-clip-body-batch"'; } > "$c51_t/s3.jsonl"
+out="$(c51_run "$c51_t/s3.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 resolved -> OK"; else fail "C51 resolved -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: parked item whose file is gone -> not counted =="
+{ c51_row parked "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"gone.md\",\"reason\":\"exhausted\""; } > "$c51_t/s4.jsonl"
+out="$(c51_run "$c51_t/s4.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 gone file -> OK"; else fail "C51 gone -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: unavailable only, reset date passed -> OK =="
+c51_row unavailable '"call_site":"harvest-clip-body-batch","reason":"exhausted","reset":"2020-01-01T00:00:00Z"' > "$c51_t/s5.jsonl"
+out="$(c51_run "$c51_t/s5.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 reset passed -> OK"; else fail "C51 passed reset -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: follow-web parked query -> WARN =="
+{ c51_row unavailable '"call_site":"follow-web","reason":"exhausted","reset":null'
+  c51_row parked '"call_site":"follow-web","vault":null,"item":"0123456789ab","reason":"exhausted"'; } > "$c51_t/s6.jsonl"
+out="$(c51_run "$c51_t/s6.jsonl")"
+if grepq "$out" 'WARN C51-firecrawl-parked'; then pass "C51 follow-web parked -> WARN"; else fail "C51 follow-web -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+rm -rf "$c51_t"
+
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

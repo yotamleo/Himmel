@@ -145,6 +145,19 @@
       "schema_version": 1,
       "envelope": ["v", "ts", "host", "source", "kind"],
       "grandfathered": false
+    },
+    {
+      "id": "firecrawl-parked",
+      "default_path": "~/.himmel/state/firecrawl-parked.jsonl",
+      "override_env": "HIMMEL_FIRECRAWL_PARKED",
+      "writer": "marketplace/plugins/obsidian-triage/tools/harvest-clip-body-batch.py",
+      "readers": ["marketplace/plugins/obsidian-triage/tools/lib/follow-web.mjs", "scripts/himmel-doctor.sh"],
+      "format": "jsonl",
+      "rotation": "none",
+      "retention": "unbounded",
+      "schema_version": 1,
+      "envelope": ["v", "ts", "host", "source", "kind"],
+      "grandfathered": false
     }
   ]
 }

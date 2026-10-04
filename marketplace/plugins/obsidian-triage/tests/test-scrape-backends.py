@@ -490,5 +490,154 @@ with contextlib.redirect_stderr(err):
 check("no key: jina-only chain, nothing on stderr",
       [b.name for b in c.backends] == ["local-headless", "jina"] and err.getvalue() == "")
 
+# --- HIMMEL-4371: firecrawl unavailable (402/429) parks, never loses ---------
+import contextlib
+import urllib.error
+
+PARKED = SCRATCH / "parked.jsonl"
+os.environ["HIMMEL_FIRECRAWL_PARKED"] = str(PARKED)
+os.environ["FIRECRAWL_API_KEY"] = "k"
+os.environ["HARVEST_SCRAPE_BACKEND"] = "jina,firecrawl"
+
+
+class Net:
+    scrape_calls = 0
+    usage_calls = 0
+    scrape = "402"  # 402 | 429 | ok
+    jina = "fail"  # fail | ok
+    remaining = 0
+    reset = "2026-11-01T00:00:00Z"
+    usage_fail = False
+
+
+def net_open(req, timeout=None):
+    url = req.full_url if hasattr(req, "full_url") else req
+    if "r.jina.ai" in url:
+        if Net.jina == "ok":
+            return Resp(b"Markdown Content:\n# J\n\njina body\n")
+        raise OSError("jina down")
+    if url.endswith("/v2/team/credit-usage"):
+        Net.usage_calls += 1
+        if Net.usage_fail:
+            raise OSError("usage down")
+        return Resp(json.dumps({"success": True, "data": {
+            "remainingCredits": Net.remaining, "planCredits": 1000,
+            "billingPeriodStart": None, "billingPeriodEnd": Net.reset}}).encode())
+    if url.endswith("/v2/scrape"):
+        Net.scrape_calls += 1
+        if Net.scrape in ("402", "429"):
+            body = b'{"success":false,"error":"Insufficient credits to perform this request."}' if Net.scrape == "402" else b'{"success":false,"error":"Rate limit exceeded for your request quota"}'
+            raise urllib.error.HTTPError(url, int(Net.scrape), "x", {}, io.BytesIO(body))
+        return Resp(json.dumps({"success": True, "data": {"markdown": "# FC\n\nfirecrawl body", "metadata": {"creditsUsed": 1}}}).encode())
+    raise AssertionError("unexpected url " + url)
+
+
+urllib.request.urlopen = net_open
+
+
+def parked_rows():
+    if not PARKED.exists():
+        return []
+    return [json.loads(l) for l in PARKED.read_text().splitlines() if l.strip()]
+
+
+def mkvault(n, deny=None):
+    v = Path(tempfile.mkdtemp(dir=str(SCRATCH)))
+    (v / "Clippings").mkdir()
+    for i in range(n):
+        (v / "Clippings" / f"c{i}.md").write_text(
+            f"---\ntype: article\nsource: https://example.com/post{i}\n---\nshort.\n", encoding="utf-8", newline="\n")
+    if deny:
+        (v / ".harvest-deny").write_text(deny, encoding="utf-8")
+    return v
+
+
+def run_main(vault, *extra):
+    sys.argv = ["h", str(vault), "--firecrawl-thin", *extra]
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            mod.main()
+        except SystemExit:
+            pass
+    return out.getvalue(), err.getvalue()
+
+
+# 1. a 402 disables firecrawl after ONE call and parks every item that needed it
+v = mkvault(3)
+Net.scrape, Net.jina, Net.remaining = "402", "fail", 0
+out, err = run_main(v)
+rows = parked_rows()
+parked = [r for r in rows if r["kind"] == "parked"]
+unav = [r for r in rows if r["kind"] == "unavailable"]
+check("402: firecrawl is called once, not once per item", Net.scrape_calls == 1)
+check("402: one stderr line, not one per item", err.count("firecrawl unavailable") == 1)
+check("402: all 3 items parked", len(parked) == 3 and {r["item"] for r in parked} == {"Clippings/c0.md", "Clippings/c1.md", "Clippings/c2.md"})
+check("402: one unavailable row, reason exhausted, reset from billingPeriodEnd",
+      len(unav) == 1 and unav[0]["reason"] == "exhausted" and unav[0]["reset"] == "2026-11-01T00:00:00Z")
+check("402: rows carry the standard envelope",
+      all(all(k in r for k in ("v", "ts", "host", "source", "kind")) for r in rows))
+check("402: clips stay eligible (no harvested_at, not failed)",
+      all("harvested_at" not in (v / "Clippings" / f"c{i}.md").read_text() for i in range(3)) and "FAIL" not in err)
+check("402: ledger row for the failed call carries the reason",
+      any(l.get("reason") == "exhausted" and l.get("ok") is False for l in ledger_lines()))
+
+# 2. still exhausted: the probe says 0, so ZERO scrape calls and nothing is double-parked
+Net.scrape_calls = Net.usage_calls = 0
+Net.scrape, Net.remaining = "ok", 0
+run_main(v)
+check("exhausted run: probe made, 0 scrape calls", Net.usage_calls >= 1 and Net.scrape_calls == 0)
+check("exhausted run: items stay parked, not duplicated", len([r for r in parked_rows() if r["kind"] == "parked"]) == 3)
+check("exhausted run: nothing resolved", not [r for r in parked_rows() if r["kind"] == "resolved"])
+
+# 3. credit-usage probe fails: fall back to ONE attempt
+Net.scrape_calls = Net.usage_calls = 0
+Net.usage_fail, Net.scrape = True, "ok"
+run_main(v)
+check("probe failure: exactly one firecrawl attempt", Net.scrape_calls == 1)
+Net.usage_fail = False
+
+# 4. recovery: parked items retried FIRST (limit 1 picks a parked clip), then resolved
+v2 = mkvault(2)
+Net.scrape, Net.jina, Net.remaining, Net.scrape_calls = "402", "fail", 0, 0
+run_main(v2, "--limit", "1")  # c0 parked, c1 untouched
+first = [r for r in parked_rows() if r["kind"] == "parked" and r["vault"] == str(v2)]
+check("limit 1 parks only the first clip", [r["item"] for r in first] == ["Clippings/c0.md"])
+Net.scrape, Net.remaining, Net.scrape_calls = "ok", 500, 0
+run_main(v2, "--limit", "1")
+check("recovery: the parked clip (c0) is retried before the untouched one",
+      "harvested_at" in (v2 / "Clippings" / "c0.md").read_text() and "harvested_at" not in (v2 / "Clippings" / "c1.md").read_text())
+check("recovery: parked row resolved + an available row written",
+      any(r["kind"] == "resolved" and r["item"] == "Clippings/c0.md" for r in parked_rows())
+      and any(r["kind"] == "available" for r in parked_rows()))
+
+# 5. ANY success resolves (jina), a vanished file resolves as gone
+v3 = mkvault(2)
+Net.scrape, Net.jina, Net.remaining = "402", "fail", 0
+run_main(v3)
+(v3 / "Clippings" / "c1.md").unlink()
+Net.jina = "ok"
+run_main(v3)
+res = {r["item"]: r for r in parked_rows() if r["kind"] == "resolved" and r["vault"] == str(v3)}
+check("jina success resolves the parked clip", res.get("Clippings/c0.md", {}).get("via") == "jina")
+check("a parked clip whose file is gone resolves as gone", res.get("Clippings/c1.md", {}).get("via") == "gone")
+
+# 6. 429 parks for the next run but claims no reset date
+v4 = mkvault(1)
+Net.scrape, Net.jina, Net.remaining = "429", "fail", 100
+before = len(parked_rows())
+run_main(v4)
+new = parked_rows()[before:]
+check("429: reason rate-limited, no reset date claimed",
+      any(r["kind"] == "unavailable" and r["reason"] == "rate-limited" and not r.get("reset") for r in new))
+check("429: item parked", any(r["kind"] == "parked" and r["vault"] == str(v4) for r in new))
+
+# 7. the G-1 gate runs first: a denied URL is never parked
+v5 = mkvault(1, deny="https://example.com/**\n")
+Net.scrape, Net.jina = "402", "fail"
+before = len(parked_rows())
+run_main(v5)
+check("denied URL is never parked", not [r for r in parked_rows()[before:] if r["kind"] == "parked"])
+
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
