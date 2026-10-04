@@ -45,8 +45,10 @@ def github(url):
     repo = "%s/%s" % (parts[0], parts[1])
     if len(parts) >= 4 and parts[2] in ("issues", "pull") and parts[3].isdigit():
         argv = ["gh", "issue" if parts[2] == "issues" else "pr", "view", parts[3], "-R", repo]
-    else:
+    elif len(parts) == 2:
         argv = ["gh", "repo", "view", repo]
+    else:  # blob/tree/other paths: gh has no keyless file read here, so use the generic web route
+        return web(url)
     p = run(argv)
     err = p.stderr.lower()
     if p.returncode != 0:
@@ -56,7 +58,7 @@ def github(url):
 
 
 def web(url):
-    p = run(["curl", "-s", "-m", "60", "-L", "https://r.jina.ai/" + url], timeout=90)
+    p = run(["curl", "-sf", "-m", "60", "-L", "https://r.jina.ai/" + url], timeout=90)
     if p.returncode != 0:
         return 1
     out = p.stdout
@@ -67,11 +69,13 @@ def web(url):
 
 def main(url):
     host = (urlparse(url).hostname or "").lower()
-    if host.endswith("youtube.com") or host == "youtu.be":
+    def on(*domains):
+        return any(host == d or host.endswith("." + d) for d in domains)
+    if on("youtube.com", "youtu.be"):
         return youtube(url)
     if host in ("github.com", "www.github.com"):
         return github(url)
-    if host.endswith(("x.com", "twitter.com", "reddit.com")):
+    if on("x.com", "twitter.com", "reddit.com"):
         return NEEDS_AUTH
     return web(url)
 

@@ -11,6 +11,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bench  # noqa: E402
+import local_adapters  # noqa: E402
 import providers  # noqa: E402
 import render  # noqa: E402
 import score  # noqa: E402
@@ -153,10 +154,40 @@ class CommandProviderTests(unittest.TestCase):
         p = providers.CommandProvider("echoer", "echo {url}")
         self.assertEqual(p.scrape("https://x.test/a"), "https://x.test/a")
 
+    def test_cookie_warning_on_success_is_not_needs_auth(self):
+        p = providers.CommandProvider("warn", "sh -c 'echo cookie banner >&2; echo page body'")
+        self.assertEqual(p.scrape("https://x.test/a"), "page body")
+
+    def test_cookie_error_on_failure_is_needs_auth(self):
+        p = providers.CommandProvider("auth", "sh -c 'echo login required >&2; exit 1'")
+        with self.assertRaises(providers.NeedsAuth):
+            p.scrape("https://x.test/a")
+
     def test_exit_77_is_needs_auth(self):
         p = providers.CommandProvider("auth", "sh -c 'exit 77'")
         with self.assertRaises(providers.NeedsAuth):
             p.scrape("https://x.test/a")
+
+
+class LocalAdapterTests(unittest.TestCase):
+    def test_command_error_carries_http_code(self):
+        p = providers.CommandProvider("h", "sh -c 'echo http=403 >&2; exit 1'")
+        rows, _ = RunTests().run_bench(p)
+        self.assertEqual({r["error"] for r in rows}, {"CommandError:403"})
+
+    def test_command_error_without_code_is_class_only(self):
+        p = providers.CommandProvider("h", "sh -c 'echo boom >&2; exit 1'")
+        rows, _ = RunTests().run_bench(p)
+        self.assertEqual({r["error"] for r in rows}, {"CommandError"})
+
+    def test_scrapling_status_takes_last_fetched_line(self):
+        log = "INFO: Fetched (301) <GET a>\nINFO: Fetched (404) <GET b>\n"
+        self.assertEqual(local_adapters.scrapling_status(log), 404)
+        self.assertIsNone(local_adapters.scrapling_status("no status here"))
+
+    def test_lightpanda_result_parses_json(self):
+        raw = json.dumps({"url": "u", "http_status": 200, "content": "# Hi", "error": None})
+        self.assertEqual(local_adapters.lightpanda_result(raw), ("# Hi", 200, None))
 
 
 class RenderTests(unittest.TestCase):

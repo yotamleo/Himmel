@@ -4,6 +4,7 @@ object with `name`, `calls`, `last_credits` and `scrape(url) -> markdown`
 import datetime
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -17,6 +18,16 @@ class NeedsAuth(Exception):
 
 class CapReached(Exception):
     """The provider's call cap is spent; the bench marks the row skipped-cap."""
+
+
+class CommandError(RuntimeError):
+    """A command provider exited non-zero. `code` is the HTTP status the adapter
+    reported on stderr as `http=<n>`, else None; the message is never recorded."""
+
+    def __init__(self, returncode, stderr=""):
+        super().__init__("exit %d" % returncode)
+        m = re.search(r"^http=(\d{3})$", stderr or "", re.M)
+        self.code = int(m.group(1)) if m else None
 
 
 class Provider:
@@ -130,8 +141,10 @@ class CommandProvider(Provider):
         argv = [a.replace("{url}", url) for a in shlex.split(self.template)]
         p = subprocess.run(argv, capture_output=True, text=True, timeout=self.timeout)
         err = (p.stderr or "").lower()
-        if p.returncode == 77 or "cookie" in err or "login required" in err:
+        if p.returncode == 77:
             raise NeedsAuth()
         if p.returncode != 0:
-            raise RuntimeError("exit %d" % p.returncode)
+            if "cookie" in err or "login required" in err:
+                raise NeedsAuth()
+            raise CommandError(p.returncode, err)
         return p.stdout.strip()
