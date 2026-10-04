@@ -118,6 +118,8 @@ for (const name of ['operator', 'user', 'bare']) {
       // the design profile.
       'handover@himmel', 'himmel-ops@himmel', 'qmd@himmel', 'pr-review-toolkit-himmel@himmel',
       'lean-skills@himmel',
+      // HIMMEL-4018: the operator's interactive profile works the vault.
+      'obsidian-second-brain@himmel',
     ];
     const expected = name === 'operator' ? null : {
       enabledPlugins: Object.fromEntries(REG.catalog.map((id) => [id, on.includes(id)])),
@@ -591,18 +593,22 @@ test('design profile enables the full design pack (HIMMEL-4012)', () => {
 });
 
 // HIMMEL-4018: obsidian-second-brain was a user-scope skill that loaded in every
-// session. As a plugin it is catalogued (so every profile resolves it false) and
-// enabled by no named profile: it loads only for the operator (null profile) or
-// an explicit `--add-plugins` / `/profile enable`.
-test('obsidian-second-brain@himmel is catalogued and enabled by no named profile (HIMMEL-4018)', () => {
+// session. As a plugin it is catalogued (so every other profile resolves it
+// false) and enabled only where the vault is worked: the operator's interactive
+// `user` profile, vault-writing `lane-content` legs and the `telegram` bridge
+// (run.ts files attachments with it). Lean legs and the console never load it.
+const OSB_PROFILES = ['user', 'lane-content', 'telegram'];
+test('obsidian-second-brain@himmel is enabled exactly in the vault profiles (HIMMEL-4018)', () => {
   const id = 'obsidian-second-brain@himmel';
   assert.ok(REG.catalog.includes(id));
   for (const [name, def] of Object.entries(REG.profiles)) {
     if (def === null) continue; // operator: everything installed
     const p = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
-    assert.equal(p[id], false, `${name} must not enable ${id}`);
+    assert.equal(p[id], OSB_PROFILES.includes(name), `${name}: ${id} enabled must be ${OSB_PROFILES.includes(name)}`);
   }
-  assert.equal(resolveProfile(REG, 'user', { installed: [], addPlugins: [id] }).enabledPlugins[id], true);
+  for (const name of ['bare', 'leg-impl', 'console']) {
+    assert.equal(resolveProfile(REG, name, { installed: [] }).enabledPlugins[id], false, `${name} must not enable ${id}`);
+  }
 });
 
 // HIMMEL-4012 PR2b: the design core plus the add-on kit profiles. The core is
