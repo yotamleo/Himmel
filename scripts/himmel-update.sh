@@ -572,12 +572,16 @@ _drift_add() { DRIFT_LINES="${DRIFT_LINES}$1
 "; }
 
 # Captured, not piped: under pipefail `grep -q` closing early can SIGPIPE the producer.
-# 0 = plugin-unregistered reported; 1 = health exited 0 without it (registered);
-# 2 = health failed without the marker (cannot tell — never claim a fix on it).
+# 0 = plugin-unregistered reported; 1 = registered (health exited 0, or exited 1
+# on other WARN signals only — the registration check always runs on that path,
+# so unrelated degraded signals are not drift); 2 = indeterminate: the check did
+# not run or did not verify (exit 2 no logs, plugin-presence-unchecked, crash, or
+# rc 1 with no WARN line). Never claim a fix — or a clean state — on 2 (HIMMEL-4248).
 _codex_unregistered() {
     local out rc=0; out="$(bash "$1" 2>/dev/null)" || rc=$?
-    case "$out" in *plugin-unregistered*) return 0 ;; esac
+    case "$out" in *plugin-unregistered*) return 0 ;; *plugin-presence-unchecked*) return 2 ;; esac
     [ "$rc" -eq 0 ] && return 1
+    [ "$rc" -eq 1 ] && case "$out" in *"WARN "*) return 1 ;; esac
     return 2
 }
 
@@ -651,8 +655,13 @@ EOF
 
     # (3c) the codex himmel plugin registration (startup-health plugin-unregistered).
     local health="$ROOT/scripts/codex/startup-health.sh" cinstaller="$ROOT/scripts/codex/install-himmel-codex.sh"
-    if [ -f "$health" ] && { [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN:-}" ] || command -v codex >/dev/null 2>&1; } \
-        && _codex_unregistered "$health"; then
+    local hrc=1
+    if [ -f "$health" ] && { [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN:-}" ] || command -v codex >/dev/null 2>&1; }; then
+        hrc=0; _codex_unregistered "$health" || hrc=$?
+    fi
+    if [ "$hrc" -eq 2 ]; then
+        _drift_add "codex registration indeterminate (startup-health failed without a plugin verdict)" "bash scripts/codex/startup-health.sh, then: bash scripts/codex/install-himmel-codex.sh if it reports plugin-unregistered"
+    elif [ "$hrc" -eq 0 ]; then
         if [ "$mode" = "check" ]; then
             echo "    would run scripts/codex/install-himmel-codex.sh (codex plugin-unregistered)"
         else
