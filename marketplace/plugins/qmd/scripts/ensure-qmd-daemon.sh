@@ -250,6 +250,78 @@ if [ -n "$body" ]; then
   exit 1
 fi
 
+# ---- Embed-model swap in progress: do NOT start (HIMMEL-4314) --------------
+# scripts/luna/qmd-embed-model.sh swap holds this mkdir lock (holder pid inside)
+# from its liveness check to its commit or rollback. A daemon started in that
+# window serves the OLD model's query embeddings against the NEW vectors (a
+# dimension mismatch, or silent garbage when the dimensions match). A lock whose
+# pid is dead is stale: clear it and carry on; with no pid file it is stale once
+# a minute old. Same path and rule as swap_lock_* in qmd-embed-model.sh, which
+# this plugin copy cannot source.
+# The start TAKES the lock (released on exit) rather than only checking it: a
+# check-then-start leaves a window in which a swap could take the lock and pass
+# its own liveness checks. Holding it makes the two mutually exclusive; a swap
+# that starts meanwhile is refused, and its final re-check sees a started daemon.
+swap_lock="$qmd_state_dir/embed-swap.lock"
+swap_lock_stale() {
+  local p
+  p="$(cat "$1/pid" 2>/dev/null)"
+  case "$p" in
+    ''|*[!0-9]*) [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+    *) ! kill -0 "$p" 2>/dev/null ;;
+  esac
+}
+# Clearing a stale lock is itself serialized (a second mkdir lock, "<lock>.reclaim"),
+# and staleness is re-checked inside it: two contenders that both saw a dead holder
+# must not let the slower one delete the faster one's freshly taken lock. A guard
+# a minute old belongs to a reclaimer that died and is cleared.
+swap_lock_reclaim() {
+  if [ -n "$(find "$swap_lock.reclaim" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
+    rmdir "$swap_lock.reclaim" 2>/dev/null
+  fi
+  mkdir "$swap_lock.reclaim" 2>/dev/null || return 0
+  if swap_lock_stale "$swap_lock"; then
+    rm -rf "$swap_lock"
+  fi
+  rmdir "$swap_lock.reclaim" 2>/dev/null
+  return 0
+}
+mkdir -p "$qmd_state_dir" 2>/dev/null
+if ! mkdir "$swap_lock" 2>/dev/null; then
+  swap_pid="$(cat "$swap_lock/pid" 2>/dev/null)"
+  if swap_lock_stale "$swap_lock"; then
+    swap_lock_reclaim
+  fi
+  # Contended. WHO holds it decides: role=ensure is another session's start already
+  # on it (sessions launch together), so this one exits quietly; role=swap refuses.
+  # The role file is written before the pid, so a holder with neither is brand new:
+  # poll briefly (SessionStart must stay fast); one that never names a role is
+  # treated as a swap.
+  swap_role=""
+  swap_i=0
+  while :; do
+    swap_role="$(cat "$swap_lock/role" 2>/dev/null)"
+    case "$swap_role" in
+      ensure) exit 0 ;;
+      swap) break ;;
+    esac
+    if mkdir "$swap_lock" 2>/dev/null; then swap_role=mine; break; fi
+    swap_i=$((swap_i + 1))
+    if [ "$swap_i" -ge 8 ]; then break; fi
+    sleep 0.25
+  done
+  if [ "$swap_role" != mine ]; then
+    echo "ensure-qmd-daemon: an embed-model swap is in progress (pid ${swap_pid:-unknown}, $swap_lock) - NOT starting the qmd daemon." >&2 # t13b-ok: refusal message text, starts nothing
+    echo "  Starting it now would serve queries against a half-swapped index. Retry once the swap finishes;" >&2
+    echo "  if that pid is gone, remove the lock directory." >&2
+    exit 1
+  fi
+fi
+echo ensure > "$swap_lock/role"
+echo "$$" > "$swap_lock/pid"
+# shellcheck disable=SC2064 # expand now: the lock path is fixed for this run
+trap "[ \"\$(cat '$swap_lock/pid' 2>/dev/null)\" = \"$$\" ] && rm -rf '$swap_lock'" EXIT
+
 # ---- Dead: start the daemon ------------------------------------------------
 if ! resolve_qmd; then
   echo "ensure-qmd-daemon: ERROR - qmd is not installed / not on PATH." >&2
