@@ -65,7 +65,9 @@ build_tree() {
     old "$ROOT/claude-$(id -u)/j9002/corpus-b.jsonl" "$ROOT/claude-$(id -u)/j9002"
     old "$ROOT/mog-run.old/f" "$ROOT/mog-run.old" "$ROOT/unrelated-dir"
 }
-reap() { TMP_REAP_TMP_ROOT="$ROOT" TMP_REAP_ARCHIVE_ROOT="$ARCH" TMP_REAP_SESSIONS_DIR="$SESS" bash "$SCRIPT" "$@" 2>&1; }
+# TMP_REAP_UID defaults to a uid nobody has, so an unreadable same-uid entry in the HOST's
+# /proc (a non-dumpable runner process) only warns instead of refusing --apply; section 10 sets it.
+reap() { TMP_REAP_TMP_ROOT="$ROOT" TMP_REAP_ARCHIVE_ROOT="$ARCH" TMP_REAP_SESSIONS_DIR="$SESS" TMP_REAP_UID="${TMP_REAP_UID:-99998}" bash "$SCRIPT" "$@" 2>&1; }
 
 build_tree
 ( exec 3< "$CL/$HELD/scratchpad/notes.md"; exec sleep 120 ) &
@@ -84,7 +86,7 @@ contains "dry-run lists a KEEP row" "$out" "KEEP"
 
 echo "== 8. failed preserve -> no reap =="
 : > "$T/not-a-dir"
-out="$(TMP_REAP_ARCHIVE_ROOT="$T/not-a-dir/archive" TMP_REAP_TMP_ROOT="$ROOT" TMP_REAP_SESSIONS_DIR="$SESS" bash "$SCRIPT" --apply 2>&1)"; rc=$?
+out="$(TMP_REAP_UID=99998 TMP_REAP_ARCHIVE_ROOT="$T/not-a-dir/archive" TMP_REAP_TMP_ROOT="$ROOT" TMP_REAP_SESSIONS_DIR="$SESS" bash "$SCRIPT" --apply 2>&1)"; rc=$?
 [ "$rc" -ne 0 ] && echo "ok - failed preserve exits non-zero" || { echo "FAIL - failed preserve rc=$rc"; fails=$((fails+1)); }
 exists "dead session dir survives a failed preserve" "$CL/$DEAD"
 exists "old judge dir survives a failed preserve" "$ROOT/claude-$(id -u)/j9002"
@@ -135,12 +137,12 @@ contains "collision is reported as a failed preserve" "$out" "preserve failed"
 echo "== 10. unreadable /proc entries: same-uid refuses --apply, other-uid warns =="
 FP="$T/proc"; rm -rf "$FP"; mkdir -p "$FP/100" "$FP/200"; ln -s "$T" "$FP/100/cwd"
 build_tree; rm -rf "$ARCH"   # section 9 left a colliding j9002 archive copy behind
-out="$(TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "same-uid unreadable entry: --apply rc 2" "$rc" 2
 contains "same-uid refusal is reported" "$out" "1 same-uid /proc entr(ies) unreadable: a live dir could be held by one; refusing --apply"
 exists "refusal reaps no fixture" "$ROOT/mog-run.old"
 exists "refusal reaps no dead session dir" "$CL/$DEAD"
-out="$(TMP_REAP_PROC="$FP" reap)"; rc=$?
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap)"; rc=$?
 check "same-uid unreadable entry: dry-run rc 0" "$rc" 0
 contains "dry-run warns that --apply would refuse" "$out" "--apply would refuse"
 out="$(TMP_REAP_PROC="$FP" TMP_REAP_UID=99999 reap --apply)"; rc=$?
@@ -149,7 +151,7 @@ contains "other-uid entry only warns" "$out" "WARN tmp-reap: 1 other-uid /proc e
 absent "other-uid entry: fixture reaped" "$ROOT/mog-run.old"
 absent "other-uid entry: dead session dir reaped" "$CL/$DEAD"
 rm -rf "$FP/200"; build_tree
-out="$(TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "readable fake proc: --apply rc 0" "$rc" 0
 case "$out" in *WARN*) echo "FAIL - readable fake proc printed a WARN"; fails=$((fails+1)) ;; *) echo "ok - readable fake proc prints no WARN" ;; esac
 absent "readable fake proc: fixture reaped" "$ROOT/mog-run.old"
