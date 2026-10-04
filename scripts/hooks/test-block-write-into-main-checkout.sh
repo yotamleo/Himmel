@@ -3399,6 +3399,66 @@ _r4138 "88b dq \$(echo lowercase-esacs; cat <<E it's E); touch primary" block 'x
 _r4138 "88c dq \$(echo showcase; cat <<E it's E); touch worktree (ALLOW)" allow 'x="$(echo showcase; cat <<E\nit'"'"'s\nE\n)"; touch @W@/f'
 }
 
+echo "== HIMMEL-4213/4228 prefix words before the verb, \${…}/\$[…] assignment values =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# _r4213 runs a row from cwd /tmp AND from the primary checkout.
+_r4213() { # label verdict template
+    local c="$3"
+    c="${c//@P@/$_PR}"; c="${c//@W@/$_WR}"
+    _subst_row "$1, cwd /tmp" "$2" "$c" /tmp
+    _subst_row "$1, cwd the primary" "$2" "$c" "$_PR"
+}
+# HIMMEL-4213: a leading `{`, `!`, reserved word, `time [-p]` or wrapper
+# command is skipped before the verb arms read the command word.
+_r4213 "93a { touch primary; }"                                        block '{ touch @P@/f; }'
+_r4213 "93b ! touch primary"                                           block '! touch @P@/f'
+_r4213 "93c ! x=1 touch primary"                                       block '! x=1 touch @P@/f'
+_r4213 "93d if true; then touch primary; fi"                           block 'if true; then touch @P@/f; fi'
+_r4213 "93e while false; do touch primary; done"                       block 'while false; do touch @P@/f; done'
+_r4213 "93f nice touch primary"                                        block 'nice touch @P@/f'
+_r4213 "93g command touch primary"                                     block 'command touch @P@/f'
+_r4213 "93h exec touch primary"                                        block 'exec touch @P@/f'
+_r4213 "93i time touch primary"                                        block 'time touch @P@/f'
+_r4213 "93j time -p ! nice -n 5 nohup touch primary"                   block 'time -p ! nice -n 5 nohup touch @P@/f'
+_r4213 "93k timeout -k 1 5 cp into the primary"                        block 'timeout -k 1 5 cp @W@/README.md @P@/f'
+_r4213 "93l env -u X FOO=1 rm in the primary"                          block 'env -u X FOO=1 rm @P@/README.md'
+_r4213 "93m sudo -u root -E stdbuf -oL touch primary"                  block 'sudo -u root -E stdbuf -oL touch @P@/f'
+_r4213 "93n exec -a n sed -i in the primary"                           block 'exec -a n sed -i s/a/b/ @P@/README.md'
+_r4213 "93o until false; do x=1 ln -s into the primary"                block 'until false; do x=1 ln -s @W@/README.md @P@/l; done'
+_r4213 "93p nice --bogus touch primary (unknown option: fail closed)"  block 'nice --bogus touch @P@/f'
+_r4213 "93q sudo -Z v touch primary (unknown option: fail closed)"     block 'sudo -Z v touch @P@/f'
+_r4213 "93r { touch worktree; } (ALLOW)"                               allow '{ touch @W@/f; }'
+_r4213 "93s nice touch worktree (ALLOW)"                               allow 'nice touch @W@/f'
+_r4213 "93t time touch /tmp (ALLOW)"                                   allow 'time touch /tmp/himmel-4213-f'
+_r4213 "93u time make (ALLOW)"                                         allow 'time make -n'
+_r4213 "93v nice grep in the primary (ALLOW)"                          allow 'nice grep x @P@/README.md'
+_r4213 "93w command -v touch (ALLOW)"                                  allow 'command -v touch'
+_r4213 "93x git -C primary log and status (ALLOW)"                     allow 'git -C @P@ log --oneline -1; git -C @P@ status --short'
+_r4213 "93y queue-lock status piped to sed (ALLOW)"                    allow 'bash scripts/queue-lock.sh status | sed -n 1p'
+_r4213 "93z if grep -q x primary; then echo y; fi (ALLOW)"             allow 'if grep -q x @P@/README.md; then echo y; fi'
+# the wrapper check after the chain still reads the unstripped clause
+_r4213 "93za exec -a sh -c 'touch primary' stays denied"              block "exec -a sh -c 'touch @P@/f'"
+_r4213 "93zb sudo -u \$'\\x62ash' -c 'touch primary' stays denied"     block "sudo -u \$'\\x62ash' -c 'touch @P@/f'"
+# HIMMEL-4228: a `${…}` or `$[…]` value holding a separator no longer hides
+# the write verb after it.
+_r4213 "94a x=\${y:-a|b} touch primary"                                block 'x=${y:-a|b} touch @P@/f'
+_r4213 "94b x=\${y:-a;b} touch primary"                                block 'x=${y:-a;b} touch @P@/f'
+_r4213 "94c x=\${y:-a&b} touch primary"                                block 'x=${y:-a&b} touch @P@/f'
+_r4213 "94d x=\${y:-(a)} touch primary"                                block 'x=${y:-(a)} touch @P@/f'
+_r4213 "94e x=\${y:-a|b} cp into the primary"                          block 'x=${y:-a|b} cp @W@/README.md @P@/f'
+_r4213 "94f x=\$[1|2] touch primary"                                   block 'x=$[1|2] touch @P@/f'
+_r4213 "94g x=\${y:-\${z:-a|b}} touch primary (nested)"                block 'x=${y:-${z:-a|b}} touch @P@/f'
+_r4213 "94h x=\${y:-\"}|\"} touch primary (quoted brace)"              block 'x=${y:-"}|"} touch @P@/f'
+_r4213 "94i x=\${y:-a} touch primary (control)"                        block 'x=${y:-a} touch @P@/f'
+_r4213 "94j x=\"\${y:-a|b}\" touch primary (control)"                  block 'x="${y:-a|b}" touch @P@/f'
+_r4213 "94k x=\$[1+2] touch primary (control)"                         block 'x=$[1+2] touch @P@/f'
+_r4213 "94l x=\${y:-a|b} touch worktree (ALLOW)"                       allow 'x=${y:-a|b} touch @W@/f'
+_r4213 "94m x=\$[1|2] touch worktree (ALLOW)"                          allow 'x=$[1|2] touch @W@/f'
+_r4213 "94n cp worktree file to \${HOME}/x (ALLOW)"                    allow 'cp @W@/README.md ${HOME}/x'
+_r4213 "94o echo '\${y:-a|b} touch primary' is text (ALLOW)"           allow 'echo '"'"'x=${y:-a|b} touch @P@/f'"'"''
+}
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'

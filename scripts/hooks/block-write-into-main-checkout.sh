@@ -160,8 +160,9 @@
 #     readings (mode 0) still run: their line split resyncs the quote scan
 #     after a body the blanker cannot parse, so the extra readings only ADD
 #     denials. HIMMEL-4153: leading assignment words are skipped before the
-#     verb arms read the command word (a wrapper AFTER them, `x=1 nice
-#     touch`, is the same residual as `nice touch`).
+#     verb arms read the command word. HIMMEL-4213: so are a leading `{`,
+#     `!`, reserved word, `time` and wrapper command (`nice -n 5 touch`,
+#     `sudo -u u touch`; `_bwimc_strip_prefix`).
 #   - `-T`/`--no-target-directory` IS modelled now (RETASK correction,
 #     HIMMEL-2592 round 6 codex-2 — this bullet used to say the opposite):
 #     for `mv` it forces the destination to plain ENTRY resolution instead
@@ -749,12 +750,44 @@ _bwimc_strip_assign() {
 # reading beside the unflattened one, so it can only add denials: the spans'
 # own contents are still read where they were. An unclosed span leaves TEXT
 # unchanged (no extra reading, today's behaviour).
+# HIMMEL-4228: a `${…}` or `$[…]` span holding a separator (`|;&()<>` or a
+# newline) becomes `$_`, which stays a dynamic word, so `x=${y:-a|b} touch
+# P/f` shows its verb and `cp a ${HOME}/x` is not re-read as a cwd path. An
+# unclosed one is left as it is.
 _BWIMC_BSNL=$'\\\n'
+# _bwimc_brace_end TEXT START OPEN — sets _BWIMC_PEND to the index of the `}`
+# (OPEN `{`) or `]` (OPEN `[`) closing the span whose body begins at START,
+# counting active nested OPENs; a `$(…)` is skipped whole. TEXT length when
+# it never closes. Clobbers the shared scanner state — callers save/restore it.
+_bwimc_brace_end() {
+    local text="$1" j="$2" len=${#1} op="$3" cl=']' d=1 ch sq se sa
+    [ "$op" != '{' ] || cl='}'
+    _bwimc_scan_init
+    while [ "$j" -lt "$len" ]; do
+        ch="${text:$j:1}"
+        if [ "$ch" = '$' ] && [ "${text:$((j+1)):1}" = '(' ] && [ "$_BWIMC_ESC" != 1 ] \
+           && [ "$_BWIMC_Q" != "'" ] && [ "$_BWIMC_Q" != A ]; then
+            sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+            _bwimc_subst_paren_end "$text" $((j+2))
+            _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0
+            j=$((_BWIMC_PEND+1)); continue
+        fi
+        _bwimc_scan_step "$ch"
+        if [ "$_BWIMC_ACT" = 1 ]; then
+            case "$ch" in
+                "$op") d=$((d+1)) ;;
+                "$cl") d=$((d-1)); [ "$d" -gt 0 ] || break ;;
+            esac
+        fi
+        j=$((j+1))
+    done
+    _BWIMC_PEND=$j
+}
 _bwimc_assign_flat() {
     local t="$1" n=${#1} i=0 c o="" sq se sa st
     _BWIMC_AF="$t"
     # shellcheck disable=SC2016  # literal `$((` is the glob pattern
-    case "$t" in *'$(('*|*'=('*|*"$_BWIMC_BSNL"*) ;; *) return 0 ;; esac
+    case "$t" in *'$(('*|*'=('*|*'${'*|*'$['*|*"$_BWIMC_BSNL"*) ;; *) return 0 ;; esac
     _bwimc_scan_init
     while [ "$i" -lt "$n" ]; do
         c="${t:$i:1}"
@@ -776,11 +809,147 @@ _bwimc_assign_flat() {
                 [ "$_BWIMC_PEND" -lt "$n" ] || return 0
                 o="${o}0"; i=$((_BWIMC_PEND+1)); continue
             fi
+            if [ "$c" = '$' ] && [ "$_BWIMC_DL" != 1 ] && { [ "${t:$((i+1)):1}" = '{' ] || [ "${t:$((i+1)):1}" = '[' ]; }; then
+                sq="$_BWIMC_Q"; se="$_BWIMC_ESC"; sa="$_BWIMC_ACT"
+                _bwimc_brace_end "$t" $((i+2)) "${t:$((i+1)):1}"
+                _BWIMC_Q="$sq"; _BWIMC_ESC="$se"; _BWIMC_ACT="$sa"; _BWIMC_DL=0
+                if [ "$_BWIMC_PEND" -lt "$n" ]; then
+                    case "${t:$i:$((_BWIMC_PEND - i + 1))}" in
+                        *[\|\;\&\(\)\<\>]*|*"$_BWIMC_NL"*)
+                            o="${o}\$_"; i=$((_BWIMC_PEND+1)); continue ;;
+                    esac
+                fi
+            fi
         fi
         _bwimc_scan_step "$c"
         o="$o$c"; i=$((i+1))
     done
     _BWIMC_AF="$o"
+}
+# _bwimc_strip_prefix CLAUSE — HIMMEL-4213. Sets _BWIMC_SP0 to CLAUSE with
+# its leading assignment words removed (_bwimc_strip_assign), and _BWIMC_SP to CLAUSE
+# with its leading run of assignment words, `{`, `!`, if/then/elif/else/
+# while/until/do, `time [-p]` and wrapper commands (command, exec, nice,
+# nohup, env, timeout, sudo, stdbuf) with their options removed, so the verb
+# arms read the command word behind them: `{ touch P/f`, `! x=1 touch P/f`,
+# `nice -n 5 touch P/f`. A wrapper name matches in any case (a
+# case-insensitive filesystem), its options as written. No verb arm matches a clause that starts with
+# one of these words, so the stripped text can only add denials. An option a
+# wrapper is not known to take hides where the command word starts: fail
+# closed by reading from the first later word a verb arm matches
+# (`sudo -Z v touch P/f` reads `touch P/f`). `command -v`, `env -S`, `sudo -l`
+# and the like stop the strip there (nothing runs, or today's residual).
+# ponytail: `env -C DIR`/`sudo -D DIR` run the command elsewhere, so a
+# relative target behind them is still read against the clause's cwd; model
+# the chdir in the strip if a real command hits it (HIMMEL-4213).
+_BWIMC_ARMVERB_RE='^([^[:space:]]*/)?(sed|eval|bash|sh|zsh|dash|ksh|install|rsync|dd|cp|mv|rm|touch|ln|git)(\.exe)?$'
+# _bwimc_sp_word — trims _BWIMC_SPT's leading blanks; _BWIMC_SPW = its first word.
+_bwimc_sp_word() {
+    _BWIMC_SPT="${_BWIMC_SPT#"${_BWIMC_SPT%%[![:space:]]*}"}"
+    _BWIMC_SPW="${_BWIMC_SPT%%[[:space:]]*}"
+}
+# _bwimc_sp_opts SHORTVAL SHORTFLAG SHORTSTOP LONGVAL LONGFLAG LONGSTOP — eats
+# the options after a wrapper word from _BWIMC_SPT. Returns 0 at the command
+# word, 1 at a stop option (left in place), 2 at an unknown option.
+_bwimc_sp_opts() {
+    local w nm k ch
+    while :; do
+        _bwimc_sp_word; w="$_BWIMC_SPW"
+        case "$w" in
+            --) _BWIMC_SPT="${_BWIMC_SPT:2}"; return 0 ;;
+            --*)
+                nm="${w#--}"; nm="${nm%%=*}"
+                case " $6 " in *" $nm "*) return 1 ;; esac
+                case " $5 " in *" $nm "*) _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; continue ;; esac
+                case " $4 " in *" $nm "*) ;; *) return 2 ;; esac
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                case "$w" in *=*) ;; *) _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;; esac
+                ;;
+            -?*)
+                k=1
+                while [ "$k" -lt "${#w}" ]; do
+                    ch="${w:$k:1}"
+                    case "$3" in *"$ch"*) return 1 ;; esac
+                    case "$1" in
+                        *"$ch"*)
+                            if [ "$((k+1))" -eq "${#w}" ]; then
+                                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"; _bwimc_sp_word; w="$_BWIMC_SPW"
+                            fi
+                            break ;;
+                    esac
+                    case "$2" in *"$ch"*) ;; *) return 2 ;; esac
+                    k=$((k+1))
+                done
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                ;;
+            *) return 0 ;;
+        esac
+    done
+}
+_bwimc_strip_prefix() {
+    local n=${#1} w wl r
+    _bwimc_strip_assign "$1"
+    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"
+    while :; do
+        _bwimc_sp_word; w="$_BWIMC_SPW"
+        _tolower_ascii "$w"; wl="$_TOLOWER_OUT"
+        r=0
+        case "$w" in
+            '{'|'!'|if|then|elif|else|while|until|do)
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                _bwimc_strip_assign "$_BWIMC_SPT"; _BWIMC_SPT="$_BWIMC_SA"; continue ;;
+            time)
+                _BWIMC_SPT="${_BWIMC_SPT:4}"; _bwimc_sp_word
+                case "$_BWIMC_SPW" in -p|--) _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;; esac
+                _bwimc_strip_assign "$_BWIMC_SPT"; _BWIMC_SPT="$_BWIMC_SA"; continue ;;
+        esac
+        case "$wl" in
+            command) _BWIMC_SPT="${_BWIMC_SPT:7}"; _bwimc_sp_opts '' p vV '' '' '' || r=$? ;;
+            exec) _BWIMC_SPT="${_BWIMC_SPT:4}"; _bwimc_sp_opts a cl '' '' '' '' || r=$? ;;
+            nohup) _BWIMC_SPT="${_BWIMC_SPT:5}"; _bwimc_sp_opts '' '' '' '' '' 'help version' || r=$? ;;
+            nice)
+                _BWIMC_SPT="${_BWIMC_SPT:4}"; _bwimc_sp_word
+                case "$_BWIMC_SPW" in -[0-9]*|--[0-9]*) _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;; esac
+                _bwimc_sp_opts n '' '' adjustment '' 'help version' || r=$? ;;
+            timeout)
+                _BWIMC_SPT="${_BWIMC_SPT:7}"
+                _bwimc_sp_opts ks fpv '' 'kill-after signal' 'foreground preserve-status verbose' 'help version' || r=$?
+                # the DURATION operand
+                if [ "$r" = 0 ]; then _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"; fi ;;
+            stdbuf) _BWIMC_SPT="${_BWIMC_SPT:6}"; _bwimc_sp_opts ioe '' '' 'input output error' '' 'help version' || r=$? ;;
+            env|sudo)
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                while :; do
+                    if [ "$wl" = env ]; then
+                        _bwimc_sp_opts uCa i0v S 'unset chdir argv0' 'ignore-environment null debug block-signal default-signal ignore-signal list-signal-handling' 'split-string help version' || r=$?
+                    else
+                        _bwimc_sp_opts ugpChDrRtTU AbEHiKknPSsB lVve 'user group host prompt close-from chdir role type command-timeout other-user chroot' 'askpass background preserve-env set-home login non-interactive preserve-groups stdin shell reset-timestamp bell' 'list version validate remove-timestamp edit help' || r=$?
+                    fi
+                    [ "$r" = 0 ] || break
+                    _bwimc_sp_word
+                    case "$_BWIMC_SPW" in
+                        -) _BWIMC_SPT="${_BWIMC_SPT:1}" ;;
+                        [A-Za-z_]*=*) _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}" ;;
+                        *) break ;;
+                    esac
+                done ;;
+            *) break ;;
+        esac
+        if [ "$r" = 1 ]; then
+            break
+        elif [ "$r" = 2 ]; then
+            # fail closed: the first later word a verb arm matches (none: as is)
+            w="$_BWIMC_SPT"
+            while _bwimc_sp_word; [ -n "$_BWIMC_SPW" ]; do
+                _tolower_ascii "$_BWIMC_SPW"
+                [[ "$_TOLOWER_OUT" =~ $_BWIMC_ARMVERB_RE ]] && break
+                _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
+            done
+            [ -n "$_BWIMC_SPW" ] || _BWIMC_SPT="$w"
+            break
+        fi
+    done
+    _BWIMC_SP="${1:$((n - ${#_BWIMC_SPT}))}"
 }
 # _bwimc_split_clauses TEXT [skel] — with `skel` (TEXT is a _bwimc_subst_split
 # skeleton), the `(` of a `$(` STUB is not a break, so a target built from a
@@ -4123,12 +4292,18 @@ while IFS= read -r _bwimc_clause; do
     _bwimc_ecwd_track "$_bwimc_clause_sp" "$_bwimc_clause_piped"
     # HIMMEL-4153: the verb arms read the command word AFTER any leading
     # assignment words (ecwd tracking above keeps the whole clause — it
-    # already treats an assignment prefix as unresolved).
-    _bwimc_strip_assign "$_bwimc_clause"
-    if [ "$_BWIMC_SA" != "$_bwimc_clause" ]; then
-        _tolower_ascii "$_BWIMC_SA"
-        _bwimc_clause_lc="$_TOLOWER_OUT"
-        _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SA")
+    # already treats an assignment prefix as unresolved). HIMMEL-4213: and
+    # after a leading `{`, `!`, reserved word, `time` or wrapper command —
+    # the wrapper check after the chain keeps the assignment-only reading.
+    _bwimc_strip_prefix "$_bwimc_clause"
+    if [ "$_BWIMC_SP0" != "$_bwimc_clause" ]; then
+        _bwimc_clause_lc="${_bwimc_clause_lc:$((${#_bwimc_clause} - ${#_BWIMC_SP0}))}"
+        _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SP0")
+    fi
+    _bwimc_wrap_lc="$_bwimc_clause_lc"; _bwimc_wrap_sp="$_bwimc_clause_sp"
+    if [ "$_BWIMC_SP" != "$_BWIMC_SP0" ]; then
+        _bwimc_clause_lc="${_bwimc_clause_lc:$((${#_BWIMC_SP0} - ${#_BWIMC_SP}))}"
+        _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SP")
     fi
 
     # HIMMEL-1430: `grep -E` + capture instead of `grep -q` here and at every
@@ -5060,9 +5235,9 @@ while IFS= read -r _bwimc_clause; do
     # `b\ash`, `$'bash'` and `$"bash"` reach the token scan, which unquotes
     # (and ANSI-C decodes) each word itself. An escape inside `$'…'` can spell
     # any name (`$'\x62ash'`), so a clause with one always takes the scan.
-    _bwimc_wq="${_bwimc_clause_lc//[\$\'\"\\]/}"
-    if [ "$_bwimc_interp_seen" = 0 ] && { [[ "$_bwimc_wq" =~ $_BWIMC_WRAP_RE ]] || [[ "$_bwimc_clause_lc" == *"\$'"* ]]; }; then
-        _bwimc_check_interp_body "$_bwimc_clause_sp" wrap
+    _bwimc_wq="${_bwimc_wrap_lc//[\$\'\"\\]/}"
+    if [ "$_bwimc_interp_seen" = 0 ] && { [[ "$_bwimc_wq" =~ $_BWIMC_WRAP_RE ]] || [[ "$_bwimc_wrap_lc" == *"\$'"* ]]; }; then
+        _bwimc_check_interp_body "$_bwimc_wrap_sp" wrap
     fi
 done < <(_bwimc_verb_clauses "$_bwimc_hb")
 done  # HIMMEL-4138 readings
