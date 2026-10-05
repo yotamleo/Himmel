@@ -602,6 +602,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
   assert.deepEqual(
     [...MUST_RUN_CHAIN_MEMBERS].sort(),
     [
+      'block-bank-lift-writes.sh',
       'block-bare-qmd-query.sh',
       'block-chokepoint-env-prefix.sh',
       'block-destructive-commands.sh',

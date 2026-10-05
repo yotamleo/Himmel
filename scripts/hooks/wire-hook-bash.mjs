@@ -72,6 +72,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // write (`cat >`, `sed -i`, `tee`, a python heredoc) bypassed it entirely —
   // this destination-based twin closes that gap for the Bash chain.
   'block-write-into-main-checkout.sh',
+  // HIMMEL-4445: denies every Bash write to the operator-only bank lift
+  // (~/.himmel/state/bank-lift.json) and `bank-lift.sh set` — see the sibling
+  // entry on the Edit|Write|MultiEdit|NotebookEdit chain below.
+  'block-bank-lift-writes.sh',
   // HIMMEL-2975 Guard D: denies a console relay every write channel into
   // console state via Bash — see the sibling entry on the
   // Edit|Write|MultiEdit|NotebookEdit chain below.
@@ -104,6 +108,9 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // primary checkout from a linked worktree.
   'block-edit-live-settings.sh',
   'guard-memory-capture.sh',
+  // HIMMEL-4445: the file-tool twin — Write/Edit/MultiEdit/NotebookEdit on
+  // the bank lift path (any spelling, symlinks resolved).
+  'block-bank-lift-writes.sh',
   // HIMMEL-2975 Guard D: denies a console relay direct writes to the inbox,
   // leg handover docs, and the console rundir (marker-gated no-op otherwise).
   'guard-relay-writes.sh',

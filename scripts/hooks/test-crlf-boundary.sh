@@ -109,6 +109,8 @@ D_QUIET="bash scripts/test-check-c""i.sh"
 D_RELAY="CLAUDE_PID=1 bash x.sh"
 D_PRCHECK="bash scripts/cr/pr-check-cont""ext.sh"
 D_PRCHECK_ENV="bash scripts/cr/pr-check-e""nv.sh CR_CLAUDE_AGENTS"
+D_LIFT="echo x > ~/.himmel/state/ba""nk-lift.json"
+D_LIFTSET="bash scripts/lib/ba""nk-lift.sh set seven_day"
 A_OK="git status"
 
 printf '\nSingle-line command text\n'
@@ -140,6 +142,9 @@ check guard-relay-writes          Bash 0 "$D_RELAY"  "marker unset allows the sa
 check guard-pr-check-literal      Bash 2 "$D_PRCHECK" "deny the step-0 literal with no provable lane"
 check guard-pr-check-literal      Bash 2 "$D_PRCHECK_ENV" "deny the pr-check-env literal with no provable lane"
 check guard-pr-check-literal      Bash 0 "$A_OK"     "allow git status"
+check block-bank-lift-writes      Bash 2 "$D_LIFT"   "deny a redirect onto the bank lift"
+check block-bank-lift-writes      Bash 2 "$D_LIFTSET" "deny bank-lift.sh set"
+check block-bank-lift-writes      Bash 0 "$A_OK"     "allow git status"
 
 # A multi-line command is where the class actually bites: with CRLF endings the
 # LAST character of every record is a CR, so any check anchored at end-of-record
@@ -157,7 +162,9 @@ for _pair in \
     "block-rogue-codex-exec|$D_CODEX" \
     "block-rogue-codex-wsl|$D_WSL" \
     "block-tail-pipe-on-gates|$D_TAIL" \
-    "require-quiet-run|$D_QUIET"
+    "require-quiet-run|$D_QUIET" \
+    "block-bank-lift-writes|$D_LIFT" \
+    "block-bank-lift-writes|$D_LIFTSET"
 do
     _h="${_pair%%|*}"; _c="${_pair#*|}"
     check "$_h" Bash 2 "$(printf 'echo hello\n%s' "$_c")"   "deny on a second line"
