@@ -169,12 +169,12 @@ git -C "$REPO" checkout -q feat/himmel-3031-x
 
 # ── (d) refuses when the branch has no upstream ─────────────────────────────
 echo "TEST: refuses when the branch has no upstream"
-git -C "$REPO" checkout -q -b feat/no-upstream
+git -C "$REPO" checkout -q -b feat/himmel-3031-no-upstream
 err_d=$(run_sut "$TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_d=$?
 if [ "$rc_d" -ne 0 ]; then pass "refuses with no upstream (rc!=0)"; else fail "refuses with no upstream (rc!=0)" "got rc=$rc_d"; fi
-contains "refusal names upstream" "$err_d" "upstream"
+contains "refusal names upstream" "$err_d" "has no upstream"
 git -C "$REPO" checkout -q feat/himmel-3031-x
-git -C "$REPO" branch -q -D feat/no-upstream
+git -C "$REPO" branch -q -D feat/himmel-3031-no-upstream
 
 # ── (e) refuses an empty body file ───────────────────────────────────────────
 echo "TEST: refuses an empty body file"
@@ -342,6 +342,11 @@ contains "refusal is an ERR leg-pr-open line" "$err_p" "ERR leg-pr-open:"
 contains "refusal names the title key" "$err_p" "HIMMEL-1"
 contains "refusal names the branch" "$err_p" "fix/himmel-2-other"
 assert_eq "gh is never invoked on a branch mismatch" "" "$(cat "$ARGV_LOG")"
+# same prefix, different ticket: HIMMEL-1 must not match himmel-10
+git -C "$REPO" checkout -q -b fix/himmel-10-other
+git -C "$REPO" push -q -u origin fix/himmel-10-other
+run_sut "$MISMATCH_TITLE" "$BODY_FILE" >/dev/null 2>&1; rc_p2=$?
+assert_eq "HIMMEL-1 title on a himmel-10 branch refused (rc=1)" "1" "$rc_p2"
 git -C "$REPO" checkout -q feat/himmel-3031-x
 
 echo "TEST: refuses to edit an open PR whose title cites another ticket"

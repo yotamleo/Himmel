@@ -179,13 +179,11 @@ if [[ $title =~ $ticket_key_re ]]; then title_key="${BASH_REMATCH[1]}"; fi
 if [ -n "$title_key" ]; then
     branch_lc=$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]')
     key_lc=$(printf '%s' "$title_key" | tr '[:upper:]' '[:lower:]')
-    case "$branch_lc" in
-        *"$key_lc"*) ;;
-        *)
-            echo "ERR leg-pr-open: title cites $title_key but branch '$branch' does not carry it — wrong cwd?" >&2
-            exit 1
-            ;;
-    esac
+    # Token boundaries: himmel-1 must not match himmel-10 or xhimmel-1.
+    if ! [[ $branch_lc =~ (^|[^a-z0-9])"$key_lc"([^0-9]|$) ]]; then
+        echo "ERR leg-pr-open: title cites $title_key but branch '$branch' does not carry it — wrong cwd?" >&2
+        exit 1
+    fi
 fi
 
 if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
