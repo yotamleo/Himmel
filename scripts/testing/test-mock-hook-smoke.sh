@@ -95,7 +95,10 @@ if [ -s "$RL" ] && [ "$(jsonl_q "$RL" 'JSON.stringify(rows.map(r=>r.body).filter
   pass "P2 the Bash tool_result carried the HEAD sha and the Read tool_result carried the token"
 else fail "P2 tool round trips not in the request log ($RL)"; fi
 NB=$(banners "$D")
-if [ "$NB" = 0 ]; then pass "P3 zero hook-failure banners"; else fail "P3 $NB hook-failure banner line(s)"; fi
+if [ "$NB" = 0 ]; then pass "P3 zero hook-failure banners"; else
+  fail "P3 $NB hook-failure banner line(s)"
+  for f in "$D/out.json" "$D/err.txt" "$(fakekey_debuglog "$D")"; do [ -f "$f" ] && grep -iE "$BANNER_RE" "$f" 2>/dev/null | head -c 600 | sed 's/^/    banner: /'; done
+fi
 DBG=$(fakekey_debuglog "$D")
 HOOKRUNS=$(grep -cE 'Hook PreToolUse:[A-Za-z]+ \(PreToolUse\) success' "${DBG:-/dev/null}" 2>/dev/null || true)
 if [ "${HOOKRUNS:-0}" -gt 0 ]; then pass "P4 the debug log shows PreToolUse hooks completing successfully ($HOOKRUNS)"; else fail "P4 no PreToolUse hook activity in the debug log (a hook set that never fires would pass P3 vacuously)"; fi
