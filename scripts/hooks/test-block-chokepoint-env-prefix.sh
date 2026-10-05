@@ -57,12 +57,16 @@ fi
 j() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
 jp() { printf '{"tool_name":"PowerShell","tool_input":{"command":%s}}' "$(printf '%s' "$1" | jq -Rs .)"; }
 
+# HOOK_WRAP: an optional wrapper argv the hook runs under (empty = none).
+HOOK_WRAP=''
+
 # run <json> [ENV=VAL ...] -> runs the hook, sets OUT/ERR/RC.
 run() {
     local input="$1"; shift
     local outf errf
     outf=$(mktemp); errf=$(mktemp)
-    printf '%s' "$input" | env -u ENV_PREFIX_GUARD_OK -u CHOKEPOINT_REGISTRY "$@" bash "$HOOK" >"$outf" 2>"$errf"
+    # shellcheck disable=SC2086 # HOOK_WRAP is a space-joined wrapper argv
+    printf '%s' "$input" | env -u ENV_PREFIX_GUARD_OK -u CHOKEPOINT_REGISTRY "$@" $HOOK_WRAP bash "$HOOK" >"$outf" 2>"$errf"
     RC=$?
     OUT=$(cat "$outf"); ERR=$(cat "$errf")
     rm -f "$outf" "$errf"
@@ -1314,6 +1318,61 @@ chmod +x "$CRLF_JQ_DIR/jq"
 assert_allow "4130 CRLF jq: string command still allowed (shim control)" "$(jc '"echo ok"' 'echo ok')" "PATH=$CRLF_JQ_DIR:$PATH"
 assert_deny  "4130 CRLF jq: command:false still fails closed"            "$(jc false 'echo ok')" "PATH=$CRLF_JQ_DIR:$PATH"
 rm -rf "$CRLF_JQ_DIR"
+
+# --- HIMMEL-4399: assignment-only segments made UNSET_NAMES append itself
+# (scan_segment's names already carried the inherited UNSET_NAMES), so it
+# doubled per segment and `a=;` x 30 pinned a CPU for hours. The list is now
+# deduped and capped at 256 distinct names; past the cap the hook DENIES.
+# Every row here runs the hook under a CPU ceiling where prlimit exists, so a
+# regression shows up as a kill, never a hang. ---
+NL=$'\n'
+if command -v prlimit >/dev/null 2>&1; then HOOK_WRAP='nice -n 10 prlimit --cpu=10'; fi
+rep() {  # rep <text> <count> -> <text> repeated <count> times
+    local i=0 out=''
+    while [ "$i" -lt "$2" ]; do out="$out$1"; i=$((i + 1)); done
+    printf '%s' "$out"
+}
+distinct_asg() {  # distinct_asg <count> -> "v1=; v2=; ... v<count>=; "
+    local i=1 out=''
+    while [ "$i" -le "$1" ]; do out="${out}v$i=; "; i=$((i + 1)); done
+    printf '%s' "$out"
+}
+assert_allow "4399 a=; x 30 finishes and stays allowed"                 "$(j "$(rep 'a=;' 30)")"
+assert_allow "4399 A=1 x 40 newline-joined finishes and stays allowed"  "$(j "echo ok$(rep "${NL}A=1" 40)")"
+HD="cat > cases.txt <<'EOF'$(rep "${NL}LD_PRELOAD=/x.so${NL}GCONV_PATH=/x${NL}NODE_PATH=/x${NL}a=1" 8)
+EOF
+echo ok"
+assert_allow "4399 heredoc of 32 NAME=value lines finishes and stays allowed" "$(j "$HD")"
+assert_deny  "4399 a=; x 30 then a seam assignment still denies"        "$(j "$(rep 'a=;' 30) HIMMEL_CONSOLE_LEG=0; bash $MERGE_ON_GREEN 1")"
+assert_deny  "4399 unset SEAM; A=1; B=2; then the chokepoint still denies" "$(j "unset HIMMEL_CONSOLE_LEG; A=1; B=2; bash $MERGE_ON_GREEN 1")"
+assert_deny  "4399 SEAM=0; then 30 assignment-only segments; then the chokepoint" "$(j "HIMMEL_CONSOLE_LEG=0; $(rep 'a=;' 30) bash $MERGE_ON_GREEN 1")"
+assert_allow "4399 256 distinct assignment names (at the cap) stay allowed" "$(j "$(distinct_asg 256)echo ok")"
+# Past the cap: fail closed with the cap's own reason.
+run "$(j "$(distinct_asg 257)echo ok")"
+CASES=$((CASES + 1))
+if [ "$RC" = "2" ] && [ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" = "deny" ] \
+   && printf '%s' "$ERR" | grep -q "more than 256 distinct"; then
+    echo "PASS 4399 257 distinct assignment names deny (cap fails closed)"
+else
+    echo "FAIL 4399 257 distinct assignment names -- expected rc=2 + deny + cap reason, got rc=$RC"
+    FAILED=$((FAILED + 1))
+fi
+# Timing: 200 assignment-only segments in under 1 s (EPOCHREALTIME is bash 5+).
+if [ -n "${EPOCHREALTIME:-}" ]; then
+    T0=${EPOCHREALTIME/[.,]/}
+    run "$(j "$(rep 'a=;' 200)")"
+    T1=${EPOCHREALTIME/[.,]/}
+    CASES=$((CASES + 1))
+    if [ "$RC" = "0" ] && [ $((T1 - T0)) -lt 1000000 ]; then
+        echo "PASS 4399 a=; x 200 finishes in $(((T1 - T0) / 1000)) ms"
+    else
+        echo "FAIL 4399 a=; x 200 -- expected rc=0 under 1000 ms, got rc=$RC in $(((T1 - T0) / 1000)) ms"
+        FAILED=$((FAILED + 1))
+    fi
+else
+    echo "WARN 4399 timing row skipped: no EPOCHREALTIME (bash < 5)"
+fi
+HOOK_WRAP=''
 
 CASES=$((CASES + 1))
 if grep -q "block-chokepoint-env-prefix.sh" "$REPO_ROOT/.claude/settings.json" 2>/dev/null; then
