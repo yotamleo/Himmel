@@ -251,6 +251,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+      # HIMMEL-4412: the project's SessionStart/Subagent hooks run `bun`; a runner
+      # without it makes them exit 127 and the hook smoke correctly reports a failing hook.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      # The mock sandbox runs claude under a scrubbed PATH (claude, node, /usr/local/bin,
+      # /usr/bin, /bin), so setup-bun's ~/.bun/bin must be linked into one of those.
+      - name: Put bun on the scrubbed PATH
+        run: sudo ln -sf "$(command -v bun)" /usr/local/bin/bun
       - name: Install the pinned claude CLI
         run: |
           npm install --global "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
@@ -264,6 +273,14 @@ jobs:
       # scripts/testing/mock-anthropic. The suite also asserts the installed CLI
       # equals CLAUDE_CLI_VERSION, so a version drift fails loudly here.
       - run: bash scripts/testing/test-claude-mock-turn.sh
+      # HIMMEL-4412: two "a hook that fails open" smokes on the same mock. MOCK-BACKED:
+      # they prove Claude Code enforces the consult sandbox and that the project hook
+      # chain fires clean in a real session; neither is evidence of real-model behaviour.
+      # The consult sandbox needs bubblewrap and socat on the runner.
+      - name: Install the consult sandbox prerequisites
+        run: sudo apt-get install -y --no-install-recommends bubblewrap socat
+      - run: bash scripts/testing/test-mock-consult-sandbox.sh
+      - run: bash scripts/testing/test-mock-hook-smoke.sh
 
   lanes-and-trust-suites:
     # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no
