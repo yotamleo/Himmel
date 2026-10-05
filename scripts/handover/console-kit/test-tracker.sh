@@ -277,7 +277,7 @@ write_meta 20 0.6
 if command -v node >/dev/null 2>&1; then
     mo="$(node "$HERE/tracker-model-check.js" "$W/legs.html" 2>&1)"
     printf '%s\n' "$mo" | grep -v 'failure(s)$'
-    if printf '%s\n' "$mo" | grep -qx '0 failure(s)'; then pass 'the model checks pass (HIMMEL-3990)'; else fail 'the model checks pass (HIMMEL-3990)'; fi
+    if grep -qx '0 failure(s)' <<< "$mo"; then pass 'the model checks pass (HIMMEL-3990)'; else fail 'the model checks pass (HIMMEL-3990)'; fi
 else
     printf 'skip - node not available: model checks\n'
 fi
