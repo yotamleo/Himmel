@@ -882,6 +882,28 @@ row "4458 tar -xf --to-stdout (ctrl)"          allow "tar -xf /tmp/a.tar --to-st
 row "4458 unzip -l (ctrl)"                     allow "unzip -l /tmp/a.zip" /var
 row "4458 tar -cf (create, ctrl)"              allow "tar -cf /tmp/o.tar dir" /var
 row "4458 tar -xf -C abs (ctrl)"               allow "tar -xf /tmp/a.tar -C /var/out" /var
+# r11: a command that sets a tar/unzip option variable (any form) denies
+# every extraction in it; a proven non-extract mode still allows.
+row "4458 xenv prefix TAR_OPTIONS (/var)" deny "TAR_OPTIONS=-P tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv export TAR_OPTIONS (/var)" deny "export TAR_OPTIONS=-P; tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv prefix UNZIP (/var)" deny "UNZIP=-: unzip /tmp/a.zip -d /var/out" /var
+row "4458 xenv env TAR_OPTIONS (/var)" deny "env TAR_OPTIONS=-P tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv declare -x TAR_OPTIONS (/var)" deny "declare -x TAR_OPTIONS=-P; tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv prefix UNZIPOPT (/var)" deny "UNZIPOPT=-: unzip /tmp/a.zip -d /var/out" /var
+row "4458 xenv prefix ZIPINFO (/var)" deny "ZIPINFO=-: unzip /tmp/a.zip -d /var/out" /var
+row "4458 xenv quote-split TAR_OPT\"\"IONS (/var)" deny "TAR_OPT\"\"IONS=-P tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv TAR_OPTIONS + tar -tf (ctrl) (/var)" allow "TAR_OPTIONS=-P tar -tf /tmp/a.tar" /var
+row "4458 xenv no env var (ctrl) (/var)" allow "tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv prefix TAR_OPTIONS (HOME)" deny "TAR_OPTIONS=-P tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv export TAR_OPTIONS (HOME)" deny "export TAR_OPTIONS=-P; tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv prefix UNZIP (HOME)" deny "UNZIP=-: unzip /tmp/a.zip -d /var/out" "$HOME"
+row "4458 xenv env TAR_OPTIONS (HOME)" deny "env TAR_OPTIONS=-P tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv declare -x TAR_OPTIONS (HOME)" deny "declare -x TAR_OPTIONS=-P; tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv prefix UNZIPOPT (HOME)" deny "UNZIPOPT=-: unzip /tmp/a.zip -d /var/out" "$HOME"
+row "4458 xenv prefix ZIPINFO (HOME)" deny "ZIPINFO=-: unzip /tmp/a.zip -d /var/out" "$HOME"
+row "4458 xenv quote-split TAR_OPT\"\"IONS (HOME)" deny "TAR_OPT\"\"IONS=-P tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv TAR_OPTIONS + tar -tf (ctrl) (HOME)" allow "TAR_OPTIONS=-P tar -tf /tmp/a.tar" "$HOME"
+row "4458 xenv no env var (ctrl) (HOME)" allow "tar -xf /tmp/a.tar -C /var/out" "$HOME"
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"
