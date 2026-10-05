@@ -71,3 +71,17 @@ if ! printf '%s\n' "$bullet" >> "$DOC"; then
     exit 5
 fi
 echo "append-results: appended to $DOC"
+
+# HIMMEL-4419: a LIVE bullet moves the leg's ticket (the key in the doc name)
+# to In Progress. Best-effort - leg-jira-status.sh warns and exits 0 on any
+# Jira failure, and LEG_JIRA_STATUS=0 opts out.
+case "$TEXT" in
+    LIVE|LIVE[!A-Za-z0-9]*)
+        if [ "${LEG_JIRA_STATUS:-1}" != "0" ]; then
+            base="${DOC##*/}"
+            if [[ $base =~ ^([A-Za-z][A-Za-z]*-[0-9]+)- ]]; then
+                bash "$(dirname "${BASH_SOURCE[0]}")/leg-jira-status.sh" "${BASH_REMATCH[1]}" "In Progress" || true
+            fi
+        fi ;;
+esac
+exit 0

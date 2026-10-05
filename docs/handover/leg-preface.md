@@ -65,6 +65,23 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   Between GREEN and `READY` (PR open, CI and review running) you are `LIVE`:
   `- HH:MM LIVE — PR <n> open, watching CI`. After the merge you are `WRAPPED`.
 
+**Your ticket's Jira status follows you (HIMMEL-4419).** The scripts move it;
+you never hand-transition it for these steps. Each is best-effort (a Jira
+failure warns and never blocks you), forward-only and idempotent (never moved
+back from Done, never re-applied), and touches only the ticket named in your doc
+or PR title. `LEG_JIRA_STATUS=0` in the launching shell opts out.
+
+| Leg event | Jira status | Fired by |
+|---|---|---|
+| `LIVE` bullet | In Progress | `append-results.sh` (key from the doc name) |
+| PR opened | In Review | `leg-pr-open.sh` (first `[KEY]` of the title) |
+| merged, `completes-ticket: yes` | Done | `merge-on-green.sh --jira-transition` |
+| merged, `completes-ticket: no` | back to In Progress | you, after the merge: `bash scripts/handover/console-kit/leg-jira-status.sh <KEY> "In Progress" --allow-back` |
+
+`IN CI` exists in the workflow but no script sets it: the PR-open to merge span
+is short and a manual hop would only add a step. The board's `Release <v>`
+panel counts tickets per status (To Do / In Progress / In Review / IN CI / Done).
+
 `append-results.sh` stamps the time itself from `date +%H:%M`; never type a
 time by hand. A non-marker Results bullet (one that does not start with a
 marker) still goes through the Write tool if its text contains a literal `%`,
