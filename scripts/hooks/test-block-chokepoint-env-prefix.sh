@@ -1519,10 +1519,11 @@ if [ -n "${EPOCHREALTIME:-}" ]; then
     run "$(j "HIMMEL_CONSOLE_LEG=1; ls a/*.sh; $P1K")"
     T2=${EPOCHREALTIME/[.,]/}
     CASES=$((CASES + 1))
-    if [ "$RC" = "0" ] && [ $((T2 - T1 - (T1 - T0))) -lt 1000000 ]; then
+    # Bound 2500 ms relief: loaded x4 max 287 ms (x2 = 574), but CI shard 4 read 1063 ms on a slower runner, so x2 of that, rounded; pre-rework 631b80f2 took 3660-5374 ms, still red.
+    if [ "$RC" = "0" ] && [ $((T2 - T1 - (T1 - T0))) -lt 2500000 ]; then
         echo "PASS 4157 J1685: 10 KB of quoted stages beside a seam name, relief in $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
     else
-        echo "FAIL 4157 J1685: 10 KB of quoted stages beside a seam name -- expected rc=0 with relief under 1000 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
+        echo "FAIL 4157 J1685: 10 KB of quoted stages beside a seam name -- expected rc=0 with relief under 2500 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
         FAILED=$((FAILED + 1))
     fi
 else
