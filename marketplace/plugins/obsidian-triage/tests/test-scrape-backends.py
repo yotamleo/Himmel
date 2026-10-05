@@ -154,12 +154,84 @@ row = (ledger_lines() or [{}])[0]
 check("ledger: transport ok + parse failure counts the credit, ok=false",
       row.get("credits") == mod.FirecrawlClient.SCRAPE_COST and row.get("ok") is False)
 
-# --- local-headless slot: named, not implemented ----------------------------
+# --- local-headless slot: Scrapling stealth fetcher (HIMMEL-4344) -----------
+class FakePage:
+    def __init__(self, status=200, html="<h1>Real</h1><p>body</p>"):
+        self.status = status
+        self.html = html
+
+
+class FetchRecorder:
+    """Stands in for scrapling's StealthyFetcher.fetch + the markdown step."""
+    def __init__(self, page=None, exc=None):
+        self.calls = []
+        self.page = page or FakePage()
+        self.exc = exc
+
+    def fetch(self, url, **kw):
+        self.calls.append((url, kw))
+        if self.exc:
+            raise self.exc
+        return self.page
+
+    def to_markdown(self, page):
+        return "# Real\n\nbody\n" if page.html else ""
+
+
+def install_local(rec):
+    mod.LocalHeadlessClient._load = staticmethod(lambda: (rec.fetch, rec.to_markdown))
+
+
+def uninstall_local():
+    def missing():
+        raise ImportError("no scrapling")
+    mod.LocalHeadlessClient._load = staticmethod(missing)
+
+
+COOKIES = SCRATCH / "cookies"
+COOKIES.mkdir()
+(COOKIES / "site.txt").write_text(
+    "# Netscape HTTP Cookie File\n"
+    ".example.com\tTRUE\t/\tTRUE\t9999999999\tsess\tlive1\n"
+    ".example.com\tTRUE\t/\tTRUE\t1000000000\told\tdead\n"
+    "#HttpOnly_.example.com\tTRUE\t/\tTRUE\t0\ttok\tlive2\n"
+    ".other.org\tTRUE\t/\tTRUE\t9999999999\tnope\tleak\n",
+    encoding="utf-8", newline="\n")
+
+rec = FetchRecorder()
+install_local(rec)
+c = mod.LocalHeadlessClient(cookie_dir=COOKIES)
+md = c.scrape("https://www.example.com/a")
+check("local-headless: returns markdown, no longer raises NotImplemented", "# Real" in md)
+names_sent = sorted(x["name"] for x in rec.calls[0][1].get("cookies") or [])
+check("local-headless: jar cookies for the host pass through (live + HttpOnly, not expired, not other domain)",
+      names_sent == ["sess", "tok"])
+check("local-headless: headless stealth fetch, bounded timeout",
+      rec.calls[0][1].get("headless") is True and 0 < rec.calls[0][1].get("timeout", 0) <= 120000)
+rec.calls.clear()
+c.scrape("https://unrelated.net/")
+check("local-headless: no cookie sent to a host the jar does not cover", not rec.calls[0][1].get("cookies"))
+check("local-headless: missing cookie dir is no constraint",
+      mod.LocalHeadlessClient(cookie_dir=SCRATCH / "nope").scrape("https://example.com/") != "")
+
+for label, r in (("HTTP 403", FetchRecorder(page=FakePage(status=403))),
+                 ("empty markdown", FetchRecorder(page=FakePage(html=""))),
+                 ("fetch error", FetchRecorder(exc=RuntimeError("boom")))):
+    install_local(r)
+    try:
+        mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
+        check(f"local-headless: {label} raises (chain falls through)", False)
+    except mod.BackendNotImplemented:
+        check(f"local-headless: {label} raises (chain falls through)", False)
+    except Exception:
+        check(f"local-headless: {label} raises (chain falls through)", True)
+
+uninstall_local()
 try:
-    mod.LocalHeadlessClient().scrape("https://example.com/")
-    check("local-headless: not implemented", False)
+    mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
+    check("local-headless: scrapling not installed -> BackendNotImplemented", False)
 except mod.BackendNotImplemented:
-    check("local-headless: not implemented", True)
+    check("local-headless: scrapling not installed -> BackendNotImplemented", True)
 
 # --- chain: order, silent fall-through, budget ------------------------------
 check("chain default order local-headless,jina,firecrawl",
@@ -258,6 +330,22 @@ p = make_clip("---\ntype: article\nsource: https://x.com/a/status/1\n---\nshort.
 fk = FakeChain()
 mod.process_clip(p, False, fk, mod.UrlRules())
 check("process_clip: skip-host list holds on the chain", fk.calls == [])
+
+# the real chain with the local-headless slot live: gate + skip-host run first
+rec = FetchRecorder()
+install_local(rec)
+real = mod.ScrapeChain([mod.LocalHeadlessClient(cookie_dir=COOKIES)], 5)
+p = make_clip(THIN)
+glyph, msg, _ = mod.process_clip(p, False, real, mod.UrlRules())
+check("process_clip: local-headless serves a thin clip", glyph == "v" and "harvest_skill: local-headless" in p.read_text())
+for label, src in (("private host", "http://wiki.corp.internal/x"), ("skip-host", "https://x.com/a/status/1")):
+    rec.calls.clear()
+    mod.process_clip(make_clip(f"---\ntype: article\nsource: {src}\n---\nshort.\n"), False, real, mod.UrlRules())
+    check(f"process_clip: {label} never reaches local-headless", rec.calls == [])
+rec.calls.clear()
+mod.process_clip(make_clip(THIN), False, real, mod.UrlRules(deny=[("example.com/**", mod._glob_to_regex(mod._norm_target("example.com/**", True)[0]))]))
+check("process_clip: .harvest-deny never reaches local-headless", rec.calls == [])
+uninstall_local()
 
 # --- HIMMEL-4361: registry, per-site routing, kill switch, caps -------------
 import contextlib

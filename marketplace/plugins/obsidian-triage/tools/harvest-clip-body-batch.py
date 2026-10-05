@@ -43,6 +43,7 @@ Cross-platform paths via pathlib. Windows / Git Bash / macOS / Linux all work.
 LUNA-26 batch tooling. Triage stage stays LLM-driven via /triage-clips.
 """
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -717,18 +718,86 @@ class JinaReaderClient:
         return md.strip() + "\n"
 
 
+def load_jar_cookies(cookie_dir: Path, url: str, now=None) -> list:
+    """Live cookies from the operator's per-site jar (Netscape *.txt files,
+    the same ones reddit-enrich and the x/ig enrichers read) whose domain
+    covers `url`'s host, as Playwright cookie dicts. Only the jar is read,
+    never a browser store. A missing dir or unreadable file is no cookies."""
+    import time
+    now = time.time() if now is None else now
+    host = (urlparse(url).hostname or "").lower()
+    out = []
+    try:
+        files = sorted(cookie_dir.glob("*.txt"))
+    except OSError:
+        return out
+    for f in files:
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for line in text.splitlines():
+            if line.startswith("#HttpOnly_"):
+                line = line[len("#HttpOnly_"):]
+            elif not line or line.startswith("#"):
+                continue
+            fld = line.split("\t")
+            if len(fld) < 7 or not fld[5]:
+                continue
+            dom = fld[0].lower().lstrip(".")
+            try:
+                exp = int(fld[4])
+            except ValueError:
+                exp = 0
+            if (exp and exp < now) or not dom or not (host == dom or host.endswith("." + dom)):
+                continue
+            out.append({"name": fld[5], "value": "\t".join(fld[6:]), "domain": fld[0],
+                        "path": fld[2] or "/", "secure": fld[3].upper() == "TRUE"})
+    return out
+
+
 class LocalHeadlessClient:
-    """Cookie-backed local headless fetch — reserved backend slot, not built
-    yet (needs a browser + cookie read not in the tree). Follow-up ticket."""
+    """Local headless fetch via Scrapling's stealth fetcher (HIMMEL-4344).
+    Optional dependency, pinned in tools/requirements-scrapling.txt: when
+    scrapling is not importable the slot raises BackendNotImplemented and the
+    chain falls through to jina. Per-site cookies come from the jar only
+    (load_jar_cookies). Runs locally: no egress-matrix row."""
 
     name = "local-headless"
+    TIMEOUT_MS = 60000
+
+    def __init__(self, cookie_dir=None):
+        self.cookie_dir = Path(cookie_dir) if cookie_dir else Path(os.path.expanduser("~/.luna/cookies"))
 
     @classmethod
     def from_env(cls, env, budget):
-        return cls()
+        return cls(cookie_dir=(env.get("HARVEST_COOKIE_DIR") or "").strip() or None)
+
+    @staticmethod
+    def _load():
+        """(fetch(url, **kw) -> page, to_markdown(page) -> str); ImportError
+        when scrapling (or its markdown extra) is missing. Test seam."""
+        from scrapling.fetchers import StealthyFetcher
+        from scrapling.core.shell import Convertor
+
+        def to_markdown(page):
+            return "".join(Convertor._extract_content(page, "markdown"))
+        return StealthyFetcher.fetch, to_markdown
 
     def scrape(self, url: str) -> str:
-        raise BackendNotImplemented("local-headless backend is not implemented")
+        try:
+            fetch, to_markdown = self._load()
+        except ImportError:
+            raise BackendNotImplemented("scrapling is not installed")
+        page = fetch(url, headless=True, timeout=self.TIMEOUT_MS,
+                     cookies=load_jar_cookies(self.cookie_dir, url))
+        status = getattr(page, "status", 200)
+        if status >= 400:
+            raise RuntimeError(f"local-headless: HTTP {status}")
+        md = to_markdown(page).strip()
+        if not md:
+            raise RuntimeError("local-headless returned empty markdown")
+        return md + "\n"
 
 
 class FirecrawlClient:
