@@ -5572,6 +5572,45 @@ printf '%s\n' '{"items":"nope"}' > "$n_t/status-bad.json"
 out="$(DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-bad.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'INFO C19-observability.*unreadable' && ! grepq "$out" 'not desired on this host'; then pass "C19 malformed status -> unreadable INFO"; else fail "C19 malformed status -> $(printf '%s' "$out" | grep C19)"; fi
 
+echo "== C19 (HIMMEL-4289): observability-grafana desired -> user-mode install dir, stripped prometheus.yml, no Telegram check =="
+printf '%s\n' '{"items":[{"id":"observability-grafana","desired":true,"severity":"red"}]}' > "$n_t/status-graf.json"
+mkdir -p "$n_t/gi/dashboards" "$n_t/gbin" "$n_t/xdg-none" "$n_t/xdg-ok/himmel"
+sed -e '/^  - job_name: windows_exporter/,$d' "$REPO_ROOT/scripts/observability/prometheus.yml" > "$n_t/gi/prometheus.yml"
+cp "$REPO_ROOT/scripts/observability/alerts.rules.yml" "$n_t/gi/alerts.rules.yml"
+cp "$REPO_ROOT/scripts/observability/dashboards/"*.json "$n_t/gi/dashboards/"
+cp -R "$n_t/gi" "$n_t/xdg-ok/himmel/observability"
+cat > "$n_t/gbin/curl" <<'EOF'
+#!/bin/sh
+url=''
+for arg in "$@"; do url="$arg"; done
+case "$url" in
+  */api/v1/rules) printf '%s\n' '{"status":"success","data":{"groups":[{"name":"himmel-observability"}]}}' ;;
+  *:9877/metrics) printf '%s\n' 'flow_run_outcome_total 1' ;;
+  *:3000/api/health) printf '%s\n' '{"database":"ok"}' ;;
+  *) exit 22 ;;
+esac
+EOF
+chmod +x "$n_t/gbin/curl"
+c19g() { # <xdg dir>
+    DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-graf.json" XDG_DATA_HOME="$1" DOCTOR_CURL_BIN="$n_t/gbin/curl" \
+        GRAFANA_TELEGRAM_BOT_TOKEN="" GRAFANA_TELEGRAM_CHAT_ID="" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1
+}
+out="$(c19g "$n_t/xdg-none")"
+if grepq "$out" 'WARN C19-observability.*install-grafana.sh' && ! grepq "$out" 'install-stack.ps1' && ! grepq "$out" 'Telegram delivery'; then
+    pass "C19 grafana, not installed -> WARN names install-grafana.sh, no Telegram/ps1 text"
+else
+    fail "C19 grafana not installed -> $(printf '%s' "$out" | grep C19)"
+fi
+out="$(c19g "$n_t/xdg-ok")"
+if grepq "$out" 'C19-observability.*installed observability assets match' && ! grepq "$out" 'WARN C19-observability' && ! grepq "$out" 'Telegram delivery'; then
+    pass "C19 grafana, matching install under XDG_DATA_HOME -> all OK"
+else
+    fail "C19 grafana matching -> $(printf '%s' "$out" | grep C19)"
+fi
+printf 'drift\n' >> "$n_t/xdg-ok/himmel/observability/dashboards/himmel-health.json"
+out="$(c19g "$n_t/xdg-ok")"
+if grepq "$out" 'WARN C19-observability.*drift:.*dashboards/'; then pass "C19 grafana drifted dashboard -> WARN names dashboards/"; else fail "C19 grafana drift -> $(printf '%s' "$out" | grep C19)"; fi
+
 echo "== C21 record: lanes.json hermes rows match the live hermes profile default =="
 c21_rows="$(jq -r '[.lanes[] | select(.id=="hermes-oneshot" or .id=="hermes-critics") | .profileDefaultModel] | unique | join(",")' "$REPO_ROOT/scripts/lanes/lanes.json")"
 if [ "$c21_rows" = "gpt-6.1-sol" ]; then pass "C21 rows record gpt-6.1-sol"; else fail "C21 rows -> '$c21_rows'"; fi

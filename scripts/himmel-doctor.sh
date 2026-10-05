@@ -908,7 +908,7 @@ check_c19() {
     # observability-grafana, desired and not n/a), never on the OS. Unknown
     # (no node/profile/jq) stays quiet rather than WARNing on a guess.
     # Seams: DOCTOR_OBSERVABILITY_DESIRED=1|0, DOCTOR_STATUS_JSON=<file>.
-    local want="${DOCTOR_OBSERVABILITY_DESIRED:-}"
+    local want="${DOCTOR_OBSERVABILITY_DESIRED:-}" gmode="${DOCTOR_OBSERVABILITY_GRAFANA:-0}"
     if [ -z "$want" ]; then
         local sj="" node_bin=""
         if [ -n "${DOCTOR_STATUS_JSON:-}" ]; then
@@ -921,6 +921,8 @@ check_c19() {
             return
         fi
         want="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select((.id == "observability-stack" or .id == "observability-grafana") and .desired == true and .severity != "n/a")] | if length > 0 then "1" else "0" end' 2>/dev/null)" || want=""
+        # HIMMEL-4289: the opt-in Linux install (user units under XDG_DATA_HOME) has its own layout.
+        gmode="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select(.id == "observability-grafana" and .desired == true and .severity != "n/a")] | if length > 0 then "1" else "0" end' 2>/dev/null)" || gmode=0
         if [ -z "$want" ]; then
             emit INFO C19-observability "himmelctl status output unreadable -- observability not checked (cannot tell whether it is desired here)"
             return
@@ -931,8 +933,14 @@ check_c19() {
         return
     fi
 
-    local install_dir="${DOCTOR_OBSERVABILITY_INSTALL_DIR:-${LOCALAPPDATA:-${HOME:-}/AppData/Local}/himmel/observability}"
-    local source_dir="$REPO_ROOT/scripts/observability"
+    local install_dir source_dir="$REPO_ROOT/scripts/observability" fix_hint
+    if [ "$gmode" = 1 ]; then
+        install_dir="${DOCTOR_OBSERVABILITY_INSTALL_DIR:-${XDG_DATA_HOME:-${HOME:-}/.local/share}/himmel/observability}"
+        fix_hint="bash scripts/observability/install-grafana.sh install"
+    else
+        install_dir="${DOCTOR_OBSERVABILITY_INSTALL_DIR:-${LOCALAPPDATA:-${HOME:-}/AppData/Local}/himmel/observability}"
+        fix_hint="powershell -ExecutionPolicy Bypass -File scripts/observability/install-stack.ps1"
+    fi
     local drift=""
     # compared=1 only on the branch that actually ran cmp/diff (glm-2 CR
     # finding, HIMMEL-1676): cmp/diff-unavailable already emits its own INFO
@@ -943,6 +951,12 @@ check_c19() {
         drift=" stack-not-installed"
     elif ! command -v cmp >/dev/null 2>&1 || ! command -v diff >/dev/null 2>&1; then
         emit INFO C19-observability "cmp/diff unavailable — installed observability assets not compared" "install cmp + diff, then re-run"
+    elif [ "$gmode" = 1 ]; then
+        compared=1
+        # install-grafana.sh drops the Windows-only exporter stanza (the last one) when it renders prometheus.yml
+        sed -e '/^  - job_name: windows_exporter/,$d' "$source_dir/prometheus.yml" 2>/dev/null | cmp -s - "$install_dir/prometheus.yml" 2>/dev/null || drift="$drift prometheus.yml"
+        cmp -s "$source_dir/alerts.rules.yml" "$install_dir/alerts.rules.yml" 2>/dev/null || drift="$drift alerts.rules.yml"
+        diff -qr "$source_dir/dashboards" "$install_dir/dashboards" >/dev/null 2>&1 || drift="$drift dashboards/"
     else
         compared=1
         cmp -s "$source_dir/prometheus.yml" "$install_dir/prometheus.yml" 2>/dev/null || drift="$drift prometheus.yml"
@@ -950,7 +964,8 @@ check_c19() {
         diff -qr "$source_dir/provisioning" "$install_dir/grafana-provisioning" >/dev/null 2>&1 || drift="$drift provisioning/"
     fi
     if [ -n "$drift" ]; then
-        emit WARN C19-observability "observability stack stale — re-run install-stack.ps1 (drift:$drift)" "powershell -ExecutionPolicy Bypass -File scripts/observability/install-stack.ps1"
+        local stale_what="install-stack.ps1"; [ "$gmode" = 1 ] && stale_what="install-grafana.sh"
+        emit WARN C19-observability "observability stack stale — re-run $stale_what (drift:$drift)" "$fix_hint"
     elif [ "$compared" -eq 1 ]; then
         emit OK C19-observability "installed observability assets match the repo copies"
     fi
@@ -958,7 +973,9 @@ check_c19() {
     local missing=""
     [ -n "${GRAFANA_TELEGRAM_BOT_TOKEN:-}" ] || missing="$missing GRAFANA_TELEGRAM_BOT_TOKEN"
     [ -n "${GRAFANA_TELEGRAM_CHAT_ID:-}" ] || missing="$missing GRAFANA_TELEGRAM_CHAT_ID"
-    if [ -n "$missing" ]; then
+    if [ "$gmode" = 1 ]; then
+        : # alerts route to cadence-alert through the local hook, not Telegram variables
+    elif [ -n "$missing" ]; then
         emit WARN C19-observability "Grafana Telegram delivery variable(s) unset:$missing" "set the user-scoped variables, then re-run install-stack.ps1"
     else
         emit OK C19-observability "Grafana Telegram delivery variables are set"

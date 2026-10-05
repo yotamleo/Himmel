@@ -510,6 +510,17 @@
       "install": { "type": "observability", "target": "stack" },
       "removable": "full-offboard-only",
       "offboard": "advise"
+    },
+    {
+      "id": "observability-grafana",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": ["observability-stack"],
+      "probe": { "type": "observability-grafana" },
+      "install": { "type": "observability", "target": "grafana" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
     }
   ]
 }

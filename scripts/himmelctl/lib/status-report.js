@@ -498,6 +498,12 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (set "observability": {"enabled": true} in ~/.himmel/config.json, then run himmelctl ensure, to run the flow exporter as a user service)`;
       }
+      // HIMMEL-4289: observability-grafana is opt-in the same way
+      // (observability.grafana, Linux only); a clean absence is n/a, never a nag.
+      if (item.id === 'observability-grafana' && probe.cleanAbsence) {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (set "observability": {"grafana": true} in ~/.himmel/config.json, then run himmelctl ensure, to run Prometheus + Grafana as user services)`;
+      }
       // HIMMEL-2305: a cadence-off, bridge-off (or lane-not-selected) adopter
       // must not be nagged about credentials for a feature they never opted
       // into — see resolveActiveFeatures()'s own header for the shared

@@ -62,7 +62,7 @@ const RUNNABLE_INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep
 const INSTALL_TARGETS = {
   wire: ['statusline', 'pretooluse-hooks', 'guardrail-block-global'],
   build: ['jira-cli', 'bitbucket-cli'],
-  observability: ['stack'],
+  observability: ['stack', 'grafana'],
 };
 
 // adopt/setup items COLLAPSE to ONE invocation — each converges the WHOLE
@@ -248,6 +248,24 @@ function buildEntry(item, ctx, diagnosticState) {
       // operator opted in (observability.enabled in ~/.himmel/config.json) —
       // every profile desires this item, and `ensure` must never enable a
       // service unasked.
+      if (install.target === 'grafana') {
+        // HIMMEL-4289: Prometheus + Grafana as systemd user units (Linux only so
+        // far), opt-in via observability.grafana — `ensure` never downloads and
+        // starts servers unasked.
+        if (platform !== 'linux') {
+          return { unrunnable: 'the Prometheus + Grafana user units are Linux-only so far (macOS and Windows are not supported yet)' };
+        }
+        let cfg;
+        try {
+          cfg = scopeConfigPathToCtx(ctx, () => lunaConfig.load());
+        } catch (e) {
+          return { unrunnable: `cannot read ~/.himmel/config.json (${e.message}) — fix it, then re-run` };
+        }
+        if (!(cfg.observability && cfg.observability.grafana === true)) {
+          return { unrunnable: 'Prometheus + Grafana is opt-in — set "observability": {"grafana": true} in ~/.himmel/config.json, then re-run himmelctl ensure (downloads pinned Prometheus and Grafana tarballs and runs them as user services)' };
+        }
+        return { cmd: 'bash', args: [path.join(scriptsDir, 'observability', 'install-grafana.sh'), 'install'] };
+      }
       if (platform !== 'win32') {
         let cfg;
         try {
