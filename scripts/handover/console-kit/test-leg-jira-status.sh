@@ -108,6 +108,12 @@ check "7: no ticket in doc name -> no Jira call" "$(wc -c < "$STUB_LOG" | tr -d 
 LEG_JIRA_STATUS=0 STUB_STATUS="To Do" bash "$APPEND" "$d" "LIVE — y" >/dev/null 2>&1
 check "8: LEG_JIRA_STATUS=0 -> no Jira call" "$(wc -c < "$STUB_LOG" | tr -d ' ')" 0
 
+# --- 10. malformed ticket keys are refused before any Jira call ---------------
+for bad in HIMMEL-123junk HIMMEL-x-1 "HIMMEL-1 2"; do
+    run "To Do" "$bad" "In Progress"
+    check "10: '$bad' makes no Jira call" "$(wc -c < "$STUB_LOG" | tr -d ' ')" 0
+done
+
 # --- 9. opt-out holds on a direct helper call (post-merge step) ----------------
 : > "$STUB_LOG"
 LEG_JIRA_STATUS=0 STUB_STATUS="In Review" bash "$SUT" HIMMEL-9001 "In Progress" --allow-back >/dev/null 2>&1

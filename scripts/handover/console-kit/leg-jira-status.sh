@@ -46,10 +46,7 @@ warn() { echo "WARN leg-jira-status: $* (continuing; the leg is not blocked)" >&
 # ponytail: the get-then-transition pair is not atomic, so a status change landing between
 # the two can be overwritten; Jira offers no conditional transition, upgrade path = none needed
 # while a leg is the only writer of its own ticket.
-case "$KEY" in
-    [A-Za-z]*-[0-9]*) ;;
-    *) warn "'$KEY' is not a ticket key" ;;
-esac
+[[ "$KEY" =~ ^[A-Za-z][A-Za-z0-9]*-[0-9]+$ ]] || warn "'$KEY' is not a ticket key"
 
 rank() {
     case "$1" in
@@ -65,7 +62,7 @@ target_rank="$(rank "$TARGET")"
 
 CLI="${LEG_JIRA_CLI:-}"
 if [ -z "$CLI" ]; then
-    common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || warn "no repo root for $KEY"
+    common="$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || warn "no repo root for $KEY"
     CLI="$(dirname "$common")/scripts/jira/dist/index.js"
 fi
 [ -e "$CLI" ] || warn "Jira CLI '$CLI' not found for $KEY"
