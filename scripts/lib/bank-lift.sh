@@ -32,7 +32,10 @@ _bank_lift_epoch() {
   [ -n "$v" ] || return 1
   t=$(date -d "$v" +%s 2>/dev/null) && [ -n "$t" ] && { printf '%s' "$t"; return 0; }  # gnu-ok: BSD date -j fallback follows
   # BSD date: drop fractional seconds, normalise +00:00 / Z to a bare UTC stamp.
+  # A nonzero offset is not parsed (BSD date would drop it and read local time
+  # as UTC): fail toward the ceiling.
   v=$(printf '%s' "$v" | sed -e 's/\.[0-9]*//' -e 's/[+-]00:00$//' -e 's/Z$//')
+  case "$v" in *[+-][0-9][0-9]:[0-9][0-9]) return 1 ;; esac
   t=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$v" +%s 2>/dev/null) && [ -n "$t" ] && { printf '%s' "$t"; return 0; }
   return 1
 }
