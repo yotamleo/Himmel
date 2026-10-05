@@ -16,7 +16,11 @@
 # reports.
 #
 # Usage:
-#   bash scripts/preflight-adopter.sh [--strict]
+#   bash scripts/preflight-adopter.sh [--strict] [--no-vault]
+#
+#   --no-vault   skip the uv/pipx check (HIMMEL-4435): it exists for the luna
+#                vault's pre-commit install, so a vault=none profile has no use
+#                for it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,9 +29,11 @@ HIMMEL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 export HIMMEL_ROOT
 
 STRICT=0
+NO_VAULT=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --strict) STRICT=1; shift ;;
+    --no-vault) NO_VAULT=1; shift ;;
     -h|--help)
       sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'
       exit 0
@@ -47,7 +53,9 @@ echo "==> himmel adopter preflight (check-only)"
 # run so all gaps surface in one pass. adopt.sh calls these same functions, so
 # the two entry points can never drift.
 warns=0
-preflight_check_uv_pipx       || warns=$((warns + 1))
+if [ "$NO_VAULT" -eq 0 ]; then
+  preflight_check_uv_pipx     || warns=$((warns + 1))
+fi
 preflight_check_npm_invocable || warns=$((warns + 1))
 preflight_check_jira_dist     || warns=$((warns + 1))
 

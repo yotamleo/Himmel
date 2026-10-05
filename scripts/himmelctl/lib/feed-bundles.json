@@ -5,7 +5,7 @@
       "id": "search",
       "title": "Search & graph",
       "rows": [
-        "qmd-binary", "qmd-index", "qmd-cadence", "graphify", "graphify-mcp", "graphmap-cadence",
+        "qmd-binary", "qmd-index", "qmd-daemon", "qmd-cadence", "graphify", "graphify-mcp", "graphmap-cadence",
         "doctor:C33-graph-stale", "doctor:C38-uv-graphify", "doctor:C40-qmd-vec", "doctor:C44-skill-index",
         "doctor:C45-*", "doctor:C49-qmd-embed-model", "doctor:C50-qmd-fork-stamp"
       ]

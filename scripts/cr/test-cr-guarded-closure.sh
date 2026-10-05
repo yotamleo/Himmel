@@ -91,7 +91,10 @@ edges() {
     for cand in "$target" "$target.ts" "$target.js" "$target.mjs" "$target.cjs" "$target/index.js"; do
       [ -f "$ROOT/$cand" ] && { printf '%s\n' "$cand"; break; }
     done
-  done | sort -u | while IFS= read -r target; do
+  done | sort -u | grep -v '^scripts/jira/dist/' | while IFS= read -r target; do
+    # (HIMMEL-4452: scripts/jira/dist is the Jira CLI's untracked build, present
+    # only where it was built and always run from the PRIMARY checkout, never
+    # branch bytes - so the closure result must not depend on whether it exists.)
     # Drop the pinned non-executed edges (NOT_RUN below).
     grep -qxF -- "$f -> $target" <<< "$NOT_RUN" || printf '%s\n' "$target"
   done
