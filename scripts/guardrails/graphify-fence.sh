@@ -47,11 +47,20 @@
 # HIMMEL-1749 dropped the GLM/Z.ai Coding Plan, so that cell is now an
 # explicit deny and GRAPHIFY_CLIPPINGS_GLM_OK can no longer open it.)
 # This flag can't flip a hard-deny cell (salus x any cloud, gemini anywhere).
+# Persisted opt-in (HIMMEL-4185; a file, not an env var, so no per-call prefix
+# can set it):
+#   graphify.salus_ollama_cloud_ok = true in $HOME/.himmel/config.json - allow
+#                                   salus x ollama-cloud. Absent, unreadable,
+#                                   malformed or not the JSON literal true = deny.
 #
 # Backend -> provider map (backend name is lower-cased first):
-#   ollama          -> local-ollama, UNLESS OLLAMA_HOST points off-box
-#                      (not localhost/127.0.0.1/[::1], with or without port) ->
-#                      undeclared `ollama` (falls to matrix default deny)
+#   ollama          -> endpoint resolved in graphify's order (OLLAMA_BASE_URL,
+#                      then OLLAMA_HOST, then 127.0.0.1:11434) and the model
+#                      (--model, then OLLAMA_MODEL); see _ollama_provider:
+#                      loopback + local model -> local-ollama; ollama.com, or a
+#                      `-cloud`/`:cloud` model -> ollama-cloud; any other host
+#                      or an unparseable value -> ollama-unverified (HARD deny
+#                      on every corpus, before the matrix)
 #   deepseek        -> deepseek
 #   openai          -> deepseek ONLY when OPENAI_BASE_URL or DEEPSEEK_BASE_URL
 #                      points at api.deepseek.com; otherwise the undeclared
@@ -463,6 +472,16 @@ _record_backend() {
         backend_conflict=1
     fi
     backend="$1"; backend_norm="$nv"; backend_set=1
+}
+
+# _record_model <raw-value> -> same contract as _record_backend for graphify's
+# --model (HIMMEL-4185): two distinct values in one invocation are a conflict.
+_record_model() {
+    local nv; nv="$(_lc "$(_strip_wrap "$1")")"
+    if [ -n "$ollama_model_flag" ] && [ "$ollama_model_flag" != "$nv" ]; then
+        model_conflict=1
+    fi
+    ollama_model_flag="$nv"
 }
 
 # _strip_cmd <token> -> aggressive strip for COMMAND-POSITION identification:
@@ -982,16 +1001,79 @@ is_path_like() {
 # is allowed ONLY for the himmel-code corpus (defaults to local-ollama); every
 # other corpus DENIES and demands an explicit --backend. See apply_verdict.
 
-# _ollama_local -> 0 if OLLAMA_HOST is unset or points at the local box.
-_ollama_local() {
-    local h="${OLLAMA_HOST:-}"
-    [ -n "$h" ] || return 0
-    h="$(_lc "$h")"
-    h="${h#http://}"; h="${h#https://}"
-    case "$h" in
-        localhost|localhost:*|127.0.0.1|127.0.0.1:*|'[::1]'|'[::1]:'*|::1|::1:*) return 0 ;;
-        *) return 1 ;;
+# _ollama_url_host <value> <bare-ok 0|1> -> echoes the lower-cased host of an
+# ollama endpoint, or returns 1 when it cannot be parsed with confidence
+# (HIMMEL-4185, fail-closed). <bare-ok>=1 is OLLAMA_HOST's grammar as graphify
+# normalizes it: a bare port or `:port` means localhost, and a missing scheme is
+# http. OLLAMA_BASE_URL (bare-ok=0) is used by graphify VERBATIM, so it must
+# carry an http(s) scheme. Userinfo (`@`), query, fragment, whitespace and any
+# bracketed IPv6 other than [::1] are refused as unparseable.
+_ollama_url_host() {
+    local u bare="$2" hp path re
+    u="$(_lc "$1")"
+    if [ "$bare" = 1 ]; then
+        case "$u" in ''|*[!0-9]*) : ;; *) echo localhost; return 0 ;; esac
+        case "$u" in :*) case "${u#:}" in ''|*[!0-9]*) : ;; *) echo localhost; return 0 ;; esac ;; esac
+    fi
+    case "$u" in
+        http://*)  u="${u#http://}" ;;
+        https://*) u="${u#https://}" ;;
+        *://*)     return 1 ;;
+        *)         [ "$bare" = 1 ] || return 1 ;;
     esac
+    hp="${u%%/*}"
+    path="${u#"$hp"}"
+    case "$path" in *[!a-z0-9/._-]*) return 1 ;; esac
+    re='^(\[::1\]|[a-z0-9]([a-z0-9.-]*[a-z0-9])?)(:[0-9]{1,5})?$'
+    [[ "$hp" =~ $re ]] || return 1
+    if [ "${BASH_REMATCH[1]}" = "[::1]" ]; then echo "::1"; else echo "${BASH_REMATCH[1]}"; fi
+}
+
+# _ollama_provider -> local-ollama | ollama-cloud | ollama-unverified (HIMMEL-4185).
+# The endpoint is resolved in graphify's own order (llm.py
+# _resolve_ollama_base_url): OLLAMA_BASE_URL when SET (even empty - graphify
+# uses it verbatim), else a non-empty OLLAMA_HOST, else the loopback default.
+# The model is a --model flag on the graphify command (hook mode; read through
+# evaluate_invocation's ollama_model_flag by dynamic scope), else OLLAMA_MODEL.
+#   ollama.com / *.ollama.com endpoint           -> ollama-cloud
+#   loopback endpoint + a `-cloud`/`:cloud` model -> ollama-cloud (the local
+#                                                   daemon forwards it to ollama.com)
+#   loopback endpoint + any other model           -> local-ollama
+#   anything else (LAN, remote, unparseable)      -> ollama-unverified, hard
+#                                                   denied in apply_verdict
+_ollama_provider() {
+    local url bare=0 host model
+    if [ "${OLLAMA_BASE_URL+set}" = set ]; then
+        url="$OLLAMA_BASE_URL"
+    elif [ -n "${OLLAMA_HOST:-}" ]; then
+        url="$OLLAMA_HOST"; bare=1
+    else
+        url="http://127.0.0.1:11434"
+    fi
+    host="$(_ollama_url_host "$url" "$bare")" || { echo ollama-unverified; return; }
+    case "$host" in
+        ollama.com|*.ollama.com) echo ollama-cloud; return ;;
+        localhost|127.0.0.1|::1) ;;
+        *) echo ollama-unverified; return ;;
+    esac
+    model="$(_lc "${ollama_model_flag:-${OLLAMA_MODEL:-}}")"
+    case "$model" in
+        *-cloud|*:cloud) echo ollama-cloud ;;
+        *)               echo local-ollama ;;
+    esac
+}
+
+# _salus_ollama_cloud_optin -> 0 only when the PERSISTED user opt-in is set
+# (HIMMEL-4185): $HOME/.himmel/config.json parses as JSON and its
+# graphify.salus_ollama_cloud_ok is the literal `true`. Absent, unreadable,
+# malformed, or any other value is no opt-in (deny). No env override exists.
+_salus_ollama_cloud_optin() {
+    local f
+    [ -n "${HOME:-}" ] || return 1
+    f="$HOME/.himmel/config.json"
+    [ -f "$f" ] && [ -r "$f" ] || return 1
+    node -e 'let j; try { j = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(1); }
+process.exit(j && j.graphify && j.graphify.salus_ollama_cloud_ok === true ? 0 : 1);' "$f" 2>/dev/null
 }
 
 # The CLAUDE_CODE_USE_* selectors that reroute the CLI's model traffic AWAY from
@@ -1138,7 +1220,7 @@ map_provider() {
     local b="$1" hit=0
     case "$b" in
         ollama)
-            if _ollama_local; then echo local-ollama; else echo ollama; fi
+            _ollama_provider
             ;;
         deepseek)      echo deepseek ;;
         openai)
@@ -1349,6 +1431,14 @@ apply_verdict() {
         deny "claude backend points at an unverified endpoint (ANTHROPIC_BASE_URL is set to an unrecognized/unsupported value - not echoed, it may carry credentials); refusing on every corpus (fail-closed). Fix: unset ANTHROPIC_BASE_URL, or point it at https://api.anthropic.com or the ratified gateway https://api.z.ai (https only, exact host); or pick a backend that does not read it (e.g. --backend ollama for local extraction)"
     fi
 
+    # HIMMEL-4185: same reasoning as anthropic-custom above. An ollama endpoint
+    # that is neither loopback nor ollama.com (a LAN or remote host, or a value
+    # that does not parse) is not a ratified provider, and must not reach the
+    # `himmel-code x * x *` wildcard. The value is not echoed.
+    if [ "$provider" = "ollama-unverified" ]; then
+        deny "ollama endpoint is not loopback and not ollama.com, or cannot be parsed (OLLAMA_BASE_URL wins over OLLAMA_HOST, as in graphify; value not echoed); refusing on every corpus (fail-closed). Fix: unset both, or point them at http://127.0.0.1:11434"
+    fi
+
     command -v node >/dev/null 2>&1 || deny "node not found; cannot evaluate the egress matrix (fail-closed)"
 
     everr="$(mktemp 2>/dev/null || echo "")"
@@ -1392,7 +1482,13 @@ apply_verdict() {
                 # luna-clippings/zai-glm was retired here by HIMMEL-2224: that
                 # matrix cell is now an explicit deny (HIMMEL-1749 DROP), so no
                 # opt-in can reach it anymore.
-                salus/local-ollama)     optvar="GRAPHIFY_SALUS_LOCAL_OK";   optval="${GRAPHIFY_SALUS_LOCAL_OK:-}" ;;
+                salus/local-ollama)     optvar="GRAPHIFY_SALUS_LOCAL_OK=1";   optval="${GRAPHIFY_SALUS_LOCAL_OK:-}" ;;
+                # HIMMEL-4185: a PERSISTED opt-in, not a per-run env var.
+                salus/ollama-cloud)
+                    optvar="graphify.salus_ollama_cloud_ok=true in \$HOME/.himmel/config.json (persistent; absent, unreadable or malformed = deny)"
+                    optval=0
+                    if _salus_ollama_cloud_optin; then optval=1; fi
+                    ;;
                 *) deny "$corpus x $provider x extraction is conditional with no known opt-in (fail-closed)" ;;
             esac
             if [ "$optval" = "1" ]; then
@@ -1400,7 +1496,7 @@ apply_verdict() {
                     || deny "conditional requires the ledger line (ledger unwritable): $corpus x $provider"
                 return 0
             fi
-            deny "$corpus x $provider x extraction requires opt-in $optvar=1 (matrix conditional cell)"
+            deny "$corpus x $provider x extraction requires opt-in $optvar (matrix conditional cell)"
             ;;
         *)
             deny "$corpus x $provider x extraction -> $verdict (egress matrix)"
@@ -1431,6 +1527,9 @@ _deny_on_classify_sentinel() {
 # (most-restrictive-wins), applies the CWD fallback, then applies the verdict.
 evaluate_invocation() {
     local have_sub=0 subcmd="" want_backend=0 backend="" backend_norm="" backend_set=0 backend_conflict=0
+    # HIMMEL-4185: graphify's --model picks the ollama model (a `-cloud` one
+    # leaves the box); _ollama_provider reads ollama_model_flag by dynamic scope.
+    local want_model=0 ollama_model_flag="" model_conflict=0
     local unclassifiable=0 best_rank=-1 best_corpus="" best_target="" any_declared=0 marker_dirs="" any_real_root=0
     local tok st c r declared marker_dir tok_marker_dir skip_redir_target=0
 
@@ -1449,9 +1548,12 @@ evaluate_invocation() {
                 continue ;;
         esac
         if [ "$want_backend" = 1 ]; then _record_backend "$tok"; want_backend=0; continue; fi
+        if [ "$want_model" = 1 ]; then _record_model "$tok"; want_model=0; continue; fi
         case "$tok" in
             --backend)   want_backend=1; continue ;;
             --backend=*) _record_backend "${tok#--backend=}"; continue ;;
+            --model)     want_model=1; continue ;;
+            --model=*)   _record_model "${tok#--model=}"; continue ;;
         esac
         case "$tok" in
             -*) continue ;;                    # other flag
@@ -1542,6 +1644,9 @@ evaluate_invocation() {
     if [ "$backend_conflict" = 1 ]; then
         deny "conflicting --backend values in one graphify invocation (a blocked backend must stay blocked in every flag order): $CMD"
     fi
+    if [ "$model_conflict" = 1 ]; then
+        deny "conflicting --model values in one graphify invocation (a cloud model must stay classified in every flag order): $CMD"
+    fi
 
     if [ -n "$best_corpus" ]; then
         apply_verdict "$best_corpus" "$best_target" "$backend" "$any_declared" "$subcmd" "$marker_dirs" "$any_real_root"
@@ -1612,7 +1717,7 @@ classify_clause() {
         case "$s" in
             [A-Za-z_]*=*)
                 case "${s%%=*}" in
-                    ANTHROPIC_BASE_URL|CLAUDE_CODE_USE_BEDROCK|CLAUDE_CODE_USE_VERTEX|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN)
+                    ANTHROPIC_BASE_URL|CLAUDE_CODE_USE_BEDROCK|CLAUDE_CODE_USE_VERTEX|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|OLLAMA_HOST|OLLAMA_BASE_URL|OLLAMA_MODEL)
                         _GF_ENDPOINT_OVERRIDE="${s%%=*}" ;;
                 esac
                 i=$((i+1)); continue ;;                    # leading VAR=val assignment
@@ -1962,7 +2067,7 @@ classify_clause() {
                             return 0 ;;
                         [A-Za-z_]*=*)
                             case "$gf_w" in
-                                ANTHROPIC_BASE_URL=*|CLAUDE_CODE_USE_BEDROCK=*|CLAUDE_CODE_USE_VERTEX=*|ANTHROPIC_API_KEY=*|ANTHROPIC_AUTH_TOKEN=*)
+                                ANTHROPIC_BASE_URL=*|CLAUDE_CODE_USE_BEDROCK=*|CLAUDE_CODE_USE_VERTEX=*|ANTHROPIC_API_KEY=*|ANTHROPIC_AUTH_TOKEN=*|OLLAMA_HOST=*|OLLAMA_BASE_URL=*|OLLAMA_MODEL=*)
                                     _GF_ENDPOINT_OVERRIDE="${gf_w%%=*}" ;;
                             esac
                             i=$((i+1)) ;;                  # env-local assignment
@@ -2237,7 +2342,7 @@ classify_clause() {
 # dispatching instead of keeping its own copy of the matrix eval + ledger, so
 # the unattended path gets exactly the verdict an agent-typed invocation gets:
 # same provider map (endpoint-aware claude/claude-cli, reroute selectors,
-# OLLAMA_HOST), same unverified-endpoint hard deny, same matrix eval, same
+# OLLAMA_BASE_URL/OLLAMA_HOST/OLLAMA_MODEL), same unverified-endpoint hard deny, same matrix eval, same
 # conditional opt-ins, same ledger file + shape (`tool` = <tool-label>).
 #   <corpus>  the caller's ASSERTED class. It is a declaration - ledgered on
 #             every allow-family verdict (declared:true), exactly as a

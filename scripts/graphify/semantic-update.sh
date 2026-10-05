@@ -27,7 +27,11 @@
 #
 # Usage:
 #   semantic-update.sh --name N --corpus-root R --corpus-class C
-#       [--backend claude-cli] [--max-files 150] [--seed-manifest] [--dry-run]
+#       [--backend claude-cli|ollama] [--max-files 150] [--seed-manifest] [--dry-run]
+#
+# --backend ollama runs the local model (OLLAMA_MODEL, default qwen3.6:27b) at
+# --max-concurrency 1 and skips bank-preflight (no subscription draw). It
+# refuses a non-loopback or unparseable endpoint and an Ollama cloud model.
 #
 # --seed-manifest stamps the current hashes as the baseline without extracting:
 # run it once on a corpus whose graph already carries a semantic pass, or the
@@ -67,6 +71,34 @@ if [ -n "${GRAPHIFY_OUT:-}" ] && [ "$GRAPHIFY_OUT" != "graphify-out" ]; then
 fi
 OUT_DIR="$CORPUS_ROOT/graphify-out"
 MERGE=(python3 "$HERE/semantic-merge.py")
+
+# --backend ollama (HIMMEL-4185): local model, zero egress, no bank draw. This
+# script's OWN check, independent of the fence (defence in depth): the endpoint
+# graphify will reach (OLLAMA_BASE_URL verbatim when set, else OLLAMA_HOST,
+# else the loopback default - graphify's llm.py order) must be loopback, and
+# the model must not be an Ollama cloud model (`-cloud` / `:cloud`), which the
+# local daemon forwards to ollama.com.
+ollama_endpoint_is_loopback() {
+  local v re
+  if [ "${OLLAMA_BASE_URL+set}" = set ]; then
+    v="$(printf '%s' "$OLLAMA_BASE_URL" | tr '[:upper:]' '[:lower:]')"
+    re='^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?(/[a-z0-9._/-]*)?$'
+  elif [ -n "${OLLAMA_HOST:-}" ]; then
+    v="$(printf '%s' "$OLLAMA_HOST" | tr '[:upper:]' '[:lower:]')"
+    re='^((https?://)?(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?|:?[0-9]{1,5})/?$'
+  else
+    return 0
+  fi
+  [[ "$v" =~ $re ]]
+}
+if [ "$BACKEND" = "ollama" ]; then
+  export OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3.6:27b}"
+  ollama_endpoint_is_loopback \
+    || { echo "semantic-update: refusing ollama: the endpoint (OLLAMA_BASE_URL, else OLLAMA_HOST) is not loopback or does not parse -- nothing copied" >&2; exit 2; }
+  case "$(printf '%s' "$OLLAMA_MODEL" | tr '[:upper:]' '[:lower:]')" in
+    *-cloud|*:cloud) echo "semantic-update: refusing ollama: OLLAMA_MODEL '$OLLAMA_MODEL' is an Ollama cloud model -- nothing copied" >&2; exit 2 ;;
+  esac
+fi
 
 # Egress first, before any copy or bank call (HIMMEL-1084 direct-eval contract:
 # the same verdict, provider map and ledger an agent-typed graphify gets; the
@@ -171,8 +203,11 @@ PY
   [ ! -f "$CORPUS_ROOT/.graphifyignore" ] || cp "$CORPUS_ROOT/.graphifyignore" "$SCRATCH/"
   [ ! -d "$OUT_DIR/cache/semantic" ] || cp -R "$OUT_DIR/cache/semantic" "$SCRATCH/graphify-out/cache/semantic"
   printf '%s\n' "$CORPUS_CLASS" > "$SCRATCH/.graphify-corpus"
+  EXTRA=()
+  # One request at a time: the local model holds the whole GPU.
+  if [ "$BACKEND" = "ollama" ]; then EXTRA=(--max-concurrency 1); fi
   set +e
-  graphify extract "$SCRATCH" --backend "$BACKEND" --no-cluster > "$WORK/extract.log" 2>&1
+  graphify extract "$SCRATCH" --backend "$BACKEND" ${EXTRA[@]+"${EXTRA[@]}"} --no-cluster > "$WORK/extract.log" 2>&1
   rc=$?
   set -e
   cat "$WORK/extract.log" >&2

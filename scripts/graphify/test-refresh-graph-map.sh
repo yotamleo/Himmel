@@ -26,6 +26,9 @@ export GRAPHIFY_LEDGER="$WS/graphify-egress.jsonl"
 # may itself be routed through an Anthropic-compatible proxy. Endpoint-specific
 # tests below set ANTHROPIC_BASE_URL explicitly.
 unset ANTHROPIC_BASE_URL
+# Same for ollama (HIMMEL-4185): the fence classifies the endpoint + model from
+# these, so an operator's ambient values must not leak into the T44c pins.
+unset OLLAMA_HOST OLLAMA_BASE_URL OLLAMA_MODEL
 HERMETIC_HOME="$WS/hermetic-home"; mkdir -p "$HERMETIC_HOME/.claude"
 printf 'test-subscription-auth\n' > "$HERMETIC_HOME/.claude/.credentials.json"
 printf '{}\n' > "$HERMETIC_HOME/.claude/settings.json"
@@ -3238,6 +3241,62 @@ out=$( HOME="$SALHOME" GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" \
 [ "$rc" -eq 0 ] && [ -f "$UNKNOWNNOUPDATEMAPS/unknown-no-update-map.md" ] \
   && pass "T44b unknown backend is unaffected on --no-update publish-only path" \
   || fail "T44b unknown backend --no-update should publish normally (rc=$rc): $out"
+
+# --- T44c (HIMMEL-1789 / HIMMEL-4185): the scheduled preflight classifies
+# --backend ollama through the fence (:374 --eval), never a private carve-out.
+# A loopback endpoint + plain model is local-ollama and runs; a remote endpoint
+# (LAN host, remote OLLAMA_BASE_URL even with a loopback OLLAMA_HOST) fails
+# closed before graphify; a -cloud model is classified ollama-cloud (ledgered,
+# allowed on luna per the matrix); salus stays refused on this path even with
+# the persisted ollama-cloud opt-in. T44a above keeps unknown backends closed.
+OLCORPUS="$WS/ollama-corpus"; mkdir -p "$OLCORPUS"; printf 'ordinary note\n' > "$OLCORPUS/note.md"
+OLHOME="$WS/ollama-home"; mkdir -p "$OLHOME/.himmel"
+printf '{"graphify":{"salus_ollama_cloud_ok":true}}\n' > "$OLHOME/.himmel/config.json"
+_ol_run() { # <tag> [VAR=val...] -> sets out rc; calls log $WS/ol-<tag>.calls, ledger $WS/ol-<tag>.ledger
+  local tag="$1"; shift
+  mkdir -p "$WS/ol-$tag-maps"; : > "$WS/ol-$tag.calls"; : > "$WS/ol-$tag.ledger"
+  out=$( env HOME="$OLHOME" GRAPHIFY_LEDGER="$WS/ol-$tag.ledger" GRAPHIFY_CALL_LOG="$WS/ol-$tag.calls" \
+    GRAPHIFY_MAP_BIN="$BIN/graphify" "$@" bash "$SCRIPT" \
+    --name "ol-$tag" --corpus-root "${OL_ROOT:-$OLCORPUS}" --corpus-class "${OL_CLASS:-luna-personal}" --backend ollama \
+    --maps-dir "$WS/ol-$tag-maps" --title Ollama --slug "ol-$tag-map" 2>&1 ); rc=$?
+}
+_ol_run local OLLAMA_MODEL=qwen3.6:27b
+if [ "$rc" -eq 0 ] && [ -s "$WS/ol-local.calls" ] && grep -qF '"provider":"local-ollama"' "$WS/ol-local.ledger"; then
+  pass "T44c local ollama (default loopback endpoint, plain model) passes the scheduled preflight as local-ollama"
+else
+  fail "T44c local ollama should run as local-ollama (rc=$rc): $out ledger=$(cat "$WS/ol-local.ledger")"
+fi
+_ol_run lan OLLAMA_HOST=http://192.0.2.5:11434
+if [ "$rc" -eq 2 ] && grep -qF 'egress preflight refused' <<< "$out" && [ ! -s "$WS/ol-lan.calls" ]; then
+  pass "T44d remote OLLAMA_HOST fails closed before graphify"
+else
+  fail "T44d remote OLLAMA_HOST must be refused rc=2 before graphify (rc=$rc): $out calls=$(cat "$WS/ol-lan.calls")"
+fi
+_ol_run base OLLAMA_BASE_URL=http://198.51.100.7:11434/v1 OLLAMA_HOST=127.0.0.1
+if [ "$rc" -eq 2 ] && grep -qF 'egress preflight refused' <<< "$out" && [ ! -s "$WS/ol-base.calls" ]; then
+  pass "T44e remote OLLAMA_BASE_URL is not local even with a loopback OLLAMA_HOST"
+else
+  fail "T44e remote OLLAMA_BASE_URL must be refused rc=2 (rc=$rc): $out calls=$(cat "$WS/ol-base.calls")"
+fi
+_ol_run cloud OLLAMA_MODEL=qwen3-coder:480b-cloud
+if [ "$rc" -eq 0 ] && grep -qF '"provider":"ollama-cloud"' "$WS/ol-cloud.ledger" \
+   && ! grep -qF '"provider":"local-ollama"' "$WS/ol-cloud.ledger"; then
+  pass "T44f a -cloud model is classified ollama-cloud (not local-ollama) on the scheduled path"
+else
+  fail "T44f -cloud model must ledger as ollama-cloud (rc=$rc): $out ledger=$(cat "$WS/ol-cloud.ledger")"
+fi
+OL_ROOT="$SALCORPUS" _ol_run salus OLLAMA_MODEL=qwen3.6:27b
+if [ "$rc" -eq 2 ] && grep -q "SALUS by path" <<< "$out" && [ ! -s "$WS/ol-salus.calls" ]; then
+  pass "T44g salus corpus refused for --backend ollama on the scheduled path (opt-in file present)"
+else
+  fail "T44g salus x ollama must stay refused on the scheduled path (rc=$rc): $out"
+fi
+OL_CLASS=salus _ol_run salclass OLLAMA_MODEL=qwen3-coder:480b-cloud HOME="$SALHOME"
+if [ "$rc" -eq 2 ] && grep -qF 'salus_ollama_cloud_ok' <<< "$out" && [ ! -s "$WS/ol-salclass.calls" ]; then
+  pass "T44h asserted --corpus-class salus x ollama-cloud without the persisted opt-in is refused before graphify"
+else
+  fail "T44h salus x ollama-cloud without opt-in must be refused rc=2 (rc=$rc): $out"
+fi
 
 # --- T45 (HIMMEL-1902): artifact-level proof for the billed-retry fix. Run a
 # one-file corpus through a stub graphify whose update call shells a stub

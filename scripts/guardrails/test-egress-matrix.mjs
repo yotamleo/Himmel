@@ -86,6 +86,13 @@ for (const p of providers) {
     const { effective, rule } = evaluate("salus", p, u);
     if (p === "local-ollama") {
       assert(effective === "conditional", `salus x ${p} x ${u} must be conditional (per-run opt-in), got ${effective}`);
+    } else if (p === "ollama-cloud" && u === "extraction") {
+      // HIMMEL-4185: salus x ollama-cloud x extraction opens ONLY under the
+      // persisted user opt-in, via its OWN non-hard conditional row. Every
+      // other purpose stays on the salus wildcard hard deny (next branch).
+      assert(effective === "conditional" && rule && rule.provider === "ollama-cloud" &&
+        rule.corpus === "salus" && rule.hard === undefined,
+        `salus x ${p} x ${u} must be conditional via its OWN ollama-cloud row (persisted opt-in, HIMMEL-4185), got ${effective}`);
     } else if (p === "openrouter") {
       assert(effective === "deny", `salus x ${p} x ${u} must stay deny by default (configurable ≠ open), got ${effective}`);
       assert(rule && rule.provider === "openrouter" && rule.hard === undefined,
@@ -368,6 +375,22 @@ for (const u of purposes) {
   assert(effective === "deny" && rule && rule.corpus === "salus" &&
          rule.provider === "builder-io" && rule.hard === true,
     `salus x builder-io x ${u} must deny via its OWN hard builder-io row (HIMMEL-4328)`);
+}
+
+// HIMMEL-4185: ollama-cloud (a `-cloud` ollama model, or an ollama.com
+// endpoint) is a declared provider. Extraction is allowed on every corpus but
+// salus (persisted opt-in, pinned in invariant 3) and voice-audio (hard deny,
+// pinned in 3b); every other purpose stays default-deny outside himmel-code.
+assert(providers.includes("ollama-cloud"), "ollama-cloud provider must be declared (HIMMEL-4185)");
+for (const c of ["himmel-code", "luna-personal", "luna-clippings", "handover-state"]) {
+  assert(evaluate(c, "ollama-cloud", "extraction").effective === "allow",
+    `${c} x ollama-cloud x extraction must be allow (HIMMEL-4185)`);
+}
+for (const c of ["luna-personal", "luna-clippings", "handover-state"]) {
+  for (const u of purposes.filter(x => x !== "extraction")) {
+    assert(evaluate(c, "ollama-cloud", u).effective === "deny",
+      `${c} x ollama-cloud x ${u} must deny (the ollama-cloud allow is extraction-only)`);
+  }
 }
 
 if (failures > 0) {

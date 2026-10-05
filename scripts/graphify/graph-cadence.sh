@@ -146,7 +146,15 @@
 #   merged    -- the full pipeline landed: refreshed, published, merged.
 #
 # Usage:
-#   graph-cadence.sh [--threshold N] [--corpus-root <path>]
+#   graph-cadence.sh [--threshold N] [--corpus-root <path>] [--semantic]
+#
+# --semantic (HIMMEL-4185, OFF by default): after the structural refresh, run
+# semantic-update.sh on the dedicated worktree with the LOCAL ollama backend
+# (zero egress, no bank draw). Under it the per-run `git clean` keeps
+# graphify-out/, so the semantic manifest (the change gate) persists between
+# fires. A failure alerts through scripts/luna/cadence-alert.sh (HIMMEL-4181,
+# leg graph-semantic-<corpus-slug>) and fails the run (rc 3); a success clears
+# that leg's alert. Without the flag nothing changes for an armed cadence.
 #
 # THRESHOLD DEFAULT = 15 commits behind. Justified against the measured
 # numbers (HIMMEL-2095 brief): the shipped graph was 36 commits behind
@@ -169,6 +177,7 @@
 #   GRAPH_CADENCE_AST_UPDATE      override the ast-update.sh path.
 #   GRAPH_CADENCE_GRAPH_PUBLISH   override the graph-publish.sh path.
 #   GRAPH_CADENCE_MERGE_ON_GREEN  override the merge-on-green.sh path.
+#   GRAPH_CADENCE_SEMANTIC_UPDATE override the semantic-update.sh path.
 #   GRAPH_CADENCE_LEDGER_ROOT     override the handover-root resolution
 #                                 entirely (bypasses handover_root_ensure AND
 #                                 the HANDOVER_DIR-unset refusal below).
@@ -221,7 +230,7 @@ export PATH
 
 usage() {
     cat <<'EOF'
-usage: graph-cadence.sh [--threshold N] [--corpus-root <path>]
+usage: graph-cadence.sh [--threshold N] [--corpus-root <path>] [--semantic]
 
 Refresh + publish himmel's graphify graph on a cadence: measures how many
 commits origin/main is ahead of the shipped graph.json's built_at_commit,
@@ -242,11 +251,14 @@ Optional:
                        corpus. himmel is the only corpus wired for v1; a real
                        second corpus needs this flag made genuinely end-to-end
                        first (see docs).
+  --semantic          Also run the incremental semantic step (local ollama)
+                       after the structural refresh. OFF by default.
 EOF
 }
 
 THRESHOLD=15
 CORPUS_ROOT_OVERRIDE=""
+SEMANTIC=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --threshold)
@@ -257,6 +269,7 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "ERR graph-cadence: --corpus-root requires a value" >&2; exit 1; }
             CORPUS_ROOT_OVERRIDE="$2"; shift 2 ;;
         --corpus-root=*) CORPUS_ROOT_OVERRIDE="${1#--corpus-root=}"; shift ;;
+        --semantic) SEMANTIC=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "ERR graph-cadence: unknown arg: $1" >&2; usage >&2; exit 1 ;;
     esac
@@ -328,6 +341,8 @@ fi
 AST_UPDATE="${GRAPH_CADENCE_AST_UPDATE:-$SCRIPT_DIR/ast-update.sh}"
 GRAPH_PUBLISH="${GRAPH_CADENCE_GRAPH_PUBLISH:-$SCRIPT_DIR/graph-publish.sh}"
 MERGE_ON_GREEN="${GRAPH_CADENCE_MERGE_ON_GREEN:-$REPO_ROOT/scripts/handover/merge-on-green.sh}"
+SEMANTIC_UPDATE="${GRAPH_CADENCE_SEMANTIC_UPDATE:-$SCRIPT_DIR/semantic-update.sh}"
+CADENCE_ALERT="$REPO_ROOT/scripts/luna/cadence-alert.sh"
 for _f in "$AST_UPDATE" "$GRAPH_PUBLISH" "$MERGE_ON_GREEN"; do
     [ -f "$_f" ] || { echo "ERR graph-cadence: required script missing: $_f" >&2; exit 2; }
 done
@@ -876,7 +891,11 @@ fi
 if ! git -C "$WORKTREE_DIR" reset --hard origin/main >/dev/null 2>&1; then
     _fail "could not reset dedicated worktree $WORKTREE_DIR to origin/main (git reset --hard failed) -- refusing to refresh/publish from a tree that is not provably the clean origin/main snapshot"
 fi
-if ! git -C "$WORKTREE_DIR" clean -fdx >/dev/null 2>&1; then
+# --semantic keeps graphify-out/ (untracked since HIMMEL-2705): it holds the
+# semantic manifest + merged graph the next incremental pass builds on.
+_clean_keep=()
+[ "$SEMANTIC" -eq 1 ] && _clean_keep=(-e /graphify-out/)
+if ! git -C "$WORKTREE_DIR" clean -fdx ${_clean_keep[@]+"${_clean_keep[@]}"} >/dev/null 2>&1; then
     _fail "could not clean dedicated worktree $WORKTREE_DIR (git clean -fdx failed) -- refusing to refresh/publish from a tree that may carry leftover untracked files from a prior run"
 fi
 # (Re-)stamp the ownership marker AFTER the sync succeeds, so the NEXT run's
@@ -900,6 +919,20 @@ if [ "$_ast_rc" -ne 0 ]; then
     _fail "ast-update.sh exited $_ast_rc: $(printf '%s' "$_ast_out" | tail -n 3 | tr '\n' ' ')"
 fi
 ACTION="refreshed"
+
+# --- 6 (cont). semantic step (HIMMEL-4185, --semantic only) -----------------
+if [ "$SEMANTIC" -eq 1 ]; then
+    _sem_leg="graph-semantic-$CORPUS_SLUG"
+    _sem_out=$(bash "$SEMANTIC_UPDATE" --name "$CORPUS_SLUG" --corpus-root "$WORKTREE_DIR" \
+        --corpus-class himmel-code --backend ollama 2>&1)
+    _sem_rc=$?
+    printf '%s\n' "$_sem_out"
+    if [ "$_sem_rc" -ne 0 ]; then
+        bash "$CADENCE_ALERT" fail "$_sem_leg" "semantic-update-rc-$_sem_rc" "$LOG_FILE"
+        _fail "semantic-update.sh exited $_sem_rc: $(printf '%s' "$_sem_out" | tail -n 3 | tr '\n' ' ')"
+    fi
+    bash "$CADENCE_ALERT" clear "$_sem_leg"
+fi
 
 # --- 6a. retired publish/merge legs: clean no-op, not a skip ----------------
 # PUBLISH_POSSIBLE=0 (see step 2/PUBLISH_POSSIBLE above) means origin/main
