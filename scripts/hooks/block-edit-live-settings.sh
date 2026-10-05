@@ -2343,7 +2343,9 @@ _dc_data_bodies() {
     # named again (`> /tmp/x.sh` … `/tmp/x.sh`, `chmod +x x.sh; ./x.sh`)
     u='(^|[^-a-z0-9_.])(bash|sh|zsh|dash|ksh|mksh|ash|fish|python[0-9.]*|node|nodejs|perl|ruby|php|deno|bun|lua|tclsh|osascript)([^-a-z0-9_]|$)'
     [[ ! $out =~ $u ]] || return 1
-    u=" ${out//[^a-z0-9_.+-]/ } "
+    # each separator becomes two spaces, so a match consumes only its own
+    # and adjacent names (`>x.sh;x.sh`) both count
+    u="  ${out//[^a-z0-9_.+-]/  }  "
     read -r -a tw <<< "$tg"
     for t in ${tw[@]+"${tw[@]}"}; do
         t=${t//[^a-z0-9_.+-]/ }

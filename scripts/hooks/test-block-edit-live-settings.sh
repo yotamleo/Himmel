@@ -2963,6 +2963,7 @@ declare PA$'T'H=/tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nE
 printf -v PA$'T'H /tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
 declare -n p=PA$'T'H; p=/tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
 read -r PA$'T'H <<<"/tmp"; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+cat <<'EOF' >/tmp/bin/x.sh;x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
 ROWS
 # 930-937: controls from the nested worktree — data, a non-.claude glob
 # target or cd, and a read stay allowed.
