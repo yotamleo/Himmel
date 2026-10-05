@@ -144,6 +144,49 @@ expect 2 "dangling-symlink egress-denylist -> denied (fail closed)" \
     "$(payload "$TOOL" "$HIMMEL" "make a landing page")"
 rm -f "$HOME/.config/claude-glm/egress-denylist"
 
+# --- performance: decide well inside the 15 s harness timeout (J1878) --------
+# The harness kills a hook at its timeout and ALLOWS the call, so a slow hook
+# fails open. Timings via date +%s%N, falling back to SECONDS where %N is
+# unsupported (BSD date).
+now_ms() {
+    local n
+    n=$(date +%s%N 2>/dev/null)
+    case "$n" in ""|*[!0-9]*) echo $((SECONDS * 1000)) ;; *) echo $((n / 1000000)) ;; esac
+}
+# expect_fast <rc> <max-ms> <label> <payload-file>
+expect_fast() {
+    local want="$1" max_ms="$2" label="$3" file="$4" rc a b ms
+    a=$(now_ms)
+    if command -v timeout >/dev/null 2>&1; then
+        timeout $((max_ms / 1000 + 10)) bash "$SCRIPT" < "$file" >/dev/null 2>"$TMP/err"
+    else
+        bash "$SCRIPT" < "$file" >/dev/null 2>"$TMP/err"
+    fi
+    rc=$?
+    b=$(now_ms)
+    ms=$((b - a))
+    echo "timing: $label: rc=$rc in ${ms}ms"
+    if [ "$rc" = "$want" ] && [ "$ms" -lt "$max_ms" ]; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1))
+        echo "FAIL: $label (want rc=$want under ${max_ms}ms, got rc=$rc in ${ms}ms): $(cat "$TMP/err")"
+    fi
+}
+printf '%s\n' "$PHI_ROOT" > "$HOME/.config/claude-glm/phi-roots"
+i=0
+dense=""
+while [ "$i" -lt 15000 ]; do dense="${dense}a/"; i=$((i + 1)); done
+printf '%s' "$dense" | jq -Rsc --arg t "$TOOL" --arg c "$PHI_ROOT" \
+    '{hook_event_name:"PreToolUse",cwd:$c,tool_name:$t,tool_input:{prompt:.}}' > "$TMP/dense.json"
+expect_fast 2 2000 "30 KB dense a/ payload, cwd under a phi-roots root -> denied in under 2 s" "$TMP/dense.json"
+# s/S are stripped so random bytes can never spell "salus" (signal 1) and
+# short-circuit the row before the budget is what decides it.
+head -c 1150000 /dev/urandom | base64 | tr -d '\nsS' | jq -Rsc --arg t "$TOOL" --arg c "$HIMMEL" \
+    '{hook_event_name:"PreToolUse",cwd:$c,tool_name:$t,tool_input:{prompt:.}}' > "$TMP/b64.json"
+expect_fast 2 5000 "1.5 MB base64 payload, himmel cwd -> denied (over the payload byte budget) in under 5 s" "$TMP/b64.json"
+rm -f "$HOME/.config/claude-glm/phi-roots"
+
 # --- tool-name scope ----------------------------------------------------------
 expect 2 "directly-registered agent-native server, salus cwd -> denied" \
     "$(payload 'mcp__agent-native-dispatch__generate' "$SALUS" "hello")"

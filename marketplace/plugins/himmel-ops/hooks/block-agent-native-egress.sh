@@ -46,8 +46,15 @@
 # No env var is consulted for the verdict. GIT_DIR / GIT_WORK_TREE /
 # GIT_COMMON_DIR are unset so an inherited value cannot redirect the git probes.
 #
-# Fail closed (security fence): jq missing or malformed JSON that names
-# agent-native denies, git missing denies, an unreadable list denies.
+# Fail closed (security fence) for everything this script decides: jq missing
+# or malformed JSON that names agent-native denies, git missing denies, an
+# unreadable list denies, and a payload too big to inspect inside the 15 s
+# hook timeout denies (a timed-out hook is ALLOWED by the harness).
+# ponytail: the launcher is NOT fail-closed. hooks.json runs this through
+# run-node.sh, and when run-node.sh finds no node it logs one breadcrumb to
+# himmel-node.log and exits 0 (deliberately fail-open, harness-wide, for
+# every plugin hook), so this hook never runs and the call is allowed.
+# Upgrade path: HIMMEL-4463.
 # No bypass: the matrix cell is hard. To run this design work, use the local
 # design skills, which keep content on the machine.
 #
@@ -139,48 +146,10 @@ if [ -n "$common" ]; then
     _salus_marked "${common%/}/.." && deny "a .salus marker covers the session repo ($common)"
 fi
 
-# Path-like payload tokens (anything with a "/"), resolved against the cwd,
-# walked up to their deepest existing directory and canonicalized, so a
-# symlink alias into a PHI root (or a salus tree) is seen by its real path.
-# More than path_cap path-like tokens fails closed: past the cap not every
-# path could be inspected.
-# ponytail: tokens are split on whitespace only, so a path containing spaces
-# or glued inside a word is not resolved. Upgrade path: HIMMEL-4463
-# (content classifier).
-path_cap=256
-payload_dirs=""
-payload_text=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | strings] | join("\n")' 2>/dev/null) || payload_text=""
-n=0
-set -f
-for tok in $payload_text; do
-    case "$tok" in */*) ;; *) continue ;; esac
-    n=$((n + 1))
-    [ "$n" -le "$path_cap" ] || deny "the tool payload has more than $path_cap path-like tokens; cannot inspect all"
-    while :; do
-        case "$tok" in \"*|\'*|\`*|\(*|\<*|\[*) tok="${tok#?}" ;; *) break ;; esac
-    done
-    while :; do
-        case "$tok" in *\"|*\'|*\`|*\)|*\>|*\]|*,|*.|*\;|*:) tok="${tok%?}" ;; *) break ;; esac
-    done
-    case "$tok" in
-        \~/*) p="${HOME:-}/${tok#\~/}" ;;
-        /*) p="$tok" ;;
-        *) p="$cwd/$tok" ;;
-    esac
-    while [ -n "$p" ] && [ ! -d "$p" ]; do
-        case "$p" in */*) p="${p%/*}" ;; *) p="" ;; esac
-    done
-    [ -n "$p" ] || continue
-    d=$(_canon "$p")
-    [ -n "$d" ] || continue
-    d_lc=$(_lc "$d")
-    case "$d_lc" in *salus*) deny "the tool payload path $tok resolves to a salus path ($d)" ;; esac
-    payload_dirs="$payload_dirs$d_lc
-"
-done
-set +f
-
-# 5. phi-roots / egress-denylist roots
+# 5a. phi-roots / egress-denylist roots: read the lists and run the token-free
+# checks (cwd and payload text against each root) BEFORE any per-token work,
+# so these denials cost the same whatever the payload size (J1878).
+phi_roots=""   # newline-separated lowercase roots, raw and canonical forms
 if [ -n "${HOME:-}" ]; then
     for name in phi-roots egress-denylist; do
         list="$HOME/.config/claude-glm/$name"
@@ -207,14 +176,90 @@ if [ -n "${HOME:-}" ]; then
                     case "$c/" in "$r_lc/"*) deny "the session cwd is under the PHI root $root ($name)" ;; esac
                 done
                 case "$args_lc" in *"$r_lc"*) deny "the tool payload names the PHI root $root ($name)" ;; esac
-                case "
-$payload_dirs" in *"
-$r_lc
-"*|*"
-$r_lc/"*) deny "a tool payload path resolves under the PHI root $root ($name)" ;; esac
+                phi_roots="$phi_roots$r_lc
+"
             done
         done <<< "$roots"
     done
 fi
+
+# 5b. Path-like payload tokens (anything with a "/"), resolved against the
+# cwd, cut to their deepest existing directory and canonicalized, so a
+# symlink alias into a PHI root (or a salus tree) is seen by its real path.
+# Bounded so the hook always decides well inside its 15 s harness timeout (a
+# timed-out hook is ALLOWED by the harness, i.e. fails open):
+#   - payload text over payload_budget bytes: deny (cannot inspect it all);
+#   - more than path_cap path-like tokens: deny;
+#   - a token over token_max bytes (PATH_MAX) is no usable path: skipped;
+#   - a walk over walk_cap path components: deny;
+#   - at most strip_cap quote/bracket/punctuation characters are stripped
+#     from each end of a token.
+# The walk goes FORWARD from / and stops at the first missing component, so
+# it costs the existing depth, not the token length.
+# ponytail: tokens are split on whitespace only, so a path containing spaces,
+# glued inside a word, or wrapped in more than strip_cap punctuation
+# characters is not resolved. Upgrade path: HIMMEL-4463 (content classifier).
+payload_budget=262144
+path_cap=256
+token_max=4096
+walk_cap=128
+strip_cap=8
+
+# Deepest existing directory on absolute path $1. Returns 2 past walk_cap.
+_deepest_dir() {
+    local rest="${1#/}" acc="/" comp k=0
+    while [ -n "$rest" ]; do
+        k=$((k + 1))
+        [ "$k" -le "$walk_cap" ] || return 2
+        case "$rest" in
+            */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
+            *) comp="$rest"; rest="" ;;
+        esac
+        [ -n "$comp" ] || continue
+        if [ -d "${acc%/}/$comp" ]; then acc="${acc%/}/$comp"; else break; fi
+    done
+    printf '%s' "$acc"
+}
+
+payload_text=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | strings] | join("\n")' 2>/dev/null) || payload_text=""
+payload_bytes=$(printf '%s' "$payload_text" | wc -c | tr -d ' ')
+[ "${payload_bytes:-0}" -le "$payload_budget" ] \
+    || deny "the tool payload is $payload_bytes bytes, over the $payload_budget-byte inspection budget; cannot inspect all of it"
+n=0
+set -f
+for tok in $payload_text; do
+    case "$tok" in */*) ;; *) continue ;; esac
+    n=$((n + 1))
+    [ "$n" -le "$path_cap" ] || deny "the tool payload has more than $path_cap path-like tokens; cannot inspect all"
+    [ "${#tok}" -le "$token_max" ] || continue
+    # Strip at most strip_cap wrapping characters per side: each strip copies
+    # the token, so an unbounded loop is quadratic on a punctuation run.
+    k=0
+    while [ "$k" -lt "$strip_cap" ]; do
+        case "$tok" in \"*|\'*|\`*|\(*|\<*|\[*) tok="${tok#?}" ;; *) break ;; esac
+        k=$((k + 1))
+    done
+    k=0
+    while [ "$k" -lt "$strip_cap" ]; do
+        case "$tok" in *\"|*\'|*\`|*\)|*\>|*\]|*,|*.|*\;|*:) tok="${tok%?}" ;; *) break ;; esac
+        k=$((k + 1))
+    done
+    case "$tok" in
+        \~/*) p="${HOME:-}/${tok#\~/}" ;;
+        /*) p="$tok" ;;
+        *) p="$cwd/$tok" ;;
+    esac
+    case "$p" in /*) ;; *) continue ;; esac
+    p=$(_deepest_dir "$p") || deny "a tool payload path has more than $walk_cap components; cannot inspect it"
+    d=$(_canon "$p")
+    [ -n "$d" ] || continue
+    d_lc=$(_lc "$d")
+    case "$d_lc" in *salus*) deny "the tool payload path $tok resolves to a salus path ($d)" ;; esac
+    while IFS= read -r r; do
+        [ -n "$r" ] || continue
+        case "$d_lc/" in "$r/"*) deny "the tool payload path $tok resolves under the PHI root $r" ;; esac
+    done <<< "$phi_roots"
+done
+set +f
 
 exit 0
