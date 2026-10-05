@@ -20,7 +20,7 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL: jq required" >&2; exit 1; }
 node_bin=$(command -v node)
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
-work=$(mktemp -d) || exit 1
+work=$(mktemp -d "${TMPDIR:-/tmp}/qmd-daemon-test.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT
 
 # Stub curl: answers by QD_MODE, mirrors the real `-w %{http_code}` framing.
@@ -65,8 +65,8 @@ for (const id of ['qmd-binary', 'qmd-index', 'qmd-daemon']) {
   const it = m.items.find((i) => i.id === id);
   console.log(id, it ? JSON.stringify(it.profiles) : 'MISSING');
 }")
-echo "$want" | grep -q '^qmd-daemon \["luna","all"\]$' || fail "qmd-daemon profiles must equal qmd-index's [luna,all] so desired=false under core (got: $want)"
-echo "$want" | grep -q '^qmd-daemon' && echo "ok: qmd-daemon not wanted outside luna/all"
+grep -q '^qmd-daemon \["luna","all"\]$' <<< "$want" || fail "qmd-daemon profiles must equal qmd-index's [luna,all] so desired=false under core (got: $want)"
+echo "ok: qmd-daemon not wanted outside luna/all"
 
 node "$repo_root/scripts/install/manifest-lint.mjs" "$manifest_path" >/dev/null || fail "manifest-lint rejects the manifest"
 echo "ok: manifest-lint passes"
