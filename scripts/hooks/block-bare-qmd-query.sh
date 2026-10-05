@@ -715,7 +715,9 @@ qmd_nested() {
     # after it and the pipe still feeds it. HIMMEL-4337: pp is set while the
     # next word is in program position; ro while the next word is a `>`
     # target and te in a tee's words, both recorded in wr for _ran_written.
-    local lb=-1 pipe='' pfrom=-1 fs='' fb='' fr pc=0 pp=1 ro=0 te=0 tw ws
+    # ri is set while the next word is a `<` target; sw is lb when the
+    # current stage reads a written file on stdin (`< f sh`).
+    local lb=-1 pipe='' pfrom=-1 fs='' fb='' fr pc=0 pp=1 ro=0 te=0 tw ws ri=0 sw='' so sr
     local sk='' se=0 sf=0 nk='' nr=0 pk=-1 e0 nw enc fo ia ct sj tk hx hs tx sd x
     while [ "$i" -lt "$n" ]; do
         c=${w:i:1}
@@ -748,7 +750,10 @@ qmd_nested() {
                         lb=$i pp=1 te=0 ro=0
                         ;;
                     '>') ro=1 pc=0 ;;
-                    '<') ro=0 pc=0 ;;
+                    '<')
+                        ro=0 pc=0 ri=0
+                        if [ "$k" != '<' ] && [ "${w:i+1:1}" != '<' ]; then ri=1; fi
+                        ;;
                     '('|')'|'`')
                         pc=0 te=0 ro=0
                         # A backtick as a piped stage's program runs its output.
@@ -797,6 +802,10 @@ qmd_nested() {
         elif [ "$te" = 1 ]; then
             case "$tw" in -*) ;; *) _wr_add "$tw" ;; esac
         fi
+        if [ "$ri" = 1 ]; then
+            ri=0
+            case "$wr" in *" ${tw#./} "*) sw=$lb ;; esac
+        fi
         t=${t#=}
         t=${t##*/}
         [ "$t" != tee ] || te=1
@@ -826,6 +835,10 @@ qmd_nested() {
         nest_mode "$t" || continue
         pp=0
         piped=$pipe nw=${t%.exe} e0=$i enc=0 fo=0 ia=0 ct='' sj='' tk=0 hx=0 hs=0 tx=0
+        # so: the program comes from an operand, code string or hand-back;
+        # sr: stdin is a written file or a here-string.
+        so=0 sr=0
+        [ "$sw" != "$lb" ] || sr=1
         # screen and rem only peek at their words (the walk below resumes
         # after the launcher word itself); one inside a span an earlier one
         # peeked at was read with it, so the scan stays linear.
@@ -894,6 +907,11 @@ qmd_nested() {
             if [ "$rd" = 1 ]; then
                 rd=0
                 [[ $rdop != *'>'* ]] || _wr_add "$t"
+                if [ "$rdop" = '<<<' ]; then
+                    sr=1
+                elif [ "$rdop" = '<' ]; then
+                    case "$wr" in *" ${t#./} "*) sr=1 ;; esac
+                fi
                 if [ "$rdop" = '<<<' ] && { [ "$mode" = sh ] || [ "$mode" = src ]; }; then
                     # A here-string is what a shell reading stdin runs.
                     qmd_check "$v" $((depth + 1))
@@ -955,7 +973,7 @@ qmd_nested() {
                 # HIMMEL-4305: pwsh -EncodedCommand's base64 of UTF-16LE text,
                 # decoded from the case-preserving bytes; a failed decode, or
                 # no base64 to decode it with, fails closed.
-                enc=2
+                enc=2 so=1
                 if ! command -v base64 >/dev/null 2>&1 ||
                     ! x=$(printf '%s' "$v" | base64 -d 2>/dev/null | LC_ALL=C tr -d '\000') ||
                     [ -z "$x" ] || names_verb "$x"; then
@@ -970,7 +988,7 @@ qmd_nested() {
                 # --print, php's -r, deno eval — is no shell: refuse one
                 # naming a verb (so is any option word that names one).
                 if [ "$ia" = 1 ]; then
-                    ia=0
+                    ia=0 so=1
                     if names_verb "$v"; then deny=1; return 0; fi
                 elif [[ $t == -* ]]; then
                     if names_verb "$v"; then deny=1; return 0; fi
@@ -989,13 +1007,13 @@ qmd_nested() {
                 else
                     c=${t#=} k=$mode
                     if nest_mode "${c##*/}"; then
-                        mode=$k
+                        mode=$k so=1
                         e=$((j - ${#t}))
                         break
                     fi
                     # Every operand, not only the first: an option's own
                     # argument (`-I lib`, `-r ./x`) would shift the script.
-                    fo=1
+                    fo=1 so=1
                     if _ran_written "$t"; then deny=1; return 0; fi
                 fi
             elif [ "$hasc" = 0 ]; then
@@ -1015,7 +1033,7 @@ qmd_nested() {
                 elif [ "$mode" = sh ] && [[ $t =~ ^-[[:alpha:]]*[cC][[:alpha:]]*$ || $t =~ ^--(session-)?command$ ]]; then
                     hasc=1
                 elif [ "$mode" = sh ] && [[ $t =~ ^--(session-)?command= ]]; then
-                    hasc=1
+                    hasc=1 so=1
                     qmd_check "${v#*=}" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
                 elif [ "$mode" != env ] && { [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; }; then
@@ -1029,6 +1047,7 @@ qmd_nested() {
                     # command wrote (`… > f; sh f`). Every operand: an
                     # option's argument (`-o errexit`) would shift the script.
                     if [ "$mode" != env ] && [[ $t != -* ]]; then
+                        so=1
                         if _ran_written "$t"; then deny=1; return 0; fi
                     fi
                     # Another word that runs a nested string, before any -c:
@@ -1036,7 +1055,7 @@ qmd_nested() {
                     # twice.
                     c=${t#=} k=$mode
                     if nest_mode "${c##*/}"; then
-                        mode=$k
+                        mode=$k so=1
                         e=$((j - ${#t}))
                         break
                     fi
@@ -1048,6 +1067,7 @@ qmd_nested() {
                     fi
                 fi
             else
+                so=1
                 # A word with no q, `$` or backtick cannot spell qmd.
                 case "$v" in
                     *[qQ]*|*'$'*|*'`'*) qmd_check "$v" $((depth + 1)) ;;
@@ -1061,6 +1081,15 @@ qmd_nested() {
         # at are read again as the top level reads them.
         i=$e
         if [ "$mode" = screen ] || [ "$mode" = rem ]; then i=$e0 pk=$e; fi
+        # A shell or interpreter with no program operand or code string
+        # reads its program from stdin (`< f`, `<<<`, a pipe, -s); with
+        # none of them, -c's string comes from elsewhere (`xargs -a f sh
+        # -c`). Fails closed on a command that wrote a file and names a verb.
+        if { [ "$mode" = sh ] || [ "$mode" = int ]; } && [ "$so" = 0 ] && [ -n "$wr" ] &&
+            { [ "$sr" = 1 ] || [ -n "$piped" ] || [ "$hasc" = 1 ]; } && names_verb "$w"; then
+            deny=1
+            return 0
+        fi
         # A shell or source, fed by a pipe, runs the producer's output:
         # refuse a producer naming a verb. HIMMEL-4245: unless the consumer
         # stage, to the end of this command, is a plain filter (`… | grep -v
