@@ -55,7 +55,7 @@ build_tree() {
     rm -rf "$ROOT" "$SESS"; mkdir -p "$CL" "$SESS"
     mkd "$CL/$LIVE"; mkd "$CL/$STALE"; mkd "$CL/$HELD"; mkd "$CL/$DEAD"
     printf '{"pid":%s,"sessionId":"%s","procStart":"%s"}\n' "$$" "$LIVE" "$(pstart $$)" > "$SESS/$$.json"
-    printf '{"pid":%s,"sessionId":"%s","procStart":"1"}\n' "$$" "$STALE" > "$SESS/stale.json"
+    printf '{"pid":%s,"sessionId":"%s","procStart":"9000"}\n' "$$" "$STALE" > "$SESS/stale.json"
     mkdir -p "$ROOT/claude-$(id -u)/j9001" "$ROOT/claude-$(id -u)/j9002"
     printf 'r\n' > "$ROOT/claude-$(id -u)/j9001/corpus-a.jsonl"
     printf 'r\n' > "$ROOT/claude-$(id -u)/j9002/corpus-b.jsonl"
@@ -199,12 +199,14 @@ check "a real zombie is skipped: --apply rc 0" "$rc" 0
 # Non-dumpable same-uid daemons (kwin, systemd --user, 1Password) always read as unreadable. One whose
 # ppid chain reads cleanly to pid 1 without crossing a live session pid cannot hold a session's scratch.
 rm -rf "$FP/300"; mkdir -p "$FP/1" "$FP/400" "$FP/401" "$FP/402" "$FP/403"
-printf '1 (systemd) S 0 1 1\n' > "$FP/1/stat"
-printf '400 (kwin) S 1 1 1\n' > "$FP/400/stat"
+# fst <pid> <comm> <ppid> <starttime>: a stat line with field 22 (starttime) set (HIMMEL-4437)
+fst() { printf '%s (%s) S %s 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 %s\n' "$1" "$2" "$3" "$4"; }
+fst 1 systemd 0 1 > "$FP/1/stat"
+fst 400 kwin 1 4000 > "$FP/400/stat"
 build_tree
 out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "detached non-dumpable daemon: only the unreadable fake 100 refuses (still rc 2)" "$rc" 2
-rm -rf "$FP/100"; mkdir -p "$FP/100"; printf '100 (d) S 1 1 1\n' > "$FP/100/stat"
+rm -rf "$FP/100"; mkdir -p "$FP/100"; fst 100 d 1 4000 > "$FP/100/stat"
 rm -rf "$FP/401" "$FP/402" "$FP/403"
 build_tree
 out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
@@ -223,6 +225,29 @@ build_tree
 out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "unreadable grandchild with a broken chain: --apply rc 2" "$rc" 2
 rm -rf "$FP/401" "$FP/402"
+
+# HIMMEL-4437: a non-dumpable child a dead session spawned and that outlived it is reparented to pid 1 but can
+# still hold that session's scratch. An unreadable detached process that started at or after the oldest dead
+# session's procStart is NOT detached (refuse); one that started before it (a desktop daemon) only warns.
+rm -rf "$FP/403"; mkdir -p "$FP/500"
+build_tree; printf '{"pid":999999,"sessionId":"%s","procStart":"5000"}\n' "$DEAD" > "$SESS/dead.json"
+fst 500 orphan 1 6000 > "$FP/500/stat"
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "orphan started after a dead session began: --apply rc 2" "$rc" 2
+exists "orphan reaps no dead session dir" "$CL/$DEAD"
+fst 500 orphan 1 5000 > "$FP/500/stat"
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "orphan started exactly at a dead session's start: --apply rc 2" "$rc" 2
+fst 500 orphan 1 4500 > "$FP/500/stat"
+build_tree; printf '{"pid":999999,"sessionId":"%s","procStart":"5000"}\n' "$DEAD" > "$SESS/dead.json"
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "daemon started before every dead session: --apply rc 0" "$rc" 0
+absent "pre-session daemon: dead session dir reaped" "$CL/$DEAD"
+printf '500 (orphan) S 1 1 1\n' > "$FP/500/stat"
+build_tree; printf '{"pid":999999,"sessionId":"%s","procStart":"5000"}\n' "$DEAD" > "$SESS/dead.json"
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "orphan with unknown start time: --apply rc 2" "$rc" 2
+rm -rf "$FP/500" "$SESS/dead.json"
 
 echo "== 11. FAMILIES does not glob against the caller's cwd =="
 build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/himmel-fixture.zzz"

@@ -96,6 +96,16 @@
       "provenance": { "kinds": ["collection"] }
     },
     {
+      "id": "qmd-daemon",
+      "kind": "lane",
+      "scopes": ["project", "user"],
+      "profiles": ["luna", "all"],
+      "deps": ["qmd-binary"],
+      "probe": { "type": "qmd-daemon" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
       "id": "graphify-mcp",
       "kind": "mcp",
       "scopes": ["project", "user"],

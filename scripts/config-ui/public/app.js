@@ -31,6 +31,7 @@ function route() {
   $("#pages").innerHTML = PAGES.map((p) => `<a href="#/${p.id}"${p === currentPage ? ' aria-current="page"' : ""}>${p.label}</a>`).join("");
   if (currentPage.onVisit) currentPage.onVisit();
   if (feed || currentPage.needsFeed === false) paint();
+  else { $("#main").innerHTML = `<p class="sub" id="status">loading…</p>`; $("#nav").innerHTML = ""; } // no stale page under this tab
 }
 addEventListener("hashchange", route);
 route();
