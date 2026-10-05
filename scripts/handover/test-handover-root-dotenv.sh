@@ -34,21 +34,27 @@ has "handover-link: resolves the .env root" "$out" "root:       $HO"
 
 out="$(probe bash "$SCRIPTS/handover/bugs-dashboard.sh")"
 lacks "bugs-dashboard: root resolved from .env" "$out" "root unresolved"
+has "bugs-dashboard: ran to completion" "$out" "No bugs tracked"
 
 out="$(probe bash "$SCRIPTS/handover/lessons-sweep.sh")"
 lacks "lessons-sweep: root resolved from .env" "$out" "root unresolved"
+has "lessons-sweep: ran to completion" "$out" "## Digest"
 
 out="$(probe bash "$SCRIPTS/handover/resolve-active-item.sh")"
 lacks "resolve-active-item: root resolved from .env" "$out" "root unresolved"
+has "resolve-active-item: got past root resolution" "$out" "not in a git repo"
 
 out="$(probe bash "$SCRIPTS/handover/queue-lock.sh" status "$tmp/x.md")"
 lacks "queue-lock: root resolved from .env" "$out" "could not resolve handover root"
+check "queue-lock: status is free under the .env root" "$out" "free"
 
 out="$(probe bash "$SCRIPTS/handover/flush.sh")"
 lacks "flush: Mode B taken from .env" "$out" "Mode A (inline) not supported"
+has "flush: reached the Mode B root check" "$out" "handover root not in a git repo"
 
 out="$(probe bash "$SCRIPTS/handover/resume.sh" --list)"
 lacks "resume: root resolved from .env" "$out" "handover root unresolved"
+has "resume: got past root resolution" "$out" "not in a git repo"
 
 out="$(probe bash -c ". '$SCRIPTS/lanes/lib/leg-cost-row.sh'; leg_cost_ledger_path")"
 check "leg-cost-row: ledger under the .env root" "$out" "$HO/.ledger/leg-cost.jsonl"
@@ -56,12 +62,14 @@ check "leg-cost-row: ledger under the .env root" "$out" "$HO/.ledger/leg-cost.js
 printf 'doc\n' > "$tmp/doc.md"
 out="$(probe bash "$SCRIPTS/lanes/bench/scorecard/ready-go-latency.sh" --doc "$tmp/doc.md")"
 lacks "ready-go-latency: root resolved from .env" "$out" "cannot resolve the handover root"
+has "ready-go-latency: got past root resolution" "$out" "no YYYY-MM-DD"
 
 out="$(probe bash "$SCRIPTS/handover/console-kit/inbox-send.sh" --pending)"
 lacks "inbox-send: root resolved from .env" "$out" "cannot resolve handover root"
 
 out="$(probe bash "$SCRIPTS/telegram/auto-action.sh" arm-resume HIMMEL-1 12:00)"
 lacks "auto-action: root resolved from .env" "$out" "handover_root unresolved"
+has "auto-action: got past root resolution" "$out" "no resume handover"
 
 probe bash "$SCRIPTS/handover/breadcrumb.sh" write --ticket HIMMEL-1 >/dev/null
 check "breadcrumb: write lands under the .env root" "$([ -f "$HO/breadcrumbs/HIMMEL-1.json" ] && echo yes || echo no)" "yes"
