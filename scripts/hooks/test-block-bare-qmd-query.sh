@@ -607,6 +607,14 @@ deny 'echo qmd query x | tee f; bash f'
 deny 'echo qmd query x | tee -a f >/dev/null; bash -x f'
 deny "echo 'import os; os.system(\"qmd query x\")' >> f.py; python3 f.py"
 deny 'echo qmd query x >| f; sh f'
+# An option's own argument does not hide the script operand (codex-1).
+deny 'echo qmd query x > f.sh; bash -o errexit f.sh'
+deny 'echo qmd query x > f.sh; bash --rcfile /dev/null f.sh'
+deny 'echo qmd query x > f.sh; sh -O extglob f.sh'
+deny "echo 'system(\"qmd query x\")' > f.pl; perl -I lib f.pl"
+deny "echo 'require(\"child_process\").execSync(\"qmd query x\")' > f.js; node -r ./x f.js"
+deny "echo 'import os; os.system(\"qmd query x\")' > f.py; python3 -W ignore f.py"
+allow 'echo qmd status > f.sh; bash -o errexit f.sh'
 allow 'echo qmd query x > notes.txt; cat notes.txt'
 allow 'bash scripts/foo.sh'
 allow 'echo qmd status > f.sh; sh f.sh'

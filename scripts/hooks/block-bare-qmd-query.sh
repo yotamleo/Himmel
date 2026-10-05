@@ -643,7 +643,7 @@ _qn_runs() {
 }
 # _wr_add WORD — record a file the command writes (`>f`, `>>f`, `tee f`).
 _wr_add() { wr="$wr ${1#./} "; }
-# _ran_written WORD — succeed when WORD, a shell's or interpreter's first
+# _ran_written WORD — succeed when WORD, a shell's or interpreter's
 # operand, is a file the command wrote and the command names a verb.
 _ran_written() {
     case "$wr" in *" ${1#./} "*) names_verb "$w" ;; *) return 1 ;; esac
@@ -993,10 +993,10 @@ qmd_nested() {
                         e=$((j - ${#t}))
                         break
                     fi
-                    if [ "$fo" = 0 ]; then
-                        fo=1
-                        if _ran_written "$t"; then deny=1; return 0; fi
-                    fi
+                    # Every operand, not only the first: an option's own
+                    # argument (`-I lib`, `-r ./x`) would shift the script.
+                    fo=1
+                    if _ran_written "$t"; then deny=1; return 0; fi
                 fi
             elif [ "$hasc" = 0 ]; then
                 # The string is the first word after an option cluster
@@ -1025,10 +1025,10 @@ qmd_nested() {
                     qmd_check "$t" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
                 else
-                    # HIMMEL-4337: a shell's or source's first operand that
-                    # the command wrote (`… > f; sh f`).
-                    if [ "$fo" = 0 ] && [ "$mode" != env ] && [[ $t != -* ]]; then
-                        fo=1
+                    # HIMMEL-4337: a shell's or source's operand that the
+                    # command wrote (`… > f; sh f`). Every operand: an
+                    # option's argument (`-o errexit`) would shift the script.
+                    if [ "$mode" != env ] && [[ $t != -* ]]; then
                         if _ran_written "$t"; then deny=1; return 0; fi
                     fi
                     # Another word that runs a nested string, before any -c:
