@@ -823,8 +823,9 @@ function hardGateCheck() {
 function runPreflight(answers) {
   const script = path.join(__dirname, '..', 'preflight-adopter.sh');
   // HIMMEL-4435: uv/pipx exist for the luna vault's pre-commit install; skip
-  // the warning once the profile says vault=none (unknown answers keep it).
-  const noVault = Boolean(answers && answers.vault && answers.vault.mode === 'none');
+  // the warning once the profile says vault=none and no contributor overlay
+  // (which also uses the framework); unknown answers keep it.
+  const noVault = Boolean(answers && answers.vault && answers.vault.mode === 'none' && !answers.devOverlay);
   const argv = [toBashPath(script)].concat(noVault ? ['--no-vault'] : []);
   const r = spawnSync(resolveBash(), argv, { stdio: 'inherit' });
   return { ran: !r.error, rc: r.status };
