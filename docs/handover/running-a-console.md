@@ -418,6 +418,66 @@ an unattended fleet if the launch failed.
 The HANDOFF is the successor's only required read. Written properly, the succession
 does not need the predecessor's transcript at all.
 
+## Switching the Claude account (HIMMEL-4430)
+
+An account switch is a machine-level login: one active Claude account per
+machine (HIMMEL-1862), so it changes the bank every leg and console draws on,
+not any routing. Do it at a boundary, in this order.
+
+**1. Before the switch — bring the legs to a boundary.** Let each leg reach a
+milestone (`READY`, `FINDING`, `RESOLVED`) or `WRAPPED`; do not switch mid-turn on
+a deep-context leg. The cost is not yet measured: the prompt-cache audit
+([`../internals/prompt-cache.md`](../internals/prompt-cache.md), row 11) marks
+"an account switch rewrites the full prefix of running sessions" **UNVERIFIED**.
+Its live run L5 was a weekly-bank reset on the *same* account, not a switch: 2
+sessions kept their prefix, 0 invalidated, 0 compacted (a console reading about
+318k tokens from cache stayed warm). So a real switch is still untested — if it
+does invalidate, expect each live session to re-pay its whole prefix, which is
+why a leg parked at a boundary is cheaper than one switched mid-turn. Record what
+you see (re-run `invalidation --event <switch ISO>` from that doc's "Re-run").
+
+**2. Decide every armed resume.** List the jobs, find the `HIMMEL-Resume-*` ones
+(`at -c <job-id>` shows the marker), and keep or cancel each — one armed for the
+old account's reset fires against the wrong bank:
+
+```bash
+atq
+atrm <job-id>
+```
+
+`auto-arm-on-cap.sh` re-arms a resume on the next tool call once any window is at
+or above `AUTO_ARM_THRESHOLD` (default 90 %) and none exists, so an `atrm` made
+early can be undone before you finish. **Cancel last** — after the legs are
+parked and as the final action of the session, or from a plain terminal.
+
+**3. After the switch — refresh the usage cache.** The cache is stamped with the
+account that wrote it; `bank-preflight.sh` reports `BANK-UNKNOWN` while the
+stamp does not match the logged-in account (HIMMEL-3846 / HIMMEL-1712). Force
+one re-derive, then confirm the new numbers:
+
+```bash
+USAGE_FORCE_REFRESH=1 bash scripts/statusline/usage-cache-producer.sh <<< '{}'
+bash scripts/lib/bank-preflight.sh
+```
+
+Pass: `bank-preflight` prints the new account's `five_hour` / `seven_day` and
+`PROCEED` (or `SKIPPED-BANK` if that account is genuinely high). `BANK-UNKNOWN`
+means the cache is still the old account's — refresh again, or check the login.
+
+**4. Confirm the bank lift voided itself (HIMMEL-4423).** A lift is bound to the
+account that set it, so it is no lift under the new login; only the operator can
+set one (`bank-lift.sh set`). Verify:
+
+```bash
+bash scripts/lib/bank-lift.sh show
+```
+
+Expect `bank-lift: not valid`. A stale file is harmless but can be removed with
+`bash scripts/lib/bank-lift.sh clear`. A lift never relaxes `five_hour`.
+
+The Done-when for HIMMEL-4430 needs the operator to walk this once at a real
+switch and record the result (and the cache-probe verdict from step 1) in the PR.
+
 ## See also
 
 - [`console-template.md`](console-template.md) — the console's operating contract
