@@ -3988,7 +3988,8 @@ _bwimc_git_wrapped() {
             done
             [ "$xi" -gt 0 ] || return 0
             # The replacement string matters where it picks the target: a
-            # global option or its operand, the subcommand, or --output.
+            # global option or its operand, the subcommand, or --output and
+            # its operand, attached or the next word (k=4).
             k=0
             while [ "$xi" -lt "${#xt[@]}" ]; do
                 t="${xt[$xi]}"
@@ -4003,6 +4004,8 @@ _bwimc_git_wrapped() {
                         *) k=2 ;;
                     esac
                 elif [ "$k" = 3 ]; then k=1
+                elif [ "$k" = 4 ]; then k=2
+                elif [ "$(_bwimc_unq "$t")" = --output ]; then k=4
                 fi
                 xg="$xg$t "; xi=$((xi+1))
             done ;;

@@ -1446,7 +1446,8 @@ through `main_checkout_verdict`. The target covers:
 - a git behind a wrapper (`timeout`, `nice`, `stdbuf`, `ionice`, `sudo`,
   `chrt`, `taskset`, or `xargs`) — HIMMEL-4365. The cwd fails closed when the
   wrapper carries a `GIT_*` word, or when an `xargs -I` string lands in a
-  global option, the subcommand or `--output`. A bare `xargs git` reads its
+  global option, the subcommand, or `--output` and its operand (attached or
+  the next word). A bare `xargs git` reads its
   subcommand from stdin, so it fails closed too.
 
 HIMMEL-4365 also checks the file that `--output <file>` names on a read

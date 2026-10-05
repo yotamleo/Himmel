@@ -635,6 +635,13 @@ deny "xargs -I % git -C % reset (custom replstr)" "$W" "xargs -I % git -C % rese
 deny "xargs -i git {} --hard (sub from stdin)"   "$W" "xargs -i git {} --hard"
 deny "xargs git, subcommand from stdin"          "$W" "echo reset | xargs git"
 deny "xargs -I{} git diff --output={}"           "$W" "xargs -I{} git diff --output={}"
+# --output's SEPARATE operand picks the target too (codex-1).
+deny "xargs -I{} git -C <primary> diff --output {}" "$W" "printf x | xargs -I{} git -C $P diff --output {}"
+deny "xargs -i git -C <primary> log -p --output {}" "$W" "xargs -i git -C $P log -p --output {}"
+deny "xargs -I{} git diff --output {}, cwd=leg"  "$W" "printf x | xargs -I{} git diff --output {}"
+deny "xargs --replace=Q git show --output Q"      "$W" "xargs --replace=Q git show HEAD --output Q"
+deny "xargs -I{} git archive --output {}"         "$W" "xargs -I{} git archive --output {} HEAD"
+allow "xargs -I{} git -C <primary> diff --output /tmp/fixed {}" "$W" "xargs -I{} git -C $P diff --output /tmp/fixed {}"
 allow "xargs -I{} git commit, {} unused, cwd=leg" "$W" "echo x | xargs -I{} git commit -m msg"
 allow "xargs -I{} git add {} (pathspec), cwd=leg" "$W" "xargs -I{} git add {}"
 allow "timeout 5 git -C <primary> status"        "$W" "timeout 5 git -C $P status"
