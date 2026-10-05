@@ -792,9 +792,27 @@ def _block_private_requests(page):
             deny = True
         ws.close() if deny else ws.connect_to_server()
 
+    def on_paused(cdp, ev):
+        # Fetch.requestPaused fires for every redirect hop too (page.route does
+        # not: the browser follows a 3xx with no route call), before connect.
+        try:
+            deny = blocked(ev["request"]["url"])
+        except Exception:
+            deny = True
+        if deny:
+            cdp.send("Fetch.failRequest", {"requestId": ev["requestId"], "errorReason": "BlockedByClient"})
+        else:
+            cdp.send("Fetch.continueRequest", {"requestId": ev["requestId"]})
+
+    # Unguardable page (no websocket routing / no CDP): raise so the fetch fails
+    # and the chain falls through, never a silently unguarded browser.
+    if not hasattr(page, "route_web_socket"):
+        raise RuntimeError("local-headless: cannot guard websockets on this browser")
+    cdp = page.context.new_cdp_session(page)
+    cdp.on("Fetch.requestPaused", lambda ev: on_paused(cdp, ev))
+    cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
     page.route("**/*", on_request)
-    if hasattr(page, "route_web_socket"):
-        page.route_web_socket("**/*", on_websocket)
+    page.route_web_socket("**/*", on_websocket)
 
 
 class LocalHeadlessClient:

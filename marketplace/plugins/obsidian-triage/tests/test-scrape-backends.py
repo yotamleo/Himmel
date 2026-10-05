@@ -251,11 +251,38 @@ class FakeRoute:
         self.verdict = "continue"
 
 
+class FakeCDP:
+    """Stands in for a raw CDP session: records sends, fires Fetch.requestPaused."""
+    def __init__(self):
+        self.sent, self.handlers = [], {}
+
+    def on(self, ev, fn):
+        self.handlers[ev] = fn
+
+    def send(self, method, params=None):
+        self.sent.append((method, params or {}))
+
+    def pause(self, url):
+        self.sent.clear()
+        self.handlers["Fetch.requestPaused"]({"requestId": "r1", "request": {"url": url}})
+        return self.sent[-1][0]
+
+
 class FakeBrowserPage:
     """Stands in for the Playwright page Scrapling hands to page_setup."""
+    class _Ctx:
+        def __init__(self, page):
+            self.page = page
+
+        def new_cdp_session(self, _page):
+            self.page.cdp = FakeCDP()
+            return self.page.cdp
+
     def __init__(self):
         self.routes = []
         self.ws_routes = []
+        self.cdp = None
+        self.context = FakeBrowserPage._Ctx(self)
 
     def route(self, pattern, handler):
         self.routes.append((pattern, handler))
@@ -337,6 +364,24 @@ if callable(setup):
         w = FakeWS(u)
         bp.ws_routes[0][1](w)
         check(f"local-headless: websocket {u} -> {want}", w.verdict == want)
+
+    # redirect hops: page.route never sees them, CDP Fetch.requestPaused does
+    bp = FakeBrowserPage()
+    setup(bp)
+    check("local-headless: CDP Fetch.enable at Request stage covers redirect hops",
+          ("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}) in bp.cdp.sent)
+    for u, want in (("http://169.254.169.254/latest/meta-data/", "Fetch.failRequest"),
+                    ("http://127.0.0.1:8080/secret", "Fetch.failRequest"),
+                    ("https://example.com/next", "Fetch.continueRequest")):
+        check(f"local-headless: redirect hop {u} -> {want}", bp.cdp.pause(u) == want)
+
+    class NoWsPage(FakeBrowserPage):
+        route_web_socket = property(lambda self: (_ for _ in ()).throw(AttributeError("route_web_socket")))
+    try:
+        setup(NoWsPage())
+        check("local-headless: no websocket routing -> hook raises (fails closed)", False)
+    except RuntimeError:
+        check("local-headless: no websocket routing -> hook raises (fails closed)", True)
 
 uninstall_local()
 try:
