@@ -741,16 +741,16 @@ if prlit_backstop "$cmd"; then
 fi
 # HIMMEL-4367 item 5: a heredoc body is stdin, not a command line. When the
 # tokenizer proves the command has no live substitution, no runner word
-# outside the bodies (an interpreter, a wrapper, find -exec, ssh), and every
-# segment's command word is a plain data reader (or cd/echo/printf/mkdir),
-# nothing in it can run a file, so a glob or brace in a body - Python's `*`,
-# a scratch file's `{}` - is data. Only a command that names no target and
-# no cr/ or handover/ path gets this exit; one that does is classified below.
-# ponytail: python/node read their body as code, and code that assembles a
-# glob spelling of a target (os.system("bash scripts/c[r]/...")) is not seen -
-# the same ceiling as any name the text never spells (see the classifier's
-# header below). Upgrade path: drop python/node from HD_READERS if one recurs.
-HD_READERS='cat tee grep egrep fgrep head tail wc jq python python3 node'
+# outside the bodies (an interpreter, a wrapper, find -exec, ssh), no write to
+# a file (a `>`/`>>`/`>|`/`&>`/`<>` redirect that is not an fd dup or
+# /dev/null - a later call could run what it wrote), and every segment's
+# command word is a plain printer of its stdin (or cd/echo/printf/mkdir),
+# nothing in it can run a file, so a glob or brace in a body (a scratch
+# file's `{}`, a list comprehension's `*`) is data. python/node/jq run their
+# body as code, grep -f reads it as patterns and tee writes it, so none of
+# them qualifies. Only a command that names no target and no cr/ or
+# handover/ path gets this exit; one that does is classified below.
+HD_READERS='cat head tail wc'
 heredoc_data_only() { # true when only heredoc bodies could make $flat look runnable
     local k sg=-1 cw=-1 w
     st_tokenize "$cmd" || return 1
@@ -765,12 +765,15 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
         case "$w" in -exec|-ok|-execdir|-okdir) return 1 ;; esac
         # An unquoted glob or brace outside the bodies can expand to a
         # target name (`tee scripts/c?/x.sh <<E`), so it goes to the
-        # classifier. python/node take only `-` here: any other word (a -c
-        # body, a script, argv the code could glob) is code outside a body.
+        # classifier.
         [ "${ST_G[k]}" = 0 ] || return 1
-        if [ -z "${ST_RO[k]}" ] && [ "$cw" -ge 0 ] && [ "$k" -ne "$cw" ] && [ "$w" != - ]; then
-            case "${ST_W[cw]}" in python|python3|node) return 1 ;; esac
-        fi
+        # A write redirect: only an fd dup (`>&2`, `2>&1`, `>&-`) or
+        # /dev/null is not a file write.
+        case "${ST_RO[k]}" in
+            *'>&') case "$w" in *[!0-9-]* | '') return 1 ;; esac ;;
+            # *'>' also covers >>, &>, &>> and <>
+            *'>' | *'>|') [ "$w" = /dev/null ] || return 1 ;;
+        esac
         if [ -z "${ST_RO[k]}" ] && [ "$cw" -lt 0 ]; then
             [ "${ST_A[k]}${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 0000 ] || return 1
             case " $HD_READERS cd echo printf mkdir " in *" $w "*) cw=$k ;; *) return 1 ;; esac

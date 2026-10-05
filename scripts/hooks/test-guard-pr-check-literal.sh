@@ -1303,7 +1303,7 @@ print({k: v for k, v in {}.items()})
 EOF
 ENVELOPE
 )
-run "HIMMEL-4367 python3 heredoc with '*' and exec -> allow" 0 "$(payload "$H4367_PY" "$WT")" "$HR"
+run "HIMMEL-4367 python3 heredoc with '*' and exec stays judged (python runs its body) -> deny" 2 "$(payload "$H4367_PY" "$WT")" "$HR"
 H4367_CD_PY=$(cat <<'ENVELOPE'
 cd /tmp && python3 - <<'PY'
 import glob
@@ -1311,7 +1311,7 @@ print(glob.glob('*/node_modules/*'))
 PY
 ENVELOPE
 )
-run "HIMMEL-4367 cd + python3 heredoc with a */ glob -> allow" 0 "$(payload "$H4367_CD_PY" "$WT")" "$HR"
+run "HIMMEL-4367 cd + python3 heredoc with a */ glob stays judged (python runs its body) -> deny" 2 "$(payload "$H4367_CD_PY" "$WT")" "$HR"
 H4367_CAT=$(cat <<'ENVELOPE'
 cat > /tmp/rows.txt <<'EOF'
 echo x | xargs -I{} sh -c 'y {}'
@@ -1319,7 +1319,7 @@ ls *
 EOF
 ENVELOPE
 )
-run "HIMMEL-4367 cat heredoc of shell text to a file -> allow" 0 "$(payload "$H4367_CAT" "$WT")" "$HR"
+run "HIMMEL-4367 cat heredoc of shell text to a file stays judged (a later call can run it) -> deny" 2 "$(payload "$H4367_CAT" "$WT")" "$HR"
 # Deny controls: a shell reads the body, the body names a target, a runner
 # sits outside the body, the body is live, or a brace list is real.
 while IFS= read -r v; do
@@ -1353,6 +1353,28 @@ v='tee scripts/c?/pr-check-context.sh <<'\''EOF'\'''$'\n''x'$'\n''EOF'
 run "HIMMEL-4367 control [tee to a glob target, heredoc input] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 v='python3 -c "import os; os.system('\''bash scripts/c[r]/pr-chec[k]-context.sh'\'')" <<'\''EOF'\'''$'\n''x'$'\n''EOF'
 run "HIMMEL-4367 control [python3 -c glob target beside a heredoc] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+# Parent probe of df4e2d33: a heredoc written to a file (a later call can run
+# it) or read by an interpreter (python/node run their body as code) is not
+# data, and a pattern reader (grep -f -) stays judged.
+NL=$'\n'
+for v in \
+    "cat > /tmp/x.sh <<EOF${NL}bash scripts/c?/clear-cr-marker.sh b${NL}EOF" \
+    "tee /tmp/x.sh <<EOF${NL}bash scripts/c[r]/clear-cr-marker.sh b${NL}EOF" \
+    "cat <<EOF > /tmp/x.sh${NL}bash scripts/{cr,x}/clear-cr-marker.sh b${NL}EOF" \
+    "python3 - <<EOF${NL}import os; os.system('bash scripts/c?/clear-cr-marker.sh b')${NL}EOF" \
+    "node - <<EOF${NL}require('child_process').execSync('bash scripts/c?/clear-cr-marker.sh b')${NL}EOF" \
+    "grep -f - /tmp/f <<EOF${NL}scripts/c?/clear*${NL}EOF" \
+    "cat <<'EOF' | bash${NL}bash scripts/c?/clear-cr-marker.sh b${NL}EOF" \
+    "bash scripts/c?/clear-cr-marker.sh b" \
+    "echo {url}; bash scripts/c?/clear-cr-marker.sh b" \
+    "cat <<EOF${NL}a*b${NL}EOF${NL}bash scripts/c?/clear-cr-marker.sh b"; do
+    run "HIMMEL-4367 probe control [${v%%"$NL"*}] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+for v in \
+    "ssh vm 'curl {url}/x'" \
+    "cat <<EOF${NL}print([x*2 for x in range(3)])${NL}EOF"; do
+    run "HIMMEL-4367 probe [${v%%"$NL"*}] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-context.sh
 
 echo
