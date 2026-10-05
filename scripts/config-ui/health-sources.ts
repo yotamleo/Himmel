@@ -22,10 +22,11 @@ export function readBank(env: Env): Section {
     const fd = openSync(file, "r");
     try {
       const size = fstatSync(fd).size, start = Math.max(0, size - TAIL_BYTES);
-      const buf = Buffer.alloc(size - start);
-      readSync(fd, buf, 0, buf.length, start);
+      const from = Math.max(0, start - 1); // one byte early: tells a window that begins on a line start from one cut mid-row
+      const buf = Buffer.alloc(size - from);
+      readSync(fd, buf, 0, buf.length, from);
       text = buf.toString("utf8");
-      if (start > 0) text = text.slice(text.indexOf("\n") + 1); // the first line is cut mid-row
+      if (start > 0) text = text.slice(text.indexOf("\n") + 1); // drops the cut row, or just the byte before a whole one
     } finally { closeSync(fd); }
   } catch { return { state: "absent", reason: "no bank-preflight ledger" }; }
   const lines = text.split("\n");

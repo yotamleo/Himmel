@@ -144,7 +144,7 @@ function go(id) {
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-act],[data-go],[data-f]");
   if (!b) return;
-  if (b.dataset.act === "refresh-health") return void loadHealth();
+  if (b.dataset.act === "refresh-health") { loadHealth(); return void loadFeed(); } // the verdict reads the doctor feed too
   if (b.dataset.act === "open-config") {
     state.filt = { health: null, kind: null, q: b.dataset.id, problems: false };
     location.hash = "#/config";

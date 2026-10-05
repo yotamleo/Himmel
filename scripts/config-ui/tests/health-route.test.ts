@@ -62,6 +62,16 @@ test("bank: only the last 64 KiB is read (a 44k-line ledger; numbers only beyond
   expect((await body(s.port)).bank.row.seven_day).toBe("2.0");
 });
 
+test("bank: a row that starts exactly at the 64 KiB tail boundary is kept", async () => {
+  const s = boot();
+  const head = bankRow({ five_hour: "", seven_day: "" }) + "\n";
+  const probe = bankRow({ seven_day: "3.0", leg: "" }) + "\n";
+  const last = bankRow({ seven_day: "3.0", leg: "p".repeat(64 * 1024 - probe.length) }) + "\n";
+  expect(last.length).toBe(64 * 1024); // the read window starts exactly where this row does
+  writeLedger(s.ledger, [head.trimEnd(), last.trimEnd()]);
+  expect((await body(s.port)).bank.row.seven_day).toBe("3.0");
+});
+
 test("legs: absent with no manifest, ok with one (real fleet-manifest.sh and leg_tail_status)", async () => {
   const s = boot();
   expect((await body(s.port)).legs.state).toBe("absent");
