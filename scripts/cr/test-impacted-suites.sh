@@ -562,6 +562,40 @@ change docs/scan-31/new.sh
 out="$(run_is "$range")"
 if ! grepq "$out" 'test-lint-fail-open'; then pass "a new file outside every scan root does not list the scanning suite"; else fail "scan root over-selected: $out"; fi
 
+# --- 32. HIMMEL-4323: npm-licenses row (RED control) and the veto rows. -----
+NPM=scripts/hooks/test-check-npm-licenses\\.sh
+PCR=scripts/cr/test-pr-check-run\\.sh
+LSP=scripts/lanes/test-launch-site-profiles\\.sh
+mkf scripts/hooks/test-check-npm-licenses.sh 'echo npm'
+mkf scripts/cr/test-pr-check-run.sh 'echo pcr'
+mkf scripts/lanes/test-launch-site-profiles.sh 'echo lsp'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: veto fixtures"
+mkdir -p "$FX/tools/new" "$FX/tools/node_modules/dep" "$FX/scripts/lanes/bench/fixtures/x" "$FX/scripts/handover" "$FX/scripts/lanes/dist" "$FX/scripts/a"
+change tools/new/package.json
+out="$(run_is "$range")"
+if grepq "$out" "^${NPM}\$"; then pass "a new package.json -> test-check-npm-licenses.sh"; else fail "npm-licenses row missed: $out"; fi
+change tools/node_modules/dep/package.json
+out="$(run_is "$range")"
+if ! grepq "$out" "^${NPM}\$"; then pass "a node_modules package.json does not select npm-licenses"; else fail "npm-licenses veto (node_modules) missed: $out"; fi
+change scripts/lanes/bench/fixtures/x/package.json
+out="$(run_is "$range")"
+if ! grepq "$out" "^${NPM}\$"; then pass "a bench-fixtures package.json does not select npm-licenses"; else fail "npm-licenses veto (fixtures) missed: $out"; fi
+change scripts/a/tool.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${PCR}\$" && grepq "$out" "^${LSP}\$"; then pass "a scripts/a/tool.sh selects pr-check-run and launch-site-profiles"; else fail "scripts/*.sh rows lost: $out"; fi
+change scripts/a/test-foo.sh
+out="$(run_is "$range")"
+if ! grepq "$out" "^${LSP}\$"; then pass "scripts/a/test-foo.sh does not select launch-site-profiles"; else fail "launch-site veto (test-*) missed: $out"; fi
+if grepq "$out" "^${PCR}\$"; then pass "scripts/a/test-foo.sh still selects pr-check-run (its walk reads it)"; else fail "pr-check-run over-vetoed scripts/a/test-foo.sh: $out"; fi
+change scripts/cr/test-foo.sh
+out="$(run_is "$range")"
+if ! grepq "$out" "^${PCR}\$"; then pass "scripts/cr/test-foo.sh does not select pr-check-run"; else fail "pr-check-run veto (scripts/cr/test-*) missed: $out"; fi
+change scripts/lanes/dist/gen.sh
+out="$(run_is "$range")"
+if ! grepq "$out" "^${LSP}\$"; then pass "a dist/ file does not select launch-site-profiles"; else fail "launch-site veto (dist) missed: $out"; fi
+if grepq "$out" "^${PCR}\$"; then pass "a dist/ file still selects pr-check-run"; else fail "pr-check-run lost dist/ file: $out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"
