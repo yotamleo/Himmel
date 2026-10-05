@@ -130,3 +130,38 @@ test("the server binds loopback only and enforces the token over real HTTP", asy
     server.stop(true);
   }
 });
+
+test("a failed sink call is not deduped: the Grafana retry runs it again", async () => {
+  let fail = true;
+  const ran: string[][] = [];
+  const handle = createHandler({ token: TOKEN, run: (a) => { if (fail) throw new Error("x"); ran.push(a); }, now: () => 0 });
+  const body = payload([{ status: "firing", labels: { alertname: "A" } }]);
+  expect((await handle(post(body))).status).toBe(500);
+  fail = false;
+  expect((await handle(post(body))).status).toBe(200);
+  expect(ran.length).toBe(1);
+});
+
+test("a firing alert re-fires after a resolve inside the dedupe window", async () => {
+  const { ran, handle } = rig();
+  const firing = payload([{ status: "firing", labels: { alertname: "A" } }]);
+  await handle(post(firing));
+  await handle(post(payload([{ status: "resolved", labels: { alertname: "A" } }])));
+  await handle(post(firing));
+  expect(ran.map((c) => c[0])).toEqual(["fail", "clear", "fail"]);
+});
+
+test("a batch larger than 20 alerts is processed in full, not truncated", () => {
+  const alerts = Array.from({ length: 25 }, (_, i) => ({ status: "firing", labels: { alertname: `A${i}` } }));
+  expect(alertCalls(JSON.parse(payload(alerts))).length).toBe(25);
+});
+
+test("expired dedupe entries do not accumulate", async () => {
+  let t = 0;
+  const ran: string[][] = [];
+  const handle = createHandler({ token: TOKEN, run: (a) => { ran.push(a); }, now: () => t });
+  await handle(post(payload([{ status: "firing", labels: { alertname: "A" }, annotations: { summary: "one" } }])));
+  t = 120_000;
+  await handle(post(payload([{ status: "firing", labels: { alertname: "A" }, annotations: { summary: "one" } }])));
+  expect(ran.length).toBe(2);
+});

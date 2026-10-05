@@ -20,7 +20,6 @@ import { join } from "node:path";
 
 export const LISTEN_HOST = "127.0.0.1";
 export const MAX_BODY_BYTES = 64 * 1024;
-const MAX_ALERTS_PER_REQUEST = 20;
 const DEDUPE_MS = 60_000;
 const MAX_CALLS_PER_MINUTE = 60;
 
@@ -40,7 +39,7 @@ const safeText = (s: unknown): string =>
 
 export function alertCalls(body: { alerts?: GrafanaAlert[] }): string[][] {
   const calls: string[][] = [];
-  for (const a of (Array.isArray(body.alerts) ? body.alerts : []).slice(0, MAX_ALERTS_PER_REQUEST)) {
+  for (const a of Array.isArray(body.alerts) ? body.alerts : []) {
     const name = safeName(a?.labels?.alertname);
     const leg = `grafana-${name}`;
     if (a?.status === "resolved") {
@@ -89,14 +88,18 @@ export function createHandler(opts: { token: string; run: Runner; now?: () => nu
 
     const t = now();
     if (t - windowStart > 60_000) { windowStart = t; windowCalls = 0; }
+    for (const [k, v] of seen) if (t - v >= DEDUPE_MS) seen.delete(k);
     try {
       for (const call of alertCalls(body)) {
         const key = call.join("\u0000");
         const prev = seen.get(key);
         if (prev !== undefined && t - prev < DEDUPE_MS) continue;
         if (++windowCalls > MAX_CALLS_PER_MINUTE) return new Response("rate limited", { status: 429 });
+        opts.run(call); // a throw skips the dedupe record, so Grafana's retry runs it again
+        // an opposite-state call for the same leg ends the old dedupe run
+        const other = `${call[0] === "clear" ? "fail" : "clear"}\u0000${call[1]}`;
+        for (const k of [...seen.keys()]) if (k === other || k.startsWith(`${other}\u0000`)) seen.delete(k);
         seen.set(key, t);
-        opts.run(call);
       }
     } catch {
       return new Response("sink failed", { status: 500 }); // Grafana retries a non-2xx
@@ -119,6 +122,7 @@ if (import.meta.main) {
   const run: Runner = (args) => {
     const r = spawnSync("bash", [sink, ...args], { stdio: "ignore", timeout: 30_000 });
     if (r.error) throw r.error;
+    if (r.status !== 0) throw new Error(`cadence-alert exited ${r.status ?? r.signal}`);
   };
   const tokenFile = process.env.HIMMEL_GRAFANA_HOOK_TOKEN_FILE;
   if (!tokenFile) { console.error("HIMMEL_GRAFANA_HOOK_TOKEN_FILE is required"); process.exit(2); }
