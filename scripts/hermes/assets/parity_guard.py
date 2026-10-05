@@ -1511,7 +1511,7 @@ SCAN_TOOLS = (
     "feishu_drive_list_comment_replies", "feishu_drive_list_comments",
     "feishu_drive_reply_comment", "focus_pane", "gui_tour", "ha_call_service",
     "ha_get_state", "ha_list_entities", "ha_list_services", "image_generate",
-    "manage_connections", "memory", "open_preview", "react_to_message", "read_preview",
+    "manage_catalog", "manage_connections", "memory", "open_preview", "react_to_message", "read_preview",
     "read_terminal", "read_window_below", "send_message", "session_search",
     "setup_mcp", "show_tip", "skill_view", "skills_list", "todo_list",
     "video_analyze", "video_generate", "vision_analyze", "web_extract",
