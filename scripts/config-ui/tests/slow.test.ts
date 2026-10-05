@@ -106,7 +106,7 @@ test("a /api/run rejected before it starts leaves the shared feed run alone", as
 // app.js is a browser module; run it against stubs and drive loadFeed directly.
 test("page: a slower, older feed load never repaints over a newer one", async () => {
   const src = readFileSync(join(import.meta.dir, "../public/app.js"), "utf8")
-    .replace(/^import .*$/m, "").concat("\nglobalThis.__loadFeed = loadFeed;\n");
+    .replace(/^import .*$/gm, "").concat("\nglobalThis.__loadFeed = loadFeed;\n");
   const painted: string[] = [];
   const el = () => ({ textContent: "", innerHTML: "", hidden: false, focus() {}, setSelectionRange() {} });
   const waiting: ((b: string) => void)[] = [];

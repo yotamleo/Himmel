@@ -1,13 +1,13 @@
 // HIMMEL-4400: the manual checklist for the config UI (PR 1841, bundles), automated.
 // Items 1-7 are the checklist; the last test is the safety contract.
 import { test, expect, type Page } from "@playwright/test";
-import { boot, BUNDLES, HIMMEL_ID, type Harness, type Variant } from "./fixtures";
+import { boot, BUNDLES, HIMMEL_ID, type BootOpts, type Harness, type Variant } from "./fixtures";
 
 let h: Harness;
 test.afterEach(async () => { await h?.stop(); });
 
-async function open(page: Page, v: Variant = {}) {
-  h = await boot(v);
+async function open(page: Page, v: Variant = {}, o: BootOpts = {}) {
+  h = await boot(v, o);
   await page.goto(h.url);
   await page.locator("#inventory .bhead").first().waitFor();
 }
@@ -134,9 +134,9 @@ test("header without feed.himmel reads version unknown, never blank", async ({ p
   await expect(page.locator("header.top")).toContainText("version unknown (feed has no himmel identity)");
 });
 
-test("rail page links are [Config]; Config is current and the hash is #/config", async ({ page }) => {
+test("rail page links are [Config, Health]; Config is current and the hash is #/config", async ({ page }) => {
   await open(page);
-  expect(await page.locator("nav.pages a").allTextContents()).toEqual(["Config"]);
+  expect(await page.locator("nav.pages a").allTextContents()).toEqual(["Config", "Health"]);
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
   expect(await page.evaluate(() => location.hash)).toBe("#/config");
 });
@@ -144,5 +144,122 @@ test("rail page links are [Config]; Config is current and the hash is #/config",
 test("at 390 px the page does not scroll horizontally", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await open(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+// HIMMEL-4405 PR-b: the Health page.
+const LEDGER = [
+  { ts: "2026-10-05T01:00:00Z", leg: "old", verdict: "SKIPPED-BANK", five_hour: "91.0", seven_day: "77.0", age: "3", degraded: false },
+  { ts: "2026-10-05T02:00:00Z", leg: "l", verdict: "PROCEED", five_hour: "22.0", seven_day: "86.0", age: "12", degraded: false },
+  { ts: "2026-10-05T02:30:00Z", leg: "claudex", verdict: "PROCEED", five_hour: "", seven_day: "", age: "", degraded: false },
+];
+const PAGE_ALERT = { labels: { alertname: "E2EPageAlert", severity: "page" }, annotations: { summary: "e2e-page-alert-summary" } };
+const SECTIONS = ["Is himmel healthy?", "What is broken, and what do I do", "Scheduled jobs", "Legs and the usage bank", "Search and graph freshness"];
+
+async function openHealth(page: Page, v: Variant = {}, o: BootOpts = {}) {
+  await open(page, v, o);
+  await page.locator("nav.pages a", { hasText: "Health" }).click();
+  await page.locator("#verdict .word").waitFor();
+}
+const verdictWord = (page: Page) => page.locator("#verdict .word");
+
+test("health: Config to Health to browser back; aria-current follows; one header on both", async ({ page }) => {
+  await open(page);
+  expect(await page.locator("nav.pages a").allTextContents()).toEqual(["Config", "Health"]);
+  await page.locator("nav.pages a", { hasText: "Health" }).click();
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Health");
+  expect(await page.evaluate(() => location.hash)).toBe("#/health");
+  await expect(page.locator("header.top")).toHaveCount(1);
+  await expect(page.locator("header.top")).toContainText(HIMMEL_ID.describe);
+  await page.goBack();
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
+  await expect(page.locator("#inventory .bhead").first()).toBeVisible();
+});
+
+test("health: the five sections appear in spec order", async ({ page }) => {
+  await openHealth(page);
+  expect(await page.locator("main h2").allTextContents()).toEqual(SECTIONS);
+});
+
+test("health: fail first with remedy; open in Config lands on the row", async ({ page }) => {
+  await openHealth(page, { failDetail: "e2e-fail-detail" });
+  const rows = page.locator("#broken .hrow");
+  expect(await rows.locator(".id").allTextContents()).toEqual(["guard-fail", "guard-warn"]);
+  await expect(rows.first()).toContainText("e2e-fail-detail");
+  await expect(rows.first()).toContainText("fix-guard-cmd");
+  await expect(rows.first().locator('[data-act="copy"]')).toBeVisible();
+  await rows.first().locator('[data-act="open-config"]').click();
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
+  await expect(page.locator("#q")).toHaveValue("guard-fail");
+  await expect(page.locator("#inventory .row-head", { hasText: "guard-fail" })).toBeVisible();
+});
+
+test("health: the verdict names its inputs; cadence jobs and search rows come from the feed", async ({ page }) => {
+  await openHealth(page);
+  await expect(verdictWord(page)).toHaveText("Act now");
+  await expect(page.locator("#verdict")).toContainText("1 fail · 1 warn");
+  await expect(page.locator("#jobs")).toContainText("luna-pipeline");
+  await expect(page.locator("#jobs")).toContainText("armed e2e");
+  await expect(page.locator("#jobs")).toContainText("ran-e2e-evidence");
+  await expect(page.locator("#search")).toContainText("qmd-binary");
+  await expect(page.locator("#search")).toContainText("C45-e2e-hit");
+});
+
+test("health: bank card shows the newest row with bank numbers; I2 the ledger is never appended; the card follows the fixture", async ({ page }) => {
+  await openHealth(page, {}, { ledger: LEDGER });
+  const bank = page.locator("#bank");
+  await expect(bank).toContainText("Last bank preflight");
+  await expect(bank).toContainText("PROCEED");
+  await expect(bank).toContainText("86.0");
+  await expect(bank).toContainText("22.0");
+  await expect(bank).not.toContainText("SKIPPED-BANK"); // an older row, and the newest row has no bank numbers
+  expect(h.ledgerLines()).toBe(LEDGER.length);
+  h.writeLedger([{ ...LEDGER[1], seven_day: "55.5" }]);
+  await page.locator('[data-act="refresh-health"]').click();
+  await expect(bank).toContainText("55.5");
+  expect(h.ledgerLines()).toBe(1);
+});
+
+test("health: legs card shows the leg doc and its marker from the real parsers (BLOCKED flips it)", async ({ page }) => {
+  await openHealth(page, {}, { handover: { bullet: "- 03:00 LIVE — x" } });
+  const legs = page.locator("#legs");
+  await expect(legs).toContainText("HIMMEL-9999-N1-e2e-leg-RESUME.md");
+  await expect(legs.locator(".leg .mk")).toHaveText("LIVE");
+  h.setBullet("- 03:05 BLOCKED — y");
+  await page.locator('[data-act="refresh-health"]').click();
+  await expect(legs.locator(".leg .mk")).toHaveText("BLOCKED");
+});
+
+test("health: with the feed pending the verdict is No data and bank and legs still render (D2)", async ({ page }) => {
+  h = await boot({}, { ledger: LEDGER, handover: { bullet: "- 03:00 LIVE — x" }, feedDelayMs: 5000 });
+  await page.goto(h.url);
+  await page.evaluate(() => { location.hash = "#/health"; });
+  await expect(verdictWord(page)).toHaveText("No data");
+  await expect(page.locator("#bank")).toContainText("86.0");
+  await expect(page.locator("#legs")).toContainText("LIVE");
+  await expect(verdictWord(page)).toHaveText("Act now", { timeout: 20_000 }); // the feed lands, the verdict follows
+});
+
+test("health: a firing page alert makes the verdict Act now and shows its summary", async ({ page }) => {
+  await openHealth(page, { clean: true }, { prom: { alerts: [PAGE_ALERT] } });
+  await expect(verdictWord(page)).toHaveText("Act now");
+  await expect(page.locator("#verdict")).toContainText("alerts: 1 firing");
+  await expect(page.locator("#broken .alert")).toContainText("E2EPageAlert");
+  await expect(page.locator("#broken .alert")).toContainText("e2e-page-alert-summary");
+});
+
+test("health: every source absent leaves No data cards that name the source; verdict says alerts not checked (I3, I6)", async ({ page }) => {
+  await openHealth(page, { clean: true });
+  await expect(verdictWord(page)).toHaveText("All clear");
+  await expect(page.locator("#verdict")).toContainText("alerts not checked");
+  await expect(page.locator("#bank .nodata")).toContainText("bank-preflight ledger");
+  await expect(page.locator("#legs .nodata")).toContainText("fleet manifest");
+  await expect(page.locator("#verdict .nodata")).toContainText("monitoring tier not running");
+  expect(await page.locator("main h2").allTextContents()).toEqual(SECTIONS);
+});
+
+test("health: at 390 px the page does not scroll horizontally", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await openHealth(page, {}, { ledger: LEDGER, handover: { bullet: "- 03:00 LIVE — x" }, prom: { alerts: [PAGE_ALERT] } });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
