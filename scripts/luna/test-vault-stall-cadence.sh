@@ -131,6 +131,7 @@ EOF
     git -C "$V" add -A
     GIT_COMMITTER_DATE="@$(($(date +%s) - 7200)) +0000" GIT_AUTHOR_DATE="@$(($(date +%s) - 7200)) +0000" \
         git -C "$V" commit -q -m seed
+    mkdir -p "$V/.git/hooks"   # an init without templates (as under the CI runner) has none
     cp "$TMP/fake-pre-commit" "$V/.git/hooks/pre-commit"
     : >"$TMP/sent.log"
     S="$TMP/state$N"
