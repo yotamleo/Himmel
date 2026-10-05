@@ -7,8 +7,7 @@ import type { CreateIssueResponse } from '../types.js';
 import { uploadAll } from './attach-helper.js';
 import { readBodyFile } from './body-file.js';
 import { parseLabels } from './labels.js';
-import { BUG_FREEZE, freezeApplies, pickFreezeVersion, todayIso } from '../freeze.js';
-import { assertVersionExists, fetchVersions } from './versions.js';
+import { assertVersionExists, earliestUnreleased, fetchVersions } from './versions.js';
 
 function collect(value: string, prev: string[]): string[] {
   return [...prev, value];
@@ -51,7 +50,7 @@ export function registerCreate(program: Command): void {
     .option('--labels <labels>', 'Comma-separated labels to set (e.g. a,b)')
     .option(
       '--fix-version <name>',
-      "Set the fixVersion (validated against the project's versions; an explicit value wins over the v1 bug freeze default)",
+      "Set the fixVersion (validated against the project's versions; an explicit value wins over the Bug default of the earliest unreleased version)",
     )
     .option('--project <key>', 'Project key (default: JIRA_PROJECT_KEY env var)')
     .option('--attach <path>', 'File to attach (repeatable)', collect, [])
@@ -95,29 +94,23 @@ export function registerCreate(program: Command): void {
           await assertVersionExists(options.project ?? projectKey(), options.fixVersion);
           fields['fixVersions'] = [{ name: options.fixVersion }];
         }
-        // The v1 bug freeze (HIMMEL-3411) defaults a post-cutoff Bug without the
-        // blocker label to the earliest unreleased version; an explicit
-        // --fix-version always wins, and an unreadable/empty version list files
-        // with no fixVersion rather than guess (HIMMEL-4489).
-        if (options.fixVersion === undefined && freezeApplies(options.type, labels, todayIso())) {
-          let frozenTo: string | undefined;
+        // A Bug without an explicit --fix-version defaults to the earliest
+        // unreleased version; an unreadable/empty version list files with no
+        // fixVersion rather than guess (HIMMEL-4489). The release gate is the
+        // v1-blocker label and priority, not the version default.
+        if (options.fixVersion === undefined && options.type.toLowerCase() === 'bug') {
+          let defaultVersion: string | undefined;
           try {
-            frozenTo = pickFreezeVersion(await fetchVersions(options.project ?? projectKey()));
+            defaultVersion = earliestUnreleased(await fetchVersions(options.project ?? projectKey()));
           } catch {
-            frozenTo = undefined;
+            defaultVersion = undefined;
           }
           // stderr: stdout stays the bare `Created KEY` line scripted callers capture.
-          if (frozenTo) {
-            fields['fixVersions'] = [{ name: frozenTo }];
-            console.error(
-              `jira: bug freeze (after ${BUG_FREEZE.cutoff}): fixVersion ${frozenTo}; ` +
-                `label ${BUG_FREEZE.blockerLabel} to keep it in ${BUG_FREEZE.v1Version}`,
-            );
+          if (defaultVersion) {
+            fields['fixVersions'] = [{ name: defaultVersion }];
+            console.error(`jira: Bug defaults to fixVersion ${defaultVersion} (earliest unreleased); --fix-version overrides`);
           } else {
-            console.error(
-              `jira: bug freeze (after ${BUG_FREEZE.cutoff}): no unreleased version after ` +
-                `${BUG_FREEZE.v1Version} found; filing with no fixVersion`,
-            );
+            console.error('jira: no unreleased version found; filing the Bug with no fixVersion');
           }
         }
 

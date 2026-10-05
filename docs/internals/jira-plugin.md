@@ -30,7 +30,7 @@ For Jira ops in this repo, default to the local CLI at
 |-------------|-----------------------------------------------------------------------------|------------------------------------------------------------------|
 | Get         | `node scripts/jira/dist/index.js get HIMMEL-N` (default includes description body, a `Labels:` line when the issue has any (HIMMEL-3610), and a `Fix versions:` line when it has any (HIMMEL-3713); add `--short` for header-only) | `getJiraIssue`                                                   |
 | List/search | `... list --jql "..."`; `... list --label <l>` filters by label (HIMMEL-243; composed into the built JQL, `--jql` still wins); `... list --labels` appends each issue's labels as a trailing comma-separated column (off by default, HIMMEL-3610 — on by default would break fixed-column consumers of the TSV output) | `searchJiraIssuesUsingJql`                                       |
-| Create      | `... create --type Story --title ... --desc ... [--labels a,b] [--fix-version v1.0.0]` (project auto-loaded from `.env`; pass `--project FOO` only to override per-call; `--labels` comma-separated, HIMMEL-243; `--fix-version` validated against the project's versions, HIMMEL-3713 — overridden by the v1 bug freeze on a post-cutoff Bug without the blocker label) | `createJiraIssue`                                                |
+| Create      | `... create --type Story --title ... --desc ... [--labels a,b] [--fix-version v1.0.0]` (project auto-loaded from `.env`; pass `--project FOO` only to override per-call; `--labels` comma-separated, HIMMEL-243; `--fix-version` validated against the project's versions, HIMMEL-3713 — a Bug without it defaults to the earliest unreleased version, HIMMEL-4489) | `createJiraIssue`                                                |
 | Edit        | `... edit HIMMEL-N --title ... --desc ... [--labels a,b]` (`--labels` is FULL-REPLACE: the set becomes the complete label list — no MCP `editJiraIssue` fallback needed for labels since HIMMEL-243) or `... edit HIMMEL-N --add-labels a,b` (APPENDS without reading/replacing the existing set, via Jira's atomic `update` operation; mutually exclusive with `--labels`, HIMMEL-3610); `... edit HIMMEL-N --fix-version v1.0.0` (FULL-REPLACE) or `--add-fix-version v1.0.0` (APPENDS via the same atomic `update` operation; mutually exclusive with `--fix-version`) — both validated against the project's versions, failing non-zero and naming the project on an unknown version name (HIMMEL-3713) | `editJiraIssue`                                                  |
 | Comment     | `... comment HIMMEL-N "text"`                                               | `addCommentToJiraIssue`                                          |
 | Comments    | `... comments HIMMEL-N [--last N]` (HIMMEL-3162 — read path; author/created/body oldest-first, ADF rendered to plain text) | (none — MCP has no comment read) |
@@ -52,7 +52,6 @@ For Jira ops in this repo, default to the local CLI at
 | Roadmap     | `... roadmap fields [--json]` / `... roadmap set HIMMEL-N [--readiness 0-4] [--theme T] [--goals G1,G3] [--impact 1-5] [--alignment N] [--effort XS\|S\|M\|L\|XL [--guard]] [--audit-date D] [--audit-evidence URL] [--close-candidate yes\|no] [--no-roi]` / `... roadmap get HIMMEL-N` / `... roadmap export --out F.json` / `... roadmap sync-sprints [--board N] [--dry-run]` (HIMMEL-3890; fields resolved by name, ROI = impact × alignment × confidence ÷ effort recomputed after every set; `sync-sprints` gives each dated unreleased fixVersion a same-named sprint carrying its dates and moves its open issues in — an issue on several dated versions goes to the earliest-releasing one — and `--dry-run` exits 1 on drift) | (none) |
 | Rank        | `... rank HIMMEL-N --before\|--after HIMMEL-M` / `... rank --file order.txt` (HIMMEL-3890; Agile `PUT /issue/rank`, the file ranks top-down in chunks of 50) | (none) |
 | Resolution  | `... resolution HIMMEL-N` (HIMMEL-3890; re-runs the current status's self-transition so the workflow post-function sets or clears the resolution — resolution is not on the edit screen) | (none) |
-| Bug freeze  | `... freeze-check [--project KEY] [--limit N]` (HIMMEL-3411; Bugs created after the freeze cutoff in `v1.0.0` without `v1-blocker`; exit 1 if any) | (none) |
 
 **Use MCP only when the plugin lacks the operation** (custom-field
 discovery, account-ID lookup via `lookupJiraAccountId`). Confluence now has
@@ -159,17 +158,14 @@ The sync reads reachability from the tags of the clone it runs in, so it must
 run from a clone of the repo whose releases it lists (`--repo` must match), and
 `--apply` refuses when a published tag is missing locally (`git fetch --tags`).
 
-**The v1 bug freeze (HIMMEL-3411).** Bugs filed after `2026-09-25` default to
-the earliest unreleased version after `v1.0.0`, not `v1.0.0` itself (read from the
-project's versions; HIMMEL-4489). `create --type Bug` sets that fixVersion and
-prints one stderr line saying so, unless `--labels` includes `v1-blocker`, which
-leaves the version unset so the bug can be added to `v1.0.0` by hand. An explicit
-`--fix-version` always wins, and when no unreleased version can be read the bug is
-filed with no fixVersion and a warning. Other types are untouched. `node <repo-root>/scripts/jira/dist/index.js freeze-check` lists the
-Bugs created after the cutoff that carry `v1.0.0` without `v1-blocker` (the
-freeze's leaks), and exits 1 if there are any. The cutoff date, both version
-names and the label live in one constant, `BUG_FREEZE` in
-`scripts/jira/src/freeze.ts`.
+**Bug default fixVersion (HIMMEL-4489).** `create --type Bug` without
+`--fix-version` sets the earliest unreleased, unarchived version from the project's
+versions and prints one stderr line saying so; an explicit `--fix-version` always
+wins, and when no unreleased version can be read the Bug is filed with no
+fixVersion and a warning. Other types are untouched. There is no date cutoff and
+no deferral of every Bug (the HIMMEL-3411 v1 bug freeze and its `freeze-check` op
+were removed by operator ruling 2026-10-05): the release gate is the `v1-blocker`
+label and priority, which the board shows.
 
 ## Confluence CLI (HIMMEL-437)
 

@@ -17,6 +17,16 @@ interface JiraVersion {
   releaseDate?: string;
 }
 
+/**
+ * The default fixVersion for a new Bug (HIMMEL-4489): the earliest version, in
+ * the project's sequence order, that is neither released nor archived.
+ */
+export function earliestUnreleased(
+  versions: Array<{ name: string; released?: boolean; archived?: boolean }>,
+): string | undefined {
+  return versions.find((v) => !v.released && !v.archived)?.name;
+}
+
 export interface VersionCreateOptions {
   description?: string;
   startDate?: string;
