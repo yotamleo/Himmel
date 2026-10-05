@@ -450,6 +450,18 @@ HAS_XARGS=0
 set_rule() {
     local script="$1" sub="$2" hassub="$3" scrb
     scrb=$(_base "$script")
+    # An existing symlink (chain) to bank-lift.sh runs it under another name.
+    if [ "$hassub" = 1 ] && ! _is_dynamic "$script"; then
+        local e n=0 tgt
+        e=$(_expand "$script")
+        while [ "$n" -lt 8 ] && [ -L "$e" ]; do
+            case "$e" in '?/'*) break ;; esac
+            tgt=$(readlink "$e" 2>/dev/null) || break
+            case "$tgt" in /*) e="$tgt" ;; *) e="${e%/*}/$tgt" ;; esac
+            n=$((n+1))
+        done
+        [ "$n" -gt 0 ] && scrb=$(_base "$e")
+    fi
     if [ "$scrb" = "_bank_lift_cmd" ] || { ! _is_dynamic "$scrb" && _name_matches "$scrb" bank-lift.sh; }; then
         if [ "$hassub" = 1 ]; then
             if _is_dynamic "$sub" || _name_matches "$sub" set; then deny "\`bank-lift.sh set\` is operator-only"; fi
@@ -516,6 +528,16 @@ check_copy() {
         return 0
     fi
     [ "$verb" = ln ] && sym=1
+    # A copy/link/rename of bank-lift.sh runs `set` under another name. Only
+    # a source that spells "bank": a bare `*.sh` glob keeps every name, so
+    # bank-lift.sh still matches by name wherever it lands.
+    for src in ${pos[@]+"${pos[@]}"}; do
+        srcb=$(_base "$src")
+        case "$(_lower "$srcb")" in *bank*) ;; *) continue ;; esac
+        if ! _is_dynamic "$srcb" && _name_matches "$srcb" bank-lift.sh; then
+            deny "$verb makes an alias of bank-lift.sh ($src)"
+        fi
+    done
     # Aliasing: a link TO the lift or its directory lets a later write reach
     # it without naming it.
     if [ "$sym" = 1 ]; then
@@ -926,6 +948,20 @@ check_clause() {
                 for a in "$@"; do
                     case "$(lift_ref "$a")" in LIFT|STATE) deny "find runs actions over a bank-lift path ($a)" ;; esac
                 done
+                # -exec/-execdir/-ok/-okdir launch a command: check it as a clause.
+                local -a fx=()
+                local inx=0
+                for a in "$@"; do
+                    if [ "$inx" = 1 ]; then
+                        case "$a" in
+                            ';'|'+') [ "${#fx[@]}" -gt 0 ] && check_clause "$depth" 0 "${fx[@]}"; fx=(); inx=0 ;;
+                            *) fx+=("$a") ;;
+                        esac
+                        continue
+                    fi
+                    case "$a" in -exec|-execdir|-ok|-okdir) inx=1 ;; esac
+                done
+                [ "${#fx[@]}" -gt 0 ] && check_clause "$depth" 0 "${fx[@]}"
             fi ;;
         *)
             if [[ "$cmd" =~ $MENTION_RE ]]; then

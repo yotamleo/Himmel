@@ -339,6 +339,22 @@ row "cat <<EOF body names bank-lift (ctrl)" allow "cat <<EOF
 run bank-lift.sh set 10 at \$(date)
 EOF"
 
+echo "== review round 3 (codex-1, codex-2) =="
+# find -exec/-execdir/-ok run a command: it is a launcher like xargs.
+row "find -exec bash bank-lift.sh set"     deny  "find . -maxdepth 0 -exec bash scripts/lib/bank-lift.sh set \\;"
+row "find -execdir bank-lift.sh set {} +"  deny  "find . -maxdepth 0 -execdir scripts/lib/bank-lift.sh set {} +"
+row "find -ok sh -c set"                   deny  "find . -maxdepth 0 -ok sh -c 'bash scripts/lib/bank-lift.sh set 5' \\;"
+row "find -exec bank-lift.sh show (ctrl)"  allow "find . -maxdepth 0 -exec bash scripts/lib/bank-lift.sh show \\;"
+row "find -exec cat (control)"             allow "find /tmp -name x -exec cat {} \\;"
+# An alias of bank-lift.sh: making one, or running an existing symlink.
+ln -s "$T/lib/bank-lift.sh" "$T/lifthelper"
+ln -s "$T/lifthelper" "$T/lifthelper2"
+row "ln -s bank-lift.sh alias"             deny  "ln -s \"\$PWD/scripts/lib/bank-lift.sh\" /tmp/lift-helper; bash /tmp/lift-helper set"
+row "cp bank-lift.sh alias"                deny  "cp scripts/lib/bank-lift.sh $T/helper"
+row "existing symlink alias set"           deny  "bash $T/lifthelper set 5"
+row "symlink chain alias set (direct)"     deny  "$T/lifthelper2 set 5"
+row "existing symlink alias show (ctrl)"   allow "bash $T/lifthelper show"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. rm rows are the ALLOW control (removing a lift only
