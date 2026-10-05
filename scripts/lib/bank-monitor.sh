@@ -65,6 +65,8 @@ valid_pct "$seven" || exit 0
 # +00:00 offset); a bare epoch is accepted too. Anything else reads as unknown.
 seven_reset_epoch="$(jq -r '.seven_day.resets_at | if type == "number" then floor elif type == "string" then (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | try fromdateiso8601 catch empty) else empty end' "$BANK_CACHE_FILE" 2>/dev/null)" || seven_reset_epoch=""
 case "$seven_reset_epoch" in ''|*[!0-9]*) seven_reset_epoch="" ;; esac
+five_reset_epoch="$(jq -r '.five_hour.resets_at | if type == "number" then floor elif type == "string" then (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | try fromdateiso8601 catch empty) else empty end' "$BANK_CACHE_FILE" 2>/dev/null)" || five_reset_epoch=""
+case "$five_reset_epoch" in ''|*[!0-9]*) five_reset_epoch="" ;; esac
 real_now="$now"
 
 # HIMMEL-1712: a cache stamped by a different account is the same
@@ -205,8 +207,12 @@ if [ -n "$seven_reset_epoch" ] && [ -n "$seven_rate_raw" ] && [ "$seven_reset_ep
     reset_in="$(awk -v reset="$seven_reset_epoch" -v now="$real_now" 'BEGIN { printf "%.1fh", (reset - now) / 3600 }')"
     unspent="$(awk -v seven="$seven" -v rate="$seven_rate_raw" -v reset="$seven_reset_epoch" -v now="$real_now" 'BEGIN { value = 100 - (seven + rate * (reset - now) / 3600); if (value < 0) value = 0; printf "%.1f", value }')"
 fi
+five_reset_in='?'
+if [ -n "$five_reset_epoch" ] && [ "$five_reset_epoch" -gt "$real_now" ]; then
+    five_reset_in="$(awk -v reset="$five_reset_epoch" -v now="$real_now" 'BEGIN { printf "%.1fh", (reset - now) / 3600 }')"
+fi
 if [ "$spare_only" -eq 1 ]; then
-    printf 'seven_day_reset_in=%s unspent_at_reset=%s\n' "$reset_in" "$unspent"
+    printf 'seven_day_reset_in=%s unspent_at_reset=%s five_hour_reset_in=%s\n' "$reset_in" "$unspent" "$five_reset_in"
     exit 0
 fi
 
@@ -242,7 +248,7 @@ if [ -n "$codex_five" ] || [ -n "$codex_seven" ]; then
 fi
 
 if [ "$emit" -eq 1 ]; then
-    printf 'BANK %s rate five_hour=+%s/h seven_day=+%s/h ttc=%sh state=%s five_hour_ttc=%sh seven_day_ttc=%sh codex=%s seven_day_reset_in=%s unspent_at_reset=%s\n' \
-        "$clock" "$five_rate" "$seven_rate" "$ttc" "$state" "$five_ttc" "$seven_ttc" "$codex" "$reset_in" "$unspent"
+    printf 'BANK %s rate five_hour=+%s/h seven_day=+%s/h ttc=%sh state=%s five_hour_ttc=%sh seven_day_ttc=%sh codex=%s seven_day_reset_in=%s unspent_at_reset=%s five_hour_reset_in=%s\n' \
+        "$clock" "$five_rate" "$seven_rate" "$ttc" "$state" "$five_ttc" "$seven_ttc" "$codex" "$reset_in" "$unspent" "$five_reset_in"
 fi
 exit 0
