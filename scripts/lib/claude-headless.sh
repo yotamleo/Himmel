@@ -460,7 +460,11 @@ DEDUPED_PATH="$(dedupe_path "$PATH")"
     _nd=$(</proc/net/dev); _nd=${_nd#*$'\n'}; _nd=${_nd#*$'\n'}; _re=$'^[[:space:]]*lo:[^\n]*$'
     # Exact names only (HIMMEL-4461): a substring strip would also erase a name
     # built from the two kept ones, e.g. ANTHROPIC_BASE_URLANTHROPIC_API_KEY.
-    [[ $_nd =~ $_re ]] && { _k=; for _v in "${!ANTHROPIC_@}"; do
+    # Sentinel: a readonly `_v` aborts `for _v` and leaves _k empty, a nameref
+    # walks values; the self-named assignment errors on the first and `${!_v}`
+    # exposes the second, so the keep branch is skipped and _l stays non-empty.
+    _v=_v
+    [[ $_nd =~ $_re && ${!_v} == _v ]] && { _k=; for _v in "${!ANTHROPIC_@}"; do
         [[ $_v == ANTHROPIC_BASE_URL || $_v == ANTHROPIC_API_KEY ]] || _k+=$_v; done
       _l=$_k${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}; }
   fi

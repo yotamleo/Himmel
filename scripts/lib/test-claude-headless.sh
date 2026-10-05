@@ -440,10 +440,10 @@ rm -f "$LIVE_DIR"/*.json
 # (ANTHROPIC_BASE_URLANTHROPIC_API_KEY) must not vanish from the gate the way a
 # substring strip lets it. Needs a loopback-only netns (unshare -rn).
 # shellcheck disable=SC2030,SC2031  # per-launch subshell exports, as in shadow_launch
-seam_launch() { # <tag> [extra variable name] -> prints launched|refused
+seam_launch() { # <tag> [extra variable name] [startup file] -> prints launched|refused
   local art="$W/art19-$1"; rm -f "$art"
   ( export NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=k
-    export BASH_ENV="$SH18/funcs.sh" SHADOW_MARK="$W/mark19-$1"
+    export BASH_ENV="${3:-$SH18/funcs.sh}" SHADOW_MARK="$W/mark19-$1"
     [ -n "${2:-}" ] && export "$2=x"
     FAKE_ARTIFACT="$art" HIMMEL_CLAUDE_BIN="$FAKE_OK" unshare -rn bash "$SUT" \
       --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" \
@@ -451,6 +451,10 @@ seam_launch() { # <tag> [extra variable name] -> prints launched|refused
       --prompt-file "$PROMPT_FILE" ) >/dev/null 2>"$W/err19-$1"
   [ -f "$art" ] && echo launched || echo refused
 }
+# A readonly gate loop variable (set before the gate, here by the startup file)
+# makes `for _v` fail without discarding the line; the gate must refuse, not
+# launch on an empty survivor list.
+{ cat "$SH18/gate.sh"; arm18 'unset(){ :; }; return(){ :; }; readonly _v='; } > "$SH18/ro19.sh"
 if ! unshare -rn true 2>/dev/null; then
   SKIP=$((SKIP+1)); echo "skip - 19 (no unshare -rn)"
 else
@@ -463,8 +467,9 @@ else
   else
     check "19 control: seam keeps exactly base URL + key, launch happens" "launched" "$r19"
     check "19 concatenated kept names under the seam: launch refused" "refused" "$(seam_launch cat ANTHROPIC_BASE_URLANTHROPIC_API_KEY)"
-    check "19 shadows armed past the seam guard (ctl cat)" "yes yes" \
-      "$([ -f "$W/mark19-ctl" ] && printf yes || printf no) $([ -f "$W/mark19-cat" ] && printf yes || printf no)"
+    check "19 readonly loop variable under the seam: launch refused" "refused" "$(seam_launch rov ANTHROPIC_MODEL "$SH18/ro19.sh")"
+    check "19 shadows armed past the seam guard (ctl cat rov)" "yes yes yes" \
+      "$([ -f "$W/mark19-ctl" ] && printf yes || printf no) $([ -f "$W/mark19-cat" ] && printf yes || printf no) $([ -f "$W/mark19-rov" ] && printf yes || printf no)"
   fi
 fi
 rm -f "$LIVE_DIR"/*.json

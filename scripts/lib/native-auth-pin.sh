@@ -69,8 +69,10 @@
 # native_auth_pin_env returns non-zero when a target variable is still set. Since
 # HIMMEL-4461 that verdict rides on no builtin: enumeration and verification are
 # expansions and the status is a final `[[ ]]` (no `return`), so a function or
-# alias shadowing `unset`/`return`/`builtin`/`compgen` can stop the strip but not
-# hide it. The limits below (aliased keywords, BASH_ENV DEBUG traps) still apply
+# alias shadowing `unset`/`return`/`builtin`/`compgen`, or a readonly/nameref
+# loop variable set beforehand, can stop the strip but not hide it. A shadowed
+# `unset` is still CALLED inside the function, though, and can rewrite its locals
+# (e.g. `_failed`, `_keep_mock`) -- so the rc is advisory. The limits below (aliased keywords, BASH_ENV DEBUG traps) still apply
 # to the function, and a launch must not depend on a function call, so every
 # caller ALSO gates the LAUNCH on a condition built only from shell keywords and
 # expansions (`[[ ]]`, `case`, `&&`, `${!PREFIX*}`, `$(<file)`) -- no function
@@ -128,11 +130,12 @@ native_auth_pin_env() {
   # No external tool, no builtin in the decision path and no `return`: the
   # enumeration and the verification are `${!X@}` expansions, the checks are
   # `[[ ]]` / case / `for`, and the verdict is the final `[[ ]]`'s status
-  # (HIMMEL-4461). The one builtin that acts is `unset`; a shadowed `unset` can
-  # stop the strip but not hide it -- the expansion pass sees the survivor and
-  # the pin returns non-zero. Callers still gate the launch on the keyword-only
-  # LAUNCH GATE in the file header (defence in depth, and the limits listed there
-  # -- aliased keywords, BASH_ENV DEBUG traps -- apply to this function too).
+  # (HIMMEL-4461). The one builtin that acts is `unset`; a shadowed `unset` that
+  # only no-ops stops the strip without hiding it -- the expansion pass sees the
+  # survivor and the pin returns non-zero. One that also rewrites this function's
+  # locals can hide it, which is why callers gate the launch on the keyword-only
+  # LAUNCH GATE in the file header (the limits listed there -- aliased keywords,
+  # BASH_ENV DEBUG traps -- apply to this function too).
   unset -f unset 2>/dev/null
   local IFS=$'\n' _name _failed _keep_mock _nd _line _n _nonlo _sawlo
   # Plain assignments, not `local` initialisers: a shadowed `local` must not leave
@@ -169,6 +172,14 @@ native_auth_pin_env() {
   # and every canonical name -- any case mix -- starts with one of these four
   # letters. Each expansion still scans bash's whole variable table (as compgen
   # does), so a huge environment stays slow -- measured, deferred (HIMMEL-4474).
+  # Loop-variable sentinel (HIMMEL-4461): a readonly `_name` set before the call
+  # makes `local` fail and `for _name` abort silently, and a nameref `_name`
+  # (with `local` shadowed) walks VALUES instead of names. A plain self-named
+  # assignment exposes both -- it errors out on a readonly (aborting the call,
+  # non-zero) and `${!_name}` names the target of a nameref -- so either one
+  # fails closed here instead of returning 0 from an empty loop.
+  _name=_name
+  [[ ${!_name} == _name ]] || _failed=1
   for _name in "${!A@}" "${!a@}" "${!C@}" "${!c@}"; do
     case "$_name" in
       [Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_* | [Cc][Ll][Aa][Uu][Dd][Ee]_[Cc][Oo][Dd][Ee]_[Uu][Ss][Ee]_*) ;;
@@ -183,7 +194,10 @@ native_auth_pin_env() {
   done
   # Independent verification by the same expansions: anything still set (a no-op
   # `unset`, a readonly) is a refusal. Exact-name matches only -- never substring
-  # removal, which would erase a name built from the two kept ones.
+  # removal, which would erase a name built from the two kept ones. The sentinel
+  # is re-checked: the `unset` above is the one call a shadow could run inside.
+  _name=_name
+  [[ ${!_name} == _name ]] || _failed=1
   for _name in "${!A@}" "${!a@}" "${!C@}" "${!c@}"; do
     case "$_name" in
       [Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_* | [Cc][Ll][Aa][Uu][Dd][Ee]_[Cc][Oo][Dd][Ee]_[Uu][Ss][Ee]_*) ;;

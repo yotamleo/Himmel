@@ -182,6 +182,35 @@ r=$(bash -c '
   native_auth_pin_env; echo $?' _ "$lib" 2>/dev/null)
 check "T16c alias unset/builtin/compgen: mixed-case name -> pin refuses" "$(nz "$r")" "refused"
 
+# A readonly or nameref loop variable set BEFORE the call must not blind the
+# enumeration: `local` fails on a readonly name and a shadowed `local` leaves a
+# nameref in force, so `for _name` either aborts or walks values instead of
+# names. lr prints launched when the pin returned 0, refused otherwise
+# (including an aborted subshell).
+lr(){ [ "$1" = 0 ] && echo launched || echo refused; }
+r=$( (
+  export Anthropic_Base_Url=evil ANTHROPIC_BASE_URL=https://evil
+  readonly _name=x
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T18 readonly loop variable: pin refuses" "$(lr "$r")" "refused"
+r=$( (
+  export Anthropic_Base_Url=evil
+  local(){ :; }; declare -n _name
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T18b shadowed local + nameref loop variable: pin refuses" "$(lr "$r")" "refused"
+r=$( (
+  export Anthropic_Base_Url=evil
+  local(){ :; }
+  . "$lib"
+  native_auth_pin_env; echo $?; printf '%s' "${Anthropic_Base_Url-gone}"
+) 2>/dev/null)
+check "T18 control: shadowed local alone still strips (rc 0, var gone)" "$r" "0
+gone"
+
 # Substring removal (HIMMEL-4461 follow-up): with the seam on, a name built from
 # the two kept names must not vanish from the verification.
 r=$(unshare -rn bash -c '
