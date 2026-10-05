@@ -1,0 +1,7 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "d=\"${FAKEKEY_MARKER_DIR:-/nonexistent}\"; env > \"$d/hook-env.txt\" && touch \"$d/session-start-hook-ran\"" } ] }
+    ]
+  }
+}

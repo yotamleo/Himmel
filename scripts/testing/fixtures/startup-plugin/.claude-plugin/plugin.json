@@ -1,0 +1,5 @@
+{
+  "name": "startup-fixture",
+  "version": "0.0.1",
+  "description": "Credential-free startup suite fixture (HIMMEL-4410): its SessionStart hook leaves a marker file."
+}
