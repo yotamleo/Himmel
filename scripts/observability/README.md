@@ -499,6 +499,34 @@ transcript is unreadable, never 0. To render this as a Grafana table, add an
 Infinity/JSON datasource pointed at that URL; the dashboard ships the stat
 tiles (Prometheus-backed) plus a text panel naming this endpoint.
 
+## Install on Linux (HIMMEL-4289)
+
+Opt-in: set `"observability": {"grafana": true}` in `~/.himmel/config.json`, then
+`himmelctl ensure observability-grafana` (or run
+`bash scripts/observability/install-grafana.sh install|status|uninstall` directly).
+Until opted in the item reads n/a, never red. macOS is deferred (HIMMEL-4406).
+
+It installs nothing as root. Pinned upstream tarballs (Prometheus 3.15.0,
+Grafana 13.2.3; amd64 and arm64) are downloaded to
+`${XDG_DATA_HOME:-~/.local/share}/himmel/observability`, verified against the
+sha256 pins in the script (a mismatch aborts before anything is installed), and
+run as three systemd **user** units, all bound to loopback:
+
+| Unit | Port | Role |
+|---|---|---|
+| `himmel-observability-prometheus.service` | 9090 | scrapes flow-exporter, evaluates `alerts.rules.yml`; capped at 30d / 5GB retention |
+| `himmel-observability-grafana.service` | 3000 | serves the provisioned `himmel-health` dashboard (anonymous Viewer; random admin password in a 0600 file) |
+| `himmel-observability-grafana-alert-hook.service` | 9878 | Bun receiver: Grafana can only POST webhooks, so this turns a firing/resolved alert into `cadence-alert.sh fail\|clear grafana-<alertname>` |
+
+Differences from the Windows stack: the contact point is the webhook above (one
+dedupe path and one log through `cadence-alert`, no Telegram variables), the
+`windows_exporter` scrape job is stripped (its target never exists on Linux, so
+`up == 0` would alert forever), and Grafana telemetry, update checks, news and
+external snapshots are off. Doctor C19 checks this stack only when the item is
+desired, comparing the stripped `prometheus.yml`, `alerts.rules.yml` and
+`dashboards/` against the install dir. `uninstall` disables and removes the
+units and the data dir.
+
 ## Install on Windows
 
 From a PowerShell session in the repo:

@@ -4016,6 +4016,7 @@ const PROBES = {
   'bridge-health': probeBridgeHealth,
   'bridge-persistence': probeBridgePersistence,
   'observability-stack': probeObservabilityStack,
+  'observability-grafana': (item, ctx) => require('./probes-observability.js').probeObservabilityGrafana(item, ctx, { scopeConfigPathToCtx, spawnBashProbe, probeTimeoutSecs }),
 };
 
 // Run the probe for one manifest item. ctx = { repoRoot, targetPath, scope,
