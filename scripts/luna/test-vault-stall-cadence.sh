@@ -5,7 +5,7 @@
 # secret fully matches a CLOSED machine-generated shape). Anything else alerts
 # with no commit, and no alert, log or state file ever carries the secret.
 #
-# Every fixture is a scratch git repo under mktemp; the live vault is never
+# Every fixture is a scratch git repo under a temp dir; the live vault is never
 # touched. Its .git/hooks/pre-commit is a small stand-in for the vault's
 # no-stash pre-commit wrapper: it honours each hook's `exclude:` in the
 # fixture's .pre-commit-config.yaml, runs the REAL shellcheck and the REAL
@@ -45,7 +45,8 @@ chmod +x "$TMP/sender.sh"
 cat >"$TMP/fake-pre-commit" <<'HOOK'
 #!/usr/bin/env bash
 cd "$(git rev-parse --show-toplevel)" || exit 2
-mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR)
+files=()
+while IFS= read -r f; do files+=("$f"); done < <(git diff --cached --name-only --diff-filter=ACMR)
 [ "${#files[@]}" -eq 0 ] && exit 0
 excl() { awk -v id="$1" '
     $0 ~ "- id: "id"$" { on = 1; next }
@@ -58,10 +59,10 @@ sc_ex="$(excl shellcheck)"; cj_ex="$(excl check-json)"
 sc_out=""; cj_out=""
 for f in "${files[@]}"; do
     case "$f" in
-        *.sh) if [ -z "$sc_ex" ] || ! printf '%s' "$f" | grep -Eq "$sc_ex"; then
+        *.sh) if [ -z "$sc_ex" ] || [ -z "$(printf '%s' "$f" | grep -E "$sc_ex")" ]; then
                   o="$(shellcheck "$f" 2>&1)" || sc_out="$sc_out$o"$'\n'
               fi ;;
-        *.json) if [ -z "$cj_ex" ] || ! printf '%s' "$f" | grep -Eq "$cj_ex"; then
+        *.json) if [ -z "$cj_ex" ] || [ -z "$(printf '%s' "$f" | grep -E "$cj_ex")" ]; then
                   python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" 2>/dev/null \
                       || cj_out="$cj_out$f: Failed to json decode (Expecting value)"$'\n'
               fi ;;
