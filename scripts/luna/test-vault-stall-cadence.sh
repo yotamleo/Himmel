@@ -557,5 +557,18 @@ assert_eq "T27 cron's shell sees the literal runner path" "$odd/vault-stall-cade
 HOME="$TMP/home" VAULT_STALL_CRONTAB="$TMP/crontab" VAULT_STALL_RUNNER_DIR="$odd" \
     HIMMEL_OBSERVABILITY_CONFIG="$TMP/obs.json" bash "$SUT" disarm >/dev/null 2>&1
 
+# --- T28 toml_regex refuses an empty regex (HIMMEL-4493) ----------------------
+# cmd_run cannot reach this (a benign finding always has a closed shape), so the
+# function is exercised directly; an empty ''''''  regex would allowlist everything.
+eval "$(sed -n '/^toml_regex() {/,/^}/p' "$SUT")"
+printf '[allowlist]\nregexes = [\n  '"'''^keep\$'''"',\n]\n' >"$TMP/t28.toml"
+rm -f "$TMP/t28.out"
+toml_regex "$TMP/t28.toml" "" "$TMP/t28.out"; rc=$?
+assert_eq "T28 empty regex refused with rc 4" "4" "$rc"
+assert_eq "T28 empty regex writes no edit" "no" "$([ -s "$TMP/t28.out" ] && echo yes || echo no)"
+toml_regex "$TMP/t28.toml" "^new\$" "$TMP/t28.out"; rc=$?
+assert_eq "T28 a non-empty regex is still added" "0" "$rc"
+assert_has "T28 the non-empty regex landed" "'''^new\$'''" "$(cat "$TMP/t28.out")"
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi
