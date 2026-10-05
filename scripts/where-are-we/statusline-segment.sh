@@ -86,6 +86,9 @@ now="$(date +%s)"
 # --- Active-handover marker (breadcrumb presence; offline, no node) ---------
 marker=""
 if [ -f "$ROOT/scripts/lib/handover-path.sh" ]; then
+    # HIMMEL-4420: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+    # shellcheck disable=SC1091
+    if . "$ROOT/scripts/lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
     # shellcheck source=/dev/null
     . "$ROOT/scripts/lib/handover-path.sh" 2>/dev/null || true
     hroot=""

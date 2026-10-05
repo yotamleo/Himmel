@@ -30,6 +30,11 @@ FAILED=0
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# HIMMEL-4420: handover-link.sh now loads .env HANDOVER_DIR when the env lacks
+# it; pin an empty .env so the unset-HANDOVER_DIR cases ignore the operator's.
+mkdir -p "$TMP/dotenv-cache"; : > "$TMP/dotenv-cache/.env"
+export HIMMELCTL_CACHE_DIR="$TMP/dotenv-cache"
+
 # T1: status (default) on mode A → rc=0, mentions "mode:       A"
 unset HANDOVER_DIR
 out=$(bash "$CLI" 2>&1)

@@ -48,6 +48,9 @@ done
 [ -f "$DOC" ] || { echo "ready-go-latency: doc not found: $DOC" >&2; exit 2; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# HIMMEL-4420: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+# shellcheck disable=SC1091
+if . "$HERE/../../../lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
 # shellcheck source=../../../lib/handover-path.sh
 . "$HERE/../../../lib/handover-path.sh"
 ROOT=$(handover_root) || { echo "ready-go-latency: cannot resolve the handover root (set HANDOVER_DIR)" >&2; exit 2; }
