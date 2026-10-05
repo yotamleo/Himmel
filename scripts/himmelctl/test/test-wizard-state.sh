@@ -268,7 +268,8 @@ echo "ok: caseE — migration membership uses the authoritative invocation scope
 # ── caseF (HIMMEL-4435): the pre-commit framework item is wanted only when a
 # luna vault is selected or the contributor overlay is on; a vault=none
 # starter install places native gates and must not list it. ─────────────────
-outF=$(HOME="$work/homeF" HIMMELCTL_CACHE_DIR="$(winpath "$work/cacheF")" "$node_bin" -e "
+mkdir -p "$work/tgtF-without"
+outF=$(cd "$work/tgtF-without" && HOME="$work/homeF" HIMMELCTL_CACHE_DIR="$(winpath "$work/cacheF")" "$node_bin" -e "
 const state = require('$state_lib_w');
 const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
 const it = manifest.items.find((i) => i.id === 'pre-commit');
@@ -283,5 +284,26 @@ console.log(JSON.stringify({
 echo "$outF" | jq -e '.none == false and .vault == true and .contrib == true' >/dev/null \
   || fail "caseF: pre-commit must be unwanted for vault=none, wanted with a vault or devOverlay (got: $outF)"
 echo "ok: caseF — pre-commit framework item is not wanted for a vault=none starter install"
+
+# HIMMEL-4440: a core target with vault=none that ships its OWN
+# .pre-commit-config.yaml still needs the framework (adopt.sh keeps the
+# uv/pipx check for it) — himmelctl must agree. Project scope only; the
+# target is the cwd, the same key state.js's targetKeyForScope uses.
+mkdir -p "$work/tgtF-with" "$work/tgtF-without"
+: > "$work/tgtF-with/.pre-commit-config.yaml"
+membershipF() {
+  (cd "$1" && "$node_bin" -e "
+const state = require('$state_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const it = manifest.items.find((i) => i.id === 'pre-commit');
+const base = { role: 'adopter', tier: 'standard', scope: 'project', handover: { mode: 'none', path: '' }, pluginSet: 'lean', lanes: [], alwaysOn: false, vault: { mode: 'none', path: '' } };
+console.log(state.itemMembership(it, 'core', 'project', base));
+")
+}
+withF=$(membershipF "$work/tgtF-with")
+withoutF=$(membershipF "$work/tgtF-without")
+[[ "$withF" == "true" && "$withoutF" == "false" ]] \
+  || fail "caseF: vault=none core target with its own .pre-commit-config.yaml must want pre-commit, without it n/a (got with=$withF without=$withoutF)"
+echo "ok: caseF — pre-commit wanted for a vault=none core target that ships its own .pre-commit-config.yaml"
 
 echo "PASS"
