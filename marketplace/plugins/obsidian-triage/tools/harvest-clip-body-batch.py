@@ -860,7 +860,9 @@ class LocalHeadlessClient:
             raise BackendNotImplemented("scrapling is not installed")
         page = fetch(url, headless=True, timeout=self.TIMEOUT_MS,
                      cookies=load_jar_cookies(self.cookie_dir, url),
-                     page_setup=_block_private_requests)
+                     page_setup=_block_private_requests,
+                     # a service worker's traffic bypasses every route/CDP guard
+                     additional_args={"service_workers": "block"})
         # defence in depth: _block_private_requests already aborted any request to
         # a private host; refuse to ingest a page that still landed on one
         final_host = (urlparse(str(getattr(page, "url", "") or url)).hostname or "").lower()

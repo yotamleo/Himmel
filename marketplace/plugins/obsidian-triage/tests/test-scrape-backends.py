@@ -311,6 +311,8 @@ rec = FetchRecorder()
 install_local(rec)
 mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
 setup = rec.calls[0][1].get("page_setup")
+check("local-headless: service workers are blocked at context creation",
+      rec.calls[0][1].get("additional_args") == {"service_workers": "block"})
 check("local-headless: fetch registers a page_setup hook (route installed before navigation)", callable(setup))
 if callable(setup):
     bp = FakeBrowserPage()
