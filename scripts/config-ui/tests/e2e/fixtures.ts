@@ -23,7 +23,9 @@ const row = (id: string, health: string, bundle: string, extra: Record<string, u
 });
 const toggle = (action: string, target: string) => ({ control: { class: "toggle", action, target } });
 
-export type Variant = { unmapped?: boolean; breakOrder?: boolean };
+export const HIMMEL_ID = { version: "0.9.9", describe: "v0.9.9-3-gabc", commit: "0123456789abcdef0123456789abcdef01234567", checkout: "/srv/himmel-wt" };
+
+export type Variant = { unmapped?: boolean; breakOrder?: boolean; noIdentity?: boolean };
 
 export function buildFeed(v: Variant = {}) {
   const rows: ReturnType<typeof row>[] = [];
@@ -44,6 +46,7 @@ export function buildFeed(v: Variant = {}) {
   const count = (h: string) => rows.filter((r) => r.health === h).length;
   return {
     schema: "himmel-config-feed/1", generatedAt: "2026-10-04T14:02:00Z", target: { scope: "user", path: "/x" },
+    ...(v.noIdentity ? {} : { himmel: HIMMEL_ID }),
     base: "/b", profileCache: true, bundles, rows,
     summary: { total: rows.length, ok: count("ok"), warn: count("warn"), fail: count("fail"), off: count("off"), info: 0 },
   };

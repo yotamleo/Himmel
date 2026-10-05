@@ -139,6 +139,17 @@ const sets = (feed) => {
   return { rows, triage, controls: rows.filter((r) => r.control.class === "toggle") };
 };
 
+// The one shared header, from the feed envelope only (feed.himmel, feed.generatedAt). A feed from before HIMMEL-4403 has no himmel.
+export function renderHeader(feed) {
+  const h = feed && feed.himmel;
+  const t = feed && feed.generatedAt ? `<span><span class="k">feed</span> ${esc(String(feed.generatedAt).replace("T", " ").slice(0, 16))}</span>` : "";
+  if (!h) return `<span class="ver unk">version unknown (feed has no himmel identity)</span>${t}`;
+  const c = String(h.commit ?? "");
+  return `<span class="ver">himmel ${esc(h.version)} · ${esc(h.describe)}</span>
+    <span title="${esc(c)}"><span class="k">commit</span> ${esc(c.slice(0, 12))}</span>
+    ${h.checkout ? `<span><span class="k">serving</span> ${esc(h.checkout)}</span>` : ""}${t}`;
+}
+
 export function renderNav(feed, current) {
   const { rows, triage, controls } = sets(feed);
   return [["triage", "Triage", triage.length, 1], ["controls", "Controls", controls.length, 2], ["inventory", "Inventory", rows.length, 3]]

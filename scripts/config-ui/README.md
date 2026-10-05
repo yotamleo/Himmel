@@ -42,4 +42,6 @@ the fragment). The first report can take a couple of minutes.
 - [ ] 5. Searching `C45` opens Search & graph with the hit row; clearing restores the default state.
 - [ ] 6. Tab to a header; Enter or Space toggles it; focus stays on that header after the repaint.
 - [ ] 7. Unsorted is absent with 0 unmapped rows; when one exists it is always open and last.
+- [ ] Header: above the page, one line shows `himmel <version> · <describe>`, the 12-char commit, the served checkout and the feed time; a feed without `himmel` reads `version unknown (feed has no himmel identity)`.
+- [ ] Page links: the rail lists the pages (Config only for now), the current one is highlighted, and the address bar reads `#/config` (the token never stays in the URL).
 - [ ] Safety: click a toggle: only a dry-run plan appears; confirm stays disabled until you type the target; cancel clears it.

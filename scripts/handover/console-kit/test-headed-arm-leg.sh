@@ -1600,11 +1600,17 @@ d17nohandover="$tmp/c17nohandover"; mk_launch_stubs "$d17nohandover" "HIMMEL-333
 nohandover_doc="$tmp/HIMMEL-3333-nohandover-doc.md"
 printf '%s\n' '# fixture doc launched with HANDOVER_DIR unset' > "$nohandover_doc"
 rc=0
+# HIMMEL-4416: the wrapper now loads the .env HANDOVER_DIR, so "cannot be
+# resolved at all" needs a hermetic cwd (non-git, no inline handovers/) and an
+# empty .env in the cache dir load_dotenv reads first - not the operator's.
+mkdir -p "$tmp/nohandover-cwd" "$tmp/nohandover-cache"; : > "$tmp/nohandover-cache/.env"
+( cd "$tmp/nohandover-cwd" && \
 HEADED_ARM_LEG_TARGET="$HEADED_ARM" \
 HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
 KONSOLE_CMD="$d17nohandover/konsole" PGREP_CMD="$d17nohandover/pgrep" \
 LEG_REPO="$tmp/repo17nohandover" HEADED_ARM_LOCK_DIR="$d17nohandover/locks" HEADED_ARM_PROC="$d17nohandover/proc" \
-  env -u HANDOVER_DIR bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-nohandover" "$nohandover_doc" "$d17nohandover/signal-never" "$PAST" "$d17nohandover/log" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+HIMMELCTL_CACHE_DIR="$tmp/nohandover-cache" \
+  env -u HANDOVER_DIR bash "$SCRIPT" --profile leg-impl "HIMMEL-3333-nohandover" "$nohandover_doc" "$d17nohandover/signal-never" "$PAST" "$d17nohandover/log" "claude-sonnet-5" ) >/dev/null 2>&1 || rc=$?
 wait_record "$d17nohandover" || true
 check "full launch --profile (HANDOVER_DIR unset): exit 0, launch still succeeds" "$rc" "0"
 check "full launch --profile (HANDOVER_DIR unset): additionalDirectories not granted" \
@@ -2165,6 +2171,33 @@ wait_record "$d26" || true
 env26="$(cat "$d26/env-record" 2>/dev/null || true)"
 check "HANDOVER_DIR e2e: full launch, console cwd has inline handovers/: exit 0" "$rc" "0"
 contains "HANDOVER_DIR e2e: leg env carries the console's resolved root verbatim" "$env26" "HANDOVER_DIR=$primary26/handovers"
+
+# --- 26b (HIMMEL-4416). The root's .env HANDOVER_DIR (Mode B) reaches the leg
+# even when the launching shell exported none: handover_root reads only the live
+# env, so a wrapper that skipped load-dotenv.sh resolved the inline stub. An
+# explicit (non-empty) env value still wins over .env. RED on the pre-fix
+# wrapper: the leg env carries the inline <cwd>/handovers stub instead.
+mode_b26="$tmp/modeb26"; mkdir -p "$mode_b26/repo/handovers" "$mode_b26/dotenv-root" "$mode_b26/explicit-root"
+git -C "$mode_b26/repo" init -q
+printf 'HANDOVER_DIR=%s\n' "$mode_b26/dotenv-root" > "$mode_b26/repo/.env"
+for variant26b in dotenv explicit; do
+  d26b="$tmp/c26b-$variant26b"; mk_launch_stubs "$d26b" "HIMMEL-4416-$variant26b"
+  want26b="$mode_b26/dotenv-root"; launch_env26b=''
+  if [ "$variant26b" = explicit ]; then want26b="$mode_b26/explicit-root"; launch_env26b="$want26b"; fi
+  rc=0
+  ( cd "$mode_b26/repo" && \
+    IMPL_GUARD_OK='' HIMMEL_CONSOLE_LEG='' HANDOVER_DIR="$launch_env26b" \
+    HEADED_ARM_LEG_TARGET="$HEADED_ARM" HEADED_ARM_LEG_PREFLIGHT="$PROCEED_PREFLIGHT" \
+    KONSOLE_CMD="$d26b/konsole" PGREP_CMD="$d26b/pgrep" \
+    LEG_REPO="$tmp/repo26" HEADED_ARM_LOCK_DIR="$d26b/locks" HEADED_ARM_PROC="$d26b/proc" \
+      bash "$SCRIPT" --profile leg-impl "HIMMEL-4416-$variant26b" "$some_doc" "$d26b/signal-never" "$PAST" "$d26b/log" "claude-sonnet-5" \
+  ) >/dev/null 2>&1 || rc=$?
+  wait_record "$d26b" || true
+  env26b="$(cat "$d26b/env-record" 2>/dev/null || true)"
+  check "HIMMEL-4416 ($variant26b): full launch exits 0" "$rc" "0"
+  contains "HIMMEL-4416 ($variant26b): leg env carries [$want26b]" "$env26b" "HANDOVER_DIR=$want26b"
+  not_contains "HIMMEL-4416 ($variant26b): leg env never carries the inline stub" "$env26b" "HANDOVER_DIR=$mode_b26/repo/handovers"
+done
 
 # End-to-end: a GO written by go.sh from the SAME primary-like cwd (the
 # console's own resolution), then go_gate resolved from a DIFFERENT cwd

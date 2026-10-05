@@ -65,6 +65,8 @@
 #   6  <version> is out of sequence (pre-release) or has no matching
 #      pre-release history (bare release), and no --version-override was
 #      given
+#   7  VERSION at <sha> does not read the tag's X.Y.Z (or is unreadable);
+#      NOT waived by --version-override (HIMMEL-4417)
 #
 # GH is overridable (GH_BIN) for hermetic PATH-stub tests, same seam shape as
 # go.sh's HERE-relative sourcing.
@@ -245,6 +247,20 @@ fi
 if ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
     echo "cut-tag: refusing - $SHA is not an ancestor of (or equal to) origin/main" >&2
     exit 3
+fi
+
+# HIMMEL-4417: the tagged commit's VERSION file must already read the tag's
+# X.Y.Z, or himmelctl --version and the config feed's himmel.version
+# mis-attribute the build. Not waived by --version-override (that flag is about
+# tag sequence only); the bump lands by PR BEFORE the cut.
+if ! sha_version=$(git show "$SHA:VERSION" 2>/dev/null); then
+    echo "cut-tag: refusing - could not read VERSION at $SHA" >&2
+    exit 7
+fi
+sha_version="${sha_version%$'\r'}"   # $(...) already dropped trailing newlines; internal whitespace must fail the compare
+if [ "$sha_version" != "${_vx}.${_vy}.${_vz}" ]; then
+    echo "cut-tag: refusing - VERSION at $SHA is ${sha_version:-empty} but $VERSION is ${_vx}.${_vy}.${_vz} - land the VERSION bump (docs/release/v1-checklist.md step 1) on main first" >&2
+    exit 7
 fi
 
 if git ls-remote --exit-code --tags origin "refs/tags/$VERSION" >/dev/null 2>&1; then
