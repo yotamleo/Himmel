@@ -2965,6 +2965,13 @@ declare -n p=PA$'T'H; p=/tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings
 read -r PA$'T'H <<<"/tmp"; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
 cat <<'EOF' >/tmp/bin/x.sh;x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
 ROWS
+# 940-943: env -S text env decodes itself (`\_`, `\t`, `${VAR}`) is refused
+rows_both 940 2 "env -S text carrying an env escape or \${VAR} denies" <<'ROWS'
+env -S 'bash\_-c\_"echo x > ~/.claude/sett*s.json"'
+env --split-string='sh\_-c\_"echo x > ~/.claude/s*.json"'
+env -iS 'bash\t-c\t"echo x > ~/.claude/sett*s.json"'
+env -S 'bash -c ${X}'
+ROWS
 # 930-937: controls from the nested worktree — data, a non-.claude glob
 # target or cd, and a read stay allowed.
 for c in "cat <<'EOF'
@@ -2973,7 +2980,8 @@ EOF" "git commit -m \"\$(cat <<'EOF'
 fix ~/.cl\$(printf a)ude spelling
 EOF
 )\"" 'git status' 'echo x > docs/settings.json' 'echo x > /tmp/sett*.json' \
-    'cd docs && echo x > sett*.json' 'ls ~/.claude/sett*.json' 'echo x > /tmp/@(settings).json'; do
+    'cd docs && echo x > sett*.json' 'ls ~/.claude/sett*.json' 'echo x > /tmp/@(settings).json' \
+    "env -S 'bash -c \"echo hi\"'" "env FOO=1 echo 'a\\_b'"; do
     assert_rc "930 nested worktree control allows: $c" 0 \
         "$(bash_rc_of "$NESTED_WT" "$c" HOME="$FAKEHOME")"
 done

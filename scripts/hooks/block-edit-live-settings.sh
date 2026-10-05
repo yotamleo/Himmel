@@ -2912,6 +2912,18 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                                     done
                                     ;;
                             esac
+                            # env decodes its own escapes (`\_` is a space)
+                            # and `${VAR}` in TEXT before it splits, which a
+                            # shell read of TEXT does not, so such TEXT is
+                            # refused fail-closed rather than decoded here
+                            case "$ibw" in
+                                *\\* | *\$\{*)
+                                    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
+                                        deny_message "a $tool_name command" "$cmd" "env -S text carrying a backslash escape or \${VAR} is not judged, so it is refused fail-closed; run the command directly"
+                                        exit 2
+                                    fi
+                                    ;;
+                            esac
                         fi
                     elif [ "${ST_A[ii]}" != 1 ]; then
                         case "${il##*/}" in
