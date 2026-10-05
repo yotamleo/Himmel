@@ -568,6 +568,96 @@ echo "== HIMMEL-3565 residual 4 (documented, not fixed): branch -D main is inert
 # here so a change to that invariant is caught rather than silently drifting.
 allow "branch -D main, no -C (git itself refuses; not modelled)" "$W" "git branch -D main"
 
+echo "== HIMMEL-4365: work-tree / index rewrites aimed at the primary, every spelling of the target =="
+# `restore --staged` writes only the primary's INDEX; it is denied like `add`
+# and `update-index` above (the console's next commit on the primary would
+# carry the leg's staging). HOME here is the fixture's $FIX/home, so
+# ~/../primary and $HOME/../primary resolve to the fixture primary.
+for sub in "apply x.patch" "apply --index x.patch" "apply --3way x.patch" "apply -R x.patch" \
+           "apply --cached x.patch" "reset --hard" "reset --hard origin/main" "reset --merge HEAD~1" \
+           "reset --keep HEAD~1" "reset HEAD~1" "reset --soft HEAD~1" "checkout -- README.md" \
+           "checkout ." "checkout -f" "checkout main" "checkout feat/x" "restore README.md" \
+           "restore --worktree README.md" "restore --staged README.md" "restore -S README.md" \
+           "restore -SW README.md" "stash push" "stash drop" "stash clear" "clean -f" "clean -fd" \
+           "merge --ff-only origin/main" "pull origin main" "pull --rebase origin main" \
+           "cherry-pick -n feat/x" "revert --no-commit HEAD" "am --3way x.patch" "switch -"; do
+    deny "-C <primary> $sub" "$W" "git -C $P $sub"
+done
+for sub in "reset --hard" "apply x.patch" "checkout -- README.md" "restore README.md" "restore --staged README.md"; do
+    deny "-C ~/../primary $sub"                  "$W" "git -C ~/../primary $sub"
+    deny "-C \$HOME/../primary $sub"             "$W" "git -C \$HOME/../primary $sub"
+    deny "-C \"\${HOME}\"/../primary $sub"       "$W" "git -C \"\${HOME}\"/../primary $sub"
+    deny "-C ../primary (relative) $sub"         "$W" "git -C ../primary $sub"
+    deny "-C <wt>/../primary $sub"               "$W" "git -C $W/../primary $sub"
+    deny "-C <primary>/ (trailing slash) $sub"   "$W" "git -C $P/ $sub"
+    deny "-C <primary>/handovers/.. $sub"        "$W" "git -C $P/handovers/.. $sub"
+    deny "-C <wt> -C .. -C primary (chained) $sub" "$W" "git -C $W -C .. -C primary $sub"
+    deny "-C . (cwd = primary) $sub"             "$P" "git -C . $sub"
+    deny "no -C (cwd = primary) $sub"            "$P" "git $sub"
+    deny "-c k=v -C <primary> $sub"              "$W" "git -c x.y=z -C $P $sub"
+    deny "-C <primary> -c k=v $sub"              "$W" "git -C $P -c x.y=z $sub"
+    deny "--no-pager -C <primary> $sub"          "$W" "git --no-pager -C $P $sub"
+    deny "--git-dir= --work-tree= $sub"          "$W" "git --git-dir=$P/.git --work-tree=$P $sub"
+    deny "--work-tree= --git-dir= (reversed) $sub" "$W" "git --work-tree=$P --git-dir=$P/.git $sub"
+    deny "--git-dir <p> --work-tree <p> $sub"    "$W" "git --git-dir $P/.git --work-tree $P $sub"
+    deny "--git-dir=\$HOME/../primary/.git $sub" "$W" "git --git-dir=\$HOME/../primary/.git --work-tree=\$HOME/../primary $sub"
+    deny "--work-tree=../primary (relative) $sub" "$W" "git --work-tree=../primary $sub"
+done
+echo "== HIMMEL-4365: the read-only and sanctioned forms on the primary stay ALLOWED =="
+allow "-C ~/../primary status"                   "$W" "git -C ~/../primary status"
+allow "-C \$HOME/../primary log -1"              "$W" "git -C \$HOME/../primary log -1"
+allow "-C ../primary diff"                       "$W" "git -C ../primary diff"
+allow "--git-dir= --work-tree= status"           "$W" "git --git-dir=$P/.git --work-tree=$P status"
+allow "-c k=v -C <primary> show HEAD"            "$W" "git -c x.y=z -C $P show HEAD"
+allow "-C <primary> rev-parse HEAD"              "$W" "git -C $P rev-parse HEAD"
+allow "-C <primary> branch --list"               "$W" "git -C $P branch --list"
+allow "-C ../primary fetch"                      "$W" "git -C ../primary fetch"
+allow "-C ~/../primary pull --ff-only (wrap)"    "$W" "git -C ~/../primary pull --ff-only"
+allow "-C <primary> worktree list"               "$W" "git -C $P worktree list"
+allow "-C <primary> worktree remove <wt>"        "$W" "git -C $P worktree remove --force $W"
+
+echo "== HIMMEL-4365: a git behind a wrapper the prefix loop does not strip =="
+deny "timeout 5 git -C <primary> reset --hard"   "$W" "timeout 5 git -C $P reset --hard"
+deny "nice git -C <primary> reset --hard"        "$W" "nice git -C $P reset --hard"
+deny "nice -n 5 git -C <primary> apply"          "$W" "nice -n 5 git -C $P apply x.patch"
+deny "stdbuf -o0 git -C <primary> checkout --"   "$W" "stdbuf -o0 git -C $P checkout -- README.md"
+deny "ionice -c3 git -C <primary> restore"       "$W" "ionice -c3 git -C $P restore README.md"
+deny "sudo git -C <primary> reset --hard"        "$W" "sudo git -C $P reset --hard"
+deny "timeout 5 git -C ~/../primary reset"       "$W" "timeout 5 git -C ~/../primary reset --hard"
+deny "timeout 5 git reset --hard, cwd=primary"   "$P" "timeout 5 git reset --hard"
+deny "timeout 5 env -C <primary> git reset"      "$W" "timeout 5 env -C $P git reset --hard"
+deny "env -C ../primary timeout 5 git reset"     "$W" "env -C ../primary timeout 5 git reset --hard"
+deny "nice env GIT_DIR=<primary> git reset"      "$W" "nice env GIT_DIR=$P/.git git reset --hard"
+deny "xargs git -C <primary> reset --hard"       "$W" "echo x | xargs git -C $P reset --hard"
+deny "xargs -a list git -C <primary> apply"      "$W" "xargs -a list git -C $P apply"
+deny "xargs -I{} git -C {} reset (stdin target)" "$W" "xargs -I{} git -C {} reset --hard"
+deny "xargs -I % git -C % reset (custom replstr)" "$W" "xargs -I % git -C % reset --hard"
+deny "xargs -i git {} --hard (sub from stdin)"   "$W" "xargs -i git {} --hard"
+deny "xargs git, subcommand from stdin"          "$W" "echo reset | xargs git"
+deny "xargs -I{} git diff --output={}"           "$W" "xargs -I{} git diff --output={}"
+allow "xargs -I{} git commit, {} unused, cwd=leg" "$W" "echo x | xargs -I{} git commit -m msg"
+allow "xargs -I{} git add {} (pathspec), cwd=leg" "$W" "xargs -I{} git add {}"
+allow "timeout 5 git -C <primary> status"        "$W" "timeout 5 git -C $P status"
+allow "sudo -u nobody git -C <primary> log -1"   "$W" "sudo -u nobody git -C $P log -1"
+allow "timeout 60 git -C <primary> pull --ff-only" "$W" "timeout 60 git -C $P pull --ff-only"
+allow "nice git -C <leg> reset --hard"           "$W" "nice git -C $W reset --hard"
+allow "nice git reset --hard, cwd=leg"           "$W" "nice git reset --hard"
+allow "git ls-files | xargs git add, cwd=leg"    "$W" "git ls-files | xargs git add"
+allow "nice git status, cwd=primary"             "$P" "nice git status"
+allow "timeout 5 git worktree remove, cwd=primary" "$P" "timeout 5 git worktree remove $W"
+
+echo "== HIMMEL-4365: --output <file> on a read subcommand writes that file =="
+deny "-C <primary> diff --output=<rel>"          "$W" "git -C $P diff --output=.claude/settings.json"
+deny "-C <primary> diff --output <rel>"          "$W" "git -C $P diff --output .claude/settings.json"
+deny "-C <primary> log -p --output=README.md"    "$W" "git -C $P log -p --output=README.md"
+deny "-C <primary> show --output=README.md"      "$W" "git -C $P show --output=README.md HEAD"
+deny "diff --output=<primary>/<f>, cwd=leg"      "$W" "git diff --output=$P/.claude/settings.json"
+deny "--work-tree=<primary> diff --output=<rel>" "$W" "git --work-tree=$P --git-dir=$P/.git diff --output=README.md"
+allow "diff --output=/tmp/x.diff"                "$W" "git diff --output=/tmp/x.diff"
+allow "diff --output=<rel>, cwd=leg"             "$W" "git diff --output=out.diff"
+allow "-C <primary> diff --output=/tmp/x.diff"   "$W" "git -C $P diff --output=/tmp/x.diff"
+allow "-C <primary> log -- --output=x (pathspec)" "$W" "git -C $P log -- --output=x"
+
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
 for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
            '{"tool_input":{"command":"git status"}}'; do

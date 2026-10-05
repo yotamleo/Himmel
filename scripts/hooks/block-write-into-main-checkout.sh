@@ -3525,9 +3525,10 @@ _bwimc_redir_scan_text "$_bwimc_hb"
 # `.single-writer` (both honoured inside main_checkout_verdict).
 #
 # ponytail: command-text scanning, not a shell parser — a git invocation
-# displaced behind a wrapper this arm does not strip (sudo, xargs, timeout,
-# `sh -c '…'`, an interpreter body) is missed, the same residual as every
-# other arm. A `cd` inside a conditional (`false && cd <primary>`) is assumed
+# displaced behind a wrapper _bwimc_strip_prefix does not model (setsid,
+# watch, parallel, `find -exec`; HIMMEL-4365 covers the modelled ones and
+# xargs, see _bwimc_git_wrapped) or inside an interpreter body is missed, the
+# same residual as every other arm. A `cd` inside a conditional (`false && cd <primary>`) is assumed
 # to have run, and a write is ALSO checked from every cwd a cd left, so
 # `false && cd <leg>; git merge x` from the primary is still caught; the cost
 # is that `cd <leg> && git merge x` typed from the primary is denied too.
@@ -3944,6 +3945,88 @@ _bwimc_git_check_common_owner() {
     _bwimc_git_check_path "$owner" "$label"
 }
 
+# _bwimc_git_wrapped CLAUSE CWD UNRES GITENV — HIMMEL-4365. The prefix loop in
+# _bwimc_git_clause models env/command/exec/nohup/time only, so a git behind
+# any other wrapper (`timeout 60 git -C <primary> reset --hard`, `nice`,
+# `stdbuf`, `ionice`, `sudo`, `xargs`) never reached the subcommand check.
+# _bwimc_strip_prefix (the verb arms' wrapper model) finds the command word
+# past them; when that word is git, or `xargs … git`, the clause is re-read
+# from the git word, the leading assignments kept. What the stripped wrappers
+# do to git's environment is not modelled, so the re-read clause's cwd fails
+# closed (a write then denies `unresolved-git-target`) when they carry a
+# GIT_* word, an `env` while a GIT_* value is exported (GITENV), a chdir that
+# does not resolve, or an `xargs -I/-i/--replace` string that appears in the
+# git words (the target or subcommand may come from stdin); `xargs git` with
+# no subcommand fails closed the same way.
+# ponytail: wrappers _bwimc_strip_prefix does not model (setsid, watch,
+# parallel, `find -exec`) still hide a git; upgrade path: a wrapper added
+# there is covered here for free.
+_bwimc_git_wrapped() {
+    local wsp wsp0 wdir apfx strip wu=0 t wl k xt=() xi=0 xg="" xa=0 xr=""
+    [ "${_bwimc_g_wrap:-0}" = 0 ] || return 0
+    _bwimc_strip_prefix "$1"
+    wsp="$_BWIMC_SP"; wsp0="$_BWIMC_SP0"; wdir="$_BWIMC_SPDIR"
+    while IFS= read -r t; do xt+=("$t"); done < <(_bwimc_tokenize "$wsp")
+    [ "${#xt[@]}" -gt 0 ] || return 0
+    t=$(_bwimc_unq "${xt[0]}"); t="${t##*/}"; _tolower_ascii "$t"; wl="${_TOLOWER_OUT%.exe}"
+    case "$wl" in
+        git) [ "$wsp" != "$wsp0" ] || return 0 ;;
+        xargs)
+            k=1
+            while [ "$k" -lt "${#xt[@]}" ]; do
+                t=$(_bwimc_unq "${xt[$k]}")
+                case "$t" in
+                    -I) k=$((k+1)); xr=$(_bwimc_unq "${xt[$k]:-}"); k=$((k+1)); continue ;;
+                    -I*) xr="${t#-I}" ;;
+                    -i|--replace) xr="{}" ;;
+                    -i*) xr="${t#-i}" ;;
+                    --replace=*) xr="${t#--replace=}" ;;
+                esac
+                t="${t##*/}"; _tolower_ascii "$t"
+                if [ "${_TOLOWER_OUT%.exe}" = git ]; then xi=$k; break; fi
+                k=$((k+1))
+            done
+            [ "$xi" -gt 0 ] || return 0
+            # The replacement string matters where it picks the target: a
+            # global option or its operand, the subcommand, or --output.
+            k=0
+            while [ "$xi" -lt "${#xt[@]}" ]; do
+                t="${xt[$xi]}"
+                if [ "$k" != 2 ] || [ "${t#--output}" != "$t" ]; then
+                    case "$t" in *"${xr:-$'\n'}"*) xa=1 ;; esac
+                fi
+                if [ "$k" = 0 ]; then k=1
+                elif [ "$k" = 1 ]; then
+                    case "$(_bwimc_unq "$t")" in
+                        -C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix) k=3 ;;
+                        -*) ;;
+                        *) k=2 ;;
+                    esac
+                elif [ "$k" = 3 ]; then k=1
+                fi
+                xg="$xg$t "; xi=$((xi+1))
+            done ;;
+        *) return 0 ;;
+    esac
+    apfx="${1:0:$((${#1} - ${#wsp0}))}"
+    strip="${wsp0:0:$((${#wsp0} - ${#wsp}))}"
+    case "$strip" in *GIT_*) wu=1 ;; esac
+    if [ -n "$4" ]; then
+        case " $strip " in *[[:space:]/]env[[:space:]]*) wu=1 ;; esac
+    fi
+    [ "$3" = 1 ] && wu=1
+    [ "$xa" = 1 ] && wu=1
+    if [ -n "$wdir" ]; then
+        if t=$(_bwimc_resolve_abs "$wdir" "$2"); then set -- "$1" "$t" "$3" "$4"; else wu=1; fi
+    fi
+    local saved_cwd="$_bwimc_gcwd" saved_unres="$_bwimc_gcwd_unres"
+    _bwimc_gcwd="$2"; _bwimc_gcwd_unres="$wu"
+    _bwimc_g_wrap=1; [ -z "$xg" ] || _bwimc_g_xargs=1
+    if [ -n "$xg" ]; then _bwimc_git_clause "$apfx$xg"; else _bwimc_git_clause "$apfx$wsp"; fi
+    _bwimc_g_wrap=0; _bwimc_g_xargs=0
+    _bwimc_gcwd="$saved_cwd"; _bwimc_gcwd_unres="$saved_unres"
+}
+
 # _bwimc_git_clause CLAUSE_SP — per-clause state machine for arm (g). Reads
 # and updates the command-wide _bwimc_gcwd / _bwimc_gcwd_unres /
 # _bwimc_genv_* globals; must be called as a plain statement (never `$(…)`).
@@ -4150,7 +4233,7 @@ _bwimc_git_clause() {
     tu=$(_bwimc_unq "${toks[$i]}")
     case "${tu##*/}" in
         git|git.exe|GIT|GIT.EXE|Git.exe) ;;
-        *) return 0 ;;
+        *) _bwimc_git_wrapped "$1" "$_bwimc_gcwd" "$_bwimc_gcwd_unres" "$e_dir$e_wt$e_idx"; return 0 ;;
     esac
     start=$((i+1))
 
@@ -4227,6 +4310,44 @@ _bwimc_git_clause() {
         _bwimc_git_alts "$1"
         return 0
     fi
+
+    # HIMMEL-4365: `xargs git` with no subcommand reads it, and any global
+    # option, from stdin.
+    if [ "${_bwimc_g_xargs:-0}" = 1 ] && [ -z "$sub" ]; then
+        _BWIMC_GIT_SUB="(xargs stdin)"
+        _bwimc_deny "unresolved-git-target" "$1" "$dir" ""
+    fi
+    # HIMMEL-4365: `--output <file>` (the diff/log/show family) writes FILE,
+    # so a read subcommand can still overwrite a primary file (`git -C
+    # <primary> diff --output=.claude/settings.json`). A relative FILE is
+    # resolved from the -C dir and, when a --work-tree/GIT_WORK_TREE is set
+    # (git then runs from the work tree's top), from that too; each is
+    # checked like any other write operand. The clause itself stays a read.
+    local ow=0 of="" owt="${wtree:-$e_wt}"
+    for v in ${args[@]+"${args[@]}"}; do
+        if [ "$ow" = 1 ]; then
+            of="$v"; ow=0
+        else
+            case "$v" in
+                --) break ;;
+                --output) ow=1; continue ;;
+                --output=*) of="${v#--output=}" ;;
+                *) continue ;;
+            esac
+        fi
+        _BWIMC_GIT_SUB="$sub --output"
+        [ "$_bwimc_g_jail" = 0 ] || _bwimc_deny "chroot-git" "$1" "$dir" ""
+        case "$of" in
+            /*|'~'*|'$'*) ;;
+            *) [ "$unres" = 0 ] || _bwimc_deny "unresolved-git-target" "$1" "$dir" ""
+               if [ -n "$owt" ]; then
+                   r=$(_bwimc_resolve_abs "$owt" "$dir") || _bwimc_deny "unresolved-git-target" "$owt" "$dir" ""
+                   _bwimc_check_target "$of" "$r"
+               fi ;;
+        esac
+        _bwimc_check_target "$of" "$dir"
+        _BWIMC_GIT_SUB=""
+    done
 
     # A config override (-c, --config-env, GIT_CONFIG*) can repoint the
     # remote or refspec pull/fetch act on, so it voids their carve-out.
@@ -4635,6 +4756,8 @@ _bwimc_genv_cfg=0
 _bwimc_g_repoint=0
 _bwimc_g_netop=0
 _bwimc_g_jail=0
+_bwimc_g_wrap=0
+_bwimc_g_xargs=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     # HIMMEL-4010: substitution bodies arrive as their own clauses; the

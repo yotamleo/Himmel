@@ -1443,6 +1443,18 @@ through `main_checkout_verdict`. The target covers:
   `env`, or by an earlier `export`
 - the cwd set by an earlier `cd` / `pushd` / `env -C`
 
+- a git behind a wrapper (`timeout`, `nice`, `stdbuf`, `ionice`, `sudo`,
+  `chrt`, `taskset`, or `xargs`) — HIMMEL-4365. The cwd fails closed when the
+  wrapper carries a `GIT_*` word, or when an `xargs -I` string lands in a
+  global option, the subcommand or `--output`. A bare `xargs git` reads its
+  subcommand from stdin, so it fails closed too.
+
+HIMMEL-4365 also checks the file that `--output <file>` names on a read
+subcommand (`diff`, `log`, `show`) as a write operand. So `git -C <primary>
+diff --output=.claude/settings.json` is denied. `restore --staged` writes only
+the primary's index, but it is still denied like `add`: the console's next
+commit would carry what the leg staged.
+
 A `cd` may not have run (`false && cd <leg>; git merge x`), so a write is also
 checked from every cwd an earlier `cd` left. The cost is that
 `cd <leg> && git merge x` typed from the primary is denied as well.
