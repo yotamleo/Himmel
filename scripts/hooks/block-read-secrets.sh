@@ -36,17 +36,26 @@
 # not a determined attacker):
 #   * `bash -c 'cat .env'` IS now caught (HIMMEL-440): when the clause command
 #     resolves to a shell interpreter (bash/sh/zsh/dash/ksh/ash), the matcher
-#     recurses into the `-c '<body>'` and re-runs the reader+secret check on the
-#     body's first statement (the body is real shell, so this is FP-free —
-#     unlike node -e / python -c non-shell bodies). Remaining `-c` gaps:
-#     variable bodies `bash -c "$CMD"` (variable indirection, below), process
-#     substitution `bash <(echo 'cat .env')`, and exotic flag interleavings
-#     where `-c` follows a non-flag operand. (Multi-statement bodies like
-#     `bash -c 'echo hi; cat .env'` already block via the later clause.) A
-#     secret passed as a POSITIONAL into the body (`bash -c 'cat "$1"' _ .env`)
-#     reaches the reader via `$1` — the same accepted variable-indirection gap
-#     below, not a literal arg. Scanning stops at the body's closing quote, so a
+#     takes the body's first statement from `-c '<body>'` and rescans it (the
+#     body is real shell, so this is FP-free — unlike node -e / python -c
+#     non-shell bodies). Since HIMMEL-4492 the body is rejoined into its own
+#     command text and scanned by a recursive scan_clause call, so it gets
+#     every outer rule, including glob expansion under its OWN quoting:
+#     `bash -c 'cat .e*'` globs `.e*` against cwd and denies, while
+#     `bash -c 'grep -v ".*" f'` keeps its quoted pattern literal. Nested
+#     `bash -c "bash -c '...'"` recurses the same way; past SCAN_MAX_DEPTH (4)
+#     the clause denies. Interpreter options with a separate value (`-o x`,
+#     `+O x`, `--rcfile f`) are stepped over on the way to `-c`. A secret
+#     passed as a POSITIONAL into the body (`bash -c 'cat "$1"' _ .env`)
+#     reaches the reader via `$1`. That is the variable-indirection gap below,
+#     not a literal arg. Scanning stops at the body's closing quote, so a
 #     trailing positional after a NON-secret body read is not over-blocked.
+#     ponytail: variable bodies (`bash -c "$CMD"`), process substitution
+#     (`bash <(echo 'cat .env')`), `-c` after a non-flag operand,
+#     and nested quoting the quote-naive body close misreads stay unscanned
+#     (a glob in a later body statement, `bash -c 'echo; cat .e*'`, IS
+#     expanded: rs_tokens drops the body's closing quote first), revisit
+#     under HIMMEL-4438 or on the first real leak of that shape.
 #   * `git show HEAD:.env`, `git cat-file -p HEAD:.env` — git not in
 #     reader list (would false-positive on most git commands).
 #   * Cross-command exfil: `cp .env /tmp/x; cat /tmp/x` — cp is write-only,
@@ -105,8 +114,8 @@
 #     merely SAYS --regexp because it was crafted as -f's value". Position
 #     (0 or not) and "was this token just consumed as -f/--file's value"
 #     are now tracked as explicit, one-token-at-a-time ARMED STATE
-#     (`at_pos0`/`expect_pattern_val`/`expect_file_val`, and their `rec_`
-#     twins for the recursed body) instead of being inferred by comparing a
+#     (`at_pos0`/`expect_pattern_val`/`expect_file_val`, which a recursed
+#     `-c` body gets from its own scan_clause call) instead of being inferred by comparing a
 #     token's text — text an adversarial -f/--file value can always be
 #     crafted to collide with, state cannot.
 #   * A QUOTED value to some OTHER tool-specific file-reading long option at
@@ -128,13 +137,17 @@
 #     itself a source of future bugs). Deliberately left as a documented,
 #     accepted false positive rather than attempted here — costs a cycle,
 #     never a leak (the bypass hint below names the recovery).
-#   * Wrappers are carved out only in their bare form, where the command is
-#     the wrapper's immediate next token: {sudo,doas,env,xargs,time,nice,
-#     command,nohup}. A wrapper with leading ARGS before the command
-#     (`timeout 5 cat .env`, `nice -n5 cat .env`, `sudo -u u cat .env`) makes
-#     that arg the command token → the read is allowed through. Likewise
-#     wrappers outside the set (`strace`, `flatpak-spawn`). Determined-attacker
-#     territory; the gate targets the common accidental shapes.
+#   * Wrappers {sudo,doas,env,xargs,time,nice,command,nohup,timeout} are
+#     stepped over to find the real command (HIMMEL-4492): after a wrapper the
+#     hunt skips its flags, the separate value of its known value-taking flags
+#     (wrapper_flag_takes_value: `nice -n 5`, `sudo -u u`, `timeout -s KILL`)
+#     and timeout's one DURATION operand, so `timeout 5 cat .env`,
+#     `nice -n5 cat .env` and `sudo -u u cat .env` deny. The command word is
+#     matched with its quotes removed, so `'cat' .env` denies too.
+#     ponytail: wrappers outside the set (`strace`, `stdbuf`, `ionice`,
+#     `flatpak-spawn`) and a value-taking wrapper flag missing from the table
+#     still make their operand the command token, revisit under HIMMEL-4438
+#     or when a real call shows one of them.
 #   * `cat <<< .env` here-string normalises to `cat < < < .env` and trips the
 #     `<`-redirect path though it reads no file.
 #   * NTFS alternate data streams: `.env:stream` is not matched (low risk —
@@ -417,6 +430,13 @@ rs_tokens() {
         if [ "$off" = 0 ] && [ -n "$tq" ]; then
             RS_TOKS+=("$raw")
         else
+            # HIMMEL-4492: a word whose LAST char opens a quote it never
+            # closes is the tail of a `-c` body the clause split cut off
+            # (`bash -c 'echo; cat .e*'` leaves `.e*'`). That quote is the
+            # body's closing one, so glob the word without it.
+            if [ "$off" = 0 ] && [ -n "$q" ] && [ "${raw: -1}" = "$q" ]; then
+                raw=${raw%?}
+            fi
             set +f
             # shellcheck disable=SC2206 # the glob is the point
             g=($raw)
@@ -522,6 +542,312 @@ pattern_hint_applies() {  # $1 = the raw command string
     )
 }
 
+wrapper_flag_takes_value() {  # $1 = wrapper, $2 = its (dequoted) flag token
+    # HIMMEL-4492: the wrapper flags whose VALUE is the next, separate token
+    # (`nice -n 5`, `sudo -u user`, `timeout -s KILL 5`). The command hunt
+    # skips that value so it cannot pose as the command. A glued value
+    # (`-n5`, `--signal=KILL`) is one flag token and needs no entry here.
+    # `env -S` is deliberately absent: its quoted operand (`env -S 'cat .env'`)
+    # must become the command word, so the hunt classifies it.
+    case "$1:$2" in
+        timeout:-s|timeout:-k|timeout:--signal|timeout:--kill-after)    return 0 ;;
+        nice:-n|nice:--adjustment)                                      return 0 ;;
+        sudo:-u|sudo:-g|sudo:-h|sudo:-p|sudo:-C|sudo:-D|sudo:-r)        return 0 ;;
+        sudo:-t|sudo:-U|sudo:-T|sudo:--user|sudo:--group|sudo:--chdir)  return 0 ;;
+        doas:-u|doas:-C)                                                return 0 ;;
+        xargs:-I|xargs:-n|xargs:-L|xargs:-P|xargs:-s|xargs:-d|xargs:-E) return 0 ;;
+        xargs:-a|xargs:--arg-file|xargs:--max-args|xargs:--max-procs)   return 0 ;;
+        time:-f|time:-o|time:--format|time:--output)                    return 0 ;;
+        env:-u|env:-C|env:--unset|env:--chdir)                          return 0 ;;
+    esac
+    return 1
+}
+
+# scan_clause CLAUSE DEPTH (HIMMEL-4492): scan ONE clause and set the global
+# `block` (plus `glued_tok`, named in the denial) when it reads a secret. A
+# shell interpreter's `-c` body is rejoined into its own command text and
+# scanned by a recursive call, so the body gets every rule below for free:
+# glob expansion against cwd under its OWN quote tracking (rs_tokens), wrappers,
+# quoted command words, the HIMMEL-2213 pattern exemptions, HIMMEL-2228 glued
+# options, `<` redirects, the in-place carve-out and a further nested `bash -c`.
+# This replaced a mirrored `rec_*` state machine (HIMMEL-440) that saw the body
+# only through the OUTER clause's tokens: there a body word such as `.e*'`
+# starts inside the outer quote, so rs_tokens kept it literal and
+# `bash -c 'cat .e*'` was allowed. A nest deeper than SCAN_MAX_DEPTH denies:
+# a body this hook will not read counts as a read (fail closed). Every state
+# variable is `local` so a recursive call cannot clobber its caller's scan.
+SCAN_MAX_DEPTH=4
+scan_clause() {
+    local clause="$1" depth="$2"
+    local cmdtok="" reader=0 secret_after=0 inplace=0 prev=""
+    local pattern_cmd=0     # cmdtok is grep/sed/awk-family (HIMMEL-2213)
+    local at_pos0=0             # the NEXT token is the one right after cmdtok
+    local expect_pattern_val=0  # the NEXT token is -e/--regexp's value (always data)
+    local expect_file_val=0     # the NEXT token is -f/--file's value (always a real file)
+    # HIMMEL-4492 command hunt: the last wrapper seen, whether the next token
+    # is a wrapper flag's VALUE, and whether `timeout` still owes its DURATION.
+    local wrap="" wrap_val=0 need_dur=0
+    # HIMMEL-440 interpreter `-c` body:
+    local interp=0          # cmdtok resolved to a shell interpreter
+    local found_c=0         # a -c / -*c flag has been seen
+    local interp_val=0      # the NEXT token is an interpreter option's value (-o x)
+    local body_state=0      # 0 = no body yet, 1 = collecting, 2 = closed
+    local body="" bodyq=""  # the body's text, and its outer quote char (' or ")
+    local tok dtok this_at_pos0 t
+    local -a toks
+    if [ "$depth" -gt "$SCAN_MAX_DEPTH" ]; then block=1; return 0; fi
+    rs_tokens "$clause"
+    [ "${#RS_TOKS[@]}" -gt 0 ] || return 0
+    toks=("${RS_TOKS[@]}")  # copy: a recursive call reassigns RS_TOKS
+    for tok in "${toks[@]}"; do
+        # HIMMEL-2525: bash's default $IFS (space/tab/newline) does
+        # NOT include CR (0x0D), so a CR glued onto this token —
+        # trailing (`cat .env<CR>`, the tail of a Windows CRLF
+        # one-liner) or embedded MID-token (`.en<CR>v`) — survives
+        # this word-split attached to $tok, unchanged, and every
+        # comparison below (is_reader_cmd/is_interp_cmd/
+        # is_pattern_arg_cmd on cmdtok; is_secret_path/
+        # glued_opt_secret/is_quoted_pattern_tok/is_inplace_token on
+        # an argument; the HIMMEL-440 -c body text, which is built
+        # from this same $tok) then compares against
+        # the WRONG string and MISSES — a false ALLOW in a secrets
+        # fence. Strip every CR from $tok HERE, once, before ANY of
+        # those comparisons run this iteration: one match-site strip
+        # covers every call site below because they all read this
+        # one variable. Deliberately scoped to $tok alone — $cmd,
+        # $normalized and $clause are never touched, so a CR that is
+        # legitimate DATA inside a heredoc body (its own $clause,
+        # untouched by this loop; see the SOH-tail comment in the
+        # header) is never mutated, and the raw command this hook
+        # echoes back on denial stays byte-for-byte what was received
+        # (test-crlf-boundary.sh's heredoc positive control pins
+        # this). A blanket `tr -d '\r'` on $cmd/$normalized would
+        # "fix" the same three bypass rows but corrupt exactly that
+        # heredoc content — the WRONG fix, ruled out by design, not
+        # by oversight.
+        #
+        # Stated behaviour for a token-INTERNAL CR: stripping ALL
+        # CRs (not just a trailing one) means `.en<CR>v` normalises
+        # to `.env` and is DENIED. Deliberate: no legitimate filename
+        # argument the model would ever emit contains a literal CR,
+        # so collapsing it to the clean name costs nothing real and
+        # keeps this fence fail-closed. A CR that is its OWN token
+        # (real whitespace on both sides, e.g. `cat <CR> .env`) is
+        # the discriminator this strip must NOT change the verdict
+        # of: `.env` there was already clean before this line ever
+        # ran, so it denies before and after — proving this fix is
+        # the narrow per-token strip the ticket asks for, not a
+        # blanket strip that would happen to pass the same probe.
+        tok="${tok//$'\r'/}"
+        # Redirect-from-secret: authoritative for `<`-redirects and
+        # independent of command position (e.g. `done <.env`).
+        if [ "$prev" = "<" ] && is_secret_path "$tok"; then
+            block=1
+        fi
+        if [ -z "$cmdtok" ]; then
+            # Still hunting the command token: skip leading redirect tokens,
+            # env-assignments (VAR=val), reader-wrapping commands with their
+            # flags (HIMMEL-4492), and shell keywords. Words are matched on a
+            # dequoted copy (HIMMEL-4492): the shell strips the quotes, so
+            # `'cat' .env` and `"bash" -c '...'` run cat and bash.
+            dtok="${tok//[\'\"\\]/}"
+            if [ "$wrap_val" = "1" ]; then wrap_val=0; prev="$tok"; continue; fi
+            case "$tok" in
+                "<"|">")                            prev="$tok"; continue ;;
+                [A-Za-z_]*=*)                       prev="$tok"; continue ;;
+            esac
+            # After a wrapper: skip its flags and the separate value of a
+            # value-taking flag (`nice -n 5`, `sudo -u u`), then timeout's one
+            # DURATION operand (`timeout 5`). Flags are only skipped once a
+            # wrapper was seen, so a bare `-x` command word is still classified.
+            if [ -n "$wrap" ]; then
+                case "$dtok" in
+                    -*)
+                        if wrapper_flag_takes_value "$wrap" "$dtok"; then wrap_val=1; fi
+                        prev="$tok"; continue ;;
+                esac
+                if [ "$need_dur" = "1" ]; then need_dur=0; prev="$tok"; continue; fi
+            fi
+            case "$dtok" in
+                sudo|doas|env|xargs|time|nice|command|nohup|timeout)
+                    wrap="$dtok"; need_dur=0
+                    if [ "$wrap" = "timeout" ]; then need_dur=1; fi
+                    prev="$tok"; continue ;;
+                if|while|until|then|else|elif|"!")  prev="$tok"; continue ;;
+            esac
+            cmdtok="$tok"
+            if is_reader_cmd "$dtok"; then reader=1; fi
+            if is_interp_cmd "$dtok"; then interp=1; fi
+            if is_pattern_arg_cmd "$dtok"; then pattern_cmd=1; fi
+            at_pos0=1
+            prev="$tok"
+            continue
+        fi
+        # Past the command token: scan its arguments.
+        this_at_pos0="$at_pos0"; at_pos0=0
+        if is_inplace_token "$tok"; then inplace=1; fi
+        # HIMMEL-2228: scan INSIDE a glued option token. Independent of the
+        # exemption chain below (a glued value is never exempt — see header).
+        # Gated on expect_pattern_val/expect_file_val (still holding the
+        # PREVIOUS token's armed state here, before the chain below updates
+        # them): a token already consumed as -f/-e's own value is an opaque
+        # string to the target command, not itself parsed for a nested
+        # flag=value — `grep -f --file=.env` must open a file literally
+        # named `--file=.env`, not treat it as a second glued -f/--file.
+        if [ "$expect_pattern_val" != "1" ] && [ "$expect_file_val" != "1" ] \
+            && glued_opt_secret "$tok"; then
+            secret_after=1; glued_tok="$tok"
+        fi
+        # HIMMEL-2213 round 5 (panel review of rounds 1-4): every
+        # earlier cut tried to recognise "the flag before this token
+        # doesn't consume a value" — -m/-A/-B/-C take a separate
+        # numeric value, -f/-e take a separate file/pattern value,
+        # and every other reader's own flags have their own arity —
+        # and each attempt to special-case one more flag (-f, -e)
+        # either left a still-unhandled flag free to leak a real
+        # secret (`rg --ignore-file .env ...`, `rg --ignore-file
+        # '.env' ...`) or wrongly treated a boring flag VALUE (`-m`'s
+        # count) as though it were the pattern, stealing the
+        # exemption before the real pattern arrived. There is no
+        # bounded flag-arity table across grep/egrep/fgrep/rg/
+        # ripgrep/ag/sed/awk/gawk/mawk/nawk that closes this for
+        # good, so this cut stops trying: the exemption now applies
+        # ONLY to the token immediately following the reader command
+        # itself, with ZERO flags in between — a `<reader> '<pat>'
+        # ...` shape has no room for "which flag consumes what" to
+        # go wrong, because there is no flag to reason about. Any
+        # flag before an otherwise-implicit pattern (`-rn '.env'`,
+        # `-m 1 '.env'`) now falls back to the ordinary scan and may
+        # false-block — the documented, ACCEPTED tradeoff (a false
+        # positive costs a cycle; every false negative this design
+        # ever had leaked). `-e`/`--regexp` is the one narrow,
+        # unambiguous exception kept: by definition ITS VALUE is
+        # ALWAYS a pattern, at whatever position it appears, so
+        # exempting the token immediately after it (not just after
+        # the bare command) is still fail-closed-safe — but ONLY for
+        # a grep/sed/awk-family command (`pattern_cmd`): `-e` means
+        # something else entirely (or nothing) for other readers —
+        # `cat -e .env` (GNU cat's -e = -vE, display non-printing
+        # chars) genuinely reads .env, and an earlier cut of this
+        # gate applied the -e exemption unconditionally, false-
+        # ALLOWing it (panel review, HIMMEL-2213 round 6).
+        #
+        # Round 7 (panel review): the round-5/6 cuts checked `prev`
+        # against RAW TEXT ("-e"/"--regexp", or cmdtok's own name for
+        # position 0). That is spoofable: `grep -f --regexp .env` —
+        # `-f` consumes "--regexp" as ITS (nonsense) filename value,
+        # but the text comparison couldn't tell that from a REAL
+        # `--regexp` flag, so `.env` (the actual file grep -f left
+        # over as a target) got wrongly exempted next. Position and
+        # "was this token consumed as -f's value" are now tracked as
+        # explicit STATE (at_pos0/expect_pattern_val/expect_file_val,
+        # armed and consumed one token at a time) instead of being
+        # inferred from a token's text — text an adversarial -f/-e
+        # value can always be crafted to match, state cannot.
+        if [ "$expect_pattern_val" = "1" ]; then
+            expect_pattern_val=0  # -e/--regexp's own value is always a pattern — data, never scanned.
+        elif [ "$expect_file_val" = "1" ]; then
+            expect_file_val=0
+            is_secret_path "$tok" && secret_after=1  # -f/--file's own value is always a real read target.
+        elif [ "$pattern_cmd" = "1" ] && { [ "$tok" = "-e" ] || [ "$tok" = "--regexp" ]; }; then
+            expect_pattern_val=1
+            is_secret_path "$tok" && secret_after=1  # "-e"/"--regexp" itself never matches a secret glob; harmless.
+        elif [ "$tok" = "-f" ] || [ "$tok" = "--file" ]; then
+            expect_file_val=1
+            is_secret_path "$tok" && secret_after=1  # "-f"/"--file" itself never matches a secret glob; harmless.
+        elif [ "$pattern_cmd" = "1" ] && [ "$this_at_pos0" = "1" ] \
+            && is_quoted_pattern_tok "$tok"; then
+            :  # the token right after the bare command, if quoted, is the implicit inline pattern.
+        elif is_secret_path "$tok"; then
+            secret_after=1
+        fi
+
+        # HIMMEL-440: when the command is a shell interpreter, collect its
+        # `-c '<body>'` for the recursive scan after this loop. The body is
+        # real shell, so rescanning it is correct (and FP-free, unlike
+        # node -e / python -c non-shell bodies). Only the FIRST statement of
+        # the body arrives here: any `;`/`|`/`&`-separated later statement is
+        # already its own clause.
+        if [ "$interp" = "1" ]; then
+            if [ "$found_c" = "0" ]; then
+                # Hunt for -c: skip interpreter flags and the value of a
+                # value-taking one (`-o errexit`, `-euo pipefail`, `--rcfile f`,
+                # HIMMEL-4492); a -c or a short bundle holding c (-lc, -xc,
+                # -ce) arms the next operand as the body. A non-flag operand
+                # BEFORE any -c (`bash run.sh`) means this isn't a -c
+                # invocation → no body.
+                if [ "$interp_val" = "1" ]; then
+                    interp_val=0
+                else
+                    case "${tok//[\'\"\\]/}" in
+                        --rcfile|--init-file)   interp_val=1 ;;
+                        --*)                    : ;;
+                        -*c*)                   found_c=1 ;;
+                        -*o|-*O|+*o|+*O)        interp_val=1 ;;
+                        -*|+*)                  : ;;
+                        *)      interp=0 ;;
+                    esac
+                fi
+            elif [ "$body_state" = "0" ]; then
+                # -c seen; the first non-flag operand opens the body. Note its
+                # outer quote char and strip it (`'cat` → `cat`; an ANSI-C
+                # `$'cat` too, whose escapes are not modelled). An unquoted
+                # body is that one word (`bash -c cat .env` runs `cat`; the
+                # rest are $0/$1… positionals the body does not read).
+                case "$tok" in
+                    -*) : ;;
+                    *)
+                        bodyq="" t="$tok"
+                        case "$tok" in
+                            \'*)    bodyq="'"; t="${tok#\'}" ;;
+                            \"*)    bodyq='"'; t="${tok#\"}" ;;
+                            \$\'*)  bodyq="'"; t="${tok#\$\'}" ;;
+                        esac
+                        body="$t"; body_state=1
+                        if [ -z "$bodyq" ]; then body_state=2; fi
+                        ;;
+                esac
+            elif [ "$body_state" = "1" ]; then
+                t="$tok"
+                body="$body $t"
+            fi
+            # A token bearing the body's closing quote ends the body; later
+            # tokens are positionals (`bash -c 'cat x' .env` — the `.env` is
+            # $0, never read). Quote-naive: matches the outer quote only (an
+            # escaped `\"` does not close a double-quoted body; other nested
+            # quoting is an accepted gap).
+            if [ "$body_state" = "1" ] && [ -n "$bodyq" ]; then
+                case "$bodyq:$t" in
+                    "'":*\')             body_state=2 ;;
+                    '"':*\\\")           : ;;
+                    '"':*\")             body_state=2 ;;
+                esac
+            fi
+            if [ "$body_state" = "2" ]; then interp=0; fi
+        fi
+        prev="$tok"
+    done
+    # A clause leaks only when its COMMAND is a reader and a secret follows as
+    # an arg. In-place sed/awk rewrites (carved per-clause, so a global `-i`
+    # can't mask a separate read clause) don't leak.
+    if [ "$reader" = "1" ] && [ "$secret_after" = "1" ] && [ "$inplace" = "0" ]; then
+        block=1
+    fi
+    # HIMMEL-440 / HIMMEL-4492: scan the interpreter `-c` body as its own
+    # command text. Strip its closing quote; a double-quoted body also drops
+    # the outer shell's `\"`/`\\` escapes. A body never closed in this clause
+    # (cut by a `;`) is scanned as far as it got.
+    if [ "$body_state" != "0" ]; then
+        if [ "$body_state" = "2" ] && [ -n "$bodyq" ]; then body="${body%?}"; fi
+        if [ "$bodyq" = '"' ]; then
+            body="${body//\\\"/\"}"
+            body="${body//\\\\/\\}"
+        fi
+        scan_clause "$body" $((depth + 1))
+    fi
+    return 0
+}
+
 case "$tool" in
     Read)
         fp="$_rd_fp"
@@ -575,274 +901,7 @@ case "$tool" in
         # would re-split on spaces and destroy clause boundaries).
         while IFS= read -r clause; do
             if [ -z "$clause" ]; then continue; fi
-            cmdtok=""
-            reader=0
-            secret_after=0
-            inplace=0
-            prev=""
-            pattern_cmd=0     # cmdtok is grep/sed/awk-family (HIMMEL-2213)
-            at_pos0=0             # the NEXT token is the one right after cmdtok
-            expect_pattern_val=0  # the NEXT token is -e/--regexp's value (always data)
-            expect_file_val=0     # the NEXT token is -f/--file's value (always a real file)
-            # HIMMEL-440 recursion state (interpreter `-c` body re-resolution):
-            interp=0          # cmdtok resolved to a shell interpreter
-            found_c=0         # a -c / -*c flag has been seen
-            rec_cmd=""        # the recursed command (body's first token)
-            rec_reader=0
-            rec_secret=0
-            rec_inplace=0
-            rec_pattern_cmd=0    # rec_cmd is grep/sed/awk-family (HIMMEL-2213)
-            rec_at_pos0=0
-            rec_expect_pattern_val=0
-            rec_expect_file_val=0
-            bodyq=""          # the -c body's outer quote char (' or "), if any
-            bodyclosed=0      # past the body's closing quote → tokens are $0/$1…
-            rs_tokens "$clause"
-            [ "${#RS_TOKS[@]}" -gt 0 ] || continue
-            for tok in "${RS_TOKS[@]}"; do
-                # HIMMEL-2525: bash's default $IFS (space/tab/newline) does
-                # NOT include CR (0x0D), so a CR glued onto this token —
-                # trailing (`cat .env<CR>`, the tail of a Windows CRLF
-                # one-liner) or embedded MID-token (`.en<CR>v`) — survives
-                # this word-split attached to $tok, unchanged, and every
-                # comparison below (is_reader_cmd/is_interp_cmd/
-                # is_pattern_arg_cmd on cmdtok; is_secret_path/
-                # glued_opt_secret/is_quoted_pattern_tok/is_inplace_token on
-                # an argument; the HIMMEL-440 recursed -c body's mirrored
-                # checks, which reuse this same $tok) then compares against
-                # the WRONG string and MISSES — a false ALLOW in a secrets
-                # fence. Strip every CR from $tok HERE, once, before ANY of
-                # those comparisons run this iteration: one match-site strip
-                # covers every call site below because they all read this
-                # one variable. Deliberately scoped to $tok alone — $cmd,
-                # $normalized and $clause are never touched, so a CR that is
-                # legitimate DATA inside a heredoc body (its own $clause,
-                # untouched by this loop; see the SOH-tail comment in the
-                # header) is never mutated, and the raw command this hook
-                # echoes back on denial stays byte-for-byte what was received
-                # (test-crlf-boundary.sh's heredoc positive control pins
-                # this). A blanket `tr -d '\r'` on $cmd/$normalized would
-                # "fix" the same three bypass rows but corrupt exactly that
-                # heredoc content — the WRONG fix, ruled out by design, not
-                # by oversight.
-                #
-                # Stated behaviour for a token-INTERNAL CR: stripping ALL
-                # CRs (not just a trailing one) means `.en<CR>v` normalises
-                # to `.env` and is DENIED. Deliberate: no legitimate filename
-                # argument the model would ever emit contains a literal CR,
-                # so collapsing it to the clean name costs nothing real and
-                # keeps this fence fail-closed. A CR that is its OWN token
-                # (real whitespace on both sides, e.g. `cat <CR> .env`) is
-                # the discriminator this strip must NOT change the verdict
-                # of: `.env` there was already clean before this line ever
-                # ran, so it denies before and after — proving this fix is
-                # the narrow per-token strip the ticket asks for, not a
-                # blanket strip that would happen to pass the same probe.
-                tok="${tok//$'\r'/}"
-                # Redirect-from-secret: authoritative for `<`-redirects and
-                # independent of command position (e.g. `done <.env`).
-                if [ "$prev" = "<" ] && is_secret_path "$tok"; then
-                    block=1
-                fi
-                if [ -z "$cmdtok" ]; then
-                    # Still hunting the command token: skip leading redirect
-                    # tokens, env-assignments (VAR=val), common reader-wrapping
-                    # commands, and shell keywords.
-                    case "$tok" in
-                        "<"|">")                            prev="$tok"; continue ;;
-                        [A-Za-z_]*=*)                       prev="$tok"; continue ;;
-                        sudo|doas|env|xargs|time|nice|command|nohup)
-                                                            prev="$tok"; continue ;;
-                        if|while|until|then|else|elif|"!")  prev="$tok"; continue ;;
-                    esac
-                    cmdtok="$tok"
-                    if is_reader_cmd "$cmdtok"; then reader=1; fi
-                    if is_interp_cmd "$cmdtok"; then interp=1; fi
-                    if is_pattern_arg_cmd "$cmdtok"; then pattern_cmd=1; fi
-                    at_pos0=1
-                    prev="$tok"
-                    continue
-                fi
-                # Past the command token: scan its arguments.
-                this_at_pos0="$at_pos0"; at_pos0=0
-                if is_inplace_token "$tok"; then inplace=1; fi
-                # HIMMEL-2228: scan INSIDE a glued option token. Independent of the
-                # exemption chain below (a glued value is never exempt — see header).
-                # Gated on expect_pattern_val/expect_file_val (still holding the
-                # PREVIOUS token's armed state here, before the chain below updates
-                # them): a token already consumed as -f/-e's own value is an opaque
-                # string to the target command, not itself parsed for a nested
-                # flag=value — `grep -f --file=.env` must open a file literally
-                # named `--file=.env`, not treat it as a second glued -f/--file.
-                if [ "$expect_pattern_val" != "1" ] && [ "$expect_file_val" != "1" ] \
-                    && glued_opt_secret "$tok"; then
-                    secret_after=1; glued_tok="$tok"
-                fi
-                # HIMMEL-2213 round 5 (panel review of rounds 1-4): every
-                # earlier cut tried to recognise "the flag before this token
-                # doesn't consume a value" — -m/-A/-B/-C take a separate
-                # numeric value, -f/-e take a separate file/pattern value,
-                # and every other reader's own flags have their own arity —
-                # and each attempt to special-case one more flag (-f, -e)
-                # either left a still-unhandled flag free to leak a real
-                # secret (`rg --ignore-file .env ...`, `rg --ignore-file
-                # '.env' ...`) or wrongly treated a boring flag VALUE (`-m`'s
-                # count) as though it were the pattern, stealing the
-                # exemption before the real pattern arrived. There is no
-                # bounded flag-arity table across grep/egrep/fgrep/rg/
-                # ripgrep/ag/sed/awk/gawk/mawk/nawk that closes this for
-                # good, so this cut stops trying: the exemption now applies
-                # ONLY to the token immediately following the reader command
-                # itself, with ZERO flags in between — a `<reader> '<pat>'
-                # ...` shape has no room for "which flag consumes what" to
-                # go wrong, because there is no flag to reason about. Any
-                # flag before an otherwise-implicit pattern (`-rn '.env'`,
-                # `-m 1 '.env'`) now falls back to the ordinary scan and may
-                # false-block — the documented, ACCEPTED tradeoff (a false
-                # positive costs a cycle; every false negative this design
-                # ever had leaked). `-e`/`--regexp` is the one narrow,
-                # unambiguous exception kept: by definition ITS VALUE is
-                # ALWAYS a pattern, at whatever position it appears, so
-                # exempting the token immediately after it (not just after
-                # the bare command) is still fail-closed-safe — but ONLY for
-                # a grep/sed/awk-family command (`pattern_cmd`): `-e` means
-                # something else entirely (or nothing) for other readers —
-                # `cat -e .env` (GNU cat's -e = -vE, display non-printing
-                # chars) genuinely reads .env, and an earlier cut of this
-                # gate applied the -e exemption unconditionally, false-
-                # ALLOWing it (panel review, HIMMEL-2213 round 6).
-                #
-                # Round 7 (panel review): the round-5/6 cuts checked `prev`
-                # against RAW TEXT ("-e"/"--regexp", or cmdtok's own name for
-                # position 0). That is spoofable: `grep -f --regexp .env` —
-                # `-f` consumes "--regexp" as ITS (nonsense) filename value,
-                # but the text comparison couldn't tell that from a REAL
-                # `--regexp` flag, so `.env` (the actual file grep -f left
-                # over as a target) got wrongly exempted next. Position and
-                # "was this token consumed as -f's value" are now tracked as
-                # explicit STATE (at_pos0/expect_pattern_val/expect_file_val,
-                # armed and consumed one token at a time) instead of being
-                # inferred from a token's text — text an adversarial -f/-e
-                # value can always be crafted to match, state cannot.
-                if [ "$expect_pattern_val" = "1" ]; then
-                    expect_pattern_val=0  # -e/--regexp's own value is always a pattern — data, never scanned.
-                elif [ "$expect_file_val" = "1" ]; then
-                    expect_file_val=0
-                    is_secret_path "$tok" && secret_after=1  # -f/--file's own value is always a real read target.
-                elif [ "$pattern_cmd" = "1" ] && { [ "$tok" = "-e" ] || [ "$tok" = "--regexp" ]; }; then
-                    expect_pattern_val=1
-                    is_secret_path "$tok" && secret_after=1  # "-e"/"--regexp" itself never matches a secret glob; harmless.
-                elif [ "$tok" = "-f" ] || [ "$tok" = "--file" ]; then
-                    expect_file_val=1
-                    is_secret_path "$tok" && secret_after=1  # "-f"/"--file" itself never matches a secret glob; harmless.
-                elif [ "$pattern_cmd" = "1" ] && [ "$this_at_pos0" = "1" ] \
-                    && is_quoted_pattern_tok "$tok"; then
-                    :  # the token right after the bare command, if quoted, is the implicit inline pattern.
-                elif is_secret_path "$tok"; then
-                    secret_after=1
-                fi
-
-                # HIMMEL-440: when the command is a shell interpreter, recurse
-                # into its `-c '<body>'`. The body is real shell, so re-running
-                # the reader+secret check on it is correct (and FP-free, unlike
-                # node -e / python -c non-shell bodies). Only the FIRST
-                # statement of the body needs this — any `;`/`|`/`&`-separated
-                # later statements are already their own clauses.
-                if [ "$interp" = "1" ]; then
-                    if [ -z "$rec_cmd" ]; then
-                        if [ "$found_c" = "0" ]; then
-                            # Hunt for -c: skip interpreter flags; a -c or a
-                            # combined trailing-c bundle (-lc, -ic, -xc) arms
-                            # the next operand as the recursed command. A
-                            # non-flag operand BEFORE any -c (`bash run.sh`)
-                            # means this isn't a -c invocation → abort recursion.
-                            case "$tok" in
-                                --*)    : ;;
-                                -c|-*c) found_c=1 ;;
-                                -*)     : ;;
-                                *)      interp=0 ;;
-                            esac
-                        else
-                            # -c seen; the first non-flag operand is the body's
-                            # command. Note the body's outer quote char so we can
-                            # stop scanning at its close (everything after is
-                            # $0/$1… positionals the body does not read). Strip
-                            # ONE leading quote glued on by the quote-naive
-                            # tokeniser (`'cat` → `cat`); bash-3.2-safe.
-                            case "$tok" in
-                                -*) : ;;
-                                *)
-                                    case "$tok" in
-                                        \'*) bodyq="'" ;;
-                                        \"*) bodyq='"' ;;
-                                    esac
-                                    rtok="${tok#\'}"; rtok="${rtok#\"}"
-                                    rec_cmd="$rtok"
-                                    if is_reader_cmd "$rec_cmd"; then rec_reader=1; fi
-                                    if is_pattern_arg_cmd "$rec_cmd"; then rec_pattern_cmd=1; fi
-                                    rec_at_pos0=1
-                                    # Unquoted single-word body (`bash -c cat .env`)
-                                    # has no args of its own — the rest are
-                                    # positionals. Mark the body already closed.
-                                    [ -z "$bodyq" ] && bodyclosed=1
-                                    ;;
-                            esac
-                        fi
-                    elif [ "$bodyclosed" = "0" ]; then
-                        # Inside the body: scan ITS args. is_secret_path already
-                        # strips one trailing quote (`.env'` → `.env`).
-                        this_rec_at_pos0="$rec_at_pos0"; rec_at_pos0=0
-                        if is_inplace_token "$tok"; then rec_inplace=1; fi
-                        # HIMMEL-2228: same glued-token scan as the outer clause loop,
-                        # applied to the recursed -c body, same armed-state gate (see
-                        # the outer loop's comment above).
-                        if [ "$rec_expect_pattern_val" != "1" ] && [ "$rec_expect_file_val" != "1" ] \
-                            && glued_opt_secret "$tok"; then
-                            rec_secret=1; glued_tok="$tok"
-                        fi
-                        # HIMMEL-2213 round 7: same explicit-STATE rule as the
-                        # outer clause above (position + "was this token just
-                        # consumed as -f/--file's value" tracked as state, not
-                        # inferred from a token's spoofable raw text).
-                        if [ "$rec_expect_pattern_val" = "1" ]; then
-                            rec_expect_pattern_val=0
-                        elif [ "$rec_expect_file_val" = "1" ]; then
-                            rec_expect_file_val=0
-                            is_secret_path "$tok" && rec_secret=1
-                        elif [ "$rec_pattern_cmd" = "1" ] && { [ "$tok" = "-e" ] || [ "$tok" = "--regexp" ]; }; then
-                            rec_expect_pattern_val=1
-                            is_secret_path "$tok" && rec_secret=1
-                        elif [ "$tok" = "-f" ] || [ "$tok" = "--file" ]; then
-                            rec_expect_file_val=1
-                            is_secret_path "$tok" && rec_secret=1
-                        elif [ "$rec_pattern_cmd" = "1" ] && [ "$this_rec_at_pos0" = "1" ] \
-                            && is_quoted_pattern_tok "$tok"; then
-                            :  # the token right after the bare body command, if quoted, is the implicit inline pattern.
-                        elif is_secret_path "$tok"; then
-                            rec_secret=1
-                        fi
-                        # A token bearing the body's closing quote ends the body;
-                        # subsequent tokens are positionals (`bash -c 'cat x' .env`
-                        # — the `.env` is $0, never read). Quote-naive: matches the
-                        # outer quote only (escaped/nested quotes are accepted gaps).
-                        case "$tok" in
-                            *\') [ "$bodyq" = "'" ] && bodyclosed=1 ;;
-                            *\") [ "$bodyq" = '"' ] && bodyclosed=1 ;;
-                        esac
-                    fi
-                fi
-                prev="$tok"
-            done
-            # A clause leaks only when its COMMAND is a reader and a secret
-            # follows as an arg. In-place sed/awk rewrites (carved per-clause,
-            # so a global `-i` can't mask a separate read clause) don't leak.
-            if [ "$reader" = "1" ] && [ "$secret_after" = "1" ] && [ "$inplace" = "0" ]; then
-                block=1
-            fi
-            # HIMMEL-440: the recursed interpreter `-c` body leaked a secret.
-            if [ "$rec_reader" = "1" ] && [ "$rec_secret" = "1" ] && [ "$rec_inplace" = "0" ]; then
-                block=1
-            fi
+            scan_clause "$clause" 0
         done <<EOF
 $normalized
 EOF

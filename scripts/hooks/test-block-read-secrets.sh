@@ -583,6 +583,64 @@ assert_rc "4367-2 control: a literal .env inside a quoted span still denies" 2 \
     "$(run_in_globdir "grep -v 'x .env y' rows.tsv")"
 rm -rf "$GLOBDIR"
 
+# HIMMEL-4492: a shell `-c` body is rescanned as its own command text, so an
+# unquoted glob in it expands against cwd like a top-level one does, while a
+# quoted pattern in it stays literal. Wrappers (timeout/nice/sudo with their
+# flags and values) and quoted command words no longer hide the command.
+NESTDIR=$(mktemp -d) || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+: >"$NESTDIR/.env"
+: >"$NESTDIR/rows.tsv"
+run_in_nestdir() { (cd "$NESTDIR" && printf '%s' "$(j_bash "$1")" | bash "$HOOK" >/dev/null 2>&1; echo "$?"); }
+for c in \
+    "bash -c 'cat .e*'" \
+    "sh -c 'cat .e*'" \
+    'bash -c "cat .e*"' \
+    "bash -lc 'cat .e*'" \
+    "bash -c 'head .e*'" \
+    "bash -c 'cat ./.e*'" \
+    "bash -c 'cat .en?'" \
+    "bash -c 'cat .[e]nv'" \
+    "bash -c 'cat rows.tsv .e*'" \
+    "timeout 5 bash -c 'cat .env'" \
+    "timeout 5 bash -c 'cat .e*'" \
+    "nice bash -c 'cat .e*'" \
+    "nice -n5 bash -c 'cat .e*'" \
+    "nice -n 5 bash -c 'cat .env'" \
+    "timeout 5 cat .env" \
+    "nice -n5 cat .env" \
+    "sudo -u u cat .env" \
+    "'bash' -c 'cat .env'" \
+    "\"bash\" -c 'cat .env'" \
+    "'cat' .env" \
+    "\"cat\" .env" \
+    "bash -c \"bash -c 'cat .e*'\"" \
+    "bash -o errexit -c 'cat .env'" \
+    "bash -euo pipefail -c 'cat .env'" \
+    "bash -ce 'cat .env'" \
+    "env -S 'cat .env'" \
+    "bash -c 'timeout 5 cat .env'" \
+    "bash -c 'echo hi; cat .e*'" \
+    "bash -c \"echo hi; cat .e*\""; do
+    assert_rc "4492 deny: $c" 2 "$(run_in_nestdir "$c")"
+done
+for c in \
+    "bash -c 'echo .e*'" \
+    "bash -c 'cat rows.tsv'" \
+    "bash -c 'grep -v \".*\" rows.tsv'" \
+    "bash -c 'grep \".env\" rows.tsv'" \
+    "bash -c 'cat rows.tsv' .env" \
+    "timeout 5 make test" \
+    "nice -n5 ls .env" \
+    "bash -c 'ls -la .e*'" \
+    "bash -c 'sed -i s/a/b/ .env'" \
+    "bash -euo pipefail -c 'make test'" \
+    "bash run.sh .env" \
+    "bash -c 'echo hi; ls .e*'" \
+    "bash -c 'echo hi; grep -v \".*\" rows.tsv'"; do
+    assert_rc "4492 allow: $c" 0 "$(run_in_nestdir "$c")"
+done
+rm -rf "$NESTDIR"
+
 # --- Direct tests of the shared predicate (scripts/guardrails/lib.sh) ---
 # Exercises is_secret_basename in isolation, independent of either hook's
 # tool-dispatch/tokenizer plumbing above.
