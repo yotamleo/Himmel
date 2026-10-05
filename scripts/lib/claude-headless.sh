@@ -20,6 +20,18 @@
 # (himmel-architecture-2026-08-28.md §3 — file-per-session, no shared-write
 # store), written ONLY by this script.
 set -uo pipefail
+# HIMMEL-3914/HIMMEL-4460: refuse a chokepoint seam (NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK)
+# that differs from the session's launch env. Parameter expansion, not dirname:
+# a PATH-shadowed dirname must not pick what is sourced before the seam guard.
+case "${BASH_SOURCE[0]}" in */*) _csg_dir="${BASH_SOURCE[0]%/*}" ;; *) _csg_dir=. ;; esac
+_csg_lib="$_csg_dir/chokepoint-seam-guard.sh"
+# shellcheck source=scripts/lib/chokepoint-seam-guard.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$_csg_lib" ] && . "$_csg_lib"; }; then
+  echo "claude-headless.sh: cannot load $_csg_lib - refusing (HIMMEL-3914)" >&2
+  exit 96
+fi
+chokepoint_seam_guard scripts/lib/claude-headless.sh || exit 96
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -446,7 +458,15 @@ DEDUPED_PATH="$(dedupe_path "$PATH")"
      [[ ${ANTHROPIC_BASE_URL-} == http://127.0.0.1 || ${ANTHROPIC_BASE_URL-} == http://127.0.0.1[:/]* ||
         ${ANTHROPIC_BASE_URL-} == http://localhost || ${ANTHROPIC_BASE_URL-} == http://localhost[:/]* ]]; then
     _nd=$(</proc/net/dev); _nd=${_nd#*$'\n'}; _nd=${_nd#*$'\n'}; _re=$'^[[:space:]]*lo:[^\n]*$'
-    [[ $_nd =~ $_re ]] && { _l=${_l//ANTHROPIC_BASE_URL/}; _l=${_l//ANTHROPIC_API_KEY/}; _l=${_l//[[:space:]]/}; }
+    # Exact names only (HIMMEL-4461): a substring strip would also erase a name
+    # built from the two kept ones, e.g. ANTHROPIC_BASE_URLANTHROPIC_API_KEY.
+    # Sentinel: a readonly `_v` aborts `for _v` and leaves _k empty, a nameref
+    # walks values; the self-named assignment errors on the first and `${!_v}`
+    # exposes the second, so the keep branch is skipped and _l stays non-empty.
+    _v=_v
+    [[ $_nd =~ $_re && ${!_v} == _v ]] && { _k=; for _v in "${!ANTHROPIC_@}"; do
+        [[ $_v == ANTHROPIC_BASE_URL || $_v == ANTHROPIC_API_KEY ]] || _k+=$_v; done
+      _l=$_k${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}; }
   fi
   [[ -z $_l ]] && \
   PATH="$DEDUPED_PATH" MSYS_NO_PATHCONV=1 "${CMD[@]}" < "$PROMPT_FILE" \

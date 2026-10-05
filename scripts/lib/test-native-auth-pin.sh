@@ -20,6 +20,8 @@ td="$(mktemp -d "${TMPDIR:-/tmp}/native-auth-pin-test.XXXXXX")"
 trap 'rm -rf "$td"' EXIT
 
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
+# nz <rc> -> "refused" only for a numeric non-zero rc (empty or garbage is not a refusal)
+nz(){ case "$1" in '' | *[!0-9]* | 0) echo "rc:$1" ;; *) echo refused ;; esac; }
 
 # Child observers: absent.sh exits 0 iff every argv-named variable is ABSENT
 # (unset -- not merely empty) from the child's environment; present.sh exits 0
@@ -129,7 +131,7 @@ check "T11 fake tools earlier in PATH cannot stop the strip" "$(shadow_run "PATH
 # A strip that cannot run must REFUSE (rc != 0), never return 0 with the
 # routing variable still set: a no-op `unset` leaves every target set.
 r=$(shadow_run 'unset(){ return 0; }; export -f unset')
-check "T12 no-op unset: pin refuses (rc non-zero)" "$([ "${r%% *}" != 0 ] && echo refused || echo "rc0:$r")" "refused"
+check "T12 no-op unset: pin refuses (rc non-zero)" "$(nz "${r%% *}")" "refused"
 
 r=$( (
   export Anthropic_Base_Url=https://evil.example
@@ -137,7 +139,7 @@ r=$( (
   . "$lib"
   native_auth_pin_env; echo $?
 ) 2>/dev/null)
-check "T14 no-op unset: surviving mixed-case name -> pin refuses" "$([ "$r" != 0 ] && echo refused || echo "rc0")" "refused"
+check "T14 no-op unset: surviving mixed-case name -> pin refuses" "$(nz "$r")" "refused"
 
 # Seam (HIMMEL-4411) keeping BOTH mock names must return 0, not trip the
 # verification on the separator between them. Needs a loopback-only netns.
@@ -152,7 +154,93 @@ r=$( (
   . "$lib"
   native_auth_pin_env; echo $?
 ) 2>/dev/null)
-check "T13 readonly target survives -> pin refuses (rc non-zero)" "$([ "$r" != 0 ] && echo refused || echo "rc0")" "refused"
+check "T13 readonly target survives -> pin refuses (rc non-zero)" "$(nz "$r")" "refused"
+
+# HIMMEL-4461 item 1: `unset` no-op AND `builtin` replaced by a function that
+# emits only PATH blinds both compgen passes; a mixed-case name the exact-case
+# expansions do not cover must still make the pin refuse. `return` shadowed too:
+# the verdict may not ride on a shadowable builtin.
+r=$( (
+  export Anthropic_Base_Url=https://evil.example
+  unset(){ return 0; }; builtin(){ echo PATH; }; export -f unset builtin
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T16 unset+builtin shadow: surviving mixed-case name -> pin refuses" "$(nz "$r")" "refused"
+r=$( (
+  export Claude_Code_Use_Bedrock=1
+  unset(){ return 0; }; builtin(){ echo PATH; }; return(){ :; }; export -f unset builtin return
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T16b unset+builtin+return shadow: mixed-case name -> pin refuses" "$(nz "$r")" "refused"
+r=$(bash -c '
+  export Anthropic_Api_Key=sk-x
+  shopt -s expand_aliases
+  alias unset=: builtin="echo PATH; :" compgen="echo PATH; :"
+  . "$1"
+  native_auth_pin_env; echo $?' _ "$lib" 2>/dev/null)
+check "T16c alias unset/builtin/compgen: mixed-case name -> pin refuses" "$(nz "$r")" "refused"
+
+# A readonly or nameref loop variable set BEFORE the call must not blind the
+# enumeration: `local` fails on a readonly name and a shadowed `local` leaves a
+# nameref in force, so `for _name` either aborts or walks values instead of
+# names. lr prints launched when the pin returned 0, refused otherwise
+# (including an aborted subshell).
+lr(){ [ "$1" = 0 ] && echo launched || echo refused; }
+r=$( (
+  export Anthropic_Base_Url=evil ANTHROPIC_BASE_URL=https://evil
+  readonly _name=x
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T18 readonly loop variable: pin refuses" "$(lr "$r")" "refused"
+r=$( (
+  export Anthropic_Base_Url=evil
+  local(){ :; }; declare -n _name
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T18b shadowed local + nameref loop variable: pin refuses" "$(lr "$r")" "refused"
+r=$( (
+  export Anthropic_Base_Url=evil
+  local(){ :; }
+  . "$lib"
+  native_auth_pin_env; echo $?; printf '%s' "${Anthropic_Base_Url-gone}"
+) 2>/dev/null)
+check "T18 control: shadowed local alone still strips (rc 0, var gone)" "$r" "0
+gone"
+
+# Substring removal (HIMMEL-4461 follow-up): with the seam on, a name built from
+# the two kept names must not vanish from the verification.
+r=$(unshare -rn bash -c '
+  export NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=k ANTHROPIC_BASE_URLANTHROPIC_API_KEY=x
+  unset(){ return 0; }; builtin(){ echo PATH; }; export -f unset builtin
+  . "$1"; native_auth_pin_env; echo $?' _ "$lib" 2>/dev/null) || r=skip
+if [ "$r" = skip ]; then echo "  SKIP  T17 (no unshare -rn)"; else check "T17 seam: concatenated kept names do not vanish -> pin refuses" "$(nz "$r")" "refused"; fi
+
+# HIMMEL-4461 item 2: the seam keeps the mock only after a read of
+# /proc/net/dev that OBSERVED `lo` and nothing else. A fake /proc is bind-mounted
+# in a private mount+user namespace; prints "kept" or "stripped".
+netdev_run() { # <net/dev content file>
+  mkdir -p "$td/fp/net"; cp "$1" "$td/fp/net/dev"
+  unshare -rmn bash -c '
+    mount --bind "$2" /proc || exit 9
+    export NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=k
+    . "$1"; native_auth_pin_env; [[ -n ${ANTHROPIC_BASE_URL-} ]] && echo kept || echo stripped' _ "$lib" "$td/fp" 2>/dev/null || echo skip
+}
+hdr=$'Inter-|   Receive\n face |bytes'
+: > "$td/nd-empty"
+printf '%s\n' "$hdr" > "$td/nd-hdr"
+printf '%s\n%s\n' "$hdr" '    lo: 0 0' > "$td/nd-lo"
+printf '%s\n%s\n%s\n' "$hdr" '    lo: 0 0' '  eth0: 0 0' > "$td/nd-eth"
+r=$(netdev_run "$td/nd-lo")
+if [ "$r" = skip ]; then echo "  SKIP  N1-N4 (no unshare -rmn bind of /proc)"; else
+  check "N1 control: lo-only read keeps the mock" "$r" "kept"
+  check "N2 empty /proc/net/dev read -> mock stripped" "$(netdev_run "$td/nd-empty")" "stripped"
+  check "N3 header-only read (no lo observed) -> mock stripped" "$(netdev_run "$td/nd-hdr")" "stripped"
+  check "N4 lo plus a non-lo interface -> mock stripped" "$(netdev_run "$td/nd-eth")" "stripped"
+fi
 
 # --- caller-level: the keyword-only LAUNCH GATE (HIMMEL-4459) ------------------
 # With `unset` AND `return` shadowed the pin itself falls through rc 0 with the
