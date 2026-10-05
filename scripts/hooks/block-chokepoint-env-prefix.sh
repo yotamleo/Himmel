@@ -1099,7 +1099,9 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # anything but a read-only program (| sh, | xargs, | while read, a
 # compound's `done | sh`), or when a file written by a redirect is run again:
 # a command word ending in its name, or its name beside a shell, source, `.`,
-# exec, eval, xargs, env, nohup, setsid or timeout word.
+# exec, eval, xargs, env, nohup, setsid or timeout word; and when any file is
+# written (a redirect, tee, cp, mv, install, ln, dd of=) beside a command
+# word with a / or one outside the relief names (CR round 8).
 # No relief at all on: an unquoted heredoc body with $( or a backtick,
 # <( >( =(, a paren glued to a word (zsh grouping, extglob), alias, function,
 # hash, enable, a `name() {` that shadows a relief name, a PATH/LD_*/IFS/
@@ -1110,7 +1112,7 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # '$(' and '\' below are literal case patterns, not missed expansions.
 # shellcheck disable=SC2016,SC1003
 pobf_relief() {
-    local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' hasSh=0 ap
+    local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' ap wr=0
     local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO
     local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' TAB=$'\t'
     local re_sq="^([^${SQ}]*)${SQ}(.*)\$"
@@ -1125,7 +1127,6 @@ pobf_relief() {
     local re_fn="(^|[[:blank:];|&${NL}])([A-Za-z_][A-Za-z0-9_-]*)\\(\\)[[:blank:]]*\\{"
     local re_dw="(^|[^[:alnum:]_])(alias|unalias|function|hash|enable|disable|zmodload|autoload)([^[:alnum:]_]|\$)"
     local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
-    local re_sh="(^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source|exec|eval|chmod|install)([^[:alnum:]_.-]|\$)|(^|[;|&(${NL}])[[:blank:]]*\\.[[:blank:]]"
     local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
     case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
     t=${t//\\$NL/}
@@ -1221,7 +1222,6 @@ pobf_relief() {
         F=${F/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}{"}
     done
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
-    [[ $F =~ $re_sh ]] && hasSh=1
     F=${F//[0-9]>&[0-9]/ }
     F=${F//>&[0-9]/ }
     F=${F//[0-9]>&-/ }
@@ -1316,36 +1316,60 @@ pobf_relief() {
         j=$((j + 1))
     done
     # Global: a pipe into anything but a read-only filter (sh, xargs, while,
-    # tee, a compound's `done | sh`), or a file written and named again beside
-    # a shell word (bash f, . f, ./f), voids every stage's relief.
+    # tee, a compound's `done | sh`), or a file written and named again (a
+    # command word ending in its name, or its name beside a shell word: bash
+    # f, . f), voids every stage's relief.
     nf=0
     j=1
     while [ "$j" -lt "$i" ]; do
         [ "${SP[j - 1]}" = 1 ] && [ "${FL[j]}" = 0 ] && nf=1
         j=$((j + 1))
     done
-    if [ "$hasSh" = 1 ]; then
-        x=$F
-        while [[ $x =~ $re_wr ]]; do
-            w=${BASH_REMATCH[1]}
-            x=${x/>/ }
-            case "$w" in /dev/null|/dev/stderr|/dev/stdout|/dev/tty) continue ;; esac
-            w=$(pobf_exp "$w"); w=${w##*/}
-            [ -z "$w" ] && { nf=1; break; }
-            j=0
-            while [ "$j" -lt "$i" ]; do
-                c=$(pobf_exp "${CW[j]}")
-                case "$c" in
-                    *"$w") nf=1 ;;
-                    bash|sh|zsh|dash|ksh|mksh|source|.|exec|eval|xargs|env|nohup|setsid|timeout)
-                        # A literal script's later words are its data.
-                        s=${ST[j]}
-                        [ "${CL[j]}" = 2 ] && s=${C2[j]}
-                        while [[ $s =~ $re_wr ]]; do s=${s/"${BASH_REMATCH[0]}"/ }; done
-                        case "$(pobf_exp "$s")" in *"$w"*) nf=1 ;; esac ;;
-                esac
-                j=$((j + 1))
-            done
+    x=$F
+    while [[ $x =~ $re_wr ]]; do
+        w=${BASH_REMATCH[1]}
+        x=${x/>/ }
+        case "$w" in /dev/null|/dev/stderr|/dev/stdout|/dev/tty) continue ;; esac
+        wr=1
+        w=$(pobf_exp "$w"); w=${w##*/}
+        [ -z "$w" ] && { nf=1; break; }
+        j=0
+        while [ "$j" -lt "$i" ]; do
+            c=$(pobf_exp "${CW[j]}")
+            case "$c" in
+                *"$w") nf=1 ;;
+                bash|sh|zsh|dash|ksh|mksh|source|.|exec|eval|xargs|env|nohup|setsid|timeout)
+                    # A literal script's later words are its data.
+                    s=${ST[j]}
+                    [ "${CL[j]}" = 2 ] && s=${C2[j]}
+                    while [[ $s =~ $re_wr ]]; do s=${s/"${BASH_REMATCH[0]}"/ }; done
+                    case "$(pobf_exp "$s")" in *"$w"*) nf=1 ;; esac ;;
+            esac
+            j=$((j + 1))
+        done
+    done
+    # CR round 8: a written file (a redirect, tee, cp, mv, install, ln, dd
+    # of=) can run under a name the scan above never ties to it (./run after
+    # a cd, a PATH directory, a copy). Beside a command word with a / or one
+    # outside the relief names, every stage's relief is voided.
+    j=0
+    while [ "$j" -lt "$i" ]; do
+        case "${CW[j]}" in
+            tee|cp|mv|install|ln) wr=1 ;;
+            dd) case "${ST[j]}" in *of=*) wr=1 ;; esac ;;
+        esac
+        j=$((j + 1))
+    done
+    if [ "$wr" = 1 ]; then
+        j=0
+        while [ "$j" -lt "$i" ]; do
+            c=${CW[j]}
+            case "$c" in
+                '') ;;
+                */*) nf=1 ;;
+                *) case " $POBF_NAMES " in *" $c "*) ;; *) nf=1 ;; esac ;;
+            esac
+            j=$((j + 1))
         done
     fi
     j=0

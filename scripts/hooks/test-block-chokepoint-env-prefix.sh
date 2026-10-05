@@ -1393,6 +1393,19 @@ EOF" "python3 -c 'import os; os.system(\"/r/w/scrip?s/$CK/g?.sh\")'" \
          "find /r/w -path '/r/w/scrip?s/$CK/g?.sh' -exec sh {} \\;" "/usr/bin/env /r/w/scrip?s/$CK/g?.sh"; do
     assert_deny "4157 inert-reader exemption does not reach: $F" "$(j "$UL true; $F")"
 done
+# CR round 8 on 730941fe: a file written by a relieved stage and then run
+# with no shell word (the redirect scan ran only beside one). A file write
+# beside a path command word or an unrelieved one now voids every relief.
+assert_deny "4157 written file run directly (CR round 8 verbatim)" "$(j "unset HIMMEL_CONSOLE_LEG; echo /r/w/scrip?s/$CK/g?.sh > /t/run; /t/run")"
+WR="echo /r/w/scrip?s/$CK/g?.sh > /t/run"
+for F in "$WR; /t/run" "cd /t; $WR; ./run" "$WR; . /t/run" "$WR; source /t/run" "$WR; exec /t/run" \
+         "$WR; env /t/run" "$WR; command /t/run" "$WR; nohup /t/run" "$WR; echo /t/run | xargs -I{} {}" \
+         "$WR; find /t -name run -exec {} \\;" "echo /r/w/scrip?s/$CK/g?.sh > /usr/local/bin/run; run" \
+         "echo /r/w/scrip?s/$CK/g?.sh > /t/a; cp /t/a /t/run; /t/run" \
+         "echo /r/w/scrip?s/$CK/g?.sh | tee /t/run; /t/run" \
+         "echo /r/w/scrip?s/$CK/g?.sh > /t/a; dd if=/t/a of=/t/run; /t/run"; do
+    assert_deny "4157 write-then-execute without a shell word: $F" "$(j "unset HIMMEL_CONSOLE_LEG; $F")"
+done
 # CR round on 51d82af1: a relief entry that can run a program gets none.
 # sed/awk lose relief outright (sed e, awk pipes); git -O and gh alias/config
 # name a program; an assignment prefix can name a pager or browser.
