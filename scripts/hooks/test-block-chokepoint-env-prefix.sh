@@ -1572,19 +1572,21 @@ if [ -n "${EPOCHREALTIME:-}" ]; then
         FAILED=$((FAILED + 1))
     fi
     # HIMMEL-4447: an all-digit redirect target ('1') made pobf_exp walk every
-    # token index per redirect -- redirects x tokens. ~12 KB of them.
-    R12K=$(rep_text "echo x >'1'; " 920)
+    # token index per redirect -- redirects x tokens. ~19.5 KB of them: base
+    # grows quadratically and head close to linearly, so at this size the two
+    # stay apart on a CI-speed runner too (12 KB did not).
+    R20K=$(rep_text "echo x >'1'; " 1500)
     T0=${EPOCHREALTIME/[.,]/}
-    run "$(j "FOO=1; ls a/*.sh; $R12K")"
+    run "$(j "FOO=1; ls a/*.sh; $R20K")"
     T1=${EPOCHREALTIME/[.,]/}
-    run "$(j "HIMMEL_CONSOLE_LEG=1; ls a/*.sh; $R12K")"
+    run "$(j "HIMMEL_CONSOLE_LEG=1; ls a/*.sh; $R20K")"
     T2=${EPOCHREALTIME/[.,]/}
     CASES=$((CASES + 1))
-    # Bound 1200 ms relief: alone 487-564 ms, 3 concurrent max 580 ms (x2 = 1160, rounded); base 4579fc21 took 3875 ms in-suite, still red.
-    if [ "$RC" = "0" ] && [ $((T2 - T1 - (T1 - T0))) -lt 1200000 ]; then
-        echo "PASS 4447: 12 KB of digit-token redirects beside a seam name, relief in $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
+    # Bound 8500 ms relief: local alone 1139-1198 ms, 3 concurrent max 1234 ms; CI shard 5 ran this row 3.4x local (1973 vs 582 ms at 12 KB), so 1234 x 3.4 x 2 = 8392, rounded. Base 4579fc21 took 12655 ms locally (12 KB: 3875), still red.
+    if [ "$RC" = "0" ] && [ $((T2 - T1 - (T1 - T0))) -lt 8500000 ]; then
+        echo "PASS 4447: 19.5 KB of digit-token redirects beside a seam name, relief in $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
     else
-        echo "FAIL 4447: 12 KB of digit-token redirects beside a seam name -- expected rc=0 with relief under 1200 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
+        echo "FAIL 4447: 19.5 KB of digit-token redirects beside a seam name -- expected rc=0 with relief under 8500 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
         FAILED=$((FAILED + 1))
     fi
 else
