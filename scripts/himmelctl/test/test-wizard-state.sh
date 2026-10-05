@@ -265,4 +265,23 @@ echo "$outE" | jq -e '.migrated.items["pre-commit-hooks"].enabled == true' >/dev
   || fail "caseE: a project-only item backfilled under a target with a STALE persisted scope:'user' must still key off the AUTHORITATIVE invocation scope 'project' (got: $outE)"
 echo "ok: caseE — migration membership uses the authoritative invocation scope, never a stale persisted target.scope"
 
+# ── caseF (HIMMEL-4435): the pre-commit framework item is wanted only when a
+# luna vault is selected or the contributor overlay is on; a vault=none
+# starter install places native gates and must not list it. ─────────────────
+outF=$(HOME="$work/homeF" HIMMELCTL_CACHE_DIR="$(winpath "$work/cacheF")" "$node_bin" -e "
+const state = require('$state_lib_w');
+const manifest = JSON.parse(require('fs').readFileSync('$manifest_w', 'utf8'));
+const it = manifest.items.find((i) => i.id === 'pre-commit');
+const base = { role: 'adopter', tier: 'standard', scope: 'project', handover: { mode: 'none', path: '' }, pluginSet: 'lean', lanes: [], alwaysOn: false };
+const m = (a) => state.itemMembership(it, 'core', 'project', Object.assign({}, base, a));
+console.log(JSON.stringify({
+  none: m({ vault: { mode: 'none', path: '' } }),
+  vault: m({ vault: { mode: 'default-template', path: '/v' } }),
+  contrib: m({ vault: { mode: 'none', path: '' }, devOverlay: true }),
+}));
+")
+echo "$outF" | jq -e '.none == false and .vault == true and .contrib == true' >/dev/null \
+  || fail "caseF: pre-commit must be unwanted for vault=none, wanted with a vault or devOverlay (got: $outF)"
+echo "ok: caseF — pre-commit framework item is not wanted for a vault=none starter install"
+
 echo "PASS"

@@ -126,6 +126,16 @@ grepq "$out" "neither 'uv' nor 'pipx' found" || fail "uv/pipx gap: missing WARN 
 grepq "$out" 'warning(s)' || fail "uv/pipx gap: missing warning-count summary (got: $out)"
 echo "ok: uv+pipx absent WARNs and exits 0 (non-strict)"
 
+# ── 3b. HIMMEL-4435: same env + --no-vault -> no uv/pipx WARN, 0 warnings ────
+mkdir -p "$real_jira_dist"; : > "$real_jira_dist/index.js"
+mkdir -p "$real_jira_node_modules"
+out=$(PATH="$work/bin:$tool_free_path" bash "$preflight" --no-vault 2>&1); rc=$?
+rm -rf "$real_jira_dist" "$real_jira_node_modules"
+[ "$rc" -eq 0 ] || fail "--no-vault: expected exit 0, got $rc"
+if grepq "$out" "neither 'uv' nor 'pipx' found"; then fail "--no-vault: uv/pipx WARN must not fire for vault=none (got: $out)"; fi
+grepq "$out" '0 warnings' || fail "--no-vault: missing '0 warnings' summary (got: $out)"
+echo "ok: --no-vault suppresses the uv/pipx WARN (HIMMEL-4435)"
+
 # ── 4. node present + npm absent -> WARN, exit 0 (non-strict) ────────────────
 c4bin="$work/c4bin"; mkdir -p "$c4bin"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$c4bin/uv";   chmod +x "$c4bin/uv"

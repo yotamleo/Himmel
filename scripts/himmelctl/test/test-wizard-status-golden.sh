@@ -35,7 +35,7 @@
 #      the STATE itself, not just the query, carries the six golden reds
 #      PLUS (HIMMEL-2349) the additive overlay's own recorded-install-profile
 #      coverage of 8 more manifest items: summary is
-#      {red:11,degraded:1,green:0,na:manifestCount-12} (pre-commit is
+#      {red:10,degraded:1,green:0,na:manifestCount-11} (pre-commit is
 #      actively scrubbed from PATH, so this holds regardless of whether the
 #      host running the suite has pre-commit installed) - see the bonus
 #      check's own comment, right where it's asserted, for the
@@ -308,7 +308,9 @@ outAFull=$(run_status_full)
 # to n/a here). HIMMEL-3307: two of those 7 reds (bitbucket-cli-build,
 # jira-env-keys) are optional integrations a clean starter never set up and now
 # read n/a (opt-in) instead of red. Net: red 6->11, degraded 0->1, green 0->0,
-# na 42->34 (8 moved out of n/a, 2 moved back in) - items
+# na 42->34 (8 moved out of n/a, 2 moved back in); HIMMEL-4435: this fixture
+# is vault=none, so the pre-commit framework item is no longer wanted at all
+# (n/a), taking red 11->10 and na 34->35 - items
 # moving FROM n/a TO a real severity is exactly the additive overlay's
 # intended direction (an item the record covers but the persisted
 # state.json hadn't enabled is no longer silently invisible), and every one
@@ -319,9 +321,9 @@ outAFull=$(run_status_full)
 # HIMMEL-2349 codex-3: previously this assertion held green==1 ONLY because
 # the machine running the suite happened to have pre-commit.exe on PATH.
 echo "$outAFull" | jq -e --argjson n "$manifestCount" \
-  '(.items | length) == $n and .summary.red == 11 and .summary.degraded == 1 and .summary.green == 0 and .summary.na == ($n - 12)' >/dev/null \
-  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:11, degraded:1, green:0, na:$((manifestCount - 12))} - the six golden reds PLUS the 5 red/1 degraded/2 opt-in n/a of the 8 items the recorded install-profile additively covers (got: $(echo "$outAFull" | jq -c '.summary'))"
-echo "ok: case a (bonus) - a --items-less run against the same state confirms six golden reds PLUS the additive overlay's 8 recorded-profile-covered items (5 red, 1 degraded, 2 opt-in n/a, 0 green), against the whole manifest"
+  '(.items | length) == $n and .summary.red == 10 and .summary.degraded == 1 and .summary.green == 0 and .summary.na == ($n - 11)' >/dev/null \
+  || fail "case a (bonus): expected the full $manifestCount-item run to read {red:10, degraded:1, green:0, na:$((manifestCount - 11))} - the six golden reds PLUS the 4 red/1 degraded/3 n/a of the 8 items the recorded install-profile additively covers (got: $(echo "$outAFull" | jq -c '.summary'))"
+echo "ok: case a (bonus) - a --items-less run against the same state confirms six golden reds PLUS the additive overlay's 8 recorded-profile-covered items (4 red, 1 degraded, 3 n/a, 0 green), against the whole manifest"
 
 # ── case (b): six discrimination flips, each restored after ────────────────
 
