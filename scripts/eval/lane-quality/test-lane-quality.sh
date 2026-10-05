@@ -144,6 +144,22 @@ for lane in deepseek claudex; do
 done
 check "refused lanes launch nothing" '[ ! -s "$TMP/fake.log" ]'
 
+# HIMMEL-4459: exported exit/return/unset shadows must never reach the agent or
+# judge launch. The control (no ambient proxy) proves the shadowed runner still
+# launches, so the proxied run staying empty is not vacuous.
+shadow_lq() { # <proxy-url|-> <outdir>
+  : >"$TMP/fake.log"
+  # shellcheck disable=SC2016
+  bash -c '
+    exit() { :; }; return() { :; }; unset() { :; }; export -f exit return unset
+    [ "$1" = - ] && p=() || p=(ANTHROPIC_BASE_URL="$1")
+    exec env "${p[@]}" bash "$2" run --lane native --model m --tasks shell-red-green --out "$3"' _ "$1" "$RUN" "$2" >"$TMP/shadow.log" 2>&1
+}
+shadow_lq - "$TMP/out-shadow-ctl"
+check "shadowed exit/return/unset, no proxy: the runner still launches (control)" '[ -s "$TMP/fake.log" ]'
+shadow_lq http://evil.invalid "$TMP/out-shadow-px"
+check "shadowed exit/return/unset + ambient ANTHROPIC_BASE_URL: nothing is launched" '[ ! -s "$TMP/fake.log" ]'
+
 # openrouter (phase 2): the agent goes through the lane launcher, the judge
 # stays native, and the metered balance is read before and after each task.
 printf '#!/usr/bin/env bash\necho "$*" >>"$LQ_FAKE_LOG.launcher"\nexec "$LQ_CLAUDE_BIN" "$@"\n' >"$TMP/bin/claude-openrouter"

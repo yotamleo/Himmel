@@ -110,6 +110,16 @@
             "timeout": 15
           }
         ]
+      },
+      {
+        "matcher": "mcp__.*[Aa][Gg][Ee][Nn][Tt][-_][Nn][Aa][Tt][Ii][Vv][Ee].*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -p sh \"${CLAUDE_PLUGIN_ROOT}/hooks/run-node.sh\" \"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook-with-bash.js\" \"${CLAUDE_PLUGIN_ROOT}/hooks/block-agent-native-egress.sh\"",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "SessionStart": [

@@ -317,7 +317,10 @@ run_claude_review() {
     # substitution, so the unsets stay scoped to this review.
     # shellcheck source=../lib/native-auth-pin.sh
     # shellcheck disable=SC1091
-    if ! . "$SCRIPT_DIR/../lib/native-auth-pin.sh" || ! native_auth_pin_env; then
+    # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE
+    # (native-auth-pin.sh) re-checks, immune to shadowed builtins.
+    if ! . "$SCRIPT_DIR/../lib/native-auth-pin.sh" ||
+       { native_auth_pin_env; [[ -n "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; }; then
         echo "hermes-critic.sh: native-auth pin unavailable — refusing the claude route" >&2
         return 1
     fi
@@ -356,8 +359,16 @@ run_claude_review() {
         return 1
     fi
     # headless-claude-ok: CR critic pass — this invocation IS the product (HIMMEL-2017).
-    out="$(cd "$scratch_dir" && PATH="$deduped_path" "${CLAUDE_LANE_CMD[@]}" -p --settings "$critic_settings" --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
-    crc=$?
+    # HIMMEL-4459: the launch sits INSIDE the keyword-only gate, so a shadowed
+    # `return`/`[`/`exit` above can skip a refusal but never reach this launch.
+    # HIMMEL-4461: the `cd` precedes the gate (a shadowed `cd` could export a proxy
+    # variable after it); only the launch sits between gate and launch.
+    cd "$scratch_dir" || { rm -rf "$scratch_dir"; return 1; }
+    out=""; crc=1
+    if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
+        out="$(PATH="$deduped_path" "${CLAUDE_LANE_CMD[@]}" -p --settings "$critic_settings" --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
+        crc=$?
+    fi
     [ -n "$scratch_dir" ] && rm -rf "$scratch_dir"
     printf '%s' "$out" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{const j=JSON.parse(d);console.log(j.result??"")}catch(e){console.log(d)}})'
     # Return CLAUDE's rc, not the node unwrap's — a transport failure must not

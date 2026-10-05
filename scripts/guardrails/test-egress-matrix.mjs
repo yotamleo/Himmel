@@ -358,6 +358,18 @@ for (const p of ["firecrawl", "jina-reader"]) {
   }
 }
 
+// HIMMEL-4328: the hosted agent-native MCP (Builder.io) gets its OWN declared
+// provider and an EXPLICIT hard salus deny row, so the cell the
+// block-agent-native-egress.sh hook enforces is legible here, not only implied
+// by the salus wildcard.
+assert(providers.includes("builder-io"), "builder-io provider must be declared (HIMMEL-4328)");
+for (const u of purposes) {
+  const { effective, rule } = evaluate("salus", "builder-io", u);
+  assert(effective === "deny" && rule && rule.corpus === "salus" &&
+         rule.provider === "builder-io" && rule.hard === true,
+    `salus x builder-io x ${u} must deny via its OWN hard builder-io row (HIMMEL-4328)`);
+}
+
 if (failures > 0) {
   console.error(`egress-matrix: ${failures} invariant failure(s)`);
   process.exit(1);

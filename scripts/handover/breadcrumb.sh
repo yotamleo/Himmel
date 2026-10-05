@@ -49,6 +49,9 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# HIMMEL-4420: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+# shellcheck disable=SC1091
+if . "$SCRIPT_DIR/../lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
 # shellcheck source=../lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/handover-path.sh" || { echo "breadcrumb: cannot source handover-path.sh" >&2; exit 2; }

@@ -4513,8 +4513,23 @@ STUB
     chmod +x "$c40_t/curl"
     : > "$c40_t/log"
 }
+# HIMMEL-4432: C40 composes himmelctl status's qmd-daemon item, so a case feeds it
+# a status fixture (DOCTOR_STATUS_JSON) instead of running a 13s real status. The
+# item's verdict mirrors what the status probe reads off the same stub curl
+# (covered in test-wizard-qmd-daemon.sh): refused -> absent, wedged/foreign/empty
+# reply -> degraded, anything that answers initialize -> present.
+c40_status() { # <desired true|false> <actual> <detail> — writes $c40_t/status.json
+    jq -n --argjson d "$1" --arg a "$2" --arg t "$3" '{items:[{id:"qmd-daemon",desired:$d,actual:$a,detail:$t}]}' > "$c40_t/status.json"
+}
 c40_run() { # <mode>
-    PATH="$FAKEBIN:$PATH" C40_MODE="$1" C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" \
+    case "$1" in
+        down) c40_status true absent "no qmd daemon answering on the url (qmd is optional)" ;;
+        inithang) c40_status true degraded "a process accepted the connection but did not answer initialize within 10s -- wedged" ;;
+        reset|empty204) c40_status true degraded "a process returned no usable initialize reply (curl rc=52, HTTP 204)" ;;
+        foreign) c40_status true degraded "a process answers but it is NOT qmd (initialize reply has no qmd serverInfo)" ;;
+        *) c40_status true present "initialize answered in 0.3s" ;;
+    esac
+    PATH="$FAKEBIN:$PATH" C40_MODE="$1" C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" DOCTOR_STATUS_JSON="$c40_t/status.json" \
         CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1
 }
 c40_precond() { # <mode> — the stub must answer the init payload the way the mode says
@@ -4553,6 +4568,44 @@ else
     else
         fail "C40 slow-but-alive initialize -> $(printf '%s' "$out" | grep -A1 C40)"
     fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (HIMMEL-4432): the verdict FOLLOWS himmelctl status's qmd-daemon item, not C40's own probe (RED) =="
+# The stub curl answers every initialize happily (mode ok); only the status
+# fixture varies, so a verdict that tracks the fixture cannot come from a probe.
+c40_setup
+c40_status false absent "not wanted"
+out="$(PATH="$FAKEBIN:$PATH" C40_MODE=ok C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" DOCTOR_STATUS_JSON="$c40_t/status.json" CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C40-qmd-vec' && grepq "$out" -F 'not wanted' && ! grepq "$out" 'WARN C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec' && [ ! -s "$c40_t/log" ]; then
+    pass "C40 qmd-daemon desired=false -> INFO not wanted, no daemon contact"
+else
+    fail "C40 not wanted -> $(printf '%s' "$out" | grep -A1 C40) log=$(tr '\n' ' ' < "$c40_t/log")"
+fi
+c40_status true absent "no qmd daemon answering"
+out="$(PATH="$FAKEBIN:$PATH" C40_MODE=ok C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" DOCTOR_STATUS_JSON="$c40_t/status.json" CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec' && ! grepq "$out" 'OK   C40-qmd-vec' && [ ! -s "$c40_t/log" ]; then
+    pass "C40 status says absent (stub would answer) -> INFO skip, follows status"
+else
+    fail "C40 status absent -> $(printf '%s' "$out" | grep -A1 C40) log=$(tr '\n' ' ' < "$c40_t/log")"
+fi
+c40_status true degraded "status-owned wedge detail"
+out="$(PATH="$FAKEBIN:$PATH" C40_MODE=ok C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" DOCTOR_STATUS_JSON="$c40_t/status.json" CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'status-owned wedge detail' && ! grepq "$out" 'OK   C40-qmd-vec' && [ ! -s "$c40_t/log" ]; then
+    pass "C40 status says degraded (stub would answer) -> WARN carrying status's detail"
+else
+    fail "C40 status degraded -> $(printf '%s' "$out" | grep -A1 C40) log=$(tr '\n' ' ' < "$c40_t/log")"
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (HIMMEL-4432): unknown status (no qmd-daemon item) keeps C40's own probe, never a silent pass =="
+c40_setup
+printf '{"items":[]}' > "$c40_t/status.json"
+out="$(PATH="$FAKEBIN:$PATH" C40_MODE=inithang C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" DOCTOR_STATUS_JSON="$c40_t/status.json" CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F 'did not answer'; then
+    pass "C40 no qmd-daemon item in status -> own probe still WARNs on a wedge"
+else
+    fail "C40 unknown status -> $(printf '%s' "$out" | grep -A1 C40)"
 fi
 rm -rf "$c40_t"
 

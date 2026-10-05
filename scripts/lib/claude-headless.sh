@@ -345,6 +345,7 @@ BANK_VERDICT="$(CADENCE_BANK_LEG="${CADENCE_BANK_LEG:-claude-headless:$ROLE}" ba
 artifact_mtime() {
   local path="$1" newest
   if [ -d "$path" ]; then
+    # shellcheck disable=SC2030  # pairs with native-auth-pin.sh's ${!PREFIX*} reads (empty-named var)
     newest="$(find "$path" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do date -r "$f" '+%s.%N' 2>/dev/null; done | sed 's/\.N$/.000000000/' | sort -rn | head -1)"
     if [ -n "$newest" ]; then printf '%s' "$newest"; else date -r "$path" '+%s.%N' 2>/dev/null | sed 's/\.N$/.000000000/' || true; fi
   else
@@ -434,10 +435,22 @@ STDOUT_FILE="$(mktemp "${TMPDIR:-${TEMP:-/tmp}}/claude-headless-stdout.XXXXXX")"
 # for an existing copy, so handing it an already-duplicated inherited PATH
 # lets that compound across every headless dispatch in a long session.
 DEDUPED_PATH="$(dedupe_path "$PATH")"
-# shellcheck disable=SC1091
-( cd "$CWD" && . "$REPO_ROOT/scripts/lib/native-auth-pin.sh" && native_auth_pin_env && \
+# shellcheck disable=SC1091,SC2031  # SC2031: ${!PREFIX*} parses as an empty-named var
+# HIMMEL-4459: native_auth_pin_env's return value is ADVISORY here — a shadowed
+# `unset`/`return` (function, alias, startup file) can make it return 0 with the
+# proxy variables still set. The launch is gated on the keyword-only snippet
+# documented in native-auth-pin.sh ("LAUNCH GATE"), which no shadow can reach.
+( cd "$CWD" && { . "$REPO_ROOT/scripts/lib/native-auth-pin.sh" || exit 1; native_auth_pin_env
+  _l="${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}"
+  if [[ -n $_l && ${NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK-} = 1 && -r /proc/net/dev && ${ANTHROPIC_BASE_URL-} != *@* ]] &&
+     [[ ${ANTHROPIC_BASE_URL-} == http://127.0.0.1 || ${ANTHROPIC_BASE_URL-} == http://127.0.0.1[:/]* ||
+        ${ANTHROPIC_BASE_URL-} == http://localhost || ${ANTHROPIC_BASE_URL-} == http://localhost[:/]* ]]; then
+    _nd=$(</proc/net/dev); _nd=${_nd#*$'\n'}; _nd=${_nd#*$'\n'}; _re=$'^[[:space:]]*lo:[^\n]*$'
+    [[ $_nd =~ $_re ]] && { _l=${_l//ANTHROPIC_BASE_URL/}; _l=${_l//ANTHROPIC_API_KEY/}; _l=${_l//[[:space:]]/}; }
+  fi
+  [[ -z $_l ]] && \
   PATH="$DEDUPED_PATH" MSYS_NO_PATHCONV=1 "${CMD[@]}" < "$PROMPT_FILE" \
-  >"$STDOUT_FILE" 2>"$STDERR_FILE" ) &
+  >"$STDOUT_FILE" 2>"$STDERR_FILE"; } ) &
 # HIMMEL-2514: deliberately NOT named CLAUDE_PID — an interactive Claude Code
 # session exports its OWN pid into every subprocess under that exact name, so
 # any pre-launch refusal (bank-preflight, concurrency cap, a registry-row

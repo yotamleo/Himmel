@@ -231,6 +231,57 @@ jobs:
         working-directory: scripts/jira
       - run: bash scripts/ci/jira-cli-smoke.sh
 
+  # HIMMEL-4410 (epic HIMMEL-4409): the credential-free Claude startup suite. A
+  # REAL `claude` CLI starts under a fake key inside a loopback-only network
+  # namespace and no model turn runs, so it needs no login, no secret and no
+  # network (see scripts/testing/fakekey-claude.sh). The CLI is PINNED to an
+  # exact version so a Claude Code release cannot redden or silently change this
+  # job: to bump it, change CLAUDE_CLI_VERSION below (it must exist on npm:
+  # `npm view @anthropic-ai/claude-code@<v> version`), run
+  # `bash scripts/testing/test-fakekey-claude-startup.sh` against that version
+  # locally, and fix any assertion the new debug-log wording breaks in the same PR.
+  # The suite is SKIP_LISTed in run-shell-tests.sh because the shell-unit shards
+  # have no claude CLI; this job is where it runs.
+  claude-startup:
+    runs-on: ubuntu-latest
+    env:
+      CLAUDE_CLI_VERSION: '2.1.289'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # HIMMEL-4412: the project's SessionStart/Subagent hooks run `bun`; a runner
+      # without it makes them exit 127 and the hook smoke correctly reports a failing hook.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      # The mock sandbox runs claude under a scrubbed PATH (claude, node, /usr/local/bin,
+      # /usr/bin, /bin), so setup-bun's ~/.bun/bin must be linked into one of those.
+      - name: Put bun on the scrubbed PATH
+        run: sudo ln -sf "$(command -v bun)" /usr/local/bin/bun
+      - name: Install the pinned claude CLI
+        run: |
+          npm install --global "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
+          claude --version
+      # ubuntu-24.04 refuses unprivileged user namespaces by default (AppArmor);
+      # the suite needs `unshare -rn` and fails closed without it.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - run: bash scripts/testing/test-fakekey-claude-startup.sh
+      # HIMMEL-4411: a full scripted turn (text, Bash tool_use, tool_result) against
+      # scripts/testing/mock-anthropic. The suite also asserts the installed CLI
+      # equals CLAUDE_CLI_VERSION, so a version drift fails loudly here.
+      - run: bash scripts/testing/test-claude-mock-turn.sh
+      # HIMMEL-4412: two "a hook that fails open" smokes on the same mock. MOCK-BACKED:
+      # they prove Claude Code enforces the consult sandbox and that the project hook
+      # chain fires clean in a real session; neither is evidence of real-model behaviour.
+      # The consult sandbox needs bubblewrap and socat on the runner.
+      - name: Install the consult sandbox prerequisites
+        run: sudo apt-get install -y --no-install-recommends bubblewrap socat
+      - run: bash scripts/testing/test-mock-consult-sandbox.sh
+      - run: bash scripts/testing/test-mock-hook-smoke.sh
+
   lanes-and-trust-suites:
     # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no
     # package.json (a committed one under scripts/ trips the npm-audit gates for a

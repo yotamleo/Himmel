@@ -629,10 +629,18 @@ export function mcpServersForProfile(registry, name) {
       throw new Error(`plugin-profiles: profile "${bad}" cannot be composed in a profile list (${NON_ADDITIVE_PROFILES.join(', ')} are not additive)`);
     }
     const lists = members.map((m) => mcpServersForProfile(registry, m));
-    // A member with no allowlist means "no strip": it must never be narrowed by
-    // another member's list (same rule as enabledPlugins: a member never turns
-    // off another), so the union is no allowlist at all.
-    return lists.some((l) => l === undefined) ? undefined : [...new Set(lists.flat())];
+    // HIMMEL-4401: a composed leg must never load more MCP servers than a member
+    // allows. Members declaring different allowlists refuse (operator ruling
+    // 2026-10-05); identical lists keep that list; a member declaring none is
+    // ignored, so exactly one declared list is kept rather than widened to
+    // "every user MCP server".
+    const declared = members.map((m, i) => ({ m, l: lists[i] })).filter((x) => x.l !== undefined);
+    if (declared.length === 0) return undefined;
+    const key = (l) => JSON.stringify([...l].sort());
+    if (declared.some((x) => key(x.l) !== key(declared[0].l))) {
+      throw new Error(`plugin-profiles: cannot compose profiles with different mcpServers allowlists (${declared.map((x) => `${x.m}: [${x.l.join(', ')}]`).join('; ')}); a composed leg would load every user MCP server — compose members with identical lists, or none`);
+    }
+    return declared[0].l;
   }
   const profiles = registry.profiles ?? {};
   if (!Object.hasOwn(profiles, name)) {

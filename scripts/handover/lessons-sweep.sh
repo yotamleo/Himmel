@@ -6,6 +6,9 @@
 # operator promotes what's worth keeping (no auto-write to vault / CLAUDE.md).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# HIMMEL-4420: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+# shellcheck disable=SC1091
+if . "$HERE/../lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
 # shellcheck source=/dev/null
 . "$HERE/../lib/handover-path.sh" || { echo "lessons-sweep.sh: cannot source handover-path.sh" >&2; exit 2; }
 

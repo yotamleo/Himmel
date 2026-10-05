@@ -126,6 +126,43 @@ if grep -q '^HIMMEL_WHERE_ARE_WE=0$' "$ENVD" 2>/dev/null; then pass "recursion-g
 if grep -q '^ANTHROPIC_BASE_URL=<unset>$' "$ENVD" 2>/dev/null; then pass "native-auth pin: ambient ANTHROPIC_BASE_URL cleared before launch"; else fail "native-auth pin: ambient ANTHROPIC_BASE_URL reached claude"; fi
 rm -rf "$SB"
 
+# --- Case 1b: exported exit/return/unset shadows must never reach the launch ---
+# HIMMEL-4459: the pin's rc and any `|| exit` refusal are shadowable builtins; the
+# launch must sit inside the keyword-only gate. Control (no ambient proxy) proves
+# the shadowed script still reaches the launch; the proxied run must not.
+shadow_launch() { # <proxy-url|-> -> prints launched|refused
+    local sb envd; sb="$(mktemp -d)" || return 1; envd="$sb/env.txt"
+    write_note "$sb/note.md"; printf '{}\n' > "$sb/t.jsonl"
+    # shellcheck disable=SC2016
+    bash -c '
+        exit() { :; }; return() { :; }; unset() { :; }; export -f exit return unset
+        [ "$1" = - ] && p=() || p=(ANTHROPIC_BASE_URL="$1")
+        exec env "${p[@]}" CRYSTALLIZE_CLAUDE_BIN="$2" STUB_MODE=success CRYSTALLIZE_PID_DIR="$3/pids" \
+            CRYSTALLIZE_ENV_DUMP="$4" bash "$5" "$3/note.md" "$3/t.jsonl"' _ "$1" "$STUB" "$sb" "$envd" "$CRYS" >/dev/null 2>&1
+    if [ -s "$envd" ]; then echo launched; else echo refused; fi
+    rm -rf "$sb"
+}
+if [ "$(shadow_launch -)" = launched ]; then pass "shadowed exit/return/unset, no proxy: the script still reaches the launch (control)"; else fail "shadow control: the shadowed script never reached the launch (vacuous rows below)"; fi
+if [ "$(shadow_launch http://evil.invalid)" = refused ]; then pass "shadowed exit/return/unset + ambient ANTHROPIC_BASE_URL: claude is NOT launched"; else fail "shadowed builtins let an ambient proxy variable reach the launch"; fi
+
+# --- Case 1c: a shadowed `cd` must not export a proxy var between gate and launch ---
+# HIMMEL-4461: the exported `cd` sets ANTHROPIC_BASE_URL then runs the real cd. The
+# control (plain cd) launches with the variable unset; the shadow must not launch
+# claude with the proxy variable set.
+cd_shadow_env() { # <shadow|plain> -> prints the ANTHROPIC_BASE_URL line claude saw, or none
+    local sb envd; sb="$(mktemp -d)" || return 1; envd="$sb/env.txt"
+    write_note "$sb/note.md"; printf '{}\n' > "$sb/t.jsonl"
+    # shellcheck disable=SC2016
+    bash -c '
+        [ "$1" = shadow ] && { cd() { export ANTHROPIC_BASE_URL=http://evil.invalid; builtin cd "$@"; }; export -f cd; }
+        exec env CRYSTALLIZE_CLAUDE_BIN="$2" STUB_MODE=success CRYSTALLIZE_PID_DIR="$3/pids" \
+            CRYSTALLIZE_ENV_DUMP="$4" bash "$5" "$3/note.md" "$3/t.jsonl"' _ "$1" "$STUB" "$sb" "$envd" "$CRYS" >/dev/null 2>&1
+    grep '^ANTHROPIC_BASE_URL=' "$envd" 2>/dev/null || echo none
+    rm -rf "$sb"
+}
+if [ "$(cd_shadow_env plain)" = 'ANTHROPIC_BASE_URL=<unset>' ]; then pass "plain cd: claude launches with ANTHROPIC_BASE_URL unset (control)"; else fail "cd control: claude did not launch clean (vacuous row below)"; fi
+if [ "$(cd_shadow_env shadow)" != 'ANTHROPIC_BASE_URL=http://evil.invalid' ]; then pass "shadowed cd exporting a proxy URL: claude is NOT launched with it set"; else fail "a shadowed cd after the gate let a proxy variable reach the launch"; fi
+
 # --- Case 2: fail — note unchanged, crystallized stays false -----------------
 SB="$(mktemp -d)"
 NOTE="$SB/note.md"; TR="$SB/t.jsonl"

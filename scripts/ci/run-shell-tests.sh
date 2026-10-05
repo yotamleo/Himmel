@@ -718,6 +718,10 @@ scripts/handover/test-hop.sh         # integration: needs a live 'claude' (--pri
 scripts/handover/test-arm-resume.sh  # HIMMEL-3132: superseded by its two --only wrappers below, not a VM-coverage gap — per-section timing (2026-09-18) found the 2775s runtime (637/0/1, HIMMEL-2254) concentrated almost entirely in one section (real wall-clock wait loops); the other 91 sections (~200s) run per-PR via test-arm-resume-fast.sh and the slow section runs nightly via test-arm-resume-1879.sh (SUITE_TIER_DEFAULT extended below). This monolith stays skipped only so a bare run doesn't duplicate both wrappers' coverage; runnable individually
 scripts/luna/test-pipeline-cadence.sh  # integration: drives a live 'claude' (--settings fragment) — VM e2e covers it
 scripts/statusline/test-usage-fetch-scheduled.sh  # needs network + OAuth credential; GATE probe run manually (HIMMEL-1841)
+scripts/testing/test-fakekey-claude-startup.sh  # HIMMEL-4410: needs the pinned claude CLI and unshare -rn; the claude-startup job in ci.yml runs it
+scripts/testing/test-claude-mock-turn.sh  # HIMMEL-4411: needs the pinned claude CLI and unshare -rn; the claude-startup job in ci.yml runs it
+scripts/testing/test-mock-consult-sandbox.sh  # HIMMEL-4412: needs the pinned claude CLI, bwrap, socat and unshare -rn; the claude-startup job in ci.yml runs it
+scripts/testing/test-mock-hook-smoke.sh  # HIMMEL-4412: needs the pinned claude CLI and unshare -rn; the claude-startup job in ci.yml runs it
 scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's deps over npm/network — VM e2e covers it
 "
 

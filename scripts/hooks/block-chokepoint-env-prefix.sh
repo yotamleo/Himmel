@@ -1033,6 +1033,447 @@ seam_assigned() {
     return 1
 }
 
+# pobf_word <text> -- rc 0 when <text> holds a path word (one with a `/`) with a
+# glob, grouping or extendedglob metachar in any segment: the HIMMEL-4157
+# anchor-less test. Only a leading `~` (home) or `#` (comment) is exempt, and
+# `$(` / `${` are expansions, not groupings. Caller holds `set -f`.
+pobf_word() {
+    local w
+    for w in ${1//[;|&<>]/ }; do
+        case "$w" in */*) ;; *) continue ;; esac
+        w=${w//\$\(/}
+        w=${w//\$\{/}
+        case "${w#[#~]}" in *[\*\?\[\{\(\#^\~]*) return 0 ;; esac
+    done
+    return 1
+}
+
+# pobf_tok -- pobf_relief's helper: close the quoted body into a token.
+pobf_tok() {
+    if [ -n "$body" ]; then TOK[n]=$body; F="$F$T1$n$T1"; n=$((n + 1)); fi
+    body=''
+}
+
+# pobf_exp <text> <mode> -- pobf_relief's helper: put the token bodies back
+# into <text>, result in PX (no fork). Mode p pads each body with a blank
+# each side, s puts one blank in its place, r puts it back as is and then
+# drops trailing newlines, as the $( ) it replaces did. The result is that
+# of replacing marker k = 0, 1, .. n-1 in turn, but only a k that stands
+# between two adjacent \001 marks can match, so only those are visited
+# (J1685: a walk over all n per stage or per redirect was super-linear).
+# They go in text order when no two share a mark and (mode r) no body is
+# all digits, the cases where order cannot change the result; otherwise k
+# runs in order over the whole range that can match.
+pobf_exp() {
+    local x=$1 m=$2 r='' seg ks='' lo=-1 hi=-1 prev=0 ov=0 k
+    case "$x" in *"$T1"*) r=${x#*"$T1"} ;; esac
+    while :; do
+        case "$r" in *"$T1"*) ;; *) break ;; esac
+        seg=${r%%"$T1"*}; r=${r:${#seg}+1}
+        case "$seg" in ''|*[!0-9]*|0?*) prev=0; continue ;; esac
+        if [ "${#seg}" -gt 9 ] || [ "$seg" -ge "$n" ]; then prev=0; continue; fi
+        [ "$prev" = 1 ] && ov=1
+        prev=1
+        ks="$ks $seg"
+        if [ "$lo" -lt 0 ] || [ "$seg" -lt "$lo" ]; then lo=$seg; fi
+        [ "$seg" -gt "$hi" ] && hi=$seg
+        [ "$m" = r ] && case "${TOK[seg]}" in *[!0-9]*) ;; *) ov=1 ;; esac
+    done
+    if [ "$ov" = 1 ]; then
+        k=$lo
+        [ "$m" = r ] && hi=$((n - 1))
+        # No body holds a \001, so once x has under two marks no marker is
+        # left and the rest of the range is a no-op (HIMMEL-4447: walking it
+        # per digit-token redirect was redirects x tokens).
+        while [ "$k" -le "$hi" ]; do
+            case "$x" in *"$T1"*"$T1"*) ;; *) break ;; esac
+            pobf_put
+            k=$((k + 1))
+        done
+    else
+        for k in $ks; do pobf_put; done
+    fi
+    if [ "$m" = r ]; then
+        k=${x##*[!"$NL"]}
+        x=${x%"$k"}
+    fi
+    PX=$x
+}
+
+# pobf_put -- pobf_exp's helper: put token k back into x per mode m.
+pobf_put() {
+    case "$x" in
+        *"$T1$k$T1"*)
+            case "$m" in
+                r) x=${x//"$T1$k$T1"/"${TOK[k]}"} ;;
+                p) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;;
+                *) x=${x//"$T1$k$T1"/ } ;;
+            esac ;;
+    esac
+}
+
+# Every command name pobf_relief gives relief to (plus sed/awk, which lost
+# theirs); a function may not shadow one.
+POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du jq basename dirname realpath readlink test tr column nl tac rev fold fmt paste rm find git bash sh zsh dash ksh mksh gh printf sort rg sed gsed awk gawk mawk python python3 node perl ruby command builtin time'
+
+# pobf_relief <raw text> -- HIMMEL-4157 over-deny relief (judge J1685d: the
+# anchor-less arm denied 134 of 164 HANDOVER_DIR history rows, because its
+# quote-blind word split counted quoted sed/grep regexes, python programs and
+# heredoc prose as path words). Runs ONLY when that arm is about to deny and
+# only when the shell-operand form did not match, so it costs nothing on the
+# common path. rc 0 (relief: allow) when no path word with a metachar stands
+# where something can run or glob-expand it into a command; rc 1 (no relief:
+# deny as before) on anything it cannot model.
+# It reads quotes and heredocs: each '..', "..", $'..' body and each heredoc
+# body becomes a token. The text is split into stages at ; && || | & NL and
+# at $( ( ) and backticks; the text after a substitution continues the stage
+# it interrupted. Per stage, by its command word:
+#   - a read-only program (ls cat grep head tail wc echo diff cut stat jq rm
+#     ..., test without -v, printf without -v, sort without --compress, rg
+#     without --pre, find without -exec/-ok/-fprint, git grep/log/show/status/
+#     ls-files/rev-parse without -O/--ext-diff/--textconv/--output, a shell
+#     running a LITERAL script file) skips its words and tokens;
+#   - gh (no extension/codespace/ssh/browse/alias/config) and python/node/
+#     perl/ruby with no exec, import or spawn word skip only their tokens;
+#   - an assignment prefix voids a stage's relief unless it runs a shell on
+#     a literal script (PAGER=, GIT_PAGER=, GH_BROWSER= name a program);
+#   - sed and awk get NO relief: their scripts run programs (sed e, awk
+#     system/getline/pipes) in forms only a parse could rule out (HIMMEL-3930);
+#   - anything else is scanned like the old split, tokens included
+#     (bash -c 'g?.sh', eval, cat <<EOF | sh).
+# Inside $( ) or backticks a read-only stage still has its words scanned, and
+# echo/printf/cat its tokens too: that output may become a command word.
+# Every stage is scanned (no relief anywhere) when a stage pipes into
+# anything but a read-only program (| sh, | xargs, | while read, a
+# compound's `done | sh`), or when a file written by a redirect is run again:
+# a command word ending in its name, or its name beside a shell, source, `.`,
+# exec, eval, xargs, env, nohup, setsid or timeout word; and when any file is
+# written (a redirect, tee, cp, mv, install, ln, dd of=) beside a command
+# word with a / or one outside the relief names (CR round 8).
+# No relief at all on: an unquoted heredoc body with $( or a backtick,
+# <( >( =(, a paren glued to a word (zsh grouping, extglob), alias, function,
+# hash, enable, an unquoted empty paren pair (`name () {`), an assignment to
+# functions/dis_functions/aliases/dis_aliases/galiases/saliases/BASH_ALIASES,
+# a PATH/LD_*/IFS/BASH_ENV/ENV/ZDOTDIR assignment, or an unterminated quote or
+# heredoc.
+# ponytail: an allowed interpreter can still assemble a path with no
+# metachar, and the read-only set is a closed list a new exec-capable
+# option would slip past; the HIMMEL-3930 structural parse replaces this.
+# '$(' and '\' below are literal case patterns, not missed expansions;
+# the unquoted $g_* in ${rest%%$g_*} are glob patterns on purpose.
+# shellcheck disable=SC2016,SC1003,SC2295
+pobf_relief() {
+    local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' ap wr=0
+    local PX p tl rd=0 ea sa
+    local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO XP
+    local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' TAB=$'\t'
+    # Each scan cuts at the first special char with a glob (the prefix up to
+    # the first char of the set), not a ^(..)(.*)$ regex, and reads a long
+    # line or text 256 chars at a time (rest, the tail in tl): the regex
+    # copied the whole rest per quote or stage, quadratic on a long line
+    # (J1685). Every choice looks at most 3 chars past the prefix, so rest
+    # is topped up while tl is left and rest holds under 4 chars; the heredoc
+    # and $'..' regexes, which read on, get the whole tail.
+    local g_dq="[${DQ}\\\\\$${BQ}]*"
+    local g_uq="[${SQ}${DQ}\\\\\$#<()${BQ}]*"
+    local g_sp="[\$();&|${BQ}${NL}]*"
+    local re_an="^(([^${SQ}\\\\]|\\\\.)*)${SQ}(.*)\$"
+    local re_hd="^<<(-?)[[:blank:]]*(${SQ}([^${SQ}]*)${SQ}|${DQ}([^${DQ}]*)${DQ}|\\\\?([^][:blank:];|&<>()${SQ}${DQ}\\\\]+))(.*)\$"
+    local re_wr=">[>|]?[[:blank:]]*([^[:blank:];|&()<>${NL}]*)"
+    local re_pa="[^][:blank:];|&()\$<>${BQ}=${NL}]\\(|\\)[^][:blank:];|&()<>${BQ}${NL}]"
+    local re_eq="(^|[[:blank:];|&(${NL}])=\\("
+    local re_ep="\\([[:blank:]]*\\)"
+    local re_dw="(^|[^[:alnum:]_])(alias|unalias|function|hash|enable|disable|zmodload|autoload)([^[:alnum:]_]|\$)"
+    local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
+    local re_fp="(^|[^[:alnum:]_])(functions|dis_functions|aliases|dis_aliases|galiases|dis_galiases|saliases|dis_saliases|commands|BASH_ALIASES|BASH_CMDS|fpath|FPATH|enable|autoload)([^[:alnum:]_]|\$)"
+    local re_sa="(^|[^[:alnum:]_])set([[:blank:]]+[-+][[:alnum:]]*)*[[:blank:]]+[-+][[:alnum:]]*A"
+    local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
+    case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
+    t=${t//\\$NL/}
+    while IFS= read -r L; do
+        if [ "$hi" -lt "$hn" ]; then
+            cmp=$L
+            [ "${HDASH[hi]}" = - ] && cmp=${L#"${L%%[!"$TAB"]*}"}
+            if [ "$cmp" = "${HD[hi]}" ]; then
+                TOK[HIX[hi]]=$hb; hb=''; hi=$((hi + 1))
+                continue
+            fi
+            if [ "${HQ[hi]}" = 0 ]; then
+                case "$L" in *'$('*|*"$BQ"*) return 1 ;; esac
+            fi
+            hb="$hb$L$NL"
+            continue
+        fi
+        # A line the regex . cannot read (bytes invalid in this locale) gets no
+        # relief: the regex scan the globs below replaced dropped its tail.
+        [[ $L =~ ^.*$ ]] || return 1
+        rest=${L:0:256}; tl=${L:256}
+        while :; do
+            if [ -n "$tl" ] && [ "${#rest}" -lt 4 ]; then rest="$rest${tl:0:256}"; tl=${tl:256}; fi
+            [ -n "$rest" ] || break
+            q=${md#"${md%?}"}
+            case "$q" in
+                S)
+                    case "$rest" in
+                        *"$SQ"*)
+                            p=${rest%%"$SQ"*}
+                            body="$body$p"; rest=${rest:${#p}+1}; md=${md%?}; pobf_tok ;;
+                        *) body="$body$rest"; rest='' ;;
+                    esac
+                    continue ;;
+                A)
+                    rest="$rest$tl"; tl=''
+                    if [[ $rest =~ $re_an ]]; then
+                        body="$body${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[3]}; md=${md%?}; pobf_tok
+                    else body="$body$rest"; rest=''; fi
+                    continue ;;
+                D)
+                    p=${rest%%$g_dq}
+                    body="$body$p"; rest=${rest:${#p}}
+                    [ -n "$tl" ] && [ "${#rest}" -lt 4 ] && continue
+                    case "$rest" in
+                        '') ;;
+                        "$DQ"*) md=${md%?}; pobf_tok; rest=${rest#?} ;;
+                        # A lone trailing backslash: no relief (it looped).
+                        '\') return 1 ;;
+                        '\'*) body="$body${rest:0:2}"; rest=${rest#??} ;;
+                        '$('*) pobf_tok; md="${md}C"; F="$F \$("; rest=${rest#??} ;;
+                        "$BQ"*) pobf_tok; md="${md}B"; F="$F $BQ"; rest=${rest#?} ;;
+                        *) body="$body${rest:0:1}"; rest=${rest#?} ;;
+                    esac
+                    continue ;;
+            esac
+            # Unquoted: U top level, C inside $( ), P a ( inside it, B backticks.
+            p=${rest%%$g_uq}
+            F="$F$p"; rest=${rest:${#p}}
+            [ -n "$tl" ] && [ "${#rest}" -lt 4 ] && continue
+            case "$rest" in
+                '') ;;
+                "$SQ"*) md="${md}S"; rest=${rest#?} ;;
+                "$DQ"*) md="${md}D"; rest=${rest#?} ;;
+                '$'"$SQ"*) md="${md}A"; rest=${rest#??} ;;
+                '$('*) md="${md}C"; F="$F\$("; rest=${rest#??} ;;
+                '$'*) F="$F\$"; rest=${rest#?} ;;
+                '\') return 1 ;;
+                '\'*) F="$F${rest:0:2}"; rest=${rest#??} ;;
+                '#'*)
+                    case "$F" in
+                        ''|*[[:blank:]\;\|\&\(\)]|*"$NL"|*"$BQ") rest=''; tl='' ;;
+                        *) F="$F#"; rest=${rest#?} ;;
+                    esac ;;
+                '('*) case "$q" in C|P) md="${md}P" ;; esac; F="$F("; rest=${rest#?} ;;
+                ')'*)
+                    F="$F)"; rest=${rest#?}
+                    case "$q" in C|P) md=${md%?}; case "$md" in *D) F="$F " ;; esac ;; esac ;;
+                "$BQ"*)
+                    F="$F$BQ"; rest=${rest#?}
+                    if [ "$q" = B ]; then
+                        md=${md%?}; case "$md" in *D) F="$F " ;; esac
+                    else md="${md}B"; fi ;;
+                '<<<'*) F="$F<<<"; rest=${rest#???} ;;
+                '<<'*)
+                    rest="$rest$tl"; tl=''
+                    [[ $rest =~ $re_hd ]] || return 1
+                    HDASH[hn]=${BASH_REMATCH[1]}
+                    HD[hn]="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
+                    case "${BASH_REMATCH[2]}" in "$SQ"*|"$DQ"*|'\'*) HQ[hn]=1 ;; *) HQ[hn]=0 ;; esac
+                    rest=${BASH_REMATCH[6]}
+                    HIX[hn]=$n; TOK[n]=''; F="$F $T1$n$T1 "; n=$((n + 1)); hn=$((hn + 1)) ;;
+                *) F="$F${rest:0:1}"; rest=${rest#?} ;;
+            esac
+        done
+        [ "$hi" -lt "$hn" ] && [ "$md" != U ] && return 1
+        case "$md" in
+            *[SDA]) body="$body$NL" ;;
+            *) F="$F$NL" ;;
+        esac
+    done <<< "$t"
+    [ "$md" = U ] && [ "$hi" = "$hn" ] || return 1
+    case "$F" in *'<('*|*'>('*) return 1 ;; esac
+    # No relief (HIMMEL-4442) on an unquoted empty paren pair, on any unquoted
+    # word functions, dis_functions, aliases, dis_aliases, galiases,
+    # dis_galiases, saliases, dis_saliases, commands, BASH_ALIASES, BASH_CMDS,
+    # fpath, FPATH, enable or autoload (delimited by a non-identifier char each
+    # side, after quote removal), or on set followed by -A or +A.
+    # Runtime-built definitions (eval, here-string, source) are HIMMEL-4454's.
+    [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
+    [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
+    F=${F//[0-9]>&[0-9]/ }
+    F=${F//>&[0-9]/ }
+    F=${F//[0-9]>&-/ }
+    F=${F//>&-/ }
+    F=${F//<&[0-9]/ }
+    F=${F//&>/>}
+    F=${F//|&/|}
+    # Split into stages: ST text, SP 1 when it pipes into the next stage, SS 1
+    # inside $( ) or backticks (its output may become a command word), CO the
+    # stage a substitution interrupted (the text after it continues that one).
+    rest=${F:0:256}; tl=${F:256}; s=''; i=0; ostk=''; bqi=0
+    while :; do
+        p=${rest%%$g_sp}
+        s="$s$p"; rest=${rest:${#p}}
+        if [ -n "$tl" ] && [ "${#rest}" -lt 4 ]; then rest="$rest${tl:0:256}"; tl=${tl:256}; continue; fi
+        case "$rest" in '$'[!\(]*|'$') s="$s\$"; rest=${rest#?}; continue ;; esac
+        sub=0; case "$stack" in *S*) sub=1 ;; esac
+        [ "$bq" = 1 ] && sub=1
+        ST[i]=$s; SS[i]=$sub; SP[i]=0; s=''
+        [ -z "${CO[i]-}" ] && CO[i]=-1
+        case "$rest" in
+            '') i=$((i + 1)); break ;;
+            '$(('*) stack="PP$stack"; ostk="- - $ostk"; rest=${rest#???} ;;
+            '$('*) stack="S$stack"; ostk="$i $ostk"; rest=${rest#??} ;;
+            '('*) stack="P$stack"; ostk="- $ostk"; rest=${rest#?} ;;
+            ')'*)
+                stack=${stack#?}; w=${ostk%% *}; ostk=${ostk#* }
+                case "$w" in -|'') ;; *) CO[i + 1]=$w ;; esac
+                rest=${rest#?} ;;
+            "$BQ"*)
+                if [ "$bq" = 0 ]; then bqi=$i; else CO[i + 1]=$bqi; fi
+                bq=$((1 - bq)); rest=${rest#?} ;;
+            '||'*|'&&'*|';;'*) rest=${rest#??} ;;
+            '|'*) SP[i]=1; rest=${rest#?} ;;
+            *) rest=${rest#?} ;;
+        esac
+        i=$((i + 1))
+    done
+    # Class per stage: 2 = skip words and tokens, 1 = skip tokens, 0 = scan.
+    j=0
+    while [ "$j" -lt "$i" ]; do
+        s=${ST[j]//[<>]/ }
+        c=''; c2=''; ap=0
+        for w in $s; do
+            [ -n "$c" ] && { c2=$w; break; }
+            case "$w" in
+                if|then|do|else|elif|while|until|'!'|'{'|'}'|time|command|builtin) continue ;;
+            esac
+            [[ $w =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]] && { ap=1; continue; }
+            c=$w
+        done
+        case "$c" in /bin/*|/usr/bin/*) c=${c##*/} ;; esac
+        pobf_exp "${ST[j]}" p; x=$PX; XP[j]=$x
+        cls=0
+        FL[j]=0
+        case "$c" in
+            ls|cat|grep|egrep|fgrep|head|tail|wc|echo|diff|uniq|cut|stat|file|du|jq|basename|dirname|realpath|readlink|tr|column|nl|tac|rev|fold|fmt|paste|rm) cls=2 ;;
+            # test -v 'a[$(cmd)]' expands the subscript.
+            test|'[') case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
+            find) case "$x" in *-exec*|*-ok*|*-fprint*|*-fls*) ;; *) cls=2 ;; esac ;;
+            git) case "$c2" in
+                     grep|log|show|status|ls-files|rev-parse)
+                         case "$x" in *--ext-diff*|*--textconv*|*--output*|*--open-files-in-pager*) ;;
+                             *) [[ $x =~ (^|[[:space:]])-[[:alnum:]]*O ]] || cls=2 ;;
+                         esac ;;
+                 esac ;;
+            # A shell running a LITERAL script file (no metachar, no option, no
+            # -c, not /dev or /proc) takes its args and stdin as data, like any
+            # program; a script that runs its args is a self-authored wrapper,
+            # which no text layer sees anyway (header: posture, not exploit).
+            bash|sh|zsh|dash|ksh|mksh)
+                case "$c2" in -*|''|/dev/*|/proc/*) ;; *) [[ $c2 =~ ^[A-Za-z0-9_./+-]+$ ]] && cls=2 ;; esac ;;
+            gh) [[ $x =~ extension|ext[[:space:]]|codespace|ssh|browse|alias|config ]] || cls=1 ;;
+            printf) case "$x" in *-v*) ;; *) cls=2 ;; esac ;;
+            sort) case "$x" in *--compress*) ;; *) cls=2 ;; esac ;;
+            rg) case "$x" in *--pre*) ;; *) cls=2 ;; esac ;;
+            python|python3|node|perl|ruby) [[ $x =~ $re_ix ]] || cls=1 ;;
+        esac
+        # An assignment prefix (PAGER=, GIT_PAGER=, GH_BROWSER=, ...) can name a
+        # program the command then runs; only a shell on a literal script keeps
+        # its relief (BASH_ENV/ENV/PATH are refused above).
+        [ "$ap" = 1 ] && case "$c" in bash|sh|zsh|dash|ksh|mksh) ;; *) cls=0 ;; esac
+        if [ "${CO[j]-}" -ge 0 ] 2>/dev/null && [ "${CO[j]}" -lt "$j" ]; then
+            cls=${CL[CO[j]]}; c=${CW[CO[j]]}; c2=${C2[CO[j]]}
+        fi
+        CL[j]=$cls; CW[j]=$c; C2[j]=$c2
+        [ "$cls" = 2 ] && FL[j]=1
+        j=$((j + 1))
+    done
+    # Global: a pipe into anything but a read-only filter (sh, xargs, while,
+    # tee, a compound's `done | sh`), or a file written and named again (a
+    # command word ending in its name, or its name beside a shell word: bash
+    # f, . f), voids every stage's relief.
+    nf=0
+    j=1
+    while [ "$j" -lt "$i" ]; do
+        [ "${SP[j - 1]}" = 1 ] && [ "${FL[j]}" = 0 ] && nf=1
+        j=$((j + 1))
+    done
+    # Per stage, once (J1685: per redirect it was redirects x stages, a fork
+    # each): ea joins every command word, sa every shell-like stage's text,
+    # each closed by \002, which no token or word holds. "A command word ends
+    # in the name" is then ea holding name\002; "a shell stage names it" is
+    # sa holding it. Once nf is 1 no later redirect can change a verdict.
+    x=$F
+    while [[ $x =~ $re_wr ]]; do
+        w=${BASH_REMATCH[1]}
+        x=${x/>/ }
+        case "$w" in /dev/null|/dev/stderr|/dev/stdout|/dev/tty) continue ;; esac
+        wr=1
+        [ "$nf" = 1 ] && break
+        if [ "$rd" = 0 ]; then
+            rd=1; ea=$T2; sa=$T2; j=0
+            while [ "$j" -lt "$i" ]; do
+                pobf_exp "${CW[j]}" r; c=$PX
+                ea="$ea$c$T2"
+                case "$c" in
+                    bash|sh|zsh|dash|ksh|mksh|source|.|exec|eval|xargs|env|nohup|setsid|timeout)
+                        # A literal script's later words are its data.
+                        s=${ST[j]}
+                        [ "${CL[j]}" = 2 ] && s=${C2[j]}
+                        while [[ $s =~ $re_wr ]]; do s=${s/"${BASH_REMATCH[0]}"/ }; done
+                        pobf_exp "$s" r; sa="$sa$PX$T2" ;;
+                esac
+                j=$((j + 1))
+            done
+        fi
+        pobf_exp "$w" r; w=${PX##*/}
+        [ -z "$w" ] && { nf=1; break; }
+        case "$ea" in *"$w$T2"*) nf=1 ;; esac
+        case "$sa" in *"$w"*) nf=1 ;; esac
+    done
+    # CR round 8: a written file (a redirect, tee, cp, mv, install, ln, dd
+    # of=) can run under a name the scan above never ties to it (./run after
+    # a cd, a PATH directory, a copy). Beside a command word with a / or one
+    # outside the relief names, every stage's relief is voided.
+    j=0
+    while [ "$j" -lt "$i" ]; do
+        case "${CW[j]}" in
+            tee|cp|mv|install|ln) wr=1 ;;
+            dd) case "${ST[j]}" in *of=*) wr=1 ;; esac ;;
+        esac
+        j=$((j + 1))
+    done
+    if [ "$wr" = 1 ]; then
+        j=0
+        while [ "$j" -lt "$i" ]; do
+            c=${CW[j]}
+            case "$c" in
+                '') ;;
+                */*) nf=1 ;;
+                *) case " $POBF_NAMES " in *" $c "*) ;; *) nf=1 ;; esac ;;
+            esac
+            j=$((j + 1))
+        done
+    fi
+    j=0
+    while [ "$j" -lt "$i" ]; do
+        cls=${CL[j]}
+        [ "$nf" = 1 ] && cls=0
+        # Inside $( ) or backticks the output may become a command word, and any
+        # command can print a glob it was handed (find -printf, awk, python3,
+        # gh): no stage there has relief, every token is scanned (CR rounds
+        # 10, 11).
+        [ "${SS[j]}" = 1 ] && cls=0
+        case "$cls" in
+            2) ;;
+            1) pobf_exp "${ST[j]}" s
+               pobf_word "$PX" && return 1 ;;
+            *) pobf_word "${XP[j]}" && return 1 ;;
+        esac
+        j=$((j + 1))
+    done
+    return 0
+}
+
 # raw_obfuscated <raw text> -- HIMMEL-3921 text layer, run on the UNTOUCHED
 # command. Deny-leaning and parse-free on purpose: every special-case parse
 # rule in a guard became a bypass (PR 1494/1501/1508), so this is a plain scan.
@@ -1042,14 +1483,17 @@ seam_assigned() {
 # declare/typeset/readonly/let/eval word (the verb alone denies, so the
 # obfuscated seam NAME -- export "$n=1" -- is covered when the path is also
 # obfuscated; an obfuscated NAME beside a LITERAL chokepoint path stays a
-# residual of this layer). ponytail: a program word that hides BOTH its
-# `scripts/` anchor and its glob (`$D/m*.sh`, a word assembled from
-# variables, or `cd` into the directory then `./g?.sh` / `./g(o).sh`) is not
-# a scripts/ word, so only the basename backstop sees it;
-# close it by registering the assembled path forms or by the structural guard
-# once HIMMEL-3930 lands.
+# residual of this layer). HIMMEL-4157 closed a glob or grouping that hides
+# the anchor (scr(ipts)/, (scripts)/, {scripts,x}/, scrip?s/, `cd` then
+# ./g?.sh, ./g(o).sh or bash g?.sh, $D/g*.sh) and the zsh extendedglob
+# operators # ## ^ ~: any path word with a metachar in any segment, and any
+# glob word handed to a shell or `source`, now counts (second loop below).
+# ponytail: still open -- a word assembled wholly from variables ($D/$B, no
+# metachar), an obfuscated seam NAME or an obfuscated env word (/usr/bin/en?
+# -i) beside an anchor-less path, and zsh <-> numeric ranges (the tr splits
+# at <); close them with the structural guard once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d cw='/.claude/worktrees/' xg=0 write=0 obf=0 SQ="'"
+    local t="$1" w rest v wv clr d u kw ov cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 so=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
     wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
@@ -1090,8 +1534,9 @@ raw_obfuscated() {
                     d=${w//"$cw"/\/}
                 fi
                 case "$d" in *'/.'*) obf=1 ;; esac
+                # HIMMEL-4157: zsh extendedglob # ^ ~ count like * ? [ {.
                 case "$rest" in
-                    *[\*\?\[\{\$]*) obf=1 ;;
+                    *[\*\?\[\{\$\#^\~]*) obf=1 ;;
                 esac ;;
         esac
     done
@@ -1100,11 +1545,90 @@ raw_obfuscated() {
     # (#i)GO.sh -- this station's Bash runs zsh -c, which globs them to the
     # chokepoint) left every piece plain. Re-split keeping the parens: any `(`
     # after scripts/ in a word counts, like the glob characters above.
+    # HIMMEL-4157: a glob or grouping can hide the scripts/ anchor itself
+    # (scr(ipts)/, {scripts,x}/, scrip?s/, or cd then ./g?.sh), and zsh
+    # extendedglob adds non-paren operators (g#o.sh, go##.sh, ^x.sh, g*~x.sh).
+    # So ANY path word (one holding a `/`) with a glob, grouping or
+    # extendedglob metachar in any segment counts, scripts/ or not. Only a
+    # leading `~` (home) or `#` (comment) is exempt, and `$(` / `${` are
+    # expansions, not groupings (a $var alone stays the ponytail residual).
     for w in $(printf '%s' "$t" | tr ';|&<>' '     '); do
         case "$w" in *scripts/*) case "${w#*scripts/}" in *'('*) obf=1 ;; esac ;; esac
+        case "$w" in */*) ;; *) continue ;; esac
+        w=${w//\$\(/}
+        w=${w//\$\{/}
+        case "${w#[#~]}" in *[\*\?\[\{\(\#^\~]*) pobf=1 ;; esac
     done
     set +f
-    [ "$obf" = 1 ] || return 0
+    # A slash-less glob word as the SCRIPT operand of a shell or `source`
+    # (cd into the directory, then bash g?.sh) names a script the same way.
+    # Only the first non-option operand counts (-o/-O, --rcfile and
+    # --init-file take a value; a short cluster holding c runs a command
+    # string, which needs a path or PATH to reach one). Any other --long
+    # option, and a bare --, is skipped (J1685: --norc, --restricted).
+    d=${t//\$\(\(/}
+    d=${d//\$\(/}
+    d=${d//\$\{/}
+    # `.` counts only in command position (prose has ". ("): after a
+    # separator or `$(`, then any keyword, precommand or VAR=x prefix.
+    # `source` counts as any word. The shell may be an absolute path
+    # (/bin/bash) or quoted ('bash').
+    kw='(then|do|else|elif|if|while|until|time|builtin|command|eval|\{|!|[[:alnum:]_]+=[^[:blank:]]*)'
+    # An option value may be quoted, blanks and all (-o "errexit"); each
+    # o/O in a short cluster takes its own value (-eo errexit, -oo a b).
+    ov="(\"[^\"]*\"|${SQ}[^${SQ}]*${SQ}|[^[:blank:]\"$SQ]+)+"
+    [[ $d =~ ((^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|mksh|source)[\"$SQ]?([[:blank:]]+([-+][^-c[:blank:]]*[oO][^c[:blank:]]*([[:blank:]]+${ov})+|--(rcfile|init-file)[[:blank:]]+${ov}|--[^[:blank:]]*|-[^-c[:blank:]]*|\+[^c[:blank:]]*))*|(^|[\;\|\&\(\`=$NL])[[:blank:]]*(${kw}[[:blank:]]+)*\.)[[:blank:]]+([\*\?\[\{\(\^]|[^#~[:blank:]-][^[:blank:]]*[\*\?\[\{\(\#\^\~]) ]] && so=1 && pobf=1
+    [ "$obf$pobf" = 00 ] && return 0
+    clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
+    if [ "$obf" = 0 ]; then
+        # The anchor-less arm needs stronger evidence than a write VERB: a glob
+        # or regex beside printf/read/export is everyday text (the verb set
+        # newly denied 7,777 of 261,405 real-history commands; this arm 615).
+        # So it denies on the console marker NAME anywhere, a seam NAME
+        # written (below), an env-clearing option beside an `env` word, unset
+        # or env -u of a non-literal name, an export/declare/let NAME= or
+        # printf -v whose name is assembled ($n, `cmd`), export -n, declare
+        # +x, exec -, ${!, or bash startup state; names are read quote-,
+        # backslash- and ${}-joined, as raw_mention reads them. ponytail: a
+        # seam name assembled for read/mapfile/getopts/for (read "$n") beside
+        # an anchor-less path is not seen; close it with the HIMMEL-3930 parse.
+        u=${t//[\'\"\\]/}
+        rest=$u
+        while [[ $rest =~ ^(.*)\$\{[^}]*\}(.*)$ ]]; do rest="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"; done
+        u="$u$NL$rest"
+        local seg="[^;|&$NL]*" nl="(^|[^[:alnum:]_])"
+        [[ $t =~ $clr ]] && write=1
+        [[ $u =~ ${nl}(BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug|HIMMEL_CONSOLE_LEG)([^[:alnum:]_]|$) ]] && write=1
+        # unset / env -u with a NON-literal operand ($n, `cmd`, zsh unset -m
+        # pattern); a literal seam operand is caught by the name scan below.
+        [[ $u =~ ${nl}unset[[:blank:]]${seg}([\$\`]|-[[:alnum:]]*m) ]] && write=1
+        [[ $u =~ ${nl}(export|declare|typeset|readonly|local|let)([[:blank:]]${seg})?[[:blank:]][^=[:blank:]]*[\$\`][^[:blank:]]*= ]] && write=1
+        [[ $u =~ ${nl}printf[[:blank:]]+-v[[:blank:]]*[\$\`] ]] && write=1
+        # env clearing: -i / --i(gnore-environment) / a bare - anywhere in the
+        # env word's segment, or -u / --u(nset) with a non-literal operand.
+        [[ $u =~ (^|[^[:alnum:]_.-])env([[:blank:]]${seg})?[[:blank:]]-(-?i|[[:alnum:]]*i|[[:blank:]]|$) ]] && write=1
+        [[ $u =~ (^|[^[:alnum:]_.-])env([[:blank:]]${seg})?[[:blank:]](-[[:alnum:]]*u|--u[[:alnum:]-]*)[=[:blank:]]*[^[:blank:]]*[\$\`] ]] && write=1
+        # A seam NAME counts when assigned (NAME=, NAME+=, NAME = in (( )),
+        # ${NAME:=}; a $NAME / ${NAME read and a == test do not) or after a
+        # writer word or option in the same segment (unset, export, read,
+        # declare, typeset, local, readonly, let, mapfile, readarray, getopts,
+        # for, select, printf -v, env -u, export -n).
+        for v in $ALL_SEAM_VARS; do
+            case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+            [[ $u =~ (^|[^[:alnum:]_\$\{])${v}[+]?= || $u =~ \$\{${v}:?= ]] && write=1
+            [[ $u =~ (^|[^[:alnum:]_\$\{])${v}[[:blank:]]*([-+*/%^\|\&]|<<|>>)?=([^=]|$) ]] && write=1
+            [[ $u =~ ${nl}(unset|export|read|declare|typeset|local|readonly|let|mapfile|readarray|getopts|for|select|-[[:alnum:]]*[vun]|--unset)([=[:blank:]]${seg})?[^[:alnum:]_]${v}([^[:alnum:]_]|$) ]] && write=1
+        done
+        [ "$write" = 1 ] || return 0
+        # HIMMEL-4157 (J1685d): a glob handed to a shell or source gets no
+        # relief; a glob path word only where pobf_relief cannot clear it.
+        if [ "$so" = 0 ]; then
+            set -f
+            pobf_relief "$t" && { set +f; return 0; }
+            set +f
+        fi
+        deny_text_layer "names a seam or clears the environment beside a path with a glob or grouping in a segment"
+    fi
     # ponytail: the verb scan also matches inside a quoted argument value
     # (--set 'reason=...exec...'), skipping quoted spans is a parse rule;
     # HIMMEL-4135 tracks a proven-safe shape or the HIMMEL-3930 structural parse.
@@ -1117,7 +1641,6 @@ raw_obfuscated() {
     # standalone -u*/-i*/--unset*/--ignore-environment/bare - token counts only in env position
     # (env_clear_opt, HIMMEL-3955); a seam NAME= counts as an assignment, not
     # as a --long-option's value (seam_assigned).
-    clr='(declare|typeset|local)[[:space:]]+(.*[[:space:]])?\+[[:alnum:]]*x|(^|[^[:alnum:]_-])exec[[:space:]]+-|\$\{!|(^|[^[:alnum:]_-])export[[:space:]]+-[[:alnum:]]*n'
     [[ $t =~ $clr ]] && write=1
     env_clear_opt "$t" && write=1
     for v in $ALL_SEAM_VARS; do

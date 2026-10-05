@@ -109,6 +109,7 @@ EOF
 cat > "$BIN/claude" <<'EOF'
 #!/usr/bin/env bash
 # cwd is the demo dir for this leg.
+[ -n "${SMOKE_CLAUDE_WITNESS:-}" ] && echo "launched ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-<unset>}" >> "$SMOKE_CLAUDE_WITNESS"
 sha="$(git rev-parse --short HEAD 2>/dev/null)"
 tok="$(sed -n 's/^SMOKE-TOKEN: //p' DEMO-PROJECT.md 2>/dev/null)"
 case "${SMOKE_STUB_MODE:-clean}" in
@@ -582,6 +583,28 @@ set -e
 if printf '%s\n' "$OUT" | grep -qE '^claude-print +SKIP.*native-auth pin unavailable'
 then pass "claude leg skips when the native-auth pin cannot be applied"
 else fail "claude leg launched unpinned: $OUT"; fi
+
+# --- 11a2: exported exit/return/unset/[ shadows must never reach the launch -----
+# HIMMEL-4459: the pin's rc and the PIN_OK refusal run through shadowable builtins;
+# the launch itself sits inside the keyword-only gate. Control (no ambient proxy)
+# proves the shadowed script still reaches the launch, so the proxied row is not
+# vacuous. The `[` shadow answers false for a `0` first operand (the PIN_OK probe).
+shadow_smoke() { # <proxy-url|-> -> prints the witness file's content (empty = never launched)
+    local w="$TMP/shadow-witness"; rm -f "$w"
+    # shellcheck disable=SC2016
+    bash -c '
+        exit() { :; }; return() { :; }; unset() { :; }
+        function [ { case "$1" in 0) builtin return 1 ;; esac; builtin [ "$@"; }
+        export -f exit return unset [
+        [ "$1" = - ] && p=() || p=(ANTHROPIC_BASE_URL="$1")
+        exec env "${p[@]}" PATH="$2:$PATH" SMOKE_STUB_MODE=clean SMOKE_CLAUDE_WITNESS="$3" \
+            bash "$4" --from "$5" --timeout 20' _ "$1" "$BIN" "$w" "$SMOKE" "$FIX" >"$TMP/shadow-out" 2>&1
+    cat "$w" 2>/dev/null || true
+}
+if [ -n "$(shadow_smoke -)" ]; then pass "shadowed builtins, no proxy: the demo still reaches the claude launch (control)"
+else fail "shadow control: the shadowed demo never reached the claude launch (vacuous row below)"; fi
+if [ -z "$(shadow_smoke http://evil.invalid)" ]; then pass "shadowed builtins + ambient ANTHROPIC_BASE_URL: claude is NOT launched"
+else fail "shadowed builtins let an ambient proxy variable reach the claude launch: $(shadow_smoke http://evil.invalid)"; fi
 
 # --- 11b: an agent leg without its positive control is not a result ----------
 # codex present, pwsh absent: codex-exec passes on its own, but nothing has
