@@ -383,9 +383,9 @@ echo "== review round 4 (codex-1) =="
 row "cd state; cp lift-named src ."        deny  "cd ~/.himmel/state && cp /tmp/bank-lift.json ."
 row "cd state; mv lift-named src ./"       deny  "cd ~/.himmel/state && mv $T/src/bank-lift.json ./"
 row "cd state; cp -t . lift-named src"     deny  "cd ~/.himmel/state; cp -t . /tmp/bank-lift.json"
-row "cd; cp other src . (ctrl)"            allow "cd /tmp && cp $T/src/other.txt ."
+row "cd; cp other src . (cwd unproven)"            deny  "cd /tmp && cp $T/src/other.txt ."
 row "cd; cp lift-named src (over-deny r6)" deny  "cd /tmp && cp $T/src/bank-lift.json backup.txt"
-row "cd; cp other src to file (ctrl)"      allow "cd /tmp && cp $T/src/other.txt backup.txt"
+row "cd; cp other src to file (cwd unproven)"      deny  "cd /tmp && cp $T/src/other.txt backup.txt"
 
 echo "== review round 5 (unforgeable redirect marks) =="
 # A word spelling a tokenizer mark must not be read as a redirect: the marks
@@ -635,7 +635,7 @@ row "4458 bsdtar -xf -C ~"                  deny  "bsdtar -xf /tmp/x.tar -C ~"
 row "4458 tar -xf -C ~/.himmel/state"       deny  "tar -xf /tmp/x.tar -C ~/.himmel/state"
 row "4458 tar -xf -C /tmp/out (ctrl)"       allow "tar -xf /tmp/x.tar -C /tmp/out"
 row "4458 cd build && tar -xzf (r7: relative cd)" deny "cd build && tar -xzf /tmp/x.tgz"
-row "4458 cd /var/build && tar -xzf (ctrl)" allow "cd /var/build && tar -xzf /tmp/x.tgz"
+row "4458 cd /var/build && tar -xzf (cwd unproven)" deny  "cd /var/build && tar -xzf /tmp/x.tgz"
 row "4458 tar -czf -C ~ create (ctrl)"      allow "tar -czf /tmp/b.tgz -C ~ .config"
 row "4458 tar -tf list, cwd HOME (ctrl)"    allow "tar -tf /tmp/x.tar" "$HOME"
 row "4458 unzip -l list (ctrl)"             allow "unzip -l /tmp/x.zip -d ~"
@@ -652,7 +652,7 @@ row "4458 tar -xf (no -O), cwd HOME"        deny  "tar -xzf /tmp/x.tgz inv/home.
 # when joined by &&; after `;` the cwd is unproven (r6) and it denies.
 row "4458 cd \$S; tar xzf -C head (r6 over-deny)" deny "S=/tmp/s; cd \$S; tar xzf head.tgz -C head --strip-components=1"
 row "4458 cd \$S && tar xzf -C head (r7: computed cd)" deny "S=/tmp/s; cd \$S && tar xzf head.tgz -C head --strip-components=1"
-row "4458 cd /var/s && tar xzf -C head (ctrl)" allow "cd /var/s && tar xzf head.tgz -C head --strip-components=1"
+row "4458 cd /var/s && tar xzf -C head (cwd unproven)" deny  "cd /var/s && tar xzf head.tgz -C head --strip-components=1"
 # Panel r1 codex-1: an option's operand is never a flag (-O as the archive).
 row "4458 tar -xf -O -C \$HOME (operand)"    deny  "tar -xf -O -C \"\$HOME\""
 row "4458 tar xf -O -C ~ (old-style operand)" deny "tar xf -O -C ~"
@@ -680,20 +680,20 @@ row "4458 cpio -idF a -D ~"                 deny  "cpio -idF /tmp/a.cpio -D ~"
 row "4458 cpio -i -E -D -D ~"               deny  "cpio -i -E -D -D ~"
 row "4458 cpio -p ~/.himmel (pass-through)" deny  "find . | cpio -pdm ~/.himmel"
 row "4458 cpio -i --to-stdout, cwd HOME (ctrl)" allow "cpio -i --to-stdout < /tmp/a.cpio" "$HOME"
-row "4458 cpio -p /tmp/o (ctrl)"            allow "find . | cpio -pdm /tmp/o"
-# Panel r1 codex-2: a relative operand after a resolved cd is the cd target's.
+row "4458 cpio -p /tmp/o (always denies)"  deny  "find . | cpio -pdm /tmp/o"
+# Panel r1 codex-2: a relative operand after a cd (r9: cwd unknown) denies.
 row "4458 cd ~/projects && tar -C .."       deny  "cd \"\$HOME/projects\" && tar -xf /tmp/x.tar -C .."
 row "4458 cd ~/projects && tar -C ../.himmel" deny "cd ~/projects && tar -xf /tmp/x.tar -C ../.himmel"
 row "4458 cd ~/projects && unzip -d .."      deny  "cd ~/projects && unzip /tmp/x.zip -d .."
 row "4458 cd ~/projects/.. && tar -xf"       deny  "cd ~/projects/.. && tar -xf /tmp/x.tar"
-row "4458 cd /var/w && tar -C .. (ctrl)"     allow "cd /var/w && tar -xf /tmp/x.tar -C .."
-row "4458 cd ~/projects && tar -C sub (ctrl)" allow "cd ~/projects && tar -xf /tmp/x.tar -C sub"
+row "4458 cd /var/w && tar -C .. (cwd unproven)"     deny  "cd /var/w && tar -xf /tmp/x.tar -C .."
+row "4458 cd ~/projects && tar -C sub (cwd unproven)" deny  "cd ~/projects && tar -xf /tmp/x.tar -C sub"
 row "4458 cd ~/projects && cp -r .himmel .." deny  "cd ~/projects && cp -r /tmp/h/.himmel .."
 row "4458 cd ~ && cp -r .himmel ."         deny  "cd ~ && cp -r /tmp/h/.himmel ."
-row "4458 cd ~/.himmel && cp -r d state (exists, ctrl)" allow "cd ~/.himmel && cp -r /tmp/d state"
+row "4458 cd ~/.himmel && cp -r d state (exists, cwd unproven)" deny  "cd ~/.himmel && cp -r /tmp/d state"
 row "4458 cd ~/projects && cp lift-named ../.himmel/state/" deny "cd ~/projects && cp /tmp/s/bank-lift.json ../.himmel/state/"
-row "4458 cd ~/projects && cp -r d .. (ctrl)" allow "cd ~/projects && cp -r /tmp/d .."
-row "4458 cd /tmp/w && cp -r .himmel .. (ctrl)" allow "cd /tmp/w && cp -r /tmp/h/.himmel .."
+row "4458 cd ~/projects && cp -r d .. (cwd unproven)" deny  "cd ~/projects && cp -r /tmp/d .."
+row "4458 cd /tmp/w && cp -r .himmel .. (cwd unproven)" deny  "cd /tmp/w && cp -r /tmp/h/.himmel .."
 # Panel r2 codex-1: a relative -C resolves against the -C before it.
 row "4458 tar -C \$HOME/projects -C .."      deny  "tar -xf /tmp/x.tar -C \"\$HOME/projects\" -C .."
 row "4458 tar -C ~/projects -C ../.himmel"    deny  "tar -xf /tmp/x.tar -C ~/projects -C ../.himmel"
@@ -729,7 +729,7 @@ row "4458 unzip -l -: (list, ctrl)"           allow "unzip -l -: /tmp/x.zip"
 row "4458 cpio --absolute-filenames -D /tmp/o" deny "cpio -i --absolute-filenames -D /tmp/o < /tmp/a.cpio"
 row "4458 cpio -idm (absolute by default)"    deny  "cpio -idm < /tmp/a.cpio"
 row "4458 cpio --extract (absolute by default)" deny "cpio --extract -D /tmp/o < /tmp/a.cpio"
-row "4458 cpio -idm --no-absolute-filenames (ctrl)" allow "cpio -idm --no-absolute-filenames < /tmp/a.cpio"
+row "4458 cpio -idm --no-absolute-filenames (always denies)" deny "cpio -idm --no-absolute-filenames < /tmp/a.cpio"
 row "4458 cpio -it (list, ctrl)"              allow "cpio -it < /tmp/a.cpio"
 row "4458 cpio --list -i (list, ctrl)"        allow "cpio -i --list < /tmp/a.cpio"
 # Panel r3 codex-2: an unresolved (computed) destination denies.
@@ -784,22 +784,22 @@ tar -xf /tmp/x.tar" "$HOME"
 row "4458 cd X & tar -xf"                     deny  "cd /var/w & tar -xf /tmp/x.tar" "$HOME"
 row "4458 cd X && cd Y; tar -xf"              deny  "cd /var/w && cd /var/v; tar -xf /tmp/x.tar" "$HOME"
 row "4458 cd X | tar -xf"                     deny  "cd /var/w | tar -xf /tmp/x.tar" "$HOME"
-row "4458 cd X && tar -xf (ctrl)"             allow "cd /var/w && tar -xf /tmp/x.tar" "$HOME"
-row "4458 cd X && cd Y && tar -xf (ctrl)"     allow "cd /var/w && cd /var/v && tar -xf /tmp/x.tar" "$HOME"
-# Panel r6 (HIMMEL-4490): structural fail-closed. With the cwd unproven (a cd
-# not joined only by && at top level, a cd in ( ) { } or a nested shell body,
-# any eval) every extraction denies, absolute destinations included.
-row "4458 cd X; tar -C abs (unproven cwd)"    deny  "cd /var/w; tar -xf /tmp/x.tar -C /var/out" "$HOME"
-row "4458 cd X; unzip -d abs (unproven cwd)"  deny  "cd /var/w; unzip /tmp/x.zip -d /var/out" "$HOME"
+row "4458 cd X && tar -xf (cwd unproven)"             deny  "cd /var/w && tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X && cd Y && tar -xf (cwd unproven)"     deny  "cd /var/w && cd /var/v && tar -xf /tmp/x.tar" "$HOME"
+# Panel r6 (HIMMEL-4490), reshaped in r9: with a directory-changing word
+# anywhere the cwd is unknown; a relative or missing destination denies, an
+# absolute one is judged as with a proven cwd.
+row "4458 cd X; tar -C abs (abs dest)"     allow "cd /var/w; tar -xf /tmp/x.tar -C /var/out" "$HOME"
+row "4458 cd X; unzip -d abs (abs dest)"   allow "cd /var/w; unzip /tmp/x.zip -d /var/out" "$HOME"
 row "4458 cd X; tar -C rel, cwd .himmel"      deny  "cd /nonexistent; tar -xf /tmp/x.tar -C state" "$HOME/.himmel"
 row "4458 bash -c 'cd X && true'; tar -xf"    deny  "bash -c 'cd /var/out && true'; tar -xf /tmp/x.tar" "$HOME"
 row "4458 (cd X && true); tar -xf"            deny  "(cd /var/out && true); tar -xf /tmp/x.tar" "$HOME"
 row "4458 { cd X && true; }; tar -xf"         deny  "{ cd /var/out && true; }; tar -xf /tmp/x.tar" "$HOME"
 row "4458 true || cd X && tar -xf (cd skipped)" deny "true || cd /var/w && tar -xf /tmp/x.tar" "$HOME"
 row "4458 echo | cd X && tar -xf (pipeline)"  deny  "echo | cd /var/w && tar -xf /tmp/x.tar" "$HOME"
-row "4458 eval true; tar -C abs"              deny  "eval true; tar -xf /tmp/x.tar -C /var/out" "$HOME"
+row "4458 eval true; tar -C abs (abs dest)"               allow "eval true; tar -xf /tmp/x.tar -C /var/out" "$HOME"
 row "4458 sh -c 'cd X && tar -xf' (nested)"   deny  "sh -c 'cd /var/w && tar -xf /tmp/x.tar'" "$HOME"
-row "4458 cd X && tar -C rel (ctrl)"          allow "cd /var/w && tar -xf /tmp/x.tar -C out" "$HOME"
+row "4458 cd X && tar -C rel (cwd unproven)"          deny  "cd /var/w && tar -xf /tmp/x.tar -C out" "$HOME"
 row "4458 tar -C abs, no cd (ctrl)"           allow "tar -xf /tmp/x.tar -C /var/out" "$HOME"
 row "4458 (true); tar -C abs, no cd (ctrl)"   allow "(true); tar -xf /tmp/x.tar -C /var/out" "$HOME"
 row "4458 cd X; tar -tf (list, ctrl)"         allow "cd /var/w; tar -tf /tmp/x.tar" "$HOME"
@@ -817,9 +817,9 @@ row "4458 cpio -iR (not allowlisted)"         deny  "cpio -i --no-absolute-filen
 row "4458 CDPATH=… cd rel && tar"             deny  "CDPATH=\"\$HOME/.himmel\" cd state && tar -xf /tmp/a.tar" /var
 row "4458 export CDPATH; cd rel && tar"       deny  "export CDPATH=$HOME/.himmel; cd state && tar -xf /tmp/a.tar" /var
 row "4458 cd rel && tar (no CDPATH word)"     deny  "cd state && tar -xf /tmp/a.tar" /var
-row "4458 CDPATH quoted-split, cd abs && tar -C abs" deny "export CD\"\"PATH=/x; cd /var/w && tar -xf /tmp/a.tar -C /var/out" /var
-row "4458 popd && tar"                        deny  "popd && tar -xf /tmp/a.tar -C /var/out" /var
-row "4458 cd /var/w && tar -xzf -C out --strip (ctrl)" allow "cd /var/w && tar -xzf x.tgz -C out --strip-components=1" /var
+row "4458 CDPATH quoted-split, cd abs && tar -C abs (abs dest)" allow "export CD\"\"PATH=/x; cd /var/w && tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 popd && tar (abs dest)"                         allow "popd && tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 cd /var/w && tar -xzf -C out --strip (cwd unproven)" deny  "cd /var/w && tar -xzf x.tgz -C out --strip-components=1" /var
 row "4458 tar --strip-components N split (ctrl)" allow "tar -xzf /tmp/x.tgz --strip-components 1 -C /var/out" /var
 row "4458 tar xzf old-style -C (ctrl)"        allow "tar xzf /tmp/x.tgz -C /var/out --strip-components=1" /var
 row "4458 tar -C abs plain (ctrl)"            allow "tar -xf /tmp/x.tar -C /var/out" /var
@@ -831,9 +831,38 @@ row "4458 cd ~/x && tar -C abs (ctrl)"        allow "cd ~/x && tar -xf /tmp/x.ta
 row "4458 pushd -n abs && tar (from HOME)"    deny  "pushd -n /var/w && tar -xf /tmp/x.tar" "$HOME"
 row "4458 cd -P abs && tar (from HOME)"       deny  "cd -P /var/w && tar -xf /tmp/x.tar" "$HOME"
 row "4458 false && cd && true || tar (from HOME)" deny "false && cd /var/w && true || tar -xf /tmp/x.tar" "$HOME"
-row "4458 cd abs && tar -C abs || true"       deny  "cd /var/w && tar -xf /tmp/x.tar -C /var/out || true" /var
+row "4458 cd abs && tar -C abs || true (abs dest)" allow "cd /var/w && tar -xf /tmp/x.tar -C /var/out || true" /var
 row "4458 tar -C abs || true, no cd (ctrl)"   allow "tar -xf /tmp/x.tar -C /var/out || true" /var
-row "4458 cd abs && tar, from HOME (ctrl)"    allow "cd /var/w && tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd abs && tar, no dest (from HOME)" deny  "cd /var/w && tar -xf /tmp/x.tar" "$HOME"
+# r9: a directory-changing word ANYWHERE leaves the cwd unknown for the whole
+# command; a relative destination (extraction or copy) or no destination
+# denies, an absolute one is judged as with a proven cwd.
+row "4458 false && cd && true; tar (from HOME)" deny "false && cd /var/w && true; tar -xf /tmp/x.tar" "$HOME"
+row "4458 false && cd && true; cp -r . (from HOME)" deny "false && cd /var/w && true; cp -r /tmp/h/.himmel ." "$HOME"
+row "4458 cd /nonexistent; cp -r . (from HOME)" deny "cd /nonexistent; cp -r /tmp/h/.himmel ." "$HOME"
+row "4458 cd abs; cp -r . (from HOME)"        deny  "cd /var/w; cp -r /tmp/h/.himmel ." "$HOME"
+row "4458 cd abs && cp -r . (from HOME)"      deny  "cd /var/w && cp -r /tmp/h/.himmel ." "$HOME"
+row "4458 cd abs; cp -r abs (from HOME, ctrl)" allow "cd /var/w; cp -r /tmp/h/.himmel /var/out" "$HOME"
+row "4458 cd abs && tar -C abs (from HOME, ctrl)" allow "cd /var/w && tar -xf /tmp/x.tar -C /var/out" "$HOME"
+row "4458 cd /x; cp a abs/ (ctrl)"            allow "cd /x; cp a /var/out/" /var
+row "4458 tar -xf, cwd /var, no cd (ctrl)"    allow "tar -xf /tmp/x.tar" /var
+row "4458 pushd abs; cp -r . (from HOME)"     deny  "pushd /var/w; cp -r /tmp/h/.himmel ." "$HOME"
+row "4458 ( cd abs ); cp -r . (from HOME)"    deny  "(cd /var/w); cp -r /tmp/h/.himmel ." "$HOME"
+row "4458 { cd abs; }; tar (from HOME)"       deny  "{ cd /var/w; }; tar -xf /tmp/x.tar" "$HOME"
+row "4458 eval cd; tar -C . (from HOME)"      deny  "eval cd /var/w; tar -xf /tmp/x.tar -C ." "$HOME"
+row "4458 bash -c cd; cp -r . (from HOME)"    deny  "bash -c 'cd /var/w'; cp -r /tmp/h/.himmel ." "$HOME"
+row "4458 \$(cd) ; tar (from HOME)"           deny  "x=\$(cd /var/w); tar -xf /tmp/x.tar" "$HOME"
+row "4458 CDPATH; cp -r . (cwd /var)"         deny  "CDPATH=/var; cp -r /tmp/h/.himmel ." /var
+row "4458 ln -s rel src after cd (from HOME)" deny  "cd /var/w; ln -s .himmel/bank-lift.json /var/out/l" "$HOME"
+# Absolute destinations still deny every way a member escapes them.
+row "4458 tar -xPf -C abs"                    deny  "tar -xPf /tmp/x.tar -C /var/out" /var
+row "4458 tar --absolute-names -C abs"        deny  "tar -xf /tmp/x.tar --absolute-names -C /var/out" /var
+row "4458 bsdtar -xPf -C abs"                 deny  "bsdtar -xPf /tmp/x.tar -C /var/out" /var
+row "4458 bsdtar --absolute-paths -C abs"     deny  "bsdtar -xf /tmp/x.tar --absolute-paths -C /var/out" /var
+row "4458 unzip -: -d abs"                    deny  "unzip -: /tmp/x.zip -d /var/out" /var
+row "4458 unzip -^ -d abs"                    deny  "unzip -^ /tmp/x.zip -d /var/out" /var
+row "4458 cpio -i -D abs -F"                  deny  "cpio -i -D /var/out -F /tmp/x.cpio" /var
+row "4458 cpio -p abs (pass mode)"            deny  "find . | cpio -pdm /var/out" /var
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"

@@ -2288,44 +2288,34 @@ HIMMEL-4458 closed these gaps:
   destination (`-C`, `-C<dir>`, `--directory[=]`, `-d`, `-d<dir>`, `-D`) is
   HOME, `~/.himmel` or its state dir — a member can be
   `.himmel/state/bank-lift.json`. With no destination option the effective
-  cwd counts: the hook's cwd, or a preceding `cd`/`pushd` target (a bare `cd`,
-  `~`, `$HOME`; an unresolvable target — `$d`, `-`, `popd` — denies too, name
-  the destination with `-C`/`-d`). An option's operand is never read as a
+  cwd counts: the hook's cwd, or — with a directory-changing word in the
+  command — unknown, which denies (see Unproven cwd). An option's operand is never read as a
   flag: `tar -xf -O -C ~` names the archive `-O` and still denies (tar
   `-f -C -T -X -b -I` and GNU-only `-H -K -N -V -g -F -L`, the long forms that
   take one, unzip `-d -P -O -I`, cpio `-F -E -H -I -O -D -R -M -C`). A letter
   whose arity differs between GNU tar and bsdtar (plain `tar -s`, `-L`, ...),
   or an unknown long option, makes the next word untrusted as `-O`; a
   destination option spelled as another option's operand judges the cwd and
-  every later word. `cpio -p` judges its directory operand.
-- **Relative operands after a cd.** A relative destination of an extraction,
-  or of `cp`/`mv`/`install`/`rsync`/`ln` (destination, `--parents` path, link
-  source, missing-ancestor check), is also judged against the last resolved
-  `cd`/`pushd` target: `cd ~/projects && tar -xf x.tar -C ..` is HOME and
-  denies; `cd /tmp/w && tar ... -C ..` does not. After an unresolvable cd a
-  relative destination containing `..` denies too.
-- **Unproven cwd: every extraction denies.** A cd may fail, be skipped, or
-  run in a subshell, so the cwd is provably the cd target only for a
-  top-level `cd X && …`. In a command with a cd/pushd/popd not joined to the
-  next clause by `&&` (`;`, newline, `&`, `|`, `||`), reached through `|`,
-  `||` or `&`, or inside `( … )`, `{ …; }` or a nested shell body
-  (`bash -c`/`sh -c`, `$( )`), or with any `eval`, a tar/gtar/bsdtar/unzip/
-  cpio extraction denies whatever its destination, absolute ones included.
-  This is a structural fail-closed, not cwd modelling: run the extraction as
-  its own command, or join it to the cd by `&&` only. Over-deny measured on
-  the p22-samp corpus (20 601 commands): 5 per cwd newly denied, all a
-  `cd <scratch>;` (or newline) followed by `tar xzf … -C <rel>` or
-  `unzip … -d <rel>`. A cd/pushd whose target is not absolute (relative,
-  computed `$d`, `-`, or a bare `popd`; `~` and `$HOME` count as absolute) is
-  unproven too, and so is any command whose text contains `CDPATH` (a plain
-  substring test: `CDPATH=~/.himmel cd state && tar -xf a.tar` lands in HOME).
-  Two more whole-command rules: a cd/pushd/popd carrying any option word
-  (`pushd -n /x` does not change dir; `cd -P /x` too) is unproven, since
-  option-free is the only proven form; and a `||` anywhere in a command that
-  also has a cd/pushd/popd makes the cwd unproven, since the cd may be skipped
-  (`false && cd /x && true || tar -xf a` extracts in the old cwd). Over-deny of
-  these two rules vs the previous fence: 0 in every recorded corpus (same
-  corpora as below, both cwds).
+  every later word.
+- **Unproven cwd: relative destinations deny.** The fence does not model the
+  cwd through shell control flow (a cd may fail, be skipped, run in a
+  subshell or go through CDPATH). The cwd is the hook's own cwd unless a
+  directory-changing word appears anywhere in the command — raw text or
+  dequoted tokens: `cd`, `pushd`, `popd`, `eval`, `su`, `runuser`, `chroot`,
+  `CDPATH`, any `chdir`, `find -execdir`, a `(` or backtick (subshell, `$( )`,
+  `<( )`, `$(( ))`), a `{ … }` group, `env`/`sudo` with `-C`/`-i`, or a shell
+  running a `-c` string. Then the cwd is unknown for the whole command, and an
+  extraction with no destination option, or a RELATIVE (or computed `$VAR`)
+  destination of an extraction or of `cp`/`mv`/`install`/`rsync`/`ln`
+  (destination, `--parents` path, link source, missing-ancestor check),
+  denies. An absolute, `~` or `$HOME` destination is judged exactly as with a
+  known cwd, so `cd /x; tar -xf a.tar -C /var/out` is allowed. Remedy (named in
+  the deny): use an absolute destination (`tar -C /abs`, `cp … /abs`), or run
+  the command on its own without the directory-changing word. Over-deny vs the
+  previous per-operator cd modelling, per cwd: p22-samp 66 of 20 601, p22-hot
+  28 of 5 602, p22-hist 27 of 4 789, write-fence templates 4 of 771,
+  suite-1874 2 of 317, p22-gen 0, corpus 0 — mostly `S=/abs; …; cp x "$S/"`
+  (a computed destination) in a command that also has a `$( )`, `(` or cd.
 - **Extraction options are allowlisted.** While extracting, any option the
   destination check does not model denies, long or short, bundled letters
   included, so `--one-top-level=DIR`, `--transform`, `-P`/`--absolute-names`,
@@ -2334,11 +2324,8 @@ HIMMEL-4458 closed these gaps:
   `--get`, `--file`, `--directory`, `--strip-components`, `--gzip`,
   `--gunzip`, `--bzip2`, `--xz`, `--zstd`, `--verbose`, `--no-same-owner`,
   `--no-same-permissions`, `--same-permissions`, `--preserve-permissions`,
-  `--touch`, `--keep-old-files`, `--skip-old-files`; unzip `-o -q -n -j -d`;
-  cpio `-i -p -d -m -v -u -D -F` and `--extract`, `--pass-through`,
-  `--make-directories`, `--preserve-modification-time`, `--unconditional`,
-  `--verbose`, `--quiet`, `--no-absolute-filenames`, `--file`, `--directory`.
-  Value options take `--opt=V`, `--opt V`, `-fV` and `-f V`. List mode
+  `--touch`, `--keep-old-files`, `--skip-old-files`; unzip `-o -q -n -j -d`.
+  Every cpio extraction denies (below). Value options take `--opt=V`, `--opt V`, `-fV` and `-f V`. List mode
   (`tar -t`) is not checked. Over-deny of this and the relative-cd rule vs the
   previous fence: 0 in every recorded corpus (p22-samp 20 601, p22-hot 5 602,
   p22-hist 4 789, write-fence templates 771, p22-gen 605, corpus 514,
@@ -2347,31 +2334,30 @@ HIMMEL-4458 closed these gaps:
   before it, so a relative one is judged as the composed path:
   `tar -xf x -C "$HOME/projects" -C ..` is HOME and denies (also bundled,
   attached and `--directory=` spellings, and a relative first `-C` against the
-  cwd or cd target). A relative `-C` after a computed one (`-C "$d" -C ..`)
-  fails closed. unzip `-d` and cpio `-D` are last-one-wins and need no chain.
+  cwd). A relative `-C` after a computed one (`-C "$d" -C ..`)
+  fails closed. unzip `-d` is last-one-wins and needs no chain.
 - **Absolute member names.** An extraction that keeps absolute (or `../`)
   member names writes wherever a member names, whatever the destination, so it
   denies: tar/gtar/bsdtar `-P` (bundled or old-style too), `--absolute-names`,
-  `--absolute-paths`; `unzip -:`; `cpio -i`/`--extract` unless
-  `--no-absolute-filenames` is given, since GNU cpio keeps absolute names by
-  default. Listing (`-t`, cpio `--list`), stdout extraction and creation stay
-  allowed. Residuals: `pax`, `7z x` and `bsdcpio` are not in the extractor
+  `--absolute-paths`; `unzip -:` and `-^`. Every cpio extraction (`-i`/
+  `--extract`, and `-p` pass mode) denies whatever its destination: GNU cpio
+  keeps absolute and `../` names by default and `--no-absolute-filenames` is
+  not modelled (fail closed; extract with tar or unzip instead). Listing
+  (`-t`, cpio `--list`), stdout extraction and creation stay allowed. Residuals: `pax`, `7z x` and `bsdcpio` are not in the extractor
   list; symlink-member traversal (a member symlink then a member written through
   it) relies on GNU tar's and bsdtar's default protections, which `-P` is what
-  disables; `cpio -p` is judged only by its directory operand.
+  disables.
 - **Computed destinations.** An extraction destination that cannot be
-  resolved — `-C "$D"`, `--directory="$D"`, `unzip -d "$D"`, `cpio -D "$D"`,
-  a `cpio -p` directory operand, `$(…)` or backticks — denies, like an
-  unresolved `cd`; `$HOME` spellings still resolve. A variable assigned a
+  resolved — `-C "$D"`, `--directory="$D"`, `unzip -d "$D"`, `$(…)` or
+  backticks — denies; `$HOME` spellings still resolve. A variable assigned a
   literal earlier in the same command is not tracked, so
   `S=/tmp/s; tar -xf a -C $S/x` denies too: spell the literal path.
 - **Ancestors of HOME.** Members are relative, so a destination that is a
   strict ancestor of HOME (`/`, `/home`, `~/..`; whole path components, so
   `/ho` is not one; compared lexically and physically) reaches the lift with a
   member such as `home/<user>/.himmel/state/bank-lift.json` and denies: `-C`,
-  `--directory`, `unzip -d`, `cpio -D`/`-p`, a relative destination resolved
-  against a cd target, and the extraction cwd (the hook's cwd or a resolved
-  `cd /`). A destination inside HOME other than HOME, `~/.himmel` or its state
+  `--directory`, `unzip -d`, and the extraction cwd (the hook's cwd). A
+  destination inside HOME other than HOME, `~/.himmel` or its state
   dir (`-C "$HOME/projects"`) stays allowed.
 - **Directory symlinks.** tar `--keep-directory-symlink` (and its `--keep-d…`
   abbreviations) follows a directory symlink inside the destination and

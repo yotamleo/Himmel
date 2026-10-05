@@ -91,12 +91,7 @@ CWD=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || CWD=""
 
 LIFT_NAME=bank-lift.json
 STATE_REAL="$HOME/.himmel/state"
-HAS_CD=0   # set for Bash: a cd/pushd makes every relative path's dir unknown
-CD_HOME=0  # set for Bash: a cd/pushd/popd that may land in HOME, ~/.himmel or its state dir
-CD_SEEN=0  # set for Bash once a cd/pushd/popd clause has been walked
-CD_UNK=0   # set for Bash: a cd/pushd/popd whose target cannot be resolved
-CD_DIR=""  # set for Bash: the last resolved cd/pushd target ("" when unresolved)
-CWD_UNPROVEN=0  # set for Bash: a cd/eval leaves the cwd not provably known
+CWD_UNPROVEN=0  # set for Bash: a directory-changing word anywhere makes the cwd unknown
 # HIMMEL-4458: the repo whose scripts/lib/bank-lift.sh may run show|clear —
 # this hook's own checkout (scripts/hooks/..), the primary when that is a
 # .claude/worktrees/* worktree. Its worktrees qualify too.
@@ -137,7 +132,7 @@ _expand() {
     case "$w" in
         /*) ;;
         '$'*|'`'*) printf '?/%s' "$w"; return ;;
-        *) if [ "$HAS_CD" = 1 ]; then printf '?/%s' "$w"; return; fi; w="$CWD/$w" ;;
+        *) if [ "$CWD_UNPROVEN" = 1 ]; then printf '?/%s' "$w"; return; fi; w="$CWD/$w" ;;
     esac
     # A `..` after a symlink climbs out of the link's TARGET, not out of the
     # lexical parent: resolve the existing directory part physically.
@@ -295,16 +290,12 @@ read -r -d '' TOKENIZER <<'AWK'
 function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
 function addc(c) { if (c == SB) forged = 1; tok = tok c }
 function emit_tok() {
-    if (!quoted && tok == "{") gd[d]++
-    if (!quoted && tok == "}" && gd[d] > 0) gd[d]--
     if (tok != "" || quoted) { buf[d] = buf[d] (bn[d]++ ? US : "") tok }
     tok = ""; quoted = 0
 }
 function emit_mark(m) { emit_tok(); buf[d] = buf[d] (bn[d]++ ? US : "") m }
 function flush(   l) {
     emit_tok()
-    # A clause inside ( ) or { } is marked P (non-strict pass only).
-    if (!STRICT && bn[d] > 0 && gd[d] + pd[d] > 0) buf[d] = buf[d] US SB "P"
     if (bn[d] > 0) { l = buf[d]; gsub(/\n/, NL, l); print l }
     buf[d] = ""; bn[d] = 0
 }
@@ -409,19 +400,14 @@ END {
             while (i < n && substr(s, i + 1, 1) != "\n") i++
             continue
         }
-        if (c == ")") { if (d > 0 && typ[d] == "p") close_sub(); else { flush(); if (pd[d] > 0) pd[d]-- }; continue }
+        if (c == ")") { if (d > 0 && typ[d] == "p") close_sub(); else flush(); continue }
         if ((c == "<" || c == ">") && c2 == "(") { emit_tok(); i++; open_sub("p"); continue }
         if (c == "&" && c2 == ">") {
             emit_mark(SB "W"); i++
             if (substr(s, i + 1, 1) == ">") i++
             continue
         }
-        # && ends a clause whose cd (if any) runs the next only on success.
-        if (c == "&" && c2 == "&" && !STRICT) { emit_mark(SB "A"); flush(); i++; continue }
-        if (c == "(") { flush(); pd[d]++; continue }
-        # A clause ended by | or & (also the first half of ||) is marked O.
-        if ((c == "&" || c == "|") && !STRICT) { emit_tok(); if (bn[d] > 0) emit_mark(SB "O"); flush(); continue }
-        if (c == ";" || c == "&" || c == "|") { flush(); continue }
+        if (c == ";" || c == "&" || c == "|" || c == "(") { flush(); continue }
         if (c == ">") {
             if (!quoted && tok ~ /^([0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$/) tok = ""
             j = i + 1
@@ -553,7 +539,7 @@ _repo_lift_script() {
     [ -n "$LIFT_REPO" ] || return 1
     case "$w" in
         scripts/lib/bank-lift.sh|./scripts/lib/bank-lift.sh)
-            [ "$HAS_CD" = 0 ] || return 1
+            [ "$CWD_UNPROVEN" = 0 ] || return 1
             p="$CWD/$w" ;;
         /*) p="$w" ;;
         '~/'*|'$HOME/'*|'${HOME}/'*) p=$(_expand "$w") ;;
@@ -763,6 +749,25 @@ set_rule() {
     return 0
 }
 
+# Directory-changing words (whole command; see the CWD_UNPROVEN check at the
+# bottom): cd/pushd/popd, eval, su/runuser/chroot, CDPATH, any chdir/--chdir,
+# find -execdir, a `(` or backtick (subshell, $( ), <( )), a { } brace group,
+# env/sudo with -C/-i, and a shell running a -c string.
+DIRWORD_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd|eval|su|runuser|chroot)([^A-Za-z0-9_.-]|$)|CDPATH|chdir|-execdir|[(`]|(^|[[:space:];&|])[{]([[:space:]]|$)|(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*[Ci]|(^|[^A-Za-z0-9_.-])(bash|sh|zsh|dash|ksh|mksh|ash|fish|busybox)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*c'
+# shellcheck disable=SC2016  # the rewrite names literal command shapes
+UNPROVEN_FIX='a directory-changing word (cd/pushd/popd/CDPATH/eval/subshell/nested shell) makes the cwd unknown: use an absolute destination (`tar -C /abs`, `cp ... /abs`) or run it as its own command'
+
+# _rel_unproven <word> -> 0 when the cwd is unproven and the word is not an
+# absolute, ~ or $HOME path (relative, or computed: it may be relative).
+# shellcheck disable=SC2016  # literal $HOME spellings are matched as text
+_rel_unproven() {
+    [ "$CWD_UNPROVEN" = 1 ] || return 1
+    case "$1" in
+        /*|'~'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) return 1 ;;
+    esac
+    return 0
+}
+
 # check_copy <verb> <args...>: cp / mv / install / rsync / ln destination and
 # aliasing rules.
 check_copy() {
@@ -830,24 +835,14 @@ check_copy() {
     # it without naming it.
     if [ "$sym" = 1 ]; then
         for src in ${pos[@]+"${pos[@]}"}; do
-            case "$(lift_ref "$src")$(_cd_ref "$src")" in *LIFT*|*STATE*) deny "$verb links to the bank lift or its directory ($src)" ;; esac
+            _rel_unproven "$src" && deny "$verb links to a relative source ($src): $UNPROVEN_FIX"
+            case "$(lift_ref "$src")" in LIFT|STATE) deny "$verb links to the bank lift or its directory ($src)" ;; esac
         done
     fi
-    # After a cd the dir of a relative destination is unknown: a lift-named
-    # source copied into a bare directory destination (`.`, `dir/`, -t) may
-    # land as the lift.
-    if [ "$HAS_CD" = 1 ]; then
-        case "$dest" in /*|'~'*|'$'*) ;; *)
-            case "$tdir:$dest" in ?*:*|*:.|*:..|*/|*/.|*/..)
-                for src in ${pos[@]+"${pos[@]}"}; do
-                    srcb=$(_base "$src")
-                    if ! _is_dynamic "$srcb" && ! _is_pure_glob "$srcb" && _name_matches "$srcb" "$LIFT_NAME"; then
-                        deny "$verb puts a lift-named file into $dest after a cd"
-                    fi
-                done ;;
-            esac ;;
-        esac
-    fi
+    # With the cwd unproven a relative destination cannot be placed (the
+    # --parents path and the ancestor check below build on it); an absolute
+    # one is judged as with a proven cwd.
+    _rel_unproven "$dest" && deny "$verb writes to a relative destination ($dest): $UNPROVEN_FIX"
     # HIMMEL-4458: cp --parents / rsync -R (--relative) recreate the SOURCE's
     # path under the destination, so a glob-spelled source
     # (.himmel/state/bank-l?ft.json) lands as the lift. Judge the path the
@@ -858,8 +853,8 @@ check_copy() {
             rel="$src"
             case "$verb:$rel" in rsync:*/./*) rel="${rel#*/./}" ;; esac
             rel="${rel#/}"
-            case "$(lift_ref "${dest%/}/$rel")$(_cd_ref "${dest%/}/$rel")" in
-                *LIFT*|*STATE*) deny "$verb --parents/-R recreates the bank lift's path under $dest ($src)" ;;
+            case "$(lift_ref "${dest%/}/$rel")" in
+                LIFT|STATE) deny "$verb --parents/-R recreates the bank lift's path under $dest ($src)" ;;
             esac
             if _is_dynamic "$dest"; then
                 case "$(lift_ref "/$rel")" in
@@ -869,8 +864,6 @@ check_copy() {
         done
     fi
     dk=$(lift_ref "$dest")
-    # A relative destination after a resolved cd is the cd target's.
-    [ "$dk" = NONE ] && dk=$(_cd_ref "$dest")
     case "$dk" in
         LIFT) deny "$verb writes the bank lift ($dest)" ;;
         STATE) need="$LIFT_NAME" ;;
@@ -886,7 +879,6 @@ check_copy() {
     # unknowable or directory source denies here.
     if { [ "$dk" = STATE ] || [ "$dk" = HIMMEL ]; } && [ -z "$tdir" ]; then
         kind=$(_expand "$dest")
-        case "$kind" in '?/'*) [ -n "$CD_DIR" ] && kind=$(CWD="$CD_DIR" HAS_CD=0 _expand "$dest") ;; esac
         case "$kind" in
             '?/'*) ;;
             *) if [ ! -d "$kind" ]; then
@@ -977,7 +969,7 @@ analyse() {
     case "$low" in *bank*lift*|*lift*bank*) TEXT_MENTION=1 ;; esac
     [[ "$low" =~ $MENTION_NEAR_RE ]] && TEXT_MENTION=1
     case "$low" in *xargs*) HAS_XARGS=1 ;; esac
-    local stdin_shell=0 bodies="" CL_AND=0 CL_PAR=0 CL_O=0 CL_PREV_O=0
+    local stdin_shell=0 bodies=""
     local CUR_BODIES=""
     while IFS= read -r line; do
         case "$line" in $'\002B\037'*) CUR_BODIES="$CUR_BODIES${line#$'\002B\037'}"$'\n' ;; esac
@@ -996,7 +988,6 @@ EOF
         local -a tk=() args=()
         IFS=$'\037' read -r -a tk <<<"$line"
         local i=0 t nt=${#tk[@]} fed=0
-        CL_PREV_O=$CL_O; CL_AND=0; CL_PAR=0; CL_O=0
         # Redirect targets; build args without them.
         while [ "$i" -lt "$nt" ]; do
             t="${tk[$i]//$'\036'/$'\n'}"
@@ -1005,9 +996,6 @@ EOF
                     i=$((i+1)); t="${tk[$i]:-}"
                     if [ -n "$t" ] && is_lift "$t"; then deny "a redirect writes the bank lift ($t)"; fi
                     ;;
-                $'\002A') CL_AND=1 ;;
-                $'\002P') CL_PAR=1 ;;
-                $'\002O') CL_O=1 ;;
                 $'\002R')
                     i=$((i+1)); fed=1
                     t="${tk[$i]:-}"
@@ -1034,65 +1022,6 @@ EOF
 # a member can be .himmel/state/bank-lift.json — a name no clause spells.
 # Extraction into HOME, ~/.himmel or its state dir denies; so does one with no
 # destination option whose effective cwd is one of those.
-# _note_cd <cd|pushd|popd> <args...>: a bare cd, or a target resolving to
-# HOME, ~/.himmel or its state dir, sets CD_HOME. `-`, popd, a stack index, a
-# computed target ($d; $HOME spellings do resolve), or a relative target after
-# an earlier cd set CD_UNK. Both stick for the rest of the command. CD_DIR is
-# the last resolved target ("" when unresolved), which a relative operand of a
-# later clause is also judged against (_cd_ref).
-# shellcheck disable=SC2016  # literal $HOME spellings are matched as text
-_note_cd() {
-    local c="$1" t k=UNK
-    shift
-    while [ $# -gt 0 ]; do
-        case "$1" in --) shift; break ;; -[LPe@]|-n) shift ;; *) break ;; esac
-    done
-    t="${1-}"
-    CD_DIR=""
-    if [ "$c" = popd ]; then :
-    elif [ -z "$t" ]; then k=HOME; [ "$c" = cd ] && CD_DIR="$HOME"
-    else
-        case "$t" in
-            -|[+-][0-9]*) ;;
-            /*|'~'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) k=$(lift_ref "$t"); CD_DIR=$(_expand "$t") ;;
-            *'$'*|*'`'*) ;;
-            *) if [ "$CD_SEEN" = 0 ]; then k=$(HAS_CD=0 lift_ref "$t"); CD_DIR=$(HAS_CD=0 _expand "$t"); fi ;;
-        esac
-    fi
-    case "$CD_DIR" in '?'*) CD_DIR="" ;; esac
-    CD_SEEN=1
-    case "$k" in LIFT|STATE|HIMMEL|HOME) CD_HOME=1 ;; UNK) CD_UNK=1 ;; esac
-}
-
-# _cd_abs <cd|pushd|popd> <args...> -> 0 when the target does not go through
-# CDPATH or the dir stack: absolute, ~, ~/..., a $HOME spelling, or bare cd.
-# Any option word (`pushd -n` does not change dir; `-P`, `-e`, ...) is
-# unproven: option-free is the only proven form.
-# shellcheck disable=SC2016,SC2088  # literal ~ and $HOME spellings are matched as text
-_cd_abs() {
-    local c="$1"
-    shift
-    [ "$c" = popd ] && return 1
-    while [ $# -gt 0 ]; do
-        case "$1" in --) shift; break ;; -?*) return 1 ;; *) break ;; esac
-    done
-    case "${1-}" in
-        '') [ "$c" = cd ] ;;
-        /*|'~'|'~/'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-# _cd_ref <word> -> lift_ref of a relative word resolved against the last
-# resolved cd target (`cd ~/projects && tar -C ..` is HOME), else NONE.
-_cd_ref() {
-    case "$1" in ''|/*|'~'*|'$'*) echo NONE; return ;; esac
-    if [ "$CD_SEEN" = 1 ] && [ -n "$CD_DIR" ]; then
-        CWD="$CD_DIR" HAS_CD=0 lift_ref "$1"
-    else
-        echo NONE
-    fi
-}
 
 # _tar_dest <dir>: record a tar -C/--directory destination. tar applies each
 # -C relative to the one before it, so a relative dir is judged as the composed
@@ -1135,7 +1064,7 @@ _home_anc() {
     return 1
 }
 
-# _extract_allow <tar|gtar|bsdtar|unzip|cpio> <args...>: an extraction may
+# _extract_allow <tar|gtar|bsdtar|unzip> <args...>: an extraction may
 # use ONLY options the destination parser understands, or inert ones that
 # cannot change where a member lands (HIMMEL-4458 r7). Anything else denies,
 # long or short, bundled letters included: an option like --one-top-level=DIR
@@ -1148,7 +1077,6 @@ _extract_allow() {
     case "$c" in
         tar|gtar|bsdtar) sl=xfCzjJvomkp; vl=fC ;;
         unzip) sl=oqndj; vl=d ;;
-        cpio) sl=ipdmvuDF; vl=DF ;;
     esac
     for a in "$@"; do
         if [ "$skip" -gt 0 ]; then skip=$((skip-1)); first=0; continue; fi
@@ -1158,8 +1086,7 @@ _extract_allow() {
             --*)
                 case "$c:${a%%=*}" in
                     *tar:--extract|*tar:--get|*tar:--gzip|*tar:--gunzip|*tar:--bzip2|*tar:--xz|*tar:--zstd|*tar:--verbose|*tar:--no-same-owner|*tar:--no-same-permissions|*tar:--same-permissions|*tar:--preserve-permissions|*tar:--touch|*tar:--keep-old-files|*tar:--skip-old-files) ;;
-                    cpio:--extract|cpio:--pass-through|cpio:--make-directories|cpio:--preserve-modification-time|cpio:--unconditional|cpio:--verbose|cpio:--quiet|cpio:--no-absolute-filenames) ;;
-                    *tar:--file|*tar:--directory|*tar:--strip-components|cpio:--file|cpio:--directory)
+                    *tar:--file|*tar:--directory|*tar:--strip-components)
                         case "$a" in *=*) ;; *) skip=1 ;; esac ;;
                     *) deny "$c extracts with ${a%%=*}, an option the destination check does not model (it may move members off the judged destination, e.g. into HOME or ~/.himmel); use only -x/-f/-C/-z/-j/-J/-v/-o/-m/-k/-p, --strip-components, --no-same-owner/--no-same-permissions (unzip: -o/-q/-n/-j/-d)" ;;
                 esac
@@ -1201,8 +1128,8 @@ _extract_allow() {
 # kept absolute (or ../) member names (-P, --absolute-names/-paths, unzip -:,
 # cpio copy-in without --no-absolute-filenames) deny whatever the destination.
 check_extract() {
-    local c="$1" x=0 q="" a k first=1 n out=0 end=0 pend=0 u cwdchk=0 pass=0 v ch dash amb args alld=0
-    local abs=0 noabs=0 lst=0 cprev="" ksym=0 e
+    local c="$1" x=0 q="" a k first=1 n out=0 end=0 pend=0 u cwdchk=0 v ch dash amb args alld=0
+    local abs=0 lst=0 cprev="" ksym=0 e
     local -a dests=() pos=()
     shift
     [ "$c" = unzip ] && x=1
@@ -1235,14 +1162,14 @@ check_extract() {
         case "$c:$a" in
             *:--) end=1; continue ;;
             *tar:--extract|*tar:--ext|*tar:--extr*|*tar:--get|cpio:--extract|cpio:--ext|cpio:--extr*) x=1; continue ;;
-            cpio:--pass-through|cpio:--pass*) x=1; pass=1; continue ;;
+            cpio:--pass-through|cpio:--pass*) x=1; continue ;;
             *tar:--to-stdout|cpio:--to-stdout) [ "$u" = 1 ] || out=1; continue ;;
             *tar:--directory=*|*tar:--dir*=*) _tar_dest "${a#*=}"; continue ;;
             cpio:--directory=*|cpio:--dir*=*) dests+=("${a#*=}"); continue ;;
             *tar:--abs*) abs=1; continue ;;
             *tar:--keep-d*) ksym=1; continue ;;
             cpio:--abs*) abs=1; continue ;;
-            cpio:--no-abs*) noabs=1; continue ;;
+            cpio:--no-abs*) continue ;;
             cpio:--list) lst=1; continue ;;
             *tar:--dir*) q=C; continue ;;
             cpio:--dir*) q=D; continue ;;
@@ -1266,7 +1193,7 @@ check_extract() {
             ch="${v:0:1}"; v="${v:1}"
             case "$c:$ch" in
                 *tar:x|cpio:i) x=1; continue ;;
-                cpio:p) x=1; pass=1; continue ;;
+                cpio:p) x=1; continue ;;
                 *tar:O) [ "$u" = 1 ] || out=1; continue ;;
                 *tar:P|unzip:[:]) abs=1; continue ;;
                 cpio:t) lst=1; continue ;;
@@ -1289,9 +1216,11 @@ check_extract() {
     # -O / --to-stdout extracts to stdout, not to disk; cpio -t lists.
     [ "$lst" = 1 ] && x=0
     [ "$x" = 1 ] && [ "$out" = 0 ] || return 0
-    # GNU cpio keeps absolute member names by default (copy-in only).
-    [ "$c" = cpio ] && [ "$pass" = 0 ] && [ "$noabs" = 0 ] && abs=1
-    [ "$abs" = 1 ] && deny "$c keeps absolute (or ../) member names, so a member can land on the bank lift whatever the destination; drop -P/--absolute-names/--absolute-paths/-: (cpio: add --no-absolute-filenames)"
+    # GNU cpio keeps absolute and ../ member names by default, and its
+    # pass mode copies whatever paths stdin names: every cpio extraction
+    # denies, whatever the destination (--no-absolute-filenames not modelled).
+    [ "$c" = cpio ] && deny "cpio extracts members by their own (absolute or ../) names, which can land on the bank lift whatever the destination; extract with tar or unzip into an absolute destination"
+    [ "$abs" = 1 ] && deny "$c keeps absolute (or ../) member names, so a member can land on the bank lift whatever the destination; drop -P/--absolute-names/--absolute-paths/-:"
     # ponytail: a symlink ALREADY inside an allowed destination is followed by
     # default for a member's intermediate path (GNU tar without a directory
     # member, unzip, cpio) and is not judged here; revisit (new ticket) if a
@@ -1299,24 +1228,13 @@ check_extract() {
     # extraction, e.g. the destination is created in the same command.
     [ "$ksym" = 1 ] && deny "$c --keep-directory-symlink follows a directory symlink inside the destination, which can lead into HOME or ~/.himmel; drop it"
     _extract_allow "$c" "$@"
-    # Structural fail-closed: with the cwd unproven, no destination (even an
-    # absolute one) is judged; split the cd and the extraction into separate
-    # commands, or join them only by && at top level.
-    [ "$CWD_UNPROVEN" = 1 ] && deny "$c extracts in a command whose cwd is not provably known (a cd not joined only by && at top level, a cd in a subshell, brace group or nested shell body, a cd with an option or a non-absolute target, a || beside a cd, a CDPATH mention, or an eval), so it may extract into HOME or ~/.himmel; run the extraction as its own command"
-    # cpio -p copies into its directory operand.
-    [ "$pass" = 1 ] && dests+=(${pos[@]+"${pos[@]}"})
     n=${#dests[@]}
     if [ "$n" = 0 ] || [ "$cwdchk" = 1 ]; then
-        [ "$CD_HOME" = 1 ] && deny "$c extracts into the cwd after a cd into HOME or ~/.himmel"
-        [ "$CD_UNK" = 1 ] && deny "$c extracts into the cwd after a cd whose target cannot be resolved, or that may have failed (only \`cd X && ...\` moves the cwd), so the cwd may be HOME or ~/.himmel; name the destination with -C/-d"
-        if [ "$CD_SEEN" = 0 ]; then
-            case "$(lift_ref "$CWD")" in
-                LIFT|STATE|HIMMEL|HOME) deny "$c extracts into the cwd ($CWD), which is HOME or ~/.himmel" ;;
-            esac
-            _home_anc "$CWD" && deny "$c extracts into the cwd ($CWD), an ancestor of HOME: a relative member can reach the bank lift"
-        elif [ -n "$CD_DIR" ]; then
-            _home_anc "$CD_DIR" && deny "$c extracts into the cwd after a cd to $CD_DIR, an ancestor of HOME: a relative member can reach the bank lift"
-        fi
+        [ "$CWD_UNPROVEN" = 1 ] && deny "$c extracts into the cwd: $UNPROVEN_FIX"
+        case "$(lift_ref "$CWD")" in
+            LIFT|STATE|HIMMEL|HOME) deny "$c extracts into the cwd ($CWD), which is HOME or ~/.himmel" ;;
+        esac
+        _home_anc "$CWD" && deny "$c extracts into the cwd ($CWD), an ancestor of HOME: a relative member can reach the bank lift"
         [ "$n" = 0 ] && return 0
     fi
     for a in "${dests[@]}"; do
@@ -1325,26 +1243,12 @@ check_extract() {
         case "$(_expand "$a")" in
             *'$'*|*'`'*) deny "$c extracts into a computed destination ($a), which may be HOME or ~/.himmel; name a literal path" ;;
         esac
-        case "$a" in
-            /*|'~'*|'$'*) ;;
-            *) [ "$CD_HOME" = 1 ] && deny "$c extracts into a relative dir ($a) after a cd into HOME or ~/.himmel"
-               # After an unresolved cd, `.`, a `..` or a .himmel-named first
-               # part may be HOME's.
-               if [ "$CD_UNK" = 1 ]; then
-                   k="${a#./}"; k="${k%%/*}"
-                   case "/$a/" in */../*) k=. ;; esac
-                   if [ -z "$k" ] || [ "$k" = . ] || _name_matches "$k" .himmel; then
-                       deny "$c extracts into $a after a cd whose target cannot be resolved (it may be HOME or ~/.himmel)"
-                   fi
-               fi ;;
-        esac
-        if [ "$CD_SEEN" = 0 ]; then k=$(HAS_CD=0 lift_ref "$a"); else k=$(lift_ref "$a"); fi
-        [ "$k" = NONE ] && k=$(_cd_ref "$a")
+        _rel_unproven "$a" && deny "$c extracts into a relative destination ($a): $UNPROVEN_FIX"
+        k=$(lift_ref "$a")
         case "$k" in
             LIFT|STATE|HIMMEL|HOME) deny "$c extracts into $a (HOME, ~/.himmel or its state dir), where a member can be the bank lift" ;;
         esac
-        if [ "$CD_SEEN" = 0 ]; then e=$(HAS_CD=0 _expand "$a"); else e=$(_expand "$a"); fi
-        case "$e" in '?/'*) [ -n "$CD_DIR" ] && e=$(CWD="$CD_DIR" HAS_CD=0 _expand "$a") ;; esac
+        e=$(_expand "$a")
         _home_anc "$e" && deny "$c extracts into $a, an ancestor of HOME: a relative member (home/<user>/.himmel/state/...) can reach the bank lift"
     done
     return 0
@@ -1454,7 +1358,6 @@ check_clause() {
                 continue ;;
             eval)
                 shift
-                CWD_UNPROVEN=1
                 if _is_dynamic "$*" && [ "$TEXT_MENTION" = 1 ]; then
                     deny "eval runs computed text beside a bank-lift mention"
                 fi
@@ -1620,18 +1523,6 @@ check_clause() {
         *)
             case "$cmd" in
                 tar|gtar|bsdtar|unzip|cpio) check_extract "$cmd" "$@" ;;
-                # The cwd is provably the cd target only for a top-level cd
-                # joined to the next clause by && and not reached through | ||
-                # or &; else (failed or skipped cd, a subshell, a nested body)
-                # it is unproven and every extraction denies.
-                cd|pushd|popd) _note_cd "$cmd" "$@"
-                    if [ "$CL_AND" = 0 ] || [ "$CL_PAR" = 1 ] || [ "$CL_PREV_O" = 1 ] || [ "$depth" -gt 0 ]; then
-                        CWD_UNPROVEN=1
-                    fi
-                    # A relative target goes through CDPATH; popd, `-` and a
-                    # stack index are unknown: only an absolute, ~ or $HOME
-                    # target (or a bare cd) is proven.
-                    _cd_abs "$cmd" "$@" || CWD_UNPROVEN=1 ;;
             esac
             if [[ "$cmd" =~ $MENTION_RE ]]; then
                 for a in "$@"; do
@@ -1644,27 +1535,17 @@ check_clause() {
     return 0
 }
 
-# A cd anywhere in the command makes relative paths' directory unknown.
-case "$CMD" in *cd*|*pushd*|*popd*)
-    # grep -c reads all input: a -q early exit would SIGPIPE printf on a big
-    # command and, under pipefail, read a found cd as none.
-    cd_hits=$(printf '%s' "$CMD" | grep -Ec '(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)')
-    case "$cd_hits" in ''|0) ;; *) HAS_CD=1 ;; esac ;;
-esac
 # Layer 1: the whole-command mention rule (J1874). The trigger reads both the
 # raw text and the dequoted tokens (quote splits, $'..', heredoc bodies).
 WTOK=$(printf '%s' "$CMD" | awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
-# A command naming CDPATH (assignment, export/declare/env, quoted or split by
-# quotes) may redirect a relative cd: the cwd is unproven. A relative cd
-# target is unproven on its own too, so this is the belt to that brace.
-case "$CMD$WTOK" in *CDPATH*) CWD_UNPROVEN=1 ;; esac
-# A || anywhere beside a cd/pushd/popd: the cd may be skipped (`false && cd
-# /x && true || tar -xf a` extracts in the old cwd). A whole-command flag, not
-# per-clause reasoning; grep -c, not -q (see HAS_CD above).
-case "$CMD" in *'||'*)
-    cd_hits=$(printf '%s\n%s' "$CMD" "$WTOK" | grep -Ec '(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)')
-    case "$cd_hits" in ''|0) ;; *) CWD_UNPROVEN=1 ;; esac ;;
-esac
+# HIMMEL-4458: the cwd is never modelled through shell control flow. It is the
+# hook's own cwd unless a directory-changing word appears ANYWHERE in the raw
+# text or the dequoted tokens; then it is unknown for the whole command, and a
+# relative destination of an extraction or copy denies (_rel_unproven). Erring
+# toward unproven is the design. grep -c reads all input: a -q early exit would
+# SIGPIPE printf on a big command and, under pipefail, read a hit as none.
+cwd_hits=$(printf '%s\n%s' "$CMD" "${WTOK//$'\037'/ }" | grep -Ec "$DIRWORD_RE")
+case "$cwd_hits" in ''|0) ;; *) CWD_UNPROVEN=1 ;; esac
 if names_lift "$CMD" || names_lift "$WTOK"; then whole_command_gate "$CMD" 0; fi
 analyse "$CMD" 0
 exit 0
