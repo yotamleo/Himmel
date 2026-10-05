@@ -863,6 +863,25 @@ row "4458 unzip -: -d abs"                    deny  "unzip -: /tmp/x.zip -d /var
 row "4458 unzip -^ -d abs"                    deny  "unzip -^ /tmp/x.zip -d /var/out" /var
 row "4458 cpio -i -D abs -F"                  deny  "cpio -i -D /var/out -F /tmp/x.cpio" /var
 row "4458 cpio -p abs (pass mode)"            deny  "find . | cpio -pdm /var/out" /var
+# r10: the tar/unzip MODE is allowlisted: extracting unless a non-extract
+# mode is proven by a real option word; old-style bundle only as argv[1].
+row "4458 tar long opts then member O"        deny  "tar --extract --file /tmp/a.tar --directory \"\$HOME\" O .himmel" /var
+row "4458 tar --ge (abbrev of --get)"         deny  "tar --ge -f /tmp/a.tar -C \"\$HOME\"" /var
+row "4458 tar --ex (abbrev of --extract)"     deny  "tar --ex -f /tmp/a.tar -C \"\$HOME\"" /var
+row "4458 tar -f --directory -x then member O" deny "tar -f /tmp/a.tar --directory \"\$HOME\" -x O" /var
+row "4458 unzip member named l"               deny  "unzip /tmp/a.zip -d \"\$HOME\" l" /var
+row "4458 bsdtar --extract then member O"     deny  "bsdtar --extract -f /tmp/a.tar -C \"\$HOME\" O" /var
+row "4458 tar -xf member then -O (after non-option)" deny "tar -xf /tmp/a.tar m -O -C \"\$HOME\"" /var
+row "4458 tar --lis (abbrev, not proven)"      deny  "tar --lis -f /tmp/a.tar -C \"\$HOME\"" /var
+row "4458 tar -tf (ctrl)"                      allow "tar -tf /tmp/a.tar" /var
+row "4458 tar tvf old-style (ctrl)"            allow "tar tvf /tmp/a.tar" /var
+row "4458 tar --list -f (ctrl)"                allow "tar --list -f /tmp/a.tar" /var
+row "4458 tar -xOf (stdout, ctrl)"             allow "tar -xOf /tmp/a.tar" /var
+row "4458 tar -xf -O (stdout, ctrl)"           allow "tar -xf /tmp/a.tar -O" /var
+row "4458 tar -xf --to-stdout (ctrl)"          allow "tar -xf /tmp/a.tar --to-stdout" /var
+row "4458 unzip -l (ctrl)"                     allow "unzip -l /tmp/a.zip" /var
+row "4458 tar -cf (create, ctrl)"              allow "tar -cf /tmp/o.tar dir" /var
+row "4458 tar -xf -C abs (ctrl)"               allow "tar -xf /tmp/a.tar -C /var/out" /var
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"

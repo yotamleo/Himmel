@@ -1129,10 +1129,14 @@ _extract_allow() {
 # cpio copy-in without --no-absolute-filenames) deny whatever the destination.
 check_extract() {
     local c="$1" x=0 q="" a k first=1 n out=0 end=0 pend=0 u cwdchk=0 v ch dash amb args alld=0
-    local abs=0 lst=0 cprev="" ksym=0 e
+    local abs=0 lst=0 cprev="" ksym=0 e wasfirst nonopt=0 nx=0 xe=0
     local -a dests=() pos=()
     shift
-    [ "$c" = unzip ] && x=1
+    # Mode allowlist: tar/gtar/bsdtar and unzip count as EXTRACTING unless a
+    # non-extract mode is PROVEN by a real option word (not an operand, not a
+    # word after a non-option or `--`, not after an unknown long option); an
+    # old-style bundle (`tar tvf`) is read only as argv[1].
+    case "$c" in tar|gtar|bsdtar|unzip) x=1 ;; esac
     case "$c" in
         tar) args=fCTXbI; amb=HKNVgFLs ;;
         gtar) args=fCTXbIHKNVgFL; amb="" ;;
@@ -1141,6 +1145,7 @@ check_extract() {
         cpio) args=FEHIODRMC; amb="" ;;
     esac
     for a in "$@"; do
+        wasfirst=$first; first=0
         [ "$alld" = 1 ] && dests+=("$a")
         # The operand of the option before it: never a flag.
         if [ -n "$q" ]; then
@@ -1161,9 +1166,13 @@ check_extract() {
         dash=1
         case "$c:$a" in
             *:--) end=1; continue ;;
-            *tar:--extract|*tar:--ext|*tar:--extr*|*tar:--get|cpio:--extract|cpio:--ext|cpio:--extr*) x=1; continue ;;
+            *tar:--extract|*tar:--get) xe=1; continue ;;
+            cpio:--extract|cpio:--ext|cpio:--extr*) x=1; continue ;;
+            # Only a full-spelled non-extract mode word proves the mode.
+            *tar:--list|*tar:--create|*tar:--append|*tar:--update|*tar:--diff|*tar:--compare)
+                [ "$u" = 1 ] || [ "$nonopt" = 1 ] || nx=1; continue ;;
             cpio:--pass-through|cpio:--pass*) x=1; continue ;;
-            *tar:--to-stdout|cpio:--to-stdout) [ "$u" = 1 ] || out=1; continue ;;
+            *tar:--to-stdout|cpio:--to-stdout) [ "$u" = 1 ] || [ "$nonopt" = 1 ] || out=1; continue ;;
             *tar:--directory=*|*tar:--dir*=*) _tar_dest "${a#*=}"; continue ;;
             cpio:--directory=*|cpio:--dir*=*) dests+=("${a#*=}"); continue ;;
             *tar:--abs*) abs=1; continue ;;
@@ -1183,21 +1192,22 @@ check_extract() {
             # An unknown long option may take the next word.
             *:--*) pend=1; continue ;;
             *:-?*) v="${a#-}" ;;
-            *tar:*) [ "$first" = 1 ] || { first=0; continue; }
+            *tar:*) [ "$wasfirst" = 1 ] || { nonopt=1; continue; }
                     v="$a"; dash=0 ;;
-            cpio:*) pos+=("$a"); first=0; continue ;;
-            *) first=0; continue ;;
+            cpio:*) pos+=("$a"); continue ;;
+            *) nonopt=1; continue ;;
         esac
-        first=0
         while [ -n "$v" ]; do
             ch="${v:0:1}"; v="${v:1}"
             case "$c:$ch" in
-                *tar:x|cpio:i) x=1; continue ;;
+                *tar:x) xe=1; continue ;;
+                cpio:i) x=1; continue ;;
                 cpio:p) x=1; continue ;;
-                *tar:O) [ "$u" = 1 ] || out=1; continue ;;
+                *tar:[tcrud]) [ "$u" = 1 ] || [ "$nonopt" = 1 ] || nx=1; continue ;;
+                *tar:O) [ "$u" = 1 ] || [ "$nonopt" = 1 ] || out=1; continue ;;
                 *tar:P|unzip:[:]) abs=1; continue ;;
                 cpio:t) lst=1; continue ;;
-                unzip:[ltvZpcz]) [ "$u" = 1 ] || x=0; continue ;;
+                unzip:[ltvZpc]) [ "$u" = 1 ] || [ "$nonopt" = 1 ] || x=0; continue ;;
             esac
             case "$args" in
                 *"$ch"*)
@@ -1213,8 +1223,11 @@ check_extract() {
             case "$amb" in *"$ch"*) u=1; pend=1 ;; esac
         done
     done
-    # -O / --to-stdout extracts to stdout, not to disk; cpio -t lists.
+    # -O / --to-stdout extracts to stdout, not to disk; cpio -t lists. A tar
+    # with a proven non-extract mode and no explicit -x/--extract/--get does
+    # not extract.
     [ "$lst" = 1 ] && x=0
+    case "$c" in tar|gtar|bsdtar) [ "$nx" = 1 ] && [ "$xe" = 0 ] && x=0 ;; esac
     [ "$x" = 1 ] && [ "$out" = 0 ] || return 0
     # GNU cpio keeps absolute and ../ member names by default, and its
     # pass mode copies whatever paths stdin names: every cpio extraction

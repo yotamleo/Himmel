@@ -2330,6 +2330,17 @@ HIMMEL-4458 closed these gaps:
   previous fence: 0 in every recorded corpus (p22-samp 20 601, p22-hot 5 602,
   p22-hist 4 789, write-fence templates 771, p22-gen 605, corpus 514,
   suite-1874 317; both cwds).
+- **tar/unzip mode is allowlisted.** tar/gtar/bsdtar and unzip count as
+  extracting unless a non-extract mode is PROVEN by a real option word: tar
+  `-t -c -r -u -d` (dashed, bundled, or an old-style bundle as argv[1]
+  only), the full long names `--list --create --append --update --diff
+  --compare`, or `-O`/`--to-stdout`; unzip `-l -t -v -Z -p -c`. A member or
+  operand word, a word after a non-option or `--`, and the word after an
+  unknown long option never prove a mode, so `tar --extract --file a.tar
+  --directory "$HOME" O .himmel` (member `O`) and `tar --ge -f a.tar -C
+  "$HOME"` (an abbreviation) deny. An explicit `-x`/`--extract`/`--get`
+  keeps the extract reading. Over-deny vs the previous fence: 0 in every
+  recorded corpus, both cwds.
 - **Chained tar `-C`.** tar applies each `-C`/`--directory` relative to the one
   before it, so a relative one is judged as the composed path:
   `tar -xf x -C "$HOME/projects" -C ..` is HOME and denies (also bundled,
