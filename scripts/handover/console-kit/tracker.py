@@ -164,10 +164,11 @@ def actuals():
         if not m or leg_marker(p)[0] != 'WRAPPED':
             continue
         try:
-            ts = [int(x.group(1)) * 60 + int(x.group(2)) for x in
-                  (TS_RE.match(l) for l in open(p, encoding='utf-8', errors='replace')) if x]
+            text = open(p, encoding='utf-8', errors='replace').read()
         except OSError:
             continue
+        results = text.partition('\n## Results')[2]
+        ts = [int(x.group(1)) * 60 + int(x.group(2)) for x in (TS_RE.match(l) for l in results.splitlines()) if x]
         mins = sum(g for g in ((b - a) % 1440 for a, b in zip(ts, ts[1:])) if g <= IDLE_MIN)
         r = out.setdefault(int(m.group(1)), [0, 0])
         r[0] += 1
@@ -335,10 +336,12 @@ def bucket(m):
 def read_versions(path, mir):
     """(versions, release state unknown): [{n, rel, date}] in Jira release order from a `jira versions` snapshot.
 
-    v1.0.0 and non-v1.0.x names are not rows. A missing file lists the mirror's v1.0.x fixVersions, none released."""
+    v1.0.0 and non-v1.0.x names are not rows. A missing, empty or row-less file lists the mirror's v1.0.x fixVersions, none released."""
     try:
         lines = [l.rstrip('\n').split('\t') for l in open(path, encoding='utf-8')]
     except OSError:
+        lines = []
+    if not any(len(f) >= 2 and VER_RE.match(f[0]) and f[0] != 'v1.0.0' for f in lines):
         names = sorted({v for m in mir.values() for v in m['fv'] if VER_RE.match(v) and v != 'v1.0.0'}, key=ver_key)
         return [dict(n=v, rel=False, date='') for v in names], True
     return [dict(n=f[0], rel=f[1] == 'true', date=f[2] if len(f) > 2 else '') for f in lines
