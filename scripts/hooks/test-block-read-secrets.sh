@@ -556,6 +556,33 @@ assert_rc "Bash grep '.env' -rn scripts/ (hint shape 1, pattern first)" 0 \
 assert_rc "Bash grep -e '.env' -rn scripts/ (hint shape 2, explicit -e)" 0 \
     "$(run_case "$(j_bash "grep -e '.env' -rn scripts/")")"
 
+# HIMMEL-4367 item 2: a word inside a quoted pattern does not glob against
+# the hook's cwd. From a dir holding .env, the `.*` in a quoted grep pattern
+# used to expand to `.env` and deny a read of a scratchpad TSV. An unquoted
+# glob there still expands and still denies.
+GLOBDIR=$(mktemp -d) || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+: >"$GLOBDIR/.env"
+: >"$GLOBDIR/rows.tsv"
+run_in_globdir() { (cd "$GLOBDIR" && printf '%s' "$(j_bash "$1")" | bash "$HOOK" >/dev/null 2>&1; echo "$?"); }
+TAB=$(printf '\t')
+assert_rc "4367-2 grep -v quoted pattern with a tab and .* over a tsv allows" 0 \
+    "$(run_in_globdir "grep -v '^[0-9]*${TAB}.*  ' rows.tsv")"
+assert_rc "4367-2 cd + grep -F | grep -v quoted .* pattern | tail allows" 0 \
+    "$(run_in_globdir "cd /tmp/x; grep -F -e 'tee' -e 'time -o' rows.tsv | grep -v '^[0-9]*${TAB}.*  ' | tail -30")"
+assert_rc "4367-2 grep -E 'a .* b' over a tsv allows" 0 \
+    "$(run_in_globdir "grep -E 'a .* b' rows.tsv")"
+assert_rc "4367-2 control: cat .* (unquoted glob) still denies" 2 "$(run_in_globdir "cat .*")"
+assert_rc "4367-2 control: cat .e* (unquoted glob) still denies" 2 "$(run_in_globdir "cat .e*")"
+assert_rc "4367-2 control: glob after a closed quoted pattern still denies" 2 \
+    "$(run_in_globdir "grep 'a b' .e*")"
+assert_rc "4367-2 control: escaped quote inside double quotes keeps the glob" 2 \
+    "$(run_in_globdir 'grep "a\" b" .e*')"
+assert_rc "4367-2 control: ANSI-C quoting stops tracking, glob still denies" 2 \
+    "$(run_in_globdir "cat \$'\\'' .e*")"
+assert_rc "4367-2 control: a literal .env inside a quoted span still denies" 2 \
+    "$(run_in_globdir "grep -v 'x .env y' rows.tsv")"
+rm -rf "$GLOBDIR"
+
 # --- Direct tests of the shared predicate (scripts/guardrails/lib.sh) ---
 # Exercises is_secret_basename in isolation, independent of either hook's
 # tool-dispatch/tokenizer plumbing above.

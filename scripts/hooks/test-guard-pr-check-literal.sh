@@ -1282,6 +1282,79 @@ run "control: --from-file shape on a tampered worktree copy still denies (HIMMEL
 need_in_err "deny names the byte mismatch, not the shape" "differs from the HIMMEL_REPO anchor's"
 g -C "$WT" checkout -q -- scripts/cr/write-verdicts.sh
 
+# ---- HIMMEL-4367 item 5: only a command that can run a target is judged -----
+# On an edited branch, so every deny control below would run edited bytes. A
+# brace group with no comma and no `..` is literal text to bash ({url}), never
+# a brace list; a quoted-delimiter heredoc read only by a data reader is data
+# when nothing outside the bodies can run a file.
+echo 'echo edited-4367' >>"$WT/scripts/cr/pr-check-context.sh"
+while IFS= read -r v; do
+    run "HIMMEL-4367 no target run [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done <<'ALLOW4367'
+ssh -p 2222 h 'bash vm-run-local.sh camofox "python3 local_adapters.py camofox {url}"'
+bash -c 'echo {name} done'
+ALLOW4367
+H4367_PY=$(cat <<'ENVELOPE'
+python3 - <<'EOF'
+import os
+s = "a" * 3
+exec("print(s)")
+print({k: v for k, v in {}.items()})
+EOF
+ENVELOPE
+)
+run "HIMMEL-4367 python3 heredoc with '*' and exec -> allow" 0 "$(payload "$H4367_PY" "$WT")" "$HR"
+H4367_CD_PY=$(cat <<'ENVELOPE'
+cd /tmp && python3 - <<'PY'
+import glob
+print(glob.glob('*/node_modules/*'))
+PY
+ENVELOPE
+)
+run "HIMMEL-4367 cd + python3 heredoc with a */ glob -> allow" 0 "$(payload "$H4367_CD_PY" "$WT")" "$HR"
+H4367_CAT=$(cat <<'ENVELOPE'
+cat > /tmp/rows.txt <<'EOF'
+echo x | xargs -I{} sh -c 'y {}'
+ls *
+EOF
+ENVELOPE
+)
+run "HIMMEL-4367 cat heredoc of shell text to a file -> allow" 0 "$(payload "$H4367_CAT" "$WT")" "$HR"
+# Deny controls: a shell reads the body, the body names a target, a runner
+# sits outside the body, the body is live, or a brace list is real.
+while IFS= read -r v; do
+    run "HIMMEL-4367 control [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done <<'DENY4367'
+bash scripts/c{r,}/pr-chec{k,}-context.sh
+bash scripts/cr/pr-che{c..c}k-context.sh
+bash scripts/cr/{pr-check-context.sh}
+find . -exec bash {} +
+cd scripts/cr; bash *
+DENY4367
+for body in \
+    'bash <<'\''EOF'\''' \
+    'sh -s <<'\''EOF'\''' \
+    'ssh h <<'\''EOF'\''' \
+    'at now <<'\''EOF'\''' \
+    'cat <<'\''EOF'\'' | bash'; do
+    v="$body"$'\n''bash scripts/c[r]/pr-chec[k]-context.sh'$'\n''EOF'
+    run "HIMMEL-4367 control [$body + glob target body] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+v='cat > /tmp/f <<'\''EOF'\'''$'\n''bash scripts/c[r]/pr-chec[k]-context.sh'$'\n''EOF'$'\n''bash /tmp/f'
+run "HIMMEL-4367 control [cat body to a file, then bash it] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+# shellcheck disable=SC2016 # the $( ) is payload text, not for this shell
+v='python3 - <<EOF'$'\n''$(bash scripts/c[r]/pr-chec[k]-context.sh)'$'\n''EOF'
+run "HIMMEL-4367 control [unquoted heredoc with a live \$( )] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+v='python3 - <<'\''EOF'\'''$'\n''import os; os.system("bash scripts/cr/pr-check-context.sh")'$'\n''EOF'
+run "HIMMEL-4367 control [python body naming the target] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+# Outside the body: an unquoted glob that can spell a target, and a python -c
+# body (code on the command line, not stdin) beside a decoy heredoc.
+v='tee scripts/c?/pr-check-context.sh <<'\''EOF'\'''$'\n''x'$'\n''EOF'
+run "HIMMEL-4367 control [tee to a glob target, heredoc input] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+v='python3 -c "import os; os.system('\''bash scripts/c[r]/pr-chec[k]-context.sh'\'')" <<'\''EOF'\'''$'\n''x'$'\n''EOF'
+run "HIMMEL-4367 control [python3 -c glob target beside a heredoc] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+g -C "$WT" checkout -q -- scripts/cr/pr-check-context.sh
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "all guard-pr-check-literal cases passed"

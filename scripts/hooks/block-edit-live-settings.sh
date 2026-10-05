@@ -1021,7 +1021,8 @@ _tok_verb_write() {
         if [[ ${segtxt[s]:-} =~ $re ]]; then
             matched=1
             segm[s]=1
-            if [ "$kind" = checkout ] && [[ ${segtxt[s]:-} =~ $gre ]]; then return 0; fi
+            if [ "$kind" = checkout ] && [[ ${segtxt[s]:-} =~ $gre ]] \
+                && ! _tok_ro_git_seg "$s"; then return 0; fi
         fi
         s=$((s + 1))
     done
@@ -1058,6 +1059,34 @@ _tok_verb_write() {
         s=$((s + 1))
     done
     return 1
+}
+
+# _tok_ro_git_seg SEG — 0 when segment SEG is one plain read-only git run, so a
+# `checkout`/`restore` in it is a file name (`git -C <wt> diff … --
+# scripts/x-checkout.sh`, HIMMEL-4367 item 3), not the subcommand. Plain
+# means: `git` is the command word (no assignment, wrapper or `find -exec`
+# before it) and the only `git` word in the segment, `-C DIR` pairs aside its
+# subcommand is diff/show/log/status/blame/grep, and no word carries a live
+# `$`, a glob or `--output`. Anything else is 1, and the caller keeps the
+# segment a candidate write.
+_tok_ro_git_seg() {
+    local sg=$1 k=0 seen=0 st=0 lw
+    while [ "$k" -lt "$ST_N" ]; do
+        if [ "${ST_S[k]}" = "$sg" ] && [ -z "${ST_RO[k]}" ]; then
+            lw=${ST_LW[k]}
+            [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1
+            case "$lw" in --output*) return 1 ;; esac
+            [ "${lw##*/}" != git ] || seen=$((seen + 1))
+            case "$st" in
+                0) [ "$lw" = git ] || return 1; st=1 ;;
+                # case kept: `-C DIR` picks the repo, `-c` sets a config
+                1) case "${ST_W[k]}" in -C) st=2 ;; diff|show|log|status|blame|grep) st=3 ;; *) return 1 ;; esac ;;
+                2) st=1 ;;
+            esac
+        fi
+        k=$((k + 1))
+    done
+    [ "$st" = 3 ] && [ "$seen" = 1 ]
 }
 
 # _tok_ln_write REGEX — 0 (a candidate write) unless every word matching the
@@ -1580,7 +1609,7 @@ _tok_readonly_ok() {
             first=$lw fk=$k
         else
             case "$first" in
-                less|git|rg|sed) [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1 ;;
+                less|git|rg|sed|eval) [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1 ;;
             esac
             # `git -C DIR` only picks the repo, so the word after DIR is the
             # subcommand (HIMMEL-4298: `git -C <primary> diff … | grep` was
@@ -1592,6 +1621,12 @@ _tok_readonly_ok() {
                 sub=''
             else
                 [ -n "$sub" ] || sub=x$lw
+            fi
+            # `git grep -O<pager>` / `--open-files-in-pager` runs a program
+            # (HIMMEL-4367: git grep joined the read-only subcommands); git
+            # takes any unique prefix of a long option, so `--op…` counts.
+            if [ "$first:$sub" = git:xgrep ]; then
+                case "$w" in -O* | -[!-]*O* | --op*) return 1 ;; esac
             fi
             case "$first:$lw" in
                 # less: -o/-O (alone or in a cluster) and --log-file
@@ -1616,10 +1651,15 @@ _tok_readonly_ok() {
 _tok_ro_segment() {
     [ "$fk" -ge 0 ] || return 0
     case "$first" in
-        cat|head|tail|grep|diff|wc|jq|rg|less|sed) ;;
+        cat|head|tail|grep|diff|wc|jq|rg|less|sed|cut) ;;
         ls) [ "$_RO_LS" = 1 ] || return 1 ;;
+        # HIMMEL-4364: `eval` as the command word has had its body judged by
+        # this same hook in a run of its own (the body scan above, which
+        # exits on a refusal); with no live `$` or glob in its words (checked
+        # per word) eval runs exactly that body, so it writes nothing more.
+        eval) ;;
         git)
-            case "$sub" in xdiff|xshow|xlog|xstatus|xblame) ;; *) return 1 ;; esac
+            case "$sub" in xdiff|xshow|xlog|xstatus|xblame|xgrep) ;; *) return 1 ;; esac
             ;;
         *) return 1 ;;
     esac
@@ -3302,6 +3342,24 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         && { [ "$mentions_settings" = "1" ] \
             || { [ "$write_verb" = 1 ] && { [ "$dir_dest" = "1" ] || [ -n "$nested_wt_primary" ]; }; }; }; then
         brace_dir_dest=1
+        # HIMMEL-4364: under a write verb (no settings file named), a word the
+        # tokenizer vouches for counts only if its brace can move a directory:
+        # a climb word, or a group before the word's last `/`. A group in the
+        # leaf alone keeps the literal directory, and its leaf names are
+        # judged by _check_variant below (`/tmp/settings.{json,bak}`,
+        # `.claude/settings.{json,bak}` from a worktree). A quoted brace never
+        # expands; an interpreter body was judged in its own run.
+        if [ "$mentions_settings" = 0 ] && [ "$TOK" = 1 ]; then
+            brace_dir_dest=0 widx=0
+            while [ "$widx" -lt "$ST_N" ]; do
+                w=${ST_W[widx]}
+                if [ "${ST_G[widx]}" = 1 ] && has_unquoted_brace_group "$w"; then
+                    if has_brace_climb_word "$w"; then brace_dir_dest=1; break; fi
+                    case "$w" in */*) case "${w%/*}" in *'{'*) brace_dir_dest=1; break ;; esac ;; esac
+                fi
+                widx=$((widx + 1))
+            done
+        fi
     fi
     # A writer that is not a recognised verb (sed -i, perl -pi, ...) from a
     # nested worktree: one word that is a path with a brace group that could

@@ -739,7 +739,57 @@ if prlit_backstop "$cmd"; then
     shown=${shown:0:200}
     deny "the command names a guarded script and can write text to a file or feed it as input (a '>' redirect that is not an fd dup or /dev/null, a <<< here-string, or tee), or shadows a reader (cat, tee, ...) with a function or alias - whatever later runs that file cannot be enumerated, so it cannot be proven safe (HIMMEL-3917, HIMMEL-3913). If the text contains '>' (an arrow in a message, a Results bullet), write it with the Write tool and pass the file (-F, --body-file, --comment-file), or use '→' / 'to' instead. Run each script as its own literal command."
 fi
-case "$flat" in *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;; *) [ "$mentions" -eq 1 ] || exit 0 ;; esac
+# HIMMEL-4367 item 5: a heredoc body is stdin, not a command line. When the
+# tokenizer proves the command has no live substitution, no runner word
+# outside the bodies (an interpreter, a wrapper, find -exec, ssh), and every
+# segment's command word is a plain data reader (or cd/echo/printf/mkdir),
+# nothing in it can run a file, so a glob or brace in a body - Python's `*`,
+# a scratch file's `{}` - is data. Only a command that names no target and
+# no cr/ or handover/ path gets this exit; one that does is classified below.
+# ponytail: python/node read their body as code, and code that assembles a
+# glob spelling of a target (os.system("bash scripts/c[r]/...")) is not seen -
+# the same ceiling as any name the text never spells (see the classifier's
+# header below). Upgrade path: drop python/node from HD_READERS if one recurs.
+HD_READERS='cat tee grep egrep fgrep head tail wc jq python python3 node'
+heredoc_data_only() { # true when only heredoc bodies could make $flat look runnable
+    local k sg=-1 cw=-1 w
+    st_tokenize "$cmd" || return 1
+    [ "$ST_HEREDOC$ST_SUBST$ST_ANSIC" = 100 ] || return 1
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        if [ "${ST_S[k]}" != "$sg" ]; then sg=${ST_S[k]}; cw=-1; fi
+        w=${ST_W[k]}
+        case "${w##*/}" in
+            bash|sh|zsh|dash|ksh|mksh|busybox|toybox|source|.|eval|time|command|builtin|nohup|nice|stdbuf|sudo|env|exec|timeout|xargs|ssh) return 1 ;;
+        esac
+        case "$w" in -exec|-ok|-execdir|-okdir) return 1 ;; esac
+        # An unquoted glob or brace outside the bodies can expand to a
+        # target name (`tee scripts/c?/x.sh <<E`), so it goes to the
+        # classifier. python/node take only `-` here: any other word (a -c
+        # body, a script, argv the code could glob) is code outside a body.
+        [ "${ST_G[k]}" = 0 ] || return 1
+        if [ -z "${ST_RO[k]}" ] && [ "$cw" -ge 0 ] && [ "$k" -ne "$cw" ] && [ "$w" != - ]; then
+            case "${ST_W[cw]}" in python|python3|node) return 1 ;; esac
+        fi
+        if [ -z "${ST_RO[k]}" ] && [ "$cw" -lt 0 ]; then
+            [ "${ST_A[k]}${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 0000 ] || return 1
+            case " $HD_READERS cd echo printf mkdir " in *" $w "*) cw=$k ;; *) return 1 ;; esac
+        fi
+        case "${ST_RO[k]}" in
+            *'<<'|*'<<-')
+                [ "$cw" -ge 0 ] || return 1
+                case " $HD_READERS " in *" ${ST_W[cw]} "*) ;; *) return 1 ;; esac
+                ;;
+        esac
+        k=$((k + 1))
+    done
+    return 0
+}
+case "$flat" in
+    *[cC][rR]/*|*[hH]andover/*) ;;
+    *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || ! heredoc_data_only || exit 0 ;;
+    *) [ "$mentions" -eq 1 ] || exit 0 ;;
+esac
 
 # The canonical fence runs the anchor's copy through $himmel_repo, so it is
 # exempt - but only in its exact shape. Anything added to it (a second
@@ -1106,10 +1156,17 @@ for tok in ${flat//[;&|()<>\`=]/$'\n'}; do
     raw=$tok
     # A brace list reads as a glob that matches every word it could expand to,
     # innermost group first; a pair it cannot reduce is unresolvable.
+    # HIMMEL-4367: a non-empty group with no comma and no `..` ({url}) is
+    # literal text to bash, not a list - kept as a name (braces marked %),
+    # which no target carries. An empty {} stays a glob: find and xargs -I
+    # substitute it.
     while :; do
         case "$tok" in *'{'*) ;; *) break ;; esac
         rest=${tok##*'{'}
         case "$rest" in *'}'*) ;; *) break ;; esac
+        case "${rest%%'}'*}" in
+            ?*) case "${rest%%'}'*}" in *,*|*..*) ;; *) tok=${tok%'{'*}%${rest%%'}'*}%${rest#*'}'}; continue ;; esac ;;
+        esac
         tok=${tok%'{'*}'*'${rest#*'}'}
     done
     case "$tok" in *'{'*'}'*) hit=1; unresolved=$tok ;; esac
