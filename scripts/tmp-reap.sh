@@ -89,16 +89,21 @@ proc_start() {
 }
 
 # Session ids whose pid is alive AND whose start time matches procStart (guards pid reuse).
-LIVE_IDS=""; LIVE_PIDS=""
+LIVE_IDS=""; LIVE_PIDS=""; DEAD_START_MIN=""
 if [ -d "$SESSIONS" ]; then
     for f in "$SESSIONS"/*.json; do
         [ -f "$f" ] || continue
         row="$(jq -r '[.sessionId // "", (.pid // "" | tostring), (.procStart // "" | tostring)] | join(" ")' "$f" 2>/dev/null)" || continue
         set -f; set -- $row; set +f
         [ "$#" -eq 3 ] || continue
-        [ -d "/proc/$2" ] || continue
-        [ "$(proc_start "$2")" = "$3" ] && { LIVE_IDS="$LIVE_IDS
-$1"; LIVE_PIDS="$LIVE_PIDS $2"; }
+        if [ -d "/proc/$2" ] && [ "$(proc_start "$2")" = "$3" ]; then
+            LIVE_IDS="$LIVE_IDS
+$1"; LIVE_PIDS="$LIVE_PIDS $2"; continue
+        fi
+        # a dead session with a dir on disk: keep the oldest start (HIMMEL-4437, see detached())
+        case "$3" in ''|*[!0-9]*) continue ;; esac
+        set -- "$1" "$2" "$3" "$CLAUDE_ROOT"/-*/"$1"
+        [ -d "$4" ] && { [ -z "$DEAD_START_MIN" ] || [ "$3" -lt "$DEAD_START_MIN" ]; } && DEAD_START_MIN="$3"
     done
 fi
 session_live() { case "$LIVE_IDS
@@ -113,8 +118,23 @@ CENSUS_WARNED=0
 # A non-dumpable same-uid process (desktop daemons with file caps or setgid) always has an unreadable
 # cwd. It is detached when its ppid chain reads cleanly to pid 1 and crosses no live session pid: it
 # cannot then be a descendant of a session, so it holds no session's scratch. Unknown = not detached.
+# HIMMEL-4437: a child a DEAD session spawned also reaches pid 1 yet can hold that session's scratch, so a
+# process that started at or after the oldest dead session dir's procStart (same clock ticks) is not detached;
+# an unknown start time is not detached either.
+# ponytail: a dead session dir with no sessions json has no known start and cannot bound this check; the boot
+# clock is not compared, so a procStart from an earlier boot only makes it refuse more (fail closed). Revisit
+# if stale sessions json makes real daemons refuse.
 detached() { # <pid>
-    local pid="$1" hops=0 s
+    local pid="$1" hops=0 s st
+    if [ -n "$DEAD_START_MIN" ]; then
+        s="$(cat "${TMP_REAP_PROC:-/proc}/$pid/stat" 2>/dev/null)" || return 1
+        s="${s##*) }"
+        set -f; set -- $s; set +f
+        [ "$#" -ge 20 ] || return 1
+        shift 19; st="$1"
+        case "$st" in ''|*[!0-9]*) return 1 ;; esac
+        [ "$st" -lt "$DEAD_START_MIN" ] || return 1
+    fi
     while [ "$hops" -lt 64 ]; do
         case " $LIVE_PIDS " in *" $pid "*) return 1 ;; esac
         [ "$pid" = 1 ] && return 0
