@@ -23,6 +23,22 @@ the "VERSION" section below for why); HIMMEL-3603's pre-cut PR bumped it to
    git tag via the GitHub API; it never touches tracked files).
 3. Re-note `main`'s new tip sha — that is the sha the tag must point at.
 
+This step repeats for **every** release line (HIMMEL-4417), not just `1.0.0`:
+before the first `vX.Y.Z-pre.N` tag of a new `X.Y.Z`, land a PR that sets
+`VERSION` to the bare `X.Y.Z`. Two things enforce it:
+
+- `cut-tag.sh` reads `VERSION` at `<sha>` and refuses (exit 7) when it is not
+  the tag's `X.Y.Z`; `--version-override` does not waive it.
+- `scripts/release/check-version-tag.sh` (run by its suite
+  `scripts/release/test-check-version-tag.sh` in CI) fails when `VERSION` is
+  not the `X.Y.Z` base of the highest `v*` tag.
+
+`VERSION` is the only file that tracks the release line. `packaging/aur/PKGBUILD`
+`pkgver` also names a release but is bumped by the operator at AUR-publish time
+(it needs the sha256 of the published tarball, see its header), so it lags the
+tag by design. `scripts/jira`, `scripts/bitbucket` and every plugin's own
+`package.json` / `plugin.json` version are independent and are not bumped here.
+
 ## 2. `cut-tag.sh` — cutting the bare release
 
 `scripts/handover/console-kit/cut-tag.sh` (console-run only; never from a
