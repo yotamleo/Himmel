@@ -195,6 +195,7 @@ COOKIES.mkdir()
     ".example.com\tTRUE\t/\tTRUE\t9999999999\tsess\tlive1\n"
     ".example.com\tTRUE\t/\tTRUE\t1000000000\told\tdead\n"
     "#HttpOnly_.example.com\tTRUE\t/\tTRUE\t0\ttok\tlive2\n"
+    ".example.com\tTRUE\t/\tTRUE\tgarbage\tbadexp\tstale\n"
     ".other.org\tTRUE\t/\tTRUE\t9999999999\tnope\tleak\n",
     encoding="utf-8", newline="\n")
 
@@ -206,6 +207,11 @@ check("local-headless: returns markdown, no longer raises NotImplemented", "# Re
 names_sent = sorted(x["name"] for x in rec.calls[0][1].get("cookies") or [])
 check("local-headless: jar cookies for the host pass through (live + HttpOnly, not expired, not other domain)",
       names_sent == ["sess", "tok"])
+sent = {x["name"]: x for x in rec.calls[0][1].get("cookies") or []}
+check("local-headless: #HttpOnly_ cookies keep httpOnly, plain ones do not",
+      sent["tok"].get("httpOnly") is True and not sent["sess"].get("httpOnly"))
+check("local-headless: a cookie with a malformed expiry is skipped, not revived as a session cookie",
+      "badexp" not in sent)
 check("local-headless: headless stealth fetch, bounded timeout",
       rec.calls[0][1].get("headless") is True and 0 < rec.calls[0][1].get("timeout", 0) <= 120000)
 rec.calls.clear()

@@ -737,7 +737,8 @@ def load_jar_cookies(cookie_dir: Path, url: str, now=None) -> list:
         except (OSError, UnicodeError):
             continue
         for line in text.splitlines():
-            if line.startswith("#HttpOnly_"):
+            http_only = line.startswith("#HttpOnly_")
+            if http_only:
                 line = line[len("#HttpOnly_"):]
             elif not line or line.startswith("#"):
                 continue
@@ -748,11 +749,12 @@ def load_jar_cookies(cookie_dir: Path, url: str, now=None) -> list:
             try:
                 exp = int(fld[4])
             except ValueError:
-                exp = 0
+                continue  # malformed expiry: skip, never revive as a session cookie
             if (exp and exp < now) or not dom or not (host == dom or host.endswith("." + dom)):
                 continue
             out.append({"name": fld[5], "value": "\t".join(fld[6:]), "domain": fld[0],
-                        "path": fld[2] or "/", "secure": fld[3].upper() == "TRUE"})
+                        "path": fld[2] or "/", "secure": fld[3].upper() == "TRUE",
+                        "httpOnly": http_only})
     return out
 
 
