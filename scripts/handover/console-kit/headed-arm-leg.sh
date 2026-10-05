@@ -744,6 +744,16 @@ fi
 # ticket).
 if [ -z "${HANDOVER_DIR:-}" ]; then
     unset -f handover_root 2>/dev/null || true
+    # HIMMEL-4416: handover_root reads only the live env, so feed it the
+    # primary's .env HANDOVER_DIR first (same loader every handover script
+    # uses); without this a console launched with no exported HANDOVER_DIR
+    # resolved the inline <cwd>/handovers stub on a Mode B station. A live
+    # non-empty value is never overridden (load_dotenv only fills absent).
+    # shellcheck source=scripts/lib/load-dotenv.sh
+    # shellcheck disable=SC1091
+    if . "$HERE/../../lib/load-dotenv.sh" 2>/dev/null; then
+        load_dotenv HANDOVER_DIR 2>/dev/null || true
+    fi
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
     if . "$HERE/../../lib/handover-path.sh" 2>/dev/null; then
