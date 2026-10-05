@@ -332,7 +332,15 @@ def _is_private_host(host: str) -> bool:
     try:
         ip = ipaddress.ip_address(host.strip("[]"))
     except ValueError:
-        return False
+        # Chromium also dials decimal / hex / short IPv4 spellings
+        # (2130706433, 0x7f.1, 127.1) that ipaddress rejects.
+        import socket
+        try:
+            ip = ipaddress.ip_address(socket.inet_aton(h))
+        except (OSError, ValueError):
+            return False
+    if ip.version == 6 and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
     return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
 
 
@@ -758,6 +766,74 @@ def load_jar_cookies(cookie_dir: Path, url: str, now=None) -> list:
     return out
 
 
+def _block_private_requests(page, state):
+    """Scrapling page_setup hook (runs before navigation). Aborts the browser's
+    navigations, redirect hops and same-process subresources to a private host,
+    and page-level websockets. The decision is on the request URL alone, before
+    the browser resolves or connects.
+
+    NOT covered (HIMMEL-4496): cross-site iframes (separate CDP targets, so their
+    redirect hops are never paused), dedicated/shared-worker traffic including
+    worker websockets, and DNS rebinding (the check is hostname-only).
+
+    Fail closed: Scrapling swallows an exception raised here and navigates
+    anyway, so the first thing installed is a deny-all route that only lets
+    requests through once state["armed"] is set, which happens after the last
+    guard is in place. A failed install leaves the browser denying everything."""
+    def blocked(url) -> bool:
+        p = urlparse(str(url))
+        if p.scheme in ("data", "blob", "about"):
+            return False
+        return not p.hostname or _is_private_host(p.hostname)
+
+    def on_request(route):
+        try:
+            # a popup's requests are refused outright: its redirect chain could
+            # reach a private host before a CDP guard can attach to the new page
+            deny = (not state["armed"] or route.request.frame.page is not page
+                    or blocked(route.request.url))
+        except Exception:
+            deny = True  # fail closed
+        route.abort() if deny else route.continue_()
+
+    def on_websocket(ws):
+        try:
+            deny = blocked(ws.url)
+        except Exception:
+            deny = True
+        ws.close() if deny else ws.connect_to_server()
+
+    def on_paused(cdp, ev):
+        # Fetch.requestPaused fires for every redirect hop too (page.route does
+        # not: the browser follows a 3xx with no route call), before connect.
+        try:
+            deny = blocked(ev["request"]["url"])
+        except Exception:
+            deny = True
+        if deny:
+            cdp.send("Fetch.failRequest", {"requestId": ev["requestId"], "errorReason": "BlockedByClient"})
+        else:
+            cdp.send("Fetch.continueRequest", {"requestId": ev["requestId"]})
+
+    # Guards live on the browser CONTEXT so a popup the page opens is covered
+    # from its first request. The deny-all route goes in first; an unguardable
+    # context (no websocket routing / no CDP) raises, the caller sees armed unset.
+    ctx = page.context
+    ctx.route("**/*", on_request)
+    if not hasattr(ctx, "route_web_socket"):
+        raise RuntimeError("local-headless: cannot guard websockets on this browser")
+
+    def guard_cdp(pg):
+        cdp = ctx.new_cdp_session(pg)
+        cdp.on("Fetch.requestPaused", lambda ev: on_paused(cdp, ev))
+        cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+
+    ctx.route_web_socket("**/*", on_websocket)
+    guard_cdp(page)
+    ctx.on("page", guard_cdp)
+    state["armed"] = True
+
+
 class LocalHeadlessClient:
     """Local headless fetch via Scrapling's stealth fetcher (HIMMEL-4344).
     Optional dependency, pinned in tools/requirements-scrapling.txt: when
@@ -791,10 +867,18 @@ class LocalHeadlessClient:
             fetch, to_markdown = self._load()
         except ImportError:
             raise BackendNotImplemented("scrapling is not installed")
+        state = {"armed": False}
         page = fetch(url, headless=True, timeout=self.TIMEOUT_MS,
-                     cookies=load_jar_cookies(self.cookie_dir, url))
-        # a public URL can redirect onto a private host the pre-fetch gate never saw;
-        # refuse to ingest what that landed on
+                     cookies=load_jar_cookies(self.cookie_dir, url),
+                     page_setup=lambda pg: _block_private_requests(pg, state),
+                     # a service worker's traffic bypasses every route/CDP guard
+                     additional_args={"service_workers": "block"})
+        # Scrapling swallows a page_setup exception and navigates anyway; the
+        # hook's deny-all route kept the browser closed, and this refuses the result
+        if not state["armed"]:
+            raise RuntimeError("local-headless: private-host guard did not install")
+        # defence in depth: _block_private_requests already aborted any request to
+        # a private host; refuse to ingest a page that still landed on one
         final_host = (urlparse(str(getattr(page, "url", "") or url)).hostname or "").lower()
         if final_host and _is_private_host(final_host):
             raise RuntimeError("local-headless: redirected to a private host")
