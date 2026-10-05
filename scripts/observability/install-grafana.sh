@@ -222,7 +222,7 @@ After=$PROM_UNIT
 [Service]
 Type=simple
 WorkingDirectory=$(unit_escape "$GRAF_DIR")
-Environment=GF_SECURITY_ADMIN_PASSWORD__FILE=$(unit_escape "$DATA")/admin-password
+Environment="GF_SECURITY_ADMIN_PASSWORD__FILE=$(unit_escape "$DATA")/admin-password"
 ExecStart="$(unit_escape "$GRAF_DIR")/bin/grafana" server --homepath="$(unit_escape "$GRAF_DIR")" --config="$(unit_escape "$DATA")/grafana.ini"
 Restart=on-failure
 RestartSec=5
@@ -237,8 +237,8 @@ Description=himmel Grafana alert hook to cadence-alert (HIMMEL-4289)
 [Service]
 Type=simple
 WorkingDirectory=$(unit_escape "$root")
-Environment=HIMMEL_GRAFANA_HOOK_PORT=$HOOK_PORT
-Environment=HIMMEL_GRAFANA_HOOK_TOKEN_FILE=$(unit_escape "$DATA")/hook-token
+Environment="HIMMEL_GRAFANA_HOOK_PORT=$HOOK_PORT"
+Environment="HIMMEL_GRAFANA_HOOK_TOKEN_FILE=$(unit_escape "$DATA")/hook-token"
 ExecStart="$(unit_escape "$bun")" run "$(unit_escape "$root")/scripts/observability/grafana-cadence-hook.ts"
 Restart=on-failure
 RestartSec=5

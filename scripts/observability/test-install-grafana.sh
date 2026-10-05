@@ -130,6 +130,7 @@ assert_eq "admin password is 0600" "600" "$(stat -c %a "$D/admin-password" 2>/de
 assert_eq "hook token is 0600" "600" "$(stat -c %a "$D/hook-token" 2>/dev/null)"
 assert_eq "contact-points file (embeds the token) is 0600" "600" "$(stat -c %a "$D/grafana-provisioning/alerting/contact-points.yaml" 2>/dev/null)"
 assert_contains "hook unit reads the token from a file, not argv" "HIMMEL_GRAFANA_HOOK_TOKEN_FILE=$D/hook-token" "$hook_unit"
+assert_contains "hook unit quotes the whole Environment assignment (paths with spaces)" "Environment=\"HIMMEL_GRAFANA_HOOK_TOKEN_FILE=$D/hook-token\"" "$hook_unit"
 assert_not_contains "token never appears in a unit file" "$(cat "$D/hook-token" 2>/dev/null)" "$hook_unit$graf_unit$prom_unit"
 assert_contains "contact point sends the same token as a bearer credential" "authorization_credentials: $(cat "$D/hook-token" 2>/dev/null)" "$cp_yaml"
 calls="$(cat "$LOG")"

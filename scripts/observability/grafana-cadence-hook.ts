@@ -45,7 +45,7 @@ export function alertCalls(body: { alerts?: GrafanaAlert[] }): string[][] {
     if (a?.status === "resolved") {
       calls.push(["clear", leg]);
     } else {
-      const log = [a?.annotations?.summary, a?.generatorURL].filter(Boolean).map(safeText).join(" ");
+      const log = [a?.annotations?.summary, a?.generatorURL].filter(Boolean).map(safeText).join(" ").slice(0, 300);
       calls.push(["fail", leg, name, log]);
     }
   }
