@@ -187,8 +187,12 @@ yaml_exclude() {
 # toml_regex <file> <regex> <out> — rc as yaml_exclude.
 toml_regex() {
     if grep -qF "'''$2'''" "$1"; then return 3; fi
-    grep -qE '^[ \t]*regexes[ \t]*=[ \t]*\[' "$1" || return 4
-    awk -v re="$2" -v q="'''" '{ print } !done && /^[ \t]*regexes[ \t]*=[ \t]*\[/ { print "  " q re q ","; done = 1 }' "$1" > "$3"
+    # Only the global [allowlist] table's regexes; a rule-scoped array is not it.
+    awk -v re="$2" -v q="'''" '
+        /^[ \t]*\[/ { sec = $0; sub(/[ \t]*(#.*)?$/, "", sec); sub(/^[ \t]*/, "", sec) }
+        { print }
+        !done && sec == "[allowlist]" && /^[ \t]*regexes[ \t]*=[ \t]*\[/ { print "  " q re q ","; done = 1 }
+        END { exit !done }' "$1" > "$3" || return 4
 }
 
 alert() {
@@ -299,9 +303,20 @@ cmd_run() {
     for f in $files; do
         case "$f" in .pre-commit-config.yaml) cp "$work/yaml" "$vault/$f" ;; .gitleaks.toml) cp "$work/toml" "$vault/$f" ;; esac
     done
+    # Restore a file only while it still holds exactly this run's edit and HEAD
+    # does not: another writer's change, or a commit that landed the edit
+    # (the sync shares no lock with this run), is left alone.
     rollback() {
-        cp "$work/yaml.orig" "$vault/.pre-commit-config.yaml"
-        [ -f "$work/toml.orig" ] && cp "$work/toml.orig" "$vault/.gitleaks.toml"
+        local f new orig
+        for f in $files; do
+            case "$f" in
+                .pre-commit-config.yaml) new="$work/yaml"; orig="$work/yaml.orig" ;;
+                .gitleaks.toml) new="$work/toml"; orig="$work/toml.orig" ;;
+            esac
+            cmp -s "$new" "$vault/$f" || continue
+            git -C "$vault" diff --quiet HEAD -- "$f" && continue
+            [ -f "$orig" ] && cp "$orig" "$vault/$f"
+        done
     }
     if ! (cd "$vault" && SKIP="$SKIP_FIXERS" git hook run pre-commit </dev/null >/dev/null 2>&1); then
         rollback; rm -rf "$work"; alert "still-refused-after-remediation $classes (rolled back)" 0; return 0

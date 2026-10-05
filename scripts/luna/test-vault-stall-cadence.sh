@@ -369,5 +369,62 @@ assert_has "T17 HEAD carries the exclude" "^handovers/" "$(git -C "$V" show HEAD
 assert_not_has "T17 no rollback alert" "(rolled back)" "$out"
 assert_has "T17 reports the landed edit" "landed through another commit" "$out"
 
+# --- T18 a rollback never overwrites a concurrent edit (round 3, codex-1) -----
+mkvault
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+mv "$V/.git/hooks/pre-commit" "$V/.git/hooks/pre-commit.real"
+cat >"$V/.git/hooks/pre-commit" <<'HOOK'
+#!/usr/bin/env bash
+# On its first pass, another writer edits the config and the re-run refuses.
+"$(git rev-parse --git-dir)/hooks/pre-commit.real" || exit $?
+sim="$(git rev-parse --git-dir)/sim-edit"
+if [ -e "$sim" ]; then
+    rm -f "$sim"
+    printf '# concurrent edit\n' >>.pre-commit-config.yaml
+    exit 1
+fi
+exit 0
+HOOK
+chmod +x "$V/.git/hooks/pre-commit"
+: >"$V/.git/sim-edit"
+before="$(head_sha)"
+out="$(run_sut)"
+assert_eq "T18 no commit" "$before" "$(head_sha)"
+assert_has "T18 still alerts the refusal" "still-refused-after-remediation" "$(sent)"
+assert_has "T18 the concurrent edit survives the rollback" "# concurrent edit" "$(cat "$V/.pre-commit-config.yaml")"
+
+# --- T19 the regex lands in the global [allowlist], not a rule's (codex-3) ----
+mkvault
+cat >"$V/.gitleaks.toml" <<'EOF'
+[extend]
+useDefault = true
+
+[[rules]]
+id = "fixture-rule"
+regex = '''fixture-never-[0-9]{40}'''
+[rules.allowlist]
+regexes = [
+  '''^fixture-unrelated$''',
+]
+
+[allowlist]
+description = "fixture"
+regexes = [
+  '''^himmel-local-claudex$''',
+]
+EOF
+git -C "$V" add .gitleaks.toml
+GIT_COMMITTER_DATE="@$(($(date +%s) - 7200)) +0000" GIT_AUTHOR_DATE="@$(($(date +%s) - 7200)) +0000" \
+    git -C "$V" commit -q -m "fixture: rule-scoped allowlist first"
+printf -- '- 10:00 LIVE — release-token: `%s`\n' "$LOCK_TOKEN" >"$V/handovers/b.md"
+git -C "$V" add handovers/b.md
+out="$(run_sut)"; rc=$?
+assert_eq "T19 run exits 0" "0" "$rc"
+assert_eq "T19 commit holds ONLY the gitleaks config" ".gitleaks.toml " "$(head_files)"
+assert_eq "T19 the regex sits after the [allowlist] header" "yes" \
+    "$(awk '/^\[allowlist\]/ { a = NR } /pid\[0-9\]\+/ { r = NR } END { print (a && r > a) ? "yes" : "no" }' "$V/.gitleaks.toml")"
+assert_eq "T19 the hook now passes" "0" "$(hook_rc)"
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi
