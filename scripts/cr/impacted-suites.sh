@@ -648,6 +648,9 @@ done <<< "$changed"
 # scripts/lanes/lib/leg-cost-row.sh; lint-fail-open scans scripts/lanes/ and
 # main went red, HIMMEL-4242). <glob> is a `case` pattern on the repo-relative
 # path, and its `*` crosses `/`. Add a row, not a new mechanism.
+# A `!<glob> <suite>` row (HIMMEL-4323) vetoes a file the suite's walk skips; a
+# glob with no `/` matches the basename. Mirror the suite's own skip rule
+# exactly, never wider: a veto that over-reaches is an under-selection.
 # ponytail: whole-repo walkers are left out on purpose — scripts/test-adopt.sh
 # and scripts/himmelctl/test/test-versioned-layout.sh copy the whole tree (a
 # `*` row would run 554s+19s on every PR, against HIMMEL-3815);
@@ -669,8 +672,14 @@ scripts/*test-*.sh scripts/lib/test-red-control-extraction-lint.sh
 scripts/*.sh scripts/cr/test-pr-check-run.sh
 scripts/*.mjs scripts/cr/test-pr-check-run.sh
 scripts/*.js scripts/cr/test-pr-check-run.sh
+!scripts/cr/test-*.sh scripts/cr/test-pr-check-run.sh
+!scripts/handover/test-*.sh scripts/cr/test-pr-check-run.sh
+!*.test.mjs scripts/cr/test-pr-check-run.sh
 scripts/cr/* scripts/cr/test-cr-guarded-closure.sh
 *package.json scripts/test-check-plugin-drift.sh
+*package.json scripts/hooks/test-check-npm-licenses.sh
+!*/node_modules/* scripts/hooks/test-check-npm-licenses.sh
+!scripts/lanes/bench/fixtures/* scripts/hooks/test-check-npm-licenses.sh
 marketplace/plugins/*/UPSTREAM_PIN scripts/test-check-plugin-drift.sh
 *.ps1 scripts/parity/test-ps-twin-oem-encoding.sh
 scripts/claude-*.ps1 scripts/parity/test-launcher-twin-parity.sh
@@ -699,6 +708,12 @@ scripts/*.ts scripts/lanes/test-launch-site-profiles.sh
 scripts/*.mjs scripts/lanes/test-launch-site-profiles.sh
 scripts/*.js scripts/lanes/test-launch-site-profiles.sh
 scripts/*.ps1 scripts/lanes/test-launch-site-profiles.sh
+!test-* scripts/lanes/test-launch-site-profiles.sh
+!*.test.* scripts/lanes/test-launch-site-profiles.sh
+!check-no-headless-claude* scripts/lanes/test-launch-site-profiles.sh
+!*/node_modules/* scripts/lanes/test-launch-site-profiles.sh
+!*/dist/* scripts/lanes/test-launch-site-profiles.sh
+!*/fixtures/* scripts/lanes/test-launch-site-profiles.sh
 scripts/telegram/* scripts/hooks/run-hook-with-bash.test.mjs
 scripts/himmelctl/* scripts/hooks/run-hook-with-bash.test.mjs
 scripts/hooks/* scripts/hooks/run-hook-with-bash.test.mjs
@@ -721,12 +736,26 @@ EOF
 scan_roots > "$work/scan-roots" || io_fail "writing the scan-roots map"
 while IFS= read -r f; do
     [ -n "$f" ] || continue
+    # A `!<glob> <suite>` row vetoes that suite for a file the suite's walk
+    # skips. A glob with no `/` is matched against the basename.
+    vetoed=""
+    while read -r glob rule_suite; do
+        case "$glob" in !*) ;; *) continue ;; esac
+        glob="${glob#!}"
+        subject="$f"
+        case "$glob" in */*) ;; *) subject="${f##*/}" ;; esac
+        # shellcheck disable=SC2254
+        case "$subject" in
+            $glob) vetoed="${vetoed}${rule_suite}"$'\n' ;;
+        esac
+    done < "$work/scan-roots"
     while read -r glob rule_suite; do
         [ -n "$glob" ] || continue
+        case "$glob" in !*) continue ;; esac
         # $glob unquoted on purpose: it is the case pattern.
         # shellcheck disable=SC2254
         case "$f" in
-            $glob) if grep -Fxq -- "$rule_suite" <<< "$suites"; then
+            $glob) if grep -Fxq -- "$rule_suite" <<< "$suites" && ! grep -Fxq -- "$rule_suite" <<< "$vetoed"; then
                        printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a scan-root suite"
                    fi ;;
         esac
