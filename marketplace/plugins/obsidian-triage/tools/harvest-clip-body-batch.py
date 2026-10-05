@@ -780,7 +780,9 @@ def _block_private_requests(page):
 
     def on_request(route):
         try:
-            deny = blocked(route.request.url)
+            # a popup's requests are refused outright: its redirect chain could
+            # reach a private host before a CDP guard can attach to the new page
+            deny = route.request.frame.page is not page or blocked(route.request.url)
         except Exception:
             deny = True  # fail closed
         route.abort() if deny else route.continue_()

@@ -240,8 +240,9 @@ for label, r, expect in (("HTTP 403", FetchRecorder(page=FakePage(status=403)), 
 
 # --- per-request private-host enforcement (HIMMEL-4477) ---------------------
 class FakeRoute:
-    def __init__(self, url):
-        self.request = type("Req", (), {"url": url})()
+    def __init__(self, url, page=None):
+        frame = type("Frame", (), {"page": page})()
+        self.request = type("Req", (), {"url": url, "frame": frame})()
         self.verdict = None
 
     def abort(self, *a, **k):
@@ -301,7 +302,7 @@ class FakeBrowserPage:
 def verdict_for(setup, url):
     bp = FakeBrowserPage()
     setup(bp)
-    fr = FakeRoute(url)
+    fr = FakeRoute(url, bp)
     bp.routes[0][1](fr)
     return fr.verdict
 
@@ -375,6 +376,9 @@ if callable(setup):
     # redirect hops: page.route never sees them, CDP Fetch.requestPaused does
     bp = FakeBrowserPage()
     setup(bp)
+    popup_route = FakeRoute("https://example.com/popup", object())  # a different page than the fetched one
+    bp.routes[0][1](popup_route)
+    check("local-headless: a popup's request is refused even to a public host", popup_route.verdict == "abort")
     check("local-headless: a popup (context page event) gets its own CDP guard",
           [e for e, _ in bp.context.page_listeners] == ["page"])
     check("local-headless: CDP Fetch.enable at Request stage covers redirect hops",
