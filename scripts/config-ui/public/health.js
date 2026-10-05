@@ -30,8 +30,11 @@ function verdictHtml(feed, health) {
   const v = verdict(feed, health);
   const inputs = !feed ? "the doctor feed is still running" : `${v.fail} fail · ${v.warn} warn · ${v.alerts ? `alerts: ${v.alerts.length} firing` : "alerts not checked"}`;
   const m = health && health.monitoring;
+  // Each source's failure shows on its own: a responding exporter makes the roll-up "ok" while Prometheus errors.
+  const srcErrs = ["prometheus", "exporter"].filter((k) => m && m[k] && m[k].state === "error")
+    .map((k) => `<div class="nodata">monitoring ${k} unreachable: ${esc(m[k].reason || "no answer")}</div>`).join("");
   const mon = m && m.state === "absent" ? `<div class="nodata">monitoring tier not running</div>`
-    : m && m.state === "error" ? `<div class="nodata">monitoring unreachable: ${esc(m.reason || (m.prometheus && m.prometheus.reason) || "no answer")}</div>` : "";
+    : srcErrs || (m && m.state === "error" ? `<div class="nodata">monitoring unreachable: ${esc(m.reason || "no answer")}</div>` : "");
   return `<div class="vhead"><span class="word st ${v.cls}">${esc(v.word)}</span><span class="inputs">${esc(inputs)}</span>
     <button class="btn" data-act="refresh-health">refresh</button></div>${mon}`;
 }

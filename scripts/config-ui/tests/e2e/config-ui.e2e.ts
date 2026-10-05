@@ -250,6 +250,18 @@ test("health: with the feed pending the verdict is No data and bank and legs sti
   await expect(verdictWord(page)).toHaveText("Act now", { timeout: 20_000 }); // the feed lands, the verdict follows
 });
 
+test("health: returning to Config before the feed lands shows loading, not Health content (HIMMEL-4443)", async ({ page }) => {
+  h = await boot({}, { ledger: LEDGER, handover: { bullet: "- 03:00 LIVE — x" }, feedDelayMs: 5000 });
+  await page.goto(h.url);
+  await page.evaluate(() => { location.hash = "#/health"; });
+  await expect(verdictWord(page)).toHaveText("No data");
+  await page.locator("nav.pages a", { hasText: "Config" }).click();
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
+  await expect(page.locator("main #verdict")).toHaveCount(0);
+  await expect(page.locator("#status")).toHaveText("loading…");
+  await expect(page.locator("#inventory .bhead").first()).toBeVisible({ timeout: 20_000 }); // the feed lands and Config paints
+});
+
 test("health: a firing page alert makes the verdict Act now and shows its summary", async ({ page }) => {
   await openHealth(page, { clean: true }, { prom: { alerts: [PAGE_ALERT] } });
   await expect(verdictWord(page)).toHaveText("Act now");
