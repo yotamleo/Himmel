@@ -209,7 +209,9 @@ fi
 #   - at most strip_cap quote/bracket/punctuation characters are stripped
 #     from each end of a token.
 # The walk goes FORWARD from / and stops at the first missing component, so
-# it costs the existing depth, not the token length.
+# it costs the existing depth, not the token length. A component over NAME_MAX
+# (255) cannot exist, so the walk looks for each "/" in a bounded prefix and
+# stops there; it never runs pattern expansion over a huge component.
 # ponytail: tokens are split on whitespace only, so a path containing spaces,
 # glued inside a word, or wrapped in more than strip_cap punctuation
 # characters is not resolved. Upgrade path: HIMMEL-4463 (content classifier).
@@ -250,14 +252,22 @@ _resolve_leaf() {
 
 # Deepest existing directory on absolute path $1. Returns 2 past walk_cap.
 _deepest_dir() {
-    local rest="${1#/}" acc="/" comp k=0
+    local rest="${1#/}" acc="/" comp head k=0
     while [ -n "$rest" ]; do
         k=$((k + 1))
         [ "$k" -le "$walk_cap" ] || return 2
         _over_budget
-        case "$rest" in
-            */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
-            *) comp="$rest"; rest="" ;;
+        # Pattern expansion (%%, #) on a huge component with no "/" is
+        # superlinear and cannot be interrupted (a 262 KB run takes ~20 s, past
+        # the harness timeout). A component over NAME_MAX (255) cannot exist, so
+        # look for the "/" only in a bounded prefix and stop the walk at one.
+        head="${rest:0:256}"
+        case "$head" in
+            */*) comp="${head%%/*}"; rest="${rest:$((${#comp} + 1))}" ;;
+            *)
+                [ "${#rest}" -le 255 ] || break
+                comp="$rest"; rest=""
+                ;;
         esac
         [ -n "$comp" ] || continue
         if [ -d "${acc%/}/$comp" ]; then acc="${acc%/}/$comp"; else break; fi

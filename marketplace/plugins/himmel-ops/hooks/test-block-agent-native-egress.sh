@@ -238,6 +238,17 @@ expect 0 "minified JS line over 4096 bytes containing // -> allowed" \
     "$(payload "$TOOL" "$HIMMEL" "inline $(rep 'a="x";//c;' 400)")"
 expect 0 "4.2 KB URL -> allowed" \
     "$(payload "$TOOL" "$HIMMEL" "see https://example.com/$(rep 'segment/' 540)")"
+# A first component no real filesystem can hold (over NAME_MAX) must not be fed
+# to pattern expansion: ${x%%/*} on a 262 KB no-slash run takes ~20 s, past the
+# 15 s harness timeout, which allows. The alias token after it must still deny.
+{ head -c 262000 /dev/zero | tr '\0' x; printf '%s' "/b records-alias/patient.md"; } \
+    | jq -Rsc --arg t "$TOOL" --arg c "$HIMMEL" \
+    '{hook_event_name:"PreToolUse",cwd:$c,tool_name:$t,tool_input:{prompt:.}}' > "$TMP/huge1.json"
+expect_fast 2 3000 "262 KB no-slash first component then an alias token -> denied on the alias in under 3 s" "$TMP/huge1.json"
+{ head -c 125000 /dev/zero | tr '\0' '('; printf '%s' "a/b records-alias/patient.md"; } \
+    | jq -Rsc --arg t "$TOOL" --arg c "$HIMMEL" \
+    '{hook_event_name:"PreToolUse",cwd:$c,tool_name:$t,tool_input:{prompt:.}}' > "$TMP/huge2.json"
+expect_fast 2 3000 "125000 punctuation-wrapped token then an alias token -> denied on the alias in under 3 s" "$TMP/huge2.json"
 # 4. A wall-clock budget denies. EGRESS_HOOK_BUDGET_S can only LOWER the 10 s
 # budget; 0 makes the first path token overrun it, standing in for a slow resolver.
 EGRESS_HOOK_BUDGET_S=0 expect 2 "path token resolved past the wall-clock budget -> denied (fail closed)" \
