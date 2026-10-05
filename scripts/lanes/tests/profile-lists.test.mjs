@@ -65,20 +65,20 @@ test('HIMMEL-4014: an unknown member fails closed with the unknown-profile error
   assert.throws(() => resolveProfile(REG, 'design,nope'), /unknown profile "nope"/);
 });
 
-test('HIMMEL-4014: mcpServers is the union of the members allowlists', () => {
+test('HIMMEL-4014/4401: composed mcpServers refuses differing allowlists, keeps identical or the one declared', () => {
   const reg = structuredClone(REG);
   reg.profiles.__m1 = { enable: [], mcpServers: ['qmd'] };
   reg.profiles.__m2 = { enable: [], mcpServers: ['qmd', 'context7'] };
   reg.profiles.__m3 = { enable: [] };
-  assert.deepEqual(mcpServersForProfile(reg, '__m1,__m2').sort(), ['context7', 'qmd']);
-  // a member with no allowlist = no strip: it must never be narrowed by another
-  assert.equal(mcpServersForProfile(reg, '__m1,__m3'), undefined);
-  assert.equal(mcpServersForProfile(reg, '__m3,__m1'), undefined);
+  assert.throws(() => mcpServersForProfile(reg, '__m1,__m2'), /different mcpServers allowlists.*__m1.*__m2/s);
+  // a member with no allowlist never widens another member's list to "all servers"
+  assert.deepEqual(mcpServersForProfile(reg, '__m1,__m3'), ['qmd']);
+  assert.deepEqual(mcpServersForProfile(reg, '__m3,__m1'), ['qmd']);
   reg.profiles.__m4 = { enable: [] };
   assert.equal(mcpServersForProfile(reg, '__m3,__m4'), undefined);
-  // an explicit [] is still a strip-everything allowlist, not "no allowlist"
+  // an explicit [] is a declared strip-everything allowlist: differing from ['qmd'] refuses
   reg.profiles.__m5 = { enable: [], mcpServers: [] };
-  assert.deepEqual(mcpServersForProfile(reg, '__m1,__m5'), ['qmd']);
+  assert.throws(() => mcpServersForProfile(reg, '__m1,__m5'), /different mcpServers allowlists/);
 });
 
 test('HIMMEL-4014: the --mcp-servers list path refuses duplicate members like resolveProfile', () => {
