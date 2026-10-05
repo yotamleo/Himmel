@@ -101,7 +101,13 @@ function itemMembership(item, profile, scope, cachedAnswers) {
   if (item.id === 'pre-commit') {
     const vault = cachedAnswers.vault;
     const usesFramework = Boolean(cachedAnswers.devOverlay) || Boolean(vault && vault.mode && vault.mode !== 'none');
-    if (!usesFramework) return false;
+    // HIMMEL-4440: a project target that ships its OWN .pre-commit-config.yaml
+    // still needs the framework with vault=none (adopt.sh agrees). Probed at
+    // the cwd — the same target key targetKeyForScope uses — so membership
+    // keeps its signature; user scope has no target dir and stays n/a.
+    const shipsOwnConfig = scope === 'project'
+      && fs.existsSync(path.join(process.cwd(), '.pre-commit-config.yaml'));
+    if (!usesFramework && !shipsOwnConfig) return false;
   }
   if (!item.profiles.includes(profile)) return false;
   if (item.scopes.includes(scope)) return true;
