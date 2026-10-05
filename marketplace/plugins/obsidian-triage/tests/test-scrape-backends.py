@@ -238,6 +238,106 @@ for label, r, expect in (("HTTP 403", FetchRecorder(page=FakePage(status=403)), 
     except Exception as e:
         check(f"local-headless: {label} raises (chain falls through)", expect in str(e))
 
+# --- per-request private-host enforcement (HIMMEL-4477) ---------------------
+class FakeRoute:
+    def __init__(self, url):
+        self.request = type("Req", (), {"url": url})()
+        self.verdict = None
+
+    def abort(self, *a, **k):
+        self.verdict = "abort"
+
+    def continue_(self, *a, **k):
+        self.verdict = "continue"
+
+
+class FakeBrowserPage:
+    """Stands in for the Playwright page Scrapling hands to page_setup."""
+    def __init__(self):
+        self.routes = []
+        self.ws_routes = []
+
+    def route(self, pattern, handler):
+        self.routes.append((pattern, handler))
+
+    def route_web_socket(self, pattern, handler):
+        self.ws_routes.append((pattern, handler))
+
+
+def verdict_for(setup, url):
+    bp = FakeBrowserPage()
+    setup(bp)
+    fr = FakeRoute(url)
+    bp.routes[0][1](fr)
+    return fr.verdict
+
+
+rec = FetchRecorder()
+install_local(rec)
+mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
+setup = rec.calls[0][1].get("page_setup")
+check("local-headless: fetch registers a page_setup hook (route installed before navigation)", callable(setup))
+if callable(setup):
+    bp = FakeBrowserPage()
+    setup(bp)
+    check("local-headless: one catch-all route covers every request type", [p for p, _ in bp.routes] == ["**/*"])
+    for label, u in (("loopback v4", "http://127.0.0.1:8080/x"),
+                     ("localhost", "http://localhost/x"),
+                     ("RFC1918 192.168", "http://192.168.1.5/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("RFC1918 10.x", "http://10.0.0.9/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("RFC1918 172.16", "http://172.16.4.2/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("link-local metadata", "http://169.254.169.254/latest/meta-data/"),
+                     ("loopback v6", "http://[::1]/x"),
+                     ("IPv6 ULA", "http://[fd00::1]/x"),
+                     ("IPv6 link-local", "http://[fe80::1]/x"),
+                     ("IPv4-mapped IPv6", "http://[::ffff:10.0.0.1]/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("decimal-encoded loopback", "http://2130706433/x"),
+                     ("hex-encoded loopback", "http://0x7f.1/x"),
+                     ("short-form loopback", "http://127.1/x"),
+                     ("internal TLD", "http://nas.internal/x"),
+                     ("websocket to a private host", "ws://127.0.0.1:9222/devtools"),
+                     ("basic-auth userinfo on a private host", "http://user:pw@10.0.0.9/x")):  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+        check(f"local-headless: request to {label} is aborted", verdict_for(setup, u) == "abort")
+    for label, u in (("public subresource", "https://cdn.example.com/a.png"),
+                     ("public page", "https://example.com/"),
+                     ("public IP literal", "http://93.184.216.34/x"),
+                     ("data: URI", "data:image/png;base64,AAAA"),
+                     ("about:blank", "about:blank"),
+                     ("blob: URL", "blob:https://example.com/1234")):
+        check(f"local-headless: {label} still loads", verdict_for(setup, u) == "continue")
+
+    class ExplodingRoute(FakeRoute):
+        @property
+        def request(self):
+            raise RuntimeError("boom")
+
+        @request.setter
+        def request(self, v):
+            pass
+    bp = FakeBrowserPage()
+    setup(bp)
+    er = ExplodingRoute("http://x/")
+    bp.routes[0][1](er)
+    check("local-headless: a handler that cannot read the request fails closed (abort)", er.verdict == "abort")
+
+    bp = FakeBrowserPage()
+    setup(bp)
+    check("local-headless: websocket route registered when Playwright offers it", [p for p, _ in bp.ws_routes] == ["**/*"])
+
+    class FakeWS:
+        def __init__(self, url):
+            self.url, self.verdict = url, None
+
+        def close(self, *a, **k):
+            self.verdict = "close"
+
+        def connect_to_server(self):
+            self.verdict = "connect"
+    for u, want in (("ws://127.0.0.1:9222/x", "close"), ("wss://cdn.example.com/live", "connect")):
+        w = FakeWS(u)
+        bp.ws_routes[0][1](w)
+        check(f"local-headless: websocket {u} -> {want}", w.verdict == want)
+
 uninstall_local()
 try:
     mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
