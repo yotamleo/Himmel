@@ -111,7 +111,7 @@ row "xargs feed"          deny "echo $P | xargs -I{} cp /tmp/x.json {}"
 row "xargs sort -o lift"  deny "echo x | xargs sort -o $P"
 row "xargs -I cat lift (over-deny r7)"  deny "echo x | xargs -I{} cat $P"
 row "xargs -I grep lift (over-deny r7)" deny "echo until | xargs -I{} grep -n {} $P"
-row "xargs cat lift, no option (ctrl)"  allow "echo x | xargs cat $P"
+row "xargs cat lift, no option (over-deny J1874)" deny "echo x | xargs cat $P"
 row "find -exec"          deny "find ~/.himmel/state -name 'bank-lift.json' -exec sh -c 'echo x > {}' \\;"
 row "backslash-newline"   deny "echo x \\
 > $P"
@@ -258,16 +258,16 @@ row "direct show"                  allow "$S show"
 row "cat the lift"                 allow "cat ~/.himmel/state/bank-lift.json"
 row "jq . the lift"                allow "jq . ~/.himmel/state/bank-lift.json"
 row "jq -r .until the lift"        allow "jq -r .until \$HOME/.himmel/state/bank-lift.json"
-row "cat lift > /tmp copy"         allow "cat ~/.himmel/state/bank-lift.json > /tmp/lift-copy.json"
+row "cat lift > /tmp copy (over-deny J1874)" deny "cat ~/.himmel/state/bank-lift.json > /tmp/lift-copy.json"
 # Round 6 ruling: naming bank-lift.json outside an allowlisted reader denies
 # (accepted over-deny) — these rows were ALLOW before it.
 row "cp lift to /tmp (over-deny r6)"   deny  "cp ~/.himmel/state/bank-lift.json /tmp/lift-copy.json"
 row "rm the lift (over-deny r6)"       deny  "rm -f ~/.himmel/state/bank-lift.json"
-row "test -f the lift"             allow "test -f ~/.himmel/state/bank-lift.json && echo yes"
+row "test -f lift && echo (over-deny J1874)" deny "test -f ~/.himmel/state/bank-lift.json && echo yes"
 row "ls state/"                    allow "ls -la ~/.himmel/state"
 row "write other state file"       allow "echo x > ~/.himmel/state/other.json"
-row "write lift-named file elsewhere" allow "echo x > /tmp/x/bank-lift.json"
-row "write lookalike name"         allow "echo x > ~/.himmel/state/bank-lift.json.bak"
+row "write lift-named file elsewhere (over-deny J1874)" deny "echo x > /tmp/x/bank-lift.json"
+row "write lookalike name (over-deny J1874)" deny "echo x > ~/.himmel/state/bank-lift.json.bak"
 row "grep pattern"                 allow "grep -rn 'bank-lift' scripts/"
 row "git grep 'bank-lift.sh set' (over-deny r7)" deny "git grep -n 'bank-lift.sh set'"
 row "commit msg names .json (over-deny r6)" deny "git commit -m 'feat: [HIMMEL-4445] deny agent writes to ~/.himmel/state/bank-lift.json'"
@@ -275,7 +275,7 @@ row "commit message with set (over-deny r7)" deny "git commit -m 'docs: bank-lif
 row "commit -F message file (ctrl)" allow "git commit -F /tmp/commit-msg.txt"
 row "echo mention (over-deny r7)"  deny  "echo 'run: bash scripts/lib/bank-lift.sh set'"
 row "longer name test-bank-lift.sh (ctrl)" allow "bash scripts/lib/test-bank-lift.sh"
-row "set -e then show"             allow "set -euo pipefail; bash $S show"
+row "set -e then show (over-deny J1874)" deny "set -euo pipefail; bash $S show"
 row "preflight script"             allow "bash scripts/lib/bank-preflight.sh"
 row "test suite"                   allow "bash scripts/lib/test-bank-preflight.sh"
 row "cp unrelated"                 allow "cp a.txt b.txt"
@@ -286,10 +286,10 @@ row "mv the lift away (over-deny r6)" deny "mv ~/.himmel/state/bank-lift.json /t
 row "redirect to \$OUT"            allow "echo x > \"\$OUT\""
 row "cd + find -exec {}"           allow "cd foo && find . -name '*.tmp' -exec rm {} \\;"
 row "rsync -avt (t is a flag)"     allow "rsync -avt src/ dst/"
-row "heredoc commit naming set"    allow "git commit -F - <<'EOF'
+row "heredoc commit naming set (over-deny J1874)" deny "git commit -F - <<'EOF'
 feat: bash scripts/lib/bank-lift.sh set is operator-only
 EOF"
-row "\$(cat heredoc) commit naming set" allow "git commit -m \"\$(cat <<'EOF'
+row "\$(cat heredoc) commit naming set (over-deny J1874)" deny "git commit -m \"\$(cat <<'EOF'
 feat: [HIMMEL-4445] deny bash scripts/lib/bank-lift.sh set
 EOF
 )\""
@@ -316,7 +316,7 @@ ln -s "$ST/sub" "$T/sublink"
 row "symlink/.. lands in state"            deny  "echo x > $T/sublink/../bank-lift.json"
 row "symlink/.. lands in state (cp)"       deny  "cp $T/src/other.txt $T/sublink/../bank-lift.json"
 _check "Write tool via symlink/.."          deny  "$(jq -cn --arg p "$T/sublink/../bank-lift.json" '{tool_name:"Write",tool_input:{file_path:$p,content:"{}"}}')"
-row "real dir/.. outside state (control)"  allow "echo x > $T/src/sub/../bank-lift.json"
+row "real dir/.. outside state (over-deny J1874)" deny "echo x > $T/src/sub/../bank-lift.json"
 row "busybox by absolute path sh -c"       deny  "/usr/bin/busybox sh -c 'echo x > $P'"
 row "busybox by relative path sh -c"       deny  "./busybox sh -c 'echo x > $P'"
 
@@ -341,7 +341,7 @@ EOF"
 row "cat <<'EOF' body \$( > lift) (quoted)" allow "cat <<'EOF'
 {\"a\": \$(printf '{}' > $P)}
 EOF"
-row "cat <<EOF body names bank-lift (ctrl)" allow "cat <<EOF
+row "cat <<EOF body names bank-lift, \$(date) (over-deny J1874)" deny "cat <<EOF
 run bank-lift.sh set 10 at \$(date)
 EOF"
 
@@ -435,6 +435,55 @@ row "bank-lift.sh show (r7 ctrl)"          allow "bash scripts/lib/bank-lift.sh 
 row "bank-lift.sh clear (r7 ctrl)"         allow "bash scripts/lib/bank-lift.sh clear"
 row "cat bank-lift.sh (ctrl)"              allow "cat scripts/lib/bank-lift.sh"
 row "grep -n set bank-lift.sh (ctrl)"      allow "grep -n set scripts/lib/bank-lift.sh"
+
+echo "== judge J1874 (whole-command mention rule) =="
+# A reader on the allowlist, inside \$( ), backticks or a pipe into xargs,
+# hands the lift path to a writer that never names it. Console ruling: when
+# the command text names bank-lift.json / bank-lift.sh ANYWHERE, every clause
+# at every depth must be a reader (or bank-lift.sh show|clear) and no redirect
+# may write anything but /dev/null.
+row "J1874 cp \$(jq -rn abs lift)"          deny  "cp /tmp/forged \$(jq -rn '\"$LIFT\"')"
+row "J1874 cp \$(jq -rn \$HOME lift)"       deny  "cp /tmp/forged \$(jq -rn \"\\\"\$HOME/.himmel/state/bank-lift.json\\\"\")"
+row "J1874 echo > \"\$(ls lift)\""          deny  "echo hi > \"\$(ls ~/.himmel/state/bank-lift.json)\""
+row "J1874 echo > backtick ls lift"         deny  "echo hi > \"\`ls ~/.himmel/state/bank-lift.json\`\""
+row "J1874 tee \"\$(ls lift)\""             deny  "tee \"\$(ls ~/.himmel/state/bank-lift.json)\""
+row "J1874 printf | tee \"\$(ls lift)\""    deny  "printf x | tee \"\$(ls ~/.himmel/state/bank-lift.json)\""
+row "J1874 ls lift | xargs cp"              deny  "ls ~/.himmel/state/bank-lift.json | xargs cp /tmp/x"
+row "J1874 grep -l lift | xargs cp"         deny  "grep -l x ~/.himmel/state/bank-lift.json | xargs cp /tmp/x"
+row "J1874 ls lift | xargs -I{} cp"         deny  "ls ~/.himmel/state/bank-lift.json | xargs -I{} cp /tmp/x {}"
+row "J1874 nested \$(echo \$(ls lift))"     deny  "cp /tmp/x \"\$(echo \"\$(ls ~/.himmel/state/bank-lift.json)\")\""
+row "J1874 \$HOME path in \$(ls)"           deny  "echo hi > \"\$(ls \$HOME/.himmel/state/bank-lift.json)\""
+row "J1874 dd of=\$(ls lift)"               deny  "dd if=/tmp/x of=\$(ls ~/.himmel/state/bank-lift.json)"
+row "J1874 var from \$(ls lift) then cp"    deny  "f=\$(ls ~/.himmel/state/bank-lift.json); cp /tmp/x \"\$f\""
+row "J1874 heredoc sub ls | xargs cp"       deny  "cat <<EOF
+\$(ls ~/.himmel/state/bank-lift.json | xargs cp /tmp/x)
+EOF"
+row "J1874 reader | tee elsewhere"          deny  "cat ~/.himmel/state/bank-lift.json | tee /tmp/copy"
+row "J1874 less -O attached (4458 codex-1)" deny  "less -O\"\$HOME/.himmel/state/bank-lift.json\" /tmp/x"
+row "J1874 less --log-file= lift"           deny  "less --log-file=\$HOME/.himmel/state/bank-lift.json /tmp/x"
+row "J1874 less +! command"                 deny  "less '+!cp /tmp/x ~/.himmel/state/bank-lift.json' /tmp/y"
+row "J1874 LESSOPEN prefix on less"         deny  "LESSOPEN='|cp /tmp/x %s' less ~/.himmel/state/bank-lift.json"
+row "J1874 RIPGREP_CONFIG_PATH prefix"      deny  "RIPGREP_CONFIG_PATH=/tmp/rc rg x ~/.himmel/state/bank-lift.json"
+row "J1874 heredoc delim w/ space (4458 codex-2)" deny "cat <<'E F'
+x'
+E F
+echo x > ~/.himmel/state/bank-lift.json"
+row "J1874 heredoc delim w/ space, unbalanced" deny "cat <<'E F'
+data
+E F
+cp /tmp/x ~/.himmel/state/bank-lift.json"
+row "J1874 reader | jq (ctrl)"              allow "cat ~/.himmel/state/bank-lift.json | jq .until"
+row "J1874 grep 2>/dev/null (ctrl)"         allow "grep x ~/.himmel/state/bank-lift.json 2>/dev/null"
+row "J1874 jq >/dev/null 2>&1 (ctrl)"       allow "jq . ~/.himmel/state/bank-lift.json >/dev/null 2>&1"
+row "J1874 test || ls (ctrl)"               allow "test -f ~/.himmel/state/bank-lift.json || ls ~/.himmel/state"
+row "J1874 if [ ] then cat fi (ctrl)"       allow "if [ -f ~/.himmel/state/bank-lift.json ]; then cat ~/.himmel/state/bank-lift.json; fi"
+row "J1874 x=\$(cat lift) (ctrl)"           allow "x=\$(cat ~/.himmel/state/bank-lift.json)"
+row "J1874 LC_ALL=C grep (ctrl)"            allow "LC_ALL=C grep -c x ~/.himmel/state/bank-lift.json"
+row "J1874 show 2>&1 (ctrl)"                allow "bash scripts/lib/bank-lift.sh show 2>&1"
+row "J1874 clear (ctrl)"                    allow "bash scripts/lib/bank-lift.sh clear"
+row "J1874 cat <<'E F' no lift (ctrl)"      allow "cat <<'E F'
+data
+E F"
 
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered

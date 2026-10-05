@@ -2234,11 +2234,33 @@ unrelated file in passes. It also refuses `bank-lift.sh set` (and the sourced
 `_bank_lift_cmd set`) under any launcher: `bash`/`sh`/direct/`source`/`.`,
 `env`/`timeout`/`nohup`/`command`/`exec`/`nice`/`sudo`/`xargs`, `-c` bodies,
 heredocs into a shell, a computed (`$(…)`, `$var`) subcommand or script word.
+Whole-command layer (judge J1874, runs FIRST): a reader can hand the lift
+path to a writer that never names it — `cp x $(jq -rn '"…/bank-lift.json"')`,
+`echo > "$(ls <lift>)"`, `ls <lift> | xargs cp x`. So when the command text
+names `bank-lift.json` or `bank-lift.sh` ANYWHERE — inside `$( )`, backticks,
+heredoc bodies and pipelines, after quote removal and `$'…'` decoding — the
+command passes only if EVERY clause at every depth (pipeline stages,
+substitution bodies, `-c` bodies, `&&`/`||`/`;` lists) is a reader under the
+limits below or `bash <path>/bank-lift.sh show|clear` (also direct, the
+script word spelled literally), AND no redirect writes anywhere but
+`/dev/null` (`>`, `>>`, `<>`, `>|`, `&>`, `&>>`; fd dups such as `2>&1` are
+fine). `xargs` is not a wrapper here, so any `xargs` clause denies; so does an
+assignment to a variable a reader or the loader obeys (`LESS*`, `RIPGREP_*`,
+`GREP_*`, `LD_*`, `DYLD_*`, `PATH`, `BASH_ENV`, `ENV`), and `less` with
+`-o`/`-O` (attached too), `--log-file` or a `+cmd`. A lift-naming command the
+tokenizer cannot parse reliably (an unclosed quote or substitution, a quoted
+heredoc delimiter containing a space) denies. Over-deny is accepted:
+`test -f <lift> && echo yes`, `cat <lift> > /tmp/copy`, `set -e; bash
+…/bank-lift.sh show`, a heredoc commit message naming the lift, and a
+write to any lift-NAMED file (`/tmp/x/bank-lift.json`) all deny; split the
+command, or put text in a file. Residual (ponytail): a lift name obfuscated
+by a glob or brace inside a substitution does not trigger this layer.
 Name rule (console ruling, applied before the rules above on every clause,
 nested ones included): a clause with a word naming `bank-lift.json` or
 `bank-lift.sh` (not a longer name such as `test-bank-lift.sh`) passes only
 when it is `bash <path>/bank-lift.sh show|clear`, the direct
-`<path>/bank-lift.sh show|clear`, or a reader: `cat`, `less`, `head`, `stat`,
+`<path>/bank-lift.sh show|clear`, or a reader: `cat`, `less` without
+`-o`/`-O`/`--log-file`/`+cmd`, `head`, `stat`,
 `ls`, `file`, `wc`, `test`/`[`, `jq` without `-i`/`--in-place`, `tail` without
 `-f`/`-F`/`--follow`, `grep`/`rg` without `--pre`. The command word is
 resolved past assignments and the `env`/`sudo`/`doas`/`nice`/`xargs`/`timeout`/

@@ -17,6 +17,10 @@
 # lift, `git commit -m` / ticket titles / echo naming it. Remedy for text:
 # `git commit -F <file>`, a jira --desc-file. Only the reader allowlist
 # (cat less head tail stat ls file wc test [ jq grep rg) may name it.
+# Judge J1874: that check runs on the WHOLE command first — once the text
+# names either file anywhere, every clause at every depth ($( ), backticks,
+# pipelines, heredoc substitutions) must be such a reader and no redirect may
+# write past /dev/null, so a reader cannot hand the path to a writer.
 #
 # Remedy named in every deny: the operator runs `! bash scripts/lib/bank-lift.sh
 # set ...` at their own prompt. There is deliberately NO env bypass — a bypass
@@ -264,6 +268,9 @@ case "$CMD" in *$'\002'*) deny "the command carries a \\x02 control byte (tokeni
 # <( ), >( ) open a nested depth whose clauses print as their own lines; the
 # outer word carries a "$" so it reads as dynamic. Heredoc bodies print as a
 # line "\002B\037<body>". A \002 decoded from $'..' prints a "\002X" line.
+# With -v STRICT=1 (the whole-command layer only) a parse it cannot trust —
+# an unclosed quote or substitution, a quoted heredoc delimiter cut at a
+# space — also prints a "\002U" line.
 read -r -d '' TOKENIZER <<'AWK'
 function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
 function addc(c) { if (c == SB) forged = 1; tok = tok c }
@@ -413,13 +420,15 @@ END {
                 emit_tok(); i++
                 if (substr(s, i + 1, 1) == "-") i++
                 while (substr(s, i + 1, 1) == " " || substr(s, i + 1, 1) == "\t") i++
-                del = ""; dq = 0
+                del = ""; dq = 0; inq = ""
                 while (i < n) {
                     x = substr(s, i + 1, 1)
                     if (x ~ /[ \t\n;&|<>()]/) break
                     if (x != "'" && x != "\"" && x != "\\") del = del x; else dq = 1
+                    if (x == "'" || x == "\"") { if (inq == "") inq = x; else if (inq == x) inq = "" }
                     i++
                 }
+                if (inq != "") hdbad = 1
                 hd[++nhd] = del; hdq[nhd] = dq
                 continue
             }
@@ -427,6 +436,7 @@ END {
         }
         addc(c)
     }
+    if (STRICT && (hdbad || mode != "o" || d > 0)) print SB "U"
     while (d > 0) { flush(); d-- }
     flush()
     if (forged) print SB "X"
@@ -458,26 +468,61 @@ _base() { local b="${1%/}"; printf '%s' "${b##*/}"; }
 # option leaves the command word unknown: an option's argument (`env -u cat`)
 # must not be read as the command.
 check_lift_name() {
-    local a l hit=0 w c ow
+    local a l hit=0
     for a in "$@"; do
         l=$(_lower "$a")
         case "$l" in *bank-lift.json*) hit=1; break ;; esac
         if [[ "$l" =~ (^|[^a-z0-9_.-])bank-lift\.sh($|[^a-z0-9_.-]) ]]; then hit=1; break; fi
     done
     [ "$hit" = 1 ] || return 0
+    reader_clause 0 "$@" && return 0
+    deny "a word names the bank lift (bank-lift.json or bank-lift.sh) in a non-reader command (${READER_CMD:-unknown}); only cat/less/head/tail/stat/ls/file/wc/test/jq/grep/rg and \`bash scripts/lib/bank-lift.sh show|clear\` may name it — for a commit message or ticket text that names it, use \`git commit -F <file>\` / a --desc-file"
+}
+
+# Variables a reader (or the loader / the shell's command lookup) obeys: an
+# assignment to one turns a reader into a command runner (LESSOPEN='|cp …',
+# RIPGREP_CONFIG_PATH with --pre, LD_PRELOAD, PATH).
+_reader_env_unsafe() {
+    local n="${1%%=*}"
+    case "${n%+}" in LESS*|RIPGREP_*|GREP_*|LD_*|DYLD_*|PATH|BASH_ENV|ENV) return 0 ;; esac
+    return 1
+}
+
+# reader_clause <strict 0|1> <args...> -> 0 when the clause's command is an
+# allowlisted reader or `bash <path>/bank-lift.sh show|clear` (also direct),
+# 1 otherwise; READER_CMD names the resolved command word. A reader carrying
+# a write/exec option denies here. The command word is resolved past
+# keywords, assignments and option-less env/sudo/timeout-style wrappers.
+# strict=1 (the whole-command layer): xargs is not a wrapper, an assignment
+# to a _reader_env_unsafe variable is not a reader, the bank-lift.sh word
+# must be literal, and a clause with no command word left passes.
+READER_CMD=""
+reader_clause() {
+    local strict="$1"; shift
+    local a w c="" ow
     while [ $# -gt 0 ]; do
         w="$1"
         case "$w" in
             '{'|'}'|'!'|if|then|else|elif|do|while|until|fi|done|command|time) shift; continue ;;
         esac
-        if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then shift; continue; fi
+        if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then
+            if [ "$strict" = 1 ] && _reader_env_unsafe "$w"; then READER_CMD="$w"; return 1; fi
+            shift; continue
+        fi
         c=$(_lower "$(_base "$w")")
         case "$c" in
             env|sudo|doas|nice|xargs|timeout|stdbuf|ionice|chrt|taskset|setsid|nohup)
+                if [ "$strict" = 1 ] && [ "$c" = xargs ]; then READER_CMD="xargs"; return 1; fi
                 shift
                 case "${1-}" in -*) c=""; break ;; esac
                 if [ "$c" = env ]; then
-                    while [ $# -gt 0 ]; do case "$1" in *=*) shift ;; *) break ;; esac; done
+                    while [ $# -gt 0 ]; do
+                        case "$1" in
+                            *=*) if [ "$strict" = 1 ] && _reader_env_unsafe "$1"; then READER_CMD="$1"; return 1; fi
+                                 shift ;;
+                            *) break ;;
+                        esac
+                    done
                 elif [ "$c" = timeout ] && [ $# -gt 0 ]; then
                     shift
                 fi
@@ -485,21 +530,94 @@ check_lift_name() {
         esac
         break
     done
+    READER_CMD="$c"
+    if [ "$strict" = 1 ] && [ $# -eq 0 ]; then return 0; fi
     ow="${1-}"
     shift
     case "$c" in
-        bash) if _name_matches "$(_base "${1-}")" bank-lift.sh; then
+        bash) if [ "$strict" = 1 ]; then
+                  if [ "$(_base "${1-}")" = bank-lift.sh ]; then
+                      case "${2-}" in show|clear) return 0 ;; esac
+                  fi
+              elif _name_matches "$(_base "${1-}")" bank-lift.sh; then
                   case "${2-}" in show|clear) return 0 ;; esac
               fi ;;
-        bank-lift.sh) _is_dynamic "$ow" || case "${1-}" in show|clear) return 0 ;; esac ;;
+        bank-lift.sh) if [ "$strict" = 0 ] || [ "$(_base "$ow")" = bank-lift.sh ]; then
+                          _is_dynamic "$ow" || case "${1-}" in show|clear) return 0 ;; esac
+                      fi ;;
     esac
     case "$c" in
-        cat|less|head|stat|ls|file|wc|test|'[') return 0 ;;
+        cat|head|stat|ls|file|wc|test|'[') return 0 ;;
+        less) for a in "$@"; do
+                  case "$a" in
+                      --[lL][oO][gG]*) deny "less --log-file writes a file beside a bank-lift mention ($a)" ;;
+                      --*) ;;
+                      -*[oO]*|+*) deny "less $a writes a log file or runs a command beside a bank-lift mention" ;;
+                  esac
+              done; return 0 ;;
         jq) for a in "$@"; do case "$a" in -i|--in-place*) deny "jq edits in place a word naming the bank lift ($a)" ;; esac; done; return 0 ;;
         tail) for a in "$@"; do case "$a" in --follow*) deny "tail follows the bank lift" ;; --*) ;; -*[fF]*) deny "tail follows the bank lift" ;; esac; done; return 0 ;;
         grep|rg) for a in "$@"; do case "$a" in --pre|--pre=*) deny "$c --pre runs a command on the bank lift" ;; esac; done; return 0 ;;
     esac
-    deny "a word names the bank lift (bank-lift.json or bank-lift.sh) in a non-reader command (${c:-unknown}); only cat/less/head/tail/stat/ls/file/wc/test/jq/grep/rg and \`bash scripts/lib/bank-lift.sh show|clear\` may name it — for a commit message or ticket text that names it, use \`git commit -F <file>\` / a --desc-file"
+    return 1
+}
+
+# --------------------------------------------------- whole-command layer ---
+# Judge J1874 (console ruling): a per-clause name rule misses a reader that
+# HANDS the lift path to a writer — `cp x $(jq -rn '"…/bank-lift.json"')`,
+# `echo > "$(ls <lift>)"`, `ls <lift> | xargs cp x`. So, as the FIRST layer:
+# when the command text names bank-lift.json / bank-lift.sh anywhere ($( ),
+# backticks, heredoc bodies, pipelines; not a longer name such as
+# test-bank-lift.sh), every clause at every depth must pass reader_clause
+# strictly, and no redirect may write anything but /dev/null (fd dups are
+# fine). Anything else, or a parse the tokenizer flags as untrustworthy,
+# denies. The per-clause layers below still run on what passes.
+# ponytail: a lift name obfuscated INSIDE a substitution (glob, brace, a
+# split across words) does not trigger this layer, so a reader can still
+# hand such a path to a writer; upgrade path is the operator-owned lift
+# named in the header ponytail, filed when seen in a transcript.
+names_lift() {
+    local l
+    l=$(_lower "$1"); l="${l//\\/}"
+    case "$l" in *bank-lift.json*) return 0 ;; esac
+    [[ "$l" =~ (^|[^a-z0-9_.-])bank-lift\.sh($|[^a-z0-9_.-]) ]]
+}
+
+# whole_command_gate <command-text> <depth>
+whole_command_gate() {
+    local text="$1" depth="$2" out line t i nt
+    [ "$depth" -le 4 ] || deny "a command naming the bank lift nests too deep to inspect"
+    out=$(printf '%s' "$text" | awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        case "$line" in
+            $'\002X') deny "the command decodes a \\x02 control byte (tokenizer sentinel)" ;;
+            $'\002U') deny "a command naming the bank lift cannot be parsed reliably (an unclosed quote or substitution, or a quoted heredoc delimiter with a space)" ;;
+            $'\002B\037'*) continue ;;   # heredoc body: data; its $( ) arrive as S lines
+            $'\002S\037'*) line="${line#$'\002S\037'}"; whole_command_gate "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
+        esac
+        local -a tk=() args=()
+        IFS=$'\037' read -r -a tk <<<"$line"
+        nt=${#tk[@]}; i=0
+        while [ "$i" -lt "$nt" ]; do
+            t="${tk[$i]//$'\036'/$'\n'}"
+            case "$t" in
+                $'\002W')
+                    i=$((i+1))
+                    [ "${tk[$i]:-}" = /dev/null ] \
+                        || deny "the command names the bank lift and redirects output to ${tk[$i]:-?}; in such a command only /dev/null may be a redirect target" ;;
+                $'\002R') i=$((i+1)) ;;
+                *) args+=("$t") ;;
+            esac
+            i=$((i+1))
+        done
+        [ "${#args[@]}" -gt 0 ] || continue
+        reader_clause 1 "${args[@]}" \
+            || deny "the command names the bank lift (bank-lift.json or bank-lift.sh), so every command in it — pipeline stages, \$( ) and backtick bodies, heredoc substitutions — must be a reader (cat/less/head/tail/stat/ls/file/wc/test/jq/grep/rg) or \`bash scripts/lib/bank-lift.sh show|clear\`; this one is not (${READER_CMD:-unknown}) — for a commit message or ticket text that names it, use \`git commit -F <file>\` / a --desc-file"
+    done <<EOF
+$out
+EOF
+    return 0
 }
 
 # Inline interpreter code naming the lift FILE (bank-lift.json, split or
@@ -1065,5 +1183,9 @@ case "$CMD" in *cd*|*pushd*|*popd*)
     cd_hits=$(printf '%s' "$CMD" | grep -Ec '(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)')
     case "$cd_hits" in ''|0) ;; *) HAS_CD=1 ;; esac ;;
 esac
+# Layer 1: the whole-command mention rule (J1874). The trigger reads both the
+# raw text and the dequoted tokens (quote splits, $'..', heredoc bodies).
+WTOK=$(printf '%s' "$CMD" | awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
+if names_lift "$CMD" || names_lift "$WTOK"; then whole_command_gate "$CMD" 0; fi
 analyse "$CMD" 0
 exit 0
