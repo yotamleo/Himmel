@@ -4485,6 +4485,7 @@ case "$d" in
         case "$mode" in
             down) finish 000 7 ;;
             inithang) finish 000 28 ;;
+            slowinit) [ "${m:-0}" -lt 8 ] && finish 000 28 ;;
             reset) finish 000 52 ;;
             empty204) finish 204 0 ;;
             foreign) pfx; printf '%s' '{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"other-server"}}}'; finish 200 ;;
@@ -4522,7 +4523,7 @@ c40_precond() { # <mode> — the stub must answer the init payload the way the m
     : > "$c40_t/log"
     case "$1" in
         down) [ "$rc" -eq 7 ] && [ -z "$got" ] ;;
-        inithang) [ "$rc" -eq 28 ] && [ -z "$got" ] ;;
+        inithang|slowinit) [ "$rc" -eq 28 ] && [ -z "$got" ] ;;
         reset) [ "$rc" -eq 52 ] && [ -z "$got" ] ;;
         empty204) [ "$rc" -eq 0 ] && [ -z "$got" ] ;;
         *) [ "$rc" -eq 0 ] && [ -n "$got" ] ;;
@@ -4538,6 +4539,19 @@ else
         pass "C40 served vec probe -> OK; vec sub-query sent with a -m bound"
     else
         fail "C40 served vec probe -> $(printf '%s' "$out" | grep -A1 C40) log=$(tr '\n' ' ' < "$c40_t/log")"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40: slow-but-alive daemon (initialize answers in ~5s under load) -> OK, not a wedge WARN (HIMMEL-4383, RED) =="
+c40_setup
+if ! c40_precond slowinit; then fail "C40 slowinit: precondition — stub did not time out at -m 3"
+else
+    out="$(c40_run slowinit)"
+    if grepq "$out" 'OK   C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec'; then
+        pass "C40 slow-but-alive initialize -> OK (budget covers loaded latency)"
+    else
+        fail "C40 slow-but-alive initialize -> $(printf '%s' "$out" | grep -A1 C40)"
     fi
 fi
 rm -rf "$c40_t"

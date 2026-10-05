@@ -2875,7 +2875,15 @@ check_c39_gtimeout_darwin() {
 check_c40_qmd_vec() {
     local url="${HIMMEL_DOCTOR_QMD_URL:-http://localhost:8181/mcp}"
     local curl_bin="${HIMMEL_DOCTOR_QMD_CURL:-curl}"
-    local vec_timeout=30
+    local vec_timeout=30 init_timeout=10
+    # HIMMEL-4383: the initialize budget is a measured loaded figure, not a guess.
+    # Live 2026-10-05: idle 0.33-0.39s; under 8 concurrent vec queries the peak was
+    # 2.87s, so the old 3s flapped a healthy daemon. 10s is ~2x that peak. A genuine
+    # wedge still WARNs; the budget only stops a slow-but-alive daemon reading as one.
+    # HIMMEL_DOCTOR_QMD_INIT_TIMEOUT overrides it (positive integer, else the default).
+    if [ -n "${HIMMEL_DOCTOR_QMD_INIT_TIMEOUT+x}" ] && [[ "$HIMMEL_DOCTOR_QMD_INIT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+        init_timeout="$HIMMEL_DOCTOR_QMD_INIT_TIMEOUT"
+    fi
     if ! command -v "$curl_bin" >/dev/null 2>&1; then
         emit INFO C40-qmd-vec "curl not found -- qmd vector-health check skipped"
         return
@@ -2892,10 +2900,10 @@ check_c40_qmd_vec() {
     local init init_rc init_code=""
     # `-w '%{http_code}'` appends the status after the body ("000" when no HTTP
     # exchange happened); peel it off so an empty body can be told apart by status.
-    init="$("$curl_bin" -s -m 3 -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
+    init="$("$curl_bin" -s -m "$init_timeout" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
     case "${init: -3}" in [0-9][0-9][0-9]) init_code="${init: -3}"; init="${init%???}" ;; esac
     if [ -z "$init" ] && [ "$init_rc" -eq 28 ]; then
-        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd server is wedged, vec search is not being served" "$remedy"
+        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within ${init_timeout}s -- the qmd server is wedged, vec search is not being served" "$remedy"
         return
     fi
     # Only a refused connection (curl rc 7) means nothing is listening. An empty
