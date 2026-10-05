@@ -257,7 +257,7 @@ if ! sha_version=$(git show "$SHA:VERSION" 2>/dev/null); then
     echo "cut-tag: refusing - could not read VERSION at $SHA" >&2
     exit 7
 fi
-sha_version=$(printf '%s' "$sha_version" | tr -d '[:space:]')
+sha_version="${sha_version%$'\r'}"   # $(...) already dropped trailing newlines; internal whitespace must fail the compare
 if [ "$sha_version" != "${_vx}.${_vy}.${_vz}" ]; then
     echo "cut-tag: refusing - VERSION at $SHA is ${sha_version:-empty} but $VERSION is ${_vx}.${_vy}.${_vz} - land the VERSION bump (docs/release/v1-checklist.md step 1) on main first" >&2
     exit 7

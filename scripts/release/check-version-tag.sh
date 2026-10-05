@@ -42,11 +42,19 @@ latest=$(printf '%s\n' "$tags" \
     | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
 base="${latest%% *}"
 tag="${latest#* }"
+if ! [[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "check-version-tag: could not compute the latest tag base from: $tags" >&2
+    exit 1
+fi
 
 # VERSION may be AHEAD of the tag (the bump PR lands before the first tag of a
 # new line - docs/release/v1-checklist.md step 1; cut-tag.sh enforces equality
 # at cut time). It must never be BEHIND.
 top=$(printf '%s\n%s\n' "$ver" "$base" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+if [ "$top" != "$ver" ] && [ "$top" != "$base" ]; then
+    echo "check-version-tag: could not compare VERSION $ver with tag base $base" >&2
+    exit 1
+fi
 if [ "$ver" != "$base" ] && [ "$top" = "$base" ]; then
     echo "check-version-tag: VERSION is $ver but the latest tag $tag is at $base - bump VERSION (and the release-tracking files, docs/release/v1-checklist.md) before tagging" >&2
     exit 1

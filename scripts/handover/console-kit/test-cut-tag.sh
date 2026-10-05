@@ -373,6 +373,9 @@ check "version-file unreadable: rc 7 (fail closed)" "$rc" "7"
 reset_calls
 rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_SHA_VERSION="0.3.0" run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
 check "version-file matching: rc 0" "$rc" "0"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_SHA_VERSION="0.3. 0" run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "version-file with internal whitespace: rc 7" "$rc" "7"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then
