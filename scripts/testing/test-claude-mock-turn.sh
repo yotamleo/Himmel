@@ -152,6 +152,9 @@ if command -v jq >/dev/null 2>&1; then
   H="$WORK/h"; mkdir -p "$H/home" "$H/cfg" "$H/wt" "$H/reg" "$H/slots"
   printf '%s' '{"oauthAccount":{"accountUuid":"uuid-mock-turn-test"}}' >"$H/home/.claude.json"
   printf '#!/usr/bin/env bash\ntrue\n' >"$H/no-fleet-ps.sh"; chmod +x "$H/no-fleet-ps.sh"
+  # CLAUDE_CODE_* in the process env is a Claude Code marker: with a seam set and no claude ancestor
+  # (CI), bank-preflight's guard refuses (HIMMEL-3914). Claude reads these from its own settings env.
+  printf '%s' '{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1","CLAUDE_CODE_MAX_RETRIES":"0"}}' >"$H/cfg/settings.json"
   node -e '
 const art=process.argv[1];
 require("fs").writeFileSync(process.argv[2],JSON.stringify({turns:[
@@ -178,7 +181,7 @@ HEOF
   env -i PATH="$(dirname "$(command -v claude)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin" \
     HOME="$H/home" CLAUDE_CONFIG_DIR="$H/cfg" REPO="$REPO" MOCK="$MOCK" H="$H" \
     ANTHROPIC_API_KEY="$FAKEKEY_KEY" ANTHROPIC_MODEL=canary-model-must-be-stripped \
-    NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 CLAUDE_CODE_MAX_RETRIES=0 \
+    NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 \
     HIMMEL_REGISTRY_DIR="$H/reg" HIMMEL_FLEET_SLOTS="$H/slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native \
     CADENCE_BANK_CACHE="$H/bank-cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$H/bank-ledger.jsonl" \
     FLEET_PS_CMD="$H/no-fleet-ps.sh" \
