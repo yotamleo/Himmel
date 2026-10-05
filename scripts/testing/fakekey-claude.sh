@@ -98,6 +98,10 @@ fakekey_run() {
     local pair
     # shellcheck disable=SC2086  # intentional word-splitting of NAME=value pairs
     for pair in ${FAKEKEY_EXTRA_ENV}; do
+      case "$pair" in
+        [A-Za-z_]*=*) ;;
+        *) echo "fakekey: FAKEKEY_EXTRA_ENV entry '$pair' is not NAME=value (fail closed)" >&2; return 2 ;;
+      esac
       case "${pair%%=*}" in
         PATH | HOME | CLAUDE_CONFIG_DIR | ANTHROPIC_API_KEY | ANTHROPIC_BASE_URL | ANTHROPIC_AUTH_TOKEN | CLAUDE_CODE_MAX_RETRIES | API_TIMEOUT_MS | CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
           echo "fakekey: FAKEKEY_EXTRA_ENV may not override reserved variable '${pair%%=*}' (fail closed)" >&2

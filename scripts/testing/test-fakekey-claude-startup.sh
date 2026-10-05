@@ -68,6 +68,7 @@ assert_mcp_connected() {
 
 PROFILE=leg-impl
 SERVERS=$(node "$REPO/scripts/lanes/plugin-profiles.mjs" "$PROFILE" --mcp-servers | node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(0,"utf8")).join(" "))')
+[ -n "$SERVERS" ] || { echo "FAIL: no mcp servers resolved for profile $PROFILE (S1/R2 would be vacuous)"; exit 1; }
 PROFILE_CFG="$WORK/profile.json"
 node "$REPO/scripts/lanes/plugin-profiles.mjs" "$PROFILE" >"$PROFILE_CFG"
 # shellcheck disable=SC2086  # SERVERS is a space-separated list of simple names
@@ -89,6 +90,9 @@ if [ "$rc" = 2 ] && [ ! -e "$WORK/r3c/rc" ]; then pass "R3 userinfo URL (real ho
 FAKEKEY_EXTRA_ENV='ANTHROPIC_BASE_URL=https://api.anthropic.com' fakekey_run "$WORK/r3d" >/dev/null 2>&1
 rc=$?
 if [ "$rc" = 2 ] && [ ! -e "$WORK/r3d/rc" ]; then pass "R3 FAKEKEY_EXTRA_ENV cannot override a reserved variable"; else fail "R3 reserved override not refused (rc=$rc)"; fi
+FAKEKEY_EXTRA_ENV='touch' fakekey_run "$WORK/r3e" >/dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ] && [ ! -e "$WORK/r3e/rc" ]; then pass "R3 FAKEKEY_EXTRA_ENV rejects a non-assignment entry"; else fail "R3 non-assignment entry not refused (rc=$rc)"; fi
 (cd "$WORK" && fakekey_run rel-out --mcp-config "$WORK/mcp-good.json" --strict-mcp-config)
 if [ -s "$WORK/rel-out/rc" ] && [ -n "$(fakekey_debuglog "$WORK/rel-out")" ]; then pass "R3 relative outdir resolves to absolute (artifacts land under it)"; else fail "R3 relative outdir broke the run's artifacts"; fi
 
