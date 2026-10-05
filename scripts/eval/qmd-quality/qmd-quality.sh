@@ -96,15 +96,21 @@ model_file() {
 # checks which model made the index's vectors (HIMMEL-4232), so a mismatch gives
 # errors or garbage on every vec/hybrid query. Unset: adopt the index's own model,
 # as qmd-embed-model.sh and doctor C49 judge it; set but different: refuse, naming
-# both. An index that cannot be read here is left to the eval to report.
-if command -v sqlite3 >/dev/null 2>&1; then
+# both. Only modes that embed a query (anything but lex) are checked. An index
+# that cannot be read here is left to the eval to report.
+embed_modes="$(printf '%s\n' "$MODES" | tr ',' '\n' | grep -vx lex)"
+if [ -z "$embed_modes" ]; then
+  :
+elif ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "qmd-quality: sqlite3 not on PATH; the index's embed model was NOT checked against QMD_EMBED_MODEL" >&2
+else
   if idx_models="$(sqlite3 -readonly "$INDEX" "SELECT DISTINCT model FROM content_vectors ORDER BY model;" 2>/dev/null)" && [ -n "$idx_models" ]; then
     if [ -z "${QMD_EMBED_MODEL:-}" ] && [ "$(printf '%s\n' "$idx_models" | wc -l)" -eq 1 ]; then
       QMD_EMBED_MODEL="$idx_models"; export QMD_EMBED_MODEL
       echo "qmd-quality: embed model taken from the index: $QMD_EMBED_MODEL" >&2
     else
       want="${QMD_EMBED_MODEL:-hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf}"
-      if printf '%s\n' "$idx_models" | grep -qvxF -- "$want"; then
+      if grep -qvxF -- "$want" <<<"$idx_models"; then
         echo "qmd-quality: embed model mismatch: eval would use '$want' but the index holds vectors from: $(printf '%s' "$idx_models" | tr '\n' ' ')" >&2
         echo "qmd-quality: set QMD_EMBED_MODEL to the index's single model, or evaluate an index built with one model" >&2
         exit 2
