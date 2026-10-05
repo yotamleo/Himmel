@@ -3317,6 +3317,22 @@ check_c44_skill_index() {
     files_line="$(printf '%s\n' "$list_out" | grep -A2 '^skills (' | grep 'Files:')"
     count="$(printf '%s' "$files_line" | grep -oE '[0-9]+' || true)"
     if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+        # HIMMEL-4436: a starter install never enables the qmd items, so nothing can
+        # build the collection -- not wanted is INFO, not a FAIL. Unknown (no node,
+        # jq or status) keeps the FAIL. Seam: DOCTOR_STATUS_JSON=<file> (as C19).
+        local sj="" node_bin="" qmd_wanted=""
+        if [ -n "${DOCTOR_STATUS_JSON:-}" ]; then
+            sj="$(cat "$DOCTOR_STATUS_JSON" 2>/dev/null)"
+        elif node_bin="$(resolve_node 2>/dev/null)" && [ -f "$REPO_ROOT/scripts/himmelctl/bin.js" ]; then
+            sj="$("$node_bin" "$REPO_ROOT/scripts/himmelctl/bin.js" status --json 2>/dev/null)"
+        fi
+        if [ -n "$sj" ] && command -v jq >/dev/null 2>&1; then
+            qmd_wanted="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select(.id == "qmd-index" or .id == "qmd-binary")] | if length == 0 then empty elif any(.[]; .desired == true) then "1" elif all(.[]; .desired == false) then "0" else empty end' 2>/dev/null)" || qmd_wanted=""
+        fi
+        if [ "$qmd_wanted" = 0 ]; then
+            emit INFO C44-skill-index "qmd items not wanted on this install (himmelctl status) -- /skill-find index not checked"
+            return
+        fi
         emit FAIL C44-skill-index \
             "the 'skills' qmd collection is missing or empty -- /skill-find silently reverts to guessing skill/command names (HIMMEL-2222)" \
             "bash scripts/skill-index/ensure-skill-index.sh   (or: himmelctl ensure)"
