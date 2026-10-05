@@ -764,6 +764,11 @@ check "bank-lift set -> account bound" "$ACCT" "$(jq -r '.account' "$BANK_LIFT_F
 check "bank-lift show reports VALID" "bank-lift: VALID" "$(bash "$LIFT" show "$W/lc.json" 2>/dev/null | tail -1)"
 check "set lift lets sd=98 PROCEED" PROCEED "$(verdict "$(lfx 10 98 "$NOW" "")")"
 bash "$LIFT" clear >/dev/null 2>&1
+# a permissive caller umask must not make set write a file the validator rejects
+( umask 0002; bash "$LIFT" set "$W/lc.json" >/dev/null 2>&1 )
+check "bank-lift set under umask 0002 is still VALID" "bank-lift: VALID" "$(bash "$LIFT" show "$W/lc.json" 2>/dev/null | tail -1)"
+check "bank-lift set writes mode 600" 600 "$(stat -c '%a' "$BANK_LIFT_FILE" 2>/dev/null || stat -f '%Lp' "$BANK_LIFT_FILE" 2>/dev/null)"  # gnu-ok: BSD stat fallback
+bash "$LIFT" clear >/dev/null 2>&1
 check "bank-lift clear removes the file" absent "$([ -e "$BANK_LIFT_FILE" ] && echo present || echo absent)"
 printf '%s' "{\"account\":\"deadbeefdeadbeef\",\"seven_day\":{\"resets_at\":\"$RESET_ISO\"}}" > "$W/lc2.json"
 bash "$LIFT" set "$W/lc2.json" >/dev/null 2>&1
