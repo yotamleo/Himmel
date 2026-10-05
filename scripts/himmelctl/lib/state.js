@@ -93,6 +93,16 @@ function itemMembership(item, profile, scope, cachedAnswers) {
   if (item.id === 'handover-wiring') {
     return Boolean(cachedAnswers.handover) && cachedAnswers.handover.mode !== 'none';
   }
+  // HIMMEL-4435: the pre-commit framework is only wanted when something uses
+  // it — a luna vault (its setup installs pre-commit) or the contributor
+  // overlay. A starter install with vault=none places himmel's NATIVE gates
+  // (no framework), so listing it would report a red item whose remedy
+  // needs uv/pipx the profile never asked for.
+  if (item.id === 'pre-commit') {
+    const vault = cachedAnswers.vault;
+    const usesFramework = Boolean(cachedAnswers.devOverlay) || Boolean(vault && vault.mode && vault.mode !== 'none');
+    if (!usesFramework) return false;
+  }
   if (!item.profiles.includes(profile)) return false;
   if (item.scopes.includes(scope)) return true;
   // HIMMEL-2892: a CONTRIBUTOR's station has no project-scope record — the
