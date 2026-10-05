@@ -1497,6 +1497,12 @@ for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
 { bash \"\$@\"; }" "ls () if true; then bash \"\$@\"; fi"; do
         assert_deny "4442 relief name shadowed: $D [$pre]" "$(j "$D; $pre ls $GP")"
     done
+    # Judge J1871: zsh defines EVERY name before the parens (`ls foo () {`
+    # shadows ls; bash rejects it), and `foo (){` was a DENY on main via `){`.
+    for D in "ls foo () { bash \"\$@\"; }" "ls foo (){ bash \"\$@\"; }" \
+             "ls foo() { bash \"\$@\"; }" "foo ls () { bash \"\$@\"; }"; do
+        assert_deny "4442 J1871 multi-name definition: $D [$pre]" "$(j "$D; $pre ls $GP")"
+    done
     assert_allow "4442 control: relieved ls, no function [$pre]" "$(j "$pre ls /r/w/docs/*.md")"
 done
 
