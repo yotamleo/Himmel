@@ -80,6 +80,11 @@ echo "== loopback guard (R3) =="
 FAKEKEY_BASE_URL=https://api.anthropic.com fakekey_run "$WORK/r3" >/dev/null 2>&1
 rc=$?
 if [ "$rc" = 2 ] && [ ! -e "$WORK/r3/rc" ]; then pass "R3 non-loopback ANTHROPIC_BASE_URL refused before claude ran"; else fail "R3 non-loopback URL not refused (rc=$rc)"; fi
+FAKEKEY_SANDBOX=2 fakekey_run "$WORK/r3b" >/dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ] && [ ! -e "$WORK/r3b/rc" ]; then pass "R3 FAKEKEY_SANDBOX other than 0/1 refused (fail closed)"; else fail "R3 bad FAKEKEY_SANDBOX not refused (rc=$rc)"; fi
+(cd "$WORK" && fakekey_run rel-out --mcp-config "$WORK/mcp-good.json" --strict-mcp-config)
+if [ -s "$WORK/rel-out/rc" ] && [ -n "$(fakekey_debuglog "$WORK/rel-out")" ]; then pass "R3 relative outdir resolves to absolute (artifacts land under it)"; else fail "R3 relative outdir broke the run's artifacts"; fi
 
 echo "== startup run (leg-impl config, fixture plugin, scrubbed env) =="
 MARK="$WORK/marker"; mkdir -p "$MARK"
@@ -123,7 +128,8 @@ if grepq "$LOG" '\[Bootstrap\] Skipped: Nonessential traffic disabled' && ! grep
   pass "S4 no [Bootstrap] fetch attempted"
 else fail "S4 [Bootstrap] was not skipped"; fi
 if grepq "$LOG" 'API error \(attempt 1/1\)'; then pass "S4 doomed API call capped at one attempt (MAX_RETRIES=0)"; else fail "S4 retry cap not visible"; fi
-if [ "$(cat "$WORK/main/rc" 2>/dev/null)" != 124 ]; then pass "S4 run ended before the timeout"; else fail "S4 run hit the timeout"; fi
+main_rc=$(cat "$WORK/main/rc" 2>/dev/null)
+if [[ "$main_rc" =~ ^[0-9]+$ ]] && [ "$main_rc" != 124 ]; then pass "S4 run ended before the timeout"; else fail "S4 run hit the timeout"; fi
 
 echo "== R2 broken MCP fixture fails the S1 assertion =="
 fakekey_run "$WORK/r2" --mcp-config "$WORK/mcp-broken.json" --strict-mcp-config --settings "$PROFILE_CFG"

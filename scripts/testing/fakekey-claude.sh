@@ -70,6 +70,10 @@ fakekey_run() {
     return 2
   fi
   local sandbox="${FAKEKEY_SANDBOX:-1}"
+  case "$sandbox" in
+    0 | 1) ;;
+    *) echo "fakekey: FAKEKEY_SANDBOX must be 0 or 1, got '$sandbox' (fail closed)" >&2; return 2 ;;
+  esac
   if [ "$sandbox" = 1 ] && ! fakekey_sandbox_available; then
     echo "fakekey: unshare -rn unavailable; refusing to run unsandboxed (fail closed)" >&2
     return 3
@@ -78,6 +82,7 @@ fakekey_run() {
   claude_bin=$(command -v claude) || { echo "fakekey: claude not on PATH" >&2; return 4; }
   node_bin=$(command -v node) || { echo "fakekey: node not on PATH" >&2; return 4; }
   mkdir -p "$out/cfg" "$out/home" || return 4
+  out=$(cd "$out" && pwd) || return 4 # absolute: the run cd's into $out
   rm -f "$out/rc" "$out/out.json" "$out/err.txt"
   local path="${claude_bin%/*}:${node_bin%/*}:/usr/local/bin:/usr/bin:/bin"
   local -a envv=(
