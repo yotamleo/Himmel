@@ -29,5 +29,6 @@ EOF
 
 fakekey_run "$RUN" --plugin-dir "$PLUGINDIR" --output-format stream-json --verbose
 echo "03d rc=$(cat "$RUN/rc")"
-probe_skill_discovered "$RUN" probe-plugin:probe-skill
-probe_skill_discovered "$RUN" probe-skill
+probe_skill_discovered "$RUN" probe-plugin:probe-skill; ns=$?
+probe_skill_discovered "$RUN" probe-skill; bare=$?
+[ "$ns" = 0 ] || [ "$bare" = 0 ] # either supported name counts as discovered

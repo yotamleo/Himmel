@@ -86,7 +86,7 @@ fakekey_run() {
   node_bin=$(command -v node) || { echo "fakekey: node not on PATH" >&2; return 4; }
   mkdir -p "$out/cfg" "$out/home" || return 4
   out=$(cd "$out" && pwd) || return 4 # absolute: the run cd's into $out
-  rm -f "$out/rc" "$out/out.json" "$out/err.txt"
+  rm -rf "$out/rc" "$out/out.json" "$out/err.txt" "$out/cfg/debug" # a reused outdir must not serve a stale log
   local path="${claude_bin%/*}:${node_bin%/*}:/usr/local/bin:/usr/bin:/bin"
   local -a envv=(
     "PATH=$path" "HOME=$out/home" "CLAUDE_CONFIG_DIR=$out/cfg"
@@ -94,8 +94,18 @@ fakekey_run() {
     "CLAUDE_CODE_MAX_RETRIES=0" "API_TIMEOUT_MS=5000"
   )
   [ "${FAKEKEY_NONESSENTIAL:-1}" = 1 ] && envv+=("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1")
-  # shellcheck disable=SC2206  # intentional word-splitting of NAME=value pairs
-  [ -n "${FAKEKEY_EXTRA_ENV:-}" ] && envv+=(${FAKEKEY_EXTRA_ENV})
+  if [ -n "${FAKEKEY_EXTRA_ENV:-}" ]; then
+    local pair
+    # shellcheck disable=SC2086  # intentional word-splitting of NAME=value pairs
+    for pair in ${FAKEKEY_EXTRA_ENV}; do
+      case "${pair%%=*}" in
+        PATH | HOME | CLAUDE_CONFIG_DIR | ANTHROPIC_API_KEY | ANTHROPIC_BASE_URL | ANTHROPIC_AUTH_TOKEN | CLAUDE_CODE_MAX_RETRIES | API_TIMEOUT_MS | CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)
+          echo "fakekey: FAKEKEY_EXTRA_ENV may not override reserved variable '${pair%%=*}' (fail closed)" >&2
+          return 2 ;;
+      esac
+      envv+=("$pair")
+    done
+  fi
   local rc
   # headless-claude-ok: fake-key credential-free test, HIMMEL-4410
   if [ "$sandbox" = 1 ]; then

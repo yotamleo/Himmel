@@ -86,6 +86,9 @@ if [ "$rc" = 2 ] && [ ! -e "$WORK/r3b/rc" ]; then pass "R3 FAKEKEY_SANDBOX other
 FAKEKEY_BASE_URL='http://localhost:9@api.anthropic.com' fakekey_run "$WORK/r3c" >/dev/null 2>&1
 rc=$?
 if [ "$rc" = 2 ] && [ ! -e "$WORK/r3c/rc" ]; then pass "R3 userinfo URL (real host after @) refused"; else fail "R3 userinfo URL not refused (rc=$rc)"; fi
+FAKEKEY_EXTRA_ENV='ANTHROPIC_BASE_URL=https://api.anthropic.com' fakekey_run "$WORK/r3d" >/dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ] && [ ! -e "$WORK/r3d/rc" ]; then pass "R3 FAKEKEY_EXTRA_ENV cannot override a reserved variable"; else fail "R3 reserved override not refused (rc=$rc)"; fi
 (cd "$WORK" && fakekey_run rel-out --mcp-config "$WORK/mcp-good.json" --strict-mcp-config)
 if [ -s "$WORK/rel-out/rc" ] && [ -n "$(fakekey_debuglog "$WORK/rel-out")" ]; then pass "R3 relative outdir resolves to absolute (artifacts land under it)"; else fail "R3 relative outdir broke the run's artifacts"; fi
 
