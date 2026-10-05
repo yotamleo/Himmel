@@ -176,6 +176,16 @@ test("health: Config to Health to browser back; aria-current follows; one header
   await expect(page.locator("#inventory .bhead").first()).toBeVisible();
 });
 
+test("health: reloading at #/health starts loadHealth without a page error", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await openHealth(page);
+  await page.reload();
+  await page.locator("#verdict .word").waitFor();
+  expect(errors).toEqual([]);
+  await expect(page.locator("#bank, #legs").first()).not.toContainText("loading");
+});
+
 test("health: the five sections appear in spec order", async ({ page }) => {
   await openHealth(page);
   expect(await page.locator("main h2").allTextContents()).toEqual(SECTIONS);

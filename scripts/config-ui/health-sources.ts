@@ -32,7 +32,7 @@ export function readBank(env: Env): Section {
   for (let i = lines.length - 1; i >= 0; i--) {
     let r: Record<string, unknown>;
     try { r = JSON.parse(lines[i]); } catch { continue; }
-    if (!r || typeof r !== "object" || !(r.five_hour || r.seven_day)) continue;
+    if (!r || typeof r !== "object" || (r.five_hour == null || r.five_hour === "") && (r.seven_day == null || r.seven_day === "")) continue;
     const { ts, verdict, five_hour, seven_day, age, degraded } = r;
     return { state: "ok", row: { ts, verdict, five_hour, seven_day, age, degraded } };
   }
@@ -68,7 +68,7 @@ const refused = (e: unknown) => { const c = (e as { code?: string })?.code; retu
 
 async function probe(url: string): Promise<{ res?: Response; section?: Section }> {
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(MONITOR_TIMEOUT_MS) });
+    const res = await fetch(url, { redirect: "error", signal: AbortSignal.timeout(MONITOR_TIMEOUT_MS) }); // a redirect could leave loopback
     if (!res.ok) return { section: { state: "error", reason: `HTTP ${res.status}` } };
     return { res };
   } catch (e) {
@@ -91,8 +91,9 @@ export async function readMonitoring(env: Env): Promise<Section> {
   let prometheus: Section = p.section ?? { state: "ok" };
   if (p.res) {
     try {
-      const j = (await p.res.json()) as { data?: { alerts?: { state?: string; labels?: Record<string, string>; annotations?: Record<string, string> }[] } };
-      const alerts = (j.data?.alerts ?? []).filter((a) => a.state === "firing")
+      const j = (await p.res.json()) as { status?: string; data?: { alerts?: { state?: string; labels?: Record<string, string>; annotations?: Record<string, string> }[] } };
+      if (j.status !== "success" || !Array.isArray(j.data?.alerts)) throw new Error("not a Prometheus alerts answer");
+      const alerts = j.data!.alerts!.filter((a) => a.state === "firing")
         .map((a) => ({ alertname: a.labels?.alertname ?? "", severity: a.labels?.severity ?? "", summary: a.annotations?.summary ?? "" }));
       prometheus = { state: "ok", alerts };
     } catch { prometheus = { state: "error", reason: "unreadable alerts" }; }

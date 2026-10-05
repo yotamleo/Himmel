@@ -102,6 +102,29 @@ test("monitoring: a Prometheus that answers 500 is an error, not absent", async 
   expect((await body(s.port)).monitoring.prometheus.state).toBe("error");
 });
 
+test("I7: a loopback Prometheus that redirects off-loopback is an error, never followed", async () => {
+  const far = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json({ status: "success", data: { alerts: [] } }) });
+  const prom = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.redirect(`http://127.0.0.1:${far.port}/api/v1/alerts`, 302) });
+  cleanups.push(() => { far.stop(true); prom.stop(true); });
+  const s = boot({ HIMMEL_PROMETHEUS_URL: `http://127.0.0.1:${prom.port}` });
+  expect((await body(s.port)).monitoring.prometheus.state).toBe("error");
+});
+
+test("monitoring: a 200 that is not a Prometheus success with an alerts array is an error, not zero alerts", async () => {
+  for (const bad of [{}, { status: "error", error: "x" }, { status: "success", data: {} }]) {
+    const prom = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => Response.json(bad) });
+    cleanups.push(() => prom.stop(true));
+    const s = boot({ HIMMEL_PROMETHEUS_URL: `http://127.0.0.1:${prom.port}` });
+    expect([JSON.stringify(bad), (await body(s.port)).monitoring.prometheus.state]).toEqual([JSON.stringify(bad), "error"]);
+  }
+});
+
+test("bank: a row whose numbers are numeric zero is still a bank row", async () => {
+  const s = boot();
+  writeLedger(s.ledger, [bankRow({ five_hour: 0, seven_day: 0 })]);
+  expect((await body(s.port)).bank.row).toMatchObject({ five_hour: 0, seven_day: 0 });
+});
+
 test("I7: a non-loopback HIMMEL_PROMETHEUS_URL is refused and never fetched", async () => {
   const s = boot({ HIMMEL_PROMETHEUS_URL: "http://example.com" });
   const m = (await body(s.port)).monitoring;

@@ -17,6 +17,7 @@ if (m) history.replaceState(null, "", location.pathname + location.search + "#/c
 // region nav and its 1/2/3 keys on that page only.
 // Health renders without a feed (D2): its bank and legs cards do not wait for the doctor report.
 let health = null; // GET /api/health, null while loading
+let healthGen = 0; // declared before route() runs: a reload at #/health calls loadHealth() from it
 const PAGES = [
   { id: "config", label: "Config", regions: true, render: (f) => render(f, state) },
   { id: "health", label: "Health", needsFeed: false, render: (f) => renderHealth(f, health), onVisit: () => { if (!health) loadHealth(); } },
@@ -90,7 +91,6 @@ async function loadFeed() {
 }
 
 // Only the newest call may paint, as with the feed.
-let healthGen = 0;
 async function loadHealth() {
   const gen = ++healthGen;
   let j;
