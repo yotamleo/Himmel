@@ -223,6 +223,21 @@ i=0
 while [ "$i" -lt 2100 ]; do longp="$longp/."; i=$((i + 1)); done
 expect 2 "alias path token over 4096 bytes -> denied (fail closed)" \
     "$(payload "$TOOL" "$HIMMEL" "summarise $longp/patients")"
+# Length alone does not deny: long tokens that are not paths into a root (base64,
+# data URIs, minified JS, long URLs) stop the walk at their first missing
+# component and are allowed, as they were before item 3.
+rep() { local s="" i=0; while [ "$i" -lt "$2" ]; do s="$s$1"; i=$((i + 1)); done; printf '%s' "$s"; }
+b64=$(rep 'aGVsbG8/d29ybGQ+' 520)
+expect 0 "8 KB data:image/png;base64 URI -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "use data:image/png;base64,$b64")"
+expect 0 "raw 8 KB base64 blob with slashes -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "embed $b64")"
+expect 0 "8 KB /9j/ JPEG base64 blob -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "embed /9j/4AAQSkZJRgABAQ$b64")"
+expect 0 "minified JS line over 4096 bytes containing // -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "inline $(rep 'a="x";//c;' 400)")"
+expect 0 "4.2 KB URL -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "see https://example.com/$(rep 'segment/' 540)")"
 # 4. A wall-clock budget denies. EGRESS_HOOK_BUDGET_S can only LOWER the 10 s
 # budget; 0 makes the first path token overrun it, standing in for a slow resolver.
 EGRESS_HOOK_BUDGET_S=0 expect 2 "path token resolved past the wall-clock budget -> denied (fail closed)" \

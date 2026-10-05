@@ -195,10 +195,14 @@ fi
 # timed-out hook is ALLOWED by the harness, i.e. fails open):
 #   - payload text over payload_budget bytes: deny (cannot inspect it all);
 #   - more than path_cap path-like tokens: deny;
-#   - a path-shaped token over token_max bytes (PATH_MAX): deny (an alias
-#     padded with ./ components could otherwise hide behind the skip);
+#   - a token's length alone never denies (base64, data: URIs, minified JS and
+#     long URLs are long and are not paths into a root): every token takes the
+#     forward walk, so an alias padded with ./ components trips walk_cap and
+#     denies, while a blob stops at its first missing component and is allowed;
 #   - past hook_budget wall-clock seconds (10 s, inside the 15 s harness
-#     timeout): deny; EGRESS_HOOK_BUDGET_S can only LOWER it (test seam);
+#     timeout): deny; EGRESS_HOOK_BUDGET_S can only LOWER it (test seam). The
+#     budget bounds accumulated slowness across steps, NOT a single hung
+#     resolve (see the ponytail below);
 #   - a failure to canonicalize an existing path or leaf symlink, or to
 #     extract the payload text: deny;
 #   - a walk over walk_cap path components: deny;
@@ -214,7 +218,6 @@ fi
 # Upgrade path: HIMMEL-4463 (a watchdog process).
 payload_budget=262144
 path_cap=256
-token_max=4096
 walk_cap=128
 strip_cap=8
 hook_budget=10
@@ -274,7 +277,6 @@ for tok in $payload_text; do
     n=$((n + 1))
     [ "$n" -le "$path_cap" ] || deny "the tool payload has more than $path_cap path-like tokens; cannot inspect all"
     _over_budget
-    [ "${#tok}" -le "$token_max" ] || deny "a tool payload path token is over $token_max bytes; cannot inspect it"
     # Strip at most strip_cap wrapping characters per side: each strip copies
     # the token, so an unbounded loop is quadratic on a punctuation run.
     k=0
