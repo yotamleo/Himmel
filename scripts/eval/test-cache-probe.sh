@@ -51,6 +51,11 @@ has "too-few-turns: classed inconclusive" "$LAST_OUT" "a	inconclusive"
 scenario ttl-expiry inconclusive 2 invalidation --event "$EVENT"
 has "ttl-expiry: classed ttl, not invalidated" "$LAST_OUT" "a	ttl"
 
+# HIMMEL-4422 live run L5 (2026-10-05 weekly-bank reset, same account): a kept
+# its 317k prefix across a 35 min idle, b wrote ~16k but still read 77% of it.
+scenario account-switch not-invalidated 0 invalidation --event "$EVENT"
+has "account-switch: both sessions kept" "$LAST_OUT" "kept=2 invalidated=0"
+
 # An unexplained rewrite on the THIRD post-event turn is not the event's doing:
 # a prefix change shows on the first turn after it, so only that one is judged.
 scenario late-rewrite-unrelated not-invalidated 0 invalidation --event "$EVENT"

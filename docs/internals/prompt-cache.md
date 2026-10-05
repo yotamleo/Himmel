@@ -56,8 +56,9 @@ TRUE / FALSE / UNVERIFIED, each with the eval scenario (a fixture in
 | 8 | "the 76.5% read-ratio / `<40%` = structural issue" figures (`token-economy.md`) | **UNVERIFIED** — one-tweet heuristics from another workspace; himmel's measured 98.2% neither confirms nor refutes the threshold | — | none (no fixture: a threshold from elsewhere) |
 | 9 | "one extra cache write (~4k tokens) per session started or compacted after an index edit" (this doc, `SKILL.md` rail 6) | **UNVERIFIED** — an estimate from the index size, not a measured delta | — | none; ponytail: an estimate, upgrade path = a probe mode that diffs first-turn `cache_creation` before/after an edit (HIMMEL-3837 follow-up) |
 | 10 | "edits that invalidate thinking also restart the prompt cache; append-only with fixed system and tools is the cache-safe shape" (this doc, HIMMEL-3875) | **UNVERIFIED** — reported by the ticket from the preserved-thinking docs page, not measured | — | none; ponytail: ticket-reported, upgrade path = a `scripts/eval/cache-probe.sh` scenario that edits an earlier turn / the system prompt and asserts the rewrite |
+| 11 | "an account switch rewrites the full prefix of running sessions" (token-maxxing guide technique 3, HIMMEL-4422) | **UNVERIFIED** — no account switch has been measured. L5 is a weekly-bank reset on the SAME account (not a switch): 2 live sessions kept their prefix and survived the change, 0 invalidated, 0 compacted. It rules out "any bank/login-adjacent event rewrites the prefix", not the per-account claim | live run L5 | `account-switch` (the probe reads a kept pair); ponytail: needs a real switch to another account, re-run `invalidation --event <switch ISO>` over sessions live across it (HIMMEL-4422 follow-up) |
 
-Counts: 3 TRUE, 4 FALSE (all fixed), 3 UNVERIFIED (noted, not guessed).
+Counts: 3 TRUE, 4 FALSE (all fixed), 4 UNVERIFIED (noted, not guessed).
 Unrelated caches (gh, graphify, qmd, npm, `USAGE_CACHE_TTL`,
 `QMD_STALENESS_CACHE_TTL`) were ruled out: none is a prompt-cache claim.
 
@@ -69,6 +70,7 @@ Unrelated caches (gh, graphify, qmd, npm, `USAGE_CACHE_TTL`,
 | L2 | `invalidation --event @<primary>/graphify-out/graph.json` | `verdict: not-invalidated kept=14 invalidated=0`, read-ratio 99.0 % |
 | L3 | `first-turn` | `verdict: warm-start warm=1199 cold=11`, read-ratio 98.2 % |
 | L4 | `idle-gap` | `verdict: ttl-consistent cold-expected=126 cold-rewrote=113 warm-expected=14659 warm-rewrote=41` |
+| L5 | `invalidation --event 2026-10-05T16:00:00Z` (2026-10-05 weekly-bank reset at 100 %, same account, between ~15:55Z and ~16:16Z; events 15:55Z and 16:10Z give the same verdict) over the console and leg N1182 transcripts | `verdict: not-invalidated kept=2 invalidated=0 compacted=0 ttl=0`, read-ratio 98.1 %; console 317.5k to 319.5k read across a 2101 s gap, N1182 155k to 119k read with a 15.8k write (1605 s gap, still above half). Both sessions survived the change |
 
 The probe reads only `usage` and timestamps; the runs put no transcript
 content in the repo.
