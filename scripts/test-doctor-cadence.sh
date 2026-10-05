@@ -191,6 +191,12 @@ if [ "$rc" -ne 0 ] && ! grep -q 'HIMMEL-Doctor' "$FAKE_CRON"; then pass "an unwr
 DOCTORCAD_RUNNER_DIR="$W/runner2" bash "$P/scripts/doctor-cadence.sh" arm >/dev/null 2>&1
 head -1 "$W/runner2/doctor-cadence.sh" | grep -qx '#!/usr/bin/env bash' && pass "the runner uses a bash shebang" || fail "the runner uses a bash shebang"
 
+# a % in the runner path is escaped: cron reads an unescaped % as a newline.
+PCT="$W/100%/run"
+DOCTORCAD_RUNNER_DIR="$PCT" bash "$P/scripts/doctor-cadence.sh" arm --force >/dev/null 2>&1
+grep -qF "\"$W/100\\%/run/doctor-cadence.sh\"" "$FAKE_CRON" && pass "a % in the runner path is escaped in the crontab line" || fail "a % in the runner path is escaped in the crontab line"
+DOCTORCAD_RUNNER_DIR="$PCT" bash "$P/scripts/doctor-cadence.sh" disarm >/dev/null 2>&1
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "test-doctor-cadence: all passed"; exit 0; fi
 echo "test-doctor-cadence: $FAILED failed"; exit 1

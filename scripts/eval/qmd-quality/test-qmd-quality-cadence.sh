@@ -159,6 +159,12 @@ bash "$CAD" disarm >/dev/null 2>&1; check "disarm exits 0" 0 $?
 grep -q 'HIMMEL-Qmd-Quality' "$FAKE_CRON"; check "disarm removes the entry" 1 $?
 [ ! -e "$RUNNER" ] && pass "disarm removes the runner" || fail "disarm removes the runner"
 
+# 9. a % in the runner path is escaped: cron reads an unescaped % as a newline.
+PCT="$W/100%/run"
+QMDQUAL_RUNNER_DIR="$PCT" bash "$CAD" arm --golden "$GOLD" --index "$IDX" --force >/dev/null 2>&1
+grep -qF "\"$W/100\\%/run/qmd-quality-cadence.sh\"" "$FAKE_CRON" && pass "a % in the runner path is escaped in the crontab line" || fail "a % in the runner path is escaped in the crontab line"
+QMDQUAL_RUNNER_DIR="$PCT" bash "$CAD" disarm >/dev/null 2>&1
+
 echo
 echo "$PASSED passed, $FAILED failed"
 [ "$FAILED" -eq 0 ]

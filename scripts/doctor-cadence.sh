@@ -126,7 +126,8 @@ cmd_arm() {
         return 3
     fi
     runner="$RUNNER_DIR/doctor-cadence.sh"
-    entry="${time#*:} ${time%:*} * * * \"$runner\" # $TASK_NAME"
+    # cron reads an unescaped % as a newline, even inside quotes.
+    entry="${time#*:} ${time%:*} * * * \"${runner//%/\\%}\" # $TASK_NAME"
     if [ "$dry" -eq 1 ]; then
         echo "DRY doctor-cadence: would write $runner and install: $entry"
         return 0
