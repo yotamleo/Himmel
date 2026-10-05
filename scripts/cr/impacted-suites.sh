@@ -776,7 +776,11 @@ done <<< "$changed"
 # ponytail: the second arm matches by basename text in the guarded files, so a
 # basename shared with an unrelated file over-selects (the safe direction); a
 # target named only through an assembled path is the suite's own ponytail gap.
-closure_suite=scripts/cr/test-cr-guarded-closure.sh
+# The extension is appended below, never written on an assignment line: the suite
+# reads a path stored in a variable as an edge, and an edge to itself would walk
+# its own file list into the closure.
+closure_suite=scripts/cr/test-cr-guarded-closure
+closure_suite="${closure_suite}.sh"
 if grep -Fxq -- "$closure_suite" <<< "$suites"; then
     git show "${head_sha}:scripts/cr/pr-check-context.sh" > "$work/ctx" 2>/dev/null || : > "$work/ctx"
     sed -n '/^cr_guarded="/,/"$/p' "$work/ctx" | sed 's/^cr_guarded="//; s/"$//' | tr ' ' '\n' | sed '/^$/d' > "$work/guarded" || io_fail "reading cr_guarded"
@@ -793,7 +797,8 @@ if grep -Fxq -- "$closure_suite" <<< "$suites"; then
         [ -s "$work/guarded-specs" ] || continue
         cg_rc=0
         # shellcheck disable=SC2046  # one pathspec per line, split on purpose
-        git grep -qE -f <(needle_ere "$(file_literal "$f")") "$head_sha" -- $(tr '\n' ' ' < "$work/guarded-specs") || cg_rc=$?
+        # The suite's seeds skip test-*, so a test naming the file is no edge.
+        git grep -qE -f <(needle_ere "$(file_literal "$f")") "$head_sha" -- $(tr '\n' ' ' < "$work/guarded-specs") ':(exclude,glob)**/test-*' ':(exclude,glob)**/*.test.*' || cg_rc=$?
         if [ "$cg_rc" -gt 1 ]; then io_fail "searching the guarded files for ${f}"; fi
         if [ "$cg_rc" -eq 0 ]; then printf '%s\n' "$closure_suite" >> "$found" || io_fail "recording the closure suite"; break; fi
     done <<< "$changed"

@@ -618,6 +618,7 @@ mkf scripts/lanes/leg-pr-open.sh 'bash "$d/../handover/console-kit/leg-jira-stat
 mkf scripts/lanes/unrelated.sh 'echo unrelated'
 mkf scripts/handover/console-kit/leg-jira-status.sh 'echo jira'
 mkf scripts/handover/console-kit/tracker.py 'print(1)'
+mkf scripts/cr/test-names-tracker.sh 'grep -q tracker.py x'
 mkf .agents/skills/pr-check/SKILL.md 'runbook'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: guarded-closure fixtures"
@@ -632,7 +633,7 @@ out="$(run_is "$range")"
 if grepq "$out" "^${GC}\$"; then pass "the runbook twin -> test-cr-guarded-closure.sh"; else fail "runbook seed missed: $out"; fi
 change scripts/handover/console-kit/tracker.py
 out="$(run_is "$range")"
-if ! grepq "$out" "^${GC}\$"; then pass "tracker.py (reached by no guarded file) does not select the closure suite"; else fail "closure row over-selected tracker.py: $out"; fi
+if ! grepq "$out" "^${GC}\$"; then pass "tracker.py (named only by a guarded test, reached by no guarded file) does not select the closure suite"; else fail "closure row over-selected tracker.py: $out"; fi
 change scripts/lanes/unrelated.sh
 out="$(run_is "$range")"
 if ! grepq "$out" "^${GC}\$"; then pass "an unreferenced scripts/lanes file does not select the closure suite"; else fail "closure row over-selected scripts/lanes: $out"; fi
