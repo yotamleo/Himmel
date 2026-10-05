@@ -2213,6 +2213,79 @@ CLOSED on missing `jq` or malformed JSON. PowerShell is unguarded (ponytail in
 the hook). Bypass: `QMD_UNBOUNDED_OK=1` (launching shell). Spec:
 `scripts/hooks/test-block-bare-qmd-query.sh`.
 
+### `block-bank-lift-writes.sh` — operator-only bank lift (HIMMEL-4445)
+
+Fires on Bash and on `Edit|Write|MultiEdit|NotebookEdit` (Codex: Bash and the
+`apply_patch` envelope). The bank lift `~/.himmel/state/bank-lift.json`
+(HIMMEL-4423) relaxes the 7-day bank gate while it is valid, so raising it is
+the operator's call. The hook refuses every agent write to that path —
+redirects (`>`, `>>`, `>|`, `&>`, `<>`), `tee`, `cp`/`mv`/`install`/`ln`/`rsync`
+as a destination, `dd of=`, `sed -i`, `touch`/`truncate`/`patch`, `-o`/`--output`
+options, editors, downloaders and interpreters handed the path, `find -exec`,
+`xargs`, and inline interpreter code (`python3 -c`, `perl -e`, `node -e`, a
+heredoc script) that names `bank-lift.json`, `$BANK_LIFT_FILE` or `bank-lift.sh` —
+under every spelling of the path: `~`, `$HOME`, `${HOME}`, `/home/<user>`,
+`~user`, relative from `~`, `~/.himmel` or `state/`, `.`/`..` segments, quote
+splits, backslashes, `$'…'`, globs, braces, case, symlinks (dangling too) and a
+`cd` before a relative name. A whole-directory write into `state/`, `.himmel/`
+or `~` is refused when its source could put a lift there (a lift-named, glob or
+`$var` source, a `dir/` or `dir/.` contents copy, `-T`, `ln -n`); copying an
+unrelated file in passes. It also refuses `bank-lift.sh set` (and the sourced
+`_bank_lift_cmd set`) under any launcher: `bash`/`sh`/direct/`source`/`.`,
+`env`/`timeout`/`nohup`/`command`/`exec`/`nice`/`sudo`/`xargs`, `-c` bodies,
+heredocs into a shell, a computed (`$(…)`, `$var`) subcommand or script word.
+Whole-command layer (judge J1874, runs FIRST): a reader can hand the lift
+path to a writer that never names it — `cp x $(jq -rn '"…/bank-lift.json"')`,
+`echo > "$(ls <lift>)"`, `ls <lift> | xargs cp x`. So when the command text
+names `bank-lift.json` or `bank-lift.sh` ANYWHERE — inside `$( )`, backticks,
+heredoc bodies and pipelines, after quote removal and `$'…'` decoding — the
+command passes only if EVERY clause at every depth (pipeline stages,
+substitution bodies, `-c` bodies, `&&`/`||`/`;` lists) is a reader under the
+limits below or `bash <path>/bank-lift.sh show|clear` (also direct, the
+script word spelled literally), AND no redirect writes anywhere but
+`/dev/null` (`>`, `>>`, `<>`, `>|`, `&>`, `&>>`; fd dups such as `2>&1` are
+fine). `xargs` is not a wrapper here, so any `xargs` clause denies; so does an
+assignment to a variable a reader or the loader obeys (`LESS*`, `RIPGREP_*`,
+`GREP_*`, `LD_*`, `DYLD_*`, `PATH`, `BASH_ENV`, `ENV`), and `less` with
+`-o`/`-O` (attached too), `--log-file` or a `+cmd`. A reader, wrapper
+(`env`, `sudo`, `timeout`, …) or `bash` word counts only when it is bare or
+exactly `/usr/bin/<name>` / `/bin/<name>`: `/tmp/cat`, `./cat`, `~/bin/less`
+or `/tmp/env cat` is whatever was planted there, so it denies (both layers).
+A lift-naming command the
+tokenizer cannot parse reliably (an unclosed quote or substitution, a quoted
+heredoc delimiter containing a space) denies. Over-deny is accepted:
+`test -f <lift> && echo yes`, `cat <lift> > /tmp/copy`, `set -e; bash
+…/bank-lift.sh show`, a heredoc commit message naming the lift, and a
+write to any lift-NAMED file (`/tmp/x/bank-lift.json`) all deny; split the
+command, or put text in a file. Residual (ponytail): a lift name obfuscated
+by a glob or brace inside a substitution does not trigger this layer; and
+the `bank-lift.sh` script word is still trusted by basename, so a planted
+`/tmp/x/bank-lift.sh show` passes (known gap, HIMMEL-4458).
+Name rule (console ruling, applied before the rules above on every clause,
+nested ones included): a clause with a word naming `bank-lift.json` or
+`bank-lift.sh` (not a longer name such as `test-bank-lift.sh`) passes only
+when it is `bash <path>/bank-lift.sh show|clear`, the direct
+`<path>/bank-lift.sh show|clear`, or a reader: `cat`, `less` without
+`-o`/`-O`/`--log-file`/`+cmd`, `head`, `stat`,
+`ls`, `file`, `wc`, `test`/`[`, `jq` without `-i`/`--in-place`, `tail` without
+`-f`/`-F`/`--follow`, `grep`/`rg` without `--pre`. The command word is
+resolved past assignments and the `env`/`sudo`/`doas`/`nice`/`xargs`/`timeout`/
+`stdbuf`/`ionice`/`chrt`/`taskset`/`setsid`/`nohup` wrappers, but a wrapper
+carrying any option leaves it unknown, so the clause denies. Everything else
+naming the lift denies, including `rm`/`mv`/`cp` of the lift, `source`/`.` of
+`bank-lift.sh`, `bash -c` bodies, `find -exec`, `echo`, `git grep`, and
+commit messages or ticket titles given inline (`git commit -m`, a jira
+`--title`). This overrides the ticket's original allowance for such mentions.
+The remedy for text is a file: `git commit -F <file>`, a jira `--desc-file`.
+Over-deny is accepted: inline interpreter code that only READS the lift, or
+edits a file whose text names `bank-lift.sh`, is refused too (use
+`cat`/`jq`, or the Edit tool). The deny
+names the remedy — the operator runs `! bash scripts/lib/bank-lift.sh set ...`
+— and there is deliberately no env bypass. A must-run chain member in
+`run-hook-with-bash.js`. Fails CLOSED on missing `jq`, malformed JSON or a
+tokenizer error. Residuals are ponytail-marked in the hook. Spec:
+`scripts/hooks/test-block-bank-lift-writes.sh`.
+
 ### `guard-pr-check-literal.sh` — relative `scripts/cr/` gate spellings (HIMMEL-3383, HIMMEL-3495)
 
 Every leg profile allow-lists `bash scripts/cr/pr-check-context.sh` and

@@ -287,6 +287,9 @@ const MUST_RUN_CHAIN_MEMBERS = new Set([
   // HIMMEL-3956: fails CLOSED; a starved run let a bare `qmd query` through,
   // and that is the call that orphans a GPU-bound bun child for hours.
   'block-bare-qmd-query.sh',
+  // HIMMEL-4445: fails CLOSED; a starved run let an agent write the
+  // operator-only bank lift (or run `bank-lift.sh set`) unchecked.
+  'block-bank-lift-writes.sh',
 ]);
 
 function envMs(name, fallback) {
