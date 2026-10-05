@@ -620,6 +620,20 @@ deny 'echo qmd query x > f; xargs -a f sh -c'
 allow 'echo qmd status > f; sh < f'
 allow 'echo qmd query x > f; wc -l < f'
 allow 'echo qmd query x > f; grep x < f'
+# bash -s operands are positional args, and an operand naming stdin is no
+# program source, src mode included (CR round 3 codex-1/codex-2).
+deny 'echo qmd query x > f; bash -s ignored < f'
+deny 'echo qmd query x > f; source /dev/stdin < f'
+deny 'echo qmd query x > f; sh /dev/stdin < f'
+deny 'echo qmd query x > f; . /dev/stdin < f'
+deny 'echo qmd query x > f; bash /dev/fd/0 < f'
+deny 'echo qmd query x > f; source /proc/self/fd/0 < f'
+deny 'echo qmd query x > f; sh - < f'
+deny 'echo qmd query x > f; cat f | source /dev/stdin'
+deny "echo 'import os; os.system(\"qmd query x\")' > f; python3 /dev/stdin < f"
+allow 'echo qmd status > f; source /dev/stdin < f'
+allow 'echo qmd status > f; bash -s ignored < f'
+allow 'echo qmd query x > f; cat /dev/stdin < f'
 # An option's own argument does not hide the script operand (codex-1).
 deny 'echo qmd query x > f.sh; bash -o errexit f.sh'
 deny 'echo qmd query x > f.sh; bash --rcfile /dev/null f.sh'

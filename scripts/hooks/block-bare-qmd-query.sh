@@ -836,8 +836,8 @@ qmd_nested() {
         pp=0
         piped=$pipe nw=${t%.exe} e0=$i enc=0 fo=0 ia=0 ct='' sj='' tk=0 hx=0 hs=0 tx=0
         # so: the program comes from an operand, code string or hand-back;
-        # sr: stdin is a written file or a here-string.
-        so=0 sr=0
+        # sr: stdin is a written file or a here-string; ss: sh -s seen.
+        so=0 sr=0 ss=0
         [ "$sw" != "$lb" ] || sr=1
         # screen and rem only peek at their words (the walk below resumes
         # after the launcher word itself); one inside a span an earlier one
@@ -1013,7 +1013,10 @@ qmd_nested() {
                     fi
                     # Every operand, not only the first: an option's own
                     # argument (`-I lib`, `-r ./x`) would shift the script.
-                    fo=1 so=1
+                    # An operand naming stdin (/dev/stdin, /dev/fd/0,
+                    # /proc/self/fd/0) is no program source.
+                    fo=1
+                    case "$v" in */dev/*|dev/*|*/proc/*|proc/*) ;; *) so=1 ;; esac
                     if _ran_written "$t"; then deny=1; return 0; fi
                 fi
             elif [ "$hasc" = 0 ]; then
@@ -1046,8 +1049,15 @@ qmd_nested() {
                     # HIMMEL-4337: a shell's or source's operand that the
                     # command wrote (`… > f; sh f`). Every operand: an
                     # option's argument (`-o errexit`) would shift the script.
+                    # After sh -s the operands are positional args, and an
+                    # operand naming stdin (/dev/stdin, /dev/fd/0,
+                    # /proc/self/fd/0) is no program source: both keep the
+                    # stdin check below on.
+                    if [ "$mode" = sh ] && [ "$so" = 0 ] && [[ $t =~ ^-[[:alpha:]]*s[[:alpha:]]*$ ]]; then ss=1; fi
                     if [ "$mode" != env ] && [[ $t != -* ]]; then
-                        so=1
+                        if [ "$ss" = 0 ]; then
+                            case "$v" in */dev/*|dev/*|*/proc/*|proc/*) ;; *) so=1 ;; esac
+                        fi
                         if _ran_written "$t"; then deny=1; return 0; fi
                     fi
                     # Another word that runs a nested string, before any -c:
@@ -1082,10 +1092,11 @@ qmd_nested() {
         i=$e
         if [ "$mode" = screen ] || [ "$mode" = rem ]; then i=$e0 pk=$e; fi
         # A shell or interpreter with no program operand or code string
-        # reads its program from stdin (`< f`, `<<<`, a pipe, -s); with
+        # reads its program from stdin (`< f`, `<<<`, a pipe, -s), as does
+        # a source of /dev/stdin; with
         # none of them, -c's string comes from elsewhere (`xargs -a f sh
         # -c`). Fails closed on a command that wrote a file and names a verb.
-        if { [ "$mode" = sh ] || [ "$mode" = int ]; } && [ "$so" = 0 ] && [ -n "$wr" ] &&
+        if { [ "$mode" = sh ] || [ "$mode" = src ] || [ "$mode" = int ]; } && [ "$so" = 0 ] && [ -n "$wr" ] &&
             { [ "$sr" = 1 ] || [ -n "$piped" ] || [ "$hasc" = 1 ]; } && names_verb "$w"; then
             deny=1
             return 0
