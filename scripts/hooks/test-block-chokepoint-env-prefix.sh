@@ -1488,11 +1488,56 @@ assert_allow "4157 hidden anchor with no seam write"           "$(j "bash /r/w/s
 assert_allow "4157 HEAD^ beside export"                        "$(j "export FOO=1; git show HEAD^")"
 assert_allow "4157 ~/ home path beside export"                 "$(j "export FOO=1; ls ~/notes")"
 assert_allow "4157 a # comment beside export"                  "$(j "export FOO=1 # set foo")"
+# HIMMEL-4442 (CR round 13 on #1685): a function shadowing a relief name kept
+# relief when spelled `ls ()`, `ls ( )`, with a subshell or compound body, or
+# with a newline before the brace; only `ls() {` was caught.
+for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
+    for D in "ls () { bash \"\$@\"; }" "ls ( ) { bash \"\$@\"; }" "ls () ( bash \"\$@\" )" \
+             "ls ()
+{ bash \"\$@\"; }" "ls () if true; then bash \"\$@\"; fi"; do
+        assert_deny "4442 relief name shadowed: $D [$pre]" "$(j "$D; $pre ls $GP")"
+    done
+    # Judge J1871: zsh defines EVERY name before the parens (`ls foo () {`
+    # shadows ls; bash rejects it), and `foo (){` was a DENY on main via `){`.
+    for D in "ls foo () { bash \"\$@\"; }" "ls foo (){ bash \"\$@\"; }" \
+             "ls foo() { bash \"\$@\"; }" "foo ls () { bash \"\$@\"; }"; do
+        assert_deny "4442 J1871 multi-name definition: $D [$pre]" "$(j "$D; $pre ls $GP")"
+    done
+    # Judge J1871b: zsh defines a function or alias with no parens through its
+    # special parameters (`functions[ls]=...` shadows ls); bash has BASH_ALIASES.
+    for N in functions dis_functions aliases dis_aliases galiases saliases BASH_ALIASES; do
+        for D in "${N}[ls]='bash \"\$@\"; '" "$N=(ls 'bash \"\$@\"')"; do
+            assert_deny "4442 J1871b special-parameter definition: $D [$pre]" "$(j "$D; $pre ls $GP")"
+        done
+    done
+    assert_deny "4442 J1871b += definition [$pre]" "$(j "functions[ls]+='bash \"\$@\"; '; $pre ls $GP")"
+    assert_deny "4442 J1871b judge input [$pre]" \
+        "$(j "functions[ls]='bash \"\$@\"; '; $pre ls /r/w/scrip?s/handover/console-kit/g?.sh")"
+    # Judge J1871c: any word naming a shadow table, enable/autoload, or set -A/+A
+    # gets no relief, whatever the syntax around it.
+    for D in "set -A functions ls 'bash \"\$@\"; '" "set -A dis_functions ls x; enable -f ls" \
+             "commands+=( ls /usr/bin/bash )" "set -A commands ls /usr/bin/bash" \
+             "set -A aliases ls 'bash \"\$@\"'" "fpath=(/tmp/f \$fpath); functions -u ls" \
+             "fpath=(/tmp/f); autoload -U ls" "FPATH=/tmp/f" "enable -f ls" "autoload ls" \
+             "set +A x ls" "set -A x ls" "BASH_CMDS[ls]=/usr/bin/bash" "dis_galiases[ls]=x" \
+             "dis_saliases[sh]=x" "com''mands+=( ls /usr/bin/bash )" "echo \$functions" \
+             "fun''ctions[ls]=x"; do
+        assert_deny "4442 J1871c shadow-table word: $D [$pre]" "$(j "$D; $pre ls $GP")"
+    done
+    assert_deny "4442 J1871c judge input [$pre]" \
+        "$(j "functions[ls]=x; $pre ls /r/w/scrip?s/handover/console-kit/g?.sh")"
+    assert_allow "4442 control: myfunctions= is not functions= [$pre]" "$(j "myfunctions=1; $pre ls /r/w/docs/*.md")"
+    assert_allow "4442 control: mycommands is not commands [$pre]" "$(j "mycommands=1; $pre ls /r/w/docs/*.md")"
+    assert_allow "4442 control: a quoted 'functions' is not a word [$pre]" "$(j "$pre ls /r/w/docs/*.md | grep 'functions'")"
+    assert_allow "4442 control: commands_x/enabled are other words [$pre]" "$(j "commands_x=1; enabled=1; $pre ls /r/w/docs/*.md")"
+    assert_allow "4442 control: relieved ls, no function [$pre]" "$(j "$pre ls /r/w/docs/*.md")"
+done
 
 # HIMMEL-4157 (judge J1685 NO-GO): the relief pass was super-linear -- per
 # redirect it walked every stage, forking per token expansion. 200 redirects
 # took 13 s against a 15 s hook budget; a 10 KB line of quoted stages 5 s.
-# A hook timeout fails OPEN, so a slow allow is a bypass. Same verdicts, in
+# A hook timeout fails CLOSED inside the hook chain, so a slow allow shows up
+# as an over-deny. Same verdicts, in
 # time (EPOCHREALTIME is bash 5+). The 10 KB row times the relief alone: the
 # same text without the seam name never reaches it, and the rest of the
 # hook costs over a second on that text on main too.

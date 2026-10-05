@@ -1141,8 +1141,10 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # word with a / or one outside the relief names (CR round 8).
 # No relief at all on: an unquoted heredoc body with $( or a backtick,
 # <( >( =(, a paren glued to a word (zsh grouping, extglob), alias, function,
-# hash, enable, a `name() {` that shadows a relief name, a PATH/LD_*/IFS/
-# BASH_ENV/ENV/ZDOTDIR assignment, or an unterminated quote or heredoc.
+# hash, enable, an unquoted empty paren pair (`name () {`), an assignment to
+# functions/dis_functions/aliases/dis_aliases/galiases/saliases/BASH_ALIASES,
+# a PATH/LD_*/IFS/BASH_ENV/ENV/ZDOTDIR assignment, or an unterminated quote or
+# heredoc.
 # ponytail: an allowed interpreter can still assemble a path with no
 # metachar, and the read-only set is a closed list a new exec-capable
 # option would slip past; the HIMMEL-3930 structural parse replaces this.
@@ -1169,9 +1171,11 @@ pobf_relief() {
     local re_wr=">[>|]?[[:blank:]]*([^[:blank:];|&()<>${NL}]*)"
     local re_pa="[^][:blank:];|&()\$<>${BQ}=${NL}]\\(|\\)[^][:blank:];|&()<>${BQ}${NL}]"
     local re_eq="(^|[[:blank:];|&(${NL}])=\\("
-    local re_fn="(^|[[:blank:];|&${NL}])([A-Za-z_][A-Za-z0-9_-]*)\\(\\)[[:blank:]]*\\{"
+    local re_ep="\\([[:blank:]]*\\)"
     local re_dw="(^|[^[:alnum:]_])(alias|unalias|function|hash|enable|disable|zmodload|autoload)([^[:alnum:]_]|\$)"
     local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
+    local re_fp="(^|[^[:alnum:]_])(functions|dis_functions|aliases|dis_aliases|galiases|dis_galiases|saliases|dis_saliases|commands|BASH_ALIASES|BASH_CMDS|fpath|FPATH|enable|autoload)([^[:alnum:]_]|\$)"
+    local re_sa="(^|[^[:alnum:]_])set([[:blank:]]+[-+][[:alnum:]]*)*[[:blank:]]+[-+][[:alnum:]]*A"
     local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
     case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
     t=${t//\\$NL/}
@@ -1275,12 +1279,13 @@ pobf_relief() {
     done <<< "$t"
     [ "$md" = U ] && [ "$hi" = "$hn" ] || return 1
     case "$F" in *'<('*|*'>('*) return 1 ;; esac
-    # A `name() {` definition is no grouping; it is dropped (a call to it is
-    # then an unknown command, scanned), unless it shadows a relief name.
-    while [[ $F =~ $re_fn ]]; do
-        case " $POBF_NAMES " in *" ${BASH_REMATCH[2]} "*) return 1 ;; esac
-        F=${F/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}{"}
-    done
+    # No relief (HIMMEL-4442) on an unquoted empty paren pair, on any unquoted
+    # word functions, dis_functions, aliases, dis_aliases, galiases,
+    # dis_galiases, saliases, dis_saliases, commands, BASH_ALIASES, BASH_CMDS,
+    # fpath, FPATH, enable or autoload (delimited by a non-identifier char each
+    # side, after quote removal), or on set followed by -A or +A.
+    # Runtime-built definitions (eval, here-string, source) are HIMMEL-4454's.
+    [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
     F=${F//[0-9]>&[0-9]/ }
     F=${F//>&[0-9]/ }
