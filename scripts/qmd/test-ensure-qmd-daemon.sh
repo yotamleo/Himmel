@@ -770,16 +770,41 @@ switch="$(dirname "$script")/qmd-daemon-switch.sh"
 [ -f "$switch" ] || fail "(x) $switch not found"
 export XDG_CACHE_HOME="$work/cache"
 mkdir -p "$XDG_CACHE_HOME/qmd"
+real_ps="$(command -v ps)"
+# Stale pid: a live process that is NOT a qmd mcp one must be left alone, and pid 0 refused.
 sleep 60 &
+stale_pid=$!
+STUB_PIDS+=("$stale_pid")
+echo "$stale_pid" > "$XDG_CACHE_HOME/qmd/mcp.pid"
+set +e
+out="$(HOME="$home" PATH="$bin:$safe" QMD_PS="$real_ps" bash "$switch" off 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "(x) stale pid: rc $rc ($out)"
+sleep 0.5
+kill -0 "$stale_pid" 2>/dev/null || fail "(x) stale pid: a non-qmd process was killed"
+case "$out" in *"not a qmd mcp process"*) : ;; *) fail "(x) stale pid: no left-alone message ($out)" ;; esac
+kill "$stale_pid" 2>/dev/null || true
+wait "$stale_pid" 2>/dev/null || true
+echo 0 > "$XDG_CACHE_HOME/qmd/mcp.pid"
+set +e
+out="$(HOME="$home" PATH="$bin:$safe" QMD_PS="$real_ps" bash "$switch" off 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "(x) pid 0: rc $rc ($out)"
+case "$out" in *"no running daemon found"*) : ;; *) fail "(x) pid 0: not refused ($out)" ;; esac
+rm -f "$off_flag"
+# A real qmd mcp-looking daemon (args contain "qmd" then "mcp") is stopped.
+fake_script="$work/qmd-mcp-fake.sh"
+printf '%s\n' "trap 'exit 0' TERM" 'while :; do sleep 1; done' > "$fake_script"
+bash "$fake_script" &
 fake_daemon=$!
 STUB_PIDS+=("$fake_daemon")
 echo "$fake_daemon" > "$XDG_CACHE_HOME/qmd/mcp.pid"
 set +e
-out="$(HOME="$home" PATH="$bin:$safe" bash "$switch" off 2>&1)"; rc=$?
+out="$(HOME="$home" PATH="$bin:$safe" QMD_PS="$real_ps" bash "$switch" off 2>&1)"; rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "(x) off: rc $rc ($out)"
 [ -f "$off_flag" ] || fail "(x) off: flag not created"
-sleep 1
+sleep 2
 if kill -0 "$fake_daemon" 2>/dev/null; then fail "(x) off: daemon pid $fake_daemon still alive"; fi
 rm -f "$state/alive" "$state/qmd-argv.log"
 set +e
