@@ -24,6 +24,7 @@ NO_FLEET="$W/no-fleet-ps.sh"; printf '%s\n' '#!/usr/bin/env bash' 'true' > "$NO_
 # further down explicitly unsets HOME for one call to cover that path; it
 # uses env -u HOME on that one subshell only, so this export is unaffected.
 export HOME="$W/home"; mkdir -p "$HOME"
+export BANK_LIFT_FILE="$W/home/.himmel/state/bank-lift.json"  # never inherit an operator lift (HIMMEL-4423)
 printf '%s' '{"oauthAccount":{"accountUuid":"uuid-bank-preflight-test"}}' > "$HOME/.claude.json"
 IDLIB="$REPO/scripts/lib/usage-cache-identity.sh"
 # shellcheck source=usage-cache-identity.sh
@@ -690,6 +691,9 @@ check "lift for wrong window, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
  "$(verdict "$(fx 10 98 "$NOW" "")")"
 printf '%s' '{not json' > "$BANK_LIFT_FILE"
 check "malformed lift file, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+write_lift $((NOW+3600)) "$ACCT"; printf '%s' '{not json' >> "$BANK_LIFT_FILE"
+check "valid lift object then trailing garbage, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
  "$(verdict "$(fx 10 98 "$NOW" "")")"
 printf '%s' '{"window":"seven_day","until":"soon","account":"x"}' > "$BANK_LIFT_FILE"
 check "non-numeric lift until, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \

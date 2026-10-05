@@ -30,7 +30,7 @@ _bank_lift_epoch() {
     *) printf '%s' "$v"; return 0 ;;
   esac
   [ -n "$v" ] || return 1
-  t=$(date -d "$v" +%s 2>/dev/null) && [ -n "$t" ] && { printf '%s' "$t"; return 0; }
+  t=$(date -d "$v" +%s 2>/dev/null) && [ -n "$t" ] && { printf '%s' "$t"; return 0; }  # gnu-ok: BSD date -j fallback follows
   # BSD date: drop fractional seconds, normalise +00:00 / Z to a bare UTC stamp.
   v=$(printf '%s' "$v" | sed -e 's/\.[0-9]*//' -e 's/[+-]00:00$//' -e 's/Z$//')
   t=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$v" +%s 2>/dev/null) && [ -n "$t" ] && { printf '%s' "$t"; return 0; }
@@ -40,18 +40,20 @@ _bank_lift_epoch() {
 # bank_lift_valid <cache>: 0 only when the file is well-formed, unexpired and
 # bound to the current account (which must also be the cache's account).
 bank_lift_valid() {
-  local cache="${1:-}" f win until acct cur now cached
+  local cache="${1:-}" f win until acct cur now cached fields
   f="$(bank_lift_file)"
   [ -f "$f" ] && command -v jq >/dev/null 2>&1 || return 1
+  # A parse error anywhere in the file (even after a valid object) is no lift.
+  fields=$(jq -r '
+    (if (.window|type)=="string" then .window else "" end),
+    (if (.until|type)=="number" and (.until|floor)==.until then (.until|tostring) else "" end),
+    (if (.account|type)=="string" then .account else "" end)
+    ' "$f" 2>/dev/null) || return 1
   {
     IFS= read -r win
     IFS= read -r until
     IFS= read -r acct
-  } < <(jq -r '
-    (if (.window|type)=="string" then .window else "" end),
-    (if (.until|type)=="number" and (.until|floor)==.until then (.until|tostring) else "" end),
-    (if (.account|type)=="string" then .account else "" end)
-    ' "$f" 2>/dev/null)
+  } <<<"$fields"
   win=${win%$'\r'}; until=${until%$'\r'}; acct=${acct%$'\r'}
   [ "$win" = "seven_day" ] || return 1
   case "$until" in ''|*[!0-9]*) return 1 ;; esac
@@ -83,8 +85,8 @@ _bank_lift_cmd() {
       [ "$until" -gt "$(date +%s)" ] || { echo "bank-lift: seven_day window already reset" >&2; return 1; }
       mkdir -p "$(dirname "$f")" || return 1
       tmp="$f.tmp.$$"
-      jq -n --argjson u "$until" --arg a "$acct" --arg by "${USER:-unknown}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-        '{window:"seven_day",until:$u,account:$a,set_by:$by,set_at:$at}' > "$tmp"
+      if ! jq -n --argjson u "$until" --arg a "$acct" --arg by "${USER:-unknown}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        '{window:"seven_day",until:$u,account:$a,set_by:$by,set_at:$at}' > "$tmp"; then rm -f "$tmp"; return 1; fi
       if ! mv "$tmp" "$f"; then rm -f "$tmp"; return 1; fi
       echo "bank-lift: set until $until ($resets)"
       ;;
