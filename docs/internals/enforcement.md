@@ -2234,11 +2234,24 @@ unrelated file in passes. It also refuses `bank-lift.sh set` (and the sourced
 `_bank_lift_cmd set`) under any launcher: `bash`/`sh`/direct/`source`/`.`,
 `env`/`timeout`/`nohup`/`command`/`exec`/`nice`/`sudo`/`xargs`, `-c` bodies,
 heredocs into a shell, a computed (`$(…)`, `$var`) subcommand or script word.
-`show`, `clear`, `rm`/`mv` of the lift (they only tighten the gate), reads, and
-mentions (grep patterns, commit messages, `echo`, a script's data arguments
-such as a ticket title) pass. Over-deny: inline interpreter code that only
-READS the lift, or edits a file whose text names `bank-lift.sh`, is refused
-too (use `cat`/`jq`, or the Edit tool). The deny
+Name rule (console ruling, applied before the rules above on every clause,
+nested ones included): a clause with a word naming `bank-lift.json` or
+`bank-lift.sh` (not a longer name such as `test-bank-lift.sh`) passes only
+when it is `bash <path>/bank-lift.sh show|clear`, the direct
+`<path>/bank-lift.sh show|clear`, or a reader: `cat`, `less`, `head`, `stat`,
+`ls`, `file`, `wc`, `test`/`[`, `jq` without `-i`/`--in-place`, `tail` without
+`-f`/`-F`/`--follow`, `grep`/`rg` without `--pre`. The command word is
+resolved past assignments and the `env`/`sudo`/`doas`/`nice`/`xargs`/`timeout`/
+`stdbuf`/`ionice`/`chrt`/`taskset`/`setsid`/`nohup` wrappers, but a wrapper
+carrying any option leaves it unknown, so the clause denies. Everything else
+naming the lift denies, including `rm`/`mv`/`cp` of the lift, `source`/`.` of
+`bank-lift.sh`, `bash -c` bodies, `find -exec`, `echo`, `git grep`, and
+commit messages or ticket titles given inline (`git commit -m`, a jira
+`--title`). This overrides the ticket's original allowance for such mentions.
+The remedy for text is a file: `git commit -F <file>`, a jira `--desc-file`.
+Over-deny is accepted: inline interpreter code that only READS the lift, or
+edits a file whose text names `bank-lift.sh`, is refused too (use
+`cat`/`jq`, or the Edit tool). The deny
 names the remedy — the operator runs `! bash scripts/lib/bank-lift.sh set ...`
 — and there is deliberately no env bypass. A must-run chain member in
 `run-hook-with-bash.js`. Fails CLOSED on missing `jq`, malformed JSON or a

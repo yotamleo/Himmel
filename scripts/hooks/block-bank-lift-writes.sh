@@ -11,9 +11,12 @@
 #      as a whole with a lift-named (or unknowable) entry;
 #   2. run `bank-lift.sh set`, under any launcher (bash/sh/direct/source/.,
 #      env/timeout/nohup/command/exec/sudo/xargs/…) or path spelling.
-# `bank-lift.sh show` / `clear`, reads of the lift, and mentions of it (grep
-# patterns, commit messages, echo) stay allowed; `rm` of the lift is allowed
-# because removing it only TIGHTENS the gate.
+# `bash <path>/bank-lift.sh show` / `clear` and reads of the lift stay
+# allowed. By console ruling (rounds 6-7) any OTHER command with a word naming
+# bank-lift.json or bank-lift.sh denies, over-deny accepted: rm/mv/cp of the
+# lift, `git commit -m` / ticket titles / echo naming it. Remedy for text:
+# `git commit -F <file>`, a jira --desc-file. Only the reader allowlist
+# (cat less head tail stat ls file wc test [ jq grep rg) may name it.
 #
 # Remedy named in every deny: the operator runs `! bash scripts/lib/bank-lift.sh
 # set ...` at their own prompt. There is deliberately NO env bypass — a bypass
@@ -447,34 +450,56 @@ _base() { local b="${1%/}"; printf '%s' "${b##*/}"; }
 # keywords, assignments and simple env/sudo/timeout/nice-style wrappers;
 # anything else counts as not a reader. Redirect targets are not in args:
 # a write redirect onto the lift is denied by the redirect rule.
+#
+# Round 7: a word naming bank-lift.sh (as a path or word, not as part of a
+# longer name like test-bank-lift.sh) triggers it too; that clause may also
+# be `bash <path>/bank-lift.sh show|clear ...` or `<path>/bank-lift.sh
+# show|clear ...`. A wrapper (env, sudo, nice, timeout, ...) that carries ANY
+# option leaves the command word unknown: an option's argument (`env -u cat`)
+# must not be read as the command.
 check_lift_name() {
-    local a hit=0 w c
+    local a l hit=0 w c ow
     for a in "$@"; do
-        case "$(_lower "$a")" in *bank-lift.json*) hit=1; break ;; esac
+        l=$(_lower "$a")
+        case "$l" in *bank-lift.json*) hit=1; break ;; esac
+        if [[ "$l" =~ (^|[^a-z0-9_.-])bank-lift\.sh($|[^a-z0-9_.-]) ]]; then hit=1; break; fi
     done
     [ "$hit" = 1 ] || return 0
     while [ $# -gt 0 ]; do
         w="$1"
         case "$w" in
-            '{'|'}'|'!'|if|then|else|elif|do|while|until|fi|done|nohup|command|time) shift; continue ;;
+            '{'|'}'|'!'|if|then|else|elif|do|while|until|fi|done|command|time) shift; continue ;;
         esac
         if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then shift; continue; fi
         c=$(_lower "$(_base "$w")")
         case "$c" in
-            env) shift; while [ $# -gt 0 ]; do case "$1" in -*|*=*) shift ;; *) break ;; esac; done; continue ;;
-            sudo|doas|nice|xargs) shift; while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done; continue ;;
-            timeout) shift; while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) shift; break ;; esac; done; continue ;;
+            env|sudo|doas|nice|xargs|timeout|stdbuf|ionice|chrt|taskset|setsid|nohup)
+                shift
+                case "${1-}" in -*) c=""; break ;; esac
+                if [ "$c" = env ]; then
+                    while [ $# -gt 0 ]; do case "$1" in *=*) shift ;; *) break ;; esac; done
+                elif [ "$c" = timeout ] && [ $# -gt 0 ]; then
+                    shift
+                fi
+                continue ;;
         esac
         break
     done
+    ow="${1-}"
     shift
+    case "$c" in
+        bash) if _name_matches "$(_base "${1-}")" bank-lift.sh; then
+                  case "${2-}" in show|clear) return 0 ;; esac
+              fi ;;
+        bank-lift.sh) _is_dynamic "$ow" || case "${1-}" in show|clear) return 0 ;; esac ;;
+    esac
     case "$c" in
         cat|less|head|stat|ls|file|wc|test|'[') return 0 ;;
         jq) for a in "$@"; do case "$a" in -i|--in-place*) deny "jq edits in place a word naming the bank lift ($a)" ;; esac; done; return 0 ;;
         tail) for a in "$@"; do case "$a" in --follow*) deny "tail follows the bank lift" ;; --*) ;; -*[fF]*) deny "tail follows the bank lift" ;; esac; done; return 0 ;;
         grep|rg) for a in "$@"; do case "$a" in --pre|--pre=*) deny "$c --pre runs a command on the bank lift" ;; esac; done; return 0 ;;
     esac
-    deny "a word names the bank lift (bank-lift.json) in a non-reader command (${c:-unknown}); only cat/less/head/tail/stat/ls/file/wc/test/jq/grep/rg may name it"
+    deny "a word names the bank lift (bank-lift.json or bank-lift.sh) in a non-reader command (${c:-unknown}); only cat/less/head/tail/stat/ls/file/wc/test/jq/grep/rg and \`bash scripts/lib/bank-lift.sh show|clear\` may name it — for a commit message or ticket text that names it, use \`git commit -F <file>\` / a --desc-file"
 }
 
 # Inline interpreter code naming the lift FILE (bank-lift.json, split or
