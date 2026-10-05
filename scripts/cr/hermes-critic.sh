@@ -361,9 +361,12 @@ run_claude_review() {
     # headless-claude-ok: CR critic pass — this invocation IS the product (HIMMEL-2017).
     # HIMMEL-4459: the launch sits INSIDE the keyword-only gate, so a shadowed
     # `return`/`[`/`exit` above can skip a refusal but never reach this launch.
+    # HIMMEL-4461: the `cd` precedes the gate (a shadowed `cd` could export a proxy
+    # variable after it); only the launch sits between gate and launch.
+    cd "$scratch_dir" || { rm -rf "$scratch_dir"; return 1; }
     out=""; crc=1
     if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
-        out="$(cd "$scratch_dir" && PATH="$deduped_path" "${CLAUDE_LANE_CMD[@]}" -p --settings "$critic_settings" --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
+        out="$(PATH="$deduped_path" "${CLAUDE_LANE_CMD[@]}" -p --settings "$critic_settings" --output-format json --permission-mode plan --max-turns 1 --tools "" --strict-mcp-config --mcp-config '{"mcpServers":{}}' ${claude_model_args[@]+"${claude_model_args[@]}"} < "$pack_file" 2>"$err_file")"
         crc=$?
     fi
     [ -n "$scratch_dir" ] && rm -rf "$scratch_dir"
