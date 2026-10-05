@@ -668,39 +668,90 @@ export BANK_LIFT_FILE="$W/home/.himmel/state/bank-lift.json"; mkdir -p "$W/home/
 write_lift() { # <until> <account> [window]
   printf '{"window":"%s","until":%s,"account":"%s","set_by":"t","set_at":"x"}' "${3:-seven_day}" "$1" "$2" > "$BANK_LIFT_FILE"
 }
+LRESET=$((NOW+7200))
+lfx() { # fx plus a seven_day.resets_at, which a lift's validity is bounded by
+  fx "$@" | sed "s/\"seven_day\":{\"utilization\":\([^}]*\)}/\"seven_day\":{\"utilization\":\1,\"resets_at\":$LRESET}/"
+}
 rm -f "$BANK_LIFT_FILE"
 check "no lift, sd=98 -> SKIPPED-BANK (RED control)" SKIPPED-BANK \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 write_lift $((NOW+3600)) "$ACCT"
 check "lift valid, sd=98 -> PROCEED" PROCEED \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 check "lift valid, ledger row carries lift:true" true \
  "$(tail -1 "$W/ledger.jsonl" | jq -r '.lift')"
 check "lift valid + fh=90 -> SKIPPED-BANK (five_hour ceiling binds)" SKIPPED-BANK \
- "$(verdict "$(fx 90 98 "$NOW" "")")"
+ "$(verdict "$(lfx 90 98 "$NOW" "")")"
 write_lift $((NOW-10)) "$ACCT"
 check "lift expired, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 check "no valid lift, ledger row carries lift:false" false \
  "$(tail -1 "$W/ledger.jsonl" | jq -r '.lift')"
 write_lift $((NOW+3600)) "deadbeefdeadbeef"
 check "lift for another account, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 write_lift $((NOW+3600)) "$ACCT" five_hour
 check "lift for wrong window, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 printf '%s' '{not json' > "$BANK_LIFT_FILE"
 check "malformed lift file, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 write_lift $((NOW+3600)) "$ACCT"; printf '%s' '{not json' >> "$BANK_LIFT_FILE"
 check "valid lift object then trailing garbage, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 printf '%s' '{"window":"seven_day","until":"soon","account":"x"}' > "$BANK_LIFT_FILE"
 check "non-numeric lift until, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
- "$(verdict "$(fx 10 98 "$NOW" "")")"
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
 write_lift $((NOW+3600)) "$ACCT"
 check "lift + CADENCE_BANK_MAX_PCT=95 still binds five_hour" SKIPPED-BANK \
- "$(CADENCE_BANK_MAX_PCT=95 verdict "$(fx 96 98 "$NOW" "")")"
+ "$(CADENCE_BANK_MAX_PCT=95 verdict "$(lfx 96 98 "$NOW" "")")"
+write_lift 9999999999 "$ACCT"
+check "far-future until (hand-written) outlives resets_at -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
+write_lift $((LRESET+1)) "$ACCT"
+check "until one second past resets_at -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
+write_lift "$LRESET" "$ACCT"
+check "until == resets_at -> PROCEED" PROCEED \
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
+check "valid lift, cache without resets_at -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+printf '%s' "$(stamp_account "$(lfx 10 98 "$NOW" "")")" > "$W/c.json"
+sed -i.bak 's/"resets_at":[0-9]*/"resets_at":"not-a-date"/' "$W/c.json"
+check "valid lift, unparseable resets_at -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" CADENCE_BANK_LEG=testleg FLEET_PS_CMD="$NO_FLEET" bash "$SUT" </dev/null 2>/dev/null)"
+# The preflight's own identity gate refuses a mismatched cache earlier (BANK-UNKNOWN),
+# so the lift's own account/identity branches are exercised through bank_lift_valid.
+lift_rc() { ( . "$REPO/scripts/lib/bank-lift.sh"; bank_lift_valid "$1" >/dev/null 2>&1; echo $? ); }
+printf '%s' "$(stamp_account "$(lfx 10 98 "$NOW" "")")" > "$W/c.json"
+check "bank_lift_valid, matching cache -> valid (control)" 0 "$(lift_rc "$W/c.json")"
+printf '%s' "$(lfx 10 98 "$NOW" "" | sed 's/^{/{"account":"deadbeefdeadbeef",/')" > "$W/c2.json"
+check "bank_lift_valid, cache of a different account -> no lift" 1 "$(lift_rc "$W/c2.json")"
+check "bank_lift_valid, cache file missing -> no lift" 1 "$(lift_rc "$W/absent.json")"
+mv "$HOME/.claude.json" "$HOME/.claude.json.off"
+check "bank_lift_valid, no identity (~/.claude.json absent) -> no lift" 1 "$(lift_rc "$W/c.json")"
+mv "$HOME/.claude.json.off" "$HOME/.claude.json"
+chmod 666 "$BANK_LIFT_FILE"
+check "lift file world-writable -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
+chmod 620 "$BANK_LIFT_FILE"
+check "lift file group-writable -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
+chmod 600 "$BANK_LIFT_FILE"
+check "lift file owner-only 600 -> PROCEED (mode control)" PROCEED \
+ "$(verdict "$(lfx 10 98 "$NOW" "")")"
+# A foreign owner cannot be created without root: stub `id` so the current uid differs from the file's.
+mkdir -p "$W/idstub"; printf '%s\n' '#!/usr/bin/env bash' 'echo 4242424' > "$W/idstub/id"; chmod +x "$W/idstub/id"
+check "lift file owned by another uid -> no lift" 1 "$(PATH="$W/idstub:$PATH" lift_rc "$W/c.json")"
+check "lift file owned by the current uid -> valid (owner control)" 0 "$(lift_rc "$W/c.json")"
+check "valid lift, sd=100 -> SKIPPED-BANK (never extra_usage)" SKIPPED-BANK \
+ "$(verdict "$(lfx 10 100 "$NOW" "")")"
+check "valid lift, sd=99.9 -> PROCEED" PROCEED \
+ "$(verdict "$(lfx 10 99.9 "$NOW" "")")"
+lift=true; export lift
+check "no lift, inherited env lift=true cannot leak into the ledger row" false \
+ "$(rm -f "$BANK_LIFT_FILE"; verdict "$(fx null null "$NOW" "")" >/dev/null; tail -1 "$W/ledger.jsonl" | jq -r '.lift')"
+unset lift
 rm -f "$BANK_LIFT_FILE"
 
 # bank-lift.sh set|show|clear
@@ -711,7 +762,7 @@ bash "$LIFT" set "$W/lc.json" >/dev/null 2>&1
 check "bank-lift set -> file holds until == resets_at" "$((NOW+7200))" "$(jq -r '.until' "$BANK_LIFT_FILE" 2>/dev/null)"
 check "bank-lift set -> account bound" "$ACCT" "$(jq -r '.account' "$BANK_LIFT_FILE" 2>/dev/null)"
 check "bank-lift show reports VALID" "bank-lift: VALID" "$(bash "$LIFT" show "$W/lc.json" 2>/dev/null | tail -1)"
-check "set lift lets sd=98 PROCEED" PROCEED "$(verdict "$(fx 10 98 "$NOW" "")")"
+check "set lift lets sd=98 PROCEED" PROCEED "$(verdict "$(lfx 10 98 "$NOW" "")")"
 bash "$LIFT" clear >/dev/null 2>&1
 check "bank-lift clear removes the file" absent "$([ -e "$BANK_LIFT_FILE" ] && echo present || echo absent)"
 printf '%s' "{\"account\":\"deadbeefdeadbeef\",\"seven_day\":{\"resets_at\":\"$RESET_ISO\"}}" > "$W/lc2.json"

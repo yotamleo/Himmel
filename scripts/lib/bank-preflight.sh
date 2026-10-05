@@ -73,6 +73,7 @@ LANE="${CADENCE_BANK_LANE:-${LEG_LANE:-native}}"
 is_num() { case "$1" in ''|*[!0-9.]*) return 1 ;; *.*.*) return 1 ;; *[0-9]*) return 0 ;; *) return 1 ;; esac; }
 is_int() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
 
+lift=false  # HIMMEL-4423: never inherit an env value into the ledger row
 emit() {
   [ -d "$LEDGER_DIR" ] || mkdir -p "$LEDGER_DIR" 2>/dev/null
   degraded=false; [ "$usable" -eq 1 ] && degraded=true
@@ -1200,7 +1201,12 @@ lift=false
 if { . "$REPO/scripts/lib/bank-lift.sh"; } 2>/dev/null && bank_lift_valid "$CACHE"; then lift=true; fi
 over_fh=false; over_sd=false
 over "$fh" && over_fh=true
-[ "$lift" = true ] || { over "$sd" && over_sd=true; }
+if [ "$lift" = true ]; then
+  # A lift spends the remaining bank, never extra_usage: a full seven_day still refuses.
+  is_num "$sd" && awk -v a="$sd" 'BEGIN{exit !(a>=100)}' && over_sd=true
+else
+  over "$sd" && over_sd=true
+fi
 if [ "$over_fh" = true ] || [ "$over_sd" = true ]; then
   echo "bank-preflight: at/over ${MAX_PCT}% — skipping leg=$LEG" >&2
   emit SKIPPED-BANK
