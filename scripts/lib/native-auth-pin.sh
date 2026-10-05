@@ -126,13 +126,25 @@ native_auth_pin_env() {
     # SURVIVED the pin -- reported, never masked, so the caller can abort.
     unset "$_name" || _failed=1
   done
-  # Independent verification, by expansion: anything still set is a refusal.
-  # (Mixed-case names are covered by the enumeration above; these four prefix
-  # expansions catch a stripping step that silently did nothing.)
+  # Independent verification: anything still set is a refusal. First a second
+  # enumeration pass (catches mixed-case names a no-op `unset` left behind), then
+  # by expansion -- four prefix expansions, not commands, so unshadowable.
+  _names=$(builtin compgen -v) || return 1
+  for _name in $_names; do
+    case "$_name" in
+      [Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_* | [Cc][Ll][Aa][Uu][Dd][Ee]_[Cc][Oo][Dd][Ee]_[Uu][Ss][Ee]_*) ;;
+      *) continue ;;
+    esac
+    if [[ $_keep_mock = 1 ]]; then
+      case "$_name" in ANTHROPIC_BASE_URL | ANTHROPIC_API_KEY) continue ;; esac
+    fi
+    _failed=1
+  done
   _name="${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}"
   if [[ $_keep_mock = 1 ]]; then
     _name=${_name//ANTHROPIC_BASE_URL/}
     _name=${_name//ANTHROPIC_API_KEY/}
+    _name=${_name//$'\n'/}
   fi
   [[ -z "$_name" ]] || _failed=1
   return "$_failed"

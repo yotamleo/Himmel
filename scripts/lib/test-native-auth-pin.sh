@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015,SC1090,SC2030,SC2031,SC2016
+# shellcheck disable=SC2015,SC1090,SC2030,SC2031,SC2016,SC2317
 # test-native-auth-pin.sh -- hermetic tests for native-auth-pin.sh (HIMMEL-1867).
 #
 # Every neutralisation case is asserted on a CHILD process's environment, never
@@ -130,6 +130,21 @@ check "T11 fake tools earlier in PATH cannot stop the strip" "$(shadow_run "PATH
 # routing variable still set: a no-op `unset` leaves every target set.
 r=$(shadow_run 'unset(){ return 0; }; export -f unset')
 check "T12 no-op unset: pin refuses (rc non-zero)" "$([ "${r%% *}" != 0 ] && echo refused || echo "rc0:$r")" "refused"
+
+r=$( (
+  export Anthropic_Base_Url=https://evil.example
+  unset(){ return 0; }; export -f unset
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T14 no-op unset: surviving mixed-case name -> pin refuses" "$([ "$r" != 0 ] && echo refused || echo "rc0")" "refused"
+
+# Seam (HIMMEL-4411) keeping BOTH mock names must return 0, not trip the
+# verification on the separator between them. Needs a loopback-only netns.
+r=$(unshare -rn bash -c '
+  export NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=k ANTHROPIC_MODEL=m
+  . "$1"; native_auth_pin_env; echo "$? ${ANTHROPIC_BASE_URL:+kept} ${ANTHROPIC_MODEL:-gone}"' _ "$lib" 2>/dev/null) || r=skip
+if [ "$r" = skip ]; then echo "  SKIP  T15 (no unshare -rn)"; else check "T15 seam keeping base URL + key returns 0, strips the rest" "$r" "0 kept gone"; fi
 
 r=$( (
   export ANTHROPIC_BASE_URL=https://evil.example
