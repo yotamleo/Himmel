@@ -110,7 +110,7 @@ native_auth_pin_env() {
   # report. The return value is therefore ADVISORY; callers MUST gate the launch
   # on the keyword-only LAUNCH GATE documented in the file header (HIMMEL-4459).
   unset -f unset builtin command compgen 2>/dev/null
-  local IFS=$'\n' _name _names _failed=0 _keep_mock=0 _nd _line _n=0 _nonlo=0
+  local IFS=$'\n' _name _names _failed=0 _keep_mock=0 _nd _line _n=0 _nonlo=0 _sawlo=0
   # Test seam (HIMMEL-4411): a mock-backed test may keep EXACTLY the base URL and
   # key, and only when the base URL is loopback -- so a headless launch can be
   # pointed at scripts/testing/mock-anthropic without the pin ever letting a real
@@ -122,15 +122,15 @@ native_auth_pin_env() {
   # This bounds an INHERITED variable only: a process that deliberately bridges
   # `lo` to the outside (e.g. a unix-socket relay) is NOT detected by it.
   if [[ "${NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK:-}" = 1 && -r /proc/net/dev ]]; then
-    _nd=$(</proc/net/dev) || _nd=
+    _nd=$(</proc/net/dev) || { _nd=; _nonlo=1; }
     for _line in $_nd; do
       _n=$((_n + 1))
       [[ $_n -le 2 ]] && continue
       _line=${_line%%:*}
       _line=${_line// /}
-      [[ $_line = lo ]] || _nonlo=1
+      if [[ $_line = lo ]]; then _sawlo=1; else _nonlo=1; fi
     done
-    if [[ $_nonlo = 0 ]]; then
+    if [[ $_nonlo = 0 && $_sawlo = 1 ]]; then
       case "${ANTHROPIC_BASE_URL:-}" in
         *@*) ;;
         http://127.0.0.1 | http://127.0.0.1[:/]* | http://localhost | http://localhost[:/]*) _keep_mock=1 ;;
