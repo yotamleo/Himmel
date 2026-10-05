@@ -17,7 +17,7 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 check() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (want '$2', got '$3')"; fi; }
 has() { if grep -qF -- "$2" "$3" 2>/dev/null; then pass "$1"; else fail "$1 (no '$2' in $3)"; fi; }
 
-W="$(mktemp -d)" || exit 1
+W="$(mktemp -d "${TMPDIR:-/tmp}/qmdqual-cad.XXXXXX")" || exit 1
 trap 'rm -rf "$W"' EXIT
 export HOME="$W/home"; mkdir -p "$HOME"
 
@@ -62,7 +62,7 @@ export SENT STUB_RC="$W/rc" STUB_MRR="$W/mrr" QMD_QUALITY_EVAL_CMD="$W/eval.sh" 
     CADENCE_ALERT_DEDUPE_DIR="$W/dedupe" CADENCE_ALERT_SEND_CMD="$W/send.sh"
 GOLD="$W/golden.jsonl"; IDX="$W/index.sqlite"; : > "$GOLD"; : > "$IDX"
 sent_n() { wc -l < "$SENT" | tr -d ' '; }
-n_runs() { find "$STATE/runs" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+n_runs() { local n=0 d; for d in "$STATE"/runs/*/; do [ -d "$d" ] && n=$((n + 1)); done; echo "$n"; }
 run_cad() { QMD_QUALITY_TS="$1" bash "$CAD" run --golden "$GOLD" --index "$IDX" >/dev/null 2>&1; }
 set_mrr() { printf 'lex %s\nhybrid %s\n' "$1" "$2" > "$STUB_MRR"; }
 
