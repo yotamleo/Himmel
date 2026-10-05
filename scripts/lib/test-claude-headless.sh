@@ -413,7 +413,7 @@ printf '%s\n' '[[ $0 = *claude-headless.sh ]] || return 0' > "$SH18/gate.sh"
 { cat "$SH18/gate.sh"; printf '%s\n' 'return(){ :; }' 'readonly ANTHROPIC_BASE_URL'; } > "$SH18/ro.sh"
 shadow_launch() { # <tag> <startup file or ''> -> prints launched|refused
   local art="$W/art18-$1"; rm -f "$art"
-  ( export ANTHROPIC_BASE_URL=https://evil.example ANTHROPIC_API_KEY=x
+  ( [ "${3:-}" = noproxy ] || export ANTHROPIC_BASE_URL=https://evil.example ANTHROPIC_API_KEY=x
     [ -n "$2" ] && export BASH_ENV="$2"
     run_sut "$FAKE_OK" "$art" >/dev/null 2>&1 )
   [ -f "$art" ] && echo launched || echo refused
@@ -422,6 +422,10 @@ check "18 startup-file unset+return function shadows: launch refused" "refused" 
 check "18 startup-file unset+return alias shadows: launch refused" "refused" "$(shadow_launch ali "$SH18/alias.sh")"
 check "18 readonly base URL + return shadow: launch refused" "refused" "$(shadow_launch ro "$SH18/ro.sh")"
 check "18 control: no shadow, proxy vars stripped, launch happens" "launched" "$(shadow_launch ctl '')"
+# Proxy-free controls WITH the shadows installed: the refusals above must come
+# from the gate, not from the shadows breaking the launch path.
+check "18 control: function shadows installed, no proxy: launch happens" "launched" "$(shadow_launch cf "$SH18/funcs.sh" noproxy)"
+check "18 control: alias shadows installed, no proxy: launch happens" "launched" "$(shadow_launch ca "$SH18/alias.sh" noproxy)"
 rm -f "$LIVE_DIR"/*.json
 
 echo "--- $PASS passed, $FAIL failed, $SKIP skipped ---"
