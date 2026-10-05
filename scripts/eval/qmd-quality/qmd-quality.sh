@@ -23,6 +23,10 @@
 # uncached one is refused (exit 3) rather than downloaded. QMD_EMBED_MODEL /
 # QMD_RERANK_MODEL select candidate models, exactly as qmd itself reads them.
 #
+# Embed model (HIMMEL-4439): with QMD_EMBED_MODEL unset the eval adopts the
+# index's single embed model; a set model that differs from the index's (or an
+# index mixing models) is refused with exit 2, naming both.
+#
 # Output in <out>: runs.jsonl (ranked lists + per-query ms), scores.tsv (also
 # printed), latency.tsv (median and p90 ms per mode).
 # QMD_EVAL_TIMEOUT_SECS bounds each mode (default 1800 s; the whole process group
@@ -87,6 +91,33 @@ model_file() {
   file="${rest##*/}"
   printf 'hf_%s_%s\n' "$user" "$file"
 }
+
+# The SDK embeds queries with QMD_EMBED_MODEL (else the gemma default), and never
+# checks which model made the index's vectors (HIMMEL-4232), so a mismatch gives
+# errors or garbage on every vec/hybrid query. Unset: adopt the index's own model,
+# as qmd-embed-model.sh and doctor C49 judge it; set but different: refuse, naming
+# both. Only modes that embed a query (anything but lex) are checked. An index
+# that cannot be read here is left to the eval to report.
+embed_modes="$(printf '%s\n' "$MODES" | tr ',' '\n' | grep -vx lex)"
+if [ -z "$embed_modes" ]; then
+  :
+elif ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "qmd-quality: sqlite3 not on PATH; the index's embed model was NOT checked against QMD_EMBED_MODEL" >&2
+else
+  if idx_models="$(sqlite3 -readonly "$INDEX" "SELECT DISTINCT model FROM content_vectors ORDER BY model;" 2>/dev/null)" && [ -n "$idx_models" ]; then
+    if [ -z "${QMD_EMBED_MODEL:-}" ] && [ "$(printf '%s\n' "$idx_models" | wc -l)" -eq 1 ]; then
+      QMD_EMBED_MODEL="$idx_models"; export QMD_EMBED_MODEL
+      echo "qmd-quality: embed model taken from the index: $QMD_EMBED_MODEL" >&2
+    else
+      want="${QMD_EMBED_MODEL:-hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf}"
+      if grep -qvxF -- "$want" <<<"$idx_models"; then
+        echo "qmd-quality: embed model mismatch: eval would use '$want' but the index holds vectors from: $(printf '%s' "$idx_models" | tr '\n' ' ')" >&2
+        echo "qmd-quality: set QMD_EMBED_MODEL to the index's single model, or evaluate an index built with one model" >&2
+        exit 2
+      fi
+    fi
+  fi
+fi
 
 MODELS_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/qmd/models"
 need="${QMD_EMBED_MODEL:-hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf}"
