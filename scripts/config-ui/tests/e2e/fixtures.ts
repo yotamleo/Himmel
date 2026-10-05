@@ -1,6 +1,7 @@
 // HIMMEL-4400: fixture feeds + the server harness. The bundle order and titles
-// come from the real scripts/himmelctl/lib/feed-bundles.json, so a reorder
-// there fails the suite; the rows are synthetic and deterministic.
+// come from the real scripts/himmelctl/lib/feed-bundles.json, so the suite
+// checks the UI renders the CURRENT table order (a reorder there is followed,
+// not flagged); the rows are synthetic and deterministic.
 import { spawn, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -93,7 +94,11 @@ export async function boot(v: Variant = {}): Promise<Harness> {
     stateFiles: () => (existsSync(state) ? readdirSync(state) : []),
     stop: async () => {
       child.kill("SIGTERM");
-      await new Promise((r) => (child.exitCode !== null || child.signalCode !== null ? r(null) : child.once("exit", r)));
+      await new Promise((r) => {
+        if (child.exitCode !== null || child.signalCode !== null) return r(null);
+        child.once("exit", r);
+        setTimeout(() => { child.kill("SIGKILL"); r(null); }, 5_000).unref();
+      });
       rmSync(dir, { recursive: true, force: true });
     },
   };
