@@ -414,12 +414,12 @@ arith_fold() {
         [ -n "$n" ] || continue
         re="(^|[^A-Za-z0-9_])${n}${ws}(\\[\\])?${ws}((\\+\\+|--)|(([-+*/%&|^]|<<|>>)?=([^=]|\$)))"
         if [[ $flat =~ $re ]]; then
-            UNSET_NAMES="$UNSET_NAMES $n"
+            unset_add "$n"
             continue
         fi
         re="(\\+\\+|--)${ws}${n}(\$|[^A-Za-z0-9_])"
         if [[ $flat =~ $re ]]; then
-            UNSET_NAMES="$UNSET_NAMES $n"
+            unset_add "$n"
         fi
     done
     while [ "$k" -lt "$ns" ]; do
@@ -1231,6 +1231,49 @@ raw_mention() {
 # child instead -- it feeds the segment-local `names`, not this global.
 UNSET_NAMES=''
 
+# HIMMEL-4399: every write to UNSET_NAMES goes through unset_add, which adds
+# each whitespace-split word ONCE. scan_segment's `names` already carries the
+# inherited UNSET_NAMES, so the old plain append made an assignment-only
+# segment append the list to itself -- it doubled per segment and `a=;` x 30
+# pinned a CPU for hours. Dedupe keeps the SET of names unchanged (the words
+# a later unquoted expansion splits out) and bounds its length. Past
+# UNSET_CAP distinct names the hook DENIES: never allow, never truncate.
+# ponytail: 256 distinct names is a fixed ceiling (a longer genuine list
+# over-denies), raise UNSET_CAP if a real payload trips it.
+UNSET_CAP=256
+unset_add() {  # unset_add <word>...
+    local arg n
+    local -a ws all
+    for arg in "$@"; do
+        IFS=$' \t\n' read -r -d '' -a ws <<<"$arg"
+        for n in ${ws[@]+"${ws[@]}"}; do
+            case " $UNSET_NAMES " in *" $n "*) continue ;; esac
+            UNSET_NAMES="$UNSET_NAMES $n"
+            IFS=$' \t\n' read -r -d '' -a all <<<"$UNSET_NAMES"
+            [ "${#all[@]}" -le "$UNSET_CAP" ] || deny_unset_cap
+        done
+    done
+}
+
+deny_unset_cap() {  # OUR text only, never raw command text (HIMMEL-4399).
+    local msg reason
+    msg="block-chokepoint-env-prefix: refusing a command that assigns or clears more than $UNSET_CAP distinct variable names in the current shell.
+
+    This guard tracks every name a command assigns or clears in the current
+    shell so a later segment cannot run a sanctioned chokepoint with a
+    cleared seam variable. Past $UNSET_CAP names it fails closed rather than
+    track an unbounded list. Split the command into smaller ones.
+
+    To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
+    shell that launched Claude Code (a per-call prefix does not reach a
+    hook process); restart without it to re-enable the guard."
+    reason=$(printf '%s' "$msg" | jq -Rs . 2>/dev/null) \
+        || reason='"block-chokepoint-env-prefix: command assigns or clears too many variable names to track -- split it"'
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"
+    printf '%s\n' "$msg" >&2
+    exit 2
+}
+
 # check_invocation <invoked-program word> <assignment-name list> -- the
 # invariant's deny point, and the registry's ONLY reader. Deny iff the
 # invoked-program token IS a registered chokepoint path (exact, or
@@ -1668,7 +1711,7 @@ scan_segment() {
         for n in $ALL_SEAM_VARS; do
             [ -n "$n" ] || continue
             if [[ $seg =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                UNSET_NAMES="$UNSET_NAMES $n"
+                unset_add "$n"
                 # ...and into THIS segment's own names: `bash chokepoint.sh
                 # $[ SEAM = 0 ]` expands before the exec, so the call in the
                 # same segment must see it (CodeRabbit, PR #853 class sweep).
@@ -1921,7 +1964,7 @@ scan_segment() {
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
                     -*) ;;
-                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]}" ;;
+                    *) unset_add "${W[$k]}" ;;
                     esac
                     k=$((k + 1))
                 done
@@ -1945,7 +1988,7 @@ scan_segment() {
                 while [ "$k" -lt "$nw" ]; do
                     case "${W[$k]}" in
                     -*) ;;
-                    *) UNSET_NAMES="$UNSET_NAMES ${W[$k]%%=*}" ;;
+                    *) unset_add "${W[$k]%%=*}" ;;
                     esac
                     k=$((k + 1))
                 done
@@ -1987,7 +2030,7 @@ scan_segment() {
                     for n in $ALL_SEAM_VARS; do
                         [ -n "$n" ] || continue
                         if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                            UNSET_NAMES="$UNSET_NAMES $n"
+                            unset_add "$n"
                         fi
                     done
                     k=$((k + 1))
@@ -2014,7 +2057,7 @@ scan_segment() {
                     for n in $ALL_SEAM_VARS; do
                         [ -n "$n" ] || continue
                         if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                            UNSET_NAMES="$UNSET_NAMES $n"
+                            unset_add "$n"
                         fi
                     done
                     k=$((k + 1))
@@ -2037,7 +2080,7 @@ scan_segment() {
                     for n in $ALL_SEAM_VARS; do
                         [ -n "$n" ] || continue
                         if [[ "${W[$k]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                            UNSET_NAMES="$UNSET_NAMES $n"
+                            unset_add "$n"
                         fi
                     done
                     k=$((k + 1))
@@ -2059,7 +2102,7 @@ scan_segment() {
                             for n in $ALL_SEAM_VARS; do
                                 [ -n "$n" ] || continue
                                 if [[ "${W[$((k + 1))]}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                                    UNSET_NAMES="$UNSET_NAMES $n"
+                                    unset_add "$n"
                                 fi
                             done
                         fi
@@ -2068,7 +2111,7 @@ scan_segment() {
                         for n in $ALL_SEAM_VARS; do
                             [ -n "$n" ] || continue
                             if [[ "${W[$k]#-v}" =~ (^|[^A-Za-z0-9_])"$n"($|[^A-Za-z0-9_]) ]]; then
-                                UNSET_NAMES="$UNSET_NAMES $n"
+                                unset_add "$n"
                             fi
                         done
                         k=$((k + 1)); continue ;;
@@ -2095,7 +2138,7 @@ scan_segment() {
     # assignment with no trailing command doesn't export or set anything)
     # and are excluded by the phase check.
     if [ "$phase" = "start" ] && [ "$asg_ok" = "1" ]; then
-        UNSET_NAMES="$UNSET_NAMES $names"
+        unset_add "$names"
     fi
     return 0
 }
