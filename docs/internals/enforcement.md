@@ -2269,7 +2269,11 @@ HIMMEL-4458 closed these gaps:
   `scripts/lib/bank-lift.sh` or `./scripts/lib/bank-lift.sh` from that root
   with no `cd` in the command, or an absolute / `~` / `$HOME` path. A planted
   `/tmp/x/bank-lift.sh show`, a relative path from another cwd, or a
-  `worktrees/w1/../../..` escape denies.
+  `worktrees/w1/../../..` escape denies. The script itself must be a regular
+  file, not a symlink, whose directory resolves physically to that checkout's
+  `scripts/lib`: a symlinked `scripts/lib` or `bank-lift.sh` pointing out of
+  the checkout denies, as does a path that does not resolve. A symlinked path
+  to the checkout itself still passes, since it resolves to the same root.
 - **`cp --parents` / `rsync -R` (`--relative`).** These recreate the source's
   path under the destination, so the created path (destination + source,
   rsync's `/./` marking the start) is judged: a glob-spelled
@@ -2316,6 +2320,12 @@ HIMMEL-4458 closed these gaps:
   list; symlink-member traversal (a member symlink then a member written through
   it) relies on GNU tar's and bsdtar's default protections, which `-P` is what
   disables; `cpio -p` is judged only by its directory operand.
+- **Computed destinations.** An extraction destination that cannot be
+  resolved — `-C "$D"`, `--directory="$D"`, `unzip -d "$D"`, `cpio -D "$D"`,
+  a `cpio -p` directory operand, `$(…)` or backticks — denies, like an
+  unresolved `cd`; `$HOME` spellings still resolve. A variable assigned a
+  literal earlier in the same command is not tracked, so
+  `S=/tmp/s; tar -xf a -C $S/x` denies too: spell the literal path.
 - **Linear scan.** The per-word lowercase fork in the name rule and the
   per-clause basename forks are gone, so a 20k-word command takes well under a
   second instead of a minute (the hook timed out on ~10k words).

@@ -535,7 +535,8 @@ _sys_word() {
 # `show`): scripts/lib/bank-lift.sh or ./scripts/lib/bank-lift.sh from a cwd
 # that is LIFT_REPO or one of its .claude/worktrees/* (no cd in the command),
 # or an absolute / ~ / $HOME path whose checkout dir resolves, physically, to
-# one of those.
+# one of those; the script itself must be a regular file (no symlink) whose
+# dir resolves physically to that checkout's scripts/lib.
 # shellcheck disable=SC2088,SC2016  # literal ~ / $HOME spellings are matched as text
 _repo_lift_script() {
     local w="$1" p d
@@ -551,6 +552,10 @@ _repo_lift_script() {
     _is_dynamic "$p" && return 1
     case "$p" in */scripts/lib/bank-lift.sh) ;; *) return 1 ;; esac
     d=$(CDPATH='' cd -P -- "${p%/scripts/lib/bank-lift.sh}" 2>/dev/null && pwd -P) || return 1
+    # The script itself, every component: a symlinked scripts/lib or
+    # bank-lift.sh can point out of the checkout (panel r3).
+    [ -f "$p" ] && [ ! -L "$p" ] || return 1
+    [ "$(CDPATH='' cd -P -- "${p%/bank-lift.sh}" 2>/dev/null && pwd -P)" = "$d/scripts/lib" ] || return 1
     [ "$d" = "$LIFT_REPO" ] && return 0
     case "$d" in
         "$LIFT_REPO"/.claude/worktrees/*/*) return 1 ;;
@@ -1191,6 +1196,11 @@ check_extract() {
         [ "$n" = 0 ] && return 0
     fi
     for a in "${dests[@]}"; do
+        # A computed destination ($D, $(...), `...`; $HOME spellings resolve)
+        # cannot be shown to stay off HOME: fail closed, like an unresolved cd.
+        case "$(_expand "$a")" in
+            *'$'*|*'`'*) deny "$c extracts into a computed destination ($a), which may be HOME or ~/.himmel; name a literal path" ;;
+        esac
         case "$a" in
             /*|'~'*|'$'*) ;;
             *) [ "$CD_HOME" = 1 ] && deny "$c extracts into a relative dir ($a) after a cd into HOME or ~/.himmel"
