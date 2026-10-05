@@ -50,7 +50,8 @@
 #     reaches the reader via `$1`. That is the variable-indirection gap below,
 #     not a literal arg. Scanning stops at the body's closing quote, so a
 #     trailing positional after a NON-secret body read is not over-blocked.
-#     ponytail: variable bodies (`bash -c "$CMD"`), process substitution
+#     ponytail: variable bodies (`bash -c "$CMD"`), `eval` bodies
+#     (`eval 'cat .env'`, not rescanned), process substitution
 #     (`bash <(echo 'cat .env')`), `-c` after a non-flag operand,
 #     and nested quoting the quote-naive body close misreads stay unscanned
 #     (a glob in a later body statement, `bash -c 'echo; cat .e*'`, IS
@@ -433,8 +434,12 @@ rs_tokens() {
             # HIMMEL-4492: a word whose LAST char opens a quote it never
             # closes is the tail of a `-c` body the clause split cut off
             # (`bash -c 'echo; cat .e*'` leaves `.e*'`). That quote is the
-            # body's closing one, so glob the word without it.
-            if [ "$off" = 0 ] && [ -n "$q" ] && [ "${raw: -1}" = "$q" ]; then
+            # body's closing one, so glob the word without it. A word that is
+            # ONLY the quote char is a body's OPENING quote cut off by leading
+            # whitespace (`bash -c ' cat .env'`): keep it, or the token vanishes
+            # and scan_clause takes `cat` as a one-word unquoted body.
+            if [ "$off" = 0 ] && [ -n "$q" ] && [ "${#raw}" -gt 1 ] \
+                && [ "${raw: -1}" = "$q" ]; then
                 raw=${raw%?}
             fi
             set +f
@@ -776,8 +781,12 @@ scan_clause() {
                 # -ce) arms the next operand as the body. A non-flag operand
                 # BEFORE any -c (`bash run.sh`) means this isn't a -c
                 # invocation → no body.
+                # A `-c` flag where an option VALUE was due (`bash -o -c '...'`)
+                # still arms the body: the shell refuses that line, so reading
+                # it as a -c costs nothing and keeps base's deny.
                 if [ "$interp_val" = "1" ]; then
                     interp_val=0
+                    case "${tok//[\'\"\\]/}" in -c|-*c) found_c=1 ;; esac
                 else
                     case "${tok//[\'\"\\]/}" in
                         --rcfile|--init-file)   interp_val=1 ;;

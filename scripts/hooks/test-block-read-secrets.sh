@@ -620,7 +620,23 @@ for c in \
     "env -S 'cat .env'" \
     "bash -c 'timeout 5 cat .env'" \
     "bash -c 'echo hi; cat .e*'" \
-    "bash -c \"echo hi; cat .e*\""; do
+    "bash -c \"echo hi; cat .e*\"" \
+    "bash -c ' cat .env'" \
+    "bash -c \"  cat .env\"" \
+    "sh -c ' cat .env'" \
+    "zsh -c ' cat .env'" \
+    "bash -lc ' cat .env'" \
+    "nice bash -c ' cat .env'" \
+    "bash -c ' head -n1 .env'" \
+    "bash -c ' grep -r . .env'" \
+    "bash -c ' cat id_rsa'" \
+    "bash -c ' cat secrets.yaml'" \
+    "bash -c ' cat .env; echo done'" \
+    "bash -c '  cat .env'" \
+    "bash -c ' cat .e*'" \
+    "bash -o -c 'cat .env'" \
+    "bash -lo -c 'cat .env'" \
+    "bash -O -c 'cat .env'"; do
     assert_rc "4492 deny: $c" 2 "$(run_in_nestdir "$c")"
 done
 for c in \
