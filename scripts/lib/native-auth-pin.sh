@@ -60,17 +60,19 @@
 #
 # bash 3.2-safe (macOS ships 3.2) and Git-Bash-safe: no `declare -A`, no
 # `${var^^}` (the prefix test is a case-insensitive glob), no `grep -P`;
-# enumeration is the `compgen -v` builtin -- no external tool, so a shadowed
-# PATH entry cannot blind it (HIMMEL-4459). JSON screening shells out to
+# enumeration is the `"${!A@}"`-style prefix expansion -- no external tool and no
+# builtin, so neither a shadowed PATH entry nor a function or alias can blind it
+# (HIMMEL-4459, HIMMEL-4461). JSON screening shells out to
 # node -- an established himmel dependency (claude-glm's screen does the same).
 #
 # LAUNCH GATE (HIMMEL-4459) -- the guarantee, and what carries it.
-# native_auth_pin_env returns non-zero when it cannot enumerate or a target
-# variable is still set, BUT ITS RETURN VALUE IS ADVISORY: any builtin it uses
-# (`unset`, `return`, `builtin`, `compgen`) can be shadowed by an exported or
-# in-shell function, an alias, or a BASH_ENV file, and with `unset` and `return`
-# both shadowed it falls through rc 0 with the proxy variables still set. So
-# every caller gates the LAUNCH on a condition built only from shell keywords and
+# native_auth_pin_env returns non-zero when a target variable is still set. Since
+# HIMMEL-4461 that verdict rides on no builtin: enumeration and verification are
+# expansions and the status is a final `[[ ]]` (no `return`), so a function or
+# alias shadowing `unset`/`return`/`builtin`/`compgen` can stop the strip but not
+# hide it. The limits below (aliased keywords, BASH_ENV DEBUG traps) still apply
+# to the function, and a launch must not depend on a function call, so every
+# caller ALSO gates the LAUNCH on a condition built only from shell keywords and
 # expansions (`[[ ]]`, `case`, `&&`, `${!PREFIX*}`, `$(<file)`) -- no function
 # call, builtin or external command, hence nothing to shadow. It is a documented
 # snippet, deliberately NOT a function (a function is shadowable). After the pin:
@@ -92,9 +94,12 @@
 #
 # The gate checks the exact-case prefixes (ANTHROPIC_ / anthropic_ and the
 # CLAUDE_CODE_USE_ pair) -- the names a child on Linux/macOS actually reads, since
-# environment names are case-sensitive there. The pin itself still strips every
-# mixed-case spelling for the case-insensitive Windows reader (parked,
-# HIMMEL-4102); extending the gate to mixed case is tracked in HIMMEL-4461.
+# environment names are case-sensitive there. The pin itself strips every
+# mixed-case spelling for the case-insensitive Windows reader, and refuses
+# (non-zero) when one survives (HIMMEL-4461).
+# ponytail: the launch gate is exact-case and callers ignore the pin's rc, so on a
+# case-insensitive Windows reader a mixed-case survivor of a shadowed `unset` is
+# not refused at launch; extend the gate when Windows is unparked (HIMMEL-4102).
 #
 # What this guarantees (HIMMEL-4459, narrowed by HIMMEL-4461): an INHERITED
 # exact-case variable cannot reach a launch through these callers, and a shadowed
@@ -110,8 +115,8 @@
 #   - an env-selected launcher: LQ_CLAUDE_BIN, LQ_LANE_BIN, CRYSTALLIZE_CLAUDE_BIN
 #     and HIMMEL_CLAUDE_BIN name the binary that runs, so whoever sets them
 #     controls the launch outright;
-#   - a mixed-case spelling (see above): the pin strips it, the gate does not
-#     re-check it (HIMMEL-4461); or the PowerShell twin.
+#   - a mixed-case spelling at launch (see above): the pin strips it and its rc
+#     refuses a survivor, the gate does not re-check it; or the PowerShell twin.
 
 # The predicate lives once, as the case glob inside native_auth_pin_env (no
 # fork per variable -- a `tr` per variable was brutally slow on Windows). The
@@ -120,16 +125,19 @@
 # header's CANONICAL VARIABLE SET block is the definition they are checked against.
 
 native_auth_pin_env() {
-  # No external tool and no process substitution anywhere in this function: the
-  # enumeration is `compgen -v` (a builtin) and the checks are `[[ ]]` / case /
-  # parameter expansion, none of which a PATH entry can replace. A function named
-  # like a builtin CAN shadow it, so the first line removes functions of the names
-  # used here, and the final step re-checks with `${!PREFIX*}` expansions. That
-  # is best effort: shadowing `unset` AND `return` defeats this function's own
-  # report. The return value is therefore ADVISORY; callers MUST gate the launch
-  # on the keyword-only LAUNCH GATE documented in the file header (HIMMEL-4459).
-  unset -f unset builtin command compgen 2>/dev/null
-  local IFS=$'\n' _name _names _failed=0 _keep_mock=0 _nd _line _n=0 _nonlo=0 _sawlo=0
+  # No external tool, no builtin in the decision path and no `return`: the
+  # enumeration and the verification are `${!X@}` expansions, the checks are
+  # `[[ ]]` / case / `for`, and the verdict is the final `[[ ]]`'s status
+  # (HIMMEL-4461). The one builtin that acts is `unset`; a shadowed `unset` can
+  # stop the strip but not hide it -- the expansion pass sees the survivor and
+  # the pin returns non-zero. Callers still gate the launch on the keyword-only
+  # LAUNCH GATE in the file header (defence in depth, and the limits listed there
+  # -- aliased keywords, BASH_ENV DEBUG traps -- apply to this function too).
+  unset -f unset 2>/dev/null
+  local IFS=$'\n' _name _failed _keep_mock _nd _line _n _nonlo _sawlo
+  # Plain assignments, not `local` initialisers: a shadowed `local` must not leave
+  # an inherited _keep_mock=1 in force.
+  _failed=0 _keep_mock=0 _n=0 _nonlo=0 _sawlo=0
   # Test seam (HIMMEL-4411): a mock-backed test may keep EXACTLY the base URL and
   # key, and only when the base URL is loopback -- so a headless launch can be
   # pointed at scripts/testing/mock-anthropic without the pin ever letting a real
@@ -156,10 +164,12 @@ native_auth_pin_env() {
       esac
     fi
   fi
-  _names=$(builtin compgen -v) || return 1
-  # An enumeration that yields nothing cannot be trusted (any real shell has PATH).
-  [[ -n "$_names" ]] || return 1
-  for _name in $_names; do
+  # Enumerate by EXPANSION (HIMMEL-4461): "${!A@}" and friends are parameter
+  # expansions, not commands, so no function, alias or PATH entry can blind them,
+  # and every canonical name -- any case mix -- starts with one of these four
+  # letters. Each expansion still scans bash's whole variable table (as compgen
+  # does), so a huge environment stays slow -- measured, deferred (HIMMEL-4461).
+  for _name in "${!A@}" "${!a@}" "${!C@}" "${!c@}"; do
     case "$_name" in
       [Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_* | [Cc][Ll][Aa][Uu][Dd][Ee]_[Cc][Oo][Dd][Ee]_[Uu][Ss][Ee]_*) ;;
       *) continue ;;
@@ -171,11 +181,10 @@ native_auth_pin_env() {
     # SURVIVED the pin -- reported, never masked, so the caller can abort.
     unset "$_name" || _failed=1
   done
-  # Independent verification: anything still set is a refusal. First a second
-  # enumeration pass (catches mixed-case names a no-op `unset` left behind), then
-  # by expansion -- four prefix expansions, not commands, so unshadowable.
-  _names=$(builtin compgen -v) || return 1
-  for _name in $_names; do
+  # Independent verification by the same expansions: anything still set (a no-op
+  # `unset`, a readonly) is a refusal. Exact-name matches only -- never substring
+  # removal, which would erase a name built from the two kept ones.
+  for _name in "${!A@}" "${!a@}" "${!C@}" "${!c@}"; do
     case "$_name" in
       [Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_* | [Cc][Ll][Aa][Uu][Dd][Ee]_[Cc][Oo][Dd][Ee]_[Uu][Ss][Ee]_*) ;;
       *) continue ;;
@@ -185,14 +194,9 @@ native_auth_pin_env() {
     fi
     _failed=1
   done
-  _name="${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}"
-  if [[ $_keep_mock = 1 ]]; then
-    _name=${_name//ANTHROPIC_BASE_URL/}
-    _name=${_name//ANTHROPIC_API_KEY/}
-    _name=${_name//$'\n'/}
-  fi
-  [[ -z "$_name" ]] || _failed=1
-  return "$_failed"
+  # The verdict is the status of this last keyword test -- no `return`, which a
+  # function could shadow into a fall-through.
+  [[ $_failed = 0 ]]
 }
 
 native_auth_pin_screen_settings() { # $1 = --settings value (file path or inline JSON)
