@@ -1936,6 +1936,16 @@ doing its job: a token already consumed as a preceding `-f`/`-e`'s own value
 is skipped (`grep -f --file=.env` opens a file literally named
 `--file=.env`, not the secret).
 
+**Nested shell bodies are re-scanned as command lines (HIMMEL-4492).** An
+interpreter `-c` body (bash, sh, zsh, dash, ksh, ash) is scanned again as its
+own command line, recursively, so a glob read inside it (`bash -c 'cat .e*'`) expands
+against cwd exactly like a top-level one. Wrappers (`timeout`, `nice`, `sudo`
+and their flag values) and quoted command words (`'cat' .env`) no longer hide
+the command. Nesting deeper than 4 levels denies: a body the guard cannot read
+fully counts as unreadable, which is fail-closed. An `eval` body is **not**
+re-scanned: `eval 'cat .env'` is allowed, as it was before. Remaining ceilings are
+named as `ponytail:` notes in the hook header (HIMMEL-4438).
+
 ### `guard-memory-capture.sh` — auto-memory capture guard (HIMMEL-570 / HIMMEL-1088)
 
 **Ceiling, and the gap the guard cannot close alone (HIMMEL-3313 / HIMMEL-3314).**
