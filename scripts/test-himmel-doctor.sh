@@ -5351,6 +5351,13 @@ if grepq "$out" 'INFO C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index';
 else
     fail "C44 qmd not wanted -> $(printf '%s' "$out" | grep -A1 C44)"
 fi
+printf '{"items":[{"id":"qmd-index","severity":"n/a"}]}' > "$t/status-qmd-unk.json"
+out="$(DOCTOR_STATUS_JSON="$t/status-qmd-unk.json" HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 desired missing from status -> stays FAIL"
+else
+    fail "C44 desired missing from status -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
 rm -rf "$t"
 
 echo "== C44: qmd not resolvable -> INFO skip, no FAIL =="

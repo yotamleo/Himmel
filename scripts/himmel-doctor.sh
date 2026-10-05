@@ -3327,7 +3327,7 @@ check_c44_skill_index() {
             sj="$("$node_bin" "$REPO_ROOT/scripts/himmelctl/bin.js" status --json 2>/dev/null)"
         fi
         if [ -n "$sj" ] && command -v jq >/dev/null 2>&1; then
-            qmd_wanted="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select(.id == "qmd-index" or .id == "qmd-binary")] | if length == 0 then empty elif any(.[]; .desired == true) then "1" else "0" end' 2>/dev/null)" || qmd_wanted=""
+            qmd_wanted="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select(.id == "qmd-index" or .id == "qmd-binary")] | if length == 0 then empty elif any(.[]; .desired == true) then "1" elif all(.[]; .desired == false) then "0" else empty end' 2>/dev/null)" || qmd_wanted=""
         fi
         if [ "$qmd_wanted" = 0 ]; then
             emit INFO C44-skill-index "qmd items not wanted on this install (himmelctl status) -- /skill-find index not checked"
