@@ -108,5 +108,10 @@ check "7: no ticket in doc name -> no Jira call" "$(wc -c < "$STUB_LOG" | tr -d 
 LEG_JIRA_STATUS=0 STUB_STATUS="To Do" bash "$APPEND" "$d" "LIVE — y" >/dev/null 2>&1
 check "8: LEG_JIRA_STATUS=0 -> no Jira call" "$(wc -c < "$STUB_LOG" | tr -d ' ')" 0
 
+# --- 9. opt-out holds on a direct helper call (post-merge step) ----------------
+: > "$STUB_LOG"
+LEG_JIRA_STATUS=0 STUB_STATUS="In Review" bash "$SUT" HIMMEL-9001 "In Progress" --allow-back >/dev/null 2>&1
+check "9: LEG_JIRA_STATUS=0 on a direct call -> no Jira call" "$(wc -c < "$STUB_LOG" | tr -d ' ')" 0
+
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed"; exit 1

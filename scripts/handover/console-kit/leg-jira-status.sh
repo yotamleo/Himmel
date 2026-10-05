@@ -41,6 +41,11 @@ git_env_scrub
 
 warn() { echo "WARN leg-jira-status: $* (continuing; the leg is not blocked)" >&2; exit 0; }
 
+[ "${LEG_JIRA_STATUS:-1}" != 0 ] || exit 0   # operator opt-out, honoured on a direct call too
+
+# ponytail: the get-then-transition pair is not atomic, so a status change landing between
+# the two can be overwritten; Jira offers no conditional transition, upgrade path = none needed
+# while a leg is the only writer of its own ticket.
 case "$KEY" in
     [A-Za-z]*-[0-9]*) ;;
     *) warn "'$KEY' is not a ticket key" ;;
