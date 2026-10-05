@@ -40,7 +40,7 @@ const src = await Bun.file(serverPath).text()
 // HIMMEL-4446: without the plugin's node_modules server.ts dies at import
 // (5 ms, no stderr line, no proxy hit) and every case below fails with a
 // misleading "expected true, got false". Missing deps are an environment
-// problem: skip locally with the fix named, but fail loudly under CI so a
+// problem: skip the server-booting cases locally with the fix named, but fail loudly under CI so a
 // broken `bun install` there can never become a silent skip.
 const depMissing = (() => {
   try {
@@ -62,7 +62,7 @@ test('plugin dependencies are installed (fails under CI only)', () => {
   if (inCI) expect(depMissing).toBe(false)
 })
 
-describe.skipIf(skipNoDeps)('telegram-himmel fork — TELEGRAM_OWN_POLLER gate survives an upstream re-sync', () => {
+describe('telegram-himmel fork — TELEGRAM_OWN_POLLER gate survives an upstream re-sync', () => {
   test('an unusable ps still kills the stale poller (Windows)', () => {
     // Upstream 0.0.7 gates the SIGTERM on execFileSync('ps', …) inside one
     // broad try/catch. `ps` THROWS on Windows (verified: it throws even for the
