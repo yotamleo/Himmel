@@ -66,6 +66,16 @@ expect 2 "repo whose origin remote names salus -> denied" \
     "$(payload "$TOOL" "$REMOTE_ONLY" "hello")"
 expect 2 ".salus marker in an ancestor -> denied" \
     "$(payload "$TOOL" "$MARKED/deep/dir" "hello")"
+# Symlinks in (HIMMEL-4328 CR codex-2): non-git dirs, so only the canonical
+# cwd can reveal salus / the marker.
+mkdir -p "$TMP/data/salus-exports/batch" "$TMP/data/nogit-marked/sub" "$TMP/links"
+: > "$TMP/data/nogit-marked/.salus"
+ln -s "$TMP/data/salus-exports/batch" "$TMP/links/exports"
+ln -s "$TMP/data/nogit-marked/sub" "$TMP/links/marked-sub"
+expect 2 "cwd is a symlink into a dir whose real path names salus -> denied" \
+    "$(payload "$TOOL" "$TMP/links/exports" "hello")"
+expect 2 "cwd is a symlink into a .salus-marked tree -> denied" \
+    "$(payload "$TOOL" "$TMP/links/marked-sub" "hello")"
 expect 2 "himmel cwd, payload names a salus path -> denied" \
     "$(payload "$TOOL" "$HIMMEL" "restyle $SALUS/src/app/page.tsx")"
 expect 2 "himmel cwd, payload names salus in mixed case -> denied" \
@@ -78,6 +88,12 @@ expect 2 "cwd under a phi-roots root -> denied" \
     "$(payload "$TOOL" "$PHI_ROOT" "hello")"
 expect 0 "himmel cwd, unrelated payload with phi-roots configured -> allowed" \
     "$(payload "$TOOL" "$HIMMEL" "make a landing page")"
+# A symlink into a PHI root whose own path names nothing (HIMMEL-4328 CR
+# codex-2): the cwd must be canonicalized before the root comparison.
+mkdir -p "$TMP/links"
+ln -s "$PHI_ROOT" "$TMP/links/records-link"
+expect 2 "cwd is a symlink into a phi-roots root -> denied (canonical cwd)" \
+    "$(payload "$TOOL" "$TMP/links/records-link" "hello")"
 chmod 000 "$HOME/.config/claude-glm/phi-roots"
 if [ -r "$HOME/.config/claude-glm/phi-roots" ]; then
     pass=$((pass + 1))   # running as root: unreadability cannot be staged
@@ -117,6 +133,15 @@ if [ -n "$matcher" ] && printf '%s\n' "$TOOL" | grep -Eq "^(${matcher})$" \
 else
     fail=$((fail + 1)); echo "FAIL: hooks.json does not route $TOOL to block-agent-native-egress.sh (matcher='$matcher')"
 fi
+# Claude Code's matcher is case-sensitive while the hook lowercases, so the
+# matcher must spell its own case-insensitivity (HIMMEL-4328 CR codex-1).
+for name in 'mcp__Agent-Native__x' 'mcp__plugin_builder-visual_AGENT_NATIVE-dispatch__y' 'mcp__agent_Native__z'; do
+    if [ -n "$matcher" ] && printf '%s\n' "$name" | grep -Eq "^(${matcher})$"; then
+        pass=$((pass + 1))
+    else
+        fail=$((fail + 1)); echo "FAIL: hooks.json matcher does not route mixed-case $name (matcher='$matcher')"
+    fi
+done
 
 echo "test-block-agent-native-egress: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

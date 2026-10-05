@@ -112,7 +112,7 @@
         ]
       },
       {
-        "matcher": "mcp__.*agent[-_]native.*",
+        "matcher": "mcp__.*[Aa][Gg][Ee][Nn][Tt][-_][Nn][Aa][Tt][Ii][Vv][Ee].*",
         "hooks": [
           {
             "type": "command",

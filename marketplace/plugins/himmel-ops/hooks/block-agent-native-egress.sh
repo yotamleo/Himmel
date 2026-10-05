@@ -26,7 +26,9 @@
 #   5. the cwd sits under, or the payload contains, a root listed in
 #      ~/.config/claude-glm/phi-roots or ~/.config/claude-glm/egress-denylist
 #      (the same lists graphify-fence.sh reads)
-# All matching is case-insensitive.
+# All matching is case-insensitive. Signals 2, 4 and 5 test BOTH the cwd as
+# given and its canonical (symlink-resolved) form, and signal 5 also
+# canonicalizes each listed root, so a symlink in cannot dodge them.
 # ponytail: substring match on "salus" over-blocks (a design prompt that merely
 # mentions the word, a himmel worktree slug containing it). That is the safe
 # direction, and the recovery is to reword. Upgrade path: a corpus classifier
@@ -52,6 +54,10 @@
 set -uo pipefail
 
 _lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
+
+# Canonical (symlink-resolved) form of a directory; empty when it is not one.
+# cd -P / pwd -P in a subshell: bash 3.2-safe, no realpath dependency.
+_canon() { (cd -P -- "$1" 2>/dev/null && pwd -P) || true; }
 
 deny() {
     {
@@ -88,6 +94,8 @@ command -v git >/dev/null 2>&1 || deny "git is not on PATH, so the session repo 
 cwd=$(printf '%s' "$input" | jq -r '.cwd // empty' 2>/dev/null)
 [ -n "$cwd" ] || cwd="$PWD"
 cwd_lc=$(_lc "$cwd")
+cwd_real=$(_canon "$cwd")
+real_lc=$(_lc "$cwd_real")
 args_lc=$(_lc "$(printf '%s' "$input" | jq -c '.tool_input // {}' 2>/dev/null)")
 
 # 1. payload names salus
@@ -95,6 +103,7 @@ case "$args_lc" in *salus*) deny "the tool payload names salus" ;; esac
 
 # 2. cwd path names salus
 case "$cwd_lc" in *salus*) deny "the session cwd ($cwd) is a salus path" ;; esac
+case "$real_lc" in *salus*) deny "the session cwd ($cwd) resolves to a salus path ($cwd_real)" ;; esac
 
 # 3. git toplevel / common dir / remotes
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
@@ -121,6 +130,9 @@ _salus_marked() {
     return 1
 }
 _salus_marked "$cwd" && deny "a .salus marker covers the session cwd ($cwd)"
+if [ -n "$cwd_real" ]; then
+    _salus_marked "$cwd_real" && deny "a .salus marker covers the session cwd ($cwd -> $cwd_real)"
+fi
 if [ -n "$common" ]; then
     _salus_marked "${common%/}/.." && deny "a .salus marker covers the session repo ($common)"
 fi
@@ -138,9 +150,17 @@ if [ -n "${HOME:-}" ]; then
             case "$root" in ""|\#*) continue ;; esac
             root="${root%/}"
             [ -n "$root" ] || continue
-            root_lc=$(_lc "$root")
-            case "$cwd_lc/" in "$root_lc/"*) deny "the session cwd is under the PHI root $root ($name)" ;; esac
-            case "$args_lc" in *"$root_lc"*) deny "the tool payload names the PHI root $root ($name)" ;; esac
+            # Compare raw and canonical forms both ways: either match denies.
+            root_real=$(_canon "$root")
+            for r in "$root" "$root_real"; do
+                r_lc=$(_lc "${r%/}")
+                [ -n "$r_lc" ] || continue
+                for c in "$cwd_lc" "$real_lc"; do
+                    [ -n "$c" ] || continue
+                    case "$c/" in "$r_lc/"*) deny "the session cwd is under the PHI root $root ($name)" ;; esac
+                done
+                case "$args_lc" in *"$r_lc"*) deny "the tool payload names the PHI root $root ($name)" ;; esac
+            done
         done < "$list"
     done
 fi
