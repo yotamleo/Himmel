@@ -155,6 +155,66 @@ check("ledger: transport ok + parse failure counts the credit, ok=false",
       row.get("credits") == mod.FirecrawlClient.SCRAPE_COST and row.get("ok") is False)
 
 # --- local-headless slot: Scrapling stealth fetcher (HIMMEL-4344) -----------
+class FakeRoute:
+    def __init__(self, url, page=None):
+        frame = type("Frame", (), {"page": page})()
+        self.request = type("Req", (), {"url": url, "frame": frame})()
+        self.verdict = None
+
+    def abort(self, *a, **k):
+        self.verdict = "abort"
+
+    def continue_(self, *a, **k):
+        self.verdict = "continue"
+
+
+class FakeCDP:
+    """Stands in for a raw CDP session: records sends, fires Fetch.requestPaused."""
+    def __init__(self):
+        self.sent, self.handlers = [], {}
+
+    def on(self, ev, fn):
+        self.handlers[ev] = fn
+
+    def send(self, method, params=None):
+        self.sent.append((method, params or {}))
+
+    def pause(self, url):
+        self.sent.clear()
+        self.handlers["Fetch.requestPaused"]({"requestId": "r1", "request": {"url": url}})
+        return self.sent[-1][0]
+
+
+class FakeBrowserPage:
+    """Stands in for the Playwright page Scrapling hands to page_setup. Routes
+    are registered on its context, so a popup is covered too."""
+    class _Ctx:
+        def __init__(self, page):
+            self.page = page
+            self.page_listeners = []
+
+        def new_cdp_session(self, _page):
+            self.page.cdp = FakeCDP()
+            return self.page.cdp
+
+        def route(self, pattern, handler):
+            self.page.routes.append((pattern, handler))
+
+        def route_web_socket(self, pattern, handler):
+            self.page.ws_routes.append((pattern, handler))
+
+        def on(self, ev, fn):
+            self.page_listeners.append((ev, fn))
+
+    ctx_class = _Ctx
+
+    def __init__(self):
+        self.routes = []
+        self.ws_routes = []
+        self.cdp = None
+        self.context = self.ctx_class(self)
+
+
 class FakePage:
     def __init__(self, status=200, html="<h1>Real</h1><p>body</p>", url=None):
         self.status = status
@@ -165,13 +225,21 @@ class FakePage:
 
 class FetchRecorder:
     """Stands in for scrapling's StealthyFetcher.fetch + the markdown step."""
-    def __init__(self, page=None, exc=None):
+    def __init__(self, page=None, exc=None, browser=None):
         self.calls = []
         self.page = page or FakePage()
         self.exc = exc
+        self.browser = browser  # the fake Playwright page handed to page_setup
 
     def fetch(self, url, **kw):
         self.calls.append((url, kw))
+        # like Scrapling 0.4.15: run page_setup before navigating, swallow its errors
+        if kw.get("page_setup"):
+            self.browser = self.browser or FakeBrowserPage()
+            try:
+                kw["page_setup"](self.browser)
+            except Exception:
+                pass
         if self.exc:
             raise self.exc
         return self.page
@@ -239,66 +307,6 @@ for label, r, expect in (("HTTP 403", FetchRecorder(page=FakePage(status=403)), 
         check(f"local-headless: {label} raises (chain falls through)", expect in str(e))
 
 # --- per-request private-host enforcement (HIMMEL-4477) ---------------------
-class FakeRoute:
-    def __init__(self, url, page=None):
-        frame = type("Frame", (), {"page": page})()
-        self.request = type("Req", (), {"url": url, "frame": frame})()
-        self.verdict = None
-
-    def abort(self, *a, **k):
-        self.verdict = "abort"
-
-    def continue_(self, *a, **k):
-        self.verdict = "continue"
-
-
-class FakeCDP:
-    """Stands in for a raw CDP session: records sends, fires Fetch.requestPaused."""
-    def __init__(self):
-        self.sent, self.handlers = [], {}
-
-    def on(self, ev, fn):
-        self.handlers[ev] = fn
-
-    def send(self, method, params=None):
-        self.sent.append((method, params or {}))
-
-    def pause(self, url):
-        self.sent.clear()
-        self.handlers["Fetch.requestPaused"]({"requestId": "r1", "request": {"url": url}})
-        return self.sent[-1][0]
-
-
-class FakeBrowserPage:
-    """Stands in for the Playwright page Scrapling hands to page_setup. Routes
-    are registered on its context, so a popup is covered too."""
-    class _Ctx:
-        def __init__(self, page):
-            self.page = page
-            self.page_listeners = []
-
-        def new_cdp_session(self, _page):
-            self.page.cdp = FakeCDP()
-            return self.page.cdp
-
-        def route(self, pattern, handler):
-            self.page.routes.append((pattern, handler))
-
-        def route_web_socket(self, pattern, handler):
-            self.page.ws_routes.append((pattern, handler))
-
-        def on(self, ev, fn):
-            self.page_listeners.append((ev, fn))
-
-    ctx_class = _Ctx
-
-    def __init__(self):
-        self.routes = []
-        self.ws_routes = []
-        self.cdp = None
-        self.context = self.ctx_class(self)
-
-
 def verdict_for(setup, url):
     bp = FakeBrowserPage()
     setup(bp)
@@ -395,11 +403,28 @@ if callable(setup):
 
     class NoWsPage(FakeBrowserPage):
         ctx_class = NoWsCtx
-    try:
-        setup(NoWsPage())
-        check("local-headless: no websocket routing -> hook raises (fails closed)", False)
-    except RuntimeError:
-        check("local-headless: no websocket routing -> hook raises (fails closed)", True)
+
+    class NoCdpCtx(FakeBrowserPage._Ctx):
+        def new_cdp_session(self, _page):
+            raise RuntimeError("no cdp")
+
+    class NoCdpPage(FakeBrowserPage):
+        ctx_class = NoCdpCtx
+
+    # Scrapling swallows a page_setup exception and navigates anyway, so a failed
+    # install must leave a browser that denies everything and a refused scrape
+    for label, page_cls in (("no websocket routing", NoWsPage), ("CDP session fails", NoCdpPage)):
+        bad = FetchRecorder(browser=page_cls())
+        install_local(bad)
+        try:
+            mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
+            check(f"local-headless: {label} -> scrape refuses (guard did not install)", False)
+        except RuntimeError as e:
+            check(f"local-headless: {label} -> scrape refuses (guard did not install)", "did not install" in str(e))
+        fr = FakeRoute("https://example.com/", bad.browser)
+        bad.browser.routes[0][1](fr)
+        check(f"local-headless: {label} -> deny-all route is already in place, even a public page aborts",
+              fr.verdict == "abort")
 
 uninstall_local()
 try:

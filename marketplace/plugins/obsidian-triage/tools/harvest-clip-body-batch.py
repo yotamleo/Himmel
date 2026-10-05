@@ -766,12 +766,20 @@ def load_jar_cookies(cookie_dir: Path, url: str, now=None) -> list:
     return out
 
 
-def _block_private_requests(page):
-    """Scrapling page_setup hook (runs before navigation): abort every browser
-    request, subresources and websockets included, whose host is private. The
-    decision is on the request URL alone, before the browser resolves or
-    connects. Hostname-only: a public name that resolves to a private address
-    (DNS rebinding) is not caught here."""
+def _block_private_requests(page, state):
+    """Scrapling page_setup hook (runs before navigation). Aborts the browser's
+    navigations, redirect hops and same-process subresources to a private host,
+    and page-level websockets. The decision is on the request URL alone, before
+    the browser resolves or connects.
+
+    NOT covered (HIMMEL-4496): cross-site iframes (separate CDP targets, so their
+    redirect hops are never paused), dedicated/shared-worker traffic including
+    worker websockets, and DNS rebinding (the check is hostname-only).
+
+    Fail closed: Scrapling swallows an exception raised here and navigates
+    anyway, so the first thing installed is a deny-all route that only lets
+    requests through once state["armed"] is set, which happens after the last
+    guard is in place. A failed install leaves the browser denying everything."""
     def blocked(url) -> bool:
         p = urlparse(str(url))
         if p.scheme in ("data", "blob", "about"):
@@ -782,7 +790,8 @@ def _block_private_requests(page):
         try:
             # a popup's requests are refused outright: its redirect chain could
             # reach a private host before a CDP guard can attach to the new page
-            deny = route.request.frame.page is not page or blocked(route.request.url)
+            deny = (not state["armed"] or route.request.frame.page is not page
+                    or blocked(route.request.url))
         except Exception:
             deny = True  # fail closed
         route.abort() if deny else route.continue_()
@@ -807,10 +816,10 @@ def _block_private_requests(page):
             cdp.send("Fetch.continueRequest", {"requestId": ev["requestId"]})
 
     # Guards live on the browser CONTEXT so a popup the page opens is covered
-    # from its first request. Unguardable context (no websocket routing / no CDP):
-    # raise so the fetch fails and the chain falls through, never a silently
-    # unguarded browser.
+    # from its first request. The deny-all route goes in first; an unguardable
+    # context (no websocket routing / no CDP) raises, the caller sees armed unset.
     ctx = page.context
+    ctx.route("**/*", on_request)
     if not hasattr(ctx, "route_web_socket"):
         raise RuntimeError("local-headless: cannot guard websockets on this browser")
 
@@ -819,10 +828,10 @@ def _block_private_requests(page):
         cdp.on("Fetch.requestPaused", lambda ev: on_paused(cdp, ev))
         cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
 
-    ctx.route("**/*", on_request)
     ctx.route_web_socket("**/*", on_websocket)
     guard_cdp(page)
     ctx.on("page", guard_cdp)
+    state["armed"] = True
 
 
 class LocalHeadlessClient:
@@ -858,11 +867,16 @@ class LocalHeadlessClient:
             fetch, to_markdown = self._load()
         except ImportError:
             raise BackendNotImplemented("scrapling is not installed")
+        state = {"armed": False}
         page = fetch(url, headless=True, timeout=self.TIMEOUT_MS,
                      cookies=load_jar_cookies(self.cookie_dir, url),
-                     page_setup=_block_private_requests,
+                     page_setup=lambda pg: _block_private_requests(pg, state),
                      # a service worker's traffic bypasses every route/CDP guard
                      additional_args={"service_workers": "block"})
+        # Scrapling swallows a page_setup exception and navigates anyway; the
+        # hook's deny-all route kept the browser closed, and this refuses the result
+        if not state["armed"]:
+            raise RuntimeError("local-headless: private-host guard did not install")
         # defence in depth: _block_private_requests already aborted any request to
         # a private host; refuse to ingest a page that still landed on one
         final_host = (urlparse(str(getattr(page, "url", "") or url)).hostname or "").lower()
