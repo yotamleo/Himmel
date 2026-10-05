@@ -1662,8 +1662,8 @@ if command -v python3 >/dev/null 2>&1; then
             '## Results (newest at the bottom)' '- 12:00 DISPATCH N361' > "$W/handover/console.md"
     }
     # TRACKER_HANDOVERS_DIR: tick's --emit-fp reads live legs from the same fake bucket the render did (HIMMEL-3990).
-    t3933() { PATH="$W/bin-3361:$PATH" TICK_TRACKER_MIRROR_DIR="$t3933_mir" TRACKER_HANDOVERS_DIR="$W/tracker3933/luna/handovers/yotamleo/himmel" bash "$SUT" --legs "$W/handover/$b3361.md" "$@"; }
-    t3933_render() { python3 "$HERE/tracker.py" --plan-dir "$t3933_plan" --out "$t3933_out" --luna-map "$W/tracker3933/luna-map.json" --mirror-dir "$t3933_mir" --luna-root "$W/tracker3933/luna" >/dev/null; }
+    t3933() { PATH="$W/bin-3361:$PATH" TICK_TRACKER_MIRROR_DIR="$t3933_mir" TRACKER_HANDOVERS_DIR="$W/tracker3933/luna/handovers/tester/himmel" bash "$SUT" --legs "$W/handover/$b3361.md" "$@"; }
+    t3933_render() { python3 "$HERE/tracker.py" --plan-dir "$t3933_plan" --out "$t3933_out" --luna-map "$W/tracker3933/luna-map.json" --mirror-dir "$t3933_mir" --luna-root "$W/tracker3933/luna" --handovers "$W/tracker3933/luna/handovers/tester/himmel" >/dev/null; }
     rm -f "$t3933_out" "$t3933_out.fp"
     write_mirror3933 2026-09-30T10:00:00.000+0000 'To Do'
     write_console3933

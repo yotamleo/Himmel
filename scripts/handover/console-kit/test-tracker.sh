@@ -80,7 +80,7 @@ mk 7 'In Progress' '["v1.0.1"]' 'active unplanned'
 out="$W/out.html"
 render() {
     python3 "$HERE/tracker.py" --plan-dir "$plan" --out "$out" --luna-map "$W/luna-map.json" \
-        --mirror-dir "$mir" --luna-root "$W/luna" "$@" 2>&1
+        --mirror-dir "$mir" --luna-root "$W/luna" --handovers "$W/luna/handovers/tester/himmel" "$@" 2>&1
 }
 stdout="$(render)"
 render_rc=$?
@@ -203,7 +203,7 @@ printf '%s\n' "VERSION_CAP_OVERRIDES = {'v1.0.1': {'tickets': 30, 'bugs': 0.45}}
 
 # --- HIMMEL-3990 ask 5: a live leg marks its ticket in progress, with its label and phase.
 hb="$W/luna/handovers"
-bk="$hb/yotamleo/himmel"
+bk="$hb/tester/himmel"
 mkdir -p "$bk" "$hb/.locks/queue/live.lock" "$hb/.locks/queue/gone.lock" "$hb/.locks/queue/brief.lock"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 printf '%s\n' '# leg' '- brief: follows PR 1999' '## Results' '- 10:00 LIVE — started' '- 10:20 LIVE — PR 1525 open, watching CI' '- a later note naming PR 1998' >"$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md"
