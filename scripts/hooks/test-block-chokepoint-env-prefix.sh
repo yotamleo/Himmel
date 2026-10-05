@@ -1456,6 +1456,63 @@ assert_allow "4157 HEAD^ beside export"                        "$(j "export FOO=
 assert_allow "4157 ~/ home path beside export"                 "$(j "export FOO=1; ls ~/notes")"
 assert_allow "4157 a # comment beside export"                  "$(j "export FOO=1 # set foo")"
 
+# HIMMEL-4157 (judge J1685 NO-GO): the relief pass was super-linear -- per
+# redirect it walked every stage, forking per token expansion. 200 redirects
+# took 13 s against a 15 s hook budget; a 10 KB line of quoted stages 5 s.
+# A hook timeout fails OPEN, so a slow allow is a bypass. Same verdicts, in
+# time (EPOCHREALTIME is bash 5+). The 10 KB row times the relief alone: the
+# same text without the seam name never reaches it, and the rest of the
+# hook costs over a second on that text on main too.
+rep_text() {  # rep_text <text> <count> -> <text> repeated <count> times
+    local i=0 out=''
+    while [ "$i" -lt "$2" ]; do out="$out$1"; i=$((i + 1)); done
+    printf '%s' "$out"
+}
+if [ -n "${EPOCHREALTIME:-}" ]; then
+    T0=${EPOCHREALTIME/[.,]/}
+    run "$(j "HIMMEL_CONSOLE_LEG=1; ls a/*.sh; $(rep_text 'echo x >f; ' 200)")"
+    T1=${EPOCHREALTIME/[.,]/}
+    CASES=$((CASES + 1))
+    if [ "$RC" = "0" ] && [ $((T1 - T0)) -lt 1000000 ]; then
+        echo "PASS 4157 J1685: 200 redirects beside a seam name finish in $(((T1 - T0) / 1000)) ms"
+    else
+        echo "FAIL 4157 J1685: 200 redirects beside a seam name -- expected rc=0 under 1000 ms, got rc=$RC in $(((T1 - T0) / 1000)) ms"
+        FAILED=$((FAILED + 1))
+    fi
+    P1K=$(rep_text "echo 'a'; " 1000)
+    T0=${EPOCHREALTIME/[.,]/}
+    run "$(j "FOO=1; ls a/*.sh; $P1K")"
+    T1=${EPOCHREALTIME/[.,]/}
+    run "$(j "HIMMEL_CONSOLE_LEG=1; ls a/*.sh; $P1K")"
+    T2=${EPOCHREALTIME/[.,]/}
+    CASES=$((CASES + 1))
+    if [ "$RC" = "0" ] && [ $((T2 - T1 - (T1 - T0))) -lt 1000000 ]; then
+        echo "PASS 4157 J1685: 10 KB of quoted stages beside a seam name, relief in $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
+    else
+        echo "FAIL 4157 J1685: 10 KB of quoted stages beside a seam name -- expected rc=0 with relief under 1000 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
+        FAILED=$((FAILED + 1))
+    fi
+else
+    echo "WARN 4157 J1685 timing rows skipped: no EPOCHREALTIME (bash < 5)"
+fi
+# A lone trailing backslash looped the relief pass forever (a hook timeout,
+# which fails open); it now gets no relief.
+if command -v timeout >/dev/null 2>&1; then
+    CASES=$((CASES + 1))
+    # shellcheck disable=SC1003 # the payload ends in a literal backslash
+    printf '%s' "$(j 'HIMMEL_CONSOLE_LEG=1; ls a/*.sh; echo a\')" \
+        | env -u ENV_PREFIX_GUARD_OK -u CHOKEPOINT_REGISTRY timeout 10 bash "$HOOK" >/dev/null 2>&1
+    RC=$?
+    if [ "$RC" = "2" ]; then
+        echo "PASS 4157 trailing backslash beside a seam name denies (no loop)"
+    else
+        echo "FAIL 4157 trailing backslash beside a seam name -- expected rc=2, got rc=$RC (124 = looped)"
+        FAILED=$((FAILED + 1))
+    fi
+else
+    echo "WARN 4157 trailing-backslash row skipped: no timeout(1)"
+fi
+
 # HIMMEL-4130 (HIMMEL-3986 sweep): a PRESENT non-string .command must not
 # fall through to .cmd -- `//` treats false like null, so the hook judged
 # the benign .cmd text. A non-string .command now fails closed; a null or

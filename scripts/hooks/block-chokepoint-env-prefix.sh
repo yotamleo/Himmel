@@ -1054,14 +1054,51 @@ pobf_tok() {
     body=''
 }
 
-# pobf_exp -- pobf_relief's helper: put the token bodies back into $1.
+# pobf_exp <text> <mode> -- pobf_relief's helper: put the token bodies back
+# into <text>, result in PX (no fork). Mode p pads each body with a blank
+# each side, s puts one blank in its place, r puts it back as is and then
+# drops trailing newlines, as the $( ) it replaces did. The result is that
+# of replacing marker k = 0, 1, .. n-1 in turn, but only a k that stands
+# between two adjacent \001 marks can match, so only those are visited
+# (J1685: a walk over all n per stage or per redirect was super-linear).
+# They go in text order when no two share a mark and (mode r) no body is
+# all digits, the cases where order cannot change the result; otherwise k
+# runs in order over the whole range that can match.
 pobf_exp() {
-    local x=$1 k=0
-    while [ "$k" -lt "$n" ]; do
-        case "$x" in *"$T1$k$T1"*) x=${x//"$T1$k$T1"/"${TOK[k]}"} ;; esac
-        k=$((k + 1))
+    local x=$1 m=$2 r='' seg ks='' lo=-1 hi=-1 prev=0 ov=0 k
+    case "$x" in *"$T1"*) r=${x#*"$T1"} ;; esac
+    while :; do
+        case "$r" in *"$T1"*) ;; *) break ;; esac
+        seg=${r%%"$T1"*}; r=${r:${#seg}+1}
+        case "$seg" in ''|*[!0-9]*|0?*) prev=0; continue ;; esac
+        if [ "${#seg}" -gt 9 ] || [ "$seg" -ge "$n" ]; then prev=0; continue; fi
+        [ "$prev" = 1 ] && ov=1
+        prev=1
+        ks="$ks $seg"
+        if [ "$lo" -lt 0 ] || [ "$seg" -lt "$lo" ]; then lo=$seg; fi
+        [ "$seg" -gt "$hi" ] && hi=$seg
+        [ "$m" = r ] && case "${TOK[seg]}" in *[!0-9]*) ;; *) ov=1 ;; esac
     done
-    printf '%s' "$x"
+    if [ "$ov" = 1 ]; then
+        ks=''; k=$lo
+        [ "$m" = r ] && hi=$((n - 1))
+        while [ "$k" -le "$hi" ]; do ks="$ks $k"; k=$((k + 1)); done
+    fi
+    for k in $ks; do
+        case "$x" in
+            *"$T1$k$T1"*)
+                case "$m" in
+                    r) x=${x//"$T1$k$T1"/"${TOK[k]}"} ;;
+                    p) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;;
+                    *) x=${x//"$T1$k$T1"/ } ;;
+                esac ;;
+        esac
+    done
+    if [ "$m" = r ]; then
+        k=${x##*[!"$NL"]}
+        x=${x%"$k"}
+    fi
+    PX=$x
 }
 
 # Every command name pobf_relief gives relief to (plus sed/awk, which lost
@@ -1109,18 +1146,26 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # ponytail: an allowed interpreter can still assemble a path with no
 # metachar, and the read-only set is a closed list a new exec-capable
 # option would slip past; the HIMMEL-3930 structural parse replaces this.
-# '$(' and '\' below are literal case patterns, not missed expansions.
-# shellcheck disable=SC2016,SC1003
+# '$(' and '\' below are literal case patterns, not missed expansions;
+# the unquoted $g_* in ${rest%%$g_*} are glob patterns on purpose.
+# shellcheck disable=SC2016,SC1003,SC2295
 pobf_relief() {
     local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' ap wr=0
-    local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO
+    local PX p tl rd=0 ea sa
+    local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO XP
     local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' TAB=$'\t'
-    local re_sq="^([^${SQ}]*)${SQ}(.*)\$"
-    local re_dq="^([^${DQ}\\\\\$${BQ}]*)(.*)\$"
+    # Each scan cuts at the first special char with a glob (the prefix up to
+    # the first char of the set), not a ^(..)(.*)$ regex, and reads a long
+    # line or text 256 chars at a time (rest, the tail in tl): the regex
+    # copied the whole rest per quote or stage, quadratic on a long line
+    # (J1685). Every choice looks at most 3 chars past the prefix, so rest
+    # is topped up while tl is left and rest holds under 4 chars; the heredoc
+    # and $'..' regexes, which read on, get the whole tail.
+    local g_dq="[${DQ}\\\\\$${BQ}]*"
+    local g_uq="[${SQ}${DQ}\\\\\$#<()${BQ}]*"
+    local g_sp="[\$();&|${BQ}${NL}]*"
     local re_an="^(([^${SQ}\\\\]|\\\\.)*)${SQ}(.*)\$"
-    local re_uq="^([^${SQ}${DQ}\\\\\$#<()${BQ}]*)(.*)\$"
     local re_hd="^<<(-?)[[:blank:]]*(${SQ}([^${SQ}]*)${SQ}|${DQ}([^${DQ}]*)${DQ}|\\\\?([^][:blank:];|&<>()${SQ}${DQ}\\\\]+))(.*)\$"
-    local re_sp="^([^\$();&|${BQ}${NL}]*)(.*)\$"
     local re_wr=">[>|]?[[:blank:]]*([^[:blank:];|&()<>${NL}]*)"
     local re_pa="[^][:blank:];|&()\$<>${BQ}=${NL}]\\(|\\)[^][:blank:];|&()<>${BQ}${NL}]"
     local re_eq="(^|[[:blank:];|&(${NL}])=\\("
@@ -1144,26 +1189,38 @@ pobf_relief() {
             hb="$hb$L$NL"
             continue
         fi
-        rest=$L
-        while [ -n "$rest" ]; do
+        # A line the regex . cannot read (bytes invalid in this locale) gets no
+        # relief: the regex scan the globs below replaced dropped its tail.
+        [[ $L =~ ^.*$ ]] || return 1
+        rest=${L:0:256}; tl=${L:256}
+        while :; do
+            if [ -n "$tl" ] && [ "${#rest}" -lt 4 ]; then rest="$rest${tl:0:256}"; tl=${tl:256}; fi
+            [ -n "$rest" ] || break
             q=${md#"${md%?}"}
             case "$q" in
                 S)
-                    if [[ $rest =~ $re_sq ]]; then
-                        body="$body${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}; md=${md%?}; pobf_tok
-                    else body="$body$rest"; rest=''; fi
+                    case "$rest" in
+                        *"$SQ"*)
+                            p=${rest%%"$SQ"*}
+                            body="$body$p"; rest=${rest:${#p}+1}; md=${md%?}; pobf_tok ;;
+                        *) body="$body$rest"; rest='' ;;
+                    esac
                     continue ;;
                 A)
+                    rest="$rest$tl"; tl=''
                     if [[ $rest =~ $re_an ]]; then
                         body="$body${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[3]}; md=${md%?}; pobf_tok
                     else body="$body$rest"; rest=''; fi
                     continue ;;
                 D)
-                    [[ $rest =~ $re_dq ]]
-                    body="$body${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}
+                    p=${rest%%$g_dq}
+                    body="$body$p"; rest=${rest:${#p}}
+                    [ -n "$tl" ] && [ "${#rest}" -lt 4 ] && continue
                     case "$rest" in
                         '') ;;
                         "$DQ"*) md=${md%?}; pobf_tok; rest=${rest#?} ;;
+                        # A lone trailing backslash: no relief (it looped).
+                        '\') return 1 ;;
                         '\'*) body="$body${rest:0:2}"; rest=${rest#??} ;;
                         '$('*) pobf_tok; md="${md}C"; F="$F \$("; rest=${rest#??} ;;
                         "$BQ"*) pobf_tok; md="${md}B"; F="$F $BQ"; rest=${rest#?} ;;
@@ -1172,8 +1229,9 @@ pobf_relief() {
                     continue ;;
             esac
             # Unquoted: U top level, C inside $( ), P a ( inside it, B backticks.
-            [[ $rest =~ $re_uq ]]
-            F="$F${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}
+            p=${rest%%$g_uq}
+            F="$F$p"; rest=${rest:${#p}}
+            [ -n "$tl" ] && [ "${#rest}" -lt 4 ] && continue
             case "$rest" in
                 '') ;;
                 "$SQ"*) md="${md}S"; rest=${rest#?} ;;
@@ -1181,10 +1239,11 @@ pobf_relief() {
                 '$'"$SQ"*) md="${md}A"; rest=${rest#??} ;;
                 '$('*) md="${md}C"; F="$F\$("; rest=${rest#??} ;;
                 '$'*) F="$F\$"; rest=${rest#?} ;;
+                '\') return 1 ;;
                 '\'*) F="$F${rest:0:2}"; rest=${rest#??} ;;
                 '#'*)
                     case "$F" in
-                        ''|*[[:blank:]\;\|\&\(\)]|*"$NL"|*"$BQ") rest='' ;;
+                        ''|*[[:blank:]\;\|\&\(\)]|*"$NL"|*"$BQ") rest=''; tl='' ;;
                         *) F="$F#"; rest=${rest#?} ;;
                     esac ;;
                 '('*) case "$q" in C|P) md="${md}P" ;; esac; F="$F("; rest=${rest#?} ;;
@@ -1198,6 +1257,7 @@ pobf_relief() {
                     else md="${md}B"; fi ;;
                 '<<<'*) F="$F<<<"; rest=${rest#???} ;;
                 '<<'*)
+                    rest="$rest$tl"; tl=''
                     [[ $rest =~ $re_hd ]] || return 1
                     HDASH[hn]=${BASH_REMATCH[1]}
                     HD[hn]="${BASH_REMATCH[3]}${BASH_REMATCH[4]}${BASH_REMATCH[5]}"
@@ -1232,10 +1292,11 @@ pobf_relief() {
     # Split into stages: ST text, SP 1 when it pipes into the next stage, SS 1
     # inside $( ) or backticks (its output may become a command word), CO the
     # stage a substitution interrupted (the text after it continues that one).
-    rest=$F; s=''; i=0; ostk=''; bqi=0
+    rest=${F:0:256}; tl=${F:256}; s=''; i=0; ostk=''; bqi=0
     while :; do
-        [[ $rest =~ $re_sp ]]
-        s="$s${BASH_REMATCH[1]}"; rest=${BASH_REMATCH[2]}
+        p=${rest%%$g_sp}
+        s="$s$p"; rest=${rest:${#p}}
+        if [ -n "$tl" ] && [ "${#rest}" -lt 4 ]; then rest="$rest${tl:0:256}"; tl=${tl:256}; continue; fi
         case "$rest" in '$'[!\(]*|'$') s="$s\$"; rest=${rest#?}; continue ;; esac
         sub=0; case "$stack" in *S*) sub=1 ;; esac
         [ "$bq" = 1 ] && sub=1
@@ -1273,12 +1334,7 @@ pobf_relief() {
             c=$w
         done
         case "$c" in /bin/*|/usr/bin/*) c=${c##*/} ;; esac
-        x=${ST[j]}
-        k=0
-        while [ "$k" -lt "$n" ]; do
-            case "$x" in *"$T1$k$T1"*) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;; esac
-            k=$((k + 1))
-        done
+        pobf_exp "${ST[j]}" p; x=$PX; XP[j]=$x
         cls=0
         FL[j]=0
         case "$c" in
@@ -1325,28 +1381,38 @@ pobf_relief() {
         [ "${SP[j - 1]}" = 1 ] && [ "${FL[j]}" = 0 ] && nf=1
         j=$((j + 1))
     done
+    # Per stage, once (J1685: per redirect it was redirects x stages, a fork
+    # each): ea joins every command word, sa every shell-like stage's text,
+    # each closed by \002, which no token or word holds. "A command word ends
+    # in the name" is then ea holding name\002; "a shell stage names it" is
+    # sa holding it. Once nf is 1 no later redirect can change a verdict.
     x=$F
     while [[ $x =~ $re_wr ]]; do
         w=${BASH_REMATCH[1]}
         x=${x/>/ }
         case "$w" in /dev/null|/dev/stderr|/dev/stdout|/dev/tty) continue ;; esac
         wr=1
-        w=$(pobf_exp "$w"); w=${w##*/}
+        [ "$nf" = 1 ] && break
+        if [ "$rd" = 0 ]; then
+            rd=1; ea=$T2; sa=$T2; j=0
+            while [ "$j" -lt "$i" ]; do
+                pobf_exp "${CW[j]}" r; c=$PX
+                ea="$ea$c$T2"
+                case "$c" in
+                    bash|sh|zsh|dash|ksh|mksh|source|.|exec|eval|xargs|env|nohup|setsid|timeout)
+                        # A literal script's later words are its data.
+                        s=${ST[j]}
+                        [ "${CL[j]}" = 2 ] && s=${C2[j]}
+                        while [[ $s =~ $re_wr ]]; do s=${s/"${BASH_REMATCH[0]}"/ }; done
+                        pobf_exp "$s" r; sa="$sa$PX$T2" ;;
+                esac
+                j=$((j + 1))
+            done
+        fi
+        pobf_exp "$w" r; w=${PX##*/}
         [ -z "$w" ] && { nf=1; break; }
-        j=0
-        while [ "$j" -lt "$i" ]; do
-            c=$(pobf_exp "${CW[j]}")
-            case "$c" in
-                *"$w") nf=1 ;;
-                bash|sh|zsh|dash|ksh|mksh|source|.|exec|eval|xargs|env|nohup|setsid|timeout)
-                    # A literal script's later words are its data.
-                    s=${ST[j]}
-                    [ "${CL[j]}" = 2 ] && s=${C2[j]}
-                    while [[ $s =~ $re_wr ]]; do s=${s/"${BASH_REMATCH[0]}"/ }; done
-                    case "$(pobf_exp "$s")" in *"$w"*) nf=1 ;; esac ;;
-            esac
-            j=$((j + 1))
-        done
+        case "$ea" in *"$w$T2"*) nf=1 ;; esac
+        case "$sa" in *"$w"*) nf=1 ;; esac
     done
     # CR round 8: a written file (a redirect, tee, cp, mv, install, ln, dd
     # of=) can run under a name the scan above never ties to it (./run after
@@ -1383,18 +1449,11 @@ pobf_relief() {
             cls=1
             case "${CW[j]}" in echo|printf|cat) cls=0 ;; esac
         fi
-        x=${ST[j]}
         case "$cls" in
             2) ;;
-            1) k=0
-               while [ "$k" -lt "$n" ]; do x=${x//"$T1$k$T1"/ }; k=$((k + 1)); done
-               pobf_word "$x" && return 1 ;;
-            *) k=0
-               while [ "$k" -lt "$n" ]; do
-                   case "$x" in *"$T1$k$T1"*) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;; esac
-                   k=$((k + 1))
-               done
-               pobf_word "$x" && return 1 ;;
+            1) pobf_exp "${ST[j]}" s
+               pobf_word "$PX" && return 1 ;;
+            *) pobf_word "${XP[j]}" && return 1 ;;
         esac
         j=$((j + 1))
     done
