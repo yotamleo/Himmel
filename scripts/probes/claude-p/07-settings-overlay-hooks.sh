@@ -95,11 +95,13 @@ run_claude() {
   # HIMMEL-1867) — without it a proxied dev shell would silently measure the
   # proxy's hook behavior, not native claude's, with no warning.
   # shellcheck disable=SC1091
-  ( cd "$SCRATCH" && . "$REPO_ROOT/scripts/lib/native-auth-pin.sh" && native_auth_pin_env &&
+  # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
+  ( cd "$SCRATCH" && { . "$REPO_ROOT/scripts/lib/native-auth-pin.sh" || exit 1; native_auth_pin_env
+    [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] &&
     # headless-claude-ok: HIMMEL-2178 probe 3e (bank-preflight gates above)
     timeout "$TIMEOUT_S" env MSYS_NO_PATHCONV=1 claude -p \
       --output-format json --permission-mode acceptEdits --allowedTools "Bash" \
-      --max-turns 2 --model "$MODEL" "$@" < "$PROMPT_FILE" > "$out" 2>"$err" )
+      --max-turns 2 --model "$MODEL" "$@" < "$PROMPT_FILE" > "$out" 2>"$err"; } )
 }
 
 echo "07-settings-overlay-hooks: run 1 (control, no --settings)..."

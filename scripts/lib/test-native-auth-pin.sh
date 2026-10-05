@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015,SC1090
+# shellcheck disable=SC2015,SC1090,SC2030,SC2031,SC2016,SC2317,SC2329
 # test-native-auth-pin.sh -- hermetic tests for native-auth-pin.sh (HIMMEL-1867).
 #
 # Every neutralisation case is asserted on a CHILD process's environment, never
@@ -100,6 +100,93 @@ check "T7 bystander variable preserved in child after pin" "$?" "0"
   [ "$a" -eq 0 ] && [ "$p" -eq 0 ]
 )
 check "T8 full canonical set cleared, native credential + bystander kept" "$?" "0"
+
+# --- fail closed under a shadowed tool / broken strip (HIMMEL-4459) -----------
+# shadow_run <setup> -- run <setup> (shadows) in a subshell BEFORE sourcing the
+# pin, pin an evil-routed environment, then report "<pin rc> <child verdict>"
+# where the child verdict is whether the routing variables are absent in a CHILD.
+shadow_run() {
+  (
+    export ANTHROPIC_BASE_URL=https://evil.example ANTHROPIC_API_KEY=sk-x ANTHROPIC_MODEL=m
+    eval "$1"
+    . "$lib"
+    native_auth_pin_env; prc=$?
+    bash "$td/absent.sh" ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_MODEL 2>/dev/null && v=absent || v=survived
+    echo "$prc $v"
+  )
+}
+
+check "T9 export -f awk cannot stop the strip" "$(shadow_run 'awk(){ :; }; export -f awk')" "0 absent"
+check "T10 export -f tail/cut/tr/grep/env cannot stop the strip" \
+  "$(shadow_run 'for f in tail cut tr grep env; do eval "$f(){ :; }"; export -f "$f"; done')" "0 absent"
+check "T10b export -f compgen/builtin/command cannot stop the strip" \
+  "$(shadow_run 'compgen(){ return 1; }; builtin(){ return 1; }; command(){ return 1; }; export -f compgen builtin command')" "0 absent"
+
+mkdir -p "$td/fakebin"
+for t in awk env tail cut tr grep sed; do printf '#!/bin/sh\nexit 0\n' > "$td/fakebin/$t"; chmod +x "$td/fakebin/$t"; done
+check "T11 fake tools earlier in PATH cannot stop the strip" "$(shadow_run "PATH='$td/fakebin':\$PATH")" "0 absent"
+
+# A strip that cannot run must REFUSE (rc != 0), never return 0 with the
+# routing variable still set: a no-op `unset` leaves every target set.
+r=$(shadow_run 'unset(){ return 0; }; export -f unset')
+check "T12 no-op unset: pin refuses (rc non-zero)" "$([ "${r%% *}" != 0 ] && echo refused || echo "rc0:$r")" "refused"
+
+r=$( (
+  export Anthropic_Base_Url=https://evil.example
+  unset(){ return 0; }; export -f unset
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T14 no-op unset: surviving mixed-case name -> pin refuses" "$([ "$r" != 0 ] && echo refused || echo "rc0")" "refused"
+
+# Seam (HIMMEL-4411) keeping BOTH mock names must return 0, not trip the
+# verification on the separator between them. Needs a loopback-only netns.
+r=$(unshare -rn bash -c '
+  export NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=k ANTHROPIC_MODEL=m
+  . "$1"; native_auth_pin_env; echo "$? ${ANTHROPIC_BASE_URL:+kept} ${ANTHROPIC_MODEL:-gone}"' _ "$lib" 2>/dev/null) || r=skip
+if [ "$r" = skip ]; then echo "  SKIP  T15 (no unshare -rn)"; else check "T15 seam keeping base URL + key returns 0, strips the rest" "$r" "0 kept gone"; fi
+
+r=$( (
+  export ANTHROPIC_BASE_URL=https://evil.example
+  readonly ANTHROPIC_BASE_URL
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T13 readonly target survives -> pin refuses (rc non-zero)" "$([ "$r" != 0 ] && echo refused || echo "rc0")" "refused"
+
+# --- caller-level: the keyword-only LAUNCH GATE (HIMMEL-4459) ------------------
+# With `unset` AND `return` shadowed the pin itself falls through rc 0 with the
+# proxy variables set; the gate each caller carries (header of the pin) must still
+# refuse. gate_caller.sh is the short gate verbatim; `launched` = the gate passed.
+cat > "$td/gate_caller.sh" <<'EOF'
+#!/usr/bin/env bash
+# $1 = pin lib, $2 = shadow mode
+lib="$1"
+case "$2" in
+  insh) unset(){ :; }; return(){ :; } ;;
+  alias) shopt -s expand_aliases
+alias unset=: return=:
+;;
+  ro) return(){ :; }; readonly ANTHROPIC_BASE_URL ;;
+esac
+. "$lib"
+native_auth_pin_env
+[[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] && echo launched || echo refused
+EOF
+gate_run() { # <mode> -> launched|refused ; ambient proxy vars as an inherited shell carries them
+  ( export ANTHROPIC_BASE_URL=https://evil.example ANTHROPIC_API_KEY=x CLAUDE_CODE_USE_BEDROCK=1
+    case "$1" in
+      exp) unset(){ :; }; return(){ :; }; export -f unset return ;;
+      env) printf '%s\n' 'unset(){ :; }' 'return(){ :; }' > "$td/shadow-env.sh"; export BASH_ENV="$td/shadow-env.sh" ;;
+    esac
+    bash "$td/gate_caller.sh" "$lib" "$1" 2>/dev/null )
+}
+check "G1 control: no shadow -> pin strips, gate passes (launched)" "$(gate_run none)" "launched"
+check "G2 exported unset+return shadows -> gate refuses" "$(gate_run exp)" "refused"
+check "G3 in-shell (non-exported) unset+return shadows -> gate refuses" "$(gate_run insh)" "refused"
+check "G4 startup-file unset+return shadows -> gate refuses" "$(gate_run env)" "refused"
+check "G5 alias unset/return shadows -> gate refuses" "$(gate_run alias)" "refused"
+check "G6 readonly target + return shadow -> gate refuses" "$(gate_run ro)" "refused"
 
 # --- --settings screen --------------------------------------------------------
 # caller.sh stands in for a launch site: screen FIRST, and only touch the
