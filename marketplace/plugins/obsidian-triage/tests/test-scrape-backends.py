@@ -269,26 +269,33 @@ class FakeCDP:
 
 
 class FakeBrowserPage:
-    """Stands in for the Playwright page Scrapling hands to page_setup."""
+    """Stands in for the Playwright page Scrapling hands to page_setup. Routes
+    are registered on its context, so a popup is covered too."""
     class _Ctx:
         def __init__(self, page):
             self.page = page
+            self.page_listeners = []
 
         def new_cdp_session(self, _page):
             self.page.cdp = FakeCDP()
             return self.page.cdp
 
+        def route(self, pattern, handler):
+            self.page.routes.append((pattern, handler))
+
+        def route_web_socket(self, pattern, handler):
+            self.page.ws_routes.append((pattern, handler))
+
+        def on(self, ev, fn):
+            self.page_listeners.append((ev, fn))
+
+    ctx_class = _Ctx
+
     def __init__(self):
         self.routes = []
         self.ws_routes = []
         self.cdp = None
-        self.context = FakeBrowserPage._Ctx(self)
-
-    def route(self, pattern, handler):
-        self.routes.append((pattern, handler))
-
-    def route_web_socket(self, pattern, handler):
-        self.ws_routes.append((pattern, handler))
+        self.context = self.ctx_class(self)
 
 
 def verdict_for(setup, url):
@@ -368,6 +375,8 @@ if callable(setup):
     # redirect hops: page.route never sees them, CDP Fetch.requestPaused does
     bp = FakeBrowserPage()
     setup(bp)
+    check("local-headless: a popup (context page event) gets its own CDP guard",
+          [e for e, _ in bp.context.page_listeners] == ["page"])
     check("local-headless: CDP Fetch.enable at Request stage covers redirect hops",
           ("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}) in bp.cdp.sent)
     for u, want in (("http://169.254.169.254/latest/meta-data/", "Fetch.failRequest"),
@@ -375,8 +384,11 @@ if callable(setup):
                     ("https://example.com/next", "Fetch.continueRequest")):
         check(f"local-headless: redirect hop {u} -> {want}", bp.cdp.pause(u) == want)
 
-    class NoWsPage(FakeBrowserPage):
+    class NoWsCtx(FakeBrowserPage._Ctx):
         route_web_socket = property(lambda self: (_ for _ in ()).throw(AttributeError("route_web_socket")))
+
+    class NoWsPage(FakeBrowserPage):
+        ctx_class = NoWsCtx
     try:
         setup(NoWsPage())
         check("local-headless: no websocket routing -> hook raises (fails closed)", False)

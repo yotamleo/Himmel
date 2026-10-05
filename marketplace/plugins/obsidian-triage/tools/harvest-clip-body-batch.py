@@ -804,15 +804,23 @@ def _block_private_requests(page):
         else:
             cdp.send("Fetch.continueRequest", {"requestId": ev["requestId"]})
 
-    # Unguardable page (no websocket routing / no CDP): raise so the fetch fails
-    # and the chain falls through, never a silently unguarded browser.
-    if not hasattr(page, "route_web_socket"):
+    # Guards live on the browser CONTEXT so a popup the page opens is covered
+    # from its first request. Unguardable context (no websocket routing / no CDP):
+    # raise so the fetch fails and the chain falls through, never a silently
+    # unguarded browser.
+    ctx = page.context
+    if not hasattr(ctx, "route_web_socket"):
         raise RuntimeError("local-headless: cannot guard websockets on this browser")
-    cdp = page.context.new_cdp_session(page)
-    cdp.on("Fetch.requestPaused", lambda ev: on_paused(cdp, ev))
-    cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
-    page.route("**/*", on_request)
-    page.route_web_socket("**/*", on_websocket)
+
+    def guard_cdp(pg):
+        cdp = ctx.new_cdp_session(pg)
+        cdp.on("Fetch.requestPaused", lambda ev: on_paused(cdp, ev))
+        cdp.send("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]})
+
+    ctx.route("**/*", on_request)
+    ctx.route_web_socket("**/*", on_websocket)
+    guard_cdp(page)
+    ctx.on("page", guard_cdp)
 
 
 class LocalHeadlessClient:
