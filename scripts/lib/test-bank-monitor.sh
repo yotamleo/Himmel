@@ -222,7 +222,7 @@ seed_series spare-mode '"1970-01-01T02:46:40Z"'
 rm -f "$BANK_STATE_FILE"
 ring_before="$(cat "$BANK_STATE_FILE.samples")"
 out="$(BANK_NOW_EPOCH=2800 BANK_NOW_HM=12:30 bash "$SUT" --spare)"
-check '--spare prints only the two fields' 'seven_day_reset_in=2.0h unspent_at_reset=55.0 five_hour_reset_in=?' "$out"
+check '--spare prints only the three fields' 'seven_day_reset_in=2.0h unspent_at_reset=55.0 five_hour_reset_in=?' "$out"
 check '--spare writes no emission state' 'no' "$([ -e "$BANK_STATE_FILE" ] && echo yes || echo no)"
 check '--spare leaves the sample ring byte-identical' "$ring_before" "$(cat "$BANK_STATE_FILE.samples")"
 out="$(run_at 2800 12:30)"
