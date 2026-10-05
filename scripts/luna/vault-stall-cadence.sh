@@ -263,10 +263,10 @@ cmd_run() {
     if [ -n "$bad" ]; then alert "unremediable: ${bad%; }" "$dry"; return 0; fi
     [ -n "$classes" ] || { alert "unclassified refusal" "$dry"; return 0; }
 
-    # Loop cap: one remediation per class per 24 h.
+    # Loop cap: one remediation per class per vault per 24 h.
     for c in $classes; do
         if [ -f "$STATE_DIR/remediated.tsv" ] && awk -F'\t' -v c="$c" -v t="$((now - CAP_SECS))" \
-            '$2 == c && $1 + 0 >= t { f = 1 } END { exit !f }' "$STATE_DIR/remediated.tsv"; then
+            -v v="$vault" '$2 == c && $3 == v && $1 + 0 >= t { f = 1 } END { exit !f }' "$STATE_DIR/remediated.tsv"; then
             alert "did-not-hold $c (remediated within 24h, stalled again)" "$dry"; return 0
         fi
     done
@@ -276,6 +276,8 @@ cmd_run() {
     work="$(mktemp -d "${TMPDIR:-/tmp}/vault-stall.XXXXXX")" || return 2
     cp "$vault/.pre-commit-config.yaml" "$work/yaml" 2>/dev/null
     cp "$vault/.gitleaks.toml" "$work/toml" 2>/dev/null
+    cp "$vault/.pre-commit-config.yaml" "$work/yaml.orig" 2>/dev/null
+    cp "$vault/.gitleaks.toml" "$work/toml.orig" 2>/dev/null
     for c in $classes; do
         case "$c" in
             shellcheck | check-json)
@@ -302,7 +304,14 @@ cmd_run() {
     if [ -n "$dirty" ]; then rm -rf "$work"; alert "config-dirty $files (uncommitted edits; not remediated)" "$dry"; return 0; fi
     if [ "$dry" -eq 1 ]; then rm -rf "$work"; echo "vault-stall: would commit $files"; return 0; fi
 
-    cp "$vault/.pre-commit-config.yaml" "$work/yaml.orig"; cp "$vault/.gitleaks.toml" "$work/toml.orig" 2>/dev/null
+    # The sync may have committed a config change since planning (the tree is
+    # clean again): writing the stale plan would revert it.
+    for f in $files; do
+        case "$f" in .pre-commit-config.yaml) wf="$work/yaml.orig" ;; .gitleaks.toml) wf="$work/toml.orig" ;; esac
+        if ! cmp -s "$wf" "$vault/$f"; then
+            rm -rf "$work"; alert "config-changed-during-run $f (not written)" 0; return 0
+        fi
+    done
     for f in $files; do
         case "$f" in .pre-commit-config.yaml) cp "$work/yaml" "$vault/$f" ;; .gitleaks.toml) cp "$work/toml" "$vault/$f" ;; esac
     done
@@ -344,7 +353,7 @@ cmd_run() {
         echo "vault-stall: the edit landed through another commit (the sync); not rolled back"
     fi
     rm -rf "$work"
-    for c in $classes; do printf '%s\t%s\n' "$now" "$c" >> "$STATE_DIR/remediated.tsv"; done
+    for c in $classes; do printf '%s\t%s\t%s\n' "$now" "$c" "$vault" >> "$STATE_DIR/remediated.tsv"; done
     echo "vault-stall: REMEDIATED $classes - committed $files; the next sync flushes the backlog"
     bash "$ALERT" clear "$LEG"
     return 0

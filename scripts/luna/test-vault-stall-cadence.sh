@@ -501,5 +501,46 @@ out="$(cd "$(dirname "$V")" && HOME="$TMP/home" VAULT_STALL_STATE_DIR="$S" \
 assert_eq "T24 run exits 0" "0" "$rc"
 assert_eq "T24 commit holds ONLY the gitleaks config" ".gitleaks.toml " "$(head_files)"
 
+# --- T25 a config committed between planning and writing is kept (round 6) ---
+# A git shim plays the sync: on the cadence's dirty-config check it commits an
+# operator's config edit first, so the tree is clean but the plan is stale.
+mkvault
+real_git="$(command -v git)"
+mkdir -p "$TMP/gitshim"
+cat >"$TMP/gitshim/git" <<SHIM
+#!/usr/bin/env bash
+case " \$* " in
+    *" status --porcelain "*)
+        if [ -e "$TMP/sim-sync-commit" ]; then
+            rm -f "$TMP/sim-sync-commit"
+            printf '# synced operator edit\n' >>"$V/.pre-commit-config.yaml"
+            "$real_git" -C "$V" -c core.hooksPath=/dev/null commit -q -m sync -- .pre-commit-config.yaml
+        fi ;;
+esac
+exec "$real_git" "\$@"
+SHIM
+chmod +x "$TMP/gitshim/git"
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+: >"$TMP/sim-sync-commit"
+out="$(PATH="$TMP/gitshim:$PATH" run_sut)"
+assert_has "T25 the synced edit survives" "# synced operator edit" "$(cat "$V/.pre-commit-config.yaml")"
+assert_has "T25 alerts the mid-run change" "config-changed-during-run" "$(sent)"
+assert_eq "T25 nothing committed after the sync" "sync" "$(git -C "$V" log -1 --format=%s)"
+
+# --- T26 the loop cap is per vault (round 6, codex-3) -------------------------
+mkvault
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+run_sut >/dev/null
+shared_state="$S"
+mkvault
+S="$shared_state"
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+out="$(run_sut)"
+assert_has "T26 another vault's first stall is remediated" "REMEDIATED" "$out"
+assert_not_has "T26 no did-not-hold across vaults" "did-not-hold" "$(sent)"
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi
