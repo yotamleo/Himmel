@@ -38,6 +38,8 @@ cat > "$W/eval.sh" <<'SH'
 out=""
 while [ $# -gt 0 ]; do case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac; done
 mkdir -p "$out"; : > "$out/index.sqlite"
+# STUB_KILL: SIGTERM the cadence run while the eval is in flight.
+if [ -n "${STUB_KILL:-}" ]; then kill -TERM "$PPID"; exit 0; fi
 rc="$(cat "$STUB_RC" 2>/dev/null || echo 0)"
 [ "$rc" -eq 0 ] || { echo "boom" >&2; exit "$rc"; }
 {
@@ -119,10 +121,9 @@ QMD_QUALITY_KEEP_RUNS=2 run_cad 20260108T000001Z
 check "failed runs pruned to 2" 2 "$(n_runs)"
 echo 0 > "$STUB_RC"
 
-# 6b2. a snapshot left by an interrupted run is swept by the next run.
-mkdir -p "$STATE/runs/20260101T000000Z"; : > "$STATE/runs/20260101T000000Z/index.sqlite"
-run_cad 20260108T500001Z
-[ ! -e "$STATE/runs/20260101T000000Z/index.sqlite" ] && pass "stale snapshot swept" || fail "stale snapshot swept"
+# 6b2. a run terminated mid-eval (cron kill, shutdown) still removes its snapshot.
+STUB_KILL=1 run_cad 20260108T500001Z; check "terminated run exits 143" 143 $?
+[ ! -e "$STATE/runs/20260108T500001Z/index.sqlite" ] && pass "snapshot removed after SIGTERM" || fail "snapshot removed after SIGTERM"
 
 # 6c. an unwritable metrics.tsv must not pass silently.
 chmod 444 "$STATE/metrics.tsv"

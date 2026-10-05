@@ -81,9 +81,8 @@ cmd_run() {
     ts="${QMD_QUALITY_TS:-$(date -u +%Y%m%dT%H%M%SZ)}"
     out="$STATE_DIR/runs/$ts"
     mkdir -p "$out" || return 2
-    # an interrupted run (cron kill, shutdown) must not strand the snapshot either:
-    # the trap covers this run, the sweep covers one killed past any trap.
-    rm -f "$STATE_DIR"/runs/*/index.sqlite
+    # an interrupted run (cron kill, shutdown) must not strand the snapshot either.
+    # ponytail: a SIGKILL skips the trap, so the leak is bounded only by prune_runs; sweep stale snapshots under a run lock (HIMMEL-4500).
     SNAPSHOT="$out/index.sqlite"
     trap 'rm -f "$SNAPSHOT"' EXIT
     trap 'exit 130' INT
