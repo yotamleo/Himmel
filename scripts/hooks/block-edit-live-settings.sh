@@ -865,10 +865,14 @@ mentions_primary_or_home() {
     fi
     # An unexpanded home spelling (`~`, `~user`, `$HOME`, `${HOME}`) right
     # before `.claude`, which may end the word: `cp x ~/.claude` names the
-    # directory itself as the destination.
+    # directory itself as the destination. A `${HOME…}` with an operator
+    # (`${HOME:-/x}`, `${HOME%/}`) is $HOME too, and a `$(…)` or backtick
+    # substitution right before `/.claude` can print $HOME (`$(printenv
+    # HOME)/.claude`), so it fails closed (HIMMEL-4298); a plain `$X/` or
+    # `${X}/` stays a variable-built path (the header ponytail).
     local out
     # shellcheck disable=SC2016 # literal unexpanded $home/${home} text, not expansion
-    out=$(printf '%s' "$c_noquotes" | grep -E '(~[a-z0-9._-]*|\$home|\$\{home\})/\.claude([^a-z0-9_.-]|$)') || true
+    out=$(printf '%s' "$c_noquotes" | grep -E '(~[a-z0-9._-]*|\$home|\$\{home([^a-z0-9_}][^}]*)?\}|[)`])/\.claude([^a-z0-9_.-]|$)') || true
     [ -n "$out" ] && return 0
     # A relative parent-directory traversal landing directly on `.claude/`
     # (`../.claude/…`, any number of `../` segments) climbs OUT of the
@@ -878,6 +882,46 @@ mentions_primary_or_home() {
     # shape that reaches the primary checkout's own `.claude/`.
     case "$c_noquotes" in *'../.claude/'*) return 0 ;; esac
     return 1
+}
+
+# interp_home_write CMD_LC — 0 when the command runs an interpreter (python,
+# node, perl, ruby, their versioned names, bun, deno) and its text names both
+# a home-directory API (`expanduser`, `homedir()`, `Path.home()`, `Dir.home`,
+# `$ENV{HOME}`, `os.environ['HOME']`, `process.env.HOME`) and a file-write API (`open(…,
+# 'w')`, `write_text`, `writeFileSync`, `File.write`, `open(F, ">…")`,
+# `shutil.*`, a rename or symlink, and every file-mutating API whose name
+# holds no write/open token: io.FileIO/os.fdopen/File.new with a write mode,
+# os.truncate/remove/unlink/chmod/makedirs, Path.unlink/chmod/mkdir and a
+# one-argument Path.replace (str.replace takes two), fs.rm/unlink/truncate/cp
+# and their Sync or promises forms, File.delete/truncate, IO.binwrite and
+# copy_stream, perl unlink/truncate/rename/chmod and `+<`, Deno.*). The body builds its path at run time
+# (`expanduser('~')+'/.cl'+'aude/sett'+'ings.json'`), so no text match on
+# the path can see it; the pair is judged instead, whatever the path, -c/-e
+# body or heredoc alike (HIMMEL-4298). Fail-closed: a script that reads a
+# home file and writes elsewhere is denied too. Only the API in use counts
+# (a call, an index, an attribute): a python heredoc that edits a doc whose
+# TEXT mentions `homedir` or `$HOME` is not a home read, and the history
+# corpus is full of those. The open-mode span crosses `;` (a `';'` string
+# literal must not end it), so it can over-deny a body that opens one file
+# and passes 'w' to another call; ri + rh bound that, fail-closed.
+# ponytail: a body the text does not hold (`base64 -d | python3`, `python3
+# x.py`, `-c "$(cat f)"`) is not seen, it names no API; a shell `$HOME` spliced
+# into the body is the variable-built path the header ponytail already names
+# (HIMMEL-4220). Upgrade path: HIMMEL-4317.
+interp_home_write() {
+    local LC_ALL=C
+    # shellcheck disable=SC2016 # literal `$` text in the home-API pattern
+    local ri='(^|[^a-z0-9_.-])(python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|perl[0-9.]*|ruby[0-9.]*)([^a-z0-9_.-]|$)' \
+        rh='expanduser[[:space:]]*\(|expandvars[[:space:]]*\(|expand_path[[:space:]]*\(|homedir[[:space:]]*\(|(path|dir)[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|env[[:space:]]*\.[[:space:]]*home([^a-z0-9_]|$)|(environ|env|getenv)([[:space:]]*\.[[:space:]]*(get|fetch))?[[:space:]]*[[({][[:space:]]*['\''"]?home['\''"]?[[:space:]]*[])},]' \
+        rw='write_text|write_bytes|\.[[:space:]]*write(r|v|lines)?([[:space:]]*\(|[[:space:]])|writefile|appendfile|createwritestream|copyfile|cpsync|renamesync|symlink|hardlink|syswrite|json[[:space:]]*\.[[:space:]]*dump[[:space:]]*\(|shutil[[:space:]]*\.|fileutils[[:space:]]*\.|io[[:space:]]*\.[[:space:]]*write|os[[:space:]]*\.[[:space:]]*(replace|rename|link)|\.[[:space:]]*rename([[:space:]]*\(|[[:space:]])|\.[[:space:]]*touch[[:space:]]*\(|o_(wronly|rdwr|creat|trunc|append)|(open|fileio|fdopen|new|zipfile)(sync)?[[:space:]]*\((.*,)?[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?['\''"][rbt]*[wax+][rbt+]*['\''"]|open[[:space:]]*\(?[^;]*['\''"](\+?>|\+<)|os[[:space:]]*\.[[:space:]]*(f?truncate|remove|unlink|rmdir|[lf]?chmod|l?chown|mkdir|makedirs|mknod|mkfifo)|\.[[:space:]]*(unlink|rmdir|[lf]?chmod|l?chown|mkdir|makedirs|f?truncate|rm|cp|link|mknod)(sync)?[[:space:]]*\(|\.[[:space:]]*replace[[:space:]]*\(([^,()]|\(([^()]|\(([^()]|\([^()]*\))*\))*\))*\)|(file|dir|pathname)[[:space:]]*\.[[:space:]]*(delete|unlink|truncate|l?chmod|l?chown|rename|mkfifo|mkdir|rmdir)|(f?truncate|unlink|rm|rmdir|link|[lf]?chmod|l?chown|mkdir|cp|write|writev)sync|(^|[^a-z0-9_.])(unlink|f?truncate|rename|chmod|chown|rmdir|mkdir|rm|cp|link|symlink|copy|move|rmtree|remove_tree|make_path|mkpath)[[:space:]]*\(|(^|[^a-z0-9_.])(unlink|f?truncate|rename)[[:space:]]+[$'\''"]|(^|[^a-z0-9_.])chmod[[:space:]]+[0-7]+[[:space:]]*,|file[[:space:]]*\.[[:space:]]*(open|new)[[:space:]]+[^;]*,[[:space:]]*['\''"][rbt]*[wax+]|inplace[[:space:]]*=[[:space:]]*(true|1)|\$\^i[[:space:]]*=|copy_stream|binwrite|::(wronly|rdwr|creat|trunc|append)|deno[[:space:]]*\.[[:space:]]*(write[a-z]*|remove|f?truncate|rename|copyfile|create|symlink|link|chmod|chown|mkdir)'
+    # A backslash line continuation (LF or CRLF) splits nothing in the
+    # interpreter's own parse, so it is folded away before matching.
+    local t bc=$'\\\r\n' bn=$'\\\n'
+    t=${1//"$bc"/}
+    t=${t//"$bn"/}
+    [[ $t =~ $ri ]] || return 1
+    [[ $t =~ $rh ]] || return 1
+    [[ $t =~ $rw ]]
 }
 
 # is_readonly_allowlisted CMD_LC — the rule 1 exception: a short list of
@@ -1271,6 +1315,18 @@ _uj_text_dests() {
         if [ "$tnext" = 1 ]; then
             tnext=0
             _uj_dest "${nws[i]}" "$lw" && hit=0
+            # ALL=1: its `>` is read too, as a later piece's own scan would
+            # read it, so _tok_unjudged_verb can skip that scan
+            if [ "$all" = 1 ]; then
+                case "$lw" in
+                    *'>'*)
+                        rem=${lw##*>}
+                        if [ -z "$rem" ]; then tnext=1
+                        else _uj_dest "${nws[i]##*>}" "$rem" && hit=0
+                        fi
+                        ;;
+                esac
+            fi
         else
             case "$lw" in
                 *'>'*)
@@ -1358,7 +1414,7 @@ _tok_unjudged_verb() {
     fi
     # npieces: the same pieces in the original case ($2), for the bin-dir
     # name check; nok=0 drops back to the lowercased word if they misalign
-    local cw nw nok=1
+    local cw nw nok=1 ua=0
     local -a npieces
     n=0
     while IFS= read -r txt; do
@@ -1433,6 +1489,14 @@ EOF
                         1:*|*'('*) all=1 ;;
                         *) k=$n ;;
                     esac
+                    # an ALL=1 scan with no hit has already read every word
+                    # a later ALL=1 piece would: rescanning to the end per
+                    # piece was quadratic (each `print(` line of a python
+                    # heredoc, HIMMEL-4192)
+                    if [ "$all" = 1 ]; then
+                        [ "$ua" = 0 ] || { i=$((i + 1)); continue; }
+                        ua=1
+                    fi
                     while [ "$k" -lt "$n" ]; do
                         txt="$txt ${pieces[k]}" ntxt="$ntxt ${npieces[k]-}"
                         k=$((k + 1))
@@ -1518,7 +1582,17 @@ _tok_readonly_ok() {
             case "$first" in
                 less|git|rg|sed) [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1 ;;
             esac
-            [ -n "$sub" ] || sub=x$lw
+            # `git -C DIR` only picks the repo, so the word after DIR is the
+            # subcommand (HIMMEL-4298: `git -C <primary> diff … | grep` was
+            # denied as subcommand `-C`); `-c` can set a config that runs a
+            # command, so it stays the subcommand and denies
+            if [ -z "$sub" ] && [ "$first:$w" = git:-C ]; then
+                sub=C
+            elif [ "$sub" = C ]; then
+                sub=''
+            else
+                [ -n "$sub" ] || sub=x$lw
+            fi
             case "$first:$lw" in
                 # less: -o/-O (alone or in a cluster) and --log-file
                 # log the input stream to a file; a `+` word runs a
@@ -1568,7 +1642,7 @@ _tok_exported() {
 # settings.json — rule 2 catches `cp x .claude/` / `cp -t .claude/ x`,
 # where the destination basename is never "settings.json" in the text.
 mentions_dot_claude_dir_dest() {
-    local c out
+    local c
     # A `.claude/worktrees/…` mention is a CONTAINER path, not a destination
     # (HIMMEL-3499/3555 panel round on #1210): every linked worktree lives at
     # <root>/.claude/worktrees/<name>, so `git -C <that-path> checkout …` or
@@ -1610,8 +1684,12 @@ mentions_dot_claude_dir_dest() {
     # longer name (`.claude.json`, `.claude-x`).
     # Accepted over-match: a real filename ending in `…x.claude` now matches
     # too — fail-closed, matching the project's stated preference.
-    out=$(printf '%s' "$c" | grep -E '\.claude([^a-z0-9_.-]|$)') || true
-    [ -n "$out" ]
+    # Matched in-shell, never by a grep fork: this runs once per operand
+    # word, and a fork per word of a quote-heavy heredoc blew the 15 s
+    # budget (HIMMEL-4192). A newline is outside the class, so the match is
+    # the per-line grep's; under C every other byte is too.
+    local LC_ALL=C
+    [[ $c =~ \.claude([^a-z0-9_.-]|$) ]]
 }
 
 # _dc_can_be_claude COMPONENT — 0 when one path component that carries a glob,
@@ -1865,8 +1943,70 @@ _dc_can_be_claude() {
 # reading would deny every `$(pwd)/x`. Upgrade path: HIMMEL-4220.
 # ponytail: DC_DOTS reads only the command text, so a dotglob/GLOB_DOTS left
 # on by the shell profile is unseen and `~/*/x` passes. Upgrade path: HIMMEL-4222.
+#
+# A long TEXT is folded in chunks cut at a space no component can cross: bash
+# copies the whole remaining text on every name, so one pass over 6000 `$"`
+# words was quadratic (HIMMEL-4298). A component crosses a space only inside
+# a `$(…)`, `${…}` or backtick span, so a cut waits while a `(` or `{` is
+# open and never falls between the text's first and last backtick (which
+# backticks pair depends on where a match starts). _DCO is the folded text
+# without the kept span lines, _DCK those lines.
 _dc_name_fold() {
-    local t=$1 out='' m c pw pf r keep=''
+    if [ "${#1}" -le 2048 ]; then
+        _dc_fold_one "$1"
+        return 0
+    fi
+    local s=$'\037' i n w acc='' res='' kp='' d=0 b=0 fb=-1 lb=-1
+    local -a f
+    case "$1" in *"$s"*) _dc_fold_one "$1"; return 0 ;; esac
+    IFS=$s read -r -d '' -a f <<< "${1// /$s}" || true
+    n=${#f[@]}
+    f[n - 1]=${f[n - 1]%$'\n'}
+    for ((i = 0; i < n; i++)); do
+        case "${f[i]}" in
+            *'`'*) [ "$fb" -ge 0 ] || fb=$i; lb=$i ;;
+        esac
+    done
+    [ "$fb" -ge 0 ] || fb=$n
+    for ((i = 0; i < n; i++)); do
+        w=${f[i]}
+        acc=$acc$w
+        case "$w" in *[\(\)\{\}]*) _dc_depth "$w" ;; esac
+        [ "$i" -lt $((n - 1)) ] || break
+        if [ "${#acc}" -ge 1024 ] && [ "$d" = 0 ] && [ "$b" = 0 ] \
+            && { [ "$i" -lt "$fb" ] || [ "$i" -ge "$lb" ]; }; then
+            _dc_fold_one "$acc "
+            res=$res$_DCO kp=$kp$_DCK acc=''
+        else
+            acc="$acc "
+        fi
+    done
+    _dc_fold_one "$acc"
+    _DCF=$res$_DCO$kp$_DCK
+}
+
+# _dc_depth WORD — d and b, the open `(` and `{` count, after WORD. A pair
+# closed in WORD is dropped first; a closer with nothing open since the last
+# cut closes nothing a component spans (that span would cross the cut).
+_dc_depth() {
+    local w=${1//[!()]/} r
+    while [[ $w == *'()'* ]]; do w=${w//'()'/}; done
+    r=${w//[!)]/}
+    d=$((d - ${#r}))
+    [ "$d" -ge 0 ] || d=0
+    r=${w//[!(]/}
+    d=$((d + ${#r}))
+    w=${1//[!\{\}]/}
+    while [[ $w == *'{}'* ]]; do w=${w//'{}'/}; done
+    r=${w//[!\}]/}
+    b=$((b - ${#r}))
+    [ "$b" -ge 0 ] || b=0
+    r=${w//[!\{]/}
+    b=$((b + ${#r}))
+}
+
+_dc_fold_one() {
+    local t=$1 out='' m c pw pf r keep='' x ow
     # shellcheck disable=SC2016 # literal backtick in a regex bracket, not expansion
     local re='(^-[A-Za-z0-9]*|[[:space:]]-[A-Za-z0-9]*|^|[/[:space:]=:<>|;&(`])(([.{*?]|\[[^]/[:space:]]*\]|[@+!]?\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\)|\$\(([^()]|\([^()]*\))*\)|\$\{[^}/]*\}|`[^`]*`)([^/[:space:];&|<>()`]|\[[^]/[:space:]]*\]|\$\(([^()]|\([^()]*\))*\)|`[^`]*`|\(([^/[:space:];&<>()`]|\([^/[:space:];&<>()`]*\))*\))*)'
     # shellcheck disable=SC2016 # a literal `$(` in a regex bracket, not expansion
@@ -1878,13 +2018,19 @@ _dc_name_fold() {
         # shellcheck disable=SC2016 # a literal `$(` in a regex bracket, not expansion
         pre='[.{][^/[:space:]]*[][*?{}$(#^~]'
     fi
-    _DCF=$1
+    _DCF=$1 _DCO=$1 _DCK=''
     [[ $t =~ $pre ]] || return 0
+    # ow is the last word of out, kept as out grows: reading it back with
+    # `${out##*[…]}` rescanned all of out per name, quadratic in a long
+    # command (HIMMEL-4298, 1500 `$"` tilde words took 20 s)
+    ow=''
     while [[ $t =~ $re ]]; do
         m=${BASH_REMATCH[0]}
         c=${BASH_REMATCH[2]} pf=${BASH_REMATCH[1]}
-        out=$out${t%%"$m"*}$pf
-        t=${t#*"$m"}
+        x=${t%%"$m"*}
+        t=${t:${#x}+${#m}}
+        _dc_ow "$x$pf"
+        out=$out$x$pf
         # a literal `.claude` already reads as `.claude`; a span after it
         # ends it as before, so doc text (`$HOME/.claude`, `~/.claude`) keeps
         # its words apart
@@ -1897,7 +2043,7 @@ _dc_name_fold() {
         # or a `..` climb can be
         pw=x
         if [ "$pf" = / ]; then
-            pw=${out##*[[:space:]=:<>|;&(\`]}
+            pw=$ow
             case "$pw" in [/~\$.*]*|*../*) pw=x ;; esac
         fi
         # a glob-led name matches a dot-name only under dotglob/GLOB_DOTS.
@@ -1976,10 +2122,23 @@ _dc_name_fold() {
                     ;;
             esac
         fi
+        _dc_ow "$c"
         out=$out$c
         [ -n "$m" ] || break
     done
-    _DCF=$out$t$keep
+    _DCO=$out$t _DCK=$keep
+    _DCF=$_DCO$_DCK
+}
+
+# _dc_ow TEXT — ow, the last word of _dc_name_fold's out, once TEXT is
+# appended to out. `%` takes the shortest suffix, so only TEXT's tail is read.
+_dc_ow() {
+    local p=${1%[[:space:]=:<>|;&(\`]*}
+    if [ "$p" = "$1" ]; then
+        ow=$ow$1
+    else
+        ow=${1:${#p}+1}
+    fi
 }
 
 # _dc_receiver SEG — 0 when the command SEG (leading assignments skipped)
@@ -2563,6 +2722,115 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                 TOK=1
             fi
         fi
+        # HIMMEL-4353: the body of a `bash/sh/zsh/dash -c` or an `eval` is ONE
+        # quoted word to the tokenizer, so its words never carry their own
+        # glob flag (ST_G) and the glob/brace leaf and `.claude` fold checks
+        # below never see `~/.claude/sett*s.json` inside it. The shell reads
+        # that body as a command of its own, so this hook judges it as one:
+        # each body goes through this same hook in a run of its own (same cwd,
+        # same env) before anything below can allow. Bodies are never joined,
+        # so an open heredoc in one cannot swallow the next (CR round 1).
+        # Nesting recurses one level per
+        # body; each level is a strict substring of the last, so it ends. A
+        # command the tokenizer could not vouch for (TOK=0) needs none of
+        # this: its fallback splits the quote-stripped text and treats every
+        # word as a glob already.
+        # ponytail: only shells named here (any path, any wrapper before them)
+        # and `eval` have their body re-judged; `su -c`, `ssh host '…'`,
+        # `watch '…'` bodies stay one word, and an `eval` behind a construct
+        # the command-word walk below does not know (a `case` pattern, an
+        # unlisted wrapper) is not a body. Upgrade path: add the name when a
+        # bypass report names one.
+        # The scan stays linear (J1818a): `eval` is a body only as a segment's
+        # command word (after assignments, `if`/`then`/`do`/`!`/`{` and exec
+        # wrappers with their options), and its body's words are not scanned
+        # again here, so `echo eval eval …` is no body at all. A shell's body
+        # is one word, so it is matched anywhere (`find -exec sh -c`, `xargs
+        # bash -c`). Nesting is capped: a body found HIMMEL_LSB_DEPTH (the
+        # child count above this run) 3 levels down is refused fail-closed.
+        if [ "$TOK" = 1 ]; then
+            idepth=${HIMMEL_LSB_DEPTH:-0}
+            case "$idepth" in '' | *[!0-9]*) idepth=0 ;; esac
+            ii=0 iseg=-1 icmd=0 iwr=0 iwn='' ioa=0
+            while [ "$ii" -lt "$ST_N" ]; do
+                ij=$((ii + 1)) ibw='' icw=0
+                if [ "${ST_S[ii]}" != "$iseg" ]; then
+                    iseg=${ST_S[ii]} icmd=1 iwr=0 ioa=0
+                fi
+                if [ "$icmd" = 1 ] && [ -z "${ST_RO[ii]}" ]; then
+                    il=${ST_LW[ii]}
+                    if [ "$ioa" = 1 ]; then
+                        ioa=0
+                    elif [ "$iwr" = 1 ] && case "$il" in -* | [0-9]*) true ;; *) false ;; esac; then
+                        ! _wrapper_opt_arg "$iwn" "$il" || ioa=1
+                    elif [ "${ST_A[ii]}" != 1 ]; then
+                        case "${il##*/}" in
+                            if | then | else | elif | do | while | until | '!' | '{') ;;
+                            env | sudo | doas | xargs | command | builtin | exec | nohup | nice | ionice | timeout | stdbuf | setsid | taskset | chrt | unbuffer | time | noglob | nocorrect)
+                                iwr=1 iwn=${il##*/} ;;
+                            *) icmd=0 icw=1 ;;
+                        esac
+                    fi
+                fi
+                case "${ST_LW[ii]##*/}" in
+                    bash|sh|zsh|dash|ksh|mksh|ash|fish)
+                        ic=0 iskip=0 iunc=0
+                        while [ "$ij" -lt "$ST_N" ] && [ "${ST_S[ij]}" = "${ST_S[ii]}" ]; do
+                            iw=${ST_W[ij]}
+                            ij=$((ij + 1))
+                            [ -z "${ST_RO[ij-1]}" ] || continue
+                            if [ "$iskip" = 1 ]; then iskip=0; continue; fi
+                            case "$iw" in
+                                -o|+o|-O|+O|--rcfile|--init-file) iskip=1 iunc=$ic ;;
+                                -|--|+c) iunc=1 ;;
+                                --*) iunc=$ic ;;
+                                -c) iunc=$ic ic=1 ;;
+                                [-+]?) iunc=$ic ;;
+                                [-+]*) iunc=1 ;;
+                                *) [ "$ic" = 0 ] || ibw=$iw; break ;;
+                            esac
+                            # J1818b: an option run this scan cannot read with
+                            # certainty (`--`, `-`, `+c`, a combined flag, any
+                            # option after `-c`, a body that starts with `-` or
+                            # `+`) leaves the body undetermined, so the rest of
+                            # the segment, one word per line, is judged as the
+                            # body: fail-closed, the parser does not grow.
+                            if [ "$iunc" = 1 ]; then
+                                ibw='' ix=$((ii + 1))
+                                while [ "$ix" -lt "$ST_N" ] && [ "${ST_S[ix]}" = "${ST_S[ii]}" ]; do
+                                    [ -n "${ST_RO[ix]}" ] || ibw="${ibw:+$ibw$'\n'}${ST_W[ix]}"
+                                    ix=$((ix + 1))
+                                done
+                                break
+                            fi
+                        done
+                        ;;
+                    eval)
+                        if [ "$icw" = 1 ]; then
+                            while [ "$ij" -lt "$ST_N" ] && [ "${ST_S[ij]}" = "${ST_S[ii]}" ]; do
+                                [ -n "${ST_RO[ij]}" ] || ibw="${ibw:+$ibw }${ST_W[ij]}"
+                                ij=$((ij + 1))
+                            done
+                            ii=$((ij - 1))
+                        fi
+                        ;;
+                esac
+                if [ -z "$ibw" ]; then
+                    :
+                elif [ "$idepth" -ge 3 ]; then
+                    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
+                        deny_message "a $tool_name command" "$cmd" "interpreter bodies (eval, bash -c) nested more than 3 deep are not judged, so they are refused fail-closed; run the innermost command directly"
+                        exit 2
+                    fi
+                elif ! jq -n --arg cmd "$ibw" --arg cwd "$cwd" \
+                    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
+                    echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c or eval in: $cmd" >&2
+                    exit 2
+                fi
+                ii=$((ii + 1))
+            done
+        fi
     fi
     # The shell drops quotes and escapes inside a word (`c\p`, `c""p` and
     # `settings.js\on` all name what they spell without them), so every
@@ -3042,9 +3310,12 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     if [ "$brace_dir_dest" = 0 ] && [ "$write_verb" = 0 ] && [ -n "$nested_wt_primary" ] \
         && has_unquoted_brace_group "$cmd_n"; then
         if [ "$TOK" = 1 ]; then
+            # a word with no unquoted `{` (ST_G=0) never brace-expands: a
+            # quoted jq program (`'{c:.critic, f:(.a // "")}'`) is no climb
+            # (HIMMEL-4298)
             widx=0
             while [ "$widx" -lt "$ST_N" ]; do
-                if has_brace_climb_word "${ST_W[widx]}"; then brace_dir_dest=1; break; fi
+                if [ "${ST_G[widx]}" = 1 ] && has_brace_climb_word "${ST_W[widx]}"; then brace_dir_dest=1; break; fi
                 widx=$((widx + 1))
             done
         else
@@ -3056,6 +3327,15 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
             done
             if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
         fi
+    fi
+
+    # An interpreter that both finds $HOME and writes a file can build the
+    # live path at run time, out of the text's sight (interp_home_write). Read
+    # from the raw text: cmd_lc has lost the quotes that mark a write mode.
+    if interp_home_write "$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')" \
+        && [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
+        deny_message "a $tool_name command" "$cmd" "an interpreter (python/node/perl/ruby) both reads the home directory (expanduser, homedir(), Path.home(), \$ENV{HOME}, os.environ['HOME']) and writes a file, so it can build ~/.claude/settings*.json at run time; write the file from a worktree path instead"
+        exit 2
     fi
 
     if [ "$mentions_settings" = "0" ] && [ "$dir_dest" = "0" ] && [ "$dirdest_climb" = "0" ] \

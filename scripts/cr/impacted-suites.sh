@@ -145,6 +145,8 @@ runner_for() {
             printf 'bun test %q --dots\n' "$path" ;;
         scripts/vault/tests/*.test.mjs|scripts/vault/tests/*.test.js|scripts/vault/tests/*.test.ts)
             printf 'bun test %q --dots\n' "$path" ;;
+        scripts/config-ui/tests/*.test.mjs|scripts/config-ui/tests/*.test.js|scripts/config-ui/tests/*.test.ts)
+            printf 'bun test %q --dots\n' "$path" ;;
         marketplace/plugins/luna-correlate/*.test.mjs|marketplace/plugins/luna-correlate/*.test.js|marketplace/plugins/luna-correlate/*.test.ts)
             rel="${path#marketplace/plugins/luna-correlate/}"
             printf 'cd marketplace/plugins/luna-correlate && bun test %q\n' "$rel" ;;
@@ -189,6 +191,7 @@ matrix-npm-test|npm-test|npm test
 luna-vitals|bun-test|scripts/luna-vitals && bun install
 telegram-suites|bun-test|bun test scripts/telegram --dots
 vault-suites|bun-test|bun test scripts/vault/tests --dots
+config-ui-suites|bun-test|bun test scripts/config-ui --dots
 luna-correlate|bun-test|marketplace/plugins/luna-correlate && bun install
 telegram-himmel|bun-test|marketplace/plugins/telegram-himmel && bun install
 EOF

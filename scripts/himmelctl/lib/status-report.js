@@ -487,24 +487,16 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (set bridge.enabled in ~/.himmel/config.json to enable the bridge)`;
       }
-      // HIMMEL-2326: observability-stack's own probe (probes.js) reads
-      // 'absent' on posix UNCONDITIONALLY — Phase A (HIMMEL-922) ships a
-      // win32-only installer, so a posix host can never converge this item
-      // no matter what the operator does. profiles:["core","all"] makes it
-      // desired:true for every core/all target — without this downgrade
-      // this would be the exact false-red class doc-guard-map's own comment
-      // above names ("without this downgrade the fix for the OLD
-      // tautological false-green would just become a false red for nearly
-      // everyone"). win32 stays on the standard red path: unlike
-      // graphify-mcp/doc-guard-map, this item carries a REAL `install`
-      // descriptor (install.type:'observability'), so `himmelctl ensure`
-      // can genuinely converge a win32 'absent' — that stays a true alarm.
-      // 'degraded' (a partial install, or an inconclusive win32 query) is a
-      // DIFFERENT probe.actual and never reaches this branch on either
-      // platform.
-      if (item.id === 'observability-stack' && (ctx.platform || process.platform) !== 'win32') {
+      // HIMMEL-2326 / HIMMEL-4341: on posix observability-stack is opt-in
+      // (observability.enabled in ~/.himmel/config.json). profiles:["core","all"]
+      // makes it desired:true for every target, so the probe marks the
+      // not-opted-in absence `cleanAbsence` and it reads n/a here — never a
+      // nag. An opted-in host that reads absent (service not installed) or
+      // degraded carries no flag and stays a true alarm; win32 never sets it
+      // either (its installer is `himmelctl ensure`-convergeable).
+      if (item.id === 'observability-stack' && probe.cleanAbsence) {
         severity = 'n/a';
-        detail = `${probe.detail} — Phase A (HIMMEL-922) ships a Windows-only installer; tracked as HIMMEL-2333`;
+        detail = `${probe.detail} — opt-in (set "observability": {"enabled": true} in ~/.himmel/config.json, then run himmelctl ensure, to run the flow exporter as a user service)`;
       }
       // HIMMEL-2305: a cadence-off, bridge-off (or lane-not-selected) adopter
       // must not be nagged about credentials for a feature they never opted

@@ -120,6 +120,23 @@ settled. The written spec MUST contain: an `Estimate record: <path>` line (the
 effort-assess JSON from 1a), an `## Alternatives considered` section and a
 `## Definition of done` section. Stage 2 refuses to start without them.
 
+It also carries, for the terminal lint (HIMMEL-4375):
+- `## Invariants`: `none`, or one `I<n>` line per "one / never / always /
+  every" rule the design states.
+- `## Fact ownership`, when the design adds or aggregates a status, report,
+  doctor, health, probe, check or inventory surface. It is a table with one row
+  per fact:
+  - the fact;
+  - every EXISTING surface that computes it, as backticked paths found by grep,
+    or `none (grep: <pattern>)`. A delegation (A calls B) counts as two
+    surfaces;
+  - its single owner after this design;
+  - how each non-owner is folded, delegated or removed.
+
+  Build it by grepping the repo, never from memory. Self-answer mode does not
+  exempt it. The lint detects the surface from the H1 and the first section,
+  so name it there.
+
 **HALT it before its auto-handoff to writing-plans.** When brainstorming has
 written + self-reviewed the spec and the design is approved, return HERE
 instead of letting it invoke writing-plans — minerva runs the spec-critic
@@ -226,6 +243,13 @@ fi
 # <<< himmel-ops scripts resolver
 bash "$S/legs.sh" 2>/dev/null || true
 ```
+
+**Lint first (HIMMEL-4375).** Run `bash "$S/minerva-trace-lint.sh" <spec-file> <plan-file>`
+from the target repo before any hand-off. A non-zero exit names each gap:
+- a missing or ungrepped Fact ownership row → back to the spec (1b);
+- an invariant with no named test → back to the plan (Stage 3).
+
+Do not hand off until it prints `ok`, in either mode.
 
 - If mode is `autonomous` (Stage 0) **AND** the output contains `execute`: do NOT
   stop — **invoke `lean-skills:subagent-driven-development`** on the hardened plan

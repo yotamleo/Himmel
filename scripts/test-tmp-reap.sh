@@ -17,6 +17,8 @@
 #      other-uid only warns (TMP_REAP_UID), dry-run warns, a readable proc is quiet;
 #      an empty census root refuses
 #  11. FAMILIES does not glob against the caller's cwd
+#  13. a judge dir's .holder (HIMMEL-4325): live keeps, dead reaps at once, unknown/absent = today's path
+#  14. judge-dir.sh creates the dir + holder, refuses a bad PR/suffix, fails loudly
 # Platform guard: POSIX bash 3.2+.
 set -uo pipefail
 
@@ -198,6 +200,95 @@ build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/him
 out="$(cd "$CWD" && reap --apply)"; rc=$?
 check "apply from a cwd with family-named files rc 0" "$rc" 0
 absent "11. old fixture reaped despite cwd files" "$ROOT/mog-run.old"
+
+echo "== 12. scoped to one leg (HIMMEL-4235): --judge / --session =="
+build_tree
+touch -t 200001010000 "$ROOT/claude-$(id -u)/j9001"
+out="$(reap --apply --judge 9001)"; rc=$?
+check "scoped --judge rc 0" "$rc" 0
+absent "12. the named PR's idle judge dir is reaped" "$ROOT/claude-$(id -u)/j9001"
+mkdir -p "$ROOT/claude-$(id -u)/j9003"; : > "$ROOT/claude-$(id -u)/j9003/f"
+out="$(reap --apply --judge 9003)"; rc=$?
+exists "12. a just-touched judge dir (maybe still running) is kept even when named" "$ROOT/claude-$(id -u)/j9003"
+mkdir -p "$ROOT/claude-$(id -u)/j9004"; : > "$ROOT/claude-$(id -u)/j9004/f"; touch -d '2 hours ago' "$ROOT/claude-$(id -u)/j9004"
+out="$(reap --apply --judge 9004)"; rc=$?
+exists "12. a judge dir under the 6 h floor is kept in scoped mode too" "$ROOT/claude-$(id -u)/j9004"
+exists "12. another leg's old judge dir untouched" "$ROOT/claude-$(id -u)/j9002"
+exists "12. fixture untouched by a scoped run" "$ROOT/mog-run.old"
+exists "12. dead session untouched by a judge-only scope" "$CL/$DEAD"
+build_tree
+out="$(reap --apply --session "$DEAD")"; rc=$?
+check "scoped --session rc 0" "$rc" 0
+absent "12. the named dead session is reaped" "$CL/$DEAD"
+exists "12. another session untouched" "$CL/$STALE"
+exists "12. judge dir untouched by a session-only scope" "$ROOT/claude-$(id -u)/j9002"
+out="$(reap --judge 9a)"; rc=$?
+check "non-numeric --judge rc 2" "$rc" 2
+out="$(reap --session nope)"; rc=$?
+check "malformed --session rc 2" "$rc" 2
+
+echo "== 13. judge holder (HIMMEL-4325): .holder = '<pid> <starttime>' =="
+JD="$ROOT/claude-$(id -u)"
+holder() { printf '%s\n' "$2" > "$1/.holder"; }
+sleep 600 & HOLD_PID=$!
+build_tree
+mkdir -p "$JD/j9101" "$JD/j9102" "$JD/j9103" "$JD/j9104" "$JD/j9105" "$JD/j9106"
+: > "$JD/j9101/f"; holder "$JD/j9101" "$$ $(pstart $$)"; old "$JD/j9101"
+: > "$JD/j9102/f"; holder "$JD/j9102" "999999 5"
+: > "$JD/j9103/f"; holder "$JD/j9103" "$$ 1"
+: > "$JD/j9104/f"; holder "$JD/j9104" "$$ -"; old "$JD/j9104"
+: > "$JD/j9105/f"; holder "$JD/j9105" "$$ -"
+: > "$JD/j9106/f"; holder "$JD/j9106" "$HOLD_PID $(pstart "$HOLD_PID")"; old "$JD/j9106"
+out="$(reap --apply --judge 9101)"; check "13. scoped rc 0" "$?" 0
+exists "13. live holder keeps an aged judge dir (scoped)" "$JD/j9101"
+contains "13. keep reason names the holder" "$out" "live judge holder"
+out="$(reap --apply --judge 9102)"
+absent "13. dead holder (pid gone), fresh dir, reaped at once in scoped mode" "$JD/j9102"
+out="$(reap --apply --judge 9103)"
+absent "13. pid-reuse holder (start time differs) reads dead, reaped at once" "$JD/j9103"
+out="$(reap --apply --judge 9104)"
+absent "13. unreadable start time reads UNKNOWN: aged dir takes the no-holder path (reaped)" "$JD/j9104"
+out="$(reap --apply --judge 9105)"
+exists "13. unreadable start time is not dead: fresh dir kept by the 6 h floor" "$JD/j9105"
+out="$(reap --apply --judge 9106)"
+exists "13. holder = long-lived parent (console-judge child case): dir kept" "$JD/j9106"
+out="$(reap --apply)"
+exists "13. live holder survives an unscoped sweep too" "$JD/j9101"
+exists "13. long-lived parent holder survives an unscoped sweep" "$JD/j9106"
+absent "13. unscoped sweep reaps the no-holder aged dir (today's path)" "$JD/j9002"
+kill "$HOLD_PID" 2>/dev/null; HOLD_PID=""
+
+echo "== 14. judge-dir.sh =="
+JDS="$HERE/judge-dir.sh"
+jd() { TMP_REAP_TMP_ROOT="$ROOT" TMP_REAP_SESSIONS_DIR="$SESS" bash "$JDS" "$@"; }
+build_tree
+d="$(jd 9201)"; rc=$?
+check "14. creates and prints the dir" "$d" "$JD/j9201"
+check "14. rc 0" "$rc" 0
+check "14. holder = ancestor session pid + start time" "$(cat "$JD/j9201/.holder")" "$$ $(pstart $$)"
+d="$(jd 9201 b)"; check "14. suffix dir" "$d" "$JD/j9201b"
+d="$(jd 9a 2>/dev/null)"; rc=$?; check "14. non-numeric PR refused" "$rc" 2; check "14. ... and prints no dir" "$d" ""
+d="$(jd 9201 B 2>/dev/null)"; rc=$?; check "14. suffix outside [a-z] refused" "$rc" 2; check "14. ... and prints no dir" "$d" ""
+d="$(jd 9201 ab 2>/dev/null)"; rc=$?; check "14. multi-char suffix refused" "$rc" 2
+d="$(jd 2>/dev/null)"; rc=$?; check "14. no PR refused" "$rc" 2
+rm -rf "$JD"; build_tree
+sleep 300 & OTHER=$!
+mkdir -p "$JD/j9301"; echo "$OTHER $(pstart "$OTHER")" > "$JD/j9301/.holder"
+d="$(jd 9301 2>/dev/null)"; rc=$?; check "14. a live other holder is not overwritten" "$rc" 1; check "14. ... and prints no dir" "$d" ""
+check "14. ... holder file untouched" "$(cat "$JD/j9301/.holder")" "$OTHER $(pstart "$OTHER")"
+kill "$OTHER" 2>/dev/null; wait "$OTHER" 2>/dev/null
+d="$(jd 9301 2>/dev/null)"; rc=$?; check "14. a dead other holder is taken over" "$rc" 0
+check "14. ... holder rewritten" "$(cat "$JD/j9301/.holder")" "$$ $(pstart $$)"
+mkdir -p "$JD/j9302"; ln -s "$ROOT/victim" "$JD/j9302/.holder"; : > "$ROOT/victim"
+d="$(jd 9302 2>/dev/null)"; rc=$?; check "14. a symlinked .holder is refused" "$rc" 1
+check "14. ... and its target is not written" "$(wc -c < "$ROOT/victim" | tr -d ' ')" 0
+d="$(TMP_REAP_TMP_ROOT="$ROOT" TMP_REAP_SESSIONS_DIR="$ROOT/no-sessions" bash "$JDS" 9303)"; check "14. no session ancestor: holder is unknown, not the parent shell" "$(cat "$JD/j9303/.holder")" "- -"
+out="$(reap --apply --judge 9303)"; exists "14. ... and tmp-reap keeps the fresh dir (unknown holder, 6 h floor)" "$JD/j9303"
+rm -rf "$JD"; chmod 555 "$ROOT"
+if [ -w "$ROOT" ]; then echo "ok - 14. (writable despite chmod, e.g. root: unwritable-root case skipped)"; else
+    d="$(jd 9202 2>/dev/null)"; rc=$?; check "14. mkdir failure fails loudly" "$([ "$rc" -ne 0 ] && echo nonzero)" nonzero; check "14. ... and prints no dir" "$d" ""
+fi
+chmod 755 "$ROOT"
 
 echo
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILURE(S)"; exit 1; }

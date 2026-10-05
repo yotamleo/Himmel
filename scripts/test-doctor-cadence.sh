@@ -26,6 +26,7 @@ P="$W/primary"; WT="$W/wt"
 mkdir -p "$P/scripts/luna"
 git init -q "$P"
 cp "$DIR/doctor-cadence.sh" "$P/scripts/doctor-cadence.sh" 2>/dev/null || true
+cp "$DIR/doctor-counts.sh" "$P/scripts/doctor-counts.sh" 2>/dev/null || true
 cp "$REAL_ROOT/scripts/luna/cadence-alert.sh" "$P/scripts/luna/cadence-alert.sh"
 # The stub doctor: prints $STUB_OUT, records where it ran.
 cat > "$P/scripts/himmel-doctor.sh" <<'SH'
@@ -80,7 +81,24 @@ check "a WARN that disappears sends no alert" 2 "$(sent_n)"
 
 # 5. state: counts file + previous run kept for diffing.
 check "counts file reflects the last run" "fail=1 warn=0" "$(cat "$STATE/counts" 2>/dev/null)"
-[ -s "$STATE/prev.tsv" ] && pass "previous run kept" || fail "previous run kept"
+[ -s "$STATE/alerted.tsv" ] && pass "alert baseline kept" || fail "alert baseline kept"
+check "last.tsv and counts come from the same run" "FAIL C16-hooks" "$(cat "$STATE/last.tsv" 2>/dev/null)"
+
+# 5b. HIMMEL-4382: an ad-hoc doctor run that introduces a new finding must not
+# swallow the cadence alert (the baseline is the cadence's own, not last.tsv).
+: > "$SENT"; doctor_out "C16-hooks" ""; run_cad
+n0="$(sent_n)"
+# shellcheck source=doctor-counts.sh
+. "$DIR/doctor-counts.sh" 2>/dev/null
+printf 'FAIL C16-hooks\nFAIL C77-adhoc\n' > "$W/adhoc.keys"
+doctor_state_publish "$STATE" "$W/adhoc.keys" 2 0
+check "doctor_state_publish writes last.tsv and counts together" "fail=2 warn=0" "$(cat "$STATE/counts")"
+doctor_out "C16-hooks C77-adhoc" ""; run_cad
+check "a finding first seen by an ad-hoc run still alerts the cadence once" "$((n0 + 1))" "$(sent_n)"
+last_alert="$(tail -1 "$SENT")"
+case "$last_alert" in *C77-adhoc*) pass "that alert names the ad-hoc finding" ;; *) fail "that alert names the ad-hoc finding" ;; esac
+run_cad
+check "the next identical cadence run does not alert again" "$((n0 + 1))" "$(sent_n)"
 
 # 6. a first-ever run with only WARNs is a baseline: no alert.
 rm -rf "$STATE"; : > "$SENT"
@@ -112,6 +130,22 @@ echo "fail=0 warn=0" > "$SEG_STATE/counts"
 check "segment prints nothing when the doctor is clean" "" "$(seg)"
 echo "garbage" > "$SEG_STATE/counts"
 check "segment prints nothing on a malformed state file" "" "$(seg)"
+
+# 9b. HIMMEL-4363: a counts file older than 24 h shows its age; a fresh one does not.
+echo "fail=1 warn=12" > "$SEG_STATE/counts"
+check "fresh counts show no age" "doctor  1 FAIL  12 WARN" "$(seg)"
+age_file() { perl -e 'utime $ARGV[0], $ARGV[0], $ARGV[1]' "$(($(date +%s) - $1))" "$2"; }
+age_file 259200 "$SEG_STATE/counts"
+check "counts over 24h old show the age in days" "doctor  1 FAIL  12 WARN (3d old)" "$(seg)"
+age_file 108000 "$SEG_STATE/counts"
+check "counts 30h old show the age in hours" "doctor  1 FAIL  12 WARN (30h old)" "$(seg)"
+# the shared writer: atomic (no tmp left behind), creates the dir, exact format.
+# shellcheck source=doctor-counts.sh
+. "$DIR/doctor-counts.sh" 2>/dev/null
+WSTATE="$W/wstate/nested"
+doctor_counts_write "$WSTATE" 4 7 2>/dev/null
+check "shared writer writes fail=/warn=" "fail=4 warn=7" "$(cat "$WSTATE/counts" 2>/dev/null)"
+check "shared writer leaves no tmp file" "counts" "$(ls "$WSTATE" 2>/dev/null)"
 
 # 10. cron arm / status / disarm through a stub crontab; never the real one.
 cat > "$W/crontab" <<'SH'

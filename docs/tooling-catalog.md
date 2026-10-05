@@ -76,7 +76,7 @@ truth for presence; named profiles can still opt in. Full detail:
 | `ai-image-prompts` | AI image prompt library (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-imagegen` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `platform-design-skills` | Platform design guidelines: all 8 upstream platforms load, no skills list (sha-pinned) | ON-DEMAND, `design-a11y` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `diagram-design` | Diagram design skills (manifest-bearing upstream, sha-pinned) | ON-DEMAND, `design-diagram` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
-| `builder-visual` | Builder.io skills: all upstream skills load, incl. visual-plan and visual-recap; `strict:true` (upstream plugin.json, HIMMEL-4068) (sha-pinned) | ON-DEMAND, `design-diagram` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `builder-visual` | Builder.io skills: all upstream skills load, incl. visual-plan and visual-recap; `strict:true` (upstream plugin.json, HIMMEL-4068) (sha-pinned) | ON-DEMAND, `design` core (HIMMEL-4326) + `design-diagram` profile (HIMMEL-4012 PR2b); its `.mcp.json` registers the hosted OAuth MCP `agent-native-dispatch` (`https://dispatch.agent-native.com/mcp`, egress to Builder.io, one-time operator login); catalog id `@himmel` |
 | `frontend-slides` | HTML presentation generator, `git-subdir` `plugins/frontend-slides`, tag `v2.1.0` | ON-DEMAND, `design-slides` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `design-dna` | Design DNA skill (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 | `anydesign` | Capture a site into a design system, tag `v0.6.0` (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
@@ -1491,9 +1491,11 @@ on demand; nothing here runs automatically.
   (`GRAPHIFY_LEDGER`); `deepseek`/`codex` use OpenAI chat/completions, `glm` (via z.ai anthropic-compat)/`claude` use the Anthropic Messages API. DeepSeek off-peak advisory. `--dry-run` first.
 - `scripts/luna/fetch-health.py` — Daily no-LLM health probes for luna
   clip-source fetch integrations. The registry (`build_probe_registry`) carries
-  **ten** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
+  **eleven** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
   `x-twitter-cli`, `instagram-embed`, `instagram-media`, `youtube-playwright`,
-  `github`, `bitbucket`, `firecrawl`. The full run (armed by `pipeline-cadence.sh`'s
+  `github`, `bitbucket`, `firecrawl` (HIMMEL-4335: probes the free
+  `/v2/team/credit-usage`, spends no credit, and ledgers credits 0 to
+  `firecrawl-ledger.jsonl`), `jina-reader` (keyless). The full run (armed by `pipeline-cadence.sh`'s
   fetch-health leg) probes every source, writes `~/.himmel/fetch-health.json`
   (`last_success_timestamp` preserved per source across runs), and exits 0 iff
   every source is `ok`. `--probe <source>` (HIMMEL-2176 Task 2) runs exactly
@@ -1885,9 +1887,12 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   `himmel-doctor` run, so a standing FAIL is seen in a day, not nine
   (HIMMEL-4243). `run` executes the doctor from the **primary** checkout
   (resolved through git-common-dir; a worktree run gives false C16 reds) and
-  keeps `last.tsv` / `prev.tsv` / `counts` under
-  `~/.himmel/state/doctor-cadence/`. A FAIL, or a WARN id absent from the
-  previous run, goes to Telegram through `scripts/luna/cadence-alert.sh`; the
+  keeps `last.tsv` / `alerted.tsv` / `counts` under
+  `~/.himmel/state/doctor-cadence/` (HIMMEL-4382: `himmel-doctor.sh` itself
+  judges the primary checkout from any cwd and a full run there writes
+  `last.tsv` + `counts` together; `--root <path>` judges another checkout and
+  writes nothing). A FAIL, or a WARN id absent from `alerted.tsv` (the set this
+  script last alerted on; an ad-hoc doctor run never moves it), goes to Telegram through `scripts/luna/cadence-alert.sh`; the
   first-ever run is a baseline (FAILs only); a doctor that prints no Summary
   line alerts too. `hud-custom-lines.sh` shows `doctor  N FAIL  M WARN` from
   `counts` (read-only, silent when absent or clean). Registered in

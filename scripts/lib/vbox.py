@@ -34,6 +34,11 @@ def _resolve_vboxmanage():
     """
     override = os.environ.get("VBOXMANAGE_PATH")
     if override:
+        # A relative path must resolve now: _run() runs it under cwd=$HOME.
+        # (A drive-qualified `C:/..` value is absolute on Windows already.)
+        if (("/" in override or os.sep in override) and override[1:2] != ":"
+                and not os.path.isabs(override)):
+            return os.path.abspath(override)
         return override
     return shutil.which("VBoxManage") or _WINDOWS_DEFAULT
 
@@ -46,7 +51,10 @@ class VBoxError(RuntimeError):
 
 
 def _run(*args, timeout=120):
-    r = subprocess.run([VBOXMANAGE, *args], capture_output=True, text=True, timeout=timeout)
+    # cwd=$HOME (HIMMEL-4334): VBoxManage may spawn the long-lived VBoxSVC, which
+    # inherits this cwd and would pin a merged worktree as "in use".
+    r = subprocess.run([VBOXMANAGE, *args], capture_output=True, text=True, timeout=timeout,
+                       cwd=os.path.expanduser("~"))
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 

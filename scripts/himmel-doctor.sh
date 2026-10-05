@@ -3,7 +3,7 @@
 # severity-grouped report with remediation, and (on request) file ONE
 # consolidated GitHub issue. Read-only except `--fix` (heals C1-guardrail wiring).
 #
-#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json]
+#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json] [--root <path>]
 #
 # Exit 0 unless a FAIL finding is present (then 1) — so `--fix` re-checks are
 # scriptable. WARN/INFO never fail the exit. See the /himmel-doctor command md.
@@ -12,8 +12,22 @@
 # stderr. Same checks, same exit code. Needs jq.
 set -uo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-[ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/himmel-doctor.sh" ] || REPO_ROOT="${HIMMEL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+# HIMMEL-4382: the doctor judges the STATION (primary) checkout, resolved via
+# git-common-dir like doctor-cadence, so a run from a leg worktree reports what
+# the primary reports. `--root <path>` / HIMMEL_DOCTOR_ROOT judges another
+# checkout (a leg testing its own branch); a run whose root is not the station
+# publishes no state.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+common="$(git -C "$SELF_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+STATION_ROOT=""
+[ -n "$common" ] && STATION_ROOT="$(cd "$(dirname "$common")" 2>/dev/null && pwd)"
+[ -n "$STATION_ROOT" ] && [ -f "$STATION_ROOT/scripts/himmel-doctor.sh" ] || STATION_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$STATION_ROOT" ] && [ -f "$STATION_ROOT/scripts/himmel-doctor.sh" ] || STATION_ROOT="${HIMMEL_REPO:-$(cd "$SELF_DIR/.." && pwd)}"
+ROOT_OVERRIDE="${HIMMEL_DOCTOR_ROOT:-}"
+prev_arg=""
+for arg in "$@"; do [ "$prev_arg" = --root ] && ROOT_OVERRIDE="$arg"; prev_arg="$arg"; done
+REPO_ROOT="$STATION_ROOT"
+[ -n "$ROOT_OVERRIDE" ] && REPO_ROOT="$(cd "$ROOT_OVERRIDE" 2>/dev/null && pwd || printf '%s' "$ROOT_OVERRIDE")"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/lib/resolve-node.sh"
 # shellcheck source=/dev/null
@@ -47,6 +61,8 @@ while [ $# -gt 0 ]; do
         --json) DO_JSON=1 ;;
         --file-issue) DO_FILE=1 ;;
         --repo) shift; REPO_FLAG="${1:-}" ;;
+        --root) [ -n "${2:-}" ] || { echo "himmel-doctor: --root needs a path" >&2; exit 2; }
+                shift ;; # the value was read by the pre-scan above
         --no-color) USE_COLOR=0 ;;
         -h|--help) sed -n '2,/^set /p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
         *) echo "himmel-doctor: unknown arg '$1'" >&2; exit 2 ;;
@@ -68,7 +84,8 @@ else C_RED=""; C_YEL=""; C_GRN=""; C_DIM=""; C_0=""; fi
 
 n_fail=0; n_warn=0; n_info=0
 BODY="$(mktemp)"
-trap 'rm -f "$BODY"' EXIT
+KEYS="$(mktemp "${TMPDIR:-/tmp}/himmel-doctor-keys.XXXXXX")" || { echo "himmel-doctor: mktemp failed" >&2; exit 2; }
+trap 'rm -f "$BODY" "$KEYS"' EXIT
 printf '## himmel-doctor findings (%s)\n\n' "$(uname -s 2>/dev/null || echo ?)" >> "$BODY"
 
 # emit <SEV> <id> <msg> <remedy>
@@ -87,6 +104,7 @@ emit() {
         printf '%s%-4s%s %s: %s\n' "$col" "$sev" "$C_0" "$id" "$msg"
         [ -n "$remedy" ] && printf '       %s→ %s%s\n' "$C_DIM" "$remedy" "$C_0"
     fi
+    case "$sev" in FAIL|WARN) printf '%s %s\n' "$sev" "$id" >> "$KEYS" ;; esac
     if [ "$sev" != OK ]; then printf -- '- **%s** %s: %s\n  - → %s\n' "$sev" "$id" "$msg" "$remedy" >> "$BODY"; fi
 }
 
@@ -190,7 +208,7 @@ check_c4() {
 
 # --- C5: cwd repo not registered for handover-resume ----------------------------
 check_c5() {
-    local top; top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    local top="$REPO_ROOT"
     [ -n "$top" ] || return
     [ -f "$REGISTRY" ] || { emit INFO C5-handover "no handover registry yet" "/handover-setup to enable handover-resume"; return; }
     # Case-insensitive (Windows registry stores lowercased paths) + accept a
@@ -875,66 +893,6 @@ check_c17() {
     printf '%s\n' "$out" | grep '^READY-DRIFT doc-disabled ' | awk '{print "       · "$3" is enabled+keyed but a doc still marks its toolkit disabled"}'
 }
 
-# --- C18: monitored zero-usage command cluster (2026-07-29 skill-hygiene spec) --
-# WARN-only, "flag but don't auto-fix" like C15. That survey found five
-# project-scope commands with WEAK evidence (no supersession found anywhere,
-# "never used" is the only signal) and disposed them KEEP-monitor rather than
-# removed. No persistent usage-tracking mechanism exists yet (the survey's own
-# open question, §4 Q5) -- so this check applies the survey's own age/cost
-# thresholds (never-used AND age>60d, OR never-used AND age>30d AND cost>50
-# tok) to a STATIC declared table rather than a live usage counter. A command
-# dropping out of `.claude/commands/` (disabled/removed) silently drops out of
-# this check too -- nothing to update there. Update/remove an entry once a
-# fresh usage signal actually resolves it; don't let this table go stale.
-DOCTOR_C18_MONITORED='
-quiet-run|2026-05-18|17
-retitle|2026-06-22|37
-improve|2026-05-25|40
-guardrail-sim|2026-06-21|71
-cr-scores|2026-06-19|21
-'
-
-# portable YYYY-MM-DD -> epoch seconds; GNU date first (Git Bash/Linux), then
-# BSD date -j (macOS). Echoes nothing (rc=1) on an unparsable/foreign date --
-# callers must treat that as "skip", never crash.
-_c18_epoch() {
-    date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
-}
-
-check_c18() {
-    local cmds_dir="${DOCTOR_C18_COMMANDS_DIR:-$REPO_ROOT/.claude/commands}"
-    # Test seam only (default unset -- production always uses the built-in
-    # table above): lets the hermetic test supply landed-dates relative to
-    # its own run time instead of asserting against a live-clock threshold
-    # crossing on the real, fixed 2026-xx-xx dates.
-    local monitored="${DOCTOR_C18_MONITORED_OVERRIDE:-$DOCTOR_C18_MONITORED}"
-    local now; now="$(date +%s)"
-    local name landed cost added_epoch age_days hits hit_n
-    hits=""; hit_n=0
-    while IFS='|' read -r name landed cost; do
-        [ -n "$name" ] || continue
-        [ -f "$cmds_dir/$name.md" ] || continue   # already disabled/removed -- nothing to flag
-        added_epoch="$(_c18_epoch "$landed")"
-        case "$added_epoch" in ''|*[!0-9]*) continue ;; esac   # unparsable date -- skip, never crash
-        age_days=$(( (now - added_epoch) / 86400 ))
-        if [ "$age_days" -gt 60 ] || { [ "$age_days" -gt 30 ] && [ "${cost:-0}" -gt 50 ]; }; then
-            hits="${hits}${name} (${age_days}d old, ~${cost} tok)
-"
-            hit_n=$((hit_n + 1))
-        fi
-    done <<EOF
-$monitored
-EOF
-    if [ "$hit_n" -eq 0 ]; then
-        emit OK C18-skill-usage "no monitored zero-usage command has crossed its staleness threshold"
-        return
-    fi
-    emit WARN C18-skill-usage \
-        "$hit_n monitored command(s) from the 2026-07-29 skill-hygiene survey are still zero-usage past their threshold" \
-        "re-confirm real usage; disable/remove if still unused, or clear the entry in check_c18 if it's now in active use"
-    printf '%s' "$hits" | sed '/^$/d' | sed 's/^/       · /'
-}
-
 # --- C19: observability stack drift + endpoint readiness (read-only advisory) ---
 # HIMMEL-1676: the alerting assets existed in-repo while the installed stack had
 # no rule groups. Compare the installed copies and query the two local endpoints;
@@ -942,6 +900,34 @@ EOF
 check_c19() {
     if [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" = 1 ]; then
         emit OK C19-observability "observability drift checks skipped by test seam"
+        return
+    fi
+
+    # HIMMEL-4287: gate on whether the observability item is DESIRED and
+    # applicable on this host (himmelctl status: observability-stack /
+    # observability-grafana, desired and not n/a), never on the OS. Unknown
+    # (no node/profile/jq) stays quiet rather than WARNing on a guess.
+    # Seams: DOCTOR_OBSERVABILITY_DESIRED=1|0, DOCTOR_STATUS_JSON=<file>.
+    local want="${DOCTOR_OBSERVABILITY_DESIRED:-}"
+    if [ -z "$want" ]; then
+        local sj="" node_bin=""
+        if [ -n "${DOCTOR_STATUS_JSON:-}" ]; then
+            sj="$(cat "$DOCTOR_STATUS_JSON" 2>/dev/null)"
+        elif node_bin="$(resolve_node 2>/dev/null)" && [ -f "$REPO_ROOT/scripts/himmelctl/bin.js" ]; then
+            sj="$("$node_bin" "$REPO_ROOT/scripts/himmelctl/bin.js" status --json 2>/dev/null)"
+        fi
+        if ! command -v jq >/dev/null 2>&1 || [ -z "$sj" ]; then
+            emit INFO C19-observability "could not read himmelctl status -- observability not checked (cannot tell whether it is desired here)"
+            return
+        fi
+        want="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select((.id == "observability-stack" or .id == "observability-grafana") and .desired == true and .severity != "n/a")] | if length > 0 then "1" else "0" end' 2>/dev/null)" || want=""
+        if [ -z "$want" ]; then
+            emit INFO C19-observability "himmelctl status output unreadable -- observability not checked (cannot tell whether it is desired here)"
+            return
+        fi
+    fi
+    if [ "$want" != 1 ]; then
+        emit INFO C19-observability "observability stack not desired on this host (himmelctl status: n/a or not wanted) -- not checked"
         return
     fi
 
@@ -1179,7 +1165,7 @@ check_c21() {
 # visible without grepping session transcripts. No log = nothing has been
 # starved yet — OK, not a finding.
 check_c22() {
-    local log="$REPO_ROOT/.claude/logs/hook-chain-skips.jsonl"
+    local log="${HIMMEL_DOCTOR_CHAIN_SKIPS_LOG:-$REPO_ROOT/.claude/logs/hook-chain-skips.jsonl}"
     [ -f "$log" ] || { emit OK C22-chain-skips "no hook-chain-skips.jsonl — no starved chain member recorded"; return; }
     command -v jq >/dev/null 2>&1 || { emit INFO C22-chain-skips "hook-chain-skips.jsonl present but jq missing — counts not checked"; return; }
     local summary jq_rc=0
@@ -1187,7 +1173,10 @@ check_c22() {
     # is an output-buffer overflow (a chatty hook), not budget starvation —
     # folding both into one "starved" label made the remedy text below
     # misleading for a box that is only seeing chatty-hook overflows.
-    summary="$(jq -rs 'group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
+    # HIMMEL-4287: the log also records the hook suites' own fixture members
+    # (hang/hog/flood and anything under a scripts/**/test or fixtures dir); only a real
+    # hook's starvation is a finding, so those rows are dropped before counting.
+    summary="$(jq -rs 'map(select((.member // "") | test("^(hang[0-9]*|hog[0-9]*|flood[0-9]*)\\.sh$|(^|/)scripts/([^/]+/)*(tests?|fixtures?)/") | not)) | group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
     # A malformed/partially-written row makes the WHOLE `jq -s` slurp fail
     # (HIMMEL-2060 CR round 1, codex-2) — distinguish that from a genuinely
     # empty log rather than reporting both as the same clean OK.
@@ -2529,9 +2518,8 @@ check_c32() {
 DOCTOR_C33_CADENCE_INTERVAL_S=$((6 * 3600))
 
 # portable ISO8601 UTC ("...Z") -> epoch seconds; GNU date first (Git Bash/
-# Linux), then BSD date -j (macOS) -- same fallback shape as check_c18's
-# _c18_epoch. Echoes nothing (rc=1) on an unparsable timestamp; callers treat
-# that as "can't determine age", never crash.
+# Linux), then BSD date -j (macOS). Echoes nothing (rc=1) on an unparsable
+# timestamp; callers treat that as "can't determine age", never crash.
 _c33_epoch() {
     date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null  # gnu-ok: GNU date -d is paired with the BSD date -j fallback on this same line
 }
@@ -3048,6 +3036,51 @@ check_c49_qmd_embed_model() {
     esac
 }
 
+# --- C50-qmd-fork-stamp: build stamp vs deployed HEAD vs the pin (HIMMEL-4268) ---
+# `himmelctl update` once rolled the station's qmd fork back to the pin with
+# nothing reporting it. Three values must agree: the fork clone's build-success
+# stamp (.himmel-build-ok, the SHA the artifacts were BUILT from), the clone's
+# HEAD, and the QMD_FORK_REF pin in scripts/lib/qmd-bin.sh. Stamp != HEAD is a
+# stale build; HEAD != pin is drift, either direction. Read-only: it never
+# rebuilds, checks out or updates anything. Dir and pin resolve through
+# qmd-bin.sh itself (QMD_FORK_DIR / QMD_FORK_REF honoured), which is the test seam.
+check_c50_qmd_fork_stamp() {
+    local lib="$REPO_ROOT/scripts/lib/qmd-bin.sh" dir pin stamp head stamp_file
+    [ -f "$lib" ] || return 0
+    # shellcheck disable=SC1090
+    dir="$( . "$lib" >/dev/null 2>&1; _qmd_fork_dir )"
+    # shellcheck disable=SC1090
+    pin="$( . "$lib" >/dev/null 2>&1; _qmd_fork_ref )"
+    stamp_file="$dir/.himmel-build-ok"
+    # An abbreviated or symbolic QMD_FORK_REF names the same commit as a full SHA; compare resolved.
+    pin="$(git -C "$dir" rev-parse --verify --quiet "$pin^{commit}" 2>/dev/null || printf '%s' "$pin")"
+    if ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+        emit WARN C50-qmd-fork-stamp "no qmd fork checkout at $dir -- nothing to compare against the pin ${pin:0:8}" \
+            "bash scripts/lib/qmd-bin.sh install   # builds the pinned fork"
+        return 0
+    fi
+    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)"
+    stamp="$(head -n1 "$stamp_file" 2>/dev/null)"
+    if [ -z "$stamp" ]; then
+        emit WARN C50-qmd-fork-stamp "qmd fork at $dir has no build stamp (.himmel-build-ok) -- HEAD ${head:0:8} was never confirmed built" \
+            "bash scripts/lib/qmd-bin.sh install   # rebuilds and re-stamps"
+    elif [ "$stamp" != "$head" ]; then
+        emit WARN C50-qmd-fork-stamp "qmd fork stale build: stamp ${stamp:0:8} but HEAD is ${head:0:8} -- the running qmd is not the checked-out code" \
+            "bash scripts/lib/qmd-bin.sh install   # rebuilds and re-stamps"
+    elif [ "$head" = "$pin" ]; then
+        emit OK C50-qmd-fork-stamp "qmd fork stamp, HEAD and pin all ${pin:0:8}"
+    elif git -C "$dir" merge-base --is-ancestor "$pin" "$head" 2>/dev/null; then
+        emit WARN C50-qmd-fork-stamp "qmd fork HEAD is ahead of the pin: HEAD ${head:0:8}, QMD_FORK_REF ${pin:0:8} -- the next update rolls the fork back" \
+            "bump QMD_FORK_REF in scripts/lib/qmd-bin.sh to ${head:0:8} (reviewed PR), or reset the fork to the pin"
+    elif git -C "$dir" merge-base --is-ancestor "$head" "$pin" 2>/dev/null; then
+        emit WARN C50-qmd-fork-stamp "qmd fork pin is ahead of HEAD: HEAD ${head:0:8}, QMD_FORK_REF ${pin:0:8} -- the deployed fork is behind" \
+            "bash scripts/lib/qmd-bin.sh install   # moves the fork to the pin"
+    else
+        emit WARN C50-qmd-fork-stamp "qmd fork HEAD ${head:0:8} and QMD_FORK_REF ${pin:0:8} differ and are not ancestors of each other (or the pin is not in the local clone)" \
+            "bash scripts/lib/qmd-bin.sh install   # converges the fork on the pin"
+    fi
+}
+
 # --- C41: MCP server credential on the command line (HIMMEL-2762) ---------------
 # An MCP server entry launched as `npm exec <server> --api-key <key>` puts the key
 # in argv, so any local user reads it via ps or /proc/<pid>/cmdline, and it lands
@@ -3072,8 +3105,9 @@ check_c41_mcp_argv_key() {
         emit INFO C41-mcp-argv-key "jq not found -- MCP argv-credential scan skipped"
         return
     fi
-    local root="${HIMMEL_DOCTOR_MCP_ROOT:-$REPO_ROOT}" f shown out rc name what n=0 hits=0 bad=0
-    local remedy="move the key into the server's env block (mcpServers.<name>.env) or a file the server reads, never an args element; then rotate the exposed key"
+    local root="${HIMMEL_DOCTOR_MCP_ROOT:-$REPO_ROOT}" f shown out rc name what n=0 hits=0 bad=0 acked=0
+    local ack_file="${HIMMEL_DOCTOR_ACK_FILE:-${HOME:-}/.claude/himmel/doctor-ack.txt}"
+    local remedy="move the key into the server's env block (mcpServers.<name>.env) or a file the server reads, never an args element; then rotate the exposed key. Do NOT swap in \${VAR} inside args: the expanded value is still on the child's argv, and Claude Code documents expansion for .mcp.json only. Use the server's env field (mcpServers.<name>.env, \${VAR} expands there), if the server reads the key from its environment; the key you put there must be the one the server was signed in with (a sign-in key and a .env key may differ -- never assume they match). To accept the exposure, add the line 'C41-mcp-argv-key <server>' to $ack_file"
     # The jq program is deliberately single-quoted: its $vars are jq's, not the shell's.
     # shellcheck disable=SC2016
     local program='
@@ -3125,11 +3159,16 @@ check_c41_mcp_argv_key() {
         n=$((n+1))
         while IFS=$'\t' read -r name what; do
             [ -n "$name" ] || continue
+            if [ -f "$ack_file" ] && grep -qxF "C41-mcp-argv-key $name" "$ack_file" 2>/dev/null; then
+                acked=$((acked+1))
+                emit INFO C41-mcp-argv-key "MCP server '$name' ($shown) passes a credential on its command line ($what) -- acknowledged by the operator in $ack_file"
+                continue
+            fi
             hits=$((hits+1))
             emit WARN C41-mcp-argv-key "MCP server '$name' ($shown) passes a credential on its command line ($what) -- readable by any local user via ps and /proc/<pid>/cmdline" "$remedy"
         done <<< "$out"
     done
-    if [ "$hits" -gt 0 ] || [ "$bad" -gt 0 ]; then
+    if [ "$hits" -gt 0 ] || [ "$bad" -gt 0 ] || [ "$acked" -gt 0 ]; then
         return
     fi
     if [ "$n" -eq 0 ]; then
@@ -3368,6 +3407,53 @@ check_c48_tmp_usage() {
     fi
 }
 
+# --- C51-firecrawl-parked (HIMMEL-4371) ------------------------------------------
+# Items parked because Firecrawl was unavailable (credits exhausted, rate-limited).
+# Folds the enveloped state file the harvest tool and follow-web write: `parked`
+# adds, `resolved` removes, `available` clears the status and follow-web rows.
+# A harvest item whose vault file is gone no longer counts. doctor-cadence diffs
+# this WARN between runs and DMs once for a new one (HIMMEL-4251).
+# Seam: HIMMEL_FIRECRAWL_PARKED (the state file).
+check_c51_firecrawl_parked() {
+    local f="${HIMMEL_FIRECRAWL_PARKED:-$HOME/.himmel/state/firecrawl-parked.jsonl}" now
+    if [ ! -f "$f" ] || ! command -v jq >/dev/null 2>&1; then
+        emit OK C51-firecrawl-parked "no Firecrawl-parked items"
+        return 0
+    fi
+    local parked status reason reset n=0 vault item site
+    # parked: unresolved rows as tab lines (site, vault, item); status: last unavailable/available row.
+    parked="$(jq -rRs '
+        [split("\n")[] | (try fromjson catch empty) | select(type == "object")] as $rows
+        | reduce $rows[] as $r ({items: {}, st: null};
+            if   $r.kind == "parked"      then .items[(($r.vault // "") + "\u0000" + ($r.item // ""))] = $r
+            elif $r.kind == "resolved"    then del(.items[(($r.vault // "") + "\u0000" + ($r.item // ""))])
+            elif $r.kind == "unavailable" then .st = $r
+            elif $r.kind == "available"   then .st = null | .items |= with_entries(select(.value.call_site != "follow-web"))
+            else . end)
+        | (.items | to_entries[] | .value | [(.call_site // ""), (.vault // ""), (.item // "")] | @tsv),
+          "STATUS\t" + (.st.reason // "") + "\t" + (.st.reset // "")
+    ' "$f" 2>/dev/null)"
+    status="$(printf '%s\n' "$parked" | awk -F'\t' '$1=="STATUS" {print $2 "\t" $3}' | tail -1)"
+    reason="${status%%$'\t'*}"; reset="${status#*$'\t'}"
+    while IFS=$'\t' read -r site vault item; do
+        if [ -z "$site" ] || [ "$site" = STATUS ]; then continue; fi
+        # a harvest item whose clip file is gone is resolved by the next harvest as `gone`
+        if [ "$site" = follow-web ] || [ -f "$vault/$item" ]; then n=$((n+1)); fi
+    done <<< "$parked"
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if [ "$n" -eq 0 ]; then
+        # unavailable with nothing parked: only worth a WARN while the reset is still ahead
+        if [ -n "$reason" ] && [ -n "$reset" ] && [[ "$reset" > "$now" ]]; then
+            emit WARN C51-firecrawl-parked "Firecrawl unavailable ($reason), no items parked yet" "credits return around ${reset%%T*}; harvests skip Firecrawl until then"
+        else
+            emit OK C51-firecrawl-parked "no Firecrawl-parked items"
+        fi
+        return 0
+    fi
+    local rd="${reset%%T*}"
+    emit WARN C51-firecrawl-parked "$n item(s) parked: Firecrawl unavailable (${reason:-unknown})" "parked items retry automatically on the next harvest once credits return (reset ${rd:-unknown})"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3388,7 +3474,6 @@ check_c14
 check_c15
 check_c16
 check_c17
-check_c18
 check_c19
 check_c20
 check_c21
@@ -3420,8 +3505,21 @@ check_c46_plugin_enabled_missing
 check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
 check_c48_tmp_usage
 check_c49_qmd_embed_model
+check_c50_qmd_fork_stamp
+check_c51_firecrawl_parked
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
+
+# HIMMEL-4363: a full run refreshes the statusline counts. There is no subset
+# flag; the two *_SKIP seams skip checks, so a run with either set is a subset
+# and never writes (it would publish a falsely low count). HIMMEL-4382: a
+# run judging a non-station root never writes either; counts and
+# last.tsv are published together by doctor_state_publish.
+if [ "$REPO_ROOT" = "$STATION_ROOT" ] && [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" != 1 ] && [ "${DOCTOR_ORPHAN_SCAN_SKIP:-0}" != 1 ]; then
+    # shellcheck source=doctor-counts.sh
+    . "$SELF_DIR/doctor-counts.sh"
+    doctor_state_publish "${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}" "$KEYS" "$n_fail" "$n_warn" || true
+fi
 
 if [ "$DO_FILE" = 1 ] && [ $((n_fail+n_warn+n_info)) -gt 0 ]; then
     echo; echo "Filing a consolidated GitHub issue:"; file_issue

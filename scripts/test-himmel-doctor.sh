@@ -177,6 +177,13 @@ export HIMMEL_DOCTOR_TMP_DF="$FAKEROOT/no-such-df"
 # Same for C49-qmd-embed-model (HIMMEL-4232): never read the operator's real
 # qmd index; an absent index makes C48 silent, dedicated cases point at a fixture.
 export HIMMEL_DOCTOR_QMD_INDEX="$FAKEROOT/no-such-index.sqlite"
+# Same for C50-qmd-fork-stamp (HIMMEL-4268): never read the operator's real qmd
+# fork clone or QMD_FORK_REF; an unset dir resolves to a nonexistent fixture path.
+export QMD_FORK_DIR="$FAKEROOT/no-such-qmd-fork"
+unset QMD_FORK_REF
+# Same for C51-firecrawl-parked (HIMMEL-4371): never read the operator's real
+# parked-items state; an absent file is OK, dedicated cases point at a fixture.
+export HIMMEL_FIRECRAWL_PARKED="$FAKEROOT/no-such-parked.jsonl"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -285,6 +292,35 @@ if [ "$rc" -eq 0 ]; then pass "clean -> rc0"; else fail "clean -> rc=$rc; $(prin
 # write_settings' fixture carries no PreToolUse block at all -> guardrail-block.mjs
 # detects mode=project -> C1-guardrail has nothing to check (HIMMEL-2013).
 if grepq "$out" 'OK   C1-guardrail'; then pass "clean -> C1-guardrail OK (no guardrail block)"; else fail "clean -> $(printf '%s' "$out" | grep C1-guardrail)"; fi
+rm -rf "$t"
+
+# HIMMEL-4363: a full doctor run refreshes the statusline counts; a subset run
+# (a *_SKIP seam set) never does. State dir pinned to a temp dir.
+echo "== counts file: full run writes it, subset run does not =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-counts.XXXXXX")" || { echo "FAIL: mktemp -d failed"; exit 1; }; write_settings "$t/claude" "$WRAPPER"
+sub_out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/sub" bash "$DOC" --no-color 2>&1)"
+if grepq "$sub_out" 'Summary:' && [ ! -e "$t/sub/counts" ]; then pass "subset run (SKIP seams set) reaches its Summary and writes no counts"; else fail "subset run: no Summary or wrote counts: $(printf '%s' "$sub_out" | tail -3)"; fi
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/full" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$DOC" --no-color 2>&1)"
+want="$(printf '%s\n' "$out" | sed -n -E 's/^Summary: ([0-9]+) FAIL +([0-9]+) WARN.*/fail=\1 warn=\2/p')"
+if [ -n "$want" ] && [ "$(cat "$t/full/counts" 2>/dev/null)" = "$want" ]; then pass "full run writes counts matching its Summary ($want)"; else fail "full run counts '$(cat "$t/full/counts" 2>/dev/null)' != '$want'"; fi
+# HIMMEL-4382: last.tsv is written with the counts from the same run, and a run
+# from a linked worktree judges the station (primary) checkout, so it publishes
+# the same state; a --root run judges another checkout and publishes nothing.
+if [ -e "$t/full/last.tsv" ]; then
+    nl="$(grep -c '^FAIL \|^WARN ' "$t/full/last.tsv")"; wl="$(sed -n -E 's/^fail=([0-9]+) warn=([0-9]+)$/\1 \2/p' "$t/full/counts" | awk '{print $1+$2}')"
+    if [ "$nl" = "$wl" ]; then pass "full run writes last.tsv matching the counts ($nl findings)"; else fail "last.tsv has $nl findings but counts say $wl"; fi
+else fail "full run did not write last.tsv"; fi
+WTD="$t/wt"
+if git -C "$REPO_ROOT" worktree add -q --detach "$WTD" HEAD 2>/dev/null; then
+    # the fixture checks out HEAD; overlay the doctor under test so an
+    # uncommitted change is what the worktree run executes.
+    cp "$REPO_ROOT/scripts/himmel-doctor.sh" "$REPO_ROOT/scripts/doctor-counts.sh" "$WTD/scripts/"
+    (cd "$WTD" && RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/wtstate" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$WTD/scripts/himmel-doctor.sh" --no-color >/dev/null 2>&1)
+    if [ -n "$want" ] && [ "$(cat "$t/wtstate/counts" 2>/dev/null)" = "$want" ] && cmp -s "$t/full/last.tsv" "$t/wtstate/last.tsv"; then pass "a worktree run publishes the same counts and last.tsv as the primary run"; else fail "worktree run state differs from the primary run: '$(cat "$t/wtstate/counts" 2>/dev/null)' vs '$want'"; fi
+    root_out="$(cd "$WTD" && RESOLVE_NODE_PROBE_DIRS="$FAKENODE" CLAUDE_DIR="$t/claude" HOME="$t/home" HIMMEL_DOCTOR_STATE_DIR="$t/rootstate" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_ORPHAN_SCAN_SKIP=0 bash "$WTD/scripts/himmel-doctor.sh" --no-color --root "$WTD" 2>&1)"
+    if grepq "$root_out" 'Summary:' && [ ! -e "$t/rootstate/counts" ] && [ ! -e "$t/rootstate/last.tsv" ]; then pass "a --root run completes its report and publishes no counts and no last.tsv"; else fail "a --root run: no Summary or wrote state"; fi
+    git -C "$REPO_ROOT" worktree remove --force "$WTD" >/dev/null 2>&1; git -C "$REPO_ROOT" worktree prune
+else fail "could not create the worktree fixture"; fi
 rm -rf "$t"
 
 # HIMMEL-4254 P1: --json is the config UI's status feed. stdout must carry
@@ -1093,7 +1129,7 @@ process.stdout.write(JSON.stringify({ items: [] }));
 JS
 }
 c16_run() {  # c16_run [extra env assignments...] -> the doctor's stdout
-    (cd "$c16_t" && env HIMMEL_REPO="$c16_t" HIMMELCTL_CACHE_DIR="$c16_t/cache" CLAUDE_DIR="$c16_t/claude" HOME="$c16_t/home" \
+    (cd "$c16_t" && env HIMMEL_REPO="$c16_t" HIMMEL_DOCTOR_ROOT="$c16_t" HIMMELCTL_CACHE_DIR="$c16_t/cache" CLAUDE_DIR="$c16_t/claude" HOME="$c16_t/home" \
         DOCTOR_OBSERVABILITY_SKIP=1 "$@" "$BASH" "$DOC" --no-color 2>/dev/null)
 }
 c16_warn() { printf '%s\n' "$1" | sed -n 's/^Summary: .* \([0-9][0-9]*\) WARN .*/\1/p'; }
@@ -1272,76 +1308,6 @@ else
 fi
 rm -rf "$t"
 
-# ── C18: monitored zero-usage command cluster (2026-07-29 skill-hygiene spec) ──
-echo "== C18: monitored command absent (removed) -> OK, never flagged =="
-t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
-OLD="$(date -d '-90 days' +%Y-%m-%d 2>/dev/null || date -v-90d +%Y-%m-%d 2>/dev/null)"
-out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="removed-tool|$OLD|99" \
-    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
-    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if grepq "$out" 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
-    pass "C18 -> OK (removed command silently drops out)"
-else
-    fail "C18 removed -> rc=$rc; $(printf '%s' "$out" | grep C18)"
-fi
-rm -rf "$t"
-
-echo "== C18: present + fresh (age<30d) -> OK, not flagged =="
-t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
-FRESH="$(date -d '-10 days' +%Y-%m-%d 2>/dev/null || date -v-10d +%Y-%m-%d 2>/dev/null)"
-printf 'fresh command\n' > "$t/c18cmds/fresh-tool.md"
-out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="fresh-tool|$FRESH|99" \
-    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
-    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if grepq "$out" 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
-    pass "C18 -> OK (fresh, under both thresholds)"
-else
-    fail "C18 fresh -> rc=$rc; $(printf '%s' "$out" | grep C18)"
-fi
-rm -rf "$t"
-
-echo "== C18: present + age>60d -> WARN C18-skill-usage =="
-t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
-STALE="$(date -d '-70 days' +%Y-%m-%d 2>/dev/null || date -v-70d +%Y-%m-%d 2>/dev/null)"
-printf 'stale command\n' > "$t/c18cmds/stale-tool.md"
-out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="stale-tool|$STALE|10" \
-    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
-    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if grepq "$out" 'WARN C18-skill-usage' && grepq "$out" 'stale-tool' && [ "$rc" -eq 0 ]; then
-    pass "C18 -> WARN (age>60d, never-fatal)"
-else
-    fail "C18 stale -> rc=$rc; $(printf '%s' "$out" | grep -A4 C18)"
-fi
-rm -rf "$t"
-
-echo "== C18: present + age>30d AND cost>50 -> WARN C18-skill-usage (pricier caught sooner) =="
-t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
-MID="$(date -d '-40 days' +%Y-%m-%d 2>/dev/null || date -v-40d +%Y-%m-%d 2>/dev/null)"
-printf 'pricier command\n' > "$t/c18cmds/pricier-tool.md"
-out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="pricier-tool|$MID|71" \
-    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
-    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if grepq "$out" 'WARN C18-skill-usage' && grepq "$out" 'pricier-tool' && [ "$rc" -eq 0 ]; then
-    pass "C18 -> WARN (age>30d + cost>50, never-fatal)"
-else
-    fail "C18 pricier -> rc=$rc; $(printf '%s' "$out" | grep -A4 C18)"
-fi
-rm -rf "$t"
-
-echo "== C18: present + age>30d, cost<=50 -> OK, not flagged (below both thresholds) =="
-t="$(mktemp -d)"; mkdir -p "$t/claude" "$t/c18cmds"; write_settings "$t/claude" "$WRAPPER"
-MID="$(date -d '-40 days' +%Y-%m-%d 2>/dev/null || date -v-40d +%Y-%m-%d 2>/dev/null)"
-printf 'cheap command\n' > "$t/c18cmds/cheap-tool.md"
-out="$(DOCTOR_C18_COMMANDS_DIR="$t/c18cmds" DOCTOR_C18_MONITORED_OVERRIDE="cheap-tool|$MID|10" \
-    DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
-    CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
-if grepq "$out" 'OK   C18-skill-usage' && [ "$rc" -eq 0 ]; then
-    pass "C18 -> OK (age>30d but cost<=50, below both thresholds)"
-else
-    fail "C18 cheap-mid-age -> rc=$rc; $(printf '%s' "$out" | grep C18)"
-fi
-rm -rf "$t"
-
 # ── C19: installed observability drift + local endpoint readiness ──────────────
 # The rule-group assertions below depend on check_c19 successfully parsing the
 # stub Prometheus response with jq (codex-1 CR finding, HIMMEL-1676) — on a
@@ -1367,7 +1333,7 @@ case "$url" in
 esac
 EOF
 chmod +x "$t/bin/curl"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
     GRAFANA_TELEGRAM_BOT_TOKEN="" GRAFANA_TELEGRAM_CHAT_ID="" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -1405,7 +1371,7 @@ case "$url" in
 esac
 EOF
 chmod +x "$t/bin/curl"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
     GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -1460,7 +1426,7 @@ case "$url" in
 esac
 EOF
     chmod +x "$t/bin/curl"
-    out="$(PATH="$NOCMPDIFF" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+    out="$(PATH="$NOCMPDIFF" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
         GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
         DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
         CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -3894,7 +3860,7 @@ c32_fixture_base() {
 }
 run_doctor_fake_repo() {
     # run_doctor_fake_repo <fake-repo-root> <home-scratch-dir>
-    (cd "$1" && HIMMEL_REPO="$1" CLAUDE_DIR="$2/claude" HOME="$2" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null)
+    (cd "$1" && HIMMEL_REPO="$1" HIMMEL_DOCTOR_ROOT="$1" CLAUDE_DIR="$2/claude" HOME="$2" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null)
 }
 
 echo "== C34: everything wired (real copies of the 3 target files) -> all three rows OK =="
@@ -4253,7 +4219,7 @@ c37_detector_rc() {  # rc the detector itself gives this fixture (precondition p
     echo $?
 }
 c37_run() {  # c37_run [extra env assignments...] -> the doctor's stdout
-    (cd "$c37_t" && env HIMMEL_REPO="$c37_t" CLAUDE_DIR="$c37_t/claude" HOME="$c37_t/home" DOCTOR_OBSERVABILITY_SKIP=1 \
+    (cd "$c37_t" && env HIMMEL_REPO="$c37_t" HIMMEL_DOCTOR_ROOT="$c37_t" CLAUDE_DIR="$c37_t/claude" HOME="$c37_t/home" DOCTOR_OBSERVABILITY_SKIP=1 \
         VENDORED_DUPES_HOME="$c37_t/home" VENDORED_DUPES_CWD="" VENDORED_DUPES_CONFIG_DIR="$c37_t/cfg" \
         "$@" "$BASH" "$DOC" --no-color 2>/dev/null)
 }
@@ -5269,13 +5235,13 @@ cat > "$t/claude-here" <<'EOF'
 cat "$(dirname "$0")/list-here.json"
 EOF
 chmod +x "$t/claude-other" "$t/claude-here"
-out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-other" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+out="$(HIMMEL_DOCTOR_ROOT="$c46_root" HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-other" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C46-plugin-enabled-missing' && grepq "$out" -F 'scoped@himmel'; then
     pass "C46 install at another project path -> WARN"
 else
     fail "C46 install at another project path -> $(printf '%s' "$out" | grep -A1 C46)"
 fi
-out="$(HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-here" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+out="$(HIMMEL_DOCTOR_ROOT="$c46_root" HIMMEL_DOCTOR_CLAUDE_BIN="$t/claude-here" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'OK   C46-plugin-enabled-missing' && ! grepq "$out" 'WARN C46-plugin-enabled-missing'; then
     pass "C46 install at this checkout's project path -> OK"
 else
@@ -5503,6 +5469,114 @@ else
     pass "C49 skipped: sqlite3 not installed"
 fi
 
+# --- C50-qmd-fork-stamp (HIMMEL-4268): build stamp vs deployed HEAD vs pin ------
+# Fixture fork clone (a throwaway git repo: commit A older, B newer), a fixture
+# stamp file and a fixture QMD_FORK_REF; the live station fork is never read.
+c50_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c50.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c50_t/fork" "$c50_t/home" "$c50_t/claude"
+git -C "$c50_t/fork" init -q
+git -C "$c50_t/fork" -c user.name=t -c user.email=t@t commit -q --allow-empty -m a
+c50_a="$(git -C "$c50_t/fork" rev-parse HEAD)"
+git -C "$c50_t/fork" -c user.name=t -c user.email=t@t commit -q --allow-empty -m b
+c50_b="$(git -C "$c50_t/fork" rev-parse HEAD)"
+c50_run() { # <stamp content, empty = no stamp> <pin> [fork dir]
+    if [ -n "$1" ]; then printf '%s\n' "$1" > "$c50_t/fork/.himmel-build-ok"; else rm -f "$c50_t/fork/.himmel-build-ok"; fi
+    QMD_FORK_DIR="${3:-$c50_t/fork}" QMD_FORK_REF="$2" PATH="$FAKEBIN:$PATH" \
+        CLAUDE_DIR="$c50_t/claude" HOME="$c50_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C50-qmd-fork-stamp: stamp == HEAD == pin -> OK (RED) =="
+out="$(c50_run "$c50_b" "$c50_b")"
+if grepq "$out" 'OK   C50-qmd-fork-stamp'; then pass "C50 all three agree -> OK"; else fail "C50 agree -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: abbreviated pin naming HEAD -> OK, not drift =="
+out="$(c50_run "$c50_b" "${c50_b:0:10}")"
+if grepq "$out" 'OK   C50-qmd-fork-stamp'; then pass "C50 short pin == HEAD -> OK"; else fail "C50 short pin -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: stamp != HEAD -> WARN stale build =="
+out="$(c50_run "$c50_a" "$c50_b")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -i 'stale build'; then pass "C50 stale build -> WARN"; else fail "C50 stale -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: HEAD ahead of the pin -> WARN names HEAD ahead =="
+out="$(c50_run "$c50_b" "$c50_a")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -F 'HEAD is ahead of the pin'; then pass "C50 HEAD ahead -> WARN"; else fail "C50 head ahead -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: pin ahead of HEAD -> WARN names pin ahead =="
+git -C "$c50_t/fork" checkout -q "$c50_a"
+out="$(c50_run "$c50_a" "$c50_b")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -F 'pin is ahead of HEAD'; then pass "C50 pin ahead -> WARN"; else fail "C50 pin ahead -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: read-only (HEAD and stamp unchanged by the check) =="
+if [ "$(git -C "$c50_t/fork" rev-parse HEAD)" = "$c50_a" ] && [ "$(cat "$c50_t/fork/.himmel-build-ok")" = "$c50_a" ]; then pass "C50 read-only"; else fail "C50 mutated the fork"; fi
+
+echo "== C50-qmd-fork-stamp: no stamp -> WARN, no crash =="
+out="$(c50_run '' "$c50_a")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -i 'no build stamp'; then pass "C50 missing stamp -> WARN"; else fail "C50 no stamp -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: no fork clone -> WARN, no crash =="
+out="$(c50_run "$c50_b" "$c50_b" "$c50_t/absent")"
+if grepq "$out" 'WARN C50-qmd-fork-stamp' && grepq "$out" -i 'no qmd fork'; then pass "C50 missing fork -> WARN"; else fail "C50 no fork -> $(printf '%s' "$out" | grep -A1 C50)"; fi
+
+echo "== C50-qmd-fork-stamp: --json carries the row =="
+c50_json="$(QMD_FORK_DIR="$c50_t/fork" QMD_FORK_REF="$c50_a" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c50_t/claude" HOME="$c50_t/home" bash "$DOC" --json 2>/dev/null)"
+if grepq "$c50_json" 'C50-qmd-fork-stamp'; then pass "C50 in --json"; else fail "C50 not in --json"; fi
+rm -rf "$c50_t"
+
+# --- HIMMEL-4333 / HIMMEL-4287: C41 operator ack, C22 fixture exclusion, C19 desired gate, C21 record ---
+n_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-n1200.XXXXXX")" || { fail "N1200 setup: mktemp -d failed"; exit 1; }
+mkdir -p "$n_t/home" "$n_t/root" "$n_t/claude"
+cat > "$n_t/home/.claude.json" <<'EOF'
+{"mcpServers":{"context7":{"command":"npx","args":["-y","@upstash/context7-mcp","--api-key","NOT-A-REAL-VALUE-zq81x"]},"other":{"command":"npm","args":["exec","x","--","--api-key","NOT-A-REAL-VALUE-q9"]}}}
+EOF
+printf '# operator acks\nC41-mcp-argv-key context7\n' > "$n_t/ack.txt"
+
+echo "== C41 ack: acknowledged server reports INFO, an unacknowledged one still WARNs, value withheld =="
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_ACK_FILE="$n_t/ack.txt" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C41-mcp-argv-key.*context7.*acknowledged' && ! grepq "$out" "WARN C41-mcp-argv-key.*'context7'" \
+    && grepq "$out" "WARN C41-mcp-argv-key.*'other'" && ! grepq "$out" -F 'NOT-A-REAL-VALUE'; then
+    pass "C41 ack -> INFO for the acked server only"
+else
+    fail "C41 ack -> $(printf '%s' "$out" | grep C41)"
+fi
+
+echo "== C22: fixture-only chain members (hang/hog/flood) -> no WARN =="
+cat > "$n_t/skips-fixture.jsonl" <<'EOF'
+{"action":"skip","member":"hang.sh","reason":"ETIMEDOUT"}
+{"action":"skip","member":"hang2.sh","reason":"ETIMEDOUT"}
+{"action":"skip","member":"hog3.sh","reason":"ETIMEDOUT"}
+{"action":"skip","member":"flood.sh","reason":"ENOBUFS"}
+{"action":"skip","member":"/x/scripts/hooks/test/fixtures/slow.sh","reason":"ETIMEDOUT"}
+EOF
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-fixture.jsonl" bash "$DOC" --no-color 2>&1)"
+if ! grepq "$out" 'WARN C22-chain-skips' && grepq "$out" 'C22-chain-skips'; then pass "C22 fixture-only -> no WARN"; else fail "C22 fixture-only -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C22: fixtures + a real member -> WARN names only the real member =="
+cp "$n_t/skips-fixture.jsonl" "$n_t/skips-mixed.jsonl"
+printf '%s\n' '{"action":"skip","member":"block-read-secrets.sh","reason":"ETIMEDOUT"}' >> "$n_t/skips-mixed.jsonl"
+printf '%s\n' '{"action":"skip","member":"/home/test/himmel/scripts/hooks/real-guard.sh","reason":"ETIMEDOUT"}' >> "$n_t/skips-mixed.jsonl"
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-mixed.jsonl" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh' && grepq "$out" 'WARN C22-chain-skips.*real-guard.sh' && ! grepq "$out" -E 'WARN C22-chain-skips.*(hang|hog|flood)'; then pass "C22 mixed -> real member only"; else fail "C22 mixed -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C19: observability not desired on this host -> INFO, no WARN =="
+printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"n/a"},{"id":"observability-grafana","desired":false,"severity":"n/a"}]}' > "$n_t/status-na.json"
+out="$(DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-na.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C19-observability.*not desired' && ! grepq "$out" 'WARN C19-observability'; then pass "C19 not desired -> INFO"; else fail "C19 not desired -> $(printf '%s' "$out" | grep C19)"; fi
+
+echo "== C19: observability desired and applicable -> checks still run (WARN on missing install) =="
+printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"red"}]}' > "$n_t/status-on.json"
+out="$(DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-on.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" DOCTOR_CURL_BIN="$n_t/nocurl" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C19-observability.*stack stale'; then pass "C19 desired -> checks run"; else fail "C19 desired -> $(printf '%s' "$out" | grep C19)"; fi
+
+echo "== C19: malformed status payload -> unreadable INFO, never 'not desired' =="
+printf '%s\n' '{"items":"nope"}' > "$n_t/status-bad.json"
+out="$(DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-bad.json" DOCTOR_OBSERVABILITY_INSTALL_DIR="$n_t/none" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C19-observability.*unreadable' && ! grepq "$out" 'not desired on this host'; then pass "C19 malformed status -> unreadable INFO"; else fail "C19 malformed status -> $(printf '%s' "$out" | grep C19)"; fi
+
+echo "== C21 record: lanes.json hermes rows match the live hermes profile default =="
+c21_rows="$(jq -r '[.lanes[] | select(.id=="hermes-oneshot" or .id=="hermes-critics") | .profileDefaultModel] | unique | join(",")' "$REPO_ROOT/scripts/lanes/lanes.json")"
+if [ "$c21_rows" = "gpt-6.1-sol" ]; then pass "C21 rows record gpt-6.1-sol"; else fail "C21 rows -> '$c21_rows'"; fi
+rm -rf "$n_t"
+
 rm -rf "$HIMMEL_DOCTOR_NOOP_HANDOVER"
 
 rm -rf "$FAKEROOT"
@@ -5516,4 +5590,56 @@ rm -rf "$HIMMEL_DOCTOR_PROC_BASE"
 # cleanup.
 rm -rf "$HIMMEL_DOCTOR_SYSTEMCTL_BASE"
 echo
+# --- C51-firecrawl-parked (HIMMEL-4371): parked items + unavailable status ------
+c51_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c51.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c51_t/home" "$c51_t/claude" "$c51_t/vault"
+: > "$c51_t/vault/a.md"
+c51_row() { printf '{"v":1,"ts":"2026-10-04T00:00:00Z","host":"h","source":"t","kind":"%s",%s}\n' "$1" "$2"; }
+c51_run() { # <state file>
+    HIMMEL_FIRECRAWL_PARKED="$1" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c51_t/claude" HOME="$c51_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C51-firecrawl-parked: no state file -> OK (RED) =="
+out="$(c51_run "$c51_t/none.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 no state -> OK"; else fail "C51 no state -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: unavailable + parked item -> WARN naming count, reason, reset, remedy =="
+{ c51_row unavailable '"call_site":"harvest-clip-body-batch","reason":"exhausted","reset":"2099-01-01T00:00:00Z"'
+  c51_row parked "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"a.md\",\"reason\":\"exhausted\""; } > "$c51_t/s1.jsonl"
+out="$(c51_run "$c51_t/s1.jsonl")"
+if grepq "$out" 'WARN C51-firecrawl-parked' && grepq "$out" -F '1 item' && grepq "$out" -F 'exhausted' \
+   && grepq "$out" -F 'parked items retry automatically on the next harvest once credits return (reset 2099-01-01'; then
+    pass "C51 parked -> WARN with remedy"
+else fail "C51 parked -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: 429 without a reset -> WARN says reset unknown =="
+{ c51_row unavailable '"call_site":"harvest-clip-body-batch","reason":"rate-limited","reset":null'
+  c51_row parked "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"a.md\",\"reason\":\"rate-limited\""; } > "$c51_t/s2.jsonl"
+out="$(c51_run "$c51_t/s2.jsonl")"
+if grepq "$out" 'WARN C51-firecrawl-parked' && grepq "$out" -F '(reset unknown)'; then pass "C51 no reset -> unknown"; else fail "C51 429 -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: resolved item -> OK =="
+{ cat "$c51_t/s1.jsonl"
+  c51_row resolved "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"a.md\",\"via\":\"jina\""
+  c51_row available '"call_site":"harvest-clip-body-batch"'; } > "$c51_t/s3.jsonl"
+out="$(c51_run "$c51_t/s3.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 resolved -> OK"; else fail "C51 resolved -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: parked item whose file is gone -> not counted =="
+{ c51_row parked "\"call_site\":\"harvest-clip-body-batch\",\"vault\":\"$c51_t/vault\",\"item\":\"gone.md\",\"reason\":\"exhausted\""; } > "$c51_t/s4.jsonl"
+out="$(c51_run "$c51_t/s4.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 gone file -> OK"; else fail "C51 gone -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: unavailable only, reset date passed -> OK =="
+c51_row unavailable '"call_site":"harvest-clip-body-batch","reason":"exhausted","reset":"2020-01-01T00:00:00Z"' > "$c51_t/s5.jsonl"
+out="$(c51_run "$c51_t/s5.jsonl")"
+if grepq "$out" 'OK   C51-firecrawl-parked'; then pass "C51 reset passed -> OK"; else fail "C51 passed reset -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+
+echo "== C51-firecrawl-parked: follow-web parked query -> WARN =="
+{ c51_row unavailable '"call_site":"follow-web","reason":"exhausted","reset":null'
+  c51_row parked '"call_site":"follow-web","vault":null,"item":"0123456789ab","reason":"exhausted"'; } > "$c51_t/s6.jsonl"
+out="$(c51_run "$c51_t/s6.jsonl")"
+if grepq "$out" 'WARN C51-firecrawl-parked'; then pass "C51 follow-web parked -> WARN"; else fail "C51 follow-web -> $(printf '%s' "$out" | grep -A1 C51)"; fi
+rm -rf "$c51_t"
+
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

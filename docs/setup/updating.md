@@ -3,6 +3,10 @@
 **TL;DR — `git pull` your himmel checkout. Marketplace `autoUpdate` does NOT
 deliver himmel updates on its own.** Run `/himmel-update` (or `bash
 scripts/himmel-update.sh`) to do the pull + marketplace re-sync in one step.
+From a shell, the command is `himmelctl update` (`himmel` is installed beside it
+as an alias, so `himmel update` works too). If the graphify pin sync keeps
+skipping because a Claude session is live, run `bash scripts/himmel-update.sh
+--graphify-only` when none is.
 
 > This updates the himmel **harness**. A configured `LUNA_VAULT_PATH` is
 > already refreshed by `/himmel-update`'s own dependency chain (step 6,

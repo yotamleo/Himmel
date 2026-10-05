@@ -29,14 +29,26 @@
 # shellcheck disable=SC2086  # word-splitting a /proc line and a jq row into positionals is the point
 set -u
 
-usage() { echo "usage: tmp-reap.sh [--dry-run|--apply]" ; }
-APPLY=0
-case "${1:-}" in
-    ''|--dry-run) ;;
-    --apply) APPLY=1 ;;
-    -h|--help) usage; exit 0 ;;
-    *) usage >&2; exit 2 ;;
-esac
+usage() { echo "usage: tmp-reap.sh [--dry-run|--apply] [--judge <pr-number>] [--session <uuid>]" ; }
+APPLY=0; SCOPE_JUDGE=""; SCOPE_SESSION=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --dry-run) ;;
+        --apply) APPLY=1 ;;
+        -h|--help) usage; exit 0 ;;
+        --judge)   shift; SCOPE_JUDGE="${1:-}"
+                   case "$SCOPE_JUDGE" in ''|*[!0-9]*) usage >&2; exit 2 ;; esac ;;
+        --session) shift; SCOPE_SESSION="${1:-}"
+                   printf '%s\n' "$SCOPE_SESSION" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || { usage >&2; exit 2; } ;;
+        *) usage >&2; exit 2 ;;
+    esac
+    shift
+done
+# Scoped (HIMMEL-4235): only the judged PR's judge dirs (j<N>, j<N>[a-z]) and the one
+# session dir; no fixtures, no cache-break copy, the same 6 h floor on judge dirs as the unscoped sweep, none on the session
+# (liveness and the census still apply). Never a fleet-wide sweep. A judge dir's .holder
+# (judge_holder, below) overrides the floor: a live holder is always kept, a dead one reaped at once.
+SCOPED=0; [ -n "$SCOPE_JUDGE$SCOPE_SESSION" ] && SCOPED=1
 command -v jq >/dev/null 2>&1 || { echo "tmp-reap: jq is required" >&2; exit 2; }
 # liveness is read from /proc: without it nothing can be proven dead, so never apply
 if [ "$APPLY" = 1 ] && [ ! -r /proc/self/stat ]; then echo "tmp-reap: /proc is unreadable, refusing --apply" >&2; exit 2; fi
@@ -53,6 +65,7 @@ MAX_BYTES=5242880
 NOW="$(date +%s)"
 MONTH="$(date +%Y-%m)"
 FAMILIES="mog-run.* mog-home.* himmel-git-empty-template.* himmel-fixture.* himmel-prov.* capguard-* poller-* cr-floor-probe-* clean-sandbox.* rt-tarball-out.*"
+if [ "$SCOPED" = 1 ]; then FAMILIES=""; SESSION_AGE=0; fi   # judge floor stays 6 h unless the dir's .holder proves its judge dead (judge_holder)
 
 mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo "$NOW"; }
 sha() { # sha256 hex of a file, non-zero when neither tool can read it
@@ -148,6 +161,25 @@ EOF
     return 1
 }
 
+# Judge holder (HIMMEL-4325): scripts/judge-dir.sh writes <dir>/.holder = "<pid> <starttime>"
+# (starttime = /proc/<pid>/stat field 22; the pid is the judge's nearest claude-session ancestor).
+# live = pid alive with the SAME start time; dead = pid gone or a different start time (pid reuse);
+# unknown = no/garbled holder, no starttime recorded ("-", a platform without /proc), or an unreadable
+# /proc: unknown is never dead, it takes the 6 h-floor path. An in-process console-judge shares its
+# parent's claude process, so its dir reads live until that session exits: fails safe, toward keep.
+judge_holder() { # <dir>: live | dead | unknown
+    local h pid st cur
+    h="$(cat "$1/.holder" 2>/dev/null)" || { echo unknown; return; }
+    set -f; set -- $h; set +f
+    [ "$#" -eq 2 ] || { echo unknown; return; }
+    case "$1$2" in ''|*[!0-9]*) echo unknown; return ;; esac
+    pid="$1"; st="$2"
+    [ -r /proc/self/stat ] || { echo unknown; return; }
+    if [ ! -d "/proc/$pid" ]; then echo dead; return; fi
+    cur="$(proc_start "$pid")" || { echo unknown; return; }   # alive but unreadable: not provably dead
+    if [ "$cur" = "$st" ]; then echo live; else echo dead; fi
+}
+
 # kind of a whitelisted file name, or empty
 file_kind() {
     case "$1" in
@@ -201,7 +233,10 @@ consider() { # <tier> <kind> <id> <path> <min_age_s> <live:0|1>
     local tier="$1" kind="$2" id="$3" path="$4" min_age="$5" live="$6" kb age
     [ -d "$path" ] && [ ! -L "$path" ] || return 0
     kb="$(size_kb "$path")"
-    if [ "$live" = 1 ]; then note_keep "$kind" "$kb" "$path" "live session"; return 0; fi
+    if [ "$live" = 1 ]; then
+        if [ "$kind" = judge ]; then note_keep "$kind" "$kb" "$path" "live judge holder"; else note_keep "$kind" "$kb" "$path" "live session"; fi
+        return 0
+    fi
     if in_use "$path"; then note_keep "$kind" "$kb" "$path" "process cwd/fd under it"; return 0; fi
     age=$((NOW - $(mtime "$path")))
     if [ "$age" -lt "$min_age" ]; then note_keep "$kind" "$kb" "$path" "younger than ${min_age}s"; return 0; fi
@@ -214,11 +249,17 @@ if [ -d "$CLAUDE_ROOT" ]; then
         [ -d "$d" ] || continue
         id="${d##*/}"
         printf '%s\n' "$id" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || continue
+        [ "$SCOPED" = 0 ] || [ "$id" = "$SCOPE_SESSION" ] || continue
         live=0; session_live "$id" && live=1
         consider 3 session "$id" "$d" "$SESSION_AGE" "$live"
     done
-    for d in "$CLAUDE_ROOT"/j[0-9]*; do
-        consider 2 judge "${d##*/}" "$d" "$JUDGE_AGE" 0
+    if [ "$SCOPED" = 0 ]; then set -- "$CLAUDE_ROOT"/j[0-9]*
+    elif [ -n "$SCOPE_JUDGE" ]; then set -- "$CLAUDE_ROOT/j$SCOPE_JUDGE" "$CLAUDE_ROOT/j$SCOPE_JUDGE"[a-z]
+    else set --; fi
+    for d in "$@"; do
+        jlive=0; jage="$JUDGE_AGE"
+        case "$(judge_holder "$d")" in live) jlive=1 ;; dead) jage=0 ;; esac
+        consider 2 judge "${d##*/}" "$d" "$jage" "$jlive"
     done
 fi
 # Fixtures: one find per family (no per-dir process) and one batched du. An old
@@ -290,7 +331,7 @@ $SORTED
 EOF
 
 # cache-break state is tiny and has no uuid dir: copy-only, never reaped
-if [ "$APPLY" = 1 ] && [ -d "$CLAUDE_ROOT" ]; then
+if [ "$APPLY" = 1 ] && [ "$SCOPED" = 0 ] && [ -d "$CLAUDE_ROOT" ]; then
     for f in "$CLAUDE_ROOT"/cache-break-state-*.json; do
         [ -f "$f" ] || continue
         id="${f##*/cache-break-state-}"; id="${id%.json}"

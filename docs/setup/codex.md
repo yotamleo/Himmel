@@ -86,7 +86,7 @@ auto-arm). The PreToolUse *block* decision fires in any sandbox mode.
 himmel's driver commands load natively under Codex as thin `.agents/skills/<name>/SKILL.md`
 wrappers that shell the same `scripts/` the Claude `.claude/commands/` use
 (HIMMEL-533/604/607): `worktree`, `clean`, `clean-garden`, `shell-lint`,
-`guardrail-sim`, `pr-check`, the handover-flow cluster (`handover-commit`,
+`pr-check`, the handover-flow cluster (`handover-commit`,
 `handover-flush`, `handover-arm-resume`, `context-hop`, `handover-link`,
 `handover-pr-open`, `handover-pr-merge`), and `cr-scores`, `retitle`, `quiet-run`,
 `pipeline-cadence`, `luna-backfill`, `skill-find`. Tier-A skills

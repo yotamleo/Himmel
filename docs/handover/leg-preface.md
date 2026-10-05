@@ -240,6 +240,11 @@ for a relay that is not coming.
   title and body are files, so the Bash command a leg types is always the
   same short fixed literal no matter what the PR says — the body never enters
   the command the classifier reads.
+- **Ship scratch never lands in the worktree root (HIMMEL-4334).** PR title and
+  body files, commit-message temp files, logs and verdict lists go in your
+  session scratchpad, or under `.himmel-scratch/` if you have no
+  scratchpad. A stray at the root pins the worktree as "possible forgotten
+  work" and the merged worktree is never pruned.
 - Never use bare `git stash` / `git stash pop`: the stash stack is shared with
   every other worktree and another session may pop yours.
 - A background task "stopped because the system is running low on memory" is

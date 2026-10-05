@@ -15,9 +15,11 @@
 # `run` executes scripts/himmel-doctor.sh from the PRIMARY checkout (resolved
 # via git-common-dir: a worktree run gives false C16 reds), then keeps the
 # result under ~/.himmel/state/doctor-cadence/:
-#   last.tsv   "<SEV> <id>" per FAIL/WARN of the latest run
-#   prev.tsv   the run before it (what the next run diffs against)
-#   counts     "fail=<n> warn=<n>" — read by the statusline segment
+#   last.tsv     "<SEV> <id>" per FAIL/WARN of the latest run (any full
+#                primary doctor run writes it, with counts, via doctor_state_publish)
+#   alerted.tsv  the findings this script last alerted on (what its next
+#                run diffs against; an ad-hoc doctor run never moves it)
+#   counts       "fail=<n> warn=<n>" — read by the statusline segment
 # An alert goes out (through scripts/luna/cadence-alert.sh, the existing
 # Telegram path) when a FAIL or a WARN is absent from the previous run. The
 # first-ever run is a baseline: only FAILs alert, so arming does not DM the
@@ -35,6 +37,8 @@ set -uo pipefail
 TASK_NAME="HIMMEL-Doctor"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}"
+# shellcheck source=doctor-counts.sh
+. "$SCRIPT_DIR/doctor-counts.sh"
 CRONTAB_BIN="${DOCTORCAD_CRONTAB:-crontab}"
 RUNNER_DIR="${DOCTORCAD_RUNNER_DIR:-${HOME:-}/.claude/doctor-cadence}"
 
@@ -58,15 +62,17 @@ cmd_run() {
         return 1
     fi
     keys="$(sed -n -E 's/^(FAIL|WARN) +([A-Za-z0-9_-]+):.*/\1 \2/p' "$out" | sort -u)"
-    local first=0
-    [ -f "$STATE_DIR/last.tsv" ] || first=1
-    if [ "$first" -eq 0 ]; then cp -f "$STATE_DIR/last.tsv" "$STATE_DIR/prev.tsv"; else : > "$STATE_DIR/prev.tsv"; fi
-    printf '%s\n' "$keys" | sed '/^$/d' > "$STATE_DIR/last.tsv"
-    printf 'fail=%s warn=%s\n' \
-        "$(grep -c '^FAIL ' "$STATE_DIR/last.tsv")" "$(grep -c '^WARN ' "$STATE_DIR/last.tsv")" > "$STATE_DIR/counts"
+    local first=0 kf
+    # alerted.tsv is THIS script's alert baseline; an ad-hoc doctor run never
+    # touches it, so a finding it first saw still alerts here (HIMMEL-4382).
+    [ -f "$STATE_DIR/alerted.tsv" ] || first=1
+    kf="$(mktemp "$STATE_DIR/.keys.XXXXXX")" || return 2
+    printf '%s\n' "$keys" | sed '/^$/d' > "$kf"
+    doctor_state_publish "$STATE_DIR" "$kf" \
+        "$(grep -c '^FAIL ' "$kf")" "$(grep -c '^WARN ' "$kf")" || true
     while IFS= read -r k; do
         [ -n "$k" ] || continue
-        grep -qxF "$k" "$STATE_DIR/prev.tsv" && continue
+        [ "$first" -eq 0 ] && grep -qxF "$k" "$STATE_DIR/alerted.tsv" && continue
         sev="${k%% *}"
         [ "$first" -eq 1 ] && [ "$sev" != FAIL ] && continue
         new="${new:+$new, }$k"
@@ -77,6 +83,9 @@ cmd_run() {
         bash "$root/scripts/luna/cadence-alert.sh" clear himmel-doctor
         bash "$root/scripts/luna/cadence-alert.sh" fail himmel-doctor "new: $new" "$out"
     fi
+    # advance the baseline only after the alert step; a disappeared finding
+    # leaves it, so one that comes back alerts again.
+    mv -f "$kf" "$STATE_DIR/alerted.tsv"
     return 0
 }
 

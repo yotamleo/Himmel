@@ -813,10 +813,16 @@ echo "$outSK2otherproject" | jq -e '.actual == "degraded"' >/dev/null \
 sk2_drift_repo="$work/sk2-drift-repo"; mkdir -p "$sk2_drift_repo/docs/setup"
 printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"url","url":"https://github.com/kepano/obsidian-skills.git"}}}}' > "$sk2_drift_repo/docs/setup/settings-template.json"
 sk2_drift="$work/sk2-drift"; mkdir -p "$sk2_drift/.claude"
-printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"github","repo":"kepano/obsidian-skills"}}}}' > "$sk2_drift/.claude/settings.json"
+printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"github","repo":"someone-else/obsidian-skills"}}}}' > "$sk2_drift/.claude/settings.json"
+# HIMMEL-4333: a github shorthand equals the https github.com url for the SAME repo
+# (no drift); a directory source for it is still drift.
+sk2_equal="$work/sk2-equal"; mkdir -p "$sk2_equal/.claude"
+printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"github","repo":"kepano/obsidian-skills"}}}}' > "$sk2_equal/.claude/settings.json"
+sk2_dir="$work/sk2-dir"; mkdir -p "$sk2_dir/.claude"
+printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"directory","path":"/opt/kepano/obsidian-skills"}}}}' > "$sk2_dir/.claude/settings.json"
 sk2_nodrift="$work/sk2-nodrift"; mkdir -p "$sk2_nodrift/.claude"
 printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"url","url":"https://github.com/kepano/obsidian-skills.git"}}}}' > "$sk2_nodrift/.claude/settings.json"
-for sk2_case in drift nodrift; do
+for sk2_case in drift nodrift equal dir; do
   sk2_case_target="$work/sk2-$sk2_case"
   outSK2d=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
@@ -826,7 +832,7 @@ const env = Object.assign({}, process.env, { HOME: '$sk2_home_w' });
 const ctx = { repoRoot: '$(winpath "$sk2_drift_repo")', targetPath: '$(winpath "$sk2_case_target")', scope: 'project', env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
-  if [ "$sk2_case" = drift ]; then
+  if [ "$sk2_case" = drift ] || [ "$sk2_case" = dir ]; then
     echo "$outSK2d" | jq -e '.actual == "degraded" and (.detail | contains("obsidian-skills") and contains("source drift") and contains("claude plugin marketplace remove obsidian-skills"))' >/dev/null \
       || fail "settings-key verifyPluginSet: a marketplace source mismatch must read degraded with the remedy (got: $outSK2d)"
   else

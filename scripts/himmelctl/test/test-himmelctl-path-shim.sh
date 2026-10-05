@@ -69,6 +69,15 @@ SHIM_CALL_LOG="$(winpath "$work/shim-calls.log")" SHIM_LABEL=A \
   || fail "caseA: generated launcher did not dispatch to this checkout's bin.js"
 echo "ok: caseA update creates a working checkout-targeted POSIX launcher"
 
+# HIMMEL-4380: a `himmel` alias launcher sits beside himmelctl, so `himmel update`
+# works in any shell (fish included) with no shell config.
+[ -x "$binA/himmel" ] || fail "caseA2: executable himmel alias launcher missing"
+SHIM_CALL_LOG="$(winpath "$work/shim-calls.log")" SHIM_LABEL=A2 \
+  PATH="$(winpath "$binA"):$PATH" "$binA/himmel" update
+[ "$(tail -n 1 "$work/shim-calls.log")" = 'A2:update' ] \
+  || fail "caseA2: himmel alias did not dispatch to this checkout's bin.js"
+echo "ok: caseA2 himmel alias launcher dispatches like himmelctl"
+
 # ── B: re-run is byte-idempotent; moved checkout re-points the loader ───────
 cp "$binA/himmelctl" "$work/himmelctl.before"
 cp "$binA/himmelctl.js" "$work/himmelctl-js.before"
@@ -527,11 +536,11 @@ if command -v jq >/dev/null 2>&1; then
   [ -f "$ledK" ] || fail "caseK: no ledger written at $ledK"
   [ "$(jq -rs '.[0].op' "$ledK")" = "install-begin" ] || fail "caseK: first row is not install-begin"
   [ "$(jq -rs '.[-1] | .op + " " + .status' "$ledK")" = "install-end ok" ] || fail "caseK: session did not end ok"
-  [ "$(jq -rs '[.[] | select(.kind=="shim" and .op=="create" and .class=="code")] | length' "$ledK")" = "2" ] \
-    || fail "caseK: expected two shim create rows (himmelctl.js + himmelctl)"
+  [ "$(jq -rs '[.[] | select(.kind=="shim" and .op=="create" and .class=="code")] | length' "$ledK")" = "3" ] \
+    || fail "caseK: expected three shim create rows (himmelctl.js + himmelctl + himmel alias)"
   HIMMEL_PROVENANCE_DIR="$(winpath "$provK")" run_update "$fixtureK" "$binK" linux "$(winpath "$binK"):$PATH" >/dev/null
-  [ "$(jq -rs '[.[] | select(.kind=="shim" and .op=="replace" and .class=="code")] | length' "$ledK")" = "2" ] \
-    || fail "caseK: the re-run should record two shim replace rows"
+  [ "$(jq -rs '[.[] | select(.kind=="shim" and .op=="replace" and .class=="code")] | length' "$ledK")" = "3" ] \
+    || fail "caseK: the re-run should record three shim replace rows"
   [ "$(jq -rs '[.[] | select(.op=="install-begin")] | length' "$ledK")" = "2" ] || fail "caseK: each run should be its own session"
   [ -n "$(find "$provK/provenance-backups" -type f -name '*himmelctl*' 2>/dev/null | head -1)" ] \
     || fail "caseK: a replaced launcher should have a backup in the ledger dir"

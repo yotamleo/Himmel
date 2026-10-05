@@ -13,7 +13,6 @@
 //   HIMMEL_REPORT_DOCTOR        path of the doctor script to run
 //   HIMMEL_REPORT_CADENCE_ROOT  tree holding the cadence scripts and
 //                               plugin-profile.sh (default: the checkout)
-//   HIMMEL_REPORT_NO_REDACT=1   disables redaction (the RED control only)
 
 const fs = require('fs');
 const os = require('os');
@@ -23,6 +22,7 @@ const statusReportLib = require('./status-report.js');
 const probesLib = require('./probes.js');
 const redactLib = require('./redact.js');
 const adopterProfileLib = require('./adopter-profile.js');
+const bundlesLib = require('./feed-bundles.js');
 const { resolveBash } = require('../../hooks/run-hook-with-bash.js');
 
 const SCHEMA = 'himmel-config-feed/1';
@@ -49,8 +49,26 @@ const CADENCES = [
   { name: 'doctor', script: 'scripts/doctor-cadence.sh', evidence: 'doctor-last', cost: 'none' },
 ];
 
-function repoRoot() {
+function checkoutRoot() {
   return process.env.HIMMELCTL_REPO_ROOT || path.resolve(__dirname, '..', '..', '..');
+}
+// The STATION anchor (HIMMEL-4373): the primary checkout behind a worktree
+// (git-common-dir), else the checkout itself. The report answers "how is this
+// station", so checkout-relative probes judge the anchor, never whichever
+// worktree's bin.js happens to be running. Idempotent: the anchor of an anchor
+// is itself.
+const anchorCache = new Map();
+function repoRoot() {
+  const root = checkoutRoot();
+  if (anchorCache.has(root)) return anchorCache.get(root);
+  let anchor = root;
+  if (fs.existsSync(path.join(root, '.git'))) {
+    const r = spawnSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8', timeout: 5000 });
+    const common = r.status === 0 ? r.stdout.trim() : '';
+    if (common && path.basename(common) === '.git') anchor = path.dirname(common);
+  }
+  anchorCache.set(root, anchor);
+  return anchor;
 }
 function scriptRoot() {
   return process.env.HIMMEL_REPORT_CADENCE_ROOT || repoRoot();
@@ -78,14 +96,46 @@ function doctorPath() {
 function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
 }
+// The repo-root .env as text. envStatus records whether it could be read: 'ok',
+// 'absent' (no such file, normal) or 'unreadable' (exists but cannot be read, so
+// the redactor has no .env values to match; the envelope says so, HIMMEL-4327).
+let envStatus = 'ok';
 function readDotEnv() {
-  try { return fs.readFileSync(path.join(repoRoot(), '.env'), 'utf8'); } catch { return ''; }
+  try {
+    const raw = fs.readFileSync(path.join(repoRoot(), '.env'), 'utf8');
+    envStatus = 'ok';
+    return raw;
+  } catch (e) {
+    envStatus = e && e.code === 'ENOENT' ? 'absent' : 'unreadable';
+    return '';
+  }
 }
 function mtimeIso(p) {
   try { return fs.statSync(p).mtime.toISOString(); } catch { return null; }
 }
 
+// A FAIL/WARN row always tells the operator what to run next (HIMMEL-4373).
+// Used only when the row's own source (detail text, doctor remedy, secrets
+// `obtain`) supplied nothing.
+function fallbackRemedy(o) {
+  const ctl = 'node scripts/himmelctl/bin.js';
+  switch (o.source) {
+    case 'item':
+      return o.id === 'luna-sources'
+        ? `${ctl} status --items luna-sources   # then fix the failing source itself`
+        : `${ctl} ensure --items ${o.id}`;
+    case 'doctor': return `bash scripts/himmel-doctor.sh   # see ${String(o.id).replace(/^doctor:/, '')}`;
+    case 'plugin': return 'bash scripts/machine-setup/plugin-profile.sh list --json';
+    case 'secret': return `set ${String(o.id).replace(/^secret:/, '')} in the environment or the repo .env (see scripts/himmelctl/lib/secrets-manifest.json)`;
+    default: return `${ctl} status`;
+  }
+}
+
 function mkRow(o) {
+  const fix = o.fix || { remedy: '', owner: 'user' };
+  if ((o.health === 'fail' || o.health === 'warn') && !String(fix.remedy || '').trim()) {
+    return mkRow({ ...o, fix: { ...fix, remedy: fallbackRemedy(o) } });
+  }
   return {
     id: o.id,
     source: o.source,
@@ -95,7 +145,7 @@ function mkRow(o) {
     installed: o.installed,
     fires: o.fires || { state: 'unverified', evidence: null, at: null },
     health: o.health,
-    fix: o.fix || { remedy: '', owner: 'user' },
+    fix,
     probedAt: o.probedAt,
     control: o.control || { class: 'display-only' },
     sensitive: o.sensitive === true,
@@ -235,7 +285,7 @@ function cadenceRow(c, ctx) {
     installed: { state, detail: broken ? (String(r.stderr || out).split('\n')[0] || 'status failed') : out.split('\n')[0] },
     fires,
     health: broken ? 'warn' : armed ? 'ok' : 'off',
-    fix: { remedy: armed || broken ? '' : `bash ${c.script} arm`, owner: 'user' },
+    fix: { remedy: broken ? `bash ${c.script} status` : armed ? '' : `bash ${c.script} arm`, owner: 'user' },
     probedAt,
     control: { class: 'toggle', action: armed ? 'cadence.disarm' : 'cadence.arm', target: c.name, consent: 'typed', cost: c.cost },
   });
@@ -329,16 +379,78 @@ function featureGroup(feature) {
   return 'vault';
 }
 
-// Presence only (A7): the value is never read into a row — only whether the
-// key is set (non-empty) in the checkout's .env or the environment.
+// Presence only (A7): never a value. Each secret is checked where its own
+// consumer reads it (the manifest's `storage` text, mirrored here), never by a
+// blanket read of the repo-root .env: that file carries a DIFFERENT bot's
+// TELEGRAM_BOT_TOKEN, and the process-env-only keys are never read from it.
+//   repo-env     key set in the repo-root .env (the tool loads it itself)
+//   process-env  key set in the environment
+//   bridge-env   key set in the Telegram bridge's own file (TELEGRAM_ENV, else
+//                ~/.claude/channels/telegram/.env)
+//   file         a non-empty file: `override` names an env var holding the path,
+//                `dirVar` one holding the directory (file `name` inside it),
+//                else the `home`-relative default
+// A manifest secret with no entry reads absent (and the test fails), so a new
+// secret cannot silently inherit the wrong source.
+const PRESENCE_SOURCES = {
+  BITBUCKET_API_TOKEN: { kind: 'repo-env' },
+  BITBUCKET_EMAIL: { kind: 'repo-env' },
+  FIRECRAWL_API_KEY: { kind: 'process-env' },
+  FIRECRAWL_BASE_URL: { kind: 'process-env' },
+  INSTAGRAM_COOKIE_FILE: { kind: 'file', home: '.luna/cookies/instagram.txt' },
+  REDDIT_COOKIE_FILE: { kind: 'file', home: '.luna/cookies/reddit.txt', override: 'REDDIT_COOKIE_FILE' },
+  TELEGRAM_BOT_TOKEN: { kind: 'bridge-env' },
+  TWITTER_AUTH_TOKEN: { kind: 'process-env' },
+  TWITTER_CT0: { kind: 'process-env' },
+  TWITTER_COOKIE_FILE: { kind: 'file', home: '.luna/cookies/twitter.txt' },
+  WHISPER_MODEL: { kind: 'file', home: '.himmel/whisper/ggml-small.bin', override: 'WHISPER_MODEL', dirVar: 'WHISPER_DIR', name: 'ggml-small.bin' },
+  YOUTUBE_STORAGE_STATE: { kind: 'file', home: '.luna/playwright-state/youtube.json' },
+};
+
+// True when `KEY=` has a non-empty value in .env-shaped text. A line regex, so
+// no value is parsed or kept.
+function envFileHasKey(file, key) {
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch { return false; }
+  const head = `^[ \\t]*(?:export[ \\t]+)?${key}[ \\t]*=[ \\t]*`;
+  // a quote opening a multiline value, with the value on the next line, is present too
+  return new RegExp(`${head}(?!["']{0,2}[ \\t]*(?:#.*)?\\r?$)\\S`, 'm').test(raw)
+    || new RegExp(`${head}["'](?:[ \\t]*\\r?\\n)+[ \\t]*[^\\s"']`, 'm').test(raw);
+}
+function expandHome(p) {
+  return /^~[\\/]/.test(p) ? path.join(homeDir(), p.slice(2)) : p;
+}
+function nonEmptyFile(p) {
+  try { const st = fs.statSync(p); return st.isFile() && st.size > 0; } catch { return false; }
+}
+
+function secretPresent(name) {
+  const src = PRESENCE_SOURCES[name];
+  if (!src) return false;
+  const env = process.env;
+  if (src.kind === 'repo-env') return envFileHasKey(path.join(repoRoot(), '.env'), name);
+  if (src.kind === 'process-env') return Boolean(env[name]);
+  if (src.kind === 'bridge-env') {
+    const file = env.TELEGRAM_ENV ? expandHome(env.TELEGRAM_ENV) : path.join(homeDir(), '.claude', 'channels', 'telegram', '.env');
+    return envFileHasKey(file, name);
+  }
+  if (src.kind === 'file') {
+    let p;
+    if (src.override && env[src.override]) p = expandHome(env[src.override]);
+    else if (src.dirVar && env[src.dirVar]) p = path.join(expandHome(env[src.dirVar]), src.name);
+    else p = path.join(homeDir(), ...src.home.split('/'));
+    return nonEmptyFile(p);
+  }
+  return false;
+}
+
 function secretRows(ctx) {
   const man = readJson(path.join(__dirname, 'secrets-manifest.json'));
-  const env = probesLib.parseDotEnv(readDotEnv());
   // A required secret of a feature this profile never selected is not a failure
   // (same scoping the wizard's secrets walk uses); null = no profile, scope nothing.
   const active = adopterProfileLib.resolveActiveFeatures(ctx.answers);
   return ((man && man.secrets) || []).map((s) => {
-    const present = Boolean(env[s.name]) || Boolean(process.env[s.name]);
+    const present = secretPresent(s.name);
     const inScope = active === null || active.has(s.feature);
     return mkRow({
       id: `secret:${s.name}`, source: 'secret', group: featureGroup(s.feature || ''), title: s.name,
@@ -359,7 +471,67 @@ function secretRows(ctx) {
 //   are then skipped and the envelope says profileCache:false)
 //   items:   optional row-id list (the --items re-probe); the doctor runs only
 //   when a requested row comes from it.
-function buildFeed({ manifest, scope, targetPath, answers, items }) {
+function buildFeed(args) {
+  // status-report.js and the probes resolve their checkout from this seam, so
+  // pointing it at the station anchor makes every checkout-relative probe judge
+  // the station. Restored even if a probe throws.
+  const prev = process.env.HIMMELCTL_REPO_ROOT;
+  process.env.HIMMELCTL_REPO_ROOT = repoRoot();
+  try {
+    return composeFeed(args);
+  } finally {
+    if (prev === undefined) delete process.env.HIMMELCTL_REPO_ROOT;
+    else process.env.HIMMELCTL_REPO_ROOT = prev;
+  }
+}
+
+// ── one owner per finding (HIMMEL-4373) ──────────────────────────────────
+// A doctor check that restates a fact the status engine owns is dropped from
+// the feed (plain doctor CLI output is unchanged). owner null = the whole
+// status report (C16 summarises every status finding). When the doctor's
+// verdict is WORSE than its owner's, the fold must not mask it: ONE
+// probe-disagree row names both probes and their verdicts.
+const DOCTOR_OWNER = {
+  'C16-status': null,
+  'C19-observability': 'observability-stack',
+  'C28-guardrail-consent': 'guardrail-block-global',
+  'C9-scheduler': 'scheduler-backend',
+  'C30-bridge-liveness': 'bridge-health',
+  'C20-node': 'node',
+};
+const HEALTH_RANK = { fail: 2, warn: 1 };
+
+function foldDoctorRows(rows, probedAt) {
+  const out = [];
+  const disagree = new Map();
+  for (const r of rows) {
+    const did = r.source === 'doctor' ? r.id.replace(/^doctor:/, '') : null;
+    if (!did || !Object.prototype.hasOwnProperty.call(DOCTOR_OWNER, did)) { out.push(r); continue; }
+    const owner = DOCTOR_OWNER[did];
+    const owned = rows.filter((x) => (owner === null ? (x.source === 'item' || x.source === 'cadence') : x.id === owner && x.source === 'item'));
+    if (owned.length === 0) { out.push(r); continue; } // no owner row in this report: nothing to fold into
+    const ownerRank = Math.max(...owned.map((x) => HEALTH_RANK[x.health] || 0));
+    const docRank = HEALTH_RANK[r.health] || 0;
+    if (docRank > ownerRank && !(disagree.has(did) && HEALTH_RANK[disagree.get(did).r.health] >= docRank)) disagree.set(did, { r, ownerRank });
+  }
+  for (const [did, { r, ownerRank }] of disagree) {
+    const owner = DOCTOR_OWNER[did];
+    const ownerLabel = owner === null ? 'status' : owner;
+    const ownerHealth = ownerRank === 2 ? 'fail' : ownerRank === 1 ? 'warn' : 'ok';
+    const msg = `probes disagree: doctor ${did} says ${r.health}, status ${ownerLabel} says ${ownerHealth}`;
+    out.push(mkRow({
+      id: `probe-disagree:${did}`, source: 'doctor', group: 'core', title: msg,
+      declared: { where: `scripts/himmel-doctor.sh#${did}`, desired: 'agree', profile: 'all' },
+      installed: { state: 'degraded', detail: `${msg} (${r.title})` },
+      health: r.health,
+      fix: { remedy: owner === null ? 'node scripts/himmelctl/bin.js status   # and: bash scripts/himmel-doctor.sh' : `node scripts/himmelctl/bin.js status --items ${owner}   # compare with: bash scripts/himmel-doctor.sh`, owner: 'user' },
+      probedAt,
+    }));
+  }
+  return out;
+}
+
+function composeFeed({ manifest, scope, targetPath, answers, items }) {
   const probedAt = new Date().toISOString();
   const itemIds = items && items.length > 0 ? items : null;
   const foldedIds = new Set(CADENCES.map((c) => `${c.name}-cadence`));
@@ -375,14 +547,23 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
   if (wants('initiative:')) rows = rows.concat(initiativeRows(ctx));
   if (wants('flag:')) rows = rows.concat(flagRows(ctx));
   if (wants('secret:')) rows = rows.concat(secretRows(ctx));
+  rows = foldDoctorRows(rows, probedAt);
   // doctor:run reports a dead or timed-out doctor; an --items filter must not hide it.
   // Ids are shown redacted, so --items matches on the redacted form of both sides.
-  const literals = process.env.HIMMEL_REPORT_NO_REDACT === '1' ? null : redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env);
-  const shown = (id) => (literals ? redactLib.redactDeep({ id }, { literals }).id : id);
+  const literals = redactLib.envValues(readDotEnv(), probesLib.parseDotEnv, process.env);
+  const shown = (id) => redactLib.redactDeep({ id }, { literals }).id;
   if (itemIds) {
     const wanted = itemIds.map(shown);
-    rows = rows.filter((r) => wanted.includes(shown(r.id)) || r.id === 'doctor:run' || r.id === 'plugin:run');
+    rows = rows.filter((r) => wanted.includes(shown(r.id)) || r.id === 'doctor:run' || r.id === 'plugin:run'
+      || (r.id.startsWith('probe-disagree:') && wanted.includes(shown(`doctor:${r.id.slice('probe-disagree:'.length)}`))));
   }
+
+  // HIMMEL-4379: bundle on the RAW ids (redaction can rewrite an id), after the
+  // fold and the --items filter, so Unsorted appears only for a surviving row.
+  const table = bundlesLib.loadBundles();
+  const bundleIds = rows.map((r) => bundlesLib.bundleOf(r.id, table));
+  const bundles = table.map((b) => ({ id: b.id, title: b.title }));
+  if (bundleIds.includes(bundlesLib.UNSORTED)) bundles.push({ id: bundlesLib.UNSORTED, title: 'Unsorted' });
 
   const summary = { total: rows.length, ok: 0, warn: 0, fail: 0, off: 0, info: 0 };
   for (const r of rows) summary[r.health] = (summary[r.health] || 0) + 1;
@@ -393,11 +574,18 @@ function buildFeed({ manifest, scope, targetPath, answers, items }) {
     target: { scope, path: targetPath },
     base: repoRoot(),
     profileCache: Boolean(answers),
+    // 'unreadable' = the .env exists but could not be read, so the redactor had
+    // no .env values to match and only shape-based scrubbing applied.
+    redaction: { env: envStatus },
     rows,
     summary,
   };
-  if (process.env.HIMMEL_REPORT_NO_REDACT === '1') return feed;
-  return redactLib.redactDeep(feed, { literals });
+  const out = redactLib.redactDeep(feed, { literals });
+  // Fixed table text, never station data: attached AFTER redaction so a .env
+  // value equal to a bundle id cannot rewrite it (rows keep their order).
+  out.rows.forEach((r, i) => { r.bundle = bundleIds[i]; });
+  out.bundles = bundles;
+  return out;
 }
 
-module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, remedyFromDetail };
+module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, DOCTOR_OWNER, PRESENCE_SOURCES, envFileHasKey, remedyFromDetail };

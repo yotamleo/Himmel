@@ -551,7 +551,12 @@ report_guardrail_block() {
 # Advisory; never fails the update. HIMMEL_DRIFT_CTL overrides the himmelctl
 # command (test seam). Never auto-deletes git config: a leaked url.*.insteadOf
 # is WARN + the unset command only.
-DRIFT_CONVERGE_IDS="pre-commit-hooks"
+# qmd-index (HIMMEL-4313): ensure registers any missing himmel/luna/skills
+# collection (idempotent qmd_install + collection add + ensure-skill-index.sh;
+# it never embeds or reindexes). It does not honour the embed-model swap lock
+# (HIMMEL-4314), so _qmd_swap_held keeps qmd-index in the DRIFT block while a
+# swap holds it.
+DRIFT_CONVERGE_IDS="pre-commit-hooks qmd-index"
 DRIFT_LINES=""
 
 _drift_ctl() {
@@ -570,6 +575,19 @@ for (const i of r.items) {
   const armedOff = i.id === "graphmap-cadence" && i.desired === false && i.actual === "present";
   if (bad || armedOff) console.log([i.id, armedOff ? "armed-off" : i.severity, i.desired, i.actual, String(i.detail || "").replace(/\s+/g, " ").slice(0, 240)].join("\t"));
 }' 2>/dev/null
+}
+
+# 0 = a live embed-model swap holds the lock (same path and stale rule as
+# scripts/luna/qmd-embed-model.sh: dead pid, or no pid and a minute old).
+_qmd_swap_held() {
+    local d="${XDG_CACHE_HOME:-$HOME/.cache}/qmd/embed-swap.lock" pid
+    [ -d "$d" ] || return 1
+    [ "$(cat "$d/role" 2>/dev/null)" = "swap" ] || return 1
+    pid="$(cat "$d/pid" 2>/dev/null)" || pid=""
+    case "$pid" in
+        ''|*[!0-9]*) [ -z "$(find "$d" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+        *) kill -0 "$pid" 2>/dev/null ;;
+    esac
 }
 
 _drift_add() { DRIFT_LINES="${DRIFT_LINES}$1
@@ -599,9 +617,15 @@ report_drift() {
         echo "    skip: node not on PATH."; return 0
     fi
     if json="$(_drift_ctl status --json 2>/dev/null)" && rows="$(printf '%s' "$json" | _drift_rows)"; then
-        local pending="$rows" converged=""
+        local pending="$rows" converged="" swap_held=0
         for id in $DRIFT_CONVERGE_IDS; do
             grep -q "^$id	" <<< "$rows" || continue
+            # Left in $pending: it lands in the DRIFT block below with the swap remedy.
+            if [ "$id" = "qmd-index" ] && _qmd_swap_held; then
+                echo "    not converging qmd-index: an embed-model swap holds the qmd lock"
+                swap_held=1
+                continue
+            fi
             if [ "$mode" = "check" ]; then
                 echo "    would converge $id: himmelctl ensure --items $id --yes"
                 continue
@@ -636,8 +660,15 @@ report_drift() {
             fi
             # Converged ids drop out of $pending in apply mode; in check mode
             # they are reported above as "would converge", not as drift.
-            case " $DRIFT_CONVERGE_IDS " in *" $id "*) [ "$mode" = "check" ] && continue; esac
+            case " $DRIFT_CONVERGE_IDS " in *" $id "*)
+                [ "$mode" = "check" ] && ! { [ "$id" = "qmd-index" ] && [ "$swap_held" = 1 ]; } && continue ;;
+            esac
             case "$id" in
+                qmd-index) if [ "$swap_held" = 1 ]; then
+                        _drift_add "$id ($sev): $detail (not converged: an embed-model swap holds the qmd lock)" "wait for qmd-embed-model.sh swap to finish, then: himmelctl ensure --items qmd-index"
+                    else
+                        _drift_add "$id ($sev): $detail" "himmelctl status --items $id  (then: himmelctl ensure --items $id)"
+                    fi ;;
                 luna-sources) _drift_add "$id ($sev): $detail" "ensure cannot fix credentials — repair the source itself (re-auth), then: himmelctl status --items $id" ;;
                 *)            _drift_add "$id ($sev): $detail" "himmelctl status --items $id  (then: himmelctl ensure --items $id)" ;;
             esac
@@ -1665,6 +1696,9 @@ _probe_tool_row() { PROBE_TOOL_ROWS="${PROBE_TOOL_ROWS}$1|$2|${3//|//}"$'\n'; }
 sync_graphify() {
     local lib="$ROOT/scripts/lib/graphify-bin.sh"
     echo "==> graphify pin sync (HIMMEL-1048)"
+    # HIMMEL-4380: a live Claude session's graphify-mcp holds the uv tool dir, so
+    # this step skips whenever it runs in-session. Name the way to clear it.
+    echo "    (a skip held by a live session clears with: bash scripts/himmel-update.sh --graphify-only — run it with no Claude session live, e.g. from a scheduled slot)"
     if [ ! -f "$lib" ]; then
         echo "    skip: graphify-bin.sh not found ($lib)."
         return 0
@@ -2030,6 +2064,31 @@ $(jq -r --slurpfile s "$settings" '.plugins[]? | select(.source | type == "strin
 EOF
     fi
     specs="$(printf '%s%s\n' "$specs" "$bumped" | sed '/^$/d')"
+    # HIMMEL-4380: enabledPlugins also lists plugins that are NOT installed
+    # (stale entries), and `claude plugin update` on those prints a red
+    # "not installed" failure each. Keep only specs present in
+    # installed_plugins.json; the count of the rest is one summary line. An
+    # absent/unreadable installed file cannot prove anything, so it filters
+    # nothing (the old behaviour).
+    if [ -n "$specs" ] && [ -f "$installed" ]; then
+        local kept="" n_skipped=0 spec_i
+        while IFS= read -r spec_i; do
+            [ -n "$spec_i" ] || continue
+            if jq -e --arg k "$spec_i" '(.plugins // {}) | has($k)' "$installed" >/dev/null 2>&1; then
+                kept="$kept$spec_i
+"
+            elif jq -e '.plugins | type == "object"' "$installed" >/dev/null 2>&1; then
+                n_skipped=$((n_skipped + 1))
+            else
+                kept="$kept$spec_i
+"
+            fi
+        done <<EOF
+$specs
+EOF
+        specs="$(printf '%s' "$kept" | sed '/^$/d')"
+        [ "$n_skipped" -eq 0 ] || echo "    $n_skipped enabled plugin(s) not installed, skipped."
+    fi
     if [ -z "$specs" ]; then
         echo "    no remote-sourced plugins installed."
         return 0
@@ -2546,6 +2605,8 @@ Modes:
   --only <item>       run ONE step: pull marketplace jira_cli qmd_fork hermes
                       luna_template graphify cli_proxy marketplaces toolchain tools
                       drift drift-check (installer-drift pass; -check is read-only)
+  --graphify-only     alias for --only graphify: clear a graphify pin-sync skip
+                      from a slot with no live Claude session (HIMMEL-4380)
   --plugins-check     just the plugin install-state report; no git, no network
   -h, --help          this text
 
@@ -2555,6 +2616,12 @@ USAGE
 }
 case "${1:-}" in
     ""|--check|--dry-run|--versions|--only|--plugins-check) ;;
+    --graphify-only)
+        # HIMMEL-4380: alias for `--only graphify`, the standing way to clear a
+        # pin-sync skip (every in-session run is blocked by the live
+        # graphify-mcp holder) from a slot with no Claude session live.
+        shift
+        set -- --only graphify "$@" ;;
     -h|--help)
         print_usage
         exit 0 ;;

@@ -224,14 +224,16 @@ _CMDPOS_WRAPS = tuple(
 _SCAN_BUDGET = 2.0
 
 
-def _cmdpos_match(text: str, verbs, deadline=None) -> bool:
+def _cmdpos_match(text: str, verbs, deadline=None, anchor=_CMDPOS_ANCHOR,
+                  wraps=_CMDPOS_WRAPS, need=None) -> bool:
     """True when a `verbs` atom sits in command position: after an
     anchor and any run of assignments, keywords and wrappers (with their
     flags). The same grammar the .sh CMDPOS spells as one ERE. True as well
-    once `deadline` (a time.monotonic() value) has passed."""
+    once `deadline` (a time.monotonic() value) has passed. With `need` (an
+    index into `wraps`), the run must pass through that wrapper first."""
     if deadline is None:
         deadline = time.monotonic() + _SCAN_BUDGET
-    todo = [(-1, m.end()) for m in _CMDPOS_ANCHOR.finditer(text)]
+    todo = [(-1, m.end(), need is None) for m in anchor.finditer(text)]
     seen = set()
     while todo:
         if time.monotonic() > deadline:
@@ -240,17 +242,17 @@ def _cmdpos_match(text: str, verbs, deadline=None) -> bool:
         if state in seen:
             continue
         seen.add(state)
-        w, p = state
+        w, p, ok = state
         if w < 0:
-            if verbs.match(text, p):
+            if ok and verbs.match(text, p):
                 return True
-            todo += [(-1, m.end()) for u in _CMDPOS_UNITS if (m := u.match(text, p))]
-            todo += [(i, m.end()) for i, (heads, _, _) in enumerate(_CMDPOS_WRAPS)
+            todo += [(-1, m.end(), ok) for u in _CMDPOS_UNITS if (m := u.match(text, p))]
+            todo += [(i, m.end(), ok or i == need) for i, (heads, _, _) in enumerate(wraps)
                      for h in heads if (m := h.match(text, p))]
         else:
-            _, steps, exits = _CMDPOS_WRAPS[w]
-            todo += [(w, m.end()) for st in steps if (m := st.match(text, p))]
-            todo += [(-1, m.end()) for x in exits if (m := x.match(text, p))]
+            _, steps, exits = wraps[w]
+            todo += [(w, m.end(), ok) for st in steps if (m := st.match(text, p))]
+            todo += [(-1, m.end(), ok) for x in exits if (m := x.match(text, p))]
     return False
 
 
@@ -280,6 +282,38 @@ _CMDPOS_VERBS = re.compile(
 # gap re-scanned at every anchor was quadratic and ran the 10s hook timeout out).
 _DELETE_FLAG = re.compile(r"\s-delete(?=[^A-Za-z0-9_-]|$)")
 _FIND_VERB = re.compile(_EXE_PREFIX + r"find(?:\.exe)?(?=\s)")
+# HIMMEL-4255: the mass-delete family (find -delete, find/fd running rm, xargs
+# running rm) also sees through the launchers _WRAPPERS leaves out: busybox,
+# command [-p|--|-v …], eval, and a shell's -c with its own flags first
+# (`bash -o pipefail -c`). The quoted payload is read as text, so
+# `bash -c 'find d -delete'` matches like the bare form. Twin of the .sh
+# _xwrap / MASS_CMDPOS / MASS_PFX. Over-deny only: `command -v find; ls -delete`.
+# ponytail: the widening covers the mass-delete family only, not
+# _cmdpos_destructive's atoms (`bash -c 'shutdown'` still passes), upgrade
+# path HIMMEL-912's word-level tokenizer.
+# Every head here takes an optional .exe, and xargs does too in this set only
+# (the .sh twin's _xwrap adds xargs.exe to lib.sh's xargs).
+_XARGS = next(i for i, (heads, _, _) in enumerate(_WRAPPERS) if heads == ("xargs",))
+_X_WRAPS = tuple(
+    ((re.compile(_EXE_PREFIX + r"xargs(?:\.exe)?"),),) + w[1:] if i == _XARGS else w
+    for i, w in enumerate(_CMDPOS_WRAPS)) + tuple(
+    ((re.compile(_EXE_PREFIX + h + r"(?:\.exe)?"),),
+     tuple(re.compile(r"\s+" + st) for st in steps),
+     tuple(re.compile(x + r"\s+") for x in (exits or ("",))))
+    for h, steps, exits in (
+        ("busybox", (), ()),
+        ("command", (r"-[-a-z0-9]*",), ()),
+        ("eval", (), ()),
+        (r"(?:(?:ba|da|k|mk|z|a)?sh|fish)", _FLG_VALS, (r"\s+-[a-z0-9]*c[a-z0-9]*",)),
+    ))
+# HIMMEL-4255: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
+# --exec/--exec-batch) runs, or that xargs runs, deletes every match, with or
+# without -r. Twin of the .sh FIND_RM_PAT / XARGS_RM_PAT: the exec flag is not
+# tied to find or fd (over-deny only: `grep -x rm f`), and a command that is a
+# single echo/printf/: of plain words (the .sh _rmpos_text) runs nothing.
+_RM_VERB = re.compile(_EXE_PREFIX + r"rm(?:\.exe)?(?=[^a-z0-9_.-]|$)")
+_EXEC_ANCHOR = re.compile(r"(?<=\s)-(?:exec|execdir|ok|okdir|x|-exec|-exec-batch)\s+")
+_RMPOS_TEXT = re.compile(r"\s*(?:echo|printf|:)(?:\s[^\];&|<>(){}`$\\\"*?\[!#~']*)?")
 
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
@@ -339,7 +373,8 @@ TERMINAL_DESTRUCTIVE = re.compile(
 
 
 def _find_delete(raw: str) -> bool:
-    """HIMMEL-4190, twin of the .sh rm scans: newlines fold to `;`, a
+    """HIMMEL-4190, twin of the .sh rm scans (HIMMEL-4255: find/fd/xargs
+    running rm too): newlines fold to `;`, a
     backslash-newline pair is dropped on a second copy, and each copy is read
     with its quotes and backslashes kept and dropped, so `"find" d '-delete'`
     reads as `find d -delete`."""
@@ -351,11 +386,19 @@ def _find_delete(raw: str) -> bool:
         bare = re.sub(r" {2,}", " ", bare)
         texts[src] = texts[bare] = None
     deadline = time.monotonic() + _SCAN_BUDGET  # one budget for every reading
+    text_only = bool(_RMPOS_TEXT.fullmatch(re.sub(r"[\r\n]", ";", low)))
     for text in texts:
         last = None
         for last in _DELETE_FLAG.finditer(text):
             pass
-        if last and _cmdpos_match(text[:last.start() + 1], _FIND_VERB, deadline):
+        if last and _cmdpos_match(text[:last.start() + 1], _FIND_VERB, deadline,
+                                  wraps=_X_WRAPS):
+            return True
+        if not text_only and _cmdpos_match(text, _RM_VERB, deadline,
+                                           anchor=_EXEC_ANCHOR, wraps=_X_WRAPS):
+            return True
+        if "xargs" in text and _cmdpos_match(text, _RM_VERB, deadline,
+                                             wraps=_X_WRAPS, need=_XARGS):
             return True
     return False
 

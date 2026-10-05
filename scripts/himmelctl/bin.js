@@ -241,6 +241,12 @@ commands:
                           leg, bypass flag and secret as one row grammar, for
                           the config UI. --items re-probes only those row ids.
                           Secrets show presence, never values.
+  ui [--port N]           read-only config UI on 127.0.0.1 (needs bun): serves the
+                          report feed as one page and prints a URL carrying a
+                          per-launch token. The OPERATOR runs this from a
+                          terminal; agents must not (refused under a Claude
+                          session env unless --allow-agent-session). Runs in the foreground,
+                          Ctrl-C or 30 min idle exits
   gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
@@ -313,6 +319,8 @@ const ALLOWED_OPTIONS = {
   // HIMMEL-4254 P2: the config UI's feed (himmel-config-feed/1). Its own verb,
   // never a `status` mode — status --json is a golden-tested contract.
   report: ['items', 'json'],
+  // HIMMEL-4254 P3: the read-only config UI server.
+  ui: ['port', 'allowAgentSession'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
   // `scope` takes its OWN positional verbs/targets (set|get|status, then
   // project|user for set) — parsed in parseArgs's scope cases, not as --flags.
@@ -353,6 +361,8 @@ const OPTION_FLAGS = {
   prune: '--prune',
   preset: '--preset',
   purgeState: '--purge-state',
+  port: '--port',
+  allowAgentSession: '--allow-agent-session',
 };
 const OPTION_DEFAULTS = {
   fromProfile: null, defaultScope: null, scope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
@@ -361,6 +371,8 @@ const OPTION_DEFAULTS = {
   prune: false,
   preset: null,
   purgeState: false,
+  port: null,
+  allowAgentSession: false,
 };
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
@@ -390,6 +402,8 @@ function parseArgs(argv) {
     prune: false,      // ensure: --prune (opt-in — disable/unwire candidates require this; HIMMEL-2349)
     preset: null,      // gaps: --preset <name> (null = default 'operator' reference)
     purgeState: false, // uninstall: --purge-state (also remove operator state; default keeps it — HIMMEL-3058)
+    port: null,        // ui: --port N (null = ephemeral, HIMMEL-4254)
+    allowAgentSession: false, // ui: --allow-agent-session (operator override of the agent-session refusal, HIMMEL-4350)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -458,6 +472,19 @@ function parseArgs(argv) {
       case 'report':
         if (!setSubcommand('report')) return args;
         break;
+      case 'ui':
+        if (!setSubcommand('ui')) return args;
+        break;
+      case '--port': {
+        const raw = argv[++i];
+        if (raw === undefined || !/^\d+$/.test(raw) || Number(raw) > 65535) {
+          console.error('himmelctl: --port requires a port number 0-65535');
+          process.exitCode = 2;
+          return args;
+        }
+        args.port = Number(raw);
+        break;
+      }
       case 'scope':
         if (!setSubcommand('scope')) return args;
         break;
@@ -560,6 +587,9 @@ function parseArgs(argv) {
       }
       case '--json':
         args.json = true;
+        break;
+      case '--allow-agent-session':
+        args.allowAgentSession = true;
         break;
       case '--from-profile':
         args.fromProfile = argv[++i];
@@ -4939,6 +4969,7 @@ function applyHimmelctlPathShim(args) {
     if (platform === 'win32') {
       const cmdBody = `@echo off\r\nREM ${launcherLib.SHIM_MARKER}\r\nnode "%~dp0himmelctl.js" %*\r\n`;
       if (!launcherLib.writeMarkedLauncher(path.join(binDir, 'himmelctl.cmd'), cmdBody)) return false;
+      launcherLib.writeMarkedLauncher(path.join(binDir, 'himmel.cmd'), cmdBody); // HIMMEL-4380 alias, best-effort
       // No himmelctl.ps1 (codex-adv-1): a stale marked .ps1 from a prior install
       // is removed; an unmarked/symlinked one is left untouched. Removal is a
       // best-effort cleanup of a LEGACY artifact, not part of writing the PATH
@@ -4954,6 +4985,11 @@ function applyHimmelctlPathShim(args) {
       const launcher = path.join(binDir, 'himmelctl');
       const shBody = `#!/usr/bin/env sh\n# ${launcherLib.SHIM_MARKER}\nexec node "$(dirname "$0")/himmelctl.js" "$@"\n`;
       if (!launcherLib.writeMarkedLauncher(launcher, shBody, 0o755)) return false;
+      // HIMMEL-4380: a `himmel` alias beside himmelctl, so `himmel update` works
+      // in any shell (fish included) without shell config. Best-effort: a
+      // third-party `himmel` is refused by writeMarkedLauncher (with its own
+      // message) and must not fail the himmelctl launcher.
+      launcherLib.writeMarkedLauncher(path.join(binDir, 'himmel'), shBody, 0o755);
     }
   } catch (e) {
     console.error(`himmelctl: failed to write PATH launcher in ${binDir}: ${e.message}`);
@@ -5157,6 +5193,32 @@ function cmdReport(args) {
   const feed = configFeed.buildFeed({ manifest, scope, targetPath, answers, items: args.items });
   process.stdout.write(JSON.stringify(feed) + '\n');
   return 0;
+}
+
+// HIMMEL-4254 P3: `ui` runs scripts/config-ui/server.ts under bun in the
+// foreground. The server prints the tokened URL itself; this verb only locates
+// it, refuses a missing bun, and forwards the exit code.
+function cmdUi(args) {
+  if (!args.allowAgentSession && Object.keys(process.env).some((k) => (k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')) && process.env[k])) {
+    console.error('himmelctl: ui: operator-only; refused inside a Claude session (CLAUDECODE / CLAUDE_CODE_* is set). Run it from your own terminal, or pass --allow-agent-session to override.');
+    return 2;
+  }
+  const server = path.join(repoRoot(), 'scripts', 'config-ui', 'server.ts');
+  if (!fs.existsSync(server)) {
+    console.error(`himmelctl: ui: ${displayPath(server)} not found (needs a himmel checkout)`);
+    return 1;
+  }
+  if (!which('bun')) {
+    console.error('himmelctl: ui: bun is required (https://bun.sh)');
+    return 1;
+  }
+  return new Promise((resolve) => {
+    const child = require('child_process').spawn('bun', [server, '--port', String(args.port === null ? 0 : args.port)], { stdio: 'inherit' });
+    // A signal to this wrapper must reach the server, never orphan it.
+    for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => child.kill(sig));
+    child.on('error', (e) => { console.error(`himmelctl: ui: ${e.message}`); resolve(1); });
+    child.on('exit', (code, sig) => resolve(sig ? 0 : code === null ? 1 : code));
+  });
 }
 
 // HIMMEL-3312 S13 item 7 ("himmelctl doctor"): the health-check surface for
@@ -7900,6 +7962,9 @@ async function main() {
   }
   if (args.subcommand === 'report') {
     return cmdReport(args);
+  }
+  if (args.subcommand === 'ui') {
+    return await cmdUi(args);
   }
   if (args.subcommand === 'scope') {
     return await cmdScope(args);

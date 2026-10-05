@@ -24,7 +24,11 @@
 # TERM goes to that one pid only - it never signals a non-matching pid, and
 # 0 or >1 matches is a refusal, not a best guess.
 #
-# After the signal, if the doc names exactly one worktree path (a
+# After the signal, the leg's own /tmp scratch (its judge dirs, and its session
+# scratch dir) is archived then reaped via tmp-reap.sh, scoped to this leg only
+# (HIMMEL-4235); a reap failure warns and never fails the close.
+#
+# Then, if the doc names exactly one worktree path (a
 # `.claude/worktrees/...` path appearing once), runs
 # `scripts/clean.sh --only <worktree> --only-allow-unmerged` and reports (not
 # fails) a "not pruned" skip. That flag (HIMMEL-3747) makes clean-garden.sh
@@ -64,6 +68,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 KILL="${KILL_BIN:-kill}"
 CLEAN_SH="${CLEAN_SH_BIN:-$HERE/../../clean.sh}"
 WRAP_SUBTREE_CHECK="${WRAP_SUBTREE_CHECK_BIN:-$HERE/../wrap-subtree-check.sh}"
+TMP_REAP="${TMP_REAP_BIN:-$HERE/../../tmp-reap.sh}"
 
 usage() {
     echo "usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>" >&2
@@ -296,6 +301,47 @@ if ! "$KILL" -TERM "$matched"; then
 fi
 echo "close-wrapped-leg: sent TERM to pid $matched (leg $(leg_label "$DOC"))"
 
+# ---------- Wrapped leg's own /tmp scratch (HIMMEL-4235) ----------------------
+# Archive-then-reap THIS leg's judge dirs (j<N>, j<N>[a-z]) and its session
+# scratch dir, scoped through tmp-reap.sh --judge <pr>/--session: never a fleet-wide
+# sweep (other legs are live). Dry-run first; apply only after a clean dry-run.
+# Never fatal: any failure WARNs and the close carries on.
+reap_leg_scratch() {
+    local pr sid args=() i PROC_ROOT="${CLAUDE_SESSIONS_PROC:-/proc}"
+    # judge dirs are named for the PR they judged, never the leg label: take the
+    # PR from the doc's newest READY/MERGED bullet; no PR means no judge scope
+    pr="$(grep -E '^- [0-9:]+ (READY|MERGED)' "$DOC" | grep -oE '(READY|MERGED)[ #-]+(PR[ #]+)?[0-9]+' | tail -n 1 | grep -oE '[0-9]+$')"
+    if [ -n "$pr" ]; then args+=(--judge "$pr")
+    else echo "close-wrapped-leg: no PR in the leg doc - reaping no judge dir, never guessing"; fi
+    if [ -n "$TRANSCRIPT" ]; then
+        sid="$(basename "$TRANSCRIPT" .jsonl)"
+        case "$sid" in
+            ????????-????-????-????-????????????) args+=(--session "$sid") ;;
+        esac
+    fi
+    if [ "${#args[@]}" -eq 0 ]; then
+        echo "close-wrapped-leg: no judge number or session id for this leg - skipping the /tmp reap, never guessing"
+        return 0
+    fi
+    # the TERM is asynchronous: give the session a moment to exit so its scratch is not "live"
+    for ((i = 0; i < ${CLOSE_WRAPPED_LEG_REAP_WAIT:-5}; i++)); do
+        [ -d "$PROC_ROOT/$matched" ] || break
+        sleep 1
+    done
+    # a session that outlives the TERM still owns its scratch: reap nothing now
+    if [ -d "$PROC_ROOT/$matched" ]; then
+        echo "close-wrapped-leg: pid $matched still running after TERM - leaving its /tmp scratch for a later reap"
+        return 0
+    fi
+    if ! bash "$TMP_REAP" "${args[@]}"; then
+        echo "close-wrapped-leg: WARN tmp-reap dry-run failed for ${args[*]} - not applying; close continues" >&2
+        return 0
+    fi
+    bash "$TMP_REAP" --apply "${args[@]}" || echo "close-wrapped-leg: WARN tmp-reap --apply failed for ${args[*]} - close continues" >&2
+    return 0
+}
+reap_leg_scratch || echo "close-wrapped-leg: WARN /tmp reap errored - close continues" >&2
+
 worktrees=$(grep -oE "/[^\` ]*/\.claude/worktrees/[^\`) ]+" "$DOC" | sort -u)
 wt_count=$(printf '%s\n' "$worktrees" | grep -c . || true)
 if [ "$wt_count" -ne 1 ]; then
@@ -304,8 +350,22 @@ if [ "$wt_count" -ne 1 ]; then
 fi
 WT="$worktrees"
 
-out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
-rc=$?
+# HIMMEL-4334: the TERM'd session may still be inside the worktree when the
+# first prune runs ("in use"). Retry quietly a bounded number of times (a few
+# seconds in all) so a leg that exits promptly is pruned now, not left for a
+# manual --only later. Only the "in use" skip retries; every other outcome is
+# final on the first pass.
+prune_tries=${CLOSE_WRAPPED_LEG_PRUNE_RETRIES:-3}
+prune_try=0
+while :; do
+    out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
+    rc=$?
+    case "$out" in *'in use'*) ;; *) break ;; esac
+    [ "$rc" -ne 0 ] || break
+    [ "$prune_try" -lt "$prune_tries" ] || break
+    prune_try=$((prune_try + 1))
+    sleep "${CLOSE_WRAPPED_LEG_PRUNE_WAIT:-1}"
+done
 echo "$out"
 if [ "$rc" -ne 0 ]; then
     # clean-garden.sh's own --only failure text always contains "not a prune

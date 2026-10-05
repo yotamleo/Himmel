@@ -6,7 +6,7 @@
 export const ROLE_REQUIRES = {
   user: ['lean-skills@himmel'],
   design: ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
-    'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel',
+    'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel', 'builder-visual@himmel',
     'context7@claude-plugins-official'],
   'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
     'lottie-motion-design@himmel', 'motion-lexicon@himmel', 'playground@claude-plugins-official'],
@@ -25,6 +25,7 @@ export const ROLE_REQUIRES = {
   'code-ui': ['playwright@claude-plugins-official'],
   'lane-impl': ['pr-review-toolkit-himmel@himmel'],
   'leg-impl': ['pr-review-toolkit-himmel@himmel'],
+  'leg-e2e': ['pr-review-toolkit-himmel@himmel'],
   'lane-review': ['pr-review-toolkit-himmel@himmel'],
   'lane-content': ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
   telegram: ['obsidian-triage@himmel'],

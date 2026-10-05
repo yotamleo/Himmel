@@ -12,6 +12,7 @@
   },
   "design": {
     "enabled": [
+      "builder-visual@himmel",
       "context7@claude-plugins-official",
       "frontend-design@claude-plugins-official",
       "handover@himmel",
@@ -144,6 +145,16 @@
       "qmd@himmel"
     ],
     "contextBudget": 35000
+  },
+  "leg-e2e": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 40000
   },
   "lane-review": {
     "enabled": [

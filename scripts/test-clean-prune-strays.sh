@@ -94,6 +94,10 @@ WT_PYCACHE=$(mk_wt wt-pycache feat/pycache) # case 12: pinned-worktree __pycache
 WT_PYSRC=$(mk_wt wt-pysrc   feat/pysrc)    # case 13: untracked .py source (allowlist boundary)
 WT_PYNEW=$(mk_wt wt-pynew   feat/pynew)    # case 14: untracked .py source + its .pyc together
 WT_VITEST=$(mk_wt wt-vitest feat/vitest)   # case 15: untracked .vitest/ reporter output (HIMMEL-3754)
+WT_SCRATCH=$(mk_wt wt-scratch feat/scratch)   # case 16: root-level leg ship scratch (HIMMEL-4334)
+WT_SCRNEST=$(mk_wt wt-scrnest feat/scrnest)   # case 17: same shape NESTED -> still forgotten
+WT_SCRWIP=$(mk_wt wt-scrwip feat/scrwip)      # case 18: root scratch + tracked mod -> still refuses
+WT_SCRPFX=$(mk_wt wt-scrpfx feat/scrpfx)      # case 19: root-prefixed DIR (.pr-body-notes/) is real work -> kept
 
 printf 'lock\n' > "$WT_LOCK/package-lock.json"
 mkdir -p "$WT_CODEX/.codex"; printf 'x\n' > "$WT_CODEX/.codex/config.toml"; printf 'x\n' > "$WT_CODEX/AGENTS.md"
@@ -134,6 +138,49 @@ printf 'x\n' > "$WT_PYNEW/scripts/__pycache__/newthing.cpython-314.pyc"
 # a worktree pinned before the .gitignore fix, same as WT_PYCACHE above).
 mkdir -p "$WT_VITEST/scripts/jira/.vitest/json"
 printf '{}\n' > "$WT_VITEST/scripts/jira/.vitest/json/output.json"
+
+# HIMMEL-4334: leg ship scratch at the worktree ROOT (PR body/title, commit
+# msg tmp, panel logs, suite verdicts, scratch dirs) is discardable; the same
+# names nested below the root are not.
+for f in .pr-body.txt .pr-body-3.md .pr-title.txt .git-pr-body.md .git-pr-title.txt \
+         .commit-msg-1.tmp panel-stdout.log panel-stderr-2.log .suite-verdicts.txt \
+         .suites5.txt .verdicts-empty.txt .msg-5k1.txt; do
+    printf 'x\n' > "$WT_SCRATCH/$f"
+done
+mkdir -p "$WT_SCRATCH/.scratch" "$WT_SCRATCH/.himmel-scratch" "$WT_SCRATCH/.os-verify-logs-9"
+printf 'x\n' > "$WT_SCRATCH/.scratch/a.txt"
+printf 'x\n' > "$WT_SCRATCH/.himmel-scratch/b.txt"
+printf 'x\n' > "$WT_SCRATCH/.os-verify-logs-9/c.log"
+mkdir -p "$WT_SCRNEST/pkg"; printf 'x\n' > "$WT_SCRNEST/pkg/.pr-body.txt"
+mkdir -p "$WT_SCRPFX/.pr-body-notes"; printf 'x\n' > "$WT_SCRPFX/.pr-body-notes/design.md"
+printf 'x\n' > "$WT_SCRWIP/.pr-body.txt"; printf 'changed\n' >> "$WT_SCRWIP/README"
+
+# HIMMEL-4334 (judge NO-GO): git lists an untracked NESTED REPO as one collapsed
+# entry ending in "/" (`.scratch/nested/`), which the `<dir>/*` scratch arms
+# would match -- a force-prune would destroy its unpushed commits.
+mk_nested_repo() {
+    git init -q "$1"
+    printf 'x\n' > "$1/f"
+    git -C "$1" add f
+    git -C "$1" -c user.email=t@test.com -c user.name=t commit -q -m "unpushed"
+}
+WT_NEST1=$(mk_wt wt-nest1 feat/nest1)   # case 20: nested repo under .scratch/ -> kept
+WT_NEST2=$(mk_wt wt-nest2 feat/nest2)   # case 21: nested repo under .himmel-scratch/ -> kept
+WT_NEST3=$(mk_wt wt-nest3 feat/nest3)   # case 22: nested repo under .os-verify-logs-*/ -> kept
+# case 23 (judge J1806u): same as 21 but the worktree carries the REAL repo
+# .gitignore; an ignored .himmel-scratch/ would hide the nested repo from the
+# scan and `git worktree remove` would delete it. Case 24: the file does not
+# ignore .himmel-scratch at all.
+WT_NEST4=$(mk_wt wt-nest4 feat/nest4)
+cp "$SCRIPT_DIR/../.gitignore" "$WT_NEST4/.gitignore"
+git -C "$WT_NEST4" add .gitignore
+git -C "$WT_NEST4" -c user.email=t@test.com -c user.name=t commit -q -m "carry the real repo .gitignore"
+mkdir -p "$WT_NEST4/.himmel-scratch"
+mk_nested_repo "$WT_NEST4/.himmel-scratch/nested"
+mkdir -p "$WT_NEST1/.scratch" "$WT_NEST2/.himmel-scratch" "$WT_NEST3/.os-verify-logs-1"
+mk_nested_repo "$WT_NEST1/.scratch/nested"
+mk_nested_repo "$WT_NEST2/.himmel-scratch/nested"
+mk_nested_repo "$WT_NEST3/.os-verify-logs-1/nested"
 
 run_clean() {
     (
@@ -290,6 +337,27 @@ if grepq "$(printf '%s\n' "$out" | grep -F "feat/vitest")" "discarding untracked
 else
     fail "15: expected strays NOTE naming .vitest/json/output.json for feat/vitest" "$out"
 fi
+
+# case 16: root-level leg scratch only -> pruned + NOTE
+if [ ! -d "$WT_SCRATCH" ]; then pass "16: root-scratch worktree pruned"; else fail "16: root-scratch worktree NOT pruned" "$out"; fi
+if grepq "$(printf '%s\n' "$out" | grep -F "feat/scratch")" "discarding untracked strays:.*\.pr-body\.txt"; then
+    pass "16: NOTE names the root .pr-body.txt stray"
+else
+    fail "16: expected strays NOTE naming .pr-body.txt for feat/scratch" "$out"
+fi
+# case 17: the same name nested under pkg/ is NOT leg scratch -> kept
+if [ -d "$WT_SCRNEST" ]; then pass "17: nested .pr-body.txt worktree kept"; else fail "17: nested .pr-body.txt worktree was pruned" "$out"; fi
+# case 18: a tracked modification still refuses even with root scratch
+if [ -d "$WT_SCRWIP" ]; then pass "18: tracked-WIP + root scratch worktree kept"; else fail "18: tracked-WIP + root scratch worktree was pruned" "$out"; fi
+# case 19: a directory merely PREFIXED like a scratch file is real work -> kept (codex-1)
+if [ -d "$WT_SCRPFX" ]; then pass "19: .pr-body-notes/ dir worktree kept"; else fail "19: .pr-body-notes/ dir worktree was pruned" "$out"; fi
+# cases 20-22: a nested repo under each scratch-dir arm is never a stray
+if [ -d "$WT_NEST1/.scratch/nested/.git" ]; then pass "20: nested repo under .scratch/ kept"; else fail "20: nested repo under .scratch/ was pruned" "$out"; fi
+if [ -d "$WT_NEST2/.himmel-scratch/nested/.git" ]; then pass "21: nested repo under .himmel-scratch/ kept"; else fail "21: nested repo under .himmel-scratch/ was pruned" "$out"; fi
+if [ -d "$WT_NEST3/.os-verify-logs-1/nested/.git" ]; then pass "22: nested repo under .os-verify-logs-1/ kept"; else fail "22: nested repo under .os-verify-logs-1/ was pruned" "$out"; fi
+if [ -d "$WT_NEST4/.himmel-scratch/nested/.git" ]; then pass "23: nested repo under .himmel-scratch/ kept with the REAL .gitignore"; else fail "23: nested repo under .himmel-scratch/ was pruned with the REAL .gitignore" "$out"; fi
+ign_rc=0; git -C "$WT_NEST4" check-ignore -q .himmel-scratch/notes.md || ign_rc=$?
+if [ "$ign_rc" -eq 1 ]; then pass "24: the repo .gitignore does not ignore .himmel-scratch"; else fail "24: the repo .gitignore ignores .himmel-scratch (check-ignore rc=$ign_rc)"; fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────
 echo

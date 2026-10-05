@@ -46,7 +46,8 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from typing import NamedTuple
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
 
 # Force UTF-8 stdout on Windows so clip filenames + URLs containing
 # non-ASCII (en-dash, arrow, emoji) don't crash the print() pipeline
@@ -69,6 +70,7 @@ TRACKING_PARAMS = {
 # touch firecrawl — the free tier (1000 credits/mo) is scarce.
 FIRECRAWL_DEFAULT_BASE_URL = "https://api.firecrawl.dev"
 FIRECRAWL_DEFAULT_BUDGET = 20  # max scrape calls per run (~1 credit each)
+FIRECRAWL_DEFAULT_MAX_CREDITS = 5  # per-call ceiling: a stealth call (5) passes, anything above stops firecrawl for the run
 
 # Hosts firecrawl must NOT scrape — a cheaper/better path already owns them:
 #   x.com / twitter → twitter-cli-enrich (X anti-automation; firecrawl
@@ -353,6 +355,170 @@ def firecrawl_eligible(canonical: str) -> bool:
     return not _is_private_host(host)
 
 
+class UrlRules:
+    """The vault's G-1 deny/allow globs (harvest-clips.md Phase 2). `error` is
+    set when a list exists but cannot be read: the gate then refuses every URL
+    (fail closed) rather than send a possibly-denied URL to a scraper."""
+
+    def __init__(self, deny=(), allow=(), error=None):
+        self.deny = list(deny)
+        self.allow = list(allow)
+        self.error = error
+
+
+def _norm_host(host: str) -> str:
+    """Lowercase, drop a trailing dot, IDNA-encode (so IDN == punycode)."""
+    labels = []
+    for label in host.lower().rstrip(".").split("."):
+        if "*" not in label:
+            try:
+                label = label.encode("idna").decode("ascii")
+            except UnicodeError:
+                pass
+        labels.append(label)
+    return ".".join(labels)
+
+
+def _norm_path(path: str, is_pattern: bool = False) -> tuple[str, str]:
+    """(path, query): percent-decode the path (to a fixed point), resolve
+    dot-segments keeping a trailing `/` after `.`/`..`/empty, empty -> `/`.
+    The query is split off first: its slashes and dots are not path segments."""
+    path, qsep, query = path.partition("?")
+    # ponytail: 4 decode passes, raise if a backend is seen decoding deeper (HIMMEL-4355)
+    for _ in range(4):
+        if is_pattern:  # an encoded `*` at any layer stays literal, never a wildcard
+            path = re.sub(r"%2[aA]", "\x00", path)
+        dec = unquote(path)
+        if dec == path:
+            break
+        path = dec
+    segs = path.split("/")[1:]
+    out = []
+    for seg in segs:
+        if seg == "..":
+            if out:
+                out.pop()
+        elif seg != ".":
+            out.append(seg)
+    joined = "/" + "/".join(out)
+    if segs and segs[-1] in (".", "..") and out and out[-1] != "":
+        joined += "/"
+    return joined, qsep + query
+
+
+def _norm_target(text: str, is_pattern: bool = False) -> list[str]:
+    """`host[:port]/path` for a URL or glob line, scheme dropped. A pattern
+    with no `/` is a host-only rule and covers every path. A URL yields every
+    candidate a rule could mean: with and without the port, with and without
+    the query (a path rule must hold whatever the query says)."""
+    rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", text.strip())
+    cut = re.search(r"[/?#]", rest)
+    hostport, tail = (rest, "") if cut is None else (rest[: cut.start()], rest[cut.start():])
+    if not is_pattern:
+        tail = tail.split("#", 1)[0]
+    if tail.startswith("?"):
+        tail = "/" + tail
+    if is_pattern and not tail:
+        tail = "/**"
+    hostport = hostport.rsplit("@", 1)[-1]
+    host, sep, port = hostport.partition(":")
+    host = _norm_host(host)
+    path, query = _norm_path(tail or "/", is_pattern)
+    if is_pattern:
+        return [f"{host}{sep}{port}{path}{query}"]
+    cands = []
+    for hp in ([f"{host}{sep}{port}", host] if sep else [host]):
+        cands += [f"{hp}{path}", f"{hp}{path}{query}"]
+    return cands
+
+
+def _glob_to_regex(pattern: str):
+    """`*` = zero-or-more non-`/` chars, `**` = across path segments."""
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        else:
+            out.append(re.escape("*" if pattern[i] == "\x00" else pattern[i]))
+            i += 1
+    return re.compile("".join(out))
+
+
+def load_url_rules(vault: Path) -> UrlRules:
+    """Read <vault>/.harvest-deny and .harvest-allow (one glob per line, `#`
+    starts a comment). A missing file is no constraint; an unreadable one fails
+    closed with a stderr line. Patterns are normalised like URLs (_norm_target)."""
+    lists = {}
+    error = None
+    for name in (".harvest-deny", ".harvest-allow"):
+        path = vault / name
+        if not path.exists() and not path.is_symlink():
+            lists[name] = []
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception as e:
+            error = f"{name} unreadable ({type(e).__name__}); refusing every scrape (fail closed)"
+            print(f"harvest-clip-body-batch: {error}", file=sys.stderr)
+            lists[name] = []
+            continue
+        pats = []
+        for ln in text.splitlines():
+            ln = ln.split("#", 1)[0].strip()
+            if ln:
+                pats.append((ln, _glob_to_regex(_norm_target(ln, True)[0])))
+        lists[name] = pats
+    return UrlRules(lists[".harvest-deny"], lists[".harvest-allow"], error)
+
+
+def _rule_match(pats, url: str):
+    cands = _norm_target(url)
+    for text, rx in pats:
+        if any(rx.fullmatch(c) for c in cands):
+            return text
+    return None
+
+
+def _odd_host(url: str) -> str:
+    """The URL (or its authority) when it cannot be matched safely, else "":
+    a backslash anywhere (WHATWG reads it as `/`), `%XX` in the authority, a
+    bracketed IPv6 literal, or a host that is not plain `[a-z0-9.-]`. A scraper
+    may read these as a different host or path than this matcher does, so such
+    a URL is refused outright, never decoded or repaired."""
+    if "\\" in url:
+        return url
+    rest = re.sub(r"^[A-Za-z][A-Za-z0-9+.-]*://", "", url.strip())
+    auth = re.split(r"[/?#]", rest, maxsplit=1)[0]
+    if "%" in auth:
+        return auth
+    host = auth.rsplit("@", 1)[-1]
+    host = _norm_host(host.partition(":")[0])
+    return "" if re.fullmatch(r"[a-z0-9.-]*", host) else auth
+
+
+def url_gate(canonical: str, rules) -> str | None:
+    """The ONE vault-list gate for every scrape backend (jina, firecrawl, the
+    local-headless slot). Returns the reason a URL must not be sent to a
+    scraper, or None. A .harvest-allow match overrides a .harvest-deny match.
+    No rules loaded at all fails closed."""
+    if rules is None:
+        return "vault deny/allow lists not loaded; refusing scrape (fail closed)"
+    if rules.error:
+        return rules.error
+    bad = _odd_host(canonical)
+    if bad:
+        return f"URL host {bad!r} has characters a scraper may decode differently; refusing scrape (fail closed)"
+    hit = _rule_match(rules.deny, canonical)
+    if hit is None or _rule_match(rules.allow, canonical) is not None:
+        return None
+    return f"URL matched .harvest-deny pattern {hit}"
+
+
 def _revert(path: Path, original: str) -> None:
     """Best-effort restore of a clip to its pre-write content. Swallows a
     revert-time write error (nothing more we can do — the failure is already
@@ -377,25 +543,277 @@ def insert_harvested_section(body: str, section_md: str):
     return before + block + after, (before + after == body)
 
 
+def ledger_path():
+    """Per-call Firecrawl ledger (HIMMEL-4335). Same ~/.himmel/state/ root the
+    other luna tools keep state under; HIMMEL_FIRECRAWL_LEDGER overrides it
+    (tests always point it at a scratch file)."""
+    import os
+    override = os.environ.get("HIMMEL_FIRECRAWL_LEDGER", "").strip()
+    if override:
+        return Path(override)
+    return Path(os.environ.get("HOME") or Path.home()) / ".himmel" / "state" / "firecrawl-ledger.jsonl"
+
+
+def ledger_append(call_site, endpoint, credits, ok=True, source="firecrawl", reason=None):
+    """Append one JSONL line: ts, call_site, endpoint (path only), credits.
+    Never the key, the URL (or its query string) or the page body. A ledger
+    write failure never breaks the scrape that triggered it."""
+    import datetime
+    import json
+    import socket
+    row = {
+        "v": 1,
+        "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host": socket.gethostname(),
+        "source": source,
+        "kind": "call",
+        "call_site": call_site,
+        "endpoint": endpoint,
+        "credits": credits,
+        "ok": ok,
+    }
+    if reason:
+        row["reason"] = reason
+    try:
+        lp = ledger_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        with open(lp, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
+# Firecrawl-unavailable parking (HIMMEL-4371). An item that needed Firecrawl
+# while it was unavailable (402 / credits exhausted, 429, auth) is parked in an
+# enveloped JSONL state file, registered in scripts/observability/ledgers.json
+# as `firecrawl-parked`, so it is neither lost nor marked failed. Row kinds:
+# parked / resolved (per item), unavailable / available (global status).
+# himmel-doctor C51 reads it; follow-web.mjs appends to it for searches.
+class FirecrawlUnavailable(RuntimeError):
+    def __init__(self, reason):
+        super().__init__(f"firecrawl unavailable ({reason})")
+        self.reason = reason
+
+
+_UNAVAILABLE_BODY = re.compile(
+    r"insufficient credits|out of credits|credits? (?:have been )?exhausted|quota|payment required|upgrade your plan",
+    re.I)
+
+
+def classify_firecrawl_unavailable(status, body):
+    """'exhausted' | 'rate-limited' | 'auth' | None. 402 and a quota /
+    insufficient-credits body mean exhausted; 429 is a rate limit (no reset
+    date is claimed); 401/403 is auth."""
+    if status in (401, 403):
+        return "auth"
+    if status == 429:
+        return "rate-limited"  # before the body match: a rate-limit text may mention "quota"
+    if _UNAVAILABLE_BODY.search(body or "") or status == 402:
+        return "exhausted"
+    return None
+
+
+def parked_path():
+    import os
+    override = os.environ.get("HIMMEL_FIRECRAWL_PARKED", "").strip()
+    if override:
+        return Path(override)
+    return Path(os.environ.get("HOME") or Path.home()) / ".himmel" / "state" / "firecrawl-parked.jsonl"
+
+
+def parked_append(kind, **fields):
+    """Append one enveloped row (v, ts, host, source, kind + fields). Never the
+    key, a URL or a page body. A write failure never breaks the harvest."""
+    import datetime
+    import json
+    import socket
+    row = {
+        "v": 1,
+        "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "host": socket.gethostname(),
+        "source": "firecrawl",
+        "kind": kind,
+    }
+    row.update({k: v for k, v in fields.items() if v is not None})
+    try:
+        pp = parked_path()
+        pp.parent.mkdir(parents=True, exist_ok=True)
+        with open(pp, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
+def parked_load():
+    """Fold the state file: ({(vault, item): parked row} still unresolved,
+    latest `unavailable` row, or None once an `available` row follows it).
+    `available` also clears follow-web query rows (queries are not addressable)."""
+    import json
+    items, status = {}, None
+    try:
+        lines = parked_path().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return items, status
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(r, dict):
+            continue
+        kind = r.get("kind")
+        if kind == "parked":
+            items[(r.get("vault"), r.get("item"))] = r
+        elif kind == "resolved":
+            items.pop((r.get("vault"), r.get("item")), None)
+        elif kind == "unavailable":
+            status = r
+        elif kind == "available":
+            status = None
+            items = {k: v for k, v in items.items() if v.get("call_site") != "follow-web"}
+    return items, status
+
+
+class BackendNotImplemented(Exception):
+    """A named backend slot with no implementation yet — the chain skips it
+    silently (never an error, never a log line)."""
+
+
+class JinaReaderClient:
+    """Jina Reader (https://r.jina.ai/<url>) — keyless, free scrape rung."""
+
+    name = "jina"
+    BASE = "https://r.jina.ai/"
+
+    def __init__(self, timeout=45):
+        self.timeout = timeout
+
+    @classmethod
+    def from_env(cls, env, budget):
+        return cls()
+
+    def scrape(self, url: str) -> str:
+        import urllib.request
+        req = urllib.request.Request(self.BASE + url, method="GET",
+                                     headers={"Accept": "text/plain"})
+        # egress-matrix jina-reader is allow+log: one ledger line per fetch;
+        # the endpoint is the fixed reader path, never the target URL.
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                text = resp.read().decode("utf-8", errors="replace")
+        except Exception:
+            ledger_append("harvest-clip-body-batch", "/reader", 0, ok=False, source="jina-reader")
+            raise
+        ledger_append("harvest-clip-body-batch", "/reader", 0, source="jina-reader")
+        marker = "Markdown Content:"
+        idx = text.find(marker)
+        # A 200 whose preamble reports the target's own error (403/404 page,
+        # bot wall) is an error page, not content.
+        if re.search(r"(?m)^Warning: Target URL returned error", text[:idx] if idx >= 0 else text[:500]):
+            raise RuntimeError("jina: target URL returned an error page")
+        md = text[idx + len(marker):] if idx >= 0 else text
+        if not md.strip():
+            raise RuntimeError("jina returned empty markdown")
+        return md.strip() + "\n"
+
+
+class LocalHeadlessClient:
+    """Cookie-backed local headless fetch — reserved backend slot, not built
+    yet (needs a browser + cookie read not in the tree). Follow-up ticket."""
+
+    name = "local-headless"
+
+    @classmethod
+    def from_env(cls, env, budget):
+        return cls()
+
+    def scrape(self, url: str) -> str:
+        raise BackendNotImplemented("local-headless backend is not implemented")
+
+
 class FirecrawlClient:
     """Thin firecrawl /v2/scrape client (stdlib urllib — no new deps).
     Injectable for tests: override `scrape`. `base_url` defaults to the
     hosted API but honors FIRECRAWL_BASE_URL so self-hosted firecrawl
     instances (open source, AGPL) work for operators with more budget."""
 
-    def __init__(self, api_key, base_url=None, budget=FIRECRAWL_DEFAULT_BUDGET, timeout=45):
+    name = "firecrawl"
+    SCRAPE_COST = 1  # documented /v2/scrape cost when the response omits it
+    STEALTH_SCRAPE_COST = 5  # same, for a `proxy: stealth` call
+
+    def __init__(self, api_key, base_url=None, budget=FIRECRAWL_DEFAULT_BUDGET, timeout=45,
+                 max_credits=FIRECRAWL_DEFAULT_MAX_CREDITS, stealth=False):
         self.api_key = api_key
         self.base_url = (base_url or FIRECRAWL_DEFAULT_BASE_URL).rstrip("/")
         self.remaining = budget
         self.timeout = timeout
+        self.max_credits = max_credits
+        self.stealth = stealth
+        if stealth and max_credits < self.STEALTH_SCRAPE_COST:
+            # a stealth call is billed 5, so it would trip the ceiling on its first call
+            raise ValueError(f"HARVEST_FIRECRAWL_STEALTH=1 needs HARVEST_FIRECRAWL_MAX_CREDITS of at least "
+                             f"{self.STEALTH_SCRAPE_COST} (a stealth call costs {self.STEALTH_SCRAPE_COST}), "
+                             f"got {max_credits}")
+        self.unavailable = None  # reason once a 402/429/auth/probe-0 disabled it for this run
+        self.reset = None
+        self.served = 0
+        self.probed_ok = False
+
+    @classmethod
+    def from_env(cls, env, budget):
+        """None without FIRECRAWL_API_KEY (the chain then runs keyless, silently)."""
+        api_key = (env.get("FIRECRAWL_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        return cls(api_key, base_url=(env.get("FIRECRAWL_BASE_URL") or "").strip() or None, budget=budget,
+                   max_credits=_env_int(env, "HARVEST_FIRECRAWL_MAX_CREDITS", FIRECRAWL_DEFAULT_MAX_CREDITS),
+                   stealth=(env.get("HARVEST_FIRECRAWL_STEALTH") or "").strip() == "1")
+
+    def credit_usage(self):
+        """GET /v2/team/credit-usage (free): the `data` dict, or None on any failure."""
+        import json
+        import urllib.request
+        req = urllib.request.Request(f"{self.base_url}/v2/team/credit-usage", method="GET",
+                                     headers={"Authorization": f"Bearer {self.api_key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            body = data.get("data") if isinstance(data, dict) else None
+            ledger_append("harvest-clip-body-batch", "/v2/team/credit-usage", 0, ok=isinstance(body, dict))
+            return body if isinstance(body, dict) else None
+        except Exception:
+            ledger_append("harvest-clip-body-batch", "/v2/team/credit-usage", 0, ok=False)
+            return None
+
+    def mark_unavailable(self, reason, reset=None):
+        """Disable firecrawl for the rest of the run: ONE stderr line, one state row."""
+        if reason == "exhausted" and reset is None:
+            reset = (self.credit_usage() or {}).get("billingPeriodEnd")
+        self.unavailable, self.reset, self.remaining = reason, (reset if reason == "exhausted" else None), 0
+        when = f", resets {self.reset}" if self.reset else ""
+        print(f"harvest-clip-body-batch: firecrawl unavailable ({reason}{when}); disabled for the rest of "
+              "this run, affected items parked (deferred: firecrawl-unavailable)", file=sys.stderr)
+        parked_append("unavailable", call_site="harvest-clip-body-batch", reason=reason, reset=self.reset)
+
+    def _trip_ceiling(self, what):
+        """The call is already billed and cannot be refunded; this only stops the next ones."""
+        self.remaining = 0
+        print(f"harvest-clip-body-batch: {what} (ceiling {self.max_credits}); "
+              "firecrawl disabled for the rest of this run", file=sys.stderr)
 
     def scrape(self, url: str) -> str:
         """POST /v2/scrape, return data.markdown. Raises on any failure
         (HTTP error, success=false, empty markdown) — the caller routes a
-        failed scrape to a retryable partial outcome."""
+        failed scrape to a retryable partial outcome. Every call that
+        reaches the API appends one ledger line. A 402/quota/429/auth
+        response raises FirecrawlUnavailable and disables the client."""
         import json
+        import urllib.error
         import urllib.request
-        payload = json.dumps({"url": url, "formats": ["markdown"]}).encode("utf-8")
+        opts = {"url": url, "formats": ["markdown"]}
+        if self.stealth:  # 5x credits: only on an explicit HARVEST_FIRECRAWL_STEALTH=1
+            opts["proxy"] = "stealth"
+        payload = json.dumps(opts).encode("utf-8")
         req = urllib.request.Request(
             f"{self.base_url}/v2/scrape",
             data=payload,
@@ -405,14 +823,242 @@ class FirecrawlClient:
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        if not data.get("success"):
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as e:
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                err_body = ""
+            reason = classify_firecrawl_unavailable(e.code, err_body)
+            ledger_append("harvest-clip-body-batch", "/v2/scrape", 0, ok=False, reason=reason)
+            if reason:
+                self.mark_unavailable(reason)
+                raise FirecrawlUnavailable(reason) from e
+            raise
+        except Exception:
+            ledger_append("harvest-clip-body-batch", "/v2/scrape", 0, ok=False)
+            raise
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            # transport succeeded, so the call was made and billed: count it
+            cost = self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST
+            ledger_append("harvest-clip-body-batch", "/v2/scrape", cost, ok=False)
+            if cost > self.max_credits:
+                self._trip_ceiling(f"firecrawl call cost {cost} credits")
+            raise
+        # a valid-JSON body of the wrong shape still spent the call: ledger it once
+        body = data.get("data") if isinstance(data, dict) else None
+        body = body if isinstance(body, dict) else {}
+        meta = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        used = meta.get("creditsUsed")
+        ok = isinstance(data, dict) and bool(data.get("success"))
+        default_cost = self.STEALTH_SCRAPE_COST if self.stealth else self.SCRAPE_COST
+        # `type is int` keeps True out. A creditsUsed that is present but not an integer
+        # (30.0, "30", true, null) cannot be trusted to be under the ceiling, so it trips it.
+        unreadable = "creditsUsed" in meta and type(used) is not int
+        credits = used if type(used) is int else default_cost
+        ledger_append("harvest-clip-body-batch", "/v2/scrape", credits, ok=ok)
+        if unreadable:
+            self._trip_ceiling(f"firecrawl call reported a non-integer creditsUsed ({type(used).__name__})")
+        elif credits > self.max_credits:
+            self._trip_ceiling(f"firecrawl call cost {credits} credits")
+        if not ok:
+            reason = classify_firecrawl_unavailable(None, str(data)[:500])
+            if reason:
+                self.mark_unavailable(reason)
+                raise FirecrawlUnavailable(reason)
             raise RuntimeError(f"firecrawl success=false: {str(data)[:200]}")
-        md = (data.get("data") or {}).get("markdown")
-        if not md or not md.strip():
+        md = body.get("markdown")
+        if not md or not isinstance(md, str) or not md.strip():
             raise RuntimeError("firecrawl returned empty markdown")
+        self.served += 1
         return md
+
+
+class BackendSpec(NamedTuple):
+    """One registry row. `cls` has a `name` and `scrape(url) -> markdown`, and
+    a `from_env(env, budget)` that returns an instance, or None when its key is
+    missing. `cap` names the per-run limit it keeps (None = uncapped);
+    `egress_host` is the host it sends URLs to (None = local), and must have a
+    scripts/guardrails/egress-matrix.json row."""
+    cls: type
+    needs_key: bool
+    cap: str | None
+    egress_host: str | None
+
+
+# The ONE name table: the chain, HARVEST_SCRAPE_BACKEND, HARVEST_SCRAPE_DENY and
+# the .harvest-backends skip/only lines all resolve names here. Order = default order.
+BACKEND_REGISTRY = {
+    "local-headless": BackendSpec(LocalHeadlessClient, False, None, None),
+    "jina": BackendSpec(JinaReaderClient, False, None, "r.jina.ai"),
+    "firecrawl": BackendSpec(FirecrawlClient, True, "run-budget", "api.firecrawl.dev"),
+}
+DEFAULT_SCRAPE_BACKENDS = tuple(BACKEND_REGISTRY)
+
+
+def resolve_backend_names(names, label):
+    """Every name must be in BACKEND_REGISTRY; an unknown one is an error
+    naming the valid set."""
+    unknown = [n for n in names if n not in BACKEND_REGISTRY]
+    if unknown:
+        raise ValueError(f"unknown {label} {','.join(unknown)} (valid: {', '.join(BACKEND_REGISTRY)})")
+    return list(names)
+
+
+def _env_int(env, key, default):
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return default
+    # ASCII digits only, like follow-web.mjs: int() alone takes +5, 1_0 and non-ASCII digits
+    if not re.fullmatch(r"[0-9]+", raw):
+        raise ValueError(f"{key} must be a non-negative integer, got {raw!r}")
+    return int(raw)
+
+
+def resolve_firecrawl_budget(flag, env):
+    """Per-run firecrawl call cap: --firecrawl-budget wins, then
+    HARVEST_FIRECRAWL_BUDGET, then the default."""
+    return flag if flag is not None else _env_int(env, "HARVEST_FIRECRAWL_BUDGET", FIRECRAWL_DEFAULT_BUDGET)
+
+
+class BackendRoutes:
+    """The vault's .harvest-backends lines. `error` is set when the file exists
+    but cannot be read or parsed: the chain then refuses every URL (fail closed)."""
+
+    def __init__(self, rules=(), actions=None, error=None):
+        self.rules = list(rules)
+        self.actions = actions or {}
+        self.error = error
+
+    def match(self, url: str):
+        """(mode, names) of the FIRST matching line, else None."""
+        hit = _rule_match(self.rules, url)
+        return self.actions[hit] if hit is not None else None
+
+
+def load_backend_routes(vault: Path) -> BackendRoutes:
+    """Read <vault>/.harvest-backends: `<url-glob> skip=a,b` or `<url-glob>
+    only=a`, `#` starts a comment, the first matching line wins. Globs are
+    matched exactly like .harvest-deny (_norm_target / _glob_to_regex). A
+    missing file is no constraint; an unreadable file, a malformed line or an
+    unknown backend name fails closed with a stderr line."""
+    path = vault / ".harvest-backends"
+    if not path.exists() and not path.is_symlink():
+        return BackendRoutes()
+
+    def fail(why):
+        error = f".harvest-backends {why}; refusing every scrape (fail closed)"
+        print(f"harvest-clip-body-batch: {error}", file=sys.stderr)
+        return BackendRoutes(error=error)
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as e:
+        return fail(f"unreadable ({type(e).__name__})")
+    rules, actions = [], {}
+    for n, ln in enumerate(text.splitlines(), 1):
+        ln = ln.split("#", 1)[0].strip()
+        if not ln:
+            continue
+        parts = ln.split()
+        mode, _, val = parts[-1].partition("=")
+        if len(parts) != 2 or mode not in ("skip", "only"):
+            return fail(f"line {n} is not `<url-glob> skip=a,b` or `<url-glob> only=a`")
+        names = [x.strip() for x in val.split(",") if x.strip()]
+        if not names:
+            return fail(f"line {n} names no backend")
+        try:
+            resolve_backend_names(names, ".harvest-backends backend")
+        except ValueError as e:
+            return fail(f"line {n}: {e}")
+        rules.append((parts[0], _glob_to_regex(_norm_target(parts[0], True)[0])))
+        actions.setdefault(parts[0], (mode, names))
+    return BackendRoutes(rules, actions)
+
+
+class ScrapeChain:
+    """Tries each backend in order; a not-implemented backend is skipped
+    silently, a failing one falls through to the next. `remaining` is the
+    per-run cap on thin-body scrapes (process_clip decrements it); firecrawl
+    additionally keeps its own cap, decremented per attempt. `routes` (the
+    vault's .harvest-backends) narrows the chain per URL; HARVEST_SCRAPE_DENY
+    already removed killed backends at build time, so a route can never re-add
+    one."""
+
+    def __init__(self, backends, budget, routes=None):
+        self.backends = list(backends)
+        self.remaining = budget
+        self.routes = routes
+        self.last_backend = None
+
+    def backends_for(self, url: str) -> list:
+        if self.routes is None:
+            return list(self.backends)
+        if self.routes.error:
+            return []
+        hit = self.routes.match(url)
+        if hit is None:
+            return list(self.backends)
+        mode, names = hit
+        return [b for b in self.backends if (b.name in names) == (mode == "only")]
+
+    def scrape(self, url: str) -> str:
+        errors = []
+        if self.routes is not None and self.routes.error:
+            raise RuntimeError(f"scrape refused: {self.routes.error}")
+        usable = self.backends_for(url)
+        if not usable:
+            raise RuntimeError("no scrape backend permitted for this URL (kill switch, .harvest-backends or no key)")
+        fc_reason = None
+        for b in usable:
+            if b.name == "firecrawl":
+                if getattr(b, "unavailable", None):
+                    fc_reason = b.unavailable
+                    continue
+                if b.remaining <= 0:
+                    continue
+                b.remaining -= 1
+            try:
+                md = b.scrape(url)
+            except BackendNotImplemented:
+                continue
+            except FirecrawlUnavailable as e:
+                fc_reason = e.reason
+                continue
+            except Exception as e:
+                errors.append(f"{b.name}: {type(e).__name__}: {str(e)[:80]}")
+                continue
+            self.last_backend = b.name
+            return md
+        if fc_reason:
+            raise FirecrawlUnavailable(fc_reason)  # the chain reached firecrawl and it was unavailable: park, do not fail
+        raise RuntimeError("all scrape backends failed" + (f" ({'; '.join(errors)})" if errors else ""))
+
+
+def build_scrape_chain(env, budget):
+    """Build the chain from HARVEST_SCRAPE_BACKEND (comma list, default: the
+    registry order). HARVEST_SCRAPE_DENY (comma list, or `all`) is a kill switch
+    that removes backends whatever the order or routing says. A backend that
+    needs a key and has none (firecrawl) is left out silently."""
+    raw = (env.get("HARVEST_SCRAPE_BACKEND") or "").strip()
+    names = [n.strip() for n in raw.split(",") if n.strip()] or list(DEFAULT_SCRAPE_BACKENDS)
+    names = list(dict.fromkeys(names))  # a repeated name must not mint a second client (and a second firecrawl budget)
+    resolve_backend_names(names, "HARVEST_SCRAPE_BACKEND")
+    killed = [n.strip() for n in (env.get("HARVEST_SCRAPE_DENY") or "").split(",") if n.strip()]
+    named = resolve_backend_names([n for n in killed if n != "all"], "HARVEST_SCRAPE_DENY")
+    killed = set(BACKEND_REGISTRY) if "all" in killed else set(named)
+    backends = []
+    for n in names:
+        if n in killed:
+            continue
+        client = BACKEND_REGISTRY[n].cls.from_env(env, budget)
+        if client is not None:
+            backends.append(client)
+    return ScrapeChain(backends, budget)
 
 
 def parse_frontmatter(text: str):
@@ -557,7 +1203,24 @@ def persist_flag_only(path: Path, text: str, fm_raw: str, body: str, hits: list)
     return True
 
 
-def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, list]:
+def _stamp_refused(path: Path, text: str, fm_raw: str, body: str, canonical: str, dry_run: bool) -> str:
+    """harvest-clips.md Phase 2: a G-1 deny sets harvest_status: refused_sensitivity
+    + harvest_url_canonical in the frontmatter. Frontmatter-only (harvested_at stays
+    unset, so editing the lists lets a later run retry); G-3 body check, reverts on
+    mismatch. Returns a message suffix."""
+    if dry_run:
+        return " [dry-run]"
+    pairs = [("harvest_status", "harvest_status: refused_sensitivity"),
+             ("harvest_url_canonical", f'harvest_url_canonical: "{canonical}"')]
+    path.write_text(f"---\n{insert_frontmatter_pairs(fm_raw, pairs)}\n---\n{body}", encoding="utf-8", newline="\n")
+    _d, _r, disk_body, disk_ok = parse_frontmatter(path.read_text(encoding="utf-8"))
+    if not disk_ok or disk_body != body:
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return " [status-write failed (G-3); reverted]"
+    return " [harvest_status: refused_sensitivity written]"
+
+
+def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park=None) -> tuple[str, str, list]:
     """Return (glyph, message, injection_hits) per logging contract.
 
     injection_hits is returned STRUCTURALLY (not just embedded in the
@@ -620,6 +1283,9 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
     # exhausted / fetch-failed clips return a retryable partial WITHOUT
     # marking harvested_at, so a later run retries them.
     if firecrawl is not None and firecrawl_eligible(canonical) and is_thin_body(body):
+        denied = url_gate(canonical, url_rules)
+        if denied:
+            return flagged_early("o", f"skipped (sensitivity): {denied}{_stamp_refused(path, text, fm_raw, body, canonical, dry_run)}")
         if dry_run:
             # Never spend a credit on a dry-run — report the plan only.
             return ("v", f"would harvest via firecrawl (thin-body escalation): {canonical} [dry-run]{flag_suffix}", injection_hits)
@@ -627,12 +1293,17 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
             return ("~", "partial (thin-body): firecrawl budget exhausted this run; re-run to retry", injection_hits)
         try:
             md = firecrawl.scrape(canonical)
+        except FirecrawlUnavailable as e:
+            if park is not None:
+                park(path, e.reason)
+            return ("~", f"partial (thin-body): deferred: firecrawl-unavailable ({e.reason}); parked, retried first once credits return", injection_hits)
         except Exception as e:
             return ("~", f"partial (thin-body): firecrawl fetch failed ({type(e).__name__}: {str(e)[:120]}); re-run to retry", injection_hits)
         firecrawl.remaining -= 1
+        served_by = getattr(firecrawl, "last_backend", None) or "firecrawl"
         section = (
             f"## Harvested content\n"
-            f"<!-- harvest-clips {TODAY} via firecrawl ({canonical}) -->\n\n"
+            f"<!-- harvest-clips {TODAY} via {served_by} ({canonical}) -->\n\n"
             f"{md.strip()}\n\n"
         )
         new_body, insert_ok = insert_harvested_section(body, section)
@@ -647,7 +1318,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
         merged_hits = injection_hits + [h for h in fc_hits if h not in injection_hits]
         markers = {
             "harvested_at": TODAY,
-            "harvest_skill": "firecrawl",
+            "harvest_skill": served_by,
             "harvest_url_canonical": canonical,
             "harvest_status": "ok",
         }
@@ -686,7 +1357,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None) -> tuple[str, str, l
             _revert(path, text)
             return ("x", f"failed (frontmatter-yaml-write, credit spent): {e}; reverted", merged_hits)
         fc_suffix = f" [injection-suspect: {', '.join(merged_hits)}]" if merged_hits else ""
-        return ("v", f"harvested via firecrawl, {len(md.encode('utf-8'))}b fetched (thin-body escalation), harvest_status=ok{fc_suffix}", merged_hits)
+        return ("v", f"harvested via {served_by}, {len(md.encode('utf-8'))}b fetched (thin-body escalation), harvest_status=ok{fc_suffix}", merged_hits)
 
     if is_thin_body(body):
         gap_host = enricher_gap_host(canonical)
@@ -822,11 +1493,11 @@ def main():
                          "harvest_flag/_detail on hits.")
     ap.add_argument("--firecrawl-thin", action="store_true",
                     help="Escalation: fetch clean markdown via firecrawl for "
-                         "thin-body article/web clips (needs FIRECRAWL_API_KEY). "
+                         "thin-body article/web clips (keyless Jina first; the firecrawl rung needs FIRECRAWL_API_KEY). "
                          "Off by default — conserves the free-tier credits.")
-    ap.add_argument("--firecrawl-budget", type=int, default=FIRECRAWL_DEFAULT_BUDGET,
+    ap.add_argument("--firecrawl-budget", type=int, default=None,
                     help="Max firecrawl scrape calls per run (~1 credit each). "
-                         f"Default {FIRECRAWL_DEFAULT_BUDGET}.")
+                         f"Default HARVEST_FIRECRAWL_BUDGET, else {FIRECRAWL_DEFAULT_BUDGET}.")
     args = ap.parse_args()
     if args.scan_only is not None:
         sys.exit(run_scan_only(args.scan_only))
@@ -860,29 +1531,79 @@ def main():
         sys.exit(run_rescan_flags(clips, args.vault, args.dry_run))
 
     firecrawl = None
+    url_rules = None
     if args.firecrawl_thin:
         import os
-        api_key = os.environ.get("FIRECRAWL_API_KEY", "").strip()
-        if not api_key:
+        url_rules = load_url_rules(args.vault)
+        try:
+            firecrawl = build_scrape_chain(os.environ, resolve_firecrawl_budget(args.firecrawl_budget, os.environ))
+        except ValueError as e:
+            print(f"harvest-clip-body-batch: {e}", file=sys.stderr)
+            sys.exit(2)
+        firecrawl.routes = load_backend_routes(args.vault)
+        if not any(b.name != "local-headless" for b in firecrawl.backends):
             print(
-                "harvest-clip-body-batch: --firecrawl-thin requires FIRECRAWL_API_KEY "
-                "in the environment.", file=sys.stderr,
+                "harvest-clip-body-batch: --firecrawl-thin has no usable scrape backend "
+                "(needs jina, or firecrawl with FIRECRAWL_API_KEY; check HARVEST_SCRAPE_DENY).", file=sys.stderr,
             )
             sys.exit(2)
-        base_url = os.environ.get("FIRECRAWL_BASE_URL", "").strip() or None
-        firecrawl = FirecrawlClient(api_key, base_url=base_url, budget=args.firecrawl_budget)
+
+    # HIMMEL-4371: items parked while Firecrawl was unavailable are retried FIRST.
+    vault_key = str(args.vault)
+    mine, status, fc = {}, None, None
+    if firecrawl is not None and not args.dry_run:
+        items, status = parked_load()
+        mine = {it: r for (vp, it), r in items.items() if vp == vault_key}
+        for it in list(mine):
+            if not (args.vault / it).exists():
+                parked_append("resolved", call_site="harvest-clip-body-batch", vault=vault_key, item=it, via="gone")
+                del mine[it]
+        fc = next((b for b in firecrawl.backends if b.name == "firecrawl"), None)
+        if mine and fc is not None and fc.remaining > 0:
+            # Free credit-usage probe before spending: 0 remaining keeps the items parked
+            # without a scrape call; a failed probe falls back to ONE attempt.
+            usage = fc.credit_usage()
+            if usage is None:
+                fc.remaining = min(fc.remaining, 1)
+            elif isinstance(usage.get("remainingCredits"), int) and usage["remainingCredits"] <= 0:
+                reset = usage.get("billingPeriodEnd")
+                fc.unavailable, fc.reset, fc.remaining = "exhausted", reset, 0
+                print(f"harvest-clip-body-batch: firecrawl credits still exhausted"
+                      f"{f' (resets {reset})' if reset else ''}; {len(mine)} parked item(s) stay parked, no scrape call",
+                      file=sys.stderr)
+                if not (status and status.get("reason") == "exhausted" and status.get("reset") == reset):
+                    parked_append("unavailable", call_site="harvest-clip-body-batch", reason="exhausted", reset=reset)
+            else:
+                fc.probed_ok = True
+        clips = sorted(clips, key=lambda p: p.relative_to(args.vault).as_posix() not in mine)
 
     if args.limit > 0:
         clips = clips[: args.limit * 4]  # over-fetch; filter below cuts to limit
 
+    def park(path, reason):
+        it = path.relative_to(args.vault).as_posix()
+        if it not in mine:
+            mine[it] = {}
+            parked_append("parked", call_site="harvest-clip-body-batch", vault=vault_key, item=it, reason=reason)
+            newly_parked.append(it)
+
+    newly_parked = []
     ok = partial = failed = skipped = 0
     processed_count = 0
     flagged = []  # injection-suspect clips (HIMMEL-256) for the run report
     for clip in clips:
         if args.limit > 0 and processed_count >= args.limit:
             break
-        glyph, msg, injection_hits = process_clip(clip, args.dry_run, firecrawl)
         relpath = clip.relative_to(args.vault).as_posix()
+        was_parked = relpath in mine
+        if firecrawl is not None:
+            firecrawl.last_backend = None
+        glyph, msg, injection_hits = process_clip(clip, args.dry_run, firecrawl, url_rules, park)
+        if was_parked and glyph in ("v", "o") and not args.dry_run:
+            # ANY success (jina, local, firecrawl) or a clip that no longer waits resolves it.
+            via = (getattr(firecrawl, "last_backend", None) or "other") if glyph == "v" else "skipped"
+            parked_append("resolved", call_site="harvest-clip-body-batch", vault=vault_key, item=relpath, via=via)
+            mine.pop(relpath, None)
         if injection_hits:
             # Structural flag state — flagged clips reach the report even
             # when the harvest write failed (any glyph).
@@ -906,6 +1627,11 @@ def main():
         f"\nharvest-clip-body-batch: {ok} ok, {partial} partial, "
         f"{failed} failed, {skipped} skipped. (dry_run={args.dry_run})"
     )
+    if fc is not None and fc.unavailable is None and status is not None and (fc.served or fc.probed_ok):
+        parked_append("available", call_site="harvest-clip-body-batch")
+    if newly_parked:
+        print(f"harvest-clip-body-batch: {len(newly_parked)} item(s) parked (deferred: firecrawl-unavailable); "
+              "they retry first on the next run once credits return")
     if flagged:
         print(
             f"harvest-clip-body-batch: {len(flagged)} flagged "

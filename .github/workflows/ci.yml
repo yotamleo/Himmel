@@ -175,6 +175,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # HIMMEL-4332: flag-registry-lint ran on the runner's unpinned default node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
       # HIMMEL-4265: run the SAME pre-commit shellcheck hook the local gate runs
       # (pinned shellcheck-py version, default severity, .shellcheckrc, and the
       # hook's own vendored/fixture excludes), so nothing the hook refuses can
@@ -364,7 +368,11 @@ jobs:
       run:
         shell: bash
     steps:
+      # HIMMEL-4350: this job holds issues:write; the issue steps use gh with
+      # GH_TOKEN env and never git, so the persisted checkout token is not needed.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version-file: .bun-version
@@ -391,6 +399,14 @@ jobs:
       - name: Vault tests (ubuntu only)
         if: matrix.os == 'ubuntu-latest'
         run: bun test scripts/vault/tests --dots
+      # HIMMEL-4254 P3: the read-only config UI (auth/Host/redaction, idle exit,
+      # render, the real `himmelctl ui` verb). Repo-root cwd like the suites
+      # above; hermetic (stub feed via CONFIG_UI_HIMMELCTL, loopback only).
+      # Ubuntu only: it spawns node/bun children with POSIX signal semantics,
+      # which the non-gating Windows nightly (parked) would only turn red.
+      - name: Config UI tests (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: bun test scripts/config-ui --dots
       # --frozen-lockfile fails if bun.lock has drifted from package.json. Catches
       # the class of bug where a dep range is bumped in package.json but the
       # lockfile is never regenerated (HIMMEL-553). HIMMEL-2620 wired the test

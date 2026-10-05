@@ -293,6 +293,33 @@ git -C "$REPO" push -q origin "none/pushed:refs/heads/none/pushed"
 out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_PUSHED" --only-allow-unmerged)
 expect "9e: ahead-of-main but head pushed to origin pruned WITH the flag" "$out" is_gone "$WT_UA_PUSHED"
 
+# 9g (HIMMEL-4334): a never-merged branch's leg scratch may be its only copy,
+# so the root-scratch arms do NOT apply under --only-allow-unmerged; only tool
+# churn (package-lock.json) stays discardable.
+WT_UA_SCRATCH=$(mk_wt wt-ua-scratch none/scratch)
+printf 'x\n' > "$WT_UA_SCRATCH/.pr-body.txt"
+mkdir -p "$WT_UA_SCRATCH/.scratch"; printf 'x\n' > "$WT_UA_SCRATCH/.scratch/a.txt"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_SCRATCH" --only-allow-unmerged)
+expect "9g: unmerged branch with root scratch refused WITH the flag" "$out" rc_nonzero "$out"
+expect "9g: unmerged scratch worktree kept" "$out" is_dir "$WT_UA_SCRATCH"
+WT_UA_CHURN=$(mk_wt wt-ua-churn none/churn)
+printf 'lock\n' > "$WT_UA_CHURN/package-lock.json"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_CHURN" --only-allow-unmerged)
+expect "9g control: tool churn alone still pruned WITH the flag" "$out" is_gone "$WT_UA_CHURN"
+
+# 9g2 (HIMMEL-4334 judge J1806u): the REAL repo .gitignore must not hide
+# .himmel-scratch/ from the stray scan, or `git worktree remove` would delete a
+# never-merged branch's only scratch. Branch pushed so the ahead check passes.
+WT_UA_REAL=$(mk_wt wt-ua-real none/realignore)
+cp "$SCRIPT_DIR/../.gitignore" "$WT_UA_REAL/.gitignore"
+git -C "$WT_UA_REAL" add .gitignore
+git -C "$WT_UA_REAL" commit -q -m "carry the real repo .gitignore"
+git -C "$REPO" push -q origin "none/realignore:refs/heads/none/realignore"
+mkdir -p "$WT_UA_REAL/.himmel-scratch"; printf 'x\n' > "$WT_UA_REAL/.himmel-scratch/notes.md"
+out=$(run_clean "$CLEAN_GARDEN" --only "$WT_UA_REAL" --only-allow-unmerged)
+expect "9g2: .himmel-scratch/notes.md under the REAL .gitignore refused WITH the flag" "$out" rc_is "$out" 1
+expect "9g2: worktree with .himmel-scratch kept" "$out" is_dir "$WT_UA_REAL"
+
 WT_UA_NOTPUSHED=$(mk_wt wt-ua-notpushed none/notpushed)
 printf 'extra\n' > "$WT_UA_NOTPUSHED/extra.txt"
 git -C "$WT_UA_NOTPUSHED" add extra.txt

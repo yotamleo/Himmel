@@ -616,7 +616,7 @@ test('obsidian-second-brain@himmel is enabled exactly in the vault profiles (HIM
 // core), so an unproven manifest-less shape in an add-on cannot break
 // `--profile design`.
 const DESIGN_CORE = ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
-  'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel',
+  'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel', 'builder-visual@himmel',
   'context7@claude-plugins-official'];
 const DESIGN_ADDONS = {
   'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
@@ -630,7 +630,7 @@ const DESIGN_ADDONS = {
   'design-trial': ['hallmark@himmel'],
 };
 
-test('design profile enables exactly the 7-member core on top of base (HIMMEL-4012 PR2b)', () => {
+test('design profile enables exactly the 8-member core on top of base (HIMMEL-4012 PR2b)', () => {
   assert.deepEqual([...REG.profiles.design.enable].sort(), [...DESIGN_CORE].sort());
 });
 
@@ -646,7 +646,7 @@ test('each design add-on profile enables its set on base, never the design core 
 });
 
 test('no add-on id leaks into the design core and the superseded ui-ux-pro-max id is gone (HIMMEL-4012 PR2b)', () => {
-  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official' && i !== 'taste-skill-core@himmel'); // taste-skill-core is deliberately in the core AND the imagegen/reference add-ons (HIMMEL-4067)
+  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official' && i !== 'taste-skill-core@himmel' && i !== 'builder-visual@himmel'); // taste-skill-core is deliberately in the core AND the imagegen/reference add-ons (HIMMEL-4067)
   for (const id of addonIds) assert.ok(!REG.profiles.design.enable.includes(id), `${id} must stay out of the design core`);
   assert.ok(!REG.catalog.includes('ui-ux-pro-max@ui-ux-pro-max-skill'), 'old ui-ux-pro-max id replaced by the pinned himmel entry');
 });
@@ -1511,4 +1511,36 @@ test('HIMMEL-4024: code kit CLIs (ast-grep, shfmt, bats) have drift rows, a cata
   for (const n of ['shfmt', 'bats']) assert.ok(byName.has(n), `${n} drift row`);
   for (const n of ['ast-grep', 'shfmt', 'bats', '`code`', '`code-ui`']) assert.ok(cat.includes(n), `catalog mentions ${n}`);
   assert.ok(existsSync(join(root, 'scripts', 'machine-setup', 'install-code-kit-clis.sh')), 'install step');
+});
+
+// HIMMEL-4400: a headed e2e leg needs the Playwright MCP under --strict-mcp-config. The
+// plugin's own .mcp.json is flat-form and lives in the plugin cache, so the server def is
+// resolved from the registry mcpCatalog, the tier after home / repo / marketplace manifest.
+test('leg-e2e carries the Playwright MCP in its composed --mcp-config (HIMMEL-4400)', () => {
+  assert.deepEqual(mcpServersForProfile(REG, 'leg-e2e'), ['qmd', 'playwright']);
+  const dir = makeTmpDir('pp-e2e-');
+  const marketplaceDir = join(dir, 'marketplace', 'plugins');
+  mkdirSync(join(marketplaceDir, 'qmd'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'qmd', '.mcp.json'), JSON.stringify({ mcpServers: { qmd: { command: 'qmd', args: ['mcp'] } } }));
+  const cfg = collectMcpServerDefs(['qmd', 'playwright'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir, mcpCatalog: REG.mcpCatalog });
+  assert.equal(cfg.mcpServers.playwright.command, 'npx');
+  assert.match(cfg.mcpServers.playwright.args.join(' '), /@playwright\/mcp@\d+\.\d+\.\d+/, 'pinned, never @latest');
+});
+
+test('leg-e2e matches leg-impl plugins and leaves the Playwright plugin OFF so only the catalog server exists (HIMMEL-4400)', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'leg-e2e', { installed: [] });
+  for (const id of ['pr-review-toolkit-himmel@himmel', 'qmd@himmel']) assert.equal(p[id], true, id);
+  assert.notEqual(p['playwright@claude-plugins-official'], true, 'plugin ships only the MCP; enabling it risks a second server');
+  assert.deepEqual(resolveProfile(REG, 'leg-impl', { installed: [] }).enabledPlugins, p);
+  assert.equal(REG.profiles['leg-e2e'].gateAllow, true);
+  assert.deepEqual(validateRegistry(REG), []);
+});
+
+test('collectMcpServerDefs: the mcpCatalog tier loses to home/repo/manifest and still refuses an unknown name (HIMMEL-4400)', () => {
+  const dir = makeTmpDir('pp-cat-');
+  const home = join(dir, 'home.json');
+  writeFileSync(home, JSON.stringify({ mcpServers: { x: { command: 'home-x' } } }));
+  const opts = { homeConfigPath: home, repoMcpPath: join(dir, '.mcp.json'), marketplaceDir: join(dir, 'm'), mcpCatalog: { x: { command: 'cat-x' }, y: { command: 'cat-y' } } };
+  assert.deepEqual(collectMcpServerDefs(['x', 'y'], opts).mcpServers, { x: { command: 'home-x' }, y: { command: 'cat-y' } });
+  assert.throws(() => collectMcpServerDefs(['z'], opts), /not defined/);
 });

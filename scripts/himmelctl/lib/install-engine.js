@@ -26,7 +26,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
-const { parseDotEnv } = require('./probes.js');
+const { parseDotEnv, scopeConfigPathToCtx } = require('./probes.js');
+const lunaConfig = require('./luna-config.js');
 const { resolvePowershell } = require('./helpers.js');
 // HIMMEL-2176: the SAME bash resolver scripts/hooks/run-hook-with-bash.js's
 // own launcher uses to pick a real, usable Git Bash on Windows (never bare
@@ -240,10 +241,24 @@ function buildEntry(item, ctx, diagnosticState) {
       // loud placeholder that `exit 2`s — cross-platform packaging is
       // tracked as its own gap (HIMMEL-2333), not something this ticket
       // builds. Mirrors the WINGET_IDS posix-gap posture above: never a
-      // doomed spawn of the placeholder — posix returns `unrunnable` with a
-      // reason naming the gap instead.
+      // doomed spawn of the placeholder.
+      //
+      // HIMMEL-4341: posix now runs install-stack.sh (HIMMEL-4288: the exporter
+      // only, as a systemd user unit / launchd agent), but ONLY when the
+      // operator opted in (observability.enabled in ~/.himmel/config.json) —
+      // every profile desires this item, and `ensure` must never enable a
+      // service unasked.
       if (platform !== 'win32') {
-        return { unrunnable: 'observability stack install is Windows-only in Phase A (HIMMEL-922) — install-stack.sh is a loud placeholder (exit 2); cross-platform packaging is tracked as HIMMEL-2333. Install from a Windows host, or wait for that work to land.' };
+        let cfg;
+        try {
+          cfg = scopeConfigPathToCtx(ctx, () => lunaConfig.load());
+        } catch (e) {
+          return { unrunnable: `cannot read ~/.himmel/config.json (${e.message}) — fix it, then re-run` };
+        }
+        if (!(cfg.observability && cfg.observability.enabled === true)) {
+          return { unrunnable: 'observability stack is opt-in on this platform — set "observability": {"enabled": true} in ~/.himmel/config.json, then re-run himmelctl ensure (installs the flow exporter as a user service)' };
+        }
+        return { cmd: 'bash', args: [path.join(scriptsDir, 'observability', 'install-stack.sh'), 'install'] };
       }
       const psBin = resolvePowershell(ctx.env || process.env);
       const scriptPath = path.join(scriptsDir, 'observability', 'install-stack.ps1');
