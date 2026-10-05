@@ -2213,6 +2213,38 @@ CLOSED on missing `jq` or malformed JSON. PowerShell is unguarded (ponytail in
 the hook). Bypass: `QMD_UNBOUNDED_OK=1` (launching shell). Spec:
 `scripts/hooks/test-block-bare-qmd-query.sh`.
 
+### `block-bank-lift-writes.sh` — operator-only bank lift (HIMMEL-4445)
+
+Fires on Bash and on `Edit|Write|MultiEdit|NotebookEdit` (Codex: Bash and the
+`apply_patch` envelope). The bank lift `~/.himmel/state/bank-lift.json`
+(HIMMEL-4423) relaxes the 7-day bank gate while it is valid, so raising it is
+the operator's call. The hook refuses every agent write to that path —
+redirects (`>`, `>>`, `>|`, `&>`, `<>`), `tee`, `cp`/`mv`/`install`/`ln`/`rsync`
+as a destination, `dd of=`, `sed -i`, `touch`/`truncate`/`patch`, `-o`/`--output`
+options, editors, downloaders and interpreters handed the path, `find -exec`,
+`xargs`, and inline interpreter code (`python3 -c`, `perl -e`, `node -e`, a
+heredoc script) that names `bank-lift.json`, `$BANK_LIFT_FILE` or `bank-lift.sh` —
+under every spelling of the path: `~`, `$HOME`, `${HOME}`, `/home/<user>`,
+`~user`, relative from `~`, `~/.himmel` or `state/`, `.`/`..` segments, quote
+splits, backslashes, `$'…'`, globs, braces, case, symlinks (dangling too) and a
+`cd` before a relative name. A whole-directory write into `state/`, `.himmel/`
+or `~` is refused when its source could put a lift there (a lift-named, glob or
+`$var` source, a `dir/` or `dir/.` contents copy, `-T`, `ln -n`); copying an
+unrelated file in passes. It also refuses `bank-lift.sh set` (and the sourced
+`_bank_lift_cmd set`) under any launcher: `bash`/`sh`/direct/`source`/`.`,
+`env`/`timeout`/`nohup`/`command`/`exec`/`nice`/`sudo`/`xargs`, `-c` bodies,
+heredocs into a shell, a computed (`$(…)`, `$var`) subcommand or script word.
+`show`, `clear`, `rm`/`mv` of the lift (they only tighten the gate), reads, and
+mentions (grep patterns, commit messages, `echo`, a script's data arguments
+such as a ticket title) pass. Over-deny: inline interpreter code that only
+READS the lift, or edits a file whose text names `bank-lift.sh`, is refused
+too (use `cat`/`jq`, or the Edit tool). The deny
+names the remedy — the operator runs `! bash scripts/lib/bank-lift.sh set ...`
+— and there is deliberately no env bypass. A must-run chain member in
+`run-hook-with-bash.js`. Fails CLOSED on missing `jq`, malformed JSON or a
+tokenizer error. Residuals are ponytail-marked in the hook. Spec:
+`scripts/hooks/test-block-bank-lift-writes.sh`.
+
 ### `guard-pr-check-literal.sh` — relative `scripts/cr/` gate spellings (HIMMEL-3383, HIMMEL-3495)
 
 Every leg profile allow-lists `bash scripts/cr/pr-check-context.sh` and
