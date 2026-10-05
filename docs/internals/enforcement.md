@@ -2286,7 +2286,19 @@ HIMMEL-4458 closed these gaps:
   `.himmel/state/bank-lift.json`. With no destination option the effective
   cwd counts: the hook's cwd, or a preceding `cd`/`pushd` target (a bare `cd`,
   `~`, `$HOME`; an unresolvable target — `$d`, `-`, `popd` — denies too, name
-  the destination with `-C`/`-d`).
+  the destination with `-C`/`-d`). An option's operand is never read as a
+  flag: `tar -xf -O -C ~` names the archive `-O` and still denies (tar
+  `-f -C -T -X -b -I` and GNU-only `-H -K -N -V -g -F -L`, the long forms that
+  take one, unzip `-d -P -O -I`, cpio `-F -E -H -I -O -D -R -M -C`). A letter
+  whose arity differs between GNU tar and bsdtar (plain `tar -s`, `-L`, ...),
+  or an unknown long option, makes the next word untrusted as `-O`; a
+  destination option spelled as another option's operand judges the cwd and
+  every later word. `cpio -p` judges its directory operand.
+- **Relative operands after a cd.** A relative destination of an extraction,
+  or of `cp`/`mv`/`install`/`rsync`/`ln` (destination, `--parents` path, link
+  source, missing-ancestor check), is also judged against the last resolved
+  `cd`/`pushd` target: `cd ~/projects && tar -xf x.tar -C ..` is HOME and
+  denies; `cd /tmp/w && tar ... -C ..` does not.
 - **Linear scan.** The per-word lowercase fork in the name rule and the
   per-clause basename forks are gone, so a 20k-word command takes well under a
   second instead of a minute (the hook timed out on ~10k words).

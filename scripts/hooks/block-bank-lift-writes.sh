@@ -95,6 +95,7 @@ HAS_CD=0   # set for Bash: a cd/pushd makes every relative path's dir unknown
 CD_HOME=0  # set for Bash: a cd/pushd/popd that may land in HOME, ~/.himmel or its state dir
 CD_SEEN=0  # set for Bash once a cd/pushd/popd clause has been walked
 CD_UNK=0   # set for Bash: a cd/pushd/popd whose target cannot be resolved
+CD_DIR=""  # set for Bash: the last resolved cd/pushd target ("" when unresolved)
 # HIMMEL-4458: the repo whose scripts/lib/bank-lift.sh may run show|clear —
 # this hook's own checkout (scripts/hooks/..), the primary when that is a
 # .claude/worktrees/* worktree. Its worktrees qualify too.
@@ -814,7 +815,7 @@ check_copy() {
     # it without naming it.
     if [ "$sym" = 1 ]; then
         for src in ${pos[@]+"${pos[@]}"}; do
-            case "$(lift_ref "$src")" in LIFT|STATE) deny "$verb links to the bank lift or its directory ($src)" ;; esac
+            case "$(lift_ref "$src")$(_cd_ref "$src")" in *LIFT*|*STATE*) deny "$verb links to the bank lift or its directory ($src)" ;; esac
         done
     fi
     # After a cd the dir of a relative destination is unknown: a lift-named
@@ -842,8 +843,8 @@ check_copy() {
             rel="$src"
             case "$verb:$rel" in rsync:*/./*) rel="${rel#*/./}" ;; esac
             rel="${rel#/}"
-            case "$(lift_ref "${dest%/}/$rel")" in
-                LIFT|STATE) deny "$verb --parents/-R recreates the bank lift's path under $dest ($src)" ;;
+            case "$(lift_ref "${dest%/}/$rel")$(_cd_ref "${dest%/}/$rel")" in
+                *LIFT*|*STATE*) deny "$verb --parents/-R recreates the bank lift's path under $dest ($src)" ;;
             esac
             if _is_dynamic "$dest"; then
                 case "$(lift_ref "/$rel")" in
@@ -853,6 +854,8 @@ check_copy() {
         done
     fi
     dk=$(lift_ref "$dest")
+    # A relative destination after a resolved cd is the cd target's.
+    [ "$dk" = NONE ] && dk=$(_cd_ref "$dest")
     case "$dk" in
         LIFT) deny "$verb writes the bank lift ($dest)" ;;
         STATE) need="$LIFT_NAME" ;;
@@ -868,6 +871,7 @@ check_copy() {
     # unknowable or directory source denies here.
     if { [ "$dk" = STATE ] || [ "$dk" = HIMMEL ]; } && [ -z "$tdir" ]; then
         kind=$(_expand "$dest")
+        case "$kind" in '?/'*) [ -n "$CD_DIR" ] && kind=$(CWD="$CD_DIR" HAS_CD=0 _expand "$dest") ;; esac
         case "$kind" in
             '?/'*) ;;
             *) if [ ! -d "$kind" ]; then
@@ -1014,7 +1018,9 @@ EOF
 # _note_cd <cd|pushd|popd> <args...>: a bare cd, or a target resolving to
 # HOME, ~/.himmel or its state dir, sets CD_HOME. `-`, popd, a stack index, a
 # computed target ($d; $HOME spellings do resolve), or a relative target after
-# an earlier cd set CD_UNK. Both stick for the rest of the command.
+# an earlier cd set CD_UNK. Both stick for the rest of the command. CD_DIR is
+# the last resolved target ("" when unresolved), which a relative operand of a
+# later clause is also judged against (_cd_ref).
 # shellcheck disable=SC2016  # literal $HOME spellings are matched as text
 _note_cd() {
     local c="$1" t k=UNK
@@ -1023,74 +1029,122 @@ _note_cd() {
         case "$1" in --) shift; break ;; -[LPe@]|-n) shift ;; *) break ;; esac
     done
     t="${1-}"
+    CD_DIR=""
     if [ "$c" = popd ]; then :
-    elif [ -z "$t" ]; then k=HOME
+    elif [ -z "$t" ]; then k=HOME; [ "$c" = cd ] && CD_DIR="$HOME"
     else
         case "$t" in
             -|[+-][0-9]*) ;;
-            /*|'~'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) k=$(lift_ref "$t") ;;
+            /*|'~'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) k=$(lift_ref "$t"); CD_DIR=$(_expand "$t") ;;
             *'$'*|*'`'*) ;;
-            *) [ "$CD_SEEN" = 0 ] && k=$(HAS_CD=0 lift_ref "$t") ;;
+            *) if [ "$CD_SEEN" = 0 ]; then k=$(HAS_CD=0 lift_ref "$t"); CD_DIR=$(HAS_CD=0 _expand "$t"); fi ;;
         esac
     fi
+    case "$CD_DIR" in '?'*) CD_DIR="" ;; esac
     CD_SEEN=1
     case "$k" in LIFT|STATE|HIMMEL|HOME) CD_HOME=1 ;; UNK) CD_UNK=1 ;; esac
 }
 
+# _cd_ref <word> -> lift_ref of a relative word resolved against the last
+# resolved cd target (`cd ~/projects && tar -C ..` is HOME), else NONE.
+_cd_ref() {
+    case "$1" in ''|/*|'~'*|'$'*) echo NONE; return ;; esac
+    if [ "$CD_SEEN" = 1 ] && [ -n "$CD_DIR" ]; then
+        CWD="$CD_DIR" HAS_CD=0 lift_ref "$1"
+    else
+        echo NONE
+    fi
+}
+
 # check_extract <tar|gtar|bsdtar|unzip|cpio> <args...>
+# An option's operand is consumed, never read as a flag (`tar -xf -O` names
+# the archive -O; it is not --to-stdout). Letters whose arity differs between
+# GNU tar and bsdtar are not consumed, but the word after them is never
+# trusted as a stdout flag, and a destination option there also keeps the cwd
+# check (it may be an operand).
 check_extract() {
-    local c="$1" x=0 nx="" a k first=1 multi=0 n out=0
-    local -a dests=() later=()
+    local c="$1" x=0 q="" a k first=1 n out=0 end=0 pend=0 u cwdchk=0 pass=0 v ch dash amb args alld=0
+    local -a dests=() pos=()
     shift
     [ "$c" = unzip ] && x=1
+    case "$c" in
+        tar) args=fCTXbI; amb=HKNVgFLs ;;
+        gtar) args=fCTXbIHKNVgFL; amb="" ;;
+        bsdtar) args=fCTXbIs; amb="" ;;
+        unzip) args=dPOI; amb="" ;;
+        cpio) args=FEHIODRMC; amb="" ;;
+    esac
     for a in "$@"; do
-        if [ -n "$nx" ]; then dests+=("$a"); nx=""; continue; fi
-        [ "$multi" = 1 ] && later+=("$a")
-        case "$c" in
-            tar|gtar|bsdtar)
-                case "$a" in
-                    --extract|--get) x=1 ;;
-                    --to-stdout) out=1 ;;
-                    --directory=*) dests+=("${a#*=}") ;;
-                    --directory) nx=d ;;
-                    --*) ;;
-                    -C) nx=d ;;
-                    -C?*) dests+=("${a#-C}") ;;
-                    -*) case "$a" in *x*) x=1 ;; esac
-                        case "$a" in *O*) out=1 ;; esac
-                        case "$a" in *C*) multi=1 ;; esac ;;
-                    *) if [ "$first" = 1 ]; then
-                           case "$a" in *x*) x=1 ;; esac
-                           case "$a" in *O*) out=1 ;; esac
-                           case "$a" in *C*) multi=1 ;; esac
-                       fi ;;
-                esac ;;
-            unzip)
-                case "$a" in
-                    -d) nx=d ;;
-                    -d?*) dests+=("${a#-d}") ;;
-                    --*) ;;
-                    -*) case "$a" in *[ltvZpc]*) x=0 ;; esac
-                        case "$a" in *d) nx=d ;; esac ;;
-                esac ;;
-            cpio)
-                case "$a" in
-                    --extract) x=1 ;;
-                    --directory=*) dests+=("${a#*=}") ;;
-                    --directory|-D) nx=d ;;
-                    -D?*) dests+=("${a#-D}") ;;
-                    --*) ;;
-                    -*) case "$a" in *i*) x=1 ;; esac ;;
-                esac ;;
+        [ "$alld" = 1 ] && dests+=("$a")
+        # The operand of the option before it: never a flag.
+        if [ -n "$q" ]; then
+            ch="${q:0:1}"; q="${q:1}"
+            case "$c:$ch" in *tar:C|cpio:D|unzip:d) dests+=("$a"); continue ;; esac
+            # A destination option as another option's operand: the readings
+            # diverge from here, so judge the cwd and every later word.
+            case "$c:$a" in
+                *tar:--dir*=*|cpio:--dir*=*) cwdchk=1; alld=1; dests+=("${a#*=}") ;;
+                *tar:-C?*|cpio:-D?*|unzip:-d?*) cwdchk=1; alld=1; dests+=("${a#-?}") ;;
+                *tar:-C|*tar:--dir*|cpio:-D|cpio:--dir*|unzip:-d) cwdchk=1; alld=1 ;;
+            esac
+            continue
+        fi
+        u=$pend; pend=0
+        if [ "$end" = 1 ]; then pos+=("$a"); continue; fi
+        case "$a" in -[CDd]*|--dir*) [ "$u" = 1 ] && cwdchk=1 ;; esac
+        dash=1
+        case "$c:$a" in
+            *:--) end=1; continue ;;
+            *tar:--extract|*tar:--ext|*tar:--extr*|*tar:--get|cpio:--extract|cpio:--ext|cpio:--extr*) x=1; continue ;;
+            cpio:--pass-through|cpio:--pass*) x=1; pass=1; continue ;;
+            *tar:--to-stdout|cpio:--to-stdout) [ "$u" = 1 ] || out=1; continue ;;
+            *tar:--directory=*|*tar:--dir*=*|cpio:--directory=*|cpio:--dir*=*) dests+=("${a#*=}"); continue ;;
+            *tar:--dir*) q=C; continue ;;
+            cpio:--dir*) q=D; continue ;;
+            *:--*=*) continue ;;
+            *tar:--file|*tar:--fil|*tar:--files*|*tar:--exclude|*tar:--exclude-from|*tar:--exclude-tag*|*tar:--exclude-ignore*|*tar:--blocking-factor|*tar:--format|*tar:--starting-file|*tar:--newer*|*tar:--after-date|*tar:--label|*tar:--listed-incremental|*tar:--info-script|*tar:--new-volume-script|*tar:--tape-length|*tar:--use-compress-program|*tar:--transform|*tar:--xform|*tar:--owner*|*tar:--group*|*tar:--mode|*tar:--mtime|*tar:--suffix|*tar:--to-command|*tar:--rsh-command|*tar:--rmt-command|*tar:--volno-file|*tar:--record-size|*tar:--strip-components|*tar:--warning|*tar:--hole-detection|*tar:--sort|*tar:--quoting-style|*tar:--index-file|*tar:--pax-option|*tar:--level|*tar:--add-file|*tar:--checkpoint-action|*tar:--quote-chars|*tar:--no-quote-chars|*tar:--options|*tar:--include|*tar:--uid|*tar:--gid|*tar:--uname|*tar:--gname)
+                q=a; continue ;;
+            cpio:--file|cpio:--pattern-file|cpio:--format|cpio:--owner|cpio:--message|cpio:--io-size|cpio:--rsh-command|cpio:--block-size)
+                q=a; continue ;;
+            # Common long flags that take no operand.
+            *:--no-*|*:--verbose|*:--gzip|*:--gunzip|*:--bzip2|*:--xz|*:--lzma|*:--lzip|*:--lzop|*:--zstd|*:--auto-compress|*:--overwrite*|*:--keep-old-files|*:--skip-old-files|*:--keep-newer-files|*:--keep-directory-symlink|*:--unlink-first|*:--recursive-unlink|*:--same-owner|*:--same-permissions|*:--preserve-permissions|*:--numeric-owner|*:--wildcards|*:--anchored|*:--ignore-case|*:--totals|*:--touch|*:--sparse|*:--dereference|*:--ignore-zeros|*:--null|*:--absolute-names|*:--exclude-vcs*|*:--exclude-caches*|*:--exclude-backups|*:--show-transformed-names|*:--delay-directory-restore|*:--make-directories|*:--preserve-modification-time|*:--unconditional|*:--list|*:--create|*:--quiet|*:--selinux|*:--acls|*:--xattrs) continue ;;
+            # An unknown long option may take the next word.
+            *:--*) pend=1; continue ;;
+            *:-?*) v="${a#-}" ;;
+            *tar:*) [ "$first" = 1 ] || { first=0; continue; }
+                    v="$a"; dash=0 ;;
+            cpio:*) pos+=("$a"); first=0; continue ;;
+            *) first=0; continue ;;
         esac
         first=0
+        while [ -n "$v" ]; do
+            ch="${v:0:1}"; v="${v:1}"
+            case "$c:$ch" in
+                *tar:x|cpio:i) x=1; continue ;;
+                cpio:p) x=1; pass=1; continue ;;
+                *tar:O) [ "$u" = 1 ] || out=1; continue ;;
+                unzip:[ltvZpcz]) [ "$u" = 1 ] || x=0; continue ;;
+            esac
+            case "$args" in
+                *"$ch"*)
+                    if [ "$dash" = 1 ] && [ -n "$v" ]; then
+                        case "$c:$ch" in *tar:C|cpio:D|unzip:d) dests+=("$v") ;; esac
+                        v=""
+                    else
+                        q="$q$ch"
+                        [ "$dash" = 1 ] && v=""
+                    fi
+                    continue ;;
+            esac
+            case "$amb" in *"$ch"*) u=1; pend=1 ;; esac
+        done
     done
     # -O / --to-stdout extracts to stdout, not to disk.
     [ "$x" = 1 ] && [ "$out" = 0 ] || return 0
-    # A bundled C (tar -xfC a.tar dir) takes a later word: judge every one.
-    dests+=(${later[@]+"${later[@]}"})
+    # cpio -p copies into its directory operand.
+    [ "$pass" = 1 ] && dests+=(${pos[@]+"${pos[@]}"})
     n=${#dests[@]}
-    if [ "$n" = 0 ]; then
+    if [ "$n" = 0 ] || [ "$cwdchk" = 1 ]; then
         [ "$CD_HOME" = 1 ] && deny "$c extracts into the cwd after a cd into HOME or ~/.himmel"
         [ "$CD_UNK" = 1 ] && deny "$c extracts into the cwd after a cd whose target cannot be resolved (it may be HOME or ~/.himmel); name the destination with -C/-d"
         if [ "$CD_SEEN" = 0 ]; then
@@ -1098,7 +1152,7 @@ check_extract() {
                 LIFT|STATE|HIMMEL|HOME) deny "$c extracts into the cwd ($CWD), which is HOME or ~/.himmel" ;;
             esac
         fi
-        return 0
+        [ "$n" = 0 ] && return 0
     fi
     for a in "${dests[@]}"; do
         case "$a" in
@@ -1113,6 +1167,7 @@ check_extract() {
                fi ;;
         esac
         if [ "$CD_SEEN" = 0 ]; then k=$(HAS_CD=0 lift_ref "$a"); else k=$(lift_ref "$a"); fi
+        [ "$k" = NONE ] && k=$(_cd_ref "$a")
         case "$k" in
             LIFT|STATE|HIMMEL|HOME) deny "$c extracts into $a (HOME, ~/.himmel or its state dir), where a member can be the bank lift" ;;
         esac
