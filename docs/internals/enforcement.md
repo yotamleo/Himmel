@@ -2304,6 +2304,12 @@ HIMMEL-4458 closed these gaps:
   `cd`/`pushd` target: `cd ~/projects && tar -xf x.tar -C ..` is HOME and
   denies; `cd /tmp/w && tar ... -C ..` does not. After an unresolvable cd a
   relative destination containing `..` denies too.
+- **A cd counts only when joined by `&&`.** A cd may fail and leave the old
+  cwd (which may be HOME), so only `cd X && …` moves the cwd to `X`. After a
+  cd followed by `;`, a newline, `&`, `|` or `||` the cwd is unknown: an
+  extraction with no `-C`/`-d` destination denies (`cd /nonexistent; tar -xf
+  x.tar`), as after an unresolvable cd; an explicit absolute destination is
+  judged as usual.
 - **Chained tar `-C`.** tar applies each `-C`/`--directory` relative to the one
   before it, so a relative one is judged as the composed path:
   `tar -xf x -C "$HOME/projects" -C ..` is HOME and denies (also bundled,

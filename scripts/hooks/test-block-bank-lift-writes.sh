@@ -766,6 +766,22 @@ row "4458 tar --keep-dir (prefix)"            deny  "tar -xf /tmp/x.tar --keep-d
 row "4458 tar --keep-d (prefix)"              deny  "tar -x --keep-d -f /tmp/x.tar -C /var/out"
 row "4458 tar -t --keep-directory-symlink (list, ctrl)" allow "tar -tf /tmp/x.tar --keep-directory-symlink"
 row "4458 tar --keep-old-files (ctrl)"        allow "tar -xf /tmp/x.tar --keep-old-files -C /var/out"
+# Panel r5 codex-1: only a cd joined by && moves the cwd; after ; newline & ||
+# the cd may have failed, so the cwd is unknown (the old one may be HOME).
+# (/var/w stands in for the panel's /tmp: /tmp is an ancestor of this suite's HOME.)
+row "4458 tar -xf, cwd HOME"                  deny  "tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X; tar -xf (cd may fail)"        deny  "cd /nonexistent; tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X || tar -xf"                    deny  "cd /nonexistent || tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X; unzip"                        deny  "cd /nonexistent; unzip /tmp/x.zip" "$HOME"
+row "4458 cd X <newline> tar -xf"             deny  "cd /var/w
+tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X & tar -xf"                     deny  "cd /var/w & tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X && cd Y; tar -xf"              deny  "cd /var/w && cd /var/v; tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X | tar -xf"                     deny  "cd /var/w | tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X && tar -xf (ctrl)"             allow "cd /var/w && tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X && cd Y && tar -xf (ctrl)"     allow "cd /var/w && cd /var/v && tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd X; tar -xf -C abs (ctrl)"        allow "cd /tmp; tar -xf /tmp/x.tar -C /tmp/out" "$HOME"
+row "4458 cd X; unzip -d abs (ctrl)"          allow "cd /var/w; unzip /tmp/x.zip -d /var/out" "$HOME"
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"

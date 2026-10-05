@@ -411,6 +411,8 @@ END {
             if (substr(s, i + 1, 1) == ">") i++
             continue
         }
+        # && ends a clause whose cd (if any) runs the next only on success.
+        if (c == "&" && c2 == "&" && !STRICT) { emit_mark(SB "A"); flush(); i++; continue }
         if (c == ";" || c == "&" || c == "|" || c == "(") { flush(); continue }
         if (c == ">") {
             if (!quoted && tok ~ /^([0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$/) tok = ""
@@ -967,7 +969,7 @@ analyse() {
     case "$low" in *bank*lift*|*lift*bank*) TEXT_MENTION=1 ;; esac
     [[ "$low" =~ $MENTION_NEAR_RE ]] && TEXT_MENTION=1
     case "$low" in *xargs*) HAS_XARGS=1 ;; esac
-    local stdin_shell=0 bodies=""
+    local stdin_shell=0 bodies="" CL_AND=0
     local CUR_BODIES=""
     while IFS= read -r line; do
         case "$line" in $'\002B\037'*) CUR_BODIES="$CUR_BODIES${line#$'\002B\037'}"$'\n' ;; esac
@@ -986,6 +988,7 @@ EOF
         local -a tk=() args=()
         IFS=$'\037' read -r -a tk <<<"$line"
         local i=0 t nt=${#tk[@]} fed=0
+        CL_AND=0
         # Redirect targets; build args without them.
         while [ "$i" -lt "$nt" ]; do
             t="${tk[$i]//$'\036'/$'\n'}"
@@ -994,6 +997,7 @@ EOF
                     i=$((i+1)); t="${tk[$i]:-}"
                     if [ -n "$t" ] && is_lift "$t"; then deny "a redirect writes the bank lift ($t)"; fi
                     ;;
+                $'\002A') CL_AND=1 ;;
                 $'\002R')
                     i=$((i+1)); fed=1
                     t="${tk[$i]:-}"
@@ -1023,7 +1027,8 @@ EOF
 # _note_cd <cd|pushd|popd> <args...>: a bare cd, or a target resolving to
 # HOME, ~/.himmel or its state dir, sets CD_HOME. `-`, popd, a stack index, a
 # computed target ($d; $HOME spellings do resolve), or a relative target after
-# an earlier cd set CD_UNK. Both stick for the rest of the command. CD_DIR is
+# an earlier cd set CD_UNK, as does any cd not joined to the next clause by
+# && (it may have failed; check_clause). Both stick for the rest of the command. CD_DIR is
 # the last resolved target ("" when unresolved), which a relative operand of a
 # later clause is also judged against (_cd_ref).
 # shellcheck disable=SC2016  # literal $HOME spellings are matched as text
@@ -1214,7 +1219,7 @@ check_extract() {
     n=${#dests[@]}
     if [ "$n" = 0 ] || [ "$cwdchk" = 1 ]; then
         [ "$CD_HOME" = 1 ] && deny "$c extracts into the cwd after a cd into HOME or ~/.himmel"
-        [ "$CD_UNK" = 1 ] && deny "$c extracts into the cwd after a cd whose target cannot be resolved (it may be HOME or ~/.himmel); name the destination with -C/-d"
+        [ "$CD_UNK" = 1 ] && deny "$c extracts into the cwd after a cd whose target cannot be resolved, or that may have failed (only \`cd X && ...\` moves the cwd), so the cwd may be HOME or ~/.himmel; name the destination with -C/-d"
         if [ "$CD_SEEN" = 0 ]; then
             case "$(lift_ref "$CWD")" in
                 LIFT|STATE|HIMMEL|HOME) deny "$c extracts into the cwd ($CWD), which is HOME or ~/.himmel" ;;
@@ -1525,7 +1530,9 @@ check_clause() {
         *)
             case "$cmd" in
                 tar|gtar|bsdtar|unzip|cpio) check_extract "$cmd" "$@" ;;
-                cd|pushd|popd) _note_cd "$cmd" "$@" ;;
+                # Only a cd joined to the next clause by && is known to have
+                # moved the cwd; after ; newline & | || it may have failed.
+                cd|pushd|popd) _note_cd "$cmd" "$@"; [ "$CL_AND" = 1 ] || CD_UNK=1 ;;
             esac
             if [[ "$cmd" =~ $MENTION_RE ]]; then
                 for a in "$@"; do
