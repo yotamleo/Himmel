@@ -1056,14 +1056,39 @@ _cd_ref() {
     fi
 }
 
+# _tar_dest <dir>: record a tar -C/--directory destination. tar applies each
+# -C relative to the one before it, so a relative dir is judged as the composed
+# path (`-C ~/projects -C ..` is HOME); a chain through a computed dir fails
+# closed. Uses check_extract's dests/cprev.
+# shellcheck disable=SC2016  # literal $HOME spellings are matched as text
+_tar_dest() {
+    local d="$1"
+    case "$d" in
+        /*|'~'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) ;;
+        *) if [ -n "$cprev" ]; then
+               case "$cprev" in
+                   /*|'~'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) ;;
+                   *'$'*|*'`'*) deny "$c resolves -C $d against a computed -C ($cprev), which may be HOME or ~/.himmel; name an absolute destination" ;;
+               esac
+               d="$cprev/$d"
+           fi ;;
+    esac
+    cprev="$d"
+    dests+=("$d")
+}
+
 # check_extract <tar|gtar|bsdtar|unzip|cpio> <args...>
 # An option's operand is consumed, never read as a flag (`tar -xf -O` names
 # the archive -O; it is not --to-stdout). Letters whose arity differs between
 # GNU tar and bsdtar are not consumed, but the word after them is never
 # trusted as a stdout flag, and a destination option there also keeps the cwd
 # check (it may be an operand).
+# A relative tar -C/--directory resolves against the -C before it (_tar_dest);
+# kept absolute (or ../) member names (-P, --absolute-names/-paths, unzip -:,
+# cpio copy-in without --no-absolute-filenames) deny whatever the destination.
 check_extract() {
     local c="$1" x=0 q="" a k first=1 n out=0 end=0 pend=0 u cwdchk=0 pass=0 v ch dash amb args alld=0
+    local abs=0 noabs=0 lst=0 cprev=""
     local -a dests=() pos=()
     shift
     [ "$c" = unzip ] && x=1
@@ -1079,7 +1104,7 @@ check_extract() {
         # The operand of the option before it: never a flag.
         if [ -n "$q" ]; then
             ch="${q:0:1}"; q="${q:1}"
-            case "$c:$ch" in *tar:C|cpio:D|unzip:d) dests+=("$a"); continue ;; esac
+            case "$c:$ch" in *tar:C) _tar_dest "$a"; continue ;; cpio:D|unzip:d) dests+=("$a"); continue ;; esac
             # A destination option as another option's operand: the readings
             # diverge from here, so judge the cwd and every later word.
             case "$c:$a" in
@@ -1098,7 +1123,12 @@ check_extract() {
             *tar:--extract|*tar:--ext|*tar:--extr*|*tar:--get|cpio:--extract|cpio:--ext|cpio:--extr*) x=1; continue ;;
             cpio:--pass-through|cpio:--pass*) x=1; pass=1; continue ;;
             *tar:--to-stdout|cpio:--to-stdout) [ "$u" = 1 ] || out=1; continue ;;
-            *tar:--directory=*|*tar:--dir*=*|cpio:--directory=*|cpio:--dir*=*) dests+=("${a#*=}"); continue ;;
+            *tar:--directory=*|*tar:--dir*=*) _tar_dest "${a#*=}"; continue ;;
+            cpio:--directory=*|cpio:--dir*=*) dests+=("${a#*=}"); continue ;;
+            *tar:--abs*) abs=1; continue ;;
+            cpio:--abs*) abs=1; continue ;;
+            cpio:--no-abs*) noabs=1; continue ;;
+            cpio:--list) lst=1; continue ;;
             *tar:--dir*) q=C; continue ;;
             cpio:--dir*) q=D; continue ;;
             *:--*=*) continue ;;
@@ -1107,7 +1137,7 @@ check_extract() {
             cpio:--file|cpio:--pattern-file|cpio:--format|cpio:--owner|cpio:--message|cpio:--io-size|cpio:--rsh-command|cpio:--block-size)
                 q=a; continue ;;
             # Common long flags that take no operand.
-            *:--no-*|*:--verbose|*:--gzip|*:--gunzip|*:--bzip2|*:--xz|*:--lzma|*:--lzip|*:--lzop|*:--zstd|*:--auto-compress|*:--overwrite*|*:--keep-old-files|*:--skip-old-files|*:--keep-newer-files|*:--keep-directory-symlink|*:--unlink-first|*:--recursive-unlink|*:--same-owner|*:--same-permissions|*:--preserve-permissions|*:--numeric-owner|*:--wildcards|*:--anchored|*:--ignore-case|*:--totals|*:--touch|*:--sparse|*:--dereference|*:--ignore-zeros|*:--null|*:--absolute-names|*:--exclude-vcs*|*:--exclude-caches*|*:--exclude-backups|*:--show-transformed-names|*:--delay-directory-restore|*:--make-directories|*:--preserve-modification-time|*:--unconditional|*:--list|*:--create|*:--quiet|*:--selinux|*:--acls|*:--xattrs) continue ;;
+            *:--no-*|*:--verbose|*:--gzip|*:--gunzip|*:--bzip2|*:--xz|*:--lzma|*:--lzip|*:--lzop|*:--zstd|*:--auto-compress|*:--overwrite*|*:--keep-old-files|*:--skip-old-files|*:--keep-newer-files|*:--keep-directory-symlink|*:--unlink-first|*:--recursive-unlink|*:--same-owner|*:--same-permissions|*:--preserve-permissions|*:--numeric-owner|*:--wildcards|*:--anchored|*:--ignore-case|*:--totals|*:--touch|*:--sparse|*:--dereference|*:--ignore-zeros|*:--null|*:--exclude-vcs*|*:--exclude-caches*|*:--exclude-backups|*:--show-transformed-names|*:--delay-directory-restore|*:--make-directories|*:--preserve-modification-time|*:--unconditional|*:--list|*:--create|*:--quiet|*:--selinux|*:--acls|*:--xattrs) continue ;;
             # An unknown long option may take the next word.
             *:--*) pend=1; continue ;;
             *:-?*) v="${a#-}" ;;
@@ -1123,12 +1153,14 @@ check_extract() {
                 *tar:x|cpio:i) x=1; continue ;;
                 cpio:p) x=1; pass=1; continue ;;
                 *tar:O) [ "$u" = 1 ] || out=1; continue ;;
+                *tar:P|unzip:[:]) abs=1; continue ;;
+                cpio:t) lst=1; continue ;;
                 unzip:[ltvZpcz]) [ "$u" = 1 ] || x=0; continue ;;
             esac
             case "$args" in
                 *"$ch"*)
                     if [ "$dash" = 1 ] && [ -n "$v" ]; then
-                        case "$c:$ch" in *tar:C|cpio:D|unzip:d) dests+=("$v") ;; esac
+                        case "$c:$ch" in *tar:C) _tar_dest "$v" ;; cpio:D|unzip:d) dests+=("$v") ;; esac
                         v=""
                     else
                         q="$q$ch"
@@ -1139,8 +1171,12 @@ check_extract() {
             case "$amb" in *"$ch"*) u=1; pend=1 ;; esac
         done
     done
-    # -O / --to-stdout extracts to stdout, not to disk.
+    # -O / --to-stdout extracts to stdout, not to disk; cpio -t lists.
+    [ "$lst" = 1 ] && x=0
     [ "$x" = 1 ] && [ "$out" = 0 ] || return 0
+    # GNU cpio keeps absolute member names by default (copy-in only).
+    [ "$c" = cpio ] && [ "$pass" = 0 ] && [ "$noabs" = 0 ] && abs=1
+    [ "$abs" = 1 ] && deny "$c keeps absolute (or ../) member names, so a member can land on the bank lift whatever the destination; drop -P/--absolute-names/--absolute-paths/-: (cpio: add --no-absolute-filenames)"
     # cpio -p copies into its directory operand.
     [ "$pass" = 1 ] && dests+=(${pos[@]+"${pos[@]}"})
     n=${#dests[@]}
@@ -1158,9 +1194,11 @@ check_extract() {
         case "$a" in
             /*|'~'*|'$'*) ;;
             *) [ "$CD_HOME" = 1 ] && deny "$c extracts into a relative dir ($a) after a cd into HOME or ~/.himmel"
-               # After an unresolved cd, `.` or a .himmel-named first part may be HOME's.
+               # After an unresolved cd, `.`, a `..` or a .himmel-named first
+               # part may be HOME's.
                if [ "$CD_UNK" = 1 ]; then
                    k="${a#./}"; k="${k%%/*}"
+                   case "/$a/" in */../*) k=. ;; esac
                    if [ -z "$k" ] || [ "$k" = . ] || _name_matches "$k" .himmel; then
                        deny "$c extracts into $a after a cd whose target cannot be resolved (it may be HOME or ~/.himmel)"
                    fi

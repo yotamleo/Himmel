@@ -2298,7 +2298,24 @@ HIMMEL-4458 closed these gaps:
   or of `cp`/`mv`/`install`/`rsync`/`ln` (destination, `--parents` path, link
   source, missing-ancestor check), is also judged against the last resolved
   `cd`/`pushd` target: `cd ~/projects && tar -xf x.tar -C ..` is HOME and
-  denies; `cd /tmp/w && tar ... -C ..` does not.
+  denies; `cd /tmp/w && tar ... -C ..` does not. After an unresolvable cd a
+  relative destination containing `..` denies too.
+- **Chained tar `-C`.** tar applies each `-C`/`--directory` relative to the one
+  before it, so a relative one is judged as the composed path:
+  `tar -xf x -C "$HOME/projects" -C ..` is HOME and denies (also bundled,
+  attached and `--directory=` spellings, and a relative first `-C` against the
+  cwd or cd target). A relative `-C` after a computed one (`-C "$d" -C ..`)
+  fails closed. unzip `-d` and cpio `-D` are last-one-wins and need no chain.
+- **Absolute member names.** An extraction that keeps absolute (or `../`)
+  member names writes wherever a member names, whatever the destination, so it
+  denies: tar/gtar/bsdtar `-P` (bundled or old-style too), `--absolute-names`,
+  `--absolute-paths`; `unzip -:`; `cpio -i`/`--extract` unless
+  `--no-absolute-filenames` is given, since GNU cpio keeps absolute names by
+  default. Listing (`-t`, cpio `--list`), stdout extraction and creation stay
+  allowed. Residuals: `pax`, `7z x` and `bsdcpio` are not in the extractor
+  list; symlink-member traversal (a member symlink then a member written through
+  it) relies on GNU tar's and bsdtar's default protections, which `-P` is what
+  disables; `cpio -p` is judged only by its directory operand.
 - **Linear scan.** The per-word lowercase fork in the name rule and the
   per-clause basename forks are gone, so a 20k-word command takes well under a
   second instead of a minute (the hook timed out on ~10k words).
