@@ -596,6 +596,48 @@ out="$(run_is "$range")"
 if ! grepq "$out" "^${LSP}\$"; then pass "a dist/ file does not select launch-site-profiles"; else fail "launch-site veto (dist) missed: $out"; fi
 if grepq "$out" "^${PCR}\$"; then pass "a dist/ file still selects pr-check-run"; else fail "pr-check-run lost dist/ file: $out"; fi
 
+# --- 33. HIMMEL-4488: a changed .claude/commands/*.html selects the CR
+# terminology suite (RED control: the .md row alone missed it). ----------------
+TERM=scripts/ci/test-check-cr-terminology\\.sh
+mkf scripts/ci/test-check-cr-terminology.sh 'echo term'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: terminology fixture"
+mkdir -p "$FX/.claude/commands"
+change .claude/commands/x.html
+out="$(run_is "$range")"
+if grepq "$out" "^${TERM}\$"; then pass "a .claude/commands/x.html -> test-check-cr-terminology.sh"; else fail "commands html row missed: $out"; fi
+
+# --- 34. HIMMEL-4453: a change to the CR guarded closure selects
+# test-cr-guarded-closure.sh (#1851: leg-jira-status.sh, reached from the
+# guarded scripts/lanes/leg-pr-open.sh, was added without selecting it). --------
+GC=scripts/cr/test-cr-guarded-closure\\.sh
+mkf scripts/cr/test-cr-guarded-closure.sh 'echo gc'
+mkf scripts/cr/pr-check-context.sh 'cr_guarded="scripts/cr scripts/lib
+scripts/lanes/leg-pr-open.sh"'
+mkf scripts/lanes/leg-pr-open.sh 'bash "$d/../handover/console-kit/leg-jira-status.sh"'
+mkf scripts/lanes/unrelated.sh 'echo unrelated'
+mkf scripts/handover/console-kit/leg-jira-status.sh 'echo jira'
+mkf scripts/handover/console-kit/tracker.py 'print(1)'
+mkf scripts/cr/test-names-tracker.sh 'grep -q tracker.py x'
+mkf .agents/skills/pr-check/SKILL.md 'runbook'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: guarded-closure fixtures"
+change scripts/lanes/leg-pr-open.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "a guarded file (leg-pr-open.sh) -> test-cr-guarded-closure.sh"; else fail "guarded file missed: $out"; fi
+change scripts/handover/console-kit/leg-jira-status.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "the #1851 shape: an unguarded file a guarded file names -> test-cr-guarded-closure.sh"; else fail "#1851 shape missed: $out"; fi
+change .agents/skills/pr-check/SKILL.md
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "the runbook twin -> test-cr-guarded-closure.sh"; else fail "runbook seed missed: $out"; fi
+change scripts/handover/console-kit/tracker.py
+out="$(run_is "$range")"
+if ! grepq "$out" "^${GC}\$"; then pass "tracker.py (named only by a guarded test, reached by no guarded file) does not select the closure suite"; else fail "closure row over-selected tracker.py: $out"; fi
+change scripts/lanes/unrelated.sh
+out="$(run_is "$range")"
+if ! grepq "$out" "^${GC}\$"; then pass "an unreferenced scripts/lanes file does not select the closure suite"; else fail "closure row over-selected scripts/lanes: $out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"
