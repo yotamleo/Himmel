@@ -57,6 +57,12 @@ _t_touch_at() { touch -d "@$1" "$2" 2>/dev/null || TZ=UTC touch -t "$(_t_date_at
 TMPDIR_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
+# HIMMEL-4420: queue-lock.sh now loads .env HANDOVER_DIR when the env lacks it.
+# Pin an empty .env so the cases that unset HANDOVER_DIR stay hermetic against
+# the operator's real one.
+mkdir -p "$TMPDIR_ROOT/dotenv-cache"; : > "$TMPDIR_ROOT/dotenv-cache/.env"
+export HIMMELCTL_CACHE_DIR="$TMPDIR_ROOT/dotenv-cache"
+
 HANDOVER_DIR="$TMPDIR_ROOT/handovers"
 mkdir -p "$HANDOVER_DIR"
 export HANDOVER_DIR
