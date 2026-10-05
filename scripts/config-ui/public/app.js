@@ -1,5 +1,6 @@
 // HIMMEL-4254 P3/P4: thin DOM glue. All markup comes from render.js.
 import { render, renderNav, renderHeader } from "/render.js";
+import { renderHealth } from "/health.js";
 
 const $ = (s) => document.querySelector(s);
 const state = { open: new Set(), bundles: {}, filt: { health: null, kind: null, q: "", problems: false }, plans: {} };
@@ -14,7 +15,13 @@ if (m) history.replaceState(null, "", location.pathname + location.search + "#/c
 
 // Pages: one entry each (id = the `#/<id>` route). `regions` keeps the Config
 // region nav and its 1/2/3 keys on that page only.
-const PAGES = [{ id: "config", label: "Config", regions: true, render: (f) => render(f, state) }];
+// Health renders without a feed (D2): its bank and legs cards do not wait for the doctor report.
+let health = null; // GET /api/health, null while loading
+let healthGen = 0; // declared before route() runs: a reload at #/health calls loadHealth() from it
+const PAGES = [
+  { id: "config", label: "Config", regions: true, render: (f) => render(f, state) },
+  { id: "health", label: "Health", needsFeed: false, render: (f) => renderHealth(f, health), onVisit: () => { if (!health) loadHealth(); } },
+];
 let currentPage = PAGES[0];
 
 function route() {
@@ -22,7 +29,8 @@ function route() {
   currentPage = PAGES.find((p) => p.id === id) || PAGES[0];
   if (id !== currentPage.id) history.replaceState(null, "", location.pathname + location.search + "#/" + currentPage.id);
   $("#pages").innerHTML = PAGES.map((p) => `<a href="#/${p.id}"${p === currentPage ? ' aria-current="page"' : ""}>${p.label}</a>`).join("");
-  if (feed) paint();
+  if (currentPage.onVisit) currentPage.onVisit();
+  if (feed || currentPage.needsFeed === false) paint();
 }
 addEventListener("hashchange", route);
 route();
@@ -32,13 +40,16 @@ function paint() {
   const focusK = document.activeElement && document.activeElement.matches && document.activeElement.matches(".row-head") ? document.activeElement.dataset.k : null;
   const focusB = document.activeElement && document.activeElement.matches && document.activeElement.matches(".bhead") ? document.activeElement.dataset.b : null;
   $("#main").innerHTML = currentPage.render(feed);
-  $("#nav").innerHTML = currentPage.regions ? renderNav(feed, current) : "";
+  $("#nav").innerHTML = currentPage.regions && feed ? renderNav(feed, current) : "";
   $("#top").innerHTML = renderHeader(feed);
-  $("#where").textContent = `${location.host} · ${feed.target ? feed.target.scope : "?"} scope`;
+  $("#where").textContent = `${location.host} · ${feed && feed.target ? feed.target.scope : "?"} scope`;
   if (focusK !== null) { for (const h of document.querySelectorAll(".row-head")) if (h.dataset.k === focusK) { h.focus(); break; } }
   if (focusB !== null) { for (const h of document.querySelectorAll(".bhead")) if (h.dataset.b === focusB) { h.focus(); break; } }
   if (keep !== null) { const q = $("#q"); q.focus(); q.setSelectionRange(keep, keep); }
 }
+
+// #status lives in main and a page paint replaces it; fall back to the toast.
+function setStatus(t) { const el = $("#status"); if (el) el.textContent = t; else toast(t); }
 
 function toast(t) {
   const el = $("#toast");
@@ -79,6 +90,21 @@ async function loadFeed() {
   } catch (_) { if (gen === feedGen) toast("re-probe failed: server unreachable"); }
 }
 
+// Only the newest call may paint, as with the feed.
+async function loadHealth() {
+  const gen = ++healthGen;
+  let j;
+  try {
+    const r = await fetch("/api/health", { headers: { "X-Himmel-Token": token } });
+    j = r.ok ? await r.json() : null;
+    if (!j) toast(`health sources failed (${r.status})`);
+  } catch (_) { j = null; toast("health sources: server unreachable"); }
+  if (gen !== healthGen) return;
+  const gone = { state: "error", reason: "health endpoint unreachable" };
+  health = j || { bank: gone, legs: gone, monitoring: { state: "error", reason: "health endpoint unreachable" } };
+  if (currentPage.needsFeed === false) paint();
+}
+
 // Two-step write: the dry-run binds a preview id; only confirm runs it.
 async function preview(b) {
   const k = b.dataset.k;
@@ -117,7 +143,14 @@ function go(id) {
 
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-act],[data-go],[data-f]");
-  if (!b || !feed) return;
+  if (!b) return;
+  if (b.dataset.act === "refresh-health") { loadHealth(); return void loadFeed(); } // the verdict reads the doctor feed too
+  if (b.dataset.act === "open-config") {
+    state.filt = { health: null, kind: null, q: b.dataset.id, problems: false };
+    location.hash = "#/config";
+    return;
+  }
+  if (!feed) return;
   if (b.dataset.go) return go(b.dataset.go);
   if (b.dataset.f) { state.filt[b.dataset.f] = state.filt[b.dataset.f] === b.dataset.v ? null : b.dataset.v; return paint(); }
   if (b.dataset.act === "copy") {
@@ -165,15 +198,15 @@ document.addEventListener("keydown", (e) => {
 
 (async () => {
   try {
-    const r = await fetchFeed((s) => { $("#status").textContent = `probing the station… ${s}s (the first report can take a couple of minutes)`; });
-    if (r.status === 401) { $("#status").textContent = "Not authorised: open the URL printed by `himmelctl ui` (it carries the session token)."; return; }
+    const r = await fetchFeed((s) => { setStatus(`probing the station… ${s}s (the first report can take a couple of minutes)`); });
+    if (r.status === 401) { setStatus("Not authorised: open the URL printed by `himmelctl ui` (it carries the session token)."); return; }
     if (!r.ok) {
       let why = "";
       try { why = (await r.json()).reason || ""; } catch (_) { /* status only */ }
-      $("#status").textContent = `Feed failed (${r.status})${why ? ": " + why : ""}. Reload to retry.`;
+      setStatus(`Feed failed (${r.status})${why ? ": " + why : ""}. Reload to retry.`);
       return;
     }
     feed = await r.json();
     paint();
-  } catch (_) { $("#status").textContent = "Server unreachable (it exits after 30 min idle)."; }
+  } catch (_) { setStatus("Server unreachable (it exits after 30 min idle)."); }
 })();

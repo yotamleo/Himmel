@@ -15,6 +15,7 @@ import { redactDeep, envValues } from "../himmelctl/lib/redact.js";
 import { parseDotEnv } from "../himmelctl/lib/probes.js";
 import { ActionError, buildTable, loadRegistries, resolveAction, type Resolved } from "./actions";
 import { acquireLock, runChild, type Lock } from "./lock";
+import { readBank, readLegs, readMonitoring } from "./health-sources";
 import { appendAudit } from "./audit";
 
 const LOOPBACK = "127.0.0.1";
@@ -40,6 +41,7 @@ const STATIC: Record<string, [string, string]> = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/app.js": ["app.js", "application/javascript; charset=utf-8"],
   "/render.js": ["render.js", "application/javascript; charset=utf-8"],
+  "/health.js": ["health.js", "application/javascript; charset=utf-8"],
   "/app.css": ["app.css", "text/css; charset=utf-8"],
 };
 
@@ -49,6 +51,7 @@ type Env = Record<string, string | undefined>;
 export type ServerOpts = {
   port?: number; token?: string; hostname?: string; env?: Env; onIdle?: () => void;
   root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; feedWaitMs?: number; feedTimeoutMs?: number;
+  legsScript?: string; legsTimeoutMs?: number;
 };
 type Preview = Resolved & { expires: number };
 type Probe = Record<string, { installed: string; health: string }>;
@@ -216,6 +219,15 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       bump(); // HIMMEL-4350: only an authenticated request keeps the server alive
       if (req.method === "GET" && path === "/api/feed") {
         return feedRoute();
+      }
+      if (path === "/api/health") {
+        if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+        const [bank, legs, monitoring] = await Promise.all([
+          Promise.resolve(readBank(env)),
+          readLegs(opts.legsScript ?? join(CHECKOUT, "scripts/config-ui/legs.sh"), env, opts.legsTimeoutMs),
+          readMonitoring(env),
+        ]);
+        return json(redactOut({ bank, legs, monitoring }));
       }
       if (path !== "/api/preview" && path !== "/api/run") return new Response("not found", { status: 404 });
       if (req.method !== "POST") return new Response("method not allowed", { status: 405 });

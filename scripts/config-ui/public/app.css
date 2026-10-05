@@ -89,3 +89,14 @@ h2{font:600 13px var(--mono);letter-spacing:.06em;text-transform:uppercase;margi
   .body{padding-left:4px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+/* HIMMEL-4405 PR-b: Health page. Existing tokens only. */
+.vhead{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.vhead .word{font-size:20px;font-weight:600}
+.vhead .inputs{color:var(--dim)}
+.hrow{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.hrow .id{font-weight:600}.hrow .det{color:var(--dim);min-width:0}.hrow .remedy{background:var(--panel);padding:1px 6px;overflow-wrap:anywhere}
+.alert{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.card{border:1px solid var(--line);background:var(--panel);padding:10px 14px;margin:8px 0;overflow-wrap:anywhere}
+.card h3{margin:0 0 6px;font-size:13px}
+.leg{display:flex;gap:12px;padding:3px 0;overflow-wrap:anywhere}.leg .mk{min-width:76px;font-weight:600}
+.nodata{color:var(--dim);font-style:italic;padding:4px 0}
