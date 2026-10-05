@@ -83,7 +83,14 @@ repos:
         # Plan tooling (specs/plan/<KEY>/tools/) is the same class: ad-hoc
         # launch/render scripts a roadmap console leaves behind; info-level
         # findings there can stall every vault commit.
-        exclude: ^handovers/.*/(specs/(console-kit-[^/]+|reports/[^/]*-artifacts|plan/[^/]+/tools)|verdicts|logs)/
+        #
+        # The fifth stall of this class (an SC2013 info finding in a
+        # specs/wiring-proof/ script) held 191 staged paths for 9 h. Every .sh
+        # under handovers/ is a session artefact (evidence, scratch or a launch
+        # helper), never shipped code, so the exclude covers all of handovers/
+        # instead of growing one subdirectory at a time (HIMMEL-4471; the
+        # vault-stall cadence adds this same exclude if an older vault lacks it).
+        exclude: ^handovers/
 
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1

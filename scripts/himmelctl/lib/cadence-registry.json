@@ -72,6 +72,14 @@
       "description": "daily Google Health connector pull to a review artifact — no claude session; only offered once GOOGLE_HEALTH_REFRESH_TOKEN is configured (docs/luna/google-health-connector-setup.md) (HIMMEL-3068)",
       "requires": "env:GOOGLE_HEALTH_REFRESH_TOKEN",
       "recommended": false
+    },
+    {
+      "id": "vault-stall",
+      "label": "vault auto-commit stall watch",
+      "script": "scripts/luna/vault-stall-cadence.sh",
+      "description": "every 15 min: detect a stalled vault auto-commit, remediate only known-benign pre-commit refusals under handovers/ (shellcheck/check-json exclude, closed-shape gitleaks allowlist), alert on everything else without the secret (HIMMEL-4471)",
+      "requires": "vault",
+      "recommended": false
     }
   ]
 }
