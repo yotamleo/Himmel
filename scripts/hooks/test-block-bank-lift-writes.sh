@@ -315,6 +315,30 @@ row "real dir/.. outside state (control)"  allow "echo x > $T/src/sub/../bank-li
 row "busybox by absolute path sh -c"       deny  "/usr/bin/busybox sh -c 'echo x > $P'"
 row "busybox by relative path sh -c"       deny  "./busybox sh -c 'echo x > $P'"
 
+echo "== review round 2 (codex-1, codex-2) =="
+# sed writes a file with its w/W command (or the s///w flag), no -i needed.
+row "sed w command"                        deny  "sed 'w $P' /tmp/in"
+row "sed -n -e W command"                  deny  "sed -n -e 'W $P' /tmp/in"
+row "sed --expression= s///w flag"         deny  "sed --expression='s/a/b/w $P' /tmp/in"
+row "sed -ne bundle, w after address"      deny  "sed -ne '/x/w $P' /tmp/in"
+row "sed e command naming the lift"        deny  "sed '1e cp /tmp/x ~/.himmel/state/bank-lift.json' /tmp/in"
+row "sed reads the lift (control)"         allow "sed -n p $P"
+row "sed w elsewhere (control)"            allow "sed 'w /tmp/out' $P"
+row "sed -e script, lift is a file (ctrl)" allow "sed -e 's/w/x/' $P"
+# An unquoted heredoc delimiter runs \$( ) and backticks in the body.
+row "cat <<EOF body \$( > lift)"           deny  "cat <<EOF
+{\"a\": \$(printf '{}' > $P)}
+EOF"
+row "cat <<EOF body backtick > lift"       deny  "cat <<EOF
+x \`cp /tmp/x $P\`
+EOF"
+row "cat <<'EOF' body \$( > lift) (quoted)" allow "cat <<'EOF'
+{\"a\": \$(printf '{}' > $P)}
+EOF"
+row "cat <<EOF body names bank-lift (ctrl)" allow "cat <<EOF
+run bank-lift.sh set 10 at \$(date)
+EOF"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. rm rows are the ALLOW control (removing a lift only

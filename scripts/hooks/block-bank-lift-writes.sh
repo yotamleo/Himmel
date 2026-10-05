@@ -288,9 +288,38 @@ function heredocs(   k, body, line, e, del, stripped) {
             if (stripped == del) break
             body = body (body == "" ? "" : "\n") line
         }
+        if (!hdq[k]) subs(body)
         gsub(/\n/, NL, body); print "@B@" US body
     }
     nhd = 0
+}
+# An unquoted-delimiter heredoc body runs its $( ) and backtick commands:
+# print each as "@S@\037<command>" (nesting counted on parens, quotes not).
+function subs(b,   p, L, j, dep, x, inner, e) {
+    L = length(b); p = 1
+    while (p <= L) {
+        x = substr(b, p, 1)
+        if (x == "\\") { p += 2; continue }
+        if (x == "$" && substr(b, p + 1, 1) == "(") {
+            dep = 1; j = p + 2
+            while (j <= L && dep > 0) {
+                x = substr(b, j, 1)
+                if (x == "\\") { j += 2; continue }
+                if (x == "(") dep++; else if (x == ")") dep--
+                j++
+            }
+            inner = dep > 0 ? substr(b, p + 2) : substr(b, p + 2, j - p - 3)
+            gsub(/\n/, NL, inner); print "@S@" US inner
+            p = j; continue
+        }
+        if (x == "`") {
+            e = index(substr(b, p + 1), "`")
+            if (e == 0) { inner = substr(b, p + 1); j = L + 1 } else { inner = substr(b, p + 1, e - 1); j = p + e + 1 }
+            gsub(/\n/, NL, inner); print "@S@" US inner
+            p = j; continue
+        }
+        p++
+    }
 }
 { s = (NR > 1 ? s "\n" : "") $0 }
 END {
@@ -378,14 +407,14 @@ END {
                 emit_tok(); i++
                 if (substr(s, i + 1, 1) == "-") i++
                 while (substr(s, i + 1, 1) == " " || substr(s, i + 1, 1) == "\t") i++
-                del = ""
+                del = ""; dq = 0
                 while (i < n) {
                     x = substr(s, i + 1, 1)
                     if (x ~ /[ \t\n;&|<>()]/) break
-                    if (x != "'" && x != "\"" && x != "\\") del = del x
+                    if (x != "'" && x != "\"" && x != "\\") del = del x; else dq = 1
                     i++
                 }
-                hd[++nhd] = del
+                hd[++nhd] = del; hdq[nhd] = dq
                 continue
             }
             emit_mark("@R@"); continue
@@ -530,6 +559,61 @@ check_copy() {
     return 0
 }
 
+SED_E_RE='(^|[[:space:];{}!/0-9$])e([[:space:]]|$)'
+# check_sed_scripts <sed-args...>: a sed SCRIPT writes with w/W (also the
+# s///w flag) and runs commands with e (also s///e). The script is each -e /
+# --expression value, else the first operand; -f files are not read.
+check_sed_scripts() {
+    local -a scripts=() ops=()
+    local a nx="" have=0 rest ch line p cand low
+    for a in "$@"; do
+        case "$nx" in
+            e) scripts+=("$a"); nx=""; continue ;;
+            skip) nx=""; continue ;;
+        esac
+        case "$a" in
+            --expression=*) scripts+=("${a#*=}"); have=1 ;;
+            --expression) nx=e; have=1 ;;
+            --file=*) have=1 ;;
+            --file) nx=skip; have=1 ;;
+            --line-length) nx=skip ;;
+            --*|-) ;;
+            -*)
+                rest="${a#-}"
+                while [ -n "$rest" ]; do
+                    ch="${rest:0:1}"; rest="${rest:1}"
+                    case "$ch" in
+                        e) have=1; if [ -n "$rest" ]; then scripts+=("$rest"); else nx=e; fi; break ;;
+                        f) have=1; [ -n "$rest" ] || nx=skip; break ;;
+                        l) [ -n "$rest" ] || nx=skip; break ;;
+                        i) break ;;
+                    esac
+                done ;;
+            *) ops+=("$a") ;;
+        esac
+    done
+    [ "$have" = 1 ] || [ "${#ops[@]}" -eq 0 ] || scripts+=("${ops[0]}")
+    for a in ${scripts[@]+"${scripts[@]}"}; do
+        low=$(_lower "$a")
+        if [[ "$low" =~ $LIFT_CODE_RE ]] && [[ "$a" =~ $SED_E_RE ]]; then
+            deny "a sed e command names the bank lift"
+        fi
+        while IFS= read -r line; do
+            p="$line"
+            while [ -n "$p" ]; do
+                case "$p" in *[wW]*) ;; *) break ;; esac
+                p="${p#*[wW]}"
+                cand="${p#"${p%%[![:space:]]*}"}"
+                [ -n "$cand" ] || continue
+                is_lift "$cand" && deny "a sed w/W command writes the bank lift ($cand)"
+            done
+        done <<EOF
+$a
+EOF
+    done
+    return 0
+}
+
 # analyse <command-text> <depth>
 analyse() {
     local text="$1" depth="$2" out line
@@ -555,7 +639,10 @@ EOF
     # Pass 1: clauses.
     while IFS= read -r line; do
         [ -n "$line" ] || continue
-        case "$line" in "@B@"$'\037'*) bodies="$bodies${line#@B@$'\037'}"$'\n'; continue ;; esac
+        case "$line" in
+            "@B@"$'\037'*) bodies="$bodies${line#@B@$'\037'}"$'\n'; continue ;;
+            "@S@"$'\037'*) line="${line#@S@$'\037'}"; analyse "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
+        esac
         local -a tk=() args=()
         IFS=$'\037' read -r -a tk <<<"$line"
         local i=0 t nt=${#tk[@]} fed=0
@@ -824,7 +911,8 @@ check_clause() {
                     case "$a" in -*) continue ;; esac
                     is_lift "$a" && deny "sed -i edits the bank lift ($a)"
                 done
-            fi ;;
+            fi
+            check_sed_scripts "$@" ;;
         dd)
             for a in "$@"; do
                 case "$a" in of=*) is_lift "${a#of=}" && deny "dd of= writes the bank lift (${a#of=})" ;; esac
