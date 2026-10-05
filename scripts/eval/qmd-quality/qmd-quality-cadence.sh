@@ -81,6 +81,13 @@ cmd_run() {
     ts="${QMD_QUALITY_TS:-$(date -u +%Y%m%dT%H%M%SZ)}"
     out="$STATE_DIR/runs/$ts"
     mkdir -p "$out" || return 2
+    # an interrupted run (cron kill, shutdown) must not strand the snapshot either:
+    # the trap covers this run, the sweep covers one killed past any trap.
+    rm -f "$STATE_DIR"/runs/*/index.sqlite
+    SNAPSHOT="$out/index.sqlite"
+    trap 'rm -f "$SNAPSHOT"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
     if [ -n "${QMD_QUALITY_EVAL_CMD:-}" ]; then
         "$QMD_QUALITY_EVAL_CMD" --index "$index" --out "$out" --golden "$golden" --scope golden > "$out/eval.log" 2>&1
     else

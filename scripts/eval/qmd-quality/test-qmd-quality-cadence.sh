@@ -119,6 +119,11 @@ QMD_QUALITY_KEEP_RUNS=2 run_cad 20260108T000001Z
 check "failed runs pruned to 2" 2 "$(n_runs)"
 echo 0 > "$STUB_RC"
 
+# 6b2. a snapshot left by an interrupted run is swept by the next run.
+mkdir -p "$STATE/runs/20260101T000000Z"; : > "$STATE/runs/20260101T000000Z/index.sqlite"
+run_cad 20260108T500001Z
+[ ! -e "$STATE/runs/20260101T000000Z/index.sqlite" ] && pass "stale snapshot swept" || fail "stale snapshot swept"
+
 # 6c. an unwritable metrics.tsv must not pass silently.
 chmod 444 "$STATE/metrics.tsv"
 run_cad 20260109T000001Z; check "metrics write failure exits 2" 2 $?
