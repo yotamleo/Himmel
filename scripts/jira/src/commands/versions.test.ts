@@ -284,7 +284,17 @@ describe('version-archive (HIMMEL-4469)', () => {
       'GET /version/10002/relatedIssueCounts': { issuesFixedCount: 3, issuesAffectedCount: 0 },
       'PUT /version/10002': {},
     });
-    await expect(archiveVersion('HIMMEL', 'v1.0.0', {})).rejects.toThrow(/3 issues.*--force/);
+    await expect(archiveVersion('HIMMEL', 'v1.0.0', {})).rejects.toThrow(/3 fix-version.*--force/);
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+  });
+
+  it('also refuses when only affects-version issues remain', async () => {
+    const calls = stubJira({
+      'GET /project/HIMMEL/versions': VERSIONS,
+      'GET /version/10002/relatedIssueCounts': { issuesFixedCount: 0, issuesAffectedCount: 2 },
+      'PUT /version/10002': {},
+    });
+    await expect(archiveVersion('HIMMEL', 'v1.0.0', {})).rejects.toThrow(/2 affects-version.*--force/);
     expect(calls.some((c) => c.method === 'PUT')).toBe(false);
   });
 

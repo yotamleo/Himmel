@@ -114,13 +114,15 @@ export async function archiveVersion(
   if (!found) throw new Error(`no version named "${name}" in project ${project}`);
   const archived = !opts.unarchive;
   if (archived && !opts.force) {
-    const { issuesFixedCount } = await request<{ issuesFixedCount: number }>(
+    const counts = await request<{ issuesFixedCount?: number; issuesAffectedCount?: number }>(
       'GET',
       `/version/${found.id}/relatedIssueCounts`,
     );
-    if (issuesFixedCount > 0) {
+    const fixed = counts.issuesFixedCount ?? 0;
+    const affected = counts.issuesAffectedCount ?? 0;
+    if (fixed + affected > 0) {
       throw new Error(
-        `version "${name}" still has ${issuesFixedCount} issues; pass --force to archive it anyway`,
+        `version "${name}" still has ${fixed} fix-version and ${affected} affects-version issues; pass --force to archive it anyway`,
       );
     }
   }
