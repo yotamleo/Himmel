@@ -171,6 +171,23 @@ if [ "$branch" = "main" ]; then
     exit 1
 fi
 
+# HIMMEL-4462: the ticket this title cites must be the ticket this branch is
+# for — a stale cwd must never publish (or overwrite) another ticket's PR.
+ticket_key_re='\[([A-Za-z][A-Za-z0-9]*-[0-9]+)\]'
+title_key=""
+if [[ $title =~ $ticket_key_re ]]; then title_key="${BASH_REMATCH[1]}"; fi
+if [ -n "$title_key" ]; then
+    branch_lc=$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]')
+    key_lc=$(printf '%s' "$title_key" | tr '[:upper:]' '[:lower:]')
+    case "$branch_lc" in
+        *"$key_lc"*) ;;
+        *)
+            echo "ERR leg-pr-open: title cites $title_key but branch '$branch' does not carry it — wrong cwd?" >&2
+            exit 1
+            ;;
+    esac
+fi
+
 if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
     echo "ERR leg-pr-open: branch '$branch' has no upstream — push it first" >&2
     exit 1
@@ -219,6 +236,17 @@ if [ -z "$existing_pr" ]; then
     number=${url##*/}
 else
     number="$existing_pr"
+    # ponytail: GitHub only — the forge seam has no PR-title read, so Bitbucket
+    # keeps the branch check alone; add a seam read when one is needed.
+    if [ -n "$title_key" ] && [ "$(forge_detect)" = github ]; then
+        pr_title=$("${GH_CMD:-gh}" pr view "$number" --json title --jq .title 2>/dev/null) || pr_title=""
+        pr_key=""
+        if [[ $pr_title =~ $ticket_key_re ]]; then pr_key="${BASH_REMATCH[1]}"; fi
+        if [ "$(printf '%s' "$pr_key" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$title_key" | tr '[:upper:]' '[:lower:]')" ]; then
+            echo "ERR leg-pr-open: title cites $title_key but PR #$number on branch '$branch' is titled '${pr_title}' (key '${pr_key:-none}') — refusing to overwrite it" >&2
+            exit 1
+        fi
+    fi
     if ! out=$(forge_pr_set_body "$number" "$title" "$body" 2>&1); then
         echo "ERR leg-pr-open: PR body update failed:" >&2
         printf '%s\n' "$out" >&2

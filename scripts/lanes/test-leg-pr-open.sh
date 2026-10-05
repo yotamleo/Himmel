@@ -48,9 +48,9 @@ git -C "$REPO" config user.name test
 git -C "$REPO" remote add origin "$BARE"
 echo base > "$REPO/f"; git -C "$REPO" add f; git -C "$REPO" commit -qm base
 git -C "$REPO" push -q origin main
-git -C "$REPO" checkout -q -b feat/x
+git -C "$REPO" checkout -q -b feat/himmel-3031-x
 echo change > "$REPO/f"; git -C "$REPO" add f; git -C "$REPO" commit -qm change
-git -C "$REPO" push -q -u origin feat/x
+git -C "$REPO" push -q -u origin feat/himmel-3031-x
 HEAD_SHA=$(git -C "$REPO" rev-parse HEAD)
 
 # HIMMEL-4419: the SUT moves the title's ticket to In Review; a stub Jira CLI
@@ -104,6 +104,7 @@ case "$* " in
         # — reproduce that here, not just the bare URL.
         echo "posted @coderabbitai review on PR #9 (owner/repo) for head $HEAD_SHA_STUB"
         ;;
+    *"pr view"*)   printf '%s\n' "${STUB_PR_TITLE:-feat(lanes): [HIMMEL-3031] existing title}" ;;
     *"pr edit"*)   exit 0 ;;
     *"repo view"*) echo "owner/repo" ;;
     *) echo "stub: unhandled gh args: $*" >&2; exit 99 ;;
@@ -164,7 +165,7 @@ git -C "$REPO" checkout -q main
 err_c=$(run_sut "$TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_c=$?
 if [ "$rc_c" -ne 0 ]; then pass "refuses on main (rc!=0)"; else fail "refuses on main (rc!=0)" "got rc=$rc_c"; fi
 contains "refusal on main names main" "$err_c" "main"
-git -C "$REPO" checkout -q feat/x
+git -C "$REPO" checkout -q feat/himmel-3031-x
 
 # ── (d) refuses when the branch has no upstream ─────────────────────────────
 echo "TEST: refuses when the branch has no upstream"
@@ -172,7 +173,7 @@ git -C "$REPO" checkout -q -b feat/no-upstream
 err_d=$(run_sut "$TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_d=$?
 if [ "$rc_d" -ne 0 ]; then pass "refuses with no upstream (rc!=0)"; else fail "refuses with no upstream (rc!=0)" "got rc=$rc_d"; fi
 contains "refusal names upstream" "$err_d" "upstream"
-git -C "$REPO" checkout -q feat/x
+git -C "$REPO" checkout -q feat/himmel-3031-x
 git -C "$REPO" branch -q -D feat/no-upstream
 
 # ── (e) refuses an empty body file ───────────────────────────────────────────
@@ -200,7 +201,7 @@ echo change2 > "$REPO/f"; git -C "$REPO" add f; git -C "$REPO" commit -qm change
 err_g=$(run_sut "$TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_g=$?
 if [ "$rc_g" -ne 0 ]; then pass "refuses when HEAD unpushed (rc!=0)"; else fail "refuses when HEAD unpushed (rc!=0)" "got rc=$rc_g"; fi
 contains "refusal names push" "$err_g" "push"
-git -C "$REPO" push -q origin feat/x
+git -C "$REPO" push -q origin feat/himmel-3031-x
 
 # ── (h) find-open lookup survives a stderr warning on a CLEAN success (codex-1 round 2) ──
 echo "TEST: find-open lookup survives a stderr warning on success (no open PR)"
@@ -297,11 +298,11 @@ echo "TEST: a conventional title with a ticket still opens the PR"
 : > "$ARGV_LOG"
 unset STUB_OPEN_PR 2>/dev/null || true
 GOOD_TITLE_FILE="$TMP_ROOT/good-title.txt"
-printf 'fix(x): [HIMMEL-1] foo\n' > "$GOOD_TITLE_FILE"
+printf 'fix(x): [HIMMEL-3031] foo\n' > "$GOOD_TITLE_FILE"
 out_m=$(JIRA_PROJECT_KEY=HIMMEL run_sut "$GOOD_TITLE_FILE" "$BODY_FILE"); rc_m=$?
 assert_eq "conventional title still opens the PR (rc=0)" "0" "$rc_m" || echo "  (out=$out_m)" >&2
 argv_m=$(cat "$ARGV_LOG")
-contains "gh receives the conventional title" "$argv_m" "--title fix(x): [HIMMEL-1] foo"
+contains "gh receives the conventional title" "$argv_m" "--title fix(x): [HIMMEL-3031] foo"
 
 # HIMMEL-4094: exercise the real burn computation against a known transcript.
 cp "$HERE/tests/fixtures/leg-burn-sample.jsonl" "$FAKE_CLAUDE_HOME/projects/-fake-project/$FAKE_SID.jsonl"
@@ -326,6 +327,30 @@ for supplied_profile in leg-impl design,design-motion '' 'bad profile' 'bad/prof
         "leg-burn: calls=4 avg-ctx=963 first-turn=1.2k compactions=2 cost-eq=1.6k profile=$expected_profile" "$profile_line"
 done
 not_contains "unavailable fallback remains profile-less" "$argv_k" "profile="
+
+# ── HIMMEL-4462: the ticket in the title must match the branch (and the PR it edits)
+echo "TEST: refuses a title whose ticket is not in the branch name"
+: > "$ARGV_LOG"
+unset STUB_OPEN_PR 2>/dev/null || true
+MISMATCH_TITLE="$TMP_ROOT/mismatch-title.txt"
+printf 'fix(x): [HIMMEL-1] foo\n' > "$MISMATCH_TITLE"
+git -C "$REPO" checkout -q -b fix/himmel-2-other
+git -C "$REPO" push -q -u origin fix/himmel-2-other
+err_p=$(run_sut "$MISMATCH_TITLE" "$BODY_FILE" 2>&1 >/dev/null); rc_p=$?
+assert_eq "title/branch ticket mismatch refused (rc=1)" "1" "$rc_p"
+contains "refusal is an ERR leg-pr-open line" "$err_p" "ERR leg-pr-open:"
+contains "refusal names the title key" "$err_p" "HIMMEL-1"
+contains "refusal names the branch" "$err_p" "fix/himmel-2-other"
+assert_eq "gh is never invoked on a branch mismatch" "" "$(cat "$ARGV_LOG")"
+git -C "$REPO" checkout -q feat/himmel-3031-x
+
+echo "TEST: refuses to edit an open PR whose title cites another ticket"
+: > "$ARGV_LOG"
+err_q=$(STUB_OPEN_PR=42 STUB_PR_TITLE='fix(y): [HIMMEL-7] someone else' run_sut "$TITLE_FILE" "$BODY_FILE" 2>&1 >/dev/null); rc_q=$?
+assert_eq "PR-title ticket mismatch refused (rc=1)" "1" "$rc_q"
+contains "refusal names the PR number" "$err_q" "42"
+contains "refusal names the PR's key" "$err_q" "HIMMEL-7"
+not_contains "the PR is never edited" "$(cat "$ARGV_LOG")" "pr edit"
 
 # ── HIMMEL-4419: opening the PR moves the ticket to In Review ───────────────
 unset STUB_OPEN_PR 2>/dev/null || true
