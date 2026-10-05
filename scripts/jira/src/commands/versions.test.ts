@@ -10,6 +10,7 @@ import {
   moveVersion,
   setFixVersion,
   assertVersionExists,
+  earliestUnreleased,
 } from './versions.js';
 
 interface Call {
@@ -185,6 +186,23 @@ describe('setFixVersion', () => {
     const out = await setFixVersion('HIMMEL-374', 'remove', 'v1.0.0');
     expect(calls[0].body).toEqual({ update: { fixVersions: [{ remove: { name: 'v1.0.0' } }] } });
     expect(out).toBe('HIMMEL-374 fixVersion -v1.0.0');
+  });
+});
+
+describe('earliestUnreleased (HIMMEL-4489)', () => {
+  const v = (name: string, extra: { released?: boolean; archived?: boolean } = {}) => ({ name, ...extra });
+
+  it('skips released versions and returns the first unreleased one', () => {
+    expect(earliestUnreleased([v('v1.0.0', { released: true }), v('v1.0.1', { released: true }), v('v1.0.2'), v('v1.0.3')])).toBe('v1.0.2');
+  });
+
+  it('skips archived versions', () => {
+    expect(earliestUnreleased([v('v1.0.1', { archived: true }), v('v1.0.2')])).toBe('v1.0.2');
+  });
+
+  it('returns undefined when every version is released or archived, or there are none', () => {
+    expect(earliestUnreleased([v('v1.0.0', { released: true }), v('v1.0.1', { archived: true })])).toBeUndefined();
+    expect(earliestUnreleased([])).toBeUndefined();
   });
 });
 
