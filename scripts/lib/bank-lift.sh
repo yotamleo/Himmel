@@ -103,7 +103,7 @@ _bank_lift_cmd() {
       until=$(_bank_lift_epoch "$resets") || { echo "bank-lift: no usable seven_day.resets_at ('$resets')" >&2; return 1; }
       [ "$until" -gt "$(date +%s)" ] || { echo "bank-lift: seven_day window already reset" >&2; return 1; }
       mkdir -p "$(dirname "$f")" || return 1
-      tmp="$f.tmp.$$"
+      tmp=$(mktemp "$f.tmp.XXXXXX") || return 1
       if ! ( umask 077; jq -n --argjson u "$until" --arg a "$acct" --arg by "${USER:-unknown}" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         '{window:"seven_day",until:$u,account:$a,set_by:$by,set_at:$at}' > "$tmp" ); then rm -f "$tmp"; return 1; fi
       if ! mv "$tmp" "$f"; then rm -f "$tmp"; return 1; fi
