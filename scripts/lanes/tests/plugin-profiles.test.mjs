@@ -890,6 +890,31 @@ test('mcpServersForProfile: absent field or operator -> undefined; present field
   assert.throws(() => mcpServersForProfile(SCHEMA_REG, 'no-such-profile'), /unknown profile/);
 });
 
+// HIMMEL-4401: composing profiles must never widen the MCP allowlist. Different
+// lists refuse; identical lists and no lists still compose; exactly one declared
+// list is kept (the member without one never widens it to "load everything").
+const MCP_COMPOSE_REG = { ...SCHEMA_REG, profiles: { ...SCHEMA_REG.profiles,
+  a: { enable: [], mcpServers: ['qmd'], contextBudget: 5000 },
+  a2: { enable: [], mcpServers: ['qmd'], contextBudget: 5000 },
+  b: { enable: [], mcpServers: ['qmd', 'playwright'], contextBudget: 5000 },
+  none1: { enable: [], contextBudget: 5000 },
+  none2: { enable: [], contextBudget: 5000 },
+} };
+
+test('mcpServersForProfile: composing members with different allowlists refuses, naming members and lists', () => {
+  assert.throws(() => mcpServersForProfile(MCP_COMPOSE_REG, 'a,b'), /plugin-profiles:.*\ba\b.*\bb\b.*qmd.*playwright/s);
+});
+
+test('mcpServersForProfile: a composed result never contains an unlisted server, and a member without a list never widens one that has it', () => {
+  assert.deepEqual(mcpServersForProfile(MCP_COMPOSE_REG, 'a,none1'), ['qmd']);
+  assert.deepEqual(mcpServersForProfile(MCP_COMPOSE_REG, 'none1,b'), ['qmd', 'playwright']);
+});
+
+test('mcpServersForProfile: composing identical allowlists, or no allowlists, still composes', () => {
+  assert.deepEqual(mcpServersForProfile(MCP_COMPOSE_REG, 'a,a2'), ['qmd']);
+  assert.equal(mcpServersForProfile(MCP_COMPOSE_REG, 'none1,none2'), undefined);
+});
+
 test('collectMcpServerDefs: empty names -> {mcpServers:{}} without touching any file', () => {
   assert.deepEqual(collectMcpServerDefs([], { homeConfigPath: '/no/such/home.json', repoMcpPath: '/no/such/.mcp.json', marketplaceDir: '/no/such/marketplace' }), { mcpServers: {} });
 });
