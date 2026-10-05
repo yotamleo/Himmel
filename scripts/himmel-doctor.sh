@@ -2893,10 +2893,43 @@ check_c40_qmd_vec() {
         return
     fi
 
-    local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
-    local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
     # ponytail: the remedy points at the qmd README instead of printing the literal start command, because the ws5 T13(b) marker scan false-positives on that command's flag (HIMMEL-3233); the README carries it verbatim.
     local remedy="see the server log ~/.cache/qmd/mcp.log; restart the qmd server (stop the 'qmd mcp' process, then start a session; start command: see marketplace/plugins/qmd/README.md)"
+    # HIMMEL-4432: daemon liveness (the initialize round-trip) is owned by
+    # `himmelctl status`'s qmd-daemon item; C40 composes it the way C16 composes
+    # status. Not wanted = INFO, absent = INFO skip (qmd is optional), degraded =
+    # WARN with status's detail. Only a live daemon reaches the vec probe below.
+    # Unknown status (no node, no item, unreadable) keeps C40's own probe below,
+    # never a silent pass. Seam: DOCTOR_STATUS_JSON=<file> (as C19/C44).
+    local sj="" node_bin="" qd_row="" qd_desired qd_actual qd_detail
+    if [ -n "${DOCTOR_STATUS_JSON:-}" ]; then
+        sj="$(cat "$DOCTOR_STATUS_JSON" 2>/dev/null)"
+    elif node_bin="$(resolve_node 2>/dev/null)" && [ -f "$REPO_ROOT/scripts/himmelctl/bin.js" ]; then
+        sj="$("$node_bin" "$REPO_ROOT/scripts/himmelctl/bin.js" status --json 2>/dev/null)"
+    fi
+    if [ -n "$sj" ]; then
+        qd_row="$(printf '%s' "$sj" | jq -r '.items | arrays | [.[] | select(.id == "qmd-daemon")] | first // empty | "\(.desired)\t\(.actual)\t\(.detail // "")"' 2>/dev/null)" || qd_row=""
+    fi
+    if [ -n "$qd_row" ]; then
+        IFS=$'\t' read -r qd_desired qd_actual qd_detail <<< "$qd_row"
+        if [ "$qd_desired" = false ]; then
+            emit INFO C40-qmd-vec "qmd daemon not wanted on this install (himmelctl status) -- vector-health check skipped"
+            return
+        fi
+        case "$qd_actual" in
+        absent)
+            emit INFO C40-qmd-vec "no qmd server answering (himmelctl status qmd-daemon: ${qd_detail:-absent}) -- vector-health check skipped (qmd is optional)"
+            return
+            ;;
+        degraded)
+            emit WARN C40-qmd-vec "qmd daemon degraded (himmelctl status qmd-daemon): ${qd_detail:-no detail} -- vec search is not being served" "$remedy"
+            return
+            ;;
+        esac
+    fi
+
+    local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
+    local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
     local init init_rc init_code=""
     # `-w '%{http_code}'` appends the status after the body ("000" when no HTTP
     # exchange happened); peel it off so an empty body can be told apart by status.

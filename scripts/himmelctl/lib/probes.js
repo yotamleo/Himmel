@@ -1116,6 +1116,49 @@ function probeQmdIndex(item, ctx) {
   return { actual: 'degraded', detail: `${present.length}/${collections.length} collections registered (missing: ${missing.join(', ')})` };
 }
 
+// ── qmd-daemon ───────────────────────────────────────────────────────────
+
+// HIMMEL-4432: the qmd daemon's liveness is judged HERE (one owner per fact,
+// HIMMEL-755); doctor C40 composes this item the way C16 composes status. It is
+// one initialize round-trip against the daemon, with the budget measured in
+// HIMMEL-4383 (live 2026-10-05: idle 0.33-0.39s, peak 2.87s under 8 concurrent
+// vec queries, so 10s ~= 2x the peak; a genuine wedge still reads degraded).
+// An answer slower than QMD_DAEMON_SLOW_SECS is still PRESENT — slow-but-alive
+// is not a wedge. Seams (read from ctx.env, shared with doctor C40):
+// HIMMEL_DOCTOR_QMD_URL (localhost, NOT 127.0.0.1: the daemon binds ::1 only,
+// HIMMEL-3041), HIMMEL_DOCTOR_QMD_CURL, HIMMEL_DOCTOR_QMD_INIT_TIMEOUT.
+const QMD_DAEMON_INIT_TIMEOUT_SECS = 10;
+const QMD_DAEMON_SLOW_SECS = 3;
+
+function probeQmdDaemon(item, ctx) {
+  const env = ctx.env || process.env;
+  const url = env.HIMMEL_DOCTOR_QMD_URL || 'http://localhost:8181/mcp';
+  const curl = env.HIMMEL_DOCTOR_QMD_CURL || 'curl';
+  const override = env.HIMMEL_DOCTOR_QMD_INIT_TIMEOUT;
+  const budget = override !== undefined && /^[1-9][0-9]*$/.test(override) ? Number(override) : QMD_DAEMON_INIT_TIMEOUT_SECS;
+  const payload = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmelctl-status","version":"1"}}}';
+  const started = Date.now();
+  const r = spawnProbeSync(curl, ['-s', '-m', String(budget), '-w', '%{http_code}', '-X', 'POST',
+    '-H', 'Content-Type: application/json', '-H', 'Accept: application/json, text/event-stream', '-d', payload, url],
+  { env, encoding: 'utf8', timeout: (budget + 5) * 1000 });
+  const elapsed = (Date.now() - started) / 1000;
+  if (r.error && r.error.code === 'ENOENT') return { actual: 'degraded', detail: `curl not found (${curl}) — qmd daemon health could not be checked` };
+  if (r.timedOut || r.status === 28) return { actual: 'degraded', detail: `a process on ${url} accepted the connection but did not answer initialize within ${budget}s — the qmd daemon is wedged, vec search is not being served` };
+  let body = r.stdout || '';
+  let code = '';
+  if (/[0-9]{3}$/.test(body)) { code = body.slice(-3); body = body.slice(0, -3); }
+  if (!body && r.status === 7) return { actual: 'absent', detail: `no qmd daemon answering on ${url} (qmd is optional)` };
+  if (!body) return { actual: 'degraded', detail: `a process on ${url} returned no usable initialize reply (curl rc=${r.status}, HTTP ${code || 'unknown'}) — vec search is not being served` };
+  const data = body.split(/\r?\n/).filter((l) => /^data:/.test(l)).map((l) => l.replace(/^data:\s*/, ''))[0];
+  let name;
+  try { name = JSON.parse(data !== undefined ? data : body).result.serverInfo.name; } catch (e) { name = undefined; }
+  if (name !== 'qmd') return { actual: 'degraded', detail: `a process on ${url} answers but it is NOT qmd (initialize reply has no qmd serverInfo) — qmd vector search cannot work` };
+  const secs = elapsed.toFixed(1);
+  return elapsed > QMD_DAEMON_SLOW_SECS
+    ? { actual: 'present', detail: `initialize answered in ${secs}s (slow but alive; budget ${budget}s)` }
+    : { actual: 'present', detail: `initialize answered in ${secs}s` };
+}
+
 // ── mcp-registered ───────────────────────────────────────────────────────
 
 // CR fix (HIMMEL-1017 CR round): SCOPE-AWARE file resolution. Claude Code's
@@ -3995,6 +4038,7 @@ const PROBES = {
   'settings-hooks': probeSettingsHooks,
   'cmd:has_qmd': probeCmdHasQmd,
   'qmd-index': probeQmdIndex,
+  'qmd-daemon': probeQmdDaemon,
   'mcp-registered': probeMcpRegistered,
   'handover-dir': probeHandoverDir,
   dep: probeDep,
