@@ -59,54 +59,82 @@
 #                                      screen_settings_arg for the pattern.
 #
 # bash 3.2-safe (macOS ships 3.2) and Git-Bash-safe: no `declare -A`, no
-# `${var^^}` (upper-casing happens inside POSIX awk's toupper), no `grep -P`;
-# portable environment enumeration via `env`. JSON screening shells out to
+# `${var^^}` (the prefix test is a case-insensitive glob), no `grep -P`;
+# enumeration is the `compgen -v` builtin -- no external tool, so a shadowed
+# PATH entry or exported function cannot blind it (HIMMEL-4459). The pin fails
+# CLOSED: native_auth_pin_env returns non-zero when it cannot enumerate or a
+# target variable is still set afterwards. JSON screening shells out to
 # node -- an established himmel dependency (claude-glm's screen does the same).
 
-# _native_auth_pin_is_canonical is intentionally NOT a shell function: the
-# predicate lives once, inside the awk below (toupper is POSIX), because a
-# `tr` fork PER VARIABLE is brutally slow on Windows (large environment, MSYS
-# fork cost) -- the first draft did exactly that and its test suite spent
-# ~60s per case. The node screen and the PowerShell twin carry the same
-# predicate in their own runtimes; this header's CANONICAL VARIABLE SET block
-# is the definition they are all checked against.
+# The predicate lives once, as the case glob inside native_auth_pin_env (no
+# fork per variable -- a `tr` per variable was brutally slow on Windows). The
+# node screen and the PowerShell twin (not mirrored for HIMMEL-4459; Windows is
+# parked, HIMMEL-4102) carry the same predicate in their own runtimes; this
+# header's CANONICAL VARIABLE SET block is the definition they are checked against.
 
 native_auth_pin_env() {
-  # Enumerate the environment portably: `env` emits one NAME=value per line
-  # and names cannot contain newlines, so splitting at the first '=' is exact
-  # even when a VALUE spans lines -- a value-continuation line either fails
-  # the identifier-shape regex or names a canonical-family variable, which is
-  # the fail-safe direction either way (it only ever unsets something the pin
-  # is meant to clear). Process substitution (not a pipe) keeps the unsets in
-  # THIS shell.
-  local _name _failed=0 _keep_mock=0
+  # No external tool and no process substitution anywhere in this function: the
+  # enumeration is `compgen -v` (a builtin) and the checks are `[[ ]]` / case /
+  # parameter expansion, none of which a PATH entry or an exported function can
+  # replace. A function named like a builtin CAN shadow it (`export -f unset`,
+  # `export -f compgen`), so the first line removes any function of the names
+  # used here; and because `unset` itself could be the shadowed one, the final
+  # step re-checks with `${!PREFIX*}` expansions (not commands, unshadowable)
+  # and the pin returns non-zero if any target is still set. A shadow can
+  # therefore only ever cause a REFUSAL, never a silent pass (HIMMEL-4459).
+  # Callers: `native_auth_pin_env || <refuse the launch>`.
+  unset -f unset builtin command compgen 2>/dev/null
+  local IFS=$'\n' _name _names _failed=0 _keep_mock=0 _nd _line _n=0 _nonlo=0
   # Test seam (HIMMEL-4411): a mock-backed test may keep EXACTLY the base URL and
   # key, and only when the base URL is loopback -- so a headless launch can be
   # pointed at scripts/testing/mock-anthropic without the pin ever letting a real
   # or proxy host through. Everything else in the canonical set is still stripped.
   # The variable alone is not enough: a local relay on loopback could forward the
-  # kept key anywhere, so the seam is honoured only when this process is provably
-  # network-isolated -- /proc/net/dev (per-netns; /sys/class/net still lists the
-  # host NICs inside `unshare -rn`) shows only `lo`. Unreadable (non-Linux) = refuse.
-  if [ "${NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK:-}" = 1 ] && [ -r /proc/net/dev ] &&
-    [ "$(tail -n +3 /proc/net/dev 2>/dev/null | cut -d: -f1 | tr -d ' ' | grep -vc '^lo$')" = 0 ]; then
-    case "${ANTHROPIC_BASE_URL:-}" in
-      *@*) ;;
-      http://127.0.0.1 | http://127.0.0.1[:/]* | http://localhost | http://localhost[:/]*) _keep_mock=1 ;;
-    esac
+  # kept key anywhere, so the seam is honoured only when this process sees no
+  # network interface but `lo` -- /proc/net/dev (per-netns; /sys/class/net still
+  # lists the host NICs inside `unshare -rn`). Unreadable (non-Linux) = refuse.
+  # This bounds an INHERITED variable only: a process that deliberately bridges
+  # `lo` to the outside (e.g. a unix-socket relay) is NOT detected by it.
+  if [[ "${NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK:-}" = 1 && -r /proc/net/dev ]]; then
+    _nd=$(</proc/net/dev) || _nd=
+    for _line in $_nd; do
+      _n=$((_n + 1))
+      [[ $_n -le 2 ]] && continue
+      _line=${_line%%:*}
+      _line=${_line// /}
+      [[ $_line = lo ]] || _nonlo=1
+    done
+    if [[ $_nonlo = 0 ]]; then
+      case "${ANTHROPIC_BASE_URL:-}" in
+        *@*) ;;
+        http://127.0.0.1 | http://127.0.0.1[:/]* | http://localhost | http://localhost[:/]*) _keep_mock=1 ;;
+      esac
+    fi
   fi
-  while IFS= read -r _name; do
-    if [ "$_keep_mock" = 1 ]; then
+  _names=$(builtin compgen -v) || return 1
+  # An enumeration that yields nothing cannot be trusted (any real shell has PATH).
+  [[ -n "$_names" ]] || return 1
+  for _name in $_names; do
+    case "$_name" in
+      [Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_* | [Cc][Ll][Aa][Uu][Dd][Ee]_[Cc][Oo][Dd][Ee]_[Uu][Ss][Ee]_*) ;;
+      *) continue ;;
+    esac
+    if [[ $_keep_mock = 1 ]]; then
       case "$_name" in ANTHROPIC_BASE_URL | ANTHROPIC_API_KEY) continue ;; esac
     fi
     # Plain unset: a failure here (e.g. readonly) means a canonical variable
     # SURVIVED the pin -- reported, never masked, so the caller can abort.
     unset "$_name" || _failed=1
-  done < <(env | awk -F= '
-    $1 ~ /^[A-Za-z_][A-Za-z0-9_]*$/ {
-      n = toupper($1)
-      if (n ~ /^ANTHROPIC_/ || n ~ /^CLAUDE_CODE_USE_/) print $1
-    }')
+  done
+  # Independent verification, by expansion: anything still set is a refusal.
+  # (Mixed-case names are covered by the enumeration above; these four prefix
+  # expansions catch a stripping step that silently did nothing.)
+  _name="${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}"
+  if [[ $_keep_mock = 1 ]]; then
+    _name=${_name//ANTHROPIC_BASE_URL/}
+    _name=${_name//ANTHROPIC_API_KEY/}
+  fi
+  [[ -z "$_name" ]] || _failed=1
   return "$_failed"
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015,SC1090
+# shellcheck disable=SC2015,SC1090,SC2030,SC2031,SC2016
 # test-native-auth-pin.sh -- hermetic tests for native-auth-pin.sh (HIMMEL-1867).
 #
 # Every neutralisation case is asserted on a CHILD process's environment, never
@@ -100,6 +100,44 @@ check "T7 bystander variable preserved in child after pin" "$?" "0"
   [ "$a" -eq 0 ] && [ "$p" -eq 0 ]
 )
 check "T8 full canonical set cleared, native credential + bystander kept" "$?" "0"
+
+# --- fail closed under a shadowed tool / broken strip (HIMMEL-4459) -----------
+# shadow_run <setup> -- run <setup> (shadows) in a subshell BEFORE sourcing the
+# pin, pin an evil-routed environment, then report "<pin rc> <child verdict>"
+# where the child verdict is whether the routing variables are absent in a CHILD.
+shadow_run() {
+  (
+    export ANTHROPIC_BASE_URL=https://evil.example ANTHROPIC_API_KEY=sk-x ANTHROPIC_MODEL=m
+    eval "$1"
+    . "$lib"
+    native_auth_pin_env; prc=$?
+    bash "$td/absent.sh" ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_MODEL 2>/dev/null && v=absent || v=survived
+    echo "$prc $v"
+  )
+}
+
+check "T9 export -f awk cannot stop the strip" "$(shadow_run 'awk(){ :; }; export -f awk')" "0 absent"
+check "T10 export -f tail/cut/tr/grep/env cannot stop the strip" \
+  "$(shadow_run 'for f in tail cut tr grep env; do eval "$f(){ :; }"; export -f "$f"; done')" "0 absent"
+check "T10b export -f compgen/builtin/command cannot stop the strip" \
+  "$(shadow_run 'compgen(){ return 1; }; builtin(){ return 1; }; command(){ return 1; }; export -f compgen builtin command')" "0 absent"
+
+mkdir -p "$td/fakebin"
+for t in awk env tail cut tr grep sed; do printf '#!/bin/sh\nexit 0\n' > "$td/fakebin/$t"; chmod +x "$td/fakebin/$t"; done
+check "T11 fake tools earlier in PATH cannot stop the strip" "$(shadow_run "PATH='$td/fakebin':\$PATH")" "0 absent"
+
+# A strip that cannot run must REFUSE (rc != 0), never return 0 with the
+# routing variable still set: a no-op `unset` leaves every target set.
+r=$(shadow_run 'unset(){ return 0; }; export -f unset')
+check "T12 no-op unset: pin refuses (rc non-zero)" "$([ "${r%% *}" != 0 ] && echo refused || echo "rc0:$r")" "refused"
+
+r=$( (
+  export ANTHROPIC_BASE_URL=https://evil.example
+  readonly ANTHROPIC_BASE_URL
+  . "$lib"
+  native_auth_pin_env; echo $?
+) 2>/dev/null)
+check "T13 readonly target survives -> pin refuses (rc non-zero)" "$([ "$r" != 0 ] && echo refused || echo "rc0")" "refused"
 
 # --- --settings screen --------------------------------------------------------
 # caller.sh stands in for a launch site: screen FIRST, and only touch the
