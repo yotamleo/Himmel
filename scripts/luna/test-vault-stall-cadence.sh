@@ -542,5 +542,19 @@ out="$(run_sut)"
 assert_has "T26 another vault's first stall is remediated" "REMEDIATED" "$out"
 assert_not_has "T26 no did-not-hold across vaults" "did-not-hold" "$(sent)"
 
+# --- T27 shell metacharacters in the runner path stay literal (round 7) -------
+# shellcheck disable=SC2016  # the $ and backticks are the payload
+odd="$TMP/run\$HOME'q\`id\`%d"
+rm -f "$TMP/cron.tab"
+out="$(HOME="$TMP/home" VAULT_STALL_CRONTAB="$TMP/crontab" VAULT_STALL_RUNNER_DIR="$odd" \
+    HIMMEL_OBSERVABILITY_CONFIG="$TMP/obs.json" bash "$SUT" arm --vault "$TMP/v1" 2>&1)"; rc=$?
+assert_eq "T27 arm exits 0" "0" "$rc"
+row="$(grep 'vault-stall' "$TMP/cron.tab")"
+cmd="${row#\*/15 \* \* \* \* }"
+cmd="${cmd//\\%/%}"
+assert_eq "T27 cron's shell sees the literal runner path" "$odd/vault-stall-cadence.sh" "$(sh -c "printf '%s' $cmd")"
+HOME="$TMP/home" VAULT_STALL_CRONTAB="$TMP/crontab" VAULT_STALL_RUNNER_DIR="$odd" \
+    HIMMEL_OBSERVABILITY_CONFIG="$TMP/obs.json" bash "$SUT" disarm >/dev/null 2>&1
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi

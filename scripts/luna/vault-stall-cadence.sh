@@ -276,8 +276,8 @@ cmd_run() {
     work="$(mktemp -d "${TMPDIR:-/tmp}/vault-stall.XXXXXX")" || return 2
     cp "$vault/.pre-commit-config.yaml" "$work/yaml" 2>/dev/null
     cp "$vault/.gitleaks.toml" "$work/toml" 2>/dev/null
-    cp "$vault/.pre-commit-config.yaml" "$work/yaml.orig" 2>/dev/null
-    cp "$vault/.gitleaks.toml" "$work/toml.orig" 2>/dev/null
+    [ -f "$work/yaml" ] && cp "$work/yaml" "$work/yaml.orig"   # the plan's own baseline
+    [ -f "$work/toml" ] && cp "$work/toml" "$work/toml.orig"
     for c in $classes; do
         case "$c" in
             shellcheck | check-json)
@@ -306,6 +306,9 @@ cmd_run() {
 
     # The sync may have committed a config change since planning (the tree is
     # clean again): writing the stale plan would revert it.
+    # ponytail: a change landing in the instant between this cmp and the cp
+    # below is still overwritten (no lock is shared with the vault sync).
+    # Upgrade: a lock the vault sync also takes.
     for f in $files; do
         case "$f" in .pre-commit-config.yaml) wf="$work/yaml.orig" ;; .gitleaks.toml) wf="$work/toml.orig" ;; esac
         if ! cmp -s "$wf" "$vault/$f"; then
@@ -399,8 +402,10 @@ cmd_arm() {
         return 3
     fi
     runner="$RUNNER_DIR/vault-stall-cadence.sh"
-    local pct='%'
-    entry="*/15 * * * * \"${runner//"$pct"/\\%}\" # $TASK_NAME"   # cron reads a bare % as a newline
+    # Single-quote the path for cron's sh, then escape %: cron reads a bare % as a newline.
+    local pct='%' q="'" quoted
+    quoted="'${runner//"$q"/"'\\''"}'"
+    entry="*/15 * * * * ${quoted//"$pct"/\\%} # $TASK_NAME"
     if [ "$dry" -eq 1 ]; then
         echo "DRY vault-stall: would write $runner and install: $entry"
         return 0
