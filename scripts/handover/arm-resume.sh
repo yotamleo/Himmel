@@ -4471,7 +4471,7 @@ _arm_probe() {
 }
 
 _arm_shipped_preflight() {
-    local _ticket="$1" _branch _jira _status _prs _num _state _mergeable
+    local _ticket="$1" _branch _jira _common _status _prs _num _state _mergeable
 
     # (a) TICKET STATUS. The Jira CLI is an untracked build artifact
     # (scripts/jira/dist/index.js), so it is routinely absent in a worktree --
@@ -4479,7 +4479,15 @@ _arm_shipped_preflight() {
     # (same shape as SCHTASKS_CMD/GH_CMD elsewhere in this file): a worktree
     # never has dist/ built, so a test exercising this branch has no other way
     # to point it at a fixture CLI.
-    _jira="${ARM_JIRA_CLI:-$SCRIPT_DIR/../jira/dist/index.js}"
+    # Anchored to the PRIMARY checkout via the git common dir (HIMMEL-4456, same
+    # idiom as console-kit/leg-jira-status.sh): script-relative would run branch
+    # bytes, or find nothing, from a worktree. Outside git it stays script-relative.
+    _jira="${ARM_JIRA_CLI:-}"
+    if [ -z "$_jira" ]; then
+        _common=$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+            && _jira="$(dirname "$_common")/scripts/jira/dist/index.js" \
+            || _jira="$SCRIPT_DIR/../jira/dist/index.js"
+    fi
     if [ -n "$_ticket" ] && [ -f "$_jira" ] && command -v node >/dev/null 2>&1; then
         _status=$(_arm_probe node "$_jira" get "$_ticket" | head -1 | awk -F'\t' '{print $3}') || _status=""
         case "$_status" in
