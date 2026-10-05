@@ -7,11 +7,20 @@ so progress moves as work lands. Related luna notes per placed ticket are cached
 luna-map file (qmd lexical search + a key grep of the handover tree); only keys missing or
 older than 7 days are re-queried, `--refresh-luna` forces all.
 
+The main view is version-first (HIMMEL-3990): which Jira version are we working on. A ticket's version is its earliest
+unreleased v1.0.x fixVersion (else the newest released one); its column is its Jira status name. Release state comes from
+a `jira versions` snapshot (`name<TAB>released<TAB>releaseDate`, Jira release order); without it no version counts as
+released and the page says "release state unknown". The plan's own views sit folded below.
+
 USAGE
     node scripts/jira/dist/index.js mirror
+    node scripts/jira/dist/index.js versions > ~/.himmel/state/jira-mirror/HIMMEL.versions.tsv
     python3 tracker.py --plan-dir <HIMMEL-3882 plan dir> --out <tracker.html> --luna-map <luna-map.json>
-        [--mirror-dir DIR] [--luna-root DIR] [--handovers DIR] [--refresh-luna]
+        [--mirror-dir DIR] [--versions-file FILE] [--luna-root DIR] [--handovers DIR] [--refresh-luna]
     python3 tracker.py ... --emit-fp     print the freshness fingerprint and exit
+
+--versions-file defaults to <mirror-dir>.versions.tsv; its bytes (or '-' when missing) are a fingerprint input, so a
+release moves tracker= to STALE.
 
 Writes --out, the sidecar <out>.fp (the fingerprint tick.sh compares for tracker=) and
 --luna-map (stdlib only).
@@ -35,7 +44,7 @@ VER_RE = re.compile(r'^v1\.0\.(\d+)([a-z]?)$')  # a trail '<version>a', 'b', ...
 SKIP_RE = re.compile(r'HIMMEL-3882|/dashboard|/artifacts|backlog|\.bak|/graphify-out/')
 KEY_RE = re.compile(r'HIMMEL-\d+')
 MAX_NOTES, TTL = 5, 7 * 86400
-ROOT = OUT = LUNA_MAP = ''
+ROOT = OUT = LUNA_MAP = VERSIONS = ''
 PLAN_FILES = ('meta.json', 'versions.tsv', 'placement.tsv', 'closures.tsv', 'unplaced.tsv')
 
 
@@ -167,8 +176,8 @@ def actuals():
 
 
 def fingerprint():
-    """16 hex over the mirror's newest `updated:`, the plan + stage1/stage2 files' bytes, the live legs and the wrapped
-    legs' actuals (what the page shows)."""
+    """16 hex over the mirror's newest `updated:`, the plan + stage1/stage2 files' bytes, the versions file, the live legs
+    and the wrapped legs' actuals (what the page shows)."""
     upd = ''
     for p in glob.glob(os.path.join(MIRROR, 'HIMMEL-*.md')):
         for l in open(p, encoding='utf-8', errors='replace'):
@@ -181,6 +190,7 @@ def fingerprint():
         h.update(open(p, 'rb').read() if os.path.exists(p) else b'-')
     for p in plan_globs():
         h.update(open(p, 'rb').read())
+    h.update(open(VERSIONS, 'rb').read() if os.path.isfile(VERSIONS) else b'-')
     h.update(json.dumps(sorted(live_legs().items())).encode())
     h.update(json.dumps(sorted(actuals().items())).encode())
     return h.hexdigest()[:16]
@@ -313,13 +323,64 @@ def num(key):
     return int(key.split('-')[1])
 
 
+# HIMMEL-3990: the Jira-first view. Buckets come from the status NAME (statusCategory only for a name not listed).
+BUCKETS = {'to do': 'todo', 'backlog': 'todo', 'in progress': 'prog', 'in review': 'rev', 'ci': 'ci', 'in ci': 'ci',
+           'done': 'done', 'closed': 'done', 'in public': 'done', 'wont do': 'wont', 'wont fix': 'wont'}
+
+
+def bucket(m):
+    return BUCKETS.get(m['sn'].strip().lower()) or {'Done': 'done', 'In Progress': 'prog'}.get(m['cat'], 'todo')
+
+
+def read_versions(path, mir):
+    """(versions, release state unknown): [{n, rel, date}] in Jira release order from a `jira versions` snapshot.
+
+    v1.0.0 and non-v1.0.x names are not rows. A missing file lists the mirror's v1.0.x fixVersions, none released."""
+    try:
+        lines = [l.rstrip('\n').split('\t') for l in open(path, encoding='utf-8')]
+    except OSError:
+        names = sorted({v for m in mir.values() for v in m['fv'] if VER_RE.match(v) and v != 'v1.0.0'}, key=ver_key)
+        return [dict(n=v, rel=False, date='') for v in names], True
+    return [dict(n=f[0], rel=f[1] == 'true', date=f[2] if len(f) > 2 else '') for f in lines
+            if len(f) >= 2 and VER_RE.match(f[0]) and f[0] != 'v1.0.0'], False
+
+
+def jira_view(mir, legs, vers, prows, vnames):
+    """The version-first page data: JT tickets, JC working-on, JN up-next, JA released-but-open alerts.
+
+    prows are the plan's placed rows (user impact is col 9, plan version col 3), vnames the plan's version names."""
+    vi = {v['n']: i for i, v in enumerate(vers)}
+    plan = {r[0]: r for r in prows}
+    tk = []
+    for k, m in mir.items():
+        hit = [v for v in m['fv'] if v in vi]
+        if not hit:
+            continue
+        un = [v for v in hit if not vers[vi[v]]['rel']]
+        v = min(un, key=vi.get) if un else max(hit, key=vi.get)
+        b, p = bucket(m), plan.get(num(k))
+        lg = legs.get(num(k))
+        tk.append(dict(k=num(k), t=clip(m['title'], 90), s=m['sn'] or m['cat'], b=b, v=vi[v],
+                       ui=(p[9] if p else '') or '', pv=vnames[p[3]] if p else None,
+                       leg=lg if b not in ('done', 'wont') else None, live=bool(lg and b == 'todo')))
+    tk.sort(key=lambda t: t['k'])
+
+    def open_(t):
+        return t['b'] not in ('done', 'wont')
+
+    cur = next((i for i in range(len(vers)) if not vers[i]['rel'] and any(t['v'] == i and open_(t) for t in tk)), -1)
+    nxt = next((i for i in range(len(vers)) if i > cur and not vers[i]['rel'] and any(t['v'] == i for t in tk)), -1)
+    al = [[i, [t['k'] for t in tk if t['v'] == i and open_(t)]] for i in range(len(vers)) if vers[i]['rel']]
+    return tk, cur, nxt, [a for a in al if a[1]]
+
+
 def clip(s, n):
     s = ' '.join(s.split())
     return s if len(s) <= n else s[:n - 1] + '…'
 
 
 def read_mirror():
-    """{key: dict(st, fv, upd, title, type)} from the mirror frontmatter."""
+    """{key: dict(st, sn, cat, fv, upd, title, type)} from the mirror frontmatter; sn is the Jira status name, cat its category."""
     out = {}
     for p in glob.glob(os.path.join(MIRROR, 'HIMMEL-*.md')):
         txt = open(p, encoding='utf-8', errors='replace').read()
@@ -340,7 +401,11 @@ def read_mirror():
         except ValueError:
             fv = []
         cat = fm.get('statusCategory', '').strip('"')
-        out[key] = dict(st=2 if cat == 'Done' else 1 if cat == 'In Progress' else 0, fv=fv,
+        try:
+            sn = json.loads(fm.get('status', '""'))
+        except ValueError:
+            sn = ''
+        out[key] = dict(st=2 if cat == 'Done' else 1 if cat == 'In Progress' else 0, sn=sn if isinstance(sn, str) else '', cat=cat, fv=fv,
                         upd=fm.get('updated', '').strip('"'), title=m.group(1) if m else '',
                         type=fm.get('type', '').strip('"'))
     return out
@@ -437,12 +502,14 @@ def luna_map(keys, refresh):
 
 
 def main():
-    global MIRROR, LUNA, HANDOVERS, ROOT, OUT, LUNA_MAP
+    global MIRROR, LUNA, HANDOVERS, ROOT, OUT, LUNA_MAP, VERSIONS
     ap = argparse.ArgumentParser(description='Render the HIMMEL-3882 roadmap tracker page.')
     ap.add_argument('--plan-dir', required=True, help='the HIMMEL-3882 plan dir (holds stage1/ and stage3/)')
     ap.add_argument('--out', required=True, help='tracker.html to write')
     ap.add_argument('--luna-map', required=True, help='luna-map.json cache path')
     ap.add_argument('--mirror-dir', default=MIRROR)
+    ap.add_argument('--versions-file', default=None,
+                    help="a `jira versions` snapshot: name<TAB>released<TAB>releaseDate (default <mirror-dir>.versions.tsv)")
     ap.add_argument('--luna-root', default=LUNA)
     ap.add_argument('--handovers', default=os.environ.get('TRACKER_HANDOVERS_DIR', ''),
                     help='handover tree to grep for notes and live legs (default $TRACKER_HANDOVERS_DIR, '
@@ -453,6 +520,7 @@ def main():
     ROOT, OUT, LUNA_MAP, MIRROR, LUNA = (os.path.abspath(a.plan_dir), os.path.abspath(a.out),
                                          os.path.abspath(a.luna_map), os.path.abspath(a.mirror_dir),
                                          os.path.abspath(a.luna_root))
+    VERSIONS = os.path.abspath(a.versions_file) if a.versions_file else MIRROR + '.versions.tsv'
     HANDOVERS = os.path.abspath(a.handovers) if a.handovers else os.path.join(LUNA, 'handovers', 'yotamleo', 'himmel')
     if a.emit_fp:
         print(fingerprint())
@@ -554,11 +622,13 @@ def main():
     upd = max((m['upd'] for m in mir.values()), default='')
     lg, cur = ledger_lines(rows, vers)
     seq = rules['seq']
+    jv, ru = read_versions(VERSIONS, mir)
+    jt, jc, jn, ja = jira_view(mir, legs, jv, rows[:n_plan], vers)
     p90 = meta.get('version_p90_fw') if isinstance(meta.get('version_p90_fw'), dict) else {}
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
                 sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, VC=version_caps(rules, vers),
                 LEG={str(n): v for n, v in sorted(legs.items())}, ACT={str(n): v for n, v in sorted(actuals().items())}, L=LAYERS, T=themes, P=rows,
-                U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur,
+                U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur, JV=jv, JT=jt, JC=jc, JN=jn, JA=ja, RU=ru,
                 CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
                          text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)],
                                             [v for v in vers if trail_parent(v)])),
@@ -585,85 +655,40 @@ def main():
 
 TEMPLATE = r'''<title>Himmel Roadmap</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,500&family=Geist:wght@400;500;600&family=Geist+Mono&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@400;600&display=swap">
 <style>
-/* HIMMEL-3990 design: "the release board" — an overview read in seconds, not a report. Versions are sequential, so they sit
-   in a side rail; picking one fills the board: a column chart of every version, the picked version as a kanban (to do /
-   in progress / done, done cards saying what the work actually took against its estimate), the estimate-vs-actual strip
-   and its themes as bars. Decisions open as a menu from the masthead; each card shows what a lever would change and the line
-   to send the console — the page never acts. Warm paper and ink; the only chroma is meaning (done / live / to-do / over
-   cap); --ldn is the neutral no-cap swatch (HIMMEL-3979). Serif only for what users gained; mono for keys. */
-:root{--bg:#f5f4ef;--surface:#fff;--ink:#1a1a17;--muted:#6e6c64;--line:#e2e0d8;--accent:#1f4fd8;--done:#2e7d4f;--live:#b45f06;
---todo:#b9b7ae;--warn:#c2410c;--ldn:#d8d6ce;--bar:#4b4a44;--scrim:rgba(26,26,23,.28);
---f-serif:"Newsreader","Iowan Old Style","Charter",Georgia,serif;--f-sans:"Geist",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--f-mono:"Geist Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121311;--surface:#1b1c19;--ink:#eceae2;--muted:#9a988f;--line:#2b2c28;--accent:#7b9cff;
---done:#5cbf85;--live:#f5b14d;--todo:#4a4b46;--warn:#f08a5b;--ldn:#34352f;--bar:#c9c7be;--scrim:rgba(0,0,0,.5);color-scheme:dark}}
-:root[data-theme="dark"]{--bg:#121311;--surface:#1b1c19;--ink:#eceae2;--muted:#9a988f;--line:#2b2c28;--accent:#7b9cff;
---done:#5cbf85;--live:#f5b14d;--todo:#4a4b46;--warn:#f08a5b;--ldn:#34352f;--bar:#c9c7be;--scrim:rgba(0,0,0,.5);color-scheme:dark}
+/* HIMMEL-3990 design: "which version are we working on". The main view is one hero sentence (Jira's release state and
+   status names), the board of the version being worked on, and one table of every version; every number opens its
+   tickets. The plan's own views sit folded below it. Palette, type and status dots follow the himmel Config page
+   (scripts/config-ui/public/app.css): dark first, IBM Plex, a "● word" dot per status. The old names (--ink, --muted,
+   --live, --warn, ...) stay as aliases so the folded plan views keep their colours. */
+:root{--bg:#121416;--panel:#191c1f;--line:#2a2f34;--fg:#e8e2d6;--dim:#8e959c;--accent:#9fb7cf;
+--todo:#6f767d;--prog:#d1a85f;--rev:#9fb7cf;--ci:#b49cd6;--done:#7fae8a;--fail:#d9796b;
+--surface:var(--panel);--ink:var(--fg);--muted:var(--dim);--live:var(--prog);--warn:var(--fail);--ldn:var(--line);--bar:var(--dim);--scrim:rgba(0,0,0,.45);
+--f-serif:"IBM Plex Sans",system-ui,sans-serif;--f-sans:"IBM Plex Sans",system-ui,sans-serif;--f-mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+--ease:cubic-bezier(.2,.7,.2,1);color-scheme:dark}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f5f4f0;--panel:#ecebe6;--line:#d6d4cc;--fg:#1f2326;--dim:#5f666d;--accent:#365a7d;
+--todo:#7a8087;--prog:#8a5d0e;--rev:#365a7d;--ci:#6a4c9c;--done:#2f6b3f;--fail:#a3392b;--scrim:rgba(26,26,23,.28);color-scheme:light}}
+:root[data-theme="light"]{--bg:#f5f4f0;--panel:#ecebe6;--line:#d6d4cc;--fg:#1f2326;--dim:#5f666d;--accent:#365a7d;
+--todo:#7a8087;--prog:#8a5d0e;--rev:#365a7d;--ci:#6a4c9c;--done:#2f6b3f;--fail:#a3392b;--scrim:rgba(26,26,23,.28);color-scheme:light}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--f-sans);font-variant-numeric:tabular-nums}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 var(--f-mono);font-variant-numeric:tabular-nums}
 ::selection{background:var(--accent);color:var(--bg)}
-:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
 code,.key{font-family:var(--f-mono);font-size:12.5px}
 button{font:inherit;color:inherit}
-.mast{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
-.mast .in{max-width:1200px;margin-inline:auto;padding:10px 16px;display:flex;flex-wrap:wrap;gap:6px 16px;align-items:center}
-.mast b{font-weight:600}
-.mast .stamp{color:var(--muted);font-size:12.5px;flex:1 1 200px;min-width:0}
-.sw{display:inline-flex;gap:8px;align-items:center;font-size:13.5px;cursor:pointer;user-select:none}
-.sw input{appearance:none;-webkit-appearance:none;margin:0;width:32px;height:18px;border-radius:9px;background:var(--todo);position:relative;cursor:pointer;flex:none}
-.sw input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:var(--surface)}
-.sw input:checked{background:var(--ink)}.sw input:checked::after{left:16px}
-.tbtn{border:1px solid var(--line);background:none;border-radius:4px;padding:3px 9px;font-size:12.5px;color:var(--muted);cursor:pointer}
-.shell{max-width:1360px;margin-inline:auto;padding:20px 24px 64px;display:grid;grid-template-columns:220px minmax(0,1fr);gap:32px;align-items:start}
+.mast{border-bottom:1px solid var(--line)}
+.mast .in{max-width:1180px;margin-inline:auto;padding:14px 16px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.brand{font-weight:600;letter-spacing:.04em}
+.mast .stamp{color:var(--dim);font-size:11px;flex:1 1 200px;min-width:0}
+.tbtn,.jsw{all:unset;cursor:pointer;border:1px solid var(--line);padding:2px 8px;border-radius:3px;font:12px var(--f-mono);color:var(--fg);display:inline-flex;gap:6px;align-items:center;transition:border-color .2s}
+.tbtn:hover,.jsw:hover{border-color:var(--accent)}
+.jsw .jt{display:inline-block;width:22px;height:10px;border:1px solid var(--dim);position:relative;transition:border-color .2s}
+.jsw .jt::after{content:"";position:absolute;top:1px;left:1px;width:8px;height:6px;background:var(--dim);transition:transform .25s var(--ease),background .2s}
+.jsw[aria-checked="true"] .jt{border-color:var(--accent)}.jsw[aria-checked="true"] .jt::after{transform:translateX(12px);background:var(--accent)}
+.shell{max-width:1180px;margin-inline:auto;padding:0 16px 64px}
 main{min-width:0}
-#rail{position:sticky;top:60px;max-height:calc(100vh - 76px);overflow:auto;overscroll-behavior:contain;padding-right:4px}
-#rail h2{font:500 12px var(--f-sans);color:var(--muted);margin:4px 0 8px}
-.vr{all:unset;box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px 8px;align-items:center;width:100%;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:12.5px}
-.vr:hover{background:var(--surface)}.vr:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-.vr[aria-current="true"]{background:var(--surface);box-shadow:inset 3px 0 0 var(--ink)}
-.vr .nm{font:500 13px var(--f-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.vr.tr .nm{color:var(--muted);padding-left:12px}
-.vr .fg{color:var(--muted);white-space:nowrap}
-.vr .strip{grid-column:1/-1;height:5px}
-.mast .in{position:relative}
-.dbtn{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:4px 6px 4px 12px;font-size:13px;cursor:pointer;display:inline-flex;gap:8px;align-items:center}
-.dbtn span{min-width:22px;padding:1px 7px;border-radius:999px;background:var(--ink);color:var(--bg);font-weight:600;font-size:12px;text-align:center}
-.dbtn.hot{border-color:var(--warn)}.dbtn.hot span{background:var(--warn)}
-.dbtn[aria-expanded="true"]{border-color:var(--ink)}
-.decp{position:absolute;right:16px;top:calc(100% + 6px);width:min(620px,calc(100vw - 32px));max-height:76vh;overflow:auto;overscroll-behavior:contain;background:var(--surface);border:1px solid var(--line);border-radius:8px;box-shadow:0 18px 40px rgba(0,0,0,.14);padding:2px 18px 8px}
-.decp[hidden]{display:none}.decp:focus{outline:none}
-.sec2{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin:36px 0 12px}
-.sec2 h2{font:600 15px var(--f-sans);margin:0}.sec2 p{margin:0;font-size:12.5px;color:var(--muted)}
-.cols{display:flex;gap:6px;align-items:stretch;height:200px;overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 14px 10px}
-.col{all:unset;box-sizing:border-box;flex:1 0 34px;display:flex;flex-direction:column;align-items:stretch;gap:4px;cursor:pointer;border-radius:4px;min-width:34px}
-.col .cn{font:600 11.5px var(--f-sans);text-align:center;color:var(--muted)}.col .cn.x{color:var(--warn)}
-.col .well{flex:1;display:flex;flex-direction:column;justify-content:flex-end}
-.col .stk{display:flex;flex-direction:column-reverse;border-radius:3px 3px 0 0;overflow:hidden;min-height:3px;background:var(--line)}
-.col .stk i{display:block;min-height:2px}
-.col .nm{font:500 10.5px var(--f-mono);text-align:center;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:4px;border-top:1px solid var(--line)}
-.col.tr .nm{opacity:.75}
-.col:hover .stk{filter:brightness(1.08)}.col:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.col[aria-pressed="true"] .nm{color:var(--ink);font-weight:700;border-top:2px solid var(--ink)}
-.i-l{background:var(--live)}.i-s{background:color-mix(in srgb,var(--live) 45%,var(--todo))}.i-t{background:var(--todo)}.i-d,.stk .d,.thb .d{background:var(--done)}.stk .l{background:var(--live)}.stk .s{background:color-mix(in srgb,var(--live) 45%,var(--todo))}.stk .t,.thb .t{background:var(--todo)}
-.key-row{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin-top:8px}
-.key-row i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:-1px}
-.board{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px 20px 20px}
-.board .lead{margin:0 0 14px;color:var(--muted);font-size:14px;max-width:70ch}
-.kan{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:18px}
-.kc h3{display:flex;justify-content:space-between;align-items:center;font:600 12.5px var(--f-sans);margin:0 0 8px;padding-bottom:6px;border-bottom:2px solid var(--todo)}
-.kc.prog h3{border-color:var(--live)}.kc.done h3{border-color:var(--done)}
-.kc h3 span{font-weight:500;color:var(--muted)}
-.kc .n{display:inline-block;margin-top:6px;font-size:13px}
-.kcard{all:unset;box-sizing:border-box;display:grid;gap:5px;width:100%;padding:10px 12px;margin-bottom:8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);cursor:pointer}
-.kcard:hover{border-color:var(--muted)}.kcard:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.kcard .kt{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:12px}
-.kcard .kt code{color:var(--ink);margin-right:auto}
-.kcard .kx{font-size:13.5px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.kcard .chip{justify-self:start}
-.took{display:grid;gap:4px;font-size:12px;color:var(--muted)}
-.took .tb{display:block;height:4px;border-radius:2px;background:var(--line);overflow:hidden}.took .tb i{display:block;height:100%;background:var(--done)}
+.thb .d{background:var(--done)}.thb .t{background:var(--todo)}
 .acc{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:14px 18px}
 .ar{display:grid;grid-template-columns:7em minmax(0,1fr) 9.5em;gap:14px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
 .ar:last-of-type{border-bottom:0}
@@ -677,26 +702,8 @@ main{min-width:0}
 .thr .n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .thb{display:flex;height:10px;border-radius:2px;overflow:hidden}.thb i{display:block;height:100%}
 .thr .fact{text-align:right;margin:0}
-.duo{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px}
-.donut{position:absolute;right:14px;top:14px;width:58px;height:58px;transform:rotate(-90deg)}
-.donut circle{fill:none;stroke-width:6}.donut .rg{stroke:var(--todo)}.donut .d{stroke:var(--done)}.donut .l{stroke:var(--live)}.donut .s{stroke:color-mix(in srgb,var(--live) 45%,var(--todo))}
-.mb{display:flex;gap:6px;align-items:flex-end;height:34px;margin-top:6px}
-.mb span{display:flex;flex-direction:column;align-items:center;gap:2px;font:500 10px var(--f-mono);color:var(--muted)}
-.mb i{display:block;width:16px;background:var(--done);border-radius:2px 2px 0 0;min-height:2px}
-h2.sec{font:500 13px var(--f-sans);color:var(--muted);margin:40px 0 0;padding-bottom:8px;border-bottom:1px solid var(--line)}
 .sum{font:500 18px/1.4 var(--f-serif);margin:12px 0 20px;max-width:62ch}
 .head{font:500 22px/1.25 var(--f-serif);margin:0 0 8px}
-.tiles{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
-.tile{all:unset;box-sizing:border-box;display:flex;flex-direction:column;gap:4px;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:6px;cursor:pointer;min-width:0}
-.tile:hover{border-color:var(--muted)}.tile:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.tile .lb{font-size:12px;color:var(--muted)}
-.tile .fig{font:600 28px/1.15 var(--f-sans);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.tile .sb{font-size:13px;color:var(--muted)}
-.tile.hot{border-color:var(--warn)}.tile.hot .fig{color:var(--warn)}
-.tile .chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:2px}
-.tile .cap{margin-top:6px}
-.tile{position:relative}.tile.dn{padding-right:86px}
-.tile .strip{margin-top:6px}
 section:focus{outline:none}
 ol.decl{list-style:none;margin:0;padding:0}
 .card{border-bottom:1px solid var(--line);padding:14px 0}
@@ -805,23 +812,73 @@ ol.ct{list-style:none;margin:0 0 8px;padding:0}
 ol.ct li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:6px 0;border-top:1px solid var(--line);font-size:13.5px}
 ol.ct li .t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 ol.ct li .v{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
-@media (max-width:1100px){
- .tiles{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
- .duo{grid-template-columns:minmax(0,1fr)}
-}
-@media (max-width:900px){
- .shell{grid-template-columns:minmax(0,1fr);gap:16px}
- #rail{position:static;max-height:none;padding:0}
- #raill{display:flex;gap:6px;overflow-x:auto;padding:0 0 4px}
- #rail h2{display:none}
- .vr{flex:0 0 auto;width:auto;min-width:118px;border:1px solid var(--line)}
- .kan{grid-template-columns:minmax(0,1fr)}
+:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
+/* the version-first view (HIMMEL-3990) */
+.hero{padding:28px 0 4px}
+.jk{color:var(--dim);font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.hero h1{font:600 34px/1.15 var(--f-mono);margin:4px 0 10px;letter-spacing:-.01em}
+.sent{font:16px/1.6 var(--f-sans);margin:0 0 14px}
+.jn{all:unset;cursor:pointer;color:var(--accent);font-family:var(--f-mono);font-weight:600;border-bottom:1px dotted var(--accent)}
+.jn:hover{border-bottom-style:solid}
+.jn:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+.jbar{display:flex;height:8px;background:var(--line);overflow:hidden;border-radius:1px}
+.jbar.big{height:12px;max-width:760px}
+.jbar i{display:block;height:100%;width:0;transition:width .7s var(--ease)}
+.js-todo{background:var(--todo)}.js-prog{background:var(--prog)}.js-rev{background:var(--rev)}.js-ci{background:var(--ci)}.js-done{background:var(--done)}
+.jst{white-space:nowrap}.jst::before{content:"● "}
+.jc-todo{color:var(--todo)}.jc-prog{color:var(--prog)}.jc-rev{color:var(--rev)}.jc-ci{color:var(--ci)}.jc-done{color:var(--done)}.jc-fail{color:var(--fail)}
+.jlegend{display:flex;flex-wrap:wrap;gap:14px;font-size:12px;margin:10px 0 0}
+.jnext{color:var(--dim);font:13px var(--f-sans);margin:12px 0 0}
+.jnote{color:var(--fail);font:600 12px var(--f-mono);margin:0 0 10px}
+.jalert{border:1px solid var(--fail);border-left-width:3px;background:var(--panel);padding:10px 14px;margin:18px 0 0;font-family:var(--f-sans)}
+.jalert .jw{font:600 13px var(--f-mono);color:var(--fail)}.jalert ul{margin:6px 0 0;padding-left:18px}
+#rm h2{font:600 13px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;margin:36px 0 4px}
+.jsub{color:var(--dim);font:12px var(--f-sans);margin:0 0 12px}
+.jboard{display:grid;grid-template-columns:repeat(var(--cols,4),minmax(0,1fr));gap:10px}
+.jcol{background:var(--panel);border:1px solid var(--line);padding:10px;min-height:80px;min-width:0}
+.jcol h3{font:600 12px var(--f-mono);margin:0 0 8px;display:flex;justify-content:space-between;gap:8px}
+.jcard{all:unset;display:block;box-sizing:border-box;width:100%;cursor:pointer;border:1px solid var(--line);padding:8px 10px;margin:0 0 8px;background:var(--bg);transition:border-color .2s,transform .2s var(--ease)}
+.jcard:hover{border-color:var(--accent);transform:translateY(-1px)}
+.jcard:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
+.jkey{font-size:11px;color:var(--dim)}.jtl{font-size:12.5px;margin:2px 0;overflow-wrap:anywhere}.jui{font:12px/1.45 var(--f-sans);color:var(--dim);overflow-wrap:anywhere}
+.jchip{display:inline-block;font-size:11px;border:1px solid var(--prog);color:var(--prog);border-radius:3px;padding:0 5px;margin-top:4px}
+.jnone{color:var(--dim);font-size:12px}
+.jdonefold{color:var(--dim);font:12px var(--f-sans);margin-top:10px}
+.enter{animation:enter .32s var(--ease) both}
+.leave{animation:leave .18s ease-in both}
+@keyframes enter{from{opacity:0;transform:translateY(4px)}}
+@keyframes leave{to{opacity:0;transform:translateY(-3px)}}
+#rm table{width:100%;border-collapse:collapse}
+#rm th,#rm td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
+#rm th{font-size:11px;color:var(--dim);font-weight:400;letter-spacing:.08em;text-transform:uppercase}
+#rm th:first-child,#rm td:first-child,#rm th:nth-child(2),#rm td:nth-child(2){text-align:left}
+#rm td.barc{width:26%;min-width:120px}
+tr[data-v]{cursor:pointer;transition:background .35s}
+tr[data-v]:hover{background:var(--panel)}
+tr.jsel{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+tr.jsel td:first-child{box-shadow:inset 2px 0 var(--accent)}
+tr.jflash{animation:jflash .9s ease-out}
+@keyframes jflash{from{background:color-mix(in srgb,var(--accent) 30%,transparent)}}
+.vn{font-weight:600}
+.z{color:var(--line)}
+.tw{overflow-x:auto}
+#db .jrow{border-bottom:1px solid var(--line);padding:10px 0}
+#db .jrow .jm{font-size:12px;margin-top:2px}
+#db .jrow .jtl{font-size:13px}
+#drawer:not([hidden]){animation:dslide .3s var(--ease)}
+@keyframes dslide{from{opacity:0;transform:translateX(24px)}}
+.plan{margin-top:48px;border-top:1px solid var(--line)}
+.plan>h2.jh{font:600 13px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;margin:28px 0 4px}
+.plan{font:14px/1.5 var(--f-sans)}
+.plan>details>summary,.plan footer details>summary{color:var(--fg)}
+.plan details>div,.plan details>ol{padding-bottom:14px}
+#decs.hot{color:var(--fail)}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+@media (max-width:760px){
+ .jboard{grid-template-columns:minmax(0,1fr)}.hero h1{font-size:27px}#rm td.barc,#rm th.barc{display:none}
 }
 @media (max-width:560px){
- .shell{padding:12px 16px 48px}.mast .in{padding:8px 16px}
- .tiles{gap:8px}.tile{padding:10px 12px}.tile .fig{font-size:22px}.tile .chips{display:none}
- .tile.dn{padding-right:12px}.donut{width:40px;height:40px;right:10px;top:10px}
- .board{padding:14px}.cols{height:170px;padding:10px}
+ .shell{padding:0 16px 48px}.mast .in{padding:10px 16px}
  .ar{grid-template-columns:4.6em minmax(0,1fr);row-gap:2px}.ar .am{grid-column:2;text-align:left}.aax{margin:4px 0 0 calc(4.6em + 14px)}
  .thr{grid-template-columns:minmax(0,7em) minmax(0,1fr) 3em}
  .sum{font-size:17px}
@@ -833,31 +890,45 @@ ol.ct li .v{font-family:var(--f-mono);font-size:12px;color:var(--muted)}
  .terms{grid-template-columns:minmax(0,1fr)}
 }
 </style>
-<header class="mast"><div class="in"><b>Himmel roadmap</b><span class="stamp" id="stamp"></span>
-<label class="sw" title="Hides done tickets from counts, bars and lists. Decisions and levers always weigh the full planned load."><input type="checkbox" role="switch" id="rem"> Remaining only</label>
-<button class="dbtn" id="decb" type="button" aria-expanded="false" aria-controls="decp">Needs your input <span id="decn">0</span></button>
-<button class="tbtn" id="theme" type="button">Theme</button>
-<section class="decp" id="decp" tabindex="-1" aria-label="Needs your input" hidden><ol class="decl" id="decl"></ol></section></div></header>
+<header class="mast"><div class="in"><b class="brand">himmel · roadmap</b><span class="stamp" id="stamp"></span>
+<button class="jsw" id="hide" type="button" role="switch" aria-checked="true" title="Hides Done, Closed, In Public, wont do and wont fix from the boards and lists; the counts in the hero sentence and the table still include them."><span class="jt"></span>Hide done work</button>
+<button class="tbtn" id="theme" type="button">Theme</button></div></header>
 <div class="shell" id="main">
-<nav id="rail" aria-label="Versions, in release order"><h2>Versions, in order</h2><div id="raill"></div></nav>
 <main>
-<section class="tiles" id="tiles" aria-label="Where the release stands"></section>
-<div class="sec2"><h2>Every version</h2><p>Tickets per version; pick a column or a rail row.</p></div>
-<div class="cols" id="cols"></div>
-<div class="key-row" id="ckey"></div>
-<section id="board" tabindex="-1" aria-labelledby="boardh"><div class="sec2"><h2 id="boardh">Board</h2><p>Open a card for the ticket.</p></div><div class="board" id="boardb"></div></section>
-<div class="duo">
-<section id="acc" tabindex="-1" aria-labelledby="acch"><div class="sec2"><h2 id="acch">Estimate vs actual</h2><p>Each dot a done ticket; the bar is the median.</p></div><div class="acc" id="accb"></div></section>
-<section aria-labelledby="themh"><div class="sec2"><h2 id="themh">Themes</h2><p>Done of total.</p></div><div id="themb"></div></section>
+<div id="rm">
+<section class="hero" aria-labelledby="hh">
+<div class="jk">Working on</div>
+<h1 id="hh"></h1>
+<p class="jnote" id="hnote"></p>
+<p class="sent" id="sent"></p>
+<div class="jbar big" id="hbar"></div>
+<div class="jlegend" id="legend"></div>
+<p class="jnext" id="next"></p>
+<div id="alerts"></div>
+</section>
+<section aria-labelledby="bh"><h2 id="bh"></h2><p class="jsub" id="bsub"></p>
+<div class="jboard" id="board"></div><p class="jdonefold" id="donefold"></p></section>
+<section aria-labelledby="vh"><h2 id="vh">Every version</h2>
+<p class="jsub">In Jira's release order. Pick a row to see its board; every number opens its tickets.</p>
+<div class="tw"><table><thead><tr><th>Version</th><th>State</th><th class="barc">Progress</th>
+<th>To Do</th><th>In Progress</th><th>In Review</th><th>IN CI</th><th>Done</th><th>Total</th></tr></thead><tbody id="vt"></tbody></table></div>
+<p class="jsub" id="vfold"></p></section>
 </div>
-<section id="gain" tabindex="-1" aria-labelledby="gainh"><div class="sec2"><h2 id="gainh">What users gained</h2></div><div class="gains" id="gains"></div></section>
+<section class="plan" aria-label="The plan">
+<h2 class="jh">The plan, folded</h2>
+<p class="jsub">The forecast behind the versions above: what the plan expects, what finished work took, and the decisions it waits on.</p>
+<details class="fold" id="pdec"><summary id="decs">Plan decisions that need your input</summary><ol class="decl" id="decl"></ol></details>
+<details class="fold"><summary>How long finished tickets took, against their estimate</summary><div class="acc" id="accb"></div></details>
+<details class="fold"><summary id="themh">Themes in the plan's running version</summary><div id="themb"></div></details>
+<details class="fold"><summary>What users gained</summary><div class="gains" id="gains"></div></details>
 <footer>
-<details class="fold"><summary>Terms</summary>
-<dl class="terms" id="terms"></dl></details>
 <details class="fold" id="pvj"><summary id="pvjs">Plan vs Jira</summary><div id="pvjb"></div></details>
 <details class="fold"><summary>Budget rules</summary><div class="rules" id="rules"></div></details>
+<details class="fold"><summary>Terms</summary>
+<dl class="terms" id="terms"></dl></details>
 <p id="prov"></p>
 </footer>
+</section>
 </main>
 </div>
 <div id="scrim" hidden></div>
@@ -1082,69 +1153,10 @@ function versionBody(i,host){
  if(w.length){host.appendChild(add(el("h3","grp"),"Working now",el("span",null,pl(w.length,"leg","legs"))));
   var ul=el("ul","work");w.forEach(function(p){ul.appendChild(add(el("li"),chip(M.leg(p)),impactText(p,el("span"))))});host.appendChild(ul)}
  ticketList(host,a,5,function(k){return T[k]})}
-// The release desk: tiles, the decisions queue with its levers, the versions strip, what users gained.
 var WI={},ALL=false,BAND=["Stops now","Blocks release","Queue health"];
 function num(x){return x==null?"–":x===Math.round(x)?String(x):f2(x)}
 function bw(b){return b.what+" "+num(b.used)+" of "+num(b.cap)}
-function tile(lb,fig,sb,on,hot){var b=el("button",hot?"tile hot":"tile");b.type="button";add(b,el("span","lb",lb),el("span","fig",fig));
- if(sb!=null)b.appendChild(typeof sb=="string"?el("span","sb",sb):sb);b.addEventListener("click",function(){on(b)});return b}
-function jump(id){var s=$(id);s.scrollIntoView({block:"start"});s.focus({preventScroll:true})}
-function svg(t,a){var e=document.createElementNS("http://www.w3.org/2000/svg",t);for(var k in a)e.setAttribute(k,a[k]);return e}
-// donut: done / live / started arcs over the to-do ring; r 15.9155 makes the circumference 100, so a dash is a percentage.
-function donut(parts,tot,label){var s=svg("svg",{viewBox:"0 0 42 42","class":"donut",role:"img","aria-label":label}),off=0;
- s.appendChild(svg("circle",{cx:21,cy:21,r:15.9155,"class":"rg"}));
- parts.forEach(function(x){if(!x[1])return;var p=100*x[1]/(tot||1);s.appendChild(svg("circle",{cx:21,cy:21,r:15.9155,"class":x[0],"stroke-dasharray":p+" "+(100-p),"stroke-dashoffset":-off}));off+=p});return s}
 function fmtMin(m){return m==null?"–":m<60?Math.round(m)+" min":(Math.round(m/6)/10)+" h"}
-function renderTiles(){var h=$("tiles"),cur=D.CUR,tr=M.tally(M.inTrain());h.textContent="";
- var g=tile("v1.0.x shipped",pct(tr.done,tr.n)+" %",tr.done+" of "+tr.n+" tickets done",function(b){openDrill("done",{train:1},"v1.0.x: shipped",b)});
- g.className+=" dn";g.appendChild(donut([["d",tr.done],["l",tr.live],["s",tr.prog-tr.live]],tr.n,tr.done+" of "+tr.n+" done, "+tr.live+" with a leg"));h.appendChild(g);
- if(cur!=null){var t=M.tally(M.inV(cur)),ld=M.load(cur),r=tile("Running now",D.V[cur],t.left+" left · "+(ld.cap!=null?pct(ld.used,ld.cap)+" % of its budget":"no cap"),function(){select(cur,true)});
-  add(r,strip(t),capBar(ld));h.appendChild(r)}
- else h.appendChild(tile("Running now","–","Every v1.0.x ticket is done.",function(){jump("gain")}));
- var lv=D.P.filter(function(p){return M.leg(p)}),ch=el("span","chips");
- lv.slice(0,3).forEach(function(p){ch.appendChild(chip(M.leg(p)))});if(lv.length>3)ch.appendChild(el("span","sb","+"+(lv.length-3)));
- var mv=tile("Legs on it",String(lv.length),lv.length?null:"No leg is on a ticket.",function(b){openDrill("live",{train:1},"Legs working now",b)});
- if(lv.length)mv.appendChild(ch);h.appendChild(mv);
- var ac=M.accuracy(),all=[],mx=0;ac.forEach(function(x){mx=Math.max(mx,x.med);x.rows.forEach(function(r){all.push(r.min)})});
- var e=tile("A done ticket took",fmtMin(M.med(all)),all.length?"median of "+all.length+" measured · per size:":"No wrapped leg measured yet.",function(){jump("acc")});
- if(ac.length){var mb=el("span","mb");mb.setAttribute("role","img");mb.setAttribute("aria-label",ac.map(function(x){return x.size+" "+fmtMin(x.med)}).join(", "));
-  ac.forEach(function(x){var i=el("i");i.style.height=Math.max(2,22*x.med/(mx||1))+"px";i.title=x.size+": median "+fmtMin(x.med);mb.appendChild(add(el("span"),i,x.size))});e.appendChild(mb)}
- h.appendChild(e)}
-// select(i): the rail, the chart and the board follow the picked version.
-var SEL=D.CUR!=null?D.CUR:0,DOPEN=false;
-function select(i,go){SEL=i;renderRail();renderChart();renderBoard();renderThemes();if(go)jump("board")}
-function renderRail(){var h=$("raill");h.textContent="";
- V.forEach(function(_,i){var a=M.inV(i,REM),t=M.tally(a),bx=M.breaches(i,M.stats(i,M.inV(i))),b=el("button",M.parent(i)>=0?"vr tr":"vr"),nm=el("span","nm"),
-  fg=el("span",bx.length?"fg x":"fg",(bx.length?"▲ ":"")+(t.n?t.left?t.left+" left":"✓ shipped":"empty"));b.type="button";
-  if(i===SEL)b.setAttribute("aria-current","true");if(bx.length)fg.title="over cap: "+bx.map(bw).join(", ");
-  if(i===D.CUR){var cd=el("span","cur-dot");cd.title="running now";nm.appendChild(cd)}add(nm,D.V[i]);
-  add(b,nm,fg,strip(t));b.addEventListener("click",function(){select(i,true)});h.appendChild(b)})}
-// renderChart: one column per v1.0.x version, stacked done / live / started / to do, ▲ over a cap; height is the ticket count.
-function renderChart(){var h=$("cols"),idx=[],mx=1;h.textContent="";V.forEach(function(_,i){if(M.train(i)){idx.push(i);mx=Math.max(mx,M.inV(i,REM).length)}});
- idx.forEach(function(i){var t=M.tally(M.inV(i,REM)),bx=M.breaches(i,M.stats(i,M.inV(i))),b=el("button",M.parent(i)>=0?"col tr":"col"),st=el("span","stk");b.type="button";
-  b.setAttribute("aria-pressed",i===SEL?"true":"false");
-  b.setAttribute("aria-label",D.V[i]+": "+t.done+" done, "+t.live+" with a leg, "+(t.prog-t.live)+" started, "+t.todo+" to do"+(bx.length?"; over cap":""));
-  st.style.height=(100*t.n/mx)+"%";[["d",REM?0:t.done],["l",t.live],["s",t.prog-t.live],["t",t.todo]].forEach(function(x){if(x[1]>0){var s=el("i",x[0]);s.style.flexGrow=x[1];st.appendChild(s)}});
-  add(b,el("span",bx.length?"cn x":"cn",(bx.length?"▲":"")+(t.left||"✓")),add(el("span","well"),st),el("span","nm",D.V[i].replace(/^v1\.0\./,".")));
-  b.title=D.V[i];b.addEventListener("click",function(){select(i,true)});h.appendChild(b)});
- var k=$("ckey");k.textContent="";[["d","done"],["l","a leg is on it"],["s","started"],["t","to do"]].forEach(function(x){k.appendChild(add(el("span"),add(el("i","stk-key"),null),x[1])).firstChild.className="i-"+x[0]});
- k.appendChild(el("span","x","▲ over a cap"))}
-function kcard(p){var b=el("button","kcard"),top=el("span","kt"),lg=M.leg(p),ac=M.act(p);b.type="button";
- add(top,el("code",null,keyOf(p)),p[10]?el("span","sz",p[10]):null,p[12]!=null?dots(p[12]):null);add(b,top,impactText(p,el("span","kx")));
- if(lg)b.appendChild(chip(lg));
- if(p[2]==2){var tk=el("span","took");
-  if(ac){var bar=el("span","tb"),f=el("i");f.style.width=Math.min(100,100*ac[1]/ACTMAX)+"%";add(tk,"est "+(p[10]||"?")+" · took "+pl(ac[0],"leg","legs")+", "+fmtMin(ac[1]),add(bar,f))}
-  else tk.textContent="est "+(p[10]||"?")+" · not measured";b.appendChild(tk)}
- b.addEventListener("click",function(){openDrill("one",{k:p[0]},keyOf(p),b)});return b}
-var ACTMAX=1;Object.keys(D.ACT||{}).forEach(function(k){ACTMAX=Math.max(ACTMAX,D.ACT[k][1])});
-function renderBoard(){var i=SEL,h=$("boardb"),a=M.inV(i,REM),t=M.tally(a),ld=M.load(i,REM),kan=el("div","kan");h.textContent="";
- $("boardh").textContent=D.V[i]+(i===D.CUR?" · running now":"");
- add(h,headline(i,t),el("p","lead",M.summary(a,"theme").lead),add(el("div","bars"),strip(t),capBar(ld),capLine(i,ld)));
- [["To do","todo",function(p){return p[2]==0}],["In progress","doing",function(p){return p[2]==1}],["Done","done",function(p){return p[2]==2}]].forEach(function(c){
-  if(REM&&c[1]=="done")return;var ps=M.order(a.filter(c[2])),col=el("section","kc "+(c[1]=="doing"?"prog":c[1]));
-  col.appendChild(add(el("h3"),c[0],el("span",null,String(ps.length))));ps.slice(0,6).forEach(function(p){col.appendChild(kcard(p))});
-  if(ps.length>6)col.appendChild(nb("+"+(ps.length-6)+" more",c[1],{v:i},V[i]+": "+c[0].toLowerCase()));
-  if(!ps.length)col.appendChild(el("p","fact","Nothing here."));kan.appendChild(col)});h.appendChild(kan)}
 function renderAcc(){var h=$("accb"),ac=M.accuracy(),mx=1;h.textContent="";
  if(!ac.length){h.appendChild(el("p","fact","No done ticket has both a size estimate and a wrapped leg yet."));return}
  ac.forEach(function(x){x.rows.forEach(function(r){mx=Math.max(mx,r.min)})});
@@ -1154,7 +1166,7 @@ function renderAcc(){var h=$("accb"),ac=M.accuracy(),mx=1;h.textContent="";
   m.style.left=(100*x.med/mx)+"%";tr.appendChild(m);
   add(r,add(el("span","as"),el("span","sz",x.size),el("span","fact","×"+x.n)),tr,el("span","am",fmtMin(x.med)+" · "+pl(x.legs,"leg","legs")));h.appendChild(r)});
  h.appendChild(add(el("div","aax"),el("span",null,"0"),el("span",null,fmtMin(mx))))}
-function renderThemes(){var i=SEL,h=$("themb"),a=M.inV(i,REM),g={};h.textContent="";$("themh").textContent="Themes in "+D.V[i];
+function renderThemes(){var i=D.CUR!=null?D.CUR:0,h=$("themb"),a=M.inV(i,REM),g={};h.textContent="";$("themh").textContent="Themes in "+D.V[i];
  a.forEach(function(p){var k=p[5];g[k]=g[k]||{k:k,d:0,n:0};g[k].n++;if(p[2]==2)g[k].d++});
  var gs=Object.keys(g).map(function(k){return g[k]}).sort(function(x,y){return y.n-x.n||String(T[x.k]).localeCompare(String(T[y.k]))}).slice(0,8),mx=gs.length?gs[0].n:1;
  gs.forEach(function(x){var bar=el("span","thb"),d=el("i","d"),l=el("i","t");d.style.width=(100*x.d/mx)+"%";l.style.width=(100*(x.n-x.d)/mx)+"%";add(bar,d,l);
@@ -1217,14 +1229,11 @@ function body(d,li,id,paint){li.appendChild(el("span","band b"+d.band,BAND[d.ban
   if(st.lv=="place"){var b2=el("div","wi"),l2=el("ul","fall");d.u.forEach(function(x){l2.appendChild(add(el("li"),el("span"),add(el("span","t"),el("code",null,"HIMMEL-"+x[0])," ",x[1]),el("span","fact",x[3])))});
    add(b2,l2,copyLine(d.u.map(function(x){return "place HIMMEL-"+x[0]})));li.appendChild(b2)}}}
 function card(d,id){var li=el("li","card");function paint(f){li.textContent="";body(d,li,id,paint);if(f){var x=li.querySelector('[data-f="'+f+'"]');if(x)x.focus()}}paint();return li}
-function renderDecisions(ds){var ol=$("decl");ol.textContent="";$("decn").textContent=ds.length;
- $("decb").className=ds.some(function(d){return d.band<2})?"dbtn hot":"dbtn";
+function renderDecisions(ds){var ol=$("decl"),s=$("decs");ol.textContent="";s.textContent="Plan decisions that need your input ("+ds.length+")";
+ s.className=ds.some(function(d){return d.band<2})?"hot":"";
  if(!ds.length){ol.appendChild(el("li","card fact","Nothing needs a decision: every cap holds, no leg waits, Jira and the plan agree."));return}
  var id={};(ALL?ds:ds.slice(0,40)).forEach(function(d){var k=d.type+":"+d.i+":"+(d.p?d.p[0]:"");id[k]=(id[k]||0)+1;ol.appendChild(card(d,k+":"+id[k]))});
  if(!ALL&&ds.length>40){var b=el("button","lv","+"+(ds.length-40)+" more");b.type="button";b.addEventListener("click",function(){ALL=true;renderDecisions(ds)});ol.appendChild(add(el("li","card"),b))}}
-// decMenu: the decisions open as a menu under the header; Esc or the button closes it.
-function decMenu(o){DOPEN=o;$("decp").hidden=!o;$("decb").setAttribute("aria-expanded",o?"true":"false");if(o){var f=$("decp").querySelector("button,input");if(f)f.focus()}}
-$("decb").addEventListener("click",function(){decMenu(!DOPEN)});
 function renderGains(){var h=$("gains");h.textContent="";
  var g=M.gains().sort(function(x,y){return y.done.filter(M.isUser).length-x.done.filter(M.isUser).length||y.done.length-x.done.length||x.i-y.i}).slice(0,4);
  if(!g.length){h.appendChild(el("p","fact","Nothing has shipped on the v1.0.x train yet."));return}
@@ -1235,12 +1244,80 @@ function renderPvj(){var a=M.inTrain(REM),dr=a.filter(function(p){return p[7]==1
  $("pvjs").textContent="Plan vs Jira: "+(dr.length+off.length?(dr.length+off.length)+" differ ›":"they agree");b.textContent="";
  if(dr.length){b.appendChild(el("p",null,pl(dr.length,"ticket is","tickets are")+" planned for one version while Jira names another."));M.order(dr).forEach(function(p){b.appendChild(ticket(p))})}
  if(off.length){b.appendChild(el("p",null,pl(off.length,"open ticket sits","open tickets sit")+" in a version in Jira but not in the plan."));M.order(off).forEach(function(p){b.appendChild(ticket(p))})}}
-function render(){var ds=M.decisions();renderTiles();renderDecisions(ds);renderRail();renderChart();renderBoard();renderAcc();renderThemes();renderGains();renderPvj()}
+// The version-first view (HIMMEL-3990): Jira's own versions and status names, built from D.JV / D.JT; the plan's views sit folded below.
+var JV=D.JV,JT=D.JT,JB=[["todo","To Do"],["prog","In Progress"],["rev","In Review"],["ci","IN CI"],["done","Done"]],
+ RMO=matchMedia("(prefers-reduced-motion: reduce)").matches,JCUR=D.JC,JNXT=D.JN,JSEL=D.JC>=0?D.JC:JV.length-1;
+var HIDE=true;try{var hs=localStorage.getItem("hide3990");if(hs!==null)HIDE=hs==="1"}catch(e){}
+// jb(t): a To Do ticket a live leg works reads In Progress; Jira's own later status always wins; wont do/fix count as done.
+function jb(t){return t.live?"prog":t.b=="wont"?"done":t.b}
+function jin(i){return JT.filter(function(t){return t.v===i})}
+function jtally(a){var r={n:a.length};JB.forEach(function(s){r[s[0]]=[]});a.forEach(function(t){r[jb(t)].push(t)});r.open=a.length-r.done.length;return r}
+function jdot(b,x){return el("span","jst jc-"+b,x)}
+function jnum(label,title,list,cls){var b=el("button",cls||"jn",String(label));b.type="button";
+ b.addEventListener("click",function(e){e.stopPropagation();openDrill("jt",{list:list},title,b)});return b}
+function jlist(db,list){db.appendChild(el("p","note",pl(list.length,"ticket","tickets")+"."));
+ list.slice().sort(function(a,c){return a.k-c.k}).forEach(function(t,j){var r=el("div","jrow enter"),m=el("div","jm");r.style.animationDelay=Math.min(j,12)*18+"ms";
+  add(r,el("div","jkey","HIMMEL-"+t.k),el("div","jtl",t.t));add(m,jdot(jb(t),t.live?"a leg is on it":t.s));
+  if(t.leg)add(m," · leg "+t.leg[0]+" "+t.leg[1]+(t.live?" (Jira still To Do)":""));
+  if(t.pv&&t.pv!==JV[t.v].n)add(m," · ","the plan places it in "+t.pv);
+  r.appendChild(m);if(t.ui)r.appendChild(el("div","jui",t.ui));db.appendChild(r)})}
+// jbar(t): segments start at width 0 and grow on the next frame, so a fill animates on load and on every re-render.
+function jbar(t,big){var w=el("div",big?"jbar big":"jbar");JB.slice().reverse().forEach(function(s){var n=t[s[0]].length;if(!n)return;var i=el("i","js-"+s[0]);i.dataset.w=(100*n/(t.n||1))+"%";i.title=s[1]+": "+n;w.appendChild(i)});
+ w.setAttribute("role","img");w.setAttribute("aria-label",JB.map(function(s){return t[s[0]].length+" "+s[1]}).join(", "));return w}
+function jgrow(){var a=document.querySelectorAll(".jbar i[data-w]");requestAnimationFrame(function(){requestAnimationFrame(function(){a.forEach(function(i){i.style.width=i.dataset.w;i.removeAttribute("data-w")})})})}
+function jhero(){var h=$("hh"),s=$("sent"),hn=$("hnote");s.textContent="";hn.textContent=D.RU?"release state unknown":"";
+ if(D.RU)hn.title="No versions file was found, so no version counts as released. Write `jira versions` to <mirror-dir>.versions.tsv.";
+ var lg=$("legend"),nx=$("next"),al=$("alerts"),nb0=jbar(jtally([]),true);nb0.id="hbar";$("hbar").replaceWith(nb0);lg.textContent="";nx.textContent="";al.textContent="";
+ if(JCUR<0){h.textContent="Nothing open";s.textContent="Every unreleased version is done.";return}
+ var v=JV[JCUR],t=jtally(jin(JCUR));h.textContent=v.n;
+ add(s,jnum(t.done.length,v.n+": Done",t.done)," of ",jnum(t.n,v.n+": every ticket",jin(JCUR))," done · ",
+  jnum(t.rev.length,v.n+": In Review",t.rev)," in review · ",jnum(t.ci.length,v.n+": IN CI",t.ci)," in CI · ",
+  jnum(t.prog.length,v.n+": In Progress",t.prog)," in progress · ",jnum(t.todo.length,v.n+": To Do",t.todo)," to do.");
+ var nb=jbar(t,true);nb.id="hbar";$("hbar").replaceWith(nb);
+ JB.slice().reverse().forEach(function(x){lg.appendChild(jdot(x[0],x[1]))});
+ if(JNXT>=0){var u=jtally(jin(JNXT));add(nx,"Up next: "+JV[JNXT].n+" — ",jnum(u.open,JV[JNXT].n+": open",jin(JNXT).filter(function(x){return jb(x)!="done"}))," open, "+u.done.length+" done.")}
+ D.JA.forEach(function(x){var rv=JV[x[0]],o=x[1].map(function(k){return JT.filter(function(t2){return t2.k===k})[0]});
+  var a=el("div","jalert");add(a,el("div","jw","● "+rv.n+" was released on "+rv.date+" but still holds "+o.length+" open ticket"+(o.length==1?"":"s")),
+   "Move "+(o.length==1?"it":"them")+" to "+v.n+" or close "+(o.length==1?"it":"them")+".");var ul=el("ul");
+  o.forEach(function(t2){var li=el("li");add(li,jnum("HIMMEL-"+t2.k,"HIMMEL-"+t2.k,[t2])," — "+t2.t+" ",jdot(jb(t2),t2.live?"a leg is on it":t2.s));ul.appendChild(li)});a.appendChild(ul);al.appendChild(a)})}
+function jboard(){var b=$("board"),f=$("donefold");b.textContent="";f.textContent="";
+ if(JSEL<0){$("bh").textContent="No versions";$("bsub").textContent="";return}
+ var v=JV[JSEL],a=jin(JSEL),t=jtally(a);
+ $("bh").textContent=v.n+(JSEL===JCUR?" — the board":" — board");
+ $("bsub").textContent=(v.rel?"Released "+v.date+". ":JSEL===JCUR?"The version being worked on. ":"Not released. ")+t.open+" open of "+t.n+".";
+ var cols=JB.filter(function(s){return !HIDE||s[0]!="done"});b.style.setProperty("--cols",cols.length);
+ cols.forEach(function(s,ci){var c=el("div","jcol enter"),h=el("h3");c.style.animationDelay=ci*40+"ms";
+  add(h,jdot(s[0],s[1]),jnum(t[s[0]].length,v.n+": "+s[1],t[s[0]]));c.appendChild(h);
+  t[s[0]].slice(0,6).forEach(function(x,j){var k=el("button","jcard enter");k.type="button";k.style.animationDelay=(ci*40+j*25)+"ms";
+   add(k,el("div","jkey","HIMMEL-"+x.k),el("div","jtl",x.t));
+   if(x.ui)k.appendChild(el("div","jui",x.ui.length>120?x.ui.slice(0,118)+"…":x.ui));
+   if(x.leg)k.appendChild(el("span","jchip",x.leg[0]+" · "+x.leg[1]+(x.leg[2]?" · PR "+x.leg[2]:"")));
+   k.addEventListener("click",function(){openDrill("jt",{list:[x]},"HIMMEL-"+x.k,k)});c.appendChild(k)});
+  if(t[s[0]].length>6)c.appendChild(jnum("+"+(t[s[0]].length-6)+" more",v.n+": "+s[1],t[s[0]]));
+  if(!t[s[0]].length)c.appendChild(el("div","jnone","None."));b.appendChild(c)});
+ if(HIDE&&t.done.length)add(f,jnum(t.done.length,v.n+": Done",t.done)," done ticket"+(t.done.length==1?" is":"s are")+" hidden. Turn off “Hide done work” to show them.")}
+function jversions(flashI){var b=$("vt");b.textContent="";var hid=0;
+ JV.forEach(function(v,i){var a=jin(i),t=jtally(a);if(!t.n)return;if(HIDE&&!t.open){hid++;return}
+  var r=el("tr","enter");r.dataset.v=i;r.tabIndex=0;if(i===JSEL)r.className="jsel"+(i===flashI?" jflash":"");
+  var st=v.rel?(t.open?["fail","Released · "+t.open+" open"]:["done","Released"]):i===JCUR?["prog","Working on"]:i===JNXT?["rev","Up next"]:["todo","Planned"];
+  var td=el("td");td.appendChild(el("span","vn",v.n));r.appendChild(td);td=el("td");td.appendChild(jdot(st[0],st[1]));r.appendChild(td);
+  td=el("td","barc");td.appendChild(jbar(t));r.appendChild(td);
+  JB.forEach(function(s){var td=el("td"),n=t[s[0]].length;td.appendChild(n?jnum(n,v.n+": "+s[1],t[s[0]]):el("span","z","0"));r.appendChild(td)});
+  td=el("td");td.appendChild(jnum(t.n,v.n+": every ticket",a));r.appendChild(td);
+  function pick(){JSEL=i;jrender(i);$("bh").scrollIntoView({behavior:RMO?"auto":"smooth"})}
+  r.addEventListener("click",pick);r.addEventListener("keydown",function(e){if(e.target!==r)return;if(e.key=="Enter"||e.key==" "){e.preventDefault();pick()}});b.appendChild(r)});
+ $("vfold").textContent=hid?hid+" version"+(hid==1?"":"s")+" with only done work "+(hid==1?"is":"are")+" hidden.":""}
+function jrender(flashI){jhero();jboard();jversions(flashI);jgrow();$("hide").setAttribute("aria-checked",HIDE?"true":"false")}
+// Hide-done: fade the outgoing columns and rows, then re-render; the board keeps its height, so nothing jumps.
+$("hide").addEventListener("click",function(){HIDE=!HIDE;try{localStorage.setItem("hide3990",HIDE?"1":"0")}catch(e){}
+ if(RMO){jrender();return}document.querySelectorAll(".jcol,#vt tr").forEach(function(e){e.classList.remove("enter");e.classList.add("leave")});setTimeout(jrender,180)});
+function render(){var ds=M.decisions();jrender();renderDecisions(ds);renderAcc();renderThemes();renderGains();renderPvj()}
 // drawer: numbers open it; focus moves in, Tab is trapped, Esc closes and focus returns to the number that opened it.
 function openDrill(kind,scope,title,from){
  var db=$("db");db.textContent="";$("dh").textContent=title;if($("drawer").hidden)opener=from;
  if(kind=="load")loadView(scope.v,db);
  else if(kind=="version"){db.appendChild(headline(scope.v,M.tally(M.inV(scope.v,REM))));versionBody(scope.v,db)}
+ else if(kind=="jt")jlist(db,scope.list);
  else if(kind=="one")D.P.filter(function(p){return p[0]==scope.k}).forEach(function(p){var t=ticket(p);t.open=true;db.appendChild(t)});
  else{var a=M.drill(kind,scope,REM);
   db.appendChild(el("p","note",pl(a.length,"ticket","tickets")+(REM?", done ones hidden":"")+"."));a.forEach(function(p){db.appendChild(ticket(p))})}
@@ -1258,18 +1335,17 @@ function loadView(i,db){var ld=M.load(i,REM),tb=el("table","ld"),hr=el("tr");
   d.appendChild(el("summary",null,k.kind+": "+pl(k.tickets.length,"ticket","tickets")+", "+f2(k.used)+(k.cap!=null?" of "+f2(k.cap):"")+" ›"));
   var ol=el("ol","ct");k.tickets.forEach(function(p){var li=el("li"),t=el("span","t");add(t,el("code",null,keyOf(p))," ",p[9]?p[9].replace(/^internal:\s*/i,""):p[1]);t.title=p[9]||p[1];
    add(li,t,el("span","v",M.ld(p).toFixed(3)+" · "+pct(M.ld(p),ld.used)+" %"));ol.appendChild(li)});d.appendChild(ol);db.appendChild(d)})}
-document.addEventListener("keydown",function(e){if($("drawer").hidden){if(DOPEN&&e.key=="Escape"){e.preventDefault();decMenu(false);$("decb").focus()}return}
+$("dx").addEventListener("click",closeDrill);$("scrim").addEventListener("click",closeDrill);
+document.addEventListener("keydown",function(e){if($("drawer").hidden)return;
  if(e.key=="Escape"){e.preventDefault();closeDrill();return}
  if(e.key!="Tab")return;var f=[].slice.call($("drawer").querySelectorAll("button,summary,a[href],[tabindex]")).filter(function(x){return x.offsetParent!==null||x===$("dh")});
  if(!f.length)return;var i=f.indexOf(document.activeElement);
  if(e.shiftKey&&i<=0){e.preventDefault();f[f.length-1].focus()}else if(!e.shiftKey&&i==f.length-1){e.preventDefault();f[0].focus()}});
-$("dx").addEventListener("click",closeDrill);$("scrim").addEventListener("click",closeDrill);
-$("rem").addEventListener("change",function(){REM=this.checked;render()});
 var TK="hrt-theme";function applyTheme(m){if(m)document.documentElement.setAttribute("data-theme",m);else document.documentElement.removeAttribute("data-theme")}
 try{applyTheme(localStorage.getItem(TK))}catch(e){}
 $("theme").addEventListener("click",function(){var dk=getComputedStyle(document.documentElement).colorScheme=="dark",m=dk?"light":"dark";applyTheme(m);try{localStorage.setItem(TK,m)}catch(e){}});
 $("stamp").textContent="Rendered "+D.gen+" · Jira "+D.mir+" · plan @"+D.sha;
-$("prov").textContent="Status is read from the Jira mirror, and a leg with a held queue lock counts its ticket as in progress. Impact text, sizes, readiness and budgets come from the roadmap plan.";
+$("prov").textContent="Versions and statuses are read from Jira (fixVersion and status name); a leg with a held queue lock shows its To Do ticket as In Progress. Impact text, sizes, readiness and budgets come from the roadmap plan.";
 (function(){var t=$("terms"),mk=function(c){return el("span","mk "+c)};
  [["Status",[mk("done"),"done · ",mk("live"),"a leg is on it · ",mk("started"),"started in Jira, no leg · ",mk("todo"),"to do"]],
   ["Leg chip",["N123 · LIVE: the leg's label and its last marker (or its PR number while it is live)."]],
@@ -1278,7 +1354,7 @@ $("prov").textContent="Status is read from the Jira mirror, and a leg with a hel
   ["Ready to build",["0 no plan yet · 1 problem stated · 2 fix named, not yet checked · 3 plan audited · 4 spec ready. Below 3 a version schedules only a planning slice."]],
   ["Budget",[capBar({used:.45,cap:.6,kinds:[]})," used of the version's cap; the tick is the cap, orange is over it."]],
   ["No cap",[capBar({deferred:true})," ","no cap — deferred bucket"]],
-  ["Remaining only",["Hides done tickets everywhere; every count, budget and summary is recomputed from what is left."]]
+  ["Hide done work",["Hides Done, Closed, In Public, wont do and wont fix from the version board and its lists. The counts in the sentence and the table still include them."]]
  ].forEach(function(x){t.appendChild(el("dt",null,x[0]));var d=el("dd");x[1].forEach(function(c){add(d,c)});t.appendChild(d)})})();
 D.CAP.text.forEach(function(x){$("rules").appendChild(el("p",null,x))});
 render();

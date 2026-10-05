@@ -59,10 +59,15 @@ printf '%s\t%s\t%s\n' key close_flag close_evidence \
 printf '%s\t%s\n' key reason HIMMEL-4 'unplaced reason text' > "$plan/stage3/unplaced.tsv"
 printf '%s\t%s\t%s\n' key theme impact HIMMEL-1 tooling 4 > "$plan/stage1/C01.tsv"
 
-# mk <n> <statusCategory> <fixVersions json> <title>
+# mk <n> <statusCategory> <fixVersions json> <title> [status name]; writes into $mdir. A status name is the Jira status
+# (HIMMEL-3990); without one the frontmatter has no `status:` line and the page falls back to the category.
+mdir="$mir"
 mk() {
-    printf '%s\n' '---' "key: \"HIMMEL-$1\"" 'updated: "2026-09-30T10:00:00.000+0000"' "statusCategory: \"$2\"" \
-        "fixVersions: $3" 'type: "Bug"' '---' "# HIMMEL-$1: $4" > "$mir/HIMMEL-$1.md"
+    {
+        printf '%s\n' '---' "key: \"HIMMEL-$1\"" 'updated: "2026-09-30T10:00:00.000+0000"' "statusCategory: \"$2\""
+        [ -n "${5:-}" ] && printf 'status: "%s"\n' "$5"
+        printf '%s\n' "fixVersions: $3" 'type: "Bug"' '---' "# HIMMEL-$1: $4"
+    } > "$mdir/HIMMEL-$1.md"
 }
 mk 1 'To Do' '["v1.0.1"]' 'planned bug'
 mk 2 'To Do' '[]' 'parked ticket'
@@ -102,7 +107,7 @@ contains 'readiness reads in words (HIMMEL-3990)' "$html" '"fix named, not yet c
 contains 'impact is a secondary 5-dot tag (HIMMEL-3990)' "$html" '"impact "+n+" of 5"'
 contains 'the notes list is labelled vault notes (HIMMEL-3990)' "$html" 'Vault notes that mention it:'
 # Ask 2: the terms name every scale.
-for s in 'Status' 'Leg chip' 'Size' 'Impact' 'Ready to build' 'Budget' 'No cap' 'Remaining only'; do
+for s in 'Status' 'Leg chip' 'Size' 'Impact' 'Ready to build' 'Budget' 'No cap' 'Hide done work'; do
     contains "the terms name $s (HIMMEL-3990)" "$html" "[\"$s\","
 done
 contains 'the size scale comes from the plan (HIMMEL-3957)' "$html" 'XS 0.44 · S 1 · M 2.2 · L 5 · XL 11.1'
@@ -139,8 +144,8 @@ contains 'a cap the plan does not record says so (HIMMEL-3957)' "$html3" 'not re
 write_meta 20 0.6
 write_caps 0.30
 # HIMMEL-3990: the page contract — tokens for both themes, phone layout, keyboard-reachable drill-downs.
-contains 'dark tokens follow the system (HIMMEL-3990)' "$html" '@media (prefers-color-scheme:dark){:root:not([data-theme="light"])'
-contains 'dark tokens follow the toggle (HIMMEL-3990)' "$html" ':root[data-theme="dark"]{'
+contains 'light tokens follow the system (HIMMEL-3990)' "$html" '@media (prefers-color-scheme:light){:root:not([data-theme="dark"])'
+contains 'light tokens follow the toggle (HIMMEL-3990)' "$html" ':root[data-theme="light"]{'
 contains 'the phone layout has its own rules (HIMMEL-3990)' "$html" '@media (max-width:560px)'
 contains 'every number is a button (HIMMEL-3990)' "$html" 'var b=el("button","n",label);b.type="button";'
 contains 'the drill-down is a modal dialog (HIMMEL-3990)' "$html" 'role="dialog" aria-modal="true"'
@@ -148,24 +153,18 @@ contains 'Escape closes the drill-down (HIMMEL-3990)' "$html" 'if(e.key=="Escape
 contains 'closing returns focus to the number (HIMMEL-3990)' "$html" 'opener.focus()'
 contains 'the pulse respects reduced motion (HIMMEL-3990)' "$html" '@media (prefers-reduced-motion:no-preference)'
 contains 'caps are tested by null, never truthiness: a cap of 0 is a cap (HIMMEL-3957)' "$html" 'cap==null?null:r4(cap-u)'
-contains 'the dashboard renders tiles, the decisions menu, the version rail and the board (HIMMEL-3990)' "$html" 'renderTiles();renderDecisions(ds);renderRail();renderBoard();renderAcc();renderThemes();renderGains()'
-not_contains 'the rail is the only version overview: no column chart (HIMMEL-3990)' "$html" 'renderChart'
-contains 'the dark theme is the Watchfloor hull (HIMMEL-3990)' "$html" '--bg:#0b1120'
-contains 'a status legend names the hollow circle (HIMMEL-3990)' "$html" '["todo","not started"]'
-contains 'the decisions open with a per-band summary (HIMMEL-3990)' "$html" 'function decSummary(ds)'
-contains 'gains name work done ahead of schedule (HIMMEL-3990)' "$html" '"Also done ahead of schedule: "'
-contains 'a wide screen gets a side column (HIMMEL-3990)' "$html" '@media (min-width:1500px)'
-contains 'the budget rules say what a bank is (HIMMEL-3990)' "$html" 'Bank = '
+not_contains 'the page has no column chart (HIMMEL-3990)' "$html" 'renderChart'
+contains 'the status legend names the five Jira statuses (HIMMEL-3990)' "$html" '["todo","To Do"],["prog","In Progress"],["rev","In Review"],["ci","IN CI"],["done","Done"]'
 not_contains 'the steer panel waits for the UI phase (HIMMEL-3990)' "$html" 'renderSteer'
-contains 'a done card says what it took against its estimate (HIMMEL-3990)' "$html" '"est "+(p[10]||"?")+" · took "+pl(ac[0],"leg","legs")'
-contains 'the decisions open as a menu from the masthead (HIMMEL-3990)' "$html" 'aria-controls="decp"'
+contains 'the estimate-vs-actual fold shows each size against what finished work took (HIMMEL-3990)' "$html" 'fmtMin(x.med)+" · "+pl(x.legs,"leg","legs")'
+contains 'the plan decisions sit in a folded section (HIMMEL-3990)' "$html" '<details class="fold" id="pdec"><summary id="decs">'
 contains 'a lever words its console instruction (HIMMEL-3990)' "$html" 'lines.push("open trail "+toName)'
 contains 'a nested drill keeps the first opener (HIMMEL-3990)' "$html" '"drawer").hidden)opener=from;'
 # The new plan inputs move the freshness fingerprint; each render must itself succeed (HIMMEL-3979).
-# fp_ok <label> <var> -- render --emit-fp into <var>, failing the test when the render exits non-zero.
+# fp_ok <label> <var> [render args] -- render --emit-fp into <var>, failing the test when the render exits non-zero.
 fp_ok() {
     local o rc
-    o="$(render --emit-fp)"
+    o="$(render --emit-fp "${@:3}")"
     rc=$?
     if [ "$rc" -eq 0 ]; then pass "$1: --emit-fp exits 0 (HIMMEL-3979)"; else fail "$1: --emit-fp exited $rc"; fi
     printf -v "$2" '%s' "$o"
@@ -294,6 +293,66 @@ contains 'a v1.0.2b ticket renders (HIMMEL-4026)' "$thtml" '"trail b ticket"'
 contains 'trail versions sit in train order (HIMMEL-4026)' "$thtml" '"v1.0.1","v1.0.1a","v1.0.1b","v1.0.2","v1.0.2b"'
 contains 'the whole-train ledger counts trail tickets (HIMMEL-4026)' "$tstdout" 'Whole v1.0.x train: 1 of 8 done'
 contains 'the JS train test accepts a trail suffix (HIMMEL-4026)' "$thtml" '/^v1\.0\.\d+[a-z]?$/'
+
+# --- HIMMEL-3990: version-first page. Versions and release state come from Jira (mirror fixVersions + a `jira versions`
+# snapshot in <mirror-dir>.versions.tsv); the main view answers "which version are we working on".
+# No versions file yet: no version counts as released and the page says so.
+contains 'a missing versions file means release state unknown (HIMMEL-3990)' "$html" '"RU":true'
+contains 'the hero says release state unknown (HIMMEL-3990)' "$html" '"release state unknown"'
+jm="$W/jm"
+mkdir -p "$jm"
+mdir="$jm"
+mk 30 'Done' '["v1.0.1"]' 'released done one' 'Done'
+mk 31 'To Do' '["v1.0.1"]' 'released but open' 'To Do'
+mk 32 'In Progress' '["v1.0.3","v1.0.2"]' 'review one' 'In Review'
+mk 33 'In Progress' '["v1.0.2"]' 'ci one' 'IN CI'
+mk 34 'To Do' '["v1.0.3"]' 'next one' 'To Do'
+mk 35 'Done' '["v1.0.2"]' 'wont one' 'wont do'
+mk 36 'In Progress' '["v1.0.2"]' 'category fallback one'
+mk 37 'To Do' '["v1.0.0"]' 'zero version one' 'To Do'
+mdir="$mir"
+printf 'v1.0.0\ttrue\t2026-09-30\nv1.0.1\ttrue\t2026-10-04\nv1.0.2\tfalse\t\nv1.0.3\tfalse\t\n' > "$W/jm.versions.tsv"
+render --mirror-dir "$jm" >/dev/null
+jhtml="$(cat "$out" 2>/dev/null)"
+contains 'the default versions file is <mirror-dir>.versions.tsv (HIMMEL-3990)' "$jhtml" \
+    '"JV":[{"n":"v1.0.1","rel":true,"date":"2026-10-04"},{"n":"v1.0.2","rel":false,"date":""},{"n":"v1.0.3","rel":false,"date":""}]'
+contains 'a versions file means release state is known (HIMMEL-3990)' "$jhtml" '"RU":false'
+not_contains 'a ticket with only v1.0.0 is in no version (HIMMEL-3990)' "$jhtml" '"t":"zero version one"'
+contains 'working on is the earliest unreleased version with open work, not a released one (HIMMEL-3990)' "$jhtml" '"JC":1,'
+contains 'up next is the next unreleased version holding a ticket (HIMMEL-3990)' "$jhtml" '"JN":2,'
+contains 'a released version holding an open ticket is alerted, naming the ticket (HIMMEL-3990)' "$jhtml" '"JA":[[0,[31]]]'
+contains 'the alert text names the release date and the open tickets (HIMMEL-3990)' "$jhtml" ' but still holds '
+contains 'In Review is counted from the status name (HIMMEL-3990)' "$jhtml" '"k":32,"t":"review one","s":"In Review","b":"rev","v":1,'
+contains 'IN CI is counted from the status name (HIMMEL-3990)' "$jhtml" '"k":33,"t":"ci one","s":"IN CI","b":"ci","v":1,'
+contains 'wont do counts as done (HIMMEL-3990)' "$jhtml" '"s":"wont do","b":"wont"'
+contains 'an unknown status falls back to the status category (HIMMEL-3990)' "$jhtml" '"t":"category fallback one","s":"In Progress","b":"prog"'
+contains 'a released-only ticket keeps its released version (HIMMEL-3990)' "$jhtml" '"k":30,"t":"released done one","s":"Done","b":"done","v":0,'
+contains 'hide done work is ON by default (HIMMEL-3990)' "$jhtml" 'var HIDE=true;try{var hs=localStorage.getItem("hide3990")'
+contains 'the hide switch starts checked (HIMMEL-3990)' "$jhtml" 'role="switch" aria-checked="true"'
+contains 'the switch is labelled Hide done work (HIMMEL-3990)' "$jhtml" 'Hide done work</button>'
+contains 'the board caps a column at 6 cards (HIMMEL-3990)' "$jhtml" 'slice(0,6)'
+contains 'a drill says where the plan places a ticket that Jira puts elsewhere (HIMMEL-3990)' "$jhtml" '"the plan places it in "'
+contains 'every version is a keyboard-pickable row (HIMMEL-3990)' "$jhtml" 'e.key=="Enter"||e.key==" "'
+contains 'the version table is titled Every version (HIMMEL-3990)' "$jhtml" '<h2 id="vh">Every version</h2>'
+not_contains 'no tiles section (HIMMEL-3990)' "$jhtml" 'id="tiles"'
+# an explicit --versions-file wins over the default path
+printf 'v1.0.1\tfalse\t\nv1.0.2\ttrue\t2026-10-05\n' > "$W/alt.versions.tsv"
+render --mirror-dir "$jm" --versions-file "$W/alt.versions.tsv" >/dev/null
+althtml="$(cat "$out" 2>/dev/null)"
+contains '--versions-file names the snapshot (HIMMEL-3990)' "$althtml" '"JV":[{"n":"v1.0.1","rel":false,"date":""},{"n":"v1.0.2","rel":true,"date":"2026-10-05"}]'
+# the versions file is a fingerprint input: a release moves tracker=
+fpa='' fpb='' fpc='' fpd='' fpe=''
+fp_ok 'versions base' fpa --mirror-dir "$jm"
+printf 'v1.0.1\ttrue\t2026-10-04\nv1.0.2\ttrue\t2026-10-05\nv1.0.3\tfalse\t\n' > "$W/jm.versions.tsv"
+fp_ok 'versions released' fpb --mirror-dir "$jm"
+if [ -n "$fpa" ] && [ "$fpa" != "$fpb" ]; then pass 'a versions-file change moves the fingerprint (HIMMEL-3990)'; else fail "a versions-file change left the fingerprint at '$fpa'"; fi
+fp_ok 'versions explicit' fpc --mirror-dir "$jm" --versions-file "$W/alt.versions.tsv"
+if [ "$fpb" != "$fpc" ]; then pass '--emit-fp reads --versions-file (HIMMEL-3990)'; else fail '--emit-fp ignored --versions-file'; fi
+rm -f "$W/jm.versions.tsv"
+fp_ok 'versions missing' fpd --mirror-dir "$jm"
+if [ "$fpb" != "$fpd" ]; then pass 'a missing versions file differs from a present one (HIMMEL-3990)'; else fail 'a missing versions file left the fingerprint'; fi
+fp_ok 'versions missing again' fpe --mirror-dir "$jm"
+if [ "$fpd" = "$fpe" ]; then pass 'the fingerprint is stable with the versions file missing (HIMMEL-3990)'; else fail 'the fingerprint moved with no input change'; fi
 
 printf '%s\n' "$fails failure(s)"
 [ "$fails" -eq 0 ]
