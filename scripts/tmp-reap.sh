@@ -21,8 +21,9 @@
 # Delete order: fixtures, then judge dirs, then dead-session scratch by size.
 #
 # ponytail: a dir held only by an other-uid process (e.g. root) is still invisible
-# to the census (an unreadable same-uid /proc entry refuses --apply, other-uid ones
-# only warn); add a privileged census if a root-held dir is ever reaped. The
+# to the census (an unreadable same-uid /proc entry refuses --apply unless its ppid chain
+# reads to pid 1 without crossing a live session, i.e. a detached non-dumpable desktop
+# daemon, which only warns; other-uid ones only warn); add a privileged census if a root-held dir is ever reaped. The
 # whitelist is name-based; widen if a kind goes missing (HIMMEL-4224 follow-ups).
 # Fixture names with whitespace are not handled (the families are mktemp names);
 # session/judge dirs still cost a du and stat each.
@@ -88,7 +89,7 @@ proc_start() {
 }
 
 # Session ids whose pid is alive AND whose start time matches procStart (guards pid reuse).
-LIVE_IDS=""
+LIVE_IDS=""; LIVE_PIDS=""
 if [ -d "$SESSIONS" ]; then
     for f in "$SESSIONS"/*.json; do
         [ -f "$f" ] || continue
@@ -96,8 +97,8 @@ if [ -d "$SESSIONS" ]; then
         set -f; set -- $row; set +f
         [ "$#" -eq 3 ] || continue
         [ -d "/proc/$2" ] || continue
-        [ "$(proc_start "$2")" = "$3" ] && LIVE_IDS="$LIVE_IDS
-$1"
+        [ "$(proc_start "$2")" = "$3" ] && { LIVE_IDS="$LIVE_IDS
+$1"; LIVE_PIDS="$LIVE_PIDS $2"; }
     done
 fi
 session_live() { case "$LIVE_IDS
@@ -109,8 +110,26 @@ $1
 # whose cwd cannot be read is counted by owner: an unreadable same-uid entry could
 # hide a live dir, so --apply refuses; other-uid ones only warn. A zombie holds no cwd.
 CENSUS_WARNED=0
+# A non-dumpable same-uid process (desktop daemons with file caps or setgid) always has an unreadable
+# cwd. It is detached when its ppid chain reads cleanly to pid 1 and crosses no live session pid: it
+# cannot then be a descendant of a session, so it holds no session's scratch. Unknown = not detached.
+detached() { # <pid>
+    local pid="$1" hops=0 s
+    while [ "$hops" -lt 64 ]; do
+        case " $LIVE_PIDS " in *" $pid "*) return 1 ;; esac
+        [ "$pid" = 1 ] && return 0
+        s="$(cat "${TMP_REAP_PROC:-/proc}/$pid/stat" 2>/dev/null)" || return 1
+        s="${s##*) }"
+        set -f; set -- $s; set +f
+        [ "$#" -ge 2 ] || return 1
+        pid="$2"
+        case "$pid" in ''|0|*[!0-9]*) return 1 ;; esac
+        hops=$((hops+1))
+    done
+    return 1
+}
 census() {
-    local proc="${TMP_REAP_PROC:-/proc}" me="${TMP_REAP_UID:-$(id -u)}" raw same other o st
+    local proc="${TMP_REAP_PROC:-/proc}" me="${TMP_REAP_UID:-$(id -u)}" raw same other det o st
     if [ ! -d "$proc" ]; then   # no census root = no liveness snapshot at all
         echo "tmp-reap: census root $proc is not a directory; refusing" >&2
         [ "$APPLY" = 1 ] && exit 2
@@ -129,16 +148,22 @@ census() {
                 o="$(owner "$p")"   # an unknown owner counts as same-uid: unknown is never safe
                 [ -n "$o" ] || [ -d "$p" ] || continue   # exited between the checks: not unknown, just gone
                 case "$o" in ''|*[!0-9]*) o="$me" ;; esac   # non-numeric (a stat -f fallback's fs report) is unknown too
-                if [ "$o" = "$me" ]; then echo '@@unread same'; else echo '@@unread other'; fi
+                if [ "$o" != "$me" ]; then echo '@@unread other'
+                elif detached "${p##*/}"; then echo '@@unread detached'
+                else echo '@@unread same'; fi
             fi
             for fd in "$p"/fd/*; do [ -e "$fd" ] && readlink "$fd" 2>/dev/null; done
         done
     )"
     same="$(printf '%s\n' "$raw" | grep -c '^@@unread same$')"
     other="$(printf '%s\n' "$raw" | grep -c '^@@unread other$')"
+    det="$(printf '%s\n' "$raw" | grep -c '^@@unread detached$')"
     OPEN_PATHS="$(printf '%s\n' "$raw" | grep -v '^@@unread ' | grep -F "$TMP_ROOT/" | sort -u)"
     if [ "$other" -gt 0 ] && [ "$CENSUS_WARNED" = 0 ]; then
         echo "WARN tmp-reap: $other other-uid /proc entries unreadable (expected on a multi-user host; not checked)" >&2
+    fi
+    if [ "$det" -gt 0 ] && [ "$CENSUS_WARNED" = 0 ]; then
+        echo "WARN tmp-reap: $det same-uid non-dumpable /proc entr(ies) detached from every live session (not checked)" >&2
     fi
     if [ "$same" -gt 0 ]; then
         if [ "$APPLY" = 1 ]; then

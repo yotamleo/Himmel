@@ -15,7 +15,8 @@
 #   9. an archive target with different content keeps the dir
 #  10. an unreadable same-uid /proc entry refuses --apply (fake TMP_REAP_PROC);
 #      other-uid only warns (TMP_REAP_UID), dry-run warns, a readable proc is quiet;
-#      an empty census root refuses
+#      an empty census root refuses; a same-uid unreadable entry detached from every live
+#      session (ppid chain reads to pid 1) only warns, one under a live session refuses
 #  11. FAMILIES does not glob against the caller's cwd
 #  13. a judge dir's .holder (HIMMEL-4325): live keeps, dead reaps at once, unknown/absent = today's path
 #  14. judge-dir.sh creates the dir + holder, refuses a bad PR/suffix, fails loudly
@@ -187,13 +188,41 @@ chmod 755 "$FPX"
 check "existing but unreadable census root: --apply rc 2" "$rc" 2
 exists "unreadable census root reaps nothing" "$ROOT/mog-run.old"
 
-rm -rf "$FP/200"; mkdir -p "$FP/300"; printf '300 (x) Z b) S 1 2 3\n' > "$FP/300/stat"
+rm -rf "$FP/200"; mkdir -p "$FP/300"; printf '300 (x) Z b) S 999 2 3\n' > "$FP/300/stat"
 out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "comm containing ') Z ' is not a zombie: --apply rc 2" "$rc" 2
 exists "spoofed zombie comm reaps nothing" "$ROOT/mog-run.old"
 printf '300 (x y) Z 1 2 3\n' > "$FP/300/stat"
 out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
 check "a real zombie is skipped: --apply rc 0" "$rc" 0
+
+# Non-dumpable same-uid daemons (kwin, systemd --user, 1Password) always read as unreadable. One whose
+# ppid chain reads cleanly to pid 1 without crossing a live session pid cannot hold a session's scratch.
+rm -rf "$FP/300"; mkdir -p "$FP/1" "$FP/400" "$FP/401" "$FP/402" "$FP/403"
+printf '1 (systemd) S 0 1 1\n' > "$FP/1/stat"
+printf '400 (kwin) S 1 1 1\n' > "$FP/400/stat"
+build_tree
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "detached non-dumpable daemon: only the unreadable fake 100 refuses (still rc 2)" "$rc" 2
+rm -rf "$FP/100"; mkdir -p "$FP/100"; printf '100 (d) S 1 1 1\n' > "$FP/100/stat"
+rm -rf "$FP/401" "$FP/402" "$FP/403"
+build_tree
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "detached unreadable same-uid entries: --apply rc 0" "$rc" 0
+contains "detached entries only warn" "$out" "detached from every live session"
+absent "detached entries: dead session dir reaped" "$CL/$DEAD"
+mkdir -p "$FP/401" "$FP/402"
+printf '401 (child) S %s 1 1\n' "$$" > "$FP/401/stat"
+printf '402 (grandchild) S 401 1 1\n' > "$FP/402/stat"
+build_tree
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "unreadable child of a live session: --apply rc 2" "$rc" 2
+exists "live-session child reaps nothing" "$ROOT/mog-run.old"
+rm -rf "$FP/401"
+build_tree
+out="$(TMP_REAP_UID="$(id -u)" TMP_REAP_PROC="$FP" reap --apply)"; rc=$?
+check "unreadable grandchild with a broken chain: --apply rc 2" "$rc" 2
+rm -rf "$FP/401" "$FP/402"
 
 echo "== 11. FAMILIES does not glob against the caller's cwd =="
 build_tree; CWD="$T/cwd"; mkdir -p "$CWD"; : > "$CWD/mog-run.zzz"; : > "$CWD/himmel-fixture.zzz"
