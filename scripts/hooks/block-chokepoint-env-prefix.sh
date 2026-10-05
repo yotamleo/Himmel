@@ -1448,6 +1448,9 @@ pobf_relief() {
         if [ "${SS[j]}" = 1 ] && [ "$cls" = 2 ]; then
             cls=1
             case "${CW[j]}" in echo|printf|cat) cls=0 ;; esac
+        # CR round 10: an interpreter (or gh) there can print the glob that runs.
+        elif [ "${SS[j]}" = 1 ] && [ "$cls" = 1 ]; then
+            cls=0
         fi
         case "$cls" in
             2) ;;

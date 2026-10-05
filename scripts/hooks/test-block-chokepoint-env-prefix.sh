@@ -1350,6 +1350,20 @@ for F in "bash -eo errexit g?.sh" "bash +eo errexit g?.sh" "bash -Oe extglob g?.
     assert_deny "4157 cd then clustered -o value, slash-less glob: $F" "$(j "cd scripts/$CK; $UL $F")"
 done
 assert_allow "4157 clustered -o value on a plain basename" "$(j "export FOO=1; bash -eo errexit go.sh")"
+# CR round 10: an interpreter stage inside $( ) or backticks prints a word the
+# shell then globs and runs, so its tokens are scanned (class 1 -> 0).
+GP="/r/w/scrip?s/$CK/g?.sh"
+for pre in "unset HIMMEL_CONSOLE_LEG;" "$UL"; do
+    # shellcheck disable=SC2016 # the $( ) is probe text, not an expansion
+    {
+    assert_deny "4157 CR10 python3 in \$( ) prints a glob [$pre]"  "$(j "$pre \$(python3 -c 'print(\"$GP\")')")"
+    assert_deny "4157 CR10 python3 in backticks prints a glob [$pre]" "$(j "$pre \`python3 -c 'print(\"$GP\")'\`")"
+    assert_deny "4157 CR10 perl -e print in \$( ) [$pre]"          "$(j "$pre \$(perl -e 'print \"$GP\"')")"
+    assert_deny "4157 CR10 node -e console.log in \$( ) [$pre]"    "$(j "$pre \$(node -e 'console.log(\"$GP\")')")"
+    }
+done
+# shellcheck disable=SC2016 # the $( ) is probe text, not an expansion
+assert_allow "4157 CR10 interpreter in \$( ), no glob word, beside the seam name" "$(j 'unset HIMMEL_CONSOLE_LEG; x=$(python3 -c '"'"'print(1)'"'"'); echo $x')"
 # J1685d: a glob word that cannot run (an inert reader's argument, a quoted
 # rg script) beside a seam name is everyday text, not a hidden anchor. A sed
 # or awk script gets no relief (it can run a program; a parse that tells the
