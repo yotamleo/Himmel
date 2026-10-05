@@ -49,3 +49,17 @@ test("renderHealth with no feed and no health still renders all five sections", 
     ["Is himmel healthy?", "What is broken, and what do I do", "Scheduled jobs", "Legs and the usage bank", "Search and graph freshness"]);
   expect(html).toContain("No data");
 });
+
+// HIMMEL-4443: a responding exporter makes monitoring.state "ok", which must not hide a failing Prometheus.
+test("each monitoring source's failure is rendered on its own, even when the other is ok", () => {
+  const gone = { state: "absent" };
+  const mon = (prometheus: object, exporter: object) => ({ bank: gone, legs: gone, monitoring: { state: "ok", prometheus, exporter } });
+  const promDown = renderHealth(feed(r("a", "ok")), mon({ state: "error", reason: "HTTP 500" }, { state: "ok" }));
+  expect(promDown).toContain("monitoring prometheus unreachable: HTTP 500");
+  expect(promDown).not.toContain("monitoring exporter unreachable");
+  const expDown = renderHealth(feed(r("a", "ok")), mon({ state: "ok", alerts: [] }, { state: "error", reason: "no answer" }));
+  expect(expDown).toContain("monitoring exporter unreachable: no answer");
+  expect(expDown).not.toContain("monitoring prometheus unreachable");
+  const bothOk = renderHealth(feed(r("a", "ok")), mon({ state: "ok", alerts: [] }, { state: "ok" }));
+  expect(bothOk).not.toContain("unreachable");
+});
