@@ -1080,25 +1080,36 @@ pobf_exp() {
         [ "$m" = r ] && case "${TOK[seg]}" in *[!0-9]*) ;; *) ov=1 ;; esac
     done
     if [ "$ov" = 1 ]; then
-        ks=''; k=$lo
+        k=$lo
         [ "$m" = r ] && hi=$((n - 1))
-        while [ "$k" -le "$hi" ]; do ks="$ks $k"; k=$((k + 1)); done
+        # No body holds a \001, so once x has under two marks no marker is
+        # left and the rest of the range is a no-op (HIMMEL-4447: walking it
+        # per digit-token redirect was redirects x tokens).
+        while [ "$k" -le "$hi" ]; do
+            case "$x" in *"$T1"*"$T1"*) ;; *) break ;; esac
+            pobf_put
+            k=$((k + 1))
+        done
+    else
+        for k in $ks; do pobf_put; done
     fi
-    for k in $ks; do
-        case "$x" in
-            *"$T1$k$T1"*)
-                case "$m" in
-                    r) x=${x//"$T1$k$T1"/"${TOK[k]}"} ;;
-                    p) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;;
-                    *) x=${x//"$T1$k$T1"/ } ;;
-                esac ;;
-        esac
-    done
     if [ "$m" = r ]; then
         k=${x##*[!"$NL"]}
         x=${x%"$k"}
     fi
     PX=$x
+}
+
+# pobf_put -- pobf_exp's helper: put token k back into x per mode m.
+pobf_put() {
+    case "$x" in
+        *"$T1$k$T1"*)
+            case "$m" in
+                r) x=${x//"$T1$k$T1"/"${TOK[k]}"} ;;
+                p) x=${x//"$T1$k$T1"/" ${TOK[k]} "} ;;
+                *) x=${x//"$T1$k$T1"/ } ;;
+            esac ;;
+    esac
 }
 
 # Every command name pobf_relief gives relief to (plus sed/awk, which lost

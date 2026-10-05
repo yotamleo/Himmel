@@ -1571,6 +1571,22 @@ if [ -n "${EPOCHREALTIME:-}" ]; then
         echo "FAIL 4157 J1685: 10 KB of quoted stages beside a seam name -- expected rc=0 with relief under 2500 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
         FAILED=$((FAILED + 1))
     fi
+    # HIMMEL-4447: an all-digit redirect target ('1') made pobf_exp walk every
+    # token index per redirect -- redirects x tokens. ~12 KB of them.
+    R12K=$(rep_text "echo x >'1'; " 920)
+    T0=${EPOCHREALTIME/[.,]/}
+    run "$(j "FOO=1; ls a/*.sh; $R12K")"
+    T1=${EPOCHREALTIME/[.,]/}
+    run "$(j "HIMMEL_CONSOLE_LEG=1; ls a/*.sh; $R12K")"
+    T2=${EPOCHREALTIME/[.,]/}
+    CASES=$((CASES + 1))
+    # Bound 1200 ms relief: alone 487-564 ms, 3 concurrent max 580 ms (x2 = 1160, rounded); base 4579fc21 took 3875 ms in-suite, still red.
+    if [ "$RC" = "0" ] && [ $((T2 - T1 - (T1 - T0))) -lt 1200000 ]; then
+        echo "PASS 4447: 12 KB of digit-token redirects beside a seam name, relief in $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
+    else
+        echo "FAIL 4447: 12 KB of digit-token redirects beside a seam name -- expected rc=0 with relief under 1200 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
+        FAILED=$((FAILED + 1))
+    fi
 else
     echo "WARN 4157 J1685 timing rows skipped: no EPOCHREALTIME (bash < 5)"
 fi
