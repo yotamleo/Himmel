@@ -257,7 +257,7 @@ Upgrade gotcha: `uv tool upgrade graphifyy` from **inside** a live session runni
 the graphify MCP server + hooks can leave the `graphify` CLI shim unwritten — a
 Windows file-lock on the venv `Scripts\` dir (`Access is denied`) — while `uv tool
 list` still reports the new version. Repair from a context where `graphify-mcp` is
-not running: stop those processes, then `uv tool install "graphifyy[all]" --force`.
+not running: stop those processes, then `uv tool install "graphifyy[all,ollama]" --force`.
 
 ## bash 5.1+ treats a literal `&` in `${var//pat/repl}` as the matched text
 
