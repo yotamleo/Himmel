@@ -82,6 +82,10 @@ template_version: 3
 > paths and what to take from each. Name what is private and must never reach
 > the tree.>
 
+> **Exemplar (optional):** <one in-repo path — a gate, a suite, a script — that
+> shows the paved path for this change, and what to copy from it. Omit the line
+> when no single file fits.>
+
 > **Trust paths (pre-dispatch, HIMMEL-4089):** <exact paths the planned scope
 > plausibly needs; permitted read/write operations and exclusions; the
 > operator's up-front scope grant, or explicitly none needed. A brief grants
@@ -93,7 +97,9 @@ template_version: 3
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check. Write
 >    the bullet with `scripts/handover/console-kit/append-results.sh <doc>
 >    "LIVE ..."` (leg-preface.md), never the Edit tool. A bullet never
->    contains `>`; write `→` or `to` (HIMMEL-3917).
+>    contains `>`; write `→` or `to` (HIMMEL-3917). The LIVE bullet moves the
+>    ticket to In Progress and the PR open to In Review, by script
+>    (leg-preface.md, HIMMEL-4419); do not transition it by hand.
 > 2. <the deliverables, one numbered item each, named by path>
 > 3. **Tests:** <the suite to write and the specific RED assertion to show
 >    first; the impacted suites you already know about, by name.> Suites run
@@ -138,6 +144,7 @@ template_version: 3
 | RETASK token | Any text reaching the leg could re-task it; the nonce is what makes a revision authentic. |
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
+| Exemplar line (optional) | A leg told only to "add a gate" copies the nearest older gate, which may be the stale shape. Naming the one file that shows the paved path (e.g. `scripts/hooks/check-unchecked-mktemp.sh`, `scripts/handover/console-kit/test-ready-check.sh`) makes the leg imitate that. Instructional only, no validator: judge it by drift before anyone gates it (HIMMEL-4428). |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND uses `--no-profile` is a leg running on vibes (a launch with neither is refused). |
 | `completes-ticket:` line | `merge-on-green.sh` closes the ticket only on `--jira-transition` (opt-in, HIMMEL-3143, because a default closes multi-PR tickets early). Without the line every leg guesses whether its PR finishes the ticket: in one shift six merges printed `would-transition` and five were closed by hand (HIMMEL-3271). It is a per-brief decision, never a default. |
 | Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the four exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`, `operator-ruling`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997/HIMMEL-3480, CLAUDE.md: "raise effort before tier") — the tag is validated and the free text after it must be non-blank, but its content is otherwise unrestricted, so a paraphrase can never be falsely rejected. For a standing operator ruling on model choice, `operator-ruling:` free text names the ruling, its date and where it was given, so the console can trace the Opus/Fable spend back to it. |

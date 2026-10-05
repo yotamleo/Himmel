@@ -325,7 +325,9 @@ const primaryRoot = () => {
     return resolve(HERE, '..', '..', '..');
 };
 const JIRA_CLI = process.env.BOARD_JIRA || (versionsDeclared.length ? join(primaryRoot(), 'scripts', 'jira', 'dist', 'index.js') : '');
-const DONE_STATUS = /^(done|closed|resolved)$/i;
+// HIMMEL-4419: the legs' Jira ladder, in the order a Release panel shows it.
+const LEG_STATUSES = ['To Do', 'In Progress', 'In Review', 'IN CI', 'Done'];
+const DONE_STATUS =/^(done|closed|resolved)$/i;
 const releaseOf = (version) => {
     const a = ['list', '--jql', `project = HIMMEL AND fixVersion = "${version}"`, '--labels', '--limit', '1000'];
     let out;
@@ -340,12 +342,13 @@ const releaseOf = (version) => {
         .map((f) => ({ key: f[0], status: f[2].trim(), title: f[3], labels: (f[4] || '').split(',').map((x) => x.trim()) }));
     if (rows.length !== lines.length) return { version, unavailable: true };
     const open = rows.filter((r) => !DONE_STATUS.test(r.status));
-    return { version, done: rows.length - open.length, total: rows.length, blockers: open.filter((r) => r.labels.includes('v1-blocker')) };
+    const byStatus = Object.fromEntries(LEG_STATUSES.map((st) => [st, rows.filter((r) => r.status === st).length]));
+    return { version, done: rows.length - open.length, total: rows.length, byStatus, blockers: open.filter((r) => r.labels.includes('v1-blocker')) };
 };
 const releases = versionsDeclared.map(releaseOf);
 // A separate fingerprint (as the census one is): tick.sh never sees these counts.
 const releaseSig = releases.map((r) => (r.unavailable ? `${r.version}=unavailable`
-    : `${r.version}=${r.done}/${r.total}:${r.blockers.map((b) => `${b.key}@${b.status}@${redact(b.title)}`).join('+')}`)).join(',');
+    : `${r.version}=${r.done}/${r.total}:${LEG_STATUSES.map((st) => r.byStatus[st]).join('/')}:${r.blockers.map((b) => `${b.key}@${b.status}@${redact(b.title)}`).join('+')}`)).join(',');
 const ciOf = (pr) => {
     const rollup = (pr && pr.statusCheckRollup) || [];
     // No checks reported yet is not a green build: it reads pending.
@@ -466,8 +469,9 @@ const epicRows = epics.map((e) => {
 const releasePanel = (r) => {
     if (r.unavailable) return `<section data-release="${esc(r.version)}" data-unavailable="1"><h2>Release ${safe(r.version)}</h2><p class="none">unavailable</p></section>`;
     const pct = Math.round((r.done / Math.max(1, r.total)) * 100);
+    const breakdown = LEG_STATUSES.map((st) => `<span data-status="${esc(st)}" data-count="${r.byStatus[st]}">${esc(st)} ${r.byStatus[st]}</span>`).join(' · ');
     const blockers = r.blockers.map((b) => `<li data-blocker="${esc(b.key)}"><b>${esc(b.key)}</b> ${safe(b.title, 90)} <span class="pr">${safe(b.status)}</span></li>`).join('\n');
-    return `<section data-release="${esc(r.version)}" data-done="${r.done}" data-total="${r.total}"><h2>Release ${safe(r.version)}</h2><b>${r.done}/${r.total}</b><div class="bar"><i style="width:${pct}%"></i></div>${blockers ? `<ul>${blockers}</ul>` : '<p class="none">no open v1-blocker tickets</p>'}</section>`;
+    return `<section data-release="${esc(r.version)}" data-done="${r.done}" data-total="${r.total}"><h2>Release ${safe(r.version)}</h2><b>${r.done}/${r.total}</b><div class="bar"><i style="width:${pct}%"></i></div><p class="status">${breakdown}</p>${blockers ? `<ul>${blockers}</ul>` : '<p class="none">no open v1-blocker tickets</p>'}</section>`;
 };
 const prRows = (openPrs || []).map((p) => `<li data-ci="${ciOf(p)}"><b>#${p.number}</b> ${safe(p.title, 90)} <span class="pr">${ciOf(p)}${p.isDraft ? ' · draft' : ''}</span></li>`).join('\n');
 const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(p.title, 90)}</li>`).join('\n');

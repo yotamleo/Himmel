@@ -965,5 +965,62 @@ class InstagramGuardTests(unittest.TestCase):
         self.assertEqual(self.calls, 2)
 
 
+class ErrorLineAllSourcesTests(unittest.TestCase):
+    """HIMMEL-4392: classify_command is shared, so every command probe's reason
+    carries the error line; pin the redaction for each, not only instagram."""
+
+    SECRET = "SECRETVALUE0123"  # gitleaks:allow
+
+    def run_probe(self, source, stderr, returncode=1):
+        with tempfile.TemporaryDirectory() as tmp:
+            cookies = Path(tmp) / ".luna" / "cookies"
+            cookies.mkdir(parents=True)
+            (cookies / "twitter.txt").write_text("cookie", encoding="utf-8")
+            env = {"HOME": tmp, "PATH": "/bin", "TWITTER_AUTH_TOKEN": "t", "TWITTER_CT0": "c"}
+
+            def command(args, **kwargs):
+                return subprocess.CompletedProcess(args, returncode, "", stderr)
+
+            with patch.object(fetch_health.shutil, "which", return_value="/bin/tool"):
+                if source == "x-media":
+                    return fetch_health.probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", env, command)
+                if source == "x-twitter-cli":
+                    return fetch_health.probe_twitter_cli(env, command)
+                return fetch_health.probe_github(env, command)
+
+    def test_each_command_probe_surfaces_a_safe_error_line_without_url_parts(self):
+        err = f"[twitter][error] HttpError: '401' for url: https://u:{self.SECRET}@x/y?sessionid={self.SECRET}"
+        for source in ("x-media", "x-twitter-cli", "github"):
+            with self.subTest(source=source):
+                r = self.run_probe(source, err)
+                self.assertIn("HttpError: '401'", r.reason)
+                self.assertNotIn(self.SECRET, r.reason)
+
+    def test_each_command_probe_withholds_a_credential_bearing_message(self):
+        for line in (
+            f"[twitter][error] sessionid={self.SECRET}",
+            f"[twitter][error] token={self.SECRET} cookie={self.SECRET}",
+            f"[twitter][error] HttpError: '401' for url: https://h/?a=b and sessionid={self.SECRET}",
+        ):
+            for source in ("x-media", "x-twitter-cli", "github"):
+                with self.subTest(source=source, line=line):
+                    r = self.run_probe(source, line)
+                    self.assertIn("error message withheld", r.reason)
+                    self.assertNotIn(self.SECRET, r.reason)
+
+    def test_non_scheme_url_forms_are_never_surfaced(self):
+        for url in (
+            f"//user:{self.SECRET}@host/p",
+            f"host.example/p?a={self.SECRET}",
+            f"/api/v1/x/?a={self.SECRET}",
+            f"https%3A%2F%2Fh%2F%3Fs%3D{self.SECRET}",
+        ):
+            for source in ("x-media", "x-twitter-cli", "github"):
+                with self.subTest(source=source, url=url):
+                    r = self.run_probe(source, f"[twitter][error] HttpError: '401' for url: {url}")
+                    self.assertNotIn(self.SECRET, r.reason)
+                    self.assertNotIn("/api/v1", r.reason)
+
+
 if __name__ == "__main__":
     unittest.main()

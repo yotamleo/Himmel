@@ -2875,7 +2875,15 @@ check_c39_gtimeout_darwin() {
 check_c40_qmd_vec() {
     local url="${HIMMEL_DOCTOR_QMD_URL:-http://localhost:8181/mcp}"
     local curl_bin="${HIMMEL_DOCTOR_QMD_CURL:-curl}"
-    local vec_timeout=30
+    local vec_timeout=30 init_timeout=10
+    # HIMMEL-4383: the initialize budget is a measured loaded figure, not a guess.
+    # Live 2026-10-05: idle 0.33-0.39s; under 8 concurrent vec queries the peak was
+    # 2.87s, so the old 3s flapped a healthy daemon. 10s is ~2x that peak. A genuine
+    # wedge still WARNs; the budget only stops a slow-but-alive daemon reading as one.
+    # HIMMEL_DOCTOR_QMD_INIT_TIMEOUT overrides it (positive integer, else the default).
+    if [ -n "${HIMMEL_DOCTOR_QMD_INIT_TIMEOUT+x}" ] && [[ "$HIMMEL_DOCTOR_QMD_INIT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+        init_timeout="$HIMMEL_DOCTOR_QMD_INIT_TIMEOUT"
+    fi
     if ! command -v "$curl_bin" >/dev/null 2>&1; then
         emit INFO C40-qmd-vec "curl not found -- qmd vector-health check skipped"
         return
@@ -2885,17 +2893,50 @@ check_c40_qmd_vec() {
         return
     fi
 
-    local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
-    local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
     # ponytail: the remedy points at the qmd README instead of printing the literal start command, because the ws5 T13(b) marker scan false-positives on that command's flag (HIMMEL-3233); the README carries it verbatim.
     local remedy="see the server log ~/.cache/qmd/mcp.log; restart the qmd server (stop the 'qmd mcp' process, then start a session; start command: see marketplace/plugins/qmd/README.md)"
+    # HIMMEL-4432: daemon liveness (the initialize round-trip) is owned by
+    # `himmelctl status`'s qmd-daemon item; C40 composes it the way C16 composes
+    # status. Not wanted = INFO, absent = INFO skip (qmd is optional), degraded =
+    # WARN with status's detail. Only a live daemon reaches the vec probe below.
+    # Unknown status (no node, no item, unreadable) keeps C40's own probe below,
+    # never a silent pass. Seam: DOCTOR_STATUS_JSON=<file> (as C19/C44).
+    local sj="" node_bin="" qd_row="" qd_desired qd_actual qd_detail
+    if [ -n "${DOCTOR_STATUS_JSON:-}" ]; then
+        sj="$(cat "$DOCTOR_STATUS_JSON" 2>/dev/null)"
+    elif node_bin="$(resolve_node 2>/dev/null)" && [ -f "$REPO_ROOT/scripts/himmelctl/bin.js" ]; then
+        sj="$("$node_bin" "$REPO_ROOT/scripts/himmelctl/bin.js" status --json 2>/dev/null)"
+    fi
+    if [ -n "$sj" ]; then
+        qd_row="$(printf '%s' "$sj" | jq -r '.items | arrays | [.[] | select(.id == "qmd-daemon")] | first // empty | "\(.desired)\t\(.actual)\t\(.detail // "")"' 2>/dev/null)" || qd_row=""
+    fi
+    if [ -n "$qd_row" ]; then
+        IFS=$'\t' read -r qd_desired qd_actual qd_detail <<< "$qd_row"
+        if [ "$qd_desired" = false ]; then
+            emit INFO C40-qmd-vec "qmd daemon not wanted on this install (himmelctl status) -- vector-health check skipped"
+            return
+        fi
+        case "$qd_actual" in
+        absent)
+            emit INFO C40-qmd-vec "no qmd server answering (himmelctl status qmd-daemon: ${qd_detail:-absent}) -- vector-health check skipped (qmd is optional)"
+            return
+            ;;
+        degraded)
+            emit WARN C40-qmd-vec "qmd daemon degraded (himmelctl status qmd-daemon): ${qd_detail:-no detail} -- vec search is not being served" "$remedy"
+            return
+            ;;
+        esac
+    fi
+
+    local init_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"himmel-doctor","version":"1"}}}'
+    local vec_payload='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"query","arguments":{"searches":[{"type":"vec","query":"himmel doctor vector probe"}],"limit":1,"rerank":false}}}'
     local init init_rc init_code=""
     # `-w '%{http_code}'` appends the status after the body ("000" when no HTTP
     # exchange happened); peel it off so an empty body can be told apart by status.
-    init="$("$curl_bin" -s -m 3 -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
+    init="$("$curl_bin" -s -m "$init_timeout" -w '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d "$init_payload" "$url" 2>/dev/null)"; init_rc=$?
     case "${init: -3}" in [0-9][0-9][0-9]) init_code="${init: -3}"; init="${init%???}" ;; esac
     if [ -z "$init" ] && [ "$init_rc" -eq 28 ]; then
-        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within 3s -- the qmd server is wedged, vec search is not being served" "$remedy"
+        emit WARN C40-qmd-vec "a process on $url accepted the connection but did not answer initialize within ${init_timeout}s -- the qmd server is wedged, vec search is not being served" "$remedy"
         return
     fi
     # Only a refused connection (curl rc 7) means nothing is listening. An empty
@@ -3309,6 +3350,22 @@ check_c44_skill_index() {
     files_line="$(printf '%s\n' "$list_out" | grep -A2 '^skills (' | grep 'Files:')"
     count="$(printf '%s' "$files_line" | grep -oE '[0-9]+' || true)"
     if [ -z "$count" ] || [ "$count" -eq 0 ]; then
+        # HIMMEL-4436: a starter install never enables the qmd items, so nothing can
+        # build the collection -- not wanted is INFO, not a FAIL. Unknown (no node,
+        # jq or status) keeps the FAIL. Seam: DOCTOR_STATUS_JSON=<file> (as C19).
+        local sj="" node_bin="" qmd_wanted=""
+        if [ -n "${DOCTOR_STATUS_JSON:-}" ]; then
+            sj="$(cat "$DOCTOR_STATUS_JSON" 2>/dev/null)"
+        elif node_bin="$(resolve_node 2>/dev/null)" && [ -f "$REPO_ROOT/scripts/himmelctl/bin.js" ]; then
+            sj="$("$node_bin" "$REPO_ROOT/scripts/himmelctl/bin.js" status --json 2>/dev/null)"
+        fi
+        if [ -n "$sj" ] && command -v jq >/dev/null 2>&1; then
+            qmd_wanted="$(printf '%s' "$sj" | jq -er '.items | arrays | [.[] | select(.id == "qmd-index" or .id == "qmd-binary")] | if length == 0 then empty elif any(.[]; .desired == true) then "1" elif all(.[]; .desired == false) then "0" else empty end' 2>/dev/null)" || qmd_wanted=""
+        fi
+        if [ "$qmd_wanted" = 0 ]; then
+            emit INFO C44-skill-index "qmd items not wanted on this install (himmelctl status) -- /skill-find index not checked"
+            return
+        fi
         emit FAIL C44-skill-index \
             "the 'skills' qmd collection is missing or empty -- /skill-find silently reverts to guessing skill/command names (HIMMEL-2222)" \
             "bash scripts/skill-index/ensure-skill-index.sh   (or: himmelctl ensure)"

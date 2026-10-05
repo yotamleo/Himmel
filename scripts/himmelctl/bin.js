@@ -820,9 +820,14 @@ function hardGateCheck() {
 // zero rc is informational only. bash is itself a hard-gate tool; if it is
 // somehow absent the spawn errors and the advisory is simply skipped (the
 // missing-handler below reports bash).
-function runPreflight() {
+function runPreflight(answers) {
   const script = path.join(__dirname, '..', 'preflight-adopter.sh');
-  const r = spawnSync(resolveBash(), [toBashPath(script)], { stdio: 'inherit' });
+  // HIMMEL-4435: uv/pipx exist for the luna vault's pre-commit install; skip
+  // the warning once the profile says vault=none and no contributor overlay
+  // (which also uses the framework); unknown answers keep it.
+  const noVault = Boolean(answers && answers.vault && answers.vault.mode === 'none' && !answers.devOverlay);
+  const argv = [toBashPath(script)].concat(noVault ? ['--no-vault'] : []);
+  const r = spawnSync(resolveBash(), argv, { stdio: 'inherit' });
   return { ran: !r.error, rc: r.status };
 }
 
@@ -4356,7 +4361,7 @@ async function cmdInstall(args) {
   // 1. Hard-gate tool check.
   let missing = hardGateCheck();
   // 2. Run preflight-adopter.sh; its advisories print verbatim.
-  runPreflight();
+  runPreflight(profileAnswers);
   // 3. Missing tools → install-if-missing offer (interactive) or remediation.
   if (missing.length > 0) {
     const ok = await handleMissing(missing, args);

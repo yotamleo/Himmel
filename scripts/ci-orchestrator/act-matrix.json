@@ -18,6 +18,7 @@
     "ci:unchecked-mktemp-range": "HIMMEL-4301: not yet act-classified — needs the pull_request base.sha context and a full-history checkout, same shim shape as ci:commit-lint above; falls through to hosted routing without an act-exec fast path until someone verifies it under act.",
     "ci:lanes-and-trust-suites": "HIMMEL-2880: not yet act-classified — needs a full-history checkout (fetch-depth 0) act does not replicate; falls through to hosted routing without an act-exec fast path until someone verifies it under act.",
     "ci:guardrail-matrices": "HIMMEL-2880: not yet act-classified — no known act blocker, just never surveyed; falls through to hosted routing without an act-exec fast path until classified.",
+    "ci:claude-startup": "HIMMEL-4410: not act-classified — needs a real npm-installed claude CLI and unshare -rn (user namespaces) that act containers do not give; falls through to hosted routing without an act-exec fast path.",
     "ci:doc-invariants": "HIMMEL-2880: not yet act-classified — no-ops without the gitignored .himmel-dev marker and only meaningfully gates the public post-propagation tree, not a private PR; falls through to hosted routing without an act-exec fast path until classified."
   }
 }

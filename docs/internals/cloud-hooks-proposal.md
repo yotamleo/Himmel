@@ -5,6 +5,15 @@ line changed. The operator picks; a build is a separate PR (and one that edits
 `.claude/settings.json` is on `scripts/ci/ci-trust-paths.txt`, so it needs a
 trust-reviewed console GO).
 
+**Update 2026-10-05.** Two of the unknowns below are settled. The HIMMEL-4273
+probe showed plugin hooks DO load when the environment's setup script installs the
+plugins (`--with-plugins`), and that repo hooks fire with the cloud clone counted
+as a primary checkout; see
+[`cloud-brief-template.md`](../handover/cloud-brief-template.md#plugin-hooks-in-the-cloud-probed-2026-10-04-himmel-4273).
+The table "Plugin hooks: does NOT load" therefore holds only for a plugin-free
+environment. The [user-level tool audit](#user-level-tool-audit-himmel-4206-slice-2)
+at the end replaces "What fails open or closed" with measured behaviour.
+
 ## The problem
 
 A `claude --cloud` session loads the clone's `.claude/settings.json` hooks (single-repo
@@ -104,3 +113,46 @@ Cost: one new hook script plus one `.claude/settings.json` stanza.
 
 Build (c)? Mirror (b) for the three hooks after (c) reports? Both are separate PRs
 and need your OK because each edits `.claude/settings.json`.
+
+## User-level tool audit (HIMMEL-4206 slice 2)
+
+Every hook script wired in `.claude/settings.json` was grepped for user-level state:
+`~/.himmel`, `~/.claude/himmel`, the handover root, `HIMMEL_REPO`, qmd, graphify, luna,
+bun, the Jira dist. Each one that matched was then run in a **local cloud-like
+simulation** on 2026-10-05: a fresh `git clone --depth 1` (a primary checkout, like
+the cloud clone), `env -i PATH=/usr/bin:/bin HOME=<empty dir> CLAUDE_CODE_REMOTE=true
+CLAUDE_PROJECT_DIR=<clone>`, so qmd, graphify, `HIMMEL_REPO`, `HANDOVER_DIR` and all
+home state were absent. Each hook got a benign Bash payload, and each guard also got a
+payload it must refuse.
+
+**Not yet observed in a real cloud session.** The cloud probe was refused by
+`bank-preflight.sh` (seven-day bank at 85 %); its brief and the reconciliation of this
+table are HIMMEL-4429. The simulation does not reproduce the cloud's own `/tmp`,
+installed tools, or the connector tool names.
+
+| Hook | Reaches for | Benign call | Guard call | Cloud verdict |
+|---|---|---|---|---|
+| block-destructive-commands, block-git-stash | (graphify in a comment only) | rc 0 | `git reset --hard HEAD` / `git stash`: rc 2, denied | **Guard holds** |
+| block-edit-on-main | primary-checkout test | rc 0 | Write in the clone: rc 2, denied | **Fails closed by design**: work in a worktree (template step 3) |
+| block-write-into-main-checkout | anchor / primary | rc 0 | `git checkout -b` in the clone: rc 2, denied | **Fails closed by design** (same remedy) |
+| block-edit-live-settings | primary `.claude/` | rc 0 | Write `.claude/settings.json`: rc 2, denied | **Guard holds** |
+| block-read-secrets, require-quiet-run, block-chokepoint-env-prefix | none | rc 0 | a read of the dotenv file, a bare suite, a seam prefix: rc 2, denied | **Guard holds** |
+| guard-pr-check-literal | `HIMMEL_REPO` (45 refs) | rc 0 | relative `scripts/cr/pr-check-context.sh`: rc 2, "HIMMEL_REPO is unset" | **Fails closed**: a cloud session cannot run `/pr-check`; intended, the shepherd runs it |
+| block-bare-qmd-query | qmd | rc 0 | bare `qmd query`: rc 2 even with qmd absent | **Guard holds** (denies a command that would fail anyway) |
+| auto-approve-safe-bash | `HANDOVER_DIR`, `HIMMEL_REPO`, Jira dist | allow for `true`, 10 ms | n/a | **Fail open, correct**: anchor-dependent branches simply do not match |
+| block-backend-tier | Jira dist | rc 0 | n/a | **Inert**: its matcher is the local plugin's `mcp__plugin_atlassian_atlassian__*`; the cloud connector's tool name differs (to confirm in HIMMEL-4429), and the CLI has no credentials there, so the MCP is the right route |
+| block-jira-compound-write | Jira dist | rc 0 | n/a | **Inert**: no authenticated CLI in the cloud |
+| auto-arm-on-cap, auto-arm-on-subagent-cap, console-compact-reinject, console-precompact-snapshot, stop-console-idle-guard, guard-relay-writes | handover root | rc 0, silent, 2-72 ms | n/a | **Fail open, correct**: no handover root means no console or relay state to act on |
+| inject-initiative | `HIMMEL_REPO` | rc 0, silent | n/a | Fail open, correct (no initiative in the cloud) |
+| qmd-staleness-notice | qmd, its cache under `/tmp/claude` | rc 0, silent with a fresh cache dir | n/a | Fail open, correct. Locally it served this station's cached notice from the shared `/tmp/claude`; the cloud VM's `/tmp` starts empty |
+| graphify-freshness-advisory, graphify inline guard (`command -v graphify … ; exit 0`) | graphify | rc 0, silent | n/a | Fail open, correct |
+| check-update-available, detect-dirty-primary, memory-index-state-notice, claudex-inbox-sessionstart, guard-memory-capture, block-rogue-claude-schedule | `~/.claude/himmel`, luna, memory dir | rc 0, silent | n/a | Fail open, correct |
+| log-classifier-denial, shadow-ledger, session-run-hook (bun), stop-queue | `~/.himmel`, `~/.claude/himmel/trust` | rc 0; wrote `~/.himmel/session-runs.jsonl`, `~/.himmel/state/classifier-denials.jsonl`, `~/.claude/himmel/trust/ledger.jsonl` | n/a | **Fail open, harmless**: telemetry lands in the VM's own home and is discarded with it |
+
+**Result.** No wired hook crashed or hung, every guard that should deny still denied,
+and every hook that reaches for absent user-level state went silent with rc 0. Two
+fail closed in the cloud by design (edit-on-main, write-into-main-checkout: the
+worktree step answers both), and one fails closed on purpose (`guard-pr-check-literal`:
+the shepherd owns `/pr-check`). The simulation found **no hook that needs a change**,
+so no hook-change ticket is filed yet; HIMMEL-4429 files one for any row the real
+cloud run contradicts.

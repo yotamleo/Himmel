@@ -227,7 +227,10 @@ Run these, in order, and write the result as the first bullet under
     **Keep the roadmap tracker current** (HIMMEL-3933; only when `## Live state`
     has a `tracker:` URL, else skip). On every MERGED and WRAPPED, and whenever
     the tick reads `tracker=STALE:<age>` or `tracker=MISSING`: refresh the Jira
-    mirror (`node <primary>/scripts/jira/dist/index.js mirror`), re-render with
+    mirror (`node <primary>/scripts/jira/dist/index.js mirror`) and the version
+    release state (`node <primary>/scripts/jira/dist/index.js versions` redirected to
+    `<mirror-dir>.versions.tsv`, i.e. `~/.himmel/state/jira-mirror/HIMMEL.versions.tsv`;
+    without it the page says "release state unknown"), re-render with
     `python3 "{{KIT}}/tracker.py" --plan-dir <plan dir> --out <handover bucket>/roadmap-tracker.html`
     plus the vault-map cache argument (`tracker.py --help` names every
     argument; `--out` and `--plan-dir` must be the paths the tick reads, so the

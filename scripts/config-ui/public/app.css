@@ -18,6 +18,14 @@ body{background:var(--bg);color:var(--fg);font:13px/1.5 var(--mono);margin:0}
 .rail{position:sticky;top:env(safe-area-inset-top,0px);align-self:start;padding:20px 16px;border-right:1px solid var(--line);height:100vh;display:flex;flex-direction:column;gap:18px}
 .brand{font:600 13px var(--mono);letter-spacing:.04em}
 .brand small{display:block;color:var(--dim);font-weight:400}
+.top{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;padding:10px 24px;border-bottom:1px solid var(--line);font-size:12px;overflow-wrap:anywhere}
+.top .ver{font-weight:600;color:var(--fg)}
+.top .k{color:var(--dim)}
+.top .unk{color:var(--warn)}
+.pages{display:flex;flex-direction:column;gap:2px}
+.pages a{display:block;padding:6px 8px;border-radius:3px;color:var(--dim);text-decoration:none;font-weight:600}
+.pages a[aria-current="page"]{color:var(--fg);background:var(--panel);box-shadow:inset 2px 0 0 var(--accent)}
+.pages a:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
 .nav{display:flex;flex-direction:column;gap:2px}
 .nav button{all:unset;cursor:pointer;display:flex;justify-content:space-between;padding:6px 8px;border-radius:3px;color:var(--dim)}
 .nav button[aria-current="true"]{color:var(--fg);background:var(--panel)}
@@ -72,7 +80,8 @@ h2{font:600 13px var(--mono);letter-spacing:.06em;text-transform:uppercase;margi
 @media (max-width:760px){
   .shell{grid-template-columns:1fr}
   .rail{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap;align-items:center;padding:12px 16px}
-  .nav{flex-direction:row;flex-wrap:wrap}
+  .pages,.nav{flex-direction:row;flex-wrap:wrap}
+  .top{padding-inline:16px}
   .railfoot{display:none}
   main{padding-inline:16px}
   .row-head{grid-template-columns:74px minmax(0,1fr) auto;grid-template-areas:"st id slot" "kind det det"}
@@ -80,3 +89,14 @@ h2{font:600 13px var(--mono);letter-spacing:.06em;text-transform:uppercase;margi
   .body{padding-left:4px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+/* HIMMEL-4405 PR-b: Health page. Existing tokens only. */
+.vhead{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
+.vhead .word{font-size:20px;font-weight:600}
+.vhead .inputs{color:var(--dim)}
+.hrow{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.hrow .id{font-weight:600}.hrow .det{color:var(--dim);min-width:0}.hrow .remedy{background:var(--panel);padding:1px 6px;overflow-wrap:anywhere}
+.alert{padding:8px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.card{border:1px solid var(--line);background:var(--panel);padding:10px 14px;margin:8px 0;overflow-wrap:anywhere}
+.card h3{margin:0 0 6px;font-size:13px}
+.leg{display:flex;gap:12px;padding:3px 0;overflow-wrap:anywhere}.leg .mk{min-width:76px;font-weight:600}
+.nodata{color:var(--dim);font-style:italic;padding:4px 0}
