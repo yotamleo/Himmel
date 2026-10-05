@@ -98,6 +98,18 @@ rm -rf "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tool
 run "$EMPTY" --nope
 if [ "$RC" -eq 2 ]; then ok "unknown flag exits 2"; else bad "unknown flag rc=$RC"; fi
 
+# 7b. every documented paste ends `|| true`: a non-zero setup script stops the
+# cloud session from starting, and the clone itself can fail before the script runs.
+TEMPLATE="$ROOT/docs/handover/cloud-brief-template.md"
+pastes="$(grep -h 'bash /tmp/himmel-setup/scripts/cloud/setup-env.sh' "$SETUP" "$TEMPLATE")"
+if [ -z "$pastes" ]; then
+  bad "no setup paste line found in the header or $TEMPLATE"
+elif printf '%s\n' "$pastes" | grep -qv '|| true$'; then
+  bad "a setup paste line does not end with '|| true': $(printf '%s\n' "$pastes" | grep -v '|| true$')"
+else
+  ok "every setup paste line ends with '|| true' ($(printf '%s\n' "$pastes" | wc -l | tr -d ' ') lines)"
+fi
+
 # 8. syntax + lint.
 if bash -n "$SETUP"; then ok "bash -n clean"; else bad "bash -n failed"; fi
 if command -v shellcheck >/dev/null 2>&1; then

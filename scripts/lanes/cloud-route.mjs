@@ -119,10 +119,11 @@ ${named}
 
 ## How to do it
 1. Read \`CLAUDE.md\` and these files in full before editing: ${files.join(' ')}
-2. Create branch \`${branch}\` from \`main\` BEFORE any edit (the repo's edit-on-main guard denies edits on \`main\`).
-3. Edit ONLY these files: ${files.join(' ')}. Keep the diff minimal and match the surrounding style.
-4. Write the new or changed test FIRST and show it RED without the fix, then green. Run \`shellcheck\` on every \`.sh\` file you touch. Report rc and the PASS/FAIL tail of each.
-5. Make exactly ONE commit, never amend it. Before pushing, run the impacted suites: \`bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell\` lists every suite that references a changed file, and \`bash scripts/ci/run-shell-tests.sh --impacted origin/main..HEAD\` runs them. A red suite is fixed in a NEW commit, never an amend.
+2. Claim the ticket: through the Atlassian MCP, transition ${t.key} to \`In Progress\` (a cloud session has no handover doc and no queue lock; the ticket status is the claim).
+3. Create the branch as a worktree BEFORE any edit: \`git worktree add -b ${branch} .claude/worktrees/himmel-${n} origin/main\`, and work inside it (the repo's edit-on-main guard denies edits in the cloud's primary clone, even on a feature branch).
+4. Edit ONLY these files: ${files.join(' ')}. Keep the diff minimal and match the surrounding style.
+5. Write the new or changed test FIRST and show it RED without the fix, then green. Run \`shellcheck\` on every \`.sh\` file you touch. Report rc and the PASS/FAIL tail of each.
+6. Make exactly ONE commit, never amend it. Before pushing, run the impacted suites: \`bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell\` lists every suite that references a changed file, and \`bash scripts/ci/run-shell-tests.sh --impacted origin/main..HEAD\` runs them. A red suite is fixed in a NEW commit, never an amend.
 
     ${subject}
 
@@ -131,12 +132,13 @@ ${named}
     Platforms tested: linux
     Security reviewed: manual — confirm the change only does what the ticket asks and widens no permission or check
 
-6. Push the branch and open a PR to \`main\` titled \`${subject}\`. The body must include a summary, the files changed, the test/shellcheck/impacted-suite results, the line \`cloud-pilot: ${t.key} (console ${o.consoleId ?? 'unknown'})\`, the line \`completes-ticket: ${completes}\` and a \`## Ticket coverage\` section: one line per ask of the ticket, each ending \`done\` or \`deferred → HIMMEL-<n>\`. The asks:
+7. Push the branch and open a PR to \`main\` titled \`${subject}\`. The body must include a summary, the files changed, the test/shellcheck/impacted-suite results, the line \`cloud-pilot: ${t.key} (console ${o.consoleId ?? 'unknown'})\`, the line \`completes-ticket: ${completes}\` and a \`## Ticket coverage\` section: one line per ask of the ticket, each ending \`done\` or \`deferred → HIMMEL-<n>\`. The asks:
 
 ${coverage}
 
-7. Turn on \`/autofix-pr\` for the PR, so you fix your own CI reds and review comments.
-8. Do NOT merge, do NOT request reviewers, and do NOT touch any other file.
+8. Turn on \`/autofix-pr\` for the PR, so you fix your own CI reds and review comments.
+9. Do NOT merge, do NOT request reviewers, and do NOT touch any other file.
+10. Report (this replaces the handover doc): post ONE top-level PR comment whose first line is \`CLOUD-DONE <your session URL>\` followed by the PR head SHA and the test results, then comment on ${t.key} through the Atlassian MCP with the PR URL. Leave the ticket \`In Progress\`: the local shepherd closes it at merge. Once a local shepherd comments on the PR, stop pushing to the branch. If you are blocked on a question, post it instead as a \`CLOUD-BLOCKED <your session URL>\` PR comment (a ${t.key} comment if no PR exists yet) and end the session.
 
 When done, print the PR URL, the branch, the commit SHA, and a 3-line summary.
 `;
