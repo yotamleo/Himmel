@@ -129,7 +129,14 @@ render_config() {
     cp "$src/provisioning/alerting/rules.yaml" "$prov/alerting/" || die "cannot copy alert rules"
     sed -e "s/himmel-telegram/$CONTACT_POINT/g" "$src/provisioning/alerting/policies.yaml" > "$prov/alerting/policies.yaml" || die "cannot render policies"
     grep -q himmel-telegram "$prov/alerting/policies.yaml" && die "policies still route to himmel-telegram"
-    cat > "$prov/alerting/contact-points.yaml" <<EOF || die "cannot write the contact point"
+    # Shared secret between Grafana's webhook and the hook receiver: random, 0600, never logged.
+    if [ ! -s "$DATA/hook-token" ]; then
+        (umask 077; head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' > "$DATA/hook-token") || die "cannot write the hook token"
+    fi
+    [ "$(wc -c < "$DATA/hook-token")" -ge 32 ] || die "hook token is too short; remove $DATA/hook-token and re-run"
+    # This file embeds the token, so it is 0600 too.
+    (umask 077; cat > "$prov/alerting/contact-points.yaml" <<EOF
+
 # Rendered by install-grafana.sh (HIMMEL-4289): alerts go to cadence-alert.sh through
 # grafana-cadence-hook.ts, never to Telegram directly.
 apiVersion: 1
@@ -143,7 +150,10 @@ contactPoints:
         settings:
           url: http://$HOST:$HOOK_PORT/alert
           httpMethod: POST
+          authorization_scheme: Bearer
+          authorization_credentials: $(cat "$DATA/hook-token")
 EOF
+    ) || die "cannot write the contact point"
 
     cat > "$DATA/grafana.ini" <<EOF || die "cannot write grafana.ini"
 ; Rendered by install-grafana.sh (HIMMEL-4289). Loopback only; telemetry off.
@@ -228,6 +238,7 @@ Description=himmel Grafana alert hook to cadence-alert (HIMMEL-4289)
 Type=simple
 WorkingDirectory=$(unit_escape "$root")
 Environment=HIMMEL_GRAFANA_HOOK_PORT=$HOOK_PORT
+Environment=HIMMEL_GRAFANA_HOOK_TOKEN_FILE=$(unit_escape "$DATA")/hook-token
 ExecStart="$(unit_escape "$bun")" run "$(unit_escape "$root")/scripts/observability/grafana-cadence-hook.ts"
 Restart=on-failure
 RestartSec=5
