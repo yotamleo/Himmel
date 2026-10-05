@@ -100,6 +100,15 @@ P4='StandardOutput\.ReadToEnd|StandardError\.ReadToEnd|StandardOutput\.ReadToEnd
 # match.
 P5="\\\$[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[^|#]*\\|[[:space:]]*(&[[:space:]]*)?($N)([[:space:]]|$)"
 
+# grep_p2 <file> -- numbered P2 matches, shared by capture and fingerprint checks.
+grep_p2() {
+  # Mask only the discovery argument, not other native calls on the same line.
+  # Recover original text after matching so exemption fingerprints stay exact.
+  sed -E 's/(^|[^A-Za-z0-9_.$-])([Gg][Ee][Tt]-[Cc][Oo][Mm][Mm][Aa][Nn][Dd])[[:space:]]+[A-Za-z_][A-Za-z0-9_.-]*/\1\2 __command_lookup__/g' "$1" \
+    | grep -nE "$P2" \
+    | awk -F: 'NR == FNR { lines[FNR] = $0; next } { print $1 ":" lines[$1] }' "$1" -
+}
+
 # Reviewed-exempt table: files the detector flags that are genuinely NOT in
 # the class, each with a content FINGERPRINT of the file's detector-matching
 # lines at review time and a one-line reason (path|fingerprint|reason). The
@@ -124,9 +133,7 @@ EXEMPT_ENTRIES=(
   "scripts/hooks/test-gen-changelog.ps1|ab426cb2e589|pwsh captures are matched against fixed English gate messages; its non-ASCII case deliberately asserts via ReadAllBytes + UTF8.GetString, bypassing console capture on purpose"
   "scripts/lib/test-detect-hook-dup.ps1|e9a575b5243c|captures are matched against hook basenames from detect-hook-dup.ps1's own hardcoded ASCII list (HIMMEL-3574 added SC5e, one more capture of the same class)"
   "scripts/machine-setup/win11.ps1|a2f586628b44|the one capture is node --version, a semver string, ASCII by construction"
-  "scripts/observability/agent-runtime-census.ps1|052947551066|captures are --version strings; the poolmon dump is written by poolmon to a FILE and read with Get-Content (out of class)"
   "scripts/parity/test-ps-twin-oem-encoding.ps1|803fb1df1a65|the child-pwsh probe captures [Console]::OutputEncoding.CodePage, a numeric codepage string ASCII by construction, to check whether a fresh child even inherits cp437 before trusting the negative control -- nothing non-ASCII is ever captured"
-  "scripts/qmd/register-qmd-daemon-logon.ps1|b1f09e3332c2|Get-Command pwsh is a cmdlet, not a native-stdout capture; scheduling goes through Register-ScheduledTask"
   "scripts/setup/onboard-telegram.ps1|105ef190faf2|the one capture is bun --version, ASCII by construction"
   "scripts/telegram/restart-bridge.ps1|a8248b332a87|bun/cmd launches redirect to a log FILE via Start-Process; the & \$Action calls are injectable PowerShell scriptblocks, not native captures"
 )
@@ -155,7 +162,7 @@ fingerprint_detector_lines() {
   local file="$1"
   {
     grep -nE "$P1" "$file"
-    grep -nE "$P2" "$file"
+    grep_p2 "$file"
     grep -nE "$P3" "$file"
     grep -nE "$P4" "$file"
     grep -nE "$P5" "$file"
@@ -163,6 +170,36 @@ fingerprint_detector_lines() {
     | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
     | LC_ALL=C sort | sha256hex | cut -c1-12
 }
+
+# HIMMEL-4103: command discovery must not look like native stdout capture.
+# Scratch fixtures exercise the same detector and fingerprint as the fleet scan.
+detector_fixtures() (
+  local scratch name line failures=0
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/oem-detector.XXXXXX")" || exit 1
+  trap 'rm -f "$scratch/lookup.ps1" "$scratch/capture.ps1" "$scratch/native.ps1"; rmdir "$scratch"' EXIT
+  for name in git gh node npm npx jq qmd claude codex pwsh powershell python python3 bun curl docker cmd bash schtasks taskkill icacls rtk winget gemini cygpath; do
+    printf '%s\n' "\$path = (Get-Command $name -CommandType Application | Select-Object -First 1).Source" > "$scratch/lookup.ps1"
+    if grep_p2 "$scratch/lookup.ps1" >/dev/null || [ "$(fingerprint_detector_lines "$scratch/lookup.ps1")" != e3b0c44298fc ]; then
+      echo "FAIL: Get-Command $name lookup is not a native capture" >&2
+      failures=$((failures + 1))
+    fi
+    # A lookup on the same line must not hide a genuine later native capture.
+    line="Get-Command $name | Select-Object -First 1; $name --version | Select-Object -First 1"
+    printf '%s\n' "$line" > "$scratch/capture.ps1"
+    if [ "$(grep_p2 "$scratch/capture.ps1")" != "1:$line" ] || [ "$(fingerprint_detector_lines "$scratch/capture.ps1")" != "$(printf '%s\n' "$line" | sha256hex | cut -c1-12)" ]; then
+      echo "FAIL: real $name capture after Get-Command must retain its original text and fingerprint" >&2
+      failures=$((failures + 1))
+    fi
+    printf '%s\n' "$name --version | Select-Object -First 1" > "$scratch/native.ps1"
+    if ! grep_p2 "$scratch/native.ps1" >/dev/null; then
+      echo "FAIL: real $name pipeline capture was lost" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  [ "$failures" -eq 0 ] || exit 1
+  echo 'ok: Get-Command detector fixtures (25 names, 75 cases)'
+)
+detector_fixtures || FAIL=$((FAIL + 1))
 
 flagged=0
 unexempt_fail=0
@@ -226,7 +263,7 @@ for f in $PS1_FILES; do
 
   hit=0
   grep -qE "$P1" "$full" && hit=1
-  grep -qE "$P2" "$full" && hit=1
+  grep_p2 "$full" >/dev/null && hit=1
   grep -qE "$P3" "$full" && hit=1
   grep -qE "$P4" "$full" && hit=1
   grep -qE "$P5" "$full" && hit=1
@@ -239,7 +276,7 @@ for f in $PS1_FILES; do
     # no-op for that capture (exactly the bug that escaped this guard in
     # templates/luna-second-brain/scripts/setup.ps1 -- HIMMEL-2256).
     fixline_ln=$(grep -nE "$FIXLINE_RE" "$full" | head -1 | cut -d: -f1)
-    first_capture_ln=$({ grep -nE "$P1" "$full"; grep -nE "$P2" "$full"; grep -nE "$P3" "$full"; grep -nE "$P4" "$full"; grep -nE "$P5" "$full"; } 2>/dev/null | cut -d: -f1 | sort -n | head -1)
+    first_capture_ln=$({ grep -nE "$P1" "$full"; grep_p2 "$full"; grep -nE "$P3" "$full"; grep -nE "$P4" "$full"; grep -nE "$P5" "$full"; } 2>/dev/null | cut -d: -f1 | sort -n | head -1)
     if [ "$fixline_ln" -gt "$first_capture_ln" ]; then
       capture_text="$(sed -n "${first_capture_ln}p" "$full" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
       echo "FAIL: $f carries the HIMMEL-2256 fix line at L$fixline_ln but it lands AFTER the first native-stdout capture at L$first_capture_ln ($capture_text) -- the fix is a no-op for that capture. Move the fix line above L$first_capture_ln in $f." >&2
@@ -315,7 +352,7 @@ for f in $PS1_FILES; do
     [ -n "${blk_s:-}" ] || continue
     job_capture_ln=$({
       grep -nE "$P1" "$full"
-      grep -nE "$P2" "$full"
+      grep_p2 "$full"
       grep -nE "$P3" "$full"
       grep -nE "$P4" "$full"
       grep -nE "$P5" "$full"

@@ -51,6 +51,15 @@ then writes `<root>/<user>/<bucket>/<PREFIX>-nextleg-<date>A-console.md` from
 [`console-template.md`](console-template.md). A second `new` on the same day
 writes `…B-console.md` — it never overwrites.
 
+**Keep the `-console` suffix in a scoped name:** `--name roadmap-console`, not
+`--name roadmap`. The suffix is load-bearing. `console-compact-reinject.sh`
+re-injects the live state after a compaction only for a session whose
+launch-time `-n` name ends in `-console`, and `/rename` does not change that
+name. `next` derives the successor's name from its `--doc`, so a doc without
+the suffix hands the mistake down the chain. To fix a mis-named console, copy
+its doc to a `…-console.md` path, take the lock on the new path, release the
+old one, and leave a pointer stub behind.
+
 It then acquires the queue lock on that document and prints the
 `release-token:` line. **That token belongs to the console you are about to
 launch** — record it in the console's first Results bullet, because releasing
@@ -72,14 +81,17 @@ Finally it prints the launch line. Run it in a terminal of its own:
 ```text
 env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID \
     CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 \
-    claude --model <model> --autocompact 200000 -n <session-name> "load <doc> and continue"
+    claude --model '<model>[1m]' --autocompact auto -n <session-name> "load <doc> and continue"
 ```
 
-`--autocompact 200000` is the default (HIMMEL-2973 — the largest cache-read
-cost driver on the fleet was Fable consoles compacting only near the 1M
-window). Set `CONSOLE_CONTEXT=1m` in the launching shell before running
-`console new`/`next` to opt into the old `--autocompact auto` behavior; the
-printed launch line reflects whichever is resolved.
+Consoles default to 1m context with `--autocompact auto` (HIMMEL-3884,
+console-class exemption from HIMMEL-2975). Both `console new` and `next`
+accept `--context 1m|standard`, which overrides the environment and default.
+Use `--context standard` or `CONSOLE_CONTEXT=standard` in the launching shell
+to opt down to `--autocompact 200000`. The printed launch line and armed
+launch use the same resolved choice. Fable-family models retain their existing
+handling: the CLI strips `[1m]`, so the suffix is not applied; autocompact still
+is. Legs and non-console arms keep their standard default.
 
 A console wants a real TTY. A session launched without one exits at the first
 idle cross-session message.
@@ -118,6 +130,18 @@ re-dispatch (`headed-arm-leg.sh` exits 14) until someone has looked and run
 
 ## Dispatching legs
 
+**Pre-dispatch trust-path check (HIMMEL-4089):** trace the planned scope and
+list the trust paths it will plausibly need (shared libraries, hooks, launchers,
+settings, or guardrail inventories). Put the exact paths, permitted operations,
+and exclusions in the initial brief, with the operator's up-front scope grant.
+If that grant is missing, narrow the task or obtain it before dispatch; a
+console cannot manufacture operator permission. The brief grants task scope,
+not a bypass of the leg's tool-permission envelope. In particular, an auto-mode
+leg's mid-flight inbox EXPANSION may be refused by the classifier and needs
+operator confirmation in-window, even with a valid RETASK token. Do not use
+repeated inbox revisions as a workaround; see
+[`../internals/retask-channel.md`](../internals/retask-channel.md).
+
 When drafting the brief's **Ship:** item, spell the attestation trailers'
 grammar rather than paraphrasing it: the token is the FIRST word after the
 colon — `Platforms tested: <os>`, `Security reviewed: manual — <what you
@@ -140,6 +164,30 @@ many readers but exactly one writer per artifact. And **every dispatch names an
 explicit model**: an unnamed one draws on the scarcer parent quota. Tier and
 effort guidance, including the console's own wake-up budget, is in
 [`../internals/lane-calibration.md`](../internals/lane-calibration.md).
+
+Three pre-launch checks that each cost a console a dead leg when skipped:
+
+- **An old backlog bug may already be fixed.** Before dispatching a leg on a
+  bug filed weeks ago, check that it still reproduces on current main: read
+  the code the ticket names and look for a regression test that covers it.
+  Many have been fixed in passing. Batch the check in one read-only agent pass
+  (still open, fixed, or partial, each with file:line evidence), and verify any
+  "fixed" claim yourself before you close the ticket.
+- **The Tier line needs a literal em-dash.** An Opus or Fable leg launches only
+  if its brief carries `> **Tier:** opus — <category>: <reason>`. With an ASCII
+  hyphen in place of the em-dash, `headed-arm-leg.sh` refuses: no launch log,
+  nothing in `pgrep`. `--dry-run` an Opus or Fable launch first and look for
+  `refusing` in its output.
+- **Design-profile legs need a one-time interactive OAuth login.** The `design`
+  profile enables `builder-visual@himmel`, whose `.mcp.json` registers the hosted
+  `agent-native-dispatch` MCP server (`https://dispatch.agent-native.com/mcp`,
+  OAuth). Until the operator has logged in once (`/mcp`, pick
+  `agent-native-dispatch`), the server needs auth and a leg cannot answer the
+  prompt, which looks like a hung leg. Tool arguments go to Builder.io servers:
+  never use it on salus/PHI work. `context7` needs no login. Do not arm a
+  design-profile leg unattended (`--arm`, at-jobs, overnight) until a fresh
+  session has been checked to keep the token.
+
 Pass **`--profile leg-impl`** (HIMMEL-2830) on a native-lane leg: it narrows
 the leg's plugin set, appends the standing rules from
 [`leg-preface.md`](leg-preface.md) to its system prompt — which is why the v3
@@ -183,9 +231,31 @@ bullet can be wrong — recover the real one from
 `IDLE-HELD?` is heartbeat age, not death: a leg inside a long foreground suite
 makes no tool calls. Verify with `pgrep` against the leg's session name;
 never force-release on the flag alone.
+**`NOLIVE` and `FORKED` (HIMMEL-4234).** A leg that never took its lock or wrote
+a marker bullet reads `FREE` forever, so the waiter's key never moved and the
+console was never woken. `legs=` now shows `<N>:NOLIVE` once a leg with no held
+lock and no marker bullet at all is older than `TICK_NOLIVE_MIN` minutes
+(default 10), counted from the fleet manifest's `added` time, else the launch
+log's `armed:` line, else the doc's mtime; the change from `FREE` wakes the
+waiter. `<N>:FORKED` means the leg's session transcript (found only by its
+`custom-title`, never guessed) ends in a `continued-in` record: the session was
+forked or backgrounded into another one, usually without its preface. A
+`WRAPPED`, `READY`, `LIVE`, `BLOCKED` or held-lock leg is never either. Act on
+both the same way: `ListAgents`, then `SendMessage` the leg its lock command
+(`queue-lock.sh acquire <its doc>`), your console session name and its RETASK
+token; if it is gone, relaunch it.
 `tick.sh --legs-from <manifest>` (HIMMEL-3748) reads the same absolute docs
 from a fleet manifest that `console-kit/fleet-manifest.sh add|remove` keeps,
 re-read every sample, so a dispatch or wrap needs no waiter re-start.
+Pass `--fleet <manifest>` before the positional arguments to
+`console-kit/headed-arm-leg.sh` and `console-kit/close-wrapped-leg.sh` to keep
+that manifest updated automatically: launch adds its doc only after a successful
+handoff; close removes its doc only on a successful close (including benign
+prune skips). Failed/refused launches and closes leave the manifest unchanged.
+Without the flag, both verbs keep their existing behavior. Dry-run launches
+never update the manifest. An update failure returns nonzero and reports that
+the launch/close already happened; it does not undo it. Nonces remain console-only
+inputs to `live-state.sh --nonce`, never sourced from the manifest.
 
 ## Claudex legs: the inbox is the only channel
 
@@ -200,13 +270,23 @@ console's own session name. `AskUserQuestion` reaches nobody on a claudex leg
 while the operator is away — every claudex brief must say so and give the leg
 the console's exact session name (HIMMEL-2898 item 1).
 
-Inbox delivery is **tool-call-gated**, so a leg that ends its turn on
-`BLOCKED` or a question goes idle and never sees the answer on its own.
-Standing rule (console 03H, 2026-09-10 01:18): every claudex leg arms a
-persistent `Monitor` on `tail -n 0 -F <handover-root>/inbox/<session>.md` at
-LIVE, before anything else — carry that line verbatim in the claudex brief
-preface. A structural fix (registry entry, or an idle-wake path) is still
-open on HIMMEL-2898 items 1 and 2.
+Inbox delivery is **tool-call-gated**. Before ending a turn at BLOCKED,
+READY, PR-READY, or a blocking question/PROBE ask, the leg arms ONE bounded
+Monitor on `bash scripts/handover/console-kit/inbox-follow.sh --wake
+<handover-root>/inbox/<session>.md`, with `timeout_ms: 1800000`. Resolve the
+root through `handover_root()` and use only the leg's own exact session name.
+The supported API has no persistent flag. The leg re-arms on expiry for at
+most eight windows/four hours per unresolved hold; unrelated wakes do not
+reset the wall-clock cap. Full lifecycle, failure recovery and wrap rules:
+[`leg-preface-claudex.md`](leg-preface-claudex.md).
+
+The fixed wake envelope is data only: the leg makes a benign tool call to
+receive the authoritative inbox hook delivery before acting. The follower's
+`.md.cursor` never steals the hook's `.cursor/<session>` delivery cursor;
+restart drains lines appended during a re-arm gap without normal replay.
+Suppression can lose a wake, so expiry must trigger hook delivery too. The
+short claudex idle-wake probe (HIMMEL-4092, n=1) is not a four-hour soak or a
+cross-lane persistence claim. No registry or hook authority changes here.
 
 ## Rulings
 
@@ -219,6 +299,18 @@ Expanding or redirecting a leg needs the token; narrowing it or halting it does
 not — that asymmetry is deliberate, so a halt can never be argued away. Full
 threat model and the verbatim block:
 [`../internals/retask-channel.md`](../internals/retask-channel.md).
+
+**A ruling that widens what a leg may do is refused by the leg's own auto-mode
+classifier**, for example an extra push, or SKIP verdicts in place of a suite
+that a guard blocked. The refusal is correct: a console ruling is not user
+consent. Narrow the ask instead (run each suite on its own, with no runner
+flags), or do the step from the console, for example push the leg's verified
+head yourself and then tell it to continue.
+
+**Address `inbox-send.sh` by the leg's real session name**, the `-n` it was
+launched with (see its launch log). That name may lack the doc's date suffix.
+A ruling sent to the wrong name is never delivered and raises no error, so run
+`inbox-send.sh --pending` after sending.
 
 ## Merges
 
@@ -245,6 +337,12 @@ call stays the console's own, which the script says on its last line. On a
 PR that is already `MERGED`, GitHub reports `mergeStateStatus: UNKNOWN`
 permanently, so check 1 always fails there — that is expected, not a bug;
 the script's domain is a PR that has not yet merged.
+
+The CR ledger is keyed by head sha, so **every push needs its own review
+round**, even a one-line fix after a judge's NO-GO. A ruling of "no new
+`/pr-check` panel" leaves check 4 with no row to find, and the marker-clear
+script refuses when no critic answered at that head. Word the ruling as "one
+`/pr-check` round at the new head; only Critical or Important findings block".
 
 A PR on HIMMEL-2973/2976/2928/2974/2975 is READY only if its body cites
 `HIMMEL-2977 "GATE <previous lever> PASS <date>"` (for 2973:

@@ -44,11 +44,27 @@ For work that will need mid-flight decisions or will outlive one context window,
    is the failure this step exists to prevent. Release the lock at wrap
    (Phase 11, with the captured token) or via `/stop`; an un-released lock
    is covered by the TTL (default **6 h** — sized to cover the 3-4 h
-   overnight budget; `QUEUE_LOCK_TTL_SECONDS` tunes it, and wiring periodic
-   `queue-lock.sh heartbeat <handover-path> <token>` refreshes into long
-   sessions is the future lever for tightening it back down — TTL sizing
+   overnight budget; `QUEUE_LOCK_TTL_SECONDS` tunes it — TTL sizing
    is an open operator question on the HIMMEL-856 design) so a crashed
-   session never strands the queue.
+   session never strands the queue. **A live leg does not have to remember
+   to heartbeat (HIMMEL-2318).** A leg acquires here and releases at Phase
+   11 and calls nothing in between, so after one TTL its lock used to go
+   silently STALE and takeable. The lock now self-heartbeats from a
+   PostToolUse hook (`queue-lock.sh self-heartbeat`) that refreshes the
+   locks THIS session acquired, throttled by
+   `QUEUE_LOCK_SELF_HEARTBEAT_SECONDS` (default 300), and records the
+   session's transcript path in the lock. Operator: wire the self-heartbeat
+   hook VM-first (`wire-session-telemetry-hooks.mjs` rewrites
+   `settings.json`; `--check` reports whether it is wired, `--off` removes
+   it); never from a leg. Even
+   un-refreshed, a lock whose holder's transcript on the SAME host was
+   written within the TTL is LIVE regardless of heartbeat age: `status`
+   reports FRESH and `acquire` refuses (`QUEUE_LOCK_TAKEOVER=1` still
+   forces). `heartbeat` and `release` now emit the same `AGING` warning
+   `status` always did (heartbeat age past half the TTL), so a leg that
+   outran its margin unseen finds out at its next refresh or at wrap.
+   Without the hook, a manual `queue-lock.sh heartbeat <handover-path>
+   <token>` on long sessions is still the lever.
 1. **Plan** — `superpowers:writing-plans` on the active brief; commit to `<plans-root>/YYYY-MM-DD-<slug>.md` where `<plans-root>` resolves as:
    - `$HANDOVER_DIR/plans/` when `HANDOVER_DIR` is set (Mode B — plans live with handover state in `<state-repo>/handovers/plans/`).
    - `<repo>/docs/superpowers/plans/` otherwise (Mode A default — backwards-compat;
@@ -58,11 +74,11 @@ For work that will need mid-flight decisions or will outlive one context window,
    The Mode B path collocates the plan with the per-ticket session notes (`<state-root>/<repo>/{epics,standalones}/<TICKET>/next-session-N.md`), so a reviewer auditing the work can grep one root for plan + decisions + outcomes. Mode A keeps plans inside the code repo for solo-operator no-env-var setups.
 2. **Worktree** — `/clean_garden feat/himmel-<N>-<slug>`.
 3. **Impl** — `superpowers:subagent-driven-development`. Sequential per task: implementer subagent → spec-compliance reviewer → code-quality reviewer → fix-on-finding → next task. **Verifier cadence (HIMMEL-281, Fable-5 scaffolding):** every 3 completed tasks, dispatch one fresh-context verifier subagent that re-checks the accumulated branch diff against the Phase-1 plan. Fresh-context verification beats self-critique, and the per-task reviewers see one task at a time — this is the layer that catches cross-task drift before Phase 4. **Stop-check (HIMMEL-137):** before EACH subagent dispatch in this loop, run `bash scripts/overnight/stop-marker.sh check` (silent; rc=0 = stop marker present, rc=1 = clear). When rc=0, finish the in-flight subagent if one is running, then halt the loop gracefully (write a `next-session-N.md` snapshot at the partial-completion point, file followup tickets for remaining tasks, and exit Phase 3). Operator-triggered via `/stop` (soft) or `/stop --hard` (also `TaskStop`s in-flight). `/stop --reset` clears the marker.
-4. **Final review** — one holistic `code-reviewer` subagent across the full diff vs main. Any solo/holistic review pass uses the `pr-review-toolkit(-himmel)` `code-reviewer` (HIMMEL-299). **Never zero CR (HIMMEL-299, 2026-06-13):** a docs-only diff still gets ONE **docs-audit** `code-reviewer` subagent scoped to the docs charter — repo-claim accuracy (hooks/gates/flags/paths/commands vs actual code), dead links, stale file/flag/ticket refs, example correctness, internal consistency; NOT prose nitpicks (`CLAUDE.md` → `/claude-md-audit`). Review is never skipped outright.
-5. **Heavy CR** — dispatch 5 reviewers IN PARALLEL from `pr-review-toolkit` (`code-reviewer`, `pr-test-analyzer`, `comment-analyzer`, `silent-failure-hunter`, `type-design-analyzer`). Aggregate Critical/Important/Minor findings by file. For docs-only or test-free PRs, skip reviewers that don't apply (e.g. `pr-test-analyzer`, `type-design-analyzer`, `silent-failure-hunter` are no-ops on a pure-markdown PR) and dispatch only the relevant subset. **`/code-review ultra` sits ABOVE this tier (HIMMEL-299 eval — ADOPT):** it is the MOST expensive lane — more than this 5-reviewer heavy CR — so it is the top/last-resort escalation for the biggest/riskiest PRs, run AFTER heavy CR, never as a cheaper first reach. It is operator-triggered + billed; the agent cannot launch it — record an `ultra` pass as a one-action operator step.
+4. **Final review** — one holistic pass over the full diff vs main, run as ONE `/pr-check` (HIMMEL-926, HIMMEL-1004): the cross-model CR matrix is the gate, not a hand-dispatched reviewer set. `/pr-check` runs the critic panel (default: the paid codex critic — there is no free anchor, HIMMEL-1101; `CR_PROFILE=none` skips it) and **you, the orchestrating session, adjudicate its `[<slug>-N]` candidates inline** (`agreed|disproved|conflict|unaddressed`) — no `pr-review-toolkit:*` Claude agents are dispatched. CodeRabbit is NOT part of the matrix: it is the GitHub App and reviews the PR once it exists (HIMMEL-2704; its threads are handled after the PR is open). **Optional, opt-in Claude pass:** only with `CR_CLAUDE_AGENTS=1` (launching shell / `.env`; default OFF) does `/pr-check` also dispatch the upstream `pr-review-toolkit:code-reviewer` — keep that to ONE holistic `code-reviewer` for this phase (HIMMEL-299); the full per-agent matrix is the same opt-in branch, never the default. **Never zero CR (HIMMEL-299, 2026-06-13):** a docs-only diff still gets the **docs-audit lane** (HIMMEL-303) — `/pr-check` applies the docs charter inline (or via ONE `code-reviewer` under `CR_CLAUDE_AGENTS=1`), scoped to repo-claim accuracy (hooks/gates/flags/paths/commands vs actual code), dead links, stale file/flag/ticket refs, example correctness, internal consistency; NOT prose nitpicks (`CLAUDE.md` → `/claude-md-audit`). Review is never skipped outright. Full semantics: [`.claude/commands/pr-check.md`](../../.claude/commands/pr-check.md) (steps 2.5, 3.0, 3.5).
+5. **CR gate (`/pr-check` clears the marker)** — aggregate the adjudicated findings into Critical/Important/Minor counts by file; `/pr-check` clears the pre-push CR marker only on a clean result, and without a clean run `gh pr create` is blocked by the PreToolUse hook. Cross-model floor behaviour (`CR_REQUIRE_CROSS_MODEL`, `CR_FLOOR_FALLBACK=claude-only`) and the park path when it is exhausted are in § Park protocol. **The parallel per-agent Claude heavy CR is NOT the default** (it dispatched a Claude subagent per reviewer every round and was retired by HIMMEL-926; an overnight run that followed the old text of this doc did exactly that — HIMMEL-1004). It exists only as the `CR_CLAUDE_AGENTS=1` branch of `/pr-check` step 3.5, where the applicable subset of `pr-review-toolkit` agents (`code-reviewer`, `pr-test-analyzer`, `comment-analyzer`, `silent-failure-hunter`, `type-design-analyzer`) runs in parallel and docs-only or test-free PRs skip the no-op reviewers. **`/code-review ultra` sits ABOVE the matrix (HIMMEL-299 eval — ADOPT):** it is the MOST expensive lane — more than a default `/pr-check` run or the opt-in agent fan-out — so it is the top/last-resort escalation for the biggest/riskiest PRs, run AFTER `/pr-check` is clean, never as a cheaper first reach. It is operator-triggered + billed; the agent cannot launch it — record an `ultra` pass as a one-action operator step.
 6. **Fix batch** — dispatch fix subagent(s) for ALL Critical + Important findings. Run tests after each batch.
-7. **Re-CR** — re-dispatch the same 5 reviewers. Loop fix → re-CR until 0 Critical remain.
-8. **PR open + push** — `gh pr create --body-file <path>`. Write the body to a file first to avoid shell-interpretation surprises (heredocs, `$()` substitutions, multi-line content with quotes). **Attestation trailers go in the FIRST commit, never a reactive amend** — see "Auto-mode classifier & attestation" below. Before the first `git commit` of any shippable change, after you have genuinely run tests + the heavy CR, write the gate trailers directly into that commit body:
+7. **Re-CR** — re-run `/pr-check` on the fixed head (same matrix; the Claude agents again only under `CR_CLAUDE_AGENTS=1`). Loop fix → re-CR until 0 Critical remain.
+8. **PR open + push** — `gh pr create --body-file <path>`. Write the body to a file first to avoid shell-interpretation surprises (heredocs, `$()` substitutions, multi-line content with quotes). **Attestation trailers go in the FIRST commit, never a reactive amend** — see "Auto-mode classifier & attestation" below. Before the first `git commit` of any shippable change, after you have genuinely run tests + `/pr-check`, write the gate trailers directly into that commit body:
    ```
    Platforms tested: <linux|windows|gitbash|…>   # only when the diff touches shell/scripts
    Security reviewed: <pr-review-toolkit|manual|claude-code-security-review>   # only for non-docs code
@@ -291,8 +307,8 @@ and a fresh after-report replaces the red one.
 The pipeline ships code, but some repo artifacts mirror that code and must be
 updated in the **same PR** or they silently rot. **Owner: the executing agent,
 as the first action of Phase 8** (before `gh pr create`) — diff the change set
-against this list and commit any sync edit onto the branch. The Phase-5 heavy
-CR (`comment-analyzer` / `cavecrew-reviewer`) is the backstop, not the primary
+against this list and commit any sync edit onto the branch. The Phase-4/5 `/pr-check`
+CR (its adjudicated panel findings; `comment-analyzer` under `CR_CLAUDE_AGENTS=1`) is the backstop, not the primary
 catch.
 
 - **`docs/commands-catalog.md`** — if the diff adds, renames, or removes a
@@ -339,7 +355,7 @@ overnight run, just read the file directly; it's plain markdown.
 
 ## Budget (informational)
 
-- **Subagent dispatches:** ~50-60 per overnight run. Per phase 3, impl is ~3 subagents per task (implementer + 2 reviewers); a 16-task plan = ~48 just for impl. Add ~6-12 for phase 5 heavy CR over 1-2 rounds, plus fix-batch dispatches (5-10).
+- **Subagent dispatches:** ~50-60 per overnight run. Per phase 3, impl is ~3 subagents per task (implementer + 2 reviewers); a 16-task plan = ~48 just for impl. The default `/pr-check` CR matrix adds ~0 Claude subagent dispatches (cross-model critic calls + inline adjudication); only the opt-in `CR_CLAUDE_AGENTS=1` fan-out adds ~6-12 over 1-2 rounds. Plus fix-batch dispatches (5-10).
 - **Wall time:** ~3-4 hours.
 - **Inference cost:** ~$10-20 on Sonnet. Bump to Opus for the planning / final-review phases if extra rigor is wanted; Sonnet is enough for impl + per-task reviews.
 - **Effort tiering (Fable-5, HIMMEL-281):** on Fable 5, `low` effort ≈ `xhigh` on prior models — this strengthens the raise-effort-before-tier rule of the Subagent delegation & escalation policy (HIMMEL-166/688, root `CLAUDE.md`). For mechanical subagent work, raise effort before raising the model tier; reach for Opus-class only with a concrete reason. Default effort `high`; `max` is a re-verification tax (2-3× time for the same answer, community-measured) — reserve it for capability-critical single calls, not pipeline phases.
@@ -420,7 +436,7 @@ Opus 4.8 runs a model-based **auto-mode classifier** on every tool call in auton
 What this means for an autonomous run, and how to stay unblocked:
 
 1. **Attestation: write trailers into the FIRST commit** (Phase 8), never a reactive amend. This avoids the gate-circumvention veto entirely — the push passes the deterministic git hook first-try and there is no amend for the classifier to flag. This is the single most important rule for shipping autonomously.
-2. **Never `git commit --amend` to satisfy a just-failed push gate.** If you somehow committed without a required trailer, the recovery is to author a clean replacement commit message *before* the first push of that branch — not an amend after a failed push. If the branch is already pushed, the trailer must go in the PR body (the gates accept PR-body attestation) — let the operator add it; do not amend.
+2. **Never `git commit --amend` to satisfy a just-failed push gate.** If you somehow committed without a required trailer, the recovery is to author a clean replacement commit message *before* the first push of that branch — not an amend after a failed push. If the branch is already pushed, recut it: a fresh branch from main with ONE new commit carrying the trailers, a new PR, and the old one closed (a PR-body trailer clears the pre-push gate but fails the console's ready-check, which reads only the first commit; see [`stuck-playbook.md`](../internals/stuck-playbook.md) § missing attestation trailer). Do not amend.
 3. **Self-modification is operator-only by design.** The agent cannot add allow-rules to its own settings, nor edit `CLAUDE.md` / `.claude/settings.json`, even in a worktree PR branch — the *commit* of such a change is classified as self-modification and HARD-blocked when the change is **agent-inferred**. The unblock is **explicit user specification**: when the operator states the exact allow-rule string (or exact rule text) verbatim, the intent bar is met and the agent may commit it. Pure operational docs (this file) are NOT governing config and commit freely.
 4. **External writes (Jira): ensure the specific standing allow-rule exists, then run them.** With `Bash(node scripts/jira/dist/index.js:*)` in settings, transitions run autonomously — 100%, no defer. If the rule is absent (and you cannot add it — that's operator self-mod), do NOT probe alternative invocations (flagged as evasion); record the transition as an operator action in the handover and ask the operator to add the rule once.
 

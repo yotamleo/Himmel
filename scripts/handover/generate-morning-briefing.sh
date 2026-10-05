@@ -340,7 +340,10 @@ Backlog tickets:
 ${backlog_rows}
 In-Progress:
 ${inprogress_raw}"
-    if llm_out=$($CLAUDE_CMD --model "$LLM_MODEL" "$llm_prompt" </dev/null 2>/dev/null); then
+    # HIMMEL-4013: a text-in/text-out summary needs no plugins beyond the floor.
+    if ! llm_settings=$(bash "$(dirname "${BASH_SOURCE[0]}")/../lanes/profile-settings.sh" bare); then
+        echo "WARNING: --llm plugin profile 'bare' did not resolve; using heuristic" >&2
+    elif llm_out=$($CLAUDE_CMD --settings "$llm_settings" --model "$LLM_MODEL" "$llm_prompt" </dev/null 2>/dev/null); then
         t=$(extract_block "$llm_out" TLDR);    if [ -n "$t" ]; then tldr_final="$t"; else echo "WARNING: --llm TLDR block empty; using heuristic" >&2; fi
         o=$(extract_block "$llm_out" ORDER);   if [ -n "$o" ]; then order_final="$o"; else echo "WARNING: --llm ORDER block empty; using heuristic" >&2; fi
         b=$(extract_block "$llm_out" BACKLOG); if [ -n "$b" ]; then backlog_block_final="$b"; fi

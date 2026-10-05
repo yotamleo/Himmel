@@ -31,7 +31,7 @@ MIRROR = os.path.expanduser('~/.himmel/state/jira-mirror/HIMMEL')
 LUNA = os.path.expanduser('~/Documents/luna')
 HANDOVERS = ''
 LAYERS = ['bugs', 'enhancements', 'features', 'misc', 'audit']
-VER_RE = re.compile(r'^v1\.0\.(\d+)([b-z]?)$')  # a trail '<version>b', 'c', ... takes its parent's overflow
+VER_RE = re.compile(r'^v1\.0\.(\d+)([a-z]?)$')  # a trail '<version>a', 'b', ... takes its parent's overflow (HIMMEL-4026)
 SKIP_RE = re.compile(r'HIMMEL-3882|/dashboard|/artifacts|backlog|\.bak|/graphify-out/')
 KEY_RE = re.compile(r'HIMMEL-\d+')
 MAX_NOTES, TTL = 5, 7 * 86400
@@ -239,7 +239,7 @@ def vlabel(v):
     if not (m and m.group(2)):
         return v
     k = ord(m.group(2)) - ord('a')
-    return 'v1.0.%s · overflow%s' % (m.group(1), '' if k == 1 else ' %d' % k)
+    return 'v1.0.%s · overflow%s' % (m.group(1), '' if k <= 1 else ' %d' % k)
 
 
 def version_caps(r, vers):
@@ -872,9 +872,9 @@ function model(D){
  var V=D.V,P=D.P,T=D.T,LEG=D.LEG||{};
  var KIND=["bugs","improvements","features","other","audits"];
  var READY=["no plan yet","problem stated","fix named, not yet checked","plan audited","spec ready"];
- function train(i){return /^v1\.0\.\d+[b-z]?$/.test(V[i])}
+ function train(i){return /^v1\.0\.\d+[a-z]?$/.test(V[i])}
  // vname(i): a trail (v1.0.2b, c, ...) reads as its parent's overflow, not a new release.
- function vname(i){var m=/^(v1\.0\.\d+)([b-z])$/.exec(V[i]);return m?m[1]+" · overflow"+(m[2]=="b"?"":" "+(m[2].charCodeAt(0)-97)):V[i]}
+ function vname(i){var m=/^(v1\.0\.\d+)([a-z])$/.exec(V[i]);return m?m[1]+" · overflow"+(m[2]<="b"?"":" "+(m[2].charCodeAt(0)-97)):V[i]}
  function keep(rem){return function(p){return !rem||p[2]!=2}}
  function inV(i,rem){return P.filter(function(p){return p[3]==i}).filter(keep(rem))}
  function inT(t,rem){return P.filter(function(p){return p[5]==t&&train(p[3])}).filter(keep(rem))}
@@ -928,9 +928,9 @@ function model(D){
  function planned(p){return p[7]!=2}
  function roi(p){return (p[12]||0)/Math.max(p[6]||0,.1)}
  // trail(i): the overflow version that takes i's work: v1.0.2 → v1.0.2b, v1.0.2b → v1.0.2c; i -1 when it does not exist yet.
- function trail(i){var m=/^(v1\.0\.\d+)([b-z]?)$/.exec(V[i]);if(!m)return null;
+ function trail(i){var m=/^(v1\.0\.\d+)([a-z]?)$/.exec(V[i]);if(!m)return null;
   var n=m[1]+(m[2]?String.fromCharCode(m[2].charCodeAt(0)+1):"b");return {i:V.indexOf(n),name:n}}
- function parent(i){var m=/^(v1\.0\.\d+)[b-z]$/.exec(V[i]);return m?V.indexOf(m[1]):-1}
+ function parent(i){var m=/^(v1\.0\.\d+)[a-z]$/.exec(V[i]);return m?V.indexOf(m[1]):-1}
  function base(i){var m=0;inV(i).forEach(function(p){if(planned(p))m+=ld(p)});return m}
  // ratio(i): P90 per unit of mean in version i, so a what-if can move the P90 with the mean.
  // ponytail: the P90 after a move is scaled from the plan's own P90 by mean (≈), not re-simulated; re-run the placer to confirm.

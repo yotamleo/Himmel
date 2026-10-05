@@ -78,21 +78,64 @@ block on it: only the questions downstream of a running exploration wait; ask
 the rest of the frontier now. The *decisions* are the operator's — put each to
 them and wait.
 
+**The seven sizing questions (HIMMEL-3996).** Besides the design tree, every
+grill asks these, each with your recommended answer. Facts (open PRs, the
+version's headroom) you look up yourself; only the choices go to the operator.
+
+1. **Smallest shippable slice and its size** (XS..XL). Recommend the thinnest
+   slice that still ships value; it sets the median.
+2. **What pushes it to the high end** (the tail driver). Recommend naming the
+   single biggest unknown, not a list.
+3. **Does it touch guards, hooks or permissions** (G1)? Recommend `yes` when any
+   scope file is under `scripts/hooks/`, a guard, or a permission list; G1 raises sigma.
+4. **Can a RED be written now, or is it plan-first?** Recommend a named failing
+   test; plan-first only when the interface is not yet known.
+5. **Is any unknown wide enough to span two steps?** Recommend splitting before
+   committing when the size range is wider than one step.
+6. **Which open PRs or single-writer groups does it collide with?** Recommend
+   checking `gh pr list` against the scope files and serialising behind any hit.
+7. **Which version does it land in, and does that version still pass P90 <= 0.8?**
+   Recommend running `effort-assess version` with this ticket added.
+
+Feed the answers to `effort-assess` (`ticket --low .. --high .. --g1 .. --deps ..
+--scope-file .. --red .. --goal .. --alternative ..`; skill: `himmel-ops:effort-assess`).
+Save its JSON next to the spec. A refused estimate (`dod.failed`) means fix the
+answers (split, or go plan-first), not quote it.
+
 **Stop condition:** the frontier is empty — every branch visited, nothing
 silently assumed. Do not advance to 1b until the operator confirms you have
 reached a shared understanding.
 
 `autonomous` mode has no operator to answer: still build the tree and still
 write the frontier out, but answer each question yourself with the recommended
-answer and carry the whole Q/A list into the spec as an explicit ASSUMPTIONS
-section — the Stage-2 critic red-teams it (charter dimension 1, hidden
-assumptions).
+answer and carry the whole Q/A list (the seven sizing questions included) into
+the spec as an explicit ASSUMPTIONS section — the Stage-2 critic red-teams it
+(charter dimension 1, hidden assumptions).
 
 ### 1b. Brainstorm → spec
 
 Invoke `lean-skills:brainstorming` for the design and the written spec, carrying
 the Stage-1a outcome in as settled context — do not re-ask what the grill
-settled.
+settled. The written spec MUST contain: an `Estimate record: <path>` line (the
+effort-assess JSON from 1a), an `## Alternatives considered` section and a
+`## Definition of done` section. Stage 2 refuses to start without them.
+
+It also carries, for the terminal lint (HIMMEL-4375):
+- `## Invariants`: `none`, or one `I<n>` line per "one / never / always /
+  every" rule the design states.
+- `## Fact ownership`, when the design adds or aggregates a status, report,
+  doctor, health, probe, check or inventory surface. It is a table with one row
+  per fact:
+  - the fact;
+  - every EXISTING surface that computes it, as backticked paths found by grep,
+    or `none (grep: <pattern>)`. A delegation (A calls B) counts as two
+    surfaces;
+  - its single owner after this design;
+  - how each non-owner is folded, delegated or removed.
+
+  Build it by grepping the repo, never from memory. Self-answer mode does not
+  exempt it. The lint detects the surface from the H1 and the first section,
+  so name it there.
 
 **HALT it before its auto-handoff to writing-plans.** When brainstorming has
 written + self-reviewed the spec and the design is approved, return HERE
@@ -100,6 +143,14 @@ instead of letting it invoke writing-plans — minerva runs the spec-critic
 first.
 
 ## Stage 2 — spec critic (adversarial)
+
+**Gate first (HIMMEL-3996).** Resolve `$S` with the resolver from the Mode
+section, then run `bash "$S/minerva-spec-gate.sh" <spec-file>`. A non-zero exit
+means the spec lacks the estimate record, alternatives or definition of done:
+it names what is missing — fix the spec (back to 1a/1b), re-run the gate, and
+only dispatch the critic once it prints `ok`. Never skip it, and in `autonomous`
+mode the gate still applies (the answers go to ASSUMPTIONS, the record path stays
+in the spec). The critic reads the estimate record and may challenge sigma.
 
 Dispatch a fresh subagent (Agent tool) against the written spec file. Loop
 fix → re-critic until it returns clean, **cap 2 rounds** (then advance with
@@ -192,6 +243,13 @@ fi
 # <<< himmel-ops scripts resolver
 bash "$S/legs.sh" 2>/dev/null || true
 ```
+
+**Lint first (HIMMEL-4375).** Run `bash "$S/minerva-trace-lint.sh" <spec-file> <plan-file>`
+from the target repo before any hand-off. A non-zero exit names each gap:
+- a missing or ungrepped Fact ownership row → back to the spec (1b);
+- an invariant with no named test → back to the plan (Stage 3).
+
+Do not hand off until it prints `ok`, in either mode.
 
 - If mode is `autonomous` (Stage 0) **AND** the output contains `execute`: do NOT
   stop — **invoke `lean-skills:subagent-driven-development`** on the hardened plan

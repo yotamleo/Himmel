@@ -284,6 +284,9 @@ const MUST_RUN_CHAIN_MEMBERS = new Set([
   // HIMMEL-3669: the auto-memory index's only form gate (line/growth caps);
   // a starved run let a malformed MEMORY.md write through unchecked.
   'guard-memory-capture.sh',
+  // HIMMEL-3956: fails CLOSED; a starved run let a bare `qmd query` through,
+  // and that is the call that orphans a GPU-bound bun child for hours.
+  'block-bare-qmd-query.sh',
 ]);
 
 function envMs(name, fallback) {

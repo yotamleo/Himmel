@@ -9,6 +9,8 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 SUT="$REPO/scripts/lib/claude-headless.sh"
 PASS=0; FAIL=0; SKIP=0
 W="$(mktemp -d -t claude-headless-test.XXXXXX)"; trap 'rm -rf "$W"' EXIT
+# A bank read can prune dead reservations; never inspect the real slot root.
+export HIMMEL_FLEET_SLOTS="$W/fleet-slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native
 
 # HIMMEL-1712: bank-preflight now distrusts a cache whose account doesn't
 # match the current identity — synthesize one so mk_bank_cache's fixture
@@ -347,6 +349,52 @@ FAKE_ARGV_OUT="$W/argv16c.txt" FAKE_ARTIFACT="$W/artifact16c.txt" HIMMEL_CLAUDE_
   --artifact "$W/artifact16c.txt" --permission-mode default --prompt-file "$PROMPT_FILE" \
   --system-prompt-file "$W/no-such-file.md" >/dev/null 2>&1
 check_ne "16 unreadable --system-prompt-file refuses" "0" "$?"
+rm -f "$LIVE_DIR"/*.json
+
+# --- 17 (HIMMEL-4082): the HIMMEL_CLAUDE_LANE seam picks the launcher when
+# HIMMEL_CLAUDE_BIN is unset. Mini tree: lib/ copied (REPO_ROOT = mini), the rest
+# of scripts/ symlinked, the lane launchers replaced by argv-capturing stubs.
+MINI="$W/mini"; mkdir -p "$MINI/scripts"
+for e in "$REPO"/scripts/*; do
+  n="$(basename "$e")"
+  case "$n" in lib|claude-openrouter|claude-codex) ;; *) ln -s "$e" "$MINI/scripts/$n" ;; esac
+done
+cp -R "$REPO/scripts/lib" "$MINI/scripts/lib"
+for l in claude-openrouter claude-codex; do
+  {
+    echo '#!/usr/bin/env bash'
+    echo "echo $l > \"\$LANE_SEEN\""
+    # shellcheck disable=SC2016  # stub body is written literally
+    printf '%s\n' 'printf "%s\n" "$@" > "$FAKE_ARGV_OUT"'
+    # shellcheck disable=SC2016  # stub body is written literally
+    printf '%s\n' 'cat > /dev/null; echo OK > "$FAKE_ARTIFACT"'
+    echo "echo '{\"is_error\":false,\"result\":\"done\",\"session_id\":\"s\",\"permission_denials\":[],\"num_turns\":1}'"
+  } > "$MINI/scripts/$l"
+  chmod +x "$MINI/scripts/$l"
+done
+# A native fallback must never reach a real binary: a fake `claude` first on PATH
+# records itself and fails, so a regression is loud and the test asserts it never ran.
+mkdir -p "$W/fakebin"
+# shellcheck disable=SC2016  # stub body is written literally
+printf '%s\n' '#!/usr/bin/env bash' 'echo invoked > "$NATIVE_SEEN"' 'exit 97' > "$W/fakebin/claude"
+chmod +x "$W/fakebin/claude"
+lane_run() { # <lane> <tag> -> rc; no HIMMEL_CLAUDE_BIN
+  rm -f "$W/lane-seen-$2" "$W/native-seen"
+  PATH="$W/fakebin:$PATH" NATIVE_SEEN="$W/native-seen" HIMMEL_CLAUDE_LANE="$1" LANE_SEEN="$W/lane-seen-$2" FAKE_ARGV_OUT="$W/lane-argv-$2" FAKE_ARTIFACT="$W/lane-art-$2" \
+    bash "$MINI/scripts/lib/claude-headless.sh" --role test-role --ticket HIMMEL-4082 --worktree "$WORKTREE" \
+    --cwd "$WORKTREE" --artifact "$W/lane-art-$2" --permission-mode default --prompt-file "$PROMPT_FILE" >/dev/null 2>&1
+}
+lane_run openrouter or; check "17 openrouter lane exits 0" "0" "$?"
+check "17 openrouter lane used its launcher" "claude-openrouter" "$(cat "$W/lane-seen-or" 2>/dev/null)"
+lane_run claudex cx; check "17 claudex lane exits 0" "0" "$?"
+check "17 claudex lane used its launcher" "claude-codex" "$(cat "$W/lane-seen-cx" 2>/dev/null)"
+check "17 lane argv keeps the explicit permission mode" "default" \
+  "$(awk 'p{print; exit} /^--permission-mode$/{p=1}' "$W/lane-argv-or")"
+check "17 lane argv keeps -p and json output" "2" \
+  "$(grep -c -x -E -- '-p|json' "$W/lane-argv-or")"
+lane_run bogus bg; check_ne "17 unknown lane refuses" "0" "$?"
+check "17 unknown lane launched nothing" "" "$(cat "$W/lane-seen-bg" 2>/dev/null)"
+check "17 unknown lane never fell back to native claude" "" "$(cat "$W/native-seen" 2>/dev/null)"
 rm -f "$LIVE_DIR"/*.json
 
 echo "--- $PASS passed, $FAIL failed, $SKIP skipped ---"

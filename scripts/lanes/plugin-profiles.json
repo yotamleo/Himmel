@@ -57,21 +57,23 @@
     "pr-review-toolkit-himmel@himmel",
     "lean-skills@himmel"
   ],
-  "mcpCatalog": {},
+  "mcpCatalog": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@0.0.83"]
+    }
+  },
   "catalog": [
     "telegram@claude-plugins-official",
     "frontend-design@claude-plugins-official",
-    "vercel@claude-plugins-official",
-    "huggingface-skills@claude-plugins-official",
-    "firecrawl@claude-plugins-official",
-    "chrome-devtools-mcp@claude-plugins-official",
     "gopls-lsp@claude-plugins-official",
     "rust-analyzer-lsp@claude-plugins-official",
     "mcp-server-dev@claude-plugins-official",
-    "atomic-agents@claude-plugins-official",
     "watch@claude-video",
     "lean-skills@himmel",
     "plannotator-effective-html@himmel",
+    "impeccable@himmel",
+    "ui-ux-pro-max@himmel",
     "context7@claude-plugins-official",
     "code-review@claude-plugins-official",
     "code-simplifier@claude-plugins-official",
@@ -91,10 +93,10 @@
     "agent-sdk-dev@claude-plugins-official",
     "hookify@claude-plugins-official",
     "playground@claude-plugins-official",
-    "atlassian@claude-plugins-official",
     "obsidian@obsidian-skills",
     "qmd@qmd",
     "claude-obsidian@himmel",
+    "obsidian-second-brain@himmel",
     "handover@himmel",
     "luna-correlate@himmel",
     "himmel-ops@himmel",
@@ -102,39 +104,201 @@
     "pr-review-toolkit-himmel@himmel",
     "telegram-himmel@himmel",
     "qmd@himmel",
-    "codex@openai-codex"
+    "codex@openai-codex",
+    "taste-skill-core@himmel",
+    "animejs-skills@himmel",
+    "gsap-skills@himmel",
+    "lottie-motion-design@himmel",
+    "motion-lexicon@himmel",
+    "threejs-skills@himmel",
+    "ai-image-prompts@himmel",
+    "platform-design-skills@himmel",
+    "diagram-design@himmel",
+    "builder-visual@himmel",
+    "frontend-slides@himmel",
+    "design-dna@himmel",
+    "anydesign@himmel",
+    "anthropic-design-skills@himmel",
+    "hallmark@himmel",
+    "shadcn-mcp@himmel",
+    "emilkowalski-skills@himmel"
   ],
+  "_comment_contextBudget": "HIMMEL-4021 calibration audit 2026-10-02: 813 merged PR bodies searched; 738 bodies contain numeric leg-burn (739 leg records, including two explicitly separate legs in #1113), none names its author's profile unambiguously. Every profile has n=0 attributable merged legs and retains contextBudget under the n<3 rule; user/design/design-* /lane-* /bare/console-relay/console-judge/console have no additional profile-specific observation here. leg-impl has one historical 70500 first-turn observation (HIMMEL-2935, #777); telegram has one 32541 observation (HIMMEL-2961, #680). These probes are not three measured legs. Sources/date range, aggregation and exclusions: docs/internals/lane-calibration.md, HIMMEL-4021 audit. Operator stays null and resolves standard/200000 by default. No child autocompact inheritance measurement was made: UNMEASURED.",
   "profiles": {
     "operator": null,
     "user": {
-      "_comment": "HIMMEL-3064: lean-skills@himmel replaces superpowers@claude-plugins-official + mattpocock-skills@claude-plugins-official (restated here for audit-clarity though base already carries it, same convention as telegram's pr-review-toolkit-himmel restatement). plannotator-effective-html@himmel moved OUT to the new design profile -- its 6 skills cost ~630 tok every session for 1 invocation in 1628 transcripts, so design/UI work now opts in via --profile design instead of every session paying for it.",
+      "_comment": "HIMMEL-3064: lean-skills@himmel replaces superpowers@claude-plugins-official + mattpocock-skills@claude-plugins-official (restated here for audit-clarity though base already carries it, same convention as telegram's pr-review-toolkit-himmel restatement). plannotator-effective-html@himmel moved OUT to the new design profile -- its 6 skills cost ~630 tok every session for 1 invocation in 1628 transcripts, so design/UI work now opts in via --profile design instead of every session paying for it. HIMMEL-4018: obsidian-second-brain@himmel (~2.2k tok listing) is enabled here, in lane-content and in telegram — the vault-working profiles — and stays off in every lean leg and console profile.",
       "enable": [
-        "lean-skills@himmel"
+        "lean-skills@himmel",
+        "obsidian-second-brain@himmel"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "design": {
-      "_comment": "HIMMEL-3064: plannotator-effective-html@himmel is deliberately NOT in the always-on `user` tier -- its 6 skills (design-artifact, html, html-diagram, html-plan, html-prototype, html-wireframe) cost ~630 tok of session-start listing every session, and across 1628 local transcripts it was invoked exactly once. Design/UI work opts in via this profile instead.",
+      "_comment": "HIMMEL-3064: plannotator-effective-html@himmel is deliberately NOT in the always-on `user` tier -- its 6 skills (design-artifact, html, html-diagram, html-plan, html-prototype, html-wireframe) cost ~630 tok of session-start listing every session, and across 1628 local transcripts it was invoked exactly once. Design/UI work opts in via this profile instead. HIMMEL-4012: the profile now enables the full design pack (plannotator-effective-html, frontend-design, ui-ux-pro-max, impeccable) - it shipped with plannotator only and its test pinned exactly that, so a design leg ran with almost no design tooling. design legs also launch on the 1m context (headed-arm-leg.sh, operator ruling 2026-10-01). HIMMEL-4012 PR2b: the core is 7 members (adds taste-skill-core, shadcn-mcp, context7; ui-ux-pro-max is now the pinned himmel entry). The kit add-ons after this profile (design-motion ... design-trial) each stack on base ONLY, never on this core: until HIMMEL-4014 composes profiles, a design leg adds one with `--profile design --add-plugins <ids>`. Root-skill repos (animejs, ai-image-prompts, design-dna, anydesign: `skills: [\"./\"]`, install shape UNPROVEN) live only in add-ons so an unproven shape cannot break `--profile design`.",
       "enable": [
-        "plannotator-effective-html@himmel"
+        "plannotator-effective-html@himmel",
+        "frontend-design@claude-plugins-official",
+        "ui-ux-pro-max@himmel",
+        "impeccable@himmel",
+        "taste-skill-core@himmel",
+        "shadcn-mcp@himmel",
+        "builder-visual@himmel",
+        "context7@claude-plugins-official"
       ],
-      "contextBudget": 50000
+      "contextBudget": 50000,
+      "contextMode": "1m",
+      "autocompact": 1000000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. No existing profile-specific measurement; see docs/internals/lane-calibration.md."
+    },
+    "design-motion": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "emilkowalski-skills@himmel",
+        "animejs-skills@himmel",
+        "gsap-skills@himmel",
+        "lottie-motion-design@himmel",
+        "motion-lexicon@himmel",
+        "playground@claude-plugins-official"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "design-3d": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "threejs-skills@himmel"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "design-imagegen": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "taste-skill-core@himmel",
+        "ai-image-prompts@himmel"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "design-a11y": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "platform-design-skills@himmel"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "design-diagram": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "diagram-design@himmel",
+        "builder-visual@himmel"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "design-slides": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "frontend-slides@himmel"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "design-reference": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "taste-skill-core@himmel",
+        "design-dna@himmel",
+        "anydesign@himmel",
+        "anthropic-design-skills@himmel"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "design-trial": {
+      "_comment": "HIMMEL-4012 PR2b design kit add-on. Stacks on base only, not on the design core; launch as `--profile design --add-plugins <these ids>` until HIMMEL-4014 composes profiles.",
+      "enable": [
+        "hallmark@himmel"
+      ],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "code": {
+      "_comment": "HIMMEL-4024 opt-in code kit (HIMMEL-4017 resource-map): language servers (typescript-lsp, pyright-lsp: the server binary must exist on the machine) plus code-simplifier, ~0.2k listing in all. Stacks on base only; compose per task with `--profile leg-impl,code` (HIMMEL-4014). The CLIs of this kit (ast-grep, shfmt, bats) are not plugins: scripts/machine-setup/install-code-kit-clis.sh. No other profile enables these.",
+      "enable": [
+        "typescript-lsp@claude-plugins-official",
+        "pyright-lsp@claude-plugins-official",
+        "code-simplifier@claude-plugins-official"
+      ],
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000
+    },
+    "code-ui": {
+      "_comment": "HIMMEL-4024 opt-in code kit, UI add-on: the playwright MCP (est 3-5k of tool schemas, unmeasured) is the one meaningful delta of the kit, so it is its own profile rather than part of `code`. Compose with `--profile lane-impl,code-ui` for browser-driven e2e.",
+      "enable": [
+        "playwright@claude-plugins-official"
+      ],
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000
     },
     "lane-impl": {
       "gateAllow": true,
       "enable": [
         "pr-review-toolkit-himmel@himmel"
       ],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "leg-impl": {
       "gateAllow": true,
-      "_comment": "HIMMEL-2830 / HIMMEL-2928 lever 1. Resolves to the same plugin set as lane-impl TODAY and that is deliberate, not an oversight: the differentiator is contextBudget. A headed leg re-pays its whole fixed context on every API call of a session that runs for hours, so its budget is the measured leg target (35000), not the lane-worker default (45000). Do NOT \"dedupe\" this into lane-impl — a lane worker and a headed leg are different callers with different floors, and headed-arm-leg.sh --profile names this one. Sibling profiles leg-docs and leg-upstream were designed and DROPPED: leg-docs would resolve to bare AND break /pr-check (its CR gate dispatches the pr-review-toolkit-himmel:code-reviewer agent, which a docs leg needs too), and /drift-fix, /fork-resync and /upstream-file are repo-local .claude/commands/*.md, not plugin-borne, so leg-upstream would be a second name for this exact manifest. mcpServers (HIMMEL-2935, lever 1 second half): --strict-mcp-config strips EVERY MCP server not named here, including plugin-bundled ones — qmd is named because it is the one MCP tool this profile's own plugin set (pr-review-toolkit-himmel + the floor's qmd@himmel) actually needs; graphify/obsidian-vault/context7 are USER-level servers a leg never touches. MEASURED (RED control, HIMMEL-2935): removing them saved only 2.5k of first-turn context (73.0k to 70.5k) — they were NOT the bulk of the floor; #642's ~40k tool/MCP-schema estimate is dominated by built-in tool schemas and skill/agent listings this lever cannot touch. Lever 1 is exhausted at that number; do not chase the remaining floor here.",
+      "_comment": "HIMMEL-2830 / HIMMEL-2928 lever 1. Resolves to the same plugin set as lane-impl TODAY and that is deliberate, not an oversight: the differentiator is contextBudget. A headed leg re-pays its whole fixed context on every API call of a session that runs for hours, so its budget is the legacy leg target (35000), not the lane-worker default (45000); HIMMEL-4021 retains this unmet target because the merged PR bodies cannot attribute three legs to this profile. Do NOT \"dedupe\" this into lane-impl — a lane worker and a headed leg are different callers with different floors, and headed-arm-leg.sh --profile names this one. Sibling profiles leg-docs and leg-upstream were designed and DROPPED: leg-docs would resolve to bare AND break /pr-check (its CR gate dispatches the pr-review-toolkit-himmel:code-reviewer agent, which a docs leg needs too), and /drift-fix, /fork-resync and /upstream-file are repo-local .claude/commands/*.md, not plugin-borne, so leg-upstream would be a second name for this exact manifest. mcpServers (HIMMEL-2935, lever 1 second half): --strict-mcp-config strips EVERY MCP server not named here, including plugin-bundled ones — qmd is named because it is the one MCP tool this profile's own plugin set (pr-review-toolkit-himmel + the floor's qmd@himmel) actually needs; graphify/obsidian-vault/context7 are USER-level servers a leg never touches. MEASURED (RED control, HIMMEL-2935): removing them saved only 2.5k of first-turn context (73.0k to 70.5k) — they were NOT the bulk of the floor; #642's ~40k tool/MCP-schema estimate is dominated by built-in tool schemas and skill/agent listings this lever cannot touch. Lever 1 is exhausted at that number; do not chase the remaining floor here.",
       "enable": [
         "pr-review-toolkit-himmel@himmel"
       ],
       "mcpServers": ["qmd"],
-      "contextBudget": 35000
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "leg-e2e": {
+      "gateAllow": true,
+      "_comment": "HIMMEL-4400 headed e2e leg: leg-impl plus ONE Playwright MCP server, so a leg can drive a browser (the himmelctl config-UI checklist). The server comes from mcpCatalog.playwright (pinned @playwright/mcp, npm registry only, never @latest) and rides --mcp-config under --strict-mcp-config; the playwright@claude-plugins-official plugin is deliberately NOT enabled, because it ships nothing but that same MCP server (no skills, commands or agents) and under strict mode its copy is stripped anyway, so enabling it would add nothing or a second server. Tools therefore appear as mcp__playwright__*, not mcp__plugin_playwright_playwright__*. Context cost: the playwright tool schemas add an estimated 3-5k first-turn tokens over leg-impl (code-ui's own estimate, unmeasured here), hence the 40000 budget vs leg-impl's 35000. Use it only for legs that drive a browser; every other leg stays on leg-impl.",
+      "enable": [
+        "pr-review-toolkit-himmel@himmel"
+      ],
+      "mcpServers": [
+        "qmd",
+        "playwright"
+      ],
+      "contextBudget": 40000,
+      "contextMode": "standard",
+      "autocompact": 200000
     },
     "lane-review": {
       "gateAllow": true,
@@ -146,31 +310,44 @@
         "Edit",
         "NotebookEdit"
       ],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "lane-content": {
       "gateAllow": true,
       "enable": [
         "pr-review-toolkit-himmel@himmel",
         "claude-obsidian@himmel",
-        "obsidian-triage@himmel"
+        "obsidian-triage@himmel",
+        "obsidian-second-brain@himmel"
       ],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "telegram": {
       "gateAllow": false,
-      "_comment": "HIMMEL-2961. Wired ONLY at the bridge dispatch (scripts/telegram/poller.ts's makeRunFn/runOnce, the sole per-message cold `claude` spawn) — the entry-point inventory found two other Telegram-adjacent spawn sites and both are out of scope: auto-action.ts's dispatchAutoAction spawns no claude at all (it shells out to fixed scripts), and hermes is its own interpreter, dormant, with no plugin-profile seam to wire. enable mirrors lane-content (obsidian-triage + claude-obsidian cover the actual Telegram workload — clip/harvest/archive/triage/media-enrich commands — plus pr-review-toolkit-himmel restated for audit-clarity though base already carries it); telegram-himmel@himmel is deliberately EXCLUDED even though it is the bridge's own plugin — its .mcp.json defines an MCP server also named telegram (gated by HIMMEL_MCP_TELEGRAM/TELEGRAM_OWN_POLLER) that launches a second poller-adjacent process, which would be self-referential/recursive inside the very session the live poller spawned. luna-correlate@himmel is excluded as unrelated (health-factor correlation, not content work). mcpServers names only qmd — of every plugin in this profile's enable+base+floor union, qmd is the sole one that bundles an MCP server this profile's own plugin set actually needs (luna-correlate and telegram-himmel are the only other two plugins in the whole marketplace that bundle one at all, and both are excluded above); --strict-mcp-config then strips every USER-level server (graphify/obsidian-vault/context7/etc.) the bridge never touches. MEASURED (profile-context-probe.mjs, HIMMEL-2961): baseline (no --settings, today's live bridge) = 33440-33493 first-turn tokens across runs; telegram profile measured=32541 against contextBudget=45000 (delta -952) — the injected lean set is already BELOW the unleaned baseline, so the win here is deny-by-default correctness (no ambient full ~/.claude leak into an unattended bridge run) rather than a token reduction.",
+      "_comment": "HIMMEL-2961. Wired ONLY at the bridge dispatch (scripts/telegram/poller.ts's makeRunFn/runOnce, the sole per-message cold `claude` spawn) — the entry-point inventory found two other Telegram-adjacent spawn sites and both are out of scope: auto-action.ts's dispatchAutoAction spawns no claude at all (it shells out to fixed scripts), and hermes is its own interpreter, dormant, with no plugin-profile seam to wire. enable is obsidian-triage (the actual Telegram workload — clip/harvest/archive/triage/media-enrich commands) plus pr-review-toolkit-himmel restated for audit-clarity though base already carries it. claude-obsidian was DROPPED (HIMMEL-4020): the bridge's vault-filing prompt (run.ts) names only a vault-local skill or obsidian-second-brain, and 147 bridge transcripts show 0 claude-obsidian skill calls and 0 obsidian-vault MCP calls (only obsidian-triage:luna-ingest/telegram-clip ran), while its skill listing costs ~1.6k first-turn tokens; telegram-himmel@himmel is deliberately EXCLUDED even though it is the bridge's own plugin — its .mcp.json defines an MCP server also named telegram (gated by HIMMEL_MCP_TELEGRAM/TELEGRAM_OWN_POLLER) that launches a second poller-adjacent process, which would be self-referential/recursive inside the very session the live poller spawned. luna-correlate@himmel is excluded as unrelated (health-factor correlation, not content work). mcpServers names only qmd — of every plugin in this profile's enable+base+floor union, qmd is the sole one that bundles an MCP server this profile's own plugin set actually needs (of the other marketplace plugins that bundle one, luna-correlate and telegram-himmel are excluded above, and obsidian-second-brain's `vault` server is deliberately left out — see the HIMMEL-4018 note below); --strict-mcp-config then strips every USER-level server (graphify/obsidian-vault/context7/etc.) the bridge never touches. MEASURED (profile-context-probe.mjs, HIMMEL-2961): baseline (no --settings, today's live bridge) = 33440-33493 first-turn tokens across runs; telegram profile measured=32541 against contextBudget=45000 (delta -952) — the injected lean set is already BELOW the unleaned baseline, so the win here is deny-by-default correctness (no ambient full ~/.claude leak into an unattended bridge run) rather than a token reduction. HIMMEL-4018: obsidian-second-brain@himmel added to enable because run.ts's attachment-filing prompt falls back to it when the vault has no local filing skill (luna has none); ~2.2k tok fits the 45000 budget. mcpServers deliberately stays [qmd], so --strict-mcp-config strips the plugin's own `vault` MCP server here; its slash commands still load.",
       "enable": [
         "pr-review-toolkit-himmel@himmel",
-        "claude-obsidian@himmel",
-        "obsidian-triage@himmel"
+        "obsidian-triage@himmel",
+        "obsidian-second-brain@himmel"
       ],
       "mcpServers": ["qmd"],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "bare": {
       "enable": [],
-      "contextBudget": 45000
+      "contextBudget": 45000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "console-relay": {
       "gateAllow": true,
@@ -178,14 +355,29 @@
       "enable": [],
       "drop": ["pr-review-toolkit-himmel@himmel", "lean-skills@himmel"],
       "mcpServers": [],
-      "contextBudget": 35000
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     },
     "console-judge": {
       "_comment": "HIMMEL-3133 / design §3.2: a judge session, launched via headed-arm-leg.sh --judge (\"the judge is a leg\"). drop removes the same two non-floor ids console-relay drops above (pr-review-toolkit-himmel@himmel, lean-skills@himmel) -- a judge reads and writes a verdict, it does not implement or ship. Deliberately no gateAllow, unlike console-relay: a judge's few gate-shaped calls (inbox-send.sh, queue-lock.sh, write-verdicts.sh) take the ordinary classifier path rather than being pre-approved wholesale -- its custody rule is \"transport is the disk\" (a verdict file), not a permission grant, so this name does NOT belong in plugin-profiles.mjs's LEG_PROFILES set (:29, its only reader) and that file is not touched for this profile. mcpServers names only qmd, same reasoning as leg-impl/telegram above: the one MCP tool a judge's evidence-gathering actually needs; graphify/obsidian-vault/context7 are USER-level servers a judge never touches.",
       "enable": [],
       "drop": ["pr-review-toolkit-himmel@himmel", "lean-skills@himmel"],
       "mcpServers": ["qmd"],
-      "contextBudget": 35000
+      "contextBudget": 35000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "console": {
+      "_comment": "HIMMEL-4013: a console session (console.sh new/next arm, and a resume of a console doc). Floor (handover, himmel-ops, qmd) plus base's lean-skills; drops pr-review-toolkit-himmel, which a console never runs (it dispatches legs, it does not review its own diff). gateAllow stays false: the leg-shaped gateAllow rules are for legs, and a console runs under the operator's own permission config. Not a leg profile, so it is not in plugin-profiles.mjs LEG_PROFILES.",
+      "enable": [],
+      "drop": ["pr-review-toolkit-himmel@himmel"],
+      "contextBudget": 50000,
+      "contextMode": "standard",
+      "autocompact": 200000,
+      "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
     }
   }
 }

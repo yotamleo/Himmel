@@ -7,7 +7,9 @@
 # doc is free AND its own last Results marker-bullet is WRAPPED. It never
 # kills a pid it cannot independently prove belongs to that leg.
 #
-# Usage: close-wrapped-leg.sh <leg-doc>
+# Usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>
+# --fleet removes the doc after a successful close, including benign prune skips.
+# A manifest update failure returns 1 after the session has already closed.
 #
 # Refuses (nothing signaled) unless:
 #   - `queue-lock.sh status <leg-doc>` reports free (rc=0);
@@ -22,7 +24,11 @@
 # TERM goes to that one pid only - it never signals a non-matching pid, and
 # 0 or >1 matches is a refusal, not a best guess.
 #
-# After the signal, if the doc names exactly one worktree path (a
+# After the signal, the leg's own /tmp scratch (its judge dirs, and its session
+# scratch dir) is archived then reaped via tmp-reap.sh, scoped to this leg only
+# (HIMMEL-4235); a reap failure warns and never fails the close.
+#
+# Then, if the doc names exactly one worktree path (a
 # `.claude/worktrees/...` path appearing once), runs
 # `scripts/clean.sh --only <worktree> --only-allow-unmerged` and reports (not
 # fails) a "not pruned" skip. That flag (HIMMEL-3747) makes clean-garden.sh
@@ -62,9 +68,25 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 KILL="${KILL_BIN:-kill}"
 CLEAN_SH="${CLEAN_SH_BIN:-$HERE/../../clean.sh}"
 WRAP_SUBTREE_CHECK="${WRAP_SUBTREE_CHECK_BIN:-$HERE/../wrap-subtree-check.sh}"
+TMP_REAP="${TMP_REAP_BIN:-$HERE/../../tmp-reap.sh}"
 
 usage() {
-    echo "usage: close-wrapped-leg.sh <leg-doc>" >&2
+    echo "usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>" >&2
+}
+
+FLEET_MANIFEST=""
+if [ "${1:-}" = --fleet ]; then
+    if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then usage; exit 2; fi
+    FLEET_MANIFEST="$2"; shift 2
+fi
+
+# Only successful close exits retire the leg; refusals and failed pruning keep it.
+close_success() {
+    if [ -n "$FLEET_MANIFEST" ] && ! bash "$HERE/fleet-manifest.sh" remove "$FLEET_MANIFEST" "$DOC"; then
+        echo "close-wrapped-leg: session closed but fleet manifest update failed: $FLEET_MANIFEST" >&2
+        exit 1
+    fi
+    exit 0
 }
 
 if [ "$#" -ne 1 ]; then
@@ -158,6 +180,7 @@ fi
 # have. 0 or >1 matching transcripts: say so on stderr and still close -
 # never guess which one. The hook itself dedups by session_id (HIMMEL-3629),
 # so it is harmless if the leg's own SessionEnd ALSO manages to fire.
+TRANSCRIPT=""
 END_SESSION_WIKI="${END_SESSION_WIKI_BIN:-$HERE/../../hooks/end-session-wiki.sh}"
 PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
 if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
@@ -252,22 +275,97 @@ if [ "$subtree_rc" -ne 0 ]; then
     exit 6
 fi
 
+# ---------- Leg cost ledger (HIMMEL-4217) ----------------------------------------
+# One JSONL row per wrapped leg, from the transcript resolved above. Never
+# fatal: a meter or ledger failure WARNs and the close proceeds. A retry of the
+# same transcript (a refused or failed close re-run) never writes a second row.
+if [ -n "$TRANSCRIPT" ]; then
+    if ! . "$HERE/../../lanes/lib/leg-cost-row.sh"; then
+        echo "close-wrapped-leg: WARN cannot load leg-cost-row.sh - no cost ledger row" >&2
+    elif ! ledger=$(leg_cost_ledger_path "$DOC"); then
+        echo "close-wrapped-leg: WARN cannot resolve the cost ledger path - no cost ledger row" >&2
+    elif [ -f "$ledger" ] && grep -qF "\"session\":\"$(basename "$TRANSCRIPT" .jsonl)\"" "$ledger"; then
+        echo "close-wrapped-leg: cost ledger already has a row for this transcript"
+    elif ! row=$(leg_cost_row "$TRANSCRIPT" "$DOC"); then
+        echo "close-wrapped-leg: WARN leg-burn failed - no cost ledger row" >&2
+    elif mkdir -p "$(dirname "$ledger")" 2>/dev/null && printf '%s\n' "$row" >> "$ledger" 2>/dev/null; then
+        echo "close-wrapped-leg: cost ledger row appended to $ledger"
+    else
+        echo "close-wrapped-leg: WARN cannot write $ledger - no cost ledger row" >&2
+    fi
+fi
+
 if ! "$KILL" -TERM "$matched"; then
     echo "close-wrapped-leg: failed to send TERM to pid $matched" >&2
     exit 1
 fi
 echo "close-wrapped-leg: sent TERM to pid $matched (leg $(leg_label "$DOC"))"
 
+# ---------- Wrapped leg's own /tmp scratch (HIMMEL-4235) ----------------------
+# Archive-then-reap THIS leg's judge dirs (j<N>, j<N>[a-z]) and its session
+# scratch dir, scoped through tmp-reap.sh --judge <pr>/--session: never a fleet-wide
+# sweep (other legs are live). Dry-run first; apply only after a clean dry-run.
+# Never fatal: any failure WARNs and the close carries on.
+reap_leg_scratch() {
+    local pr sid args=() i PROC_ROOT="${CLAUDE_SESSIONS_PROC:-/proc}"
+    # judge dirs are named for the PR they judged, never the leg label: take the
+    # PR from the doc's newest READY/MERGED bullet; no PR means no judge scope
+    pr="$(grep -E '^- [0-9:]+ (READY|MERGED)' "$DOC" | grep -oE '(READY|MERGED)[ #-]+(PR[ #]+)?[0-9]+' | tail -n 1 | grep -oE '[0-9]+$')"
+    if [ -n "$pr" ]; then args+=(--judge "$pr")
+    else echo "close-wrapped-leg: no PR in the leg doc - reaping no judge dir, never guessing"; fi
+    if [ -n "$TRANSCRIPT" ]; then
+        sid="$(basename "$TRANSCRIPT" .jsonl)"
+        case "$sid" in
+            ????????-????-????-????-????????????) args+=(--session "$sid") ;;
+        esac
+    fi
+    if [ "${#args[@]}" -eq 0 ]; then
+        echo "close-wrapped-leg: no judge number or session id for this leg - skipping the /tmp reap, never guessing"
+        return 0
+    fi
+    # the TERM is asynchronous: give the session a moment to exit so its scratch is not "live"
+    for ((i = 0; i < ${CLOSE_WRAPPED_LEG_REAP_WAIT:-5}; i++)); do
+        [ -d "$PROC_ROOT/$matched" ] || break
+        sleep 1
+    done
+    # a session that outlives the TERM still owns its scratch: reap nothing now
+    if [ -d "$PROC_ROOT/$matched" ]; then
+        echo "close-wrapped-leg: pid $matched still running after TERM - leaving its /tmp scratch for a later reap"
+        return 0
+    fi
+    if ! bash "$TMP_REAP" "${args[@]}"; then
+        echo "close-wrapped-leg: WARN tmp-reap dry-run failed for ${args[*]} - not applying; close continues" >&2
+        return 0
+    fi
+    bash "$TMP_REAP" --apply "${args[@]}" || echo "close-wrapped-leg: WARN tmp-reap --apply failed for ${args[*]} - close continues" >&2
+    return 0
+}
+reap_leg_scratch || echo "close-wrapped-leg: WARN /tmp reap errored - close continues" >&2
+
 worktrees=$(grep -oE "/[^\` ]*/\.claude/worktrees/[^\`) ]+" "$DOC" | sort -u)
 wt_count=$(printf '%s\n' "$worktrees" | grep -c . || true)
 if [ "$wt_count" -ne 1 ]; then
     echo "close-wrapped-leg: doc names $wt_count worktree path(s) - skipping the prune, never guessing" >&2
-    exit 0
+    close_success
 fi
 WT="$worktrees"
 
-out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
-rc=$?
+# HIMMEL-4334: the TERM'd session may still be inside the worktree when the
+# first prune runs ("in use"). Retry quietly a bounded number of times (a few
+# seconds in all) so a leg that exits promptly is pruned now, not left for a
+# manual --only later. Only the "in use" skip retries; every other outcome is
+# final on the first pass.
+prune_tries=${CLOSE_WRAPPED_LEG_PRUNE_RETRIES:-3}
+prune_try=0
+while :; do
+    out=$(bash "$CLEAN_SH" --only "$WT" --only-allow-unmerged 2>&1)
+    rc=$?
+    case "$out" in *'in use'*) ;; *) break ;; esac
+    [ "$rc" -ne 0 ] || break
+    [ "$prune_try" -lt "$prune_tries" ] || break
+    prune_try=$((prune_try + 1))
+    sleep "${CLOSE_WRAPPED_LEG_PRUNE_WAIT:-1}"
+done
 echo "$out"
 if [ "$rc" -ne 0 ]; then
     # clean-garden.sh's own --only failure text always contains "not a prune
@@ -288,9 +386,9 @@ if [ "$rc" -ne 0 ]; then
     fi
     if [ "$benign" -eq 1 ]; then
         echo "close-wrapped-leg: worktree $WT not pruned (see message above) - not a failure, retry --only shortly"
-        exit 0
+        close_success
     fi
     echo "close-wrapped-leg: clean.sh --only $WT --only-allow-unmerged failed (rc=$rc)" >&2
     exit 1
 fi
-exit 0
+close_success

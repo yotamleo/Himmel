@@ -43,7 +43,8 @@ param(
     [int]$ExpectDocs = -1,                            # from the sender's stats
     [int]$ExpectVectors = -1,
     [string]$EnsureScript = '',                       # ensure-qmd-daemon.ps1, uploaded alongside (HIMMEL-1416)
-    [switch]$NoRestart                                # leave the daemon down (debug)
+    [switch]$NoRestart,                               # leave the daemon down (debug)
+    [switch]$LexicalOnly                              # vectors stripped by the sender (HIMMEL-4232): pending is expected
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,7 +75,7 @@ function Fail($code, $msg) {
 # swap-failure path -- a failed ship must not leave the receiver's search
 # service DOWN just because the swap did not happen (CR finding [codex-1]).
 function Start-QmdDaemon {
-    $qmd = (Get-Command qmd -ErrorAction SilentlyContinue).Source
+    $qmd = (Get-Command qmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if (-not $qmd) { return $null }
     $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "`"$qmd`" mcp --keep-models" }
     if ($r.ReturnValue -ne 0) { return $null }
@@ -247,11 +248,13 @@ function Complete-PostSweepFailure {
 # -- no legitimate mismatch source remains, so tolerating one here would just
 # be hiding a real transport bug.
 function Get-ShipVerdict {
-    param($Docs, $Vecs, $Pending, $ExpectDocs, $ExpectVectors)
+    param($Docs, $Vecs, $Pending, $ExpectDocs, $ExpectVectors, [switch]$LexicalOnly)
     if ($null -eq $Docs -or $null -eq $Vecs) {
         return @{ FailCode = 5; FailMsg = 'could not parse doc/vector counts from qmd status -- refusing to call the ship verified.' }
     }
-    if ($Pending -gt 0) {
+    # A lexical-only ship (HIMMEL-4232) carries no vectors on purpose: every
+    # hash is pending until this station embeds with its own model.
+    if ($Pending -gt 0 -and -not $LexicalOnly) {
         return @{ FailCode = 5; FailMsg = "$Pending content hash(es) still need embedding after the swap -- vectors LAG lex. This is the silent-wrong state the ship exists to eliminate; the shipped artifact was not fully embedded at the source." }
     }
     if ($ExpectVectors -ge 0 -and $Vecs -ne $ExpectVectors) {
@@ -501,7 +504,7 @@ Emit 'docs' $(if ($null -ne $docs) { $docs } else { 'unparsed' })
 Emit 'vectors' $(if ($null -ne $vecs) { $vecs } else { 'unparsed' })
 Emit 'pending' $pending
 
-$verdict = Get-ShipVerdict -Docs $docs -Vecs $vecs -Pending $pending -ExpectDocs $ExpectDocs -ExpectVectors $ExpectVectors
+$verdict = Get-ShipVerdict -Docs $docs -Vecs $vecs -Pending $pending -ExpectDocs $ExpectDocs -ExpectVectors $ExpectVectors -LexicalOnly:$LexicalOnly
 if ($verdict.FailCode -ne 0) {
     Fail $verdict.FailCode "$($verdict.FailMsg)`n$statusText"
 }

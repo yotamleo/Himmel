@@ -76,6 +76,24 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/run-unchecked-mktemp-under-bwk.sh
 
+  # HIMMEL-4301: the unchecked-mktemp gate (scripts/hooks/check-unchecked-mktemp.sh)
+  # was pre-commit only (stages: [pre-commit]), so a commit made with the hook
+  # skipped or bypassed (UNCHECKED_MKTEMP_OK=1, --no-verify) reached main
+  # (#1747, #1771). This re-runs its added-lines scan over the PR's net diff,
+  # like plugin-version-bump does for its pre-commit twin. --merge-ref: CI's
+  # refs/pull/N/merge has the CURRENT base tip as HEAD^1, so lines main gained
+  # since the PR forked are never the PR's. fetch-depth: 0 → HEAD^1 reachable.
+  unchecked-mktemp-range:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: No unchecked mktemp capture added anywhere in the PR range
+        run: bash scripts/hooks/check-unchecked-mktemp.sh --range --merge-ref "${{ github.event.pull_request.base.sha }}"
+
   # Commit-time / pre-commit backstop for the 5 leak classes (HIMMEL-2561 /
   # HIMMEL-2705 step 2): catches anything that slipped past the pre-commit
   # hook (a --no-verify commit, a merge, a stale clone) by re-scanning the
@@ -157,22 +175,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # --severity=warning makes the gate deterministic across shellcheck
-      # versions: SC2329 (note-level, "function never invoked") is the only
-      # check newer shellchecks add over the pre-commit-pinned 0.10.x, and it
-      # only fires on pre-existing files. pre-commit stays the strict
-      # style-level local gate; CI catches warnings+errors regardless of the
-      # runner's shellcheck version.
-      # git pathspec `*` crosses `/`, so 'scripts/*.sh' matches every depth
-      # (top-level setup.sh/adopt.sh/… included). 'scripts/**/*.sh' would NOT —
-      # in a git pathspec `**/` requires an intervening directory, silently
-      # dropping the 34 top-level scripts. xargs -r: no files -> don't run
-      # shellcheck on stdin.
-      # scripts/lanes/bench/fixtures/ holds benchmark INPUT scripts — sample
-      # shell fed to the lane bench as the thing being measured. Adding
-      # shellcheck directives to them would change the artifact under
-      # measurement, so they're excluded the same way scripts/statusline/ is.
-      - run: git ls-files -z 'scripts/*.sh' | grep -zv '^scripts/statusline/' | grep -zv '^scripts/lanes/bench/fixtures/' | xargs -0 -r shellcheck --severity=warning
+      # HIMMEL-4332: flag-registry-lint ran on the runner's unpinned default node.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      # HIMMEL-4265: run the SAME pre-commit shellcheck hook the local gate runs
+      # (pinned shellcheck-py version, default severity, .shellcheckrc, and the
+      # hook's own vendored/fixture excludes), so nothing the hook refuses can
+      # reach main. The old `shellcheck --severity=warning` over a hand-kept
+      # file list let info-level findings (SC2119) through CI and fail locally.
+      - run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
+      - run: pre-commit run shellcheck --all-files --show-diff-on-failure
+      # HIMMEL-4254 P2: a bypass flag a hook reads but the config UI's display
+      # registry lacks is a flag the UI silently cannot show.
+      - run: node scripts/install/flag-registry-lint.mjs
 
   node-suites:
     runs-on: ubuntu-latest
@@ -244,6 +260,8 @@ jobs:
       # keeps the retry-cap / resume / mid-batch-abort contract under a runner
       # check; SKIP-guarding them instead would exit 0 with nothing exercised.
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: node --test "scripts/lanes/tests/**/*.test.mjs"
       # HIMMEL-1529: same shape — a zero-dependency node:test suite outside any
       # package.json. Listed explicitly because nothing globs for it; an
@@ -263,6 +281,20 @@ jobs:
       # authoritative check a bypassed or skipped local hook can no longer
       # dodge (HIMMEL-3025 is exactly the kind of leak this surfaces).
       - run: bash scripts/hooks/check-hook-lib-suites.sh
+      # HIMMEL-4096: .ps1 suites are invisible to run-shell-tests.sh. Ubuntu
+      # runners ship pwsh; require positive completion and reject suite skips.
+      # DeepSeek wiring remains deferred until its PS balance path is fixed.
+      - name: Codex PowerShell launcher suite (ubuntu)
+        shell: bash
+        run: |
+          set -o pipefail
+          pwsh -NoProfile -File scripts/test-claude-codex.ps1 | tee codex-ps.log
+          if grep -q '^SKIP' codex-ps.log; then
+            echo "::error::Codex PowerShell suite SKIPPED — a SKIP is not a pass"; exit 1
+          fi
+          if ! grep -q '^ALL PASS$' codex-ps.log; then
+            echo "::error::Codex PowerShell suite did not report success"; exit 1
+          fi
 
   guardrail-matrices:
     # HIMMEL-1522: the egress matrix decides whether a corpus may leave the
@@ -336,8 +368,14 @@ jobs:
       run:
         shell: bash
     steps:
+      # HIMMEL-4350: this job holds issues:write; the issue steps use gh with
+      # GH_TOKEN env and never git, so the persisted checkout token is not needed.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       - run: cd scripts/luna-vitals && bun install --frozen-lockfile && bun test
       # Must run from the repo root, not scripts/telegram/ — these suites pin
       # their fixtures repo-root-relative, so running them from their own
@@ -361,6 +399,14 @@ jobs:
       - name: Vault tests (ubuntu only)
         if: matrix.os == 'ubuntu-latest'
         run: bun test scripts/vault/tests --dots
+      # HIMMEL-4254 P3: the read-only config UI (auth/Host/redaction, idle exit,
+      # render, the real `himmelctl ui` verb). Repo-root cwd like the suites
+      # above; hermetic (stub feed via CONFIG_UI_HIMMELCTL, loopback only).
+      # Ubuntu only: it spawns node/bun children with POSIX signal semantics,
+      # which the non-gating Windows nightly (parked) would only turn red.
+      - name: Config UI tests (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: bun test scripts/config-ui --dots
       # --frozen-lockfile fails if bun.lock has drifted from package.json. Catches
       # the class of bug where a dep range is bumped in package.json but the
       # lockfile is never regenerated (HIMMEL-553). HIMMEL-2620 wired the test
@@ -532,6 +578,8 @@ jobs:
           cache: 'npm'
           cache-dependency-path: '**/package-lock.json'
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
 
       # gitleaks: pinned to the SAME version as the pre-commit hook
       # (.pre-commit-config.yaml → gitleaks rev v8.30.1) and reuses .gitleaks.toml,
@@ -669,14 +717,26 @@ jobs:
       # files, and a suffix-anchored glob silently matched nothing.
       - name: Install + enable at/atd (Linux — arm-resume scheduler backend)
         if: runner.os == 'Linux'
-        # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Step cap 10
-        # min; each apt call gets a 5 min `timeout` and a 2 min dpkg-lock wait so
-        # a lock fails fast and visibly instead of blocking silently.
-        timeout-minutes: 10
+        # HIMMEL-3919: a hung dpkg/apt lock held this step ~1.5 h. Each apt call
+        # gets a `timeout` and a dpkg-lock wait so a lock fails fast and visibly
+        # instead of blocking silently. HIMMEL-4073: worst case is the 2 min
+        # plain install + 5 min refresh + 5 min retry = 12 min, so the step cap
+        # is 13 (it was 10 when the whole step was refresh + install).
+        timeout-minutes: 13
         run: |
+          started=$SECONDS
+          trap 'echo "at/atd install: duration_seconds=$((SECONDS - started))"' EXIT
           sudo rm -f /etc/apt/sources.list.d/google-chrome* /etc/apt/sources.list.d/microsoft-* /etc/apt/sources.list.d/azure-cli*
-          sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
-          sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at
+          # HIMMEL-4073: try the plain install first (the runner's package
+          # index is usually fresh enough); only a failure pays for an index
+          # refresh and a retry. Each branch logs which path ran.
+          if sudo timeout 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 at; then
+            echo "at/atd install: plain install succeeded, index refresh skipped"
+          else
+            echo "at/atd install: plain install failed, falling back to index refresh + retry"
+            sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
+            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at
+          fi
           sudo systemctl enable --now atd || sudo service atd start || true
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
@@ -684,6 +744,8 @@ jobs:
       # bun") without it. Installing bun keeps that hermetic PATH-scrub case
       # under a runner check; a self-skip would exit 0 with nothing exercised.
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
       # HIMMEL-3193: the run step below now covers marketplace/ (root `.`), where
       # the obsidian-triage suites need js-yaml + playwright from
       # tools/node_modules. ensure-deps.sh installs them and exits non-zero on
@@ -700,7 +762,7 @@ jobs:
       # above: python -m pip works identically on every OS in this matrix.
       - name: Install pre-commit (scripts/test-template-nostash-hooks.sh)
         shell: bash
-        run: python -m pip install --disable-pip-version-check pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
       # Explicit `bash` prefix: on windows-latest the default run shell is pwsh,
       # but Git Bash is preinstalled + on PATH, so `bash …` runs under MSYS2.
       # FAIL_LOG_DIR: full failed-suite logs land there and upload as an
@@ -774,7 +836,7 @@ jobs:
       # - name: Install pre-commit (Windows)
       #   if: runner.os == 'Windows'
       #   shell: bash
-      #   run: python -m pip install --disable-pip-version-check pre-commit
+      #   run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
       #
       # - name: Vault sweeper suite (Windows only)
       #   if: runner.os == 'Windows'
@@ -871,7 +933,7 @@ jobs:
           echo "OK: every gating shell-unit shard passed."
       - name: Download shard manifests
         if: ${{ !cancelled() }}
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           pattern: shell-unit-manifest-ubuntu-latest-shard*
           path: shard-manifest/

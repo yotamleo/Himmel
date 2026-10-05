@@ -1,0 +1,21 @@
+# <vault>/.harvest-backends: per-site scrape-backend routing (HIMMEL-4361).
+# Copy this file to <vault>/.harvest-backends and uncomment what you need.
+#
+# One rule per line:   <url-glob> skip=<backend,...>   or   <url-glob> only=<backend,...>
+# Globs match exactly like .harvest-deny (`*` = within a path segment, `**` = across segments;
+# a bare host covers every path). The FIRST matching line wins, so list narrow rules first.
+# Backends: local-headless, jina, firecrawl.
+#
+# .harvest-deny, the odd-host refusal and HARVEST_SCRAPE_DENY always win over this file.
+# An unreadable file, a malformed line or an unknown backend name stops all scraping.
+#
+# Examples (all commented out):
+#
+# A site Jina reads well: never spend a Firecrawl credit on it.
+# docs.example.com only=jina
+#
+# A site where Jina returns a bot wall but Firecrawl works:
+# news.example.org/** skip=jina
+#
+# A site that burned credits in the benchmark: keep it off Firecrawl.
+# x.example.net/** skip=firecrawl

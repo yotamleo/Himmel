@@ -14,6 +14,7 @@
 # PLATFORM GUARD: no .ps1 twin, by design. The console kit is Linux-only
 # (pgrep, atq, /tmp suite locks, and claudex/konsole); this Bash 3.2 suite
 # exercises that platform-specific script.
+# shellcheck disable=SC2015  # `[ cond ] && pass || fail`: pass() cannot fail, so A && B || C is if-then-else here
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -118,8 +119,8 @@ if [ "${1:-}" = api ]; then
   printf '%b' "${STUB_GQL_OUT-HTTP/2.0 200 OK\r\nX-Ratelimit-Remaining: 4321\r\nX-Ratelimit-Reset: 1790000000\r\n\r\n}"
   exit "${STUB_GQL_RC:-0}"
 fi
-if [ "$PWD" != "$REPO" ]; then
-  printf 'gh stub: expected cwd=%s, got %s\n' "$REPO" "$PWD" >&2
+if [ "$PWD" != "${GH_STUB_CWD:-$REPO}" ]; then
+  printf 'gh stub: expected cwd=%s, got %s\n' "${GH_STUB_CWD:-$REPO}" "$PWD" >&2
   exit 9
 fi
 printf '%s\n' 2247 2250
@@ -155,8 +156,8 @@ cp "$HERE/../../lanes/lib/claude-sessions.sh" "$W/repo/scripts/lanes/lib/claude-
 cat > "$W/repo/scripts/lib/bank-preflight.sh" <<'STUB'
 #!/usr/bin/env bash
 [ -z "${STUB_PF_SEEN:-}" ] || printf 'ledger=%s launch=%s\n' "${CADENCE_BANK_LEDGER:-unset}" "${CADENCE_BANK_LAUNCH:-unset}" > "$STUB_PF_SEEN"
-printf '%s\n' "${STUB_FLEET_LINE-bank-preflight: FLEET native=1 claudex=0 reserved=0 total=1/8}" >&2
-printf 'PROCEED\n'
+printf '%s\n' "${STUB_FLEET_LINE-bank-preflight: FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/8}" >&2
+printf '%s\n' "${STUB_PF_VERDICT:-PROCEED}"
 STUB
 
 chmod +x "$W/repo/scripts/handover/queue-lock.sh" "$W/repo/scripts/context-fill.sh" "$W/repo/scripts/lanes/leg-burn.sh" "$W/repo/scripts/lanes/ceiling-conformance.sh" "$W/repo/scripts/lib/bank-preflight.sh" "$W/bin/"*
@@ -189,7 +190,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown plan-index=skip or=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -207,6 +208,23 @@ fi
 contains '--verbose labels leg locks' "$verbose" 'leg locks: N61:FRESH,N65:FREE'
 contains '--verbose labels context fill' "$verbose" 'fill: 28'
 contains '--verbose labels leg models (HIMMEL-2976, HIMMEL-3145)' "$verbose" 'leg models: sonnet:1'
+
+# --- a console FOR another checkout lists that checkout's PRs, not himmel's.
+# console.sh records the project on the doc's project line; the gh stub answers
+# only from GH_STUB_CWD, so prs= is populated only when gh ran in that checkout.
+mkdir -p "$W/project"
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '> the repo you ship from is **`x`**. The project this console is FOR is **`'"$W/project"'`** — you' \
+    > "$W/handover/console-project.md"
+proj_out="$(TOKEN='' GH_STUB_CWD="$W/project" bash "$SUT" --doc "$W/handover/console-project.md")"
+contains 'a foreign console lists its project PRs (gh runs in the project)' "$proj_out" ' prs=#2247,#2250 '
+proj_out="$(TOKEN='' bash "$SUT" --doc "$W/handover/console-project.md")"
+contains 'a foreign console never lists the himmel REPO PRs' "$proj_out" ' prs=none '
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '> The project this console is FOR is **`none — this console runs in the himmel checkout itself`** — you' \
+    > "$W/handover/console-himmel.md"
+proj_out="$(TOKEN='' bash "$SUT" --doc "$W/handover/console-himmel.md")"
+contains 'a himmel console (project line reads none) lists the REPO PRs' "$proj_out" ' prs=#2247,#2250 '
 
 # --- HIMMEL-3130: a comma-separated --legs is equivalent to space-separated -
 # `for leg in $LEGS` word-splits on IFS whitespace only, so a comma-joined
@@ -346,7 +364,7 @@ esac
 # WITHOUT rotating its token, and the leg accepted and wrote its bullet. The
 # Live-state nonce still carries J, and that is correct -- not an incident.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results (newest at the bottom)' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
 relayed_out="$(DOC="$kdoc" bash "$SUT")"
 contains 'an unrotated leg that accepted this console reads nonces=RELAYED (relay without rotation is valid)' "$relayed_out" 'nonces=RELAYED:N61'
@@ -358,36 +376,53 @@ contains 'the tails census is unchanged by the acceptance bullet' "$relayed_out"
 
 # A bullet that names ANOTHER console does not confirm THIS one.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-19J-console` replaces `HIMMEL-nextleg-2026-09-18I-console`' > "$n61doc"
 contains 'an acceptance bullet naming a different console does not confirm this one' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 
 # Only the INCOMING session counts: a leg that accepted a LATER console L (which
 # replaces K) names K after `replaces`, and that must not confirm K.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20L-console` replaces `HIMMEL-nextleg-2026-09-20K-console`' > "$n61doc"
 contains 'a stem after the word replaces is the OUTGOING console and confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 
 # The LATEST acceptance wins: accepted K, then moved on to L -> not K's leg.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' \
     '- 05:02 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20L-console` replaces `HIMMEL-nextleg-2026-09-20K-console`' > "$n61doc"
 contains 'a later acceptance of another console supersedes an earlier one' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 
 # A handover root whose path contains a space keeps its leg doc whole.
 # shellcheck disable=SC2016  # backtick spans, literal fixture text
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
 ln -s "$W/handover" "$W/hand over"
 contains 'a leg doc path containing a space is read whole (RELAYED, not UNCONFIRMED)' "$(HANDOVER_DIR="$W/hand over" DOC="$kdoc" bash "$SUT")" 'nonces=RELAYED:N61'
 rm -f "$W/hand over"
 
 # Prose that merely mentions the phrase (not a Results bullet) confirms nothing.
-printf '%s\n' '# leg' '- LIVE — working' \
+printf '%s\n' '# leg' '- LIVE — working' '## Results' \
     'note: SUCCESSION accepted: HIMMEL-nextleg-2026-09-20K-console replaces J (prose, not a bullet)' > "$n61doc"
 contains 'a non-bullet line mentioning SUCCESSION accepted confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+# HIMMEL-3264: only the leg doc's `## Results` section is read. An
+# acceptance-shaped bullet quoted ABOVE Results (e.g. an example in a brief)
+# naming this console must not upgrade UNCONFIRMED to RELAYED, and neither
+# must one under a later `## ` section.
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '## Brief' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' \
+    '## Results (newest at the bottom)' '- LIVE — working' > "$n61doc"
+contains 'an acceptance bullet above ## Results confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '## Results' '- LIVE — working' '## Notes' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
+contains 'an acceptance bullet under a section after ## Results confirms nothing' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
+# shellcheck disable=SC2016  # backtick spans, literal fixture text
+printf '%s\n' '# leg' '## ResultsArchive' \
+    '- 04:17 SUCCESSION accepted: `HIMMEL-nextleg-2026-09-20K-console` replaces `HIMMEL-nextleg-2026-09-19J-console`' > "$n61doc"
+contains 'a heading that merely starts with Results is not the Results section' "$(DOC="$kdoc" bash "$SUT")" 'nonces=UNCONFIRMED:N61'
 printf '%s\n' '# leg' '- LIVE — working' > "$n61doc"
 
 # shellcheck disable=SC2016  # backtick leg span, literal fixture text
@@ -1652,6 +1687,160 @@ if command -v python3 >/dev/null 2>&1; then
 else
     skip 'tracker= rows: no python3'
 fi
+
+# --- HIMMEL-4051: plan-index=<ok|ok:pending|REFRESHING|FAIL:<why>|skip> -- the tick keeps the
+# roadmap-plan qmd index fresh without ever waiting on it: only `plan-index.sh --check` (a
+# fingerprint) runs inline; a stale index launches --refresh DETACHED. A stub qmd only, an
+# --out under $W (never ~/.himmel/state). RED control (pre-change tick.sh): no plan-index= field.
+if command -v python3 >/dev/null 2>&1; then
+    p4051="$W/pi4051"; p4051_plan="$p4051/plan"; p4051_mir="$p4051/mirror"; p4051_out="$p4051/out"; p4051_calls="$p4051/qmd-calls"
+    mkdir -p "$p4051_plan/stage1" "$p4051_plan/stage3" "$p4051_mir"
+    printf 'key\ttheme\tepic\tgoals\timpact\timpact_evidence\talignment\tdeps\tdup_of\tclose_flag\tclose_evidence\tnotes\nHIMMEL-111\tKnowledge substrate\tHIMMEL-100\tG7\t2\te\t0.5\t\t\tnone\t\tn\n' > "$p4051_plan/stage1/C01.tsv"
+    printf 'key\tuser_impact\tissue_plain\nHIMMEL-111\tinternal\tA plain sentence.\n' > "$p4051_plan/stage1/C01.explain.tsv"
+    printf 'key\troi\tconfidence\teffort_mid\trank\tversion\tcommit\tslice_effort\tlayer\treason\nHIMMEL-111\t1\t1\t1\t1\tv1.0.1\tcommitted\t\tbugs\twhy-one\n' > "$p4051_plan/stage3/placement.tsv"
+    printf '{"stage":3}\n' > "$p4051_plan/stage3/meta.json"
+    echo one > "$p4051_mir/HIMMEL-111.md"
+    cat > "$p4051/qmd" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" >> "$QMD_CALLS"
+reg="$QMD_CALLS.registered"
+case "$1 ${2:-}" in
+    "collection list") [ -f "$reg" ] && echo "roadmap-plan (3 files)"; exit 0 ;;
+    "collection add") printf '%s\n' "$3" > "$reg"; exit 0 ;;
+    "collection show") [ -f "$reg" ] && echo "Path: $(cat "$reg")"; exit 0 ;;
+esac
+[ -n "${QMD_SLEEP:-}" ] && [ "$1" = embed ] && sleep "$QMD_SLEEP"
+if [ "${QMD_FAIL:-0}" = 1 ] && [ "$1" = embed ]; then exit 3; fi
+exit 0
+STUB
+    chmod +x "$p4051/qmd"
+    # shellcheck disable=SC2016  # backtick leg span, literal fixture text
+    write_console4051() {  # write_console4051 [plan dir, omitted = no tracker-plan: line]
+        printf '%s\n' '# console' '' '## Live state' '' \
+            'legs: `N361:J-N361-0a1b2c9d:cachyos-x8664-pid361:361`' 'queue: N361 (3361)' 'last GO: none' 'acked: none' \
+            ${1:+"tracker-plan: $1"} '' \
+            '## Results (newest at the bottom)' '- 12:00 DISPATCH N361' > "$W/handover/console.md"
+    }
+    t4051() {
+        PATH="$W/bin-3361:$PATH" QMD_CALLS="$p4051_calls" ROADMAP_QMD_BIN="$p4051/qmd" TICK_PLAN_INDEX_OUT="$p4051_out" \
+            TICK_TRACKER_MIRROR_DIR="$p4051_mir" bash "$SUT" --legs "$W/handover/$b3361.md" "$@"
+    }
+    wait4051() {  # the detached refresh writes OUT/.last-run when it ends
+        local i=0
+        while [ ! -f "$p4051_out/.last-run" ] && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
+    }
+    write_console4051
+    contains 'no plan dir configured reads plan-index=skip (HIMMEL-4051)' "$(t4051)" ' plan-index=skip'
+    [ ! -e "$p4051_out" ] && pass 'skip touches no state (HIMMEL-4051)' || fail 'skip created the out dir (HIMMEL-4051)'
+    write_console4051 "$p4051/missing"
+    contains 'a configured but absent plan dir reads plan-index=skip (HIMMEL-4051)' "$(t4051)" ' plan-index=skip'
+
+    write_console4051 "$p4051_plan"
+    contains 'a never-built index reads plan-index=REFRESHING (HIMMEL-4051)' "$(t4051)" ' plan-index=REFRESHING'
+    wait4051
+    contains 'the detached refresh embedded the collection (HIMMEL-4051)' "$(cat "$p4051_calls" 2>/dev/null)" 'embed -c roadmap-plan'
+    contains 'after the refresh the tick reads plan-index=ok (HIMMEL-4051)' "$(t4051)" ' plan-index=ok'
+    contains '--verbose labels the plan index (HIMMEL-4051)' "$(t4051 --verbose)" 'plan-index: ok'
+    n4051="$(wc -l < "$p4051_calls")"
+    t4051 >/dev/null
+    [ "$(wc -l < "$p4051_calls")" = "$n4051" ] && pass 'an unchanged index never relaunches qmd (HIMMEL-4051)' || fail 'ok tick called qmd (HIMMEL-4051)'
+
+    # a mirror change inside the minimum interval: stale but not yet due
+    echo two >> "$p4051_mir/HIMMEL-111.md"
+    contains 'stale but inside the minimum interval reads plan-index=ok:pending (HIMMEL-4051)' "$(t4051)" ' plan-index=ok:pending'
+    [ "$(wc -l < "$p4051_calls")" = "$n4051" ] && pass 'ok:pending launches no refresh (HIMMEL-4051)' || fail 'pending tick called qmd (HIMMEL-4051)'
+    rm -f "$p4051_out/.last-run"
+    contains 'stale and due (interval 0) reads plan-index=REFRESHING (HIMMEL-4051)' "$(TICK_PLAN_INDEX_MIN_SECS=0 t4051)" ' plan-index=REFRESHING'
+    wait4051
+    contains 'the due refresh made the index ok again (HIMMEL-4051)' "$(t4051)" ' plan-index=ok'
+
+    # a failing qmd: FAIL:<why>, and the backoff stops a relaunch every tick
+    echo three >> "$p4051_mir/HIMMEL-111.md"
+    rm -f "$p4051_out/.last-run"
+    TICK_PLAN_INDEX_MIN_SECS=0 QMD_FAIL=1 t4051 >/dev/null
+    wait4051
+    contains 'a failed refresh reads plan-index=FAIL: (HIMMEL-4051)' "$(t4051)" ' plan-index=FAIL:'
+    n4051="$(wc -l < "$p4051_calls")"
+    t4051 >/dev/null; sleep 0.3
+    [ "$(wc -l < "$p4051_calls")" = "$n4051" ] && pass 'a recent failure is not relaunched (HIMMEL-4051)' || fail 'failure relaunched inside the backoff (HIMMEL-4051)'
+
+    # a slow qmd never holds the tick: it returns while the refresh is still running
+    echo four >> "$p4051_mir/HIMMEL-111.md"
+    rm -f "$p4051_out/.last-fail" "$p4051_out/.last-run"
+    s4051=$SECONDS
+    o4051="$(TICK_PLAN_INDEX_MIN_SECS=0 QMD_SLEEP=4 t4051)"
+    e4051=$((SECONDS - s4051))
+    contains 'a slow qmd still reads plan-index=REFRESHING (HIMMEL-4051)' "$o4051" ' plan-index=REFRESHING'
+    [ "$e4051" -le 2 ] && pass "the tick does not wait on the refresh (${e4051}s, HIMMEL-4051)" || fail "tick waited ${e4051}s on a 4s qmd (HIMMEL-4051)"
+    contains 'while the refresh holds the lock the tick reads REFRESHING (HIMMEL-4051)' "$(t4051)" ' plan-index=REFRESHING'
+    wait4051
+
+    # an overlapping launch (OUT/.launch held) reads REFRESHING and a duplicate wrapper exits
+    # without touching the live refresh's bookkeeping (codex-1)
+    echo five >> "$p4051_mir/HIMMEL-111.md"
+    mkdir "$p4051_out/.launch"; echo 77 > "$p4051_out/.last-run"
+    n4051="$(wc -l < "$p4051_calls")"
+    contains 'a held launch lock reads plan-index=REFRESHING (HIMMEL-4051)' "$(TICK_PLAN_INDEX_MIN_SECS=0 t4051)" ' plan-index=REFRESHING'
+    # HIMMEL-4059: drive the PRODUCTION wrapper (not a hand copy); RED control: pre-change the
+    # wrapper was inline in tick.sh, so plan-index-launch.sh is absent and the first check fails
+    wrap4059="$(dirname "$SUT")/plan-index-launch.sh"
+    [ -f "$wrap4059" ] && pass 'the launch wrapper is its own script (HIMMEL-4059)' || fail 'plan-index-launch.sh is missing (HIMMEL-4059)'
+    bash "$wrap4059" "$p4051_out" bash -c 'echo clobbered > "$1/.last-run"' _ "$p4051_out"
+    [ -f "$wrap4059" ] && [ "$(cat "$p4051_out/.last-run")" = 77 ] && [ "$(wc -l < "$p4051_calls")" = "$n4051" ] && pass 'a held launch lock blocks a duplicate refresh (HIMMEL-4051)' || fail 'duplicate refresh ran past .launch (HIMMEL-4051)'
+    rmdir "$p4051_out/.launch"
+    # a free .launch: the wrapper runs the command, records rc, and releases the lock
+    bash "$wrap4059" "$p4051_out" bash -c 'exit 5'
+    [ "$(cat "$p4051_out/.last-run" 2>/dev/null)" = 5 ] && [ ! -d "$p4051_out/.launch" ] && pass 'the wrapper records rc and releases .launch (HIMMEL-4059)' || fail 'wrapper did not record rc / release .launch (HIMMEL-4059)'
+    rm -f "$p4051_out/.last-run" "$p4051_out/.last-fail"
+
+    # HIMMEL-4059 item 1: an --out path with a quote and a command substitution must neither run
+    # text nor leave .launch behind (the old double-quoted trap re-parsed $o when it fired)
+    p4051_out_save="$p4051_out"
+    # shellcheck disable=SC2016  # the $( is a literal hostile path component
+    p4051_out="$p4051/o\"x\$(touch $p4051/PWNED)"
+    t4051 >/dev/null; wait4051
+    [ ! -e "$p4051/PWNED" ] && [ -f "$p4051_out/.last-run" ] && [ ! -d "$p4051_out/.launch" ] && pass 'a hostile --out path is cleaned up without running text (HIMMEL-4059)' || fail 'hostile --out path left .launch or ran text (HIMMEL-4059)'
+    p4051_out="$p4051_out_save"
+
+    # HIMMEL-4059 item 3: a launcher that is not installed reads FAIL:no-launcher and writes .last-fail
+    p4051_out="$p4051/out-nolauncher"
+    contains 'a missing launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER=no-such-launcher-4059 t4051)" ' plan-index=FAIL:no-launcher'
+    [ -s "$p4051_out/.last-fail" ] && pass 'a missing launcher writes .last-fail (HIMMEL-4059)' || fail 'no .last-fail for a missing launcher (HIMMEL-4059)'
+    # one installed word must not mask a missing one (codex-1: command -v passes if ANY operand exists)
+    rm -rf "$p4051_out"
+    contains 'a half-installed launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER='env no-such-launcher-4059' t4051)" ' plan-index=FAIL:no-launcher'
+    rm -rf "$p4051_out"
+    contains 'a blank launcher reads plan-index=FAIL:no-launcher (HIMMEL-4059)' "$(TICK_PLAN_INDEX_LAUNCHER=' ' t4051)" ' plan-index=FAIL:no-launcher'
+    p4051_out="$p4051_out_save"
+else
+    skip 'plan-index= rows: no python3'
+fi
+
+# HIMMEL-4076: removing the fleet-based skip would read a metered account
+# without a live OpenRouter leg; missing the field hides its effective floor.
+cat > "$W/repo/scripts/lanes/openrouter-cost.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'read\n' >> "$OR_READS"
+printf '%s\n' "${OR_READING-balance=7.50:key-limit_remaining spend=?}"
+STUB
+export OR_READS="$W/or-reads"
+contains 'no live OpenRouter leg shows or=skip' \
+  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/8' bash "$SUT")" ' or=skip'
+[ ! -e "$OR_READS" ] && pass 'no OpenRouter leg skips all cost reads' || fail 'cost helper read without OpenRouter leg'
+contains 'live OpenRouter leg surfaces smaller key cap and label' \
+  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=1 claudex=0 openrouter=1 reserved=0 total=2/8' bash "$SUT")" ' or=7.50:key-limit_remaining'
+[ -f "$OR_READS" ] && pass 'live OpenRouter leg reads cost helper' || fail 'no balance read for OpenRouter leg'
+contains 'unknown balance is honest' \
+  "$(OR_READING='balance=? spend=?' STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT")" ' or=?'
+contains 'verbose labels metered balance' \
+  "$(STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT" --verbose)" 'OpenRouter: 7.50:key-limit_remaining'
+
+contains 'OpenRouter tick bank is the lane verdict, not subscription usage' \
+  "$(CADENCE_BANK_LANE=openrouter STUB_PF_VERDICT=SKIPPED-BANK bash "$SUT")" ' bank=openrouter:SKIPPED-BANK '
+contains 'OpenRouter leg marker selects lane verdict' \
+  "$(CADENCE_BANK_LANE='' LEG_LANE=openrouter STUB_PF_VERDICT=BANK-UNKNOWN bash "$SUT")" ' bank=openrouter:BANK-UNKNOWN '
+contains 'OpenRouter funded verdict surfaces without changing raw balance' \
+  "$(CADENCE_BANK_LANE=openrouter STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT")" ' bank=openrouter:PROCEED '
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

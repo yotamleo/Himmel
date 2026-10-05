@@ -146,6 +146,10 @@ case "$1 $2" in
     case "$*" in
       *defaultBranchRef*) printf '%s' "${GH_STUB_DEFAULT_BRANCH-main}"; exit 0 ;;
     esac
+    # HIMMEL-2141: a directory carrying .stub-nwo is a DIFFERENT repo's checkout.
+    [ -f "$PWD/.stub-nwo" ] && { cat "$PWD/.stub-nwo"; exit 0; }
+    # HIMMEL-2141: --json url answers the repo URL (the hook compares hosts too).
+    case "$*" in *"json url"*) printf 'https://%s/%s' "${GH_STUB_HOST:-github.com}" "${GH_STUB_NWO:-o/r}"; exit 0 ;; esac
     printf '%s' "${GH_STUB_NWO:-o/r}" ;;
   *) echo '{}' ;;
 esac
@@ -158,7 +162,17 @@ export PATH="$TMP/bin:$PATH"
 git init -q -b trunk "$TMP" 2>/dev/null || git init -q "$TMP"
 
 payload() { # payload <tool_name> <command>
-  printf '{"tool_name":"%s","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$2" "$TMP"
+  printf '{"tool_name":"%s","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$2" "${PAYLOAD_CWD:-$TMP}"
+}
+
+# HIMMEL-3929: cr-merge-gate.sh now fails closed on a missing nested helper, so a
+# fixture lib dir that holds a copy of it must hold its helpers too (and the hook's
+# own timeout-bin.sh, which it now also refuses to run without).
+cp_crgate_deps() { # cp_crgate_deps <dest-lib-dir>
+  local _d
+  for _d in cr-signal cr-body-findings cr-available cr-ledger-evidence nwo timeout-bin; do
+    cp "$SCRIPT_DIR/../lib/$_d.sh" "$1/"
+  done
 }
 
 pass=0; fail=0
@@ -185,6 +199,32 @@ if [ "${HIMMEL_1495_SELF:-0}" = "1" ]; then
     [ "$probe_rc" = "2" ] || exit 1
     exit 0
 fi
+
+# ── HIMMEL-2141: the PR number binds to ITS repo. PR 42 exists in both o/r (the
+# project repo) and x/y; a merge whose effective repo (-R, else the payload cwd's
+# repo) is not the project repo must never be evaluated against o/r's PR 42.
+mkdir -p "$TMP/other"; printf 'x/y' > "$TMP/other/.stub-nwo"
+PIN2141="--match-head-commit abc123"
+PAYLOAD_CWD="$TMP/other" GH_STUB_MODE=clean t xrepo-cwd-other-refuses 2 Bash "gh pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-cwd-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-cwd-other-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-cwd-other-names-repos"; fi
+[ -r "$TMP/calls-xrepo-cwd-other-refuses.log" ] || { fail=$((fail+1)); echo "FAIL xrepo-calls-log-unreadable"; }
+if grep -q "^pr view" "$TMP/calls-xrepo-cwd-other-refuses.log"; then fail=$((fail+1)); echo "FAIL xrepo-cwd-other-never-looked-up-pr"; else pass=$((pass+1)); echo "ok   xrepo-cwd-other-never-looked-up-pr"; fi
+mkdir -p "$TMP/otherhost"; printf 'https://enterprise.example/o/r' > "$TMP/otherhost/.stub-nwo"
+PAYLOAD_CWD="$TMP/otherhost" GH_STUB_MODE=clean t xrepo-cwd-other-host-same-nwo-refuses 2 Bash "gh pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-cwd-other-host-same-nwo-refuses"; then pass=$((pass+1)); echo "ok   xrepo-cwd-other-host-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-cwd-other-host-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-dash-R-other-refuses 2 Bash "gh pr merge 42 --squash -R x/y $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-dash-R-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-dash-R-other-refuses-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-dash-R-other-refuses-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-long-repo-other-refuses 2 Bash "gh --repo x/y pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-long-repo-other-refuses"; then pass=$((pass+1)); echo "ok   xrepo-long-repo-other-refuses-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-long-repo-other-refuses-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-cd-chain-refuses 2 Bash "cd $TMP/other && gh pr merge 42 --squash $PIN2141"
+GH_STUB_MODE=clean t xrepo-same-repo-R-allows 0 Bash "gh pr merge 42 --squash -R o/r $PIN2141"
+# Positive control for the never-looked-up-pr matcher above: a same-repo merge DOES read the PR.
+if grep -q "^pr view" "$TMP/calls-xrepo-same-repo-R-allows.log"; then pass=$((pass+1)); echo "ok   xrepo-lookup-matcher-detects-pr-view"; else fail=$((fail+1)); echo "FAIL xrepo-lookup-matcher-detects-pr-view"; fi
+GH_STUB_MODE=clean t xrepo-other-host-same-nwo-refuses 2 Bash "gh pr merge 42 --squash -R enterprise.example/o/r $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-other-host-same-nwo-refuses"; then pass=$((pass+1)); echo "ok   xrepo-other-host-names-repos"; else fail=$((fail+1)); echo "FAIL xrepo-other-host-names-repos"; fi
+GH_STUB_MODE=clean t xrepo-same-repo-R-host-allows 0 Bash "gh pr merge 42 --squash -R github.com/O/R $PIN2141"
+CR_MERGE_GATE_OK=1 PAYLOAD_CWD="$TMP/other" GH_STUB_MODE=clean t xrepo-bypass-skips-refusal 2 Bash "gh pr merge 42 --squash $PIN2141"
+if grep -q "project repo" "$TMP/err-xrepo-bypass-skips-refusal"; then fail=$((fail+1)); echo "FAIL xrepo-bypass-names-no-refusal"; else pass=$((pass+1)); echo "ok   xrepo-bypass-names-no-refusal"; fi
 
 GH_STUB_MODE=unresolved t merge-with-unresolved-blocks   2 Bash "gh pr merge 42 --squash"
 GH_STUB_MODE=clean      t merge-clean-allows             0 Bash "gh pr merge 42 --squash --match-head-commit abc123"
@@ -225,6 +265,107 @@ GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-pipe-h-still-gated 2 Bash "gh pr 
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-bg-h-still-gated 2 Bash "gh pr merge 42 --squash & ls -h"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-redirect-help-still-gated 2 Bash "gh pr merge 42 > --help"
 GH_STUB_MODE=clean GH_STUB_PRVIEW=fail t merge-help-then-real-merge-gated 2 Bash "gh pr merge --help; gh pr merge 42 --squash"
+PIN="--match-head-commit abc123"
+# ── HIMMEL-3929: the detector over-fires (deny-leaning). A `merge` word after a
+# `gh` word in the normalized text fires it; the command must then be exactly
+# `gh [-R v|--repo v|--repo=v]* pr [same]* merge <closed tokens>` or it DENIES.
+# (a) a persistent flag BEFORE the verb is parsed, not skipped: the gates run.
+GH_STUB_MODE=unresolved t flag-before-verb-gated          2 Bash "gh pr -R o/r merge 42 --squash $PIN"
+GH_STUB_MODE=unresolved t flag-before-pr-gated            2 Bash "gh -R o/r pr merge 42 --squash $PIN"
+GH_STUB_MODE=unresolved t repo-long-before-pr-gated       2 Bash "gh --repo o/r pr merge 42 --squash $PIN"
+GH_STUB_MODE=unresolved t repo-eq-before-verb-gated       2 Bash "gh pr --repo=o/r merge 42 --squash $PIN"
+GH_STUB_MODE=clean      t flag-before-verb-clean-allows   0 Bash "gh pr -R o/r merge 42 --squash $PIN"
+GH_STUB_MODE=clean      t flag-before-pr-clean-allows     0 Bash "gh -R o/r pr merge 42 --squash $PIN"
+# The -R before the verb is the gated repo: a wrong one must not slip past.
+GH_STUB_MODE=clean      t flag-before-verb-other-repo     2 Bash "gh pr -R o/other merge 42 --squash $PIN"
+# (b) everything else that names a merge but is not that exact shape DENIES.
+for _row in "api-put|gh api -X PUT repos/o/r/pulls/42/merge" \
+            "api-method-flag|gh api repos/o/r/pulls/42/merge --method PUT" \
+            "api-graphql-merge|gh api graphql -f query=mergePullRequest" \
+            "alias-set|gh alias set mm pr merge" \
+            "alias-set-quoted|gh alias set mm 'pr merge'" \
+            "alias-import|gh alias import merge.yml" \
+            "bash-c|bash -c 'gh pr merge 42 --squash $PIN'" \
+            "sh-c-split|sh -c 'gh pr mer\\\"\\\"ge 42 $PIN'" \
+            "eval|eval 'gh pr merge 42 $PIN'" \
+            "env-prefix|env X=1 gh pr merge 42 $PIN" \
+            "brace|gh pr {merge,42} $PIN" \
+            "empty-backticks|gh pr mer\`\`ge 42 $PIN" \
+            "var-before|gh pr \${X}merge 42 $PIN" \
+            "var-inside|gh pr m\${X}erge 42 $PIN" \
+            "ifs|gh\${IFS}pr\${IFS}merge 42 $PIN" \
+            "var-default|gh pr m\${X:-er}ge 42 $PIN" \
+            "subst|gh pr \$(echo merge) 42 $PIN" \
+            "ansi-c|gh pr \$'m\\\\x65rge' 42 $PIN" \
+            "quote-split|gh pr mer''ge 42 $PIN" \
+            "quote-split-gh|g\\\"h\\\" pr merge 42 $PIN" \
+            "chain-after-other|git status; gh -R o/r pr merge 42 $PIN" \
+            "second-verb|gh pr merge merge 42 $PIN" \
+            "pr-twice|gh pr pr merge 42 $PIN" \
+            "prog-ansi-c|\$'\\\\x67\\\\x68' pr merge 42 $PIN" \
+            "prog-var|G=gh; \${G} pr merge 42 $PIN" \
+            "prog-glob-bracket|/usr/bin/g[h] pr merge 42 $PIN" \
+            "prog-glob-question|/usr/bin/g? pr merge 42 $PIN" \
+            "wrapper-env-glob|env /usr/bin/g[h] pr merge 42 $PIN" \
+            "wrapper-nice-var|nice \$G pr merge 1 $PIN" \
+            "verb-glob|command gh pr m?rge 1 $PIN" \
+            "verb-star|gh pr * 42 --squash $PIN" \
+            "r1-verb-dq|gh pr \\\"\$M\\\" 1 $PIN" \
+            "r1-verb-bare|gh pr \$M 1 $PIN" \
+            "r1-verb-brace|gh pr \\\"\${VERB}\\\" 1 $PIN" \
+            "r1-verb-subst|gh pr \\\"\$(printf merg)e\\\" 1 $PIN" \
+            "r1-verb-backtick|gh pr \`printf merge\` 1 $PIN" \
+            "r1-sub-var|A=\\\"pr merge\\\"; gh \$A 42 $PIN" \
+            "r1-sub-at|set -- pr merge; gh \\\"\$@\\\" 42 $PIN" \
+            "r2-api-put|G=gh; \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "r2-api-put-bare|G=gh; \$G api -X PUT repos/o/r/pulls/1/merge" \
+            "r2-graphql|G=gh; \\\"\$G\\\" api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:1}){clientMutationId}}'" \
+            "verb-glob-bang|gh pr [!x]erge 42 $PIN" \
+            "verb-glob-caret|gh pr [^x]erge 42 $PIN" \
+            "j1-bs-gh-bare|\\\\gh pr \$M" \
+            "j1-bs-gh-dq|\\\\gh pr \\\"\$M\\\" 1 $PIN" \
+            "j1-bs-mid-gh|g\\\\h pr \$M" \
+            "j2-command|G=gh; command \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "j2-env|G=gh; env \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "j2-nice|G=gh; nice \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "j2-assign|G=gh; X=1 \\\"\$G\\\" api -X PUT repos/o/r/pulls/1/merge" \
+            "b1-quoted-gh-pr-glob|\\\"gh\\\" \\\"pr\\\" m?rge 42 $PIN" \
+            "b1-quoted-verb-glob|\\\"gh\\\" pr \\\"m?rge\\\" 42 $PIN" \
+            "b2-graphql-vars|gh api graphql -f 'query=mutation(\$id:ID!){mergePullRequest(input:{pullRequestId:\$id}){clientMutationId}}' -F id=ID" \
+            "b2-graphql-vars-eq|gh api graphql -f query='mutation(\$id:ID!){mergePullRequest(input:{pullRequestId:\$id}){clientMutationId}}' -F id=ID" \
+            "c1-var-dq|C=\\\"gh pr merge 42\\\"; \$C" \
+            "c1-var-sq|C='gh pr merge 42'; \$C" \
+            "c1-eval|C=\\\"gh pr merge 42\\\"; eval \\\"\$C\\\"" \
+            "c1-bash-c|C=\\\"gh pr merge 42\\\"; bash -c \\\"\$C\\\"" \
+            "c1-dot-gh|./gh pr merge 42 $PIN" \
+            "c1-bin-gh|bin/gh pr merge 42 $PIN" \
+            "c1-alias|gh alias set mm \\\"pr merge\\\"; gh mm 8" \
+            "graphql-nospace|gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\\\"X\\\"}){clientMutationId}}'" \
+            "i2-backslash-verb|\\\"\$G\\\" pr me\\\\rge 42 $PIN" \
+            "verb-first|gh merge pr 42 $PIN"; do
+    GH_STUB_MODE=clean t "detector-${_row%%|*}-denies" 2 Bash "${_row#*|}"
+done
+# (c) the detector does not widen onto non-merge gh, nor onto `git merge`.
+GH_STUB_MODE=unresolved t allow-gh-pr-view        0 Bash "gh pr view 42"
+GH_STUB_MODE=unresolved t allow-gh-pr-list        0 Bash "gh pr list --state open"
+GH_STUB_MODE=unresolved t allow-gh-run-list       0 Bash "gh run list"
+GH_STUB_MODE=unresolved t allow-gh-api-pr         0 Bash "gh api repos/o/r/pulls/42"
+GH_STUB_MODE=unresolved t allow-git-merge-then-gh 0 Bash "git merge main && gh pr view 42"
+GH_STUB_MODE=unresolved t allow-gh-alias-list     0 Bash "gh alias list"
+GH_STUB_MODE=unresolved t allow-gh-pr-view-mergeable 0 Bash "gh pr view 42 --json mergeable,mergeStateStatus"
+GH_STUB_MODE=unresolved t allow-i1-view-var 0 Bash "gh pr view \\\"\$PR\\\""
+GH_STUB_MODE=unresolved t allow-i1-checks-var 0 Bash "gh pr checks \\\"\$PR\\\""
+GH_STUB_MODE=unresolved t allow-i1-view-subst 0 Bash "gh pr view \\\"\$(git branch --show-current)\\\""
+GH_STUB_MODE=unresolved t allow-i1-diff-grep 0 Bash "gh pr diff 42 | grep merge"
+GH_STUB_MODE=unresolved t allow-i1-list-search 0 Bash "gh pr list --search \\\"merge conflict\\\""
+GH_STUB_MODE=unresolved t allow-bare-bracket 0 Bash "[ -f x ]"
+GH_STUB_MODE=unresolved t allow-ls-star 0 Bash "ls *"
+GH_STUB_MODE=unresolved t allow-gh-pr-view-quoted-jq 0 Bash "gh pr view 42 --jq '.[0]'"
+GH_STUB_MODE=unresolved t allow-abs-gh-pr-view 0 Bash "/usr/bin/gh pr view 42 --json mergeable"
+GH_STUB_MODE=unresolved t allow-computed-prog     0 Bash "\\\"\$PY\\\" x.py"
+GH_STUB_MODE=unresolved t allow-computed-prog-path 0 Bash "\\\"\$HOME/bin/tool\\\" run"
+# merge-on-green's own argv shape is the plain direct form and must stay allowed.
+GH_STUB_MODE=clean      t allow-mog-argv          0 Bash "gh pr merge 42 --repo o/r --squash $PIN"
 # ── HIMMEL-3918: six residual gaps. Every row below is RED on 4822509f. Each
 # uses GH_STUB_MODE=clean plus a valid pin, so the ONLY thing that can produce
 # rc 2 is the rule under test (a vacuous deny from another gate cannot pass).
@@ -369,6 +510,25 @@ for _lib in cr-merge-gate ci-green-gate; do
         fail=$((fail+1)); echo "FAIL lib-unparseable-$_lib-denies (rc=$_rc want 2) err=$(cat "$TMP/err-badlib-$_lib")"
     fi
 done
+# HIMMEL-3929: the NESTED sources (cr-merge-gate's five helpers) and the hook's
+# own timeout-bin.sh fail closed too; each row names the lib that is missing.
+for _row in "cr-signal|cr-merge-gate" "cr-body-findings|cr-merge-gate" "cr-available|cr-merge-gate" \
+            "cr-ledger-evidence|cr-merge-gate" "nwo|cr-merge-gate" "timeout-bin|timeout-bin"; do
+    _lib=${_row%%|*}; _want=${_row#*|}
+    _root="$TMP/nolib-nested-$_lib"
+    mkdir -p "$_root/scripts/hooks"
+    cp -R "$SCRIPT_DIR/../lib" "$_root/scripts/lib"
+    cp "$HOOK" "$_root/scripts/hooks/block-unresolved-cr-merge.sh"
+    rm -f "$_root/scripts/lib/$_lib.sh"
+    _rc=0
+    payload Bash "gh pr merge 42 --squash $PIN" | GH_STUB_MODE=clean GH_STUB_LOG="$TMP/calls-nolib-nested-$_lib.log" \
+        bash "$_root/scripts/hooks/block-unresolved-cr-merge.sh" >/dev/null 2>"$TMP/err-nolib-nested-$_lib" || _rc=$?
+    if [ "$_rc" = "2" ] && grep -q "cannot load scripts/lib/$_want.sh" "$TMP/err-nolib-nested-$_lib"; then
+        pass=$((pass+1)); echo "ok   nested-lib-missing-$_lib-denies"
+    else
+        fail=$((fail+1)); echo "FAIL nested-lib-missing-$_lib-denies (rc=$_rc want 2) err=$(cat "$TMP/err-nolib-nested-$_lib")"
+    fi
+done
 # HIMMEL-3360 (operator ruling 2026-09-21): CodeRabbit's commit-status state is
 # advisory only. The removed `zombie*`/`young` cases here drove the HIMMEL-980
 # override off a CodeRabbit CHECK-RUN that production never emits; the
@@ -504,7 +664,8 @@ grep -qi "does not match" "$TMP/err-leg-valid-go-wrong-pin-blocks" || { echo "FA
 # required case, since a leg could otherwise point --repo at a repo it
 # controls and reuse a GO minted for the console's real repo.
 printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.locks/go/42.abc123"
-HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo t leg-cross-repo-go-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 --repo other/repo"
+# HIMMEL-2141: a cross-repo merge is refused up front unless CR_MERGE_GATE_OK=1; this row is about the GO mac.
+CR_MERGE_GATE_OK=1 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo t leg-cross-repo-go-blocks 2 Bash "gh pr merge 42 --squash --match-head-commit abc123 --repo other/repo"
 grep -qi "mac" "$TMP/err-leg-cross-repo-go-blocks" || { echo "FAIL leg-cross-repo-go-blocks reason missing"; fail=$((fail+1)); }
 
 # ── HIMMEL-3578 (3): a v1-tagged mac (himmel-go-v1|<pr>|<sha>, no nwo bound
@@ -596,6 +757,7 @@ printf 'pr=42\nhead=abc123\nby=test\nat=now\nmac=%s\n' "$GO_MAC_42" > "$GOROOT/.
 RED_NOTB_ROOT="$TMP/no-timeout-red"
 mkdir -p "$RED_NOTB_ROOT/scripts/hooks" "$RED_NOTB_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$RED_NOTB_ROOT/scripts/lib/cr-merge-gate.sh"
+cp_crgate_deps "$RED_NOTB_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$RED_NOTB_ROOT/scripts/lib/ci-green-gate.sh"
 cp "$SCRIPT_DIR/../lib/handover-path.sh" "$RED_NOTB_ROOT/scripts/lib/handover-path.sh"
 cp "$SCRIPT_DIR/../lib/go-gate.sh" "$RED_NOTB_ROOT/scripts/lib/go-gate.sh"
@@ -695,6 +857,7 @@ NOGOMAC_ROOT="$TMP/no-go-mac-hook"
 mkdir -p "$NOGOMAC_ROOT/scripts/hooks" "$NOGOMAC_ROOT/scripts/lib"
 cp "$HOOK" "$NOGOMAC_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$NOGOMAC_ROOT/scripts/lib/cr-merge-gate.sh"
+cp_crgate_deps "$NOGOMAC_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$NOGOMAC_ROOT/scripts/lib/ci-green-gate.sh"
 cp "$SCRIPT_DIR/../lib/handover-path.sh" "$NOGOMAC_ROOT/scripts/lib/handover-path.sh"
 cp "$NOGOMAC_GOGATE" "$NOGOMAC_ROOT/scripts/lib/go-gate.sh"
@@ -723,6 +886,7 @@ fi
 RESOLVE_ROOT_ANCHOR="$TMP/resolve-root-anchor"
 mkdir -p "$RESOLVE_ROOT_ANCHOR/scripts/hooks" "$RESOLVE_ROOT_ANCHOR/scripts/lib"
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/cr-merge-gate.sh"
+cp_crgate_deps "$RESOLVE_ROOT_ANCHOR/scripts/lib"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/ci-green-gate.sh"
 cp "$SCRIPT_DIR/../lib/handover-path.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/handover-path.sh"
 cp "$SCRIPT_DIR/../lib/go-gate.sh" "$RESOLVE_ROOT_ANCHOR/scripts/lib/go-gate.sh"
@@ -791,6 +955,7 @@ mkdir -p "$PRE_FIX_ROOT/scripts/hooks" "$PRE_FIX_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-fix.sh" \
     "$PRE_FIX_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_FIX_ROOT/scripts/lib/cr-merge-gate.sh"
+cp_crgate_deps "$PRE_FIX_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_FIX_ROOT/scripts/lib/ci-green-gate.sh"
 # The mutant wrapper always exits 0 itself (it prints the gated hook's rc as
 # data rather than propagating it) -- same shape as the RC-3 grep-mutant in
@@ -848,6 +1013,7 @@ mkdir -p "$PRE_PIN_ROOT/scripts/hooks" "$PRE_PIN_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-pin.sh" \
     "$PRE_PIN_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_PIN_ROOT/scripts/lib/cr-merge-gate.sh"
+cp_crgate_deps "$PRE_PIN_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_PIN_ROOT/scripts/lib/ci-green-gate.sh"
 cp "$SCRIPT_DIR/../lib/go-gate.sh" "$PRE_PIN_ROOT/scripts/lib/go-gate.sh"
 cp "$SCRIPT_DIR/../lib/handover-path.sh" "$PRE_PIN_ROOT/scripts/lib/handover-path.sh"
@@ -913,6 +1079,7 @@ else
     cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-rc127-fix.sh" \
         "$PRE_RC127_ROOT/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
     cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$PRE_RC127_ROOT/scripts/lib/cr-merge-gate.sh"
+    cp_crgate_deps "$PRE_RC127_ROOT/scripts/lib"
     cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$PRE_RC127_ROOT/scripts/lib/ci-green-gate.sh"
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$PRE_RC127_ROOT/scripts/lib/handover-path.sh"
     cp "$TRUNC_GOGATE" "$PRE_RC127_ROOT/scripts/lib/go-gate.sh"
@@ -947,6 +1114,7 @@ RUNEOF
     mkdir -p "$POST_RC127_ROOT/scripts/hooks" "$POST_RC127_ROOT/scripts/lib"
     cp "$HOOK" "$POST_RC127_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
     cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$POST_RC127_ROOT/scripts/lib/cr-merge-gate.sh"
+    cp_crgate_deps "$POST_RC127_ROOT/scripts/lib"
     cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$POST_RC127_ROOT/scripts/lib/ci-green-gate.sh"
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$POST_RC127_ROOT/scripts/lib/handover-path.sh"
     cp "$TRUNC_GOGATE" "$POST_RC127_ROOT/scripts/lib/go-gate.sh"
@@ -985,6 +1153,7 @@ BROKEN_GOGATE_ROOT="$TMP/broken-gogate-hook"
 mkdir -p "$BROKEN_GOGATE_ROOT/scripts/hooks" "$BROKEN_GOGATE_ROOT/scripts/lib"
 cp "$HOOK" "$BROKEN_GOGATE_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
 cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$BROKEN_GOGATE_ROOT/scripts/lib/cr-merge-gate.sh"
+cp_crgate_deps "$BROKEN_GOGATE_ROOT/scripts/lib"
 cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$BROKEN_GOGATE_ROOT/scripts/lib/ci-green-gate.sh"
 cp "$SCRIPT_DIR/../lib/handover-path.sh" "$BROKEN_GOGATE_ROOT/scripts/lib/handover-path.sh"
 cp "$BROKEN_GOGATE" "$BROKEN_GOGATE_ROOT/scripts/lib/go-gate.sh"
@@ -1053,6 +1222,7 @@ rc4_extract_hook() {
     cp "$SCRIPT_DIR/fixtures/red-control/block-unresolved-cr-merge.pre-rc4-fix.sh" \
         "$1/scripts/hooks/block-unresolved-cr-merge.sh" 2>/dev/null
     cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$1/scripts/lib/cr-merge-gate.sh"
+    cp_crgate_deps "$1/scripts/lib"
     cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$1/scripts/lib/ci-green-gate.sh"
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$1/scripts/lib/handover-path.sh"
     cp "$TRUNC_GOGATE" "$1/scripts/lib/go-gate.sh"
@@ -1102,6 +1272,7 @@ RUNEOF
     mkdir -p "$POST_RC4A_ROOT/scripts/hooks" "$POST_RC4A_ROOT/scripts/lib"
     cp "$HOOK" "$POST_RC4A_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
     cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$POST_RC4A_ROOT/scripts/lib/cr-merge-gate.sh"
+    cp_crgate_deps "$POST_RC4A_ROOT/scripts/lib"
     cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$POST_RC4A_ROOT/scripts/lib/ci-green-gate.sh"
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$POST_RC4A_ROOT/scripts/lib/handover-path.sh"
     cp "$TRUNC_GOGATE" "$POST_RC4A_ROOT/scripts/lib/go-gate.sh"
@@ -1156,6 +1327,7 @@ RUNEOF
     mkdir -p "$POST_RC4B_ROOT/scripts/hooks" "$POST_RC4B_ROOT/scripts/lib"
     cp "$HOOK" "$POST_RC4B_ROOT/scripts/hooks/block-unresolved-cr-merge.sh"
     cp "$SCRIPT_DIR/../lib/cr-merge-gate.sh" "$POST_RC4B_ROOT/scripts/lib/cr-merge-gate.sh"
+    cp_crgate_deps "$POST_RC4B_ROOT/scripts/lib"
     cp "$SCRIPT_DIR/../lib/ci-green-gate.sh" "$POST_RC4B_ROOT/scripts/lib/ci-green-gate.sh"
     cp "$SCRIPT_DIR/../lib/handover-path.sh" "$POST_RC4B_ROOT/scripts/lib/handover-path.sh"
     cp "$TRUNC_GOGATE" "$POST_RC4B_ROOT/scripts/lib/go-gate.sh"
@@ -1294,8 +1466,9 @@ HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_TRUST_FILE=scripts/ci/run.sh \
 grep -q "single plain command" "$TMP/err-trust-path-quoted-host-repo-blocks" \
     || { fail=$((fail+1)); echo "FAIL trust-path-quoted-host-repo-blocks: a quoted repo is not refused by the plain-command rule (HIMMEL-3918 B1)"; }
 # Control: a PR genuinely on another repo (no list there, the anchor's origin
-# is o/r) is still not-adopted and passes with no GO.
-HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo GH_STUB_TRUST_FILE=scripts/ci/run.sh \
+# is o/r) is still not-adopted and passes with no GO (HIMMEL-2141: past the
+# cross-repo refusal, via CR_MERGE_GATE_OK=1).
+CR_MERGE_GATE_OK=1 HANDOVER_DIR="$GOROOT" GH_STUB_MODE=clean GH_STUB_PR_NWO=other/repo GH_STUB_TRUST_FILE=scripts/ci/run.sh \
     t trust-other-repo-not-adopted-allows 0 Bash "gh pr merge 42 --squash --repo other/repo --match-head-commit abc123"
 # The same rule at the lib, which merge-on-green.sh shares: a non-canonical
 # nwo's 404 is refused, never "not-adopted", even without the hook's guard.

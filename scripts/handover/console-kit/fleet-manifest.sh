@@ -51,9 +51,11 @@ USAGE
 
 # Every leg's doc is an absolute path with no whitespace or glob character:
 # tick word-splits its leg list, so anything else would silently shrink the
-# fleet it judges.
-VALID='type == "object" and .schema == 1 and (.legs | type == "array")
-    and all(.legs[]; type == "object" and (.doc | type == "string" and test("^/[^[:space:]*?\\[]+$")))'
+# fleet it judges. Run with `jq -s`: the file must hold exactly one top-level
+# value (HIMMEL-3981) — jq reads a stream, so two concatenated objects would
+# otherwise pass per value and list/add would act on a multi-object file.
+VALID='length == 1 and (.[0] | type == "object" and .schema == 1 and (.legs | type == "array")
+    and all(.legs[]; type == "object" and (.doc | type == "string" and test("^/[^[:space:]*?\\[]+$"))))'
 
 [ "$#" -ge 2 ] || { usage >&2; exit 2; }
 verb="$1"; manifest="$2"; shift 2
@@ -61,7 +63,7 @@ verb="$1"; manifest="$2"; shift 2
 case "$verb" in
     list)
         [ "$#" -eq 0 ] || { usage >&2; exit 2; }
-        if ! jq -e "$VALID" "$manifest" >/dev/null 2>&1; then
+        if ! jq -e -s "$VALID" "$manifest" >/dev/null 2>&1; then
             echo "fleet-manifest: not a schema-1 fleet manifest: $manifest" >&2
             exit 1
         fi
@@ -92,7 +94,7 @@ if ! exec 9>>"$manifest.lock" || ! flock -x -w 30 9; then  # gnu-ok: Linux-only 
 fi
 
 if [ -e "$manifest" ]; then
-    if ! jq -e "$VALID" "$manifest" >/dev/null 2>&1; then
+    if ! jq -e -s "$VALID" "$manifest" >/dev/null 2>&1; then
         echo "fleet-manifest: refusing to rewrite an invalid manifest: $manifest" >&2
         exit 1
     fi

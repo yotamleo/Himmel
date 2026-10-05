@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# claude-deepseek — isolated DeepSeek inference lane (HIMMEL-4084).
+# bash 3.2-safe. Exit 2: missing dependency/key; 3: egress; 4: seed; 5: balance.
+# Station opt-in is process-environment ONLY; .env supplies only the API key.
+# No --force bypass: neither opt-in nor a permissive matrix overrides PHI/vaults.
+# shellcheck disable=SC1091
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$HERE/.." && pwd)"
+CONFIG_DIR="$HOME/.claude-deepseek"
+if [ -z "${DEEPSEEK_API_KEY-}" ] && [ -r "$HERE/lib/load-dotenv.sh" ]; then
+  # shellcheck source=lib/load-dotenv.sh
+  . "$HERE/lib/load-dotenv.sh"
+  load_dotenv --root "$(_load_dotenv_primary_for "${CLAUDE_DEEPSEEK_DOTENV_ROOT:-$REPO_ROOT}")" DEEPSEEK_API_KEY
+  case "${DEEPSEEK_API_KEY-}" in
+    \"*\") DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY#\"}"; DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY%\"}" ;;
+    \'*\') DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY#\'}"; DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY%\'}" ;;
+  esac
+fi
+[ -n "${DEEPSEEK_API_KEY-}" ] || { echo 'claude-deepseek: DEEPSEEK_API_KEY missing; set it or add it to the primary .env.' >&2; exit 2; }
+command -v node >/dev/null 2>&1 || { echo 'claude-deepseek: node required; failing closed.' >&2; exit 3; }
+RESEED=0
+# shellcheck disable=SC2034 # RESEED is consumed by the sourced mirror-seed library.
+if [ "${1-}" = --reseed ]; then RESEED=1; shift; fi
+
+# Authorize explicit provider inference cells, preserving first-match denial,
+# including wildcard hard rows. Only the approved literal condition is known.
+node -e '
+const fs=require("fs"), path=require("path");
+const fail=s=>{console.error("claude-deepseek: REFUSED - "+s);process.exit(3);};
+try {
+ const M=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+ const cwd=fs.realpathSync(process.cwd());
+ const under=root=>{if(!root)return false;const r=fs.realpathSync(root);return cwd===r||cwd.startsWith(r+path.sep);};
+ // Ancestor markers also fence nested workspaces (including .salus-profile).
+ for(let p=cwd;;p=path.dirname(p)) {
+  if(fs.existsSync(path.join(p,".salus"))||fs.existsSync(path.join(p,".salus-profile"))) fail("PHI-marked workspace");
+  const marker=path.join(p,".obsidian");
+  if(fs.existsSync(marker)&&fs.statSync(marker).isDirectory())fail("vault corpus");
+  if(path.dirname(p)===p)break;
+ }
+ for(const name of ["phi-roots","egress-denylist"]) {
+  const p=path.join(process.env.HOME,".config/claude-glm",name);
+  if(fs.existsSync(p)) {
+   if(!fs.statSync(p).isFile())fail("invalid guard config");
+   for(const r of fs.readFileSync(p,"utf8").split(/\r?\n/).filter(Boolean))if(under(r))fail("guarded workspace");
+  }
+ }
+ if(under(process.env.LUNA_VAULT_PATH)||under(process.env.LUNA_VAULT))fail("vault corpus");
+ const corpus=under(process.env.HANDOVER_DIR)?"handover-state":under(process.argv[2])?"himmel-code":"unknown";
+ if(!["himmel-code","handover-state"].includes(corpus))fail("unknown corpus");
+ if(!M.providers||!Object.prototype.hasOwnProperty.call(M.providers,"deepseek"))fail("provider undeclared");
+ if(process.env.HIMMEL_DEEPSEEK_INFERENCE_OK!=="1")fail("station requires HIMMEL_DEEPSEEK_INFERENCE_OK=1 in process environment (not .env)");
+ let match=null;
+ for(const r of M.rules) {
+  if(!(r.corpus===corpus||r.corpus==="*"))continue;
+  if(!(r.provider==="deepseek"||r.provider==="*"))continue;
+  if(!(r.purpose==="inference"||r.purpose==="*"))continue;
+  // A wildcard allow never authorizes a new provider, but its deny still wins.
+  if(r.provider==="*"&&["allow","allow+log"].includes(r.verdict))continue;
+  match=r;break;
+ }
+ if(!match||match.provider!=="deepseek")fail("no explicit permitting inference cell");
+ const conditional=match.verdict==="conditional"&&match.condition==="HIMMEL_DEEPSEEK_INFERENCE_OK=1";
+ // allow+log is refused: this launcher does not implement the ledger obligation.
+ if(match.verdict!=="allow"&&!conditional)fail("first matching inference cell denies or has unknown condition");
+} catch(_) {fail("cannot verify egress policy or workspace");}
+' "${CLAUDE_DEEPSEEK_EGRESS_MATRIX:-$HERE/guardrails/egress-matrix.json}" "$REPO_ROOT" || exit 3
+
+# GET /user/balance is account metadata only. Key travels on stdin, not argv.
+# Unknown/non-USD balances refuse; no guessed FX conversion or fail-open probe.
+command -v curl >/dev/null 2>&1 || { echo 'claude-deepseek: balance UNKNOWN (curl missing); refusing.' >&2; exit 5; }
+case "$DEEPSEEK_API_KEY" in *$'\n'*|*$'\r'*|*\"*|*\\*) echo 'claude-deepseek: invalid API key format.' >&2; exit 2 ;; esac
+balance_raw="$(printf 'header = "Authorization: Bearer %s"\n' "$DEEPSEEK_API_KEY" | curl -fsS --max-time 10 --noproxy '*' -K - https://api.deepseek.com/user/balance 2>/dev/null)" || balance_raw=''
+balance="$(printf '%s' "$balance_raw" | node -e '
+let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{
+ try {
+  const j=JSON.parse(s), rows=j.balance_infos;
+  if(j.is_available!==true||!Array.isArray(rows))throw Error();
+  const usd=rows.filter(r=>r.currency==="USD");
+  if(usd.length!==1||typeof usd[0].total_balance!=="string"||!/^\d+(\.\d+)?$/.test(usd[0].total_balance))throw Error();
+  const n=Number(usd[0].total_balance);
+  if(!Number.isFinite(n))throw Error();
+  const raw=process.env.DEEPSEEK_MIN_BALANCE_USD||"3";
+  const floor=/^\d+(\.\d+)?$/.test(raw)&&Number.isFinite(Number(raw))?Number(raw):3;
+  if(n<floor)throw Error();
+  process.stdout.write(n.toFixed(2));
+ }catch(_){process.exit(5);}
+});
+')" || { echo 'claude-deepseek: balance below floor, unavailable or UNKNOWN; refusing (DEEPSEEK_MIN_BALANCE_USD defaults to 3).' >&2; exit 5; }
+
+seed_fail() { echo "claude-deepseek: seed failed: $1" >&2; exit 4; }
+sanitize_settings() {
+  node -e '
+const fs=require("fs");
+const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
+delete j.model;
+if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0 || k.toUpperCase()==="CLAUDE_CODE_AUTO_MODE_SERVER") delete j.env[k];
+fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
+' "$1" "$2"
+}
+# shellcheck source=lane-mirror-seed.sh
+[ -r "$HERE/lane-mirror-seed.sh" ] || seed_fail 'load shared mirror seed'
+. "$HERE/lane-mirror-seed.sh"
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LANE=claude-deepseek
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+LOCK="$CONFIG_DIR.seed-lock"
+TIMEOUT="${CLAUDE_LANE_SEED_LOCK_TIMEOUT:-60}"
+STALE="${CLAUDE_LANE_SEED_LOCK_STALE:-120}"
+case "$TIMEOUT" in ''|*[!0-9]*) seed_fail 'invalid seed timeout' ;; esac
+case "$STALE" in ''|*[!0-9]*) seed_fail 'invalid seed stale age' ;; esac
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_TIMEOUT=$((10#$TIMEOUT))
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_STALE=$((10#$STALE))
+# shellcheck disable=SC2034 # State consumed by the sourced mirror-seed library.
+SEED_LOCK_RELEASE_FATAL=1
+seed_after_mirror() {
+# shellcheck source=lib/git-clean.sh
+. "$HERE/lib/git-clean.sh"
+common="$(git_clean -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || seed_fail 'resolve primary checkout'
+node -e '
+const fs=require("fs"), p=process.argv[1], root=process.argv[2];
+try {
+ const j=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+ const object=v=>v&&typeof v==="object"&&!Array.isArray(v);
+ if(!object(j)||(j.projects!==undefined&&!object(j.projects)))throw Error("invalid config object");
+ j.projects=j.projects||{};
+ const project=j.projects[root]||{};
+ if(!object(project))throw Error("invalid project object");
+ if(j.hasCompletedOnboarding===true&&project.hasTrustDialogAccepted===true)process.exit(0);
+ j.hasCompletedOnboarding=true;project.hasTrustDialogAccepted=true;j.projects[root]=project;
+ const temp=p+".tmp."+process.pid;
+ fs.writeFileSync(temp,JSON.stringify(j,null,2)+"\n",{mode:0o600});fs.renameSync(temp,p);
+}catch(e){console.error("claude-deepseek: onboarding seed failed: "+e.message);process.exit(4);}
+' "$CONFIG_DIR/.claude.json" "$(dirname "$common")" || seed_fail 'onboarding and primary trust'
+}
+# DeepSeek always serializes onboarding/trust, even when the mirror is fresh.
+seed_with_lock
+command -v claude >/dev/null 2>&1 || { echo 'claude-deepseek: claude missing from PATH.' >&2; exit 2; }
+# Route the recognized alias to Flash, never the provider opus/V4 Pro alias.
+CONTEXT_WINDOW=786432
+export ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
+export ANTHROPIC_AUTH_TOKEN="$DEEPSEEK_API_KEY"
+export ANTHROPIC_API_KEY=''
+export ANTHROPIC_MODEL=sonnet
+export ANTHROPIC_DEFAULT_OPUS_MODEL='deepseek-flash[1m]'
+export ANTHROPIC_DEFAULT_SONNET_MODEL='deepseek-flash[1m]'
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-flash
+export ANTHROPIC_DEFAULT_OPUS_MODEL_NAME='DeepSeek Flash 1M'
+export ANTHROPIC_DEFAULT_SONNET_MODEL_NAME='DeepSeek Flash 1M'
+export ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME='DeepSeek Flash'
+export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-flash
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CONTEXT_WINDOW"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CONTEXT_WINDOW"
+export CLAUDE_CODE_EFFORT_LEVEL=max
+# ponytail: gateway lacks safeguard results, remove after HIMMEL-4086 verifies support.
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
+export CLAUDE_CONFIG_DIR="$CONFIG_DIR"
+echo "claude-deepseek: lane=deepseek model=$ANTHROPIC_MODEL labels=$ANTHROPIC_DEFAULT_OPUS_MODEL_NAME/$ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME balance=$balance USD (start snapshot; session cost is balance delta)" >&2
+exec claude "$@"

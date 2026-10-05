@@ -712,7 +712,7 @@ the required-environment table (HIMMEL-460).
 | pluginSet | `lean` | The only option (HIMMEL-816 default). `full` was dropped (HIMMEL-2304): its enable set didn't reflect what himmel actually runs — see §6 for the documented per-plugin manual recipe instead. |
 | lanes | `codex` \| `hermes` \| `none` (comma list) | Universal now. Default `none`. **HIMMEL-2352 (operator ruling 34, 2026-09-01): v1 ships Claude tiers as the only implementation lanes — codex and hermes are offered ONLY as cross-model review (CR) lanes for `/pr-check`, never as implementation lanes.** `ollama-local` and `copilot-cli` — the two lanes this question used to default-select — are dropped from the wizard entirely; they still exist as ordinary (now `dormant`) rows in `scripts/lanes/lanes.json`, reachable only by an operator who opts in directly with that registry's `optInEnv` (`OLLAMA_LOCAL_LANE_OK=1` / `COPILOT_CLI_LANE_OK=1`), never through himmelctl. The interactive menu carries a help line per option naming what it needs (e.g. "codex — requires the codex CLI + its own login; skip if you don't have it") — selecting either AT THE PROMPT is itself the explicit consent `--with-codex` / `--with-hermes` provide non-interactively. The `--lanes` CSV flag stays restricted to `none` only: naming `codex`/`hermes` there is still refused (so the flag never becomes a second, quieter door around that consent), and naming `ollama`/`copilot` there is refused the SAME way — one door, not two — with the refusal naming the `lanes.json` opt-in env instead of pretending a `--with-ollama` flag exists. **Without codex or hermes selected (by either door), `/pr-check`'s review panel runs Claude-only and `CR_REQUIRE_CROSS_MODEL` cannot be satisfied — the wizard discloses this at the question and the summary reflects the resulting floor (HIMMEL-2303).** |
 | alwaysOn | `yes` \| `no` | Universal now. Default `no`. Chooses the machine-hardening **checklist** over a one-line pointer — nothing is executed either way (see below). |
-| cadences | per-cadence multi-select: `pipeline`, `qmd`, `graphmap`, `codex-sweep`, `drift-fix`, `upstream-watch`, `repo-sync`, `pull-cadence` — comma list or `none` | PER-ROW gated, not whole-question vault gated (HIMMEL-2176; per-cadence HIMMEL-2302; the last four rows added HIMMEL-3068): `pipeline`/`qmd`/`graphmap` are offered only when vault≠`none`; `codex-sweep` only when the `codex` lane was selected above; `drift-fix`/`upstream-watch` carry `requires:'none'` and are ALWAYS offered (they need neither a vault nor a lane); `repo-sync` carries `requires:'platform:windows'` (HIMMEL-3086 — schtasks only, no crontab arm path) and is offered only on a Windows host; `pull-cadence` is offered only once `GOOGLE_HEALTH_REFRESH_TOKEN` is set in the primary checkout's `.env` (docs/luna/google-health-connector-setup.md) — asked only when at least one row is offered, so e.g. a vault-less, codex-less machine still gets asked (offering `drift-fix`/`upstream-watch`, plus `repo-sync` on Windows). Replaces the old binary luna-cadence question: pick WHICH recurring cadence jobs to arm now, not all-or-nothing. Enter accepts the profile-seeded recommended set (`operator` seeds `pipeline,qmd,graphmap`; every other profile seeds none). `pipeline` arms via the flags himmelctl derives from `luna.cadence.*` (see [Adopter config file](#adopter-config-file--himmelconfigjson-himmel-2176) below); every other row arms via its own script's all-default invocation (no per-adopter schedule surface yet). `luna.cadence.enabled` mirrors the `pipeline` selection for older readers. If the config document could not be saved it refuses to arm any unit, rather than leaving machine state the config cannot account for. `scripts/graphify/graph-cadence.sh` is NOT a separate row — it has no `cmd_arm` of its own; arming `graphmap` already arms it unconditionally as a fifth, standalone task (HIMMEL-2095). |
+| cadences | per-cadence multi-select: `pipeline`, `qmd`, `graphmap`, `codex-sweep`, `drift-fix`, `upstream-watch`, `doctor`, `repo-sync`, `pull-cadence` — comma list or `none` | PER-ROW gated, not whole-question vault gated (HIMMEL-2176; per-cadence HIMMEL-2302; the last four rows added HIMMEL-3068): `pipeline`/`qmd`/`graphmap` are offered only when vault≠`none`; `codex-sweep` only when the `codex` lane was selected above; `drift-fix`/`upstream-watch`/`doctor` carry `requires:'none'` and are ALWAYS offered (they need neither a vault nor a lane); `repo-sync` carries `requires:'platform:windows'` (HIMMEL-3086 — schtasks only, no crontab arm path) and is offered only on a Windows host; `pull-cadence` is offered only once `GOOGLE_HEALTH_REFRESH_TOKEN` is set in the primary checkout's `.env` (docs/luna/google-health-connector-setup.md) — asked only when at least one row is offered, so e.g. a vault-less, codex-less machine still gets asked (offering `drift-fix`/`upstream-watch`, plus `repo-sync` on Windows). Replaces the old binary luna-cadence question: pick WHICH recurring cadence jobs to arm now, not all-or-nothing. Enter accepts the profile-seeded recommended set (`operator` seeds `pipeline,qmd,graphmap`; every other profile seeds none). `pipeline` arms via the flags himmelctl derives from `luna.cadence.*` (see [Adopter config file](#adopter-config-file--himmelconfigjson-himmel-2176) below); every other row arms via its own script's all-default invocation (no per-adopter schedule surface yet). `luna.cadence.enabled` mirrors the `pipeline` selection for older readers. If the config document could not be saved it refuses to arm any unit, rather than leaving machine state the config cannot account for. `scripts/graphify/graph-cadence.sh` is NOT a separate row — it has no `cmd_arm` of its own; arming `graphmap` already arms it unconditionally as a fifth, standalone task (HIMMEL-2095). |
 | disarm cadence | `yes` \| `no` | Asked only when at least one offered cadence above was declined, naming every declined unit. Default `no`. A `yes` runs each declined unit's own `disarm` subcommand with consent (`--dry-run` shows it) to tear down any already-armed jobs; a `no` leaves them armed and the run's summary says so explicitly, per declined unit, rather than implying `off` already disarmed anything. |
 | PHI declaration | `yes` \| `no` | vault≠`none` only. Default `no`. Preceded by a printed, read-only PHI checklist (§4d). Records **only** the operator's yes/no answer at `luna.phi.declared` — himmelctl creates none of the PHI markers themselves (see §4d). |
 | secrets walk | `run` \| `skip` | vault≠`none` only. Default `skip`. Walks luna secrets interactively (instruction card + a probe per secret); himmelctl never harvests the secret value itself. HIMMEL-2305: walks only the secrets whose `feature` tag (`scripts/himmelctl/lib/secrets-manifest.json`) matches what you actually selected elsewhere in this run — vault≠`none` for luna-source credentials, telegram bridge `on` for `TELEGRAM_BOT_TOKEN`/`WHISPER_MODEL`. A feature you declined (or never asked about) is skipped, with one line naming how many secrets and why; `.env.example`'s own generated block stays the full union for every adopter, reorganized into the same per-feature sections. |
@@ -1273,9 +1273,11 @@ same PHI-tier refusal, but subtree-wide.
 qmd is a local markdown search engine (BM25 + vector + rerank). himmel's clone
 runs it as a **shared HTTP daemon** (`localhost:8181`, HIMMEL-592) auto-brought-up
 by the `qmd` plugin's SessionStart hook, so every session shares one read-only
-index. The standalone CLI installs from a **local clone of upstream
-`tobi/qmd`** (HIMMEL-3045 — previously a himmel-owned fork, `yotamleo/qmd`,
-until its carried fixes landed upstream), pinned to an immutable commit SHA
+index. The standalone CLI installs from a **local clone of the carried fork
+`yotamleo/qmd`** until tobi/qmd#1029 is fixed upstream (HIMMEL-3956: the
+launcher forwards signals to bun, upstream PR tobi/qmd#1030; HIMMEL-3982 pins
+back to `tobi/qmd`, and re-running the install re-points an existing clone's
+origin in place), pinned to an immutable commit SHA
 rather than a mutable branch (HIMMEL-911) — never `bun add -g @tobilu/qmd`
 directly, which EPERM-wedges on this project's machines (zombie `qmd mcp`
 stdio processes hold locks) and bun blocks its postinstall script
@@ -1301,6 +1303,12 @@ qmd pull
 # 3. Register collections (idempotent; skip ones you don't have).
 qmd collection add /path/to/himmel          --name himmel
 qmd collection add ~/Documents/luna         --name luna     # your luna vault
+
+# 3b. Optional: choose the embed model BEFORE the first embed. gemma is the
+#     default; Qwen3-Embedding-0.6B retrieves better but needs a build-capable
+#     host (GPU) to embed a corpus. See docs/internals/qmd-embed-model.md.
+bash scripts/luna/qmd-embed-model.sh capability
+bash scripts/luna/qmd-embed-model.sh set qwen     # only on a build-capable host
 
 # 4. Index + embed. `qmd update` ingests new/changed docs (fast); `qmd embed`
 #    builds the vector embeddings — CPU-intensive on a big vault (the luna vault
@@ -1399,7 +1407,7 @@ Plugins live at `~/.claude/plugins/`. Different install methods per plugin — r
 
 | Plugin | Source | Install method | Why |
 |--------|--------|----------------|-----|
-| `obsidian-second-brain` | `eugeniughelbur/obsidian-second-brain` | manual clone (NOT in himmel marketplace) | Daily notes, kanban, ADRs, vault operating manual |
+| `obsidian-second-brain` | himmel marketplace (sources `eugeniughelbur/obsidian-second-brain`, tag-pinned) | `claude plugin install obsidian-second-brain@himmel` after adding himmel marketplace. Never clone it into `~/.claude/skills/`: a user-scope copy ignores `enabledPlugins` and loads into every session (HIMMEL-4018) | Daily notes, kanban, ADRs, vault operating manual. Opt-in: no named profile enables it; `/profile enable` does |
 | `handover` | himmel marketplace | `/plugin install` after adding himmel marketplace | Handover doc workflows for cross-session continuity |
 | `obsidian-triage` (LUNA-3) | himmel marketplace | `/plugin install` after adding himmel marketplace | Autonomous triage of Web Clipper output: `/triage-clips` + `/synthesize-clips`. Required only if you set up the Web Clipper templates in §5a |
 | `obsidian` (Steph Ango's skills) | himmel marketplace (sources `kepano/obsidian-skills`, SHA-pinned) | `/plugin install` after adding himmel marketplace | `obsidian-markdown`, `obsidian-bases`, `json-canvas`, `obsidian-cli`, `defuddle`. `obsidian-triage` can use `obsidian-markdown` for proper OFM when editing clipped notes (recommended, not required — fallback documented in the command body) |
@@ -1599,14 +1607,16 @@ you ever want the per-turn review back.
 ### Install sequence
 
 ```bash
-# 1. obsidian-second-brain — manual clone (no marketplace); Claude Code loads
-#    user skills from ~/.claude/skills/, not ~/.claude/plugins/ (HIMMEL-2891)
-git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skills/obsidian-second-brain
-
-# 2. himmel marketplace (carries handover + obsidian-triage + claude-obsidian)
+# himmel marketplace (carries handover + obsidian-triage + claude-obsidian
+# + obsidian-second-brain)
 # inside Claude Code:
 #   /plugin marketplace add yotamleo/himmel
 #   /plugin install handover
+#
+#   # Optional — obsidian-second-brain, tag-pinned (HIMMEL-4018). Install it as
+#   # a plugin, never as a clone under ~/.claude/skills/: a user-scope copy
+#   # ignores enabledPlugins and loads into every session, bare included.
+#   /plugin install obsidian-second-brain   # = claude plugin install obsidian-second-brain@himmel
 #
 #   # Optional — Web Clipper triage stack (skip if §5a was skipped)
 #   /plugin install obsidian-triage
@@ -1617,7 +1627,7 @@ git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skil
 
 After restoring plugins, verify skills load:
 ```
-/obsidian-daily            # from obsidian-second-brain
+/obsidian-daily            # from obsidian-second-brain, once installed and enabled
 /triage-clips --dry-run    # from obsidian-triage; should exit 0 with "no Clippings/" or per-clip preview
 ```
 

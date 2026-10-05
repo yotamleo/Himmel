@@ -431,7 +431,7 @@ ledger="$git_dir/cr-critic-scores.jsonl"
 # so an unknown roster never turns silence into an unlock.
 panel_empty=$(CRITICS="$SCRIPT_DIR/critics.json" node -e '
   try { const p = JSON.parse(require("fs").readFileSync(process.env.CRITICS, "utf8")).panel;
-        console.log(Array.isArray(p) && p.length === 0 ? 1 : 0); } catch (_) { console.log(0); }' 2>/dev/null)
+        console.log(String(Array.isArray(p) && p.length === 0 ? 1 : 0)); } catch (_) { console.log("0"); }' 2>/dev/null)
 # shellcheck disable=SC2016  # $-refs below are JS inside a single-quoted node script, not shell
 verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANCH="$branch" node -e '
   const fs = require("fs"), e = process.env;
@@ -726,15 +726,15 @@ if [ -z "$verdict" ]; then
     audit "REFUSED reason=ledger-unreadable branch=$branch sha=$tip"
     exit 14
 fi
-responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).responders))' 2>/dev/null)
-non_claude_responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).nonClaudeResponders))' 2>/dev/null)
+responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).responders)))' 2>/dev/null)
+non_claude_responders=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).nonClaudeResponders)))' 2>/dev/null)
 blocking=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).blocking.join(" ")))' 2>/dev/null)
-malformed=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).malformed))' 2>/dev/null)
+malformed=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).malformed)))' 2>/dev/null)
 deferred=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).deferred||[]).join(" ")))' 2>/dev/null)
 applied_amends=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).applied||[]).join(" ")))' 2>/dev/null)
-unadjudicated_count=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).unadjudicated||[]).length))' 2>/dev/null)
+unadjudicated_count=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String((JSON.parse(s).unadjudicated||[]).length)))' 2>/dev/null)
 # HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility (see gate 3b below).
-floor_fallback_eligible=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).floorFallbackEligible?1:0))' 2>/dev/null)
+floor_fallback_eligible=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).floorFallbackEligible?1:0)))' 2>/dev/null)
 exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).exhaustedLanes||[]).join(" ")))' 2>/dev/null)
 
 # HIMMEL-3107: provenance of the context-free floor review. claude-floor-review.sh
@@ -945,7 +945,7 @@ if [ -n "$blocking" ]; then
     # the FINDING's reason, while --reason documents why the RECORD was wrong.
     # Omitting it leaves the deferral rejected for a missing reason, i.e. this
     # very hint would send the reader into a dead end.
-    echo "    scripts/cr/ledger-append.sh amend --head ${tip_short:-$tip} --id <finding-id> --set verdict=deferred --set deferred_to=<TICKET> --set reason=\"<why it is out of scope here>\" --reason \"deferred after review\"" >&2
+    echo "    scripts/cr/ledger-append.sh amend --head ${tip_short:-$tip} --id <finding-id> --set verdict=deferred --set deferred_to=<TICKET> --set fu_class=<escape|hardening|polish> --set reason=\"<why it is out of scope here>\" --reason \"deferred after review\"" >&2
     audit "REFUSED reason=blocking-findings branch=$branch sha=$tip findings=$blocking"
     exit 15
 fi
@@ -993,7 +993,7 @@ if [ "${unadjudicated_count:-0}" -gt 0 ]; then
     echo "  the WRONG ledger key and leaves the marker wedged:" >&2
     echo "    scripts/cr/ledger-append.sh amend --head ${tip_short:-$tip} --id <finding-id> --artifact <artifact-from-above> --perspective <perspective-from-above> --set verdict=<agreed-or-disproved> --reason \"<one line>\"" >&2
     echo "  For a suggestion that is real but out of scope here, defer it instead (HIMMEL-1294):" >&2
-    echo "    scripts/cr/ledger-append.sh amend --head ${tip_short:-$tip} --id <finding-id> --artifact <artifact-from-above> --perspective <perspective-from-above> --set verdict=deferred --set deferred_to=<TICKET> --reason \"<why>\"" >&2
+    echo "    scripts/cr/ledger-append.sh amend --head ${tip_short:-$tip} --id <finding-id> --artifact <artifact-from-above> --perspective <perspective-from-above> --set verdict=deferred --set deferred_to=<TICKET> --set fu_class=<escape|hardening|polish> --reason \"<why>\"" >&2
     audit "REFUSED reason=unadjudicated-findings branch=$branch sha=$tip count=$unadjudicated_count"
     exit 14
 fi

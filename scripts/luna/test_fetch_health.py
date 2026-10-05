@@ -77,6 +77,7 @@ class FetchHealthTests(unittest.TestCase):
             self.assertEqual(fetch_health.probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", env, forbidden_command).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_twitter_cli(env, forbidden_command).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_youtube(env, forbidden_http).status, "auth-or-cookie-expired")
+            self.assertIn("youtube-state-from-chrome.py --profile Default", fetch_health.probe_youtube(env, forbidden_http).reason)
             self.assertEqual(fetch_health.probe_bitbucket(env, forbidden_http).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_firecrawl(env, forbidden_http).status, "auth-or-cookie-expired")
 
@@ -197,6 +198,12 @@ class FetchHealthTests(unittest.TestCase):
             false_marker = b'<html><title>known video</title><script>ytcfg.set({"LOGGED_IN":false});</script></html>'
             self.assertEqual(fetch_health.probe_youtube({"HOME": tmp}, http_with(no_marker)).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_youtube({"HOME": tmp}, http_with(false_marker)).status, "auth-or-cookie-expired")
+            # HIMMEL-4271: the expired-state reason names the working remedy
+            # (the Chrome-cookie converter), not the Playwright login Google blocks.
+            self.assertIn(
+                "python3 scripts/luna/youtube-state-from-chrome.py --profile Default",
+                fetch_health.probe_youtube({"HOME": tmp}, http_with(no_marker)).reason,
+            )
 
     def test_github_uses_gh_api(self):
         seen = []
@@ -289,22 +296,45 @@ class FetchHealthTests(unittest.TestCase):
             self.assertEqual(loaded["BITBUCKET_API_TOKEN"], "quoted-secret")
             self.assertEqual(loaded["BITBUCKET_EMAIL"], "ops@example.com")
 
-    def test_firecrawl_uses_v2_scrape_and_validates_markdown(self):
+    def test_firecrawl_probes_free_credit_usage_not_scrape(self):
+        # HIMMEL-4335: the nightly probe must not spend a credit — it reads the
+        # free GET /v2/team/credit-usage, never POST /v2/scrape.
         seen = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            ledger = Path(tmp) / "ledger.jsonl"
 
-        def http(url, **kwargs):
-            seen["url"] = url
-            seen.update(kwargs)
-            return fetch_health.HttpResult(200, b'{"success":true,"data":{"markdown":"Example Domain"}}')
+            def http(url, **kwargs):
+                seen["url"] = url
+                seen.update(kwargs)
+                return fetch_health.HttpResult(200, b'{"success":true,"data":{"remainingCredits":109,"planCredits":1000}}')
 
-        result = fetch_health.probe_firecrawl({"FIRECRAWL_API_KEY": "secret"}, http)
-        self.assertEqual(result.status, "ok")
-        self.assertEqual(seen["url"], "https://api.firecrawl.dev/v2/scrape")
-        self.assertEqual(json.loads(seen["data"]), {"url": "https://example.com/", "formats": ["markdown"]})
+            env = {"FIRECRAWL_API_KEY": "secret", "HIMMEL_FIRECRAWL_LEDGER": str(ledger)}
+            result = fetch_health.probe_firecrawl(env, http)
+            self.assertEqual(result.status, "ok")
+            self.assertEqual(seen["url"], "https://api.firecrawl.dev/v2/team/credit-usage")
+            self.assertEqual(seen.get("method", "GET"), "GET")
+            self.assertIsNone(seen.get("data"))
+            rows = [json.loads(l) for l in ledger.read_text().splitlines()]
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["call_site"], "fetch-health")
+            self.assertEqual(rows[0]["endpoint"], "/v2/team/credit-usage")
+            self.assertEqual(rows[0]["credits"], 0)
+            self.assertEqual(rows[0]["v"], 1)
+            self.assertEqual(rows[0]["source"], "firecrawl")
+            self.assertEqual(rows[0]["kind"], "call")
+            self.assertTrue(rows[0]["host"])
+            self.assertTrue(rows[0]["ts"])
+            self.assertNotIn("secret", ledger.read_text())
+
+    def test_firecrawl_credit_usage_rejects_bad_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {"FIRECRAWL_API_KEY": "secret", "HIMMEL_FIRECRAWL_LEDGER": str(Path(tmp) / "l.jsonl")}
+            http = lambda url, **kw: fetch_health.HttpResult(200, b'{"success":false}')
+            self.assertEqual(fetch_health.probe_firecrawl(env, http).status, "auth-or-cookie-expired")
 
     def test_firecrawl_normalizes_base_url_with_v2_suffix(self):
         # HIMMEL-1468: a FIRECRAWL_BASE_URL set WITH a /v2 suffix (or a trailing
-        # slash) used to compose /v2/v2/scrape. Each variant must collapse to the
+        # slash) used to compose /v2/v2/<path>. Each variant must collapse to the
         # single canonical /v2 path.
         for base_url in (
             "https://api.firecrawl.dev/v2",
@@ -315,10 +345,29 @@ class FetchHealthTests(unittest.TestCase):
 
             def http(url, **kwargs):
                 seen.update(url=url)
-                return fetch_health.HttpResult(200, b'{"success":true,"data":{"markdown":"x"}}')
-            result = fetch_health.probe_firecrawl({"FIRECRAWL_API_KEY": "secret", "FIRECRAWL_BASE_URL": base_url}, http)
+                return fetch_health.HttpResult(200, b'{"success":true,"data":{"remainingCredits":1}}')
+            with tempfile.TemporaryDirectory() as tmp:
+                env = {"FIRECRAWL_API_KEY": "secret", "FIRECRAWL_BASE_URL": base_url, "HIMMEL_FIRECRAWL_LEDGER": str(Path(tmp) / "l.jsonl")}
+                result = fetch_health.probe_firecrawl(env, http)
             self.assertEqual(result.status, "ok", base_url)
-            self.assertEqual(seen["url"], "https://api.firecrawl.dev/v2/scrape", base_url)
+            self.assertEqual(seen["url"], "https://api.firecrawl.dev/v2/team/credit-usage", base_url)
+
+    def test_jina_probe_reads_public_page_without_a_key(self):
+        seen = {}
+
+        def http(url, **kwargs):
+            seen["url"] = url
+            seen.update(kwargs)
+            return fetch_health.HttpResult(200, b"Title: Example Domain\n\nMarkdown Content:\nExample Domain\nThis domain is for use in examples.")
+
+        result = fetch_health.probe_jina_reader({}, http)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(seen["url"], "https://r.jina.ai/https://example.com/")
+        self.assertNotIn("Authorization", seen.get("headers") or {})
+        bad = fetch_health.probe_jina_reader({}, lambda url, **kw: fetch_health.HttpResult(200, b"<html>blocked</html>"))
+        self.assertEqual(bad.status, "blocked-or-rate-limited")
+        limited = fetch_health.probe_jina_reader({}, lambda url, **kw: fetch_health.HttpResult(429, b""))
+        self.assertEqual(limited.status, "blocked-or-rate-limited")
 
     def test_redirect_handler_strips_auth_off_scope(self):
         handler = fetch_health.AuthScopedRedirectHandler({"www.reddit.com"})
@@ -357,7 +406,7 @@ class FetchHealthTests(unittest.TestCase):
                 raise RuntimeError("stub failure")
 
             results = fetch_health.run_probes(env, http=broken_http, command=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stub failure")), repo_root=Path(tmp))
-            self.assertEqual(set(results), {"reddit", "x-fxtwitter", "instagram-embed", "instagram-media", "x-media", "x-twitter-cli", "youtube-playwright", "github", "bitbucket", "firecrawl"})
+            self.assertEqual(set(results), {"reddit", "x-fxtwitter", "instagram-embed", "instagram-media", "x-media", "x-twitter-cli", "youtube-playwright", "github", "bitbucket", "firecrawl", "jina-reader"})
             self.assertTrue(all(result.status in fetch_health.STATUSES for result in results.values()))
 
     def test_probe_mode_matches_full_run_for_every_source(self):
@@ -378,7 +427,13 @@ class FetchHealthTests(unittest.TestCase):
             registry = fetch_health.build_probe_registry(env, http, command, root)
             self.assertEqual(set(registry), set(full))
             for source in registry:
-                single = fetch_health.run_single_probe(source, env, http=http, command=command, repo_root=root)
+                # HIMMEL-4306: Instagram probes share throttle + cache state, so
+                # each comparison starts from the same fresh state the full run had.
+                fresh = dict(env, HIMMEL_IG_THROTTLE_STATE=str(root / f"{source}-t.json"),
+                             HIMMEL_IG_PROBE_CACHE=str(root / f"{source}-c.json"))
+                single = fetch_health.run_single_probe(source, fresh, http=http, command=command, repo_root=root)
+                if source in fetch_health.IG_PROBE_SOURCES and full[source].status == "cooldown":
+                    continue  # an earlier Instagram probe in the same run opened the shared cooldown
                 self.assertEqual(single, full[source], source)
 
     def test_probe_unknown_source_is_a_usage_error(self):
@@ -442,7 +497,7 @@ class FetchHealthTests(unittest.TestCase):
                 "TWITTER_CT0=ct0\n",
                 encoding="utf-8",
             )
-            firecrawl_body = b'{"success":true,"data":{"markdown":"Example Domain"}}'
+            firecrawl_body = b'{"success":true,"data":{"remainingCredits":109}}'
 
             def run_probe(source):
                 completed = subprocess.CompletedProcess(["twitter"], 0, "{}", "")
@@ -454,7 +509,7 @@ class FetchHealthTests(unittest.TestCase):
                     with patch.object(fetch_health.urllib.request, "build_opener", lambda *a, **k: _StubOpener(firecrawl_body)):
                         with patch.object(fetch_health.shutil, "which", return_value="/bin/twitter"):
                             with patch.object(fetch_health.subprocess, "run", return_value=completed):
-                                with patch.dict(os.environ, {"HOME": tmp, "PATH": "/bin"}, clear=True):
+                                with patch.dict(os.environ, {"HOME": tmp, "PATH": "/bin", "HIMMEL_FIRECRAWL_LEDGER": str(root / "ledger.jsonl")}, clear=True):
                                     stdout = io.StringIO()
                                     with redirect_stdout(stdout):
                                         code = fetch_health.main(["--probe", source])
@@ -710,6 +765,204 @@ class FetchHealthTests(unittest.TestCase):
             result = fetch_health.probe_twitter_cli({"HOME": tmp, "PATH": ""}, forbidden_command)
             self.assertEqual(result.status, "auth-or-cookie-expired")
             self.assertIn("TWITTER_AUTH_TOKEN", result.reason)
+
+
+class InstagramGuardTests(unittest.TestCase):
+    """HIMMEL-4306: the Instagram probes share the throttle and cache their
+    verdict, so status/doctor runs stop hitting the operator's account."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        cookie = self.tmp / ".luna" / "cookies" / "instagram.txt"
+        cookie.parent.mkdir(parents=True)
+        cookie.write_text("cookie", encoding="utf-8")
+        os.utime(cookie, (1, 1))  # old: a re-login (newer cookie) is tested separately
+        self.cookie = cookie
+        binary = self.tmp / "bin" / "gallery-dl"
+        binary.parent.mkdir()
+        binary.write_text("#!/bin/sh\n", encoding="utf-8")
+        binary.chmod(0o755)
+        self.env = {
+            "HOME": str(self.tmp),
+            "PATH": str(binary.parent),
+            "HIMMEL_IG_THROTTLE_STATE": str(self.tmp / "throttle.json"),
+            "HIMMEL_IG_PROBE_CACHE": str(self.tmp / "probe-cache.json"),
+            "HIMMEL_IG_MIN_GAP_S": "0",
+            "HIMMEL_IG_JITTER_S": "0",
+        }
+        self.calls = 0
+
+    def command(self, returncode=0, stderr=""):
+        def run(*args, **kwargs):
+            self.calls += 1
+            return subprocess.CompletedProcess(args, returncode, "", stderr)
+        return run
+
+    def http(self, status=200, body=b'<div class="Caption">hi</div>'):
+        def get(*args, **kwargs):
+            self.calls += 1
+            return fetch_health.HttpResult(status, body)
+        return get
+
+    def probe(self, source, *, command=None, http=None):
+        return fetch_health.run_single_probe(
+            source, self.env, http=http or self.http(), command=command or self.command(), repo_root=self.tmp)
+
+    def age_cache(self, source, seconds):
+        path = Path(self.env["HIMMEL_IG_PROBE_CACHE"])
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data[source]["checked_epoch"] -= seconds
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    def test_cooldown_is_a_status(self):
+        self.assertIn("cooldown", fetch_health.STATUSES)
+
+    def test_second_media_probe_is_served_from_the_cache(self):
+        first = self.probe("instagram-media")
+        second = self.probe("instagram-media")
+        self.assertEqual(first.status, "ok")
+        self.assertEqual(second.status, "ok")
+        self.assertEqual(self.calls, 1)
+        self.assertIn("cached", second.reason)
+
+    def test_embed_probe_is_cached_too(self):
+        self.probe("instagram-embed")
+        self.probe("instagram-embed")
+        self.assertEqual(self.calls, 1)
+
+    def test_an_ok_verdict_expires_after_24h(self):
+        self.probe("instagram-media")
+        self.age_cache("instagram-media", 24 * 3600 + 60)
+        self.probe("instagram-media")
+        self.assertEqual(self.calls, 2)
+
+    def test_a_failed_verdict_is_only_cached_for_an_hour(self):
+        self.env["HIMMEL_IG_BACKOFF_BASE_S"] = "0"  # isolate the cache TTL from the throttle backoff
+        bad = self.command(returncode=1, stderr="connection reset")
+        self.assertEqual(self.probe("instagram-media", command=bad).status, "transport-fail")
+        self.probe("instagram-media", command=bad)
+        self.assertEqual(self.calls, 1)
+        self.age_cache("instagram-media", 3600 + 60)
+        self.probe("instagram-media", command=bad)
+        self.assertEqual(self.calls, 2)
+
+    def test_a_cookie_newer_than_the_cache_forces_a_fresh_probe(self):
+        self.probe("instagram-media")
+        os.utime(self.cookie, None)  # re-login: the cookie file is now newer
+        self.age_cache("instagram-media", 10)
+        self.probe("instagram-media")
+        self.assertEqual(self.calls, 2)
+
+    def test_429_starts_a_cooldown_and_later_probes_send_nothing(self):
+        r = self.probe("instagram-embed", http=self.http(429, b""))
+        self.assertEqual(r.status, "blocked-or-rate-limited")
+        self.calls = 0
+        media = self.probe("instagram-media")
+        self.assertEqual(media.status, "cooldown")
+        self.assertIn("cooldown", media.reason)
+        embed = self.probe("instagram-embed")
+        self.assertEqual(embed.status, "cooldown")
+        self.assertEqual(self.calls, 0)
+
+    def test_a_gallery_dl_challenge_starts_a_cooldown(self):
+        r = self.probe("instagram-media", command=self.command(1, "challenge_required"))
+        self.assertEqual(r.status, "blocked-or-rate-limited")
+        self.assertEqual(self.probe("instagram-embed").status, "cooldown")
+
+    def test_a_probe_never_waits_for_a_slot_it_reports_cooldown(self):
+        self.env["HIMMEL_IG_MIN_GAP_S"] = "600"
+        self.probe("instagram-embed")  # takes the slot
+        r = self.probe("instagram-media")
+        self.assertEqual(r.status, "cooldown")
+        self.assertEqual(self.calls, 1)
+
+    def test_a_cooldown_run_exits_zero_and_is_not_a_failure(self):
+        import contextlib
+        self.env["HIMMEL_IG_DAILY_CAP"] = "0"
+        with patch.dict(os.environ, self.env, clear=False), patch.object(fetch_health, "primary_repo_root", return_value=self.tmp):
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+                rc = fetch_health.main(["--probe", "instagram-media"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(buf.getvalue())["status"], "cooldown")
+
+    def test_a_failed_probe_surfaces_rc_and_a_stderr_tail(self):
+        # HIMMEL-4374: "command probe failed" hid the real error behind the cache.
+        r = self.probe("instagram-media", command=self.command(3, "[instagram][error] HttpError: '560 Server Error' for url: https://www.instagram.com/p/x/"))
+        self.assertEqual(r.status, "transport-fail")
+        self.assertIn("rc=3", r.reason)
+        self.assertIn("560 Server Error", r.reason)
+        cached = self.probe("instagram-media")
+        self.assertIn("560 Server Error", cached.reason)
+
+    def test_the_stderr_tail_never_carries_a_cookie_value(self):
+        secrets = ("SECRETSESSION0123456789abcdef", "csrfSECRET9876543210", "tok_AbCdEf0123456789XYZ")  # gitleaks:allow
+        stderr = (
+            f"error: Cookie: sessionid={secrets[0]}; csrftoken={secrets[1]}\n"
+            f"Authorization: Bearer {secrets[2]}\nsessionid: {secrets[0]} connection reset"
+        )
+        r = self.probe("instagram-media", command=self.command(1, stderr))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
+        self.assertIn("rc=1; no error line", r.reason)
+        blobs =[r.reason, Path(self.env["HIMMEL_IG_PROBE_CACHE"]).read_text(encoding="utf-8"),
+                 Path(self.env["HIMMEL_IG_THROTTLE_STATE"]).read_text(encoding="utf-8")]
+        with patch.dict(os.environ, self.env, clear=False), patch.object(fetch_health, "primary_repo_root", return_value=self.tmp):
+            buf = io.StringIO()
+            with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+                fetch_health.main(["--probe", "instagram-media"])
+        blobs.append(buf.getvalue())
+        for blob in blobs:
+            for secret in secrets:
+                self.assertNotIn(secret, blob)
+
+    def test_a_login_redirect_is_a_rejected_session_with_a_remedy(self):
+        r = self.probe("instagram-media", command=self.command(4, "[instagram][error] HTTP redirect to home page (https://www.instagram.com/)"))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
+        self.assertIn("rc=4", r.reason)
+        self.assertIn("redirect to home page", r.reason)
+        self.assertIn("Cookie-Editor", r.reason)
+        self.assertIn("~/.luna/cookies/instagram.txt", r.reason)
+
+    def test_only_a_gallery_dl_error_line_is_surfaced_never_other_stderr(self):
+        # Allowlist, not a redactor: a secret in any non-error line cannot reach the reason.
+        err = (  # gitleaks:allow
+            "bad password=\"short secret\" token='abc'\n"
+            "Cookie: a=one; sid=secret\nSet-Cookie: x=y; k=v\n"
+            "{'sessionid': 'short-secret', \"csrftoken\": \"tiny\"}\n"
+            "Authorization: Basic dXNlcjpwYXNz\n"
+        )
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertIn("rc=1; no error line", r.reason)
+        for leaked in ("short", "abc", "one", "secret", "k=v", "x=y", "tiny", "dXNlcjpwYXNz", "Basic"):
+            self.assertNotIn(leaked, r.reason)
+
+    def test_an_error_line_never_carries_a_url_part(self):
+        err = ("[instagram][error] HttpError: '401' for url: https://user:SECRETUSERINFO@x/y?sessionid=SECRETQUERY&a=b#SECRETFRAG"  # gitleaks:allow
+               " and http://z/p")
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertIn("HttpError: '401'", r.reason)
+        for leaked in ("SECRETUSERINFO", "SECRETQUERY", "SECRETFRAG", "http"):
+            self.assertNotIn(leaked, r.reason)
+
+    def test_an_unrecognised_error_message_is_withheld(self):
+        # Only known-safe message shapes are surfaced; free text could carry a credential.
+        err = "[instagram][error] login failed sessionid=SECRETSESSION0123 password hunter2 csrf SECRETCSRF"  # gitleaks:allow
+        r = self.probe("instagram-media", command=self.command(1, err))
+        self.assertIn("rc=1; error message withheld", r.reason)
+        for leaked in ("SECRETSESSION0123", "hunter2", "SECRETCSRF", "login failed"):
+            self.assertNotIn(leaked, r.reason)
+
+    def test_the_error_line_is_bounded(self):
+        r = self.probe("instagram-media", command=self.command(1, "[instagram][error] " + "x" * 5000))
+        self.assertLess(len(r.reason), 400)
+
+    def test_other_sources_are_not_throttled_or_cached(self):
+        for _ in range(2):
+            fetch_health.run_single_probe("x-fxtwitter", self.env, http=self.http(200, b'{"code":200,"tweet":{"id":"20"}}'),
+                                          command=self.command(), repo_root=self.tmp)
+        self.assertEqual(self.calls, 2)
 
 
 if __name__ == "__main__":

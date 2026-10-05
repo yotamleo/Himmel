@@ -42,6 +42,8 @@
 #   console_context_leg_env_unset_names      -- prints, one per line, every var a
 #                                                leg sets on itself that must never
 #                                                reach a console it arms (HIMMEL-3568)
+#   console_context_launch_seam_env_names    -- prints the subset of that list that
+#                                                only shapes a launch (HIMMEL-4118)
 
 console_context_valid() {
     case "$1" in
@@ -100,29 +102,27 @@ console_context_autocompact() {
 
 # console_context_default <is_console 0|1> <console_context_env value>
 #
-# Only for the no-explicit-value path -- a caller with an explicit
-# --context/positional value never calls this. HIMMEL-2975: every arm
-# defaults to `standard` now (previously a console-class arm defaulted to
-# `1m`, the largest single measured saving in the cost program going
-# unrealized). CONSOLE_CONTEXT=1m in the launching shell is the one
-# remaining way a console-class arm opts back into 1m without an explicit
-# value -- non-console callers pass is_console=0 and the env is ignored,
-# same as before this file existed.
+# Only for the no-explicit-value path. HIMMEL-3884 exempts consoles from
+# HIMMEL-2975's standard default: consoles default to 1m, with
+# CONSOLE_CONTEXT=standard opting down. Non-console arms remain standard
+# and ignore the environment. A valid env choice is explicit provenance.
 # shellcheck disable=SC2034  # output-contract globals, read by sourcing callers (arm-resume.sh, headed-arm.sh, console.sh)
 console_context_default() {
-    if [ "$1" -eq 1 ] && [ "$2" = "1m" ]; then
+    CONSOLE_CONTEXT_RESOLVED_MODE="standard"
+    CONSOLE_CONTEXT_RESOLVED_SOURCE="default"
+    if [ "$1" -eq 1 ]; then
         CONSOLE_CONTEXT_RESOLVED_MODE="1m"
-        CONSOLE_CONTEXT_RESOLVED_SOURCE="console-context-env"
-    else
-        CONSOLE_CONTEXT_RESOLVED_MODE="standard"
-        CONSOLE_CONTEXT_RESOLVED_SOURCE="default"
+        if console_context_valid "$2"; then
+            CONSOLE_CONTEXT_RESOLVED_MODE="$2"
+            CONSOLE_CONTEXT_RESOLVED_SOURCE="console-context-env"
+        fi
     fi
 }
 
 # console_context_source_label <explicit_given 0|1> -- prints the source word
 # both arming paths log and record: `explicit` when the mode was named
-# (--context / the launcher's positional) OR opted into with CONSOLE_CONTEXT=1m
-# (a 1m arm is always that opt-in, the mechanism is not lost), else `default`.
+# (--context / the launcher's positional) OR selected with CONSOLE_CONTEXT
+# (1m or standard), else `default`.
 # Spec 2973 sec 2.4 keys on `context=1m (explicit)`. HIMMEL-3282: arm-resume.sh
 # used to spell this from its own prose while headed-arm.sh spelled `(explicit)`,
 # so a reader keying on the spec attributed one path and silently skipped the
@@ -191,9 +191,13 @@ console_context_leg_env_unset_names() {
         HIMMEL_CONSOLE_RELAY \
         CLAUDE_CODE_EFFORT_LEVEL \
         CLAUDEX_LANE_OK \
+        LEG_LANE \
+        OPENROUTER_MODEL \
         LEG_PROFILE_SETTINGS \
         LEG_PROFILE_PREFACE \
         LEG_PROFILE_MCP_CONFIG \
+        LEG_PROFILE_NO_SETTING_SOURCES \
+        HIMMEL_LEG_PROFILE \
         LEG_CLAUDE_BIN \
         HIMMEL_LEAN_LEG \
         LEG_EFFORT \
@@ -201,5 +205,25 @@ console_context_leg_env_unset_names() {
         HEADED_ARM_REQUIRED_AUTOCOMPACT \
         HEADED_ARM_LAUNCHER \
         HEADED_ARM_RECORDER \
+        HEADED_ARM_LAUNCHER_ENV
+}
+
+# console_context_launch_seam_env_names -- prints, one per line, the names in
+# the list above that only choose HOW a later headed-arm launch builds its
+# claude argv (the shim, its binary and its profile flags), never who the
+# session is or which guards it runs under. arm-resume.sh clears exactly these
+# in its `at` job body (HIMMEL-4118 F2): `at` snapshots the submitter's env, so
+# an arm made from inside a consult would otherwise hand the resumed session
+# LEG_PROFILE_NO_SETTING_SOURCES and friends. The rest of the list stays live
+# there on purpose: HIMMEL_CONSOLE_LEG turns leg-only guard hooks ON and
+# HANDOVER_DIR names the root, so clearing them would widen, not narrow.
+console_context_launch_seam_env_names() {
+    printf '%s\n' \
+        LEG_PROFILE_SETTINGS \
+        LEG_PROFILE_PREFACE \
+        LEG_PROFILE_MCP_CONFIG \
+        LEG_PROFILE_NO_SETTING_SOURCES \
+        LEG_CLAUDE_BIN \
+        HEADED_ARM_LAUNCHER \
         HEADED_ARM_LAUNCHER_ENV
 }

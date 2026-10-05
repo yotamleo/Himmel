@@ -1206,7 +1206,7 @@ test("cold runFn: resolves the telegram profile settings + mcp allowlist for eve
   expect(capturedSettings).toBeDefined();
   const enabled = JSON.parse(capturedSettings!).enabledPlugins;
   expect(enabled["obsidian-triage@himmel"]).toBe(true);
-  expect(enabled["claude-obsidian@himmel"]).toBe(true);
+  expect(enabled["claude-obsidian@himmel"]).toBe(false);   // HIMMEL-4020: unused by the bridge, dropped
   expect(enabled["pr-review-toolkit-himmel@himmel"]).toBe(true);
   expect(enabled["telegram-himmel@himmel"]).toBe(false);   // self-referential MCP server, excluded
   expect(enabled["luna-correlate@himmel"]).toBe(false);    // unrelated, excluded

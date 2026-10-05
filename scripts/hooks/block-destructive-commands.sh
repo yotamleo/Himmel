@@ -86,7 +86,7 @@ esac
 #     MORE conservative than old's incidental behavior, not merely
 #     equivalent to it, which is the correct direction for a security
 #     fence on an input shape that should never occur.
-if ! result=$(jq -r 'if (. == null or . == false) then error("bad-shape") else ((try (.tool_input.command // .tool_input.cmd) catch null) as $c | if ($c != null and ($c|type) != "string") then error("non-string-command") else (((try (.tool_name) catch null) // "" | tostring) + "\n" + ($c // "")) end) end' <<<"$input" 2>/dev/null); then
+if ! result=$(jq -r 'if (. == null or . == false) then error("bad-shape") else ((try (.tool_input | if has("command") and .command != null then .command else .cmd end) catch null) as $c | if ($c != null and ($c|type) != "string") then error("non-string-command") else (((try (.tool_name) catch null) // "" | tostring) + "\n" + ($c // "")) end) end' <<<"$input" 2>/dev/null); then
     echo "block-destructive-commands: malformed/truncated JSON on stdin - failing closed" >&2
     exit 2
 fi
@@ -108,8 +108,25 @@ esac
 # anchor on `$` (end-of-string), and a herestring's synthetic trailing newline
 # would fold to an extra trailing ';' that a `$`-anchored pattern does not expect.
 cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
+# HIMMEL-3991: the shell drops a backslash-newline pair before it splits words,
+# but the fold above turns that newline into `;`, so `git reset \<NL>--hard`
+# reads as two commands. cmd_lc_join drops each pair (`\` + LF, or `\` + CRLF
+# for Windows jq text mode) BEFORE the fold. It is a SECOND scan source, never
+# a replacement: a backslash inside a comment or single quotes is not a
+# continuation (`ls # x \<NL>rm -rf d` still runs the rm), so cmd_lc keeps
+# every match it had and the join only ever adds denies. A typed `\;` (find's
+# `-exec rm {} \;`) is not a line break and stays put.
+_bsnl=$'\\\n'
+_bscrlf=$'\\\r\n'
+cmd_lc_join="$cmd_lc"
+if [[ $cmd == *"$_bsnl"* || $cmd == *"$_bscrlf"* ]]; then
+    cmd_lc_join=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]' '[:lower:]')
+    cmd_lc_join="${cmd_lc_join//"$_bscrlf"/}"
+    cmd_lc_join="${cmd_lc_join//"$_bsnl"/}"
+    cmd_lc_join="${cmd_lc_join//[$'\r\n']/;}"
+fi
 
-# contains ERE -> true iff $cmd_lc matches ERE.
+# contains ERE -> true iff $cmd_lc (or its joined twin cmd_lc_join) matches ERE.
 #
 # HIMMEL-1741: this was `printf '%s' "$cmd_lc" | grep -Eq "$1"` — a fork PAIR
 # (subshell + grep) per call, and the deny floor below calls it 18 times, so
@@ -130,7 +147,7 @@ cmd_lc=$(printf '%s' "$cmd" | LC_ALL=C tr '[:upper:]\n\r' '[:lower:];;')
 # unchanged. Equivalence is pinned per-rule in the paired test suite.
 contains() {
     local re="$1"
-    [[ $cmd_lc =~ $re ]]
+    [[ $cmd_lc =~ $re ]] || [[ $cmd_lc_join =~ $re ]]
 }
 
 deny() {
@@ -215,7 +232,7 @@ esac
 # This bounded grammar is intentionally NOT an arms race: further wrapper
 # permutations belong to the HIMMEL-912 shared-tokenizer follow-up, and this
 # CC-hook + the auto-mode classifier remain the outer defense layers. Mirrors
-# parity_guard.py's _CMDPOS_DESTRUCTIVE (shared contract).
+# parity_guard.py's _cmdpos_destructive (shared contract).
 # Assignment VALUE is quote-aware (CR r5): FOO='a b' / FOO="a b" would
 # otherwise break prefix consumption at the space and drop the verb out of
 # command position. Factored into ASSIGN so the env-prefix (CR r6) reuses it.
@@ -234,6 +251,68 @@ if ! { [ -r "$SCRIPT_DIR/../guardrails/lib.sh" ] && . "$SCRIPT_DIR/../guardrails
     exit 2
 fi
 guard_cmdpos_grammar
+# HIMMEL-3984: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
+# --exec/--exec-batch) runs is at command position too.
+# The flag is matched wherever it sits, with no check that find or fd launched
+# it: it is also the only catch for an rm that a wrapper CMDPOS does not model
+# runs (`watch -x rm`, `stdbuf -o0 -ok rm`, `strace -x rm`). Over-deny only.
+# HIMMEL-4134: an ALLOWLIST is the one exception. A command that is a single
+# echo, printf or : with plain words only (no separator, redirect, quote,
+# backslash, expansion, glob or brace) runs nothing, so `echo x -exec rm -rf y`
+# is text. Add a command word only with a reason it can never execute one.
+# ponytail: the bracket classes, `=~` patterns and the HIMMEL-3983/3984/4146
+# additions are run on Linux bash 5 only (no macOS bash 3.2 here, Git Bash
+# parked, HIMMEL-4102), upgrade path HIMMEL-4134 item 3: run this suite on a
+# macOS station under /bin/bash.
+_rmpos_flag='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${CMDPOS_PFX}"
+_rmpos_text='^[[:space:]]*(echo|printf|:)([[:space:]][^];&|<>(){}`$\"*?[!#~'"'"']*)?$'
+if [[ $cmd_lc =~ $_rmpos_text ]]; then
+    RMPOS="(${CMDPOS})"
+else
+    RMPOS="(${CMDPOS}|${_rmpos_flag})"
+fi
+# HIMMEL-3984: `find -delete` is a recursive delete of its own. The gap is
+# unbounded, like RM_RECURSIVE_PAT's, so a quoted `;` cannot hide the flag.
+# HIMMEL-4255: the mass-delete family (find -delete, find/fd running rm,
+# xargs running rm) also sees through the launchers CMDPOS leaves out:
+# busybox, command [-p|--|-v ...], eval, and a shell's -c (bash/sh/dash/zsh/
+# ksh/mksh/ash/fish, own flags first: `bash -o pipefail -c`). The quoted
+# payload is read as text, so `bash -c 'find d -delete'` matches like the bare
+# form. Over-deny only: `command -v find; ls -delete` denies.
+# parity_guard.py's _X_WRAPS is the twin.
+# ponytail: this widening covers the mass-delete family only, not the
+# CMDPOS atoms (`bash -c 'rm -rf d'` still passes this hook, the Python twin
+# denies it), upgrade path HIMMEL-912's word-level tokenizer.
+# Every head here takes an optional .exe, and xargs.exe joins lib.sh's xargs
+# (which has no .exe), with the same flags.
+_xwrap='(busybox(\.exe)?|command(\.exe)?([[:space:]]+-[-[:alnum:]]*)*|eval(\.exe)?|xargs\.exe([[:space:]]+(-[adeilnps]'"${CMDVAL}"'|--[admp][a-z-]*'"${CMDVAL}"'|'"${CMDFLG}"'))*|((ba|da|k|mk|z|a)?sh|fish)(\.exe)?([[:space:]]+'"${CMDFLG}"'('"${CMDVAL}"')?)*[[:space:]]+-[[:alnum:]]*c[[:alnum:]]*)[[:space:]]+'
+MASS_PFX="${CMDPOS_PFX}(${_xwrap}${CMDPOS_PFX})*"
+MASS_CMDPOS="${CMDPOS}(${_xwrap}${CMDPOS_PFX})*"
+# HIMMEL-4255: the old single pattern (CMDPOS find .* -delete) was quadratic,
+# about 22s on a 100 KB command of `; find x` words. _find_delete cuts the
+# text at its LAST -delete flag with a glob (linear) and looks for a
+# command-position find in what is before it, which is the same set: any find
+# before any -delete is before the last one.
+FIND_VERB_PAT="${MASS_CMDPOS}"'find(\.exe)?[[:space:]]'
+_find_delete() {
+    local s=$1 pre
+    if [[ $s == *[[:space:]]-delete ]]; then
+        pre=${s%-delete}
+    else
+        pre=${s%[[:space:]]-delete[![:alnum:]_-]*}
+        [ "${#pre}" -lt "${#s}" ] || return 1
+        pre="$pre "
+    fi
+    [[ $pre =~ $FIND_VERB_PAT ]]
+}
+# HIMMEL-4255: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
+# --exec/--exec-batch) runs deletes every match, so it denies with or without
+# -r. Like _rmpos_flag, the flag is not tied to find or fd: over-deny only
+# (`grep -x rm f` denies), and the echo/printf allowlist skips it.
+FIND_RM_PAT='[[:space:]]-(exec|execdir|ok|okdir|x|-exec|-exec-batch)[[:space:]]+'"${MASS_PFX}"'rm(\.exe)?([^[:alnum:]_.-]|$)'
+# HIMMEL-4255: so does an rm that xargs runs (`ls | xargs -0 rm`), with
+# xargs's own options and any launcher between them.
+XARGS_RM_PAT="${MASS_CMDPOS}"'xargs(\.exe)?([[:space:]]+(-[adeilnps]'"${CMDVAL}"'|--[admp][a-z-]*'"${CMDVAL}"'|'"${CMDFLG}"'))*[[:space:]]+'"${MASS_PFX}"'rm(\.exe)?([^[:alnum:]_.-]|$)'
 # HIMMEL-2834: the three rm checks below run against rm_scrub, not cmd_lc.
 # The old anchor was a bare word boundary `(^|[^[:alnum:]_.-])`, which matches
 # the literal ANYWHERE in the command string, not just where a command is
@@ -292,11 +371,97 @@ guard_cmdpos_grammar
 # map `\r`->`\n` then upper->lower before rm_scrub folds the (now all-`\n`)
 # newlines to `;` - lowering and separator-folding commute, so both paths
 # produce the same byte string when there is no heredoc to strip.
+#
+# HIMMEL-4126: the per-line check below misses a quote opened on an EARLIER
+# line - the opener is then quoted text and the "body" lines run. Before
+# stripping, _hd_carried_clean walks everything before the opener and returns
+# 0 only when it ends outside any quote or comment. It models ', ", \, and a
+# word-initial # well enough to be exact on plain text, and returns 1 (do not
+# strip, scan everything) on whatever it does not model: a backtick, $'...',
+# ${ or $( inside "...", a # after < > or ), an earlier heredoc whose body is
+# data (any <<, or an @@ mask other than a here-string's <@@), and a lone CR
+# in $cmd (bash reads it as a character; here it is already a newline). It
+# only ever disqualifies, so it can never strip more than before.
+# HIMMEL-4146: an unquoted ${, $(( or $[ is skipped to its closer only when
+# it closes before any quote, backslash, $, backtick, # or newline (every
+# character the N state acts on, so the skip never walks past one: zsh reads
+# `$((true)#)` as a subshell plus a comment); one left open (or holding any of
+# those) returns 1, as does a $[ inside "...".
+_hd_carried_clean() {
+    local s=$1 i=0 n st=N c p=$'\n' o cl d
+    s="${s//<<</}"
+    s="${s//<@@/}"
+    case $s in *'<<'*|*'@@'*|*'`'*) return 1 ;; esac
+    [[ $s == *[\'\"\$]* ]] || return 0
+    [ -z "$_hd_lone_cr" ] || return 1
+    n=${#s}
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        case $st in
+            N)
+                case $c in
+                    # A \-newline is removed, so what came before it still
+                    # decides whether a following # starts a comment.
+                    \\) [ "${s:i+1:1}" = $'\n' ] && c=$p; i=$((i + 1)) ;;
+                    \') [ "$p" = '$' ] && return 1; st=S ;;
+                    \") st=D ;;
+                    '$')
+                        o=${s:i+1:1}
+                        case $o in
+                            '{'*) cl='}' ;;
+                            '['*) cl=']' ;;
+                            '('*) [ "${s:i+2:1}" = '(' ] && cl=')' || o= ;;
+                            *) o= ;;
+                        esac
+                        if [ -n "$o" ]; then
+                            d=0
+                            i=$((i + 1))
+                            while [ "$i" -lt "$n" ]; do
+                                c=${s:i:1}
+                                case $c in
+                                    "$o") d=$((d + 1)) ;;
+                                    "$cl") d=$((d - 1)); [ "$d" -eq 0 ] && break ;;
+                                    [\'\"\\\$\`\#]|$'\n') return 1 ;;
+                                esac
+                                i=$((i + 1))
+                            done
+                            [ "$d" -eq 0 ] || return 1
+                        fi
+                        ;;
+                    \#)
+                        case $p in
+                            [[:space:]]|';'|'&'|'|'|'(') st=C ;;
+                            '<'|'>'|')') return 1 ;;
+                        esac
+                        ;;
+                esac
+                ;;
+            S) [ "$c" = "'" ] && st=N ;;
+            D)
+                case $c in
+                    \\) i=$((i + 1)) ;;
+                    \") st=N ;;
+                    '$') case ${s:i+1:1} in '('|'{'|'[') return 1 ;; esac ;;
+                esac
+                ;;
+            C) [ "$c" = $'\n' ] && st=N ;;
+        esac
+        p=$c
+        i=$((i + 1))
+    done
+    [ "$st" = N ]
+}
 if [[ $cmd_lc != *'<<'* ]]; then
     rm_scrub="$cmd_lc"
 else
 rm_scrub_raw=$(printf '%s' "$cmd" | LC_ALL=C tr '\r' '\n' | LC_ALL=C tr '[:upper:]' '[:lower:]')
 if [[ $rm_scrub_raw == *'<<'* ]]; then
+    _hd_lone_cr=
+    _hd_nocrlf="${cmd//$'\r\n'/}"
+    [[ $_hd_nocrlf == *$'\r'* ]] && _hd_lone_cr=1
+    # Strips rm_scrub_raw in place. With _hd_check_carried set it also applies
+    # the HIMMEL-4126 disqualifier and sets _hd_carried_hit when that fires.
+    _hd_strip() {
     _hd_budget=8
     while [ "$_hd_budget" -gt 0 ] && [[ $rm_scrub_raw == *'<<'* ]]; do
         _hd_budget=$((_hd_budget - 1))
@@ -310,6 +475,9 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             break
         fi
         _hd_prefix="${rm_scrub_raw%%"$_hd_opener"*}"
+        # rm_scrub_raw is exactly prefix + opener + rest, so the rest is taken
+        # by offset: `${rm_scrub_raw#"$_hd_prefix"...}` matched the prefix as a
+        # pattern, quadratic in its length (seconds at 90 KB; J1664 note 2).
         # A third `<` right before this match means the "<<" matched here is
         # actually the tail of a `<<<` here-string operator, not a heredoc
         # redirect. Bash never reads a body for `<<<` - its whole "value" is
@@ -319,7 +487,7 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         # equal the here-string's word (HIMMEL-3029). Disqualify with the same
         # mask-and-continue mechanism as the mid-quote/comment cases below.
         if [[ $_hd_prefix == *'<' ]]; then
-            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw:${#_hd_prefix}+${#_hd_opener}}"
             continue
         fi
         # An opener sitting inside an OPEN quote on its own physical line is
@@ -352,11 +520,32 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
         _hd_sq="${_hd_line_prefix//[^\']/}"
         _hd_dq="${_hd_line_prefix//[^\"]/}"
         _hd_hash="${_hd_line_prefix//[^#]/}"
-        if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )) || [[ -n $_hd_hash ]]; then
-            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+        if (( ${#_hd_sq} % 2 == 1 || ${#_hd_dq} % 2 == 1 )) || [[ -n $_hd_hash ]] ||
+            { [ -n "$_hd_check_carried" ] && ! _hd_carried_clean "$_hd_prefix" && _hd_carried_hit=1; }; then
+            rm_scrub_raw="${_hd_prefix}@@${_hd_opener:2}${rm_scrub_raw:${#_hd_prefix}+${#_hd_opener}}"
             continue
         fi
-        _hd_tail="${rm_scrub_raw#"$_hd_prefix""$_hd_opener"}"
+        _hd_tail="${rm_scrub_raw:${#_hd_prefix}+${#_hd_opener}}"
+        # HIMMEL-3991 (judge J1643): bash joins a backslash-newline on the
+        # opener line before it reads the body, so `cat <<'EOF' \<NL>/dev/null`
+        # starts its body a line later. Join first, or the strip below takes
+        # `/dev/null` as the body and ends on the wrong line, hiding what
+        # follows. Only an odd trailing backslash run continues the line; `\\`
+        # is an escaped one. Bash reads `\`+CR as an escaped CR, not a
+        # continuation, and `\r` is already `\n` here, so with any `\`+CR in
+        # the command a join is unsafe: fail closed (judge J1643b).
+        while [[ $_hd_tail == *$'\n'* ]]; do
+            _hd_l="${_hd_tail%%$'\n'*}"
+            _hd_bs="${_hd_l##*[!\\]}"
+            (( ${#_hd_bs} % 2 == 1 )) || break
+            # Inside a comment or quote a trailing backslash may be no
+            # continuation; rather than model that, strip nothing more and
+            # scan the rest as-is (fail closed).
+            [[ $_hd_l == *[\#\'\"\`]* ]] && break 2
+            [[ $cmd == *$'\\\r'* ]] && break 2
+            _hd_rest="${_hd_tail#*$'\n'}"
+            _hd_tail="${_hd_l%\\}${_hd_rest}"
+        done
         if [[ $_hd_tail != *$'\n'* ]]; then
             break
         fi
@@ -383,13 +572,25 @@ if [[ $rm_scrub_raw == *'<<'* ]]; then
             break
         fi
     done
+    }
+    # J1664: the disqualifier masks an opener main stripped, and a later
+    # heredoc can then take lines main scanned. When it fired, also scan
+    # main's strip of the same text, so the head never allows what main
+    # refused. The `;` line keeps the two copies apart through the join.
+    _hd_in="$rm_scrub_raw" _hd_check_carried=1 _hd_carried_hit=
+    _hd_strip
+    if [ -n "$_hd_carried_hit" ]; then
+        _hd_head="$rm_scrub_raw" rm_scrub_raw="$_hd_in" _hd_check_carried=
+        _hd_strip
+        rm_scrub_raw="${_hd_head}"$'\n;\n'"${rm_scrub_raw}"
+    fi
 fi
 rm_scrub="${rm_scrub_raw//$'\n'/;}"
 fi
 # Separator before the flag tolerates a real space OR a lowercased ${IFS}
 # token (a common word-split bypass), and the flag itself tolerates one
 # leading quote char - both `-rf` and `"-rf"`/`'-rf'` trip it (HIMMEL-851 U2/U3).
-RM_R_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})['\''"]?-[[:alnum:]_]*r'
+RM_R_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})['\''"]?-[[:alnum:]_]*r'
 if [[ $rm_scrub =~ $RM_R_PAT ]]; then
     deny "recursive rm"
 fi
@@ -422,10 +623,74 @@ fi
 # `rm -f x $(ls --reverse)` and `rm -- --rfile` all deny again) plus a few of
 # its later false-DENY-avoidance rounds (comment-vs-mid-word-# among them) -
 # the false-DENY relief is deferred to HIMMEL-3636, not re-fixed here.
-RM_RECURSIVE_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$).*--r[a-z-]*([^[:alnum:]_-]|$)'
+RM_RECURSIVE_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$).*--r[a-z-]*([^[:alnum:]_-]|$)'
 if [[ $rm_scrub =~ $RM_RECURSIVE_PAT ]]; then
     deny "recursive rm"
 fi
+# HIMMEL-3650: the literal `-r`/`--r` scans above never see a flag the shell
+# only assembles at parse time (`rm -"r" d`, `rm -f"r" d`, `rm "--"recursive d`,
+# `rm -\r d`, `rm -$'r' d`, `command rm -r d`). Normalise instead of adding
+# spellings: strip every quote and backslash (the shell would drop them) and a
+# `command` wrapper, then run the same two flag scans on the result. A `$`
+# glued to a quote (`$'-r'`, `$"-r"`) is dropped with it, so a word the quoting
+# starts (`rm $'-r' d`) normalises to `-r`; a `$` the shell cannot resolve
+# (`rm -$x`) stays in an option word and denies. An ANSI-C string holding a
+# backslash (`$'\x2dr'`, `$'\055r'`) is unresolvable and denies outright.
+# Over-deny only: `rm -- -r` (a file literally named -r) and
+# `rm "my -r file"` deny - the word-level fix is HIMMEL-912.
+# HIMMEL-3991: rm_scrub has the continuation newline folded to `;`, so
+# `rm \<NL>-"r" d` ends the rm segment before the quoted flag. Run the scans
+# below on a joined copy too (see cmd_lc_join). With a heredoc, the copy is
+# joined after the body strip, where `\r` is already `\n`, so a CRLF
+# continuation arrives there as `\`+LF+LF and is dropped as that pair.
+rm_join="$rm_scrub"
+if [[ $cmd_lc_join != "$cmd_lc" ]]; then
+    if [[ $cmd_lc != *'<<'* ]]; then
+        rm_join="$cmd_lc_join"
+    else
+        rm_join="$rm_scrub_raw"
+        [[ $cmd == *"$_bscrlf"* ]] && rm_join="${rm_join//"$_bsnl"$'\n'/}"
+        rm_join="${rm_join//"$_bsnl"/}"
+        rm_join="${rm_join//$'\n'/;}"
+    fi
+fi
+_rm_srcs=("$rm_scrub")
+[[ $rm_join != "$rm_scrub" ]] && _rm_srcs+=("$rm_join")
+_sq="'"
+RM_ANSIC_ESC_PAT="(^|[^[:alnum:]_.-])rm(\\.exe)?([^|;&]*)\\\$${_sq}[^${_sq}]*\\\\"
+RM_OPT_DOLLAR_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-][^|;&]*)?([[:space:]]|\$\{ifs\})-[^[:space:]|;&]*\$'
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_ANSIC_ESC_PAT ]]; then
+    deny "recursive rm (ANSI-C escape in rm argument)"
+fi
+rm_norm="${_rm_src//\$[\"\']/}"
+rm_norm="${rm_norm//[\"\'\\]/}"
+rm_norm="${rm_norm//$'\t'/ }"
+while [[ $rm_norm == *'  '* ]]; do rm_norm="${rm_norm//  / }"; done
+# `command` plus any option run (`-p`, `--`, `-p --`) before rm: drop the wrapper.
+_cmd_pat='command( -[-[:alnum:]]*)* rm'
+_cmd_n=8
+while (( _cmd_n-- > 0 )) && [[ $rm_norm =~ $_cmd_pat ]]; do
+    rm_norm="${rm_norm/"${BASH_REMATCH[0]}"/rm}"
+done
+if [[ $rm_norm =~ $RM_R_PAT ]] || [[ $rm_norm =~ $RM_RECURSIVE_PAT ]] || [[ $rm_norm =~ $RM_OPT_DOLLAR_PAT ]]; then
+    deny "recursive rm (quote/escape-normalised)"
+fi
+# HIMMEL-4158: rm_norm splits a quoted wrapper value (`nice -n '1 0' find`)
+# into two words, so also read the text with its quotes kept.
+if _find_delete "$rm_norm" || _find_delete "$_rm_src"; then
+    deny "recursive delete (find -delete)"
+fi
+if [[ ! $cmd_lc =~ $_rmpos_text ]] && { [[ $rm_norm =~ $FIND_RM_PAT ]] || [[ $_rm_src =~ $FIND_RM_PAT ]]; }; then
+    deny "mass delete (find/fd running rm)"
+fi
+# The glob is a cheap pre-check (the pattern needs both words in this order,
+# and rm_norm only drops characters, so it holds every word _rm_src does):
+# CMDPOS is slow on long `((` runs, HIMMEL-4321.
+if [[ $rm_norm == *xargs*rm* ]] && { [[ $rm_norm =~ $XARGS_RM_PAT ]] || [[ $_rm_src =~ $XARGS_RM_PAT ]]; }; then
+    deny "mass delete (xargs rm)"
+fi
+done
 # HIMMEL-2610 J1267R R1: the quote/comment/`--`-terminator scan above has no
 # model of backslash escaping, so an escaped char can fake any of its
 # boundaries - an escaped space can pose as the real space around a `--`
@@ -435,19 +700,24 @@ fi
 # extend the scan to model every escape shape (whack-a-mole across the rounds
 # above), fail closed: a backslash anywhere between `rm` and a `--r...` flag
 # in the same command segment is denied outright.
-RM_RECURSIVE_ESC_PAT="${CMDPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
-if [[ $rm_scrub =~ $RM_RECURSIVE_ESC_PAT ]]; then
+RM_RECURSIVE_ESC_PAT="${RMPOS}"'rm(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*\\[^|;&]*--r[a-z-]*([^[:alnum:]_-]|$)'
+# Like every rm scan, this runs on both the folded and the joined text (HIMMEL-3991).
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_RECURSIVE_ESC_PAT ]]; then
     deny "recursive rm (escaped)"
 fi
+done
 # Backslash-newline continuation: newlines are already folded to ';' above, so
 # `rm \<newline>-rf` becomes `rm \;-rf` here - the literal backslash before the
 # folded separator is the tell (HIMMEL-851 U3). `;+` (not a single `;`): on
 # Windows, jq's text-mode stdout turns the JSON-decoded `\n` into `\r\n`, so
 # ONE real newline folds to TWO semicolons here - tolerate either.
-RM_CONT_PAT="${CMDPOS}"'rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'
-if [[ $rm_scrub =~ $RM_CONT_PAT ]]; then
+RM_CONT_PAT="${RMPOS}"'rm(\.exe)?[[:space:]]*\\[[:space:]]*;+[[:space:]]*-[[:alnum:]_]*r'
+for _rm_src in "${_rm_srcs[@]}"; do
+if [[ $_rm_src =~ $RM_CONT_PAT ]]; then
     deny "recursive rm (line continuation)"
 fi
+done
 # /s is bound to the switch (space/another switch/end), not a path prefix -
 # `rd /scripts` must not false-trip on the "/s" substring (HIMMEL-851 U1).
 if contains '(^|[^[:alnum:]_.-])(del|erase|rd|rmdir)(\.exe)?([^[:alnum:]_.-]|$)[^|;&]*/s([^[:alnum:]_.-]|$)'; then
@@ -779,7 +1049,7 @@ if contains '(^|[^[:alnum:]_.-])git(\.exe)?[[:space:]]+push([^[:alnum:]_.-]|$)';
                 deny "force push"
             fi
         fi
-    done <<< "${cmd_lc//[;|&]/$'\n'}"
+    done <<< "${cmd_lc//[;|&]/$'\n'}"$'\n'"${cmd_lc_join//[;|&]/$'\n'}"
 fi
 if contains '(^|[^[:alnum:]_.-])git(\.exe)?[[:space:]]+reset[[:space:]]+--hard([^[:alnum:]_-]|$)'; then
     deny "git reset --hard"

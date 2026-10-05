@@ -8,6 +8,50 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.68] — 2026-10-05
+
+### Fixed
+- `scripts/upgrade.sh`: the vault-deletion resolver now asks `git merge-file`
+  for 31-character markers and requires a complete open/base/separator/close
+  sequence per hunk. Manual text such as a setext `=======` underline or a
+  documented conflict example is no longer mistaken for a marker, so vault text
+  is not dropped as a deletion; a malformed hunk falls back to the
+  `.template-merge` sidecar (HIMMEL-4386).
+
+## [0.4.67] — 2026-10-04
+
+### Changed
+- `scripts/upgrade.sh`: a `_CLAUDE.md` section the vault deliberately deleted
+  stays deleted. The upgrade resolves the deletion once (reporting any template
+  change it drops) and advances the base, so the next upgrade is clean instead
+  of re-conflicting. A hunk where the vault kept text still goes to the
+  `.template-merge` sidecar.
+- `_CLAUDE.md`: "Repo conventions" now says single-writer vaults skip the
+  PR/worktree bullets (HIMMEL-4380).
+
+## [0.4.66] — 2026-10-04
+
+### Removed
+- `.pre-commit-config.yaml`: the `conventional-commit-msg` hook and its script
+  `scripts/hooks/check-commit-msg.sh`. The hook ran with `pass_filenames: false`,
+  so it never saw a commit message and validated nothing; turning it on would
+  reject the vault's own automated commits (obsidian-git, pipeline subjects).
+  The conventional format stays a convention. `/luna-upgrade` overwrites the
+  config; an already-installed vault keeps an unreferenced
+  `scripts/hooks/check-commit-msg.sh` that can be deleted by hand. The
+  `commit-msg` git shim stays and is harmless with no commit-msg-stage hook
+  (HIMMEL-3642).
+
+## [0.4.64] — 2026-10-02
+
+### Fixed
+- `.gitleaks.toml`: allowlist an anchored 40-hex commit SHA and the exact
+  literal `runClaudexSharedDispatch`, both false positives that stalled the
+  autosync commit (HIMMEL-4087).
+- `.pre-commit-config.yaml`: `check-json` skips `handovers/**/verdicts/`, and
+  the `shellcheck` exclude covers `specs/plan/<KEY>/tools/`, so a fresh vault no
+  longer stalls on judge evidence or plan tooling (HIMMEL-4087).
+
 ## [0.4.63] — 2026-09-29
 
 ### Fixed

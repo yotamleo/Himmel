@@ -1104,8 +1104,8 @@ export function hasReadOnlyFloor(cwd: string): boolean {
   return false;
 }
 // HIMMEL-2961: the bridge's own lean plugin profile — see plugin-profiles.json's
-// "telegram" entry for the full enable/mcpServers rationale (obsidian-triage +
-// claude-obsidian cover the Telegram content workload; telegram-himmel and
+// "telegram" entry for the full enable/mcpServers rationale (obsidian-triage
+// covers the Telegram content workload; telegram-himmel and
 // luna-correlate are deliberately excluded; qmd is the sole mcpServers entry).
 const TELEGRAM_PROFILE = "telegram";
 
@@ -1120,9 +1120,10 @@ const TELEGRAM_PROFILE = "telegram";
 // cache only grows on a real on-disk change, never per-request — and every
 // function (loadRegistry/validateRegistry/mcpServersForProfile/
 // collectMcpServerDefs) comes from the SAME fresh import, so they can never
-// drift out of sync with each other. plugin-profiles.mjs's only imports are
-// node:fs/node:path/node:url/node:os (no local files), so busting on its own
-// mtime alone is sufficient — there is no local import graph to combine.
+// drift out of sync with each other. plugin-profiles.mjs's only STATIC imports are
+// node:* builtins (HIMMEL-4038: skill-listing.mjs/skill-cost.mjs load lazily,
+// only for a caller passing opts.skillEntries, which this loader never does), so
+// busting on its own mtime alone is sufficient — there is no local import graph to combine.
 //
 // A `?v=<mtime>` query-string on the specifier does NOT bust Bun's dynamic
 // import() cache (measured: two imports of the same path differing only by

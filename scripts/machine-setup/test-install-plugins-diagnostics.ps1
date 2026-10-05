@@ -81,7 +81,7 @@ function Set-Stub {
     Set-Content -Path (Join-Path $StubDir 'claude.cmd') -Value $lines
 }
 
-$Pwsh = (Get-Command pwsh).Source
+$Pwsh = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 $SavedPath = $env:PATH
 $SavedConfigDir = $env:CLAUDE_CONFIG_DIR
 

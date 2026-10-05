@@ -10,6 +10,14 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+// HIMMEL-4038: skill-listing.mjs / skill-cost.mjs are imported lazily, only by a
+// caller that opts in via opts.skillEntries. The telegram poller's cachebust loader
+// copies THIS file alone into a tmp dir (scripts/telegram/poller.ts), so a static
+// local import would break every poller load.
+let listingLib;
+export async function loadListingLib() {
+  return (listingLib ??= await import('./skill-listing.mjs'));
+}
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REGISTRY = process.env.PLUGIN_PROFILES_REGISTRY || join(SCRIPT_DIR, 'plugin-profiles.json');
@@ -68,7 +76,7 @@ const GATE_ANCHOR_LITERAL = 'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-g
 // so this literal carries no ':*' tail at all.
 const GATE_ANCHOR_LITERAL_PR_CHECK_CONTEXT = 'Bash(bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh")';
 const GATE_ANCHOR_LITERALS = new Set([GATE_ANCHOR_LITERAL, GATE_ANCHOR_LITERAL_PR_CHECK_CONTEXT]);
-const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
+const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'leg-e2e', 'lane-review', 'lane-content', 'console-relay']);
 
 function validateGateAllow(errors, rules) {
   if (rules === undefined) return; // older custom registries do not opt in
@@ -250,6 +258,16 @@ function validateProfileSpec(errors, name, spec, catalogSet, floorSet) {
     const mcpOk = Array.isArray(spec.mcpServers) && spec.mcpServers.every((s) => typeof s === 'string' && s.length > 0);
     if (!mcpOk) errors.push(`profile "${name}" mcpServers must be an array of non-empty strings`);
   }
+  // HIMMEL-4021: legacy registries default to standard / 200000. A higher
+  // ceiling requires an explicit 1m profile; lower ceilings await Q8 evidence.
+  if (spec.contextMode !== undefined && !['standard', '1m'].includes(spec.contextMode)) {
+    errors.push(`profile "${name}" contextMode must be standard or 1m`);
+  }
+  if (spec.autocompact !== undefined && (!Number.isSafeInteger(spec.autocompact)
+    || spec.autocompact < 200000 || spec.autocompact > 1000000
+    || (spec.contextMode !== '1m' && spec.autocompact !== 200000))) {
+    errors.push(`profile "${name}" autocompact must be an integer from 200000 to 1000000; only contextMode 1m may exceed 200000`);
+  }
   // contextBudget (HIMMEL-2189) — the first-turn token ceiling the measured
   // probe asserts against, so it is REQUIRED on every non-operator profile
   // (a missing budget would let a lane's context footprint grow unnoticed).
@@ -372,6 +390,7 @@ export function validateRegistry(registry) {
 // skips step 1: it resolves to floor-only-plus-overlay so a dispatch can
 // compose a one-off surface purely from --add-plugins with no registry entry.
 export function resolveProfile(registry, name, opts = {}) {
+  if (String(name).includes(',')) return composeProfiles(registry, name, opts);
   const profiles = registry.profiles ?? {};
   // Own-property test, NOT `name in profiles` — `in` walks the prototype chain,
   // so a --profile value colliding with an Object.prototype member (constructor,
@@ -437,9 +456,63 @@ export function resolveProfile(registry, name, opts = {}) {
         if (rule && !allow.includes(rule)) allow.push(rule);
       }
     }
-    return { enabledPlugins, permissions: { allow } };
+    return { enabledPlugins, permissions: { allow }, ...listingSettings(registry, [name], enabledPlugins, opts) };
   }
-  return { enabledPlugins };
+  return { enabledPlugins, ...listingSettings(registry, [name], enabledPlugins, opts) };
+}
+
+// HIMMEL-4021: sibling output, never extra Claude settings keys. Resolve the
+// names through the same composition gate, then take the largest declared cap.
+export function contextForProfile(registry, name) {
+  const errors = validateRegistry(registry);
+  if (errors.length) throw new Error(`plugin-profiles: registry invalid:\n  - ${errors.join('\n  - ')}`);
+  resolveProfile(registry, name);
+  const specs = name.split(',').map((member) => registry.profiles[member]);
+  return {
+    contextMode: specs.some((spec) => spec?.contextMode === '1m') ? '1m' : 'standard',
+    autocompact: Math.max(...specs.map((spec) => spec?.autocompact ?? 200000)),
+  };
+}
+
+// HIMMEL-4014: profiles that cannot be members of a `--profile a,b` list: operator
+// injects nothing, bare skips base, and the role profiles carry guard semantics, so
+// none of them is additive. Shared with the launcher's --consult refusal.
+export const NON_ADDITIVE_PROFILES = ['operator', 'bare', 'console', 'console-relay', 'console-judge'];
+
+// HIMMEL-4014: a comma list resolves to the UNION of its members. enabledPlugins is
+// an OR (a member's drop never switches off another member's enable), the floor
+// stays on (every member forces it), permissions.allow is the de-duplicated union,
+// and the skill listing runs ONCE over the union with the union of required ids.
+function composeProfiles(registry, list, opts) {
+  const members = list.split(',');
+  if (members.some((m) => !/^[A-Za-z0-9._-]+$/.test(m)) || new Set(members).size !== members.length) {
+    throw new Error(`plugin-profiles: malformed profile list "${list}" (names joined by single commas, no spaces, empty or repeated members)`);
+  }
+  const resolved = members.map((m) => {
+    const r = resolveProfile(registry, m, { ...opts, skillEntries: undefined });
+    if (NON_ADDITIVE_PROFILES.includes(m)) {
+      throw new Error(`plugin-profiles: profile "${m}" cannot be composed in a profile list (${NON_ADDITIVE_PROFILES.join(', ')} are not additive)`);
+    }
+    return r;
+  });
+  const enabledPlugins = {};
+  for (const r of resolved) for (const [id, on] of Object.entries(r.enabledPlugins)) enabledPlugins[id] = enabledPlugins[id] || on;
+  const allow = [...new Set(resolved.flatMap((r) => r.permissions?.allow ?? []))];
+  return { enabledPlugins, ...(allow.length ? { permissions: { allow } } : {}), ...listingSettings(registry, members, enabledPlugins, opts) };
+}
+
+// HIMMEL-4038: opts.skillEntries (a scanSkillCosts().entries scan) opts a caller
+// in to skillOverrides + skillListingBudgetFraction (opts.configDir, HIMMEL-4060:
+// also scan that config dir's skills-dir command trees for the reserve); absent = unchanged output,
+// so the pure registry goldens stay byte-identical.
+// HIMMEL-4116: the budget fraction is sized against the profile's own window (a 1m
+// contextMode is 1_000_000), not the skill-listing default of 200k.
+function listingSettings(registry, names, enabledPlugins, opts) {
+  if (!opts.skillEntries) return {};
+  const enabledIds = Object.entries(enabledPlugins).filter(([, on]) => on).map(([id]) => id);
+  if (!listingLib) throw new Error('plugin-profiles: opts.skillEntries needs `await loadListingLib()` first');
+  const window = names.some((n) => registry.profiles[n]?.contextMode === '1m') ? 1_000_000 : undefined;
+  return listingLib.skillListingSettings({ entries: opts.skillEntries, window, configDir: opts.configDir, cwd: opts.cwd, enabledIds, requiredIds: [...new Set(names.flatMap((n) => listingLib.requiredIdsFor(n)))] });
 }
 
 // HIMMEL-3567/HIMMEL-3572: the permission matcher compares literal command
@@ -546,6 +619,21 @@ export function resolveProfileByName(name, opts = {}, path = REGISTRY) {
 // distinct from an explicit [], which means "strip everything"). Mirrors
 // resolveProfile's own-property fail-closed check on an unknown name.
 export function mcpServersForProfile(registry, name) {
+  if (String(name).includes(',')) {
+    const members = name.split(',');
+    if (members.some((m) => !/^[A-Za-z0-9._-]+$/.test(m)) || new Set(members).size !== members.length) {
+      throw new Error(`plugin-profiles: malformed profile list "${name}" (names joined by single commas, no spaces, empty or repeated members)`);
+    }
+    const bad =members.find((m) => NON_ADDITIVE_PROFILES.includes(m));
+    if (bad !== undefined) {
+      throw new Error(`plugin-profiles: profile "${bad}" cannot be composed in a profile list (${NON_ADDITIVE_PROFILES.join(', ')} are not additive)`);
+    }
+    const lists = members.map((m) => mcpServersForProfile(registry, m));
+    // A member with no allowlist means "no strip": it must never be narrowed by
+    // another member's list (same rule as enabledPlugins: a member never turns
+    // off another), so the union is no allowlist at all.
+    return lists.some((l) => l === undefined) ? undefined : [...new Set(lists.flat())];
+  }
   const profiles = registry.profiles ?? {};
   if (!Object.hasOwn(profiles, name)) {
     throw new Error(`plugin-profiles: unknown profile "${name}" (known: ${Object.keys(profiles).join(', ')})`);
@@ -579,7 +667,7 @@ function refuseIfPluginRootRef(name, def) {
   }
 }
 
-export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marketplaceDir }) {
+export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marketplaceDir, mcpCatalog = {} }) {
   if (names.length === 0) return { mcpServers: {} };
   const readDefs = (path) => {
     if (!existsSync(path)) return {};
@@ -596,10 +684,14 @@ export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marke
     else {
       const manifestPath = join(marketplaceDir, name, '.mcp.json');
       const manifest = readDefs(manifestPath);
-      if (!Object.hasOwn(manifest, name)) {
+      // HIMMEL-4400: last tier, the registry mcpCatalog — for a server whose upstream
+      // plugin ships a flat-form .mcp.json that only exists in the plugin cache.
+      if (!Object.hasOwn(manifest, name) && Object.hasOwn(mcpCatalog, name)) {
+        def = mcpCatalog[name];
+      } else if (!Object.hasOwn(manifest, name)) {
         throw new Error(`plugin-profiles: mcpServers entry "${name}" is not defined in ${homeConfigPath}, ${repoMcpPath}, or ${manifestPath}`);
       }
-      def = manifest[name];
+      else def = manifest[name];
     }
     refuseIfPluginRootRef(name, def);
     mcpServers[name] = def;
@@ -628,6 +720,11 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     }
     const name = argv[0];
     if (!name) die(2, 'usage: plugin-profiles.mjs <profile> [--add-plugins a@m,b@m] | --mcp-servers | --mcp-config | --list | --validate');
+    if (argv[1] === '--context') {
+      if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
+      process.stdout.write(JSON.stringify(contextForProfile(loadRegistry(), name)) + '\n');
+      process.exit(0);
+    }
     if (argv[1] === '--mcp-servers') {
       if (argv.length > 2) die(2, `plugin-profiles: unknown argument "${argv[2]}"`);
       const registry = loadRegistry();
@@ -646,6 +743,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
         homeConfigPath: join(homedir(), '.claude.json'),
         repoMcpPath: join(process.cwd(), '.mcp.json'),
         marketplaceDir: join(SCRIPT_DIR, '..', '..', 'marketplace', 'plugins'),
+        mcpCatalog: registry.mcpCatalog,
       });
       process.stdout.write(JSON.stringify(cfg) + '\n');
       process.exit(0);
@@ -675,7 +773,12 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
     // HIMMEL-3567: the anchor a leg types its merge from — the primary checkout
     // behind $HIMMEL_REPO (or behind this script), never a worktree.
     const anchor = primaryCheckout(process.env.HIMMEL_REPO || SCRIPT_DIR);
-    const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined });
+    // HIMMEL-4038: the skill scan feeds skillOverrides + the listing budget fraction.
+    await loadListingLib();
+    const { scanSkillCosts } = await import('./skill-cost.mjs');
+    const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude');
+    const skillEntries = scanSkillCosts({ cwd: process.cwd(), configDir }).entries;
+    const settings = resolveProfileByName(name, { addPlugins, installed, anchor: anchor ?? undefined, skillEntries, configDir, cwd: process.cwd() });
     if (settings === null) process.exit(0); // operator: nothing to inject
     process.stdout.write(JSON.stringify(settings) + '\n');
   } catch (e) {

@@ -2,13 +2,15 @@
 // HIMMEL-1040 — resolver invariants for the named plugin-profile registry.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, existsSync } from 'node:fs';
 import { makeTmpDir } from '../../lib/test-tmpdir.mjs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { homedir } from 'node:os';
 import { resolveProfile, validateRegistry, parseAddPlugins, loadRegistry, readEnabledPluginIds, resolveProfileByName, mcpServersForProfile, collectMcpServerDefs } from '../plugin-profiles.mjs';
 import * as PP from '../plugin-profiles.mjs';
+import { ROLE_REQUIRES } from '../role-requires.mjs';
 
 const REG = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin-profiles.json'), 'utf8'));
 const FLOOR = REG.floor;
@@ -116,6 +118,8 @@ for (const name of ['operator', 'user', 'bare']) {
       // the design profile.
       'handover@himmel', 'himmel-ops@himmel', 'qmd@himmel', 'pr-review-toolkit-himmel@himmel',
       'lean-skills@himmel',
+      // HIMMEL-4018: the operator's interactive profile works the vault.
+      'obsidian-second-brain@himmel',
     ];
     const expected = name === 'operator' ? null : {
       enabledPlugins: Object.fromEntries(REG.catalog.map((id) => [id, on.includes(id)])),
@@ -321,6 +325,14 @@ test('lane-content adds obsidian on top of the impl floor', () => {
   assert.equal(p['pr-review-toolkit-himmel@himmel'], true);
   // still lean on dev-authoring
   assert.equal(p['skill-creator@claude-plugins-official'], false);
+});
+
+test('telegram drops claude-obsidian but keeps the plugins the bridge actually calls (HIMMEL-4020)', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'telegram');
+  assert.equal(p['claude-obsidian@himmel'], false);
+  assert.equal(p['obsidian-triage@himmel'], true);
+  assert.equal(p['pr-review-toolkit-himmel@himmel'], true);
+  assert.equal(p['telegram-himmel@himmel'], false);
 });
 
 test('per-dispatch overlay enables a plugin over the base profile', () => {
@@ -567,6 +579,170 @@ test('design profile enables plannotator-effective-html on top of the base floor
   assert.equal(p['lean-skills@himmel'], true, 'base still applies to design');
   assert.equal(p['pr-review-toolkit-himmel@himmel'], true, 'base still applies to design');
   assert.equal(REG.profiles.design.contextBudget, 50000);
+});
+
+test('design profile enables the full design pack (HIMMEL-4012)', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'design', { installed: [] });
+  for (const id of ['frontend-design@claude-plugins-official', 'ui-ux-pro-max@himmel', 'impeccable@himmel']) {
+    assert.equal(p[id], true, `${id} must be enabled for design`);
+  }
+  for (const name of ['user', 'leg-impl', 'lane-impl']) {
+    const q = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
+    assert.notEqual(q['impeccable@himmel'], true, `${name} must not enable impeccable`);
+  }
+});
+
+// HIMMEL-4018: obsidian-second-brain was a user-scope skill that loaded in every
+// session. As a plugin it is catalogued (so every other profile resolves it
+// false) and enabled only where the vault is worked: the operator's interactive
+// `user` profile, vault-writing `lane-content` legs and the `telegram` bridge
+// (run.ts files attachments with it). Lean legs and the console never load it.
+const OSB_PROFILES = ['user', 'lane-content', 'telegram'];
+test('obsidian-second-brain@himmel is enabled exactly in the vault profiles (HIMMEL-4018)', () => {
+  const id = 'obsidian-second-brain@himmel';
+  assert.ok(REG.catalog.includes(id));
+  for (const [name, def] of Object.entries(REG.profiles)) {
+    if (def === null) continue; // operator: everything installed
+    const p = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
+    assert.equal(p[id], OSB_PROFILES.includes(name), `${name}: ${id} enabled must be ${OSB_PROFILES.includes(name)}`);
+  }
+  for (const name of ['bare', 'leg-impl', 'console']) {
+    assert.equal(resolveProfile(REG, name, { installed: [] }).enabledPlugins[id], false, `${name} must not enable ${id}`);
+  }
+});
+
+// HIMMEL-4012 PR2b: the design core plus the add-on kit profiles. The core is
+// the always-with-design set; every add-on stacks on base only (never on the
+// core), so an unproven manifest-less shape in an add-on cannot break
+// `--profile design`.
+const DESIGN_CORE = ['plannotator-effective-html@himmel', 'frontend-design@claude-plugins-official',
+  'ui-ux-pro-max@himmel', 'impeccable@himmel', 'taste-skill-core@himmel', 'shadcn-mcp@himmel', 'builder-visual@himmel',
+  'context7@claude-plugins-official'];
+const DESIGN_ADDONS = {
+  'design-motion': ['emilkowalski-skills@himmel', 'animejs-skills@himmel', 'gsap-skills@himmel',
+    'lottie-motion-design@himmel', 'motion-lexicon@himmel', 'playground@claude-plugins-official'],
+  'design-3d': ['threejs-skills@himmel'],
+  'design-imagegen': ['taste-skill-core@himmel', 'ai-image-prompts@himmel'],
+  'design-a11y': ['platform-design-skills@himmel'],
+  'design-diagram': ['diagram-design@himmel', 'builder-visual@himmel'],
+  'design-slides': ['frontend-slides@himmel'],
+  'design-reference': ['taste-skill-core@himmel', 'design-dna@himmel', 'anydesign@himmel', 'anthropic-design-skills@himmel'],
+  'design-trial': ['hallmark@himmel'],
+};
+
+test('design profile enables exactly the 8-member core on top of base (HIMMEL-4012 PR2b)', () => {
+  assert.deepEqual([...REG.profiles.design.enable].sort(), [...DESIGN_CORE].sort());
+});
+
+test('each design add-on profile enables its set on base, never the design core (HIMMEL-4012 PR2b)', () => {
+  for (const [name, ids] of Object.entries(DESIGN_ADDONS)) {
+    assert.ok(REG.profiles[name], `profile ${name} missing`);
+    assert.deepEqual([...REG.profiles[name].enable].sort(), [...ids].sort(), `${name} members`);
+    const { enabledPlugins: p } = resolveProfile(REG, name, { installed: [] });
+    for (const id of ids) assert.equal(p[id], true, `${name} must enable ${id}`);
+    for (const id of DESIGN_CORE.filter((c) => !ids.includes(c))) assert.notEqual(p[id], true, `${name} must not stack the design core (${id})`);
+    assert.equal(p['lean-skills@himmel'], true, `${name} inherits base`);
+  }
+});
+
+test('no add-on id leaks into the design core and the superseded ui-ux-pro-max id is gone (HIMMEL-4012 PR2b)', () => {
+  const addonIds = Object.values(DESIGN_ADDONS).flat().filter((i) => i !== 'playground@claude-plugins-official' && i !== 'taste-skill-core@himmel' && i !== 'builder-visual@himmel'); // taste-skill-core is deliberately in the core AND the imagegen/reference add-ons (HIMMEL-4067)
+  for (const id of addonIds) assert.ok(!REG.profiles.design.enable.includes(id), `${id} must stay out of the design core`);
+  assert.ok(!REG.catalog.includes('ui-ux-pro-max@ui-ux-pro-max-skill'), 'old ui-ux-pro-max id replaced by the pinned himmel entry');
+});
+
+test('every design kit himmel id is in the catalog, enabledPlugins:false and onDemandPlugins of the template (HIMMEL-4012 PR2b)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const tmpl = JSON.parse(readFileSync(join(REPO_ROOT, 'docs', 'setup', 'settings-template.json'), 'utf8'));
+  const ids = [...DESIGN_CORE, ...Object.values(DESIGN_ADDONS).flat()].filter((i) => i.endsWith('@himmel'));
+  for (const id of ids) {
+    assert.ok(REG.catalog.includes(id), `${id} missing from catalog`);
+    assert.equal(tmpl.enabledPlugins[id], false, `${id} must be enabledPlugins:false in the template`);
+    assert.ok(Object.hasOwn(tmpl.onDemandPlugins, id), `${id} must be an onDemandPlugins key (install-plugins installs from it)`);
+  }
+});
+
+// HIMMEL-4067: upstream ships a plugin.json for these, so strict:false + a marketplace
+// skills list is a manifest conflict (the plugin loads nothing), and the upstream default
+// skills/ dir loads in full anyway, so a subset split never restricted anything.
+test('ui-ux-pro-max and taste-skill-core are strict:true with no skills list; the taste split entries are gone (HIMMEL-4067)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const mp = JSON.parse(readFileSync(join(REPO_ROOT, 'marketplace', '.claude-plugin', 'marketplace.json'), 'utf8'));
+  const byName = new Map(mp.plugins.map((x) => [x.name, x]));
+  for (const name of ['ui-ux-pro-max', 'taste-skill-core']) {
+    assert.equal(byName.get(name)?.strict, true, `${name}: strict:true`);
+    assert.ok(!('skills' in byName.get(name)), `${name}: no marketplace skills list beside an upstream plugin.json`);
+  }
+  for (const name of ['taste-skill-imagegen', 'taste-skill-styles']) assert.ok(!byName.has(name), `${name} dropped`);
+  assert.ok(!JSON.stringify(REG).includes('taste-skill-imagegen') && !JSON.stringify(REG).includes('taste-skill-styles'), 'no profile references a dropped taste entry');
+});
+
+// HIMMEL-4068: the old form of this test demanded an explicit skills list on every strict:false entry.
+// That belief was wrong: Claude Code always loads a plugin's upstream default skills/ dir in full, so a
+// marketplace subset list restricts nothing (no-op when upstream has no plugin.json, a 'conflicting
+// manifests' load failure when it has one). The only list that does work is ['./'], which designates a
+// repo whose root is itself a SKILL.md (no skills/ dir).
+test('marketplace kit entries are pinned; a skills list is only the root-skill form ./ (HIMMEL-4012 PR2b, HIMMEL-4068)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const mp = JSON.parse(readFileSync(join(REPO_ROOT, 'marketplace', '.claude-plugin', 'marketplace.json'), 'utf8'));
+  const byName = new Map(mp.plugins.map((x) => [x.name, x]));
+  const kit = [...DESIGN_CORE, ...Object.values(DESIGN_ADDONS).flat()].filter((i) => i.endsWith('@himmel')).map((i) => i.split('@')[0]);
+  for (const name of kit) {
+    const e = byName.get(name);
+    assert.ok(e, `${name} missing from marketplace.json`);
+    if (typeof e.source === 'string') continue; // himmel-owned local plugin (shadcn-mcp)
+    assert.match(e.source.url, /^https:\/\/github\.com\/[^/]+\/[^/]+\.git$/, `${name}: explicit HTTPS git url`);
+    assert.ok(/^[0-9a-f]{40}$/.test(e.source.sha ?? '') || typeof e.source.ref === 'string', `${name}: pinned by full sha or release tag`);
+    if ('skills' in e) {
+      assert.equal(e.strict, false, `${name}: a skills list beside strict:true is meaningless`);
+      assert.deepEqual(e.skills, ['./'], `${name}: a skills subset list is a no-op or a manifest conflict; only the root-skill ./ form works`);
+    }
+  }
+  for (const name of ['gsap-skills', 'builder-visual']) {
+    assert.equal(byName.get(name)?.strict, true, `${name}: upstream ships a plugin.json, so strict:true`);
+  }
+});
+
+// HIMMEL-4012 role-coverage table: what each profile's ROLE requires, so a
+// profile that ships without its role's tools fails here instead of passing a
+// test that merely pins whatever the profile happens to contain (the HIMMEL-3064
+// design profile shipped with one plugin and its test pinned exactly that one).
+// The table lives in role-requires.mjs; profile-context-probe.mjs checks the same
+// ids against a live init event.
+
+test('every shipped profile declares its role requirements and resolves them (HIMMEL-4012)', () => {
+  const shipped = Object.keys(REG.profiles).filter((n) => REG.profiles[n] !== null);
+  assert.deepEqual([...shipped].sort(), Object.keys(ROLE_REQUIRES).sort(), 'a profile with no ROLE_REQUIRES row is untested');
+  for (const name of shipped) {
+    const { enabledPlugins: p } = resolveProfile(REG, name, { installed: [] });
+    for (const id of ROLE_REQUIRES[name]) assert.equal(p[id], true, `${name} must enable ${id}`);
+  }
+});
+
+test('every himmel-marketplace catalog id exists in the himmel marketplace (HIMMEL-4012)', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const mp = JSON.parse(readFileSync(join(REPO_ROOT, 'marketplace', '.claude-plugin', 'marketplace.json'), 'utf8'));
+  const names = new Set(mp.plugins.map((x) => x.name));
+  for (const id of REG.catalog.filter((i) => i.endsWith('@himmel'))) {
+    assert.ok(names.has(id.split('@')[0]), `${id} is not in marketplace/.claude-plugin/marketplace.json`);
+  }
+});
+
+test('every official catalog id is installable: local-path sourced in the live marketplace snapshot (HIMMEL-4012)', (t) => {
+  const snap = join(homedir(), '.claude', 'plugins', 'marketplaces', 'claude-plugins-official', '.claude-plugin', 'marketplace.json');
+  if (!existsSync(snap)) return t.skip('no claude-plugins-official snapshot on this machine');
+  const byName = new Map(JSON.parse(readFileSync(snap, 'utf8')).plugins.map((x) => [x.name, x]));
+  for (const id of REG.catalog.filter((i) => i.endsWith('@claude-plugins-official'))) {
+    const entry = byName.get(id.split('@')[0]);
+    assert.ok(entry, `${id} is not in the official marketplace`);
+    assert.equal(typeof entry.source, 'string', `${id} is url-sourced upstream (no install path - /plugin lists it as failed to load)`);
+  }
+});
+
+test('catalog carries no url-sourced official id that has no install path (HIMMEL-4012)', () => {
+  for (const id of ['atlassian', 'atomic-agents', 'chrome-devtools-mcp', 'firecrawl', 'huggingface-skills', 'vercel']) {
+    assert.ok(!REG.catalog.includes(`${id}@claude-plugins-official`), `${id} dropped from catalog (failed to load)`);
+  }
 });
 
 test('settings-template enabledPlugins mirrors the registry `user` profile (HIMMEL-1044 wiring)', () => {
@@ -1290,4 +1466,81 @@ test('HIMMEL-1033: the atlassian guard detects a profile that enables it (contro
   const bad = structuredClone(REG);
   bad.profiles.__probe = { enable: [ATLASSIAN] };
   assert.deepEqual(noProfileEnablesAtlassian(bad), ['__probe']);
+});
+
+// HIMMEL-4024: the opt-in code kit. `code` (LSPs + code-simplifier, 0-150 listing tokens) and
+// `code-ui` (playwright MCP, the one meaningful delta) each stack on base only, so they compose
+// per task: `--profile leg-impl,code`. No profile enables them by default.
+const CODE_KIT = {
+  code: ['typescript-lsp@claude-plugins-official', 'pyright-lsp@claude-plugins-official', 'code-simplifier@claude-plugins-official'],
+  'code-ui': ['playwright@claude-plugins-official'],
+};
+
+test('HIMMEL-4024: each code kit profile enables its set on base and nothing else', () => {
+  for (const [name, ids] of Object.entries(CODE_KIT)) {
+    assert.ok(REG.profiles[name], `profile ${name} missing`);
+    assert.deepEqual([...REG.profiles[name].enable].sort(), [...ids].sort(), `${name} members`);
+    const { enabledPlugins: p } = resolveProfile(REG, name, { installed: [] });
+    for (const id of ids) assert.equal(p[id], true, `${name} must enable ${id}`);
+    assert.equal(p['lean-skills@himmel'], true, `${name} inherits base`);
+    assert.equal(REG.profiles[name].contextMode, 'standard');
+  }
+});
+
+test('HIMMEL-4024: no non-kit profile enables a code kit plugin; the kit composes with leg-impl', () => {
+  const kitIds = Object.values(CODE_KIT).flat();
+  for (const [name, def] of Object.entries(REG.profiles)) {
+    if (def === null || name in CODE_KIT) continue;
+    const p = resolveProfile(REG, name, { installed: [] }).enabledPlugins;
+    for (const id of kitIds) assert.notEqual(p[id], true, `${name} must not enable ${id}`);
+  }
+  const both = resolveProfile(REG, 'leg-impl,code,code-ui', { installed: [] }).enabledPlugins;
+  for (const id of kitIds) assert.equal(both[id], true, id);
+  assert.equal(both['pr-review-toolkit-himmel@himmel'], true);
+});
+
+test('HIMMEL-4024: code kit CLIs (ast-grep, shfmt, bats) have drift rows, a catalog entry and an install step', () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const up = JSON.parse(readFileSync(join(root, 'scripts', 'upstreams.json'), 'utf8'));
+  const cat = readFileSync(join(root, 'docs', 'tooling-catalog.md'), 'utf8');
+  const byName = new Map(up.entries.map((e) => [e.name, e]));
+  // The nightly bump rewrites synced_base and the install pin together, so assert they agree, not a literal.
+  const astGrep = byName.get('ast-grep');
+  assert.match(astGrep?.synced_base ?? '', /^\d+\.\d+\.\d+$/);
+  assert.ok(readFileSync(join(root, astGrep?.version_pin?.file ?? 'missing'), 'utf8').includes(`AST_GREP_VERSION:-${astGrep.synced_base}`), 'install pin matches synced_base');
+  for (const n of ['shfmt', 'bats']) assert.ok(byName.has(n), `${n} drift row`);
+  for (const n of ['ast-grep', 'shfmt', 'bats', '`code`', '`code-ui`']) assert.ok(cat.includes(n), `catalog mentions ${n}`);
+  assert.ok(existsSync(join(root, 'scripts', 'machine-setup', 'install-code-kit-clis.sh')), 'install step');
+});
+
+// HIMMEL-4400: a headed e2e leg needs the Playwright MCP under --strict-mcp-config. The
+// plugin's own .mcp.json is flat-form and lives in the plugin cache, so the server def is
+// resolved from the registry mcpCatalog, the tier after home / repo / marketplace manifest.
+test('leg-e2e carries the Playwright MCP in its composed --mcp-config (HIMMEL-4400)', () => {
+  assert.deepEqual(mcpServersForProfile(REG, 'leg-e2e'), ['qmd', 'playwright']);
+  const dir = makeTmpDir('pp-e2e-');
+  const marketplaceDir = join(dir, 'marketplace', 'plugins');
+  mkdirSync(join(marketplaceDir, 'qmd'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'qmd', '.mcp.json'), JSON.stringify({ mcpServers: { qmd: { command: 'qmd', args: ['mcp'] } } }));
+  const cfg = collectMcpServerDefs(['qmd', 'playwright'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir, mcpCatalog: REG.mcpCatalog });
+  assert.equal(cfg.mcpServers.playwright.command, 'npx');
+  assert.match(cfg.mcpServers.playwright.args.join(' '), /@playwright\/mcp@\d+\.\d+\.\d+/, 'pinned, never @latest');
+});
+
+test('leg-e2e matches leg-impl plugins and leaves the Playwright plugin OFF so only the catalog server exists (HIMMEL-4400)', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'leg-e2e', { installed: [] });
+  for (const id of ['pr-review-toolkit-himmel@himmel', 'qmd@himmel']) assert.equal(p[id], true, id);
+  assert.notEqual(p['playwright@claude-plugins-official'], true, 'plugin ships only the MCP; enabling it risks a second server');
+  assert.deepEqual(resolveProfile(REG, 'leg-impl', { installed: [] }).enabledPlugins, p);
+  assert.equal(REG.profiles['leg-e2e'].gateAllow, true);
+  assert.deepEqual(validateRegistry(REG), []);
+});
+
+test('collectMcpServerDefs: the mcpCatalog tier loses to home/repo/manifest and still refuses an unknown name (HIMMEL-4400)', () => {
+  const dir = makeTmpDir('pp-cat-');
+  const home = join(dir, 'home.json');
+  writeFileSync(home, JSON.stringify({ mcpServers: { x: { command: 'home-x' } } }));
+  const opts = { homeConfigPath: home, repoMcpPath: join(dir, '.mcp.json'), marketplaceDir: join(dir, 'm'), mcpCatalog: { x: { command: 'cat-x' }, y: { command: 'cat-y' } } };
+  assert.deepEqual(collectMcpServerDefs(['x', 'y'], opts).mcpServers, { x: { command: 'home-x' }, y: { command: 'cat-y' } });
+  assert.throws(() => collectMcpServerDefs(['z'], opts), /not defined/);
 });

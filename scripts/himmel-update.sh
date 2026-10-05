@@ -354,7 +354,12 @@ update_hermes() {
     # venv (or a stale HERMES_PY) re-resolves instead of breaking the refresh.
     local py
     py="$(resolve_hermes_py "$src")" || py=""
-    if [ -n "$py" ] && [ -x "$py" ]; then
+    if hermes_pm_launcher "$src" >/dev/null; then
+        # PM-managed install (HIMMEL-4307): hermes owns its dependency generations
+        # (Python 3.14 under ~/.hermes/tools); pip-installing into that interpreter
+        # would fight the package manager. Code is pulled; hermes refreshes its own deps.
+        echo "    note: hermes is PM-managed (.hermes/bin/hermes) — code pulled; dependencies are refreshed by hermes itself, no pip editable refresh."
+    elif [ -n "$py" ] && [ -x "$py" ]; then
         # uv-created venvs ship WITHOUT pip (uv venv default), so a plain
         # `$py -m pip install` fails with "No module named pip". Bootstrap pip
         # via stdlib ensurepip first — best-effort, harmless if pip is present.
@@ -536,6 +541,189 @@ report_guardrail_block() {
     return 0
 }
 
+# ─── installer-drift pass (HIMMEL-4246) ──────────────────────────────────────
+# `himmelctl status` already knew about drift the updater never looked at (a
+# repo with no pre-commit/commit-msg hook sat degraded for 9 days, HIMMEL-4243).
+# This pass runs at the END of an update: converge what `himmelctl ensure` can
+# fix safely and idempotently (DRIFT_CONVERGE_IDS, an explicit allow-list — never
+# "everything red"), re-check, and print every red/degraded item it could not
+# converge in a loud DRIFT block with a remedy. `check` mode only reports.
+# Advisory; never fails the update. HIMMEL_DRIFT_CTL overrides the himmelctl
+# command (test seam). Never auto-deletes git config: a leaked url.*.insteadOf
+# is WARN + the unset command only.
+# qmd-index (HIMMEL-4313): ensure registers any missing himmel/luna/skills
+# collection (idempotent qmd_install + collection add + ensure-skill-index.sh;
+# it never embeds or reindexes). It does not honour the embed-model swap lock
+# (HIMMEL-4314), so _qmd_swap_held keeps qmd-index in the DRIFT block while a
+# swap holds it.
+DRIFT_CONVERGE_IDS="pre-commit-hooks qmd-index"
+DRIFT_LINES=""
+
+_drift_ctl() {
+    if [ -n "${HIMMEL_DRIFT_CTL:-}" ]; then "$HIMMEL_DRIFT_CTL" "$@"
+    else node "$ROOT/scripts/himmelctl/bin.js" "$@"; fi
+}
+
+# _drift_rows: stdin = status --json; one `id<TAB>severity<TAB>desired<TAB>actual<TAB>detail`
+# line per red/degraded item, plus any item that is armed though the profile wants it off.
+_drift_rows() {
+    node -e '
+const r = JSON.parse(require("fs").readFileSync(0, "utf8"));
+if (!r || !Array.isArray(r.items)) process.exit(1);
+for (const i of r.items) {
+  const bad = i.severity === "red" || i.severity === "degraded";
+  const armedOff = i.id === "graphmap-cadence" && i.desired === false && i.actual === "present";
+  if (bad || armedOff) console.log([i.id, armedOff ? "armed-off" : i.severity, i.desired, i.actual, String(i.detail || "").replace(/\s+/g, " ").slice(0, 240)].join("\t"));
+}' 2>/dev/null
+}
+
+# 0 = a live embed-model swap holds the lock (same path and stale rule as
+# scripts/luna/qmd-embed-model.sh: dead pid, or no pid and a minute old).
+_qmd_swap_held() {
+    local d="${XDG_CACHE_HOME:-$HOME/.cache}/qmd/embed-swap.lock" pid
+    [ -d "$d" ] || return 1
+    [ "$(cat "$d/role" 2>/dev/null)" = "swap" ] || return 1
+    pid="$(cat "$d/pid" 2>/dev/null)" || pid=""
+    case "$pid" in
+        ''|*[!0-9]*) [ -z "$(find "$d" -maxdepth 0 -mmin +1 2>/dev/null)" ] ;;
+        *) kill -0 "$pid" 2>/dev/null ;;
+    esac
+}
+
+_drift_add() { DRIFT_LINES="${DRIFT_LINES}$1
+        remedy: $2
+"; }
+
+# Captured, not piped: under pipefail `grep -q` closing early can SIGPIPE the producer.
+# 0 = plugin-unregistered reported; 1 = registered (health exited 0, or exited 1
+# on other WARN signals only — the registration check always runs on that path,
+# so unrelated degraded signals are not drift); 2 = indeterminate: the check did
+# not run or did not verify (exit 2 no logs, plugin-presence-unchecked, crash, or
+# rc 1 with no WARN line). Never claim a fix — or a clean state — on 2 (HIMMEL-4248).
+_codex_unregistered() {
+    local out rc=0; out="$(bash "$1" 2>/dev/null)" || rc=$?
+    case "$out" in *plugin-unregistered*) return 0 ;; *plugin-presence-unchecked*) return 2 ;; esac
+    [ "$rc" -eq 0 ] && return 1
+    [ "$rc" -eq 1 ] && case "$out" in *"WARN "*) return 1 ;; esac
+    return 2
+}
+
+report_drift() {
+    local mode="${1:-apply}" json rows id sev detail
+    DRIFT_LINES=""
+    echo ""
+    echo "==> installer drift (HIMMEL-4246)"
+    if ! command -v node >/dev/null 2>&1; then
+        echo "    skip: node not on PATH."; return 0
+    fi
+    if json="$(_drift_ctl status --json 2>/dev/null)" && rows="$(printf '%s' "$json" | _drift_rows)"; then
+        local pending="$rows" converged="" swap_held=0
+        for id in $DRIFT_CONVERGE_IDS; do
+            grep -q "^$id	" <<< "$rows" || continue
+            # Left in $pending: it lands in the DRIFT block below with the swap remedy.
+            if [ "$id" = "qmd-index" ] && _qmd_swap_held; then
+                echo "    not converging qmd-index: an embed-model swap holds the qmd lock"
+                swap_held=1
+                continue
+            fi
+            if [ "$mode" = "check" ]; then
+                echo "    would converge $id: himmelctl ensure --items $id --yes"
+                continue
+            fi
+            echo "    converging $id: himmelctl ensure --items $id --yes"
+            _drift_ctl ensure --items "$id" --yes >/dev/null 2>&1 || true
+            # A failed re-check keeps the last valid rows (never clears them).
+            local rejson renew
+            if rejson="$(_drift_ctl status --json 2>/dev/null)" && renew="$(printf '%s' "$rejson" | _drift_rows)"; then
+                pending="$renew"
+                if grep -q "^$id	" <<< "$pending"; then
+                    echo "    $id still drifted after ensure" >&2
+                else
+                    echo "    converged $id"
+                    converged="$converged $id"
+                fi
+            else
+                echo "    $id: re-check after ensure failed — not claiming convergence" >&2
+            fi
+        done
+        while IFS="$(printf '\t')" read -r id sev _ _ detail; do
+            [ -n "$id" ] || continue
+            if [ "$sev" = "armed-off" ]; then
+                if [ "$mode" = "check" ]; then
+                    echo "    would disarm graphmap-cadence (armed, but the install profile says off)"
+                else
+                    echo "    disarming graphmap-cadence (armed, but the install profile says off)"
+                    bash "$ROOT/scripts/luna/graphmap-cadence.sh" disarm >/dev/null 2>&1 \
+                        || _drift_add "graphmap-cadence: armed but the profile says off; disarm failed" "bash scripts/luna/graphmap-cadence.sh disarm"
+                fi
+                continue
+            fi
+            # Converged ids drop out of $pending in apply mode; in check mode
+            # they are reported above as "would converge", not as drift.
+            case " $DRIFT_CONVERGE_IDS " in *" $id "*)
+                [ "$mode" = "check" ] && ! { [ "$id" = "qmd-index" ] && [ "$swap_held" = 1 ]; } && continue ;;
+            esac
+            case "$id" in
+                qmd-index) if [ "$swap_held" = 1 ]; then
+                        _drift_add "$id ($sev): $detail (not converged: an embed-model swap holds the qmd lock)" "wait for qmd-embed-model.sh swap to finish, then: himmelctl ensure --items qmd-index"
+                    else
+                        _drift_add "$id ($sev): $detail" "himmelctl status --items $id  (then: himmelctl ensure --items $id)"
+                    fi ;;
+                luna-sources) _drift_add "$id ($sev): $detail" "ensure cannot fix credentials — repair the source itself (re-auth), then: himmelctl status --items $id" ;;
+                *)            _drift_add "$id ($sev): $detail" "himmelctl status --items $id  (then: himmelctl ensure --items $id)" ;;
+            esac
+        done <<EOF
+$pending
+EOF
+    else
+        echo "    skip: himmelctl status --json unavailable (no install profile? run himmelctl install)."
+    fi
+
+    # (3a) a url.*.insteadOf in the LOCAL config that no himmel installer wrote
+    # (the HIMMEL-4243 test-fixture leak) rewrites every remote URL. WARN only.
+    local key
+    while IFS= read -r key; do
+        [ -n "$key" ] || continue
+        _drift_add "leaked git config $key in the repo local config (no himmel installer writes it)" "git -C $ROOT config --local --unset-all $key"
+    done <<EOF
+$(git -C "$ROOT" config --local --name-only --get-regexp '^url\..*\.insteadof$' 2>/dev/null || true)
+EOF
+
+    # (3c) the codex himmel plugin registration (startup-health plugin-unregistered).
+    local health="$ROOT/scripts/codex/startup-health.sh" cinstaller="$ROOT/scripts/codex/install-himmel-codex.sh"
+    local hrc=1
+    if [ -f "$health" ] && { [ -n "${CODEX_BIN:-}" ] && [ -x "${CODEX_BIN:-}" ] || command -v codex >/dev/null 2>&1; }; then
+        hrc=0; _codex_unregistered "$health" || hrc=$?
+    fi
+    if [ "$hrc" -eq 2 ]; then
+        _drift_add "codex registration indeterminate (startup-health failed without a plugin verdict)" "bash scripts/codex/startup-health.sh, then: bash scripts/codex/install-himmel-codex.sh if it reports plugin-unregistered"
+    elif [ "$hrc" -eq 0 ]; then
+        if [ "$mode" = "check" ]; then
+            echo "    would run scripts/codex/install-himmel-codex.sh (codex plugin-unregistered)"
+        else
+            echo "    codex plugin-unregistered — running scripts/codex/install-himmel-codex.sh"
+            if [ -f "$cinstaller" ]; then bash "$cinstaller" >/dev/null 2>&1 || true; fi
+            local crc=0; _codex_unregistered "$health" || crc=$?
+            case "$crc" in
+                0) _drift_add "codex plugin-unregistered persists after install-himmel-codex.sh" "bash scripts/codex/install-himmel-codex.sh, then restart codex" ;;
+                1) echo "    converged codex plugin registration" ;;
+                *) _drift_add "codex registration not verified after install-himmel-codex.sh (startup-health failed without a plugin verdict)" "bash scripts/codex/startup-health.sh, then restart codex" ;;
+            esac
+        fi
+    fi
+
+    if [ -z "$DRIFT_LINES" ]; then
+        echo "    no unconverged drift."
+        return 0
+    fi
+    echo ""
+    echo "================================================================"
+    echo "==> DRIFT — needs attention (NOT auto-fixed)"
+    printf '%s' "$DRIFT_LINES" | sed 's/^\([^ ]\)/    ✗ \1/'
+    echo "================================================================"
+    return 0
+}
+
 
 # ─── statusLine hud migration (HIMMEL-718) ──────────────────────────────────
 # Existing installs wired to the bash bar need one best-effort re-wire after the
@@ -686,6 +874,11 @@ STATUS_luna_template="not-attempted"; DETAIL_luna_template=""
 # it has no fixed row: print_status_table adds one only when sync_graphify set
 # STATUS_graphify — today only for the uv-missing skip (HIMMEL-3077).
 STATUS_graphify="";                   DETAIL_graphify=""
+# HIMMEL-4088: probe-mode station tools (rtk, twitter-cli, ...) are advisory too.
+# Their count is registry-driven, so rows accumulate here as "name|status|detail"
+# lines (written by sync_probe_tools, read back by print_status_table) instead of
+# one fixed STATUS_/DETAIL_ pair each.
+PROBE_TOOL_ROWS=""
 
 # 1. checkout pull. The real `git pull --ff-only` (apply only — --check mode
 #    has its own read-only fetch+rev-list reporting above and sets STATUS_pull
@@ -1146,6 +1339,13 @@ EOF
     if [ -n "$STATUS_graphify" ]; then
         printf '    %-14s %-14s %s\n' "graphify" "$STATUS_graphify" "$DETAIL_graphify"
     fi
+    local pt_name pt_status pt_detail
+    while IFS='|' read -r pt_name pt_status pt_detail; do
+        [ -n "$pt_name" ] || continue
+        printf '    %-14s %-14s %s\n' "$pt_name" "$pt_status" "$pt_detail"
+    done <<EOF
+$PROBE_TOOL_ROWS
+EOF
 }
 
 # ─── --versions report plumbing (HIMMEL-3400) ────────────────────────────────
@@ -1354,12 +1554,136 @@ EOF
         [ "$state" = "unknown" ] && unknown=$((unknown + 1))
         printf '    %-14s %-8s %-30s %-30s %s\n' "$id" "$state" "$inst" "$avail" "$note"
     done
+    # HIMMEL-4088: registry-driven probe-tool rows — any id the fixed list above
+    # does not name, in the order sync_probe_tools wrote them.
+    local extra_ids
+    extra_ids=$(cut -d'|' -f1 "$VER_FILE" 2>/dev/null | grep -vxE 'himmel|plugins|jira_cli|qmd_fork|hermes|luna_template|cli_proxy|node|npm|bun|pm' | awk '!seen[$0]++')
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        row=$(grep "^$id|" "$VER_FILE" | tail -1)
+        IFS='|' read -r _ inst avail state note <<EOF
+$row
+EOF
+        [ "$state" = "behind" ] && behind=$((behind + 1))
+        [ "$state" = "unknown" ] && unknown=$((unknown + 1))
+        printf '    %-14s %-8s %-30s %-30s %s\n' "$id" "$state" "$inst" "$avail" "$note"
+    done <<EOF
+$extra_ids
+EOF
     echo ""
     echo "    $behind behind, $unknown undetermined."
     [ "$behind" -eq 0 ] || return 1
     [ "$unknown" -eq 0 ] || return 3
     return 0
 }
+
+# ─── probe-mode station tools (HIMMEL-4088) ──────────────────────────────────
+# Registry tag_release/probe entries that declare an `upgrade` block (rtk,
+# twitter-cli) name a binary installed on THIS machine. Only the nightly
+# drift-fix cadence used to upgrade them, so with that cadence unarmed an
+# operator's /himmel-update said "everything current" while the drift guard
+# still read them BEHIND.
+#
+# The guard is the single source of "BEHIND + latest": it runs ONCE and its
+# `<name>: BEHIND (... latest tag vX; installed Y ...)` line is parsed, so there
+# is no second copy of the probe / latest-release logic here. The upgrade itself
+# is apply-tool-upgrade.sh, which re-probes and only reports success if the
+# version strictly advanced. Entries marked `unattended: false` are operator
+# gated: the one-command manual upgrade is printed, never run. Advisory: a
+# failure fills a `failed` row and returns 1 for `--only tools`, but the callers
+# in the update chain swallow it.
+#   sync_probe_tools check | apply
+sync_probe_tools() {
+    local mode="$1" registry guard upgrader entries drift_out
+    local name unattended line latest inst manual out rc failed=0
+    registry="${DRIFT_REGISTRY:-$ROOT/scripts/upstreams.json}"
+    guard="$ROOT/scripts/check-plugin-drift.sh"
+    upgrader="$ROOT/scripts/upstreams/apply-tool-upgrade.sh"
+    echo ""
+    echo "==> probe-mode station tools (HIMMEL-4088)"
+    if [ ! -f "$registry" ] || [ ! -f "$guard" ] || [ ! -f "$upgrader" ] || ! command -v python3 >/dev/null 2>&1; then
+        echo "    skip: registry, drift guard, apply-tool-upgrade.sh or python3 not available."
+        return 0
+    fi
+    entries=$(python3 - "$registry" <<'PY' 2>/dev/null | tr -d '\r'
+import json, sys
+try:
+    reg = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    sys.exit(3)
+for e in reg.get("entries", []):
+    up = e.get("upgrade")
+    if e.get("kind") == "tag_release" and e.get("mode") == "probe" and isinstance(up, dict) and up.get("command"):
+        print("%s\x1f%s" % (e.get("name", ""), "true" if up.get("unattended") is True else "false"))
+PY
+) || {
+        # An unreadable registry is undetermined, not "none declared": say so and
+        # leave an `unknown` row so --versions exits 3 instead of reading clean.
+        echo "    registry unreadable ($registry) — probe tools undetermined."
+        _probe_tool_row registry skipped "unreadable: $registry"
+        _ver_row registry - - unknown "unreadable: $registry"
+        return 0
+    }
+    if [ -z "$entries" ]; then
+        echo "    none declared in the registry."
+        return 0
+    fi
+    drift_out=$(bash "$guard" 2>&1) || true
+    while IFS=$'\x1f' read -r name unattended; do
+        [ -n "$name" ] || continue
+        line=$(printf '%s\n' "$drift_out" | grep -F -- "  $name: " | head -1)
+        case "$line" in
+            "  $name: CURRENT"*)
+                inst=$(printf '%s' "$line" | sed -n 's/.*installed \([^ )]*\).*/\1/p')
+                _probe_tool_row "$name" up-to-date "${inst:-current}"
+                _ver_row "$name" "${inst:--}" "${inst:--}" current
+                continue ;;
+            "  $name: BEHIND"*) ;;
+            *)
+                inst="${line#*"$name": }"
+                if [ -z "$line" ]; then
+                    inst="not reported by the drift guard (gh unavailable?)"
+                fi
+                _probe_tool_row "$name" skipped "$inst"
+                case "$line" in
+                    *"not installed"*) _ver_row "$name" - - n/a "not installed" ;;
+                    *)                 _ver_row "$name" - - unknown "$inst" ;;
+                esac
+                continue ;;
+        esac
+        latest=$(printf '%s' "$line" | sed -n 's/.*latest tag v\{0,1\}\([^;) ]*\).*/\1/p')
+        inst=$(printf '%s' "$line" | sed -n 's/.*installed \([^ )]*\).*/\1/p')
+        manual="bash scripts/upstreams/apply-tool-upgrade.sh $name $latest"
+        if [ "$unattended" != "true" ]; then
+            echo "    $name $inst -> $latest is operator-gated (upgrade.unattended is not true); run: $manual"
+            _probe_tool_row "$name" skipped "$inst -> $latest operator-gated — run: $manual"
+            _ver_row "$name" "$inst" "$latest" behind "operator-gated — run: $manual"
+            continue
+        fi
+        _ver_row "$name" "$inst" "$latest" behind "run /himmel-update to upgrade"
+        if [ "$mode" = "check" ]; then
+            _probe_tool_row "$name" skipped "$inst -> $latest update available — run without --check to upgrade"
+            continue
+        fi
+        rc=0
+        out=$(bash "$upgrader" "$name" "$latest" --unattended 2>&1) || rc=$?
+        case "$rc" in
+            0) _probe_tool_row "$name" updated "$(printf '%s\n' "$out" | grep '^UPGRADE ' | tail -1 | cut -d' ' -f3-)" ;;
+            1) _probe_tool_row "$name" up-to-date "$(_last_line_trimmed "$out")" ;;
+            3) _probe_tool_row "$name" skipped "$(_last_line_trimmed "$out")" ;;
+            *)
+                failed=1
+                echo "    $name upgrade failed (rc=$rc) — $(_last_line_trimmed "$out")"
+                echo "    retry by hand: $manual"
+                _probe_tool_row "$name" failed "rc=$rc — $(_last_line_trimmed "$out")" ;;
+        esac
+    done <<EOF
+$entries
+EOF
+    return "$failed"
+}
+
+_probe_tool_row() { PROBE_TOOL_ROWS="${PROBE_TOOL_ROWS}$1|$2|${3//|//}"$'\n'; }
 
 # ─── graphify pin sync (HIMMEL-1048) ─────────────────────────────────────────
 # Best-effort advisory: roll an EXISTING graphify install forward to the pinned
@@ -1372,6 +1696,9 @@ EOF
 sync_graphify() {
     local lib="$ROOT/scripts/lib/graphify-bin.sh"
     echo "==> graphify pin sync (HIMMEL-1048)"
+    # HIMMEL-4380: a live Claude session's graphify-mcp holds the uv tool dir, so
+    # this step skips whenever it runs in-session. Name the way to clear it.
+    echo "    (a skip held by a live session clears with: bash scripts/himmel-update.sh --graphify-only — run it with no Claude session live, e.g. from a scheduled slot)"
     if [ ! -f "$lib" ]; then
         echo "    skip: graphify-bin.sh not found ($lib)."
         return 0
@@ -1676,9 +2003,14 @@ sync_marketplaces() {
 # installed content, so a plugin sourced from its own remote (ponytail,
 # scroll-world, superpowers, …) just sits stale even after every marketplace
 # refresh. This runs the missing step: `claude plugin update <spec>` for every
-# installed non-@himmel plugin. @himmel plugins are excluded — their content
-# is this checkout, already re-read by `claude plugin marketplace update
-# himmel` (chain item 2), so a separate `plugin update` there is redundant.
+# installed non-@himmel plugin. A checkout-sourced @himmel plugin (marketplace
+# `source` is a "./plugins/x" string) is excluded — its content is this
+# checkout, already re-read by `claude plugin marketplace update himmel`
+# (chain item 2), so a separate `plugin update` there is redundant — unless
+# its plugin.json version moved past the installed one (HIMMEL-4295). A
+# url/git-subdir-sourced @himmel plugin (marketplace `source` is an object,
+# e.g. obsidian-second-brain) is NOT the checkout and is updated like any
+# other remote plugin (HIMMEL-4127).
 # Advisory + failure-isolated, same as sync_marketplaces: one plugin failing
 # to update must never abort the others or the update. MUST run before
 # reconcile_plugins, so a plugin update can never leave a floor-`false` plugin
@@ -1701,12 +2033,64 @@ update_installed_plugins() {
         return 0
     fi
     local specs
-    specs="$(jq -r '.enabledPlugins // {} | keys[] | select(endswith("@himmel") | not)' "$settings" 2>/dev/null)" || {
+    local manifest="$ROOT/marketplace/.claude-plugin/marketplace.json" remote_names='[]'
+    if [ -f "$manifest" ]; then
+        remote_names="$(jq -c '[.plugins[]? | select(.source | type == "object") | .name]' "$manifest" 2>/dev/null)" || remote_names='[]'
+    fi
+    specs="$(jq -r --argjson remote "$remote_names" '.enabledPlugins // {} | keys[]
+        | select((endswith("@himmel") | not) or (sub("@himmel$"; "") as $n | $remote | index($n)))' "$settings" 2>/dev/null)" || {
         echo "    skip: could not read enabledPlugins from $settings."
         return 0
     }
+    # The marketplace re-read does not move an installed checkout plugin off
+    # its cached OLD version: Claude Code keeps serving
+    # plugins/cache/himmel/<name>/<old-version> until `plugin update` runs.
+    # So a checkout plugin whose user-scope installed version differs from its
+    # plugin.json version is updated too (HIMMEL-4295).
+    local installed="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+    local bumped="" name src want have
+    if [ -f "$manifest" ] && [ -f "$installed" ]; then
+        while IFS=' ' read -r name src; do
+            [ -n "$name" ] || continue
+            want="$(jq -r '.version // empty' "$ROOT/marketplace/$src/.claude-plugin/plugin.json" 2>/dev/null)" || want=""
+            have="$(jq -r --arg k "$name@himmel" '[.plugins[$k][]? | select(.scope == "user") | .version][0] // empty' "$installed" 2>/dev/null)" || have=""
+            if [ -n "$want" ] && [ -n "$have" ] && [ "$want" != "$have" ]; then
+                bumped="$bumped
+$name@himmel"
+            fi
+        done <<EOF
+$(jq -r --slurpfile s "$settings" '.plugins[]? | select(.source | type == "string") | .name as $n
+    | select(($s[0].enabledPlugins // {}) | has($n + "@himmel")) | "\($n) \(.source)"' "$manifest" 2>/dev/null)
+EOF
+    fi
+    specs="$(printf '%s%s\n' "$specs" "$bumped" | sed '/^$/d')"
+    # HIMMEL-4380: enabledPlugins also lists plugins that are NOT installed
+    # (stale entries), and `claude plugin update` on those prints a red
+    # "not installed" failure each. Keep only specs present in
+    # installed_plugins.json; the count of the rest is one summary line. An
+    # absent/unreadable installed file cannot prove anything, so it filters
+    # nothing (the old behaviour).
+    if [ -n "$specs" ] && [ -f "$installed" ]; then
+        local kept="" n_skipped=0 spec_i
+        while IFS= read -r spec_i; do
+            [ -n "$spec_i" ] || continue
+            if jq -e --arg k "$spec_i" '(.plugins // {}) | has($k)' "$installed" >/dev/null 2>&1; then
+                kept="$kept$spec_i
+"
+            elif jq -e '.plugins | type == "object"' "$installed" >/dev/null 2>&1; then
+                n_skipped=$((n_skipped + 1))
+            else
+                kept="$kept$spec_i
+"
+            fi
+        done <<EOF
+$specs
+EOF
+        specs="$(printf '%s' "$kept" | sed '/^$/d')"
+        [ "$n_skipped" -eq 0 ] || echo "    $n_skipped enabled plugin(s) not installed, skipped."
+    fi
     if [ -z "$specs" ]; then
-        echo "    no non-@himmel plugins installed."
+        echo "    no remote-sourced plugins installed."
         return 0
     fi
     if [ "$mode" = "check" ]; then
@@ -2209,7 +2593,8 @@ Usage: scripts/himmel-update.sh [MODE]
 
 Update the himmel checkout and every component it manages. With no MODE it runs
 the real update: pull, marketplace re-sync, jira CLI rebuild, qmd fork, hermes,
-luna template, then the advisory steps (cli-proxy-api, codex, toolchain).
+luna template, then the advisory steps (cli-proxy-api, codex, toolchain,
+probe-mode station tools such as rtk and twitter-cli).
 
 Modes:
   (none)              run the real update
@@ -2218,7 +2603,10 @@ Modes:
                       marked; read-only. Exit 0 all current, 1 any behind,
                       3 none behind but some could not be determined
   --only <item>       run ONE step: pull marketplace jira_cli qmd_fork hermes
-                      luna_template graphify cli_proxy marketplaces toolchain
+                      luna_template graphify cli_proxy marketplaces toolchain tools
+                      drift drift-check (installer-drift pass; -check is read-only)
+  --graphify-only     alias for --only graphify: clear a graphify pin-sync skip
+                      from a slot with no live Claude session (HIMMEL-4380)
   --plugins-check     just the plugin install-state report; no git, no network
   -h, --help          this text
 
@@ -2228,6 +2616,12 @@ USAGE
 }
 case "${1:-}" in
     ""|--check|--dry-run|--versions|--only|--plugins-check) ;;
+    --graphify-only)
+        # HIMMEL-4380: alias for `--only graphify`, the standing way to clear a
+        # pin-sync skip (every in-session run is blocked by the live
+        # graphify-mcp holder) from a slot with no Claude session live.
+        shift
+        set -- --only graphify "$@" ;;
     -h|--help)
         print_usage
         exit 0 ;;
@@ -2333,7 +2727,7 @@ fi
 if [ "${1:-}" = "--only" ]; then
     only_item="${2:-}"
     if [ -z "$only_item" ]; then
-        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
+        echo "update --only: needs an item — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools drift drift-check" >&2
         exit 2
     fi
     branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")
@@ -2365,8 +2759,11 @@ if [ "${1:-}" = "--only" ]; then
         cli_proxy)     sync_cli_proxy || only_rc=1 ;;
         marketplaces)  sync_marketplaces ;;
         toolchain)     report_toolchain apply ;;
+        tools)         sync_probe_tools apply || only_rc=1 ;;
+        drift)         report_drift apply ;;
+        drift-check)   report_drift check ;;
         *)
-            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain" >&2
+            echo "update --only: unknown item '$only_item' — one of: pull marketplace jira_cli qmd_fork hermes luna_template graphify cli_proxy marketplaces toolchain tools drift drift-check" >&2
             exit 2 ;;
     esac
     report_qmd_daemon_restart
@@ -2402,6 +2799,7 @@ if [ "${1:-}" = "--versions" ]; then
         update_luna_template check || true
         sync_cli_proxy check || true
         report_toolchain check || true
+        sync_probe_tools check || true
         _ver_pm_rows
     } >/dev/null 2>&1
     versions_rc=0
@@ -2448,7 +2846,9 @@ if [ "${1:-}" = "--check" ] || [ "${1:-}" = "--dry-run" ]; then
     report_cadence_stale
     report_qmd_bun_missing
     report_toolchain check
+    sync_probe_tools check || true
     report_guardrail_block
+    report_drift check
     print_status_table
     exit 0
 fi
@@ -2626,10 +3026,13 @@ offer_retired_plugin_removal apply
 report_cadence_stale
 report_qmd_bun_missing
 report_toolchain apply
+# HIMMEL-4088: `|| true` — a failed tool upgrade is advisory, never aborts the update.
+sync_probe_tools apply || true
 report_guardrail_block
 report_dependency_readiness
 backfill_user_claude_md
 report_qmd_daemon_restart
+report_drift apply
 
 print_status_table
 

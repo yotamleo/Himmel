@@ -144,6 +144,11 @@ fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1" >&2; }
 #                        reads — STUB_PROTECTION_PREMERGE would be dead, and the
 #                        case would prove nothing about the pre-merge re-read.
 #   STUB_CI_RC          exit code of the stub check-ci. Default 0.
+#   STUB_CI_RCS         space-separated exit codes, one per check-ci call (the
+#                        last repeats; HIMMEL-4136). Overrides STUB_CI_RC.
+#   STUB_ROUND_STATE / STUB_ROUND_HEAD / STUB_ROUND_FAIL=1  the between-rounds
+#                        `--json state,headRefOid` re-read (HIMMEL-4136).
+#                        Defaults OPEN / STUB_SHA.
 #   STUB_MERGE_FAIL=1   `gh pr merge` exits 1 (generic failure).
 #   STUB_MERGE_POLICY_REFUSED=1  merge exits 1 with GitHub's base-policy refusal.
 #   STUB_POST_STATE     PR state the post-merge re-query returns. Default MERGED.
@@ -274,7 +279,23 @@ mog_build_fixture() {
         # points at a distinct anchor tree; asserting only the exit code is
         # weaker and can pass vacuously (a fixture where the two trees agree
         # would look identical either way).
-        printf '#!/usr/bin/env bash\n: > "%s/scripts/check-ci.ran"\nexit %s\n' "$tmp" "${STUB_CI_RC:-0}" > "$tmp/scripts/check-ci.sh"
+        # HIMMEL-4136: STUB_CI_RCS ("7 7 0") answers call N with its Nth code
+        # (the last one repeats); check-ci.count counts the calls and
+        # check-ci.distinct records each call's CHECK_CI_DISTINCT_DEADLINE.
+        # shellcheck disable=SC2086 # word-split on purpose: one code per line
+        printf '%s\n' ${STUB_CI_RCS:-${STUB_CI_RC:-0}} > "$tmp/scripts/check-ci.rcs"
+        cat > "$tmp/scripts/check-ci.sh" <<'STUBCI'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+: > "$d/check-ci.ran"
+printf "%s" "${MERGE_WATCH_POST_GO:-}" > "$d/check-ci.postgo"
+printf "%s\n" "${CHECK_CI_DISTINCT_DEADLINE:-}" >> "$d/check-ci.distinct"
+n=$(( $(cat "$d/check-ci.count" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$d/check-ci.count"
+rc=$(sed -n "${n}p" "$d/check-ci.rcs")
+[ -n "$rc" ] || rc=$(tail -n 1 "$d/check-ci.rcs")
+exit "$rc"
+STUBCI
         chmod +x "$tmp/scripts/check-ci.sh"
     fi
 
@@ -360,6 +381,12 @@ case "$verb" in
                 # preserved, letting a test simulate an empty pre-merge base
                 # (fail-closed path) rather than silently defaulting (coderabbit).
                 printf '%s' "${STUB_BASE_PREMERGE-${STUB_BASE-main}}" ;;
+            "state,headRefOid")
+                # HIMMEL-4136: merge-on-green's between-rounds re-read, before
+                # it watches a DEADLINE-PENDING check-ci again — the PR must
+                # still be OPEN at the certified head.
+                [ "${STUB_ROUND_FAIL:-0}" = "1" ] && { echo "gh: round query failed" >&2; exit 1; }
+                printf '%s %s' "${STUB_ROUND_STATE:-OPEN}" "${STUB_ROUND_HEAD:-${STUB_SHA-abc123def456}}" ;;
             "state,headRefOid,baseRefName")
                 # Post-merge re-query — shared by BOTH the failure-recovery
                 # path AND the success-path confirmation poll (codex-adv,
@@ -524,13 +551,22 @@ case "$verb" in
                     */rules/branches/*) rk=RULES; rpat='/rules/branches/' ;;
                     *) rk=RULESET; rpat='/rulesets/' ;;
                 esac
+                # HIMMEL-3857 — STUB_RULESET_JSON_<id> (numeric id) overrides the
+                # shared STUB_RULESET_JSON for that one ruleset, so a case can make
+                # only ONE contributing ruleset weak. Unset = the shared body.
+                json_var="STUB_${rk}_JSON"
+                rid="${api_path##*/}"
+                case "$rk|$rid" in
+                    RULESET\|*[!0-9]*|RULESET\|) ;;
+                    RULESET\|*) id_var="STUB_RULESET_JSON_$rid"; [ -n "${!id_var+x}" ] && json_var="$id_var" ;;
+                esac
                 n=$(grep -c "$rpat" "$GH_LOG" 2>/dev/null || echo 1)
                 if [ "${n:-1}" -le 1 ]; then
-                    fail_var="STUB_${rk}_FAIL"; json_var="STUB_${rk}_JSON"
+                    fail_var="STUB_${rk}_FAIL"
                     [ "${!fail_var:-0}" = "1" ] && { echo "gh: $rk unreadable" >&2; exit 1; }
                     json_val="${!json_var:-}"
                 else
-                    fail_var="STUB_${rk}_PREMERGE_FAIL"; json_var="STUB_${rk}_JSON"; pm_var="STUB_${rk}_JSON_PREMERGE"
+                    fail_var="STUB_${rk}_PREMERGE_FAIL"; pm_var="STUB_${rk}_JSON_PREMERGE"
                     [ "${!fail_var:-0}" = "1" ] && { echo "gh: $rk unreadable" >&2; exit 1; }
                     json_val="${!pm_var-${!json_var:-}}"
                 fi
@@ -1134,12 +1170,30 @@ if [ "$have_jq_2869" = "1" ]; then
     r3 "no rules at all" '[]' "$R_SET"
 
     # 3808-3b. One contributing ruleset strong, a SECOND (with checks) has a bypass
-    # actor: every contributing ruleset must be clean.
+    # actor: every contributing ruleset must be clean. Per-id bodies (HIMMEL-3857)
+    # so ONLY ruleset 2 carries the bypass — ruleset 1 is read clean first.
     STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
         STUB_RULES_JSON='[{"type":"required_status_checks","ruleset_id":1,"parameters":{"required_status_checks":[{"context":"a"}]}},{"type":"required_status_checks","ruleset_id":2,"parameters":{"required_status_checks":[{"context":"b"}]}}]' \
-        STUB_RULESET_JSON='{"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' \
-        run_mog 12 "3808-3b: a bypass actor on any contributing ruleset → exit 12"
+        STUB_RULESET_JSON_1='{"id":1,"enforcement":"active","bypass_actors":[]}' \
+        STUB_RULESET_JSON_2='{"id":2,"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' \
+        run_mog 12 "3808-3b: a bypass actor on the second contributing ruleset only → exit 12"
     assert_gh_lacks "3808-3b: no merge attempted" "pr merge"
+    assert_audit_has "3808-3b: ruleset 1 read clean" "ruleset=1:enforcement=active,bypass_actors=0"
+    assert_audit_has "3808-3b: ruleset 2 refused on its bypass actor" "ruleset=2:enforcement=active,bypass_actors=1"
+
+    # 3808-3c. A bypass actor on a ruleset with NO required_status_checks rule
+    # cannot skip a required check: ruleset 1 strong, ruleset 2 bypassable but
+    # contributing only a pull_request rule → accept (HIMMEL-3857).
+    STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_SHA="rs3c" \
+        STUB_PROTECTION_FAIL=1 STUB_PROTECTION_PREMERGE_FAIL=1 \
+        STUB_RULES_JSON='[{"type":"required_status_checks","ruleset_id":1,"parameters":{"required_status_checks":[{"context":"a"}]}},{"type":"pull_request","ruleset_id":2}]' \
+        STUB_RULESET_JSON_1='{"id":1,"enforcement":"active","bypass_actors":[]}' \
+        STUB_RULESET_JSON_2='{"id":2,"enforcement":"active","bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"}]}' \
+        run_mog 0 "3808-3c: bypass actor on a ruleset without required checks → merged"
+    assert_merge_has "3808-3c: merge pins the certified sha" "--match-head-commit rs3c"
+    assert_gh_has "3808-3c: reads the strong ruleset" "api repos/yotamleo/Himmel/rulesets/1"
+    assert_gh_lacks "3808-3c: never reads the non-contributing ruleset" "api repos/yotamleo/Himmel/rulesets/2"
+    assert_audit_has "3808-3c: audit names the ruleset source" "source=ruleset"
 
     # 3808-4. API errors fail closed.
     STUB_NWO="yotamleo/Himmel" STUB_CWD_NWO="yotamleo/Himmel" STUB_PRIVATE=false STUB_PROTECTION_FAIL=1 \
@@ -3362,6 +3416,50 @@ if HIMMEL_REPO=x env -u HIMMEL_REPO bash -c '[ -z "${HIMMEL_REPO+set}" ]'; then 
 # is that control.
 STUB_CI_RC=0 run_mog 0 "3475-a: worktree is its own anchor (byte-identical) behaves as before"
 if [ -e "$LAST_TMP/scripts/check-ci.ran" ]; then pass; else fail "3475-a: the anchor's (== worktree's) check-ci.sh never ran"; fi
+
+# HIMMEL-4071: merge-on-green runs only after the console's GO, so its check-ci
+# call is the post-GO path: the stub must see MERGE_WATCH_POST_GO=1.
+if [ "$(cat "$LAST_TMP/scripts/check-ci.postgo" 2>/dev/null)" = 1 ]; then pass; else fail "4071: merge-on-green did not mark its check-ci call post-GO (MERGE_WATCH_POST_GO=1)"; fi
+
+# HIMMEL-4136 (C1, J1660): a saturated CI queue. check-ci exit 7 (opted in via
+# CHECK_CI_DISTINCT_DEADLINE=1) = the --max-wait deadline passed with checks
+# still pending and nothing failed. merge-on-green re-watches ONLY that, at most
+# 3 rounds, re-reading the PR (OPEN at the certified head) before every re-watch.
+# Every other code — a red above all — still refuses on the first round.
+mog4136_calls() { cat "$LAST_TMP/scripts/check-ci.count" 2>/dev/null || echo 0; }
+STUB_CI_RCS="7 0" run_mog 0 "4136-a: one DEADLINE-PENDING round, then green, merges"
+if [ "$(mog4136_calls)" = 2 ]; then pass; else fail "4136-a: check-ci should run twice, ran $(mog4136_calls)"; fi
+if [ "$(grep -c '^1$' "$LAST_TMP/scripts/check-ci.distinct" 2>/dev/null)" = 2 ]; then pass; else fail "4136-a: every check-ci call must carry CHECK_CI_DISTINCT_DEADLINE=1"; fi
+assert_gh_has "4136-a: the head is re-read, pinned to this PR, before the re-watch" "pr view 77 --repo owner/repo --json state,headRefOid --jq"
+assert_gh_has "4136-a: the merge happened" "pr merge"
+
+STUB_CI_RCS="7 7 7 7" run_mog 14 "4136-b: still pending after the cap refuses (exit 14)"
+if [ "$(mog4136_calls)" = 3 ]; then pass; else fail "4136-b: the cap is 3 check-ci rounds, ran $(mog4136_calls)"; fi
+assert_audit_has "4136-b: audit names the deadline-pending refusal" "REFUSED reason=gate-not-green gate=check-ci:7 rounds=3"
+assert_gh_lacks "4136-b: no merge attempted" "pr merge"
+
+# Counter-examples: a red, and every non-deadline failure, never loops.
+STUB_CI_RCS="7 1" run_mog 14 "4136-c: pending then RED refuses (exit 14), never merges"
+if [ "$(mog4136_calls)" = 2 ]; then pass; else fail "4136-c: a red ends the loop at once, ran $(mog4136_calls)"; fi
+assert_gh_lacks "4136-c: no merge attempted" "pr merge"
+for mog4136_rc in 1 2 3; do
+    STUB_CI_RCS="$mog4136_rc 0" run_mog 14 "4136-d: check-ci exit $mog4136_rc refuses on round 1 (no re-watch)"
+    if [ "$(mog4136_calls)" = 1 ]; then pass; else fail "4136-d: exit $mog4136_rc must not loop, check-ci ran $(mog4136_calls)"; fi
+    assert_gh_lacks "4136-d: exit $mog4136_rc never re-reads for another round" "--json state,headRefOid --jq"
+    assert_gh_lacks "4136-d: exit $mog4136_rc never merges" "pr merge"
+done
+
+# A stale head never merges: the head moving (or the PR leaving OPEN, or an
+# unreadable re-read) between rounds refuses before a second watch.
+STUB_CI_RCS="7 0" STUB_ROUND_HEAD=feedface0000 run_mog 14 "4136-e: head moved during the wait refuses (exit 14)"
+if [ "$(mog4136_calls)" = 1 ]; then pass; else fail "4136-e: no re-watch after the head moved, ran $(mog4136_calls)"; fi
+assert_audit_has "4136-e: audit names the moved head" "REFUSED reason=head-moved-during-ci-wait"
+assert_gh_lacks "4136-e: no merge attempted" "pr merge"
+STUB_CI_RCS="7 0" STUB_ROUND_STATE=CLOSED run_mog 14 "4136-f: PR closed during the wait refuses (exit 14)"
+assert_gh_lacks "4136-f: no merge attempted" "pr merge"
+STUB_CI_RCS="7 0" STUB_ROUND_FAIL=1 run_mog 14 "4136-g: an unreadable re-read refuses (fail closed, exit 14)"
+if [ "$(mog4136_calls)" = 1 ]; then pass; else fail "4136-g: no re-watch on an unreadable head, ran $(mog4136_calls)"; fi
+assert_gh_lacks "4136-g: no merge attempted" "pr merge"
 
 # Core RED-then-GREEN assertion: two DISTINCT trees. The worktree's own
 # check-ci.sh always fails; the anchor's always passes. The anchor must

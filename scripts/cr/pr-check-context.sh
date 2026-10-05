@@ -780,6 +780,13 @@ gitd() { git --no-replace-objects -c core.fsmonitor=false -c core.untrackedCache
 # plugin-profiles.mjs. leg-pr-open.sh itself runs leg-burn.sh (to compute the
 # ship PR's leg-burn line) and sources leg-burn.sh's lib/burn-weights.sh, so
 # both join the guarded set too.
+# HIMMEL-4038: plugin-profiles.mjs lazily imports skill-listing.mjs / skill-cost.mjs
+# (and skill-listing.mjs imports role-requires.mjs), so the closure test reaches
+# them; they are guarded for the same reason plugin-profiles.mjs is.
+# HIMMEL-4053: scripts/lanes/plugin-profiles.json is data, but profile-settings.sh
+# (guarded) reads it to resolve the bare profile hermes-critic.sh applies, so a
+# branch could rewrite the profile its own review runs under - guarded like
+# egress-matrix.json above.
 cr_guarded="scripts/cr scripts/lib scripts/guardrails/lib.sh scripts/check-ci.sh scripts/handover/resolve-active-item.sh
 scripts/handover/resolve-active-item-report.sh
 scripts/handover/append-cr-findings.sh scripts/handover/append-cr-bugs.sh scripts/handover/bug.sh
@@ -790,7 +797,7 @@ scripts/observability/session-run-hook.ts scripts/observability/session-run-ledg
 scripts/hermes/invoke.sh scripts/hermes/egress-gate.sh
 scripts/guardrails/egress-matrix-eval.mjs scripts/guardrails/egress-matrix.json
 scripts/statusline/usage-cache-producer.sh
-scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs
+scripts/lanes/bank-status.ts scripts/lanes/bank-status-core.mjs scripts/lanes/funded-max-pct.mjs scripts/lanes/openrouter-cost.sh
 scripts/lanes/resolve.mjs scripts/lanes/check.mjs scripts/lanes/probe.mjs scripts/lanes/set-lane-override.mjs scripts/lanes/profile-managed.cjs
 scripts/observability/quota-sources.ts
 scripts/telegram/alibaba-probe-once.ts scripts/telegram/quota-gauge.ts scripts/telegram/quota-gauge-alibaba.ts
@@ -801,7 +808,7 @@ scripts/telegram/log-timestamp.ts scripts/telegram/gate.ts scripts/telegram/run.
 scripts/telegram/triage.ts scripts/telegram/transcribe.ts scripts/telegram/spawn-glm.ts
 scripts/telegram/glm-env.ts scripts/telegram/grants.ts scripts/telegram/huge-diff-guard.ts
 scripts/telegram/lane-args.ts scripts/telegram/phi-egress-guard.ts scripts/telegram/round-guard.ts
-scripts/lanes/plugin-profiles.mjs scripts/lanes/leg-pr-open.sh scripts/lanes/leg-burn.sh scripts/lanes/lib/burn-weights.sh"
+scripts/lanes/plugin-profiles.mjs scripts/lanes/plugin-profiles.json scripts/lanes/role-requires.mjs scripts/lanes/skill-cost.mjs scripts/lanes/skill-listing.mjs scripts/lanes/profile-settings.sh scripts/lanes/leg-pr-open.sh scripts/lanes/leg-burn.sh scripts/lanes/lib/burn-weights.sh"
 cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails/lib.sh' ':(top)scripts/check-ci.sh'
     ':(top)scripts/handover/resolve-active-item.sh'
     ':(top)scripts/handover/resolve-active-item-report.sh'
@@ -813,7 +820,7 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/hermes/invoke.sh' ':(top)scripts/hermes/egress-gate.sh'
     ':(top)scripts/guardrails/egress-matrix-eval.mjs' ':(top)scripts/guardrails/egress-matrix.json'
     ':(top)scripts/statusline/usage-cache-producer.sh'
-    ':(top)scripts/lanes/bank-status.ts' ':(top)scripts/lanes/bank-status-core.mjs' ':(top)scripts/lanes/funded-max-pct.mjs'
+    ':(top)scripts/lanes/bank-status.ts' ':(top)scripts/lanes/bank-status-core.mjs' ':(top)scripts/lanes/funded-max-pct.mjs' ':(top)scripts/lanes/openrouter-cost.sh'
     ':(top)scripts/lanes/resolve.mjs' ':(top)scripts/lanes/check.mjs' ':(top)scripts/lanes/probe.mjs'
     ':(top)scripts/lanes/set-lane-override.mjs' ':(top)scripts/lanes/profile-managed.cjs'
     ':(top)scripts/observability/quota-sources.ts'
@@ -829,7 +836,7 @@ cr_pathspecs=(':(top)scripts/cr/' ':(top)scripts/lib/' ':(top)scripts/guardrails
     ':(top)scripts/telegram/glm-env.ts' ':(top)scripts/telegram/grants.ts'
     ':(top)scripts/telegram/huge-diff-guard.ts' ':(top)scripts/telegram/lane-args.ts'
     ':(top)scripts/telegram/phi-egress-guard.ts' ':(top)scripts/telegram/round-guard.ts'
-    ':(top)scripts/lanes/plugin-profiles.mjs'
+    ':(top)scripts/lanes/plugin-profiles.mjs' ':(top)scripts/lanes/plugin-profiles.json' ':(top)scripts/lanes/role-requires.mjs' ':(top)scripts/lanes/skill-cost.mjs' ':(top)scripts/lanes/skill-listing.mjs' ':(top)scripts/lanes/profile-settings.sh'
     ':(top)scripts/lanes/leg-pr-open.sh' ':(top)scripts/lanes/leg-burn.sh' ':(top)scripts/lanes/lib/burn-weights.sh'
     ':(top,exclude,glob)scripts/**/__pycache__/**')
 cr_manifest() { # cr_manifest <root> - "<mode> <blob-id> <path>" per guarded file, sorted

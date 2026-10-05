@@ -311,19 +311,16 @@ assert_not_contains "d: RED CONTROL — model not suffixed (unescaped)" 'claude-
 assert_not_contains "d: RED CONTROL — model not suffixed (escaped)" 'claude-fable-5-1\[1m\]' "$out"
 
 # ---------------------------------------------------------------------------
-# (e) HIMMEL-2975 T6: every arm defaults to standard now, console handovers
-#     included -- console arms used to default to 1m unconditionally (the
-#     largest single measured saving in the cost program going unrealized
-#     on every unpinned console arm). RED before this ticket's fix: e1
-#     resolved 1m/auto on the pre-fix code.
+# (e) HIMMEL-3884: console handovers default to 1m/auto; ordinary arms
+#     retain standard/200000. Reverting the shared resolver breaks e1.
 # ---------------------------------------------------------------------------
 HO_E1=$(make_handover "arm-context-console.md")
 out=$(run_arm --time "$(future_time)" --handover "$HO_E1" --dry-run 2>&1)
 rc=$?
 assert_rc "e1: console handover, no --context, exits 0" 0 "$rc"
-assert_contains "e1: guard line defaults console to standard (HIMMEL-2975)" 'context=standard (default)' "$out"
-assert_contains_either "e1: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
-assert_not_contains "e1: no [1m] suffix anywhere in output" '[1m]' "$out"
+assert_contains "e1: guard line defaults console to 1m (HIMMEL-3884)" 'context=1m (default)' "$out"
+assert_contains_either "e1: relaunch command carries --autocompact auto" '--autocompact auto' '--autocompact "auto"' "$out"
+assert_contains "e1: unpinned console preserves operator model default" 'model unset (operator default)' "$out"
 
 HO_E2=$(make_handover)
 out=$(run_arm --time "$(future_time)" --handover "$HO_E2" --dry-run 2>&1)
@@ -333,20 +330,8 @@ assert_contains "e2: guard line defaults non-console to standard" 'context=stand
 assert_contains_either "e2: relaunch command carries --autocompact 200000" '--autocompact 200000' '--autocompact "200000"' "$out"
 
 # ---------------------------------------------------------------------------
-# (e3) HIMMEL-2975: CONSOLE_CONTEXT=1m keeps the 1M opt-in reachable now
-#      that the console default flips to standard (contract requirement 4 —
-#      the explicit opt-in must keep working). GREEN BEFORE AND AFTER this
-#      ticket's fix, on purpose — say so here because a reviewer seeing a
-#      test that never changes colour will otherwise read it as dead
-#      weight: before the fix, arm-resume.sh had NO CONSOLE_CONTEXT support
-#      at all, but every console arm defaulted to 1m unconditionally, so
-#      this scenario passed by coincidence of the (buggy) default; after,
-#      the default is standard and this scenario passes because the shared
-#      resolver (scripts/lib/console-context.sh) explicitly consults
-#      CONSOLE_CONTEXT for a console-class arm. Same PASS, different
-#      mechanism underneath — that is the point, and it is why the
-#      assertions below anchor on the resolved MODE/AUTOCOMPACT rather than
-#      the full reason wording, which legitimately changes between the two.
+# (e3) CONSOLE_CONTEXT=1m remains supported as an explicit env choice.
+#      Non-console handovers ignore this console-only environment setting.
 # ---------------------------------------------------------------------------
 HO_E3=$(make_handover "arm-context-console.md")
 out=$(CONSOLE_CONTEXT=1m run_arm --time "$(future_time)" --handover "$HO_E3" --dry-run 2>&1)
@@ -509,13 +494,13 @@ case "${OSTYPE:-$(uname -s 2>/dev/null)}" in
         assert_contains "j1: success is post-verify earned" 'RESUME ARMED for' "$out"
         TITLE_J1=$(job_title "$REAL_SCHED/job.body")
         assert_contains "j1: precondition, the launch command names the session" 'arm-context-console' "$TITLE_J1"
-        assert_contains "j1: the reason line spells the source like headed-arm.sh" 'context=standard (default)' "$out"
+        assert_contains "j1: the reason line spells the source like headed-arm.sh" 'context=1m (default)' "$out"
         assert_not_contains "j1: the old prose reason is gone" 'no --context given' "$out"
         assert_rc "j1: sc_launch_context attributes the arm from its record, not unknown" 0 \
-            "$(rc_of test "$(sc_launch_context "$CACHE_J/launch-logs" "$TITLE_J1")" = standard)"
+            "$(rc_of test "$(sc_launch_context "$CACHE_J/launch-logs" "$TITLE_J1")" = 1m)"
         ROW_J1=$(cat "$CACHE_J/launch-logs/$TITLE_J1.log" 2>/dev/null)
         case "$ROW_J1" in
-            "headed-arm: role=console session=$TITLE_J1 context=standard source=default autocompact=200000 launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)
+            "headed-arm: role=console session=$TITLE_J1 context=1m source=default autocompact=auto launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)
                 echo "PASS j1: the row is headed-arm.sh's shape (same prefix and field names)" ;;
             *) echo "FAIL j1: row is not headed-arm.sh's shape: '$ROW_J1'"; FAILED=$((FAILED + 1)) ;;
         esac

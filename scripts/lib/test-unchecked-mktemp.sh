@@ -987,9 +987,193 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# HIMMEL-4301: the CI range mode (--range [--merge-ref] <base>) and the
+# merge-commit scoping (a merge's inherited lines are not the merge's own).
+# ---------------------------------------------------------------------------
+# range_repo -- a fixture repo whose main holds one clean script.
+# must <cmd...> -- a fixture-setup step that aborts the suite on failure, so a
+# row can never go vacuously green on a half-built repo.
+must() {
+    "$@" || { echo "FAIL: fixture setup: $* failed -- aborting suite" >&2; exit 1; }
+}
+# must_merge_head <row> -- the merge stopped with MERGE_HEAD set (a staged
+# merge), else the merge-scoping row would test a plain commit.
+must_merge_head() {
+    git -C "$R" rev-parse -q --verify MERGE_HEAD >/dev/null || {
+        echo "FAIL: $1 setup: no MERGE_HEAD after the merge -- aborting suite" >&2
+        exit 1
+    }
+}
+
+# range_repo -- a fixture repo whose main holds one clean script.
+range_repo() {
+    setup_repo || return 1
+    must git -C "$R" branch -m main
+    printf '#!/usr/bin/env bash\necho "one"\n' > "$R/base.sh"
+    must git -C "$R" add base.sh
+    must git -C "$R" commit -q -m "base"
+}
+
+run_range() {
+    ( cd "$R" && bash "$GATE" "$@" >/dev/null 2>&1 )
+}
+
+# G22 -- an unchecked capture committed anywhere in the PR range is refused by
+# the CI range mode, even when a later commit is unrelated (the pre-commit hook
+# is skipped/bypassed for these commits; this is the path #1747 / #1771 took).
+range_repo || { echo "FAIL: G22 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/pr.sh"
+must git -C "$R" add pr.sh
+must git -C "$R" commit -q -m "add unchecked capture"
+printf 'echo "later unrelated"\n' >> "$R/base.sh"
+must git -C "$R" commit -q -am "unrelated later commit"
+g22_out="$(cd "$R" && bash "$GATE" --range main 2>&1)"
+g22_rc=$?
+assert_rc "G22 unchecked capture added in PR range -> range gate refuses" 1 "$g22_rc"
+g22_named="$(printf '%s' "$g22_out" | grep -Fc 'pr.sh:2:' || true)"
+assert_eq "G22 range gate names the exact file:line" "1" "$g22_named"
+
+# G23 -- a guarded capture in the range, and pre-existing debt on main that the
+# PR does not touch -> range gate ok.
+range_repo || { echo "FAIL: G23 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/debt.sh"
+must git -C "$R" add debt.sh
+must git -C "$R" commit -q -m "pre-existing debt on main"
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\nT=$(mktemp -d) || exit 1\necho "$T"\n' > "$R/pr.sh"
+must git -C "$R" add pr.sh
+must git -C "$R" commit -q -m "add guarded capture"
+run_range --range main
+assert_rc "G23 guarded capture in range, untouched debt on main -> range gate ok" 0 "$?"
+
+# G24 -- an unchecked capture added and then FIXED inside the range never lands:
+# the range gate judges the net diff, so it passes.
+range_repo || { echo "FAIL: G24 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/pr.sh"
+must git -C "$R" add pr.sh
+must git -C "$R" commit -q -m "add unchecked capture"
+printf '#!/usr/bin/env bash\nT=$(mktemp -d) || exit 1\necho "$T"\n' > "$R/pr.sh"
+must git -C "$R" commit -q -am "guard it"
+run_range --range main
+assert_rc "G24 capture added then guarded in range -> range gate ok" 0 "$?"
+
+# G25 -- a merge-forward inside the range does not make main's inherited debt
+# the PR's: main gains an unchecked capture after the PR forked, the PR merges
+# main forward, the range gate (merge-base form) stays clean.
+range_repo || { echo "FAIL: G25 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\necho "pr"\n' > "$R/pr.sh"
+must git -C "$R" add pr.sh
+must git -C "$R" commit -q -m "pr work"
+must git -C "$R" checkout -q main
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/main-debt.sh"
+must git -C "$R" add main-debt.sh
+must git -C "$R" commit -q -m "main gains an unchecked capture"
+must git -C "$R" checkout -q feature
+must git -C "$R" merge -q --no-edit main
+run_range --range main
+assert_rc "G25 merge-forward of main's debt, range gate -> ok" 0 "$?"
+
+# G26 -- --merge-ref (CI's refs/pull/N/merge): HEAD is a merge whose first
+# parent is the base tip; the range is HEAD^1..HEAD, i.e. the PR's net diff.
+# Refuses the PR's own unchecked capture, ignores a stale <base> argument.
+range_repo || { echo "FAIL: G26 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/pr.sh"
+must git -C "$R" add pr.sh
+must git -C "$R" commit -q -m "pr adds unchecked capture"
+must git -C "$R" checkout -q main
+printf '#!/usr/bin/env bash\necho "main moved"\n' > "$R/other.sh"
+must git -C "$R" add other.sh
+must git -C "$R" commit -q -m "main moves on"
+must git -C "$R" checkout -q --detach main
+must git -C "$R" merge -q --no-ff --no-edit feature
+stale_base="$(git -C "$R" rev-parse main~1)" || { echo "FAIL: G26 setup: rev-parse main~1 failed -- aborting suite" >&2; exit 1; }
+g26_out="$(cd "$R" && bash "$GATE" --range --merge-ref "$stale_base" 2>&1)"
+g26_rc=$?
+assert_rc "G26 merge ref carrying the PR's unchecked capture -> range gate refuses" 1 "$g26_rc"
+g26_named="$(printf '%s' "$g26_out" | grep -Fc 'pr.sh:2:' || true)"
+assert_eq "G26 names the PR's file:line" "1" "$g26_named"
+
+# G27 -- the range mode fails closed on an unresolvable base.
+range_repo || { echo "FAIL: G27 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+run_range --range no-such-ref
+assert_rc "G27 unresolvable range base -> refuses" 1 "$?"
+
+# G28 -- a merge-forward commit does not own the lines it inherited: main
+# gained an unchecked capture, the PR merges main in (staged merge, MERGE_HEAD
+# set). Only lines added relative to EVERY parent are the merge's own.
+range_repo || { echo "FAIL: G28 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\necho "pr"\n' > "$R/pr.sh"
+must git -C "$R" add pr.sh
+must git -C "$R" commit -q -m "pr work"
+must git -C "$R" checkout -q main
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/main-debt.sh"
+must git -C "$R" add main-debt.sh
+must git -C "$R" commit -q -m "main gains an unchecked capture"
+must git -C "$R" checkout -q feature
+must git -C "$R" merge -q --no-commit --no-ff main
+must_merge_head G28
+run_gate
+assert_rc "G28 staged merge inheriting main's unchecked capture -> gate ok" 0 "$?"
+
+# G29 -- a merge's OWN conflict resolution that adds an unchecked capture is
+# still refused: the resolved line is in neither parent.
+range_repo || { echo "FAIL: G29 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+printf '#!/usr/bin/env bash\necho "a"\necho "shared"\necho "z"\n' > "$R/conf.sh"
+must git -C "$R" add conf.sh
+must git -C "$R" commit -q -m "conf base"
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\necho "a"\necho "branch side"\necho "z"\n' > "$R/conf.sh"
+must git -C "$R" commit -q -am "branch edit"
+must git -C "$R" checkout -q main
+printf '#!/usr/bin/env bash\necho "a"\necho "main side"\necho "z"\n' > "$R/conf.sh"
+must git -C "$R" commit -q -am "main edit"
+must git -C "$R" checkout -q feature
+g29_merge_rc=0
+git -C "$R" merge -q --no-commit --no-ff main >/dev/null 2>&1 || g29_merge_rc=$?
+[ "$g29_merge_rc" -ne 0 ] || { echo "FAIL: G29 setup: the conflicting merge did not stop on a conflict -- aborting suite" >&2; exit 1; }
+must_merge_head G29
+printf '#!/usr/bin/env bash\necho "a"\nT=$(mktemp -d)\necho "z"\n' > "$R/conf.sh"
+must git -C "$R" add conf.sh
+g29_out="$(cd "$R" && bash "$GATE" 2>&1)"
+g29_rc=$?
+assert_rc "G29 merge conflict resolution adds an unchecked capture -> gate refuses" 1 "$g29_rc"
+g29_named="$(printf '%s' "$g29_out" | grep -Fc 'conf.sh:3:' || true)"
+assert_eq "G29 names the resolution's file:line" "1" "$g29_named"
+
+# G30 -- a merge that inherits main's unchecked capture AND adds its own in a
+# different file: only the merge's own line is named.
+range_repo || { echo "FAIL: G30 setup: range_repo failed -- aborting suite" >&2; exit 1; }
+must git -C "$R" checkout -q -b feature
+printf '#!/usr/bin/env bash\necho "pr"\n' > "$R/pr.sh"
+must git -C "$R" add pr.sh
+must git -C "$R" commit -q -m "pr work"
+must git -C "$R" checkout -q main
+printf '#!/usr/bin/env bash\nT=$(mktemp -d)\necho "$T"\n' > "$R/main-debt.sh"
+must git -C "$R" add main-debt.sh
+must git -C "$R" commit -q -m "main gains an unchecked capture"
+must git -C "$R" checkout -q feature
+must git -C "$R" merge -q --no-commit --no-ff main
+must_merge_head G30
+printf 'U=$(mktemp -d)\n' >> "$R/pr.sh"
+must git -C "$R" add pr.sh
+g30_out="$(cd "$R" && bash "$GATE" 2>&1)"
+g30_rc=$?
+assert_rc "G30 merge adding its own capture beside inherited debt -> gate refuses" 1 "$g30_rc"
+g30_named="$(printf '%s' "$g30_out" | grep -Fc 'pr.sh:3:' || true)"
+g30_inherited="$(printf '%s' "$g30_out" | grep -Fc 'main-debt.sh' || true)"
+assert_eq "G30 names the merge's own line" "1" "$g30_named"
+assert_eq "G30 does not name the inherited file" "0" "$g30_inherited"
+
+
+# ---------------------------------------------------------------------------
 # Section 3: RED control (scripts/lib/red-control.sh).
 #
-# Mutation: swap the gate's staged-blob read (`git show ":$sh_path"`) for a
+# Mutation: swap the gate's staged-blob read (`git show "$(blob_spec ...)"`) for a
 # working-tree read (`cat "$sh_path"`). Fixture: a file is STAGED with a
 # guarded mktemp on line 2 (real gate: no violation, rc=0); the WORKING TREE
 # copy of that same file is then edited, unstaged, to make line 2 unguarded.
@@ -1014,7 +1198,7 @@ correct_value="rc=$real_rc flagged=$([ "$real_named" -gt 0 ] && echo yes || echo
 mkdir -p "$R/scripts/hooks" "$R/scripts/lib"
 cp "$LIB_DIR/unchecked-mktemp.sh" "$R/scripts/lib/unchecked-mktemp.sh"
 mutant="$R/scripts/hooks/check-unchecked-mktemp.mutant.sh"
-sed 's#git show ":$sh_path"#cat "$sh_path"#' "$GATE" > "$mutant"
+sed 's#git show "$(blob_spec "$sh_path")"#cat "$sh_path"#' "$GATE" > "$mutant"
 chmod +x "$mutant"
 
 red_control_run --cwd "$R" -- sh -c 'bash "'"$mutant"'" 2>&1'

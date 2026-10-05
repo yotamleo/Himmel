@@ -264,6 +264,68 @@ if [ -n "$LEGS_FROM" ]; then
     LEGS_SPLIT="$legs_union"
 fi
 
+# HIMMEL-4234: a leg that never went LIVE (a backgrounded or forked launch that
+# lost its preface, so it never took its lock or wrote a bullet) holds the same
+# FREE a lost lock does, forever, so the waiter's key never moved and nothing
+# woke the console. NOLIVE is FREE plus a clock; FORKED is FREE plus a
+# transcript that ended in a continued-in record. Both are legs= labels only --
+# lock_status itself (procs=, closable, held_legs) is untouched.
+nolive_min="${TICK_NOLIVE_MIN:-10}"
+case "$nolive_min" in ''|*[!0-9]*) nolive_min=10 ;; esac
+nolive_min=$((10#$nolive_min))
+
+# launch_dir_default: the console work dir the <name>.launch.log files live in.
+launch_dir_default() {
+    if [ -n "${TICK_LAUNCH_DIR:-}" ]; then
+        printf '%s\n' "$TICK_LAUNCH_DIR"
+    elif [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/himmel-console" ]; then
+        printf '%s\n' "$XDG_RUNTIME_DIR/himmel-console"
+    else
+        printf '%s\n' "${TMPDIR:-/tmp}/himmel-console-$(id -u)"
+    fi
+}
+
+# leg_start_epoch <leg doc> <candidate names, comma list> -- when the leg was
+# dispatched: the fleet manifest's `added` time, else the newest launch-log
+# `armed:` line naming the doc or a candidate session, else the doc's mtime.
+leg_start_epoch() {
+    local doc="$1" cands="$2" t="" ts line armed
+    if [ -n "$LEGS_FROM" ] && [ -r "$LEGS_FROM" ]; then
+        ts="$(jq -r --arg d "$doc" '[.legs[] | select(.doc == $d) | .added][0] // empty' "$LEGS_FROM" 2>/dev/null)" || ts=""
+        [ -z "$ts" ] || t="$(date -d "$ts" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
+    fi
+    if [ -z "$t" ]; then
+        armed="$(find "$(launch_dir_default)" -maxdepth 2 -name '*.launch.log' -exec grep -hF ' armed: name=' {} + 2>/dev/null)"  # gnu-ok: Linux-only kit
+        line="$(printf '%s\n' "$armed" | awk -v d="doc=$doc" -v c=",$cands," '
+            { n = $3; sub(/^name=/, "", n); if (index(c, "," n ",") || index($0, " " d " ")) { if ($1 > last) last = $1 } }
+            END { if (last != "") print last }')"
+        if [ -n "$line" ]; then
+            t="$(date -d "${line/_/ }" +%s 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
+        fi
+    fi
+    [ -n "$t" ] || t="$(stat -c %Y "$doc" 2>/dev/null)" || t=""  # gnu-ok: Linux-only kit
+    printf '%s' "$t"
+}
+
+# leg_forked <candidate names, comma list> -- succeeds when the newest session
+# transcript whose custom-title IS one of the names ends in a continued-in
+# record. The title is the only link (the harness writes it from `claude -n`);
+# no transcript found = not forked, never a guess.
+leg_forked() {
+    local dir="${TICK_PROJECTS_DIR:-$HOME/.claude/projects}" cand f newest=""
+    [ -d "$dir" ] || return 1
+    for cand in ${1//,/ }; do
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            if [ -z "$newest" ] || [ "$f" -nt "$newest" ]; then newest="$f"; fi
+        done < <(find "$dir" -maxdepth 2 -name '*.jsonl' -mmin "-${TICK_FORK_WINDOW_MIN:-1440}" -exec grep -lF "\"customTitle\":\"$cand\"" {} + 2>/dev/null)  # gnu-ok: Linux-only kit
+    done
+    [ -n "$newest" ] || return 1
+    # the last record that is not a trailing cost-state: a resumed session appends
+    # assistant/user records after its continued-in, so only the final one counts.
+    grep -v '"type":"cost-state"' "$newest" 2>/dev/null | tail -n 1 | grep -q '"type":"continued-in"'  # pipefail-ok: tail reads its input to EOF and grep -q sees one line, so no SIGPIPE upstream
+}
+
 legs_summary=""
 tails_summary=""
 leg_docmap=""
@@ -314,7 +376,24 @@ for leg in $LEGS_SPLIT; do
     else
         printf 'tick: no such leg doc: %s\n' "$leg_doc" >&2
     fi
-    legs_summary="$(csv_add "$legs_summary" "$label:$lock_status")"
+    # HIMMEL-4234: FREE with no marker bullet ever (tails ?) is a leg that never
+    # went LIVE; that, or a transcript that ended in continued-in, shows in legs=
+    # in place of FREE. A wrapped or marker-bearing leg is never relabelled.
+    # ponytail: the clock is dispatch time, so a leg first listed after the
+    # threshold baselines already NOLIVE and the waiter stays silent for it;
+    # upgrade = wake on first sight of a NOLIVE, if that ever bites.
+    leg_label_state="$lock_status"
+    if [ -f "$leg_doc" ] && [ "$lock_status" = FREE ] && [ "$tail_status" = "?" ]; then
+        if leg_forked "$leg_cands"; then
+            leg_label_state=FORKED
+        else
+            leg_t="$(leg_start_epoch "$leg_doc" "$leg_cands")"
+            if [ -n "$leg_t" ] && [ $(( $(date +%s) - leg_t )) -ge $(( nolive_min * 60 )) ]; then
+                leg_label_state=NOLIVE
+            fi
+        fi
+    fi
+    legs_summary="$(csv_add "$legs_summary" "$label:$leg_label_state")"
     tails_summary="$(csv_add "$tails_summary" "$label:$tail_status")"
     leg_docmap="$leg_docmap$label=$leg_doc"$'\n'
     leg_candmap="$leg_candmap$label"$'\t'"$lock_status"$'\t'"$leg_cands"$'\n'
@@ -530,8 +609,11 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                 if [ -n "$span_doc" ] && [ -f "$span_doc" ]; then
                     # The LATEST acceptance bullet's INCOMING session (the first
                     # name after the colon, not the one after `replaces`) must
-                    # be exactly this console.
-                    accepted="$(sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' "$span_doc" 2>/dev/null | tail -n 1)"
+                    # be exactly this console. Only the `## Results` section
+                    # is read (HIMMEL-3264): an acceptance-shaped line quoted
+                    # above it, or under a later `## ` heading, confirms
+                    # nothing.
+                    accepted="$(awk '/^## /{ r = ($0 ~ /^## Results([[:space:]]|$)/) } r' "$span_doc" 2>/dev/null | sed -n -E 's/^- .*SUCCESSION accepted:[^A-Za-z0-9]*([A-Za-z0-9_.-]+).*/\1/p' | tail -n 1)"
                 fi
                 if [ -n "$accepted" ] && [ "$accepted" = "$console_stem" ]; then
                     relayed_csv="$(csv_add "$relayed_csv" "$span_leg")"
@@ -794,7 +876,16 @@ for lock_dir in "$suite_tmp"/himmel-shell-suite-*.lock; do
 done
 suites="${suite_alive}alive/${suite_dead}dead"
 
-pr_out="$(cd "$REPO" 2>/dev/null && gh pr list --json number --jq '.[].number' 2>/dev/null)" || pr_out=""
+# Open PRs are the project's, not himmel's: a console always runs in himmel, and
+# console.sh records the checkout it is FOR on the doc's project line (`none --
+# ...` for himmel itself). board.mjs reads the same line, so board-fp stays in step.
+pr_repo="$REPO"
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    # shellcheck disable=SC2016  # single-quoted sed pattern; no expansion wanted
+    doc_project="$(sed -n 's/.*The project this console is FOR is \*\*`\([^`]*\)`\*\*.*/\1/p' "$console_doc" | head -n 1)"
+    case "$doc_project" in /*) pr_repo="$doc_project" ;; esac
+fi
+pr_out="$(cd "$pr_repo" 2>/dev/null && gh pr list --json number --jq '.[].number' 2>/dev/null)" || pr_out=""
 prs=""
 while IFS= read -r pr; do
     case "$pr" in ''|*[!0-9]*) continue ;; esac
@@ -871,6 +962,57 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     esac
 fi
 
+# HIMMEL-4051: keep the roadmap-plan qmd index (HIMMEL-4000) fresh WITHOUT ever waiting
+# on it: the tick runs under the waiter's 120 s timeout and a refresh runs qmd embed. Only
+# `plan-index.sh --check` (a fingerprint) runs inline; stale + due launches --refresh
+# DETACHED (plan-index.sh's own lock keeps it to one). ok = fresh; ok:pending = stale but
+# inside the minimum interval since the last success (TICK_PLAN_INDEX_MIN_SECS, default
+# 900) so a busy mirror cannot cause back-to-back embeds; REFRESHING = launched or running;
+# FAIL:<why> = the last refresh failed (same interval backs off the relaunch); skip = no
+# plan dir. The console doc dir is NOT watched: its bucket changes on every Results bullet.
+# The wrapper takes OUT/.launch first, so an overlapping tick's duplicate exits before it can
+# clobber the live refresh's .run.log/.last-fail/.last-run.
+# ponytail: a SIGKILL mid-refresh leaves OUT/.lock or .launch, read as FAIL:lock-stuck after an hour
+# until removed by hand; a pid-aware takeover when it bites.
+plan_index_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    pi_dir="${console_doc%/*}"
+    pi_plan="$(sed -n 's/^tracker-plan:[[:space:]]*//p' "$console_doc" 2>/dev/null | head -n 1)"
+    [ -n "$pi_plan" ] || pi_plan="$pi_dir/specs/plan/HIMMEL-3882"
+    if [ -d "$pi_plan" ]; then
+        pi_out="${TICK_PLAN_INDEX_OUT:-${HOME:-/tmp}/.himmel/state/roadmap-plan}"
+        pi_min="${TICK_PLAN_INDEX_MIN_SECS:-900}"
+        case "$pi_min" in ''|*[!0-9]*) pi_min=900 ;; esac
+        pi_args=(--plan-dir "$pi_plan" --out "$pi_out" --watch "${TICK_TRACKER_MIRROR_DIR:-${HOME:-/tmp}/.himmel/state/jira-mirror/HIMMEL}")
+        [ -z "$LEGS_FROM" ] || pi_args+=(--watch "$LEGS_FROM")
+        pi_age() { local m; m="$(stat -c %Y "$1" 2>/dev/null)" || m=""; case "$m" in ''|*[!0-9]*) echo 999999999 ;; *) echo $(( $(date +%s) - m )) ;; esac; }  # gnu-ok: console kit is Linux-only
+        if bash "$HERE/../../roadmap/plan-index.sh" --check "${pi_args[@]}" >/dev/null 2>&1; then
+            plan_index_summary=ok
+        elif [ -d "$pi_out/.lock" ] || [ -d "$pi_out/.launch" ]; then
+            pi_lk="$pi_out/.lock"; [ -d "$pi_lk" ] || pi_lk="$pi_out/.launch"
+            if [ "$(pi_age "$pi_lk")" -ge 3600 ]; then plan_index_summary=FAIL:lock-stuck; else plan_index_summary=REFRESHING; fi
+        elif [ -f "$pi_out/.last-fail" ] && [ "$(pi_age "$pi_out/.last-fail")" -lt "$pi_min" ]; then
+            plan_index_summary="FAIL:$(head -c 60 "$pi_out/.last-fail" 2>/dev/null | tr -c '[:alnum:] ._:-' '_')"
+        elif [ -f "$pi_out/.fp" ] && [ -d "$pi_out/docs" ] && [ "$(pi_age "$pi_out/.fp")" -lt "$pi_min" ]; then
+            plan_index_summary=ok:pending
+        elif mkdir -p "$pi_out" 2>/dev/null; then
+            rm -f "$pi_out/.last-run"
+            read -r -a pi_launcher <<<"${TICK_PLAN_INDEX_LAUNCHER:-setsid nohup}"
+            pi_have=1; [ "${#pi_launcher[@]}" -gt 0 ] || pi_have=0
+            for pi_w in "${pi_launcher[@]}"; do command -v "$pi_w" >/dev/null 2>&1 || pi_have=0; done  # command -v with several operands passes if ANY exists
+            if [ "$pi_have" = 1 ]; then
+                "${pi_launcher[@]}" bash "$HERE/plan-index-launch.sh" "$pi_out" bash "$HERE/../../roadmap/plan-index.sh" --refresh "${pi_args[@]}" </dev/null >/dev/null 2>&1 &
+                plan_index_summary=REFRESHING
+            else
+                echo "no-launcher: ${pi_launcher[*]} not found" >"$pi_out/.last-fail"
+                plan_index_summary="FAIL:no-launcher"
+            fi
+        else
+            plan_index_summary=FAIL:no-out-dir
+        fi
+    fi
+fi
+
 bank_cache="${TICK_BANK_CACHE_FILE:-/tmp/claude/statusline-usage-cache.json}"
 fh="$(jq -r '.five_hour.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || fh=""
 wk="$(jq -r '.seven_day.utilization | if type == "number" then floor else empty end' "$bank_cache" 2>/dev/null)" || wk=""
@@ -922,7 +1064,13 @@ fi
 # and the ledger goes to /dev/null so a tick writes no cadence-ledger row.
 # ponytail: bank-preflight still takes its fleet admission lock and prunes
 # expired/consumed reservations while it counts, exactly as any bank read does.
-fleet_out="$(CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null bash "$REPO/scripts/lib/bank-preflight.sh" 2>&1 >/dev/null)" || fleet_out=""
+fleet_out="$(CADENCE_BANK_LAUNCH='' CADENCE_BANK_LEDGER=/dev/null bash "$REPO/scripts/lib/bank-preflight.sh" 2>&1)" || fleet_out=""
+# HIMMEL-4081: bank= uses the selected lane's own preflight verdict. Keep
+# or= below informational; it never stands in for the bank admission gate.
+if [ "${CADENCE_BANK_LANE:-${LEG_LANE:-native}}" = openrouter ]; then
+    or_verdict="$(printf '%s\n' "$fleet_out" | grep -E '^(PROCEED|SKIPPED-BANK|BANK-UNKNOWN|SKIPPED-FLEET)$' | tail -n 1)"
+    bank="openrouter:${or_verdict:-BANK-UNKNOWN}"
+fi
 fleet_total="$(printf '%s\n' "$fleet_out" | sed -n 's/^bank-preflight: FLEET .*total=\([0-9][0-9]*\)\/\([0-9][0-9]*\)$/\1 \2/p' | tail -n 1)"
 underfill_min="${TICK_UNDERFILL_MIN:-10}"
 case "$underfill_min" in ''|*[!0-9]*) underfill_min=10 ;; esac
@@ -935,14 +1083,7 @@ if [ -n "$fleet_total" ]; then
     # real window start (the sig- file is touched again at release, and lock
     # dirs are re-stamped by every heartbeat). The dir is fleet-wide, like the
     # census, so any console's recent launch counts as capacity being filled.
-    launch_dir="${TICK_LAUNCH_DIR:-}"
-    if [ -z "$launch_dir" ]; then
-        if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR/himmel-console" ]; then
-            launch_dir="$XDG_RUNTIME_DIR/himmel-console"
-        else
-            launch_dir="${TMPDIR:-/tmp}/himmel-console-$(id -u)"
-        fi
-    fi
+    launch_dir="$(launch_dir_default)"
     recent_launch="$(find "$launch_dir" -maxdepth 2 -name '*.launch.log' -mmin "-$underfill_min" 2>/dev/null | head -n 1)"  # gnu-ok: console kit is Linux/KDE-only (headed-arm.sh); the launch logs it reads exist nowhere else
     if [ $((10#$fleet_live)) -ge $((10#$fleet_cap)) ] || [ -n "$recent_launch" ]; then
         capacity=ok
@@ -953,6 +1094,26 @@ else
     fleet='?'
     capacity=unknown
 fi
+
+# HIMMEL-4076: reuse the fleet census, never read the metered account when
+# no OpenRouter leg is live. This informational field is deliberately absent
+# from console-wait.sh's action key, so changing credit never wakes a waiter.
+openrouter='?'
+or_live="$(printf '%s\n' "$fleet_out" | sed -n 's/^bank-preflight: FLEET .*openrouter=\([0-9][0-9]*\) .*/\1/p' | tail -n 1)"
+case "$or_live" in
+    ''|*[!0-9]*) : ;;
+    *)
+        if [ "$or_live" -eq 0 ]; then
+            openrouter=skip
+        elif [ -r "$REPO/scripts/lanes/openrouter-cost.sh" ]; then
+            or_cost="$(bash "$REPO/scripts/lanes/openrouter-cost.sh" 2>/dev/null)" || or_cost=''
+            or_balance="${or_cost%% *}"
+            case "$or_balance" in
+                balance=\?|balance=[0-9]*:credit|balance=[0-9]*:key-limit_remaining) openrouter="${or_balance#balance=}" ;;
+            esac
+        fi
+        ;;
+esac
 
 # orphans= (HIMMEL-2761): shell-tool wrappers older than TICK_ORPHAN_MIN minutes,
 # joined to the owning session name -- a poll loop that outlives its wrapped
@@ -1187,6 +1348,8 @@ if [ "$verbose" -eq 1 ]; then
     printf 'tracker: %s\n' "$tracker_summary"
     printf 'denials: %s\n' "$denials_summary"
     printf 'ci queue: %s\n' "$ciq_summary"
+    printf 'plan-index: %s\n' "$plan_index_summary"
+    printf 'OpenRouter: %s\n' "$openrouter"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
@@ -1195,13 +1358,13 @@ else
     # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
     # `legset=` (HIMMEL-3293) follows, `board=` (HIMMEL-3361) follows it, and
     # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
-    # and `ciq=` (HIMMEL-3840) is last.
+    # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then

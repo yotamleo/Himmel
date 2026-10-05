@@ -519,6 +519,49 @@ if [ "$rc" -eq 0 ] && [ -z "$out" ]; then pass "every red suite was selected -> 
 ( cd "$FX" && bash "$IS" --selector-miss "$range" >/dev/null 2>&1 ); rc=$?
 if [ "$rc" -eq 2 ]; then pass "--selector-miss without --red-file -> rc2"; else fail "selector-miss usage rc=$rc"; fi
 
+# --- 30. HIMMEL-3963: the word "source" in a full-line COMMENT is prose, not a
+# source edge. A comment naming the changed helper must not join the closure
+# (bank-preflight.sh:1084 "# Same source and spelling as tick.sh's ..." pulled
+# ~136 suites in for a tracker.py change); a real source line, however it is
+# indented or chained, still must. ------------------------------------------
+mkf scripts/lib/cm-lib.sh
+mkf scripts/lib/cm-prose.sh $'# Same source and spelling as cm-lib.sh\'s field\n  # source cm-lib.sh is the real one\necho prose'
+mkf scripts/test-cm-prose.sh 'bash "$d/lib/cm-prose.sh"'
+mkf scripts/lib/cm-asg.sh $'_CM="$d/cm-lib.sh"\n# the source $_CM line lives elsewhere\necho asg'
+mkf scripts/test-cm-asg.sh 'bash "$d/lib/cm-asg.sh"'
+mkf scripts/lib/cm-real.sh $'if x; then\n    source "$here/cm-lib.sh"   # trailing comment\nfi'
+mkf scripts/test-cm-real.sh 'bash "$d/lib/cm-real.sh"'
+mkf scripts/lib/cm-chain.sh 'true; . cm-lib.sh'
+mkf scripts/test-cm-chain.sh 'bash "$d/lib/cm-chain.sh"'
+mkf scripts/lib/cm-var.sh $'_CM="$d/cm-lib.sh"\n    . "$_CM"'
+mkf scripts/test-cm-var.sh 'bash "$d/lib/cm-var.sh"'
+mkf scripts/lib/cm-sub.sh $'(source cm-lib.sh)\n(. "$_CM")'
+mkf scripts/test-cm-sub.sh 'bash "$d/lib/cm-sub.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: comment-prose closure fixtures"
+change scripts/lib/cm-lib.sh
+out="$(run_is "$range")"
+if ! grepq "$out" 'test-cm-prose\.sh'; then pass "a comment that says 'source ... cm-lib.sh' does not widen"; else fail "comment prose widened the closure: $out"; fi
+if ! grepq "$out" 'test-cm-asg\.sh'; then pass "a comment 'source \$var' does not make an assigning file a variable sourcer"; else fail "comment var-source widened the closure: $out"; fi
+if grepq "$out" '^scripts/test-cm-real\.sh$'; then pass "an indented real source line with a trailing comment is still followed"; else fail "indented source missed: $out"; fi
+if grepq "$out" '^scripts/test-cm-chain\.sh$'; then pass "a chained '; . x' source is still followed"; else fail "chained source missed: $out"; fi
+if grepq "$out" '^scripts/test-cm-var\.sh$'; then pass "an indented variable-sourcing file is still followed"; else fail "indented var-source missed: $out"; fi
+if grepq "$out" '^scripts/test-cm-sub\.sh$'; then pass "a subshell '(source x)' is still followed"; else fail "subshell source missed: $out"; fi
+
+# --- 31. HIMMEL-4256: the PR-1734 shape. A NEW file under a tree that a suite
+# walks (lint-fail-open scans scripts/lanes/) lists that suite, though no suite
+# names the file; a new file outside every declared tree does not. -----------
+mkf scripts/guardrails/test-lint-fail-open.sh 'bash "$d/lint-fail-open.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: scan-roots fixtures"
+mkdir -p "$FX/scripts/lanes/lib" "$FX/docs/scan-31"
+change scripts/lanes/lib/leg-cost-row.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/guardrails/test-lint-fail-open\.sh$'; then pass "a new file under scripts/lanes/ -> test-lint-fail-open.sh (scan root)"; else fail "scan-root miss on the PR-1734 shape: $out"; fi
+change docs/scan-31/new.sh
+out="$(run_is "$range")"
+if ! grepq "$out" 'test-lint-fail-open'; then pass "a new file outside every scan root does not list the scanning suite"; else fail "scan root over-selected: $out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"

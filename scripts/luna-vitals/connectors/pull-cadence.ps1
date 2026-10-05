@@ -62,7 +62,7 @@ $artifact = Join-Path $artifactDir "gh-$resolvedTo.json"
 $flowRunLedger = ([System.IO.Path]::GetFullPath((Join-Path $repoRoot 'scripts\lib\flow-run-ledger.sh'))) -replace '\\','/'
 $flowRunBash = $null
 try {
-    $flowRunBash = (Get-Command bash -ErrorAction Stop).Source
+    $flowRunBash = (Get-Command bash -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 } catch {
     $flowRunBash = $null
 }

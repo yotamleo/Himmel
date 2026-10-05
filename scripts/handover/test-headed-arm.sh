@@ -71,6 +71,12 @@ if ! host_modes_stick; then
   host_skip "headed-arm.sh's claim-lock root needs a chmod/mkdir -m 0700 that sticks; this host's modes do not"
   exit 0
 fi
+# Copied/mutant renderers get a sibling resolver like the real tree; ambient
+# HEADED_ARM_LEG_PROFILES is deliberately ignored by direct console arms.
+fixture_profiles() {
+  mkdir -p "$1/lanes"
+  cp "$HERE/../lanes/plugin-profiles.mjs" "$HERE/../lanes/plugin-profiles.json" "$1/lanes/"
+}
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()        { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
@@ -287,15 +293,12 @@ contains "happy path: carries the session name via -n"  "$rec1" "-n HIMMEL-9999-
 contains     "happy path: carries the default model (Opus parent, HIMMEL-3079)" "$rec1" "claude-opus-5-5"
 not_contains "happy path: default model is not Fable"   "$rec1" "claude-fable-5-1"
 contains "happy path: doc reaches the prompt"            "$rec1" "load some/handover-doc.md and continue"
-# HIMMEL-2973: default [context] is now `standard` (--autocompact 200000) --
-# the console arm path is the biggest cache-read cost driver on the fleet
-# (2026-09-12 cost audit), and 1m context is now an explicit opt-in via
-# CONSOLE_CONTEXT=1m in the launching shell, never the bare default.
-contains     "happy path: default context passes autocompact 200000" "$rec1" "--autocompact 200000"
-not_contains "happy path: default context has no autocompact auto"   "$rec1" "--autocompact auto"
-not_contains "happy path: default model carries no [1m] suffix" "$rec1" "[1m]"
+# HIMMEL-3884: direct consoles default to 1m/auto with honest provenance.
+contains     "happy path: default context passes autocompact auto" "$rec1" "--autocompact auto"
+not_contains "happy path: default context has no autocompact 200000" "$rec1" "--autocompact 200000"
+contains "happy path: default model carries [1m] suffix" "$rec1" "[1m]"
 log1="$(cat "$d1/log" 2>/dev/null || true)"
-contains "happy path: log records the default context (standard)" "$log1" "context=standard (default)"
+contains "happy path: log records the default context (1m)" "$log1" "context=1m (default)"
 
 # --- 1b (HIMMEL-2973). CONSOLE_CONTEXT=1m opts into 1m without a positional -
 d1b="$tmp/c1b"; mk_stub "$d1b" 1 alive "HIMMEL-9999b-leg"
@@ -312,17 +315,35 @@ log1b="$(cat "$d1b/log" 2>/dev/null || true)"
 contains     "CONSOLE_CONTEXT=1m: log spells the source (explicit)" "$log1b" "context=1m (explicit)"
 not_contains "CONSOLE_CONTEXT=1m: log no longer spells the mechanism as the source" "$log1b" "(CONSOLE_CONTEXT=1m)"
 
-# --- 1c (HIMMEL-2973). positional 1m WITHOUT the env is refused up front ----
+# --- 1c (HIMMEL-3884). positional 1m needs no environment workaround ----
 d1c="$tmp/c1c"; mk_stub "$d1c" 1 alive "HIMMEL-9999c-leg"
 outc1c=$(env -u CONSOLE_CONTEXT KONSOLE_CMD="$d1c/konsole" PGREP_CMD="$d1c/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d1c/locks" HEADED_ARM_PROC="$d1c/proc" \
-    bash "$SCRIPT" "HIMMEL-9999c-leg" "some/handover-doc.md" "$d1c/signal-never" "$PAST" "$d1c/log" claude-opus-5 1m 2>&1)
+    bash "$SCRIPT" --dry-run "HIMMEL-9999c-leg" "some/handover-doc.md" "$d1c/signal-never" "$PAST" "$d1c/log" claude-opus-5 1m 2>&1)
 rcc1c=$?
-check    "positional 1m without env: exit 2" "$rcc1c" "2"
-contains "positional 1m without env: names CONSOLE_CONTEXT=1m" "$outc1c" "CONSOLE_CONTEXT=1m"
-if [ -e "$d1c/record" ]; then echo "FAIL - positional 1m without env: no konsole record"; fails=$((fails+1))
-else echo "ok - positional 1m without env: no konsole record"; fi
-if [ -e "$d1c/locks" ]; then echo "FAIL - positional 1m without env: no lock dir created"; fails=$((fails+1))
-else echo "ok - positional 1m without env: no lock dir created"; fi
+check "positional 1m without env: exit 0" "$rcc1c" "0"
+contains "positional 1m without env: explicit source" "$outc1c" "context=1m (explicit)"
+contains "positional 1m without env: auto" "$outc1c" "--autocompact auto"
+outc1c=$(CONSOLE_CONTEXT=standard run_headed_arm "$d1c" "$REPO" "HIMMEL-9999c-leg" "some/handover-doc.md" "$d1c/signal-never" "$PAST" claude-opus-5 standard 2>&1)
+check "positional standard: exit 0" "$?" "0"
+wait_record "$d1c" || true
+contains "positional standard: argv opts down" "$(cat "$d1c/record" 2>/dev/null || true)" "--autocompact 200000"
+
+# HIMMEL-4094/3884: ambient leg profiles cannot override a console opt-down.
+for ambient in profile resolver both stale; do
+  ambient_env=(-u HEADED_ARM_CONTEXT_PROFILE -u HEADED_ARM_LEG_PROFILES -u HEADED_ARM_CONTEXT_PID)
+  case "$ambient" in
+    profile) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design) ;;
+    resolver) ambient_env+=(HEADED_ARM_LEG_PROFILES=/nonexistent/ambient-resolver.mjs) ;;
+    both) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs") ;;
+    stale) ambient_env+=(HEADED_ARM_CONTEXT_PROFILE=design HEADED_ARM_LEG_PROFILES="$HERE/../lanes/plugin-profiles.mjs" HEADED_ARM_CONTEXT_PID=1) ;;
+  esac
+  rc=0
+  out="$(env -u CONSOLE_CONTEXT "${ambient_env[@]}" KONSOLE_CMD="$BASH" PGREP_CMD="$BASH" \
+    bash "$SCRIPT" --dry-run HIMMEL-4094-console some/doc.md /tmp/nosig 99999999999 "$tmp/ambient-$ambient.log" claude-sonnet-5 standard 2>&1)" || rc=$?
+  check "ambient profile inputs ($ambient): direct standard arm succeeds" "$rc" "0"
+  contains "ambient profile inputs ($ambient): console opt-down wins" "$out" "--autocompact 200000"
+  not_contains "ambient profile inputs ($ambient): no profile 1m ceiling" "$out" "--autocompact 600000"
+done
 
 # --- 1d (HIMMEL-2973). positional 1m WITH the env is accepted ---------------
 d1d="$tmp/c1d"; mk_stub "$d1d" 1 alive "HIMMEL-9999d-leg"
@@ -351,9 +372,9 @@ if [ -s "$d1e/record" ]; then echo "ok - durable record, default: konsole IS inv
 else echo "FAIL - durable record, default: konsole IS invoked (precondition)"; fails=$((fails+1)); fi
 rec1e="$(cat "$d1e/cache/launch-logs/HIMMEL-9999e-console.log" 2>/dev/null || true)"
 contains "durable record, default: names the role"    "$rec1e" "headed-arm: role=console session=HIMMEL-9999e-console "
-contains "durable record, default: records the mode"  "$rec1e" " context=standard "
+contains "durable record, default: records the mode"  "$rec1e" " context=1m "
 contains "durable record, default: records the source" "$rec1e" " source=default "
-contains "durable record, default: records autocompact" "$rec1e" " autocompact=200000 "
+contains "durable record, default: records autocompact" "$rec1e" " autocompact=auto "
 
 d1f="$tmp/c1f"; mk_stub "$d1f" 1 alive "HIMMEL-9999f-console"; mkdir -p "$d1f/cache"
 rc1f=0
@@ -1546,6 +1567,7 @@ mutant36="$mutant36dir/scripts/handover/headed-arm.sh"
 # shellcheck disable=SC2016 # single-quoted sed script; $RECORDER must stay literal
 sed 's/if \[ "\$RECORDER" = "1" \]; then/if true; then/' "$SCRIPT" > "$mutant36"
 cp "$HERE/../lib/console-context.sh" "$mutant36dir/scripts/lib/console-context.sh"
+fixture_profiles "$mutant36dir/scripts"
 chmod 755 "$mutant36"
 d37="$tmp/c37"; mk_stub "$d37" 1 alive "HIMMEL-red36"
 mrc36=0
@@ -1788,6 +1810,7 @@ cp "$SCRIPT" "$d43/bare/headed-arm.sh"
 # lone copy needs that sibling to reach the konsole-default resolution at all.
 # konsole-macos.sh is still deliberately absent -- that is what this case proves.
 cp "$HERE/../lib/console-context.sh" "$d43/lib/console-context.sh"
+fixture_profiles "$d43"
 mk_stub "$d43" 1 alive
 out43=$(HEADED_ARM_UNAME=Darwin PGREP_CMD="$d43/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43/locks" \
   bash "$d43/bare/headed-arm.sh" "HIMMEL-mac43" "doc43.md" "$d43/signal-never" "$PAST" "$d43/log" 2>&1)
@@ -1811,6 +1834,7 @@ cp "$SCRIPT" "$d43b/bare/headed-arm.sh"
 # lone copy needs that sibling to reach the konsole-default resolution at all.
 # konsole-macos.sh is still deliberately absent -- that is what this case proves.
 cp "$HERE/../lib/console-context.sh" "$d43b/lib/console-context.sh"
+fixture_profiles "$d43b"
 mk_stub "$d43b" 1 alive
 # HIMMEL-3484: pinning KONSOLE_CMD exercised the OVERRIDE, not the Linux
 # default this row names. KONSOLE_CMD is now unset and the default's bare
@@ -1839,6 +1863,7 @@ not_contains "43b Linux default: never mentions the macOS shim" "$out43b" "konso
 d43c="$tmp/c43c"; mkdir -p "$d43c/bare" "$d43c/lib"
 cp "$SCRIPT" "$d43c/bare/headed-arm.sh"
 cp "$HERE/../lib/console-context.sh" "$d43c/lib/console-context.sh"
+fixture_profiles "$d43c"
 mk_stub "$d43c" 1 alive
 out43c=$(env -u KONSOLE_CMD -u HEADED_ARM_UNAME PATH="$d43c:$PATH" PGREP_CMD="$d43c/pgrep" HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43c/locks" \
   bash "$d43c/bare/headed-arm.sh" "HIMMEL-mac43c" "doc43c.md" "$d43c/signal-never" "$PAST" "$d43c/log" 2>&1)
@@ -2087,6 +2112,7 @@ d42="$tmp/c42"; mkdir -p "$d42/bare" "$d42/lib"
 cp "$SCRIPT" "$d42/bare/headed-arm.sh"
 # HIMMEL-2975: the lone copy needs its ../lib sibling to get this far at all.
 cp "$HERE/../lib/console-context.sh" "$d42/lib/console-context.sh"
+fixture_profiles "$d42"
 mk_stub "$d42" 1 alive
 # A shim that WOULD record a launch, so "nothing was launched" is a real
 # assertion rather than a missing-file tautology.
@@ -2121,5 +2147,16 @@ wait_record "$d42b" || true
 rec42b="$(cat "$d42b/record" 2>/dev/null || true)"
 check "42b macOS + RECORDER=1 + explicit KONSOLE_CMD: exit 0, not the refusal" "$rc42b" "0"
 contains "42b explicit KONSOLE_CMD: the util-linux script(1) wrapper still reaches the argv" "$rec42b" "script -q -a -f $d42b/log -c"
+
+# --- 43 (HIMMEL-4052): a headless console arm keeps the console profile. The
+# HEADED_ARM_HEADLESS=1 argv rebuild used to drop --settings (HIMMEL-4013).
+d43="$tmp/c43"; mkdir -p "$d43"
+rc43=0
+out43=$(HEADED_ARM_HEADLESS=1 LEG_PROFILE_SETTINGS=/dev/null HEADED_ARM_CLAUDE_CLI=true \
+  KONSOLE_CMD="$d43/konsole" PGREP_CMD=true HEADED_ARM_REPO="$REPO" HEADED_ARM_LOCK_DIR="$d43/locks" HEADED_ARM_PROC="$d43/proc" \
+  bash "$SCRIPT" --dry-run --role console "HIMMEL-hl43" "doc43.md" "$d43/signal-never" "$PAST" "$d43/log" 2>&1) || rc43=$?
+check "43 headless console --dry-run: exit 0" "$rc43" "0"
+contains "43 headless console: argv is the background launch" "$out43" "--bg"
+contains "43 headless console: argv keeps the console --settings (HIMMEL-4052)" "$out43" "--settings"
 
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

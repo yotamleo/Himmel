@@ -115,6 +115,17 @@ echo "$*" >> "$GH_STUB_ARGS"
 # HIMMEL-3385: the value of the --jq flag among the args ("" if none).
 _jq_arg() { while [ $# -gt 0 ]; do if [ "$1" = "--jq" ]; then printf '%s' "${2:-}"; return; fi; shift; done; }
 cmd="${1:-}"
+# HIMMEL-4136: the GraphQL budget probe (`gh api -i graphql`, lib/gh-graphql-budget.sh)
+# when GH_STUB_RL_PROBE names a counter file. Call 1 (the startup preflight) spends
+# 4 real seconds and reports a healthy budget; every later call (_rl_recover)
+# reports it exhausted with the reset 6 s away.
+if [ "$cmd" = "api" ] && [ -n "${GH_STUB_RL_PROBE:-}" ] && [ "${2:-}" = "-i" ]; then
+    rp=$(cat "$GH_STUB_RL_PROBE" 2>/dev/null); rp=${rp:-0}
+    echo $((rp+1)) > "$GH_STUB_RL_PROBE"
+    if [ "$rp" -eq 0 ]; then sleep 4; printf 'X-Ratelimit-Remaining: 4000\nX-Ratelimit-Reset: %s\n' "$(($(date +%s) + 3600))"; exit 0; fi
+    printf 'X-Ratelimit-Remaining: 0\nX-Ratelimit-Reset: %s\n' "$(($(date +%s) + 6))"
+    exit 1
+fi
 if [ "$cmd" = "api" ]; then
     case " $* " in
         *" --paginate repos/octo/demo/pulls/42/files "*)
@@ -567,6 +578,8 @@ case " $* " in
                 # HIMMEL-3381: the required gate's own row read ("<bucket><TAB><name>").
                 # GH_STUB_CHECKS is a newline list of "<bucket>:<name>".
                 case " $* " in
+                    # HIMMEL-4071: the failed-job link read ("<name><TAB><link>").
+                    *'\(.name)\t\(.link)'*) printf '%b' "${GH_STUB_FAILLINKS:-}"; exit 0 ;;
                     *'\(.bucket)\t\(.name)'*)
                         # late:<n>     first read lacks <n>, later reads carry it green
                         # flipfail:<n> first read has <n> pending, later reads carry it failed
@@ -608,7 +621,7 @@ case " $* " in
                     # must NOT be read as the ignorable rollup — proves
                     # watch_decidable's case is an exact match, not a glob.
                     blocking-cr-substring) printf 'CHECKCI_OK\ncoderabbit-extra\n' ;;
-                    blocking-cap-pending|blocking-cap-red) printf 'CHECKCI_OK\nunit-tests\n' ;;
+                    blocking-cap-pending|blocking-cap-red|blocking-long-pending) printf 'CHECKCI_OK\nunit-tests\n' ;;
                     # Every OTHER mode reports a still-pending NON-CodeRabbit
                     # check by default, so watch_decidable() reliably reads
                     # false and never races the backgrounded --watch job:
@@ -636,12 +649,18 @@ case " $* " in
             # shapes (0 failed) — the cap/decidable path must not misread the
             # generic default (1 failed, meant for the red-confirm caller) as
             # a red verdict. blocking-cap-red is the one case that IS red.
-            blocking-cr-decidable|blocking-cap-pending|blocking-cr-substring|blocking-cap-extend) echo 0 ;;
+            blocking-cr-decidable|blocking-cap-pending|blocking-cr-substring|blocking-cap-extend|green-then-slow|blocking-long-pending) echo 0 ;;
             blocking-cap-red) echo 1 ;;
             *) echo 1 ;;
         esac
         exit 0 ;;
 esac
+# HIMMEL-4136: the first plain `pr checks` call fails as a rate limit, once.
+if [ -n "${GH_STUB_RL_ONCE:-}" ] && [ ! -e "$GH_STUB_RL_ONCE" ]; then
+    : > "$GH_STUB_RL_ONCE"
+    echo "GraphQL: API rate limit exceeded for user ID 1." >&2
+    exit 1
+fi
 case "$GH_STUB_MODE" in
     no-pr)
         echo 'no pull requests found for branch "feat/x"' >&2; exit 1 ;;
@@ -724,6 +743,12 @@ case "$GH_STUB_MODE" in
     blocking-cap-red)
         if [ "$is_watch" -eq 1 ]; then sleep 3; echo "X ci fail"; exit 1; fi
         exit 8 ;;
+    blocking-long-pending)
+        # HIMMEL-4136: a check pending far past any deadline the suite asks
+        # for — the watch outlives the cap AND the extension, so check-ci
+        # must reach its own deadline arithmetic to stop it.
+        if [ "$is_watch" -eq 1 ]; then sleep 30; echo "All checks were successful"; exit 0; fi
+        exit 8 ;;
     blocking-cap-extend)
         # HIMMEL-2907: round 1 runs past the cap exactly like blocking-cap-
         # pending (a healthy shard still mid-run); round 2 — check-ci.sh's
@@ -734,6 +759,16 @@ case "$GH_STUB_MODE" in
             w=$(cat "$GH_STUB_WATCH" 2>/dev/null); w=${w:-0}
             echo $((w+1)) > "$GH_STUB_WATCH"
             if [ "$w" -eq 0 ]; then sleep 3; fi
+            echo "All checks were successful"; exit 0
+        fi
+        exit 8 ;;
+    green-then-slow)
+        # HIMMEL-4131: the first watch is instantly green (the settle path is then
+        # taken); every later watch runs past any cap the suite sets.
+        if [ "$is_watch" -eq 1 ]; then
+            w=$(cat "$GH_STUB_WATCH" 2>/dev/null); w=${w:-0}
+            echo $((w+1)) > "$GH_STUB_WATCH"
+            if [ "$w" -ge 1 ]; then sleep 8; fi
             echo "All checks were successful"; exit 0
         fi
         exit 8 ;;
@@ -818,6 +853,7 @@ ACCESS_OVERRIDE="$STUBDIR/access.json"
 # HIMMEL-3473: GitHub's mergeStateStatus sequence + the head it reports. Default
 # CLEAN at the watched head, so every pre-3473 case keeps its verdict.
 MERGE_STATE_OVERRIDE=CLEAN; MERGE_HEAD_OVERRIDE=sha1
+BUDGET_PREFLIGHT_OVERRIDE=0; RL_PROBE_OVERRIDE=""; RL_ONCE_OVERRIDE=""
 
 # --- HIMMEL-1953: no real sleeping, and no unbounded case -------------------
 #
@@ -912,6 +948,7 @@ run() {
         GH_STUB_PRODUCERS="$PRODUCERS_OVERRIDE" \
         GH_STUB_STATUSCTX="$STATUSCTX_OVERRIDE" \
         GH_STUB_CHECKS="$CHECKS_OVERRIDE" \
+        HIMMEL_CONSOLE_LEG=0 \
         GH_STUB_MERGE_STATE="$MERGE_STATE_OVERRIDE" \
         GH_STUB_MERGE_HEAD="$MERGE_HEAD_OVERRIDE" \
         GH_STUB_MSC="$STUBDIR/msc" \
@@ -930,7 +967,10 @@ run() {
         CR_BOT_LOGINS="$CR_BOT_LOGINS_OVERRIDE" \
         CHECK_CI_SLEEP_CMD="$SLEEP_CMD_OVERRIDE" \
         CHECK_CI_PROBE_INTERVAL=1 \
-        GH_BUDGET_PREFLIGHT=0 \
+        GH_BUDGET_PREFLIGHT="$BUDGET_PREFLIGHT_OVERRIDE" \
+        GH_BUDGET_JITTER_MAX=0 \
+        GH_STUB_RL_PROBE="$RL_PROBE_OVERRIDE" \
+        GH_STUB_RL_ONCE="$RL_ONCE_OVERRIDE" \
         "$CASE_RUNNER" $CASE_RUNNER_ARGS bash "$SCRIPT" "$@" >"$of" 2>"$ef"
     RC=$?
     if [ "$RC" -eq 124 ] && [ "$CASE_RUNNER" != env ]; then
@@ -945,6 +985,7 @@ run() {
     RULES_OVERRIDE=none; CLASSIC_OVERRIDE=none; PRODUCERS_OVERRIDE=none; STATUSCTX_OVERRIDE=none; CHECKS_OVERRIDE="pass:unit-tests"
     KEEP_ALERT_STATE=0; ALERT_FAIL_OVERRIDE=""; ACCESS_OVERRIDE="$STUBDIR/access.json"
     MERGE_STATE_OVERRIDE=CLEAN; MERGE_HEAD_OVERRIDE=sha1
+    BUDGET_PREFLIGHT_OVERRIDE=0; RL_PROBE_OVERRIDE=""; RL_ONCE_OVERRIDE=""
 }
 
 run_in_repo() {
@@ -1997,7 +2038,7 @@ fi
 # extension (round 1 hits the cap with the check still running; round 2 —
 # the extension — resolves green). Today this is rc 2; after the fix rc 0,
 # with the WAITING notice naming the count and the still-pending job.
-run blocking-cap-extend --max-wait 1
+run blocking-cap-extend --max-wait 2
 assert_rc 0 "2907-a a slow-but-healthy shard resolves after the one-time extension"
 assert_err_has "WAITING 1 pending (unit-tests) — extending once (HIMMEL-2907)" "2907-a WAITING notice names the pending count and job"
 assert_out_has "all checks green + all review threads resolved" "2907-a eventual green verdict"
@@ -2015,6 +2056,124 @@ else
     fail "2907-b extends exactly once, not infinitely" "WAITING appeared $waiting_count times, want 1"
 fi
 assert_err_has "still pending (unit-tests)" "2907-b the exit-2 line names the pending job"
+assert_err_has "DEADLINE-PENDING" "2907-b the exit-2 line names a deadline-with-pending, not an error (HIMMEL-4131)"
+
+# --- HIMMEL-4131: --max-wait bounds the WHOLE run ---------------------------
+# Real sleeps: elapsed wall time is the signal. Each stub watch runs 3s+ (8s for
+# green-then-slow after its first), so a per-round cap would stack rounds.
+
+# 4131-b — an instantly green round 1, then settle, then a slow round 2: the
+# settle wait and round 2 share the deadline. Per-round caps took ~2+2+2 = 6s+.
+POLL_OVERRIDE=1
+SETTLE_OVERRIDE=3
+SLEEP_CMD_OVERRIDE="sleep"
+t0=$SECONDS
+run green-then-slow --max-wait 3
+t_elapsed=$((SECONDS - t0))
+assert_rc 2 "4131-b settle + slow round 2 hits the deadline with pending, rc 2"
+assert_err_has "DEADLINE-PENDING" "4131-b the verdict names the deadline-with-pending"
+if [ "$t_elapsed" -le 5 ]; then
+    pass "4131-b settle and round 2 share the --max-wait deadline"
+else
+    fail "4131-b settle and round 2 share the --max-wait deadline" "elapsed=${t_elapsed}s want <=5s for --max-wait 3"
+fi
+
+# 4131-c — the deadline lands mid-extension: round 1 takes half, the extension
+# is cut at the deadline while still pending, and the verdict says pending.
+POLL_OVERRIDE=1
+SLEEP_CMD_OVERRIDE="sleep"
+t0=$SECONDS
+run blocking-cap-pending --max-wait 2
+t_elapsed=$((SECONDS - t0))
+assert_rc 2 "4131-c deadline mid-extension rc 2"
+if [ "$t_elapsed" -le 3 ]; then
+    pass "4131-c --max-wait bounds cap + extension together"
+else
+    fail "4131-c --max-wait bounds cap + extension together" "elapsed=${t_elapsed}s want <=3s for --max-wait 2 (per-round caps took ~4s)"
+fi
+assert_err_has "extending once" "4131-c the extension started inside the deadline"
+assert_err_has "DEADLINE-PENDING" "4131-c the verdict says pending, not broken"
+
+# 4131-e — a leading-zero --max-wait is decimal (08 is not an octal error).
+# HIMMEL-4136 (J1660): the case must REACH the deadline arithmetic, or it passes
+# with the 10# normalisation removed. register-then-green certified with only
+# its rc asserted; blocking-long-pending holds a check pending through the cap
+# AND the extension, so every deadline split ($(( ... )) over MAX_WAIT) runs.
+# Costs the 8 real seconds it asks for.
+SETTLE_OVERRIDE=0
+POLL_OVERRIDE=1
+SLEEP_CMD_OVERRIDE="sleep"
+run blocking-long-pending --max-wait 08
+assert_rc 2 "4131-e --max-wait 08 reads as decimal 8 and runs to the deadline"
+assert_err_has "extending once" "4131-e the run reached the deadline arithmetic (cap + extension)"
+assert_err_has "the 8s --max-wait deadline passed" "4131-e the deadline is decimal 8 seconds"
+assert_err_lacks "4131-e no arithmetic error on a leading-zero --max-wait" "value too great for base" -iF "value too great for base"
+
+# 4131-d — a deadline that cuts the settle window short must not certify green:
+# the late-registering check set never had its window (codex-1, round 1).
+# HIMMEL-4136: --max-wait below --settle is now refused up front (4136-a), so
+# the window is cut by the time the first watch already spent: settle 5 inside
+# a 5s deadline still truncates it.
+POLL_OVERRIDE=1
+SETTLE_OVERRIDE=5
+SLEEP_CMD_OVERRIDE="sleep"
+t0=$SECONDS
+run green-then-slow --max-wait 5
+t_elapsed=$((SECONDS - t0))
+assert_rc 2 "4131-d a deadline cutting the settle window short is rc 2, never green"
+assert_err_has "settle window" "4131-d the verdict names the truncated settle window"
+assert_err_has "DEADLINE-PENDING" "4131-d the verdict says pending, not broken"
+if [ "$t_elapsed" -le 6 ]; then
+    pass "4131-d the truncated settle stays inside --max-wait"
+else
+    fail "4131-d the truncated settle stays inside --max-wait" "elapsed=${t_elapsed}s want <=6s for --max-wait 5"
+fi
+
+# --- HIMMEL-4136: J1660 follow-ups ------------------------------------------
+
+# 4136-a — a --max-wait below --settle can never certify green (the settle wait
+# alone outlasts the deadline), so it is a usage error, refused before any gate.
+run register-then-green --settle 30 --max-wait 10
+assert_rc 64 "4136-a --max-wait below --settle is a usage error (exit 64)"
+assert_err_has "--max-wait (10s) is below --settle (30s)" "4136-a the refusal names both values"
+assert_grep_lacks "4136-a no gh call is made for a refused command line" "gh was called" -q . "$STUBDIR/args.log"
+# ...the env defaults are held to the same rule (merge-on-green passes no flags).
+SETTLE_OVERRIDE=30
+CHECK_CI_MAX_WAIT=10 run register-then-green
+assert_rc 64 "4136-a CHECK_CI_MAX_WAIT below CHECK_CI_SETTLE is refused too"
+# Boundaries: equal is allowed, and --max-wait 0 (unbounded) or --settle 0 never trip it.
+run register-then-green --settle 5 --max-wait 5
+assert_rc 0 "4136-a --max-wait equal to --settle is accepted"
+run register-then-green --settle 30 --max-wait 0
+assert_rc 0 "4136-a --max-wait 0 (unbounded) is accepted with any --settle"
+
+# 4136-b — CHECK_CI_DISTINCT_DEADLINE=1 (merge-on-green's opt-in) turns ONLY the
+# DEADLINE-PENDING verdict into exit 7; a red stays 1, and the default stays 2.
+CHECK_CI_DISTINCT_DEADLINE=1 run blocking-cap-pending --max-wait 1
+assert_rc 7 "4136-b opted in: a deadline with checks still pending exits 7"
+assert_err_has "DEADLINE-PENDING" "4136-b opted in: the verdict line is unchanged"
+CHECK_CI_DISTINCT_DEADLINE=1 run blocking-cap-red --max-wait 1
+assert_rc 1 "4136-b opted in: a red at the cap is still exit 1, never the deadline code"
+POLL_OVERRIDE=1
+SETTLE_OVERRIDE=5
+SLEEP_CMD_OVERRIDE="sleep"
+CHECK_CI_DISTINCT_DEADLINE=1 run green-then-slow --max-wait 5
+assert_rc 7 "4136-b opted in: a deadline cutting the settle window short exits 7"
+CHECK_CI_DISTINCT_DEADLINE=0 run blocking-cap-pending --max-wait 1
+assert_rc 2 "4136-b not opted in: DEADLINE-PENDING stays exit 2 for every other caller"
+
+# 4136-c — the rate-limit recovery wait is bounded by what is LEFT of
+# --max-wait, not the whole of it. The preflight spends 4 real seconds of a 10 s
+# budget; the first probe then hits a rate limit whose reset is ~7-8 s away.
+# Bounded by the full 10 s that wait was taken and the run went green; bounded
+# by the ~6 s left it must refuse without sleeping.
+BUDGET_PREFLIGHT_OVERRIDE=1
+RL_PROBE_OVERRIDE="$STUBDIR/rl-probe"; rm -f "$RL_PROBE_OVERRIDE"
+RL_ONCE_OVERRIDE="$STUBDIR/rl-once"; rm -f "$RL_ONCE_OVERRIDE"
+run register-then-green --max-wait 10
+assert_rc 2 "4136-c a rate-limit reset beyond the REMAINING budget is exit 2"
+assert_err_has "longer than the" "4136-c the refusal names the budget bound"
+assert_err_lacks "4136-c the recovery did not sleep past the deadline" "a sleep was taken" -F "sleeping"
 
 # 2907-c — negative control: a FAILED check alongside a pending one at cap
 # must red_exit immediately (the failed-bucket probe is checked before the
@@ -2369,6 +2528,18 @@ assert_err_has "codeowner-review-gate" "3381-f the refusal names the failed requ
 if [ "$(wc -l < "$STUBDIR/sleepcount" | tr -d ' ')" = 0 ]; then pass "3381-f a failed required check is never slept on"; else fail "3381-f a failed required check is never slept on" "sleeps=$(wc -l < "$STUBDIR/sleepcount")"; fi
 if [ "$(alert_count)" = 1 ]; then pass "3381-f one alert for a failed required check"; else fail "3381-f one alert for a failed required check" "count=$(alert_count)"; fi
 
+# 4071 — the leg owns a pre-READY red, so a failed REQUIRED check names the
+# failed job's log command (job id from the check's link) at once; a failed check
+# whose link is not an Actions job (an external status) names no log command.
+export GH_STUB_FAILLINKS='codeowner-review-gate\thttps://github.com/octo/demo/actions/runs/777/job/4242\nunit-tests\thttps://ci.example/build/9\n'
+RULES_OVERRIDE="req:codeowner-review-gate"; CHECKS_OVERRIDE="pass:unit-tests
+fail:codeowner-review-gate"
+run cr-completed
+assert_rc 1 "4071-a a FAILED required check still exits 1"
+assert_err_has "gh api --allow-escape-sequences repos/octo/demo/actions/jobs/4242/logs" "4071-a the failed job's log command is printed"
+if grep -qF 'jobs/9/logs' <<< "$ERR"; then fail "4071-b a non-Actions link names no job log"; else pass "4071-b a non-Actions link names no job log"; fi
+unset GH_STUB_FAILLINKS
+
 # 3381-g — dedupe: the SAME head refused twice sends ONE alert; the printed line
 # still appears both times.
 KEEP_ALERT_STATE=0
@@ -2712,5 +2883,5 @@ assert_grep_lacks "3473-g --threads-only makes no mergeStateStatus read" "found 
 
 echo
 echo "ran $COUNT cases; PASS=$PASS FAIL=$FAIL"
-if [ "$COUNT" -ne 189 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 189"; exit 1; fi
+if [ "$COUNT" -ne 203 ]; then echo "CASE-COUNT MISMATCH: ran $COUNT want 203"; exit 1; fi
 [ "$FAIL" -eq 0 ] || exit 1

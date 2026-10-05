@@ -193,7 +193,7 @@ worktree_in_use() {
             inuse_walk_pid="$inuse_ppid"
         done
 
-        local inuse_entry inuse_pid inuse_cwd inuse_found_cwd=0
+        local inuse_entry inuse_pid inuse_cwd inuse_comm inuse_found_cwd=0
         for inuse_entry in /proc/[0-9]*; do
             inuse_pid="${inuse_entry#/proc/}"
             # Gated on /proc/self above, i.e. Linux only.
@@ -216,7 +216,11 @@ worktree_in_use() {
                             ;;
                     esac
                     WORKTREE_INUSE_RESULT="in-use-confirmed"
-                    WORKTREE_INUSE_DETAIL="Process $inuse_pid has its working directory at '$inuse_cwd', inside '$path' -- confirmed via /proc, not inferred from a blocked rename."
+                    # HIMMEL-4334: name the holder's command, so a long-lived
+                    # daemon (VBoxSVC, qmd.js mcp) reads differently from a leg.
+                    inuse_comm=$(tr '\0' ' ' < "$inuse_entry/cmdline" 2>/dev/null | cut -c1-80)
+                    [ -n "$inuse_comm" ] || inuse_comm=$(cat "$inuse_entry/comm" 2>/dev/null)
+                    WORKTREE_INUSE_DETAIL="Process $inuse_pid has its working directory at '$inuse_cwd', inside '$path' -- confirmed via /proc, not inferred from a blocked rename. Holder command: (${inuse_comm:-unknown})."
                     return 0
                     ;;
             esac

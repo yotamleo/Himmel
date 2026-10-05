@@ -29,7 +29,9 @@ mkdir -p "$td/bin"
 cat > "$td/bin/qmd" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1 $2" = "collection list" ]; then
-    if [ "${QMD_STUB_SKILLS_FILES:-0}" -gt 0 ]; then
+    # Unset -> no 'skills' collection at all; set (including 0) -> registered
+    # with that file count, so the zero-file case is a real registered collection.
+    if [ -n "${QMD_STUB_SKILLS_FILES+x}" ]; then
         printf 'Collections (2):\n\nhimmel (qmd://himmel/)\n  Files:    527\n\nskills (qmd://skills/)\n  Files:    %s\n' "$QMD_STUB_SKILLS_FILES"
     else
         printf 'Collections (1):\n\nhimmel (qmd://himmel/)\n  Files:    527\n'
@@ -52,7 +54,7 @@ unset QMD_STUB_SKILLS_FILES
 out="$(bash "$TARGET" 'read a post from X' 2>&1)"; rc=$?
 check "missing collection: exit code" "$rc" "3"
 case "$out" in
-    *"build-skill-index.sh"*"skills"*) ;;
+    *"build-skill-index.sh"*"ensure-skill-index.sh"*) ;;
     *) echo "FAIL - missing collection: remedy text absent from output"; fail=1 ;;
 esac
 case "$out" in
@@ -67,6 +69,25 @@ check "empty collection: exit code" "$rc" "3"
 case "$out" in
     *"build-skill-index.sh"*) ;;
     *) echo "FAIL - empty collection: remedy text absent from output"; fail=1 ;;
+esac
+case "$out" in
+    *"stub-query-ran"*) echo "FAIL - empty collection: qmd query was invoked despite 0 files"; fail=1 ;;
+    *) ;;
+esac
+case "$(qmd collection list)" in
+    *"skills (qmd://skills/)"*"Files:    0"*) echo "ok - empty collection: stub registers 'skills' with 0 files" ;;
+    *) echo "FAIL - empty collection: stub did not register a zero-file 'skills' collection"; fail=1 ;;
+esac
+
+# Remedy honours a customised SKILL_INDEX_DIR (HIMMEL-3760) in both the build
+# and ingest lines, instead of a hardcoded default path.
+custom="$td/custom index"
+out="$(SKILL_INDEX_DIR="$custom" bash "$TARGET" 'read a post from X' 2>&1)"; rc=$?
+check "custom SKILL_INDEX_DIR: exit code" "$rc" "3"
+q="$(printf '%q' "$custom")"
+case "$out" in
+    *"build-skill-index.sh --out $q"*"SKILL_INDEX_DIR=$q bash scripts/skill-index/ensure-skill-index.sh"*) echo "ok - custom SKILL_INDEX_DIR: remedy uses it" ;;
+    *) echo "FAIL - custom SKILL_INDEX_DIR: remedy does not print [$q]: $out"; fail=1 ;;
 esac
 
 # GREEN: populated collection -> query runs, rc from qmd propagates.

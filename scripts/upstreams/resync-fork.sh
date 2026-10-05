@@ -7,9 +7,10 @@
 # moves a version PIN (a text literal); apply-tool-upgrade.sh upgrades an
 # INSTALLED BINARY. Neither fits a carried fork. himmel has historically
 # carried SHA-pinned forks (qmd, de-forked HIMMEL-3045 once its delta collapsed
-# to empty against upstream) and installable-tag-pinned forks (claude-obsidian,
-# retired at v2.2.0 — HIMMEL-2925); no registry entry currently carries a
-# `fork` block (every eligible entry reports SKIP, rc=3), but each carried its
+# to empty against upstream, re-forked HIMMEL-3956 for launcher signal
+# forwarding) and installable-tag-pinned forks (claude-obsidian, retired at
+# v2.2.0 — HIMMEL-2925); qmd is the one entry with a `fork` block today (every
+# other eligible entry reports SKIP, rc=3), and each carried its
 # own delta on top of a recorded upstream base (`synced_base` in
 # scripts/upstreams.json). When upstream tags past that base, bumping
 # synced_base alone would claim the fork sits on a base it never rebased onto

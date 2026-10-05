@@ -9,8 +9,10 @@ import {
   existsSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
 } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import {
   basename,
@@ -20,7 +22,15 @@ import {
   resolve,
   sep,
 } from 'node:path';
-import { isMain } from '../lib/is-main.mjs';
+// HIMMEL-4038: inline (not ../lib/is-main.mjs) — plugin-profiles.mjs imports this
+// module from sandboxes that copy scripts/lanes/ alone (arm-resume suites).
+function isMain(importMetaUrl) {
+  try {
+    return process.argv[1] && realpathSync(fileURLToPath(importMetaUrl)) === realpathSync(process.argv[1]);
+  } catch {
+    return false;
+  }
+}
 
 const ROUTING_TEXT_CAP = 1536;
 const PLUGIN_SCAN_MAX_DEPTH = 6;
@@ -225,6 +235,69 @@ function findPluginSkillDirectories(root, skipped) {
 
   walk(root, 0);
   return skillDirectories;
+}
+
+// HIMMEL-4060: the plugin-cache DIRECTORY COMPONENT of a scanned path —
+// `<configDir>/plugins/cache/<marketplace>/<plugin>/<version>/...` — as
+// { marketplace, plugin, version }, or null for a path outside that layout. Matching this
+// component (not a `/<plugin>/` substring) keeps a skill directory that merely
+// shares a plugin's name from being attributed to that plugin.
+export function pluginCacheOf(path) {
+  const parts = resolve(path).split(sep);
+  for (let i = 0; i + 4 < parts.length; i++) {
+    if (parts[i] === 'plugins' && parts[i + 1] === 'cache') return { marketplace: parts[i + 2], plugin: parts[i + 3], version: parts[i + 4] };
+  }
+  return null;
+}
+
+// HIMMEL-4070: an installed_plugins.json install applies to a session in `cwd` when it is
+// user scope, or a project install whose projectPath is cwd. Shared by installedVersionsOf
+// (profile-context-probe) and runtimeNamesOf so the two cannot disagree.
+export function installApplies(install, cwd) {
+  return install?.scope === 'user' || Boolean(cwd && install?.projectPath === cwd);
+}
+
+// HIMMEL-4068: under strict:true Claude Code namespaces a plugin's skills by the
+// upstream plugin.json `name`, not the marketplace entry name. Map `<entry>@<mkt>`
+// -> that manifest name, for installs whose installPath ships one (read from
+// <configDir>/plugins/installed_plugins.json); an id absent from the map falls
+// back to the id's own name. Empty when the file is unreadable. Only installs that
+// apply to `cwd` count (installApplies) — an omitted cwd leaves user scope only.
+export function runtimeNamesOf(configDir, cwd) {
+  const out = new Map();
+  try {
+    const doc = JSON.parse(readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8'));
+    for (const [id, installs] of Object.entries(doc.plugins ?? {})) {
+      for (const i of Array.isArray(installs) ? installs : []) {
+        if (!installApplies(i, cwd) || typeof i?.installPath !== 'string') continue;
+        try {
+          const name = JSON.parse(readFileSync(join(i.installPath, '.claude-plugin', 'plugin.json'), 'utf8'))?.name;
+          if (typeof name === 'string' && name) { out.set(id, name); break; }
+        } catch { /* no manifest at this install: the entry name applies */ }
+      }
+    }
+  } catch { /* unreadable: every id falls back to its entry name */ }
+  return out;
+}
+
+// HIMMEL-4060: listing entries of skills-dir command trees
+// (`<configDir>/skills/<tree>/commands/*.md`, surfaced as `<tree>:<command>`),
+// which scanSkillCosts does not see. Returns null when <configDir>/skills is
+// unreadable, so the caller can fall back to a constant. Paths the scan could not
+// read (EACCES/EPERM/ELOOP) are pushed onto `skipped`, as scanSkillCosts reports them.
+export function scanCommandTrees(configDir, skipped = []) {
+  const root = join(resolve(configDir), 'skills');
+  let trees;
+  try {
+    trees = readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const entries = [];
+  for (const tree of trees) {
+    for (const e of scanCommands(join(root, tree.name, 'commands'), 'skills-dir-commands', skipped)) entries.push({ ...e, tree: tree.name });
+  }
+  return entries;
 }
 
 export function scanSkillCosts(options = {}) {

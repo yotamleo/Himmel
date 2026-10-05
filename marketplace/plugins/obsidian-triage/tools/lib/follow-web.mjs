@@ -25,10 +25,11 @@
 // github/headFn/account rungs are passed through untouched (no downgrade),
 // and repo/followers claims (owned by other rungs) are never web-checked.
 
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { homedir, hostname } from "node:os";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -45,6 +46,10 @@ export const WEB_VERIFIABLE_KINDS = new Set(["course", "role", "product", "tool"
 
 export const FIRECRAWL_DEFAULT_BASE_URL = "https://api.firecrawl.dev";
 export const FIRECRAWL_DEFAULT_BUDGET = 20; // max searches per run (~1 credit each)
+export const FIRECRAWL_DEFAULT_MAX_CREDITS = 5; // per-call ceiling; above it firecrawl search stops for the run
+// Names HARVEST_SCRAPE_DENY accepts: the scrape-backend registry in
+// tools/harvest-clip-body-batch.py (BACKEND_REGISTRY), which owns the list.
+export const SCRAPE_BACKEND_NAMES = ["local-headless", "jina", "firecrawl"];
 const FIRECRAWL_TIMEOUT_MS = 20000;
 
 // qmd local-vault rung (FREE — a BM25 lookup against the operator's already-
@@ -187,23 +192,108 @@ export function chainWebFns(fns) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Per-call Firecrawl ledger (HIMMEL-4335) — same JSONL file and shape as
+ * harvest-clip-body-batch.py's ledger_append. One line: ts, call_site,
+ * endpoint (path only), credits, ok. Never the key, the query or any result.
+ * HIMMEL_FIRECRAWL_LEDGER overrides the ~/.himmel/state/ default; a write
+ * failure never breaks the search.
+ */
+export function ledgerAppend(callSite, endpoint, credits, ok = true, env = process.env, reason = null) {
+  try {
+    const lp = (env.HIMMEL_FIRECRAWL_LEDGER || "").trim() ||
+      join(env.HOME || homedir(), ".himmel", "state", "firecrawl-ledger.jsonl");
+    mkdirSync(dirname(lp), { recursive: true });
+    const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    appendFileSync(lp, JSON.stringify({
+      v: 1, ts, host: hostname(), source: "firecrawl", kind: "call",
+      call_site: callSite, endpoint, credits, ok, ...(reason ? { reason } : {}),
+    }) + "\n");
+  } catch { /* ledger is best-effort */ }
+}
+
+// Firecrawl-unavailable parking (HIMMEL-4371): same state file and envelope as
+// harvest-clip-body-batch.py's parked_append (`firecrawl-parked` in
+// scripts/observability/ledgers.json). A search that hit a 402 / quota / 429 /
+// auth response is parked as a query hash (never the query text).
+const UNAVAILABLE_BODY = /insufficient credits|out of credits|credits? (?:have been )?exhausted|quota|payment required|upgrade your plan/i;
+
+export function classifyUnavailable(status, body) {
+  if (status === 401 || status === 403) return "auth";
+  if (status === 429) return "rate-limited"; // before the body match: a rate-limit text may mention "quota"
+  if (UNAVAILABLE_BODY.test(body || "") || status === 402) return "exhausted";
+  return null;
+}
+
+function parkedPath(env) {
+  return (env.HIMMEL_FIRECRAWL_PARKED || "").trim() ||
+    join(env.HOME || homedir(), ".himmel", "state", "firecrawl-parked.jsonl");
+}
+
+export function parkedAppend(kind, fields = {}, env = process.env) {
+  try {
+    const pp = parkedPath(env);
+    mkdirSync(dirname(pp), { recursive: true });
+    const ts = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    appendFileSync(pp, JSON.stringify({ v: 1, ts, host: hostname(), source: "firecrawl", kind, ...fields }) + "\n");
+  } catch { /* best-effort */ }
+}
+
+// { unavailable: bool, webItems: Set } folded from the state file, like parked_load().
+function parkedFold(env) {
+  const out = { unavailable: false, webItems: new Set() };
+  let lines = [];
+  try { lines = readFileSync(parkedPath(env), "utf8").split("\n"); } catch { return out; }
+  for (const line of lines) {
+    let r;
+    try { r = JSON.parse(line); } catch { continue; }
+    if (!r || typeof r !== "object") continue;
+    if (r.kind === "unavailable") out.unavailable = true;
+    else if (r.kind === "available") { out.unavailable = false; out.webItems.clear(); }
+    else if (r.kind === "parked" && r.call_site === "follow-web") out.webItems.add(r.item);
+  }
+  return out;
+}
+
+const FIRECRAWL_SEARCH_COST = 1; // documented cost when the response omits creditsUsed
+
+/**
  * Build a firecrawl-backed `webFn(query) -> {found,url,title,snippet}`.
  * Returns null when `apiKey` is falsy (web rung disabled). Budget-capped:
  * after `budget` searches it returns `{found:false}` without spending a
  * credit. Any HTTP/parse failure resolves to `{found:false}` (never throws
  * into verifyWebClaims — which would only be caught as `unverified` anyway).
  */
-export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT_BUDGET } = {}) {
+export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT_BUDGET, maxCredits = FIRECRAWL_DEFAULT_MAX_CREDITS } = {}) {
   if (!apiKey) return null;
   const base = (baseUrl || FIRECRAWL_DEFAULT_BASE_URL).replace(/\/+$/, "");
   let remaining = budget;
+  let unavailable = null; // reason once a 402/quota/429/auth response disabled search for this run
+  let wasUnavailable; // state-file status when this run first needed it (undefined = not read yet)
+  const parkedSeen = new Set();
+
+  const park = (query) => {
+    const item = createHash("sha256").update(query).digest("hex").slice(0, 12);
+    if (parkedSeen.has(item)) return;
+    parkedSeen.add(item);
+    if (parkedFold(process.env).webItems.has(item)) return;
+    parkedAppend("parked", { call_site: "follow-web", item, reason: unavailable });
+  };
+
+  // The call is already billed and cannot be refunded: this only stops the next searches.
+  const tripCeiling = (what) => {
+    remaining = 0;
+    console.error(`follow-web: search unavailable: ${what} (ceiling ${maxCredits}); firecrawl search disabled for the rest of this run`);
+  };
 
   return async function firecrawlWebFn(query) {
+    if (unavailable) { park(query); return { found: false }; }
     if (remaining <= 0) return { found: false };
     remaining -= 1;
+    if (wasUnavailable === undefined) wasUnavailable = parkedFold(process.env).unavailable;
 
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), FIRECRAWL_TIMEOUT_MS);
+    let ledgered = false;
     try {
       const r = await fetch(`${base}/v2/search`, {
         method: "POST",
@@ -214,9 +304,51 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         body: JSON.stringify({ query, limit: 3 }),
         signal: ctrl.signal,
       });
-      if (!r.ok) return { found: false };
-      const data = await r.json();
+      if (!r.ok) {
+        ledgered = true;
+        let errBody = "";
+        try { errBody = String(await r.text()).slice(0, 500); } catch { /* body is best-effort */ }
+        const reason = classifyUnavailable(r.status, errBody);
+        ledgerAppend("follow-web", "/v2/search", 0, false, process.env, reason);
+        if (reason) {
+          unavailable = reason;
+          remaining = 0;
+          console.error(`follow-web: firecrawl unavailable (${reason}); search disabled for the rest of this run, queries parked (deferred: firecrawl-unavailable)`);
+          parkedAppend("unavailable", { call_site: "follow-web", reason });
+          park(query);
+        }
+        return { found: false };
+      }
+      let data;
+      try {
+        data = await r.json();
+      } catch {
+        // transport succeeded, so the call was billed: book the known cost and honour the ceiling
+        ledgered = true;
+        ledgerAppend("follow-web", "/v2/search", FIRECRAWL_SEARCH_COST, false);
+        if (FIRECRAWL_SEARCH_COST > maxCredits) tripCeiling(`a firecrawl search cost ${FIRECRAWL_SEARCH_COST} credits`);
+        return { found: false };
+      }
+      ledgered = true;
+      // A creditsUsed that is present but not an integer ("30", 2.5, true, null) cannot be
+      // trusted to be under the ceiling, so it trips it, like the scrape path.
+      const unreadable = !!data && typeof data === "object" && "creditsUsed" in data && !Number.isInteger(data.creditsUsed);
+      const credits = data && Number.isInteger(data.creditsUsed) ? data.creditsUsed : FIRECRAWL_SEARCH_COST;
+      ledgerAppend("follow-web", "/v2/search", credits, !!data && data.success !== false);
+      if (unreadable) tripCeiling("a firecrawl search reported a non-integer creditsUsed");
+      else if (credits > maxCredits) tripCeiling(`a firecrawl search cost ${credits} credits`);
+      if (data && data.success === false) {
+        const reason = classifyUnavailable(null, JSON.stringify(data).slice(0, 500));
+        if (reason) {
+          unavailable = reason;
+          remaining = 0;
+          console.error(`follow-web: firecrawl unavailable (${reason}); search disabled for the rest of this run, queries parked (deferred: firecrawl-unavailable)`);
+          parkedAppend("unavailable", { call_site: "follow-web", reason });
+          park(query);
+        }
+      }
       if (!data || data.success === false) return { found: false };
+      if (wasUnavailable) { wasUnavailable = false; parkedAppend("available", { call_site: "follow-web" }); }
       // firecrawl /v2/search returns either `data: [ ... ]` or, when sources
       // are split, `data: { web: [ ... ], ... }`. Handle both defensively.
       const results = Array.isArray(data.data)
@@ -233,6 +365,7 @@ export function makeFirecrawlWebFn({ apiKey, baseUrl, budget = FIRECRAWL_DEFAULT
         snippet: top.description || top.snippet || top.markdown || "",
       };
     } catch {
+      if (!ledgered) ledgerAppend("follow-web", "/v2/search", 0, false);
       return { found: false }; // network/abort/parse — grounded no-op
     } finally {
       clearTimeout(t);
@@ -458,6 +591,25 @@ export function makeFixtureWebFn(raw) {
   return (query) => (query in map ? map[query] : { found: false });
 }
 
+// Non-negative integer env var; unset -> fallback, malformed -> a clear error.
+function envNonNegInt(env, key, fallback) {
+  const raw = (env[key] || "").trim();
+  if (!raw) return fallback;
+  if (!/^[0-9]+$/.test(raw)) throw new Error(`${key} must be a non-negative integer, got '${raw}'`);
+  return parseInt(raw, 10);
+}
+
+// HARVEST_SCRAPE_DENY as a validated list (`all` allowed); an unknown name is
+// an error naming the valid set, like the scrape path's registry lookup.
+function scrapeDenyList(env) {
+  const names = (env.HARVEST_SCRAPE_DENY || "").split(",").map((n) => n.trim()).filter(Boolean);
+  const unknown = names.filter((n) => n !== "all" && !SCRAPE_BACKEND_NAMES.includes(n));
+  if (unknown.length) {
+    throw new Error(`unknown HARVEST_SCRAPE_DENY ${unknown.join(",")} (valid: ${SCRAPE_BACKEND_NAMES.join(", ")}, all)`);
+  }
+  return names;
+}
+
 /**
  * Resolve the webFn the CLI should use, fixture-first, then a FREE-FIRST
  * fallback chain (mirrors follow-list-score.mjs's makeFetchFn precedence):
@@ -478,13 +630,32 @@ export function makeWebFn(env = process.env) {
 
   const apiKey = (env.FIRECRAWL_API_KEY || "").trim();
   const baseUrl = (env.FIRECRAWL_BASE_URL || "").trim() || undefined;
-  const fcBudget = parseInt(env.FOLLOW_WEB_BUDGET || "", 10) || FIRECRAWL_DEFAULT_BUDGET;
+  // FOLLOW_WEB_BUDGET (this tool's own knob) wins, then the shared harvest cap.
+  const fcBudget = (env.FOLLOW_WEB_BUDGET || "").trim()
+    ? envNonNegInt(env, "FOLLOW_WEB_BUDGET", FIRECRAWL_DEFAULT_BUDGET)
+    : envNonNegInt(env, "HARVEST_FIRECRAWL_BUDGET", FIRECRAWL_DEFAULT_BUDGET);
+  const maxCredits = envNonNegInt(env, "HARVEST_FIRECRAWL_MAX_CREDITS", FIRECRAWL_DEFAULT_MAX_CREDITS);
+
+  // Kill switch shared with the scrape path: firecrawl is the only paid
+  // search rung, so denying it (or `all`) removes it whatever else is set.
+  const denied = scrapeDenyList(env);
+  const fcDenied = denied.includes("all") || denied.includes("firecrawl");
+  if (fcDenied && apiKey) {
+    console.error("follow-web: search unavailable: firecrawl is denied by HARVEST_SCRAPE_DENY");
+  }
+
+  // `all` is the whole-run kill switch, so it also drops the hermes rung (a paid agent
+  // fan-out); the free local qmd and CLI rungs spend nothing and stay.
+  const hermesDenied = denied.includes("all");
+  if (hermesDenied && (env.FOLLOW_WEB_HERMES || "").trim()) {
+    console.error("follow-web: search unavailable: the hermes rung is denied by HARVEST_SCRAPE_DENY=all");
+  }
 
   const chain = [
     makeQmdWebFn(env),
     makeCliWebFn(env),
-    makeHermesWebFn(env),
-    makeFirecrawlWebFn({ apiKey, baseUrl, budget: fcBudget }),
+    hermesDenied ? null : makeHermesWebFn(env),
+    fcDenied ? null : makeFirecrawlWebFn({ apiKey, baseUrl, budget: fcBudget, maxCredits }),
   ].filter(Boolean);
 
   if (chain.length === 0) return null;

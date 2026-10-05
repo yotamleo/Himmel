@@ -75,6 +75,20 @@ detect_platform() {
 
 platform=$(detect_platform)
 
+# HIMMEL-4013: the emitted claude command runs under the role-matched plugin
+# profile (role-profile.sh on the handover doc), never the full plugin set.
+# Fails closed: an unresolvable profile emits nothing.
+SR_LANES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lanes" && pwd)"
+SR_PROFILE=$(bash "$SR_LANES/role-profile.sh" "$HANDOVER_PATH" 2>/dev/null) || SR_PROFILE=user
+SR_SETTINGS=$(bash "$SR_LANES/profile-settings.sh" "$SR_PROFILE") || {
+    echo "ERROR: plugin profile '$SR_PROFILE' did not resolve; refusing to emit a full-plugin-set resume (HIMMEL-4013)" >&2
+    exit 2
+}
+# A Windows claude needs a Windows path in the .bat.
+if [ "$platform" = "windows" ] && command -v cygpath >/dev/null 2>&1; then
+    SR_SETTINGS=$(cygpath -m "$SR_SETTINGS")
+fi
+
 case "$platform" in
     windows)
         # schtasks /create: ONETIME at the given /st HH:MM. We tag with a
@@ -90,7 +104,7 @@ case "$platform" in
         bat_path="%TEMP%\\himmel-resume-$task_name.bat"
         cat <<EOF
 # Step 1 - write the resume launcher (one line, CMD syntax):
-echo claude "$RESUME_PROMPT" > "$bat_path"
+echo claude --settings "$SR_SETTINGS" "$RESUME_PROMPT" > "$bat_path"
 
 # Step 2 - register the one-shot Task Scheduler entry:
 schtasks /create /tn "$task_name" /tr "$bat_path" /sc ONCE /st $RESUME_TIME /f
@@ -108,7 +122,7 @@ EOF
             cat <<EOF
 # Step 1 - schedule via 'at':
 at $RESUME_TIME <<'CMD'
-claude "$RESUME_PROMPT"
+claude --settings "$SR_SETTINGS" "$RESUME_PROMPT"
 CMD
 
 # To inspect / cancel:
@@ -125,7 +139,7 @@ EOF
 # WARNING: 'at' is not installed; falling back to crontab. crontab entries
 # are RECURRING - this fires daily at $RESUME_TIME until you remove it.
 # Step 1 - add a one-line entry to your crontab:
-(crontab -l 2>/dev/null; echo "$mm $hh * * * claude \"$RESUME_PROMPT\"") | crontab -
+(crontab -l 2>/dev/null; echo "$mm $hh * * * claude --settings \"$SR_SETTINGS\" \"$RESUME_PROMPT\"") | crontab -
 
 # Step 2 - REMOVE the entry after it has fired once:
 crontab -l | grep -v 'HIMMEL-Resume' | crontab -

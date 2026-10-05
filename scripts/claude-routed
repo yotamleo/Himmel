@@ -127,7 +127,7 @@ sanitize_settings() { # $1 src $2 dest — strip model + env.ANTHROPIC_* (node: 
 const fs=require("fs");
 const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
-if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) delete j.env[k];
+if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0 || k.toUpperCase()==="CLAUDE_CODE_AUTO_MODE_SERVER") delete j.env[k];
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 ' "$1" "$2"
 }
@@ -319,6 +319,10 @@ case "$HOUR_UTC" in
   *)           echo "claude-routed: outside GLM peak window (14:00-18:00 UTC+8). Advisory only." >&2 ;;
 esac
 
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+# https://code.claude.com/docs/en/llm-gateway-protocol#feature-pass-through
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
 exec env \
   ANTHROPIC_BASE_URL="$ROUTED_BASE_URL" \
   ANTHROPIC_AUTH_TOKEN="$OMNIROUTE_API_KEY" \

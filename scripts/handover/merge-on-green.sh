@@ -108,7 +108,9 @@
 #   13  cannot resolve the PR, its head SHA, or a well-formed metadata line
 #       (six pipe-joined fields incl. the head branch), or cannot read the
 #       pre-merge policy — refused
-#   14  check-ci gate not green (unresolved threads / red CI / changes requested)
+#   14  check-ci gate not green (unresolved threads / red CI / changes requested),
+#       including checks still pending after 3 deadline rounds, or the PR no
+#       longer OPEN at the certified head between those rounds (HIMMEL-4136)
 #   15  merge failed (gh error, incl. a --match-head-commit head-moved abort, a
 #       branch-delete error where the PR did NOT reach MERGED, an indeterminate
 #       post-merge PR-state query, a MERGED state whose head does not match the
@@ -668,8 +670,13 @@ fi
 
 # 3. Green gate — check-ci.sh exit 0 is the only pass. It watches CI to green,
 # then re-verifies review state + head binding. Any other rc = not merge-safe.
-# No flags passed, so the watch is bounded by CHECK_CI_MAX_WAIT (default 540s,
-# HIMMEL-2062) the same as every other caller — that same env var tunes both.
+# No flags passed, so each watch is bounded by CHECK_CI_MAX_WAIT — one TOTAL
+# deadline, default 900s (HIMMEL-2907, HIMMEL-4131) — the same as every other
+# caller; that same env var tunes both. Under a saturated CI queue a GO'd PR's
+# checks can still be pending at that deadline, so this script re-watches on
+# check-ci's DEADLINE-PENDING verdict alone (exit 7 under
+# CHECK_CI_DISTINCT_DEADLINE=1, HIMMEL-4136), at most CI_DEADLINE_ROUNDS rounds
+# (~45 min at the default) — see the loop below.
 if [ ! -f "$CHECK_CI" ]; then
     echo "merge-on-green: check-ci.sh not found at $CHECK_CI — cannot certify green. Refusing." >&2
     audit "REFUSED reason=no-check-ci repo=$nwo pr=#$pr_num"
@@ -708,12 +715,46 @@ fi
 CR_STATE=$(cr_app_state "$PWD" 2>/dev/null) || CR_STATE=""
 CR_STATE=${CR_STATE:-unknown}
 
-ci_rc=0
-if [ -n "$selector" ]; then
-    bash "$CHECK_CI" "$selector"
-else
-    bash "$CHECK_CI"
-fi || ci_rc=$?
+# HIMMEL-4071: this script runs only after the console's GO, so a red here is
+# the console's (merge_watch_alert routes it to the console inbox); a leg's own
+# pre-GO check-ci watch never sets MERGE_WATCH_POST_GO and is not routed.
+#
+# HIMMEL-4136 (J1660 C1): the saturated-queue loop. Only exit 7 — the deadline
+# passed with checks still pending and NOTHING failed — is re-watched; a red
+# (1), every other exit, and green itself leave the loop on the round they
+# happen, so a red never merges and is never retried. Before each re-watch the
+# PR is re-read, pinned to THIS number and repo: it must still be OPEN at the
+# head the GO certified ($sha), or this refuses — a stale head never merges, and
+# no round is spent watching a head nobody GO'd. An unreadable re-read refuses
+# too (fail closed). The cap is fixed here, not tunable: 3 rounds, each bounded
+# by check-ci's own --max-wait (~45 min at the 900s default; an unbounded
+# CHECK_CI_MAX_WAIT=0 never yields 7). A check-ci that predates the opt-in
+# answers DEADLINE-PENDING as 2, which refuses on round 1 as before.
+CI_DEADLINE_ROUNDS=3
+ci_round=0
+while :; do
+    ci_round=$((ci_round + 1))
+    ci_rc=0
+    if [ -n "$selector" ]; then
+        CHECK_CI_DISTINCT_DEADLINE=1 MERGE_WATCH_POST_GO=1 bash "$CHECK_CI" "$selector"
+    else
+        CHECK_CI_DISTINCT_DEADLINE=1 MERGE_WATCH_POST_GO=1 bash "$CHECK_CI"
+    fi || ci_rc=$?
+    [ "$ci_rc" -eq 7 ] || break
+    [ "$ci_round" -lt "$CI_DEADLINE_ROUNDS" ] || break
+    round_line=$("$GH" pr view "$pr_num" --repo "$nwo" --json state,headRefOid --jq '"\(.state) \(.headRefOid)"' 2>/dev/null) || round_line=""
+    if [ "$round_line" != "OPEN $sha" ]; then
+        echo "merge-on-green: check-ci was still pending at its deadline, and PR #$pr_num is no longer OPEN at the certified head $sha (read: '${round_line:-unreadable}') — not watching again, not merging." >&2
+        audit "REFUSED reason=head-moved-during-ci-wait gate=check-ci:7 round=$ci_round now=$(printf '%s' "${round_line:-unreadable}" | tr -c 'A-Za-z0-9_.-' '_') repo=$nwo pr=#$pr_num sha=$sha"
+        exit 14
+    fi
+    echo "merge-on-green: check-ci reached its deadline with checks still pending (round $ci_round of $CI_DEADLINE_ROUNDS); PR #$pr_num is still OPEN at $sha — watching again." >&2
+done
+if [ "$ci_rc" -eq 7 ]; then
+    echo "merge-on-green: checks still pending after $CI_DEADLINE_ROUNDS check-ci rounds (the saturated-queue cap) — not merging. Re-run once CI has finished." >&2
+    audit "REFUSED reason=gate-not-green gate=check-ci:7 rounds=$ci_round repo=$nwo pr=#$pr_num sha=$sha"
+    exit 14
+fi
 if [ "$ci_rc" -eq 5 ]; then
     # HIMMEL-3381: check-ci exit 5 = GitHub will refuse this merge (a required
     # check never reported, or the required set is unreadable). Not a red CI, and

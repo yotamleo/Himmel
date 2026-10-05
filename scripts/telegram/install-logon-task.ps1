@@ -55,7 +55,7 @@ if (-not (Test-Path $launcher)) {
   Write-Error "launcher not found: $launcher — pass -Repo <himmel root>."
   exit 1
 }
-$pwshPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+$pwshPath = (Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
 if (-not $pwshPath) { $pwshPath = 'C:\Program Files\PowerShell\7\pwsh.exe' }
 
 $action  = New-ScheduledTaskAction -Execute $pwshPath `

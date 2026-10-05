@@ -145,6 +145,8 @@ runner_for() {
             printf 'bun test %q --dots\n' "$path" ;;
         scripts/vault/tests/*.test.mjs|scripts/vault/tests/*.test.js|scripts/vault/tests/*.test.ts)
             printf 'bun test %q --dots\n' "$path" ;;
+        scripts/config-ui/tests/*.test.mjs|scripts/config-ui/tests/*.test.js|scripts/config-ui/tests/*.test.ts)
+            printf 'bun test %q --dots\n' "$path" ;;
         marketplace/plugins/luna-correlate/*.test.mjs|marketplace/plugins/luna-correlate/*.test.js|marketplace/plugins/luna-correlate/*.test.ts)
             rel="${path#marketplace/plugins/luna-correlate/}"
             printf 'cd marketplace/plugins/luna-correlate && bun test %q\n' "$rel" ;;
@@ -189,6 +191,7 @@ matrix-npm-test|npm-test|npm test
 luna-vitals|bun-test|scripts/luna-vitals && bun install
 telegram-suites|bun-test|bun test scripts/telegram --dots
 vault-suites|bun-test|bun test scripts/vault/tests --dots
+config-ui-suites|bun-test|bun test scripts/config-ui --dots
 luna-correlate|bun-test|marketplace/plugins/luna-correlate && bun install
 telegram-himmel|bun-test|marketplace/plugins/telegram-himmel && bun install
 EOF
@@ -547,8 +550,15 @@ done <<< "$changed"
 # (`"$dir/$name"`) and a backslash-continued `source \` are not followed —
 # upgrade path is a real dataflow pass if a T6 selector-miss row shows one.
 varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
+# HIMMEL-3963: the start of a source-edge match. The keyword is preceded by the
+# line start / an indent, or by a separator after a first character that is not
+# `#` — so the word "source" in a full-line comment (bank-preflight.sh:
+# "# Same source and spelling as tick.sh's ...") is prose, never an edge. Only a
+# line whose first non-blank character is `#` is skipped: a `#` later in a line
+# (a quoted string, a trailing comment after a real source) never hides one.
+src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
 grep_rc=0
-git -c core.quotepath=off grep -l -E '(^|[[:space:];&|({])(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
+git -c core.quotepath=off grep -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
     echo "impacted-suites: git grep failed (rc=$grep_rc) listing variable-sourcing files — cannot tell which suites are impacted" >&2
     exit 2
@@ -569,7 +579,7 @@ while [ -s "$front" ]; do
     : > "$work/asgpats"
     : > "$work/dirpats"
     while IFS= read -r f; do
-        { printf '(^|[[:space:];&|({])(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
+        { printf '%s(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?' "$src_lead"; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
         { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
         { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
     done < "$front"
@@ -624,6 +634,97 @@ while IFS= read -r f; do
             printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a content-rule suite"
         fi
     done < <(content_rules)
+done <<< "$changed"
+
+# scan_roots — one `<glob> <suite>` row per suite that WALKS a repo tree
+# (HIMMEL-4256): a file added, changed or deleted under the tree changes the
+# suite's result though no suite names it (PR 1734 added
+# scripts/lanes/lib/leg-cost-row.sh; lint-fail-open scans scripts/lanes/ and
+# main went red, HIMMEL-4242). <glob> is a `case` pattern on the repo-relative
+# path, and its `*` crosses `/`. Add a row, not a new mechanism.
+# ponytail: whole-repo walkers are left out on purpose — scripts/test-adopt.sh
+# and scripts/himmelctl/test/test-versioned-layout.sh copy the whole tree (a
+# `*` row would run 554s+19s on every PR, against HIMMEL-3815);
+# scripts/ci/test-run-shell-tests.sh 23c only reacts to a NEW top-level tree;
+# scripts/lib/test-vm-guest-excludes.sh only to a secret-named file. Upgrade
+# path: a row here once a --selector-miss ledger row names one of them.
+scan_roots() {
+    cat <<'EOF'
+scripts/guardrails/*.sh scripts/guardrails/test-lint-fail-open.sh
+scripts/hooks/*.sh scripts/guardrails/test-lint-fail-open.sh
+scripts/lanes/*.sh scripts/guardrails/test-lint-fail-open.sh
+scripts/lanes/*.mjs scripts/guardrails/test-lint-fail-open.sh
+scripts/lanes/*.ts scripts/guardrails/test-lint-fail-open.sh
+scripts/hooks/* scripts/lib/test-override-env.sh
+scripts/guardrails/* scripts/lib/test-override-env.sh
+scripts/lib/* scripts/lib/test-override-env.sh
+marketplace/plugins/himmel-ops/hooks/* scripts/lib/test-override-env.sh
+scripts/*test-*.sh scripts/lib/test-red-control-extraction-lint.sh
+scripts/*.sh scripts/cr/test-pr-check-run.sh
+scripts/*.mjs scripts/cr/test-pr-check-run.sh
+scripts/*.js scripts/cr/test-pr-check-run.sh
+scripts/cr/* scripts/cr/test-cr-guarded-closure.sh
+*package.json scripts/test-check-plugin-drift.sh
+marketplace/plugins/*/UPSTREAM_PIN scripts/test-check-plugin-drift.sh
+*.ps1 scripts/parity/test-ps-twin-oem-encoding.sh
+scripts/claude-*.ps1 scripts/parity/test-launcher-twin-parity.sh
+scripts/handover/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/handover/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/handover/*.js scripts/guardrails/test-check-git-env-scrub.sh
+scripts/lanes/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/lanes/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/lanes/*.js scripts/guardrails/test-check-git-env-scrub.sh
+scripts/hooks/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/hooks/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/hooks/*.js scripts/guardrails/test-check-git-env-scrub.sh
+scripts/cr/*.sh scripts/guardrails/test-check-git-env-scrub.sh
+scripts/cr/*.mjs scripts/guardrails/test-check-git-env-scrub.sh
+scripts/cr/*.js scripts/guardrails/test-check-git-env-scrub.sh
+docs/*.md scripts/ci/test-check-cr-terminology.sh
+docs/*.html scripts/ci/test-check-cr-terminology.sh
+.claude/commands/*.md scripts/ci/test-check-cr-terminology.sh
+marketplace/*.md scripts/ci/test-check-cr-terminology.sh
+marketplace/*.html scripts/ci/test-check-cr-terminology.sh
+README.md scripts/ci/test-check-cr-terminology.sh
+CLAUDE.md scripts/ci/test-check-cr-terminology.sh
+*/SKILL.md scripts/lint/test-skill-lint.sh
+scripts/*.sh scripts/lanes/test-launch-site-profiles.sh
+scripts/*.ts scripts/lanes/test-launch-site-profiles.sh
+scripts/*.mjs scripts/lanes/test-launch-site-profiles.sh
+scripts/*.js scripts/lanes/test-launch-site-profiles.sh
+scripts/*.ps1 scripts/lanes/test-launch-site-profiles.sh
+scripts/telegram/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/himmelctl/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/hooks/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/lanes/* scripts/hooks/run-hook-with-bash.test.mjs
+marketplace/plugins/* scripts/hooks/run-hook-with-bash.test.mjs
+scripts/lanes/bench/* scripts/lanes/tests/bench-no-ledger-write.test.mjs
+scripts/lanes/bench/* scripts/lanes/tests/bench-no-telegram-spawner-grep.test.mjs
+marketplace/plugins/claude-hud/dist/* marketplace/plugins/claude-hud/tests/build-output.test.js
+scripts/hooks/*.sh scripts/hooks/test-check-hook-file-parse.sh
+scripts/hooks/*.sh scripts/hooks/test-crlf-boundary.sh
+scripts/hooks/*.sh scripts/lint/test-shell-lint.sh
+scripts/himmelctl/test/*.sh scripts/himmelctl/test/test-suite-hermeticity.sh
+.github/workflows/*.yml scripts/upstreams/test-ci-tool-pins.sh
+.github/workflows/*.yaml scripts/upstreams/test-ci-tool-pins.sh
+marketplace/plugins/lean-skills/skills/* marketplace/plugins/lean-skills/hooks/test-note-superpowers-prefix.sh
+marketplace/plugins/handover/templates/*-next-session.md marketplace/plugins/handover/scripts/test-skill-e2e.sh
+marketplace/plugins/*/hooks/hooks.json scripts/codex/test-codex-hook-parity.sh
+EOF
+}
+scan_roots > "$work/scan-roots" || io_fail "writing the scan-roots map"
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    while read -r glob rule_suite; do
+        [ -n "$glob" ] || continue
+        # $glob unquoted on purpose: it is the case pattern.
+        # shellcheck disable=SC2254
+        case "$f" in
+            $glob) if grep -Fxq -- "$rule_suite" <<< "$suites"; then
+                       printf '%s\n' "$rule_suite" >> "$found" || io_fail "recording a scan-root suite"
+                   fi ;;
+        esac
+    done < "$work/scan-roots"
 done <<< "$changed"
 
 if [ -s "$pats" ]; then

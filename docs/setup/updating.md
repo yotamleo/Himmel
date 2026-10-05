@@ -3,6 +3,10 @@
 **TL;DR — `git pull` your himmel checkout. Marketplace `autoUpdate` does NOT
 deliver himmel updates on its own.** Run `/himmel-update` (or `bash
 scripts/himmel-update.sh`) to do the pull + marketplace re-sync in one step.
+From a shell, the command is `himmelctl update` (`himmel` is installed beside it
+as an alias, so `himmel update` works too). If the graphify pin sync keeps
+skipping because a Claude session is live, run `bash scripts/himmel-update.sh
+--graphify-only` when none is.
 
 > This updates the himmel **harness**. A configured `LUNA_VAULT_PATH` is
 > already refreshed by `/himmel-update`'s own dependency chain (step 6,
@@ -107,6 +111,23 @@ bash scripts/himmel-update.sh               # from a shell, in the himmel checko
 # or, an equivalent entry point:
 node scripts/himmelctl/bin.js update        # thin wrapper, same engine
 ```
+
+Every update ends with an **installer-drift pass** (HIMMEL-4246; `--only drift`,
+read-only twin `--only drift-check`, also run by `--check`). It runs
+`himmelctl status --json`, converges the allow-listed items (today
+`pre-commit-hooks`, via `himmelctl ensure --items <id> --yes`) and re-checks, then
+prints everything it could not converge — credentials such as a `luna-sources`
+re-auth, a leaked `url.*.insteadOf` in the repo's local git config (WARN with the
+unset command, never auto-deleted), a codex `plugin-unregistered` that the
+installer did not fix — in a loud **DRIFT** block with a remedy line.
+
+`ensure --items <id>` (HIMMEL-4267) is scoped to exactly those items: it does not
+run the additive recorded-profile reconcile (that belongs to bare `ensure`,
+`install` and `update`, which converge the whole profile), never writes other
+items into the target's `state.json`, and for `pre-commit-hooks` runs
+`adopt.sh --only-hooks` (git gate hooks only: no settings, plugin, marketplace,
+statusline or `CLAUDE.md` changes). A requested item whose own post-check is green
+is not failed by an unrelated installer step; it prints a warning instead.
 
 `scripts/himmel-update.sh` (HIMMEL-893), in **apply mode** (no `--check`),
 refuses to run against a **dirty checkout** (uncommitted changes) — commit or

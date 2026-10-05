@@ -26,7 +26,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
-const { parseDotEnv } = require('./probes.js');
+const { parseDotEnv, scopeConfigPathToCtx } = require('./probes.js');
+const lunaConfig = require('./luna-config.js');
 const { resolvePowershell } = require('./helpers.js');
 // HIMMEL-2176: the SAME bash resolver scripts/hooks/run-hook-with-bash.js's
 // own launcher uses to pick a real, usable Git Bash on Windows (never bare
@@ -61,13 +62,18 @@ const RUNNABLE_INSTALL_TYPES = ['adopt', 'setup', 'wire', 'plugins', 'qmd', 'dep
 const INSTALL_TARGETS = {
   wire: ['statusline', 'pretooluse-hooks', 'guardrail-block-global'],
   build: ['jira-cli', 'bitbucket-cli'],
-  observability: ['stack'],
+  observability: ['stack', 'grafana'],
 };
 
 // adopt/setup items COLLAPSE to ONE invocation — each converges the WHOLE
 // core bundle in one shot (adopt.sh/setup.sh are monolithic installers), so
 // planning two adopt-type items still yields exactly one `adopt.sh` entry.
 const COALESCE_TYPES = new Set(['adopt', 'setup']);
+// HIMMEL-4267: adopt-type items whose whole job is covered by `adopt.sh
+// --only-hooks`. A plan whose adopt group holds ONLY these runs the hooks-only
+// mode instead of the monolithic adopt (settings wiring, plugins,
+// marketplaces) — a hooks repair must not re-adopt the user scope.
+const ADOPT_ONLY_HOOKS_ITEMS = new Set(['pre-commit-hooks']);
 
 // win32 has no bare-name package-manager fallback (unlike brew/apt) — mirror
 // bin.js's own WINGET_IDS map for the 5 tools it documents a winget id for;
@@ -214,7 +220,7 @@ function buildEntry(item, ctx, diagnosticState) {
       if (!lunaPath) {
         return { unrunnable: "no luna vault path configured — configure one via 'himmelctl install', then re-run" };
       }
-      return { cmd: 'bash', args: ['-c', '. "$1" && qmd_install && qmd_register_collection "$2" himmel && qmd_register_collection "$3" luna', 'himmel-qmd', resolverPath, himmelPath, lunaPath] };
+      return { cmd: 'bash', args: ['-c', '. "$1" && qmd_install && qmd_register_collection "$2" himmel && qmd_register_collection "$3" luna && bash "$4"', 'himmel-qmd', resolverPath, himmelPath, lunaPath, path.join(scriptsDir, 'skill-index', 'ensure-skill-index.sh')] };
     }
     case 'build': {
       // Same positional-arg fix as 'qmd' above, for the build dir.
@@ -235,10 +241,42 @@ function buildEntry(item, ctx, diagnosticState) {
       // loud placeholder that `exit 2`s — cross-platform packaging is
       // tracked as its own gap (HIMMEL-2333), not something this ticket
       // builds. Mirrors the WINGET_IDS posix-gap posture above: never a
-      // doomed spawn of the placeholder — posix returns `unrunnable` with a
-      // reason naming the gap instead.
+      // doomed spawn of the placeholder.
+      //
+      // HIMMEL-4341: posix now runs install-stack.sh (HIMMEL-4288: the exporter
+      // only, as a systemd user unit / launchd agent), but ONLY when the
+      // operator opted in (observability.enabled in ~/.himmel/config.json) —
+      // every profile desires this item, and `ensure` must never enable a
+      // service unasked.
+      if (install.target === 'grafana') {
+        // HIMMEL-4289: Prometheus + Grafana as systemd user units (Linux only so
+        // far), opt-in via observability.grafana — `ensure` never downloads and
+        // starts servers unasked.
+        if (platform !== 'linux') {
+          return { unrunnable: 'the Prometheus + Grafana user units are Linux-only so far (macOS and Windows are not supported yet)' };
+        }
+        let cfg;
+        try {
+          cfg = scopeConfigPathToCtx(ctx, () => lunaConfig.load());
+        } catch (e) {
+          return { unrunnable: `cannot read ~/.himmel/config.json (${e.message}) — fix it, then re-run` };
+        }
+        if (!(cfg.observability && cfg.observability.grafana === true)) {
+          return { unrunnable: 'Prometheus + Grafana is opt-in — set "observability": {"grafana": true} in ~/.himmel/config.json, then re-run himmelctl ensure (downloads pinned Prometheus and Grafana tarballs and runs them as user services)' };
+        }
+        return { cmd: 'bash', args: [path.join(scriptsDir, 'observability', 'install-grafana.sh'), 'install'] };
+      }
       if (platform !== 'win32') {
-        return { unrunnable: 'observability stack install is Windows-only in Phase A (HIMMEL-922) — install-stack.sh is a loud placeholder (exit 2); cross-platform packaging is tracked as HIMMEL-2333. Install from a Windows host, or wait for that work to land.' };
+        let cfg;
+        try {
+          cfg = scopeConfigPathToCtx(ctx, () => lunaConfig.load());
+        } catch (e) {
+          return { unrunnable: `cannot read ~/.himmel/config.json (${e.message}) — fix it, then re-run` };
+        }
+        if (!(cfg.observability && cfg.observability.enabled === true)) {
+          return { unrunnable: 'observability stack is opt-in on this platform — set "observability": {"enabled": true} in ~/.himmel/config.json, then re-run himmelctl ensure (installs the flow exporter as a user service)' };
+        }
+        return { cmd: 'bash', args: [path.join(scriptsDir, 'observability', 'install-stack.sh'), 'install'] };
       }
       const psBin = resolvePowershell(ctx.env || process.env);
       const scriptPath = path.join(scriptsDir, 'observability', 'install-stack.ps1');
@@ -444,6 +482,9 @@ function planInstall(items, ctx) {
     const install = representative.install;
     const built = buildEntry(representative, ctx, diagnosticState);
     const depIds = (groupDeps.get(groupId) || []).map((g) => groupRepresentativeId.get(g)).filter(Boolean);
+    if (install.type === 'adopt' && built.args && groupItems.every((it) => ADOPT_ONLY_HOOKS_ITEMS.has(it.id))) {
+      built.args = [...built.args, '--only-hooks'];
+    }
     const entry = { id: representative.id, type: install.type, deps: depIds, ...built };
     if (COALESCE_TYPES.has(install.type)) entry.coalesceKey = install.type;
     plan.push(entry);

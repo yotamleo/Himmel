@@ -100,9 +100,10 @@ Run these, in order, and write the result as the first bullet under
     `telegram` Monitor loops). Loops are pure code, never model turns: a
     `Monitor` arm is capped at 30 min, and every expiry woke this full-context
     session only to re-arm it. Instead, run `console-wait.sh` **once** with the
-    **Bash tool's `run_in_background: true`** — no 30-min cap, and the harness
-    re-invokes you when the command exits:
-    `bash "{{KIT}}/console-wait.sh" "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md" --doc "<this file>" --token <your token> --legs "<absolute leg docs>"`
+    **Bash tool's `run_in_background: true` AND `timeout: 7200000`** — both
+    are required: the default background limit (30 min) killed a waiter once
+    (HIMMEL-3940). The harness re-invokes you when the command exits:
+    `bash "{{KIT}}/console-wait.sh" "{{INBOX}}" --doc "<this file>" --token <your token> --legs "<absolute leg docs>"`
     (everything after the inbox path is passed to `tick.sh` unchanged). It is
     silent while nothing happens and **exits on the first real event**,
     printing one block: `WAKE telegram` plus the operator's line(s), or
@@ -169,14 +170,21 @@ Run these, in order, and write the result as the first bullet under
     The tick re-reads the manifest every sample and the waiter takes a silent
     baseline when its leg set changes, so neither needs a re-start; the
     `legset=`/`unwatched=` checks above then compare against the manifest.
-    `## Live state` is still yours to edit by hand in this slice.
+    Then render the `legs:` entries from it (HIMMEL-3987) instead of editing
+    them: `bash "{{KIT}}/live-state.sh" "<this doc>" [--nonce <N-label>=<nonce>]`.
+    It reads each leg's lock token from its held lock and keeps the nonce and
+    pid already on the line; a leg not yet listed needs `--nonce` (the nonce is
+    yours, never read from the leg or the manifest). A manifest leg holding no
+    lock is left out. The rest of `## Live state` is still yours to edit.
+    **Your manifest:** `{{FLEET_MANIFEST}}` — {{FLEET_MANIFEST_NOTE}}.
 11. **Open your Telegram inbox** (HIMMEL-3355). The operator can message you
     from Telegram with `/console {{SESSION_NAME}} <text>`; the bridge appends
     one line per message to your inbox file, but only if the file already
     exists — creating it is what tells the bridge a console is listening. The
     waiter (step 10) creates it on start; to open it before that, run
-    `: >> "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md"`
-    (create the `consoles/` directory first if it is absent). The waiter reads
+    `: >> "{{INBOX}}"`
+    (the bridge root's `consoles/{{SESSION_NAME}}.md`, resolved when this doc
+    was rendered; create the `consoles/` directory first if it is absent). The waiter reads
     it through `inbox-follow.sh --once`, which keeps a read cursor next to the
     inbox (`<inbox>.cursor`): a line the bridge appended while no waiter ran is
     delivered by the next start, and a re-start does not replay delivered lines
@@ -334,11 +342,11 @@ re-arm.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 180 s, wakes on change | **Runs inside the step-10 waiter, not here** — the only unconditional check of the five, so its absence is the one that goes structurally unnoticed; the waiter's heartbeat (`<inbox>.wait`) is how you see it is live. The waiter passes its args to `tick.sh`: `--doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), **`UNVERIFIED`** (a lock *named* for the leg doc exists but records a path that does not resolve here, so `queue-lock.sh` can neither attribute it nor rule it out — **not** free: find its owner before anything else, never reclaim on it; HIMMEL-3290), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-start the waiter, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12. Next comes `tracker=<ok\|STALE:<age>\|MISSING\|skip>` (HIMMEL-3933) — whether `roadmap-tracker.html` still matches the Jira mirror and the plan files (`skip` with no `tracker:` URL); `STALE`/`MISSING` means refresh, re-render and republish the tracker (step 12) |
+| tick | 180 s, wakes on change | **Runs inside the step-10 waiter, not here** — the only unconditional check of the five, so its absence is the one that goes structurally unnoticed; the waiter's heartbeat (`<inbox>.wait`) is how you see it is live. The waiter passes its args to `tick.sh`: `--doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`NOLIVE`** (HIMMEL-4234: no lock, no marker bullet, and older than `TICK_NOLIVE_MIN` minutes (default 10) — the leg never went LIVE; `ListAgents`, then `SendMessage` it the `queue-lock.sh acquire <its doc>` command, your console session name and its token), **`FORKED`** (its session transcript ends in a `continued-in` record — forked or backgrounded, likely without its preface; message it the same way, or relaunch), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), **`UNVERIFIED`** (a lock *named* for the leg doc exists but records a path that does not resolve here, so `queue-lock.sh` can neither attribute it nor rule it out — **not** free: find its owner before anything else, never reclaim on it; HIMMEL-3290), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-start the waiter, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12. Next comes `tracker=<ok\|STALE:<age>\|MISSING\|skip>` (HIMMEL-3933) — whether `roadmap-tracker.html` still matches the Jira mirror and the plan files (`skip` with no `tracker:` URL); `STALE`/`MISSING` means refresh, re-render and republish the tracker (step 12) |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
 | notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
-| telegram | 1 s poll, event-driven | **Runs inside the step-10 waiter.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`, the inbox being `${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/{{SESSION_NAME}}.md`. The waiter drains it each second with `inbox-follow.sh --once` and wakes you with `WAKE telegram` plus the line(s). The persisted read cursor (`<inbox>.cursor`, a byte offset) means a line appended while no waiter ran is delivered on the next start, and delivered lines are not replayed (at-least-once: a waiter killed mid-emit can repeat one line) (HIMMEL-3356). The file must exist before the bridge will write to it (step 11). See step 11 for the authority these lines carry and how to reply |
+| telegram | 1 s poll, event-driven | **Runs inside the step-10 waiter.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`, the inbox being `{{INBOX}}`. The waiter drains it each second with `inbox-follow.sh --once` and wakes you with `WAKE telegram` plus the line(s). The persisted read cursor (`<inbox>.cursor`, a byte offset) means a line appended while no waiter ran is delivered on the next start, and delivered lines are not replayed (at-least-once: a waiter killed mid-emit can repeat one line) (HIMMEL-3356). The file must exist before the bridge will write to it (step 11). See step 11 for the authority these lines carry and how to reply |
 
 The three polling monitors are plain Bash loops over already-versioned inputs;
 write them in the session scratchpad, not in the repo. The context-fill probe

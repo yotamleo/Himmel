@@ -24,8 +24,8 @@
 #                                 live one was explained by compaction/ttl)
 #   cache-probe.sh idle-gap <session.jsonl>...
 #       Does an idle gap past the TTL re-pay the prefix, and a shorter one not?
-#       The TTL is per session: 3600s when any cache write used the 1h tier
-#       (usage.cache_creation.ephemeral_1h_input_tokens), else 300s.
+#       The TTL is per session: 3600s when the last cache write used the 1h
+#       tier (usage.cache_creation.ephemeral_1h_input_tokens), else 300s.
 #         exit 0 ttl-consistent | 1 ttl-inconsistent | 2 inconclusive
 #   cache-probe.sh first-turn <session.jsonl>...
 #       Does a session's first request read a warm shared prefix
@@ -106,6 +106,7 @@ def cls($p; $c; $comp; $ttl):
 def mean(k): if length == 0 then 0 else ((map(.[k]) | add) / length | floor) end;
 
 [ .[] | select(.type == "assistant" and .message.usage != null and .message.id != null)
+  | select(.message.model != "<synthetic>" and any(.message.usage | .input_tokens, .cache_read_input_tokens, .cache_creation_input_tokens, .cache_creation; . != null))
   | { id: .message.id, t: secs,
       in: (.message.usage.input_tokens // 0),
       cr: (.message.usage.cache_read_input_tokens // 0),
@@ -114,7 +115,7 @@ def mean(k): if length == 0 then 0 else ((map(.[k]) | add) / length | floor) end
   | select(.t != null) ] as $rows
 | ($rows | group_by(.id) | map(.[0]) | sort_by(.t, .id)) as $T
 | ([ .[] | select(.type == "system" and .subtype == "compact_boundary") | secs | select(. != null) ]) as $C
-| (if ($T | map(.h1) | add // 0) > 0 then 3600 else 300 end) as $ttl  # ponytail: one tier per session, over-flags a mixed-tier one; take the tier from the last write turn (HIMMEL-3837 follow-up)
+| (($T | map(select(.cc > 0)) | last) as $w | if $w != null and $w.h1 > 0 then 3600 else 300 end) as $ttl
 | ($T | map(.cr) | add // 0) as $sumcr
 | ($T | map(.in + .cr + .cc) | add // 0) as $sumall
 | def comp($p; $c): any($C[]; . > $p.t and . <= $c.t);

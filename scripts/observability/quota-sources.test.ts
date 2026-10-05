@@ -242,3 +242,18 @@ test("readLaneQuotaTargets is empty on a missing or malformed registry", () => {
   writeFileSync(malformed, "{not json");
   expect(readLaneQuotaTargets(malformed)).toEqual({ withBank: [], without: [] });
 });
+
+test("readLaneQuotaTargets dedupes a repeated lane id, first occurrence wins", () => {
+  const lanes = join(tmp, "dup-lanes.json");
+  writeFileSync(lanes, JSON.stringify({ lanes: [
+    { id: "sonnet", quota: { bank: "claude" } },
+    { id: "hermes-critics" },
+    { id: "sonnet", quota: { bank: "glm" } },
+    { id: "hermes-critics", quota: { bank: "codex" } },
+    { id: "glm", quota: { bank: "glm" } },
+  ] }));
+  expect(readLaneQuotaTargets(lanes)).toEqual({
+    withBank: [{ lane: "sonnet", bank: "claude" }, { lane: "glm", bank: "glm" }],
+    without: ["hermes-critics"],
+  });
+});

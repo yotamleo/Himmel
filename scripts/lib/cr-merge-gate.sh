@@ -113,7 +113,7 @@ _cmg_outside_block() {
         else
             prefix="CodeRabbit's review body "
         fi
-        echo "BLOCK: ${prefix}reports $od_n outside-diff-range finding(s) on head $gate_head of PR #$num, $((od_n - od_ok)) not dispositioned:$od_list — these carry no thread to resolve. Fix them, or record an explicit disposition at head $gate_head (ledger-append.sh finding --model coderabbit-outside --verdict deferred --deferred-to <TICKET> --reason <why>; check-ci.sh prints the full recipe), or --verdict fixed --reason \"fixed in <sha>\"; or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated.$extra"
+        echo "BLOCK: ${prefix}reports $od_n outside-diff-range finding(s) on head $gate_head of PR #$num, $((od_n - od_ok)) not dispositioned:$od_list — these carry no thread to resolve. Fix them, or record an explicit disposition at head $gate_head (ledger-append.sh finding --model coderabbit-outside --verdict deferred --deferred-to <TICKET> --fu-class <escape|hardening|polish> --reason <why>; check-ci.sh prints the full recipe), or --verdict fixed --reason \"fixed in <sha>\"; or bypass with CR_MERGE_GATE_OK=1 in the launching shell if already adjudicated.$extra"
         return 2
     fi
     echo "ALLOW: PR #$num — CodeRabbit's review body reports outside-diff dispositioned=$od_ok (each has an explicit ledger disposition at head $gate_head)." >&2
@@ -124,35 +124,39 @@ _cmg_outside_block() {
 # file so a hook can source this gate from any cwd.
 # shellcheck source=scripts/lib/cr-signal.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-signal.sh"
+# HIMMEL-3929: every nested source is readability-checked first and a missing one
+# makes THIS file's own source fail (`return 1`), so the hook's load check denies
+# instead of the gate running with its helper functions undefined (fail open).
+_cmg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+{ [ -r "$_cmg_dir/cr-signal.sh" ] && . "$_cmg_dir/cr-signal.sh"; } || return 1
 
 # The ONE reader for CodeRabbit's review-BODY findings (HIMMEL-1126/1147) —
 # outside-diff-range / nitpick / additional comments the thread gate below
 # cannot see (S1: no thread, no isResolved, unresolvable by construction).
 # shellcheck source=scripts/lib/cr-body-findings.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-body-findings.sh"
+{ [ -r "$_cmg_dir/cr-body-findings.sh" ] && . "$_cmg_dir/cr-body-findings.sh"; } || return 1
 
 # Is CodeRabbit configured here at all (HIMMEL-1125)? Same posture as check-ci:
 # this whole gate is CodeRabbit-specific, so on a repo without it the gate is a
 # no-op rather than a permanent block on "absent".
 # shellcheck source=scripts/lib/cr-available.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-available.sh"
+{ [ -r "$_cmg_dir/cr-available.sh" ] && . "$_cmg_dir/cr-available.sh"; } || return 1
 
 # The CR-ledger evidence reader (HIMMEL-1465): tells the outside-diff body-
 # findings gate below (stage 3) whether a given finding carries an explicit
 # disposition at this exact head (deferred + tracked ticket, or disproved).
 # shellcheck source=scripts/lib/cr-ledger-evidence.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/cr-ledger-evidence.sh"
+{ [ -r "$_cmg_dir/cr-ledger-evidence.sh" ] && . "$_cmg_dir/cr-ledger-evidence.sh"; } || return 1
 
 # _cmg_canon_nwo / _cmg_nwo_eq / _cmg_local_nwo — moved to scripts/lib/nwo.sh
 # (HIMMEL-2034) so the CodeRabbit TRIGGER path can reuse the same "is this OUR
 # repo?" answer instead of re-deriving origin-URL parsing. Names unchanged.
 # shellcheck source=scripts/lib/nwo.sh
 # shellcheck disable=SC1091  # sourced at runtime; checked standalone by pre-commit
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/nwo.sh"
+{ [ -r "$_cmg_dir/nwo.sh" ] && . "$_cmg_dir/nwo.sh"; } || return 1
 
 cr_merge_gate() {
     [ "${CR_MERGE_GATE_OK:-0}" = "1" ] && return 0

@@ -83,11 +83,15 @@ usage() {
     cat <<'USAGE'
 usage: console.sh new  [--name <slug>] [--arm] [--dry-run] [--model <m>]
                        [--bucket <b>] [--prefix <P>] [--project <dir>]
-                       [--deadline-min <n>]
+                       [--deadline-min <n>] [--context <1m|standard>]
        console.sh next [--doc <path>] [--date <YYYY-MM-DD>] [--name <slug>]
                        [--arm] [--dry-run] [--model <m>] [--bucket <b>]
                        [--prefix <P>] [--project <dir>] [--deadline-min <n>]
+                       [--context <1m|standard>]
        console.sh -h|--help
+
+Consoles default to 1m. --context overrides CONSOLE_CONTEXT and the default;
+--context standard or CONSOLE_CONTEXT=standard opts down to 200000.
 
 --name on next selects which console succession to continue; defaults to the name
 implied by --doc's own basename when --doc is given and --name is not,
@@ -262,12 +266,15 @@ do_arm() {
     # only load there. Legs for the project are dispatched into it
     # explicitly with LEG_REPO=<project> (headed-arm-leg.sh), never by the
     # console inheriting a repo override.
+    if [ "$CONTEXT_GIVEN" -eq 1 ]; then
+        export CONSOLE_CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    fi
     if [ "${CONSOLE_ARM_FOREGROUND:-0}" = "1" ]; then
-        bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
+        bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model"
     elif command -v setsid >/dev/null 2>&1; then
-        setsid nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        setsid nohup bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     else
-        nohup bash "$arm" "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
+        nohup bash "$arm" --role console "$session" "$doc" "$fill_signal" "$deadline_epoch" "$log" "$model" >/dev/null 2>&1 &
     fi
     echo "armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
     echo "arm-log: $log"
@@ -286,6 +293,8 @@ NAME_GIVEN=0
 ARM=0
 DRY_RUN=0
 MODEL=""
+CONTEXT=""
+CONTEXT_GIVEN=0
 BUCKET=""
 PREFIX=""
 PROJECT_ARG=""
@@ -319,6 +328,15 @@ while [ "$#" -gt 0 ]; do
         --dry-run) DRY_RUN=1; shift ;;
         --model) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; MODEL="$2"; shift 2 ;;
         --model=*) MODEL="${1#--model=}"; shift ;;
+        --context)
+            if [ "$#" -lt 2 ] || ! console_context_valid "$2"; then
+                err "--context must be 1m or standard"; exit 2
+            fi
+            CONTEXT="$2"; CONTEXT_GIVEN=1; shift 2 ;;
+        --context=*)
+            CONTEXT="${1#--context=}"
+            console_context_valid "$CONTEXT" || { err "--context must be 1m or standard"; exit 2; }
+            CONTEXT_GIVEN=1; shift ;;
         --bucket) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; BUCKET="$2"; shift 2 ;;
         --bucket=*) BUCKET="${1#--bucket=}"; shift ;;
         --prefix) [ "$#" -ge 2 ] || { usage >&2; exit 1; }; PREFIX="$2"; shift 2 ;;
@@ -644,15 +662,18 @@ state_dir="$root/$slug/$bucket"
 # Fable is the escalation target, reached only via --model / CONSOLE_MODEL.
 model="${MODEL:-${CONSOLE_MODEL:-claude-opus-5-5}}"
 fill_percent="${CONSOLE_FILL_PERCENT:-45}"
-# HIMMEL-2973 (genuinely shared as of HIMMEL-2975 T6): do_arm passes
-# headed-arm.sh no [context] positional, so headed-arm.sh's own default
-# resolution decides the launch's --autocompact value; this calls the same
-# scripts/lib/console-context.sh resolver headed-arm.sh does, purely for the
-# printed launch/would-launch lines below to show the value that will
-# actually be used -- the printed line and the launched value can no longer
-# drift apart, same CONSOLE_CONTEXT=1m opt-in headed-arm.sh honours.
-console_context_default 1 "${CONSOLE_CONTEXT:-}"
+# HIMMEL-3884: resolve once for both printed and armed launches. An explicit
+# --context overrides the console-only environment choice and 1m default.
+if [ "$CONTEXT_GIVEN" -eq 1 ]; then
+    CONSOLE_CONTEXT_RESOLVED_MODE="$CONTEXT"
+else
+    console_context_default 1 "${CONSOLE_CONTEXT:-}"
+fi
 console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MODE")"
+launch_model="$(console_context_strip_1m_suffix "$model")"
+if [ "$CONSOLE_CONTEXT_RESOLVED_MODE" = 1m ] && ! console_context_model_is_fable "$launch_model"; then
+    launch_model="${launch_model}[1m]"
+fi
 
 # launch_cmd <session> <doc> -- the command line printed for an operator to
 # paste. HIMMEL-3299: no launcher runs for it, so the console's durable launch
@@ -668,9 +689,14 @@ console_autocompact="$(console_context_autocompact "$CONSOLE_CONTEXT_RESOLVED_MO
 # console must start in himmel for its project hooks and GO gate. The group
 # keeps a failed cd from falling through to claude in the wrong directory.
 launch_cmd() {
-    printf 'cd %q && { bash %q %s %s %s %s; %s claude --model %s --autocompact %s -n %s "load %s and continue"; }' \
-        "$repo" "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label 0)" "$console_autocompact" \
-        "$CONSOLE_LAUNCH_ENV" "$model" "$console_autocompact" "$1" "$2"
+    # HIMMEL-4013: the printed console line carries the `console` plugin profile
+    # (--settings), like the armed launch; fails closed (no profile, no line).
+    local console_settings
+    console_settings=$(bash "$HERE/../../lanes/profile-settings.sh" console) \
+        || { err "the console plugin profile did not resolve; refusing to print a full-plugin-set console launch (HIMMEL-4013)"; exit 2; }
+    printf 'cd %q && { bash %q %s %s %s %s; %s claude --settings %q --model %q --autocompact %s -n %s "load %s and continue"; }' \
+        "$repo" "$HERE/record-launch.sh" "$1" "$CONSOLE_CONTEXT_RESOLVED_MODE" "$(console_context_source_label "$CONTEXT_GIVEN")" "$console_autocompact" \
+        "$CONSOLE_LAUNCH_ENV" "$console_settings" "$launch_model" "$console_autocompact" "$1" "$2"
 }
 
 # _console_sha256_8 <string> -- first 8 hex chars of sha256(<string>). Small
@@ -988,7 +1014,8 @@ cmd_new() {
         if [ -n "$project_dir" ]; then
             echo "would-project: $project_dir"
         fi
-        echo "would-launch: $(launch_cmd "$session" "$doc")"
+        launch_line=$(launch_cmd "$session" "$doc") || exit $?
+        echo "would-launch: $launch_line"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1025,8 +1052,22 @@ cmd_new() {
     set +C
     [ "$claimed" -eq 1 ] || { err "all letters A-Z, AA-ZZ (past ZZ) are taken for today's '$name' console in $state_dir"; exit 1; }
     local session="${prefix}-nextleg-${date}${letter}-${name}"
+    # HIMMEL-4204: the Telegram inbox, resolved here (same default as
+    # arm-resume.sh / bus.ts) so step 10/11 print a literal, runnable path.
+    local inbox="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/${session}.md"
     local fill_signal="$chain_dir/sig-$session"
     local log="$chain_dir/launch-$session.log"
+
+    # HIMMEL-4058: resolve the launch line (and so the console profile) BEFORE
+    # the lock and the render, as cmd_next does before clearing its cleanup
+    # trap: a profile refusal must leave neither a rendered doc nor a held lock.
+    # The doc claimed above is still the empty placeholder, so remove it.
+    local launch_rc=0
+    launch_line=$(launch_cmd "$session" "$doc") || launch_rc=$?
+    if [ "$launch_rc" -ne 0 ]; then
+        rm -f "$doc"
+        exit "$launch_rc"
+    fi
 
     echo "doc: $doc"
     echo "session: $session"
@@ -1069,10 +1110,13 @@ cmd_new() {
     fi
 
     render_template "$console_template" "$doc" \
+        FLEET_MANIFEST "${doc%.md}.fleet.json" \
+        FLEET_MANIFEST_NOTE "none carried (first console of the chain); create it with fleet-manifest.sh add" \
         LETTER "$letter" \
         PREDECESSOR "none — first console of the chain" \
         PREDECESSOR_HANDOFF "none" \
         SESSION_NAME "$session" \
+        INBOX "$inbox" \
         HANDOVER_ROOT "$root" \
         STATE_DIR "$state_dir" \
         REPO "$repo" \
@@ -1089,7 +1133,7 @@ cmd_new() {
 
     printf '%s\n' "$lock_out"
 
-    echo "launch: $(launch_cmd "$session" "$doc")"
+    echo "launch: $launch_line"
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"
@@ -1229,6 +1273,9 @@ cmd_next() {
 
     local doc="$state_dir/${prefix}-nextleg-${successor_date}${successor_letter}-${name}.md"
     local session="${prefix}-nextleg-${successor_date}${successor_letter}-${name}"
+    # HIMMEL-4204: the Telegram inbox, resolved here (same default as
+    # arm-resume.sh / bus.ts) so step 10/11 print a literal, runnable path.
+    local inbox="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/${session}.md"
     # HANDOFF sits beside the predecessor's OWN doc, not in $state_dir — a
     # --doc pointing outside $state_dir (a different bucket, a different
     # root entirely) must still get its HANDOFF written next to it.
@@ -1270,7 +1317,8 @@ cmd_next() {
         if [ -n "$project_dir" ]; then
             echo "would-project: $project_dir"
         fi
-        echo "would-launch: $(launch_cmd "$session" "$doc")"
+        launch_line=$(launch_cmd "$session" "$doc") || exit $?
+        echo "would-launch: $launch_line"
         if [ "$ARM" -eq 1 ]; then
             echo "would-armed: name=$session doc=$doc signal=$fill_signal deadline=$deadline_epoch log=$log"
             echo "would-arm-log: $log"
@@ -1305,11 +1353,26 @@ cmd_next() {
     # An honest, explicit placeholder rather than an empty string: the
     # successor's own ACTION ZERO acquires and records it, exactly as the
     # console-template's own instructions already tell it to.
+    # HIMMEL-3989: carry the predecessor's fleet manifest to the successor's
+    # stem so its waiter can start with --legs-from and keep watching the same
+    # legs. A COPY, not a rename: the outgoing console's waiter still reads
+    # its own until that console releases. No manifest = no-op.
+    local predecessor_manifest successor_manifest manifest_note
+    predecessor_manifest="$predecessor_dir/${predecessor_stem}.fleet.json"
+    successor_manifest="${doc%.md}.fleet.json"
+    manifest_note="none carried (the predecessor had no manifest); create it with fleet-manifest.sh add"
+    if [ -f "$predecessor_manifest" ]; then
+        cp "$predecessor_manifest" "$successor_manifest" || { err "could not copy fleet manifest $predecessor_manifest to $successor_manifest"; exit 1; }
+        manifest_note="carried from the predecessor, already in place: start the waiter with --legs-from on it"
+    fi
     render_template "$console_template" "$doc" \
+        FLEET_MANIFEST "$successor_manifest" \
+        FLEET_MANIFEST_NOTE "$manifest_note" \
         LETTER "$successor_letter" \
         PREDECESSOR "$predecessor_base" \
         PREDECESSOR_HANDOFF "$predecessor_handoff_ref" \
         SESSION_NAME "$session" \
+        INBOX "$inbox" \
         HANDOVER_ROOT "$root" \
         STATE_DIR "$state_dir" \
         REPO "$repo" \
@@ -1365,9 +1428,12 @@ cmd_next() {
             exit 1
         fi
     fi
+    # HIMMEL-4052: resolved BEFORE the cleanup trap is cleared, so a profile
+    # refusal (exit 2) removes the claimed successor doc and a retry is not
+    # blocked by "successor doc already exists".
+    launch_line=$(launch_cmd "$session" "$doc") || exit $?
     trap - EXIT
-
-    echo "launch: $(launch_cmd "$session" "$doc")"
+    echo "launch: $launch_line"
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"

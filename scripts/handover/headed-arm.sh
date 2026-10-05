@@ -30,12 +30,10 @@
 # context-window choice, same two measured levers as
 # scripts/handover/arm-resume.sh's --context (the [1m] model-id suffix,
 # silently a no-op on a Fable-family model, and the actual cost-driving
-# --autocompact auto|200000). Defaults to `standard` (200000): the 2026-09-12
-# cost audit found Fable consoles launched with the old 1m default averaging
-# 241-275k tokens/turn, ~40% of a console's context per shift, so 1m context
-# now requires CONSOLE_CONTEXT=1m set in the LAUNCHING shell -- an explicit
-# operator opt-in, refused otherwise (same shape as the HIMMEL-2779 leg-side
-# REQUIRED_AUTOCOMPACT refusal below).
+# --autocompact auto|200000). Direct consoles default to `1m` (auto),
+# HIMMEL-3884's console-class exemption from HIMMEL-2975. A positional
+# `standard` or CONSOLE_CONTEXT=standard opts down to 200000. Leg-wrapper
+# launches retain their profile mode and existing ceiling guard.
 # Run detached, so it outlives the session that armed it:
 #   setsid nohup bash scripts/handover/headed-arm.sh ... >/dev/null 2>&1 &
 #
@@ -387,22 +385,46 @@ fi
 NAME="$1"; DOC="$2"; SIGNAL="$3"; DEADLINE="$4"; LOG="$5"; MODEL="${6:-claude-opus-5-5}"
 # HIMMEL-2973 (default re-pinned by HIMMEL-2975 T6, resolution now shared
 # via scripts/lib/console-context.sh): --context resolution, arming-time
-# only (see the header comment above). Defaults to `standard`
-# (--autocompact 200000): the console arm path is the largest cache-read
-# cost driver on the fleet (2026-09-12 cost audit), so 1m is now an explicit
-# operator opt-in via CONSOLE_CONTEXT=1m in the LAUNCHING shell, never the
-# bare default. $#-ge 7 (not just "${7:-}" non-empty) is what distinguishes
+# only (see the header comment above). Direct consoles default to 1m/auto;
+# non-console wrapper profiles retain their configured mode. A positional
+# choice overrides CONSOLE_CONTEXT and the default. $#-ge 7 (not just
+# "${7:-}" non-empty) is what distinguishes
 # an explicit empty-string 7th positional from "omitted" for the log line
 # below -- nothing currently passes an empty string here, but the
 # distinction costs nothing and matches how arm-resume.sh tells explicit
 # from default. This launcher is always console-class (is_console=1) --
 # it has no non-console callers, unlike arm-resume.sh's handover-name test.
+# HIMMEL-4021: the profile is validated before any wait/claim/launch. Legs
+# supply their selected profile; a direct console arm resolves console.
+_context_profile="console"
+_context_profiles="$(dirname "$0")/../lanes/plugin-profiles.mjs"
+# The leg wrapper execs this renderer in the same process. An inherited marker
+# belongs to a different PID, so ambient profile/resolver variables cannot opt
+# a direct console arm into 1m. This guards ambient leakage, not a hostile shell.
+if [ "${HEADED_ARM_CONTEXT_PID:-}" = "$$" ]; then
+    _context_profile="${HEADED_ARM_CONTEXT_PROFILE:-console}"
+    _context_profiles="${HEADED_ARM_LEG_PROFILES:-$_context_profiles}"
+fi
+unset HEADED_ARM_CONTEXT_PROFILE HEADED_ARM_LEG_PROFILES HEADED_ARM_CONTEXT_PID
+if ! _context_json="$(node "$_context_profiles" "$_context_profile" --context)" \
+    || ! _profile_mode="$(printf '%s' "$_context_json" | jq -er '.contextMode | select(. == "standard" or . == "1m")')" \
+    || ! _profile_autocompact="$(printf '%s' "$_context_json" | jq -er '.autocompact | select(type == "number" and . >= 200000 and . <= 1000000 and floor == .)')"; then
+    echo "headed-arm: profile context resolver failed; refusing launch" >&2
+    exit 2
+fi
+if [ "$_profile_mode" = "standard" ] && [ "$_profile_autocompact" != "200000" ]; then
+    echo "headed-arm: standard profile must resolve autocompact 200000" >&2
+    exit 2
+fi
 if [ "$#" -ge 7 ]; then
     CONTEXT="$7"
     _headed_context_source=$(console_context_source_label 1)
 else
     console_context_default 1 "${CONSOLE_CONTEXT:-}"
     CONTEXT="$CONSOLE_CONTEXT_RESOLVED_MODE"
+    if [ "$_context_profile" != "console" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+        CONTEXT="$_profile_mode"
+    fi
     # HIMMEL-3279/3282: the source word (an env opt-in spells `explicit` too)
     # is the shared one arm-resume.sh emits, so the two paths cannot disagree.
     _headed_context_source=$(console_context_source_label 0)
@@ -412,13 +434,9 @@ if ! console_context_valid "$CONTEXT"; then
     echo "headed-arm: context must be 1m or standard, got: $CONTEXT" >&2
     exit 2
 fi
-# HIMMEL-2973: 1m is an explicit operator opt-in -- refuse before the claim
-# lock or konsole is ever touched (same refusal shape as the HIMMEL-2779
-# leg-side REQUIRED_AUTOCOMPACT check below) unless CONSOLE_CONTEXT=1m was
-# set in the launching shell. A resolved CONTEXT of 1m always means that
-# check already passed (the `elif` above only reaches 1m when it did), so
-# this only ever fires for an explicit positional `1m` without the env.
-if [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+# HIMMEL-3884: direct consoles may select 1m without an env opt-in.
+# Keep the existing non-console profile guard for leg-wrapper launches.
+if [ "$_context_profile" != "console" ] && [ "$CONTEXT" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ] && [ "$_profile_mode" != "1m" ]; then
     usage
     echo "headed-arm: refusing 1m context: set CONSOLE_CONTEXT=1m in the launching shell to opt in; omit [context] or pass standard for the --autocompact 200000 default." >&2
     exit 2
@@ -433,12 +451,20 @@ fi
 # Strip any [1m] suffix the caller may have typed into MODEL directly, so
 # `standard` can guarantee its absence and `1m` never doubles it.
 MODEL="$(console_context_strip_1m_suffix "$MODEL")"
-AUTOCOMPACT="$(console_context_autocompact "$CONTEXT")"
+if [ "$_context_profile" != "console" ] && [ "$CONTEXT" = "1m" ] && [ "$_profile_mode" = "1m" ] && [ "${CONSOLE_CONTEXT:-}" != "1m" ]; then
+    _headed_context_source="profile $_context_profile contextMode 1m"
+fi
+AUTOCOMPACT="$_profile_autocompact"
+if [ "$CONTEXT" = "standard" ]; then
+    AUTOCOMPACT="200000"
+elif [ "$_context_profile" = "console" ] || [ "${CONSOLE_CONTEXT:-}" = "1m" ]; then
+    AUTOCOMPACT="auto"
+fi
 if [ "$CONTEXT" = "1m" ]; then
     if [ "$_headed_model_is_fable" -eq 1 ]; then
         # Measured fact: the CLI silently strips [1m] for Fable-family
         # models -- never claim to have set 1m context on one.
-        CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL is Fable-family -- the CLI silently strips a [1m] suffix there, so it is NOT applied (autocompact=auto still is)"
+        CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL is Fable-family -- the CLI silently strips a [1m] suffix there, so it is NOT applied (autocompact=$AUTOCOMPACT still is)"
     else
         MODEL="${MODEL}[1m]"
         CONTEXT_REASON="context=1m ($_headed_context_source); model=$MODEL"
@@ -568,12 +594,27 @@ if [ "$ROLE" = "console" ]; then
     CONSOLE_ENV=("HIMMEL_CONSOLE_DOC=$_console_doc" "HIMMEL_CONSOLE_WORKDIR=$(dirname -- "$SIGNAL")")
 fi
 LAUNCH_ARGV=("$LAUNCHER" --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+# HIMMEL-4013: a console arm runs under the `console` plugin profile (the
+# floor plus lean-skills; no review toolkit). A leg arm reaches here through
+# leg-claude-launcher.sh, which already prepends its own --settings, so only
+# --role console adds one. Fails closed: no profile, no console launch.
+if [ "$ROLE" = "console" ]; then
+    _console_profile_settings=$(bash "$(dirname "$0")/../lanes/profile-settings.sh" console) || {
+        echo "headed-arm.sh: the console plugin profile did not resolve; refusing to launch a console with the full plugin set (HIMMEL-4013)" >&2
+        exit 2
+    }
+    LAUNCH_ARGV=("$LAUNCHER" --settings "$_console_profile_settings" "${LAUNCH_ARGV[@]:1}")
+fi
 if [ "$HEADLESS" = "1" ]; then
     # auto is what a headed leg runs in (defaultMode=auto in the operator's
     # user settings), declared here because an unattended launch must never
     # rely on the default (CLAUDE.md "Claude invocation billing").
     # headless-claude-ok: HIMMEL-3403 console-armed leg; headed-arm-leg.sh ran the bank/fleet preflight
     LAUNCH_ARGV=("$LAUNCHER" --bg --permission-mode auto --model "$MODEL" --autocompact "$AUTOCOMPACT" -n "$NAME" "load $DOC and continue")
+    # HIMMEL-4052: the rebuild above would drop the console profile --settings.
+    if [ "$ROLE" = "console" ]; then
+        LAUNCH_ARGV=("$LAUNCHER" --settings "$_console_profile_settings" "${LAUNCH_ARGV[@]:1}")
+    fi
 fi
 
 # HIMMEL-2779: headed-arm-leg.sh sets this required value. Validate the same

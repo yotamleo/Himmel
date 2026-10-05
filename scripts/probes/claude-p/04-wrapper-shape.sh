@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# headless-claude-ok: HIMMEL-2179 probe the operator runs by hand; the comment below names the claude -p config it measures
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013)
 # Probe 4 (HIMMEL-2179): combined wrapper shape — stdin prompt,
 # --append-system-prompt-file, --output-format json --json-schema. Verify by
 # ARTIFACT: does the envelope carry a schema-conformant `structured_output`.

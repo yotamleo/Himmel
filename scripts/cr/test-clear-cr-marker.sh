@@ -16,6 +16,11 @@ set -uo pipefail
 # below pins today's insensitivity.
 unset ARMAUTOMERGE CR_MERGE_GATE_OK CR_REQUIRE_CROSS_MODEL
 
+# HIMMEL-4297 — a leg shell carries FORCE_COLOR=3, which makes node's
+# console.log colour a bare number/boolean (\e[33m0\e[39m) in the values the
+# gate parses. Pin it on so the suite catches a regression in any environment.
+export FORCE_COLOR=3
+
 # grepq <text> [grep-args...] — a `grep -q` test against <text> with NO
 # pipeline. printf/echo-into-`grep -q` is a trap under this file's
 # `set -o pipefail`: grep -q exits the instant it matches, the producer
@@ -1641,6 +1646,7 @@ if [ -n "$hint_head" ] && [ "$hint_head" != "$sha" ]; then pass; else fail "hint
 cmd="$hint"
 cmd=${cmd//<finding-id>/codex-1}
 cmd=${cmd//<TICKET>/HIMMEL-1327}
+cmd=${cmd//<escape|hardening|polish>/hardening}
 cmd=${cmd//<why it is out of scope here>/pre-existing}
 _amend_rc=0
 _amend_out=$(cd "$tmp" && HIMMEL_REPO="$tmp" bash -c "$cmd" 2>&1) || _amend_rc=$?

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# launch-profile-ok-file: experiment probe; it measures a specific claude -p config, so a role profile would change the measurement (HIMMEL-4013) # headless-claude-ok: prose mention only; the real claude -p call below carries its own marker (HIMMEL-4243)
 # Probe 3b (HIMMEL-2179, RETASK RTK-2179-8f3a1c): does a seeded
 # CLAUDE_CONFIG_DIR (copying ONLY .credentials.json + a throwaway skills/
 # dir — no --bare, no --add-dir) give bare-equivalent skill isolation WITH

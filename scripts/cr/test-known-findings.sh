@@ -176,6 +176,15 @@ not_contains "prompt: fix classes excluded" "$p" "[mktemp-no-template]"
 l="$(bash "$SCRIPT" --list 2>&1)"
 contains "list: table header" "$l" "| id | kind | source | detector | title |"
 contains "list: has gnu-only-utility row" "$l" '`gnu-only-utility`'
+# HIMMEL-2450: a pipe (or newline) in any cell must not split the markdown row.
+cat > "$tmp/pipe-kf.json" <<'KFJSON'
+{"classes":[{"id":"pipe-title","kind":"checklist","title":"a|b\nc","source":"s|t","globs":[],"detector":null,"learning_match":null,"canonical":"c","coverage":"c","prompt":false,"evidence":{}}]}
+KFJSON
+lp="$(KNOWN_FINDINGS_FILE="$tmp/pipe-kf.json" bash "$SCRIPT" --list 2>&1)"
+lrow="$(grep -F '`pipe-title`' <<< "$lp")"
+contains "list: pipe in title escaped" "$lrow" 'a\|b c'
+contains "list: pipe in source escaped" "$lrow" 's\|t'
+check "list: pipe-title is one row with 6 unescaped separators" "$(tr -cd '|' <<< "${lrow//\\|/}" | wc -c | tr -d ' ')" "6"
 
 # --refresh on a COPY: ledger + learnings evidence rewritten; shipped JSON untouched
 cp "$HERE/known-findings.json" "$tmp/kf.json"

@@ -6,6 +6,7 @@ import {
   createVersion,
   releaseVersion,
   editVersion,
+  moveVersion,
   setFixVersion,
   assertVersionExists,
 } from './versions.js';
@@ -226,5 +227,40 @@ describe('start date + version-edit (HIMMEL-3890)', () => {
     stubJira({ 'GET /project/HIMMEL/versions': VERSIONS });
     await expect(editVersion('HIMMEL', 'v1.0.0', {})).rejects.toThrow(/nothing to edit/);
     await expect(editVersion('HIMMEL', 'v9', { description: 'x' })).rejects.toThrow(/no version named "v9"/);
+  });
+});
+
+describe('version-move (HIMMEL-4006)', () => {
+  const MOVABLE = [
+    { id: '10001', name: 'v1.0.1', self: 'https://x.example/rest/api/3/version/10001' },
+    { id: '10002', name: 'v1.0.1b', self: 'https://x.example/rest/api/3/version/10002' },
+  ];
+
+  it('POSTs the other version self URL as `after` on the resolved id', async () => {
+    const calls = stubJira({ 'GET /project/HIMMEL/versions': MOVABLE, 'POST /version/10002/move': {} });
+    const out = await moveVersion('HIMMEL', 'v1.0.1b', { after: 'v1.0.1' });
+    expect(calls[1]).toEqual({
+      method: 'POST',
+      url: '/version/10002/move',
+      body: { after: 'https://x.example/rest/api/3/version/10001' },
+    });
+    expect(out).toBe('Moved version v1.0.1b after v1.0.1');
+  });
+
+  it('POSTs `position` for --position First|Last', async () => {
+    const calls = stubJira({ 'GET /project/HIMMEL/versions': MOVABLE, 'POST /version/10002/move': {} });
+    const out = await moveVersion('HIMMEL', 'v1.0.1b', { position: 'First' });
+    expect(calls[1]).toEqual({ method: 'POST', url: '/version/10002/move', body: { position: 'First' } });
+    expect(out).toBe('Moved version v1.0.1b to First');
+  });
+
+  it('refuses unknown names, a bad position, and zero or two targets', async () => {
+    const calls = stubJira({ 'GET /project/HIMMEL/versions': MOVABLE });
+    await expect(moveVersion('HIMMEL', 'v9', { after: 'v1.0.1' })).rejects.toThrow(/no version named "v9"/);
+    await expect(moveVersion('HIMMEL', 'v1.0.1b', { after: 'v9' })).rejects.toThrow(/no version named "v9"/);
+    await expect(moveVersion('HIMMEL', 'v1.0.1b', { position: 'Middle' })).rejects.toThrow(/--position/);
+    await expect(moveVersion('HIMMEL', 'v1.0.1b', {})).rejects.toThrow(/exactly one/);
+    await expect(moveVersion('HIMMEL', 'v1.0.1b', { after: 'v1.0.1', position: 'Last' })).rejects.toThrow(/exactly one/);
+    expect(calls.every((c) => c.method === 'GET')).toBe(true);
   });
 });

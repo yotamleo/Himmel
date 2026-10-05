@@ -31,7 +31,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
-const { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd } = require('./lib/helpers.js');
+const { himmelIdentity, cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd } = require('./lib/helpers.js');
 const launcherLib = require('./lib/launcher.js');
 const uninstallWrapperLib = require('./lib/uninstall-wrapper.js');
 const standaloneBundleLib = require('./lib/standalone-bundle.js');
@@ -235,6 +235,18 @@ commands:
   deps upgrade            bump present declared toolchain deps toward latest;
                           qmd's model pull (~2.1 GB) is gated behind a prompt
                           or --with-models
+  report [--items <id,..>] --json
+                          read-only config feed (himmel-config-feed/1): every
+                          item, doctor check, cadence, plugin, lane, initiative
+                          leg, bypass flag and secret as one row grammar, for
+                          the config UI. --items re-probes only those row ids.
+                          Secrets show presence, never values.
+  ui [--port N]           read-only config UI on 127.0.0.1 (needs bun): serves the
+                          report feed as one page and prints a URL carrying a
+                          per-launch token. The OPERATOR runs this from a
+                          terminal; agents must not (refused under a Claude
+                          session env unless --allow-agent-session). Runs in the foreground,
+                          Ctrl-C or 30 min idle exits
   gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
@@ -304,6 +316,11 @@ const ALLOWED_OPTIONS = {
   uninstall: ['dryRun', 'yes', 'purgeState'],
   update: ['dryRun'],
   status: ['items', 'json'],
+  // HIMMEL-4254 P2: the config UI's feed (himmel-config-feed/1). Its own verb,
+  // never a `status` mode — status --json is a golden-tested contract.
+  report: ['items', 'json'],
+  // HIMMEL-4254 P3: the read-only config UI server.
+  ui: ['port', 'allowAgentSession'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
   // `scope` takes its OWN positional verbs/targets (set|get|status, then
   // project|user for set) — parsed in parseArgs's scope cases, not as --flags.
@@ -344,6 +361,8 @@ const OPTION_FLAGS = {
   prune: '--prune',
   preset: '--preset',
   purgeState: '--purge-state',
+  port: '--port',
+  allowAgentSession: '--allow-agent-session',
 };
 const OPTION_DEFAULTS = {
   fromProfile: null, defaultScope: null, scope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
@@ -352,6 +371,8 @@ const OPTION_DEFAULTS = {
   prune: false,
   preset: null,
   purgeState: false,
+  port: null,
+  allowAgentSession: false,
 };
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
@@ -381,6 +402,8 @@ function parseArgs(argv) {
     prune: false,      // ensure: --prune (opt-in — disable/unwire candidates require this; HIMMEL-2349)
     preset: null,      // gaps: --preset <name> (null = default 'operator' reference)
     purgeState: false, // uninstall: --purge-state (also remove operator state; default keeps it — HIMMEL-3058)
+    port: null,        // ui: --port N (null = ephemeral, HIMMEL-4254)
+    allowAgentSession: false, // ui: --allow-agent-session (operator override of the agent-session refusal, HIMMEL-4350)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -446,6 +469,22 @@ function parseArgs(argv) {
       case 'gaps':
         if (!setSubcommand('gaps')) return args;
         break;
+      case 'report':
+        if (!setSubcommand('report')) return args;
+        break;
+      case 'ui':
+        if (!setSubcommand('ui')) return args;
+        break;
+      case '--port': {
+        const raw = argv[++i];
+        if (raw === undefined || !/^\d+$/.test(raw) || Number(raw) > 65535) {
+          console.error('himmelctl: --port requires a port number 0-65535');
+          process.exitCode = 2;
+          return args;
+        }
+        args.port = Number(raw);
+        break;
+      }
       case 'scope':
         if (!setSubcommand('scope')) return args;
         break;
@@ -548,6 +587,9 @@ function parseArgs(argv) {
       }
       case '--json':
         args.json = true;
+        break;
+      case '--allow-agent-session':
+        args.allowAgentSession = true;
         break;
       case '--from-profile':
         args.fromProfile = argv[++i];
@@ -4927,6 +4969,7 @@ function applyHimmelctlPathShim(args) {
     if (platform === 'win32') {
       const cmdBody = `@echo off\r\nREM ${launcherLib.SHIM_MARKER}\r\nnode "%~dp0himmelctl.js" %*\r\n`;
       if (!launcherLib.writeMarkedLauncher(path.join(binDir, 'himmelctl.cmd'), cmdBody)) return false;
+      launcherLib.writeMarkedLauncher(path.join(binDir, 'himmel.cmd'), cmdBody); // HIMMEL-4380 alias, best-effort
       // No himmelctl.ps1 (codex-adv-1): a stale marked .ps1 from a prior install
       // is removed; an unmarked/symlinked one is left untouched. Removal is a
       // best-effort cleanup of a LEGACY artifact, not part of writing the PATH
@@ -4942,6 +4985,11 @@ function applyHimmelctlPathShim(args) {
       const launcher = path.join(binDir, 'himmelctl');
       const shBody = `#!/usr/bin/env sh\n# ${launcherLib.SHIM_MARKER}\nexec node "$(dirname "$0")/himmelctl.js" "$@"\n`;
       if (!launcherLib.writeMarkedLauncher(launcher, shBody, 0o755)) return false;
+      // HIMMEL-4380: a `himmel` alias beside himmelctl, so `himmel update` works
+      // in any shell (fish included) without shell config. Best-effort: a
+      // third-party `himmel` is refused by writeMarkedLauncher (with its own
+      // message) and must not fail the himmelctl launcher.
+      launcherLib.writeMarkedLauncher(path.join(binDir, 'himmel'), shBody, 0o755);
     }
   } catch (e) {
     console.error(`himmelctl: failed to write PATH launcher in ${binDir}: ${e.message}`);
@@ -5125,6 +5173,52 @@ async function cmdStatus(args) {
   console.log(`${report.summary.red} red, ${report.summary.degraded} degraded, ${report.summary.green} green, ${report.summary.na} n/a${notSetUp > 0 ? ` (${notSetUp} of them desired but not set up: see the n/a rows above)` : ''}`);
   printOrphanedBundleInfo();
   return 0;
+}
+
+// HIMMEL-4254 P2: `report --json`. Read-only; composes the existing engines
+// (lib/config-feed.js). Row ids are free-form (doctor:C24-x, flag:NAME), so
+// --items is NOT validated against the manifest here — an unknown id yields no
+// row. No install profile is not an error: the feed says profileCache:false.
+function cmdReport(args) {
+  if (!args.json) {
+    console.error('himmelctl: report requires --json');
+    return 2;
+  }
+  const configFeed = require('./lib/config-feed.js');
+  const manifest = loadManifest();
+  const profilePath = cachePath();
+  const answers = fs.existsSync(profilePath) ? loadProfile(profilePath) : null;
+  const scope = answers ? answers.scope : 'user';
+  const targetPath = scope === 'user' ? repoRoot() : path.resolve(process.cwd());
+  const feed = configFeed.buildFeed({ manifest, scope, targetPath, answers, items: args.items });
+  process.stdout.write(JSON.stringify(feed) + '\n');
+  return 0;
+}
+
+// HIMMEL-4254 P3: `ui` runs scripts/config-ui/server.ts under bun in the
+// foreground. The server prints the tokened URL itself; this verb only locates
+// it, refuses a missing bun, and forwards the exit code.
+function cmdUi(args) {
+  if (!args.allowAgentSession && Object.keys(process.env).some((k) => (k === 'CLAUDECODE' || k.startsWith('CLAUDE_CODE_')) && process.env[k])) {
+    console.error('himmelctl: ui: operator-only; refused inside a Claude session (CLAUDECODE / CLAUDE_CODE_* is set). Run it from your own terminal, or pass --allow-agent-session to override.');
+    return 2;
+  }
+  const server = path.join(repoRoot(), 'scripts', 'config-ui', 'server.ts');
+  if (!fs.existsSync(server)) {
+    console.error(`himmelctl: ui: ${displayPath(server)} not found (needs a himmel checkout)`);
+    return 1;
+  }
+  if (!which('bun')) {
+    console.error('himmelctl: ui: bun is required (https://bun.sh)');
+    return 1;
+  }
+  return new Promise((resolve) => {
+    const child = require('child_process').spawn('bun', [server, '--port', String(args.port === null ? 0 : args.port)], { stdio: 'inherit' });
+    // A signal to this wrapper must reach the server, never orphan it.
+    for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => child.kill(sig));
+    child.on('error', (e) => { console.error(`himmelctl: ui: ${e.message}`); resolve(1); });
+    child.on('exit', (code, sig) => resolve(sig ? 0 : code === null ? 1 : code));
+  });
 }
 
 // HIMMEL-3312 S13 item 7 ("himmelctl doctor"): the health-check surface for
@@ -5542,9 +5636,26 @@ async function cmdEnsure(args) {
   // some of those same items would be an outright false claim, not just
   // noise. This is also what makes reconcileTarget()'s profileSource stamp
   // meaningful ACROSS runs: the one run that sets it never fights it.
-  const additive = args.profile
+  //
+  // HIMMEL-4267: ALSO skipped under --items. A scoped run converges only the
+  // named items; turning other items on (and persisting them) is a profile
+  // decision that belongs to bare `ensure` / `install` / `update`, not to a
+  // one-item repair like himmel-update's `ensure --items pre-commit-hooks`.
+  const additive = (args.profile || args.items)
     ? { changed: false, added: [] }
     : stateLib.additiveReconcile(target, manifest, cachedAnswers);
+  if (args.items && !args.profile) {
+    // The named items still need the recorded profile's say on whether they
+    // are wanted — applied IN MEMORY only (a --items run never saves state),
+    // so a repair of a recorded-but-not-yet-enabled item still converges.
+    for (const id of args.items) {
+      const entry = target.items[id];
+      const item = manifest.items.find((i) => i.id === id);
+      if (entry && !entry.enabled && item && stateLib.recordedDesired(target, entry, item, cachedAnswers)) {
+        entry.enabled = true;
+      }
+    }
+  }
   if (additive.changed) {
     stateChanged = true;
     console.log(`himmelctl: recorded install-profile enables ${additive.added.length} item(s) this target hadn't turned on: ${additive.added.join(', ')} (persisting; this never disables anything)`);
@@ -5625,6 +5736,17 @@ async function cmdEnsure(args) {
           const decided = /^\s*n/i.test(ans) ? 'no' : 'yes';
           itemState.overrides.consent = decided;
           stateChanged = true;
+          if (args.items) {
+            // HIMMEL-4267: a scoped run saves no derive/reconcile bookkeeping,
+            // but the operator's own answer about the requested item is
+            // theirs to keep — write that one field into a fresh state.
+            const fresh = stateLib.load();
+            const freshTarget = fresh.targets[targetKey] || stateLib.ensureTarget(fresh, manifest, cachedAnswers);
+            const freshItem = freshTarget.items['guardrail-block-global'] || (freshTarget.items['guardrail-block-global'] = { enabled: false, overrides: {} });
+            if (!freshItem.overrides || typeof freshItem.overrides !== 'object' || Array.isArray(freshItem.overrides)) freshItem.overrides = {};
+            freshItem.overrides.consent = decided;
+            stateLib.save(fresh);
+          }
           console.log(`himmelctl: recorded guardrail-block-global consent = ${decided}`);
         } else if (consent !== 'yes' && consent !== 'no') {
           // No recorded answer, and this run cannot ask right now
@@ -6088,7 +6210,7 @@ async function cmdEnsure(args) {
     // Nothing is about to be consented to — no install/unwire will run, so
     // it's correct (and the one intentional exception to the deferred-save
     // rule below) to persist the derive/reconcile bookkeeping right here.
-    if (stateChanged && !args.dryRun) stateLib.save(state);
+    if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
     // CR fix: "already at the desired state" is FALSE when hints remain —
     // those items still need manual convergence. Say so instead.
     console.log(hints.length > 0
@@ -6150,7 +6272,10 @@ async function cmdEnsure(args) {
   // behind !args.dryRun (dry-run's zero-mutation guarantee is unconditional).
   provOpen(args); // HIMMEL-3332 S5: past every no-op/refusal return, before the first mutation
   provStep = 'ensure';
-  if (stateChanged && !args.dryRun) stateLib.save(state);
+  // HIMMEL-4267: a scoped (--items) run never persists derive/migrate
+  // bookkeeping — the recorded target stays byte-identical (the requested
+  // item's own consent answer is written separately where it is asked).
+  if (stateChanged && !args.dryRun && !args.items) stateLib.save(state);
 
   // Step 4: toward-disabled dispatch (A5b) — per-item `removable` check.
   // CR fix: dispatched in REVERSE dependency order (a dependent, B deps on
@@ -6355,6 +6480,18 @@ async function cmdEnsure(args) {
   // unrelated pre-existing green) read as a false success. A failed/nonzero
   // install must never yield a successful ensure, independent of what the
   // probe says afterward.
+  // HIMMEL-4267: under --items the requested item is judged by its OWN
+  // post-check. A failed primitive whose item probes green (a coalesced
+  // installer's unrelated step failing after the item was placed) is a
+  // warning, not a failure of the item asked for.
+  if (args.items && failed.length > 0) {
+    const stillIds = new Set(stillNotConverged.map((r) => r.id));
+    const benign = failed.filter((f) => !stillIds.has(f.id));
+    for (const f of benign) {
+      console.error(`himmelctl: warning: ${f.id}'s installer reported a failure (${f.reason}) but ${f.id} post-checks green — treating as converged`);
+    }
+    failed = failed.filter((f) => stillIds.has(f.id));
+  }
   if (stillNotConverged.length > 0 || disableErrors.length > 0 || failed.length > 0 || pruneRejected) {
     if (stillNotConverged.length > 0) {
       console.error(`himmelctl: ${stillNotConverged.length} item(s) still not converged: ${stillNotConverged.map((r) => r.id).join(', ')}`);
@@ -7741,23 +7878,13 @@ async function main() {
   // its rc: 1 when any component is behind, 3 when none is but one is unknown.
   if (argv.indexOf('--version') !== -1) {
     const root = repoRoot();
-    let version = 'unknown';
-    try {
-      version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim() || 'unknown';
-    } catch {
-      // fall through to 'unknown'
-    }
-    const git = (...gitArgs) => {
-      // Only a root that is itself a checkout: without this an install dir
-      // nested in some other repo would report THAT repo's describe/commit.
-      if (!fs.existsSync(path.join(root, '.git'))) return 'unknown';
-      const r = spawnSync('git', ['-C', root, ...gitArgs], { encoding: 'utf8' });
-      const out = r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : '';
-      return out || 'unknown';
-    };
+    // Shared with the config feed's feed.himmel (HIMMEL-4403): VERSION is the
+    // declared release line; describe/commit are the checkout's own state and
+    // may read ahead of it between a release cut and the next VERSION bump.
+    const { version, describe, commit } = himmelIdentity(root);
     console.log(`himmel ${version}`);
-    console.log(`describe: ${git('describe', '--tags', '--always')}`);
-    console.log(`commit: ${git('rev-parse', 'HEAD')}`);
+    console.log(`describe: ${describe}`);
+    console.log(`commit: ${commit}`);
     if (argv.indexOf('--all') === -1) return 0;
     const script = toBashPath(path.join(root, 'scripts', 'himmel-update.sh'));
     return runSpawn({ argv: [resolveBash(), script, '--versions'] });
@@ -7822,6 +7949,12 @@ async function main() {
   }
   if (args.subcommand === 'gaps') {
     return await cmdGaps(args);
+  }
+  if (args.subcommand === 'report') {
+    return cmdReport(args);
+  }
+  if (args.subcommand === 'ui') {
+    return await cmdUi(args);
   }
   if (args.subcommand === 'scope') {
     return await cmdScope(args);

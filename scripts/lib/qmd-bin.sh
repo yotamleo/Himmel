@@ -31,15 +31,14 @@
 # clone AND the clone's HEAD is the pinned commit AND `qmd --version`
 # reports >= QMD_FORK_MIN_VERSION) and skips.
 #
-# HIMMEL-3045: consumes upstream `tobi/qmd` directly. Until HIMMEL-2882 this
-# clone tracked a himmel-owned fork (`yotamleo/qmd`) carrying two local
-# fixes; upstream merged both under its own SHAs, collapsing the fork's
-# delta to empty, so HIMMEL-3045 dropped the fork and pointed the clone at
-# tobi/qmd itself (the fork's history stays on yotamleo/qmd as archive tags).
-# An existing clone whose origin is still the retired fork migrates
-# automatically (`git remote set-url`) the next time qmd_install() runs;
-# QMD_FORK_REPO/_REF/_DIR and the on-disk `qmd-fork` dir name are unchanged
-# (renaming is out of scope -- HIMMEL-3045).
+# HIMMEL-3956: carries the `yotamleo/qmd` fork again -- two commits on top of
+# tobi/qmd main 04e4dbd8 that make the bin/qmd launcher forward signals to
+# its bun child (tobi/qmd#1030, fixing #1029). HIMMEL-3045 had dropped the
+# earlier fork once upstream merged its fixes. An existing clone whose origin
+# is either known qmd remote (tobi/qmd or yotamleo/qmd, https) is re-pointed
+# with `git remote set-url` -- no re-clone -- the next time qmd_install()
+# runs, in either direction, so moving back to upstream is a pin change only.
+# QMD_FORK_REPO/_REF/_DIR and the on-disk `qmd-fork` dir name are unchanged.
 #
 # PIN (HIMMEL-911): the install ref is a FULL COMMIT SHA -- not a branch.
 # A branch is a MUTABLE tracking ref; a force-push there would silently
@@ -57,19 +56,37 @@
 # scripts/adopt.ps1) can delegate to this ONE implementation instead of
 # duplicating the clone/build/link recipe natively.
 
+# qmd_cmd runs qmd under qmd_bounded (HIMMEL-3956): a deadline that kills the
+# whole process tree, since `timeout` alone orphans qmd's bun child.
+# Named lib-dir var so the standalone-bundle closure walk follows this source.
+# Pure parameter expansion: a hermetic probe PATH may carry no dirname.
+_QMDBIN_LIB_DIR="${BASH_SOURCE[0]%/*}"
+[ "$_QMDBIN_LIB_DIR" = "${BASH_SOURCE[0]}" ] && _QMDBIN_LIB_DIR=.
+# shellcheck source=scripts/lib/qmd-bounded.sh
+. "$_QMDBIN_LIB_DIR/qmd-bounded.sh"
+
 # Fork config -- overridable per call (env var set before sourcing/calling).
-_qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/tobi/qmd.git}"; }
-_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-04e4dbd8245c527a88f1a8f0bda547aef9ca81fb}"; }
+# ponytail: carried fork until tobi/qmd#1030 merges (or tobi/qmd main gains
+# an equivalent launcher signal fix); then pin back to tobi/qmd at that SHA --
+# HIMMEL-3982. upstream-watch reports #1030 merging; the upstreams.json qmd
+# `fork` block keeps /fork-resync auditing the delta meanwhile.
+# The pin is the tip of origin/fix/launcher-forward-signals (the fork's pin
+# branch), not fork main.
+_qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
+_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-932839a2a4cc4b894b1fd5fb2a86758321985c56}"; }
 _qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
-# HIMMEL-3045: an owned clone's origin may still be the retired himmel qmd
-# fork (a few forms seen in the wild -- with/without .git, a trailing
-# slash from a hand-fixed remote); recognize those and migrate rather than
-# refuse. The SSH form is a genuinely different string and is intentionally
-# NOT matched here -- it falls through to the ordinary unrecognized-origin
-# refusal, same as any other unowned remote.
-_qmd_is_legacy_fork_origin() {
+# An owned clone's origin may be either known qmd remote -- upstream tobi/qmd
+# or the himmel fork yotamleo/qmd -- in the forms seen in the wild (with or
+# without .git, a trailing slash from a hand-fixed remote). A known origin
+# that differs from QMD_FORK_REPO is re-pointed rather than refused
+# (HIMMEL-3045, both directions since HIMMEL-3956). The SSH forms are
+# genuinely different strings and are intentionally NOT matched -- they fall
+# through to the ordinary unrecognized-origin refusal, same as any other
+# unowned remote.
+_qmd_is_known_origin() {
   case "${1%/}" in
     https://github.com/yotamleo/qmd.git | https://github.com/yotamleo/qmd) return 0 ;;
+    https://github.com/tobi/qmd.git | https://github.com/tobi/qmd) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -461,10 +478,11 @@ qmd_install() {
     # overridable only via QMD_FORK_FORCE=1.
     origin_url="$(git -C "$fork_dir" remote get-url origin 2>/dev/null)"
     if [ "$origin_url" != "$repo" ]; then
-      if _qmd_is_legacy_fork_origin "$origin_url"; then
-        # HIMMEL-3045: this clone predates the de-fork -- migrate its origin
-        # in place instead of refusing an install this tool actually owns.
-        echo "  $fork_dir origin is the retired himmel qmd fork ('$origin_url') - migrating to $repo (HIMMEL-3045)."
+      if _qmd_is_known_origin "$origin_url"; then
+        # HIMMEL-3045/3956: a clone of the other known qmd remote (fork or
+        # upstream) -- re-point its origin in place instead of refusing an
+        # install this tool actually owns.
+        echo "  $fork_dir origin is a known qmd remote ('$origin_url') - re-pointing to $repo (HIMMEL-3956)."
         if ! git -C "$fork_dir" remote set-url origin "$repo"; then
           echo "  ERROR: could not update $fork_dir's origin to $repo." >&2
           return 1
@@ -694,9 +712,9 @@ qmd_cmd() {
   local bun_qmd
   bun_qmd="$(_qmd_bun_js)"
   if [ -f "$bun_qmd" ] && command -v bun >/dev/null 2>&1; then
-    bun "$bun_qmd" "$@"
+    qmd_bounded "$(qmd_timeout_secs)" bun "$bun_qmd" "$@"
   elif command -v qmd >/dev/null 2>&1; then
-    qmd "$@"
+    qmd_bounded "$(qmd_timeout_secs)" qmd "$@"
   else
     return 127
   fi

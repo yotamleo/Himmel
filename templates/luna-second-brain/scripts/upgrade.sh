@@ -974,7 +974,7 @@ claude_threeway() {
     # No recorded base => use pristine template as base (=> ours wins, safe).
     local base_use="$base"
     [ -f "$base" ] || base_use="$theirs"
-    local merged mf_err rc
+    local merged mf_err rc resolved="" report=""
     # Preflight the git launcher itself: `git merge-file` exits with the
     # conflict-hunk count TRUNCATED TO 127, so 126/127 from the merge are
     # legitimate high-conflict results — indistinguishable from the shell's
@@ -995,6 +995,20 @@ claude_threeway() {
             # toward WRITE_FAILURES (fail-closed) and the base only advances if
             # _CLAUDE.md was actually replaced — never a lying stamp + lost merge.
             if write_file "$merged" "$ours"; then
+                advance_base
+            else
+                WRITE_FAILURES=$((WRITE_FAILURES+1))
+            fi
+        fi
+    elif [ "$rc" -ge 1 ] && [ "$rc" -le 127 ] && resolved="$(mktemp)" && report="$(mktemp)" \
+        && resolve_vault_deletions "$ours" "$base_use" "$theirs" "$resolved" "$report"; then
+        # HIMMEL-4380: every conflict hunk was a vault-deleted section — the
+        # deletion wins, the dropped template change is reported, and the base
+        # advances so the next run is clean.
+        CLAUDE_MERGE_RESULT="clean"
+        echo "  _CLAUDE.md: $(sed 's/$/ /' "$report" | tr -d '\n')"
+        if [ "$execute" = 1 ]; then
+            if write_file "$resolved" "$ours"; then
                 advance_base
             else
                 WRITE_FAILURES=$((WRITE_FAILURES+1))
@@ -1024,7 +1038,68 @@ claude_threeway() {
             echo "    (git produced no diagnostic output)" >&2
         fi
     fi
-    rm -f "$merged" "$mf_err"
+    rm -f "$merged" "$mf_err" "${resolved:-}" "${report:-}"
+}
+
+# HIMMEL-4380: a conflict hunk whose vault ("ours") side is EMPTY while the base
+# had content is a section the vault deliberately deleted and the template kept
+# or edited. Such a conflict recurs on every upgrade (a conflict never advances
+# the base or the stamp), so the vault's deletion wins here and the template
+# change is reported instead. Any hunk where the vault kept text stays a real
+# conflict. Args: <ours> <base> <theirs> <resolved-out> <report-out>; exit 0 =
+# every hunk was a deletion and <resolved-out> is the full merge, 1 = at least
+# one genuine conflict remains (nothing written for the caller to use).
+resolve_vault_deletions() {
+    local ours="$1" base="$2" theirs="$3" out="$4" report="$5"
+    [ -n "$PYTHON" ] || return 1
+    local diff3; diff3="$(mktemp)"
+    # HIMMEL-4386: a long marker size, so manual text (a setext `=======`
+    # underline, a documented conflict example) is never taken for a marker.
+    git merge-file -p --diff3 --marker-size 31 "$ours" "$base" "$theirs" > "$diff3" 2>/dev/null
+    local rc=$?
+    if [ "$rc" -lt 1 ] || [ "$rc" -gt 127 ]; then rm -f "$diff3"; return 1; fi
+    "$PYTHON" - "$diff3" "$out" "$report" <<'PY'
+import sys
+src, out, report = sys.argv[1:4]
+M = 31
+OPEN, BASE, SEP, CLOSE = ("<" * M, "|" * M, "=" * M, ">" * M)
+def is_marker(line, m):
+    # the exact marker run, then a space or end of line: a longer run never matches
+    t = line.rstrip("\r\n")
+    return t == m or t.startswith(m + " ")
+lines = open(src, encoding="utf-8", newline="").read().splitlines(keepends=True)
+res, dropped, i = [], [], 0
+while i < len(lines):
+    if not is_marker(lines[i], OPEN):
+        res.append(lines[i]); i += 1; continue
+    ours, base, theirs = [], [], []
+    cur, stage = ours, 0  # 0 ours, 1 base, 2 theirs, 3 closed
+    i += 1
+    while i < len(lines):
+        l = lines[i]
+        i += 1
+        if stage == 0 and is_marker(l, BASE): cur, stage = base, 1
+        elif stage == 1 and is_marker(l, SEP): cur, stage = theirs, 2
+        elif stage == 2 and is_marker(l, CLOSE): stage = 3; break
+        elif is_marker(l, OPEN) or is_marker(l, BASE) or is_marker(l, SEP) or is_marker(l, CLOSE):
+            sys.exit(1)  # out-of-order marker: malformed hunk
+        else: cur.append(l)
+    if stage != 3 or ours or not base:
+        sys.exit(1)
+    changed = [t for t in theirs if t not in base]
+    dropped.append((base, changed))
+open(out, "w", encoding="utf-8", newline="").write("".join(res))
+with open(report, "w", encoding="utf-8") as fh:
+    for base, changed in dropped:
+        head = base[0].strip() if base else ""
+        if changed:
+            fh.write("section deleted by the vault kept deleted; template change dropped: %s\n" % " | ".join(c.strip() for c in changed if c.strip()))
+        else:
+            fh.write("section deleted by the vault kept deleted (template unchanged): %s\n" % head)
+PY
+    local prc=$?
+    rm -f "$diff3"
+    return "$prc"
 }
 
 process() {

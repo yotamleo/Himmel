@@ -20,6 +20,9 @@
 #  11. no-description  : a comment-only description (`# TODO`) counts as empty
 #  12. description ok  : real text followed by a trailing `# comment` stays clean
 #  13. name-mismatch   : a quoted name: with trailing whitespace still matches
+#  14. description ok  : a quoted value holding ` # ` (`" # TODO"`) is not a comment
+#      (b) an empty quoted value plus a trailing comment is still empty
+#  15. tab in path     : a path containing a TAB is linted by its real path
 #
 # Exit: 0 all passed, 1 any failed. bash 3.2-safe.
 
@@ -335,6 +338,69 @@ printf -- '---\nname: "quoted-name-skill"  \ndescription: quoted name with trail
 
 OUT13="$(bash "$LINT" "$QUOTEDNAME" 2>&1)"; EC13=$?
 if [ "$EC13" -eq 0 ]; then pass "quoted name: with trailing whitespace still matches the parent dir"; else fail "expected exit 0, got $EC13" "$OUT13"; fi
+
+# ---------------------------------------------------------------------------
+# Case 14: a ` #` inside a quoted description is content, not a comment
+# ---------------------------------------------------------------------------
+printf '\nCase 14: quoted description containing " # " is not reported empty\n'
+
+mkdir -p "$TMP_ROOT/quoted-hash-skill"
+QUOTEDHASH="$TMP_ROOT/quoted-hash-skill/SKILL.md"
+cat > "$QUOTEDHASH" <<'EOF'
+---
+name: quoted-hash-skill
+description: " # TODO"
+---
+
+# quoted-hash-skill
+EOF
+
+OUT14="$(bash "$LINT" "$QUOTEDHASH" 2>&1)"; EC14=$?
+if [ "$EC14" -eq 0 ]; then pass "quoted description with an inner ' # ' exits 0"; else fail "expected exit 0, got $EC14" "$OUT14"; fi
+assert_not_contains "no [no-description] for a quoted ' # ' value" "no-description" "$OUT14"
+
+printf '\nCase 14b: an empty quoted description followed by a comment is still empty\n'
+
+mkdir -p "$TMP_ROOT/empty-quoted-skill"
+EMPTYQUOTED="$TMP_ROOT/empty-quoted-skill/SKILL.md"
+cat > "$EMPTYQUOTED" <<'EOF'
+---
+name: empty-quoted-skill
+description: "" # TODO
+---
+EOF
+
+OUT14B="$(bash "$LINT" "$EMPTYQUOTED" 2>&1)"; EC14B=$?
+if [ "$EC14B" -eq 1 ]; then pass "empty quoted description exits 1"; else fail "expected exit 1, got $EC14B" "$OUT14B"; fi
+assert_contains "[no-description] for an empty quoted value" "no-description" "$OUT14B"
+
+# ---------------------------------------------------------------------------
+# Case 15: a path containing a TAB is linted by its real path
+# ---------------------------------------------------------------------------
+printf '\nCase 15: a path containing a TAB is linted by its real path\n'
+
+TABDIR="$TMP_ROOT/tab$(printf '\t')parent"
+mkdir -p "$TABDIR/tab-path-skill" "$TABDIR/tab-bad-skill"
+cat > "$TABDIR/tab-path-skill/SKILL.md" <<'EOF'
+---
+name: tab-path-skill
+description: lives under a directory whose name holds a tab
+---
+EOF
+cat > "$TABDIR/tab-bad-skill/SKILL.md" <<'EOF'
+---
+description: missing a name field, under a tab path
+---
+EOF
+
+OUT15A="$(bash "$LINT" "$TABDIR/tab-path-skill/SKILL.md" 2>&1)"; EC15A=$?
+if [ "$EC15A" -eq 0 ]; then pass "clean file under a tab path exits 0"; else fail "expected exit 0, got $EC15A" "$OUT15A"; fi
+assert_contains "clean tab-path file is actually checked" "clean (1 file(s) checked)" "$OUT15A"
+
+OUT15B="$(bash "$LINT" "$TABDIR/tab-bad-skill/SKILL.md" 2>&1)"; EC15B=$?
+if [ "$EC15B" -eq 1 ]; then pass "bad file under a tab path exits 1"; else fail "expected exit 1, got $EC15B" "$OUT15B"; fi
+assert_contains "finding names the real tab-holding path" "$TABDIR/tab-bad-skill/SKILL.md:" "$OUT15B"
+assert_contains "[no-name] reported for the tab-path file" "no-name" "$OUT15B"
 
 # ---------------------------------------------------------------------------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

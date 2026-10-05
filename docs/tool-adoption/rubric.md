@@ -99,6 +99,15 @@ question. Log the ADR in the registry (`registry.md`, HIMMEL-201).
   read failed). Rejected tools are the most valuable registry entries:
   they stop the same tool being re-evaluated from scratch next quarter.
 
+A **re-audit** (§5) of a tool that already has a verdict ends in one of
+four states instead, each recorded with the model versions it was
+measured on:
+
+- **ADOPT** — as above; the re-audit found an outcome gain.
+- **PILOT-MEASURE** — as above; promising on today's models, not yet proven.
+- **KEEP-REMOVED** — previously removed or rejected, and still is.
+- **RE-REMOVE** — previously adopted or kept, and the re-audit removes it.
+
 ## 4. Measurement protocol
 
 Adopt on evidence from a **real himmel workday**, not a synthetic demo.
@@ -115,6 +124,8 @@ Adopt on evidence from a **real himmel workday**, not a synthetic demo.
 4. **Compare on outcome, not bytes.** The tool wins only if the *session*
    went better — work shipped with less friction. A token drop with
    equal-or-worse outcomes is a REJECT, not a win.
+   Where the eval ran an `effort-assess` estimate (HIMMEL-3997), record
+   estimate vs actual too: the same KPI the effort-route recommender is judged on.
 
 The before/after baseline above applies to **net-new installs**. For
 items **already in use** — our own skills/tools running every session,
@@ -131,3 +142,46 @@ and fill the outcome signals from step 2. A single number that always
 moves in the "good" direction (tokens down) and never captures regressions
 (work that didn't ship, loops that got worse) is exactly the metric to
 distrust. The honest signals are the messy ones.
+
+## 5. Per-sprint re-audit (HIMMEL-3883)
+
+A verdict holds for the models it was measured on. A new model (a new
+Claude tier, a GPT release such as GPT-6.1 Sol) can flip it: a terse-output
+style that saved tokens on one model can cost tokens or drop evidence on
+the next. So every committed sprint carries one standing re-audit item.
+
+**Scope per sprint:** re-check every registry verdict whose measured-on
+model has changed since it was measured, plus up to **2 new candidates**.
+Timebox: one small leg. It counts against the sprint's planned capacity,
+not the surprise margin.
+
+**Each re-check answers four questions** (first case: caveman, removed in
+HIMMEL-2033):
+
+1. **Upstream alive?** Last push, open issues, licence. A "dead upstream"
+   reason expires when upstream resumes.
+2. **Scanner trip still applies?** Re-run Hermes `skills_guard`
+   (`scan_skill`, source `community`) at the current pin, and read every
+   critical hit at its cited line before calling it real or a false
+   positive.
+3. **Still saves tokens on today's models?** Measure, never take the
+   claim: a before/after token count on a fixed task set (the same prompts
+   in both arms), from `claude -p --output-format json` usage and
+   `total_cost_usd`, repriced from `modelUsage` at list prices where the
+   reported cost is off. This is the burn-pricing method of the
+   HIMMEL-2763 cost-reduction work
+   ([`lane-calibration.md`](../internals/lane-calibration.md)). Count the
+   tool's own prompt text as input cost. Record n per cell; n=1 shows
+   "no clear win", not an effect size.
+4. **Harms output quality for legs or the review panel?** Put at least one
+   gate-parsed output in the task set (a `FINDING:` review, a
+   `READY <pr> <sha> GREEN` line). Terse output can drop the evidence
+   lines gates parse, or drop findings, so compare format AND coverage.
+
+Token numbers stay an input (§1): a re-audit ADOPT still needs an outcome
+gain, not only a token drop.
+
+**Record** the verdict (a §3 re-audit state), the measured-on model IDs
+and the re-open trigger in the registry's
+[re-audit ledger](registry.md#re-audit-ledger-himmel-3883), with the
+evidence in a dated `reaudit-<yyyy-mm>-sprint<n>.md` beside it.

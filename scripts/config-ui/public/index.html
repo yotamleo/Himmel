@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>himmel config console</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="rail" aria-label="Regions">
+    <div class="brand">himmelctl ui<small id="where">127.0.0.1</small></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="railfoot">
+      <span id="probed"></span>
+      <span>session token ok · exits after 30 min idle</span>
+    </div>
+  </aside>
+  <main id="main"><p class="sub" id="status">loading…</p></main>
+</div>
+<div class="toast" id="toast" hidden></div>
+<script type="module" src="/app.js"></script>
+</body>
+</html>

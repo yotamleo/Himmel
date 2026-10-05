@@ -181,6 +181,82 @@ case "$out" in
     *) echo "FAIL T18 stderr did not name file:line"; FAILED=$((FAILED + 1)) ;;
 esac
 
+# T19-T24 (HIMMEL-4124): argv-array spawns of gemini, parity with the claude gate → BLOCK
+printf "%s\n" 'const r = spawnSync("gemini", ["-p", prompt]);' > "$TMP/sp_one.mjs"
+rc=$(run_hook "sp_one.mjs")
+assert_rc "T19 one-line spawnSync(\"gemini\", …) unmarked" 1 "$rc"
+
+printf "%s\n" 'const r = spawnSync(' '  "gemini",' '  ["-p", prompt],' ');' > "$TMP/sp_multi.mjs"
+rc=$(run_hook "sp_multi.mjs")
+assert_rc "T20 multi-line spawnSync( / \"gemini\" unmarked" 1 "$rc"
+
+printf "%s\n" 'subprocess.run(' '    ["gemini", "-p", prompt],' '    check=True,' ')' > "$TMP/sp_multi.py"
+rc=$(run_hook "sp_multi.py")
+assert_rc "T21 multi-line subprocess.run( / [\"gemini\" unmarked" 1 "$rc"
+
+printf "%s\n" 'const p = Bun.spawn({' '  cmd: ["gemini", "-p", prompt],' '});' > "$TMP/sp_bun.ts"
+rc=$(run_hook "sp_bun.ts")
+assert_rc "T22 Bun.spawn({ cmd: [\"gemini\" unmarked" 1 "$rc"
+
+printf "%s\n" 'spawnSync("gemini.cmd", ["-p", prompt]);' > "$TMP/sp_cmd.mjs"
+rc=$(run_hook "sp_cmd.mjs")
+assert_rc "T23 Windows npm shim gemini.cmd unmarked" 1 "$rc"
+
+printf "%s\n" 'os.spawnlp(os.P_WAIT, "gemini", "gemini", "-p", p)' > "$TMP/sp_os.py"
+rc=$(run_hook "sp_os.py")
+assert_rc "T24 os.spawnlp(mode, \"gemini\") unmarked" 1 "$rc"
+
+# T25-T26: a marker covers the argv spawn → CLEAN
+printf "%s\n" 'spawnSync("gemini", ["-p", prompt]); // headless-gemini-ok: batch job' > "$TMP/sp_ok_one.mjs"
+rc=$(run_hook "sp_ok_one.mjs")
+assert_rc "T25 same-line marker on one-line argv spawn" 0 "$rc"
+
+printf "%s\n" '// headless-gemini-ok: batch job, quota accepted' 'const r = spawnSync(' '  "gemini",' '  ["-p", prompt],' ');' > "$TMP/sp_ok_multi.mjs"
+rc=$(run_hook "sp_ok_multi.mjs")
+assert_rc "T26 marker above a multi-line argv spawn" 0 "$rc"
+
+# T27: gemini as an ARGUMENT, or a longer name, is not the program → CLEAN
+printf "%s\n" 'spawnSync("git", ["gemini", "-p"]);' 'spawnSync("mygemini", ["-p"]);' 'spawnSync(' '  "git",' '  ["gemini"]);' > "$TMP/sp_arg.mjs"
+rc=$(run_hook "sp_arg.mjs")
+assert_rc "T27 gemini as argument / mygemini not flagged" 0 "$rc"
+
+# T28 (HIMMEL-4123, shared join): a comment holding an unbalanced bracket must not break the join → BLOCK
+printf "%s\n" 'subprocess.run(' '    # note )' '    ["gemini", *a])' > "$TMP/sp_cmt.py"
+rc=$(run_hook "sp_cmt.py")
+assert_rc "T28 # comment with ) between ( and [\"gemini\" unmarked" 1 "$rc"
+
+# T29: the shared join lib missing → fail closed, even on a clean file → BLOCK
+mkdir -p "$TMP/nolib"
+cp "$HOOK" "$TMP/nolib/check-no-headless-gemini.sh"
+rc=$(cd "$TMP" && bash "$TMP/nolib/check-no-headless-gemini.sh" "interactive.sh" >/dev/null 2>&1; echo "$?")
+assert_rc "T29 missing lib/headless-spawn-join.sh fails closed" 1 "$rc"
+
+# T30 (HIMMEL-4124 CR): the join itself failing (awk missing or erroring) → fail closed, even on a clean file → BLOCK
+mkdir -p "$TMP/badawk"
+printf '%s\n' '#!/bin/sh' 'exit 2' > "$TMP/badawk/awk"
+chmod +x "$TMP/badawk/awk"
+rc=$(cd "$TMP" && PATH="$TMP/badawk:$PATH" bash "$HOOK" "interactive.sh" >/dev/null 2>&1; echo "$?")
+assert_rc "T30 a failing join (awk rc!=0) fails closed" 1 "$rc"
+
+# T31 (HIMMEL-4132): a name=value staged filename must not read as an awk
+# assignment (awk would read stdin and the multi-line join would pass) → BLOCK
+printf "%s\n" 'const r = spawnSync(' '  "gemini",' '  args)' > "$TMP/gemini_x=1.js"
+rc=$(run_hook "gemini_x=1.js" </dev/null)
+assert_rc "T31 multi-line spawn in a name=value filename unmarked" 1 "$rc"
+
+# T32 (HIMMEL-4132): a file named '-' must not read as stdin → BLOCK
+printf "%s\n" 'gemini -p "summarize"' > "$TMP/-"
+rc=$(run_hook "-" </dev/null)
+assert_rc "T32 headless call in a file named - unmarked" 1 "$rc"
+rm -f "$TMP/-"
+
+# T33 (HIMMEL-4137): a correctly MARKED file named -lead.js must read as ALLOW,
+# not as an option (pins the leading-dash false-positive fix) → CLEAN
+printf "%s\n" 'spawnSync("gemini", ["-p", prompt]); // headless-gemini-ok: batch job' > "$TMP/-lead.js"
+rc=$(run_hook "-lead.js" </dev/null)
+assert_rc "T33 marked headless call in a file named -lead.js" 0 "$rc"
+rm -f "$TMP/-lead.js"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

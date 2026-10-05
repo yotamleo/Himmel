@@ -19,6 +19,10 @@
 #           version than the one our fork is merged to. (claude-obsidian -> AgriciDaniel.)
 #           This sub-case also makes tag-name refs (e.g. v1.9.2-himmel.1) work —
 #           we never compare a tag name to a SHA.
+#      Sidecar entries with standalone:true (HIMMEL-4019) also track reviewed
+#      adoption targets for dormant external installs absent from our marketplace:
+#      ref vs HEAD for track:head, synced_base vs tags for track:release. These
+#      are target pins, not a claim that a station's installed cache was updated.
 #   2. Vendored forks — any marketplace/plugins/<p>/UPSTREAM_PIN that carries the
 #      generic fields `upstream_repo` / `upstream_path` / `upstream_sha256`. Drift
 #      = the recorded sha256 != the sha256 of that upstream file fetched now.
@@ -46,6 +50,9 @@
 #           API instead of the highest semver tag — for upstreams whose tags are
 #           NON-MONOTONIC (a stale higher-semver tag would otherwise be a phantom
 #           "latest"; graphify's months-old v1.0.0 vs its current v0.9.x line).
+#           `tag_prefix` (with latest_source: release) strips a tag stream's prefix
+#           from the release tag before comparing — bun tags `bun-v1.4.3`, so the
+#           entry keeps a bare synced_base and a bare BEHIND version (HIMMEL-4258).
 #      Installed marketplaces (obsidian-skills, openai-codex,
 #      claude-video, claude-plugins-official, …) are NOT listed in the registry:
 #      they are discovered dynamically from ~/.claude/plugins/known_marketplaces.json
@@ -58,13 +65,13 @@
 #
 # Fork-delta audit is split by storage shape. A registry entry carrying a
 # `fork` block is mechanically rebased + classified by
-# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence — no
-# entry currently carries one (qmd de-forked HIMMEL-3045, claude-obsidian
-# retired at v2.2.0 HIMMEL-2925, so every eligible entry reports SKIP), but the
-# mechanism stays ready for a future fork: an ADDITIVE result is expected for a
-# well-behaved fork, a NON-ADDITIVE result would be a genuine regression worth
-# investigating, and the unattended cadence stops after reporting, never
-# pushes.
+# scripts/upstreams/resync-fork.sh on the nightly /fork-resync cadence — qmd
+# carries one again (HIMMEL-3956, launcher signal forwarding until
+# tobi/qmd#1030 lands; claude-obsidian retired at v2.2.0 HIMMEL-2925). An
+# ADDITIVE result is expected for a well-behaved fork; a NON-ADDITIVE result is
+# a regression worth investigating unless the entry's own note says the delta
+# modifies upstream files (qmd's does), and the unattended cadence stops after
+# reporting, never pushes.
 # Vendored single-file forks (telegram-himmel, pr-review-toolkit-himmel) still
 # require a manual file-level delta judgment when their UPSTREAM_PIN changes.
 #
@@ -318,11 +325,29 @@ def repo_of(s):
     return ""
 for p in m.get("plugins", []):
     s = p.get("source")
-    if isinstance(s, dict) and s.get("source") in ("github", "url") and (s.get("ref") or s.get("sha")):
+    # git-subdir (HIMMEL-4012): claude-plugins-official's own shape for a plugin
+    # living in a repo subdirectory; it carries the same url + ref|sha.
+    if isinstance(s, dict) and s.get("source") in ("github", "url", "git-subdir") and (s.get("ref") or s.get("sha")):
         o = ups.get(p["name"]) or {}
         ref = s.get("ref") or s.get("sha")
         print("|".join([p["name"], repo_of(s), ref,
-                        o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", "")]))
+                        o.get("upstream_repo", ""), o.get("track", ""), o.get("synced_base", ""),
+                        o.get("tag_prefix", "")]))
+# HIMMEL-4019: dormant installs live in other marketplaces, not ours. Track
+# their reviewed adoption targets without changing any install or live setting.
+market_names = {p["name"] for p in m.get("plugins", [])}
+for name, o in ups.items():
+    if not isinstance(o, dict) or o.get("standalone") is not True:
+        continue
+    if name in market_names:
+        raise ValueError(f"standalone upstream duplicates marketplace entry: {name}")
+    repo, ref, track = o.get("upstream_repo", ""), o.get("ref", ""), o.get("track", "")
+    if not repo or not ref or track not in ("release", "head"):
+        raise ValueError(f"invalid standalone upstream: {name}")
+    release = track == "release"
+    print("|".join([name, repo, ref, repo if release else "",
+                    "release" if release else "", o.get("synced_base", "") if release else "",
+                    o.get("tag_prefix", "")]))
 PY
   pins_out="$(python3 -c "$_pins_py" "$MJSON" "$UPSTREAMS" 2>/dev/null | tr -d '\r')"
   pins_rc=$?  # pipefail makes this the pipeline's status (= python3's, if it failed)
@@ -330,7 +355,7 @@ PY
     echo "  ? marketplace.json / plugin-upstreams.json parse failed (python3 error) — pinned-remote class UNCHECKED."
     incomplete=1
   else
-    while IFS='|' read -r name repo ref up_repo up_track up_base; do
+    while IFS='|' read -r name repo ref up_repo up_track up_base up_prefix; do
       [ -n "$name" ] || continue
       # Sub-case (b): fork with a true-upstream override. The marketplace `repo`
       # is OUR fork; check the named upstream's latest STABLE version TAG against
@@ -367,7 +392,16 @@ PY
         # BEHIND against a current base. A real new stable release still trips
         # the BEHIND path. highest_version, not `sort -V | tail -1`: BSD sort
         # has no -V, and this was the last live GNU-only site (HIMMEL-1054).
-        latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+        # tag_prefix (HIMMEL-4012): a repo with several tag streams (impeccable:
+        # skill-v* is the skill, engine-v* the CLI) names the one it pins; only
+        # that stream is compared. The prefix is stripped for the semver sort and
+        # restored on the winner so it compares equal to synced_base.
+        if [ -n "$up_prefix" ]; then
+          latest="$(printf '%s\n' "$tags_raw" | awk -v p="$up_prefix" 'index($0, p) == 1 { print substr($0, length(p) + 1) }' | grep -E '^[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+          [ -z "$latest" ] || latest="$up_prefix$latest"
+        else
+          latest="$(printf '%s\n' "$tags_raw" | grep -E '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$' | highest_version)"
+        fi
         if [ -z "$latest" ]; then
           echo "  $name: ? no stable version tags found on $up_repo — UNCHECKED"
           incomplete=1
@@ -514,14 +548,14 @@ def expand(p):
     p = re.sub(r'%([A-Za-z_][A-Za-z0-9_]*)%', lambda m: os.environ.get(m.group(1), ''), p)
     return os.path.expanduser(p).replace('\\', '/')
 
-def line(name, kind, repo, mode, v1, v2, tier, extra=''):
+def line(name, kind, repo, mode, v1, v2, tier, extra='', prefix=''):
     # \x1f (ASCII unit separator), not '|': version_regex (v2, probe mode) can
     # legitimately contain '|' for regex alternation, which would misalign a
     # pipe-delimited record. `extra` (8th field) carries the tag_release
     # `latest_source` ('release' -> read the maintainer's latest-non-prerelease
     # via the Releases API instead of the highest semver tag, for upstreams
     # whose tags are non-monotonic); empty for every other record.
-    print('\x1f'.join([name, kind, repo, mode, v1 or '', v2 or '', tier or '', extra or '']))
+    print('\x1f'.join([name, kind, repo, mode, v1 or '', v2 or '', tier or '', extra or '', prefix or '']))
 
 if os.path.exists(reg_path) and os.path.getsize(reg_path) > 0:
     d = json.load(open(reg_path))   # malformed -> raises -> class UNCHECKED
@@ -535,7 +569,7 @@ if os.path.exists(reg_path) and os.path.getsize(reg_path) > 0:
         elif kind == 'commit_head' and mode == 'checkout':
             line(e['name'], 'commit_head', repo, 'checkout', expand(e.get('checkout_path', '')), '', tier)
         elif kind == 'tag_release' and mode == 'base':
-            line(e['name'], 'tag_release', repo, 'base', e.get('synced_base', ''), '', tier, e.get('latest_source', ''))
+            line(e['name'], 'tag_release', repo, 'base', e.get('synced_base', ''), '', tier, e.get('latest_source', ''), e.get('tag_prefix', ''))
         elif kind == 'tag_release' and mode == 'probe':
             line(e['name'], 'tag_release', repo, 'probe', e.get('version_command', ''), e.get('version_regex', ''), tier, e.get('latest_source', ''))
         else:
@@ -569,7 +603,7 @@ PY
     echo "  ? upstreams.json / known_marketplaces.json parse failed (python3 error) — carried-upstreams class UNCHECKED."
     incomplete=1
   else
-    while IFS=$'\x1f' read -r name kind repo mode v1 v2 tier latest_src; do
+    while IFS=$'\x1f' read -r name kind repo mode v1 v2 tier latest_src tag_pfx; do
       [ -n "$name" ] || continue
       tier_note=""
       if [ -n "$tier" ]; then tier_note="  [$tier]"; fi
@@ -746,6 +780,9 @@ PY
             # BEHIND. Opt into the maintainer's own latest-non-prerelease
             # designation (the Releases API), which reflects real recency.
             latest="$(gh api "repos/$repo/releases/latest" --jq '.tag_name' 2>/dev/null)"; api_rc=$?
+            # tag_prefix (HIMMEL-4258): bun tags its releases `bun-v1.4.3`; strip the
+            # stream prefix so synced_base and the BEHIND line stay bare versions.
+            [ -z "$tag_pfx" ] || latest="${latest#"$tag_pfx"}"
             if [ "$api_rc" -ne 0 ] || ! printf '%s' "$latest" | grep -qE '^v?[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
               echo "  $name: ? no parseable latest release on $repo (latest_source=release) — UNCHECKED"
               incomplete=1; continue

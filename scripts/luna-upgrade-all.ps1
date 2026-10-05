@@ -47,7 +47,7 @@ $cands = @(
     "${env:ProgramFiles(x86)}\Git\bin\bash.exe",
     "$env:LOCALAPPDATA\Programs\Git\bin\bash.exe"
 )
-$gitCmd = (Get-Command git -ErrorAction SilentlyContinue).Source
+$gitCmd = (Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
 if ($gitCmd) {
     # git.exe is at <GitRoot>\cmd\git.exe; bash is at <GitRoot>\bin\bash.exe.
     $gitRoot = Split-Path -Parent (Split-Path -Parent $gitCmd)
@@ -57,7 +57,7 @@ foreach ($cand in $cands) {
     if ($cand -and (Test-Path -LiteralPath $cand)) { $bash = $cand; break }
 }
 if (-not $bash) {
-    $pathBash = (Get-Command bash -ErrorAction SilentlyContinue).Source
+    $pathBash = (Get-Command bash -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
     if ($pathBash -and $pathBash -notmatch 'System32') { $bash = $pathBash }
 }
 if (-not $bash) {

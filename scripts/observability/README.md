@@ -499,6 +499,34 @@ transcript is unreadable, never 0. To render this as a Grafana table, add an
 Infinity/JSON datasource pointed at that URL; the dashboard ships the stat
 tiles (Prometheus-backed) plus a text panel naming this endpoint.
 
+## Install on Linux (HIMMEL-4289)
+
+Opt-in: set `"observability": {"grafana": true}` in `~/.himmel/config.json`, then
+`himmelctl ensure observability-grafana` (or run
+`bash scripts/observability/install-grafana.sh install|status|uninstall` directly).
+Until opted in the item reads n/a, never red. macOS is deferred (HIMMEL-4406).
+
+It installs nothing as root. Pinned upstream tarballs (Prometheus 3.15.0,
+Grafana 13.2.3; amd64 and arm64) are downloaded to
+`${XDG_DATA_HOME:-~/.local/share}/himmel/observability`, verified against the
+sha256 pins in the script (a mismatch aborts before anything is installed), and
+run as three systemd **user** units, all bound to loopback:
+
+| Unit | Port | Role |
+|---|---|---|
+| `himmel-observability-prometheus.service` | 9090 | scrapes flow-exporter, evaluates `alerts.rules.yml`; capped at 30d / 5GB retention |
+| `himmel-observability-grafana.service` | 3000 | serves the provisioned `himmel-health` dashboard (anonymous Viewer; random admin password in a 0600 file) |
+| `himmel-observability-grafana-alert-hook.service` | 9878 | Bun receiver: Grafana can only POST webhooks, so this turns a firing/resolved alert into `cadence-alert.sh fail\|clear grafana-<alertname>` |
+
+Differences from the Windows stack: the contact point is the webhook above (one
+dedupe path and one log through `cadence-alert`, no Telegram variables), the
+`windows_exporter` scrape job is stripped (its target never exists on Linux, so
+`up == 0` would alert forever), and Grafana telemetry, update checks, news and
+external snapshots are off. Doctor C19 checks this stack only when the item is
+desired, comparing the stripped `prometheus.yml`, `alerts.rules.yml` and
+`dashboards/` against the install dir. `uninstall` disables and removes the
+units and the data dir.
+
 ## Install on Windows
 
 From a PowerShell session in the repo:
@@ -648,6 +676,49 @@ Import `dashboards/war-room-system.json` into Grafana. As of HIMMEL-924 the
 `${DS_PROMETHEUS}` variable auto-binds to the provisioned Prometheus
 datasource (`provisioning/datasources/prometheus.yaml`, fixed `uid:
 prometheus`) — no manual bind step.
+
+## Health dashboard (HIMMEL-4292)
+
+`dashboards/himmel-health.json` (uid `himmel-health`) is the operator-facing
+dashboard. It answers, in this order: is himmel healthy, what is failing and
+what to do, are the scheduled jobs on time, sessions and the usage bank,
+search and graph freshness, the Luna vault, and 7-day trends. `war-room-system.json`
+stays the engineer's view (Windows host series included).
+
+It reads only series that exist: the `flow-exporter.ts` families, plus the
+Prometheus built-ins `ALERTS` (from `alerts.rules.yml`) and `up`. Every
+datasource reference is the provisioned uid `prometheus`. Status colours are
+colour-blind safe and always come with a word and an icon: blue `#1f78c8`
+for good, amber `#e69f00` for warn, red-orange `#d6352f` for critical, grey
+`#8a8f98` for no data. The firing-alerts table maps each `alertname` to a
+plain "what to do" sentence. An alert without one shows its raw name.
+
+**Provisioning is inert until an installer renders it.**
+`provisioning/dashboards/himmel-dashboards.yaml.tmpl` carries a
+`@HIMMEL_DASHBOARDS_DIR@` path. Grafana loads only `*.yaml`/`*.yml`, so the
+template does nothing as shipped. `restart-stack.sh` copies `provisioning/`
+wholesale, and a provider whose path is missing would break Grafana on the
+station. The Linux Grafana installer (HIMMEL-4289) copies `dashboards/` to a
+machine-local dir, then renders the template into the machine-local
+provisioning copy. Until then, import the JSON by hand.
+
+`test-dashboard-lint.sh` guards it. It checks that the file is valid JSON,
+that panel ids are unique, that every PromQL metric is an exporter family,
+`ALERTS` or `up`, and that the datasource uid matches
+`provisioning/datasources/prometheus.yaml`. It also fails if an active
+provider `*.yaml` appears under `provisioning/dashboards/`.
+
+**Not shown yet (gaps; listed, never faked):**
+
+| Gap | Wanted | Where it goes |
+|---|---|---|
+| G1 | Console legs and their cost | HIMMEL-4290 makes it machine-readable; `/obs-report` (HIMMEL-4291) shows it |
+| G4 | Advice per alert in the rules | The advice lives in the dashboard's `alertname` mapping instead |
+| G5 | Usage bank reset time | The exporter does not keep the usage cache's `resets_at` |
+| G6 | Windows auto-provisioning of this dashboard | `install-stack.ps1` copies only `provisioning/`; Windows is parked (HIMMEL-4102), Linux via HIMMEL-4289 |
+| G7 | Daily health check (himmel-doctor results) | `/obs-report`, HIMMEL-4291 |
+| G8 | Machine setup (`himmelctl status`) | `/obs-report`, HIMMEL-4291 |
+| G9 | qmd search index age | `/obs-report`, HIMMEL-4291 |
 
 ## Alerting (HIMMEL-1199 — a boundary change)
 

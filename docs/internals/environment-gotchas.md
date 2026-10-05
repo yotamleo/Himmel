@@ -383,6 +383,16 @@ Mitigations:
   `model_refusal_fallback` before blaming the arm environment — refusal flags
   on routine harness code are typically false positives.
 
+Preserved-thinking cost (HIMMEL-3875; read matrix reported by the ticket from
+the Anthropic preserved-thinking docs, not independently verified): the
+fallback continues the **same** session on another model, and a model can only
+read some other models' thinking blocks — Opus 5.5 can't read Fable blocks,
+Sonnet 5.5 can't read Opus 5.5 or Fable blocks, and nothing reads Sonnet 5.5
+blocks (Sonnet 5.5 thinking is also account-bound). After a cross-model
+fallback the earlier thinking is **silently dropped** and may be re-thought,
+costing tokens; auto-compact does not restore it. Nothing breaks — Claude Code
+handles the drop internally — so this is a cost, not an error.
+
 ## `claude --bare` never reads OAuth/keychain — use `--safe-mode` for a hookless run
 
 `claude -p --bare` on subscription (Max/Pro) auth reports "Not logged in"
@@ -1413,6 +1423,22 @@ and the failure was purely the wrapper's read timeout. Fall back to raw REST
 (`POST /search/simple/?query=<q>`, `GET /vault/<path>`) or a qmd search over
 the vault's indexed content — never to a stale on-disk grep, which reads a
 copy the live vault may have since changed.
+
+## Obsidian hangs on bulk file churn inside the vault
+
+Obsidian watches every file under the vault root, including gitignored paths
+and paths in its own "Excluded files" list. Each create or delete is a vault
+event, and the renderer pins at 100 % CPU replaying them against its cached
+index. Hundreds of thousands of generated files (judge scratch, a
+`graphify-out/` of about 21k files) froze it. So did moving 22k files OUT of
+the vault while it ran, after which the restart stuck on "loading cache"
+because the IndexedDB cache was stale.
+
+**Close Obsidian before any bulk move or delete of more than about 1k files in
+the vault**, and keep bulk generators out of the vault tree. Recovery: close it,
+move `~/.config/obsidian/IndexedDB` aside (do not delete it), then start
+Obsidian again. The cache rebuild took about 45 s for 46k files. Measure its
+CPU with `top -b -n 2`, not `ps -o pcpu`, which reports a lifetime average.
 
 ## Patching a shell script through a python heredoc silently corrupts bytes
 

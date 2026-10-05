@@ -240,9 +240,9 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
 # Honors $env:BUN_INSTALL for relocated bun roots, matching the bash lib.
 $QmdBunRoot = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $HOME '.bun' }
 $QmdBunJs = Join-Path $QmdBunRoot 'install\global\node_modules\@tobilu\qmd\dist\cli\qmd.js'
-# HIMMEL-877: qmd installs from a local clone of upstream tobi/qmd (HIMMEL-
-# 3045; previously a himmel-owned fork, yotamleo/qmd, until its carried fixes
-# landed upstream), pinned to an immutable commit SHA rather than a mutable
+# HIMMEL-877: qmd installs from a local clone of the carried fork
+# yotamleo/qmd (HIMMEL-3956: launcher signal forwarding, until tobi/qmd#1030
+# merges -- HIMMEL-3982 pins back to upstream tobi/qmd), pinned to an immutable commit SHA rather than a mutable
 # branch (HIMMEL-911), never `bun add -g @tobilu/qmd` directly (EPERM-wedges
 # on this project's machines; bun blocks its postinstall script).
 # scripts/lib/qmd-bin.sh is the single chokepoint for the clone+build+link

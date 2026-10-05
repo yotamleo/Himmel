@@ -96,7 +96,7 @@ function New-State {
 
 # Resolved up front so Invoke-Uninstall still works while a test (9) runs
 # with a stripped-down $env:PATH that cannot find pwsh by name.
-$PwshExe = (Get-Command pwsh).Source
+$PwshExe = (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source
 
 function Invoke-Uninstall {
     # Pipes empty stdin so the child sees IsInputRedirected=$true -- the

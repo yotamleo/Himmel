@@ -12,12 +12,15 @@ add(){ bash "$A" --notes "$N" --head H1 --date 2026-06-20 --pr 602 \
 
 seed
 add gptoss-1 crit src/a.ts 42 "off-by-one" agreed
+check "first append -> rc 0" "$?" "0"
 check "section created" "$(grep -c '^## CR Findings' "$N")" "1"
 check "head header"     "$(grep -c '^### 2026-06-20 — HEAD H1 (PR 602)' "$N")" "1"
 check "bullet present"   "$(grep -c '\[gptoss-1\] src/a.ts:42 — off-by-one (agreed)' "$N")" "1"
 
-# Dedup: same (head,id) again -> no new bullet.
+# Dedup: same (head,id) again -> no new bullet, and rc 9 (already present) so
+# a caller can tell a skip from a write (HIMMEL-2430).
 add gptoss-1 crit src/a.ts 42 "off-by-one" agreed
+check "dedup -> rc 9" "$?" "9"
 check "dedup (head,id)" "$(grep -c 'cr:H1:gptoss-1' "$N")" "1"
 
 # Second finding, same head -> 1 header, 2 bullets.

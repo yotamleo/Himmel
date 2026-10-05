@@ -56,9 +56,13 @@ SCRIPTS="$(cd "$HERE/.." && pwd)"              # scripts/
 #   claude-codex: 2        — proxy config validation JS; .ps1 validates natively
 #   claude-glm: 1          — GLM-specific settings surgery; .ps1 equivalent is native
 #   claude-openrouter: 1   — stdin credit-parser; .ps1 parses ConvertFrom-Json natively
+#   claude-deepseek: 0    — egress, balance, sanitizer and trust all have JS twins
 #   claude-routed: 0
 #   claude-glm-seed-check.sh: 0  (no embedded JS on either side)
-EXPECT_BASH_ONLY="claude-codex:2 claude-glm:1 claude-openrouter:1 claude-routed:0 claude-glm-seed-check.sh:0"
+#   HIMMEL-4098 (temporary): the CLAUDE_CODE_AUTO_MODE_SERVER settings strip is bash-only
+#   until HIMMEL-4169 (windows-parked) ports it to the .ps1 twins. It adds one bash-only
+#   block to codex (3), glm (2), openrouter (2), deepseek (1) and routed (1) — revert those counts then.
+EXPECT_BASH_ONLY="claude-codex:3 claude-glm:2 claude-openrouter:2 claude-deepseek:1 claude-routed:1 claude-glm-seed-check.sh:0"
 
 # Canary floors — today's counts. A pair deleted or a PS delegation dropped
 # trips these; update them CONSCIOUSLY when the twin set genuinely changes.
@@ -103,6 +107,13 @@ function sanitizerKeys(s) {
   while ((m = prefixes.exec(s)) !== null) keys.push(m[1] + '*');
   while ((m = exact.exec(s)) !== null) keys.push(m[1]);
   return keys.sort();
+}
+
+// HIMMEL-4098 (temporary): bash sanitizers also strip env.CLAUDE_CODE_AUTO_MODE_SERVER;
+// the .ps1 twins wait on HIMMEL-4169 (windows-parked). Until then a .ps1 block matches
+// its bash twin with that one predicate removed. Delete this with the pin split below.
+function parkedNorm(c) {
+  return c.replace(' || u==="CLAUDE_CODE_AUTO_MODE_SERVER"', '').replace(' || k.toUpperCase()==="CLAUDE_CODE_AUTO_MODE_SERVER"', '');
 }
 
 // A block boundary the extractor could not determine. Thrown — never returned
@@ -282,6 +293,86 @@ function psShapeViolations(s) {
   mustThrow('ps: unterminated here-string', "$J = @'\nconst x=1;\nnode -e $J\n", psJsBlocks);
 })();
 
+// HIMMEL-4093: execute the PS twin's actual Node blocks, not merely compare
+// two copies that could lose the same safety predicate. No pwsh is required
+// for this embedded-JS case; PS control flow still needs its own smoke suite.
+{
+  const cp = require('child_process');
+  const blocks = psJsBlocks(fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.psm1'), 'utf8'));
+  const identity = blocks.find(b => b.var === '$IdentityJs');
+  const retire = blocks.find(b => b.var === '$RetireJs');
+  const root = fs.mkdtempSync(path.join(require('os').tmpdir(), 'seed-retire-parity-'));
+  try {
+    if (!identity || !retire) throw Error('PS immutable-identity/retirement blocks missing');
+    const lock = path.join(root, 'mirror.seed-lock');
+    fs.mkdirSync(lock); // Legacy lock is empty: retirement must still stay non-empty.
+    const checked = cp.spawnSync(process.execPath, ['-e', identity.js, lock], {encoding:'utf8'});
+    if (checked.status !== 0) throw Error('PS identity lookup failed');
+    const observed = checked.stdout;
+    const run = id => cp.spawnSync(process.execPath, ['-e', retire.js, lock, id], {encoding:'utf8'});
+    const failed = cp.spawnSync(process.execPath, ['-e', 'require("fs").renameSync=()=>{throw Object.assign(Error("fixture rename failure"),{code:"EIO"});};\n' + retire.js, lock, observed], {encoding:'utf8'});
+    if (failed.status === 0 || !fs.existsSync(lock)) throw Error('retirement failure injection did not leave the stale lock');
+    if (run(observed).status !== 0) throw Error('first stale contender could not recover failed retirement');
+    const retired = lock + '.stale.' + observed.replace(':', '.');
+    if (!fs.readdirSync(retired).length) throw Error('empty retirement allows replacement');
+    const old = fs.statSync(retired, {bigint:true});
+    if (old.dev + ':' + old.ino !== observed) throw Error('retired immutable identity changed');
+    fs.mkdirSync(lock); // Fresh acquirer publishes a populated lock.
+    fs.writeFileSync(path.join(lock, 'owner'), 'fresh');
+    const fresh = fs.statSync(lock, {bigint:true});
+    if (run(observed).status === 0) throw Error('second delayed stale contender stole the fresh lock');
+    if (fs.statSync(lock, {bigint:true}).ino !== fresh.ino || fs.readFileSync(path.join(lock, 'owner'), 'utf8') !== 'fresh') throw Error('fresh lock did not survive');
+    // A different, unreserved identity must also fail its final comparison.
+    if (run(fresh.dev + ':' + (fresh.ino + 1n)).status === 0) throw Error('changed identity was retired');
+    if (!fs.existsSync(path.join(lock, 'owner'))) throw Error('identity mismatch moved fresh lock');
+    fs.unlinkSync(path.join(lock, 'owner'));
+    const planted = cp.spawnSync(process.execPath, ['-e', `
+const fixtureFs=require("fs"),write=fixtureFs.writeFileSync,open=fixtureFs.openSync;let swapped=false;
+function swap(p,flags) { if(!swapped && p===path.join(lock,"owner") && flags==="wx") { swapped=true;fs.renameSync(lock,lock+".held");fs.mkdirSync(lock); } }
+fixtureFs.writeFileSync=function(p,data,opts){swap(p,opts&&opts.flag);return write.apply(this,arguments);};
+fixtureFs.openSync=function(p,flags){swap(p,flags);return open.apply(this,arguments);};
+` + retire.js, lock, fresh.dev + ':' + fresh.ino], {encoding:'utf8'});
+    if (!fs.existsSync(lock + '.held')) throw Error('owner-plant race injection did not execute: ' + planted.stderr);
+    if (planted.status === 0 || fs.existsSync(path.join(lock, 'owner'))) throw Error('failed identity check left a planted owner in fresh lock');
+    console.log('ok: PS retirement JS preserves fresh acquisition and removes its planted owner on identity mismatch');
+  } catch (e) { fail('PS seed retirement: ' + e.message); }
+  finally { fs.rmSync(root, {recursive:true, force:true}); }
+}
+
+// HIMMEL-4096: execute the PS permission block on real read-only directories.
+// Windows chmod has no POSIX owner/execute bits; exact modes apply only on POSIX.
+if (process.platform === 'win32') {
+  console.log('SKIP: PS permission JS POSIX-mode regression on Windows');
+} else {
+  const cp = require('child_process');
+  const blocks = psJsBlocks(fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.psm1'), 'utf8'));
+  const writable = blocks.find(b => b.var === '$WritableJs');
+  const root = fs.mkdtempSync(path.join(require('os').tmpdir(), 'seed-writable-parity-'));
+  const mirror = path.join(root, 'mirror'), sub = path.join(mirror, 'sub'), outside = path.join(root, 'outside');
+  try {
+    if (!writable) throw Error('PS directory permission block missing');
+    fs.mkdirSync(mirror); fs.mkdirSync(sub); fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(sub, 'private'), 'private', {mode:0o400});
+    fs.symlinkSync(outside, path.join(sub, 'linked'), 'dir');
+    for (const p of [mirror, sub, outside]) fs.chmodSync(p, 0o500);
+    const run = p => cp.spawnSync(process.execPath, ['-e', writable.js, p], {encoding:'utf8'});
+    for (const p of [mirror, path.join(sub, 'linked'), path.join(root, 'missing')]) {
+      const result = run(p);
+      if (result.status !== 0) throw Error('permission restoration failed: ' + result.stderr);
+    }
+    for (const p of [mirror, sub]) if ((fs.statSync(p).mode & 0o777) !== 0o700) throw Error('mirrored directory not owner-writable');
+    if ((fs.statSync(outside).mode & 0o777) !== 0o500) throw Error('symlink target chmodded');
+    if ((fs.statSync(path.join(sub, 'private')).mode & 0o777) !== 0o400) throw Error('file mode changed');
+    fs.rmSync(mirror, {recursive:true});
+    if (!fs.existsSync(outside)) throw Error('symlink target removed');
+    console.log('ok: PS permission JS restores directory write access without following links or changing files');
+  } catch (e) { fail('PS seed directory permissions: ' + e.message); }
+  finally {
+    for (const p of [mirror, sub, outside]) if (fs.existsSync(p)) fs.chmodSync(p, 0o700);
+    fs.rmSync(root, {recursive:true, force:true});
+  }
+}
+
 // Enumerate twin pairs from disk: every scripts/claude-*.ps1 whose stem has a
 // regular-file bash sibling (claude-<stem> or claude-<stem>.sh).
 const pairs = [];
@@ -297,8 +388,17 @@ if (pairs.length === 0) fail('no launcher twin pairs discovered under ' + script
 
 let pairsWithJs = 0, matchedPs = 0, totalBashOnly = 0;
 for (const [bashFile, psFile] of pairs) {
-  const bs = fs.readFileSync(path.join(scriptsDir, bashFile), 'utf8');
-  const ps = fs.readFileSync(path.join(scriptsDir, psFile), 'utf8');
+  let bs = fs.readFileSync(path.join(scriptsDir, bashFile), 'utf8');
+  let ps = fs.readFileSync(path.join(scriptsDir, psFile), 'utf8');
+  // HIMMEL-4091: compare the executing shared seed, including the caller's
+  // lane-specific sanitizer passed into the module. Never exempt moved JS.
+  if (['claude-codex', 'claude-openrouter', 'claude-deepseek'].includes(bashFile)) {
+    if (!bs.includes('. "$HERE/lane-mirror-seed.sh"') || !ps.includes("Import-Module (Join-Path $PSScriptRoot 'lane-mirror-seed.psm1')")) {
+      fail(bashFile + ': shared mirror seed is not loaded by both twins');
+    }
+    bs += '\n' + fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.sh'), 'utf8');
+    ps += '\n' + fs.readFileSync(path.join(scriptsDir, 'lane-mirror-seed.psm1'), 'utf8');
+  }
   bashShapeViolations(bs).forEach(() => fail(bashFile + ': double-quoted `node -e "..."` — an embedded-JS shape this parity check cannot compare; use the single-quoted form'));
   psShapeViolations(ps).forEach(() => fail(psFile + ': literal `node -e \'...\'`/`"..."` — a PS embedded-JS shape this check cannot compare; assign a here-string and pass the $var'));
   let bb, pb;
@@ -313,6 +413,9 @@ for (const [bashFile, psFile] of pairs) {
 
   if (bashFile === 'claude-glm') {
     const expected = ['ANTHROPIC_*', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_*'];
+    // HIMMEL-4098: bash also strips CLAUDE_CODE_AUTO_MODE_SERVER; the .ps1 twin
+    // keeps `expected` until HIMMEL-4169 (windows-parked) ports it — then drop this split.
+    const bashExpected = ['ANTHROPIC_*', 'CLAUDE_CODE_AUTO_MODE_SERVER', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_*'];
     const bashSanitizer = bb.find((js) => js.includes('delete j.model;') && js.includes('delete j.env[k];'));
     const psSanitizer = pb.find((p) => p.var === '$SanitizerJs');
     if (!bashSanitizer) fail('claude-glm: settings sanitizer JS block not found');
@@ -320,14 +423,14 @@ for (const [bashFile, psFile] of pairs) {
     if (bashSanitizer && psSanitizer) {
       const bashKeys = sanitizerKeys(bashSanitizer);
       const psKeys = sanitizerKeys(psSanitizer.js);
-      if (JSON.stringify(bashKeys) !== JSON.stringify(expected)) {
-        fail('claude-glm: sanitizer key set ' + JSON.stringify(bashKeys) + ' != pinned ' + JSON.stringify(expected));
+      if (JSON.stringify(bashKeys) !== JSON.stringify(bashExpected)) {
+        fail('claude-glm: sanitizer key set ' + JSON.stringify(bashKeys) + ' != pinned ' + JSON.stringify(bashExpected));
       }
       if (JSON.stringify(psKeys) !== JSON.stringify(expected)) {
         fail('claude-glm.ps1: sanitizer key set ' + JSON.stringify(psKeys) + ' != pinned ' + JSON.stringify(expected));
       }
-      if (JSON.stringify(bashKeys) === JSON.stringify(expected) && JSON.stringify(psKeys) === JSON.stringify(expected)) {
-        console.log('ok: claude-glm sanitizer key set pinned on both twins (' + expected.join(', ') + ')');
+      if (JSON.stringify(bashKeys) === JSON.stringify(bashExpected) && JSON.stringify(psKeys) === JSON.stringify(expected)) {
+        console.log('ok: claude-glm sanitizer key set pinned on both twins (bash: ' + bashExpected.join(', ') + '; ps1: ' + expected.join(', ') + ')');
       }
     }
   }
@@ -342,7 +445,7 @@ for (const [bashFile, psFile] of pairs) {
   let pairMatched = 0;
   for (const { var: v, js } of pb) {
     const t = canon(js);
-    if (bb.includes(t)) { pairMatched++; matchedPs++; continue; }
+    if (bb.includes(t) || bb.some((c) => parkedNorm(c) === t)) { pairMatched++; matchedPs++; continue; }
     let best = -1, bestCommon = -1;
     bb.forEach((c, i) => {
       let d = 0;

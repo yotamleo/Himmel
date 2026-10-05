@@ -396,15 +396,14 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (bash scripts/setup-hooks.sh --guardrail-mode global --yes, or run 'himmelctl ensure' interactively to consent + auto-wire)`;
       }
-      // HIMMEL-1100/2891: obsidian-second-brain is a MANUAL clone only — no
-      // himmel script ever installs it (docs/setup/new-machine.md: "manual
-      // clone, NOT in himmel marketplace"), the same "no automated path
-      // exists" shape as graphify-mcp/doc-guard-map above. It is cloned to
-      // ~/.claude/skills/ — that is where Claude Code loads user skills
-      // from; a ~/.claude/plugins/ clone would never be read (HIMMEL-2891).
+      // HIMMEL-1100/4127: obsidian-second-brain is an opt-in url-sourced
+      // plugin in the himmel marketplace (HIMMEL-4018) — no himmel script
+      // installs it, the same "no automated path exists" shape as
+      // graphify-mcp/doc-guard-map above. The operator installs it with
+      // `claude plugin install`; himmel-update keeps it current.
       if (item.id === 'obsidian-second-brain') {
         severity = 'n/a';
-        detail = `${probe.detail} — opt-in (manual clone: git clone https://github.com/eugeniughelbur/obsidian-second-brain ~/.claude/skills/obsidian-second-brain)`;
+        detail = `${probe.detail} — opt-in (claude plugin install obsidian-second-brain@himmel; update: claude plugin update obsidian-second-brain@himmel)`;
       }
       // HIMMEL-1100 round 5 (glm-3): gemini-cli is an optional second-opinion
       // lane (gemini-subagent, /x-read family), not core tooling every
@@ -488,24 +487,22 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (set bridge.enabled in ~/.himmel/config.json to enable the bridge)`;
       }
-      // HIMMEL-2326: observability-stack's own probe (probes.js) reads
-      // 'absent' on posix UNCONDITIONALLY — Phase A (HIMMEL-922) ships a
-      // win32-only installer, so a posix host can never converge this item
-      // no matter what the operator does. profiles:["core","all"] makes it
-      // desired:true for every core/all target — without this downgrade
-      // this would be the exact false-red class doc-guard-map's own comment
-      // above names ("without this downgrade the fix for the OLD
-      // tautological false-green would just become a false red for nearly
-      // everyone"). win32 stays on the standard red path: unlike
-      // graphify-mcp/doc-guard-map, this item carries a REAL `install`
-      // descriptor (install.type:'observability'), so `himmelctl ensure`
-      // can genuinely converge a win32 'absent' — that stays a true alarm.
-      // 'degraded' (a partial install, or an inconclusive win32 query) is a
-      // DIFFERENT probe.actual and never reaches this branch on either
-      // platform.
-      if (item.id === 'observability-stack' && (ctx.platform || process.platform) !== 'win32') {
+      // HIMMEL-2326 / HIMMEL-4341: on posix observability-stack is opt-in
+      // (observability.enabled in ~/.himmel/config.json). profiles:["core","all"]
+      // makes it desired:true for every target, so the probe marks the
+      // not-opted-in absence `cleanAbsence` and it reads n/a here — never a
+      // nag. An opted-in host that reads absent (service not installed) or
+      // degraded carries no flag and stays a true alarm; win32 never sets it
+      // either (its installer is `himmelctl ensure`-convergeable).
+      if (item.id === 'observability-stack' && probe.cleanAbsence) {
         severity = 'n/a';
-        detail = `${probe.detail} — Phase A (HIMMEL-922) ships a Windows-only installer; tracked as HIMMEL-2333`;
+        detail = `${probe.detail} — opt-in (set "observability": {"enabled": true} in ~/.himmel/config.json, then run himmelctl ensure, to run the flow exporter as a user service)`;
+      }
+      // HIMMEL-4289: observability-grafana is opt-in the same way
+      // (observability.grafana, Linux only); a clean absence is n/a, never a nag.
+      if (item.id === 'observability-grafana' && probe.cleanAbsence) {
+        severity = 'n/a';
+        detail = `${probe.detail} — opt-in (set "observability": {"grafana": true} in ~/.himmel/config.json, then run himmelctl ensure, to run Prometheus + Grafana as user services)`;
       }
       // HIMMEL-2305: a cadence-off, bridge-off (or lane-not-selected) adopter
       // must not be nagged about credentials for a feature they never opted

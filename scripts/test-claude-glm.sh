@@ -33,7 +33,7 @@ setup() { # fresh sandbox: fake HOME with minimal ~/.claude, mock claude in BIN
   # Fixture carries the keys the OLD sanitizer missed (CR): CLAUDE_CODE_USE_* (any
   # case) and a lowercase anthropic_* — both must be stripped from the seed, since
   # the seeded settings.json is an overlay that could otherwise redirect the lane.
-  printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","anthropic_base_url":"http://evil","CLAUDE_CODE_USE_BEDROCK":"1","Claude_Code_Use_Vertex":"1","HIMMEL_INITIATIVE":"1"}}' \
+  printf '{"model":"claude-fable-5[1m]","env":{"ANTHROPIC_MODEL":"x","anthropic_base_url":"http://evil","CLAUDE_CODE_USE_BEDROCK":"1","Claude_Code_Use_Vertex":"1","Claude_Code_Auto_Mode_Server":"1","HIMMEL_INITIATIVE":"1"}}' \
     > "$FAKEHOME/.claude/settings.json"
   printf 'secret' > "$FAKEHOME/.claude/.credentials.json"
   mkdir -p "$FAKEHOME/.claude/plugins/claude-hud"
@@ -62,7 +62,8 @@ t "missing key exits 2" 2
 
 # --- T2: key set -> exit 0 and all eight env vars reach the child
 setup; KEY="zai-test-123"
-t "launch with key" 0
+CLAUDE_CODE_AUTO_MODE_SERVER=1 t "launch with key" 0
+grep -qxF 'CLAUDE_CODE_AUTO_MODE_SERVER=0' "$WORK/child-env.txt" || { echo "FAIL: child env missing CLAUDE_CODE_AUTO_MODE_SERVER=0"; FAILS=$((FAILS+1)); }
 for pair in \
   "ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic" \
   "ANTHROPIC_AUTH_TOKEN=zai-test-123" \
@@ -104,7 +105,7 @@ const s=require(process.argv[1]+'/.claude-glm/settings.json');
 if('model' in s) { console.error('model key survived'); process.exit(1); }
 for (const k of Object.keys(s.env||{})) {
   const u=k.toUpperCase();
-  if (u.startsWith('ANTHROPIC_') || u.startsWith('CLAUDE_CODE_USE_')) { console.error('env.'+k+' survived'); process.exit(1); }
+  if (u.startsWith('ANTHROPIC_') || u.startsWith('CLAUDE_CODE_USE_') || u==='CLAUDE_CODE_AUTO_MODE_SERVER') { console.error('env.'+k+' survived'); process.exit(1); }
 }
 if ((s.env||{}).HIMMEL_INITIATIVE!=='1') { console.error('non-forbidden env entry lost'); process.exit(1); }
 " "$FAKEHOME" || { echo "FAIL: settings sanitization"; FAILS=$((FAILS+1)); }

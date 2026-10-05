@@ -448,7 +448,8 @@ _tolower_ascii() {
     _TOLOWER_OUT="$b"
 }
 
-# guard_cmdpos_grammar — HIMMEL-1180. Sets EXEPFX / ASSIGN / CMDPOS in the
+# guard_cmdpos_grammar — HIMMEL-1180. Sets EXEPFX / ASSIGN / CMDVAL / CMDFLG /
+# CMDPOS in the
 # CALLER's scope (plain assignment, not `local` — this is meant to be sourced
 # inline into a hook script, the same way the rest of this file's predicates
 # are). Byte-identical to the grammar block-destructive-commands.sh built up
@@ -473,13 +474,48 @@ _tolower_ascii() {
 # SEPARATE, deeper analysis that already handles that case for anything this
 # gate's fast check lets through.
 #
+# HIMMEL-3983/3984 widened the run with the compound keywords (do, then,
+# else, elif, if, while, until, !, {) and the wrappers exec, timeout, nohup,
+# nice, time and xargs, each with its own flags.
+# ponytail: wrappers still outside the run are command/builtin (rm handles
+# `command` itself; `command -v X` is a lookup, not a call), setsid, stdbuf,
+# ionice, taskset, chrt, chroot, doas, flock, watch, parallel, `env -S`,
+# `su -c`, `sh -c`, and a `case` arm's `pat)`, upgrade path HIMMEL-912's
+# word-level tokenizer.
+#
 # Callers: append their own atom alternation directly after `"$CMDPOS"`, e.g.
 #   grep -Eq "${CMDPOS}graphify(\.exe)?([^[:alnum:]_.-]|\$)"
 guard_cmdpos_grammar() {
     EXEPFX='["'\'']?([a-z]:)?([^[:space:]|;&`"'\'']*[/\\])?'
     ASSIGN='[[:alnum:]_]+=('\''[^'\'']*'\''|"[^"]*"|[^[:space:]|;&]*)'
+    # HIMMEL-3983: a compound-statement keyword also starts a command, and so
+    # does a function body (`f() { ...`, `function f { ...`). A bare `)` is
+    # no separator: `fix(x) shutdown` in a message would deny.
+    local kw='(do|then|else|elif|if|while|until|function[[:space:]]+[^[:space:]]+|[!]|[{])'
+    # HIMMEL-3984: exec-style wrappers (shapes from block-graphify-egress.sh).
+    # A flag's optional value only ever over-matches; the bare-flag branch
+    # is always there, so a value-shaped atom is never hidden.
+    # HIMMEL-4150: the value may be quoted and hold a space (`exec -a 'a b'`),
+    # the shape ASSIGN uses; parity_guard.py's _VAL is the twin.
+    # HIMMEL-4158: a value is one shell word of concatenated segments ('…',
+    # "…", $'…', \x, bare), and a flag word may hold such segments too
+    # (`-u'a b'`). The old whitespace-run and HIMMEL-4150 quoted atoms stay as
+    # alternatives, so the set only grows. CMDVAL / CMDFLG are exported for
+    # block-graphify-egress.sh (parity_guard.py: _VALS / _FLGS). A `$` right before `'` always opens
+    # $'…' (whose \' does not close it), the reading the Python twin takes.
+    local qa=\''[^'\'']*'\' qd='"([^"\\]|\\.)*"' qe='\\.'
+    local qc='\$'\''([^'\''\\]|\\.)*'\' bare='[^[:space:]'\''"\\$]'
+    local seg='('"$qa"'|'"$qd"'|'"$qe"'|'"$bare"'|\$*'"$qc"'|\$+('"$qd"'|'"$qe"'|'"$bare"'))'
+    local seg1='('"$qa"'|'"$qd"'|'"$qe"'|[^-[:space:]'\''"\\$]|\$*'"$qc"'|\$+('"$qd"'|'"$qe"'|'"$bare"'))'
+    CMDVAL='[[:space:]]+('"$seg1$seg"'*\$*|'"$qa"'|"[^"]*"|[^-[:space:]][^[:space:]]*)'
+    CMDFLG='-('"$seg"'+\$*|[^[:space:]]+)'
+    local val="$CMDVAL" flg="$CMDFLG"
+    local wrap='sudo([[:space:]]+'"$flg"'('"$val"')?)*|env([[:space:]]+('"$flg"'('"$val"')?|'"$ASSIGN"'))*|exec([[:space:]]+(-a'"$val"'|'"$flg"'))*|timeout([[:space:]]+'"$flg"'('"$val"')?)*'"$val"'|nohup([[:space:]]+--)?|nice([[:space:]]+(-n'"$val"'|--a[a-z-]*'"$val"'|'"$flg"'))*|time([[:space:]]+(-[of]'"$val"'|--[of][a-z-]*'"$val"'|'"$flg"'))*|xargs([[:space:]]+(-[adeilnps]'"$val"'|--[admp][a-z-]*'"$val"'|'"$flg"'))*|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*'
+    # CMDPOS_PFX is the run after the separator, for a caller that anchors it
+    # behind its own launcher (find -exec in block-destructive-commands.sh).
+    CMDPOS_PFX='(('"$ASSIGN"'|'"$kw"'|'"$EXEPFX"'('"$wrap"'))[[:space:]]+)*'"$EXEPFX"
     # shellcheck disable=SC2034 # consumed by the CALLER after sourcing, not in this file
-    CMDPOS='(^|[|;&(`])[[:space:]]*(('"$ASSIGN"'|'"$EXEPFX"'(sudo([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|'"$ASSIGN"'))*|cmd(\.exe)?([[:space:]]+/[[:alnum:]]+(:[[:alnum:]]+)?)*[[:space:]]+/c|(powershell|pwsh)(\.exe)?([[:space:]]+-[^[:space:]]+)*[[:space:]]+-c[[:alnum:]]*))[[:space:]]+)*'"$EXEPFX"
+    CMDPOS='(^|[|;&(`]|[)][[:space:]]*[{])[[:space:]]*'"$CMDPOS_PFX"
 }
 
 # guard_long_opt_name TOKEN — splits a long-option token into its name and

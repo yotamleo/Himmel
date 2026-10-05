@@ -392,6 +392,27 @@ run_test "(18) HIMMEL-1712 CR (panel round 9, codex-2): OAuth fetch is skipped, 
   [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "10" ] || exit 1;
 '
 
+run_test "(18b) HIMMEL-3729: an identity flip DURING the OAuth fetch discards the fetched numbers instead of stamping them under the pinned account" '
+  W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-18b.XXXXXX") || exit 1; export HOME="$W/home"; mkdir -p "$HOME";
+  printf "%s" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-A\"}}" > "$HOME/.claude.json";
+  export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";
+  export USAGE_OAUTH_TTL=0;
+  stub="$W/stub.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat <<JSON" "{\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":20}}" "JSON" > "$stub";
+  chmod +x "$stub"; export USAGE_OAUTH_CMD="$stub";
+  printf "%s" "{\"session_id\":\"sess-18b\",\"model\":{}}" | bash "$PRODUCER";
+  acct_first=$(jq -r ".account" "$CLAUDE_USAGE_CACHE"); [ -n "$acct_first" ] && [ "$acct_first" != "null" ] || exit 1;
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "10" ] || exit 1;
+  # The stub flips the on-disk identity to account B DURING the fetch, then returns numbers.
+  stub2="$W/stub2.sh";
+  printf "%s\n" "#!/usr/bin/env bash" "cat > \"\$HOME/.claude.json\" <<JSON" "{\"oauthAccount\":{\"accountUuid\":\"uuid-account-B\"}}" "JSON" "cat <<JSON" "{\"five_hour\":{\"utilization\":99},\"seven_day\":{\"utilization\":88}}" "JSON" > "$stub2";
+  chmod +x "$stub2"; export USAGE_OAUTH_CMD="$stub2";
+  err=$(printf "%s" "{\"session_id\":\"sess-18b\",\"model\":{}}" | bash "$PRODUCER" 2>&1 >/dev/null);
+  [ "$(jq -r ".account" "$CLAUDE_USAGE_CACHE")" = "$acct_first" ] || exit 1;
+  [ "$(jq -r ".five_hour.utilization" "$CLAUDE_USAGE_CACHE")" = "10" ] || exit 1;
+  printf "%s" "$err" | grep -q "on-disk account identity changed during the OAuth fetch" || exit 1;
+'
+
 run_test "(19) HIMMEL-1712 item 4: USAGE_FORCE_REFRESH=1 bypasses the rates-path TTL and stamps a fresh derived_at" '
   W=$(mktemp -d "${TMPDIR:-/tmp}/usage-cache-producer-19.XXXXXX"); export HOME="$W/home"; mkdir -p "$HOME";
   export CLAUDE_USAGE_CACHE="$W/cache.json"; export HUD_USAGE_SNAPSHOT="$W/hud.json";

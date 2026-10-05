@@ -69,7 +69,10 @@
 #
 # Fails CLOSED (exit 96) once enforcement applies: a walk error, an unreadable
 # or empty environ, an unreadable registry entry, or any seam mismatch. The
-# only allows are "no /proc" and "no claude ancestor" outside the marker rule.
+# only allows are "no /proc on a non-Linux host" and "no claude ancestor"
+# outside the marker rule. On Linux an unreadable /proc, or a /proc that is not
+# a procfs mount (stat -f %T), denies (HIMMEL-3921: a fake view via unshare -rm
+# + tmpfs is not a real platform).
 # ponytail: R1 a detached launch with no Claude Code marker in its env (env -i,
 # systemd-run, cron) and no claude ancestor is allowed; R2 a fresh `claude`
 # launched with a forged env is indistinguishable from a legit launch; R3
@@ -79,8 +82,14 @@
 # tools come from fixed system dirs, but bash itself still honours inherited
 # state before this lib runs: an exported BASH_FUNC_* shadowing a builtin
 # (printf, read, [), BASH_ENV sourced at startup, SHELLOPTS/BASHOPTS turning on
-# options, and an extdebug DEBUG trap - HIMMEL-3921 tracks the text-level (a)
-# layer for R1/R3/R5.
+# options, and an extdebug DEBUG trap - the hook's text layer (HIMMEL-3921)
+# refuses those names beside a chokepoint word; R6 the pure-bash double-fork
+# `( (sleep 1; exec <chokepoint>) & )` detaches a chokepoint from its claude
+# ancestor into the orphan path, and the "clear, don't set" variant (`env -u
+# HIMMEL_CONSOLE_LEG merge-on-green.sh`) removes a marker instead of setting a
+# seam, so the orphan rule never fires - only the hook's text deny (env -u /
+# unset of a seam or marker beside a chokepoint word) covers it, and an
+# obfuscated seam NAME (`export "$n=1"`) stays a residual of that layer.
 
 CSG_DENY_RC=96
 
@@ -325,12 +334,28 @@ _csg_deny() {
 # proc root and start pid are fixed here; _csg_gate takes them only so the
 # suite can drive the whole gate on a fake /proc tree.
 chokepoint_seam_guard() {
+    # HIMMEL-3921: on Linux /proc must be a real procfs, not a tmpfs with a few
+    # written stat files (unshare -rm). A missing /proc is _csg_gate's case.
+    if [ -r /proc/self/stat ] && [ "$("$(_csg_bin uname)" -s 2>/dev/null)" = Linux ]; then
+        _csg_procfs /proc || _csg_deny "${1##*/}" "/proc is not a procfs mount on a Linux host"
+    fi
     _csg_gate /proc "$$" "$1"
 }
 
+# _csg_procfs <proc-root> - rc 0 when <proc-root> is a procfs mount.
+_csg_procfs() {
+    [ "$("$(_csg_bin stat)" -f -c %T "$1" 2>/dev/null)" = proc ]
+}
+
 _csg_gate() {
-    local proc="$1" start="$2" key="$3" name="${3##*/}" pid env cwd anchor="" root seams bad files f home bgsvc=0
-    [ -r "$proc/self/stat" ] || return 0
+    local proc="$1" start="$2" key="$3" name="${3##*/}" os="${4:-}" pid env cwd anchor="" root seams bad files f home bgsvc=0
+    if [ ! -r "$proc/self/stat" ]; then
+        # HIMMEL-3921: a Linux host with no readable /proc (unshare -rm + a tmpfs
+        # over /proc) is not a real platform - deny. Genuine non-Linux stays allowed.
+        [ -n "$os" ] || os=$("$(_csg_bin uname)" -s 2>/dev/null) || os=Linux # unknown platform fails closed
+        [ "$os" != Linux ] || _csg_deny "$name" "no readable /proc on a Linux host"
+        return 0
+    fi
     if pid=$(_csg_find_outermost "$proc" "$start"); then :; else
         _csg_deny "$name" "cannot walk this process's ancestry in /proc"
     fi

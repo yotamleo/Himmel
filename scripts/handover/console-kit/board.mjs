@@ -15,6 +15,9 @@
 // what the file on disk carried before this render; the Artifact publish
 // itself stays a model step, never done here.
 //
+// Leg set (HIMMEL-3988): --legs wins; else the console's fleet manifest
+// (<console doc stem>.fleet.json, via fleet-manifest.sh list); else the Live-state scan.
+//
 // State comes from tick.sh (leg locks, tails, fleet, open PRs, and the board
 // fingerprint via --emit-fp), the console doc's `## Live state` block, the leg
 // docs' Results bullets, `gh` (open + merged PRs), and -- for a WRAPPED leg
@@ -149,7 +152,20 @@ const epicsDeclared = liveField('epics').split(/[,\s]+/).filter(Boolean).map((e)
 }).filter(Boolean);
 // A version name lands inside a JQL string: only a plain release token is accepted.
 const versionsDeclared = liveField('versions').split(/[,\s]+/).filter((v) => /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(v));
-const decisions = liveField('decisions').split(';').map((d) => d.trim()).filter((d) => d && d !== 'none');
+// Split on ';' only at parenthesis depth 0, so "A (x; y); B?" -> ["A (x; y)", "B?"] (HIMMEL-3944).
+const splitTopLevel = (s) => {
+    const out = [];
+    let depth = 0;
+    let cur = '';
+    for (const ch of s) {
+        if (ch === '(') depth += 1;
+        else if (ch === ')') depth = Math.max(0, depth - 1);
+        if (ch === ';' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+    }
+    out.push(cur);
+    return out;
+};
+const decisions = splitTopLevel(liveField('decisions')).map((d) => d.trim()).filter((d) => d && d !== 'none');
 const queueLine = liveField('queue');
 const lastGo = liveField('last GO').replace(/`/g, '');
 const consoleResults = section('## Results').filter((l) => l.startsWith('- ')).slice(-8);
@@ -179,9 +195,24 @@ const primeLabels = (names) => {
 const labelOf = (name) => legLabel.get(name) || '';
 const ticketOf = (file) => (/^([A-Z][A-Z0-9]*-\d+)/.exec(basename(file)) || [])[1] || '';
 const newer = (a, b) => (statSync(a).mtimeMs >= statSync(b).mtimeMs ? a : b);
+// HIMMEL-3988: with no --legs, the console's fleet manifest (<console doc stem>.fleet.json,
+// the file tick.sh --legs-from reads) IS the leg set. It is read through
+// fleet-manifest.sh list -- the one validation -- never a second parser here. No manifest
+// keeps the Live-state scan below; one that fails validation is reported and falls back.
+const manifestPath = join(bucket, `${basename(docPath).replace(/\.md$/, '')}.fleet.json`);
+let manifestDocs = null;
+if (opt.legs === undefined && existsSync(manifestPath)) {
+    try {
+        manifestDocs = execFileSync('bash', [join(HERE, 'fleet-manifest.sh'), 'list', manifestPath],
+            { encoding: 'utf8', timeout: 30000, stdio: ['ignore', 'pipe', 'ignore'] }).split('\n').filter(Boolean);
+    } catch { console.error(`board: warning: fleet manifest unreadable (${manifestPath}); falling back to the Live-state leg scan`); }
+}
+// --changed folds this in: the tick fingerprint only moves with a lock or tail, so a leg
+// added to the manifest before it holds a lock would otherwise read UNCHANGED.
+const manifestSig = manifestDocs ? manifestDocs.join(',') : '';
 let legFiles;
-if (opt.legs !== undefined) {
-    legFiles = opt.legs.split(/[\s,]+/).filter(Boolean).map((f) => resolve(f));
+if (opt.legs !== undefined || manifestDocs) {
+    legFiles = (opt.legs !== undefined ? opt.legs.split(/[\s,]+/).filter(Boolean) : manifestDocs).map((f) => resolve(f));
     primeLabels([...liveEntries.map((e) => e.stem), ...legFiles.map((f) => basename(f))]);
 } else {
     const docs = readdirSync(bucket).filter((f) => f.endsWith('-RESUME.md'));
@@ -255,9 +286,16 @@ const fleetOk = Number.isFinite(fleetLive) && Number.isFinite(fleetCap) && fleet
 const idle = fleetOk ? Math.max(0, fleetCap - fleetLive) : 0;
 
 // ---------------------------------------------------------------- gh
+// A console always runs in himmel; the checkout it is FOR is recorded on the
+// doc's project line (console.sh writes it, `none — ...` for himmel itself).
+// Its PRs are the ones the board shows, so gh asks that checkout. A recorded
+// path that is gone reads `gh unavailable`, never himmel's PRs. tick.sh reads
+// the same line for prs=, so the board fingerprint stays in step.
+const projectLine = /The project this console is FOR is \*\*`([^`]*)`\*\*/.exec(docText);
+const prRepo = projectLine && projectLine[1].startsWith('/') ? projectLine[1] : repo;
 const ghJson = (ghArgs) => {
     try {
-        return JSON.parse(execFileSync('gh', ghArgs, { cwd: repo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] }));
+        return JSON.parse(execFileSync('gh', ghArgs, { cwd: prRepo, encoding: 'utf8', timeout: 45000, stdio: ['ignore', 'pipe', 'ignore'] }));
     } catch { return null; }
 };
 const gh = (ghArgs) => {
@@ -436,6 +474,36 @@ const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(
 const logRows = consoleResults.map((l) => `<li>${safe(l.slice(2), 200)}</li>`).join('\n');
 const panel = (title, body, empty) => `<section><h2>${title}</h2>${body ? `<ul>${body}</ul>` : `<p class="none">${empty}</p>`}</section>`;
 
+// Cost today (HIMMEL-4217): one line from the leg cost ledger close-wrapped-leg.sh
+// appends to (LEG_COST_LEDGER, else $HANDOVER_DIR/.ledger/leg-cost.jsonl). An absent
+// or unreadable ledger, or no usable row dated today, renders nothing and never fails
+// the render. Not part of the fingerprint: --changed does not move on a new ledger row.
+const costSection = (() => {
+    try {
+        const ledger = process.env.LEG_COST_LEDGER
+            || (process.env.HANDOVER_DIR ? join(process.env.HANDOVER_DIR, '.ledger', 'leg-cost.jsonl') : '');
+        if (!ledger) return '';
+        const d = new Date();
+        const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const byClass = Object.create(null);
+        let n = 0;
+        let total = 0;
+        for (const line of readFileSync(ledger, 'utf8').split('\n')) {
+            let r;
+            try { r = JSON.parse(line); } catch { continue; }
+            if (!r || r.date !== today || typeof r.cost_eq !== 'number') continue;
+            (byClass[r.class || 'unknown'] ||= []).push(r.cost_eq);
+            n += 1;
+            total += r.cost_eq;
+        }
+        if (!n) return '';
+        const fmt = (v) => (v >= 1e6 ? `${(v / 1e6).toFixed(1)}M` : v >= 1e3 ? `${Math.round(v / 1e3)}k` : String(Math.round(v)));
+        const median = (a) => { const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+        const per = Object.keys(byClass).sort().map((c) => `${safe(c, 20)} ${fmt(median(byClass[c]))}`).join(', ');
+        return `<section data-cost-legs="${n}"><h2>Cost today</h2><p class="sub">${n} leg${n === 1 ? '' : 's'} · ${fmt(total)} cost-eq · median ${per}</p></section>`;
+    } catch { return ''; }
+})();
+
 const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -443,7 +511,7 @@ const html = `<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Console Board</title>
 ${fp ? `<meta name="console-board-fp" content="${fp}">` : ''}
-${ciFleetSig ? `<meta name="console-board-cifleet-fp" content="${esc(ciFleetSig)}">\n` : ''}${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}${releaseSig ? `\n<meta name="console-board-versions-fp" content="${esc(releaseSig)}">` : ''}
+${ciFleetSig ? `<meta name="console-board-cifleet-fp" content="${esc(ciFleetSig)}">\n` : ''}${censusSig ? `<meta name="console-board-census-fp" content="${safe(censusSig)}">` : ''}${releaseSig ? `\n<meta name="console-board-versions-fp" content="${esc(releaseSig)}">` : ''}${manifestSig ? `\n<meta name="console-board-manifest-fp" content="${esc(manifestSig)}">` : ''}
 <style>
 :root { --bg:#f6f7f9; --surface:#fff; --text:#1c2128; --muted:#5b6672; --line:#d9dee4; --accent:#2457c5; --ok:#1a7f37; --warn:#9a6700; --bad:#cf222e; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0f1318; --surface:#181d24; --text:#e6e9ed; --muted:#96a1ad; --line:#2b333d; --accent:#7aa2ff; --ok:#3fb950; --warn:#d29922; --bad:#ff7b72; } }
@@ -485,6 +553,7 @@ ${fleetOk ? `<div class="fleet" data-fleet="${fleetLive}/${fleetCap}">${fleetLiv
 ${ladder}
 </ul>
 </section>
+${costSection}
 ${panel('Needs the console', needRows, 'nothing waiting on the console')}
 ${panel('Open operator decisions', decisions.map((d) => `<li>${safe(d)}</li>`).join('\n'), 'none recorded (Live state decisions:)')}
 ${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}${releases.map((r) => `\n${releasePanel(r)}`).join('')}
@@ -509,18 +578,20 @@ let oldFp = null;
 let oldCensusSig = '';
 let oldReleaseSig = '';
 let oldCiFleetSig = '';
+let oldManifestSig = '';
 if (changedFlag && existsSync(outPath)) {
     const prev = readFileSync(outPath, 'utf8');
     oldFp = (/<meta name="console-board-fp" content="([0-9a-f]{16})">/.exec(prev) || [])[1] || null;
     oldCensusSig = (/<meta name="console-board-census-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
     oldCiFleetSig = (/<meta name="console-board-cifleet-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
     oldReleaseSig = (/<meta name="console-board-versions-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
+    oldManifestSig = (/<meta name="console-board-manifest-fp" content="([^"]*)">/.exec(prev) || [])[1] || '';
 }
 const tmp = `${outPath}.tmp${process.pid}`;
 writeFileSync(tmp, html);
 renameSync(tmp, outPath);
 if (changedFlag) {
-    console.log(`${fp !== oldFp || censusSig !== oldCensusSig || esc(ciFleetSig) !== oldCiFleetSig || esc(releaseSig) !== oldReleaseSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
+    console.log(`${fp !== oldFp || censusSig !== oldCensusSig || esc(ciFleetSig) !== oldCiFleetSig || esc(releaseSig) !== oldReleaseSig || esc(manifestSig) !== oldManifestSig ? 'CHANGED' : 'UNCHANGED'} ${outPath}`);
 } else {
     console.log(outPath);
 }

@@ -126,10 +126,24 @@ reviewing — never a reactive `git commit --amend` after a push fails. In
 auto-mode the amend is flagged as gate-circumvention and **HARD-blocked
 (uncleable)**.
 
-**What to do if the branch is already pushed without the trailer:** add the
-trailer to the **PR body** instead of amending. See
-[`overnight-mode.md`](../handover/overnight-mode.md) § Auto-mode classifier &
-attestation.
+**What to do if the branch is already pushed without the trailer:** recut it.
+The pre-push gate accepts a trailer in any commit of the range or the PR body,
+but the console's `ready-check.sh` check 5 reads **only the PR's first
+commit** (HIMMEL-4128) — a PR-body or later-commit trailer clears the push gate
+and still FAILS ready-check, so the PR can never be merged by a console. A
+typical case: a docs-only first commit (which needs no trailer), then a later
+commit adds a non-docs path (which does).
+
+1. Cut a fresh branch from `origin/main`.
+2. Make **ONE ordinary new commit** with the whole change, carrying the
+   `Platforms tested:` / `Security reviewed:` trailers, each on its own line.
+   Not `git commit --amend`, and not a `git commit-tree` rebuild of the old
+   first commit (both are classifier-vetoed, HIMMEL-2982).
+3. Push, open a new PR, and close the old one with a pointer to it.
+
+Proven in practice: #1650 was recut as #1654, which passed ready-check and
+merged. `test-ready-check.sh` § 5e pins check 5's first-commit-only rule, so
+this recovery and the gate agree.
 
 **What to do if the FIRST commit carries a trailer whose token doesn't
 conform** — a genuine `Security reviewed:` line whose text doesn't start with

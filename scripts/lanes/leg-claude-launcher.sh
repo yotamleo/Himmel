@@ -48,6 +48,12 @@
 #                           ~/.claude.json user-level ones this exists to cut,
 #                           which is exactly why the file is never hand-typed
 #                           (see plugin-profiles.mjs's collectMcpServerDefs).
+#   LEG_PROFILE_NO_SETTING_SOURCES (HIMMEL-4069) exactly 1 -> --setting-sources ""
+#                           (an empty list: no user, project or local settings
+#                           scope loads, only --settings and managed policy).
+#                           Set only by headed-arm-leg.sh --consult, whose
+#                           sandbox those scopes' write roots would widen. It
+#                           only ever loads LESS (clause 4).
 # Seam: LEG_CLAUDE_BIN overrides the `claude` binary this execs (default:
 # `claude` from PATH). headed-arm-leg.sh sets it to scripts/claude-codex on
 # the claudex lane so all profile flags reach that backend (HIMMEL-2962);
@@ -61,6 +67,39 @@
 set -u
 
 CLAUDE_BIN="${LEG_CLAUDE_BIN:-claude}"
+
+# (HIMMEL-4152) Under a consult the caller's PATH must not pick the binary: a
+# foreign `claude` first on PATH could ignore `--setting-sources ""`. Resolve it
+# once from the pinned PATH in consult-env.sh (its home part comes from the
+# passwd entry, not the caller-set $HOME). A consult reaches here through
+# leg-claude-launcher-consult.sh, which already ran this on an absolute
+# `bash -p` with the startup variables and exported functions stripped, so
+# `type -P` below is a plain PATH search. LEG_CLAUDE_BIN stays the suite's
+# seam: headed-arm-leg.sh scrubs it (var + token) and refuses its
+# HEADED_ARM_LEG_CLAUDE_BIN source before a consult launches, so no consult
+# reaches here with it set. The ponytail for the pinned dirs is in consult-env.sh.
+if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ] && [ -z "${LEG_CLAUDE_BIN:-}" ]; then
+    # shellcheck source=consult-env.sh
+    if ! . "${BASH_SOURCE[0]%/*}/consult-env.sh"; then
+        echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but consult-env.sh did not load" >&2
+        exit 2
+    fi
+    _pin_path="$(consult_pin_path)"
+    # shellcheck disable=SC2030  # the lookup PATH is subshell-local on purpose
+    CLAUDE_BIN="$(PATH="$_pin_path"; type -P claude 2>/dev/null)" || CLAUDE_BIN=""
+    case "$CLAUDE_BIN" in
+        /*) ;;
+        *)
+            echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but no claude on the pinned PATH ($_pin_path); a consult never runs the caller's PATH claude" >&2
+            exit 2 ;;
+    esac
+    # An npm-installed claude is a `#!/usr/bin/env node` script, and claude
+    # spawns helpers by name: the consult runs on the pinned PATH alone, so
+    # neither can resolve through a caller-chosen dir.
+    PATH="$_pin_path"
+    export PATH
+    unset -v _pin_path
+fi
 
 PRE=()
 
@@ -89,6 +128,21 @@ if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
         exit 2
     fi
     PRE+=(--mcp-config "$LEG_PROFILE_MCP_CONFIG" --strict-mcp-config)
+fi
+
+if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ]; then
+    PRE+=(--setting-sources "")
+    # (HIMMEL-4118 F1) The consult is confined only if the FINAL argv carries
+    # `--setting-sources ""` and nothing after it names the flag again (the
+    # last occurrence wins, so a caller-built `--setting-sources user,project`
+    # would load the scopes this exists to cut). Refuse rather than launch.
+    for _nss_arg in "$@"; do
+        case "$_nss_arg" in
+            --setting-sources|--setting-sources=*)
+                echo "leg-claude-launcher: refusing to launch: LEG_PROFILE_NO_SETTING_SOURCES=1 (a consult) but the caller's argv names --setting-sources again, which would override the empty list and load the user/project/local scopes" >&2
+                exit 2 ;;
+        esac
+    done
 fi
 
 exec "$CLAUDE_BIN" ${PRE[@]+"${PRE[@]}"} "$@"

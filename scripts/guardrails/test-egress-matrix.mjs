@@ -273,8 +273,8 @@ assert(evaluate("salus", "moonshot", "extraction").effective === "deny",
   "salus x moonshot x extraction must be hard denied");
 assert(evaluate("himmel-code", "openai-codex", "inference").effective === "allow",
   "himmel-code x codex impl lane must stay allowed");
-assert(evaluate("himmel-code", "deepseek", "inference").effective === "allow",
-  "himmel-code x deepseek stays allow — de-listing is for private-content egress, not public code (wildcard)");
+assert(evaluate("himmel-code", "deepseek", "extraction").effective === "allow",
+  "himmel-code x deepseek extraction stays public-code wildcard allow; inference is station-gated (HIMMEL-4084)");
 assert(evaluate("luna-personal", "zai-glm", "inference").rule === null,
   "luna-personal x zai-glm x inference must still fall through to DEFAULT deny — the HIMMEL-2224 de-listing adds explicit deny rows only for the four cells that were open, it does not invent new rows");
 assert(evaluate("luna-personal", "deepseek", "embedding").effective === "deny",
@@ -323,6 +323,40 @@ assert(evaluate("luna-personal", "openrouter", "enrichment").effective === "deny
   "luna-personal x openrouter x enrichment must deny");
 assert(evaluate("handover-state", "openrouter", "embedding").effective === "deny",
   "handover-state x openrouter x embedding must deny (no bulk pipelines over the transit vendor)");
+
+// HIMMEL-4084: only the DeepSeek launcher's approved station condition may
+// authorize inference. Generic consumers still see conditional, not allow.
+for (const corpus of ["himmel-code", "handover-state"]) {
+  const { effective, rule } = evaluate(corpus, "deepseek", "inference");
+  assert(effective === "conditional", `${corpus} DeepSeek inference needs station opt-in`);
+  assert(rule && rule.corpus === corpus && rule.provider === "deepseek" &&
+    rule.purpose === "inference" && rule.condition === "HIMMEL_DEEPSEEK_INFERENCE_OK=1",
+    `${corpus} DeepSeek inference must use its explicit station condition`);
+}
+for (const corpus of ["luna-personal", "luna-clippings", "salus", "voice-audio"]) {
+  assert(evaluate(corpus, "deepseek", "inference").effective === "deny",
+    `${corpus} DeepSeek inference stays denied`);
+}
+
+// HIMMEL-4335: the scrape backends (Firecrawl, Jina Reader) are declared
+// providers. Public clipped URLs may be sent for `enrichment` with a ledger
+// obligation (allow+log, via their own explicit rows); every other corpus x
+// purpose stays denied, and salus / voice-audio stay HARD-denied.
+for (const p of ["firecrawl", "jina-reader"]) {
+  assert(providers.includes(p), `provider ${p} must be declared`);
+  const { effective, rule } = evaluate("luna-clippings", p, "enrichment");
+  assert(effective === "allow" && rule?.verdict === "allow+log" &&
+    rule.corpus === "luna-clippings" && rule.provider === p && rule.purpose === "enrichment",
+    `luna-clippings x ${p} x enrichment must be allow+log via its OWN row, got ${effective}/${rule?.verdict}`);
+  for (const u of purposes.filter(x => x !== "enrichment")) {
+    assert(evaluate("luna-clippings", p, u).effective === "deny", `luna-clippings x ${p} x ${u} must deny`);
+  }
+  for (const c of ["luna-personal", "handover-state", "salus", "voice-audio"]) {
+    for (const u of purposes) {
+      assert(evaluate(c, p, u).effective === "deny", `${c} x ${p} x ${u} must deny`);
+    }
+  }
+}
 
 if (failures > 0) {
   console.error(`egress-matrix: ${failures} invariant failure(s)`);

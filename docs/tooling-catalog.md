@@ -33,43 +33,82 @@ Key deny entries (always blocked):
 
 ## Plugins (claude-plugins-official marketplace)
 
-All installed from the official Claude plugins marketplace. **Tier** is the
+Official plugins and himmel's opt-in kits are listed below. **Tier** is the
 two-tier plugin profile (HIMMEL-2733) — ALWAYS (installed + enabled
-everywhere), ON-DEMAND (installed, disabled — `plugin-profile.sh enable
-<spec>`), NOT INSTALLED (the pre-existing HIMMEL-816 lean floor —
-`claude plugin install <spec>`). Full detail:
+in the base profiles), ON-DEMAND (available, off by default —
+`plugin-profile.sh enable <spec>`). Availability and activation are distinct:
+retained cache artifacts are available even when no current install-registry
+record remains. The installation inventory below is the checked source of
+truth for presence; named profiles can still opt in. Full detail:
 [configuration.md §4.7](configuration.md#47-plugin-profile--two-tiers-one-toggle-himmel-2733).
 
 | Plugin | What it does | Tier |
 |--------|-------------|------|
-| `lean-skills` | himmel's vendored subset (HIMMEL-3064) of `superpowers` + `mattpocock-skills` workflow skills — 11 of superpowers' 14 (the reference closure of the 4 himmel invokes: brainstorming, writing-plans, systematic-debugging, verification-before-completion) plus `grilling` from mattpocock/skills. Replaces both fat upstream plugins, which are no longer installed — see `marketplace/plugins/lean-skills/README.md` | ALWAYS |
+| `lean-skills` | himmel's vendored subset (HIMMEL-3064) of `superpowers` + `mattpocock-skills` workflow skills — 11 of superpowers' 14 (the reference closure of the 4 himmel invokes: brainstorming, writing-plans, systematic-debugging, verification-before-completion) plus `grilling` from mattpocock/skills. Replaces both fat upstream plugins in the base profiles; their dormant installs remain available, off by default — see `marketplace/plugins/lean-skills/README.md` | ALWAYS |
 | `context7` | Fetches current library/framework docs on demand (MCP server) | ON-DEMAND |
-| `code-review` | Code review agent with severity-tagged findings | NOT INSTALLED |
-| `code-simplifier` | Simplifies recently written code for clarity/maintainability | NOT INSTALLED |
-| `skill-creator` | Creates new custom skills | NOT INSTALLED |
-| `github` | GitHub integration (issues, PRs, repos) | NOT INSTALLED |
-| `feature-dev` | Feature development workflow (explorer, architect, reviewer agents) | NOT INSTALLED |
-| `claude-md-management` | Manages CLAUDE.md files across projects | NOT INSTALLED |
-| `security-guidance` | Security analysis and guidance | NOT INSTALLED (retired in favor of the CR gate — see HIMMEL-2036 in [new-machine.md §6](setup/new-machine.md#security-guidance--recommended-off-operator-decision-pending-himmel-2036)) |
-| `commit-commands` | Git commit helpers and conventions | NOT INSTALLED |
-| `claude-code-setup` | Setup assistant for new Claude Code environments | NOT INSTALLED |
-| `pr-review-toolkit` | PR review tools (code, tests, types, silent failures, comments) | NOT INSTALLED (himmel ships its own `pr-review-toolkit-himmel@himmel` fork instead, which IS on the ALWAYS tier) |
+| `code-review` | Code review agent with severity-tagged findings | ON-DEMAND — cached, off by default |
+| `code-simplifier` | Simplifies recently written code for clarity/maintainability | ON-DEMAND — cached, off by default |
+| `skill-creator` | Creates new custom skills | ON-DEMAND — cached, off by default |
+| `github` | GitHub integration (issues, PRs, repos) | ON-DEMAND — cached, off by default |
+| `feature-dev` | Feature development workflow (explorer, architect, reviewer agents) | ON-DEMAND — cached, off by default |
+| `claude-md-management` | Manages CLAUDE.md files across projects | ON-DEMAND — cached, off by default |
+| `security-guidance` | Security analysis and guidance | ON-DEMAND — cached, off by default (retired in favor of the CR gate — see HIMMEL-2036 in [new-machine.md §6](setup/new-machine.md#security-guidance--recommended-off-operator-decision-pending-himmel-2036)) |
+| `commit-commands` | Git commit helpers and conventions | ON-DEMAND — cached, off by default |
+| `claude-code-setup` | Setup assistant for new Claude Code environments | ON-DEMAND — cached, off by default |
+| `pr-review-toolkit` | PR review tools (code, tests, types, silent failures, comments) | ON-DEMAND — cached, off by default (himmel ships its own `pr-review-toolkit-himmel@himmel` fork instead, which IS on the ALWAYS tier) |
 | `playwright` | Browser automation via Playwright MCP | ON-DEMAND |
-| `ralph-loop` | Autonomous loop execution | NOT INSTALLED |
+| `ralph-loop` | Autonomous loop execution | ON-DEMAND — cached, off by default |
 | `typescript-lsp` | TypeScript language server integration | ON-DEMAND |
-| `pyright-lsp` | Python type checking via Pyright | NOT INSTALLED |
+| `pyright-lsp` | Python type checking via Pyright | ON-DEMAND — cached, off by default |
 | `plannotator-effective-html` | HTML design/UI artifact kit (design-artifact, html, html-diagram/-plan/-prototype/-wireframe) | ON-DEMAND — `design` profile only (HIMMEL-3064): measured 1 invocation in 1628 transcripts against ~630 tok/session cost, so it opts in per-dispatch instead of riding the ALWAYS tier |
+| `frontend-design` | Anthropic's frontend-design skill (official marketplace, local-path entry) | ON-DEMAND — `design` profile only (HIMMEL-4012); already cached; activation remains per profile |
+| `ui-ux-pro-max` | UI/UX design intelligence (7 skills), himmel entry pinned to upstream tag `v2.15.0` over HTTPS (replaces the old `ui-ux-pro-max@ui-ux-pro-max-skill` install; the operator script removes it) | ON-DEMAND, `design` core (HIMMEL-4012); catalog id `ui-ux-pro-max@himmel` |
+| `impeccable` | Design fluency skill (23 commands, 4 agents), himmel marketplace entry pinned to upstream tag `skill-v4.5.0` over HTTPS as a `git-subdir` source on `plugin/` (HIMMEL-3069 precedent; a `url`+`path` source caches the whole repo and loses the agents/hooks) | ON-DEMAND — `design` profile only (HIMMEL-4012); replaces the user-scope `~/.claude/skills/impeccable` copy |
+| `obsidian-second-brain` | Obsidian vault memory: 47 slash commands plus a `vault` MCP server (uv), himmel marketplace entry pinned to upstream commit `87fe5437c44fffafb5188566d458891651536d4e` (tag `v0.17.0`) over HTTPS (HIMMEL-4018; replaces the user-scope `~/.claude/skills/obsidian-second-brain` copy, which loaded ~2.2k tok into every session and ignored `enabledPlugins`). Install: `claude plugin install obsidian-second-brain@himmel` | ON-DEMAND — `user`, `lane-content` and `telegram` profiles (plus the operator profile); off in lean legs and the console; catalog id `obsidian-second-brain@himmel` |
+| `emilkowalski-skills` | Emil Kowalski's design-engineering/animation skills: all 13 upstream skills load (a marketplace `skills` list never restricts anything, so animate-expo, mobile-native and write-swift cannot be excluded without a fork, HIMMEL-4068). MIT, sha-pinned, `strict:false`, no skills list | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `taste-skill-core` | Leonxlnx/taste-skill, all 13 upstream skills in ONE plugin (sha-pinned, `strict:true`; the former imagegen and styles split never restricted anything, HIMMEL-4067) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
+| `shadcn-mcp` | himmel wrapper plugin for the shadcn/ui registry MCP (`npx shadcn@4.21.0 mcp`, no API key; upstream ships no plugin) | ON-DEMAND, `design` core (HIMMEL-4012 PR2b) |
+| `animejs-skills` | Anime.js skills (root-skill repo, `skills: ["./"]`, install shape UNPROVEN, add-on only) | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `gsap-skills` | GSAP skills (8 skills, sha-pinned) | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `lottie-motion-design` | Lottie motion-design skill (sha-pinned) | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `motion-lexicon` | Motion vocabulary skill, tag `v6.0.0` | ON-DEMAND, `design-motion` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `threejs-skills` | Three.js skills (10 skills, sha-pinned) | ON-DEMAND, `design-3d` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `ai-image-prompts` | AI image prompt library (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-imagegen` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `platform-design-skills` | Platform design guidelines: all 8 upstream platforms load, no skills list (sha-pinned) | ON-DEMAND, `design-a11y` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `diagram-design` | Diagram design skills (manifest-bearing upstream, sha-pinned) | ON-DEMAND, `design-diagram` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `builder-visual` | Builder.io skills: all upstream skills load, incl. visual-plan and visual-recap; `strict:true` (upstream plugin.json, HIMMEL-4068) (sha-pinned) | ON-DEMAND, `design` core (HIMMEL-4326) + `design-diagram` profile (HIMMEL-4012 PR2b); its `.mcp.json` registers the hosted OAuth MCP `agent-native-dispatch` (`https://dispatch.agent-native.com/mcp`, egress to Builder.io, one-time operator login); catalog id `@himmel` |
+| `frontend-slides` | HTML presentation generator, `git-subdir` `plugins/frontend-slides`, tag `v2.1.0` | ON-DEMAND, `design-slides` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `design-dna` | Design DNA skill (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `anydesign` | Capture a site into a design system, tag `v0.6.0` (root-skill repo, UNPROVEN shape, add-on only) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `anthropic-design-skills` | anthropics/skills: whole skills/ dir loads (design ones: theme-factory, brand-guidelines, canvas-design; a skills list cannot subset it, HIMMEL-4068) | ON-DEMAND, `design-reference` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
+| `hallmark` | Nutlope/hallmark design skill (90 MB clone), opt-in trial | ON-DEMAND, `design-trial` profile (HIMMEL-4012 PR2b); catalog id `@himmel` |
 
-himmel's lean floor also carries `plugin-dev`, `agent-sdk-dev`, `hookify`,
-`playground`, and `atlassian` (all NOT INSTALLED) — see the full re-enable
-table in [new-machine.md §6](setup/new-machine.md#lean-profile--disabled-by-default-enable-on-need-himmel-816).
+`plugin-dev`, `agent-sdk-dev`, `hookify`, and `playground` are cached and
+available off by default, not absent. `atlassian@claude-plugins-official` is
+not installed. See the full re-enable table in
+[new-machine.md §6](setup/new-machine.md#lean-profile--disabled-by-default-enable-on-need-himmel-816).
 
-`coderabbit`, `mattpocock-skills` and `superpowers` (installed but
-floor-disabled — lean-skills vendors the closure this repo actually invokes,
-see above) are also on the lean floor as of HIMMEL-3551, tracked in
-`enabledPlugins` after they were found installed-but-untracked. Same tier,
-three other-marketplace plugins: `ponytail@ponytail`, `scroll-world@scroll-world`
-and `ui-ux-pro-max@ui-ux-pro-max-skill` (all installed but floor-disabled).
+### Dormant profile candidates (HIMMEL-4019)
+
+Keep these installs. Candidate names below describe future profiles, not
+implemented profiles or permission to enable a plugin. The existing resolver's
+live installed-ID overlay leaves all four off in managed profiles; operator is
+the existing unmanaged sentinel. This change does not restore dormant IDs to
+`plugin-profiles.json`: doing that also requires updating the old catalog-absence
+assertions in its test (console deferred that scope). Until that follow-up,
+these names are documentation candidates, not `--add-plugins` catalog members.
+Pins are refreshed adoption targets, **not** claims that the local install was
+updated. `scripts/plugin-upstreams.json` tracks these standalone targets in the
+drift report; no marketplace install source or live setting is changed.
+
+| Plugin ID | Availability / default | Candidate profile | Refreshed target pin |
+|-----------|------------------------|-------------------|----------------------|
+| `superpowers@claude-plugins-official` | Available, off by default | `workflow-full` — upstream workflow kit, alternative to lean-skills | `obra/superpowers` `v6.4.2` (`8ca22dba9a94f28898bbce59f2537ff4d87c747d`) |
+| `mattpocock-skills@claude-plugins-official` | Available, off by default | `typescript-coach` — TypeScript/workflow coaching | `mattpocock/skills` HEAD `d81f3a183412e71a5b1e84ca21bc1a35eea03a60` |
+| `coderabbit@claude-plugins-official` | Available, off by default | `review-coderabbit` — optional keyed review skills; credential decision remains HIMMEL-4015 | `coderabbitai/skills` HEAD `59945da347a93f9937d3fb09f5ba81a16010351f` |
+| `ponytail@ponytail` | Available, off by default | `honesty-audit` — deliberate-simplification audit | `DietrichGebert/ponytail` `v4.10.3` (`ef8ca48fed2321ab6668b2a954f23b1af97d7f6d`) |
+
+`scroll-world@scroll-world` also remains installed and off by default.
 
 The `coderabbit` plugin entry above is a Claude Code plugin install, tracked
 for the lean-floor reconcile like any other — it is unrelated to the
@@ -90,17 +129,124 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 > Fail-open when gh is absent; exit 2 on drift (cadence-armable). Run it on
 > demand or arm it like `pipeline-cadence`. Since HIMMEL-3807 it also scans
 > every third-party pin in the repo (`scripts/upstreams/pin-scan.py`): npm/bun
-> dependencies at their lockfile version, pre-commit revs, workflow `uses:`, the
-> gitleaks `ver=` literal and `OXLINT_VERSION=` in `scripts/hooks`. Discovery is
-> by scanning, so a new pin is watched with no registry edit; a bump held back on
-> purpose goes in `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream
-> ships something newer than the release reviewed).
+> dependencies at their lockfile version, pre-commit revs, the gitleaks `ver=`
+> literal, workflow `pip install pkg==ver` pins and `OXLINT_VERSION=` in
+> `scripts/hooks`. Discovery is by scanning, so a new pin is watched with no
+> registry edit; a bump held back on purpose goes in
+> `scripts/upstreams/pin-holds.json` (reads `HELD` until upstream ships
+> something newer than the release reviewed).
+>
+> **CI tool pins (HIMMEL-4258):** every CI tool version is exact, with one owner
+> per pin. CI's bun is the repo-root `.bun-version` (every `setup-bun` step uses
+> `bun-version-file`, so setup-bun builds the release URL instead of listing bun's
+> tags through api.github.com, whose 503 killed jobs before any test ran); the
+> `bun-ci` row in `scripts/upstreams.json` (`tag_prefix: bun-v`) lets the nightly
+> `/drift-fix` bump it. Dependabot owns npm manifests and workflow `uses:`
+> (`.github/dependabot.yml` records the split), so pin-scan no longer reports
+> actions. Left floating on purpose: `setup-node` `'22'` (an LTS line, not an
+> exact version, with no drift row able to track a major line), `npm i -g npm@^11`
+> (a deliberate floor, HIMMEL-2573), `apt-get install at` and the runner-image
+> shellcheck/pwsh (the image owns them).
 
 > **Boundary ownership:** which optimizer owns which token boundary (rtk vs
 > MCP-output vs cache vs routing) is governed by
 > [`docs/token-economy.md`](token-economy.md) (HIMMEL-654 WS6) — one
 > optimizer per boundary; adoption changes gate on a measured real-session
 > delta.
+
+### Checked installation inventory (HIMMEL-4019)
+
+Observed 2026-10-02 on the operator station. `INSTALLED` means an install
+registry record **or** a retained version directory in the plugin cache; it
+says nothing about enabled state, effective project scope, or pin freshness.
+`NOT INSTALLED` entries are available catalog candidates without either.
+Legacy split/design marketplace artifacts remain explicitly listed while
+cached; listing them does not enable them. The obsidian-second-brain plugin
+has not yet replaced the user-scope skill on this station.
+
+Compare a station observation (read-only, no network):
+
+```bash
+bash scripts/check-tooling-catalog.sh --installed ~/.claude/plugins/installed_plugins.json --cache ~/.claude/plugins/cache
+```
+
+For CI, `scripts/test-check-tooling-catalog.sh` supplies the independent
+2026-10-02 snapshot as JSON in a temporary directory; the existing shell runner
+automatically discovers the suite. Refresh the snapshot and this inventory
+together after an intentional installation change. A JSON array of full IDs
+can also be passed to `--installed` for a hermetic observation.
+
+<!-- plugin-installation-inventory -->
+| Plugin ID | Installation |
+|-----------|--------------|
+| `agent-sdk-dev@claude-plugins-official` | INSTALLED |
+| `ai-image-prompts@himmel` | INSTALLED |
+| `animejs-skills@himmel` | INSTALLED |
+| `anthropic-design-skills@himmel` | INSTALLED |
+| `anydesign@himmel` | INSTALLED |
+| `atlassian@claude-plugins-official` | NOT INSTALLED |
+| `builder-visual@himmel` | INSTALLED |
+| `claude-code-setup@claude-plugins-official` | INSTALLED |
+| `claude-md-management@claude-plugins-official` | INSTALLED |
+| `claude-obsidian@himmel` | INSTALLED |
+| `code-review@claude-plugins-official` | INSTALLED |
+| `code-simplifier@claude-plugins-official` | INSTALLED |
+| `coderabbit@claude-plugins-official` | INSTALLED |
+| `codex@openai-codex` | INSTALLED |
+| `commit-commands@claude-plugins-official` | INSTALLED |
+| `context7@claude-plugins-official` | INSTALLED |
+| `design-dna@himmel` | INSTALLED |
+| `diagram-design@himmel` | INSTALLED |
+| `emilkowalski-skills@himmel` | INSTALLED |
+| `feature-dev@claude-plugins-official` | INSTALLED |
+| `frontend-design@claude-plugins-official` | INSTALLED |
+| `frontend-slides@himmel` | INSTALLED |
+| `github@claude-plugins-official` | INSTALLED |
+| `gopls-lsp@claude-plugins-official` | INSTALLED |
+| `gsap-skills@himmel` | INSTALLED |
+| `hallmark@himmel` | INSTALLED |
+| `handover@himmel` | INSTALLED |
+| `himmel-ops@himmel` | INSTALLED |
+| `hookify@claude-plugins-official` | INSTALLED |
+| `impeccable@himmel` | INSTALLED |
+| `lean-skills@himmel` | INSTALLED |
+| `lottie-motion-design@himmel` | INSTALLED |
+| `luna-correlate@himmel` | INSTALLED |
+| `mattpocock-skills@claude-plugins-official` | INSTALLED |
+| `mcp-server-dev@claude-plugins-official` | INSTALLED |
+| `motion-lexicon@himmel` | INSTALLED |
+| `obsidian-second-brain@himmel` | NOT INSTALLED |
+| `obsidian-triage@himmel` | INSTALLED |
+| `obsidian@obsidian-skills` | INSTALLED |
+| `plannotator-effective-html@himmel` | INSTALLED |
+| `platform-design-skills@himmel` | INSTALLED |
+| `playground@claude-plugins-official` | INSTALLED |
+| `playwright@claude-plugins-official` | INSTALLED |
+| `plugin-dev@claude-plugins-official` | INSTALLED |
+| `ponytail@ponytail` | INSTALLED |
+| `pr-review-toolkit-himmel@himmel` | INSTALLED |
+| `pr-review-toolkit@claude-plugins-official` | INSTALLED |
+| `pyright-lsp@claude-plugins-official` | INSTALLED |
+| `qmd@himmel` | INSTALLED |
+| `qmd@qmd` | NOT INSTALLED |
+| `ralph-loop@claude-plugins-official` | INSTALLED |
+| `rust-analyzer-lsp@claude-plugins-official` | INSTALLED |
+| `scroll-world@scroll-world` | INSTALLED |
+| `security-guidance@claude-plugins-official` | INSTALLED |
+| `shadcn-mcp@himmel` | INSTALLED |
+| `skill-creator@claude-plugins-official` | INSTALLED |
+| `superpowers@claude-plugins-official` | INSTALLED |
+| `taste-skill-core@himmel` | INSTALLED |
+| `taste-skill-imagegen@himmel` | INSTALLED |
+| `taste-skill-styles@himmel` | INSTALLED |
+| `telegram-himmel@himmel` | INSTALLED |
+| `telegram@claude-plugins-official` | INSTALLED |
+| `threejs-skills@himmel` | INSTALLED |
+| `typescript-lsp@claude-plugins-official` | INSTALLED |
+| `ui-ux-pro-max@himmel` | INSTALLED |
+| `ui-ux-pro-max@ui-ux-pro-max-skill` | INSTALLED |
+| `watch@claude-video` | INSTALLED |
+<!-- /plugin-installation-inventory -->
 
 ### qmd (`tobi/qmd`)
 
@@ -110,9 +256,11 @@ Installed via `extraKnownMarketplaces` in `settings.json`.
 **Usage:** Searching local knowledge base, notes, docs.
 
 **CLI install (HIMMEL-877, pinned HIMMEL-911):** the standalone `qmd` CLI
-installs from a **local clone of upstream `tobi/qmd`** (HIMMEL-3045 —
-previously a himmel-owned fork, `yotamleo/qmd`, until its carried fixes landed
-upstream), pinned to an
+installs from a **local clone of the carried fork `yotamleo/qmd`** until
+tobi/qmd#1029 is fixed upstream (HIMMEL-3956: two commits on `tobi/qmd` main
+that make the launcher forward signals to bun, upstream PR tobi/qmd#1030;
+HIMMEL-3982 pins back to `tobi/qmd`, and `qmd_install` re-points an existing
+clone's origin in place), pinned to an
 immutable commit SHA (the literal lives in `_qmd_fork_ref`; read it there
 rather than copying it here) rather than a mutable branch, via `scripts/lib/qmd-bin.sh`'s `qmd_install` (clone → fetch/checkout
 the pinned SHA → `bun install && bun run build` → junction/symlink onto the
@@ -181,15 +329,20 @@ README's fork-delta section).
 
 ---
 
-### obsidian-second-brain (external, manual install)
+### obsidian-second-brain (HIMMEL-4018: now the `obsidian-second-brain@himmel` plugin)
+
+> The manual install (v0.8, a clone linked into `~/.claude/skills/`) is
+> retired: a user-scope copy ignores `enabledPlugins` and loads into every
+> session. Never re-create it; if one is present, move it out of
+> `~/.claude/skills/` (the profile probe fails while it is there). The
+> research-toolkit decision below still stands.
 
 **Repo:** `eugeniughelbur/obsidian-second-brain`
-**Install path:** `~/.claude/plugins/obsidian-second-brain/` (cloned)
-**Skill link:** `~/.claude/skills/obsidian-second-brain`
-**Commands:** 33 slash commands installed to `~/.claude/commands/` (5 research-toolkit
+**Install:** `claude plugin install obsidian-second-brain@himmel` (himmel marketplace, pinned to upstream commit `87fe5437c44fffafb5188566d458891651536d4e`, tag `v0.17.0`)
+**Enable:** the `user`, `lane-content` and `telegram` profiles (plus the operator profile, once installed); off in every other named profile
+**Commands:** 47 slash commands from the plugin (5 research-toolkit
 commands are NOT adopted — see Research toolkit line below)
-**Version:** v0.8 (May 2026) | **Installed:** 2026-05-16
-**Update:** `git pull` in `~/.claude/plugins/obsidian-second-brain/`
+**Update:** bump the `sha` pin in `marketplace/.claude-plugin/marketplace.json` to the new upstream commit, then `claude plugin marketplace update himmel` and `claude plugin update obsidian-second-brain@himmel` (it is url-sourced, so the marketplace refresh alone leaves the installed copy on the old commit)
 **Research toolkit:** NOT ADOPTED (proposed 2026-07-29, pending ADR sign-off) —
 operator confirmed no active XAI/Grok or Perplexity subscription. A
 `~/.config/obsidian-second-brain/.env`
@@ -339,8 +492,8 @@ Astra surfaces (`~/.codex/config.toml`, `scripts/cr/critics.json`) are already a
 
 **Tier:** ALWAYS — installed + enabled on every himmel machine; one of the three harness-operational plugins `plugin-profile.sh disable` refuses (HIMMEL-2733).
 **What:** Harness-meta operational skills for himmel.
-**Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (grill→brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428; the one front door for grill / stress-test / brainstorm, HIMMEL-2039), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569).
-**Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829).
+**Skills:** `himmel-ops:stuck-playbook` (load-on-trigger guardrail-recovery playbook, HIMMEL-211), `himmel-ops:minerva` (grill→brainstorm→critic→spec→critic→plan pipeline with adversarial critic loops, HIMMEL-428; the one front door for grill / stress-test / brainstorm, HIMMEL-2039), `himmel-ops:vm` (lean-invoke VM lifecycle + e2e runbook, HIMMEL-491/493), `himmel-ops:memory-compound` (lean-invoke auto-memory→vault compaction with a qmd findability gate, HIMMEL-569), `himmel-ops:effort-assess` (PILOT reference-class effort record with a DoD refusal and a version tail check, HIMMEL-3995).
+**Commands:** `/minerva` — runs the minerva pipeline; `/memory-compound` — runs the auto-memory compaction pass; `/fanout` — validates + confirms + dispatches N work items to the invariant-policy lane by type, refusing destructive/irreversible items below the judgement tier and any dormant lane (HIMMEL-1829); `/cloud-route` — classifies tickets for the cloud credit lane, writes the cloud brief and prints the operator launch line without launching (HIMMEL-4262).
 **Hook:** `hooks/hooks.json` wires a PreToolUse(`matcher: "Skill"`) hook `inject-minerva-critic.sh` (HIMMEL-429) — injects the minerva critic loop when `lean-skills:brainstorming`/`lean-skills:writing-plans` fires without `/minerva`, and routes `lean-skills:grilling` into minerva Stage 1a (HIMMEL-2039). The match is namespace-agnostic (substring on `brainstorming`/`writing-plans`), so retained `superpowers:` aliases still trigger it. Advisory, fail-open; kill switch `MINERVA_HOOK_DISABLE=1`.
 **Plugin path:** `marketplace/plugins/himmel-ops/`
 
@@ -590,6 +743,33 @@ GLM peak window (14:00–18:00 UTC+8); advisory only, changes no behavior.
 PHI/egress guards, and the `--settings` env-injection screen against a mock
 `claude`; only the live-backend acceptance leg is manual — the **HIMMEL-665
 Task 8 checklist**.
+
+---
+
+## Opt-in role kits (HIMMEL-4024, from the HIMMEL-4017 research)
+
+Kits are plugin profiles that stack on base and compose per task with
+`--profile a,b` (HIMMEL-4014), e.g. `--profile leg-impl,code`. No other
+profile enables a kit member. Keyed items belong to HIMMEL-4015. This is the
+code kit; the content/research and ops kits follow separately.
+
+| Profile | Members | Listing cost | Use |
+|---------|---------|--------------|-----|
+| `code` | `typescript-lsp`, `pyright-lsp`, `code-simplifier` (all `@claude-plugins-official`) | ~0.2k | a leg on a typed TS/Python repo; the language-server binary must exist on the machine |
+| `code-ui` | `playwright@claude-plugins-official` (MCP) | est 3-5k, unmeasured | browser-driven e2e, UI lanes only |
+
+CLI tools of the code kit (0 listing tokens, not plugins), installed by
+`scripts/machine-setup/install-code-kit-clis.sh` (`--dry-run` to preview):
+
+| Tool | Install | Drift row (`scripts/upstreams.json`) |
+|------|---------|--------------------------------------|
+| `ast-grep` 0.45.3 (structural search/rewrite, MIT) | npm `@ast-grep/cli`, pinned | `ast-grep`, `tag_release` base, auto-bumpable via `version_pin` |
+| `shfmt` (shell formatter) | system package manager | `shfmt`, probe, report-only |
+| `bats` (bash test runner) | system package manager | `bats`, probe, report-only |
+
+The plugin members are already tracked: `claude-plugins-official` is a
+dynamically discovered marketplace in the drift report, so they need no
+`upstreams.json` row of their own.
 
 ---
 
@@ -1311,9 +1491,11 @@ on demand; nothing here runs automatically.
   (`GRAPHIFY_LEDGER`); `deepseek`/`codex` use OpenAI chat/completions, `glm` (via z.ai anthropic-compat)/`claude` use the Anthropic Messages API. DeepSeek off-peak advisory. `--dry-run` first.
 - `scripts/luna/fetch-health.py` — Daily no-LLM health probes for luna
   clip-source fetch integrations. The registry (`build_probe_registry`) carries
-  **ten** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
+  **eleven** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
   `x-twitter-cli`, `instagram-embed`, `instagram-media`, `youtube-playwright`,
-  `github`, `bitbucket`, `firecrawl`. The full run (armed by `pipeline-cadence.sh`'s
+  `github`, `bitbucket`, `firecrawl` (HIMMEL-4335: probes the free
+  `/v2/team/credit-usage`, spends no credit, and ledgers credits 0 to
+  `firecrawl-ledger.jsonl`), `jina-reader` (keyless). The full run (armed by `pipeline-cadence.sh`'s
   fetch-health leg) probes every source, writes `~/.himmel/fetch-health.json`
   (`last_success_timestamp` preserved per source across runs), and exits 0 iff
   every source is `ok`. `--probe <source>` (HIMMEL-2176 Task 2) runs exactly
@@ -1701,6 +1883,23 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   a dormant flag, since the launch surface (mission-doc generation, model pin,
   workspace pre-trust) is real scope for an already-sized leg. Arming is
   operator-invoked: `bash scripts/upstreams/upstream-watch-cadence.sh arm`.
+- `scripts/doctor-cadence.sh run|arm|status|disarm` (HIMMEL-4251) — the daily
+  `himmel-doctor` run, so a standing FAIL is seen in a day, not nine
+  (HIMMEL-4243). `run` executes the doctor from the **primary** checkout
+  (resolved through git-common-dir; a worktree run gives false C16 reds) and
+  keeps `last.tsv` / `alerted.tsv` / `counts` under
+  `~/.himmel/state/doctor-cadence/` (HIMMEL-4382: `himmel-doctor.sh` itself
+  judges the primary checkout from any cwd and a full run there writes
+  `last.tsv` + `counts` together; `--root <path>` judges another checkout and
+  writes nothing). A FAIL, or a WARN id absent from `alerted.tsv` (the set this
+  script last alerted on; an ad-hoc doctor run never moves it), goes to Telegram through `scripts/luna/cadence-alert.sh`; the
+  first-ever run is a baseline (FAILs only); a doctor that prints no Summary
+  line alerts too. `hud-custom-lines.sh` shows `doctor  N FAIL  M WARN` from
+  `counts` (read-only, silent when absent or clean). Registered in
+  `cadence-registry.json` as `doctor`; cron only (Windows is parked).
+  Report-only: repair is `himmel-update`'s drift pass (HIMMEL-4246). Arming is
+  operator-invoked: `bash scripts/doctor-cadence.sh arm`. Test:
+  `scripts/test-doctor-cadence.sh`.
 
 ---
 

@@ -9,6 +9,9 @@ set -uo pipefail
 HOP="$(cd "$(dirname "$0")" && pwd)/hop.sh"
 [ -x "$HOP" ] || chmod +x "$HOP"
 
+# HIMMEL-4013: hop infers its profile from the caller's role env; a test run
+# inside a console/leg must not inherit it.
+unset HOP_PROFILE HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_LEG
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 SLUG="dpz$$"
@@ -41,14 +44,47 @@ assert_not_contains() {
 }
 
 FAILED=0
+# HIMMEL-4013: redirect profile settings to scratch BEFORE the first hop, so no
+# case can overwrite the operator's persistent profile files.
+export HIMMEL_PROFILE_SETTINGS_DIR="$TMP/profiles"
 
 # T1: --print --dry-run with a message, custom handover root
 out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message "test message" --print --dry-run 2>&1)
 rc=$?
 assert_rc "T1 print dry-run rc=0" 0 "$rc"
 assert_contains "T1 mentions snapshot path" "$TMP/handovers/$SLUG/context-hop-" "$out"
-assert_contains "T1 prints operator command" "claude \"load" "$out"
+assert_contains "T1 prints operator command" "\"load" "$out"
 assert_contains "T1 embeds message in snapshot body" "test message" "$out"
+# HIMMEL-4013: the printed command carries the role-matched profile settings.
+assert_contains "T1 operator command applies --settings" "claude --settings '" "$out"
+assert_contains "T1 default role profile is user" "/user.json'" "$out"
+out=$(env HIMMEL_CONSOLE_DOC=/x/doc.md bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --print --dry-run 2>&1)
+assert_contains "T1 console hop uses the console profile" "/console.json'" "$out"
+out=$(env HIMMEL_CONSOLE_LEG=1 bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --print --dry-run 2>&1)
+assert_contains "T1 leg hop uses leg-impl" "/leg-impl.json'" "$out"
+out=$(env HOP_PROFILE=bare HIMMEL_CONSOLE_DOC=/x/doc.md bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --print --dry-run 2>&1)
+assert_contains "T1 HOP_PROFILE overrides the inferred role" "/bare.json'" "$out"
+out=$(env HOP_PROFILE=no-such-profile bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --print --dry-run 2>&1)
+rc=$?
+assert_rc "T1 unknown profile fails closed" 2 "$rc"
+out=$(env HIMMEL_CONSOLE_DOC=/x/doc.md bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --dry-run 2>&1)
+assert_contains "T2 schedule hop hands arm-resume the profile" "--profile console" "$out"
+
+# HIMMEL-4033: the profile is derived from the hopping session's handover doc
+# (role-profile.sh, as arm-resume does) when HOP_PROFILE is unset; env wins.
+printf '# leg\n> profile: design\nRETASK token T-x\n' > "$TMP/design-leg.md"
+printf '# leg\nRETASK token T-x\n' > "$TMP/plain-leg.md"
+out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/design-leg.md" --message m --print --dry-run 2>&1)
+assert_contains "T1b --doc with an explicit profile hops as design" "/design.json'" "$out"
+out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/plain-leg.md" --message m --print --dry-run 2>&1)
+assert_contains "T1b --doc leg doc hops as leg-impl" "/leg-impl.json'" "$out"
+out=$(env HIMMEL_CONSOLE_DOC="$TMP/design-leg.md" bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message m --print --dry-run 2>&1)
+assert_contains "T1b HIMMEL_CONSOLE_DOC file is read for its role" "/design.json'" "$out"
+out=$(env HOP_PROFILE=bare bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/design-leg.md" --message m --print --dry-run 2>&1)
+assert_contains "T1b HOP_PROFILE beats the doc" "/bare.json'" "$out"
+out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --doc "$TMP/no-such-doc.md" --message m --print --dry-run 2>&1)
+rc=$?
+assert_rc "T1b missing --doc is a usage error" 1 "$rc"
 
 # T2: --schedule (default) --dry-run — should mention arm-resume.sh
 out=$(bash "$HOP" --handover-root "$TMP/handovers/$SLUG" --message "test" --dry-run 2>&1)
@@ -158,6 +194,7 @@ own="$TMP/own-checkout"
 mkdir -p "$own/scripts"
 cp -r "$ROOT/scripts/lib" "$own/scripts/lib"
 cp -r "$ROOT/scripts/handover" "$own/scripts/handover"
+cp -r "$ROOT/scripts/lanes" "$own/scripts/lanes"
 mkdir -p "$own/state-fixture/ownslug"
 printf 'HANDOVER_DIR=%s\nUSER_SLUG=ownslug\n' "$own/state-fixture" > "$own/.env"
 foreign="$TMP/foreign-repo"
@@ -168,6 +205,27 @@ out=$(cd "$foreign/nested" && env -u HANDOVER_DIR -u USER_SLUG bash "$own/script
 rc=$?
 assert_rc "T18 own-checkout .env resolves rc=0" 0 "$rc"
 assert_contains "T18 snapshot under own-checkout's HANDOVER_DIR, not the foreign CWD repo" "$own/state-fixture/ownslug/context-hop-" "$out"
+
+# --- HIMMEL-4054: hop must propagate arm-resume's real exit status. The origin
+# repo is a scratch `git init` whose arm-resume.sh stub exits with a chosen rc.
+stubrepo="$TMP/stub-origin"
+mkdir -p "$stubrepo/scripts/handover" "$TMP/handovers/stub"
+( cd "$stubrepo" && git init -q )
+# shellcheck disable=SC2016 # the stub must expand STUB_ARM_RC itself, not this shell
+printf '#!/usr/bin/env bash\nexit "${STUB_ARM_RC:-0}"\n' > "$stubrepo/scripts/handover/arm-resume.sh"
+
+# T19: arm-resume refuses (rc 2) → hop exits 2 with the failure diagnostic.
+out=$(cd "$stubrepo" && STUB_ARM_RC=2 bash "$HOP" --handover-root "$TMP/handovers/stub" --message "rc-test" 2>&1)
+rc=$?
+assert_rc "T19 arm-resume rc=2 propagates" 2 "$rc"
+assert_contains "T19 diagnostic carries the real rc" "arm-resume.sh failed (rc=2)" "$out"
+assert_not_contains "T19 no CONTEXT-HOP ARMED banner on refusal" "CONTEXT-HOP ARMED" "$out"
+
+# T20: arm-resume succeeds → hop exits 0 with the banner.
+out=$(cd "$stubrepo" && STUB_ARM_RC=0 bash "$HOP" --handover-root "$TMP/handovers/stub" --message "rc-ok" 2>&1)
+rc=$?
+assert_rc "T20 arm-resume rc=0 → hop rc=0" 0 "$rc"
+assert_contains "T20 banner on success" "CONTEXT-HOP ARMED" "$out"
 
 if [ "$FAILED" -gt 0 ]; then
     echo "---"

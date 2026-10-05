@@ -26,6 +26,15 @@ and what it must not touch. `headed-arm-leg.sh` **refuses** (exit 2) a launch
 with no `--profile` (HIMMEL-3267); `--no-profile` is the explicit opt-out, and
 then the preface is not injected, so paste it into the brief yourself or the
 leg is under-briefed.
+
+**Composed profiles (HIMMEL-4014).** `--profile` and the brief's `profile:` line
+take a comma list (`design,design-motion`, no spaces): the leg gets the union of
+the members' plugin sets. `operator`, `bare` and the console/relay/judge role
+profiles cannot be members. A leg that needs a skill outside its fixed profile
+asks its console for a read-only consult instead (`CONSULT <list> :: <question>
+:: read: <paths>`, see `leg-preface.md`); the console launches it with
+`headed-arm-leg.sh --consult --profile <list> --console <name> …` and relays the
+answer back with `console-kit/consult-relay.sh <consult-doc> <asker>`.
 Claudex briefs no longer paste the coordination paragraph: `--lane claudex`
 always appends [`leg-preface-claudex.md`](leg-preface-claudex.md).
 
@@ -73,6 +82,13 @@ template_version: 3
 > paths and what to take from each. Name what is private and must never reach
 > the tree.>
 
+> **Trust paths (pre-dispatch, HIMMEL-4089):** <exact paths the planned scope
+> plausibly needs; permitted read/write operations and exclusions; the
+> operator's up-front scope grant, or explicitly none needed. A brief grants
+> scope, not tool permissions. If authorization is missing, narrow before
+> dispatch; an auto-mode inbox EXPANSION needs operator confirmation in-window,
+> not merely a RETASK token.>
+
 > **Contract:**
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check. Write
 >    the bullet with `scripts/handover/console-kit/append-results.sh <doc>
@@ -93,7 +109,15 @@ template_version: 3
 >    run `leg-burn.sh` by hand (HIMMEL-3572). **`completes-ticket: yes|no`** — does this PR finish the
 >    cited ticket? `yes` → the leg merges with `--jira-transition`; `no` (the
 >    ticket spans further PRs, sibling slices, or work owed outside any PR) →
->    it omits the flag. <Anything else unusual: a PR body that must carry other
+>    it omits the flag. **The PR body carries a `## Ticket coverage` section**
+>    (HIMMEL-4207): one list line per ask of each cited ticket, each ending
+>    `done` or `deferred → HIMMEL-<n>` (`->` also accepted), e.g.
+>    `- ask one: done` / `- ask two: deferred → HIMMEL-1234`. A deferred key
+>    must exist and still be open; `ready-check.sh` item 7 FAILs a missing
+>    section, an unmarked line, or a deferral to a nonexistent or Done/Closed
+>    ticket, so file the follow-up before you write the line. The marker is
+>    LAST with nothing after it; lint it yourself before READY with
+>    `ready-check.sh --only 7 <pr>` (HIMMEL-4300). <Anything else unusual: a PR body that must carry other
 >    specific numbers, a public-CI wait, a second ticket to comment on but
 >    leave open.>
 
@@ -121,9 +145,10 @@ template_version: 3
 ## What the console must also do (2026-09-13)
 
 - (a) One plan task per leg, plus the stage-worker rule: run the context-fill
-  probe after every completed step (ruling A1) — at ≥60 % fill, or on noticing
-  a compaction, the leg commits what is done and hands off to a `b`-suffixed
-  successor brief rather than continuing.
+  probe after every completed step (ruling A1) — at ≥75 % fill the leg commits
+  what is done and hands off to a `b`-suffixed successor brief rather than
+  continuing. A compaction alone is not a hand-off: the leg's `--autocompact`
+  ceiling is the backstop (HIMMEL-4089).
 - (b) The console creates the leg's worktree before arming it, never after.
 - (c) Holding for the console's `GO` ends the leg's turn — never a Bash sleep
   loop; a leg that blocks in one never wakes to receive it.
@@ -149,3 +174,13 @@ template_version: 3
   in a commit still goes to codex-exec. Put the routing in the brief's Contract so the
   leg does not have to infer it; the full rule and its evidence live in
   [`../internals/lane-calibration.md`](../internals/lane-calibration.md#bank-scarcity-routing-rule-himmel-2772).
+- (g) **Surface tickets route through minerva (HIMMEL-4375).** Before briefing a
+  leg on a ticket that adds or aggregates a status, report, doctor, health,
+  probe, check or inventory surface, the console needs a minerva spec and plan
+  that pass `marketplace/plugins/himmel-ops/scripts/minerva-trace-lint.sh`. At
+  minimum it needs the spec's grepped `## Fact ownership` matrix. The brief
+  cites that spec. This is the routing point: one config UI shipped a single
+  fact as two findings because no one asked which existing surface already
+  computed it. ponytail: brief-template prose is the first layer; on its first
+  drift, escalate to a structural check in `headed-arm-leg.sh` that refuses a
+  surface ticket's launch without a lint-clean spec path.

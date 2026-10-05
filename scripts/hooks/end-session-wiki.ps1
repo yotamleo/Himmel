@@ -702,7 +702,7 @@ $rawSection
             $env:CRYSTALLIZE_RULES_FILE = $rulesExpanded
         }
         try {
-            Start-Process -FilePath (Get-Command pwsh).Source `
+            Start-Process -FilePath (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source `
                 -ArgumentList @('-NoProfile', '-File', $crys, $absPath, $transcriptPath) `
                 -WindowStyle Hidden | Out-Null
         } catch { }
@@ -772,7 +772,7 @@ $rawSection
         # timeout), which "HTTP 0" alone hides.
         $script:eswLastPutError = ''
         if ($env:ESW_PUT_CMD) {
-            $out = & (Get-Command pwsh).Source -NoProfile -File $env:ESW_PUT_CMD $Key $Uri 2>$null
+            $out = & (Get-Command pwsh -CommandType Application | Select-Object -First 1).Source -NoProfile -File $env:ESW_PUT_CMD $Key $Uri 2>$null
             $n = 0
             if ([int]::TryParse((@($out) | Select-Object -First 1), [ref]$n)) { return $n }
             return 0

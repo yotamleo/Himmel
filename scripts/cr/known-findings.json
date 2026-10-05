@@ -1,6 +1,6 @@
 {
   "_schema": "known-findings v1 (HIMMEL-2058). One entry per recurring CR finding CLASS. `kind`: fix = a real defect class with a canonical fix; rebuttal = a false-premise class with a canonical rebuttal (critics are told not to re-raise it unless the code regressed); checklist = a judgment class the self-review asks about. `detector` runs in scripts/cr/known-findings.sh --diff (deterministic, no LLM): added-line-regex = POSIX-ERE over ADDED lines of files matching `globs`; twin-missing = a .sh/.ps1 twin exists but is not in the diff; no-test-change = non-test sources under `globs` changed and no test-*.sh/*.test.* file did; removed-flag-in-docs = a `--flag` token deleted from source still appears in a doc that also names that source file; md-fence-no-lang = an added ``` fence with no language in a .md; hook-header-no-fail-direction = a NEW scripts/hooks/*.sh whose header never states fail-open/fail-closed; files under a testdata/ dir are fixture data and never scanned. `learning_match` is the regex --refresh uses to attribute CodeRabbit learnings-export rows (sums their Usage into evidence.learnings_uses). `evidence.ledger` is rewritten by --refresh from the CR ledger (findings whose file matches `globs`, verdicts resolved through amends). Hand-edit everything else; keep ids stable (they are cited in PR comments).",
-  "refreshed_at": "2026-09-30",
+  "refreshed_at": "2026-10-04",
   "classes": [
     {
       "id": "errexit-false-positive",
@@ -21,24 +21,25 @@
       "coverage": ".coderabbit.yaml path_instructions cover NON-errexit files only; the errexit-file carve-out is HIMMEL-1684 (open). CodeRabbit learnings (5 rows, ~1.8k uses, last used 2026-09-29) suppress most re-raises in practice: 2 App re-raises since 2026-08-10, one of them legitimate (a `set -e` caller). HIMMEL-3905 added the detector so /pr-check step 2.8 attributes the finding before a critic spends a round; it is per-line, so it cannot see whether the `&&` is in final position or the file sets -e.",
       "prompt": true,
       "evidence": {
-        "learnings_uses": 1828,
+        "learnings_uses": 1829,
         "cr_app_finding_comments_since_2026-08-10": 2,
         "ledger": {
-          "findings": 2918,
-          "agreed": 282,
-          "disproved": 286,
-          "deferred": 748,
-          "other": 1080,
-          "unadjudicated": 522,
+          "findings": 3766,
+          "agreed": 279,
+          "disproved": 368,
+          "deferred": 1051,
+          "other": 1534,
+          "unadjudicated": 534,
           "models": {
-            "codex": 2876,
-            "coderabbit": 26,
+            "codex": 3716,
+            "coderabbit": 29,
             "claude": 13,
             "console": 1,
             "": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 5
       }
@@ -65,21 +66,22 @@
         "learnings_uses": 580,
         "cr_app_finding_comments_since_2026-08-10": 2,
         "ledger": {
-          "findings": 2918,
-          "agreed": 282,
-          "disproved": 286,
-          "deferred": 748,
-          "other": 1080,
-          "unadjudicated": 522,
+          "findings": 3766,
+          "agreed": 279,
+          "disproved": 368,
+          "deferred": 1051,
+          "other": 1534,
+          "unadjudicated": 534,
           "models": {
-            "codex": 2876,
-            "coderabbit": 26,
+            "codex": 3716,
+            "coderabbit": 29,
             "claude": 13,
             "console": 1,
             "": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 3
       }
@@ -102,26 +104,27 @@
       "coverage": ".coderabbit.yaml handover-root carve-out covers a test that redirects HANDOVER_DIR but not a test that touches no handover path (HIMMEL-1684 gap 2, open). Still the single most-raised class in the measured window despite being the #1 learning: 8 App raises across 6 PRs, hand-counted over 2026-08-20..09-02 (a subset of the since-08-10 field above, which this refresh therefore raises from 3 to 8 as a measured lower bound), and CodeRabbit WITHDREW every one on rebuttal. The learning is applied 1009 times yet does not suppress the raise — which is why the rebuttal now enumerates the four sub-shapes instead of restating the rule.",
       "prompt": true,
       "evidence": {
-        "learnings_uses": 1071,
+        "learnings_uses": 1072,
         "cr_app_finding_comments_since_2026-08-10": 8,
         "ledger": {
-          "findings": 2861,
-          "agreed": 282,
-          "disproved": 277,
-          "deferred": 736,
-          "other": 1052,
-          "unadjudicated": 514,
+          "findings": 3706,
+          "agreed": 279,
+          "disproved": 358,
+          "deferred": 1039,
+          "other": 1504,
+          "unadjudicated": 526,
           "models": {
-            "codex": 2820,
-            "coderabbit": 25,
+            "codex": 3657,
+            "coderabbit": 28,
             "claude": 13,
             "console": 1,
             "": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
-        "learnings_rows": 7
+        "learnings_rows": 8
       }
     },
     {
@@ -146,21 +149,22 @@
         "learnings_uses": 314,
         "cr_app_finding_comments_since_2026-08-10": 6,
         "ledger": {
-          "findings": 2948,
-          "agreed": 283,
-          "disproved": 292,
-          "deferred": 761,
-          "other": 1088,
-          "unadjudicated": 524,
+          "findings": 3801,
+          "agreed": 280,
+          "disproved": 374,
+          "deferred": 1065,
+          "other": 1546,
+          "unadjudicated": 536,
           "models": {
-            "codex": 2905,
-            "coderabbit": 26,
+            "codex": 3750,
+            "coderabbit": 29,
             "": 2,
             "claude": 13,
             "console": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 5
       }
@@ -188,21 +192,22 @@
         "learnings_uses": 536,
         "cr_app_finding_comments_since_2026-08-10": 20,
         "ledger": {
-          "findings": 2948,
-          "agreed": 283,
-          "disproved": 292,
-          "deferred": 761,
-          "other": 1088,
-          "unadjudicated": 524,
+          "findings": 3801,
+          "agreed": 280,
+          "disproved": 374,
+          "deferred": 1065,
+          "other": 1546,
+          "unadjudicated": 536,
           "models": {
-            "codex": 2905,
-            "coderabbit": 26,
+            "codex": 3750,
+            "coderabbit": 29,
             "": 2,
             "claude": 13,
             "console": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 22
       }
@@ -227,26 +232,27 @@
       "coverage": "shell-lint BASH32 + .coderabbit.yaml path_instructions; 2 App re-raises since 2026-08-10.",
       "prompt": false,
       "evidence": {
-        "learnings_uses": 1,
+        "learnings_uses": 2,
         "cr_app_finding_comments_since_2026-08-10": 2,
         "ledger": {
-          "findings": 2948,
-          "agreed": 283,
-          "disproved": 292,
-          "deferred": 761,
-          "other": 1088,
-          "unadjudicated": 524,
+          "findings": 3801,
+          "agreed": 280,
+          "disproved": 374,
+          "deferred": 1065,
+          "other": 1546,
+          "unadjudicated": 536,
           "models": {
-            "codex": 2905,
-            "coderabbit": 26,
+            "codex": 3750,
+            "coderabbit": 29,
             "": 2,
             "claude": 13,
             "console": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
-        "learnings_rows": 2
+        "learnings_rows": 3
       }
     },
     {
@@ -271,21 +277,22 @@
         "learnings_uses": 157,
         "cr_app_finding_comments_since_2026-08-10": 5,
         "ledger": {
-          "findings": 2949,
-          "agreed": 285,
-          "disproved": 287,
-          "deferred": 770,
-          "other": 1084,
-          "unadjudicated": 523,
+          "findings": 3815,
+          "agreed": 282,
+          "disproved": 373,
+          "deferred": 1077,
+          "other": 1548,
+          "unadjudicated": 535,
           "models": {
-            "codex": 2907,
-            "coderabbit": 26,
-            "claude": 13,
+            "codex": 3764,
+            "coderabbit": 29,
+            "claude": 14,
             "console": 1,
             "": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 23
       }
@@ -308,21 +315,22 @@
         "learnings_uses": 100,
         "cr_app_finding_comments_since_2026-08-10": 0,
         "ledger": {
-          "findings": 2892,
-          "agreed": 285,
-          "disproved": 278,
-          "deferred": 758,
-          "other": 1056,
-          "unadjudicated": 515,
+          "findings": 3755,
+          "agreed": 282,
+          "disproved": 363,
+          "deferred": 1065,
+          "other": 1518,
+          "unadjudicated": 527,
           "models": {
-            "codex": 2851,
-            "coderabbit": 25,
-            "claude": 13,
+            "codex": 3705,
+            "coderabbit": 28,
+            "claude": 14,
             "console": 1,
             "": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 4
       }
@@ -353,19 +361,20 @@
         "learnings_uses": 0,
         "cr_app_finding_comments_since_2026-08-10": 16,
         "ledger": {
-          "findings": 3311,
-          "agreed": 325,
-          "disproved": 314,
-          "deferred": 900,
-          "other": 1222,
-          "unadjudicated": 550,
+          "findings": 4335,
+          "agreed": 322,
+          "disproved": 420,
+          "deferred": 1266,
+          "other": 1763,
+          "unadjudicated": 564,
           "models": {
-            "codex": 3264,
-            "coderabbit": 26,
+            "codex": 4277,
+            "coderabbit": 29,
             "": 2,
-            "claude": 16,
+            "claude": 17,
             "console": 2,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 5,
+            "console-judge": 3
           },
           "disproved_pct": 11
         },
@@ -400,19 +409,20 @@
         "learnings_uses": 259,
         "cr_app_finding_comments_since_2026-08-10": 21,
         "ledger": {
-          "findings": 3459,
-          "agreed": 334,
-          "disproved": 324,
-          "deferred": 976,
-          "other": 1268,
-          "unadjudicated": 557,
+          "findings": 4582,
+          "agreed": 331,
+          "disproved": 437,
+          "deferred": 1390,
+          "other": 1853,
+          "unadjudicated": 571,
           "models": {
-            "codex": 3397,
-            "coderabbit": 27,
+            "codex": 4507,
+            "coderabbit": 32,
             "": 13,
-            "claude": 17,
-            "coderabbit-outside": 3,
-            "console": 2
+            "claude": 18,
+            "coderabbit-outside": 7,
+            "console": 2,
+            "console-judge": 3
           },
           "disproved_pct": 11
         },
@@ -442,21 +452,22 @@
         "learnings_uses": 0,
         "cr_app_finding_comments_since_2026-08-10": 0,
         "ledger": {
-          "findings": 2948,
-          "agreed": 283,
-          "disproved": 292,
-          "deferred": 761,
-          "other": 1088,
-          "unadjudicated": 524,
+          "findings": 3801,
+          "agreed": 280,
+          "disproved": 374,
+          "deferred": 1065,
+          "other": 1546,
+          "unadjudicated": 536,
           "models": {
-            "codex": 2905,
-            "coderabbit": 26,
+            "codex": 3750,
+            "coderabbit": 29,
             "": 2,
             "claude": 13,
             "console": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 0
       }
@@ -486,21 +497,22 @@
         "learnings_uses": 0,
         "cr_app_finding_comments_since_2026-08-10": 1,
         "ledger": {
-          "findings": 3200,
-          "agreed": 301,
-          "disproved": 311,
-          "deferred": 857,
-          "other": 1194,
-          "unadjudicated": 537,
+          "findings": 4121,
+          "agreed": 298,
+          "disproved": 400,
+          "deferred": 1193,
+          "other": 1679,
+          "unadjudicated": 551,
           "models": {
-            "codex": 3154,
-            "coderabbit": 26,
+            "codex": 4065,
+            "coderabbit": 29,
             "": 2,
             "claude": 15,
             "console": 2,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 5,
+            "console-judge": 3
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 0,
         "sightings": [
@@ -533,21 +545,22 @@
         "learnings_uses": 98,
         "cr_app_finding_comments_since_2026-08-10": 0,
         "ledger": {
-          "findings": 2948,
-          "agreed": 283,
-          "disproved": 292,
-          "deferred": 761,
-          "other": 1088,
-          "unadjudicated": 524,
+          "findings": 3801,
+          "agreed": 280,
+          "disproved": 374,
+          "deferred": 1065,
+          "other": 1546,
+          "unadjudicated": 536,
           "models": {
-            "codex": 2905,
-            "coderabbit": 26,
+            "codex": 3750,
+            "coderabbit": 29,
             "": 2,
             "claude": 13,
             "console": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 2,
         "sightings": [
@@ -575,20 +588,20 @@
         "learnings_uses": 0,
         "cr_app_finding_comments_since_2026-08-10": 8,
         "ledger": {
-          "findings": 264,
+          "findings": 283,
           "agreed": 27,
           "disproved": 15,
-          "deferred": 56,
-          "other": 127,
+          "deferred": 65,
+          "other": 137,
           "unadjudicated": 39,
           "models": {
-            "codex": 228,
-            "coderabbit": 3,
+            "codex": 244,
+            "coderabbit": 4,
             "sonnet": 24,
             "": 8,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 3
           },
-          "disproved_pct": 7
+          "disproved_pct": 6
         },
         "learnings_rows": 0
       }
@@ -610,24 +623,24 @@
       "coverage": "scripts/hooks/CLAUDE.md prose only. Ledger: scripts/hooks is the largest finding bucket (521 rows); 10 App re-raises on fail-open/closed since 2026-08-10.",
       "prompt": false,
       "evidence": {
-        "learnings_uses": 167,
+        "learnings_uses": 168,
         "cr_app_finding_comments_since_2026-08-10": 10,
         "ledger": {
-          "findings": 598,
-          "agreed": 85,
-          "disproved": 85,
-          "deferred": 173,
-          "other": 224,
-          "unadjudicated": 31,
+          "findings": 865,
+          "agreed": 82,
+          "disproved": 108,
+          "deferred": 256,
+          "other": 382,
+          "unadjudicated": 37,
           "models": {
-            "codex": 590,
+            "codex": 854,
             "coderabbit": 6,
             "claude": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 4
           },
-          "disproved_pct": 15
+          "disproved_pct": 13
         },
-        "learnings_rows": 17
+        "learnings_rows": 18
       }
     },
     {
@@ -651,16 +664,17 @@
         "learnings_uses": 57,
         "cr_app_finding_comments_since_2026-08-10": 0,
         "ledger": {
-          "findings": 699,
+          "findings": 874,
           "agreed": 67,
-          "disproved": 70,
-          "deferred": 154,
-          "other": 310,
-          "unadjudicated": 98,
+          "disproved": 95,
+          "deferred": 209,
+          "other": 399,
+          "unadjudicated": 104,
           "models": {
-            "codex": 685,
-            "coderabbit": 9,
-            "claude": 5
+            "codex": 857,
+            "coderabbit": 11,
+            "claude": 5,
+            "console-judge": 1
           },
           "disproved_pct": 12
         },
@@ -687,18 +701,18 @@
         "learnings_uses": 201,
         "cr_app_finding_comments_since_2026-08-10": 0,
         "ledger": {
-          "findings": 157,
+          "findings": 175,
           "agreed": 23,
           "disproved": 14,
-          "deferred": 31,
-          "other": 51,
+          "deferred": 40,
+          "other": 60,
           "unadjudicated": 38,
           "models": {
-            "codex": 153,
-            "coderabbit": 3,
-            "coderabbit-outside": 1
+            "codex": 168,
+            "coderabbit": 4,
+            "coderabbit-outside": 3
           },
-          "disproved_pct": 12
+          "disproved_pct": 10
         },
         "learnings_rows": 6
       }
@@ -718,14 +732,14 @@
       "prompt": true,
       "evidence": {
         "ledger": {
-          "findings": 3,
+          "findings": 8,
           "agreed": 0,
           "disproved": 0,
-          "deferred": 1,
-          "other": 0,
+          "deferred": 2,
+          "other": 4,
           "unadjudicated": 2,
           "models": {
-            "codex": 2,
+            "codex": 7,
             "coderabbit": 1
           },
           "disproved_pct": 0
@@ -767,16 +781,16 @@
           "note": "hand-counted from the 28h leg report; evidence.ledger is left unset until --refresh mines it"
         },
         "ledger": {
-          "findings": 31,
+          "findings": 41,
           "agreed": 0,
-          "disproved": 4,
-          "deferred": 6,
-          "other": 13,
+          "disproved": 8,
+          "deferred": 11,
+          "other": 14,
           "unadjudicated": 8,
           "models": {
-            "codex": 31
+            "codex": 41
           },
-          "disproved_pct": 17
+          "disproved_pct": 24
         }
       }
     },
@@ -844,16 +858,16 @@
           "note": "hand-counted from this branch panel rounds; evidence.ledger left unset until --refresh mines it"
         },
         "ledger": {
-          "findings": 23,
+          "findings": 24,
           "agreed": 0,
           "disproved": 6,
-          "deferred": 8,
+          "deferred": 9,
           "other": 9,
           "unadjudicated": 0,
           "models": {
-            "codex": 23
+            "codex": 24
           },
-          "disproved_pct": 26
+          "disproved_pct": 25
         }
       }
     },
@@ -877,18 +891,18 @@
         "learnings_uses": 125,
         "cr_app_finding_comments_since_2026-08-10": 3,
         "ledger": {
-          "findings": 665,
+          "findings": 831,
           "agreed": 65,
-          "disproved": 65,
-          "deferred": 144,
-          "other": 296,
-          "unadjudicated": 95,
+          "disproved": 88,
+          "deferred": 197,
+          "other": 380,
+          "unadjudicated": 101,
           "models": {
-            "codex": 655,
-            "coderabbit": 9,
+            "codex": 819,
+            "coderabbit": 11,
             "claude": 1
           },
-          "disproved_pct": 11
+          "disproved_pct": 12
         },
         "learnings_rows": 6
       }
@@ -913,21 +927,22 @@
         "learnings_uses": 14,
         "cr_app_finding_comments_since_2026-08-10": 2,
         "ledger": {
-          "findings": 3001,
-          "agreed": 300,
-          "disproved": 288,
-          "deferred": 774,
-          "other": 1092,
-          "unadjudicated": 547,
+          "findings": 3881,
+          "agreed": 297,
+          "disproved": 373,
+          "deferred": 1089,
+          "other": 1563,
+          "unadjudicated": 559,
           "models": {
-            "codex": 2958,
-            "coderabbit": 27,
-            "claude": 13,
+            "codex": 3826,
+            "coderabbit": 31,
+            "claude": 14,
             "console": 1,
             "": 1,
-            "coderabbit-outside": 1
+            "coderabbit-outside": 6,
+            "console-judge": 2
           },
-          "disproved_pct": 12
+          "disproved_pct": 11
         },
         "learnings_rows": 10
       }
@@ -952,27 +967,27 @@
         "learnings_uses": 1,
         "cr_app_finding_comments_since_2026-08-10": 2,
         "ledger": {
-          "findings": 205,
+          "findings": 237,
           "agreed": 13,
-          "disproved": 28,
-          "deferred": 56,
-          "other": 85,
-          "unadjudicated": 23,
+          "disproved": 34,
+          "deferred": 66,
+          "other": 96,
+          "unadjudicated": 28,
           "models": {
-            "codex": 201,
-            "coderabbit": 2,
-            "coderabbit-outside": 1,
+            "codex": 231,
+            "coderabbit": 3,
+            "coderabbit-outside": 2,
             "claude": 1
           },
-          "disproved_pct": 15
+          "disproved_pct": 16
         },
         "learnings_rows": 1
       }
     }
   ],
   "learnings_export": {
-    "rows": 359,
-    "total_uses": 5131,
-    "unmatched_rows": 219
+    "rows": 364,
+    "total_uses": 5137,
+    "unmatched_rows": 222
   }
 }

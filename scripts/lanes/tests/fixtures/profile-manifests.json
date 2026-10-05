@@ -4,6 +4,7 @@
       "handover@himmel",
       "himmel-ops@himmel",
       "lean-skills@himmel",
+      "obsidian-second-brain@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
     ],
@@ -11,10 +12,115 @@
   },
   "design": {
     "enabled": [
+      "builder-visual@himmel",
+      "context7@claude-plugins-official",
+      "frontend-design@claude-plugins-official",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "impeccable@himmel",
+      "lean-skills@himmel",
+      "plannotator-effective-html@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "shadcn-mcp@himmel",
+      "taste-skill-core@himmel",
+      "ui-ux-pro-max@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-motion": {
+    "enabled": [
+      "animejs-skills@himmel",
+      "emilkowalski-skills@himmel",
+      "gsap-skills@himmel",
       "handover@himmel",
       "himmel-ops@himmel",
       "lean-skills@himmel",
-      "plannotator-effective-html@himmel",
+      "lottie-motion-design@himmel",
+      "motion-lexicon@himmel",
+      "playground@claude-plugins-official",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-3d": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "threejs-skills@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-imagegen": {
+    "enabled": [
+      "ai-image-prompts@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "taste-skill-core@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-a11y": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "platform-design-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-diagram": {
+    "enabled": [
+      "builder-visual@himmel",
+      "diagram-design@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-slides": {
+    "enabled": [
+      "frontend-slides@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-reference": {
+    "enabled": [
+      "anthropic-design-skills@himmel",
+      "anydesign@himmel",
+      "design-dna@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel",
+      "taste-skill-core@himmel"
+    ],
+    "contextBudget": 50000
+  },
+  "design-trial": {
+    "enabled": [
+      "hallmark@himmel",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
     ],
@@ -40,6 +146,16 @@
     ],
     "contextBudget": 35000
   },
+  "leg-e2e": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 40000
+  },
   "lane-review": {
     "enabled": [
       "handover@himmel",
@@ -56,6 +172,7 @@
       "handover@himmel",
       "himmel-ops@himmel",
       "lean-skills@himmel",
+      "obsidian-second-brain@himmel",
       "obsidian-triage@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
@@ -64,10 +181,10 @@
   },
   "telegram": {
     "enabled": [
-      "claude-obsidian@himmel",
       "handover@himmel",
       "himmel-ops@himmel",
       "lean-skills@himmel",
+      "obsidian-second-brain@himmel",
       "obsidian-triage@himmel",
       "pr-review-toolkit-himmel@himmel",
       "qmd@himmel"
@@ -81,6 +198,15 @@
       "qmd@himmel"
     ],
     "contextBudget": 45000
+  },
+  "console": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 50000
   },
   "console-relay": {
     "enabled": [
@@ -97,5 +223,29 @@
       "qmd@himmel"
     ],
     "contextBudget": 35000
+  },
+  "code": {
+    "enabled": [
+      "code-simplifier@claude-plugins-official",
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "pr-review-toolkit-himmel@himmel",
+      "pyright-lsp@claude-plugins-official",
+      "qmd@himmel",
+      "typescript-lsp@claude-plugins-official"
+    ],
+    "contextBudget": 35000
+  },
+  "code-ui": {
+    "enabled": [
+      "handover@himmel",
+      "himmel-ops@himmel",
+      "lean-skills@himmel",
+      "playwright@claude-plugins-official",
+      "pr-review-toolkit-himmel@himmel",
+      "qmd@himmel"
+    ],
+    "contextBudget": 45000
   }
 }

@@ -36,7 +36,8 @@ CONFIG_DIR="${HOME}/.claude-glm"
 # forces exactly one re-seed, which re-sanitizes under the current rule.
 # v2 = strip env.ANTHROPIC_*/CLAUDE_CODE_USE_* case-insensitively (was: ANTHROPIC_* only, case-sensitive).
 # v3 = also strip CLAUDE_CODE_OAUTH_TOKEN so seeded settings cannot override lane auth.
-SEED_VERSION="3"
+# v4 = also strip CLAUDE_CODE_AUTO_MODE_SERVER: a settings env beats the launcher export (HIMMEL-4098).
+SEED_VERSION="4"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/load-dotenv.sh
@@ -204,7 +205,7 @@ const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
 delete j.model;
 if (j.env) for (const k of Object.keys(j.env)) {
   const u=k.toUpperCase();
-  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0 || u==="CLAUDE_CODE_OAUTH_TOKEN") delete j.env[k];
+  if (u.indexOf("ANTHROPIC_")===0 || u.indexOf("CLAUDE_CODE_USE_")===0 || u==="CLAUDE_CODE_OAUTH_TOKEN" || u==="CLAUDE_CODE_AUTO_MODE_SERVER") delete j.env[k];
 }
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 ' "$1" "$2"
@@ -425,6 +426,10 @@ esac
 
 command -v claude >/dev/null 2>&1 || { echo "claude-glm: 'claude' not found on PATH" >&2; exit 5; }
 
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+# https://code.claude.com/docs/en/llm-gateway-protocol#feature-pass-through
+export CLAUDE_CODE_AUTO_MODE_SERVER=0
 exec env \
   ANTHROPIC_BASE_URL="$GLM_BASE_URL" \
   ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY" \

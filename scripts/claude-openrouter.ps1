@@ -48,9 +48,32 @@ $OpenRouterAnthropicBaseUrl = if ($env:OPENROUTER_ANTHROPIC_BASE_URL) { $env:OPE
 #   anthropic/claude-fable-5  (the judgment/taste escalation tier)
 #   anthropic/claude-opus-5-fast
 #   anthropic/claude-sonnet-5
-# ':batch' variants exist for async pricing — opt in deliberately, never default.
+# ':batch' variants are asynchronous and unsupported by interactive tier overrides.
 $OpenRouterModel         = if ($env:OPENROUTER_MODEL) { $env:OPENROUTER_MODEL } else { 'anthropic/claude-opus-5.5' }
-$OpenRouterHaiku         = if ($env:OPENROUTER_HAIKU) { $env:OPENROUTER_HAIKU } else { $OpenRouterModel }
+# Independent subagent tiers (HIMMEL-4083), catalog verified 2026-10-02.
+$OpenRouterHaiku         = if ($env:OPENROUTER_HAIKU) { $env:OPENROUTER_HAIKU } else { 'anthropic/claude-haiku-4.5' }
+$OpenRouterSonnet        = if ($env:OPENROUTER_SONNET) { $env:OPENROUTER_SONNET } else { 'anthropic/claude-sonnet-5.5' }
+$OpenRouterOpus          = if ($env:OPENROUTER_OPUS) { $env:OPENROUTER_OPUS } else { 'anthropic/claude-opus-5.5' }
+# ponytail: offline synchronous Claude catalog snapshot (2026-10-02), refresh this allowlist
+# and its bash twin when adopting a newly listed OpenRouter Claude slug.
+$KnownTierSlugs = @(
+  'anthropic/claude-sonnet-5.5', 'anthropic/claude-opus-5.5',
+  'anthropic/claude-fable-5.1', 'anthropic/claude-opus-5',
+  'anthropic/claude-sonnet-5', 'anthropic/claude-fable-5',
+  'anthropic/claude-opus-4.8', 'anthropic/claude-opus-4.7',
+  'anthropic/claude-sonnet-4.6', 'anthropic/claude-opus-4.6',
+  'anthropic/claude-opus-4.5', 'anthropic/claude-haiku-4.5',
+  'anthropic/claude-sonnet-4.5', 'anthropic/claude-opus-4.1',
+  'anthropic/claude-sonnet-4'
+)
+function Assert-TierSlug([string]$Name, [string]$Slug) {
+  if ($KnownTierSlugs -ccontains $Slug) { return }
+  [Console]::Error.WriteLine("claude-openrouter: unknown or malformed $Name slug; use a Claude slug from the launcher catalog snapshot (2026-10-02), or update the snapshot before adopting a new model. Refusing to launch.")
+  exit 2
+}
+Assert-TierSlug 'OPENROUTER_HAIKU' $OpenRouterHaiku
+Assert-TierSlug 'OPENROUTER_SONNET' $OpenRouterSonnet
+Assert-TierSlug 'OPENROUTER_OPUS' $OpenRouterOpus
 $OpenRouterContextWindow = if ($env:OPENROUTER_CONTEXT_WINDOW) { $env:OPENROUTER_CONTEXT_WINDOW } else { '1000000' }
 $OpenRouterApiBase       = if ($env:OPENROUTER_API_BASE) { $env:OPENROUTER_API_BASE } else { 'https://openrouter.ai/api/v1' }
 
@@ -222,8 +245,17 @@ const cwd=process.env.CLAUDE_OPENROUTER_CWD || process.cwd();
 // under(): equality counts (launching FROM the himmel checkout root itself is
 // himmel-code, not "unknown" — a root-equal cwd must classify, not fall through).
 const under=(root)=>{ try { const c=path.resolve(cwd).toLowerCase(), r=path.resolve(root).toLowerCase(); return !!root && (c===r || c.startsWith(r+path.sep)); } catch(_) { return false; } };
+// Marker detection uses the real cwd, never the caller-supplied test override.
+let vaultMarker=false;
+try {
+ for(let p=fs.realpathSync(process.cwd());;p=path.dirname(p)) {
+  const marker=path.join(p,".obsidian");
+  if(fs.existsSync(marker)&&fs.statSync(marker).isDirectory()){vaultMarker=true;break;}
+  if(path.dirname(p)===p)break;
+ }
+} catch(_) { console.error("claude-openrouter: cannot verify vault markers — failing closed."); process.exit(3); }
 let corpus;
-if (under(process.env.LUNA_VAULT_PATH) || under(process.env.LUNA_VAULT)) corpus="luna-personal";
+if (vaultMarker || under(process.env.LUNA_VAULT_PATH) || under(process.env.LUNA_VAULT)) corpus="luna-personal";
 else if (under(process.env.HANDOVER_DIR)) corpus="handover-state";
 else if (under(repoRoot)) corpus="himmel-code";
 else corpus="unknown";
@@ -268,188 +300,137 @@ if (j.env) for (const k of Object.keys(j.env)) if (k.indexOf("ANTHROPIC_")===0) 
 fs.writeFileSync(process.argv[2], JSON.stringify(j,null,2));
 '@
 
-function Copy-SeedConfig {
-  $src = Join-Path $HomeDir '.claude'
-  $sentinel = Join-Path $ConfigDir '.seeded'
-  try {
-    Remove-Item -LiteralPath $sentinel -Force -ErrorAction Stop
-  } catch [System.Management.Automation.ItemNotFoundException] {
-    # already absent — goal reached.
-  } catch {
-    [Console]::Error.WriteLine("claude-openrouter: FAILED to clear stale .seeded sentinel ($($_.Exception.Message)). Refusing to reseed while a stale sentinel remains. Fix the cause and re-run (or rm -rf ~/.claude-openrouter).")
-    exit 4
-  }
-  # The config dir must exist BEFORE the sanitizer below, which writes its
-  # output to $ConfigDir/settings.json — on a first launch $ConfigDir does not
-  # exist yet, so creating it later made seeding fail and misreport the cause as
-  # "node missing/broken" (CR round 3, codex-1). Kept in its own handler so a
-  # creation failure still surfaces as the documented exit-4 seed failure rather
-  # than an unhandled error under $ErrorActionPreference='Stop' (codex-3).
-  try {
-    New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir 'plugins') | Out-Null
-  } catch {
-    [Console]::Error.WriteLine("claude-openrouter: FAILED to create the config dir $ConfigDir ($($_.Exception.Message)). Refusing to launch with an unseeded config dir. Fix the cause and re-run.")
-    exit 4
-  }
-  $settings = Join-Path $src 'settings.json'
-  if (Test-Path -LiteralPath $settings) {
-    $sanitized = $false
-    try {
-      & node -e $SanitizerJs $settings (Join-Path $ConfigDir 'settings.json')
-      $sanitized = ($LASTEXITCODE -eq 0)
-    } catch { $sanitized = $false }
-    if (-not $sanitized) {
-      [Console]::Error.WriteLine('claude-openrouter: FAILED to sanitize settings.json (node missing/broken?). Refusing to launch with an unseeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-openrouter).')
-      exit 4
-    }
-  }
-  try {
-    if (-not (Test-Path -LiteralPath $settings)) {
-      $dst = Join-Path $ConfigDir 'settings.json'
-      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Force }
-    }
-    foreach ($f in 'CLAUDE.md', 'RTK.md') {
-      $p = Join-Path $src $f
-      $dp = Join-Path $ConfigDir $f
-      if (Test-Path -LiteralPath $p) { Copy-Item -LiteralPath $p -Destination $dp -Force }
-      elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
-    }
-    foreach ($d in 'commands', 'skills', 'hooks', 'agents') {
-      $dst = Join-Path $ConfigDir $d
-      if (Test-Path -LiteralPath $dst) { Remove-Item -LiteralPath $dst -Recurse -Force }
-      $p = Join-Path $src $d
-      if (Test-Path -LiteralPath $p -PathType Container) { Copy-Item -LiteralPath $p -Destination $ConfigDir -Recurse -Force }
-    }
-    foreach ($p in 'installed_plugins.json', 'known_marketplaces.json') {
-      $sp = Join-Path $src (Join-Path 'plugins' $p)
-      $dp = Join-Path $ConfigDir (Join-Path 'plugins' $p)
-      if (Test-Path -LiteralPath $sp) { Copy-Item -LiteralPath $sp -Destination $dp -Force }
-      elseif (Test-Path -LiteralPath $dp) { Remove-Item -LiteralPath $dp -Force }
-    }
-    $mdst = Join-Path $ConfigDir (Join-Path 'plugins' 'marketplaces')
-    if (Test-Path -LiteralPath $mdst) { Remove-Item -LiteralPath $mdst -Recurse -Force }
-    $mp = Join-Path $src (Join-Path 'plugins' 'marketplaces')
-    if (Test-Path -LiteralPath $mp -PathType Container) { Copy-Item -LiteralPath $mp -Destination (Join-Path $ConfigDir 'plugins') -Recurse -Force }
-    $hudCfg = Join-Path $src (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
-    $hudDst = Join-Path $ConfigDir (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json'))
-    if (Test-Path -LiteralPath $hudCfg) {
-      New-Item -ItemType Directory -Force -Path (Join-Path $ConfigDir (Join-Path 'plugins' 'claude-hud')) | Out-Null
-      Copy-Item -LiteralPath $hudCfg -Destination $hudDst -Force
-    } elseif (Test-Path -LiteralPath $hudDst) {
-      Remove-Item -LiteralPath $hudDst -Force
-    }
-    # HIMMEL-3334: the un-swept claude-hud config path, alongside the legacy one above.
-    $hudNewSrc = Join-Path $src 'claude-hud.json'
-    $hudNewDst = Join-Path $ConfigDir 'claude-hud.json'
-    if (Test-Path -LiteralPath $hudNewSrc) {
-      Copy-Item -LiteralPath $hudNewSrc -Destination $hudNewDst -Force
-    } elseif (Test-Path -LiteralPath $hudNewDst) {
-      Remove-Item -LiteralPath $hudNewDst -Force
-    }
-    New-Item -ItemType File -Force -Path (Join-Path $ConfigDir '.seeded') | Out-Null
-  } catch {
-    [Console]::Error.WriteLine("claude-openrouter: FAILED to seed config dir ($($_.Exception.Message)). Refusing to launch with a half-seeded config dir. Fix the cause and re-run (or rm -rf ~/.claude-openrouter).")
-    exit 4
-  }
+Import-Module (Join-Path $PSScriptRoot 'lane-mirror-seed.psm1') -Force
+$LaneSeed = @{
+  HomeDir = $HomeDir; ConfigDir = $ConfigDir; Lane = 'claude-openrouter'
+  SanitizerJs = $SanitizerJs; Stamp = ''; StampRequired = $false; LeafOnly = $false
 }
-
-function Test-ConfigSeedStale {
-  if ($env:CLAUDE_LANE_AUTO_RESEED -eq '0') { return $false }
-  try {
-    $sentinel = Join-Path $ConfigDir '.seeded'
-    if (-not (Test-Path -LiteralPath $sentinel)) { return $false }
-    $sentinelTime = (Get-Item -Force -LiteralPath $sentinel).LastWriteTimeUtc
-    $src = Join-Path $HomeDir '.claude'
-    foreach ($rel in @('settings.json', 'CLAUDE.md', 'RTK.md', (Join-Path 'plugins' 'installed_plugins.json'), (Join-Path 'plugins' 'known_marketplaces.json'), (Join-Path 'plugins' (Join-Path 'claude-hud' 'config.json')), 'claude-hud.json')) {
-      $s = Join-Path $src $rel
-      $d = Join-Path $ConfigDir $rel
-      if (Test-Path -LiteralPath $s) {
-        if ((Get-Item -LiteralPath $s).LastWriteTimeUtc -gt $sentinelTime) { return $true }
-      } elseif (Test-Path -LiteralPath $d) { return $true }
-    }
-    foreach ($rel in @('commands', 'skills', 'hooks', 'agents', (Join-Path 'plugins' 'marketplaces'))) {
-      $s = Join-Path $src $rel
-      $d = Join-Path $ConfigDir $rel
-      if (Test-Path -LiteralPath $s -PathType Container) {
-        if (-not (Test-Path -LiteralPath $d -PathType Container)) { return $true }
-        if ((Get-Item -LiteralPath $s).LastWriteTimeUtc -gt $sentinelTime) { return $true }
-      } elseif (Test-Path -LiteralPath $d -PathType Container) { return $true }
-    }
-    return $false
-  } catch { return $false }
-}
+function Test-ConfigSeedStale { Test-LaneConfigSeedStale $LaneSeed }
 
 # --- config-dir seed concurrency lock (HIMMEL-830) ---------------------------
 $Lock            = "$ConfigDir.seed-lock"
 $SeedLockTimeout = if ($env:CLAUDE_LANE_SEED_LOCK_TIMEOUT) { [int]$env:CLAUDE_LANE_SEED_LOCK_TIMEOUT } else { 60 }
 $SeedLockStale   = if ($env:CLAUDE_LANE_SEED_LOCK_STALE) { [int]$env:CLAUDE_LANE_SEED_LOCK_STALE } else { 120 }
 
-function Test-SeedLockStale {
-  if (-not (Test-Path -LiteralPath $Lock -PathType Container)) { return $false }
+$LaneSeed.LockTimeout = $SeedLockTimeout
+$LaneSeed.LockStale = $SeedLockStale
+
+function Invoke-LegTrustSeed {
+  # Only the primary checkout is trusted, under the existing seed lock.
+  $savedGitEnv = @{}
   try {
-    $age = ([DateTime]::UtcNow - (Get-Item -Force -LiteralPath $Lock).LastWriteTimeUtc).TotalSeconds
-    return ($age -ge $SeedLockStale)
-  } catch { return $false }
+    foreach ($name in 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE') {
+      # Explicit provider removal avoids passing an empty GIT_DIR to native Git.
+      if (Test-Path -LiteralPath "Env:$name") {
+        $savedGitEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        Remove-Item -LiteralPath "Env:$name"
+      }
+    }
+    $common = & git -C $RepoRoot rev-parse --path-format=absolute --git-common-dir
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve primary checkout for leg trust' }
+    $primary = Split-Path -Parent $common
+  } finally {
+    foreach ($name in $savedGitEnv.Keys) { Set-Item -LiteralPath "Env:$name" -Value $savedGitEnv[$name] }
+  }
+  $trustJs = @'
+const fs=require("fs"), p=process.argv[1], root=process.argv[2];
+try {
+  const j=fs.existsSync(p)?JSON.parse(fs.readFileSync(p,"utf8")):{};
+  const object=v=>v && typeof v==="object" && !Array.isArray(v);
+  if (!object(j) || (j.projects!==undefined && !object(j.projects))) throw Error("invalid lane config object");
+  j.projects=j.projects||{};
+  const project=j.projects[root]||{};
+  if (!object(project)) throw Error("invalid primary project object");
+  if (j.hasCompletedOnboarding===true && project.hasTrustDialogAccepted===true) process.exit(0);
+  j.hasCompletedOnboarding=true;
+  project.hasTrustDialogAccepted=true;
+  j.projects[root]=project;
+  const temp=p+".tmp."+process.pid;
+  fs.writeFileSync(temp,JSON.stringify(j,null,2)+"\n",{mode:0o600});
+  fs.renameSync(temp,p);
+} catch(e) { console.error("claude-openrouter: leg onboarding seed failed: "+e.message); process.exit(4); }
+'@
+  & node -e $trustJs (Join-Path $ConfigDir '.claude.json') $primary
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to seed leg onboarding and primary-root trust' }
 }
 
 function Invoke-SeedWithLock {
-  $ticks = 0
-  $maxTicks = $SeedLockTimeout * 2
-  $lastAcquireErr = ''
-  while ($true) {
-    try {
-      New-Item -ItemType Directory -Path $Lock -ErrorAction Stop | Out-Null
-      break
-    } catch {
-      $lastAcquireErr = $_.Exception.Message
-      if (Test-SeedLockStale) {
-        try {
-          Rename-Item -LiteralPath $Lock -NewName ((Split-Path -Leaf $Lock) + ".stale.$PID") -ErrorAction Stop
-          try { [System.IO.Directory]::Delete("$Lock.stale.$PID") } catch { }
-          continue
-        } catch { }
-      }
-      if ($ticks -ge $maxTicks) {
-        [Console]::Error.WriteLine("claude-openrouter: timed out after ${SeedLockTimeout}s waiting for the config-dir seed lock ($Lock). If no other claude-openrouter launch of this lane is seeding, remove that dir, or tune CLAUDE_LANE_SEED_LOCK_TIMEOUT / CLAUDE_LANE_SEED_LOCK_STALE; last acquire error: $lastAcquireErr")
-        exit 4
-      }
-      Start-Sleep -Milliseconds 500
-      $ticks++
-    }
-  }
-  try {
-    if ($Reseed -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or (Test-ConfigSeedStale)) {
-      Copy-SeedConfig
-    }
-  } finally {
-    try { [System.IO.Directory]::Delete($Lock) }
-    catch { [Console]::Error.WriteLine("claude-openrouter: WARNING - failed to release seed lock $Lock (not empty or busy); it self-heals via stale steal after ${SeedLockStale}s but concurrent launches wait/time out until then.") }
+  Invoke-LaneSeedWithLock $LaneSeed $Reseed {
+    if ($env:LEG_LANE -eq 'openrouter') { Invoke-LegTrustSeed }
   }
 }
 
-if ((-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
+if (($env:LEG_LANE -eq 'openrouter') -or (-not (Test-Path -LiteralPath (Join-Path $ConfigDir '.seeded'))) -or $Reseed -or (Test-ConfigSeedStale)) {
   Invoke-SeedWithLock
 }
 
-# --- advisory remaining-credit surfacing (HIMMEL-1774 §4) --------------------
-# Advisory (stderr); never gates the launch. A query failure is LOUDLY UNKNOWN
-# (HIMMEL-1771). Runs only AFTER the egress gate authorized the lane; the credits
+# --- remaining-credit GATE (HIMMEL-1774 §4, hardened by HIMMEL-4076) ----------
+# Twin of the bash launcher: a balance below OPENROUTER_MIN_CREDIT_USD (default 3;
+# non-numeric falls back to 3) or an UNKNOWN balance refuses with exit 5 BEFORE
+# claude starts. Runs only AFTER the egress gate authorized the lane; the credits
 # call carries the key but NO corpus content.
+$minCredit = 3.0
+$parsedMin = 0.0
+if ($env:OPENROUTER_MIN_CREDIT_USD -and [double]::TryParse($env:OPENROUTER_MIN_CREDIT_USD, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedMin) -and -not [double]::IsNaN($parsedMin) -and -not [double]::IsInfinity($parsedMin) -and $parsedMin -ge 0) { $minCredit = $parsedMin }
+function Test-OpenRouterNumber($value) {
+  return (($value -is [int] -or $value -is [long] -or $value -is [double] -or $value -is [decimal]) -and -not [double]::IsNaN([double]$value) -and -not [double]::IsInfinity([double]$value))
+}
 $creditSurfaced = $false
+$remVal = 0.0
 try {
   $resp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -NoProxy -Method Get `
     -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/credits"
   $j = $resp.Content | ConvertFrom-Json -ErrorAction Stop
   $d = if ($j.data) { $j.data } else { $j }
-  if ($null -ne $d.total_credits -and $null -ne $d.total_usage) {
-    $rem = ([double]$d.total_credits - [double]$d.total_usage).ToString('0.00')
-    [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: `$$rem (OpenRouter balance at $OpenRouterApiBase/credits). Advisory only.")
-    $creditSurfaced = $true
+  if ((Test-OpenRouterNumber $d.total_credits) -and (Test-OpenRouterNumber $d.total_usage)) {
+    $remVal = [double]$d.total_credits - [double]$d.total_usage
+    $creditSurfaced = Test-OpenRouterNumber $remVal
   }
 } catch { }
 if (-not $creditSurfaced) {
-  [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: UNKNOWN (could not query $OpenRouterApiBase/credits). The metered balance is NOT verified — do not assume it is fine.")
+  [Console]::Error.WriteLine("claude-openrouter: remaining metered credit: UNKNOWN (could not query $OpenRouterApiBase/credits). The metered balance is NOT verified; refusing to launch (exit 5).")
+  exit 5
 }
+$rem = $remVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+[Console]::Error.WriteLine("claude-openrouter: remaining metered credit: `$$rem (OpenRouter balance at $OpenRouterApiBase/credits).")
+if ($remVal -lt $minCredit) {
+  [Console]::Error.WriteLine("claude-openrouter: remaining credit `$$rem is below the floor (OPENROUTER_MIN_CREDIT_USD=$minCredit); refusing to launch (exit 5).")
+  exit 5
+}
+# Per-key monthly cap (GET /key): null limit = uncapped; unreadable or
+# limit_remaining under the floor refuses (exit 5). Twin of the bash gate.
+$keyKnown = $false
+$keyCapped = $false
+$keyVal = 0.0
+try {
+  $kresp = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -NoProxy -Method Get `
+    -Headers @{Authorization="Bearer $key"} -Uri "$OpenRouterApiBase/key"
+  $kj = $kresp.Content | ConvertFrom-Json -ErrorAction Stop
+  $kd = if ($kj.data) { $kj.data } else { $kj }
+  if ($kd.PSObject.Properties['limit'] -and $null -eq $kd.limit) { $keyKnown = $true }
+  elseif ((Test-OpenRouterNumber $kd.limit) -and (Test-OpenRouterNumber $kd.limit_remaining)) {
+    $keyVal = [double]$kd.limit_remaining
+    $keyKnown = $true
+    $keyCapped = $true
+  }
+} catch { }
+if (-not $keyKnown) {
+  [Console]::Error.WriteLine("claude-openrouter: key limit_remaining: UNKNOWN (could not read $OpenRouterApiBase/key); refusing to launch (exit 5).")
+  exit 5
+}
+$effVal = $remVal
+$effSrc = 'credit'
+if ($keyCapped) {
+  $krem = $keyVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+  [Console]::Error.WriteLine("claude-openrouter: key limit_remaining: `$$krem (OpenRouter per-key cap at $OpenRouterApiBase/key).")
+  if ($keyVal -lt $minCredit) {
+    [Console]::Error.WriteLine("claude-openrouter: key limit_remaining `$$krem is below the floor (OPENROUTER_MIN_CREDIT_USD=$minCredit) or exhausted; refusing to launch (exit 5).")
+    exit 5
+  }
+  if ($keyVal -lt $remVal) { $effVal = $keyVal; $effSrc = 'key limit_remaining' }
+}
+$eff = $effVal.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture)
+[Console]::Error.WriteLine("claude-openrouter: effective balance `$$eff ($effSrc).")
 
 # --- launch: env contract mirrors the bash twin ------------------------------
 # ANTHROPIC_API_KEY is DELIBERATELY set EMPTY — load-bearing, not cosmetic: an
@@ -465,9 +446,28 @@ $env:ANTHROPIC_BASE_URL             = $OpenRouterAnthropicBaseUrl
 $env:ANTHROPIC_AUTH_TOKEN           = $key
 $env:ANTHROPIC_API_KEY              = ''
 $env:ANTHROPIC_MODEL                = $OpenRouterModel
+if ($env:LEG_LANE -eq 'openrouter') {
+  # Use an alias only when it resolves to the exact session pin.
+  if ($OpenRouterModel -like 'anthropic/claude-sonnet-*' -and $OpenRouterModel -ceq $OpenRouterSonnet) { $env:ANTHROPIC_MODEL = 'sonnet' }
+  elseif ($OpenRouterModel -like 'anthropic/claude-opus-*' -and $OpenRouterModel -ceq $OpenRouterOpus) { $env:ANTHROPIC_MODEL = 'opus' }
+}
 $env:ANTHROPIC_DEFAULT_HAIKU_MODEL  = $OpenRouterHaiku
-$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $OpenRouterModel
-$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $OpenRouterModel
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL = $OpenRouterSonnet
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL   = $OpenRouterOpus
+$orLabel = $OpenRouterModel
+if ($OpenRouterModel -match '^anthropic/claude-(sonnet|opus|fable)-(.+)$') {
+  $family = $Matches[1]
+  $orLabel = $family.Substring(0, 1).ToUpperInvariant() + $family.Substring(1) + ' ' + $Matches[2] + ' (OpenRouter)'
+}
+$env:ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME  = if ($OpenRouterHaiku -eq $OpenRouterModel) { $orLabel } else { $OpenRouterHaiku }
+$env:ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = if ($OpenRouterSonnet -ceq $OpenRouterModel) { $orLabel } else { $OpenRouterSonnet }
+$env:ANTHROPIC_DEFAULT_OPUS_MODEL_NAME   = if ($OpenRouterOpus -ceq $OpenRouterModel) { $orLabel } else { $OpenRouterOpus }
+# ponytail: client-side auto classifier through the gateway (HIMMEL-4086),
+# remove this temporary switch when safeguards/safeguard_results pass through.
+$env:CLAUDE_CODE_AUTO_MODE_SERVER = '0'
+if ($env:LEG_LANE -eq 'openrouter') {
+  [Console]::Error.WriteLine("claude-openrouter: lane=openrouter slug=$OpenRouterModel alias=$($env:ANTHROPIC_MODEL) labels=$orLabel")
+}
 $env:CLAUDE_CODE_AUTO_COMPACT_WINDOW = $OpenRouterContextWindow
 $env:CLAUDE_CONFIG_DIR              = $ConfigDir
 

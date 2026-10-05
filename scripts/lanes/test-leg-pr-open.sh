@@ -67,6 +67,11 @@ GH_STUB="$TMP_ROOT/gh-stub.sh"
 cat >"$GH_STUB" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$ARGV_LOG"
+previous=""
+for arg in "$@"; do
+    [ "$previous" != "--body" ] || printf '%s\n' "$arg" > "${ARGV_LOG}.body"
+    previous="$arg"
+done
 case "$* " in
     *"pr list"*"--state open"*)
         if [ -n "${STUB_FIND_OPEN_STDERR:-}" ]; then
@@ -284,6 +289,30 @@ out_m=$(JIRA_PROJECT_KEY=HIMMEL run_sut "$GOOD_TITLE_FILE" "$BODY_FILE"); rc_m=$
 assert_eq "conventional title still opens the PR (rc=0)" "0" "$rc_m" || echo "  (out=$out_m)" >&2
 argv_m=$(cat "$ARGV_LOG")
 contains "gh receives the conventional title" "$argv_m" "--title fix(x): [HIMMEL-1] foo"
+
+# HIMMEL-4094: exercise the real burn computation against a known transcript.
+cp "$HERE/tests/fixtures/leg-burn-sample.jsonl" "$FAKE_CLAUDE_HOME/projects/-fake-project/$FAKE_SID.jsonl"
+for supplied_profile in leg-impl design,design-motion '' 'bad profile' 'bad/profile'; do
+    : > "$ARGV_LOG"
+    (
+        cd "$REPO" || exit 99
+        unset CLAUDE_PID
+        HIMMEL_LEG_PROFILE="$supplied_profile" CLAUDE_CODE_SESSION_ID="$FAKE_SID" CLAUDE_CONFIG_DIR="$FAKE_CLAUDE_HOME" \
+            FORGE=github CR_APP=0 GH_CMD="$GH_STUB" ARGV_LOG="$ARGV_LOG" \
+            HEAD_SHA_STUB="$HEAD_SHA" JIRA_PROJECT_KEY=HIMMEL \
+            bash "$SUT" "$TITLE_FILE" "$NO_BURN_BODY"
+    ) >/dev/null; profile_rc=$?
+    assert_eq "profile '$supplied_profile' does not block PR publication" "0" "$profile_rc"
+    profile_argv=$(cat "${ARGV_LOG}.body")
+    case "$supplied_profile" in
+        leg-impl|design,design-motion) expected_profile="$supplied_profile" ;;
+        *) expected_profile=unknown ;;
+    esac
+    profile_line=$(printf '%s\n' "$profile_argv" | grep '^leg-burn:')
+    assert_eq "profile '$supplied_profile' is the final PR-body field" \
+        "leg-burn: calls=4 avg-ctx=963 first-turn=1.2k compactions=2 cost-eq=1.6k profile=$expected_profile" "$profile_line"
+done
+not_contains "unavailable fallback remains profile-less" "$argv_k" "profile="
 
 echo
 echo "===================================="

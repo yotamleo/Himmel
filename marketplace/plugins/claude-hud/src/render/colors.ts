@@ -1,4 +1,5 @@
-import type { HudColorName, HudColorValue, HudColorOverrides } from '../config.js';
+import type { HudColorName, HudColorValue, HudColorOverrides, UsageValueMode } from '../config.js';
+import { isPaceAlert, type UsagePace } from '../usage-pace.js';
 
 export const RESET = '\x1b[0m';
 
@@ -133,18 +134,51 @@ export function getContextColor(
   return resolveAnsi(colors?.context, GREEN);
 }
 
-export function getQuotaColor(percent: number, colors?: Partial<HudColorOverrides>): string {
-  if (percent >= 90) return resolveAnsi(colors?.critical, RED);
-  if (percent >= 75) return resolveAnsi(colors?.usageWarning, BRIGHT_MAGENTA);
+/**
+ * Usage-window colour: the more severe of the used-percentage band and the
+ * consumption pace (when pace is given).
+ */
+export function getQuotaColor(
+  percent: number,
+  colors?: Partial<HudColorOverrides>,
+  pace: UsagePace | null = null,
+): string {
+  if (percent >= 90 || pace === 'critical') return resolveAnsi(colors?.critical, RED);
+  if (percent >= 75 || pace === 'warning') return resolveAnsi(colors?.usageWarning, BRIGHT_MAGENTA);
   return resolveAnsi(colors?.usage, BRIGHT_BLUE);
 }
 
-export function quotaBar(percent: number, width: number = 10, colors?: Partial<HudColorOverrides>): string {
+/**
+ * A usage window's percentage (or remaining percentage) in its quota colour,
+ * followed by a ▲ in the pace colour when pace is amber/red.
+ */
+export function formatQuotaPercent(
+  percent: number | null,
+  colors?: Partial<HudColorOverrides>,
+  mode: UsageValueMode = 'percent',
+  pace: UsagePace | null = null,
+): string {
+  if (percent === null) {
+    return label('--', colors);
+  }
+  const color = getQuotaColor(percent, colors, pace);
+  const displayPercent = mode === 'remaining' ? Math.max(0, 100 - percent) : percent;
+  // The marker takes the pace's own colour, which the percent band may outrank.
+  const marker = isPaceAlert(pace) ? ` ${colorize('▲', getQuotaColor(0, colors, pace))}` : '';
+  return `${color}${displayPercent}%${RESET}${marker}`;
+}
+
+export function quotaBar(
+  percent: number,
+  width: number = 10,
+  colors?: Partial<HudColorOverrides>,
+  pace: UsagePace | null = null,
+): string {
   const safeWidth = Number.isFinite(width) ? Math.max(0, Math.round(width)) : 0;
   const safePercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
   const filled = Math.round((safePercent / 100) * safeWidth);
   const empty = safeWidth - filled;
-  const color = getQuotaColor(safePercent, colors);
+  const color = getQuotaColor(safePercent, colors, pace);
   const filledChar = colors?.barFilled ?? '█';
   const emptyChar = colors?.barEmpty ?? '░';
   return `${color}${filledChar.repeat(filled)}${DIM}${emptyChar.repeat(empty)}${RESET}`;

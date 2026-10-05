@@ -67,4 +67,11 @@ regexes = [
   '''^himmel-local-claudex$''',
   '''^[a-z0-9]+-[a-z0-9]+-pid[0-9]+[.,;:)]?$''',
   '''^[A-Z]{1,2}-N[0-9]+[a-z]?-[0-9a-f]{4,16}[.,;:)]?$''',
+  # Full 40-hex git commit SHAs (base/pin/head shas in briefs and plan docs)
+  # trip generic-api-key on entropy and can stall the autosync commit.
+  # Anchored to exactly 40 lowercase hex plus one optional trailing
+  # punctuation char; a longer or mixed-case token is still caught.
+  '''^[0-9a-f]{40}[.,;:)]?$''',
+  # atlassian-api-token false positive on a function name. Exact literal only.
+  '''^runClaudexSharedDispatch$''',
 ]

@@ -23,6 +23,7 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(HERE, 'wire-session-telemetry-hooks.mjs');
 const REAL_WRITER = path.join(HERE, 'session-run-hook.ts');
+const REAL_QUEUE_LOCK = path.join(HERE, '..', 'handover', 'queue-lock.sh');
 
 let TMP;
 before(() => { TMP = makeTmpDir('wire-session-telemetry-'); });
@@ -62,6 +63,9 @@ function fixture(name, obj = BASE, { withWriter = true } = {}) {
   if (withWriter) {
     fs.mkdirSync(path.join(root, 'scripts', 'observability'), { recursive: true });
     fs.copyFileSync(REAL_WRITER, path.join(root, 'scripts', 'observability', 'session-run-hook.ts'));
+    // HIMMEL-2318: the fifth entry's script must exist too, or install refuses.
+    fs.mkdirSync(path.join(root, 'scripts', 'handover'), { recursive: true });
+    fs.copyFileSync(REAL_QUEUE_LOCK, path.join(root, 'scripts', 'handover', 'queue-lock.sh'));
   }
   const p = path.join(root, '.claude', 'settings.json');
   fs.writeFileSync(p, serialize(obj), 'utf8');
@@ -89,7 +93,7 @@ describe('reversibility — install then remove round-trips byte for byte', () =
     const original = fs.readFileSync(f, 'utf8');
     const on = run([], f);
     assert.equal(on.status, 0, on.stderr);
-    assert.equal(statusOf(JSON.parse(fs.readFileSync(f, 'utf8'))).wired, 4);
+    assert.equal(statusOf(JSON.parse(fs.readFileSync(f, 'utf8'))).wired, 5);
     const off = run(['--off'], f);
     assert.equal(off.status, 0, off.stderr);
     assert.equal(fs.readFileSync(f, 'utf8'), original);
@@ -110,7 +114,7 @@ describe('reversibility — install then remove round-trips byte for byte', () =
   });
 
   test('--off leaves a pre-existing empty owned-event array as [] (it deletes only what it filled)', () => {
-    // The other three specs are fully wired, so --off performs a real write
+    // The other four specs are fully wired, so --off performs a real write
     // (changed > 0); SessionEnd is a pre-existing [] this script never filled.
     // The deletion guard must keep it as [] rather than dropping the key.
     const wired = install(BASE).settings;
@@ -250,9 +254,9 @@ describe('idempotence', () => {
         SessionEnd: [{ hooks: [{ type: 'command', command: 'bun "$CLAUDE_PROJECT_DIR/scripts/observability/session-run-hook.ts" session-end' }] }],
       },
     };
-    assert.equal(statusOf(handPasted).wired, 0, 'present without a timeout is not canonical, and the other three are absent');
+    assert.equal(statusOf(handPasted).wired, 0, 'present without a timeout is not canonical, and the other four are absent');
     const { settings, changed } = install(handPasted);
-    assert.equal(changed, 4, 'the malformed SessionEnd entry is repaired, plus the 3 missing entries added');
+    assert.equal(changed, 5, 'the malformed SessionEnd entry is repaired, plus the 4 missing entries added');
     assert.equal(settings.hooks.SessionEnd[0].hooks[0].timeout, 10);
     assert.equal(settings.hooks.SessionEnd.length, 1, 'repaired in place, not duplicated');
   });
@@ -264,7 +268,7 @@ describe('idempotence', () => {
     const { settings, changed } = install(on);
     assert.equal(changed, 1, 'the extra is removed and counted');
     assert.equal(settings.hooks.PreToolUse.filter((g) => g.matcher === 'Agent').length, 1);
-    assert.equal(statusOf(settings).wired, 4);
+    assert.equal(statusOf(settings).wired, 5);
   });
 });
 
@@ -292,11 +296,11 @@ describe('what it must never touch', () => {
 });
 
 describe('the wiring it produces', () => {
-  test('all four entries wired', () => {
+  test('all five entries wired', () => {
     const { settings } = install(BASE);
     const { wired, total } = statusOf(settings);
-    assert.equal(total, 4);
-    assert.equal(wired, 4);
+    assert.equal(total, 5);
+    assert.equal(wired, 5);
   });
 
   test('every entry carries an explicit 10s timeout', () => {
@@ -335,13 +339,64 @@ describe('the wiring it produces', () => {
   });
 });
 
+describe('the queue-lock self-heartbeat entry (HIMMEL-2318)', () => {
+  const heartbeatHooks = (settings) => (settings.hooks.PostToolUse ?? [])
+    .flatMap((g) => (g.hooks ?? []).map((h) => ({ group: g, hook: h })))
+    .filter(({ hook }) => hook.command.includes('scripts/handover/queue-lock.sh'));
+
+  test('install wires exactly one canonical self-heartbeat hook, matcher-less, 10s, quoted project dir', () => {
+    const { settings } = install(BASE);
+    const found = heartbeatHooks(settings);
+    assert.equal(found.length, 1);
+    const { group, hook } = found[0];
+    assert.equal('matcher' in group, false, 'no matcher key: it must fire after every tool');
+    assert.equal(group.hooks.length, 1, 'it gets its own dedicated group');
+    assert.equal(hook.timeout, 10);
+    assert.equal(hook.command, 'bash "$CLAUDE_PROJECT_DIR/scripts/handover/queue-lock.sh" self-heartbeat');
+  });
+
+  test('the pre-existing Agent group is left byte-identical beside it', () => {
+    const { settings } = install(BASE);
+    const agent = settings.hooks.PostToolUse.find((g) => g.matcher === 'Agent');
+    assert.equal(agent.hooks.length, 2, 'foreign hook + subagent-end only; self-heartbeat is not in the Agent group');
+    assert.deepEqual(agent.hooks[0], BASE.hooks.PostToolUse[0].hooks[0]);
+  });
+
+  test('--off removes only the self-heartbeat group and install repairs a timeout-less paste', () => {
+    const { settings: on } = install(BASE);
+    const { settings: off } = remove(on);
+    assert.equal(heartbeatHooks(off).length, 0);
+    assert.deepEqual(off.hooks.PostToolUse, BASE.hooks.PostToolUse);
+
+    const pasted = structuredClone(BASE);
+    pasted.hooks.PostToolUse.push({
+      hooks: [{ type: 'command', command: 'bash "$CLAUDE_PROJECT_DIR/scripts/handover/queue-lock.sh" self-heartbeat' }],
+    });
+    assert.equal(statusOf(pasted).wired, 0);
+    const { settings } = install(pasted);
+    const found = heartbeatHooks(settings);
+    assert.equal(found.length, 1, 'repaired in place, not duplicated');
+    assert.equal(found[0].hook.timeout, 10);
+  });
+
+  test('install REFUSES when queue-lock.sh is missing, naming it, and writes nothing', () => {
+    const f = fixture('no-queue-lock');
+    fs.rmSync(path.join(path.dirname(path.dirname(f)), 'scripts', 'handover', 'queue-lock.sh'));
+    const original = fs.readFileSync(f, 'utf8');
+    const r = run([], f);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /no writer at .*queue-lock\.sh/);
+    assert.equal(fs.readFileSync(f, 'utf8'), original, 'nothing is written');
+  });
+});
+
 describe('--check writes nothing', () => {
   test('it reports state and leaves the file alone', () => {
     const f = fixture('check');
     const original = fs.readFileSync(f, 'utf8');
     const r = run(['--check'], f);
     assert.equal(r.status, 0);
-    assert.match(r.stdout, /0\/4 entries wired/);
+    assert.match(r.stdout, /0\/5 entries wired/);
     assert.match(r.stdout, /wrote nothing/);
     assert.equal(fs.readFileSync(f, 'utf8'), original);
   });
@@ -350,7 +405,7 @@ describe('--check writes nothing', () => {
     const f = fixture('check-after');
     run([], f);
     const r = run(['--check'], f);
-    assert.match(r.stdout, /4\/4 entries wired/);
+    assert.match(r.stdout, /5\/5 entries wired/);
   });
 
   test('it reports a DUPLICATE when one spec has two owned hooks', () => {

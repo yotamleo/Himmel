@@ -1563,6 +1563,9 @@ mkdir -p "$FAILOPEN/handover" "$FAILOPEN/lib"
 # wholesale means the next fail-closed sibling does not repeat this.
 cp "$(dirname "$ARM")"/*.sh "$FAILOPEN/handover/" 2>/dev/null || true
 cp "$(dirname "$ARM")/../lib"/*.sh "$FAILOPEN/lib/" 2>/dev/null || true
+# HIMMEL-4013: arm-resume resolves its plugin profile through ../lanes (fail-closed).
+mkdir -p "$FAILOPEN/lanes"
+cp "$(dirname "$ARM")/../lanes"/* "$FAILOPEN/lanes/" 2>/dev/null || true
 # telemetry.sh is the SUBJECT of this test — it must be the only thing missing.
 rm -f "$FAILOPEN/lib/telemetry.sh"
 # (a) lib ABSENT — dedup must still block rc 3 with the ERR text intact.
@@ -1603,7 +1606,7 @@ assert_not_contains "T24 broken lib: the parse error is not leaked to the operat
 FAILOPEN_NEG="$TMP/failopen-neg"
 rm -rf "$FAILOPEN_NEG"
 mkdir -p "$FAILOPEN_NEG"
-cp -R "$FAILOPEN/handover" "$FAILOPEN/lib" "$FAILOPEN_NEG/"
+cp -R "$FAILOPEN/handover" "$FAILOPEN/lib" "$FAILOPEN/lanes" "$FAILOPEN_NEG/"
 sed -e '\#bash -n .*lib/telemetry\.sh#d' -e '\#lib/telemetry\.sh#s# 2>/dev/null || true##' "$FAILOPEN/handover/arm-resume.sh" \
     > "$FAILOPEN_NEG/handover/arm-resume.sh"
 # A no-op sed would make this control vacuous — the exact class of bug the
@@ -4721,6 +4724,20 @@ assert_rc "1640 leg E (no frontmatter, two body --- rules around a ticket) arms 
 assert_contains "1640 leg E arm banner printed" "RESUME ARMED" "$out"
 assert_not_contains "1640 leg E not refused as a ticket dup" "already has another armed resume slot" "$out"
 assert_not_contains "1640 leg E not refused as unclosed frontmatter" "unclosed YAML frontmatter" "$out"
+
+# Leg F (HIMMEL-1654): a UTF-8 BOM before the line-1 `---` opener. The BOM strip
+# must work in mawk too (an `\xHH` awk escape is a gawk extension and silently
+# skips there). The BOM'd frontmatter carries HIMMEL-9999, the ticket leg A
+# armed, so it must parse as a STRICT ticket and the mutex refuse it (rc 13).
+# A skipped strip leaves line 1 as `<BOM>---`, no frontmatter is entered, no
+# ticket is inferred and the handover arms (rc 0) past the mutex.
+HO_1640_F="$R1640/leg-f-bom.md"
+printf -- '\357\273\277---\nticket: HIMMEL-9999\nresume_cwd: %s\n---\n\n# HIMMEL-9999 leg F (BOM frontmatter)\n' \
+    "$R1640/repo" > "$HO_1640_F"
+_a1640 "$HO_1640_F" --cwd "$R1640/repo"; rc=$?
+assert_rc "1654 leg F (BOM before frontmatter) parses the ticket and is refused as a dup (rc=13)" 13 "$rc"
+assert_contains "1654 leg F refused by the ticket mutex" "already has another armed resume slot" "$out"
+assert_not_contains "1654 leg F did not arm" "RESUME ARMED" "$out"
 fi
 
 # ---------------------------------------------------------------------------

@@ -1138,6 +1138,44 @@ test("resolveProfileSettings: lane-impl → complete enabledPlugins JSON with fl
   expect(parsed.enabledPlugins["claude-obsidian@himmel"]).toBe(false); // dropped content
 });
 
+// HIMMEL-4060: the spawners pass the skill scan, as the plugin-profiles CLI does (#1565).
+test("resolveProfileSettings: a profile with required plugins carries skillOverrides + a budget fraction", () => {
+  const parsed = JSON.parse(resolveProfileSettings("lane-impl", [], "/nonexistent-cwd", []) as string);
+  expect(parsed.skillOverrides["update-config"]).toBe("name-only");
+  expect(typeof parsed.skillListingBudgetFraction).toBe("number");
+});
+
+test("resolveProfileSettings: the child cwd selects its project runtime namespace", () => {
+  const home = mkdtempSync(join(tmpdir(), "listing-cwd-home-"));
+  const oldHome = process.env.HOME;
+  const oldConfig = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    process.env.HOME = home;
+    const configDir = join(home, ".claude");
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    const cwd = join(home, "checkout");
+    mkdirSync(cwd);
+    const installPath = join(configDir, "plugins", "cache", "himmel", "lean-skills", "1.0");
+    mkdirSync(join(installPath, ".claude-plugin"), { recursive: true });
+    writeFileSync(join(installPath, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "x".repeat(300) }));
+    for (let i = 0; i < 8; i++) {
+      const skillDir = join(installPath, "skills", `s${i}`);
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(join(skillDir, "SKILL.md"), `---\nname: s${i}\ndescription: ${"d".repeat(1000)}\n---\n`);
+    }
+    writeFileSync(join(configDir, "plugins", "installed_plugins.json"), JSON.stringify({
+      plugins: { "lean-skills@himmel": [{ scope: "project", projectPath: cwd, installPath }] },
+    }));
+    const current = JSON.parse(resolveProfileSettings("lane-impl", [], cwd, []) as string);
+    const foreign = JSON.parse(resolveProfileSettings("lane-impl", [], join(home, "foreign"), []) as string);
+    expect(current.skillListingBudgetFraction).toBeGreaterThan(foreign.skillListingBudgetFraction);
+  } finally {
+    if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+    if (oldConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = oldConfig;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("resolveProfileSettings: overlay enables the named plugin", () => {
   const s = resolveProfileSettings("lane-impl", ["claude-obsidian@himmel"], "/nonexistent-cwd", []);
   expect(JSON.parse(s as string).enabledPlugins["claude-obsidian@himmel"]).toBe(true);

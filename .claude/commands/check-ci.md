@@ -45,7 +45,10 @@ can't certify an incomplete check set (default 30, `--settle 0` disables,
 e.g. `bash scripts/check-ci.sh 1150 --settle 60`). `--threads-only` runs
 just the review-thread gate — that's how `/pr-check` step 4.8 reuses this
 implementation. `--max-wait <sec>` (default 900, `CHECK_CI_MAX_WAIT` env,
-0 = unbounded) bounds each `gh pr checks --watch` round — CodeRabbit's own
+0 = unbounded) bounds the WHOLE run's waiting with one deadline (watch rounds,
+the one-time extension and the `--settle` wait share it, HIMMEL-4131; a deadline
+hit with checks still pending and nothing failed exits 2 with a
+`DEADLINE-PENDING` line — not an error, re-invoke) — CodeRabbit's own
 rollup CHECK can sit "pending" long after every other check, so the watch is
 supervised and stopped early once the verdict no longer depends on any
 non-CodeRabbit check still pending, or at this cap, whichever comes first
@@ -111,7 +114,8 @@ Act on the exit code:
   the exact head the finding was posted at (HIMMEL-3124; the recipe names it)
   — the exit-3 message prints the `ledger-append.sh finding …
   --model coderabbit-outside` recipe — `--verdict deferred` needs a tracked
-  `--deferred-to <TICKET>` AND `--reason`, `--verdict disproved` needs
+  `--deferred-to <TICKET>`, `--fu-class <escape|hardening|polish>` AND
+  `--reason`, `--verdict disproved` needs
   `--reason`; any severity. It never carries to a new head. A header count the
   parser cannot match to findings is exit `2` (check the PR body manually).
 - `4` — retired (HIMMEL-3360): no longer emitted. CodeRabbit's status being

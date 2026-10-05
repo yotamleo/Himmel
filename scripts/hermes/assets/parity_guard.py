@@ -51,6 +51,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.parse
 
 
@@ -157,25 +158,162 @@ _CMDPOS = r"(?:^|[;&|(\n])\s*"
 # documented limits are intentional.
 # Bounded executable-path prefix: optional quote + optional drive letter +
 # one slash-terminated segment run. "/" only — norm() folds "\" to "/".
-_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:[^\s|;&`\"']*/)?"
+# The run stops at "(" and at ")" before "{": both are command-position anchors,
+# so a "((((…" or "){){){…" run otherwise rescans the rest of the run from every
+# anchor (quadratic, HIMMEL-4190).
+_EXE_PREFIX = r"[\"']?(?:[a-z]:)?(?:(?:[^\s|;&(`\"')]|\)(?!\{))*/)?"
 # Quote-aware assignment (CR r5): FOO='a b' / FOO="a b" / FOO=bare. Shared by
 # the env-prefix assignment tolerance and the leading env-assignment prefix so
 # a quoted value's space does not drop the verb out of command position.
-_ASSIGN = r"[a-z0-9_]+=(?:'[^']*'|\"[^\"]*\"|[^\s|;&]*)"
-_CMDPOS_DESTRUCTIVE = (
-    r"(?:^|[;&|(`\n])\s*"
-    + r"(?:(?:" + _ASSIGN
-    + r"|" + _EXE_PREFIX + r"(?:sudo(?:\s+-\S+(?:\s+[^-\s]\S*)?)*"   # sudo + flags, each with an optional value token (CR r6/r7)
-    + r"|env(?:\s+(?:-\S+(?:\s+[^-\s]\S*)?|" + _ASSIGN + r"))*"      # env + flags(+value)/assignments (CR r6/r7)
-    + r"|cmd(?:\.exe)?(?:\s+/\w+(?::\w+)?)*\s+/c"        # cmd accepts /d /s /e:on … before /c (CR r3)
-    + r"|(?:powershell|pwsh)(?:\.exe)?(?:\s+-\S+)*\s+-c\w*"
-    + r"))\s+)*"
-    + _EXE_PREFIX
+_ASSIGNS = (r"[a-z0-9_]+='[^']*'", r"[a-z0-9_]+=\"[^\"]*\"", r"[a-z0-9_]+=[^\s|;&]*")
+# HIMMEL-4134: parity with the .sh grammar (scripts/guardrails/lib.sh
+# guard_cmdpos_grammar, HIMMEL-3983/3984): a compound keyword or a function
+# body's `{` starts a command (`) {` too), and so do the exec-style wrappers
+# exec, timeout, nohup, nice, time and xargs, each with its own flags. A flag
+# value may be quoted with a space in it (`exec -a 'my proc' shutdown`).
+# HIMMEL-4158: a value is one shell word of concatenated segments ('…', "…",
+# $'…', \x, bare) and a flag word may hold them too (`-u'a b'`); the old
+# whitespace-run and HIMMEL-4150 quoted atoms stay as alternatives, so the set
+# only grows. Twin of lib.sh CMDVAL / CMDFLG. Every reading is its own pattern
+# with one possible length; _cmdpos_destructive below walks them over a set of
+# (state, position) pairs instead of one regex, because a backtracking regex
+# over overlapping readings (`sudo -u"x -u"x …`, `sudo -u "x -u " …`) is
+# exponential on a non-match, where the .sh ERE is not.
+_QSEG = (r"'[^']*'|\"(?:[^\"\\]|\\[\s\S])*\"|\$'(?:[^'\\]|\\[\s\S])*'"
+         r"|\\[\s\S]|\$(?!')")
+_SEG = r"(?:" + _QSEG + r"|[^\s'\"\\$])"
+_WORD = r"(?:" + _QSEG + r"|[^-\s'\"\\$])" + _SEG + r"*"
+_VALS = (r"\s+" + _WORD + r"(?=\s|$)", r"\s+'[^']*'", r"\s+\"[^\"]*\"", r"\s+[^-\s]\S*")
+_FLGS = (r"-" + _SEG + r"+(?=\s|$)", r"-\S+")
+_FLG_VALS = tuple(f + v for f in _FLGS for v in ("",) + _VALS)
+
+
+def _with_val(*flags: str) -> tuple:
+    return tuple(f + v for f in flags for v in _VALS)
+
+
+# Each wrapper: (heads, steps, exits). A head follows _EXE_PREFIX, a step is
+# one more flag (+value) after whitespace, and an exit ends the wrapper in
+# command position (a bare one is just the whitespace).
+_WRAPPERS = (
+    (("sudo",), _FLG_VALS, ()),                              # sudo + flags, each with an optional value token (CR r6/r7; quoted HIMMEL-4150)
+    (("env",), _FLG_VALS + _ASSIGNS, ()),                    # env + flags(+value)/assignments (CR r6/r7; quoted HIMMEL-4150)
+    (("exec",), _with_val("-a") + _FLGS, ()),
+    (("timeout",), _FLG_VALS, _VALS),
+    (("nohup", r"nohup\s+--"), (), ()),
+    (("nice",), _with_val("-n", "--a[a-z-]*") + _FLGS, ()),
+    (("time",), _with_val("-[of]", "--[of][a-z-]*") + _FLGS, ()),
+    (("xargs",), _with_val("-[adeilnps]", "--[admp][a-z-]*") + _FLGS, ()),
+    ((r"cmd(?:\.exe)?",), (r"/\w+(?::\w+)?",), (r"\s+/c",)),   # cmd accepts /d /s /e:on … before /c (CR r3)
+    ((r"(?:powershell|pwsh)(?:\.exe)?",), (r"-\S+",), (r"\s+-c\w*",)),
 )
+_CMDPOS_ANCHOR = re.compile(r"(?:^|[;&|(`\n]|\)\s*\{)\s*")
+_CMDPOS_UNITS = tuple(re.compile(u + r"\s+") for u in _ASSIGNS + (
+    r"(?:do|then|else|elif|if|while|until|function\s+\S+|!|\{)",))
+_CMDPOS_WRAPS = tuple(
+    (tuple(re.compile(_EXE_PREFIX + h) for h in heads),
+     tuple(re.compile(r"\s+" + st) for st in steps),
+     tuple(re.compile(x + r"\s+") for x in (exits or ("",))))
+    for heads, steps, exits in _WRAPPERS)
+
+
+# The hermes hook times out at 10s and fails OPEN, so a slow scan turns a deny
+# into an allow. Every walk carries a budget and answers "match" (deny) once it
+# is spent: whatever quadratic shape a later regex change reintroduces degrades
+# to a refusal, never to an allow (HIMMEL-4190).
+_SCAN_BUDGET = 2.0
+
+
+def _cmdpos_match(text: str, verbs, deadline=None, anchor=_CMDPOS_ANCHOR,
+                  wraps=_CMDPOS_WRAPS, need=None) -> bool:
+    """True when a `verbs` atom sits in command position: after an
+    anchor and any run of assignments, keywords and wrappers (with their
+    flags). The same grammar the .sh CMDPOS spells as one ERE. True as well
+    once `deadline` (a time.monotonic() value) has passed. With `need` (an
+    index into `wraps`), the run must pass through that wrapper first."""
+    if deadline is None:
+        deadline = time.monotonic() + _SCAN_BUDGET
+    todo = [(-1, m.end(), need is None) for m in anchor.finditer(text)]
+    seen = set()
+    while todo:
+        if time.monotonic() > deadline:
+            return True
+        state = todo.pop()
+        if state in seen:
+            continue
+        seen.add(state)
+        w, p, ok = state
+        if w < 0:
+            if ok and verbs.match(text, p):
+                return True
+            todo += [(-1, m.end(), ok) for u in _CMDPOS_UNITS if (m := u.match(text, p))]
+            todo += [(i, m.end(), ok or i == need) for i, (heads, _, _) in enumerate(wraps)
+                     for h in heads if (m := h.match(text, p))]
+        else:
+            _, steps, exits = wraps[w]
+            todo += [(w, m.end(), ok) for st in steps if (m := st.match(text, p))]
+            todo += [(-1, m.end(), ok) for x in exits if (m := x.match(text, p))]
+    return False
+
+
+def _cmdpos_destructive(text: str) -> bool:
+    return _cmdpos_match(text, _CMDPOS_VERBS)
+
 
 # ScheduledTasks module WRITE verbs (HIMMEL-1821). Shared by the two anchors
 # the rule below applies it under; mirrors the .sh hook's SCHEDVERBS.
 _SCHED_VERBS = r"(?:register|unregister|set|start|stop|disable|enable)-scheduledtask(?:[^A-Za-z0-9_.-]|$)"
+
+# Bare command-name atoms refused in command position (_cmdpos_destructive).
+_CMDPOS_VERBS = re.compile(
+    _EXE_PREFIX + r"(?:"
+    + r"(?:(?:format|diskpart|bcdedit)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)|mkfs)"
+    + r"|schtasks(?:\.exe)?\s+(/create|/change|/delete|/end|/run|/config)(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs (mutations only)
+    + r"|" + _SCHED_VERBS
+    + r"|(?:taskkill|stop-process|pskill)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r"|(?:shutdown|reboot|logoff)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r"|(?:icacls|takeown)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
+    + r")"
+)
+# HIMMEL-4190: `find -delete` is a recursive delete of its own. Twin of the .sh
+# FIND_DELETE_PAT: the gap is unbounded (a `;` in it too), so a quoted `;`
+# cannot hide the flag. Linear here: find the last -delete once, then ask for a
+# bounded `find` verb at command position in the text up to it (an unbounded
+# gap re-scanned at every anchor was quadratic and ran the 10s hook timeout out).
+_DELETE_FLAG = re.compile(r"\s-delete(?=[^A-Za-z0-9_-]|$)")
+_FIND_VERB = re.compile(_EXE_PREFIX + r"find(?:\.exe)?(?=\s)")
+# HIMMEL-4255: the mass-delete family (find -delete, find/fd running rm, xargs
+# running rm) also sees through the launchers _WRAPPERS leaves out: busybox,
+# command [-p|--|-v …], eval, and a shell's -c with its own flags first
+# (`bash -o pipefail -c`). The quoted payload is read as text, so
+# `bash -c 'find d -delete'` matches like the bare form. Twin of the .sh
+# _xwrap / MASS_CMDPOS / MASS_PFX. Over-deny only: `command -v find; ls -delete`.
+# ponytail: the widening covers the mass-delete family only, not
+# _cmdpos_destructive's atoms (`bash -c 'shutdown'` still passes), upgrade
+# path HIMMEL-912's word-level tokenizer.
+# Every head here takes an optional .exe, and xargs does too in this set only
+# (the .sh twin's _xwrap adds xargs.exe to lib.sh's xargs).
+_XARGS = next(i for i, (heads, _, _) in enumerate(_WRAPPERS) if heads == ("xargs",))
+_X_WRAPS = tuple(
+    ((re.compile(_EXE_PREFIX + r"xargs(?:\.exe)?"),),) + w[1:] if i == _XARGS else w
+    for i, w in enumerate(_CMDPOS_WRAPS)) + tuple(
+    ((re.compile(_EXE_PREFIX + h + r"(?:\.exe)?"),),
+     tuple(re.compile(r"\s+" + st) for st in steps),
+     tuple(re.compile(x + r"\s+") for x in (exits or ("",))))
+    for h, steps, exits in (
+        ("busybox", (), ()),
+        ("command", (r"-[-a-z0-9]*",), ()),
+        ("eval", (), ()),
+        (r"(?:(?:ba|da|k|mk|z|a)?sh|fish)", _FLG_VALS, (r"\s+-[a-z0-9]*c[a-z0-9]*",)),
+    ))
+# HIMMEL-4255: an rm that find (-exec/-execdir/-ok/-okdir) or fd (-x/-X/
+# --exec/--exec-batch) runs, or that xargs runs, deletes every match, with or
+# without -r. Twin of the .sh FIND_RM_PAT / XARGS_RM_PAT: the exec flag is not
+# tied to find or fd (over-deny only: `grep -x rm f`), and a command that is a
+# single echo/printf/: of plain words (the .sh _rmpos_text) runs nothing.
+_RM_VERB = re.compile(_EXE_PREFIX + r"rm(?:\.exe)?(?=[^a-z0-9_.-]|$)")
+_EXEC_ANCHOR = re.compile(r"(?<=\s)-(?:exec|execdir|ok|okdir|x|-exec|-exec-batch)\s+")
+_RMPOS_TEXT = re.compile(r"\s*(?:echo|printf|:)(?:\s[^\];&|<>(){}`$\\\"*?\[!#~']*)?")
 
 # Catastrophic / shared-machine / irreversible classes only.
 # Routine git, gh, mv, cp, and non-recursive rm are intentionally NOT here.
@@ -183,11 +321,9 @@ TERMINAL_DESTRUCTIVE = re.compile(
     r"\brm\b[^|;&\n]*(?:\s|\$\{ifs\})[\"']?-\w*r"   # recursive rm (rm -r/-rf/-Rf); tolerates a quoted flag + ${IFS} separator (HIMMEL-851 U2/U3)
     + r"|\brm\b[^|;&\n]*--recursive"
     + r"|\b(del|erase|rd|rmdir)\b[^|;&\n]*/s(?:[^A-Za-z0-9_.-]|$)"  # recursive Windows delete; /s bound to the switch, not a path prefix like /scripts (HIMMEL-851 U1)
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:(?:format|diskpart|bcdedit)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)|mkfs)"
     + r"|\bcipher\s+/w"
     # HIMMEL-1141 verb split: schtasks /query is read-only (cadence diagnostic),
     # so only the mutating verbs are refused. Mirrors the .sh hook schtasks line.
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"schtasks(?:\.exe)?\s+(/create|/change|/delete|/end|/run|/config)(?:[^A-Za-z0-9_.-]|$)"    # protects scheduled jobs (mutations only)
     # HIMMEL-1821: same capability, other spellings — the PowerShell
     # ScheduledTasks module drives the Task Scheduler COM API and never
     # launches schtasks.exe, so the CLI line alone guards one spelling out of
@@ -212,10 +348,10 @@ TERMINAL_DESTRUCTIVE = re.compile(
     # parenthesised -ComObject ('Schedule.Service') form is refused.
     # Both scheduled-task rules also take a LOCAL script-block anchor "{"
     # (CR r8) so ForEach-Object { Register-ScheduledTask … } is refused; "{"
-    # cannot go into the shared _CMDPOS_DESTRUCTIVE without refusing
+    # cannot go into the shared _cmdpos_destructive without refusing
     # jq '{format: .x}', but no JSON key is spelled <verb>-scheduledtask.
     # RESIDUAL (CR r3/r4/r5), the shared no-general-parser limit of
-    # _CMDPOS_DESTRUCTIVE rather than anything these rules introduced —
+    # _cmdpos_destructive rather than anything these rules introduced —
     # measured: brace script blocks for the SHARED atoms (ForEach-Object
     # { schtasks /create … }, { shutdown … }, { taskkill … } are all allowed
     # today, exactly as before this change), string indirection
@@ -226,18 +362,50 @@ TERMINAL_DESTRUCTIVE = re.compile(
     # A tokenizer closes these, a wider regex does not (HIMMEL-912). Mirrors
     # the .sh hook's ScheduledTasks + Schedule.Service lines
     # (lockstep, HIMMEL-754).
-    + r"|" + _CMDPOS_DESTRUCTIVE + _SCHED_VERBS
     + r"|(?:^|[{])\s*[\"']?" + _SCHED_VERBS
     + r"|(?:^|[|;&(={`\n])\s*new-object[^|;&\n]*-c[a-z0-9]*\s*[:=]?\s*[(\"']*schedule\.service(?:[^A-Za-z0-9_.-]|$)"
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:taskkill|stop-process|pskill)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\bkill\s+-9"
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:shutdown|reboot|logoff)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\breg\s+(add|delete)\b"
-    + r"|" + _CMDPOS_DESTRUCTIVE + r"(?:icacls|takeown)(?:\.exe)?(?:[^A-Za-z0-9_.-]|$)"
     + r"|\bgit\s+push\b[^|;&\n]*(--force|--force-with-lease|\s-f\b)"
     + r"|\bgit\s+(reset\s+--hard|clean\s+-\w*f|filter-branch)\b"
     + r"|\bcurl[^|;&]*\|\s*(ba)?sh|\bwget[^|;&]*\|\s*(ba)?sh"
 )
+
+
+def _find_delete(raw: str) -> bool:
+    """HIMMEL-4190, twin of the .sh rm scans (HIMMEL-4255: find/fd/xargs
+    running rm too): newlines fold to `;`, a
+    backslash-newline pair is dropped on a second copy, and each copy is read
+    with its quotes and backslashes kept and dropped, so `"find" d '-delete'`
+    reads as `find d -delete`."""
+    low = raw.lower()
+    texts = {}  # identical readings are walked once
+    for src in (low, _join_continuations(low)):
+        src = re.sub(r"[\r\n]", ";", src)
+        bare = re.sub(r"[\"'\\]", "", re.sub(r"\$([\"'])", r"\1", src)).replace("\t", " ")
+        bare = re.sub(r" {2,}", " ", bare)
+        texts[src] = texts[bare] = None
+    deadline = time.monotonic() + _SCAN_BUDGET  # one budget for every reading
+    text_only = bool(_RMPOS_TEXT.fullmatch(re.sub(r"[\r\n]", ";", low)))
+    for text in texts:
+        last = None
+        for last in _DELETE_FLAG.finditer(text):
+            pass
+        if last and _cmdpos_match(text[:last.start() + 1], _FIND_VERB, deadline,
+                                  wraps=_X_WRAPS):
+            return True
+        if not text_only and _cmdpos_match(text, _RM_VERB, deadline,
+                                           anchor=_EXEC_ANCHOR, wraps=_X_WRAPS):
+            return True
+        if "xargs" in text and _cmdpos_match(text, _RM_VERB, deadline,
+                                             wraps=_X_WRAPS, need=_XARGS):
+            return True
+    return False
+
+
+def _terminal_destructive(text: str) -> bool:
+    return bool(TERMINAL_DESTRUCTIVE.search(text)) or _cmdpos_destructive(text)
+
 
 # Container privesc shapes (block-docker-privesc parity, HIMMEL-731). Membership
 # in the docker group is root-equivalent, so a docker/podman run|exec|create that
@@ -929,7 +1097,8 @@ _ENGINE_UNTRUSTED = re.compile(r"z\.ai|glm|zhipu|deepseek")
 EXT_GIT_PUSH = re.compile(_CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+push(?:\s|$)")
 EXT_GIT_URL = re.compile(
     _CMDPOS + r"git(?:\.exe)?(?:\s+-\S+(?:\s+\S+)?)*\s+"
-    r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*\s+\S*url\s+\S+)")
+    r"(?:remote\s+set-url|config(?:\s+-\S+(?:\s+\S+)?)*(?:\s+(?:set|add|replace-all))?(?:\s+-\S+(?:\s+\S+)?)*\s+\S*(?i:url|insteadof)\s+\S+)"
+    r"|" + _CMDPOS + r"git(?:\.exe)?\s+(?:[^;&|]*\s)?(?:-c|--config-env)[=\s]*\S*(?i:insteadof)=")
 EXT_GH_ANY = re.compile(_CMDPOS + r"gh(?:\.exe)?(?:\s|$)")
 # Audited-lane carve-out (block-glm-external-writes.sh policy, 2026-07-03): gh
 # issue (reads AND writes — cr-deferred followups are audited gh issues) + the
@@ -958,21 +1127,274 @@ def _external_writes_allowed() -> bool:
     return False  # unknown / absent engine signal -> fail-closed (refuse)
 
 
-def terminal_external_write_reason(cmd_norm: str):
+_ANSI_SIMPLE = {"a": "\x07", "b": "\x08", "e": "\x1b", "E": "\x1b", "f": "\x0c",
+                "n": "\n", "r": "\r", "t": "\t", "v": "\x0b", "\\": "\\",
+                "'": "'", '"': '"', "?": "?"}
+_ANSI_HEX = {"x": 2, "u": 4, "U": 8}
+
+
+def _ansi_c_decode(s: str) -> str:
+    """Flat decode (HIMMEL-844 round 10): ONE position-free pass over the whole command, no
+    quote state. Drops every dollar-quote opener and decodes every backslash escape wherever it
+    sits, so decoys and split segments cannot hide `git` or the key. A NUL escape (\\0 \\x00 \\c@
+    \\c`) truncates a segment in bash, so the pass runs twice: NUL kept as `#`, and NUL dropping
+    everything through the next unescaped quote. Code points >= 128 become `#`. Over-approximation
+    only: the caller's `git` + `insteadof` rule runs on both streams."""
+    streams, n = [s], len(s)  # raw first: plain `ins\teadOf` is `insteadOf` to bash
+    for drop in (False, True):
+        out, i = [], 0
+        while i < n:
+            c = s[i]
+            if c == "$" and s[i + 1:i + 2] == "'":
+                i += 2
+                continue
+            if c != "\\":
+                out.append(c)
+                i += 1
+                continue
+            e = s[i + 1:i + 2]
+            i += 2
+            if not e:
+                break
+            if e in _ANSI_SIMPLE:
+                out.append(_ANSI_SIMPLE[e])
+                continue
+            if e in "01234567":
+                v, d = int(e), 1
+                while d < 3 and s[i:i + 1] and s[i] in "01234567":
+                    v, i, d = v * 8 + int(s[i]), i + 1, d + 1
+                v %= 256
+            elif e in _ANSI_HEX:
+                v, d = 0, 0
+                while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
+                    v, i, d = v * 16 + int(s[i], 16), i + 1, d + 1
+                if d == 0:
+                    out.append("\\" + e)
+                    continue
+            elif e == "c":
+                v = 0 if s[i:i + 1] in ("@", "`") else 35
+                i += 1
+            else:
+                out.append("\\" + e)
+                continue
+            if v == 0 and drop:
+                while i < n:
+                    c = s[i]
+                    if c == "\\":
+                        i += 2
+                        continue
+                    i += 1
+                    if c == "'":
+                        break
+                continue
+            out.append(chr(v) if 0 < v < 128 else "#")
+        streams.append("".join(out))
+    streams.append(_bash_words(s))
+    streams.append(_bash_words(s, 1))
+    streams.append(_bash_words(s, 2))
+    return ";".join(streams)
+
+
+def _ansi_c_one(s: str, i: int):
+    """Decode the escape whose backslash sits at s[i]; return (text, next index, is_nul)."""
+    e = s[i + 1:i + 2]
+    i += 2
+    if e in _ANSI_SIMPLE and e:
+        return _ANSI_SIMPLE[e], i, False
+    if e and e in "01234567":
+        v, d = int(e), 1
+        while d < 3 and s[i:i + 1] and s[i] in "01234567":
+            v, i, d = v * 8 + int(s[i]), i + 1, d + 1
+        v %= 256
+    elif e in _ANSI_HEX and e:
+        v, d = 0, 0
+        while d < _ANSI_HEX[e] and s[i:i + 1] and s[i] in "0123456789abcdefABCDEF":
+            v, i, d = v * 16 + int(s[i], 16), i + 1, d + 1
+        if d == 0:
+            return "\\" + e, i, False
+    elif e == "c":
+        v = 0 if s[i:i + 1] in ("@", "`") else 35
+        i += 1
+    else:
+        return "\\" + e, i, False
+    return (chr(v) if 0 < v < 128 else "#"), i, v == 0
+
+
+def _bash_words(s: str, regions: int = 0) -> str:
+    """HIMMEL-4032, the quote-aware fourth stream: bash decodes escapes ONLY inside a
+    dollar-quote body; outside one a backslash quotes the next char (`ns\\teadOf` is
+    `nsteadOf`, not a TAB) and a backslash-newline is deleted. A NUL ends the dollar-quote
+    body. Added beside the flat streams, never instead of them: deny-only.
+    HIMMEL-4225: `regions=1` (the fifth stream) also reads a # comment at word start and
+    a heredoc body as text that opens no quote, kept verbatim, so a stray apostrophe there
+    cannot desync the rest. A delimiter it cannot classify ($-expansion, backtick, escape in
+    a double or dollar quote, open quote) reads no body; no heredoc inside (( )).
+    `regions=2` (the sixth) resets the quote state at every newline, the backstop for any
+    region the fifth misreads. Beside the fourth stream, never instead of it."""
+    out, i, n, st = [], 0, len(s), 0  # st 0 bare, 1 single, 2 double, 3 dollar-quote
+    hd, ar, hb = [], 0, False  # pending heredocs (delimiter, strip tabs); (( depth; bad delimiter
+    while i < n:
+        c = s[i]
+        if regions == 2 and c == "\n":
+            st = 0
+        if st == 1:
+            if c == "'":
+                st = 0
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if st == 3:
+            if c == "'":
+                st, i = 0, i + 1
+                continue
+            if c != "\\":
+                out.append(c)
+                i += 1
+                continue
+            r, i, nul = _ansi_c_one(s, i)
+            if nul:
+                while i < n:
+                    c = s[i]
+                    if c == "\\":
+                        i += 2
+                        continue
+                    i += 1
+                    if c == "'":
+                        break
+                st = 0
+                continue
+            out.append(r)
+            continue
+        if c == "\\":
+            if s[i + 1:i + 2] == "\n":
+                i += 2
+            elif s[i + 1:i + 3] == "\r\n":
+                i += 3
+            else:
+                out.append(s[i + 1:i + 2])
+                i += 2
+            continue
+        if st == 2:
+            if c == '"':
+                st = 0
+            else:
+                out.append(c)
+            i += 1
+            continue
+        if regions == 1 and c == "#" and (i == 0 or s[i - 1] in " \t\n;&|()<>"):
+            j = s.find("\n", i)
+            j = n if j < 0 else j
+            out.append(s[i:j])
+            i = j
+            continue
+        if regions == 1 and s[i:i + 2] == "((":
+            ar, i = ar + 1, i + 2
+            out.append("((")
+            continue
+        if regions == 1 and s[i:i + 2] == "))" and ar:
+            ar, i = ar - 1, i + 2
+            out.append("))")
+            continue
+        if regions == 1 and not ar and s[i:i + 2] == "<<" and s[i + 2:i + 3] != "<" and (i == 0 or s[i - 1] != "<"):
+            strip = s[i + 2:i + 3] == "-"
+            j, d, uc = i + 2 + strip, [], False
+            while j < n and s[j] in " \t":
+                j += 1
+            w = j
+            while j < n and s[j] not in " \t\n;&|()<>":
+                dl = False
+                if s[j] == "$":
+                    if s[j + 1:j + 2] in ("'", '"'):
+                        dl, j = True, j + 1
+                    else:
+                        uc = True
+                if s[j] == "`":
+                    uc = True
+                if s[j] in "'\"":
+                    k = s.find(s[j], j + 1)
+                    if k < 0:
+                        uc, k = True, n
+                    if "\\" in s[j + 1:k] and (s[j] == '"' or dl):
+                        uc = True
+                    d.append(s[j + 1:k])
+                    j = k + 1
+                elif s[j] == "\\":
+                    if s[j + 1:j + 2] != "\n":
+                        d.append(s[j + 1:j + 2])
+                    j += 2
+                else:
+                    d.append(s[j])
+                    j += 1
+            out.append(s[i:j])
+            i = j
+            if uc:
+                hb = True
+            elif j > w:
+                hd.append(("".join(d), strip))
+            continue
+        if regions == 1 and c == "\n" and hb:
+            hd, hb = [], False
+        if regions == 1 and c == "\n" and hd:
+            out.append(c)
+            i += 1
+            for d, strip in hd:
+                while i < n:
+                    j = s.find("\n", i)
+                    j = n if j < 0 else j
+                    ln = s[i:j]
+                    out.append(ln + "\n")
+                    i = j + 1
+                    if (ln.lstrip("\t") if strip else ln) == d:
+                        break
+            hd = []
+            continue
+        if c == "'":
+            st = 1
+        elif c == '"':
+            st = 2
+        elif c == "$" and s[i + 1:i + 2] == "'":
+            st, i = 3, i + 1
+        elif not (c == "$" and s[i + 1:i + 2] == '"'):
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# HIMMEL-4032: bash deletes a backslash-newline before parsing; an ODD trailing run only (an
+# even run is a literal backslash and a real boundary). `\r` after the backslash = CRLF.
+_LINE_CONT = re.compile(r"(?<!\\)((?:\\\\)*)\\\r?\n")
+
+
+def _join_continuations(s: str) -> str:
+    return _LINE_CONT.sub(r"\1", s)
+
+
+def terminal_external_write_reason(cmd_norm: str, raw_cmd: str = ""):
     """Return a block reason if `cmd_norm` (already norm()-ed) is an external-write
     shape (git push / remote-URL rewrite / gh PR-mutation / network CLI), else
-    None. The caller gates this on an untrusted / unknown engine."""
-    if EXT_GIT_PUSH.search(cmd_norm):
+    None. `raw_cmd` is the un-norm()-ed command (norm() destroys backslash escapes).
+    The caller gates this on an untrusted / unknown engine."""
+    # HIMMEL-4032: every arm also reads a continuation-joined copy and refuses if EITHER text
+    # does (deny-only, so `foo \<newline>gh pr merge` stays refused as before).
+    texts = (cmd_norm, norm(_join_continuations(raw_cmd or cmd_norm)))
+    if any(EXT_GIT_PUSH.search(t) for t in texts):
         return ("git push is refused on an untrusted/unknown engine — commit "
                 "locally; the trusted main tier / operator pushes (HIMMEL-695).")
-    if EXT_GIT_URL.search(cmd_norm):
+    # HIMMEL-844 round 7: decode every ANSI-C dollar-quote segment (bash's own escape set)
+    # from the RAW command (norm() already mangled backslashes), then delete every quote and
+    # backslash and lowercase: the words git sees. Blunt rule: `git` AND `insteadof` denies.
+    # Accepted overmatch: `git log --grep insteadof`.
+    dq_lc = re.sub(r"['\"\\]", "", _ansi_c_decode(raw_cmd or cmd_norm)).lower()
+    if (any(EXT_GIT_URL.search(t) for t in texts) or EXT_GIT_URL.search(dq_lc)
+            or ("git" in dq_lc and "insteadof" in dq_lc)):
         return ("Rewriting a git remote / push URL is refused on an untrusted/"
                 "unknown engine (HIMMEL-695).")
-    if len(EXT_GH_ANY.findall(cmd_norm)) > len(EXT_GH_ALLOW.findall(cmd_norm)):
+    if any(len(EXT_GH_ANY.findall(t)) > len(EXT_GH_ALLOW.findall(t)) for t in texts):
         return ("gh is limited on an untrusted/unknown engine: issue ops + "
                 "pr/run reads only; PR mutations belong to the trusted main "
                 "tier (HIMMEL-695).")
-    if EXT_NET.search(cmd_norm):
+    if any(EXT_NET.search(t) for t in texts):
         return ("Network CLIs are refused on an untrusted/unknown engine — "
                 "chores are repo-local (HIMMEL-695).")
     return None
@@ -1250,7 +1672,10 @@ def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
     if TERMINAL_FORBIDDEN_PATHS.search(cmd):
         block("Shell access to secret paths, the guard hook, or Claude "
               "Code's home is forbidden — use the file tools for those.")
-    if TERMINAL_DESTRUCTIVE.search(cmd):
+    # HIMMEL-4158: norm() turns `\` into `/`, which hides a shell escape in a
+    # wrapper value (`sudo -u a\ b reboot`); also read the raw text then.
+    if _terminal_destructive(cmd) or _find_delete(raw_cmd) or (
+            "\\" in raw_cmd and _terminal_destructive(raw_cmd.strip().lower())):
         block("Catastrophic command class refused (recursive deletion, "
               "disk/scheduler/process/registry mutation, force-push, "
               "remote-exec). Ask the operator if genuinely needed.")
@@ -1286,7 +1711,7 @@ def _command_checks(raw_cmd: str, cmd: str, payload: dict, args: dict) -> None:
     # PR-mutation / network CLIs unless the engine is an affirmed trusted
     # main tier (fail-closed on an unknown engine).
     if not _external_writes_allowed():
-        reason = terminal_external_write_reason(cmd)
+        reason = terminal_external_write_reason(cmd, raw_cmd)
         if reason:
             block(reason)
 

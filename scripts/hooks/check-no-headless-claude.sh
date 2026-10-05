@@ -44,22 +44,18 @@ set -uo pipefail
 PATTERN='(^|[^A-Za-z0-9_-])claude[[:space:]]+(-p|--print|--bg)($|[^A-Za-z0-9_-])'
 
 # HIMMEL-2195: argv-array spawns keep the flags in a separate array
-# (`spawnSync('claude', args)`), so PATTERN cannot see `-p`. Deny-leaning by
-# design, no variable tracing: any spawn-family call whose program argument is
-# the literal "claude" needs the same opt-in marker, wherever the flags are.
-# Covers spawn/exec/execFile[Sync], Bun.spawn[Sync], child_process.*, python
-# subprocess.{run,call,check_call,check_output,Popen} and os.exec*/spawn*.
-# The program must be the first argument (optionally the first array
-# element) and exactly `claude`, so `spawnSync('git', ['claude'])` and
-# `spawnSync('myclaude', …)` stay clean.
-# `claude.exe` (Windows) counts as the literal too, and Bun's object form
-# `Bun.spawn({ cmd: ["claude", …] })` is covered.
-SPAWN_PATTERN='(^|[^A-Za-z0-9_])(spawn|spawnSync|exec|execSync|execFile|execFileSync|fork|Popen|run|call|check_call|check_output|execv|execvp|execve|execvpe|execl|execlp|execle|execlpe)[[:space:]]*\([[:space:]]*(\{[^)]*cmd[[:space:]]*:[[:space:]]*)?\[?[[:space:]]*["'"'"']claude(\.exe)?["'"'"']|(^|[^A-Za-z0-9_])spawn(v|l)p?e?[[:space:]]*\([^,)]*,[[:space:]]*["'"'"']claude(\.exe)?["'"'"']'
-# A call may span lines. The awk pass below joins a window that starts at a
-# line with an unclosed `(` / `[` / `{` and runs while the depth stays open
-# (bounded to SPAWN_WINDOW lines), tests the joined text, and reports the line
-# carrying the program literal. A `headless-claude-ok` marker anywhere from the
-# line above the window through that program line covers the call.
+# (`spawnSync('claude', args)`), so PATTERN cannot see `-p`. The spawn pattern and
+# its multi-line join live in lib/headless-spawn-join.sh, shared with the gemini
+# twin (HIMMEL-4124); see it for what they cover. `claude.exe` (Windows) counts as
+# the literal too. Fail closed if the lib cannot load (HIMMEL-3177 shape).
+_join_lib="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/headless-spawn-join.sh"
+# shellcheck source=lib/headless-spawn-join.sh
+if ! { [ -r "$_join_lib" ] && . "$_join_lib"; } 2>/dev/null; then
+    echo "check-no-headless-claude: cannot load $_join_lib — refusing" >&2
+    exit 1
+fi
+SPAWN_PATTERN=$(headless_spawn_pattern 'claude(\.exe)?')
+# A call may span lines: the join window runs at most SPAWN_WINDOW code lines.
 SPAWN_WINDOW=8
 
 # Self-test: a known-positive sample must match. Catches accidental
@@ -108,12 +104,12 @@ is_exempt() {
 has_optin_marker() {
     local file="$1" line_no="$2"
     # Same-line marker (comment on the call line itself)
-    if sed -n "${line_no}p" "$file" 2>/dev/null | grep -q 'headless-claude-ok'; then
+    if sed -n "${line_no}p" 2>/dev/null <"$file" | grep -q 'headless-claude-ok'; then
         return 0
     fi
     # Preceding-line marker (within 1 line above the call)
     if [ "$line_no" -gt 1 ]; then
-        if sed -n "$((line_no - 1))p" "$file" 2>/dev/null | grep -q 'headless-claude-ok'; then
+        if sed -n "$((line_no - 1))p" 2>/dev/null <"$file" | grep -q 'headless-claude-ok'; then
             return 0
         fi
     fi
@@ -147,30 +143,8 @@ for f in "${files[@]}"; do
             violations+=("$f:$line_no")
         fi
     done < <({
-        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" -- "$f" 2>/dev/null
-        SPAWN_RE="$SPAWN_PATTERN" SPAWN_WIN="$SPAWN_WINDOW" awk '
-            BEGIN { re = ENVIRON["SPAWN_RE"]; win = ENVIRON["SPAWN_WIN"] + 0 }
-            function depth(s,   t, o, c) {
-                t = s; o = gsub(/[(\[{]/, "&", t)
-                t = s; c = gsub(/[)\]}]/, "&", t)
-                return o - c
-            }
-            { L[NR] = $0 }
-            END {
-                for (i = 1; i <= NR; i++) {
-                    d = depth(L[i]); if (d <= 0) continue
-                    j = i; J = L[i]; hit = 0
-                    while (d > 0 && j < NR && j < i + win) {
-                        j++; J = J " " L[j]; d += depth(L[j])
-                        if (!hit && J ~ re) { hit = j }
-                    }
-                    if (!hit) continue
-                    ok = 0
-                    for (k = (i > 1 ? i - 1 : 1); k <= hit; k++)
-                        if (L[k] ~ /headless-claude-ok/) ok = 1
-                    if (!ok) print hit ":" L[hit]
-                }
-            }' "$f" 2>/dev/null
+        grep -En -e "$PATTERN" -e "$SPAWN_PATTERN" 2>/dev/null <"$f"
+        headless_spawn_join "$f" "$SPAWN_PATTERN" "$SPAWN_WINDOW" headless-claude-ok
     } | sort -n -u)
 done
 
@@ -191,8 +165,8 @@ native_auth_pin_advisory() {
         else
             # Direct self-test inputs are real files outside the index.
             [ -f "$f" ] || continue
-            grep -q 'headless-claude-ok' -- "$f" 2>/dev/null || continue
-            grep -q 'native-auth-pin' -- "$f" 2>/dev/null && continue
+            grep -q 'headless-claude-ok' 2>/dev/null <"$f" || continue
+            grep -q 'native-auth-pin' 2>/dev/null <"$f" && continue
         fi
         echo "check-no-headless-claude: ADVISORY - $f carries a '# headless-claude-ok:' marker but never references native-auth-pin; a marked headless site that inherits an ambient ANTHROPIC_BASE_URL is silently proxied off native auth (operator ruling 2026-08-17). Source scripts/lib/native-auth-pin.sh and call native_auth_pin_env before the launch (PowerShell sites: scripts/lib/native-auth-pin.ps1). Advisory only, not blocking." >&2
     done

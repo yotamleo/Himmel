@@ -101,6 +101,8 @@ echo "kill $*" >> "$CALLS_LOG"
 if [ "${CWL_KILL_FAIL:-0}" = "1" ]; then
     exit 1
 fi
+# a TERMed session exits only when the case asks (the fleet cases re-use one fake pid)
+if [ "$1" = "-TERM" ] && [ "${CWL_KILL_REMOVES_PROC:-0}" = "1" ]; then rm -rf "${CLAUDE_SESSIONS_PROC:?}/${!#}"; fi
 exit 0
 STUB
 chmod +x "$KILL_STUB"
@@ -127,7 +129,11 @@ CLEAN_STUB="$W/bin/clean.sh"
 cat > "$CLEAN_STUB" <<'STUB'
 #!/usr/bin/env bash
 echo "clean.sh $*" >> "$CALLS_LOG"
-if [ "${CWL_CLEAN_MODE:-ok}" = "in-use" ]; then
+if [ "${CWL_CLEAN_MODE:-ok}" = "in-use-once" ] && [ "$(grep -c '^clean.sh' "$CALLS_LOG")" -ge 2 ]; then
+    echo "clean-garden: prune summary — 1 pruned, 0 partial, 0 skipped, 0 failed"
+    exit 0
+fi
+if [ "${CWL_CLEAN_MODE:-ok}" = "in-use" ] || [ "${CWL_CLEAN_MODE:-ok}" = "in-use-once" ]; then
     echo "worktree is in use, skipping"
     echo "clean-garden: prune summary — 0 pruned, 0 partial, 1 skipped, 0 failed"
     exit 1
@@ -172,6 +178,16 @@ exit 0
 STUB
 chmod +x "$SUBTREE_STUB"
 
+# Stub tmp-reap.sh (HIMMEL-4235): logs its argv and succeeds, so the cases
+# that do not opt in can never reap anything (least of all the real /tmp).
+REAP_STUB="$W/bin/tmp-reap-stub.sh"
+cat > "$REAP_STUB" <<'STUB'
+#!/usr/bin/env bash
+echo "tmp-reap $*" >> "$CALLS_LOG.reap"
+exit "${CWL_REAP_STUB_RC:-0}"
+STUB
+chmod +x "$REAP_STUB"
+
 DOC="$W/HIMMEL-9-N1-demo-2026-01-01-RESUME.md"
 SESSION_NAME="HIMMEL-9-N1-demo-2026-01-01"
 WT="$W/wt/one"
@@ -202,9 +218,10 @@ run() { # run <doc> - runs the script under test with every stub wired
     # <repo-root>/handovers, creating REAL handovers/.locks/ state in
     # whatever checkout this suite runs from (HIMMEL-3667).
     CALLS_LOG="$CALLS" PATH="$W/bin:$PATH" CLAUDE_SESSIONS_PROC="$W/proc" \
-        HANDOVER_DIR="$W/handover-root" \
+        HANDOVER_DIR="${CWL_HANDOVER_DIR-$W/handover-root}" \
         GH_BIN="$GH_STUB" KILL_BIN="$KILL_STUB" CLEAN_SH_BIN="$CLEAN_STUB" \
-        WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" \
+        WRAP_SUBTREE_CHECK_BIN="$SUBTREE_STUB" TMP_REAP_BIN="${CWL_REAP_BIN:-$REAP_STUB}" \
+        CLOSE_WRAPPED_LEG_REAP_WAIT=0 CLOSE_WRAPPED_LEG_PRUNE_WAIT=0 \
         CWL_PR_STATE="${CWL_PR_STATE:-MERGED}" CWL_CLEAN_MODE="${CWL_CLEAN_MODE:-ok}" \
         CWL_SUBTREE_MODE="${CWL_SUBTREE_MODE:-closable}" \
         CWL_PR_VIEW_FAIL="${CWL_PR_VIEW_FAIL:-0}" CWL_KILL_FAIL="${CWL_KILL_FAIL:-0}" \
@@ -212,7 +229,7 @@ run() { # run <doc> - runs the script under test with every stub wired
         CLOSE_WRAPPED_LEG_PROJECTS_DIR="${CWL_PROJECTS_DIR:-$W/no-such-projects-dir}" \
         bash "$SCRIPT" "$@"
 }
-reset_calls() { : > "$CALLS"; }
+reset_calls() { : > "$CALLS"; : > "$CALLS.reap"; }
 unset CWL_PR_STATE CWL_CLEAN_MODE CWL_PR_VIEW_FAIL CWL_KILL_FAIL CWL_SUBTREE_MODE
 
 # --- 1. usage ----------------------------------------------------------------
@@ -275,6 +292,46 @@ exact_count "no-worktree: kill called exactly once with the matched pid" "$calls
 not_contains "no-worktree: clean.sh not called" "$calls6" "clean.sh"
 check "no-worktree: exactly two calls logged (subtree check + kill, no other pid signaled)" "$(wc -l < "$CALLS" | tr -d ' ')" "2"
 
+# HIMMEL-3748: removing the successful-close manifest update must fail this.
+fleet_manifest="$W/fleet.json"
+bash "$HERE/fleet-manifest.sh" add "$fleet_manifest" "$DOC" "$W/HIMMEL-9-N2-other.md"
+rc=0; out=$(run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: successful no-worktree close returns zero' 0 "$rc"
+check 'fleet: close removes only its own doc' "$W/HIMMEL-9-N2-other.md" "$(jq -r '.legs[].doc' "$fleet_manifest")"
+bash "$HERE/fleet-manifest.sh" add "$fleet_manifest" "$DOC"
+fleet_before="$(cat "$fleet_manifest")"
+mkdoc '- 10:00 LIVE - not wrapped'
+rc=0; out=$(run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: refused close preserves status' 4 "$rc"
+check 'fleet: refused close keeps manifest unchanged' "$fleet_before" "$(cat "$fleet_manifest")"
+mkdoc '- 10:00 WRAPPED - done'
+rc=0; out=$(CWL_KILL_FAIL=1 run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: failed signal preserves status' 1 "$rc"
+check 'fleet: failed signal keeps manifest unchanged' "$fleet_before" "$(cat "$fleet_manifest")"
+
+# Each successful prune exit must retire its doc; a failed prune must not.
+for fleet_mode in ok not-candidate in-use fail; do
+    bash "$HERE/fleet-manifest.sh" add "$fleet_manifest" "$DOC"
+    mkdoc '- 10:00 WRAPPED - done' "worktree: \`$WT/.claude/worktrees/demo\`"
+    rc=0; out=$(CWL_CLEAN_MODE="$fleet_mode" run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+    fleet_present="$(jq --arg d "$DOC" 'any(.legs[]; .doc == $d)' "$fleet_manifest")"
+    if [ "$fleet_mode" = fail ]; then
+        check 'fleet: failed prune status' 1 "$rc"
+        check 'fleet: failed prune keeps doc' true "$fleet_present"
+    else
+        check "fleet: $fleet_mode prune success" 0 "$rc"
+        check "fleet: $fleet_mode prune retires doc" false "$fleet_present"
+    fi
+done
+printf '%s\n' 'invalid manifest' > "$fleet_manifest"
+mkdoc '- 10:00 WRAPPED - done'
+rc=0; out=$(run --fleet "$fleet_manifest" "$DOC" 2>&1) || rc=$?
+check 'fleet: update failure returns nonzero after close' 1 "$rc"
+contains 'fleet: update failure reports session already closed' "$out" 'session closed but fleet manifest update failed'
+check 'fleet: invalid manifest never overwritten' 'invalid manifest' "$(cat "$fleet_manifest")"
+rc=0; run --fleet >/dev/null 2>&1 || rc=$?
+check 'fleet: missing flag value refuses' 2 "$rc"
+
 # --- 7. 1 match, 2 worktree paths -------------------------------------------------
 mkdoc "- 10:00 WRAPPED - done" "worktree: \`$WT/.claude/worktrees/demo\`" "worktree: \`$W/wt/.claude/worktrees/other\`"
 reset_calls
@@ -329,6 +386,14 @@ reset_calls
 rc=0; out=$(CWL_CLEAN_MODE="in-use" run "$DOC" 2>&1) || rc=$?
 check "clean-in-use: rc 0 (non-fatal)" "$rc" "0"
 contains "clean-in-use: names it" "$out" "in use"
+exact_count "clean-in-use: retried a bounded 3 times after the first pass (4 calls)" "$(cat "$CALLS")" "clean.sh --only $WT/.claude/worktrees/demo --only-allow-unmerged" "4"
+
+# --- 11b. in use at first, free on the retry (HIMMEL-4334) ----------------------
+reset_calls
+rc=0; out=$(CWL_CLEAN_MODE="in-use-once" run "$DOC" 2>&1) || rc=$?
+check "clean-in-use-once: rc 0" "$rc" "0"
+exact_count "clean-in-use-once: pruned on the second call, no more retries" "$(cat "$CALLS")" "clean.sh --only $WT/.claude/worktrees/demo --only-allow-unmerged" "2"
+contains "clean-in-use-once: final output is the successful prune" "$out" "1 pruned"
 
 # --- 12. clean.sh fails for another reason --------------------------------------
 reset_calls
@@ -493,6 +558,14 @@ FRESH4="$PROJDIR4/sess-fresh.jsonl"
     printf '%s\n' "{\"timestamp\":\"2026-06-17T00:00:00Z\",\"cwd\":\"$ESW_SB4/proj\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"line one\"}]}}"
     yes '{"padding":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}' 2>/dev/null | head -c 1000000 || true
 } > "$FRESH4"
+# the `|| true` above only absorbs `yes`'s SIGPIPE; assert the fixtures were
+# genuinely generated, else this case passes without exercising scale (HIMMEL-3740).
+fixture_ok=yes
+[ "$(wc -c < "$FRESH4")" -ge 1000000 ] || fixture_ok=no
+for stale in "$PROJDIR4"/stale-*.jsonl; do
+    [ -s "$stale" ] || fixture_ok=no
+done
+check "timing-guard: padded fresh transcript (>=1MB) and stale decoys generated" "$fixture_ok" "yes"
 mkdoc "- 10:00 WRAPPED - done"
 reset_calls
 start_ts=$(date +%s)
@@ -595,6 +668,165 @@ out=$(HOME="$ESW_SB7/home" LUNA_VAULT_PATH="$ESW_SB7/vault" OBSIDIAN_API_KEY="" 
 check "fallback-head-window: rc 0 (still closes)" "$rc" "0"
 note_count23=$(find "$ESW_SB7/vault/sessions" -type f -name '*.md' 2>/dev/null | wc -l | tr -d ' ')
 check "fallback-head-window: exactly one note written (customTitle past the head window is still found by the unbounded all-time fallback)" "$note_count23" "1"
+
+# --- 25: leg cost ledger (HIMMEL-4217) ---------------------------------------
+# A wrapped leg's transcript is metered by leg-burn.sh --raw and ONE JSONL row
+# lands in <handover root>/.ledger/leg-cost.jsonl before the TERM. A meter or
+# ledger failure only WARNs - the close still succeeds.
+LC_PROJ="$W/lc-projects"
+mkdir -p "$LC_PROJ"
+LC_T="$LC_PROJ/sess-lc1.jsonl"
+asst() { # asst <id> <input> <cache-read> <cache-create> <out>
+    printf '{"type":"assistant","message":{"id":"%s","model":"claude-sonnet-5-5","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"output_tokens":%s}}}\n' "$1" "$2" "$3" "$4" "$5"
+}
+{
+    printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\",\"timestamp\":\"2026-10-03T00:00:00Z\"}"
+    asst m1 10 1000 2000 100
+    asst m2 20 3000 0 200
+    asst m2 20 3000 0 200
+    printf '%s\n' '{"type":"system","subtype":"compact_boundary"}'
+    asst m3 5 4000 500 50
+} > "$LC_T"
+LC_LEDGER="$W/handover-root/.ledger/leg-cost.jsonl"
+rm -f "$LC_LEDGER"
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 4321 abc GREEN"
+{ printf -- '---\nclass: impl\nprofile: leg-impl\n---\n'; cat "$DOC"; } > "$DOC.fm" && mv "$DOC.fm" "$DOC"
+reset_calls
+rc=0; out=$(CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger: rc 0" "$rc" "0"
+check "ledger: exactly one row" "$(grep -c . "$LC_LEDGER" 2>/dev/null)" "1"
+lc_row() { jq -r ".$1" "$LC_LEDGER" 2>/dev/null | head -1; }
+check "ledger: calls deduped by message id" "$(lc_row calls)" "3"
+check "ledger: input" "$(lc_row input)" "35"
+check "ledger: cache_read" "$(lc_row cache_read)" "8000"
+check "ledger: cache_create" "$(lc_row cache_create)" "2500"
+check "ledger: out" "$(lc_row out)" "350"
+check "ledger: cost_eq is exact (35 + 8000*0.1 + 2500*1.25 + 350*5)" "$(lc_row cost_eq)" "5710"
+check "ledger: compactions" "$(lc_row compactions)" "1"
+check "ledger: model from the transcript" "$(lc_row model)" "claude-sonnet-5-5"
+check "ledger: leg label" "$(lc_row leg)" "N1"
+check "ledger: ticket key" "$(lc_row ticket)" "HIMMEL-9"
+check "ledger: class from front matter" "$(lc_row class)" "impl"
+check "ledger: profile from front matter" "$(lc_row profile)" "leg-impl"
+check "ledger: PR from the READY bullet" "$(lc_row pr)" "4321"
+check "ledger: date is today" "$(lc_row date)" "$(date +%F)"
+# a retried close (same transcript) never writes a second row
+mkdoc "- 10:00 WRAPPED - done"
+rc=0; out=$(CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger: retried close still one row" "$(grep -c . "$LC_LEDGER")" "1"
+# class from the doc name; no front matter
+DOC_SHEP="$W/HIMMEL-9-N1-demo-cloud-shepherd-2026-01-01-RESUME.md"
+SESSION_SAVE="$SESSION_NAME"; DOC_SAVE="$DOC"
+SESSION_NAME="HIMMEL-9-N1-demo-cloud-shepherd-2026-01-01"; DOC="$DOC_SHEP"
+mkcmdline 210 claude -n "$SESSION_NAME" work
+sed "s/$SESSION_SAVE/$SESSION_NAME/" "$LC_T" > "$LC_PROJ/sess-lc2.jsonl"; rm -f "$LC_T"
+mkdoc "- 10:00 WRAPPED - done"
+rc=0; out=$(CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-class: rc 0" "$rc" "0"
+check "ledger-class: shepherd derived from the doc name" "$(jq -r .class "$LC_LEDGER" | tail -1)" "shepherd"
+check "ledger-class: profile unknown without front matter" "$(jq -r .profile "$LC_LEDGER" | tail -1)" "unknown"
+# a broken meter still closes, with a WARN and no row
+LC_BAD="$W/bin/leg-burn-broken.sh"
+printf '#!/usr/bin/env bash\necho boom >&2\nexit 2\n' > "$LC_BAD"; chmod +x "$LC_BAD"
+rm -f "$LC_LEDGER"; reset_calls
+rc=0; out=$(LEG_BURN_BIN="$LC_BAD" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-fail: close still rc 0 when leg-burn fails" "$rc" "0"
+contains "ledger-fail: WARNs" "$out" "WARN"
+exact_count "ledger-fail: TERM still sent" "$(cat "$CALLS")" "kill -TERM 210" "1"
+check "ledger-fail: no row written" "$([ -e "$LC_LEDGER" ] && { wc -l < "$LC_LEDGER" | tr -d ' '; } || echo 0)" "0"
+# an unwritable ledger location also only WARNs
+reset_calls
+rc=0; out=$(LEG_COST_LEDGER="/proc/no-such-dir/x.jsonl" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-unwritable: close still rc 0" "$rc" "0"
+contains "ledger-unwritable: WARNs" "$out" "WARN"
+SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
+
+# --- 26: ledger root follows the DOC, not the cwd (HIMMEL-4231) ---------------
+# HANDOVER_DIR unset and cwd a repo with its own handovers/ stub (a console
+# running from the himmel checkout): the row must land under the handover root
+# that holds the leg doc, never in the cwd repo's stub.
+LR_STATE="$W/lr-state"; LR_STUB="$W/lr-stub"
+mkdir -p "$LR_STATE/handovers/u/himmel" "$LR_STUB/handovers"
+git -C "$LR_STUB" init -q 2>/dev/null || { echo "FAIL: case 26 setup: git init in $LR_STUB"; exit 1; }
+printf '{"repos":{"state":{"path":"%s","user":"u"}}}\n' "$LR_STATE" > "$W/lr-registry.json"
+LR_STEM="HIMMEL-9-N7-rootcase-2026-01-01"
+DOC_SAVE="$DOC"; SESSION_SAVE="$SESSION_NAME"
+DOC="$LR_STATE/handovers/u/himmel/$LR_STEM.md"; SESSION_NAME="$LR_STEM"
+mkcmdline 211 claude -n "$SESSION_NAME" work
+pgrep_x_stub 211
+printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\",\"timestamp\":\"2026-10-03T00:00:00Z\"}" > "$LC_PROJ/sess-lr1.jsonl"
+asst m1 10 1000 2000 100 >> "$LC_PROJ/sess-lr1.jsonl"
+mkdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(cd "$LR_STUB" && CWL_HANDOVER_DIR="" HANDOVER_REGISTRY="$W/lr-registry.json" CWL_PROJECTS_DIR="$LC_PROJ" run "$DOC" 2>&1) || rc=$?
+check "ledger-root: rc 0" "$rc" "0"
+check "ledger-root: row lands under the doc's handover root" "$(grep -c sess-lr1 "$LR_STATE/handovers/.ledger/leg-cost.jsonl" 2>/dev/null)" "1"
+check "ledger-root: nothing in the cwd repo's stub" "$([ -e "$LR_STUB/handovers/.ledger" ] && echo present || echo absent)" "absent"
+pgrep_x_stub 210
+SESSION_NAME="$SESSION_SAVE"; DOC="$DOC_SAVE"
+
+# --- 27: the wrapped leg's own /tmp scratch is archived (HIMMEL-4235) --------
+# A judge dir of THIS leg's PR (leg N1, READY PR 2 -> j2*) and the leg's session scratch dir are
+# archived then reaped after the TERM; the label-named j1a (another PR's judge), another
+# session's dir and a root fixture in the same tree are untouched. Real
+# tmp-reap.sh against a scratch root: the real /tmp is never reached.
+RP_ROOT="$W/reap-tmp"; RP_ARCH="$W/reap-arch"; RP_CL="$RP_ROOT/claude-$(id -u)"
+RP_SID=55555555-5555-5555-5555-555555555555; RP_OTHER=66666666-6666-6666-6666-666666666666
+mkdir -p "$RP_CL/j2a" "$RP_CL/j2b" "$RP_CL/j1a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER" "$RP_ROOT/mog-run.old" "$W/reap-proc/1" "$W/reap-sessions"
+ln -s / "$W/reap-proc/1/cwd"
+for d in "$RP_CL/j2a" "$RP_CL/j1a" "$RP_CL/-proj/$RP_SID" "$RP_CL/-proj/$RP_OTHER"; do printf '{"a":1}\n' > "$d/corpus-x.jsonl"; done
+touch -t 200001010000 "$RP_CL/j2a" "$RP_CL/j2b"   # an idle judge (over the 6 h floor)
+touch -t 200001010000 "$RP_ROOT/mog-run.old"
+RP_PROJ="$W/reap-projects/p"; mkdir -p "$RP_PROJ"
+printf '%s\n' "{\"customTitle\":\"$SESSION_NAME\",\"cwd\":\"$W\"}" > "$RP_PROJ/$RP_SID.jsonl"
+rm -rf "$W/proc"; mkdir -p "$W/proc"
+mkcmdline 210 claude -n "$SESSION_NAME" work
+pgrep_x_stub 210
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 2 abc GREEN"
+reset_calls
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 TMP_REAP_TMP_ROOT="$RP_ROOT" TMP_REAP_ARCHIVE_ROOT="$RP_ARCH" TMP_REAP_SESSIONS_DIR="$W/reap-sessions" TMP_REAP_PROC="$W/reap-proc" \
+    CWL_REAP_BIN="$HERE/../../tmp-reap.sh" CWL_PROJECTS_DIR="$W/reap-projects" run "$DOC" 2>&1) || rc=$?
+check "reap: rc 0" "$rc" "0"
+check "reap: this leg's judge dir reaped" "$([ -e "$RP_CL/j2a" ] && echo present || echo absent)" "absent"
+check "reap: this leg's empty judge dir reaped" "$([ -e "$RP_CL/j2b" ] && echo present || echo absent)" "absent"
+check "reap: this leg's session scratch reaped" "$([ -e "$RP_CL/-proj/$RP_SID" ] && echo present || echo absent)" "absent"
+check "reap: judge corpus archived first" "$(find "$RP_ARCH" -name corpus-x.jsonl 2>/dev/null | grep -c 'j2a')" "1"
+check "reap: another leg's judge dir untouched" "$([ -e "$RP_CL/j1a/corpus-x.jsonl" ] && echo present || echo absent)" "present"
+check "reap: another session's dir untouched" "$([ -e "$RP_CL/-proj/$RP_OTHER/corpus-x.jsonl" ] && echo present || echo absent)" "present"
+check "reap: no fleet-wide fixture sweep" "$([ -e "$RP_ROOT/mog-run.old" ] && echo present || echo absent)" "present"
+
+# --- 28: a reap failure never fails the wrap; a failed dry-run never applies --
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 7 abc GREEN"
+rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work; pgrep_x_stub 210
+reset_calls
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 CWL_REAP_STUB_RC=1 run "$DOC" 2>&1) || rc=$?
+check "reap-fail: close still rc 0" "$rc" "0"
+contains "reap-fail: WARNs" "$out" "WARN"
+exact_count "reap-fail: kill still called once" "$(cat "$CALLS")" "kill -TERM 210" "1"
+not_contains "reap-fail: no apply after a failed dry-run" "$(cat "$CALLS.reap")" "--apply"
+rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work
+reset_calls
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 run "$DOC" 2>&1) || rc=$?
+contains "reap-ok: dry-run is scoped to the leg's PR number (never the leg label)" "$(cat "$CALLS.reap")" "tmp-reap --judge 7"
+contains "reap-ok: apply follows a clean dry-run" "$(cat "$CALLS.reap")" "--apply"
+# a leg with no PR in its doc reaps no judge dir: session half only, never a guess
+mkdoc "- 10:00 WRAPPED - done"
+rm -rf "$W/proc"; mkdir -p "$W/proc"; mkcmdline 210 claude -n "$SESSION_NAME" work
+reset_calls
+rc=0; out=$(CWL_KILL_REMOVES_PROC=1 run "$DOC" 2>&1) || rc=$?
+not_contains "reap-nopr: no judge scope without a PR" "$(cat "$CALLS.reap")" "--judge"
+contains "reap-nopr: says why" "$out" "no PR"
+
+# --- 29: a session that outlives the TERM keeps its scratch (never reaped live) -
+mkdoc "- 10:00 WRAPPED - done" "- 09:50 READY - PR 7 abc GREEN"
+rm -rf "$W/proc"; mkdir -p "$W/proc"
+mkcmdline 210 claude -n "$SESSION_NAME" work
+pgrep_x_stub 210
+reset_calls
+rc=0; out=$(run "$DOC" 2>&1) || rc=$?
+check "reap-alive: close still rc 0" "$rc" "0"
+contains "reap-alive: says it skipped" "$out" "still running"
+check "reap-alive: tmp-reap never called" "$(wc -c < "$CALLS.reap" | tr -d ' ')" "0"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
 post_handovers=absent

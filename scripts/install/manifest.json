@@ -90,7 +90,7 @@
       "scopes": ["project", "user"],
       "profiles": ["luna", "all"],
       "deps": ["qmd-binary"],
-      "probe": { "type": "qmd-index", "collections": ["himmel", "luna"] },
+      "probe": { "type": "qmd-index", "collections": ["himmel", "luna", "skills"] },
       "install": { "type": "qmd" },
       "removable": "full-offboard-only",
       "provenance": { "kinds": ["collection"] }
@@ -412,7 +412,7 @@
       "scopes": ["user"],
       "profiles": ["luna", "all"],
       "deps": [],
-      "probe": { "type": "file-exists", "path": "{homePath}/.claude/skills/obsidian-second-brain/.git" },
+      "probe": { "type": "settings-key", "file": ".claude/settings.json", "key": "enabledPlugins.obsidian-second-brain@himmel", "expect": true },
       "removable": "full-offboard-only",
       "offboard": "advise"
     },
@@ -508,6 +508,17 @@
       "deps": [],
       "probe": { "type": "observability-stack" },
       "install": { "type": "observability", "target": "stack" },
+      "removable": "full-offboard-only",
+      "offboard": "advise"
+    },
+    {
+      "id": "observability-grafana",
+      "kind": "scheduler",
+      "scopes": ["user"],
+      "profiles": ["core", "all"],
+      "deps": ["observability-stack"],
+      "probe": { "type": "observability-grafana" },
+      "install": { "type": "observability", "target": "grafana" },
       "removable": "full-offboard-only",
       "offboard": "advise"
     }

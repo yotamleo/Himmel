@@ -171,6 +171,49 @@ if [ "$apt_total" -gt 0 ] && [ "$apt_total" -eq "$apt_locked" ]; then
 else
   bad "shell-unit-shard: apt-get calls in the install step lacking DPkg::Lock::Timeout ($apt_locked/$apt_total)"
 fi
+# HIMMEL-4073: the plain install runs FIRST; `apt-get update` is only the
+# fallback after it fails, and the step logs which path ran.
+first_apt="$(grep -m1 -o 'apt-get [a-z]*' <<< "$step")"
+else_ln="$(grep -n '^ *else$' <<< "$step" | head -1 | cut -d: -f1)"
+upd_ln="$(grep -n 'apt-get update' <<< "$step" | head -1 | cut -d: -f1)"
+if [ "$first_apt" = "apt-get install" ] && grep -Eq '^ +if sudo timeout [0-9]+ apt-get install ' <<< "$step" \
+   && [ -n "$else_ln" ] && [ -n "$upd_ln" ] && [ "$upd_ln" -gt "$else_ln" ]; then
+  ok "shell-unit-shard: at/atd install tries plain install first, apt-get update only in the else fallback"
+else
+  bad "shell-unit-shard: at/atd install does not try the plain install before an update fallback"
+fi
+# HIMMEL-4077: a swallowed install failure or an update-only fallback leaves
+# `at` absent and lets scheduler tests silently exercise the crontab path.
+if grep -Eq 'apt-get install .*\|\|[[:space:]]*true([[:space:];]|$)' <<< "$step"; then
+  bad "shell-unit-shard: at/atd install swallows an apt-get install failure with || true"
+elif [ "$?" -eq 1 ]; then
+  ok "shell-unit-shard: no apt-get install failure is swallowed with || true"
+else
+  bad "shell-unit-shard: cannot check at/atd install for swallowed failures"
+fi
+fallback="$(awk '/^ *else$/ {f=1; next} f && /^ *fi$/ {f=0} f' <<< "$step")"
+fallback_upd_ln="$(grep -n 'apt-get update' <<< "$fallback" | head -1 | cut -d: -f1)"
+fallback_install_ln="$(grep -nE 'apt-get install .* at([[:space:];]|$)' <<< "$fallback" | head -1 | cut -d: -f1)"
+if [ -n "$fallback_upd_ln" ] && [ -n "$fallback_install_ln" ] \
+   && [ "$fallback_install_ln" -gt "$fallback_upd_ln" ]; then
+  ok "shell-unit-shard: at/atd else fallback installs at after apt-get update"
+else
+  bad "shell-unit-shard: at/atd else fallback must install at after apt-get update"
+fi
+# The fallback path runs every apt call once, so the sum of their `timeout N`
+# values must fit inside the step cap (CR round 1: 300+300+300 > 600).
+apt_sum="$(grep -o 'sudo timeout [0-9]* apt-get' <<< "$step" | awk '{s+=$3} END {print s+0}')"
+cap_min="$(grep -Eo '^        timeout-minutes: [0-9]+$' <<< "$step" | grep -Eo '[0-9]+$')"
+if [ -n "$cap_min" ] && [ "$apt_sum" -gt 0 ] && [ "$apt_sum" -le $((cap_min * 60)) ]; then
+  ok "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) fits the step cap (${cap_min}m)"
+else
+  bad "shell-unit-shard: at/atd install worst-case apt time (${apt_sum}s) exceeds the step cap (${cap_min:-none}m)"
+fi
+if grep -q 'echo .*skipped' <<< "$step" && grep -q 'echo .*falling back' <<< "$step"; then
+  ok "shell-unit-shard: at/atd install logs which path ran"
+else
+  bad "shell-unit-shard: at/atd install does not log which path ran"
+fi
 
 [ "$fails" -eq 0 ] && { echo "all passed"; exit 0; }
 echo "$fails failed" >&2

@@ -47,6 +47,12 @@
 #                       without gets himmel's native gates directly, since the
 #                       framework's hooks would skip without a config
 #                       (HIMMEL-3306).
+#   --only-hooks        Place the git gate hooks and nothing else (HIMMEL-4267):
+#                       no settings wiring, plugins, marketplaces, CLAUDE.md,
+#                       statusline or bundle. What `himmelctl ensure --items
+#                       pre-commit-hooks` runs, so a hooks repair never
+#                       re-adopts the whole user scope. Core profile only;
+#                       not combinable with --skip-hooks.
 #   --handover-mode <inline|external>
 #                       Gate for wire_handover_dir_luna's env.HANDOVER_DIR
 #                       write (HIMMEL-2466). external (the default, today's
@@ -116,6 +122,7 @@ DRY_RUN=0
 FILL_ENV=0
 WITH_GRAPHIFY=0
 SKIP_HOOKS=0
+ONLY_HOOKS=0
 HANDOVER_MODE="external"
 
 # ── Parse args ───────────────────────────────────────────────────────────────
@@ -129,6 +136,7 @@ while [[ $# -gt 0 ]]; do
     --fill-env)       FILL_ENV=1; shift ;;
     --with-graphify)  WITH_GRAPHIFY=1; shift ;;
     --skip-hooks)     SKIP_HOOKS=1; shift ;;
+    --only-hooks)     ONLY_HOOKS=1; shift ;;
     --handover-mode)  HANDOVER_MODE="$2"; shift 2 ;;
     -h|--help)        sed -n '2,/^set -e/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 0 ;;
     *) echo "ERROR: unknown flag: $1" >&2; exit 2 ;;
@@ -138,6 +146,10 @@ done
 case "$PROFILE" in core|luna|all) ;; *) echo "ERROR: invalid --profile: $PROFILE (expected core|luna|all)" >&2; exit 2 ;; esac
 case "$SCOPE"   in project|user)  ;; *) echo "ERROR: invalid --scope: $SCOPE (expected project|user)" >&2; exit 2 ;; esac
 case "$HANDOVER_MODE" in inline|external) ;; *) echo "ERROR: invalid --handover-mode: $HANDOVER_MODE (expected inline|external)" >&2; exit 2 ;; esac
+if [[ $ONLY_HOOKS -eq 1 ]]; then
+  [[ $SKIP_HOOKS -eq 0 ]] || { echo "ERROR: --only-hooks and --skip-hooks contradict each other" >&2; exit 2; }
+  [[ "$PROFILE" == "core" ]] || { echo "ERROR: --only-hooks applies to --profile core only (got: $PROFILE)" >&2; exit 2; }
+fi
 [ -n "$LUNA_TARGET" ] || LUNA_TARGET="$HOME/Documents/luna"
 
 run() { if [[ $DRY_RUN -eq 1 ]]; then echo "DRY: $*"; else "$@"; fi; }
@@ -1252,6 +1264,11 @@ do_luna() {
 
 _dry_note=""; [[ $DRY_RUN -eq 1 ]] && _dry_note=" (dry-run)"
 echo "==> himmel adopt — profile=$PROFILE scope=$SCOPE${_dry_note}"
+if [[ $ONLY_HOOKS -eq 1 ]]; then
+  install_precommit_hooks || exit $?
+  echo "──── Done ────"
+  exit 0
+fi
 case "$PROFILE" in
   core) do_core ;;
   # `luna` historically used --target; also honor an explicit --luna-target so

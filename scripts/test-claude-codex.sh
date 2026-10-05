@@ -43,6 +43,16 @@ run_launcher() {
   fi
 }
 
+# HIMMEL-4086: the gateway must force client-side classification even when
+# the parent enables server-side auto mode. Removing the export breaks this.
+setup
+cat > "$BIN/claude" <<'MOCK'
+#!/usr/bin/env bash
+env > "$HOME/child-env.txt"
+MOCK
+CLAUDE_CODE_AUTO_MODE_SERVER=1 run_launcher "gateway forces client-side auto mode"
+grep -qxF 'CLAUDE_CODE_AUTO_MODE_SERVER=0' "$FAKEHOME/child-env.txt" || { echo "FAIL: child env missing CLAUDE_CODE_AUTO_MODE_SERVER=0"; FAILS=$((FAILS + 1)); }
+
 # HIMMEL-2626: like run_launcher, but for cases that must exit NONZERO — an
 # expected exit code plus a substring the combined stdout+stderr must contain
 # (an empty needle skips the substring check).
@@ -67,6 +77,17 @@ run_launcher_expect() {
   fi
   echo "ok: $name"
 }
+
+# HIMMEL-4098: a settings env CLAUDE_CODE_AUTO_MODE_SERVER beats the launcher export; the seed strips it, project settings and --settings refuse it.
+setup
+printf '%s\n' '{"env":{"Claude_Code_Auto_Mode_Server":"1","KEEP":"yes"}}' > "$FAKEHOME/.claude/settings.json"
+run_launcher "seed strips env.CLAUDE_CODE_AUTO_MODE_SERVER"
+node - "$FAKEHOME/.claude-codex/settings.json" <<'NODE' || FAILS=$((FAILS + 1))
+const assert = require('node:assert/strict');
+const j = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
+assert.ok(!Object.keys(j.env).some((k) => k.toUpperCase() === 'CLAUDE_CODE_AUTO_MODE_SERVER'));
+assert.equal(j.env.KEEP, 'yes');
+NODE
 
 # HIMMEL-2959: sanitize_settings must preserve operator-owned allow rules.
 setup
@@ -103,6 +124,10 @@ for flag in --bare --safe-mode --setting-sources; do
   run_launcher_expect "harness integrity flag still refused: $flag" 3 'REFUSED' "$flag"
 done
 run_launcher_expect 'backend settings override still refused' 3 'REFUSED' --settings '{"env":{"ANTHROPIC_BASE_URL":"https://other.invalid"}}'
+run_launcher_expect 'auto-mode override via --settings refused (HIMMEL-4098)' 3 'REFUSED' --settings '{"env":{"CLAUDE_CODE_AUTO_MODE_SERVER":"1"}}'
+mkdir -p "$WORK/.claude"
+printf '%s\n' '{"env":{"claude_code_auto_mode_server":"1"}}' > "$WORK/.claude/settings.local.json"
+run_launcher_expect 'auto-mode override via project settings refused (HIMMEL-4098)' 3 'REFUSED'
 
 # A named model reaches the load-bearing seeded CLAUDE.md stanza at the file end.
 setup

@@ -20,6 +20,7 @@ fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 contains() { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)); }; }
+notcontains() { grepq "$2" -F -e "$3" && { echo "FAIL - $1: output contains [$3]"; fails=$((fails+1)); } || echo "ok - $1"; }
 
 SHA=0123456789abcdef0123456789abcdef01234567
 PR=77
@@ -51,6 +52,8 @@ case "$args" in
         printf '%s' "${STUB_ROLLUP:-[]}" ;;
     *"--json commits"*)
         printf '%s' "${STUB_COMMITS:-[]}" ;;
+    *"--json body"*)
+        printf '%b' "${STUB_BODY:-}" ;;
     *"commits(first:100)"*)
         printf '%s\n' "${STUB_MERGE_OIDS:-}" ;;
     *"api graphql"*)
@@ -64,6 +67,23 @@ case "$args" in
 esac
 STUB
 chmod +x "$tmp/bin/gh"
+
+# ── jira stub (JIRA_CMD): `get KEY` reads STUB_JIRA_DB lines "KEY<TAB>Status";
+# an absent key is the real CLI's HTTP 404, STUB_JIRA_DOWN=1 is an outage ────
+cat > "$tmp/bin/jira-stub" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "get" ] || { echo "jira-stub: unhandled: $*" >&2; exit 1; }
+[ -n "${STUB_JIRA_DOWN:-}" ] && { echo "jira: get $2 failed: connect ECONNREFUSED" >&2; exit 1; }
+st=$(awk -F'\t' -v k="$2" '$1 == k { print $2 }' "${STUB_JIRA_DB:-/dev/null}")
+if [ -z "$st" ]; then
+    echo "jira: get $2 failed: HTTP 404: Issue does not exist or you do not have permission to see it." >&2
+    exit 1
+fi
+[ "$st" = "MALFORMED" ] && { printf 'garbage with no tabs\n'; exit 0; }
+[ "$st" = "BLANK" ] && st=""
+printf '%s\tTask\t%s\tsummary\n' "$2" "$st"
+STUB
+chmod +x "$tmp/bin/jira-stub"
 export GH_LOG
 PATH="$tmp/bin:$PATH"
 export PATH
@@ -72,6 +92,9 @@ export PATH
 GREEN_ROLLUP='[{"name":"build","status":"COMPLETED","conclusion":"SUCCESS"},{"context":"legacy-ci","state":"SUCCESS"}]'
 GREEN_COMMITS='[{"messageHeadline":"feat(x): [HIMMEL-1] add thing","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"},{"messageHeadline":"fix(x): [HIMMEL-2] tweak","messageBody":""}]'
 GREEN_FILES="scripts/handover/console-kit/ready-check.sh"
+GREEN_BODY='## Summary\nthing\n\n## Ticket coverage\n- ask one: done\n- ask two: done\n\n## Test plan\nx\n'
+JIRA_DB="$tmp/jira.db"
+printf 'HIMMEL-50\tTo Do\nHIMMEL-51\tDone\nHIMMEL-52\tClosed\nHIMMEL-53\tWon'"'"'t Do\nHIMMEL-54\tBLANK\nHIMMEL-55\tMALFORMED\n' > "$JIRA_DB"
 
 seed_ledger_ok() {
     printf '{"kind":"avail","ts":"2026-01-01T00:00:00Z","branch":"b","head":"%s","model":"codex","status":"ok"}\n' "$SHA" > "$LEDGER"
@@ -91,12 +114,14 @@ run() {
         STUB_MERGE_OIDS="${STUB_MERGE_OIDS:-}" \
         STUB_FILES="${STUB_FILES:-$GREEN_FILES}" \
         STUB_FILES_FAIL="${STUB_FILES_FAIL:-}" \
+        STUB_BODY="${STUB_BODY-$GREEN_BODY}" \
+        JIRA_CMD="$tmp/bin/jira-stub" STUB_JIRA_DB="$JIRA_DB" STUB_JIRA_DOWN="${STUB_JIRA_DOWN:-}" \
         PATH="$PATH" GH_LOG="$GH_LOG" \
         bash "$SCRIPT" "$PR" "$SHA")
 }
 
 reset_stubs() {
-    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_MERGE_OIDS STUB_FILES STUB_FILES_FAIL
+    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_MERGE_OIDS STUB_FILES STUB_FILES_FAIL STUB_BODY STUB_JIRA_DOWN
     seed_ledger_ok
 }
 
@@ -254,6 +279,17 @@ rc=0; out="$(run)" || rc=$?
 check "files-unreadable: exit 1" "$rc" "1"
 contains "files-unreadable: check 5 fails" "$out" "[FAIL] 5. cannot read PR files"
 
+# --- 5e. check 5 reads ONLY the first commit (HIMMEL-4128) --------------
+# A docs-only first commit with the trailers on a LATER commit (what a PR-body
+# or follow-up-commit "recovery" amounts to) must still FAIL: the stuck-playbook
+# recovery is a recut, not a trailer added after the fact.
+reset_stubs
+STUB_COMMITS='[{"messageHeadline":"docs: [HIMMEL-1] note","messageBody":""},{"messageHeadline":"fix(x): [HIMMEL-2] code","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"}]'
+rc=0; out="$(run)" || rc=$?
+check "later-commit-trailers: exit 1" "$rc" "1"
+contains "later-commit-trailers: check 5 fails (platforms)" "$out" "missing 'Platforms tested:'"
+contains "later-commit-trailers: check 5 fails (security)" "$out" "missing 'Security reviewed:'"
+
 # --- 6. check 6 fails: a commit subject with no ticket ID ---------------
 reset_stubs
 STUB_COMMITS='[{"messageHeadline":"feat(x): [HIMMEL-1] add thing","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"},{"messageHeadline":"fix(x): tweak with no ticket","messageBody":""}]'
@@ -287,7 +323,145 @@ check "merge-plus-unticketed: exit 1" "$rc" "1"
 contains "merge-plus-unticketed: check 6 fails" "$out" "[FAIL] 6."
 contains "merge-plus-unticketed: names the offending subject, not the merge" "$out" "tweak with no ticket"
 
-# --- 7. HIMMEL-3533: TICKET_ID_PATTERN / JIRA_PROJECT_KEY must resolve from
+# --- 7. HIMMEL-4207: ticket coverage. The PR body needs a `## Ticket coverage`
+# section, one line per ask, each `done` or `deferred → <KEY>`; a deferred key
+# must exist and be open. A Jira error reads UNKNOWN, never PASS. ------------
+reset_stubs
+rc=0; out="$(run)" || rc=$?
+contains "coverage all-done: check 7 passes" "$out" "[PASS] 7."
+
+reset_stubs
+STUB_BODY='## Summary\nthing\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage missing section: exit 1" "$rc" "1"
+contains "coverage missing section: check 7 fails" "$out" "[FAIL] 7."
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done\n- ask two: deferred -> HIMMEL-99999\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage deferred to nonexistent key: exit 1" "$rc" "1"
+contains "coverage nonexistent key: check 7 fails" "$out" "[FAIL] 7."
+contains "coverage nonexistent key: names the key" "$out" "HIMMEL-99999"
+
+for st in 51 52 53; do
+    reset_stubs
+    STUB_BODY='## Ticket coverage\n- ask one: done\n- ask two: deferred \xe2\x86\x92 HIMMEL-'"$st"'\n'
+    rc=0; out="$(run)" || rc=$?
+    check "coverage deferred to closed key HIMMEL-$st: exit 1" "$rc" "1"
+    contains "coverage closed key HIMMEL-$st: check 7 fails" "$out" "[FAIL] 7."
+done
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done\n- ask two: deferred \xe2\x86\x92 HIMMEL-50\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage deferred to open key: exit 0" "$rc" "0"
+contains "coverage open key: check 7 passes" "$out" "[PASS] 7."
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done\n- ask two: deferred -> HIMMEL-50\n'
+STUB_JIRA_DOWN=1
+rc=0; out="$(run)" || rc=$?
+check "coverage jira unreachable: exit 1" "$rc" "1"
+contains "coverage jira unreachable: reads UNKNOWN" "$out" "UNKNOWN"
+case "$out" in *"[PASS] 7."*) echo "FAIL - coverage jira unreachable: must not PASS"; fails=$((fails+1)) ;; *) echo "ok - coverage jira unreachable: no PASS" ;; esac
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done\n- ask two: maybe later\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage unmarked line: exit 1" "$rc" "1"
+contains "coverage unmarked line: check 7 fails" "$out" "[FAIL] 7."
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage empty section: exit 1" "$rc" "1"
+
+# codex-1: `done` must be the line's terminal disposition, not a substring
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: not done\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage 'not done': exit 1" "$rc" "1"
+contains "coverage 'not done': check 7 fails" "$out" "[FAIL] 7."
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done pending verification\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage 'done pending verification': exit 1" "$rc" "1"
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done.\n- ask two: **done**\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage 'done.' / bold done: exit 0" "$rc" "0"
+
+# codex-2: a successful jira get with a blank status is UNKNOWN, never open
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: deferred -> HIMMEL-54\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage blank jira status: exit 1" "$rc" "1"
+contains "coverage blank jira status: reads UNKNOWN" "$out" "UNKNOWN"
+
+# round 2: a deferral must also END the line, and a delimiter-free jira reply is not a status
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: deferred -> HIMMEL-50 pending verification\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage deferral with trailing prose: exit 1" "$rc" "1"
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: deferred -> HIMMEL-50.\n- ask two: deferred \xe2\x86\x92 **HIMMEL-50**\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage deferral with trailing punctuation/bold: exit 0" "$rc" "0"
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: deferred -> HIMMEL-55\n'
+rc=0; out="$(run)" || rc=$?
+check "coverage malformed jira reply: exit 1" "$rc" "1"
+contains "coverage malformed jira reply: reads UNKNOWN" "$out" "UNKNOWN"
+
+# --- 7b. HIMMEL-4300: `--only 7 <pr>` runs just the coverage check, so a leg
+# lints its own PR body before READY with item 7's exact logic (no second copy).
+run7() {
+    (cd "$REPO" && env -u TICKET_ID_PATTERN \
+        JIRA_PROJECT_KEY=HIMMEL STUB_NWO="$NWO" \
+        STUB_BODY="${STUB_BODY-$GREEN_BODY}" \
+        JIRA_CMD="$tmp/bin/jira-stub" STUB_JIRA_DB="$JIRA_DB" \
+        PATH="$PATH" GH_LOG="$GH_LOG" \
+        bash "$SCRIPT" --only 7 "$PR")
+}
+
+reset_stubs
+rc=0; out="$(run7)" || rc=$?
+check "only 7 clean body: exit 0" "$rc" "0"
+contains "only 7 clean body: check 7 passes" "$out" "[PASS] 7."
+contains "only 7 clean body: says PASS" "$out" "COVERAGE-LINT PASS"
+notcontains "only 7 clean body: runs no other check" "$out" "[PASS] 1."
+
+# checks 1-6 must not gate it: a head the stub does not know is irrelevant here
+reset_stubs
+STUB_HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef STUB_UNRESOLVED=3
+rc=0; out="$(run7)" || rc=$?
+check "only 7 ignores items 1-6: exit 0" "$rc" "0"
+
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done\n- ask two: done pending verification\n- ask three: deferred -> HIMMEL-50 (see thread)\n'
+rc=0; out="$(run7)" || rc=$?
+check "only 7 trailing text: exit 1" "$rc" "1"
+contains "only 7 trailing text: names the failing line" "$out" "ask two: done pending verification"
+contains "only 7 trailing text: names the second failing line" "$out" "ask three: deferred -> HIMMEL-50 (see thread)"
+contains "only 7 trailing text: prints the done shape" "$out" "- <ask>: done"
+contains "only 7 trailing text: prints the deferred shape" "$out" "- <ask>: deferred → HIMMEL-<n>"
+contains "only 7 trailing text: says marker LAST" "$out" "marker LAST"
+contains "only 7 trailing text: says FAIL" "$out" "COVERAGE-LINT FAIL"
+
+# the full run prints the same shape message on the same failure
+reset_stubs
+STUB_BODY='## Ticket coverage\n- ask one: done pending verification\n'
+rc=0; out="$(run)" || rc=$?
+contains "full run trailing text: prints the accepted shape" "$out" "- <ask>: done"
+
+rc=0; out="$(cd "$REPO" && bash "$SCRIPT" --only 6 "$PR" 2>&1)" || rc=$?
+check "only 6 refused: exit 2" "$rc" "2"
+
+# --- 8. HIMMEL-3533: TICKET_ID_PATTERN / JIRA_PROJECT_KEY must resolve from
 # ready-check.sh's OWN checkout, never the caller's CWD repo. Fixture mirrors
 # test-bank-preflight-dotenv-root.sh: a scratch "own checkout" (this script +
 # scripts/lib/load-dotenv.sh, laid out at the same relative depth, plus a
@@ -307,6 +481,7 @@ out="$(cd "$REPO" && env -u TICKET_ID_PATTERN -u JIRA_PROJECT_KEY \
     STUB_NWO="$NWO" STUB_HEAD="$SHA" STUB_MSS=CLEAN \
     STUB_ROLLUP="$GREEN_ROLLUP" STUB_UNRESOLVED=0 \
     STUB_COMMITS="$STUB_COMMITS" STUB_FILES="$GREEN_FILES" \
+    STUB_BODY="$GREEN_BODY" JIRA_CMD="$tmp/bin/jira-stub" STUB_JIRA_DB="$JIRA_DB" \
     PATH="$PATH" GH_LOG="$GH_LOG" \
     bash "$own/scripts/handover/console-kit/ready-check.sh" "$PR" "$SHA")" || rc=$?
 check "own-checkout .env: exit 0" "$rc" "0"

@@ -2,6 +2,17 @@
 # One npm entry per package manifest (npm ecosystem also covers bun.lock).
 # github-actions is included for when CI workflows land (HIMMEL-494) — it is a
 # no-op until .github/workflows/ exists.
+#
+# Who bumps what (HIMMEL-4258) — one owner per pin, never two:
+#   Dependabot     npm manifests (above) and every workflow `uses:` (github-actions).
+#   drift loop     scripts/upstreams.json `version_pin` entries (the nightly
+#                  /drift-fix bump): .bun-version (bun-ci), graphify, ast-grep, ...
+#   pin-scan.py    reports (a chore(deps) PR bumps): pre-commit revs (Dependabot's
+#                  pre-commit ecosystem would ignore pin-holds.json), the gitleaks
+#                  ver= + sha, OXLINT_VERSION=, workflow `pip install pkg==ver`.
+# Not watched here on purpose: bun (.bun-version is a version file Dependabot's
+# bun ecosystem does not read; bun.lock is covered by the npm entries) and pip
+# (no requirements file exists; the only pip pins are inline in workflows).
 version: 2
 updates:
   - package-ecosystem: "npm"

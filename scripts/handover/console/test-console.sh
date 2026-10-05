@@ -53,6 +53,11 @@ export HIMMELCTL_CACHE_DIR="$tmp/himmelctl-cache"
 # operator's real registry (Do-Not: tests use scratch copies only).
 export HANDOVER_REGISTRY="$tmp/no-registry-for-this-suite.json"
 
+# HIMMEL-4204: console.sh renders the resolved inbox path into every doc. Pin
+# BRIDGE_ROOT under $tmp for the WHOLE suite so no doc embeds the operator's
+# real home directory (case 8 scans the temp root for private strings).
+export BRIDGE_ROOT="$tmp/bridge"
+
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 
@@ -119,6 +124,18 @@ docB="$root/tester/demorepo/DEMO-nextleg-${today}B-console.md"
 out1="$(console new --bucket demorepo)"
 check "1 new writes the console doc" "$([ -f "$docA" ] && echo yes)" "yes"
 check "2 doc has no surviving placeholder" "$(grep -c '{{' "$docA" 2>/dev/null)" "0"
+# HIMMEL-4204: the step-10/11 commands carry the RESOLVED literal inbox path,
+# never a ${BRIDGE_ROOT:-...} expansion guard-pr-check-literal denies.
+check "2b doc has no BRIDGE_ROOT expansion" "$(grep -c 'BRIDGE_ROOT' "$docA" 2>/dev/null)" "0"
+# shellcheck disable=SC2016  # literal, unexpanded on purpose
+check "2b step-10/11 commands carry no \${ expansion" "$(grep -E 'console-wait.sh|`: >> ' "$docA" 2>/dev/null | grep -cF '${')" "0"
+check "2b doc names the BRIDGE_ROOT override inbox literally" "$(grep -cF "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}A-console.md" "$docA" 2>/dev/null)" "3"
+docInboxDefault="$root/tester/inboxdefault/DEMO-nextleg-${today}A-console.md"
+outInbox="$( unset BRIDGE_ROOT; HOME="$tmp/inboxhome" console new --bucket inboxdefault 2>&1 )"
+tokenInbox="$(token_of "$outInbox")"
+# Release now: a held lock's owner files carry the host name (case 8 leak scan).
+HANDOVER_DIR="$root" bash "$QL" release "$docInboxDefault" "$tokenInbox" >/dev/null 2>&1
+check "2c unset BRIDGE_ROOT renders the HOME default inbox literally" "$(grep -cF "$tmp/inboxhome/.claude/handover/bridge/consoles/DEMO-nextleg-${today}A-console.md" "$docInboxDefault" 2>/dev/null)" "3"
 
 check "3 new prints release-token" "$(printf '%s\n' "$out1" | grep -c '^release-token: ')" "1"
 token1="$(token_of "$out1")"
@@ -167,18 +184,47 @@ after5="$(find "$root" -type f | sort)"
 check "5 dry-run writes nothing" "$before5" "$after5"
 check "5 dry-run prints would-doc" "$(printf '%s\n' "$out5" | grep -c '^would-doc: ')" "1"
 
-# --- 5b (HIMMEL-2973): the printed launch line defaults to --autocompact
-# 200000, and CONSOLE_CONTEXT=1m in the launching shell flips it to auto.
-out5b="$(console new --bucket dryrepo5b --dry-run)"
-check "5b default launch line carries --autocompact 200000" \
-    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact 200000')" "1"
-check "5b default launch line carries no --autocompact auto" \
-    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact auto')" "0"
+# --- 5b (HIMMEL-3884): consoles default to 1m/auto, not standard.
+out5b="$(unset CONSOLE_CONTEXT; console new --bucket dryrepo5b --dry-run)"
+check "5b default launch line carries --autocompact auto" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact auto')" "1"
+check "5b default launch line carries no --autocompact 200000" \
+    "$(printf '%s\n' "$out5b" | grep -c -- '--autocompact 200000')" "0"
+# HIMMEL-4013: the console launch line applies the console plugin profile.
+check "5b launch line carries --settings <console profile>" \
+    "$(printf '%s\n' "$out5b" | grep -c -- 'claude --settings [^ ]*/console.json --model ')" "1"
 out5c="$(CONSOLE_CONTEXT=1m console new --bucket dryrepo5c --dry-run)"
 check "5c CONSOLE_CONTEXT=1m launch line carries --autocompact auto" \
     "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact auto')" "1"
 check "5c CONSOLE_CONTEXT=1m launch line carries no --autocompact 200000" \
     "$(printf '%s\n' "$out5c" | grep -c -- '--autocompact 200000')" "0"
+
+# HIMMEL-3884: catch console default regressions and ignored CLI overrides.
+out3884="$(unset CONSOLE_CONTEXT; console next --bucket demorepo --doc "$docA" --dry-run)"
+check "3884 next defaults to --autocompact auto" \
+    "$(printf '%s\n' "$out3884" | grep -c -- '--autocompact auto')" "1"
+check "3884 next records 1m default auto" \
+    "$(printf '%s\n' "$out3884" | grep -c -- "record-launch.sh DEMO-nextleg-${today}B-console 1m default auto")" "1"
+for command3884 in new next; do
+    out3884="$(CONSOLE_CONTEXT=1m console "$command3884" --bucket demorepo --context standard --dry-run)"
+    check "3884 $command3884 --context standard overrides env" \
+        "$(printf '%s\n' "$out3884" | grep -c -- '--autocompact 200000')" "1"
+    check "3884 $command3884 standard source is explicit" \
+        "$(printf '%s\n' "$out3884" | grep -c -- 'standard explicit 200000')" "1"
+    out3884="$(CONSOLE_CONTEXT=standard console "$command3884" --bucket demorepo --context=1m --dry-run)"
+    check "3884 $command3884 --context=1m overrides env" \
+        "$(printf '%s\n' "$out3884" | grep -c -- '1m explicit auto')" "1"
+    rc3884=0
+    out3884="$(console "$command3884" --bucket demorepo --context bogus --dry-run 2>&1)" || rc3884=$?
+    check "3884 $command3884 bogus context refused" "$rc3884" "2"
+    check "3884 $command3884 bogus diagnostic" \
+        "$(printf '%s\n' "$out3884" | grep -c -- '--context must be 1m or standard')" "1"
+done
+out3884="$(CONSOLE_CONTEXT=standard console new --bucket dry3884 --dry-run)"
+check "3884 env opt-down is explicit" \
+    "$(printf '%s\n' "$out3884" | grep -c -- 'standard explicit 200000')" "1"
+resolved3884="$(. "$REPO_REAL/scripts/lib/console-context.sh"; console_context_default 0 1m; printf '%s %s' "$CONSOLE_CONTEXT_RESOLVED_MODE" "$CONSOLE_CONTEXT_RESOLVED_SOURCE")"
+check "3884 non-console ignores env and stays standard" "$resolved3884" "standard default"
 
 # --- 5d (HIMMEL-3081): the printed launch line must clear the inherited
 # child-session marker. An operator pastes this line into a terminal that was
@@ -211,6 +257,8 @@ check "6 next writes successor stub" "$([ -f "$doc6B" ] && echo yes)" "yes"
 check "6 next writes predecessor HANDOFF" "$([ -f "$handoff6A" ] && echo yes)" "yes"
 check "6 successor stub names the predecessor" "$(grep -c "DEMO-nextleg-${today}A-console.md" "$doc6B")" "1"
 check "6 successor has no surviving placeholder" "$(grep -c '{{' "$doc6B" 2>/dev/null)" "0"
+check "6 successor has no BRIDGE_ROOT expansion" "$(grep -c 'BRIDGE_ROOT' "$doc6B" 2>/dev/null)" "0"
+check "6 successor names its inbox literally" "$(grep -cF "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}B-console.md" "$doc6B" 2>/dev/null)" "3"
 check "6 handoff has no surviving placeholder" "$(grep -c '{{' "$handoff6A" 2>/dev/null)" "0"
 
 # --- 6c (HIMMEL-3266): the GENERATED stub and HANDOFF must not tell the
@@ -267,17 +315,20 @@ log7B="$tmp/work/tester-armrepo-${root_digest}/launch-${session7B}.log"
 
 cat > "$tmp/stub-arm.sh" <<'STUB'
 #!/usr/bin/env bash
-echo "armed: name=$1 doc=$2 signal=$3 deadline=$4" >> "$5"
+[ "$1" = --role ] && shift 2
+echo "armed: name=$1 doc=$2 signal=$3 deadline=$4 context=${7:-${CONSOLE_CONTEXT:-default}}" >> "$5"
 STUB
 chmod +x "$tmp/stub-arm.sh"
 
 out7a="$(console new --bucket armrepo)"
 token7a="$(token_of "$out7a")"
 out7b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
-    CONSOLE_HEADED_ARM="$tmp/stub-arm.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
-    bash "$C" next --bucket armrepo --arm --deadline-min 0 ) )"
+    CONSOLE_HEADED_ARM="$tmp/stub-arm.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" CONSOLE_CONTEXT=1m \
+    bash "$C" next --bucket armrepo --arm --deadline-min 0 --context standard ) )"
 check "7 next --arm reports armed" "$(printf '%s\n' "$out7b" | grep -c '^armed: ')" "1"
 check "7 arm log written" "$([ -f "$log7B" ] && echo yes)" "yes"
+check "3884 explicit context reaches actual arm input" "$(grep -c 'context=standard$' "$log7B")" "1"
+check "3884 explicit context agrees with printed launch" "$(printf '%s\n' "$out7b" | grep -c -- 'standard explicit 200000')" "1"
 check "7 arm log carries armed/signal/deadline/session" \
     "$(grep -cE "armed: name=${session7B} doc=.* signal=.*sig-${session7B} deadline=[0-9]+" "$log7B" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc7A" "$token7a" >/dev/null 2>&1
@@ -309,7 +360,7 @@ leak_free() {
 # every such line must carry a token this run actually saw `new` print — an
 # unrelated
 # leak, or a line that merely LOOKS token-shaped, still fails loudly.
-known_tokens=("$token1" "$token4" "$token6a" "$token6ba" "$token7a")
+known_tokens=("$token1" "$token4" "$token6a" "$token6ba" "$token7a" "$tokenInbox")
 token_residual() {
     local token
     for token in "$@"; do
@@ -1295,8 +1346,8 @@ out56b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     bash "$C" next --bucket rolerepo --arm --deadline-min 0 ) )"
 check "56 next --arm reports armed" "$(printf '%s\n' "$out56b" | grep -c '^armed: ')" "1"
 check "56 CONSOLE_ROLE=console (retired): the stub was invoked" "$(grep -c '' "$record56" 2>/dev/null)" "1"
-check "56 CONSOLE_ROLE=console (retired): stub record has no --role" \
-    "$(grep -c -- '--role' "$record56" 2>/dev/null)" "0"
+check "56 CONSOLE_ROLE=console (retired): the arm is launched --role console (HIMMEL-4052)" \
+    "$(grep -c -- '--role console ' "$record56" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc56A" "$token56a" >/dev/null 2>&1
 
 doc57A="$root/tester/rolerepo2/DEMO-nextleg-${today}A-console.md"
@@ -1313,8 +1364,8 @@ out57b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
     CONSOLE_HEADED_ARM="$tmp/stub-arm-role-57.sh" CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
     bash "$C" next --bucket rolerepo2 --arm --deadline-min 0 ) )"
 check "57 next --arm reports armed" "$(printf '%s\n' "$out57b" | grep -c '^armed: ')" "1"
-check "57 no CONSOLE_ROLE: stub record has no --role" \
-    "$(grep -c -- '--role' "$record57" 2>/dev/null)" "0"
+check "57 no CONSOLE_ROLE: the arm is launched --role console (HIMMEL-4052)" \
+    "$(grep -c -- '--role console ' "$record57" 2>/dev/null)" "1"
 HANDOVER_DIR="$root" bash "$QL" release "$doc57A" "$token57a" >/dev/null 2>&1
 
 # --- 58 (HIMMEL-3136 R2): a stale CONSOLE_ROLE=relay in the environment no
@@ -1339,9 +1390,52 @@ out58b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PR
 check "58 CONSOLE_ROLE=relay (retired): exits 0" "$rc58b" "0"
 check "58 CONSOLE_ROLE=relay (retired): armed line printed" "$(printf '%s\n' "$out58b" | grep -c '^armed: ')" "1"
 check "58 CONSOLE_ROLE=relay (retired): stub invoked" "$([ -e "$record58" ] && echo 1 || echo 0)" "1"
-check "58 CONSOLE_ROLE=relay (retired): stub record has no --role" \
-    "$(grep -c -- '--role' "$record58" 2>/dev/null)" "0"
+check "58 CONSOLE_ROLE=relay (retired): --role console, never relay (HIMMEL-4052)" \
+    "$(grep -c -- '--role console ' "$record58" 2>/dev/null)$(grep -c -- '--role relay' "$record58" 2>/dev/null)" "10"
 HANDOVER_DIR="$root" bash "$QL" release "$doc58A" "$token58a" >/dev/null 2>&1
+
+# --- 58b (HIMMEL-4052): a console profile refusal (profile-settings.sh rc 2)
+# inside launch_cmd must fail the whole command. It ran inside $(...) at the
+# `launch:` / `would-launch:` echoes, so the exit 2 was lost and the arm went on
+# (rc 0) with no profiled launch line. HIMMEL_PROFILE_SETTINGS_DIR under /dev/null
+# makes the resolver's mkdir fail, which is its fail-closed rc 2.
+record58b="$tmp/role-record-58b"
+cat > "$tmp/stub-arm-role-58b.sh" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$record58b"
+STUB
+chmod +x "$tmp/stub-arm-role-58b.sh"
+rc58n=0
+out58n="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_PROFILE_SETTINGS_DIR=/dev/null/no-such CONSOLE_HEADED_ARM="$tmp/stub-arm-role-58b.sh" \
+    CONSOLE_ARM_FOREGROUND=1 CONSOLE_WORK_DIR="$tmp/work" \
+    bash "$C" new --bucket rolerepo4 --arm --deadline-min 0 ) 2>&1 )" || rc58n=$?
+check "58b new --arm with an unresolvable console profile: exit 2" "$rc58n" "2"
+# HIMMEL-4058: the profile is resolved BEFORE the lock, so the refusal leaves no
+# doc and no held lock (the release token must not even have been printed).
+doc58nA="$root/tester/rolerepo4/DEMO-nextleg-${today}A-console.md"
+check "58b new refusal: no doc left behind (HIMMEL-4058)" "$([ -e "$doc58nA" ] && echo 1 || echo 0)" "0"
+check "58b new refusal: no release-token printed (HIMMEL-4058)" "$(printf '%s\n' "$out58n" | grep -c 'release-token')" "0"
+check "58b new refusal: no queue lock held (HIMMEL-4058)" \
+    "$(HANDOVER_DIR="$root" bash "$QL" status "$doc58nA" 2>&1)" "free"
+check "58b refusal: no launch line printed" "$(printf '%s\n' "$out58n" | grep -c '^launch: ')" "0"
+check "58b refusal: the arm was never started" "$([ -e "$record58b" ] && echo 1 || echo 0)" "0"
+rc58d=0
+( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_PROFILE_SETTINGS_DIR=/dev/null/no-such bash "$C" new --bucket rolerepo4 --dry-run ) >/dev/null 2>&1 || rc58d=$?
+check "58b new --dry-run with an unresolvable console profile: exit 2" "$rc58d" "2"
+# `next` refusal must also remove the claimed successor doc (else a retry dies
+# on "successor doc already exists").
+out58x="$(console new --bucket rolerepo5)"
+token58x="$(token_of "$out58x")"
+doc58xA="$root/tester/rolerepo5/DEMO-nextleg-${today}A-console.md"
+doc58xB="$root/tester/rolerepo5/DEMO-nextleg-${today}B-console.md"
+rc58x=0
+( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_PROFILE_SETTINGS_DIR=/dev/null/no-such bash "$C" next --bucket rolerepo5 ) >/dev/null 2>&1 || rc58x=$?
+check "58b next with an unresolvable console profile: exit 2" "$rc58x" "2"
+check "58b next refusal: successor doc removed" "$([ -e "$doc58xB" ] && echo 1 || echo 0)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc58xA" "$token58x" >/dev/null 2>&1
 
 # --- 60: HIMMEL-2973 Delta 6 -- `next` copies the predecessor's
 # `## Live state` verbatim into the successor's HANDOFF `## In flight`
@@ -1444,21 +1538,22 @@ HANDOVER_DIR="$root" bash "$QL" release "$doc60bA" "$token60b" >/dev/null 2>&1
 out61a="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
 check "61 dry-run --arm launch line defaults to claude-opus-5-5" \
-    "$(printf '%s\n' "$out61a" | grep -c '^would-launch: .* claude --model claude-opus-5-5 ')" "1"
+    "$(printf '%s\n' "$out61a" | grep -cF -- '--model claude-opus-5-5\[1m\] ')" "1"
 check "61 dry-run --arm launch line carries no fable model" \
     "$(printf '%s\n' "$out61a" | grep -c 'claude-fable-5-1')" "0"
 out61b="$( ( cd "$fixture_repo" && unset CONSOLE_MODEL && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm --model claude-fable-5-1 ) )"
 check "61 explicit --model claude-fable-5-1 still launches Fable" \
-    "$(printf '%s\n' "$out61b" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+    "$(printf '%s\n' "$out61b" | grep -c '^would-launch: .* claude --settings [^ ]* --model claude-fable-5-1 ')" "1"
 out61c="$( ( cd "$fixture_repo" && CONSOLE_MODEL=claude-fable-5-1 HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
     CONSOLE_WORK_DIR="$tmp/work" bash "$C" new --bucket modeldefault --dry-run --arm ) )"
 check "61 CONSOLE_MODEL=claude-fable-5-1 still launches Fable" \
-    "$(printf '%s\n' "$out61c" | grep -c '^would-launch: .* claude --model claude-fable-5-1 ')" "1"
+    "$(printf '%s\n' "$out61c" | grep -c '^would-launch: .* claude --settings [^ ]* --model claude-fable-5-1 ')" "1"
 
 record61="$tmp/record-61"
 cat > "$tmp/stub-arm-model-61.sh" <<STUB
 #!/usr/bin/env bash
+[ "\$1" = --role ] && shift 2
 printf '%s\n' "\$6" >> "$record61"
 STUB
 chmod +x "$tmp/stub-arm-model-61.sh"
@@ -1514,13 +1609,13 @@ rm -f "$tmp/claude-argv-63"
 run_launch_line "$out63a"
 row63a="$(cat "$LL63/$S63.log" 2>/dev/null || true)"
 case "$row63a" in
-    "headed-arm: role=console session=$S63 context=standard source=default autocompact=200000 launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) r63a=match ;;
+    "headed-arm: role=console session=$S63 context=1m source=default autocompact=auto launched="[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) r63a=match ;;
     *) r63a="nomatch: [$row63a]" ;;
 esac
 check "63a running the pasted line writes one console row: context, source, autocompact, launched" "$r63a" "match"
 argv63a="$(cat "$tmp/claude-argv-63" 2>/dev/null || true)"
 contains() { case "$1" in *"$2"*) echo "ok - $3" ;; *) echo "FAIL - $3: [$1] lacks [$2]"; fails=$((fails+1)) ;; esac; }
-contains "$argv63a" "--autocompact 200000 -n $S63" "63a the row's autocompact is the value claude was launched with"
+contains "$argv63a" "--autocompact auto -n $S63" "63a the row's autocompact is the value claude was launched with"
 contains "$argv63a" "row-existed" "63a the row was already there when claude started"
 HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63a/$S63.md" "$token63a" >/dev/null 2>&1
 
@@ -1575,6 +1670,7 @@ check "64 step 8 no longer calls held the only expected state" \
 # .env of its own and none of the three vars exported by the caller.
 own65="$tmp/own-checkout-65"
 mkdir -p "$own65/scripts"
+cp -r "$REPO_REAL/scripts/lanes" "$own65/scripts/lanes"  # HIMMEL-4052: launch_cmd refusals now propagate, so the fixture needs the profile resolver
 cp -r "$REPO_REAL/scripts/lib" "$own65/scripts/lib"
 cp -r "$REPO_REAL/scripts/handover" "$own65/scripts/handover"
 ln -s "$REPO_REAL/docs" "$own65/docs"
@@ -1617,7 +1713,10 @@ cat > "$tmp/stub-arm-66.sh" <<STUB
 # happens not to print".
 {
     printf 'LEG_PROFILE_SETTINGS=%s\n' "\${LEG_PROFILE_SETTINGS+set}"
+    printf 'HIMMEL_LEG_PROFILE=%s\n' "\${HIMMEL_LEG_PROFILE+set}"
     printf 'HIMMEL_CONSOLE_LEG=%s\n' "\${HIMMEL_CONSOLE_LEG+set}"
+    printf 'LEG_LANE=%s\n' "\${LEG_LANE+set}"
+    printf 'OPENROUTER_MODEL=%s\n' "\${OPENROUTER_MODEL+set}"
     printf 'HEADED_ARM_REQUIRED_AUTOCOMPACT=%s\n' "\${HEADED_ARM_REQUIRED_AUTOCOMPACT+set}"
 } > "$tmp/child-env-66.txt"
 exec "$REPO_REAL/scripts/handover/headed-arm.sh" --dry-run "\$@"
@@ -1635,10 +1734,12 @@ KONSOLE_STUB
 chmod +x "$tmp/konsole-66"
 
 out66b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO \
+    HIMMEL_LEG_PROFILE=leg-impl \
     LEG_PROFILE_SETTINGS=/leaked-66/settings.json LEG_PROFILE_PREFACE=/leaked-66/preface.md \
     LEG_PROFILE_MCP_CONFIG=/leaked-66/mcp.json LEG_CLAUDE_BIN=/leaked-66/claude \
     HIMMEL_LEAN_LEG=1 HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=leaked-console-66 \
     LEG_EFFORT=high CLAUDE_CODE_EFFORT_LEVEL=high CLAUDEX_LANE_OK=1 \
+    LEG_LANE=openrouter OPENROUTER_MODEL=anthropic/claude-sonnet-5.5 \
     CR_TRIGGER_SUPPRESS=1 IMPL_GUARD_OK=1 INLINE_IMPL_OK=1 HIMMEL_READ_CLAMP_LINES=4000 \
     HIMMEL_CONSOLE_RELAY=1 \
     HEADED_ARM_LAUNCHER=/leaked-66/leg-claude-launcher.sh HEADED_ARM_RECORDER=1 \
@@ -1675,6 +1776,12 @@ propagated67="$(grep -v -E '^[[:space:]]*#' "$REPO_REAL/scripts/handover/console
 strip_list67="$( ( . "$REPO_REAL/scripts/lib/console-context.sh"; console_context_leg_env_unset_names ) | sort -u)"
 missing67="$(comm -23 <(printf '%s\n' "$propagated67") <(printf '%s\n' "$strip_list67"))"
 check "67 every leg_propagate_env name in headed-arm-leg.sh is in the strip list" "$missing67" ""
+check "67 armed child's own environment strips LEG_LANE" \
+    "$(grep -c '^LEG_LANE=set$' "$tmp/child-env-66.txt")" "0"
+check "67 armed child's own environment strips OPENROUTER_MODEL" \
+    "$(grep -c '^OPENROUTER_MODEL=set$' "$tmp/child-env-66.txt")" "0"
+check "67 armed child's own environment strips HIMMEL_LEG_PROFILE" \
+    "$(grep -c '^HIMMEL_LEG_PROFILE=set$' "$tmp/child-env-66.txt")" "0"
 
 # --- 68: --project <dir> -- a console for a repo that is NOT this himmel
 # checkout (the himmel-ops plugin's /console, run from e.g. ~/Websites). The
@@ -1982,5 +2089,28 @@ out76="$( cd "$tmp76/foreign-cwd" && env -u USER_SLUG -u FORGE HANDOVER_DIR="$ro
     GIT_DIR="$tmp76/poison/.git" bash "$C" new --dry-run --bucket slug76 2>&1 )"
 check "76 slug ignores an inherited GIT_DIR (checkout's forge login, not GIT_DIR's user.name)" \
     "$(printf '%s\n' "$out76" | grep -c "^would-doc: $root/forge-login-75/slug76/")" "1"
+
+# 77 (HIMMEL-3989): `next` COPIES the predecessor's <stem>.fleet.json to the
+# successor's stem (copy, not rename: the outgoing waiter still reads its own),
+# and the successor stub's ACTION ZERO step 10 names the carried manifest path.
+out77="$(console new --bucket fleet77src)"
+token77="$(token_of "$out77")"
+doc77A="$root/tester/fleet77src/DEMO-nextleg-${today}A-console.md"
+doc77B="$root/tester/fleet77dst/DEMO-nextleg-${today}B-console.md"
+doc77C="$root/tester/fleet77dst2/DEMO-nextleg-${today}B-console.md"
+man77A="${doc77A%.md}.fleet.json"
+man77B="${doc77B%.md}.fleet.json"
+man77C="${doc77C%.md}.fleet.json"
+console next --bucket fleet77dst2 --doc "$doc77A" >/dev/null 2>&1
+check "77 no predecessor manifest: successor gets none (no-op)" "$([ -e "$man77C" ] && echo yes || echo no)" "no"
+check "77 no predecessor manifest: step 10 names the successor's own manifest path" \
+    "$(grep -Fc "$man77C" "$doc77C" 2>/dev/null)" "1"
+printf '{"schema":1,"legs":["/x/leg.md"]}\n' > "$man77A"
+console next --bucket fleet77dst --doc "$doc77A" >/dev/null 2>&1
+check "77 manifest is copied to the successor's stem" "$(cat "$man77B" 2>/dev/null)" '{"schema":1,"legs":["/x/leg.md"]}'
+check "77 the predecessor's manifest is left in place (copy, not rename)" "$([ -f "$man77A" ] && echo yes)" "yes"
+check "77 successor step 10 names the carried manifest path" "$(grep -Fc "$man77B" "$doc77B" 2>/dev/null)" "1"
+check "77 no unrendered {{FLEET_MANIFEST}} left in the successor doc" "$(grep -Fc '{{FLEET_MANIFEST' "$doc77B" 2>/dev/null)" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$doc77A" "$token77" >/dev/null 2>&1
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -237,7 +237,7 @@ const KINDS = ['hook', 'plugin', 'dep', 'wiring', 'vault', 'scheduler', 'lane', 
 // INSTALL_TARGETS so its install descriptor can dispatch to install-stack.ps1
 // (win32-only in Phase A — install-engine.js's buildEntry() 'observability'
 // case).
-const PROBE_TYPES = ['file-exists', 'git-hooks', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'mcp-registered', 'handover-dir', 'dep', 'cmd:has_hermes', 'cmd:is_himmel_dev', 'telegram-access', 'cmd:codex_provisioned', 'cmd:cadence_armed', 'cmd:guardrail_block_status', 'cmd:hermes_checkout', 'cmd:telegram_getme', 'cmd:whisper_ready', 'cmd:python_interpreter', 'distinct-tokens', 'luna-sources', 'cadence-coherence', 'phi-coherence', 'engine-allowlist', 'bridge-health', 'bridge-persistence', 'observability-stack'];
+const PROBE_TYPES = ['file-exists', 'git-hooks', 'settings-key', 'settings-hooks', 'cmd:has_qmd', 'qmd-index', 'mcp-registered', 'handover-dir', 'dep', 'cmd:has_hermes', 'cmd:is_himmel_dev', 'telegram-access', 'cmd:codex_provisioned', 'cmd:cadence_armed', 'cmd:guardrail_block_status', 'cmd:hermes_checkout', 'cmd:telegram_getme', 'cmd:whisper_ready', 'cmd:python_interpreter', 'distinct-tokens', 'luna-sources', 'cadence-coherence', 'phi-coherence', 'engine-allowlist', 'bridge-health', 'bridge-persistence', 'observability-stack', 'observability-grafana'];
 const ITEM_KEYS = ['id', 'kind', 'scopes', 'profiles', 'deps', 'probe'];
 // Optional schema-v2 consumer keys (HIMMEL-755 A1). Permitted by the
 // exact-key check but not required — items authored under schemaVersion:1
@@ -560,6 +560,12 @@ function checkProbeShape(probe, label, errors) {
       // are a fixed convention (restart-stack.sh's own hard allowlist),
       // not per-item configuration — same posture as cmd:codex_provisioned/
       // phi-coherence/bridge-persistence above.
+      reportExtra([]);
+      break;
+    }
+    case 'observability-grafana': {
+      // No fields — HIMMEL-4289. The three himmel-observability-* user units and
+      // their loopback ports are fixed by install-grafana.sh, not per-item config.
       reportExtra([]);
       break;
     }

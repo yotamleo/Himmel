@@ -33,16 +33,23 @@ operators lives in the himmel repo at `scripts/qmd/ensure-qmd-daemon.ps1`.
 
 The plugin **name stays `qmd`** and the server **name stays `qmd`**, so the
 skill reference (`qmd:qmd`) and the MCP tool prefix
-(`mcp__plugin_qmd_qmd__*`) are identical to upstream in NAME — the one
-intentional content delta below (the skill's `allowed-tools` line) is the
-second fork delta; everything else in the skill tree is verbatim upstream.
+(`mcp__plugin_qmd_qmd__*`) are identical to upstream in NAME — the
+intentional content deltas below are the skill's other fork deltas;
+everything else in the skill tree is verbatim upstream.
 
-The `skills/qmd/` skill is copied from upstream with ONE line changed (the
-upstream `release` skill, which is qmd-repo maintenance tooling, is not
-vendored): the skill's `allowed-tools` gains `mcp__plugin_qmd_qmd__*` —
-upstream allows only `mcp__qmd__*`, which does not match the plugin-scoped
-tool prefix the plugin itself produces (pre-existing upstream mismatch;
-harmless there, fixed here since we own the copy).
+The `skills/qmd/` skill is copied from upstream (the upstream `release`
+skill, which is qmd-repo maintenance tooling, is not vendored) with two
+content deltas:
+
+- **One line changed:** the skill's `allowed-tools` gains
+  `mcp__plugin_qmd_qmd__*` — upstream allows only `mcp__qmd__*`, which does
+  not match the plugin-scoped tool prefix the plugin itself produces
+  (pre-existing upstream mismatch; harmless there, fixed here since we own the
+  copy).
+- **One section added:** `What works here (himmel fork, measured)`, under
+  `Collection Filtering` (HIMMEL-4184) — query guidance measured on himmel's
+  own collections with `scripts/eval/qmd-quality/qmd-quality.sh`; re-run that
+  eval before changing it.
 
 ## Freshness & lifecycle
 
@@ -79,16 +86,18 @@ not carry the ceiling yet (HIMMEL-3751).
 
 ## Upstream watch
 
-The standalone `qmd` CLI installs from a local clone of upstream `tobi/qmd`
-(pinned to an immutable commit SHA rather than a mutable branch — HIMMEL-911
+The standalone `qmd` CLI installs from a local clone of the carried fork
+`yotamleo/qmd` until tobi/qmd#1029 is fixed upstream (pinned to an immutable commit SHA rather than a mutable branch — HIMMEL-911
 — cloned + built with bun, then junctioned/symlinked onto the bun-global
 `@tobilu/qmd` path — `scripts/lib/qmd-bin.sh`, HIMMEL-877), not
 `bun add -g @tobilu/qmd` (that command EPERM-wedges on this project's
-machines and bun blocks its postinstall script). Until HIMMEL-3045 that clone
-tracked a himmel-owned fork (`yotamleo/qmd`) carrying two local fixes; upstream
-merged both under its own SHAs, so the fork was dropped and the clone now
-points at `tobi/qmd` directly (the fork's history stays on `yotamleo/qmd` as
-archive tags). This
+machines and bun blocks its postinstall script). The fork carries two
+commits on top of `tobi/qmd` main that make the `bin/qmd` launcher forward
+SIGINT/SIGTERM/SIGHUP to its bun child (HIMMEL-3956, upstream PR
+tobi/qmd#1030). When that merges, HIMMEL-3982 pins back to `tobi/qmd` and
+`qmd_install` re-points an existing clone's origin in place (HIMMEL-3045
+dropped an earlier fork the same way). This
 plugin's **manifest + skill** stay pinned separately and are low-churn.
 Re-sync `skills/qmd/` from `tobi/qmd` if the upstream search skill changes
-materially; re-sync the CLI clone per `docs/setup/new-machine.md`.
+materially, keeping both skill deltas above; re-sync the CLI clone per
+`docs/setup/new-machine.md`.

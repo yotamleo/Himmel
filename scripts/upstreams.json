@@ -30,9 +30,9 @@
       "kind": "commit_head",
       "mode": "pin",
       "tracked_repo": "jarrodwatts/claude-hud",
-      "pinned_commit": "939eb66485832dead1b0a28a954f76f7aa2bdb06",
+      "pinned_commit": "d46bbd765c8bd54da56e0ecf17c7e649a5a0b7d1",
       "tier": "A",
-      "note": "Vendored at marketplace/plugins/claude-hud (VENDORED.md); pin = main HEAD 939eb66, 10 commits past v0.8.0 (HIMMEL-2274, fork-drift issue #518). The local vendored-tree drift (our own edits) is separately guarded by scripts/statusline/check-hud-drift.sh (himmel-dev pre-commit); this entry guards UPSTREAM advance. Not in marketplace.json by design — it is the statusline renderer (wired via node), not a marketplace plugin."
+      "note": "Vendored at marketplace/plugins/claude-hud (VENDORED.md); pin = v0.9.0 release commit d46bbd7 (HIMMEL-4085). The local vendored-tree drift (our own edits) is separately guarded by scripts/statusline/check-hud-drift.sh (himmel-dev pre-commit); this entry guards UPSTREAM advance. Not in marketplace.json by design — it is the statusline renderer (wired via node), not a marketplace plugin."
     },
     {
       "name": "hermes-agent",
@@ -72,6 +72,39 @@
         "note": "PyPI package installed via `uv tool install`. Safe to run unattended: non-interactive, idempotent, no sudo, no remote-script-pipe-to-shell, and it resolves through uv rather than fetching a release artifact. Low blast radius too — twitter-cli is a plain subprocess call from marketplace/plugins/obsidian-triage/tools/twitter-cli-enrich.mjs, wired into no hook, so a regression breaks X-thread enrichment and nothing else. Tier A (proactive) with no known-bug caveat, so chasing releases is the declared stance."
       },
       "note": "Installed CLI at ~/.local/bin/twitter (consumed by the telegram clipper). Tier A (proactive). UNCHECKED if twitter absent / --version yields no parseable version."
+    },
+    {
+      "name": "ast-grep",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "ast-grep/ast-grep",
+      "synced_base": "0.45.3",
+      "version_pin": {
+        "file": "scripts/machine-setup/install-code-kit-clis.sh",
+        "template": "AST_GREP_VERSION:-{version}"
+      },
+      "tier": "A",
+      "note": "HIMMEL-4024 opt-in code kit CLI (structural search/rewrite, MIT, 0 listing tokens), installed by scripts/machine-setup/install-code-kit-clis.sh via npm @ast-grep/cli. Pinned at release tag 0.45.3 (commit 979c143639e3588c31f563091e69398683ed34f0 per HIMMEL-4017 resource-map); version_pin lets the nightly bump rewrite the install pin and synced_base together."
+    },
+    {
+      "name": "shfmt",
+      "kind": "tag_release",
+      "mode": "probe",
+      "tracked_repo": "mvdan/sh",
+      "version_command": "shfmt --version",
+      "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z.-]*",
+      "tier": "B",
+      "note": "HIMMEL-4024 opt-in code kit CLI (shell formatter), installed from the system package manager by scripts/machine-setup/install-code-kit-clis.sh, so distro-versioned: BEHIND is the normal steady state and report-only (no upgrade command). UNCHECKED if shfmt is absent."
+    },
+    {
+      "name": "bats",
+      "kind": "tag_release",
+      "mode": "probe",
+      "tracked_repo": "bats-core/bats-core",
+      "version_command": "bats --version",
+      "version_regex": "[0-9]+\\.[0-9]+\\.[0-9]+[0-9A-Za-z.-]*",
+      "tier": "B",
+      "note": "HIMMEL-4024 opt-in code kit CLI (bash test runner), installed from the system package manager by scripts/machine-setup/install-code-kit-clis.sh, so distro-versioned: BEHIND is the normal steady state and report-only (no upgrade command). UNCHECKED if bats is absent."
     },
     {
       "name": "luna-calendar",
@@ -132,7 +165,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "Graphify-Labs/graphify",
-      "synced_base": "0.9.66",
+      "synced_base": "0.9.75",
       "latest_source": "release",
       "version_pin": { "file": "scripts/lib/graphify-bin.sh", "template": "GRAPHIFY_VERSION:-{version}" },
       "tier": "A",
@@ -155,7 +188,15 @@
       "tracked_repo": "tobi/qmd",
       "synced_base": "2.8.3",
       "tier": "B",
-      "note": "DE-FORKED from yotamleo/qmd in HIMMEL-3045: HIMMEL-2882 found upstream tobi/qmd had merged both of the fork's carried bugfixes (Windows index-name path normalization, a REST JSON.parse guard) under its own SHAs (2d5806fb, 4fde5662, re-authored by the fork maintainer directly against upstream), collapsing the fork's delta to EMPTY, so himmel now consumes tobi/qmd directly (the fork's history is archived as tags on yotamleo/qmd, not deleted). tracked_repo is the TRUE upstream (tobi/qmd). The in-repo pin is a full commit SHA (`_qmd_fork_ref` in scripts/lib/qmd-bin.sh), not a version, so this entry deliberately carries NO `version_pin` — there is no `{version}` literal for scripts/upstreams/apply-drift-bump.sh to rewrite; the nightly drift-fix cadence reports it SKIP (manual) and leaves it alone, unchanged by the de-fork. synced_base = the upstream STABLE tag the pin was last audited against (2.8.3, HIMMEL-2136 / fork-drift #518, 2026-08-26); the pin itself sits ahead of it on unreleased upstream main (`04e4dbd8245c527a88f1a8f0bda547aef9ca81fb`, HIMMEL-2882) — moving either the pin or synced_base past this is HIMMEL-3041's job (tobi/qmd#950, open), not a mechanical bump. Tier B (reactive) — next signal to re-audit is upstream main advancing past the pin."
+      "fork": {
+        "fork_repo": "https://github.com/yotamleo/qmd.git",
+        "upstream_repo": "https://github.com/tobi/qmd.git",
+        "pin_file": "scripts/lib/qmd-bin.sh",
+        "pin_template": "QMD_FORK_REF:-{sha}",
+        "work_dir": "${HOME}/.himmel/fork-resync",
+        "note": "RE-FORKED in HIMMEL-3956 (restores the block HIMMEL-3045 dropped): the pin is fork branch `fix/launcher-forward-signals` @ 932839a2a4cc4b894b1fd5fb2a86758321985c56 (a merge commit of fork PR #13 on that branch, not on the fork's main), seven commits on top of upstream main 04e4dbd8245c527a88f1a8f0bda547aef9ca81fb: two make the bin/qmd node launcher forward SIGINT/SIGTERM/SIGHUP to its bun child, two (HIMMEL-4247, fork #11 and #12) bound a hung native rerank with a timeout and RRF fallback and report rerankTimedOut (a timed-out `qmd query` otherwise orphans bun at ~99 % CPU), three (HIMMEL-4237, fork #13) bound the rerank model load with a timeout. The delta modifies an upstream file (bin/qmd), so the /fork-resync audit reports NON-ADDITIVE (rc=4) by design, like the HIMMEL-2136 delta did - an expected known gap, not a regression. Return condition: tobi/qmd#1030 (fixes #1029) merged, or tobi/qmd main carrying an equivalent launcher signal fix, AND upstream equivalents of the rerank timeout/RRF fallback, rerankTimedOut and rerank model-load timeout commits (or an explicit decision to retire them); then HIMMEL-3982 pins _qmd_fork_ref/_qmd_fork_repo back to tobi/qmd and drops this block again (qmd_install re-points an existing clone's origin with `git remote set-url`, no re-clone). Signals: scripts/upstreams/upstream-watch.sh lists #1030 under Closed / merged when it merges (it tracks every operator-authored PR in a foreign repo); this block keeps the nightly /fork-resync audit rebasing the delta onto new upstream tags - a rebase that comes out EMPTY means upstream absorbed the fix. Scratch clones only (work_dir) - never the live $HOME/.himmel/qmd-fork install; nothing is pushed without --push."
+      },
+      "note": "Carried fork yotamleo/qmd again since HIMMEL-3956 (see `fork`); earlier DE-FORKED in HIMMEL-3045: HIMMEL-2882 found upstream tobi/qmd had merged both of the fork's carried bugfixes (Windows index-name path normalization, a REST JSON.parse guard) under its own SHAs (2d5806fb, 4fde5662, re-authored by the fork maintainer directly against upstream), collapsing the fork's delta to EMPTY, so himmel now consumes tobi/qmd directly (the fork's history is archived as tags on yotamleo/qmd, not deleted). tracked_repo is the TRUE upstream (tobi/qmd). The in-repo pin is a full commit SHA (`_qmd_fork_ref` in scripts/lib/qmd-bin.sh), not a version, so this entry deliberately carries NO `version_pin` — there is no `{version}` literal for scripts/upstreams/apply-drift-bump.sh to rewrite; the nightly drift-fix cadence reports it SKIP (manual) and leaves it alone, unchanged by the de-fork. synced_base = the upstream STABLE tag the pin was last audited against (2.8.3, HIMMEL-2136 / fork-drift #518, 2026-08-26); the pin itself sits ahead of it: the fork commit 932839a2a4cc4b894b1fd5fb2a86758321985c56 on top of unreleased upstream main `04e4dbd8245c527a88f1a8f0bda547aef9ca81fb` (HIMMEL-2882, HIMMEL-3956) — moving either the pin or synced_base past this is HIMMEL-3041's job (tobi/qmd#950, open), not a mechanical bump. Tier B (reactive) — next signal to re-audit is upstream main advancing past the pin."
     },
     {
       "name": "superpowers-skills",
@@ -174,6 +215,21 @@
       "synced_base": "1.2.3",
       "tier": "B",
       "note": "ONE skill vendored verbatim at marketplace/plugins/lean-skills/skills/grilling (HIMMEL-3064); the plugin's other 10 exposed skills were invoked 0 times across 1628 local transcripts and are not carried. The upstream skill ships an agents/openai.yaml (Codex interface metadata) dropped here as harness-specific. grilling reaches himmel through inject-minerva-critic.sh's namespace-agnostic `*:grilling|grilling` matcher, which keeps routing the bare vendored name — that matcher is why de-plugining grilling needed no hook change. Tier B (reactive): one short prose skill, so BEHIND is a fine steady state; re-vendor when a release actually touches grilling/SKILL.md. No `version_pin` — same manual-repair discipline as the superpowers-skills row."
+    },
+    {
+      "name": "bun-ci",
+      "kind": "tag_release",
+      "mode": "base",
+      "tracked_repo": "oven-sh/bun",
+      "synced_base": "1.4.2",
+      "latest_source": "release",
+      "tag_prefix": "bun-v",
+      "version_pin": {
+        "file": ".bun-version",
+        "template": "{version}"
+      },
+      "tier": "A",
+      "note": "bun version CI installs (HIMMEL-4258). Every setup-bun step reads the repo-root .bun-version (bun-version-file), an exact semver, so setup-bun builds the release URL directly instead of listing bun's tags through api.github.com (a 503 there killed jobs before any test ran). version_pin makes the nightly bump rewrite .bun-version and synced_base together; the template is the bare {version} because the file holds nothing else. Bun tags its releases `bun-v<version>` (plus a rolling `canary`), so tag_prefix strips the stream prefix and latest_source=release reads the maintainer's latest non-prerelease. pin-scan.py does not report this pin: setup-bun's `uses:` is the action, not the bun version, and .bun-version is not a workflow file."
     }
   ]
 }

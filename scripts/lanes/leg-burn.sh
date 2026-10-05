@@ -59,6 +59,8 @@
 #                    all cache reads spent re-reading the fixed per-call floor.
 #   compaction-rewarm compactions * the mean context of the first call after
 #                    each compact_boundary - the re-warm cost compactions add.
+#   profile          optional final field from --profile <name> or
+#                    HIMMEL_LEG_PROFILE; omitted when neither is set.
 #
 # HIMMEL-2996 --raw / LEG_BURN_RAW=1: out=, cache-read=, cache-create= and
 # input= print as plain integers instead of the %.1fk-rounded default, so a
@@ -78,14 +80,24 @@
 set -u
 
 usage() {
-    echo "usage: leg-burn.sh [--raw] <transcript.jsonl|session-name>" >&2
+    echo "usage: leg-burn.sh [--raw] [--profile <name>] <transcript.jsonl|session-name>" >&2
 }
 
 RAW=0
-if [ "${1:-}" = "--raw" ]; then
-    RAW=1
-    shift
-fi
+PROFILE="${HIMMEL_LEG_PROFILE:-}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --raw) RAW=1; shift ;;
+        --profile)
+            if [ "$#" -lt 2 ] || [ -z "$2" ]; then usage; exit 2; fi
+            PROFILE="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
+case "$PROFILE" in
+    *[!A-Za-z0-9._,-]*) echo "leg-burn: invalid profile name: $PROFILE" >&2; exit 2 ;;
+esac
+PROFILE_FIELD="${PROFILE:+ profile=$PROFILE}"
 [ "${LEG_BURN_RAW:-0}" = "1" ] && RAW=1
 
 if [ "$#" -ne 1 ] || [ -z "${1:-}" ]; then
@@ -205,6 +217,6 @@ CACHE_HEALTH=$(awk -v cr="$CR" -v inp="$INP" \
 COMPACTION_REWARM=$(awk -v n="$REWARM_N" -v s="$REWARM_SUM" -v comp="$COMP" \
     'BEGIN { printf "%.10g", (n > 0 ? comp * (s / n) : 0) }')
 
-printf 'leg-burn %s: calls=%s avg-ctx=%s first-turn=%s out=%s compactions=%s text-only=%s cache-read=%s cache-create=%s input=%s cache-health=%s%% cost-eq=%s floor-share=%s%% compaction-rewarm=%s\n' \
+printf 'leg-burn %s: calls=%s avg-ctx=%s first-turn=%s out=%s compactions=%s text-only=%s cache-read=%s cache-create=%s input=%s cache-health=%s%% cost-eq=%s floor-share=%s%% compaction-rewarm=%s%s\n' \
     "$(basename "$TRANSCRIPT")" "$CALLS" "$(k "$AVG")" "$(k "$FIRST")" "$(kr "$OUT" k)" "$COMP" "$TEXT_ONLY" \
-    "$(kr "$CR" kf)" "$(kr "$CC" kf)" "$(kr "$INP" kf)" "$CACHE_HEALTH" "$(kf "$COST_EQ")" "$FLOOR_SHARE" "$(kf "$COMPACTION_REWARM")"
+    "$(kr "$CR" kf)" "$(kr "$CC" kf)" "$(kr "$INP" kf)" "$CACHE_HEALTH" "$(kf "$COST_EQ")" "$FLOOR_SHARE" "$(kf "$COMPACTION_REWARM")" "$PROFILE_FIELD"

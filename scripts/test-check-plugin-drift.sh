@@ -168,7 +168,11 @@ assert 'fork' not in co
 
 qmd = entries['qmd']
 assert qmd['tracked_repo'] == 'tobi/qmd'
-assert 'fork' not in qmd
+# HIMMEL-3956 re-carried the fork (launcher signal forwarding) until
+# tobi/qmd#1030 lands; HIMMEL-3982 drops this block again.
+assert qmd['fork']['fork_repo'] == 'https://github.com/yotamleo/qmd.git'
+assert qmd['fork']['upstream_repo'] == 'https://github.com/tobi/qmd.git'
+assert qmd['fork']['pin_file'] == 'scripts/lib/qmd-bin.sh'
 assert 'version_pin' not in qmd
 
 plugin_root = root / 'templates/luna-second-brain/.obsidian/plugins'
@@ -212,7 +216,7 @@ PY
 )"
 audit_rc=$?
 if [ "$audit_rc" -eq 0 ]; then
-  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (plain pin, de-forked HIMMEL-3045), the five default-installed luna plugins + the opt-in github-sync (HIMMEL-3066), scripts/lib pins, codex dynamic discovery, and explicit skips"
+  ok "zero-gap inventory covers claude-obsidian (plain pin), qmd (carried fork, HIMMEL-3956), the five default-installed luna plugins + the opt-in github-sync (HIMMEL-3066), scripts/lib pins, codex dynamic discovery, and explicit skips"
 else
   bad "zero-gap inventory invalid: $audit_out"
 fi
@@ -891,6 +895,9 @@ cat > "$W12/bin/curl" <<'CURL'
 #!/usr/bin/env bash
 for last; do :; done
 pkg="${last#https://registry.npmjs.org/}"; pkg="${pkg%/latest}"
+case "$last" in https://pypi.org/pypi/*) pkg="${last#https://pypi.org/pypi/}"; pkg="${pkg%/json}"
+  ver=$(grep -E "^${pkg}=" "$PINSTATE/pypi" 2>/dev/null | head -1 | cut -d= -f2); [ -n "$ver" ] || exit 22
+  printf '{"info":{"version":"%s"}}\n' "$ver"; exit 0 ;; esac
 ver=$(grep -E "^${pkg}=" "$PINSTATE/npm" 2>/dev/null | head -1 | cut -d= -f2)
 [ -n "$ver" ] || ver="${PINSTATE_DEFAULT:-}"
 [ -n "$ver" ] || exit 22
@@ -945,7 +952,10 @@ jobs:
     steps:
       - uses: owner/act@v3
       - uses: owner/act2@v1
+      - run: python -m pip install --disable-pip-version-check pypi-stale==1.0.0 pypi-second==3.0.0 pypi-dev==1.2.3.dev1
+      - run: python -m pip install pypi-fresh==2.0.0
 YML
+printf 'pypi-stale=1.2.0\npypi-fresh=2.0.0\npypi-second=3.0.0\n' > "$W12/state/pypi"
 printf '#!/usr/bin/env bash\nOXLINT_VERSION=1.0.0\n' > "$W12/root/scripts/hooks/h.sh"
 # A vendored upstream tree (VENDORED.md marker): its pins follow upstream, not npm-latest.
 mkdir -p "$W12/root/vend"; printf 'vend-pkg=9.0.0\n' >> "$W12/state/npm"
@@ -970,8 +980,11 @@ if grepq "$pin_sec" '^  npm:unreach-pkg .*UNCHECKED'; then ok "pin-scan: unreach
 if grepq "$pin_sec" '^  npm:oxlint 1\.0\.0 (scripts/hooks/h\.sh): BEHIND'; then ok "pin-scan: OXLINT_VERSION= literal watched -> BEHIND"; else bad "oxlint literal not BEHIND; $(printf '%s' "$pin_sec" | grep oxlint)"; fi
 if grepq "$pin_sec" '^  gh:owner/hookrepo v1\.0\.0 (\.pre-commit-config\.yaml): BEHIND'; then ok "pin-scan: stale pre-commit rev -> BEHIND"; else bad "hookrepo not BEHIND"; fi
 if grepq "$pin_sec" '^  gh:owner/heldrepo v1\.0\.0 .*: HELD'; then ok "pin-scan: recorded hold -> HELD, not drift"; else bad "heldrepo not HELD"; fi
-if grepq "$pin_sec" '^  gh:owner/act v3 .*: CURRENT'; then ok "pin-scan: major-only action pin tracks its major -> CURRENT"; else bad "act@v3 not CURRENT"; fi
-if grepq "$pin_sec" '^  gh:owner/act2 v1 .*: BEHIND'; then ok "pin-scan: action a major behind -> BEHIND"; else bad "act2@v1 not BEHIND"; fi
+if grepq "$pin_sec" 'owner/act'; then bad "pin-scan reported a workflow uses: pin; Dependabot owns those; $(printf '%s' "$pin_sec" | grep owner/act)"; else ok "pin-scan skips workflow uses: pins (Dependabot github-actions owns them)"; fi
+if grepq "$pin_sec" '^  pypi:pypi-stale 1\.0\.0 (\.github/workflows/w\.yml): BEHIND'; then ok "pin-scan: stale workflow pip == pin -> BEHIND"; else bad "pypi-stale not BEHIND; $(printf '%s' "$pin_sec" | grep pypi-stale)"; fi
+if grepq "$pin_sec" '^  pypi:pypi-fresh 2\.0\.0 .*: CURRENT'; then ok "pin-scan: current workflow pip == pin -> CURRENT"; else bad "pypi-fresh not CURRENT"; fi
+if grepq "$pin_sec" '^  pypi:pypi-second 3\.0\.0 .*: CURRENT'; then ok "pin-scan: second == pin on one pip install line is also scanned"; else bad "pypi-second not discovered"; fi
+if grepq "$pin_sec" 'pypi:pypi-dev'; then bad "a .dev version suffix was truncated and reported"; else ok "pin-scan: a pip pin with a version suffix is not misreported"; fi
 if grepq "$pin_sec" '^  npm:vend-pkg 1\.0\.0 (vend): VENDORED'; then ok "pin-scan: pin inside a VENDORED.md tree -> VENDORED, not BEHIND npm-latest"; else bad "vend-pkg not VENDORED; $(printf '%s' "$pin_sec" | grep vend-pkg)"; fi
 if [ "$pin_rc" -eq 2 ]; then ok "pin-scan drift run exits 2"; else bad "pin-scan drift run rc=$pin_rc; expected 2"; fi
 # A hold expires when upstream ships something newer than the one reviewed.
@@ -989,6 +1002,108 @@ if [ -z "$cov_missing" ]; then ok "pin-scan discovers every tracked package.json
 if grepq "$cov_out" -F 'scripts/hooks/check-oxlint-complexity.sh' && grepq "$cov_out" -F 'scripts/hooks/check-oxlint-hardening.sh'; then ok "pin-scan discovers both oxlint hook pins"; else bad "oxlint hook pins not discovered"; fi
 if grepq "$cov_out" -E '^  gh:gitleaks/gitleaks v[0-9.]+ \([^)]*\.github/workflows/ci\.yml[^)]*\.pre-commit-config\.yaml'; then ok "pin-scan reads the ci.yml gitleaks literal into the same row as the hook rev"; else bad "ci.yml gitleaks pin not discovered with the hook rev; $(printf '%s' "$cov_out" | grep gitleaks)"; fi
 rm -rf "$W12" "$PIN_EMPTY"
+
+# 13. Non-semver tag streams + git-subdir sources (HIMMEL-4012). Hermetic: a
+#     stubbed gh serves tags/heads from a state dir; a fixture marketplace.json
+#     and plugin-upstreams.json carry the shapes under test.
+#     (a) an override with `tag_prefix` ("skill-v") compares only that stream's
+#         tags — the engine-v* stream and bare semver tags must not win;
+#     (b) a `git-subdir` source with a sha is read like a url source (HEAD
+#         compare) instead of silently vanishing from the inventory.
+W13="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-stream.XXXXXX")" || { bad "tag_prefix/git-subdir fixture: mktemp -d failed"; exit 1; }; mkdir -p "$W13/bin" "$W13/state"
+cat >"$W13/bin/gh" <<'GH'
+#!/usr/bin/env bash
+a="$*"
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+repo=$(printf '%s\n' "$a" | sed -n 's|.*repos/\([^/ ]*/[^/ ]*\)/.*|\1|p')
+case "$a" in
+  *"/compare/"*) printf '3\n'; exit 0 ;;
+  *"/tags"*) grep -E "^${repo}=" "$GHSTATE/tags" 2>/dev/null | head -1 | cut -d= -f2- | tr ',' '\n'; exit 0 ;;
+  *"commits/HEAD"*) grep -E "^${repo}=" "$GHSTATE/heads" 2>/dev/null | head -1 | cut -d= -f2; exit 0 ;;
+esac
+exit 0
+GH
+chmod +x "$W13/bin/gh"
+SUB_SHA=aaaabbbbccccdddd000011112222333344445555
+SUB_HEAD=ffffeeeeddddcccc999988887777666655554444
+printf 'o/stream-cur=engine-v0.1.9,skill-v4.3.1,skill-v4.3.0,v9.9.9\no/stream-behind=engine-v0.1.9,skill-v4.4.0,skill-v4.3.1\no/stream-none=v1.0.0\n' >"$W13/state/tags"
+printf 'o/sub-ok=%s\no/sub-behind=%s\n' "$SUB_SHA" "$SUB_HEAD" >"$W13/state/heads"
+cat >"$W13/m.json" <<JSON
+{"plugins":[
+ {"name":"stream-cur","source":{"source":"url","url":"https://github.com/o/stream-cur.git","ref":"skill-v4.3.1"}},
+ {"name":"stream-behind","source":{"source":"url","url":"https://github.com/o/stream-behind.git","ref":"skill-v4.3.1"}},
+ {"name":"stream-none","source":{"source":"url","url":"https://github.com/o/stream-none.git","ref":"skill-v4.3.1"}},
+ {"name":"sub-ok","source":{"source":"git-subdir","url":"https://github.com/o/sub-ok.git","path":"plugin","sha":"$SUB_SHA"}},
+ {"name":"sub-behind","source":{"source":"git-subdir","url":"https://github.com/o/sub-behind.git","path":"plugin","sha":"$SUB_SHA"}}
+]}
+JSON
+cat >"$W13/u.json" <<JSON
+{
+ "stream-cur":{"upstream_repo":"o/stream-cur","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v"},
+ "stream-behind":{"upstream_repo":"o/stream-behind","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v"},
+ "stream-none":{"upstream_repo":"o/stream-none","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v"}
+}
+JSON
+printf '{}' >"$W13/empty.json"
+GHSTATE="$W13/state" PATH="$W13/bin:$PATH" DRIFT_MJSON="$W13/m.json" DRIFT_UPSTREAMS="$W13/u.json" \
+  DRIFT_REGISTRY="$W13/empty.json" DRIFT_KNOWN_MARKETPLACES=/dev/null \
+  bash "$SCRIPT" >"$W13/out.txt" 2>&1
+out13="$(cat "$W13/out.txt")"
+if grepq "$out13" '^  stream-cur: CURRENT'; then ok "tag_prefix: synced to the highest skill-v tag -> CURRENT (engine-v/bare v9.9.9 ignored)"; else bad "stream-cur not CURRENT; $(grep stream-cur "$W13/out.txt")"; fi
+if grepq "$out13" '^  stream-behind: BEHIND'; then ok "tag_prefix: newer skill-v tag -> BEHIND"; else bad "stream-behind not BEHIND; $(grep stream-behind "$W13/out.txt")"; fi
+if grepq "$out13" '^  stream-none: ? no stable version tags'; then ok "tag_prefix: no tag in the stream -> UNCHECKED, never a false CURRENT"; else bad "stream-none not UNCHECKED; $(grep stream-none "$W13/out.txt")"; fi
+if grepq "$out13" '^  sub-ok: CURRENT'; then ok "git-subdir sha pin at HEAD -> CURRENT"; else bad "git-subdir sub-ok not CURRENT; $(grep sub-ok "$W13/out.txt")"; fi
+if grepq "$out13" '^  sub-behind: BEHIND'; then ok "git-subdir sha pin behind HEAD -> BEHIND"; else bad "git-subdir source missing from the pinned-remote class; $(grep sub-behind "$W13/out.txt")"; fi
+# HIMMEL-4019: standalone adoption targets must be checked even when absent
+# from our marketplace. Reuse the same gh boundary and state fixture.
+printf '{"plugins":[]}' >"$W13/m.json"
+cat >"$W13/u.json" <<JSON
+{
+ "candidate-release-current":{"standalone":true,"upstream_repo":"o/stream-cur","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v","ref":"$SUB_SHA"},
+ "candidate-release-behind":{"standalone":true,"upstream_repo":"o/stream-behind","track":"release","synced_base":"skill-v4.3.1","tag_prefix":"skill-v","ref":"$SUB_SHA"},
+ "candidate-head-current":{"standalone":true,"upstream_repo":"o/sub-ok","track":"head","ref":"$SUB_SHA"},
+ "candidate-head-behind":{"standalone":true,"upstream_repo":"o/sub-behind","track":"head","ref":"$SUB_SHA"}
+}
+JSON
+out14="$(GHSTATE="$W13/state" PATH="$W13/bin:$PATH" DRIFT_MJSON="$W13/m.json" DRIFT_UPSTREAMS="$W13/u.json" DRIFT_REGISTRY="$W13/empty.json" DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$SCRIPT" 2>&1)"; rc14=$?
+for verdict in 'candidate-release-current: CURRENT' 'candidate-release-behind: BEHIND' 'candidate-head-current: CURRENT' 'candidate-head-behind: BEHIND'; do
+  if grepq "$out14" -F "$verdict"; then ok "standalone target: $verdict"; else bad "standalone target missing verdict: $verdict; $out14"; fi
+done
+if [ "$rc14" -eq 2 ]; then ok "standalone drift exits 2"; else bad "standalone drift rc=$rc14; expected 2"; fi
+printf '{"bad":{"standalone":true,"upstream_repo":"o/sub-ok","track":"typo","ref":"%s"}}' "$SUB_SHA" >"$W13/u.json"
+out14="$(GHSTATE="$W13/state" PATH="$W13/bin:$PATH" DRIFT_MJSON="$W13/m.json" DRIFT_UPSTREAMS="$W13/u.json" DRIFT_REGISTRY="$W13/empty.json" DRIFT_KNOWN_MARKETPLACES=/dev/null bash "$SCRIPT" 2>&1)"; rc14=$?
+if [ "$rc14" -eq 3 ] && grepq "$out14" 'parse failed'; then ok "invalid standalone track is INCOMPLETE, never current"; else bad "invalid standalone target rc=$rc14; $out14"; fi
+rm -rf "$W13"
+
+# 15. Registry tag_prefix on a latest_source=release entry (HIMMEL-4258): bun
+#     publishes `bun-v1.4.3`, which the bare-version release match rejected as
+#     UNCHECKED. tag_prefix strips the stream prefix so synced_base stays a bare
+#     version (what .bun-version holds) and the BEHIND line names a bare version
+#     apply-drift-bump.sh can take as-is.
+W15="$(mktemp -d "${TMPDIR:-/tmp}/pdrift-w15.XXXXXX")" || { echo "mktemp -d failed" >&2; exit 1; }; mkdir -p "$W15/bin"
+cat > "$W15/bin/gh" <<'GH'
+#!/usr/bin/env bash
+[ "$1" = auth ] && [ "$2" = status ] && exit 0
+case "$*" in
+  *"/releases/latest"*) printf 'bun-v1.4.3\n'; exit 0 ;;
+esac
+exit 0
+GH
+chmod +x "$W15/bin/gh"
+printf '{"plugins":[]}' >"$W15/m.json"; printf '{}' >"$W15/u.json"
+for base in 1.4.2 1.4.3; do
+  cat > "$W15/reg.json" <<JSON
+{"entries":[{"name":"bun-pin","kind":"tag_release","mode":"base","tracked_repo":"oven-sh/bun","synced_base":"$base","latest_source":"release","tag_prefix":"bun-v","tier":"A"}]}
+JSON
+  out15="$(PATH="$W15/bin:$PATH" DRIFT_REGISTRY="$W15/reg.json" DRIFT_KNOWN_MARKETPLACES=/dev/null DRIFT_MJSON="$W15/m.json" DRIFT_UPSTREAMS="$W15/u.json" bash "$SCRIPT" 2>&1)"
+  line15="$(printf '%s' "$out15" | grep 'bun-pin')"
+  if [ "$base" = 1.4.2 ]; then
+    if grepq "$line15" 'BEHIND.*1\.4\.3'; then ok "release tag_prefix: bun-v1.4.3 vs 1.4.2 -> BEHIND naming the bare 1.4.3"; else bad "bun-pin not BEHIND; $line15"; fi
+  else
+    if grepq "$line15" 'CURRENT'; then ok "release tag_prefix: bun-v1.4.3 vs 1.4.3 -> CURRENT"; else bad "bun-pin not CURRENT; $line15"; fi
+  fi
+done
+rm -rf "$W15"
 
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi

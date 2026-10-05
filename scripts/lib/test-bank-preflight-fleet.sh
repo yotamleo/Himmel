@@ -76,7 +76,9 @@ run_pf() {
   # informational case into a launch. "$@" comes after, so a case's own
   # explicit assignment still overrides these defaults (env: later
   # duplicate assignments win).
-  env FLEET_CAP_OK= CADENCE_BANK_LAUNCH= "$@" HIMMEL_FLEET_SLOTS="$slots" FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
+  # The suite is the simulated launcher and remains alive between calls.
+  # A default preflight-subshell owner would correctly be reclaimed as dead.
+  env FLEET_CAP_OK= CADENCE_BANK_LAUNCH= CADENCE_BANK_CALLER_PID="$$" "$@" HIMMEL_FLEET_SLOTS="$slots" FLEET_PS_CMD="$dir/ps" FLEET_PROC="$dir/proc" \
     CADENCE_BANK_CACHE="$W/c.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$W/ledger.jsonl" \
     bash "$SUT" </dev/null 2>>"$W/err.log"
 }
@@ -127,7 +129,7 @@ p3live="$W/ps3live"; mk_ps_stub "$p3live" \
 : > "$W/err.log"
 after_b="$(run_pf "$slots_b" "$p3live" HIMMEL_FLEET_CAP=4)"
 check "(b) informational read after the reserved leg goes live -> PROCEED" PROCEED "$after_b"
-if grep -q 'FLEET native=3 claudex=0 reserved=0 total=3/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=3 claudex=0 openrouter=0 reserved=0 total=3/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - (b) live session consumes its own reservation (reserved=0, not double-counted)"
 else
   FAIL=$((FAIL+1)); echo "FAIL - (b) reservation not consumed by the matching live session"; grep 'FLEET ' "$W/err.log" || true
@@ -141,7 +143,7 @@ printf '%s\n' "$$" > "$slots_c/HIMMEL-9004-expiredleg/pid"
 : > "$W/err.log"
 c_out="$(run_pf "$slots_c" "$p0" HIMMEL_FLEET_CAP=4)"
 check "(c) expired reservation present, 0 live, cap 4 -> PROCEED" PROCEED "$c_out"
-if grep -q 'FLEET native=0 claudex=0 reserved=0 total=0/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=0 claudex=0 openrouter=0 reserved=0 total=0/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - (c) expired reservation pruned from the count"
 else
   FAIL=$((FAIL+1)); echo "FAIL - (c) expired reservation still counted"; grep 'FLEET ' "$W/err.log" || true
@@ -391,7 +393,7 @@ reserve_then_live() {
   : > "$W/err.log"
   run_pf "$slots" "$pl" HIMMEL_FLEET_CAP=4 >/dev/null
   if [ "$mode" = counted ]; then
-    if grep -q 'FLEET native=1 claudex=0 reserved=1 total=2/4' "$W/err.log" 2>/dev/null; then
+    if grep -q 'FLEET native=1 claudex=0 openrouter=0 reserved=1 total=2/4' "$W/err.log" 2>/dev/null; then
       PASS=$((PASS+1)); echo "ok - ($label) whitespace-name reservation NOT consumed by a first-token match (reserved=1, over-counts to the TTL)"
     else
       FAIL=$((FAIL+1)); echo "FAIL - ($label) whitespace-name reservation was consumed by a first-token match"; grep 'FLEET ' "$W/err.log" || true
@@ -399,7 +401,7 @@ reserve_then_live() {
     check "($label) unconsumed reservation directory stays on disk" 1 "$(count_resv "$slots")"
     return 0
   fi
-  if grep -q 'FLEET native=1 claudex=0 reserved=0 total=1/4' "$W/err.log" 2>/dev/null; then
+  if grep -q 'FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/4' "$W/err.log" 2>/dev/null; then
     PASS=$((PASS+1)); echo "ok - ($label) live session consumes the reservation (reserved=0, not double-counted)"
   else
     FAIL=$((FAIL+1)); echo "FAIL - ($label) reservation not consumed by the matching live session"; grep 'FLEET ' "$W/err.log" || true
@@ -425,7 +427,7 @@ printf '%s\n' "$$" > "$slots_m/HIMMEL-9504-oldcode/pid"
 pm="$W/ps-m"; mk_ps_stub "$pm" '9001:claude:--model claude-opus-5 -n HIMMEL-9504-oldcode load doc'
 : > "$W/err.log"
 run_pf "$slots_m" "$pm" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=1 claudex=0 reserved=0 total=1/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - (m) a name-file-less (old-code) reservation is still consumed by the dir-name match"
 else
   FAIL=$((FAIL+1)); echo "FAIL - (m) old-code reservation not consumed"; grep 'FLEET ' "$W/err.log" || true
@@ -443,7 +445,7 @@ printf '%s\n' "$((NOW + 600))" > "$slots_n/HIMMEL-9506-fresh/expires"; printf '%
 printf '%s\n' "HIMMEL-9506-fresh" > "$slots_n/HIMMEL-9506-fresh/name"
 : > "$W/err.log"
 run_pf "$slots_n" "$p0" HIMMEL_FLEET_CAP=4 >/dev/null
-if grep -q 'FLEET native=0 claudex=0 reserved=1 total=1/4' "$W/err.log" 2>/dev/null; then
+if grep -q 'FLEET native=0 claudex=0 openrouter=0 reserved=1 total=1/4' "$W/err.log" 2>/dev/null; then
   PASS=$((PASS+1)); echo "ok - (n) stale reservation with a name file pruned, unmatched live one counted once"
 else
   FAIL=$((FAIL+1)); echo "FAIL - (n) prune/count changed by the name file"; grep 'FLEET ' "$W/err.log" || true
@@ -472,7 +474,7 @@ po="$W/ps-o"; mk_ps_stub "$po" '9001:claude:--model claude-opus-5 -n HIMMEL-9507
 for o_run in first second; do
   : > "$W/err.log"
   run_pf "$slots_o" "$po" HIMMEL_FLEET_CAP=4 >/dev/null
-  if grep -q 'FLEET native=1 claudex=0 reserved=2 total=3/4' "$W/err.log" 2>/dev/null; then
+  if grep -q 'FLEET native=1 claudex=0 openrouter=0 reserved=2 total=3/4' "$W/err.log" 2>/dev/null; then
     PASS=$((PASS+1)); echo "ok - (o) $o_run preflight: ambiguous first token consumes neither reservation (reserved=2, total=3)"
   else
     FAIL=$((FAIL+1)); echo "FAIL - (o) $o_run preflight: an ambiguous first token consumed a reservation"; grep 'FLEET ' "$W/err.log" || true
@@ -507,14 +509,14 @@ p_live() {
 }
 p_expect() { # <label> <slots> consumed|kept
   if [ "$3" = kept ]; then
-    if grep -q 'FLEET native=1 claudex=0 reserved=1 total=2/4' "$W/err.log" 2>/dev/null; then
+    if grep -q 'FLEET native=1 claudex=0 openrouter=0 reserved=1 total=2/4' "$W/err.log" 2>/dev/null; then
       PASS=$((PASS+1)); echo "ok - ($1) not consumed by a different live full name (reserved=1)"
     else
       FAIL=$((FAIL+1)); echo "FAIL - ($1) reservation consumed by a live session with a different full name"; grep 'FLEET ' "$W/err.log" || true
     fi
     check "($1) unconsumed reservation stays on disk" 1 "$(count_resv "$2")"
   else
-    if grep -q 'FLEET native=1 claudex=0 reserved=0 total=1/4' "$W/err.log" 2>/dev/null; then
+    if grep -q 'FLEET native=1 claudex=0 openrouter=0 reserved=0 total=1/4' "$W/err.log" 2>/dev/null; then
       PASS=$((PASS+1)); echo "ok - ($1) consumed by the live session with the identical full name (reserved=0)"
     else
       FAIL=$((FAIL+1)); echo "FAIL - ($1) not consumed by the identical live full name"; grep 'FLEET ' "$W/err.log" || true

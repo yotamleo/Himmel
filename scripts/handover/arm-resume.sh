@@ -273,7 +273,28 @@ DRY_RUN=0
 RESUME_CWD_OVERRIDE=""
 CHANNELS=""
 MODEL=""
+PROFILE=""
 FABLE_OK=""
+# HIMMEL-4013: the relaunched claude runs under a role-matched plugin profile
+# (--settings <file>), never the operator's full plugin set. --profile wins;
+# else the role is read from the handover doc (role-profile.sh). Resolved at
+# ARM time to a stable per-user file (an at/cron relaunch fires later) and
+# FAIL CLOSED: an unresolvable profile refuses the arm (rc 2).
+_arm_profile_settings_flag() {
+    local prof="$PROFILE" settings
+    if [ -z "$prof" ]; then
+        if [ -n "$HANDOVER_PATH" ] && [ -f "$HANDOVER_PATH" ]; then
+            prof=$(bash "$SCRIPT_DIR/../lanes/role-profile.sh" "$HANDOVER_PATH") || prof="user"
+        else
+            prof="user"
+        fi
+    fi
+    settings=$(bash "$SCRIPT_DIR/../lanes/profile-settings.sh" "$prof") || {
+        echo "ERR arm-resume: plugin profile '$prof' did not resolve; refusing to arm a relaunch with the full plugin set (HIMMEL-4013). Fix the profile or pass --profile <name>." >&2
+        exit 2
+    }
+    printf -- '--settings %s ' "$(printf '%q' "$settings")"
+}
 # HIMMEL-2658: --context resolution (arming-time 1m/standard choice, never
 # inherited from the operator's user-level model setting). Left empty means
 # "use the console/non-console default" -- resolved right after the MODEL_REASON
@@ -349,6 +370,10 @@ Optional:
                      it and relaunch PLAIN (bridge reaches Telegram on its
                      own). Override only after `bun supervisor.ts --kill`
                      with ARM_CHANNELS_OK=1. Omit for a silent relaunch.
+  --profile <name>   Plugin profile for the relaunched claude (HIMMEL-4013),
+                     applied as `--settings <resolved file>`. Omitted: the
+                     role is read from the handover doc (a `profile:` line,
+                     else console / leg-impl / user). Fails closed.
   --model <name>     Pass --model <name> to the relaunched claude (e.g.
                      opus, sonnet, haiku, or a full model id). Passed
                      through verbatim — no validation against a model
@@ -379,9 +404,9 @@ Optional:
                      Fable-family model — the CLI strips it there) and
                      passes --autocompact auto; standard strips any
                      [1m] suffix and passes --autocompact 200000.
-                     Default: standard on every arm, console or not
-                     (HIMMEL-2975); a console-class arm can still opt into
-                     1m via CONSOLE_CONTEXT=1m in the launching shell. The
+                     Default: 1m for consoles (HIMMEL-3884), standard for
+                     non-console arms. CONSOLE_CONTEXT=standard opts a
+                     console down; explicit --context overrides it. The
                      resolved mode, its source (explicit vs. default) and
                      the effective autocompact value are always echoed to
                      the arm log.
@@ -523,6 +548,7 @@ EOF
 # Arg parsing — accept --flag <value> or --flag=<value>, any order,
 # unknown flags are rejected loudly. Avoids the v1 "$3 == --force"
 # positional trap.
+ARGC_AT_START=$#
 while [ $# -gt 0 ]; do
     case "$1" in
         --time)        RESUME_TIME="${2:-}"; _TIME_GIVEN=1; shift 2 ;;
@@ -535,6 +561,13 @@ while [ $# -gt 0 ]; do
         --worktree=*)  WORKTREE_BRANCH="${1#--worktree=}"; shift ;;
         --channels)    CHANNELS="${2:-}"; shift 2 ;;
         --channels=*)  CHANNELS="${1#--channels=}"; shift ;;
+        --profile)
+            if [ $# -lt 2 ] || [ -z "$2" ] || [ "${2#-}" != "$2" ]; then
+                echo "ERR arm-resume: --profile requires a non-empty profile name" >&2
+                exit 2
+            fi
+            PROFILE="$2"; shift 2 ;;
+        --profile=*)   PROFILE="${1#--profile=}"; shift ;;
         --model)
             # Require a real value: a missing/empty value or a following
             # option (e.g. `--model --dry-run`) must error, not silently
@@ -707,6 +740,23 @@ fi
 # honors. Refuse instead of picking a winner.
 if [ "$AUTOMERGE" -eq 1 ] && [ "$NO_AUTOMERGE" -eq 1 ]; then
     echo "ERR arm-resume: --automerge and --no-automerge are mutually exclusive" >&2
+    exit 2
+fi
+
+# HIMMEL-4142 S3: a consult is confined only by headed-arm-leg.sh --consult's
+# `--setting-sources ""`, which no arm-resume launch path carries (and the at body
+# clears the seam, HIMMEL-4118 F2), so a re-armed consult would start unconfined.
+# Fail closed: a session carrying the consult marker never arms. A consult is a
+# short question; the console relaunches one with headed-arm-leg.sh if it must.
+# HIMMEL-4163: the read-only --list-temp-arms sweep arms nothing, so it alone passes,
+# and only as the SOLE argument (the flag beside any other mode or arm arg still refuses).
+# ponytail: the consult is identified by this env var alone, so a consult that unsets
+# LEG_PROFILE_NO_SETTING_SOURCES is not recognised here; the consult's deny rules and
+# sandbox bound that, upgrade path = a process-ancestry check or a consult-workdir
+# token file, trigger = an exploit beyond the sandbox (HIMMEL-4163).
+if [ -n "${LEG_PROFILE_NO_SETTING_SOURCES:-}" ] \
+    && ! { [ "${LIST_TEMP_ARMS:-0}" -eq 1 ] && [ "$ARGC_AT_START" -eq 1 ]; }; then
+    echo "ERR arm-resume: refusing to arm from inside a consult (LEG_PROFILE_NO_SETTING_SOURCES is set): no arm-resume launch carries the consult's --setting-sources confinement; relaunch it with headed-arm-leg.sh --consult" >&2
     exit 2
 fi
 
@@ -990,15 +1040,9 @@ echo "arm-resume: $MODEL_REASON"
 # changing. Reuses _arm_is_console and _arm_model_is_fable, already computed
 # above for the MODEL_REASON block -- do not recompute either.
 #
-# HIMMEL-2975: every arm defaults to `standard` now -- a console-class arm
-# used to default to `1m` unconditionally, the largest single measured
-# saving in the cost program going unrealized every time one armed with no
-# --context. console_context_default() (scripts/lib/console-context.sh)
-# also gives CONSOLE_CONTEXT=1m in the launching shell a way to opt a
-# console arm back into 1m without an explicit --context -- arm-resume.sh
-# had no CONSOLE_CONTEXT support at all before this ticket; adding it here
-# is what keeps the opt-in reachable now that the bare default no longer
-# gets you there by accident.
+# HIMMEL-3884: consoles default to 1m; non-console arms remain standard.
+# The shared resolver honors CONSOLE_CONTEXT=standard as a console-only
+# opt-down. An explicit --context takes precedence over both.
 if [ -z "$CONTEXT_MODE" ]; then
     console_context_default "$_arm_is_console" "${CONSOLE_CONTEXT:-}"
     CONTEXT_MODE="$CONSOLE_CONTEXT_RESOLVED_MODE"
@@ -2340,7 +2384,7 @@ _infer_ticket_strict() {
     # a well-formed YAML block -- one that OPENS at line 1 of the document
     # (optionally after a UTF-8 BOM) and CLOSES at a later `---`. The opening
     # delimiter is anchored to the document start (codex-adv r3): only NR==1
-    # matching `^---[[:space:]]*$` -- after `sub(/^\xef\xbb\xbf/,"")` strips an
+    # matching `^---[[:space:]]*$` -- after `sub(/^\357\273\277/,"")` strips an
     # optional leading BOM -- enters frontmatter mode (c==1). A file whose first
     # line is anything else NEVER enters frontmatter mode, so a `---` horizontal
     # rule in the BODY of a plain-markdown handover is ordinary text: it can
@@ -2357,10 +2401,13 @@ _infer_ticket_strict() {
     # the three shapes by exit code: no frontmatter at all (c==0) and a closed
     # block (c==2, set before `exit` so END's c==1 check is false) are fine;
     # EOF with c==1 (opened, never closed) exits 3 and the arm refuses loudly
-    # BEFORE any scheduler mutation. POSIX awk (string concat, printf,
-    # exit-to-END).
+    # BEFORE any scheduler mutation. Any other awk exit code stays fail-soft
+    # (no ticket, like the old `|| true`). The BOM is the octal escape
+    # \357\273\277, not `\xef\xbb\xbf`: `\xHH` is a gawk extension that mawk
+    # (Ubuntu's default awk) silently skips (HIMMEL-1654); the rest is plain
+    # POSIX awk (string concat, printf, exit-to-END).
     _fm_rc=0
-    _fm=$(awk 'NR==1{sub(/^\xef\xbb\xbf/,"")} NR==1 && /^---[[:space:]]*$/{c=1; next} c==1 && /^---[[:space:]]*$/{printf "%s",b; c=2; exit} c==1{b=b $0 "\n"} END{if(c==1) exit 3}' "$_ho") || _fm_rc=$?
+    _fm=$(awk 'NR==1{sub(/^\357\273\277/,"")} NR==1 && /^---[[:space:]]*$/{c=1; next} c==1 && /^---[[:space:]]*$/{printf "%s",b; c=2; exit} c==1{b=b $0 "\n"} END{if(c==1) exit 3}' "$_ho") || _fm_rc=$?
     if [ "$_fm_rc" -eq 3 ]; then
         echo "ERR arm-resume: unclosed YAML frontmatter in $_ho -- an opening --- with no closing ---. Refusing to arm: a truncated frontmatter ticket would silently bypass the ticket mutex (HIMMEL-1329/HIMMEL-1640). Close the frontmatter block (or remove the stray opening ---) and re-arm." >&2
         exit 1
@@ -4711,6 +4758,8 @@ _crontab_schedule() {
     # same %q-quote shape as q_model, since this is the actual cost-driving
     # lever and a skipped site here is a silent no-op on this platform.
     q_autocompact="--autocompact $(printf '%q' "$AUTOCOMPACT") "
+    # HIMMEL-4013: role-matched plugin profile, appended after the autocompact arg.
+    q_autocompact="$q_autocompact$(_arm_profile_settings_flag)" || exit 2
     # HIMMEL-3074: resolve claude ABSOLUTELY at arm time (see the function
     # header). `command -v` may return a function/alias name for a shell-level
     # `claude`; only a leading `/` is a path cron can exec, anything else
@@ -4824,6 +4873,7 @@ fi"
     # session know it IS a POSIX armed relaunch, so it can self-exit with
     # SIGTERM once its work is done and a successor (if any) is armed -- see
     # docs/handover/overnight-mode.md's Launch preamble.
+    # launch-profile-ok: q_autocompact above carries --settings (_arm_profile_settings_flag)
     local tail="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID && export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1 && ${q_automerge}$q_claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
     if [ "$HEADROOM_PROXY_ACTIVE" -eq 1 ]; then
         local q_hb q_log q_curl
@@ -5952,6 +6002,9 @@ schedule_arm() {
                 # --autocompact passthrough (HIMMEL-2658), same %q-quote shape
                 # as q_model above; always non-empty by the time this runs.
                 q_autocompact="--autocompact $(printf '%q' "$AUTOCOMPACT") "
+                # HIMMEL-4013: role-matched plugin profile (--settings <file>),
+                # appended after the autocompact arg; fails closed.
+                q_autocompact="$q_autocompact$(_arm_profile_settings_flag)" || exit 2
                 # HIMMEL_HEADROOM_PROXY (HIMMEL-901): $launch_lines is the
                 # plain 'claude ...' line unless the flag is active, in
                 # which case it becomes a livez-check-then-launch block
@@ -6006,6 +6059,7 @@ schedule_arm() {
                 # shape/rationale as the crontab runner's twin above -- lets
                 # the resumed session self-exit with SIGTERM once a
                 # successor is armed (see overnight-mode.md).
+                # launch-profile-ok: q_autocompact above carries --settings (_arm_profile_settings_flag)
                 local launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID
 export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1
 ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
@@ -6014,6 +6068,7 @@ ${q_automerge}claude ${q_name}$q_prompt $q_channels$q_model$q_autocompact"
                     q_hb=$(printf '%q' "$HEADROOM_BIN")
                     q_log=$(printf '%q' "$HOME/.headroom-proxy.log")
                     q_curl=$(printf '%q' "$HEADROOM_CURL")
+                    # launch-profile-ok: q_autocompact above carries --settings (_arm_profile_settings_flag)
                     launch_lines="unset ARMAUTOMERGE CR_MERGE_GATE_OK ARM_RESUME_SAFETY_ARM CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID
 export CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 HIMMEL_ARMED_RELAUNCH=1
 $q_curl -s -m 5 http://127.0.0.1:$HEADROOM_PROXY_PORT/livez >/dev/null 2>&1 || { $q_hb proxy --port $HEADROOM_PROXY_PORT >> $q_log 2>&1 & sleep 3; }
@@ -6047,6 +6102,11 @@ fi"
                 # env, so a console arm's own pair must not leak into a
                 # non-console relaunch).
                 at_safety_child="${at_safety_child}unset HIMMEL_CONSOLE_DOC HIMMEL_CONSOLE_WORKDIR
+"
+                # HIMMEL-4118 F2: same always-clear for the launch-seam vars a
+                # leg or consult carries (LEG_PROFILE_NO_SETTING_SOURCES, the
+                # shim, its binary), so the resumed session never inherits them.
+                at_safety_child="${at_safety_child}unset $(console_context_launch_seam_env_names | tr '\n' ' ')
 "
                 if [ -n "$CONSOLE_PRECOMPACT_DOC" ]; then
                     at_safety_child="${at_safety_child}export HIMMEL_CONSOLE_DOC=$(printf '%q' "$CONSOLE_PRECOMPACT_DOC") HIMMEL_CONSOLE_WORKDIR=$(printf '%q' "$CONSOLE_PRECOMPACT_WORKDIR")

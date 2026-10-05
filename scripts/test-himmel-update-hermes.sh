@@ -38,10 +38,19 @@ check() {  # <description> <expected-substring> <actual-output>
 # run a shell function directly, so it's exported and invoked via `bash -c`;
 # falls back to an unbounded direct call when `timeout` isn't available
 # (same graceful-degrade convention as check-plugin-drift.sh).
+# Budget (HIMMEL-4114, re-measured 2026-10-03 on a loaded fleet): the WHOLE
+# suite took 5s and 60s alone, 53s and 60s as concurrent runs, and one run hit
+# the old 60s per-call cap (exit 124, killed at 68s), and a later run beside
+# three other suites took 116s. The four bounded calls share the suite's time,
+# so one call's worst figure is <= 116s. Rule: loaded x2 -- 116 * 2 = 232,
+# rounded up to 240.
+# ponytail: cases 3/4 make real calls to github.com, so 240s covers network
+# variance as well as fleet load, not load alone; upgrade path is pointing
+# those cases at a local bare remote (HIMMEL-4117).
 run_hermes_check_bounded() {
   if [ -n "$_TIMEOUT_BIN" ]; then
     export -f update_hermes
-    HERMES_HOME="$1" "$_TIMEOUT_BIN" 60 bash -c 'update_hermes check' 2>&1
+    HERMES_HOME="$1" "$_TIMEOUT_BIN" 240 bash -c 'update_hermes check' 2>&1
   else
     HERMES_HOME="$1" update_hermes check 2>&1
   fi
@@ -812,6 +821,44 @@ if [ "$ver" = "$((CADENCE_RUNNER_FORMAT_VERSION - 1))" ]; then echo "ok: Windows
 # Git-Bash runs where the two homes coincide).
 uh=$(USERPROFILE='' HOME="$tmp/fake-home" cadence_user_home)
 if [ "$uh" = "$tmp/fake-home" ]; then echo "ok: cadence_user_home falls back to HOME"; else echo "FAIL: cadence_user_home got '$uh'"; fail=1; fi
+
+# HIMMEL-4307: a PM-managed install (.hermes/bin/hermes) owns its dependency
+# generations — apply must NOT pip-install into its interpreter. A legacy venv
+# install keeps the editable refresh. Both cases pull nothing (heads equal), so
+# they add no gateway restart to the suite-stub count asserted above.
+bareP="$tmp/bareP/NousResearch/hermes-agent.git"
+mkdir -p "$bareP"; git init -q --bare "$bareP"
+seedP="$tmp/seedP"
+git clone -q "$bareP" "$seedP"
+git -C "$seedP" config user.email "test@test.test"; git -C "$seedP" config user.name "Test"
+printf 'v1\n' > "$seedP/f.txt"; git -C "$seedP" add f.txt; git -C "$seedP" commit --quiet -m v1
+git -C "$seedP" push --quiet origin HEAD:release
+for layoutP in pm legacy; do
+  homeP="$tmp/layout-$layoutP"; srcP="$homeP/hermes-agent"
+  git init -q "$srcP"
+  git -C "$srcP" remote add upstream "$bareP"
+  git -C "$srcP" fetch -q upstream refs/heads/release
+  git -C "$srcP" checkout -q -b local-work --track upstream/release
+  git -C "$srcP" remote add origin "$tmp/no-such-origin/NousResearch/hermes-agent"
+  pipP="$homeP/pip-calls.log"
+  mkdir -p "$srcP/venv/bin"
+  printf '#!/bin/sh\necho "$*" >> "%s"\nexit 0\n' "$pipP" > "$srcP/venv/bin/python"
+  chmod +x "$srcP/venv/bin/python"
+  if [ "$layoutP" = pm ]; then
+    mkdir -p "$srcP/.hermes/bin"
+    printf '#!/bin/sh\nexit 1\n' > "$srcP/.hermes/bin/hermes"; chmod +x "$srcP/.hermes/bin/hermes"
+  fi
+  rc=0
+  out=$(HERMES_HOME="$homeP" update_hermes apply 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then echo "ok: $layoutP layout apply -> exit 0"; else echo "FAIL: $layoutP layout apply -> exit $rc"; printf '%s\n' "$out"; fail=1; fi
+  if [ "$layoutP" = pm ]; then
+    check "PM-managed layout: noted, dependencies left to hermes" "PM-managed" "$out"
+    if [ ! -s "$pipP" ]; then echo "ok: PM-managed layout ran no pip"; else echo "FAIL: PM-managed layout ran pip: $(cat "$pipP")"; fail=1; fi
+  else
+    check "legacy venv layout: editable refresh kept" "refreshing editable install" "$out"
+    if grep -q 'install -e' "$pipP" 2>/dev/null; then echo "ok: legacy layout ran pip install -e"; else echo "FAIL: legacy layout did not run pip install -e"; fail=1; fi
+  fi
+done
 
 if [ "$fail" -eq 0 ]; then
   echo "PASS: himmel-update hermes smoke test"

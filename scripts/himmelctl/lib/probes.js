@@ -131,17 +131,6 @@ function probeFileExists(item, ctx) {
     const resolved = path.resolve(raw.replace('{vaultPath}', ctx.targetPath));
     return { actual: fs.existsSync(resolved) ? 'present' : 'absent', detail: resolved };
   }
-  // {homePath} (HIMMEL-1100): mirrors {vaultPath} for a fixed, known location
-  // that is neither repoRoot nor targetPath — a manually-cloned plugin under
-  // $HOME (e.g. obsidian-second-brain, cloned by hand per docs/setup/
-  // new-machine.md, never copied/scaffolded by any himmel script). Resolves
-  // the same way mcpConfigPath()/resolveConfigFile() already do elsewhere in
-  // this file: ctx.env.HOME first, else os.homedir().
-  if (raw.indexOf('{homePath}') !== -1) {
-    const home = (ctx.env && ctx.env.HOME) || os.homedir();
-    const resolved = path.resolve(raw.replace('{homePath}', home));
-    return { actual: fs.existsSync(resolved) ? 'present' : 'absent', detail: resolved };
-  }
   const base = (ctx.scope === 'user' || REPO_ROOT_FILE_EXISTS_IDS.has(item.id)) ? ctx.repoRoot : ctx.targetPath;
   const resolved = path.resolve(base, raw);
   if (!fs.existsSync(resolved)) return { actual: 'absent', detail: resolved };
@@ -612,7 +601,54 @@ function isDirectory(p) {
 // HIMMEL-3441); it is still subject to the installed-ledger check below like
 // every other enabled plugin, and is named in the detail as information.
 // ~/.claude/plugins/installed_plugins.json is that ledger.
-function verifyPluginSet(enabledPlugins, ctx) {
+// HIMMEL-4270: per-marketplace source comparison, settings entry vs template.
+// The himmel-owned marketplace's manifest wins; for a third-party one the
+// settings side is recommended. Entries absent from settings are not drift.
+function marketplaceSource(entry) {
+  const src = entry && entry.source;
+  if (!src || typeof src !== 'object') return '';
+  const val = src.source === 'github' ? src.repo
+    : src.source === 'directory' ? src.path
+    : src.source === 'url' ? src.url : '';
+  return typeof val === 'string' ? val : '';
+}
+
+// HIMMEL-4333: a github `owner/repo` shorthand and an https github.com url are
+// the same source (the template is https for HIMMEL-2837's hermetic guard, live
+// settings use the shorthand). directory and other types compare as themselves.
+function marketplaceIdentity(entry) {
+  const src = entry && entry.source;
+  const val = marketplaceSource(entry);
+  if (!src || !val) return '';
+  const m = src.source === 'url' ? /^https:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(val) : null;
+  if (src.source === 'github') return 'github:' + val.toLowerCase();
+  return m ? 'github:' + m[1].toLowerCase() : src.source + ':' + val;
+}
+
+// Quote a token for the printed shell command only when it needs it.
+function shq(s) {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(s) ? s : "'" + s.replace(/'/g, "'\\''") + "'";
+}
+
+function marketplaceSourceDrift(settings, template, ctx) {
+  const have = (settings && typeof settings.extraKnownMarketplaces === 'object' && settings.extraKnownMarketplaces) || {};
+  const want = (template && typeof template.extraKnownMarketplaces === 'object' && template.extraKnownMarketplaces) || {};
+  const scope = ctx.scope === 'project' ? 'project' : 'user';
+  const out = [];
+  for (const name of Object.keys(want)) {
+    const wantSrc = marketplaceSource(want[name]).replace(/<himmel-path>/g, ctx.repoRoot);
+    const haveSrc = marketplaceSource(have[name]);
+    if (!wantSrc || !haveSrc || wantSrc === haveSrc) continue;
+    if (name !== 'himmel' && marketplaceIdentity(want[name]) === marketplaceIdentity(have[name])) continue;
+    const reconcile = `claude plugin marketplace remove ${shq(name)} --scope ${scope} && claude plugin marketplace add ${shq(wantSrc)} --scope ${scope}`;
+    out.push(name === 'himmel'
+      ? `marketplace 'himmel' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — the himmel manifest is right; reconcile: ${reconcile}`
+      : `marketplace '${name}' source drift: settings has '${haveSrc}', template wants '${wantSrc}' — keeping the settings source is recommended, so set the template's entry to '${haveSrc}'; to adopt the template's source instead: ${reconcile}`);
+  }
+  return out;
+}
+
+function verifyPluginSet(enabledPlugins, ctx, settings) {
   const templatePath = path.join(ctx.repoRoot, 'docs', 'setup', 'settings-template.json');
   let template;
   try {
@@ -652,9 +688,15 @@ function verifyPluginSet(enabledPlugins, ctx) {
     const entries = Array.isArray(installed[k]) ? installed[k] : [];
     return !entries.some((e) => scopeMatches(e) && typeof e.installPath === 'string' && isDirectory(e.installPath));
   });
+  // HIMMEL-4270: a marketplace registered under a different source than the
+  // template's makes `claude plugin marketplace add` fail — drift (degraded),
+  // not an install failure. Same remedy text as install-plugins.sh. Computed
+  // before the not-installed return so that missing plugin keeps its remedy.
+  const drift = marketplaceSourceDrift(settings, template, ctx);
   if (notInstalled.length > 0) {
-    return { problem: `not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}` };
+    return { problem: [`not installed for this scope per ${ledgerPath}: ${notInstalled.join(', ')}`].concat(drift).join('; ') };
   }
+  if (drift.length > 0) return { problem: drift.join('; ') };
   if (extra.length > 0) {
     return { note: `extra (not in the recorded set): ${extra.join(', ')}` };
   }
@@ -710,7 +752,7 @@ function probeSettingsKey(item, ctx) {
       if (problem) return { actual: 'degraded', detail: `${filePath}: ${problem}` };
     }
     if (item.probe.verifyPluginSet) {
-      const result = verifyPluginSet(getVal(item.probe.key), ctx);
+      const result = verifyPluginSet(getVal(item.probe.key), ctx, data);
       if (result.problem) return { actual: 'degraded', detail: `${filePath}: ${result.problem}` };
       if (result.note) return { actual: 'present', detail: `${filePath} (${result.note})` };
     }
@@ -1212,7 +1254,17 @@ function probeMcpRegistered(item, ctx) {
 function probeHandoverDir(item, ctx) {
   const resolverPath = path.resolve(ctx.repoRoot, item.probe.resolver);
   const cwd = ctx.targetPath || ctx.repoRoot;
-  const r = spawnBashProbe(['-c', `. "${resolverPath}" && handover_root`],
+  // HIMMEL-4403: answer as the handover tooling does, from ANY checkout. The
+  // resolver never reads .env, so a process launched without HANDOVER_DIR in
+  // its env reported the inline <checkout>/handovers stub (false green from the
+  // primary, FAIL from a worktree). Anchor on the primary (git-common-dir
+  // parent, as load-dotenv.sh does), load HANDOVER_DIR from its .env, then
+  // resolve from there so the inline fallback is the primary's too. A non-git
+  // cwd skips both: load_dotenv would otherwise fall back to this script's own
+  // checkout's .env.
+  const loaderPath = path.resolve(path.dirname(resolverPath), 'load-dotenv.sh');
+  const prelude = `common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ "$(basename "$common")" = .git ] && cd "$(dirname "$common")" && . "${loaderPath}" && load_dotenv HANDOVER_DIR; `;
+  const r = spawnBashProbe(['-c', `${prelude}. "${resolverPath}" && handover_root`],
     { env: ctx.env || process.env, cwd, encoding: 'utf8' });
   if (r.timedOut) return { actual: 'degraded', detail: `handover-dir probe timed out after ${probeTimeoutSecs(r)}s` };
   if (!r.error && r.status === 0 && r.stdout && r.stdout.trim()) {
@@ -1329,7 +1381,7 @@ function probeCmdHasHermes(item, ctx) {
   const r = spawnBashProbe(['-c', '. "$HIMMEL_PROBE_RESOLVER" || exit 3; resolve_hermes_py >/dev/null'], { env });
   if (r.timedOut) return { actual: 'degraded', detail: `cmd:has_hermes probe timed out after ${probeTimeoutSecs(r)}s` };
   if (r.error) return { actual: 'degraded', detail: `spawn error: ${r.error.message}` };
-  if (r.status === 0) return { actual: 'present', detail: 'hermes venv python resolved (resolve_hermes_py rc=0)' };
+  if (r.status === 0) return { actual: 'present', detail: 'hermes runtime python resolved (resolve_hermes_py rc=0)' };
   if (r.status === 1) return { actual: 'absent', detail: 'resolve_hermes_py rc=1 — hermes not installed' };
   if (r.status === 3) return { actual: 'degraded', detail: `cannot source resolver ${resolverPath} — cmd:has_hermes probe wiring broken` };
   return { actual: 'degraded', detail: `resolve_hermes_py: unexpected rc=${r.status} (not the documented 0/1 — probe wiring likely broken, e.g. the resolver sourced but never defined resolve_hermes_py)` };
@@ -2500,6 +2552,7 @@ function probeLunaSources(item, ctx) {
   const problems = [];
   const unrecognized = [];
   const unconfigured = [];
+  const cooling = [];
   let evaluated = 0;
   for (const source of sources) {
     const envForSpawn = Object.assign({}, env, {
@@ -2532,7 +2585,12 @@ function probeLunaSources(item, ctx) {
     if (!parsed || parsed.status !== 'ok') {
       const status = parsed && parsed.status;
       const reason = parsed && parsed.reason;
-      if (status === 'auth-or-cookie-expired' && UNCONFIGURED_REASON_RE.test(reason || '')) {
+      if (status === 'cooldown') {
+        // HIMMEL-4306: the Instagram throttle is deliberately holding requests
+        // (a 429/challenge, the daily cap, or a spacing/backoff window) — a wait,
+        // not a fault, so it never joins `problems`.
+        cooling.push(`${source} (${reason || 'cooldown'})`);
+      } else if (status === 'auth-or-cookie-expired' && UNCONFIGURED_REASON_RE.test(reason || '')) {
         unconfigured.push(`${source} (${reason})`);
       } else {
         problems.push(`${source}: ${status || 'unknown status'}${reason ? ` (${reason})` : ''}`);
@@ -2553,6 +2611,7 @@ function probeLunaSources(item, ctx) {
     if (unconfigured.length > 0) {
       parts.push(`${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}`);
     }
+    if (cooling.length > 0) parts.push(`${cooling.length} on cooldown, waiting (no action needed): ${cooling.join('; ')}`);
     return { actual: 'degraded', detail: parts.join(' | ') };
   }
   // HIMMEL-2176 CR round 3 fix (retask stage1-build-6d2e): evaluated === 0
@@ -2578,13 +2637,13 @@ function probeLunaSources(item, ctx) {
   // turns 'absent' into a warn, 'degraded' into a fail — see that file's
   // luna-sources block). Covers both "some configured, some not" and "every
   // named source unconfigured" — both benign, both warn.
-  if (unconfigured.length > 0) {
-    const healthy = evaluated - unconfigured.length;
+  if (unconfigured.length > 0 || cooling.length > 0) {
+    const healthy = evaluated - unconfigured.length - cooling.length;
     const healthyNote = healthy > 0 ? `; ${healthy} other configured source(s) healthy` : '';
-    return {
-      actual: 'absent',
-      detail: `${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}${healthyNote}`,
-    };
+    const parts = [];
+    if (unconfigured.length > 0) parts.push(`${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}`);
+    if (cooling.length > 0) parts.push(`${cooling.length} on cooldown, waiting (no action needed): ${cooling.join('; ')}`);
+    return { actual: 'absent', detail: `${parts.join(' | ')}${healthyNote}` };
   }
   return { actual: 'present', detail: `all ${evaluated} configured luna source(s) healthy` };
 }
@@ -3824,10 +3883,38 @@ function probeObservabilityStack(item, ctx) {
   const env = ctx.env || process.env;
   const platform = ctx.platform || process.platform;
   if (platform !== 'win32') {
-    return {
-      actual: 'absent',
-      detail: 'observability install-stack is Windows-only in Phase A (HIMMEL-922) — install-stack.sh is a loud placeholder that exits 2; cross-platform packaging is tracked as HIMMEL-2333, so this reads absent on every non-Windows host, never present or a repairable-looking degraded',
-    };
+    // HIMMEL-4341: posix runs the exporter-only user service HIMMEL-4288 ships
+    // (install-stack.sh). Opt-in via observability.enabled in
+    // ~/.himmel/config.json: every profile desires this item, but a
+    // systemd/launchd service is never enabled unasked. Not opted in is a
+    // CLEAN absence, never degraded.
+    let config;
+    try {
+      config = scopeConfigPathToCtx(ctx, () => lunaConfig.load());
+    } catch (e) {
+      return { actual: 'degraded', detail: `cannot read luna config: ${e.message}` };
+    }
+    if (!(config.observability && config.observability.enabled === true)) {
+      return {
+        actual: 'absent',
+        detail: 'observability.enabled is not true in ~/.himmel/config.json — the exporter service is opt-in',
+        cleanAbsence: true,
+      };
+    }
+    // Read-only: `status` only runs systemctl is-enabled / launchctl print,
+    // curls the exporter and reads doctor-cadence status; spawnProbeSync bounds it.
+    const script = path.join(ctx.repoRoot, 'scripts', 'observability', 'install-stack.sh');
+    const r = spawnBashProbe([script, 'status'], { env, encoding: 'utf8' });
+    if (r.timedOut) return { actual: 'degraded', detail: `install-stack.sh status timed out after ${probeTimeoutSecs(r)}s — exporter state could not be determined` };
+    if (r.error) return { actual: 'degraded', detail: `install-stack.sh status failed to spawn: ${r.error.message} — exporter state could not be determined` };
+    const out = String(r.stdout || '').trim();
+    if (r.status === 0) return { actual: 'present', detail: 'flow exporter service registered, healthy, doctor-cadence armed' };
+    const fails = out.split(/\r?\n/).filter((l) => l.startsWith('FAIL'));
+    if (fails.length === 0) return { actual: 'degraded', detail: `install-stack.sh status exited rc=${r.status} — ${String(r.stderr || out).trim().slice(0, 200)}` };
+    // service + health both failing = never installed (cadence aside); anything else = partial.
+    const svcFail = fails.some((l) => l.startsWith('FAIL service'));
+    const healthFail = fails.some((l) => l.startsWith('FAIL health'));
+    return { actual: svcFail && healthFail ? 'absent' : 'degraded', detail: fails.join('; ') };
   }
   const psBin = resolvePowershell(env);
   // The WILDCARD TaskName is load-bearing, and is why -ErrorAction Stop is safe
@@ -3929,6 +4016,7 @@ const PROBES = {
   'bridge-health': probeBridgeHealth,
   'bridge-persistence': probeBridgePersistence,
   'observability-stack': probeObservabilityStack,
+  'observability-grafana': (item, ctx) => require('./probes-observability.js').probeObservabilityGrafana(item, ctx, { scopeConfigPathToCtx, spawnBashProbe, probeTimeoutSecs }),
 };
 
 // Run the probe for one manifest item. ctx = { repoRoot, targetPath, scope,
@@ -3945,4 +4033,4 @@ function runProbe(item, ctx) {
 // parseDotEnv is also exported for reuse (HIMMEL-755): install-engine.js's
 // HIMMELCTL_SUDO_PASSWORD resolution reads the primary checkout's .env with
 // this SAME minimal parser rather than writing a second one.
-module.exports = { runProbe, parseDotEnv };
+module.exports = { runProbe, parseDotEnv, scopeConfigPathToCtx };

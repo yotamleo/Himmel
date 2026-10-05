@@ -145,7 +145,12 @@ Stages currently wired:
   CR-ledger defect class (10 `agreed` findings in the 14 days to
   2026-09-07, always the same unchecked-capture shape) and is also
   `known-findings.json`'s `test-setup-unchecked-vacuous-green` shape (a);
-  bypass `UNCHECKED_MKTEMP_OK=1`; HIMMEL-2709).
+  bypass `UNCHECKED_MKTEMP_OK=1`; HIMMEL-2709; HIMMEL-4301: on a staged
+  merge only lines added relative to EVERY parent count (the conflict
+  resolution, `git diff --cc` semantics), so a merge-forward needs no
+  bypass; and CI's `unchecked-mktemp-range` job runs `--range --merge-ref`
+  over the PR's net diff so a commit made with the hook skipped is still
+  caught).
 - **Runtime pin (not a gate — `/himmel-doctor` C20):** the doctor FAILS (exit 1)
   when the running node major ≠ the `.nvmrc` pin, so the drift stops being
   rediscovered per session (HIMMEL-1986 → HIMMEL-2010). Downgraded to a
@@ -2078,12 +2083,19 @@ leaving a *different* `+`-prefixed refspec in the same push unprotected.
 Recognizes a bounded set of launcher wrappers
 (`sudo`, `env`, `cmd /c`, `powershell`/`pwsh -c`) and an executable-path
 prefix, so a wrapped or path-qualified form (`/usr/bin/env rm -rf /`,
-`C:\…\format.exe`) is refused like the bare name. Routine git/gh/mv/cp,
-non-recursive `rm`, `curl` without a remote-exec pipe, and normal
-`git status`/`commit`/`push` are all allowed.
+`C:\…\format.exe`) is refused like the bare name. HIMMEL-3984/3983 widened
+command position to the exec-style wrappers `exec`, `timeout`, `nohup`,
+`nice`, `time` and `xargs` (with their flags), to the compound keywords
+(`do`, `then`, `else`, `elif`, `if`, `while`, `until`, `!`, `{`, `(`, a
+function body), and to a `find`/`fd` exec flag (`-exec`, `-execdir`, `-ok`,
+`-x`, `--exec-batch`); `find … -delete` is refused as a recursive delete.
+Routine git/gh/mv/cp, non-recursive `rm`, `curl` without a remote-exec pipe,
+and normal `git status`/`commit`/`push` are all allowed.
 
 Deliberately NOT a general shell parser: quoted-payload wrappers (`bash -c
-"rm -rf /"`, `xargs`, `nohup` chains) are an accepted residual gap — this
+"rm -rf /"`, `su -c`, `env -S`) and the wrappers listed in the `ponytail:`
+note on `guard_cmdpos_grammar` (`setsid`, `stdbuf`, `flock`, …) are an
+accepted residual gap — this
 hook plus the auto-mode classifier are the outer defense layers, not an
 arms race against every wrapper permutation. Fails CLOSED on missing `jq`
 or malformed/truncated JSON (a security floor, not a convenience hook — the
@@ -2178,6 +2190,28 @@ shapes, and this is fleet policy about one checkout's shared ref namespace.
 The brief-level twin is `STASH_BAN_LINE` in the lane worker prompts. Fails
 CLOSED on missing `jq` or malformed JSON. Bypass: `GIT_STASH_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-git-stash.sh`.
+
+### `block-bare-qmd-query.sh` — unbounded qmd search verbs (HIMMEL-3960, HIMMEL-3956)
+
+Fires on Bash. The qmd launcher is a node trampoline that forwards no signals,
+so a `timeout N qmd query …` kills node and orphans the bun child; five such
+orphans ran at ~99 % CPU for ~15 h. Refuses `qmd query|search|vsearch` at
+COMMAND POSITION (the `block-git-stash.sh` grammar, widened to wrappers such as
+`timeout`, `env`, `nice`, `setsid`, `xargs`, `sh -c` and a `bun`/`node`/`npx`
+runtime prefix, and stepping over global options before the verb). The match
+also runs over the command's words after bash quote removal (HIMMEL-4121), so
+`qmd "qu"ery`, `qmd $'query'`, `qmd \query` and `q"md" query` are refused while
+`qmd "query"" notes"` (one non-verb word) passes. An unknown `$'\X'` escape is
+read as zsh reads it (`X`, since the Bash tool may run zsh); a verb held in a variable is
+still a miss (ponytail in the hook). Other verbs
+(`status`, `update`, `embed`, `get`) and non-command-position text
+(`grep 'qmd query' log`) pass. The deny names the bounded replacement,
+`bash scripts/lib/qmd-bounded.sh <verb> …` (deadline `$QMD_TIMEOUT_SECS`, else
+300 s, killing the whole process group), or the `mcp__qmd__query` tool. A
+must-run chain member in `run-hook-with-bash.js`: a starved run denies. Fails
+CLOSED on missing `jq` or malformed JSON. PowerShell is unguarded (ponytail in
+the hook). Bypass: `QMD_UNBOUNDED_OK=1` (launching shell). Spec:
+`scripts/hooks/test-block-bare-qmd-query.sh`.
 
 ### `guard-pr-check-literal.sh` — relative `scripts/cr/` gate spellings (HIMMEL-3383, HIMMEL-3495)
 
@@ -2446,6 +2480,54 @@ shell variables, PowerShell-native `$env:` syntax, `sudo`/`xargs`/`find
 `eval`/`bash -c` recursion. Bypass: `ENV_PREFIX_GUARD_OK=1` (launching
 shell, session-sticky). Spec: `scripts/hooks/test-block-chokepoint-env-prefix.sh`.
 
+**Text layer for detached and non-Linux launches (HIMMEL-3921).** The
+in-session seam guard (`scripts/lib/chokepoint-seam-guard.sh`, HIMMEL-3914)
+only sees calls under a claude ancestor on Linux; `setsid -f`, `at`, a
+pure-bash double-fork, `systemd-run --user`, cron and non-Linux hosts bypass
+it. The hook therefore adds a parse-free, deny-leaning scan of the raw command
+(`raw_obfuscated`, plus two arms in `raw_mention`): (1) a seam write
+(`NAME=`, `export`/`env`/`read`/`printf -v`/`declare`/...) beside a `scripts/`
+path word carrying ANY glob/brace/`$var` character after `scripts/` (no prefix
+compare or registry resolution: every quote- or escape-split spelling mis-resolved
+it, so an unrelated `scripts/hooks/*.sh` beside a write verb also denies, an
+accepted over-deny; `ls scripts/*.sh` with no write token is allowed), any
+word containing `scripts/` (relative, `./` or absolute) spelled with a `/.` or `//` segment (no
+normaliser: `scripts/lanes/../lanes/stop-w*.sh` denies), or an
+ANSI-C `$'` word naming a path or carrying any backslash escape other than the
+plain whitespace/quote ones (`\n \t \r \\ \' \" \a \b \f \v`; an allowlist, so
+`\x \u \U \c \e` and octal all count; a bare `$'\t'` is allowed), is denied (any
+clearing token of arm (3) below anywhere in the command also counts as the
+write here, with no verb anchoring; a seam `NAME=` passed as the value of a
+`--long-option` with no env-like word before it, e.g. `ledger-append.sh amend
+--set k=v`, is an argument and not a write here); (2) `BASH_ENV`, `BASH_FUNC_*`, `SHELLOPTS`, `BASHOPTS` or `extdebug`
+beside a chokepoint word is denied; (3) CLEARING a seam or
+`HIMMEL_CONSOLE_LEG` (ANY `unset` whatever its argument, any `export -n`,
+`declare|typeset|local +x`, `exec -<opt>`, `${!`, and any standalone
+`-u*`/`-i*`/`--u*`/`--i*`/bare `-` token in env position (HIMMEL-3955: the
+token follows an env-like word, `env`, a `$var`/brace word or a glob that
+matches `env`, with only option and `NAME=val` words between, in the same
+simple command; the relief is an ALLOWLIST (`relief_off`): it runs only when
+the whole command is plain words (`[A-Za-z0-9_./=:@%+,-]+`) joined by spaces or
+tabs, its first non-assignment word is a bare read-only program (`grep diff ls
+cat head tail wc stat file cut uniq cmp basename dirname realpath readlink echo
+printf`) and no word is `env` in any case; any quote, backslash, `$`, backtick, redirection, separator, paren,
+brace, glob metachar or newline takes the old plain whole-text match, so the
+relief never loosens the old deny (a glob-path `grep -i … scripts/hooks/*.sh`
+therefore still denies); `grep -i`, `sed -i`, `diff -u`, `ls -i`, `sort -u` and a
+`--id N` flag are not env-clearing), so
+`env -u NAME`/`-uNAME`/`-iu`/`$x-uNAME`/a globbed `en?` with a long option
+all deny) beside a
+chokepoint word is denied — this reverses the old "clear-and-prove" allow and
+over-denies subshell-scoped clears (the raw scan cannot model scope). The lib
+also fails closed (exit 96) on Linux when `/proc` is unreadable or is not a
+real procfs mount (`stat -f -c %T /proc` must be `proc`; a fake view via
+`unshare -rm` + tmpfs is refused); genuine non-Linux stays hook-only.
+Deliberate over-deny: `quiet-run.sh ... -- env -u X bash test` and a
+leg-launch argv whose brief text mentions `env -u` or `extdebug` deny beside
+a chokepoint word; put the control in a script file and run that instead. Residuals (ponytail): an obfuscated seam NAME beside a LITERAL
+chokepoint path (`export "$n=1"`), a program word that hides both its
+`scripts/` anchor and its glob, and S2/S4 (HIMMEL-3930).
+
 **Suite concurrency budget (HIMMEL-1818).** Test suites share a machine-wide
 semaphore (`scripts/lib/suite-semaphore.sh`): `HIMMEL_SUITE_SLOTS` slots
 (default 3) under `${TMPDIR:-/tmp}/himmel-suite-semaphore.d`. Only the two
@@ -2633,6 +2715,57 @@ quoting, delimiters), so it was removed rather than patched again.
 Known remaining gap: a merge with no selector AND no cwd branch still exits 0
 (nothing to resolve).
 
+**HIMMEL-3929 — the detector only ever adds to main's.** The detector used to be
+the text regexp `gh pr merge`, so every spelling it missed merged with no gate.
+That regexp still runs byte for byte (on its own normalized copy) and never
+stops firing: every rule below only ADDS a deny, so nothing the old detector
+denied can pass (`C="gh pr merge 42"; $C`, `eval "$C"`, `./gh pr merge` stay
+denied). The added rules, each per segment (split on `;` `&` `|` `(`): (A) a `gh`
+word, then only flags (`-R`/`--repo` take a value), then a `pr` word, then a
+`merge` word, or `gh api` / `gh alias` followed by any merge-ish word
+(`.../pulls/N/merge`, `mutation{mergePullRequest`, `alias set mm pr merge`);
+`gh pr view`, `gh pr list --search "merge conflict"` and `gh pr diff | grep merge`
+never reach a merge word there. (B) a segment with a `gh` word, a `$` or backtick
+and a merge-ish word fires, where merge-ish is a literal merge word in any copy or
+a word whose literal residue is letters of `merge` (`m${X:-er}ge`,
+`$'m\x65rge'`, `gh${IFS}pr${IFS}merge`); a non-merge gh command with `$` or a
+substitution (`gh pr view "$PR"`) is untouched. (C) a segment with a gh word, a
+`pr` word and a glob word that globs to `merge` (`m?rge`, `[m]erge`, a bare `*`,
+`[!x]erge`, `[^x]erge`) fires, after ONE shared dequote (quotes and backslashes
+stripped: `"gh" "pr" m?rge`, `\gh pr $M`, `g\h pr $M`); `ls *` has no such
+precondition. Separately, the GraphQL mutation name `mergepullrequest` anywhere in
+the dequoted, lowercased command denies, whatever `(` or `;` splits around it. (E) one
+shell-computed word, by position: a literal `gh` word then an expansion or
+substitution in the subcommand position or, after `pr`, in the verb position
+(`gh pr "$M" 1`, `gh $A 42`, `gh "$@" 42`), or a segment with any non-plain word
+(rule D's allowlist, so `command`/`env`/`nice "$G"` and `X=1 "$G"` count) before an
+`api` word, followed by a merge-ish word or a PUT to a `pulls/` path
+(`G=gh; "$G" api -X PUT repos/o/r/pulls/1/merge`), fires; `gh pr view "$PR"` never
+has an expansion in those positions. Note the new deny of the GET form
+`gh api .../pulls/N/merge`, which the merge rule cannot tell from the PUT. (D) the mirror case: in a segment
+with a `pr` word then a merge word, every word up to the merge word must match
+`^[A-Za-z0-9_./+=-]+$` (quote chars and backslashes ignored), else it fires
+(`$'\x67\x68' pr merge`, `G=gh; ${G} pr merge`, `"$G" pr me\rge`). Once fired, the
+raw-char allowlist
+above refuses every expansion spelling, and the command must parse as exactly
+`gh [-R v | --repo v | --repo=v]* pr [same]* merge <closed tokens>`; `gh api
+.../pulls/N/merge` (and `mergePullRequest` GraphQL), `gh alias set|import` naming a
+merge, `bash -c`/`sh -c`/`eval`/`env` wrappers, a prefix or chain, and any other
+flag placement deny. The `-R`/`--repo` value found before the verb is the gated repo
+exactly like one after it. The one exact exception is `gh help pr merge` (the deny
+text's own pointer). Non-merge gh (`gh pr view`, `gh api .../pulls/N`, `gh run`,
+`gh alias list`) and `git merge main && gh ...` (merge before gh) are untouched.
+A gh alias that expands to a merge and is invoked by its own name (`gh mm 8`) is
+not visible to a text detector; defining one is what the alias rule denies.
+Known residual, exactly two shapes: BOTH the program word AND the verb
+shell-computed (or a `bash -c` fed from a variable holding both), or a computed
+merge path such as `gh api -X PUT "$U"`; each is undecidable by text and is not detected;
+the structural backstop (a gh- or credential-level merge gate) is HIMMEL-3945.
+Fail closed also for the nested sources: `scripts/lib/cr-merge-gate.sh` returns 1
+(so the hook's load check denies) when one of its five helpers is missing, and the
+hook denies when `timeout-bin.sh` will not load. Fixtures that copy
+`cr-merge-gate.sh` into a scratch tree must copy its helpers too.
+
 **HIMMEL-3918 — six residuals closed, by ONE deny rule rather than parsing**
 (five panel rounds each found a new redirect/prefix shape; every parse rule in
 this hook became a bypass in #1494 and again here). A command whose unquoted text
@@ -2644,7 +2777,7 @@ quote, `#`, `\`, `$`, redirect and separator is denied outright). The `gh pr
 merge` detector runs on a normalized copy (backslash-newline pairs removed, then
 every backslash, then every `'` `"` and `$`, newlines to spaces), so
 `gh pr mer\<newline>ge`, `m""erge`, `"merge"` and `$'merge'` are seen (word forms
-that need a real expansion, `${X:-merge}` and `{merge,}`, are HIMMEL-3929), and only a hit on that copy triggers the allowlist. Every word after `merge` must then be in a closed
+that need a real expansion, `${X:-merge}` and `{merge,}`, are closed by HIMMEL-3929, below), and only a hit on that copy triggers the allowlist. Every word after `merge` must then be in a closed
 set (`-s -m -r -d --squash --merge --rebase --delete-branch
 --disable-auto`; `--auto` (the pin binds at enable time, a later push changes the head) and `--admin` (merges past required checks) deny, `-R`/`--repo <v>`, `--match-head-commit <v>`, at most one
 selector); grouped short flags (`-dt`), attached `-Rrepo`, `-b/-t/-F/-A`, unknown
@@ -3672,8 +3805,8 @@ rather than an unbounded call. The GNU part is load-bearing on Windows:
 *sleep*, not a command runner — invoking it GNU-style fails instantly, and the
 hook would read that as the guard's own rc 1 and print a MISCONFIGURED
 advisory blaming the operator's env vars while never checking the index.
-`qmd-cadence.sh`'s liveness probe carries the same `timeout --version` /
-`*oreutils*` discriminator for the same reason. The distinction is not academic: the
+`qmd-cadence.sh`'s liveness probe sidesteps the question entirely: it runs
+under `qmd_bounded` (HIMMEL-3956), which needs no `timeout` binary. The distinction is not academic: the
 SessionStart entry's own timeout bounds the hang by killing the hook *process*,
 and the hook prints nothing until the guard returns — so an unbounded fallback
 meant a hung qmd took the warning down with it and the session heard silence on

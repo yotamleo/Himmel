@@ -1,0 +1,376 @@
+#!/usr/bin/env bash
+# scripts/eval/lane-quality/run.sh - lane-quality eval (HIMMEL-4090).
+#
+# Runs the same frozen task set against one lane and model, and records per
+# task: the hidden acceptance result, a blind judge score, wall time, tool
+# calls, compactions, cost, the bank reading before and after, and guardrail
+# friction. A new model is one more `run`; `table` turns runs into rows.
+#
+# Usage:
+#   run.sh list
+#   run.sh run --lane native|openrouter --model <model> [--tasks a,b] [--effort <level>]
+#              [--max-usd <usd>] [--timeout <sec>] [--judge-model <model>]
+#              [--no-judge] [--keep] [--out <dir>]
+#   run.sh table <run-dir>...
+#   run.sh materialize <task> <dir> [--reference]   (used by the suite)
+#
+# Each task runs in a fresh detached worktree at the pinned BASE_SHA, plus
+# the task's fixture/ committed on top (a fixed author and date, so the
+# fixture commit is reproducible). The agent sees only tasks/<id>/prompt.md;
+# accept.sh and reference/ stay outside its worktree. The judge sees the task,
+# the diff and the agent's final report with every model and lane name
+# redacted, and never the acceptance result: the two signals stay independent.
+#
+# Lanes: `native` and `openrouter` (phase 2, operator-approved). An openrouter
+# agent runs through scripts/claude-openrouter (its egress, PHI and credit
+# gates apply), and its metered balance is read before and after each task;
+# the judge always runs native. deepseek and claudex exit 3 until the
+# operator opts in (deepseek needs a station opt-in in the launching shell).
+# ponytail: OpenRouter credit metadata lags, so a per-task balance delta can
+# under-report; read the sweep's account delta again later for the total.
+# Upgrade path: per-generation cost from OpenRouter's generation API.
+#
+# Budget: --max-usd (default 3) caps the sweep. The agent's reported
+# total_cost_usd is summed after each task; no further task starts once the
+# sum reaches the cap, and each agent call gets the remainder as
+# --max-budget-usd. On a subscription lane that figure is the API-price
+# equivalent, not money spent; the bank reading is the subscription cost.
+#
+# Output: <out>/runs.jsonl (one JSON row per task) plus per-task logs, under
+# ~/.himmel/eval/lane-quality/<run-id>/ by default.
+#
+# Test seams (env): LQ_CLAUDE_BIN, LQ_PREFLIGHT, LQ_REPO, LQ_BASE_SHA,
+# LQ_WORK_ROOT, LQ_TRANSCRIPTS, LQ_LANE_BIN, LQ_METERED_PROBE.
+#
+# ponytail: the bank reading is the account-wide five-hour percent, so any
+# other session running during a task lands in its delta; run a sweep on a
+# quiet fleet, or read the delta as an upper bound. Upgrade path: per-session
+# usage from the transcript once a lane exposes it (HIMMEL-4090 phase 2).
+# ponytail: a single headless run cannot hand off, so `handoffs` is not
+# recorded; compactions are. Upgrade path: drive a lane through its leg
+# launcher when phase 2 measures leg churn (HIMMEL-4089).
+# ponytail: the hidden tests live in the repo, so an agent on a later checkout
+# could read them; the runner flags a transcript that touches this directory
+# (`peeked`) instead of preventing it. Upgrade path: move the tasks to the
+# state repo if a run is ever flagged.
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+TASKS="$HERE/tasks"
+die() { echo "lane-quality: $*" >&2; exit 64; }
+usage() { sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 64; }
+command -v jq >/dev/null 2>&1 || die "jq is required"
+
+all_tasks() { for d in "$TASKS"/*/; do [ -f "$d/prompt.md" ] && basename "$d"; done; }
+
+# materialize <task> <dir> [--reference]: copy the task's fixture (or its
+# reference solution) into <dir>. The fixture is committed and its sha
+# printed; a reference is copied only, with `.ref` suffixes dropped (stored
+# that way so CI never discovers a reference test-*.sh as a suite).
+materialize() {
+  local task="$1" dir="$2" mode="${3:-}" src f
+  [ -f "$TASKS/$task/prompt.md" ] || die "unknown task '$task'"
+  if [ "$mode" = --reference ]; then
+    src="$TASKS/$task/reference"
+    [ -d "$src" ] || return 0
+    cp -R "$src/." "$dir/" || die "cannot copy the $task reference"
+    while IFS= read -r f; do mv "$f" "${f%.ref}" || die "cannot rename $f"; done < <(find "$dir/lq-work" -name '*.ref' 2>/dev/null)
+    return 0
+  fi
+  src="$TASKS/$task/fixture"
+  if [ -d "$src" ]; then
+    cp -R "$src/." "$dir/" || die "cannot copy the $task fixture"
+    git -C "$dir" add -A || die "cannot stage the $task fixture"
+    GIT_AUTHOR_DATE='2026-01-01T00:00:00Z' GIT_COMMITTER_DATE='2026-01-01T00:00:00Z' \
+      git -C "$dir" -c user.name=lane-quality -c user.email=lane-quality@invalid \
+      -c commit.gpgsign=false commit -q --no-verify -m "lane-quality fixture: $task" || die "cannot commit the $task fixture"
+  fi
+  git -C "$dir" rev-parse HEAD
+}
+
+# Redact every model and lane name before the judge sees a byte.
+redact() {
+  sed -E 's/(anthropic|claude|opus|sonnet|haiku|fable|gpt[-_.a-z0-9]*|codex|claudex|openai|deepseek|openrouter|gemini|glm|kimi|qwen|llama|mistral)/[redacted]/Ig; s/\bnative\b/[redacted]/Ig;s/\[redacted\]([-_.]*[0-9][-_.0-9]*)?/[redacted]/g'
+}
+
+bank_read() { # prints "<token> <five_hour>"
+  local out tok five
+  out="$("$PREFLIGHT" 2>&1)"
+  tok="$(printf '%s\n' "$out" | grep -Eo '^(PROCEED|SKIPPED-[A-Z]+|BANK-[A-Z]+)$' | tail -1)"
+  five="$(printf '%s\n' "$out" | sed -n 's/.*five_hour=\([0-9.?]*\).*/\1/p' | tail -1)"
+  echo "${tok:-BANK-UNKNOWN} ${five:-?}"
+}
+
+metered_read() { # prints the metered lane's balance in USD, "?" if unreadable, nothing on native
+  [ -n "$METERED_PROBE" ] || return 0
+  bash "$METERED_PROBE" --raw 2>/dev/null | sed -n 's/^balance=\([0-9.]*\):.*/\1/p' | grep . || echo '?'
+}
+
+# List prices in USD per million tokens: input, output, cache write, cache read.
+# ponytail: Claude Code does not recognize the OpenRouter slug
+# anthropic/claude-haiku-4.5 ([claude-code:unrecognized_model], costBasis
+# unknown) and over-counts its total_cost_usd about 5x, so a metered lane is
+# repriced here from modelUsage; an unpriced model leaves the cost unknown and
+# stops the sweep. Upgrade path: drop this table once Claude Code prices the
+# gateway slug (costBasis no longer "unknown"), or add a row per model adopted.
+# The metered balance fell 12-16% more than list price in the first live
+# sweeps, so the repriced cost carries a 1.2 markup to keep --max-usd a real cap.
+# Claude Code's figure was exactly 5x list price on every live task, whatever
+# the token mix. The per-call factor (BUDGET_FACTOR) relies on that ratio, so a
+# run that reports any other ratio, no cost or no priced tokens leaves the cost
+# unknown and stops the sweep.
+PRICES='{"anthropic/claude-haiku-4.5":[1,5,1.25,0.1]}'
+METERED_MARKUP=1.2
+REPORTED_RATIO=5
+
+agent_cost() { # $1 result json -> the agent's real cost in USD, or null
+  if [ "$LANE" = native ]; then jq -r '.total_cost_usd // null' "$1"; return; fi
+  jq -r --argjson p "$PRICES" --argjson mk "$METERED_MARKUP" --argjson rr "$REPORTED_RATIO" '
+    .total_cost_usd as $rep
+    | if (.modelUsage // {}) == {} then null
+    else [.modelUsage | to_entries[] | $p[.key] as $r
+          | if $r == null then null
+            else ((.value.inputTokens // 0) * $r[0] + (.value.outputTokens // 0) * $r[1]
+                  + (.value.cacheCreationInputTokens // 0) * $r[2] + (.value.cacheReadInputTokens // 0) * $r[3]) / 1000000
+            end]
+         | if any(. == null) then null
+           else add as $list
+             | if $list <= 0 or $rep == null or ($rep / $list - $rr | fabs) > 0.05 then null
+               else $list * $mk end
+           end
+    end' "$1"
+}
+
+transcript_metrics() { # $1 = transcript or empty -> JSON object
+  if [ -z "$1" ] || [ ! -r "$1" ]; then
+    echo '{"tool_calls":null,"compactions":null,"hook_denials":null,"peeked":null}'; return
+  fi
+  jq -s -c '
+    def text: if type == "string" then . elif type == "array" then map(.text? // "") | join(" ") else "" end;
+    [ .[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") ] as $tu
+    | { tool_calls: ($tu | map(.id) | unique | length),
+        compactions: ([ .[] | select(.type == "system" and .subtype == "compact_boundary") ] | length),
+        hook_denials: ([ .[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)
+                         | select(.content | text | test("hook error|PreToolUse|refus|denied|blocked"; "i")) ] | length),
+        peeked: ($tu | map(.input | tostring) | any(test("eval/lane-quality"))) }' "$1"
+}
+
+judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out dir, $6 budget -> judge JSON on stdout
+  local task="$1" wt="$2" fix="$3" report="$4" od="$5" budget="$6" jdir packet
+  jdir="$(mktemp -d "${TMPDIR:-/tmp}/lq-judge.XXXXXX")" || { echo null; return 0; }
+  packet="$od/$task.judge-packet.md"
+  git -C "$wt" add -A
+  {
+    cat "$HERE/judge-rubric.md"
+    printf '\n## Task given to the agent\n\n'
+    cat "$TASKS/$task/prompt.md"
+    printf '\n## The diff it produced\n\n```diff\n'
+    git -C "$wt" diff --cached "$fix" | head -c 60000
+    printf '\n```\n\n## Its final report\n\n'
+    cat "$report"
+  } | redact >"$packet"
+  (
+    cd "$jdir" || exit 1
+    native_auth_pin_env || exit 1
+    # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted by run_task, no tools, explicit permission mode, budget-capped
+    # launch-profile-ok: HIMMEL-4090 the judge runs with --tools "", so no tool profile applies
+    timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
+      --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
+  ) >"$od/$task.judge.json" 2>"$od/$task.judge.err"
+  rm -rf "$jdir"
+  jq -c '(.structured_output // (.result | fromjson? ) // null) as $s
+         | if $s == null then null else $s + {cost_usd: (.total_cost_usd // null)} end' \
+    "$od/$task.judge.json" 2>/dev/null || echo null
+}
+
+run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
+  local task="$1" wt fix start end bank0 bank1 met0 met1 acost outer res sid tr metrics acc_line acc_rc scope jres remaining tok judged=0
+  wt="$WORK_ROOT/lq-$RUN_ID-$task"
+  mkdir -p "$WORK_ROOT"
+  git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $task"
+  fix="$(materialize "$task" "$wt")" || die "fixture for $task failed"
+  bank0="$(bank_read)"
+  if [ "${bank0%% *}" != PROCEED ]; then
+    git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1
+    echo "bank-refused ${bank0%% *}"; return 0
+  fi
+  bank0="${bank0#* }"; met0="$(metered_read)"
+  remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" 'BEGIN{printf "%.2f", m - s}')"
+  outer="$(awk -v r="$remaining" -v f="$BUDGET_FACTOR" 'BEGIN{printf "%.2f", r * f}')"
+  start="$(date +%s)"
+  (
+    cd "$wt" || exit 1
+    native_auth_pin_env || exit 1
+    # headless-claude-ok: HIMMEL-4090 lane-quality agent run, bank-preflighted per sweep, explicit permission mode, budget-capped
+    # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config (claude or the lane launcher in $AGENT_BIN), not a leg profile
+    timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
+      --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
+  ) >"$OUT/$task.result.json" 2>"$OUT/$task.stderr"
+  end="$(date +%s)"
+  bank1="$(bank_read)"; bank1="${bank1#* }"; met1="$(metered_read)"
+  res="$OUT/$task.result.json"
+  jq -e . "$res" >/dev/null 2>&1 || echo '{"is_error":true,"subtype":"harness-no-json"}' >"$res"
+  jq -r '.result // ""' "$res" >"$OUT/$task.report.md"
+  acost="$(agent_cost "$res")"
+  sid="$(jq -r '.session_id // ""' "$res")"
+  tr=""
+  [ -n "$sid" ] && tr="$(find "$TRANSCRIPTS" -name "$sid.jsonl" -print 2>/dev/null | head -1)"
+  metrics="$(transcript_metrics "$tr")"
+  timeout "$TIMEOUT" bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$task.accept.log" 2>&1; acc_rc=$?
+  acc_line="$(grep -E '^accept: [0-9]+/[0-9]+$' "$OUT/$task.accept.log" | tail -1)"
+  # Staged against the fixture commit, so a file the agent committed counts too.
+  git -C "$wt" add -A
+  scope="$(git -C "$wt" diff --cached --name-only "$fix" | grep -v '^lq-work/' | jq -R . | jq -sc .)"
+  remaining="$(awk -v m="$MAX_USD" -v s="$SPENT" -v c="$( [ "$acost" = null ] && echo 0 || echo "$acost" )" 'BEGIN{printf "%.2f", m - s - c}')"
+  jres=null
+  if [ "$NO_JUDGE" -eq 0 ]; then
+    read -r tok _ <<<"$(bank_read)"
+    if [ "$tok" != PROCEED ]; then
+      echo "lane-quality: bank preflight said $tok; judge skipped" >"$OUT/$task.judge.err"
+    elif [ "$acost" = null ]; then
+      echo "lane-quality: agent cost unknown, budget cannot be bounded; judge skipped" >"$OUT/$task.judge.err"
+    elif awk -v r="$remaining" 'BEGIN{exit !(r >= 0.01)}'; then
+      jres="$(judge "$task" "$wt" "$fix" "$OUT/$task.report.md" "$OUT" "$remaining")"
+      judged=1
+    else
+      echo "lane-quality: budget spent by the agent; judge skipped" >"$OUT/$task.judge.err"
+    fi
+  fi
+  [ -n "$jres" ] || jres=null
+  if [ "$KEEP" -eq 0 ]; then git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1; fi
+  jq -nc --arg run "$RUN_ID" --arg lane "$LANE" --arg model "$MODEL" --arg effort "$EFFORT" --arg task "$task" \
+    --arg base "$BASE_SHA" --arg fix "$fix" --argjson wall "$((end - start))" --arg b0 "$bank0" --arg b1 "$bank1" --arg m0 "$met0" --arg m1 "$met1" --argjson ac "$acost" \
+    --arg acc "$acc_line" --argjson accrc "$acc_rc" --argjson scope "$scope" --argjson m "$metrics" \
+    --argjson j "$jres" --arg wt "$( [ "$KEEP" -eq 1 ] && echo "$wt" )" --slurpfile r "$res" '
+    $r[0] as $r
+    | { run_id: $run, lane: $lane, model: $model, effort: $effort, task: $task, base_sha: $base, fixture_sha: $fix,
+        wall_s: $wall, duration_ms: ($r.duration_ms // null), num_turns: ($r.num_turns // null),
+        cost_usd: $ac, reported_cost_usd: ($r.total_cost_usd // null), bank_5h_before: $b0, bank_5h_after: $b1,
+        metered_before: (if $m0 == "" then null else $m0 end), metered_after: (if $m1 == "" then null else $m1 end),
+        permission_denials: (($r.permission_denials // []) | length),
+        is_error: (if $r | has("is_error") then $r.is_error else null end),
+        subtype: ($r.subtype // null),
+        accept_passed: (($acc | capture("(?<p>[0-9]+)/").p? | tonumber?) // 0),
+        accept_total: (($acc | capture("/(?<t>[0-9]+)").t? | tonumber?) // 0),
+        accept_ok: ($accrc == 0), scope_ok: ($scope | length == 0), out_of_scope: $scope,
+        judge: $j, kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl" || die "$task: could not record its runs.jsonl row"
+  # "unknown" when the agent, or a judge that was launched, left no cost
+  # (killed by the timeout, or failed): the sweep stops.
+  jq -nr --argjson ac "$acost" --argjson j "$jres" --argjson judged "$judged" '
+    if $ac == null or ($judged == 1 and ($j.cost_usd? // null) == null) then "unknown"
+    else $ac + ($j.cost_usd? // 0) end'
+}
+
+cmd_run() {
+  LANE=""; MODEL=""; TASK_LIST=""; EFFORT=""; MAX_USD=3; TIMEOUT=1800; JUDGE_MODEL=opus
+  NO_JUDGE=0; KEEP=0; OUT=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --lane|--model|--tasks|--effort|--max-usd|--timeout|--judge-model|--out)
+        [ $# -ge 2 ] || die "$1 needs a value"
+        case "$1" in
+          --lane) LANE="$2" ;; --model) MODEL="$2" ;; --tasks) TASK_LIST="$2" ;;
+          --effort) EFFORT="$2" ;; --max-usd) MAX_USD="$2" ;; --timeout) TIMEOUT="$2" ;;
+          --judge-model) JUDGE_MODEL="$2" ;; --out) OUT="$2" ;;
+        esac; shift 2 ;;
+      --no-judge) NO_JUDGE=1; shift ;;
+      --keep) KEEP=1; shift ;;
+      *) die "unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$MODEL" ] || die "--model is required"
+  case "$LANE" in
+    native|openrouter) ;;
+    deepseek|claudex)
+      echo "lane-quality: lane '$LANE' is not enabled (HIMMEL-4090): it needs the operator's go; see docs/internals/lane-calibration.md" >&2
+      exit 3 ;;
+    *) die "--lane must be native or openrouter; got '$LANE'" ;;
+  esac
+  awk -v m="$MAX_USD" 'BEGIN{exit !(m+0 > 0)}' || die "--max-usd must be a positive number"
+  case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
+  [ "$TIMEOUT" -gt 0 ] || die "--timeout must be positive (0 disables timeout)"
+
+  CLAUDE_BIN="${LQ_CLAUDE_BIN:-claude}"
+  REPO="${LQ_REPO:-$(dirname "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)")}"
+  PREFLIGHT="${LQ_PREFLIGHT:-$REPO/scripts/lib/bank-preflight.sh}"
+  BASE_SHA="${LQ_BASE_SHA:-$(tr -d '[:space:]' <"$HERE/BASE_SHA")}"
+  WORK_ROOT="${LQ_WORK_ROOT:-$REPO/.claude/worktrees}"
+  # The judge always runs native; a metered lane's agent goes through its launcher.
+  AGENT_BIN="$CLAUDE_BIN"; METERED_PROBE=""; BUDGET_FACTOR=1; TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude/projects}"
+  if [ "$LANE" = openrouter ]; then
+    # Only a priced model can be capped; refuse the rest before any spend.
+    [ "$MODEL" = haiku ] || die "--lane openrouter supports --model haiku only (the one model with a PRICES row); got '$MODEL'"
+    AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/claude-openrouter}"
+    METERED_PROBE="${LQ_METERED_PROBE:-$REPO/scripts/lanes/openrouter-cost.sh}"
+    TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude-openrouter/projects}"
+    # The sweep cap counts real (repriced) spend. The per-call cap is in Claude
+    # Code's own units, REPORTED_RATIO (5) times list price, and the real charge
+    # is at most METERED_MARKUP (1.2) times list, so a factor of 4 stops a call
+    # at 4/5 x 1.2 = 0.96 of the real remainder.
+    BUDGET_FACTOR=4
+    echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
+  fi
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9.-' '_')"
+  OUT="${OUT:-$HOME/.himmel/eval/lane-quality/$RUN_ID}"
+  mkdir -p "$OUT" || die "cannot create $OUT"
+  OUT="$(cd "$OUT" && pwd)" || die "cannot resolve $OUT"
+  # shellcheck source=../../lib/native-auth-pin.sh
+  . "$HERE/../../lib/native-auth-pin.sh" || die "cannot source native-auth-pin.sh"
+  git -C "$REPO" cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || die "base sha $BASE_SHA not in $REPO"
+
+  local tasks t cost tok
+  tasks="${TASK_LIST:-$(all_tasks | tr '\n' ',')}"
+  SPENT=0
+  echo "lane-quality: run $RUN_ID → $OUT"
+  for t in $(printf '%s' "$tasks" | tr ',' ' '); do
+    [ -f "$TASKS/$t/prompt.md" ] || die "unknown task '$t'"
+    if awk -v m="$MAX_USD" -v s="$SPENT" 'BEGIN{exit !(s >= m)}'; then
+      echo "lane-quality: budget cap reached (spent $SPENT of $MAX_USD USD); not starting '$t'" >&2
+      break
+    fi
+    read -r tok _ <<<"$(bank_read)"
+    if [ "$tok" != PROCEED ]; then
+      echo "lane-quality: bank preflight said $tok; not starting '$t'" >&2
+      exit 75
+    fi
+    echo "lane-quality: task $t"
+    cost="$(run_task "$t")" || die "task '$t' failed; see $OUT"
+    cost="$(printf '%s\n' "$cost" | tail -1)"
+    case "$cost" in bank-refused*)
+      echo "lane-quality: bank preflight said ${cost#bank-refused }; '$t' not launched" >&2
+      exit 75 ;;
+    esac
+    if [ "$cost" = unknown ]; then
+      echo "lane-quality: task '$t' left its cost unknown (agent or judge killed?); stopping the sweep, spend so far is a lower bound" >&2
+      break
+    fi
+    SPENT="$(awk -v s="$SPENT" -v c="${cost:-0}" 'BEGIN{printf "%.4f", s + c}')"
+  done
+  echo "lane-quality: done, spent $SPENT USD (API-price equivalent); rows in $OUT/runs.jsonl"
+}
+
+cmd_table() {
+  [ $# -ge 1 ] || die "table needs at least one run directory"
+  local d files=""
+  for d in "$@"; do [ -r "$d/runs.jsonl" ] || die "no runs.jsonl in $d"; files="$files $d/runs.jsonl"; done
+  echo '| lane | model | task | accept | judge C/S/T/H | wall s | tool calls | compactions | cost USD | 5h bank | metered USD | denials perm/hook | peeked |'
+  echo '|---|---|---|---|---|---|---|---|---|---|---|---|---|'
+  # shellcheck disable=SC2086
+  jq -r '
+    def n: if . == null then "?" else tostring end;
+    "| \(.lane) | \(.model) | \(.task) | \(.accept_passed)/\(.accept_total)\(if .accept_ok then "" else " ✗" end) | "
+    + (if .judge == null then "–" else "\(.judge.correctness)/\(.judge.scope_discipline)/\(.judge.test_quality)/\(.judge.honesty)" end)
+    + " | \(.wall_s) | \(.tool_calls | n) | \(.compactions | n) | \(.cost_usd | n) | \(.bank_5h_before)→\(.bank_5h_after) | "
+    + (if .metered_before == null then "–" else "\(.metered_before)→\(.metered_after)" end) + " | "
+    + "\(.permission_denials)/\(.hook_denials | n) | \(.peeked | n) |"' $files
+}
+
+[ $# -ge 1 ] || usage
+case "$1" in
+  list) all_tasks ;;
+  run) shift; cmd_run "$@" ;;
+  table) shift; cmd_table "$@" ;;
+  materialize) shift; [ $# -ge 2 ] || die "materialize <task> <dir> [--reference]"; materialize "$@" ;;
+  -h|--help) usage ;;
+  *) die "unknown command '$1' (list|run|table|materialize)" ;;
+esac

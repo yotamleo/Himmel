@@ -681,6 +681,14 @@ printf '#!/bin/sh\nexit 0\n' > "$UV_OK_BIN/uv"; chmod +x "$UV_OK_BIN/uv"
 OUT="$(PATH="$UV_OK_BIN:$NO_UV_BIN" run_update "$CLONE15" "$FH15" "$STUB15" --only graphify)"
 assert_not_contains "uv present: no uv-missing row" "uv missing" "$OUT"
 
+# HIMMEL-4380: --graphify-only is the standing way to clear a pin-sync skip from
+# a slot with no live session; it is the same step as --only graphify.
+OUT="$(PATH="$NO_UV_BIN" run_update "$CLONE15" "$FH15" "$STUB15" --graphify-only)"; RC=$?
+assert_eq "--graphify-only exits 0 (advisory)" "0" "$RC"
+assert_contains "--graphify-only runs only the graphify step" "graphify  *skipped  *uv missing" "$OUT"
+assert_not_contains "--graphify-only does not run the chain" "git pull --ff-only" "$OUT"
+assert_contains "graphify step names --graphify-only as the way to clear a held skip" "himmel-update.sh --graphify-only" "$OUT"
+
 echo ""
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
