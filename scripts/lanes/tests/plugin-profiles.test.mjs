@@ -1512,3 +1512,35 @@ test('HIMMEL-4024: code kit CLIs (ast-grep, shfmt, bats) have drift rows, a cata
   for (const n of ['ast-grep', 'shfmt', 'bats', '`code`', '`code-ui`']) assert.ok(cat.includes(n), `catalog mentions ${n}`);
   assert.ok(existsSync(join(root, 'scripts', 'machine-setup', 'install-code-kit-clis.sh')), 'install step');
 });
+
+// HIMMEL-4400: a headed e2e leg needs the Playwright MCP under --strict-mcp-config. The
+// plugin's own .mcp.json is flat-form and lives in the plugin cache, so the server def is
+// resolved from the registry mcpCatalog, the tier after home / repo / marketplace manifest.
+test('leg-e2e carries the Playwright MCP in its composed --mcp-config (HIMMEL-4400)', () => {
+  assert.deepEqual(mcpServersForProfile(REG, 'leg-e2e'), ['qmd', 'playwright']);
+  const dir = makeTmpDir('pp-e2e-');
+  const marketplaceDir = join(dir, 'marketplace', 'plugins');
+  mkdirSync(join(marketplaceDir, 'qmd'), { recursive: true });
+  writeFileSync(join(marketplaceDir, 'qmd', '.mcp.json'), JSON.stringify({ mcpServers: { qmd: { command: 'qmd', args: ['mcp'] } } }));
+  const cfg = collectMcpServerDefs(['qmd', 'playwright'], { homeConfigPath: join(dir, 'home.json'), repoMcpPath: join(dir, '.mcp.json'), marketplaceDir, mcpCatalog: REG.mcpCatalog });
+  assert.equal(cfg.mcpServers.playwright.command, 'npx');
+  assert.match(cfg.mcpServers.playwright.args.join(' '), /@playwright\/mcp@\d+\.\d+\.\d+/, 'pinned, never @latest');
+});
+
+test('leg-e2e matches leg-impl plugins and leaves the Playwright plugin OFF so only the catalog server exists (HIMMEL-4400)', () => {
+  const { enabledPlugins: p } = resolveProfile(REG, 'leg-e2e', { installed: [] });
+  for (const id of ['pr-review-toolkit-himmel@himmel', 'qmd@himmel']) assert.equal(p[id], true, id);
+  assert.notEqual(p['playwright@claude-plugins-official'], true, 'plugin ships only the MCP; enabling it risks a second server');
+  assert.deepEqual(resolveProfile(REG, 'leg-impl', { installed: [] }).enabledPlugins, p);
+  assert.equal(REG.profiles['leg-e2e'].gateAllow, true);
+  assert.deepEqual(validateRegistry(REG), []);
+});
+
+test('collectMcpServerDefs: the mcpCatalog tier loses to home/repo/manifest and still refuses an unknown name (HIMMEL-4400)', () => {
+  const dir = makeTmpDir('pp-cat-');
+  const home = join(dir, 'home.json');
+  writeFileSync(home, JSON.stringify({ mcpServers: { x: { command: 'home-x' } } }));
+  const opts = { homeConfigPath: home, repoMcpPath: join(dir, '.mcp.json'), marketplaceDir: join(dir, 'm'), mcpCatalog: { x: { command: 'cat-x' }, y: { command: 'cat-y' } } };
+  assert.deepEqual(collectMcpServerDefs(['x', 'y'], opts).mcpServers, { x: { command: 'home-x' }, y: { command: 'cat-y' } });
+  assert.throws(() => collectMcpServerDefs(['z'], opts), /not defined/);
+});

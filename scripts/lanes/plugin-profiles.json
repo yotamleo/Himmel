@@ -57,7 +57,12 @@
     "pr-review-toolkit-himmel@himmel",
     "lean-skills@himmel"
   ],
-  "mcpCatalog": {},
+  "mcpCatalog": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@0.0.83"]
+    }
+  },
   "catalog": [
     "telegram@claude-plugins-official",
     "frontend-design@claude-plugins-official",
@@ -280,6 +285,20 @@
       "contextMode": "standard",
       "autocompact": 200000,
       "_comment_contextBudget": "HIMMEL-4021 audit 2026-10-02: n=0 attributable merged legs in PR bodies (#643-#1604, merged 2026-09-12 to 2026-10-02 UTC); keep contextBudget under n<3. Existing observations and source PRs, if any, are recorded in the registry-level _comment_contextBudget and docs/internals/lane-calibration.md."
+    },
+    "leg-e2e": {
+      "gateAllow": true,
+      "_comment": "HIMMEL-4400 headed e2e leg: leg-impl plus ONE Playwright MCP server, so a leg can drive a browser (the himmelctl config-UI checklist). The server comes from mcpCatalog.playwright (pinned @playwright/mcp, npm registry only, never @latest) and rides --mcp-config under --strict-mcp-config; the playwright@claude-plugins-official plugin is deliberately NOT enabled, because it ships nothing but that same MCP server (no skills, commands or agents) and under strict mode its copy is stripped anyway, so enabling it would add nothing or a second server. Tools therefore appear as mcp__playwright__*, not mcp__plugin_playwright_playwright__*. Context cost: the playwright tool schemas add an estimated 3-5k first-turn tokens over leg-impl (code-ui's own estimate, unmeasured here), hence the 40000 budget vs leg-impl's 35000. Use it only for legs that drive a browser; every other leg stays on leg-impl.",
+      "enable": [
+        "pr-review-toolkit-himmel@himmel"
+      ],
+      "mcpServers": [
+        "qmd",
+        "playwright"
+      ],
+      "contextBudget": 40000,
+      "contextMode": "standard",
+      "autocompact": 200000
     },
     "lane-review": {
       "gateAllow": true,

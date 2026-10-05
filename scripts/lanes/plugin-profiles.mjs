@@ -76,7 +76,7 @@ const GATE_ANCHOR_LITERAL = 'Bash(bash "$HIMMEL_REPO/scripts/handover/merge-on-g
 // so this literal carries no ':*' tail at all.
 const GATE_ANCHOR_LITERAL_PR_CHECK_CONTEXT = 'Bash(bash "$HIMMEL_REPO/scripts/cr/pr-check-context.sh")';
 const GATE_ANCHOR_LITERALS = new Set([GATE_ANCHOR_LITERAL, GATE_ANCHOR_LITERAL_PR_CHECK_CONTEXT]);
-const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'lane-review', 'lane-content', 'console-relay']);
+const LEG_PROFILES = new Set(['lane-impl', 'leg-impl', 'leg-e2e', 'lane-review', 'lane-content', 'console-relay']);
 
 function validateGateAllow(errors, rules) {
   if (rules === undefined) return; // older custom registries do not opt in
@@ -667,7 +667,7 @@ function refuseIfPluginRootRef(name, def) {
   }
 }
 
-export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marketplaceDir }) {
+export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marketplaceDir, mcpCatalog = {} }) {
   if (names.length === 0) return { mcpServers: {} };
   const readDefs = (path) => {
     if (!existsSync(path)) return {};
@@ -684,10 +684,14 @@ export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marke
     else {
       const manifestPath = join(marketplaceDir, name, '.mcp.json');
       const manifest = readDefs(manifestPath);
-      if (!Object.hasOwn(manifest, name)) {
+      // HIMMEL-4400: last tier, the registry mcpCatalog — for a server whose upstream
+      // plugin ships a flat-form .mcp.json that only exists in the plugin cache.
+      if (!Object.hasOwn(manifest, name) && Object.hasOwn(mcpCatalog, name)) {
+        def = mcpCatalog[name];
+      } else if (!Object.hasOwn(manifest, name)) {
         throw new Error(`plugin-profiles: mcpServers entry "${name}" is not defined in ${homeConfigPath}, ${repoMcpPath}, or ${manifestPath}`);
       }
-      def = manifest[name];
+      else def = manifest[name];
     }
     refuseIfPluginRootRef(name, def);
     mcpServers[name] = def;
@@ -739,6 +743,7 @@ if (import.meta.url === `file://${process.argv[1]}` || process.argv[1] === fileU
         homeConfigPath: join(homedir(), '.claude.json'),
         repoMcpPath: join(process.cwd(), '.mcp.json'),
         marketplaceDir: join(SCRIPT_DIR, '..', '..', 'marketplace', 'plugins'),
+        mcpCatalog: registry.mcpCatalog,
       });
       process.stdout.write(JSON.stringify(cfg) + '\n');
       process.exit(0);

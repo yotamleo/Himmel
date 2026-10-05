@@ -25,6 +25,7 @@ export const ROLE_REQUIRES = {
   'code-ui': ['playwright@claude-plugins-official'],
   'lane-impl': ['pr-review-toolkit-himmel@himmel'],
   'leg-impl': ['pr-review-toolkit-himmel@himmel'],
+  'leg-e2e': ['pr-review-toolkit-himmel@himmel'],
   'lane-review': ['pr-review-toolkit-himmel@himmel'],
   'lane-content': ['claude-obsidian@himmel', 'obsidian-triage@himmel'],
   telegram: ['obsidian-triage@himmel'],
