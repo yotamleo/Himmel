@@ -100,6 +100,14 @@ case "$1 $2" in
     [ "${CT_ANCESTOR_BAD:-0}" = "1" ] && exit 1
     exit 0 ;;
 esac
+case "$1" in
+  show)
+    # `git show <sha>:VERSION` (HIMMEL-4417): default = the version being cut, so
+    # every pre-existing case reads a matching VERSION; CT_SHA_VERSION overrides.
+    [ "${CT_SHOW_FAIL:-0}" = "1" ] && exit 128
+    printf '%s\n' "${CT_SHA_VERSION:-$CT_WANT_BASE}"
+    exit 0 ;;
+esac
 case "$*" in
   "ls-remote --exit-code --tags origin "*)
     [ "${CT_TAG_EXISTS:-0}" = "1" ] && exit 0
@@ -115,7 +123,9 @@ STUB
 chmod +x "$GIT_STUB_DIR/git"
 
 run() { # run <version> <sha> [more args...] - runs the script under test
-    CALLS_LOG="$CALLS" PATH="$GIT_STUB_DIR:$PATH" GH_BIN="$GH_STUB" SHA_ENV="$SHA" \
+    CT_WANT_BASE="$(printf '%s' "${1:-}" | sed -E 's/^v//; s/-pre\..*$//')" \
+        CT_SHA_VERSION="${CT_SHA_VERSION:-}" CT_SHOW_FAIL="${CT_SHOW_FAIL:-0}" \
+        CALLS_LOG="$CALLS" PATH="$GIT_STUB_DIR:$PATH" GH_BIN="$GH_STUB" SHA_ENV="$SHA" \
         CT_ANCESTOR_BAD="${CT_ANCESTOR_BAD:-0}" CT_TAG_EXISTS="${CT_TAG_EXISTS:-0}" \
         CT_SERIES_TAGS="${CT_SERIES_TAGS:-}" CT_FETCH_FAIL="${CT_FETCH_FAIL:-0}" \
         CT_RUNS_JSON="${CT_RUNS_JSON:-}" CT_STATUS_JSON="${CT_STATUS_JSON:-}" \
@@ -129,7 +139,7 @@ run() { # run <version> <sha> [more args...] - runs the script under test
 reset_calls() { : > "$CALLS"; }
 unset CT_ANCESTOR_BAD CT_TAG_EXISTS CT_SERIES_TAGS CT_FETCH_FAIL CT_RUNS_JSON CT_STATUS_JSON CT_CREATE_FAIL
 unset CT_ORIGIN_URL CT_ORIGIN_URL_FAIL CT_NWO_MISMATCH CT_SERIES_LS_FAIL CT_RUNS_FAIL CT_STATUS_FAIL
-unset CT_CI_RUNS_JSON CT_CI_RUNS_FAIL
+unset CT_CI_RUNS_JSON CT_CI_RUNS_FAIL CT_SHA_VERSION CT_SHOW_FAIL
 
 CLEAN_VERSION="v0.3.0-pre.9"
 CT_SERIES_TAGS_DEFAULT="aaaa1111	refs/tags/v0.3.0-pre.6
@@ -347,6 +357,25 @@ check "pre-leading-zero: not refused as usage" "$( [ "$rc" != "2" ] && echo yes 
 reset_calls
 rc=0; out=$(CT_SERIES_TAGS="" run "v01.0.0" "$SHA" --version-override "leading zero" 2>&1) || rc=$?
 check "bare-leading-zero: mirrors pre path (not refused as usage)" "$( [ "$rc" != "2" ] && echo yes || echo no )" "yes"
+
+# --- 17. VERSION at <sha> must equal the tag's X.Y.Z (HIMMEL-4417) ----------
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_SHA_VERSION="0.2.0" run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "version-file stale: rc 7" "$rc" "7"
+contains "version-file stale: names both" "$out" "VERSION at $SHA is 0.2.0 but $CLEAN_VERSION is 0.3.0"
+not_contains "version-file stale: no ref created" "$(cat "$CALLS")" "git/refs -f"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_SHA_VERSION="0.2.0" run "$CLEAN_VERSION" "$SHA" --version-override "re-cut" 2>&1) || rc=$?
+check "version-file stale: --version-override does NOT waive it" "$rc" "7"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_SHOW_FAIL=1 run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "version-file unreadable: rc 7 (fail closed)" "$rc" "7"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_SHA_VERSION="0.3.0" run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "version-file matching: rc 0" "$rc" "0"
+reset_calls
+rc=0; out=$(CT_SERIES_TAGS="$CT_SERIES_TAGS_DEFAULT" CT_SHA_VERSION="0.3. 0" run "$CLEAN_VERSION" "$SHA" 2>&1) || rc=$?
+check "version-file with internal whitespace: rc 7" "$rc" "7"
 
 echo "----"
 if [ "$fails" -eq 0 ]; then
