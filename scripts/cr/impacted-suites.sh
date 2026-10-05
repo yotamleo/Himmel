@@ -124,8 +124,10 @@ usage() {
 runner_for() {
     local path="$1" rel
     case "$path" in
-        scripts/hooks/*.test.mjs|scripts/lib/*.test.mjs|scripts/lanes/tests/*.test.mjs|scripts/trust/tests/*.test.mjs)
+        scripts/hooks/*.test.mjs|scripts/lib/*.test.mjs|scripts/lanes/tests/*.test.mjs|scripts/trust/tests/*.test.mjs|scripts/where-are-we/tests/*.test.mjs|scripts/lessons/tests/*.test.mjs|scripts/op-env-parity.test.mjs|scripts/observability/*.test.mjs)
             printf 'node --test %q\n' "$path" ;;
+        scripts/fleet-control/*.test.ts|scripts/observability/*.test.ts)
+            printf 'bun test %q --dots\n' "$path" ;;
         scripts/jira/*.test.ts)
             rel="${path#scripts/jira/}"
             printf 'cd scripts/jira && npx vitest run %q\n' "$rel" ;;
@@ -194,6 +196,10 @@ vault-suites|bun-test|bun test scripts/vault/tests --dots
 config-ui-suites|bun-test|bun test scripts/config-ui --dots
 luna-correlate|bun-test|marketplace/plugins/luna-correlate && bun install
 telegram-himmel|bun-test|marketplace/plugins/telegram-himmel && bun install
+where-are-we|node-test|scripts/where-are-we/tests/*.test.mjs
+lessons|node-test|scripts/lessons/tests/*.test.mjs
+op-env-observability-mjs|node-test|op-env-parity.test.mjs
+fleet-control-observability|bun-test|bun test scripts/fleet-control scripts/observability
 EOF
 }
 
