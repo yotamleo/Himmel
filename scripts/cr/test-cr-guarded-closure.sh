@@ -91,10 +91,15 @@ edges() {
     for cand in "$target" "$target.ts" "$target.js" "$target.mjs" "$target.cjs" "$target/index.js"; do
       [ -f "$ROOT/$cand" ] && { printf '%s\n' "$cand"; break; }
     done
-  done | sort -u | grep -v '^scripts/jira/dist/' | while IFS= read -r target; do
-    # (HIMMEL-4452: scripts/jira/dist is the Jira CLI's untracked build, present
-    # only where it was built and always run from the PRIMARY checkout, never
-    # branch bytes - so the closure result must not depend on whether it exists.)
+  done | sort -u | while IFS= read -r target; do
+    # (HIMMEL-4452/4455: scripts/jira/dist is the Jira CLI's untracked build,
+    # present only where it was built, so the closure result must not depend on
+    # whether it exists. Only an edge whose parent is pinned in DIST_PRIMARY is
+    # dropped - a parent that resolves dist from the PRIMARY checkout, never
+    # branch bytes. Any other dist edge, e.g. one relative to the script, stays.)
+    case "$target" in
+      scripts/jira/dist/*) [[ $'\n'"$DIST_PRIMARY" == *$'\n'"$f::"* ]] && continue ;;
+    esac
     # Drop the pinned non-executed edges (NOT_RUN below).
     grep -qxF -- "$f -> $target" <<< "$NOT_RUN" || printf '%s\n' "$target"
   done
@@ -107,6 +112,15 @@ NOT_RUN="scripts/cr/install-cr-gate.sh -> scripts/hooks/check-cr-before-push.sh
 scripts/lib/wire-statusline.sh -> marketplace/plugins/claude-hud/dist/index.js
 scripts/lib/bank-preflight.sh -> scripts/lanes/codex-bank-probe.ts
 scripts/lanes/bank-status-core.mjs -> scripts/lanes/codex-bank-probe.ts"
+
+# Parents allowed to name scripts/jira/dist, pinned as <file>::<regex>. The regex
+# must match the file, proving the dist path there is anchored on the PRIMARY
+# checkout (git-common-dir / its repo root) or is only prompt text, not run
+# relative to the script (checked below, so a pin cannot rot silently).
+DIST_PRIMARY="scripts/handover/console-kit/leg-jira-status.sh::dirname \"\\\$common\"\\)/scripts/jira/dist/index\\.js
+scripts/handover/merge-on-green.sh::cd \"\\\$repo_root\" && node scripts/jira/dist/index\\.js
+scripts/telegram/run.ts::\\\$\\{p\\.cwd\\}/scripts/jira/dist/index\\.js
+scripts/telegram/spawn-glm.ts::Jira updates .*via node scripts/jira/dist/index\\.js"
 
 # closure - the transitive set of files reached from the seeds.
 closure() {
@@ -227,12 +241,29 @@ else
   check "$(printf 'scripts/lib/a.sh\nscripts/lib/locked.sh\n' | ROOT="$fx" unreadable)" "scripts/lib/locked.sh" "unreadable() names a reached file edges() cannot read"
 fi
 chmod 600 "$fx/scripts/lib/locked.sh"
+# HIMMEL-4455: the jira dist filter is per-edge. A script-relative dist edge
+# (the arm-resume.sh / breadcrumb.sh shape) must stay an edge, and a pinned
+# parent's dist edge is still dropped.
+mkdir -p "$fx/scripts/jira/dist" "$fx/scripts/handover/console-kit"
+: > "$fx/scripts/jira/dist/index.js"
+# shellcheck disable=SC2016  # fixture text, the $ must stay literal
+printf '%s\n' '_jira="${X_CLI:-$SCRIPT_DIR/../jira/dist/index.js}"' > "$fx/scripts/handover/relative-dist.sh"
+# shellcheck disable=SC2016  # fixture text, the $ must stay literal
+printf '%s\n' 'node "$repo_root/scripts/jira/dist/index.js" get' > "$fx/scripts/handover/console-kit/leg-jira-status.sh"
+check "$(ROOT="$fx" edges scripts/handover/relative-dist.sh)" "scripts/jira/dist/index.js" "edges() keeps a script-relative scripts/jira/dist edge"
+check "$(ROOT="$fx" edges scripts/handover/console-kit/leg-jira-status.sh)" "" "edges() drops the dist edge of a DIST_PRIMARY-pinned parent"
 rm -rf "$fx"
 
 # Every pinned NOT_RUN edge is still a real edge of its parent.
 while IFS= read -r pin; do
   check "$(NOT_RUN='' edges "${pin%% -> *}" | grep -cxF -- "${pin#* -> }")" "1" "NOT_RUN pin is still an edge: $pin"
 done <<< "$NOT_RUN"
+
+# Every DIST_PRIMARY pin still matches its file: the dist path there is anchored
+# on the primary checkout (or is prompt text), not resolved relative to the script.
+while IFS= read -r pin; do
+  check "$(grep -qE -- "${pin#*::}" "$ROOT/${pin%%::*}" && echo held || echo gone)" "held" "DIST_PRIMARY pin still holds: ${pin%%::*}"
+done <<< "$DIST_PRIMARY"
 
 reached="$(closure)"
 echo "closure ($(printf '%s\n' "$reached" | grep -c .) files reached from the runbook and scripts/cr):"
