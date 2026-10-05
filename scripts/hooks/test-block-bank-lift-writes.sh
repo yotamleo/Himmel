@@ -303,21 +303,37 @@ import subprocess; subprocess.run(['bash','scripts/lib/bank-lift.sh','set'])
 EOF"
 _check "Read tool (not guarded)" allow "$(jq -cn --arg p "$LIFT" '{tool_name:"Read",tool_input:{file_path:$p}}')"
 
+echo "== review round 1 (codex-1, codex-2) =="
+# A symlink into a state SUBdir, then `..`: lexically that is outside the
+# state dir, physically it is the state dir.
+mkdir -p "$ST/sub"
+ln -s "$ST/sub" "$T/sublink"
+row "symlink/.. lands in state"            deny  "echo x > $T/sublink/../bank-lift.json"
+row "symlink/.. lands in state (cp)"       deny  "cp $T/src/other.txt $T/sublink/../bank-lift.json"
+_check "Write tool via symlink/.."          deny  "$(jq -cn --arg p "$T/sublink/../bank-lift.json" '{tool_name:"Write",tool_input:{file_path:$p,content:"{}"}}')"
+row "real dir/.. outside state (control)"  allow "echo x > $T/src/sub/../bank-lift.json"
+row "busybox by absolute path sh -c"       deny  "/usr/bin/busybox sh -c 'echo x > $P'"
+row "busybox by relative path sh -c"       deny  "./busybox sh -c 'echo x > $P'"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. rm rows are the ALLOW control (removing a lift only
 # tightens the gate); every other verb must deny.
 # shellcheck source=./lib-test-write-fence-matrix.sh
-. "$HOOKS/lib-test-write-fence-matrix.sh"
+. "$HOOKS/lib-test-write-fence-matrix.sh" || { bad "source lib-test-write-fence-matrix.sh"; exit 1; }
+mrows=0
 while IFS='	' read -r vlabel vtmpl; do
     [ -n "$vlabel" ] || continue
     cmd=$(_matrix_render_cmd "$vtmpl" "/tmp/x.json" "$P")
     case "$vlabel" in rm|"rm -r") exp=allow ;; *) exp=deny ;; esac
     row "matrix: $vlabel" "$exp" "$cmd"
+    mrows=$((mrows+1))
 done <<EOF
 $(_matrix_srcless_verbs)
 $(_matrix_src_verbs)
 EOF
+# A failed generator leaves the heredoc empty: no rows must read as a failure.
+if [ "$mrows" -ge 10 ]; then ok "matrix generated $mrows rows"; else bad "matrix generated only $mrows rows"; fi
 
 echo
 echo "PASS: $pass  FAIL: $fail"

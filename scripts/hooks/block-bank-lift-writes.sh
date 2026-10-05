@@ -109,10 +109,22 @@ _expand() {
         '${HOME}/'*) w="$HOME/${w#\$\{HOME\}/}" ;;
     esac
     case "$w" in
-        /*) _norm "$w" ;;
-        '$'*|'`'*) printf '?/%s' "$w" ;;
-        *) if [ "$HAS_CD" = 1 ]; then printf '?/%s' "$w"; else _norm "$CWD/$w"; fi ;;
+        /*) ;;
+        '$'*|'`'*) printf '?/%s' "$w"; return ;;
+        *) if [ "$HAS_CD" = 1 ]; then printf '?/%s' "$w"; return; fi; w="$CWD/$w" ;;
     esac
+    # A `..` after a symlink climbs out of the link's TARGET, not out of the
+    # lexical parent: resolve the existing directory part physically.
+    case "$w" in
+        *..*)
+            local d="${w%/*}" b="${w##*/}" pd
+            case "$b" in .|..) d="$w"; b="" ;; esac
+            if pd=$(CDPATH='' cd -P -- "${d:-/}" 2>/dev/null && pwd -P); then
+                w="$pd${b:+/$b}"
+            fi
+            ;;
+    esac
+    _norm "$w"
 }
 
 # _glob_from_word <s> -> a [[ ]] pattern: {a,b} becomes *.
@@ -716,10 +728,11 @@ check_clause() {
 
     # Shells.
     if [[ "$cmd" =~ $SHELL_RE ]] || [ "$cmd" = busybox ]; then
+        local bbsh=0   # busybox's own sh applet (cmd stays "busybox")
         if [ "$cmd" = busybox ]; then
-            case "${1:-}" in sh|ash|bash) shift ;; *) w="${1:-}"; [ $# -gt 0 ] && shift; cmd=$(_lower "$(_base "$w")") ;; esac
+            case "${1:-}" in sh|ash|bash) shift; bbsh=1 ;; *) w="${1:-}"; [ $# -gt 0 ] && shift; cmd=$(_lower "$(_base "$w")") ;; esac
         fi
-        if [[ "$cmd" =~ $SHELL_RE ]] || [ "$w" = busybox ]; then
+        if [[ "$cmd" =~ $SHELL_RE ]] || [ "$bbsh" = 1 ]; then
             local cflag=0 sflag=0
             while [ $# -gt 0 ]; do
                 case "$1" in
