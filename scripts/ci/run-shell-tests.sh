@@ -720,6 +720,8 @@ scripts/luna/test-pipeline-cadence.sh  # integration: drives a live 'claude' (--
 scripts/statusline/test-usage-fetch-scheduled.sh  # needs network + OAuth credential; GATE probe run manually (HIMMEL-1841)
 scripts/testing/test-fakekey-claude-startup.sh  # HIMMEL-4410: needs the pinned claude CLI and unshare -rn; the claude-startup job in ci.yml runs it
 scripts/testing/test-claude-mock-turn.sh  # HIMMEL-4411: needs the pinned claude CLI and unshare -rn; the claude-startup job in ci.yml runs it
+scripts/testing/test-mock-consult-sandbox.sh  # HIMMEL-4412: needs the pinned claude CLI, bwrap, socat and unshare -rn; the claude-startup job in ci.yml runs it
+scripts/testing/test-mock-hook-smoke.sh  # HIMMEL-4412: needs the pinned claude CLI and unshare -rn; the claude-startup job in ci.yml runs it
 scripts/test-plugin-test.sh          # integration: self-bootstraps a plugin's deps over npm/network — VM e2e covers it
 "
 

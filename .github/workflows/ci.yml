@@ -264,6 +264,14 @@ jobs:
       # scripts/testing/mock-anthropic. The suite also asserts the installed CLI
       # equals CLAUDE_CLI_VERSION, so a version drift fails loudly here.
       - run: bash scripts/testing/test-claude-mock-turn.sh
+      # HIMMEL-4412: two "a hook that fails open" smokes on the same mock. MOCK-BACKED:
+      # they prove Claude Code enforces the consult sandbox and that the project hook
+      # chain fires clean in a real session; neither is evidence of real-model behaviour.
+      # The consult sandbox needs bubblewrap and socat on the runner.
+      - name: Install the consult sandbox prerequisites
+        run: sudo apt-get install -y --no-install-recommends bubblewrap socat
+      - run: bash scripts/testing/test-mock-consult-sandbox.sh
+      - run: bash scripts/testing/test-mock-hook-smoke.sh
 
   lanes-and-trust-suites:
     # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no
