@@ -260,6 +260,10 @@ jobs:
       - name: Allow unprivileged user namespaces
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: bash scripts/testing/test-fakekey-claude-startup.sh
+      # HIMMEL-4411: a full scripted turn (text, Bash tool_use, tool_result) against
+      # scripts/testing/mock-anthropic. The suite also asserts the installed CLI
+      # equals CLAUDE_CLI_VERSION, so a version drift fails loudly here.
+      - run: bash scripts/testing/test-claude-mock-turn.sh
 
   lanes-and-trust-suites:
     # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no

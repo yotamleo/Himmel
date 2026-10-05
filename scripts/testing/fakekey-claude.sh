@@ -110,7 +110,34 @@ fakekey_run() {
       envv+=("$pair")
     done
   fi
-  local rc
+  local rc mock="${FAKEKEY_MOCK_FIXTURE:-}"
+  if [ -n "$mock" ]; then
+    # HIMMEL-4411: scripted local API. It must listen INSIDE the netns (loopback is
+    # isolated there), so it starts in the same sandboxed shell as claude and is
+    # killed when claude ends. Never without the sandbox.
+    [ "$sandbox" = 1 ] || { echo "fakekey: FAKEKEY_MOCK_FIXTURE requires the sandbox (fail closed)" >&2; return 2; }
+    [ -f "$mock" ] || { echo "fakekey: FAKEKEY_MOCK_FIXTURE '$mock' is not a file" >&2; return 2; }
+    local mock_js
+    mock_js="$(cd "${BASH_SOURCE[0]%/*}" && pwd)/mock-anthropic/mock-anthropic.mjs" # absolute: the run cd's into $out
+    mock=$(cd "$(dirname "$mock")" && printf '%s/%s' "$(pwd)" "${mock##*/}")
+    rm -f "$out/mock.port" "$out/mock.log"
+    # shellcheck disable=SC2016  # the sh -c body expands inside the sandbox, not here
+    # headless-claude-ok: fake-key mock-backed test, HIMMEL-4411 (env -i here does the work native-auth-pin does for real launches)
+    (cd "$out" && env -i "${envv[@]}" unshare -rn sh -c '
+      ip link set lo up || exit 1
+      "$1" "$2" --fixture "$3" --port-file "$4" --log "$5" & m=$!
+      i=0; while [ ! -s "$4" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+      [ -s "$4" ] || { kill "$m" 2>/dev/null; exit 97; }
+      ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$4")"; export ANTHROPIC_BASE_URL
+      shift 5
+      timeout "$@"; rc=$?
+      kill "$m" 2>/dev/null; wait "$m" 2>/dev/null
+      exit "$rc"' _ "$node_bin" "$mock_js" "$mock" "$out/mock.port" "$out/mock.log" \
+      "$secs" "$claude_bin" -p "say hi" --output-format json --debug "$@" >"$out/out.json" 2>"$out/err.txt")
+    rc=$?
+    printf '%s\n' "$rc" >"$out/rc"
+    return 0
+  fi
   # headless-claude-ok: fake-key credential-free test, HIMMEL-4410
   if [ "$sandbox" = 1 ]; then
     (cd "$out" && env -i "${envv[@]}" unshare -rn sh -c 'ip link set lo up && exec timeout "$@"' _ \
