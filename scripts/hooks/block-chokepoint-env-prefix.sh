@@ -1174,7 +1174,8 @@ pobf_relief() {
     local re_ep="\\([[:blank:]]*\\)"
     local re_dw="(^|[^[:alnum:]_])(alias|unalias|function|hash|enable|disable|zmodload|autoload)([^[:alnum:]_]|\$)"
     local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
-    local re_fp="(^|[[:blank:];|&(${NL}])(functions|dis_functions|aliases|dis_aliases|galiases|saliases|BASH_ALIASES)(\\[[^]]*\\])?\\+?="
+    local re_fp="(^|[^[:alnum:]_])(functions|dis_functions|aliases|dis_aliases|galiases|dis_galiases|saliases|dis_saliases|commands|BASH_ALIASES|BASH_CMDS|fpath|FPATH|enable|autoload)([^[:alnum:]_]|\$)"
+    local re_sa="(^|[^[:alnum:]_])set([[:blank:]]+[-+][[:alnum:]]*)*[[:blank:]]+[-+][[:alnum:]]*A"
     local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
     case "$t" in *"$T1"*|*"$T2"*) return 1 ;; esac
     t=${t//\\$NL/}
@@ -1278,15 +1279,13 @@ pobf_relief() {
     done <<< "$t"
     [ "$md" = U ] && [ "$hi" = "$hn" ] || return 1
     case "$F" in *'<('*|*'>('*) return 1 ;; esac
-    # A function or alias defined in plain text gets no relief (HIMMEL-4442):
-    # an unquoted empty paren pair (`name () {`, any spelling; nothing is
-    # stripped by name, as zsh defines EVERY word before the parens, judge
-    # J1871), or an assignment to zsh's functions/aliases special parameters
-    # or bash's BASH_ALIASES, with or without a [key], = or += (J1871b). The
-    # `function`/`alias` words are re_dw's. Quoted text is a token here, so a
-    # quoted '()' is not one. A definition made by text the shell builds at
-    # run time (eval, a here-string, source /dev/stdin) is HIMMEL-4454's.
-    [[ $F =~ $re_ep || $F =~ $re_fp ]] && return 1
+    # No relief (HIMMEL-4442) on an unquoted empty paren pair, on any unquoted
+    # word functions, dis_functions, aliases, dis_aliases, galiases,
+    # dis_galiases, saliases, dis_saliases, commands, BASH_ALIASES, BASH_CMDS,
+    # fpath, FPATH, enable or autoload (delimited by a non-identifier char each
+    # side, after quote removal), or on set followed by -A or +A.
+    # Runtime-built definitions (eval, here-string, source) are HIMMEL-4454's.
+    [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
     F=${F//[0-9]>&[0-9]/ }
     F=${F//>&[0-9]/ }

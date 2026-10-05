@@ -1513,7 +1513,23 @@ for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
     assert_deny "4442 J1871b += definition [$pre]" "$(j "functions[ls]+='bash \"\$@\"; '; $pre ls $GP")"
     assert_deny "4442 J1871b judge input [$pre]" \
         "$(j "functions[ls]='bash \"\$@\"; '; $pre ls /r/w/scrip?s/handover/console-kit/g?.sh")"
+    # Judge J1871c: any word naming a shadow table, enable/autoload, or set -A/+A
+    # gets no relief, whatever the syntax around it.
+    for D in "set -A functions ls 'bash \"\$@\"; '" "set -A dis_functions ls x; enable -f ls" \
+             "commands+=( ls /usr/bin/bash )" "set -A commands ls /usr/bin/bash" \
+             "set -A aliases ls 'bash \"\$@\"'" "fpath=(/tmp/f \$fpath); functions -u ls" \
+             "fpath=(/tmp/f); autoload -U ls" "FPATH=/tmp/f" "enable -f ls" "autoload ls" \
+             "set +A x ls" "set -A x ls" "BASH_CMDS[ls]=/usr/bin/bash" "dis_galiases[ls]=x" \
+             "dis_saliases[sh]=x" "com''mands+=( ls /usr/bin/bash )" "echo \$functions" \
+             "fun''ctions[ls]=x"; do
+        assert_deny "4442 J1871c shadow-table word: $D [$pre]" "$(j "$D; $pre ls $GP")"
+    done
+    assert_deny "4442 J1871c judge input [$pre]" \
+        "$(j "functions[ls]=x; $pre ls /r/w/scrip?s/handover/console-kit/g?.sh")"
     assert_allow "4442 control: myfunctions= is not functions= [$pre]" "$(j "myfunctions=1; $pre ls /r/w/docs/*.md")"
+    assert_allow "4442 control: mycommands is not commands [$pre]" "$(j "mycommands=1; $pre ls /r/w/docs/*.md")"
+    assert_allow "4442 control: a quoted 'functions' is not a word [$pre]" "$(j "$pre ls /r/w/docs/*.md | grep 'functions'")"
+    assert_allow "4442 control: commands_x/enabled are other words [$pre]" "$(j "commands_x=1; enabled=1; $pre ls /r/w/docs/*.md")"
     assert_allow "4442 control: relieved ls, no function [$pre]" "$(j "$pre ls /r/w/docs/*.md")"
 done
 
