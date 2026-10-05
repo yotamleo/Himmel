@@ -44,7 +44,7 @@ const src = await Bun.file(serverPath).text()
 // broken `bun install` there can never become a silent skip.
 const depMissing = (() => {
   try {
-    import.meta.resolveSync('@modelcontextprotocol/sdk/server/index.js', serverDir)
+    import.meta.resolveSync('@modelcontextprotocol/sdk/server/index.js', serverPath)
     return false
   } catch {
     return true
