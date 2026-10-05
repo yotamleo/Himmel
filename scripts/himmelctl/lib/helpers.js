@@ -133,4 +133,29 @@ function nodeScriptCmd(scriptPath) {
   return `node ${SHELL_SAFE_PATH.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`}`;
 }
 
-module.exports = { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd };
+// himmelIdentity(root) — the ONE answer to "which himmel is this" (HIMMEL-4403),
+// shared by `--version` and the config feed. `version` is the VERSION file (the
+// declared release line, bumped at release cut); `describe` and `commit` are the
+// checkout's own git state and are the truth about what is running, so they can
+// read ahead of `version` (v1.0.2-pre.1-N-g<sha> vs 1.0.0). NEVER throws:
+// anything unreadable is the string 'unknown'.
+function himmelIdentity(root) {
+  const { spawnSync } = require('child_process');
+  let version = 'unknown';
+  try {
+    version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim() || 'unknown';
+  } catch {
+    // fall through to 'unknown'
+  }
+  const git = (...gitArgs) => {
+    // Only a root that is itself a checkout: without this an install dir
+    // nested in some other repo would report THAT repo's describe/commit.
+    if (!fs.existsSync(path.join(root, '.git'))) return 'unknown';
+    const r = spawnSync('git', ['-C', root, ...gitArgs], { encoding: 'utf8' });
+    const out = r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : '';
+    return out || 'unknown';
+  };
+  return { version, describe: git('describe', '--tags', '--always'), commit: git('rev-parse', 'HEAD'), checkout: root };
+}
+
+module.exports = { himmelIdentity, cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd };

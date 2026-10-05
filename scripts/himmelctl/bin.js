@@ -31,7 +31,7 @@ const os = require('os');
 const path = require('path');
 const readline = require('readline');
 const { spawnSync } = require('child_process');
-const { cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd } = require('./lib/helpers.js');
+const { himmelIdentity, cacheDir, profileForVault, which, resolvePowershell, displayPath, shellQuote, nodeScriptCmd } = require('./lib/helpers.js');
 const launcherLib = require('./lib/launcher.js');
 const uninstallWrapperLib = require('./lib/uninstall-wrapper.js');
 const standaloneBundleLib = require('./lib/standalone-bundle.js');
@@ -7878,23 +7878,13 @@ async function main() {
   // its rc: 1 when any component is behind, 3 when none is but one is unknown.
   if (argv.indexOf('--version') !== -1) {
     const root = repoRoot();
-    let version = 'unknown';
-    try {
-      version = fs.readFileSync(path.join(root, 'VERSION'), 'utf8').trim() || 'unknown';
-    } catch {
-      // fall through to 'unknown'
-    }
-    const git = (...gitArgs) => {
-      // Only a root that is itself a checkout: without this an install dir
-      // nested in some other repo would report THAT repo's describe/commit.
-      if (!fs.existsSync(path.join(root, '.git'))) return 'unknown';
-      const r = spawnSync('git', ['-C', root, ...gitArgs], { encoding: 'utf8' });
-      const out = r.status === 0 && typeof r.stdout === 'string' ? r.stdout.trim() : '';
-      return out || 'unknown';
-    };
+    // Shared with the config feed's feed.himmel (HIMMEL-4403): VERSION is the
+    // declared release line; describe/commit are the checkout's own state and
+    // may read ahead of it between a release cut and the next VERSION bump.
+    const { version, describe, commit } = himmelIdentity(root);
     console.log(`himmel ${version}`);
-    console.log(`describe: ${git('describe', '--tags', '--always')}`);
-    console.log(`commit: ${git('rev-parse', 'HEAD')}`);
+    console.log(`describe: ${describe}`);
+    console.log(`commit: ${commit}`);
     if (argv.indexOf('--all') === -1) return 0;
     const script = toBashPath(path.join(root, 'scripts', 'himmel-update.sh'));
     return runSpawn({ argv: [resolveBash(), script, '--versions'] });
