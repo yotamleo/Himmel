@@ -48,7 +48,7 @@ list=$(mktemp "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") ||run_all "mktemp fa
 trap 'rm -f "$list" "$list.n"' EXIT
 
 esc() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|/]/\\&/g'; }
-src_re='(^|[;&|][[:space:]]*|^[[:space:]]+)(source|\.)[[:space:]]'
+src_re='(^|[;&|{(![:space:]])(source|\.)[[:space:]]'
 
 printf '%s\n' "$changed" > "$list"
 while IFS= read -r f; do
@@ -63,8 +63,9 @@ while IFS= read -r f; do
   [ -f "$f" ] || continue
   lines=$(grep -E -e "$src_re" "$f" 2>/dev/null | grep -v '^[[:space:]]*#')
   [ -n "$lines" ] || continue
+  # every source line must name a *.sh/*.bash, else the neighbour set is uncertain
+  printf '%s\n' "$lines" | grep -qvE '[A-Za-z0-9_.+-]+\.(sh|bash)' && run_all "dynamic source line in $f"
   names=$(printf '%s\n' "$lines" | grep -oE '[A-Za-z0-9_.+-]+\.(sh|bash)')
-  [ -n "$names" ] || run_all "dynamic source line in $f"
   printf '%s\n' "$names" | while IFS= read -r n; do
     printf '%s\n' "$tracked" | awk -v n="$n" '{ k=split($0,p,"/"); if (p[k]==n) print }'
   done >> "$list"
