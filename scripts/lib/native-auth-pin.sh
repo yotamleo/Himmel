@@ -83,6 +83,12 @@
 # the survivors must be exactly ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY, the URL a
 # loopback literal without `@`, and `$(</proc/net/dev)` must list only `lo`.
 #
+# The gate checks the exact-case prefixes (ANTHROPIC_ / anthropic_ and the
+# CLAUDE_CODE_USE_ pair) -- the names a child on Linux/macOS actually reads, since
+# environment names are case-sensitive there. The pin itself still strips every
+# mixed-case spelling for the case-insensitive Windows reader (parked,
+# HIMMEL-4102); extending the gate to mixed case is tracked in HIMMEL-4461.
+#
 # True guarantee: an INHERITED variable, or a shadowed tool, cannot reach a
 # launch through these callers. NOT guaranteed: a hostile shell that shadows the
 # launcher itself (or `[[`/`.` etc.) -- that is out of scope; so is the PowerShell

@@ -96,7 +96,7 @@ run_claude() {
   # proxy's hook behavior, not native claude's, with no warning.
   # shellcheck disable=SC1091
   # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
-  ( cd "$SCRATCH" && { . "$REPO_ROOT/scripts/lib/native-auth-pin.sh"; native_auth_pin_env
+  ( cd "$SCRATCH" && { . "$REPO_ROOT/scripts/lib/native-auth-pin.sh" || exit 1; native_auth_pin_env
     [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] &&
     # headless-claude-ok: HIMMEL-2178 probe 3e (bank-preflight gates above)
     timeout "$TIMEOUT_S" env MSYS_NO_PATHCONV=1 claude -p \

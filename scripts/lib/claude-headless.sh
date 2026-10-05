@@ -440,7 +440,7 @@ DEDUPED_PATH="$(dedupe_path "$PATH")"
 # `unset`/`return` (function, alias, startup file) can make it return 0 with the
 # proxy variables still set. The launch is gated on the keyword-only snippet
 # documented in native-auth-pin.sh ("LAUNCH GATE"), which no shadow can reach.
-( cd "$CWD" && { . "$REPO_ROOT/scripts/lib/native-auth-pin.sh"; native_auth_pin_env
+( cd "$CWD" && { . "$REPO_ROOT/scripts/lib/native-auth-pin.sh" || exit 1; native_auth_pin_env
   _l="${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}"
   if [[ -n $_l && ${NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK-} = 1 && -r /proc/net/dev && ${ANTHROPIC_BASE_URL-} != *@* ]] &&
      [[ ${ANTHROPIC_BASE_URL-} == http://127.0.0.1 || ${ANTHROPIC_BASE_URL-} == http://127.0.0.1[:/]* ||
