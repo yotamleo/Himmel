@@ -4545,6 +4545,17 @@ c40_precond() { # <mode> — the stub must answer the init payload the way the m
     esac
 }
 
+echo "== C40: operator opt-out flag -> INFO 'qmd off by operator', no probe (HIMMEL-4494) =="
+c40_setup
+mkdir -p "$c40_t/home/.himmel/state"; : > "$c40_t/home/.himmel/state/qmd-daemon.off"
+out="$(c40_run down)"
+if grepq "$out" 'INFO C40-qmd-vec.*qmd off by operator' && ! grepq "$out" 'WARN C40-qmd-vec' && [ ! -s "$c40_t/log" ]; then
+    pass "C40 opt-out flag -> INFO qmd off by operator, curl never called"
+else
+    fail "C40 opt-out flag -> $(printf '%s' "$out" | grep C40) log=$(tr '\n' ' ' < "$c40_t/log")"
+fi
+rm -rf "$c40_t"
+
 echo "== C40: served vec probe -> OK, probe bounded and really vec (RED) =="
 c40_setup
 if ! c40_precond ok; then fail "C40 ok: precondition — stub did not answer init"
