@@ -250,8 +250,16 @@ cmd_resolve() {
         jira_line="(skipped — --no-jira)"
     else
         if [ "$jira_set" -ne 1 ]; then
-            if [ -f "$SCRIPT_DIR/../jira/dist/index.js" ]; then
-                jira_cmd="node \"$SCRIPT_DIR/../jira/dist/index.js\""
+            # Primary checkout's dist via the git common dir (HIMMEL-4456, same
+            # idiom as console-kit/leg-jira-status.sh); script-relative outside git.
+            local jira_js common
+            if common="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+                jira_js="$(dirname "$common")/scripts/jira/dist/index.js"
+            else
+                jira_js="$SCRIPT_DIR/../jira/dist/index.js"
+            fi
+            if [ -f "$jira_js" ]; then
+                jira_cmd="node \"$jira_js\""
             fi
         fi
         if [ -n "$jira_cmd" ]; then
