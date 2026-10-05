@@ -232,4 +232,12 @@ else
     esac
 fi
 
+# HIMMEL-4419: an open PR moves the ticket in the title's first [KEY] to In
+# Review. Best-effort: leg-jira-status.sh warns and exits 0 on any Jira
+# failure; LEG_JIRA_STATUS=0 opts out. Its stdout is kept off this script's
+# one-line `PR ...` contract.
+if [ "${LEG_JIRA_STATUS:-1}" != "0" ] && [[ $title =~ \[([A-Za-z][A-Za-z]*-[0-9]+)\] ]]; then
+    bash "$HERE/../handover/console-kit/leg-jira-status.sh" "${BASH_REMATCH[1]}" "In Review" >/dev/null || true
+fi
+
 echo "PR ${number} ${url} ${head_sha}"

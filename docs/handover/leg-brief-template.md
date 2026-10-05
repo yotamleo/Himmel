@@ -93,7 +93,9 @@ template_version: 3
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check. Write
 >    the bullet with `scripts/handover/console-kit/append-results.sh <doc>
 >    "LIVE ..."` (leg-preface.md), never the Edit tool. A bullet never
->    contains `>`; write `→` or `to` (HIMMEL-3917).
+>    contains `>`; write `→` or `to` (HIMMEL-3917). The LIVE bullet moves the
+>    ticket to In Progress and the PR open to In Review, by script
+>    (leg-preface.md, HIMMEL-4419); do not transition it by hand.
 > 2. <the deliverables, one numbered item each, named by path>
 > 3. **Tests:** <the suite to write and the specific RED assertion to show
 >    first; the impacted suites you already know about, by name.> Suites run

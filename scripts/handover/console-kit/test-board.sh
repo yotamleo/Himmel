@@ -401,8 +401,8 @@ T="$(printf '\t')"
 write_v100() {  # write_v100 <done count: 3 or 4>
     {
         printf 'HIMMEL-9001%sBug%sIn Progress%sfix the blocker cachyos-x8664-pid777777 now%sci,v1-blocker\n' "$T" "$T" "$T" "$T"
-        printf 'HIMMEL-9002%sTask%sTo Do%snot a blocker%sci\n' "$T" "$T" "$T" "$T"
-        printf 'HIMMEL-9003%sTask%sTo Do%sblocker two%sv1-blocker\n' "$T" "$T" "$T" "$T"
+        printf 'HIMMEL-9002%sTask%sIN CI%snot a blocker%sci\n' "$T" "$T" "$T" "$T"
+        printf 'HIMMEL-9003%sTask%sIn Review%sblocker two%sv1-blocker\n' "$T" "$T" "$T" "$T"
         printf 'HIMMEL-9004%sTask%sDone%sshipped a%sv1-blocker\n' "$T" "$T" "$T" "$T"
         printf 'HIMMEL-9005%sTask%sDone%sshipped b%s\n' "$T" "$T" "$T" "$T"
         printf 'HIMMEL-9006%sTask%sDone%sshipped c%sv1-blocker\n' "$T" "$T" "$T" "$T"
@@ -437,6 +437,13 @@ contains 'a second open blocker is listed' "$vhtml" 'data-blocker="HIMMEL-9003"'
 lacks 'an open ticket without the v1-blocker label is not listed' "$vhtml" 'HIMMEL-9002'
 lacks 'a done v1-blocker ticket is not listed as a blocker' "$vhtml" 'HIMMEL-9004'
 lacks 'a lock token in a blocker title is redacted' "$vhtml" 'pid777777'
+# HIMMEL-4419: a per-status breakdown (To Do / In Progress / In Review / IN CI / Done) per panel.
+contains 'v1.0.0 breakdown: In Progress count' "$vhtml" 'data-status="In Progress" data-count="1"'
+contains 'v1.0.0 breakdown: In Review count' "$vhtml" 'data-status="In Review" data-count="1"'
+contains 'v1.0.0 breakdown: IN CI count' "$vhtml" 'data-status="IN CI" data-count="1"'
+contains 'v1.0.0 breakdown: Done count' "$vhtml" 'data-status="Done" data-count="3"'
+contains 'v1.0.0 breakdown: To Do count (zero shown)' "$vhtml" 'data-status="To Do" data-count="0"'
+contains 'v1.0.1 breakdown: its own To Do count' "$vhtml" 'data-status="To Do" data-count="1"'
 contains 'the versions fingerprint meta is present' "$vhtml" 'console-board-versions-fp'
 same 'one Jira call per version' "$(printf '%s\n' "$jargv" | grep -c .)" '2'
 contains 'the CLI is asked by fixVersion JQL' "$jargv" 'fixVersion = "v1.0.0"'

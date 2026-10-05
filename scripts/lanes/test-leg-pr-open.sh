@@ -53,6 +53,19 @@ echo change > "$REPO/f"; git -C "$REPO" add f; git -C "$REPO" commit -qm change
 git -C "$REPO" push -q -u origin feat/x
 HEAD_SHA=$(git -C "$REPO" rev-parse HEAD)
 
+# HIMMEL-4419: the SUT moves the title's ticket to In Review; a stub Jira CLI
+# keeps every run here off the real tracker and records the transitions.
+JIRA_LOG="$TMP_ROOT/jira.log"
+JIRA_STUB="$TMP_ROOT/jira-stub.sh"
+cat >"$JIRA_STUB" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$JIRA_LOG"
+[ "$1" = get ] && printf '{"fields":{"status":{"name":"%s"}}}\n' "${STUB_JIRA_STATUS:-In Progress}"
+exit 0
+STUB
+chmod +x "$JIRA_STUB"
+export JIRA_LOG LEG_JIRA_CLI="$JIRA_STUB"
+
 TITLE_FILE="$TMP_ROOT/title.txt"
 BODY_FILE="$TMP_ROOT/body.txt"
 printf 'feat(lanes): [HIMMEL-3031] leg-pr-open.sh publishes a PR from files\n' > "$TITLE_FILE"
@@ -313,6 +326,19 @@ for supplied_profile in leg-impl design,design-motion '' 'bad profile' 'bad/prof
         "leg-burn: calls=4 avg-ctx=963 first-turn=1.2k compactions=2 cost-eq=1.6k profile=$expected_profile" "$profile_line"
 done
 not_contains "unavailable fallback remains profile-less" "$argv_k" "profile="
+
+# ── HIMMEL-4419: opening the PR moves the ticket to In Review ───────────────
+unset STUB_OPEN_PR 2>/dev/null || true
+: > "$JIRA_LOG"
+out_n=$(run_sut "$TITLE_FILE" "$BODY_FILE"); rc_n=$?
+assert_eq "jira-wired open still exits 0" "0" "$rc_n"
+assert_eq "jira-wired open keeps the one-line success contract" \
+    "PR 9 https://github.com/owner/repo/pull/9 $(git -C "$REPO" rev-parse HEAD)" "$out_n"
+assert_eq "PR open transitions the title's ticket to In Review" \
+    "transition HIMMEL-3031 In Review" "$(grep '^transition' "$JIRA_LOG")"
+: > "$JIRA_LOG"
+LEG_JIRA_STATUS=0 run_sut "$TITLE_FILE" "$BODY_FILE" >/dev/null
+assert_eq "LEG_JIRA_STATUS=0 makes no Jira call" "0" "$(wc -c < "$JIRA_LOG" | tr -d ' ')"
 
 echo
 echo "===================================="
