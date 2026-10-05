@@ -5,10 +5,12 @@
 #     #!/bin/bash
 #     rm -rf /tmp/himmel-setup \
 #       && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
-#       && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh
+#       && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh || true
 #
 # (the box runs BEFORE the session's repo clone exists, hence the throwaway
-# clone). The apt/pip steps land system-wide; the Jira dist and obsidian deps
+# clone; the trailing `|| true` keeps a failed clone or step from blocking the
+# session start, since a non-zero setup script stops the session). The apt/pip
+# steps land system-wide; the Jira dist and obsidian deps
 # build inside that throwaway clone, so a session that needs them re-runs this
 # script from its own clone (idempotent, the system steps skip as present).
 # Full paste instructions: docs/handover/cloud-brief-template.md.

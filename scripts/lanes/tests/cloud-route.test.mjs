@@ -132,7 +132,8 @@ test('brief carries every template section, in order', () => {
     'Do the thing.',
     '## How to do it',
     'Read `CLAUDE.md`',
-    'feat/himmel-9001-tick-relayed-results-only',
+    'transition HIMMEL-9001 to `In Progress`',
+    'git worktree add -b feat/himmel-9001-tick-relayed-results-only .claude/worktrees/himmel-9001 origin/main',
     'Edit ONLY these files: scripts/lanes/example.sh',
     'RED',
     'never amend',
@@ -144,6 +145,9 @@ test('brief carries every template section, in order', () => {
     '## Ticket coverage',
     '/autofix-pr',
     'Do NOT merge',
+    'CLOUD-DONE',
+    'comment on HIMMEL-9001',
+    'CLOUD-BLOCKED',
     'print the PR URL, the branch, the commit SHA, and a 3-line summary',
   ];
   let at = -1;

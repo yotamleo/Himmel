@@ -64,9 +64,11 @@ himmel-ops 0.4.22, lean-skills 0.2.2).
    #!/bin/bash
    rm -rf /tmp/himmel-setup \
      && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
-     && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh
+     && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh || true
    ```
 
+   Keep the trailing `|| true`: a non-zero setup script stops the session from
+   starting, and a failed clone or step should cost a tool, not the session.
    It installs shellcheck, `at`, pre-commit, builds the Jira CLI dist (no
    secret), installs the obsidian-triage tool deps and sets
    `BASH_DEFAULT_TIMEOUT_MS`/`BASH_MAX_TIMEOUT_MS` to 600000. It is idempotent
@@ -90,7 +92,7 @@ himmel-ops 0.4.22, lean-skills 0.2.2).
    #!/bin/bash
    rm -rf /tmp/himmel-setup \
      && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
-     && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh --with-plugins
+     && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh --with-plugins || true
    ```
 
    `--with-plugins` installs the lean set (himmel-ops, lean-skills). To control
@@ -122,14 +124,16 @@ himmel-ops 0.4.22, lean-skills 0.2.2).
    numbers marked approximate ("find the code by its text"). Name the files.
 4. **`## How to do it`** — numbered:
    1. Read `CLAUDE.md` and the named files in full before editing.
-   2. Create the branch as a worktree BEFORE any edit:
+   2. Claim the ticket: through the Atlassian MCP, transition it to
+      `In Progress` (see "What replaces the handover and the lock" below).
+   3. Create the branch as a worktree BEFORE any edit:
       `git worktree add -b <type>/himmel-<n>-<slug> .claude/worktrees/<name> origin/main`,
       and work there (the repo's edit-on-main guard denies edits in the cloud's
       primary clone, even on a feature branch).
-   3. Edit ONLY the named files; keep the diff minimal and in the surrounding style.
-   4. Write the new or changed test FIRST and show it RED without the fix, then
+   4. Edit ONLY the named files; keep the diff minimal and in the surrounding style.
+   5. Write the new or changed test FIRST and show it RED without the fix, then
       green. Run `shellcheck` on every `.sh` file touched.
-   5. Make exactly ONE commit, never amend. Then, before pushing, run the
+   6. Make exactly ONE commit, never amend. Then, before pushing, run the
       impacted suites (the selector reads the COMMITTED range, so it sees
       nothing before the commit): `bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell`
       lists every suite that references a changed file, and
@@ -145,15 +149,38 @@ himmel-ops 0.4.22, lean-skills 0.2.2).
           Platforms tested: linux
           Security reviewed: manual — <what you checked>
 
-   6. Push, open a PR to `main` titled as the commit. The body carries a summary,
+   7. Push, open a PR to `main` titled as the commit. The body carries a summary,
       the files changed, the test/shellcheck/impacted-suite results, the line
       `cloud-pilot: HIMMEL-<n> (<console id>)`, the `completes-ticket:` line and
       the `## Ticket coverage` section below.
-   7. Turn on `/autofix-pr` for the PR, so the session fixes its own CI reds and
+   8. Turn on `/autofix-pr` for the PR, so the session fixes its own CI reds and
       review comments before the shepherd picks it up.
-   8. Do NOT merge, do NOT request reviewers, do NOT touch any other file.
+   9. Do NOT merge, do NOT request reviewers, do NOT touch any other file.
+   10. Report: one top-level PR comment whose first line is
+       `CLOUD-DONE <session URL>`, then the head SHA and test results; then a
+       comment on the ticket (Atlassian MCP) with the PR URL. Leave the ticket
+       `In Progress`. Once a local shepherd comments on the PR, stop pushing.
 5. **Closing.** `When done, print the PR URL, the branch, the commit SHA, and a
    3-line summary.`
+
+## What replaces the handover and the lock
+
+A local leg is held together by its handover doc (status bullets the console's
+tick reads), a queue lock on that doc, and SendMessage to the console. A cloud
+session has none of the three: no luna, no `queue-lock.sh` state, and no inbox
+(SendMessage cannot reach a local session from the cloud). It works on four
+substitutes, all of them on GitHub or Jira, which it reaches:
+
+| Local leg | Cloud session |
+|---|---|
+| One handover doc per leg | One ticket = one branch = one PR. The PR body (summary, results, `## Ticket coverage`) is the record |
+| Queue lock on the doc | The ticket's Jira status: `In Progress` + an open `cloud-pilot:` PR means taken. The console dispatches no second session on it |
+| `LIVE` / `READY` / `WRAPPED` bullets | One `CLOUD-DONE <session URL>` top-level PR comment when the PR is up; the console polls the PR with `gh` (no callback exists) |
+| `BLOCKED` / `FINDING` to the console | A `CLOUD-BLOCKED <session URL>` PR comment (or, before a PR exists, a ticket comment) stating the question, then end the session; the console answers with `claude -p "<msg>" --cloud <session>` |
+| Jira close at merge | Unchanged: the local shepherd merges and closes; the session never transitions past `In Progress` |
+
+The `CLOUD-<MARKER>` first-line shape matches the `CLOUD-ACK` reply proven on
+2026-10-04 and the reader HIMMEL-4277 builds into the tick.
 
 ## PR body contract
 
