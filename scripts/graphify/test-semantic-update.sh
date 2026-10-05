@@ -242,5 +242,49 @@ echo "T20: --max-files 00 is not a positive integer"
 out=$(run --name t18 --corpus-root "$C18" --corpus-class himmel-code --max-files 00); rc=$?
 [ "$rc" -eq 1 ] && pass "T20 usage error" || fail "T20 (rc=$rc): $out"
 
+echo "T21: an untouched file's edge to a node the re-extraction restores survives (HIMMEL-4211)"
+C21="$WS/c21"; new_corpus "$C21"
+python3 - "$C21/graphify-out/graph.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1]))
+g["nodes"] += [{"id": "sem_a.md_alpha", "label": "alpha", "file_type": "concept", "_origin": "semantic", "source_file": "a.md"},
+               {"id": "sem_b.md_beta", "label": "beta", "file_type": "concept", "_origin": "semantic", "source_file": "b.md"}]
+g["links"].append({"source": "sem_b.md_beta", "target": "sem_a.md_alpha", "relation": "mentions", "_origin": "semantic", "source_file": "b.md"})
+json.dump(g, open(sys.argv[1], "w"))
+PY
+run --name t21 --corpus-root "$C21" --corpus-class himmel-code --seed-manifest > /dev/null
+printf 'alpha\nmore\n' > "$C21/a.md"
+out=$(run --name t21 --corpus-root "$C21" --corpus-class himmel-code); rc=$?
+got=$(python3 -c 'import json,sys;g=json.load(open(sys.argv[1]));print(sum(1 for e in g["links"] if e["source"]=="sem_b.md_beta" and e["target"]=="sem_a.md_alpha"))' "$C21/graphify-out/graph.json")
+[ "$rc" -eq 0 ] && [ "$got" = 1 ] && pass "T21 b.md edge to restored a.md node kept" || fail "T21 (rc=$rc) edges=$got: $out"
+
+echo "T22: manifest write fails after graph.json landed -> non-zero; the rerun converges to the clean-run graph"
+mkdir -p "$WS/pyfail"
+cat > "$WS/pyfail/sitecustomize.py" <<'PY'
+import os
+_real = os.replace
+def _replace(src, dst, *a, **k):
+    if str(dst).endswith("semantic-manifest.json") and os.path.exists(os.environ.get("FAIL_MANIFEST_FLAG", "/nonexistent")):
+        raise OSError("simulated manifest write failure")
+    return _real(src, dst, *a, **k)
+os.replace = _replace
+PY
+C22="$WS/c22"; C22B="$WS/c22b"; new_corpus "$C22"; new_corpus "$C22B"
+out=$(run --name t22b --corpus-root "$C22B" --corpus-class himmel-code); rc=$?
+[ "$rc" -eq 0 ] || fail "T22 clean run (rc=$rc): $out"
+: > "$WS/fail-manifest"
+export PYTHONPATH="$WS/pyfail" FAIL_MANIFEST_FLAG="$WS/fail-manifest"
+out=$(run --name t22 --corpus-root "$C22" --corpus-class himmel-code); rc=$?
+unset PYTHONPATH FAIL_MANIFEST_FLAG
+norm() { python3 -c 'import json,sys;g=json.load(open(sys.argv[1]));print(json.dumps([sorted(n["id"] for n in g["nodes"]),sorted((e["source"],e["target"]) for e in g["links"])]))' "$1/graphify-out/graph.json"; }
+# graph.json must already hold the new content: the failure came AFTER the graph write.
+[ "$rc" -ne 0 ] && [ ! -e "$C22/graphify-out/semantic-manifest.json" ] && [ "$(norm "$C22")" = "$(norm "$C22B")" ] \
+  && pass "T22 failure is non-zero, graph.json landed, files stay unstamped" || fail "T22 (rc=$rc): $out"
+rm -f "$WS/fail-manifest"
+out=$(run --name t22 --corpus-root "$C22" --corpus-class himmel-code); rc=$?
+m=$(python3 -c 'import json,sys;print(" ".join(sorted(json.load(open(sys.argv[1]))["files"])))' "$C22/graphify-out/semantic-manifest.json" 2>/dev/null)
+[ "$rc" -eq 0 ] && [ "$(norm "$C22")" = "$(norm "$C22B")" ] && [ "$m" = "a.md b.md sub/c.md" ] \
+  && pass "T22 rerun converges, manifest stamped" || fail "T22 rerun (rc=$rc) m='$m': $out"
+
 echo
 [ "$FAILS" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$FAILS FAILED"; exit 1; }

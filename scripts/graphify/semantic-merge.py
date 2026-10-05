@@ -172,12 +172,13 @@ def cmd_merge(a):
     def owned(item):
         return item.get("_origin") == "semantic" and item.get("source_file") in touched
 
+    # Remove the owned items, add the new nodes, and only THEN prune edges
+    # against the final node set: an untouched file's edge to a node the
+    # re-extraction restores must survive.
     before_n, before_e = len(g["nodes"]), len(g[ekey])
     g["nodes"] = [n for n in g["nodes"] if not owned(n)]
     live_ids = {n["id"] for n in g["nodes"]}
     nodes_removed = before_n - len(g["nodes"])
-    g[ekey] = [e for e in g[ekey] if not owned(e) and e["source"] in live_ids and e["target"] in live_ids]
-    edges_removed = before_e - len(g[ekey])
     g["hyperedges"] = [h for h in g.get("hyperedges") or [] if not owned(h)]
 
     nodes_added = 0
@@ -186,6 +187,8 @@ def cmd_merge(a):
             g["nodes"].append(n)
             live_ids.add(n["id"])
             nodes_added += 1
+    g[ekey] = [e for e in g[ekey] if not owned(e) and e["source"] in live_ids and e["target"] in live_ids]
+    edges_removed = before_e - len(g[ekey])
     edges_added = 0
     for e in new_edges:
         if e.get("source") in live_ids and e.get("target") in live_ids:
@@ -200,7 +203,11 @@ def cmd_merge(a):
             hyper.append(h)
     g["hyperedges"] = hyper
 
-    # Manifest first (it reads and hashes), so a failure there leaves graph.json untouched.
+    # The manifest dict is computed (files hashed) first, so a hashing failure
+    # leaves graph.json untouched. graph.json is then written BEFORE the
+    # manifest: a file is stamped only once its graph content landed, and a
+    # crash between the two leaves it unstamped, so the next run re-replaces it
+    # by source_file (idempotent).
     files = manifest_files(a.out)
     for rel in plan["deleted"]:
         files.pop(rel, None)
