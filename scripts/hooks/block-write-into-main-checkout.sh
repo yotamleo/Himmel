@@ -1433,6 +1433,12 @@ _bwimc_expand_token_raw() {
     t="${t#"${t%%[![:space:]]*}"}"
     t="${t%"${t##*[![:space:]]}"}"
     [ -n "$t" ] || return 1
+    # HIMMEL-4359: once the command assigns HOME itself, the hook's own HOME
+    # no longer names what ~ / $HOME expand to — unresolvable, like a cd.
+    # shellcheck disable=SC2088,SC2016
+    [ "${_bwimc_home_taint:-0}" = 1 ] && case "$t" in
+        '~'|'~/'*|'$HOME'|'$HOME/'*|'${HOME}'|'${HOME}/'*) return 1 ;;
+    esac
     # shellcheck disable=SC2088,SC2016
     case "$t" in
         '~') t="${HOME:-}" ;;
@@ -1692,6 +1698,7 @@ _bwimc_deny() {
         unresolved-git-target) why="a git -C/--git-dir/--work-tree/GIT_* env or cd target could not be resolved (failing closed)" ;;
         repointed-remote) why="it runs a remote operation in a command that repoints a remote (a -c remote/url/protocol/core.sshCommand key, a GIT_CONFIG_COUNT/PARAMETERS/KEY_* env, or git remote add|set-url), which can reach the primary under an innocent name (failing closed)" ;;
         unresolved-heredoc) why="a heredoc opener's terminator was never found in the command (failing closed — text after it cannot be safely classified)" ;;
+        home-reassigned) why="the command assigns HOME itself, so this ~ / \$HOME target cannot be resolved (failing closed, HIMMEL-4359)" ;;
         unresolved-cd) why="a cd/pushd target in this command could not be resolved (failing closed — a later relative write cannot be classified against an unknown cwd, HIMMEL-3648)" ;;
         marker-byte) why="the command carries a raw control byte (0x01-0x06 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
         shell-ambiguous) why="bash and zsh (or bash versions) read a \$'…' span in it differently, so its target cannot be classified (failing closed, HIMMEL-4138)" ;;
@@ -2196,7 +2203,7 @@ _bwimc_ecwd_track() {
                 # cd, so leave _bwimc_ecwd/_bwimc_ecwd_unres untouched in that
                 # case rather than guessing HOME or failing closed.
                 if [ "$tu" = cd ]; then
-                    [ -n "${HOME:-}" ] && { _bwimc_ecwd="$HOME"; _bwimc_ecwd_unres=0; } || _bwimc_ecwd_unres=1
+                    [ -n "${HOME:-}" ] && [ "${_bwimc_home_taint:-0}" = 0 ] && { _bwimc_ecwd="$HOME"; _bwimc_ecwd_unres=0; } || _bwimc_ecwd_unres=1
                 elif [ "$_bwimc_ecwd_pushn" -ge 1 ]; then
                     _bwimc_ecwd_unres=1
                 fi
@@ -2324,6 +2331,15 @@ _bwimc_ecwd_track() {
 # _bwimc_expand_token already gives it; revisit if a literal `~` directory
 # ever appears inside a checkout.
 _bwimc_cd_guard() {
+    # HIMMEL-4359: after an in-command HOME assignment a ~ / $HOME write
+    # target resolves against a HOME this hook cannot see — fail closed.
+    # A cp SOURCE passes here too, as behind a cd: its basename names the
+    # child the copy writes, and `cp -r ~ d/` takes that name from HOME.
+    # shellcheck disable=SC2088,SC2016
+    [ "${_bwimc_home_taint:-0}" = 1 ] && case "${1#[\"\']}" in
+        '~'|'~/'*|'$HOME'|'$HOME'[!A-Za-z0-9_]*|'${HOME}'*)
+            _bwimc_deny "home-reassigned" "$1" "" "" ;;
+    esac
     # shellcheck disable=SC2088
     case "$1" in
         /*|[A-Za-z]:/*|[A-Za-z]:\\*|*'$'*|*'`'*) return 0 ;;
@@ -2705,6 +2721,22 @@ case "$cmd" in
     *[$'\001'$'\002'$'\003'$'\004'$'\005'$'\006'$'\016']*)
         _bwimc_deny "marker-byte" "(raw control byte in command)" "" "" ;;
 esac
+
+# HIMMEL-4359: a HOME assignment anywhere in the command (`HOME=x`, a prefix
+# `HOME=x cmd`, export/declare/typeset/local/readonly, `env [-i] HOME=x`, and
+# a quoted or escaped name those builtins still read as HOME) taints every ~ /
+# $HOME expansion: _bwimc_expand_token_raw stops resolving them and
+# _bwimc_cd_guard denies them as write targets. Order-blind on purpose — a
+# write before the assignment is over-denied, never under-denied.
+_bwimc_home_taint=0
+_bwimc_home_re='(^|[^A-Za-z0-9_$])HOME[+]?='
+if [[ "$cmd" =~ $_bwimc_home_re ]]; then
+    _bwimc_home_taint=1
+else
+    case "$cmd" in
+        *OME*|*"\$'"*) [[ "$(_bwimc_unq "$cmd")" =~ $_bwimc_home_re ]] && _bwimc_home_taint=1 ;;
+    esac
+fi
 
 _bwimc_hb=$(_bwimc_blank_heredocs "$cmd")
 
@@ -3987,7 +4019,7 @@ _bwimc_git_clause() {
                 esac
             done
             if [ "$i" -ge "$n" ]; then
-                [ -n "${HOME:-}" ] && { _bwimc_gcwd="$HOME"; _bwimc_gcwd_unres=0; } || _bwimc_gcwd_unres=1
+                [ -n "${HOME:-}" ] && [ "${_bwimc_home_taint:-0}" = 0 ] && { _bwimc_gcwd="$HOME"; _bwimc_gcwd_unres=0; } || _bwimc_gcwd_unres=1
             elif [ "$(_bwimc_unq "${toks[$i]}")" = "-" ]; then
                 _bwimc_gcwd_unres=1
             elif r=$(_bwimc_resolve_abs "${toks[$i]}" "$cwd"); then
