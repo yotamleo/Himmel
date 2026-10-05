@@ -44,7 +44,7 @@ $changed
 esac
 
 tracked=$(git ls-files) || run_all "git ls-files failed"
-list=$(mktemp) || run_all "mktemp failed"
+list=$(mktemp "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") ||run_all "mktemp failed"
 trap 'rm -f "$list" "$list.n"' EXIT
 
 esc() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|/]/\\&/g'; }
