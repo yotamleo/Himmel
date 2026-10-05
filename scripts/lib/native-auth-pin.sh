@@ -96,11 +96,22 @@
 # mixed-case spelling for the case-insensitive Windows reader (parked,
 # HIMMEL-4102); extending the gate to mixed case is tracked in HIMMEL-4461.
 #
-# True guarantee: an INHERITED variable, or a shadowed tool, cannot reach a
-# launch through these callers. NOT guaranteed: a hostile shell that shadows the
-# launcher itself (or `[[`/`.` etc.) -- that is out of scope; so is a BASH_ENV
-# with `set -T` plus a DEBUG trap that re-exports a variable at launch time, which
-# defeats any in-shell gate; so is the PowerShell twin.
+# What this guarantees (HIMMEL-4459, narrowed by HIMMEL-4461): an INHERITED
+# exact-case variable cannot reach a launch through these callers, and a shadowed
+# unset/return/builtin/compgen/exit/cd or `[` cannot turn a refusal into a launch
+# or set a variable between the gate and the launch -- every caller does its `cd`
+# and other commands BEFORE the gate, so only the launch follows the keyword test.
+# It does NOT guarantee, and these are out of scope:
+#   - a shadowed LAUNCHER (an exported function or alias for `claude`, `timeout`,
+#     `env`, or the stub binary) -- the gate cannot see what the launch runs;
+#   - a `[[` alias or redefinition injected by a startup file (BASH_ENV, rc file);
+#   - a BASH_ENV with `set -T` plus a DEBUG trap that re-exports a variable at
+#     launch time, which defeats any in-shell gate;
+#   - an env-selected launcher: LQ_CLAUDE_BIN, LQ_LANE_BIN, CRYSTALLIZE_CLAUDE_BIN
+#     and HIMMEL_CLAUDE_BIN name the binary that runs, so whoever sets them
+#     controls the launch outright;
+#   - a mixed-case spelling (see above): the pin strips it, the gate does not
+#     re-check it (HIMMEL-4461); or the PowerShell twin.
 
 # The predicate lives once, as the case glob inside native_auth_pin_env (no
 # fork per variable -- a `tr` per variable was brutally slow on Windows). The
