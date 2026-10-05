@@ -265,8 +265,11 @@ while IFS= read -r pin; do
   # Every non-comment line naming jira/dist must match (a second, script-relative
   # reference added to a pinned file would otherwise ride the pin), and at least one must.
   dist_lines="$(grep -vE '^[[:space:]]*#' "$ROOT/${pin%%::*}" | grep -F 'jira/dist')"
-  check "$(printf '%s\n' "$dist_lines" | grep -cvE -- "${pin#*::}")" "0" "DIST_PRIMARY pin covers every jira/dist line: ${pin%%::*}"
-  check "$(printf '%s\n' "$dist_lines" | grep -cE -- "${pin#*::}" | grep -qvx 0 && echo held || echo gone)" "held" "DIST_PRIMARY pin still holds: ${pin%%::*}"
+  # Count references, not lines: a line mixing an approved reference with a script-relative one fails.
+  refs="$(printf '%s\n' "$dist_lines" | grep -oF 'jira/dist' | wc -l)"
+  pinned="$(printf '%s\n' "$dist_lines" | grep -oE -- "${pin#*::}" | wc -l)"
+  check "$refs" "$pinned" "DIST_PRIMARY pin covers every jira/dist reference: ${pin%%::*}"
+  check "$([[ "$pinned" -gt 0 ]] && echo held || echo gone)" "held" "DIST_PRIMARY pin still holds: ${pin%%::*}"
 done <<< "$DIST_PRIMARY"
 
 reached="$(closure)"
