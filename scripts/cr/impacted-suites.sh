@@ -199,7 +199,7 @@ telegram-himmel|bun-test|marketplace/plugins/telegram-himmel && bun install
 where-are-we|node-test|scripts/where-are-we/tests/*.test.mjs
 lessons|node-test|scripts/lessons/tests/*.test.mjs
 op-env-observability-mjs|node-test|op-env-parity.test.mjs
-fleet-control-observability|bun-test|bun test scripts/fleet-control scripts/observability --dots
+fleet-control-observability|bun-test|bun test scripts/fleet-control scripts/observability
 EOF
 }
 
