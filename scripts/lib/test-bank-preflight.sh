@@ -7,6 +7,8 @@ PASS=0; FAIL=0
 W="$(mktemp -d -t bank-preflight.XXXXXX)"; trap 'rm -rf "$W"' EXIT
 # All bank reads prune reservations, so isolate even bank-only cases.
 export HIMMEL_FLEET_SLOTS="$W/fleet-slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native
+# HIMMEL-4423: a launching shell that exports the 95 workaround must not move the ceiling under test.
+export CADENCE_BANK_MAX_PCT=85
 
 # NO_FLEET: an empty-output ps stub, isolating every bank-only case below
 # from this machine's OWN running fleet (a real `ps -eo args` would count
@@ -658,5 +660,58 @@ check "fleet reports all three lanes and total" \
   "$(grep '^bank-preflight: FLEET ' "$W/err.log")"
 check "OpenRouter processes count toward fleet refusal" SKIPPED-FLEET \
   "$(fleet_verdict "$por" HIMMEL_FLEET_CAP=3 CADENCE_BANK_LANE=openrouter)"
+
+# HIMMEL-4423: bank-lift. An operator-set, expiring, account-bound lift skips
+# ONLY the seven_day comparison. BANK_LIFT_FILE points into the scratch HOME.
+export BANK_LIFT_FILE="$W/home/.himmel/state/bank-lift.json"; mkdir -p "$W/home/.himmel/state"
+write_lift() { # <until> <account> [window]
+  printf '{"window":"%s","until":%s,"account":"%s","set_by":"t","set_at":"x"}' "${3:-seven_day}" "$1" "$2" > "$BANK_LIFT_FILE"
+}
+rm -f "$BANK_LIFT_FILE"
+check "no lift, sd=98 -> SKIPPED-BANK (RED control)" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+write_lift $((NOW+3600)) "$ACCT"
+check "lift valid, sd=98 -> PROCEED" PROCEED \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+check "lift valid, ledger row carries lift:true" true \
+ "$(tail -1 "$W/ledger.jsonl" | jq -r '.lift')"
+check "lift valid + fh=90 -> SKIPPED-BANK (five_hour ceiling binds)" SKIPPED-BANK \
+ "$(verdict "$(fx 90 98 "$NOW" "")")"
+write_lift $((NOW-10)) "$ACCT"
+check "lift expired, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+check "no valid lift, ledger row carries lift:false" false \
+ "$(tail -1 "$W/ledger.jsonl" | jq -r '.lift')"
+write_lift $((NOW+3600)) "deadbeefdeadbeef"
+check "lift for another account, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+write_lift $((NOW+3600)) "$ACCT" five_hour
+check "lift for wrong window, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+printf '%s' '{not json' > "$BANK_LIFT_FILE"
+check "malformed lift file, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+printf '%s' '{"window":"seven_day","until":"soon","account":"x"}' > "$BANK_LIFT_FILE"
+check "non-numeric lift until, sd=98 -> SKIPPED-BANK" SKIPPED-BANK \
+ "$(verdict "$(fx 10 98 "$NOW" "")")"
+write_lift $((NOW+3600)) "$ACCT"
+check "lift + CADENCE_BANK_MAX_PCT=95 still binds five_hour" SKIPPED-BANK \
+ "$(CADENCE_BANK_MAX_PCT=95 verdict "$(fx 96 98 "$NOW" "")")"
+rm -f "$BANK_LIFT_FILE"
+
+# bank-lift.sh set|show|clear
+LIFT="$REPO/scripts/lib/bank-lift.sh"
+RESET_ISO="$(date -u -d "@$((NOW+7200))" +%Y-%m-%dT%H:%M:%S.123456+00:00 2>/dev/null)"
+printf '%s' "{\"account\":\"$ACCT\",\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":98,\"resets_at\":\"$RESET_ISO\"},\"primaries_refreshed_at\":$NOW}" > "$W/lc.json"
+bash "$LIFT" set "$W/lc.json" >/dev/null 2>&1
+check "bank-lift set -> file holds until == resets_at" "$((NOW+7200))" "$(jq -r '.until' "$BANK_LIFT_FILE" 2>/dev/null)"
+check "bank-lift set -> account bound" "$ACCT" "$(jq -r '.account' "$BANK_LIFT_FILE" 2>/dev/null)"
+check "bank-lift show reports VALID" "bank-lift: VALID" "$(bash "$LIFT" show "$W/lc.json" 2>/dev/null | tail -1)"
+check "set lift lets sd=98 PROCEED" PROCEED "$(verdict "$(fx 10 98 "$NOW" "")")"
+bash "$LIFT" clear >/dev/null 2>&1
+check "bank-lift clear removes the file" absent "$([ -e "$BANK_LIFT_FILE" ] && echo present || echo absent)"
+printf '%s' "{\"account\":\"deadbeefdeadbeef\",\"seven_day\":{\"resets_at\":\"$RESET_ISO\"}}" > "$W/lc2.json"
+bash "$LIFT" set "$W/lc2.json" >/dev/null 2>&1
+check "bank-lift set refuses another account's cache" absent "$([ -e "$BANK_LIFT_FILE" ] && echo present || echo absent)"
 
 echo "passed=$PASS failed=$FAIL"; [ "$FAIL" -eq 0 ]

@@ -81,8 +81,8 @@ emit() {
   # would make it invalid JSONL. Control characters become `?` (the ps view's own
   # convention), then `\` and `"` are escaped.
   _leg_json="$(printf '%s' "$LEG" | tr '[:cntrl:]' '?' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
-  printf '{"ts":"%s","leg":"%s","verdict":"%s","five_hour":"%s","seven_day":"%s","age":"%s","degraded":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_leg_json" "$1" "${fh:-}" "${sd:-}" "${age:-}" "$degraded" \
+  printf '{"ts":"%s","leg":"%s","verdict":"%s","five_hour":"%s","seven_day":"%s","age":"%s","degraded":%s,"lift":%s}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_leg_json" "$1" "${fh:-}" "${sd:-}" "${age:-}" "$degraded" "${lift:-false}" \
     >> "$LEDGER" 2>/dev/null
   printf '%s\n' "$1"
   exit 0
@@ -1191,7 +1191,17 @@ codex_fig="$(_codex_bank_figure 2>/dev/null)" || codex_fig=""
 echo "bank-preflight: leg=$LEG five_hour=${fh:-n/a} seven_day=${sd:-n/a} extra_usage=${xu:-n/a} age=${age}s codex=${codex_fig}" >&2
 
 over() { is_num "$1" && awk -v a="$1" -v b="$MAX_PCT" 'BEGIN{exit !(a>=b)}'; }
-if over "$fh" || over "$sd"; then
+# HIMMEL-4423: per-window checks. A valid operator lift (bank-lift.sh) skips ONLY
+# the seven_day comparison; five_hour still binds. A missing, expired, malformed
+# or other-account lift is no lift (bank_lift_valid fails toward the ceiling).
+lift=false
+# shellcheck source=bank-lift.sh
+# shellcheck disable=SC1091
+if { . "$REPO/scripts/lib/bank-lift.sh"; } 2>/dev/null && bank_lift_valid "$CACHE"; then lift=true; fi
+over_fh=false; over_sd=false
+over "$fh" && over_fh=true
+[ "$lift" = true ] || { over "$sd" && over_sd=true; }
+if [ "$over_fh" = true ] || [ "$over_sd" = true ]; then
   echo "bank-preflight: at/over ${MAX_PCT}% — skipping leg=$LEG" >&2
   emit SKIPPED-BANK
 fi
