@@ -1362,6 +1362,21 @@ for pre in "unset HIMMEL_CONSOLE_LEG;" "$UL"; do
     assert_deny "4157 CR10 node -e console.log in \$( ) [$pre]"    "$(j "$pre \$(node -e 'console.log(\"$GP\")')")"
     }
 done
+# CR round 11: ANY stage inside $( ) or backticks can print the glob, so every
+# stage there is scanned, not only interpreters (find -printf, awk, git config).
+for pre in "unset HIMMEL_CONSOLE_LEG;" "$UL"; do
+    # shellcheck disable=SC2016 # the $( ) is probe text, not an expansion
+    {
+    assert_deny "4157 CR11 find -printf in \$( ) [$pre]"        "$(j "$pre \$(find /r/w -maxdepth 0 -printf '$GP')")"
+    assert_deny "4157 CR11 find -printf in backticks [$pre]"    "$(j "$pre \`find /r/w -maxdepth 0 -printf '$GP'\`")"
+    assert_deny "4157 CR11 awk BEGIN print in \$( ) [$pre]"     "$(j "$pre \$(awk 'BEGIN{print \"$GP\"}')")"
+    assert_deny "4157 CR11 git config arg in \$( ) [$pre]"      "$(j "$pre \$(git config --get x.y '$GP')")"
+    assert_deny "4157 CR11 nested \$( ) find -printf [$pre]"    "$(j "$pre \$(echo \$(find /r/w -maxdepth 0 -printf '$GP'))")"
+    assert_deny "4157 CR11 \$( ) in double quotes, find [$pre]" "$(j "$pre \"\$(find /r/w -maxdepth 0 -printf '$GP')\"")"
+    }
+done
+# shellcheck disable=SC2016 # the $( ) is probe text, not an expansion
+assert_allow "4157 CR11 plain git rev-parse in \$( ) beside the seam name" "$(j 'unset HIMMEL_CONSOLE_LEG; x=$(git rev-parse HEAD); echo $x')"
 # shellcheck disable=SC2016 # the $( ) is probe text, not an expansion
 assert_allow "4157 CR10 interpreter in \$( ), no glob word, beside the seam name" "$(j 'unset HIMMEL_CONSOLE_LEG; x=$(python3 -c '"'"'print(1)'"'"'); echo $x')"
 # J1685d: a glob word that cannot run (an inert reader's argument, a quoted

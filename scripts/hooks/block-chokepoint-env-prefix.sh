@@ -1442,16 +1442,11 @@ pobf_relief() {
     while [ "$j" -lt "$i" ]; do
         cls=${CL[j]}
         [ "$nf" = 1 ] && cls=0
-        # Inside $( ) or backticks the output may become a command word: an
-        # unquoted word is scanned; so is an echo/printf/cat token, whose text
-        # IS the output.
-        if [ "${SS[j]}" = 1 ] && [ "$cls" = 2 ]; then
-            cls=1
-            case "${CW[j]}" in echo|printf|cat) cls=0 ;; esac
-        # CR round 10: an interpreter (or gh) there can print the glob that runs.
-        elif [ "${SS[j]}" = 1 ] && [ "$cls" = 1 ]; then
-            cls=0
-        fi
+        # Inside $( ) or backticks the output may become a command word, and any
+        # command can print a glob it was handed (find -printf, awk, python3,
+        # gh): no stage there has relief, every token is scanned (CR rounds
+        # 10, 11).
+        [ "${SS[j]}" = 1 ] && cls=0
         case "$cls" in
             2) ;;
             1) pobf_exp "${ST[j]}" s
