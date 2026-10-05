@@ -43,7 +43,8 @@
 # ponytail: git signals trust the repo's own metadata. A salus clone renamed,
 # with its remote renamed and no .salus marker or phi-roots entry, is not
 # recognised. Upgrade path: ship a `.salus` marker in the salus repo itself.
-# No env var is consulted for the verdict. GIT_DIR / GIT_WORK_TREE /
+# No env var can loosen the verdict (EGRESS_HOOK_BUDGET_S only shortens the
+# time budget, for the test suite). GIT_DIR / GIT_WORK_TREE /
 # GIT_COMMON_DIR are unset so an inherited value cannot redirect the git probes.
 #
 # Fail closed (security fence) for everything this script decides: jq missing
@@ -61,6 +62,7 @@
 # Hook contract (PreToolUse): JSON on stdin; exit 0 allows, exit 2 blocks
 # (stderr reaches Claude). bash 3.2-safe.
 set -uo pipefail
+t0=$SECONDS
 
 _lc() { printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'; }
 
@@ -129,9 +131,12 @@ case "$(_lc "$remotes")" in *salus*) deny "the session repo has a salus remote" 
 
 # 4. .salus marker at the cwd / main repo or any ancestor
 _salus_marked() {
-    local d="$1" prev=""
+    local d="$1" prev="x"
     [ -d "$d" ] || d="${d%/*}"
-    while [ -n "$d" ] && [ "$d" != "$prev" ]; do
+    d="${d%/}"
+    # Trimming the last component of "/a" leaves "", and "/.salus" is then the
+    # root's own marker, so the walk probes it before it stops.
+    while [ "$d" != "$prev" ]; do
         if [ -e "$d/.salus" ]; then return 0; fi
         prev="$d"
         d="${d%/*}"
@@ -190,30 +195,79 @@ fi
 # timed-out hook is ALLOWED by the harness, i.e. fails open):
 #   - payload text over payload_budget bytes: deny (cannot inspect it all);
 #   - more than path_cap path-like tokens: deny;
-#   - a token over token_max bytes (PATH_MAX) is no usable path: skipped;
+#   - a token's length alone never denies (base64, data: URIs, minified JS and
+#     long URLs are long and are not paths into a root): every token takes the
+#     forward walk, so an alias padded with ./ components trips walk_cap and
+#     denies, while a blob stops at its first missing component and is allowed;
+#   - past hook_budget wall-clock seconds (10 s, inside the 15 s harness
+#     timeout): deny; EGRESS_HOOK_BUDGET_S can only LOWER it (test seam). The
+#     budget bounds accumulated slowness across steps, NOT a single hung
+#     resolve (see the ponytail below);
+#   - a failure to canonicalize an existing path or leaf symlink, or to
+#     extract the payload text: deny;
 #   - a walk over walk_cap path components: deny;
 #   - at most strip_cap quote/bracket/punctuation characters are stripped
 #     from each end of a token.
 # The walk goes FORWARD from / and stops at the first missing component, so
-# it costs the existing depth, not the token length.
+# it costs the existing depth, not the token length. A component over NAME_MAX
+# (255) cannot exist, so the walk looks for each "/" in a bounded prefix and
+# stops there; it never runs pattern expansion over a huge component.
 # ponytail: tokens are split on whitespace only, so a path containing spaces,
 # glued inside a word, or wrapped in more than strip_cap punctuation
 # characters is not resolved. Upgrade path: HIMMEL-4463 (content classifier).
+# ponytail: the budget is checked between steps, so one syscall hung in a
+# dead NFS/FUSE mount is not preempted (the harness timeout then allows).
+# Upgrade path: HIMMEL-4463 (a watchdog process).
 payload_budget=262144
 path_cap=256
-token_max=4096
 walk_cap=128
 strip_cap=8
+hook_budget=10
+case "${EGRESS_HOOK_BUDGET_S:-}" in
+    ""|*[!0-9]*) ;;
+    *) [ "$EGRESS_HOOK_BUDGET_S" -lt "$hook_budget" ] && hook_budget=$EGRESS_HOOK_BUDGET_S ;;
+esac
+
+_over_budget() {
+    [ $((SECONDS - t0)) -lt "$hook_budget" ] \
+        || deny "the path checks ran past the $hook_budget s wall-clock budget; cannot inspect all of the payload"
+}
+
+# Canonical form of the symlink $1 (its chain followed, parents resolved);
+# empty when it cannot be resolved. readlink without -f: bash 3.2 / BSD safe.
+_resolve_leaf() {
+    local p="$1" hops=0 t dir
+    while [ -L "$p" ]; do
+        hops=$((hops + 1))
+        [ "$hops" -le 40 ] || return 0
+        t=$(readlink -- "$p") || return 0
+        case "$t" in /*) p="$t" ;; *) p="${p%/*}/$t" ;; esac
+    done
+    # A target that is itself a directory (or ends in ..) is normalized whole.
+    if [ -d "$p" ]; then _canon "$p"; return; fi
+    dir="${p%/*}"
+    dir=$(_canon "${dir:-/}")
+    [ -n "$dir" ] && printf '%s/%s' "${dir%/}" "${p##*/}"
+}
 
 # Deepest existing directory on absolute path $1. Returns 2 past walk_cap.
 _deepest_dir() {
-    local rest="${1#/}" acc="/" comp k=0
+    local rest="${1#/}" acc="/" comp head k=0
     while [ -n "$rest" ]; do
         k=$((k + 1))
         [ "$k" -le "$walk_cap" ] || return 2
-        case "$rest" in
-            */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
-            *) comp="$rest"; rest="" ;;
+        _over_budget
+        # Pattern expansion (%%, #) on a huge component with no "/" is
+        # superlinear and cannot be interrupted (a 262 KB run takes ~20 s, past
+        # the harness timeout). A component over NAME_MAX (255) cannot exist, so
+        # look for the "/" only in a bounded prefix and stop the walk at one.
+        head="${rest:0:256}"
+        case "$head" in
+            */*) comp="${head%%/*}"; rest="${rest:$((${#comp} + 1))}" ;;
+            *)
+                [ "${#rest}" -le 255 ] || break
+                comp="$rest"; rest=""
+                ;;
         esac
         [ -n "$comp" ] || continue
         if [ -d "${acc%/}/$comp" ]; then acc="${acc%/}/$comp"; else break; fi
@@ -221,7 +275,8 @@ _deepest_dir() {
     printf '%s' "$acc"
 }
 
-payload_text=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | strings] | join("\n")' 2>/dev/null) || payload_text=""
+payload_text=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | strings] | join("\n")' 2>/dev/null) \
+    || deny "the payload text could not be extracted (jq failed), so it cannot be inspected"
 payload_bytes=$(printf '%s' "$payload_text" | wc -c | tr -d ' ')
 [ "${payload_bytes:-0}" -le "$payload_budget" ] \
     || deny "the tool payload is $payload_bytes bytes, over the $payload_budget-byte inspection budget; cannot inspect all of it"
@@ -231,7 +286,7 @@ for tok in $payload_text; do
     case "$tok" in */*) ;; *) continue ;; esac
     n=$((n + 1))
     [ "$n" -le "$path_cap" ] || deny "the tool payload has more than $path_cap path-like tokens; cannot inspect all"
-    [ "${#tok}" -le "$token_max" ] || continue
+    _over_budget
     # Strip at most strip_cap wrapping characters per side: each strip copies
     # the token, so an unbounded loop is quadratic on a punctuation run.
     k=0
@@ -250,16 +305,30 @@ for tok in $payload_text; do
         *) p="$cwd/$tok" ;;
     esac
     case "$p" in /*) ;; *) continue ;; esac
-    p=$(_deepest_dir "$p") || deny "a tool payload path has more than $walk_cap components; cannot inspect it"
+    leaf=""
+    if [ -L "$p" ]; then
+        # The walk below canonicalizes only directories; a leaf symlink to a
+        # file is resolved here.
+        leaf=$(_resolve_leaf "$p")
+        [ -n "$leaf" ] || deny "the tool payload path $tok is a symlink that cannot be resolved"
+    fi
+    p=$(_deepest_dir "$p") || deny "a tool payload path has more than $walk_cap components or ran past the time budget; cannot inspect it"
     d=$(_canon "$p")
-    [ -n "$d" ] || continue
-    d_lc=$(_lc "$d")
-    case "$d_lc" in *salus*) deny "the tool payload path $tok resolves to a salus path ($d)" ;; esac
-    while IFS= read -r r; do
-        [ -n "$r" ] || continue
-        case "$d_lc/" in "$r/"*) deny "the tool payload path $tok resolves under the PHI root $r" ;; esac
-    done <<< "$phi_roots"
+    # _deepest_dir returned an existing directory, so a failed canonicalization
+    # (a mode-000 alias target, a dead mount) is not "no path": deny.
+    [ -n "$d" ] || deny "the tool payload path $tok names an existing directory that cannot be canonicalized"
+    for c in "$d" "$leaf"; do
+        [ -n "$c" ] || continue
+        c_lc=$(_lc "$c")
+        case "$c_lc" in *salus*) deny "the tool payload path $tok resolves to a salus path ($c)" ;; esac
+        while IFS= read -r r; do
+            [ -n "$r" ] || continue
+            case "$c_lc/" in "$r/"*) deny "the tool payload path $tok resolves under the PHI root $r" ;; esac
+        done <<< "$phi_roots"
+    done
 done
 set +f
+# The last token's resolution is not followed by another per-token check.
+_over_budget
 
 exit 0
