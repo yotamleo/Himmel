@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_COUNTS = Object.freeze({
-  PreToolUse: 12,
+  PreToolUse: 13,
   SessionStart: 5,
   SessionEnd: 3,
   Notification: 1,
@@ -41,6 +41,9 @@ const EXPECTED_HOOKS = Object.freeze([
   { event: 'PreToolUse', script: 'guard-implementor-dispatch.sh' },
   { event: 'PreToolUse', script: 'guard-console-dispatch.sh' },
   { event: 'PreToolUse', script: 'guard-subagent-model.sh' },
+  // HIMMEL-4328: plugin-shipped so it fires in a salus session too, where
+  // $CLAUDE_PROJECT_DIR/scripts/hooks/ does not exist.
+  { event: 'PreToolUse', script: 'block-agent-native-egress.sh', source: 'plugin' },
   { event: 'SessionStart', script: 'inject-where-are-we.sh' },
   { event: 'SessionStart', script: 'inject-doc-freshness.sh' },
   { event: 'SessionStart', script: 'inject-worktree-nudge.sh' },
