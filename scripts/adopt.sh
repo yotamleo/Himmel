@@ -225,7 +225,12 @@ require_tools() {
   # proceed without one. When bun is present it covers every himmel JS build, so
   # the shared WARN stays advisory and adopt proceeds.
   local npm_gap=0
-  preflight_check_uv_pipx       || true
+  # HIMMEL-4435: uv/pipx only matters when pre-commit will be installed -- the
+  # luna vault, or a core target that brings its own .pre-commit-config.yaml.
+  # A core target without one gets the native gates, so the warning is noise.
+  if [[ "$PROFILE" != "core" || -f "$TARGET/.pre-commit-config.yaml" ]]; then
+    preflight_check_uv_pipx     || true
+  fi
   preflight_check_npm_invocable || npm_gap=1
   preflight_check_jira_dist     || true
   if [[ "$npm_gap" -eq 1 && "${BUN_AVAILABLE:-1}" -eq 0 ]]; then
