@@ -105,5 +105,28 @@ has "wrapper: the refusal names QMD_QUALITY_GOLDEN" "$out" "QMD_QUALITY_GOLDEN"
 out=$(QMD_QUALITY_GOLDEN="$FIX/golden.jsonl" XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --index "$TMP/idx.sqlite" --out "$TMP/o9" 2>&1); rc=$?
 eq "wrapper: QMD_QUALITY_GOLDEN names the golden set (reaches the model check)" "$rc" "3"
 
+# --- HIMMEL-4439: the eval uses the index's embed model, or names the mismatch -
+QWEN='hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf'
+GEMMA='hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf'
+if command -v sqlite3 >/dev/null 2>&1; then
+  sqlite3 "$TMP/qwen.sqlite" "CREATE TABLE content_vectors(hash TEXT, seq INT, pos INT, model TEXT); INSERT INTO content_vectors VALUES('h',0,0,'$QWEN');"
+  echo x >"$TMP/xdg/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf"
+  # Explicit model that differs from the index: refused up front, both models named.
+  out=$(QMD_EMBED_MODEL="$GEMMA" XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --golden "$FIX/golden.jsonl" --index "$TMP/qwen.sqlite" --modes vec --out "$TMP/m1" 2>&1); rc=$?
+  eq "model: QMD_EMBED_MODEL differing from the index is refused" "$rc" "2"
+  has "model: the refusal names the index's model" "$out" "Qwen3-Embedding-0.6B"
+  has "model: the refusal names the configured model" "$out" "embeddinggemma-300M"
+  # Unset: the index's model is used (not the gemma default), so it is Qwen that must be cached.
+  out=$(env -u QMD_EMBED_MODEL XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --golden "$FIX/golden.jsonl" --index "$TMP/qwen.sqlite" --modes vec --out "$TMP/m2" 2>&1); rc=$?
+  eq "model: unset QMD_EMBED_MODEL adopts the index's model (uncached = exit 3)" "$rc" "3"
+  has "model: the missing model named is the index's" "$out" "Qwen3-Embedding-0.6B-Q8_0.gguf"
+  # An index mixing two models cannot be evaluated by one model.
+  sqlite3 "$TMP/qwen.sqlite" "INSERT INTO content_vectors VALUES('h2',0,0,'$GEMMA');"
+  out=$(env -u QMD_EMBED_MODEL XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" --golden "$FIX/golden.jsonl" --index "$TMP/qwen.sqlite" --modes vec --out "$TMP/m3" 2>&1); rc=$?
+  eq "model: a mixed-model index is refused" "$rc" "2"
+else
+  echo "SKIP model: sqlite3 not on PATH"
+fi
+
 echo "test-qmd-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
