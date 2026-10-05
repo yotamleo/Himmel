@@ -904,6 +904,18 @@ row "4458 xenv prefix ZIPINFO (HOME)" deny "ZIPINFO=-: unzip /tmp/a.zip -d /var/
 row "4458 xenv quote-split TAR_OPT\"\"IONS (HOME)" deny "TAR_OPT\"\"IONS=-P tar -xf /tmp/a.tar -C /var/out" "$HOME"
 row "4458 xenv TAR_OPTIONS + tar -tf (ctrl) (HOME)" allow "TAR_OPTIONS=-P tar -tf /tmp/a.tar" "$HOME"
 row "4458 xenv no env var (ctrl) (HOME)" allow "tar -xf /tmp/a.tar -C /var/out" "$HOME"
+# r12: the BARE variable name counts (printf -v, read, nameref, +=);
+# case-sensitive, so the unzip command never matches UNZIP.
+row "4458 xenv printf -v bare name (/var)" deny "printf -v TAR_OPTIONS -- -P; export TAR_OPTIONS; tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv read bare name (/var)" deny "read TAR_OPTIONS </tmp/o; export TAR_OPTIONS; tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv declare -n nameref (/var)" deny "declare -n r=TAR_OPTIONS; r=-P; export TAR_OPTIONS; tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 xenv UNZIP+= append (/var)" deny "UNZIP+=-: unzip /tmp/a.zip -d /var/out" /var
+row "4458 xenv unzip cmd is not UNZIP (ctrl) (/var)" allow "unzip /tmp/a.zip -d /var/out" /var
+row "4458 xenv printf -v bare name (HOME)" deny "printf -v TAR_OPTIONS -- -P; export TAR_OPTIONS; tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv read bare name (HOME)" deny "read TAR_OPTIONS </tmp/o; export TAR_OPTIONS; tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv declare -n nameref (HOME)" deny "declare -n r=TAR_OPTIONS; r=-P; export TAR_OPTIONS; tar -xf /tmp/a.tar -C /var/out" "$HOME"
+row "4458 xenv UNZIP+= append (HOME)" deny "UNZIP+=-: unzip /tmp/a.zip -d /var/out" "$HOME"
+row "4458 xenv unzip cmd is not UNZIP (ctrl) (HOME)" allow "unzip /tmp/a.zip -d /var/out" "$HOME"
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"

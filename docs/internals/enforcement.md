@@ -2341,13 +2341,16 @@ HIMMEL-4458 closed these gaps:
   "$HOME"` (an abbreviation) deny. An explicit `-x`/`--extract`/`--get`
   keeps the extract reading. Over-deny vs the previous fence: 0 in every
   recorded corpus, both cwds.
-- **tar/unzip option variables.** When a command sets `TAR_OPTIONS`, `UNZIP`,
-  `UNZIPOPT`, `ZIPINFO` or `ZIPINFOOPT` in any form (prefix, `export`, `env`,
-  `declare`/`typeset`/`local -x`, `readonly`, or a nested body), every
-  tar/unzip extraction in that command denies. A proven non-extract mode still
-  allows. The scan matches `NAME=` in the raw text and in the dequoted tokens,
-  like the directory-word scan, so a quote-split name still matches. The
-  value is never parsed. A value inherited from the launching environment is
+- **tar/unzip option variables.** When a command names `TAR_OPTIONS`, `UNZIP`,
+  `UNZIPOPT`, `ZIPINFO` or `ZIPINFOOPT` anywhere, every tar/unzip extraction in
+  that command denies. That covers a prefix, `export`, `env`,
+  `declare`/`typeset`/`local -x`, `readonly`, `printf -v`, `read`, a
+  nameref, `+=` and a nested body. A mere mention also denies, such as
+  `echo $TAR_OPTIONS; tar -xf …`; that over-deny is accepted. A proven
+  non-extract mode still allows. The scan matches the bare, case-sensitive
+  name, so the `unzip` command never matches `UNZIP`. It reads the raw text
+  and the dequoted tokens, like the directory-word scan, so a quote-split
+  name still matches. The value is never parsed. A value inherited from the launching environment is
   out of scope: each Bash call is a fresh shell the hook cannot see.
 - **Chained tar `-C`.** tar applies each `-C`/`--directory` relative to the one
   before it, so a relative one is judged as the composed path:

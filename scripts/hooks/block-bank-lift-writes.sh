@@ -92,7 +92,7 @@ CWD=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || CWD=""
 LIFT_NAME=bank-lift.json
 STATE_REAL="$HOME/.himmel/state"
 CWD_UNPROVEN=0  # set for Bash: a directory-changing word anywhere makes the cwd unknown
-XENV_SET=0      # set for Bash: the command assigns a tar/unzip option variable
+XENV_SET=0      # set for Bash: the command names a tar/unzip option variable
 # HIMMEL-4458: the repo whose scripts/lib/bank-lift.sh may run show|clear —
 # this hook's own checkout (scripts/hooks/..), the primary when that is a
 # .claude/worktrees/* worktree. Its worktrees qualify too.
@@ -755,11 +755,13 @@ set_rule() {
 # find -execdir, a `(` or backtick (subshell, $( ), <( )), a { } brace group,
 # env/sudo with -C/-i, and a shell running a -c string.
 DIRWORD_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd|eval|su|runuser|chroot)([^A-Za-z0-9_.-]|$)|CDPATH|chdir|-execdir|[(`]|(^|[[:space:];&|])[{]([[:space:]]|$)|(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*[Ci]|(^|[^A-Za-z0-9_.-])(bash|sh|zsh|dash|ksh|mksh|ash|fish|busybox)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*c'
-# tar/unzip read options from these variables. An assignment in ANY form
-# (prefix, export, env, declare/typeset/local, readonly, a nested body) is
-# matched by `NAME=` in the raw text and the dequoted tokens; the value is not
-# parsed. A value inherited from the launching environment is out of scope.
-XENV_RE='(^|[^A-Za-z0-9_])(TAR_OPTIONS|UNZIP|UNZIPOPT|ZIPINFO|ZIPINFOOPT)='
+# tar/unzip read options from these variables. A variable can be set in many
+# forms (prefix, export, env, declare/typeset/local, readonly, printf -v, read,
+# a nameref, +=, a nested body), so the BARE name anywhere in the raw text or
+# the dequoted tokens counts; mentions over-deny, by design. Case-sensitive:
+# the `unzip` command never matches `UNZIP`. The value is not parsed. A value
+# inherited from the launching environment is out of scope.
+XENV_RE='(^|[^A-Za-z0-9_])(TAR_OPTIONS|UNZIP|UNZIPOPT|ZIPINFO|ZIPINFOOPT)([^A-Za-z0-9_]|$)'
 # shellcheck disable=SC2016  # the rewrite names literal command shapes
 UNPROVEN_FIX='a directory-changing word (cd/pushd/popd/CDPATH/eval/subshell/nested shell) makes the cwd unknown: use an absolute destination (`tar -C /abs`, `cp ... /abs`) or run it as its own command'
 
@@ -1239,7 +1241,7 @@ check_extract() {
     # pass mode copies whatever paths stdin names: every cpio extraction
     # denies, whatever the destination (--no-absolute-filenames not modelled).
     [ "$c" = cpio ] && deny "cpio extracts members by their own (absolute or ../) names, which can land on the bank lift whatever the destination; extract with tar or unzip into an absolute destination"
-    [ "$XENV_SET" = 1 ] && deny "$c extracts while the command sets TAR_OPTIONS/UNZIP/UNZIPOPT/ZIPINFO/ZIPINFOOPT, which can inject options (-P, -C, -:) the hook cannot see; pass the options on the $c command line"
+    [ "$XENV_SET" = 1 ] && deny "$c extracts while the command names TAR_OPTIONS/UNZIP/UNZIPOPT/ZIPINFO/ZIPINFOOPT, which can inject options (-P, -C, -:) the hook cannot see; pass the options on the $c command line"
     [ "$abs" = 1 ] && deny "$c keeps absolute (or ../) member names, so a member can land on the bank lift whatever the destination; drop -P/--absolute-names/--absolute-paths/-:"
     # ponytail: a symlink ALREADY inside an allowed destination is followed by
     # default for a member's intermediate path (GNU tar without a directory
