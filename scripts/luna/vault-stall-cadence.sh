@@ -218,6 +218,7 @@ cmd_run() {
     done
     gitdir="$(git -C "$vault" rev-parse --absolute-git-dir 2>/dev/null)" \
         || { echo "ERR vault-stall: not a git repo: $vault" >&2; return 2; }
+    vault="$(cd "$vault" && pwd -P)" || return 2   # later steps cd into it
     if [ "$dry" -eq 0 ]; then
         mkdir -p "$STATE_DIR" || return 2
         command -v flock >/dev/null 2>&1 || { echo "ERR vault-stall: flock not on PATH (needed to serialize runs)" >&2; return 2; }

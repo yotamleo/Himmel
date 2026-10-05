@@ -490,5 +490,16 @@ assert_has "T23 cron row escapes the percent sign" 'run\%dir' "$(cat "$TMP/cron.
 HOME="$TMP/home" VAULT_STALL_CRONTAB="$TMP/crontab" VAULT_STALL_RUNNER_DIR="$TMP/run%dir" \
     HIMMEL_OBSERVABILITY_CONFIG="$TMP/obs.json" bash "$SUT" disarm >/dev/null 2>&1
 
+# --- T24 run with a relative --vault remediates (round 5, codex-1) -----------
+mkvault
+printf -- '- 10:00 LIVE — release-token: `%s`\n' "$LOCK_TOKEN" >"$V/handovers/b.md"
+git -C "$V" add handovers/b.md
+out="$(cd "$(dirname "$V")" && HOME="$TMP/home" VAULT_STALL_STATE_DIR="$S" \
+    CADENCE_ALERT_SEND_CMD="$TMP/sender.sh" CADENCE_ALERT_FILE="$TMP/alerts.log" \
+    CADENCE_ALERT_DEDUPE_DIR="$TMP/dedupe" \
+    bash "$SUT" run --vault "$(basename "$V")" 2>&1)"; rc=$?
+assert_eq "T24 run exits 0" "0" "$rc"
+assert_eq "T24 commit holds ONLY the gitleaks config" ".gitleaks.toml " "$(head_files)"
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi
