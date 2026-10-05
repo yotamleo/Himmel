@@ -308,7 +308,14 @@ cmd_run() {
     fi
     # shellcheck disable=SC2086  # $files is a space-separated list of fixed names
     if ! SKIP="$SKIP_FIXERS" git -C "$vault" commit -q --only -m "chore(vault): [HIMMEL-4471] remediate stall class ${classes// /, }" -- $files >/dev/null 2>&1; then
-        rollback; rm -rf "$work"; alert "remediation-commit-refused $classes (rolled back)" 0; return 0
+        # The vault sync shares no lock with this run: it may have staged and
+        # committed the edit itself between the re-run and this commit. Then
+        # HEAD already holds it, and a rollback would revert a landed fix.
+        # shellcheck disable=SC2086  # $files is a space-separated list of fixed names
+        if ! git -C "$vault" diff --quiet HEAD -- $files; then
+            rollback; rm -rf "$work"; alert "remediation-commit-refused $classes (rolled back)" 0; return 0
+        fi
+        echo "vault-stall: the edit landed through another commit (the sync); not rolled back"
     fi
     rm -rf "$work"
     for c in $classes; do printf '%s\t%s\n' "$now" "$c" >> "$STATE_DIR/remediated.tsv"; done
@@ -346,6 +353,7 @@ cmd_arm() {
     done
     case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) echo "ERR vault-stall: cron only; Windows is parked (HIMMEL-4102)" >&2; return 2 ;; esac
     command -v "$CRONTAB_BIN" >/dev/null 2>&1 || { echo "ERR vault-stall: '$CRONTAB_BIN' not on PATH" >&2; return 2; }
+    command -v flock >/dev/null 2>&1 || { echo "ERR vault-stall: flock not on PATH (every run needs it; on macOS: brew install flock)" >&2; return 2; }
     git -C "$vault" rev-parse --git-dir >/dev/null 2>&1 || { echo "ERR vault-stall: not a git repo: $vault" >&2; return 2; }
     vault="$(cd "$vault" && pwd -P)" || return 2   # cron runs from $HOME: bake an absolute path
     root="$(resolve_primary)" || { echo "ERR vault-stall: cannot resolve the primary checkout" >&2; return 2; }

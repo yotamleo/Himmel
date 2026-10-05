@@ -335,5 +335,39 @@ assert_eq "T15 arm with a relative vault exits 0" "0" "$rc"
 assert_has "T15 runner carries the absolute vault path" "run --vault $(cd "$TMP/v1" && pwd -P)" "$(cat "$TMP/runner/vault-stall-cadence.sh")"
 cadence disarm >/dev/null
 
+# --- T16 arm refuses a host without flock (panel round 2, codex-2) ------------
+rm -f "$TMP/cron.tab"; rm -rf "$TMP/runner"
+out="$(PATH="$TMP/noflock" cadence arm --vault "$TMP/v1")"; rc=$?
+assert_eq "T16 arm without flock exits 2" "2" "$rc"
+assert_has "T16 arm names flock" "flock" "$out"
+assert_eq "T16 no crontab row written" "" "$(cat "$TMP/cron.tab" 2>/dev/null)"
+
+# --- T17 a sync that lands the edit mid-run is not rolled back (codex-1) ------
+mkvault
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+mv "$V/.git/hooks/pre-commit" "$V/.git/hooks/pre-commit.real"
+cat >"$V/.git/hooks/pre-commit" <<'HOOK'
+#!/usr/bin/env bash
+# Runs the stand-in hook; on its first pass it plays the vault sync, which
+# stages everything and commits it between the cadence's hook re-run and its
+# own commit.
+"$(git rev-parse --git-dir)/hooks/pre-commit.real" || exit $?
+sim="$(git rev-parse --git-dir)/sim-sync"
+if [ -e "$sim" ]; then
+    rm -f "$sim"
+    git add -A && git -c core.hooksPath=/dev/null commit -q -m "chore: vault autosync"
+fi
+exit 0
+HOOK
+chmod +x "$V/.git/hooks/pre-commit"
+: >"$V/.git/sim-sync"
+out="$(run_sut)"; rc=$?
+assert_eq "T17 run exits 0" "0" "$rc"
+assert_eq "T17 the landed config is not rolled back" "" "$(git -C "$V" status --porcelain -- .pre-commit-config.yaml)"
+assert_has "T17 HEAD carries the exclude" "^handovers/" "$(git -C "$V" show HEAD:.pre-commit-config.yaml)"
+assert_not_has "T17 no rollback alert" "(rolled back)" "$out"
+assert_has "T17 reports the landed edit" "landed through another commit" "$out"
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi
