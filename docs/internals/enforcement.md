@@ -2326,6 +2326,20 @@ HIMMEL-4458 closed these gaps:
   unresolved `cd`; `$HOME` spellings still resolve. A variable assigned a
   literal earlier in the same command is not tracked, so
   `S=/tmp/s; tar -xf a -C $S/x` denies too: spell the literal path.
+- **Ancestors of HOME.** Members are relative, so a destination that is a
+  strict ancestor of HOME (`/`, `/home`, `~/..`; whole path components, so
+  `/ho` is not one; compared lexically and physically) reaches the lift with a
+  member such as `home/<user>/.himmel/state/bank-lift.json` and denies: `-C`,
+  `--directory`, `unzip -d`, `cpio -D`/`-p`, a relative destination resolved
+  against a cd target, and the extraction cwd (the hook's cwd or a resolved
+  `cd /`). A destination inside HOME other than HOME, `~/.himmel` or its state
+  dir (`-C "$HOME/projects"`) stays allowed.
+- **Directory symlinks.** tar `--keep-directory-symlink` (and its `--keep-d…`
+  abbreviations) follows a directory symlink inside the destination and
+  denies on extraction. Ceiling (a `ponytail:` in the hook): a symlink already
+  inside an allowed destination is followed by default for a member's
+  intermediate path (GNU tar with no directory member, unzip, cpio); unzip and
+  cpio have no opt-in flag to deny.
 - **Linear scan.** The per-word lowercase fork in the name rule and the
   per-clause basename forks are gone, so a 20k-word command takes well under a
   second instead of a minute (the hook timed out on ~10k words).

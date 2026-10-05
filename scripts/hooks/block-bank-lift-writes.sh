@@ -1082,6 +1082,26 @@ _tar_dest() {
     dests+=("$d")
 }
 
+# _home_anc <expanded-path> -> 0 when the path is a strict ancestor of HOME
+# (whole components: /home is one of /home/u, /ho is not), lexically or
+# physically, either side.
+_home_anc() {
+    local e="$1" p h hr
+    case "$e" in /*) ;; *) return 1 ;; esac
+    hr=$(CDPATH='' cd -P -- "$HOME" 2>/dev/null && pwd -P) || hr=""
+    p=""
+    [ -d "$e" ] && p=$(CDPATH='' cd -P -- "$e" 2>/dev/null && pwd -P)
+    for e in "$e" "$p"; do
+        [ -n "$e" ] || continue
+        [ "$e" = / ] && return 0
+        for h in "$HOME" "$hr"; do
+            [ -n "$h" ] || continue
+            case "$h" in "$e"/*) return 0 ;; esac
+        done
+    done
+    return 1
+}
+
 # check_extract <tar|gtar|bsdtar|unzip|cpio> <args...>
 # An option's operand is consumed, never read as a flag (`tar -xf -O` names
 # the archive -O; it is not --to-stdout). Letters whose arity differs between
@@ -1093,7 +1113,7 @@ _tar_dest() {
 # cpio copy-in without --no-absolute-filenames) deny whatever the destination.
 check_extract() {
     local c="$1" x=0 q="" a k first=1 n out=0 end=0 pend=0 u cwdchk=0 pass=0 v ch dash amb args alld=0
-    local abs=0 noabs=0 lst=0 cprev=""
+    local abs=0 noabs=0 lst=0 cprev="" ksym=0 e
     local -a dests=() pos=()
     shift
     [ "$c" = unzip ] && x=1
@@ -1131,6 +1151,7 @@ check_extract() {
             *tar:--directory=*|*tar:--dir*=*) _tar_dest "${a#*=}"; continue ;;
             cpio:--directory=*|cpio:--dir*=*) dests+=("${a#*=}"); continue ;;
             *tar:--abs*) abs=1; continue ;;
+            *tar:--keep-d*) ksym=1; continue ;;
             cpio:--abs*) abs=1; continue ;;
             cpio:--no-abs*) noabs=1; continue ;;
             cpio:--list) lst=1; continue ;;
@@ -1142,7 +1163,7 @@ check_extract() {
             cpio:--file|cpio:--pattern-file|cpio:--format|cpio:--owner|cpio:--message|cpio:--io-size|cpio:--rsh-command|cpio:--block-size)
                 q=a; continue ;;
             # Common long flags that take no operand.
-            *:--no-*|*:--verbose|*:--gzip|*:--gunzip|*:--bzip2|*:--xz|*:--lzma|*:--lzip|*:--lzop|*:--zstd|*:--auto-compress|*:--overwrite*|*:--keep-old-files|*:--skip-old-files|*:--keep-newer-files|*:--keep-directory-symlink|*:--unlink-first|*:--recursive-unlink|*:--same-owner|*:--same-permissions|*:--preserve-permissions|*:--numeric-owner|*:--wildcards|*:--anchored|*:--ignore-case|*:--totals|*:--touch|*:--sparse|*:--dereference|*:--ignore-zeros|*:--null|*:--exclude-vcs*|*:--exclude-caches*|*:--exclude-backups|*:--show-transformed-names|*:--delay-directory-restore|*:--make-directories|*:--preserve-modification-time|*:--unconditional|*:--list|*:--create|*:--quiet|*:--selinux|*:--acls|*:--xattrs) continue ;;
+            *:--no-*|*:--verbose|*:--gzip|*:--gunzip|*:--bzip2|*:--xz|*:--lzma|*:--lzip|*:--lzop|*:--zstd|*:--auto-compress|*:--overwrite*|*:--keep-old-files|*:--skip-old-files|*:--keep-newer-files|*:--unlink-first|*:--recursive-unlink|*:--same-owner|*:--same-permissions|*:--preserve-permissions|*:--numeric-owner|*:--wildcards|*:--anchored|*:--ignore-case|*:--totals|*:--touch|*:--sparse|*:--dereference|*:--ignore-zeros|*:--null|*:--exclude-vcs*|*:--exclude-caches*|*:--exclude-backups|*:--show-transformed-names|*:--delay-directory-restore|*:--make-directories|*:--preserve-modification-time|*:--unconditional|*:--list|*:--create|*:--quiet|*:--selinux|*:--acls|*:--xattrs) continue ;;
             # An unknown long option may take the next word.
             *:--*) pend=1; continue ;;
             *:-?*) v="${a#-}" ;;
@@ -1182,6 +1203,12 @@ check_extract() {
     # GNU cpio keeps absolute member names by default (copy-in only).
     [ "$c" = cpio ] && [ "$pass" = 0 ] && [ "$noabs" = 0 ] && abs=1
     [ "$abs" = 1 ] && deny "$c keeps absolute (or ../) member names, so a member can land on the bank lift whatever the destination; drop -P/--absolute-names/--absolute-paths/-: (cpio: add --no-absolute-filenames)"
+    # ponytail: a symlink ALREADY inside an allowed destination is followed by
+    # default for a member's intermediate path (GNU tar without a directory
+    # member, unzip, cpio) and is not judged here; revisit (new ticket) if a
+    # destination-internal symlink becomes plantable by an agent before the
+    # extraction, e.g. the destination is created in the same command.
+    [ "$ksym" = 1 ] && deny "$c --keep-directory-symlink follows a directory symlink inside the destination, which can lead into HOME or ~/.himmel; drop it"
     # cpio -p copies into its directory operand.
     [ "$pass" = 1 ] && dests+=(${pos[@]+"${pos[@]}"})
     n=${#dests[@]}
@@ -1192,6 +1219,9 @@ check_extract() {
             case "$(lift_ref "$CWD")" in
                 LIFT|STATE|HIMMEL|HOME) deny "$c extracts into the cwd ($CWD), which is HOME or ~/.himmel" ;;
             esac
+            _home_anc "$CWD" && deny "$c extracts into the cwd ($CWD), an ancestor of HOME: a relative member can reach the bank lift"
+        elif [ -n "$CD_DIR" ]; then
+            _home_anc "$CD_DIR" && deny "$c extracts into the cwd after a cd to $CD_DIR, an ancestor of HOME: a relative member can reach the bank lift"
         fi
         [ "$n" = 0 ] && return 0
     fi
@@ -1219,6 +1249,9 @@ check_extract() {
         case "$k" in
             LIFT|STATE|HIMMEL|HOME) deny "$c extracts into $a (HOME, ~/.himmel or its state dir), where a member can be the bank lift" ;;
         esac
+        if [ "$CD_SEEN" = 0 ]; then e=$(HAS_CD=0 _expand "$a"); else e=$(_expand "$a"); fi
+        case "$e" in '?/'*) [ -n "$CD_DIR" ] && e=$(CWD="$CD_DIR" HAS_CD=0 _expand "$a") ;; esac
+        _home_anc "$e" && deny "$c extracts into $a, an ancestor of HOME: a relative member (home/<user>/.himmel/state/...) can reach the bank lift"
     done
     return 0
 }
