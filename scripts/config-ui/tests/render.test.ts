@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 // @ts-ignore plain browser ES module, no types
-import { render, renderNav, rollup, isOpen } from "../public/render.js";
+import { render, renderNav, renderHeader, rollup, isOpen } from "../public/render.js";
 
 const row = (id: string, health: string, source = "item", control: Record<string, unknown> = { class: "display-only" }, extra: Record<string, unknown> = {}) => ({
   id, source, group: "core", title: id, health,
@@ -340,4 +340,25 @@ test("a feed without bundles renders one All rows bundle", () => {
 test("bundle titles from the feed are escaped", () => {
   const f = { ...bfeed, bundles: [{ id: "alpha", title: "<img src=x onerror=1>" }] };
   expect(bhtml({}, {}, f)).not.toContain("<img");
+});
+
+// HIMMEL-4405: the shared header.
+const ident = { version: "0.9.9", describe: "v0.9.9-3-gabc", commit: "0123456789abcdef0123456789abcdef01234567", checkout: "/srv/himmel-wt" };
+test("renderHeader shows describe, the 12-char commit, checkout and feed time", () => {
+  const h = renderHeader({ ...feed, himmel: ident });
+  expect(h).toContain("himmel 0.9.9 · v0.9.9-3-gabc");
+  expect(h).toContain("0123456789ab<");
+  expect(h).toContain(`title="${ident.commit}"`);
+  expect(h).toContain("/srv/himmel-wt");
+  expect(h).toContain("2026-10-04 14:02");
+});
+test("renderHeader without feed.himmel says version unknown, keeps the feed time", () => {
+  const h = renderHeader(feed);
+  expect(h).toContain("version unknown (feed has no himmel identity)");
+  expect(h).toContain("2026-10-04 14:02");
+});
+test("renderHeader escapes every identity field", () => {
+  const x = "<img src=x onerror=1>";
+  const h = renderHeader({ ...feed, himmel: { version: x, describe: x, commit: x, checkout: x } });
+  expect(h).not.toContain("<img");
 });

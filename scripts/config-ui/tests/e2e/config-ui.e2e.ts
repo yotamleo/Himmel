@@ -1,7 +1,7 @@
 // HIMMEL-4400: the manual checklist for the config UI (PR 1841, bundles), automated.
 // Items 1-7 are the checklist; the last test is the safety contract.
 import { test, expect, type Page } from "@playwright/test";
-import { boot, BUNDLES, type Harness, type Variant } from "./fixtures";
+import { boot, BUNDLES, HIMMEL_ID, type Harness, type Variant } from "./fixtures";
 
 let h: Harness;
 test.afterEach(async () => { await h?.stop(); });
@@ -116,4 +116,33 @@ test("safety: a toggle shows only a dry-run plan; nothing runs without the typed
   expect(ran.length).toBeGreaterThan(0);
   expect(ran.every((l) => l.endsWith("--dry-run")), ran.join("\n")).toBe(true);
   expect(h.stateFiles()).toEqual([]);
+});
+
+// HIMMEL-4405 PR-a: the shared header and the page links.
+test("header shows describe, the 12-char commit, checkout and feed time", async ({ page }) => {
+  await open(page);
+  const top = page.locator("header.top");
+  await expect(top).toContainText(HIMMEL_ID.describe);
+  await expect(top).toContainText(HIMMEL_ID.commit.slice(0, 12));
+  await expect(top).not.toContainText(HIMMEL_ID.commit.slice(0, 13));
+  await expect(top).toContainText(HIMMEL_ID.checkout);
+  await expect(top).toContainText("2026-10-04 14:02");
+});
+
+test("header without feed.himmel reads version unknown, never blank", async ({ page }) => {
+  await open(page, { noIdentity: true });
+  await expect(page.locator("header.top")).toContainText("version unknown (feed has no himmel identity)");
+});
+
+test("rail page links are [Config]; Config is current and the hash is #/config", async ({ page }) => {
+  await open(page);
+  expect(await page.locator("nav.pages a").allTextContents()).toEqual(["Config"]);
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
+  expect(await page.evaluate(() => location.hash)).toBe("#/config");
+});
+
+test("at 390 px the page does not scroll horizontally", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await open(page);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });

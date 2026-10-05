@@ -1,5 +1,5 @@
 // HIMMEL-4254 P3/P4: thin DOM glue. All markup comes from render.js.
-import { render, renderNav } from "/render.js";
+import { render, renderNav, renderHeader } from "/render.js";
 
 const $ = (s) => document.querySelector(s);
 const state = { open: new Set(), bundles: {}, filt: { health: null, kind: null, q: "", problems: false }, plans: {} };
@@ -10,15 +10,30 @@ let current = "triage";
 // memory only and clear it from the address bar.
 const m = /#t=([0-9a-f]+)/.exec(location.hash);
 const token = m ? m[1] : "";
-if (m) history.replaceState(null, "", location.pathname + location.search);
+if (m) history.replaceState(null, "", location.pathname + location.search + "#/config");
+
+// Pages: one entry each (id = the `#/<id>` route). `regions` keeps the Config
+// region nav and its 1/2/3 keys on that page only.
+const PAGES = [{ id: "config", label: "Config", regions: true, render: (f) => render(f, state) }];
+let currentPage = PAGES[0];
+
+function route() {
+  const id = (/^#\/(\w+)/.exec(location.hash) || [])[1];
+  currentPage = PAGES.find((p) => p.id === id) || PAGES[0];
+  if (id !== currentPage.id) history.replaceState(null, "", location.pathname + location.search + "#/" + currentPage.id);
+  $("#pages").innerHTML = PAGES.map((p) => `<a href="#/${p.id}"${p === currentPage ? ' aria-current="page"' : ""}>${p.label}</a>`).join("");
+  if (feed) paint();
+}
+addEventListener("hashchange", route);
+route();
 
 function paint() {
   const keep = document.activeElement && document.activeElement.id === "q" ? document.activeElement.selectionStart : null;
   const focusK = document.activeElement && document.activeElement.matches && document.activeElement.matches(".row-head") ? document.activeElement.dataset.k : null;
   const focusB = document.activeElement && document.activeElement.matches && document.activeElement.matches(".bhead") ? document.activeElement.dataset.b : null;
-  $("#main").innerHTML = render(feed, state);
-  $("#nav").innerHTML = renderNav(feed, current);
-  $("#probed").textContent = "probed " + String(feed.generatedAt || "").replace("T", " ").slice(0, 16);
+  $("#main").innerHTML = currentPage.render(feed);
+  $("#nav").innerHTML = currentPage.regions ? renderNav(feed, current) : "";
+  $("#top").innerHTML = renderHeader(feed);
   $("#where").textContent = `${location.host} · ${feed.target ? feed.target.scope : "?"} scope`;
   if (focusK !== null) { for (const h of document.querySelectorAll(".row-head")) if (h.dataset.k === focusK) { h.focus(); break; } }
   if (focusB !== null) { for (const h of document.querySelectorAll(".bhead")) if (h.dataset.b === focusB) { h.focus(); break; } }
@@ -135,7 +150,7 @@ document.addEventListener("input", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (!feed || e.target.matches("input")) return;
-  if (["1", "2", "3"].includes(e.key)) return go(["triage", "controls", "inventory"][Number(e.key) - 1]);
+  if (currentPage.regions && ["1", "2", "3"].includes(e.key)) return go(["triage", "controls", "inventory"][Number(e.key) - 1]);
   if ((e.key === "Enter" || e.key === " ") && e.target.matches(".bhead")) {
     e.preventDefault();
     return toggleBundle(e.target);

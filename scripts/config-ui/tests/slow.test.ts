@@ -112,10 +112,10 @@ test("page: a slower, older feed load never repaints over a newer one", async ()
   const waiting: ((b: string) => void)[] = [];
   let first = true;
   const g = globalThis as Record<string, unknown>;
-  const names = ["render", "renderNav", "document", "location", "history", "fetch", "__loadFeed"];
+  const names = ["render", "renderNav", "renderHeader", "document", "location", "history", "fetch", "__loadFeed"];
   const saved = Object.fromEntries(names.map((n) => [n, g[n]]));
   Object.assign(g, {
-    render: (f: { id?: string } | null) => { if (f) painted.push(f.id ?? "?"); return ""; }, renderNav: () => "",
+    render: (f: { id?: string } | null) => { if (f) painted.push(f.id ?? "?"); return ""; }, renderNav: () => "", renderHeader: () => "",
     document: { querySelector: el, querySelectorAll: () => [], getElementById: el, activeElement: null, addEventListener() {} },
     location: { hash: "", pathname: "/", search: "" }, history: { replaceState() {} },
     fetch: () => new Promise((res) => {
