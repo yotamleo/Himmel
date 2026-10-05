@@ -1485,6 +1485,59 @@ check_both "68f class: echo x\\ <<|primary| allows (heredoc OPENER never writes 
 check_both "68f class: echo x\\ <<|wt| allows (heredoc opener, worktree twin)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo x\\\\ <<$FIX/wt/ew-heredoc.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+echo "== HIMMEL-4359 (an in-command HOME assignment taints ~ and \$HOME) =="
+# The hook expands ~ / $HOME from its OWN HOME ($FIX/home here, outside every
+# checkout), so `HOME=<primary>; ls > ~/x` used to resolve the target to
+# $FIX/home/x and ALLOW a write into the primary. Every HOME-assignment
+# spelling x both ~ and $HOME targets x a resolved and an unresolved cd must
+# DENY; the cd forms (`cd ~`, `cd $HOME`, bare `cd`) must leave the cwd
+# unresolved. Reads and unrelated absolute writes after the assignment allow.
+_r4359() {  # _r4359 <label> <block|allow> <command>
+    check_both "4359 $1" "$2" \
+        "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$3" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
+}
+_P4359="$FIX/primary"
+for _h4359 in "HOME=$_P4359;" "export HOME=$_P4359;" "declare HOME=$_P4359;" \
+        "declare -x HOME=$_P4359;" "typeset -x HOME=$_P4359;" "readonly HOME=$_P4359;" \
+        "f() { local HOME=$_P4359;" "export \"HOME=$_P4359\";" "export H\\OME=$_P4359;"; do
+    _e4359=""; case "$_h4359" in 'f()'*) _e4359="; }; f" ;; esac
+    for _cd4359 in "cd $FIX/wt &&" "cd \"\$D\" &&"; do
+        # shellcheck disable=SC2088,SC2016  # literal ~ / $HOME: the command text under test
+        for _t4359 in '~/x' '$HOME/x' '"${HOME}"/x'; do
+            _r4359 "$_cd4359 $_h4359 ls > $_t4359 denies" block "$_cd4359 $_h4359 ls > $_t4359$_e4359"
+        done
+        _r4359 "$_cd4359 $_h4359 cp a ~/x denies" block "$_cd4359 $_h4359 cp $FIX/wt/a ~/x$_e4359"
+        _r4359 "$_cd4359 $_h4359 cd ~ then a relative write denies" block "$_cd4359 $_h4359 cd ~ && ls > x$_e4359"
+        _r4359 "$_cd4359 $_h4359 cd \$HOME then a relative write denies" block "$_cd4359 $_h4359 cd \$HOME && touch x$_e4359"
+        _r4359 "$_cd4359 $_h4359 bare cd then a relative write denies" block "$_cd4359 $_h4359 cd; rm -f x$_e4359"
+    done
+done
+# Prefix (`HOME=x cmd`) and env forms: the assignment reaches the child shell.
+for _cd4359 in "cd $FIX/wt &&" "cd \"\$D\" &&"; do
+    # shellcheck disable=SC2088,SC2016  # literal ~ / $HOME: the command text under test
+    for _t4359 in '~/x' '$HOME/x'; do
+        for _w4359 in "HOME=$_P4359 sh -c" "env HOME=$_P4359 sh -c" "env -i HOME=$_P4359 sh -c" \
+                "env -u PATH HOME=$_P4359 PATH=/bin bash -c"; do
+            _r4359 "$_cd4359 $_w4359 'ls > $_t4359' denies" block "$_cd4359 $_w4359 'ls > $_t4359'"
+        done
+        _r4359 "$_cd4359 HOME=$_P4359 ls > $_t4359 (prefix) denies" block "$_cd4359 HOME=$_P4359 ls > $_t4359"
+    done
+    _r4359 "$_cd4359 env HOME=$_P4359 sh -c 'cd ~ && ls > x' denies" block \
+        "$_cd4359 env HOME=$_P4359 sh -c 'cd ~ && ls > x'"
+done
+# ALLOW controls: the assignment alone, reads of ~, unrelated absolute writes,
+# a non-HOME variable, and `$HOME=` text that is no assignment.
+_r4359 "HOME=/tmp/h; echo hi allows" allow "HOME=/tmp/h; echo hi"
+_r4359 "HOME=/tmp/x cat ~/f allows" allow "HOME=/tmp/x cat ~/f"
+_r4359 "export HOME=/tmp/h; ls /tmp > /tmp/out allows" allow "export HOME=/tmp/h; ls /tmp > /tmp/out"
+_r4359 "HOME=primary; cat ~/f; ls \$HOME allows" allow "HOME=$_P4359; cat ~/f; ls \$HOME"
+_r4359 "HOME=primary; ls > wt/out (absolute worktree) allows" allow "HOME=$_P4359; ls > $FIX/wt/out"
+_r4359 "env HOME=primary sh -c 'cat ~/f' > /tmp/out allows" allow "env HOME=$_P4359 sh -c 'cat ~/f' > /tmp/out"
+_r4359 "cd wt && export HOME=/tmp/h; ls > /tmp/out allows" allow "cd $FIX/wt && export HOME=/tmp/h; ls > /tmp/out"
+_r4359 "MYHOME=primary; ls > ~/x (not HOME) allows" allow "MYHOME=$_P4359; ls > ~/x"
+_r4359 "echo \$HOME=1 > ~/x (no assignment) allows" allow "echo \$HOME=1 > ~/x"
+_r4359 "no assignment: ls > ~/x allows" allow "ls > ~/x"
+
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
