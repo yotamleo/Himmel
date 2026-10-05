@@ -5,6 +5,7 @@ import {
   listVersions,
   createVersion,
   releaseVersion,
+  archiveVersion,
   editVersion,
   moveVersion,
   setFixVersion,
@@ -262,5 +263,55 @@ describe('version-move (HIMMEL-4006)', () => {
     await expect(moveVersion('HIMMEL', 'v1.0.1b', {})).rejects.toThrow(/exactly one/);
     await expect(moveVersion('HIMMEL', 'v1.0.1b', { after: 'v1.0.1', position: 'Last' })).rejects.toThrow(/exactly one/);
     expect(calls.every((c) => c.method === 'GET')).toBe(true);
+  });
+});
+
+describe('version-archive (HIMMEL-4469)', () => {
+  it('archives an empty version: counts, then PUT archived:true', async () => {
+    const calls = stubJira({
+      'GET /project/HIMMEL/versions': VERSIONS,
+      'GET /version/10002/relatedIssueCounts': { issuesFixedCount: 0, issuesAffectedCount: 0 },
+      'PUT /version/10002': {},
+    });
+    const out = await archiveVersion('HIMMEL', 'v1.0.0', {});
+    expect(calls[2]).toEqual({ method: 'PUT', url: '/version/10002', body: { archived: true } });
+    expect(out).toBe('Archived version v1.0.0');
+  });
+
+  it('refuses a version that still has issues and names the count', async () => {
+    const calls = stubJira({
+      'GET /project/HIMMEL/versions': VERSIONS,
+      'GET /version/10002/relatedIssueCounts': { issuesFixedCount: 3, issuesAffectedCount: 0 },
+      'PUT /version/10002': {},
+    });
+    await expect(archiveVersion('HIMMEL', 'v1.0.0', {})).rejects.toThrow(/3 issues.*--force/);
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+  });
+
+  it('--force archives despite issues and skips the count lookup', async () => {
+    const calls = stubJira({
+      'GET /project/HIMMEL/versions': VERSIONS,
+      'PUT /version/10002': {},
+    });
+    await archiveVersion('HIMMEL', 'v1.0.0', { force: true });
+    expect(calls.map((c) => `${c.method} ${c.url}`)).toEqual([
+      'GET /project/HIMMEL/versions',
+      'PUT /version/10002',
+    ]);
+  });
+
+  it('--unarchive PUTs archived:false with no issue check', async () => {
+    const calls = stubJira({
+      'GET /project/HIMMEL/versions': VERSIONS,
+      'PUT /version/10001': {},
+    });
+    const out = await archiveVersion('HIMMEL', 'v0.2.0', { unarchive: true });
+    expect(calls[1]).toEqual({ method: 'PUT', url: '/version/10001', body: { archived: false } });
+    expect(out).toBe('Unarchived version v0.2.0');
+  });
+
+  it('throws when the version name does not exist', async () => {
+    stubJira({ 'GET /project/HIMMEL/versions': VERSIONS });
+    await expect(archiveVersion('HIMMEL', 'v9.9.9', {})).rejects.toThrow(/no version named "v9.9.9"/);
   });
 });

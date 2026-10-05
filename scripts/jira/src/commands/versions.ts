@@ -97,6 +97,37 @@ export async function releaseVersion(
   return `Released version ${name}`;
 }
 
+export interface VersionArchiveOptions {
+  unarchive?: boolean;
+  force?: boolean;
+}
+
+// HIMMEL-4469: archiving hides a version from the fixVersion pick-list. It is
+// refused while issues still carry the version (counted via relatedIssueCounts)
+// unless --force; --unarchive restores it and never needs the check.
+export async function archiveVersion(
+  project: string,
+  name: string,
+  opts: VersionArchiveOptions,
+): Promise<string> {
+  const found = (await fetchVersions(project)).find((v) => v.name === name);
+  if (!found) throw new Error(`no version named "${name}" in project ${project}`);
+  const archived = !opts.unarchive;
+  if (archived && !opts.force) {
+    const { issuesFixedCount } = await request<{ issuesFixedCount: number }>(
+      'GET',
+      `/version/${found.id}/relatedIssueCounts`,
+    );
+    if (issuesFixedCount > 0) {
+      throw new Error(
+        `version "${name}" still has ${issuesFixedCount} issues; pass --force to archive it anyway`,
+      );
+    }
+  }
+  await request('PUT', `/version/${found.id}`, { archived });
+  return `${archived ? 'Archived' : 'Unarchived'} version ${name}`;
+}
+
 export async function editVersion(
   project: string,
   name: string,
@@ -239,6 +270,21 @@ export function registerVersions(program: Command): void {
     .option('--date <date>', 'Release date, YYYY-MM-DD')
     .action(async (name: string, options: { project?: string; date?: string }) => {
       console.log(await releaseVersion(options.project ?? projectKey(), name, options.date));
+    });
+
+  program
+    .command('version-archive <name>')
+    .description('Archive a project version (refused while issues carry it, unless --force)')
+    .option('--project <key>', 'Project key (default: JIRA_PROJECT_KEY env var)')
+    .option('--unarchive', 'Restore an archived version instead')
+    .option('--force', 'Archive even if issues still carry the version')
+    .action(async (name: string, options: VersionArchiveOptions & { project?: string }) => {
+      console.log(
+        await archiveVersion(options.project ?? projectKey(), name, {
+          unarchive: options.unarchive,
+          force: options.force,
+        }),
+      );
     });
 
   program
