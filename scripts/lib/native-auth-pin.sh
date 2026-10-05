@@ -168,7 +168,7 @@ native_auth_pin_env() {
   # expansions, not commands, so no function, alias or PATH entry can blind them,
   # and every canonical name -- any case mix -- starts with one of these four
   # letters. Each expansion still scans bash's whole variable table (as compgen
-  # does), so a huge environment stays slow -- measured, deferred (HIMMEL-4461).
+  # does), so a huge environment stays slow -- measured, deferred (HIMMEL-4474).
   for _name in "${!A@}" "${!a@}" "${!C@}" "${!c@}"; do
     case "$_name" in
       [Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_* | [Cc][Ll][Aa][Uu][Dd][Ee]_[Cc][Oo][Dd][Ee]_[Uu][Ss][Ee]_*) ;;
