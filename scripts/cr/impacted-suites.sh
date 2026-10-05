@@ -698,6 +698,9 @@ scripts/cr/*.js scripts/guardrails/test-check-git-env-scrub.sh
 docs/*.md scripts/ci/test-check-cr-terminology.sh
 docs/*.html scripts/ci/test-check-cr-terminology.sh
 .claude/commands/*.md scripts/ci/test-check-cr-terminology.sh
+.claude/commands/*.html scripts/ci/test-check-cr-terminology.sh
+.claude/commands/pr-check.md scripts/cr/test-cr-guarded-closure.sh
+.agents/skills/pr-check/SKILL.md scripts/cr/test-cr-guarded-closure.sh
 marketplace/*.md scripts/ci/test-check-cr-terminology.sh
 marketplace/*.html scripts/ci/test-check-cr-terminology.sh
 README.md scripts/ci/test-check-cr-terminology.sh
@@ -761,6 +764,40 @@ while IFS= read -r f; do
         esac
     done < "$work/scan-roots"
 done <<< "$changed"
+
+# The CR guarded closure (HIMMEL-4453): scripts/cr/test-cr-guarded-closure.sh
+# DERIVES its file set by walking the runbook + scripts/cr call graph and never
+# names what it reaches, so no reference grep selects it. Every file that walk
+# reaches must lie inside pr-check-context.sh's cr_guarded set (the suite fails
+# otherwise), so a change that adds or alters an edge is one of: a file inside
+# cr_guarded (the file holding the edge), or a file a cr_guarded file names (the
+# newly reached target, e.g. #1851's leg-jira-status.sh). Select the suite for
+# both. The runbook twins are seeds, rows in scan_roots.
+# ponytail: the second arm matches by basename text in the guarded files, so a
+# basename shared with an unrelated file over-selects (the safe direction); a
+# target named only through an assembled path is the suite's own ponytail gap.
+closure_suite=scripts/cr/test-cr-guarded-closure.sh
+if grep -Fxq -- "$closure_suite" <<< "$suites"; then
+    git show "${head_sha}:scripts/cr/pr-check-context.sh" > "$work/ctx" 2>/dev/null || : > "$work/ctx"
+    sed -n '/^cr_guarded="/,/"$/p' "$work/ctx" | sed 's/^cr_guarded="//; s/"$//' | tr ' ' '\n' | sed '/^$/d' > "$work/guarded" || io_fail "reading cr_guarded"
+    : > "$work/guarded-specs"
+    while IFS= read -r g; do
+        printf ':(top)%s\n' "$g" >> "$work/guarded-specs" || io_fail "writing the guarded pathspecs"
+    done < "$work/guarded"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        while IFS= read -r g; do
+            case "$f" in "$g"|"$g"/*) printf '%s\n' "$closure_suite" >> "$found" || io_fail "recording the closure suite"; break 2 ;; esac
+        done < "$work/guarded"
+        case "$f" in scripts/handover/*|scripts/lanes/*|scripts/lib/*) ;; *) continue ;; esac
+        [ -s "$work/guarded-specs" ] || continue
+        cg_rc=0
+        # shellcheck disable=SC2046  # one pathspec per line, split on purpose
+        git grep -qE -f <(needle_ere "$(file_literal "$f")") "$head_sha" -- $(tr '\n' ' ' < "$work/guarded-specs") || cg_rc=$?
+        if [ "$cg_rc" -gt 1 ]; then io_fail "searching the guarded files for ${f}"; fi
+        if [ "$cg_rc" -eq 0 ]; then printf '%s\n' "$closure_suite" >> "$found" || io_fail "recording the closure suite"; break; fi
+    done <<< "$changed"
+fi
 
 if [ -s "$pats" ]; then
     # git grep on the resolved <head> tree, not the working tree: the answer is
