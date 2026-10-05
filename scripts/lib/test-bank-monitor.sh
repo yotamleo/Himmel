@@ -216,14 +216,42 @@ sample_reset 20 25 '"1970-01-01T02:46:40Z"'
 out="$(run_at 2800 12:30)"
 check 'an unknown rate (first sample) reads ?' 'seven_day_reset_in=? unspent_at_reset=?' "$(tail_fields "$out")"
 
-# --spare: prints just the two fields, every time, and leaves emission state alone.
+# --spare is READ-ONLY: it prints just the two fields and never touches the
+# sample ring or the emission state, so a later normal run is unaffected.
 seed_series spare-mode '"1970-01-01T02:46:40Z"'
 rm -f "$BANK_STATE_FILE"
+ring_before="$(cat "$BANK_STATE_FILE.samples")"
 out="$(BANK_NOW_EPOCH=2800 BANK_NOW_HM=12:30 bash "$SUT" --spare)"
 check '--spare prints only the two fields' 'seven_day_reset_in=2.0h unspent_at_reset=55.0' "$out"
 check '--spare writes no emission state' 'no' "$([ -e "$BANK_STATE_FILE" ] && echo yes || echo no)"
+check '--spare leaves the sample ring byte-identical' "$ring_before" "$(cat "$BANK_STATE_FILE.samples")"
 out="$(run_at 2800 12:30)"
 case "$out" in BANK*) pass 'a normal run after --spare still emits the state line' ;; *) fail "a normal run after --spare still emits the state line (out='$out')" ;; esac
+
+export BANK_STATE_FILE="$W/spare-nofile"
+sample_reset 20 25 '"1970-01-01T02:46:40Z"'
+out="$(BANK_NOW_EPOCH=2800 BANK_NOW_HM=12:30 bash "$SUT" --spare)"
+check '--spare with no ring reads ?' 'seven_day_reset_in=? unspent_at_reset=?' "$out"
+check '--spare with no ring creates no ring' 'no' "$([ -e "$BANK_STATE_FILE.samples" ] && echo yes || echo no)"
+
+# Alternating --spare and normal runs over 20 -> 21 -> 90 -> 91: --spare must
+# never make the next normal run read state=stale and swallow WEEKLY-CEILING.
+export BANK_STATE_FILE="$W/spare-alt"
+sample_reset 10 20 'null'
+run_at 1000 12:00 >/dev/null
+sample_reset 10 21 'null'
+BANK_NOW_EPOCH=1300 BANK_NOW_HM=12:05 bash "$SUT" --spare >/dev/null
+run_at 1300 12:05 >/dev/null
+sample_reset 10 90 'null'
+ring_before="$(cat "$BANK_STATE_FILE.samples")"
+BANK_NOW_EPOCH=1600 BANK_NOW_HM=12:10 bash "$SUT" --spare >/dev/null
+check 'alternating series: ring byte-identical after --spare at 90' "$ring_before" "$(cat "$BANK_STATE_FILE.samples")"
+out="$(run_at 1600 12:10)"
+case "$out" in *'state=WEEKLY-CEILING'*) pass 'alternating series: normal run after --spare still emits WEEKLY-CEILING at 90' ;; *) fail "alternating series: normal run after --spare still emits WEEKLY-CEILING at 90 (out='$out')" ;; esac
+sample_reset 10 91 'null'
+BANK_NOW_EPOCH=1900 BANK_NOW_HM=12:15 bash "$SUT" --spare >/dev/null
+out="$(run_at 1900 12:15)"
+check 'alternating series: WEEKLY-CEILING at 91 is unchanged and silent' '' "$out"
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-bank-monitor.sh'

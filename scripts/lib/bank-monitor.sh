@@ -23,9 +23,11 @@
 # unspent_at_reset=<pct> = max(0, 100 - (seven_day + seven_day_rate x reset_in)),
 # the weekly quota the current burn leaves unspent at the reset (advisory only;
 # it gates nothing). Either reads ? when the rate or resets_at is unknown or the
-# reset is already past. `--spare` records the sample like a normal run but
-# prints only those two fields every time and touches no emission state, so the
-# console tick can read them without swallowing a state-change line.
+# reset is already past. `--spare` is READ-ONLY: it derives the rate from the
+# existing sample ring plus this observation in memory, writes neither the ring
+# nor the emission state, never calls bank-status.ts, and prints only those two
+# fields. The console tick can read them without a later normal run seeing a
+# repeated cache stamp (state=stale) and swallowing a state-change line.
 #
 # PLATFORM GUARD: no .ps1 twin, by design. This is Bash 3.2-compatible and is
 # consumed by the Linux console kit; its codex-bank reader is the Bun CLI.
@@ -75,7 +77,10 @@ _id_lib="$HERE/usage-cache-identity.sh"
 { [ -r "$_id_lib" ] && . "$_id_lib"; } 2>/dev/null || usage_cache_account_mismatch() { return 0; }
 usage_cache_account_mismatch "$BANK_CACHE_FILE" && exit 0
 
-bank_status="$(bun "$REPO/scripts/lanes/bank-status.ts" 2>/dev/null | grep '^claudex ' | head -n 1)" || bank_status=""
+bank_status=""
+if [ "$spare_only" -eq 0 ]; then
+    bank_status="$(bun "$REPO/scripts/lanes/bank-status.ts" 2>/dev/null | grep '^claudex ' | head -n 1)" || bank_status=""
+fi
 codex_five="$(printf '%s\n' "$bank_status" | sed -n 's/.*5h used=\([0-9][0-9.]*\)%.*/\1/p')"
 codex_seven="$(printf '%s\n' "$bank_status" | sed -n 's/.*weekly used=\([0-9][0-9.]*\)%.*/\1/p')"
 valid_pct "$codex_five" 2>/dev/null || codex_five=""
@@ -93,7 +98,7 @@ then
 fi
 
 state_dir="$(dirname "$state_file")"
-mkdir -p "$state_dir" 2>/dev/null || exit 0
+[ "$spare_only" -eq 1 ] || mkdir -p "$state_dir" 2>/dev/null || exit 0
 
 # Stdin rate updates preserve oauth_checked_at; use mtime as well. The OAuth
 # stamp also distinguishes refreshes within the same filesystem timestamp second.
@@ -107,7 +112,25 @@ last_five="$(printf '%s\n' "$last" | awk '{print $2}')"
 last_seven="$(printf '%s\n' "$last" | awk '{print $3}')"
 last_stamp="$(printf '%s\n' "$last" | awk '{print $4}')"
 
-if [ "$cache_stamp" = "$last_stamp" ]; then
+if [ "$spare_only" -eq 1 ]; then
+    # Read-only: the ring plus this observation, in memory, mirroring the
+    # normal-mode window and reset rules below; the file is never written, so a
+    # later normal run still sees a fresh cache_stamp.
+    read -r old_seven_time old_seven now seven <<EOF
+$(awk -v cutoff="$((now - 1800))" -v now="$now" -v cur="$seven" -v stamp="$cache_stamp" '
+    $1 ~ /^[0-9]+$/ { lt = $1; ls = $3; lk = $4 }
+    $1 ~ /^[0-9]+$/ && $3 != "-" && !oa { oa_t = $1; oa_s = $3; oa = 1 }
+    $1 ~ /^[0-9]+$/ && $1 >= cutoff && $1 <= now && $3 != "-" && !ow { ow_t = $1; ow_s = $3; ow = 1 }
+    END {
+        if (lk != "" && lk == stamp) { if (oa) print oa_t, oa_s, lt, ls; else print "-", "-", lt, ls; exit }
+        reset = (lt ~ /^[0-9]+$/) && (lt >= now || cur + 0 < ls + 0)
+        if (reset || !ow) print "-", "-", now, cur; else print ow_t, ow_s, now, cur
+    }' "$samples_file" 2>/dev/null || printf '%s\n' "- - $now $seven")
+EOF
+    [ -n "$seven" ] || exit 0
+    case "$old_seven_time" in ''|*[!0-9]*) old_seven_time="$now" ;; esac
+    old_five_time="$now"
+elif [ "$cache_stamp" = "$last_stamp" ]; then
     state=stale
     # Keep the last measured projections, not a fictitious zero-burn poll.
     now="$last_time"
@@ -145,12 +168,14 @@ else
     mv -f "$samples_tmp" "$samples_file" 2>/dev/null || exit 0
 fi
 
-oldest_five="$(awk 'NF >= 3 && $2 != "-" { print $1, $2; exit }' "$samples_file")"
-oldest_seven="$(awk 'NF >= 3 && $3 != "-" { print $1, $3; exit }' "$samples_file")"
-old_five_time="$(printf '%s\n' "$oldest_five" | awk '{print $1}')"
-old_seven_time="$(printf '%s\n' "$oldest_seven" | awk '{print $1}')"
-old_five="$(printf '%s\n' "$oldest_five" | awk '{print $2}')"
-old_seven="$(printf '%s\n' "$oldest_seven" | awk '{print $2}')"
+if [ "$spare_only" -eq 0 ]; then
+    oldest_five="$(awk 'NF >= 3 && $2 != "-" { print $1, $2; exit }' "$samples_file")"
+    oldest_seven="$(awk 'NF >= 3 && $3 != "-" { print $1, $3; exit }' "$samples_file")"
+    old_five_time="$(printf '%s\n' "$oldest_five" | awk '{print $1}')"
+    old_seven_time="$(printf '%s\n' "$oldest_seven" | awk '{print $1}')"
+    old_five="$(printf '%s\n' "$oldest_five" | awk '{print $2}')"
+    old_seven="$(printf '%s\n' "$oldest_seven" | awk '{print $2}')"
+fi
 five_span=$((now - old_five_time))
 seven_span=$((now - old_seven_time))
 
