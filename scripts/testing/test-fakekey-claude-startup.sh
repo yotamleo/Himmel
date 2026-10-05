@@ -98,11 +98,16 @@ if [ -s "$WORK/rel-out/rc" ] && [ -n "$(fakekey_debuglog "$WORK/rel-out")" ]; th
 
 echo "== startup run (leg-impl config, fixture plugin, scrubbed env) =="
 MARK="$WORK/marker"; mkdir -p "$MARK"
+# The plugin's hooks.json is staged from a .tmpl at run time: a tracked hooks.json
+# registering a SessionStart hook trips the ws5 T13(a) always-on lint, and this one
+# is a test subject, not shipped surface.
+PLUGIN="$WORK/startup-plugin"; mkdir -p "$PLUGIN/hooks"
+cp "$HERE/fixtures/startup-plugin/hooks/hooks.json.tmpl" "$PLUGIN/hooks/hooks.json"
 LEAK_CANARY="canary-$$-must-not-leak"
 ANTHROPIC_AUTH_TOKEN="$LEAK_CANARY" CLAUDE_CODE_OAUTH_TOKEN="$LEAK_CANARY" \
   FAKEKEY_EXTRA_ENV="FAKEKEY_MARKER_DIR=$MARK" \
   fakekey_run "$WORK/main" --mcp-config "$WORK/mcp-good.json" --strict-mcp-config \
-  --settings "$PROFILE_CFG" --plugin-dir "$HERE/fixtures/startup-plugin"
+  --settings "$PROFILE_CFG" --plugin-dir "$PLUGIN"
 LOG=$(fakekey_debuglog "$WORK/main")
 if [ -z "$LOG" ]; then fail "main run left no debug log (cat $WORK/main/err.txt)"; head -5 "$WORK/main/err.txt" 2>/dev/null; fi
 
