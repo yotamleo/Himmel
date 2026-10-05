@@ -60,6 +60,10 @@ rc=0; out=$(GIT_CEILING_DIRECTORIES="$tmp" bash "$SCRIPT" --root "$tmp/nogit" 2>
 check "git failure: rc 1 (fail closed)" "$rc" "1"
 contains "git failure: names the failure" "$out" "git tag --list failed"
 
+mkrepo spaced "1.0. 2" v1.0.2-pre.1
+rc=0; out=$(bash "$SCRIPT" --root "$tmp/spaced" 2>&1) || rc=$?
+check "VERSION with internal whitespace: rc 1" "$rc" "1"
+
 mkrepo badver "1.0.2-pre.1" v1.0.2-pre.1
 rc=0; out=$(bash "$SCRIPT" --root "$tmp/badver" 2>&1) || rc=$?
 check "VERSION not bare X.Y.Z: rc 1" "$rc" "1"

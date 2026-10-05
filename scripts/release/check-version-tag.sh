@@ -19,7 +19,8 @@ case "${1:-}" in
     *) echo "usage: check-version-tag.sh [--root <repo>]" >&2; exit 2 ;;
 esac
 
-ver=$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null)
+ver=$(cat "$ROOT/VERSION" 2>/dev/null)   # command substitution drops trailing newlines; internal whitespace fails the regex
+ver="${ver%$'\r'}"
 if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "check-version-tag: VERSION must be bare X.Y.Z (got '$ver')" >&2
     exit 1
