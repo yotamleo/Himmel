@@ -156,9 +156,11 @@ check("ledger: transport ok + parse failure counts the credit, ok=false",
 
 # --- local-headless slot: Scrapling stealth fetcher (HIMMEL-4344) -----------
 class FakePage:
-    def __init__(self, status=200, html="<h1>Real</h1><p>body</p>"):
+    def __init__(self, status=200, html="<h1>Real</h1><p>body</p>", url=None):
         self.status = status
         self.html = html
+        if url is not None:
+            self.url = url
 
 
 class FetchRecorder:
@@ -210,6 +212,8 @@ check("local-headless: jar cookies for the host pass through (live + HttpOnly, n
 sent = {x["name"]: x for x in rec.calls[0][1].get("cookies") or []}
 check("local-headless: #HttpOnly_ cookies keep httpOnly, plain ones do not",
       sent["tok"].get("httpOnly") is True and not sent["sess"].get("httpOnly"))
+check("local-headless: persistent cookies keep their expiry, session cookies are -1",
+      sent["sess"].get("expires") == 9999999999 and sent["tok"].get("expires") == -1)
 check("local-headless: a cookie with a malformed expiry is skipped, not revived as a session cookie",
       "badexp" not in sent)
 check("local-headless: headless stealth fetch, bounded timeout",
@@ -220,17 +224,19 @@ check("local-headless: no cookie sent to a host the jar does not cover", not rec
 check("local-headless: missing cookie dir is no constraint",
       mod.LocalHeadlessClient(cookie_dir=SCRATCH / "nope").scrape("https://example.com/") != "")
 
-for label, r in (("HTTP 403", FetchRecorder(page=FakePage(status=403))),
-                 ("empty markdown", FetchRecorder(page=FakePage(html=""))),
-                 ("fetch error", FetchRecorder(exc=RuntimeError("boom")))):
+for label, r, expect in (("HTTP 403", FetchRecorder(page=FakePage(status=403)), "HTTP 403"),
+                         ("empty markdown", FetchRecorder(page=FakePage(html="")), "empty markdown"),
+                         ("fetch error", FetchRecorder(exc=RuntimeError("boom")), "boom"),
+                         ("redirect to a private host",
+                          FetchRecorder(page=FakePage(url="http://nas.internal/admin")), "private host")):
     install_local(r)
     try:
         mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
         check(f"local-headless: {label} raises (chain falls through)", False)
     except mod.BackendNotImplemented:
         check(f"local-headless: {label} raises (chain falls through)", False)
-    except Exception:
-        check(f"local-headless: {label} raises (chain falls through)", True)
+    except Exception as e:
+        check(f"local-headless: {label} raises (chain falls through)", expect in str(e))
 
 uninstall_local()
 try:

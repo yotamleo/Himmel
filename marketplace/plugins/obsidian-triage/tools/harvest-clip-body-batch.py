@@ -754,7 +754,7 @@ def load_jar_cookies(cookie_dir: Path, url: str, now=None) -> list:
                 continue
             out.append({"name": fld[5], "value": "\t".join(fld[6:]), "domain": fld[0],
                         "path": fld[2] or "/", "secure": fld[3].upper() == "TRUE",
-                        "httpOnly": http_only})
+                        "httpOnly": http_only, "expires": exp if exp else -1})
     return out
 
 
@@ -793,6 +793,11 @@ class LocalHeadlessClient:
             raise BackendNotImplemented("scrapling is not installed")
         page = fetch(url, headless=True, timeout=self.TIMEOUT_MS,
                      cookies=load_jar_cookies(self.cookie_dir, url))
+        # a public URL can redirect onto a private host the pre-fetch gate never saw;
+        # refuse to ingest what that landed on
+        final_host = (urlparse(str(getattr(page, "url", "") or url)).hostname or "").lower()
+        if final_host and _is_private_host(final_host):
+            raise RuntimeError("local-headless: redirected to a private host")
         status = getattr(page, "status", 200)
         if status >= 400:
             raise RuntimeError(f"local-headless: HTTP {status}")
