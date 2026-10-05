@@ -177,7 +177,8 @@ cmd_arm() {
         return 3
     fi
     runner="$RUNNER_DIR/qmd-quality-cadence.sh"
-    entry="${time#*:} ${time%:*} * * $day \"$runner\" # $TASK_NAME"
+    # cron reads an unescaped % as a newline, even inside quotes.
+    entry="${time#*:} ${time%:*} * * $day \"${runner//%/\\%}\" # $TASK_NAME"
     if [ "$dry" -eq 1 ]; then
         echo "DRY qmd-quality-cadence: would write $runner and install: $entry"
         return 0
