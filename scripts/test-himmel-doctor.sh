@@ -5276,6 +5276,7 @@ rm -rf "$t"
 
 echo "== C44: skills collection missing -> FAIL =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/c44-missing.XXXXXX")"
+printf '{"items":[{"id":"qmd-index","desired":true,"severity":"red"}]}' > "$t/status-qmd-on.json"
 cat > "$t/qmd" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1 $2" = "collection list" ]; then
@@ -5285,7 +5286,7 @@ fi
 exit 2
 STUB
 chmod 755 "$t/qmd"
-out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+out="$(DOCTOR_STATUS_JSON="$t/status-qmd-on.json" HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'FAIL C44-skill-index' && grepq "$out" -F 'ensure-skill-index.sh'; then
     pass "C44 missing collection -> FAIL"
 else
@@ -5295,6 +5296,7 @@ rm -rf "$t"
 
 echo "== C44: skills collection empty (0 files) -> FAIL =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/c44-empty.XXXXXX")"
+printf '{"items":[{"id":"qmd-index","desired":true,"severity":"red"}]}' > "$t/status-qmd-on.json"
 cat > "$t/qmd" <<'STUB'
 #!/usr/bin/env bash
 if [ "$1 $2" = "collection list" ]; then
@@ -5304,7 +5306,7 @@ fi
 exit 2
 STUB
 chmod 755 "$t/qmd"
-out="$(HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+out="$(DOCTOR_STATUS_JSON="$t/status-qmd-on.json" HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'FAIL C44-skill-index'; then
     pass "C44 empty collection -> FAIL"
 else
@@ -5328,6 +5330,26 @@ if grepq "$out" 'OK   C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index';
     pass "C44 populated collection -> OK"
 else
     fail "C44 populated collection -> $(printf '%s' "$out" | grep -A1 C44)"
+fi
+rm -rf "$t"
+
+echo "== C44: qmd item not wanted (starter install) -> INFO, no FAIL (HIMMEL-4436) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/c44-off.XXXXXX")" && [ -n "$t" ] || exit 1
+cat > "$t/qmd" <<'STUB'
+#!/usr/bin/env bash
+if [ "$1 $2" = "collection list" ]; then
+    printf 'Collections (1):\n\nhimmel (qmd://himmel/)\n  Files:    527\n'
+    exit 0
+fi
+exit 2
+STUB
+chmod 755 "$t/qmd"
+printf '{"items":[{"id":"qmd-index","desired":false,"severity":"n/a"}]}' > "$t/status-qmd-off.json"
+out="$(DOCTOR_STATUS_JSON="$t/status-qmd-off.json" HIMMEL_DOCTOR_SKILL_INDEX_QMD="$t/qmd" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'INFO C44-skill-index' && ! grepq "$out" 'FAIL C44-skill-index'; then
+    pass "C44 qmd not wanted -> INFO, no FAIL"
+else
+    fail "C44 qmd not wanted -> $(printf '%s' "$out" | grep -A1 C44)"
 fi
 rm -rf "$t"
 
