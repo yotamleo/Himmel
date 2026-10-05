@@ -1,0 +1,7 @@
+{
+  "name": "config-ui-e2e",
+  "private": true,
+  "description": "HIMMEL-4400: Playwright e2e for the config UI. Pinned to 1.63.0 = Chromium build 1243, already in ~/.cache/ms-playwright (no browser download).",
+  "scripts": { "test": "playwright test" },
+  "devDependencies": { "@playwright/test": "1.63.0" }
+}
