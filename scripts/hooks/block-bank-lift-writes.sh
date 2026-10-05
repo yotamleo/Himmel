@@ -1066,13 +1066,15 @@ _note_cd() {
 
 # _cd_abs <cd|pushd|popd> <args...> -> 0 when the target does not go through
 # CDPATH or the dir stack: absolute, ~, ~/..., a $HOME spelling, or bare cd.
+# Any option word (`pushd -n` does not change dir; `-P`, `-e`, ...) is
+# unproven: option-free is the only proven form.
 # shellcheck disable=SC2016,SC2088  # literal ~ and $HOME spellings are matched as text
 _cd_abs() {
     local c="$1"
     shift
     [ "$c" = popd ] && return 1
     while [ $# -gt 0 ]; do
-        case "$1" in --) shift; break ;; -[LPe@]|-n) shift ;; *) break ;; esac
+        case "$1" in --) shift; break ;; -?*) return 1 ;; *) break ;; esac
     done
     case "${1-}" in
         '') [ "$c" = cd ] ;;
@@ -1300,7 +1302,7 @@ check_extract() {
     # Structural fail-closed: with the cwd unproven, no destination (even an
     # absolute one) is judged; split the cd and the extraction into separate
     # commands, or join them only by && at top level.
-    [ "$CWD_UNPROVEN" = 1 ] && deny "$c extracts in a command whose cwd is not provably known (a cd not joined only by && at top level, a cd in a subshell, brace group or nested shell body, or an eval), so it may extract into HOME or ~/.himmel; run the extraction as its own command"
+    [ "$CWD_UNPROVEN" = 1 ] && deny "$c extracts in a command whose cwd is not provably known (a cd not joined only by && at top level, a cd in a subshell, brace group or nested shell body, a cd with an option or a non-absolute target, a || beside a cd, a CDPATH mention, or an eval), so it may extract into HOME or ~/.himmel; run the extraction as its own command"
     # cpio -p copies into its directory operand.
     [ "$pass" = 1 ] && dests+=(${pos[@]+"${pos[@]}"})
     n=${#dests[@]}
@@ -1656,6 +1658,13 @@ WTOK=$(printf '%s' "$CMD" | awk -v STRICT=1 "$TOKENIZER") || deny "command token
 # quotes) may redirect a relative cd: the cwd is unproven. A relative cd
 # target is unproven on its own too, so this is the belt to that brace.
 case "$CMD$WTOK" in *CDPATH*) CWD_UNPROVEN=1 ;; esac
+# A || anywhere beside a cd/pushd/popd: the cd may be skipped (`false && cd
+# /x && true || tar -xf a` extracts in the old cwd). A whole-command flag, not
+# per-clause reasoning; grep -c, not -q (see HAS_CD above).
+case "$CMD" in *'||'*)
+    cd_hits=$(printf '%s\n%s' "$CMD" "$WTOK" | grep -Ec '(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)')
+    case "$cd_hits" in ''|0) ;; *) CWD_UNPROVEN=1 ;; esac ;;
+esac
 if names_lift "$CMD" || names_lift "$WTOK"; then whole_command_gate "$CMD" 0; fi
 analyse "$CMD" 0
 exit 0

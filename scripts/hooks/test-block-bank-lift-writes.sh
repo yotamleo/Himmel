@@ -826,6 +826,14 @@ row "4458 tar -C abs plain (ctrl)"            allow "tar -xf /tmp/x.tar -C /var/
 row "4458 unzip -o -q -d (ctrl)"              allow "unzip -o -q /tmp/x.zip -d /var/out" /var
 row "4458 tar -tf --one-top-level (list, ctrl)" allow "tar -tf x.tar --one-top-level" /var
 row "4458 cd ~/x && tar -C abs (ctrl)"        allow "cd ~/x && tar -xf /tmp/x.tar -C /var/out" /var
+# r8: an option word on cd/pushd/popd (pushd -n does not change dir) and a
+# || anywhere beside a cd (the cd may be skipped) leave the cwd unproven.
+row "4458 pushd -n abs && tar (from HOME)"    deny  "pushd -n /var/w && tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd -P abs && tar (from HOME)"       deny  "cd -P /var/w && tar -xf /tmp/x.tar" "$HOME"
+row "4458 false && cd && true || tar (from HOME)" deny "false && cd /var/w && true || tar -xf /tmp/x.tar" "$HOME"
+row "4458 cd abs && tar -C abs || true"       deny  "cd /var/w && tar -xf /tmp/x.tar -C /var/out || true" /var
+row "4458 tar -C abs || true, no cd (ctrl)"   allow "tar -xf /tmp/x.tar -C /var/out || true" /var
+row "4458 cd abs && tar, from HOME (ctrl)"    allow "cd /var/w && tar -xf /tmp/x.tar" "$HOME"
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"

@@ -2319,6 +2319,13 @@ HIMMEL-4458 closed these gaps:
   computed `$d`, `-`, or a bare `popd`; `~` and `$HOME` count as absolute) is
   unproven too, and so is any command whose text contains `CDPATH` (a plain
   substring test: `CDPATH=~/.himmel cd state && tar -xf a.tar` lands in HOME).
+  Two more whole-command rules: a cd/pushd/popd carrying any option word
+  (`pushd -n /x` does not change dir; `cd -P /x` too) is unproven, since
+  option-free is the only proven form; and a `||` anywhere in a command that
+  also has a cd/pushd/popd makes the cwd unproven, since the cd may be skipped
+  (`false && cd /x && true || tar -xf a` extracts in the old cwd). Over-deny of
+  these two rules vs the previous fence: 0 in every recorded corpus (same
+  corpora as below, both cwds).
 - **Extraction options are allowlisted.** While extracting, any option the
   destination check does not model denies, long or short, bundled letters
   included, so `--one-top-level=DIR`, `--transform`, `-P`/`--absolute-names`,
