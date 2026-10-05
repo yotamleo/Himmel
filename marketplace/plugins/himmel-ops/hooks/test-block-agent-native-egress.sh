@@ -104,6 +104,18 @@ expect 2 "himmel cwd, payload names an ABSOLUTE alias into a phi-roots root -> d
 mkdir -p "$HIMMEL/src/app"
 expect 0 "himmel cwd, payload names an ordinary relative path -> allowed" \
     "$(payload "$TOOL" "$HIMMEL" "restyle src/app/page.tsx and https://example.com/a/b")"
+# Past the path-token cap the hook cannot inspect every path, so it fails
+# closed (CodeRabbit round 3): a PHI alias after 300 filler paths denies.
+filler=""
+i=0
+while [ "$i" -lt 300 ]; do filler="$filler src/app/f$i.tsx"; i=$((i + 1)); done
+expect 2 "PHI alias after more path-like tokens than the cap -> denied (fail closed)" \
+    "$(payload "$TOOL" "$HIMMEL" "restyle$filler then records-alias/patient.md")"
+ten=""
+i=0
+while [ "$i" -lt 10 ]; do ten="$ten src/app/f$i.tsx"; i=$((i + 1)); done
+expect 0 "himmel cwd, payload names 10 ordinary paths -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "restyle$ten")"
 # A list read that fails after the readability check fails closed (round-2
 # codex-3). Staged with a cat stub that fails when handed a file operand.
 mkdir -p "$TMP/stubbin"
@@ -125,6 +137,12 @@ printf '/\n' > "$HOME/.config/claude-glm/phi-roots"
 expect 2 "phi-roots root of / -> every call denied" \
     "$(payload "$TOOL" "$HIMMEL" "make a landing page")"
 rm -f "$HOME/.config/claude-glm/phi-roots"
+# A dangling symlink at the list path is unreadable, not absent (CodeRabbit
+# round 3): it must deny, not be skipped.
+ln -s "$TMP/nowhere/phi-roots" "$HOME/.config/claude-glm/egress-denylist"
+expect 2 "dangling-symlink egress-denylist -> denied (fail closed)" \
+    "$(payload "$TOOL" "$HIMMEL" "make a landing page")"
+rm -f "$HOME/.config/claude-glm/egress-denylist"
 
 # --- tool-name scope ----------------------------------------------------------
 expect 2 "directly-registered agent-native server, salus cwd -> denied" \

@@ -142,9 +142,12 @@ fi
 # Path-like payload tokens (anything with a "/"), resolved against the cwd,
 # walked up to their deepest existing directory and canonicalized, so a
 # symlink alias into a PHI root (or a salus tree) is seen by its real path.
-# ponytail: only the first 64 path-like tokens are resolved, and a token is
-# split on whitespace only; a PHI alias hidden past the cap or inside a word
-# is not resolved. Upgrade path: HIMMEL-4463 (content classifier).
+# More than path_cap path-like tokens fails closed: past the cap not every
+# path could be inspected.
+# ponytail: tokens are split on whitespace only, so a path containing spaces
+# or glued inside a word is not resolved. Upgrade path: HIMMEL-4463
+# (content classifier).
+path_cap=256
 payload_dirs=""
 payload_text=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | strings] | join("\n")' 2>/dev/null) || payload_text=""
 n=0
@@ -152,7 +155,7 @@ set -f
 for tok in $payload_text; do
     case "$tok" in */*) ;; *) continue ;; esac
     n=$((n + 1))
-    [ "$n" -le 64 ] || break
+    [ "$n" -le "$path_cap" ] || deny "the tool payload has more than $path_cap path-like tokens; cannot inspect all"
     while :; do
         case "$tok" in \"*|\'*|\`*|\(*|\<*|\[*) tok="${tok#?}" ;; *) break ;; esac
     done
@@ -181,6 +184,8 @@ set +f
 if [ -n "${HOME:-}" ]; then
     for name in phi-roots egress-denylist; do
         list="$HOME/.config/claude-glm/$name"
+        # A dangling symlink is an unreadable list, not an absent one.
+        if [ -L "$list" ] && [ ! -e "$list" ]; then deny "the PHI root list $list is a dangling symlink (unreadable)"; fi
         [ -e "$list" ] || continue
         { [ -f "$list" ] && [ -r "$list" ]; } || deny "the PHI root list $list is unreadable"
         # Slurp first so a read error after the readability check fails closed.
