@@ -1,0 +1,11 @@
+{
+  "turns": [
+    {
+      "reply": [
+        { "type": "text", "text": "MOCK-TURN-1 running the command." },
+        { "type": "tool_use", "name": "Bash", "input": { "command": "echo mock-tool-output-4411", "description": "echo a marker" } }
+      ]
+    },
+    { "match": "this-text-never-occurs-in-any-request", "reply": { "type": "text", "text": "MOCK-TURN-2 done." } }
+  ]
+}
