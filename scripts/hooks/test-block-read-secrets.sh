@@ -587,7 +587,7 @@ rm -rf "$GLOBDIR"
 # unquoted glob in it expands against cwd like a top-level one does, while a
 # quoted pattern in it stays literal. Wrappers (timeout/nice/sudo with their
 # flags and values) and quoted command words no longer hide the command.
-NESTDIR=$(mktemp -d) || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+NESTDIR=$(mktemp -d "${TMPDIR:-/tmp}/rs-nest.XXXXXX") || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
 : >"$NESTDIR/.env"
 : >"$NESTDIR/rows.tsv"
 run_in_nestdir() { (cd "$NESTDIR" && printf '%s' "$(j_bash "$1")" | bash "$HOOK" >/dev/null 2>&1; echo "$?"); }
