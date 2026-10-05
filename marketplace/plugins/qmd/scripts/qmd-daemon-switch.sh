@@ -28,8 +28,12 @@ case "${1:-}" in
         row="$("${QMD_PS:-ps}" -o args= -p "$pid" 2>/dev/null || true)"
         case "$row" in
           *qmd*mcp*)
-            kill -TERM "$pid" 2>/dev/null
-            echo "qmd-daemon-switch: flag set; sent SIGTERM to daemon pid $pid"
+            if kill -TERM "$pid" 2>/dev/null; then
+              echo "qmd-daemon-switch: flag set; sent SIGTERM to daemon pid $pid"
+            else
+              echo "qmd-daemon-switch: flag set, but could not signal daemon pid $pid (permission?); it may still be running" >&2
+              exit 1
+            fi
             ;;
           *) echo "qmd-daemon-switch: flag set; pid $pid in $pidfile is not a qmd mcp process, left alone" ;;
         esac
