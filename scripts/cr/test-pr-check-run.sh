@@ -75,6 +75,18 @@ CLEAR="$SCRIPT_DIR/clear-cr-marker.sh"
 # shellcheck source=scripts/lib/fixture-tempdir.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/fixture-tempdir.sh"
+
+# Every fixture dir is recorded in FIXTURE_LIST (a file, so a record made inside a
+# subshell survives) and removed by the one EXIT trap (HIMMEL-4434).
+FIXTURE_LIST=$(mktemp "${TMPDIR:-/tmp}/himmel-fixture-list.XXXXXX") || exit 1
+_d=''
+trap 'while IFS= read -r _d; do [ -n "$_d" ] && rm -rf "$_d"; done <"$FIXTURE_LIST"; rm -f "$FIXTURE_LIST"' EXIT
+tracked_fixture_dir() {
+    local d
+    d=$(fixture_mktemp_dir) || return 1
+    printf '%s\n' "$d" >>"$FIXTURE_LIST"
+    printf '%s\n' "$d"
+}
 # shellcheck source=scripts/lib/timeout-bin.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/../lib/timeout-bin.sh"
@@ -92,7 +104,7 @@ CLEAR="$SCRIPT_DIR/clear-cr-marker.sh"
 # make_repo -- a temp git repo with one commit on branch `feat/x`, pushed to a
 # real bare `origin`, with a copy of clear-cr-marker.sh under scripts/cr/.
 make_repo() {
-    tmp=$(fixture_mktemp_dir) || return 1
+    tmp=$(tracked_fixture_dir) || return 1
     (
         fixture_enter_git_init_dir "$tmp" || exit 1
         git init -q -b main .

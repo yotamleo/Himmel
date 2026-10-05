@@ -40,6 +40,18 @@ check() {
 # shellcheck disable=SC1091
 . "$HERE/lib/fixture-tempdir.sh"
 
+# Every fixture dir is recorded in FIXTURE_LIST (a file, so a record made inside a
+# subshell survives) and removed by the one EXIT trap (HIMMEL-4434).
+FIXTURE_LIST=$(mktemp "${TMPDIR:-/tmp}/himmel-fixture-list.XXXXXX") || exit 1
+_d=''
+trap 'while IFS= read -r _d; do [ -n "$_d" ] && rm -rf "$_d"; done <"$FIXTURE_LIST"; rm -f "$FIXTURE_LIST"' EXIT
+tracked_fixture_dir() {
+    local d
+    d=$(fixture_mktemp_dir) || return 1
+    printf '%s\n' "$d" >>"$FIXTURE_LIST"
+    printf '%s\n' "$d"
+}
+
 if ! command -v pre-commit >/dev/null 2>&1; then
   echo "SKIP - the pre-commit COMMAND is not on PATH (a python3 -c 'import pre_commit' pass is not enough: this test invokes bare \`pre-commit\`); cannot exercise the real stash/no-stash hooks"
   exit 0
@@ -140,7 +152,7 @@ run_race() {
 # RED: stock `pre-commit install` (the stash/rollback installer) reverts a
 # concurrent writer's edit to an UNRELATED unstaged tracked file.
 # ---------------------------------------------------------------------------
-R=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate RED fixture dir"; fails=$((fails+1)); }
+R=$(tracked_fixture_dir) || { echo "FAIL - could not allocate RED fixture dir"; fails=$((fails+1)); }
 if [ -n "${R:-}" ]; then
   mk_seed_repo "$R"
   if ! assert_toplevel_is "$R"; then
@@ -166,7 +178,7 @@ fi
 # STILL does not land -- pre-commit's own whole-tree modified-files check
 # fires regardless of the stash mechanism -- but nothing is lost.
 # ---------------------------------------------------------------------------
-G=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate GREEN fixture dir"; fails=$((fails+1)); }
+G=$(tracked_fixture_dir) || { echo "FAIL - could not allocate GREEN fixture dir"; fails=$((fails+1)); }
 if [ -n "${G:-}" ]; then
   mk_seed_repo "$G"
   if ! assert_toplevel_is "$G"; then
@@ -193,7 +205,7 @@ fi
 # Scratch HOME + GIT_CONFIG_NOSYSTEM=1 so this never touches the operator's
 # real ~/.gitconfig or global hooks.
 # ---------------------------------------------------------------------------
-F1_HOME=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate F1 scratch HOME"; fails=$((fails+1)); }
+F1_HOME=$(tracked_fixture_dir) || { echo "FAIL - could not allocate F1 scratch HOME"; fails=$((fails+1)); }
 if [ -n "${F1_HOME:-}" ]; then
   F1_GLOBAL_HOOKS="$F1_HOME/global-hooks"
   mkdir -p "$F1_GLOBAL_HOOKS"
@@ -240,7 +252,7 @@ fi
 # `mapfile` (bash >=4.4 only). Simulate stock macOS bash 3.2 by disabling the
 # builtin via BASH_ENV, the same technique the judge used.
 # ---------------------------------------------------------------------------
-F3=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate F3 fixture dir"; fails=$((fails+1)); }
+F3=$(tracked_fixture_dir) || { echo "FAIL - could not allocate F3 fixture dir"; fails=$((fails+1)); }
 if [ -n "${F3:-}" ]; then
   mk_seed_repo "$F3"
   if ! assert_toplevel_is "$F3"; then
@@ -249,6 +261,7 @@ if [ -n "${F3:-}" ]; then
   else
     (cd "$F3" && bash "$F3/scripts/hooks/install-nostash-hooks.sh" >/dev/null) || { echo "FAIL - F3 install-nostash-hooks.sh failed"; fails=$((fails+1)); }
     f3_bashenv=$(mktemp "${TMPDIR:-/tmp}/himmel-f3-bashenv.XXXXXX") || { echo "FAIL - could not allocate F3 BASH_ENV file"; fails=$((fails+1)); }
+    printf '%s\n' "$f3_bashenv" >>"$FIXTURE_LIST"
     # "mapfile" here is a string literal disabling the builtin via BASH_ENV
     # (the bash-3.2 simulation) -- not an actual mapfile call in this script.
     printf 'enable -n mapfile\n' > "$f3_bashenv"
@@ -268,7 +281,7 @@ fi
 # PATH, then commit with pre-commit AND a working `pre_commit` module both
 # off the PATH -- the baked-at-install-time interpreter must still work.
 # ---------------------------------------------------------------------------
-F4=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate F4 fixture dir"; fails=$((fails+1)); }
+F4=$(tracked_fixture_dir) || { echo "FAIL - could not allocate F4 fixture dir"; fails=$((fails+1)); }
 if [ -n "${F4:-}" ]; then
   mk_seed_repo "$F4"
   if ! assert_toplevel_is "$F4"; then
@@ -277,6 +290,7 @@ if [ -n "${F4:-}" ]; then
   else
     (cd "$F4" && bash "$F4/scripts/hooks/install-nostash-hooks.sh" >/dev/null) || { echo "FAIL - F4 install-nostash-hooks.sh failed"; fails=$((fails+1)); }
     f4_minbin=$(mktemp -d "${TMPDIR:-/tmp}/himmel-f4-minbin.XXXXXX") || { echo "FAIL - could not allocate F4 minbin"; fails=$((fails+1)); }
+    printf '%s\n' "$f4_minbin" >>"$FIXTURE_LIST"
     # ssh-keygen: not part of what's under test (pre-commit resolution), but
     # this host signs commits (commit.gpgsign=true, gpg.format=ssh) and git
     # itself needs it on PATH for ANY commit, restricted or not.
@@ -326,7 +340,7 @@ mk_c1_repo() {
 }
 
 # E8a: --allow-empty commit with an UNSTAGED edit to a tracked .json.
-C1A=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate C1a fixture dir"; fails=$((fails+1)); }
+C1A=$(tracked_fixture_dir) || { echo "FAIL - could not allocate C1a fixture dir"; fails=$((fails+1)); }
 if [ -n "${C1A:-}" ]; then
   mk_c1_repo "$C1A"
   printf '{"k": 2}   ' > "$C1A/20-Areas/settings.json"
@@ -343,7 +357,7 @@ fi
 
 # E8b: deletion-only commit next to an UNRELATED tracked file with a
 # pre-existing (already-committed) JSON violation.
-C1B=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate C1b fixture dir"; fails=$((fails+1)); }
+C1B=$(tracked_fixture_dir) || { echo "FAIL - could not allocate C1b fixture dir"; fails=$((fails+1)); }
 if [ -n "${C1B:-}" ]; then
   mk_c1_repo "$C1B"
   printf '{not json\n' > "$C1B/40-Archive/legacy.json"
@@ -376,11 +390,12 @@ fi
 # every real git operation alone except `rev-parse --show-toplevel`, whose
 # output it re-spells with a `C:` prefix, exactly like Git-Bash would.
 # ---------------------------------------------------------------------------
-C2=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate C2 fixture dir"; fails=$((fails+1)); }
+C2=$(tracked_fixture_dir) || { echo "FAIL - could not allocate C2 fixture dir"; fails=$((fails+1)); }
 if [ -n "${C2:-}" ]; then
   mk_seed_repo "$C2"
   real_git=$(command -v git)
   c2_stub_bin="$C2.stubbin"
+  printf '%s\n' "$c2_stub_bin" >>"$FIXTURE_LIST"
   mkdir -p "$c2_stub_bin"
   {
     printf '#!/usr/bin/env bash\n'
@@ -433,7 +448,7 @@ mk_argv_repo() {
   git -C "$dir" commit -qm seed --no-verify
   (cd "$dir" && bash "$dir/scripts/hooks/install-nostash-hooks.sh" >/dev/null 2>&1)
 }
-I1=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate I1 fixture dir"; fails=$((fails+1)); }
+I1=$(tracked_fixture_dir) || { echo "FAIL - could not allocate I1 fixture dir"; fails=$((fails+1)); }
 if [ -n "${I1:-}" ]; then
   mk_argv_repo "$I1"
   i1_dir="$I1/30-Resources/a-reasonably-long-folder-name-for-bulk-imported-web-clippings-2026"
@@ -463,10 +478,11 @@ fi
 # follow it and write the generated hook wherever it points -- possibly
 # outside the vault.
 # ---------------------------------------------------------------------------
-CODEX1=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate codex-1 fixture dir"; fails=$((fails+1)); }
+CODEX1=$(tracked_fixture_dir) || { echo "FAIL - could not allocate codex-1 fixture dir"; fails=$((fails+1)); }
 if [ -n "${CODEX1:-}" ]; then
   mk_seed_repo "$CODEX1"
   codex1_outside_target="$CODEX1.outside-pre-commit"
+  printf '%s\n' "$codex1_outside_target" >>"$FIXTURE_LIST"
   ln -s "$codex1_outside_target" "$CODEX1/.git/hooks/pre-commit"
   codex1_out=$(bash "$CODEX1/scripts/hooks/install-nostash-hooks.sh" 2>&1)
   codex1_rc=$?
@@ -493,10 +509,11 @@ fi
 # alone do not cover this: the fix must stop the write itself from ever
 # following a symlink at the hook path.
 # ---------------------------------------------------------------------------
-R10C1=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate r10-codex-1 fixture dir"; fails=$((fails+1)); }
+R10C1=$(tracked_fixture_dir) || { echo "FAIL - could not allocate r10-codex-1 fixture dir"; fails=$((fails+1)); }
 if [ -n "${R10C1:-}" ]; then
   mk_seed_repo "$R10C1"
   r10c1_outside_target="$R10C1.outside-pre-commit"
+  printf '%s\n' "$r10c1_outside_target" >>"$FIXTURE_LIST"
   printf '#!/usr/bin/env bash\n# Generated by scripts/hooks/install-nostash-hooks.sh -- do not edit by hand.\necho someone elses content\n' > "$r10c1_outside_target"
   r10c1_before_sha=$(git hash-object --no-filters "$r10c1_outside_target")
   ln -s "$r10c1_outside_target" "$R10C1/.git/hooks/pre-commit"
@@ -523,7 +540,7 @@ fi
 # PRIOR install, silently losing the original hook it protected. The fix
 # must refuse rather than overwrite an existing backup.
 # ---------------------------------------------------------------------------
-R10C2=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate r10-codex-2 fixture dir"; fails=$((fails+1)); }
+R10C2=$(tracked_fixture_dir) || { echo "FAIL - could not allocate r10-codex-2 fixture dir"; fails=$((fails+1)); }
 if [ -n "${R10C2:-}" ]; then
   mk_seed_repo "$R10C2"
   printf '#!/bin/sh\necho foreign hook\n' > "$R10C2/.git/hooks/pre-commit"
@@ -546,7 +563,7 @@ fi
 # leaving the repo with NEITHER hook installed. The fix must check BOTH
 # paths before moving EITHER.
 # ---------------------------------------------------------------------------
-R11C1=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate r11-codex-1 fixture dir"; fails=$((fails+1)); }
+R11C1=$(tracked_fixture_dir) || { echo "FAIL - could not allocate r11-codex-1 fixture dir"; fails=$((fails+1)); }
 if [ -n "${R11C1:-}" ]; then
   mk_seed_repo "$R11C1"
   printf '#!/bin/sh\necho foreign pre-commit\n' > "$R11C1/.git/hooks/pre-commit"
@@ -583,7 +600,7 @@ fi
 # with no backup. The fix must require an EXACT line-2 match, not a grep hit
 # anywhere in the file.
 # ---------------------------------------------------------------------------
-R11C2=$(fixture_mktemp_dir) || { echo "FAIL - could not allocate r11-codex-2 fixture dir"; fails=$((fails+1)); }
+R11C2=$(tracked_fixture_dir) || { echo "FAIL - could not allocate r11-codex-2 fixture dir"; fails=$((fails+1)); }
 if [ -n "${R11C2:-}" ]; then
   mk_seed_repo "$R11C2"
   printf '#!/bin/sh\necho real foreign logic\n# (quoting for reference) Generated by scripts/hooks/install-nostash-hooks.sh -- do not edit by hand.\necho more foreign logic\n' > "$R11C2/.git/hooks/pre-commit"

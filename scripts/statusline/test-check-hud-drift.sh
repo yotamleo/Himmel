@@ -24,6 +24,18 @@ SCRIPT="$STATUSLINE/check-hud-drift.sh"
 # shellcheck disable=SC1091
 . "$STATUSLINE/../lib/fixture-tempdir.sh"
 
+# Every fixture dir is recorded in FIXTURE_LIST (a file, so a record made inside a
+# subshell survives) and removed by the one EXIT trap (HIMMEL-4434).
+FIXTURE_LIST=$(mktemp "${TMPDIR:-/tmp}/himmel-fixture-list.XXXXXX") || exit 1
+_d=''
+trap 'while IFS= read -r _d; do [ -n "$_d" ] && rm -rf "$_d"; done <"$FIXTURE_LIST"; rm -f "$FIXTURE_LIST"' EXIT
+tracked_fixture_dir() {
+    local d
+    d=$(fixture_mktemp_dir) || return 1
+    printf '%s\n' "$d" >>"$FIXTURE_LIST"
+    printf '%s\n' "$d"
+}
+
 HUD_REL="marketplace/plugins/claude-hud"
 
 # setup_repo: temp git repo WITH .himmel-dev + a small fixture vendored tree.
@@ -33,7 +45,7 @@ HUD_REL="marketplace/plugins/claude-hud"
 # VENDORED.mdx (must NOT be swallowed by the VENDORED.md exclude). himmel-owned:
 # VENDORED.md, .gitignore, config/himmel-config.json.
 setup_repo() {
-  R=$(fixture_mktemp_dir) || return 1; git -C "$R" init -q
+  R=$(tracked_fixture_dir) || return 1; git -C "$R" init -q
   git -C "$R" config user.email t@t; git -C "$R" config user.name t
   : > "$R/.himmel-dev"
   mkdir -p "$R/$HUD_REL/dist" "$R/$HUD_REL/config"
@@ -148,7 +160,7 @@ run_test "HUD_DRIFT_OK=1 bypasses -> rc=0" '
 '
 
 run_test "outside a git repo -> rc=2 (fail-closed)" '
-  cd "$(mktemp -d)";
+  cd "$(tracked_fixture_dir)";
   expect_rc 2 bash "$SCRIPT"
 '
 
