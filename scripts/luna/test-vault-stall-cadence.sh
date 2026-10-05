@@ -49,9 +49,10 @@ files=()
 while IFS= read -r f; do files+=("$f"); done < <(git diff --cached --name-only --diff-filter=ACMR)
 [ "${#files[@]}" -eq 0 ] && exit 0
 excl() { awk -v id="$1" '
+    blk { sub(/^[ \t]*/, ""); print; exit }
     $0 ~ "- id: "id"$" { on = 1; next }
     /- id: / { on = 0 }
-    on && /exclude:/ { sub(/^[^:]*:[ \t]*/, ""); gsub(/^'\''|'\''$/, ""); print; exit }
+    on && /exclude:/ { sub(/^[^:]*:[ \t]*/, ""); gsub(/^'\''|'\''$/, ""); if ($0 ~ /^[|>]/) { blk = 1; next } print; exit }
 ' .pre-commit-config.yaml; }
 skipped() { case ",${SKIP:-}," in *",$1,"*) return 0 ;; esac; return 1; }
 rc=0
@@ -425,6 +426,69 @@ assert_eq "T19 commit holds ONLY the gitleaks config" ".gitleaks.toml " "$(head_
 assert_eq "T19 the regex sits after the [allowlist] header" "yes" \
     "$(awk '/^\[allowlist\]/ { a = NR } /pid\[0-9\]\+/ { r = NR } END { print (a && r > a) ? "yes" : "no" }' "$V/.gitleaks.toml")"
 assert_eq "T19 the hook now passes" "0" "$(hook_rc)"
+
+# --- T20 an empty exclude becomes the canonical one alone (round 4, codex-1) --
+# '^handovers/|' would carry an empty alternative that matches every path.
+mkvault
+awk -v l="        exclude: ''" '/verdicts\|logs/ { print l; next } { print }' "$V/.pre-commit-config.yaml" >"$TMP/empty.yaml"
+cp "$TMP/empty.yaml" "$V/.pre-commit-config.yaml"
+git -C "$V" add .pre-commit-config.yaml
+GIT_COMMITTER_DATE="@$(($(date +%s) - 7200)) +0000" GIT_AUTHOR_DATE="@$(($(date +%s) - 7200)) +0000" \
+    git -C "$V" commit -q -m "fixture: empty shellcheck exclude"
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+out="$(run_sut)"; rc=$?
+assert_eq "T20 run exits 0" "0" "$rc"
+assert_has "T20 exclude is the canonical alternative alone" "exclude: '^handovers/'" "$(cat "$V/.pre-commit-config.yaml")"
+assert_not_has "T20 no empty alternative" "^handovers/|'" "$(cat "$V/.pre-commit-config.yaml")"
+
+# --- T21 a block-scalar exclude is not hand-edited: alert, no commit ----------
+mkvault
+awk '/verdicts\|logs/ { print "        exclude: |"; print "          ^handovers/.*/(verdicts|logs)/"; next } { print }' \
+    "$V/.pre-commit-config.yaml" >"$TMP/block.yaml"
+cp "$TMP/block.yaml" "$V/.pre-commit-config.yaml"
+git -C "$V" add .pre-commit-config.yaml
+GIT_COMMITTER_DATE="@$(($(date +%s) - 7200)) +0000" GIT_AUTHOR_DATE="@$(($(date +%s) - 7200)) +0000" \
+    git -C "$V" commit -q -m "fixture: block-scalar shellcheck exclude"
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+before="$(head_sha)"
+out="$(run_sut)"
+assert_eq "T21 no commit" "$before" "$(head_sha)"
+assert_has "T21 alerts cannot-edit" "cannot-edit" "$(sent)"
+
+# --- T22 a config edited during the run is not committed (round 4, codex-2) ---
+mkvault
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+mv "$V/.git/hooks/pre-commit" "$V/.git/hooks/pre-commit.real"
+cat >"$V/.git/hooks/pre-commit" <<'HOOK'
+#!/usr/bin/env bash
+# On its first pass, another writer edits the config; the hook still passes.
+"$(git rev-parse --git-dir)/hooks/pre-commit.real" || exit $?
+sim="$(git rev-parse --git-dir)/sim-edit"
+if [ -e "$sim" ]; then
+    rm -f "$sim"
+    printf '# concurrent edit\n' >>.pre-commit-config.yaml
+fi
+exit 0
+HOOK
+chmod +x "$V/.git/hooks/pre-commit"
+: >"$V/.git/sim-edit"
+before="$(head_sha)"
+out="$(run_sut)"
+assert_eq "T22 no commit" "$before" "$(head_sha)"
+assert_has "T22 alerts the mid-run change" "config-changed-during-run" "$(sent)"
+assert_has "T22 the concurrent edit survives" "# concurrent edit" "$(cat "$V/.pre-commit-config.yaml")"
+
+# --- T23 a '%' in the runner path is escaped for cron (round 4, codex-3) ------
+rm -f "$TMP/cron.tab"
+out="$(HOME="$TMP/home" VAULT_STALL_CRONTAB="$TMP/crontab" VAULT_STALL_RUNNER_DIR="$TMP/run%dir" \
+    HIMMEL_OBSERVABILITY_CONFIG="$TMP/obs.json" bash "$SUT" arm --vault "$TMP/v1" 2>&1)"; rc=$?
+assert_eq "T23 arm exits 0" "0" "$rc"
+assert_has "T23 cron row escapes the percent sign" 'run\%dir' "$(cat "$TMP/cron.tab")"
+HOME="$TMP/home" VAULT_STALL_CRONTAB="$TMP/crontab" VAULT_STALL_RUNNER_DIR="$TMP/run%dir" \
+    HIMMEL_OBSERVABILITY_CONFIG="$TMP/obs.json" bash "$SUT" disarm >/dev/null 2>&1
 
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi

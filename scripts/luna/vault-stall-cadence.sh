@@ -167,12 +167,14 @@ yaml_exclude() {
             if (on && ($0 ~ /^[ \t]*- (id|repo):/ || $0 ~ /^[^ \t]/)) { flush_insert(); on = 0 }
             if (on && !done && $0 ~ /^[ \t]*exclude:/) {
                 v = $0; sub(/^[ \t]*exclude:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v)
-                if (v ~ /^".*"$/) { bad = 1 }
+                if (v ~ /^".*"$/ || v ~ /^[|>]/) { bad = 1 }
                 else if (v ~ /^'\''.*'\''$/) { v = substr(v, 2, length(v) - 2) }
                 if (index(v, "'\''")) bad = 1
                 done = 1
                 if (v == canon || index(v, canon "|") == 1) { same = 1; print; next }
-                if (!bad) { print pad "exclude: '\''" canon "|" v "'\''"; changed = 1; next }
+                # An empty exclude takes the canonical regex alone: "canon|" would add
+                # an empty alternative that matches every path.
+                if (!bad) { print pad "exclude: '\''" canon (v == "" ? "" : "|" v) "'\''"; changed = 1; next }
             }
             print
         }
@@ -269,7 +271,7 @@ cmd_run() {
     done
 
     # Plan every edit into a scratch copy first; nothing is live until all succeed.
-    local work rc files="" f re
+    local work rc files="" f re wf
     work="$(mktemp -d "${TMPDIR:-/tmp}/vault-stall.XXXXXX")" || return 2
     cp "$vault/.pre-commit-config.yaml" "$work/yaml" 2>/dev/null
     cp "$vault/.gitleaks.toml" "$work/toml" 2>/dev/null
@@ -321,6 +323,14 @@ cmd_run() {
     if ! (cd "$vault" && SKIP="$SKIP_FIXERS" git hook run pre-commit </dev/null >/dev/null 2>&1); then
         rollback; rm -rf "$work"; alert "still-refused-after-remediation $classes (rolled back)" 0; return 0
     fi
+    # Another writer may have changed a config file since it was written: never
+    # commit someone else's edit under this cadence's name.
+    for f in $files; do
+        case "$f" in .pre-commit-config.yaml) wf="$work/yaml" ;; .gitleaks.toml) wf="$work/toml" ;; esac
+        if ! cmp -s "$wf" "$vault/$f"; then
+            rm -rf "$work"; alert "config-changed-during-run $f (not committed)" 0; return 0
+        fi
+    done
     # shellcheck disable=SC2086  # $files is a space-separated list of fixed names
     if ! SKIP="$SKIP_FIXERS" git -C "$vault" commit -q --only -m "chore(vault): [HIMMEL-4471] remediate stall class ${classes// /, }" -- $files >/dev/null 2>&1; then
         # The vault sync shares no lock with this run: it may have staged and
@@ -379,7 +389,8 @@ cmd_arm() {
         return 3
     fi
     runner="$RUNNER_DIR/vault-stall-cadence.sh"
-    entry="*/15 * * * * \"$runner\" # $TASK_NAME"
+    local pct='%'
+    entry="*/15 * * * * \"${runner//"$pct"/\\%}\" # $TASK_NAME"   # cron reads a bare % as a newline
     if [ "$dry" -eq 1 ]; then
         echo "DRY vault-stall: would write $runner and install: $entry"
         return 0
