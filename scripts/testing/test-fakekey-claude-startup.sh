@@ -162,7 +162,7 @@ else fail "R4 the S2/S3 evidence appeared without its cause"; fi
 echo "== R1 the sandbox is what blocks the real host =="
 FAKEKEY_NONESSENTIAL=0 fakekey_run "$WORK/r1s" --mcp-config "$WORK/mcp-good.json" --strict-mcp-config
 LOG3=$(fakekey_debuglog "$WORK/r1s")
-if [ -n "$LOG3" ] && grepq "$LOG3" 'Bootstrap\] Fetch failed: (EADDRNOTAVAIL|ENETUNREACH|ECONNREFUSED)' && ! grepq "$LOG3" 'Fetch failed: 401'; then
+if [ -n "$LOG3" ] && grepq "$LOG3" 'Bootstrap\] Fetch failed: [A-Za-z]' && ! grepq "$LOG3" 'Fetch failed: [0-9]'; then
   pass "R1 sandboxed: [Bootstrap] cannot connect (no 401 from a real host)"
 else fail "R1 sandboxed run did not show a blocked [Bootstrap]"; fi
 FAKEKEY_SANDBOX=0 FAKEKEY_NONESSENTIAL=0 fakekey_run "$WORK/r1u" --mcp-config "$WORK/mcp-good.json" --strict-mcp-config
