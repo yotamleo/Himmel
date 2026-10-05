@@ -83,6 +83,9 @@ if [ "$rc" = 2 ] && [ ! -e "$WORK/r3/rc" ]; then pass "R3 non-loopback ANTHROPIC
 FAKEKEY_SANDBOX=2 fakekey_run "$WORK/r3b" >/dev/null 2>&1
 rc=$?
 if [ "$rc" = 2 ] && [ ! -e "$WORK/r3b/rc" ]; then pass "R3 FAKEKEY_SANDBOX other than 0/1 refused (fail closed)"; else fail "R3 bad FAKEKEY_SANDBOX not refused (rc=$rc)"; fi
+FAKEKEY_BASE_URL='http://localhost:9@api.anthropic.com' fakekey_run "$WORK/r3c" >/dev/null 2>&1
+rc=$?
+if [ "$rc" = 2 ] && [ ! -e "$WORK/r3c/rc" ]; then pass "R3 userinfo URL (real host after @) refused"; else fail "R3 userinfo URL not refused (rc=$rc)"; fi
 (cd "$WORK" && fakekey_run rel-out --mcp-config "$WORK/mcp-good.json" --strict-mcp-config)
 if [ -s "$WORK/rel-out/rc" ] && [ -n "$(fakekey_debuglog "$WORK/rel-out")" ]; then pass "R3 relative outdir resolves to absolute (artifacts land under it)"; else fail "R3 relative outdir broke the run's artifacts"; fi
 
@@ -102,7 +105,10 @@ if [ -n "$LOG" ] && assert_mcp_connected "$LOG" $SERVERS; then pass "S1 [$SERVER
 
 echo "== S2 plugin + hook =="
 if [ -f "$MARK/session-start-hook-ran" ]; then pass "S2 fixture plugin SessionStart hook ran (marker on disk)"; else fail "S2 hook marker absent"; fi
-if [ -f "$MARK/hook-env.txt" ] && ! grepq "$MARK/hook-env.txt" "$LEAK_CANARY|^HOME=$HOME\$"; then
+# Literal compares (-F): $HOME may hold regex metacharacters; rc 1 = no match, rc 2 = grep error.
+grep -qF -- "$LEAK_CANARY" "$MARK/hook-env.txt" 2>/dev/null; canary_rc=$?
+grep -qxF -- "HOME=$HOME" "$MARK/hook-env.txt" 2>/dev/null; home_rc=$?
+if [ -f "$MARK/hook-env.txt" ] && [ "$canary_rc" = 1 ] && [ "$home_rc" = 1 ]; then
   pass "S2 hook env carries no operator token and a scratch HOME"
 else fail "S2 operator env leaked into the session"; fi
 if [ -f "$MARK/hook-env.txt" ] && grepq "$MARK/hook-env.txt" "^ANTHROPIC_API_KEY=$FAKEKEY_KEY\$" \

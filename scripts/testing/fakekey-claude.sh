@@ -38,6 +38,9 @@ FAKEKEY_KEY="sk-ant-fake-000000000000"
 # fakekey_loopback_url <url> — success only for http(s)://127.x / localhost / [::1].
 fakekey_loopback_url() {
   case "$1" in
+    *@*) return 1 ;; # userinfo (http://localhost:9@evil): the real host is after the @
+  esac
+  case "$1" in
     http://127.0.0.1 | http://127.0.0.1[:/]* | https://127.0.0.1 | https://127.0.0.1[:/]*) return 0 ;;
     http://localhost | http://localhost[:/]* | https://localhost | https://localhost[:/]*) return 0 ;;
     'http://[::1]' | 'http://[::1]'[:/]*) return 0 ;;
