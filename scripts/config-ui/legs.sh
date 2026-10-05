@@ -28,7 +28,7 @@ root=$(cd "$anchor" && handover_root 2>/dev/null) || { echo "legs: no handover r
 best=""
 while IFS= read -r f; do
     if [ -z "$best" ] || [ "$f" -nt "$best" ]; then best="$f"; fi
-done < <(find "$root" -maxdepth 4 -type f -name '*.fleet.json' 2>/dev/null)
+done < <(find "$root" -maxdepth 4 -type f -name '*.fleet.json' 2>/dev/null) # gnu-ok: BSD find also supports -maxdepth
 
 if [ -z "$best" ]; then
     echo '{"manifest": null, "legs": []}'
