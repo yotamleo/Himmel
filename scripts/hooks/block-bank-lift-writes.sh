@@ -234,6 +234,8 @@ esac
 
 # ------------------------------------------------------------------ Bash ---
 CMD=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null) || deny "unreadable command (fail-closed)"
+# CRLF text must not hide a target: strip CRs at the capture boundary.
+CMD="${CMD//$'\r'/}"
 [ -n "$CMD" ] || exit 0
 
 # Tokenizer: shell text -> one CLAUSE per output line, tokens joined by \037,
