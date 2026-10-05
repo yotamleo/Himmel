@@ -2364,6 +2364,14 @@ canonical anchored fence is exempt only in its exact shape; only its echo text
 may vary. Classification uses bash builtins only, so a missing tool cannot turn
 it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.
 
+**Nested `env -S` (HIMMEL-4491).** The `env -S` split-string test also reads
+inside a nested shell body. A `bash -c '…'` (or `sh`, `zsh`, `dash`, `ksh`,
+`mksh`) body or the words after `eval` are one quoted word to the outer scan, so
+an `env -S '… \c'` inside them was no word of it. Each such body is joined and run
+through the same test, recursively, so `bash -c "env -S 'bash scripts/cr/… \c'"`
+denies like the unnested form. `su -c`, `script -c`, `watch` and a body held in
+a variable or read from stdin are not re-read (the hook's `ponytail:`).
+
 **Write-channel backstop (HIMMEL-3913, HIMMEL-3917).** Before any of the above,
 the hook reads the raw text. The inert drop and the here-string reader exemption
 (HIMMEL-1813) both let text that names a target pass as data. That text can
