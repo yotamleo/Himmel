@@ -19,6 +19,14 @@
 #   BANK_STATE_FILE  emission state; its .samples sibling is the sample ring
 #   REPO             checkout containing scripts/lanes/bank-status.ts
 #
+# HIMMEL-4421: the BANK line also carries seven_day_reset_in=<h>h and
+# unspent_at_reset=<pct> = max(0, 100 - (seven_day + seven_day_rate x reset_in)),
+# the weekly quota the current burn leaves unspent at the reset (advisory only;
+# it gates nothing). Either reads ? when the rate or resets_at is unknown or the
+# reset is already past. `--spare` records the sample like a normal run but
+# prints only those two fields every time and touches no emission state, so the
+# console tick can read them without swallowing a state-change line.
+#
 # PLATFORM GUARD: no .ps1 twin, by design. This is Bash 3.2-compatible and is
 # consumed by the Linux console kit; its codex-bank reader is the Bun CLI.
 set -uo pipefail
@@ -26,6 +34,8 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${REPO:-$(cd "$HERE/../.." && pwd)}"
 BANK_CACHE_FILE="${BANK_CACHE_FILE:-/tmp/claude/statusline-usage-cache.json}"
+spare_only=0
+[ "${1:-}" = "--spare" ] && spare_only=1
 
 if [ -n "${BANK_STATE_FILE:-}" ]; then
     state_file="$BANK_STATE_FILE"
@@ -49,6 +59,11 @@ valid_pct() {
 }
 valid_pct "$five" || exit 0
 valid_pct "$seven" || exit 0
+# resets_at is an ISO-8601 UTC string in the real cache (fractional seconds and a
+# +00:00 offset); a bare epoch is accepted too. Anything else reads as unknown.
+seven_reset_epoch="$(jq -r '.seven_day.resets_at | if type == "number" then floor elif type == "string" then (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | try fromdateiso8601 catch empty) else empty end' "$BANK_CACHE_FILE" 2>/dev/null)" || seven_reset_epoch=""
+case "$seven_reset_epoch" in ''|*[!0-9]*) seven_reset_epoch="" ;; esac
+real_now="$now"
 
 # HIMMEL-1712: a cache stamped by a different account is the same
 # can't-trust-this-number case valid_pct's own failures above already
@@ -141,6 +156,7 @@ seven_span=$((now - old_seven_time))
 
 five_rate=0.0
 seven_rate=0.0
+seven_rate_raw=""
 five_ttc='?'
 seven_ttc='?'
 if [ "$five_span" -gt 0 ]; then
@@ -156,6 +172,17 @@ if [ "$seven_span" -gt 0 ]; then
     if awk -v rate="$seven_rate_raw" 'BEGIN { exit !(rate > 0) }'; then
         seven_ttc="$(awk -v current="$seven" -v rate="$seven_rate_raw" 'BEGIN { value=(100-current)/rate; if (value < 0) value=0; printf "%.1f", value }')"
     fi
+fi
+
+reset_in='?'
+unspent='?'
+if [ -n "$seven_reset_epoch" ] && [ -n "$seven_rate_raw" ] && [ "$seven_reset_epoch" -gt "$real_now" ]; then
+    reset_in="$(awk -v reset="$seven_reset_epoch" -v now="$real_now" 'BEGIN { printf "%.1fh", (reset - now) / 3600 }')"
+    unspent="$(awk -v seven="$seven" -v rate="$seven_rate_raw" -v reset="$seven_reset_epoch" -v now="$real_now" 'BEGIN { value = 100 - (seven + rate * (reset - now) / 3600); if (value < 0) value = 0; printf "%.1f", value }')"
+fi
+if [ "$spare_only" -eq 1 ]; then
+    printf 'seven_day_reset_in=%s unspent_at_reset=%s\n' "$reset_in" "$unspent"
+    exit 0
 fi
 
 ttc='?'
@@ -190,7 +217,7 @@ if [ -n "$codex_five" ] || [ -n "$codex_seven" ]; then
 fi
 
 if [ "$emit" -eq 1 ]; then
-    printf 'BANK %s rate five_hour=+%s/h seven_day=+%s/h ttc=%sh state=%s five_hour_ttc=%sh seven_day_ttc=%sh codex=%s\n' \
-        "$clock" "$five_rate" "$seven_rate" "$ttc" "$state" "$five_ttc" "$seven_ttc" "$codex"
+    printf 'BANK %s rate five_hour=+%s/h seven_day=+%s/h ttc=%sh state=%s five_hour_ttc=%sh seven_day_ttc=%sh codex=%s seven_day_reset_in=%s unspent_at_reset=%s\n' \
+        "$clock" "$five_rate" "$seven_rate" "$ttc" "$state" "$five_ttc" "$seven_ttc" "$codex" "$reset_in" "$unspent"
 fi
 exit 0

@@ -51,6 +51,12 @@ TICK_UNDERFILL_MIN minutes (default 10); capacity=ok otherwise, capacity=unknown
 when fleet=?. TICK_LAUNCH_DIR overrides the console work dir the launch logs
 are read from.
 
+spare=<pct>@<h>h (HIMMEL-4421) is the very last field and is ABSENT unless the
+weekly quota the current burn leaves unspent at the reset (bank-monitor.sh
+--spare) is >= TICK_SPARE_MIN percent (default 10) and the reset is <=
+TICK_SPARE_HOURS hours away (default 24). Advisory: it is not in console-wait's
+action key and wakes nothing.
+
 gql=<remaining>/<reset HH:MM> (HIMMEL-3197): the GitHub GraphQL budget, read from
 the X-Ratelimit-* headers of ONE `gh api -i graphql` call
 (gh-graphql-budget.sh ghb_read); gql=? when the headers cannot be read.
@@ -1037,6 +1043,24 @@ else
 fi
 bank="5h${fh}/wk${wk}/codex=${codex}"
 
+# HIMMEL-4421: spare=<pct>@<h>h -- weekly quota the current burn leaves unspent
+# at the reset (bank-monitor.sh --spare). Shown only when the spare is >=
+# TICK_SPARE_MIN percent (default 10) and the reset is <= TICK_SPARE_HOURS hours
+# away (default 24); otherwise the field is absent. Advisory only: console-wait's
+# action key is a field whitelist that does not name spare=, so it never wakes.
+spare_min="${TICK_SPARE_MIN:-10}"
+spare_hours="${TICK_SPARE_HOURS:-24}"
+case "$spare_min" in ''|*[!0-9]*) spare_min=10 ;; esac
+case "$spare_hours" in ''|*[!0-9]*) spare_hours=24 ;; esac
+spare_tail=""
+spare_out="$(BANK_CACHE_FILE="$bank_cache" bash "$REPO/scripts/lib/bank-monitor.sh" --spare 2>/dev/null)" || spare_out=""
+spare_in="$(printf '%s\n' "$spare_out" | sed -n 's/.*seven_day_reset_in=\([0-9][0-9.]*\)h.*/\1/p')"
+spare_pct="$(printf '%s\n' "$spare_out" | sed -n 's/.*unspent_at_reset=\([0-9][0-9.]*\).*/\1/p')"
+if [ -n "$spare_in" ] && [ -n "$spare_pct" ] \
+   && awk -v p="$spare_pct" -v h="$spare_in" -v pm="$spare_min" -v hm="$spare_hours" 'BEGIN { exit !(p + 0 >= pm + 0 && h + 0 <= hm + 0) }'; then
+    spare_tail=" spare=$(awk -v p="$spare_pct" 'BEGIN { printf "%d", p }')@$(awk -v h="$spare_in" 'BEGIN { printf "%d", h }')h"
+fi
+
 fill="$(bash "$REPO/scripts/context-fill.sh" --percent 2>/dev/null)" || fill=""
 case "$fill" in ''|*[!0-9]*) fill='?' ;; esac
 
@@ -1350,6 +1374,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'ci queue: %s\n' "$ciq_summary"
     printf 'plan-index: %s\n' "$plan_index_summary"
     printf 'OpenRouter: %s\n' "$openrouter"
+    [ -z "$spare_tail" ] || printf 'spare: %s\n' "${spare_tail# spare=}"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
     # under --burn, after it. `fleet=`/`capacity=` (HIMMEL-3167) are appended
@@ -1360,11 +1385,11 @@ else
     # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
     # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) is last.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$spare_tail"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$spare_tail"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then

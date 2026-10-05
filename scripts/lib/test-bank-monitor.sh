@@ -60,13 +60,13 @@ sample 10 20
 out="$(run_at 1000 12:00)"; rc=$?
 check 'first observation emits the initial state' 0 "$rc"
 check 'first observation has unknown projections until a rate exists' \
-  'BANK 12:00 rate five_hour=+0.0/h seven_day=+0.0/h ttc=?h state=headroom five_hour_ttc=?h seven_day_ttc=?h codex=5h10/wk20' "$out"
+  'BANK 12:00 rate five_hour=+0.0/h seven_day=+0.0/h ttc=?h state=headroom five_hour_ttc=?h seven_day_ttc=?h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 
 sample 20 25
 out="$(run_at 2800 12:30)"; rc=$?
 check '30-minute series exits successfully' 0 "$rc"
 check 'exact rates and both projections are exposed; earliest projection is ttc' \
-  'BANK 12:30 rate five_hour=+20.0/h seven_day=+10.0/h ttc=4.0h state=headroom five_hour_ttc=4.0h seven_day_ttc=7.5h codex=5h10/wk20' "$out"
+  'BANK 12:30 rate five_hour=+20.0/h seven_day=+10.0/h ttc=4.0h state=headroom five_hour_ttc=4.0h seven_day_ttc=7.5h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 
 sample 21 25.5
 out="$(run_at 2980 12:33)"; rc=$?
@@ -80,7 +80,7 @@ case "$out" in *'state=park'*) pass 'five-hour threshold changes state to park' 
 sample 5 3
 out="$(run_at 3400 12:40)"; rc=$?
 check 'a usage reset discards the old rate and emits the state change' \
-  'BANK 12:40 rate five_hour=+0.0/h seven_day=+0.0/h ttc=?h state=headroom five_hour_ttc=?h seven_day_ttc=?h codex=5h10/wk20' "$out"
+  'BANK 12:40 rate five_hour=+0.0/h seven_day=+0.0/h ttc=?h state=headroom five_hour_ttc=?h seven_day_ttc=?h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 
 before_samples="$(wc -l < "$BANK_STATE_FILE.samples" | tr -d '[:space:]')"
 rm -f "$BANK_CACHE_FILE"
@@ -107,7 +107,7 @@ before_series="$(cat "$BANK_STATE_FILE.samples")"
 out="$(run_at 3100 12:35)"
 check 'unchanged cache leaves sample contents untouched' "$before_series" "$(cat "$BANK_STATE_FILE.samples")"
 check 'unchanged cache emits stale with the last measured projections' \
-  'BANK 12:35 rate five_hour=+20.0/h seven_day=+10.0/h ttc=4.0h state=stale five_hour_ttc=4.0h seven_day_ttc=7.5h codex=5h10/wk20' "$out"
+  'BANK 12:35 rate five_hour=+20.0/h seven_day=+10.0/h ttc=4.0h state=stale five_hour_ttc=4.0h seven_day_ttc=7.5h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 check 'unchanged cache does not append a sample' "$before_samples" "$(wc -l < "$BANK_STATE_FILE.samples" | tr -d '[:space:]')"
 out="$(run_at 7000 13:40)"
 check 'repeated stale polls are silent' '' "$out"
@@ -115,7 +115,7 @@ check 'stale polls do not age out the last measured series' "$before_samples" "$
 sample 22 26
 out="$(run_at 7300 13:45)"
 check 'refreshed cache resumes sampling and clears stale' \
-  'BANK 13:45 rate five_hour=+0.0/h seven_day=+0.0/h ttc=?h state=headroom five_hour_ttc=?h seven_day_ttc=?h codex=5h10/wk20' "$out"
+  'BANK 13:45 rate five_hour=+0.0/h seven_day=+0.0/h ttc=?h state=headroom five_hour_ttc=?h seven_day_ttc=?h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 check 'resumed sampling ages out old measurements' 1 "$(wc -l < "$BANK_STATE_FILE.samples" | tr -d '[:space:]')"
 
 # Only the resetting window loses history; the other keeps its full baseline.
@@ -127,13 +127,13 @@ run_at 1900 12:15 >/dev/null
 sample 5 30
 out="$(run_at 2800 12:30)"
 check 'five-hour reset retains weekly rate and projection' \
-  'BANK 12:30 rate five_hour=+0.0/h seven_day=+20.0/h ttc=3.5h state=headroom five_hour_ttc=?h seven_day_ttc=3.5h codex=5h10/wk20' "$out"
+  'BANK 12:30 rate five_hour=+0.0/h seven_day=+20.0/h ttc=3.5h state=headroom five_hour_ttc=?h seven_day_ttc=3.5h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 sample 10 35
 out="$(run_at 3100 12:35)"
 check 'post-reset sample keeps wake-up suppression' '' "$out"
 out="$(run_at 3400 12:40)"
 check 'five-hour rate restarts at its reset baseline' \
-  'BANK 12:40 rate five_hour=+60.0/h seven_day=+30.0/h ttc=1.5h state=stale five_hour_ttc=1.5h seven_day_ttc=2.2h codex=5h10/wk20' "$out"
+  'BANK 12:40 rate five_hour=+60.0/h seven_day=+30.0/h ttc=1.5h state=stale five_hour_ttc=1.5h seven_day_ttc=2.2h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 
 export BANK_STATE_FILE="$W/seven-reset-state"
 sample 10 85
@@ -143,7 +143,7 @@ run_at 1900 12:15 >/dev/null
 sample 20 5
 out="$(run_at 2800 12:30)"
 check 'weekly reset retains five-hour rate and projection' \
-  'BANK 12:30 rate five_hour=+20.0/h seven_day=+0.0/h ttc=4.0h state=headroom five_hour_ttc=4.0h seven_day_ttc=?h codex=5h10/wk20' "$out"
+  'BANK 12:30 rate five_hour=+20.0/h seven_day=+0.0/h ttc=4.0h state=headroom five_hour_ttc=4.0h seven_day_ttc=?h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 
 # oauth_checked_at may stay fixed while the stdin producer refreshes rates.
 export BANK_STATE_FILE="$W/oauth-state"
@@ -160,7 +160,7 @@ printf '{"five_hour":{"utilization":20},"seven_day":{"utilization":25},"oauth_ch
 touch -t 202001010002.00 "$BANK_CACHE_FILE"
 out="$(run_at 1900 12:15)"
 check 'OAuth refresh within the same mtime second resumes sampling' \
-  'BANK 12:15 rate five_hour=+40.0/h seven_day=+20.0/h ttc=2.0h state=headroom five_hour_ttc=2.0h seven_day_ttc=3.8h codex=5h10/wk20' "$out"
+  'BANK 12:15 rate five_hour=+40.0/h seven_day=+20.0/h ttc=2.0h state=headroom five_hour_ttc=2.0h seven_day_ttc=3.8h codex=5h10/wk20 seven_day_reset_in=? unspent_at_reset=?' "$out"
 
 export BANK_STATE_FILE="$W/mismatch-state"
 printf '%s' '{"oauthAccount":{"accountUuid":"uuid-bank-monitor-DIFFERENT"}}' > "$HOME/.claude.json"
@@ -169,6 +169,61 @@ out="$(run_at 1000 12:00)"; rc=$?
 printf '%s' '{"oauthAccount":{"accountUuid":"uuid-bank-monitor-test"}}' > "$HOME/.claude.json"
 check 'HIMMEL-1712: an account-mismatched cache is silent (same as a missing cache), never fatal' '' "$out"
 check 'HIMMEL-1712: an account-mismatched cache exits 0' 0 "$rc"
+
+# HIMMEL-4421: seven_day_reset_in / unspent_at_reset. Rate +10/h (20 -> 25 over
+# 30 min); reset epochs 10000 = 1970-01-01T02:46:40Z (2.0h out), 38800 = 10:46:40Z.
+printf '%s\n' 'claudex funded measured 5h used=10% free=90%; weekly used=20% free=80%' > "$W/codex-row"
+sample_reset() { # <five> <seven> <resets_at json>
+    sample_revision=$((sample_revision + 1))
+    printf '{"five_hour":{"utilization":%s},"seven_day":{"utilization":%s,"resets_at":%s},"account":"%s"}\n' "$1" "$2" "$3" "$ACCT" > "$BANK_CACHE_FILE"
+    touch -t "202001010000.$(printf '%02d' "$sample_revision")" "$BANK_CACHE_FILE"
+}
+tail_fields() { printf '%s\n' "$1" | sed 's/.* seven_day_reset_in=/seven_day_reset_in=/'; }
+seed_series() { # <state name> <resets_at json>
+    export BANK_STATE_FILE="$W/$1"
+    sample 10 20
+    run_at 1000 12:00 >/dev/null
+    sample_reset 20 25 "$2"
+}
+
+seed_series spare-iso '"1970-01-01T02:46:40.151477+00:00"'
+out="$(run_at 2800 12:30)"
+check 'projection matches the hand-computed value: 100 - (25 + 10/h x 2.0h) = 55.0' \
+  'seven_day_reset_in=2.0h unspent_at_reset=55.0' "$(tail_fields "$out")"
+
+seed_series spare-epoch '10000'
+out="$(run_at 2800 12:30)"
+check 'a bare epoch resets_at projects the same' 'seven_day_reset_in=2.0h unspent_at_reset=55.0' "$(tail_fields "$out")"
+
+seed_series spare-clamp '"1970-01-01T10:46:40Z"'
+out="$(run_at 2800 12:30)"
+check 'a projection past 100% clamps unspent at 0.0, never negative' 'seven_day_reset_in=10.0h unspent_at_reset=0.0' "$(tail_fields "$out")"
+
+seed_series spare-null 'null'
+out="$(run_at 2800 12:30)"
+check 'resets_at null reads ?' 'seven_day_reset_in=? unspent_at_reset=?' "$(tail_fields "$out")"
+
+seed_series spare-past '"1970-01-01T00:30:00Z"'
+out="$(run_at 2800 12:30)"
+check 'a reset in the past reads ?, never a negative number' 'seven_day_reset_in=? unspent_at_reset=?' "$(tail_fields "$out")"
+
+seed_series spare-garbage '"not-a-date"'
+out="$(run_at 2800 12:30)"
+check 'an unparseable resets_at reads ?' 'seven_day_reset_in=? unspent_at_reset=?' "$(tail_fields "$out")"
+
+export BANK_STATE_FILE="$W/spare-norate"
+sample_reset 20 25 '"1970-01-01T02:46:40Z"'
+out="$(run_at 2800 12:30)"
+check 'an unknown rate (first sample) reads ?' 'seven_day_reset_in=? unspent_at_reset=?' "$(tail_fields "$out")"
+
+# --spare: prints just the two fields, every time, and leaves emission state alone.
+seed_series spare-mode '"1970-01-01T02:46:40Z"'
+rm -f "$BANK_STATE_FILE"
+out="$(BANK_NOW_EPOCH=2800 BANK_NOW_HM=12:30 bash "$SUT" --spare)"
+check '--spare prints only the two fields' 'seven_day_reset_in=2.0h unspent_at_reset=55.0' "$out"
+check '--spare writes no emission state' 'no' "$([ -e "$BANK_STATE_FILE" ] && echo yes || echo no)"
+out="$(run_at 2800 12:30)"
+case "$out" in BANK*) pass 'a normal run after --spare still emits the state line' ;; *) fail "a normal run after --spare still emits the state line (out='$out')" ;; esac
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-bank-monitor.sh'
