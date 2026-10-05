@@ -1345,7 +1345,7 @@ if [ "$lf_posix" -eq 1 ]; then
   assert "noauto: graphify ran at least twice (staged + live verify)" test "$(grep -c . "$gel")" -ge 2
   # shellcheck disable=SC2016
   assert "noauto: EVERY graphify invocation saw GRAPHIFY_NO_AUTO_REFRESH=1" \
-    bash -c '! grep -v "NO_AUTO_REFRESH=1$" "$1" | grep -q .' _ "$gel"
+    bash -c '! grep -qv "NO_AUTO_REFRESH=1$" "$1"' _ "$gel"
   assert "noauto: skill marker advanced to the pin" \
     test "$(cat "$lf_home/.claude/skills/graphify/.graphify_version" 2>/dev/null)" = "$pinned_ver"
   assert "noauto: skill body is the new package's" grep -q "STUB SKILL BODY v$pinned_ver" "$lf_home/.claude/skills/graphify/SKILL.md"
