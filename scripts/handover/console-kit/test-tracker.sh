@@ -210,6 +210,7 @@ printf '%s\n' '# leg' '- brief: follows PR 1999' '## Results' '- 10:00 LIVE — 
 printf '%s\n' '# leg' '## Results' '- 09:00 READY 1600 abc GREEN' '- 09:30 WRAPPED — merged' > "$bk/HIMMEL-6-N56-wrapped-leg-2026-10-01.md"
 printf '%s\n' '# leg' '## Results' '- 08:00 LIVE — started' > "$bk/HIMMEL-7-N57-released-leg-2026-10-01.md"
 printf '%s\n' '# leg' '## Results' '- 08:00 LIVE — started' '- 12:00 LIVE — back after a night' '- 12:10 WRAPPED — merged' > "$bk/HIMMEL-6-N60-second-leg-2026-10-01.md"
+printf '%s\n' '# leg' '- 08:00 brief note, not a Results bullet' '## Results' '- 09:00 LIVE — started' '- 09:10 WRAPPED — merged' > "$bk/HIMMEL-8-N61-brief-stamp-leg-2026-10-01.md"
 printf '%s\n' '# leg' '- READY 1997 abc GREEN is the shape to send' '## Results' '- a note, no marker' > "$bk/HIMMEL-9-N59-brief-leg-2026-10-01.md"
 printf '{"session":"s3","handover":"%s","heartbeat":"%s"}\n' "$bk/HIMMEL-9-N59-brief-leg-2026-10-01.md" "$now" > "$hb/.locks/queue/brief.lock/owner.json"
 printf '{"session":"s1","handover":"%s","heartbeat":"%s"}\n' "$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md" "$now" > "$hb/.locks/queue/live.lock/owner.json"
@@ -222,7 +223,8 @@ contains 'a held-lock leg doc marks its ticket live with label, phase and PR (HI
 not_contains 'a WRAPPED leg is not live even while its lock lingers (HIMMEL-3990)' "$html6" '"6":["N56"'
 not_contains 'a leg doc with no held lock is not live (HIMMEL-3990)' "$html6" '"7":["N57"'
 contains 'a marker-shaped brief bullet above Results sets neither phase nor PR (HIMMEL-3990)' "$html6" '"9":["N59","LIVE",null]'
-contains 'a wrapped leg counts toward what its ticket took; a gap over 3 h is idle (HIMMEL-3990)' "$html6" '"ACT":{"6":[2,40]}'
+contains 'a wrapped leg counts toward what its ticket took; a gap over 3 h is idle (HIMMEL-3990)' "$html6" '"ACT":{"6":[2,40]'
+contains 'a timestamped line above ## Results is not counted as work (HIMMEL-4441)' "$html6" '"8":[1,10]'
 contains 'the live leg counts its ticket in progress in the ledger (HIMMEL-3990)' "$stdout6" '1 of 4 done (25 %), 2 in progress, 1 to do.'
 if [ "$fp4" != "$fp5" ]; then pass 'a leg starting moves the fingerprint (HIMMEL-3990)'; else fail 'a leg starting left the fingerprint'; fi
 printf '%s\n' '- 10:40 READY 1525 abc GREEN' >> "$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md"
@@ -342,6 +344,13 @@ printf 'v1.0.1\tfalse\t\nv1.0.2\ttrue\t2026-10-05\n' > "$W/alt.versions.tsv"
 render --mirror-dir "$jm" --versions-file "$W/alt.versions.tsv" >/dev/null
 althtml="$(cat "$out" 2>/dev/null)"
 contains '--versions-file names the snapshot (HIMMEL-3990)' "$althtml" '"JV":[{"n":"v1.0.1","rel":false,"date":""},{"n":"v1.0.2","rel":true,"date":"2026-10-05"}]'
+# an empty (truncated) versions file is no snapshot: it falls back like a missing one (HIMMEL-4441)
+: > "$W/empty.versions.tsv"
+render --mirror-dir "$jm" --versions-file "$W/empty.versions.tsv" >/dev/null
+emhtml="$(cat "$out" 2>/dev/null)"
+contains 'an empty versions file means release state unknown (HIMMEL-4441)' "$emhtml" '"RU":true'
+contains 'an empty versions file still lists the mirror fixVersions (HIMMEL-4441)' "$emhtml" '"JV":[{"n":"v1.0.1","rel":false,"date":""},'
+contains 'an empty versions file still shows the tickets (HIMMEL-4441)' "$emhtml" '"t":"released but open"'
 # the versions file is a fingerprint input: a release moves tracker=
 fpa='' fpb='' fpc='' fpd='' fpe=''
 fp_ok 'versions base' fpa --mirror-dir "$jm"
