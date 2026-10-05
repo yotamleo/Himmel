@@ -297,5 +297,43 @@ out="$(cadence disarm)"
 assert_eq "T12 disarm removes the row" "" "$(grep -F HIMMEL-VaultStall "$TMP/cron.tab")"
 assert_has "T12 status not armed" "not armed" "$(cadence status)"
 
+# --- T13 an operator edit to a config file → alert, no commit (codex-1) -----
+mkvault
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+printf '# operator edit\n' >>"$V/.pre-commit-config.yaml"
+before="$(head_sha)"; cfg_before="$(cat "$V/.pre-commit-config.yaml")"
+out="$(run_sut)"
+assert_eq "T13 no commit over a dirty config" "$before" "$(head_sha)"
+assert_eq "T13 the operator's edit is left as it was" "$cfg_before" "$(cat "$V/.pre-commit-config.yaml")"
+assert_has "T13 alert names the dirty config" "config-dirty" "$(sent)"
+
+# --- T14 no flock on PATH → a loud error, never a silent busy (codex-3) ------
+mkdir -p "$TMP/noflock"
+old_ifs="$IFS"; IFS=:
+for d in $PATH; do
+    [ -d "$d" ] || continue
+    for x in "$d"/*; do
+        b="${x##*/}"
+        [ "$b" = flock ] && continue
+        [ -x "$x" ] && [ ! -e "$TMP/noflock/$b" ] && ln -s "$x" "$TMP/noflock/$b"
+    done
+done
+IFS="$old_ifs"
+mkvault
+printf '#!/usr/bin/env bash\nfor f in $(cat list); do echo $f; done\n' >"$V/handovers/x.sh"
+git -C "$V" add handovers/x.sh
+out="$(PATH="$TMP/noflock" run_sut)"; rc=$?
+assert_eq "T14 missing flock exits 2" "2" "$rc"
+assert_has "T14 names flock" "flock" "$out"
+assert_not_has "T14 never reports busy" "busy" "$out"
+
+# --- T15 a relative --vault is baked as an absolute path (codex-5) -----------
+rm -f "$TMP/cron.tab"; rm -rf "$TMP/runner"
+out="$(cd "$TMP" && cadence arm --vault v1)"; rc=$?
+assert_eq "T15 arm with a relative vault exits 0" "0" "$rc"
+assert_has "T15 runner carries the absolute vault path" "run --vault $(cd "$TMP/v1" && pwd -P)" "$(cat "$TMP/runner/vault-stall-cadence.sh")"
+cadence disarm >/dev/null
+
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "PASS: vault-stall-cadence ($0)"; else echo "FAIL: vault-stall-cadence — $FAILED failed ($0)" >&2; exit 1; fi

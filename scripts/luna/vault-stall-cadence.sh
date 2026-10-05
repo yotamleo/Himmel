@@ -214,6 +214,7 @@ cmd_run() {
         || { echo "ERR vault-stall: not a git repo: $vault" >&2; return 2; }
     if [ "$dry" -eq 0 ]; then
         mkdir -p "$STATE_DIR" || return 2
+        command -v flock >/dev/null 2>&1 || { echo "ERR vault-stall: flock not on PATH (needed to serialize runs)" >&2; return 2; }
         exec 9>"$STATE_DIR/run.lock"
         flock -n 9 || { echo "vault-stall: busy (another run holds $STATE_DIR/run.lock)"; return 0; }
     fi
@@ -286,6 +287,12 @@ cmd_run() {
         if [ "$rc" -ne 0 ]; then rm -rf "$work"; alert "cannot-edit $f for $c" "$dry"; return 0; fi
         case " $files " in *" $f "*) ;; *) files="${files:+$files }$f" ;; esac
     done
+    # An operator's own uncommitted edit to a config file would be overwritten
+    # and then committed under the cadence's name: never touch a dirty one.
+    local dirty
+    # shellcheck disable=SC2086  # $files is a space-separated list of fixed names
+    dirty="$(git -C "$vault" status --porcelain -- $files 2>/dev/null)"
+    if [ -n "$dirty" ]; then rm -rf "$work"; alert "config-dirty $files (uncommitted edits; not remediated)" "$dry"; return 0; fi
     if [ "$dry" -eq 1 ]; then rm -rf "$work"; echo "vault-stall: would commit $files"; return 0; fi
 
     cp "$vault/.pre-commit-config.yaml" "$work/yaml.orig"; cp "$vault/.gitleaks.toml" "$work/toml.orig" 2>/dev/null
@@ -340,6 +347,7 @@ cmd_arm() {
     case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) echo "ERR vault-stall: cron only; Windows is parked (HIMMEL-4102)" >&2; return 2 ;; esac
     command -v "$CRONTAB_BIN" >/dev/null 2>&1 || { echo "ERR vault-stall: '$CRONTAB_BIN' not on PATH" >&2; return 2; }
     git -C "$vault" rev-parse --git-dir >/dev/null 2>&1 || { echo "ERR vault-stall: not a git repo: $vault" >&2; return 2; }
+    vault="$(cd "$vault" && pwd -P)" || return 2   # cron runs from $HOME: bake an absolute path
     root="$(resolve_primary)" || { echo "ERR vault-stall: cannot resolve the primary checkout" >&2; return 2; }
     bash_bin="$(command -v bash)"
     cron_read || return 4

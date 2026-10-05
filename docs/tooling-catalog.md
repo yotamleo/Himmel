@@ -1902,7 +1902,7 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   `scripts/test-doctor-cadence.sh`.
 - `scripts/luna/vault-stall-cadence.sh run [--vault <p>] [--dry-run]|arm|status|disarm`
   (HIMMEL-4471) — every 15 min, catches a vault auto-commit stall (staged paths
-  plus a last commit older than `VAULT_STALL_MIN`, default 30 min) and
+  plus a last commit older than `VAULT_STALL_MIN`, default 25 min) and
   reproduces the refusal with `git hook run pre-commit` (the content fixers
   are SKIP-ed, so nothing is rewritten). It remediates only two classes, and
   only under `handovers/`. A shellcheck or check-json finding gets the
