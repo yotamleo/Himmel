@@ -92,6 +92,8 @@ test("7. Unsorted is absent with 0 unmapped rows; with one it is always open and
   expect(t[t.length - 1]).toBe("Unsorted");
   expect(t).toEqual([...ALL, "Unsorted"]);
   await expect(head(page, "Unsorted")).toHaveAttribute("aria-expanded", "true");
+  await head(page, "Unsorted").click(); // always open: a toggle must not collapse it
+  await expect(head(page, "Unsorted")).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator("#inventory .row-head", { hasText: "orphan-row" })).toBeVisible();
 });
 

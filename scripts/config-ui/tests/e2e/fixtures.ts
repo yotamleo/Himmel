@@ -79,6 +79,7 @@ export async function boot(v: Variant = {}): Promise<Harness> {
       const m = /(http:\/\/127\.0\.0\.1:\d+\/#t=[0-9a-f]{64})/.exec(buf);
       if (m) ok(m[1]);
     });
+    child.on("error", fail);
     child.on("exit", (c) => fail(new Error(`himmelctl ui exited ${c}: ${err}`)));
     timer = setTimeout(() => fail(new Error("himmelctl ui printed no URL in 15 s")), 15_000);
   }).catch((e) => {
@@ -92,7 +93,7 @@ export async function boot(v: Variant = {}): Promise<Harness> {
     stateFiles: () => (existsSync(state) ? readdirSync(state) : []),
     stop: async () => {
       child.kill("SIGTERM");
-      await new Promise((r) => (child.exitCode !== null ? r(null) : child.once("exit", r)));
+      await new Promise((r) => (child.exitCode !== null || child.signalCode !== null ? r(null) : child.once("exit", r)));
       rmSync(dir, { recursive: true, force: true });
     },
   };
