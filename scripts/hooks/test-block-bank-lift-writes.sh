@@ -355,6 +355,15 @@ row "existing symlink alias set"           deny  "bash $T/lifthelper set 5"
 row "symlink chain alias set (direct)"     deny  "$T/lifthelper2 set 5"
 row "existing symlink alias show (ctrl)"   allow "bash $T/lifthelper show"
 
+echo "== review round 4 (codex-1) =="
+# After a cd the destination dir is unknown: a lift-named source copied into
+# a bare directory destination lands as the lift.
+row "cd state; cp lift-named src ."        deny  "cd ~/.himmel/state && cp /tmp/bank-lift.json ."
+row "cd state; mv lift-named src ./"       deny  "cd ~/.himmel/state && mv $T/src/bank-lift.json ./"
+row "cd state; cp -t . lift-named src"     deny  "cd ~/.himmel/state; cp -t . /tmp/bank-lift.json"
+row "cd; cp other src . (ctrl)"            allow "cd /tmp && cp $T/src/other.txt ."
+row "cd; cp lift-named src to file (ctrl)" allow "cd /tmp && cp $T/src/bank-lift.json backup.txt"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. rm rows are the ALLOW control (removing a lift only

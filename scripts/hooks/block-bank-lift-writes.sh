@@ -545,6 +545,21 @@ check_copy() {
             case "$(lift_ref "$src")" in LIFT|STATE) deny "$verb links to the bank lift or its directory ($src)" ;; esac
         done
     fi
+    # After a cd the dir of a relative destination is unknown: a lift-named
+    # source copied into a bare directory destination (`.`, `dir/`, -t) may
+    # land as the lift.
+    if [ "$HAS_CD" = 1 ]; then
+        case "$dest" in /*|'~'*|'$'*) ;; *)
+            case "$tdir:$dest" in ?*:*|*:.|*:..|*/|*/.|*/..)
+                for src in ${pos[@]+"${pos[@]}"}; do
+                    srcb=$(_base "$src")
+                    if ! _is_dynamic "$srcb" && ! _is_pure_glob "$srcb" && _name_matches "$srcb" "$LIFT_NAME"; then
+                        deny "$verb puts a lift-named file into $dest after a cd"
+                    fi
+                done ;;
+            esac ;;
+        esac
+    fi
     dk=$(lift_ref "$dest")
     case "$dk" in
         LIFT) deny "$verb writes the bank lift ($dest)" ;;
