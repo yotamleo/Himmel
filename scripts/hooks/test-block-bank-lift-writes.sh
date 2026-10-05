@@ -170,6 +170,17 @@ mkdir -p "$T/home2/.himmel"
 HOME="$T/home2" row "no state dir: cp file → state (allow)"    allow "cp $T/src/other.txt ~/.himmel/state"
 HOME="$T/home2" row "no state dir: cp -r dir → state"          deny  "cp -r $T/src ~/.himmel/state"
 HOME="$T/home2" row "no state dir: mv missing source → state"  deny  "mv /nonexistent-4445 ~/.himmel/state"
+# r10 codex-1: the same holds for EVERY missing ancestor of the lift. With no
+# ~/.himmel, `cp -r payload ~/.himmel` creates it from payload, and
+# payload/state/bank-lift.json becomes the live lift. Where ~/.himmel exists
+# the copy only nests (~/.himmel/payload), so it stays allowed.
+mkdir -p "$T/home3" "$T/payload/state"
+printf '{}\n' > "$T/payload/state/bank-lift.json"
+HOME="$T/home3" row "r10 no .himmel: cp -r dir → ~/.himmel"     deny  "cp -r $T/payload ~/.himmel"
+HOME="$T/home3" row "r10 no .himmel: mv dir → ~/.himmel"        deny  "mv $T/payload ~/.himmel"
+HOME="$T/home3" row "r10 no .himmel: mv missing src → ~/.himmel" deny "mv /nonexistent-4445 ~/.himmel"
+HOME="$T/home3" row "r10 no .himmel: cp file → ~/.himmel (allow)" allow "cp $T/src/other.txt ~/.himmel"
+HOME="$T/home2" row "r10 .himmel, no state: cp -r dir → ~/.himmel (allow)" allow "cp -r $T/payload ~/.himmel"
 
 echo "== bank-lift.sh set spellings =="
 S=scripts/lib/bank-lift.sh

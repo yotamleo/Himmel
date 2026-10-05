@@ -766,18 +766,19 @@ check_copy() {
     esac
     # Whole-directory write into an ancestor of the lift.
     if [ "$T" = 1 ] && [ -z "$tdir" ]; then deny "$verb -T replaces/fills $dest wholesale"; fi
-    # A missing state dir is CREATED from a directory source (its lift inside
-    # comes along); a source that is a literal existing regular file cannot do
-    # that, so only an unknowable or directory source denies here.
-    if [ "$dk" = STATE ] && [ -z "$tdir" ]; then
+    # A missing ancestor of the lift (~/.himmel/state, or ~/.himmel itself) is
+    # CREATED from a directory source (a lift inside comes along); a source
+    # that is a literal existing regular file cannot do that, so only an
+    # unknowable or directory source denies here.
+    if { [ "$dk" = STATE ] || [ "$dk" = HIMMEL ]; } && [ -z "$tdir" ]; then
         kind=$(_expand "$dest")
         case "$kind" in
             '?/'*) ;;
             *) if [ ! -d "$kind" ]; then
                    for src in ${pos[@]+"${pos[@]}"}; do
                        v=$(_expand "$src")
-                       case "$v" in '?/'*) deny "$verb would create the state dir ($dest) from a source" ;; esac
-                       if [ -d "$v" ] || [ ! -f "$v" ]; then deny "$verb would create the state dir ($dest) from a source" ; fi  # fail-open-ok: a file-TYPE test, the file is never read
+                       case "$v" in '?/'*) deny "$verb would create a lift ancestor dir ($dest) from a source" ;; esac
+                       if [ -d "$v" ] || [ ! -f "$v" ]; then deny "$verb would create a lift ancestor dir ($dest) from a source" ; fi  # fail-open-ok: a file-TYPE test, the file is never read
                    done
                fi ;;
         esac
