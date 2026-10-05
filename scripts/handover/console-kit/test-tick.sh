@@ -1842,6 +1842,29 @@ contains 'OpenRouter leg marker selects lane verdict' \
 contains 'OpenRouter funded verdict surfaces without changing raw balance' \
   "$(CADENCE_BANK_LANE=openrouter STUB_FLEET_LINE='bank-preflight: FLEET native=0 claudex=0 openrouter=1 reserved=0 total=1/8' bash "$SUT")" ' bank=openrouter:PROCEED '
 
+# --- HIMMEL-4421: spare=<pct>@<h>h ---------------------------------------------
+# tick reads bank-monitor.sh --spare; this stub prints STUB_SPARE verbatim (the
+# projection maths is test-bank-monitor.sh's), so only tick's gating is pinned.
+cat > "$W/repo/scripts/lib/bank-monitor.sh" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "--spare" ] || exit 2
+printf '%s\n' "${STUB_SPARE-seven_day_reset_in=?  unspent_at_reset=?}"
+STUB
+spare_has() { case "$2" in *' spare='*) fail "$1 (out='$2')" ;; *) pass "$1" ;; esac; }
+spare_out="$(STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=33.7' bash "$SUT")"
+contains 'spare= shows when spare >= 10 and reset <= 24h (HIMMEL-4421)' "$spare_out" ' or=skip spare=33@6h'
+spare_has 'spare= is absent below the spare threshold (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=9.9' bash "$SUT")"
+spare_has 'spare= is absent when the reset is more than 24h out (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=24.5h unspent_at_reset=60.0' bash "$SUT")"
+spare_has 'spare= is absent when the monitor reads ? (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=? unspent_at_reset=?' bash "$SUT")"
+contains 'TICK_SPARE_MIN moves the spare threshold (HIMMEL-4421)' \
+  "$(TICK_SPARE_MIN=5 STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=9.9' bash "$SUT")" ' spare=9@6h'
+contains 'TICK_SPARE_HOURS moves the reset window (HIMMEL-4421)' \
+  "$(TICK_SPARE_HOURS=48 STUB_SPARE='seven_day_reset_in=30.0h unspent_at_reset=60.0' bash "$SUT")" ' spare=60@30h'
+contains 'verbose labels spare (HIMMEL-4421)' \
+  "$(STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=33.7' bash "$SUT" --verbose)" 'spare: 33@6h'
+rm -f "$W/repo/scripts/lib/bank-monitor.sh"
+spare_has 'a missing bank-monitor.sh leaves spare= absent and the tick intact (HIMMEL-4421)' "$(bash "$SUT")"
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0
