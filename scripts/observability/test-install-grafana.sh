@@ -156,6 +156,9 @@ assert_contains "journal hint" "journalctl --user" "$OUT"
 echo "case 4: status reports each unit and endpoint; any FAIL is rc 1"
 setup Linux 1 1
 run install
+touch "$HOME_DIR/$DATA_REL/dashboards/stale.json"
+run install
+assert_eq "reinstall drops a dashboard the repo no longer ships" "no" "$([ -e "$HOME_DIR/$DATA_REL/dashboards/stale.json" ] && echo yes || echo no)"
 run status
 assert_eq "status rc when all up" 0 "$RC"
 assert_contains "grafana health reported" "OK   health  grafana" "$OUT"

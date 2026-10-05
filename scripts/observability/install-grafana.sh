@@ -122,6 +122,7 @@ render_config() {
     grep -q windows_exporter "$DATA/prometheus.yml" && die "prometheus.yml still names windows_exporter; its job is no longer the last stanza"
     cp "$src/alerts.rules.yml" "$DATA/alerts.rules.yml" || die "cannot copy alerts.rules.yml"
 
+    rm -f "$DATA/dashboards/"*.json # doctor diffs the whole dir, so a dashboard the repo dropped must not linger
     cp "$src/dashboards/"*.json "$DATA/dashboards/" || die "cannot copy dashboards"
     sed -e "s|@HIMMEL_DASHBOARDS_DIR@|$DATA/dashboards|" "$src/provisioning/dashboards/himmel-dashboards.yaml.tmpl" \
         > "$prov/dashboards/himmel-dashboards.yaml" || die "cannot render the dashboard provider"
