@@ -118,7 +118,7 @@ scripts/lanes/bank-status-core.mjs -> scripts/lanes/codex-bank-probe.ts"
 # checkout (git-common-dir / its repo root) or is only prompt text, not run
 # relative to the script (checked below, so a pin cannot rot silently).
 DIST_PRIMARY="scripts/handover/console-kit/leg-jira-status.sh::dirname \"\\\$common\"\\)/scripts/jira/dist/index\\.js
-scripts/handover/merge-on-green.sh::cd \"\\\$repo_root\" && node scripts/jira/dist/index\\.js
+scripts/handover/merge-on-green.sh::(\\\$repo_root/|cd \"\\\$repo_root\" && node )scripts/jira/dist/index\\.js
 scripts/telegram/run.ts::\\\$\\{p\\.cwd\\}/scripts/jira/dist/index\\.js
 scripts/telegram/spawn-glm.ts::Jira updates .*via node scripts/jira/dist/index\\.js"
 
@@ -262,7 +262,11 @@ done <<< "$NOT_RUN"
 # Every DIST_PRIMARY pin still matches its file: the dist path there is anchored
 # on the primary checkout (or is prompt text), not resolved relative to the script.
 while IFS= read -r pin; do
-  check "$(grep -qE -- "${pin#*::}" "$ROOT/${pin%%::*}" && echo held || echo gone)" "held" "DIST_PRIMARY pin still holds: ${pin%%::*}"
+  # Every non-comment line naming jira/dist must match (a second, script-relative
+  # reference added to a pinned file would otherwise ride the pin), and at least one must.
+  dist_lines="$(grep -vE '^[[:space:]]*#' "$ROOT/${pin%%::*}" | grep -F 'jira/dist')"
+  check "$(printf '%s\n' "$dist_lines" | grep -cvE -- "${pin#*::}")" "0" "DIST_PRIMARY pin covers every jira/dist line: ${pin%%::*}"
+  check "$(printf '%s\n' "$dist_lines" | grep -cE -- "${pin#*::}" | grep -qvx 0 && echo held || echo gone)" "held" "DIST_PRIMARY pin still holds: ${pin%%::*}"
 done <<< "$DIST_PRIMARY"
 
 reached="$(closure)"
