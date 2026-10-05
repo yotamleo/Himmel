@@ -173,12 +173,15 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
     cd "$jdir" || exit 1
     # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
     native_auth_pin_env
-    [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] || exit 1
-    # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted by run_task, no tools, explicit permission mode, budget-capped
-    # launch-profile-ok: HIMMEL-4090 the judge runs with --tools "", so no tool profile applies
-    timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
-      --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
-  ) >"$od/$task.judge.json" 2>"$od/$task.judge.err"
+    if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
+      # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted by run_task, no tools, explicit permission mode, budget-capped
+      # launch-profile-ok: HIMMEL-4090 the judge runs with --tools "", so no tool profile applies
+      timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
+        --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
+    else
+      exit 1
+    fi
+  )>"$od/$task.judge.json" 2>"$od/$task.judge.err"
   rm -rf "$jdir"
   jq -c '(.structured_output // (.result | fromjson? ) // null) as $s
          | if $s == null then null else $s + {cost_usd: (.total_cost_usd // null)} end' \
@@ -204,12 +207,15 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
     cd "$wt" || exit 1
     # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
     native_auth_pin_env
-    [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] || exit 1
-    # headless-claude-ok: HIMMEL-4090 lane-quality agent run, bank-preflighted per sweep, explicit permission mode, budget-capped
-    # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config (claude or the lane launcher in $AGENT_BIN), not a leg profile
-    timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
-      --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
-  ) >"$OUT/$task.result.json" 2>"$OUT/$task.stderr"
+    if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
+      # headless-claude-ok: HIMMEL-4090 lane-quality agent run, bank-preflighted per sweep, explicit permission mode, budget-capped
+      # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config (claude or the lane launcher in $AGENT_BIN), not a leg profile
+      timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
+        --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
+    else
+      exit 1
+    fi
+  )>"$OUT/$task.result.json" 2>"$OUT/$task.stderr"
   end="$(date +%s)"
   bank1="$(bank_read)"; bank1="${bank1#* }"; met1="$(metered_read)"
   res="$OUT/$task.result.json"

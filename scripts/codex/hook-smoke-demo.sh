@@ -440,10 +440,16 @@ if [ "$RUN_CLAUDE" = "1" ] && command -v claude >/dev/null 2>&1 && command -v jq
         # fired. Do NOT "fix" the trust warning - it is the positive control.
         (
             cd "$DEMO" || exit 2
-            # launch-profile-ok: the demo proves the PreToolUse hook chain fires; a profile would change what it measures (HIMMEL-4013)
-            # headless-claude-ok: hook-chain smoke demo (HIMMEL-2000); bank-gated above, --model haiku, one read-only turn
-            env "${INERT_ENV[@]}" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$LEG_TIMEOUT"} claude -p "$PROMPT" \
-                --model haiku --permission-mode default --output-format json
+            # HIMMEL-4459: the launch sits INSIDE the keyword-only gate, so a shadowed
+            # `[`/`exit` above can skip a refusal but never reach this launch.
+            if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
+                # launch-profile-ok: the demo proves the PreToolUse hook chain fires; a profile would change what it measures (HIMMEL-4013)
+                # headless-claude-ok: hook-chain smoke demo (HIMMEL-2000); bank-gated above, --model haiku, one read-only turn
+                env "${INERT_ENV[@]}" ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" "$LEG_TIMEOUT"} claude -p "$PROMPT" \
+                    --model haiku --permission-mode default --output-format json
+            else
+                exit 2
+            fi
         ) > "$CL_LOG" 2>&1
         CL_RC=$?
         CL_SECS=$(( $(date +%s) - CL_START ))

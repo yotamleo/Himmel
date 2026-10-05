@@ -268,14 +268,17 @@ HASH_BEFORE="$(_hash "$NOTE_PATH")"
 . "$HIMMEL_ROOT/scripts/lib/native-auth-pin.sh" || exit 0
 # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
 native_auth_pin_env
-[[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] || exit 0
-(
-    cd "$NOTE_DIR" 2>/dev/null || exit 0
-    CRYSTALLIZE_NOTE="$NOTE_PATH" CRYSTALLIZE_TRANSCRIPT="$TRANSCRIPT_PATH" \
-        "$CLAUDE_BIN" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-        --settings "$SETTINGS_TMP" \
-        --permission-mode acceptEdits "$PROMPT" </dev/null >/dev/null 2>&1
-) || true
+if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
+    (
+        cd "$NOTE_DIR" 2>/dev/null || exit 0
+        CRYSTALLIZE_NOTE="$NOTE_PATH" CRYSTALLIZE_TRANSCRIPT="$TRANSCRIPT_PATH" \
+            "$CLAUDE_BIN" ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
+            --settings "$SETTINGS_TMP" \
+            --permission-mode acceptEdits "$PROMPT" </dev/null >/dev/null 2>&1
+    ) || true
+else
+    exit 0
+fi
 
 # Edit-confirmed flag-set (T1d): only stamp crystallized:true when the note body
 # actually changed. A failed/no-op run leaves the note byte-unchanged and the

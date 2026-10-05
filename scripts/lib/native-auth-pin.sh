@@ -76,9 +76,16 @@
 # snippet, deliberately NOT a function (a function is shadowable). After the pin:
 #
 #   native_auth_pin_env
-#   [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] && <launch>
+#   if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
+#     <launch>
+#   else
+#     <refuse>
+#   fi
 #
-# (`|| <refuse>` for a refusing caller.) The one exception is the loopback-mock
+# The LAUNCH sits INSIDE the keyword branch; the refusal may use exit/return/`[`
+# freely, because a shadowed refusal can only skip the refusal, never reach the
+# launch (a refuse-then-launch shape falls through when `exit`/`return` is
+# shadowed). The one exception is the loopback-mock
 # seam below, re-derived with the same keyword-only syntax in claude-headless.sh:
 # the survivors must be exactly ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY, the URL a
 # loopback literal without `@`, and `$(</proc/net/dev)` must list only `lo`.
@@ -91,8 +98,9 @@
 #
 # True guarantee: an INHERITED variable, or a shadowed tool, cannot reach a
 # launch through these callers. NOT guaranteed: a hostile shell that shadows the
-# launcher itself (or `[[`/`.` etc.) -- that is out of scope; so is the PowerShell
-# twin.
+# launcher itself (or `[[`/`.` etc.) -- that is out of scope; so is a BASH_ENV
+# with `set -T` plus a DEBUG trap that re-exports a variable at launch time, which
+# defeats any in-shell gate; so is the PowerShell twin.
 
 # The predicate lives once, as the case glob inside native_auth_pin_env (no
 # fork per variable -- a `tr` per variable was brutally slow on Windows). The

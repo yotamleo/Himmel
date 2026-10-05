@@ -215,6 +215,27 @@ grep -qx -- "bypassPermissions" "$work/claude-argv" \
     && fail "claude route: a crafted --model value injected extra CLI flags"
 echo "  ok" >&2
 
+# 8a2. HIMMEL-4459: exported exit/return/unset/[ shadows must never reach the
+#      claude launch while a re-route var is ambient. The control (no proxy)
+#      proves the shadowed critic still launches, so the proxied row is not vacuous.
+echo "test: claude route survives exit/return/unset/[ shadows (auth pin)" >&2
+shadow_critic() { # <proxy-url|->
+  : > "$work/claude-argv"
+  # shellcheck disable=SC2016
+  bash -c '
+    exit() { :; }; return() { :; }; unset() { :; }
+    function [ { case "$1" in -z|-n) builtin return 1 ;; esac; builtin [ "$@"; }
+    export -f exit return unset [
+    p=(); [ "$1" = - ] || p=(ANTHROPIC_BASE_URL="$1")
+    exec env "${p[@]}" CLAUDE_ARGV_CAPTURE="$2" PATH="$3:$PATH" bash "$4" --repo "$5" --base "$6" --goal "test goal" --route claude' \
+    _ "$1" "$work/claude-argv" "$bindir" "$CRITIC" "$repo" "$base" >/dev/null 2>&1
+}
+shadow_critic -
+[ -s "$work/claude-argv" ] || fail "shadowed builtins, no proxy: the claude route did not launch (control is vacuous)"
+shadow_critic http://evil.invalid
+[ ! -s "$work/claude-argv" ] || fail "shadowed builtins + ambient ANTHROPIC_BASE_URL: claude was launched anyway"
+echo "  ok" >&2
+
 # 8b. Exhausted bank → the claude route refuses BEFORE launching claude, and
 #     fails open at exit 3 so the caller falls back to another reviewer.
 echo "test: claude route refuses an exhausted bank" >&2
