@@ -249,18 +249,21 @@ CMD=$(printf '%s' "$input" | jq -r '.tool_input.command // ""' 2>/dev/null) || d
 # CRLF text must not hide a target: strip CRs at the capture boundary.
 CMD="${CMD//$'\r'/}"
 [ -n "$CMD" ] || exit 0
+# The tokenizer marks below start with the control byte \002, so no word of
+# the command can spell one; the byte in the input itself is refused.
+case "$CMD" in *$'\002'*) deny "the command carries a \\x02 control byte (tokenizer sentinel)" ;; esac
 
 # Tokenizer: shell text -> one CLAUSE per output line, tokens joined by \037,
 # a newline inside a token as \036. Quotes are removed (quoted metachars stay
 # literal), $'..' is decoded, backslash escapes become literals, comments and
-# line continuations drop. Redirects become the tokens @W@ (write: > >> >| &>
-# <>) and @R@ (read: < <<<) before their target. $( ), backticks, ( ), <( ),
-# >( ) open a nested depth whose clauses print as their own lines; the outer
-# word carries a "$" so it reads as dynamic. Heredoc bodies print as a line
-# "@B@\037<body>".
+# line continuations drop. Redirects become the tokens \002W (write: > >> >|
+# &> <>) and \002R (read: < <<<) before their target. $( ), backticks, ( ),
+# <( ), >( ) open a nested depth whose clauses print as their own lines; the
+# outer word carries a "$" so it reads as dynamic. Heredoc bodies print as a
+# line "\002B\037<body>". A \002 decoded from $'..' prints a "\002X" line.
 read -r -d '' TOKENIZER <<'AWK'
 function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
-function addc(c) { tok = tok c }
+function addc(c) { if (c == SB) forged = 1; tok = tok c }
 function emit_tok() {
     if (tok != "" || quoted) { buf[d] = buf[d] (bn[d]++ ? US : "") tok }
     tok = ""; quoted = 0
@@ -289,12 +292,12 @@ function heredocs(   k, body, line, e, del, stripped) {
             body = body (body == "" ? "" : "\n") line
         }
         if (!hdq[k]) subs(body)
-        gsub(/\n/, NL, body); print "@B@" US body
+        gsub(/\n/, NL, body); print SB "B" US body
     }
     nhd = 0
 }
 # An unquoted-delimiter heredoc body runs its $( ) and backtick commands:
-# print each as "@S@\037<command>" (nesting counted on parens, quotes not).
+# print each as "\002S\037<command>" (nesting counted on parens, quotes not).
 function subs(b,   p, L, j, dep, x, inner, e) {
     L = length(b); p = 1
     while (p <= L) {
@@ -309,13 +312,13 @@ function subs(b,   p, L, j, dep, x, inner, e) {
                 j++
             }
             inner = dep > 0 ? substr(b, p + 2) : substr(b, p + 2, j - p - 3)
-            gsub(/\n/, NL, inner); print "@S@" US inner
+            gsub(/\n/, NL, inner); print SB "S" US inner
             p = j; continue
         }
         if (x == "`") {
             e = index(substr(b, p + 1), "`")
             if (e == 0) { inner = substr(b, p + 1); j = L + 1 } else { inner = substr(b, p + 1, e - 1); j = p + e + 1 }
-            gsub(/\n/, NL, inner); print "@S@" US inner
+            gsub(/\n/, NL, inner); print SB "S" US inner
             p = j; continue
         }
         p++
@@ -323,7 +326,7 @@ function subs(b,   p, L, j, dep, x, inner, e) {
 }
 { s = (NR > 1 ? s "\n" : "") $0 }
 END {
-    US = "\037"; NL = "\036"
+    US = "\037"; NL = "\036"; SB = "\002"; forged = 0
     n = length(s); d = 0; mode = "o"; tok = ""; quoted = 0; nhd = 0
     buf[0] = ""; bn[0] = 0
     for (i = 1; i <= n; i++) {
@@ -375,7 +378,7 @@ END {
         if (c == ")") { if (d > 0 && typ[d] == "p") close_sub(); else flush(); continue }
         if ((c == "<" || c == ">") && c2 == "(") { emit_tok(); i++; open_sub("p"); continue }
         if (c == "&" && c2 == ">") {
-            emit_mark("@W@"); i++
+            emit_mark(SB "W"); i++
             if (substr(s, i + 1, 1) == ">") i++
             continue
         }
@@ -392,17 +395,17 @@ END {
                     emit_tok(); i = j - 1; continue
                 }
             }
-            emit_mark("@W@"); i = j - 1; continue
+            emit_mark(SB "W"); i = j - 1; continue
         }
         if (c == "<") {
             if (!quoted && tok ~ /^([0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$/) tok = ""
-            if (c2 == ">") { emit_mark("@W@"); i++; continue }
+            if (c2 == ">") { emit_mark(SB "W"); i++; continue }
             if (c2 == "&") {
                 emit_tok(); i++
                 while (substr(s, i + 1, 1) ~ /[0-9-]/) i++
                 continue
             }
-            if (c2 == "<" && substr(s, i + 2, 1) == "<") { emit_mark("@R@"); i += 2; continue }
+            if (c2 == "<" && substr(s, i + 2, 1) == "<") { emit_mark(SB "R"); i += 2; continue }
             if (c2 == "<") {
                 emit_tok(); i++
                 if (substr(s, i + 1, 1) == "-") i++
@@ -417,12 +420,13 @@ END {
                 hd[++nhd] = del; hdq[nhd] = dq
                 continue
             }
-            emit_mark("@R@"); continue
+            emit_mark(SB "R"); continue
         }
         addc(c)
     }
     while (d > 0) { flush(); d-- }
     flush()
+    if (forged) print SB "X"
 }
 AWK
 
@@ -668,7 +672,7 @@ analyse() {
     local stdin_shell=0 bodies=""
     local CUR_BODIES=""
     while IFS= read -r line; do
-        case "$line" in "@B@"$'\037'*) CUR_BODIES="$CUR_BODIES${line#@B@$'\037'}"$'\n' ;; esac
+        case "$line" in $'\002B\037'*) CUR_BODIES="$CUR_BODIES${line#$'\002B\037'}"$'\n' ;; esac
     done <<EOF
 $out
 EOF
@@ -677,8 +681,9 @@ EOF
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         case "$line" in
-            "@B@"$'\037'*) bodies="$bodies${line#@B@$'\037'}"$'\n'; continue ;;
-            "@S@"$'\037'*) line="${line#@S@$'\037'}"; analyse "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
+            $'\002X') deny "the command decodes a \\x02 control byte (tokenizer sentinel)" ;;
+            $'\002B\037'*) bodies="$bodies${line#$'\002B\037'}"$'\n'; continue ;;
+            $'\002S\037'*) line="${line#$'\002S\037'}"; analyse "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
         esac
         local -a tk=() args=()
         IFS=$'\037' read -r -a tk <<<"$line"
@@ -687,11 +692,11 @@ EOF
         while [ "$i" -lt "$nt" ]; do
             t="${tk[$i]//$'\036'/$'\n'}"
             case "$t" in
-                @W@)
+                $'\002W')
                     i=$((i+1)); t="${tk[$i]:-}"
                     if [ -n "$t" ] && is_lift "$t"; then deny "a redirect writes the bank lift ($t)"; fi
                     ;;
-                @R@)
+                $'\002R')
                     i=$((i+1)); fed=1
                     t="${tk[$i]:-}"
                     case "$(_base "$t")" in *bank*) _name_matches "$(_base "$t")" bank-lift.sh && fed=2 ;; esac

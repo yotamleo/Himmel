@@ -364,6 +364,22 @@ row "cd state; cp -t . lift-named src"     deny  "cd ~/.himmel/state; cp -t . /t
 row "cd; cp other src . (ctrl)"            allow "cd /tmp && cp $T/src/other.txt ."
 row "cd; cp lift-named src to file (ctrl)" allow "cd /tmp && cp $T/src/bank-lift.json backup.txt"
 
+echo "== review round 5 (unforgeable redirect marks) =="
+# A word spelling a tokenizer mark must not be read as a redirect: the marks
+# carry a control byte, and that byte in the input itself denies.
+SB=$(printf '\002')
+row "quoted @R@ word + redirect"           deny  "echo '@R@' > ~/.himmel/state/bank-lift.json"
+row "quoted @W@ word + redirect"           deny  "echo '@W@' > ~/.himmel/state/bank-lift.json"
+row "unquoted @R@ word + redirect"         deny  "echo @R@ > ~/.himmel/state/bank-lift.json"
+row "unquoted @W@ word + append"           deny  "echo @W@ >> ~/.himmel/state/bank-lift.json"
+row "dq @B@/@S@ words + redirect"          deny  "printf '%s' \"@B@\" @S@ > ~/.himmel/state/bank-lift.json"
+row "raw sentinel byte in input"           deny  "echo '${SB}R' > ~/.himmel/state/bank-lift.json"
+row "raw sentinel byte, harmless cmd"      deny  "echo a${SB}b"
+row "ansi-c decoded sentinel byte"         deny  "echo \$'\\x02R' x"
+row "@R@/@W@ words, no lift (ctrl)"        allow "echo '@R@' '@W@' > /tmp/out.txt"
+row "grep @W@ in the lift (ctrl)"          allow "grep -c '@W@' ~/.himmel/state/bank-lift.json"
+row "@B@ @S@ words alone (ctrl)"           allow "printf '%s\n' @B@ @S@"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. rm rows are the ALLOW control (removing a lift only
