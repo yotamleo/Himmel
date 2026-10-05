@@ -237,6 +237,15 @@ expect 0 "payload names a leaf symlink to a benign file outside every root -> al
     "$(payload "$TOOL" "$HIMMEL" "summarise public/benign-link.md")"
 expect 0 "payload names a plain file outside every root -> allowed" \
     "$(payload "$TOOL" "$HIMMEL" "summarise public/plain.md")"
+# A symlink whose target ends in .. is normalized whole: this one points at the
+# parent of the PHI root, which is not inside it.
+ln -s "$PHI_ROOT/.." "$HIMMEL/public/up-link"
+expect 0 "payload names a symlink to the PARENT of a phi-roots root -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "summarise public/up-link")"
+# The budget is also checked after the last token, so a payload whose final
+# resolution overran cannot reach the allow.
+EGRESS_HOOK_BUDGET_S=0 expect 2 "budget overrun with no path token to trip the per-token check -> denied" \
+    "$(payload "$TOOL" "$HIMMEL" "restyle the landing page")"
 # 6. The .salus ancestor walk probes /.salus. Root cannot be written to stage a
 # real marker, so run the hook's own function with its existence test swapped
 # for a recorder.

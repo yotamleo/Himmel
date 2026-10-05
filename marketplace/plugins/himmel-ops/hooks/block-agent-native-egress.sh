@@ -238,6 +238,8 @@ _resolve_leaf() {
         t=$(readlink -- "$p") || return 0
         case "$t" in /*) p="$t" ;; *) p="${p%/*}/$t" ;; esac
     done
+    # A target that is itself a directory (or ends in ..) is normalized whole.
+    if [ -d "$p" ]; then _canon "$p"; return; fi
     dir="${p%/*}"
     dir=$(_canon "${dir:-/}")
     [ -n "$dir" ] && printf '%s/%s' "${dir%/}" "${p##*/}"
@@ -314,5 +316,7 @@ for tok in $payload_text; do
     done
 done
 set +f
+# The last token's resolution is not followed by another per-token check.
+_over_budget
 
 exit 0
