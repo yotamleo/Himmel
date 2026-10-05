@@ -184,7 +184,8 @@ Three pre-launch checks that each cost a console a dead leg when skipped:
   OAuth). Until the operator has logged in once (`/mcp`, pick
   `agent-native-dispatch`), the server needs auth and a leg cannot answer the
   prompt, which looks like a hung leg. Tool arguments go to Builder.io servers:
-  never use it on salus/PHI work. `context7` needs no login. Do not arm a
+  never use it on salus/PHI work. `block-agent-native-egress.sh` (HIMMEL-4328)
+  refuses the call from a salus session or when the payload names salus. `context7` needs no login. Do not arm a
   design-profile leg unattended (`--arm`, at-jobs, overnight) until a fresh
   session has been checked to keep the token.
 

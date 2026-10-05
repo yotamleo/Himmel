@@ -1,7 +1,7 @@
 {
   "version": 1,
   "jira": "HIMMEL-766",
-  "updated": "2026-10-02",
+  "updated": "2026-10-05",
   "doc": "docs/internals/egress-matrix.md",
   "semantics": {
     "evaluation": "first-match-wins over `rules`, then `default`. '*' matches any value.",
@@ -33,7 +33,8 @@
     "alibaba": { "region": "CN-account, ap-southeast-1 endpoint", "note": "DE-LISTED 2026-07-22 (HIMMEL-1257): not pursuing the HIMMEL-765 pilot — bad results. Vault/handover cells demoted to explicit deny; himmel-code wildcard unaffected (public code)." },
     "google-gemini": { "region": "US", "note": "DE-LISTED; keys deliberately unset" },
     "firecrawl": { "region": "US", "note": "HIMMEL-4335: web scrape/search API (api.firecrawl.dev, or a self-hosted FIRECRAWL_BASE_URL). Receives the URL (scrape) or the search query. Metered free plan; every call is ledgered in ~/.himmel/state/firecrawl-ledger.jsonl" },
-    "jina-reader": { "region": "US", "note": "HIMMEL-4335: keyless Jina Reader scrape (r.jina.ai/<url>). Receives the URL being fetched; no key, no metering" }
+    "jina-reader": { "region": "US", "note": "HIMMEL-4335: keyless Jina Reader scrape (r.jina.ai/<url>). Receives the URL being fetched; no key, no metering" },
+    "builder-io": { "region": "US", "note": "HIMMEL-4328: the hosted OAuth MCP `agent-native-dispatch` (https://dispatch.agent-native.com/mcp) that builder-visual@himmel registers for the design profile (HIMMEL-4326). Every tool argument (prompts, file paths, pasted content) goes to Builder.io servers. Enforced at the MCP call by marketplace/plugins/himmel-ops/hooks/block-agent-native-egress.sh" }
   },
   "purposes": ["extraction", "embedding", "rerank", "inference", "vision-embedding", "enrichment", "stt", "tts"],
   "rules": [
@@ -47,6 +48,11 @@
       "corpus": "salus", "provider": "openrouter", "purpose": "*",
       "verdict": "deny",
       "why": "HIMMEL-1774 operator ruling: OpenRouter (like every cloud provider) NEVER receives PHI. DEFAULT stays deny; `hard` was deliberately REMOVED per the 2026-08-15 operator ruling — OpenRouter is an A-tier provider and adopters may already be routing through it, so this cell is operator-CONFIGURABLE (a future operator can ratify an open by editing this cell alone, the same one-line ratification path every provider cell uses). This is a deliberate configurability decision, NOT guardrail drift. Explicit row placed BEFORE the wildcard hard deny below so the ruling is legible in this file, not only implied"
+    },
+    {
+      "corpus": "salus", "provider": "builder-io", "purpose": "*",
+      "verdict": "deny", "hard": true,
+      "why": "HIMMEL-4328: salus/PHI content never reaches the hosted agent-native MCP. Already implied by the salus wildcard below; the explicit row names the provider so the cell that block-agent-native-egress.sh enforces (salus cwd, git toplevel or origin, a .salus marker, a phi-roots/egress-denylist root, or a salus path in the tool payload) is legible here. No override exists"
     },
     {
       "corpus": "salus", "provider": "*", "purpose": "*",

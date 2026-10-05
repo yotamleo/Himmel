@@ -58,6 +58,10 @@ function unwire(text) {
       commandHook.command = 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/inject-minerva-critic.sh"';
       continue;
     }
+    if (command.includes('/hooks/block-agent-native-egress.sh')) {
+      commandHook.command = 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/block-agent-native-egress.sh"';
+      continue;
+    }
     const match = command.match(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"/);
     assert.ok(match, `could not extract project hook script from ${command}`);
     const script = match[1];
@@ -76,6 +80,11 @@ function unwire(text) {
   return `${JSON.stringify(pluginHooks, null, 2)}\n`;
 }
 
+// Derived from the live hooks.json, never hardcoded (scripts/hooks/CLAUDE.md:
+// a frozen count is a wall the next hook addition has to climb). The wirer's
+// own EXPECTED_HOOKS check pins the live file, so this stays honest.
+const LIVE_COUNT = commands(JSON.parse(readFileSync(PLUGIN_HOOKS, 'utf8'))).length;
+
 function withFixture(run, { wired = false } = {}) {
   const dir = makeTmpDir('wire-plugin-hook-bash-');
   const fixture = join(dir, 'hooks.json');
@@ -92,15 +101,15 @@ function invoke(...args) {
   return spawnSync(process.execPath, [WIRER, ...args], { encoding: 'utf8' });
 }
 
-test('rewrites the exact 21-command plugin inventory through the installed launcher', () => {
+test('rewrites the exact plugin inventory through the installed launcher', () => {
   withFixture((fixture) => {
     const before = JSON.parse(readFileSync(fixture, 'utf8'));
     const result = invoke(fixture);
     const after = JSON.parse(readFileSync(fixture, 'utf8'));
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /rewrote 21 hook command\(s\)/);
-    assert.equal(commands(after).length, 21);
+    assert.match(result.stdout, new RegExp(`rewrote ${LIVE_COUNT} hook command\\(s\\)`));
+    assert.equal(commands(after).length, LIVE_COUNT);
     for (const command of commands(after)) {
       assert.ok(command.startsWith(WIRED_PREFIX));
       assert.doesNotMatch(command, /(^|\s)bash(\s|$)/);
@@ -132,7 +141,7 @@ for (const token of LEGACY_LAUNCHER_TOKENS) {
 
       const result = invoke(fixture);
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /rewrote 21 hook command\(s\)/);
+      assert.match(result.stdout, new RegExp(`rewrote ${LIVE_COUNT} hook command\\(s\\)`));
 
       const after = JSON.parse(readFileSync(fixture, 'utf8'));
       const rewritten = after.hooks.PreToolUse[1].hooks[0].command;
