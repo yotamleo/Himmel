@@ -119,6 +119,12 @@ QMD_QUALITY_KEEP_RUNS=2 run_cad 20260108T000001Z
 check "failed runs pruned to 2" 2 "$(n_runs)"
 echo 0 > "$STUB_RC"
 
+# 6c. an unwritable metrics.tsv must not pass silently.
+chmod 444 "$STATE/metrics.tsv"
+run_cad 20260109T000001Z; check "metrics write failure exits 2" 2 $?
+has "metrics write failure alerts" "qmd-quality metrics-write" "$W/alerts.log"
+chmod 644 "$STATE/metrics.tsv"
+
 # 8. arm / status / disarm through a stub crontab.
 cat > "$W/crontab" <<'SH'
 #!/usr/bin/env bash

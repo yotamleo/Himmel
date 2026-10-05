@@ -100,12 +100,18 @@ cmd_run() {
         return 1
     fi
     log="$STATE_DIR/metrics.tsv"
-    [ -f "$log" ] || printf 'ts\tmode\tn\thit@1\thit@5\tmrr\n' > "$log" || return 2
+    if [ ! -f "$log" ] && ! printf 'ts\tmode\tn\thit@1\thit@5\tmrr\n' > "$log"; then
+        bash "$ALERT" fail qmd-quality metrics-write "$out/eval.log"
+        return 2
+    fi
     thr="${QMD_QUALITY_DRIFT_MRR:-0.05}"
     while IFS=$'\t' read -r mode _ n h1 h5 mrr _; do
         # the previous row is read BEFORE this run's row is appended.
         prev="$(awk -F'\t' -v m="$mode" '$2 == m { p = $6 } END { print p }' "$log")"
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$mode" "$n" "$h1" "$h5" "$mrr" >> "$log"
+        if ! printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ts" "$mode" "$n" "$h1" "$h5" "$mrr" >> "$log"; then
+            bash "$ALERT" fail qmd-quality metrics-write "$out/eval.log"
+            return 2
+        fi
         [ -n "$prev" ] || continue
         if awk -v p="$prev" -v c="$mrr" -v t="$thr" 'BEGIN { exit !((p - c) > t + 1e-9) }'; then
             regressed="${regressed:+$regressed, }$mode $prev->$mrr"
