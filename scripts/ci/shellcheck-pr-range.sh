@@ -61,7 +61,7 @@ while IFS= read -r f; do
   cat "$list.n" >> "$list"
   # files this one sources (only if it still exists)
   [ -f "$f" ] || continue
-  lines=$(grep -E -e "$src_re" "$f" 2>/dev/null | grep -v '^[[:space:]]*#')
+  lines=$(grep -E -e "$src_re" "$f" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/[[:space:]]#.*$//')
   [ -n "$lines" ] || continue
   # every source line must name a *.sh/*.bash, else the neighbour set is uncertain
   printf '%s\n' "$lines" | grep -qvE '[A-Za-z0-9_.+-]+\.(sh|bash)' && run_all "dynamic source line in $f"
@@ -71,6 +71,17 @@ while IFS= read -r f; do
   done >> "$list"
 done <<EOF
 $changed
+EOF
+# second hop: an untouched lib's SC2034 verdict depends on ALL its consumers being in the input set
+hop=$(sort -u "$list")
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  git grep -l -E -e "${src_re}.*$(esc "$(basename "$f")")" -- . > "$list.n" 2>/dev/null
+  rc=$?
+  [ "$rc" -le 1 ] || run_all "git grep failed on $f"
+  cat "$list.n" >> "$list"
+done <<EOF
+$hop
 EOF
 rm -f "$list.n"
 
