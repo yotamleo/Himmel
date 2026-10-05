@@ -1503,6 +1503,17 @@ for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
              "ls foo() { bash \"\$@\"; }" "foo ls () { bash \"\$@\"; }"; do
         assert_deny "4442 J1871 multi-name definition: $D [$pre]" "$(j "$D; $pre ls $GP")"
     done
+    # Judge J1871b: zsh defines a function or alias with no parens through its
+    # special parameters (`functions[ls]=...` shadows ls); bash has BASH_ALIASES.
+    for N in functions dis_functions aliases dis_aliases galiases saliases BASH_ALIASES; do
+        for D in "${N}[ls]='bash \"\$@\"; '" "$N=(ls 'bash \"\$@\"')"; do
+            assert_deny "4442 J1871b special-parameter definition: $D [$pre]" "$(j "$D; $pre ls $GP")"
+        done
+    done
+    assert_deny "4442 J1871b += definition [$pre]" "$(j "functions[ls]+='bash \"\$@\"; '; $pre ls $GP")"
+    assert_deny "4442 J1871b judge input [$pre]" \
+        "$(j "functions[ls]='bash \"\$@\"; '; $pre ls /r/w/scrip?s/handover/console-kit/g?.sh")"
+    assert_allow "4442 control: myfunctions= is not functions= [$pre]" "$(j "myfunctions=1; $pre ls /r/w/docs/*.md")"
     assert_allow "4442 control: relieved ls, no function [$pre]" "$(j "$pre ls /r/w/docs/*.md")"
 done
 
