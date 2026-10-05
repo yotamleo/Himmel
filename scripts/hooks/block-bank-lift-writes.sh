@@ -840,7 +840,10 @@ check_clause() {
 
 # A cd anywhere in the command makes relative paths' directory unknown.
 case "$CMD" in *cd*|*pushd*|*popd*)
-    if printf '%s' "$CMD" | grep -Eq '(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)'; then HAS_CD=1; fi ;;
+    # grep -c reads all input: a -q early exit would SIGPIPE printf on a big
+    # command and, under pipefail, read a found cd as none.
+    cd_hits=$(printf '%s' "$CMD" | grep -Ec '(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)')
+    case "$cd_hits" in ''|0) ;; *) HAS_CD=1 ;; esac ;;
 esac
 analyse "$CMD" 0
 exit 0
