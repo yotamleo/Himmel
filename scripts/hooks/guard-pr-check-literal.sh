@@ -1230,7 +1230,15 @@ env_split_option() { # env_split_option <raw command> - false only when
     # env's options run up to its first program word (git log --stat is
     # git's), -u/-C/-a take the next word. A glob, a live '$', a $'...'
     # word or an untokenizable command may hide one, so they return true.
-    local i j e w sk
+    # HIMMEL-4491: a nested shell body (`bash -c <body>`, `eval <words>`) is
+    # one quoted word here, so an env inside it is no word of this scan: each
+    # segment's words after an `eval`, or after a -c option cluster behind a
+    # shell word, are joined and run through this same test, recursively.
+    # ponytail: only shells and eval are re-read - su -c, script -c, watch,
+    # a body held in a variable or read from stdin are not; upgrade path:
+    # add the re-reader to the case below if one is seen carrying env -S.
+    local i j e w sk sg b
+    local -a nm=() nb=()
     st_tokenize "$1" || return 0
     [ "$ST_ANSIC" = 0 ] || return 0
     i=0
@@ -1238,6 +1246,19 @@ env_split_option() { # env_split_option <raw command> - false only when
         e=$i
         i=$((i + 1))
         w=${ST_W[$e]}
+        if [ -z "${ST_RO[$e]}" ]; then
+            sg=${ST_S[$e]}
+            if [ "${nm[sg]-}" = 1 ]; then
+                nb[sg]="${nb[sg]-} $w"
+            else
+                case "${w##*/}" in
+                    eval) nm[sg]=1 ;;
+                    bash|sh|zsh|dash|ksh|mksh) nm[sg]=0 ;;
+                    --*) ;;
+                    -*c*) [ "${nm[sg]-}" != 0 ] || nm[sg]=1 ;;
+                esac
+            fi
+        fi
         [ "${w##*/}" = env ] || continue
         sk=0
         j=$i
@@ -1259,6 +1280,10 @@ env_split_option() { # env_split_option <raw command> - false only when
                 *) break ;;
             esac
         done
+    done
+    # After the scan: the recursive st_tokenize call overwrites ST_*.
+    for b in ${nb[@]+"${nb[@]}"}; do
+        env_split_option "$b" && return 0
     done
     return 1
 }

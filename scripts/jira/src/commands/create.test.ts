@@ -88,7 +88,7 @@ describe('create — command wiring (--summary → POST /issue payload)', () => 
       'title wins',
     ]);
     expect(mockRequest).toHaveBeenCalledTimes(1);
-    const [, , body] = mockRequest.mock.calls[0] as [
+    const [, , body] = mockRequest.mock.calls.find((c) => c[0] === 'POST') as [
       string,
       string,
       { fields: { summary: string } },
@@ -97,26 +97,21 @@ describe('create — command wiring (--summary → POST /issue payload)', () => 
   });
 });
 
-// HIMMEL-3411: the v1 bug freeze is applied at the filing point.
-describe('create — v1 bug freeze wiring', () => {
+// HIMMEL-4489: a Bug defaults to the earliest unreleased version at the filing point.
+describe('create — Bug default fixVersion wiring', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     mockRequest.mockResolvedValue({ key: 'HIMMEL-1' });
   });
-  afterEach(() => {
-    vi.useRealTimers();
-  });
 
-  async function createFields(date: string, args: string[]) {
-    vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date(`${date}T12:00:00`));
+  async function createFields(args: string[]) {
     const p = new Command();
     p.exitOverride();
     registerCreate(p);
     await p.parseAsync(['node', 'jira', 'create', '--title', 't', ...args]);
-    const [, , body] = mockRequest.mock.calls[0] as [
+    const [, , body] = mockRequest.mock.calls.find((c) => c[0] === 'POST') as [
       string,
       string,
       { fields: { fixVersions?: { name: string }[] } },
@@ -124,24 +119,53 @@ describe('create — v1 bug freeze wiring', () => {
     return body.fields;
   }
 
-  it('sets fixVersion v1.0.1 on a Bug filed after the cutoff and says so', async () => {
-    const fields = await createFields('2026-09-26', ['--type', 'Bug']);
-    expect(fields.fixVersions).toEqual([{ name: 'v1.0.1' }]);
-    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/bug freeze.*v1\.0\.1/));
+  const VERSIONS = [
+    { id: '1', name: 'v1.0.0', released: true },
+    { id: '2', name: 'v1.0.1', released: true },
+    { id: '3', name: 'v1.0.2', released: false },
+  ];
+  const withVersions = (versions: unknown) =>
+    mockRequest.mockImplementation(async (method: string) =>
+      method === 'GET' ? versions : { key: 'HIMMEL-1' },
+    );
+  const postedFields = () => {
+    const call = mockRequest.mock.calls.find((c) => c[0] === 'POST');
+    return (call?.[2] as { fields: { fixVersions?: { name: string }[] } }).fields;
+  };
+
+  it('defaults a Bug to the earliest unreleased version and says so', async () => {
+    withVersions(VERSIONS);
+    await createFields(['--type', 'Bug']);
+    expect(postedFields().fixVersions).toEqual([{ name: 'v1.0.2' }]);
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/defaults to fixVersion v1\.0\.2/));
   });
 
-  it('sets no fixVersion when the Bug is labelled v1-blocker', async () => {
-    const fields = await createFields('2026-09-26', ['--type', 'Bug', '--labels', 'v1-blocker']);
-    expect(fields.fixVersions).toBeUndefined();
+  it('lets an explicit --fix-version win over the default', async () => {
+    withVersions(VERSIONS);
+    await createFields(['--type', 'Bug', '--fix-version', 'v1.0.0']);
+    expect(postedFields().fixVersions).toEqual([{ name: 'v1.0.0' }]);
   });
 
-  it('sets no fixVersion before the cutoff', async () => {
-    const fields = await createFields('2026-09-25', ['--type', 'Bug']);
-    expect(fields.fixVersions).toBeUndefined();
+  it('files with no fixVersion and a warning when no unreleased version can be found', async () => {
+    withVersions([{ id: '1', name: 'v1.0.0', released: true }]);
+    await createFields(['--type', 'Bug']);
+    expect(postedFields().fixVersions).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/no unreleased version.*no fixVersion/));
+  });
+
+  it('files with no fixVersion and a warning when the versions cannot be read', async () => {
+    mockRequest.mockImplementation(async (method: string) => {
+      if (method === 'GET') throw new Error('boom');
+      return { key: 'HIMMEL-1' };
+    });
+    await createFields(['--type', 'Bug']);
+    expect(postedFields().fixVersions).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/no unreleased version.*no fixVersion/));
   });
 
   it('sets no fixVersion on a Task', async () => {
-    const fields = await createFields('2026-09-26', ['--type', 'Task']);
+    withVersions(VERSIONS);
+    const fields = await createFields(['--type', 'Task']);
     expect(fields.fixVersions).toBeUndefined();
   });
 });

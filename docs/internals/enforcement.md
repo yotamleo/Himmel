@@ -1936,6 +1936,16 @@ doing its job: a token already consumed as a preceding `-f`/`-e`'s own value
 is skipped (`grep -f --file=.env` opens a file literally named
 `--file=.env`, not the secret).
 
+**Nested shell bodies are re-scanned as command lines (HIMMEL-4492).** An
+interpreter `-c` body (bash, sh, zsh, dash, ksh, ash) is scanned again as its
+own command line, recursively, so a glob read inside it (`bash -c 'cat .e*'`) expands
+against cwd exactly like a top-level one. Wrappers (`timeout`, `nice`, `sudo`
+and their flag values) and quoted command words (`'cat' .env`) no longer hide
+the command. Nesting deeper than 4 levels denies: a body the guard cannot read
+fully counts as unreadable, which is fail-closed. An `eval` body is **not**
+re-scanned: `eval 'cat .env'` is allowed, as it was before. Remaining ceilings are
+named as `ponytail:` notes in the hook header (HIMMEL-4438).
+
 ### `guard-memory-capture.sh` — auto-memory capture guard (HIMMEL-570 / HIMMEL-1088)
 
 **Ceiling, and the gap the guard cannot close alone (HIMMEL-3313 / HIMMEL-3314).**
@@ -2363,6 +2373,14 @@ count as shells. The
 canonical anchored fence is exempt only in its exact shape; only its echo text
 may vary. Classification uses bash builtins only, so a missing tool cannot turn
 it into a no-op. Text classification has limits, and the hook's `ponytail:` names them.
+
+**Nested `env -S` (HIMMEL-4491).** The `env -S` split-string test also reads
+inside a nested shell body. A `bash -c '…'` (or `sh`, `zsh`, `dash`, `ksh`,
+`mksh`) body or the words after `eval` are one quoted word to the outer scan, so
+an `env -S '… \c'` inside them was no word of it. Each such body is joined and run
+through the same test, recursively, so `bash -c "env -S 'bash scripts/cr/… \c'"`
+denies like the unnested form. `su -c`, `script -c`, `watch` and a body held in
+a variable or read from stdin are not re-read (the hook's `ponytail:`).
 
 **Write-channel backstop (HIMMEL-3913, HIMMEL-3917).** Before any of the above,
 the hook reads the raw text. The inert drop and the here-string reader exemption

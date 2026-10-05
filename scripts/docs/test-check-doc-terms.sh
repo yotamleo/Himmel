@@ -26,6 +26,18 @@ SCRIPT="$HERE/check-doc-terms.sh"
 # shellcheck disable=SC1091
 . "$HERE/../lib/fixture-tempdir.sh"
 
+# Every fixture dir is recorded in FIXTURE_LIST (a file, so a record made inside a
+# subshell survives) and removed by the one EXIT trap (HIMMEL-4434).
+FIXTURE_LIST=$(mktemp "${TMPDIR:-/tmp}/himmel-fixture-list.XXXXXX") || exit 1
+_d=''
+trap 'while IFS= read -r _d; do [ -n "$_d" ] && rm -rf "$_d"; done <"$FIXTURE_LIST"; rm -f "$FIXTURE_LIST"' EXIT
+tracked_fixture_dir() {
+    local d
+    d=$(fixture_mktemp_dir) || return 1
+    printf '%s\n' "$d" >>"$FIXTURE_LIST"
+    printf '%s\n' "$d"
+}
+
 pass=0
 fail=0
 
@@ -35,7 +47,7 @@ bad() { echo "FAIL: $*" >&2; fail=$((fail + 1)); }
 # setup_repo — a repo carrying the few real references the cases point at: one
 # script, one doc directory, and one env var defined somewhere in the tree.
 setup_repo() {
-  R=$(fixture_mktemp_dir) || return 1
+  R=$(tracked_fixture_dir) || return 1
   git -C "$R" init -q
   git -C "$R" config user.email t@t
   git -C "$R" config user.name t

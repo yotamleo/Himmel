@@ -47,6 +47,15 @@ grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOG="$SCRIPT_DIR/merge-on-green.sh"
 
+# HIMMEL-4434: ~70 mktemp sites below (mog-run.*, bare `mktemp -d`, mutant files,
+# red-control stderr) each leaked one entry per run. One private parent under
+# TMPDIR, exported as TMPDIR for the rest of the suite and its children, is
+# removed by the one EXIT trap, so every site is covered without a per-site list.
+MOG_SUITE_TMP=$(mktemp -d "${TMPDIR:-/tmp}/mog-suite.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+if [ -z "$MOG_SUITE_TMP" ] || [ ! -d "$MOG_SUITE_TMP" ]; then echo "FAIL: mktemp -d produced no suite TMPDIR" >&2; exit 1; fi
+trap 'rm -rf "$MOG_SUITE_TMP"' EXIT
+export TMPDIR="$MOG_SUITE_TMP"
+
 # HIMMEL-3543: console-kit/go.sh mints, and the console-GO gate verifies with,
 # a key under $HOME/.config/himmel — a scratch HOME keeps every GO this suite
 # writes off the operator's real key.
