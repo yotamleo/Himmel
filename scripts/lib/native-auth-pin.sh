@@ -61,10 +61,32 @@
 # bash 3.2-safe (macOS ships 3.2) and Git-Bash-safe: no `declare -A`, no
 # `${var^^}` (the prefix test is a case-insensitive glob), no `grep -P`;
 # enumeration is the `compgen -v` builtin -- no external tool, so a shadowed
-# PATH entry or exported function cannot blind it (HIMMEL-4459). The pin fails
-# CLOSED: native_auth_pin_env returns non-zero when it cannot enumerate or a
-# target variable is still set afterwards. JSON screening shells out to
+# PATH entry cannot blind it (HIMMEL-4459). JSON screening shells out to
 # node -- an established himmel dependency (claude-glm's screen does the same).
+#
+# LAUNCH GATE (HIMMEL-4459) -- the guarantee, and what carries it.
+# native_auth_pin_env returns non-zero when it cannot enumerate or a target
+# variable is still set, BUT ITS RETURN VALUE IS ADVISORY: any builtin it uses
+# (`unset`, `return`, `builtin`, `compgen`) can be shadowed by an exported or
+# in-shell function, an alias, or a BASH_ENV file, and with `unset` and `return`
+# both shadowed it falls through rc 0 with the proxy variables still set. So
+# every caller gates the LAUNCH on a condition built only from shell keywords and
+# expansions (`[[ ]]`, `case`, `&&`, `${!PREFIX*}`, `$(<file)`) -- no function
+# call, builtin or external command, hence nothing to shadow. It is a documented
+# snippet, deliberately NOT a function (a function is shadowable). After the pin:
+#
+#   native_auth_pin_env
+#   [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] && <launch>
+#
+# (`|| <refuse>` for a refusing caller.) The one exception is the loopback-mock
+# seam below, re-derived with the same keyword-only syntax in claude-headless.sh:
+# the survivors must be exactly ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY, the URL a
+# loopback literal without `@`, and `$(</proc/net/dev)` must list only `lo`.
+#
+# True guarantee: an INHERITED variable, or a shadowed tool, cannot reach a
+# launch through these callers. NOT guaranteed: a hostile shell that shadows the
+# launcher itself (or `[[`/`.` etc.) -- that is out of scope; so is the PowerShell
+# twin.
 
 # The predicate lives once, as the case glob inside native_auth_pin_env (no
 # fork per variable -- a `tr` per variable was brutally slow on Windows). The
@@ -75,14 +97,12 @@
 native_auth_pin_env() {
   # No external tool and no process substitution anywhere in this function: the
   # enumeration is `compgen -v` (a builtin) and the checks are `[[ ]]` / case /
-  # parameter expansion, none of which a PATH entry or an exported function can
-  # replace. A function named like a builtin CAN shadow it (`export -f unset`,
-  # `export -f compgen`), so the first line removes any function of the names
-  # used here; and because `unset` itself could be the shadowed one, the final
-  # step re-checks with `${!PREFIX*}` expansions (not commands, unshadowable)
-  # and the pin returns non-zero if any target is still set. A shadow can
-  # therefore only ever cause a REFUSAL, never a silent pass (HIMMEL-4459).
-  # Callers: `native_auth_pin_env || <refuse the launch>`.
+  # parameter expansion, none of which a PATH entry can replace. A function named
+  # like a builtin CAN shadow it, so the first line removes functions of the names
+  # used here, and the final step re-checks with `${!PREFIX*}` expansions. That
+  # is best effort: shadowing `unset` AND `return` defeats this function's own
+  # report. The return value is therefore ADVISORY; callers MUST gate the launch
+  # on the keyword-only LAUNCH GATE documented in the file header (HIMMEL-4459).
   unset -f unset builtin command compgen 2>/dev/null
   local IFS=$'\n' _name _names _failed=0 _keep_mock=0 _nd _line _n=0 _nonlo=0
   # Test seam (HIMMEL-4411): a mock-backed test may keep EXACTLY the base URL and

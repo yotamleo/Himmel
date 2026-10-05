@@ -266,7 +266,9 @@ HASH_BEFORE="$(_hash "$NOTE_PATH")"
 # shellcheck source=scripts/lib/native-auth-pin.sh
 # shellcheck disable=SC1091
 . "$HIMMEL_ROOT/scripts/lib/native-auth-pin.sh" || exit 0
-native_auth_pin_env || exit 0
+# HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
+native_auth_pin_env
+[[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] || exit 0
 (
     cd "$NOTE_DIR" 2>/dev/null || exit 0
     CRYSTALLIZE_NOTE="$NOTE_PATH" CRYSTALLIZE_TRANSCRIPT="$TRANSCRIPT_PATH" \

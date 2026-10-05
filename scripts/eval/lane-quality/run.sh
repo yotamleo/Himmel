@@ -171,7 +171,9 @@ judge() { # $1 task, $2 worktree, $3 fixture sha, $4 agent report file, $5 out d
   } | redact >"$packet"
   (
     cd "$jdir" || exit 1
-    native_auth_pin_env || exit 1
+    # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
+    native_auth_pin_env
+    [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] || exit 1
     # headless-claude-ok: HIMMEL-4090 blind judge call, bank-preflighted by run_task, no tools, explicit permission mode, budget-capped
     # launch-profile-ok: HIMMEL-4090 the judge runs with --tools "", so no tool profile applies
     timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$JUDGE_MODEL" --permission-mode dontAsk --output-format json \
@@ -200,7 +202,9 @@ run_task() { # $1 task -> appends a row to runs.jsonl, prints the task's cost
   start="$(date +%s)"
   (
     cd "$wt" || exit 1
-    native_auth_pin_env || exit 1
+    # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
+    native_auth_pin_env
+    [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] || exit 1
     # headless-claude-ok: HIMMEL-4090 lane-quality agent run, bank-preflighted per sweep, explicit permission mode, budget-capped
     # launch-profile-ok: HIMMEL-4090 the eval measures the lane's own default config (claude or the lane launcher in $AGENT_BIN), not a leg profile
     timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \

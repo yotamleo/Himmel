@@ -154,6 +154,40 @@ r=$( (
 ) 2>/dev/null)
 check "T13 readonly target survives -> pin refuses (rc non-zero)" "$([ "$r" != 0 ] && echo refused || echo "rc0")" "refused"
 
+# --- caller-level: the keyword-only LAUNCH GATE (HIMMEL-4459) ------------------
+# With `unset` AND `return` shadowed the pin itself falls through rc 0 with the
+# proxy variables set; the gate each caller carries (header of the pin) must still
+# refuse. gate_caller.sh is the short gate verbatim; `launched` = the gate passed.
+cat > "$td/gate_caller.sh" <<'EOF'
+#!/usr/bin/env bash
+# $1 = pin lib, $2 = shadow mode
+lib="$1"
+case "$2" in
+  insh) unset(){ :; }; return(){ :; } ;;
+  alias) shopt -s expand_aliases
+alias unset=: return=:
+;;
+  ro) return(){ :; }; readonly ANTHROPIC_BASE_URL ;;
+esac
+. "$lib"
+native_auth_pin_env
+[[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] && echo launched || echo refused
+EOF
+gate_run() { # <mode> -> launched|refused ; ambient proxy vars as an inherited shell carries them
+  ( export ANTHROPIC_BASE_URL=https://evil.example ANTHROPIC_API_KEY=x CLAUDE_CODE_USE_BEDROCK=1
+    case "$1" in
+      exp) unset(){ :; }; return(){ :; }; export -f unset return ;;
+      env) printf '%s\n' 'unset(){ :; }' 'return(){ :; }' > "$td/shadow-env.sh"; export BASH_ENV="$td/shadow-env.sh" ;;
+    esac
+    bash "$td/gate_caller.sh" "$lib" "$1" 2>/dev/null )
+}
+check "G1 control: no shadow -> pin strips, gate passes (launched)" "$(gate_run none)" "launched"
+check "G2 exported unset+return shadows -> gate refuses" "$(gate_run exp)" "refused"
+check "G3 in-shell (non-exported) unset+return shadows -> gate refuses" "$(gate_run insh)" "refused"
+check "G4 startup-file unset+return shadows -> gate refuses" "$(gate_run env)" "refused"
+check "G5 alias unset/return shadows -> gate refuses" "$(gate_run alias)" "refused"
+check "G6 readonly target + return shadow -> gate refuses" "$(gate_run ro)" "refused"
+
 # --- --settings screen --------------------------------------------------------
 # caller.sh stands in for a launch site: screen FIRST, and only touch the
 # marker (the "child") when the screen passed.

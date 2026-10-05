@@ -317,7 +317,10 @@ run_claude_review() {
     # substitution, so the unsets stay scoped to this review.
     # shellcheck source=../lib/native-auth-pin.sh
     # shellcheck disable=SC1091
-    if ! . "$SCRIPT_DIR/../lib/native-auth-pin.sh" || ! native_auth_pin_env; then
+    # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE
+    # (native-auth-pin.sh) re-checks, immune to shadowed builtins.
+    if ! . "$SCRIPT_DIR/../lib/native-auth-pin.sh" ||
+       { native_auth_pin_env; [[ -n "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; }; then
         echo "hermes-critic.sh: native-auth pin unavailable — refusing the claude route" >&2
         return 1
     fi

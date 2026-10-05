@@ -423,7 +423,9 @@ if [ "$RUN_CLAUDE" = "1" ] && command -v claude >/dev/null 2>&1 && command -v jq
     # shellcheck source=scripts/lib/native-auth-pin.sh
     # shellcheck disable=SC1091
     . "$REPO/scripts/lib/native-auth-pin.sh" 2>/dev/null || PIN_OK=0
-    [ "$PIN_OK" = "1" ] && { native_auth_pin_env || PIN_OK=0; }
+    # HIMMEL-4459: the pin's rc is advisory (shadowed builtins can fake rc 0);
+    # the keyword-only LAUNCH GATE in native-auth-pin.sh is the real check.
+    [ "$PIN_OK" = "1" ] && { native_auth_pin_env; [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]] || PIN_OK=0; }
     if [ "$PIN_OK" != "1" ]; then
         row claude-print SKIP - 0 0 "native-auth pin unavailable"
     elif [ "$BANK" = "PROCEED" ] || [ "$BANK" = "BANK-UNKNOWN" ]; then
