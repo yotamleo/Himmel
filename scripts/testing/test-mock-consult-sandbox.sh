@@ -118,6 +118,7 @@ jsonl_q() { node -e 'const rows=require("fs").readFileSync(process.argv[1],"utf8
 echo "== R1 RED control: sandbox OFF => the sibling write lands (the smoke can catch a leak) =="
 run_probe "$WORK/off" "$WORK/off.json"
 if [ "$(cat "$SIBLING")" != untouched ]; then pass "R1 with the sandbox off the sibling write landed"; else fail "R1 the sibling write did NOT land with the sandbox off: S2 would be vacuous ($(head -c 300 "$WORK/off/err.txt"))"; fi
+if [ -e "$REPO_PROBE" ]; then pass "R1 with the sandbox off the repo write landed too"; else fail "R1 the repo write did NOT land with the sandbox off: S3 would be vacuous"; fi
 printf 'untouched\n' >"$SIBLING"; rm -f "$REPO_PROBE"; printf '# consult\n\n## Results\n' >"$DOC"
 
 echo "== S sandbox ON: the same scripted probes =="
