@@ -182,8 +182,8 @@ HEOF
     HIMMEL_REGISTRY_DIR="$H/reg" HIMMEL_FLEET_SLOTS="$H/slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native \
     CADENCE_BANK_CACHE="$H/bank-cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$H/bank-ledger.jsonl" \
     FLEET_PS_CMD="$H/no-fleet-ps.sh" \
-    unshare -rn timeout 60 sh "$H/run.sh" >"$H/outer.out" 2>&1
-  if grepq "$H/outer.out" "cannot read the claude session's cwd"; then
+    unshare -rn timeout 60 sh "$H/run.sh" >"$H/outer.out" 2>&1 # gnu-ok: unshare -rn is Linux-only, so this whole case is
+  if grepq "$H/outer.out" "cannot read the claude session's cwd" || grepq "$H/headless.err" "cannot read the claude session's cwd"; then
     # Run from inside a Claude Code session, bank-preflight's seam guard (HIMMEL-3914) walks to
     # the session and cannot read its cwd across the user namespace. CI has no claude ancestor.
     skip "H run from inside a Claude Code session: bank-preflight's seam guard refuses across the netns (runs in CI, or detached from the session)"
@@ -199,8 +199,9 @@ fi
 
 echo "== R1 a fixture whose second turn never matches fails the M1/M2 checks =="
 FAKEKEY_MOCK_FIXTURE="$FIX/bash-roundtrip-broken.json" fakekey_run "$WORK/r1" "${TURN_ARGS[@]}"
-if [ "$(jsq "$WORK/r1/out.json" 'String(d.result).includes("MOCK-TURN-2 done.")')" != true ] \
-  && [ "$(jsonl_q "$WORK/r1/mock.log" 'rows.filter(r=>r.turn===1).length===1')" != true ]; then
+if [ "$(jsq "$WORK/r1/out.json" 'String(d.result).includes("MOCK-TURN-2 done.")')" = false ] \
+  && [ "$(jsonl_q "$WORK/r1/mock.log" 'rows.filter(r=>r.turn===0).length===1')" = true ] \
+  && [ "$(jsonl_q "$WORK/r1/mock.log" 'rows.filter(r=>r.turn===1).length===1')" = false ]; then
   pass "R1 broken fixture: the assertions that passed above fail here"
 else fail "R1 the checks passed against a broken fixture (vacuous)"; fi
 
