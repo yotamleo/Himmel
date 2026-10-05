@@ -139,6 +139,36 @@ err=$(python3 "$W/inproc.py" "$SUT" survivor "$W" "$W/child.sh" 2>&1 >/dev/null)
 eq "sweep survivor: rc 125" 125 "$rc"
 case "$err" in *4194305*) pass "sweep survivor: pid named" ;; *) fail "sweep survivor: pid not named ($err)" ;; esac
 
+# 9. orphans that exit DURING the run are reaped as they go, not left as
+#    zombies under the subreaper until the final sweep (a long differential
+#    that double-forks every hook call otherwise piles up pids).
+# shellcheck disable=SC2016  # $1 and $(seq) expand in the child shell
+python3 "$SUT" --deadline 30 -- bash -c \
+    'for i in $(seq 200); do ( true & ); done; echo ready > "$1/t9-ready"; sleep 3' _ "$W" >/dev/null 2>&1 &
+runner=$!
+for _ in $(seq 1 50); do [ -s "$W/t9-ready" ] && break; sleep 0.1; done
+sleep 0.5
+zombies=$(python3 - "$runner" <<'ZOMB'
+import os, sys
+n = 0
+for d in os.listdir("/proc"):
+    try:
+        s = open("/proc/%s/stat" % d).read() if d.isdigit() else ""
+    except OSError:
+        continue
+    f = s[s.rfind(")") + 2:].split()
+    n += bool(f) and f[0] == "Z" and f[1] == sys.argv[1]
+print(n)
+ZOMB
+)
+wait "$runner"
+eq "orphans reaped mid-run: rc 0" 0 "$?"
+if [ "$zombies" -lt 5 ]; then pass "orphans reaped mid-run ($zombies zombies)"; else fail "orphans reaped mid-run: $zombies zombies under the runner"; fi
+
+# 10. a child killed by a signal still maps to 128+sig.
+python3 "$SUT" --deadline 30 -- bash -c 'kill -KILL $$' >/dev/null 2>&1
+eq "child killed by SIGKILL: rc 137" 137 "$?"
+
 # 5. the sweep reaches only the runner's own descendants.
 if alive "$bystander"; then pass "bystander untouched"; else fail "bystander was killed"; fi
 
