@@ -22,6 +22,7 @@ const statusReportLib = require('./status-report.js');
 const probesLib = require('./probes.js');
 const redactLib = require('./redact.js');
 const adopterProfileLib = require('./adopter-profile.js');
+const bundlesLib = require('./feed-bundles.js');
 const { resolveBash } = require('../../hooks/run-hook-with-bash.js');
 
 const SCHEMA = 'himmel-config-feed/1';
@@ -557,6 +558,13 @@ function composeFeed({ manifest, scope, targetPath, answers, items }) {
       || (r.id.startsWith('probe-disagree:') && wanted.includes(shown(`doctor:${r.id.slice('probe-disagree:'.length)}`))));
   }
 
+  // HIMMEL-4379: bundle on the RAW ids (redaction can rewrite an id), after the
+  // fold and the --items filter, so Unsorted appears only for a surviving row.
+  const table = bundlesLib.loadBundles();
+  const bundleIds = rows.map((r) => bundlesLib.bundleOf(r.id, table));
+  const bundles = table.map((b) => ({ id: b.id, title: b.title }));
+  if (bundleIds.includes(bundlesLib.UNSORTED)) bundles.push({ id: bundlesLib.UNSORTED, title: 'Unsorted' });
+
   const summary = { total: rows.length, ok: 0, warn: 0, fail: 0, off: 0, info: 0 };
   for (const r of rows) summary[r.health] = (summary[r.health] || 0) + 1;
 
@@ -572,7 +580,12 @@ function composeFeed({ manifest, scope, targetPath, answers, items }) {
     rows,
     summary,
   };
-  return redactLib.redactDeep(feed, { literals });
+  const out = redactLib.redactDeep(feed, { literals });
+  // Fixed table text, never station data: attached AFTER redaction so a .env
+  // value equal to a bundle id cannot rewrite it (rows keep their order).
+  out.rows.forEach((r, i) => { r.bundle = bundleIds[i]; });
+  out.bundles = bundles;
+  return out;
 }
 
-module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, PRESENCE_SOURCES, envFileHasKey, remedyFromDetail };
+module.exports = { buildFeed, SCHEMA, REPROBE_BUDGET_MS, CADENCES, INITIATIVE_LEGS, DOCTOR_OWNER, PRESENCE_SOURCES, envFileHasKey, remedyFromDetail };

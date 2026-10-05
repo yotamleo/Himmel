@@ -79,6 +79,13 @@ repos:
         always_run: true
         pass_filenames: false
 
+      - id: bundle-registry-lint
+        name: every config-feed row id maps to exactly one bundle in feed-bundles.json
+        entry: node scripts/install/bundle-registry-lint.mjs
+        language: system
+        always_run: true
+        pass_filenames: false
+
       - id: marketplace-source-hermetic
         name: settings-template marketplace sources stay hermetic (url/directory, never github shorthand)
         entry: bash scripts/check-marketplace-source-hermetic.sh

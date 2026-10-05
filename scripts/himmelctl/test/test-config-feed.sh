@@ -422,4 +422,92 @@ leak=$( cd "$target" && HIMMELCTL_REPO_ROOT="$(winpath "$fixtureRepo")" "$node_b
 [ "$leak" = "$(winpath "$fixtureRepo")" ] || fail "i4 HIMMELCTL_REPO_ROOT leaked/changed after a throwing buildFeed: $leak"
 pass "i4 HIMMELCTL_REPO_ROOT restored after buildFeed throws"
 
+# ── j. HIMMEL-4379: every row carries a bundle; the bundle-registry lint ────
+bundle_lint="$repo_root/scripts/install/bundle-registry-lint.mjs"
+table="$repo_root/scripts/himmelctl/lib/feed-bundles.json"
+# j1: every row of the hermetic report has a bundle named in envelope.bundles; the
+# stub doctor's unregistered C9-leak id lands in unsorted, appended last
+jq -e '(.bundles|type)=="array" and ([.bundles[]|has("id") and has("title")]|all)' "$out" >/dev/null || fail "j1 envelope lacks bundles [{id,title}]"
+bad=$(jq -r '[.bundles[].id] as $b|.rows[]|select((.bundle|type)!="string" or (.bundle|IN($b[])|not))|.id' "$out")
+[ -z "$bad" ] || fail "j1 rows with no bundle or one missing from envelope.bundles: $bad"
+jq -e '.rows[]|select(.id=="doctor:C9-leak")|.bundle=="unsorted"' "$out" >/dev/null || fail "j1 an unregistered doctor id did not land in unsorted"
+jq -e '.bundles[-1]|.id=="unsorted" and .title=="Unsorted"' "$out" >/dev/null || fail "j1 envelope lacks Unsorted last"
+jq -e '.rows[]|select(.id=="doctor:C3-luna")|.bundle=="vault"' "$out" >/dev/null || fail "j1 doctor:C3-luna is not in vault"
+pass "j1 every row has a bundle named in envelope.bundles; an unregistered id lands in unsorted"
+# j2: envelope.bundles follows the table order (a full report uses every bundle id the rows touch, so compare the subsequence)
+jq -e --slurpfile t "$table" '[.bundles[]|select(.id!="unsorted")|.id] as $got|($t[0].bundles|map(.id)|map(select(. as $i|$got|index($i)))) == $got' "$out" >/dev/null || fail "j2 envelope.bundles is not in table order: $(jq -c '[.bundles[].id]' "$out")"
+jq -e --slurpfile t "$table" '[.bundles[]|select(.id!="unsorted")]|all(.title as $x|$t[0].bundles|map(.title)|index($x))' "$out" >/dev/null || fail "j2 envelope titles differ from the table"
+pass "j2 envelope.bundles is in table order with table titles"
+# j3: an --items call that drops the unregistered row has no Unsorted
+jq -e '.rows|length==1' "$work/items2.json" >/dev/null || fail "j3 precondition: items2 is one row"
+jq -e --slurpfile t "$table" '.rows[0].bundle=="vault" and ([.bundles[].id]==[$t[0].bundles[].id])' "$work/items2.json" >/dev/null || fail "j3 --items doctor:C3-luna envelope is not exactly the table's bundles: $(jq -c '[.bundles[].id]' "$work/items2.json")"
+run_report --items doctor:C9-leak > "$work/j3.json" 2>/dev/null || fail "j3 report exited non-zero"
+jq -e '.rows[0].bundle=="unsorted" and (.bundles[-1].id=="unsorted")' "$work/j3.json" >/dev/null || fail "j3 --items on the unregistered row lacks Unsorted"
+pass "j3 Unsorted is in the envelope only when a surviving row uses it"
+# j4: a probe-disagree row lands in its owner's bundle (table lookup, not hardcoded)
+n=0
+for did in $(jq -r '.rows[]|select(.id|startswith("probe-disagree:"))|.id|sub("probe-disagree:";"")' "$foldOut"); do
+  exp=$(jq -r --arg id "probe-disagree:$did" '.bundles[]|select(.rows|index($id))|.id' "$table")
+  own=$(jq -r --arg id "doctor:$did" '.bundles[]|select(.rows|index($id))|.id' "$table")
+  if [ -z "$exp" ] || [ "$exp" != "$own" ]; then fail "j4 probe-disagree:$did table bundle '$exp' != its doctor check's '$own'"; fi
+  jq -e --arg id "probe-disagree:$did" --arg b "$exp" '.rows[]|select(.id==$id)|.bundle==$b' "$foldOut" >/dev/null || fail "j4 probe-disagree:$did is not in $exp"
+  n=$((n+1))
+done
+[ "$n" -ge 1 ] || fail "j4 no probe-disagree row exercised (vacuous)"
+pass "j4 probe-disagree rows land in their doctor check's bundle ($n)"
+# j5: a .env value equal to a bundle id is redacted elsewhere but never in the bundle fields
+vaultRepo="$work/vault-repo"; mkdir -p "$vaultRepo/scripts/install" "$vaultRepo/scripts/lanes"
+cp "$fixtureRepo/scripts/install/manifest.json" "$vaultRepo/scripts/install/"; cp "$fixtureRepo/scripts/lanes/lanes.json" "$vaultRepo/scripts/lanes/"
+printf 'HIMMEL_INITIATIVE=execute,pr\nVAULT_API_TOKEN=vault\n' > "$vaultRepo/.env"
+vaultDoctor="$work/vault-doctor.sh"
+cat > "$vaultDoctor" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"sev":"WARN","id":"C3-luna","msg":"the vault is dirty","remedy":"commit it"}'
+STUB
+chmod +x "$vaultDoctor"
+( cd "$target" && HOME="$homeDir" USERPROFILE="$(winpath "$homeDir")" \
+    HIMMELCTL_CACHE_DIR="$(winpath "$cacheDir")" HIMMELCTL_REPO_ROOT="$(winpath "$vaultRepo")" \
+    HIMMEL_LUNA_CONFIG_PATH="$(winpath "$cacheDir")-luna-config.json" \
+    HIMMEL_REPORT_DOCTOR="$(winpath "$vaultDoctor")" HIMMEL_REPORT_CADENCE_ROOT="$(winpath "$scriptRoot")" \
+    PATH="$fakeBin:$PATH" "$node_bin" "$wizard" report --json ) > "$work/j5.json" 2>/dev/null || fail "j5 report exited non-zero"
+jq -e '.rows[]|select(.id=="doctor:C3-luna")|.title|contains("‹redacted›")' "$work/j5.json" >/dev/null || fail "j5 control: the .env value 'vault' was not redacted from a title (vacuous)"
+jq -e '.rows[]|select(.id=="doctor:C3-luna")|.bundle=="vault"' "$work/j5.json" >/dev/null || fail "j5 the row's bundle was redacted"
+jq -e '[.bundles[]|select(.id=="vault")]|length==1 and .[0].title=="Vault & capture"' "$work/j5.json" >/dev/null || fail "j5 the envelope's vault bundle was redacted"
+pass "j5 a .env value equal to a bundle id does not rewrite bundle fields (title is still redacted)"
+
+# ── k. HIMMEL-4379: bundle-registry-lint ────────────────────────────────────
+"$node_bin" "$bundle_lint" --root "$repo_root" >"$work/bl.out" 2>"$work/bl.err" || { cat "$work/bl.err" >&2; fail "k1 bundle lint fails on the real tree"; }
+grep -q 'bundle-registry-lint: ok' "$work/bl.out" || fail "k1 bundle lint did not print ok"
+pass "k1 bundle lint passes on the real tree"
+bl_base="$repo_root/scripts/himmelctl/test/fixtures/bundle-lint/base"
+bl_root() { rm -rf "$work/blr"; cp -R "$bl_base" "$work/blr"; }
+bl_table() { printf '%s\n' "$1" > "$work/blr/scripts/himmelctl/lib/feed-bundles.json"; }
+bl_expect() { # label, token the finding line must carry
+  if "$node_bin" "$bundle_lint" --root "$work/blr" >/dev/null 2>"$work/blr.err"; then fail "k $1: lint passed"; fi
+  grep -q "$2" "$work/blr.err" || fail "k $1: finding does not carry '$2': $(cat "$work/blr.err")"
+}
+bl_root
+"$node_bin" "$bundle_lint" --root "$work/blr" >/dev/null 2>"$work/blr.err" || { cat "$work/blr.err" >&2; fail "k2 the fixture base does not pass (control)"; }
+printf '{"items":[{"id":"node"},{"id":"extra-item"}]}\n' > "$work/blr/scripts/install/manifest.json"
+bl_expect UNMAPPED 'UNMAPPED extra-item'
+bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","no*","doctor:*","probe-disagree:*","plugin:*","lane:*","flag:*","secret:*","initiative:*","pipeline-cadence","qmd-cadence","graphmap-cadence","codex-sweep-cadence","doctor-cadence"]}]}'
+bl_expect MULTI 'MULTI node'
+bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","ghost-row","doctor:*","probe-disagree:*","plugin:*","lane:*","flag:*","secret:*","initiative:*","pipeline-cadence","qmd-cadence","graphmap-cadence","codex-sweep-cadence","doctor-cadence"]}]}'
+bl_expect DEAD 'DEAD all ghost-row'
+bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","doctor:*","probe-disagree:*","plugin:*","lane:*","flag:*","secret:*","initiative:*","pipeline-cadence","qmd-cadence","graphmap-cadence","codex-sweep-cadence","doctor-cadence"]},{"id":"all","title":"Again","rows":[]}]}'
+bl_expect DUPLICATE 'DUPLICATE all'
+bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","doctor:*","probe-disagree:*","plugin:*","lane:*","flag:*","secret:*","initiative:*","pipeline-cadence","qmd-cadence","graphmap-cadence","codex-sweep-cadence","doctor-cadence"]},{"id":"unsorted","title":"Unsorted","rows":[]}]}'
+bl_expect RESERVED 'RESERVED unsorted'
+bl_root; bl_table '{"bundles":[{"id":"all","title":"All","rows":["node","doctor:*","probe-disagree:*","plugin:*","lane:*","flag:*","secret:*","initiative:*","pipeline-cadence","qmd-cadence","graphmap-cadence","codex-sweep-cadence","doctor-cadence"]},{"id":"bare","title":"No rows"}]}'
+bl_expect MALFORMED 'bare'
+pass "k2 bundle lint fails on UNMAPPED / MULTI / DEAD / DUPLICATE / RESERVED / malformed"
+# k3: a root with nothing to enumerate must not pass vacuously
+bl_root
+printf '{"items":[]}\n' > "$work/blr/scripts/install/manifest.json"
+printf '#!/usr/bin/env bash\n' > "$work/blr/scripts/himmel-doctor.sh"
+vacRoot="$work/blr"
+if "$node_bin" "$bundle_lint" --root "$vacRoot" >/dev/null 2>"$work/bl3.err"; then fail "k3 bundle lint passed an empty registry root"; fi
+grep -q 'vacuously' "$work/bl3.err" || fail "k3 vacuous refusal does not say so: $(cat "$work/bl3.err")"
+pass "k3 bundle lint refuses to pass vacuously"
+
 echo "ALL PASS"
