@@ -1617,6 +1617,33 @@ echo "$outHDx" | jq -e '.actual == "present"' >/dev/null \
   || fail "HIMMEL-3307: once <repo>/handovers exists the probe must read present (got: $outHDx)"
 echo "ok: HIMMEL-3307 handover-dir cleanAbsence — only 'unset + git repo + inline dir not created yet'; missing HANDOVER_DIR / non-git stay a plain absent"
 
+# HIMMEL-4403: the probe must answer the way the handover tooling does from ANY
+# checkout. HANDOVER_DIR lives in the PRIMARY's gitignored .env, which the
+# resolver itself never reads, so a process launched without it in its env
+# (the config UI) reported the inline <checkout>/handovers stub: a false green
+# from the primary, a FAIL from a worktree. Fixture: a primary with .env
+# HANDOVER_DIR=<real root> and a stub handovers/, plus a linked worktree.
+hd4403_primary="$work/hd4403-primary"; mkdir -p "$hd4403_primary/handovers" "$work/hd4403-real-root"
+git -C "$hd4403_primary" init -q -b main
+git -C "$hd4403_primary" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$hd4403_primary" worktree add -q "$work/hd4403-wt" -b hd4403-wt
+printf 'HANDOVER_DIR=%s\n' "$work/hd4403-real-root" > "$hd4403_primary/.env"
+hd4403_real=$(cd "$work/hd4403-real-root" && pwd)
+for hd4403_cwd in "$hd4403_primary" "$work/hd4403-wt"; do
+  outHD4403=$(hd_probe "$hd4403_cwd")
+  echo "$outHD4403" | jq -e --arg d "$hd4403_real" '.actual == "present" and .detail == $d' >/dev/null \
+    || fail "HIMMEL-4403: HANDOVER_DIR unset in the process env must resolve via the primary .env from $hd4403_cwd (got: $outHD4403)"
+done
+# no .env value: a worktree falls back to the PRIMARY's inline dir, not <worktree>/handovers
+rm -f "$hd4403_primary/.env"
+hd4403_inline=$(cd "$hd4403_primary/handovers" && pwd)
+for hd4403_cwd in "$hd4403_primary" "$work/hd4403-wt"; do
+  outHD4403=$(hd_probe "$hd4403_cwd")
+  echo "$outHD4403" | jq -e --arg d "$hd4403_inline" '.actual == "present" and .detail == $d' >/dev/null \
+    || fail "HIMMEL-4403: inline fallback must resolve the primary's handovers/ from $hd4403_cwd (got: $outHD4403)"
+done
+echo "ok: HIMMEL-4403 handover-dir resolves the same root from the primary and from a linked worktree"
+
 # ── dep: single-cmd (rtk) ────────────────────────────────────────────────────
 dep_present_stub="$work/dep-present-bin"; mkdir -p "$dep_present_stub"
 pathDeppresent=$(build_path "$dep_present_stub" bash git jq -- rtk)

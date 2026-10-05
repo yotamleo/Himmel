@@ -1254,7 +1254,17 @@ function probeMcpRegistered(item, ctx) {
 function probeHandoverDir(item, ctx) {
   const resolverPath = path.resolve(ctx.repoRoot, item.probe.resolver);
   const cwd = ctx.targetPath || ctx.repoRoot;
-  const r = spawnBashProbe(['-c', `. "${resolverPath}" && handover_root`],
+  // HIMMEL-4403: answer as the handover tooling does, from ANY checkout. The
+  // resolver never reads .env, so a process launched without HANDOVER_DIR in
+  // its env reported the inline <checkout>/handovers stub (false green from the
+  // primary, FAIL from a worktree). Anchor on the primary (git-common-dir
+  // parent, as load-dotenv.sh does), load HANDOVER_DIR from its .env, then
+  // resolve from there so the inline fallback is the primary's too. A non-git
+  // cwd skips both: load_dotenv would otherwise fall back to this script's own
+  // checkout's .env.
+  const loaderPath = path.resolve(path.dirname(resolverPath), 'load-dotenv.sh');
+  const prelude = `common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && [ "$(basename "$common")" = .git ] && cd "$(dirname "$common")" && . "${loaderPath}" && load_dotenv HANDOVER_DIR; `;
+  const r = spawnBashProbe(['-c', `${prelude}. "${resolverPath}" && handover_root`],
     { env: ctx.env || process.env, cwd, encoding: 'utf8' });
   if (r.timedOut) return { actual: 'degraded', detail: `handover-dir probe timed out after ${probeTimeoutSecs(r)}s` };
   if (!r.error && r.status === 0 && r.stdout && r.stdout.trim()) {

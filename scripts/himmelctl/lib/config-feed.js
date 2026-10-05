@@ -21,6 +21,7 @@ const { spawnSync } = require('child_process');
 const statusReportLib = require('./status-report.js');
 const probesLib = require('./probes.js');
 const redactLib = require('./redact.js');
+const { himmelIdentity } = require('./helpers.js');
 const adopterProfileLib = require('./adopter-profile.js');
 const bundlesLib = require('./feed-bundles.js');
 const { resolveBash } = require('../../hooks/run-hook-with-bash.js');
@@ -475,10 +476,11 @@ function buildFeed(args) {
   // status-report.js and the probes resolve their checkout from this seam, so
   // pointing it at the station anchor makes every checkout-relative probe judge
   // the station. Restored even if a probe throws.
+  const served = checkoutRoot(); // read BEFORE the override: the tree actually serving this feed
   const prev = process.env.HIMMELCTL_REPO_ROOT;
   process.env.HIMMELCTL_REPO_ROOT = repoRoot();
   try {
-    return composeFeed(args);
+    return composeFeed({ ...args, served });
   } finally {
     if (prev === undefined) delete process.env.HIMMELCTL_REPO_ROOT;
     else process.env.HIMMELCTL_REPO_ROOT = prev;
@@ -531,7 +533,7 @@ function foldDoctorRows(rows, probedAt) {
   return out;
 }
 
-function composeFeed({ manifest, scope, targetPath, answers, items }) {
+function composeFeed({ manifest, scope, targetPath, answers, items, served }) {
   const probedAt = new Date().toISOString();
   const itemIds = items && items.length > 0 ? items : null;
   const foldedIds = new Set(CADENCES.map((c) => `${c.name}-cadence`));
@@ -573,6 +575,8 @@ function composeFeed({ manifest, scope, targetPath, answers, items }) {
     generatedAt: probedAt,
     target: { scope, path: targetPath },
     base: repoRoot(),
+    // The served checkout (a worktree when run from one), not the anchor.
+    himmel: himmelIdentity(served),
     profileCache: Boolean(answers),
     // 'unreadable' = the .env exists but could not be read, so the redactor had
     // no .env values to match and only shape-based scrubbing applied.
