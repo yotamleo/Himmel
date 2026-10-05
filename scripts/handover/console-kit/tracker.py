@@ -499,8 +499,9 @@ def luna_map(keys, refresh):
             if i % 100 == 99:
                 print('  %d/%d' % (i + 1, len(need)))
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        json.dump(dict(generated=now, entries=ent), open(path, 'w', encoding='utf-8'),
-                  ensure_ascii=False, separators=(',', ':'))
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(dict(generated=now, entries=ent), fh, ensure_ascii=False, separators=(',', ':'))
+            fh.write('\n')
     return {k: ent[k]['notes'] for k in keys if k in ent}
 
 

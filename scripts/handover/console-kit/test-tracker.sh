@@ -87,6 +87,15 @@ render_rc=$?
 html="$(cat "$out" 2>/dev/null)"
 if [ "$render_rc" -eq 0 ]; then pass 'tracker.py exits 0'; else fail "tracker.py exited $render_rc"; fi
 
+# HIMMEL-4468: every file tracker.py writes ends in exactly one newline (luna's end-of-file-fixer rewrites it otherwise).
+for f in "$W/luna-map.json" "$out" "$out.fp"; do
+    if [ -s "$f" ] && [ "$(tail -c 1 "$f" | od -An -tx1 | tr -d ' ')" = '0a' ] \
+        && [ "$(tail -c 2 "$f" | od -An -tx1 | tr -d ' ')" != '0a0a' ]; then
+        pass "$(basename "$f") ends in exactly one newline (HIMMEL-4468)"
+    else
+        fail "$(basename "$f") does not end in exactly one newline (HIMMEL-4468)"
+    fi
+done
 not_contains 'no Closed-by-roadmap section (HIMMEL-3954)' "$html" 'Closed by roadmap'
 contains 'the park-ns key renders in the page data (HIMMEL-3954)' "$html" '"parked ticket"'
 contains 'the park-ns evidence is the parked reason (HIMMEL-3954)' "$html" 'parked evidence text'
