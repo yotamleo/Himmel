@@ -322,6 +322,8 @@ contains 'working on is the earliest unreleased version with open work, not a re
 contains 'up next is the next unreleased version holding a ticket (HIMMEL-3990)' "$jhtml" '"JN":2,'
 contains 'a released version holding an open ticket is alerted, naming the ticket (HIMMEL-3990)' "$jhtml" '"JA":[[0,[31]]]'
 contains 'the alert text names the release date and the open tickets (HIMMEL-3990)' "$jhtml" ' but still holds '
+contains 'the released-but-open alert still renders when no unreleased version is open (HIMMEL-3990)' "$jhtml" \
+    's.textContent="Every unreleased version is done.";jalerts(-1);return}'
 contains 'In Review is counted from the status name (HIMMEL-3990)' "$jhtml" '"k":32,"t":"review one","s":"In Review","b":"rev","v":1,'
 contains 'IN CI is counted from the status name (HIMMEL-3990)' "$jhtml" '"k":33,"t":"ci one","s":"IN CI","b":"ci","v":1,'
 contains 'wont do counts as done (HIMMEL-3990)' "$jhtml" '"s":"wont do","b":"wont"'

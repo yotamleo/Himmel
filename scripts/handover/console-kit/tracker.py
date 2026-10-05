@@ -1268,7 +1268,7 @@ function jgrow(){var a=document.querySelectorAll(".jbar i[data-w]");requestAnima
 function jhero(){var h=$("hh"),s=$("sent"),hn=$("hnote");s.textContent="";hn.textContent=D.RU?"release state unknown":"";
  if(D.RU)hn.title="No versions file was found, so no version counts as released. Write `jira versions` to <mirror-dir>.versions.tsv.";
  var lg=$("legend"),nx=$("next"),al=$("alerts"),nb0=jbar(jtally([]),true);nb0.id="hbar";$("hbar").replaceWith(nb0);lg.textContent="";nx.textContent="";al.textContent="";
- if(JCUR<0){h.textContent="Nothing open";s.textContent="Every unreleased version is done.";return}
+ if(JCUR<0){h.textContent="Nothing open";s.textContent="Every unreleased version is done.";jalerts(-1);return}
  var v=JV[JCUR],t=jtally(jin(JCUR));h.textContent=v.n;
  add(s,jnum(t.done.length,v.n+": Done",t.done)," of ",jnum(t.n,v.n+": every ticket",jin(JCUR))," done · ",
   jnum(t.rev.length,v.n+": In Review",t.rev)," in review · ",jnum(t.ci.length,v.n+": IN CI",t.ci)," in CI · ",
@@ -1276,9 +1276,12 @@ function jhero(){var h=$("hh"),s=$("sent"),hn=$("hnote");s.textContent="";hn.tex
  var nb=jbar(t,true);nb.id="hbar";$("hbar").replaceWith(nb);
  JB.slice().reverse().forEach(function(x){lg.appendChild(jdot(x[0],x[1]))});
  if(JNXT>=0){var u=jtally(jin(JNXT));add(nx,"Up next: "+JV[JNXT].n+" — ",jnum(u.open,JV[JNXT].n+": open",jin(JNXT).filter(function(x){return jb(x)!="done"}))," open, "+u.done.length+" done.")}
+ jalerts(JCUR)}
+// jalerts(cur): released versions that still hold open tickets. Runs even when nothing unreleased is open (cur<0).
+function jalerts(cur){var al=$("alerts"),to=cur<0?"an unreleased version":JV[cur].n;
  D.JA.forEach(function(x){var rv=JV[x[0]],o=x[1].map(function(k){return JT.filter(function(t2){return t2.k===k})[0]});
   var a=el("div","jalert");add(a,el("div","jw","● "+rv.n+" was released on "+rv.date+" but still holds "+o.length+" open ticket"+(o.length==1?"":"s")),
-   "Move "+(o.length==1?"it":"them")+" to "+v.n+" or close "+(o.length==1?"it":"them")+".");var ul=el("ul");
+   "Move "+(o.length==1?"it":"them")+" to "+to+" or close "+(o.length==1?"it":"them")+".");var ul=el("ul");
   o.forEach(function(t2){var li=el("li");add(li,jnum("HIMMEL-"+t2.k,"HIMMEL-"+t2.k,[t2])," — "+t2.t+" ",jdot(jb(t2),t2.live?"a leg is on it":t2.s));ul.appendChild(li)});a.appendChild(ul);al.appendChild(a)})}
 function jboard(){var b=$("board"),f=$("donefold");b.textContent="";f.textContent="";
  if(JSEL<0){$("bh").textContent="No versions";$("bsub").textContent="";return}
