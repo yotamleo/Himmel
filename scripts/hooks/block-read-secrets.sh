@@ -375,6 +375,58 @@ is_inplace_token() {
     return 1
 }
 
+# rs_tokens CLAUSE: word-split CLAUSE into RS_TOKS. An unquoted word still
+# globs against the hook's cwd as a bare `for tok in $clause` did. The
+# exception (HIMMEL-4367 item 2) is a word that starts INSIDE a quoted span
+# opened by an earlier word, such as the `.*` in `grep -v '^[0-9]*<TAB>.*  ' f.tsv`.
+# That word is pattern data and stays literal. Globbed, `.*` expands to `.env`
+# in a checkout that has one, and the hook used to deny the grep. The quote
+# tracker only decides whether a word globs. It never hides a literal secret
+# name. Tracking stops at the first ANSI-C `$'`, whose escapes it does not
+# model, so every later word globs as before.
+rs_tokens() {
+    local raw q='' tq c pre rest off=0 g
+    RS_TOKS=()
+    set -f
+    # shellcheck disable=SC2086 # intentional word split for tokenisation
+    for raw in $1; do
+        tq=$q
+        case "$raw" in *"\$'"*) off=1 ;; esac
+        # Jump from one quote or backslash to the next rather than walking
+        # every character, so a long plain word costs one match (the linear
+        # fold rows in the suite pin this).
+        rest=$raw
+        while [ "$off" = 0 ]; do
+            if [ "$q" = "'" ]; then
+                case "$rest" in *"'"*) rest=${rest#*"'"} q='' ;; *) break ;; esac
+                continue
+            fi
+            case "$rest" in *[\'\"\\]*) ;; *) break ;; esac
+            pre=${rest%%[\'\"\\]*}
+            c=${rest:${#pre}:1}
+            rest=${rest:${#pre}+1}
+            # shellcheck disable=SC1003 # a literal backslash, not an escape
+            if [ "$c" = '\' ]; then
+                rest=${rest:1}
+            elif [ "$q" = '"' ]; then
+                [ "$c" != '"' ] || q=''
+            else
+                q=$c
+            fi
+        done
+        if [ "$off" = 0 ] && [ -n "$tq" ]; then
+            RS_TOKS+=("$raw")
+        else
+            set +f
+            # shellcheck disable=SC2206 # the glob is the point
+            g=($raw)
+            set -f
+            RS_TOKS+=("${g[@]}")
+        fi
+    done
+    set +f
+}
+
 glued_opt_secret() {
     # HIMMEL-2228. True iff the token is a GLUED option whose VALUE half is a
     # secret path: `--opt=<value>` / `-f<value>` (bundled `-rf<value>` too) /
@@ -545,8 +597,9 @@ case "$tool" in
             rec_expect_file_val=0
             bodyq=""          # the -c body's outer quote char (' or "), if any
             bodyclosed=0      # past the body's closing quote → tokens are $0/$1…
-            # shellcheck disable=SC2086 # intentional word split for tokenisation
-            for tok in $clause; do
+            rs_tokens "$clause"
+            [ "${#RS_TOKS[@]}" -gt 0 ] || continue
+            for tok in "${RS_TOKS[@]}"; do
                 # HIMMEL-2525: bash's default $IFS (space/tab/newline) does
                 # NOT include CR (0x0D), so a CR glued onto this token —
                 # trailing (`cat .env<CR>`, the tail of a Windows CRLF

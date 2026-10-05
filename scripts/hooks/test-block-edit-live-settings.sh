@@ -2880,6 +2880,51 @@ bash -ec 'echo hi > /tmp/x'
 bash -co pipefail 'ls | wc -l'
 sh -c -e 'echo hi'
 ROWS
+# 860-873 (HIMMEL-4364, HIMMEL-4367 items 3-4): read-only commands and
+# non-live brace targets were denied. An `eval` whose body was judged in its
+# own run is no write of its own; a brace confined to a path's leaf cannot
+# move its directory; `checkout`/`restore` inside a read-only git
+# subcommand's argument is a file name; `cut` and `git grep` only read.
+rows_both 860 0 "a read-only command or a non-live brace target allows" <<'ROWS'
+eval "cat ~/.claude/settings.json"
+sh -c 'cp /tmp/a /tmp/settings.{json,bak}'
+git -C @P@/.claude/worktrees/feat+x diff origin/main...HEAD -- scripts/hooks/block-write-into-main-checkout.sh
+git -C @P@/.claude/worktrees/feat+x diff origin/main...HEAD -- scripts/restore.sh
+grep -n 'block-edit-live-settings' @P@/.claude/settings.json | cut -c1-60
+git -C @P@ grep -n cr-scores -- .claude/commands/pr-check.md .claude/settings.json | cut -c1-170 | head -4
+git archive HEAD scripts | tar -x -C /tmp/p31x
+ROWS
+assert_rc "867 nested worktree sh -c cp of its own .claude/settings.{json,bak} allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "sh -c 'cp .claude/settings.{json,bak}'" HOME="$FAKEHOME")"
+assert_rc "868 nested worktree cp of its own .claude/settings.{json,bak} allows" 0 \
+    "$(bash_rc_of "$NESTED_WT" "cp .claude/settings.{json,bak}" HOME="$FAKEHOME")"
+assert_rc "869 primary cwd grep of .claude/settings.json piped to cut allows" 0 \
+    "$(bash_rc_of "$PRIMARY" "grep -n -A6 '\"statusLine\"' .claude/settings.json | cut -c1-600" HOME="$FAKEHOME")"
+# 870-889: controls; the write and run forms beside each narrowing still deny.
+rows_both 870 2 "a write beside a narrowed read or brace still denies" <<'ROWS'
+eval "cp /tmp/x ~/.claude/settings.json"
+eval "cat /tmp/a > ~/.claude/settings.json"
+eval "cat ~/.claude/settings.json; cp /tmp/a ~/.claude/settings.json"
+eval "cat ~/.claude/settings.json" > ~/.claude/settings.json
+eval "cat $F" ~/.claude/settings.json
+eval cat ~/.claude/sett*s.json
+sh -c 'cp /tmp/a ~/.claude/settings.{json,bak}'
+cp /tmp/a ~/.claude/settings.{json,bak}
+cp -r /tmp/d @H@{/.claude,/x}
+cp -r /tmp/d {@H@,/x}/.claude
+git -C @P@ checkout HEAD -- .claude
+git -C @P@ diff HEAD -- restore.sh; git -C @P@ checkout HEAD -- .claude
+git -C @P@ -c alias.co=checkout co -- .claude
+git -C @P@ diff --output=.claude/x HEAD -- restore.sh
+grep x @P@/.claude/settings.json | cut -c1-5 > @P@/.claude/settings.json
+git -C @P@ grep -O/tmp/x foo -- .claude/settings.json
+git -C @P@ grep -nO foo -- .claude/settings.json
+git -C @P@ grep --open-files-in-pager=vi foo -- .claude/settings.json
+ROWS
+assert_rc "888 primary cwd cp of .claude/settings.{json,bak} denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "cp .claude/settings.{json,bak}" HOME="$FAKEHOME")"
+assert_rc "889 primary cwd sh -c cp of .claude/settings.{json,bak} denies" 2 \
+    "$(bash_rc_of "$PRIMARY" "sh -c 'cp .claude/settings.{json,bak}'" HOME="$FAKEHOME")"
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
