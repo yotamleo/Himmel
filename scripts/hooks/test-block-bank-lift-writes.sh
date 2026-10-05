@@ -647,8 +647,10 @@ row "4458 cd \"\$d\"; tar -C .himmel"         deny  "cd \"\$d\"; tar -xf x.tar -
 # Differential (p22-samp): -O extracts to stdout; cwd HOME is not written.
 row "4458 tar xzf -O member, cwd HOME (ctrl)" allow "tar xzf /tmp/x.tgz -O inv/home.sha | wc -l" "$HOME"
 row "4458 tar -xf (no -O), cwd HOME"        deny  "tar -xzf /tmp/x.tgz inv/home.sha" "$HOME"
-# Differential (p22-samp): a computed cd then a named relative -C stays allowed.
-row "4458 cd \$S; tar xzf -C head (ctrl)"   allow "S=/tmp/s; cd \$S; tar xzf head.tgz -C head --strip-components=1"
+# Differential (p22-samp): a computed cd then a named relative -C stays allowed
+# when joined by &&; after `;` the cwd is unproven (r6) and it denies.
+row "4458 cd \$S; tar xzf -C head (r6 over-deny)" deny "S=/tmp/s; cd \$S; tar xzf head.tgz -C head --strip-components=1"
+row "4458 cd \$S && tar xzf -C head (ctrl)" allow "S=/tmp/s; cd \$S && tar xzf head.tgz -C head --strip-components=1"
 # Panel r1 codex-1: an option's operand is never a flag (-O as the archive).
 row "4458 tar -xf -O -C \$HOME (operand)"    deny  "tar -xf -O -C \"\$HOME\""
 row "4458 tar xf -O -C ~ (old-style operand)" deny "tar xf -O -C ~"
@@ -700,7 +702,8 @@ row "4458 tar -C sub -C ../.., cwd ~/projects" deny "tar -xf /tmp/x.tar -C sub -
 row "4458 tar -C \"\$d\" -C .. (unresolved chain)" deny "tar -xf /tmp/x.tar -C \"\$d\" -C .."
 row "4458 cd \"\$d\"; tar -C sub -C ../.."   deny  "cd \"\$d\"; tar -xf /tmp/x.tar -C sub -C ../.."
 row "4458 cd \"\$d\"; tar -C .."              deny  "cd \"\$d\"; tar -xf /tmp/x.tar -C .."
-row "4458 cd \"\$d\"; tar -C sub (ctrl)"      allow "cd \"\$d\"; tar -xf /tmp/x.tar -C sub"
+row "4458 cd \"\$d\"; tar -C sub (r6 unproven)" deny "cd \"\$d\"; tar -xf /tmp/x.tar -C sub"
+row "4458 cd \"\$d\" && tar -C sub (ctrl)"   allow "cd \"\$d\" && tar -xf /tmp/x.tar -C sub"
 row "4458 tar -C ~/projects -C sub (ctrl)"    allow "tar -xf /tmp/x.tar -C ~/projects -C sub"
 row "4458 tar -C /var/w -C .. (ctrl)"         allow "tar -xf /tmp/x.tar -C /var/w -C .."
 row "4458 tar -C ~ -C /tmp/o (absolute 2nd, ctrl)" allow "tar -xf /tmp/x.tar -C ~/projects -C /tmp/o"
@@ -780,8 +783,23 @@ row "4458 cd X && cd Y; tar -xf"              deny  "cd /var/w && cd /var/v; tar
 row "4458 cd X | tar -xf"                     deny  "cd /var/w | tar -xf /tmp/x.tar" "$HOME"
 row "4458 cd X && tar -xf (ctrl)"             allow "cd /var/w && tar -xf /tmp/x.tar" "$HOME"
 row "4458 cd X && cd Y && tar -xf (ctrl)"     allow "cd /var/w && cd /var/v && tar -xf /tmp/x.tar" "$HOME"
-row "4458 cd X; tar -xf -C abs (ctrl)"        allow "cd /tmp; tar -xf /tmp/x.tar -C /tmp/out" "$HOME"
-row "4458 cd X; unzip -d abs (ctrl)"          allow "cd /var/w; unzip /tmp/x.zip -d /var/out" "$HOME"
+# Panel r6 (HIMMEL-4490): structural fail-closed. With the cwd unproven (a cd
+# not joined only by && at top level, a cd in ( ) { } or a nested shell body,
+# any eval) every extraction denies, absolute destinations included.
+row "4458 cd X; tar -C abs (unproven cwd)"    deny  "cd /var/w; tar -xf /tmp/x.tar -C /var/out" "$HOME"
+row "4458 cd X; unzip -d abs (unproven cwd)"  deny  "cd /var/w; unzip /tmp/x.zip -d /var/out" "$HOME"
+row "4458 cd X; tar -C rel, cwd .himmel"      deny  "cd /nonexistent; tar -xf /tmp/x.tar -C state" "$HOME/.himmel"
+row "4458 bash -c 'cd X && true'; tar -xf"    deny  "bash -c 'cd /var/out && true'; tar -xf /tmp/x.tar" "$HOME"
+row "4458 (cd X && true); tar -xf"            deny  "(cd /var/out && true); tar -xf /tmp/x.tar" "$HOME"
+row "4458 { cd X && true; }; tar -xf"         deny  "{ cd /var/out && true; }; tar -xf /tmp/x.tar" "$HOME"
+row "4458 true || cd X && tar -xf (cd skipped)" deny "true || cd /var/w && tar -xf /tmp/x.tar" "$HOME"
+row "4458 echo | cd X && tar -xf (pipeline)"  deny  "echo | cd /var/w && tar -xf /tmp/x.tar" "$HOME"
+row "4458 eval true; tar -C abs"              deny  "eval true; tar -xf /tmp/x.tar -C /var/out" "$HOME"
+row "4458 sh -c 'cd X && tar -xf' (nested)"   deny  "sh -c 'cd /var/w && tar -xf /tmp/x.tar'" "$HOME"
+row "4458 cd X && tar -C rel (ctrl)"          allow "cd /var/w && tar -xf /tmp/x.tar -C out" "$HOME"
+row "4458 tar -C abs, no cd (ctrl)"           allow "tar -xf /tmp/x.tar -C /var/out" "$HOME"
+row "4458 (true); tar -C abs, no cd (ctrl)"   allow "(true); tar -xf /tmp/x.tar -C /var/out" "$HOME"
+row "4458 cd X; tar -tf (list, ctrl)"         allow "cd /var/w; tar -tf /tmp/x.tar" "$HOME"
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"

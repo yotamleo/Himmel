@@ -96,6 +96,7 @@ CD_HOME=0  # set for Bash: a cd/pushd/popd that may land in HOME, ~/.himmel or i
 CD_SEEN=0  # set for Bash once a cd/pushd/popd clause has been walked
 CD_UNK=0   # set for Bash: a cd/pushd/popd whose target cannot be resolved
 CD_DIR=""  # set for Bash: the last resolved cd/pushd target ("" when unresolved)
+CWD_UNPROVEN=0  # set for Bash: a cd/eval leaves the cwd not provably known
 # HIMMEL-4458: the repo whose scripts/lib/bank-lift.sh may run show|clear —
 # this hook's own checkout (scripts/hooks/..), the primary when that is a
 # .claude/worktrees/* worktree. Its worktrees qualify too.
@@ -294,12 +295,16 @@ read -r -d '' TOKENIZER <<'AWK'
 function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
 function addc(c) { if (c == SB) forged = 1; tok = tok c }
 function emit_tok() {
+    if (!quoted && tok == "{") gd[d]++
+    if (!quoted && tok == "}" && gd[d] > 0) gd[d]--
     if (tok != "" || quoted) { buf[d] = buf[d] (bn[d]++ ? US : "") tok }
     tok = ""; quoted = 0
 }
 function emit_mark(m) { emit_tok(); buf[d] = buf[d] (bn[d]++ ? US : "") m }
 function flush(   l) {
     emit_tok()
+    # A clause inside ( ) or { } is marked P (non-strict pass only).
+    if (!STRICT && bn[d] > 0 && gd[d] + pd[d] > 0) buf[d] = buf[d] US SB "P"
     if (bn[d] > 0) { l = buf[d]; gsub(/\n/, NL, l); print l }
     buf[d] = ""; bn[d] = 0
 }
@@ -404,7 +409,7 @@ END {
             while (i < n && substr(s, i + 1, 1) != "\n") i++
             continue
         }
-        if (c == ")") { if (d > 0 && typ[d] == "p") close_sub(); else flush(); continue }
+        if (c == ")") { if (d > 0 && typ[d] == "p") close_sub(); else { flush(); if (pd[d] > 0) pd[d]-- }; continue }
         if ((c == "<" || c == ">") && c2 == "(") { emit_tok(); i++; open_sub("p"); continue }
         if (c == "&" && c2 == ">") {
             emit_mark(SB "W"); i++
@@ -413,7 +418,10 @@ END {
         }
         # && ends a clause whose cd (if any) runs the next only on success.
         if (c == "&" && c2 == "&" && !STRICT) { emit_mark(SB "A"); flush(); i++; continue }
-        if (c == ";" || c == "&" || c == "|" || c == "(") { flush(); continue }
+        if (c == "(") { flush(); pd[d]++; continue }
+        # A clause ended by | or & (also the first half of ||) is marked O.
+        if ((c == "&" || c == "|") && !STRICT) { emit_tok(); if (bn[d] > 0) emit_mark(SB "O"); flush(); continue }
+        if (c == ";" || c == "&" || c == "|") { flush(); continue }
         if (c == ">") {
             if (!quoted && tok ~ /^([0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$/) tok = ""
             j = i + 1
@@ -969,7 +977,7 @@ analyse() {
     case "$low" in *bank*lift*|*lift*bank*) TEXT_MENTION=1 ;; esac
     [[ "$low" =~ $MENTION_NEAR_RE ]] && TEXT_MENTION=1
     case "$low" in *xargs*) HAS_XARGS=1 ;; esac
-    local stdin_shell=0 bodies="" CL_AND=0
+    local stdin_shell=0 bodies="" CL_AND=0 CL_PAR=0 CL_O=0 CL_PREV_O=0
     local CUR_BODIES=""
     while IFS= read -r line; do
         case "$line" in $'\002B\037'*) CUR_BODIES="$CUR_BODIES${line#$'\002B\037'}"$'\n' ;; esac
@@ -988,7 +996,7 @@ EOF
         local -a tk=() args=()
         IFS=$'\037' read -r -a tk <<<"$line"
         local i=0 t nt=${#tk[@]} fed=0
-        CL_AND=0
+        CL_PREV_O=$CL_O; CL_AND=0; CL_PAR=0; CL_O=0
         # Redirect targets; build args without them.
         while [ "$i" -lt "$nt" ]; do
             t="${tk[$i]//$'\036'/$'\n'}"
@@ -998,6 +1006,8 @@ EOF
                     if [ -n "$t" ] && is_lift "$t"; then deny "a redirect writes the bank lift ($t)"; fi
                     ;;
                 $'\002A') CL_AND=1 ;;
+                $'\002P') CL_PAR=1 ;;
+                $'\002O') CL_O=1 ;;
                 $'\002R')
                     i=$((i+1)); fed=1
                     t="${tk[$i]:-}"
@@ -1027,8 +1037,7 @@ EOF
 # _note_cd <cd|pushd|popd> <args...>: a bare cd, or a target resolving to
 # HOME, ~/.himmel or its state dir, sets CD_HOME. `-`, popd, a stack index, a
 # computed target ($d; $HOME spellings do resolve), or a relative target after
-# an earlier cd set CD_UNK, as does any cd not joined to the next clause by
-# && (it may have failed; check_clause). Both stick for the rest of the command. CD_DIR is
+# an earlier cd set CD_UNK. Both stick for the rest of the command. CD_DIR is
 # the last resolved target ("" when unresolved), which a relative operand of a
 # later clause is also judged against (_cd_ref).
 # shellcheck disable=SC2016  # literal $HOME spellings are matched as text
@@ -1214,6 +1223,10 @@ check_extract() {
     # destination-internal symlink becomes plantable by an agent before the
     # extraction, e.g. the destination is created in the same command.
     [ "$ksym" = 1 ] && deny "$c --keep-directory-symlink follows a directory symlink inside the destination, which can lead into HOME or ~/.himmel; drop it"
+    # Structural fail-closed: with the cwd unproven, no destination (even an
+    # absolute one) is judged; split the cd and the extraction into separate
+    # commands, or join them only by && at top level.
+    [ "$CWD_UNPROVEN" = 1 ] && deny "$c extracts in a command whose cwd is not provably known (a cd not joined only by && at top level, a cd in a subshell, brace group or nested shell body, or an eval), so it may extract into HOME or ~/.himmel; run the extraction as its own command"
     # cpio -p copies into its directory operand.
     [ "$pass" = 1 ] && dests+=(${pos[@]+"${pos[@]}"})
     n=${#dests[@]}
@@ -1365,6 +1378,7 @@ check_clause() {
                 continue ;;
             eval)
                 shift
+                CWD_UNPROVEN=1
                 if _is_dynamic "$*" && [ "$TEXT_MENTION" = 1 ]; then
                     deny "eval runs computed text beside a bank-lift mention"
                 fi
@@ -1530,9 +1544,14 @@ check_clause() {
         *)
             case "$cmd" in
                 tar|gtar|bsdtar|unzip|cpio) check_extract "$cmd" "$@" ;;
-                # Only a cd joined to the next clause by && is known to have
-                # moved the cwd; after ; newline & | || it may have failed.
-                cd|pushd|popd) _note_cd "$cmd" "$@"; [ "$CL_AND" = 1 ] || CD_UNK=1 ;;
+                # The cwd is provably the cd target only for a top-level cd
+                # joined to the next clause by && and not reached through | ||
+                # or &; else (failed or skipped cd, a subshell, a nested body)
+                # it is unproven and every extraction denies.
+                cd|pushd|popd) _note_cd "$cmd" "$@"
+                    if [ "$CL_AND" = 0 ] || [ "$CL_PAR" = 1 ] || [ "$CL_PREV_O" = 1 ] || [ "$depth" -gt 0 ]; then
+                        CWD_UNPROVEN=1
+                    fi ;;
             esac
             if [[ "$cmd" =~ $MENTION_RE ]]; then
                 for a in "$@"; do
