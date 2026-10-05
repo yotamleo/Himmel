@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2015,SC1090,SC2030,SC2031,SC2016,SC2317
+# shellcheck disable=SC2015,SC1090,SC2030,SC2031,SC2016,SC2317,SC2329
 # test-native-auth-pin.sh -- hermetic tests for native-auth-pin.sh (HIMMEL-1867).
 #
 # Every neutralisation case is asserted on a CHILD process's environment, never

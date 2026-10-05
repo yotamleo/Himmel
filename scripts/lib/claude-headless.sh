@@ -345,6 +345,7 @@ BANK_VERDICT="$(CADENCE_BANK_LEG="${CADENCE_BANK_LEG:-claude-headless:$ROLE}" ba
 artifact_mtime() {
   local path="$1" newest
   if [ -d "$path" ]; then
+    # shellcheck disable=SC2030  # pairs with native-auth-pin.sh's ${!PREFIX*} reads (empty-named var)
     newest="$(find "$path" -type f -print0 2>/dev/null | while IFS= read -r -d '' f; do date -r "$f" '+%s.%N' 2>/dev/null; done | sed 's/\.N$/.000000000/' | sort -rn | head -1)"
     if [ -n "$newest" ]; then printf '%s' "$newest"; else date -r "$path" '+%s.%N' 2>/dev/null | sed 's/\.N$/.000000000/' || true; fi
   else
