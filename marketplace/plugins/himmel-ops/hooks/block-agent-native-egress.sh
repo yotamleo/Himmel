@@ -25,7 +25,9 @@
 #   4. a `.salus` marker at the cwd, the git common dir's parent, or any ancestor
 #   5. the cwd sits under, or the payload contains, a root listed in
 #      ~/.config/claude-glm/phi-roots or ~/.config/claude-glm/egress-denylist
-#      (the same lists graphify-fence.sh reads)
+#      (the same lists graphify-fence.sh reads), or a path-like payload token
+#      resolves (through symlinks, relative to the cwd) under such a root.
+#      A listed root of "/" covers everything; a list read error denies.
 # All matching is case-insensitive. Signals 2, 4 and 5 test BOTH the cwd as
 # given and its canonical (symlink-resolved) form, and signal 5 also
 # canonicalizes each listed root, so a symlink in cannot dodge them.
@@ -137,19 +139,59 @@ if [ -n "$common" ]; then
     _salus_marked "${common%/}/.." && deny "a .salus marker covers the session repo ($common)"
 fi
 
+# Path-like payload tokens (anything with a "/"), resolved against the cwd,
+# walked up to their deepest existing directory and canonicalized, so a
+# symlink alias into a PHI root (or a salus tree) is seen by its real path.
+# ponytail: only the first 64 path-like tokens are resolved, and a token is
+# split on whitespace only; a PHI alias hidden past the cap or inside a word
+# is not resolved. Upgrade path: HIMMEL-4463 (content classifier).
+payload_dirs=""
+payload_text=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | strings] | join("\n")' 2>/dev/null) || payload_text=""
+n=0
+set -f
+for tok in $payload_text; do
+    case "$tok" in */*) ;; *) continue ;; esac
+    n=$((n + 1))
+    [ "$n" -le 64 ] || break
+    while :; do
+        case "$tok" in \"*|\'*|\`*|\(*|\<*|\[*) tok="${tok#?}" ;; *) break ;; esac
+    done
+    while :; do
+        case "$tok" in *\"|*\'|*\`|*\)|*\>|*\]|*,|*.|*\;|*:) tok="${tok%?}" ;; *) break ;; esac
+    done
+    case "$tok" in
+        \~/*) p="${HOME:-}/${tok#\~/}" ;;
+        /*) p="$tok" ;;
+        *) p="$cwd/$tok" ;;
+    esac
+    while [ -n "$p" ] && [ ! -d "$p" ]; do
+        case "$p" in */*) p="${p%/*}" ;; *) p="" ;; esac
+    done
+    [ -n "$p" ] || continue
+    d=$(_canon "$p")
+    [ -n "$d" ] || continue
+    d_lc=$(_lc "$d")
+    case "$d_lc" in *salus*) deny "the tool payload path $tok resolves to a salus path ($d)" ;; esac
+    payload_dirs="$payload_dirs$d_lc
+"
+done
+set +f
+
 # 5. phi-roots / egress-denylist roots
 if [ -n "${HOME:-}" ]; then
     for name in phi-roots egress-denylist; do
         list="$HOME/.config/claude-glm/$name"
         [ -e "$list" ] || continue
         { [ -f "$list" ] && [ -r "$list" ]; } || deny "the PHI root list $list is unreadable"
+        # Slurp first so a read error after the readability check fails closed.
+        roots=$(cat -- "$list") || deny "the PHI root list $list could not be read"
         while IFS= read -r root || [ -n "$root" ]; do
             root="${root%$'\r'}"
             root="${root#"${root%%[![:space:]]*}"}"
             root="${root%"${root##*[![:space:]]}"}"
             case "$root" in ""|\#*) continue ;; esac
+            case "$root" in *[!/]*) ;; *) deny "the PHI root list $list lists /, which covers every path" ;; esac
             root="${root%/}"
-            [ -n "$root" ] || continue
             # Compare raw and canonical forms both ways: either match denies.
             root_real=$(_canon "$root")
             for r in "$root" "$root_real"; do
@@ -160,8 +202,13 @@ if [ -n "${HOME:-}" ]; then
                     case "$c/" in "$r_lc/"*) deny "the session cwd is under the PHI root $root ($name)" ;; esac
                 done
                 case "$args_lc" in *"$r_lc"*) deny "the tool payload names the PHI root $root ($name)" ;; esac
+                case "
+$payload_dirs" in *"
+$r_lc
+"*|*"
+$r_lc/"*) deny "a tool payload path resolves under the PHI root $root ($name)" ;; esac
             done
-        done < "$list"
+        done <<< "$roots"
     done
 fi
 

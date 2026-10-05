@@ -94,6 +94,23 @@ mkdir -p "$TMP/links"
 ln -s "$PHI_ROOT" "$TMP/links/records-link"
 expect 2 "cwd is a symlink into a phi-roots root -> denied (canonical cwd)" \
     "$(payload "$TOOL" "$TMP/links/records-link" "hello")"
+# A payload PATH through a symlink alias into a PHI root (round-2 codex-1):
+# path-like payload tokens are resolved against the cwd and canonicalized.
+ln -s "$PHI_ROOT" "$HIMMEL/records-alias"
+expect 2 "himmel cwd, payload names a RELATIVE alias into a phi-roots root -> denied" \
+    "$(payload "$TOOL" "$HIMMEL" "summarise records-alias/patient.md")"
+expect 2 "himmel cwd, payload names an ABSOLUTE alias into a phi-roots root -> denied" \
+    "$(payload "$TOOL" "$HIMMEL" "summarise $TMP/links/records-link/patient.md please")"
+mkdir -p "$HIMMEL/src/app"
+expect 0 "himmel cwd, payload names an ordinary relative path -> allowed" \
+    "$(payload "$TOOL" "$HIMMEL" "restyle src/app/page.tsx and https://example.com/a/b")"
+# A list read that fails after the readability check fails closed (round-2
+# codex-3). Staged with a cat stub that fails when handed a file operand.
+mkdir -p "$TMP/stubbin"
+printf '#!/bin/sh\n[ $# -gt 0 ] && exit 1\nexec "%s"\n' "$(command -v cat)" > "$TMP/stubbin/cat"
+chmod +x "$TMP/stubbin/cat"
+PATH="$TMP/stubbin:$PATH" expect 2 "phi-roots list read fails after the readability check -> denied (fail closed)" \
+    "$(payload "$TOOL" "$HIMMEL" "make a landing page")"
 chmod 000 "$HOME/.config/claude-glm/phi-roots"
 if [ -r "$HOME/.config/claude-glm/phi-roots" ]; then
     pass=$((pass + 1))   # running as root: unreadability cannot be staged
@@ -102,6 +119,11 @@ else
         "$(payload "$TOOL" "$HIMMEL" "make a landing page")"
 fi
 chmod 600 "$HOME/.config/claude-glm/phi-roots"
+# A PHI root of "/" covers everything (round-2 codex-2): it must not strip to
+# empty and be skipped.
+printf '/\n' > "$HOME/.config/claude-glm/phi-roots"
+expect 2 "phi-roots root of / -> every call denied" \
+    "$(payload "$TOOL" "$HIMMEL" "make a landing page")"
 rm -f "$HOME/.config/claude-glm/phi-roots"
 
 # --- tool-name scope ----------------------------------------------------------
