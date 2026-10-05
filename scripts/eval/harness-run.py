@@ -162,9 +162,12 @@ def wait_child(child, timeout):
             return child.wait()
         if pid == child.pid:
             child.returncode = os.waitstatus_to_exitcode(status)
-        elif pid == 0:
-            if time.monotonic() >= end:
-                raise subprocess.TimeoutExpired(child.args, timeout)
+            break
+        # Checked on every poll: a steady stream of exiting orphans must not
+        # starve the deadline.
+        if time.monotonic() >= end:
+            raise subprocess.TimeoutExpired(child.args, timeout)
+        if pid == 0:
             time.sleep(0.05)
     return child.returncode
 

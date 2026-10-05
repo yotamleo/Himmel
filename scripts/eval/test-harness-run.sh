@@ -127,6 +127,19 @@ if mode == "survivor":
     hr.SWEEP_SECS = 0.3
     hr.descendants = lambda root: [4194305]
     sys.exit(hr.main(["--deadline", "5", "--", "true"]))
+if mode == "orphan-stream":
+    # An orphan reaped on every poll must not starve the deadline check.
+    real_wait, real_stop, t0, hit = os.waitpid, hr.stop_group, time.monotonic(), []
+    def waitpid(pid, opts):
+        if not hit and time.monotonic() - t0 < 4:
+            return 1, 0
+        return real_wait(pid, opts)
+    def stop_group(*a):
+        hit.append(time.monotonic() - t0)
+        return real_stop(*a)
+    hr.os.waitpid, hr.stop_group = waitpid, stop_group
+    hr.main(["--deadline", "1", "--kill-after", "0", "--", "sleep", "30"])
+    print("%.1f" % hit[0])
 INPROC
 
 # 7. a signal during Popen still sweeps the child and both grandchildren.
@@ -148,6 +161,7 @@ python3 "$SUT" --deadline 30 -- bash -c \
 runner=$!
 for _ in $(seq 1 50); do [ -s "$W/t9-ready" ] && break; sleep 0.1; done
 sleep 0.5
+if [ -s "$W/t9-ready" ] && kill -0 "$runner" 2>/dev/null; then pass "orphans reaped mid-run: sampled while running"; else fail "orphans reaped mid-run: not sampled mid-run"; fi
 zombies=$(python3 - "$runner" <<'ZOMB'
 import os, sys
 n = 0
@@ -168,6 +182,10 @@ if [ "$zombies" -lt 5 ]; then pass "orphans reaped mid-run ($zombies zombies)"; 
 # 10. a child killed by a signal still maps to 128+sig.
 python3 "$SUT" --deadline 30 -- bash -c 'kill -KILL $$' >/dev/null 2>&1
 eq "child killed by SIGKILL: rc 137" 137 "$?"
+
+# 11. a steady stream of reaped orphans does not starve the deadline.
+hit=$(python3 "$W/inproc.py" "$SUT" orphan-stream "$W" "$W/child.sh" 2>/dev/null)
+case "$hit" in 1.*|2.*) pass "orphan stream: deadline hit at ${hit}s" ;; *) fail "orphan stream: deadline hit at '${hit}s' (want under 3s)" ;; esac
 
 # 5. the sweep reaches only the runner's own descendants.
 if alive "$bystander"; then pass "bystander untouched"; else fail "bystander was killed"; fi
