@@ -231,6 +231,36 @@ jobs:
         working-directory: scripts/jira
       - run: bash scripts/ci/jira-cli-smoke.sh
 
+  # HIMMEL-4410 (epic HIMMEL-4409): the credential-free Claude startup suite. A
+  # REAL `claude` CLI starts under a fake key inside a loopback-only network
+  # namespace and no model turn runs, so it needs no login, no secret and no
+  # network (see scripts/testing/fakekey-claude.sh). The CLI is PINNED to an
+  # exact version so a Claude Code release cannot redden or silently change this
+  # job: to bump it, change CLAUDE_CLI_VERSION below (it must exist on npm:
+  # `npm view @anthropic-ai/claude-code@<v> version`), run
+  # `bash scripts/testing/test-fakekey-claude-startup.sh` against that version
+  # locally, and fix any assertion the new debug-log wording breaks in the same PR.
+  # The suite is SKIP_LISTed in run-shell-tests.sh because the shell-unit shards
+  # have no claude CLI; this job is where it runs.
+  claude-startup:
+    runs-on: ubuntu-latest
+    env:
+      CLAUDE_CLI_VERSION: '2.1.289'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Install the pinned claude CLI
+        run: |
+          npm install --global "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
+          claude --version
+      # ubuntu-24.04 refuses unprivileged user namespaces by default (AppArmor);
+      # the suite needs `unshare -rn` and fails closed without it.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - run: bash scripts/testing/test-fakekey-claude-startup.sh
+
   lanes-and-trust-suites:
     # HIMMEL-689: scripts/lanes is a zero-dependency ESM test package — no
     # package.json (a committed one under scripts/ trips the npm-audit gates for a
