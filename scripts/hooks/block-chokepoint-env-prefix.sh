@@ -1141,8 +1141,9 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # word with a / or one outside the relief names (CR round 8).
 # No relief at all on: an unquoted heredoc body with $( or a backtick,
 # <( >( =(, a paren glued to a word (zsh grouping, extglob), alias, function,
-# hash, enable, a `name() {` that shadows a relief name, a PATH/LD_*/IFS/
-# BASH_ENV/ENV/ZDOTDIR assignment, or an unterminated quote or heredoc.
+# hash, enable, a `name () {` that shadows a relief name, any other
+# definition (an empty paren pair left once those are dropped), a PATH/
+# LD_*/IFS/BASH_ENV/ENV/ZDOTDIR assignment, or an unterminated quote or heredoc.
 # ponytail: an allowed interpreter can still assemble a path with no
 # metachar, and the read-only set is a closed list a new exec-capable
 # option would slip past; the HIMMEL-3930 structural parse replaces this.
@@ -1169,7 +1170,8 @@ pobf_relief() {
     local re_wr=">[>|]?[[:blank:]]*([^[:blank:];|&()<>${NL}]*)"
     local re_pa="[^][:blank:];|&()\$<>${BQ}=${NL}]\\(|\\)[^][:blank:];|&()<>${BQ}${NL}]"
     local re_eq="(^|[[:blank:];|&(${NL}])=\\("
-    local re_fn="(^|[[:blank:];|&${NL}])([A-Za-z_][A-Za-z0-9_-]*)\\(\\)[[:blank:]]*\\{"
+    local re_fn="(^|[[:blank:];|&${NL}])([A-Za-z_][A-Za-z0-9_-]*)[[:blank:]]*\\([[:blank:]]*\\)[[:blank:]]*\\{"
+    local re_ep="\\([[:blank:]]*\\)"
     local re_dw="(^|[^[:alnum:]_])(alias|unalias|function|hash|enable|disable|zmodload|autoload)([^[:alnum:]_]|\$)"
     local re_as="(^|[[:blank:];|&(${NL}])(PATH|path|LD_[[:alnum:]_]*|DYLD_[[:alnum:]_]*|IFS|BASH_ENV|ENV|ZDOTDIR)\\+?="
     local re_ix="system|popen|shell=|subprocess|Popen|spawn|exec|eval|qx|os\\.|child_process|pty|__import__|importlib|getattr|require|ctypes|Kernel|open3|IO\\.|%x|${BQ}|\\|-|-\\|"
@@ -1281,6 +1283,10 @@ pobf_relief() {
         case " $POBF_NAMES " in *" ${BASH_REMATCH[2]} "*) return 1 ;; esac
         F=${F/"${BASH_REMATCH[0]}"/"${BASH_REMATCH[1]}{"}
     done
+    # Any other definition (a ( ) or compound body, a newline before the
+    # brace, a quoted or escaped name) leaves an empty paren pair: no relief
+    # (HIMMEL-4442). Quoted text is a token here, so a quoted '()' is not one.
+    [[ $F =~ $re_ep ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
     F=${F//[0-9]>&[0-9]/ }
     F=${F//>&[0-9]/ }

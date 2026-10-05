@@ -1488,11 +1488,23 @@ assert_allow "4157 hidden anchor with no seam write"           "$(j "bash /r/w/s
 assert_allow "4157 HEAD^ beside export"                        "$(j "export FOO=1; git show HEAD^")"
 assert_allow "4157 ~/ home path beside export"                 "$(j "export FOO=1; ls ~/notes")"
 assert_allow "4157 a # comment beside export"                  "$(j "export FOO=1 # set foo")"
+# HIMMEL-4442 (CR round 13 on #1685): a function shadowing a relief name kept
+# relief when spelled `ls ()`, `ls ( )`, with a subshell or compound body, or
+# with a newline before the brace; only `ls() {` was caught.
+for pre in "unset HIMMEL_CONSOLE_LEG;" "HIMMEL_CONSOLE_LEG=;"; do
+    for D in "ls () { bash \"\$@\"; }" "ls ( ) { bash \"\$@\"; }" "ls () ( bash \"\$@\" )" \
+             "ls ()
+{ bash \"\$@\"; }" "ls () if true; then bash \"\$@\"; fi"; do
+        assert_deny "4442 relief name shadowed: $D [$pre]" "$(j "$D; $pre ls $GP")"
+    done
+    assert_allow "4442 control: relieved ls, no function [$pre]" "$(j "$pre ls /r/w/docs/*.md")"
+done
 
 # HIMMEL-4157 (judge J1685 NO-GO): the relief pass was super-linear -- per
 # redirect it walked every stage, forking per token expansion. 200 redirects
 # took 13 s against a 15 s hook budget; a 10 KB line of quoted stages 5 s.
-# A hook timeout fails OPEN, so a slow allow is a bypass. Same verdicts, in
+# A hook timeout fails CLOSED inside the hook chain, so a slow allow shows up
+# as an over-deny. Same verdicts, in
 # time (EPOCHREALTIME is bash 5+). The 10 KB row times the relief alone: the
 # same text without the seam name never reaches it, and the rest of the
 # hook costs over a second on that text on main too.
