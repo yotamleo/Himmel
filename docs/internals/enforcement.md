@@ -2315,7 +2315,27 @@ HIMMEL-4458 closed these gaps:
   its own command, or join it to the cd by `&&` only. Over-deny measured on
   the p22-samp corpus (20 601 commands): 5 per cwd newly denied, all a
   `cd <scratch>;` (or newline) followed by `tar xzf … -C <rel>` or
-  `unzip … -d <rel>`.
+  `unzip … -d <rel>`. A cd/pushd whose target is not absolute (relative,
+  computed `$d`, `-`, or a bare `popd`; `~` and `$HOME` count as absolute) is
+  unproven too, and so is any command whose text contains `CDPATH` (a plain
+  substring test: `CDPATH=~/.himmel cd state && tar -xf a.tar` lands in HOME).
+- **Extraction options are allowlisted.** While extracting, any option the
+  destination check does not model denies, long or short, bundled letters
+  included, so `--one-top-level=DIR`, `--transform`, `-P`/`--absolute-names`,
+  `-h`, `-X`, `-N` and abbreviated long names all deny. Allowed: tar `-x -f -C
+  -z -j -J -v -o -m -k -p` (dashed, bundled or old-style `xzf`), `--extract`,
+  `--get`, `--file`, `--directory`, `--strip-components`, `--gzip`,
+  `--gunzip`, `--bzip2`, `--xz`, `--zstd`, `--verbose`, `--no-same-owner`,
+  `--no-same-permissions`, `--same-permissions`, `--preserve-permissions`,
+  `--touch`, `--keep-old-files`, `--skip-old-files`; unzip `-o -q -n -j -d`;
+  cpio `-i -p -d -m -v -u -D -F` and `--extract`, `--pass-through`,
+  `--make-directories`, `--preserve-modification-time`, `--unconditional`,
+  `--verbose`, `--quiet`, `--no-absolute-filenames`, `--file`, `--directory`.
+  Value options take `--opt=V`, `--opt V`, `-fV` and `-f V`. List mode
+  (`tar -t`) is not checked. Over-deny of this and the relative-cd rule vs the
+  previous fence: 0 in every recorded corpus (p22-samp 20 601, p22-hot 5 602,
+  p22-hist 4 789, write-fence templates 771, p22-gen 605, corpus 514,
+  suite-1874 317; both cwds).
 - **Chained tar `-C`.** tar applies each `-C`/`--directory` relative to the one
   before it, so a relative one is judged as the composed path:
   `tar -xf x -C "$HOME/projects" -C ..` is HOME and denies (also bundled,

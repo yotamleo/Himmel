@@ -634,7 +634,8 @@ row "4458 unzip -d~ attached"               deny  "unzip /tmp/x.zip -d~"
 row "4458 bsdtar -xf -C ~"                  deny  "bsdtar -xf /tmp/x.tar -C ~"
 row "4458 tar -xf -C ~/.himmel/state"       deny  "tar -xf /tmp/x.tar -C ~/.himmel/state"
 row "4458 tar -xf -C /tmp/out (ctrl)"       allow "tar -xf /tmp/x.tar -C /tmp/out"
-row "4458 cd build && tar -xzf (ctrl)"      allow "cd build && tar -xzf /tmp/x.tgz"
+row "4458 cd build && tar -xzf (r7: relative cd)" deny "cd build && tar -xzf /tmp/x.tgz"
+row "4458 cd /var/build && tar -xzf (ctrl)" allow "cd /var/build && tar -xzf /tmp/x.tgz"
 row "4458 tar -czf -C ~ create (ctrl)"      allow "tar -czf /tmp/b.tgz -C ~ .config"
 row "4458 tar -tf list, cwd HOME (ctrl)"    allow "tar -tf /tmp/x.tar" "$HOME"
 row "4458 unzip -l list (ctrl)"             allow "unzip -l /tmp/x.zip -d ~"
@@ -650,7 +651,8 @@ row "4458 tar -xf (no -O), cwd HOME"        deny  "tar -xzf /tmp/x.tgz inv/home.
 # Differential (p22-samp): a computed cd then a named relative -C stays allowed
 # when joined by &&; after `;` the cwd is unproven (r6) and it denies.
 row "4458 cd \$S; tar xzf -C head (r6 over-deny)" deny "S=/tmp/s; cd \$S; tar xzf head.tgz -C head --strip-components=1"
-row "4458 cd \$S && tar xzf -C head (ctrl)" allow "S=/tmp/s; cd \$S && tar xzf head.tgz -C head --strip-components=1"
+row "4458 cd \$S && tar xzf -C head (r7: computed cd)" deny "S=/tmp/s; cd \$S && tar xzf head.tgz -C head --strip-components=1"
+row "4458 cd /var/s && tar xzf -C head (ctrl)" allow "cd /var/s && tar xzf head.tgz -C head --strip-components=1"
 # Panel r1 codex-1: an option's operand is never a flag (-O as the archive).
 row "4458 tar -xf -O -C \$HOME (operand)"    deny  "tar -xf -O -C \"\$HOME\""
 row "4458 tar xf -O -C ~ (old-style operand)" deny "tar xf -O -C ~"
@@ -665,7 +667,8 @@ row "4458 tar -C -O, cwd HOME (dir -O, ctrl)" allow "tar -xf /tmp/a.tar -C -O" "
 row "4458 tar -xf a -O -C ~ (real -O, ctrl)" allow "tar -xf /tmp/a.tar -O -C ~"
 row "4458 tar -xOf a, cwd HOME (ctrl)"      allow "tar -xOf /tmp/a.tar m" "$HOME"
 row "4458 tar --to-stdout, cwd HOME (ctrl)" allow "tar -xf /tmp/a.tar --to-stdout m" "$HOME"
-row "4458 tar --exclude-vcs -C /tmp/o, cwd HOME (ctrl)" allow "tar -xf /tmp/a.tar --exclude-vcs -C /tmp/o" "$HOME"
+row "4458 tar --exclude-vcs (r7: not allowlisted)" deny "tar -xf /tmp/a.tar --exclude-vcs -C /tmp/o" "$HOME"
+row "4458 tar --no-same-owner -C /tmp/o, cwd HOME (ctrl)" allow "tar -xf /tmp/a.tar --no-same-owner -C /tmp/o" "$HOME"
 row "4458 tar --frob -C /tmp/o, cwd HOME (unknown long)" deny "tar -xf /tmp/a.tar --frob -C /tmp/o" "$HOME"
 row "4458 tar -xsO (s may take O), -C ~"     deny  "tar -xsO /tmp/a.tar -C ~"
 row "4458 unzip -P -p x.zip -d ~"           deny  "unzip -P -p /tmp/x.zip -d ~"
@@ -703,7 +706,7 @@ row "4458 tar -C \"\$d\" -C .. (unresolved chain)" deny "tar -xf /tmp/x.tar -C \
 row "4458 cd \"\$d\"; tar -C sub -C ../.."   deny  "cd \"\$d\"; tar -xf /tmp/x.tar -C sub -C ../.."
 row "4458 cd \"\$d\"; tar -C .."              deny  "cd \"\$d\"; tar -xf /tmp/x.tar -C .."
 row "4458 cd \"\$d\"; tar -C sub (r6 unproven)" deny "cd \"\$d\"; tar -xf /tmp/x.tar -C sub"
-row "4458 cd \"\$d\" && tar -C sub (ctrl)"   allow "cd \"\$d\" && tar -xf /tmp/x.tar -C sub"
+row "4458 cd \"\$d\" && tar -C sub (r7: computed cd)" deny "cd \"\$d\" && tar -xf /tmp/x.tar -C sub"
 row "4458 tar -C ~/projects -C sub (ctrl)"    allow "tar -xf /tmp/x.tar -C ~/projects -C sub"
 row "4458 tar -C /var/w -C .. (ctrl)"         allow "tar -xf /tmp/x.tar -C /var/w -C .."
 row "4458 tar -C ~ -C /tmp/o (absolute 2nd, ctrl)" allow "tar -xf /tmp/x.tar -C ~/projects -C /tmp/o"
@@ -800,6 +803,29 @@ row "4458 cd X && tar -C rel (ctrl)"          allow "cd /var/w && tar -xf /tmp/x
 row "4458 tar -C abs, no cd (ctrl)"           allow "tar -xf /tmp/x.tar -C /var/out" "$HOME"
 row "4458 (true); tar -C abs, no cd (ctrl)"   allow "(true); tar -xf /tmp/x.tar -C /var/out" "$HOME"
 row "4458 cd X; tar -tf (list, ctrl)"         allow "cd /var/w; tar -tf /tmp/x.tar" "$HOME"
+# Panel r7: extraction options are an ALLOWLIST (structural); a relative cd
+# target or any CDPATH mention leaves the cwd unproven. cwd /var as probed.
+row "4458 tar --one-top-level=\$HOME"         deny  "tar -xf /tmp/a.tar -C /var/out --one-top-level=\"\$HOME\"" /var
+row "4458 tar --one-top-level=~/.himmel"      deny  "tar -xf /tmp/a.tar -C /var/out --one-top-level=$HOME/.himmel" /var
+row "4458 tar --one-top-level DIR (split)"    deny  "tar -xf /tmp/a.tar -C /var/out --one-top-level $HOME" /var
+row "4458 tar --one-top (abbrev)"             deny  "tar -xf /tmp/a.tar -C /var/out --one-top=$HOME" /var
+row "4458 tar --transform"                    deny  "tar -xf /tmp/a.tar -C /var/out --transform=s,^,x/,"
+row "4458 tar -h bundled (unknown letter)"    deny  "tar -xhf /tmp/a.tar -C /var/out"
+row "4458 tar xhf old-style (unknown letter)" deny  "tar xhf /tmp/a.tar -C /var/out"
+row "4458 unzip -x (not allowlisted)"         deny  "unzip -o /tmp/x.zip -d /var/out -x a"
+row "4458 cpio -iR (not allowlisted)"         deny  "cpio -i --no-absolute-filenames -R u -D /var/out"
+row "4458 CDPATH=… cd rel && tar"             deny  "CDPATH=\"\$HOME/.himmel\" cd state && tar -xf /tmp/a.tar" /var
+row "4458 export CDPATH; cd rel && tar"       deny  "export CDPATH=$HOME/.himmel; cd state && tar -xf /tmp/a.tar" /var
+row "4458 cd rel && tar (no CDPATH word)"     deny  "cd state && tar -xf /tmp/a.tar" /var
+row "4458 CDPATH quoted-split, cd abs && tar -C abs" deny "export CD\"\"PATH=/x; cd /var/w && tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 popd && tar"                        deny  "popd && tar -xf /tmp/a.tar -C /var/out" /var
+row "4458 cd /var/w && tar -xzf -C out --strip (ctrl)" allow "cd /var/w && tar -xzf x.tgz -C out --strip-components=1" /var
+row "4458 tar --strip-components N split (ctrl)" allow "tar -xzf /tmp/x.tgz --strip-components 1 -C /var/out" /var
+row "4458 tar xzf old-style -C (ctrl)"        allow "tar xzf /tmp/x.tgz -C /var/out --strip-components=1" /var
+row "4458 tar -C abs plain (ctrl)"            allow "tar -xf /tmp/x.tar -C /var/out" /var
+row "4458 unzip -o -q -d (ctrl)"              allow "unzip -o -q /tmp/x.zip -d /var/out" /var
+row "4458 tar -tf --one-top-level (list, ctrl)" allow "tar -tf x.tar --one-top-level" /var
+row "4458 cd ~/x && tar -C abs (ctrl)"        allow "cd ~/x && tar -xf /tmp/x.tar -C /var/out" /var
 
 echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
 row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"

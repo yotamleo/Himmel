@@ -1064,6 +1064,23 @@ _note_cd() {
     case "$k" in LIFT|STATE|HIMMEL|HOME) CD_HOME=1 ;; UNK) CD_UNK=1 ;; esac
 }
 
+# _cd_abs <cd|pushd|popd> <args...> -> 0 when the target does not go through
+# CDPATH or the dir stack: absolute, ~, ~/..., a $HOME spelling, or bare cd.
+# shellcheck disable=SC2016,SC2088  # literal ~ and $HOME spellings are matched as text
+_cd_abs() {
+    local c="$1"
+    shift
+    [ "$c" = popd ] && return 1
+    while [ $# -gt 0 ]; do
+        case "$1" in --) shift; break ;; -[LPe@]|-n) shift ;; *) break ;; esac
+    done
+    case "${1-}" in
+        '') [ "$c" = cd ] ;;
+        /*|'~'|'~/'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 # _cd_ref <word> -> lift_ref of a relative word resolved against the last
 # resolved cd target (`cd ~/projects && tar -C ..` is HOME), else NONE.
 _cd_ref() {
@@ -1114,6 +1131,62 @@ _home_anc() {
         done
     done
     return 1
+}
+
+# _extract_allow <tar|gtar|bsdtar|unzip|cpio> <args...>: an extraction may
+# use ONLY options the destination parser understands, or inert ones that
+# cannot change where a member lands (HIMMEL-4458 r7). Anything else denies,
+# long or short, bundled letters included: an option like --one-top-level=DIR
+# moves members off the judged destination. Long options match whole names
+# only (an abbreviation denies). Not listed, by design: -P/--absolute-names,
+# --transform/--xform, --one-top-level, -h/--dereference.
+_extract_allow() {
+    local c="$1" a v ch sl vl first=1 skip=0
+    shift
+    case "$c" in
+        tar|gtar|bsdtar) sl=xfCzjJvomkp; vl=fC ;;
+        unzip) sl=oqndj; vl=d ;;
+        cpio) sl=ipdmvuDF; vl=DF ;;
+    esac
+    for a in "$@"; do
+        if [ "$skip" -gt 0 ]; then skip=$((skip-1)); first=0; continue; fi
+        case "$a" in
+            --) return 0 ;;
+            -) first=0; continue ;;
+            --*)
+                case "$c:${a%%=*}" in
+                    *tar:--extract|*tar:--get|*tar:--gzip|*tar:--gunzip|*tar:--bzip2|*tar:--xz|*tar:--zstd|*tar:--verbose|*tar:--no-same-owner|*tar:--no-same-permissions|*tar:--same-permissions|*tar:--preserve-permissions|*tar:--touch|*tar:--keep-old-files|*tar:--skip-old-files) ;;
+                    cpio:--extract|cpio:--pass-through|cpio:--make-directories|cpio:--preserve-modification-time|cpio:--unconditional|cpio:--verbose|cpio:--quiet|cpio:--no-absolute-filenames) ;;
+                    *tar:--file|*tar:--directory|*tar:--strip-components|cpio:--file|cpio:--directory)
+                        case "$a" in *=*) ;; *) skip=1 ;; esac ;;
+                    *) deny "$c extracts with ${a%%=*}, an option the destination check does not model (it may move members off the judged destination, e.g. into HOME or ~/.himmel); use only -x/-f/-C/-z/-j/-J/-v/-o/-m/-k/-p, --strip-components, --no-same-owner/--no-same-permissions (unzip: -o/-q/-n/-j/-d)" ;;
+                esac
+                first=0; continue ;;
+            -*) v="${a#-}" ;;
+            *) case "$c" in
+                   tar|gtar|bsdtar) [ "$first" = 1 ] || continue; v="$a" ;;
+                   *) first=0; continue ;;
+               esac ;;
+        esac
+        # Bundled letters; a value letter takes the rest of a dashed bundle,
+        # else the next word (old-style tar: one word per value letter).
+        while [ -n "$v" ]; do
+            ch="${v:0:1}"; v="${v:1}"
+            case "$sl" in *"$ch"*) ;; *)
+                deny "$c extracts with -$ch, an option the destination check does not model (it may move members off the judged destination, e.g. into HOME or ~/.himmel); use only -x/-f/-C/-z/-j/-J/-v/-o/-m/-k/-p, --strip-components, --no-same-owner/--no-same-permissions (unzip: -o/-q/-n/-j/-d)" ;;
+            esac
+            case "$vl" in *"$ch"*)
+                if [ "${a:0:1}" = - ]; then
+                    [ -n "$v" ] || skip=1
+                    v=""
+                else
+                    skip=$((skip+1))
+                fi ;;
+            esac
+        done
+        first=0
+    done
+    return 0
 }
 
 # check_extract <tar|gtar|bsdtar|unzip|cpio> <args...>
@@ -1223,6 +1296,7 @@ check_extract() {
     # destination-internal symlink becomes plantable by an agent before the
     # extraction, e.g. the destination is created in the same command.
     [ "$ksym" = 1 ] && deny "$c --keep-directory-symlink follows a directory symlink inside the destination, which can lead into HOME or ~/.himmel; drop it"
+    _extract_allow "$c" "$@"
     # Structural fail-closed: with the cwd unproven, no destination (even an
     # absolute one) is judged; split the cd and the extraction into separate
     # commands, or join them only by && at top level.
@@ -1551,7 +1625,11 @@ check_clause() {
                 cd|pushd|popd) _note_cd "$cmd" "$@"
                     if [ "$CL_AND" = 0 ] || [ "$CL_PAR" = 1 ] || [ "$CL_PREV_O" = 1 ] || [ "$depth" -gt 0 ]; then
                         CWD_UNPROVEN=1
-                    fi ;;
+                    fi
+                    # A relative target goes through CDPATH; popd, `-` and a
+                    # stack index are unknown: only an absolute, ~ or $HOME
+                    # target (or a bare cd) is proven.
+                    _cd_abs "$cmd" "$@" || CWD_UNPROVEN=1 ;;
             esac
             if [[ "$cmd" =~ $MENTION_RE ]]; then
                 for a in "$@"; do
@@ -1574,6 +1652,10 @@ esac
 # Layer 1: the whole-command mention rule (J1874). The trigger reads both the
 # raw text and the dequoted tokens (quote splits, $'..', heredoc bodies).
 WTOK=$(printf '%s' "$CMD" | awk -v STRICT=1 "$TOKENIZER") || deny "command tokenizer failed (fail-closed)"
+# A command naming CDPATH (assignment, export/declare/env, quoted or split by
+# quotes) may redirect a relative cd: the cwd is unproven. A relative cd
+# target is unproven on its own too, so this is the belt to that brace.
+case "$CMD$WTOK" in *CDPATH*) CWD_UNPROVEN=1 ;; esac
 if names_lift "$CMD" || names_lift "$WTOK"; then whole_command_gate "$CMD" 0; fi
 analyse "$CMD" 0
 exit 0
