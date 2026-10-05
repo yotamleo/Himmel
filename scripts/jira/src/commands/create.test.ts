@@ -88,7 +88,7 @@ describe('create — command wiring (--summary → POST /issue payload)', () => 
       'title wins',
     ]);
     expect(mockRequest).toHaveBeenCalledTimes(1);
-    const [, , body] = mockRequest.mock.calls[0] as [
+    const [, , body] = mockRequest.mock.calls.find((c) => c[0] === 'POST') as [
       string,
       string,
       { fields: { summary: string } },
@@ -116,7 +116,7 @@ describe('create — v1 bug freeze wiring', () => {
     p.exitOverride();
     registerCreate(p);
     await p.parseAsync(['node', 'jira', 'create', '--title', 't', ...args]);
-    const [, , body] = mockRequest.mock.calls[0] as [
+    const [, , body] = mockRequest.mock.calls.find((c) => c[0] === 'POST') as [
       string,
       string,
       { fields: { fixVersions?: { name: string }[] } },
@@ -124,10 +124,48 @@ describe('create — v1 bug freeze wiring', () => {
     return body.fields;
   }
 
-  it('sets fixVersion v1.0.1 on a Bug filed after the cutoff and says so', async () => {
-    const fields = await createFields('2026-09-26', ['--type', 'Bug']);
-    expect(fields.fixVersions).toEqual([{ name: 'v1.0.1' }]);
-    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/bug freeze.*v1\.0\.1/));
+  const VERSIONS = [
+    { id: '1', name: 'v1.0.0', released: true },
+    { id: '2', name: 'v1.0.1', released: true },
+    { id: '3', name: 'v1.0.2', released: false },
+  ];
+  const withVersions = (versions: unknown) =>
+    mockRequest.mockImplementation(async (method: string) =>
+      method === 'GET' ? versions : { key: 'HIMMEL-1' },
+    );
+  const postedFields = () => {
+    const call = mockRequest.mock.calls.find((c) => c[0] === 'POST');
+    return (call?.[2] as { fields: { fixVersions?: { name: string }[] } }).fields;
+  };
+
+  it('sets the earliest unreleased version after v1.0.0 on a Bug filed after the cutoff and says so', async () => {
+    withVersions(VERSIONS);
+    await createFields('2026-09-26', ['--type', 'Bug']);
+    expect(postedFields().fixVersions).toEqual([{ name: 'v1.0.2' }]);
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/bug freeze.*v1\.0\.2/));
+  });
+
+  it('lets an explicit --fix-version win over the freeze (HIMMEL-4489)', async () => {
+    withVersions(VERSIONS);
+    await createFields('2026-09-26', ['--type', 'Bug', '--fix-version', 'v1.0.0']);
+    expect(postedFields().fixVersions).toEqual([{ name: 'v1.0.0' }]);
+  });
+
+  it('files with no fixVersion and a warning when no unreleased version can be found (HIMMEL-4489)', async () => {
+    withVersions([{ id: '1', name: 'v1.0.0', released: true }]);
+    await createFields('2026-09-26', ['--type', 'Bug']);
+    expect(postedFields().fixVersions).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/bug freeze.*no fixVersion/));
+  });
+
+  it('files with no fixVersion and a warning when the versions cannot be read (HIMMEL-4489)', async () => {
+    mockRequest.mockImplementation(async (method: string) => {
+      if (method === 'GET') throw new Error('boom');
+      return { key: 'HIMMEL-1' };
+    });
+    await createFields('2026-09-26', ['--type', 'Bug']);
+    expect(postedFields().fixVersions).toBeUndefined();
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/bug freeze.*no fixVersion/));
   });
 
   it('sets no fixVersion when the Bug is labelled v1-blocker', async () => {

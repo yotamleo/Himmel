@@ -13,6 +13,7 @@ interface JiraVersion {
   name: string;
   self?: string;
   released?: boolean;
+  archived?: boolean;
   releaseDate?: string;
 }
 
@@ -63,7 +64,7 @@ export function buildFixVersionBody(
   return { update: { fixVersions: [{ [op]: { name } }] } };
 }
 
-const fetchVersions = (project: string) =>
+export const fetchVersions = (project: string) =>
   request<JiraVersion[]>('GET', `/project/${encodeURIComponent(project)}/versions`);
 
 export async function listVersions(project: string): Promise<string[]> {

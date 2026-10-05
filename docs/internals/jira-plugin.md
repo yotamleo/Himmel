@@ -160,10 +160,12 @@ run from a clone of the repo whose releases it lists (`--repo` must match), and
 `--apply` refuses when a published tag is missing locally (`git fetch --tags`).
 
 **The v1 bug freeze (HIMMEL-3411).** Bugs filed after `2026-09-25` default to
-`v1.0.1`, not `v1.0.0`. `create --type Bug` sets fixVersion `v1.0.1` and prints
-one stderr line saying so, unless `--labels` includes `v1-blocker`, which leaves
-the version unset so the bug can be added to `v1.0.0` by hand. Other types are
-untouched. `node <repo-root>/scripts/jira/dist/index.js freeze-check` lists the
+the earliest unreleased version after `v1.0.0`, not `v1.0.0` itself (read from the
+project's versions; HIMMEL-4489). `create --type Bug` sets that fixVersion and
+prints one stderr line saying so, unless `--labels` includes `v1-blocker`, which
+leaves the version unset so the bug can be added to `v1.0.0` by hand. An explicit
+`--fix-version` always wins, and when no unreleased version can be read the bug is
+filed with no fixVersion and a warning. Other types are untouched. `node <repo-root>/scripts/jira/dist/index.js freeze-check` lists the
 Bugs created after the cutoff that carry `v1.0.0` without `v1-blocker` (the
 freeze's leaks), and exits 1 if there are any. The cutoff date, both version
 names and the label live in one constant, `BUG_FREEZE` in
