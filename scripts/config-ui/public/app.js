@@ -2,7 +2,7 @@
 import { render, renderNav } from "/render.js";
 
 const $ = (s) => document.querySelector(s);
-const state = { open: new Set(), filt: { health: null, kind: null, q: "" }, plans: {} };
+const state = { open: new Set(), bundles: {}, filt: { health: null, kind: null, q: "", problems: false }, plans: {} };
 let feed = null;
 let current = "triage";
 
@@ -15,11 +15,13 @@ if (m) history.replaceState(null, "", location.pathname + location.search);
 function paint() {
   const keep = document.activeElement && document.activeElement.id === "q" ? document.activeElement.selectionStart : null;
   const focusK = document.activeElement && document.activeElement.matches && document.activeElement.matches(".row-head") ? document.activeElement.dataset.k : null;
+  const focusB = document.activeElement && document.activeElement.matches && document.activeElement.matches(".bhead") ? document.activeElement.dataset.b : null;
   $("#main").innerHTML = render(feed, state);
   $("#nav").innerHTML = renderNav(feed, current);
   $("#probed").textContent = "probed " + String(feed.generatedAt || "").replace("T", " ").slice(0, 16);
   $("#where").textContent = `${location.host} · ${feed.target ? feed.target.scope : "?"} scope`;
   if (focusK !== null) { for (const h of document.querySelectorAll(".row-head")) if (h.dataset.k === focusK) { h.focus(); break; } }
+  if (focusB !== null) { for (const h of document.querySelectorAll(".bhead")) if (h.dataset.b === focusB) { h.focus(); break; } }
   if (keep !== null) { const q = $("#q"); q.focus(); q.setSelectionRange(keep, keep); }
 }
 
@@ -85,6 +87,13 @@ async function run(k) {
   if (ok) loadFeed();
 }
 
+// A header click records an override with the bundle's rank at click time; a
+// later worse rank makes render.js drop it (isOpen).
+function toggleBundle(h) {
+  state.bundles[h.dataset.b] = { open: h.getAttribute("aria-expanded") !== "true", rank: Number(h.dataset.rank) };
+  paint();
+}
+
 function go(id) {
   current = id;
   document.getElementById(id).scrollIntoView({ block: "start" });
@@ -102,6 +111,8 @@ document.addEventListener("click", (e) => {
     try { navigator.clipboard.writeText(t).then(() => toast("Copied: " + t), () => toast(t)); } catch (_) { toast(t); }
     return;
   }
+  if (b.dataset.act === "bundle") return toggleBundle(b);
+  if (b.dataset.act === "problems") { state.filt.problems = !state.filt.problems; return paint(); }
   if (b.dataset.act === "plan") { e.stopPropagation(); return void preview(b); }
   if (b.dataset.act === "run") return void run(b.dataset.k);
   if (b.dataset.act === "close") { delete state.plans[b.dataset.k]; return paint(); }
@@ -125,6 +136,10 @@ document.addEventListener("input", (e) => {
 document.addEventListener("keydown", (e) => {
   if (!feed || e.target.matches("input")) return;
   if (["1", "2", "3"].includes(e.key)) return go(["triage", "controls", "inventory"][Number(e.key) - 1]);
+  if ((e.key === "Enter" || e.key === " ") && e.target.matches(".bhead")) {
+    e.preventDefault();
+    return toggleBundle(e.target);
+  }
   if ((e.key === "Enter" || e.key === " ") && e.target.matches(".row-head")) {
     e.preventDefault();
     const k = e.target.dataset.k;
