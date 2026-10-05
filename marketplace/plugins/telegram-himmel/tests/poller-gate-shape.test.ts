@@ -37,6 +37,31 @@ const serverPath = new URL(import.meta.resolve('../server.ts')).pathname.replace
 const serverDir = dirname(serverPath)
 const src = await Bun.file(serverPath).text()
 
+// HIMMEL-4446: without the plugin's node_modules server.ts dies at import
+// (5 ms, no stderr line, no proxy hit) and every case below fails with a
+// misleading "expected true, got false". Missing deps are an environment
+// problem: skip the server-booting cases locally with the fix named, but fail loudly under CI so a
+// broken `bun install` there can never become a silent skip.
+const depMissing = (() => {
+  try {
+    import.meta.resolveSync('@modelcontextprotocol/sdk/server/index.js', serverPath)
+    return false
+  } catch {
+    return true
+  }
+})()
+const inCI = !!process.env.CI
+const skipNoDeps = depMissing && !inCI
+if (skipNoDeps) {
+  console.warn(
+    `SKIP poller-gate-shape: @modelcontextprotocol/sdk not installed in ${serverDir} — run \`bun install --frozen-lockfile\` there`,
+  )
+}
+
+test('plugin dependencies are installed (fails under CI only)', () => {
+  if (inCI) expect(depMissing).toBe(false)
+})
+
 describe('telegram-himmel fork — TELEGRAM_OWN_POLLER gate survives an upstream re-sync', () => {
   test('an unusable ps still kills the stale poller (Windows)', () => {
     // Upstream 0.0.7 gates the SIGTERM on execFileSync('ps', …) inside one
@@ -55,7 +80,7 @@ describe('telegram-himmel fork — TELEGRAM_OWN_POLLER gate survives an upstream
   })
 })
 
-describe('telegram-himmel fork — OWN_POLLER actually gates bot.start(), not just bot.pid', () => {
+describe.skipIf(skipNoDeps)('telegram-himmel fork — OWN_POLLER actually gates bot.start(), not just bot.pid', () => {
   async function runPollAttempt(ownPoller: string): Promise<{ attempted: boolean; disabledMessage: boolean }> {
     // A TCP canary in place of a closed port: any inbound connection proves
     // the server actually tried to reach out through the proxy, i.e. that
