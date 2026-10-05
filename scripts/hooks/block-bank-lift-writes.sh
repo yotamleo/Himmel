@@ -440,6 +440,43 @@ MENTION_RE='^(curl|wget|tar|bsdtar|unzip|cpio|7z|7za|7zr|ed|ex|vi|vim|nvim|view|
 _lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 _base() { local b="${1%/}"; printf '%s' "${b##*/}"; }
 
+# check_lift_name <args...> — runs on every clause BEFORE the verb rules
+# (console ruling, HIMMEL-4445 round 6): a word that contains the basename
+# bank-lift.json, in a clause whose command is not an allowlisted reader,
+# denies. Over-deny is accepted. The command word is resolved past
+# keywords, assignments and simple env/sudo/timeout/nice-style wrappers;
+# anything else counts as not a reader. Redirect targets are not in args:
+# a write redirect onto the lift is denied by the redirect rule.
+check_lift_name() {
+    local a hit=0 w c
+    for a in "$@"; do
+        case "$(_lower "$a")" in *bank-lift.json*) hit=1; break ;; esac
+    done
+    [ "$hit" = 1 ] || return 0
+    while [ $# -gt 0 ]; do
+        w="$1"
+        case "$w" in
+            '{'|'}'|'!'|if|then|else|elif|do|while|until|fi|done|nohup|command|time) shift; continue ;;
+        esac
+        if [[ "$w" =~ ^[A-Za-z_][A-Za-z0-9_]*\+?= ]]; then shift; continue; fi
+        c=$(_lower "$(_base "$w")")
+        case "$c" in
+            env) shift; while [ $# -gt 0 ]; do case "$1" in -*|*=*) shift ;; *) break ;; esac; done; continue ;;
+            sudo|doas|nice|xargs) shift; while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) break ;; esac; done; continue ;;
+            timeout) shift; while [ $# -gt 0 ]; do case "$1" in -*) shift ;; *) shift; break ;; esac; done; continue ;;
+        esac
+        break
+    done
+    shift
+    case "$c" in
+        cat|less|head|stat|ls|file|wc|test|'[') return 0 ;;
+        jq) for a in "$@"; do case "$a" in -i|--in-place*) deny "jq edits in place a word naming the bank lift ($a)" ;; esac; done; return 0 ;;
+        tail) for a in "$@"; do case "$a" in --follow*) deny "tail follows the bank lift" ;; --*) ;; -*[fF]*) deny "tail follows the bank lift" ;; esac; done; return 0 ;;
+        grep|rg) for a in "$@"; do case "$a" in --pre|--pre=*) deny "$c --pre runs a command on the bank lift" ;; esac; done; return 0 ;;
+    esac
+    deny "a word names the bank lift (bank-lift.json) in a non-reader command (${c:-unknown}); only cat/less/head/tail/stat/ls/file/wc/test/jq/grep/rg may name it"
+}
+
 # Inline interpreter code naming the lift FILE (bank-lift.json, split or
 # globbed), $BANK_LIFT_FILE, bank-lift.sh, or its sourced _bank_lift_cmd.
 LIFT_CODE_RE='bank[^a-z0-9]{0,4}l[a-z?*]{0,2}ft[^a-z0-9]{0,6}json|bank[-_.]?lift[-_.]?(file|sh)|_bank_lift_cmd'
@@ -706,6 +743,7 @@ EOF
             i=$((i+1))
         done
         [ "${#args[@]}" -gt 0 ] || continue
+        check_lift_name "${args[@]}"
         check_clause "$depth" "$fed" "${args[@]}"
         case "$?" in 10) stdin_shell=1 ;; esac
     done <<EOF

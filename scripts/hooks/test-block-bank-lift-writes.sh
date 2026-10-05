@@ -258,8 +258,10 @@ row "cat the lift"                 allow "cat ~/.himmel/state/bank-lift.json"
 row "jq . the lift"                allow "jq . ~/.himmel/state/bank-lift.json"
 row "jq -r .until the lift"        allow "jq -r .until \$HOME/.himmel/state/bank-lift.json"
 row "cat lift > /tmp copy"         allow "cat ~/.himmel/state/bank-lift.json > /tmp/lift-copy.json"
-row "cp lift to /tmp (read)"       allow "cp ~/.himmel/state/bank-lift.json /tmp/lift-copy.json"
-row "rm the lift (tightens)"       allow "rm -f ~/.himmel/state/bank-lift.json"
+# Round 6 ruling: naming bank-lift.json outside an allowlisted reader denies
+# (accepted over-deny) — these rows were ALLOW before it.
+row "cp lift to /tmp (over-deny r6)"   deny  "cp ~/.himmel/state/bank-lift.json /tmp/lift-copy.json"
+row "rm the lift (over-deny r6)"       deny  "rm -f ~/.himmel/state/bank-lift.json"
 row "test -f the lift"             allow "test -f ~/.himmel/state/bank-lift.json && echo yes"
 row "ls state/"                    allow "ls -la ~/.himmel/state"
 row "write other state file"       allow "echo x > ~/.himmel/state/other.json"
@@ -267,7 +269,7 @@ row "write lift-named file elsewhere" allow "echo x > /tmp/x/bank-lift.json"
 row "write lookalike name"         allow "echo x > ~/.himmel/state/bank-lift.json.bak"
 row "grep pattern"                 allow "grep -rn 'bank-lift' scripts/"
 row "git grep 'bank-lift.sh set'"  allow "git grep -n 'bank-lift.sh set'"
-row "commit message mention"       allow "git commit -m 'feat: [HIMMEL-4445] deny agent writes to ~/.himmel/state/bank-lift.json'"
+row "commit msg names .json (over-deny r6)" deny "git commit -m 'feat: [HIMMEL-4445] deny agent writes to ~/.himmel/state/bank-lift.json'"
 row "commit message with set"      allow "git commit -m 'docs: bank-lift.sh set is operator-only'"
 row "echo mention"                 allow "echo 'run: bash scripts/lib/bank-lift.sh set'"
 row "set -e then show"             allow "set -euo pipefail; bash $S show"
@@ -277,7 +279,7 @@ row "cp unrelated"                 allow "cp a.txt b.txt"
 row "redirect unrelated"           allow "echo hi > /tmp/out.txt 2>&1"
 row "git config set"               allow "git config set user.name x"
 row "Read-shaped python"           allow "python3 -c 'print(1)'"
-row "mv the lift away (tightens)"  allow "mv ~/.himmel/state/bank-lift.json /tmp/old-lift.json"
+row "mv the lift away (over-deny r6)" deny "mv ~/.himmel/state/bank-lift.json /tmp/old-lift.json"
 row "redirect to \$OUT"            allow "echo x > \"\$OUT\""
 row "cd + find -exec {}"           allow "cd foo && find . -name '*.tmp' -exec rm {} \\;"
 row "rsync -avt (t is a flag)"     allow "rsync -avt src/ dst/"
@@ -292,7 +294,7 @@ EOF
 # script FILE whose data args merely mention bank-lift, and inline code whose
 # prose says "bank" and "lift"/"left" without naming the lift file, are not
 # writes.
-row "node script, title mentions bank-lift" allow "node /x/jira/dist/index.js create --type Task --title 'bank-lift: hook-deny agent writes to ~/.himmel/state/bank-lift.json and bank-lift.sh set'"
+row "node script, title names .json (over-deny r6)" deny "node /x/jira/dist/index.js create --type Task --title 'bank-lift: hook-deny agent writes to ~/.himmel/state/bank-lift.json and bank-lift.sh set'"
 row "python heredoc, prose bank + left"     allow "python3 - doc.md <<'EOF'
 s=open('doc.md').read().replace('bank 62 % left','bank 70 % left; lift voided')
 EOF"
@@ -322,9 +324,10 @@ row "sed -n -e W command"                  deny  "sed -n -e 'W $P' /tmp/in"
 row "sed --expression= s///w flag"         deny  "sed --expression='s/a/b/w $P' /tmp/in"
 row "sed -ne bundle, w after address"      deny  "sed -ne '/x/w $P' /tmp/in"
 row "sed e command naming the lift"        deny  "sed '1e cp /tmp/x ~/.himmel/state/bank-lift.json' /tmp/in"
-row "sed reads the lift (control)"         allow "sed -n p $P"
-row "sed w elsewhere (control)"            allow "sed 'w /tmp/out' $P"
-row "sed -e script, lift is a file (ctrl)" allow "sed -e 's/w/x/' $P"
+row "sed reads the lift (over-deny r6)"     deny  "sed -n p $P"
+row "sed w elsewhere (over-deny r6)"        deny  "sed 'w /tmp/out' $P"
+row "sed -e script on lift (over-deny r6)"  deny  "sed -e 's/w/x/' $P"
+row "sed reads other file (ctrl)"           allow "sed -n p /tmp/other.txt"
 # An unquoted heredoc delimiter runs \$( ) and backticks in the body.
 row "cat <<EOF body \$( > lift)"           deny  "cat <<EOF
 {\"a\": \$(printf '{}' > $P)}
@@ -362,7 +365,8 @@ row "cd state; cp lift-named src ."        deny  "cd ~/.himmel/state && cp /tmp/
 row "cd state; mv lift-named src ./"       deny  "cd ~/.himmel/state && mv $T/src/bank-lift.json ./"
 row "cd state; cp -t . lift-named src"     deny  "cd ~/.himmel/state; cp -t . /tmp/bank-lift.json"
 row "cd; cp other src . (ctrl)"            allow "cd /tmp && cp $T/src/other.txt ."
-row "cd; cp lift-named src to file (ctrl)" allow "cd /tmp && cp $T/src/bank-lift.json backup.txt"
+row "cd; cp lift-named src (over-deny r6)" deny  "cd /tmp && cp $T/src/bank-lift.json backup.txt"
+row "cd; cp other src to file (ctrl)"      allow "cd /tmp && cp $T/src/other.txt backup.txt"
 
 echo "== review round 5 (unforgeable redirect marks) =="
 # A word spelling a tokenizer mark must not be read as a redirect: the marks
@@ -380,17 +384,52 @@ row "@R@/@W@ words, no lift (ctrl)"        allow "echo '@R@' '@W@' > /tmp/out.tx
 row "grep @W@ in the lift (ctrl)"          allow "grep -c '@W@' ~/.himmel/state/bank-lift.json"
 row "@B@ @S@ words alone (ctrl)"           allow "printf '%s\n' @B@ @S@"
 
+echo "== review round 6 (lift name outside a reader denies) =="
+# Console ruling: any word naming bank-lift.json in a clause whose command is
+# not an allowlisted reader denies. Over-deny is accepted.
+mkdir -p "$T/stage/.himmel/state"
+row "python3 -c attached + positional"     deny  "python3 -c\"open('\$HOME/.himmel/state/bank-lift.json','w').write('{}')\" dummy"
+row "cp --parents into \$HOME"             deny  "cp --parents .himmel/state/bank-lift.json \"\$HOME\"" "$T/stage"
+row "rsync -R into \$HOME"                 deny  "rsync -R .himmel/state/bank-lift.json \"\$HOME\"" "$T/stage"
+row "perl one-liner writes lift"           deny  "perl -e 'open(F,\">\$ENV{HOME}/.himmel/state/bank-lift.json\")' x"
+row "ruby one-liner writes lift"           deny  "ruby -e 'File.write(Dir.home+\"/.himmel/state/bank-lift.json\",\"{}\")' x"
+row "node one-liner writes lift"           deny  "node -e 'require(\"fs\").writeFileSync(process.env.HOME+\"/.himmel/state/bank-lift.json\",\"{}\")' x"
+row "install onto lift"                    deny  "install /tmp/x ~/.himmel/state/bank-lift.json"
+row "dd of= lift"                          deny  "dd if=/tmp/x of=\$HOME/.himmel/state/bank-lift.json"
+row "sed -i lift"                          deny  "sed -i 's/a/b/' ~/.himmel/state/bank-lift.json"
+row "jq -i lift"                           deny  "jq -i '.until=1' ~/.himmel/state/bank-lift.json"
+row "jq --in-place lift"                   deny  "jq --in-place '.until=1' ~/.himmel/state/bank-lift.json"
+row "tail -f lift piped"                   deny  "tail -f ~/.himmel/state/bank-lift.json | tee /tmp/x"
+row "timeout-wrapped python names lift"    deny  "timeout 5 python3 -c 'print(1)' ~/.himmel/state/bank-lift.json"
+row "\$( ) python names lift"              deny  "x=\$(python3 -c 'import sys' .himmel/state/bank-lift.json)"
+row "reader redirected into lift"          deny  "cat /tmp/x > ~/.himmel/state/bank-lift.json"
+row "reader: cat (ctrl)"                   allow "cat ~/.himmel/state/bank-lift.json"
+row "reader: less (ctrl)"                  allow "less ~/.himmel/state/bank-lift.json"
+row "reader: head (ctrl)"                  allow "head -n 3 ~/.himmel/state/bank-lift.json"
+row "reader: stat (ctrl)"                  allow "stat ~/.himmel/state/bank-lift.json"
+row "reader: ls (ctrl)"                    allow "ls -l ~/.himmel/state/bank-lift.json"
+row "reader: file (ctrl)"                  allow "file ~/.himmel/state/bank-lift.json"
+row "reader: wc (ctrl)"                    allow "wc -c ~/.himmel/state/bank-lift.json"
+row "reader: test -f (ctrl)"               allow "test -f ~/.himmel/state/bank-lift.json"
+row "reader: [ -f ] (ctrl)"                allow "[ -f ~/.himmel/state/bank-lift.json ]"
+row "reader: jq . (ctrl)"                  allow "jq . ~/.himmel/state/bank-lift.json"
+row "reader: tail -n (ctrl)"               allow "tail -n 5 ~/.himmel/state/bank-lift.json"
+row "reader: grep -c (ctrl)"               allow "grep -c x ~/.himmel/state/bank-lift.json"
+row "reader: rg (ctrl)"                    allow "rg until ~/.himmel/state/bank-lift.json"
+row "reader past env/timeout (ctrl)"       allow "env LC_ALL=C timeout 5 cat ~/.himmel/state/bank-lift.json"
+row "bank-lift.sh show (ctrl)"             allow "bash scripts/lib/bank-lift.sh show"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
-# against the lift path. rm rows are the ALLOW control (removing a lift only
-# tightens the gate); every other verb must deny.
+# against the lift path. Every verb must deny; rm too since round 6 (it was
+# the ALLOW control before: removing a lift only tightens the gate).
 # shellcheck source=./lib-test-write-fence-matrix.sh
 . "$HOOKS/lib-test-write-fence-matrix.sh" || { bad "source lib-test-write-fence-matrix.sh"; exit 1; }
 mrows=0
 while IFS='	' read -r vlabel vtmpl; do
     [ -n "$vlabel" ] || continue
     cmd=$(_matrix_render_cmd "$vtmpl" "/tmp/x.json" "$P")
-    case "$vlabel" in rm|"rm -r") exp=allow ;; *) exp=deny ;; esac
+    exp=deny   # rm rows too since round 6: rm names bank-lift.json, not a reader
     row "matrix: $vlabel" "$exp" "$cmd"
     mrows=$((mrows+1))
 done <<EOF
