@@ -1668,6 +1668,17 @@ signalled it. Same runner/scheduler split as the graphify pair above.
   StartWhenAvailable + IgnoreNew XML) / crontab (POSIX); dedup-guarded; hermetic
   test `test-qmd-cadence.sh`. Arming is an operator flip, never auto-armed:
   `bash scripts/luna/qmd-cadence.sh arm` (`--time` / `--force` / `--dry-run`).
+- `scripts/eval/qmd-quality/qmd-quality-cadence.sh run|arm|status|disarm`
+  (HIMMEL-4184) — the weekly retrieval-quality drift check. `run` scores the
+  private golden set with `qmd-quality.sh --scope golden` (read-only snapshot of
+  the index, deleted after the run), appends each mode's hit@1 / hit@5 / MRR to
+  `~/.himmel/state/qmd-quality/metrics.tsv`, and alerts through
+  `scripts/luna/cadence-alert.sh` when a mode's MRR drops by more than
+  `QMD_QUALITY_DRIFT_MRR` (0.05) from the previous run, or the eval fails. Off
+  until an operator arms it: `bash scripts/eval/qmd-quality/qmd-quality-cadence.sh
+  arm --golden <golden.jsonl>` (default Sunday 06:00, after the 05:00 reindex;
+  `--day` / `--time` / `--index` / `--force` / `--dry-run`). Cron only; not in
+  the wizard registry. Test: `test-qmd-quality-cadence.sh`.
 
 ---
 
