@@ -485,6 +485,25 @@ row "J1874 cat <<'E F' no lift (ctrl)"      allow "cat <<'E F'
 data
 E F"
 
+echo "== codex-1 (path-qualified reader / wrapper words) =="
+# A command word resolved by basename let a planted `/tmp/cat` pass as the
+# reader cat. A reader, wrapper or bash word must be bare or /usr/bin|/bin/<name>.
+row "codex-1 /tmp/cat lift"                 deny  "/tmp/cat ~/.himmel/state/bank-lift.json"
+row "codex-1 ./cat lift"                    deny  "./cat ~/.himmel/state/bank-lift.json"
+# shellcheck disable=SC2088  # the tilde is command text for the hook, not expanded here
+row "codex-1 ~/bin/less lift"              deny  "~/bin/less ~/.himmel/state/bank-lift.json"
+row "codex-1 /tmp/env cat lift"             deny  "/tmp/env cat ~/.himmel/state/bank-lift.json"
+row "codex-1 /tmp/bash show"                deny  "/tmp/bash scripts/lib/bank-lift.sh show"
+row "codex-1 /usr/local/bin/jq lift"        deny  "/usr/local/bin/jq . ~/.himmel/state/bank-lift.json"
+row "codex-1 /tmp/timeout 5 cat lift"       deny  "/tmp/timeout 5 cat ~/.himmel/state/bank-lift.json"
+row "codex-1 \$(/tmp/cat lift) in cp"       deny  "cp /tmp/x \"\$(/tmp/cat ~/.himmel/state/bank-lift.json)\""
+row "codex-1 /usr/bin/cat lift (ctrl)"      allow "/usr/bin/cat ~/.himmel/state/bank-lift.json"
+row "codex-1 /bin/cat lift (ctrl)"          allow "/bin/cat ~/.himmel/state/bank-lift.json"
+row "codex-1 /usr/bin/env cat lift (ctrl)"  allow "/usr/bin/env cat ~/.himmel/state/bank-lift.json"
+row "codex-1 /usr/bin/bash show (ctrl)"     allow "/usr/bin/bash scripts/lib/bank-lift.sh show"
+row "codex-1 bash show (ctrl)"              allow "bash scripts/lib/bank-lift.sh show"
+row "codex-1 direct show (ctrl)"            allow "scripts/lib/bank-lift.sh show"
+
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered
 # against the lift path. Every verb must deny; rm too since round 6 (it was

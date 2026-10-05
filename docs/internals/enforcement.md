@@ -2247,14 +2247,20 @@ script word spelled literally), AND no redirect writes anywhere but
 fine). `xargs` is not a wrapper here, so any `xargs` clause denies; so does an
 assignment to a variable a reader or the loader obeys (`LESS*`, `RIPGREP_*`,
 `GREP_*`, `LD_*`, `DYLD_*`, `PATH`, `BASH_ENV`, `ENV`), and `less` with
-`-o`/`-O` (attached too), `--log-file` or a `+cmd`. A lift-naming command the
+`-o`/`-O` (attached too), `--log-file` or a `+cmd`. A reader, wrapper
+(`env`, `sudo`, `timeout`, …) or `bash` word counts only when it is bare or
+exactly `/usr/bin/<name>` / `/bin/<name>`: `/tmp/cat`, `./cat`, `~/bin/less`
+or `/tmp/env cat` is whatever was planted there, so it denies (both layers).
+A lift-naming command the
 tokenizer cannot parse reliably (an unclosed quote or substitution, a quoted
 heredoc delimiter containing a space) denies. Over-deny is accepted:
 `test -f <lift> && echo yes`, `cat <lift> > /tmp/copy`, `set -e; bash
 …/bank-lift.sh show`, a heredoc commit message naming the lift, and a
 write to any lift-NAMED file (`/tmp/x/bank-lift.json`) all deny; split the
 command, or put text in a file. Residual (ponytail): a lift name obfuscated
-by a glob or brace inside a substitution does not trigger this layer.
+by a glob or brace inside a substitution does not trigger this layer; and
+the `bank-lift.sh` script word is still trusted by basename, so a planted
+`/tmp/x/bank-lift.sh show` passes (known gap, HIMMEL-4458).
 Name rule (console ruling, applied before the rules above on every clause,
 nested ones included): a clause with a word naming `bank-lift.json` or
 `bank-lift.sh` (not a longer name such as `test-bank-lift.sh`) passes only

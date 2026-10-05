@@ -488,6 +488,12 @@ _reader_env_unsafe() {
     return 1
 }
 
+# _sys_word <word> -> 0 when a command word is bare (no `/`, found on PATH)
+# or exactly /usr/bin/<name> or /bin/<name>; any other path is not trusted.
+_sys_word() {
+    [[ "$1" != */* || "$1" =~ ^/(usr/)?bin/[^/]+$ ]]
+}
+
 # reader_clause <strict 0|1> <args...> -> 0 when the clause's command is an
 # allowlisted reader or `bash <path>/bank-lift.sh show|clear` (also direct),
 # 1 otherwise; READER_CMD names the resolved command word. A reader carrying
@@ -510,6 +516,9 @@ reader_clause() {
             shift; continue
         fi
         c=$(_lower "$(_base "$w")")
+        # codex-1: a path-qualified reader, wrapper or bash (`/tmp/cat`,
+        # `./env`) is whatever was planted there, not the system tool.
+        if [ "$c" != bank-lift.sh ] && ! _sys_word "$w"; then READER_CMD="$w"; return 1; fi
         case "$c" in
             env|sudo|doas|nice|xargs|timeout|stdbuf|ionice|chrt|taskset|setsid|nohup)
                 if [ "$strict" = 1 ] && [ "$c" = xargs ]; then READER_CMD="xargs"; return 1; fi
@@ -576,6 +585,9 @@ reader_clause() {
 # split across words) does not trigger this layer, so a reader can still
 # hand such a path to a writer; upgrade path is the operator-owned lift
 # named in the header ponytail, filed when seen in a transcript.
+# ponytail: the bank-lift.sh script word (direct, or bash's operand) is
+# still trusted by basename, so a planted `/tmp/x/bank-lift.sh show` passes;
+# upgrade path is HIMMEL-4458 (pin it to the repo's scripts/lib copy).
 names_lift() {
     local l
     l=$(_lower "$1"); l="${l//\\/}"
