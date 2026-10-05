@@ -774,4 +774,22 @@ printf '%s' "{\"account\":\"deadbeefdeadbeef\",\"seven_day\":{\"resets_at\":\"$R
 bash "$LIFT" set "$W/lc2.json" >/dev/null 2>&1
 check "bank-lift set refuses another account's cache" absent "$([ -e "$BANK_LIFT_FILE" ] && echo present || echo absent)"
 
+# HIMMEL-4450: BSD `date -j` fallback. Stub `date` so GNU `-d` fails and `-j -f`
+# behaves like BSD (trailing characters after the seconds are silently ignored).
+mkdir -p "$W/bsddate"
+cat > "$W/bsddate/date" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = "-d" ] && exit 1
+if [ "$1" = "-j" ]; then
+  v="${4:0:19}"; exec /usr/bin/date -u -d "${v/T/ }" +%s
+fi
+exec /usr/bin/date "$@"
+STUB
+chmod +x "$W/bsddate/date"
+bsd_epoch() { ( PATH="$W/bsddate:$PATH"; . "$REPO/scripts/lib/bank-lift.sh"; _bank_lift_epoch "$1" 2>/dev/null || echo FAIL ); }
+check "BSD fallback: +00:00 with fraction -> UTC epoch (control)" 1781006400 "$(bsd_epoch '2026-06-09T12:00:00.123456+00:00')"
+check "BSD fallback: Z -> UTC epoch (control)" 1781006400 "$(bsd_epoch '2026-06-09T12:00:00Z')"
+check "BSD fallback: +05:30 offset -> rejected, never read as UTC" FAIL "$(bsd_epoch '2026-06-09T12:00:00+05:30')"
+check "BSD fallback: -07:00 offset -> rejected, never read as UTC" FAIL "$(bsd_epoch '2026-06-09T12:00:00.5-07:00')"
+
 echo "passed=$PASS failed=$FAIL"; [ "$FAIL" -eq 0 ]
