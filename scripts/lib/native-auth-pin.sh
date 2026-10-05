@@ -84,7 +84,12 @@ native_auth_pin_env() {
   # key, and only when the base URL is loopback -- so a headless launch can be
   # pointed at scripts/testing/mock-anthropic without the pin ever letting a real
   # or proxy host through. Everything else in the canonical set is still stripped.
-  if [ "${NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK:-}" = 1 ]; then
+  # The variable alone is not enough: a local relay on loopback could forward the
+  # kept key anywhere, so the seam is honoured only when this process is provably
+  # network-isolated -- /proc/net/dev (per-netns; /sys/class/net still lists the
+  # host NICs inside `unshare -rn`) shows only `lo`. Unreadable (non-Linux) = refuse.
+  if [ "${NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK:-}" = 1 ] && [ -r /proc/net/dev ] &&
+    [ "$(tail -n +3 /proc/net/dev 2>/dev/null | cut -d: -f1 | tr -d ' ' | grep -vc '^lo$')" = 0 ]; then
     case "${ANTHROPIC_BASE_URL:-}" in
       *@*) ;;
       http://127.0.0.1 | http://127.0.0.1[:/]* | http://localhost | http://localhost[:/]*) _keep_mock=1 ;;

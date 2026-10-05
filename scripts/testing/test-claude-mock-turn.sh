@@ -81,18 +81,29 @@ kill "$MOCK_PID" 2>/dev/null; MOCK_PID=""
 echo "== N native-auth-pin test seam =="
 # shellcheck source=scripts/lib/native-auth-pin.sh
 # shellcheck disable=SC2030,SC2031  # each case runs in its own subshell on purpose
-n_run() { # n_run <base-url> — what survives native_auth_pin_env with the seam on
-  ( . "$REPO/scripts/lib/native-auth-pin.sh"
-    export ANTHROPIC_BASE_URL="$1" ANTHROPIC_API_KEY=k ANTHROPIC_MODEL=m CLAUDE_CODE_USE_BEDROCK=1
-    NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 native_auth_pin_env
-    printf 'url=%s key=%s model=%s bedrock=%s\n' "${ANTHROPIC_BASE_URL-unset}" "${ANTHROPIC_API_KEY-unset}" "${ANTHROPIC_MODEL-unset}" "${CLAUDE_CODE_USE_BEDROCK-unset}" )
+n_run() { # n_run <base-url> [iso] — what survives native_auth_pin_env with the seam on; iso = inside a loopback-only netns
+  local pre=()
+  [ "${2:-}" = iso ] && pre=(unshare -rn)
+  # shellcheck disable=SC2016  # $1/${…} expand in the inner shell on purpose
+  ANTHROPIC_BASE_URL="$1" ANTHROPIC_API_KEY=k ANTHROPIC_MODEL=m CLAUDE_CODE_USE_BEDROCK=1 NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 \
+    "${pre[@]}" bash -c '. "$1/scripts/lib/native-auth-pin.sh"
+    native_auth_pin_env
+    printf "url=%s key=%s model=%s bedrock=%s\n" "${ANTHROPIC_BASE_URL-unset}" "${ANTHROPIC_API_KEY-unset}" "${ANTHROPIC_MODEL-unset}" "${CLAUDE_CODE_USE_BEDROCK-unset}"' _ "$REPO"
 }
-if [ "$(n_run http://127.0.0.1:4242)" = "url=http://127.0.0.1:4242 key=k model=unset bedrock=unset" ]; then
-  pass "N1 seam keeps ONLY base URL + key, and only for a loopback URL; every other ANTHROPIC_*/USE_ var still stripped"
-else fail "N1 seam result: $(n_run http://127.0.0.1:4242)"; fi
-if [ "$(n_run https://api.anthropic.com)" = "url=unset key=unset model=unset bedrock=unset" ]; then
-  pass "R3 seam does not keep a non-loopback base URL"
-else fail "R3 seam kept a real host: $(n_run https://api.anthropic.com)"; fi
+if fakekey_sandbox_available; then
+  if [ "$(n_run http://127.0.0.1:4242 iso)" = "url=http://127.0.0.1:4242 key=k model=unset bedrock=unset" ]; then
+    pass "N1 seam keeps ONLY base URL + key, only for a loopback URL, only in a loopback-only netns; every other ANTHROPIC_*/USE_ var still stripped"
+  else fail "N1 seam result: $(n_run http://127.0.0.1:4242 iso)"; fi
+  if [ "$(n_run https://api.anthropic.com iso)" = "url=unset key=unset model=unset bedrock=unset" ]; then
+    pass "R3 seam does not keep a non-loopback base URL"
+  else fail "R3 seam kept a real host: $(n_run https://api.anthropic.com iso)"; fi
+else skip "N1/R3 need unshare -rn (the seam is honoured only in a loopback-only netns)"; fi
+# R4 (F1): the seam variable alone must not keep the key. With any real NIC present it is ignored.
+if [ "$(tail -n +3 /proc/net/dev | cut -d: -f1 | tr -d ' ' | grep -vc '^lo$')" -gt 0 ]; then
+  if [ "$(n_run http://127.0.0.1:4242)" = "url=unset key=unset model=unset bedrock=unset" ]; then
+    pass "R4 seam ignored when a non-loopback interface exists (base URL and key still stripped)"
+  else fail "R4 seam honoured on a networked host: $(n_run http://127.0.0.1:4242)"; fi
+else skip "R4 host has only lo (nothing to refuse on)"; fi
 # shellcheck disable=SC2031
 n_default() { # the pin with NO seam variable, loopback URL exported (a prefix assignment would revert after the call and prove nothing)
   ( . "$REPO/scripts/lib/native-auth-pin.sh"
