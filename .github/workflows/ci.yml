@@ -251,6 +251,15 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
+      # HIMMEL-4412: the project's SessionStart/Subagent hooks run `bun`; a runner
+      # without it makes them exit 127 and the hook smoke correctly reports a failing hook.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      # The mock sandbox runs claude under a scrubbed PATH (claude, node, /usr/local/bin,
+      # /usr/bin, /bin), so setup-bun's ~/.bun/bin must be linked into one of those.
+      - name: Put bun on the scrubbed PATH
+        run: sudo ln -sf "$(command -v bun)" /usr/local/bin/bun
       - name: Install the pinned claude CLI
         run: |
           npm install --global "@anthropic-ai/claude-code@${CLAUDE_CLI_VERSION}"
