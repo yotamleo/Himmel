@@ -13,7 +13,7 @@ per-launch token). Operator-only: it refuses to start inside a Claude session
   red-flake the fleet. Run it where `~/.cache/ms-playwright` already holds
   build 1243:
 
-  ```
+  ```bash
   cd scripts/config-ui/tests/e2e
   bun install
   bunx playwright test
@@ -28,7 +28,7 @@ per-launch token). Operator-only: it refuses to start inside a Claude session
 
 From your own terminal (not inside Claude):
 
-```
+```bash
 node scripts/himmelctl/bin.js ui --port 0
 ```
 

@@ -106,6 +106,8 @@ test("safety: a toggle shows only a dry-run plan; nothing runs without the typed
   await expect(confirm).toBeDisabled();
   await plan.locator('input[data-act="consent"]').fill("not-the-target");
   await expect(confirm).toBeDisabled();
+  await plan.locator('input[data-act="consent"]').fill((await plan.locator("label b").innerText()).trim());
+  await expect(confirm).toBeEnabled(); // typed consent matches; still nothing has run: cancel, never confirm
   await plan.locator('button[data-act="close"]').click();
   await expect(page.locator("#controls .plan")).toHaveCount(0);
   const ran = h.argv();

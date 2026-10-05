@@ -70,6 +70,7 @@ export async function boot(v: Variant = {}): Promise<Harness> {
   };
   for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
   const child: ChildProcess = spawn("node", [BIN, "ui", "--port", "0"], { env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const url = await new Promise<string>((ok, fail) => {
     let buf = "", err = "";
     child.stderr!.on("data", (d) => (err += d));
@@ -79,8 +80,12 @@ export async function boot(v: Variant = {}): Promise<Harness> {
       if (m) ok(m[1]);
     });
     child.on("exit", (c) => fail(new Error(`himmelctl ui exited ${c}: ${err}`)));
-    setTimeout(() => fail(new Error("himmelctl ui printed no URL in 15 s")), 15_000);
-  });
+    timer = setTimeout(() => fail(new Error("himmelctl ui printed no URL in 15 s")), 15_000);
+  }).catch((e) => {
+    child.kill("SIGKILL");
+    rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }).finally(() => clearTimeout(timer));
   return {
     url,
     argv: () => readFileSync(argv, "utf8").split("\n").filter(Boolean),
