@@ -2241,8 +2241,9 @@ names `bank-lift.json` or `bank-lift.sh` ANYWHERE — inside `$( )`, backticks,
 heredoc bodies and pipelines, after quote removal and `$'…'` decoding — the
 command passes only if EVERY clause at every depth (pipeline stages,
 substitution bodies, `-c` bodies, `&&`/`||`/`;` lists) is a reader under the
-limits below or `bash <path>/bank-lift.sh show|clear` (also direct, the
-script word spelled literally), AND no redirect writes anywhere but
+limits below or `bash scripts/lib/bank-lift.sh show|clear` (also direct, the
+script word spelled literally, and only the repo's own copy — see HIMMEL-4458
+below), AND no redirect writes anywhere but
 `/dev/null` (`>`, `>>`, `<>`, `>|`, `&>`, `&>>`; fd dups such as `2>&1` are
 fine). `xargs` is not a wrapper here, so any `xargs` clause denies; so does an
 assignment to a variable a reader or the loader obeys (`LESS*`, `RIPGREP_*`,
@@ -2252,20 +2253,66 @@ assignment to a variable a reader or the loader obeys (`LESS*`, `RIPGREP_*`,
 exactly `/usr/bin/<name>` / `/bin/<name>`: `/tmp/cat`, `./cat`, `~/bin/less`
 or `/tmp/env cat` is whatever was planted there, so it denies (both layers).
 A lift-naming command the
-tokenizer cannot parse reliably (an unclosed quote or substitution, a quoted
-heredoc delimiter containing a space) denies. Over-deny is accepted:
+tokenizer cannot parse reliably (an unclosed quote or substitution, a
+heredoc delimiter whose quote does not close on its line) denies; a quoted
+delimiter with a space (`<<'END MARK'`, `<<"E F"`, `<<"E"' F'`) is read as
+one word, as bash does. Over-deny is accepted:
 `test -f <lift> && echo yes`, `cat <lift> > /tmp/copy`, `set -e; bash
 …/bank-lift.sh show`, a heredoc commit message naming the lift, and a
 write to any lift-NAMED file (`/tmp/x/bank-lift.json`) all deny; split the
 command, or put text in a file. Residual (ponytail): a lift name obfuscated
-by a glob or brace inside a substitution does not trigger this layer; and
-the `bank-lift.sh` script word is still trusted by basename, so a planted
-`/tmp/x/bank-lift.sh show` passes (known gap, HIMMEL-4458).
+by a glob or brace inside a substitution does not trigger this layer.
+HIMMEL-4458 closed these gaps:
+- **Repo-anchored script.** `bank-lift.sh show|clear` passes only when the
+  script word resolves (physically) to `<repo>/scripts/lib/bank-lift.sh` of
+  the checkout the hook runs from, or of one of its `.claude/worktrees/*`:
+  `scripts/lib/bank-lift.sh` or `./scripts/lib/bank-lift.sh` from that root
+  with no `cd` in the command, or an absolute / `~` / `$HOME` path. A planted
+  `/tmp/x/bank-lift.sh show`, a relative path from another cwd, or a
+  `worktrees/w1/../../..` escape denies.
+- **`cp --parents` / `rsync -R` (`--relative`).** These recreate the source's
+  path under the destination, so the created path (destination + source,
+  rsync's `/./` marking the start) is judged: a glob-spelled
+  `.himmel/state/bank-l?ft.json` copied with `--parents` into `~` denies.
+- **Split names in inline code.** Interpreter / `sed e` code also matches once
+  quotes, `+`, commas, backticks and blanks are dropped, so
+  `"bank"+"-"+"lift"+".json"` and `"ba"+"nk-lift.sh"` deny; prose such as
+  `"bank-lift show"` does not (the joined form needs a separator before `sh`).
+- **Archive extraction.** `tar`/`gtar`/`bsdtar` extracting (`-x`, a bundled or
+  old-style `x`, `--extract`, `--get`; not `-O`/`--to-stdout`), `unzip` (not
+  `-l`/`-t`/`-v`/`-Z`/`-p`/`-c`) and `cpio -i`/`--extract` deny when the
+  destination (`-C`, `-C<dir>`, `--directory[=]`, `-d`, `-d<dir>`, `-D`) is
+  HOME, `~/.himmel` or its state dir — a member can be
+  `.himmel/state/bank-lift.json`. With no destination option the effective
+  cwd counts: the hook's cwd, or a preceding `cd`/`pushd` target (a bare `cd`,
+  `~`, `$HOME`; an unresolvable target — `$d`, `-`, `popd` — denies too, name
+  the destination with `-C`/`-d`).
+- **Linear scan.** The per-word lowercase fork in the name rule and the
+  per-clause basename forks are gone, so a 20k-word command takes well under a
+  second instead of a minute (the hook timed out on ~10k words).
+Accepted over-deny (HIMMEL-4458 item 6): a contents copy into bare HOME
+(`cp -r dotfiles/ ~/`, `rsync -a dir/ ~/`, `cp * ~/`) still denies — the same
+copy can create `.himmel/state/…` from the source tree, and `*` matches
+`.himmel` under `dotglob`.
+Out of the hook's reach by design, bounded at runtime instead: Write-tool
+CONTENT that is itself a script writing the lift, a script FILE that writes
+it without being handed its path, variable indirection that never spells the
+name, a bind mount, and interpreter tricks that never spell it. Judge J1855b
+bounds them where the lift is READ (HIMMEL-4423): `bank-preflight.sh`
+honours a lift only when it is account-bound, owner- and mode-checked,
+bounded by the usage cache's seven_day `resets_at`, and well-formed; anything
+else is no lift. A valid lift skips only the seven_day ceiling — five_hour
+still binds and a full seven_day still refuses — so a forged lift buys at
+most the rest of the current 7-day window. Remaining hook gaps
+(ponytail): an edited or planted copy of `scripts/lib/bank-lift.sh` inside a
+worktree is trusted as the repo's script; and a pure-glob source under a
+computed destination (`cp --parents * "$d"`).
 Name rule (console ruling, applied before the rules above on every clause,
 nested ones included): a clause with a word naming `bank-lift.json` or
 `bank-lift.sh` (not a longer name such as `test-bank-lift.sh`) passes only
-when it is `bash <path>/bank-lift.sh show|clear`, the direct
-`<path>/bank-lift.sh show|clear`, or a reader: `cat`, `less` without
+when it is `bash scripts/lib/bank-lift.sh show|clear` or the direct
+`scripts/lib/bank-lift.sh show|clear` (the repo's own copy, as above), or a
+reader: `cat`, `less` without
 `-o`/`-O`/`--log-file`/`+cmd`, `head`, `stat`,
 `ls`, `file`, `wc`, `test`/`[`, `jq` without `-i`/`--in-place`, `tail` without
 `-f`/`-F`/`--follow`, `grep`/`rg` without `--pre`. The command word is

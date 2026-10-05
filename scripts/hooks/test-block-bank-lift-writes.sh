@@ -26,8 +26,13 @@ export HOME="$T/home"
 ST="$HOME/.himmel/state"
 LIFT="$ST/bank-lift.json"
 REPO="$T/repo"
-mkdir -p "$ST" "$REPO/scripts/lib" "$T/src/sub"
+mkdir -p "$ST" "$REPO/scripts/lib" "$REPO/scripts/hooks" "$T/src/sub"
 : > "$REPO/scripts/lib/bank-lift.sh"
+# HIMMEL-4458: `bank-lift.sh show|clear` is trusted only as the hook's OWN
+# checkout's scripts/lib copy (or a .claude/worktrees/* one), so the hook
+# under test runs from a copy inside the scratch repo.
+cp "$HOOK" "$REPO/scripts/hooks/block-bank-lift-writes.sh" || exit 1
+HOOK="$REPO/scripts/hooks/block-bank-lift-writes.sh"
 printf '{}\n' > "$T/src/bank-lift.json"
 printf 'x\n' > "$T/src/other.txt"
 ln -s "$LIFT" "$T/filelink"       # dangling until a lift exists
@@ -514,6 +519,137 @@ row "codex-1 /usr/bin/env cat lift (ctrl)"  allow "/usr/bin/env cat ~/.himmel/st
 row "codex-1 /usr/bin/bash show (ctrl)"     allow "/usr/bin/bash scripts/lib/bank-lift.sh show"
 row "codex-1 bash show (ctrl)"              allow "bash scripts/lib/bank-lift.sh show"
 row "codex-1 direct show (ctrl)"            allow "scripts/lib/bank-lift.sh show"
+
+echo "== HIMMEL-4458 ask 1: less log options, every spelling (verify) =="
+row "4458 less -O<p> exact ticket input"    deny  "cat /tmp/payload | less -O\"\$HOME/.himmel/state/bank-lift.json\""
+row "4458 less -O <p>"                      deny  "cat /tmp/payload | less -O \"\$HOME/.himmel/state/bank-lift.json\""
+row "4458 less -o<p>"                       deny  "cat /tmp/payload | less -o\"\$HOME/.himmel/state/bank-lift.json\""
+row "4458 less -o <p>"                      deny  "cat /tmp/payload | less -o \"\$HOME/.himmel/state/bank-lift.json\""
+row "4458 less --log-file=<p>"              deny  "cat /tmp/payload | less --log-file=\$HOME/.himmel/state/bank-lift.json"
+row "4458 less --LOG-FILE=<p>"              deny  "cat /tmp/payload | less --LOG-FILE=\$HOME/.himmel/state/bank-lift.json"
+
+echo "== HIMMEL-4458 ask 2: quoted heredoc delimiter with a space =="
+row "4458 delim 'END MARK' exact ticket input" deny "cat <<'END MARK'
+x
+END MARK
+printf 1 > ~/.himmel/state/bank-lift.json"
+row "4458 delim \"E F\" (double)"           deny  "cat <<\"E F\"
+x
+E F
+printf 1 > ~/.himmel/state/bank-lift.json"
+row "4458 delim \"E\"' F' (mixed)"          deny  "cat <<\"E\"' F'
+x
+E F
+printf 1 > ~/.himmel/state/bank-lift.json"
+# Without a literal lift name the whole-command layer is silent: the
+# tokenizer itself must read the quoted delimiter whole.
+row "4458 delim 'E F', glob-spelled lift"   deny  "cat <<'E F'
+x
+E F
+printf 1 > ~/.himmel/state/bank-l?ft.json"
+row "4458 delim \"E F\", glob-spelled lift" deny  "cat <<\"E F\"
+x
+E F
+printf 1 > ~/.himmel/state/bank-l?ft.json"
+row "4458 delim 'E\"F' (other quote inside)" deny "cat <<'E\"F'
+x
+E\"F
+printf 1 > ~/.himmel/state/bank-l?ft.json"
+row "4458 delim 'E F', data only (ctrl)"    allow "cat <<'E F'
+printf 1 > ~/.himmel/state/bank-l?ft.json
+E F"
+
+echo "== HIMMEL-4458 item 2: bank-lift.sh trusted only as the repo's own copy =="
+mkdir -p "$T/x" "$T/evil/scripts/lib" "$REPO/.claude/worktrees/w1/scripts/lib"
+: > "$T/x/bank-lift.sh"; : > "$T/evil/scripts/lib/bank-lift.sh"
+: > "$REPO/.claude/worktrees/w1/scripts/lib/bank-lift.sh"
+row "4458 bash /tmp/x/bank-lift.sh show"    deny  "bash $T/x/bank-lift.sh show"
+row "4458 bash /tmp/x/bank-lift.sh clear"   deny  "bash $T/x/bank-lift.sh clear"
+row "4458 direct /tmp/x/bank-lift.sh show"  deny  "$T/x/bank-lift.sh show"
+row "4458 /usr/bin/bash planted show"       deny  "/usr/bin/bash $T/x/bank-lift.sh show"
+row "4458 relative planted from a non-repo cwd" deny "bash scripts/lib/bank-lift.sh show" "$T/evil"
+row "4458 ./ planted from a non-repo cwd"   deny  "./scripts/lib/bank-lift.sh show" "$T/evil"
+row "4458 absolute escaping a worktree"     deny  "bash $REPO/.claude/worktrees/w1/../../../../evil/scripts/lib/bank-lift.sh show"
+row "4458 relative from a repo subdir"      deny  "bash lib/bank-lift.sh show" "$REPO/scripts"
+row "4458 cd then relative show"            deny  "cd $T/evil && bash scripts/lib/bank-lift.sh show"
+row "4458 repo absolute show (ctrl)"        allow "bash $REPO/scripts/lib/bank-lift.sh show"
+row "4458 repo ./ show (ctrl)"              allow "bash ./scripts/lib/bank-lift.sh show"
+row "4458 direct ./ show (ctrl)"            allow "./scripts/lib/bank-lift.sh clear"
+row "4458 worktree absolute show (ctrl)"    allow "bash $REPO/.claude/worktrees/w1/scripts/lib/bank-lift.sh show"
+row "4458 worktree relative show (ctrl)"    allow "bash scripts/lib/bank-lift.sh show" "$REPO/.claude/worktrees/w1"
+
+echo "== HIMMEL-4458 item 3: glob-spelled lift under cp --parents / rsync -R =="
+row "4458 cp --parents bank-l?ft.json \"\$HOME\"" deny "cp --parents .himmel/state/bank-l?ft.json \"\$HOME\"" "$T/stage"
+row "4458 cp --parents bank-l*.json ~"      deny  "cp --parents .himmel/state/bank-l*.json ~" "$T/stage"
+row "4458 rsync -R bank-l?ft.json ~/"       deny  "rsync -R .himmel/state/bank-l?ft.json ~/" "$T/stage"
+row "4458 rsync -aR bank-l?ft.json ~/"      deny  "rsync -aR .himmel/state/bank-l?ft.json ~/" "$T/stage"
+row "4458 rsync --relative b*.json \$HOME"  deny  "rsync --relative .himmel/state/b*.json \$HOME" "$T/stage"
+row "4458 rsync -R /./ marker"              deny  "rsync -R $T/stage/./.himmel/state/bank-l?ft.json ~/"
+row "4458 cp --parents globbed dirs"        deny  "cp --parents .h*/st*/b?nk-lift.js?n ~" "$T/stage"
+row "4458 cp --parents -r state dir"        deny  "cp --parents -r .himmel/state ~" "$T/stage"
+row "4458 cp --parents state/* ~ (ctrl deny)" deny "cp --parents .himmel/state/* \"\$HOME\"" "$T/stage"
+row "4458 cp --parents docs (ctrl)"         allow "cp --parents docs/a.md /tmp/out" "$T/stage"
+row "4458 rsync -R glob docs (ctrl)"        allow "rsync -R docs/*.md /tmp/out/" "$T/stage"
+row "4458 cp -R is recursive, not parents (ctrl)" allow "cp -R docs/* /tmp/out" "$T/stage"
+
+echo "== HIMMEL-4458 item 4: interpreter code splitting the lift name =="
+row "4458 python3 \"bank\"+\"-\"+\"lift\""  deny  "python3 -c 'import os; open(os.path.expanduser(\"~/.himmel/state/\"+\"bank\"+\"-\"+\"lift\"+\".json\"),\"w\")'"
+row "4458 python3 many fragments"           deny  "python3 -c 'p=\"ba\"+\"nk\"+\"-\"+\"li\"+\"ft\"+\".js\"+\"on\"; open(p,\"w\")'"
+row "4458 python3 join list"                deny  "python3 -c 'import os; open(os.path.join(os.environ[\"HOME\"], \".himmel/state\", \"bank\" + \"-\" + \"lift\" + \".json\"), \"w\")'"
+row "4458 node split bank-lift.sh"          deny  "node -e 'require(\"child_process\").execSync(\"bash scripts/lib/\" + \"bank\" + \"-lift\" + \".sh set\")'"
+row "4458 python heredoc split"             deny  "python3 - <<'EOF'
+p = 'bank' + '-' + 'lift' + '.json'
+open(p, 'w')
+EOF"
+row "4458 python prose bank % left (ctrl)"  allow "python3 -c 'print(\"bank 62 % left\")'"
+row "4458 python prose bank-lift show (ctrl)" allow "python3 -c 'print(\"bank-lift show prints it\")'"
+row "4458 awk row (ctrl)"                   allow "awk -F, '{print \$1, \"bank\", \$3}' data.csv"
+
+echo "== HIMMEL-4458 item 5: archive extraction into a lift ancestor =="
+row "4458 tar -xf -C ~"                     deny  "tar -xf /tmp/x.tar -C ~"
+row "4458 tar -xf -C ~/.himmel"             deny  "tar -xf /tmp/x.tar -C ~/.himmel"
+row "4458 tar xzf -C \$HOME (old-style)"    deny  "tar xzf /tmp/x.tgz -C \$HOME"
+row "4458 tar --extract --directory="       deny  "tar --extract -f /tmp/x.tar --directory=\$HOME/.himmel"
+row "4458 tar -x -f --directory ~"          deny  "tar -x -f /tmp/x.tar --directory ~"
+row "4458 tar -C~ attached"                 deny  "tar -xf /tmp/x.tar -C~"
+row "4458 cd ~ && tar -xf"                  deny  "cd ~ && tar -xf /tmp/x.tar"
+row "4458 cd (bare) && tar xf"              deny  "cd && tar xf /tmp/x.tar"
+row "4458 cd ~/.himmel; cpio -idm"          deny  "cd ~/.himmel; cpio -idm < /tmp/x.cpio"
+row "4458 tar -xf, cwd is HOME"             deny  "tar -xf /tmp/x.tar" "$HOME"
+row "4458 unzip -d ~/.himmel"               deny  "unzip /tmp/x.zip -d ~/.himmel"
+row "4458 unzip -o -d ~"                    deny  "unzip -o /tmp/x.zip -d ~"
+row "4458 unzip -d~ attached"               deny  "unzip /tmp/x.zip -d~"
+row "4458 bsdtar -xf -C ~"                  deny  "bsdtar -xf /tmp/x.tar -C ~"
+row "4458 tar -xf -C ~/.himmel/state"       deny  "tar -xf /tmp/x.tar -C ~/.himmel/state"
+row "4458 tar -xf -C /tmp/out (ctrl)"       allow "tar -xf /tmp/x.tar -C /tmp/out"
+row "4458 cd build && tar -xzf (ctrl)"      allow "cd build && tar -xzf /tmp/x.tgz"
+row "4458 tar -czf -C ~ create (ctrl)"      allow "tar -czf /tmp/b.tgz -C ~ .config"
+row "4458 tar -tf list, cwd HOME (ctrl)"    allow "tar -tf /tmp/x.tar" "$HOME"
+row "4458 unzip -l list (ctrl)"             allow "unzip -l /tmp/x.zip -d ~"
+row "4458 unzip -d /tmp/out (ctrl)"         allow "unzip /tmp/x.zip -d /tmp/out"
+row "4458 tar -xf -C ~/projects (ctrl)"     allow "tar -xf /tmp/x.tar -C ~/projects"
+row "4458 cd \"\$HOME\" && tar -xf"          deny  "cd \"\$HOME\" && tar -xf /tmp/x.tar"
+row "4458 cd \"\$d\" && tar -xf (unresolved)" deny "cd \"\$d\" && tar -xf /tmp/x.tar"
+row "4458 cd -; tar -xf (unresolved)"       deny  "cd -; tar -xf /tmp/x.tar"
+row "4458 cd \"\$d\"; tar -C .himmel"         deny  "cd \"\$d\"; tar -xf x.tar -C .himmel"
+# Differential (p22-samp): -O extracts to stdout; cwd HOME is not written.
+row "4458 tar xzf -O member, cwd HOME (ctrl)" allow "tar xzf /tmp/x.tgz -O inv/home.sha | wc -l" "$HOME"
+row "4458 tar -xf (no -O), cwd HOME"        deny  "tar -xzf /tmp/x.tgz inv/home.sha" "$HOME"
+# Differential (p22-samp): a computed cd then a named relative -C stays allowed.
+row "4458 cd \$S; tar xzf -C head (ctrl)"   allow "S=/tmp/s; cd \$S; tar xzf head.tgz -C head --strip-components=1"
+
+echo "== HIMMEL-4458 item 6: contents copy into bare HOME (accepted over-deny) =="
+row "4458 cp -r dir/ ~/ (over-deny kept)"   deny  "cp -r dotfiles/ ~/"
+row "4458 rsync -a dir/ ~/ (over-deny kept)" deny "rsync -a dotfiles/ ~/"
+row "4458 cp * ~/ (over-deny kept)"         deny  "cp * ~/"
+
+echo "== HIMMEL-4458 item 7: latency stays linear =="
+big=$(awk 'BEGIN { printf "echo"; for (i = 0; i < 10000; i++) printf " w%d", i }')
+got=$(printf '%s' "$(bash_json "$big")" | timeout 15 bash "$HOOK" >/dev/null 2>&1; echo $?)
+if [ "$got" = 0 ]; then ok "4458 10k-word echo allows within 15s"; else bad "4458 10k-word echo allows within 15s — rc=$got"; fi
+big=$(awk 'BEGIN { printf "true"; for (i = 0; i < 1500; i++) printf " && echo w%d x", i }')
+got=$(printf '%s' "$(bash_json "$big")" | timeout 15 bash "$HOOK" >/dev/null 2>&1; echo $?)
+if [ "$got" = 0 ]; then ok "4458 1.5k-clause command allows within 15s"; else bad "4458 1.5k-clause command allows within 15s — rc=$got"; fi
 
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered

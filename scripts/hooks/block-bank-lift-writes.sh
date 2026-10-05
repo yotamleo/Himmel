@@ -37,13 +37,21 @@
 # Fail-closed (security fence): missing jq, malformed / non-object JSON, or a
 # tokenizer error -> deny. Any other non-0/2 exit is clamped to 2.
 #
-# ponytail: text-level fence — it cannot see a renamed COPY of bank-lift.sh
-# run in a later call, Write-tool CONTENT that is itself a script writing the
-# lift, a script FILE that writes the lift without being handed its path,
-# inline interpreter code that never spells bank-lift.json / bank-lift.sh, variable
-# indirection that never mentions bank-lift, or a bind mount; upgrade path is
-# to move the lift out of agent-writable reach (an operator-owned file the
-# gate verifies), filed when one of these is seen in a transcript.
+# ponytail: text-level fence — it cannot see Write-tool CONTENT that is itself
+# a script writing the lift, a script FILE that writes the lift without being
+# handed its path, inline interpreter code that never spells the name (even
+# split into "bank"+"-lift" pieces, HIMMEL-4458), variable indirection that
+# never mentions bank-lift, or a bind mount. Those are bounded at RUNTIME, not
+# here: bank-preflight honours only an account-bound lift capped by the
+# seven_day resets_at and fails closed on anything else (HIMMEL-4423, judge
+# J1855b), so a forged lift buys at most the rest of one window; upgrade path
+# is an operator-owned lift the gate verifies, filed when one is seen in a
+# transcript.
+# ponytail: bank-lift.sh show|clear is trusted as the repo's
+# scripts/lib/bank-lift.sh of this checkout or one of its .claude/worktrees
+# (HIMMEL-4458), so an edited or planted copy inside a worktree passes; a
+# pure-glob source under a computed destination (cp --parents * "$d") is not
+# judged as the lift; upgrade path is the operator-owned lift above.
 # ponytail: the PowerShell tool is not wired, Windows is parked under
 # HIMMEL-4102 — wire it when Windows legs resume.
 #
@@ -84,6 +92,15 @@ CWD=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || CWD=""
 LIFT_NAME=bank-lift.json
 STATE_REAL="$HOME/.himmel/state"
 HAS_CD=0   # set for Bash: a cd/pushd makes every relative path's dir unknown
+CD_HOME=0  # set for Bash: a cd/pushd/popd that may land in HOME, ~/.himmel or its state dir
+CD_SEEN=0  # set for Bash once a cd/pushd/popd clause has been walked
+CD_UNK=0   # set for Bash: a cd/pushd/popd whose target cannot be resolved
+# HIMMEL-4458: the repo whose scripts/lib/bank-lift.sh may run show|clear —
+# this hook's own checkout (scripts/hooks/..), the primary when that is a
+# .claude/worktrees/* worktree. Its worktrees qualify too.
+case "$0" in */*) LIFT_REPO="${0%/*}" ;; *) LIFT_REPO=. ;; esac
+LIFT_REPO=$(CDPATH='' cd -P -- "$LIFT_REPO/../.." 2>/dev/null && pwd -P) || LIFT_REPO=""
+LIFT_REPO="${LIFT_REPO%%/.claude/worktrees/*}"
 
 # ---------------------------------------------------------------- paths ---
 
@@ -153,7 +170,7 @@ _is_dynamic() { case "$1" in *'$'*|*'`'*) return 0 ;; esac; return 1; }
 _name_matches() {
     local c="$1"
     _is_dynamic "$c" && return 0
-    c=$(_glob_from_word "$c")
+    case "$c" in *"{"*) c=$(_glob_from_word "$c") ;; esac
     # Case-folded only here: option parsing elsewhere is case-sensitive (-t/-T).
     local r=1
     shopt -s nocasematch
@@ -269,8 +286,9 @@ case "$CMD" in *$'\002'*) deny "the command carries a \\x02 control byte (tokeni
 # outer word carries a "$" so it reads as dynamic. Heredoc bodies print as a
 # line "\002B\037<body>". A \002 decoded from $'..' prints a "\002X" line.
 # With -v STRICT=1 (the whole-command layer only) a parse it cannot trust —
-# an unclosed quote or substitution, a quoted heredoc delimiter cut at a
-# space — also prints a "\002U" line.
+# an unclosed quote or substitution, a heredoc delimiter whose quote does
+# not close on its line — also prints a "\002U" line. A quoted delimiter is
+# read as one word, spaces included (HIMMEL-4458).
 read -r -d '' TOKENIZER <<'AWK'
 function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
 function addc(c) { if (c == SB) forged = 1; tok = tok c }
@@ -421,12 +439,21 @@ END {
                 if (substr(s, i + 1, 1) == "-") i++
                 while (substr(s, i + 1, 1) == " " || substr(s, i + 1, 1) == "\t") i++
                 del = ""; dq = 0; inq = ""
+                # HIMMEL-4458: the delimiter is one shell word — quoted parts
+                # keep spaces and the other quote char, `\` escapes as bash's.
                 while (i < n) {
                     x = substr(s, i + 1, 1)
-                    if (x ~ /[ \t\n;&|<>()]/) break
-                    if (x != "'" && x != "\"" && x != "\\") del = del x; else dq = 1
-                    if (x == "'" || x == "\"") { if (inq == "") inq = x; else if (inq == x) inq = "" }
-                    i++
+                    if (x == "\n") break
+                    if (inq == "'") { if (x == "'") inq = ""; else del = del x; i++; continue }
+                    if (inq == "\"") {
+                        if (x == "\"") { inq = ""; i++; continue }
+                        if (x == "\\" && substr(s, i + 2, 1) ~ /[$`"\\]/) { del = del substr(s, i + 2, 1); i += 2; continue }
+                        del = del x; i++; continue
+                    }
+                    if (x ~ /[ \t;&|<>()]/) break
+                    if (x == "'" || x == "\"") { inq = x; dq = 1; i++; continue }
+                    if (x == "\\") { dq = 1; if (substr(s, i + 2, 1) != "\n") del = del substr(s, i + 2, 1); i += 2; continue }
+                    del = del x; i++
                 }
                 if (inq != "") hdbad = 1
                 hd[++nhd] = del; hdq[nhd] = dq
@@ -452,6 +479,9 @@ MENTION_RE='^(curl|wget|tar|bsdtar|unzip|cpio|7z|7za|7zr|ed|ex|vi|vim|nvim|view|
 
 _lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 _base() { local b="${1%/}"; printf '%s' "${b##*/}"; }
+# _lb <word>: R = the lowercased basename, forking only for an uppercase
+# letter (HIMMEL-4458: per-clause forks made a long command's check slow).
+_lb() { R="${1%/}"; R="${R##*/}"; case "$R" in *[A-Z]*) R=$(_lower "$R") ;; esac; }
 
 # check_lift_name <args...> — runs on every clause BEFORE the verb rules
 # (console ruling, HIMMEL-4445 round 6): a word that contains the basename
@@ -467,14 +497,19 @@ _base() { local b="${1%/}"; printf '%s' "${b##*/}"; }
 # show|clear ...`. A wrapper (env, sudo, nice, timeout, ...) that carries ANY
 # option leaves the command word unknown: an option's argument (`env -u cat`)
 # must not be read as the command.
+#
+# HIMMEL-4458 (latency): the words are joined by a space and lowered ONCE —
+# neither pattern holds a space, so a match still lies inside one word — and
+# a clause with no "bank" at all returns before any fork.
 check_lift_name() {
-    local a l hit=0
-    for a in "$@"; do
-        l=$(_lower "$a")
-        case "$l" in *bank-lift.json*) hit=1; break ;; esac
-        if [[ "$l" =~ (^|[^a-z0-9_.-])bank-lift\.sh($|[^a-z0-9_.-]) ]]; then hit=1; break; fi
-    done
-    [ "$hit" = 1 ] || return 0
+    local IFS=' ' l j
+    j="$*"; IFS=$' \t\n'
+    case "$j" in *[bB][aA][nN][kK]*) ;; *) return 0 ;; esac
+    l=$(_lower "$j")
+    case "$l" in
+        *bank-lift.json*) ;;
+        *) [[ "$l" =~ (^|[^a-z0-9_.-])bank-lift\.sh($|[^a-z0-9_.-]) ]] || return 0 ;;
+    esac
     reader_clause 0 "$@" && return 0
     deny "a word names the bank lift (bank-lift.json or bank-lift.sh) in a non-reader command (${READER_CMD:-unknown}); only cat/less/head/tail/stat/ls/file/wc/test/jq/grep/rg and \`bash scripts/lib/bank-lift.sh show|clear\` may name it — for a commit message or ticket text that names it, use \`git commit -F <file>\` / a --desc-file"
 }
@@ -494,14 +529,44 @@ _sys_word() {
     [[ "$1" != */* || "$1" =~ ^/(usr/)?bin/[^/]+$ ]]
 }
 
+# _repo_lift_script <word> -> 0 when the word is THE repo's bank-lift.sh
+# (HIMMEL-4458; a basename match let a planted /tmp/x/bank-lift.sh run as
+# `show`): scripts/lib/bank-lift.sh or ./scripts/lib/bank-lift.sh from a cwd
+# that is LIFT_REPO or one of its .claude/worktrees/* (no cd in the command),
+# or an absolute / ~ / $HOME path whose checkout dir resolves, physically, to
+# one of those.
+# shellcheck disable=SC2088,SC2016  # literal ~ / $HOME spellings are matched as text
+_repo_lift_script() {
+    local w="$1" p d
+    [ -n "$LIFT_REPO" ] || return 1
+    case "$w" in
+        scripts/lib/bank-lift.sh|./scripts/lib/bank-lift.sh)
+            [ "$HAS_CD" = 0 ] || return 1
+            p="$CWD/$w" ;;
+        /*) p="$w" ;;
+        '~/'*|'$HOME/'*|'${HOME}/'*) p=$(_expand "$w") ;;
+        *) return 1 ;;
+    esac
+    _is_dynamic "$p" && return 1
+    case "$p" in */scripts/lib/bank-lift.sh) ;; *) return 1 ;; esac
+    d=$(CDPATH='' cd -P -- "${p%/scripts/lib/bank-lift.sh}" 2>/dev/null && pwd -P) || return 1
+    [ "$d" = "$LIFT_REPO" ] && return 0
+    case "$d" in
+        "$LIFT_REPO"/.claude/worktrees/*/*) return 1 ;;
+        "$LIFT_REPO"/.claude/worktrees/?*) return 0 ;;
+    esac
+    return 1
+}
+
 # reader_clause <strict 0|1> <args...> -> 0 when the clause's command is an
-# allowlisted reader or `bash <path>/bank-lift.sh show|clear` (also direct),
-# 1 otherwise; READER_CMD names the resolved command word. A reader carrying
+# allowlisted reader or `bash <repo>/scripts/lib/bank-lift.sh show|clear`
+# (also direct; the script word must pass _repo_lift_script), 1 otherwise;
+# READER_CMD names the resolved command word. A reader carrying
 # a write/exec option denies here. The command word is resolved past
 # keywords, assignments and option-less env/sudo/timeout-style wrappers.
 # strict=1 (the whole-command layer): xargs is not a wrapper, an assignment
-# to a _reader_env_unsafe variable is not a reader, the bank-lift.sh word
-# must be literal, and a clause with no command word left passes.
+# to a _reader_env_unsafe variable is not a reader, and a clause with no
+# command word left passes.
 READER_CMD=""
 reader_clause() {
     local strict="$1"; shift
@@ -515,7 +580,7 @@ reader_clause() {
             if [ "$strict" = 1 ] && _reader_env_unsafe "$w"; then READER_CMD="$w"; return 1; fi
             shift; continue
         fi
-        c=$(_lower "$(_base "$w")")
+        _lb "$w"; c=$R
         # codex-1: a path-qualified reader, wrapper or bash (`/tmp/cat`,
         # `./env`) is whatever was planted there, not the system tool.
         if [ "$c" != bank-lift.sh ] && ! _sys_word "$w"; then READER_CMD="$w"; return 1; fi
@@ -544,15 +609,11 @@ reader_clause() {
     ow="${1-}"
     shift
     case "$c" in
-        bash) if [ "$strict" = 1 ]; then
-                  if [ "$(_base "${1-}")" = bank-lift.sh ]; then
-                      case "${2-}" in show|clear) return 0 ;; esac
-                  fi
-              elif _name_matches "$(_base "${1-}")" bank-lift.sh; then
+        bash) if _repo_lift_script "${1-}"; then
                   case "${2-}" in show|clear) return 0 ;; esac
               fi ;;
-        bank-lift.sh) if [ "$strict" = 0 ] || [ "$(_base "$ow")" = bank-lift.sh ]; then
-                          _is_dynamic "$ow" || case "${1-}" in show|clear) return 0 ;; esac
+        bank-lift.sh) if _repo_lift_script "$ow"; then
+                          case "${1-}" in show|clear) return 0 ;; esac
                       fi ;;
     esac
     case "$c" in
@@ -585,9 +646,9 @@ reader_clause() {
 # split across words) does not trigger this layer, so a reader can still
 # hand such a path to a writer; upgrade path is the operator-owned lift
 # named in the header ponytail, filed when seen in a transcript.
-# ponytail: the bank-lift.sh script word (direct, or bash's operand) is
-# still trusted by basename, so a planted `/tmp/x/bank-lift.sh show` passes;
-# upgrade path is HIMMEL-4458 (pin it to the repo's scripts/lib copy).
+# HIMMEL-4458: the bank-lift.sh script word (direct, or bash's operand) is
+# trusted only as the repo's own scripts/lib/bank-lift.sh (_repo_lift_script),
+# so a planted `/tmp/x/bank-lift.sh show` denies.
 names_lift() {
     local l
     l=$(_lower "$1"); l="${l//\\/}"
@@ -604,7 +665,7 @@ whole_command_gate() {
         [ -n "$line" ] || continue
         case "$line" in
             $'\002X') deny "the command decodes a \\x02 control byte (tokenizer sentinel)" ;;
-            $'\002U') deny "a command naming the bank lift cannot be parsed reliably (an unclosed quote or substitution, or a quoted heredoc delimiter with a space)" ;;
+            $'\002U') deny "a command naming the bank lift cannot be parsed reliably (an unclosed quote or substitution, or a heredoc delimiter whose quote does not close)" ;;
             $'\002B\037'*) continue ;;   # heredoc body: data; its $( ) arrive as S lines
             $'\002S\037'*) line="${line#$'\002S\037'}"; whole_command_gate "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
         esac
@@ -635,6 +696,18 @@ EOF
 # Inline interpreter code naming the lift FILE (bank-lift.json, split or
 # globbed), $BANK_LIFT_FILE, bank-lift.sh, or its sourced _bank_lift_cmd.
 LIFT_CODE_RE='bank[^a-z0-9]{0,4}l[a-z?*]{0,2}ft[^a-z0-9]{0,6}json|bank[-_.]?lift[-_.]?(file|sh)|_bank_lift_cmd'
+# HIMMEL-4458: a name split into string pieces ("bank"+"-"+"lift"+".json",
+# 'ba' 'nk-lift.sh') matches once quotes, + , backticks and blanks are
+# dropped. bank-lift.sh needs a separator before sh there, so joined prose
+# ("bank-lift show") does not read as the script.
+LIFT_CODE_JOINED_RE='bank[^a-z0-9]{0,4}l[a-z?*]{0,2}ft[^a-z0-9]{0,6}json|bank[-_.]?lift[-_.](file|sh)'
+# _code_names_lift <lowered-code>: 0 when inline code names the lift.
+_code_names_lift() {
+    [[ "$1" =~ $LIFT_CODE_RE ]] && return 0
+    case "$1" in *[\"\'+\`,]*) ;; *) return 1 ;; esac
+    local j="${1//[\"\'+\`,[:space:]]/}"
+    [[ "$j" =~ $LIFT_CODE_JOINED_RE ]]
+}
 # Matches "bank…lift" spelled close together (also a l?ft glob), not "bank"
 # and "left" far apart in prose.
 MENTION_NEAR_RE='bank[^a-z0-9]{0,4}l[a-z?*]{0,2}ft'
@@ -645,7 +718,7 @@ HAS_XARGS=0
 # set_rule <script-word> <first-subcommand-or-empty> <has-sub 0|1> <stdin-fed 0|1>
 set_rule() {
     local script="$1" sub="$2" hassub="$3" scrb
-    scrb=$(_base "$script")
+    scrb="${script%/}"; scrb="${scrb##*/}"
     # An existing symlink (chain) to bank-lift.sh runs it under another name.
     if [ "$hassub" = 1 ] && ! _is_dynamic "$script"; then
         local e n=0 tgt
@@ -678,7 +751,7 @@ set_rule() {
 # aliasing rules.
 check_copy() {
     local verb="$1"; shift
-    local tdir="" T=0 sym=0 a v kind src srcb need dest dk endopts=0
+    local tdir="" T=0 sym=0 a v kind src srcb need dest dk endopts=0 parents=0 rel
     local -a pos=()
     while [ $# -gt 0 ]; do
         a="$1"; shift
@@ -688,6 +761,8 @@ check_copy() {
             --target-directory=*|--targ*=*|--ta=*|--tar=*) tdir="${a#*=}" ;;
             --t|--ta|--tar|--targ*) tdir="${1:-}"; shift ;;
             --no-target-directory) T=1 ;;
+            --parents) [ "$verb" = cp ] && parents=1 ;;
+            --relative) [ "$verb" = rsync ] && parents=1 ;;
             --no-dereference) [ "$verb" = ln ] && T=1 ;;
             --symbolic*|--link) sym=1 ;;
             --suffix|--mode|--owner|--group|--backup-dir|--rsh|--filter|--exclude|--include|--temp-dir|--partial-dir|--compare-dest|--copy-dest|--link-dest|--chmod|--chown) shift ;;
@@ -702,6 +777,7 @@ check_copy() {
                         s*) case "$verb" in ln|cp) sym=1 ;; esac; v="${v#?}" ;;
                         l*) case "$verb" in cp) sym=1 ;; esac; v="${v#?}" ;;
                         n*) case "$verb" in ln) T=1 ;; esac; v="${v#?}" ;;
+                        R*) case "$verb" in rsync) parents=1 ;; esac; v="${v#?}" ;;
                         S*|m*|o*|g*|e*|f*|B*|M*)
                             case "$verb:${v%"${v#?}"}" in
                                 cp:S|mv:S|ln:S|install:[Smog]|rsync:[efBM])
@@ -755,6 +831,26 @@ check_copy() {
                 done ;;
             esac ;;
         esac
+    fi
+    # HIMMEL-4458: cp --parents / rsync -R (--relative) recreate the SOURCE's
+    # path under the destination, so a glob-spelled source
+    # (.himmel/state/bank-l?ft.json) lands as the lift. Judge the path the
+    # copy creates (dest + source path; rsync's /./ marks where it starts);
+    # under a dynamic destination, the source path alone.
+    if [ "$parents" = 1 ]; then
+        for src in ${pos[@]+"${pos[@]}"}; do
+            rel="$src"
+            case "$verb:$rel" in rsync:*/./*) rel="${rel#*/./}" ;; esac
+            rel="${rel#/}"
+            case "$(lift_ref "${dest%/}/$rel")" in
+                LIFT|STATE) deny "$verb --parents/-R recreates the bank lift's path under $dest ($src)" ;;
+            esac
+            if _is_dynamic "$dest"; then
+                case "$(lift_ref "/$rel")" in
+                    LIFT|STATE) deny "$verb --parents/-R recreates the bank lift's path under $dest ($src)" ;;
+                esac
+            fi
+        done
     fi
     dk=$(lift_ref "$dest")
     case "$dk" in
@@ -829,7 +925,7 @@ check_sed_scripts() {
     [ "$have" = 1 ] || [ "${#ops[@]}" -eq 0 ] || scripts+=("${ops[0]}")
     for a in ${scripts[@]+"${scripts[@]}"}; do
         low=$(_lower "$a")
-        if [[ "$low" =~ $LIFT_CODE_RE ]] && [[ "$a" =~ $SED_E_RE ]]; then
+        if _code_names_lift "$low" && [[ "$a" =~ $SED_E_RE ]]; then
             deny "a sed e command names the bank lift"
         fi
         while IFS= read -r line; do
@@ -911,6 +1007,119 @@ EOF
     return 0
 }
 
+# HIMMEL-4458: archive extraction writes members under its destination, and
+# a member can be .himmel/state/bank-lift.json — a name no clause spells.
+# Extraction into HOME, ~/.himmel or its state dir denies; so does one with no
+# destination option whose effective cwd is one of those.
+# _note_cd <cd|pushd|popd> <args...>: a bare cd, or a target resolving to
+# HOME, ~/.himmel or its state dir, sets CD_HOME. `-`, popd, a stack index, a
+# computed target ($d; $HOME spellings do resolve), or a relative target after
+# an earlier cd set CD_UNK. Both stick for the rest of the command.
+# shellcheck disable=SC2016  # literal $HOME spellings are matched as text
+_note_cd() {
+    local c="$1" t k=UNK
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in --) shift; break ;; -[LPe@]|-n) shift ;; *) break ;; esac
+    done
+    t="${1-}"
+    if [ "$c" = popd ]; then :
+    elif [ -z "$t" ]; then k=HOME
+    else
+        case "$t" in
+            -|[+-][0-9]*) ;;
+            /*|'~'*|'$HOME'|'${HOME}'|'$HOME/'*|'${HOME}/'*) k=$(lift_ref "$t") ;;
+            *'$'*|*'`'*) ;;
+            *) [ "$CD_SEEN" = 0 ] && k=$(HAS_CD=0 lift_ref "$t") ;;
+        esac
+    fi
+    CD_SEEN=1
+    case "$k" in LIFT|STATE|HIMMEL|HOME) CD_HOME=1 ;; UNK) CD_UNK=1 ;; esac
+}
+
+# check_extract <tar|gtar|bsdtar|unzip|cpio> <args...>
+check_extract() {
+    local c="$1" x=0 nx="" a k first=1 multi=0 n out=0
+    local -a dests=() later=()
+    shift
+    [ "$c" = unzip ] && x=1
+    for a in "$@"; do
+        if [ -n "$nx" ]; then dests+=("$a"); nx=""; continue; fi
+        [ "$multi" = 1 ] && later+=("$a")
+        case "$c" in
+            tar|gtar|bsdtar)
+                case "$a" in
+                    --extract|--get) x=1 ;;
+                    --to-stdout) out=1 ;;
+                    --directory=*) dests+=("${a#*=}") ;;
+                    --directory) nx=d ;;
+                    --*) ;;
+                    -C) nx=d ;;
+                    -C?*) dests+=("${a#-C}") ;;
+                    -*) case "$a" in *x*) x=1 ;; esac
+                        case "$a" in *O*) out=1 ;; esac
+                        case "$a" in *C*) multi=1 ;; esac ;;
+                    *) if [ "$first" = 1 ]; then
+                           case "$a" in *x*) x=1 ;; esac
+                           case "$a" in *O*) out=1 ;; esac
+                           case "$a" in *C*) multi=1 ;; esac
+                       fi ;;
+                esac ;;
+            unzip)
+                case "$a" in
+                    -d) nx=d ;;
+                    -d?*) dests+=("${a#-d}") ;;
+                    --*) ;;
+                    -*) case "$a" in *[ltvZpc]*) x=0 ;; esac
+                        case "$a" in *d) nx=d ;; esac ;;
+                esac ;;
+            cpio)
+                case "$a" in
+                    --extract) x=1 ;;
+                    --directory=*) dests+=("${a#*=}") ;;
+                    --directory|-D) nx=d ;;
+                    -D?*) dests+=("${a#-D}") ;;
+                    --*) ;;
+                    -*) case "$a" in *i*) x=1 ;; esac ;;
+                esac ;;
+        esac
+        first=0
+    done
+    # -O / --to-stdout extracts to stdout, not to disk.
+    [ "$x" = 1 ] && [ "$out" = 0 ] || return 0
+    # A bundled C (tar -xfC a.tar dir) takes a later word: judge every one.
+    dests+=(${later[@]+"${later[@]}"})
+    n=${#dests[@]}
+    if [ "$n" = 0 ]; then
+        [ "$CD_HOME" = 1 ] && deny "$c extracts into the cwd after a cd into HOME or ~/.himmel"
+        [ "$CD_UNK" = 1 ] && deny "$c extracts into the cwd after a cd whose target cannot be resolved (it may be HOME or ~/.himmel); name the destination with -C/-d"
+        if [ "$CD_SEEN" = 0 ]; then
+            case "$(lift_ref "$CWD")" in
+                LIFT|STATE|HIMMEL|HOME) deny "$c extracts into the cwd ($CWD), which is HOME or ~/.himmel" ;;
+            esac
+        fi
+        return 0
+    fi
+    for a in "${dests[@]}"; do
+        case "$a" in
+            /*|'~'*|'$'*) ;;
+            *) [ "$CD_HOME" = 1 ] && deny "$c extracts into a relative dir ($a) after a cd into HOME or ~/.himmel"
+               # After an unresolved cd, `.` or a .himmel-named first part may be HOME's.
+               if [ "$CD_UNK" = 1 ]; then
+                   k="${a#./}"; k="${k%%/*}"
+                   if [ -z "$k" ] || [ "$k" = . ] || _name_matches "$k" .himmel; then
+                       deny "$c extracts into $a after a cd whose target cannot be resolved (it may be HOME or ~/.himmel)"
+                   fi
+               fi ;;
+        esac
+        if [ "$CD_SEEN" = 0 ]; then k=$(HAS_CD=0 lift_ref "$a"); else k=$(lift_ref "$a"); fi
+        case "$k" in
+            LIFT|STATE|HIMMEL|HOME) deny "$c extracts into $a (HOME, ~/.himmel or its state dir), where a member can be the bank lift" ;;
+        esac
+    done
+    return 0
+}
+
 # check_clause <depth> <fed> <args...> — returns 10 when the clause is a shell
 # reading its script from stdin (heredoc bodies then get analysed), 11 for an
 # interpreter (already decided here).
@@ -929,7 +1138,7 @@ check_clause() {
             # is a parameter, not a write — but test it for the set path below.
             shift; continue
         fi
-        cmd=$(_lower "$(_base "$w")")
+        _lb "$w"; cmd=$R
         case "$cmd" in
             env)
                 shift
@@ -1024,7 +1233,7 @@ check_clause() {
     done
     [ $# -gt 0 ] || return 0
     w="$1"; shift
-    cmd=$(_lower "$(_base "$w")")
+    _lb "$w"; cmd=$R
 
     # xargs anywhere in the command: any word naming the lift or the state
     # dir is a write the hook cannot follow — unless the verb only reads its
@@ -1053,7 +1262,7 @@ check_clause() {
     if [[ "$cmd" =~ $SHELL_RE ]] || [ "$cmd" = busybox ]; then
         local bbsh=0   # busybox's own sh applet (cmd stays "busybox")
         if [ "$cmd" = busybox ]; then
-            case "${1:-}" in sh|ash|bash) shift; bbsh=1 ;; *) w="${1:-}"; [ $# -gt 0 ] && shift; cmd=$(_lower "$(_base "$w")") ;; esac
+            case "${1:-}" in sh|ash|bash) shift; bbsh=1 ;; *) w="${1:-}"; [ $# -gt 0 ] && shift; _lb "$w"; cmd=$R ;; esac
         fi
         if [[ "$cmd" =~ $SHELL_RE ]] || [ "$bbsh" = 1 ]; then
             local cflag=0 sflag=0
@@ -1085,7 +1294,7 @@ check_clause() {
                 return 10
             fi
             w="$1"; shift
-            set_rule "$w" "${1:-}" $(( $# > 0 ? 1 : 0 )) "$( [ "$fed" = 0 ] && echo 0 || echo 1 )"
+            set_rule "$w" "${1:-}" $(( $# > 0 ? 1 : 0 )) "$(( fed != 0 ))"
             return 0
         fi
     fi
@@ -1124,7 +1333,7 @@ check_clause() {
         if [ "$inline" = 1 ]; then
             code=$(_lower "$* $CUR_BODIES")
             code="${code//\\/}"
-            if [[ "$code" =~ $LIFT_CODE_RE ]]; then
+            if _code_names_lift "$code"; then
                 deny "an interpreter ($cmd) runs inline code naming the bank lift"
             fi
         fi
@@ -1178,13 +1387,17 @@ check_clause() {
                 [ "${#fx[@]}" -gt 0 ] && check_clause "$depth" 0 "${fx[@]}"
             fi ;;
         *)
+            case "$cmd" in
+                tar|gtar|bsdtar|unzip|cpio) check_extract "$cmd" "$@" ;;
+                cd|pushd|popd) _note_cd "$cmd" "$@" ;;
+            esac
             if [[ "$cmd" =~ $MENTION_RE ]]; then
                 for a in "$@"; do
                     case "$a" in -*=*) a="${a#*=}" ;; esac
                     case "$(lift_ref "$a")" in LIFT|STATE) deny "$cmd is handed a bank-lift path ($a)" ;; esac
                 done
             fi
-            set_rule "$w" "${1:-}" $(( $# > 0 ? 1 : 0 )) "$( [ "$fed" = 0 ] && echo 0 || echo 1 )" ;;
+            set_rule "$w" "${1:-}" $(( $# > 0 ? 1 : 0 )) "$(( fed != 0 ))" ;;
     esac
     return 0
 }
