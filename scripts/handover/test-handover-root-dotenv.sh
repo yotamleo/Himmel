@@ -9,7 +9,7 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(cd "$HERE/.." && pwd)"
-tmp="$(mktemp -d)" || exit 1; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/handover-root-dotenv.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 # has <label> <haystack> <needle> / lacks
@@ -20,7 +20,14 @@ HO="$tmp/ho"; mkdir -p "$tmp/cache" "$HO" "$tmp/work"
 printf 'HANDOVER_DIR=%s\n' "$HO" > "$tmp/cache/.env"
 cd "$tmp/work" || exit 1
 # probe <cmd...>: stdout+stderr, HANDOVER_DIR unset, .env only in the cache dir.
-probe() { env -u HANDOVER_DIR HIMMELCTL_CACHE_DIR="$tmp/cache" timeout 30 "$@" 2>&1 </dev/null; }
+# A probe that cannot run at all (rc 126/127) would pass every "lacks" check, so
+# it is logged to $tmp/unrunnable and fails the suite at the end.
+probe() {
+    local o rc
+    o="$(env -u HANDOVER_DIR HIMMELCTL_CACHE_DIR="$tmp/cache" "$@" 2>&1 </dev/null)"; rc=$?
+    case "$rc" in 126|127) echo "rc=$rc: $*" >> "$tmp/unrunnable" ;; esac
+    printf '%s' "$o"
+}
 
 out="$(probe bash "$SCRIPTS/handover-link.sh")"
 has "handover-link: resolves the .env root" "$out" "root:       $HO"
@@ -84,4 +91,5 @@ other="$tmp/other"; mkdir -p "$other"
 out="$(env HANDOVER_DIR="$other" HIMMELCTL_CACHE_DIR="$tmp/cache" bash "$SCRIPTS/handover-link.sh" 2>&1 </dev/null)"
 has "handover-link: a live HANDOVER_DIR wins over .env" "$out" "root:       $other"
 
+[ -s "$tmp/unrunnable" ] && { echo "FAIL - unrunnable probe(s):"; cat "$tmp/unrunnable"; fails=$((fails+1)); }
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }
