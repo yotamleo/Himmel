@@ -1696,6 +1696,9 @@ _probe_tool_row() { PROBE_TOOL_ROWS="${PROBE_TOOL_ROWS}$1|$2|${3//|//}"$'\n'; }
 sync_graphify() {
     local lib="$ROOT/scripts/lib/graphify-bin.sh"
     echo "==> graphify pin sync (HIMMEL-1048)"
+    # HIMMEL-4380: a live Claude session's graphify-mcp holds the uv tool dir, so
+    # this step skips whenever it runs in-session. Name the way to clear it.
+    echo "    (a skip held by a live session clears with: bash scripts/himmel-update.sh --graphify-only — run it with no Claude session live, e.g. from a scheduled slot)"
     if [ ! -f "$lib" ]; then
         echo "    skip: graphify-bin.sh not found ($lib)."
         return 0
@@ -2061,6 +2064,31 @@ $(jq -r --slurpfile s "$settings" '.plugins[]? | select(.source | type == "strin
 EOF
     fi
     specs="$(printf '%s%s\n' "$specs" "$bumped" | sed '/^$/d')"
+    # HIMMEL-4380: enabledPlugins also lists plugins that are NOT installed
+    # (stale entries), and `claude plugin update` on those prints a red
+    # "not installed" failure each. Keep only specs present in
+    # installed_plugins.json; the count of the rest is one summary line. An
+    # absent/unreadable installed file cannot prove anything, so it filters
+    # nothing (the old behaviour).
+    if [ -n "$specs" ] && [ -f "$installed" ]; then
+        local kept="" n_skipped=0 spec_i
+        while IFS= read -r spec_i; do
+            [ -n "$spec_i" ] || continue
+            if jq -e --arg k "$spec_i" '(.plugins // {}) | has($k)' "$installed" >/dev/null 2>&1; then
+                kept="$kept$spec_i
+"
+            elif jq -e '.plugins | type == "object"' "$installed" >/dev/null 2>&1; then
+                n_skipped=$((n_skipped + 1))
+            else
+                kept="$kept$spec_i
+"
+            fi
+        done <<EOF
+$specs
+EOF
+        specs="$(printf '%s' "$kept" | sed '/^$/d')"
+        [ "$n_skipped" -eq 0 ] || echo "    $n_skipped enabled plugin(s) not installed, skipped."
+    fi
     if [ -z "$specs" ]; then
         echo "    no remote-sourced plugins installed."
         return 0
@@ -2577,6 +2605,8 @@ Modes:
   --only <item>       run ONE step: pull marketplace jira_cli qmd_fork hermes
                       luna_template graphify cli_proxy marketplaces toolchain tools
                       drift drift-check (installer-drift pass; -check is read-only)
+  --graphify-only     alias for --only graphify: clear a graphify pin-sync skip
+                      from a slot with no live Claude session (HIMMEL-4380)
   --plugins-check     just the plugin install-state report; no git, no network
   -h, --help          this text
 
@@ -2586,6 +2616,12 @@ USAGE
 }
 case "${1:-}" in
     ""|--check|--dry-run|--versions|--only|--plugins-check) ;;
+    --graphify-only)
+        # HIMMEL-4380: alias for `--only graphify`, the standing way to clear a
+        # pin-sync skip (every in-session run is blocked by the live
+        # graphify-mcp holder) from a slot with no Claude session live.
+        shift
+        set -- --only graphify "$@" ;;
     -h|--help)
         print_usage
         exit 0 ;;

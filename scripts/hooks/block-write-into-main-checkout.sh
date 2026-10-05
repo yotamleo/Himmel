@@ -952,6 +952,10 @@ _bwimc_flat_mask() {
 # operand lands in _BWIMC_SPDIR for the verb loop to model (_bwimc_chdir_model);
 # `sudo -i`/`--login`, a second chdir, or an unknown wrapper option record `$`
 # (dir unknown, fail closed). No other stripped wrapper changes directory.
+# HIMMEL-4329: a wrapper name matches on its basename (`/usr/bin/env`,
+# `nice.exe`). `chroot [opts] DIR` and `sudo -R DIR`/`--chroot` change the
+# root: DIR lands in _BWIMC_SPROOT for the verb loop (_bwimc_root_model), and
+# chroot also chdirs to the new `/`.
 _BWIMC_ARMVERB_RE='^([^[:space:]]*/)?(sed|eval|bash|sh|zsh|dash|ksh|install|rsync|dd|cp|mv|rm|touch|ln|git)(\.exe)?$'
 # _bwimc_sp_word — trims _BWIMC_SPT's leading blanks; _BWIMC_SPW = its first
 # shell word as written ('..', "..", $'..' and backslash honoured, so
@@ -1002,10 +1006,16 @@ _bwimc_sp_word() {
 _bwimc_sp_dir() {
     if [ -z "$_BWIMC_SPDIR" ]; then _BWIMC_SPDIR="$1"; else _BWIMC_SPDIR='$'; fi
 }
+# _bwimc_sp_root WORD — HIMMEL-4329: records a chroot's new root (`chroot
+# DIR`, `sudo -R DIR`) in _BWIMC_SPROOT; a second one reads as unknown (`$`).
+_bwimc_sp_root() {
+    if [ -z "$_BWIMC_SPROOT" ]; then _BWIMC_SPROOT="$1"; else _BWIMC_SPROOT='$'; fi
+}
 # _bwimc_sp_opts SHORTVAL SHORTFLAG SHORTSTOP LONGVAL LONGFLAG LONGSTOP
-# [DIRSHORT DIRLONG DYNSHORT DYNLONG] — eats the options after a wrapper word from _BWIMC_SPT,
+# [DIRSHORT DIRLONG DYNSHORT DYNLONG ROOTSHORT ROOTLONG] — eats the options after a wrapper word from _BWIMC_SPT,
 # recording the DIRSHORT/DIRLONG value (`env -C`, `sudo -D`) via
-# _bwimc_sp_dir; a DYNSHORT/DYNLONG flag (`sudo -i`) records `$`. Returns 0 at the command word, 1 at a stop option (left in
+# _bwimc_sp_dir and the ROOTSHORT/ROOTLONG value (`sudo -R`) via _bwimc_sp_root;
+# a DYNSHORT/DYNLONG flag (`sudo -i`) records `$`. Returns 0 at the command word, 1 at a stop option (left in
 # place), 2 at an unknown option.
 _bwimc_sp_opts() {
     local w wr nm k ch
@@ -1025,9 +1035,11 @@ _bwimc_sp_opts() {
                 case " $4 " in *" $nm "*) ;; *) return 2 ;; esac
                 _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"
                 case "$w" in
-                    *=*) [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "${w#*=}" ;;
+                    *=*) [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "${w#*=}"
+                         [ "$nm" != "${12:-}" ] || _bwimc_sp_root "${w#*=}" ;;
                     *) _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
-                       [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU" ;;
+                       [ "$nm" != "${8:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU"
+                       [ "$nm" != "${12:-}" ] || _bwimc_sp_root "$_BWIMC_SPU" ;;
                 esac
                 ;;
             -?*)
@@ -1040,8 +1052,10 @@ _bwimc_sp_opts() {
                             if [ "$((k+1))" -eq "${#w}" ]; then
                                 _BWIMC_SPT="${_BWIMC_SPT:${#wr}}"; _bwimc_sp_word; wr="$_BWIMC_SPW"
                                 [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "$_BWIMC_SPU"
+                                [ "$ch" != "${11:-}" ] || _bwimc_sp_root "$_BWIMC_SPU"
                             else
                                 [ "$ch" != "${7:-}" ] || _bwimc_sp_dir "${w:$((k+1))}"
+                                [ "$ch" != "${11:-}" ] || _bwimc_sp_root "${w:$((k+1))}"
                             fi
                             break ;;
                     esac
@@ -1058,11 +1072,13 @@ _bwimc_sp_opts() {
 _bwimc_strip_prefix() {
     local n=${#1} w wl r
     _bwimc_strip_assign "$1"
-    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"; _BWIMC_SPDIR=''; _BWIMC_SPBAD=0
+    _BWIMC_SPT="$_BWIMC_SA"; _BWIMC_SP0="$_BWIMC_SA"; _BWIMC_SPDIR=''; _BWIMC_SPROOT=''; _BWIMC_SPBAD=0
     while :; do
         _bwimc_sp_word; w="$_BWIMC_SPW"
-        # a quoted command name still runs (`"sudo"`); a quoted keyword is no keyword
-        _tolower_ascii "$_BWIMC_SPU"; wl="$_TOLOWER_OUT"
+        # a quoted command name still runs (`"sudo"`); a quoted keyword is no keyword.
+        # HIMMEL-4329: a wrapper matches on its basename, `.exe` dropped
+        # (`/usr/bin/nice`, `nice.exe`), as _bwimc_check_interp_body does
+        _tolower_ascii "${_BWIMC_SPU##*/}"; wl="${_TOLOWER_OUT%.exe}"
         r=0
         case "$w" in
             '{'|'!'|if|then|elif|else|while|until|do)
@@ -1097,7 +1113,7 @@ _bwimc_strip_prefix() {
                     if [ "$wl" = env ]; then
                         _bwimc_sp_opts uCa i0v S 'unset chdir argv0' 'ignore-environment null debug block-signal default-signal ignore-signal list-signal-handling' 'split-string help version' C chdir || r=$?
                     else
-                        _bwimc_sp_opts ugpChDrRtTU AbEHiKknPSsB lVve 'user group host prompt close-from chdir role type command-timeout other-user chroot' 'askpass background preserve-env set-home login non-interactive preserve-groups stdin shell reset-timestamp bell' 'list version validate remove-timestamp edit help' D chdir i login || r=$?
+                        _bwimc_sp_opts ugpChDrRtTU AbEHiKknPSsB lVve 'user group host prompt close-from chdir role type command-timeout other-user chroot' 'askpass background preserve-env set-home login non-interactive preserve-groups stdin shell reset-timestamp bell' 'list version validate remove-timestamp edit help' D chdir i login R chroot || r=$?
                     fi
                     [ "$r" = 0 ] || break
                     _bwimc_sp_word
@@ -1107,6 +1123,15 @@ _bwimc_strip_prefix() {
                         *) break ;;
                     esac
                 done ;;
+            # HIMMEL-4329: `chroot [opts] NEWROOT cmd` runs cmd from NEWROOT's
+            # `/` (`--skip-chdir`: the dir is unknown)
+            chroot)
+                _BWIMC_SPT="${_BWIMC_SPT:${#w}}"
+                _bwimc_sp_opts '' '' '' 'groups userspec' 'skip-chdir' 'help version' '' '' '' skip-chdir || r=$?
+                if [ "$r" = 0 ]; then
+                    _bwimc_sp_word; _BWIMC_SPT="${_BWIMC_SPT:${#_BWIMC_SPW}}"
+                    _bwimc_sp_root "$_BWIMC_SPU"; _bwimc_sp_dir /
+                fi ;;
             *) break ;;
         esac
         if [ "$_BWIMC_SPBAD" = 1 ]; then
@@ -1114,8 +1139,10 @@ _bwimc_strip_prefix() {
         elif [ "$r" = 1 ]; then
             break
         elif [ "$r" = 2 ]; then
-            # an unknown env/sudo option may be a chdir: the dir is unknown
-            case "$wl" in env|sudo) _bwimc_sp_dir '$' ;; esac
+            # an unknown env/sudo/chroot option may be a chdir: the dir is
+            # unknown; an unknown sudo/chroot one may be a new root (HIMMEL-4329)
+            case "$wl" in env|sudo|chroot) _bwimc_sp_dir '$' ;; esac
+            case "$wl" in sudo|chroot) _bwimc_sp_root '$' ;; esac
             # fail closed: the first later word a verb arm matches (none: as is)
             w="$_BWIMC_SPT"
             while _bwimc_sp_word; [ -n "$_BWIMC_SPW" ]; do
@@ -1669,6 +1696,8 @@ _bwimc_deny() {
         marker-byte) why="the command carries a raw control byte (0x01-0x06 or 0x0e) the scanner uses as an internal marker, so its targets cannot be classified (failing closed; spell the byte as \$'\\xNN' instead)" ;;
         shell-ambiguous) why="bash and zsh (or bash versions) read a \$'…' span in it differently, so its target cannot be classified (failing closed, HIMMEL-4138)" ;;
         unclosed-expansion) why="a \${…} or \$[…] span never closes and a separator follows it, so the command after it cannot be read (failing closed)" ;;
+        unresolved-chroot) why="it runs behind a chroot (chroot DIR, sudo -R/--chroot) whose new root could not be resolved, so its targets cannot be classified (failing closed, HIMMEL-4329)" ;;
+        chroot-git) why="it runs a git write behind a chroot (chroot DIR, sudo -R/--chroot) other than /: its -C, --git-dir, --work-tree and GIT_* paths are not mapped into the new root, so its repo cannot be classified (failing closed, HIMMEL-4329)" ;;
         unsafe-interp-body) why="an eval/bash -c/sh -c/zsh -c argument contains a write-shaped token whose target cannot be proven to stay outside the primary (failing closed, HIMMEL-3648)" ;;
     esac
     {
@@ -1767,9 +1796,36 @@ _bwimc_check_canon() {
 #            caller of `both` here. `both` stays as a documented mode in the
 #            contract — the suite may still exercise it directly — rather
 #            than being deleted for lack of a current caller.
+#
+# HIMMEL-4329: behind a chroot (_bwimc_chroot, set per clause by
+# _bwimc_root_model) the write lands inside ROOT. Every reading is checked
+# (deny-only): the host reading as before; ROOT itself, so a root that IS the
+# primary or lies inside it denies any write whatever the target; ROOT + ABS
+# lexically; and ROOT + ABS resolved the way the jail resolves it
+# (_bwimc_jail_canon: an absolute symlink restarts at ROOT, `..` stops at
+# ROOT), so a root that is an ANCESTOR of the primary cannot reach it through
+# a link the host would resolve elsewhere (`chroot ~/github touch /lnk/f`,
+# lnk -> /himmel). An unknown root fails closed.
+# ponytail: a chroot into an UNRELATED root allows. That is safe on the
+# filesystem alone, since in-jail resolution never leaves ROOT, but a bind
+# mount or mount namespace can expose the primary inside an unrelated jail,
+# and this host-side check cannot see it (chroot also needs CAP_SYS_CHROOT,
+# which an agent session rarely has); upgrade path = fail closed on any write
+# behind a chroot, or read /proc/self/mountinfo for mounts under ROOT.
 _bwimc_check_abs() {
     local abs="$1" raw="$2" mode="${3:-follow}"
-    local lc canon
+    local lc canon root="${_bwimc_chroot:-}" jc
+    if [ -n "$root" ]; then
+        [ "$root" != '$' ] || _bwimc_deny "unresolved-chroot" "$raw" "$abs" ""
+        case "$abs" in
+            /*) _bwimc_chroot=""
+                _bwimc_check_abs "$root" "$raw" follow
+                _bwimc_check_abs "${root%/}$abs" "$raw" "$mode"
+                jc=$(_bwimc_jail_canon "${root%/}" "$abs") || _bwimc_deny "unresolved-chroot" "$raw" "$abs" ""
+                _bwimc_check_abs "${root%/}$jc" "$raw" "$mode"
+                _bwimc_chroot="$root" ;;
+        esac
+    fi
     _tolower_ascii "$abs"
     lc="$_TOLOWER_OUT"
     is_temp_or_devnull "$lc" && return 0
@@ -2048,6 +2104,60 @@ _bwimc_chdir_model() {
     else
         _bwimc_ecwd_unres=1
     fi
+}
+# _bwimc_root_model RAW — HIMMEL-4329: a chroot's new root (`chroot RAW`,
+# `sudo -R RAW`) for _bwimc_check_abs. Sets _bwimc_chroot to RAW resolved
+# against the cwd and canonicalised (a root that is a symlink into the primary
+# must not pass as its /tmp spelling), to "" for `/`, and to `$` (unknown, fail
+# closed) for a non-literal RAW, one that does not resolve, or a relative RAW
+# beside another wrapper chdir (which dir it is relative to is ambiguous).
+# Only the verb-loop targets (_bwimc_check_abs) read the root: a `tee` behind
+# a chroot is read by the verb loop's tee arm, and a git behind one fails
+# closed in _bwimc_git_clause's jail mode (CR codex-2). A redirect behind a
+# chroot (`chroot R echo x > /f`) is opened by the host shell, so arm (a)
+# rightly reads it on the host. An abbreviated `--chr=DIR` is an unknown
+# option, so it already fails closed.
+_bwimc_root_model() {
+    local raw="$1" r
+    _bwimc_chroot='$'
+    case "$raw" in *'$'*|*'`'*|*[*?[]*|*\\*) return 0 ;; esac
+    case "$raw" in
+        /*) ;;
+        *) [ "$_bwimc_ecwd_unres" = 0 ] && { [ -z "$_BWIMC_SPDIR" ] || [ "$_BWIMC_SPDIR" = / ]; } || return 0 ;;
+    esac
+    r=$(_bwimc_resolve_abs "$raw" "$_bwimc_ecwd") || return 0
+    r=$(guard_canon_path "$r" 2>/dev/null) || return 0
+    case "$r" in
+        /) _bwimc_chroot="" ;;
+        /*) _bwimc_chroot="$r" ;;
+    esac
+}
+# _bwimc_jail_canon ROOT ABS — HIMMEL-4329: prints ABS resolved the way a
+# process chrooted at ROOT (canonical, no trailing /) resolves it: `.` drops,
+# `..` stops at the jail's `/`, an absolute symlink target restarts at the
+# jail's `/`, a relative one resolves from its own dir. Every symlink is
+# followed, the last one included; more than 40 links fails (rc 1).
+_bwimc_jail_canon() {
+    local root="$1" rest="$2" cur="" comp l hops=0
+    while [ -n "$rest" ]; do
+        case "$rest" in
+            */*) comp="${rest%%/*}"; rest="${rest#*/}" ;;
+            *) comp="$rest"; rest="" ;;
+        esac
+        case "$comp" in
+            ''|.) continue ;;
+            ..) cur="${cur%/*}"; continue ;;
+        esac
+        if [ -L "$root$cur/$comp" ]; then
+            hops=$((hops+1)); [ "$hops" -le 40 ] || return 1
+            l=$(readlink "$root$cur/$comp") || return 1
+            case "$l" in /*) cur="" ;; esac
+            rest="$l/$rest"
+        else
+            cur="$cur/$comp"
+        fi
+    done
+    printf '%s\n' "${cur:-/}"
 }
 _bwimc_ecwd_track() {
     local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
@@ -3812,6 +3922,32 @@ _bwimc_git_clause() {
     local e_cfgglobal="$_bwimc_genv_cfgglobal" e_cfgsystem="$_bwimc_genv_cfgsystem"
     local cfg="$_bwimc_genv_cfg"
     local cwd="$_bwimc_gcwd"
+    # HIMMEL-4329 CR codex-2: a git behind a chroot (`chroot P git -C / add .`,
+    # `sudo -R P git …`) runs inside the new root, and none of git's paths
+    # are mapped into it, so the prefix loop below cannot see it at all. A
+    # root other than `/` (unresolved included) reads the clause behind the
+    # wrappers in jail mode: a git write there fails closed (chroot-git); a
+    # read still passes. Only this arm calls itself, before the verb loop
+    # reads the _BWIMC_SP* globals.
+    if [ "$_bwimc_g_jail" = 0 ]; then
+        _bwimc_strip_prefix "$1"
+        if [ -n "$_BWIMC_SPROOT" ]; then
+            local jroot='$' jsp="$_BWIMC_SP"
+            case "$_BWIMC_SPROOT" in
+                *'$'*|*'`'*|*[*?[]*|*\\*) ;;
+                *)
+                    case "$_BWIMC_SPROOT:$_bwimc_gcwd_unres" in /*|*:0)
+                        r=$(_bwimc_resolve_abs "$_BWIMC_SPROOT" "$cwd") && r=$(guard_canon_path "$r" 2>/dev/null) && jroot="$r" ;;
+                    esac ;;
+            esac
+            if [ "$jroot" != / ]; then
+                _bwimc_g_jail=1
+                _bwimc_git_clause "$jsp"
+                _bwimc_g_jail=0
+                return 0
+            fi
+        fi
+    fi
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
     # Grouping punctuation and compound-command keywords the clause splitter
@@ -4049,6 +4185,7 @@ _bwimc_git_clause() {
     fi
 
     if [ "$sub" = push ]; then
+        [ "$_bwimc_g_jail" = 0 ] || _bwimc_deny "chroot-git" "$1" "$dir" ""
         _BWIMC_GIT_SUB=push
         [ "$_bwimc_gcwd_unres" = 1 ] && unres=1
         if [ "${#args[@]}" -gt 0 ]; then
@@ -4070,6 +4207,7 @@ _bwimc_git_clause() {
                 _bwimc_git_sub_is_read "$sub" && return 0
             fi ;;
     esac
+    [ "$_bwimc_g_jail" = 0 ] || _bwimc_deny "chroot-git" "$1" "$dir" ""
 
     _BWIMC_GIT_SUB="$sub"
     [ -n "$gitdir" ] || gitdir="$e_dir"
@@ -4464,6 +4602,7 @@ _bwimc_genv_cfgsystem=""
 _bwimc_genv_cfg=0
 _bwimc_g_repoint=0
 _bwimc_g_netop=0
+_bwimc_g_jail=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     # HIMMEL-4010: substitution bodies arrive as their own clauses; the
@@ -4491,6 +4630,8 @@ _bwimc_ecwd_pushn=0
 _bwimc_spd_on=0
 _bwimc_sub_ecwd=(); _bwimc_sub_unres=(); _bwimc_sub_pushn=(); _bwimc_sub_d=0
 while IFS= read -r _bwimc_clause; do
+    # HIMMEL-4329: a chroot root holds for its own clause only
+    _bwimc_chroot=""
     # HIMMEL-4213: a wrapper chdir (`env -C DIR`) moved the cwd for its own
     # clause only — restore the cwd the clause before it left
     if [ "$_bwimc_spd_on" = 1 ]; then
@@ -4541,6 +4682,8 @@ while IFS= read -r _bwimc_clause; do
         _bwimc_clause_sp=$(_bwimc_space_before_redirects "$_BWIMC_SP0")
     fi
     _bwimc_wrap_lc="$_bwimc_clause_lc"; _bwimc_wrap_sp="$_bwimc_clause_sp"
+    # HIMMEL-4329: a chroot root, read against the cwd before its own chdir
+    [ -z "$_BWIMC_SPROOT" ] || _bwimc_root_model "$_BWIMC_SPROOT"
     if [ -n "$_BWIMC_SPDIR" ]; then
         _bwimc_spd_ecwd="$_bwimc_ecwd"; _bwimc_spd_unres="$_bwimc_ecwd_unres"; _bwimc_spd_on=1
         _bwimc_chdir_model "$_BWIMC_SPDIR"
@@ -5272,6 +5415,38 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_i=$((_bwimc_i+1))
         done
 
+    elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*([^[:space:]]*/)?tee(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
+        # HIMMEL-4329 CR codex-2: arm (a) reads `tee` on the host only and
+        # only behind its own short wrapper list, so `chroot P tee /f`,
+        # `sudo -R P tee /f`, `nice tee`, `timeout 5 tee` and `/usr/bin/tee`
+        # wrote into the primary unseen. Here tee is read behind every
+        # stripped wrapper, its FILE operands (FOLLOW) through
+        # _bwimc_check_target, which maps them into a chroot root. Arm (a)
+        # still runs, so this can only add denials. tee takes no option with
+        # a separate value; `--` ends option parsing.
+        _bwimc_toks=()
+        while IFS= read -r _bwimc_t; do _bwimc_toks+=("$_bwimc_t"); done < <(_bwimc_tokenize "$_bwimc_clause_sp")
+        _bwimc_dd=0
+        _bwimc_i=1
+        while [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ]; do
+            _bwimc_t="${_bwimc_toks[$_bwimc_i]}"
+            if _bwimc_redirect_op_of "$_bwimc_t"; then
+                _bwimc_i=$(_bwimc_skip_redirect_at "$_bwimc_i")
+                continue
+            fi
+            if [ "$_bwimc_dd" = 0 ] && [ "$_bwimc_t" = "--" ]; then
+                _bwimc_dd=1
+            elif [ "$_bwimc_dd" = 1 ]; then
+                _bwimc_cd_guard "$_bwimc_t"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd"
+            else
+                case "$_bwimc_t" in
+                    -*) : ;;
+                    *) _bwimc_cd_guard "$_bwimc_t"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd" ;;
+                esac
+            fi
+            _bwimc_i=$((_bwimc_i+1))
+        done
+
     elif _bwimc_m=$(printf '%s' "$_bwimc_clause_lc" | grep -E '^[[:space:]]*ln(\.exe)?[[:space:]]+') && [ -n "$_bwimc_m" ]; then
         # `ln`/`ln -s` CREATES a directory entry (HIMMEL-2592 §2) — the fence
         # had no `ln` arm at all, so `ln -s x <primary>/link` wrote into a
@@ -5484,6 +5659,7 @@ while IFS= read -r _bwimc_clause; do
         _bwimc_check_interp_body "$_bwimc_wrap_sp" wrap
     fi
 done < <(_bwimc_verb_clauses "$_bwimc_hb")
+_bwimc_chroot=""
 done  # HIMMEL-4138 readings
 
 if [ "$_bwimc_sourced" = 1 ]; then

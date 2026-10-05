@@ -3,7 +3,7 @@
 # severity-grouped report with remediation, and (on request) file ONE
 # consolidated GitHub issue. Read-only except `--fix` (heals C1-guardrail wiring).
 #
-#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json]
+#   bash himmel-doctor.sh [--fix] [--file-issue] [--repo owner/name] [--no-color] [--json] [--root <path>]
 #
 # Exit 0 unless a FAIL finding is present (then 1) — so `--fix` re-checks are
 # scriptable. WARN/INFO never fail the exit. See the /himmel-doctor command md.
@@ -12,8 +12,22 @@
 # stderr. Same checks, same exit code. Needs jq.
 set -uo pipefail
 
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-[ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/scripts/himmel-doctor.sh" ] || REPO_ROOT="${HIMMEL_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+# HIMMEL-4382: the doctor judges the STATION (primary) checkout, resolved via
+# git-common-dir like doctor-cadence, so a run from a leg worktree reports what
+# the primary reports. `--root <path>` / HIMMEL_DOCTOR_ROOT judges another
+# checkout (a leg testing its own branch); a run whose root is not the station
+# publishes no state.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+common="$(git -C "$SELF_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+STATION_ROOT=""
+[ -n "$common" ] && STATION_ROOT="$(cd "$(dirname "$common")" 2>/dev/null && pwd)"
+[ -n "$STATION_ROOT" ] && [ -f "$STATION_ROOT/scripts/himmel-doctor.sh" ] || STATION_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$STATION_ROOT" ] && [ -f "$STATION_ROOT/scripts/himmel-doctor.sh" ] || STATION_ROOT="${HIMMEL_REPO:-$(cd "$SELF_DIR/.." && pwd)}"
+ROOT_OVERRIDE="${HIMMEL_DOCTOR_ROOT:-}"
+prev_arg=""
+for arg in "$@"; do [ "$prev_arg" = --root ] && ROOT_OVERRIDE="$arg"; prev_arg="$arg"; done
+REPO_ROOT="$STATION_ROOT"
+[ -n "$ROOT_OVERRIDE" ] && REPO_ROOT="$(cd "$ROOT_OVERRIDE" 2>/dev/null && pwd || printf '%s' "$ROOT_OVERRIDE")"
 # shellcheck source=/dev/null
 . "$REPO_ROOT/scripts/lib/resolve-node.sh"
 # shellcheck source=/dev/null
@@ -47,6 +61,8 @@ while [ $# -gt 0 ]; do
         --json) DO_JSON=1 ;;
         --file-issue) DO_FILE=1 ;;
         --repo) shift; REPO_FLAG="${1:-}" ;;
+        --root) [ -n "${2:-}" ] || { echo "himmel-doctor: --root needs a path" >&2; exit 2; }
+                shift ;; # the value was read by the pre-scan above
         --no-color) USE_COLOR=0 ;;
         -h|--help) sed -n '2,/^set /p' "${BASH_SOURCE[0]}" | sed '$d'; exit 0 ;;
         *) echo "himmel-doctor: unknown arg '$1'" >&2; exit 2 ;;
@@ -68,7 +84,8 @@ else C_RED=""; C_YEL=""; C_GRN=""; C_DIM=""; C_0=""; fi
 
 n_fail=0; n_warn=0; n_info=0
 BODY="$(mktemp)"
-trap 'rm -f "$BODY"' EXIT
+KEYS="$(mktemp "${TMPDIR:-/tmp}/himmel-doctor-keys.XXXXXX")" || { echo "himmel-doctor: mktemp failed" >&2; exit 2; }
+trap 'rm -f "$BODY" "$KEYS"' EXIT
 printf '## himmel-doctor findings (%s)\n\n' "$(uname -s 2>/dev/null || echo ?)" >> "$BODY"
 
 # emit <SEV> <id> <msg> <remedy>
@@ -87,6 +104,7 @@ emit() {
         printf '%s%-4s%s %s: %s\n' "$col" "$sev" "$C_0" "$id" "$msg"
         [ -n "$remedy" ] && printf '       %s→ %s%s\n' "$C_DIM" "$remedy" "$C_0"
     fi
+    case "$sev" in FAIL|WARN) printf '%s %s\n' "$sev" "$id" >> "$KEYS" ;; esac
     if [ "$sev" != OK ]; then printf -- '- **%s** %s: %s\n  - → %s\n' "$sev" "$id" "$msg" "$remedy" >> "$BODY"; fi
 }
 
@@ -190,7 +208,7 @@ check_c4() {
 
 # --- C5: cwd repo not registered for handover-resume ----------------------------
 check_c5() {
-    local top; top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    local top="$REPO_ROOT"
     [ -n "$top" ] || return
     [ -f "$REGISTRY" ] || { emit INFO C5-handover "no handover registry yet" "/handover-setup to enable handover-resume"; return; }
     # Case-insensitive (Windows registry stores lowercased paths) + accept a
@@ -873,66 +891,6 @@ check_c17() {
         "key-missing: confirm the key in its .env, or disable the skill if there's no active subscription. doc-disabled: correct the doc."
     printf '%s\n' "$out" | grep '^READY-DRIFT key-missing ' | awk '{print "       · "$3" is enabled but "$4" is absent/blank"}'
     printf '%s\n' "$out" | grep '^READY-DRIFT doc-disabled ' | awk '{print "       · "$3" is enabled+keyed but a doc still marks its toolkit disabled"}'
-}
-
-# --- C18: monitored zero-usage command cluster (2026-07-29 skill-hygiene spec) --
-# WARN-only, "flag but don't auto-fix" like C15. That survey found five
-# project-scope commands with WEAK evidence (no supersession found anywhere,
-# "never used" is the only signal) and disposed them KEEP-monitor rather than
-# removed. No persistent usage-tracking mechanism exists yet (the survey's own
-# open question, §4 Q5) -- so this check applies the survey's own age/cost
-# thresholds (never-used AND age>60d, OR never-used AND age>30d AND cost>50
-# tok) to a STATIC declared table rather than a live usage counter. A command
-# dropping out of `.claude/commands/` (disabled/removed) silently drops out of
-# this check too -- nothing to update there. Update/remove an entry once a
-# fresh usage signal actually resolves it; don't let this table go stale.
-DOCTOR_C18_MONITORED='
-quiet-run|2026-05-18|17
-retitle|2026-06-22|37
-improve|2026-05-25|40
-guardrail-sim|2026-06-21|71
-cr-scores|2026-06-19|21
-'
-
-# portable YYYY-MM-DD -> epoch seconds; GNU date first (Git Bash/Linux), then
-# BSD date -j (macOS). Echoes nothing (rc=1) on an unparsable/foreign date --
-# callers must treat that as "skip", never crash.
-_c18_epoch() {
-    date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%d' "$1" +%s 2>/dev/null
-}
-
-check_c18() {
-    local cmds_dir="${DOCTOR_C18_COMMANDS_DIR:-$REPO_ROOT/.claude/commands}"
-    # Test seam only (default unset -- production always uses the built-in
-    # table above): lets the hermetic test supply landed-dates relative to
-    # its own run time instead of asserting against a live-clock threshold
-    # crossing on the real, fixed 2026-xx-xx dates.
-    local monitored="${DOCTOR_C18_MONITORED_OVERRIDE:-$DOCTOR_C18_MONITORED}"
-    local now; now="$(date +%s)"
-    local name landed cost added_epoch age_days hits hit_n
-    hits=""; hit_n=0
-    while IFS='|' read -r name landed cost; do
-        [ -n "$name" ] || continue
-        [ -f "$cmds_dir/$name.md" ] || continue   # already disabled/removed -- nothing to flag
-        added_epoch="$(_c18_epoch "$landed")"
-        case "$added_epoch" in ''|*[!0-9]*) continue ;; esac   # unparsable date -- skip, never crash
-        age_days=$(( (now - added_epoch) / 86400 ))
-        if [ "$age_days" -gt 60 ] || { [ "$age_days" -gt 30 ] && [ "${cost:-0}" -gt 50 ]; }; then
-            hits="${hits}${name} (${age_days}d old, ~${cost} tok)
-"
-            hit_n=$((hit_n + 1))
-        fi
-    done <<EOF
-$monitored
-EOF
-    if [ "$hit_n" -eq 0 ]; then
-        emit OK C18-skill-usage "no monitored zero-usage command has crossed its staleness threshold"
-        return
-    fi
-    emit WARN C18-skill-usage \
-        "$hit_n monitored command(s) from the 2026-07-29 skill-hygiene survey are still zero-usage past their threshold" \
-        "re-confirm real usage; disable/remove if still unused, or clear the entry in check_c18 if it's now in active use"
-    printf '%s' "$hits" | sed '/^$/d' | sed 's/^/       · /'
 }
 
 # --- C19: observability stack drift + endpoint readiness (read-only advisory) ---
@@ -2560,9 +2518,8 @@ check_c32() {
 DOCTOR_C33_CADENCE_INTERVAL_S=$((6 * 3600))
 
 # portable ISO8601 UTC ("...Z") -> epoch seconds; GNU date first (Git Bash/
-# Linux), then BSD date -j (macOS) -- same fallback shape as check_c18's
-# _c18_epoch. Echoes nothing (rc=1) on an unparsable timestamp; callers treat
-# that as "can't determine age", never crash.
+# Linux), then BSD date -j (macOS). Echoes nothing (rc=1) on an unparsable
+# timestamp; callers treat that as "can't determine age", never crash.
 _c33_epoch() {
     date -d "$1" +%s 2>/dev/null || date -j -f '%Y-%m-%dT%H:%M:%SZ' "$1" +%s 2>/dev/null  # gnu-ok: GNU date -d is paired with the BSD date -j fallback on this same line
 }
@@ -3517,7 +3474,6 @@ check_c14
 check_c15
 check_c16
 check_c17
-check_c18
 check_c19
 check_c20
 check_c21
@@ -3556,11 +3512,13 @@ printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C
 
 # HIMMEL-4363: a full run refreshes the statusline counts. There is no subset
 # flag; the two *_SKIP seams skip checks, so a run with either set is a subset
-# and never writes (it would publish a falsely low count).
-if [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" != 1 ] && [ "${DOCTOR_ORPHAN_SCAN_SKIP:-0}" != 1 ]; then
+# and never writes (it would publish a falsely low count). HIMMEL-4382: a
+# run judging a non-station root never writes either; counts and
+# last.tsv are published together by doctor_state_publish.
+if [ "$REPO_ROOT" = "$STATION_ROOT" ] && [ "${DOCTOR_OBSERVABILITY_SKIP:-0}" != 1 ] && [ "${DOCTOR_ORPHAN_SCAN_SKIP:-0}" != 1 ]; then
     # shellcheck source=doctor-counts.sh
-    . "$REPO_ROOT/scripts/doctor-counts.sh"
-    doctor_counts_write "${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}" "$n_fail" "$n_warn" || true
+    . "$SELF_DIR/doctor-counts.sh"
+    doctor_state_publish "${HIMMEL_DOCTOR_STATE_DIR:-${HOME:-}/.himmel/state/doctor-cadence}" "$KEYS" "$n_fail" "$n_warn" || true
 fi
 
 if [ "$DO_FILE" = 1 ] && [ $((n_fail+n_warn+n_info)) -gt 0 ]; then

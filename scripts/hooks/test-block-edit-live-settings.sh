@@ -2780,6 +2780,106 @@ ruby -e 'puts File.read(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
 ruby -e 'puts File.exist?(Dir.home+"/.cl"+"aude/sett"+"ings.json")'
 perl -e 'open(my $f,"<",$ENV{HOME}."/.cl"."aude/sett"."ings.json"); print <$f>'
 ROWS
+# 790-811 (HIMMEL-4353): a bash/sh/zsh/dash -c or eval body is one quoted word
+# to the tokenizer, so its glob and brace targets carried no glob flag and the
+# leaf/`.claude` fold checks never saw them. The body is now judged as a
+# command of its own.
+rows_both 790 2 "interpreter body writing live settings via a glob or brace denies" <<'ROWS'
+bash -c "echo x > ~/.claude/sett*s.json"
+eval "echo x > ~/.claude/s?ttings.json"
+bash -c "echo x > ~/.claude/settings.{json,bak}"
+sh -c 'cp /tmp/a ~/.cl*/settings.json'
+zsh -c 'echo x >> ~/.claude/sett*s.json'
+dash -c "echo x | tee ~/.claude/settings.js?n"
+command eval 'mv /tmp/a $HOME/.claude/sett*.json'
+bash -c 'install -m 644 /tmp/a $HOME/.claude/settings.{json,x}'
+sh -c "ln -sf /tmp/a ~/.claude/s*ings.local.json"
+eval 'dd if=/tmp/a of=$HOME/.claude/settings.j*'
+bash -lc 'echo x > ~/.claude/sett*s.json'
+bash -c 'echo x > @P@/.claude/sett*s.json'
+sh -c "cp /tmp/a @P@/.claude/settings.local.{json,x}"
+eval "echo x >> @P@/.cl*/settings.json"
+zsh -c "tee @P@/.claude/s?ttings.json < /tmp/a"
+command eval "dd if=/tmp/a of=@P@/.claude/sett*s.json"
+dash -c 'mv /tmp/a @P@/.claude/settings.js[o]n'
+bash -c "bash -c 'echo x > ~/.claude/sett*s.json'"
+ROWS
+# 808-813: controls; a glob or brace in an interpreter body that names no live
+# settings file, or only reads one, stays allowed.
+rows_both 808 0 "interpreter body glob/brace with a non-live target or a read allows" <<'ROWS'
+bash -c "echo x > /tmp/sett*s.json"
+bash -c "ls ~/.claude/*.md"
+eval "echo x > /tmp/s?ttings.json"
+zsh -c 'ls @P@/.claude/sett*'
+eval "cat ~/.claude/*.md"
+bash -c "echo x > /tmp/x.{json,bak}"
+ROWS
+# 814-815: the worktree's OWN copy through an interpreter body stays allowed,
+# as row 11 and row 273 allow it at top level.
+assert_rc "814 bash -c redirect into worktree .claude/sett*s.json allows" 0 \
+    "$(bash_rc_of "$WT2" 'bash -c "echo x > .claude/sett*s.json"')"
+assert_rc "815 sh -c redirect into worktree .claude/s?ttings.json allows" 0 \
+    "$(bash_rc_of "$WT2" "sh -c 'echo x > .claude/s?ttings.json'")"
+# 816-817 (CR round 1): an unterminated heredoc in one body must not swallow a
+# later body's write; each body is judged in its own run.
+rows_both 816 2 "an open heredoc in one interpreter body does not hide a later body's write" <<'ROWS'
+bash -c 'cat <<EOF'; bash -c 'echo x > ~/.claude/sett*s.json'
+eval 'cat <<EOF'; eval "echo x > ~/.claude/sett*s.json"
+bash -c "cat <<'EOF'"; bash -c 'echo x > ~/.claude/sett*s.json'
+eval "cat <<'EOF'"; eval "echo x > ~/.claude/sett*s.json"
+sh -c "cat <<'EOF'"; sh -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -c "cat <<'EOF' > /tmp/x"; bash -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -c "cat <<'EOF' > /tmp/x"; bash -c 'echo x > ~/.cl[a]ude/settings.json'
+bash -c "cat <<'EOF' > /tmp/x"; bash -c 'echo x > ~/.c?aude/settings.json'
+eval "cat <<'EOF' > /tmp/x"; eval 'cp /tmp/a ~/.cl*/settings.json'
+eval "cat <<'EOF' > /tmp/x"; eval 'echo x > ~/.cl[a]ude/settings.json'
+eval "cat <<'EOF' > /tmp/x"; eval 'echo x > ~/.c?aude/settings.json'
+ROWS
+# 827-828 (J1818a): an option that takes a file (`--rcfile F`, `--init-file F`)
+# does not hide the `-c` body after it.
+rows_both 827 2 "a shell's --rcfile/--init-file argument does not hide its -c body" <<'ROWS'
+bash --rcfile /tmp/rc -c "echo x > ~/.claude/sett*s.json"
+bash --init-file /tmp/rc -c 'cp /tmp/a ~/.cl*/settings.json'
+ROWS
+# 829-830 (J1818a): body nesting is capped. Three nested evals are judged in
+# full; a fourth level is refused fail-closed.
+rows_both 829 2 "interpreter bodies nested past the depth cap deny" <<'ROWS'
+eval eval eval eval 'echo x'
+ROWS
+rows_both 830 0 "interpreter bodies nested within the depth cap allow" <<'ROWS'
+eval eval eval 'echo x'
+ROWS
+# 833-855 (J1818b): a shell's option run that this hook does not parse with
+# certainty (`--`, `-`, a combined flag, an option after `-c`, a body that
+# starts with `-` or `+`) does not hide the `-c` body: the rest of the
+# segment is judged as one undeterminable body.
+rows_both 833 2 "an option form the scan cannot parse with certainty does not hide a -c body" <<'ROWS'
+bash -c -- '-not-a-command; echo x > ~/.claude/sett*s.json'
+bash -c -- 'cp /tmp/a ~/.cl*/settings.json'
+bash -c - 'echo x > ~/.claude/sett*s.json'
+bash -c '-x; echo x > ~/.claude/sett*s.json'
+bash -c '+x; cp /tmp/a ~/.cl*/settings.json'
+bash -o pipefail -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -O extglob -c 'cp /tmp/a ~/.cl*/settings.json'
+bash +O extglob -c 'cp /tmp/a ~/.cl*/settings.json'
+bash +x -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -ec 'cp /tmp/a ~/.cl*/settings.json'
+bash -xc 'echo x > ~/.claude/sett*s.json'
+bash -co pipefail 'cp /tmp/a ~/.cl*/settings.json'
+bash -xo pipefail -c 'cp /tmp/a ~/.cl*/settings.json'
+bash -c -x 'cp /tmp/a ~/.cl*/settings.json'
+bash +c 'cp /tmp/a ~/.cl*/settings.json'
+sh -c -- '-n; cp /tmp/a ~/.cl*/settings.json'
+zsh -c - 'echo x > ~/.claude/sett*s.json'
+dash -ec 'cp /tmp/a ~/.cl*/settings.json'
+sh -c -e 'echo x > ~/.claude/sett*s.json'
+ROWS
+rows_both 852 0 "an undeterminable -c body that names no live settings allows" <<'ROWS'
+bash -c -- 'echo hi'
+bash -ec 'echo hi > /tmp/x'
+bash -co pipefail 'ls | wc -l'
+sh -c -e 'echo hi'
+ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
@@ -2818,6 +2918,16 @@ if command -v node >/dev/null 2>&1; then
         timed_rc "683/$sz quote-heavy heredoc into live settings denies" 2 \
             "$(pad_to "cat <<'EOF' > ~/.claude/settings.json"$'\n' "$QU" 'EOF' "$sz")"
     done
+    # 831-832 (HIMMEL-4353, J1818a): each eval re-judged every later eval in
+    # its segment, so the cost doubled per eval word (8 words 2.7 s, 10 words
+    # 22 s). An eval word that is not the command is not a body, and nesting
+    # stops at the depth cap; each must finish well inside 3 s.
+    ob=$TIMING_BUDGET_MS TIMING_BUDGET_MS=3000
+    for ne in 8 10 12; do
+        timed_rc "831/$ne echo with $ne eval words allows" 0 "echo $(rep "$ne" 'eval ')"
+    done
+    timed_rc "832 twelve nested evals deny at the depth cap" 2 "$(rep 12 'eval ')'echo x'"
+    TIMING_BUDGET_MS=$ob
 else
     echo "SKIP 679-683 (node not installed)"
 fi

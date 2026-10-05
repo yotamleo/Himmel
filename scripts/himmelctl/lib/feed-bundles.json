@@ -80,7 +80,7 @@
         "plugin:anydesign@himmel", "plugin:anthropic-design-skills@himmel", "plugin:hallmark@himmel",
         "plugin:shadcn-mcp@himmel", "plugin:emilkowalski-skills@himmel",
         "doctor:C2-obsidian", "doctor:C6-mcp", "doctor:C15-plugins", "doctor:C15-plugins-ondemand",
-        "doctor:C17-dep-readiness", "doctor:C18-skill-usage", "doctor:C37-vendored-skill-dupes",
+        "doctor:C17-dep-readiness", "doctor:C37-vendored-skill-dupes",
         "doctor:C46-plugin-enabled-missing"
       ]
     },

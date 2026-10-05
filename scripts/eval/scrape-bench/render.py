@@ -30,12 +30,14 @@ def render(rows):
         def med(k):
             return round(statistics.median(r[k] for r in ran), 2) if n else "-"
 
-        other = ", ".join("%d %s" % (sum(1 for r in g if r["status"] == s), s)
+        unknown = sum(1 for r in g if not r.get("credits_known", True))
+        credits = "%d%s" % (sum(r.get("credits", 0) for r in g), "+?" if unknown else "")
+        other =", ".join("%d %s" % (sum(1 for r in g if r["status"] == s), s)
                           for s in ("needs-auth", "skipped-cap") if any(r["status"] == s for r in g)) or "-"
         out.append("| %s | %s | %d | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             cat, prov, n, pct("success"), pct("title_match"), pct("phrase_hit"),
             med("boilerplate_ratio"), med("length"), med("latency_s"),
-            sum(r.get("credits", 0) for r in g), other))
+            credits, other))
     return "\n".join(out) + "\n"
 
 

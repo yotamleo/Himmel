@@ -10,4 +10,7 @@ rubber-stamp. Check ONLY these dimensions and return findings as a list
    median/sigma plausible for the scope, do the stated alternatives and
    definition of done match it, and is any sigma left too low for what the
    spec admits is unknown.
+7. Fact overlap: find a fact this design computes in two places, or that an
+   existing surface already computes (a delegation counts as two). Grep for
+   it; a fact missing from the Fact ownership matrix is a finding.
 For each finding: the section + the problem + a concrete fix.

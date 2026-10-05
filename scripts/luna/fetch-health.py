@@ -217,15 +217,52 @@ def probe_instagram_embed(env: dict[str, str], http: Callable[..., HttpResult]) 
     return classify_http(result, auth_required=False, valid_body=lambda body: b"Caption" in body)
 
 
+IG_SESSION_REJECTED_REMEDY = (
+    "instagram rejected the session (redirect to home page): log the burner account into instagram.com "
+    "(clear any challenge), Cookie-Editor Export Netscape over ~/.luna/cookies/instagram.txt, chmod 600 it, "
+    "then re-run: python3 scripts/luna/fetch-health.py --probe instagram-media"
+)
+STDERR_LINE_CHARS = 200
+# Allowlist, not a redactor (HIMMEL-4374): only gallery-dl `[module][error]` lines are
+# surfaced; their text is gallery-dl's own message, with scheme URLs replaced.
+_ERROR_LINE = re.compile(r"^\[[A-Za-z0-9_.-]+\]\[error\] (.+)$")
+# A whole URL (userinfo, query and fragment included) is replaced, never trimmed.
+_URL = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://\S*")
+
+
+# Only these message shapes are surfaced; free text could carry a credential (HIMMEL-4374).
+_SAFE_MESSAGE = re.compile(
+    r"^(?:HTTP redirect to home page|HttpError: '\d{3}(?: [A-Za-z ]{1,40})?'|Login required)"
+    r"(?: (?:for|and)(?: url:)? <url>| \(<url>\))*$"
+)
+ERROR_WITHHELD = "error message withheld"
+
+
+def error_line(stderr: str) -> str:
+    """The last `[module][error] message` line if its message is a known-safe shape, else withheld."""
+    for line in reversed((stderr or "").splitlines()):
+        m = _ERROR_LINE.match(line.strip())
+        if m:
+            msg = _URL.sub("<url>", m.group(1))[:STDERR_LINE_CHARS]
+            return msg if _SAFE_MESSAGE.match(msg) else ERROR_WITHHELD
+    return ""
+
+
+def _detail(returncode: int, stderr: str) -> str:
+    line = error_line(stderr)
+    return f"{returncode}; {line}" if line else f"{returncode}; no error line"
+
+
 def classify_command(returncode: int, stderr: str) -> ProbeResult:
     if returncode == 0:
         return ProbeResult("ok", "command probe succeeded")
     text = stderr.lower()
+    detail = f" (rc={_detail(returncode, stderr)})"
     if re.search(r"429|rate.?limit|too many requests|temporarily blocked|challenge", text):
-        return ProbeResult("blocked-or-rate-limited", "command reported block or rate limit")
+        return ProbeResult("blocked-or-rate-limited", "command reported block or rate limit" + detail)
     if re.search(r"401|403|auth|login|cookie|credential|unauthorized|forbidden", text):
-        return ProbeResult("auth-or-cookie-expired", "command reported authentication failure")
-    return ProbeResult("transport-fail", "command probe failed")
+        return ProbeResult("auth-or-cookie-expired", "command reported authentication failure" + detail)
+    return ProbeResult("transport-fail", "command probe failed" + detail)
 
 
 def run_command(args: list[str], *, env: dict[str, str], timeout: int = TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
@@ -268,7 +305,12 @@ def probe_gallery_dl(
         )
     except (OSError, subprocess.TimeoutExpired):
         return ProbeResult("transport-fail", "gallery-dl invocation failed")
-    return classify_command(completed.returncode, completed.stderr)
+    result = classify_command(completed.returncode, completed.stderr)
+    if source == "instagram-media" and completed.returncode != 0 and "redirect to home page" in (completed.stderr or "").lower():
+        # HIMMEL-4374: Instagram bounced a live public post to the home page, so it
+        # is not honouring the exported session. Not a rate limit, not ours to fix.
+        return ProbeResult("auth-or-cookie-expired", f"{IG_SESSION_REJECTED_REMEDY} [{result.reason}]")
+    return result
 
 
 def twitter_cookie_credentials(env: dict[str, str]) -> tuple[str, str]:

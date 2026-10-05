@@ -869,7 +869,7 @@ loaded + ran from the worktree). The `.gitignore` ignores only
 **HIMMEL-533 delivered** the high-value "driver" commands as thin **tracked**
 `.agents/skills/` wrappers that shell the same harness-neutral `scripts/` the
 Claude commands use (no logic duplication; Claude `.claude/commands/*.md`
-untouched): `worktree`, `clean`, `clean-garden`, `shell-lint`, `guardrail-sim`,
+untouched): `worktree`, `clean`, `clean-garden`, `shell-lint`,
 and `pr-check`. `pr-check` is the **panel-only** subset — it runs the pure-shell
 critic panel (`scripts/cr/critic-panel.sh`) and clears the CR marker only when
 the panel reports 0 Critical + 0 Important (retains on findings, panel
@@ -970,7 +970,7 @@ degradation-aware line (its safe default is the *opposite* pattern — auto-appl
 default and skip, because it *has* a safe default; the gates above must still ask).
 
 **Cosmetic sites are intentionally left untouched** — they self-degrade to prose
-with no gate semantics: `/improve` clarifying Qs; `jira-init|create|comment`;
+with no gate semantics: `jira-init|create|comment`;
 `gh-pr-review|resolve|reply`; `handover-setup`; handover `init`/`register`
 (`references/init-register.md`, already self-documents "or text"); handover
 slug/hygiene prompts. `luna-upgrade`/`luna-upgrade-all` already confirm via prose
@@ -1068,7 +1068,7 @@ gate fails closed with a message naming the remedy (re-run the installer);
 | Hooks → Cursor (`.cursor/hooks.json`, fail-open) | **Port** (priority 2) | HIMMEL-487 |
 | Hooks → Copilot / Gemini | **Port, SOFT-DEFER** (no free usage) | HIMMEL-489 |
 | Skills / subagents (Cursor, Copilot) | **Accept** — read `.claude/*` directly | — |
-| Driver commands → Codex skills | **Ported (delivered)** — thin tracked `.agents/skills/` wrappers (worktree/clean/clean-garden/shell-lint/guardrail-sim/pr-check) shelling existing `scripts/`; live-verified under codex-cli 0.142.0 | HIMMEL-533 |
+| Driver commands → Codex skills | **Ported (delivered)** — thin tracked `.agents/skills/` wrappers (worktree/clean/clean-garden/shell-lint/pr-check) shelling existing `scripts/`; live-verified under codex-cli 0.142.0 | HIMMEL-533 |
 | CR reviewer skill for Codex | **Ported (panel-only)** — Codex `pr-check` skill runs the shell panel + clears the CR marker on clean; native `/review` participation deferred post-HIMMEL-527 | HIMMEL-533 |
 | where-are-we / status context for Codex | **Port** — use Codex-native advisory context, not Claude `statusLine.command` | HIMMEL-554 |
 | Marketplace (all) | **Accept** — each has one | — |

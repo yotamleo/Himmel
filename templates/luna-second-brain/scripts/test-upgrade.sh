@@ -171,6 +171,8 @@ stamp_vault() {
     printf '{"template":"luna-second-brain","version":"%s","upgraded_at":"2026-01-01T00:00:00Z"}\n' "$ver" > "$d/.vault-template.json"
 }
 
+sha_of_str() { printf '%s\n' "$1" | "${SHA256[@]}" | cut -d' ' -f1; }
+
 run_upgrade() { bash "$UPGRADE" --template-dir "$T" --vault-dir "$V" "$@"; }
 
 # ---------------------------------------------------------------------------
@@ -243,6 +245,64 @@ case "$out" in *_CLAUDE.md.template-merge*|*conflict*|*CONFLICT*) pass "T6 confl
 if [ "$rc" -ne 0 ]; then pass "T6 conflict exits non-zero"; else fail "T6 conflict exits non-zero" "rc=0"; fi
 got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
 assert_eq "T6 conflict does not advance the stamp" "0.1.0" "$got_ver"
+
+# ---------------------------------------------------------------------------
+# T6b/T6c (HIMMEL-4380): a section the VAULT deliberately deleted stays deleted.
+# T6b: template left the section unchanged. T6c: template MODIFIED it — mine-
+# deleted vs template-changed is a conflict hunk that used to recur forever
+# (a conflict never advances the stamp or base). Resolve once: vault deletion
+# wins, a report line names the dropped template change, the base advances, and
+# the next upgrade is clean. A genuine overlapping edit (T6) still conflicts.
+sec_base() { printf '# Operating Manual\n\nline-a\n\n## Repo conventions\n\n- never edit on main\n- all changes via PR\n\n## Tail\n\nline-z\n'; }
+sec_gone() { printf '# Operating Manual\n\nline-a\n\n## Tail\n\nline-z\n'; }
+for variant in unchanged modified; do
+    T="$TMP/t6s-$variant-tmpl"; V="$TMP/t6s-$variant-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+    sec_base > "$V/.vault-template.base/_CLAUDE.md"
+    sec_gone > "$V/_CLAUDE.md"
+    if [ "$variant" = unchanged ]; then sec_base > "$T/_CLAUDE.md"
+    else sec_base | sed 's/all changes via PR/all changes via reviewed PR/' > "$T/_CLAUDE.md"; fi
+    out=$(run_upgrade --yes 2>&1); rc=$?
+    assert_eq "T6s-$variant first run exits 0" "0" "$rc"
+    assert_eq "T6s-$variant section stays deleted" "$(sha_of_str "$(sec_gone)")" "$(sha_of_str "$(cat "$V/_CLAUDE.md")")"
+    if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6s-$variant no sidecar"; else fail "T6s-$variant no sidecar" "sidecar present"; fi
+    assert_eq "T6s-$variant base advanced to theirs" "$(sha_of "$T/_CLAUDE.md")" "$(sha_of "$V/.vault-template.base/_CLAUDE.md")"
+    got_ver=$("$PY" -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$V/.vault-template.json" 2>/dev/null)
+    assert_eq "T6s-$variant stamp advanced" "1.0.0" "$got_ver"
+    if [ "$variant" = modified ]; then
+        case "$out" in *"deleted by the vault"*"all changes via reviewed PR"*) pass "T6s-modified report names the dropped template change" ;; *) fail "T6s-modified report names the dropped template change" "got: $out" ;; esac
+    fi
+    # Second run, template bumped but section content unchanged => clean, no conflict.
+    make_template_ver_bump() { printf '{"metadata":{"version":"1.0.1"}}\n' > "$T/marketplace/.claude-plugin/marketplace.json"; }
+    make_template_ver_bump
+    run_upgrade --yes >/dev/null 2>&1; rc2=$?
+    assert_eq "T6s-$variant second run exits 0" "0" "$rc2"
+    if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6s-$variant second run no sidecar"; else fail "T6s-$variant second run no sidecar" "sidecar present"; fi
+    assert_eq "T6s-$variant second run section still deleted" "$(sha_of_str "$(sec_gone)")" "$(sha_of_str "$(cat "$V/_CLAUDE.md")")"
+done
+
+# T6d/T6e (HIMMEL-4386): the vault-deletion resolver must not mistake manual text
+# for diff3 markers. T6d: a vault hunk that OPENS with a setext `=======`
+# underline is vault text, not an empty side — it must conflict to the sidecar
+# and the vault text must survive. T6e: literal marker lines in the manual (as
+# a documented conflict example) must not hijack an unrelated deletion hunk.
+T="$TMP/t6d-tmpl"; V="$TMP/t6d-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+printf '# Operating Manual\n\nfoo\nbar\n\n## Tail\n\nline-z\n' > "$V/.vault-template.base/_CLAUDE.md"
+printf '# Operating Manual\n\n=======\nvault-text\n\n## Tail\n\nline-z\n' > "$V/_CLAUDE.md"
+printf '# Operating Manual\n\nx\ny\n\n## Tail\n\nline-z\n' > "$T/_CLAUDE.md"
+out=$(run_upgrade --yes 2>&1); rc=$?
+if grep -q 'vault-text' "$V/_CLAUDE.md"; then pass "T6d setext ======= hunk keeps the vault text"; else fail "T6d setext ======= hunk keeps the vault text" "vault text dropped"; fi
+if [ -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6d setext ======= hunk conflicts to the sidecar"; else fail "T6d setext ======= hunk conflicts to the sidecar" "no sidecar"; fi
+if [ "$rc" -ne 0 ]; then pass "T6d setext ======= hunk exits non-zero"; else fail "T6d setext ======= hunk exits non-zero" "rc=0"; fi
+
+lit_base() { printf '# Operating Manual\n\n<<<<<<< example\nyours\n=======\ntheirs\n>>>>>>> example\n\n## Repo conventions\n\n- never edit on main\n\n## Tail\n\nline-z\n'; }
+T="$TMP/t6e-tmpl"; V="$TMP/t6e-vault"; make_template "$T" "1.0.0"; mkdir -p "$V/.vault-template.base"; stamp_vault "$V" "0.1.0"
+lit_base > "$V/.vault-template.base/_CLAUDE.md"
+lit_base | sed '/^## Repo conventions$/,/^- never edit on main$/d' > "$V/_CLAUDE.md"
+lit_base | sed 's/never edit on main/never edit on trunk/' > "$T/_CLAUDE.md"
+out=$(run_upgrade --yes 2>&1); rc=$?
+assert_eq "T6e literal markers in the manual: deletion resolves, exits 0" "0" "$rc"
+if grep -q '^<<<<<<< example$' "$V/_CLAUDE.md" && grep -q '^>>>>>>> example$' "$V/_CLAUDE.md" && ! grep -q 'Repo conventions' "$V/_CLAUDE.md"; then pass "T6e literal marker lines kept, deleted section stays deleted"; else fail "T6e literal marker lines kept, deleted section stays deleted" "got: $(cat "$V/_CLAUDE.md")"; fi
+if [ ! -f "$V/_CLAUDE.md.template-merge" ]; then pass "T6e no sidecar"; else fail "T6e no sidecar" "sidecar present"; fi
 
 # ---------------------------------------------------------------------------
 # T7: PLUGINS-SETUP.md reprint fires when the manual-install table changed.

@@ -8,6 +8,27 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.68] — 2026-10-05
+
+### Fixed
+- `scripts/upgrade.sh`: the vault-deletion resolver now asks `git merge-file`
+  for 31-character markers and requires a complete open/base/separator/close
+  sequence per hunk. Manual text such as a setext `=======` underline or a
+  documented conflict example is no longer mistaken for a marker, so vault text
+  is not dropped as a deletion; a malformed hunk falls back to the
+  `.template-merge` sidecar (HIMMEL-4386).
+
+## [0.4.67] — 2026-10-04
+
+### Changed
+- `scripts/upgrade.sh`: a `_CLAUDE.md` section the vault deliberately deleted
+  stays deleted. The upgrade resolves the deletion once (reporting any template
+  change it drops) and advances the base, so the next upgrade is clean instead
+  of re-conflicting. A hunk where the vault kept text still goes to the
+  `.template-merge` sidecar.
+- `_CLAUDE.md`: "Repo conventions" now says single-writer vaults skip the
+  PR/worktree bullets (HIMMEL-4380).
+
 ## [0.4.66] — 2026-10-04
 
 ### Removed
