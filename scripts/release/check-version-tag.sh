@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# scripts/release/check-version-tag.sh - VERSION must equal the X.Y.Z base of the
-# highest v* tag (HIMMEL-4417). `himmelctl --version` and the config feed's
+# scripts/release/check-version-tag.sh - VERSION must not be behind the X.Y.Z base
+# of the highest v* tag (HIMMEL-4417). `himmelctl --version` and the config feed's
 # himmel.version read VERSION; a stale one mis-attributes every build.
 #
 # Usage: check-version-tag.sh [--root <repo>]
-# Exit: 0 match (or no tags to compare against - prints SKIP), 1 mismatch or a
-# VERSION that is not bare X.Y.Z, 2 usage.
+# Exit: 0 match or VERSION ahead of the tag (or no tags to compare against -
+# prints SKIP), 1 VERSION behind the tag, not bare X.Y.Z, or git failed, 2 usage.
 #
 # Tags are compared by their X.Y.Z base, numerically: a bare vX.Y.Z sorts
 # BEFORE its own -pre tags under git's version sort, so `--sort` is not used.
@@ -20,12 +20,16 @@ case "${1:-}" in
 esac
 
 ver=$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null)
-if ! printf '%s\n' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+if ! [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     echo "check-version-tag: VERSION must be bare X.Y.Z (got '$ver')" >&2
     exit 1
 fi
 
-tags=$(git -C "$ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
+# a failed lookup must not read as "no tags" (that would silently disable the check)
+if ! tags=$(git -C "$ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' 2>&1); then
+    echo "check-version-tag: git tag --list failed in $ROOT: $tags" >&2
+    exit 1
+fi
 if [ -z "$tags" ]; then
     echo "check-version-tag: SKIP - no v* tags in this checkout, cannot compare VERSION ($ver)"
     exit 0
@@ -38,8 +42,16 @@ latest=$(printf '%s\n' "$tags" \
 base="${latest%% *}"
 tag="${latest#* }"
 
-if [ "$ver" != "$base" ]; then
+# VERSION may be AHEAD of the tag (the bump PR lands before the first tag of a
+# new line - docs/release/v1-checklist.md step 1; cut-tag.sh enforces equality
+# at cut time). It must never be BEHIND.
+top=$(printf '%s\n%s\n' "$ver" "$base" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)
+if [ "$ver" != "$base" ] && [ "$top" = "$base" ]; then
     echo "check-version-tag: VERSION is $ver but the latest tag $tag is at $base - bump VERSION (and the release-tracking files, docs/release/v1-checklist.md) before tagging" >&2
     exit 1
 fi
-echo "check-version-tag: ok - VERSION $ver matches $tag"
+if [ "$ver" = "$base" ]; then
+    echo "check-version-tag: ok - VERSION $ver matches $tag"
+else
+    echo "check-version-tag: ok - VERSION $ver is ahead of the latest tag $tag (bump landed, tag pending)"
+fi

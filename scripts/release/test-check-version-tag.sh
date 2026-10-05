@@ -16,12 +16,13 @@ contains() { if grep -q -F -e "$3" <<< "$2"; then echo "ok - $1"; else echo "FAI
 mkrepo() {
     local d="$tmp/$1" v="$2"; shift 2
     mkdir -p "$d"
-    git -C "$d" init -q
+    git -C "$d" init -q || { echo "FAIL: fixture init $1" >&2; exit 1; }
     git -C "$d" config user.email t@t; git -C "$d" config user.name t
     git -C "$d" config commit.gpgsign false; git -C "$d" config tag.gpgsign false
     printf '%s\n' "$v" > "$d/VERSION"
-    git -C "$d" add VERSION; git -C "$d" commit -q -m init
-    local t; for t in "$@"; do git -C "$d" tag "$t"; done
+    git -C "$d" add VERSION || { echo "FAIL: fixture add $1" >&2; exit 1; }
+    git -C "$d" commit -q -m init || { echo "FAIL: fixture commit $1" >&2; exit 1; }
+    local t; for t in "$@"; do git -C "$d" tag "$t" || { echo "FAIL: fixture tag $t in $1" >&2; exit 1; }; done
 }
 
 mkrepo match 1.0.2 v1.0.1-pre.4 v1.0.2-pre.1
@@ -46,6 +47,18 @@ mkrepo notags 1.0.0
 rc=0; out=$(bash "$SCRIPT" --root "$tmp/notags" 2>&1) || rc=$?
 check "no tags: rc 0 (cannot check)" "$rc" "0"
 contains "no tags: says SKIP" "$out" "SKIP"
+
+# the bump PR lands before the first tag of a new line: VERSION ahead of the tag must pass
+mkrepo ahead 1.0.3 v1.0.2-pre.1 v1.0.2
+rc=0; out=$(bash "$SCRIPT" --root "$tmp/ahead" 2>&1) || rc=$?
+check "VERSION ahead of the tag: rc 0" "$rc" "0"
+contains "VERSION ahead: says ahead" "$out" "ahead of the latest tag"
+
+# a failed git lookup must fail closed, not read as "no tags"
+mkdir -p "$tmp/nogit"; printf '1.0.2\n' > "$tmp/nogit/VERSION"
+rc=0; out=$(GIT_CEILING_DIRECTORIES="$tmp" bash "$SCRIPT" --root "$tmp/nogit" 2>&1) || rc=$?
+check "git failure: rc 1 (fail closed)" "$rc" "1"
+contains "git failure: names the failure" "$out" "git tag --list failed"
 
 mkrepo badver "1.0.2-pre.1" v1.0.2-pre.1
 rc=0; out=$(bash "$SCRIPT" --root "$tmp/badver" 2>&1) || rc=$?

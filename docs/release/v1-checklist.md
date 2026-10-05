@@ -31,7 +31,8 @@ before the first `vX.Y.Z-pre.N` tag of a new `X.Y.Z`, land a PR that sets
   the tag's `X.Y.Z`; `--version-override` does not waive it.
 - `scripts/release/check-version-tag.sh` (run by its suite
   `scripts/release/test-check-version-tag.sh` in CI) fails when `VERSION` is
-  not the `X.Y.Z` base of the highest `v*` tag.
+  behind the `X.Y.Z` base of the highest `v*` tag (ahead is allowed: the bump PR
+  lands before the tag, and `cut-tag.sh` demands equality at cut time).
 
 `VERSION` is the only file that tracks the release line. `packaging/aur/PKGBUILD`
 `pkgver` also names a release but is bumped by the operator at AUR-publish time
