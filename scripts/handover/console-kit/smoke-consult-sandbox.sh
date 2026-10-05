@@ -30,6 +30,9 @@ fi
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LIB="$HERE/../../lib"
+# HIMMEL-4420: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+# shellcheck disable=SC1091
+if . "$LIB/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
 # shellcheck disable=SC1091
 . "$LIB/handover-path.sh"
 # shellcheck source=scripts/lib/git-clean.sh

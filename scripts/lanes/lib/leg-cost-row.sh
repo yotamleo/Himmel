@@ -53,6 +53,9 @@ EOF
 # (HIMMEL-4231). No doc, or one no known root holds: handover_root.
 leg_cost_ledger_path() {
     if [ -n "${LEG_COST_LEDGER:-}" ]; then printf '%s\n' "$LEG_COST_LEDGER"; return 0; fi
+    # HIMMEL-4420: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+    # shellcheck disable=SC1091
+    if . "$_LCR_HERE/../../lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
     # shellcheck source=scripts/lib/handover-path.sh
     . "$_LCR_HERE/../../lib/handover-path.sh" || return 1
     local root=""

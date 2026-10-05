@@ -17,6 +17,9 @@ esac; done
 
 # 1. Handover root (Mode B respects $HANDOVER_DIR).
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# HIMMEL-4420: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+# shellcheck disable=SC1091
+if . "$SCRIPT_DIR/../lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
 # shellcheck source=/dev/null
 . "$SCRIPT_DIR/../lib/handover-path.sh" || { echo "resolve-active-item.sh: cannot source handover-path.sh" >&2; exit 2; }
 root="$(handover_root)" || { echo "resolve-active-item.sh: handover root unresolved" >&2; exit 2; }
