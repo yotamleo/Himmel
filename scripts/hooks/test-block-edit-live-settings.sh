@@ -2972,6 +2972,60 @@ env --split-string='sh\_-c\_"echo x > ~/.claude/s*.json"'
 env -iS 'bash\t-c\t"echo x > ~/.claude/sett*s.json"'
 env -S 'bash -c ${X}'
 ROWS
+# 9440-9448 (HIMMEL-4394, J1909 B1): an extglob leaf with two or more groups
+# (`@(settings).js@(on)`, `@(settings)@(.json)`) under a live .claude denies.
+rows_both 9440 2 "an extglob leaf with 2+ groups under a live .claude denies" <<'ROWS'
+echo x > ~/.claude/@(settings).js@(on)
+echo x > ~/.claude/@(settings)@(.json)
+echo x > ~/.claude/+(settings).+(json)
+echo x > ~/.claude/!(a).js@(on)
+echo x > ~/.claude/@(settings|x).js@(on|x)
+bash -O extglob -c 'echo x > ~/.claude/@(settings).js@(on)'
+echo x > @P@/.claude/@(settings).js@(on)
+cd ~/.claude && echo x > @(settings).js@(on)
+shopt -s extglob\necho x > ~/.claude/@(settings).js@(on)
+ROWS
+# 9450-9455 (HIMMEL-4394, J1909 B2): a glob write whose cwd a cd moved
+# unprovably (an eval/bash -c body after the cd, a `..` target, CDPATH), and a
+# direct `..` target, deny.
+rows_both 9450 2 "a glob write after an unproven cd, or through a .. target, denies" <<'ROWS'
+cd ~/.claude && eval 'echo x > sett*.json'
+cd ~/.claude && bash -c 'echo x > sett*.json'
+cd ~/.config/../.claude && echo x > sett*.json
+CDPATH=~ cd .claude && echo x > sett*.json
+export CDPATH=~; cd .claude; echo x > sett*.json
+echo x > ~/.config/../.claude/sett*.json
+ROWS
+# 9460-9464 (HIMMEL-4299, J1909 B3): the file a heredoc was written to, run
+# under a glob that matches it, voids the data read.
+rows_both 9460 2 "a written heredoc file run under a glob name denies" <<'ROWS'
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.s?
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.*
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.[s]h
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nchmod +x /tmp/d/gx.s?; /tmp/d/gx.s?
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\n./gx.*
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.@(sh)
+ROWS
+# 9475-9476 (J1909): a plain read's glob after a cd — known or unresolved —
+# writes nothing, so it stays allowed. 9477: a bare `)` the fallback split
+# cut loose is no extglob group, so it stays the directory glob it was
+# (J1909 B1 fix over-denied it under an unresolved cd).
+rows_both 9475 0 "a plain read's glob after a cd allows" <<'ROWS'
+cd "$d" && ls *.json
+cd ~/.claude && ls sett*.json
+) || true\n    cd "$scratch_dir" || { rm -rf "$scratch_dir"; return 1; }
+ROWS
+# 9470-9471: J1909 controls from the nested worktree — a heredoc written but
+# never run, and a later glob that cannot match it, keep base's allow.
+for c in "cat <<'EOF' > /tmp/d/gx.sh
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF" "cat <<'EOF' > /tmp/d/gx.sh
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF
+ls /tmp/d/*.txt"; do
+    assert_rc "9470 nested worktree J1909 control allows: $c" 0 \
+        "$(bash_rc_of "$NESTED_WT" "$c" HOME="$FAKEHOME")"
+done
 # 930-937: controls from the nested worktree — data, a non-.claude glob
 # target or cd, and a read stay allowed.
 for c in "cat <<'EOF'
