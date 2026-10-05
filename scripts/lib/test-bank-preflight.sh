@@ -705,7 +705,7 @@ rm -f "$BANK_LIFT_FILE"
 
 # bank-lift.sh set|show|clear
 LIFT="$REPO/scripts/lib/bank-lift.sh"
-RESET_ISO="$(date -u -d "@$((NOW+7200))" +%Y-%m-%dT%H:%M:%S.123456+00:00 2>/dev/null)"
+RESET_ISO="$(date -u -d "@$((NOW+7200))" +%Y-%m-%dT%H:%M:%S.123456+00:00 2>/dev/null || date -u -r "$((NOW+7200))" +%Y-%m-%dT%H:%M:%S.123456+00:00)"  # gnu-ok: BSD -r fallback
 printf '%s' "{\"account\":\"$ACCT\",\"five_hour\":{\"utilization\":10},\"seven_day\":{\"utilization\":98,\"resets_at\":\"$RESET_ISO\"},\"primaries_refreshed_at\":$NOW}" > "$W/lc.json"
 bash "$LIFT" set "$W/lc.json" >/dev/null 2>&1
 check "bank-lift set -> file holds until == resets_at" "$((NOW+7200))" "$(jq -r '.until' "$BANK_LIFT_FILE" 2>/dev/null)"
