@@ -244,6 +244,14 @@
       "remedy": "LANES_GUARD_OK=1 claude   # set in the launching shell; a per-call prefix does not reach the hook"
     },
     {
+      "name": "LEG_CONTEXT_HANDOFF_OK",
+      "hooks": [
+        "scripts/hooks/guard-leg-context-handoff.sh"
+      ],
+      "bypasses": "Lets a console-spawned leg past 75 % context fill keep working without writing its RESUME doc first.",
+      "remedy": "LEG_CONTEXT_HANDOFF_OK=1 claude   # set in the launching shell; a per-call prefix does not reach the hook"
+    },
+    {
       "name": "MAIN_REF_TRANSACTION_OK",
       "hooks": [
         "scripts/hooks/check-main-ref-transaction.sh"

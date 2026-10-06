@@ -485,6 +485,9 @@ for you). The closable-window banner is the output of
 the banner by hand, and never send `WRAPPED` on a `WITHHELD:` result.
 
 **Context ≥ 75 %:** write `…legN<n>b-…-RESUME.md`, message the console, stop.
+`guard-leg-context-handoff.sh` enforces it (HIMMEL-4569): past 75 % it denies
+every call but the hand-off ones until that RESUME doc exists or your last
+marker is `WRAPPED`/`BLOCKED`, and its deny names the exact path and steps.
 Run the context-fill probe after **every** completed step, not only when you
 notice growth (ruling A1) — that is what catches the ≥75 % threshold in time.
 Your launch always carries an `--autocompact` ceiling, so a compaction is a

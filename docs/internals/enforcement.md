@@ -3756,6 +3756,28 @@ on missing `jq`, malformed, or empty stdin. Claude lane only —
 `ScheduleWakeup` is a Claude Code tool, so `.codex/hooks.json` carries no twin.
 Suite: `scripts/hooks/test-guard-leg-wakeup.sh`.
 
+### `guard-leg-context-handoff.sh` — console-spawned-leg context hand-off (HIMMEL-4569)
+
+Fires on every tool (`*`), keyed on `HIMMEL_CONSOLE_LEG=1` plus a non-empty
+`HIMMEL_CONSOLE_NAME` (both from `headed-arm-leg.sh`); anything else exits 0
+with no output. Reads fill with `scripts/context-fill.sh --percent` on the
+hook's `transcript_path`. At ≥ 75 % it denies every call except the hand-off
+ones — a Write/Edit/MultiEdit of a `*-RESUME.md`, `SendMessage`, `ListAgents`,
+`ToolSearch`, `TaskStop`, and a bare `bash …/append-results.sh`,
+`queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh` (no
+`&&`, `||`, `$(` or newline) — until the leg has handed off: its doc (the `.md`
+path in the transcript's first `load <brief> and continue` turn) ends on a
+`WRAPPED`/`BLOCKED` marker, or a `*-RESUME.md` beside that doc carries the
+doc's leg id (`N1364`, `N1364b` …) and was modified after the session's first
+turn. The deny names the fill, the RESUME path to write (the next id letter),
+the console and the marker command. Fails open with one stderr line when fill
+is UNKNOWN/STALE, the transcript or leg doc cannot be found, or the input does
+not parse — a false block strands a leg nobody watches (`ponytail:` in the
+header). Bypass: `LEG_CONTEXT_HANDOFF_OK=1` in the launching shell. Wired in
+`.claude/settings.json` and `.codex/hooks.json` (Codex transcripts carry no
+claude-hud snapshot, so there it fails open).
+Suite: `scripts/hooks/test-guard-leg-context-handoff.sh`.
+
 ### `guard-agent-model.sh` — Fable model-override deny on Agent (HIMMEL-3847)
 
 Fires on `Agent`. Denies a `tool_input.model` matching a pattern in
