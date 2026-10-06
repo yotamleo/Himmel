@@ -131,10 +131,22 @@ export function countReviewedRounds(ledgerLines: string[], ticketKey: string, ac
   // as a wrong answer; it is still two readers disagreeing about one ledger.
   const identityKey = (o: LedgerRecord): string =>
     [String(o.finding_id ?? ""), String(o.artifact || "diff"), String(o.perspective || "off")].join(SEP);
-  const amends: { target: unknown; key: string; set: Record<string, unknown> }[] = [];
+  // HIMMEL-4611: amends are bucketed by (identity, first 7 hex of the target).
+  // sameHead needs both heads >= 7 hex with one a prefix of the other, so a
+  // match always shares the first 7 chars; scanning every amend per finding was
+  // findings x amends (3.7 s on the live ledger, 4 s hook budget). Each bucket
+  // keeps ledger order, and `seq` is the amend's global position.
+  const amendBuckets = new Map<string, { seq: number; target: unknown; set: Record<string, unknown> }[]>();
+  let amendSeq = 0;
   for (const record of records) {
     if (record.kind !== "amend" || !record.set || typeof record.set !== "object") continue;
-    amends.push({ target: record.target_head, key: identityKey(record), set: record.set as Record<string, unknown> });
+    const seq = amendSeq++;
+    const h = headGroup(record.target_head);
+    if (!h) continue; // sameHead can never match an invalid target
+    const bucketKey = identityKey(record) + SEP + h;
+    const bucket = amendBuckets.get(bucketKey) ?? [];
+    bucket.push({ seq, target: record.target_head, set: record.set as Record<string, unknown> });
+    amendBuckets.set(bucketKey, bucket);
   }
 
   const esc = ticketKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -148,8 +160,16 @@ export function countReviewedRounds(ledgerLines: string[], ticketKey: string, ac
       // Identity is fixed from the ORIGINAL row; only the head moves as amends
       // apply. Same order of operations as cr-pending-audit.sh.
       const key = identityKey(raw);
-      for (const amend of amends) {
-        if (amend.key === key && sameHead(amend.target, record.head)) record = { ...record, ...amend.set };
+      // Sequential in ledger order: each applied amend may move the head, so
+      // re-select the bucket and only take amends AFTER the one just applied.
+      let after = -1;
+      for (;;) {
+        const h = headGroup(record.head);
+        const bucket = h ? amendBuckets.get(key + SEP + h) : undefined;
+        const amend = bucket?.find((a) => a.seq > after && sameHead(a.target, record.head));
+        if (!amend) break;
+        record = { ...record, ...amend.set };
+        after = amend.seq;
       }
     }
     const branch = String(record.branch ?? "");

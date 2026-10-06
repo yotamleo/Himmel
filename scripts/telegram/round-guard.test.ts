@@ -145,6 +145,27 @@ test("rounds: a chained amend (re-key, then disprove) is applied, as the audit d
   expect(countReviewedRounds(ledger, "HIMMEL-1540", branch).rounds).toBe(0);
 });
 
+// HIMMEL-4611: the amend scan was findings x amends (5.6k x 6.3k on the live
+// ledger = 3.7 s against the hook's 4 s budget). A fixture the size of the
+// real ledger must finish well under a second with the same verdict.
+test("rounds: a live-sized ledger (5.6k findings, 6.3k amends) counts in under 1 s", () => {
+  const branch = "fix/himmel-4611-x";
+  const hex = (i: number) => (0x1000000 + i).toString(16) + "a".repeat(33);
+  const ledger: string[] = [];
+  for (let i = 0; i < 6300; i++) {
+    ledger.push(JSON.stringify({ kind: "amend", branch: "fix/other", target_head: hex(i), finding_id: `codex-${(i % 10 < 6 ? 0 : 1 + (i % 3))}`, set: { verdict: "disproved" } }));
+  }
+  // finding ids repeat across heads on the live ledger (codex-1.. per run), so
+  // most amends share an identity key with most findings.
+  for (let i = 0; i < 5600; i++) ledger.push(finding("fix/other", hex(i), "imp", "agreed", `codex-${(i % 10 < 6 ? 0 : 1 + (i % 3))}`));
+  ledger.push(finding(branch, "aaaaaaa1"), avail(branch, "bbbbbbb2"), finding(branch, "ccccccc3"));
+  const t0 = performance.now();
+  const r = countReviewedRounds(ledger, "HIMMEL-4611", branch);
+  const ms = performance.now() - t0;
+  expect(r.rounds).toBe(1);
+  expect(ms).toBeLessThan(1000);
+});
+
 test("invariant: a labelled line inside the body does not end the section", () => {
   const brief = [
     "fix HIMMEL-1540",
