@@ -154,35 +154,96 @@ gathering, per the rule below.>
 > runner's subreaper sweep still reaps every hook copy the harness left in
 > flight (HIMMEL-4183).
 
-> **Adversarial rows (guard/hook PRs).** When the PR under review changes a
-> hook or guard, do NOT hand-write attack commands to probe it — Claude's
-> safety classifier stops a judge mid-review for exactly those, and routing
-> around a classifier is forbidden. Instead run the versioned generator and
-> differential at `scripts/eval/guard-corpus/`:
+> **Guard escape tests (guard/hook PRs, HIMMEL-4537).** When the PR under
+> review changes a hook or guard, its escapes are tested by exactly three
+> routes. Reasoning about escape CLASSES is expected; authoring an INSTANCE (a
+> bypass string, a new seed, a new transform) is not yours to do on any route.
 >
->     python3 scripts/eval/guard-corpus/gen --seed <N> \
->         [--seeds-file <hook test suite DENY rows>] -o corpus.jsonl
->     python3 scripts/eval/guard-corpus/diff \
->         --base sha:<base-sha>:scripts/hooks/<hook>.sh \
->         --head <worktree>/scripts/hooks/<hook>.sh \
->         --corpus corpus.jsonl --repo <repo>
+> 1. **Route 1 — generated rows (judges and legs, on the station).** Variant
+>    rows come only from the versioned generator, applied to DENY seeds the
+>    hook's own test suite already carries, and are judged by the
+>    differential at `scripts/eval/guard-corpus/`:
 >
-> `gen` emits hook-input fixtures as JSONL and NEVER executes them; `diff`
-> pipes each row to a hook copy on stdin only (no exec mode), in a scratch
-> HOME/HANDOVER_DIR with a throwaway git repo on `main` standing in for the
-> primary (rows name it as `@PRIMARY@`). `diff` reports base-deny/head-allow
-> regressions, newly-denied rows, odd exit codes and TIMEOUT RISK rows. It
-> exits **0** when clean, **1** on a base-deny/head-allow regression, **2** on
-> a setup error or empty corpus, **3** when inconclusive (an odd return
-> code, a timeout kill, or deny seeds with no base-deny control), and **4**
-> when VACUOUS (deny-expected rows and neither side denied any, so the hook
-> fails open, usually a missing data dependency; a `VACUOUS:` line prints) — so
-> a non-1 exit is NOT automatically clean. Each side is materialised as a tree
-> (`scripts/` data files such as `chokepoints.json` included). **Cite the seed and the row counts in your
-> verdict** (e.g. "gen --seed 4168, 95 rows, 0 regressions, 0 timeout-risk").
-> `gen` ships only benign over-deny twins; supply the PR hook's own test-suite
-> DENY rows via `--seeds-file` to exercise the deny side — never author new
-> attack strings yourself.
+>        python3 scripts/eval/guard-corpus/gen --seed <N> \
+>            [--seeds-file <hook test suite DENY rows>] -o corpus.jsonl
+>        python3 scripts/eval/guard-corpus/diff \
+>            --base sha:<base-sha>:scripts/hooks/<hook>.sh \
+>            --head <worktree>/scripts/hooks/<hook>.sh \
+>            --corpus corpus.jsonl --repo <repo>
+>
+>    `gen` emits hook-input fixtures as JSONL and NEVER executes them; `diff`
+>    pipes each row to a hook copy on stdin only (no exec mode), in a scratch
+>    HOME/HANDOVER_DIR with a throwaway git repo on `main` standing in for the
+>    primary (rows name it as `@PRIMARY@`). A row may carry any `tool_name`
+>    with its own `tool_input` object, so a Write/Edit/NotebookEdit guard is
+>    testable: copy the suite's existing row as a JSONL line, never author one.
+>    A row may also set `"cwd": "worktree"` (a scratch worktree on a feature
+>    branch, named `@WORKTREE@`) and carry `permission_mode` / `session_id`.
+>    `diff` reads each side's verdict from the exit code AND the JSON on stdout
+>    (deny / ask / pass / approve), so a lost JSON-only deny, a deny downgraded
+>    to ask, and an approver hook newly approving a row all count as a
+>    regression. It also counts OVER-DENY rows (allow-expected benign twins a
+>    side denied; reported, never an exit code). It exits **0** when clean,
+>    **1** on a regression, **2** on a setup error or empty corpus, **3** when
+>    inconclusive (an odd return code, a timeout kill, or deny seeds with no
+>    base-deny control), and **4** when VACUOUS (deny-expected rows and
+>    neither side denied any, so the hook fails open, usually a missing data
+>    dependency; a `VACUOUS:` line prints) — so a non-1 exit is NOT
+>    automatically clean. Each side is materialised as a tree (`scripts/` data
+>    files such as `chokepoints.json` included).
+> 2. **Route 2 — a class route 1 cannot reach (the operator writes it).** Put
+>    each such class in your verdict under `## Route-2 classes`, one line each,
+>    in exactly this shape:
+>    `- <hook> | <surface: tool_name and field> | <class name, in words> | <why route 1 cannot reach it>`.
+>    The reason is one of: no DENY seed in the suite for this surface; no
+>    transform re-spells this part of the input; needs a sequence of calls;
+>    needs state the row does not carry. Name the class, never an instance —
+>    no command, no path payload, no example. The operator writes the seed
+>    rows by hand; a leg folds them into the suite or corpus later. Your
+>    verdict does not wait for them.
+> 3. **Route 3 — real execution (VM only).** Real execution is any step that
+>    runs a seed's payload through a shell or interpreter, or checks the
+>    payload's effect (did a file change, did a process start), including
+>    running a seed and its variant to confirm they are shell-equivalent.
+>    Feeding a row to a hook copy as JSON on stdin (`diff`, or a hook suite's
+>    fixture loop under `harness-run.py`) is NOT execution and stays route 1,
+>    provided the row is only ever stdin data. Route-3 checks run on a test VM
+>    from a snapshot, by the operator or a VM leg, never on the station. A
+>    judge never runs one; it names the check in its verdict as owed.
+>
+> **What a GO resting on route 1 proves.** Say that it rests on generated
+> rows, and state: the seeds file (path and DENY row count), the seed, the row
+> count, the `diff` exit code and summary line (e.g. "gen --seed 4168, seeds
+> test-<hook>.sh 12 DENY, 95 rows, 0 regressions, 0 timeout-risk"), and what
+> route 1 cannot reach for this hook — at least: surfaces the suite has no
+> DENY seed for; mid-command re-spellings (gen's transforms re-spell the first
+> token or wrap the whole command); multi-call sequences; state a row does not
+> carry. Word it as "no regression on N generated rows from M seeds", never
+> "escape-proof". A surface the PR changes with no DENY seed is unjudged: a
+> route-2 line, not a pass. A seeds file narrower than the suite's DENY rows,
+> or a seed whose `expect` differs from the suite's, is a NO-GO line unless
+> the verdict names each dropped or relabelled row and why. A route-2 line on
+> the very surface the PR exists to close leaves its central claim unproven:
+> a limited GO that names it, for the console to rule on.
+>
+> **Classifier stop.** Tell the four kinds of stop apart:
+> - **classifier stop** — your turn or a subagent ends with an API error naming
+>   safeguards or usage policy, with a request id (`req_…`); nothing after
+>   it was delivered. This rule applies.
+> - **hook deny** — a tool call refused with a `PreToolUse` hook error naming
+>   the hook. A guard decision, maybe an over-deny worth a route-1 benign twin.
+> - **permission denial** — a tool call refused by the permission mode or the
+>   auto-mode classifier with a bracketed category. `himmel-ops:stuck-playbook`.
+> - **ordinary refusal** — model text declining, with no API error. Re-read
+>   your brief or your child's for an instance-level ask and narrow it to
+>   classes.
+>
+> On a classifier stop: do not re-author, rephrase, split or re-route the
+> stopped content, and do not send a fresh session or subagent to redo it.
+> Keep what was delivered, write `BLOCKED` with the request id and what was
+> not delivered, narrow, and leave the rest to the operator (route 2). This
+> holds at every step — writing rows, writing transforms, and reviewing or
+> designing the test policy itself.
 >
 > **Covered vs dropped (HIMMEL-4168).** The transforms (quoting, wrappers with
 > quoted flag values, nested `bash -c` to depth 4, assignment prefixes, `eval`,
@@ -193,8 +254,8 @@ gathering, per the rule below.>
 > family (`rm -rf`, `find -delete`) is intentionally NOT seedable from any
 > committed file here: the classifier stopped its authoring during the
 > generator's own build, so it was dropped rather than routed around. A judge
-> who needs destructive coverage supplies those seeds via `--seeds-file` from a
-> source outside this tree.
+> who needs destructive coverage writes a route-2 line; the operator supplies
+> those seeds.
 
 > **Ticket coverage (PR-review judges, HIMMEL-4207).** When the question is
 > whether a PR may merge, read the PR body's `## Ticket coverage` section against
@@ -246,4 +307,5 @@ gathering, per the rule below.>
 | Scratch lives outside the handover root | Judges extract whole repo trees; under a vault-resident handover root they are indexed by Obsidian despite `.gitignore` (HIMMEL-3705: 843k files, 16 GB). `/tmp` is ruled out because it can be tmpfs. |
 | Per-child scratch subdirectory | Parallel evidence-gatherers sharing one directory overwrite or interleave each other's output. |
 | Ticket coverage block | Three of 14 cloud PRs closed tickets Done with asks undone because the brief scoped them out and no judge asked whether the PR did every ask of the ticket it closes (HIMMEL-4207). |
+| Guard escape tests: three routes + classifier stop | On 2026-10-06 a safety classifier stopped a leg and an opus judge that were hand-writing bypass-shaped rows, and then the adversarial review of this very policy (HIMMEL-4537). Without the routes a guard PR either goes unjudged or its judge improvises instances; without the GO wording a GO on generated rows reads as "escape-proof"; without the stop rule a stopped session is rephrased or re-dispatched until something gets through. |
 | Fixtures under a group deadline | A judge's `subprocess.run(timeout=60)` fixture runner killed only the hook's direct `bash`; six looping `$(…)` subshells of a pre-merge hook revision ran on at 99.5 % CPU for ~3h45m (HIMMEL-3956). |

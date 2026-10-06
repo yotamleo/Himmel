@@ -40,16 +40,33 @@
 # scratch dir via `git show`. Both forms are copied into the scratch tree so
 # the hook's sibling lib lookups resolve against a copy, not the live tree.
 #
+# ROWS (HIMMEL-4537). A row carries its own tool_name (default Bash) and
+# tool_input object, so Write/Edit/NotebookEdit/... guards are testable; every
+# string in tool_input has @PRIMARY@ substituted. Optional per-row "cwd" is
+# "primary" (default: the scratch primary on main) or "worktree" (a scratch
+# worktree of it on a feature branch; @WORKTREE@ substituted). Optional
+# "permission_mode" / "session_id" go into the payload verbatim.
+#
+# DECISIONS. Each side's verdict is read from the exit code AND the JSON on
+# stdout: deny (exit 2, permissionDecision deny, legacy decision block), ask,
+# approve (permissionDecision allow, legacy approve) or pass (exit 0, no
+# decision). A regression is a clean head LOOSER than its clean base on
+# approve < pass < ask < deny -- which also covers approver hooks newly
+# approving a row.
+#
 # REPORT (stdout, human lines + a trailing JSON summary unless --no-json):
-#   - base-deny/head-allow rows  (the headline regression: head lost a deny)
+#   - regression rows (head looser than base on the deny > ask > pass >
+#     approve rank: a lost deny, deny to ask, ask to pass, pass to approve)
 #   - newly-denied rows          (head denies what base allowed)
 #   - rc other than 0 or 2
 #   - TIMEOUT RISK rows (wall time over --timeout-warn, default 5s)
 #   - deny-expected coverage: of the rows a judge marked expect=deny, how many
 #     the BASE actually denied (the positive control), and any a judge marked
 #     deny that BOTH hooks allowed
-# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error (or
-# an empty corpus), 3 if the run was inconclusive and no regression was seen:
+#   - over-deny: allow-expected rows (benign twins) either side denied;
+#     reported only, never an exit code
+# Exit 0 clean, 1 if any regression row exists (head looser than base), 2 on
+# setup error (or an empty corpus), 3 if the run was inconclusive and no regression was seen:
 # any hook errored or was hard-killed (rc outside {0,2}), OR a judge supplied
 # deny-expected seeds but the base denied none of them (the positive control
 # never fired, so a clean result proves nothing). Two broken hooks, and a
@@ -80,6 +97,12 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 PLACEHOLDER = "@PRIMARY@"
+WT_PLACEHOLDER = "@WORKTREE@"
+# per-row cwd: the scratch primary on main, or a scratch worktree of it on a
+# feature branch (HIMMEL-4537).
+ROW_CWDS = ("primary", "worktree")
+# per-row payload context passed to the hook verbatim when present.
+CONTEXT_KEYS = ("permission_mode", "session_id")
 
 
 def run_git(args, cwd=None, check=True, env=None):
@@ -287,17 +310,90 @@ def _fresh_sandbox(template_primary, parent):
     return primary, home, handover, sand
 
 
-def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
-    """Pipe a JSON payload to the hook on stdin. Returns (rc, wall_seconds).
+def _add_worktree(primary, sand):
+    """A scratch worktree of the per-row primary on a feature branch."""
+    wt = os.path.join(sand, "worktree")
+    r = subprocess.run(
+        ["git", "-C", primary, "worktree", "add", "-q", "-b",
+         "feat/guard-corpus", wt],
+        env=_sandbox_env(HOME=sand), stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE)
+    if r.returncode != 0:
+        raise RuntimeError("scratch worktree setup failed: %s"
+                           % r.stderr.decode("utf-8", "replace").strip())
+    return wt
 
-    rc is the hook's exit code, or the string 'TIMEOUT'. Nothing from the
-    payload is ever executed; the only process launched is bash <hook_path>.
+
+def _subst(value, mapping):
+    """Replace every placeholder in every string of a JSON value."""
+    if isinstance(value, str):
+        for k, v in mapping.items():
+            value = value.replace(k, v)
+        return value
+    if isinstance(value, list):
+        return [_subst(v, mapping) for v in value]
+    if isinstance(value, dict):
+        return {k: _subst(v, mapping) for k, v in value.items()}
+    return value
+
+
+def decision(rc, stdout):
+    """The hook's verdict: deny | ask | pass | approve, or rc if it errored.
+
+    Exit 2 is a deny. At exit 0 the hook may still decide through JSON on
+    stdout: hookSpecificOutput.permissionDecision (deny/ask/allow) or the
+    legacy top-level decision (block/approve). A top-level "continue": false
+    stops the call, so it ranks as deny. An explicit allow is `approve`;
+    exit 0 with no decision (or stdout that is not JSON, which the harness
+    shows as plain output) is `pass` (the normal prompt flow).
     """
-    payload = json.dumps({
-        "tool_name": "Bash",
-        "tool_input": {"command": payload_cmd},
+    if rc == 2:
+        return "deny"
+    if rc != 0:
+        return rc
+    try:
+        out = json.loads(stdout.decode("utf-8", "replace"))
+    except ValueError:
+        return "pass"
+    if not isinstance(out, dict):
+        return "pass"
+    if out.get("continue") is False:
+        return "deny"
+    hso = out.get("hookSpecificOutput")
+    d = hso.get("permissionDecision") if isinstance(hso, dict) else None
+    if d in ("deny", "ask"):
+        return d
+    if d == "allow":
+        return "approve"
+    legacy = out.get("decision")
+    if legacy == "block":
+        return "deny"
+    if legacy == "approve":
+        return "approve"
+    return "pass"
+
+
+# Strictness of a clean decision. A head below its base on this scale
+# loosened the verdict: a lost deny, a deny downgraded to ask, an ask that
+# no longer asks, or a newly approved row in an approver hook.
+RANK = {"approve": 0, "pass": 1, "ask": 2, "deny": 3}
+
+
+def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
+                 handover, timeout_run, context=None):
+    """Pipe a JSON payload to the hook on stdin.
+
+    Returns (rc, stdout, wall_seconds); rc is the hook's exit code, or the
+    string 'TIMEOUT'. Nothing from the payload is ever executed; the only
+    process launched is bash <hook_path>.
+    """
+    body = {
+        "tool_name": tool_name,
+        "tool_input": tool_input,
         "cwd": cwd,
-    })
+    }
+    body.update(context or {})
+    payload = json.dumps(body)
     # hermetic env (allowlist): no BASH_ENV/ENV/LD_PRELOAD to run code before
     # the hook reads stdin, no GIT_* redirect, and the inherited bypass seams
     # (EDIT_ON_MAIN_OK etc.) are absent by construction, so the corpus measures
@@ -309,7 +405,7 @@ def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
         # anchor HIMMEL_REPO at the per-row scratch primary (cwd), never the
         # real checkout: a hook that resolves helpers/state off it stays inside
         # the throwaway, and base and head see the identical sandbox anchor.
-        HIMMEL_REPO=cwd,
+        HIMMEL_REPO=anchor,
         CLAUDE_PROJECT_DIR=tree_root,
     )
     # each side reads ITS OWN registry copy (never an inherited path): set only
@@ -320,11 +416,12 @@ def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
     env = _sandbox_env(**overrides)
     t0 = time.time()
     p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                          start_new_session=True, cwd=cwd, env=env)
+    out = b""
     try:
-        p.communicate(payload.encode("utf-8", "surrogateescape"),
-                      timeout=timeout_run)
+        out, _ = p.communicate(payload.encode("utf-8", "surrogateescape"),
+                               timeout=timeout_run)
         rc = p.returncode
     except subprocess.TimeoutExpired:
         try:
@@ -333,7 +430,7 @@ def run_one_hook(hook_path, payload_cmd, cwd, home, handover, timeout_run):
             pass
         p.wait()
         rc = "TIMEOUT"
-    return rc, time.time() - t0
+    return rc, out, time.time() - t0
 
 
 def main(argv):
@@ -396,18 +493,34 @@ def main(argv):
               file=sys.stderr)
         return 2
 
-    # Validate the row shape at load time, for the same reason: a row missing
-    # tool_input.command would raise KeyError/TypeError inside the worker and
-    # again exit 1. A malformed row is a setup error -> exit 2.
+    # Validate the row shape at load time, for the same reason: a malformed row
+    # would raise KeyError/TypeError inside the worker and again exit 1. A
+    # malformed row is a setup error -> exit 2. tool_name defaults to Bash; a
+    # Bash row needs a string tool_input.command, any other tool an object
+    # tool_input (HIMMEL-4537). cwd, if given, is one of ROW_CWDS, and the
+    # context keys, if given, are strings.
     corpus = []
     for lineno, row in raw_rows:
-        try:
-            cmd = row["tool_input"]["command"]
-        except (TypeError, KeyError):
-            cmd = None
-        if not isinstance(cmd, str):
-            print("guard-corpus diff: corpus %s line %d: missing string "
-                  "tool_input.command" % (args.corpus, lineno), file=sys.stderr)
+        problem = None
+        if not isinstance(row, dict):
+            problem = "row is not an object"
+        else:
+            tool = row.get("tool_name", "Bash")
+            tin = row.get("tool_input")
+            if not isinstance(tool, str):
+                problem = "tool_name is not a string"
+            elif not isinstance(tin, dict):
+                problem = "tool_input is not an object"
+            elif tool == "Bash" and not isinstance(tin.get("command"), str):
+                problem = "missing string tool_input.command"
+            elif row.get("cwd", "primary") not in ROW_CWDS:
+                problem = "cwd must be one of %s" % ", ".join(ROW_CWDS)
+            elif any(k in row and not isinstance(row[k], str)
+                     for k in CONTEXT_KEYS):
+                problem = "%s must be strings" % ", ".join(CONTEXT_KEYS)
+        if problem:
+            print("guard-corpus diff: corpus %s line %d: %s"
+                  % (args.corpus, lineno, problem), file=sys.stderr)
             return 2
         corpus.append(row)
 
@@ -438,23 +551,30 @@ def main(argv):
             print("guard-corpus diff: setup error: %s" % e, file=sys.stderr)
             return 2
 
-        def _run_side(hook, raw_cmd):
+        def _run_side(hook, row):
             prim, home, handover, sand = _fresh_sandbox(template, workdir)
             try:
-                cmd = raw_cmd.replace(PLACEHOLDER, prim)
-                return run_one_hook(hook, cmd, prim, home, handover,
-                                    args.timeout_run)
+                mapping = {PLACEHOLDER: prim}
+                cwd = prim
+                if row.get("cwd") == "worktree":
+                    cwd = _add_worktree(prim, sand)
+                    mapping[WT_PLACEHOLDER] = cwd
+                tin = _subst(row["tool_input"], mapping)
+                ctx = {k: row[k] for k in CONTEXT_KEYS if k in row}
+                rc, out, wall = run_one_hook(
+                    hook, row.get("tool_name", "Bash"), tin, cwd, prim, home,
+                    handover, args.timeout_run, ctx)
+                return rc, decision(rc, out), wall
             finally:
                 shutil.rmtree(sand, ignore_errors=True)
 
         def one(idx_row):
             idx, row = idx_row
-            raw = row["tool_input"]["command"]
-            rb, tb = _run_side(base_hook, raw)
-            rh, th = _run_side(head_hook, raw)
-            return dict(idx=idx, cmd=raw, family=row.get("family"),
+            rb, db, tb = _run_side(base_hook, row)
+            rh, dh, th = _run_side(head_hook, row)
+            return dict(idx=idx, family=row.get("family"),
                         transform=row.get("transform"), expect=row.get("expect"),
-                        base=rb, head=rh, tb=tb, th=th)
+                        rb=rb, rh=rh, base=db, head=dh, tb=tb, th=th)
 
         with ThreadPoolExecutor(args.jobs) as ex:
             results = list(ex.map(one, enumerate(corpus)))
@@ -466,10 +586,16 @@ def main(argv):
         # below, exit 3), never a confirmed regression. Same for `newly`:
         # require a CLEAN base-allow, so a base error/timeout is not misread
         # as a clean allow that the head then denied.
-        regressions = [r for r in results if r["base"] == 2 and r["head"] == 0]
-        newly = [r for r in results if r["head"] == 2 and r["base"] == 0]
+        # HIMMEL-4537: both sides are now DECISIONS (deny/ask/pass/approve),
+        # read from the exit code and the JSON on stdout, so a regression is
+        # any clean head looser than its clean base on RANK: a lost deny
+        # (exit-2 or JSON), a deny downgraded to ask, an ask that no longer
+        # asks, or a row an approver hook newly approves.
+        clean = [r for r in results if r["base"] in RANK and r["head"] in RANK]
+        regressions = [r for r in clean if RANK[r["head"]] < RANK[r["base"]]]
+        newly = [r for r in clean if r["head"] == "deny" and r["base"] != "deny"]
         odd = [r for r in results
-               if r["base"] not in (0, 2) or r["head"] not in (0, 2)]
+               if r["base"] not in RANK or r["head"] not in RANK]
         slow = [r for r in results
                if max(r["tb"], r["th"]) >= args.timeout_warn]
         # deny-side positive control: of the rows the judge marked expect=deny,
@@ -477,15 +603,22 @@ def main(argv):
         # but none fired, the corpus proved no deny coverage and a clean 0
         # would be a false "reviewed clean" -- make it inconclusive (exit 3).
         deny_expected = [r for r in results if r.get("expect") == "deny"]
-        deny_fired = [r for r in deny_expected if r["base"] == 2]
+        deny_fired = [r for r in deny_expected if r["base"] == "deny"]
         deny_allowed_both = [r for r in deny_expected
-                             if r["base"] == 0 and r["head"] == 0]
+                             if r["base"] in ("pass", "approve")
+                             and r["head"] in ("pass", "approve")]
         no_deny_control = bool(deny_expected) and not deny_fired
         # VACUOUS: deny seeds exist and NEITHER side denied any -- a hook that
         # fails open (missing data dependency, broken registry) on both sides
         # reads as 0 regressions but proved nothing (HIMMEL-4219).
-        head_fired = [r for r in deny_expected if r["head"] == 2]
+        head_fired = [r for r in deny_expected if r["head"] == "deny"]
         vacuous = bool(deny_expected) and not deny_fired and not head_fired
+        # over-deny (HIMMEL-4537): allow-expected rows (the benign twins) a
+        # side denied. Reported, never an exit code: over-deny is friction,
+        # not an escape.
+        allow_expected = [r for r in results if r.get("expect") == "allow"]
+        over_base = [r for r in allow_expected if r["base"] == "deny"]
+        over_head = [r for r in allow_expected if r["head"] == "deny"]
 
         print("guard-corpus diff: %d rows" % len(results))
         print("  base-deny/head-allow (REGRESSION): %d" % len(regressions))
@@ -498,7 +631,7 @@ def main(argv):
                   % (r["idx"], r["family"], r["transform"]))
         print("  rc not in {0,2}: %d" % len(odd))
         for r in odd[:50]:
-            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["base"], r["head"]))
+            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["rb"], r["rh"]))
         print("  TIMEOUT RISK (>= %.1fs): %d" % (args.timeout_warn, len(slow)))
         for r in slow[:50]:
             print("    TIMEOUT-RISK idx=%d tb=%.2f th=%.2f transform=%s"
@@ -512,6 +645,12 @@ def main(argv):
             print("    DENY-MISSED idx=%d family=%s transform=%s "
                   "(both hooks allowed a deny-expected row)"
                   % (r["idx"], r["family"], r["transform"]))
+        print("  allow-expected rows: %d (denied by base %d; by head %d)"
+              % (len(allow_expected), len(over_base), len(over_head)))
+        for r in [r for r in allow_expected
+                  if r in over_base or r in over_head][:50]:
+            print("    OVER-DENY idx=%d family=%s transform=%s base=%s head=%s"
+                  % (r["idx"], r["family"], r["transform"], r["base"], r["head"]))
         if vacuous:
             print("VACUOUS: %d deny-expected row(s) and NEITHER base nor head "
                   "denied any; the hook likely fails open (missing data "
@@ -523,7 +662,9 @@ def main(argv):
                 rows=len(results), regressions=len(regressions),
                 newly_denied=len(newly), odd_rc=len(odd), timeout_risk=len(slow),
                 deny_expected=len(deny_expected), deny_base_fired=len(deny_fired),
-                deny_allowed_both=len(deny_allowed_both))))
+                deny_allowed_both=len(deny_allowed_both),
+                allow_expected=len(allow_expected),
+                over_deny_base=len(over_base), over_deny_head=len(over_head))))
 
         if regressions:
             return 1

@@ -65,6 +65,15 @@ BENIGN_SEEDS = [
     # tripped quote-walking guards (HIMMEL-4138), but entirely benign.
     ("benign", "heredoc-commit", "allow",
      "git commit -F - <<'EOF'\nfix: it's a message, don't block me\nEOF"),
+    # read-only shapes real guards over-denied during the HIMMEL-4537
+    # hardening pass (2026-10-06): a path held in a shell variable then read,
+    # a glob grep with stderr dropped, and a grep over a hook filename glob.
+    ("benign", "var-path-read", "allow",
+     "f=scripts/eval/guard-corpus/gen; sed -n 1,20p \"$f\""),
+    ("benign", "glob-grep-stderr", "allow",
+     "grep -n TODO scripts/hooks/*.sh 2>/dev/null"),
+    ("benign", "hook-glob-grep", "allow",
+     "grep -l settings.json scripts/hooks/block-*.sh"),
 ]
 
 # --------------------------------------------------------------------------

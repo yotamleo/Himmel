@@ -93,6 +93,22 @@ template_version: 3
 > dispatch; an auto-mode inbox EXPANSION needs operator confirmation in-window,
 > not merely a RETASK token.>
 
+> **Guard escape tests (guard/hook tickets only, HIMMEL-4537; drop otherwise):**
+> the leg's escape and variant rows come only from route 1:
+> `scripts/eval/guard-corpus/gen` over the DENY rows the hook's suite already
+> carries, judged by `diff` as PreToolUse JSON. A non-Bash row is a copy of the
+> suite's existing row. The leg never authors a bypass string, a seed or a
+> transform. A class the ticket needs that has no seed is a route-2
+> `FINDING` to the console, one line in the judge template's
+> `<hook> | <surface> | <class name> | <why route 1 cannot reach it>` shape;
+> the operator writes those seeds, and the leg folds them in once they exist.
+> Anything that runs a payload or checks its effect is route 3, VM only, never
+> on the station. On a classifier stop (an API safeguards error with a
+> `req_…` id): never re-author or rephrase, never send a fresh session or
+> subagent to redo it. Write `BLOCKED` with the request id, and narrow. The
+> full rule, and how to tell a stop from a hook deny or refusal, is the
+> judge template's "Guard escape tests" block.
+
 > **Contract:**
 > 1. LIVE; paste `git log -1 --format=%H` and the base-ancestor check. Write
 >    the bullet with `scripts/handover/console-kit/append-results.sh <doc>
@@ -147,6 +163,7 @@ template_version: 3
 | Exemplar line (optional) | A leg told only to "add a gate" copies the nearest older gate, which may be the stale shape. Naming the one file that shows the paved path (e.g. `scripts/hooks/check-unchecked-mktemp.sh`, `scripts/handover/console-kit/test-ready-check.sh`) makes the leg imitate that. Instructional only, no validator: judge it by drift before anyone gates it (HIMMEL-4428). |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND uses `--no-profile` is a leg running on vibes (a launch with neither is refused). |
 | `completes-ticket:` line | `merge-on-green.sh` closes the ticket only on `--jira-transition` (opt-in, HIMMEL-3143, because a default closes multi-PR tickets early). Without the line every leg guesses whether its PR finishes the ticket: in one shift six merges printed `would-transition` and five were closed by hand (HIMMEL-3271). It is a per-brief decision, never a default. |
+| Guard escape tests block (guard/hook tickets) | A leg hand-writing bypass-shaped rows was stopped by a safety classifier and parked (N1308, HIMMEL-4537); without the block the next guard leg improvises instances again, or retries a stop by rephrasing it. |
 | Tier line (Opus/Fable only) | Without a trimmed, non-blank reason opening with one of the four exact-lowercase category tags (`design`, `unverified-finding`, `tier-return`, `operator-ruling`), `headed-arm-leg.sh` refuses the launch (HIMMEL-2976/HIMMEL-2997/HIMMEL-3480, CLAUDE.md: "raise effort before tier") — the tag is validated and the free text after it must be non-blank, but its content is otherwise unrestricted, so a paraphrase can never be falsely rejected. For a standing operator ruling on model choice, `operator-ruling:` free text names the ruling, its date and where it was given, so the console can trace the Opus/Fable spend back to it. |
 
 ## What the console must also do (2026-09-13)
