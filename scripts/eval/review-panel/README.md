@@ -79,7 +79,9 @@ dropped-citation bullets are not findings. A finding hits a defect when:
 | `defects`, `cases`, `unscored`, `leaked` | run totals |
 
 `<c>` is each critic slug plus `panel` (the union of all critics). A case whose
-review was not performed (no output, or `REVIEW NOT PERFORMED`) is unscored;
+review was not performed (no output, `REVIEW NOT PERFORMED`, a transcript
+missing any of the three severity headings, or a nonzero panel exit in
+`<case>.rc`) is unscored;
 a critic listed as unavailable in a case's Note block is dropped from that
 case's denominators only. Recall, precision and fp_rate carry Wilson 95%
 intervals in the row's `ci`. n is small (12 defects, 2 per class): a per-class
@@ -90,4 +92,5 @@ number is a direction, not a measurement.
 Write the seeded diff and its clean twin as two `case-NN.patch` files with new
 opaque ids, add both to `key/seeds.json` under one `pair`, and run
 `python3 scripts/eval/review-panel/score.py lint`. Changing any fixture or the
-key changes `config.fixture_set`, which starts a new eval-compare series.
+key changes `config.fixture_set`, and retuning the class keywords changes
+`config.class_patterns`; either starts a new eval-compare series.

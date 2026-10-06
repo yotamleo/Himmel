@@ -29,6 +29,7 @@ Exit: 0 scored / lint clean; 1 lint problems; 2 refused input.
 Stdlib only; no network, no model call.
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -176,11 +177,14 @@ def parse_review(text):
     critic, sev, file, line, text; bullets outside the three severity
     sections (re-raises, dropped citations) are not findings."""
     findings, unavailable, performed, sev, in_note = [], set(), True, None, False
+    headings = set()
     for line in text.splitlines():
         m = SECTION.match(line)
         if m:
             name = m.group(1)
             sev = SEV.get(name)
+            if sev:
+                headings.add(sev)
             in_note = name == "Note"
             if name == "REVIEW NOT PERFORMED":
                 performed = False
@@ -199,7 +203,9 @@ def parse_review(text):
                 continue
             findings.append({"critic": critic, "sev": sev, "text": b.group(3),
                              "file": norm_path(b.group(4)), "line": int(b.group(5))})
-    if not text.strip() or not text.lstrip().startswith("# Critic Panel Review"):
+    # The panel prints all three severity headings on every completed review;
+    # a transcript missing one was cut short and is not a zero-finding review.
+    if not text.lstrip().startswith("# Critic Panel Review") or set(SEV.values()) - headings:
         performed = False
     return findings, unavailable, performed
 
@@ -243,6 +249,9 @@ def score(outputs, fixtures, key_path, critics, only=None, window=DEFAULT_WINDOW
         if any(m in text or m in etext for m in leak_markers):
             leaks.append(cid)
         findings, unavailable, performed = parse_review(text)
+        rc = os.path.join(outputs, cid + ".rc")
+        if os.path.isfile(rc) and open(rc).read().strip() != "0":
+            performed = False  # the panel exits 0 only when >= 1 critic responded
         if not performed:
             unscored.append(cid)
             continue
@@ -388,7 +397,9 @@ def main(argv=None):
         ids = only or sorted(load_key(a.key)["cases"])
         config = {"fixture_set": fixture_set_hash(a.fixtures, a.key, ids),
                   "critics": res["critics"], "window": a.window,
-                  "classes": CLASSES, "gating": list(GATING)}
+                  "classes": CLASSES, "gating": list(GATING),
+                  "class_patterns": hashlib.sha256(json.dumps(
+                      CLASS_PATTERNS, sort_keys=True).encode()).hexdigest()[:16]}
         meta = dict(meta, leaks=res["leaks"], unscored=res["unscored"])
         row = eval_runs.make_row(EVAL_ID, SOURCE, config, res["metrics"], n=res["metrics"]["cases"],
                                  status=res["status"], ci=res["ci"], ci_level=0.95 if res["ci"] else None,

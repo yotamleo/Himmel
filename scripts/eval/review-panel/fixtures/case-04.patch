@@ -15,7 +15,7 @@ new file mode 100644
 +    echo "run-once: $name already running (lock $lock)" >&2
 +    exit 0
 +fi
-+trap 'rmdir "$lock"' EXIT
++trap 'rm -f "$lock/pid"; rmdir "$lock"' EXIT
 +echo "$$" > "$lock/pid"
 +
 +"$@"

@@ -24,6 +24,10 @@ out=""; tiers="paid"; critics=""; only=""; meta="{}"; ledger_args=()
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --out|--fixtures|--key|--tiers|--critics|--only|--meta-json|--ledger)
+            if [ $# -lt 2 ]; then echo "run.sh: $1 needs a value" >&2; exit 2; fi ;;
+    esac
+    case "$1" in
         --out) out="${2:-}"; shift 2 ;;
         --fixtures) fixtures="${2:-}"; shift 2 ;;
         --key) key="${2:-}"; shift 2 ;;

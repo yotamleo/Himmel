@@ -169,6 +169,14 @@ eq "unscored: exit 0 still" "$rc" "0"
 eq "unscored: both counted" "$(metric "$TMP/s4.json" unscored)" "2"
 eq "unscored: recall is null, not 0" "$(metric "$TMP/s4.json" codex.recall)" "null"
 eq "unscored: status inconclusive" "$(jget "$TMP/s4.json" status)" "inconclusive"
+# A transcript cut short (a missing severity heading) or a nonzero panel exit is
+# not a zero-finding review.
+O4b="$TMP/out4b"; mkdir -p "$O4b"
+printf '# Critic Panel Review (1/1 critics responded)\n\n## Critical Issues (0 found)\n\n' > "$O4b/$LA.md"
+review "$O4b/$QA.md" codex
+echo 1 > "$O4b/$QA.rc"
+python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA,$QA" --no-ledger --json "$TMP/s4b.json" >/dev/null 2>&1
+eq "unscored: a truncated transcript and a nonzero rc are both unscored" "$(metric "$TMP/s4b.json" unscored)" "2"
 
 # A transcript that touches the key is flagged and the run marked inconclusive.
 O5="$TMP/out5"; mkdir -p "$O5"
@@ -193,6 +201,7 @@ eq "ledger: the row is a valid eval-runs v1 row" "$rc" "0"
 eq "ledger: eval id" "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["eval"])' "$L")" "review-panel"
 eq "ledger: the meta carries the bank cost" "$(python3 -c 'import json,sys; print(json.loads(open(sys.argv[1]).readline())["meta"]["codex_bank_delta_pct"])' "$L")" "3"
 eq "ledger: per-case rows recorded" "$(python3 -c 'import json,sys; print(len(json.loads(open(sys.argv[1]).readline())["cases"]))' "$L")" "5"
+eq "ledger: the config fingerprints the class patterns" "$(python3 -c 'import json,sys; print(len(json.loads(open(sys.argv[1]).readline())["config"].get("class_patterns", "")))' "$L")" "16"
 eq "ledger: the live ledger was never touched" "$([ -e "$TMP/never.jsonl" ] && echo yes || echo no)" "no"
 
 # --- run.sh with a stub panel -----------------------------------------------------
@@ -226,6 +235,8 @@ STUB_LOG_DIR="$TMP/stublog" REVIEW_PANEL_CMD="$TMP/stub-panel.sh" REVIEW_PANEL_S
   bash "$RUN" --out "$TMP/run2" --fixtures "$TMP/badfix" --no-ledger --critics codex >/dev/null 2>&1; rc=$?
 eq "run: a failing lint refuses the sweep" "$rc" "2"
 eq "run: no panel call on a refused sweep" "$(cat "$TMP/stublog/tiers")" ""
+timeout 10 bash "$RUN" --out >/dev/null 2>&1; rc=$?
+eq "run: an option missing its value is a usage error, not a hang" "$rc" "2"
 
 echo
 echo "test-review-panel: PASS=$PASS FAIL=$FAIL"
