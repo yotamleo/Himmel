@@ -818,6 +818,13 @@ for pre in "-C $P " ""; do
     deny "$tag worktree move -f <wt> <primary>/x"  "$cwd" "git ${pre}worktree move -f $W $P/x"
     deny "$tag worktree add <primary>/x"           "$cwd" "git ${pre}worktree add $P/nwt -b nwt"
     deny "$tag worktree add -b y <primary>/x"      "$cwd" "git ${pre}worktree add -b y $P/nwt"
+    deny "$tag worktree add -btopicb <primary>/x"  "$cwd" "git ${pre}worktree add -btopicb $P/nwt"
+    deny "$tag worktree add -Bxb <primary>/x"      "$cwd" "git ${pre}worktree add -Bxb $P/nwt"
+    deny "$tag worktree add -fb y <primary>/x"     "$cwd" "git ${pre}worktree add -fb y $P/nwt"
+    deny "$tag cat-file --filt"                    "$cwd" "git ${pre}cat-file --filt HEAD:README.md"
+    deny "$tag cat-file --fi"                      "$cwd" "git ${pre}cat-file --fi HEAD:README.md"
+    deny "$tag cat-file --text"                    "$cwd" "git ${pre}cat-file --text HEAD:README.md"
+    deny "$tag grep --textc"                       "$cwd" "git ${pre}grep --textc foo"
 done
 deny "--exec-path=<dir> -C <primary> status"       "$W" "git --exec-path=/tmp/x -C $P status"
 deny "-C <primary> --exec-path=<dir> log"          "$W" "git -C $P --exec-path=/tmp/x log"
@@ -849,6 +856,7 @@ for pre in "-C $P " ""; do
     allow "$tag grep --or (not --open…)"           "$cwd" "git ${pre}grep -e a --or -e b"
     allow "$tag worktree move <wt> /tmp/x"         "$cwd" "git ${pre}worktree move $W /tmp/x"
     allow "$tag worktree list"                     "$cwd" "git ${pre}worktree list"
+    allow "$tag grep --text foo (= -a)"            "$cwd" "git ${pre}grep --text foo"
 done
 allow "git --exec-path (prints only), cwd=primary" "$P" "git --exec-path"
 allow "git --exec-path -C <primary> status"        "$W" "git --exec-path -C $P status"

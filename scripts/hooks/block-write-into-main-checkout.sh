@@ -3849,9 +3849,11 @@ _bwimc_env_prog() {
 
 # _bwimc_git_args_prog SUB ARG... — rc 0 when the subcommand's own options run
 # a program: --ext-diff / --textconv (a configured diff driver), `cat-file
-# --filters` (smudge filters), `grep -O` / --open-files-in-pager[=<cmd>] in
-# any unique abbreviation or short cluster (probed on git 2.56: it runs
-# without a tty).
+# --filters` (smudge filters), `grep -O` / --open-files-in-pager[=<cmd>].
+# cat-file and grep use parse-options, so their long options also match in
+# any unique abbreviation (`--filt`, `--text` on cat-file, `--textc` on grep,
+# where `--text` alone is -a), and -O in a short cluster (probed on git 2.56:
+# it runs without a tty).
 _bwimc_git_args_prog() {
     local sub="$1" a ci; shift
     for a in "$@"; do
@@ -3860,8 +3862,10 @@ _bwimc_git_args_prog() {
             --ext-diff|--textconv) return 0 ;;
         esac
         case "$sub:$a" in
-            cat-file:--filters) return 0 ;;
-            grep:--*) ! _bwimc_long_is "$a" open-files-in-pager 2 || return 0 ;;
+            cat-file:--*)
+                { _bwimc_long_is "$a" filters 2 || _bwimc_long_is "$a" textconv 1; } && return 0 ;;
+            grep:--*)
+                { _bwimc_long_is "$a" open-files-in-pager 2 || _bwimc_long_is "$a" textconv 5; } && return 0 ;;
             grep:-*)
                 ci=1
                 while [ "$ci" -lt "${#a}" ]; do
@@ -4703,8 +4707,14 @@ _bwimc_git_clause() {
             if [ "$wt_skip" = 1 ]; then wt_skip=0; continue; fi
             case "$v" in
                 --reason) wt_skip=1; continue ;;
-                -*[bB]) case "$v" in --*) ;; *) wt_skip=1 ;; esac; continue ;;
-                -*) continue ;;
+                # -b/-B take the NEXT word when they end a cluster (`-fb y`);
+                # after flag letters they carry a value attached (`-btopicb`).
+                --*) continue ;;
+                -*)
+                    if [[ ! "$v" =~ ^-[fdq]*[bB]. ]]; then
+                        case "$v" in *[bB]) wt_skip=1 ;; esac
+                    fi
+                    continue ;;
             esac
             if [ -z "$wt_op" ]; then wt_op="$v"; continue; fi
             wt_n=$((wt_n+1))
