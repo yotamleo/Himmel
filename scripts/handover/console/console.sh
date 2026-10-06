@@ -637,6 +637,16 @@ if [ -z "$name" ]; then
     err "--name resolved to an empty slug (got '$NAME')"
     exit 1
 fi
+# HIMMEL-4571: stop-console-idle-guard (*-console.lock), guard-console-dispatch
+# (*-console.md) and console-compact-reinject (-n name) all key on the -console
+# suffix, so a console armed without it silently loses them. The bare default
+# `console` already yields the `…A-console` doc.
+case "$name" in
+    console|*-console) ;;
+    *)
+        err "--name '$NAME' (slug '$name') must be 'console' or end in '-console' (the console guards key on that suffix)"
+        exit 1 ;;
+esac
 date="$(date +%F)"
 # successor_date: the day used for `next`'s SUCCESSOR name only (HIMMEL-2984).
 # Defaults to today; --date overrides it so a 23:5x console can pre-mint
