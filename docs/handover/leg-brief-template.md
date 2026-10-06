@@ -84,7 +84,7 @@ template_version: 3
 
 > **Prior art (required, HIMMEL-4573):** <related tickets, prior fixes and graph
 > neighbours, each with its source. The console fills it at dispatch from one
-> qmd query over `jira-himmel` + `luna` (lex+vec, `-c <name>`), plus one
+> qmd query over `jira-himmel` + the vault collection (lex+vec, `-c <name>`), plus one
 > `graphify query` when code structure matters. If the search found nothing,
 > write `none found (<the query you ran>)`; a bare `none`, an empty line or this
 > placeholder is refused at arming by `brief-lint.sh`.>

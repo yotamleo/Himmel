@@ -97,7 +97,7 @@ template_version: 1
 > **Prior art (required, HIMMEL-4573):** <related tickets, prior fixes and graph
 > neighbours for THIS question, each with its source — pointers to what exists,
 > never the console's own conclusion (the judge stays blind). The console fills
-> it at dispatch from one qmd query over `jira-himmel` + `luna` (lex+vec,
+> it at dispatch from one qmd query over `jira-himmel` + the vault collection (lex+vec,
 > `-c <name>`), plus one `graphify query` when code structure matters. If the
 > search found nothing, write `none found (<the query you ran>)`; a bare
 > `none`, an empty line or this placeholder is refused at arming by
