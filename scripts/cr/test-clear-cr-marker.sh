@@ -2557,6 +2557,13 @@ sweep_fixture
 write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: sites=b.sh:4, c.sh:9" "${_r2_ok/\$_tip/$_tip}"
 run_clear "$tmp" 14 "8n a sweep whose sites omit the finding's own file is not a record -> exit 14"
 rm -rf "$tmp"
+# 8n-dup. A multi-site record that repeats one path is one site, not two -> refused.
+sweep_fixture
+write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: sites=a.sh:1, a.sh:1" "${_r2_ok/\$_tip/$_tip}"
+run_clear "$tmp" 14 "8n-dup a sweep listing one path twice is not a multi-site record -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F 'sites-not-distinct'; then pass; else
+    fail "8n-dup must name sites-not-distinct: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
 # 8o. A single-site record whose search is prose, not a git grep -> refused.
 sweep_fixture
 write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=looked everywhere, nothing else" "${_r2_ok/\$_tip/$_tip}"

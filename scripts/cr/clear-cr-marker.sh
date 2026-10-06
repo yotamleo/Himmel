@@ -854,6 +854,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
       if (s.body.startsWith("sites=")) {
           const paths = s.body.slice(6).split(",").map((x) => x.trim()).filter(Boolean)
               .map((x) => x.split(/\s/)[0].split(":")[0].replace(/^(\.\/)+/, ""));
+          if (new Set(paths).size < 2) return "sites-not-distinct";
           const findingHead = resolve(v.head);
           for (const p of paths) {
               if (!safePath(p)) return "site-refused:" + word(p);
