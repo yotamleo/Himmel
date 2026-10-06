@@ -26,7 +26,7 @@ if [ ! -f "$doc" ] || [ ! -r "$doc" ]; then
 fi
 
 field="$(awk '
-    found == 0 && /^> \*\*Prior art:\*\*/ { found = 1; sub(/^> \*\*Prior art:\*\*/, ""); print; next }
+    found == 0 && /^> \*\*Prior art( \([^)]*\))?:\*\*/ { found = 1; sub(/^> \*\*Prior art( \([^)]*\))?:\*\*/, ""); print; next }
     found == 1 {
         if ($0 !~ /^> / || $0 ~ /^> \*\*[^*]+:\*\*/) exit
         sub(/^> /, ""); print
@@ -38,7 +38,7 @@ flat="$(printf '%s' "$field" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //;
 
 fail() { echo "brief-lint: $doc: $1" >&2; exit 1; }
 
-grep -q '^> \*\*Prior art:\*\*' "$doc" || fail "no '> **Prior art:**' line (required: related tickets, prior fixes, graph neighbours with their source, or 'none found (<query>)')"
+grep -Eq '^> \*\*Prior art( \([^)]*\))?:\*\*' "$doc" || fail "no '> **Prior art:**' line (required: related tickets, prior fixes, graph neighbours with their source, or 'none found (<query>)')"
 [ -n "$flat" ] || fail "'> **Prior art:**' is empty"
 
 lower="$(printf '%s' "$flat" | tr '[:upper:]' '[:lower:]')"
@@ -51,6 +51,8 @@ case "$bare" in
     "none found"*)
         printf '%s' "$lower" | grep -Eq '^none found \([^)[:space:]][^)]*\)' \
             || fail "'none found' needs the query that found nothing: 'none found (<query>)'"
+        ! printf '%s' "$lower" | grep -Eq '^none found \(<[^>]*>\)' \
+            || fail "'none found' still carries the '<query>' placeholder: name the query that found nothing"
         ;;
 esac
 exit 0

@@ -45,6 +45,9 @@ mk nf_emptyq '# brief' '> **Prior art:** none found ()' '' '> **Contract:** y'
 mk next_field '# brief' '> **Prior art:**' '> **Contract:** y'
 mk filled '# brief' '> **Prior art:** HIMMEL-2581 (graphify non-adoption); fixed in #1500 (qmd jira-himmel)' '' '> **Contract:** y'
 mk nf_q '# brief' '> **Prior art:** none found (qmd -c jira-himmel "prior art field")' '' '> **Contract:** y'
+mk titled '# brief' '> **Prior art (required, HIMMEL-4573):** HIMMEL-2581 (graphify non-adoption)' '' '> **Contract:** y'
+mk titled_bare '# brief' '> **Prior art (required, HIMMEL-4573):** none' '' '> **Contract:** y'
+mk nf_ph '# brief' '> **Prior art:** none found (<query>)' '' '> **Contract:** y'
 mk multi '# brief' '> **Prior art:**' '> HIMMEL-2581 graphify non-adoption (qmd jira-himmel)' '> #1500 prior fix' '' '> **Contract:** y'
 mk first_none_then_more '# brief' '> **Prior art:** none' '> HIMMEL-1 is related' '' '> **Contract:** y'
 
@@ -58,6 +61,9 @@ expect_rc "1g unfilled placeholder fails" 1 "$tmp/placeholder.md"
 expect_rc "1h none found without a query fails" 1 "$tmp/nf_noq.md"
 expect_rc "1i none found () fails" 1 "$tmp/nf_emptyq.md"
 expect_rc "1j empty line followed directly by the next field fails" 1 "$tmp/next_field.md"
+expect_rc "1k none found (<query>) placeholder fails" 1 "$tmp/nf_ph.md"
+expect_rc "1l titled field with a bare none fails" 1 "$tmp/titled_bare.md"
+expect_rc "2e template-titled field (required, ticket) passes" 0 "$tmp/titled.md"
 expect_rc "2a filled passes" 0 "$tmp/filled.md"
 expect_rc "2b none found (query) passes" 0 "$tmp/nf_q.md"
 expect_rc "2c multi-line filled passes" 0 "$tmp/multi.md"
@@ -94,7 +100,7 @@ rc=0; out="$(run_leg "$tmp/tmpl_ok.md" --profile leg-impl)" || rc=$?
 rc=0; out="$(run_leg "$tmp/fixture_plain.md" --profile leg-impl)" || rc=$?
 [ "$rc" -eq 0 ] && ok "4e non-template fixture is not gated" || bad "4e non-template fixture (rc=$rc): $out"
 rc=0; out="$(run_leg "$tmp/tmpl_bad.md" --relay)" || rc=$?
-printf '%s' "$out" | grep -q -- 'no-prior-art-check' && bad "4f relay launch is not gated: $out" || ok "4f relay launch is not gated"
+{ [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -q -- 'no-prior-art-check'; } && ok "4f relay launch is not gated" || bad "4f relay launch is not gated (rc=$rc): $out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
