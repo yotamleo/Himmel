@@ -1,0 +1,25 @@
+diff --git a/scripts/tools/rotate-reports.sh b/scripts/tools/rotate-reports.sh
+--- a/scripts/tools/rotate-reports.sh
++++ b/scripts/tools/rotate-reports.sh
+@@ -1,11 +1,18 @@
+ #!/usr/bin/env bash
+ # rotate-reports.sh - delete generated reports older than the retention window.
+-# usage: rotate-reports.sh <report-dir>
++# usage: rotate-reports.sh [--dry-run] <report-dir>
+ set -euo pipefail
+
+ RETENTION_DAYS=30
+
+-dir="${1:?usage: rotate-reports.sh <report-dir>}"
++dry_run=0
++if [ "${1:-}" = "--dry-run" ]; then dry_run=1; shift; fi
++
++dir="${1:?usage: rotate-reports.sh [--dry-run] <report-dir>}"
+ [ -d "$dir" ] || { echo "rotate-reports: no such dir: $dir" >&2; exit 2; }
+
+-find "$dir" -name 'report-*.html' -type f -mtime +"$RETENTION_DAYS" -print -delete
++if [ "$dry_run" -eq 1 ]; then
++    find "$dir" -name 'report-*.html' -type f -mtime +"$RETENTION_DAYS" -print
++else
++    find "$dir" -name 'report-*.html' -type f -mtime +"$RETENTION_DAYS" -print -delete
++fi

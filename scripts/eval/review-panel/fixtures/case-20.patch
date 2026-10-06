@@ -1,0 +1,25 @@
+diff --git a/scripts/tools/test-sync-mirror.sh b/scripts/tools/test-sync-mirror.sh
+new file mode 100644
+--- /dev/null
++++ b/scripts/tools/test-sync-mirror.sh
+@@ -0,0 +1,20 @@
++#!/usr/bin/env bash
++# test-sync-mirror.sh - suite for scripts/tools/sync-mirror.sh.
++set -u
++HERE="$(cd "$(dirname "$0")" && pwd)"
++TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
++PASS=0; FAIL=0
++eq() { if [ "$2" = "$3" ]; then PASS=$((PASS + 1)); echo "PASS $1"; else FAIL=$((FAIL + 1)); echo "FAIL $1: expected '$3', got '$2'"; fi; }
++
++mkdir -p "$TMP/src" "$TMP/dst"
++printf 'a\n' > "$TMP/src/one.txt"
++bash "$HERE/sync-mirror.sh" "$TMP/src" "$TMP/dst" > "$TMP/log" 2>&1
++rc=$?
++eq "sync-mirror exits 0 on a good mirror" "$rc" "0"
++
++bash "$HERE/sync-mirror.sh" "$TMP/missing" "$TMP/dst" > "$TMP/log2" 2>&1
++rc=$?
++if [ "$rc" -ne 0 ]; then PASS=$((PASS + 1)); echo "PASS missing source is refused"; else FAIL=$((FAIL + 1)); echo "FAIL missing source was accepted"; fi
++
++echo "PASS=$PASS FAIL=$FAIL"
++[ "$FAIL" -eq 0 ]

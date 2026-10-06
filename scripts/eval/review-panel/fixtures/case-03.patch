@@ -1,0 +1,32 @@
+diff --git a/scripts/tools/health_probe.py b/scripts/tools/health_probe.py
+--- a/scripts/tools/health_probe.py
++++ b/scripts/tools/health_probe.py
+@@ -1,8 +1,9 @@
+ """Probe a list of service health endpoints and print their status."""
+ import argparse
++import json
+ import urllib.request
+
+-TIMEOUT_S = 5
++TIMEOUT_S = 50
+
+
+ def probe(url):
+@@ -15,10 +16,15 @@
+
+ def main(argv=None):
+     ap = argparse.ArgumentParser()
++    ap.add_argument("--json", action="store_true", help="print one JSON object instead of lines")
+     ap.add_argument("urls", nargs="+")
+     args = ap.parse_args(argv)
+-    for url in args.urls:
+-        print("%s %s" % (url, probe(url)))
++    results = {url: probe(url) for url in args.urls}
++    if args.json:
++        print(json.dumps(results, sort_keys=True))
++        return
++    for url, status in results.items():
++        print("%s %s" % (url, status))
+
+
+ if __name__ == "__main__":

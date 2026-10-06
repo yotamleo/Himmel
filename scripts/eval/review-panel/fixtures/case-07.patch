@@ -1,0 +1,21 @@
+diff --git a/scripts/lib/test_slugify.py b/scripts/lib/test_slugify.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/lib/test_slugify.py
+@@ -0,0 +1,16 @@
++import unittest
++
++from slugify import slugify
++
++
++class SlugifyTest(unittest.TestCase):
++    def test_lowercases_and_dashes(self):
++        raw = "Hello World Again"
++        self.assertEqual(slugify(raw), "hello-world-again")
++
++    def test_strips_punctuation(self):
++        self.assertEqual(slugify("a.b,c!"), "abc")
++
++
++if __name__ == "__main__":
++    unittest.main()

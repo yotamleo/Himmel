@@ -1,0 +1,24 @@
+diff --git a/scripts/hooks/deny-listed-hosts.sh b/scripts/hooks/deny-listed-hosts.sh
+new file mode 100644
+--- /dev/null
++++ b/scripts/hooks/deny-listed-hosts.sh
+@@ -0,0 +1,19 @@
++#!/usr/bin/env bash
++# deny-listed-hosts.sh - PreToolUse guard: refuse a fetch to a host the policy denies.
++# Reads the tool call JSON on stdin; exit 2 = deny, exit 0 = allow.
++set -uo pipefail
++
++policy="${HOST_POLICY_FILE:-$HOME/.config/himmel/host-policy.json}"
++payload="$(cat)"
++host="$(printf '%s' "$payload" | jq -r '.tool_input.url // empty' | sed -E 's#^[A-Za-z]+://([^/@]*@)?([^/:]+).*#\2#' | tr '[:upper:]' '[:lower:]')"
++[ -n "$host" ] || exit 0
++
++if ! verdict="$(jq -r --arg h "$host" '.hosts[$h] // "allow"' "$policy")"; then
++    echo "deny-listed-hosts: cannot read $policy - denying" >&2
++    exit 2
++fi
++if [ "$verdict" = "deny" ]; then
++    echo "deny-listed-hosts: $host is denied by $policy" >&2
++    exit 2
++fi
++exit 0
