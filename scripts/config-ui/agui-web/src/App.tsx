@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { initialView, reduce, settledCount, type Tool, type View } from "./reducer";
+import { initialView, reduce, runClock, settledCount, type ClockAnchor, type Tool, type View } from "./reducer";
 import type { Source } from "./stream";
 
 // A transport failure ends the run the same way RUN_ERROR does, so calls still running are marked failed too.
@@ -48,15 +48,16 @@ export function App({ source }: { source: Source }) {
 // While the run is live, time keeps moving between events so running bars keep growing.
 function useRunClock(view: View): number {
   const [tick, setTick] = useState(0);
-  const last = useRef({ elapsed: 0, wall: Date.now() });
-  if (last.current.elapsed !== view.elapsed) last.current = { elapsed: view.elapsed, wall: Date.now() };
+  const last = useRef<ClockAnchor | undefined>(undefined);
+  const clock = runClock(last.current, view, Date.now());
+  last.current = clock.anchor;
   useEffect(() => {
     if (view.status !== "running") return;
     const id = setInterval(() => setTick((n) => n + 1), 250);
     return () => clearInterval(id);
   }, [view.status]);
   void tick;
-  return view.status === "running" ? view.elapsed + (Date.now() - last.current.wall) : view.elapsed;
+  return clock.now;
 }
 
 const secs = (ms: number) => (ms < 10000 ? (ms / 1000).toFixed(1) : Math.round(ms / 1000).toString()) + "s";
