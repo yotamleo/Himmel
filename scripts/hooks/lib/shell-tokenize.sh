@@ -119,13 +119,13 @@ st_tokenize() {
                         [ "$j" -lt "$n" ] || return 1
                         # The shell runs the decoded word (`$'\x2dr'` is -r,
                         # HIMMEL-4576). ${…@E} is bash 4.4+; an older bash
-                        # does not model it, so the caller's stricter scan
-                        # decides. The eval'd text is constant, never input.
-                        if [ "${BASH_VERSINFO[0]}" -lt 4 ] \
-                            || { [ "${BASH_VERSINFO[0]}" = 4 ] && [ "${BASH_VERSINFO[1]}" -lt 4 ]; }; then
-                            return 1
+                        # keeps the raw body, as before (declining here would
+                        # switch guard_unwrap off for the whole command, J1946
+                        # B1). The eval'd text is constant, never input.
+                        if [ "${BASH_VERSINFO[0]}" -gt 4 ] \
+                            || { [ "${BASH_VERSINFO[0]}" = 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
+                            eval 'body=${body@E}'
                         fi
-                        eval 'body=${body@E}'
                         _st_q; w=$w$body; i=$((j + 1))
                         ;;
                     '"') _st_q; ctx=${ctx}D; i=$((i + 2)) ;;
