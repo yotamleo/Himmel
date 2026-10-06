@@ -1463,7 +1463,12 @@ through `main_checkout_verdict`. The target covers:
 
 HIMMEL-4365 also checks the file that `--output <file>` names on a read
 subcommand (`diff`, `log`, `show`) as a write operand. So `git -C <primary>
-diff --output=.claude/settings.json` is denied. `restore --staged` writes only
+diff --output=.claude/settings.json` is denied. HIMMEL-4518 treats
+`archive -o <file>`, `format-patch -o <dir>` / `--output-directory[=]<dir>`
+(also `-o` at the end of a bundled cluster such as `-ko <dir>`) and the file
+operand of `bundle create` the same way. Their repo check alone passed from a
+leg cwd, so `git archive -o <primary>/x.tar HEAD` is now denied, while
+`-o /tmp/x.tar` and leg-local paths are allowed. `restore --staged` writes only
 the primary's index, but it is still denied like `add`: the console's next
 commit would carry what the leg staged.
 

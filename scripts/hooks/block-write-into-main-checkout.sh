@@ -4354,7 +4354,11 @@ _bwimc_git_clause() {
     # resolved from the -C dir and, when a --work-tree/GIT_WORK_TREE is set
     # (git then runs from the work tree's top), from that too; each is
     # checked like any other write operand. The clause itself stays a read.
-    local ow=0 of="" owt="${wtree:-$e_wt}"
+    # HIMMEL-4518: the same holds for `archive -o <f>`, `format-patch -o
+    # <dir>` / `--output-directory[=]<dir>` (-o also ends a bundled cluster
+    # such as `-ko <dir>`, the rest being its operand) and the `bundle create
+    # <file>` operand, whose repo check alone passes from a leg cwd.
+    local ow=0 of="" owt="${wtree:-$e_wt}" bc=0
     for v in ${args[@]+"${args[@]}"}; do
         if [ "$ow" = 1 ]; then
             of="$v"; ow=0
@@ -4363,7 +4367,20 @@ _bwimc_git_clause() {
                 --) break ;;
                 --output) ow=1; continue ;;
                 --output=*) of="${v#--output=}" ;;
-                *) continue ;;
+                *)
+                    case "$sub:$v" in
+                        format-patch:--output-directory) ow=1; continue ;;
+                        format-patch:--output-directory=*) of="${v#*=}" ;;
+                        archive:-o|format-patch:-o) ow=1; continue ;;
+                        archive:-o*|format-patch:-o*) of="${v#-o}" ;;
+                        archive:-[!-]*o*|format-patch:-[!-]*o*)
+                            of="${v#*o}"
+                            [ -n "$of" ] || { ow=1; continue; } ;;
+                        bundle:create) [ "$bc" != 0 ] || bc=1; continue ;;
+                        bundle:-*) continue ;;
+                        bundle:*) [ "$bc" = 1 ] || continue; of="$v"; bc=2 ;;
+                        *) continue ;;
+                    esac ;;
             esac
         fi
         _BWIMC_GIT_SUB="$sub --output"
