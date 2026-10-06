@@ -39,14 +39,16 @@ STUB
     chmod +x "$1/gh"
 }
 
-# ready_pass_ledger <repo> <sha>... - append an ok CR-ledger row per sha to
-# <repo>'s git-common-dir (what ready-check's check 4 reads).
+# ready_pass_ledger <repo> <sha>... - record an ok CR-ledger row per sha in
+# <repo>'s git-common-dir (what ready-check's check 4 reads), through the
+# ledger's single writer, ledger-append.sh (test-pr-check-run invariant 7).
+READY_PASS_APPEND="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../cr" && pwd)/ledger-append.sh"
 ready_pass_ledger() {
     local repo="$1" gd s
     shift
     gd=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir) || return 1
     for s in "$@"; do
-        printf '{"kind":"avail","ts":"2026-01-01T00:00:00Z","branch":"b","head":"%s","model":"codex","status":"ok"}\n' "$s" \
-            >> "$gd/cr-critic-scores.jsonl" || return 1
+        CR_LEDGER="$gd/cr-critic-scores.jsonl" bash "$READY_PASS_APPEND" avail \
+            --branch b --head "$s" --model codex --status ok || return 1
     done
 }
