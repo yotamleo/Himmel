@@ -658,6 +658,37 @@ for kind in deny allow; do
   has "bom-$kind: row named ODD-RC" "$OUT15" "ODD-RC idx="
 done
 
+# --- 16. HIMMEL-4587: the hook's own exit ends the row ------------------------
+# A hook that backgrounds a child holding stdout must not make the row wait for
+# the timeout; what the hook wrote before exiting is read, and a child still
+# running never turns a deny into a pass.
+cat > "$TMP/bg-deny-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+sleep 30 &
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}\n'
+exit 0
+STUB
+cat > "$TMP/bg-allow-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+sleep 30 &
+exit 0
+STUB
+chmod +x "$TMP/bg-deny-hook.sh" "$TMP/bg-allow-hook.sh"
+T0=$SECONDS
+OUT16A=$(python3 "$DIFF" --base "$TMP/bg-deny-hook.sh" --head "$TMP/bg-allow-hook.sh" \
+        --corpus "$TMP/one-row.jsonl" --jobs 1 --timeout-run 10 2>&1); RC16A=$?
+if [ "$RC16A" = "1" ]; then pass "bg-child: backgrounded deny lost by a backgrounding allow => exit 1"
+else fail "bg-child: expected exit 1, got $RC16A"; fi
+has "bg-child: deny read, not TIMEOUT" "$OUT16A" "base=deny head=pass"
+if [ $((SECONDS - T0)) -lt 8 ]; then pass "bg-child: row did not wait for the timeout"
+else fail "bg-child: row took $((SECONDS - T0))s, waited on the child"; fi
+python3 "$DIFF" --base "$TMP/bg-deny-hook.sh" --head "$TMP/bg-deny-hook.sh" \
+        --corpus "$TMP/one-row.jsonl" --jobs 1 --timeout-run 10 >/dev/null 2>&1; RC16B=$?
+if [ "$RC16B" = "0" ]; then pass "bg-child-control: backgrounded deny both sides => exit 0"
+else fail "bg-child-control: expected exit 0, got $RC16B"; fi
+
 echo "----"
 echo "guard-corpus: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
