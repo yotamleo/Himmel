@@ -196,6 +196,23 @@ if [ "$kind" = "finding" ] && [ -z "$batch_file" ] && { [ -n "$deferred_to" ] ||
   echo "ledger-append.sh: a deferral needs --fu-class escape|hardening|polish (HIMMEL-4034; see docs/release/follow-up-triage.md) - NOTHING was written" >&2
   exit 2
 fi
+# HIMMEL-4604: the single-row finding verb is held to the batch writers' bar.
+# clear-cr-marker.sh compares verdicts lowercase, so only the lowercase set is
+# a verdict; and a row with no branch stamp is exempt from gate 4d, so a
+# missing --branch is stamped with the current branch, and refused when there
+# is none (detached HEAD) rather than written unstamped.
+if [ "$kind" = "finding" ] && [ -z "$batch_file" ]; then
+  case "$verdict" in
+    ""|agreed|disproved|conflict|unaddressed|deferred|fixed) ;;
+    *) echo "ledger-append.sh: --verdict must be agreed|disproved|conflict|unaddressed|deferred|fixed (got '$verdict') - NOTHING was written" >&2
+       exit 2 ;;
+  esac
+  [ -n "$branch" ] || branch=$(git symbolic-ref --short -q HEAD 2>/dev/null || true)
+  if [ -z "$branch" ]; then
+    echo "ledger-append.sh: finding needs --branch (no current branch to stamp: detached HEAD or not a repo) - NOTHING was written" >&2
+    exit 2
+  fi
+fi
 
 # HIMMEL-3340: the evidentiary bar for `disproved`. A wrong `agreed` costs a
 # wasted fix; a wrong `disproved` closes the question for good (it stops a class
