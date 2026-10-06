@@ -80,7 +80,8 @@ echo "6. denial cross-check: mapper vs trajectory.py (spec 2.3)"
 : >"$TMP/divergence.txt"
 for f in "$REPO"/scripts/eval/lane-quality/fixtures/trajectory/*.jsonl "$REPO/scripts/config-ui/tests/fixtures/agui/agents.jsonl" "$FX/classes.jsonl"; do
   n="$(basename "$f")"
-  digest "$f" | jq -r --arg n "$n" '.stats.denial_divergence[] | "\($n) \(.tool_call_id) \(.only)"' >>"$TMP/divergence.txt"
+  digest "$f" >"$TMP/cross.json" || bad "the cross-check digest of $n exits 0"
+  jq -r --arg n "$n" '.stats.denial_divergence[] | "\($n) \(.tool_call_id) \(.only)"' "$TMP/cross.json" >>"$TMP/divergence.txt" || bad "the cross-check digest of $n lists its divergences"
 done
 grep -v '^#' "$HERE/denial-exceptions.txt" | grep -v '^$' | awk '{print $1, $2, $3}' | sort >"$TMP/allowed.txt"
 sort "$TMP/divergence.txt" >"$TMP/seen.txt"
@@ -114,6 +115,9 @@ mkdir -p "$TMP/nogit"
 printf '#!/bin/sh\nexit 1\n' >"$TMP/nogit/git"
 chmod +x "$TMP/nogit/git"
 check "a failed git ls-files makes it partial and names the lookup" 'PATH="$TMP/nogit:$PATH" digest "$TMP/$SID.jsonl" | jq -e ".status == \"partial\" and .stats.lookups_failed == [\"tracked-tests\"]" >/dev/null'
+mkdir -p "$TMP/onlybun"
+ln -s "$(command -v bun)" "$TMP/onlybun/bun"
+check "git and python3 missing from PATH make it partial, exit 0" 'PATH="$TMP/onlybun" digest "$TMP/$SID.jsonl" | jq -e ".status == \"partial\" and .stats.trajectory_failed == true and .stats.lookups_failed == [\"tracked-tests\"]" >/dev/null'
 check "lookups that worked leave lookups_failed empty" 'jq -e ".stats.lookups_failed == []" "$TMP/classes.json" >/dev/null'
 
 echo "test-leg-digest: $PASS passed, $FAIL failed"

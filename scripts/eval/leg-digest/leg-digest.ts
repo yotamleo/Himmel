@@ -84,16 +84,21 @@ function hookNames(): Set<string> | null {
   catch { return null; }
 }
 
+// spawnSync throws when the binary is not on PATH, so each spawn sits inside the try.
 function trackedTests(): Set<string> | null {
-  const r = spawnSync(["git", "-C", REPO, "ls-files", "-z"]);
-  if (!r.success) return null;
-  return new Set(r.stdout.toString().split("\0").map((p) => basename(p)).filter((n) => /^test-[\w.-]+\.sh$|\.test\.ts$/.test(n)));
+  try {
+    const r = spawnSync(["git", "-C", REPO, "ls-files", "-z"]);
+    if (!r.success) return null;
+    return new Set(r.stdout.toString().split("\0").map((p) => basename(p)).filter((n) => /^test-[\w.-]+\.sh$|\.test\.ts$/.test(n)));
+  } catch { return null; }
 }
 
 // null when trajectory.py did not run or did not print JSON.
 function trajectory(journal: string): Record<string, unknown> | null {
-  const r = spawnSync(["python3", TRAJECTORY, "score", journal, "--denials"]);
-  try { return r.success ? JSON.parse(r.stdout.toString()) : null; } catch { return null; }
+  try {
+    const r = spawnSync(["python3", TRAJECTORY, "score", journal, "--denials"]);
+    return r.success ? JSON.parse(r.stdout.toString()) : null;
+  } catch { return null; }
 }
 
 function ledgerRows(path: string, session: string): LedgerRow[] {
