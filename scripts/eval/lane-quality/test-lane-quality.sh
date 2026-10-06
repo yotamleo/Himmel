@@ -112,6 +112,7 @@ check "acceptance passed on both" '[ "$(jq -s "map(select(.accept_ok)) | length"
 check "tool calls deduped by id" '[ "$(jq -s ".[0].tool_calls" "$R")" = 2 ]'
 check "compactions counted" '[ "$(jq -s ".[0].compactions" "$R")" = 1 ]'
 check "hook denials counted" '[ "$(jq -s ".[0].hook_denials" "$R")" = 1 ]'
+check "trajectory fields recorded (HIMMEL-4651)" 'jq -s -e ".[0] | [.red_before_green, .denial_recovery, .identical_denied_retries, .verify_before_claim] == [null, 1, 0, false]" "$R" >/dev/null'
 check "permission denials counted" '[ "$(jq -s ".[0].permission_denials" "$R")" = 1 ]'
 check "cost recorded" '[ "$(jq -s ".[0].cost_usd" "$R")" = 0.5 ]'
 check "bank reading recorded" '[ "$(jq -s -r ".[0].bank_5h_before" "$R")" = 10.0 ]'

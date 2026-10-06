@@ -446,6 +446,14 @@ def lane_quality_row(run_dir, run_id, judge_model=None, status="ok"):
         "permission_denials": total("permission_denials"),
         "peeked": float(sum(1 for t in tasks if t.get("peeked") is True)),
     })
+    # HIMMEL-4651 trajectory fields (scripts/eval/lane-quality/trajectory.py):
+    # each rate counts only the rows where its field applies (not null), so a
+    # run dir written before them gets null metrics, never a schema change.
+    for k in ("red_before_green", "verify_before_claim"):
+        metrics[k + "_rate"] = _finite_mean([1.0 if t[k] else 0.0 for t in tasks if isinstance(t.get(k), bool)])
+    metrics["denial_recovery_rate"] = _finite_mean([t.get("denial_recovery") for t in tasks])
+    idr = [t.get("identical_denied_retries") for t in tasks if _num(t.get("identical_denied_retries"))]
+    metrics["identical_denied_retries"] = float(sum(idr)) if idr else None
     cases = {}
     for tid, s in lane_quality_stats(tasks).items():
         cases[tid] = {k: v["mean"] for k, v in s.items() if isinstance(v, dict)}

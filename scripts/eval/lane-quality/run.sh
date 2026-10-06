@@ -153,18 +153,22 @@ agent_cost() { # $1 result json -> the agent's real cost in USD, or null
     end' "$1"
 }
 
-transcript_metrics() { # $1 = transcript or empty -> JSON object
+transcript_metrics() { # $1 = transcript or empty, $2 = final report file -> JSON object
   if [ -z "$1" ] || [ ! -r "$1" ]; then
-    echo '{"tool_calls":null,"compactions":null,"hook_denials":null,"peeked":null}'; return
+    echo '{"tool_calls":null,"compactions":null,"hook_denials":null,"peeked":null,"red_before_green":null,"denial_recovery":null,"identical_denied_retries":null,"verify_before_claim":null}'; return
   fi
-  jq -s -c '
+  local traj  # HIMMEL-4651 trajectory fields; a scorer failure leaves them null
+  traj="$(python3 "$HERE/trajectory.py" score "$1" --report "$2" 2>/dev/null)" || traj=""
+  jq -s -c --argjson traj "${traj:-null}" '
+    (if $traj == null then {red_before_green: null, denial_recovery: null, identical_denied_retries: null, verify_before_claim: null} else $traj end) as $traj
+    |
     def text: if type == "string" then . elif type == "array" then map(.text? // "") | join(" ") else "" end;
     [ .[] | select(.type == "assistant") | .message.content[]? | select(.type == "tool_use") ] as $tu
     | { tool_calls: ($tu | map(.id) | unique | length),
         compactions: ([ .[] | select(.type == "system" and .subtype == "compact_boundary") ] | length),
         hook_denials: ([ .[] | select(.type == "user") | .message.content[]? | select(.type == "tool_result" and .is_error == true)
                          | select(.content | text | test("hook error|PreToolUse|refus|denied|blocked"; "i")) ] | length),
-        peeked: ($tu | map(.input | tostring) | any(test("eval/lane-quality"))) }' "$1"
+        peeked: ($tu | map(.input | tostring) | any(test("eval/lane-quality"))) } + $traj' "$1"
 }
 
 # judge_call <packet> <out json> <err file> <model> <budget> [effort]: one
@@ -255,7 +259,7 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
   sid="$(jq -r '.session_id // ""' "$res")"
   tr=""
   [ -n "$sid" ] && tr="$(find "$TRANSCRIPTS" -name "$sid.jsonl" -print 2>/dev/null | head -1)"
-  metrics="$(transcript_metrics "$tr")"
+  metrics="$(transcript_metrics "$tr" "$OUT/$stem.report.md")"
   timeout "$TIMEOUT" bash "$TASKS/$task/accept.sh" "$wt" "$fix" >"$OUT/$stem.accept.log" 2>&1; acc_rc=$?
   acc_line="$(grep -E '^accept: [0-9]+/[0-9]+$' "$OUT/$stem.accept.log" | tail -1)"
   # Staged against the fixture commit, so a file the agent committed counts too.

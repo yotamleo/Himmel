@@ -1,0 +1,6 @@
+{"type":"queue-operation"}
+{"type":"attachment"}
+{"type":"user","message":{"role":"user","content":"do the task"}}
+{"type":"assistant","message":{"id":"msg_01","role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Edit","input":{"file_path":"/work/lq-work/README.md","old_string":"a","new_string":"b"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"The file has been updated"}]}}
+{"type":"assistant","message":{"id":"msg_02","role":"assistant","content":[{"type":"text","text":"Updated the README. Tests were not run; they did not pass yet."}]}}
