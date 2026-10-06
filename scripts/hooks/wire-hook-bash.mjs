@@ -133,6 +133,7 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'guard-agent-model.sh',
   // PreToolUse, one entry each.
   'block-backend-tier.sh',
+  'mcp-policy.sh',
   'auto-arm-on-cap.sh',
   // PreToolUse `Bash|Monitor` — its own matcher (HIMMEL-2140): denies a
   // subagent (agent_id present) from backgrounding a Bash call or reaching

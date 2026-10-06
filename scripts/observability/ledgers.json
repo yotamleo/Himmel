@@ -171,6 +171,19 @@
       "schema_version": 1,
       "envelope": ["v", "ts", "host", "source", "kind"],
       "grandfathered": false
+    },
+    {
+      "id": "mcp-audit",
+      "default_path": "~/.himmel/state/mcp-audit.jsonl",
+      "override_env": "MCP_POLICY_AUDIT_LOG",
+      "writer": "scripts/hooks/mcp-policy.sh",
+      "readers": [],
+      "format": "jsonl",
+      "rotation": "renamed to .1 once it reaches audit.max_bytes in scripts/guardrails/mcp-policy.json (default 1 MiB)",
+      "retention": "one rotated generation",
+      "schema_version": 1,
+      "envelope": ["v", "ts", "host", "source", "kind"],
+      "grandfathered": false
     }
   ]
 }

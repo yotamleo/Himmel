@@ -46,13 +46,13 @@
         ]
       },
       {
-        "matcher": "mcp__plugin_atlassian_atlassian__.*",
+        "matcher": "mcp__.*",
         "hooks": [
           {
             "type": "command",
-            "command": ".codex/run-hook.sh --sandbox block-backend-tier.sh",
-            "commandWindows": ".codex/run-hook.cmd --sandbox block-backend-tier.sh",
-            "timeout": 15
+            "command": ".codex/run-hook.sh --sandbox mcp-policy.sh+block-backend-tier.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox mcp-policy.sh+block-backend-tier.sh",
+            "timeout": 60
           }
         ]
       },
