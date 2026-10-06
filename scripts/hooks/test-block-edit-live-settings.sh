@@ -3133,6 +3133,19 @@ cat claude.txt | grep 'a$' | bash
 f=x grep 'x$' claude
 grep 'a$' claude.txt | tee /tmp/claude-1000/o
 ROWS
+# 1000-1002 (HIMMEL-4475, judge J1919 T1): bash extquote decodes a `$'…'`
+# inside a double-quoted `${…}`, so that word is live ANSI-C and the quoted
+# `$'` relaxation must not apply. A plain quoted `$'` stays text; an unquoted
+# one stays denied.
+rows_both 1000 2 "ANSI-C inside a quoted parameter expansion denies" <<'ROWS'
+echo "${x:-$'\x41'}" > claude.txt
+ROWS
+rows_both 1001 0 "a quoted dollar-quote is text" <<'ROWS'
+echo "$'\x41'" > claude.txt
+ROWS
+rows_both 1002 2 "an unquoted ANSI-C word denies" <<'ROWS'
+echo $'\x41' > claude.txt
+ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.

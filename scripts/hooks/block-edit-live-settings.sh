@@ -3624,8 +3624,12 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                     # segment can hand the text to a shell that reads it
                     # again (_tok_no_shell_ok). The tokens come from the
                     # unjoined text, so a line continuation (`$\<NL>'`)
-                    # keeps the old reading.
-                    if [ "$TOK" = 1 ] && [ "$cmd_j" = "$cmd" ] && _tok_no_shell_ok; then
+                    # keeps the old reading. bash extquote decodes a `$'…'`
+                    # inside a double-quoted `${…}`, which the tokenizer
+                    # does not flag, so any `${` before the `$'` keeps it too.
+                    if [ "$TOK" = 1 ] && [ "$cmd_j" = "$cmd" ] \
+                        && case "$cmd" in *"\${"*"\$'"*) false ;; *) true ;; esac \
+                        && _tok_no_shell_ok; then
                         :
                     else
                         ansi_c=1; mentions_settings=1
