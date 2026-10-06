@@ -102,8 +102,18 @@ describe.skipIf(!ENABLED)('jira CLI live (opt-in, JIRA_LIVE_TEST=1)', () => {
   });
 
   it('list: the issue is returned for the project', () => {
-    expect(jira('list', '--project', PROJECT, '--limit', '100')).toContain(key);
-  });
+    // Jira's search index is eventually consistent: a list straight after the
+    // create can miss the new issue (seen: empty 355 ms after create, present a
+    // minute later). Poll with backoff before asserting; this is index lag, not
+    // a CLI defect.
+    let out = '';
+    for (let waitMs = 500, spent = 0; spent <= 20_000; spent += waitMs, waitMs *= 2) {
+      out = jira('list', '--project', PROJECT, '--limit', '100');
+      if (out.includes(key)) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
+    expect(out).toContain(key);
+  }, 40_000);
 
   it('link: a second issue is linked and links lists it', () => {
     const out = jira('create', '--type', 'Task', '--title', `live ${stamp} peer`);
