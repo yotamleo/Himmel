@@ -113,7 +113,7 @@ repeats of the 4 tasks on one native lane. That is about 12 agent runs plus
 their judge calls. For scale, one stored native haiku sweep of the 4 tasks
 cost about 0.57 USD API-equivalent. Note the bank reading before and after.
 
-```
+```bash
 bash scripts/eval/lane-quality/run.sh run --lane native --model claude-haiku-4-5-20251001 --reps 3 --max-usd 3
 bash scripts/eval/lane-quality/run.sh table ~/.himmel/eval/lane-quality/<run-id>
 bash scripts/eval/lane-quality/run.sh calibration ~/.himmel/eval/lane-quality/<run-id> --judge2-model sonnet --max-usd 1
