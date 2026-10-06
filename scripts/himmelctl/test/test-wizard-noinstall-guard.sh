@@ -214,8 +214,13 @@ echo "ok: caseB dropping any single allow-set name breaks the guard (proves it c
 # `dest` itself is left untouched until the rename, so a failure at any point
 # up to and including the write leaves a previously-saved profile intact.
 writes=$(grep -c 'fs\.writeFileSync' "$wizard")
-[ "$writes" -eq 4 ] \
-  || fail "caseC: expected exactly 4 fs.writeFileSync calls in bin.js (profile cache + install-profile save + phi-roots + .salus marker; the PATH-launcher tmp write moved to lib/launcher.js, HIMMEL-3312 S13 item 1), got $writes"
+[ "$writes" -eq 5 ] \
+  || fail "caseC: expected exactly 5 fs.writeFileSync calls in bin.js (profile cache + install-profile save + phi-roots + .salus marker + the vm.mode resolver probe; the PATH-launcher tmp write moved to lib/launcher.js, HIMMEL-3312 S13 item 1), got $writes"
+# HIMMEL-4597 (J1947 B1): vmProofRoute() writes the doc-with-answer to a
+# mkdtemp dir under os.tmpdir() so scripts/lib/vm-mode.sh can resolve it,
+# and removes the dir in finally -- a probe, never an install write.
+grep -q 'fs.writeFileSync(cfg, JSON.stringify(probe))' "$wizard" \
+  || fail "caseC: missing the vm.mode resolver probe write (vmProofRoute, HIMMEL-4597), or its call shape changed"
 grep -q 'fs.writeFileSync(cachePath()' "$wizard" \
   || fail "caseC: missing the profile-cache write (cachePath())"
 # Pinned on the FULL call shape (destination var + bytes var + the exclusive-
@@ -240,7 +245,7 @@ grep -q "fs.writeFileSync(tmp, lines.join('" "$wizard" \
   || fail "caseC: missing the phi-roots merge write (mergePhiRoot, HIMMEL-2347 — now via tmp+rename, HIMMEL-2347 CR fix 3)"
 grep -q "fs.writeFileSync(markerPath, '', { flag: 'wx' })" "$wizard" \
   || fail "caseC: missing the .salus marker write, or it is no longer exclusive-create 'wx' (HIMMEL-2347 — a plain write would truncate an existing marker)"
-echo "ok: caseC bin.js's only fs.writeFileSync calls are the profile cache, the install-profile save, and the two PHI guard inputs; lib/launcher.js's is the PATH-launcher shim"
+echo "ok: caseC bin.js's only fs.writeFileSync calls are the profile cache, the install-profile save, the two PHI guard inputs and the vm.mode resolver probe; lib/launcher.js's is the PATH-launcher shim"
 
 # ── Case D: only node builtins are required -- zero npm deps ───────────────
 required=$(grep -oE "require\('[a-zA-Z_/-]+'\)" "$wizard" | sed -E "s/require\('(.*)'\)/\1/" | sort -u)
