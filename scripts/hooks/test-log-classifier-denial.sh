@@ -330,13 +330,14 @@ fi
 # --- 14. HARD RULE (HIMMEL-3724): input_head and reason_tag never leave the
 # host. Only these files may name them; a new consumer (the later Telegram
 # page) must not carry them, and adding one here is a conscious edit.
+# leg-digest.ts (+ its ledger fixture) is a host-local reader: it maps reason_tag onto the closed category list and never emits it raw; test-leg-digest.sh is the egress test that checks the digest's output (HIMMEL-4670).
 # ponytail: a file-list pin is a coarse proxy (a reader can forward the fields
 # under another name); test-tick.sh pins the real tick-line output. Upgrade: an
 # egress test on the Telegram page when that slice lands. ---
 REPO_ROOT="$(cd "$(dirname "$HOOK")/../.." && pwd)"
 if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
     readers=$(git -C "$REPO_ROOT" grep -l -E 'input_head|reason_tag' -- scripts ':!*.md' | sort | tr '\n' ' ')
-    want="scripts/handover/console-kit/test-tick.sh scripts/handover/console-kit/tick.sh scripts/hooks/log-classifier-denial.sh scripts/hooks/test-log-classifier-denial.sh "
+    want="scripts/eval/leg-digest/fixtures/classifier-denials.jsonl scripts/eval/leg-digest/leg-digest.ts scripts/eval/leg-digest/test-leg-digest.sh scripts/handover/console-kit/test-tick.sh scripts/handover/console-kit/tick.sh scripts/hooks/log-classifier-denial.sh scripts/hooks/test-log-classifier-denial.sh "
     if [ "$readers" = "$want" ]; then
         pass "only the host-local files reference input_head / reason_tag"
     else

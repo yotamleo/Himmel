@@ -77,7 +77,8 @@ class FetchHealthTests(unittest.TestCase):
             self.assertEqual(fetch_health.probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", env, forbidden_command).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_twitter_cli(env, forbidden_command).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_youtube(env, forbidden_http).status, "auth-or-cookie-expired")
-            self.assertIn("youtube-state-from-chrome.py --profile Default", fetch_health.probe_youtube(env, forbidden_http).reason)
+            self.assertIn("scrapling-venv", fetch_health.probe_youtube(env, forbidden_http).reason)
+            self.assertNotIn("youtube-state-from-chrome", fetch_health.probe_youtube(env, forbidden_http).reason)
             self.assertEqual(fetch_health.probe_bitbucket(env, forbidden_http).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_firecrawl(env, forbidden_http).status, "auth-or-cookie-expired")
 
@@ -198,12 +199,11 @@ class FetchHealthTests(unittest.TestCase):
             false_marker = b'<html><title>known video</title><script>ytcfg.set({"LOGGED_IN":false});</script></html>'
             self.assertEqual(fetch_health.probe_youtube({"HOME": tmp}, http_with(no_marker)).status, "auth-or-cookie-expired")
             self.assertEqual(fetch_health.probe_youtube({"HOME": tmp}, http_with(false_marker)).status, "auth-or-cookie-expired")
-            # HIMMEL-4271: the expired-state reason names the working remedy
-            # (the Chrome-cookie converter), not the Playwright login Google blocks.
-            self.assertIn(
-                "python3 scripts/luna/youtube-state-from-chrome.py --profile Default",
-                fetch_health.probe_youtube({"HOME": tmp}, http_with(no_marker)).reason,
-            )
+            # HIMMEL-4677: the expired-state reason names the cookieless primary
+            # path (scrapling venv + yt-dlp), never a cookie-converter step.
+            reason = fetch_health.probe_youtube({"HOME": tmp}, http_with(no_marker)).reason
+            self.assertIn("scrapling-venv", reason)
+            self.assertNotIn("youtube-state-from-chrome", reason)
 
     def test_github_uses_gh_api(self):
         seen = []
@@ -406,7 +406,7 @@ class FetchHealthTests(unittest.TestCase):
                 raise RuntimeError("stub failure")
 
             results = fetch_health.run_probes(env, http=broken_http, command=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stub failure")), repo_root=Path(tmp))
-            self.assertEqual(set(results), {"reddit", "x-fxtwitter", "instagram-embed", "instagram-media", "instagram-scrapling", "x-media", "x-twitter-cli", "youtube-playwright", "github", "bitbucket", "firecrawl", "jina-reader"})
+            self.assertEqual(set(results), {"reddit", "x-fxtwitter", "instagram-embed", "instagram-media", "instagram-scrapling", "x-media", "x-scrapling", "x-twitter-cli", "youtube-playwright", "youtube-scrapling", "github", "bitbucket", "firecrawl", "jina-reader"})
             self.assertTrue(all(result.status in fetch_health.STATUSES for result in results.values()))
 
     def test_probe_mode_matches_full_run_for_every_source(self):
@@ -825,6 +825,117 @@ class InstagramScraplingProbeTests(unittest.TestCase):
         r = self.probe(self.command(3, '{"status": "error", "detail": "scrapling not installed"}'))
         self.assertEqual(r.status, "transport-fail")
         self.assertIn("scrapling not installed", r.reason)
+
+
+class XYouTubeScraplingProbeTests(unittest.TestCase):
+    """HIMMEL-4677: the cookieless Scrapling paths X and YouTube try first, and
+    the cookie probes they demote to fallbacks."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.py = self.tmp / ".himmel" / "scrapling-venv" / "bin" / "python"
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        self.env = {"HOME": str(self.tmp), "PATH": str(self.bin)}
+        self.seen = []
+
+    def venv(self):
+        self.py.parent.mkdir(parents=True)
+        self.py.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.py.chmod(0o755)
+
+    def ytdlp(self):
+        exe = self.bin / "yt-dlp"
+        exe.write_text("#!/bin/sh\n", encoding="utf-8")
+        exe.chmod(0o755)
+
+    def command(self, returncode, stdout):
+        def run(args, **kwargs):
+            self.seen.append((args, kwargs))
+            return subprocess.CompletedProcess(args, returncode, stdout, "")
+        return run
+
+    def probe(self, source, command):
+        return fetch_health.run_single_probe(source, self.env, http=lambda *a, **k: self.fail("no http"),
+                                             command=command, repo_root=self.tmp)
+
+    def test_missing_venv_names_the_venv_and_sends_nothing(self):
+        for source in ("x-scrapling", "youtube-scrapling"):
+            r = self.probe(source, lambda *a, **k: self.fail("command should not run"))
+            self.assertEqual(r.status, "transport-fail", source)
+            self.assertIn("scrapling-venv", r.reason, source)
+
+    def test_x_ok_runs_the_plugin_helper_cookieless(self):
+        self.venv()
+        r = self.probe("x-scrapling", self.command(0, '{"status": "ok", "items": [{"kind": "video", "url": "u", "hls": true}]}'))
+        self.assertEqual(r.status, "ok")
+        self.assertIn("1 media item", r.reason)
+        args, _ = self.seen[0]
+        helper = self.tmp / "marketplace/plugins/obsidian-triage/tools/x-scrapling-media.py"
+        self.assertEqual(args[:2], [str(self.py), str(helper)])
+        self.assertEqual(args[2:], ["--url", fetch_health.DEFAULT_URLS["x-media"], "--status-id", "1354143047324299264"])
+        self.assertNotIn("--cookies", args)
+
+    def test_x_login_wall_is_blocked(self):
+        self.venv()
+        r = self.probe("x-scrapling", self.command(4, '{"status": "login_wall", "detail": "/i/flow/login"}'))
+        self.assertEqual(r.status, "blocked-or-rate-limited")
+
+    def test_youtube_needs_ytdlp_for_the_transcript(self):
+        self.venv()
+        r = self.probe("youtube-scrapling", lambda *a, **k: self.fail("command should not run"))
+        self.assertEqual(r.status, "transport-fail")
+        self.assertIn("yt-dlp", r.reason)
+
+    def test_youtube_ok_reports_the_transcript_source(self):
+        self.venv()
+        self.ytdlp()
+        out = json.dumps({"status": "ok", "title": "t", "transcript": [{"ts": "0:00", "tx": "a"}, {"ts": "0:01", "tx": "b"}],
+                          "transcript_source": "yt-dlp", "transcript_error": None})
+        r = self.probe("youtube-scrapling", self.command(0, out))
+        self.assertEqual(r.status, "ok")
+        self.assertIn("transcript via yt-dlp", r.reason)
+        self.assertIn("2 line", r.reason)
+        args, _ = self.seen[0]
+        helper = self.tmp / "marketplace/plugins/obsidian-triage/tools/yt-scrapling-meta.py"
+        self.assertEqual(args, [str(self.py), str(helper), "--video-id", "dQw4w9WgXcQ"])
+
+    def test_youtube_metadata_without_transcript_is_not_ok(self):
+        self.venv()
+        self.ytdlp()
+        out = json.dumps({"status": "ok", "title": "t", "transcript": [], "transcript_source": "yt-dlp",
+                          "transcript_error": "yt_dlp_error"})
+        r = self.probe("youtube-scrapling", self.command(0, out))
+        self.assertEqual(r.status, "transport-fail")
+        self.assertIn("yt_dlp_error", r.reason)
+
+    def test_expired_youtube_state_is_not_red_when_the_scrapling_path_is_present(self):
+        self.venv()
+        self.ytdlp()
+        r = fetch_health.probe_youtube(self.env, lambda *a, **k: self.fail("no http"))
+        self.assertEqual(r.status, "ok")
+        self.assertIn("fallback", r.reason)
+        self.assertIn("storage state missing", r.reason)
+
+    def test_expired_youtube_state_stays_red_without_ytdlp(self):
+        self.venv()
+        r = fetch_health.probe_youtube(self.env, lambda *a, **k: self.fail("no http"))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
+
+    def test_missing_x_cookie_is_not_red_when_the_scrapling_path_is_present(self):
+        self.venv()
+        r = self.probe("x-media", lambda *a, **k: self.fail("command should not run"))
+        self.assertEqual(r.status, "ok")
+        self.assertIn("fallback", r.reason)
+        self.assertIn("cookie file missing", r.reason)
+
+    def test_instagram_media_cookie_is_not_demoted(self):
+        self.venv()
+        r = fetch_health.probe_gallery_dl("instagram-media", "instagram.txt", "FETCH_HEALTH_INSTAGRAM_MEDIA_URL",
+                                          self.env, lambda *a, **k: self.fail("command should not run"))
+        self.assertEqual(r.status, "auth-or-cookie-expired")
 
 
 class InstagramGuardTests(unittest.TestCase):

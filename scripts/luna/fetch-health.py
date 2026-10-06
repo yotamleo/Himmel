@@ -391,15 +391,18 @@ def probe_twitter_cli(
     return classify_command(completed.returncode, completed.stderr)
 
 
-# HIMMEL-4271: the working rebuild route. Google usually refuses the
-# Playwright login (playwright-auth-save.mjs youtube), so every expired-state
-# reason names the signed-in-Chrome cookie converter instead.
-YOUTUBE_REMEDY = "rebuild: python3 scripts/luna/youtube-state-from-chrome.py --profile Default"
+# HIMMEL-4677: the logged-in storage state is a FALLBACK. The primary YouTube
+# path is cookieless (Scrapling for metadata, yt-dlp for the transcript), so an
+# expired state names that path, never a cookie-converter step.
+YOUTUBE_REMEDY = ("primary path is cookieless: create ~/.himmel/scrapling-venv from "
+                  "requirements-scrapling.txt and put yt-dlp on PATH")
 
 
 def probe_youtube(env: dict[str, str], http: Callable[..., HttpResult]) -> ProbeResult:
     result = _probe_youtube(env, http)
     if result.status == "auth-or-cookie-expired":
+        if scrapling_path_present(env, "youtube"):
+            return demoted_fallback(result)
         return ProbeResult(result.status, f"{result.reason} ({YOUTUBE_REMEDY})")
     return result
 
@@ -699,6 +702,114 @@ def probe_instagram_scrapling(
     return ProbeResult("transport-fail", f"scrapling helper rc={completed.returncode} status={status or 'unparsed'} {detail}".rstrip())
 
 
+X_SCRAPLING_HELPER = Path("marketplace/plugins/obsidian-triage/tools/x-scrapling-media.py")
+YT_SCRAPLING_HELPER = Path("marketplace/plugins/obsidian-triage/tools/yt-scrapling-meta.py")
+# The YouTube helper runs yt-dlp after the page load (its own 180 s budget).
+YT_SCRAPLING_TIMEOUT_SECONDS = SCRAPLING_TIMEOUT_SECONDS + 180
+SCRAPLING_PYTHON_OVERRIDE = {"x": "X_SCRAPLING_PYTHON", "youtube": "YT_SCRAPLING_PYTHON"}
+
+
+def scrapling_python(env: dict[str, str], source: str) -> Path:
+    """The venv python x-media-fetch.py / playwright-crawl-youtube.mjs use."""
+    override = (env.get(SCRAPLING_PYTHON_OVERRIDE[source]) or "").strip()
+    return Path(override) if override else resolve_home(env) / ".himmel" / "scrapling-venv" / "bin" / "python"
+
+
+def scrapling_path_present(env: dict[str, str], source: str) -> bool:
+    """Whether the cookieless primary path is installed (HIMMEL-4677): the venv,
+    plus yt-dlp for the YouTube transcript."""
+    if not scrapling_python(env, source).is_file():
+        return False
+    return source != "youtube" or bool(shutil.which("yt-dlp", path=env.get("PATH")))
+
+
+def demoted_fallback(result: ProbeResult) -> ProbeResult:
+    """An expired cookie on a fallback rung is not an outage while the
+    cookieless path is installed; its own probe reports whether that works."""
+    return ProbeResult("ok", f"fallback only, not needed while the cookieless scrapling path is installed: {result.reason}")
+
+
+def _scrapling_helper(
+    py: Path, args: list[str], env: dict[str, str], command: Callable[..., subprocess.CompletedProcess[str]], timeout: int
+) -> tuple[subprocess.CompletedProcess[str] | None, dict]:
+    try:
+        completed = command([str(py), *args], env=env, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, {}
+    try:
+        out = json.loads(completed.stdout or "")
+    except ValueError:
+        out = {}
+    return completed, out if isinstance(out, dict) else {}
+
+
+def _scrapling_failure(completed: subprocess.CompletedProcess[str], out: dict, site: str) -> ProbeResult:
+    status = out.get("status")
+    if status == "login_wall":
+        return ProbeResult("blocked-or-rate-limited", f"{site} served a login_wall to the cookieless fetch")
+    if completed.returncode == 3:
+        return ProbeResult("transport-fail", "scrapling not installed in the venv")
+    detail = str(out.get("detail", ""))[:80]
+    return ProbeResult("transport-fail", f"scrapling helper rc={completed.returncode} status={status or 'unparsed'} {detail}".rstrip())
+
+
+def probe_x_scrapling(
+    env: dict[str, str],
+    command: Callable[..., subprocess.CompletedProcess[str]],
+    repo_root: Path,
+    *,
+    child_env: dict[str, str] | None = None,
+) -> ProbeResult:
+    """HIMMEL-4677: the cookieless Scrapling path /x-media-enrich tries first."""
+    py = scrapling_python(env, "x")
+    if not py.is_file():
+        return ProbeResult("transport-fail", f"scrapling python missing ({py}); create ~/.himmel/scrapling-venv "
+                                             "from requirements-scrapling.txt")
+    url = env.get("FETCH_HEALTH_X_MEDIA_URL", DEFAULT_URLS["x-media"])
+    parts = [p for p in urllib.parse.urlparse(url).path.split("/") if p]
+    status_id = parts[2] if len(parts) >= 3 and parts[1] == "status" and parts[2].isdigit() else ""
+    if not status_id:
+        return ProbeResult("transport-fail", "x probe URL has no status id")
+    completed, out = _scrapling_helper(py, [str(repo_root / X_SCRAPLING_HELPER), "--url", url, "--status-id", status_id],
+                                       child_env if child_env is not None else env, command, SCRAPLING_TIMEOUT_SECONDS)
+    if completed is None:
+        return ProbeResult("transport-fail", "scrapling helper invocation failed")
+    if completed.returncode == 0 and out.get("status") == "ok":
+        return ProbeResult("ok", f"scrapling found {len(out.get('items') or [])} media item(s), no cookie")
+    return _scrapling_failure(completed, out, "x")
+
+
+def probe_youtube_scrapling(
+    env: dict[str, str],
+    command: Callable[..., subprocess.CompletedProcess[str]],
+    repo_root: Path,
+    *,
+    child_env: dict[str, str] | None = None,
+) -> ProbeResult:
+    """HIMMEL-4677: the cookieless YouTube path the crawler tries first:
+    metadata from Scrapling, the transcript from yt-dlp subtitles."""
+    py = scrapling_python(env, "youtube")
+    if not py.is_file():
+        return ProbeResult("transport-fail", f"scrapling python missing ({py}); create ~/.himmel/scrapling-venv "
+                                             "from requirements-scrapling.txt")
+    if not shutil.which("yt-dlp", path=env.get("PATH")):
+        return ProbeResult("transport-fail", "yt-dlp missing from PATH (the transcript source)")
+    url = env.get("FETCH_HEALTH_YOUTUBE_URL", DEFAULT_URLS["youtube-playwright"])
+    video_id = (urllib.parse.parse_qs(urllib.parse.urlparse(url).query).get("v") or [""])[0]
+    if not video_id:
+        return ProbeResult("transport-fail", "youtube probe URL has no video id")
+    completed, out = _scrapling_helper(py, [str(repo_root / YT_SCRAPLING_HELPER), "--video-id", video_id],
+                                       child_env if child_env is not None else env, command, YT_SCRAPLING_TIMEOUT_SECONDS)
+    if completed is None:
+        return ProbeResult("transport-fail", "scrapling helper invocation failed")
+    if completed.returncode == 0 and out.get("status") == "ok":
+        lines = len(out.get("transcript") or [])
+        if not lines:
+            return ProbeResult("transport-fail", f"metadata ok, no transcript from yt-dlp ({out.get('transcript_error') or 'empty'})")
+        return ProbeResult("ok", f"scrapling metadata ok, transcript via yt-dlp ({lines} lines), no cookie")
+    return _scrapling_failure(completed, out, "youtube")
+
+
 IG_PROBE_SOURCES = ("instagram-embed", "instagram-media", "instagram-scrapling")
 IG_OK_TTL_S = 24 * 3600
 IG_BAD_TTL_S = 3600
@@ -777,6 +888,19 @@ def guarded_instagram_probe(
     return result
 
 
+def probe_x_media(
+    env: dict[str, str],
+    command: Callable[..., subprocess.CompletedProcess[str]],
+    *,
+    child_env: dict[str, str] | None = None,
+) -> ProbeResult:
+    """The gallery-dl cookie rung, a fallback behind x-scrapling (HIMMEL-4677)."""
+    result = probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", env, command, child_env=child_env)
+    if result.status == "auth-or-cookie-expired" and scrapling_path_present(env, "x"):
+        return demoted_fallback(result)
+    return result
+
+
 def build_probe_registry(
     env: dict[str, str],
     http: Callable[..., HttpResult],
@@ -807,9 +931,11 @@ def build_probe_registry(
         "instagram-embed": lambda: probe_instagram_embed(effective, http),
         "instagram-media": lambda: probe_gallery_dl("instagram-media", "instagram.txt", "FETCH_HEALTH_INSTAGRAM_MEDIA_URL", effective, command, child_env=child_env),
         "instagram-scrapling": lambda: probe_instagram_scrapling(effective, command, repo_root, child_env=child_env),
-        "x-media": lambda: probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", effective, command, child_env=child_env),
+        "x-media": lambda: probe_x_media(effective, command, child_env=child_env),
+        "x-scrapling": lambda: probe_x_scrapling(effective, command, repo_root, child_env=child_env),
         "x-twitter-cli": lambda: probe_twitter_cli(effective, command, child_env=child_env),
         "youtube-playwright": lambda: probe_youtube(effective, http),
+        "youtube-scrapling": lambda: probe_youtube_scrapling(effective, command, repo_root, child_env=child_env),
         "github": lambda: probe_github(effective, command, child_env=child_env),
         "bitbucket": lambda: probe_bitbucket(effective, http),
         "firecrawl": lambda: probe_firecrawl(effective, http),

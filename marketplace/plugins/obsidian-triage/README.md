@@ -33,9 +33,11 @@ The existing `pipeline-cadence` scheduler arms it daily at **01:30** as
 | X thin-clip enrichment | None | FxTwitter API response for a known tweet |
 | Instagram caption enrichment | None | Instagram `embed/captioned` response for a known post |
 | Instagram media enrichment | Netscape cookies at `~/.luna/cookies/instagram.txt` | `gallery-dl --simulate --cookies ...` against a known post |
-| X media enrichment | Netscape cookies at `~/.luna/cookies/twitter.txt` | `gallery-dl --simulate --cookies ...` against a known tweet |
+| X media enrichment, primary (`x-scrapling`) | None: the scrapling venv `~/.himmel/scrapling-venv` (HIMMEL-4677) | `tools/x-scrapling-media.py` against a known tweet |
+| X media enrichment, fallback (`x-media`) | Netscape cookies at `~/.luna/cookies/twitter.txt` | `gallery-dl --simulate --cookies ...` against a known tweet; a missing or expired cookie reports `ok` ("fallback only") while the scrapling venv is installed |
 | X CLI enrichment | `TWITTER_AUTH_TOKEN` + `TWITTER_CT0` (process env or the primary checkout's `.env`), falling back per key to `auth_token`/`ct0` in `~/.luna/cookies/twitter.txt` | `twitter tweet 20 --json` |
-| YouTube Playwright enrichment | `~/.luna/playwright-state/youtube.json` storage state | YouTube request carrying the matching storage-state cookies |
+| YouTube enrichment, primary (`youtube-scrapling`) | None: the scrapling venv plus `yt-dlp` on PATH (HIMMEL-4677) | `tools/yt-scrapling-meta.py` for a known video: metadata via Scrapling, transcript via yt-dlp subtitles |
+| YouTube enrichment, fallback (`youtube-playwright`) | `~/.luna/playwright-state/youtube.json` storage state | YouTube request carrying the matching storage-state cookies; an expired state reports `ok` ("fallback only") while the primary path is installed |
 | GitHub harvest / ingest | Authenticated `gh` CLI | `gh api repos/cli/cli` |
 | Bitbucket ingest | `BITBUCKET_EMAIL` + `BITBUCKET_API_TOKEN` (process env or the primary checkout's `.env`) | Authenticated `GET /2.0/user` |
 | Firecrawl article enrichment | `FIRECRAWL_API_KEY` (process env or the primary checkout's `.env`; `FIRECRAWL_BASE_URL` optional) | `POST /v2/scrape` for `https://example.com/` |
@@ -57,6 +59,10 @@ at `http://127.0.0.1:9877/metrics` as `clip_fetch_source_status` and
 `clip_fetch_source_last_success_timestamp`.
 
 ### Rebuilding the YouTube storage state (HIMMEL-2549)
+
+Not needed for transcripts since HIMMEL-4677: the crawler's primary path is
+cookieless (Scrapling metadata + yt-dlp subtitles). The storage state only feeds
+the logged-in Playwright fallback, so rebuild it only if you want that fallback.
 
 `playwright-auth-save.mjs youtube` opens a real browser and asks you to log in.
 Google blocks that sign-in as automated often enough that it is no longer the

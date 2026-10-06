@@ -30,7 +30,11 @@ Batch tooling for the obsidian-triage plugin. Several flavors:
   first link-bearing reply that fxtwitter can't see. Burner account ONLY. See
   "twitter-cli X thread/reply escalation" below.
 - **Playwright crawlers** (`playwright-*.mjs`) — authenticated batch enrich.
-  LUNA-27. `playwright-crawl-youtube.mjs` is the **default YouTube path**.
+  LUNA-27. `playwright-crawl-youtube.mjs` is the **default YouTube path**; since
+  HIMMEL-4677 it runs `yt-scrapling-meta.py` first with NO cookie (metadata +
+  description via Scrapling in `~/.himmel/scrapling-venv`, transcript via
+  `yt-dlp` subtitles, `crawl_skill: scrapling-youtube`), and the logged-in
+  Playwright crawl is the fallback only when a storage state exists.
   `playwright-crawl-x.mjs` is **DEPRECATED** (LUNA-35) and superseded for X
   reply/thread capture by `twitter-cli-enrich.mjs`: X/Google anti-automation
   blocks login on automation-controlled browsers, so a burner session can't be
@@ -358,7 +362,9 @@ bun playwright-auth-save.mjs x
 # Browser opens. Log in normally. Script auto-detects success + saves state.
 ```
 
-**YouTube: use the Chrome converter first (HIMMEL-4271).** Google usually
+**YouTube: optional since HIMMEL-4677.** The crawler's primary path needs no
+cookie (Scrapling + yt-dlp); the storage state only feeds the Playwright
+fallback. If you want that fallback, use the Chrome converter (HIMMEL-4271): Google usually
 blocks the Playwright login, so from the himmel checkout run
 `python3 scripts/luna/youtube-state-from-chrome.py --profile Default` — it
 exports the signed-in Chrome profile's cookies into the same
@@ -406,7 +412,7 @@ frontmatter markers:
 
 ```yaml
 crawled_at: <ISO timestamp>
-crawl_skill: playwright-x | playwright-youtube
+crawl_skill: playwright-x | scrapling-youtube | playwright-youtube
 crawl_status: ok | partial | failed
 last_error: <short>   # only on partial/failed
 ```

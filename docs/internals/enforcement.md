@@ -587,7 +587,7 @@ leading slash).
 
 ## Claude PreToolUse Hooks
 
-**15 distinct guardrail scripts** are wired across the PreToolUse matchers in
+**16 distinct guardrail scripts** are wired across the PreToolUse matchers in
 `.claude/settings.json` (counted once each, regardless of how many `--chain`
 matchers a shared guardrail appears under) and fire BEFORE Claude executes
 tool calls: `auto-approve-safe-bash.sh`, `check-cr-marker-on-pr-create.sh`,
@@ -596,10 +596,12 @@ tool calls: `auto-approve-safe-bash.sh`, `check-cr-marker-on-pr-create.sh`,
 `block-git-stash.sh`, `block-rogue-claude-schedule.sh`,
 `block-chokepoint-env-prefix.sh`, `require-quiet-run.sh`,
 `block-edit-on-main.sh`, `guard-memory-capture.sh`,
-`orchestrator-inline-guard.sh`, `block-backend-tier.sh`, and
+`orchestrator-inline-guard.sh`, `block-backend-tier.sh`, `mcp-policy.sh`, and
 `auto-arm-on-cap.sh`. Thirteen BLOCK risky operations; one
 (`auto-approve-safe-bash`) GRANTS permission for safe ones so they don't
-hang; one (`auto-arm-on-cap`) is a fail-open watchdog that decides nothing.
+hang; one (`auto-arm-on-cap`) is a fail-open watchdog that decides nothing;
+one (`mcp-policy`) only tracks MCP calls and always allows — see
+[MCP policy tracking](#mcp-policy-tracking-himmel-4676).
 Ten FURTHER guards — `block-docker-privesc.sh` (HIMMEL-441),
 `block-merged-pr-commit.sh` (HIMMEL-512), `block-unresolved-cr-merge.sh`
 (HIMMEL-936), `block-rogue-codex-wsl.sh` (HIMMEL-999),
@@ -3894,6 +3896,56 @@ repo's `settings.json` was updated to point directly at the new file.
 Pairs with the pre-commit `mcp-plugin-refs` gate, which catches the
 same Atlassian MCP names in *committed* source files as defense-in-depth
 if this PreToolUse hook is bypassed or disabled.
+
+### MCP policy tracking (HIMMEL-4676)
+
+`scripts/hooks/mcp-policy.sh` is a **tracking + gating seam**, not a gate.
+It fires on every MCP call (matcher `mcp__.*`): in `.claude/settings.json` as
+its own entry after `block-backend-tier.sh`; in `.codex/hooks.json`, whose
+PreToolUse matchers must stay disjoint, as one `mcp__.*` chain
+`mcp-policy.sh+block-backend-tier.sh` (so in Codex, backend-tier's fail-closed
+jq branches also cover non-Atlassian MCP calls — a recorded `ponytail:` in
+`test-mcp-policy.sh` §8). As shipped it **always allows**. It classifies each
+call against the registry `scripts/guardrails/mcp-policy.json` and records what
+it *would* do:
+
+| class | meaning |
+|---|---|
+| `read` / `write` / `destructive` | the tool's class in its server's `tools` map |
+| `unknown-server` | the server is missing from `servers` |
+| `unlisted-tool` | the server is listed, the tool is not |
+| `malformed` | unparseable input, or a `tool_name` that is not `mcp__<server>__<tool>` in `[A-Za-z0-9_.-]` (ANSI and control bytes land here) |
+
+The would-verdict is `deny` for `unknown-server`, `unlisted-tool`, `malformed`,
+a server whose `verdict` is `deny`, a `destructive` tool not named in that
+server's `allow_destructive`, and an `off-box` server whose `provider` carries
+a `corpus:* purpose:*` deny (or `pending-operator`) row in
+[`egress-matrix.json`](../../scripts/guardrails/egress-matrix.json) (read only;
+the matrix stays authoritative). Everything else would-allow.
+
+**Audit.** One JSONL line per call to `$HOME/.himmel/state/mcp-audit.jsonl`:
+`ts, session, server, tool, class, egress, mode, verdict, reason`. No tool
+argument is ever written. Past `audit.max_bytes` (1 MiB) the log rotates to
+`.1`. To find what the registry is missing:
+`jq -r 'select(.class=="unknown-server" or .class=="unlisted-tool") | "\(.server) \(.tool)"' ~/.himmel/state/mcp-audit.jsonl | sort | uniq -c`.
+
+**Mode — the gating seam.** The registry's top-level `mode` covers unknown
+servers and malformed calls; a server's own `mode` overrides it for that
+server. `observe` (the only mode shipped) records and allows. `enforce` applies
+the would-verdict: a deny exits 2 and names the registry entry to add. Enforce
+is tested (`test-mcp-policy.sh` §5) but off everywhere; switching a server on is
+an operator decision for a later PR, once the audit log shows its tools are
+fully listed.
+
+**Fails open on every own error** — no `jq`, an unreadable or malformed
+registry, a jq error, the internal `timeout 2`, an unwritable audit dir. It is
+a tracker; it must never stall or refuse a call on its own bug. Measured p95
+is recorded in the PR that added it; `test-mcp-policy.sh` §9 holds a latency
+budget (`MCP_POLICY_P95_BUDGET_MS`).
+
+It does not replace `block-backend-tier.sh`: the Atlassian CLI redirect keeps
+its own matcher and still denies by design. Test seams:
+`MCP_POLICY_REGISTRY`, `MCP_POLICY_EGRESS_MATRIX`, `MCP_POLICY_AUDIT_LOG`.
 
 ### `auto-arm-on-cap.sh` — usage-cap watchdog (HIMMEL-220)
 

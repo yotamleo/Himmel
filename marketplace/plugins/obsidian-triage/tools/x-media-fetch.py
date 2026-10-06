@@ -9,7 +9,10 @@ an animated UI element, a caption-less visual) leaves nothing searchable behind.
 This rung captures it. For X clips whose body carries a video.twimg.com /
 pbs.twimg.com/media/ reference and which carry no media_enriched_at: marker:
 
-  - Download the tweet's media via gallery-dl (burner-account cookies).
+  - Download the tweet's media: Scrapling first, NO cookie (HIMMEL-4677:
+    x-scrapling-media.py reads the status page and its video.twimg.com
+    requests; curl / ffmpeg-HLS fetch the items), gallery-dl with the
+    burner-account cookies only as the fallback when it is configured.
   - Video items (incl. GIF-like tweet_video): ffmpeg -> mono 16kHz WAV -> local
     faster-whisper transcript. A SOUNDLESS video (the common tweet_video GIF -
     e.g. an animated UI element) has no audio to transcribe, so its first frame
@@ -50,7 +53,8 @@ HIMMEL-4107 - subtitles first, with provenance:
     came from and how much of the video it covers.
 
 Exit codes: 0 run completed (may include failed/partial clips), 1 bad usage,
-2 preflight (missing gallery-dl/ffmpeg or cookie file), 3 scoped-G-3 verify
+2 preflight (missing ffmpeg, or neither the scrapling venv nor
+gallery-dl + cookie file), 3 scoped-G-3 verify
 failed / reverted (used by --apply-digest and --flag-screen).
 """
 import argparse
@@ -65,6 +69,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -85,6 +90,12 @@ SLIDE_CAP = 20
 LONG_EDGE_MAX = 1600
 DEFAULT_WHISPER_MODEL = "base"
 DOWNLOAD_TIMEOUT = 180
+MEDIA_MAX_BYTES = 500 * 1024 * 1024
+SCRAPLING_HINT = (
+    "\n  or install the cookieless Scrapling backend (HIMMEL-4677): "
+    "python3 -m venv ~/.himmel/scrapling-venv ; ~/.himmel/scrapling-venv/bin/pip "
+    "install --require-hashes -r <plugin>/tools/requirements-scrapling.txt ; "
+    "~/.himmel/scrapling-venv/bin/python -m patchright install chromium")
 FFMPEG_TIMEOUT = int(os.environ.get("X_MEDIA_FFMPEG_TIMEOUT", "300"))
 # Separate seam for the soundless-video frame-extract subprocess (mirrors the IG
 # rung's HIMMEL-805 seam): FFMPEG_TIMEOUT is GLOBAL - it also guards extract_wav,
@@ -320,23 +331,67 @@ def cache_root() -> Path:
     return _home() / ".luna" / "x-media"
 
 
-def preflight():
-    missing = [b for b in ("gallery-dl", "ffmpeg") if shutil.which(b) is None]
+def scrapling_python():
+    """The python of the scrapling venv (tools/requirements-scrapling.txt), or
+    None when it is not installed. X_SCRAPLING_PYTHON overrides (tests)."""
+    override = (os.environ.get("X_SCRAPLING_PYTHON") or "").strip()
+    if override:
+        return override
+    py = _home() / ".himmel" / "scrapling-venv" / "bin" / "python"
+    return str(py) if py.is_file() else None
+
+
+def _batch_module():
+    """harvest-clip-body-batch.py: the HIMMEL-4361 backend routing lives there."""
+    import importlib.util
+    path = Path(__file__).with_name("harvest-clip-body-batch.py")
+    spec = importlib.util.spec_from_file_location("harvest_clip_body_batch", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def scrapling_permitted(vault: Path, url: str) -> bool:
+    """HIMMEL-4361 routing for the Scrapling slot, under its harvest name
+    `local-headless`: the HARVEST_SCRAPE_DENY kill switch, then the vault's
+    .harvest-backends (an unreadable file fails closed)."""
+    killed = {n.strip() for n in (os.environ.get("HARVEST_SCRAPE_DENY") or "").split(",")}
+    if killed & {"all", "local-headless"}:
+        return False
+    routes = _batch_module().load_backend_routes(vault)
+    if routes.error:
+        return False
+    hit = routes.match(url)
+    if hit is None:
+        return True
+    mode, names = hit
+    return ("local-headless" in names) == (mode == "only")
+
+
+def preflight(scrapling: bool):
+    """ffmpeg always; gallery-dl + the cookie only when Scrapling (the primary,
+    cookieless backend, HIMMEL-4677) is unavailable - then they are the
+    fallback. Returns the cookie path, or None when gallery-dl is not usable."""
+    missing = [b for b in ("gallery-dl", "ffmpeg")
+               if shutil.which(b) is None and (b == "ffmpeg" or not scrapling)]
     if missing:
         print(
             "x-media-fetch: missing required binaries: " + ", ".join(missing) +
             "\n  install: winget install yt-dlp.gallery-dl ; winget install "
-            "Gyan.FFmpeg   (or: uv tool install gallery-dl)",
+            "Gyan.FFmpeg   (or: uv tool install gallery-dl)" +
+            ("" if scrapling else SCRAPLING_HINT),
             file=sys.stderr,
         )
         sys.exit(2)
     cf = cookie_file()
+    if scrapling:
+        return cf if shutil.which("gallery-dl") and cf.is_file() else None
     if not cf.is_file():
         print(
             "x-media-fetch: cookie file missing: " + str(cf) +
             "\n  Export x.com cookies (logged into your BURNER account) with the "
             "Cookie-Editor extension in Netscape format, save to that path, then "
-            "chmod 600 it. (Cookie contents are never printed.)",
+            "chmod 600 it. (Cookie contents are never printed.)" + SCRAPLING_HINT,
             file=sys.stderr,
         )
         sys.exit(2)
@@ -380,6 +435,97 @@ def download_media(x: dict, cf: Path):
     if not files:
         return None, "no_media"             # retryable
     return files, None
+
+
+MEDIA_HOSTS = ("video.twimg.com", "pbs.twimg.com")
+
+
+def _fetch_item(item: dict, target: Path):
+    """One media item into target: curl for a direct file, ffmpeg (stream copy)
+    for an HLS master playlist. Returns None or an error token."""
+    url = str(item.get("url", ""))
+    p = urllib.parse.urlparse(url)
+    if p.scheme != "https" or (p.hostname or "").lower() not in MEDIA_HOSTS:
+        return "download_error"
+    if item.get("hls"):
+        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+               "-protocol_whitelist", "https,tls,tcp,crypto", "-i", url,
+               "-c", "copy", "-fs", str(MEDIA_MAX_BYTES), "-y", str(target)]
+        label = "ffmpeg-hls"
+    else:
+        cmd = ["curl", "-fsSL", "--max-redirs", "0", "--proto", "=https", "--max-time", "120",
+               "--max-filesize", str(MEDIA_MAX_BYTES), "-o", str(target), url]
+        label = "curl"
+    try:
+        got = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "download_timeout"
+    except OSError:
+        return f"{label.split('-')[0]}_missing"
+    if got.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
+        _emit_stderr_tail(label, got.stderr)
+        return "download_error"
+    if item.get("hls") and target.stat().st_size >= MEDIA_MAX_BYTES:
+        # -fs stops the copy at the cap and still exits 0: the file is truncated.
+        print(f"  {label}: stream reached the {MEDIA_MAX_BYTES}-byte cap, refused", file=sys.stderr)
+        target.unlink()
+        return "download_error"
+    return None
+
+
+def download_media_scrapling(x: dict, py: str):
+    """Primary backend (HIMMEL-4677): x-scrapling-media.py reads the status page
+    with NO cookie and returns its media URLs; each is fetched in tweet order as
+    NN.ext. Returns (files, None) or (None, error)."""
+    dest = cache_root() / x["shortcode"]
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    helper = str(Path(__file__).with_name("x-scrapling-media.py"))
+    try:
+        proc = subprocess.run([py, helper, "--url", x["url"], "--status-id", x["shortcode"]],
+                              capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, "download_timeout"
+    except OSError:
+        return None, "scrapling_missing"
+    try:
+        out = json.loads(proc.stdout)
+    except ValueError:
+        out = {"status": "error", "detail": "unparseable helper output"}
+    status = out.get("status")
+    if status != "ok":
+        if proc.returncode == 3:
+            return None, "scrapling_missing"
+        if status not in ("removed", "login_wall", "no_media"):
+            _emit_stderr_tail("x-scrapling-media", proc.stderr + str(out.get("detail", "")))
+            return None, "download_error"
+        return None, status
+    files = []
+    for n, item in enumerate(out.get("items") or [], start=1):
+        target = dest / f"{n:02d}{'.mp4' if item.get('kind') == 'video' else '.jpg'}"
+        error = _fetch_item(item, target)
+        if error:
+            return None, error
+        files.append(target)
+    if not files:
+        return None, "no_media"
+    return files, None
+
+
+def fetch_media(x: dict, cf, scrapling):
+    """Scrapling first (cookieless); gallery-dl (cookie) is the fallback for any
+    Scrapling miss when it is configured. Returns (files, error, backend)."""
+    if scrapling:
+        files, error = download_media_scrapling(x, scrapling)
+        if files:
+            return files, None, "scrapling"
+        if error == "removed" or cf is None:
+            return None, error, "scrapling"
+    if cf is None:
+        return None, "gallery_dl_missing", "gallery-dl"
+    files, error = download_media(x, cf)
+    return files, error, "gallery-dl"
 
 
 def classify(files):
@@ -1106,6 +1252,8 @@ def enrich_batch(args, selected, matched_total, remaining):
     enriched = 0
     partial = 0
     failed = 0
+    py = scrapling_python()
+    scrapling = py if py and scrapling_permitted(args.vault, "https://x.com/") else None
     for p, x in selected:
         relpath = p.relative_to(args.vault).as_posix()
         try:
@@ -1127,10 +1275,10 @@ def enrich_batch(args, selected, matched_total, remaining):
                          or fm0.get("media_probe_result") == "video")):
                 subs = fetch_subs(x, args.min_sub_coverage, dur_hint)
             if subs:
-                files, error = [], None
+                files, error, backend = [], None, "subs"
             else:
-                cf = preflight()
-                files, error = download_media(x, cf)
+                cf = preflight(bool(scrapling))
+                files, error, backend = fetch_media(x, cf, scrapling)
             if error:
                 text, has_crlf = read_clip(p)
                 fm, fm_raw, body, present = parse_frontmatter(text)
@@ -1273,7 +1421,8 @@ def enrich_batch(args, selected, matched_total, remaining):
             elif write_crawled(p, text, fm_raw, body, section, has_crlf,
                                extra=extra):
                 print(f"v {relpath}: {len(slide_embeds)} slides{qual_suffix} + "
-                      f"{len(transcripts)} transcript{src_note}")
+                      f"{len(transcripts)} transcript{src_note}"
+                      f"{'' if backend == 'subs' else f' [{backend}]'}")
                 enriched += 1
             else:
                 _cleanup_orphan_media(media_dir, slide_embeds,
