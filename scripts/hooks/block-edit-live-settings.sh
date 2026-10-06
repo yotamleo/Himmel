@@ -921,7 +921,98 @@ interp_home_write() {
     t=${t//"$bn"/}
     [[ $t =~ $ri ]] || return 1
     [[ $t =~ $rh ]] || return 1
-    [[ $t =~ $rw ]]
+    [[ $t =~ $rw ]] || return 1
+    # HIMMEL-4348: a home API named only inside a string literal is data
+    # (`write('call Path.home() to get it')`), so the pair is judged again on
+    # the text with literal contents blanked; any unsure reading keeps the
+    # raw-text deny above.
+    interp_literal_blank "$t" || return 0
+    [[ $_ILB_T =~ $rh ]]
+}
+
+# interp_literal_blank CMD_LC — set _ILB_T to the Bash command's words (ST_LW)
+# with the string-literal contents of each python/pypy/node/bun/deno body
+# (the word after `-c`, `-e`, `-p`, `--eval` or `--print` right after the
+# interpreter word; `deno eval` hits the dispatch words below) blanked to spaces, so the caller can tell
+# a home API named only as data from one in code (HIMMEL-4348). Returns 1 —
+# the caller keeps its raw-text deny — whenever the reading is unsure: the
+# tokenizer could not vouch for the command (TOK=0, a heredoc, PowerShell); a
+# dynamic-dispatch or spawn word anywhere (eval, exec, compile, getattr,
+# __import__, importlib, Function(, require(, import(, subprocess, system,
+# popen, spawn, …) that can turn a literal into code; an interpreter word
+# that is not `<interp> <flag> <body>`, a perl or ruby one (q()/%q() quoting
+# and `?'` char literals defeat the quote scan), or a body with a live `$` or
+# glob; and, in a body, triple quotes, a backtick, a backslash, a newline in a
+# literal, unbalanced quotes, a `#`, `/`, `%` or `?` outside a literal
+# (comments and regex literals that can hold a lone quote), or a quote whose
+# neighbours are not plain expression punctuation (a string prefix like
+# `f'`, a quote inside a comment). A literal whose content is exactly `home`
+# (`os.environ['HOME']`) or holds `$`, `@` or `{` (interpolation) is kept.
+# ponytail: a body that writes a literal as code to a file and runs it in the
+# same command (`import x` of a just-written x.py) reads as data — the same
+# ceiling as `python3 x.py` (interp_home_write's ponytail); upgrade path:
+# HIMMEL-4317.
+interp_literal_blank() {
+    local LC_ALL=C k=0 w b out=''
+    local dyn='eval|exec|compile|getattr|setattr|__import__|importlib|__builtins__|function[[:space:]]*\(|require[[:space:]]*\(|import[[:space:]]*\(|subprocess|system|popen|spawn|child_process|fork|runpy|pickle|marshal|ctypes|runin' \
+        rint='^(python[0-9.]*|pypy[0-9.]*|node|nodejs|bun|deno|perl[0-9.]*|ruby[0-9.]*)$'
+    [ "$TOK" = 1 ] || return 1
+    [[ $1 =~ $dyn ]] && return 1
+    while [ "$k" -lt "$ST_N" ]; do
+        w=${ST_LW[k]}
+        if [[ ${w##*/} =~ $rint ]]; then
+            case "${w##*/}" in perl* | ruby*) return 1 ;; esac
+            b=$((k + 2))
+            [ "$b" -lt "$ST_N" ] && [ "${ST_S[b]}" = "${ST_S[k]}" ] || return 1
+            case "${ST_LW[k + 1]}" in -c | -e | -p | --eval | --print) ;; *) return 1 ;; esac
+            [ "${ST_X[b]}" = 0 ] && [ "${ST_G[b]}" = 0 ] && [ -z "${ST_RO[b]}${ST_RO[k + 1]}" ] || return 1
+            _ilb_body "${ST_LW[b]}" || return 1
+            out="$out $w ${ST_LW[k + 1]} $_ILB_B"
+            k=$((b + 1))
+            continue
+        fi
+        out="$out $w"
+        k=$((k + 1))
+    done
+    _ILB_T=$out
+}
+
+# _ilb_body BODY — set _ILB_B to BODY with each '…'/"…" literal's contents
+# blanked (interp_literal_blank's rules); 1 when the body is unsure.
+_ilb_body() {
+    local s=$1 i=0 n=${#1} c q='' lit='' o='' pv='' cl=0
+    case "$s" in *"'''"* | *'"""'* | *'`'* | *\\*) return 1 ;; esac
+    while [ "$i" -lt "$n" ]; do
+        c=${s:i:1}
+        i=$((i + 1))
+        if [ -n "$q" ]; then
+            if [ "$c" != "$q" ]; then
+                case "$c" in $'\n' | $'\r') return 1 ;; esac
+                lit=$lit$c
+                continue
+            fi
+            case "$lit" in home | *[\$@\{]*) o=$o$q$lit$q ;; *) o=$o$q${lit//?/ }$q ;; esac
+            q='' cl=1 pv=$c
+            continue
+        fi
+        case "$c" in
+            ' ' | $'\t' | $'\n' | $'\r') o=$o$c; continue ;;
+            '#' | '/' | '%' | '?') return 1 ;;
+        esac
+        if [ "$cl" = 1 ]; then
+            case "$c" in ')' | ']' | '}' | ',' | ';' | ':' | '+' | '.') ;; *) return 1 ;; esac
+            cl=0
+        fi
+        case "$c" in
+            "'" | '"')
+                case "$pv" in '' | '(' | '[' | '{' | ',' | '=' | ':' | '+' | ';') ;; *) return 1 ;; esac
+                q=$c lit=''
+                ;;
+            *) o=$o$c pv=$c ;;
+        esac
+    done
+    [ -z "$q" ] || return 1
+    _ILB_B=$o
 }
 
 # is_readonly_allowlisted CMD_LC — the rule 1 exception: a short list of
@@ -1553,6 +1644,8 @@ _tok_sensitive_name() {
         GLOBIGNORE|EXECIGNORE|FIGNORE|FUNCNEST|OPTIND|OPTERR|TIMEFORMAT|INPUTRC) return 0 ;;
         TERM|TERMINFO|TERMCAP|COLUMNS|LINES|MAIL|MAILPATH|HOSTFILE|auto_resume|histchars) return 0 ;;
         BASH*|LD_*|DYLD_*|MALLOC*|LESS*|*PAGER*|GIT_*|SSH*|GREP*|RIPGREP*|JQ_*) return 0 ;;
+        # HIMMEL-4475: tar and unzip read default options from these.
+        TAR_*|UNZIP*|ZIPINFO*) return 0 ;;
         LC_*|XDG_*|_POSIX*|HIST*|COMP*|PS[0-9]|PROMPT*) return 0 ;;
     esac
     return 1
@@ -1586,7 +1679,7 @@ _tok_readonly_ok() {
         sg=${ST_S[k]}
         if [ "$sg" != "$s" ]; then
             [ "$s" -lt 0 ] || _tok_ro_segment || return 1
-            s=$sg first='' fk=-1 sub=''
+            s=$sg first='' fk=-1 sub='' _GGV=0 _GGD=0
         fi
         w=${ST_W[k]}
         lw=${ST_LW[k]}
@@ -1625,8 +1718,10 @@ _tok_readonly_ok() {
             # `git grep -O<pager>` / `--open-files-in-pager` runs a program
             # (HIMMEL-4367: git grep joined the read-only subcommands); git
             # takes any unique prefix of a long option, so `--op…` counts.
+            # HIMMEL-4475: a -e/-f value and a word after `--` are not
+            # options (_tok_gg_word).
             if [ "$first:$sub" = git:xgrep ]; then
-                case "$w" in -O* | -[!-]*O* | --op*) return 1 ;; esac
+                _tok_gg_word "$w" || return 1
             fi
             case "$first:$lw" in
                 # less: -o/-O (alone or in a cluster) and --log-file
@@ -1661,9 +1756,225 @@ _tok_ro_segment() {
         git)
             case "$sub" in xdiff|xshow|xlog|xstatus|xblame|xgrep) ;; *) return 1 ;; esac
             ;;
+        tar|unzip) _tok_archive_list || return 1 ;;
         *) return 1 ;;
     esac
     if [ "$first" = sed ]; then st_sed_args "$fk" 0 || return 1; fi
+    return 0
+}
+
+# _tok_gg_word WORD — one word after `git grep` (state _GGV: the next word is
+# an option's value; _GGD: `--` was seen; both reset per segment). Fails on
+# the pager option: -O in a short cluster before any -e/-f, or `--op…`.
+# HIMMEL-4475: the value of -e/-f (separate or glued, `-e-Open`) and every
+# word after `--` is a pattern or path, never an option. Any other option
+# taking a value (-A/-B/-C/-m) is not tracked: a -O as its value still
+# fails, which only over-denies (git refuses a non-number there anyway).
+_tok_gg_word() {
+    local r
+    if [ "$_GGV" = 1 ]; then _GGV=0; return 0; fi
+    [ "$_GGD" = 0 ] || return 0
+    case "$1" in
+        --) _GGD=1 ;;
+        -e|-f|--regexp|--file) _GGV=1 ;;
+        --op*) return 1 ;;
+        --*) ;;
+        -?*)
+            r=${1#-}
+            while [ -n "$r" ]; do
+                case "$r" in
+                    O*) return 1 ;;
+                    [ef]) _GGV=1; return 0 ;;
+                    [ef]*) return 0 ;;
+                esac
+                r=${r#?}
+            done
+            ;;
+    esac
+    return 0
+}
+
+# _tok_archive_list — in _tok_ro_segment's scope (fk, first): HIMMEL-4475,
+# the segment only LISTS an archive to stdout: `tar` with one cluster of
+# t/v/z/j/J/f letters holding t and ending in f (`-tf`, `tvzf`), or `unzip
+# -l`, then the archive and member names. Every later word is plain: no
+# option (`--checkpoint-action=exec=…`, `-x`, `-C`, `-d` write or run; GNU
+# tar reads options after operands too), no unquoted glob (a file named like
+# an option), no `:` in tar's archive (a remote archive runs rsh), and a `$`
+# only as `$NAME`/`${NAME}` of a name _tok_lit_name vouches for — a value
+# that cannot split or glob into an extra option word. Any other archive
+# form (an extraction, `$S` set elsewhere) keeps the deny: its operand cannot
+# be shown to stay off the live settings.
+_tok_archive_list() {
+    local j=$((fk + 1)) sg=${ST_S[fk]} n=0 a
+    while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
+        if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
+        a=${ST_W[j]}
+        if [ "$n" = 0 ]; then
+            case "$first:$a" in
+                unzip:-l) ;;
+                tar:*)
+                    case "${a#-}" in '' | *[!tvzjJf]* | *f?* | *[!f]) return 1 ;; esac
+                    case "$a" in *t*) ;; *) return 1 ;; esac
+                    ;;
+                *) return 1 ;;
+            esac
+        else
+            [ "${ST_G[j]}" = 0 ] || return 1
+            case "$a" in -?*) return 1 ;; esac
+            if [ "$first:$n" = tar:1 ]; then case "$a" in *:*) return 1 ;; esac; fi
+            if [ "${ST_X[j]}" = 1 ]; then _tok_lit_refs "$a" "$j" || return 1; fi
+        fi
+        n=$((n + 1))
+        j=$((j + 1))
+    done
+    [ "$n" -ge 2 ]
+}
+
+# _tok_lit_refs WORD K — every `$` in WORD (word K) is `$NAME` or `${NAME}`
+# of a name _tok_lit_name vouches for before word K, and the literal text
+# around the references does not start with `-`.
+_tok_lit_refs() {
+    local r=$1 lit='' nm re='^[A-Za-z_][A-Za-z0-9_]*'
+    while :; do
+        lit=$lit${r%%\$*}
+        [ "${r#*\$}" != "$r" ] || break
+        r=${r#*\$}
+        case "$r" in
+            '{'*)
+                nm=${r#\{}
+                nm=${nm%%\}*}
+                [ "${r#\{"$nm"\}}" != "$r" ] || return 1
+                r=${r#\{"$nm"\}}
+                [[ $nm =~ ${re}$ ]] || return 1
+                ;;
+            *)
+                [[ $r =~ $re ]] || return 1
+                nm=${BASH_REMATCH[0]}
+                r=${r#"$nm"}
+                ;;
+        esac
+        _tok_lit_name "$nm" "$2" || return 1
+    done
+    # The values never start with `-`; neither may the literal text left
+    # once the references are gone (`$S--checkpoint…` with S empty or unset).
+    case "$lit" in -?*) return 1 ;; esac
+    return 0
+}
+
+# _tok_lit_name NAME K — NAME is not exported, every assignment-shaped word
+# for it in the command sits before word K with a value that has no live
+# `$`, glob, quote-hidden glob character, whitespace or `:` and does not
+# start with `-`, and one of them surely ran in this shell before word K:
+# an assignment-only segment, not piped, reached only through `;` or a
+# newline. `$NAME` then expands to one of those literals — text that cannot
+# split, glob or read as an option.
+_tok_lit_name() {
+    local i=0 j t g sure=0 v
+    if _tok_exported "$1"; then return 1; fi
+    while [ "$i" -lt "$ST_N" ]; do
+        if [ "${ST_A[i]}" = 1 ] && [ "${ST_W[i]%%=*}" = "$1" ]; then
+            [ "$i" -lt "$2" ] && [ "${ST_X[i]}" = 0 ] && [ "${ST_G[i]}" = 0 ] || return 1
+            v=${ST_W[i]#*=}
+            case "$v" in -* | *[[:space:]]* | *[*?:[]*) return 1 ;; esac
+            g=${ST_S[i]} t=1 j=0
+            case "${ST_SEP[g]}" in '|'|'|&'|'&') t=0 ;; esac
+            while [ "$j" -lt "$g" ]; do
+                case "${ST_SEP[j]}" in ';'|nl) ;; *) t=0 ;; esac
+                j=$((j + 1))
+            done
+            j=0
+            while [ "$j" -lt "$ST_N" ]; do
+                if [ "${ST_S[j]}" = "$g" ] && [ -z "${ST_RO[j]}" ] && [ "${ST_A[j]}" != 1 ]; then t=0; fi
+                j=$((j + 1))
+            done
+            [ "$t" = 0 ] || sure=1
+        fi
+        i=$((i + 1))
+    done
+    [ "$sure" = 1 ]
+}
+
+# _tok_no_shell_ok — HIMMEL-4475: 0 when no part of the command can hand its
+# text to a shell that reads it again, so a quoted `$'` (`grep -E 'Passed$'`,
+# a regex anchor before the closing quote) is plain text, never ANSI-C
+# quoting. With TOK=1 the tokenizer has already found no live `$'…'` word.
+# Requires: no substitution; segments joined by ; && || | or a newline; each
+# segment's command word (after plain, non-sensitive, unexported
+# assignments) a plain word naming a program below that runs no text it is
+# given — git only as `git [-C DIR] <sub>` with a sub that runs no command
+# string (and git grep without its pager option), sed only with inert
+# scripts, sort without --compress-program, printf without -v.
+# ponytail: an allowlist — a program not listed (awk, find, xargs, python,
+# bash, …) keeps the old any-`$'` reading, fail-closed; upgrade path: add a
+# program here with a RED row when the den-ls corpus shows it.
+_tok_no_shell_ok() {
+    local k=0 s sg fk=-1 first='' sub='' w lw name pa=0 re='^[A-Za-z_][A-Za-z0-9_]*$'
+    [ "$ST_SUBST" = 0 ] || return 1
+    s=0
+    while [ "$s" -lt "$ST_NSEG" ]; do
+        case "${ST_SEP[s]}" in ';'|'&&'|'||'|'|'|nl|'') ;; *) return 1 ;; esac
+        s=$((s + 1))
+    done
+    s=-1
+    while [ "$k" -lt "$ST_N" ]; do
+        sg=${ST_S[k]}
+        if [ "$sg" != "$s" ]; then
+            [ "$s" -lt 0 ] || _tok_ns_segment || return 1
+            s=$sg fk=-1 first='' sub='' _GGV=0 _GGD=0 pa=0
+        fi
+        w=${ST_W[k]}
+        lw=${ST_LW[k]}
+        if [ -n "${ST_RO[k]}" ]; then
+            :
+        elif [ "$fk" -lt 0 ] && [ "${ST_A[k]}" = 1 ]; then
+            name=${w%%=*}
+            [[ $name =~ $re ]] || return 1
+            if _tok_sensitive_name "$name"; then return 1; fi
+            if _tok_exported "$name"; then return 1; fi
+            pa=1
+        elif [ "$fk" -lt 0 ]; then
+            # A prefix assignment (`X=1 grep …`) reaches the program's
+            # environment, which this allowlist does not model.
+            [ "$pa" = 0 ] && [ "${ST_X[k]}" = 0 ] && [ "${ST_G[k]}" = 0 ] || return 1
+            first=$lw fk=$k
+        else
+            case "$first:$lw" in
+                sort:--co*|printf:-v*) return 1 ;;
+            esac
+            if [ "$first" = git ]; then
+                if [ -z "$sub" ] && [ "$w" = -C ]; then
+                    sub=C
+                elif [ "$sub" = C ]; then
+                    sub=''
+                else
+                    [ -n "$sub" ] || sub=x$lw
+                fi
+                if [ "$sub" = xgrep ]; then _tok_gg_word "$w" || return 1; fi
+            fi
+        fi
+        k=$((k + 1))
+    done
+    [ "$s" -lt 0 ] || _tok_ns_segment || return 1
+    return 0
+}
+
+# _tok_ns_segment — the end of one segment, in _tok_no_shell_ok's scope.
+_tok_ns_segment() {
+    [ "$fk" -ge 0 ] || return 0
+    case "$first" in
+        cat|head|tail|grep|egrep|fgrep|cut|wc|tr|uniq|sort|echo|printf|ls|true|false|jq) ;;
+        diff|cmp|comm|basename|dirname|realpath|readlink|pwd|stat|cd|pushd|popd|mkdir) ;;
+        sed) st_sed_args "$fk" 1 || return 1 ;;
+        git)
+            case "$sub" in
+                xdiff|xshow|xlog|xstatus|xblame|xgrep|xrev-parse|xls-files|xcommit|xadd) ;;
+                xbranch|xmerge-base|xcat-file|xls-tree|xdescribe|xshortlog) ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
     return 0
 }
 
@@ -2857,9 +3168,36 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # is one word, so it is matched anywhere (`find -exec sh -c`, `xargs
         # bash -c`). Nesting is capped: a body found HIMMEL_LSB_DEPTH (the
         # child count above this run) 3 levels down is refused fail-closed.
+        # HIMMEL-4393: the NUMBER of runs is capped too, across all levels:
+        # a command with hundreds of bodies spawned hundreds of runs that
+        # outlived the hook chain's timeout. The top-level run makes one
+        # tally file, every run below inherits it (HIMMEL_LSB_TALLY), and
+        # each spawn first appends one byte to it and is refused fail-closed
+        # once it holds more than 16. Bound: every run in the tree is
+        # preceded by exactly one append to that one file (a run below the
+        # top never makes its own: without a tally it refuses), so the whole
+        # tree is at most 16 runs. 16 is over five times the most runs any
+        # earlier row of the suite needs (3: the depth-cap eval chain).
+        # ponytail: a SIGKILLed top-level run leaves its tally file behind
+        # (a few bytes in TMPDIR); upgrade path: sweep lsb-tally.* if seen.
         if [ "$TOK" = 1 ]; then
             idepth=${HIMMEL_LSB_DEPTH:-0}
             case "$idepth" in '' | *[!0-9]*) idepth=0 ;; esac
+            itally=''
+            [ "$idepth" = 0 ] || itally=${HIMMEL_LSB_TALLY-}
+            # _lsb_spend — count one spawn; fails once the tree is over 16
+            _lsb_spend() {
+                local spent
+                if [ -z "$itally" ]; then
+                    [ "$idepth" = 0 ] || return 1
+                    itally=$(mktemp "${TMPDIR:-/tmp}/lsb-tally.XXXXXX") || return 1
+                    trap 'rm -f "$itally"' EXIT
+                fi
+                [ -f "$itally" ] && printf x >>"$itally" || return 1
+                spent=$(wc -c <"$itally") || return 1
+                spent=${spent//[!0-9]/}
+                [ -n "$spent" ] && [ "$spent" -le 16 ]
+            }
             # _lsb_body BODY — judge BODY as a command in a run of its own
             _lsb_body() {
                 [ -n "$1" ] || return 0
@@ -2868,9 +3206,14 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                         deny_message "a $tool_name command" "$cmd" "interpreter bodies (eval, bash -c) nested more than 3 deep are not judged, so they are refused fail-closed; run the innermost command directly"
                         exit 2
                     fi
+                elif ! _lsb_spend; then
+                    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
+                        deny_message "a $tool_name command" "$cmd" "more than 16 nested command bodies (eval, bash -c, env -S, herestrings) in one command are not judged, so they are refused fail-closed; split it into smaller commands"
+                        exit 2
+                    fi
                 elif ! jq -n --arg cmd "$1" --arg cwd "$cwd" \
                     '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
-                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
+                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) HIMMEL_LSB_TALLY=$itally bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
                     echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c, eval, env -S or herestring in: $cmd" >&2
                     exit 2
                 fi
@@ -3150,7 +3493,19 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     case "$cmd_j" in
         *"\$'"*)
             case "$cmd_lc" in
-                *settings*|*claude*) ansi_c=1; mentions_settings=1 ;;
+                *settings*|*claude*)
+                    # HIMMEL-4475: a `$'` inside quotes (`grep -E 'Passed$'`)
+                    # is text when TOK=1 found no live ANSI-C word and no
+                    # segment can hand the text to a shell that reads it
+                    # again (_tok_no_shell_ok). The tokens come from the
+                    # unjoined text, so a line continuation (`$\<NL>'`)
+                    # keeps the old reading.
+                    if [ "$TOK" = 1 ] && [ "$cmd_j" = "$cmd" ] && _tok_no_shell_ok; then
+                        :
+                    else
+                        ansi_c=1; mentions_settings=1
+                    fi
+                    ;;
             esac
             ;;
     esac
