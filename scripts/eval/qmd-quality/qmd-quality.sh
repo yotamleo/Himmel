@@ -28,7 +28,10 @@
 # index mixing models) is refused with exit 2, naming both.
 #
 # Output in <out>: runs.jsonl (ranked lists + per-query ms), scores.tsv (also
-# printed), latency.tsv (median and p90 ms per mode).
+# printed), latency.tsv (median and p90 ms per mode), ci.json (bootstrap 95% CIs)
+# and cases.json (per-query reciprocal rank, for compare.ts-style paired tests).
+# Two runs are compared per query with `bun compare.ts --golden G --a A/runs.jsonl
+# --b B/runs.jsonl`.
 # QMD_EVAL_TIMEOUT_SECS bounds each mode (default 1800 s; the whole process group
 # is killed, as scripts/lib/qmd-bounded.sh does for qmd itself).
 # Exit: 0 scored, 2 eval failed or timed out, 3 a model is not cached, 64 usage error.
@@ -167,13 +170,14 @@ for mode in $(printf '%s\n' "$MODES" | tr ',' ' '); do
   [ "$rc" -eq 0 ] || { echo "qmd-quality: run-eval $mode failed (rc=$rc)" >&2; exit 2; }
   cat "$OUT/runs-$mode.jsonl" >>"$OUT/runs.jsonl"
 done
-bun "$HERE/score.ts" --golden "$GOLDEN" --runs "$OUT/runs.jsonl" >"$OUT/scores.tsv" || exit 2
+bun "$HERE/score.ts" --golden "$GOLDEN" --runs "$OUT/runs.jsonl" --ci-out "$OUT/ci.json" --cases-out "$OUT/cases.json" >"$OUT/scores.tsv" || exit 2
 bun "$HERE/latency.ts" --runs "$OUT/runs.jsonl" >"$OUT/latency.tsv" || exit 2
 cat "$OUT/scores.tsv"
 echo
 cat "$OUT/latency.tsv"
 # HIMMEL-4647: one eval-runs ledger row per run (scripts/eval/lib/eval_runs.py);
-# a ledger failure warns and never changes the eval's result.
-python3 "$HERE/../lib/eval_runs.py" qmd-quality "$OUT" --golden "$GOLDEN" --modes "$MODES" --scope "$SCOPE" \
+# a ledger failure warns and never changes the eval's result. HIMMEL-4650:
+# ledger-row.py adds the bootstrap CIs, per-query cases and the index identity.
+python3 "$HERE/ledger-row.py" "$OUT" --golden "$GOLDEN" --modes "$MODES" --scope "$SCOPE" \
   --candidate-limit "$CAND" --embed-model "${QMD_EMBED_MODEL:-}" --rerank-model "${QMD_RERANK_MODEL:-}" --index "$INDEX" \
   || echo "qmd-quality: WARNING eval-runs row not written" >&2

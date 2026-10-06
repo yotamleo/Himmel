@@ -1,5 +1,5 @@
 {
-  "_comment": "eval-compare noise bands (HIMMEL-4647). Per eval, a metric name or fnmatch glob -> {higher_is_better, band (absolute) | band_rel (fraction of the baseline)}. A metric with a CI in the ledger is gated by the CI instead; a metric matching nothing is reported as info, never gated. Bands are first guesses from n=1 history (specs/research/HIMMEL-4645-eval-infra.md section 2); HIMMEL-4648/4650 replace them with intervals.",
+  "_comment": "eval-compare noise bands (HIMMEL-4647). Per eval, a metric name or fnmatch glob -> {higher_is_better, band (absolute) | band_rel (fraction of the baseline)}. A metric with a CI in the ledger is gated by the CI instead; a metric matching nothing is reported as info, never gated. Bands are first guesses from n=1 history (specs/research/HIMMEL-4645-eval-infra.md section 2); HIMMEL-4648/4650 replace them with intervals. qmd-quality rows carry bootstrap 95% CIs on *.hit1, *.hit5 and *.mrr (HIMMEL-4650), so those bands only apply to a row without one; *.missing and the latency metrics keep their bands.",
   "lane-quality": {
     "accept_rate": {"higher_is_better": true, "band": 0.15},
     "accept_ok_rate": {"higher_is_better": true, "band": 0.25},

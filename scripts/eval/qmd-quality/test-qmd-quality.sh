@@ -152,5 +152,74 @@ eq "ledger: row carries the run's metrics" \
 python3 "$HERE/../lib/eval_runs.py" validate "$LEDGER" >/dev/null 2>&1; rc=$?
 eq "ledger: row passes validate" "$rc" "0"
 
+# --- HIMMEL-4650: bootstrap CIs, paired compare, config-stamped ledger row -----
+# Fixture: 8 queries; run A misses all; run B hits all at rank 1; run C hits 4 of 8.
+: >"$TMP/g8.jsonl"; : >"$TMP/ra.jsonl"; : >"$TMP/rb.jsonl"; : >"$TMP/rc.jsonl"
+for i in 1 2 3 4 5 6 7 8; do
+  printf '{"id":"q%s","query":"q","collections":["a"],"expect":["a/q%s.md"]}\n' "$i" "$i" >>"$TMP/g8.jsonl"
+  printf '{"id":"q%s","mode":"hybrid","ranked":["a/zz.md"]}\n' "$i" >>"$TMP/ra.jsonl"
+  printf '{"id":"q%s","mode":"hybrid","ranked":["a/q%s.md"]}\n' "$i" "$i" >>"$TMP/rb.jsonl"
+  if [ "$i" -le 4 ]; then
+    printf '{"id":"q%s","mode":"hybrid","ranked":["a/q%s.md"]}\n' "$i" "$i" >>"$TMP/rc.jsonl"
+  else
+    printf '{"id":"q%s","mode":"hybrid","ranked":["a/zz.md"]}\n' "$i" >>"$TMP/rc.jsonl"
+  fi
+done
+cj() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))[sys.argv[2]]; print(d["lo"], d["hi"])' "$1" "$2"; }
+bun "$HERE/score.ts" --golden "$TMP/g8.jsonl" --runs "$TMP/rb.jsonl" --ci-out "$TMP/ci-b.json" --cases-out "$TMP/cases-b.json" >/dev/null 2>&1; rc=$?
+eq "ci: score.ts --ci-out exits 0" "$rc" "0"
+eq "ci: an all-hit run has a degenerate hit1 interval [1,1]" "$(cj "$TMP/ci-b.json" hybrid.hit1)" "1 1"
+bun "$HERE/score.ts" --golden "$TMP/g8.jsonl" --runs "$TMP/ra.jsonl" --ci-out "$TMP/ci-a.json" >/dev/null 2>&1
+eq "ci: an all-miss run has [0,0]" "$(cj "$TMP/ci-a.json" hybrid.mrr)" "0 0"
+bun "$HERE/score.ts" --golden "$TMP/g8.jsonl" --runs "$TMP/rc.jsonl" --ci-out "$TMP/ci-c1.json" >/dev/null 2>&1
+bun "$HERE/score.ts" --golden "$TMP/g8.jsonl" --runs "$TMP/rc.jsonl" --ci-out "$TMP/ci-c2.json" >/dev/null 2>&1
+eq "ci: the bootstrap is seeded, so two runs give the same interval" "$(cat "$TMP/ci-c1.json")" "$(cat "$TMP/ci-c2.json")"
+eq "ci: 4 of 8 hits gives an interval that brackets 0.5 and has width" \
+  "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["hybrid.hit1"]; print(d["lo"] < 0.5 < d["hi"] and d["hi"] - d["lo"] > 0.3)' "$TMP/ci-c1.json")" "True"
+eq "ci: cases hold the per-query reciprocal rank" \
+  "$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["q1"]["hybrid.rr"], len(d))' "$TMP/cases-b.json")" "1 8"
+
+out=$(bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" --b "$TMP/rb.jsonl" 2>&1); rc=$?
+eq "compare: exit code" "$rc" "0"
+# 8 tied diffs: tie-corrected variance 51 - 504/48 = 40.5, z = 17.5/sqrt(40.5), p = 0.0060.
+has "compare: 8 up 0 down, sign p = 2 * 0.5^8, tie-corrected wilcoxon p" "$out" "$(printf 'hybrid\t8\t0.000\t1.000\t+1.000\t8\t0\t0.0078\t0.0060')"
+eq "compare: every flipped query is listed" "$(printf '%s\n' "$out" | grep -c '^flip')" "8"
+has "compare: a flip names the ranks" "$out" "$(printf 'flip\thybrid\tq1\trank_a=-\trank_b=1')"
+out=$(bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/rb.jsonl" --b "$TMP/rb.jsonl" 2>&1)
+has "compare: identical runs give p = 1 and no flips" "$out" "$(printf 'hybrid\t0\t1.000\t1.000\t+0.000\t0\t0\t1.0000\t1.0000')"
+bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" >/dev/null 2>&1; rc=$?
+eq "compare: a missing --b is a usage error" "$rc" "2"
+printf '{"id":"q1","mode":"lex","ranked":[]}\n' >"$TMP/rlex.jsonl"
+bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" --b "$TMP/rlex.jsonl" >/dev/null 2>&1; rc=$?
+eq "compare: no mode in common is refused" "$rc" "2"
+
+# ledger-row.py: CI, cases, and the config stamp land in the row.
+mkdir -p "$TMP/lr"
+printf 'mode\tcollection\tn\thit@1\thit@5\tmrr\tmissing\nhybrid-rerank\tALL\t8\t0.500\t0.500\t0.500\t0\n' >"$TMP/lr/scores.tsv"
+cp "$TMP/ci-c1.json" "$TMP/lr/ci.json"
+python3 - "$TMP" <<'PY'
+import json, sys
+t = sys.argv[1]
+ci = json.load(open(t + "/ci-c1.json"))
+json.dump({k.replace("hybrid.", "hybrid-rerank."): v for k, v in ci.items()}, open(t + "/lr/ci.json", "w"))
+json.dump({"q1": {"hybrid-rerank.rr": 1.0}}, open(t + "/lr/cases.json", "w"))
+PY
+echo idx >"$TMP/lr-index.sqlite"
+LL="$TMP/lr-ledger.jsonl"
+python3 "$HERE/ledger-row.py" "$TMP/lr" --golden "$TMP/g8.jsonl" --modes hybrid-rerank --embed-model E1 --index "$TMP/lr-index.sqlite" --ledger "$LL" >/dev/null 2>&1; rc=$?
+eq "ledger-row: exit 0" "$rc" "0"
+python3 "$HERE/../lib/eval_runs.py" validate "$LL" >/dev/null 2>&1; rc=$?
+eq "ledger-row: the row passes validate" "$rc" "0"
+eq "ledger-row: ci, level, method and cases are filled" \
+  "$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); print(sorted(r["ci"]), r["ci_level"], r["ci_method"], r["cases"])' "$LL")" \
+  "['hybrid-rerank.hit1', 'hybrid-rerank.hit5', 'hybrid-rerank.mrr'] 0.95 bootstrap {'q1': {'hybrid-rerank.rr': 1.0}}"
+eq "ledger-row: embed model, the DEFAULT rerank model and the index sha are stamped" \
+  "$(python3 -c 'import json,sys,hashlib; r=json.loads(open(sys.argv[1]).readline()); print(r["config"]["embed_model"], "qwen3-reranker" in r["config"]["rerank_model"], r["meta"]["index_sha256"]==hashlib.sha256(b"idx\n").hexdigest(), r["meta"]["index_bytes"])' "$LL")" \
+  "E1 True True 4"
+# eval-compare gates on the CI the row now carries (a delta inside the interval is not a regression).
+printf '%s\n' "$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); r["run_id"]="r2"; r["metrics"]["hybrid-rerank.hit1"]=0.45; print(json.dumps(r))' "$LL")" >>"$LL"
+HIMMEL_EVAL_RUNS_LEDGER="$LL" python3 "$HERE/../eval-compare" qmd-quality >/dev/null 2>&1; rc=$?
+eq "eval-compare: a drop inside the bootstrap CI is not a regression" "$rc" "0"
+
 echo "test-qmd-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
