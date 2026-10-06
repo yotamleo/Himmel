@@ -1,0 +1,11 @@
+{
+  "name": "config-ui-agui-web",
+  "private": true,
+  "description": "HIMMEL-4480 PR3: the AG-UI streamed agent view (React + @ag-ui/client), bundled with Bun into dist/. The reducer (src/reducer.ts) has no runtime imports, so its suite runs without an install.",
+  "scripts": { "build": "bun build ./index.html --outdir dist --production" },
+  "dependencies": {
+    "@ag-ui/client": "1.0.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  }
+}

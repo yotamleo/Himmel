@@ -1,0 +1,95 @@
+/* The AG-UI run view. Evolves config-ui's tokens (public/app.css): same palette and Plex pair, but prose is set
+   in Plex Sans and only machine text (tool names, args, paths) in Plex Mono. The one bold element is the run
+   strip: parallel tool calls as lanes over time. Motion is limited to bars growing and the text caret. */
+:root{
+  --bg:#121416; --panel:#191c1f; --line:#2a2f34; --fg:#e8e2d6; --dim:#8e959c;
+  --accent:#9fb7cf; --ok:#7fae8a; --warn:#d1a85f; --fail:#d9796b; --off:#6f767d;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --sans:"IBM Plex Sans",system-ui,sans-serif;
+  --tint:18%; color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
+  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light}}
+:root[data-theme="light"]{
+  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
+  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
+code,pre{font-family:var(--mono)}
+code{font-size:.9em;background:var(--panel);padding:0 4px;border-radius:2px}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.top{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;padding:10px 24px;border-bottom:1px solid var(--line);font:12.5px var(--mono)}
+.brand{font-weight:600}
+.run,.meta{color:var(--dim)}
+.meta{font-variant-numeric:tabular-nums}
+.state::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:currentColor;vertical-align:1px}
+.state.running{color:var(--ok)}.state.finished{color:var(--dim)}.state.error{color:var(--fail)}.state.idle{color:var(--warn)}
+.btn{cursor:pointer;background:none;border:1px solid var(--line);border-radius:3px;padding:2px 10px;font:12px var(--mono);margin-left:auto}
+.btn:hover{border-color:var(--accent)}
+
+/* run strip */
+.strip{padding:12px 24px 14px;border-bottom:1px solid var(--line)}
+.axis{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);margin-bottom:6px;font-variant-numeric:tabular-nums}
+.lanes{--lane:26px;position:relative;background:repeating-linear-gradient(transparent 0 11px,var(--line) 11px 12px,transparent 12px var(--lane))}
+.bar{position:absolute;height:22px;min-width:6px;padding:0 6px;cursor:pointer;text-align:left;overflow:hidden;
+  border:0;border-left:2px solid var(--c);border-radius:2px;background:color-mix(in srgb,var(--c) var(--tint),var(--bg));
+  font:11.5px/22px var(--mono);white-space:nowrap;transition:width .25s linear}
+.bar span{display:block;overflow:hidden;text-overflow:ellipsis}
+.bar i{font-style:normal;color:var(--dim)}
+.bar.running{--c:var(--accent)}.bar.done{--c:var(--ok)}.bar.error{--c:var(--fail)}
+.bar:hover{background:color-mix(in srgb,var(--c) calc(var(--tint) * 2),var(--bg))}
+
+/* transcript + panel */
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:40px;padding:24px;max-width:1200px}
+.transcript{min-width:0}
+.msg{max-width:68ch;margin:4px 0 16px}
+.caret{display:inline-block;width:.5em;height:1.05em;margin-left:2px;background:var(--accent);vertical-align:-3px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.quiet{color:var(--dim);font-size:13.5px}
+.run-error{color:var(--fail)}
+
+.group{margin:0 0 16px}
+.group-label{font:12px var(--mono);color:var(--dim);margin:0 0 6px}
+.group-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;align-items:start}
+.group-cards .call{margin:0}
+.call{margin:0 0 16px;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--c);border-radius:2px}
+.call.running{--c:var(--accent)}.call.done{--c:var(--ok)}.call.error{--c:var(--fail)}
+.call-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:baseline;width:100%;padding:8px 10px;
+  background:none;border:0;cursor:pointer;text-align:left;font:12.5px var(--mono)}
+.call-name{font-weight:600}
+.call-sum{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.call-state{color:var(--c);font-size:11.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.call-body{border-top:1px solid var(--line);padding:8px 10px;display:grid;gap:8px}
+.field span{display:block;font-size:12px;color:var(--dim)}
+.field pre{margin:2px 0 0;font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
+
+.panel{position:sticky;top:16px;align-self:start}
+.panel h2{font:600 16px var(--sans);margin:0}
+.panel-sub{color:var(--dim);font-size:13px;margin:2px 0 12px}
+.settled{display:block}
+.ticket{white-space:nowrap}
+.rounds{display:flex;gap:4px;margin:0 0 18px}
+.rounds i{flex:1;height:4px;background:var(--line)}
+.rounds i.on{background:var(--accent)}
+.sev h3{display:flex;justify-content:space-between;font:500 12.5px var(--mono);margin:16px 0 0;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.sev.crit h3{color:var(--fail)}.sev.major h3,.sev.imp h3{color:var(--warn)}.sev.minor h3,.sev.sug h3,.sev.other h3{color:var(--dim)}
+.sev ul{list-style:none;margin:0;padding:0}
+.finding{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:8px 0;border-bottom:1px solid var(--line);font-size:14px}
+.f-loc{color:var(--dim);font:12px var(--mono);overflow-wrap:anywhere}
+.verdict{align-self:start;font:11.5px var(--mono);padding:0 6px;border:1px solid currentColor;border-radius:2px;white-space:nowrap}
+.verdict.open{color:var(--warn)}.verdict.agreed,.verdict.fixed{color:var(--ok)}.verdict.deferred{color:var(--accent)}
+.verdict.disproved{color:var(--off);border-color:var(--line)}.verdict.conflict,.verdict.unaddressed{color:var(--fail)}
+
+@media (max-width:760px){
+  .top,.strip{padding-inline:16px}
+  .layout{grid-template-columns:minmax(0,1fr);gap:24px;padding:16px}
+  .panel{position:static;order:-1}
+  .group-cards{grid-template-columns:minmax(0,1fr)}
+}
+@media (prefers-reduced-motion: reduce){
+  .bar{transition:none}
+  .caret{animation:none}
+}
