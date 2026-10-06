@@ -494,6 +494,21 @@ export HOME=home
 _r4253 "w HOME=home : cd \"\$D\" && ls > ~; echo done denies" block "cd \"\$D\" && ls > ~; echo done" "$FIX/wt"
 export HOME="$_SAVED_HOME_4253"
 
+echo "== HIMMEL-4504: quoted / escaped spellings of a git read that runs a program =="
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+_r4138 "4504a -c \"core.pager=…\" (dq) git -C primary log"         block 'git -C @P@ -c "core.pager=sh -c x" log'
+_r4138 "4504b -c \$'core.pager=x' (ANSI-C) git -C primary log"      block "git -C @P@ -c \$'core.pager=x' log"
+_r4138 "4504c -c core.pag\\er=x (escaped) git -C primary log"       block 'git -C @P@ -c core.pag\er=x log'
+_r4138 "4504d grep '--open-files-in-pager=x' (sq) on primary"       block "git -C @P@ grep '--open-files-in-pager=x' foo"
+_r4138 "4504e \"--exec-path=/tmp/x\" (dq) git -C primary status"    block 'git "--exec-path=/tmp/x" -C @P@ status'
+_r4138 "4504f diff \"--ext-diff\" (dq) on primary"                  block 'git -C @P@ diff "--ext-diff"'
+_r4138 "4504g cd primary && git -c diff.external=x diff"            block 'cd @P@ && git -c diff.external=x diff'
+_subst_row "4504h cwd=primary git grep -Ox foo"                     block 'git grep -Ox foo' "$_PR"
+_r4138 "4504i -c \"color.ui=never\" git -C primary log (ALLOW)"     allow 'git -C @P@ -c "color.ui=never" log -1'
+_r4138 "4504j git -C primary diff \"--no-ext-diff\" (ALLOW)"        allow 'git -C @P@ diff "--no-ext-diff"'
+}
+
 echo "== HIMMEL-4476: loop keywords and read-only commands in a body, eval as a grep argument =="
 # Every row runs from both cwds: a bare word in a body resolves against the
 # cwd, so the primary cwd is where `until`/`sleep`/`0.1` used to deny. The
