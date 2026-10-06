@@ -282,5 +282,89 @@ bash "$RUN" table "$TMP/out1" >"$TMP/table.md" 2>&1
 check "table has a row per task" '[ "$(grep -c "| native | claude-haiku-4-5 |" "$TMP/table.md")" -ge 2 ]'
 check "table has a header" 'grep -q "^| lane | model | task |" "$TMP/table.md"'
 
+echo "5. repeats, bootstrap CIs and judge calibration (HIMMEL-4648)"
+: >"$TMP/fake.log.judge"
+bash "$RUN" run --lane native --model m --tasks shell-red-green,finding-verify --reps 2 --max-usd 9 \
+  --out "$TMP/out21" >"$TMP/run21.log" 2>&1
+rc=$?
+R21="$TMP/out21/runs.jsonl"
+check "--reps 2 runs every task twice" '[ "$rc" -eq 0 ] && [ "$(jq -s -r "map(\"\(.task):\(.rep)\") | sort | join(\",\")" "$R21")" = "finding-verify:1,finding-verify:2,shell-red-green:1,shell-red-green:2" ]'
+check "a repeat keeps its own judge packet" '[ -s "$TMP/out21/shell-red-green.judge-packet.md" ] && [ -s "$TMP/out21/shell-red-green.r2.judge-packet.md" ]'
+check "rows record the judge model" '[ "$(jq -s -r ".[0].judge_model" "$R21")" = opus ]'
+L21="$(jq -sc "map(select(.artifact | contains(\"/out21/\")))[0]" "$EL")"
+check "the ledger row carries reps 2 and n = distinct tasks" '[ "$(jq -r "\"\(.reps) \(.n) \(.config.tasks | length)\"" <<<"$L21")" = "2 2 2" ]'
+check "the ledger row carries a bootstrap 95% CI per task and criterion" 'jq -e ".ci_level == 0.95 and .ci_method == \"bootstrap-percentile\" and .ci[\"shell-red-green.judge_correctness\"].lo == 4 and .ci.judge_correctness.hi == 4" <<<"$L21" >/dev/null'
+check "a ledger row with reps validates" 'python3 "$HERE/../lib/eval_runs.py" validate "$EL" >/dev/null'
+for v in 0 x; do
+  if bash "$RUN" run --lane native --model m --tasks shell-red-green --reps "$v" --out "$TMP/out-reps-$v" >/dev/null 2>&1; then
+    bad "--reps $v is refused"
+  else ok "--reps $v is refused"; fi
+done
+
+# Fixture rows, no model call: task a passes twice (judge 4 then 5), task b
+# fails three times (judge 2, 4, and one row with no judge score).
+FX="$TMP/fx1"; mkdir -p "$FX"
+fxrow() { # task rep accept_ok correctness|null
+  jq -nc --arg t "$1" --argjson r "$2" --argjson ok "$3" --argjson c "$4" '{run_id:"fx", lane:"native", model:"m", effort:"", task:$t, rep:$r,
+    base_sha:"b", accept_passed:(if $ok then 1 else 0 end), accept_total:1, accept_ok:$ok, scope_ok:true, judge_model:"opus",
+    judge:(if $c == null then null else {correctness:$c, scope_discipline:4, test_quality:3, honesty:4, notes:"n"} end)}'
+}
+{ fxrow a 1 true 4; fxrow a 2 true 5; fxrow b 1 false 2; fxrow b 2 false 4; fxrow b 3 false null; } >"$FX/runs.jsonl"
+for s in a a.r2 b b.r2; do echo "packet $s" >"$FX/$s.judge-packet.md"; done
+
+bash "$RUN" table "$FX" >"$TMP/table-fx.md" 2>&1
+check "table reports mean and bootstrap 95% CI per task and criterion" 'grep -E "^\| native \| m \| a \| 2 \|" "$TMP/table-fx.md" | grep -q "4.50 \[4.00, 5.00\]"'
+check "a constant criterion has a zero-width CI" 'grep -E "^\| native \| m \| a \| 2 \|" "$TMP/table-fx.md" | grep -q "4.00 \[4.00, 4.00\]"'
+check "a missing judge score is counted, not dropped" 'grep -E "^\| native \| m \| b \| 3 \|" "$TMP/table-fx.md" | grep -q "3.00 \[2.00, 4.00\]" && grep -E "^\| native \| m \| b \| 3 \|" "$TMP/table-fx.md" | grep -qE "\| 1 \|$"'
+
+python3 "$HERE/../lib/eval_runs.py" lane-quality "$FX" --run-id fx --ledger "$TMP/fx-ledger.jsonl" >/dev/null 2>&1
+FXL="$TMP/fx-ledger.jsonl"
+check "fixture ledger row: per-task CI and missing count" 'jq -e ".ci[\"a.judge_correctness\"] == {lo: 4, hi: 5} and .metrics[\"b.judge_missing\"] == 1 and .metrics.judge_missing == 1 and .reps == 3 and .n == 2" "$FXL" >/dev/null'
+check "fixture ledger cases are per-task means" '[ "$(jq -r ".cases.a.judge_correctness" "$FXL")" = 4.5 ]'
+
+# Calibration math, by hand: correctness on accept-pass {4,5} vs accept-fail
+# {2,4} -> AUC 3.5/4 = 0.875; point-biserial r = 1.5 / sqrt(4.75) = 0.6882.
+bash "$RUN" calibration "$FX" --json --no-ledger >"$TMP/cal.json" 2>"$TMP/cal.err"
+check "calibration: AUC of correctness against accept_ok" 'jq -e ".metrics.auc_correctness == 0.875" "$TMP/cal.json" >/dev/null'
+check "calibration: point-biserial of correctness against accept_ok" 'jq ".metrics.pb_correctness" "$TMP/cal.json" | awk "{v = \$1} END {exit !(NR == 1 && v > 0.6882 && v < 0.6883)}"'
+check "calibration counts the row with no judge score" 'jq -e ".metrics.judge_missing == 1 and .n == 4" "$TMP/cal.json" >/dev/null'
+check "calibration without a second judge reports no kappa" 'jq -e ".metrics | has(\"kappa_correctness\") and .kappa_correctness == null" "$TMP/cal.json" >/dev/null'
+check "the calibration report prints its table" 'bash "$RUN" calibration "$FX" --no-ledger 2>/dev/null | grep -qF "| correctness | 0.875 ["'
+check "one judge score beside a missing one gets no CI" 'python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import eval_runs as e; s = e.lane_quality_stats([{\"task\": \"x\", \"judge\": {\"correctness\": 3}}, {\"task\": \"x\"}])[\"x\"]; sys.exit(not (s[\"judge_correctness\"][\"ci\"] is None and s[\"judge_missing\"] == 1))" "$HERE/../lib"'
+check "a calibration with only one class reports no AUC" 'jq -c "select(.accept_ok)" "$FX/runs.jsonl" >"$TMP/one.jsonl" && mkdir -p "$TMP/fx-one" && mv "$TMP/one.jsonl" "$TMP/fx-one/runs.jsonl" && bash "$RUN" calibration "$TMP/fx-one" --json --no-ledger | jq -e ".metrics.auc_correctness == null" >/dev/null'
+
+# Weighted kappa (quadratic) by hand: identical raters 1, independent 0,
+# reversed extremes -1.
+kap() { python3 -c 'import sys,json; sys.path.insert(0, sys.argv[1]); import lq_stats; print(lq_stats.weighted_kappa(json.loads(sys.argv[2]), json.loads(sys.argv[3])))' "$HERE" "$1" "$2"; }
+check "weighted kappa: identical raters = 1" '[ "$(kap "[1,2,3,4,5]" "[1,2,3,4,5]")" = 1.0 ]'
+check "weighted kappa: independent raters = 0" '[ "$(kap "[1,1,2,2]" "[1,2,1,2]")" = 0.0 ]'
+check "weighted kappa: reversed extremes = -1" '[ "$(kap "[1,5]" "[5,1]")" = -1.0 ]'
+
+: >"$TMP/fake.log"; : >"$TMP/fake.log.judge"
+bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --max-usd 1 >"$TMP/cal2.json" 2>"$TMP/cal2.err"
+rc=$?
+check "second-judge pass judges every stored packet once" '[ "$rc" -eq 0 ] && [ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 4 ]'
+check "second judge uses the given model and effort, budget-capped, no tools" 'grep -- "--json-schema" "$TMP/fake.log" | grep -- "--model sonnet" | grep -- "--effort low" | grep -q -- "--max-budget-usd"'
+check "second judge rescores the stored packet" 'grep -q "packet a.r2" "$TMP/fake.log.judge"'
+check "second judge result stored per row" '[ -s "$FX/a.r2.judge2.sonnet-low.json" ]'
+check "weighted kappa against a constant second judge is 0" 'jq -e ".metrics.kappa_correctness == 0 and .metrics.n_kappa == 4" "$TMP/cal2.json" >/dev/null'
+check "calibration writes a valid eval-runs row" '[ "$(jq -s -r "map(select(.eval == \"lane-quality-calibration\")) | length" "$EL")" = 1 ] && python3 "$HERE/../lib/eval_runs.py" validate "$EL" >/dev/null'
+: >"$TMP/fake.log"
+bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >"$TMP/cal3.json" 2>/dev/null
+check "a stored second-judge result is reused, never re-judged" '! grep -q -- "--json-schema" "$TMP/fake.log" && jq -e ".metrics.n_kappa == 4" "$TMP/cal3.json" >/dev/null'
+: >"$FX/a.r2.judge2.sonnet-low.json"; : >"$TMP/fake.log"
+bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >/dev/null 2>&1
+check "an empty second-judge result is judged again" '[ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 1 ] && [ -s "$FX/a.r2.judge2.sonnet-low.json" ]'
+: >"$TMP/fake.log"
+LQ_FAKE_TOKEN=SKIPPED-BANK bash "$RUN" calibration "$FX" --judge2-model haiku --json --no-ledger >/dev/null 2>&1
+rc=$?
+check "a bank refusal stops the second-judge pass before any call" '[ "$rc" -eq 75 ] && [ ! -s "$TMP/fake.log" ]'
+mkdir -p "$TMP/rel/fxr" && cp "$FX/runs.jsonl" "$FX"/*.judge-packet.md "$TMP/rel/fxr/"
+: >"$TMP/fake.log.judge"
+(cd "$TMP/rel" && bash "$RUN" calibration fxr --judge2-model haiku --json --no-ledger >/dev/null 2>&1)
+rc=$?
+check "a relative run dir still feeds the second judge its packet" '[ "$rc" -eq 0 ] && grep -q "packet b.r2" "$TMP/fake.log.judge"'
+check "weighted kappa ignores a pair off the 1..5 scale" '[ "$(kap "[1,2,6]" "[1,2,3]")" = 1.0 ]'
+
 echo "test-lane-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
