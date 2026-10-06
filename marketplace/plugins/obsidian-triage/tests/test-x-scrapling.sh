@@ -56,6 +56,13 @@ python3 "$HELPER" --from-html "$FIX/hls-quote.html" --net-log "$FIX/hls-quote.ne
   --status-id 2105643919119696297 >"$tmp/quoted.json"
 assert "quoted status yields only its own media" "image" \
   "$(jq_py "$tmp/quoted.json" '" ".join(i["kind"] for i in d["items"])')"
+# The focal tweet's own permalink (its timestamp) sits AFTER the quoted post;
+# with the pre-quote video link gone, that trailing link alone must identify it.
+sed 's#/status/2106396375269134597/video/1#/i/videos/1#g' "$FIX/hls-quote.html" >"$tmp/trailing.html"
+python3 "$HELPER" --from-html "$tmp/trailing.html" --net-log "$FIX/hls-quote.netlog" \
+  --status-id 2106396375269134597 >"$tmp/trailing.json"
+assert "trailing permalink identifies the status" "ok 1" \
+  "$(jq_py "$tmp/trailing.json" 'd["status"]+" "+str(len(d.get("items", [])))')"
 
 # --- Test 3: streamed video with no captured playlist -> error, never short ok
 echo "Test 3: HLS without a network log"
@@ -105,6 +112,11 @@ cat > "$tmp/bin/ffmpeg" <<'STUB'
 echo "ffmpeg $*" >> "$STUB_CALLS"
 for last in "$@"; do :; done
 [ "$last" = "-" ] || echo "fake media" > "$last"
+# FAKE_FFMPEG_FULL: -fs stopped the copy at the cap (a sparse file that size).
+if [ -n "${FAKE_FFMPEG_FULL:-}" ]; then
+  cap=""; while [ $# -gt 0 ]; do [ "$1" = "-fs" ] && cap="$2"; shift; done
+  [ -z "$cap" ] || python3 -c 'import sys; open(sys.argv[1], "r+b").truncate(int(sys.argv[2]))' "$last" "$cap"
+fi
 STUB
 cat > "$tmp/gallery-dl" <<'STUB'
 #!/usr/bin/env bash
@@ -167,6 +179,11 @@ make_vault "$tmp/v6" 6006
 run_tool "$tmp/v6" >"$tmp/v6.out" 2>"$tmp/v6.err"
 grep -qF -- 'ffmpeg -nostdin -hide_banner -loglevel error -protocol_whitelist https,tls,tcp,crypto -i https://video.twimg.com/amplify_video/9/pl/M.m3u8?tag=1 -c copy' "$tmp/calls" && a=ok || a=no
 assert "ffmpeg stream-copies the master playlist, https-only" ok "$a"
+: >"$tmp/calls"; make_vault "$tmp/v6b" 6016
+FAKE_FFMPEG_FULL=1 run_tool "$tmp/v6b" >"$tmp/v6b.out" 2>"$tmp/v6b.err"
+assert "an HLS copy stopped at the size cap is refused, never processed" 1 "$(grep -c '^ffmpeg ' "$tmp/calls")"
+grep -q '^x_media_pending: true$' "$tmp/v6b/Clippings/clip.md" && a=ok || a=no
+assert "the capped clip stays pending" ok "$a"
 
 # --- Test 7: an off-host item URL is refused before any download ------------
 echo "Test 7: media host allowlist in the fetcher"

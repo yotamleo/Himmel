@@ -47,7 +47,10 @@ def _https_host(u, host):
 
 def main_article(page_html, status_id):
     """The status's own <article> up to its first nested <article> (a quoted
-    post) or its close, whichever comes first. None when no article names it."""
+    post) or its close, whichever comes first. None when no article names it.
+    The article is identified by its own permalink, which may also sit AFTER
+    the quoted post (a focal tweet's timestamp): that tail is searched too."""
+    own = re.compile(rf"/status/{status_id}(?![0-9])")
     for m in ARTICLE_OPEN.finditer(page_html):
         start = m.end()
         close = page_html.find("</article>", start)
@@ -55,8 +58,13 @@ def main_article(page_html, status_id):
             continue
         nested = ARTICLE_OPEN.search(page_html, start, close)
         region = page_html[start:nested.start() if nested else close]
-        if re.search(rf"/status/{status_id}(?![0-9])", region):
+        if own.search(region):
             return region
+        if nested:
+            tail_start = close + len("</article>")
+            nxt = ARTICLE_OPEN.search(page_html, tail_start)
+            if own.search(page_html, tail_start, nxt.start() if nxt else len(page_html)):
+                return region
     return None
 
 

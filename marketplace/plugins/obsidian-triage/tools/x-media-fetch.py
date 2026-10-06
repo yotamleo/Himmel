@@ -465,6 +465,11 @@ def _fetch_item(item: dict, target: Path):
     if got.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
         _emit_stderr_tail(label, got.stderr)
         return "download_error"
+    if item.get("hls") and target.stat().st_size >= MEDIA_MAX_BYTES:
+        # -fs stops the copy at the cap and still exits 0: the file is truncated.
+        print(f"  {label}: stream reached the {MEDIA_MAX_BYTES}-byte cap, refused", file=sys.stderr)
+        target.unlink()
+        return "download_error"
     return None
 
 
