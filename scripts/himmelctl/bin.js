@@ -1491,24 +1491,41 @@ function offeredCadenceRows(lanes, vaultMode, platform, registry) {
 // this file.
 //
 // HIMMEL-4597: a row flagged `vm_proof` (cadence-registry.json) is still
-// offered, but only pre-selected when the vm.mode route is a VM. `vmAnswer` is
-// the wizard's own vm answer when it was asked this run; otherwise the
-// resolver decides (vmProofRoute()). Under vm.mode=none (rc 1) an EXPLICIT
+// offered, but only pre-selected when the vm.mode route is a VM. The resolver
+// decides (vmProofRoute()), on the config as the wizard will leave it: `doc`
+// with the wizard's own vm answer applied, or the file itself when the answer
+// changes nothing (J1947 B1). Under vm.mode=none (rc 1) an EXPLICIT
 // selection arms it (the operator's ack — remembered in vmProofAcked so the
 // apply step lets it through); under a resolver error (rc 2) it is not
 // armable at all.
 const vmProofAcked = new Set();
 
-function vmProofRoute(vmAnswer) {
-  if (vmAnswer) return { rc: vmAnswer.mode === 'none' ? 1 : 0 };
-  let r;
+// The resolver's rc is the single source of truth: validateVm is only a first
+// filter, and a value JS accepts but the resolver rejects (a JSON float port,
+// an ssh target with a char Python counts as whitespace) is a config error.
+// With no doc (or an answer that changes nothing) it reads the config file
+// the wizard writes; otherwise a temp copy of doc with the answer applied.
+function vmProofRoute(doc, vmAnswer) {
+  let cfg = lunaConfigLib.configPath();
+  let tmp;
   try {
-    r = spawnSync(resolveBash(), [toBashPath(path.join(repoRoot(), 'scripts', 'lib', 'vm-mode.sh')), 'route'], { encoding: 'utf8' });
+    if (doc && vmAnswer !== undefined) {
+      const probe = JSON.parse(JSON.stringify(doc));
+      if (applyVmAnswer(probe, vmAnswer)) {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'himmelctl-vm-'));
+        cfg = path.join(tmp, 'config.json');
+        fs.writeFileSync(cfg, JSON.stringify(probe));
+      }
+    }
+    const r = spawnSync(resolveBash(), [toBashPath(path.join(repoRoot(), 'scripts', 'lib', 'vm-mode.sh')), 'route'],
+      { encoding: 'utf8', env: Object.assign({}, process.env, { HIMMEL_VM_MODE_CONFIG: cfg }) });
+    // fail closed: a spawn failure or any rc but 0/1 is a resolver error
+    return { rc: r.status === 0 || r.status === 1 ? r.status : 2 };
   } catch (_e) {
     return { rc: 2 };
+  } finally {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
   }
-  // fail closed: a spawn failure or any rc but 0/1 is a resolver error
-  return { rc: r.status === 0 || r.status === 1 ? r.status : 2 };
 }
 
 function vmProofNote(row, route) {
@@ -1517,10 +1534,10 @@ function vmProofNote(row, route) {
   return 'vm.mode config error — fix ~/.himmel/config.json';
 }
 
-async function askCadences(ask, lanes, vaultMode, defaultIds, vmAnswer) {
+async function askCadences(ask, lanes, vaultMode, defaultIds, vmAnswer, doc) {
   const rows = offeredCadenceRows(lanes, vaultMode);
   const ids = rows.map((r) => r.id);
-  const route = rows.some((r) => r.vm_proof) ? vmProofRoute(vmAnswer) : { rc: 0 };
+  const route = rows.some((r) => r.vm_proof) ? vmProofRoute(doc, vmAnswer) : { rc: 0 };
   const blocked = (id) => rows.some((r) => r.id === id && r.vm_proof) && route.rc !== 0;
   const defaults = (defaultIds || []).filter((id) => ids.indexOf(id) !== -1 && !blocked(id));
   const opts = ids.join(',');
@@ -1669,17 +1686,17 @@ async function askQuestions(defaultScope, laneOpts, devOverlay) {
   let cadences;
   let disarmCadence = false;
   let vm;
+  let existingDoc;
   const offeredRows = offeredCadenceRows(lanes, vaultMode);
   if (offeredRows.length > 0) {
     // HIMMEL-4597: the vm.mode question sits right before the cadences it
     // gates — asked only when a vm_proof row is offered, so a flow with none
     // keeps its question sequence.
     if (offeredRows.some((r) => r.vm_proof)) {
-      let existingVm;
-      try { existingVm = lunaConfigLib.inspect().doc.vm; } catch (_e) { existingVm = undefined; }
-      vm = await askVm(ask, existingVm);
+      try { existingDoc = lunaConfigLib.inspect().doc; } catch (_e) { existingDoc = undefined; }
+      vm = await askVm(ask, existingDoc && existingDoc.vm);
     }
-    cadences = await askCadences(ask, lanes, vaultMode, preset.cadenceIds, vm);
+    cadences = await askCadences(ask, lanes, vaultMode, preset.cadenceIds, vm, existingDoc);
     // RETASK stage1-build-6d2e round 4 [codex-1] (extended HIMMEL-2302 to
     // every declined UNIT, not just pipeline): declining a unit writes its
     // disposition as 'off' but does NOT, by itself, disarm anything already
@@ -3157,15 +3174,18 @@ function applyVmAnswer(doc, vm) {
 }
 
 // HIMMEL-4597: armed `vm_proof` rows this run must NOT arm — { <id>: message }.
-// A row the operator explicitly selected under vm.mode=none in the wizard
-// (vmProofAcked) is their ack and passes; everything else non-interactive
-// (--from-profile) is refused under none or a resolver error, never armed.
-function vmProofRefusals(answers, dispositions) {
+// The route is the resolver's, on the saved config (apply: no doc) or on `doc`
+// with the vm answer applied (dry run). A row the operator explicitly selected
+// under vm.mode=none in the wizard (vmProofAcked) is their ack and passes;
+// everything else non-interactive (--from-profile) is refused under none, and
+// a resolver error refuses every row, acked or not — never armed.
+function vmProofRefusals(dispositions, doc, vmAnswer) {
   const refused = {};
-  const rows = CADENCE_REGISTRY.filter((r) => r.vm_proof && dispositions[r.id] === 'armed' && !vmProofAcked.has(r.id));
-  if (rows.length === 0) return refused;
-  const route = vmProofRoute(answers.vm);
+  const armed = CADENCE_REGISTRY.filter((r) => r.vm_proof && dispositions[r.id] === 'armed');
+  if (armed.length === 0) return refused;
+  const route = vmProofRoute(doc, vmAnswer);
   if (route.rc === 0) return refused;
+  const rows = route.rc === 1 ? armed.filter((r) => !vmProofAcked.has(r.id)) : armed;
   for (const r of rows) {
     refused[r.id] = route.rc === 1
       ? `himmelctl: REFUSED: cadence '${r.id}' wants VM proof first and vm.mode=none — NOT armed non-interactively; arm it only with an operator ack after a rollback point (bash ${r.script} arm), or set vm.mode in ~/.himmel/config.json`
@@ -3467,7 +3487,7 @@ function previewLunaSections(answers) {
     } else {
       console.log('DRY: no cadence answer this run — luna.cadence.enabled would be left untouched on disk');
     }
-    const vmProofRefused = vmProofRefusals(answers, dispositions);
+    const vmProofRefused = vmProofRefusals(dispositions, doc, answers.vm);
     for (const row of CADENCE_REGISTRY) {
       const disp = dispositions[row.id];
       if (disp === 'armed' && vmProofRefused[row.id]) {
@@ -3721,7 +3741,8 @@ function applyLunaSectionsStep(answers) {
   // disarm stays gated on `luna.disarmCadence` (decision #5: ONE consent
   // question covers every declined unit — no per-unit disarm consent).
   if (configSaveOk) {
-    const vmProofRefused = vmProofRefusals(answers, dispositions);
+    // the resolver reads the config exactly as saved (J1947 B1)
+    const vmProofRefused = vmProofRefusals(dispositions);
     for (const row of CADENCE_REGISTRY) {
       const disp = dispositions[row.id];
       if (disp === 'armed' && vmProofRefused[row.id]) {

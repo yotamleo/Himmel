@@ -39,7 +39,8 @@ trap 'rm -rf "$work"' EXIT
 cd "$work"
 export HOME="$work/home"; mkdir -p "$HOME/.himmel"
 export HIMMEL_LUNA_CONFIG_PATH="$work/luna-config.json"
-export HIMMEL_VM_MODE_CONFIG="$work/vm-config.json"
+# the wizard runs the resolver on its own config file, so the two are one file
+export HIMMEL_VM_MODE_CONFIG="$HIMMEL_LUNA_CONFIG_PATH"
 
 # ── a. validateVm parity with the resolver ───────────────────────────────────
 # name|vm-json (the whole config's `vm` value; `-` = key absent)
@@ -134,7 +135,8 @@ askcad() { # extra-node-js-before (sets vm answer) -> JSON {vs, menu}
     const prompts = [];
     const ask = async (q) => { prompts.push(q); return prompts.length > 1 ? "none" : ""; };
     const vmAns = process.env.VMANS ? JSON.parse(process.env.VMANS) : undefined;
-    w.askCadences(ask, [], "existing", ["pipeline", "vault-stall"], vmAns).then((r) => {
+    const doc = process.env.DOC ? JSON.parse(process.env.DOC) : undefined;
+    w.askCadences(ask, [], "existing", ["pipeline", "vault-stall"], vmAns, doc).then((r) => {
       const line = prompts[0].split("\n").find((l) => l.includes(" vault-stall")) || "";
       console.log(JSON.stringify({ vs: r["vault-stall"], pipeline: r.pipeline, line }));
     });
@@ -159,10 +161,10 @@ got=$(askcad)
 [ "$(cad_field "$got" .vs)" = off ] || fail "c: error — vault-stall must NOT be pre-selected: $got"
 cad_field "$got" .line | grep -qF 'vm.mode config error — fix ~/.himmel/config.json' || fail "c: error — menu line does not say to fix the config: $got"
 # the wizard's own vm answer wins over the resolver when it was asked this run
-got=$(VMANS='{"mode":"local"}' askcad)
-[ "$(cad_field "$got" .vs)" = armed ] || fail "c: wizard vm=local answer should win over a bad config: $got"
+got=$(DOC='{"vm":{"mode":"none"}}' VMANS='{"mode":"local"}' askcad)
+[ "$(cad_field "$got" .vs)" = armed ] || fail "c: wizard vm=local answer should win over a none config: $got"
 printf '{"vm":{"mode":"local"}}\n' > "$HIMMEL_VM_MODE_CONFIG"
-got=$(VMANS='{"mode":"none"}' askcad)
+got=$(DOC='{"vm":{"mode":"local"}}' VMANS='{"mode":"none"}' askcad)
 [ "$(cad_field "$got" .vs)" = off ] || fail "c: wizard vm=none answer should win over a local config: $got"
 
 # error: a vm_proof row is not armable at all — selecting it re-asks
@@ -216,6 +218,7 @@ JSON
 runprofile() { # sets $rc, $out; marker removed first
   rm -f "$work/marker"
   rm -f "$HIMMEL_LUNA_CONFIG_PATH"
+  [ -z "${SEED:-}" ] || printf '%s\n' "$SEED" > "$HIMMEL_LUNA_CONFIG_PATH"
   set +e
   out=$(PATH="$git_stub:$PATH" HIMMELCTL_INTERACTIVE=0 HIMMELCTL_REPO_ROOT="$fixture" \
     HIMMELCTL_CACHE_DIR="$work/cache" HIMMELCTL_BIN_DIR="$work/bin" MARKER="$work/marker" \
@@ -226,23 +229,30 @@ runprofile() { # sets $rc, $out; marker removed first
 }
 
 # local / remote (via the resolver): armed, unchanged behaviour
-printf '{"vm":{"mode":"local"}}\n' > "$HIMMEL_VM_MODE_CONFIG"; mkprofile ""; runprofile
+# (SEED = the wizard's own config file, which the resolver reads at apply)
+SEED='{"vm":{"mode":"local"}}'; mkprofile ""; runprofile
 [ -f "$work/marker" ] || fail "d: local — vault-stall should be armed (rc=$rc): $out"
-printf '{"vm":{"mode":"remote","remote":{"ssh":"u@h"}}}\n' > "$HIMMEL_VM_MODE_CONFIG"; runprofile
+SEED='{"vm":{"mode":"remote","remote":{"ssh":"u@h"}}}'; runprofile
 [ -f "$work/marker" ] || fail "d: remote — vault-stall should be armed (rc=$rc): $out"
 # none: refused, with a message
-printf '{"vm":{"mode":"none"}}\n' > "$HIMMEL_VM_MODE_CONFIG"; runprofile
+SEED='{"vm":{"mode":"none"}}'; runprofile
 [ ! -f "$work/marker" ] || fail "d: none — vault-stall must NOT be armed non-interactively: $out"
 if ! printf '%s' "$out" | grep -qF 'vault-stall' || ! printf '%s' "$out" | grep -qF 'vm.mode=none'; then fail "d: none — no clear refusal message: $out"; fi
-# error: refused
-printf '{"vm":{"mode":"bogus"}}\n' > "$HIMMEL_VM_MODE_CONFIG"; runprofile
+# error: refused (a vm the resolver rejects and validateVm accepts). The seed
+# is the config this profile converges to, with its port hand-edited to 22.0:
+# a run that changes nothing writes nothing, so the float stays on disk.
+SEED='{"vm":{"mode":"remote","remote":{"ssh":"u@h","port":22}}}'; runprofile
+float_seed=$(sed -E 's/"port": *22([^0-9]|$)/"port": 22.0\1/' "$HIMMEL_LUNA_CONFIG_PATH")
+printf '%s' "$float_seed" | grep -qF '"port": 22.0' || fail "d: could not build the converged float-port seed: $float_seed"
+SEED="$float_seed"; runprofile
 [ ! -f "$work/marker" ] || fail "d: error — vault-stall must NOT be armed: $out"
 printf '%s' "$out" | grep -qF 'vm.mode config error' || fail "d: error — no clear refusal message: $out"
-# the profile's own vm answer wins over the resolver
-printf '{"vm":{"mode":"none"}}\n' > "$HIMMEL_VM_MODE_CONFIG"; mkprofile '{"mode":"local"}'; runprofile
+# the profile's own vm answer wins over the config it changes
+SEED='{"vm":{"mode":"none"}}'; mkprofile '{"mode":"local"}'; runprofile
 [ -f "$work/marker" ] || fail "d: profile vm=local should arm vault-stall (rc=$rc): $out"
-printf '{"vm":{"mode":"local"}}\n' > "$HIMMEL_VM_MODE_CONFIG"; mkprofile '{"mode":"none"}'; runprofile
+SEED='{"vm":{"mode":"local"}}'; mkprofile '{"mode":"none"}'; runprofile
 [ ! -f "$work/marker" ] || fail "d: profile vm=none must refuse vault-stall: $out"
+SEED=
 ok "d — --from-profile arms vault-stall under local/remote, refuses it under none/error (profile vm answer wins)"
 
 # persistence: remote is written; local over an absent vm writes nothing
@@ -262,6 +272,43 @@ got=$(node -e '
 ' "$wizard" 2>&1)
 [ "$got" = '{"changed":true,"vm":{"mode":"remote","x":1,"remote":{"ssh":"b@h"}}}' ] || fail "d: remote answer without port/identity kept the old ones: $got"
 ok "d — a remote answer that omits port/identity drops the previous target's"
+
+# ── e. the resolver decides, on the config as written (J1947 B1) ─────────────
+# A config the JS validator accepts but the resolver rejects (rc 2): a JSON
+# float port, and an ssh target with an interior \x1c (Python isspace, JS \s
+# not). A vm answer equal to it leaves the file as it is, so vault-stall must
+# be refused as a config error — interactively and via --from-profile.
+float_cfg='{"vm":{"mode":"remote","remote":{"ssh":"u@h","port":22.0}}}'
+fs_cfg='{"vm":{"mode":"remote","remote":{"ssh":"u\u001c@h"}}}'
+askcad_doc() { # <answer-json> -> {n, vs}; doc = the wizard's own read of its config
+  node -e '
+    const w = require(process.argv[1]);
+    const doc = require(process.argv[2]).inspect().doc;
+    const seq = ["vault-stall", "none"]; let n = 0;
+    w.askCadences(async () => seq[n++], [], "existing", [], JSON.parse(process.argv[3]), doc)
+      .then((r) => console.log(JSON.stringify({ n, vs: r["vault-stall"] })));
+  ' "$wizard" "$luna_cfg" "$1" 2>/dev/null
+}
+printf '{"vm":{"mode":"local"}}\n' > "$HIMMEL_VM_MODE_CONFIG"
+printf '%s\n' "$float_cfg" > "$HIMMEL_LUNA_CONFIG_PATH"
+got=$(askcad_doc '{"mode":"remote","remote":{"ssh":"u@h","port":22,"identity":"~/.ssh/id_ed25519"}}')
+[ "$got" = '{"n":2,"vs":"off"}' ] || fail "e: interactive float port — vault-stall must be refused as a config error: $got"
+printf '%s\n' "$fs_cfg" > "$HIMMEL_LUNA_CONFIG_PATH"
+got=$(askcad_doc '{"mode":"remote","remote":{"ssh":"u\u001c@h","port":22,"identity":"~/.ssh/id_ed25519"}}')
+[ "$got" = '{"n":2,"vs":"off"}' ] || fail "e: interactive \\x1c ssh — vault-stall must be refused as a config error: $got"
+# control: the same answer over an integer port arms
+printf '{"vm":{"mode":"remote","remote":{"ssh":"u@h","port":22}}}\n' > "$HIMMEL_LUNA_CONFIG_PATH"
+got=$(askcad_doc '{"mode":"remote","remote":{"ssh":"u@h","port":22,"identity":"~/.ssh/id_ed25519"}}')
+[ "$got" = '{"n":1,"vs":"armed"}' ] || fail "e: interactive integer port control should arm: $got"
+# --from-profile: the float port on disk (converged seed from d), an equal profile answer
+SEED="$float_seed"; mkprofile '{"mode":"remote","remote":{"ssh":"u@h","port":22}}'; runprofile; SEED=
+[ ! -f "$work/marker" ] || fail "e: --from-profile float port — vault-stall must NOT be armed: $out"
+printf '%s' "$out" | grep -qF 'vm.mode config error' || fail "e: --from-profile float port — no config-error refusal: $out"
+# --from-profile: a profile answer the resolver rejects once written
+mkprofile '{"mode":"remote","remote":{"ssh":"u\u001c@h"}}'; runprofile
+[ ! -f "$work/marker" ] || fail "e: --from-profile \\x1c ssh — vault-stall must NOT be armed: $out"
+printf '%s' "$out" | grep -qF 'vm.mode config error' || fail "e: --from-profile \\x1c ssh — no config-error refusal: $out"
+ok "e — vault-stall is refused when the resolver rejects the config as written (float port, \\x1c ssh)"
 
 [ "$fails" -eq 0 ] || { echo "$fails check(s) FAILED" >&2; exit 1; }
 echo "PASS"
