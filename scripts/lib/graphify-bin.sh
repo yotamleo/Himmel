@@ -501,13 +501,12 @@ _graphify_pat_from_path() {
   printf '%s\n' "$out"
 }
 
-_graphify_mcp_holders() {
-  local pat_entry='graphify-mcp' pat_dir tool_name c ps_bin="" _out=""
-  if [ -n "${GRAPHIFY_MCP_HOLDERS:-}" ]; then
-    [ "$GRAPHIFY_MCP_HOLDERS" = "unavailable" ] && return 1
-    printf '%s\n' "$GRAPHIFY_MCP_HOLDERS"
-    return 0
-  fi
+# _graphify_mcp_holder_pats -- the two holder needles, one per line: the
+# entrypoint name, then the tool-dir ERE. The ONE definition both the count
+# (_graphify_mcp_holders) and the naming (_graphify_mcp_holder_details) read,
+# so the pids a SKIP names can never drift from the pids it counted.
+_graphify_mcp_holder_pats() {
+  local tool_name pat_root
   tool_name="$(_graphify_pypi_name)"
   # Two tool-dir needles, OR'd (codex-adv round): the RESOLVED dir plus the
   # default layout as a fallback.
@@ -524,9 +523,20 @@ _graphify_mcp_holders() {
   # `uv tool dir` fails, the resolved value falls back to the default anyway,
   # and an extra alternative can only make the probe match MORE. This guard
   # must fail CLOSED, so a redundant needle is the right kind of wrong.
-  local pat_root
   pat_root="$(_graphify_pat_from_path "$(_graphify_uv_tool_dir)/${tool_name}")"
-  pat_dir="${pat_root}|uv[/\\\\]tools[/\\\\]${tool_name}"
+  printf 'graphify-mcp\n%s\n' "${pat_root}|uv[/\\\\]tools[/\\\\]${tool_name}"
+}
+
+_graphify_mcp_holders() {
+  local pat_entry pat_dir c ps_bin="" _out=""
+  if [ -n "${GRAPHIFY_MCP_HOLDERS:-}" ]; then
+    [ "$GRAPHIFY_MCP_HOLDERS" = "unavailable" ] && return 1
+    printf '%s\n' "$GRAPHIFY_MCP_HOLDERS"
+    return 0
+  fi
+  { read -r pat_entry; read -r pat_dir; } <<EOF
+$(_graphify_mcp_holder_pats)
+EOF
   case "$(uname -s 2>/dev/null || echo)" in
     MINGW*|MSYS*|CYGWIN*)
       for c in pwsh powershell; do command -v "$c" >/dev/null 2>&1 && { ps_bin="$c"; break; }; done
@@ -640,6 +650,39 @@ _graphify_mcp_holders() {
   esac
 }
 
+# _graphify_mcp_holder_details (HIMMEL-4513) -- one line per holder for the
+# SKIP message: `pid <pid>` plus, best-effort, its parent session (ppid, its
+# comm, and its cwd when /proc exposes it). rc 1 when no details can be had;
+# the caller then prints the count alone, so this can never fail an update.
+# POSIX only, via pgrep on the same needles _graphify_mcp_holders counts.
+# Windows keeps the count alone: the only detail source there is another
+# pwsh/CIM round trip, not a cheap one. Test seam: GRAPHIFY_MCP_HOLDER_DETAILS
+# (literal text printed as-is).
+_graphify_mcp_holder_details() {
+  local pat_entry pat_dir pids p pp comm cwd line
+  if [ -n "${GRAPHIFY_MCP_HOLDER_DETAILS:-}" ]; then
+    printf '%s\n' "$GRAPHIFY_MCP_HOLDER_DETAILS"
+    return 0
+  fi
+  [ "$(_graphify_update_platform)" = "posix" ] || return 1
+  command -v pgrep >/dev/null 2>&1 || return 1
+  { read -r pat_entry; read -r pat_dir; } <<EOF
+$(_graphify_mcp_holder_pats)
+EOF
+  pids="$(pgrep -f "$pat_entry|$pat_dir" 2>/dev/null)" || return 1
+  [ -n "$pids" ] || return 1
+  for p in $pids; do
+    line="pid $p"
+    pp="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    if [ -n "$pp" ]; then
+      comm="$(ps -o comm= -p "$pp" 2>/dev/null)"
+      cwd="$(readlink "/proc/$pp/cwd" 2>/dev/null)"
+      line="$line (session: ppid $pp${comm:+ $comm}${cwd:+, cwd $cwd})"
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
 # _graphify_binary_ok (HIMMEL-1274) — does the installed graphify actually RUN?
 # `uv tool install` removes the old distribution's entry points BEFORE it fails
 # on a locked directory, so "the install returned nonzero" and "the binary still
@@ -654,11 +697,10 @@ _graphify_binary_ok() {
 }
 
 # _graphify_update_platform (HIMMEL-4513) -- "posix" (Linux/macOS) or "other".
-# On POSIX, `uv tool install --force` over a venv a live graphify-mcp holds
-# succeeds: the old files are unlinked and the holder runs on in the deleted
-# inodes. HIMMEL-1274's half-removed install is a WINDOWS file-lock failure,
-# so only "other" keeps the holder/unprobeable SKIPs. Test seam:
-# GRAPHIFY_PLATFORM_OVERRIDE (a `uname -s` value).
+# Picks the SKIP wording (HIMMEL-1274 file lock vs codex-1 mixed versions),
+# whether the update stages before the swap (posix only), and whether holder
+# details are probed. Test seam: GRAPHIFY_PLATFORM_OVERRIDE (a `uname -s`
+# value).
 _graphify_update_platform() {
   case "${GRAPHIFY_PLATFORM_OVERRIDE:-$(uname -s 2>/dev/null || echo)}" in
     Linux*|Darwin*) printf 'posix\n' ;;
@@ -1003,7 +1045,7 @@ _graphify_skill_refresh() {
 
 # Idempotent + WARN-not-fail by contract (a best-effort himmel-update step).
 graphify_update() {
-  local src installed pin extras spec holders platform stage_err add_ollama=0
+  local src installed pin extras spec holders holder_details platform stage_err add_ollama=0
   src="$(graphify_source)" || true
   if [ -z "$src" ]; then
     # Fresh install: graphify_install installs only the PACKAGE — without the
@@ -1079,41 +1121,43 @@ graphify_update() {
   # start is the only fail-SAFE option — a reinstall that cannot finish is worse
   # than one never attempted.
   #
+  # POSIX SKIPs too (HIMMEL-4513, codex-1). There the swap itself succeeds --
+  # the holder runs on in the unlinked inodes -- but a holder has only its
+  # already-imported modules in memory, and graphify's serve.py lazy-imports
+  # graphify.prs, graphify.analyze, mcp.server.stdio and starlette inside its
+  # tool handlers. A live swap therefore mixes two versions inside every live
+  # session. So holders > 0 SKIPs on every platform, naming the holders.
+  #
   # This is the NORMAL case on a busy workstation, not an edge case: every live
   # Claude Code session spawns a graphify-mcp, and /himmel-update is routinely
-  # run from inside one. The step only ever appeared to work because the pin had
-  # not moved.
-  #
-  # POSIX is different (HIMMEL-4513): there the holder does not block the swap
-  # (see _graphify_update_platform), so holders are only counted, for the note
-  # printed after it. What CAN still break a POSIX install is `--force` failing
-  # for another reason (network, resolution) after it removed the old entry
-  # points -- so the same spec is first staged and proven in a scratch tool
-  # dir, and a stage failure returns before the live install is touched. The
-  # holder and unprobeable SKIPs below apply to Windows and any other uname.
+  # run from inside one. Only with no holders (or GRAPHIFY_UNPROBED_OK=1) does
+  # the swap run, and on POSIX the same spec is first staged and proven in a
+  # scratch tool dir, so a network/resolution failure returns before `--force`
+  # removes anything.
   platform="$(_graphify_update_platform)"
-  if [ "$platform" = "posix" ]; then
-    holders="$(_graphify_mcp_holders 2>/dev/null)" || holders=""
-    case "$holders" in ''|*[!0-9]*) holders=0 ;; esac
-    if ! stage_err="$(_graphify_stage_install "$spec" "$pin")"; then
-      _graphify_pin_skip_reset
-      {
-        echo "  WARNING: graphify update to $pin not attempted -- the staged install failed: $stage_err."
-        echo "           The live install is untouched and still at v${installed:-?}. Retry, or by hand:"
-        echo "               uv tool install --force --with mcp '$spec'"
-      } >&2
-      return 1
-    fi
-  elif holders="$(_graphify_mcp_holders)"; then
+  if holders="$(_graphify_mcp_holders)"; then
     case "$holders" in ''|*[!0-9]*) holders=0 ;; esac
     if [ "$holders" -gt 0 ]; then
+      # ponytail: SKIP while graphify-mcp holders are live (codex-1: lazy imports mix versions on a live swap; HIMMEL-1274 on Windows), versioned tool dirs + atomic bin swap -> HIMMEL-4532
       {
         echo "  SKIP: $holders graphify-mcp process(es) hold the uv tool dir — NOT attempting the reinstall."
         echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
-        echo "        uv would delete the old entry points and then fail to replace the locked"
-        echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
-        echo "        To advance the pin: close the Claude Code sessions holding graphify-mcp"
-        echo "        (each live session spawns one), then re-run. Or install by hand once clear:"
+        if [ "$platform" = "posix" ]; then
+          echo "        A live graphify-mcp lazy-imports modules from disk, so swapping the install"
+          echo "        under it would mix versions inside every live session (codex-1). Refusing is"
+          echo "        the safe outcome."
+        else
+          echo "        uv would delete the old entry points and then fail to replace the locked"
+          echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
+        fi
+        echo "        Holders:"
+        if holder_details="$(_graphify_mcp_holder_details 2>/dev/null)" && [ -n "$holder_details" ]; then
+          printf '%s\n' "$holder_details" | sed 's/^/            /'
+        else
+          echo "            (holder details unavailable on this platform; $holders counted)"
+        fi
+        echo "        To advance the pin: reconnect /mcp or quit the holders, then re-run"
+        echo "        (each live Claude Code session spawns one). Or install by hand once clear:"
         echo "            uv tool install --force --with mcp '$spec'"
         for _plat in $(_graphify_present_platforms); do
           echo "            graphify install --platform $_plat"
@@ -1207,6 +1251,15 @@ graphify_update() {
       return 0
     fi
   fi
+  if [ "$platform" = "posix" ] && ! stage_err="$(_graphify_stage_install "$spec" "$pin")"; then
+    _graphify_pin_skip_reset
+    {
+      echo "  WARNING: graphify update to $pin not attempted -- the staged install failed: $stage_err."
+      echo "           The live install is untouched and still at v${installed:-?}. Retry, or by hand:"
+      echo "               uv tool install --force --with mcp '$spec'"
+    } >&2
+    return 1
+  fi
 
   echo "  graphify ${installed:-?} -> $pin (uv reinstall at pin, extras='${extras:-none}')..."
   if uv tool install --force --with mcp "$spec"; then
@@ -1220,9 +1273,6 @@ graphify_update() {
       return 1
     fi
     echo "  graphify updated to $pin (source=himmel-pin)."
-    if [ "$platform" = "posix" ] && [ "$holders" -gt 0 ]; then
-      echo "  note: $holders live graphify-mcp process(es) keep running the old graphify in memory until their session restarts or reconnects MCP (/mcp)."
-    fi
     _graphify_skill_refresh
     graphify_wsl_share_store
     _graphify_pin_skip_reset

@@ -42,7 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # The stub uv below reads UV_TOOL_BIN_DIR as "this is the scoped staging
 # install" (HIMMEL-4513), and the platform seam picks the update strategy --
 # neither may leak in from the operator's shell.
-unset UV_TOOL_BIN_DIR GRAPHIFY_PLATFORM_OVERRIDE
+unset UV_TOOL_BIN_DIR GRAPHIFY_PLATFORM_OVERRIDE GRAPHIFY_MCP_HOLDER_DETAILS
 
 pass=0
 fail=0
@@ -749,9 +749,9 @@ out=$(HOME="$knone_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$knone_too
 assert "non-kimi recorded extras pass through unchanged" grep -q '^EXTRAS=\[\[all\]\]$' <<<"$out"
 
 # --- HIMMEL-1274: the pre-flight holder guard + verify-after ----------------
-# Since HIMMEL-4513 the holder and unprobeable SKIPs are WINDOWS-only (POSIX
-# stages + swaps under live holders -- covered further down), so every SKIP
-# case here pins GRAPHIFY_PLATFORM_OVERRIDE to a Git Bash uname.
+# These pin GRAPHIFY_PLATFORM_OVERRIDE to a Git Bash uname, so they cover the
+# Windows wording and the no-staging path; the POSIX SKIPs (HIMMEL-4513,
+# codex-1) and POSIX staging are covered further down.
 echo "[test-graphify-bin] graphify_update: live graphify-mcp holders -> SKIP the reinstall, leave the install alone"
 gh_home="$tmpdir/gup-held"; mkdir -p "$gh_home"
 gh_tools="$tmpdir/gup-held-tools"; mkdir -p "$gh_tools/graphifyy"
@@ -1243,14 +1243,16 @@ assert "holders+override: still reports the holder SKIP" grep -q 'SKIP: 2 graphi
 assert "holders+override: NO uv install attempted" \
   bash -c '! grep -q "tool install" "$1"' _ "$gpv_log"
 
-# --- HIMMEL-4513: POSIX stages then swaps under live holders ----------------
-# On Linux/macOS `uv tool install --force` over a held venv WORKS: the old
-# files are unlinked, and a live graphify-mcp keeps running on the deleted
-# inodes. HIMMEL-1274's half-removed state is a WINDOWS file-lock failure. The
-# remaining POSIX risk is the install failing for an unrelated reason (network,
-# resolution) after uv has already removed the old entry points -- so the
-# upgrade is first STAGED into a scratch tool dir and verified there, and the
-# live install is touched only once the staged one is proven.
+# --- HIMMEL-4513: POSIX skips under live holders, stages + swaps when clear --
+# On Linux/macOS `uv tool install --force` over a held venv does not half-fail
+# the way HIMMEL-1274 does on Windows, but it is still unsafe (codex-1): a live
+# graphify-mcp has only its already-imported modules in memory and serve.py
+# lazy-imports the rest inside its tool handlers, so a live swap mixes versions
+# inside every holder. So POSIX SKIPs with holders > 0 too, naming them. With
+# none, the remaining risk is the install failing for an unrelated reason
+# (network, resolution) after uv has already removed the old entry points -- so
+# the upgrade is first STAGED into a scratch tool dir and verified there, and
+# the live install is touched only once the staged one is proven.
 #
 # lf_setup <slug> <installed-ver>: a uv graphifyy at <installed-ver> whose live
 # shim answers --version. lf_run [VAR=val...]: graphify_update in that fixture,
@@ -1289,53 +1291,100 @@ done
 
 case "$(uname -s 2>/dev/null || echo)" in Linux*|Darwin*) lf_posix=1 ;; *) lf_posix=0 ;; esac
 if [ "$lf_posix" -eq 1 ]; then
-  echo "[test-graphify-bin] graphify_update (POSIX): a REAL live process holds the venv dir -> upgrade succeeds, holder survives"
+  echo "[test-graphify-bin] graphify_update (POSIX): a REAL live process holds the venv dir -> SKIP, names it, venv untouched"
   lf_setup held-real 0.0.1
   # The holder: a live process whose argv names graphify-mcp under the venv and
-  # whose cwd is INSIDE the venv dir that `--force` deletes and recreates.
-  # GRAPHIFY_MCP_HOLDERS is deliberately left UNSET -- the real probe must find
-  # it -- so pgrep/ps (scrubbed with /usr/bin on hosts that ship uv there) are
-  # linked in for this case. The real probe can also count the developer's own
-  # graphify-mcp servers; that only raises N, and N>=1 is what is asserted.
+  # whose cwd is INSIDE the venv dir that `--force` would delete and recreate.
+  # GRAPHIFY_MCP_HOLDERS and GRAPHIFY_MCP_HOLDER_DETAILS are deliberately left
+  # UNSET -- the real probe must find it -- so pgrep/ps (scrubbed with /usr/bin
+  # on hosts that ship uv there) are linked in for this case. The real probe can
+  # also count the developer's own graphify-mcp servers; that only raises N.
   probe_bin="$tmpdir/probe-bin"; mkdir -p "$probe_bin"
   link_engine_if_present pgrep "$probe_bin"
   link_engine_if_present ps "$probe_bin"
+  link_engine_if_present readlink "$probe_bin"
+  link_engine_if_present tr "$probe_bin"
   printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' > "$lf_tools/graphifyy/bin/graphify-mcp"
   chmod +x "$lf_tools/graphifyy/bin/graphify-mcp"
   (cd "$lf_tools/graphifyy" && exec bash "$lf_tools/graphifyy/bin/graphify-mcp") &
   holder_pid=$!
   lf_extra_path="$probe_bin"
-  out=$(lf_run env -u GRAPHIFY_MCP_HOLDERS)
+  out=$(lf_run env -u GRAPHIFY_MCP_HOLDERS -u GRAPHIFY_MCP_HOLDER_DETAILS)
   assert "real holder: rc 0" grep -q '^RC=0$' <<<"$out"
-  assert "real holder: the live binary now reports the pin" grep -q "^graphify $pinned_ver\$" <<<"$(lf_live_version)"
-  assert "real holder: uv tool list now reports the pin" grep -q "^graphifyy v$pinned_ver\$" "$lf_list"
-  assert "real holder: the venv dir really was replaced under the holder" test ! -e "$lf_tools/graphifyy/bin/graphify-mcp"
-  assert "real holder: the holder is STILL ALIVE after the swap" kill -0 "$holder_pid"
-  assert "real holder: notes the live graphify-mcp keep the old version" grep -q 'keep running the old graphify' <<<"$out"
+  assert "real holder: SKIPs on POSIX too" grep -qE 'SKIP: [0-9]+ graphify-mcp process' <<<"$out"
   # shellcheck disable=SC2016
-  assert "real holder: no SKIP on POSIX" bash -c '! grep -q "SKIP" <<<"$1"' _ "$out"
+  assert "real holder: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+  # shellcheck disable=SC2016
+  assert "real holder: NO staging install either" bash -c '! grep -q "scoped=1" "$1"' _ "$lf_log"
+  assert "real holder: the venv dir was left alone" test -e "$lf_tools/graphifyy/bin/graphify-mcp"
+  if [ -x "$probe_bin/pgrep" ]; then
+    assert "real holder: names the holder by its pid" grep -qE "^ +pid $holder_pid( |\$)" <<<"$out"
+  fi
+  assert "real holder: the holder is STILL ALIVE" kill -0 "$holder_pid"
   kill "$holder_pid" 2>/dev/null
   wait "$holder_pid" 2>/dev/null
   # shellcheck disable=SC2016
   assert "real holder: reaped by its exact pid" bash -c '! kill -0 "$1" 2>/dev/null' _ "$holder_pid"
   holder_pid=""
 
-  echo "[test-graphify-bin] graphify_update (POSIX): holders=3 seam -> stages, swaps, notes the holders"
+  echo "[test-graphify-bin] graphify_update (POSIX): holders=3 seam -> SKIP, names the holders + remedy, no staging, no swap"
   lf_setup held-seam 0.0.1
-  out=$(lf_run GRAPHIFY_MCP_HOLDERS=3)
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=3 GRAPHIFY_MCP_HOLDER_DETAILS="pid 4242 (session: ppid 4200 claude, cwd /work/a)")
   assert "posix holders=3: rc 0" grep -q '^RC=0$' <<<"$out"
-  assert "posix holders=3: staged into a scoped scratch tool dir first" grep -q 'scoped=1' "$lf_log"
-  assert "posix holders=3: then swapped the live install" grep -qE 'tool install --force --with mcp graphifyy\[ollama\]==' "$lf_log"
-  assert "posix holders=3: the stage ran BEFORE the swap" \
-    test "$(grep -n 'scoped=1' "$lf_log" | head -1 | cut -d: -f1)" -lt "$(grep -n -- '--force' "$lf_log" | head -1 | cut -d: -f1)"
-  assert "posix holders=3: names the count in the note" grep -q '3 live graphify-mcp' <<<"$out"
-  assert "posix holders=3: the staging scratch dir is cleaned up" lf_tmp_empty
+  assert "posix holders=3: SKIP with the holder count" grep -q 'SKIP: 3 graphify-mcp process' <<<"$out"
+  assert "posix holders=3: names the holders (details seam)" grep -q 'pid 4242 (session: ppid 4200 claude, cwd /work/a)' <<<"$out"
+  assert "posix holders=3: gives the remedy" grep -q 'reconnect /mcp or quit the holders, then re-run' <<<"$out"
+  assert "posix holders=3: explains the mixed-version risk" grep -q 'mix' <<<"$out"
+  assert "posix holders=3: keeps the manual repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
+  # shellcheck disable=SC2016
+  assert "posix holders=3: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+  # shellcheck disable=SC2016
+  assert "posix holders=3: NO staging install" bash -c '! grep -q "scoped=1" "$1"' _ "$lf_log"
+  assert "posix holders=3: the skip is tracked" grep -q 'SKIPPED 1 consecutive' <<<"$out"
+  assert "posix holders=3: the live install still at the old version" grep -q '^graphifyy v0.0.1$' "$lf_list"
 
-  echo "[test-graphify-bin] graphify_update (POSIX): unprobeable holders is not a SKIP either"
+  echo "[test-graphify-bin] graphify_update (POSIX): holder details unavailable -> the count still prints"
+  lf_setup held-nodetail 0.0.1
+  # A pgrep that fails (rc 2) makes the details helper unavailable; the count
+  # comes from the GRAPHIFY_MCP_HOLDERS seam, so the SKIP itself is unaffected.
+  nd_bin="$tmpdir/lf-held-nodetail-pgrep"; mkdir -p "$nd_bin"
+  printf '#!/bin/sh\nexit 2\n' > "$nd_bin/pgrep"; chmod +x "$nd_bin/pgrep"
+  lf_extra_path="$nd_bin"
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=2 env -u GRAPHIFY_MCP_HOLDER_DETAILS)
+  assert "no details: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "no details: still prints the count" grep -q 'SKIP: 2 graphify-mcp process' <<<"$out"
+  assert "no details: says the details are unavailable" grep -q 'holder details unavailable' <<<"$out"
+  # shellcheck disable=SC2016
+  assert "no details: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): unprobeable holders -> fail-closed SKIP"
   lf_setup unprobed 0.0.1
   out=$(lf_run GRAPHIFY_MCP_HOLDERS=unavailable)
   assert "posix unprobeable: rc 0" grep -q '^RC=0$' <<<"$out"
-  assert "posix unprobeable: swapped the live install" grep -q -- '--force' "$lf_log"
+  assert "posix unprobeable: SKIP" grep -q 'SKIP: cannot probe for graphify-mcp holders' <<<"$out"
+  # shellcheck disable=SC2016
+  assert "posix unprobeable: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): unprobeable + GRAPHIFY_UNPROBED_OK=1 -> stages, then swaps"
+  lf_setup unprobed-ok 0.0.1
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=unavailable GRAPHIFY_UNPROBED_OK=1)
+  assert "posix unprobed-ok: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "posix unprobed-ok: staged first" grep -q 'scoped=1' "$lf_log"
+  assert "posix unprobed-ok: then swapped the live install" grep -q -- '--force' "$lf_log"
+  assert "posix unprobed-ok: the stage ran BEFORE the swap" \
+    test "$(grep -n 'scoped=1' "$lf_log" | head -1 | cut -d: -f1)" -lt "$(grep -n -- '--force' "$lf_log" | head -1 | cut -d: -f1)"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): holders=0 -> stages, then swaps"
+  lf_setup clear 0.0.1
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=0)
+  assert "posix holders=0: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "posix holders=0: staged into a scoped scratch tool dir first" grep -q 'scoped=1' "$lf_log"
+  assert "posix holders=0: then swapped the live install" grep -qE 'tool install --force --with mcp graphifyy\[ollama\]==' "$lf_log"
+  assert "posix holders=0: the stage ran BEFORE the swap" \
+    test "$(grep -n 'scoped=1' "$lf_log" | head -1 | cut -d: -f1)" -lt "$(grep -n -- '--force' "$lf_log" | head -1 | cut -d: -f1)"
+  # shellcheck disable=SC2016
+  assert "posix holders=0: no SKIP" bash -c '! grep -q "SKIP" <<<"$1"' _ "$out"
+  assert "posix holders=0: the staging scratch dir is cleaned up" lf_tmp_empty
 
   echo "[test-graphify-bin] graphify_update (POSIX): every graphify invocation carries GRAPHIFY_NO_AUTO_REFRESH=1; skill marker == pin"
   lf_setup noauto 0.0.1
