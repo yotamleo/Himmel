@@ -10,7 +10,7 @@
 #
 # The field is the `> **Prior art:**` line plus any directly following `> `
 # continuation lines (up to the next `> **Field:**`, a non-blockquote line, or
-# an empty `>` line).
+# an empty or whitespace-only `>` line).
 #
 # Exit 0 pass, 1 fail (reason on stderr), 2 usage.
 set -u
@@ -28,7 +28,7 @@ fi
 field="$(awk '
     found == 0 && /^> \*\*Prior art( \([^)]*\))?:\*\*/ { found = 1; sub(/^> \*\*Prior art( \([^)]*\))?:\*\*/, ""); print; next }
     found == 1 {
-        if ($0 !~ /^> / || $0 ~ /^> \*\*[^*]+:\*\*/) exit
+        if ($0 !~ /^> / || $0 ~ /^>[[:space:]]*$/ || $0 ~ /^> \*\*[^*]+:\*\*/) exit
         sub(/^> /, ""); print
     }
 ' "$doc")"

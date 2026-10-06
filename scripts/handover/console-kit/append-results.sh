@@ -62,7 +62,9 @@ fi
 # HIMMEL-4570: a leading all-caps word that is not in the vocabulary is a coined
 # marker (SHIPPED, MERGED): the tick would never read it, so refuse it instead of
 # letting it sit invisible. CONSULT / SUCCESSION / MAIN-RED are the preface's
-# documented non-status bullets and still append.
+# documented non-status bullets and still append. HIMMEL-4582: the floor is 2
+# chars (WIP, OK, PR are refused); every real marker is 4+ chars, and a 1-char
+# lead is prose.
 #
 # Leg docs only: a leg doc carries its brief's "RETASK token" line. A console doc
 # (name ends -console.md) or a doc with no leg brief takes any bullet, since
@@ -75,7 +77,7 @@ case "${DOC##*/}" in
     *) grep -q 'RETASK token' "$DOC" && is_leg=1 ;;
 esac
 case "$is_leg:$lead" in
-    1:????*)
+    1:??*)
         case "$lead" in
             LIVE|FINDING|RESOLVED|READY|BLOCKED|HALTED|WRAPPED|PARKED-BANK|RESUMED|CONSULT|CONSULT-ANSWER|ANSWER|SUCCESSION|MAIN-RED|PARK-BANK) ;;
             *)

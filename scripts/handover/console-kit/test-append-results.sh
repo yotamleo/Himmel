@@ -126,5 +126,21 @@ check "8: a leg doc still refuses a coined marker rc 6" "$rc" 6
 rc=0; bash "$SCRIPT" "$d8leg" "MERGED #12 → abc123" >/dev/null 2>&1 || rc=$?
 check "8: a leg doc refuses MERGED (not leg vocabulary) rc 6" "$rc" 6
 
+# --- 9. HIMMEL-4582: a short coined all-caps marker (WIP) is refused too; the real markers still append ---
+d9="$tmp/HIMMEL-9-N2-fixture-2026-10-06.md"
+printf '# leg\n\nYour RETASK token is X-1.\n\n## Results (newest at the bottom)\n\n- 10:00 LIVE up\n' > "$d9"
+before_d9="$tmp/d9.before"; cp "$d9" "$before_d9"
+for coined in "WIP halfway" "OK done" "PR 12 open" "WIP"; do
+    rc=0; bash "$SCRIPT" "$d9" "$coined" >/dev/null 2>&1 || rc=$?
+    check "9: short coined '${coined%% *}' refused rc 6" "$rc" 6
+done
+cmp -s "$d9" "$before_d9" && echo "ok - 9: refused doc unchanged" || { echo "FAIL - 9: refused doc unchanged"; fails=$((fails+1)); }
+for real in LIVE FINDING RESOLVED READY BLOCKED HALTED WRAPPED PARKED-BANK RESUMED; do
+    rc=0; bash "$SCRIPT" "$d9" "$real x" >/dev/null 2>&1 || rc=$?
+    check "9: marker $real still appends" "$rc" 0
+done
+rc=0; bash "$SCRIPT" "$d9" "A single capital then prose" >/dev/null 2>&1 || rc=$?
+check "9: a one-letter lead is prose, appends" "$rc" 0
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILED"; exit 1

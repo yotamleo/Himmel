@@ -43,6 +43,8 @@ mk placeholder '# brief' '> **Prior art:** <related tickets, prior fixes, graph 
 mk nf_noq '# brief' '> **Prior art:** none found' '' '> **Contract:** y'
 mk nf_emptyq '# brief' '> **Prior art:** none found ()' '' '> **Contract:** y'
 mk next_field '# brief' '> **Prior art:**' '> **Contract:** y'
+mk empty_then_quote '# brief' '> **Prior art:**' '> ' '> unrelated quoted line' '' '> **Contract:** y'
+mk nonepad_then_quote '# brief' '> **Prior art:** none' '>   ' '> unrelated quoted line' '' '> **Contract:** y'
 mk filled '# brief' '> **Prior art:** HIMMEL-2581 (graphify non-adoption); fixed in #1500 (qmd jira-himmel)' '' '> **Contract:** y'
 mk nf_q '# brief' '> **Prior art:** none found (qmd -c jira-himmel "prior art field")' '' '> **Contract:** y'
 mk titled '# brief' '> **Prior art (required, HIMMEL-4573):** HIMMEL-2581 (graphify non-adoption)' '' '> **Contract:** y'
@@ -63,6 +65,8 @@ expect_rc "1i none found () fails" 1 "$tmp/nf_emptyq.md"
 expect_rc "1j empty line followed directly by the next field fails" 1 "$tmp/next_field.md"
 expect_rc "1k none found (<query>) placeholder fails" 1 "$tmp/nf_ph.md"
 expect_rc "1l titled field with a bare none fails" 1 "$tmp/titled_bare.md"
+expect_rc "1m whitespace-only quote line ends the field, so an empty field fails" 1 "$tmp/empty_then_quote.md"
+expect_rc "1n bare none then a whitespace-only quote line then unrelated text fails" 1 "$tmp/nonepad_then_quote.md"
 expect_rc "2e template-titled field (required, ticket) passes" 0 "$tmp/titled.md"
 expect_rc "2a filled passes" 0 "$tmp/filled.md"
 expect_rc "2b none found (query) passes" 0 "$tmp/nf_q.md"
