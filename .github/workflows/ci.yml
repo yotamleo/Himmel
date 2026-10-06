@@ -198,7 +198,17 @@ jobs:
       # the full serial sweep as the backstop.
       - name: shellcheck (PR range)
         if: github.event_name == 'pull_request'
-        run: bash scripts/ci/shellcheck-pr-range.sh "${{ github.event.pull_request.base.sha }}"
+        # The narrowing decision comes from the BASE copy of the script, never the
+        # PR's own edited one (a PR could otherwise weaken the check that gates it).
+        # Absent or unreadable at base -> the full sweep, never the head copy.
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if git show "$base:scripts/ci/shellcheck-pr-range.sh" > "$RUNNER_TEMP/shellcheck-pr-range.sh" && [ -s "$RUNNER_TEMP/shellcheck-pr-range.sh" ]; then
+            bash "$RUNNER_TEMP/shellcheck-pr-range.sh" "$base"
+          else
+            echo "shellcheck-pr-range: script absent at base, ALL FILES" >&2
+            pre-commit run shellcheck --all-files --show-diff-on-failure
+          fi
       - name: shellcheck (all files)
         if: github.event_name != 'pull_request'
         run: pre-commit run shellcheck --all-files --show-diff-on-failure

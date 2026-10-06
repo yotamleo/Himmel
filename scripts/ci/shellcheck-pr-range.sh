@@ -12,7 +12,10 @@
 # Fail-safe direction: when in doubt, lint everything (--all-files) if
 #   - the diff cannot be computed or a neighbour lookup errors,
 #   - a changed file has a source line naming no *.sh/*.bash (dynamic, uncertain),
-#   - .pre-commit-config.yaml, .shellcheckrc or the CI workflow changed.
+#   - .pre-commit-config.yaml, .shellcheckrc, the CI workflow or this script changed,
+#   - a path needs quoting (newline/tab/quote in the name) so it cannot be matched.
+# Renames are split into delete+add (--no-renames) so the old path's consumers are
+# found, and `# shellcheck source=` directive edges count as source edges.
 #
 # Usage: shellcheck-pr-range.sh [--dry-run] <base-sha>
 #   --dry-run prints "ALL <reason>" or "FILES" + the file list, runs nothing.
@@ -28,7 +31,14 @@ run_all() {
   exec pre-commit run shellcheck --all-files --show-diff-on-failure
 }
 
-changed=$(git diff --name-only --diff-filter=ACMRTD "$base" HEAD) || run_all "git diff failed"
+# -z + quotePath=false: a non-ASCII path must reach the lint verbatim; a NUL count that
+# disagrees with the line count means a newline in a name -> uncertain.
+git() { command git -c core.quotePath=false "$@"; }
+dz=$(mktemp "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") || run_all "mktemp failed"
+trap 'rm -f "$dz"' EXIT
+git diff -z --no-renames --name-only --diff-filter=ACMRTD "$base" HEAD > "$dz" || run_all "git diff failed"
+changed=$(tr '\0' '\n' < "$dz")
+[ "$(tr -cd '\0' < "$dz" | wc -c)" -eq "$(printf '%s' "$changed" | grep -c .)" ] || run_all "newline in a changed path"
 [ -n "$changed" ] || { echo "shellcheck-pr-range: no changed files" >&2; [ "$dry" = 1 ] && echo "FILES"; exit 0; }
 
 case "
@@ -40,27 +50,37 @@ $changed
 .shellcheckrc
 "* | *"
 .github/workflows/ci.yml
-"*) run_all "lint config or workflow changed" ;;
+"* | *"
+scripts/ci/shellcheck-pr-range.sh
+"*) run_all "lint config, workflow or the range script changed" ;;
 esac
 
 tracked=$(git ls-files) || run_all "git ls-files failed"
 list=$(mktemp "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") ||run_all "mktemp failed"
-trap 'rm -f "$list" "$list.n"' EXIT
+trap 'rm -f "$dz" "$list" "$list.n"' EXIT
 
 esc() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|/]/\\&/g'; }
 src_re='(^|[;&|{(![:space:]])(source|\.)[[:space:]]'
+dir_re='shellcheck[[:space:]].*source='
+# consumers of $1: a source/. line or a `# shellcheck source=` directive naming it
+consumers() { git grep -l -E -e "${src_re}.*$(esc "$1")" -e "${dir_re}.*$(esc "$1")" -- . > "$list.n" 2>/dev/null; }
 
 printf '%s\n' "$changed" > "$list"
 while IFS= read -r f; do
   [ -n "$f" ] || continue
   b=$(basename "$f")
   # files that source this one (changed, added or deleted)
-  git grep -l -E -e "${src_re}.*$(esc "$b")" -- . > "$list.n" 2>/dev/null
+  consumers "$b"
   rc=$?
   [ "$rc" -le 1 ] || run_all "git grep failed on $f"
   cat "$list.n" >> "$list"
   # files this one sources (only if it still exists)
   [ -f "$f" ] || continue
+  # directive targets: `# shellcheck source=<path>` names a file shellcheck follows
+  grep -E -e "^[[:space:]]*#[[:space:]]*${dir_re}" "$f" 2>/dev/null | sed 's/.*source=//; s/[[:space:]].*$//' | grep -v '^/dev/null$' | while IFS= read -r d; do
+    d=${d##*/}
+    [ -n "$d" ] && printf '%s\n' "$tracked" | awk -v n="$d" '{ k=split($0,p,"/"); if (p[k]==n) print }'
+  done >> "$list"
   lines=$(grep -E -e "$src_re" "$f" 2>/dev/null | grep -v '^[[:space:]]*#' | sed 's/[[:space:]]#.*$//')
   [ -n "$lines" ] || continue
   # every source line must name a *.sh/*.bash, else the neighbour set is uncertain
@@ -76,7 +96,7 @@ EOF
 hop=$(sort -u "$list")
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  git grep -l -E -e "${src_re}.*$(esc "$(basename "$f")")" -- . > "$list.n" 2>/dev/null
+  consumers "$(basename "$f")"
   rc=$?
   [ "$rc" -le 1 ] || run_all "git grep failed on $f"
   cat "$list.n" >> "$list"
@@ -85,6 +105,8 @@ $hop
 EOF
 rm -f "$list.n"
 
+# a quoted path (special chars) cannot be matched back to a file: lint everything
+grep -q '^"' "$list" && run_all "path needing quotes in the neighbour set"
 # only paths that exist at HEAD; the hook itself filters by type/exclude
 files=$(sort -u "$list" | while IFS= read -r p; do [ -f "$p" ] && printf '%s\n' "$p"; done)
 [ -n "$files" ] || { echo "shellcheck-pr-range: nothing lintable (only deletions)" >&2; [ "$dry" = 1 ] && echo "FILES"; exit 0; }
