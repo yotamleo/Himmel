@@ -34,14 +34,15 @@ BASH_MAX_TIMEOUT_MS=600000
 - Leave `GH_TOKEN` and `GITHUB_TOKEN` unset. The platform's GitHub proxy then
   authenticates `git` and `gh` for the session, and your token never enters the
   VM. A token set here would be readable by anyone using the environment.
-- The two timeouts are the documented route. The setup script also writes them to
-  `/etc/profile.d/himmel-cloud.sh`, but that only reaches shells that source it.
+- The two timeouts must be set here. This field is the only place they reach
+  the Bash tool: a probe saw a value written to `/etc/profile.d` stay unset in
+  the session's shell, and this field set them (HIMMEL-4429).
 
 **Setup script:**
 
 ```bash
 #!/bin/bash
-# rev: 1
+# rev: 3
 rm -rf /tmp/himmel-setup \
   && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
   && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh --with-plugins || true

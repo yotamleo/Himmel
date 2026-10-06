@@ -40,7 +40,7 @@ run() { # run <path-dir> [args...] -> stdout in $OUT, rc in $RC
 # 1. dry-run plans every step and exits 0.
 run "$EMPTY" --dry-run
 if [ "$RC" -eq 0 ]; then ok "dry-run exits 0"; else bad "dry-run rc=$RC: $OUT"; fi
-for step in shellcheck at pre-commit jira-dist obsidian-deps env; do
+for step in shellcheck at pre-commit jira-dist obsidian-deps; do
   case "$OUT" in *"step=$step "*) ok "dry-run plans step $step" ;; *) bad "dry-run omits step $step: $OUT" ;; esac
 done
 
@@ -59,8 +59,9 @@ rm -rf "$FAKE/scripts/jira/dist"
 run "$EMPTY" --dry-run
 if [ ! -e "$FAKE/scripts/jira/dist" ] && [ ! -e "$FAKE/scripts/jira/node_modules" ]; then ok "dry-run leaves the tree untouched"; else bad "dry-run created files"; fi
 
-# 5. the timeout export is part of the plan and carries a number.
-case "$OUT" in *"BASH_DEFAULT_TIMEOUT_MS=600000"*) ok "plans BASH_DEFAULT_TIMEOUT_MS=600000" ;; *) bad "no BASH_DEFAULT_TIMEOUT_MS in plan: $OUT" ;; esac
+# 5. the Bash timeouts come from the environment's env-vars field, not the script:
+# a cloud probe showed a profile.d write never reaches the Bash tool (HIMMEL-4429).
+case "$OUT" in *"TIMEOUT_MS"*) bad "setup still plans a Bash timeout write: $OUT" ;; *) ok "no Bash timeout step (the env-vars field sets them)" ;; esac
 
 # 6. plugin profile (HIMMEL-4273): OFF by default; --with-plugins installs the
 # lean set; --plugins <list> installs exactly that list; a bad name is skipped.
@@ -88,17 +89,17 @@ FAILC="$TMP/failclaude"; mkdir -p "$FAILC"
 cp "$HAVE"/* "$FAILC/"
 printf '#!/bin/sh\necho "$@" >> "%s/claude.log"\nexit 1\n' "$TMP" > "$FAILC/claude"; chmod +x "$FAILC/claude"
 ln -s "$(command -v timeout)" "$FAILC/timeout"
-OUT="$(env -i PATH="$FAILC" HIMMEL_CLOUD_ROOT="$FAKE" HIMMEL_CLOUD_PROFILE_D="$TMP/profile.d" "$BASH_BIN" "$SETUP" --with-plugins 2>&1)"; RC=$?
+OUT="$(env -i PATH="$FAILC" HIMMEL_CLOUD_ROOT="$FAKE" "$BASH_BIN" "$SETUP" --with-plugins 2>&1)"; RC=$?
 if [ "$RC" -eq 0 ]; then ok "failing plugin install keeps rc 0"; else bad "failing plugin install rc=$RC: $OUT"; fi
 if grep -q 'install lean-skills@himmel' "$TMP/claude.log" 2>/dev/null; then ok "one failed install does not stop the next"; else bad "lean-skills install not attempted: $(cat "$TMP/claude.log" 2>/dev/null)"; fi
 case "$OUT" in *"plugin:himmel-ops"*"non-fatal"*) ok "failed plugin install is reported" ;; *) bad "failed plugin install silent: $OUT" ;; esac
 rm -rf "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tools/node_modules"
 
 # 6c. the slow npm builds run LAST (HIMMEL-4429): a cloud setup died silently in
-# jira-dist and every later step (timeouts, plugins) was lost with it.
+# jira-dist and every later step (plugins) was lost with it.
 run "$EMPTY" --dry-run --with-plugins
 order="$(printf '%s\n' "$OUT" | sed -n 's/^step=\([^ ]*\) .*/\1/p' | tr '\n' ' ')"
-case "$order" in *"env "*"plugin:lean-skills "*"jira-dist "*"obsidian-deps "*) ok "env and plugins run before the npm builds" ;; *) bad "step order puts a build before env/plugins: $order" ;; esac
+case "$order" in *"plugin:lean-skills "*"jira-dist "*"obsidian-deps "*) ok "plugins run before the npm builds" ;; *) bad "step order puts a build before the plugins: $order" ;; esac
 
 # 6d. a failing jira build is NON-fatal and says why: a FAILED line with the
 # reason, the npm stderr tail, and the next step still runs.
@@ -107,7 +108,7 @@ cp "$HAVE"/* "$NPMF/"
 for t in timeout sh tail mkdir bash; do ln -s "$(command -v "$t")" "$NPMF/$t"; done
 printf '#!/bin/sh\necho "npm ERR! registry hang" >&2\nexit 124\n' > "$NPMF/npm"; chmod +x "$NPMF/npm"
 printf '#!/bin/sh\necho ensure-deps-ran\nexit 0\n' > "$FAKE/marketplace/plugins/obsidian-triage/tools/ensure-deps.sh"
-OUT="$(env -i PATH="$NPMF" HIMMEL_CLOUD_ROOT="$FAKE" HIMMEL_CLOUD_PROFILE_D="$TMP/profile.d" TMPDIR="$TMP" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+OUT="$(env -i PATH="$NPMF" HIMMEL_CLOUD_ROOT="$FAKE" TMPDIR="$TMP" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
 if [ "$RC" -eq 0 ]; then ok "failing jira build keeps rc 0"; else bad "failing jira build rc=$RC: $OUT"; fi
 case "$OUT" in *"step=jira-dist FAILED"*"timed out"*) ok "jira build failure names its reason" ;; *) bad "no 'step=jira-dist FAILED ... timed out' line: $OUT" ;; esac
 case "$OUT" in *"npm ERR! registry hang"*) ok "jira build failure shows the npm stderr" ;; *) bad "npm stderr not surfaced: $OUT" ;; esac
