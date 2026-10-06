@@ -664,7 +664,8 @@ def whisper_transcribe(wav: Path, model: str, meta=None):
     uv = shutil.which("uv")
     if not uv:
         return None
-    cmd = [uv, "run", "--python", "3.12", "--with", "faster-whisper",
+    cmd = [uv, "run", "--python", "3.12", "--with-requirements",
+           str(Path(__file__).with_name("requirements-whisper.txt")),
            "python", str(helper), str(wav), model]
     meta_path = wav.with_suffix(".meta")
     try:

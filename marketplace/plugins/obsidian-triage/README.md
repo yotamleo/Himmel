@@ -109,9 +109,13 @@ inbox** (triage Phase-8 step-0 and the migrate engine both skip a pending clip);
 nothing else drains it. The download rung is **lean-invoke** (`/ig-media-enrich`,
 run manually or by the harvest cadence - never auto-fired from `/harvest-clips`,
 because the download + local-whisper path is expensive and needs burner cookies).
-`tools/ig-media-fetch.py` downloads the reel/carousel media via `gallery-dl`
+`tools/ig-media-fetch.py` downloads the reel/carousel media cookieless via
+Scrapling first (`tools/ig-scrapling-media.py` in `~/.himmel/scrapling-venv`,
+HIMMEL-4675; routed as `local-headless`, so `HARVEST_SCRAPE_DENY` /
+`.harvest-backends` apply), falling back to `gallery-dl`
 (burner-account cookies at `~/.luna/cookies/instagram.txt`, contents never
-printed), transcribes reels locally (`ffmpeg` -> mono-16k WAV -> faster-whisper),
+printed), transcribes reels locally (`ffmpeg` -> mono-16k WAV -> faster-whisper,
+the pair pinned in `tools/requirements-whisper.txt` and checked by `tools/whisper-probe.py`),
 and recompresses carousel slides into `Clippings/_media/<slug>/slide-NN.jpg`
 embedded under `### Slides`. An agent then reads the slide images and the
 mechanical `--apply-digest` applier writes the `### Slide digest` (scoped-G-3 +
@@ -158,7 +162,7 @@ Do this ONCE per machine before the first `/ig-media-enrich` run.
    (first use otherwise blocks on a ~140MB one-time fetch):
 
    ```
-   uv run --python 3.12 --with faster-whisper python -c "from faster_whisper import WhisperModel; WhisperModel('base')"
+   uv run --python 3.12 --with-requirements tools/requirements-whisper.txt python -c "from faster_whisper import WhisperModel; WhisperModel('base')"
    ```
 
 5. **Run the one-shot historical backfill.** `--include-evidence` extends the

@@ -1,0 +1,17 @@
+{"kind":"avail","ts":"2026-09-01T10:00:00Z","branch":"feat/a","head":"h1","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-x"}
+{"kind":"finding","ts":"2026-09-01T10:00:00Z","branch":"feat/a","head":"h1","model":"codex","finding_id":"codex-1","severity":"sug","file":"a.sh","line":1,"verdict":"","artifact":"diff","perspective":"off","text":"one","fingerprint":"fpA"}
+{"kind":"finding","ts":"2026-09-01T10:00:00Z","branch":"feat/a","head":"h1","model":"codex","finding_id":"codex-2","severity":"imp","file":"a.sh","line":2,"verdict":"","artifact":"diff","perspective":"off","text":"two","fingerprint":"fpB"}
+{"kind":"finding","ts":"2026-09-01T10:00:00Z","branch":"feat/a","head":"h1","model":"codex","finding_id":"codex-3","severity":"crit","file":"a.sh","line":3,"verdict":"","artifact":"diff","perspective":"off","text":"three"}
+{"kind":"amend","ts":"2026-09-01T11:00:00Z","branch":"feat/a","target_head":"h1","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"verdict":"fixed"},"reason":"fixed"}
+{"kind":"amend","ts":"2026-09-01T11:00:00Z","branch":"feat/a","target_head":"h1","finding_id":"codex-2","artifact":"diff","perspective":"off","set":{"verdict":"disproved"},"reason":"by design"}
+{"kind":"amend","ts":"2026-09-01T11:00:00Z","branch":"feat/a","target_head":"h1","finding_id":"codex-3","artifact":"diff","perspective":"off","set":{"verdict":"deferred","fu_class":"polish"},"reason":"deferred"}
+{"kind":"avail","ts":"2026-09-02T10:00:00Z","branch":"feat/a","head":"h2","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-x"}
+{"kind":"finding","ts":"2026-09-02T10:00:00Z","branch":"feat/a","head":"h2","model":"codex","finding_id":"codex-1","severity":"sug","file":"a.sh","line":1,"verdict":"","artifact":"diff","perspective":"off","text":"one again","fingerprint":"fpA"}
+{"kind":"amend","ts":"2026-09-02T11:00:00Z","branch":"feat/a","target_head":"h2","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"verdict":"disproved"},"reason":"re-raise of a ruled finding"}
+{"kind":"avail","ts":"2026-09-03T10:00:00Z","branch":"feat/b","head":"h3","model":"codex","status":"ok","artifact":"diff","perspective":"off","responding_model":"gpt-y"}
+{"kind":"finding","ts":"2026-09-03T10:00:00Z","branch":"feat/b","head":"h3","model":"codex","finding_id":"codex-1","severity":"imp","file":"b.sh","line":1,"verdict":"","artifact":"diff","perspective":"off","text":"four"}
+{"kind":"amend","ts":"2026-09-03T11:00:00Z","branch":"feat/b","target_head":"h3","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"verdict":"agreed"},"reason":"agreed"}
+{"kind":"finding","ts":"2026-09-03T12:00:00Z","branch":"feat/b","head":"h3","model":"claude","finding_id":"claude-1","severity":"imp","file":"b.sh","line":2,"verdict":"","artifact":"diff","perspective":"off","text":"five"}
+not json at all
+{"kind":"amend","ts":"2026-09-20T11:00:00Z","branch":"feat/b","target_head":"h3","finding_id":"codex-1","artifact":"diff","perspective":"off","set":{"verdict":"disproved"},"reason":"after the cutoff"}
+{"kind":"finding","ts":"2026-09-20T10:00:00Z","branch":"feat/b","head":"h4","model":"codex","finding_id":"codex-1","severity":"imp","file":"b.sh","line":3,"verdict":"","artifact":"diff","perspective":"off","text":"after the cutoff"}

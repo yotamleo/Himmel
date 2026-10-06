@@ -30,6 +30,21 @@
 //     Write left at that path) or ledger-append.sh finding/amend rows
 // A tool call's parentMessageId is the first text its API message streamed;
 // a call whose message streamed no text has none.
+// Agents (HIMMEL-4669): every TEXT_MESSAGE_START and TOOL_CALL_START carries
+// `agent`. The session's own agent is id "main", named by the latest
+// agent-name record (role from that name: -console, a leg's -N<digits>-, judge),
+// its model the latest assistant message.model. A sidechain record
+// (isSidechain + agentId, inline or fed from subagents/agent-<id>.jsonl) is a
+// subagent's: it is bound to the Agent call whose prompt equals its first
+// prompt (else to the call whose result names its agentId), taking that call's
+// description, subagent_type and model. A sidechain prompt, interrupt or turn
+// end is never a run boundary; a sidechain API error is a text, not RUN_ERROR.
+// Failures: TOOL_CALL_RESULT.failure is "denied" (a hook or permission
+// refusal), "suite" (a test run that exited non-zero), "error" (any other
+// is_error), or "blocked" (a call reporting a BLOCKED marker, error or not);
+// an assistant text that reports BLOCKED carries failure "blocked", and a
+// subagent's API-error text failure "error". When only an Agent call's result
+// names its subagent, that result carries the identity as `subagent`.
 // threadId is the journal's sessionId (or the caller's), runId the prompt
 // record's uuid. Agent output with no prompt before it opens an implicit run.
 //
@@ -46,7 +61,7 @@
 // Nothing here throws on bad input; a bad line is counted and skipped.
 
 import { readFileSync } from "node:fs";
-import type { AguiEvent, JsonPatchOp } from "./events.ts";
+import type { AgentInfo, AgentRole, AguiEvent, Failure, JsonPatchOp } from "./events.ts";
 import { commandVerdicts, extractHead, extractVerdicts, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
 
 export type MapperStats = {
@@ -75,11 +90,22 @@ const SILENT_TYPES = new Set([
   "artifact-autoreact-ledger", "artifact-comment-monitor",
 ]);
 const INTERRUPT = /^\[Request interrupted by user/;
+// A refusal by a PreToolUse/permission hook, or by the operator's permission prompt.
+const DENIED = /^(PreToolUse|PermissionRequest):\w+ hook error|permission to use .* has been denied|doesn't want to proceed|tool use was rejected/i;
+const SUITE = /quiet-run\.sh suite|\bbun test\b|run-shell-tests\.sh|\btest-[\w.-]+\.sh\b|\bplaywright test\b|\bpytest\b|\bnpm (run )?test\b/;
+// A status line that leads with BLOCKED: a message, or a Results bullet ("- 12:00 BLOCKED ...").
+const BLOCKED = /^\s*(?:-\s+(?:\d\d:\d\d\s+)?)?BLOCKED\b/m;
+
+const roleOfName = (name: string): AgentRole =>
+  /-console$/.test(name) ? "console" : /judge/i.test(name) ? "judge" : /(^|-)N\d+(-|$)/.test(name) ? "leg" : "agent";
+const roleOfKind = (kind: string): AgentRole => (/critic|review/i.test(kind) ? "critic" : /judge/i.test(kind) ? "judge" : "subagent");
 
 type Rec = Record<string, unknown>;
 type Block = Rec & { type?: unknown };
 // What a tool call does to review state once it succeeds.
 type PendingCall = {
+  name?: string;
+  input?: Rec;
   verdicts: VerdictUpdate[]; // recorded by a Bash command
   head?: string; // the --head a Bash command names
   write?: { path: string; text?: string }; // a Write call: its file, and the text when it holds VERDICT lines
@@ -94,6 +120,13 @@ function epochMs(rec: Rec): { timestamp?: number } {
 }
 
 // Tool-result content is a string or an array of content parts; flatten to text.
+// A prompt's text, joined as mapUser joins it (a string, or its text blocks).
+function promptText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  return content.filter((b) => isObject(b) && b.type === "text").map((b) => str((b as Rec).text) ?? "").join("\n");
+}
+
 function resultText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -112,6 +145,59 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
   const pending = new Map<string, PendingCall>(); // tool calls awaiting their result
   const verdictFiles = new Map<string, string>(); // path → text with VERDICT lines a successful Write left there
   const firstText = new Map<string, string>(); // API message.id → messageId of its first emitted text
+  let main: AgentInfo = { id: "main", name: "session", role: "agent" };
+  const agents = new Map<string, AgentInfo>(); // sidechain agentId → identity
+  const spawns = new Map<string, AgentInfo & { prompt?: string }>(); // Agent toolCallId → the subagent it asked for
+
+  const clean = (a: AgentInfo & { prompt?: string }): AgentInfo =>
+    Object.fromEntries(Object.entries(a).filter(([k, v]) => v !== undefined && k !== "prompt")) as AgentInfo;
+
+  // The agent a record belongs to, learning what the record says about it.
+  function agentOf(rec: Rec): AgentInfo {
+    const model = isObject(rec.message) ? str(rec.message.model) : undefined;
+    const known = model && model !== "<synthetic>" ? model : undefined;
+    const sub = rec.isSidechain === true ? str(rec.agentId) : undefined;
+    if (!sub) {
+      if (known) main = { ...main, model: known };
+      return clean(main);
+    }
+    let a = agents.get(sub);
+    if (!a) {
+      const prompt = rec.type === "user" && isObject(rec.message) ? promptText(rec.message.content) : undefined;
+      const spawn = prompt !== undefined ? [...spawns.values()].find((x) => x.prompt === prompt && !x.id) : undefined;
+      if (spawn) spawn.id = sub;
+      a = spawn ? { ...spawn, id: sub } : { id: sub, name: `agent ${sub}`, role: "subagent" };
+    }
+    if (known) a = { ...a, model: known };
+    a = clean(a);
+    agents.set(sub, a);
+    return a;
+  }
+
+  // An Agent call's result names the subagent it ran: bind it if its prompt did not. The identity it learns
+  // rides that result as `subagent`, since the subagent may already have sent its last START.
+  function bindResult(rec: Rec, toolCallId: string): AgentInfo | undefined {
+    const spawn = spawns.get(toolCallId);
+    if (!spawn) return undefined;
+    spawns.delete(toolCallId);
+    const r = isObject(rec.toolUseResult) ? rec.toolUseResult : undefined;
+    const id = str(r?.agentId);
+    if (!id || spawn.id) return undefined;
+    const info = clean({ ...spawn, id, model: agents.get(id)?.model ?? str(r?.resolvedModel) ?? spawn.model });
+    agents.set(id, info);
+    return info;
+  }
+
+  function classify(call: PendingCall | undefined, isError: boolean, text: string): Failure | undefined {
+    const input = call?.input ?? {};
+    const command = str(input.command) ?? "";
+    const reported = call?.name === "SendMessage" ? BLOCKED.test(str(input.message) ?? "")
+      : call?.name === "Bash" && /append-results\.sh/.test(command) && /["'\s]BLOCKED\b/.test(command);
+    if (!isError) return reported ? "blocked" : undefined;
+    if (DENIED.test(text.slice(0, 2000))) return "denied"; // a refusal says so up front; never scan a huge output
+    if (call?.name === "Bash" && SUITE.test(command)) return "suite";
+    return reported ? "blocked" : "error";
+  }
 
   function startRun(rec: Rec, out: AguiEvent[], id: string) {
     threadId ??= str(rec.sessionId) ?? "journal";
@@ -128,13 +214,23 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     runId = undefined;
   }
 
+  // A subagent still working after its session's turn ended (a background agent) has no run to join and no
+  // turn end of its own: its record gets a run of its own, closed once the record is mapped (mapRecord), and
+  // RUN_STARTED names that agent so a reader can tell it from a turn.
+  let sideRun = false;
   function ensureRun(rec: Rec, out: AguiEvent[]) {
-    if (runId === undefined) startRun(rec, out, str(rec.uuid) ?? `run-${stats.lines}`);
+    if (runId !== undefined) return;
+    startRun(rec, out, str(rec.uuid) ?? `run-${stats.lines}`);
+    if (rec.isSidechain === true && str(rec.agentId)) {
+      sideRun = true;
+      (out[out.length - 1] as { agent?: AgentInfo }).agent = agentOf(rec);
+    }
   }
 
-  function textMessage(rec: Rec, out: AguiEvent[], messageId: string, role: "user" | "assistant", text: string) {
+  function textMessage(rec: Rec, out: AguiEvent[], messageId: string, role: "user" | "assistant", text: string, failed?: "error") {
     const ts = epochMs(rec);
-    out.push({ type: "TEXT_MESSAGE_START", messageId, role, ...ts });
+    const failure = failed ?? (role === "assistant" && BLOCKED.test(text) ? "blocked" as const : undefined);
+    out.push({ type: "TEXT_MESSAGE_START", messageId, role, agent: agentOf(rec), ...(failure ? { failure } : {}), ...ts });
     out.push({ type: "TEXT_MESSAGE_CONTENT", messageId, delta: text, ...ts });
     out.push({ type: "TEXT_MESSAGE_END", messageId, ...ts });
   }
@@ -158,6 +254,14 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
       stats.ignored++;
       return true;
     }
+    if (rec.isSidechain === true) { // a subagent's brief: never a run boundary
+      if (INTERRUPT.test(text)) stats.ignored++;
+      else {
+        ensureRun(rec, out);
+        textMessage(rec, out, str(rec.uuid) ?? `prompt-${stats.lines}`, "user", text);
+      }
+      return true;
+    }
     if (INTERRUPT.test(text)) {
       finishRun(rec, out, "cancelled");
       return true;
@@ -173,11 +277,15 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     const toolCallId = str(block.tool_use_id);
     if (!toolCallId) return;
     const isError = block.is_error === true;
+    const call = pending.get(toolCallId);
+    const content = resultText(block.content);
+    const failure = classify(call, isError, content);
+    const subagent = bindResult(rec, toolCallId);
     out.push({
       type: "TOOL_CALL_RESULT", messageId: `${toolCallId}:result`, toolCallId, role: "tool",
-      content: resultText(block.content), ...(isError ? { isError: true as const } : {}), ...epochMs(rec),
+      content, ...(isError ? { isError: true as const } : {}), ...(failure ? { failure } : {}),
+      ...(subagent ? { subagent } : {}), ...epochMs(rec),
     });
-    const call = pending.get(toolCallId);
     pending.delete(toolCallId);
     if (isError) return;
     if (call?.write) {
@@ -215,15 +323,16 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
   function reviewEffect(name: string, input: unknown): PendingCall {
     const args = isObject(input) ? input : {};
     const command = str(args.command);
+    const call = { name, input: args };
     if (name === "Bash" && command) {
-      return { verdicts: commandVerdicts(command, (path) => verdictFiles.get(path)), head: extractHead(command) };
+      return { ...call, verdicts: commandVerdicts(command, (path) => verdictFiles.get(path)), head: extractHead(command) };
     }
     const path = str(args.file_path);
     const content = str(args.content);
     if (name === "Write" && path && content !== undefined) {
-      return { verdicts: [], write: { path, ...(extractVerdicts(content).length ? { text: content } : {}) } };
+      return { ...call, verdicts: [], write: { path, ...(extractVerdicts(content).length ? { text: content } : {}) } };
     }
-    return { verdicts: [] };
+    return { ...call, verdicts: [] };
   }
 
   function mapAssistant(rec: Rec, out: AguiEvent[]): boolean {
@@ -232,6 +341,11 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     const blocks = message.content.filter(isObject) as Block[];
     if (rec.isApiErrorMessage === true) {
       const text = blocks.map((b) => str(b.text) ?? "").join("\n") || "API error";
+      if (rec.isSidechain === true) { // a subagent's failure, not the run's
+        ensureRun(rec, out);
+        textMessage(rec, out, str(rec.uuid) ?? `error-${stats.lines}`, "assistant", text, "error");
+        return true;
+      }
       out.push({ type: "RUN_ERROR", message: text, ...(str(rec.error) ? { code: str(rec.error) } : {}), ...epochMs(rec) });
       runId = undefined;
       return true;
@@ -252,7 +366,16 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
         // The text the same API message streamed before this call, if any.
         const parentMessageId = messageId ? firstText.get(messageId) : undefined;
         const ts = epochMs(rec);
-        out.push({ type: "TOOL_CALL_START", toolCallId, toolCallName, ...(parentMessageId ? { parentMessageId } : {}), ...ts });
+        const agent = agentOf(rec);
+        out.push({ type: "TOOL_CALL_START", toolCallId, toolCallName, ...(parentMessageId ? { parentMessageId } : {}), agent, ...ts });
+        const input = isObject(block.input) ? block.input : {};
+        if (toolCallName === "Agent" || toolCallName === "Task") {
+          const kind = str(input.subagent_type) ?? "general-purpose";
+          spawns.set(toolCallId, {
+            id: "", name: str(input.description) ?? kind, role: roleOfKind(kind), kind,
+            model: str(input.model), parentToolCallId: toolCallId, prompt: str(input.prompt),
+          });
+        }
         out.push({ type: "TOOL_CALL_ARGS", toolCallId, delta: JSON.stringify(block.input ?? {}), ...ts });
         out.push({ type: "TOOL_CALL_END", toolCallId, ...ts });
         pending.set(toolCallId, reviewEffect(toolCallName, block.input));
@@ -274,13 +397,20 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     if (type === "user") ok = mapUser(rec, out);
     else if (type === "assistant") ok = mapAssistant(rec, out);
     else if (type === "system") {
-      if (rec.subtype === "turn_duration") finishRun(rec, out, "success");
+      if (rec.subtype === "turn_duration" && rec.isSidechain !== true) finishRun(rec, out, "success");
       else stats.ignored++;
-    } else if (type && SILENT_TYPES.has(type)) stats.ignored++;
+    } else if (type && SILENT_TYPES.has(type)) {
+      if (type === "agent-name" && str(rec.agentName)) main = { ...main, name: str(rec.agentName)!, role: roleOfName(str(rec.agentName)!) };
+      stats.ignored++;
+    }
     else if (type) stats.unknown++;
     else ok = false;
     if (!ok) stats.malformed++;
     else if (uuid) seen.add(uuid);
+    if (sideRun) {
+      sideRun = false;
+      finishRun(rec, out, "success");
+    }
   }
 
   function pushLine(line: string): AguiEvent[] {

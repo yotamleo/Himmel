@@ -133,6 +133,7 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'guard-agent-model.sh',
   // PreToolUse, one entry each.
   'block-backend-tier.sh',
+  'mcp-policy.sh',
   'auto-arm-on-cap.sh',
   // PreToolUse `*` — its own entry (HIMMEL-4569): denies a console-spawned
   // leg's non-hand-off calls at >= 75 % context fill until its RESUME doc

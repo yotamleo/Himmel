@@ -1,19 +1,25 @@
 /* The AG-UI run view. Evolves config-ui's tokens (public/app.css): same palette and Plex pair, but prose is set
    in Plex Sans and only machine text (tool names, args, paths) in Plex Mono. The one bold element is the run
-   strip: parallel tool calls as lanes over time. Motion is limited to bars growing and the text caret. */
+   strip: parallel tool calls as lanes over time, one band per agent (HIMMEL-4669). Each agent carries one of six
+   colours (--ag0..5, none of them the status green or red) on its band, its row in the agent list and the rail
+   beside its work; failures alone are red (errors, failed suites) or amber (denials, BLOCKED reports).
+   Motion is limited to bars growing and the text caret. */
 :root{
   --bg:#121416; --panel:#191c1f; --line:#2a2f34; --fg:#e8e2d6; --dim:#8e959c;
   --accent:#9fb7cf; --ok:#7fae8a; --warn:#d1a85f; --fail:#d9796b; --off:#6f767d;
   --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
   --sans:"IBM Plex Sans",system-ui,sans-serif;
   --tint:18%; color-scheme:dark;
+  --ag0:#9fb7cf; --ag1:#c3a0dc; --ag2:#76c2bd; --ag3:#e3a0b7; --ag4:#c2b87a; --ag5:#a3abe9;
 }
 @media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
   --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
-  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light}}
+  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light;
+  --ag0:#365a7d; --ag1:#6f4596; --ag2:#1f6f69; --ag3:#94405f; --ag4:#6b6320; --ag5:#424fa3;}}
 :root[data-theme="light"]{
   --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
-  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light}
+  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light;
+  --ag0:#365a7d; --ag1:#6f4596; --ag2:#1f6f69; --ag3:#94405f; --ag4:#6b6320; --ag5:#424fa3;}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
 code,pre{font-family:var(--mono)}
@@ -21,31 +27,64 @@ code{font-size:.9em;background:var(--panel);padding:0 4px;border-radius:2px}
 button{font:inherit;color:inherit}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-.top{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;padding:10px 24px;border-bottom:1px solid var(--line);font:12.5px var(--mono)}
+/* The bar stays in view on a long run: status, the failure count and the jump controls are always one glance away. */
+.top{position:sticky;top:0;z-index:2;background:var(--bg);display:flex;flex-wrap:wrap;gap:4px 16px;align-items:center;padding:10px 24px;border-bottom:1px solid var(--line);font:12.5px var(--mono)}
 .brand{font-weight:600}
 .run,.meta{color:var(--dim)}
 .meta{font-variant-numeric:tabular-nums}
 .state::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:currentColor;vertical-align:1px}
 .state.running{color:var(--ok)}.state.finished{color:var(--dim)}.state.error{color:var(--fail)}.state.idle{color:var(--warn)}
-.btn{cursor:pointer;background:none;border:1px solid var(--line);border-radius:3px;padding:2px 10px;font:12px var(--mono);margin-left:auto}
+.btn{cursor:pointer;background:none;border:1px solid var(--line);border-radius:3px;padding:2px 10px;font:12px var(--mono)}
 .btn:hover{border-color:var(--accent)}
+.replay{margin-left:auto}
+.fails{display:inline-flex;gap:6px;align-items:center;color:var(--fail)}
+.fails .btn{color:var(--fail);border-color:color-mix(in srgb,var(--fail) 45%,var(--line))}
+.fails-count{font-variant-numeric:tabular-nums}
+.dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:var(--ag)}
 
 /* run strip */
 .strip{padding:12px 24px 14px;border-bottom:1px solid var(--line)}
 .axis{display:flex;justify-content:space-between;font:11px var(--mono);color:var(--dim);margin-bottom:6px;font-variant-numeric:tabular-nums}
+.band{display:grid;grid-template-columns:150px minmax(0,1fr);gap:12px;align-items:start;padding:3px 0;border-top:1px solid var(--line);transition:opacity .2s}
+.band:first-of-type{border-top:0}
+.band.dim{opacity:.3}
+.band-name{display:flex;gap:6px;align-items:center;font:11.5px/26px var(--mono);color:var(--fg);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.axis{margin-left:162px}
 .lanes{--lane:26px;position:relative;background:repeating-linear-gradient(transparent 0 11px,var(--line) 11px 12px,transparent 12px var(--lane))}
-.bar{position:absolute;height:22px;min-width:6px;padding:0 6px;cursor:pointer;text-align:left;overflow:hidden;
+.bar{--c:var(--ag);position:absolute;height:22px;min-width:6px;padding:0 6px;cursor:pointer;text-align:left;overflow:hidden;
   border:0;border-left:2px solid var(--c);border-radius:2px;background:color-mix(in srgb,var(--c) var(--tint),var(--bg));
   font:11.5px/22px var(--mono);white-space:nowrap;transition:width .25s linear}
 .bar span{display:block;overflow:hidden;text-overflow:ellipsis}
 .bar i{font-style:normal;color:var(--dim)}
-.bar.running{--c:var(--accent)}.bar.done{--c:var(--ok)}.bar.error{--c:var(--fail)}
+.bar.running{border-right:2px dashed var(--c)}
+.bar.failed{--c:var(--fail);outline:1px solid var(--c);outline-offset:-1px}
+.bar.failed.denied,.bar.failed.blocked{--c:var(--warn)}
 .bar:hover{background:color-mix(in srgb,var(--c) calc(var(--tint) * 2),var(--bg))}
 
 /* transcript + panel */
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:40px;padding:24px;max-width:1200px}
 .transcript{min-width:0}
-.msg{max-width:68ch;margin:4px 0 16px}
+.turn{display:flex;justify-content:space-between;font:500 11.5px var(--mono);color:var(--dim);letter-spacing:.06em;
+  margin:8px 0 12px;padding-bottom:4px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+.turn span:first-child{text-transform:uppercase}
+.turn:not(:first-child){margin-top:28px}
+/* One agent's consecutive work: its name once, then a rail in its colour; a subagent's sits one step in. */
+.block{border-left:2px solid var(--ag);padding:0 0 2px 14px;margin:0 0 14px}
+.block.sub{margin-left:18px}
+.agent-head{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:center;margin:0 0 6px;font:12px var(--mono)}
+.agent-head b{font-weight:600;color:var(--ag);overflow-wrap:anywhere}
+.agent-head span{color:var(--dim)}
+.msg{max-width:68ch;margin:4px 0 12px;outline-offset:4px}
+.msg p{margin:0}
+.msg.prompt p{color:var(--fg);font-weight:500}
+.msg.brief{color:var(--dim);font-size:13.5px}
+.msg-label{display:block;font:11px var(--mono);color:var(--dim)}
+.msg.failed{border:1px solid color-mix(in srgb,var(--c) 50%,var(--line));background:color-mix(in srgb,var(--c) 8%,var(--bg));padding:6px 10px;border-radius:2px}
+.msg.failed{--c:var(--fail)}.msg.failed.denied,.msg.failed.blocked{--c:var(--warn)}
+.badge{display:inline-block;margin-right:6px;padding:0 5px;border:1px solid var(--c,var(--fail));border-radius:2px;color:var(--c,var(--fail));
+  font:500 11px/16px var(--mono);text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.badge.denied,.badge.blocked{--c:var(--warn)}.badge.suite,.badge.error{--c:var(--fail)}
+.msg .badge{margin-bottom:4px}
 .caret{display:inline-block;width:.5em;height:1.05em;margin-left:2px;background:var(--accent);vertical-align:-3px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
 .quiet{color:var(--dim);font-size:13.5px}
@@ -55,8 +94,10 @@ button{font:inherit;color:inherit}
 .group-label{font:12px var(--mono);color:var(--dim);margin:0 0 6px}
 .group-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;align-items:start}
 .group-cards .call{margin:0}
-.call{margin:0 0 16px;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--c);border-radius:2px}
+.call{margin:0 0 10px;background:var(--panel);border:1px solid var(--line);border-left:2px solid var(--c);border-radius:2px}
 .call.running{--c:var(--accent)}.call.done{--c:var(--ok)}.call.error{--c:var(--fail)}
+.call.failed{--c:var(--fail);border-color:color-mix(in srgb,var(--c) 50%,var(--line));background:color-mix(in srgb,var(--c) 7%,var(--panel))}
+.call.failed.denied,.call.failed.blocked{--c:var(--warn)}
 .call-head{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:baseline;width:100%;padding:8px 10px;
   background:none;border:0;cursor:pointer;text-align:left;font:12.5px var(--mono)}
 .call-name{font-weight:600}
@@ -65,9 +106,22 @@ button{font:inherit;color:inherit}
 .call-body{border-top:1px solid var(--line);padding:8px 10px;display:grid;gap:8px}
 .field span{display:block;font-size:12px;color:var(--dim)}
 .field pre{margin:2px 0 0;font-size:12px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:320px;overflow:auto}
+.more{cursor:pointer;background:none;border:0;padding:2px 0;color:var(--accent);font:12px var(--mono)}
+.more:hover{text-decoration:underline}
 
-.panel{position:sticky;top:16px;align-self:start}
-.panel h2{font:600 16px var(--sans);margin:0}
+.side{position:sticky;top:60px;align-self:start;display:grid;gap:28px;min-width:0}
+.agents h2,.panel h2{font:600 16px var(--sans);margin:0}
+.agents ul{list-style:none;margin:10px 0 10px;padding:0}
+.agents li{margin-left:calc(var(--depth,0) * 16px)}
+.agent{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:0 8px;align-items:center;width:100%;padding:6px 8px;
+  cursor:pointer;text-align:left;background:none;border:1px solid transparent;border-left:2px solid var(--ag);border-radius:2px}
+.agent:hover{background:var(--panel)}
+.agent[aria-pressed="true"]{background:color-mix(in srgb,var(--ag) 14%,var(--bg));border-color:color-mix(in srgb,var(--ag) 50%,var(--line))}
+.agent .dot{grid-row:1;grid-column:1}
+.agent-name{grid-row:1;grid-column:2;font:600 12.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-count{grid-row:1;grid-column:3;font:11.5px var(--mono);color:var(--dim);font-variant-numeric:tabular-nums}
+.agent-meta{grid-row:2;grid-column:2/4;font:11.5px var(--mono);color:var(--dim)}
+.agent-fail{grid-row:3;grid-column:2/4;font:500 11.5px var(--mono);color:var(--fail)}
 .panel-sub{color:var(--dim);font-size:13px;margin:2px 0 12px}
 .settled{display:block}
 .ticket{white-space:nowrap}
@@ -86,10 +140,14 @@ button{font:inherit;color:inherit}
 @media (max-width:760px){
   .top,.strip{padding-inline:16px}
   .layout{grid-template-columns:minmax(0,1fr);gap:24px;padding:16px}
-  .panel{position:static;order:-1}
+  .side{position:static;order:-1}
+  .band{grid-template-columns:minmax(0,1fr);gap:2px}
+  .band-name{line-height:18px}
+  .axis{margin-left:0}
+  .block.sub{margin-left:8px}
   .group-cards{grid-template-columns:minmax(0,1fr)}
 }
 @media (prefers-reduced-motion: reduce){
-  .bar{transition:none}
+  .bar,.band{transition:none}
   .caret{animation:none}
 }

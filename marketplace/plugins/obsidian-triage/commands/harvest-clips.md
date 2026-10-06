@@ -49,8 +49,29 @@ Exit codes:
 - 1: usage / input error (bad vault path, conflicting flags)
 - 2: env unusable (vault not found, lockfile contention, missing required env vars)
 - 3: refused under headless (HIMMEL-128)
-- 4: partial run (≥1 clip has `harvest_status: partial`); re-run later to retry
+- 4: partial run (≥1 clip landed in a **blocking** partial class below, or ≥1 failed); re-run later to retry. Deferred partials alone exit 0.
 - 5: catastrophic — abort mid-run; resume-state file written for next run
+
+### Partial classes (HIMMEL-4675) — deferred vs blocking
+
+A source-level, per-clip partial (the source cannot give more today) is **deferred**: it does NOT block `.harvest.done`, so `/triage-clips` and `/synthesize-clips` still run on the rest. A partial or failure that means this run's own view is unreliable **blocks**: G-8 writes no marker.
+
+| Class | Where it comes from | Verdict | Counted |
+|---|---|---|---|
+| `thin-body` skeleton | batch tool, clipper captured only placeholders | deferred | yes |
+| `enricher-gap` (`harvest_enricher_gap`) | batch tool, known platform with no enricher | deferred | yes |
+| `ig_media_pending` | batch tool / IG routing row, media rung pending | deferred | yes |
+| `x_media_pending` | `/x-media-enrich` parks a retryable X media failure | deferred | yes (when the clip is also a harvest partial) |
+| `firecrawl` fetch failed | batch tool `--firecrawl-thin`, one URL failed | deferred | yes |
+| `firecrawl` budget exhausted / unavailable (parked) | run-level credit cap or outage, not the clip's fault | deferred | no |
+| `stale-read` mid-pass | the clip changed under the run | **blocking** | — |
+| `rate-limited` mid-batch | a dispatched skill was throttled | **blocking** | — |
+| `failed` (`✗`, batch tool `FAIL`) | read, canonicalize or G-3 failure | **blocking** | — |
+| `catastrophic` abort | exit 5 | **blocking** | — |
+
+**Retry count.** Each deferred, counted partial increments `harvest_defer_count` in the clip's own frontmatter — not the daily G-5 state file, which rotates at midnight and would reset it. At `harvest_defer_count: 5` the batch tool also writes `harvest_needs_attention: true`, and from then on the clip is skipped (`⊘ skipped (needs-attention)`) instead of re-read every night. Five nights covers a work-week of transient outages before a human looks. A needs-attention clip is never silently dropped: it stays listed. To retry it, fix the source or clip and delete `harvest_needs_attention`.
+
+**Pending report.** Every non-dry run of `harvest-clip-body-batch.py` rebuilds `<vault>/.harvest-pending.md` from the clips' frontmatter: a `## Deferred` list (reason, count) and a `## Needs attention` bucket. The batch summary adds `harvest-clip-body-batch: D deferred (non-blocking), A needs-attention; pending report: .harvest-pending.md`. Every `PART` line the batch tool prints is deferred-class; only its `FAIL` lines (exit 4) block.
 
 ### Date substitution rule
 
@@ -158,7 +179,7 @@ On startup:
   - `harvest_status: gave_up | dedup | refused_sensitivity` → skip.
   - Not in state file → first attempt (`retry_count = 0`).
 
-State-file appends are the canonical record. Frontmatter is the operator-visible cache.
+State-file appends are the canonical record. Frontmatter is the operator-visible cache. The exception is the cross-day retry count of a deferred partial: it lives in the clip's `harvest_defer_count` frontmatter, because this file rotates daily (see "Partial classes" above).
 
 ### Per-clip workflow
 
@@ -232,7 +253,7 @@ Pick ONE of two paths per clip:
   - **Tool-deps preflight (HIMMEL-1135) — reached ONLY on the two enrich rungs below.** `tools/fxtwitter-enrich.mjs` and `tools/reddit-enrich.mjs` import `js-yaml`, which `tools/.gitignore` keeps out of git — so a plugin-cache install never has it and an enrich call would throw `Cannot find package 'js-yaml'` and revert its write. The FIRST time a clip in this run reaches either enrich rung, run `bash <plugin>/tools/ensure-deps.sh` **once** (subsequent clips skip it — already ensured this run); idempotent + fast when deps are present, installs them (browser-download-free) when absent, non-zero + a remediation message if it can't — treat that non-zero the same as any other env-unusable precondition (exit 2, per the exit-code table above). **Skip it entirely under `--dry-run`** (`DRY_RUN=1`): a dry run dispatches no enrich rung and `ensure-deps.sh` is not read-only (it may `npm install`), so running it would violate the `--dry-run` hard gate above. A batch with no `thin` X/reddit clip likewise never reaches here, so a github-only or already-rich batch never triggers a tool-dep install. (The tool's own exit-code-0-on-failure when js-yaml is missing is a separate, not-yet-fixed defect — HIMMEL-1136 — this preflight prevents the missing-dep condition from occurring at all.)
   - `thin` + **X** clip (`x.com`/`twitter.com`) → enrich via `tools/fxtwitter-enrich.mjs` (browser-free, api.fxtwitter.com), then re-run the verdict.
   - `thin` + **reddit** clip (source host `reddit.com`/`old.reddit.com`/`redd.it`) → enrich via `tools/reddit-enrich.mjs` (cookie-authenticated reddit `.json` + burner-account cookies from `~/.luna/cookies/reddit.txt`), then re-run the verdict.
-  - `thin`/`failed` + **instagram** clip (`source:` host `instagram.com`, keyed on host NOT `type:`) → do NOT auto-download media (the heavyweight `/ig-media-enrich` rung is lean-invoke). Mark `harvest_status: partial` + the dedicated boolean key `ig_media_pending: true` so `/ig-media-enrich` finds the batch. This is deliberately NOT a `harvest_flag` value (`harvest_flag` is single-valued and `/triage-clips` keys its untrusted-content handling off `harvest_flag: injection-suspect` — overloading it would clobber an injection flag). The media rung clears `ig_media_pending` when it completes the clip. The `ig_media_pending` write is a frontmatter-only mark (same G-3 body-identity discipline as the other harvest marks).
+  - `thin`/`failed` + **instagram** clip (`source:` host `instagram.com`, keyed on host NOT `type:`) → do NOT auto-download media (the heavyweight `/ig-media-enrich` rung is lean-invoke). Mark `harvest_status: partial` + the dedicated boolean key `ig_media_pending: true` so `/ig-media-enrich` finds the batch. This is a **deferred** partial (see "Partial classes"): it does not block `.harvest.done`. This is deliberately NOT a `harvest_flag` value (`harvest_flag` is single-valued and `/triage-clips` keys its untrusted-content handling off `harvest_flag: injection-suspect` — overloading it would clobber an injection flag). The media rung clears `ig_media_pending` when it completes the clip. The `ig_media_pending` write is a frontmatter-only mark (same G-3 body-identity discipline as the other harvest marks).
   - `thin` + **article/web** clip with `--firecrawl-thin` set (and the G-1 privacy gate passing) → the firecrawl escalation below, then re-run the verdict.
   - `thin` + **article/web** clip with firecrawl OFF (the default) → do NOT mark `ok`. Log `~ <clip> — partial (thin-body): clipper captured only a skeleton; enrichment needs fxtwitter/firecrawl`. Set frontmatter `harvest_status: partial` + `harvest_flag: thin-body`; state-file `harvest_status: partial`, `harvest_skill: clip-body`, `last_error: thin_body`. Skip the body write in Phase 5; only do the frontmatter mark. (The honest mark for e.g. a `docs.github.com` clip whose Web-Clipper template captured only placeholders — strictly better than the old `ok`-with-empty-body.)
   - `thin` + **repo** clip (`github.com`) → dispatch `obsidian-triage:luna-ingest` (the Phase-4 github path already owns this).
@@ -338,7 +359,7 @@ After the run, append one line to `<vault>/log.md` (if it exists):
 
 Downstream stages (`/triage-clips`, `/synthesize-clips`, `/archive-clips`) refuse to run against a harvest that never finished cleanly. This is the run's final step, after the Tracking append.
 
-If this run is exiting 0 — a clean run: every unharvested clip landed at `ok` or was skipped, no `partial`, no `failed`, no catastrophic abort — write `<vault>/.harvest.done` atomically:
+If this run is exiting 0 — a clean run: every unharvested clip landed at `ok`, was skipped, or is a **deferred** partial (the class table above: thin-body, enricher-gap, IG/X media-pending, firecrawl), with no blocking partial, no `failed`, no catastrophic abort — write `<vault>/.harvest.done` atomically:
 
 ```bash
 marker_tmp="<vault>/.harvest.done.tmp.$$"

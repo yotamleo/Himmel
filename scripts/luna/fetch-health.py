@@ -653,7 +653,53 @@ def probe_jina_reader(env: dict[str, str], http: Callable[..., HttpResult]) -> P
     return classify_http(result, auth_required=False, valid_body=valid)
 
 
-IG_PROBE_SOURCES = ("instagram-embed", "instagram-media")
+SCRAPLING_TIMEOUT_SECONDS = 120  # the helper's 60 s page load plus browser start-up
+IG_SCRAPLING_HELPER = Path("marketplace/plugins/obsidian-triage/tools/ig-scrapling-media.py")
+
+
+def probe_instagram_scrapling(
+    env: dict[str, str],
+    command: Callable[..., subprocess.CompletedProcess[str]],
+    repo_root: Path,
+    *,
+    child_env: dict[str, str] | None = None,
+) -> ProbeResult:
+    """HIMMEL-4675: the cookieless Scrapling path /ig-media-enrich tries first.
+    Same venv lookup as ig-media-fetch.py; no cookie is sent."""
+    override = (env.get("IG_SCRAPLING_PYTHON") or "").strip()
+    py = Path(override) if override else resolve_home(env) / ".himmel" / "scrapling-venv" / "bin" / "python"
+    if not py.is_file():
+        return ProbeResult("transport-fail", f"scrapling python missing ({py}); create ~/.himmel/scrapling-venv "
+                                             "from requirements-scrapling.txt")
+    url = env.get("FETCH_HEALTH_INSTAGRAM_MEDIA_URL", DEFAULT_URLS["instagram-media"])
+    parts = [p for p in urllib.parse.urlparse(url).path.split("/") if p]
+    shortcode = parts[1] if len(parts) >= 2 and parts[0] in ("p", "reel", "reels", "tv") else ""
+    if not shortcode:
+        return ProbeResult("transport-fail", "instagram probe URL has no post shortcode")
+    try:
+        completed = command(
+            [str(py), str(repo_root / IG_SCRAPLING_HELPER), "--url", url, "--shortcode", shortcode],
+            env=child_env if child_env is not None else env,
+            timeout=SCRAPLING_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ProbeResult("transport-fail", "scrapling helper invocation failed")
+    try:
+        out = json.loads(completed.stdout or "")
+    except ValueError:
+        out = {}
+    status = out.get("status") if isinstance(out, dict) else None
+    detail = str(out.get("detail", ""))[:80] if isinstance(out, dict) else ""
+    if completed.returncode == 0 and status == "ok":
+        return ProbeResult("ok", f"scrapling found {len(out.get('items') or [])} media item(s), no cookie")
+    if status == "login_wall":
+        return ProbeResult("blocked-or-rate-limited", "instagram served a login_wall to the cookieless fetch")
+    if completed.returncode == 3:
+        return ProbeResult("transport-fail", "scrapling not installed in the venv")
+    return ProbeResult("transport-fail", f"scrapling helper rc={completed.returncode} status={status or 'unparsed'} {detail}".rstrip())
+
+
+IG_PROBE_SOURCES = ("instagram-embed", "instagram-media", "instagram-scrapling")
 IG_OK_TTL_S = 24 * 3600
 IG_BAD_TTL_S = 3600
 
@@ -760,6 +806,7 @@ def build_probe_registry(
         "x-fxtwitter": lambda: probe_fxtwitter(effective, http),
         "instagram-embed": lambda: probe_instagram_embed(effective, http),
         "instagram-media": lambda: probe_gallery_dl("instagram-media", "instagram.txt", "FETCH_HEALTH_INSTAGRAM_MEDIA_URL", effective, command, child_env=child_env),
+        "instagram-scrapling": lambda: probe_instagram_scrapling(effective, command, repo_root, child_env=child_env),
         "x-media": lambda: probe_gallery_dl("x-media", "twitter.txt", "FETCH_HEALTH_X_MEDIA_URL", effective, command, child_env=child_env),
         "x-twitter-cli": lambda: probe_twitter_cli(effective, command, child_env=child_env),
         "youtube-playwright": lambda: probe_youtube(effective, http),
