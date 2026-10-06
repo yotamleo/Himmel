@@ -1114,6 +1114,12 @@ assert_rc "4438 env with a quoted assignment" 2 "$(run_case "$(j_bash "env 'FOO=
 assert_rc "4438 exec -a name rm -rf"          2 "$(run_case "$(j_bash "exec -a 'x' rm -rf /tmp/x")")"
 assert_rc "4438 allow: bash -c 'ls -la'"      0 "$(run_case "$(j_bash "bash -c 'ls -la'")")"
 assert_rc "4438 allow: echo 'rm -rf /tmp/x'"  0 "$(run_case "$(j_bash "echo 'rm -rf /tmp/x'")")"
+# HIMMEL-4576 / 4577: guard-corpus gen rows (seeds = this suite's own rows
+# rm $'\x2dr' d and xargs rm < list) that base allowed (judge J1920).
+assert_rc "4576 r'm' \$'\\x2dr' d"             2 "$(run_case "$(j_bash "r'm' \$'\\x2dr' d")")"
+assert_rc "4576 r\"m\" \$'\\x2dr' d"           2 "$(run_case "$(j_bash "r\"m\" \$'\\x2dr' d")")"
+assert_rc "4576 r\\m \$'\\x2dr' d"             2 "$(run_case "$(j_bash "r\\m \$'\\x2dr' d")")"
+assert_rc "4577 env 'FOO=a b'c xargs rm < list" 2 "$(run_case "$(j_bash "env 'FOO=a b'c xargs rm < list")")"
 nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/block-destructive-commands.sh"
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-destructive-commands.sh" >/dev/null 2>&1; echo $?)"

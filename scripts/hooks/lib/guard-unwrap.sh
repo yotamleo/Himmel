@@ -114,7 +114,8 @@ _gu_long_val() {
 }
 
 # _gu_core S — find segment S's command word past assignments, keywords and
-# wrappers with their options; set GU_CORE[S], GU_LOOKUP[S], GU_STRIP.
+# wrappers with their options; set GU_CORE[S], GU_LOOKUP[S], GU_STRIP, and
+# GU_XA[S] to the position of the first stripped `xargs`.
 _gu_core() {
     local s=$1 n p=0 k w b wrap='' endopt=0 dur=0 val='' opt l c j
     local -a idx
@@ -175,6 +176,7 @@ _gu_core() {
             env|command|builtin|exec|nohup|setsid|nice|ionice|timeout|time|stdbuf|sudo|doas|xargs)
                 wrap=$b; endopt=0; dur=0
                 [ "$b" != timeout ] || dur=1
+                [ "$b" != xargs ] || [ -n "${GU_XA[s]:-}" ] || GU_XA[s]=$p
                 GU_STRIP=1; p=$((p + 1)); continue ;;
             '!'|'{'|if|then|else|elif|while|until|do)
                 wrap=''; endopt=0; dur=0
@@ -282,8 +284,9 @@ _gu_strip_heredocs() {
 # 2 (the denial already on stderr) when one is, or when a cap is reached.
 guard_unwrap() {
     local hook=$1 cmd=$2 depth=${GUARD_UNWRAP_DEPTH:-0} s k w e sep render='' seg child first
-    local trigger=0 nl=$'\n' err rc cwd_env
-    GU_V=() GU_VS=() GU_SW=() GU_SR=() GU_CORE=() GU_LOOKUP=()
+    local trigger=0 nl=$'\n' err rc cwd_env xrender='' xseg vs=''
+    local -a children=()
+    GU_V=() GU_VS=() GU_SW=() GU_SR=() GU_CORE=() GU_LOOKUP=() GU_XA=()
     GU_SHIFT=0 GU_STRIP=0 GU_TOKENIZED=0
     GU_CWD_UNKNOWN=0
     [ "${GUARD_UNWRAP_CWD:-}" != unknown ] || GU_CWD_UNKNOWN=1
@@ -332,7 +335,7 @@ guard_unwrap() {
     while [ "$s" -lt "$ST_NSEG" ]; do
         local -a idx=()
         read -r -a idx <<<"${GU_SW[s]}"
-        seg=''
+        seg='' xseg=''
         if [ "${GU_LOOKUP[s]}" = 0 ]; then
             k=${GU_CORE[s]}
             if [ "$k" -lt "${#idx[@]}" ] && [ "${ST_W[idx[k]]##*/}" = eval ]; then
@@ -362,11 +365,24 @@ guard_unwrap() {
                 seg="$seg${seg:+ }$GU_RW"
                 k=$((k + 1))
             done
+            # A stripped xargs runs its command on targets read from stdin,
+            # so `rm` alone is not what runs: the second render keeps the
+            # xargs word on (HIMMEL-4577).
+            k=${GU_XA[s]:-$first}
+            while [ "$k" -lt "$first" ]; do
+                _gu_render_word "${idx[k]}"
+                xseg="$xseg${xseg:+ }$GU_RW"
+                k=$((k + 1))
+            done
+            xseg="$xseg${xseg:+${seg:+ }}$seg"
         fi
         for k in ${GU_SR[s]:-}; do
             case "${ST_RO[k]}" in
                 '<<'|'<<-'|[0-9]'<<'|[0-9]'<<-') ;;
-                *) _gu_render_word "$k"; seg="$seg${seg:+ }${ST_RO[k]}$GU_RW" ;;
+                *)
+                    _gu_render_word "$k"
+                    seg="$seg${seg:+ }${ST_RO[k]}$GU_RW"
+                    xseg="$xseg${xseg:+ }${ST_RO[k]}$GU_RW" ;;
             esac
         done
         if [ -n "$seg" ]; then
@@ -377,6 +393,7 @@ guard_unwrap() {
                 *) sep=';' ;;
             esac
             render="$render$seg${sep:+ $sep }"
+            xrender="$xrender$xseg${sep:+ $sep }"
         fi
         s=$((s + 1))
     done
@@ -388,35 +405,44 @@ guard_unwrap() {
         echo "guard-unwrap: refusing a command with more than $GU_MAX_VARIANTS nested shell bodies." >&2
         return 2
     fi
-    child=''
     if [ "$trigger" = 1 ]; then
-        child=$render
         # The render keeps every shell and eval word at or past the command
         # word, so the child re-derives those bodies itself. Only `env -S`
         # strings sit before the command word and are dropped, so only they
         # are re-added: re-adding a kept body grows the child at every level.
-        for e in "${GU_VS[@]+"${GU_VS[@]}"}"; do child="$child$nl$e"; done
+        for e in "${GU_VS[@]+"${GU_VS[@]}"}"; do vs="$vs$nl$e"; done
+        children=("$render$vs")
+        # The xargs-kept render renders to itself, so it adds one child, not
+        # a level per depth.
+        [ "$xrender" = "$render" ] || children[1]="$xrender$vs"
     else
+        child=''
         for e in "${GU_V[@]+"${GU_V[@]}"}"; do child="$child${child:+$nl}$e"; done
-    fi
-    [ -n "$child" ] || return 0
-    [ "$child" != "$cmd" ] || return 0
-    if [ "$depth" -ge "$GU_MAX_DEPTH" ]; then
-        echo "guard-unwrap: refusing a command nested more than $GU_MAX_DEPTH levels deep." >&2
-        return 2
+        children=("$child")
     fi
 
     cwd_env=''
     [ "$GU_CWD_UNKNOWN" = 0 ] || cwd_env=unknown
-    if ! child=$(jq -cn --arg c "$child" '{tool_name:"Bash",tool_input:{command:$c}}' 2>/dev/null); then
-        echo "guard-unwrap: cannot build the unwrapped call - failing closed" >&2
-        return 2
-    fi
-    if err=$(GUARD_UNWRAP_DEPTH=$((depth + 1)) GUARD_UNWRAP_CWD=$cwd_env "${BASH:-bash}" "$hook" <<<"$child" 2>&1 >/dev/null); then
-        return 0
-    else
-        rc=$?
-    fi
+    rc=0
+    for child in "${children[@]}"; do
+        [ -n "$child" ] || continue
+        [ "$child" != "$cmd" ] || continue
+        if [ "$depth" -ge "$GU_MAX_DEPTH" ]; then
+            echo "guard-unwrap: refusing a command nested more than $GU_MAX_DEPTH levels deep." >&2
+            return 2
+        fi
+        if ! child=$(jq -cn --arg c "$child" '{tool_name:"Bash",tool_input:{command:$c}}' 2>/dev/null); then
+            echo "guard-unwrap: cannot build the unwrapped call - failing closed" >&2
+            return 2
+        fi
+        if err=$(GUARD_UNWRAP_DEPTH=$((depth + 1)) GUARD_UNWRAP_CWD=$cwd_env "${BASH:-bash}" "$hook" <<<"$child" 2>&1 >/dev/null); then
+            continue
+        else
+            rc=$?
+        fi
+        break
+    done
+    [ "$rc" != 0 ] || return 0
     [ -z "$err" ] || printf '%s\n' "$err" >&2
     if [ "$depth" = 0 ]; then
         echo "    (denied in the form the shell actually runs: quotes removed, wrappers stripped, nested shell bodies read; rc=$rc)" >&2
