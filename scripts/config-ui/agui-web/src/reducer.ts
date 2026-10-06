@@ -111,12 +111,13 @@ export function reduce(prev: View, e: Ev): View {
       const n = v.entries.filter((en) => en.kind === "turn").length + 1;
       return { ...v, status: "running", runId: e.runId, sideRun: false, entries: [...v.entries, { kind: "turn", id: String(e.runId ?? n), n, at }] };
     }
-    // A run that ends closes every call still open: finished ones as done (with no result), failed ones as errors.
-    // Likewise a text message that never got TEXT_MESSAGE_END stops being open. A background subagent's
-    // one-record run closes nothing: its calls are still running, and their results arrive in later runs.
+    // A turn that ends closes the session's own calls still open, as done with no result; a subagent's calls stay
+    // open, since a background subagent outlives the turn and its results arrive later. A run that errors (the
+    // stream itself failed) closes every open call as an error. Likewise a text message that never got
+    // TEXT_MESSAGE_END stops being open. A background subagent's one-record run closes nothing.
     case "RUN_FINISHED": {
       if (v.sideRun) return { ...v, status: "finished", sideRun: false };
-      for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "done" });
+      for (const t of Object.values(v.tools)) if (t.status === "running" && t.agent === "main") v = finish(v, t.id, at, { status: "done" });
       return { ...closeTexts(v), status: "finished" };
     }
     case "RUN_ERROR": {

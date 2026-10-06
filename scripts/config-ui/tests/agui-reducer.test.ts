@@ -240,6 +240,15 @@ describe("agents and failures", () => {
     expect(done.tools.b).toMatchObject({ status: "done", result: "ok", end: 9 });
   });
 
+  test("a turn's end settles the session's own open calls, never a background subagent's", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 },
+      { type: "TOOL_CALL_START", toolCallId: "m", toolCallName: "Bash", timestamp: 1 },
+      { type: "TOOL_CALL_START", toolCallId: "s", toolCallName: "Read", agent: { id: "q", name: "bg", role: "subagent" }, timestamp: 2 },
+      { type: "RUN_FINISHED", timestamp: 3 }]);
+    expect([w.tools.m.status, w.tools.s.status]).toEqual(["done", "running"]);
+    expect(reduceAll([{ type: "RUN_ERROR", message: "lost", timestamp: 4 }], w).tools.s.status).toBe("error");
+  });
+
   test("an Agent call's result that names its subagent updates that agent", () => {
     const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 },
       { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Agent", timestamp: 1 },

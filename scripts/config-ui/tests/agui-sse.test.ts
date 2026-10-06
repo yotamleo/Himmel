@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
@@ -274,6 +274,18 @@ test("a subagent transcript longer than one read chunk still lands before the jo
   const agentResult = events.findIndex((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "toolu_agent");
   expect(lastFiller).toBeGreaterThan(-1);
   expect(lastFiller).toBeLessThan(agentResult);
+});
+
+test("an unreadable subagent transcript is dropped; the journal still streams to its end", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  journal(h, "-proj", RUN, mainBody);
+  chmodSync(subagentFile(h, subBody), 0o000);
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  expect(events.at(-1)?.type).toBe("RUN_FINISHED");
+  expect(events.some((e) => e.toolCallId === "toolu_push")).toBe(true);
+  expect(events.some((e) => e.toolCallId === "toolu_s1")).toBe(false);
 });
 
 test("a subagent's name is the Agent call's free-text description: it passes the redactor", async () => {

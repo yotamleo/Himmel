@@ -167,7 +167,13 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
           const fromMain = await read(main);
           if (fromMain === null) return end(c); // truncated or replaced: nothing left to follow
           held.push(...fromMain);
-          for (const s of subs) held.push(...((await read(s)) ?? [])); // a shrunk subagent file just stops growing
+          // A subagent file that shrank, vanished or turned unreadable just stops being followed; the journal goes on.
+          for (const s of subs) {
+            if (s.offset > s.size) continue;
+            const lines = await read(s).catch(() => null);
+            if (lines) held.push(...lines);
+            else s.offset = s.size + 1; // marks it dropped: never read, never behind
+          }
           // A file with unread bytes may still hold lines older than another file's: lines are released only
           // up to the oldest point such a file has been read to, so a later line never overtakes an earlier one
           // (a subagent's records land after the Agent call that spawned it, and before the turn's end).
