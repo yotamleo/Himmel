@@ -27,7 +27,7 @@ trap 'rm -rf "$TMP"' EXIT
 FAKE_HOME="$TMP/home"
 ROOT="$TMP/handovers"
 REPO="$TMP/repo"
-mkdir -p "$FAKE_HOME/.cache/himmel/verdicts/J1/scratch" "$ROOT/u/himmel/verdicts/J1" "$ROOT/inbox" "$REPO/scripts"
+mkdir -p "$FAKE_HOME/.cache/himmel/verdicts/J1/scratch" "$ROOT/u/himmel/verdicts/J1" "$ROOT/inbox" "$ROOT/u/himmel/inbox" "$REPO/scripts"
 ln -s "$REPO/scripts" "$ROOT/u/himmel/verdicts/J1/escape"
 
 pass=0
@@ -68,9 +68,11 @@ mcp_payload() { jq -nc --arg t "$1" '{tool_name:$t, tool_input:{}}'; }
 
 # --- push ---
 row "git push" 2 "$(bash_payload 'git push origin HEAD')"
+row "absolute-path git push" 2 "$(bash_payload '/usr/bin/git push origin HEAD')"
 row "git -C <dir> push" 2 "$(bash_payload "git -C $REPO push -u origin fix/x")"
 # --- PR create / comment / review / merge ---
 row "gh pr create" 2 "$(bash_payload 'gh pr create --title t --body-file b.md')"
+row "absolute-path gh pr merge" 2 "$(bash_payload '/usr/bin/gh pr merge 12 --squash')"
 row "gh pr comment" 2 "$(bash_payload 'gh pr comment 12 --body-file b.md')"
 row "gh pr review" 2 "$(bash_payload 'gh pr review 12 --approve')"
 row "gh pr merge" 2 "$(bash_payload 'gh pr merge 12 --squash')"
@@ -92,6 +94,7 @@ row "marker named in command" 2 "$(bash_payload 'env -u HIMMEL_CONSOLE_JUDGE bas
 row "Write into a repo file" 2 "$(file_payload Write "$REPO/scripts/x.sh")"
 row "Edit a repo file" 2 "$(file_payload Edit "$REPO/scripts/x.sh")"
 row "Write into the inbox" 2 "$(file_payload Write "$ROOT/inbox/m.md")"
+row "Write into a nested inbox" 2 "$(file_payload Write "$ROOT/u/himmel/inbox/x-judge-J1.md")"
 row "Write through a symlink out of verdicts" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/escape/x.sh")"
 row "Write with a .. segment" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/../../x.md")"
 row "malformed payload" 2 'not json'

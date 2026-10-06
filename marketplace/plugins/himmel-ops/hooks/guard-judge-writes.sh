@@ -19,8 +19,9 @@
 #
 # TRIP CONDITION: HIMMEL_CONSOLE_JUDGE=1 in this process's environment AND one
 # of:
-#   Bash — the command text names HIMMEL_CONSOLE_JUDGE (an override or unset
-#     of the marker); or names leg-pr-open, merge-on-green, console-kit/go.sh,
+#   Bash (a command word matches bare or as a path's last component, so
+#     /usr/bin/git is git) — the command text names HIMMEL_CONSOLE_JUDGE (an
+#     override or unset of the marker); or names leg-pr-open, merge-on-green, console-kit/go.sh,
 #     inbox-send or leg-jira-status; or has the word "git" and a mutating git
 #     verb (push, commit, merge, rebase, reset, cherry-pick, revert); or the
 #     word "gh" and a write verb (create, comment, review, merge, edit, close,
@@ -34,8 +35,8 @@
 #     segment; or it cannot be resolved (readlink -f, then parent + missing
 #     leaf); or the RESOLVED path is outside every allowed place:
 #       - $HOME/.cache/himmel/verdicts/ (the judge's scratch),
-#       - under $HANDOVER_DIR but not its inbox/, inside a verdicts/ dir or a
-#         file whose basename matches *-judge-*.md (the verdict, its own doc).
+#       - under $HANDOVER_DIR but not inside any inbox/ there, inside a
+#         verdicts/ dir or a file whose basename matches *-judge-*.md (the verdict, its own doc).
 #     With HANDOVER_DIR unset only the cache is allowed.
 #
 # DEFAULT ACTION: with the marker unset this hook is a silent no-op — the
@@ -46,9 +47,11 @@
 # RESIDUAL (deliberate): the Bash checks are textual, over whitespace and
 # shell-separator words, not a shell parser — eval, a wrapper script that does
 # the write itself, curl to an API, or a write verb this vocabulary does not
-# list still pass. Over-matching (a read whose text merely carries a verb word,
-# e.g. `gh pr view 12 --comments` is fine but `git log --grep push` denies) is
-# the safe direction. Any verdicts/ dir under the handover root is writable,
+# list still pass, and Bash file writes (a redirect, rm/mv/tee/sed -i, an
+# interpreter -c) are not screened at all: the structural fix is HIMMEL-4607
+# (judge-lane sandbox or permission profile). Over-matching (a read whose text
+# merely carries a verb word, e.g. `gh pr view 12 --comments` is fine but
+# `git log --grep push` denies) is the safe direction. Any verdicts/ dir under the handover root is writable,
 # not only this judge's own qid.
 #
 # BYPASS: launch the session without --judge (the marker is then unset). There
@@ -82,12 +85,14 @@ if ! tool=$(printf '%s' "$input" | jq -r '.tool_name | select(type == "string") 
 fi
 [ -n "$tool" ] || deny "unparseable-payload" "no tool_name"
 
-# has_word <word>... — true if any listed word is a whole word of $words.
+# has_word <word>... — true if any listed word is a whole word of $words,
+# bare or as the last component of a path (/usr/bin/git counts as git).
 has_word() {
     local w t
     for w in "$@"; do
         for t in $words; do
             [ "$t" = "$w" ] && return 0
+            [ "${t##*/}" = "$w" ] && return 0
         done
     done
     return 1
@@ -185,7 +190,7 @@ case "$tool" in
         if [ -n "${HANDOVER_DIR:-}" ]; then
             root=$(resolve "$HANDOVER_DIR") || deny "write-outside" "handover root does not resolve"
             case "$resolved" in
-                "$root"/inbox/*) ;;
+                "$root"/inbox/* | "$root"/*/inbox/*) ;;
                 "$root"/*/verdicts/* | "$root"/verdicts/*) exit 0 ;;
                 "$root"/*-judge-*.md)
                     case "${resolved##*/}" in
