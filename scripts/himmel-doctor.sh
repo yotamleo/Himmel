@@ -3590,9 +3590,10 @@ check_c53_vm_mode() {
     # the effective config offline, connecting to nothing, so the probe uses
     # its HostName and port; a ProxyJump/ProxyCommand route is one a raw TCP
     # connect cannot follow, so it is reported, not probed. -p mirrors the
-    # drivers, which always pass it.
-    if [ "$VM_MODE" = remote ] && command -v ssh >/dev/null 2>&1 \
-        && g="$(${timeout_bin:+"$timeout_bin" 5} ssh -G -p "$VM_MODE_PORT" "$VM_MODE_HOST" 2>/dev/null)"; then
+    # drivers, which always pass it. Only under timeout: a Match exec in the ssh
+    # config runs a command, which could stall the doctor.
+    if [ "$VM_MODE" = remote ] && [ -n "$timeout_bin" ] && command -v ssh >/dev/null 2>&1 \
+        && g="$("$timeout_bin" 5 ssh -G -p "$VM_MODE_PORT" "$VM_MODE_HOST" 2>/dev/null)"; then
         while read -r k v; do
             case "$k" in
                 hostname) [ -n "$v" ] && host="$v" ;;
