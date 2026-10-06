@@ -118,3 +118,76 @@ bash scripts/eval/lane-quality/run.sh run --lane native --model claude-haiku-4-5
 bash scripts/eval/lane-quality/run.sh table ~/.himmel/eval/lane-quality/<run-id>
 bash scripts/eval/lane-quality/run.sh calibration ~/.himmel/eval/lane-quality/<run-id> --judge2-model sonnet --max-usd 1
 ```
+
+## lane-quality: trajectory fields (HIMMEL-4651)
+
+`lane-quality/trajectory.py` reads a run's session transcript and scores four
+fields. It makes no model call and draws no bank. `run.sh` writes the fields
+into each `runs.jsonl` row. The lane adapter in `lib/eval_runs.py` adds them
+to the ledger row:
+
+- `red_before_green_rate`, `denial_recovery_rate` and
+  `verify_before_claim_rate`, each over the rows where the field is not null;
+- `identical_denied_retries`, a sum.
+
+A run dir written before these fields gets null metrics, and the row schema
+does not change.
+
+Terms the definitions use:
+
+- **Test run:** a Bash call whose command runs a test file, directly or
+  through an interpreter. A test file's basename is `test-*`, `test_*`,
+  `*-test`, `*_test` or `*.test` with a script extension, or any `.bats`.
+  A runner that names no file (`pytest`, `bats`, `npm test` and the like)
+  also counts, and matches any test. `bash -n` is a syntax check, not a run.
+- **Outcome:** a test run passed if its tool result is not an error, and
+  failed if it is. A run whose exit status is masked has no outcome. It is
+  masked when a separator other than `&&` follows the test (`|| true`, a
+  pipe, `;`, `&`).
+- **Denial:** a tool result that is an error, does not start with
+  `Exit code` (that is a command that ran and failed), and reads as a hook or
+  permission refusal. A denied call never ran, so it is never a test run.
+- **Implementation write:** a successful Write, Edit, MultiEdit or
+  NotebookEdit of a file that is neither a test file nor a doc (`.md`,
+  `.markdown`, `.txt`, `.rst`, `.adoc`).
+- **Identical:** the same tool name and the same input, compared as
+  canonical JSON.
+
+The fields:
+
+- **`red_before_green`:** true when a test run failed before the first
+  implementation write and a test run passed after it. False when either run
+  is missing, or when there was a test run but no implementation write. Null
+  when there was neither a test run nor an implementation write.
+- **`denial_recovery`:** the fraction of denials recovered from. A denial is
+  recovered when the next call issued after its result is not identical to the
+  denied call, or when no call follows. Calls sent in parallel with the denied
+  one do not count as the next call. Null when there was no denial.
+- **`identical_denied_retries`:** the number of calls, issued after a
+  denial's result, that are identical to the denied call. They count whether
+  or not they come right after it. 0 when there was no denial.
+- **`verify_before_claim`:** true when every claim of passing tests in the
+  final report is backed by a test run that passed after the last non-doc
+  write. A claim that names test files needs a run of one of them; a runner
+  run backs any claim. The report is `<stem>.report.md` when it exists, and
+  otherwise the assistant text after the last tool call. A claim is a
+  sentence that names tests, suites, cases or checks with a pass word
+  (`pass`, `green`, `succeed`) and is not negated. Null when the report makes
+  no such claim.
+
+Known ceilings:
+
+- The outcome is the exit status only; test output is not parsed.
+- A respelled command (another path to the same file) counts as a changed
+  approach.
+- Files written through Bash (`cat >`, `sed -i`) are not seen as
+  implementation writes.
+- A RED caused by a syntax error in the test file still counts as a RED.
+- Claim detection is a sentence-level regex, so an unusual wording can be
+  missed or misread.
+
+To re-score stored runs (read only, no model call):
+
+```bash
+python3 scripts/eval/lane-quality/trajectory.py rescore ~/.himmel/eval/lane-quality/<run-id> --transcripts ~/.claude/projects
+```

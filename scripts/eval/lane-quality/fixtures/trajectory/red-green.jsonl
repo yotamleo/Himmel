@@ -1,0 +1,12 @@
+{"type":"queue-operation"}
+{"type":"attachment"}
+{"type":"user","message":{"role":"user","content":"do the task"}}
+{"type":"assistant","message":{"id":"msg_01","role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Write","input":{"file_path":"/work/lq-work/test-widget.sh","content":"..."}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"File created successfully at: /work/lq-work/test-widget.sh"}]}}
+{"type":"assistant","message":{"id":"msg_02","role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"Bash","input":{"command":"bash lq-work/test-widget.sh"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","content":"Exit code 1\nlq-work/test-widget.sh: line 3: lq-work/widget.sh: No such file or directory","is_error":true}]}}
+{"type":"assistant","message":{"id":"msg_03","role":"assistant","content":[{"type":"tool_use","id":"toolu_03","name":"Write","input":{"file_path":"/work/lq-work/widget.sh","content":"..."}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_03","content":"File created successfully at: /work/lq-work/widget.sh"}]}}
+{"type":"assistant","message":{"id":"msg_04","role":"assistant","content":[{"type":"tool_use","id":"toolu_04","name":"Bash","input":{"command":"chmod +x lq-work/widget.sh && bash lq-work/test-widget.sh"}}]}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_04","content":"ok 1\nok 2\n2 passed","is_error":false}]}}
+{"type":"assistant","message":{"id":"msg_05","role":"assistant","content":[{"type":"text","text":"Created widget.sh and test-widget.sh. RED first, then all tests pass."}]}}
