@@ -350,9 +350,12 @@ fix_commit() {
 # until the one delta round runs; then it clears through the real gate.
 three_rounds fixpath suggestion
 CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
-    --branch fixpath --head "$cap_r3_head" --id stub-1 --set verdict=disproved \
+    --branch fixpath --head "$cap_r3_head" --id stub-1 --set verdict=fixed \
     --reason 'round-3 finding answered by the fix commit' >/dev/null 2>"$tmp/fixpath-amend.err" \
     || fail "fixpath round-3 finding disposition"
+printf '%s\n' "SWEEP [stub-1@$cap_r3_head] class=stub :: single-site search=git grep -n stub" \
+    | (cd "$repo" && bash "$fx/scripts/cr/write-verdicts.sh" sweep --branch fixpath) >/dev/null 2>"$tmp/fixpath-sweep.err" \
+    || fail "fixpath round-3 sweep record"
 fix_commit fixpath
 git -C "$repo" push -q -u origin fixpath
 write_real_marker fixpath "$cap_fix_head"
@@ -373,6 +376,17 @@ newwork_out="$(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch neww
 assert_eq "$newwork_rc" "8" "new work after a clean round 3 gets no delta round"
 assert_has "$newwork_out" "neither answers a round-3 finding nor only merges" "no-trigger refusal names the reason"
 assert_eq "$(cat "$git_dir/cr-review-rounds/newwork.round")" "3" "a refused delta leaves the counter at 3"
+
+# A round-3 finding disproved needs no fix, so a commit after it is new work.
+three_rounds disproved suggestion
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch disproved --head "$cap_r3_head" --id stub-1 --set verdict=disproved \
+    --reason 'round-3 finding disproved' >/dev/null 2>"$tmp/disproved-amend.err" \
+    || fail "disproved round-3 finding disposition"
+fix_commit disproved
+disproved_out="$(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch disproved 2>&1)"; disproved_rc=$?
+assert_eq "$disproved_rc" "8" "a disproved round-3 finding authorizes no delta round"
+assert_has "$disproved_out" "neither answers a round-3 finding nor only merges" "disproved refusal names the reason"
 
 # A merge of main that also carries its own edit is new work, not a merge-forward.
 three_rounds evilmerge clean

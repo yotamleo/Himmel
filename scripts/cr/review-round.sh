@@ -91,7 +91,8 @@ read_round() {
 
 # HIMMEL-4600: with no argument, print the last head a critic actually reviewed
 # on this branch (the newest ok avail row); with a full sha, print "finding"
-# when any finding row on this branch sits at it (full or >=7-char prefix).
+# when a finding row on this branch sits at it (full or >=7-char prefix) whose
+# verdict, after amends, is not disproved: a disproved finding needs no fix.
 ledger_query() {
     LEDGER="$git_dir/cr-critic-scores.jsonl" BRANCH="$branch" FROM="${1:-}" node -e '
 const fs = require("fs"), e = process.env;
@@ -99,14 +100,18 @@ let lines = [];
 try { lines = fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean); } catch { process.exit(0); }
 const at = (h) => { h = String(h || "").toLowerCase(); return h.length >= 7 && e.FROM.startsWith(h); };
 let last = "";
+const verdicts = new Map();
 for (const line of lines) {
   let o;
   try { o = JSON.parse(line); } catch { continue; }
   if (!o || o.branch !== e.BRANCH) continue;
   if (!e.FROM && o.kind === "avail" && o.status === "ok") last = String(o.head || "");
-  if (e.FROM && o.kind === "finding" && at(o.head)) { process.stdout.write("finding"); process.exit(0); }
+  if (e.FROM && o.kind === "finding" && at(o.head)) verdicts.set(String(o.finding_id), String(o.verdict || ""));
+  if (e.FROM && o.kind === "amend" && at(o.target_head) && verdicts.has(String(o.finding_id))
+      && o.set && typeof o.set.verdict === "string") verdicts.set(String(o.finding_id), o.set.verdict);
 }
 if (!e.FROM) process.stdout.write(last);
+else if ([...verdicts.values()].some((v) => v !== "disproved")) process.stdout.write("finding");
 '
 }
 
