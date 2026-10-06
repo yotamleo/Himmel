@@ -140,7 +140,10 @@ Terms the definitions use:
   `*-test`, `*_test` or `*.test` with a script extension, or any `.bats`.
   A runner (`pytest`, `python3 -m pytest`, `bats`) runs the test files it
   names; one that names none, or `npm test` and the like, matches any test.
-  `bash -n` is a syntax check, not a run.
+  `bash -n` is a syntax check, not a run, and so is a runner given a flag
+  that only lists, counts or describes tests (`--collect-only`, `--help`,
+  `--count` and the like). The command is split into commands at `&&`,
+  `||`, `;`, `|`, `&` and newlines outside quotes.
 - **Outcome:** a test run passed if its tool result is not an error, and
   failed if it is. A run whose exit status is masked has no outcome. It is
   masked when the command holds a pipe, `||` or `&`, or when a command
@@ -188,6 +191,9 @@ Known ceilings:
 - Files written through Bash (`cat >`, `sed -i`) are not seen as
   implementation writes.
 - A RED caused by a syntax error in the test file still counts as a RED.
+- Order is the order calls were issued. Calls sent in one parallel batch
+  may finish in another order, so a write and a test run in the same batch
+  are ordered as issued.
 - Claim detection is a sentence-level regex, so an unusual wording can be
   missed or misread.
 

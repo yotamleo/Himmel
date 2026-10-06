@@ -47,6 +47,9 @@ DOC_EXT = (".md", ".markdown", ".txt", ".rst", ".adoc")
 WRITE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 INTERPRETERS = ("bash", "sh", "zsh", "dash", "ksh", "python", "python3", "node", "bun", "bats")
 RUNNERS = ("pytest", "bats")
+# Runner flags that list, count or describe tests without running any.
+NO_RUN_FLAGS = ("--collect-only", "--co", "--help", "-h", "--version", "-V", "--fixtures", "--markers",
+                "--count", "-c")
 RUNNER_SUBCMD = ("npm", "pnpm", "yarn", "bun", "go", "cargo", "make")
 WRAPPERS = ("env", "time", "sudo", "command", "exec", "nice", "nohup")
 # Setup whose failure a test's RED is not mistaken for, in `cd d && test`.
@@ -121,7 +124,7 @@ def test_target(command):
     same; "" (masked) when a pipe, ||, & or a later ; command decides it."""
     if not isinstance(command, str):
         return None
-    parts = SEG_SPLIT_RE.split(command)
+    parts = _split(command)
     segs, seps = parts[0::2], parts[1::2]  # seps[j] joins segs[j] and segs[j+1]
     for i, seg in enumerate(segs):
         t = _segment_target(seg)
@@ -141,6 +144,35 @@ def test_target(command):
                 return t, ""  # `test; cmd`: the exit status is cmd's
         return t, "pass+fail" if fail_ok else "pass"
     return None
+
+
+def _split(command):
+    """[seg, sep, seg, ...]: command split at the separators outside quotes."""
+    parts, buf, q, i = [], [], None, 0
+    while i < len(command):
+        ch = command[i]
+        if q:
+            if ch == "\\" and q == '"':
+                buf.append(command[i:i + 2])
+                i += 2
+                continue
+            q = None if ch == q else q
+        elif ch in "'\"":
+            q = ch
+        elif ch == "\\":
+            buf.append(command[i:i + 2])
+            i += 2
+            continue
+        else:
+            m = SEG_SPLIT_RE.match(command, i)
+            if m:
+                parts += ["".join(buf), m.group(1)]
+                buf, i = [], m.end()
+                continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return parts
 
 
 def _tokens(seg):
@@ -168,6 +200,8 @@ def _segment_target(seg):
     if first in INTERPRETERS and toks[1:3] == ["-m", "pytest"]:
         toks, first = toks[2:], "pytest"
     if first in RUNNERS:
+        if any(a in NO_RUN_FLAGS for a in toks[1:]):
+            return None
         named = {os.path.basename(a.split("::")[0]) for a in toks[1:] if not a.startswith("-")}
         return frozenset(n for n in named if TEST_FILE_RE.search(n)) or frozenset(["*"])
     if first in RUNNER_SUBCMD and len(toks) > 1 and toks[1] == "test":
