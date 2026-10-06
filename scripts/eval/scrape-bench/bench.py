@@ -84,6 +84,46 @@ def main(argv=None):
     rows = run(p, fixture, a.out, a.delay, a.category, a.id)
     print("%s: %d rows, %d calls, %d credits -> %s" % (
         p.name, len(rows), p.calls, sum(r["credits"] for r in rows), a.out))
+    record_run(p.name, a, rows)
+
+
+def record_run(provider_name, a, rows):
+    """One eval-runs ledger row per bench run (HIMMEL-4647). Rates are over the
+    rows a provider actually tried (ok or error); a capped or needs-auth row
+    makes the run partial. A ledger failure warns and never fails the bench."""
+    try:
+        _record_run(provider_name, a, rows)
+    except Exception as e:  # the row is a by-product; the bench result stands
+        print("scrape-bench: WARNING eval-runs row not written: %s" % e, file=sys.stderr)
+
+
+def _record_run(provider_name, a, rows):
+    sys.path.insert(0, str(HERE.parent / "lib"))
+    import eval_runs
+    tried = [r for r in rows if r["status"] in ("ok", "error")]
+
+    def rate(k):
+        return sum(1 for r in tried if r[k]) / len(tried) if tried else None
+    lat = sorted(r["latency_s"] for r in tried)
+    mid = len(lat) // 2
+    metrics = {
+        "success_rate": rate("success"), "title_match_rate": rate("title_match"),
+        "phrase_hit_rate": rate("phrase_hit"),
+        "boilerplate_ratio_mean": (sum(r["boilerplate_ratio"] for r in tried) / len(tried)
+                                   if tried else None),
+        "latency_s_median": (lat[mid] if len(lat) % 2 else (lat[mid - 1] + lat[mid]) / 2) if lat else None,
+        "errors": sum(1 for r in rows if r["status"] == "error"),
+        "credits": sum(r["credits"] for r in rows),
+    }
+    cases = {r["id"]: {"success": r["success"], "title_match": r["title_match"],
+                       "phrase_hit": r["phrase_hit"], "latency_s": r["latency_s"]} for r in rows}
+    config = {"provider": provider_name, "fixture_sha256": eval_runs.file_sha256(a.fixture),
+              "categories": sorted(a.category or []), "ids": sorted(a.id or [])}
+    row = eval_runs.make_row(
+        "scrape-bench", "scripts/eval/scrape-bench/bench.py", config, metrics, n=len(rows),
+        status="ok" if len(tried) == len(rows) and rows else "partial",
+        cases=cases, artifact=str(Path(a.out).resolve()), repo=str(HERE))
+    eval_runs.append_safe(row, who="scrape-bench")
 
 
 if __name__ == "__main__":

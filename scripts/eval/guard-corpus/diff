@@ -447,6 +447,45 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
     return rc, out, time.time() - t0
 
 
+def _record_run(args, rc, results, metrics):
+    """One eval-runs ledger row per diff (HIMMEL-4647). A regression (rc 1) is
+    a valid measurement; odd/vacuous/no-control runs are inconclusive, and so
+    is a regression run with odd rows (it did not fully exercise the guard). A
+    ledger failure warns and never changes the diff's exit code."""
+    try:
+        _record_run_row(args, rc, results, metrics)
+    except Exception as e:  # the row is a by-product; the diff's verdict stands
+        print("guard-corpus diff: WARNING eval-runs row not written: %s" % e, file=sys.stderr)
+
+
+def _record_run_row(args, rc, results, metrics):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+    import eval_runs
+    gitsha = None
+    if args.head.startswith("sha:"):
+        out = subprocess.run(["git", "-C", args.repo, "rev-parse", "--verify", "-q",
+                              args.head[4:].split(":", 1)[0] + "^{commit}"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        gitsha = out.stdout.decode().strip() or None
+    def hook_name(spec):
+        return os.path.basename(spec.rsplit(":", 1)[-1] if spec.startswith("sha:") else spec)
+    try:
+        corpus_sha = eval_runs.file_sha256(args.corpus)
+    except OSError:
+        corpus_sha = None
+    config = dict(hook=hook_name(args.head), base_hook=hook_name(args.base), corpus_sha256=corpus_sha,
+                  timeout_warn=args.timeout_warn)
+    cases = {str(r["idx"]): dict(base=r["base"] == "deny", head=r["head"] == "deny")
+             for r in results}
+    row = eval_runs.make_row(
+        "guard-corpus", "scripts/eval/guard-corpus/diff", config, metrics,
+        n=len(results), status="ok" if rc in (0, 1) and not metrics["odd_rc"] else "inconclusive",
+        cases=cases, artifact=os.path.abspath(args.corpus),
+        meta=dict(base=args.base, head=args.head, exit=rc),
+        repo=args.repo, gitsha=gitsha)
+    eval_runs.append_safe(row, who="guard-corpus diff")
+
+
 def main(argv):
     ap = argparse.ArgumentParser(
         prog="diff", add_help=True,
@@ -681,19 +720,30 @@ def main(argv):
                 over_deny_base=len(over_base), over_deny_head=len(over_head))))
 
         if regressions:
-            return 1
+            rc = 1
         # odd includes rc=="TIMEOUT" (hard kill) and any error rc: such a run
         # never validly exercised the guard, so it is inconclusive, not clean.
-        if odd:
-            return 3
+        elif odd:
+            rc = 3
         # distinct from 3: both sides ran cleanly yet neither denied a seed.
-        if vacuous:
-            return 4
+        elif vacuous:
+            rc = 4
         # deny seeds supplied but the base denied none: the positive control
         # never fired, so the "no regression" result proves nothing.
-        if no_deny_control:
-            return 3
-        return 0
+        elif no_deny_control:
+            rc = 3
+        else:
+            rc = 0
+        _record_run(args, rc, results, dict(
+            regressions=len(regressions), newly_denied=len(newly),
+            odd_rc=len(odd), timeout_risk=len(slow),
+            deny_expected=len(deny_expected), deny_base_fired=len(deny_fired),
+            deny_allowed_both=len(deny_allowed_both),
+            deny_coverage=(len(deny_fired) / len(deny_expected)
+                           if deny_expected else None),
+            allow_expected=len(allow_expected),
+            over_deny_base=len(over_base), over_deny_head=len(over_head)))
+        return rc
     except (RuntimeError, OSError) as e:
         # A per-row sandbox copy (disk exhaustion) or hook launch (missing bash)
         # raises inside the worker pool and ex.map re-raises it here. That is a

@@ -330,13 +330,13 @@ cmd_run() {
 
   local tasks t cost tok
   tasks="${TASK_LIST:-$(all_tasks | tr '\n' ',')}"
-  SPENT=0
+  SPENT=0; STATUS=ok
   echo "lane-quality: run $RUN_ID → $OUT"
   for t in $(printf '%s' "$tasks" | tr ',' ' '); do
     [ -f "$TASKS/$t/prompt.md" ] || die "unknown task '$t'"
     if awk -v m="$MAX_USD" -v s="$SPENT" 'BEGIN{exit !(s >= m)}'; then
       echo "lane-quality: budget cap reached (spent $SPENT of $MAX_USD USD); not starting '$t'" >&2
-      break
+      STATUS=partial; break
     fi
     read -r tok _ <<<"$(bank_read)"
     if [ "$tok" != PROCEED ]; then
@@ -352,11 +352,18 @@ cmd_run() {
     esac
     if [ "$cost" = unknown ]; then
       echo "lane-quality: task '$t' left its cost unknown (agent or judge killed?); stopping the sweep, spend so far is a lower bound" >&2
-      break
+      STATUS=partial; break
     fi
     SPENT="$(awk -v s="$SPENT" -v c="${cost:-0}" 'BEGIN{printf "%.4f", s + c}')"
   done
   echo "lane-quality: done, spent $SPENT USD (API-price equivalent); rows in $OUT/runs.jsonl"
+  # HIMMEL-4647: one eval-runs ledger row per sweep (scripts/eval/lib/eval_runs.py);
+  # a ledger failure warns and never changes the sweep's result.
+  if [ -s "$OUT/runs.jsonl" ]; then
+    python3 "$HERE/../lib/eval_runs.py" lane-quality "$OUT" --run-id "$RUN_ID" --status "$STATUS" \
+      --judge-model "$( [ "$NO_JUDGE" -eq 1 ] && echo none || echo "$JUDGE_MODEL" )" \
+      || echo "lane-quality: WARNING eval-runs row not written" >&2
+  fi
 }
 
 cmd_table() {
