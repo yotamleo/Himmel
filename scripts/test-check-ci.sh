@@ -2146,7 +2146,7 @@ run register-then-green --settle 5 --max-wait 5
 # Only the ACCEPTANCE is under test, not the run's outcome: the settle wait comes
 # out of a wall-clock deadline of the same length, so under load the run can end
 # rc 2 (DEADLINE-PENDING) for a boundary that was correctly let through (HIMMEL-4594).
-if [ "$RC" -ne 64 ]; then pass "4136-a --max-wait equal to --settle is accepted"; else fail "4136-a --max-wait equal to --settle is accepted" "rc=$RC (refused as a usage error)"; fi
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 2 ]; then pass "4136-a --max-wait equal to --settle is accepted"; else fail "4136-a --max-wait equal to --settle is accepted" "rc=$RC want 0 (green) or 2 (deadline), not a usage error or a crash"; fi
 assert_err_lacks "4136-a the equal boundary is not refused as below --settle" "refusal text present" -F "is below --settle"
 run register-then-green --settle 30 --max-wait 0
 assert_rc 0 "4136-a --max-wait 0 (unbounded) is accepted with any --settle"
