@@ -173,6 +173,8 @@ def compare(current, latest):
 def main():
     root = sys.argv[1]
     holds_path = sys.argv[2] if len(sys.argv) > 2 else ""
+    # How a "release": "vm-proof" hold is lifted, as vm.mode resolves it (HIMMEL-4583).
+    vm_release = sys.argv[3] if len(sys.argv) > 3 else "vm-proof"
     holds = []
     if holds_path and os.path.exists(holds_path):
         holds = json.load(open(holds_path)).get("holds", [])
@@ -211,7 +213,10 @@ def main():
                 None,
             )
             if hold:
-                print(f"  {label}: HELD     (latest {latest} reviewed and held back: {hold.get('reason', '')})")
+                rel = hold.get("release")
+                rel = "" if not rel else "; release: " + (
+                    vm_release if rel == "vm-proof" else f"{rel} (unrecognised condition, stays HELD)")
+                print(f"  {label}: HELD     (latest {latest} reviewed and held back: {hold.get('reason', '')}{rel})")
             else:
                 print(f"  {label}: BEHIND   (latest {latest} — bump)")
                 rc |= 1

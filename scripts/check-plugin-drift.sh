@@ -99,6 +99,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MJSON="${DRIFT_MJSON:-$ROOT/marketplace/.claude-plugin/marketplace.json}"
 UPSTREAMS="${DRIFT_UPSTREAMS:-$ROOT/scripts/plugin-upstreams.json}"  # per-plugin true-upstream overrides (may be absent)
 PLUGINS_DIR="${DRIFT_PLUGINS_DIR:-$ROOT/marketplace/plugins}"
+# A pin-holds row with "release": "vm-proof" is lifted by VM proof, and the
+# route to that proof is the adopter's vm.mode, resolved once here (HIMMEL-4583).
+# shellcheck source=lib/vm-mode.sh
+. "$ROOT/scripts/lib/vm-mode.sh"
+vm_mode_load
+if VM_PROOF_RELEASE="$(vm_proof_route)"; then
+  VM_PROOF_RELEASE="vm-proof via $VM_PROOF_RELEASE"
+else
+  VM_PROOF_RELEASE="vm-proof: vm.mode=none${VM_MODE_NOTE:+ ($VM_MODE_NOTE)}, no VM can prove it; needs an operator ack plus a rollback point, never auto-released"
+fi
 
 # check_manifest_versions — the --manifest-only check (HIMMEL-3464). Local
 # only, no gh/network, so it can run on every commit. Fails closed: an
@@ -825,8 +835,10 @@ PY
 p,k,c,l=sys.argv[1:5]
 hs=json.load(open(p)).get("holds",[]) if p and os.path.exists(p) else []
 n=lambda v:str(v).lstrip("vV")
-print(next((h.get("reason") or "-" for h in hs if h.get("eco")=="upstream" and h.get("key")==k and n(h.get("current",""))==c and n(h.get("latest_reviewed",""))==l),""),end="")' \
-                "${DRIFT_PIN_HOLDS-$ROOT/scripts/upstreams/pin-holds.json}" "$name" "$norm_local" "$norm_latest" 2>/dev/null)"
+h=next((h for h in hs if h.get("eco")=="upstream" and h.get("key")==k and n(h.get("current",""))==c and n(h.get("latest_reviewed",""))==l),None)
+r=h and h.get("release")
+print("" if h is None else (h.get("reason") or "-")+("" if not r else "; release: "+(sys.argv[5] if r=="vm-proof" else "%s (unrecognised condition, stays HELD)"%r)),end="")' \
+                "${DRIFT_PIN_HOLDS-$ROOT/scripts/upstreams/pin-holds.json}" "$name" "$norm_local" "$norm_latest" "$VM_PROOF_RELEASE" 2>/dev/null)"
               if [ -n "$hold_reason" ]; then
                 echo "  $name: HELD     (latest $latest reviewed and held back: $hold_reason)${tier_note}"
               else
@@ -856,7 +868,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "  ? python3 not available — pin scan UNCHECKED."
   incomplete=1
 else
-  python3 "$ROOT/scripts/upstreams/pin-scan.py" "${DRIFT_PIN_ROOT:-$ROOT}" "${DRIFT_PIN_HOLDS-$ROOT/scripts/upstreams/pin-holds.json}"
+  python3 "$ROOT/scripts/upstreams/pin-scan.py" "${DRIFT_PIN_ROOT:-$ROOT}" "${DRIFT_PIN_HOLDS-$ROOT/scripts/upstreams/pin-holds.json}" "$VM_PROOF_RELEASE"
   pin_rc=$?
   [ $((pin_rc & 1)) -ne 0 ] && drift=1
   if [ $((pin_rc & 2)) -ne 0 ] || [ "$pin_rc" -gt 3 ]; then incomplete=1; fi

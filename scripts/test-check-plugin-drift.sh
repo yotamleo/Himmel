@@ -651,6 +651,28 @@ if grepq "$sec7" '^  base-cur: CURRENT'; then ok "tag_release base synced -> CUR
 if grepq "$sec7" '^  base-behind: BEHIND'; then ok "tag_release base stale -> BEHIND"; else bad "base-behind not BEHIND"; fi
 if grepq "$sec7" '^  base-held: HELD '; then ok "tag_release base with a matching pin-holds row -> HELD, not BEHIND"; else bad "base-held not HELD; $(printf '%s' "$sec7" | grep base-held)"; fi
 if grepq "$sec7" '^  base-held-expired: BEHIND'; then ok "tag_release hold expires once upstream moves past the reviewed release -> BEHIND"; else bad "base-held-expired not BEHIND; $(printf '%s' "$sec7" | grep base-held-expired)"; fi
+# 7b-vm (HIMMEL-4583): a hold whose release is "vm-proof" names the proof route
+# that vm.mode resolves (scripts/lib/vm-mode.sh), never a hardcoded local VM, and
+# under vm.mode=none it stays HELD and says no VM can release it.
+cat >"$W7/holds-vm.json" <<'JSON'
+{"holds":[
+ {"eco":"upstream","key":"base-held","current":"1.0.0","latest_reviewed":"2.0.0","release":"vm-proof","reason":"fixture vm hold"}
+]}
+JSON
+run7vm() { # <vm.mode config json> -> the base-held line
+  printf '%s\n' "$1" >"$W7/vmcfg.json"
+  HIMMEL_VM_MODE_CONFIG="$W7/vmcfg.json" GHSTATE="$W7/state" PATH="$W7/bin:$PATH" DRIFT_PIN_HOLDS="$W7/holds-vm.json" \
+    DRIFT_REGISTRY="$W7/upstreams.json" DRIFT_KNOWN_MARKETPLACES="$W7/km.json" \
+    DRIFT_MJSON="$empty_mjson" DRIFT_UPSTREAMS="$W7/empty_ups.json" \
+    DRIFT_TEST_DEFAULT_DIR="$CK1" \
+    bash "$SCRIPT" 2>&1 | grep '^  base-held:'
+}
+l7="$(run7vm '{}')"
+if grepq "$l7" -F 'HELD' && grepq "$l7" -F 'release: vm-proof via local-vm localhost:2222'; then ok "vm-proof hold, vm.mode unset -> local VM route"; else bad "vm-proof local route missing; $l7"; fi
+l7="$(run7vm '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example","port":2201}}}')"
+if grepq "$l7" -F 'HELD' && grepq "$l7" -F 'release: vm-proof via remote-vm ops@vm.example:2201'; then ok "vm-proof hold, vm.mode=remote -> remote VM route"; else bad "vm-proof remote route missing; $l7"; fi
+l7="$(run7vm '{"vm":{"mode":"none"}}')"
+if grepq "$l7" -F 'HELD' && grepq "$l7" -F 'vm.mode=none' && grepq "$l7" -F 'operator ack' && grepq "$l7" -F 'never auto-released'; then ok "vm-proof hold, vm.mode=none -> stays HELD, operator ack + rollback point"; else bad "vm-proof none not HELD-with-ack; $l7"; fi
 if grepq "$sec7" '^  probe-cur: CURRENT'; then ok "tag_release probe synced -> CURRENT"; else bad "probe-cur not CURRENT"; fi
 if grepq "$sec7" '^  probe-behind: BEHIND'; then ok "tag_release probe stale -> BEHIND"; else bad "probe-behind not BEHIND"; fi
 if grepq "$(printf '%s' "$sec7" | grep 'probe-ahead')" 'CURRENT'; then ok "tag_release probe installed-ahead -> CURRENT (not a phantom BEHIND)"; else bad "probe-ahead not CURRENT; $(printf '%s' "$sec7" | grep probe-ahead)"; fi
@@ -1002,6 +1024,16 @@ if grepq "$pin_sec" '^  pypi:pypi-second 3\.0\.0 .*: CURRENT'; then ok "pin-scan
 if grepq "$pin_sec" 'pypi:pypi-dev'; then bad "a .dev version suffix was truncated and reported"; else ok "pin-scan: a pip pin with a version suffix is not misreported"; fi
 if grepq "$pin_sec" '^  npm:vend-pkg 1\.0\.0 (vend): VENDORED'; then ok "pin-scan: pin inside a VENDORED.md tree -> VENDORED, not BEHIND npm-latest"; else bad "vend-pkg not VENDORED; $(printf '%s' "$pin_sec" | grep vend-pkg)"; fi
 if [ "$pin_rc" -eq 2 ]; then ok "pin-scan drift run exits 2"; else bad "pin-scan drift run rc=$pin_rc; expected 2"; fi
+# A vm-proof hold on a pin (HIMMEL-4583) names the route vm.mode resolves; none keeps it HELD.
+printf '{"holds":[{"eco":"gh","key":"owner/heldrepo","current":"v1.0.0","latest_reviewed":"v2.0.0","release":"vm-proof","reason":"fixture vm hold"}]}\n' > "$W12/holds-vm.json"
+printf '{"vm":{"mode":"none"}}\n' > "$W12/vm-none.json"
+HIMMEL_VM_MODE_CONFIG="$W12/vm-none.json" pin_run "$W12/holds-vm.json"
+l12="$(printf '%s\n' "$pin_sec" | grep 'owner/heldrepo')"
+if grepq "$l12" -F ': HELD' && grepq "$l12" -F 'vm.mode=none' && grepq "$l12" -F 'never auto-released'; then ok "pin-scan: vm-proof hold under vm.mode=none stays HELD with the ack route"; else bad "pin-scan vm-proof none; $l12"; fi
+printf '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example"}}}\n' > "$W12/vm-remote.json"
+HIMMEL_VM_MODE_CONFIG="$W12/vm-remote.json" pin_run "$W12/holds-vm.json"
+l12="$(printf '%s\n' "$pin_sec" | grep 'owner/heldrepo')"
+if grepq "$l12" -F ': HELD' && grepq "$l12" -F 'release: vm-proof via remote-vm ops@vm.example:22'; then ok "pin-scan: vm-proof hold under vm.mode=remote names the remote VM"; else bad "pin-scan vm-proof remote; $l12"; fi
 # A hold expires when upstream ships something newer than the one reviewed.
 printf 'owner/hookrepo=v1.3.0\nowner/heldrepo=v3.0.0\nowner/act=v3.4.1\nowner/act2=v2.0.0\n' > "$W12/state/rel"
 pin_run "$W12/holds.json"

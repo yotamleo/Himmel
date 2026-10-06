@@ -99,7 +99,7 @@
       "rows": [
         "observability-stack", "observability-grafana", "doctor:C19-observability", "probe-disagree:C19-observability",
         "doctor:run", "doctor:C16-status", "probe-disagree:C16-status",
-        "doctor:C25-orphans", "doctor:C35-vm-ar", "doctor:C36-stray-tmp-git", "doctor:C47-runaway-procs",
+        "doctor:C25-orphans", "doctor:C35-vm-ar", "doctor:C53-vm-mode", "doctor:C36-stray-tmp-git", "doctor:C47-runaway-procs",
         "doctor:C48-tmp-usage"
       ]
     },

@@ -224,6 +224,25 @@ def _is_auth_blocker(out, rc):
     return bool(_AUTH_RE.search(lower))
 
 
+def vm_mode_skip_reason(env=None):
+    """The SKIP line when vm.mode rules this probe out, else None (HIMMEL-4583).
+
+    vm.mode comes from scripts/lib/vm-mode.sh, the one resolver. This probe
+    drives the local ubuntu_new VM through vmsdk, so it runs only under local:
+    none has no VM, and remote has no vmsdk route yet.
+    """
+    import subprocess  # noqa: PLC0415
+    out = subprocess.run(["bash", str(_LIB / "vm-mode.sh"), "mode"], env=env,
+                         capture_output=True, text=True).stdout.strip()
+    if out == "local":
+        return None
+    if out == "remote":
+        return ("SKIP: vm.mode=remote -- this probe drives the local ubuntu_new VM "
+                "through vmsdk, which has no remote route yet")
+    return ("SKIP: vm.mode=none -- no VM to run this probe on; set vm.mode in "
+            "~/.himmel/config.json (docs/setup/vm-mode.md)")
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -232,6 +251,11 @@ def main():
     if "--help" in sys.argv or "-h" in sys.argv:
         print(__doc__)
         sys.exit(0)
+
+    skip = vm_mode_skip_reason()
+    if skip:
+        print(skip)
+        sys.exit(3)
 
     # Lazy import of vmsdk so hermetic test imports of this module don't
     # trigger the vbox/dotenv chain.

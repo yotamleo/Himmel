@@ -330,7 +330,9 @@ class TestCrashClassification(unittest.TestCase):
             original_vm = _vmsdk_mod.VM
             _vmsdk_mod.VM = _FakeVM
             try:
-                with self.assertRaises(SystemExit) as cm:
+                # The operator's own vm.mode must not decide these cases.
+                with self.assertRaises(SystemExit) as cm, \
+                        _mock.patch.object(mod, "vm_mode_skip_reason", return_value=None):
                     mod.main()
             finally:
                 _vmsdk_mod.VM = original_vm
@@ -400,6 +402,41 @@ class TestScaffoldIdempotency(unittest.TestCase):
         cp_idx = next(i for i, c in enumerate(calls) if c.startswith("cp -r"))
         self.assertLess(rm_idx, cp_idx,
                         msg="rm -rf must precede cp -r for idempotent re-runs")
+
+
+# ---------------------------------------------------------------------------
+# vm.mode guard (HIMMEL-4583) — the driver reads vm.mode, never hardcodes the
+# local VM; a temp HOME carries the config, nothing reaches a VM.
+# ---------------------------------------------------------------------------
+
+class TestVmModeGuard(unittest.TestCase):
+    def _reason(self, cfg):
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as home:
+            if cfg is not None:
+                os.makedirs(os.path.join(home, ".himmel"))
+                with open(os.path.join(home, ".himmel", "config.json"), "w") as f:
+                    f.write(cfg)
+            env = {k: v for k, v in os.environ.items() if k != "HIMMEL_VM_MODE_CONFIG"}
+            env["HOME"] = home
+            return mod.vm_mode_skip_reason(env=env)
+
+    def test_unset_runs_on_local_vm(self):
+        self.assertIsNone(self._reason(None))
+
+    def test_local_runs(self):
+        self.assertIsNone(self._reason('{"vm":{"mode":"local"}}'))
+
+    def test_none_skips_with_reason(self):
+        r = self._reason('{"vm":{"mode":"none"}}')
+        self.assertIsNotNone(r)
+        self.assertIn("SKIP: vm.mode=none", r)
+
+    def test_remote_skips_naming_the_gap(self):
+        r = self._reason('{"vm":{"mode":"remote","remote":{"ssh":"ops@h"}}}')
+        self.assertIsNotNone(r)
+        self.assertIn("SKIP: vm.mode=remote", r)
 
 
 if __name__ == "__main__":
