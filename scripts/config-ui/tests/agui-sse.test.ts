@@ -215,3 +215,15 @@ test("a cancel that lands while the journal is still opening closes the handle o
   await sleep(200);
   expect(fds() - before).toBeLessThan(5);
 });
+
+test("the max duration releases the stream even when the client stops reading", async () => {
+  const h = home();
+  const line = (i: number) => JSON.stringify({ type: "assistant", uuid: `a-${i}`, sessionId: "s", timestamp: "2026-10-06T10:00:00.000Z",
+    message: { id: `msg_${i}`, role: "assistant", content: [{ type: "text", text: "x".repeat(1000) }] } });
+  const p = journal(h, "-proj", RUN, Array.from({ length: 1200 }, (_, i) => line(i)).join("\n") + "\n"); // several read chunks, each with events
+  let closed = 0;
+  const reader = journalStream(p, { threadId: RUN, pollMs: 20, idleMs: 60_000, maxMs: 150, redact: (v) => v, onClose: () => { closed++; } }).getReader();
+  await reader.read(); // one chunk, then never read again: pull() is not called back
+  await sleep(500);
+  expect(closed).toBe(1);
+});

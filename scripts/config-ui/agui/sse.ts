@@ -64,11 +64,12 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
   const enc = new TextEncoder();
   const started = Date.now();
   let fh: FileHandle | undefined, offset = 0, grewAt = started, beatAt = started, runOpen = false, closed = false;
-  let timer: ReturnType<typeof setTimeout> | undefined, wake: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined, deadline: ReturnType<typeof setTimeout> | undefined, wake: (() => void) | undefined;
   const cleanup = () => {
     if (closed) return;
     closed = true;
     clearTimeout(timer);
+    clearTimeout(deadline);
     wake?.();
     fh?.close().catch(() => {});
     o.onClose();
@@ -86,6 +87,15 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
     c.close();
   };
   return new ReadableStream<Uint8Array>({
+    // pull() is not called while a stalled client leaves the queue full, so the
+    // max duration also runs on its own timer to release the fd and the server.
+    start(c) {
+      deadline = setTimeout(() => {
+        if (closed) return;
+        cleanup();
+        try { c.close(); } catch {}
+      }, o.maxMs);
+    },
     async pull(c) {
       try {
         if (!fh) {
