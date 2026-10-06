@@ -36,6 +36,7 @@ are then orphaned as before. Give the outer tool call a longer timeout than
 import ctypes
 import math
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -155,20 +156,36 @@ def wait_child(child, timeout):
     subreaper while it waits; otherwise each one stays a zombie (holding a pid)
     until the final sweep. Raises subprocess.TimeoutExpired like child.wait."""
     end = time.monotonic() + timeout
-    while child.returncode is None:
-        try:
-            pid, status = os.waitpid(-1, os.WNOHANG)
-        except ChildProcessError:
-            return child.wait()
-        if pid == child.pid:
-            child.returncode = os.waitstatus_to_exitcode(status)
-            break
-        # Checked on every poll: a steady stream of exiting orphans must not
-        # starve the deadline.
-        if time.monotonic() >= end:
-            raise subprocess.TimeoutExpired(child.args, timeout)
-        if pid == 0:
-            time.sleep(0.05)
+    # A pidfd turns the child's own exit into an immediate wakeup; orphans are
+    # still reaped on the 50 ms cadence. Without pidfd_open it is a plain poll.
+    try:
+        pidfd = os.pidfd_open(child.pid)
+        poller = select.poll()  # poll, not select: no FD_SETSIZE ceiling
+        poller.register(pidfd, select.POLLIN)
+    except (AttributeError, OSError):
+        pidfd = None
+    try:
+        while child.returncode is None:
+            try:
+                pid, status = os.waitpid(-1, os.WNOHANG)
+            except ChildProcessError:
+                return child.wait()
+            if pid == child.pid:
+                child.returncode = os.waitstatus_to_exitcode(status)
+                break
+            # Checked on every poll: a steady stream of exiting orphans must
+            # not starve the deadline.
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(child.args, timeout)
+            if pid == 0:
+                if pidfd is None:
+                    time.sleep(0.05)
+                else:
+                    poller.poll(min(0.05, remaining) * 1000)
+    finally:
+        if pidfd is not None:
+            os.close(pidfd)
     return child.returncode
 
 

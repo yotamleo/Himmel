@@ -140,6 +140,22 @@ if mode == "orphan-stream":
     hr.os.waitpid, hr.stop_group = waitpid, stop_group
     hr.main(["--deadline", "1", "--kill-after", "0", "--", "sleep", "30"])
     print("%.1f" % hit[0])
+if mode == "exit-latency":
+    # A child that exits at once must be reaped without a poll-interval wait.
+    # Without pidfd_open the runner falls back to the 50 ms poll by design.
+    try:
+        os.close(os.pidfd_open(os.getpid()))
+    except (AttributeError, OSError):
+        print("nopidfd")
+        sys.exit(0)
+    lat = []
+    for _ in range(9):
+        t0 = time.monotonic()
+        c = subprocess.Popen(["true"])
+        hr.wait_child(c, 30)
+        lat.append((time.monotonic() - t0) * 1000)
+    lat.sort()
+    print("%d" % lat[len(lat) // 2])
 INPROC
 
 # 7. a signal during Popen still sweeps the child and both grandchildren.
@@ -186,6 +202,27 @@ eq "child killed by SIGKILL: rc 137" 137 "$?"
 # 11. a steady stream of reaped orphans does not starve the deadline.
 hit=$(python3 "$W/inproc.py" "$SUT" orphan-stream "$W" "$W/child.sh" 2>/dev/null)
 case "$hit" in 1.*|2.*) pass "orphan stream: deadline hit at ${hit}s" ;; *) fail "orphan stream: deadline hit at '${hit}s' (want under 3s)" ;; esac
+
+# 12. HIMMEL-4542: a child that exits at once is reaped well under the 50 ms
+#     poll interval. Budget is the median over 9 runs at loaded x2 (idle is a
+#     few ms; the old poll sat at ~50).
+ms=$(python3 "$W/inproc.py" "$SUT" exit-latency "$W" "$W/child.sh" 2>/dev/null)
+case "$ms" in
+    nopidfd) pass "exit latency: skipped, no pidfd_open on this host (poll fallback)" ;;
+    ''|*[!0-9]*) fail "exit latency: no measurement ('$ms')" ;;
+    *) if [ "$ms" -lt 30 ]; then pass "exit latency: median ${ms}ms"; else fail "exit latency: median ${ms}ms (want under 30)"; fi ;;
+esac
+
+# 13. HIMMEL-4541: the REAL-process twin of row 11. A child that forks orphans
+#     back to back (each reparents to the runner and exits at once, so waitpid
+#     returns one on nearly every poll) must still hit a 1 s deadline: rc 124,
+#     inside a 5 s budget (loaded x2 of the ~2 s the SIGTERM/KILL path needs).
+t0=$(date +%s.%N)
+python3 "$SUT" --deadline 1 --kill-after 1 -- bash -c 'while :; do ( true & ); done' >/dev/null 2>&1
+rc=$?
+took=$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN { printf "%.1f", b - a }')
+eq "real orphan stream: rc 124" 124 "$rc"
+if awk -v t="$took" 'BEGIN { exit !(t < 5) }'; then pass "real orphan stream: deadline hit in ${took}s"; else fail "real orphan stream: took ${took}s (want under 5)"; fi
 
 # 5. the sweep reaches only the runner's own descendants.
 if alive "$bystander"; then pass "bystander untouched"; else fail "bystander was killed"; fi
