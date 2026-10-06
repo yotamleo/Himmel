@@ -871,6 +871,94 @@ allow "-c diff.external=<cmd> diff --ext-diff, cwd=leg" "$W" "git -c diff.extern
 allow "grep -O<cmd>, cwd=leg"                      "$W" "git grep -Ox foo"
 allow "--exec-path=<dir> status, cwd=leg"          "$W" "git --exec-path=/tmp/x status"
 
+echo "== HIMMEL-4504 J1950: program env behind a wrapper, two-step exports, worktree --, transport programs =="
+for pre in "-C $P " ""; do
+    if [ -n "$pre" ]; then cwd="$W"; tag="-C <primary>"; else cwd="$P"; tag="cwd=primary"; fi
+    # B1: a program env in front of (or inside) a wrapper the unwrap strips.
+    deny "$tag GIT_EXTERNAL_DIFF= nice -n 5 diff"   "$cwd" "GIT_EXTERNAL_DIFF=x nice -n 5 git ${pre}diff"
+    deny "$tag GIT_EXTERNAL_DIFF= timeout 5 diff"   "$cwd" "GIT_EXTERNAL_DIFF=x timeout 5 git ${pre}diff"
+    deny "$tag GIT_EXTERNAL_DIFF= xargs diff"       "$cwd" "GIT_EXTERNAL_DIFF=x xargs git ${pre}diff < /dev/null"
+    deny "$tag GIT_EXTERNAL_DIFF= stdbuf -o0 diff"  "$cwd" "GIT_EXTERNAL_DIFF=x stdbuf -o0 git ${pre}diff"
+    deny "$tag GIT_EXTERNAL_DIFF= sudo -E diff"     "$cwd" "GIT_EXTERNAL_DIFF=x sudo -E git ${pre}diff"
+    deny "$tag GIT_EXTERNAL_DIFF= ionice diff"      "$cwd" "GIT_EXTERNAL_DIFF=x ionice git ${pre}diff"
+    deny "$tag GIT_EXTERNAL_DIFF= setsid diff"      "$cwd" "GIT_EXTERNAL_DIFF=x setsid git ${pre}diff"
+    deny "$tag GIT_EXTERNAL_DIFF= nohup nice diff"  "$cwd" "GIT_EXTERNAL_DIFF=x nohup nice git ${pre}diff"
+    deny "$tag GIT_EXTERNAL_DIFF= env nice diff"    "$cwd" "GIT_EXTERNAL_DIFF=x env nice git ${pre}diff"
+    deny "$tag env GIT_EXTERNAL_DIFF= nice diff"    "$cwd" "env GIT_EXTERNAL_DIFF=x nice git ${pre}diff"
+    deny "$tag nice env GIT_EXTERNAL_DIFF= diff"    "$cwd" "nice env GIT_EXTERNAL_DIFF=x git ${pre}diff"
+    deny "$tag GIT_PAGER=<cmd> nice log"            "$cwd" "GIT_PAGER=x nice git ${pre}log"
+    deny "$tag PAGER=<cmd> timeout 5 log"           "$cwd" "PAGER=x timeout 5 git ${pre}log"
+    deny "$tag GIT_EXEC_PATH= nice status"          "$cwd" "GIT_EXEC_PATH=/tmp/x nice git ${pre}status"
+    deny "$tag GIT_CONFIG_GLOBAL= nice status"      "$cwd" "GIT_CONFIG_GLOBAL=/tmp/evil nice git ${pre}status"
+    deny "$tag GIT_CONFIG_PARAMETERS= timeout status" "$cwd" "GIT_CONFIG_PARAMETERS=\"'core.fsmonitor'='x'\" timeout 9 git ${pre}status"
+    deny "$tag GIT_CONFIG_KEY_0= nice status"       "$cwd" "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0=x nice git ${pre}status"
+    deny "$tag GIT_SSH_COMMAND= nice ls-remote"     "$cwd" "GIT_SSH_COMMAND=x nice git ${pre}ls-remote origin"
+    # B2 / T5: a program env set as its own statement, exported before,
+    # after or never (it may already be exported in the session).
+    deny "$tag X=; export X; diff"                  "$cwd" "GIT_EXTERNAL_DIFF=x; export GIT_EXTERNAL_DIFF; git ${pre}diff"
+    deny "$tag export X; X=; diff"                  "$cwd" "export GIT_EXTERNAL_DIFF; GIT_EXTERNAL_DIFF=x; git ${pre}diff"
+    deny "$tag declare -x X=; diff"                 "$cwd" "declare -x GIT_EXTERNAL_DIFF=x; git ${pre}diff"
+    deny "$tag typeset -x X=; diff"                 "$cwd" "typeset -x GIT_EXTERNAL_DIFF=x; git ${pre}diff"
+    deny "$tag set -a; X=; diff"                    "$cwd" "set -a; GIT_EXTERNAL_DIFF=x; git ${pre}diff"
+    deny "$tag readonly -x X=; diff"                "$cwd" "readonly -x GIT_EXTERNAL_DIFF=x; git ${pre}diff"
+    deny "$tag GIT_CONFIG_GLOBAL=; export; status"  "$cwd" "GIT_CONFIG_GLOBAL=/tmp/evil; export GIT_CONFIG_GLOBAL; git ${pre}status"
+    deny "$tag X= (bare, unexported); diff"         "$cwd" "GIT_EXTERNAL_DIFF=x; git ${pre}diff"
+    # B3: after `--` every worktree add/move word is positional.
+    deny "$tag worktree add -d -- -evil"            "$cwd" "git ${pre}worktree add -d -- -evil"
+    deny "$tag worktree add -d -- --evil"           "$cwd" "git ${pre}worktree add -d -- --evil"
+    deny "$tag worktree add -fd -- -x"              "$cwd" "git ${pre}worktree add -fd -- -x"
+    deny "$tag worktree move -- <wt> -m"            "$cwd" "git ${pre}worktree move -- $W -m"
+    deny "$tag worktree move <wt> -- -m"            "$cwd" "git ${pre}worktree move $W -- -m"
+    # T1: ls-remote's --upload-pack (any abbreviation) / hidden --exec run a
+    # program; fetch/pull already lose the carve-out on --upload-pack.
+    deny "$tag ls-remote --upload-pack=<cmd> ."     "$cwd" "git ${pre}ls-remote --upload-pack='touch pwn; git-upload-pack' ."
+    deny "$tag ls-remote --upload-pa=<cmd> ."       "$cwd" "git ${pre}ls-remote --upload-pa='touch pwn; git-upload-pack' ."
+    deny "$tag ls-remote --u=<cmd> ."               "$cwd" "git ${pre}ls-remote --u=x ."
+    deny "$tag ls-remote --upload-pack <cmd> ."     "$cwd" "git ${pre}ls-remote --upload-pack 'touch pwn; git-upload-pack' ."
+    deny "$tag ls-remote --exec=<cmd> ."            "$cwd" "git ${pre}ls-remote --exec=x ."
+    deny "$tag ls-remote --exe=<cmd> ."             "$cwd" "git ${pre}ls-remote --exe=x ."
+    deny "$tag fetch --upload-pa=<cmd> ."           "$cwd" "git ${pre}fetch --upload-pa=x ."
+    deny "$tag fetch origin --upload-pack <cmd>"    "$cwd" "git ${pre}fetch origin --upload-pack x"
+    deny "$tag pull --ff-only --upload-pack=<cmd>"  "$cwd" "git ${pre}pull --ff-only --upload-pack=x origin"
+    # T2: the ext:: transport runs its URL as a command.
+    deny "$tag GIT_ALLOW_PROTOCOL=ext ls-remote ext::" "$cwd" "GIT_ALLOW_PROTOCOL=ext git ${pre}ls-remote 'ext::sh -c touch% pwn'"
+    deny "$tag ls-remote ext::<cmd>"                "$cwd" "git ${pre}ls-remote 'ext::sh -c touch% pwn'"
+    deny "$tag GIT_ALLOW_PROTOCOL=ext nice ls-remote origin" "$cwd" "GIT_ALLOW_PROTOCOL=file:ext nice git ${pre}ls-remote origin"
+    # T3: HOME / XDG_CONFIG_HOME load another global config (core.fsmonitor).
+    deny "$tag HOME=<dir> status"                   "$cwd" "HOME=/tmp/h git ${pre}status"
+    deny "$tag XDG_CONFIG_HOME=<dir> status"        "$cwd" "XDG_CONFIG_HOME=/tmp/h git ${pre}status"
+    deny "$tag HOME=<dir> nice status"              "$cwd" "HOME=/tmp/h nice git ${pre}status"
+    deny "$tag env XDG_CONFIG_HOME=<dir> status"    "$cwd" "env XDG_CONFIG_HOME=/tmp/h git ${pre}status"
+    deny "$tag export HOME=<dir>; status"           "$cwd" "export HOME=/tmp/h; git ${pre}status"
+    deny "$tag HOME=<dir>; export HOME; status"     "$cwd" "HOME=/tmp/h; export HOME; git ${pre}status"
+    deny "$tag XDG_CONFIG_HOME=<dir>; status"       "$cwd" "XDG_CONFIG_HOME=/tmp/h; git ${pre}status"
+    # Ordinary reads behind wrappers and safe envs keep the relief.
+    allow "$tag nice log"                           "$cwd" "nice git ${pre}log -1"
+    allow "$tag timeout 5 status"                   "$cwd" "timeout 5 git ${pre}status"
+    allow "$tag GIT_PAGER=cat nice log"             "$cwd" "GIT_PAGER=cat nice git ${pre}log -1"
+    allow "$tag X=1 nice log"                       "$cwd" "X=1 nice git ${pre}log -1"
+    allow "$tag LC_ALL=C; status"                   "$cwd" "LC_ALL=C; git ${pre}status"
+    allow "$tag declare -x LC_ALL=C; log"           "$cwd" "declare -x LC_ALL=C; git ${pre}log -1"
+    allow "$tag log / status / diff / show"         "$cwd" "git ${pre}log -1; git ${pre}status; git ${pre}diff; git ${pre}show HEAD"
+    allow "$tag ls-remote origin"                   "$cwd" "git ${pre}ls-remote origin"
+    allow "$tag ls-remote --exit-code origin"       "$cwd" "git ${pre}ls-remote --exit-code origin"
+    allow "$tag fetch origin"                       "$cwd" "git ${pre}fetch origin"
+    allow "$tag worktree add <ignored>/wt -b"       "$cwd" "git ${pre}worktree add $P/ignored/wt -b feat/z"
+    allow "$tag worktree add -- <ignored>/wt"       "$cwd" "git ${pre}worktree add -d -- $P/ignored/wt"
+done
+# The env before a wrapper also carries GIT_DIR / GIT_WORK_TREE (the unwrap
+# re-read used to glue the assignments onto the git word).
+deny "GIT_DIR= GIT_WORK_TREE= nice git reset --hard"  "$W" "GIT_DIR=$P/.git GIT_WORK_TREE=$P nice git reset --hard"
+deny "GIT_DIR= GIT_WORK_TREE= timeout 5 git reset"    "$W" "GIT_DIR=$P/.git GIT_WORK_TREE=$P timeout 5 git reset --hard"
+deny "X=1 nice git -C <primary> reset --hard"         "$W" "X=1 nice git -C $P reset --hard"
+deny "GIT_DIR=; export GIT_DIR; … git reset --hard"   "$W" "GIT_DIR=$P/.git; export GIT_DIR; GIT_WORK_TREE=$P; export GIT_WORK_TREE; git reset --hard"
+deny "declare -x GIT_DIR= GIT_WORK_TREE=; reset"      "$W" "declare -x GIT_DIR=$P/.git GIT_WORK_TREE=$P; git reset --hard"
+deny "set -a; GIT_DIR=; GIT_WORK_TREE=; reset"        "$W" "set -a; GIT_DIR=$P/.git; GIT_WORK_TREE=$P; git reset --hard"
+# The program runs in the LEG: no primary write.
+allow "GIT_EXTERNAL_DIFF= nice git diff, cwd=leg"     "$W" "GIT_EXTERNAL_DIFF=x nice git diff"
+allow "HOME=<dir> git status, cwd=leg"                "$W" "HOME=/tmp/h git status"
+allow "ls-remote --upload-pack=<cmd> ., cwd=leg"      "$W" "git ls-remote --upload-pack=x ."
+
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="
 for raw in '' 'not json' '[]' '{}' '{"tool_name":"Bash"}' '{"tool_name":"Bash","tool_input":{}}' \
            '{"tool_input":{"command":"git status"}}'; do
