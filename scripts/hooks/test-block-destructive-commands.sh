@@ -1116,9 +1116,16 @@ assert_rc "4438 allow: bash -c 'ls -la'"      0 "$(run_case "$(j_bash "bash -c '
 assert_rc "4438 allow: echo 'rm -rf /tmp/x'"  0 "$(run_case "$(j_bash "echo 'rm -rf /tmp/x'")")"
 # HIMMEL-4576 / 4577: guard-corpus gen rows (seeds = this suite's own rows
 # rm $'\x2dr' d and xargs rm < list) that base allowed (judge J1920).
-assert_rc "4576 r'm' \$'\\x2dr' d"             2 "$(run_case "$(j_bash "r'm' \$'\\x2dr' d")")"
-assert_rc "4576 r\"m\" \$'\\x2dr' d"           2 "$(run_case "$(j_bash "r\"m\" \$'\\x2dr' d")")"
-assert_rc "4576 r\\m \$'\\x2dr' d"             2 "$(run_case "$(j_bash "r\\m \$'\\x2dr' d")")"
+# The decode needs bash 4.4+ in the hook's PATH; an older one keeps the raw
+# body, as before (J1946 B1; HIMMEL-4625 tracks a portable decode).
+# shellcheck disable=SC2016 # the hook's bash expands it, not this shell
+if [ "$(bash -c 'echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))')" -ge 404 ]; then
+    assert_rc "4576 r'm' \$'\\x2dr' d"             2 "$(run_case "$(j_bash "r'm' \$'\\x2dr' d")")"
+    assert_rc "4576 r\"m\" \$'\\x2dr' d"           2 "$(run_case "$(j_bash "r\"m\" \$'\\x2dr' d")")"
+    assert_rc "4576 r\\m \$'\\x2dr' d"             2 "$(run_case "$(j_bash "r\\m \$'\\x2dr' d")")"
+else
+    echo "SKIP 4576 \$'…' decode rows (bash in PATH is older than 4.4)"
+fi
 assert_rc "4577 env 'FOO=a b'c xargs rm < list" 2 "$(run_case "$(j_bash "env 'FOO=a b'c xargs rm < list")")"
 nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/block-destructive-commands.sh"
