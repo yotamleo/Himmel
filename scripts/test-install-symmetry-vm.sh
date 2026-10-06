@@ -16,7 +16,8 @@
 #   vm.mode none exits 3 (SKIP) before any ssh
 #
 # Exit codes: 0 = all assertions passed; 1 = an assertion failed; 3 = the VM was
-# unreachable (key auth) -- not a code failure, re-run when the VM is provisioned.
+# unreachable (key auth), or vm.mode=none (SKIP) -- not a code failure, re-run when
+# the VM is provisioned.
 set -uo pipefail
 
 # The default target is vm.mode's VM, not a hardcoded local one; vm.mode=none

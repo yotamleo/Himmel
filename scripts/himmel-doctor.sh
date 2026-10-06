@@ -3596,7 +3596,10 @@ check_c53_vm_mode() {
             # shellcheck disable=SC2016  # $1 $2 expand in the child shell
             "$timeout_bin" 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$VM_MODE_PORT" >/dev/null 2>&1 || rc=$?
         else
-            bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$VM_MODE_PORT" >/dev/null 2>&1 || rc=$?
+            # an unbounded connect could stall the whole doctor run
+            emit INFO C53-vm-mode "vm.mode=$VM_MODE ($VM_MODE_HOST:$VM_MODE_PORT), reachability not probed: no timeout binary" \
+                "install coreutils timeout to enable the probe"
+            return
         fi
     fi
     if [ "$rc" -eq 0 ]; then

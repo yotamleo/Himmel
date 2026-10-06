@@ -24,8 +24,8 @@
 #   $HOME/.ssh/id_ed25519 unless ~/.himmel/config.json sets vm.mode remote;
 #   vm.mode none exits 3 (SKIP) before any ssh
 #
-# Exit: 0 = converged | 1 = an assertion failed | 3 = the VM was unreachable
-# (not a code failure -- re-run once the VM is up).
+# Exit: 0 = converged | 1 = an assertion failed | 3 = the VM was unreachable,
+# or vm.mode=none (SKIP) (not a code failure -- re-run once the VM is up).
 set -uo pipefail
 
 # The default target is vm.mode's VM, not a hardcoded local one; vm.mode=none

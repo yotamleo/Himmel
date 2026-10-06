@@ -66,6 +66,12 @@ cfg '{"vm":{"mode":"cloud"}}'
 check "unknown mode -> none" "none" 0 mode
 cfg '{"vm":'
 check "malformed json -> none" "operator-ack+rollback-point" 1 route
+cfg '[]'
+check "non-object config -> none" "none" 0 mode
+cfg '{"vm":"none"}'
+check "non-object vm -> none" "none" 0 mode
+cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","identity":"~/my key -oProxyCommand=x"}}}'
+check "identity with whitespace -> none" "operator-ack+rollback-point" 1 route
 
 echo "== sourced: vm_mode_load sets the variables"
 cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","port":2202}}}'

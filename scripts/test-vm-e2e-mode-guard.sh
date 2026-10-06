@@ -31,17 +31,17 @@ run_suite() { # <suite> <config json> -> $out, $rc, $sshlog
 for s in scripts/test-install-symmetry-vm.sh scripts/test-luna-upgrade-vm.sh scripts/test-tarball-install-vm.sh; do
     echo "== $s"
     run_suite "$s" '{"vm":{"mode":"none"}}'
-    if [ "$rc" = 3 ] && printf '%s' "$out" | grep -qF 'SKIP: vm.mode=none' && [ -z "$sshlog" ]; then
+    if [ "$rc" = 3 ] && grep -qF 'SKIP: vm.mode=none' <<< "$out" && [ -z "$sshlog" ]; then
         pass "$s: vm.mode=none -> SKIP rc 3, no ssh"
     else fail "$s: none: rc=$rc ssh='$sshlog' out=$(printf '%s' "$out" | head -3)"; fi
 
     run_suite "$s" '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example","port":2201,"identity":"~/.ssh/vm_key"}}}'
-    if printf '%s' "$sshlog" | grep -qF -- "-p 2201 -i $T/home/.ssh/vm_key" && printf '%s' "$sshlog" | grep -qF 'ops@vm.example'; then
+    if grep -qF -- "-p 2201 -i $T/home/.ssh/vm_key" <<< "$sshlog" && grep -qF 'ops@vm.example' <<< "$sshlog"; then
         pass "$s: vm.mode=remote -> ssh targets vm.remote"
     else fail "$s: remote: ssh='$sshlog'"; fi
 
     run_suite "$s" '{}'
-    if printf '%s' "$sshlog" | grep -qF -- '-p 2222' && printf '%s' "$sshlog" | grep -qF 'localhost'; then
+    if grep -qF -- '-p 2222' <<< "$sshlog" && grep -qF 'localhost' <<< "$sshlog"; then
         pass "$s: vm.mode unset -> localhost:2222 (unchanged)"
     else fail "$s: default: ssh='$sshlog'"; fi
 done

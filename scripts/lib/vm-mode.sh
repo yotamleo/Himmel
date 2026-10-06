@@ -20,7 +20,9 @@
 #          printed). It is never auto-released.
 #
 # Fail closed: a config that exists but cannot be read (malformed JSON, no
-# python3), an unknown vm.mode value, or remote without vm.remote.ssh resolves
+# python3, a non-object config or vm), an unknown vm.mode value, remote without
+# vm.remote.ssh, or an ssh/identity carrying whitespace or a leading dash (the
+# VM drivers word-split them into ssh's argv) resolves
 # to `none` with a note saying why — a hold is never released on a guess.
 #
 # Source it and call:
@@ -53,8 +55,9 @@ try:
     j = json.load(open(sys.argv[1]))
 except Exception as e:
     print("mode=none"); print("note=cannot parse " + sys.argv[1]); sys.exit(0)
-v = j.get("vm") if isinstance(j, dict) else None
-v = v if isinstance(v, dict) else {}
+v = j.get("vm", {}) if isinstance(j, dict) else None
+if not isinstance(v, dict):
+    print("mode=none"); print("note=" + ("vm" if isinstance(j, dict) else "the config") + " is not a JSON object"); sys.exit(0)
 m = v.get("mode", "local")
 if m not in ("local", "remote", "none"):
     print("mode=none"); print("note=vm.mode=%r is not local|remote|none" % (m,)); sys.exit(0)
@@ -69,7 +72,7 @@ if m == "remote":
     ident = r.get("identity")
     bad = (ssh.startswith("-") or any(c.isspace() for c in ssh)
            or isinstance(port, bool) or not str(port).isdigit() or not 0 < int(port) < 65536
-           or (ident is not None and (not isinstance(ident, str) or any(c in ident for c in "\r\n"))))
+           or (ident is not None and (not isinstance(ident, str) or ident.startswith("-") or any(c.isspace() for c in ident))))
     if bad:
         print("mode=none"); print("note=vm.remote has an invalid ssh, port or identity"); sys.exit(0)
     print("host=" + ssh)

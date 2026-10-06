@@ -37,7 +37,8 @@
 #   Windows:  bash scripts/test-luna-upgrade-vm.sh <winuser>@localhost 2223 <key>
 #
 # Exit codes: 0 = all assertions passed; 1 = an assertion failed; 3 = the VM was
-# unreachable (key auth) -- not a code failure, re-run when the VM is provisioned.
+# unreachable (key auth), or vm.mode=none (SKIP) -- not a code failure, re-run when
+# the VM is provisioned.
 #
 # bash 3.2-safe (macOS ships 3.2): no mapfile, no associative arrays.
 #
