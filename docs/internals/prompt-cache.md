@@ -5,6 +5,7 @@ eval is `scripts/eval/cache-probe.sh` (read-only; reads session transcript
 JSONL `usage` rows) and its fixture suite `scripts/eval/test-cache-probe.sh`.
 This doc states the model the eval supports, the audit of every claim found in
 the tree, and the exact re-run commands.
+A packaged write-up (method, fresh results, limits) is in [`docs/evals/prompt-cache.md`](../evals/prompt-cache.md).
 
 ## The model (what the measurements support)
 
