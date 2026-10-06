@@ -449,7 +449,8 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
 
 def _record_run(args, rc, results, metrics):
     """One eval-runs ledger row per diff (HIMMEL-4647). A regression (rc 1) is
-    a valid measurement; odd/vacuous/no-control runs are inconclusive. A
+    a valid measurement; odd/vacuous/no-control runs are inconclusive, and so
+    is a regression run with odd rows (it did not fully exercise the guard). A
     ledger failure warns and never changes the diff's exit code."""
     try:
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
@@ -463,18 +464,19 @@ def _record_run(args, rc, results, metrics):
                               args.head[4:].split(":", 1)[0] + "^{commit}"],
                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         gitsha = out.stdout.decode().strip() or None
-    hook = args.head.rsplit(":", 1)[-1] if args.head.startswith("sha:") else args.head
+    def hook_name(spec):
+        return os.path.basename(spec.rsplit(":", 1)[-1] if spec.startswith("sha:") else spec)
     try:
         corpus_sha = eval_runs.file_sha256(args.corpus)
     except OSError:
         corpus_sha = None
-    config = dict(hook=os.path.basename(hook), corpus_sha256=corpus_sha,
+    config = dict(hook=hook_name(args.head), base_hook=hook_name(args.base), corpus_sha256=corpus_sha,
                   timeout_warn=args.timeout_warn)
     cases = {str(r["idx"]): dict(base=r["base"] == "deny", head=r["head"] == "deny")
              for r in results}
     row = eval_runs.make_row(
         "guard-corpus", "scripts/eval/guard-corpus/diff", config, metrics,
-        n=len(results), status="ok" if rc in (0, 1) else "inconclusive",
+        n=len(results), status="ok" if rc in (0, 1) and not metrics["odd_rc"] else "inconclusive",
         cases=cases, artifact=os.path.abspath(args.corpus),
         meta=dict(base=args.base, head=args.head, exit=rc),
         repo=args.repo, gitsha=gitsha)

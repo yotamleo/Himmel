@@ -54,6 +54,10 @@ python3 "$LIB" append --ledger "$L2" --eval demo --source s --config-json '{}' -
 if [ "$rc" -ne 0 ]; then pass "append: an inverted CI is refused"; else fail "append: an inverted CI was accepted"; fi
 python3 "$LIB" append --ledger "$L2" --eval "" --source s --config-json '{}' --metrics-json '{"s":1}' >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ]; then pass "append: an empty eval id is refused"; else fail "append: an empty eval id was accepted"; fi
+python3 "$LIB" append --ledger "$L2" --eval demo --source s --config-json '{}' --metrics-json '{"s":NaN}' >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ]; then pass "append: a NaN metric is refused"; else fail "append: a NaN metric was accepted"; fi
+python3 "$LIB" append --ledger "$L2" --eval demo --source s --config-json '{}' --metrics-json '{"s":1}' --ci-json '{"s":{"lo":-Infinity,"hi":1}}' >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ]; then pass "append: an infinite CI bound is refused"; else fail "append: an infinite CI bound was accepted"; fi
 if [ ! -s "$L2" ]; then pass "append: refusals wrote nothing"; else fail "append: a refused row landed"; fi
 echo '{"v":1,"kind":"eval-run"}' >"$TMP/broken.jsonl"
 python3 "$LIB" validate "$TMP/broken.jsonl" >/dev/null 2>&1; rc=$?
@@ -134,12 +138,30 @@ out=$(python3 "$CMP" civ --ledger "$V" --thresholds "$TH" --baseline c1 2>&1); r
 eq "compare: inside the baseline's CI exits 0" "$rc" "0"
 
 # A metric with no direction is reported, never gated.
+W="$TMP/wi.jsonl"
+row "$W" civ w1 '{}' '{"acc":0.80,"x":1}'
+row "$W" civ w2 '{}' '{"acc":0.80,"x":0}'
+out=$(python3 "$CMP" civ --ledger "$W" --thresholds "$TH" 2>&1); rc=$?
+eq "compare: an ungated metric does not fail" "$rc" "0"
+has "compare: an ungated metric is marked info" "$out" "info"
+
+# Nothing gated was compared: not a pass.
 U="$TMP/u.jsonl"
 row "$U" other u1 '{}' '{"x":1}'
 row "$U" other u2 '{}' '{"x":0}'
 out=$(python3 "$CMP" other --ledger "$U" --thresholds "$TH" 2>&1); rc=$?
-eq "compare: an ungated metric does not fail" "$rc" "0"
-has "compare: an ungated metric is marked info" "$out" "info"
+eq "compare: only ungated metrics is exit 3" "$rc" "3"
+N="$TMP/null.jsonl"
+row "$N" civ n1 '{}' '{"acc":0.80}'
+row "$N" civ n2 '{}' '{"acc":null,"x":1}'
+out=$(python3 "$CMP" civ --ledger "$N" --thresholds "$TH" 2>&1); rc=$?
+eq "compare: a gated metric missing from the candidate is exit 3" "$rc" "3"
+
+# An unusable candidate is not compared.
+row "$W" civ w3 '{}' '{"acc":0.80}' "" partial
+out=$(python3 "$CMP" civ --ledger "$W" --thresholds "$TH" 2>&1); rc=$?
+eq "compare: a partial candidate is exit 3" "$rc" "3"
+has "compare: says the candidate is not ok" "$out" "partial"
 
 out=$(python3 "$CMP" nothing-here --ledger "$U" --thresholds "$TH" 2>&1); rc=$?
 eq "compare: no run of the eval at all is exit 3" "$rc" "3"

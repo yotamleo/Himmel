@@ -105,6 +105,10 @@ def main(argv=None):
         print("eval-compare: no run of '%s' in %s" % (args.eval, eval_runs.ledger_path(args.ledger)))
         return 3
     cand = rows[-1]
+    if cand["status"] != "ok":
+        print("eval-compare: candidate %s is %s, not ok: nothing usable to compare"
+              % (cand["run_id"], cand["status"]))
+        return 3
     earlier = rows[:-1]
     pool = [r for r in earlier if r["status"] == "ok" and r["confighash"] == cand["confighash"]]
 
@@ -144,7 +148,7 @@ def main(argv=None):
     print("eval-compare %s: candidate %s (%s, %s) vs baseline %s"
           % (args.eval, cand["run_id"], (cand["gitsha"] or "?")[:9], cand["ts"], label))
     names = sorted(set(cand["metrics"]) | set(fixed["metrics"] if base_of is None else base_of))
-    regressions = 0
+    regressions = gated = 0
     print("%-28s %12s %12s %12s  %-10s %s" % ("metric", "baseline", "candidate", "delta", "verdict", "band"))
     for m in names:
         brow = fixed if base_of is None else base_of.get(m)
@@ -152,12 +156,16 @@ def main(argv=None):
         c = cand["metrics"].get(m)
         v, band = verdict(spec_for(table, m), base, c, (brow or {}).get("ci", {}).get(m), cand["ci"].get(m))
         regressions += v == "REGRESSION"
+        gated += v in ("REGRESSION", "better", "ok")
         fmt = lambda x: "-" if x is None else "%.6g" % x  # noqa: E731
         delta = "-" if base is None or c is None else "%+.6g" % (c - base)
         print("%-28s %12s %12s %12s  %-10s %s" % (m, fmt(base), fmt(c), delta, v, band))
     if regressions:
         print("eval-compare: %d REGRESSION(s) beyond the noise band" % regressions)
         return 1
+    if not gated:
+        print("eval-compare: no gated metric had a value on both sides: nothing was compared")
+        return 3
     print("eval-compare: no regression beyond the noise band")
     return 0
 

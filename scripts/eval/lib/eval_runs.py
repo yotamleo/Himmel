@@ -59,6 +59,7 @@ Stdlib only; no network.
 import argparse
 import hashlib
 import json
+import math
 import os
 import socket
 import statistics
@@ -108,7 +109,9 @@ def git_state(repo=None):
 
 
 def _num(x):
-    return isinstance(x, (int, float)) and not isinstance(x, bool)
+    """A finite number: json.loads accepts NaN and Infinity, and NaN fails
+    every comparison, so it would pass any regression gate silently."""
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
 
 
 def make_row(eval_id, source, config, metrics, n=None, model=None, lane=None, status="ok",

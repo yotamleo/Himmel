@@ -124,6 +124,22 @@ has "base-deny/head-error: no regression" "$OUT3C" "(REGRESSION): 0"
 if [ "$RC3C" = "3" ]; then pass "base-deny/head-error: inconclusive exit 3"
 else fail "base-deny/head-error: expected exit 3, got $RC3C"; fi
 
+# eval-runs ledger: a regression run whose head also errored on some rows did
+# not fully exercise the guard, so its row is inconclusive (never a baseline).
+cat > "$TMP/flaky-head.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+case "$input" in *SENTINEL_DENY*) exit 0 ;; esac
+exit 1
+STUB
+chmod +x "$TMP/flaky-head.sh"
+LFLAKY="$TMP/eval-runs-flaky.jsonl"
+HIMMEL_EVAL_RUNS_LEDGER="$LFLAKY" python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/flaky-head.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 >/dev/null 2>&1; RCF=$?
+FROW=$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); print(r["status"], r["config"]["base_hook"])' "$LFLAKY" 2>&1)
+if [ "$RCF" = "1" ] && [ "$FROW" = "inconclusive base-hook.sh" ]; then pass "ledger: regression plus odd rc is inconclusive, base hook in config"
+else fail "ledger: expected rc 1 + 'inconclusive base-hook.sh', got rc $RCF + '$FROW'"; fi
+
 # --- 2b. an empty corpus is refused, never certified clean -------------------
 # codex-2: zero rows exercise no hook; a clean exit 0 would be a false
 # "reviewed clean". diff must refuse it (exit 2).
