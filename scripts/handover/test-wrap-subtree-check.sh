@@ -410,7 +410,8 @@ contains 'the full chain prints CLOSABLE, all eight counted (HIMMEL-4161)' "$out
 grep -v ' node /home/u/himmel/marketplace' "$W/chain-full.txt" | sed 's/^  501   500/  501   101/' > "$W/chain-nohud.txt"
 out="$(run "$W/chain-nohud.txt" 101 2>&1)"; rc=$?
 eq 'the chain without its hud node is exempt too: rc 0 (HIMMEL-4161)' 0 "$rc"
-# (c) a non-chain child anywhere withholds, and only it (plus anything under it).
+# (c) a non-chain child of a chain node is a chain descendant and is ignored
+# (HIMMEL-4592); a chain member under a non-chain parent still withholds (below).
 { cat "$W/chain-full.txt"; printf '  510   500       00:00 sleep 100\n'; } > "$W/chain-extra-under-hud.txt"
 out="$(run "$W/chain-extra-under-hud.txt" 101 2>&1)"; rc=$?
 eq 'a non-chain child of the hud node is a chain descendant, ignored: rc 0 (HIMMEL-4592)' 0 "$rc"
