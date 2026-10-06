@@ -4364,7 +4364,8 @@ _bwimc_git_clause() {
             of="$v"; ow=0
         else
             case "$v" in
-                --) break ;;
+                # `bundle create -- <file>`: the file still follows `--`.
+                --) [ "$sub:$bc" = bundle:1 ] || break; ow=1; continue ;;
                 --output) ow=1; continue ;;
                 --output=*) of="${v#--output=}" ;;
                 *)
