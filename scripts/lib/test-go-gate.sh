@@ -148,6 +148,16 @@ STUB
 chmod +x "$ROOT/bin/gh"
 export PATH="$ROOT/bin:$PATH"
 export STUB_NWO="o/r"
+# HIMMEL-4565: go.sh refuses unless ready-check.sh passes, so it runs from a
+# repo whose CR ledger has an ok row for $SHA, under a gh answering ready-check
+# green (every other call falls through to the stub above).
+# shellcheck source=../handover/console-kit/testlib-ready-pass.sh
+. "$HERE/../handover/console-kit/testlib-ready-pass.sh"
+ready_pass_bin "$ROOT/ready-bin"
+export PATH="$ROOT/ready-bin:$PATH" READY_STUB_HEAD="$SHA"
+git init -q "$ROOT/ready-repo"
+ready_pass_ledger "$ROOT/ready-repo" "$SHA"
+cd "$ROOT/ready-repo" || { echo "FAIL: cd into the ready repo" >&2; exit 1; }
 
 # HIMMEL_CONSOLE_LEG is a Claude Code marker (any value): run from an anchor
 # checkout with no claude ancestor (CI) and HANDOVER_DIR set, go.sh refuses 96

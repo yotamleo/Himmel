@@ -2238,13 +2238,20 @@ case "$1 $2" in
 esac
 STUB
 chmod +x "$bin26/gh"
+# HIMMEL-4565: go.sh refuses unless ready-check.sh passes, so primary26's CR
+# ledger gets an ok row for the head and a gh answering ready-check green sits
+# ahead of the stub above (it hands every other call on to that stub).
+# shellcheck source=testlib-ready-pass.sh
+. "$HERE/testlib-ready-pass.sh"
+ready_pass_bin "$tmp/ready26"
+ready_pass_ledger "$primary26" "$sha26"
 go_root26="$(cd "$primary26" && HANDOVER_DIR="$primary26/handovers" bash -c '. "$1/../../lib/handover-path.sh" && . "$1/../../lib/go-gate.sh" && go_resolve_root "$1/../../.."' _ "$HERE" 2>/dev/null)" || go_root26=""
 case "$go_root26" in
   "$tmp"/?*) echo "ok - HANDOVER_DIR e2e: resolved GO root [$go_root26] is inside the suite's temp dir"; go_root26_ok=1 ;;
   *) echo "FAIL - HANDOVER_DIR e2e: resolved GO root [$go_root26] is not inside the suite's temp dir [$tmp] - refusing to write a GO"; fails=$((fails+1)); go_root26_ok=0 ;;
 esac
 if [ "$go_root26_ok" -eq 1 ]; then
-  go_out26="$(cd "$primary26" && HOME="$home26" PATH="$bin26:$PATH" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
+  go_out26="$(cd "$primary26" && HOME="$home26" READY_STUB_HEAD="$sha26" PATH="$tmp/ready26:$bin26:$PATH" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
 else
   go_out26="SKIPPED: unsafe GO root"
 fi

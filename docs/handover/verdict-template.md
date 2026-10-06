@@ -29,7 +29,11 @@ The console reads this path — never a message — to learn the verdict.
 
 <the answer itself, in the shape the brief's completion condition asked for
 — e.g. CONFIRM/REJECT plus one paragraph of reason, or a chosen disposition
-among named options. This is the field the console acts on.>
+among named options. This is the field the console acts on.
+For a merge question, the first line is exactly **GO** for head `<40-hex sha>`.
+or **NO-GO** for head `<40-hex sha>`. with the reason on the following lines.
+`go.sh --trust-reviewed <qid>` parses only that line and refuses on anything
+else (HIMMEL-3832).>
 
 ## Evidence checked
 
