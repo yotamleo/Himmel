@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { mapFile } from "../agui/journal-mapper.ts";
+import { mapFile, mapJournal } from "../agui/journal-mapper.ts";
 import { extractLedgerVerdicts, extractVerdicts, parsePanelReport } from "../agui/review-panel.ts";
 import type { AguiEvent } from "../agui/events.ts";
 import { aguiViolations } from "./agui-schema.ts";
@@ -79,6 +80,22 @@ describe("a /pr-check run", () => {
   test("every event validates", () => {
     expect(events.flatMap((e) => aguiViolations(e as Record<string, unknown>))).toEqual([]);
   });
+
+  test("a ledger row for another head, or one merely echoed, leaves the review alone", () => {
+    const bash = (n: number, command: string) => [
+      JSON.stringify({ type: "assistant", uuid: `a-x${n}`, sessionId: "sess-rev", message: { id: `msg_X${n}`, role: "assistant", content: [{ type: "tool_use", id: `toolu_x${n}`, name: "Bash", input: { command } }] } }),
+      JSON.stringify({ type: "user", uuid: `u-x${n}`, sessionId: "sess-rev", message: { role: "user", content: [{ type: "tool_result", tool_use_id: `toolu_x${n}`, content: "ok" }] } }),
+    ];
+    const extra = [
+      ...bash(1, "bash scripts/cr/ledger-append.sh amend --head fedcba9876543210fedcba9876543210fedcba98 --id codex-1 --set verdict=fixed --reason r"),
+      ...bash(2, "echo 'bash scripts/cr/ledger-append.sh finding --id codex-2 --verdict fixed --reason r'"),
+      ...bash(3, `bash scripts/cr/ledger-append.sh amend --head ${HEAD} --id codex-2 --set verdict=fixed --reason r`),
+    ];
+    const text = readFileSync(join(FIX, "review-panel.jsonl"), "utf8") + extra.join("\n") + "\n";
+    const deltas = mapJournal(text).events.filter((e) => e.type === "STATE_DELTA");
+    expect(deltas).toHaveLength(3);
+    expect(deltas[2]).toMatchObject({ delta: [{ op: "add", path: "/review/findings/1/verdict", value: "fixed" }] });
+  });
 });
 
 describe("parsePanelReport", () => {
@@ -116,6 +133,29 @@ describe("extractLedgerVerdicts", () => {
     )).toEqual([{ id: "b-2", verdict: "deferred", ticket: "HIMMEL-7" }]);
     expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh avail --id b-1 --verdict fixed")).toEqual([]);
     expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh amend --head abc --id b-3 --set severity=sug --reason x")).toEqual([]);
+  });
+
+  test("a row carries the review head it was recorded against", () => {
+    expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh amend --head abc1234 --id b-1 --set verdict=fixed --reason r")).toEqual([
+      { id: "b-1", verdict: "fixed", head: "abc1234" },
+    ]);
+  });
+
+  test("only a command-position invocation counts, never a quoted mention", () => {
+    expect(extractLedgerVerdicts("echo 'bash scripts/cr/ledger-append.sh finding --id b-1 --verdict fixed --reason x'")).toEqual([]);
+    expect(extractLedgerVerdicts("printf '%s\\n' \"ledger-append.sh amend --id b-1 --set verdict=agreed --reason x\"")).toEqual([]);
+    expect(extractLedgerVerdicts("cd /x && \"$R/scripts/cr/ledger-append.sh\" finding --id b-1 --verdict fixed")).toEqual([
+      { id: "b-1", verdict: "fixed" },
+    ]);
+  });
+
+  test("an unquoted flag value stops at a shell separator", () => {
+    expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh finding --id b-1 --verdict fixed; echo done")).toEqual([
+      { id: "b-1", verdict: "fixed" },
+    ]);
+    expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh finding --id b-2 --verdict agreed&&true")).toEqual([
+      { id: "b-2", verdict: "agreed" },
+    ]);
   });
 
   test("every invocation in one command counts, each with its own flags", () => {

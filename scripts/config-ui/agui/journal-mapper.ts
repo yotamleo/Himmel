@@ -194,7 +194,9 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
 
   function applyVerdicts(rec: Rec, verdicts: VerdictUpdate[], out: AguiEvent[]) {
     const delta: JsonPatchOp[] = [];
+    const head = review!.head;
     for (const v of verdicts) {
+      if (v.head && head && !head.startsWith(v.head) && !v.head.startsWith(head)) continue; // another review's row
       const i = review!.findings.findIndex((f) => f.id === v.id);
       if (i < 0) continue; // a verdict for a finding this journal never showed
       const finding = review!.findings[i];

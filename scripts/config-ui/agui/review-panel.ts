@@ -40,7 +40,7 @@ export type ReviewState = {
   findings: ReviewFinding[];
 };
 
-export type VerdictUpdate = { id: string; verdict: Verdict; ticket?: string };
+export type VerdictUpdate = { id: string; verdict: Verdict; ticket?: string; head?: string };
 
 const PANEL_HEADER = /^# Critic Panel Review \(\d+\/\d+ critics responded\)\s*$/m;
 const ROUND = /^pr-check: round (\d+) of (\d+) on \S+/m;
@@ -83,10 +83,17 @@ export function parsePanelReport(text: string): ReviewState | null {
 }
 
 const VERDICT_LINE = /^\s*VERDICT \[([^\]]+)\] = (?:(agreed|disproved|conflict|unaddressed)|deferred -> ([A-Z][A-Z0-9]*-\d+))\s*$/;
-const WRITE_VERDICTS = /write-verdicts\.sh\b/;
-const LEDGER_CALL = /ledger-append\.sh['"]?\s+/;
+// A script run in command position: at the start of the command or after a
+// shell separator, optionally through bash/sh/exec and a (quoted) path. A
+// mention inside an echo or a quoted string is not a run.
+// ponytail: a heredoc body line starting with the script still counts, swap in a shell tokenizer if a real journal shows one
+const scriptCall = (script: string) =>
+  new RegExp(`(?:^|[;&|\\n(])\\s*(?:(?:bash|sh|exec)\\s+)?(?:"[^"\\n]*|'[^'\\n]*|[^\\s;&|'"]*)${script}["']?\\s+`);
+const WRITE_VERDICTS = scriptCall("write-verdicts\\.sh");
+const LEDGER_CALL = scriptCall("ledger-append\\.sh");
 const LEDGER_VERDICTS = new Set<Verdict>(["agreed", "disproved", "conflict", "unaddressed", "deferred", "fixed"]);
-const FLAG_VALUE = `[ =]+(?:'([^']*)'|"([^"]*)"|(\\S+))`;
+const FLAG_VALUE = `[ =]+(?:'([^']*)'|"([^"]*)"|([^\\s;&|]+))`; // an unquoted value ends at a separator
+const SHA = /^[0-9a-f]{7,40}$/;
 
 // The value after the first --flag, unquoted; undefined when the flag is absent.
 function flag(text: string, name: string): string | undefined {
@@ -112,7 +119,8 @@ export function extractVerdicts(text: string): VerdictUpdate[] {
 // Verdicts a command records in the CR ledger, one per ledger-append.sh
 // invocation: "finding ... --id <id> --verdict <v> [--deferred-to <T>]" or
 // "amend ... --id <id> --set verdict=<v> [--set deferred_to=<T>]". Each
-// invocation's flags are read only up to the next invocation.
+// invocation's flags are read only up to the next invocation. A row's --head
+// rides along so the caller can skip a row recorded against another review.
 export function extractLedgerVerdicts(command: string): VerdictUpdate[] {
   const out: VerdictUpdate[] = [];
   for (const call of command.split(LEDGER_CALL).slice(1)) {
@@ -129,7 +137,8 @@ export function extractLedgerVerdicts(command: string): VerdictUpdate[] {
     }
     const id = flag(call, "id");
     if (!id || !verdict || !LEDGER_VERDICTS.has(verdict as Verdict)) continue;
-    out.push(ticket ? { id, verdict: verdict as Verdict, ticket } : { id, verdict: verdict as Verdict });
+    const head = extractHead(call);
+    out.push({ id, verdict: verdict as Verdict, ...(ticket ? { ticket } : {}), ...(head ? { head } : {}) });
   }
   return out;
 }
@@ -150,5 +159,5 @@ export function commandVerdicts(command: string, readFile: (path: string) => str
 // The --head sha a panel run was invoked with, if the call text names one.
 export function extractHead(text: string): string | undefined {
   const head = flag(text, "head");
-  return head && /^[0-9a-f]{7,40}$/.test(head) ? head : undefined;
+  return head && SHA.test(head) ? head : undefined;
 }
