@@ -6,7 +6,7 @@ import type { Source } from "./stream";
 type Action = { kind: "event"; e: any } | { kind: "reset" } | { kind: "fail"; message: string };
 const step = (v: View, a: Action): View =>
   a.kind === "reset" ? initialView()
-  : a.kind === "fail" ? reduce(v, { type: "RUN_ERROR", message: a.message, timestamp: Date.now() } as any)
+  : a.kind === "fail" ? reduce(v, { type: "RUN_ERROR", message: a.message } as any) // no timestamp: ends at the run's last time
   : reduce(v, a.e);
 
 export function App({ source }: { source: Source }) {

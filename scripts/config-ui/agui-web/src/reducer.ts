@@ -50,8 +50,11 @@ export function reduce(prev: View, e: Ev): View {
   switch (e.type) {
     case "RUN_STARTED":
       return { ...v, status: "running", runId: e.runId };
-    case "RUN_FINISHED":
+    // A run that ends closes every call still open: finished ones as done (with no result), failed ones as errors.
+    case "RUN_FINISHED": {
+      for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "done" });
       return { ...v, status: "finished" };
+    }
     case "RUN_ERROR": {
       for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "error" });
       return { ...v, status: "error", error: e.message };
@@ -108,9 +111,18 @@ export function reduce(prev: View, e: Ev): View {
 export const reduceAll = (events: Ev[], from: View = initialView()): View => events.reduce(reduce, from);
 
 // AG-UI timestamps are optional; a live event without one is stamped when it arrives, so durations and lane
-// reuse stay real instead of collapsing to zero.
-export const stampMissing = <E extends { timestamp?: number }>(e: E, now: number): E =>
-  typeof e.timestamp === "number" ? e : { ...e, timestamp: now };
+// reuse stay real instead of collapsing to zero. Once the stream has carried its own timestamp, a bare event
+// is placed on that clock (its last timestamp plus the wall time since), so a replayed historical run never
+// jumps to the present.
+export function makeStamper(now: () => number) {
+  let last: { ts: number; wall: number } | undefined;
+  return <E extends { timestamp?: number }>(e: E): E => {
+    const wall = now();
+    const ts = typeof e.timestamp === "number" ? e.timestamp : last ? last.ts + (wall - last.wall) : wall;
+    last = { ts, wall };
+    return ts === e.timestamp ? e : { ...e, timestamp: ts };
+  };
+}
 
 // A finding is settled once it has a terminal verdict; conflict and unaddressed still need a decision.
 const TERMINAL = new Set(["agreed", "fixed", "disproved", "deferred"]);
@@ -122,7 +134,10 @@ const unescape = (s: string) => s.replace(/~1/g, "/").replace(/~0/g, "~");
 
 export function applyPatch<T>(doc: T, ops: Op[]): T {
   let out: any = doc;
-  for (const o of ops) out = applyOp(out, o.path.split("/").slice(1).map(unescape), o);
+  for (const o of ops) {
+    if (typeof o.path !== "string" || (o.path !== "" && !o.path.startsWith("/"))) throw new Error(`not a JSON Pointer: ${o.path}`);
+    out = applyOp(out, o.path.split("/").slice(1).map(unescape), o);
+  }
   return out;
 }
 

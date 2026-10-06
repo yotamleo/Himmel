@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { initialView, reduce, reduceAll, applyPatch, stampMissing, settledCount, type View } from "../agui-web/src/reducer";
+import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, type View } from "../agui-web/src/reducer";
 import fixture from "../agui-web/src/fixture.json";
 
 // HIMMEL-4480 PR3: the page is a pure fold of AG-UI events into view state; these cases pin it on the
@@ -93,12 +93,32 @@ test("applyPatch: add/replace/remove on objects and arrays, '-' appends, escaped
   expect(doc).toEqual({ a: [1, 2], "b/c": { "~d": 1 } });
 });
 
-test("stampMissing gives a timestamp-free event the receive time and keeps an existing one", () => {
-  expect(stampMissing({ type: "TOOL_CALL_START" }, 42)).toEqual({ type: "TOOL_CALL_START", timestamp: 42 });
-  expect(stampMissing({ type: "TOOL_CALL_START", timestamp: 7 }, 42).timestamp).toBe(7);
+test("a stamper gives timestamp-free events the receive time, on the stream's own clock once it has one", () => {
+  let wall = 1000;
+  const stamp = makeStamper(() => wall);
+  expect(stamp({ type: "RUN_STARTED" })).toEqual({ type: "RUN_STARTED", timestamp: 1000 });
+  wall = 1500;
+  expect(stamp({ type: "TOOL_CALL_START" }).timestamp).toBe(1500);
+  // A historical stream: its own timestamp wins, and a later bare event lands 200 ms after it, not at wall time.
+  expect(stamp({ type: "TOOL_CALL_ARGS", timestamp: 7 }).timestamp).toBe(7);
+  wall = 1700;
+  expect(stamp({ type: "TOOL_CALL_END" }).timestamp).toBe(207);
+  const s2 = makeStamper((() => { let t = 0; return () => (t += 500); })());
   const v = reduceAll([{ type: "RUN_STARTED", runId: "r" }, { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Bash" },
-    { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x" }].map((e, i) => stampMissing(e, 1000 + i * 500)));
+    { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x" }].map(s2));
   expect([v.tools.a.start, v.tools.a.end]).toEqual([500, 1000]);
+});
+
+test("RUN_FINISHED closes calls that never reported a result", () => {
+  const v = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 }, { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Bash", timestamp: 100 },
+    { type: "RUN_FINISHED", timestamp: 400 }]);
+  expect(v.status).toBe("finished");
+  expect([v.tools.a.status, v.tools.a.end, v.tools.a.result]).toEqual(["done", 400, undefined]);
+});
+
+test("applyPatch rejects a path that is not a JSON Pointer instead of replacing the document", () => {
+  expect(() => applyPatch({ a: 1 }, [{ op: "replace", path: "a", value: 2 }])).toThrow();
+  expect(applyPatch({ a: 1 }, [{ op: "replace", path: "", value: 2 }])).toBe(2);
 });
 
 test("settled counts only terminal verdicts", () => {
