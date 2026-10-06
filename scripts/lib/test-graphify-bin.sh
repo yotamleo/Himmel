@@ -1386,6 +1386,30 @@ if [ "$lf_posix" -eq 1 ]; then
   assert "posix holders=0: no SKIP" bash -c '! grep -q "SKIP" <<<"$1"' _ "$out"
   assert "posix holders=0: the staging scratch dir is cleaned up" lf_tmp_empty
 
+  echo "[test-graphify-bin] graphify_update (POSIX): a holder appears DURING staging -> re-probe SKIPs before the swap"
+  lf_setup held-late 0.0.1
+  # A fake pgrep on a call counter: the first probe (before staging) matches
+  # nothing (rc 1, a real zero), every later one reports 3 holders. Both holder
+  # seams stay unset so the real probe -- and the re-probe -- read it.
+  late_bin="$tmpdir/lf-held-late-pgrep"; mkdir -p "$late_bin"
+  late_count="$tmpdir/lf-held-late-count"; : > "$late_count"
+  # shellcheck disable=SC2016
+  printf '#!/bin/sh\necho x >> "%s"\n[ "$(grep -c . "%s")" -le 1 ] && exit 1\nprintf "101\\n102\\n103\\n"\n' \
+    "$late_count" "$late_count" > "$late_bin/pgrep"
+  chmod +x "$late_bin/pgrep"
+  lf_extra_path="$late_bin"
+  out=$(lf_run env -u GRAPHIFY_MCP_HOLDERS -u GRAPHIFY_MCP_HOLDER_DETAILS)
+  assert "late holder: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "late holder: the stage DID run (first probe was clear)" grep -q 'scoped=1' "$lf_log"
+  # shellcheck disable=SC2016
+  assert "late holder: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+  assert "late holder: SKIP with the re-probed count" grep -q 'SKIP: 3 graphify-mcp process' <<<"$out"
+  assert "late holder: names the late holders" grep -qE '^ +pid 101' <<<"$out"
+  assert "late holder: gives the remedy" grep -q 'reconnect /mcp or quit the holders, then re-run' <<<"$out"
+  assert "late holder: the skip is tracked" grep -q 'SKIPPED 1 consecutive' <<<"$out"
+  assert "late holder: the live install still at the old version" grep -q '^graphifyy v0.0.1$' "$lf_list"
+  assert "late holder: the staging scratch dir is cleaned up" lf_tmp_empty
+
   echo "[test-graphify-bin] graphify_update (POSIX): every graphify invocation carries GRAPHIFY_NO_AUTO_REFRESH=1; skill marker == pin"
   lf_setup noauto 0.0.1
   gel="$tmpdir/lf-noauto-graphify-env"; : > "$gel"

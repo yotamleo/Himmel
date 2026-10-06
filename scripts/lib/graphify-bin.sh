@@ -1043,9 +1043,135 @@ _graphify_skill_refresh() {
   return 0
 }
 
+# _graphify_holder_gate <installed> <pin> <spec> <platform> (HIMMEL-4513) --
+# the pre-flight holder decision, run before staging AND again after it.
+# rc 0: clear (or unprobeable with GRAPHIFY_UNPROBED_OK=1), proceed. rc 1:
+# SKIPPED and fully handled (message, WSL store share, skill refresh, skip
+# tracking), so graphify_update returns 0 -- see the PRE-FLIGHT comment there.
+_graphify_holder_gate() {
+  local installed="$1" pin="$2" spec="$3" platform="$4" holders holder_details
+  if holders="$(_graphify_mcp_holders)"; then
+    case "$holders" in ''|*[!0-9]*) holders=0 ;; esac
+    if [ "$holders" -gt 0 ]; then
+      # ponytail: SKIP while graphify-mcp holders are live (codex-1: lazy imports mix versions on a live swap; HIMMEL-1274 on Windows), versioned tool dirs + atomic bin swap -> HIMMEL-4532
+      {
+        echo "  SKIP: $holders graphify-mcp process(es) hold the uv tool dir — NOT attempting the reinstall."
+        echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
+        if [ "$platform" = "posix" ]; then
+          echo "        A live graphify-mcp lazy-imports modules from disk, so swapping the install"
+          echo "        under it would mix versions inside every live session (codex-1). Refusing is"
+          echo "        the safe outcome."
+        else
+          echo "        uv would delete the old entry points and then fail to replace the locked"
+          echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
+        fi
+        echo "        Holders:"
+        if holder_details="$(_graphify_mcp_holder_details 2>/dev/null)" && [ -n "$holder_details" ]; then
+          printf '%s\n' "$holder_details" | sed 's/^/            /'
+        else
+          echo "            (holder details unavailable on this platform; $holders counted)"
+        fi
+        echo "        To advance the pin: reconnect /mcp or quit the holders, then re-run"
+        echo "        (each live Claude Code session spawns one). Or install by hand once clear:"
+        echo "            uv tool install --force --with mcp '$spec'"
+        for _plat in $(_graphify_present_platforms); do
+          echo "            graphify install --platform $_plat"
+        done
+      } >&2
+      # Share the WSL store like EVERY other path that leaves a working
+      # uv-managed install in place and returns 0 (already-at-pin,
+      # not-behind-pin, successful reinstall). Omitting it here was a real gap,
+      # not a deliberate difference: this SKIP is the ROUTINE outcome on a busy
+      # workstation — every live Claude Code session spawns a graphify-mcp — so
+      # a WSL operator would have silently lost the store link on most updates
+      # (HIMMEL-1289, public-PR CR outside-diff finding).
+      graphify_wsl_share_store
+      # HIMMEL-1601: the PACKAGE reinstall is refused (correctly -- see
+      # HIMMEL-1274 above), but the SKILL is a completely separate,
+      # non-locked target (~/.claude/skills/graphify, refreshed FROM the
+      # currently-installed package, never touches the held uv tool dir) --
+      # refresh it here too, closing the skill-vs-package drift this skip
+      # used to leave open (the skill only advanced on the OTHER, non-skip
+      # return paths above). Then escalate: this skip is routine on a busy
+      # workstation and can persist indefinitely (HIMMEL-1601) -- count and
+      # loudly report consecutive occurrences instead of one advisory line
+      # that looks identical whether this is the 1st skip or the 400th.
+      _graphify_skill_refresh
+      _graphify_pin_skip_track "$holders holders"
+      # rc 1 = "skipped", which graphify_update turns into ITS rc 0: nothing
+      # failed and nothing is broken — this is a deliberate, healthy skip. A nonzero here would print himmel-update's generic
+      # "failed (non-fatal)" warning on top, which is the misleading wording
+      # this ticket exists to remove.
+      return 1
+    fi
+  else
+    # FAIL CLOSED when the probe cannot run (HIMMEL-1293). "Could not tell"
+    # is not "clear", and this arm gates a DESTRUCTIVE step: `uv tool install
+    # --force` removes the old entry points BEFORE replacing the tool dir, so
+    # if a holder is in fact live the host goes from "graphify works" to
+    # "graphify broken". The old wording called the post-install verify a
+    # "safety net", but _graphify_binary_ok only DETECTS that state — it does
+    # not repair it, and by then the entry points are already gone.
+    #
+    # The asymmetry decides it. Proceeding wrongly costs a broken install that
+    # needs every Claude Code session closed plus a manual reinstall; declining
+    # wrongly costs an unadvanced pin on an install that KEEPS WORKING, with
+    # both remedies printed right here. This is also the contract the rest of
+    # this file already keeps: _graphify_version_lt returns "not lower" on any
+    # parse failure ("never clobber on uncertainty"), and _graphify_mcp_holders
+    # documents itself as a guard that "must fail CLOSED". This caller was the
+    # one place that read its rc 1 as permission to proceed.
+    #
+    # Retrying the install on verify failure — the other candidate fix — does
+    # not address this case: the reason the install failed is a holder that is
+    # still live on the retry, so attempt two fails identically, after the
+    # entry points are already gone.
+    #
+    # GRAPHIFY_UNPROBED_OK=1 is the escape hatch for a host that legitimately
+    # cannot probe (no pwsh/powershell on Windows; neither pgrep nor ps on a
+    # slim POSIX image). Without it, fail-closed would mean such a host never
+    # updates again — the same silent permanent staleness the Windows
+    # self-match bug caused (HIMMEL-1274) — so the default is safe and the
+    # operator keeps an explicit, one-line way out.
+    if [ "${GRAPHIFY_UNPROBED_OK:-}" = "1" ]; then
+      echo "  note: cannot probe for graphify-mcp holders on this platform — proceeding anyway (GRAPHIFY_UNPROBED_OK=1). If a graphify-mcp is live this reinstall can leave graphify BROKEN; the post-install verify reports that but cannot repair it." >&2
+    else
+      {
+        echo "  SKIP: cannot probe for graphify-mcp holders on this platform — NOT attempting the reinstall."
+        echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
+        echo "        A probe that cannot run does not mean the machine is clear. If a graphify-mcp"
+        echo "        IS live, uv would delete the old entry points and then fail to replace the"
+        echo "        locked directory, leaving graphify broken (HIMMEL-1274/1293)."
+        echo "        To advance the pin, either close the Claude Code sessions holding graphify-mcp"
+        echo "        (each live session spawns one) and install by hand:"
+        echo "            uv tool install --force --with mcp '$spec'"
+        for _plat in $(_graphify_present_platforms); do
+          echo "            graphify install --platform $_plat"
+        done
+        echo "        or, on a host that genuinely cannot probe, re-run with the override:"
+        echo "            GRAPHIFY_UNPROBED_OK=1 <this command>"
+      } >&2
+      # Same as the holders>0 skip: a working uv-managed install is left in
+      # place and we return 0, so the WSL store link must be shared here too.
+      graphify_wsl_share_store
+      # HIMMEL-1601: same two follow-ups as the holders>0 skip above -- the
+      # skill is a separate, non-locked target so refresh it regardless of
+      # whether the package reinstall could run, and escalate the skip with
+      # a persisted consecutive-run counter instead of one advisory line.
+      _graphify_skill_refresh
+      _graphify_pin_skip_track "unprobeable platform"
+      # rc 1 -> update rc 0, for the same reason as that skip — nothing failed and nothing is
+      # broken. A nonzero would draw himmel-update's generic "failed
+      # (non-fatal)" warning on top of a deliberate, healthy decline.
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # Idempotent + WARN-not-fail by contract (a best-effort himmel-update step).
 graphify_update() {
-  local src installed pin extras spec holders holder_details platform stage_err add_ollama=0
+  local src installed pin extras spec platform stage_err add_ollama=0
   src="$(graphify_source)" || true
   if [ -z "$src" ]; then
     # Fresh install: graphify_install installs only the PACKAGE — without the
@@ -1135,122 +1261,7 @@ graphify_update() {
   # scratch tool dir, so a network/resolution failure returns before `--force`
   # removes anything.
   platform="$(_graphify_update_platform)"
-  if holders="$(_graphify_mcp_holders)"; then
-    case "$holders" in ''|*[!0-9]*) holders=0 ;; esac
-    if [ "$holders" -gt 0 ]; then
-      # ponytail: SKIP while graphify-mcp holders are live (codex-1: lazy imports mix versions on a live swap; HIMMEL-1274 on Windows), versioned tool dirs + atomic bin swap -> HIMMEL-4532
-      {
-        echo "  SKIP: $holders graphify-mcp process(es) hold the uv tool dir — NOT attempting the reinstall."
-        echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
-        if [ "$platform" = "posix" ]; then
-          echo "        A live graphify-mcp lazy-imports modules from disk, so swapping the install"
-          echo "        under it would mix versions inside every live session (codex-1). Refusing is"
-          echo "        the safe outcome."
-        else
-          echo "        uv would delete the old entry points and then fail to replace the locked"
-          echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
-        fi
-        echo "        Holders:"
-        if holder_details="$(_graphify_mcp_holder_details 2>/dev/null)" && [ -n "$holder_details" ]; then
-          printf '%s\n' "$holder_details" | sed 's/^/            /'
-        else
-          echo "            (holder details unavailable on this platform; $holders counted)"
-        fi
-        echo "        To advance the pin: reconnect /mcp or quit the holders, then re-run"
-        echo "        (each live Claude Code session spawns one). Or install by hand once clear:"
-        echo "            uv tool install --force --with mcp '$spec'"
-        for _plat in $(_graphify_present_platforms); do
-          echo "            graphify install --platform $_plat"
-        done
-      } >&2
-      # Share the WSL store like EVERY other path that leaves a working
-      # uv-managed install in place and returns 0 (already-at-pin,
-      # not-behind-pin, successful reinstall). Omitting it here was a real gap,
-      # not a deliberate difference: this SKIP is the ROUTINE outcome on a busy
-      # workstation — every live Claude Code session spawns a graphify-mcp — so
-      # a WSL operator would have silently lost the store link on most updates
-      # (HIMMEL-1289, public-PR CR outside-diff finding).
-      graphify_wsl_share_store
-      # HIMMEL-1601: the PACKAGE reinstall is refused (correctly -- see
-      # HIMMEL-1274 above), but the SKILL is a completely separate,
-      # non-locked target (~/.claude/skills/graphify, refreshed FROM the
-      # currently-installed package, never touches the held uv tool dir) --
-      # refresh it here too, closing the skill-vs-package drift this skip
-      # used to leave open (the skill only advanced on the OTHER, non-skip
-      # return paths above). Then escalate: this skip is routine on a busy
-      # workstation and can persist indefinitely (HIMMEL-1601) -- count and
-      # loudly report consecutive occurrences instead of one advisory line
-      # that looks identical whether this is the 1st skip or the 400th.
-      _graphify_skill_refresh
-      _graphify_pin_skip_track "$holders holders"
-      # rc 0: nothing failed and nothing is broken — this is a deliberate,
-      # healthy skip. A nonzero here would print himmel-update's generic
-      # "failed (non-fatal)" warning on top, which is the misleading wording
-      # this ticket exists to remove.
-      return 0
-    fi
-  else
-    # FAIL CLOSED when the probe cannot run (HIMMEL-1293). "Could not tell"
-    # is not "clear", and this arm gates a DESTRUCTIVE step: `uv tool install
-    # --force` removes the old entry points BEFORE replacing the tool dir, so
-    # if a holder is in fact live the host goes from "graphify works" to
-    # "graphify broken". The old wording called the post-install verify a
-    # "safety net", but _graphify_binary_ok only DETECTS that state — it does
-    # not repair it, and by then the entry points are already gone.
-    #
-    # The asymmetry decides it. Proceeding wrongly costs a broken install that
-    # needs every Claude Code session closed plus a manual reinstall; declining
-    # wrongly costs an unadvanced pin on an install that KEEPS WORKING, with
-    # both remedies printed right here. This is also the contract the rest of
-    # this file already keeps: _graphify_version_lt returns "not lower" on any
-    # parse failure ("never clobber on uncertainty"), and _graphify_mcp_holders
-    # documents itself as a guard that "must fail CLOSED". This caller was the
-    # one place that read its rc 1 as permission to proceed.
-    #
-    # Retrying the install on verify failure — the other candidate fix — does
-    # not address this case: the reason the install failed is a holder that is
-    # still live on the retry, so attempt two fails identically, after the
-    # entry points are already gone.
-    #
-    # GRAPHIFY_UNPROBED_OK=1 is the escape hatch for a host that legitimately
-    # cannot probe (no pwsh/powershell on Windows; neither pgrep nor ps on a
-    # slim POSIX image). Without it, fail-closed would mean such a host never
-    # updates again — the same silent permanent staleness the Windows
-    # self-match bug caused (HIMMEL-1274) — so the default is safe and the
-    # operator keeps an explicit, one-line way out.
-    if [ "${GRAPHIFY_UNPROBED_OK:-}" = "1" ]; then
-      echo "  note: cannot probe for graphify-mcp holders on this platform — proceeding anyway (GRAPHIFY_UNPROBED_OK=1). If a graphify-mcp is live this reinstall can leave graphify BROKEN; the post-install verify reports that but cannot repair it." >&2
-    else
-      {
-        echo "  SKIP: cannot probe for graphify-mcp holders on this platform — NOT attempting the reinstall."
-        echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
-        echo "        A probe that cannot run does not mean the machine is clear. If a graphify-mcp"
-        echo "        IS live, uv would delete the old entry points and then fail to replace the"
-        echo "        locked directory, leaving graphify broken (HIMMEL-1274/1293)."
-        echo "        To advance the pin, either close the Claude Code sessions holding graphify-mcp"
-        echo "        (each live session spawns one) and install by hand:"
-        echo "            uv tool install --force --with mcp '$spec'"
-        for _plat in $(_graphify_present_platforms); do
-          echo "            graphify install --platform $_plat"
-        done
-        echo "        or, on a host that genuinely cannot probe, re-run with the override:"
-        echo "            GRAPHIFY_UNPROBED_OK=1 <this command>"
-      } >&2
-      # Same as the holders>0 skip: a working uv-managed install is left in
-      # place and we return 0, so the WSL store link must be shared here too.
-      graphify_wsl_share_store
-      # HIMMEL-1601: same two follow-ups as the holders>0 skip above -- the
-      # skill is a separate, non-locked target so refresh it regardless of
-      # whether the package reinstall could run, and escalate the skip with
-      # a persisted consecutive-run counter instead of one advisory line.
-      _graphify_skill_refresh
-      _graphify_pin_skip_track "unprobeable platform"
-      # rc 0 for the same reason as that skip — nothing failed and nothing is
-      # broken. A nonzero would draw himmel-update's generic "failed
-      # (non-fatal)" warning on top of a deliberate, healthy decline.
-      return 0
-    fi
-  fi
+  _graphify_holder_gate "$installed" "$pin" "$spec" "$platform" || return 0
   if [ "$platform" = "posix" ] && ! stage_err="$(_graphify_stage_install "$spec" "$pin")"; then
     _graphify_pin_skip_reset
     {
@@ -1259,6 +1270,13 @@ graphify_update() {
       echo "               uv tool install --force --with mcp '$spec'"
     } >&2
     return 1
+  fi
+  # RE-PROBE (pr-check codex-1): staging can take a while (network), and a
+  # graphify-mcp started meanwhile would otherwise get its venv swapped. A
+  # residual window between this probe and `--force` is inherent to the
+  # in-place swap; HIMMEL-4532 (versioned tool dirs) closes it properly.
+  if [ "$platform" = "posix" ]; then
+    _graphify_holder_gate "$installed" "$pin" "$spec" "$platform" || return 0
   fi
 
   echo "  graphify ${installed:-?} -> $pin (uv reinstall at pin, extras='${extras:-none}')..."
