@@ -40,6 +40,20 @@ bun install
 bun run build   # → agui-web/dist/ (untracked)
 ```
 
+`GET /api/agui/<run>` (token-gated, GET only, `agui/sse.ts`) serves that
+stream. `<run>` must be a lowercase session UUID (else `400`); it names exactly
+one `~/.claude/projects/<slug>/<run>.jsonl` whose real path stays under
+`~/.claude/projects` (none `404`, more than one `409`; a symlink that leaves the
+tree does not count). The response is `text/event-stream`, one
+`data: <json>` frame per AG-UI event (the `@ag-ui/encoder` wire format,
+hand-encoded: config-ui takes no dependency for it). It maps the file from the
+start, then polls for appends every 500 ms, and ends when the client goes away,
+2 minutes after the file stops growing with no run open, or after 4 hours. A
+`: keepalive` comment every 15 s holds a quiet stream past Bun's idle cut.
+Payload fields (deltas, results, errors, state) pass the same redactor as the
+feed; the id fields are left intact. Serving the built page from config-ui and
+printing its `#t=<token>&run=<id>` URL is PR4's.
+
 The view logic is a pure reducer (`agui-web/src/reducer.ts`) with no runtime
 imports, so its suite runs in CI without an install.
 

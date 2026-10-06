@@ -17,6 +17,7 @@ import { ActionError, buildTable, loadRegistries, resolveAction, type Resolved }
 import { acquireLock, runChild, type Lock } from "./lock";
 import { readBank, readLegs, readMonitoring } from "./health-sources";
 import { appendAudit } from "./audit";
+import { journalStream, resolveJournal } from "./agui/sse";
 
 const LOOPBACK = "127.0.0.1";
 const DEFAULT_IDLE_MS = 30 * 60 * 1000;
@@ -35,6 +36,11 @@ const IDLE_MARGIN_S = 10;
 const PREVIEW_TTL_MS = 5 * 60 * 1000;
 export const REPROBE_BUDGET_MS = 60_000;
 const MAX_BODY = 16 * 1024;
+// GET /api/agui/<run> (HIMMEL-4480): poll the journal for appends every 500 ms;
+// end 2 min after a finished run's file stops growing, and after 4 h regardless.
+const AGUI_POLL_MS = 500;
+const AGUI_IDLE_MS = 2 * 60 * 1000;
+const AGUI_MAX_MS = 4 * 60 * 60 * 1000;
 const CHECKOUT = resolve(import.meta.dir, "../..");
 const SECURITY_HEADERS: Record<string, string> = { "content-security-policy": "default-src 'self'", "x-frame-options": "DENY" };
 const STATIC: Record<string, [string, string]> = {
@@ -51,7 +57,7 @@ type Env = Record<string, string | undefined>;
 export type ServerOpts = {
   port?: number; token?: string; hostname?: string; env?: Env; onIdle?: () => void;
   root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; feedWaitMs?: number; feedTimeoutMs?: number;
-  legsScript?: string; legsTimeoutMs?: number;
+  legsScript?: string; legsTimeoutMs?: number; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number;
 };
 type Preview = Resolved & { expires: number };
 type Probe = Record<string, { installed: string; health: string }>;
@@ -228,6 +234,23 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
           readMonitoring(env),
         ]);
         return json(redactOut({ bank, legs, monitoring }));
+      }
+      if (path.startsWith("/api/agui/")) {
+        if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+        const run = path.slice("/api/agui/".length);
+        const found = await resolveJournal(env.HOME || homedir(), run);
+        if ("status" in found) return new Response(found.status === 400 ? "bad run id" : found.status === 404 ? "no such run" : "run id is ambiguous", { status: found.status });
+        // Secrets in the transcript pass the same redactor as every other output; literals read once per stream.
+        let raw = "";
+        try { raw = readFileSync(join(root, ".env"), "utf8"); } catch { /* no .env */ }
+        const literals = envValues(raw, parseDotEnv, env);
+        active++; // an open stream keeps the idle timer from shutting the server down
+        const body = journalStream(found.path, {
+          threadId: run, pollMs: opts.aguiPollMs ?? AGUI_POLL_MS, idleMs: opts.aguiIdleMs ?? AGUI_IDLE_MS, maxMs: opts.aguiMaxMs ?? AGUI_MAX_MS,
+          redact: (v) => redactDeep(v, { literals }),
+          onClose: () => { active--; if (deferred && active === 0) { deferred = false; bump(); } },
+        });
+        return new Response(body, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
       }
       if (path !== "/api/preview" && path !== "/api/run") return new Response("not found", { status: 404 });
       if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
