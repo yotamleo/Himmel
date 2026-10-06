@@ -780,3 +780,49 @@ tests:
       - eval_time: 12m
         alertname: HimmelHookChainLogUnreadable
         exp_alerts: []
+
+  # HIMMEL-4652 HimmelEvalRegression: fires only while the gauge reads 1 for
+  # the full 10m `for`; a gauge of 0 (within the noise band) never fires.
+  - interval: 1m
+    input_series:
+      - series: 'himmel_eval_metric_regression{eval="lane-quality",metric="accept_rate"}'
+        values: '1x20'
+      - series: 'himmel_eval_metric_regression{eval="lane-quality",metric="cost_usd"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HimmelEvalRegression
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: HimmelEvalRegression
+        exp_alerts:
+          - exp_labels:
+              severity: warn
+              eval: lane-quality
+              metric: accept_rate
+            exp_annotations:
+              summary: 'eval lane-quality metric accept_rate regressed beyond its noise band vs baseline'
+
+  # HIMMEL-4652 HimmelEvalStale: a scheduled eval (qmd-quality) 15 days old
+  # fires after the 1h `for`; evals outside the scheduled regex (lane-quality
+  # at the same age, guard-corpus at 13d) never fire. 1209600s = 14d.
+  - interval: 1m
+    input_series:
+      - series: 'himmel_eval_last_run_age_seconds{eval="qmd-quality"}'
+        values: '1296000x100'
+      - series: 'himmel_eval_last_run_age_seconds{eval="lane-quality"}'
+        values: '1296000x100'
+      - series: 'himmel_eval_last_run_age_seconds{eval="guard-corpus"}'
+        values: '1123200x100'
+    alert_rule_test:
+      - eval_time: 59m
+        alertname: HimmelEvalStale
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: HimmelEvalStale
+        exp_alerts:
+          - exp_labels:
+              severity: warn
+              eval: qmd-quality
+            exp_annotations:
+              summary: 'eval qmd-quality has had no run for more than 14 days'

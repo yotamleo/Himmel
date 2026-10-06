@@ -260,6 +260,58 @@ Any git error, missing repo, or timeout omits the whole family with an
 explanatory `# luna_git_* omitted: ...` comment, same fail-soft contract as
 the scheduled-task and host-detector families.
 
+## Eval results (HIMMEL-4652)
+
+The exporter reads the eval-runs ledger (`~/.himmel/eval-runs.jsonl`, or
+`$HIMMEL_EVAL_RUNS_LEDGER`; writer `scripts/eval/lib/eval_runs.py`) and exports
+one series set per eval. Passive read like every family here; an absent ledger
+omits the whole family, an unparseable line is skipped and counted in a
+`# himmel_eval_* partial:` comment.
+
+The candidate is the eval's newest `ok` row. Its baseline is the newest earlier
+`ok` row with the same `confighash`, the pick `scripts/eval/eval-compare` makes.
+
+| Series | Labels | Meaning |
+|---|---|---|
+| `himmel_eval_metric_value` | `eval`, `metric` | latest ok value (null metrics omitted) |
+| `himmel_eval_metric_ci_lower` / `_ci_upper` | `eval`, `metric` | CI bounds, only when the run recorded one |
+| `himmel_eval_run_samples` | `eval` | `n` of the latest ok run |
+| `himmel_eval_metric_baseline_delta` | `eval`, `metric` | value minus baseline; absent with no baseline |
+| `himmel_eval_metric_regression` | `eval`, `metric` | 1 = worse than baseline beyond the noise band, 0 = within it; absent when ungated |
+| `himmel_eval_last_run_age_seconds` | `eval` | seconds since the newest row of any status |
+| `himmel_eval_last_run_ok` | `eval` | 1 when the newest row is `ok` |
+
+The regression gauge ports `eval-compare`'s verdict: CI bounds when the ledger
+has them, else the band in `scripts/eval/eval-compare.json`
+(`HIMMEL_EVAL_COMPARE_THRESHOLDS` overrides the path). A metric with no
+direction there is never gated; an unreadable (or non-object) thresholds file
+omits only `himmel_eval_metric_regression`, with a comment, and the other
+series still export. A newest row that is `partial`/`inconclusive` leaves the values
+on the last ok run and shows as `himmel_eval_last_run_ok 0`.
+
+**Rules** (Prometheus `alerts.rules.yml`, Grafana twin in
+`provisioning/alerting/rules.yaml`, both `warn`, `noDataState: OK`):
+
+- `HimmelEvalRegression`: `himmel_eval_metric_regression == 1` for 10m. It
+  holds until a newer ok run clears it.
+- `HimmelEvalStale`: no run in 14 days, for the evals named in the selector's
+  regex (`qmd-quality` today). Add an eval to the regex in both copies when it
+  gets a timer; an eval run only by hand must stay out.
+
+**Dashboard:** the `Eval results` row in `himmel-health` (a score table with CI,
+delta and a worse-than-noise flag, plus days since each eval last ran).
+
+**Deploy (VM first, not done by this change):** the exporter, rules and dashboard
+reach the station only through the stack's own install path. (1) On a test VM
+run the three suites below, run `promtool check rules alerts.rules.yml` and
+`promtool test rules alerts.rules.test.yml` with a real promtool (the suites
+skip when it is absent), append a fixture row to the VM's ledger, and confirm
+`curl -s 127.0.0.1:<port>/metrics | grep himmel_eval_`. (2) Only after the
+operator's go: restart the exporter and reload Prometheus/Grafana per
+`restart-stack.sh`, then re-import `himmel-health.json`.
+Suites: `flow-exporter.test.ts`, `test-promtool-validation.sh`,
+`test-dashboard-lint.sh`.
+
 ## Live sessions and subagents (HIMMEL-1052)
 
 Three session populations exist in this harness, with three different owners:

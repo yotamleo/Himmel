@@ -88,7 +88,9 @@ for pair in \
     "himmel_hook_chain_budget_pressure|- uid: himmel_hook_chain_budget_pressure|HimmelHookChainBudgetPressure|- alert: HimmelHookChainBudgetPressure" \
     "himmel_hook_chain_budget_denials|- uid: himmel_hook_chain_budget_denials|HimmelHookChainBudgetDenials|- alert: HimmelHookChainBudgetDenials" \
     "himmel_hook_chain_log_unreadable|- uid: himmel_hook_chain_log_unreadable|HimmelHookChainLogUnreadable|- alert: HimmelHookChainLogUnreadable" \
-    "himmel_quiet_run_orphans|- uid: himmel_quiet_run_orphans|HimmelQuietRunOrphans|- alert: HimmelQuietRunOrphans"
+    "himmel_quiet_run_orphans|- uid: himmel_quiet_run_orphans|HimmelQuietRunOrphans|- alert: HimmelQuietRunOrphans" \
+    "himmel_eval_regression|- uid: himmel_eval_regression|HimmelEvalRegression|- alert: HimmelEvalRegression" \
+    "himmel_eval_stale|- uid: himmel_eval_stale|HimmelEvalStale|- alert: HimmelEvalStale"
 do
     IFS='|' read -r label grafana_marker _name prom_marker <<<"$pair"
     grafana_for="$(extract_for "$SCRIPT_DIR/provisioning/alerting/rules.yaml" "$grafana_marker")"
@@ -137,7 +139,9 @@ nodatastate_table() {
         "himmel_commit_pressure|OK" \
         "himmel_hook_chain_budget_pressure|NoData" \
         "himmel_hook_chain_budget_denials|NoData" \
-        "himmel_hook_chain_log_unreadable|NoData"
+        "himmel_hook_chain_log_unreadable|NoData" \
+        "himmel_eval_regression|OK" \
+        "himmel_eval_stale|OK"
     do
         echo "$pair"
     done

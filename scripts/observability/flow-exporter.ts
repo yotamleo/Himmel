@@ -226,6 +226,9 @@ export type RenderMetricsOptions = {
   configPath?: string;
   flowLedgerPath?: string;
   quotaLedgerPath?: string;
+  // HIMMEL-4652: eval-runs ledger and the eval-compare noise-band table.
+  evalRunsLedgerPath?: string;
+  evalThresholdsPath?: string;
   sessionLedgerPath?: string;
   lanesPath?: string;
   fetchHealthStatePath?: string;
@@ -1894,6 +1897,182 @@ function defaultLanesPath(): string {
   return join(import.meta.dir, "..", "lanes", "lanes.json");
 }
 
+// ---- HIMMEL-4652: eval-runs ledger -> himmel_eval_* ---------------------------
+// Passive reader of ~/.himmel/eval-runs.jsonl (writer: scripts/eval/lib/eval_runs.py,
+// schema there). Per eval the latest "ok" row is the candidate; its baseline is
+// the newest earlier "ok" row with the same confighash, the same pick
+// scripts/eval/eval-compare makes. The regression gauge ports eval-compare's
+// verdict (CI bounds when the ledger has them, else the band in
+// scripts/eval/eval-compare.json), so the alert and the CLI cannot disagree.
+type EvalRunRow = {
+  eval: string;
+  status: string;
+  confighash: string | null;
+  tsMs: number;
+  n: number | null;
+  metrics: Record<string, number | null>;
+  ci: Record<string, { lo: number; hi: number }>;
+};
+type EvalSpec = { higher_is_better?: boolean; band?: number; band_rel?: number };
+type EvalBound = { lo: number; hi: number };
+
+function defaultEvalRunsLedgerPath(env: Record<string, string | undefined>): string {
+  const override = env.HIMMEL_EVAL_RUNS_LEDGER;
+  if (override && override.trim()) return override;
+  return join(env.USERPROFILE ?? env.HOME ?? homedir(), ".himmel", "eval-runs.jsonl");
+}
+
+function defaultEvalThresholdsPath(env: Record<string, string | undefined>): string {
+  const override = env.HIMMEL_EVAL_COMPARE_THRESHOLDS;
+  if (override && override.trim()) return override;
+  return join(import.meta.dir, "..", "eval", "eval-compare.json");
+}
+
+function finiteNumber(x: unknown): x is number {
+  return typeof x === "number" && Number.isFinite(x);
+}
+
+function parseEvalRunRow(raw: unknown): EvalRunRow | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const tsMs = typeof r.ts === "string" ? Date.parse(r.ts) : NaN;
+  if (r.kind !== "eval-run" || typeof r.eval !== "string" || !r.eval || typeof r.status !== "string" || !Number.isFinite(tsMs)) return null;
+  if (!r.metrics || typeof r.metrics !== "object" || Array.isArray(r.metrics)) return null;
+  const metrics: Record<string, number | null> = {};
+  for (const [k, v] of Object.entries(r.metrics as Record<string, unknown>)) metrics[k] = finiteNumber(v) ? v : null;
+  const ci: Record<string, EvalBound> = {};
+  if (r.ci && typeof r.ci === "object" && !Array.isArray(r.ci)) {
+    for (const [k, b] of Object.entries(r.ci as Record<string, unknown>)) {
+      const bound = b as { lo?: unknown; hi?: unknown } | null;
+      if (bound && finiteNumber(bound.lo) && finiteNumber(bound.hi)) ci[k] = { lo: bound.lo, hi: bound.hi };
+    }
+  }
+  return {
+    eval: r.eval,
+    status: r.status,
+    confighash: typeof r.confighash === "string" ? r.confighash : null,
+    tsMs,
+    n: typeof r.n === "number" && Number.isInteger(r.n) && r.n >= 0 ? r.n : null,
+    metrics,
+    ci,
+  };
+}
+
+// fnmatch with `*` only, the one wildcard eval-compare.json uses.
+function evalSpecFor(table: Record<string, EvalSpec>, metric: string): EvalSpec | null {
+  if (Object.prototype.hasOwnProperty.call(table, metric)) return table[metric];
+  for (const [pat, spec] of Object.entries(table)) {
+    if (pat.startsWith("_")) continue;
+    const re = new RegExp("^" + pat.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*") + "$");
+    if (re.test(metric)) return spec;
+  }
+  return null;
+}
+
+// Port of eval-compare's verdict(): true when the candidate is WORSE than the
+// baseline beyond the noise band. null = not gated (no direction, or a side is missing).
+function evalRegressed(spec: EvalSpec | null, base: number | null, cand: number | null, bci?: EvalBound, cci?: EvalBound): boolean | null {
+  const EPS = 1e-9;
+  if (base === null || cand === null || !spec || typeof spec.higher_is_better !== "boolean") return null;
+  const hi = spec.higher_is_better;
+  if (bci && cci) return hi ? cci.hi < bci.lo - EPS : cci.lo > bci.hi + EPS;
+  if (bci) return hi ? cand < bci.lo - EPS : cand > bci.hi + EPS;
+  if (cci) return hi ? base > cci.hi + EPS : base < cci.lo - EPS;
+  const width = spec.band !== undefined ? Number(spec.band) : Math.abs(base) * Number(spec.band_rel ?? 0);
+  return (hi ? base - cand : cand - base) > width + EPS;
+}
+
+function evalRunsMetrics(path: string, thresholdsPath: string, nowMs: number): { lines: string[]; comments: string[] } {
+  if (!existsSync(path)) return { lines: [], comments: [] };
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    const message = e instanceof Error && e.message ? e.message : "eval ledger read failed";
+    return { lines: [], comments: [`# himmel_eval_* omitted: ${message.replace(/\s+/g, " ").trim()}`] };
+  }
+  const byEval = new Map<string, EvalRunRow[]>();
+  let skipped = 0;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let row: EvalRunRow | null = null;
+    try {
+      row = parseEvalRunRow(JSON.parse(trimmed) as unknown);
+    } catch {
+      row = null;
+    }
+    if (!row) {
+      skipped += 1;
+      continue;
+    }
+    const list = byEval.get(row.eval) ?? [];
+    list.push(row);
+    byEval.set(row.eval, list);
+  }
+
+  let thresholds: Record<string, Record<string, EvalSpec>> = {};
+  let thresholdsOk = true;
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(thresholdsPath, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    thresholds = parsed as Record<string, Record<string, EvalSpec>>;
+  } catch {
+    thresholdsOk = false;
+  }
+
+  const value: string[] = [];
+  const lower: string[] = [];
+  const upper: string[] = [];
+  const delta: string[] = [];
+  const regress: string[] = [];
+  const samples: string[] = [];
+  const age: string[] = [];
+  const lastOk: string[] = [];
+  for (const [evalId, rows] of [...byEval.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const evalLabel = sanitizeLabelValue(evalId);
+    const newest = rows[rows.length - 1];
+    age.push(sample("himmel_eval_last_run_age_seconds", { eval: evalLabel }, Math.max(0, Math.floor((nowMs - newest.tsMs) / 1000))));
+    lastOk.push(sample("himmel_eval_last_run_ok", { eval: evalLabel }, newest.status === "ok" ? 1 : 0));
+    const oks = rows.filter((r) => r.status === "ok");
+    if (oks.length === 0) continue;
+    const cand = oks[oks.length - 1];
+    const base = oks.slice(0, -1).reverse().find((r) => r.confighash === cand.confighash) ?? null;
+    if (cand.n !== null) samples.push(sample("himmel_eval_run_samples", { eval: evalLabel }, cand.n));
+    const table = thresholds[evalId] ?? {};
+    for (const [m, v] of Object.entries(cand.metrics).sort(([a], [b]) => a.localeCompare(b))) {
+      if (v === null) continue;
+      const labels = { eval: evalLabel, metric: sanitizeLabelValue(m) };
+      value.push(sample("himmel_eval_metric_value", labels, v));
+      const bound = cand.ci[m];
+      if (bound) {
+        lower.push(sample("himmel_eval_metric_ci_lower", labels, bound.lo));
+        upper.push(sample("himmel_eval_metric_ci_upper", labels, bound.hi));
+      }
+      const bv = base ? base.metrics[m] ?? null : null;
+      if (bv === null) continue;
+      delta.push(sample("himmel_eval_metric_baseline_delta", labels, v - bv));
+      if (!thresholdsOk) continue;
+      const bad = evalRegressed(evalSpecFor(table, m), bv, v, base?.ci[m], bound);
+      if (bad !== null) regress.push(sample("himmel_eval_metric_regression", labels, bad ? 1 : 0));
+    }
+  }
+
+  const lines: string[] = [];
+  addFamily(lines, "himmel_eval_metric_value", "Latest ok eval run value per eval and metric, from the eval-runs ledger.", "gauge", value);
+  addFamily(lines, "himmel_eval_metric_ci_lower", "Lower confidence bound of the latest ok eval run's metric; absent when the run recorded no interval.", "gauge", lower);
+  addFamily(lines, "himmel_eval_metric_ci_upper", "Upper confidence bound of the latest ok eval run's metric; absent when the run recorded no interval.", "gauge", upper);
+  addFamily(lines, "himmel_eval_run_samples", "Cases scored (n) in the latest ok eval run.", "gauge", samples);
+  addFamily(lines, "himmel_eval_metric_baseline_delta", "Latest ok run value minus the newest earlier ok run with the same confighash; absent with no such baseline.", "gauge", delta);
+  addFamily(lines, "himmel_eval_metric_regression", "1 when the metric is worse than its baseline beyond the noise band (CI bounds, else scripts/eval/eval-compare.json), 0 when within it; absent when the metric is not gated.", "gauge", regress);
+  addFamily(lines, "himmel_eval_last_run_age_seconds", "Seconds since the newest eval-runs row of any status, per eval.", "gauge", age);
+  addFamily(lines, "himmel_eval_last_run_ok", "1 when the newest eval-runs row of the eval has status ok, else 0.", "gauge", lastOk);
+  const comments: string[] = [];
+  if (skipped > 0) comments.push(`# himmel_eval_* partial: ${skipped} unparseable eval-runs row(s) skipped`);
+  if (!thresholdsOk) comments.push("# himmel_eval_metric_regression omitted: eval-compare.json unreadable");
+  return { lines, comments };
+}
+
 export function createExporterCache(): ExporterCache {
   return {};
 }
@@ -1906,6 +2085,7 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   const cfg = readConfig(options.configPath ?? configPath(env));
   const flowPath = options.flowLedgerPath ?? flowRunLedgerPath(env);
   const quotaPath = options.quotaLedgerPath ?? quotaGaugeLedgerPath(env);
+  const evalRunsPath = options.evalRunsLedgerPath ?? defaultEvalRunsLedgerPath(env);
   const lanesPath = options.lanesPath ?? defaultLanesPath();
 
   const lines: string[] = [];
@@ -1966,6 +2146,10 @@ export async function renderMetrics(options: RenderMetricsOptions = {}): Promise
   const quota = quotaMetrics(cfg, env, quotaPath, lanesPath, options.platform ?? process.platform, nowMs);
   lines.push(...quota.comments);
   lines.push(...quota.lines);
+
+  const evalRuns = evalRunsMetrics(evalRunsPath, options.evalThresholdsPath ?? defaultEvalThresholdsPath(env), nowMs);
+  lines.push(...evalRuns.comments);
+  lines.push(...evalRuns.lines);
 
   const durationS = (performance.now() - started) / 1000;
   addFamily(lines, "flow_exporter_scrape_duration_seconds", "Wall-clock duration of this exporter scrape.", "gauge", [

@@ -164,7 +164,7 @@
       "default_path": "~/.himmel/eval-runs.jsonl",
       "override_env": "HIMMEL_EVAL_RUNS_LEDGER",
       "writer": "scripts/eval/lib/eval_runs.py",
-      "readers": ["scripts/eval/eval-compare"],
+      "readers": ["scripts/eval/eval-compare", "scripts/observability/flow-exporter.ts"],
       "format": "jsonl",
       "rotation": "none",
       "retention": "unbounded",
