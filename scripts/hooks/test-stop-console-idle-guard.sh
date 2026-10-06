@@ -57,6 +57,12 @@ HANDOVER_DIR="$TMP/handover"
 XDG_RUNTIME_DIR="$TMP/xdg"
 mkdir -p "$HANDOVER_DIR" "$XDG_RUNTIME_DIR"
 export HANDOVER_DIR XDG_RUNTIME_DIR
+# HIMMEL-4567: the console's waiter heartbeat lives next to its Telegram inbox,
+# <bridge>/consoles/<console doc name>.wait (console.sh's own inbox path).
+BRIDGE_ROOT="$TMP/bridge"
+WAIT_HB="$BRIDGE_ROOT/consoles/FIXTURE-nextleg-console.md.wait"
+mkdir -p "$BRIDGE_ROOT/consoles"
+export BRIDGE_ROOT
 
 SESSION_ID="test-session-himmel-3144"
 CONSOLE_DOC="$HANDOVER_DIR/FIXTURE-nextleg-console.md"
@@ -81,8 +87,11 @@ cleanup() {
     for f in "$XDG_RUNTIME_DIR/himmel-queue-lock"/*; do rm -f "$f" 2>/dev/null; done
     rmdir "$XDG_RUNTIME_DIR/himmel-queue-lock" 2>/dev/null
     rmdir "$XDG_RUNTIME_DIR" 2>/dev/null
+    rm -f "$WAIT_HB" 2>/dev/null
+    rmdir "$BRIDGE_ROOT/consoles" "$BRIDGE_ROOT" 2>/dev/null
     rm -f "$TMP/bank-preflight-stub.sh" 2>/dev/null
     rm -f "$TMP/prefix-repo-himmel-3148/scripts/hooks/stop-console-idle-guard.sh" 2>/dev/null
+    rm -f "$TMP/prefix-repo-himmel-3148/scripts/hooks/stop-console-idle-guard.pre4567.sh" 2>/dev/null
     rm -f "$TMP/prefix-repo-himmel-3148/scripts/lib/handover-path.sh" 2>/dev/null
     rmdir "$TMP/prefix-repo-himmel-3148/scripts/hooks" 2>/dev/null
     rmdir "$TMP/prefix-repo-himmel-3148/scripts/lib" 2>/dev/null
@@ -103,6 +112,12 @@ CONSOLE_PAYLOAD_ACTIVE="$(printf '{"session_id":"%s","stop_hook_active":true,"ho
 LEG_PAYLOAD='{"session_id":"a-leg-session-not-a-console","stop_hook_active":false,"hook_event_name":"Stop"}'
 
 is_block() { local out; out="$(printf '%s' "$1" | grep '"decision":"block"')"; [ -n "$out" ]; }
+
+# write_hb <age-seconds> <pid> <state> — a console-wait.sh heartbeat line.
+write_hb() {
+    printf 'hb=%s pid=%s key=- tick=ok state=%s\n' \
+        "$(( $(date +%s) - $1 ))" "$2" "$3" > "$WAIT_HB"
+}
 
 run_guard() {   # run_guard <payload> [ENV=val ...]
     local payload="$1"; shift
@@ -218,6 +233,10 @@ LEG_LOCKDIR="$HANDOVER_DIR/.locks/queue/FIXTURE-leg-N1.lock"
 LEG_RELEASE_TOKEN="$(printf '%s\n' "$leg_lock_out" | sed -n 's/^release-token: `\(.*\)`$/\1/p')"
 [ -n "$LEG_RELEASE_TOKEN" ] || { echo "setup: leg acquire printed no release token" >&2; exit 1; }
 
+# (e)-(h) isolate the leg count, so a live waiter is armed throughout
+# (HIMMEL-4567: without one the stop blocks whatever the leg count).
+write_hb 0 "$$" waiting
+
 # --- (e) RED control: the PRE-FIX hook still blocks with a leg held -------
 if [ -n "$PREFIX_HOOK" ]; then
     out="$(run_guard_hook "$PREFIX_HOOK" "$CONSOLE_PAYLOAD" \
@@ -266,6 +285,67 @@ if ! release_out="$(QUEUE_LOCK_FORCE_RELEASE=1 bash "$REPO/scripts/handover/queu
 fi
 out="$(run_guard "$CONSOLE_PAYLOAD")"
 if is_block "$out"; then ok "(h) paired control: leg lock removed -> block again (same fixture, leg count is the only variable)"; else bad "(h) paired control: expected block once the leg lock is gone, got: $out"; fi
+
+# --- HIMMEL-4567: no live console-wait.sh waiter blocks, whatever the legs --
+# console-wait.sh is the console's one wake source and exits after each WAKE,
+# so a console that ends its turn without re-arming it stays deaf even with
+# legs held. A leg lock is held for every case below, so the pre-fix hook
+# allows all of them; only the waiter heartbeat varies.
+if ! leg_lock_out="$(QUEUE_LOCK_SESSION_SCOPE="leg-fixture-session-2" bash "$REPO/scripts/handover/queue-lock.sh" acquire "$LEG_DOC" 2>&1)"; then
+    echo "setup: could not re-acquire the fixture leg lock: $leg_lock_out" >&2
+    exit 1
+fi
+# shellcheck disable=SC2016  # backtick span pattern, not a shell expansion
+LEG_RELEASE_TOKEN="$(printf '%s\n' "$leg_lock_out" | sed -n 's/^release-token: `\(.*\)`$/\1/p')"
+
+# A pid that is certainly dead: a finished, reaped child of this shell.
+( exit 0 ) &
+DEAD_PID=$!
+wait "$DEAD_PID"
+
+PRE4567_HOOK=""
+if [ -n "$PREFIX_HOOK" ] && cp "$HOOKS/fixtures/red-control/stop-console-idle-guard.pre-himmel4567.sh" \
+        "$PREFIX_ROOT/scripts/hooks/stop-console-idle-guard.pre4567.sh" 2>/dev/null; then
+    PRE4567_HOOK="$PREFIX_ROOT/scripts/hooks/stop-console-idle-guard.pre4567.sh"
+else
+    skip "HIMMEL-4567 setup: could not stage the pre-fix hook — RED rows skipped"
+fi
+
+# check_waiter <label> <expect block|allow> <hb setup: absent | age pid state>
+check_waiter() {
+    local label="$1" expect="$2"; shift 2
+    if [ "$1" = absent ]; then rm -f "$WAIT_HB"; else write_hb "$1" "$2" "$3"; fi
+    if [ -n "$PRE4567_HOOK" ] && [ "$expect" = block ]; then
+        out="$(run_guard_hook "$PRE4567_HOOK" "$CONSOLE_PAYLOAD" \
+            HIMMEL_STOP_GUARD_BANK_PREFLIGHT="$REPO/scripts/lib/bank-preflight.sh" \
+            HIMMEL_STOP_GUARD_QUEUE_LOCK="$REPO/scripts/handover/queue-lock.sh")"
+        if is_block "$out"; then bad "$label RED: pre-fix hook already blocks — got: $out"; else ok "$label RED: pre-fix hook allows (bug reproduced)"; fi
+    fi
+    out="$(run_guard "$CONSOLE_PAYLOAD")"
+    if [ "$expect" = block ]; then
+        if is_block "$out"; then ok "$label -> block"; else bad "$label -> expected block, got: $out"; fi
+    else
+        if is_block "$out"; then bad "$label -> expected allow, got: $out"; else ok "$label -> allow"; fi
+    fi
+}
+
+check_waiter "(i) fresh waiting heartbeat, pid alive, leg held"   allow 0 "$$" waiting
+check_waiter "(j) fresh sampling heartbeat, pid alive, leg held"  allow 0 "$$" sampling
+check_waiter "(k) no heartbeat file, leg held"                    block absent
+check_waiter "(l) stale heartbeat (1000 s), pid alive, leg held"  block 1000 "$$" waiting
+check_waiter "(m) fresh heartbeat, state=exited, leg held"        block 0 "$$" exited
+check_waiter "(n) fresh heartbeat, dead pid, leg held"            block 0 "$DEAD_PID" waiting
+
+rm -f "$WAIT_HB"
+out="$(run_guard "$CONSOLE_PAYLOAD")"
+case "$out" in
+    *console-wait.sh*) ok "(o) the no-waiter reason names console-wait.sh" ;;
+    *) bad "(o) the no-waiter reason does not name console-wait.sh — got: $out" ;;
+esac
+out="$(run_guard "$LEG_PAYLOAD")"
+if is_block "$out"; then bad "(p) non-console stop with no waiter -> expected allow, got: $out"; else ok "(p) non-console stop with no waiter -> allow"; fi
+
+QUEUE_LOCK_FORCE_RELEASE=1 bash "$REPO/scripts/handover/queue-lock.sh" release "$LEG_DOC" "$LEG_RELEASE_TOKEN" >/dev/null 2>&1
 
 echo
 printf '%d passed, %d failed\n' "$pass" "$fail"

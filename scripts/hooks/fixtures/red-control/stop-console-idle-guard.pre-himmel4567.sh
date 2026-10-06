@@ -24,10 +24,7 @@
 # gated on lock freshness/age: `IDLE-HELD?` is heartbeat age, not death, and
 # a leg parked on an external event (a CR slot, an operator ack) makes no
 # tool calls while it waits, which is exactly the state this hook must
-# still count as "alive." HIMMEL-4567 adds one signal that IS observable: the
-# console-wait.sh waiter's heartbeat file. With no live waiter the stop
-# blocks whatever the leg count (see the waiter block below).
-# This hook does not inspect the held Jira/dispatch
+# still count as "alive." This hook does not inspect the held Jira/dispatch
 # queue itself (out of scope per the ticket — "not in scope: changing what a
 # console does with its queue").
 #
@@ -215,70 +212,18 @@ $sweep_out
 SWEEP
 [ -n "$leg_names" ] || leg_names="none"
 
-console_doc_name="${console_doc##*/}"
-
-# HIMMEL-4567: is a console-wait.sh waiter armed? It is the console's one
-# wake source for Telegram lines and tick changes, and it exits after every
-# WAKE, so a console that ends its turn without re-arming it stays deaf
-# whatever its leg count. Its heartbeat sits next to the console's inbox,
-# <bridge>/consoles/<session>.md.wait, the path console.sh renders (the
-# session name is the console doc's basename). Live = state waiting|sampling,
-# heartbeat under WAITER_MAX_AGE_SECS (one sample may take 2 x 125 s), and its
-# pid alive. No bridge root to look in (HOME and BRIDGE_ROOT both unset)
-# leaves the waiter unknown, which counts as live: fail open to the leg rule.
-WAITER_MAX_AGE_SECS=300
-waiter_live=1
-waiter_note=""
-bridge_root="${BRIDGE_ROOT:-}"
-[ -n "$bridge_root" ] || [ -z "${HOME:-}" ] || bridge_root="$HOME/.claude/handover/bridge"
-if [ -n "$bridge_root" ]; then
-    waiter_live=0
-    hb_file="$bridge_root/consoles/$console_doc_name.wait"
-    hb_epoch=""; hb_pid=""; hb_state=""
-    if [ -r "$hb_file" ]; then   # unreadable = no waiter = block (restrictive)
-        read -r -a hb_words < "$hb_file"
-        for kv in ${hb_words[@]+"${hb_words[@]}"}; do
-            case "$kv" in
-                hb=*) hb_epoch="${kv#hb=}" ;;
-                pid=*) hb_pid="${kv#pid=}" ;;
-                state=*) hb_state="${kv#state=}" ;;
-            esac
-        done
-    fi
-    case "$hb_epoch:$hb_pid" in
-        :*|*:|*[!0-9:]*) waiter_note="no waiter heartbeat at $hb_file" ;;
-        *)
-            hb_age=$(( $(date +%s) - hb_epoch ))
-            case "$hb_state" in
-                waiting|sampling)
-                    if [ "$hb_age" -gt "$WAITER_MAX_AGE_SECS" ]; then
-                        waiter_note="waiter heartbeat is ${hb_age}s old (state=$hb_state)"
-                    elif ! kill -0 "$hb_pid" 2>/dev/null; then
-                        waiter_note="waiter pid $hb_pid is not alive"
-                    else
-                        waiter_live=1
-                    fi
-                    ;;
-                *) waiter_note="waiter state=${hb_state:-unknown}, not waiting" ;;
-            esac
-            ;;
-    esac
-fi
-
 # HIMMEL-3148: one or more held leg locks IS the wake path -- a leg's own
 # SendMessage back to this console starts a new turn, structurally, so the
 # stop is not terminal. Only the zero-leg case (D1 verbatim: console F sat
 # 58 minutes dead with an empty fleet) has nothing to wake it, and blocks.
 # Deliberately not gated on status/age (console ruling, HIMMEL-3148):
 # IDLE-HELD? is heartbeat age, not death -- a leg parked on an external
-# event is correctly silent, not correctly forgotten. A missing waiter
-# (HIMMEL-4567) blocks whatever the leg count.
-[ "$leg_count" -eq 0 ] || [ "$waiter_live" -eq 0 ] || exit 0
+# event is correctly silent, not correctly forgotten.
+[ "$leg_count" -eq 0 ] || exit 0
 
-waiter_clause=""
-[ "$waiter_live" -eq 1 ] || waiter_clause=" No live console-wait.sh waiter is armed ($waiter_note): re-arm it with Bash run_in_background (console doc ACTION ZERO step 10) before ending the turn, or Telegram lines and tick changes will not wake you."
+console_doc_name="${console_doc##*/}"
 
-reason="Console stop guard (HIMMEL-3144): this session still holds the queue-lock on $console_doc_name — ending the turn now would leave it structurally dead (no Stop hook, no monitor event, starts a new one).$waiter_clause Before stopping: dispatch the next queued item, verify a READY PR, or run \`/console next --arm\` to hand off. State read at this stop — $bank_fleet_line; bank: $bank_token; leg locks held ($leg_count): $leg_names."
+reason="Console stop guard (HIMMEL-3144): this session still holds the queue-lock on $console_doc_name — ending the turn now would leave it structurally dead (no Stop hook, no monitor event, starts a new one). Before stopping: dispatch the next queued item, verify a READY PR, or run \`/console next --arm\` to hand off. State read at this stop — $bank_fleet_line; bank: $bank_token; leg locks held ($leg_count): $leg_names."
 
 _hp_json_escape "$reason"
 printf '{"decision":"block","reason":"%s"}\n' "$_HP_ESC"
