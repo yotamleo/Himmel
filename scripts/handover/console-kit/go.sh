@@ -17,8 +17,16 @@
 # merge-on-green.sh only on a trust-reviewed GO. The id names the independent
 # review (1-128 of [A-Za-z0-9._:-], e.g. the judge session) and is written as a
 # trust-reviewed= line INSIDE the mac (a separate domain tag, go-gate.sh's
-# go_mac), so it cannot be added to, or edited in, a GO after signing. Grant it
-# only on the judge's GO for that exact head.
+# go_mac), so it cannot be added to, or edited in, a GO after signing.
+# HIMMEL-3832: the id is the judge's qid, and go.sh refuses (exit 5) unless
+# <root>/<user>/<bucket>/verdicts/<qid>/*.md rules GO on that exact head
+# (go-gate.sh's go_trust_verdict holds the parse).
+#
+# HIMMEL-4565: every GO, trust-reviewed or not, first runs this directory's
+# ready-check.sh <pr> <head> from the caller's cwd and refuses (exit 4) unless
+# it PASSes - head, CI, threads, the CR-ledger ok row at that head (check 4),
+# trailers, ticket ids, coverage. Run it from the checkout /pr-check wrote the
+# ledger in (the console's primary), as the console already does by hand.
 #
 # Exit codes:
 #   0  written
@@ -33,6 +41,8 @@
 #   3  refused: run from a console-spawned leg (a judge included - HIMMEL-3133,
 #      "the judge is a leg") - a leg never writes its own GO
 #   3  refused: run from a console relay - only the console writes a GO
+#   4  refused: ready-check.sh did not PASS for <pr> at <head> (HIMMEL-4565)
+#   5  refused: --trust-reviewed <qid> has no GO verdict for <head> (HIMMEL-3832)
 #
 # A relative entry (`bash scripts/handover/console-kit/go.sh`, the leg
 # profile's pre-approved literal) hands off to the HIMMEL_REPO anchor's own
@@ -99,12 +109,12 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # gate against, so it must use their exact rule, not a hand-rolled copy of it.
 # Fail closed: this write is sensitive enough that a broken/missing shared lib
 # must never be read as "not a leg".
-unset -f console_leg go_gate _go_gate_verify go_trust_gate go_trust_id_ok go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+unset -f console_leg go_gate _go_gate_verify go_trust_gate go_trust_id_ok go_trust_verdict go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
 # shellcheck source=scripts/lib/go-gate.sh
 # shellcheck disable=SC1091
 if ! . "$HERE/../../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1 \
         || ! declare -F go_mac >/dev/null 2>&1 || ! declare -F go_resolve_root >/dev/null 2>&1 \
-        || ! declare -F go_trust_id_ok >/dev/null 2>&1; then
+        || ! declare -F go_trust_id_ok >/dev/null 2>&1 || ! declare -F go_trust_verdict >/dev/null 2>&1; then
     echo "go: cannot load scripts/lib/go-gate.sh - refusing (the console-leg marker check must fail closed, not silently no-op)" >&2
     exit 1
 fi
@@ -143,6 +153,23 @@ if ! ROOT=$(go_resolve_root "$ANCHOR"); then
 fi
 if _go_in_harness "$ROOT" "$ANCHOR"; then
     echo "go: note - writing the GO under the harness repo's inline handovers/ ($ROOT): no external HANDOVER_DIR is configured, so this is Mode A" >&2
+fi
+
+# HIMMEL-3832: a trust-reviewed GO only on the named judge's GO verdict for
+# this exact head (go_trust_verdict parses it, failing closed).
+if [ "$TRUST_SET" -eq 1 ] && ! REASON=$(go_trust_verdict "$ROOT" "$TRUST" "$SHA"); then
+    echo "go: refusing the trust-reviewed GO for PR #$PR at $SHA - $REASON No GO written." >&2
+    exit 5
+fi
+
+# HIMMEL-4565: no GO for a head ready-check does not pass. Its check 4 is the
+# CR-ledger ok row at this head (read from this cwd's git-common-dir, as when
+# the console runs it by hand), so a push after /pr-check cannot get a GO
+# without a fresh review. Run from $HERE: the anchor's copy, never a worktree's.
+if ! READY_OUT=$(bash "$HERE/ready-check.sh" "$PR" "$SHA" 2>&1); then
+    printf '%s\n' "$READY_OUT" >&2
+    echo "go: refusing - ready-check.sh did not PASS for PR #$PR at $SHA (above); fix what it names, re-run /pr-check for a new head, then re-run go.sh. No GO written." >&2
+    exit 4
 fi
 
 # HIMMEL-3578: the mac binds the repo (himmel-go-v2|<nwo>|<pr>|<sha>) - a GO

@@ -116,6 +116,52 @@ go_trust_gate() {
     printf '%s\n' "$trust"
 }
 
+# go_trust_verdict <go-root> <qid> <head-sha> — HIMMEL-3832. Before go.sh signs
+# a trust-reviewed GO, the judge it names must have ruled GO on that exact head.
+# The verdict line is the first non-blank line under the `## Verdict` heading
+# (docs/handover/verdict-template.md), and it parses only as exactly
+#     **GO** for head `<40-hex sha>`   or   **NO-GO** for head `<40-hex sha>`
+# (one trailing full stop allowed). rc 0 iff <qid> is a path segment
+# ([A-Za-z0-9][A-Za-z0-9._-]*, so never `..` or a `/`), and across every *.md
+# in <go-root>/*/*/verdicts/<qid>/ (any <user>/<bucket>): no file is unparsed,
+# none is NO-GO for <head-sha>, and at least one is GO for <head-sha>. A
+# verdict for another head is ignored (an earlier round). Fail closed: a GO
+# naming no head, trailing text, or no verdict line refuses. rc 2 = refused,
+# the reason on stdout. Read-only.
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+go_trust_verdict() {
+    local root="$1" qid="$2" sha="$3" f line word head go=0
+    case "$qid" in
+        [A-Za-z0-9]*) ;;
+        *) qid="" ;;
+    esac
+    case "$qid" in *[!A-Za-z0-9._-]*) qid="" ;; esac
+    if [ -z "$qid" ]; then
+        printf 'the trust id '"'"'%s'"'"' is not a judge qid ([A-Za-z0-9][A-Za-z0-9._-]*), so it names no verdicts/<qid>/ directory — pass the qid of the judge that ruled GO on this head.\n' "$2"
+        return 2
+    fi
+    for f in "$root"/*/*/verdicts/"$qid"/*.md; do
+        [ -f "$f" ] || continue
+        line=$(awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }' "$f" 2>/dev/null | tr -d '\r')
+        word=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `[0-9a-f]{40}`\.?$/\1/p')
+        head=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\2/p')
+        if [ -z "$word" ] || [ -z "$head" ]; then
+            printf 'the verdict in %s does not parse (first line under ## Verdict: '"'"'%s'"'"'; expected **GO** for head `<sha>`) — refusing rather than guess.\n' "$f" "$line"
+            return 2
+        fi
+        [ "$head" = "$sha" ] || continue
+        if [ "$word" != "GO" ]; then
+            printf 'the verdict in %s is NO-GO for head %s.\n' "$f" "$sha"
+            return 2
+        fi
+        go=1
+    done
+    if [ "$go" -ne 1 ]; then
+        printf 'no verdict under %s/<user>/<bucket>/verdicts/%s/ rules **GO** for head `%s` — the judge writes that verdict before a trust-reviewed GO.\n' "$root" "$qid" "$sha"
+        return 2
+    fi
+}
+
 # trust_path_check <nwo> <pr-num> <head-sha> <default-branch> <anchor> —
 # HIMMEL-3910. Does PR <pr-num> touch a CI trust path? Moved out of
 # merge-on-green.sh (HIMMEL-3895) so block-unresolved-cr-merge.sh asks the
