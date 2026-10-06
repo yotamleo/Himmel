@@ -494,6 +494,41 @@ export HOME=home
 _r4253 "w HOME=home : cd \"\$D\" && ls > ~; echo done denies" block "cd \"\$D\" && ls > ~; echo done" "$FIX/wt"
 export HOME="$_SAVED_HOME_4253"
 
+echo "== HIMMEL-4476: loop keywords and read-only commands in a body, eval as a grep argument =="
+# Every row runs from both cwds: a bare word in a body resolves against the
+# cwd, so the primary cwd is where `until`/`sleep`/`0.1` used to deny. The
+# bodies carry "github" because the body scan's prefilter needs a "git".
+_r4476() { # label verdict template
+    local c="$3"
+    c="${c//@P@/$_PR}"; c="${c//@W@/$_WR}"
+    _subst_row "$1 [cwd=primary]" "$2" "$c" "$_PR"
+    _subst_row "$1 [cwd=leg]" "$2" "$c" "$_WR"
+}
+# shellcheck disable=SC2016  # row templates are literal shell text
+{
+# (1) until/while loops in a bash -c / eval body.
+_r4476 "4476a bash -c until [ … ]; do sleep; done (ALLOW)"      allow "bash -c 'until [ -e /tmp/github-4476 ]; do sleep 0.1; done'"
+_r4476 "4476b timeout bash -c until [ a -nt b ] (ALLOW)"         allow "timeout 5 bash -c 'until [ /tmp/github-a -nt /tmp/github-b ]; do sleep 0.1; done'"
+_r4476 "4476c bash -c while ! test -e; do sleep; done; echo (ALLOW)" allow "bash -c 'while ! test -e /tmp/github-4476; do sleep 1; done; echo ok'"
+_r4476 "4476d eval until true; do :; done (ALLOW)"               allow "eval 'until true; do :; done; echo github'"
+_r4476 "4476e bash -c until … do echo > primary"                block "bash -c 'until false; do echo x > @P@/f; done'"
+_r4476 "4476f bash -c until … do echo >primary (attached)"      block "bash -c 'until false; do printf x >@P@/f; done'"
+_r4476 "4476g bash -c until … do cp into primary"               block "bash -c 'until false; do cp /tmp/a @P@/f; done'"
+_r4476 "4476h until … do echo > primary (top level)"            block 'until false; do echo x > @P@/f; done'
+_r4476 "4476i bash -c until …; done; touch primary"             block "bash -c 'until [ -e /tmp/g ]; do sleep 1; done; touch @P@/f'"
+_r4476 "4476j bash -c while … do echo \$(touch primary)"        block "bash -c 'while false; do echo \$(touch @P@/f); done'"
+_r4476 "4476k bash -c until … do sleep > primary"               block "bash -c 'until false; do sleep 1 > @P@/f; done'"
+# (3) eval as a grep argument is a pattern, not a command.
+_r4476 "4476l grep -n 'eval' <primary file> (ALLOW)"            allow "grep -n 'eval' @P@/.github/ci-trust-paths.txt"
+_r4476 "4476m grep -n eval <primary file> (ALLOW)"              allow 'grep -n eval @P@/.github/ci-trust-paths.txt'
+_r4476 "4476n LC_ALL=C grep -rn \"eval\" <primary dir> (ALLOW)" allow 'LC_ALL=C grep -rn "eval" @P@/.github'
+_r4476 "4476o eval \"echo x > primary\""                       block 'eval "echo x > @P@/f"'
+_r4476 "4476p grep 'eval' … > primary"                          block "grep -n 'eval' @P@/.github/x > @P@/f"
+_r4476 "4476q grep …; eval touch primary"                       block "grep -n x /tmp/a; eval 'touch @P@/.github/f'"
+_r4476 "4476r grep \$(eval touch primary)"                      block "grep -n \$(eval 'touch @P@/.github/f') /tmp/a"
+_r4476 "4476s nice eval with a grep word in the body"          block "nice eval 'grep x /tmp/a > @P@/.github/f'"
+}
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
