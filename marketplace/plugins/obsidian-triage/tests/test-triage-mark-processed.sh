@@ -174,6 +174,40 @@ python3 "$TOOL" "$V" "$V/Clippings/sub/$HID.md" --expect-sha "$(sha_of "$V/Clipp
 assert "hostile id exits 0" "0" "$rc"
 assert "hostile-id link rewritten" "yes" "$(grep -qF "[[Clippings/_evidence/$HID]]" "$V/Notes/n.md" && echo yes || echo no)"
 
+echo "Test 13: a preset evidence_kind still checkpoints evidence_origin before the move"
+V="$TMP/v13"; mkdir -p "$V/Clippings/sub" "$V/Clippings/_evidence"
+printf 'incumbent\n' > "$V/Clippings/_evidence/pre.md"
+printf -- '---\ntitle: p\ntype: article\nevidence_kind:\n  - article\n---\nbody\n' > "$V/Clippings/sub/pre.md"
+python3 "$TOOL" "$V" "$V/Clippings/sub/pre.md" --expect-sha "$(sha_of "$V/Clippings/sub/pre.md")" >/dev/null 2>&1; rc=$?
+assert "collision exits 5" "5" "$rc"
+assert "evidence_origin recorded for the resume" "yes" "$(has_line "$V/Clippings/sub/pre.md" "evidence_origin: 'sub/pre'")"
+
+echo "Test 14: a prior processed: false is replaced, never duplicated"
+V="$TMP/v14"; mkdir -p "$V/Clippings"
+printf -- '---\ntitle: q\ntype: article\nprocessed: false\nig_media_pending: true\n---\nbody\n' > "$V/Clippings/q.md"
+python3 "$TOOL" "$V" "$V/Clippings/q.md" --expect-sha "$(sha_of "$V/Clippings/q.md")" >/dev/null 2>&1; rc=$?
+assert "held exits 10" "10" "$rc"
+assert "exactly one processed: key" "1" "$(grep -c '^processed:' "$V/Clippings/q.md")"
+assert "and it is true" "yes" "$(has_line "$V/Clippings/q.md" "processed: true")"
+
+echo "Test 15: the move + link rewrite waits on the vault lock (parallel workers)"
+V="$TMP/v15"; make_vault "$V"; CLIP="$V/Clippings/2026-05/$ID.md"
+r="$(python3 - "$TOOL" "$V" "$CLIP" "$(sha_of "$CLIP")" <<'PY'
+import fcntl, os, subprocess, sys
+tool, vault, clip, sha = sys.argv[1:]
+fd = os.open(os.path.join(vault, "Clippings"), os.O_RDONLY)
+fcntl.flock(fd, fcntl.LOCK_EX)
+try:
+    subprocess.run([sys.executable, tool, vault, clip, "--expect-sha", sha],
+                   capture_output=True, timeout=3)
+    print("ran-unlocked")
+except subprocess.TimeoutExpired:
+    print("waited")
+PY
+)"
+assert "a held lock blocks the move" "waited" "$r"
+assert "clip not moved while locked" "no" "$([ -e "$V/Clippings/_evidence/$ID.md" ] && echo yes || echo no)"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

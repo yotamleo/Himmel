@@ -37,6 +37,7 @@ The caller logs a SKIP as `⊘ <clip> — skipped (<phase>): <reason>`.
 
 import argparse
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -316,10 +317,15 @@ def phase8(vault, clip, dry_run, tools_dir):
     if in_evidence and origin is None:
         raise skip8("evidence_origin missing; needs a manual Phase 8")
 
-    # Step 1: evidence_kind + evidence_origin in ONE edit (idempotent).
-    if not fm_has(fm, "evidence_kind") and not dry_run:
-        kinds = evidence_kind(tools_dir, fm)
-        add = ["evidence_kind:"] + [f"  - {k}" for k in kinds]
+    # Step 1: evidence_kind + evidence_origin in ONE edit (idempotent). The
+    # origin is checkpointed even when evidence_kind is already present: a
+    # moved clip without it can never be resumed.
+    need_kind = not fm_has(fm, "evidence_kind")
+    if (need_kind or origin is None) and not dry_run:
+        add = []
+        if need_kind:
+            kinds = evidence_kind(tools_dir, fm)
+            add = ["evidence_kind:"] + [f"  - {k}" for k in kinds]
         if origin is None:
             add.append("evidence_origin: " + quote(cur_id))
         new_text = insert_before_close(text, add)
@@ -354,12 +360,19 @@ def phase8(vault, clip, dry_run, tools_dir):
         return 0, f"DRY-RUN would move → _evidence/{basename}, {links} links would be rewritten"
 
     os.makedirs(evidence, exist_ok=True)
-    err = move(clip, dest)
-    if err:
-        raise skip8(MOVE_REASONS[err].format(b=basename))
-
-    rewrite_links(vault, members, new)
-    left = count_links(vault, members)
+    # Parallel workers own disjoint clips but share the notes that link to
+    # them: serialise the move + read-modify-replace rewrite + verify on an
+    # exclusive lock held on the Clippings/ directory itself.
+    lock = os.open(clippings, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        err = move(clip, dest)
+        if err:
+            raise skip8(MOVE_REASONS[err].format(b=basename))
+        rewrite_links(vault, members, new)
+        left = count_links(vault, members)
+    finally:
+        os.close(lock)
     if left:
         raise skip8(f"{left} links pending; will resume next run (evidence_pending set)")
 
@@ -383,7 +396,9 @@ def phase7(clip, expect_sha, today, summary_basis, dry_run):
     add = ["processed: true", f"triaged_at: {today}", "evidence_pending: true"]
     if summary_basis:
         add.append(f"summary_basis: {summary_basis}")
-    new_text = insert_before_close(text, add)
+    # Replace, never duplicate, a prior value of a key this phase owns.
+    owned = ("processed", "triaged_at", "evidence_pending", "summary_basis")
+    new_text = insert_before_close(drop_keys(text, owned), add)
     if not yaml_ok(new_text):
         raise skip7("proposed frontmatter would be invalid YAML; aborting")
     # Re-check immediately before the write: the guard must hold at the
