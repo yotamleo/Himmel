@@ -438,6 +438,35 @@ class TestVmModeGuard(unittest.TestCase):
         self.assertIsNotNone(r)
         self.assertIn("SKIP: vm.mode=remote", r)
 
+    # HIMMEL-4597 (J1932 T2): a resolver error is a loud config error, never a
+    # SKIP that reads as "no VM by choice".
+    def test_config_error_is_not_a_skip(self):
+        for cfg in ('{"vm":{"mode":"Local"}}', '{"vm":', '{"vm":{"mode":"remote"}}'):
+            r = self._reason(cfg)
+            self.assertIsNotNone(r, cfg)
+            self.assertTrue(r.startswith("CONFIG ERROR: vm.mode"), (cfg, r))
+            self.assertNotIn("SKIP", r, cfg)
+
+    def test_main_exits_2_on_config_error(self):
+        import sys
+        from unittest import mock as _mock
+        with _mock.patch.object(mod, "vm_mode_skip_reason",
+                                return_value="CONFIG ERROR: vm.mode cannot be resolved (x)"), \
+                _mock.patch.object(sys, "argv", ["probe"]):
+            with self.assertRaises(SystemExit) as cm:
+                mod.main()
+        self.assertEqual(cm.exception.code, 2)
+
+    def test_main_exits_3_on_skip(self):
+        import sys
+        from unittest import mock as _mock
+        with _mock.patch.object(mod, "vm_mode_skip_reason",
+                                return_value="SKIP: vm.mode=none -- x"), \
+                _mock.patch.object(sys, "argv", ["probe"]):
+            with self.assertRaises(SystemExit) as cm:
+                mod.main()
+        self.assertEqual(cm.exception.code, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -98,10 +98,49 @@ function scheduleFieldSpec() {
   };
 }
 
+// HIMMEL-4597: `vm` is the one OPTIONAL himmelctl-managed section — absent
+// means vm.mode=local, so fillDefaults()/migrate() never inject it into a
+// config that lacks it. validateVm() mirrors scripts/lib/vm-mode.sh's
+// resolver (fail closed): whatever it rejects is a resolver error there, and
+// a wizard answer that fails it is never written.
+const VM_MODES = ['local', 'remote', 'none'];
+
+// Python's os.path.expanduser for the two forms the resolver sees: `~` and
+// `~/...` (a `~user` form is left as written).
+function expandTilde(s) {
+  if (s !== '~' && !s.startsWith('~/')) return s;
+  return (process.env.HOME || os.homedir()) + s.slice(1);
+}
+
+function validateVm(vm) {
+  if (vm === undefined) return [];
+  if (!isPlainObject(vm)) return ['vm: must be an object'];
+  const mode = Object.prototype.hasOwnProperty.call(vm, 'mode') ? vm.mode : 'local';
+  if (!VM_MODES.includes(mode)) return [`vm.mode: must be one of [${VM_MODES.join(', ')}] (got ${JSON.stringify(mode)})`];
+  const errors = [];
+  if (mode !== 'remote') return errors;
+  const r = isPlainObject(vm.remote) ? vm.remote : {};
+  const ssh = typeof r.ssh === 'string' ? r.ssh.trim() : '';
+  if (ssh === '') errors.push('vm.remote.ssh: must be a non-empty string when vm.mode=remote');
+  else if (/\s/.test(ssh) || ssh.startsWith('-')) errors.push(`vm.remote.ssh: must not contain whitespace or start with "-" (got ${JSON.stringify(ssh)})`);
+  const port = Object.prototype.hasOwnProperty.call(r, 'port') ? r.port : 22;
+  const portOk = typeof port === 'number' ? Number.isInteger(port) : (typeof port === 'string' && /^[0-9]+$/.test(port));
+  if (!portOk || Number(port) < 1 || Number(port) > 65535) errors.push(`vm.remote.port: must be an integer 1..65535 (got ${JSON.stringify(port)})`);
+  const ident = r.identity || '~/.ssh/id_ed25519';
+  if (typeof ident !== 'string') {
+    errors.push(`vm.remote.identity: must be a string (got ${JSON.stringify(ident)})`);
+  } else {
+    const x = expandTilde(ident);
+    if (/\s/.test(x) || x.startsWith('-')) errors.push(`vm.remote.identity: must not contain whitespace or start with "-" after ~ expansion (got ${JSON.stringify(ident)})`);
+  }
+  return errors;
+}
+
 const SCHEMA = {
   type: 'object',
   fields: {
     version: { type: 'exact', value: CURRENT_VERSION },
+    vm: { type: 'vm', optional: true },
     luna: {
       type: 'object',
       fields: {
@@ -200,6 +239,9 @@ function checkNode(value, spec, label, errors, unknown) {
       break;
     case 'enum':
       if (!spec.values.includes(value)) errors.push(`${label}: must be one of [${spec.values.join(', ')}] (got ${JSON.stringify(value)})`);
+      break;
+    case 'vm':
+      errors.push(...validateVm(value));
       break;
     /* istanbul ignore next -- every SCHEMA leaf above is a known type */
     default:
@@ -607,4 +649,4 @@ function save(doc) {
   if (preKnown) recordSections(p, prior, doc, !existed);
 }
 
-module.exports = { load, inspect, save, migrate, validateConfig, unknownKeys, defaultConfig, configPath, CURRENT_VERSION };
+module.exports = { load, inspect, save, migrate, validateConfig, validateVm, unknownKeys, defaultConfig, configPath, CURRENT_VERSION };

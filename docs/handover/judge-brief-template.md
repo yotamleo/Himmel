@@ -216,9 +216,14 @@ gathering, per the rule below.>
 >    running a seed and its variant to confirm they are shell-equivalent.
 >    Feeding a row to a hook copy as JSON on stdin (`diff`, or a hook suite's
 >    fixture loop under `harness-run.py`) is NOT execution and stays route 1,
->    provided the row is only ever stdin data. Route-3 checks run on a test VM
->    from a snapshot, by the operator or a VM leg, never on the station. A
->    judge never runs one; it names the check in its verdict as owed.
+>    provided the row is only ever stdin data. Route-3 checks never run on the
+>    station; where they run is the operator's `vm.mode`, as
+>    `bash scripts/lib/vm-mode.sh route` prints it (docs/setup/vm-mode.md):
+>    `local-vm` or `remote-vm` = on that VM from a snapshot, by the operator
+>    or a VM leg; `operator-ack+rollback-point` (`vm.mode=none`) = no VM, so
+>    the operator runs it only after taking a rollback point; `fix-config` = a
+>    broken config, nothing runs until it is fixed. A judge never runs one; it
+>    names the check in its verdict as owed, with that route.
 >
 > **What a GO resting on route 1 proves.** Say that it rests on generated
 > rows, and state: the seeds file (path and DENY row count), the seed, the row

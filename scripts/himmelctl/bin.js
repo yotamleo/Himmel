@@ -1142,7 +1142,7 @@ function serialize(answers) {
 // Every downstream reader (applyLunaSectionsStep, previewLunaSections,
 // buildSummary) already defends with `answers.luna || {}` from the round-1/3
 // legacy-profile work, so this is safe with zero other call-site changes.
-function buildAnswers(profile, devOverlay, scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet, lanes, alwaysOn, luna, secretsWalk, bridge, cadences) {
+function buildAnswers(profile, devOverlay, scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet, lanes, alwaysOn, luna, secretsWalk, bridge, cadences, vm) {
   return {
     schemaVersion: 2,
     profile: profile,
@@ -1171,6 +1171,9 @@ function buildAnswers(profile, devOverlay, scope, vaultMode, vaultPath, handover
     // never asks it (vault=none) round-trips as genuinely absent, never a
     // fabricated {}.
     cadences: cadences,
+    // HIMMEL-4597: `vm` ({mode, remote?}) is a TOP-LEVEL optional answer too —
+    // genuinely absent unless the vm.mode question was asked.
+    vm: vm,
   };
 }
 
@@ -1486,12 +1489,59 @@ function offeredCadenceRows(lanes, vaultMode, platform, registry) {
 // answer) — a row filtered out by offeredCadenceRows() above is simply absent
 // from the returned object, exactly like a never-asked question elsewhere in
 // this file.
-async function askCadences(ask, lanes, vaultMode, defaultIds) {
+//
+// HIMMEL-4597: a row flagged `vm_proof` (cadence-registry.json) is still
+// offered, but only pre-selected when the vm.mode route is a VM. The resolver
+// decides (vmProofRoute()), on the config as the wizard will leave it: `doc`
+// with the wizard's own vm answer applied, or the file itself when the answer
+// changes nothing (J1947 B1). Under vm.mode=none (rc 1) an EXPLICIT
+// selection arms it (the operator's ack — remembered in vmProofAcked so the
+// apply step lets it through); under a resolver error (rc 2) it is not
+// armable at all.
+const vmProofAcked = new Set();
+
+// The resolver's rc is the single source of truth: validateVm is only a first
+// filter, and a value JS accepts but the resolver rejects (a JSON float port,
+// an ssh target with a char Python counts as whitespace) is a config error.
+// With no doc (or an answer that changes nothing) it reads the config file
+// the wizard writes; otherwise a temp copy of doc with the answer applied.
+function vmProofRoute(doc, vmAnswer) {
+  let cfg = lunaConfigLib.configPath();
+  let tmp;
+  try {
+    if (doc && vmAnswer !== undefined) {
+      const probe = JSON.parse(JSON.stringify(doc));
+      if (applyVmAnswer(probe, vmAnswer)) {
+        tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'himmelctl-vm-'));
+        cfg = path.join(tmp, 'config.json');
+        fs.writeFileSync(cfg, JSON.stringify(probe));
+      }
+    }
+    const r = spawnSync(resolveBash(), [toBashPath(path.join(repoRoot(), 'scripts', 'lib', 'vm-mode.sh')), 'route'],
+      { encoding: 'utf8', env: Object.assign({}, process.env, { HIMMEL_VM_MODE_CONFIG: cfg }) });
+    // fail closed: a spawn failure or any rc but 0/1 is a resolver error
+    return { rc: r.status === 0 || r.status === 1 ? r.status : 2 };
+  } catch (_e) {
+    return { rc: 2 };
+  } finally {
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+function vmProofNote(row, route) {
+  if (route.rc === 0) return '';
+  if (route.rc === 1) return `needs VM proof first — vm.mode=none: arm only with an operator ack after a rollback point; disarm: bash ${row.script} disarm`;
+  return 'vm.mode config error — fix ~/.himmel/config.json';
+}
+
+async function askCadences(ask, lanes, vaultMode, defaultIds, vmAnswer, doc) {
   const rows = offeredCadenceRows(lanes, vaultMode);
   const ids = rows.map((r) => r.id);
-  const defaults = (defaultIds || []).filter((id) => ids.indexOf(id) !== -1);
+  const route = rows.some((r) => r.vm_proof) ? vmProofRoute(doc, vmAnswer) : { rc: 0 };
+  const blocked = (id) => rows.some((r) => r.id === id && r.vm_proof) && route.rc !== 0;
+  const defaults = (defaultIds || []).filter((id) => ids.indexOf(id) !== -1 && !blocked(id));
   const opts = ids.join(',');
-  const menu = rows.map((r, i) => `  ${i + 1}) ${r.id}${defaults.indexOf(r.id) !== -1 ? ' (recommended)' : ''} — ${r.description}`).join('\n');
+  const menu = rows.map((r, i) => `  ${i + 1}) ${r.id}${defaults.indexOf(r.id) !== -1 ? ' (recommended)' : ''} — ${r.description}${r.vm_proof && route.rc !== 0 ? ` — ${vmProofNote(r, route)}` : ''}`).join('\n');
   const prompt = `? cadences — recurring scheduled jobs to arm now [${opts}|none] (default: ${defaults.join(',') || 'none'})\n${menu}\n  (Enter accepts the recommended defaults; comma-separate multiple numbers)\n> `;
   for (;;) {
     const ans = await ask(prompt);
@@ -1515,10 +1565,47 @@ async function askCadences(ask, lanes, vaultMode, defaultIds) {
         continue;
       }
     }
+    if (route.rc === 2 && selected.some(blocked)) {
+      console.error(`  ! ${selected.filter(blocked).join(', ')}: vm.mode config error — fix ~/.himmel/config.json, then re-run (it cannot be armed until the vm.mode config resolves)`);
+      continue;
+    }
     const cadences = {};
     for (const id of ids) cadences[id] = selected.indexOf(id) !== -1 ? 'armed' : 'off';
+    for (const id of selected) if (blocked(id)) vmProofAcked.add(id);
     return cadences;
   }
+}
+
+// HIMMEL-4597: where "VM proof first" steps run — the adopter's setting, read
+// by scripts/lib/vm-mode.sh. local = the local test VM (the default), remote =
+// a VM reached over ssh, none = no VM (a VM-proof step then needs an operator
+// ack + rollback point). `existing` ({mode, remote?} from ~/.himmel/config.json)
+// seeds the defaults so pressing Enter never downgrades a configured mode.
+// Remote fields re-ask until lunaConfigLib.validateVm() — the resolver's own
+// rules — accepts them.
+const VM_HELP = {
+  local: 'the local test VM (ssh localhost:2222) — the default',
+  remote: 'a VM you reach over ssh (asks for user@host, port, identity)',
+  none: 'no VM available — VM-proof steps need an operator ack + rollback point',
+};
+
+async function askVm(ask, existing) {
+  const cur = existing || { mode: 'local' };
+  const mode = await askNumberedEnum(ask, 'vm.mode — where VM-proof steps run', ['local', 'remote', 'none'], cur.mode || 'local', VM_HELP);
+  if (mode !== 'remote') return { mode: mode };
+  const prev = cur.mode === 'remote' && cur.remote ? cur.remote : {};
+  const askField = async (field, prompt, dflt) => {
+    for (;;) {
+      const v = await askPath(ask, prompt, dflt);
+      const errs = lunaConfigLib.validateVm({ mode: 'remote', remote: { ssh: 'x', [field]: v } }).filter((e) => e.startsWith(`vm.remote.${field}`));
+      if (errs.length === 0) return v;
+      console.error(`  ! ${errs[0]}`);
+    }
+  };
+  const ssh = (await askField('ssh', `? vm.remote.ssh (user@host)${prev.ssh ? ` (default: ${prev.ssh})` : ''}\n> `, prev.ssh || '')).trim();
+  const port = Number(await askField('port', `? vm.remote.port (default: ${prev.port || 22})\n> `, String(prev.port || 22)));
+  const identity = await askField('identity', `? vm.remote.identity (default: ${prev.identity || '~/.ssh/id_ed25519'})\n> `, prev.identity || '~/.ssh/id_ed25519');
+  return { mode: 'remote', remote: { ssh: ssh, port: port, identity: identity } };
 }
 
 // Walk all questions interactively and return the answer object.
@@ -1598,8 +1685,18 @@ async function askQuestions(defaultScope, laneOpts, devOverlay) {
   // nested inside `luna`.
   let cadences;
   let disarmCadence = false;
-  if (offeredCadenceRows(lanes, vaultMode).length > 0) {
-    cadences = await askCadences(ask, lanes, vaultMode, preset.cadenceIds);
+  let vm;
+  let existingDoc;
+  const offeredRows = offeredCadenceRows(lanes, vaultMode);
+  if (offeredRows.length > 0) {
+    // HIMMEL-4597: the vm.mode question sits right before the cadences it
+    // gates — asked only when a vm_proof row is offered, so a flow with none
+    // keeps its question sequence.
+    if (offeredRows.some((r) => r.vm_proof)) {
+      try { existingDoc = lunaConfigLib.inspect().doc; } catch (_e) { existingDoc = undefined; }
+      vm = await askVm(ask, existingDoc && existingDoc.vm);
+    }
+    cadences = await askCadences(ask, lanes, vaultMode, preset.cadenceIds, vm, existingDoc);
     // RETASK stage1-build-6d2e round 4 [codex-1] (extended HIMMEL-2302 to
     // every declined UNIT, not just pipeline): declining a unit writes its
     // disposition as 'off' but does NOT, by itself, disarm anything already
@@ -1756,7 +1853,7 @@ async function askQuestions(defaultScope, laneOpts, devOverlay) {
   }
 
   rl.close();
-  return buildAnswers(profile, devOverlay, scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet, lanes, alwaysOn, luna, secretsWalk, bridge, cadences);
+  return buildAnswers(profile, devOverlay, scope, vaultMode, vaultPath, handoverMode, handoverPath, pluginSet, lanes, alwaysOn, luna, secretsWalk, bridge, cadences, vm);
 }
 
 // All-default answers (no prompts) for --dry-run previews.
@@ -2129,6 +2226,13 @@ function loadProfile(p) {
         profileError(p, `field 'cadences.${row.id}' is 'armed' but requires a vault (vault.mode is 'none')`);
       }
     }
+  }
+  // HIMMEL-4597: `vm` is an OPTIONAL whole section (absent = never asked, the
+  // resolver then reads ~/.himmel/config.json). When present it gets the
+  // resolver's own rules (lunaConfigLib.validateVm) — a bad one fails loud.
+  if (obj.vm !== undefined) {
+    const vmErrors = lunaConfigLib.validateVm(obj.vm);
+    if (vmErrors.length > 0) profileError(p, `field 'vm' is invalid: ${vmErrors.join('; ')}`);
   }
   // HIMMEL-2308: migrate a validated legacy v1 (role-based) profile to the
   // v2 profile/devOverlay shape IN MEMORY — every downstream reader
@@ -3042,6 +3146,54 @@ function cadenceArmFlags(id, { doc, vaultPath }) {
   return [];
 }
 
+// HIMMEL-4597: set `doc.vm` from a wizard/profile vm answer ({mode, remote?}),
+// returning whether it changed anything. "Changed" compares the resolver's
+// view (mode; for remote, ssh/port/identity with their defaults), so an
+// answer equal to what is already configured — or `local` over an absent vm —
+// is a no-op. Keys the user added under vm are kept.
+function applyVmAnswer(doc, vm) {
+  const mode = vm.mode || 'local';
+  const eff = (v) => {
+    const m = (v && v.mode) || 'local';
+    const r = (v && v.remote) || {};
+    return JSON.stringify(m === 'remote'
+      ? { m: m, ssh: String(r.ssh || '').trim(), port: Number(r.port === undefined ? 22 : r.port), identity: r.identity || '~/.ssh/id_ed25519' }
+      : { m: m });
+  };
+  if (eff(doc.vm) === eff(vm)) return false;
+  doc.vm = Object.assign({}, doc.vm, { mode: mode });
+  if (mode === 'remote') {
+    doc.vm.remote = Object.assign({}, doc.vm.remote, { ssh: String(vm.remote.ssh).trim() });
+    // An omitted port/identity means the resolver default, never the previous target's.
+    if (vm.remote.port !== undefined) doc.vm.remote.port = Number(vm.remote.port);
+    else delete doc.vm.remote.port;
+    if (vm.remote.identity !== undefined) doc.vm.remote.identity = vm.remote.identity;
+    else delete doc.vm.remote.identity;
+  }
+  return true;
+}
+
+// HIMMEL-4597: armed `vm_proof` rows this run must NOT arm — { <id>: message }.
+// The route is the resolver's, on the saved config (apply: no doc) or on `doc`
+// with the vm answer applied (dry run). A row the operator explicitly selected
+// under vm.mode=none in the wizard (vmProofAcked) is their ack and passes;
+// everything else non-interactive (--from-profile) is refused under none, and
+// a resolver error refuses every row, acked or not — never armed.
+function vmProofRefusals(dispositions, doc, vmAnswer) {
+  const refused = {};
+  const armed = CADENCE_REGISTRY.filter((r) => r.vm_proof && dispositions[r.id] === 'armed');
+  if (armed.length === 0) return refused;
+  const route = vmProofRoute(doc, vmAnswer);
+  if (route.rc === 0) return refused;
+  const rows = route.rc === 1 ? armed.filter((r) => !vmProofAcked.has(r.id)) : armed;
+  for (const r of rows) {
+    refused[r.id] = route.rc === 1
+      ? `himmelctl: REFUSED: cadence '${r.id}' wants VM proof first and vm.mode=none — NOT armed non-interactively; arm it only with an operator ack after a rollback point (bash ${r.script} arm), or set vm.mode in ~/.himmel/config.json`
+      : `himmelctl: REFUSED: cadence '${r.id}' wants VM proof first and the vm.mode config is invalid — vm.mode config error: fix ~/.himmel/config.json; NOT armed`;
+  }
+  return refused;
+}
+
 function cadenceScriptPath(id) {
   const row = CADENCE_REGISTRY.find((r) => r.id === id);
   return path.join(repoRoot(), row.script);
@@ -3326,15 +3478,21 @@ function previewLunaSections(answers) {
     // lunaSupplied+cadenceEnabled gate — resolveCadenceDispositions() covers
     // both a fresh `cadences` section (authoritative) and a legacy profile
     // that only ever carried `luna.cadenceEnabled` (derives pipeline only).
+    if (answers.vm !== undefined && applyVmAnswer(JSON.parse(JSON.stringify(doc)), answers.vm)) {
+      console.log(`DRY: vm.mode -> ${answers.vm.mode} (~/.himmel/config.json)`);
+    }
     const dispositions = adopterProfileLib.resolveCadenceDispositions(answers);
     if (dispositions.pipeline !== undefined) {
       console.log(`DRY: luna.cadence.enabled -> ${dispositions.pipeline === 'armed'} (~/.himmel/config.json)`);
     } else {
       console.log('DRY: no cadence answer this run — luna.cadence.enabled would be left untouched on disk');
     }
+    const vmProofRefused = vmProofRefusals(dispositions, doc, answers.vm);
     for (const row of CADENCE_REGISTRY) {
       const disp = dispositions[row.id];
-      if (disp === 'armed') {
+      if (disp === 'armed' && vmProofRefused[row.id]) {
+        console.log(`DRY: ${row.id} cadence arm — WOULD BE REFUSED: ${vmProofRefused[row.id].replace(/^himmelctl: REFUSED: /, '')}`);
+      } else if (disp === 'armed') {
         try {
           const flags = cadenceArmFlags(row.id, { doc: doc, vaultPath: vaultPath });
           console.log(`DRY: bash ${cadenceScriptPath(row.id)} arm${flags.length ? ` ${flags.join(' ')}` : ''}`);
@@ -3529,6 +3687,11 @@ function applyLunaSectionsStep(answers) {
   } else {
     console.log('himmelctl: profile carries no bridge section — bridge.* left untouched on disk');
   }
+  // HIMMEL-4597: the vm answer is written only when it changes what the
+  // resolver would read — a declined/unchanged answer (and local over an
+  // absent vm) leaves the file as it is.
+  const vmChanged = answers.vm !== undefined && applyVmAnswer(doc, answers.vm);
+  if (vmChanged) supplied.add('vm.mode');
 
   // RETASK stage1-build-6d2e round 4 [codex-3]: a save() failure must stop
   // every SUBSEQUENT machine-state mutation (cadence arm/disarm, bridge
@@ -3561,7 +3724,8 @@ function applyLunaSectionsStep(answers) {
       console.log('himmelctl: wrote ~/.himmel/config.json (luna.vaultPath'
         + (dispositions.pipeline !== undefined ? ', luna.cadence.enabled' : '')
         + (lunaSupplied ? ', luna.phi.declared' : '')
-        + (bridgeSupplied ? ', bridge.*' : '') + ')');
+        + (bridgeSupplied ? ', bridge.*' : '')
+        + (vmChanged ? ', vm.*' : '') + ')');
     } catch (e) {
       console.error(`himmelctl: WARN: failed to save ~/.himmel/config.json: ${e.message}`);
       console.error('himmelctl: WARN: skipping luna cadence arm/disarm and bridge persistence install — refusing to mutate machine state that the config document could not record');
@@ -3577,9 +3741,16 @@ function applyLunaSectionsStep(answers) {
   // disarm stays gated on `luna.disarmCadence` (decision #5: ONE consent
   // question covers every declined unit — no per-unit disarm consent).
   if (configSaveOk) {
+    // the resolver reads the config exactly as saved (J1947 B1)
+    const vmProofRefused = vmProofRefusals(dispositions);
     for (const row of CADENCE_REGISTRY) {
       const disp = dispositions[row.id];
-      if (disp === 'armed') {
+      if (disp === 'armed' && vmProofRefused[row.id]) {
+        console.error(vmProofRefused[row.id]);
+        result.cadenceResults = result.cadenceResults || {};
+        result.cadenceResults[row.id] = { ran: false, rc: 1, argvDisplay: 'refused: vm.mode has no VM proof route' };
+        result.rc = 1;
+      } else if (disp === 'armed') {
         try {
           const flags = cadenceArmFlags(row.id, { doc: doc, vaultPath: doc.luna.vaultPath });
           const argv = [resolveBash(), toBashPath(cadenceScriptPath(row.id)), 'arm'].concat(flags);
@@ -7998,4 +8169,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust, offeredCadenceRows, sameFsEntry };
+module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust, offeredCadenceRows, askCadences, askVm, applyVmAnswer, sameFsEntry };

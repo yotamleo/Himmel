@@ -41,6 +41,20 @@ for s in scripts/test-install-symmetry-vm.sh scripts/test-luna-upgrade-vm.sh scr
         pass "$s: vm.mode=remote -> ssh targets vm.remote"
     else fail "$s: remote: ssh='$sshlog'"; fi
 
+    # J1932 T2: a resolver error is a loud config error (rc 2), not a SKIP,
+    # and explicit [host port ident] args do not turn it into an ssh run.
+    run_suite "$s" '{"vm":{"mode":"Local"}}'
+    if [ "$rc" = 2 ] && grep -qF 'CONFIG ERROR' <<< "$out" && ! grep -qF 'SKIP' <<< "$out" && [ -z "$sshlog" ]; then
+        pass "$s: vm.mode config error -> rc 2 CONFIG ERROR, no ssh"
+    else fail "$s: config error: rc=$rc ssh='$sshlog' out=$(printf '%s' "$out" | head -3)"; fi
+    printf '%s\n' '{"vm":' > "$T/home/.himmel/config.json"
+    : > "$T/ssh.log"
+    out="$(HOME="$T/home" SSH_LOG="$T/ssh.log" PATH="$T/bin:$PATH" bash "$REPO/$s" ops@h 2201 "$T/home/.ssh/k" 2>&1)"; rc=$?
+    sshlog="$(cat "$T/ssh.log")"
+    if [ "$rc" = 2 ] && grep -qF 'CONFIG ERROR' <<< "$out" && [ -z "$sshlog" ]; then
+        pass "$s: malformed config + explicit target args -> rc 2, no ssh"
+    else fail "$s: malformed + args: rc=$rc ssh='$sshlog'"; fi
+
     run_suite "$s" '{}'
     if grep -qF -- '-p 2222' <<< "$sshlog" && grep -qF 'localhost' <<< "$sshlog"; then
         pass "$s: vm.mode unset -> localhost:2222 (unchanged)"

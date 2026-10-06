@@ -46,6 +46,9 @@ fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+# vm.mode (HIMMEL-4597) comes from each case's fixture HOME or the seam below,
+# never from the operator's shell.
+unset HIMMEL_VM_MODE_CONFIG HIMMEL_UPDATE_VM_ACK
 
 # A deterministic copy of the caller's executable search path with pwsh
 # omitted and uname -s stubbed. This exercises the Linux lane regardless of the
@@ -131,6 +134,7 @@ make_mock_clone() {
     cp "$SRC_SCRIPTS/lib/cadence-format.sh"    "$clone/scripts/lib/cadence-format.sh"
     cp "$SRC_SCRIPTS/lib/resolve-hermes-py.sh" "$clone/scripts/lib/resolve-hermes-py.sh"
     cp "$SRC_SCRIPTS/lib/load-dotenv.sh"       "$clone/scripts/lib/load-dotenv.sh"
+    cp "$SRC_SCRIPTS/lib/vm-mode.sh"           "$clone/scripts/lib/vm-mode.sh"
     cp "$SRC_SCRIPTS/upstreams/update-marketplaces.sh" "$clone/scripts/upstreams/update-marketplaces.sh"
     git -C "$clone" add -A
     git -C "$clone" commit --quiet -m "scaffold"
@@ -573,6 +577,75 @@ OUT="$(PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only
 assert_eq "an unverifiable Linux stamp exits 0" "0" "$RC"
 assert_contains "Linux cannot-verify hint stops before installing" "bash .*--roll" "$OUT"
 assert_eq "an unverifiable Linux stamp never invokes the lane" "" "$(cat "$LINUXLOG")"
+
+echo ""
+echo "Test 9v: cli-proxy roll — VM proof first: vm.mode gates the roll (HIMMEL-4597)"
+# The roll is a VM-proof step (pin-holds.json cli-proxy-api). local/remote roll
+# and name the route; a configured none HOLDS unless `--only cli_proxy` carries
+# HIMMEL_UPDATE_VM_ACK=<existing rollback point>; a resolver error HOLDS with
+# "fix the config" only, an ack ignored. Every config is a fixture file.
+write_fake_linux_lane "$LINUXCLONE" "8.8.8" "$LINUXLOG"
+VMC="$TMP/vm-cfg.json"
+vm_roll() {   # <config json> [ack path] -> $OUT $RC, lane log
+    printf '%s\n' "$1" > "$VMC"
+    printf '1.0.0\n' > "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version"
+    : >"$LINUXLOG"
+    OUT="$(HIMMEL_VM_MODE_CONFIG="$VMC" HIMMEL_UPDATE_VM_ACK="${2:-}" PATH="$NO_PWSH_BIN" \
+        run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+}
+ROLLBACK="$TMP/rollback-point"; mkdir -p "$ROLLBACK"
+
+vm_roll '{"vm":{"mode":"local"}}'
+assert_eq "vm.mode=local: roll exits 0" "0" "$RC"
+assert_contains "vm.mode=local: names the local VM route" "VM-proof route: local-vm localhost:2222" "$OUT"
+assert_eq "vm.mode=local: the lane rolls" "--roll" "$(cat "$LINUXLOG")"
+
+vm_roll '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example"}}}'
+assert_eq "vm.mode=remote: roll exits 0" "0" "$RC"
+assert_contains "vm.mode=remote: names the remote VM route" "VM-proof route: remote-vm ops@vm.example:22" "$OUT"
+assert_eq "vm.mode=remote: the lane rolls" "--roll" "$(cat "$LINUXLOG")"
+
+vm_roll '{"vm":{"mode":"none"}}'
+assert_eq "vm.mode=none, no ack: a deliberate hold exits 0" "0" "$RC"
+assert_contains "vm.mode=none, no ack: HELD" "HELD: vm.mode=none" "$OUT"
+assert_contains "vm.mode=none, no ack: prints the ack route" "HIMMEL_UPDATE_VM_ACK=<rollback point>" "$OUT"
+assert_eq "vm.mode=none, no ack: the lane never runs" "" "$(cat "$LINUXLOG")"
+assert_eq "vm.mode=none, no ack: host stamp unchanged" "1.0.0" "$(cat "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version")"
+
+vm_roll '{"vm":{"mode":"none"}}' "$TMP/no-such-rollback"
+assert_contains "vm.mode=none, ack to a missing rollback point: HELD" "HELD: vm.mode=none" "$OUT"
+assert_contains "vm.mode=none, missing rollback point is named" "does not exist" "$OUT"
+assert_eq "vm.mode=none, missing rollback point: the lane never runs" "" "$(cat "$LINUXLOG")"
+
+vm_roll '{"vm":{"mode":"none"}}' "$ROLLBACK"
+assert_eq "vm.mode=none + ack + --only: roll exits 0" "0" "$RC"
+assert_contains "vm.mode=none + ack: names the rollback point" "rollback point $ROLLBACK" "$OUT"
+assert_eq "vm.mode=none + ack + --only: the lane rolls" "--roll" "$(cat "$LINUXLOG")"
+
+vm_roll '{"vm":{"mode":"Local"}}' "$ROLLBACK"
+assert_eq "vm.mode config error: exits 1, not a clean hold" "1" "$RC"
+assert_contains "vm.mode config error: HELD, fix the config" "HELD: vm.mode config error" "$OUT"
+assert_not_contains "vm.mode config error: never offers the ack route" "HIMMEL_UPDATE_VM_ACK=<rollback point>" "$OUT"
+assert_not_contains "vm.mode config error: an ack is ignored" "operator ack" "$OUT"
+assert_eq "vm.mode config error: the lane never runs, even with an ack" "" "$(cat "$LINUXLOG")"
+
+printf '{"vm":\n' > "$VMC"
+: >"$LINUXLOG"
+OUT="$(HIMMEL_VM_MODE_CONFIG="$VMC" PATH="$NO_PWSH_BIN" run_update "$LINUXCLONE" "$LINUXHOME" "$STUB1" --only cli_proxy)"; RC=$?
+assert_eq "malformed vm config: exits 1" "1" "$RC"
+assert_eq "malformed vm config: the lane never runs" "" "$(cat "$LINUXLOG")"
+
+# The full chain never rolls under a configured none, ack or not: the ack is an
+# `--only cli_proxy` operator action, never an unattended update.
+printf '{"vm":{"mode":"none"}}\n' > "$VMC"
+: >"$PSLOG"
+make_pwsh_stub 0
+printf '1.0.0\n' > "$FH5/.cli-proxy-api/cli-proxy-api.version"
+OUT="$(HIMMEL_VM_MODE_CONFIG="$VMC" HIMMEL_UPDATE_VM_ACK="$ROLLBACK" PATH="$PSDIR:$PATH" run_update "$CLONE5" "$FH5" "$STUB1")"; RC=$?
+assert_eq "full chain under vm.mode=none exits 0" "0" "$RC"
+assert_contains "full chain under vm.mode=none: HELD" "HELD: vm.mode=none" "$OUT"
+assert_eq "full chain under vm.mode=none: never rolls, even with an ack" "" "$(cat "$PSLOG")"
+printf '1.0.0\n' > "$LINUXHOME/.cli-proxy-api/cli-proxy-api.version"
 
 echo ""
 echo "Test 10: cli-proxy roll — a REFUSED bounce warns, never aborts the update"

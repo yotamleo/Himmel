@@ -103,12 +103,15 @@ PLUGINS_DIR="${DRIFT_PLUGINS_DIR:-$ROOT/marketplace/plugins}"
 # route to that proof is the adopter's vm.mode, resolved once here (HIMMEL-4583).
 # shellcheck source=lib/vm-mode.sh
 . "$ROOT/scripts/lib/vm-mode.sh"
+# A resolver error (rc 2) is not a configured none: it offers only "fix the
+# config", never the operator-ack route (HIMMEL-4597, J1932 T1).
 vm_mode_load
-if VM_PROOF_RELEASE="$(vm_proof_route)"; then
-  VM_PROOF_RELEASE="vm-proof via $VM_PROOF_RELEASE"
-else
-  VM_PROOF_RELEASE="vm-proof: vm.mode=none${VM_MODE_NOTE:+ ($VM_MODE_NOTE)}, no VM can prove it; needs an operator ack plus a rollback point, never auto-released"
-fi
+VM_PROOF_RELEASE="$(vm_proof_route)"
+case $? in
+  0) VM_PROOF_RELEASE="vm-proof via $VM_PROOF_RELEASE" ;;
+  1) VM_PROOF_RELEASE="vm-proof: vm.mode=none, no VM can prove it; needs an operator ack plus a rollback point, never auto-released" ;;
+  *) VM_PROOF_RELEASE="vm-proof: vm.mode config error (${VM_MODE_NOTE:-scripts/lib/vm-mode.sh did not load}), held until fixed; fix ~/.himmel/config.json (docs/setup/vm-mode.md)" ;;
+esac
 
 # check_manifest_versions — the --manifest-only check (HIMMEL-3464). Local
 # only, no gh/network, so it can run on every commit. Fails closed: an

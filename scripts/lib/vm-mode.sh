@@ -26,16 +26,27 @@
 # (the VM drivers word-split them into ssh's argv), resolves
 # to `none` with a note saying why — a hold is never released on a guess.
 #
+# A resolver error is NOT a configured none (HIMMEL-4597, judge J1932 T1). Both
+# keep every VM-proof hold HELD, but only a configured `none` may offer the
+# operator-ack route; an error's only offer is "fix the config". So an error
+# sets VM_MODE_ERROR=1 and the entry points below return 2 for it, never the
+# 1 a configured none returns.
+#
 # Source it and call:
 #   vm_mode_load        sets VM_MODE, VM_MODE_HOST, VM_MODE_PORT, VM_MODE_IDENT,
-#                       VM_MODE_NOTE (why a value was not the one configured).
+#                       VM_MODE_NOTE (why a value was not the one configured),
+#                       VM_MODE_ERROR (1 on a resolver error, else empty;
+#                       VM_MODE is then none, so a hold stays HELD).
 #   vm_mode             prints the mode.
 #   vm_proof_route      prints the route a VM-proof hold resolves to:
 #                         local-vm <host>:<port> | remote-vm <host>:<port> |
-#                         operator-ack+rollback-point
-#                       rc 0 = a VM can prove it; rc 1 = it cannot (none), so
-#                       the hold stays HELD until the operator acks.
-# Or run it: bash scripts/lib/vm-mode.sh mode|route|target
+#                         operator-ack+rollback-point | fix-config: <why>
+#                       rc 0 = a VM can prove it; rc 1 = a configured none, so
+#                       the hold stays HELD until the operator acks; rc 2 = a
+#                       resolver error, so the hold stays HELD and no ack
+#                       route is offered until the config is fixed.
+# Or run it: bash scripts/lib/vm-mode.sh mode|route|target (each exits 2 on a
+# resolver error; mode still prints none).
 #
 # Seam: HIMMEL_VM_MODE_CONFIG overrides the config path (tests use a temp HOME
 # or this; nothing here ever writes the config). Bash 3.2-safe.
@@ -43,14 +54,14 @@
 vm_mode_load() {
     local cfg="${HIMMEL_VM_MODE_CONFIG:-${HOME:-}/.himmel/config.json}" line
     VM_MODE=local VM_MODE_HOST=localhost VM_MODE_PORT=2222
-    VM_MODE_IDENT="${HOME:-}/.ssh/id_ed25519" VM_MODE_NOTE=""
+    VM_MODE_IDENT="${HOME:-}/.ssh/id_ed25519" VM_MODE_NOTE="" VM_MODE_ERROR=""
     [ -e "$cfg" ] || [ -L "$cfg" ] || return 0
     if [ ! -f "$cfg" ]; then
-        VM_MODE=none VM_MODE_NOTE="$cfg exists but is not a readable file"
+        VM_MODE=none VM_MODE_NOTE="$cfg exists but is not a readable file" VM_MODE_ERROR=1
         return 0
     fi
     if ! command -v python3 >/dev/null 2>&1; then
-        VM_MODE=none VM_MODE_NOTE="python3 not found, cannot read $cfg"
+        VM_MODE=none VM_MODE_NOTE="python3 not found, cannot read $cfg" VM_MODE_ERROR=1
         return 0
     fi
     local out
@@ -85,7 +96,7 @@ if m == "remote":
     print("host=" + ssh)
     print("port=%d" % int(port))
     print("ident=" + ident)
-' "$cfg" 2>/dev/null)" || { VM_MODE=none VM_MODE_NOTE="cannot read $cfg"; return 0; }
+' "$cfg" 2>/dev/null)" || { VM_MODE=none VM_MODE_NOTE="cannot read $cfg" VM_MODE_ERROR=1; return 0; }
     while IFS= read -r line; do
         case "$line" in
             mode=*)  VM_MODE="${line#mode=}" ;;
@@ -97,6 +108,8 @@ if m == "remote":
     done <<EOF
 $out
 EOF
+    # Every python error row above prints a note; a configured mode never does.
+    [ -n "$VM_MODE_NOTE" ] && VM_MODE=none VM_MODE_ERROR=1
     return 0
 }
 
@@ -107,27 +120,39 @@ vm_proof_route() {
     case "$VM_MODE" in
         local)  printf 'local-vm %s:%s\n' "$VM_MODE_HOST" "$VM_MODE_PORT" ;;
         remote) printf 'remote-vm %s:%s\n' "$VM_MODE_HOST" "$VM_MODE_PORT" ;;
-        *)      printf 'operator-ack+rollback-point\n'; return 1 ;;
+        *)
+            if [ -n "$VM_MODE_ERROR" ]; then
+                printf 'fix-config: %s -- fix ~/.himmel/config.json (docs/setup/vm-mode.md)\n' "$VM_MODE_NOTE"
+                return 2
+            fi
+            printf 'operator-ack+rollback-point\n'; return 1 ;;
     esac
 }
 
-# vm_mode_e2e_guard <suite> — for a host-driven VM e2e driver: under none,
-# prints the SKIP reason and returns 1 (the driver exits 3, its "environment,
-# not a code defect" code); otherwise loads the target into VM_MODE_HOST/PORT/IDENT.
+# vm_mode_e2e_guard <suite> — for a host-driven VM e2e driver: under a
+# configured none, prints the SKIP reason and returns 1 (the driver exits 3, its
+# "environment, not a code defect" code); on a resolver error, prints a CONFIG
+# ERROR and returns 2 (the driver fails, never a SKIP that reads as "no VM by
+# choice", J1932 T2); otherwise loads the target into VM_MODE_HOST/PORT/IDENT.
 vm_mode_e2e_guard() {
     vm_mode_load
     [ "$VM_MODE" != none ] && return 0
-    echo "SKIP: vm.mode=none${VM_MODE_NOTE:+ ($VM_MODE_NOTE)} -- no VM to run $1 on; set vm.mode in ~/.himmel/config.json (docs/setup/vm-mode.md)" >&2
+    if [ -n "$VM_MODE_ERROR" ]; then
+        echo "CONFIG ERROR: vm.mode cannot be resolved ($VM_MODE_NOTE) -- $1 did not run; fix ~/.himmel/config.json (docs/setup/vm-mode.md)" >&2
+        return 2
+    fi
+    echo "SKIP: vm.mode=none -- no VM to run $1 on; set vm.mode in ~/.himmel/config.json (docs/setup/vm-mode.md)" >&2
     return 1
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     case "${1:-}" in
-        mode)  vm_mode ;;
+        mode)  vm_mode; [ -z "$VM_MODE_ERROR" ] || { echo "vm.mode config error ($VM_MODE_NOTE)" >&2; exit 2; } ;;
         route) vm_proof_route ;;
         target)
             vm_mode_load
-            [ "$VM_MODE" = none ] && { echo "vm.mode=none${VM_MODE_NOTE:+ ($VM_MODE_NOTE)}" >&2; exit 1; }
+            [ -n "$VM_MODE_ERROR" ] && { echo "vm.mode config error ($VM_MODE_NOTE)" >&2; exit 2; }
+            [ "$VM_MODE" = none ] && { echo "vm.mode=none" >&2; exit 1; }
             printf '%s\t%s\t%s\n' "$VM_MODE_HOST" "$VM_MODE_PORT" "$VM_MODE_IDENT" ;;
         *) echo "usage: vm-mode.sh mode|route|target" >&2; exit 2 ;;
     esac

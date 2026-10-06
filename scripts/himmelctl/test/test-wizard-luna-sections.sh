@@ -2224,6 +2224,7 @@ inline
 lean
 none
 no
+local
 none
 no
 no
@@ -2728,6 +2729,7 @@ inline
 lean
 none
 no
+local
 none
 no
 no

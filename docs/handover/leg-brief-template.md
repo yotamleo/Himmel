@@ -109,8 +109,10 @@ template_version: 3
 > `FINDING` to the console, one line in the judge template's
 > `<hook> | <surface> | <class name> | <why route 1 cannot reach it>` shape;
 > the operator writes those seeds, and the leg folds them in once they exist.
-> Anything that runs a payload or checks its effect is route 3, VM only, never
-> on the station. On a classifier stop (an API safeguards error with a
+> Anything that runs a payload or checks its effect is route 3, never on the
+> station: on the VM `bash scripts/lib/vm-mode.sh route` names (`local-vm` /
+> `remote-vm`), by the operator after a rollback point under `vm.mode=none`,
+> and not at all under `fix-config`. On a classifier stop (an API safeguards error with a
 > `req_…` id): never re-author or rephrase, never send a fresh session or
 > subagent to redo it. Write `BLOCKED` with the request id, and narrow. The
 > full rule, and how to tell a stop from a hook deny or refusal, is the

@@ -229,11 +229,21 @@ def vm_mode_skip_reason(env=None):
 
     vm.mode comes from scripts/lib/vm-mode.sh, the one resolver. This probe
     drives the local ubuntu_new VM through vmsdk, so it runs only under local:
-    none has no VM, and remote has no vmsdk route yet.
+    none has no VM, and remote has no vmsdk route yet. It stays local-only by
+    design (HIMMEL-4597); remote SKIPs naming that gap.
+
+    A resolver error (vm-mode.sh mode exits 2) is not a configured none: it
+    returns a CONFIG ERROR line, and main() fails with 2 instead of skipping
+    (HIMMEL-4597, J1932 T2).
     """
     import subprocess  # noqa: PLC0415
-    out = subprocess.run(["bash", str(_LIB / "vm-mode.sh"), "mode"], env=env,
-                         capture_output=True, text=True).stdout.strip()
+    res = subprocess.run(["bash", str(_LIB / "vm-mode.sh"), "mode"], env=env,
+                         capture_output=True, text=True)
+    out = res.stdout.strip()
+    if res.returncode != 0:
+        why = res.stderr.strip() or "vm-mode.sh mode exited %d" % res.returncode
+        return ("CONFIG ERROR: vm.mode cannot be resolved (%s) -- this probe did "
+                "not run; fix ~/.himmel/config.json (docs/setup/vm-mode.md)" % why)
     if out == "local":
         return None
     if out == "remote":
@@ -255,7 +265,7 @@ def main():
     skip = vm_mode_skip_reason()
     if skip:
         print(skip)
-        sys.exit(3)
+        sys.exit(2 if skip.startswith("CONFIG ERROR") else 3)
 
     # Lazy import of vmsdk so hermetic test imports of this module don't
     # trigger the vbox/dotenv chain.

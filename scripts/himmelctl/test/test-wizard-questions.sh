@@ -842,7 +842,7 @@ whisper_case_input() {
   # HIMMEL-2347: one extra blank line vs. before — the new personal/medical
   # vault question sits between PHI and secretsWalk, defaults 'no' on blank,
   # so no follow-up path/marker sub-answers are ever reached here.
-  printf 'custom\n\ndefault-template\n\n\n\nnone\n\nnone\n\n\n\n\non\n\n\n%s\n' "$1"
+  printf 'custom\n\ndefault-template\n\n\n\nnone\n\n\nnone\n\n\n\n\non\n\n\n%s\n' "$1"
   if [ -n "${2:-}" ]; then printf '%s\n' "$2"; fi
   printf '\n'
 }

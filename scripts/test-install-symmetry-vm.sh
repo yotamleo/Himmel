@@ -24,7 +24,9 @@ set -uo pipefail
 # SKIPs (HIMMEL-4583).
 # shellcheck source=lib/vm-mode.sh
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib/vm-mode.sh"
-vm_mode_e2e_guard "$(basename -- "$0")" || exit 3
+# rc 1 = a configured none: SKIP (exit 3); rc 2 = a resolver error: a loud
+# config error (exit 2), never a SKIP (HIMMEL-4597, J1932 T2).
+vm_mode_e2e_guard "$(basename -- "$0")" || { vm_guard_rc=$?; [ "$vm_guard_rc" = 1 ] && exit 3; exit "$vm_guard_rc"; }
 HOSTSPEC="${1:-$VM_MODE_HOST}"
 PORT="${2:-$VM_MODE_PORT}"
 IDENT="${3:-$VM_MODE_IDENT}"
