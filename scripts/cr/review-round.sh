@@ -107,6 +107,9 @@ const at = (h) => { h = String(h || "").toLowerCase(); return h.length >= 7 && e
 const critic = (m) => m !== "claude" && m !== "claude-floor" && m !== "codex-adv";
 let reviewed = false;
 const verdicts = new Map(), settled = new Set();
+// HIMMEL-4634: one finding is id + artifact + perspective, as the defer
+// analysis and clear-cr-marker key it; a bare id merges distinct findings.
+const keyOf = (o) => [String(o.finding_id), o.artifact || "diff", o.perspective || "off"].join("\u001f");
 const note = (id, v) => {
   verdicts.set(id, v);
   if (v === "deferred" || v === "disproved") settled.add(id);
@@ -116,9 +119,9 @@ for (const line of lines) {
   try { o = JSON.parse(line); } catch { continue; }
   if (!o || o.branch !== e.BRANCH) continue;
   if (o.kind === "avail" && o.status === "ok" && critic(o.model) && at(o.head)) reviewed = true;
-  if (o.kind === "finding" && critic(o.model) && at(o.head)) note(String(o.finding_id), String(o.verdict || ""));
-  if (o.kind === "amend" && at(o.target_head) && verdicts.has(String(o.finding_id))
-      && o.set && typeof o.set.verdict === "string") note(String(o.finding_id), o.set.verdict);
+  if (o.kind === "finding" && critic(o.model) && at(o.head)) note(keyOf(o), String(o.verdict || ""));
+  if (o.kind === "amend" && at(o.target_head) && verdicts.has(keyOf(o))
+      && o.set && typeof o.set.verdict === "string") note(keyOf(o), o.set.verdict);
 }
 if (e.MODE === "avail") { if (reviewed) process.stdout.write("ok"); }
 else if ([...verdicts].some(([id, v]) => !settled.has(id) && (v === "" || v === "agreed" || v === "fixed"))) process.stdout.write("finding");
@@ -130,7 +133,22 @@ else if ([...verdicts].some(([id, v]) => !settled.has(id) && (v === "" || v === 
 # returns 8 (2 for an unresolvable --head).
 delta_check() {
     full_note="a 4th full round is refused (HIMMEL-4600)"
+    delta_reuse=0
     if [ -f "$delta_state" ]; then
+        # HIMMEL-4616: a delta round whose panel produced no critic rows is
+        # still pending, so the SAME <from> <to> pair may start again. Any
+        # other pair, or a head a critic already reviewed, has used it up.
+        read -r pend_from pend_to pend_trigger < "$delta_state" 2>/dev/null || pend_from=""
+        if [ -n "$head_sha" ] && [ -n "$pend_from" ] && [ -n "$pend_to" ] \
+            && cur_to="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" \
+            && [ "$cur_to" = "$pend_to" ] \
+            && [ "$(ledger_query avail "$pend_to")" != "ok" ]; then
+            delta_from="$pend_from"
+            delta_to="$pend_to"
+            delta_trigger="${pend_trigger:-fix}"
+            delta_reuse=1
+            return 0
+        fi
         echo "review-round: the one delta round was already used on $branch ($(cat "$delta_state" 2>/dev/null)) - a second delta round is refused, and $full_note; ask the console" >&2
         return 8
     fi
@@ -219,7 +237,7 @@ if [ "$verb" = "start" ]; then
     if [ "$round" -ge 3 ]; then
         delta_check
         delta_rc=$?
-        if [ "$delta_rc" -eq 0 ]; then
+        if [ "$delta_rc" -eq 0 ] && [ "${delta_reuse:-0}" -eq 0 ]; then
             tmp_delta="$delta_state.tmp.$$"
             if ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_trigger" > "$tmp_delta" \
                 || ! mv "$tmp_delta" "$delta_state"; then
@@ -234,7 +252,8 @@ if [ "$verb" = "start" ]; then
             exit "$delta_rc"
         fi
     fi
-    round=$((round + 1))
+    # A reused pending delta round keeps the counter it already took.
+    [ "${delta_reuse:-0}" -eq 1 ] || round=$((round + 1))
     tmp_state="$state.tmp.$$"
     current_owner=$(SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
         bash "$lock_lib" status "." "$branch" 2>/dev/null || true)
@@ -608,7 +627,7 @@ for (const o of findings.values()) {
     // is fixed in the PR, so it is never deferred by default.
     const fuClass = typeof o.fu_class === "string" ? o.fu_class.trim() : "";
     if ((severity === "crit" || fuClass === "escape") && !resolved) blocking.push(id);
-    else if (!resolved && (!verdict || verdict === "agreed") && severity === "imp" && !fuClass) unclassified.push(id);
+    else if (!resolved && (!verdict || verdict === "agreed") && severity === "imp" && fuClass !== "hardening") unclassified.push(id);
     else if (!resolved && (!verdict || verdict === "agreed")) pending.push({
       id,
       artifact: o.artifact || "diff",
@@ -656,7 +675,7 @@ if [ -n "$blocking" ] && [ "$delta_mode" -eq 1 ]; then
 fi
 unclassified="$(printf '%s' "$analysis" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).unclassified.join(" ")))' 2>/dev/null)" || unclassified=""
 if [ -n "$unclassified" ]; then
-    echo "review-round: Important finding(s) in the delta round need an explicit fu_class amend before they can be deferred: $unclassified - amend each with --set fu_class=escape (fix it in this PR) or --set fu_class=hardening, then re-run defer" >&2
+    echo "review-round: Important finding(s) in the delta round need an explicit fu_class amend before they can be deferred: $unclassified - amend each with --set fu_class=escape (fix it in this PR) or --set fu_class=hardening (exactly; polish or any other class does not qualify), then re-run defer" >&2
     exit 4
 fi
 if [ -n "$blocking" ]; then
