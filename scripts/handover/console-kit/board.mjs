@@ -372,7 +372,7 @@ for (const n of new Set([...legInfo.values()].map((i) => i.pr).filter(Boolean)))
 }
 
 // ---------------------------------------------------------------- phases
-const LADDER = ['LIVE', 'READY-TO-OPEN', 'PR open', 'READY', 'BLOCKED', 'MERGED', 'WRAPPED', 'WRAPPED, window still open'];
+const LADDER = ['LIVE', 'PARKED-BANK', 'READY-TO-OPEN', 'PR open', 'READY', 'BLOCKED','MERGED', 'WRAPPED', 'WRAPPED, window still open'];
 const labels = [...new Set([...liveLabels, ...locks.keys(), ...tails.keys(), ...legInfo.keys()])]
     .sort((a, b) => parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10) || a.localeCompare(b));
 const legs = labels.map((label) => {
@@ -383,6 +383,7 @@ const legs = labels.map((label) => {
     if (tail === 'WRAPPED' || lock === 'WRAPPED') phase = 'WRAPPED';
     else if (info.pr && mergedNums.has(info.pr)) phase = 'MERGED';
     else if (tail === 'BLOCKED' || tail === 'HALTED') phase = 'BLOCKED';
+    else if (tail === 'PARKED-BANK') phase = 'PARKED-BANK';
     else if (tail === 'READY') phase = info.pr ? 'READY' : 'READY-TO-OPEN';
     else if (info.pr && openByNum.has(info.pr)) phase = 'PR open';
     else phase = 'LIVE';

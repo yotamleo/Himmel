@@ -1308,6 +1308,7 @@ tail3393() {  # tail3393 <bullet>... -- the tails= entry of a leg doc holding th
 contains 'a LIVE bullet saying "not a FINDING" reads LIVE (HIMMEL-3393)' "$(tail3393 '- 23:47 LIVE — PR 1 open. Judgment call, not a FINDING: the ticket says so')" 'N393:LIVE'
 contains 'a LIVE bullet that mentions READY reads LIVE (HIMMEL-3393)' "$(tail3393 '- 23:47 LIVE — send READY at green')" 'N393:LIVE'
 contains 'a LIVE bullet that mentions BLOCKED and WRAPPED reads LIVE (HIMMEL-3393)' "$(tail3393 '- 23:47 LIVE — was BLOCKED, then WRAPPED nothing')" 'N393:LIVE'
+contains 'a leading PARKED-BANK reads PARKED-BANK, not the earlier LIVE (HIMMEL-4570)' "$(tail3393 '- 23:47 PARKED-BANK — committed, waiting for RESUME')" 'N393:PARKED-BANK'
 contains 'a leading FINDING still reads FINDING (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDING — needs a ruling')" 'N393:FINDING'
 contains 'a FINDING retired by a leading RESOLVED reads RESOLVED (HIMMEL-3393)' "$(tail3393 '- 23:47 FINDING — needs a ruling' '- 23:50 RESOLVED — ruled, back to work')" 'N393:RESOLVED'
 contains 'a leading RESOLVED that names FINDING and LIVE reads RESOLVED (HIMMEL-3393)' "$(tail3393 '- 23:50 RESOLVED — FINDING accepted, back to LIVE')" 'N393:RESOLVED'

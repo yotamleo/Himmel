@@ -73,7 +73,7 @@ def plan_globs():
 # HIMMEL-3990 ask 5: a ticket is in progress when a live leg works it. A leg doc is HIMMEL-<n>-N<k>-*.md in the
 # bucket; it is live while its queue lock is held and fresh and its newest marker is not WRAPPED / HALTED.
 LEG_RE = re.compile(r'^HIMMEL-(\d+)-(N\d+[a-z]?)-.*\.md$')
-MARK_RE = re.compile(r'^- (?:\d{1,2}:\d{2}\s+)?(?:\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)(?:[^A-Za-z0-9_].*)?$')
+MARK_RE = re.compile(r'^- (?:\d{1,2}:\d{2}\s+)?(?:\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE|PARKED-BANK|RESUMED)(?:[^A-Za-z0-9_].*)?$')
 PR_RE = re.compile(r'\b(?:PR|READY|GO)\s+#?(\d{3,5})\b')
 
 

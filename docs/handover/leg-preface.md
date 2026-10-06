@@ -42,8 +42,9 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   says where you are now. The tick reads that leading token and nothing else, so
   a marker word later in the text (`LIVE — not a FINDING`, `LIVE — send READY at
   green`) is prose and changes nothing; a bullet that does not start with one of
-  `LIVE` / `FINDING` / `RESOLVED` / `READY` / `BLOCKED` / `HALTED` / `WRAPPED` is
-  invisible to the tick.
+  `LIVE` / `FINDING` / `RESOLVED` / `READY` / `BLOCKED` / `HALTED` / `WRAPPED` /
+  `PARKED-BANK` / `RESUMED` is invisible to the tick (`append-results.sh` refuses
+  a coined all-caps leading word).
 - **Write every marker bullet with `append-results.sh`, never the Edit tool.**
   `bash <repo>/scripts/handover/console-kit/append-results.sh <doc> "<MARKER> …"`
   always appends at the doc's true EOF (HIMMEL-3794); an Edit whose `old_string`
