@@ -94,5 +94,19 @@ check "a malformed line makes it partial" 'digest "$TMP/$SID.p.jsonl" | jq -e ".
 check "a usage error exits 2" 'bun "$DIG" >/dev/null 2>&1; [ $? = 2 ]'
 check "the digest spawns only git and python3, never a model CLI" '[ "$(grep -oE "spawnSync\(\[\"[a-z0-9]+\"" "$DIG" | sort -u | tr -d "\n")" = "spawnSync([\"git\"spawnSync([\"python3\"" ] && ! grep -qE "\b(claude|codex|gemini)\b.*spawn|spawn.*\b(claude|codex|gemini)\b" "$DIG"'
 
+echo "8. a subagent in its own file, a relative path, more denials than ids, a failed trajectory"
+S2=4670c1a5-0000-4000-8000-000000000002
+cp -R "$FX/split" "$TMP/split"
+(cd "$TMP/split" && bun "$DIG" --transcript "$S2.jsonl" --denials-ledger "$FX/classifier-denials.jsonl") >"$TMP/split.json" 2>"$TMP/split.err"
+srow() { jq -c --arg k "$1" --arg a "${2:-main}" '[.failures[] | select(.class == $k and .agent.id == $a)] | .[0] // empty' "$TMP/split.json"; }
+check "a relative --transcript still follows its subagent file" '[ "$(jq .stats.files "$TMP/split.json")" = 2 ] && [ -n "$(srow denied/permission-prompt sub02)$(srow suite/test-trajectory.sh sub02)" ]'
+check "final_red is per agent: main went green, the subagent stayed red" '[ "$(srow suite/test-trajectory.sh | jq -c "[.count, .final_red]")" = "[1,false]" ] && [ "$(srow suite/test-trajectory.sh sub02 | jq -c "[.count, .final_red]")" = "[1,true]" ]'
+check "the trajectory join covers denials past the five tool_call_ids kept" '[ "$(srow denied/read-clamp | jq -c "[.count, (.tool_call_ids | length), .recovered, .identical_retry]")" = "[6,5,false,1]" ]'
+mkdir -p "$TMP/fakebin"
+printf '#!/bin/sh\nexit 1\n' >"$TMP/fakebin/python3"
+chmod +x "$TMP/fakebin/python3"
+check "a failed trajectory.py makes it partial" 'PATH="$TMP/fakebin:$PATH" digest "$TMP/$SID.jsonl" | jq -e ".status == \"partial\" and .stats.trajectory_failed == true" >/dev/null'
+check "a trajectory.py that ran is not a failure" 'jq -e ".stats.trajectory_failed == false" "$TMP/classes.json" >/dev/null'
+
 echo "test-leg-digest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -9,7 +9,7 @@
 // realpath leaves the journal's own directory is skipped, and at most MAX_SUBAGENTS are followed.
 
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 export const MAX_SUBAGENTS = 64; // files followed per session, beside the journal itself
 
@@ -35,7 +35,7 @@ export async function subagentFiles(journal: string, known: Set<string>): Promis
 }
 
 async function listSubagents(journal: string, known: Set<string>): Promise<{ files: string[]; capped: boolean }> {
-  const dir = dirname(journal);
+  const dir = dirname(resolve(journal));
   const subs = join(dir, basename(journal, ".jsonl"), "subagents");
   let names: string[];
   try { names = await readdir(subs); } catch { return { files: [], capped: false }; }
@@ -58,13 +58,17 @@ export async function sessionFiles(journal: string): Promise<{ paths: string[]; 
   return { paths: [journal, ...files], capped };
 }
 
-// Whole files → their non-blank lines in merge order. A final line with no newline is kept.
-export async function mergeJournalFiles(paths: string[]): Promise<string[]> {
+// Whole files → their non-blank lines in merge order. A final line with no newline is kept; a file that cannot be
+// read (gone since it was listed) is skipped and counted.
+export async function mergeJournalFiles(paths: string[]): Promise<{ lines: string[]; skipped: number }> {
   let order = 0;
-  const lines: Line[] = [];
+  let skipped = 0;
+  let lines: Line[] = [];
   for (const p of paths) {
-    const texts = (await readFile(p, "utf8")).split("\n").filter((t) => t.trim());
-    lines.push(...stampLines(texts, { ts: -Infinity }, () => order++));
+    let body: string;
+    try { body = await readFile(p, "utf8"); } catch { skipped++; continue; }
+    // concat, not push(...spread): a long journal has more lines than a call takes arguments
+    lines = lines.concat(stampLines(body.split("\n").filter((t) => t.trim()), { ts: -Infinity }, () => order++));
   }
-  return lines.sort(byTime).map((l) => l.text);
+  return { lines: lines.sort(byTime).map((l) => l.text), skipped };
 }

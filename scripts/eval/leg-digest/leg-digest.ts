@@ -49,6 +49,7 @@ type Row = {
   identical_retry: number | null; recovered: boolean | null;
   first_ts: number | null; last_ts: number | null; tool_call_ids: string[]; final_red?: boolean;
 };
+const allIds = new WeakMap<Row, string[]>(); // every tool_call_id of a row, for the trajectory join; output keeps MAX_IDS
 type Denial = { tool_call_id: string; recovered: boolean; identical: number };
 type LedgerRow = { ts: number; tag: string; used: boolean };
 
@@ -88,9 +89,10 @@ function trackedTests(): Set<string> {
   return new Set(names.map((p) => basename(p)).filter((n) => /^test-[\w.-]+\.sh$|\.test\.ts$/.test(n)));
 }
 
-function trajectory(journal: string): Record<string, unknown> {
+// null when trajectory.py did not run or did not print JSON.
+function trajectory(journal: string): Record<string, unknown> | null {
   const r = spawnSync(["python3", TRAJECTORY, "score", journal, "--denials"]);
-  try { return r.success ? JSON.parse(r.stdout.toString()) : {}; } catch { return {}; }
+  try { return r.success ? JSON.parse(r.stdout.toString()) : null; } catch { return null; }
 }
 
 function ledgerRows(path: string, session: string): LedgerRow[] {
@@ -118,7 +120,7 @@ function inconclusive(session: string, reason: string) {
 
 async function main() {
   const o = args(process.argv.slice(2));
-  let journal = o.transcript;
+  let journal = o.transcript && resolve(o.transcript);
   if (!journal) {
     const r = await resolveJournal(homedir(), o.session!);
     if (!("path" in r)) return inconclusive(o.session!, `journal ${r.status}`);
@@ -134,10 +136,12 @@ async function main() {
 
   const mapper = createJournalMapper({ threadId: session });
   const events: AguiEvent[] = [];
-  for (const l of await mergeJournalFiles(paths)) events.push(...mapper.pushLine(l));
+  const merged = await mergeJournalFiles(paths);
+  for (const l of merged.lines) events.push(...mapper.pushLine(l));
   events.push(...mapper.flush());
 
-  const traj = trajectory(journal);
+  const trajOut = trajectory(journal);
+  const traj = trajOut ?? {};
   const denials = new Map<string, Denial>(((traj.denials as Denial[]) ?? []).map((d) => [d.tool_call_id, d]));
   const hooks = hookNames();
   const tests = trackedTests();
@@ -172,6 +176,7 @@ async function main() {
     r.count++;
     if (ts !== undefined) { r.first_ts ??= ts; r.last_ts = ts; }
     if (id && r.tool_call_ids.length < MAX_IDS) r.tool_call_ids.push(id);
+    if (id) { const all = allIds.get(r) ?? []; all.push(id); allIds.set(r, all); }
     return r;
   };
   const command = (id: string): string => {
@@ -230,7 +235,7 @@ async function main() {
         const a = callAgent.get(e.toolCallId) ?? seen(agentOf(undefined));
         const cmd = command(e.toolCallId);
         if (!e.failure) {
-          if (SUITE.test(cmd)) { const s = suiteLast.get(suiteSub(cmd)); if (s) s.red = false; }
+          if (SUITE.test(cmd)) { const s = suiteLast.get(`${a.id}\0${suiteSub(cmd)}`); if (s) s.red = false; }
           break;
         }
         if (e.failure === "denied") {
@@ -240,7 +245,7 @@ async function main() {
         } else if (e.failure === "suite") {
           m.fail_suite++;
           const sub = suiteSub(cmd);
-          suiteLast.set(sub, { row: add(a, `suite/${sub}`, "suite", e.toolCallId, e.timestamp), red: true });
+          suiteLast.set(`${a.id}\0${sub}`, { row: add(a, `suite/${sub}`, "suite", e.toolCallId, e.timestamp), red: true });
         } else if (e.failure === "blocked") {
           m.fail_blocked++;
           add(a, "blocked/-", "blocked", e.toolCallId, e.timestamp);
@@ -259,7 +264,7 @@ async function main() {
   // The trajectory join: main-agent denied rows take recovered / identical from trajectory.py by tool_call_id.
   for (const r of rows.values()) {
     if (r.failure !== "denied" || r.agent.id !== "main") continue;
-    const ds = r.tool_call_ids.map((id) => denials.get(id)).filter((d): d is Denial => !!d);
+    const ds = (allIds.get(r) ?? []).map((id) => denials.get(id)).filter((d): d is Denial => !!d);
     if (ds.length === 0) continue;
     r.identical_retry = ds.reduce((n, d) => n + d.identical, 0);
     r.recovered = ds.every((d) => d.recovered);
@@ -278,10 +283,11 @@ async function main() {
     ...[...mapperDenied].filter((id) => !denials.has(id)).map((id) => ({ tool_call_id: id, only: "mapper" })),
     ...[...denials.keys()].filter((id) => !mapperDenied.has(id)).map((id) => ({ tool_call_id: id, only: "trajectory" })),
   ];
-  const stats = { ...mapper.stats, files: paths.length, subagent_cap_hit: capped, denial_divergence: divergence };
+  const stats = { ...mapper.stats, files: paths.length, files_skipped: merged.skipped, subagent_cap_hit: capped,
+    trajectory_failed: trajOut === null, denial_divergence: divergence };
   return {
     digest_v: DIGEST_SCHEMA, mapper_v: MAPPER_SCHEMA, trajectory_v: traj.trajectory_v ?? null, session,
-    status: mapper.stats.malformed > 0 || capped ? "partial" : "ok",
+    status: mapper.stats.malformed > 0 || capped || merged.skipped > 0 || trajOut === null ? "partial" : "ok",
     model: mainModel,
     metrics: { ...m, red_before_green: bool(traj.red_before_green), denial_recovery: traj.denial_recovery ?? null,
       identical_denied_retries: traj.identical_denied_retries ?? null, verify_before_claim: bool(traj.verify_before_claim) },
