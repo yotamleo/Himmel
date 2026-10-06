@@ -142,7 +142,8 @@ diff_rc=0
 # checkout a REFUSAL (exit 7) instead of a silently-wrong review.
 # Diff from the CAPTURED base SHA, not the live $db name (HIMMEL-1984): $db
 # stays the operator-visible name in messages.
-diff_out=$(git diff "$db_sha...$HEAD_SHA") || diff_rc=$?
+diff_range="$db_sha...$HEAD_SHA"
+diff_out=$(git diff "$diff_range") || diff_rc=$?
 panel_avail_lines=""   # "panel-availability: <slug> ok|unavailable (rc=N)" lines
 panel_findings=""      # the merged findings block
 # HIMMEL-2542 elapsed tell: a real panel round takes ~2 minutes, so an empty
@@ -161,13 +162,35 @@ elif [ "$diff_rc" -ne 0 ]; then
 elif [ -z "$diff_out" ]; then
     echo "empty diff - critic panel skipped"
 else
-    review_round="$(bash "$HIMMEL_ROOT/scripts/cr/review-round.sh" start --branch "$BRANCH")"
+    review_round="$(bash "$HIMMEL_ROOT/scripts/cr/review-round.sh" start --branch "$BRANCH" --head "$HEAD_SHA" --base-sha "$db_sha")"
     round_rc=$?
+    if [ "$round_rc" -eq 8 ]; then
+        echo "panel-first-pass ABORT - the three-round /pr-check cap refused another round on $BRANCH (see the reason above). Nothing was reviewed." >&2
+        exit 8
+    fi
     if [ "$round_rc" -ne 0 ]; then
         echo "panel-first-pass ABORT - could not persist the review round for $BRANCH (rc=$round_rc). Nothing was reviewed." >&2
         exit "$round_rc"
     fi
-    printf 'pr-check: round %s of 3 on %s\n' "$review_round" "$BRANCH"
+    case "$review_round" in
+        *" delta "*)
+            # HIMMEL-4600: the one delta round reviews only last-reviewed
+            # head..HEAD_SHA, never the whole branch again.
+            delta_from="${review_round##* delta }"
+            review_round="${review_round%% *}"
+            diff_range="$delta_from..$HEAD_SHA"
+            diff_out=$(git diff "$diff_range") || diff_rc=$?
+            if [ "$diff_rc" -ne 0 ] || [ -z "$diff_out" ]; then
+                echo "panel-first-pass ABORT - could not read the delta diff $diff_range (rc=$diff_rc). Nothing was reviewed." >&2
+                exit 5
+            fi
+            printf 'pr-check: delta round %s on %s (from %s)\n' "$review_round" "$BRANCH" "$delta_from"
+            echo "delta round blocking set: Critical or escape-class only - every other finding is deferred at step 4.9 (HIMMEL-4600)."
+            ;;
+        *)
+            printf 'pr-check: round %s of 3 on %s\n' "$review_round" "$BRANCH"
+            ;;
+    esac
     [ -z "${CR_PROFILE:-}" ] && echo "Default cross-model CR - no free critics registered, using the PAID codex anchor (~2min; set CR_PROFILE=none for instant claude-only)."
     panel_ran=1
     panel_tmp=$(mktemp -t cr-panel-avail.XXXXXX)
@@ -203,7 +226,7 @@ PINABORT
         # loudly (same fail-open contract as below).
         if command -v rtk >/dev/null 2>&1; then
             # Same captured-base rule as the first attempt (HIMMEL-1984).
-            retry_diff=$(rtk proxy git diff "$db_sha...$HEAD_SHA" 2>/dev/null) || retry_diff=""
+            retry_diff=$(rtk proxy git diff "$diff_range" 2>/dev/null) || retry_diff=""
             if [ -n "$retry_diff" ]; then
                 retry_tmp=$(mktemp -t cr-panel-avail.XXXXXX)
                 panel_findings=$(printf '%s' "$retry_diff" | CR_USAGE_LOG=1 CR_REVIEW_ROUND="$review_round" bash "$HIMMEL_ROOT/scripts/cr/critic-panel.sh" --head "$HEAD_SHA" --branch "$BRANCH" --base "$db" --base-sha "$db_sha" 2>"$retry_tmp")
