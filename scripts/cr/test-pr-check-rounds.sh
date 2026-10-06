@@ -374,6 +374,24 @@ assert_eq "$newwork_rc" "8" "new work after a clean round 3 gets no delta round"
 assert_has "$newwork_out" "neither answers a round-3 finding nor only merges" "no-trigger refusal names the reason"
 assert_eq "$(cat "$git_dir/cr-review-rounds/newwork.round")" "3" "a refused delta leaves the counter at 3"
 
+# A merge of main that also carries its own edit is new work, not a merge-forward.
+three_rounds evilmerge clean
+git -C "$repo" checkout -q main
+printf 'main-forward-evil\n' > "$repo/main-evil.txt"
+git -C "$repo" add main-evil.txt
+git -C "$repo" commit -q -m main-forward-evil
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q evilmerge
+git -C "$repo" merge -q --no-commit main
+printf 'smuggled\n' >> "$repo/evilmerge.txt"
+git -C "$repo" add evilmerge.txt
+git -C "$repo" commit -q --no-edit
+evil_head="$(git -C "$repo" rev-parse evilmerge)"
+evil_out="$(cd "$repo" && bash "$SCRIPT" --head "$evil_head" --branch evilmerge 2>&1)"; evil_rc=$?
+assert_eq "$evil_rc" "8" "a merge that adds its own edit gets no merge-forward delta round"
+assert_has "$evil_out" "neither answers a round-3 finding nor only merges" "evil-merge refusal names the reason"
+assert_eq "$(cat "$git_dir/cr-review-rounds/evilmerge.round")" "3" "a refused evil merge leaves the counter at 3"
+
 # Later controls only need to observe whether clearance was attempted; the
 # successful paths above deliberately used the real gate.
 install_clear_stub

@@ -152,11 +152,17 @@ delta_check() {
         delta_trigger="fix"
         return 0
     fi
-    # Merge-forward: at least one merge since the reviewed head, and every
-    # non-merge commit it brought is already on the captured base.
+    # Merge-forward: at least one merge since the reviewed head, every
+    # non-merge commit it brought is already on the captured base, and the
+    # new head's tree is exactly a clean merge of the reviewed head with the
+    # base point it merged - so a merge carrying its own edits or conflict
+    # resolutions is new work, not a merge-forward.
     if [ -n "$base_sha" ] \
         && [ -n "$(git rev-list --merges "$delta_from..$delta_to" 2>/dev/null)" ] \
-        && [ -z "$(git rev-list --no-merges "$delta_from..$delta_to" "^$base_sha" 2>/dev/null)" ]; then
+        && [ -z "$(git rev-list --no-merges "$delta_from..$delta_to" "^$base_sha" 2>/dev/null)" ] \
+        && merged_base="$(git merge-base "$delta_to" "$base_sha" 2>/dev/null)" \
+        && clean_tree="$(git merge-tree --write-tree "$delta_from" "$merged_base" 2>/dev/null)" \
+        && [ "$clean_tree" = "$(git rev-parse "$delta_to^{tree}" 2>/dev/null)" ]; then
         delta_trigger="merge-forward"
         return 0
     fi
