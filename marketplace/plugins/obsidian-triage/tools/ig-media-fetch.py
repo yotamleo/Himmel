@@ -394,6 +394,8 @@ def download_media_scrapling(ig: dict, py: str):
     except subprocess.TimeoutExpired:
         ig_throttle.record(ok=False)
         return None, "download_timeout", None
+    except OSError:
+        return None, "scrapling_missing", None
     try:
         out = json.loads(proc.stdout)
     except ValueError:

@@ -51,6 +51,14 @@ first="$(jq_py "$tmp/car.json" 'd["items"][0]["url"]')"
 last="$(jq_py "$tmp/car.json" 'd["items"][-1]["url"]')"
 [ "$first" != "$last" ] && a=ok || a=same
 assert "carousel items are distinct children" ok "$a"
+assert "carousel children in page order" "1 7 13 19 25 31" \
+  "$(jq_py "$tmp/car.json" '" ".join(i["url"].split("CARFIX22_")[1].split(".")[0] for i in d["items"])')"
+
+# --- Test 2b: the widest candidate wins, whatever its position -------------
+echo "Test 2b: widest candidate"
+printf '%s' '<script type="application/json">{"x":{"code":"WIDE0001","image_versions2":{"candidates":[{"width":320,"url":"https://a.cdninstagram.com/s.jpg"},{"width":1080,"url":"https://a.cdninstagram.com/l.jpg"},{"width":640,"url":"https://a.cdninstagram.com/m.jpg"}]}}}</script>' >"$tmp/wide.html"
+python3 "$HELPER" --from-html "$tmp/wide.html" --shortcode WIDE0001 >"$tmp/wide.json"
+assert "widest candidate chosen" "https://a.cdninstagram.com/l.jpg" "$(jq_py "$tmp/wide.json" 'd["items"][0]["url"]')"
 
 # --- Test 3: wrong shortcode -> no_media, exit 4 ---------------------------
 echo "Test 3: no media for another shortcode"
@@ -178,6 +186,14 @@ grep -qF "[gallery-dl]" "$tmp/v7b.out" && a=ok || a=no
 assert "gallery-dl served it" ok "$a"
 cp "$tmp/curl.off" "$tmp/bin/curl"
 export STUB_JSON="$tmp/wall.json" STUB_RC=4
+
+# --- Test 7c: unlaunchable scrapling interpreter -> gallery-dl fallback ----
+echo "Test 7c: scrapling interpreter missing"
+make_vault "$tmp/v7c" SCRP0072
+IG_SCRAPLING_PYTHON="$tmp/no-such-python" run_tool "$tmp/v7c" >"$tmp/v7c.out" 2>"$tmp/v7c.err"
+assert "missing-interpreter run exit 0" 0 "$?"
+grep -qF "[gallery-dl]" "$tmp/v7c.out" && a=ok || a=no
+assert "gallery-dl served it" ok "$a"
 
 # --- Test 8: Scrapling login wall, no fallback -> retryable failure --------
 echo "Test 8: no fallback available"
