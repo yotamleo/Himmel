@@ -140,9 +140,10 @@ Terms the definitions use:
   `*-test`, `*_test` or `*.test` with a script extension, or any `.bats`.
   A runner (`pytest`, `python3 -m pytest`, `bats`) runs the test files it
   names; one that names none, or `npm test` and the like, matches any test.
-  `bash -n` is a syntax check, not a run, and so is a runner given a flag
-  that only lists, counts or describes tests (`--collect-only`, `--help`,
-  `--count` and the like). The command is split into commands at `&&`,
+  `bash -n` (also inside a flag group such as `-nx`) is a syntax check, not
+  a run, and so is a runner given a flag that only lists, counts or
+  describes tests (`--collect-only`, `--help`, `--count`, bats `-c` and the
+  like). The command is split into commands at `&&`,
   `||`, `;`, `|`, `&` and newlines outside quotes.
 - **Outcome:** a test run passed if its tool result is not an error, and
   failed if it is. A run whose exit status is masked has no outcome. It is

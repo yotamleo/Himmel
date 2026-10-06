@@ -47,6 +47,7 @@ expect chain-trailing     true  null  0   true
 expect runner-named       false null  0   false
 expect runner-named-ok    false null  0   true
 expect not-a-run          false null  0   false
+expect runner-config      false null  0   true
 
 echo "2. unreadable or empty input"
 : >"$TMP/empty.jsonl"

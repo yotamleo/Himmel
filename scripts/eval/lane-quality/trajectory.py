@@ -29,6 +29,7 @@ malformed line is skipped, and only these shapes are relied on (Claude Code
 Stdlib only.
 """
 import argparse
+import itertools
 import json
 import os
 import re
@@ -49,7 +50,9 @@ INTERPRETERS = ("bash", "sh", "zsh", "dash", "ksh", "python", "python3", "node",
 RUNNERS = ("pytest", "bats")
 # Runner flags that list, count or describe tests without running any.
 NO_RUN_FLAGS = ("--collect-only", "--co", "--help", "-h", "--version", "-V", "--fixtures", "--markers",
-                "--count", "-c")
+                "--count")
+# `-c` counts tests under bats but names a config file under pytest.
+NO_RUN_FLAGS_BATS = ("-c",)
 RUNNER_SUBCMD = ("npm", "pnpm", "yarn", "bun", "go", "cargo", "make")
 WRAPPERS = ("env", "time", "sudo", "command", "exec", "nice", "nohup")
 # Setup whose failure a test's RED is not mistaken for, in `cd d && test`.
@@ -200,7 +203,8 @@ def _segment_target(seg):
     if first in INTERPRETERS and toks[1:3] == ["-m", "pytest"]:
         toks, first = toks[2:], "pytest"
     if first in RUNNERS:
-        if any(a in NO_RUN_FLAGS for a in toks[1:]):
+        no_run = NO_RUN_FLAGS + (NO_RUN_FLAGS_BATS if first == "bats" else ())
+        if any(a in no_run for a in toks[1:]):
             return None
         named = {os.path.basename(a.split("::")[0]) for a in toks[1:] if not a.startswith("-")}
         return frozenset(n for n in named if TEST_FILE_RE.search(n)) or frozenset(["*"])
@@ -209,7 +213,9 @@ def _segment_target(seg):
     script = toks[0]
     if first in INTERPRETERS:
         rest = toks[1:]
-        if "-n" in rest and first in ("bash", "sh", "zsh", "dash", "ksh"):
+        opts = list(itertools.takewhile(lambda t: t.startswith("-"), rest))
+        short = [t for t in opts if not t.startswith("--")]
+        if any("n" in t[1:] for t in short) and first in ("bash", "sh", "zsh", "dash", "ksh"):
             return None  # a syntax check runs nothing
         rest = [t for t in rest if not t.startswith("-")]
         if not rest:
