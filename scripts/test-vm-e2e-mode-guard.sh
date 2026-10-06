@@ -14,6 +14,7 @@ fail() { echo "FAIL: $1"; failures=$((failures + 1)); }
 T="$(mktemp -d "${TMPDIR:-/tmp}/test-vm-e2e-guard.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home/.himmel" "$T/bin"
+unset HIMMEL_VM_MODE_CONFIG
 cat > "$T/bin/ssh" <<'SH'
 #!/bin/sh
 printf '%s\n' "$*" >> "$SSH_LOG"

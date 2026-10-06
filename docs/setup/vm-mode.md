@@ -23,10 +23,11 @@ touches, with the restore command written down). The VM e2e suites
 (`scripts/test-*-vm.sh`, `scripts/test-luna-upgrade-skill-vm.py`) SKIP with a
 `vm.mode=none` reason and exit 3.
 
-**Fail closed.** A config that exists but cannot be parsed (or whose top level
-or `vm` is not an object), an unknown mode, `remote` without `vm.remote.ssh`,
-or an invalid port, ssh target or identity (whitespace or a leading `-`)
-resolves to `none`, with a note saying why. Nothing ever releases a hold on a
+**Fail closed.** A config path that exists but is not a readable file (a
+directory, a dangling symlink), a config that cannot be parsed (or whose top
+level or `vm` is not an object), an unknown mode, `remote` without
+`vm.remote.ssh`, or an invalid port, ssh target or identity (whitespace or a
+leading `-`, checked after `~` expands) resolves to `none`, with a note saying why. Nothing ever releases a hold on a
 guess.
 
 Check what is in force:

@@ -19,10 +19,11 @@
 #          backup of the touched paths, taken before the step, restore command
 #          printed). It is never auto-released.
 #
-# Fail closed: a config that exists but cannot be read (malformed JSON, no
-# python3, a non-object config or vm), an unknown vm.mode value, remote without
-# vm.remote.ssh, or an ssh/identity carrying whitespace or a leading dash (the
-# VM drivers word-split them into ssh's argv) resolves
+# Fail closed: a config path that exists but is not a readable file (a
+# directory, a dangling symlink, malformed JSON, no python3, a non-object
+# config or vm), an unknown vm.mode value, remote without vm.remote.ssh, or an
+# ssh/identity carrying whitespace or a leading dash, checked after ~ expands
+# (the VM drivers word-split them into ssh's argv), resolves
 # to `none` with a note saying why — a hold is never released on a guess.
 #
 # Source it and call:
@@ -43,7 +44,11 @@ vm_mode_load() {
     local cfg="${HIMMEL_VM_MODE_CONFIG:-${HOME:-}/.himmel/config.json}" line
     VM_MODE=local VM_MODE_HOST=localhost VM_MODE_PORT=2222
     VM_MODE_IDENT="${HOME:-}/.ssh/id_ed25519" VM_MODE_NOTE=""
-    [ -f "$cfg" ] || return 0
+    [ -e "$cfg" ] || [ -L "$cfg" ] || return 0
+    if [ ! -f "$cfg" ]; then
+        VM_MODE=none VM_MODE_NOTE="$cfg exists but is not a readable file"
+        return 0
+    fi
     if ! command -v python3 >/dev/null 2>&1; then
         VM_MODE=none VM_MODE_NOTE="python3 not found, cannot read $cfg"
         return 0
@@ -70,7 +75,9 @@ if m == "remote":
     ssh = ssh.strip()
     port = r.get("port", 22)
     ident = r.get("identity")
-    bad = (ssh.startswith("-") or any(c.isspace() for c in ssh)
+    if isinstance(ident, str):
+        ident = os.path.expanduser(ident)
+    bad =(ssh.startswith("-") or any(c.isspace() for c in ssh)
            or isinstance(port, bool) or not str(port).isdigit() or not 0 < int(port) < 65536
            or (ident is not None and (not isinstance(ident, str) or ident.startswith("-") or any(c.isspace() for c in ident))))
     if bad:
@@ -78,7 +85,7 @@ if m == "remote":
     print("host=" + ssh)
     print("port=%d" % int(port))
     if ident:
-        print("ident=" + os.path.expanduser(ident))
+        print("ident=" + ident)
 ' "$cfg" 2>/dev/null)" || { VM_MODE=none VM_MODE_NOTE="cannot read $cfg"; return 0; }
     while IFS= read -r line; do
         case "$line" in

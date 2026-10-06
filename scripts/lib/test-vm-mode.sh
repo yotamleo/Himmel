@@ -72,6 +72,16 @@ cfg '{"vm":"none"}'
 check "non-object vm -> none" "none" 0 mode
 cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","identity":"~/my key -oProxyCommand=x"}}}'
 check "identity with whitespace -> none" "operator-ack+rollback-point" 1 route
+mkdir -p "$T/sp home/.himmel"
+printf '%s\n' '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","identity":"~/.ssh/k"}}}' > "$T/sp home/.himmel/config.json"
+out="$(HOME="$T/sp home" bash "$LIB" route 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && [ "$out" = "operator-ack+rollback-point" ]; then pass "identity expanding to whitespace -> none"
+else fail "identity expanding to whitespace: rc=$rc '$out'"; fi
+rm -f "$T/home/.himmel/config.json"; mkdir "$T/home/.himmel/config.json"
+check "config path is a directory -> none" "none" 0 mode
+rmdir "$T/home/.himmel/config.json"; ln -s "$T/missing.json" "$T/home/.himmel/config.json"
+check "config is a dangling symlink -> none" "none" 0 mode
+rm -f "$T/home/.himmel/config.json"
 
 echo "== sourced: vm_mode_load sets the variables"
 cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","port":2202}}}'
