@@ -580,6 +580,8 @@ owner/ver-behind=v0.9.0,v2.0.0,v2.0.0-beta
 owner/ver-ahead=v0.1.0,v0.2.0
 owner/base-cur=v1.0.0,v1.2.3,v1.2.3-rc1
 owner/base-behind=v1.0.0,v2.0.0
+owner/base-held=v1.0.0,v2.0.0
+owner/base-held-expired=v1.0.0,v3.0.0
 TAGS
 MISSING="$W7/does_not_exist_dir"
 cat >"$W7/upstreams.json" <<JSON
@@ -592,6 +594,8 @@ cat >"$W7/upstreams.json" <<JSON
  {"name":"checkout-gcs","kind":"commit_head","mode":"checkout","tracked_repo":"owner/gcs-repo","checkout_path":"$GCSDIR","tier":"B"},
  {"name":"base-cur","kind":"tag_release","mode":"base","tracked_repo":"owner/base-cur","synced_base":"v1.2.3","tier":"A"},
  {"name":"base-behind","kind":"tag_release","mode":"base","tracked_repo":"owner/base-behind","synced_base":"v1.0.0","tier":"A"},
+ {"name":"base-held","kind":"tag_release","mode":"base","tracked_repo":"owner/base-held","synced_base":"1.0.0","tier":"A"},
+ {"name":"base-held-expired","kind":"tag_release","mode":"base","tracked_repo":"owner/base-held-expired","synced_base":"1.0.0","tier":"A"},
  {"name":"probe-cur","kind":"tag_release","mode":"probe","tracked_repo":"owner/ver-current","version_command":"printf 1.2.3","version_regex":"[0-9]+[.][0-9]+[.][0-9]+[0-9A-Za-z.-]*","tier":"A"},
  {"name":"probe-behind","kind":"tag_release","mode":"probe","tracked_repo":"owner/ver-behind","version_command":"printf 1.2.3","version_regex":"[0-9]+[.][0-9]+[.][0-9]+[0-9A-Za-z.-]*","tier":"A"},
  {"name":"probe-ahead","kind":"tag_release","mode":"probe","tracked_repo":"owner/ver-ahead","version_command":"printf 1.5.0","version_regex":"[0-9]+[.][0-9]+[.][0-9]+[0-9A-Za-z.-]*","tier":"A"},
@@ -609,7 +613,16 @@ KJSON
 empty_mjson="$W7/empty_mjson.json"
 printf '{"plugins":[]}' >"$empty_mjson"
 printf '{}' >"$W7/empty_ups.json"
-GHSTATE="$W7/state" PATH="$W7/bin:$PATH" \
+# pin-holds rows for carried upstreams (HIMMEL-3952): eco "upstream", key = the
+# registry name. Both holds reviewed 2.0.0, but base-held-expired's upstream
+# has since shipped v3.0.0, so its hold no longer applies.
+cat >"$W7/holds.json" <<'JSON'
+{"holds":[
+ {"eco":"upstream","key":"base-held","current":"1.0.0","latest_reviewed":"2.0.0","reason":"fixture upstream hold"},
+ {"eco":"upstream","key":"base-held-expired","current":"1.0.0","latest_reviewed":"2.0.0","reason":"fixture upstream hold"}
+]}
+JSON
+GHSTATE="$W7/state" PATH="$W7/bin:$PATH" DRIFT_PIN_HOLDS="$W7/holds.json" \
   DRIFT_REGISTRY="$W7/upstreams.json" DRIFT_KNOWN_MARKETPLACES="$W7/km.json" \
   DRIFT_MJSON="$empty_mjson" DRIFT_UPSTREAMS="$W7/empty_ups.json" \
   DRIFT_TEST_DEFAULT_DIR="$CK1" \
@@ -636,6 +649,8 @@ if grepq "$(printf '%s' "$sec7" | grep 'weird-mode')" "mode 'bogus' unknown"; th
 # 7b. tag_release paths.
 if grepq "$sec7" '^  base-cur: CURRENT'; then ok "tag_release base synced -> CURRENT"; else bad "base-cur not CURRENT"; fi
 if grepq "$sec7" '^  base-behind: BEHIND'; then ok "tag_release base stale -> BEHIND"; else bad "base-behind not BEHIND"; fi
+if grepq "$sec7" '^  base-held: HELD '; then ok "tag_release base with a matching pin-holds row -> HELD, not BEHIND"; else bad "base-held not HELD; $(printf '%s' "$sec7" | grep base-held)"; fi
+if grepq "$sec7" '^  base-held-expired: BEHIND'; then ok "tag_release hold expires once upstream moves past the reviewed release -> BEHIND"; else bad "base-held-expired not BEHIND; $(printf '%s' "$sec7" | grep base-held-expired)"; fi
 if grepq "$sec7" '^  probe-cur: CURRENT'; then ok "tag_release probe synced -> CURRENT"; else bad "probe-cur not CURRENT"; fi
 if grepq "$sec7" '^  probe-behind: BEHIND'; then ok "tag_release probe stale -> BEHIND"; else bad "probe-behind not BEHIND"; fi
 if grepq "$(printf '%s' "$sec7" | grep 'probe-ahead')" 'CURRENT'; then ok "tag_release probe installed-ahead -> CURRENT (not a phantom BEHIND)"; else bad "probe-ahead not CURRENT; $(printf '%s' "$sec7" | grep probe-ahead)"; fi
