@@ -73,6 +73,12 @@ A metric regresses when it moves the wrong way past its noise band:
 
 A metric with no direction in that table is printed as `info` and never gated.
 
+A candidate whose `meta.observational` is true (the `leg-trajectory` rows) is
+not compared at all: eval-compare lists the series (the latest `ok` row per
+`run_id`, same `confighash`) with runs, mean and latest per metric, prints no
+verdict and exits 3. The exporter likewise emits no `baseline_delta` or
+`regression` sample for such rows.
+
 Exit codes:
 
 | Code | Meaning |
@@ -214,7 +220,7 @@ call against the most recent identical denial before it, so the counts sum to
 `leg-digest/leg-digest.ts` (Bun) reads a leg's journal and its subagent
 transcripts, merged in the order the AG-UI page uses. It maps them with the
 AG-UI mapper and prints one digest JSON. It is read-only, makes no model call
-and writes nothing. Ledger rows come in P2.
+and writes nothing; `leg_ledger.py` (below) turns a digest into ledger rows.
 
 ```bash
 bun scripts/eval/leg-digest/leg-digest.ts --transcript ~/.claude/projects/<slug>/<session>.jsonl
@@ -248,3 +254,34 @@ bun scripts/eval/leg-digest/leg-digest.ts --session <uuid>   # resolved under ~/
   - 1.50 s wall on the station's largest journal (58 MB).
 
   The budget is 5 s per leg.
+
+## leg_ledger: digests into the leg ledgers (HIMMEL-4670 P2)
+
+`leg-digest/leg_ledger.py` writes one digest as:
+
+1. one `leg-failures` row per digest failures row
+   (`$HIMMEL_LEG_FAILURES_LEDGER`, else `~/.himmel/leg-failures.jsonl`). The
+   row carries closed-list categories only; unknown keys are refused, so no
+   journal text can ride in;
+2. one eval-runs row, `eval: leg-trajectory`, `run_id` = the session uuid,
+   `meta.observational: true`;
+3. the digest at `~/.himmel/state/leg-digest/<session>.json`, last, as the
+   commit marker.
+
+It is idempotent by session, under a per-session flock: a marker with status
+`ok` appends nothing; otherwise only the missing rows are appended (keyed by
+agent and class), and a later `ok` digest supersedes a `partial` or
+`inconclusive` one with one more eval-runs row.
+
+```bash
+python3 scripts/eval/leg-digest/leg_ledger.py record --digest d.json --leg N1 --ticket HIMMEL-1 [--console C --pr N --doc D]
+python3 scripts/eval/leg-digest/leg_ledger.py backfill --since 2026-10-01 [--projects ~/.claude/projects]
+python3 scripts/eval/leg-digest/leg_ledger.py validate ~/.himmel/leg-failures.jsonl
+```
+
+`backfill` digests every main journal whose first timestamp is on or after
+`--since` and whose `customTitle` names a leg (`<TICKET>-N<n>-...`), reading
+the journals only. It refuses a journal whose cwd sits under a salus root (a
+`.salus` marker on an ancestor, or a root in `~/.config/claude-glm/phi-roots`
+or `egress-denylist`). Every ledger and the state directory take a flag, so a
+trial backfill can write to scratch copies.

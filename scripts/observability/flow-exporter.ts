@@ -1904,6 +1904,8 @@ function defaultLanesPath(): string {
 // scripts/eval/eval-compare makes. The regression gauge ports eval-compare's
 // verdict (CI bounds when the ledger has them, else the band in
 // scripts/eval/eval-compare.json), so the alert and the CLI cannot disagree.
+// A meta.observational row (leg-trajectory) gets no delta and no verdict, as
+// in eval-compare.
 type EvalRunRow = {
   eval: string;
   status: string;
@@ -1912,6 +1914,7 @@ type EvalRunRow = {
   n: number | null;
   metrics: Record<string, number | null>;
   ci: Record<string, { lo: number; hi: number }>;
+  observational: boolean;
 };
 type EvalSpec = { higher_is_better?: boolean; band?: number; band_rel?: number };
 type EvalBound = { lo: number; hi: number };
@@ -1955,6 +1958,7 @@ function parseEvalRunRow(raw: unknown): EvalRunRow | null {
     n: typeof r.n === "number" && Number.isInteger(r.n) && r.n >= 0 ? r.n : null,
     metrics,
     ci,
+    observational: !!r.meta && typeof r.meta === "object" && (r.meta as Record<string, unknown>).observational === true,
   };
 }
 
@@ -2049,6 +2053,8 @@ function evalRunsMetrics(path: string, thresholdsPath: string, nowMs: number): {
         lower.push(sample("himmel_eval_metric_ci_lower", labels, bound.lo));
         upper.push(sample("himmel_eval_metric_ci_upper", labels, bound.hi));
       }
+      // an observational series (HIMMEL-4670 spec 3.1) has values, never a baseline verdict
+      if (cand.observational || base?.observational) continue;
       const bv = base ? base.metrics[m] ?? null : null;
       if (bv === null) continue;
       delta.push(sample("himmel_eval_metric_baseline_delta", labels, v - bv));

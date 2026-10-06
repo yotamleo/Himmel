@@ -184,6 +184,19 @@
       "schema_version": 1,
       "envelope": ["v", "ts", "host", "source", "kind"],
       "grandfathered": false
+    },
+    {
+      "id": "leg-failures",
+      "default_path": "~/.himmel/leg-failures.jsonl",
+      "override_env": "HIMMEL_LEG_FAILURES_LEDGER",
+      "writer": "scripts/eval/leg-digest/leg_ledger.py",
+      "readers": [],
+      "format": "jsonl",
+      "rotation": "none",
+      "retention": "unbounded",
+      "schema_version": 1,
+      "envelope": ["v", "ts", "host", "source", "kind"],
+      "grandfathered": false
     }
   ]
 }
