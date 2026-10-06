@@ -58,6 +58,8 @@ python3 "$LIB" append --ledger "$L2" --eval demo --source s --config-json '{}' -
 if [ "$rc" -ne 0 ]; then pass "append: a NaN metric is refused"; else fail "append: a NaN metric was accepted"; fi
 python3 "$LIB" append --ledger "$L2" --eval demo --source s --config-json '{}' --metrics-json '{"s":1}' --ci-json '{"s":{"lo":-Infinity,"hi":1}}' >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ]; then pass "append: an infinite CI bound is refused"; else fail "append: an infinite CI bound was accepted"; fi
+python3 "$LIB" append --ledger "$L2" --eval demo --source s --config-json '{}' --metrics-json '{"s":1}' --cases-json '{"q1":{"s":NaN}}' >/dev/null 2>&1; rc=$?
+if [ "$rc" -ne 0 ]; then pass "append: a NaN case metric is refused"; else fail "append: a NaN case metric was accepted"; fi
 if [ ! -s "$L2" ]; then pass "append: refusals wrote nothing"; else fail "append: a refused row landed"; fi
 echo '{"v":1,"kind":"eval-run"}' >"$TMP/broken.jsonl"
 python3 "$LIB" validate "$TMP/broken.jsonl" >/dev/null 2>&1; rc=$?
@@ -126,6 +128,9 @@ row "$P" qmd-quality p1 "$C" '{"hybrid.mrr":0.99}' "" partial
 row "$P" qmd-quality p2 "$C" '{"hybrid.mrr":0.70}'
 out=$(python3 "$CMP" qmd-quality --ledger "$P" --thresholds "$TH" 2>&1); rc=$?
 eq "compare: a partial run is skipped as a baseline" "$rc" "3"
+out=$(python3 "$CMP" qmd-quality --ledger "$P" --thresholds "$TH" --baseline p1 2>&1); rc=$?
+eq "compare: a named partial baseline is refused" "$rc" "3"
+has "compare: says the named baseline is not ok" "$out" "partial"
 
 # CI bounds beat the per-eval band.
 V="$TMP/ci.jsonl"

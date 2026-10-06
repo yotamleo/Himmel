@@ -201,7 +201,7 @@ def validate(row):
             p.append("cases must be an object or null")
         else:
             for cid, cm in cases.items():
-                if not isinstance(cm, dict) or any(v is not None and not isinstance(v, (int, float, bool))
+                if not isinstance(cm, dict) or any(v is not None and not (_num(v) or isinstance(v, bool))
                                                    for v in cm.values()):
                     p.append("case %s must map names to numbers, booleans or null" % cid)
     if not isinstance(row["meta"], dict):
