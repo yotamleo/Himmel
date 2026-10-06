@@ -9,7 +9,9 @@
 #
 # HIMMEL-3305 / HIMMEL-3393: a leg's tails= status is the marker its newest
 # status bullet STARTS with. The vocabulary (docs/handover/leg-preface.md -- change
-# the two together) is LIVE / FINDING / RESOLVED / READY / BLOCKED / HALTED / WRAPPED.
+# the two together) is LIVE / FINDING / RESOLVED / READY / BLOCKED / HALTED / WRAPPED, plus
+# PARKED-BANK / RESUMED (HIMMEL-4570: a leg told PARK-BANK writes PARKED-BANK and stops until
+# RESUME; before this a parked tail was invisible and the console read the earlier LIVE).
 # RESOLVED retires a FINDING the console has answered: without it FINDING stayed
 # the newest marker for the whole window the leg spent doing the authorised work.
 # A status bullet is `- [HH:MM] <MARKER> ...` (a bold `**MARKER**` also reads). The
@@ -39,7 +41,7 @@
 #
 # Source this file; it defines one function, runs nothing. Bash 3.2-compatible.
 leg_tail_status() {  # leg_tail_status <leg doc> -- prints the marker, or nothing
-    local marker_re='^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE)([^A-Za-z0-9_].*)?$'
+    local marker_re='^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?(WRAPPED|READY|RESOLVED|BLOCKED|HALTED|FINDING|LIVE|PARKED-BANK|RESUMED)([^A-Za-z0-9_].*)?$'
     local final
     final=$(sed -nE '/^- /p' "$1" 2>/dev/null | tail -n 1)
     if [ -z "$final" ]; then

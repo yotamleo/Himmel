@@ -35,6 +35,8 @@
 #   2  usage (wrong arg count)
 #   3  doc missing / unreadable / unwritable
 #   4  doc has no `## Results` heading - nothing written
+#   6  HIMMEL-4570: <text> leads with an all-caps word that is neither a status
+#      marker nor a documented non-status bullet - nothing written
 #   5  write failed (e.g. disk full) after the heading/newline checks passed
 #
 # Platform guard: POSIX bash 3.2+, no GNU-only flags.
@@ -56,6 +58,31 @@ if ! grep -Eq '^## Results([[:space:]]|$)' "$DOC"; then
     echo "append-results: '$DOC' has no '## Results' heading - refusing" >&2
     exit 4
 fi
+
+# HIMMEL-4570: a leading all-caps word that is not in the vocabulary is a coined
+# marker (SHIPPED, MERGED): the tick would never read it, so refuse it instead of
+# letting it sit invisible. CONSULT / SUCCESSION / MAIN-RED are the preface's
+# documented non-status bullets and still append.
+#
+# Leg docs only: a leg doc carries its brief's "RETASK token" line. A console doc
+# (name ends -console.md) or a doc with no leg brief takes any bullet, since
+# console-template.md has the console log MERGED / VERDICT / OPERATOR / free text
+# through this script.
+lead="${TEXT%%[!A-Z-]*}"
+is_leg=0
+case "${DOC##*/}" in
+    *-console.md) ;;
+    *) grep -q 'RETASK token' "$DOC" && is_leg=1 ;;
+esac
+case "$is_leg:$lead" in
+    1:????*)
+        case "$lead" in
+            LIVE|FINDING|RESOLVED|READY|BLOCKED|HALTED|WRAPPED|PARKED-BANK|RESUMED|CONSULT|CONSULT-ANSWER|ANSWER|SUCCESSION|MAIN-RED|PARK-BANK) ;;
+            *)
+                echo "append-results: '$lead' is not in the marker vocabulary (LIVE FINDING RESOLVED READY BLOCKED HALTED WRAPPED PARKED-BANK RESUMED) - refusing" >&2
+                exit 6 ;;
+        esac ;;
+esac
 
 stamp="$(date +%H:%M)"
 bullet="- ${stamp} ${TEXT}"
