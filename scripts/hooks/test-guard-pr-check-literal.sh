@@ -23,9 +23,12 @@ ENV_LITERAL='bash scripts/cr/pr-check-env.sh CR_CLAUDE_AGENTS'
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY
 
 FAILED=0
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/guard-pr-check-literal.XXXXXX")" || { echo "FAIL mktemp"; exit 1; }
-trap 'rm -rf "$TMP"' EXIT
-TMP="$(cd "$TMP" && pwd -P)"
+# HIMMEL-4609: fixture paths sit under a FIXED leaf, so a random mktemp suffix that
+# ends in "cr" can never read as a `cr/` path word to the guard's handover scan.
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/guard-pr-check-literal.XXXXXX")" || { echo "FAIL mktemp"; exit 1; }
+trap 'rm -rf "$TMP_ROOT"' EXIT
+mkdir "$TMP_ROOT/fx" || exit 1
+TMP="$(cd "$TMP_ROOT/fx" && pwd -P)"
 
 g() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=main -c commit.gpgsign=false "$@"; }
 

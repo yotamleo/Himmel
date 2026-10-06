@@ -3167,9 +3167,16 @@ if command -v node >/dev/null 2>&1; then
     # 680 stops at 3000 words: 6000 of them (162 KB) pass the kernel's
     # 128 KiB single-argument cap that bash_rc_of's jq --arg hits.
     # shellcheck disable=SC2088 # literal ~ is payload text the hook must see
+    # HIMMEL-4628: 679/6000 ran 3.2 s alone but 13.0 s beside one other suite
+    # (CPU pressure ~29 %, leg N1182); budget = loaded figure x2 = 26 s. The rest
+    # of this suite's timed rows peak at 1.8 s alone (680/3000), so the same
+    # ~4x load factor leaves them well inside the 12 s default.
     for nw in 1500 3000 6000; do
+        ob=$TIMING_BUDGET_MS
+        [ "$nw" -lt 6000 ] || TIMING_BUDGET_MS=26000
         timed_rc "679/$nw $nw ~/.cl\$\"a\"ude words echoed to /tmp" 0 \
             "echo $(rep "$nw" '~/.cl$"a"ude/x ')> /tmp/out.txt"
+        TIMING_BUDGET_MS=$ob
         [ "$nw" -lt 6000 ] || continue
         timed_rc "680/$nw $nw ~/.c\$\"l\"aude/settings.json words denies" 2 \
             "echo $(rep "$nw" '~/.c$"l"aude/settings.json ')> /tmp/out.txt"
