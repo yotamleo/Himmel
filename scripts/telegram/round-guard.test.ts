@@ -166,6 +166,25 @@ test("rounds: a live-sized ledger (5.6k findings, 6.3k amends) counts in under 1
   expect(ms).toBeLessThan(1000);
 });
 
+// HIMMEL-4615: a chain of k amends sharing one identity and head prefix lands in
+// ONE bucket; re-scanning it from index 0 after every applied amend was O(k^2).
+// The final amend disproves the finding, so a broken chain would read 1, not 0.
+test("rounds: a chain of 40k amends in one bucket is applied in linear time", () => {
+  const branch = "fix/himmel-4615-x";
+  const k = 40000;
+  const hex = (i: number) => "aaaaaaa" + i.toString(16).padStart(6, "0");
+  const ledger: string[] = [finding(branch, hex(0))];
+  for (let i = 0; i < k; i++) {
+    const set = i === k - 1 ? { verdict: "disproved" } : { head: hex(i + 1) };
+    ledger.push(JSON.stringify({ kind: "amend", branch, target_head: hex(i), finding_id: "codex-1", set }));
+  }
+  const t0 = performance.now();
+  const r = countReviewedRounds(ledger, "HIMMEL-4615", branch);
+  const ms = performance.now() - t0;
+  expect(r.rounds).toBe(0);
+  expect(ms).toBeLessThan(300);
+});
+
 test("invariant: a labelled line inside the body does not end the section", () => {
   const brief = [
     "fix HIMMEL-1540",

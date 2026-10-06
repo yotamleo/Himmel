@@ -162,14 +162,23 @@ export function countReviewedRounds(ledgerLines: string[], ticketKey: string, ac
       const key = identityKey(raw);
       // Sequential in ledger order: each applied amend may move the head, so
       // re-select the bucket and only take amends AFTER the one just applied.
+      // HIMMEL-4615: `after` only grows, so every bucket entry before one already
+      // scanned stays skipped; a per-bucket cursor resumes there instead of at 0,
+      // keeping a long chain inside one bucket O(k) rather than O(k^2).
       let after = -1;
+      const cursors = new Map<string, number>();
       for (;;) {
         const h = headGroup(record.head);
-        const bucket = h ? amendBuckets.get(key + SEP + h) : undefined;
-        const amend = bucket?.find((a) => a.seq > after && sameHead(a.target, record.head));
-        if (!amend) break;
+        const bucketKey = key + SEP + h;
+        const bucket = h ? amendBuckets.get(bucketKey) : undefined;
+        if (!bucket) break;
+        let i = cursors.get(bucketKey) ?? 0;
+        while (i < bucket.length && !(bucket[i].seq > after && sameHead(bucket[i].target, record.head))) i++;
+        if (i === bucket.length) break;
+        const amend = bucket[i];
         record = { ...record, ...amend.set };
         after = amend.seq;
+        cursors.set(bucketKey, i + 1);
       }
     }
     const branch = String(record.branch ?? "");
