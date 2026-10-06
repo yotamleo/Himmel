@@ -482,6 +482,141 @@ env PATH="$TMP/nobash-path" "$PY3" "$DIFF" --base "$TMP/base-hook.sh" \
 if [ "$RC10" = "2" ]; then pass "run-error: worker launch failure => exit 2 (not regression 1)"
 else fail "run-error: expected exit 2 for worker launch failure, got $RC10"; fi
 
+# --- 11. HIMMEL-4537: non-Bash rows pass through unchanged -------------------
+# A Write/Edit/NotebookEdit guard was untestable: diff hard-coded tool_name Bash
+# and required tool_input.command. A row now carries its own tool_name and
+# tool_input; @PRIMARY@ is substituted in every string of tool_input. The stub
+# denies only a Write row whose content carries the sentinel AND whose
+# file_path had the placeholder substituted.
+cat > "$TMP/write-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+case "$input" in *@PRIMARY@*) exit 7 ;; esac
+case "$input" in *'"tool_name": "Write"'*SENTINEL_DENY*) exit 2 ;; esac
+exit 0
+STUB
+chmod +x "$TMP/write-hook.sh"
+printf '%s\n' '{"tool_name":"Write","tool_input":{"file_path":"@PRIMARY@/x.txt","content":"SENTINEL_DENY"},"family":"write","transform":"identity","expect":"deny"}' \
+  > "$TMP/write-corpus.jsonl"
+OUT11=$(python3 "$DIFF" --base "$TMP/write-hook.sh" --head "$TMP/head-hook.sh" \
+        --corpus "$TMP/write-corpus.jsonl" --jobs 1 2>&1); RC11=$?
+if [ "$RC11" = "1" ]; then pass "tool-passthrough: Write row base-deny/head-allow => exit 1"
+else fail "tool-passthrough: expected exit 1, got $RC11 ($OUT11)"; fi
+python3 "$DIFF" --base "$TMP/write-hook.sh" --head "$TMP/write-hook.sh" \
+        --corpus "$TMP/write-corpus.jsonl" --jobs 1 >/dev/null 2>&1; RC11B=$?
+if [ "$RC11B" = "0" ]; then pass "tool-passthrough-control: same hook => exit 0"
+else fail "tool-passthrough-control: expected exit 0, got $RC11B"; fi
+printf '%s\n' '{"tool_name":"Write","tool_input":"not-an-object"}' > "$TMP/bad-tool.jsonl"
+python3 "$DIFF" --base "$TMP/write-hook.sh" --head "$TMP/write-hook.sh" \
+        --corpus "$TMP/bad-tool.jsonl" --jobs 1 >/dev/null 2>&1; RC11C=$?
+if [ "$RC11C" = "2" ]; then pass "tool-passthrough: non-object tool_input => exit 2"
+else fail "tool-passthrough: expected exit 2 for non-object tool_input, got $RC11C"; fi
+
+# --- 12. HIMMEL-4537: the decision is read from JSON, not exit 2 alone --------
+# A hook may deny or ask through hookSpecificOutput.permissionDecision at exit
+# 0, and an approver hook allows that way. diff used to read exit 2 only, so a
+# JSON-only deny lost by the head, a deny downgraded to ask, and an approver
+# that newly approves were all invisible.
+cat > "$TMP/json-deny-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+case "$input" in *SENTINEL_DENY*)
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}\n' ;;
+esac
+exit 0
+STUB
+cat > "$TMP/json-ask-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+case "$input" in *SENTINEL_DENY*)
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask"}}\n' ;;
+esac
+exit 0
+STUB
+cat > "$TMP/json-approve-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+case "$input" in *SENTINEL_DENY*)
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n' ;;
+esac
+exit 0
+STUB
+chmod +x "$TMP/json-deny-hook.sh" "$TMP/json-ask-hook.sh" "$TMP/json-approve-hook.sh"
+OUT12A=$(python3 "$DIFF" --base "$TMP/json-deny-hook.sh" --head "$TMP/head-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC12A=$?
+has "json-decision: JSON-only deny lost is named" "$OUT12A" "base=deny head=pass"
+if [ "$RC12A" = "1" ]; then pass "json-decision: JSON-only deny lost by head => exit 1"
+else fail "json-decision: expected exit 1 for JSON-deny/allow, got $RC12A"; fi
+OUT12B=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/json-ask-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC12B=$?
+has "json-decision: deny downgraded to ask is named" "$OUT12B" "head=ask"
+if [ "$RC12B" = "1" ]; then pass "json-decision: deny downgraded to ask => exit 1"
+else fail "json-decision: expected exit 1 for deny/ask, got $RC12B"; fi
+printf '%s\n' 'approver	either	echo SENTINEL_DENY' > "$TMP/approver-seeds.txt"
+python3 "$GEN" --seed 1 --seeds-file "$TMP/approver-seeds.txt" -o "$TMP/approver-corpus.jsonl"
+OUT12C=$(python3 "$DIFF" --base "$TMP/head-hook.sh" --head "$TMP/json-approve-hook.sh" \
+        --corpus "$TMP/approver-corpus.jsonl" --jobs 4 2>&1); RC12C=$?
+has "approver: newly approved row is named" "$OUT12C" "head=approve"
+if [ "$RC12C" = "1" ]; then pass "approver: head approves what base did not => exit 1"
+else fail "approver: expected exit 1 for pass/approve, got $RC12C"; fi
+python3 "$DIFF" --base "$TMP/json-approve-hook.sh" --head "$TMP/json-approve-hook.sh" \
+        --corpus "$TMP/approver-corpus.jsonl" --jobs 4 >/dev/null 2>&1; RC12D=$?
+if [ "$RC12D" = "0" ]; then pass "approver-control: same approver both sides => exit 0"
+else fail "approver-control: expected exit 0, got $RC12D"; fi
+
+# --- 13. HIMMEL-4537: optional per-row cwd and session context ---------------
+# Every row used to run in the scratch primary on main with no permission_mode,
+# so a guard whose verdict depends on running in a worktree could not be
+# exercised. A row may now ask for cwd "worktree" (a scratch worktree of the
+# scratch primary on a feature branch, @WORKTREE@ substituted) and carry
+# permission_mode / session_id into the payload. The stub exits 0 only when all
+# three reached it, else 7 (ODD-RC => exit 3).
+cat > "$TMP/ctx-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+b=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+[ -n "$b" ] && [ "$b" != main ] || exit 7
+case "$input" in *@WORKTREE@*) exit 7 ;; esac
+case "$input" in *'"permission_mode": "auto"'*) ;; *) exit 7 ;; esac
+case "$input" in *'"session_id": "s-1"'*) ;; *) exit 7 ;; esac
+exit 0
+STUB
+chmod +x "$TMP/ctx-hook.sh"
+printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"ls @WORKTREE@"},"cwd":"worktree","permission_mode":"auto","session_id":"s-1","expect":"allow"}' \
+  > "$TMP/ctx-corpus.jsonl"
+python3 "$DIFF" --base "$TMP/ctx-hook.sh" --head "$TMP/ctx-hook.sh" \
+        --corpus "$TMP/ctx-corpus.jsonl" --jobs 1 >/dev/null 2>&1; RC13=$?
+if [ "$RC13" = "0" ]; then pass "row-context: worktree cwd + permission_mode + session_id reach the hook"
+else fail "row-context: expected exit 0, got $RC13"; fi
+printf '%s\n' '{"tool_input":{"command":"ls"},"cwd":"elsewhere"}' > "$TMP/bad-cwd.jsonl"
+python3 "$DIFF" --base "$TMP/ctx-hook.sh" --head "$TMP/ctx-hook.sh" \
+        --corpus "$TMP/bad-cwd.jsonl" --jobs 1 >/dev/null 2>&1; RC13B=$?
+if [ "$RC13B" = "2" ]; then pass "row-context: unknown cwd value => exit 2"
+else fail "row-context: expected exit 2 for unknown cwd, got $RC13B"; fi
+
+# --- 14. HIMMEL-4537: over-denied read-only shapes are benign twins ----------
+# Three read-only shapes real guards denied during the 2026-10-06 hardening
+# pass ship as allow-expected twins, and diff counts allow-expected rows a side
+# denied, so a judge sees over-deny instead of nothing.
+TWINS=$(python3 "$GEN" --seed 1 | python3 -c '
+import json, sys
+print(" ".join(sorted({json.loads(l)["seed_verb"] for l in sys.stdin
+                       if json.loads(l)["expect"] == "allow"})))')
+for v in var-path-read glob-grep-stderr hook-glob-grep; do
+  has "benign-twin: $v" "$TWINS" "$v"
+done
+cat > "$TMP/deny-all-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 2
+STUB
+chmod +x "$TMP/deny-all-hook.sh"
+python3 "$GEN" --seed 1 -o "$TMP/benign-corpus.jsonl"
+OUT14=$(python3 "$DIFF" --base "$TMP/deny-all-hook.sh" --head "$TMP/deny-all-hook.sh" \
+        --corpus "$TMP/benign-corpus.jsonl" --jobs 4 2>&1)
+has "over-deny: allow-expected denials counted" "$OUT14" "OVER-DENY idx="
+hasnt "over-deny: count not zero" "$OUT14" "(denied by base 0;"
+
 echo "----"
 echo "guard-corpus: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
