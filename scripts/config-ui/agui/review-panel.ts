@@ -1,15 +1,19 @@
 // review-panel.ts — reads /pr-check review output out of tool-call text (HIMMEL-4480).
 //
-// Two pure readers, both tolerant (no match gives null or [], never a throw):
+// Pure readers, all tolerant (no match gives null or [], never a throw):
 //   parsePanelReport(text) — the critic panel's merged report, as printed by
 //     scripts/cr/critic-panel.sh ("# Critic Panel Review (r/t critics responded)"
 //     then "## Critical Issues (N found)" / "## Important Issues" / "## Suggestions"
 //     sections of "- [<id>]: <text> [<file>:<line>]" bullets), plus the
 //     "pr-check: round R of M on <branch>" line panel-first-pass prints before it.
-//   extractVerdicts(text) — verdicts a session records: the write-verdicts
-//     grammar ("VERDICT [<id>] = agreed|disproved|conflict|unaddressed" or
-//     "VERDICT [<id>] = deferred -> <TICKET>") and the CR ledger's
-//     "ledger-append.sh finding ... --id <id> --verdict <v> [--deferred-to <TICKET>]".
+//   extractVerdicts(text) — the write-verdicts grammar
+//     ("VERDICT [<id>] = agreed|disproved|conflict|unaddressed" or
+//     "VERDICT [<id>] = deferred -> <TICKET>").
+//   extractLedgerVerdicts(command) — the CR ledger's "ledger-append.sh finding"
+//     rows and "ledger-append.sh amend --set verdict=..." amends.
+//   commandVerdicts(command, readFile) — what one shell command records: a
+//     write-verdicts.sh run (its --from-file resolved by readFile) plus any
+//     ledger rows. Text that only quotes a verdict line records nothing.
 //
 // The state shape is the contract agreed with the AG-UI page (leg N1346):
 // { review: { pr?, head?, round?, maxRounds?, findings: [{ id, severity, title,
@@ -79,29 +83,67 @@ export function parsePanelReport(text: string): ReviewState | null {
 }
 
 const VERDICT_LINE = /^\s*VERDICT \[([^\]]+)\] = (?:(agreed|disproved|conflict|unaddressed)|deferred -> ([A-Z][A-Z0-9]*-\d+))\s*$/;
-const LEDGER_FINDING = /ledger-append\.sh['"]?\s+finding\b/;
+const WRITE_VERDICTS = /write-verdicts\.sh\b/;
+const LEDGER_CALL = /ledger-append\.sh['"]?\s+/;
 const LEDGER_VERDICTS = new Set<Verdict>(["agreed", "disproved", "conflict", "unaddressed", "deferred", "fixed"]);
+const FLAG_VALUE = `[ =]+(?:'([^']*)'|"([^"]*)"|(\\S+))`;
 
-// The value after a --flag, unquoted; undefined when the flag is absent.
+// The value after the first --flag, unquoted; undefined when the flag is absent.
 function flag(text: string, name: string): string | undefined {
-  const m = new RegExp(`--${name}[ =]+(?:'([^']*)'|"([^"]*)"|(\\S+))`).exec(text);
+  const m = new RegExp(`--${name}${FLAG_VALUE}`).exec(text);
   return m ? (m[1] ?? m[2] ?? m[3]) : undefined;
 }
 
+// Every value of a repeatable --flag, unquoted, in order.
+function flags(text: string, name: string): string[] {
+  return [...text.matchAll(new RegExp(`--${name}${FLAG_VALUE}`, "g"))].map((m) => m[1] ?? m[2] ?? m[3]);
+}
+
+// The write-verdicts grammar, one verdict per line.
 export function extractVerdicts(text: string): VerdictUpdate[] {
   const out: VerdictUpdate[] = [];
   for (const line of text.split("\n")) {
     const m = VERDICT_LINE.exec(line);
     if (m) out.push(m[3] ? { id: m[1], verdict: "deferred", ticket: m[3] } : { id: m[1], verdict: m[2] as Verdict });
   }
-  if (LEDGER_FINDING.test(text)) {
-    const id = flag(text, "id");
-    const verdict = flag(text, "verdict") as Verdict | undefined;
-    if (id && verdict && LEDGER_VERDICTS.has(verdict)) {
-      const ticket = flag(text, "deferred-to");
-      out.push(ticket ? { id, verdict, ticket } : { id, verdict });
+  return out;
+}
+
+// Verdicts a command records in the CR ledger, one per ledger-append.sh
+// invocation: "finding ... --id <id> --verdict <v> [--deferred-to <T>]" or
+// "amend ... --id <id> --set verdict=<v> [--set deferred_to=<T>]". Each
+// invocation's flags are read only up to the next invocation.
+export function extractLedgerVerdicts(command: string): VerdictUpdate[] {
+  const out: VerdictUpdate[] = [];
+  for (const call of command.split(LEDGER_CALL).slice(1)) {
+    const verb = /^\S+/.exec(call)?.[0];
+    let verdict: string | undefined;
+    let ticket: string | undefined;
+    if (verb === "finding") {
+      verdict = flag(call, "verdict");
+      ticket = flag(call, "deferred-to");
+    } else if (verb === "amend") {
+      const set = new Map(flags(call, "set").map((kv) => [kv.slice(0, kv.indexOf("=")), kv.slice(kv.indexOf("=") + 1)]));
+      verdict = set.get("verdict");
+      ticket = set.get("deferred_to");
     }
+    const id = flag(call, "id");
+    if (!id || !verdict || !LEDGER_VERDICTS.has(verdict as Verdict)) continue;
+    out.push(ticket ? { id, verdict: verdict as Verdict, ticket } : { id, verdict: verdict as Verdict });
   }
+  return out;
+}
+
+// Verdicts a shell command records: write-verdicts.sh reads VERDICT lines from
+// its --from-file (looked up with readFile) or, without one, from the command
+// text itself (a heredoc); ledger-append.sh rows count wherever they appear.
+export function commandVerdicts(command: string, readFile: (path: string) => string | undefined): VerdictUpdate[] {
+  const out: VerdictUpdate[] = [];
+  if (WRITE_VERDICTS.test(command)) {
+    const from = flag(command, "from-file");
+    out.push(...extractVerdicts(from === undefined ? command : (readFile(from) ?? "")));
+  }
+  out.push(...extractLedgerVerdicts(command));
   return out;
 }
 

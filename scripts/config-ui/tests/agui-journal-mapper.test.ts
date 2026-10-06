@@ -11,6 +11,12 @@ const types = (events: AguiEvent[]) => events.map((e) => e.type);
 const valid = (events: AguiEvent[]) => {
   const bad = events.flatMap((e) => aguiViolations(e as Record<string, unknown>));
   expect(bad).toEqual([]);
+  // A tool call's parentMessageId names a message the stream already started.
+  const started = new Set<string>();
+  for (const e of events) {
+    if (e.type === "TEXT_MESSAGE_START") started.add(e.messageId);
+    if (e.type === "TOOL_CALL_START" && e.parentMessageId !== undefined) expect(started.has(e.parentMessageId)).toBe(true);
+  }
 };
 
 describe("happy path", () => {
@@ -35,7 +41,7 @@ describe("happy path", () => {
     expect(events[1]).toMatchObject({ messageId: "u-prompt-1", role: "user" });
     expect(events[2]).toMatchObject({ messageId: "u-prompt-1", delta: "List the files in the repo root." });
     expect(events[4]).toMatchObject({ messageId: "a-text-1", role: "assistant" });
-    expect(events[7]).toMatchObject({ toolCallId: "toolu_ls", toolCallName: "Bash", parentMessageId: "msg_A" });
+    expect(events[7]).toMatchObject({ toolCallId: "toolu_ls", toolCallName: "Bash", parentMessageId: "a-text-1" });
     expect(JSON.parse((events[8] as { delta: string }).delta)).toEqual({ command: "ls", description: "List files" });
     expect(events[10]).toEqual({
       type: "TOOL_CALL_RESULT", messageId: "toolu_ls:result", toolCallId: "toolu_ls", role: "tool",
@@ -60,9 +66,9 @@ describe("interleaved parallel tool calls", () => {
     expect(results[1]).toMatchObject({ content: "File does not exist.", isError: true });
   });
 
-  test("both calls share the assistant message as parent", () => {
+  test("calls whose API message emitted no text carry no parentMessageId", () => {
     const starts = events.filter((e) => e.type === "TOOL_CALL_START");
-    expect(starts.map((s) => [s.toolCallId, s.parentMessageId])).toEqual([["toolu_one", "msg_P"], ["toolu_two", "msg_P"]]);
+    expect(starts.map((s) => [s.toolCallId, s.parentMessageId])).toEqual([["toolu_one", undefined], ["toolu_two", undefined]]);
   });
 
   test("a user interrupt finishes the run as cancelled", () => {

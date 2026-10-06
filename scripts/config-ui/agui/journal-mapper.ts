@@ -25,7 +25,11 @@
 //   API error record           → RUN_ERROR
 //   a prompt while a run is open → RUN_FINISHED (no outcome) for the old run first
 //   critic-panel report result → STATE_SNAPSHOT { review }
-//   a verdict-recording call   → STATE_DELTA, once its result comes back without error
+//   a verdict-recording Bash   → STATE_DELTA, once its result comes back without error:
+//     write-verdicts.sh (its --from-file is the text an earlier successful
+//     Write left at that path) or ledger-append.sh finding/amend rows
+// A tool call's parentMessageId is the first text its API message streamed;
+// a call whose message streamed no text has none.
 // threadId is the journal's sessionId (or the caller's), runId the prompt
 // record's uuid. Agent output with no prompt before it opens an implicit run.
 //
@@ -43,7 +47,7 @@
 
 import { readFileSync } from "node:fs";
 import type { AguiEvent, JsonPatchOp } from "./events.ts";
-import { extractHead, extractVerdicts, parsePanelReport, type ReviewState } from "./review-panel.ts";
+import { commandVerdicts, extractHead, extractVerdicts, parsePanelReport, type ReviewState, type VerdictUpdate } from "./review-panel.ts";
 
 export type MapperStats = {
   lines: number; // non-blank lines seen
@@ -74,7 +78,12 @@ const INTERRUPT = /^\[Request interrupted by user/;
 
 type Rec = Record<string, unknown>;
 type Block = Rec & { type?: unknown };
-type PendingCall = { verdictText: string; head?: string };
+// What a tool call does to review state once it succeeds.
+type PendingCall = {
+  verdicts: VerdictUpdate[]; // recorded by a Bash command
+  head?: string; // the --head a Bash command names
+  write?: { path: string; text?: string }; // a Write call: its file, and the text when it holds VERDICT lines
+};
 
 const isObject = (v: unknown): v is Rec => typeof v === "object" && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
@@ -93,14 +102,6 @@ function resultText(content: unknown): string {
     .join("\n");
 }
 
-// Every string inside a tool input, joined: where a call's verdicts are written.
-function inputText(input: unknown): string {
-  if (typeof input === "string") return input;
-  if (Array.isArray(input)) return input.map(inputText).join("\n");
-  if (isObject(input)) return Object.values(input).map(inputText).join("\n");
-  return "";
-}
-
 export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
   const stats: MapperStats = { lines: 0, events: 0, ignored: 0, unknown: 0, malformed: 0 };
   let threadId = opts.threadId;
@@ -109,6 +110,8 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
   let tail = "";
   const seen = new Set<string>(); // record uuids already mapped
   const pending = new Map<string, PendingCall>(); // tool calls awaiting their result
+  const verdictFiles = new Map<string, string>(); // path → text with VERDICT lines a successful Write left there
+  const firstText = new Map<string, string>(); // API message.id → messageId of its first emitted text
 
   function startRun(rec: Rec, out: AguiEvent[], id: string) {
     threadId ??= str(rec.sessionId) ?? "journal";
@@ -177,17 +180,21 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     const call = pending.get(toolCallId);
     pending.delete(toolCallId);
     if (isError) return;
+    if (call?.write) {
+      if (call.write.text !== undefined) verdictFiles.set(call.write.path, call.write.text);
+      else verdictFiles.delete(call.write.path);
+    }
     const panel = parsePanelReport(resultText(block.content));
     if (panel) {
       review = { ...(call?.head ? { head: call.head } : {}), ...panel };
       out.push({ type: "STATE_SNAPSHOT", snapshot: { review: structuredClone(review) }, ...epochMs(rec) });
     }
-    if (call?.verdictText && review) applyVerdicts(rec, call.verdictText, out);
+    if (call?.verdicts.length && review) applyVerdicts(rec, call.verdicts, out);
   }
 
-  function applyVerdicts(rec: Rec, text: string, out: AguiEvent[]) {
+  function applyVerdicts(rec: Rec, verdicts: VerdictUpdate[], out: AguiEvent[]) {
     const delta: JsonPatchOp[] = [];
-    for (const v of extractVerdicts(text)) {
+    for (const v of verdicts) {
       const i = review!.findings.findIndex((f) => f.id === v.id);
       if (i < 0) continue; // a verdict for a finding this journal never showed
       const finding = review!.findings[i];
@@ -199,6 +206,22 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
       }
     }
     if (delta.length) out.push({ type: "STATE_DELTA", delta, ...epochMs(rec) });
+  }
+
+  // Only a Bash command records verdicts or names a panel head; a Write only
+  // stages the VERDICT lines a later write-verdicts.sh --from-file reads.
+  function reviewEffect(name: string, input: unknown): PendingCall {
+    const args = isObject(input) ? input : {};
+    const command = str(args.command);
+    if (name === "Bash" && command) {
+      return { verdicts: commandVerdicts(command, (path) => verdictFiles.get(path)), head: extractHead(command) };
+    }
+    const path = str(args.file_path);
+    const content = str(args.content);
+    if (name === "Write" && path && content !== undefined) {
+      return { verdicts: [], write: { path, ...(extractVerdicts(content).length ? { text: content } : {}) } };
+    }
+    return { verdicts: [] };
   }
 
   function mapAssistant(rec: Rec, out: AguiEvent[]): boolean {
@@ -218,16 +241,19 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
         ensureRun(rec, out);
         const id = str(rec.uuid) ?? `${messageId ?? "message"}:${i}`;
         textMessage(rec, out, id, "assistant", str(block.text)!);
+        if (messageId && !firstText.has(messageId)) firstText.set(messageId, id);
         mapped = true;
       } else if (block.type === "tool_use" && str(block.id) && str(block.name)) {
         ensureRun(rec, out);
         const toolCallId = str(block.id)!;
+        const toolCallName = str(block.name)!;
+        // The text the same API message streamed before this call, if any.
+        const parentMessageId = messageId ? firstText.get(messageId) : undefined;
         const ts = epochMs(rec);
-        out.push({ type: "TOOL_CALL_START", toolCallId, toolCallName: str(block.name)!, ...(messageId ? { parentMessageId: messageId } : {}), ...ts });
+        out.push({ type: "TOOL_CALL_START", toolCallId, toolCallName, ...(parentMessageId ? { parentMessageId } : {}), ...ts });
         out.push({ type: "TOOL_CALL_ARGS", toolCallId, delta: JSON.stringify(block.input ?? {}), ...ts });
         out.push({ type: "TOOL_CALL_END", toolCallId, ...ts });
-        const text = inputText(block.input);
-        pending.set(toolCallId, { verdictText: extractVerdicts(text).length ? text : "", head: extractHead(text) });
+        pending.set(toolCallId, reviewEffect(toolCallName, block.input));
         mapped = true;
       }
     });
