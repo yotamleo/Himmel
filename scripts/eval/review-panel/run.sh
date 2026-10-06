@@ -65,6 +65,12 @@ if [ -z "$scratch" ]; then
     scratch="$(mktemp -d "${TMPDIR:-/tmp}/review-panel.XXXXXX")" || exit 2
 fi
 mkdir -p "$scratch" || exit 2
+# The critic must see the diff and nothing else: a scratch inside a checkout
+# would hand it the repo (and its CR ledger).
+if git -C "$scratch" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "run.sh: scratch $scratch is inside a git checkout - refusing" >&2
+    exit 2
+fi
 
 for patch in "$fixtures"/case-*.patch; do
     [ -e "$patch" ] || continue

@@ -177,6 +177,9 @@ review "$O4b/$QA.md" codex
 echo 1 > "$O4b/$QA.rc"
 python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA,$QA" --no-ledger --json "$TMP/s4b.json" >/dev/null 2>&1
 eq "unscored: a truncated transcript and a nonzero rc are both unscored" "$(metric "$TMP/s4b.json" unscored)" "2"
+printf '# Critic Panel Review (1/1 critics responded)\n\n## Critical Issues (0 found)\n\n## Important Issues (0 found)\n\n## Suggestions (2 found)\n- [codex-1]: off-by-one [%s:%s]\n' "$la_file" "$la_line" > "$O4b/$LA.md"
+python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA" --no-ledger --json "$TMP/s4c.json" >/dev/null 2>&1
+eq "unscored: fewer bullets than a heading declares is unscored" "$(metric "$TMP/s4c.json" unscored)" "1"
 
 # A transcript that touches the key is flagged and the run marked inconclusive.
 O5="$TMP/out5"; mkdir -p "$O5"
@@ -235,6 +238,12 @@ STUB_LOG_DIR="$TMP/stublog" REVIEW_PANEL_CMD="$TMP/stub-panel.sh" REVIEW_PANEL_S
   bash "$RUN" --out "$TMP/run2" --fixtures "$TMP/badfix" --no-ledger --critics codex >/dev/null 2>&1; rc=$?
 eq "run: a failing lint refuses the sweep" "$rc" "2"
 eq "run: no panel call on a refused sweep" "$(cat "$TMP/stublog/tiers")" ""
+: > "$TMP/stublog/tiers"
+STUB_LOG_DIR="$TMP/stublog" REVIEW_PANEL_CMD="$TMP/stub-panel.sh" REVIEW_PANEL_SCRATCH="$HERE/.scratch-probe" \
+  bash "$RUN" --out "$TMP/run3" --no-ledger --critics codex >/dev/null 2>&1; rc=$?
+rmdir "$HERE/.scratch-probe" 2>/dev/null
+eq "run: a scratch inside a checkout refuses the sweep" "$rc" "2"
+eq "run: no panel call from a scratch inside a checkout" "$(cat "$TMP/stublog/tiers")" ""
 timeout 10 bash "$RUN" --out >/dev/null 2>&1; rc=$?
 eq "run: an option missing its value is a usage error, not a hang" "$rc" "2"
 

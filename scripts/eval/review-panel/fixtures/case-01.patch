@@ -10,7 +10,7 @@ new file mode 100644
 +
 +policy="${HOST_POLICY_FILE:-$HOME/.config/himmel/host-policy.json}"
 +payload="$(cat)"
-+host="$(printf '%s' "$payload" | jq -r '.tool_input.url // empty' | sed -E 's#^[a-z]+://([^/:]+).*#\1#')"
++host="$(printf '%s' "$payload" | jq -r '.tool_input.url // empty' | sed -E 's#^[A-Za-z]+://([^/@]*@)?([^/:]+).*#\2#' | tr '[:upper:]' '[:lower:]')"
 +[ -n "$host" ] || exit 0
 +
 +verdict="$(jq -r --arg h "$host" '.hosts[$h] // "allow"' "$policy" 2>/dev/null)"

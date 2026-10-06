@@ -80,7 +80,8 @@ dropped-citation bullets are not findings. A finding hits a defect when:
 
 `<c>` is each critic slug plus `panel` (the union of all critics). A case whose
 review was not performed (no output, `REVIEW NOT PERFORMED`, a transcript
-missing any of the three severity headings, or a nonzero panel exit in
+missing any of the three severity headings or carrying fewer bullets than a
+heading's `(N found)`, or a nonzero panel exit in
 `<case>.rc`) is unscored;
 a critic listed as unavailable in a case's Note block is dropped from that
 case's denominators only. Recall, precision and fp_rate carry Wilson 95%

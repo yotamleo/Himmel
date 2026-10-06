@@ -177,14 +177,16 @@ def parse_review(text):
     critic, sev, file, line, text; bullets outside the three severity
     sections (re-raises, dropped citations) are not findings."""
     findings, unavailable, performed, sev, in_note = [], set(), True, None, False
-    headings = set()
+    declared, counted = {}, {}
     for line in text.splitlines():
         m = SECTION.match(line)
         if m:
             name = m.group(1)
             sev = SEV.get(name)
             if sev:
-                headings.add(sev)
+                n = re.search(r"\((\d+) found\)", line)
+                declared[sev] = int(n.group(1)) if n else -1
+                counted.setdefault(sev, 0)
             in_note = name == "Note"
             if name == "REVIEW NOT PERFORMED":
                 performed = False
@@ -196,6 +198,8 @@ def parse_review(text):
         if u and (in_note or not performed):
             unavailable.add(u.group(1))
             continue
+        if sev and line.startswith("- [") and not line.startswith("- [citation-guard"):
+            counted[sev] += 1
         b = BULLET.match(line)
         if b and sev:
             critic = b.group(1)
@@ -203,9 +207,11 @@ def parse_review(text):
                 continue
             findings.append({"critic": critic, "sev": sev, "text": b.group(3),
                              "file": norm_path(b.group(4)), "line": int(b.group(5))})
-    # The panel prints all three severity headings on every completed review;
-    # a transcript missing one was cut short and is not a zero-finding review.
-    if not text.lstrip().startswith("# Critic Panel Review") or set(SEV.values()) - headings:
+    # The panel prints all three severity headings, each with its bullet count,
+    # on every completed review; a transcript missing a heading or a bullet was
+    # cut short and is not a zero-finding review.
+    if not text.lstrip().startswith("# Critic Panel Review") or set(SEV.values()) - set(declared) \
+            or declared != counted:
         performed = False
     return findings, unavailable, performed
 
