@@ -3,26 +3,65 @@
 // No runtime imports, so the CI suite runs without `bun install`.
 import type { BaseEvent } from "@ag-ui/core";
 
-export type Text = { id: string; text: string; open: boolean };
+// HIMMEL-4669: every text and call belongs to an agent (the mapper's `agent` on START events; a stream without
+// it is all one agent, "main"), and a failure is a call or text the mapper classified (`failure`), or a call a
+// run error cut off.
+export type Failure = "denied" | "suite" | "blocked" | "error";
+export type Role = "console" | "leg" | "judge" | "critic" | "subagent" | "agent";
+export type Agent = {
+  id: string; name: string; role: Role; model?: string; kind?: string; parentToolCallId?: string;
+  calls: number; failures: number; lanes: number; // lanes: its rows in the run strip
+};
+export type Text = { id: string; text: string; open: boolean; agent: string; role?: "user" | "assistant"; failure?: Failure };
 export type ToolStatus = "running" | "done" | "error";
 export type Tool = {
-  id: string; name: string; args: string; result?: string; status: ToolStatus;
-  parentMessageId?: string; start: number; end?: number; lane: number;
+  id: string; name: string; args: string; result?: string; status: ToolStatus; failure?: Failure;
+  parentMessageId?: string; start: number; end?: number; lane: number; agent: string;
 };
-export type Entry = { kind: "text"; id: string } | { kind: "tools"; ids: string[] };
+// A turn opens at each RUN_STARTED; texts and calls follow it in arrival order.
+export type Entry = { kind: "turn"; id: string; n: number; at: number } | { kind: "text"; id: string } | { kind: "tools"; ids: string[] };
+export type FailureRef = { kind: "tool" | "text"; id: string };
 export type View = {
   status: "idle" | "running" | "finished" | "error";
   runId?: string; error?: string;
   t0?: number; elapsed: number; eventCount: number;
   entries: Entry[]; texts: Record<string, Text>; tools: Record<string, Tool>;
-  lanes: number; laneEnds: (number | null)[];
+  agents: Record<string, Agent>; agentOrder: string[]; failures: FailureRef[];
+  sideRun?: boolean; // the open run is a background subagent's one-record run, not a turn
+  lanes: number; laneEnds: Record<string, (number | null)[]>; // lanes: the strip's rows, every agent's summed
   state: any;
 };
 type Ev = BaseEvent & Record<string, any>;
 
 export const initialView = (): View => ({
-  status: "idle", elapsed: 0, eventCount: 0, entries: [], texts: {}, tools: {}, lanes: 0, laneEnds: [], state: {},
+  status: "idle", elapsed: 0, eventCount: 0, entries: [], texts: {}, tools: {},
+  agents: {}, agentOrder: [], failures: [], lanes: 0, laneEnds: {}, state: {},
 });
+
+const ROLES = new Set<Role>(["console", "leg", "judge", "critic", "subagent", "agent"]);
+const FAILURES = new Set<Failure>(["denied", "suite", "blocked", "error"]);
+
+// The agent an event names, merged into the registry (later events may know its model or real name).
+function withAgent(v: View, e: Ev): { v: View; id: string } {
+  const a = e.agent && typeof e.agent === "object" && typeof e.agent.id === "string" ? e.agent : { id: "main" };
+  const prev = v.agents[a.id];
+  const pick = (k: string) => (typeof a[k] === "string" ? { [k]: a[k] } : {});
+  const agent: Agent = {
+    ...(prev ?? { id: a.id, name: "agent", role: "agent", calls: 0, failures: 0, lanes: 0 }),
+    ...pick("name"), ...pick("model"), ...pick("kind"), ...pick("parentToolCallId"),
+    ...(ROLES.has(a.role) ? { role: a.role } : {}),
+  };
+  return {
+    id: a.id,
+    v: { ...v, agents: { ...v.agents, [a.id]: agent }, agentOrder: prev ? v.agentOrder : [...v.agentOrder, a.id] },
+  };
+}
+
+function addFailure(v: View, ref: FailureRef, agent: string): View {
+  const a = v.agents[agent];
+  return { ...v, failures: [...v.failures, ref], agents: a ? { ...v.agents, [agent]: { ...a, failures: a.failures + 1 } } : v.agents };
+}
+const failureOf = (e: Ev): Failure | undefined => (FAILURES.has(e.failure) ? e.failure : e.isError === true ? "error" : undefined);
 
 // Milliseconds since RUN_STARTED; an event without a timestamp keeps the last known time.
 function clock(v: View, e: Ev): { t0?: number; at: number } {
@@ -39,9 +78,11 @@ function freeLane(ends: (number | null)[], at: number): number {
 
 function finish(v: View, id: string, at: number, patch: Partial<Tool>): View {
   const t = v.tools[id];
-  const laneEnds = v.laneEnds.slice();
-  laneEnds[t.lane] = at;
-  return { ...v, laneEnds, tools: { ...v.tools, [id]: { ...t, ...patch, end: at } } };
+  const ends = (v.laneEnds[t.agent] ?? []).slice();
+  ends[t.lane] = at;
+  const out = { ...v, laneEnds: { ...v.laneEnds, [t.agent]: ends }, tools: { ...v.tools, [id]: { ...t, ...patch, end: at } } };
+  // A call counts as one failure however many times it is failed (a result after a run error already failed it).
+  return patch.failure && !t.failure ? addFailure(out, { kind: "tool", id }, t.agent) : out;
 }
 
 function closeTexts(v: View): View {
@@ -65,24 +106,36 @@ export function reduce(prev: View, e: Ev): View {
   const { t0, at } = clock(prev, e);
   let v: View = { ...prev, t0, elapsed: at, eventCount: prev.eventCount + 1 };
   switch (e.type) {
-    case "RUN_STARTED":
-      return { ...v, status: "running", runId: e.runId };
-    // A run that ends closes every call still open: finished ones as done (with no result), failed ones as errors.
-    // Likewise a text message that never got TEXT_MESSAGE_END stops being open.
+    case "RUN_STARTED": {
+      // A run a background subagent opened for one late record is not a turn of the session.
+      if (e.agent?.id && e.agent.id !== "main") return withAgent({ ...v, status: "running", runId: e.runId, sideRun: true }, e).v;
+      const n = v.entries.filter((en) => en.kind === "turn").length + 1;
+      return { ...v, status: "running", runId: e.runId, sideRun: false, entries: [...v.entries, { kind: "turn", id: String(e.runId ?? n), n, at }] };
+    }
+    // A turn that ends closes the session's own calls still open, as done with no result; a subagent's calls stay
+    // open, since a background subagent outlives the turn and its results arrive later. A run that errors (the
+    // stream itself failed) closes every open call as an error. Likewise a text message that never got
+    // TEXT_MESSAGE_END stops being open. A background subagent's one-record run closes nothing.
     case "RUN_FINISHED": {
-      for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "done" });
+      if (v.sideRun) return { ...v, status: "finished", sideRun: false };
+      for (const t of Object.values(v.tools)) if (t.status === "running" && t.agent === "main") v = finish(v, t.id, at, { status: "done" });
       return { ...closeTexts(v), status: "finished" };
     }
     case "RUN_ERROR": {
-      for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "error" });
+      for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "error", failure: "error" });
       return { ...closeTexts(v), status: "error", error: e.message };
     }
-    case "TEXT_MESSAGE_START":
+    case "TEXT_MESSAGE_START": {
       if (v.texts[e.messageId]) return v;
-      return {
-        ...v, entries: [...v.entries, { kind: "text", id: e.messageId }],
-        texts: { ...v.texts, [e.messageId]: { id: e.messageId, text: "", open: true } },
+      const { v: w, id: agent } = withAgent(v, e);
+      const failure = failureOf(e);
+      const text: Text = {
+        id: e.messageId, text: "", open: true, agent,
+        ...(e.role === "user" || e.role === "assistant" ? { role: e.role } : {}), ...(failure ? { failure } : {}),
       };
+      const out = { ...w, entries: [...w.entries, { kind: "text" as const, id: e.messageId }], texts: { ...w.texts, [e.messageId]: text } };
+      return failure ? addFailure(out, { kind: "text", id: e.messageId }, agent) : out;
+    }
     case "TEXT_MESSAGE_CONTENT": {
       const m = v.texts[e.messageId];
       return m ? { ...v, texts: { ...v.texts, [m.id]: { ...m, text: m.text + (e.delta ?? "") } } } : v;
@@ -93,19 +146,26 @@ export function reduce(prev: View, e: Ev): View {
     }
     case "TOOL_CALL_START": {
       if (v.tools[e.toolCallId]) return v;
-      const lane = freeLane(v.laneEnds, at);
-      const laneEnds = v.laneEnds.slice();
-      laneEnds[lane] = null;
+      const { v: w, id: agent } = withAgent(v, e);
+      // Lanes are per agent: each agent is one band of the strip, its parallel calls stacked inside it.
+      const ends = (w.laneEnds[agent] ?? []).slice();
+      const lane = freeLane(ends, at);
+      ends[lane] = null;
       const tool: Tool = {
         id: e.toolCallId, name: e.toolCallName ?? "tool", args: "", status: "running",
-        parentMessageId: e.parentMessageId, start: at, lane,
+        parentMessageId: e.parentMessageId, start: at, lane, agent,
       };
-      // A call that starts while a call of the last group is still running joins that group: they ran in parallel.
-      const last = v.entries[v.entries.length - 1];
-      const entries = last?.kind === "tools" && last.ids.some((id) => v.tools[id].status === "running")
-        ? [...v.entries.slice(0, -1), { kind: "tools" as const, ids: [...last.ids, tool.id] }]
-        : [...v.entries, { kind: "tools" as const, ids: [tool.id] }];
-      return { ...v, entries, laneEnds, lanes: Math.max(v.lanes, lane + 1), tools: { ...v.tools, [tool.id]: tool } };
+      // A call that starts while a call of the same agent's last group is still running joins that group: they ran in parallel.
+      const last = w.entries[w.entries.length - 1];
+      const entries = last?.kind === "tools" && w.tools[last.ids[0]].agent === agent && last.ids.some((id) => w.tools[id].status === "running")
+        ? [...w.entries.slice(0, -1), { kind: "tools" as const, ids: [...last.ids, tool.id] }]
+        : [...w.entries, { kind: "tools" as const, ids: [tool.id] }];
+      const a = w.agents[agent];
+      const grown = Math.max(a.lanes, lane + 1);
+      return {
+        ...w, entries, laneEnds: { ...w.laneEnds, [agent]: ends }, lanes: w.lanes + grown - a.lanes,
+        agents: { ...w.agents, [agent]: { ...a, calls: a.calls + 1, lanes: grown } }, tools: { ...w.tools, [tool.id]: tool },
+      };
     }
     case "TOOL_CALL_ARGS": {
       const t = v.tools[e.toolCallId];
@@ -114,7 +174,10 @@ export function reduce(prev: View, e: Ev): View {
     case "TOOL_CALL_RESULT": {
       const t = v.tools[e.toolCallId];
       if (!t) return v;
-      return finish(v, t.id, at, { status: e.isError === true ? "error" : "done", result: String(e.content ?? "") });
+      // An Agent call's result may be the first event to name the subagent it ran.
+      if (e.subagent?.id) v = withAgent(v, { agent: e.subagent } as Ev).v;
+      const failure = failureOf(e);
+      return finish(v, t.id, at, { status: e.isError === true ? "error" : "done", result: String(e.content ?? ""), ...(failure ? { failure } : {}) });
     }
     case "STATE_SNAPSHOT":
       return { ...v, state: e.snapshot };

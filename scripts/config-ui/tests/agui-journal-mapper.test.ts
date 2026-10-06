@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createJournalMapper, mapFile } from "../agui/journal-mapper.ts";
+import { createJournalMapper, mapFile, mapJournal } from "../agui/journal-mapper.ts";
 import type { AguiEvent } from "../agui/events.ts";
 import { aguiViolations } from "./agui-schema.ts";
 
@@ -137,5 +137,78 @@ describe("incremental use", () => {
     const mapper = createJournalMapper();
     const evs = mapper.pushLine('{"type":"assistant","uuid":"a1","sessionId":"s","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"resumed"}]}}');
     expect(evs[0]).toEqual({ type: "RUN_STARTED", threadId: "s", runId: "a1" });
+  });
+});
+
+// HIMMEL-4669: who did what, and what failed. START events carry `agent` (the session's own agent, or the
+// subagent a sidechain record names); TOOL_CALL_RESULT and a BLOCKED text carry `failure`.
+describe("agents and failures", () => {
+  const { events, stats } = mapFile(fixture("agents.jsonl"));
+  const starts = (id: string) => events.find((e) => e.type === "TOOL_CALL_START" && e.toolCallId === id) as any;
+  const result = (id: string) => events.find((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === id) as any;
+  const texts = events.filter((e) => e.type === "TEXT_MESSAGE_START") as any[];
+  const lead = { id: "main", name: "HIMMEL-4669-roadmap-console", role: "console", model: "claude-opus-5-5" };
+  const critic = { id: "a1b2c3", name: "Review the diff", role: "critic", kind: "code-critic", model: "claude-sonnet-5-5", parentToolCallId: "toolu_agent" };
+
+  test("the stream stays valid AG-UI and one run: sidechain prompts and turns are not run boundaries", () => {
+    valid(events);
+    expect(types(events).filter((t) => t.startsWith("RUN_"))).toEqual(["RUN_STARTED", "RUN_FINISHED"]);
+    expect(stats.malformed).toBe(0);
+  });
+
+  test("the session's agent is named by its agent-name record, with its role and model", () => {
+    expect(starts("toolu_agent").agent).toEqual(lead);
+    // the prompt arrives before any assistant record, so its model is not known yet
+    expect(texts[0].agent).toEqual({ id: "main", name: "HIMMEL-4669-roadmap-console", role: "console" });
+  });
+
+  test("a subagent is bound to the Agent call whose prompt it received", () => {
+    expect(texts[2]).toMatchObject({ role: "user", agent: { ...critic, model: "sonnet" } }); // its brief: the spawn's model
+    expect(starts("toolu_s1").agent).toEqual(critic); // its own records name the resolved model
+    expect(texts[3].agent).toEqual(critic);
+  });
+
+  test("an unbound sidechain agent still gets an id and a placeholder name", () => {
+    const mapper = createJournalMapper();
+    const [, start] = mapper.pushLine('{"type":"assistant","isSidechain":true,"agentId":"zz9","uuid":"x1","sessionId":"s","message":{"id":"m","role":"assistant","content":[{"type":"text","text":"hi"}]}}');
+    expect((start as any).agent).toEqual({ id: "zz9", name: "agent zz9", role: "subagent" });
+  });
+
+  test("a subagent record after its session's turn ended gets a run of its own, named for that agent", () => {
+    const lines = readFileSync(fixture("agents.jsonl"), "utf8").split("\n").filter(Boolean);
+    const sub = lines.filter((l) => JSON.parse(l).isSidechain === true);
+    const evs = mapJournal([...lines.filter((l) => !sub.includes(l)), ...sub].join("\n") + "\n").events;
+    const runs = evs.filter((e) => e.type.startsWith("RUN_")) as any[];
+    expect(runs[2]).toMatchObject({ type: "RUN_STARTED", agent: { id: "a1b2c3", name: "Review the diff" } });
+    expect(runs.at(-1)).toMatchObject({ type: "RUN_FINISHED", outcome: { type: "success" } });
+    expect(runs.length % 2).toBe(0); // every run it opened is closed
+    valid(evs);
+  });
+
+  test("a subagent's API error is a failed text of that subagent, never the run's RUN_ERROR", () => {
+    const evs = mapJournal('{"type":"assistant","isSidechain":true,"agentId":"q1","isApiErrorMessage":true,"uuid":"e1","sessionId":"s","message":{"id":"m","role":"assistant","content":[{"type":"text","text":"API Error: 529 overloaded"}]}}\n').events;
+    expect(types(evs)).not.toContain("RUN_ERROR");
+    expect(evs.find((e) => e.type === "TEXT_MESSAGE_START")).toMatchObject({ failure: "error", agent: { id: "q1" } });
+  });
+
+  test("when only the Agent call's result names the subagent, that result carries its identity", () => {
+    const lines = readFileSync(fixture("agents.jsonl"), "utf8").replace(
+      '"content":"Review the diff in scripts/x.sh for correctness."}', '"content":"a brief that matches no spawn prompt"}');
+    const evs = mapJournal(lines).events as any[];
+    expect(evs.find((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_s1").agent.name).toBe("agent a1b2c3");
+    expect(evs.find((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "toolu_agent").subagent)
+      .toMatchObject({ id: "a1b2c3", name: "Review the diff", role: "critic", parentToolCallId: "toolu_agent" });
+    expect(result("toolu_agent").subagent).toBeUndefined(); // bound by its prompt already: nothing new to say
+  });
+
+  test("failures are classified: suite, denied, blocked, error", () => {
+    expect(result("toolu_s1").failure).toBeUndefined();
+    expect(result("toolu_suite")).toMatchObject({ isError: true, failure: "suite" });
+    expect(result("toolu_push")).toMatchObject({ isError: true, failure: "denied" });
+    expect(result("toolu_msg")).toMatchObject({ failure: "blocked" });
+    expect(result("toolu_msg").isError).toBeUndefined();
+    expect(result("toolu_cat")).toMatchObject({ isError: true, failure: "error" });
+    expect(texts.at(-1)).toMatchObject({ failure: "blocked" });
+    expect(texts.filter((t) => t.failure).length).toBe(1);
   });
 });

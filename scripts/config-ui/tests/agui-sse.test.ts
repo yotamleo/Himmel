@@ -1,5 +1,5 @@
 import { test, expect, afterEach } from "bun:test";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
@@ -199,6 +199,152 @@ test("secret-shaped strings in the journal are redacted before they leave the se
   const text = await (await get(port, RUN)).text();
   expect(text).toContain("List ");
   expect(text).not.toContain(canary);
+});
+
+// HIMMEL-4669: a subagent writes its own transcript beside the journal; the stream follows it too.
+function splitAgents(): { mainBody: string; subBody: string } {
+  const lines = readFileSync(join(FIX, "agents.jsonl"), "utf8").split("\n").filter(Boolean);
+  const side = (l: string) => JSON.parse(l).isSidechain === true;
+  return { mainBody: lines.filter((l) => !side(l)).join("\n") + "\n", subBody: lines.filter(side).join("\n") + "\n" };
+}
+function subagentFile(h: string, body: string, name = "agent-a1b2c3.jsonl"): string {
+  const dir = join(h, ".claude", "projects", "-proj", RUN, "subagents");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, name), body);
+  return join(dir, name);
+}
+
+test("subagent transcripts merge into the stream in timestamp order, attributed to the subagent", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  journal(h, "-proj", RUN, mainBody);
+  subagentFile(h, subBody);
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  // the same events as the journal with the sidechain records inline, in their original order
+  expect(events).toEqual(JSON.parse(JSON.stringify(mapFile(join(FIX, "agents.jsonl"), { threadId: RUN }).events)));
+  const read = events.find((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_s1") as any;
+  expect(read.agent).toMatchObject({ id: "a1b2c3", name: "Review the diff", role: "critic" });
+});
+
+test("a subagent transcript appended while streaming arrives live", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  const lines = mainBody.split("\n").filter(Boolean);
+  journal(h, "-proj", RUN, lines.slice(0, 5).join("\n") + "\n"); // prompt, text and both calls: the run stays open
+  const { port } = boot(h, { aguiIdleMs: 100 });
+  const r = await get(port, RUN);
+  const first = await readUntil(r, (ev) => ev.some((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_suite"));
+  await sleep(200);
+  subagentFile(h, subBody);
+  const more = await readUntil({ body: { getReader: () => first.reader } } as any, (ev) => ev.some((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_s1"));
+  expect((more.events.find((e) => e.type === "TOOL_CALL_START") as any).agent.id).toBe("a1b2c3");
+  await first.reader.cancel();
+});
+
+test("a subagent file symlinked out of the session directory is not followed", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  journal(h, "-proj", RUN, mainBody);
+  mkdirSync(join(h, "elsewhere"));
+  writeFileSync(join(h, "elsewhere", "agent-zz.jsonl"), subBody);
+  mkdirSync(join(h, ".claude", "projects", "-proj", RUN, "subagents"), { recursive: true });
+  symlinkSync(join(h, "elsewhere", "agent-zz.jsonl"), join(h, ".claude", "projects", "-proj", RUN, "subagents", "agent-zz.jsonl"));
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  expect(events.some((e) => (e as any).toolCallId === "toolu_s1")).toBe(false);
+});
+
+test("a subagent transcript longer than one read chunk still lands before the journal's later lines", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  // ~400 KB of the critic's reading, timestamped inside its run (before the Agent call's result at 3.5s)
+  const filler = Array.from({ length: 1600 }, (_, i) => JSON.stringify({
+    type: "assistant", isSidechain: true, agentId: "a1b2c3", uuid: `f-${i}`, sessionId: "sess-agents",
+    timestamp: `2026-10-06T12:00:02.${String(500 + Math.floor(i / 4)).padStart(3, "0")}Z`,
+    message: { id: `mf-${i}`, role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: "x".repeat(220) }] },
+  })).join("\n") + "\n";
+  journal(h, "-proj", RUN, mainBody);
+  subagentFile(h, subBody + filler);
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  const runs = events.filter((e) => String(e.type).startsWith("RUN_"));
+  expect(runs.map((e) => e.type)).toEqual(["RUN_STARTED", "RUN_FINISHED"]); // no late side runs: nothing overtook
+  const lastFiller = events.findLastIndex((e) => e.messageId === "f-1599");
+  const agentResult = events.findIndex((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "toolu_agent");
+  expect(lastFiller).toBeGreaterThan(-1);
+  expect(lastFiller).toBeLessThan(agentResult);
+});
+
+test("an unreadable subagent transcript is dropped; the journal still streams to its end", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  journal(h, "-proj", RUN, mainBody);
+  chmodSync(subagentFile(h, subBody), 0o000);
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  expect(events.at(-1)?.type).toBe("RUN_FINISHED");
+  expect(events.some((e) => e.toolCallId === "toolu_push")).toBe(true);
+  expect(events.some((e) => e.toolCallId === "toolu_s1")).toBe(false);
+});
+
+test("a half-written subagent line holds the journal's newer lines until it completes", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  const mainLines = mainBody.split("\n").filter(Boolean);
+  const subLines = subBody.split("\n").filter(Boolean);
+  // the journal up to both calls, the critic's brief half-written, then the journal's later lines arrive
+  // (driven on journalStream directly: over HTTP the response would not start until the first frame)
+  const p = journal(h, "-proj", RUN, mainLines.slice(0, 5).join("\n") + "\n");
+  const sub = subagentFile(h, subLines[0].slice(0, 60));
+  const stream = journalStream(p, { threadId: RUN, pollMs: 20, idleMs: 300, maxMs: 5000, redact: (v) => v, onClose: () => {} });
+  setTimeout(() => appendFileSync(p, mainLines.slice(5).join("\n") + "\n"), 150);
+  setTimeout(() => appendFileSync(sub, subLines[0].slice(60) + "\n" + subLines.slice(1).join("\n") + "\n"), 300);
+  const events = parse(await new Response(stream).text());
+  const brief = events.findIndex((e) => e.type === "TEXT_MESSAGE_START" && (e as any).agent?.id === "a1b2c3");
+  const finished = events.findIndex((e) => e.type === "RUN_FINISHED");
+  expect(brief).toBeGreaterThan(-1);
+  expect(brief).toBeLessThan(finished);
+  expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(1); // no late side runs
+});
+
+test("at most 64 subagent transcripts are followed, beside the journal", async () => {
+  const h = home();
+  const { mainBody } = splitAgents();
+  journal(h, "-proj", RUN, mainBody);
+  for (let i = 0; i < 70; i++) {
+    const id = `s${String(i).padStart(2, "0")}`;
+    subagentFile(h, JSON.stringify({ type: "assistant", isSidechain: true, agentId: id, uuid: `x-${id}`, sessionId: "sess-agents",
+      timestamp: "2026-10-06T12:00:01.300Z", message: { id: `m-${id}`, role: "assistant", content: [{ type: "text", text: "hi" }] } }) + "\n", `agent-${id}.jsonl`);
+  }
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  const ids = new Set(events.filter((e) => e.type === "TEXT_MESSAGE_START").map((e) => (e as any).agent?.id).filter((id) => /^s\d\d$/.test(id)));
+  expect(ids.size).toBe(64);
+});
+
+test("a subagent's name, model and kind come from free-form Agent input: they pass the redactor", async () => {
+  const h = home();
+  const canary = "ghp_" + "A1b2".repeat(8);
+  const canary2 = "ghp_" + "C3d4".repeat(8);
+  journal(h, "-proj", RUN, readFileSync(join(FIX, "agents.jsonl"), "utf8")
+    .replace('"description":"Review the diff"', `"description":"Review ${canary}"`)
+    .replace('"subagent_type":"code-critic"', `"subagent_type":"critic-${canary2}"`));
+  const { port } = boot(h);
+  const text = await (await get(port, RUN)).text();
+  expect(text).not.toContain(canary);
+  expect(text).not.toContain(canary2);
+  const read = parse(text).find((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_s1") as any;
+  expect(read.agent).toMatchObject({ id: "a1b2c3", role: "critic" });
+});
+
+test("a long agent name is an identifier, not a secret: it is not redacted", async () => {
+  const h = home();
+  const name = "HIMMEL-4669-N1363-agui-agent-design-and-more";
+  journal(h, "-proj", RUN, readFileSync(join(FIX, "agents.jsonl"), "utf8").replace("HIMMEL-4669-roadmap-console", name));
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  expect((events.find((e) => e.type === "TOOL_CALL_START") as any).agent).toMatchObject({ name, role: "leg" });
 });
 
 test("a cancel that lands while the journal is still opening closes the handle once it opens", async () => {

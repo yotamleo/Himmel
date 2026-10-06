@@ -34,6 +34,19 @@ the review panel driven by `STATE_SNAPSHOT` / `STATE_DELTA`. It reads
 the session token from `#t=<token>&run=<id>`; with no `run` it replays the
 recorded fixture `agui-web/src/fixture.json`, so it previews without a server.
 
+**Who did what, and where it failed** (HIMMEL-4669). Every text and call
+belongs to an agent: the session's own (named by its `agent-name` record: a
+`-console`, a leg's `-N<digits>-`, a judge) or a subagent (named by the Agent
+call that spawned it: its description, `subagent_type` and model). Each agent
+has a colour, a band in the run strip, and a row in the **Agents** list that
+shows its role, model, call count and failure count; click a row to show only
+that agent. The transcript runs in turns, and one agent's consecutive work sits
+under its name, a subagent's one step in. Failures are marked by kind: `error`
+and `suite failed` (a test run that exited non-zero) in red, `denied` (a hook or
+permission refusal) and `blocked` (a BLOCKED report, by message or in text) in
+amber. The top bar counts them, and ↑ / ↓ next jumps to each in turn. Long tool
+output shows its first 12 lines with a control for the rest.
+
 ```bash
 cd scripts/config-ui/agui-web
 bun install
@@ -49,9 +62,14 @@ tree does not count). The response is `text/event-stream`, one
 hand-encoded: config-ui takes no dependency for it). It maps the file from the
 start, then polls for appends every 500 ms, and ends when the client goes away,
 2 minutes after the file stops growing with no run open, or after 4 hours. A
-`: keepalive` comment every 15 s holds a quiet stream past Bun's idle cut.
-Payload fields (deltas, results, errors, state) pass the same redactor as the
-feed; the id fields are left intact.
+`: keepalive` comment every 15 s holds a quiet stream past Bun's idle cut. It
+also follows the session's subagent transcripts
+(`<run>/subagents/agent-<id>.jsonl` beside the journal, at most 64, each one's
+real path inside the journal's directory) and merges their lines with the
+journal's in timestamp order. Payload fields (deltas, results, errors, state)
+pass the same redactor as the feed; the id fields are left intact, and so are
+`agent` (who acted: a session name is often 32+ characters, which the redactor
+would blank) and `failure` (one of four words).
 
 `GET /agui/` serves the built page from `agui-web/dist` (`/agui` redirects
 there) with the same CSP and frame headers as every other page. It serves only
@@ -81,11 +99,11 @@ It prints two URLs: the config page, then
 modification time; `--agui <session-id>` picks one session. The server runs in
 the foreground (Ctrl-C to stop); an open stream keeps it from idling out.
 
-![The AG-UI page streaming a run: a prompt, two parallel tool calls on the run strip, then the answer](docs/agui-live-run.gif)
+![The AG-UI page streaming a /pr-check round: a leg and its critic subagent in their own colours and bands, the review panel filling with three findings and their verdicts, and four failures marked by kind](docs/agui-live-run.gif)
 
-*A live stream over the real SSE path, not a mock: a fixture session journal is
-appended to while the page is open, and the page renders each event as the
-server pushes it.* Regenerate it from your own terminal (needs `ffmpeg`, the
+*A live stream over the real SSE path, not a mock: a fixture session journal and
+its subagent's transcript are appended to while the page is open, and the page
+renders each event as the server pushes it.* Regenerate it from your own terminal (needs `ffmpeg`, the
 built `agui-web/dist`, and Playwright's Chromium build 1243):
 
 ```bash
@@ -118,7 +136,10 @@ imports, so its suite runs in CI without an install.
   `agui-web/dist` built (see above; the tests skip when it is absent). Each
   test boots `himmelctl ui --agui` against a temp `HOME` and appends journal
   lines while the page is open, asserting the live render, the wrong-token
-  error state, and both themes at desktop and phone width.
+  error state, and both themes at desktop and phone width. HIMMEL-4669 adds
+  a leg with a critic subagent (`SCENE` in `agui-fixtures.ts`, also the GIF's
+  run): agent attribution and the filter, failure marking and the jump
+  control, and the long-output control.
 
 ## Manual pass (the same 7 items)
 
