@@ -104,9 +104,9 @@ drift report; no marketplace install source or live setting is changed.
 | Plugin ID | Availability / default | Candidate profile | Refreshed target pin |
 |-----------|------------------------|-------------------|----------------------|
 | `superpowers@claude-plugins-official` | Available, off by default | `workflow-full` — upstream workflow kit, alternative to lean-skills | `obra/superpowers` `v6.4.2` (`8ca22dba9a94f28898bbce59f2537ff4d87c747d`) |
-| `mattpocock-skills@claude-plugins-official` | Available, off by default | `typescript-coach` — TypeScript/workflow coaching | `mattpocock/skills` HEAD `d81f3a183412e71a5b1e84ca21bc1a35eea03a60` |
+| `mattpocock-skills@claude-plugins-official` | Available, off by default | `typescript-coach` — TypeScript/workflow coaching | `mattpocock/skills` HEAD `4588b32ecab9ecc9fc8cc6b6c5e7d675b6004b0d` |
 | `coderabbit@claude-plugins-official` | Available, off by default | `review-coderabbit` — optional keyed review skills; credential decision remains HIMMEL-4015 | `coderabbitai/skills` HEAD `59945da347a93f9937d3fb09f5ba81a16010351f` |
-| `ponytail@ponytail` | Available, off by default | `honesty-audit` — deliberate-simplification audit | `DietrichGebert/ponytail` `v4.10.3` (`ef8ca48fed2321ab6668b2a954f23b1af97d7f6d`) |
+| `ponytail@ponytail` | Available, off by default | `honesty-audit` — deliberate-simplification audit | `DietrichGebert/ponytail` `v4.13.0` (`08e952d7a8057a57ce561ff1330d093fd92eec67`) |
 
 `scroll-world@scroll-world` also remains installed and off by default.
 

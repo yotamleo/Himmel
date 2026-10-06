@@ -76,10 +76,10 @@ assert_says() {
 # both gates must invoke the SAME oxlint version, so a future bump of one
 # without the other goes red here rather than in CI.
 HARDENING_GATE="$SCRIPT_DIR/check-oxlint-hardening.sh"
-if grep -q '^OXLINT_VERSION=1\.86\.0$' "$GATE"; then
-    echo "PASS gate pins OXLINT_VERSION=1.86.0"
+if grep -q '^OXLINT_VERSION=1\.87\.0$' "$GATE"; then
+    echo "PASS gate pins OXLINT_VERSION=1.87.0"
 else
-    echo "FAIL gate must pin OXLINT_VERSION=1.86.0"
+    echo "FAIL gate must pin OXLINT_VERSION=1.87.0"
     FAILED=$((FAILED + 1))
 fi
 

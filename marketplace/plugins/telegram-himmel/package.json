@@ -8,7 +8,7 @@
     "start": "(test -d node_modules || bun install --no-summary 1>&2) && bun server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "grammy": "^1.46.0"
   }
 }

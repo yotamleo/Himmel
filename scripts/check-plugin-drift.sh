@@ -818,8 +818,21 @@ PY
               # locally-built version): not behind upstream's stable line.
               echo "  $name: CURRENT  (installed $norm_local >= $repo latest stable $norm_latest)${tier_note}"
             else
-              echo "  $name: BEHIND   ($repo latest tag $latest; installed $local_ver — upgrade)${tier_note}"
-              drift=1
+              # A reviewed hold (eco "upstream", key = registry name) in pin-holds.json
+              # reads HELD while current and latest_reviewed both still match, as in
+              # pin-scan.py; a newer upstream release re-raises BEHIND (HIMMEL-3952).
+              hold_reason="$(python3 -c 'import json,os,sys
+p,k,c,l=sys.argv[1:5]
+hs=json.load(open(p)).get("holds",[]) if p and os.path.exists(p) else []
+n=lambda v:str(v).lstrip("vV")
+print(next((h.get("reason") or "-" for h in hs if h.get("eco")=="upstream" and h.get("key")==k and n(h.get("current",""))==c and n(h.get("latest_reviewed",""))==l),""),end="")' \
+                "${DRIFT_PIN_HOLDS-$ROOT/scripts/upstreams/pin-holds.json}" "$name" "$norm_local" "$norm_latest" 2>/dev/null)"
+              if [ -n "$hold_reason" ]; then
+                echo "  $name: HELD     (latest $latest reviewed and held back: $hold_reason)${tier_note}"
+              else
+                echo "  $name: BEHIND   ($repo latest tag $latest; installed $local_ver — upgrade)${tier_note}"
+                drift=1
+              fi
             fi
           fi
           ;;
