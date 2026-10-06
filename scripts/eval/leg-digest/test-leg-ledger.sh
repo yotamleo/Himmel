@@ -100,7 +100,9 @@ P="$TMP/projects"; mkdir -p "$P/-home-x-himmel" "$P/-home-x-other"
 B1=4670b000-0000-4000-8000-000000000001; B2=4670b000-0000-4000-8000-000000000002
 B3=4670b000-0000-4000-8000-000000000003; B4=4670b000-0000-4000-8000-000000000004
 title() { printf '{"type":"custom-title","customTitle":"%s","sessionId":"%s"}\n' "$1" "$2"; }
-{ title HIMMEL-4670-N1365-agui-spec "$B1"; cat "$FX/classes.jsonl"; } >"$P/-home-x-himmel/$B1.jsonl"
+{ title HIMMEL-4670-N1365-agui-spec "$B1"; sed "s#\"sessionId\"#\"cwd\": \"$TMP/w\", \"sessionId\"#" "$FX/classes.jsonl"; } >"$P/-home-x-himmel/$B1.jsonl"
+B5=4670b000-0000-4000-8000-000000000005
+{ title HIMMEL-5-N6-nocwd "$B5"; cat "$FX/classes.jsonl"; } >"$P/-home-x-himmel/$B5.jsonl"
 cat "$FX/classes.jsonl" >"$P/-home-x-himmel/$B2.jsonl"
 { title HIMMEL-1-N9-old "$B3"; sed 's/2026-10-06T/2026-09-01T/g' "$FX/classes.jsonl"; } >"$P/-home-x-himmel/$B3.jsonl"
 mkdir -p "$TMP/salus-root" && : >"$TMP/salus-root/.salus"
@@ -112,12 +114,15 @@ bf() { python3 "$LL" backfill --since 2026-10-01 --projects "$P" --denials-ledge
 bf >"$TMP/bf1.out" 2>&1 || bad "backfill exits 0: $(head -c 300 "$TMP/bf1.out")"
 check "backfill digests only the leg-titled main journal from the window" '[ "$(jq -r .run_id "$BE" | tr "\n" " ")" = "$B1 " ]'
 check "the leg and ticket come from the title, marked backfill" 'jq -e ".meta.leg == \"N1365\" and .meta.ticket == \"HIMMEL-4670\" and .meta.backfill == true and .meta.observational == true" "$BE" >/dev/null'
-check "the salus-rooted journal is refused and counted" 'grep -q "salus=1" "$TMP/bf1.out" && absent "$B4" "$BF" "$BE"'
+check "the salus-rooted and the cwd-less journals are refused and counted" 'grep -q "salus=2" "$TMP/bf1.out" && absent "$B4" "$BF" "$BE" && absent "$B5" "$BF" "$BE"'
 check "backfill reports its row counts" 'grep -qE "^backfill: .*legs=1 .*failures\+=[1-9][0-9]* eval\+=1" "$TMP/bf1.out"'
 check "both backfill ledgers validate" 'python3 "$LL" validate "$BF" >/dev/null && python3 "$EVR" validate "$BE" >/dev/null'
 n1="$(lines "$BF")"
 bf >"$TMP/bf2.out" 2>&1
 check "a second backfill appends 0 rows" '[ "$(lines "$BE")" = 1 ] && [ "$(lines "$BF")" = "$n1" ] && grep -qE "failures\+=0 eval\+=0" "$TMP/bf2.out"'
+mkdir -p "$TMP/h/.config/claude-glm/phi-roots"
+HOME="$TMP/h" python3 "$LL" backfill --since 2026-10-01 --projects "$P" --denials-ledger "$FX/classifier-denials.jsonl" --failures-ledger "$TMP/bf3-f.jsonl" --eval-ledger "$TMP/bf3-e.jsonl" --state-dir "$TMP/bf3-s" >"$TMP/bf3.out" 2>&1; rc3=$?
+check "an unreadable PHI-roots file fails closed: nonzero, nothing written" '[ "$rc3" != 0 ] && [ ! -s "$TMP/bf3-e.jsonl" ]'
 check "a usage error exits 2" 'python3 "$LL" backfill >/dev/null 2>&1; [ $? = 2 ]'
 check "the writer spawns only bun, never a model CLI" 'absent -E "\"(claude|codex|gemini)\"" "$LL"'
 

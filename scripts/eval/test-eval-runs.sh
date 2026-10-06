@@ -207,6 +207,10 @@ orow s4 '{"fail_denied":2}' partial
 out=$(python3 "$CMP" leg-trajectory --ledger "$O" --thresholds "$TMP/obs-th.json" 2>&1); rc=$?
 eq "compare: a partial newest observational row still lists the series" "$rc" "3"
 has "compare: the series counts ok runs only" "$out" "3 runs"
+orow s5 '{"fail_denied":5}'
+orow s1 '{"fail_denied":7}'
+out=$(python3 "$CMP" leg-trajectory --ledger "$O" --thresholds "$TMP/obs-th.json" 2>&1)
+eq "compare: a superseding row for an older run_id becomes the latest" "$(printf '%s\n' "$out" | awk '$1 == "fail_denied" {print $4}')" "7"
 
 # The shipped thresholds table parses and names every wired eval.
 for e in lane-quality qmd-quality guard-corpus scrape-bench; do

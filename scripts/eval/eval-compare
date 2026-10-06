@@ -87,6 +87,7 @@ def observational(eval_id, rows):
     latest wins, listed per metric. No baseline, no verdict: exit 3."""
     latest = {}
     for r in rows:
+        latest.pop(r["run_id"], None)  # a superseding row moves its run to the end
         latest[r["run_id"]] = r
     ok = [r for r in latest.values() if r["status"] == "ok"]
     if ok:

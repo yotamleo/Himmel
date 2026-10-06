@@ -300,16 +300,17 @@ def _roots(name):
         with open(os.path.expanduser("~/.config/claude-glm/" + name), encoding="utf-8") as fh:
             return [os.path.realpath(os.path.expanduser(l.strip())) for l in fh
                     if l.strip() and not l.lstrip().startswith("#")]
-    except OSError:
-        return []
+    except FileNotFoundError:
+        return []  # absent = no listed roots; any other read error raises (fail closed)
 
 
 def salus_rooted(cwd, roots):
-    """True when cwd has a .salus marker on any ancestor or lies under a listed PHI root.
+    """True when cwd has a .salus marker on any ancestor or lies under a listed PHI root,
+    or when there is no cwd to test (fail closed).
     ponytail: a minimal re-implementation of graphify-fence.sh's salus test (a hook, not
     sourceable), upgrade path: share one primitive when a second reader needs it."""
     if not cwd:
-        return False
+        return True
     p = os.path.realpath(cwd)
     for r in roots:
         if p == r or p.startswith(r.rstrip("/") + "/"):
