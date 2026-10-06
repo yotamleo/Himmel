@@ -246,7 +246,9 @@ commands:
                           per-launch token. The OPERATOR runs this from a
                           terminal; agents must not (refused under a Claude
                           session env unless --allow-agent-session). Runs in the foreground,
-                          Ctrl-C or 30 min idle exits
+                          Ctrl-C or 30 min idle exits. --agui [<session-id>|latest]
+                          also prints the AG-UI run page URL for that session
+                          (default latest: the newest ~/.claude/projects transcript)
   gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
@@ -320,7 +322,7 @@ const ALLOWED_OPTIONS = {
   // never a `status` mode — status --json is a golden-tested contract.
   report: ['items', 'json'],
   // HIMMEL-4254 P3: the read-only config UI server.
-  ui: ['port', 'allowAgentSession'],
+  ui: ['port', 'allowAgentSession', 'agui'],
   ensure: ['items', 'profile', 'yes', 'dryRun', 'prune'],
   // `scope` takes its OWN positional verbs/targets (set|get|status, then
   // project|user for set) — parsed in parseArgs's scope cases, not as --flags.
@@ -363,6 +365,7 @@ const OPTION_FLAGS = {
   purgeState: '--purge-state',
   port: '--port',
   allowAgentSession: '--allow-agent-session',
+  agui: '--agui',
 };
 const OPTION_DEFAULTS = {
   fromProfile: null, defaultScope: null, scope: null, contribute: false, dryRun: false, items: null, json: false, profile: null, yes: false,
@@ -373,7 +376,10 @@ const OPTION_DEFAULTS = {
   purgeState: false,
   port: null,
   allowAgentSession: false,
+  agui: null,
 };
+// A Claude Code session id, the same shape config-ui's /api/agui/<run> accepts (agui/sse.ts RUN_ID).
+const AGUI_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // Parse the CLI args into a plain object. Unknown args are a hard error (exit
 // 2) so a typo doesn't silently fall through to a no-op install. A second
@@ -404,6 +410,7 @@ function parseArgs(argv) {
     purgeState: false, // uninstall: --purge-state (also remove operator state; default keeps it — HIMMEL-3058)
     port: null,        // ui: --port N (null = ephemeral, HIMMEL-4254)
     allowAgentSession: false, // ui: --allow-agent-session (operator override of the agent-session refusal, HIMMEL-4350)
+    agui: null,        // ui: --agui [<session-id>|latest] (also print the AG-UI page URL, HIMMEL-4480)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -483,6 +490,13 @@ function parseArgs(argv) {
           return args;
         }
         args.port = Number(raw);
+        break;
+      }
+      // HIMMEL-4480: --agui [<session-id>|latest]; the value is optional, so only
+      // 'latest' or a session UUID is consumed (default 'latest').
+      case '--agui': {
+        const next = argv[i + 1];
+        args.agui = next !== undefined && (next === 'latest' || AGUI_RUN_ID.test(next)) ? argv[++i] : 'latest';
         break;
       }
       case 'scope':
@@ -5371,6 +5385,25 @@ function cmdReport(args) {
   return 0;
 }
 
+// HIMMEL-4480: the newest ~/.claude/projects/<slug>/<session-id>.jsonl by mtime, or null.
+function latestSessionId(projects) {
+  let best = null, bestMs = -1;
+  let slugs = [];
+  try { slugs = fs.readdirSync(projects, { withFileTypes: true }).filter((d) => d.isDirectory()); } catch { return null; }
+  for (const slug of slugs) {
+    let names = [];
+    try { names = fs.readdirSync(path.join(projects, slug.name)); } catch { continue; }
+    for (const name of names) {
+      const id = name.slice(0, -'.jsonl'.length);
+      if (!name.endsWith('.jsonl') || !AGUI_RUN_ID.test(id)) continue;
+      let st;
+      try { st = fs.statSync(path.join(projects, slug.name, name)); } catch { continue; }
+      if (st.isFile() && st.mtimeMs > bestMs) { best = id; bestMs = st.mtimeMs; }
+    }
+  }
+  return best;
+}
+
 // HIMMEL-4254 P3: `ui` runs scripts/config-ui/server.ts under bun in the
 // foreground. The server prints the tokened URL itself; this verb only locates
 // it, refuses a missing bun, and forwards the exit code.
@@ -5388,8 +5421,17 @@ function cmdUi(args) {
     console.error('himmelctl: ui: bun is required (https://bun.sh)');
     return 1;
   }
+  let run = args.agui;
+  if (run === 'latest') {
+    run = latestSessionId(path.join(process.env.HOME || os.homedir(), '.claude', 'projects'));
+    if (run === null) {
+      console.error('himmelctl: ui: --agui latest: no session transcript under ~/.claude/projects');
+      return 1;
+    }
+  }
+  const serverArgs = [server, '--port', String(args.port === null ? 0 : args.port), ...(run ? ['--agui', run] : [])];
   return new Promise((resolve) => {
-    const child = require('child_process').spawn('bun', [server, '--port', String(args.port === null ? 0 : args.port)], { stdio: 'inherit' });
+    const child = require('child_process').spawn('bun', serverArgs, { stdio: 'inherit' });
     // A signal to this wrapper must reach the server, never orphan it.
     for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => child.kill(sig));
     child.on('error', (e) => { console.error(`himmelctl: ui: ${e.message}`); resolve(1); });

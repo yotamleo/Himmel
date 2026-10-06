@@ -6,9 +6,9 @@
 // that bound argv under the machine-wide write lock, re-probes the row and
 // appends one audit line.
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 import { scrubProviderKeys } from "../fleet-control/server";
 // redact.js is the shared CommonJS redactor (P2); imported, not copied.
 import { redactDeep, envValues } from "../himmelctl/lib/redact.js";
@@ -50,6 +50,36 @@ const STATIC: Record<string, [string, string]> = {
   "/health.js": ["health.js", "application/javascript; charset=utf-8"],
   "/app.css": ["app.css", "text/css; charset=utf-8"],
 };
+// GET /agui/ (HIMMEL-4480): the built AG-UI page, agui-web/dist (bun build, untracked).
+// Not token-gated: the page is static and the token rides the URL fragment; /api/agui/<run> stays gated.
+const AGUI_DIST = join(import.meta.dir, "agui-web", "dist");
+const AGUI_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+  ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2",
+};
+const AGUI_MISSING = `<!doctype html><meta charset="utf-8"><title>AG-UI page not built</title>
+<h1>The AG-UI page is not built</h1>
+<p>Build it once from your himmel checkout, then reload this page:</p>
+<pre>cd scripts/config-ui/agui-web
+bun install
+bun run build</pre>
+`;
+
+// Only a regular file whose real path stays inside dist; anything else (traversal, a symlink out, a directory) is a 404.
+function aguiFile(dist: string, path: string): Response {
+  let root: string;
+  try { root = realpathSync(dist); statSync(join(root, "index.html")); }
+  catch { return new Response(AGUI_MISSING, { status: 404, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } }); }
+  let rel: string;
+  try { rel = decodeURIComponent(path.slice("/agui/".length)) || "index.html"; } catch { return new Response("not found", { status: 404 }); }
+  let real: string;
+  try { real = realpathSync(join(root, rel)); } catch { return new Response("not found", { status: 404 }); }
+  const type = AGUI_TYPES[extname(real)];
+  if (!real.startsWith(root + sep) || !type) return new Response("not found", { status: 404 });
+  // A rebuild can remove the file between realpath and read: that is a 404 too, never a thrown 500.
+  try { if (statSync(real).isFile()) return new Response(readFileSync(real), { headers: { "content-type": type, "cache-control": "no-store" } }); } catch { /* gone */ }
+  return new Response("not found", { status: 404 });
+}
 
 type Env = Record<string, string | undefined>;
 // root, now, actionTimeoutMs and reprobeBudgetMs are test seams on the function
@@ -57,7 +87,7 @@ type Env = Record<string, string | undefined>;
 export type ServerOpts = {
   port?: number; token?: string; hostname?: string; env?: Env; onIdle?: () => void;
   root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; feedWaitMs?: number; feedTimeoutMs?: number;
-  legsScript?: string; legsTimeoutMs?: number; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number;
+  legsScript?: string; legsTimeoutMs?: number; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number; aguiDist?: string;
 };
 type Preview = Resolved & { expires: number };
 type Probe = Record<string, { installed: string; health: string }>;
@@ -267,6 +297,8 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       if (started) feedRun = null; // an action ran: the next feed re-probes, never reusing a cached or in-flight (pre-action) report
       return res;
     }
+    if (req.method === "GET" && path === "/agui") return new Response(null, { status: 308, headers: { location: "/agui/" } });
+    if (req.method === "GET" && path.startsWith("/agui/")) return aguiFile(opts.aguiDist ?? AGUI_DIST, path);
     const file = STATIC[path];
     if (req.method === "GET" && file) return new Response(readFileSync(join(publicRoot, file[0])), { headers: { "content-type": file[1], "cache-control": "no-store" } });
     return new Response("not found", { status: 404 });
@@ -291,8 +323,11 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
 
 if (import.meta.main) {
   const i = process.argv.indexOf("--port");
+  const a = process.argv.indexOf("--agui");
   const { port, token } = startServer({ port: i > 0 ? Number(process.argv[i + 1]) : 0 });
   console.log(`http://${LOOPBACK}:${port}/#t=${token}`);
+  // himmelctl ui --agui: the launcher has already resolved and validated the run id.
+  if (a > 0) console.log(`http://${LOOPBACK}:${port}/agui/#t=${token}&run=${process.argv[a + 1]}`);
   process.on("SIGINT", () => process.exit(0));
   process.on("SIGTERM", () => process.exit(0));
 }
