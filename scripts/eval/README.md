@@ -237,7 +237,8 @@ bun scripts/eval/leg-digest/leg-digest.ts --session <uuid>   # resolved under ~/
 - **Recovered / identical retry** on main-agent denied rows come from
   `trajectory.py score --denials`, joined by `tool_call_id`.
 - **Status** is `ok`, or `partial` (malformed lines, the subagent cap was
-  hit, a file could not be read, or `trajectory.py` failed), or
+  hit, a file could not be read, `trajectory.py` failed, or the hook or
+  tracked-test lookup failed), or
   `inconclusive` (no journal, or over 200 MB).
 - **Cross-check:** `stats.denial_divergence` lists the main-agent denials that
   only one detector saw. `test-leg-digest.sh` fails on any divergence not

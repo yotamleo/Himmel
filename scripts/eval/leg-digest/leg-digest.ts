@@ -78,15 +78,16 @@ function args(argv: string[]) {
 
 const lines = (path: string) => { try { return readFileSync(path, "utf8").split("\n"); } catch { return []; } };
 
-function hookNames(): Set<string> {
+// The two vocabulary lookups return null when they fail, so the digest is partial rather than all "other".
+function hookNames(): Set<string> | null {
   try { return new Set(readdirSync(join(REPO, "scripts/hooks")).filter((n) => n.endsWith(".sh")).map((n) => n.slice(0, -3))); }
-  catch { return new Set(); }
+  catch { return null; }
 }
 
-function trackedTests(): Set<string> {
+function trackedTests(): Set<string> | null {
   const r = spawnSync(["git", "-C", REPO, "ls-files", "-z"]);
-  const names = r.success ? r.stdout.toString().split("\0") : [];
-  return new Set(names.map((p) => basename(p)).filter((n) => /^test-[\w.-]+\.sh$|\.test\.ts$/.test(n)));
+  if (!r.success) return null;
+  return new Set(r.stdout.toString().split("\0").map((p) => basename(p)).filter((n) => /^test-[\w.-]+\.sh$|\.test\.ts$/.test(n)));
 }
 
 // null when trajectory.py did not run or did not print JSON.
@@ -143,8 +144,11 @@ async function main() {
   const trajOut = trajectory(journal);
   const traj = trajOut ?? {};
   const denials = new Map<string, Denial>(((traj.denials as Denial[]) ?? []).map((d) => [d.tool_call_id, d]));
-  const hooks = hookNames();
-  const tests = trackedTests();
+  const hookList = hookNames();
+  const testList = trackedTests();
+  const lookupsFailed = [...(hookList ? [] : ["hooks"]), ...(testList ? [] : ["tracked-tests"])];
+  const hooks = hookList ?? new Set<string>();
+  const tests = testList ?? new Set<string>();
   const ledger = ledgerRows(o.ledger, session);
 
   const agents = new Map<string, Agent>();
@@ -284,10 +288,11 @@ async function main() {
     ...[...denials.keys()].filter((id) => !mapperDenied.has(id)).map((id) => ({ tool_call_id: id, only: "trajectory" })),
   ];
   const stats = { ...mapper.stats, files: paths.length, files_skipped: merged.skipped, subagent_cap_hit: capped,
-    trajectory_failed: trajOut === null, denial_divergence: divergence };
+    trajectory_failed: trajOut === null, lookups_failed: lookupsFailed, denial_divergence: divergence };
   return {
     digest_v: DIGEST_SCHEMA, mapper_v: MAPPER_SCHEMA, trajectory_v: traj.trajectory_v ?? null, session,
-    status: mapper.stats.malformed > 0 || capped || merged.skipped > 0 || trajOut === null ? "partial" : "ok",
+    status: mapper.stats.malformed > 0 || capped || merged.skipped > 0 || trajOut === null || lookupsFailed.length > 0
+      ? "partial" : "ok",
     model: mainModel,
     metrics: { ...m, red_before_green: bool(traj.red_before_green), denial_recovery: traj.denial_recovery ?? null,
       identical_denied_retries: traj.identical_denied_retries ?? null, verify_before_claim: bool(traj.verify_before_claim) },

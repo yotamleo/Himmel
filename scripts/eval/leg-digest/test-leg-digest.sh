@@ -107,6 +107,11 @@ printf '#!/bin/sh\nexit 1\n' >"$TMP/fakebin/python3"
 chmod +x "$TMP/fakebin/python3"
 check "a failed trajectory.py makes it partial" 'PATH="$TMP/fakebin:$PATH" digest "$TMP/$SID.jsonl" | jq -e ".status == \"partial\" and .stats.trajectory_failed == true" >/dev/null'
 check "a trajectory.py that ran is not a failure" 'jq -e ".stats.trajectory_failed == false" "$TMP/classes.json" >/dev/null'
+mkdir -p "$TMP/nogit"
+printf '#!/bin/sh\nexit 1\n' >"$TMP/nogit/git"
+chmod +x "$TMP/nogit/git"
+check "a failed git ls-files makes it partial and names the lookup" 'PATH="$TMP/nogit:$PATH" digest "$TMP/$SID.jsonl" | jq -e ".status == \"partial\" and .stats.lookups_failed == [\"tracked-tests\"]" >/dev/null'
+check "lookups that worked leave lookups_failed empty" 'jq -e ".stats.lookups_failed == []" "$TMP/classes.json" >/dev/null'
 
 echo "test-leg-digest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
