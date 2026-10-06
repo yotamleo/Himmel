@@ -1271,6 +1271,19 @@ assert_eq "failing semantic step rc=3" "3" "$rc"
 assert_contains "failing semantic step ledgers action=failed" '"action":"failed"' "$(tail -n1 "$TMP_ROOT/t9-bad-ledger/.graph-cadence/ledger.jsonl" 2>/dev/null)"
 assert_contains "failing semantic step appends a cadence alert" "graph-semantic-$(corpus_slug_of "$TMP_ROOT/t9-bad-primary")" "$(cat "$TMP_ROOT/t9-bad-alerts.log" 2>/dev/null)"
 assert_contains "failing semantic step sends the alert" "sent: cadence leg failed: graph-semantic-" "$(cat "$FAKE_SEND_LOG")"
+# (e) HIMMEL-4512 item 4: rc 3 (bank at/over threshold) and rc 4 (promote lock
+# held) are benign skips -- the next fire retries -- so the run stays green and
+# raises no alert; a real failure (rc 2, above) still alerts.
+for brc in 3 4; do
+    tag="skip$brc"; mkdir -p "$TMP_ROOT/t9-$tag-home" "$TMP_ROOT/t9-$tag-ledger"
+    seed_repo "$TMP_ROOT/t9-$tag-primary" "$TMP_ROOT/t9-$tag-origin.git" 20
+    : > "$FAKE_SEM_LOG"; : > "$FAKE_SEND_LOG"; rc=0
+    out=$(FAKE_SEM_RC=$brc run_sem "$tag" --semantic) || rc=$?
+    assert_eq "benign semantic rc=$brc keeps the run rc=0" "0" "$rc"
+    assert_eq "benign semantic rc=$brc sends no alert" "" "$(cat "$FAKE_SEND_LOG")"
+    assert_eq "benign semantic rc=$brc appends no alert line" "" "$(cat "$TMP_ROOT/t9-$tag-alerts.log" 2>/dev/null)"
+    assert_contains "benign semantic rc=$brc is reported as a skip" "semantic step skipped (rc=$brc" "$out"
+done
 
 # =============================================================================
 # Test 8: usage errors

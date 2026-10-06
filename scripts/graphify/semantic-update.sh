@@ -39,6 +39,8 @@
 #
 # Exit: 0 ok / no-op; 1 usage or IO; 2 fence deny, graphify or merge failure;
 # 3 bank at/over threshold (nothing touched); 4 promote lock held.
+# graph-cadence.sh --semantic treats 3 and 4 as benign skips (the next fire
+# retries, nothing was touched) and alerts on every other non-zero rc.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,6 +100,12 @@ if [ "$BACKEND" = "ollama" ]; then
   case "$(printf '%s' "$OLLAMA_MODEL" | tr '[:upper:]' '[:lower:]')" in
     *-cloud|*:cloud) echo "semantic-update: refusing ollama: OLLAMA_MODEL '$OLLAMA_MODEL' is an Ollama cloud model -- nothing copied" >&2; exit 2 ;;
   esac
+  # Loopback + non-cloud model are verified above, so graphify's "no OLLAMA_API_KEY
+  # set" warning (HIMMEL-4512) is noise: it exists to flag a corpus leaving the
+  # machine. Hand it the documented placeholder; a caller-set key still wins, and
+  # the cloud path (refresh-graph-map.sh) never gets one, so its warning and any
+  # real auth error stay visible.
+  : "${OLLAMA_API_KEY:=ollama}"; export OLLAMA_API_KEY
 fi
 
 # Egress first, before any copy or bank call (HIMMEL-1084 direct-eval contract:

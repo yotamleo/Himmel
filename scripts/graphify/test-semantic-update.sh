@@ -42,6 +42,7 @@ cat > "$WS/bin/graphify" <<EOF
 #!/usr/bin/env bash
 echo "graphify \$*" >> "$WS/calls.log"
 echo "OLLAMA_MODEL=\${OLLAMA_MODEL:-}" >> "$WS/env.log"
+echo "OLLAMA_API_KEY=\${OLLAMA_API_KEY-unset}" >> "$WS/env.log"
 [ "\$1" = extract ] || exit 0
 [ -z "\${GRAPHIFY_STUB_RC:-}" ] || exit "\$GRAPHIFY_STUB_RC"
 python3 - "\$2" <<'PY'
@@ -295,6 +296,17 @@ ext=$(grep '^graphify extract' "$WS/calls.log")
 case "$ext" in *"--backend ollama"*"--max-concurrency 1"*) pass "T23 extract args" ;; *) fail "T23 extract args: $ext" ;; esac
 grep -qx 'OLLAMA_MODEL=qwen3.6:27b' "$WS/env.log" && pass "T23 model qwen3.6:27b" || fail "T23 model: $(cat "$WS/env.log")"
 grep -qx bank "$WS/calls.log" && fail "T23 bank-preflight called on the ollama path" || pass "T23 ollama path does not call bank-preflight"
+# T23b (HIMMEL-4512 item 8): graphify warns "no OLLAMA_API_KEY set" on every local
+# run; the loopback-verified path hands it the documented placeholder so the log
+# stays quiet, and a caller-set key is never overwritten.
+grep -qx 'OLLAMA_API_KEY=ollama' "$WS/env.log" && pass "T23b local ollama gets the placeholder OLLAMA_API_KEY" || fail "T23b placeholder key: $(cat "$WS/env.log")"
+C23B="$WS/c23b"; new_corpus "$C23B"; : > "$WS/env.log"
+out=$(OLLAMA_API_KEY=real-key run --name t23b --corpus-root "$C23B" --corpus-class himmel-code --backend ollama); rc=$?
+grep -qx 'OLLAMA_API_KEY=real-key' "$WS/env.log" && pass "T23c a caller-set OLLAMA_API_KEY is preserved" || fail "T23c caller key: $(cat "$WS/env.log")"
+# T23d: the claude-cli path never receives the placeholder.
+C23D="$WS/c23d"; new_corpus "$C23D"; : > "$WS/env.log"
+out=$(run --name t23d --corpus-root "$C23D" --corpus-class himmel-code --backend claude-cli); rc=$?
+grep -qx 'OLLAMA_API_KEY=unset' "$WS/env.log" && pass "T23d claude-cli path gets no OLLAMA_API_KEY" || fail "T23d claude-cli key leak: $(cat "$WS/env.log")"
 
 # ollama_refused <name> <VAR=val...>: the script's OWN endpoint/model check
 # refuses before the fence, the bank, the copy and graphify.
