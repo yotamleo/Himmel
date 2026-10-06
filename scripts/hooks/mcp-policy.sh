@@ -63,7 +63,7 @@ fi
 # deny only when the verdict is deny AND the mode is enforce, then the
 # refusal text.
 # shellcheck disable=SC2016  # jq program, not shell expansion
-out=$(printf '%s' "$input" | $tmo jq -Rsr --slurpfile reg "$registry" --slurpfile mx "$matrix" '
+out=$(printf '%s' "$input" | $tmo jq -Rsr --arg host "${HOSTNAME:-}" --slurpfile reg "$registry" --slurpfile mx "$matrix" '
     . as $raw
     | ($reg[0] // {}) as $r
     | (($r.servers // {}) | if type == "object" then . else {} end) as $servers
@@ -104,7 +104,7 @@ out=$(printf '%s' "$input" | $tmo jq -Rsr --slurpfile reg "$registry" --slurpfil
          then "destructive: list \"\($p.tool)\" in servers[\"\($p.server)\"].allow_destructive to allow it"
        else "" end) as $reason
     | (if $reason == "" then "allow" else "deny" end) as $verdict
-    | ({ts: (now | todate), session: $sess, server: $p.server, tool: $p.tool,
+    | ({v: 1, ts: (now | todate), host: $host, source: "mcp-policy", kind: "mcp-call", session: $sess, server: $p.server, tool: $p.tool,
         class: $class, egress: $egress, mode: $mode, verdict: $verdict, reason: $reason} | tojson),
       ((if $verdict == "deny" and $mode == "enforce" then "deny" else "allow" end)
        + " " + (($r.audit.max_bytes // 1048576) | tostring)),

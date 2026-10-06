@@ -87,8 +87,8 @@ done < <(jq -r '.servers | to_entries[] | .key as $s | (.value.tools // {}) | to
 
 # --- 3. audit line shape: fields present, no argument content ----------------
 run_hook "$(call mcp__graphify__query_graph)"
-if printf '%s' "$LAST" | jq -e '(.ts|type=="string") and .session=="s-test" and .server=="graphify" and .tool=="query_graph" and .class=="read" and .verdict=="allow" and .mode=="observe" and .egress=="local"' >/dev/null 2>&1; then
-    ok "audit line carries ts/session/server/tool/class/verdict/mode/egress"
+if printf '%s' "$LAST" | jq -e '(.ts|type=="string") and .session=="s-test" and .server=="graphify" and .tool=="query_graph" and .class=="read" and .verdict=="allow" and .mode=="observe" and .egress=="local" and .v==1 and (.host|type=="string") and .source=="mcp-policy" and .kind=="mcp-call"' >/dev/null 2>&1; then
+    ok "audit line carries v/ts/host/source/kind/session/server/tool/class/verdict/mode/egress"
 else
     bad "audit line shape: $LAST"
 fi
