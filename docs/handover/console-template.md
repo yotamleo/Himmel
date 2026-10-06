@@ -408,6 +408,9 @@ a console-spawned leg, not merely on hearing from you); answering `GO` over
 SendMessage is a notification to the leg, not the mechanism. The leg merges;
 it reports `MERGED #<n> → <sha>`; you pull the primary and the leg wraps
 (closing its ticket only if the brief says the PR completes it, below).
+`go.sh` re-runs `ready-check.sh` itself from your cwd (the primary) and
+refuses with exit 4, writing nothing, unless it passes. A head with no ok
+CR-ledger row cannot get a GO (HIMMEL-4565).
 
 The Jira close is the leg's call from the brief, not a default: the Ship
 contract's `completes-ticket: yes|no` line tells the leg to merge with
@@ -425,9 +428,13 @@ selector and shared libs, the merge gate and GO writer — the list is read
 from the default branch, never the PR head, so a PR cannot shrink it) does
 not merge through `merge-on-green.sh` on an ordinary GO: it exits 21. Such a
 PR needs an independent adversarial review first; only on the judge's GO for
-that exact head run `console-kit/go.sh --trust-reviewed <judge-id> <pr>
-<head>`, where `<judge-id>` names that review (e.g. the judge session name,
-`[A-Za-z0-9._:-]`, ≤128 chars). The id is signed into the GO's mac, so it
+that exact head run `console-kit/go.sh --trust-reviewed <qid> <pr>
+<head>`, where `<qid>` is the judge question's id (`[A-Za-z0-9][A-Za-z0-9._-]*`).
+`go.sh` refuses with exit 5 unless `<root>/<user>/<bucket>/verdicts/<qid>/`
+holds a verdict whose first line under `## Verdict` is exactly
+``**GO** for head `<head>`.``, with no NO-GO for that head and no unparsed
+verdict beside it (HIMMEL-3832). Brief the judge to write that line. The id is
+signed into the GO's mac, so it
 cannot be added or edited after the fact, and a push after it needs a fresh
 trust-reviewed GO. A trust-path PR also refuses while the anchor checkout is
 behind `origin` (pull the primary first), so the gate it runs is current.

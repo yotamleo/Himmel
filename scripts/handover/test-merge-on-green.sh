@@ -2847,6 +2847,23 @@ case "$1 $2" in
 esac
 STUB
 chmod +x "$GO_WRITER_BIN/gh"
+# HIMMEL-4565: go.sh runs ready-check.sh and refuses unless it passes, so the
+# writer runs from a repo whose CR ledger holds an ok row for each head, under a
+# gh that answers ready-check green (anything else falls through to the stub
+# above). go_write <root> <go.sh args...> - the head is the last argument.
+# shellcheck source=console-kit/testlib-ready-pass.sh
+. "$SCRIPT_DIR/console-kit/testlib-ready-pass.sh"
+GO_READY_REPO=$(mktemp -d "${TMPDIR:-/tmp}/mog-go-repo.XXXXXX") || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
+git -C "$GO_READY_REPO" init -q
+ready_pass_bin "$GO_READY_REPO/.bin"
+ready_pass_ledger "$GO_READY_REPO" "$GO_SHA" "$GO_OLD"
+go_write() {
+    local root="$1" head
+    shift
+    for head in "$@"; do :; done
+    (cd "$GO_READY_REPO" && READY_STUB_HEAD="$head" READY_STUB_NWO=owner/repo HANDOVER_DIR="$root" \
+        PATH="$GO_READY_REPO/.bin:$GO_WRITER_BIN:$PATH" bash "$GO_WRITER" "$@" >/dev/null 2>&1)
+}
 no_merge_call() {
     if [ "$(grep -c '^pr merge ' "$LAST_GH_LOG")" -eq 0 ]; then pass; else fail "$1 (expected zero merge calls)"; fi
 }
@@ -2871,7 +2888,7 @@ no_merge_call "2919-a3: no merge call"
 
 # 2919-b — marker set, GO written by the console's own writer for the certified
 # head: proceeds exactly like the unmarked happy path (2919-d's gh log).
-HANDOVER_DIR="$GO_ROOT" PATH="$GO_WRITER_BIN:$PATH" bash "$GO_WRITER" 77 "$GO_SHA" >/dev/null 2>&1
+go_write "$GO_ROOT" 77 "$GO_SHA"
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 0 "2919-b: console leg with a GO for the certified head → merged"
 assert_merge_has "2919-b: merge pins the certified head" "--match-head-commit $GO_SHA"
@@ -2880,7 +2897,7 @@ GO_B_GHLOG=$(cat "$LAST_GH_LOG")
 
 # 2919-c — only a STALE GO (an older head) exists: refused.
 rm -f "$GO_ROOT/.locks/go/77.$GO_SHA"
-HANDOVER_DIR="$GO_ROOT" PATH="$GO_WRITER_BIN:$PATH" bash "$GO_WRITER" 77 "$GO_OLD" >/dev/null 2>&1
+go_write "$GO_ROOT" 77 "$GO_OLD"
 HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$GO_ROOT" STUB_SHA="$GO_SHA" \
     run_mog 17 "2919-c: console leg with only a stale GO → exit 17"
 assert_err_has "2919-c: stderr says a stale GO is never reused" "a GO for an older head is stale"
@@ -2921,7 +2938,13 @@ TP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/mog-tp.XXXXXX") || { echo "FAIL: mktemp -d 
 TP_ROOT=$(cd "$TP_ROOT" && pwd)
 TP_GO="$TP_ROOT/.locks/go"
 TP_CI='[{"filename":".github/workflows/ci.yml"}]'
-tp_mint() { HANDOVER_DIR="$TP_ROOT" PATH="$GO_WRITER_BIN:$PATH" bash "$GO_WRITER" "$@" >/dev/null 2>&1; }
+tp_mint() { go_write "$TP_ROOT" "$@"; }
+# HIMMEL-3832: a trust-reviewed GO needs the judge's GO verdict for the head.
+mkdir -p "$TP_ROOT/u/himmel/verdicts/judge-N9"
+# shellcheck disable=SC2016  # literal backticks in the verdict line
+printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_SHA" > "$TP_ROOT/u/himmel/verdicts/judge-N9/a.md"
+# shellcheck disable=SC2016  # literal backticks in the verdict line
+printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_OLD" > "$TP_ROOT/u/himmel/verdicts/judge-N9/b.md"
 tp_run() {
     MOG_ANCHOR_GIT=1 HANDOVER_DIR="$TP_ROOT" STUB_SHA="$GO_SHA" STUB_PR_FILES_JSON="${STUB_PR_FILES_JSON-$TP_CI}" run_mog "$@"
 }

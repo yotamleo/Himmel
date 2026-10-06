@@ -406,8 +406,8 @@ check "9 unresolvable root writes nothing" "$([ -e "$badroot" ] && echo yes || e
 # .locks/ is excluded from both snapshots: queue-lock.sh legitimately writes
 # there (outside any bucket) on every `new`, unrelated to --name handling.
 before10="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
-out10="$(console new --bucket namebucket --name '../evil')"
-docNameSlug="$root/tester/namebucket/DEMO-nextleg-${today}A-evil.md"
+out10="$(console new --bucket namebucket --name '../evil-console')"
+docNameSlug="$root/tester/namebucket/DEMO-nextleg-${today}A-evil-console.md"
 check "10 --name is slugified into the doc path" "$([ -f "$docNameSlug" ] && echo yes)" "yes"
 token10="$(token_of "$out10")"
 after10_outside="$(find "$root" -type f -not -path "$root/.locks/*" -not -path "$root/tester/namebucket/*" | sort)"
@@ -431,22 +431,22 @@ check "11 second next --doc <same A> leaves B byte-identical" "$sum11B_before" "
 HANDOVER_DIR="$root" bash "$QL" release "$doc11A" "$token11a" >/dev/null 2>&1
 
 # --- 12: named chains can hand over -------------------------------------
-out12a="$(console new --bucket nightbucket --name night)"
+out12a="$(console new --bucket nightbucket --name night-console)"
 token12a="$(token_of "$out12a")"
-doc12A="$root/tester/nightbucket/DEMO-nextleg-${today}A-night.md"
-check "12 new --name night writes A-night doc" "$([ -f "$doc12A" ] && echo yes)" "yes"
+doc12A="$root/tester/nightbucket/DEMO-nextleg-${today}A-night-console.md"
+check "12 new --name night-console writes A-night doc" "$([ -f "$doc12A" ] && echo yes)" "yes"
 
-console next --bucket nightbucket --name night >/dev/null
-doc12B="$root/tester/nightbucket/DEMO-nextleg-${today}B-night.md"
-check "12 next --name night writes B-night doc" "$([ -f "$doc12B" ] && echo yes)" "yes"
+console next --bucket nightbucket --name night-console >/dev/null
+doc12B="$root/tester/nightbucket/DEMO-nextleg-${today}B-night-console.md"
+check "12 next --name night-console writes B-night doc" "$([ -f "$doc12B" ] && echo yes)" "yes"
 HANDOVER_DIR="$root" bash "$QL" release "$doc12A" "$token12a" >/dev/null 2>&1
 
 # --- 12b: next --doc alone derives a non-default name from the basename -
-out12ba="$(console new --bucket nightsrc --name night)"
+out12ba="$(console new --bucket nightsrc --name night-console)"
 token12ba="$(token_of "$out12ba")"
-doc12bA="$root/tester/nightsrc/DEMO-nextleg-${today}A-night.md"
+doc12bA="$root/tester/nightsrc/DEMO-nextleg-${today}A-night-console.md"
 console next --bucket nightdst --doc "$doc12bA" >/dev/null
-doc12bB="$root/tester/nightdst/DEMO-nextleg-${today}B-night.md"
+doc12bB="$root/tester/nightdst/DEMO-nextleg-${today}B-night-console.md"
 check "12b next --doc (no --name) derives the chain name from the doc basename" "$([ -f "$doc12bB" ] && echo yes)" "yes"
 HANDOVER_DIR="$root" bash "$QL" release "$doc12bA" "$token12ba" >/dev/null 2>&1
 
@@ -538,7 +538,7 @@ check "16c non-collision at A: never tries B" "$([ -e "$root/tester/createerror/
 check "16c non-collision at A: does not report exhaustion" "$(printf '%s\n' "$out16c" | grep -c 'all 26 letters')" "0"
 
 # ENAMETOOLONG cannot be confused with any pre-existing candidate (even as root).
-long16_name="$(printf '%0260d' 0)"
+long16_name="$(printf '%0260d' 0)-console"
 rc16d=0
 out16d="$(LC_ALL=C console new --bucket longname --name "$long16_name" 2>&1)" || rc16d=$?
 check "16d non-collision with no candidate: exits 1" "$rc16d" "1"
@@ -1247,10 +1247,10 @@ check "45 next --dry-run rolls AZ to BA" "$(printf '%s\n' "$out45" | grep -c "^w
 # basename just as it already does for a one-letter one (line ~262's regex
 # was [A-Z] only), and bump AA -> AB.
 mkdir -p "$root/tester/rollname"
-docAA46="$root/tester/rollname/DEMO-nextleg-${today}AA-mychain.md"
+docAA46="$root/tester/rollname/DEMO-nextleg-${today}AA-mychain-console.md"
 printf 'stub\n' > "$docAA46"
 console next --bucket rollname --doc "$docAA46" >/dev/null
-docAB46="$root/tester/rollname/DEMO-nextleg-${today}AB-mychain.md"
+docAB46="$root/tester/rollname/DEMO-nextleg-${today}AB-mychain-console.md"
 check "46 next --doc <two-letter> derives name and bumps to AB" "$([ -f "$docAB46" ] && echo yes)" "yes"
 
 # --- 47: new with 26 docs present picks AA instead of refusing -----------
@@ -1601,8 +1601,8 @@ run_launch_line() {
     ( cd "$tmp" && PATH="$stub63:$PATH" bash -c "$line" )
 }
 
-S63="DEMO-nextleg-${today}A-rec63a"
-out63a="$(console new --bucket rec63a --name rec63a)"
+S63="DEMO-nextleg-${today}A-rec63a-console"
+out63a="$(console new --bucket rec63a --name rec63a-console)"
 token63a="$(token_of "$out63a")"
 check "63a printing the launch line writes no row (a line nobody pastes is no console)" "$([ -e "$LL63/$S63.log" ] && echo present || echo absent)" "absent"
 rm -f "$tmp/claude-argv-63"
@@ -1620,9 +1620,9 @@ contains "$argv63a" "row-existed" "63a the row was already there when claude sta
 HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63a/$S63.md" "$token63a" >/dev/null 2>&1
 
 # 63b. CONSOLE_CONTEXT=1m is the one opt-in: the row says so, as the arm paths do.
-S63b="DEMO-nextleg-${today}A-rec63b"
+S63b="DEMO-nextleg-${today}A-rec63b-console"
 out63b="$( ( cd "$fixture_repo" && HANDOVER_DIR="$root" USER_SLUG=tester JIRA_PROJECT_KEY=DEMO CONSOLE_WORK_DIR="$tmp/defaultwork" \
-    CONSOLE_CONTEXT=1m bash "$C" new --bucket rec63b --name rec63b ) )"
+    CONSOLE_CONTEXT=1m bash "$C" new --bucket rec63b --name rec63b-console ) )"
 token63b="$(token_of "$out63b")"
 run_launch_line "$out63b"
 check "63b CONSOLE_CONTEXT=1m: the row is context=1m source=explicit autocompact=auto" \
@@ -1630,19 +1630,19 @@ check "63b CONSOLE_CONTEXT=1m: the row is context=1m source=explicit autocompact
 HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63b/$S63b.md" "$token63b" >/dev/null 2>&1
 
 # 63c. next records the SUCCESSOR's session (the console its line launches).
-out63c="$(console new --bucket rec63c --name rec63c)"
+out63c="$(console new --bucket rec63c --name rec63c-console)"
 token63c="$(token_of "$out63c")"
-out63c2="$(console next --bucket rec63c --name rec63c)"
+out63c2="$(console next --bucket rec63c --name rec63c-console)"
 run_launch_line "$out63c2"
-check "63c next: the successor's line writes a row for the successor session" "$(grep -c "^headed-arm: role=console session=DEMO-nextleg-${today}B-rec63c " "$LL63/DEMO-nextleg-${today}B-rec63c.log" 2>/dev/null || true)" "1"
-check "63c next: the predecessor's session got no row (its line was never run)" "$([ -e "$LL63/DEMO-nextleg-${today}A-rec63c.log" ] && echo present || echo absent)" "absent"
-HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63c/DEMO-nextleg-${today}A-rec63c.md" "$token63c" >/dev/null 2>&1
+check "63c next: the successor's line writes a row for the successor session" "$(grep -c "^headed-arm: role=console session=DEMO-nextleg-${today}B-rec63c-console " "$LL63/DEMO-nextleg-${today}B-rec63c-console.log" 2>/dev/null || true)" "1"
+check "63c next: the predecessor's session got no row (its line was never run)" "$([ -e "$LL63/DEMO-nextleg-${today}A-rec63c-console.log" ] && echo present || echo absent)" "absent"
+HANDOVER_DIR="$root" bash "$QL" release "$root/tester/rec63c/DEMO-nextleg-${today}A-rec63c-console.md" "$token63c" >/dev/null 2>&1
 
 # 63d. --dry-run shows the SAME command it would print, and running nothing
 # writes nothing.
-out63d="$(console new --bucket rec63d --name rec63d --dry-run)"
+out63d="$(console new --bucket rec63d --name rec63d-console --dry-run)"
 check "63d --dry-run: would-launch names the recorder" "$(printf '%s\n' "$out63d" | grep -c '^would-launch: .*record-launch.sh ')" "1"
-check "63d --dry-run: writes no row" "$([ -e "$LL63/DEMO-nextleg-${today}A-rec63d.log" ] && echo present || echo absent)" "absent"
+check "63d --dry-run: writes no row" "$([ -e "$LL63/DEMO-nextleg-${today}A-rec63d-console.log" ] && echo present || echo absent)" "absent"
 
 # 63e. a launch-record dir that cannot be written never stops the console: the
 # recorder warns and claude still starts.
@@ -1679,7 +1679,7 @@ printf 'HANDOVER_DIR=%s\nUSER_SLUG=ownslug\nJIRA_PROJECT_KEY=OWNKEY\n' "$own65/s
 foreign65="$tmp/foreign-repo-65"
 mkdir -p "$foreign65/nested"
 ( cd "$foreign65" && git init -q )
-out65="$(cd "$foreign65/nested" && env -u HANDOVER_DIR -u USER_SLUG -u JIRA_PROJECT_KEY CONSOLE_WORK_DIR="$tmp/defaultwork65" bash "$own65/scripts/handover/console/console.sh" new --name rec65 --dry-run 2>&1)"
+out65="$(cd "$foreign65/nested" && env -u HANDOVER_DIR -u USER_SLUG -u JIRA_PROJECT_KEY CONSOLE_WORK_DIR="$tmp/defaultwork65" bash "$own65/scripts/handover/console/console.sh" new --name rec65-console --dry-run 2>&1)"
 rc65=$?
 check "65 own-checkout .env resolves rc=0" "$rc65" "0"
 case "$out65" in
@@ -2112,5 +2112,17 @@ check "77 the predecessor's manifest is left in place (copy, not rename)" "$([ -
 check "77 successor step 10 names the carried manifest path" "$(grep -Fc "$man77B" "$doc77B" 2>/dev/null)" "1"
 check "77 no unrendered {{FLEET_MANIFEST}} left in the successor doc" "$(grep -Fc '{{FLEET_MANIFEST' "$doc77B" 2>/dev/null)" "0"
 HANDOVER_DIR="$root" bash "$QL" release "$doc77A" "$token77" >/dev/null 2>&1
+
+# --- 78 (HIMMEL-4571): a name without the -console suffix is refused, nothing armed
+before78="$(find "$root" -type f -not -path "$root/.locks/*" | sort)"
+rc78n=0; out78n="$(console new --bucket nosuffix78 --name roadmap 2>&1)" || rc78n=$?
+check "78 new --name roadmap (no -console suffix) exits non-zero" "$([ "$rc78n" -ne 0 ] && echo yes)" "yes"
+check "78 new refusal names the suffix" "$(printf '%s\n' "$out78n" | grep -c -- '-console')" "1"
+rc78x=0; console next --bucket nosuffix78 --name roadmap >/dev/null 2>&1 || rc78x=$?
+check "78 next --name roadmap (no -console suffix) exits non-zero" "$([ "$rc78x" -ne 0 ] && echo yes)" "yes"
+check "78 refusal writes nothing" "$(find "$root" -type f -not -path "$root/.locks/*" | sort)" "$before78"
+rc78ok=0; out78ok="$(console new --bucket nosuffix78 --name roadmap-console 2>&1)" || rc78ok=$?
+check "78 new --name roadmap-console is accepted" "$rc78ok" "0"
+HANDOVER_DIR="$root" bash "$QL" release "$root/tester/nosuffix78/DEMO-nextleg-${today}A-roadmap-console.md" "$(token_of "$out78ok")" >/dev/null 2>&1
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

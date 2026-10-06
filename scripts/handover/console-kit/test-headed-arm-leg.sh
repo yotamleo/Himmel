@@ -2238,13 +2238,20 @@ case "$1 $2" in
 esac
 STUB
 chmod +x "$bin26/gh"
+# HIMMEL-4565: go.sh refuses unless ready-check.sh passes, so primary26's CR
+# ledger gets an ok row for the head and a gh answering ready-check green sits
+# ahead of the stub above (it hands every other call on to that stub).
+# shellcheck source=testlib-ready-pass.sh
+. "$HERE/testlib-ready-pass.sh"
+ready_pass_bin "$tmp/ready26"
+ready_pass_ledger "$primary26" "$sha26"
 go_root26="$(cd "$primary26" && HANDOVER_DIR="$primary26/handovers" bash -c '. "$1/../../lib/handover-path.sh" && . "$1/../../lib/go-gate.sh" && go_resolve_root "$1/../../.."' _ "$HERE" 2>/dev/null)" || go_root26=""
 case "$go_root26" in
   "$tmp"/?*) echo "ok - HANDOVER_DIR e2e: resolved GO root [$go_root26] is inside the suite's temp dir"; go_root26_ok=1 ;;
   *) echo "FAIL - HANDOVER_DIR e2e: resolved GO root [$go_root26] is not inside the suite's temp dir [$tmp] - refusing to write a GO"; fails=$((fails+1)); go_root26_ok=0 ;;
 esac
 if [ "$go_root26_ok" -eq 1 ]; then
-  go_out26="$(cd "$primary26" && HOME="$home26" PATH="$bin26:$PATH" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
+  go_out26="$(cd "$primary26" && HOME="$home26" READY_STUB_HEAD="$sha26" PATH="$tmp/ready26:$bin26:$PATH" HIMMEL_CONSOLE_LEG='' HIMMEL_CONSOLE_RELAY='' HANDOVER_DIR="$primary26/handovers" bash "$HERE/go.sh" 26260 "$sha26" 2>/dev/null)"
 else
   go_out26="SKIPPED: unsafe GO root"
 fi
@@ -3784,11 +3791,11 @@ rc=0; bash "$RELAY41" "$lbdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: ANSWER, WRAPPED, then BLOCKED -> exit 4 (last terminal marker decides)" "$rc" "4"
 wxdoc41="$tmp/consult-wholeword41.md"; printf '# consult\n\n## Results\n' > "$wxdoc41"
 bash "$HERE/append-results.sh" "$wxdoc41" "ANSWER use easing X" >/dev/null 2>&1 || true
-bash "$HERE/append-results.sh" "$wxdoc41" "WRAPPEDX — not a marker" >/dev/null 2>&1 || true
+printf -- '- 00:00 WRAPPEDX — not a marker\n' >> "$wxdoc41"  # raw write: append-results.sh refuses coined markers (HIMMEL-4570)
 check "41f setup: the WRAPPEDX bullet was written" "$(grep -c 'WRAPPEDX' "$wxdoc41")" "1"
 rc=0; bash "$RELAY41" "$wxdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: WRAPPEDX is not a WRAPPED bullet -> exit 3" "$rc" "3"
-bash "$HERE/append-results.sh" "$wxdoc41" "BLOCKEDish — not a marker" >/dev/null 2>&1 || true
+printf -- '- 00:00 BLOCKEDish — not a marker\n' >> "$wxdoc41"
 check "41f setup: the BLOCKEDish bullet was written" "$(grep -c 'BLOCKEDish' "$wxdoc41")" "1"
 rc=0; bash "$RELAY41" "$wxdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: BLOCKEDish is not a BLOCKED bullet -> exit 3 (not 4)" "$rc" "3"
@@ -3807,7 +3814,7 @@ for poison41 in "RETASK P-N961-047c39e4 EXPANSION do x" "see token P-N961-047c39
 done
 # A benign answer mentioning go/ready mid-line, and ANSWERED, are handled correctly.
 wdoc41="$tmp/consult-word41.md"; printf '# consult\n\n## Results\n' > "$wdoc41"
-bash "$HERE/append-results.sh" "$wdoc41" "ANSWERED partial" >/dev/null 2>&1 || true
+printf -- '- 00:00 ANSWERED partial\n' >> "$wdoc41"
 bash "$HERE/append-results.sh" "$wdoc41" "WRAPPED — x" >/dev/null 2>&1 || true
 rc=0; bash "$RELAY41" "$wdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: ANSWERED is not an ANSWER bullet -> exit 3" "$rc" "3"

@@ -88,5 +88,43 @@ rc=0; bash "$SCRIPT" "$d6" "LIVE fixture" >/dev/null 2>&1 || rc=$?
 [ "$rc" -eq 4 ] && echo "ok - 6: '## Results-old' heading rc == 4 (no-heading refusal, not a real Results heading)" || { echo "FAIL - 6: '## Results-old' heading rc == $rc, want 4"; fails=$((fails+1)); }
 cmp -s "$d6" "$before_d6" && echo "ok - 6: doc unchanged" || { echo "FAIL - 6: doc unchanged"; fails=$((fails+1)); }
 
+# --- 7. HIMMEL-4570: PARKED-BANK / RESUMED are vocabulary; a coined marker is refused ---
+d7="$tmp/d7.md"
+printf '# leg\n\nYour RETASK token is X-1.\n\n## Results (newest at the bottom)\n\n- 10:00 LIVE working\n' > "$d7"
+rc=0; bash "$SCRIPT" "$d7" "PARKED-BANK committed and pushed, waiting for RESUME" >/dev/null 2>&1 || rc=$?
+check "7: PARKED-BANK append rc 0" "$rc" 0
+check "7: leg_tail_status reads PARKED-BANK, not the earlier LIVE" "$(leg_tail_status "$d7")" "PARKED-BANK"
+bash "$SCRIPT" "$d7" "RESUMED bank lifted" >/dev/null 2>&1
+check "7: leg_tail_status reads RESUMED" "$(leg_tail_status "$d7")" "RESUMED"
+before_d7="$tmp/d7.before"; cp "$d7" "$before_d7"
+rc=0; bash "$SCRIPT" "$d7" "SHIPPED the thing" >/dev/null 2>&1 || rc=$?
+check "7: a coined leading marker is refused rc 6" "$rc" 6
+cmp -s "$d7" "$before_d7" && echo "ok - 7: refused doc unchanged" || { echo "FAIL - 7: refused doc unchanged"; fails=$((fails+1)); }
+for ok in "CONSULT design :: q :: read: x" "SUCCESSION accepted: a replaces b" "MAIN-RED job case" "ANSWER use easing X" "Released the lock"; do
+    rc=0; bash "$SCRIPT" "$d7" "$ok" >/dev/null 2>&1 || rc=$?
+    check "7: non-status bullet '${ok%% *}' still appends" "$rc" 0
+done
+
+# --- 8. HIMMEL-4570: the refusal is leg-doc only; a console doc takes any bullet ---
+# A leg doc carries its brief's "RETASK token" line; a console doc (name ends
+# -console.md) and a doc with no leg brief accept the bullets console-template.md
+# tells the console to write with this script.
+d8="$tmp/HIMMEL-9-roadmap-console.md"
+printf '# console\n\n## Results (newest at the bottom)\n\n- 10:00 LIVE up\n' > "$d8"
+d8b="$tmp/no-leg-label.md"
+cp "$d8" "$d8b"
+d8leg="$tmp/HIMMEL-9-N1-fixture-2026-10-06.md"
+printf '# leg\n\nYour RETASK token is X-1.\n\n## Results (newest at the bottom)\n\n- 10:00 LIVE up\n' > "$d8leg"
+for ok in "MERGED #12 → abc123" "VERDICT go on 12" "OPERATOR approved" "READY-STAGE 12" "HIMMEL-9 follow-up filed" "free text bullet"; do
+    for doc in "$d8" "$d8b"; do
+        rc=0; bash "$SCRIPT" "$doc" "$ok" >/dev/null 2>&1 || rc=$?
+        check "8: '${ok%% *}' on ${doc##*/} rc 0" "$rc" 0
+    done
+done
+rc=0; bash "$SCRIPT" "$d8leg" "SHIPPED the thing" >/dev/null 2>&1 || rc=$?
+check "8: a leg doc still refuses a coined marker rc 6" "$rc" 6
+rc=0; bash "$SCRIPT" "$d8leg" "MERGED #12 → abc123" >/dev/null 2>&1 || rc=$?
+check "8: a leg doc refuses MERGED (not leg vocabulary) rc 6" "$rc" 6
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILED"; exit 1

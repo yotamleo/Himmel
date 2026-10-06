@@ -3120,6 +3120,28 @@ certified — the same head its `--match-head-commit` pins — and `go.sh` uses
 `console_leg` for its refusal, so none of the three can drift on "is this a
 leg" or "what a GO binds" (HIMMEL-3149).
 
+`go.sh` itself refuses to write a GO for a head nobody reviewed (HIMMEL-4565):
+before it signs anything it runs the anchor's own `console-kit/ready-check.sh
+<pr> <head>` from the caller's cwd, and any non-PASS exits 4 with ready-check's
+output and writes nothing. That covers the CR ledger (check 4: an ok row for
+that exact head in `<git-common-dir>/cr-critic-scores.jsonl`), the head and
+merge state, the check rollup, unresolved threads, trailers, ticket ids and
+coverage. It re-runs rather than trusting a recorded PASS, so the console's
+flow is unchanged (ready-check, then go) and no file a leg could write stands
+in for the check. A trust-reviewed GO (`--trust-reviewed <qid>`, HIMMEL-3832)
+also needs the judge's verdict on disk: `go_trust_verdict` reads every
+`<root>/*/*/verdicts/<qid>/*.md`, takes the first non-blank line under
+`## Verdict`, and accepts only `**GO** for head \`<40-hex>\`` or
+`**NO-GO** for head \`<40-hex>\``, with one optional trailing full stop. It
+passes only when no file is unparsed, none is NO-GO for this head, and at least
+one is GO for it. A verdict for another head is ignored as an earlier round.
+Anything else exits 5 and writes nothing: no files, a free-form line, or an id
+that is not a path segment (`[A-Za-z0-9][A-Za-z0-9._-]*`). The id is still
+signed into the trust mac, so the HMAC domains and merge-on-green's exits 17/21
+are unchanged. Residual: the verdict file is plain text under the handover root,
+which the leg's uid can write, so it proves a GO verdict exists, not that a
+judge wrote it. Like the key residual below, that is HIMMEL-3897's.
+
 ### CodeRabbit availability — arm it per repo (HIMMEL-1125)
 
 **⚠️ Setup step. On a repo that HAS the CodeRabbit App, run this once:**

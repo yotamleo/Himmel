@@ -359,7 +359,10 @@ The console sends GO by first running `bash scripts/handover/console-kit/go.sh
 notification: a leg launched by `headed-arm-leg.sh` carries
 `HIMMEL_CONSOLE_LEG=1`, and `merge-on-green.sh` refuses it (exit 17) without a
 GO for the exact head it certifies, so a push after GO needs a fresh one
-(HIMMEL-2919).
+(HIMMEL-2919). `go.sh` runs `ready-check.sh` itself and writes nothing unless
+it passes (exit 4, HIMMEL-4565). A `--trust-reviewed <qid>` GO also needs the
+judge's ``**GO** for head `<sha>`.`` verdict under `verdicts/<qid>/` (exit 5,
+HIMMEL-3832).
 
 An armed merge stops at "awaiting approval" wherever branch protection requires
 a review the automation identity cannot give — on a single-maintainer repo the

@@ -48,6 +48,8 @@ lacks "preface carries no 60 % hand-off"     "$PREFACE" '60 ?%'
 has   "brief template hands off at 75 %"     "$BRIEF"   '≥75 % fill'
 lacks "brief template carries no 60 % fill"  "$BRIEF"   '60 ?% fill'
 has   "calibration states the 75 % leg rule" "$CALIB"   'Leg handover is at 75% context fill'
+has   "preface names close-wrapped-leg.sh as the session end (HIMMEL-2414)" "$PREFACE" "the console's \`close-wrapped-leg.sh\` ends the session"
+lacks "preface does not tell a leg to exit its own session (HIMMEL-2414)" "$PREFACE" 'closable-window banner, and \*\*exit\*\*'
 lacks "calibration drops the 45 % leg rule"  "$CALIB"   'Leg handover is whichever limit arrives first: 45%'
 
 if [ "$fails" -gt 0 ]; then

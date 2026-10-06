@@ -287,6 +287,15 @@ append_ledger() {
 
 marker_exists() { [ -f "$1/.git/cr-pending/feat/x" ]; }
 
+# write_sweeps <tmp> <SWEEP-lines...> — HIMMEL-4566: the class-sweep records
+# write-verdicts.sh sweep appends for branch feat/x.
+write_sweeps() {
+    local tmp="$1" l; shift
+    mkdir -p "$tmp/.git/cr-class-sweeps/feat"
+    : > "$tmp/.git/cr-class-sweeps/feat/x"
+    for l in "$@"; do printf '%s\n' "$l" >> "$tmp/.git/cr-class-sweeps/feat/x"; done
+}
+
 echo "== clear-cr-marker.sh tests =="
 
 # Codex /pr-check contract: ledger evidence must precede the sanctioned clear
@@ -2416,6 +2425,9 @@ write_ledger "$tmp" \
     "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1-sug","severity":"sug","file":"a.sh","line":2,"verdict":""}' "$_r1")" \
     "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r2-fixed","severity":"sug","file":"a.sh","line":3,"verdict":"fixed"}' "${_tip:0:8}")" \
     "$(avail_ok "${_tip:0:8}")"
+# HIMMEL-4566: r2-fixed carries its class-sweep record, so gate 4d passes and
+# this case still reaches the gate 4c it exists to test.
+write_sweeps "$tmp" "SWEEP [r2-fixed@${_tip:0:8}] class=typo :: single-site search=git grep -n teh"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 run_clear "$tmp" 14 "earlier-round unadjudicated findings block even though tip is fully adjudicated -> exit 14"
 if grepq "$LAST_CLEAR_OUT" -F 'REFUSED reason=unadjudicated-earlier-round'; then pass; else
@@ -2444,6 +2456,10 @@ write_ledger "$tmp" \
     "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1-agreed","severity":"imp","file":"a.sh","line":1,"verdict":"agreed"}' "$_r1")" \
     "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r2-fixed","severity":"sug","file":"a.sh","line":3,"verdict":"fixed"}' "${_tip:0:8}")" \
     "$(avail_ok "${_tip:0:8}")"
+# HIMMEL-4566: both rows are agreed-and-fixed on this branch, so gate 4d needs
+# their class-sweep records before this dry run can report a pass.
+write_sweeps "$tmp" "SWEEP [r1-agreed@$_r1] class=unquoted path :: sites=a.sh:1, b.sh:4" \
+    "SWEEP [r2-fixed@${_tip:0:8}] class=typo :: single-site search=git grep -n typo"
 stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
 _ledger_before="$(cat "$tmp/.git/cr-critic-scores.jsonl")"
 run_clear "$tmp" 0 "--dry-run with a promotable earlier-round row -> exit 0, gate 4c skipped" --dry-run
@@ -2453,6 +2469,70 @@ if [ "$_ledger_before" = "$_ledger_after" ]; then pass; else
     fail "8f dry-run must NEVER write to the shared ledger -- content changed: before=[$_ledger_before] after=[$_ledger_after]"; fi
 if grepq "$LAST_CLEAR_OUT" -F 'skipping the branch-wide still-open check'; then pass; else
     fail "8f dry-run must say it skipped the mutating branch-wide check: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
+# 8g-8l. HIMMEL-4566 gate 4d: a finding on this branch whose effective verdict
+# is agreed or fixed needs a class-sweep record (write-verdicts.sh sweep) in
+# <git-common-dir>/cr-class-sweeps/<branch>, keyed <id>@<head>. Shared fixture:
+# round 1 at $sha raised r1 (agreed, fixed by round 2), round 2 at the tip
+# recorded r2 as fixed within the round.
+sweep_fixture() {
+    make_repo || exit 1
+    _r1="${sha:0:8}"
+    (cd "$tmp" && echo x >> f.txt && git commit -qam "round 2" && git push -q origin feat/x) >/dev/null 2>&1
+    _tip=$(git -C "$tmp" rev-parse --verify refs/heads/feat/x)
+    write_marker "$tmp" "$_tip"
+    write_ledger "$tmp" \
+        "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r1","severity":"imp","file":"a.sh","line":1,"verdict":"agreed","fingerprint":"fp-r1"}' "$_r1")" \
+        "$(printf '{"kind":"finding","head":"%s","branch":"feat/x","model":"codex","finding_id":"r2","severity":"sug","file":"a.sh","line":3,"verdict":"fixed"}' "${_tip:0:8}")" \
+        "$(avail_ok "${_tip:0:8}")"
+    stub_gh "$tmp" ""; stub_check_ci "$tmp" 0
+}
+
+# 8g. No sweep record -> refused exit 14, naming both rows; marker stays.
+sweep_fixture
+run_clear "$tmp" 14 "8g agreed-and-fixed findings with no class-sweep record -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F 'REFUSED reason=missing-class-sweep'; then pass; else
+    fail "8g must refuse with reason=missing-class-sweep: $LAST_CLEAR_OUT"; fi
+if grepq "$LAST_CLEAR_OUT" -F "r1@$_r1" && grepq "$LAST_CLEAR_OUT" -F "r2@${_tip:0:8}"; then pass; else
+    fail "8g must name every finding missing a sweep as <id>@<head>: $LAST_CLEAR_OUT"; fi
+if marker_exists "$tmp"; then pass; else fail "8g: marker must REMAIN"; fi
+# 8h. --dry-run refuses the same way (gate 4d is read-only).
+run_clear "$tmp" 14 "8h --dry-run also refuses a missing class-sweep record" --dry-run
+rm -rf "$tmp"
+
+# 8i. Both records present (multi-site and single-site shapes) -> clears.
+sweep_fixture
+write_sweeps "$tmp" "SWEEP [r1@${sha:0:12}] class=unquoted path :: sites=a.sh:1, b.sh:4, c.sh:9" \
+    "SWEEP [r2@$_tip] class=typo :: single-site search=git grep -n teh"
+run_clear "$tmp" 0 "8i every agreed-and-fixed finding has a class-sweep record -> exit 0"
+if marker_exists "$tmp"; then fail "8i: marker should be GONE"; else pass; fi
+rm -rf "$tmp"
+
+# 8j. A record naming the right id at the WRONG head does not count.
+sweep_fixture
+write_sweeps "$tmp" "SWEEP [r1@${_tip:0:8}] class=unquoted path :: sites=a.sh:1, b.sh:4" \
+    "SWEEP [r2@$_tip] class=typo :: single-site search=git grep -n teh"
+run_clear "$tmp" 14 "8j class-sweep record at a sha that is not the finding head -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F "r1@$_r1" && ! grepq "$LAST_CLEAR_OUT" -F "r2@${_tip:0:8}"; then pass; else
+    fail "8j must name r1 only: $LAST_CLEAR_OUT"; fi
+rm -rf "$tmp"
+
+# 8k. A malformed record (one site, no search) does not count either.
+sweep_fixture
+write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: sites=a.sh:1" \
+    "SWEEP [r2@$_tip] class=typo :: single-site search=git grep -n teh"
+run_clear "$tmp" 14 "8k a one-site sweep with no backing search is not a record -> exit 14"
+rm -rf "$tmp"
+
+# 8l. An agreed finding later DEFERRED to a ticket needs no sweep; a legacy row
+# with no branch stamp is exempt. Only r2 carries a record.
+sweep_fixture
+append_ledger "$tmp" "8l defer r1" amend --head "$_r1" --id r1 --set verdict=deferred \
+    --set deferred_to=HIMMEL-9 --set fu_class=hardening --set reason="out of scope" --reason "deferred after review"
+printf '{"kind":"finding","head":"%s","model":"codex","finding_id":"legacy","severity":"imp","file":"a.sh","line":5,"verdict":"agreed"}\n' "$_r1" >> "$tmp/.git/cr-critic-scores.jsonl"
+write_sweeps "$tmp" "SWEEP [r2@$_tip] class=typo :: single-site search=git grep -n teh"
+run_clear "$tmp" 0 "8l deferred-after-agreed and legacy unstamped rows need no sweep -> exit 0"
 rm -rf "$tmp"
 
 # 5a-5e. HIMMEL-2128 — CR_FLOOR_FALLBACK=claude-only gate-3b escape. All five
