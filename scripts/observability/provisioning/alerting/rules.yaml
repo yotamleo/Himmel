@@ -766,3 +766,64 @@ groups:
           severity: warn
         annotations:
           summary: '{{ $values.A.Value }} hook-chain skip log(s) unreadable — hook_chain_budget_events_recent may be under-counting'
+
+      # HIMMEL-4652: eval drift. Twin of alerts.rules.yml's HimmelEvalRegression.
+      # refId A filters in PromQL (`== 1`), so an empty vector is the healthy
+      # case (no regression, or no eval ledger on this host): noDataState OK.
+      - uid: himmel_eval_regression
+        title: "Eval regression beyond noise band"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: himmel_eval_metric_regression == 1
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'eval {{ $labels.eval }} metric {{ $labels.metric }} regressed beyond its noise band vs baseline'
+
+      # HIMMEL-4652: no run in 14 days on a scheduled eval. Twin of
+      # alerts.rules.yml's HimmelEvalStale; keep the eval regex in step.
+      - uid: himmel_eval_stale
+        title: "Scheduled eval has not run in 14 days"
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              expr: himmel_eval_last_run_age_seconds{eval=~"qmd-quality"} > 1209600
+              instant: true
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator: { type: gt, params: [0] }
+              datasource: { type: __expr__, uid: __expr__ }
+              refId: B
+        noDataState: OK
+        execErrState: Alerting
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: 'eval {{ $labels.eval }} has had no run for more than 14 days'

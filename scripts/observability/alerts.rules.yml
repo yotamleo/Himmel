@@ -427,3 +427,31 @@ groups:
           severity: warn
         annotations:
           summary: '{{ $value }} hook-chain skip log(s) unreadable — hook_chain_budget_events_recent may be under-counting'
+
+      # ---- HIMMEL-4652: eval drift ------------------------------------------
+      # himmel_eval_* come from flow-exporter.ts reading the eval-runs ledger
+      # (scripts/eval/lib/eval_runs.py). The regression gauge is the exporter's
+      # port of scripts/eval/eval-compare: 1 = the latest ok run is worse than
+      # its same-config baseline beyond the noise band (CI bounds when the run
+      # recorded them, else scripts/eval/eval-compare.json). It stays 1 until a
+      # newer ok run clears it, so `for: 10m` only absorbs a scrape blip.
+      - alert: HimmelEvalRegression
+        expr: himmel_eval_metric_regression == 1
+        for: 10m
+        labels:
+          severity: warn
+        annotations:
+          summary: 'eval {{ $labels.eval }} metric {{ $labels.metric }} regressed beyond its noise band vs baseline'
+
+      # "No run in N days" on a scheduled eval. The eval list is the regex in
+      # the selector: only evals something actually runs on a schedule belong
+      # there, or a deliberately manual eval pages forever. qmd-quality is the
+      # one scheduled today; extend the regex (here and in rules.yaml) when
+      # another eval gets a timer. 14d = 1209600s.
+      - alert: HimmelEvalStale
+        expr: himmel_eval_last_run_age_seconds{eval=~"qmd-quality"} > 1209600
+        for: 1h
+        labels:
+          severity: warn
+        annotations:
+          summary: 'eval {{ $labels.eval }} has had no run for more than 14 days'

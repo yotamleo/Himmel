@@ -656,6 +656,14 @@
                       "HimmelCommitPressure": {
                         "text": "HimmelCommitPressure — Windows: committed memory is near the limit. Close programs or reboot.",
                         "index": 17
+                      },
+                      "HimmelEvalRegression": {
+                        "text": "HimmelEvalRegression — An eval scored worse than its normal noise. Open the Eval results row, then run eval-compare for that eval.",
+                        "index": 18
+                      },
+                      "HimmelEvalStale": {
+                        "text": "HimmelEvalStale — A scheduled eval has not run in 14 days. Check its timer and run it by hand.",
+                        "index": 19
                       }
                     }
                   }
@@ -2309,6 +2317,264 @@
       }
     },
     {
+      "type": "row",
+      "id": 32,
+      "title": "Eval results",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 64
+      },
+      "panels": []
+    },
+    {
+      "type": "table",
+      "id": 33,
+      "title": "Latest eval scores",
+      "description": "Newest passing run of each eval, with its confidence range when the run recorded one, the change against the last run with the same setup, and whether that change is worse than normal run-to-run noise.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 16,
+        "x": 0,
+        "y": 65
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "himmel_eval_metric_value",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "himmel_eval_metric_ci_lower",
+          "refId": "B",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "himmel_eval_metric_ci_upper",
+          "refId": "C",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "himmel_eval_metric_baseline_delta",
+          "refId": "D",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "himmel_eval_metric_regression",
+          "refId": "E",
+          "instant": true,
+          "range": false,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "job": true,
+              "instance": true
+            },
+            "indexByName": {
+              "eval": 0,
+              "metric": 1,
+              "Value #A": 2,
+              "Value #B": 3,
+              "Value #C": 4,
+              "Value #D": 5,
+              "Value #E": 6
+            },
+            "renameByName": {
+              "eval": "Eval",
+              "metric": "Measure",
+              "Value #A": "Score",
+              "Value #B": "Low",
+              "Value #C": "High",
+              "Value #D": "Change vs last run",
+              "Value #E": "Worse than noise"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "noValue": "No eval runs recorded"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Worse than noise"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "0": {
+                        "text": "No",
+                        "color": "#1f78c8",
+                        "index": 0
+                      },
+                      "1": {
+                        "text": "Yes — look at it",
+                        "color": "#d6352f",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "type": "stat",
+      "id": 34,
+      "title": "Days since each eval last ran",
+      "description": "Newest run of any outcome. Amber after 7 days, red after 14.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 8,
+        "x": 16,
+        "y": 65
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "himmel_eval_last_run_age_seconds / 86400",
+          "refId": "A",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{eval}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "decimals": 1,
+          "noValue": "No eval runs recorded",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#1f78c8",
+                "value": null
+              },
+              {
+                "color": "#e69f00",
+                "value": 7
+              },
+              {
+                "color": "#d6352f",
+                "value": 14
+              }
+            ]
+          },
+          "mappings": [
+            {
+              "type": "special",
+              "options": {
+                "match": "null+nan",
+                "result": {
+                  "text": "No data",
+                  "color": "#8a8f98",
+                  "index": 0
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "showPercentChange": false,
+        "wideLayout": true
+      }
+    },
+    {
       "type": "text",
       "id": 31,
       "title": "Not shown here yet",
@@ -2316,7 +2582,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 64
+        "y": 75
       },
       "options": {
         "mode": "markdown",

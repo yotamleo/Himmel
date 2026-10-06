@@ -13,6 +13,7 @@ let previousFetchHealthState: string | undefined;
 let previousSessionLedger: string | undefined;
 let previousToolCensus: string | undefined;
 let previousHookChainSkipLog: string | undefined;
+let previousEvalRuns: string | undefined;
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "flow-exporter-"));
   previousFetchHealthState = process.env.HIMMEL_FETCH_HEALTH_STATE;
@@ -31,6 +32,9 @@ beforeEach(() => {
   // <checkout>/.claude/logs/hook-chain-skips.jsonl.
   previousHookChainSkipLog = process.env.RUN_HOOK_CHAIN_SKIP_LOG;
   process.env.RUN_HOOK_CHAIN_SKIP_LOG = join(tmp, "missing-hook-chain-skips.jsonl");
+  // HIMMEL-4652: same isolation for the eval-runs ledger.
+  previousEvalRuns = process.env.HIMMEL_EVAL_RUNS_LEDGER;
+  process.env.HIMMEL_EVAL_RUNS_LEDGER = join(tmp, "missing-eval-runs.jsonl");
 });
 afterEach(() => {
   if (previousFetchHealthState === undefined) delete process.env.HIMMEL_FETCH_HEALTH_STATE;
@@ -41,6 +45,8 @@ afterEach(() => {
   else process.env.HIMMEL_TOOL_CENSUS = previousToolCensus;
   if (previousHookChainSkipLog === undefined) delete process.env.RUN_HOOK_CHAIN_SKIP_LOG;
   else process.env.RUN_HOOK_CHAIN_SKIP_LOG = previousHookChainSkipLog;
+  if (previousEvalRuns === undefined) Reflect.deleteProperty(process.env, "HIMMEL_EVAL_RUNS_LEDGER");
+  else process.env.HIMMEL_EVAL_RUNS_LEDGER = previousEvalRuns;
   rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -2027,4 +2033,91 @@ test("renderSessionsJson serves per-session detail Prometheus labels cannot carr
   const dead1 = view.sessions.find((s: { session_id: string }) => s.session_id === "dead-1");
   expect(dead1.status).toBe("dead");
   expect(dead1.end_reason).toBeNull();
+});
+
+// HIMMEL-4652: eval-runs ledger -> himmel_eval_* series.
+function evalRow(over: Record<string, unknown>): string {
+  return JSON.stringify({
+    v: 1, ts: "2026-07-10T00:00:00Z", host: "h", source: "s", kind: "eval-run", run_id: "r", eval: "lane-quality",
+    status: "ok", gitsha: null, git_dirty: null, config: {}, confighash: "aaaa", model: null, lane: null, n: 10, reps: 1,
+    metrics: {}, ci: {}, ci_level: null, ci_method: null, cases: null, artifact: null, meta: {}, ...over,
+  });
+}
+
+async function evalBody(lines: string[]): Promise<string> {
+  const ledger = join(tmp, "eval-runs.jsonl");
+  writeFileSync(ledger, lines.join("\n") + "\n");
+  return renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: join(tmp, "none"),
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    evalRunsLedgerPath: ledger,
+  });
+}
+
+test("eval-runs ledger exports latest ok value, CI bounds, n, delta and age per eval and metric", async () => {
+  const body = await evalBody([
+    evalRow({ run_id: "a1", ts: "2026-07-10T00:00:00Z", model: "opus", metrics: { accept_rate: 0.8, cost_usd: 1.0, gone: null } }),
+    evalRow({ run_id: "a2", ts: "2026-07-12T00:00:00Z", model: "opus", metrics: { accept_rate: 0.5, cost_usd: 1.2, gone: null } }),
+    evalRow({ run_id: "q1", eval: "qmd-quality", confighash: "bbbb", ts: "2026-07-10T00:00:00Z", metrics: { "hybrid.mrr": 0.6 }, ci: { "hybrid.mrr": { lo: 0.5, hi: 0.7 } } }),
+    evalRow({ run_id: "q2", eval: "qmd-quality", confighash: "bbbb", ts: "2026-07-12T00:00:00Z", metrics: { "hybrid.mrr": 0.62 }, ci: { "hybrid.mrr": { lo: 0.55, hi: 0.68 } } }),
+    evalRow({ run_id: "q3", eval: "qmd-quality", confighash: "bbbb", ts: "2026-07-12T11:00:00Z", status: "partial", metrics: { "hybrid.mrr": 0.1 } }),
+    evalRow({ run_id: "g1", eval: "guard-corpus", confighash: "cccc", ts: "2026-07-12T06:00:00Z", metrics: { regressions: 0 } }),
+    "{nope",
+  ]);
+
+  expect(body).toContain("# TYPE himmel_eval_metric_value gauge");
+  expect(body).toContain('himmel_eval_metric_value{eval="lane-quality",metric="accept_rate"} 0.5');
+  expect(body).toContain('himmel_eval_metric_value{eval="lane-quality",metric="cost_usd"} 1.2');
+  expect(body).not.toContain('metric="gone"');
+  // the newest row of qmd-quality is partial: the value stays the newest ok one
+  expect(body).toContain('himmel_eval_metric_value{eval="qmd-quality",metric="hybrid.mrr"} 0.62');
+  expect(body).toContain('himmel_eval_metric_ci_lower{eval="qmd-quality",metric="hybrid.mrr"} 0.55');
+  expect(body).toContain('himmel_eval_metric_ci_upper{eval="qmd-quality",metric="hybrid.mrr"} 0.68');
+  expect(body).not.toContain('himmel_eval_metric_ci_lower{eval="lane-quality"');
+  expect(body).toContain('himmel_eval_run_samples{eval="lane-quality"} 10');
+  expect(body).toContain('himmel_eval_metric_baseline_delta{eval="lane-quality",metric="accept_rate"} -0.3');
+  expect(body).toContain('himmel_eval_metric_baseline_delta{eval="qmd-quality",metric="hybrid.mrr"} 0.02');
+  // no earlier ok run with the same confighash: no delta, no verdict
+  expect(body).not.toContain('himmel_eval_metric_baseline_delta{eval="guard-corpus"');
+  expect(body).not.toContain('himmel_eval_metric_regression{eval="guard-corpus"');
+  expect(body).toContain('himmel_eval_last_run_age_seconds{eval="lane-quality"} 129600');
+  expect(body).toContain('himmel_eval_last_run_age_seconds{eval="qmd-quality"} 90000');
+  expect(body).toContain('himmel_eval_last_run_ok{eval="qmd-quality"} 0');
+  expect(body).toContain('himmel_eval_last_run_ok{eval="lane-quality"} 1');
+  expect(body).toContain("# himmel_eval_* partial: 1 unparseable");
+});
+
+test("eval-runs regression gauge follows eval-compare's noise bands", async () => {
+  const body = await evalBody([
+    evalRow({ run_id: "a1", ts: "2026-07-10T00:00:00Z", metrics: { accept_rate: 0.8, cost_usd: 1.0, peeked: 0, unlisted: 5 } }),
+    evalRow({ run_id: "a2", ts: "2026-07-12T00:00:00Z", metrics: { accept_rate: 0.5, cost_usd: 1.2, peeked: 0, unlisted: 1 } }),
+    evalRow({ run_id: "q1", eval: "qmd-quality", confighash: "bbbb", ts: "2026-07-10T00:00:00Z", metrics: { "hybrid.mrr": 0.6 }, ci: { "hybrid.mrr": { lo: 0.5, hi: 0.7 } } }),
+    evalRow({ run_id: "q2", eval: "qmd-quality", confighash: "bbbb", ts: "2026-07-12T00:00:00Z", metrics: { "hybrid.mrr": 0.3 }, ci: { "hybrid.mrr": { lo: 0.25, hi: 0.35 } } }),
+  ]);
+  // 0.8 -> 0.5 is worse than the 0.15 band
+  expect(body).toContain('himmel_eval_metric_regression{eval="lane-quality",metric="accept_rate"} 1');
+  // +20% cost is inside the 50% relative band
+  expect(body).toContain('himmel_eval_metric_regression{eval="lane-quality",metric="cost_usd"} 0');
+  expect(body).toContain('himmel_eval_metric_regression{eval="lane-quality",metric="peeked"} 0');
+  // a metric with no direction in eval-compare.json is never gated
+  expect(body).not.toContain('himmel_eval_metric_regression{eval="lane-quality",metric="unlisted"}');
+  // a CI-carrying metric is gated by the intervals: [0.25,0.35] sits wholly below [0.5,0.7]
+  expect(body).toContain('himmel_eval_metric_regression{eval="qmd-quality",metric="hybrid.mrr"} 1');
+});
+
+test("eval-runs families are absent without a ledger", async () => {
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: join(tmp, "none"),
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    evalRunsLedgerPath: join(tmp, "missing-eval-runs.jsonl"),
+  });
+  expect(body).not.toContain("himmel_eval_");
 });
