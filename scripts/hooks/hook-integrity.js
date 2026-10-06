@@ -1303,7 +1303,9 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
     let closure;
     try {
       closure = sourcedClosure(file, root);
-    } catch (_e) {
+    } catch (e) {
+      // A missing hook runs nothing, as verifyOneFile already allows for the member.
+      if (file === scriptPath && e && e.code === 'ENOENT') return { ok: true };
       return { ok: false, relPath: path.relative(root, file), reason: `${SOURCED_DENY}could not read it to find what it sources` };
     }
     if (closure.unresolved.length) {
