@@ -28,7 +28,7 @@ pass=0; fail=0
 ok()  { pass=$((pass+1)); printf '  ok   %s\n' "$1"; }
 bad() { fail=$((fail+1)); printf '  FAIL %s\n' "$1"; }
 
-T="$(mktemp -d)" || exit 1
+T="$(mktemp -d "${TMPDIR:-/tmp}/guard-leg-ctx.XXXXXX")" || exit 1
 trap 'rm -rf "$T"' EXIT
 T="$(cd "$T" && pwd)"
 CFG="$T/cfg"

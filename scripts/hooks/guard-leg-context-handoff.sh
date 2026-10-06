@@ -96,7 +96,7 @@ case "$tool" in
             *'&&'*|*'||'*|*'$('*|*"
 "*) ;;
             *)
-                if printf '%s' "$cmd" | grep -qE '^[[:space:]]*bash[[:space:]]+([^[:space:]]*/)?(scripts/handover/console-kit/append-results\.sh|scripts/handover/queue-lock\.sh[[:space:]]+release|scripts/handover/wrap-subtree-check\.sh|scripts/context-fill\.sh)([[:space:]]|$)'; then
+                if grep -qE '^[[:space:]]*bash[[:space:]]+([^[:space:]]*/)?(scripts/handover/console-kit/append-results\.sh|scripts/handover/queue-lock\.sh[[:space:]]+release|scripts/handover/wrap-subtree-check\.sh|scripts/context-fill\.sh)([[:space:]]|$)' <<< "$cmd"; then
                     exit 0
                 fi
                 ;;
@@ -152,7 +152,7 @@ for cand in "$dir"/*-RESUME.md; do
     [ -f "$cand" ] || continue
     [ "$cand" = "$doc" ] && continue
     if [ -n "$leg_id" ]; then
-        printf '%s\n' "$(basename "$cand" .md)" | tr '-' '\n' | grep -qE "^${leg_base}[a-z]?\$" || continue
+        grep -qE "^${leg_base}[a-z]?\$" <<< "$(basename "$cand" .md | tr '-' '\n')" || continue
     else
         [ "$cand" = "$want" ] || continue
     fi
