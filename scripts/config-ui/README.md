@@ -25,6 +25,24 @@ Monitoring URLs are loopback-only (`HIMMEL_PROMETHEUS_URL`, default
 `http://127.0.0.1:9090`; flow exporter port `HIMMEL_FLOW_EXPORTER_PORT`, default
 9877); a non-loopback URL is refused.
 
+## Agent run view (AG-UI, HIMMEL-4480)
+
+`agui-web/` is a React page that renders an agent run streamed as AG-UI events:
+assistant text, tool-call cards, a run strip of parallel calls over time, and
+the review panel driven by `STATE_SNAPSHOT` / `STATE_DELTA`. It reads
+`/api/agui/<run>` (one constant, `AGUI_URL` in `agui-web/src/stream.ts`) with
+the session token from `#t=<token>&run=<id>`; with no `run` it replays the
+recorded fixture `agui-web/src/fixture.json`, so it previews without a server.
+
+```bash
+cd scripts/config-ui/agui-web
+bun install
+bun run build   # → agui-web/dist/ (untracked)
+```
+
+The view logic is a pure reducer (`agui-web/src/reducer.ts`) with no runtime
+imports, so its suite runs in CI without an install.
+
 ## Tests
 
 - Unit and server suites: `bun test scripts/config-ui --dots` (CI-gated).
