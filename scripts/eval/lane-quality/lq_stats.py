@@ -67,9 +67,14 @@ def point_biserial(scores, labels):
 
 def weighted_kappa(a, b, lo=SCALE[0], hi=SCALE[1]):
     """Quadratic weighted Cohen's kappa of two raters on the integer scale
-    lo..hi. None with no pairs, or when chance disagreement is zero (both
-    raters gave one and the same score throughout)."""
-    if not a or len(a) != len(b):
+    lo..hi. A pair with either score off that scale is ignored. None with no
+    pairs, or when chance disagreement is zero (both raters gave one and the
+    same score throughout)."""
+    if len(a) != len(b):
+        return None
+    ab = [(x, y) for x, y in zip(a, b) if x in range(lo, hi + 1) and y in range(lo, hi + 1)]
+    a, b = [x for x, _ in ab], [y for _, y in ab]
+    if not a:
         return None
     k = hi - lo + 1
     n = len(a)

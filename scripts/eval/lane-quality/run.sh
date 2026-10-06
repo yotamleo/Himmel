@@ -180,11 +180,11 @@ judge_call() {
       # headless-claude-ok: HIMMEL-4090 blind judge call (HIMMEL-4648 second judge too), bank-preflighted by its caller, no tools, explicit permission mode, budget-capped
       # launch-profile-ok: HIMMEL-4090 the judge runs with --tools "", so no tool profile applies
       timeout "$TIMEOUT" "$CLAUDE_BIN" -p --model "$model" ${effort:+--effort "$effort"} --permission-mode dontAsk --output-format json \
-        --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools "" <"$packet"
+        --max-budget-usd "$budget" --no-session-persistence --json-schema "$(cat "$HERE/judge-schema.json")" --tools ""
     else
       exit 1
     fi
-  )>"$out" 2>"$err"
+  ) <"$packet" >"$out" 2>"$err"  # opened before the cd, so a relative path still resolves
   rm -rf "$jdir"
 }
 

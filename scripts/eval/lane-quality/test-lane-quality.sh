@@ -356,6 +356,12 @@ check "a stored second-judge result is reused, never re-judged" '! grep -q -- "-
 LQ_FAKE_TOKEN=SKIPPED-BANK bash "$RUN" calibration "$FX" --judge2-model haiku --json --no-ledger >/dev/null 2>&1
 rc=$?
 check "a bank refusal stops the second-judge pass before any call" '[ "$rc" -eq 75 ] && [ ! -s "$TMP/fake.log" ]'
+mkdir -p "$TMP/rel/fxr" && cp "$FX/runs.jsonl" "$FX"/*.judge-packet.md "$TMP/rel/fxr/"
+: >"$TMP/fake.log.judge"
+(cd "$TMP/rel" && bash "$RUN" calibration fxr --judge2-model haiku --json --no-ledger >/dev/null 2>&1)
+rc=$?
+check "a relative run dir still feeds the second judge its packet" '[ "$rc" -eq 0 ] && grep -q "packet b.r2" "$TMP/fake.log.judge"'
+check "weighted kappa ignores a pair off the 1..5 scale" '[ "$(kap "[1,2,6]" "[1,2,3]")" = 1.0 ]'
 
 echo "test-lane-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
