@@ -100,7 +100,7 @@ before_d7="$tmp/d7.before"; cp "$d7" "$before_d7"
 rc=0; bash "$SCRIPT" "$d7" "SHIPPED the thing" >/dev/null 2>&1 || rc=$?
 check "7: a coined leading marker is refused rc 6" "$rc" 6
 cmp -s "$d7" "$before_d7" && echo "ok - 7: refused doc unchanged" || { echo "FAIL - 7: refused doc unchanged"; fails=$((fails+1)); }
-for ok in "CONSULT design :: q :: read: x" "SUCCESSION accepted: a replaces b" "MAIN-RED job case" "Released the lock"; do
+for ok in "CONSULT design :: q :: read: x" "SUCCESSION accepted: a replaces b" "MAIN-RED job case" "ANSWER use easing X" "Released the lock"; do
     rc=0; bash "$SCRIPT" "$d7" "$ok" >/dev/null 2>&1 || rc=$?
     check "7: non-status bullet '${ok%% *}' still appends" "$rc" 0
 done

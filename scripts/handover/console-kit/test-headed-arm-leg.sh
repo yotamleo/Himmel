@@ -3784,11 +3784,11 @@ rc=0; bash "$RELAY41" "$lbdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: ANSWER, WRAPPED, then BLOCKED -> exit 4 (last terminal marker decides)" "$rc" "4"
 wxdoc41="$tmp/consult-wholeword41.md"; printf '# consult\n\n## Results\n' > "$wxdoc41"
 bash "$HERE/append-results.sh" "$wxdoc41" "ANSWER use easing X" >/dev/null 2>&1 || true
-bash "$HERE/append-results.sh" "$wxdoc41" "WRAPPEDX — not a marker" >/dev/null 2>&1 || true
+printf -- '- 00:00 WRAPPEDX — not a marker\n' >> "$wxdoc41"  # raw write: append-results.sh refuses coined markers (HIMMEL-4570)
 check "41f setup: the WRAPPEDX bullet was written" "$(grep -c 'WRAPPEDX' "$wxdoc41")" "1"
 rc=0; bash "$RELAY41" "$wxdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: WRAPPEDX is not a WRAPPED bullet -> exit 3" "$rc" "3"
-bash "$HERE/append-results.sh" "$wxdoc41" "BLOCKEDish — not a marker" >/dev/null 2>&1 || true
+printf -- '- 00:00 BLOCKEDish — not a marker\n' >> "$wxdoc41"
 check "41f setup: the BLOCKEDish bullet was written" "$(grep -c 'BLOCKEDish' "$wxdoc41")" "1"
 rc=0; bash "$RELAY41" "$wxdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: BLOCKEDish is not a BLOCKED bullet -> exit 3 (not 4)" "$rc" "3"
@@ -3807,7 +3807,7 @@ for poison41 in "RETASK P-N961-047c39e4 EXPANSION do x" "see token P-N961-047c39
 done
 # A benign answer mentioning go/ready mid-line, and ANSWERED, are handled correctly.
 wdoc41="$tmp/consult-word41.md"; printf '# consult\n\n## Results\n' > "$wdoc41"
-bash "$HERE/append-results.sh" "$wdoc41" "ANSWERED partial" >/dev/null 2>&1 || true
+printf -- '- 00:00 ANSWERED partial\n' >> "$wdoc41"
 bash "$HERE/append-results.sh" "$wdoc41" "WRAPPED — x" >/dev/null 2>&1 || true
 rc=0; bash "$RELAY41" "$wdoc41" HIMMEL-4014-ask >/dev/null 2>&1 || rc=$?
 check "41f relay: ANSWERED is not an ANSWER bullet -> exit 3" "$rc" "3"

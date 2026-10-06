@@ -67,7 +67,7 @@ lead="${TEXT%%[!A-Z-]*}"
 case "$lead" in
     ????*)
         case "$lead" in
-            LIVE|FINDING|RESOLVED|READY|BLOCKED|HALTED|WRAPPED|PARKED-BANK|RESUMED|CONSULT|CONSULT-ANSWER|SUCCESSION|MAIN-RED|PARK-BANK) ;;
+            LIVE|FINDING|RESOLVED|READY|BLOCKED|HALTED|WRAPPED|PARKED-BANK|RESUMED|CONSULT|CONSULT-ANSWER|ANSWER|SUCCESSION|MAIN-RED|PARK-BANK) ;;
             *)
                 echo "append-results: '$lead' is not in the marker vocabulary (LIVE FINDING RESOLVED READY BLOCKED HALTED WRAPPED PARKED-BANK RESUMED) - refusing" >&2
                 exit 6 ;;
