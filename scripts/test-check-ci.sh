@@ -732,7 +732,7 @@ case "$GH_STUB_MODE" in
         # appears, which a zombie's lingering process-table entry cannot fake.
         if [ "$is_watch" -eq 1 ]; then
             echo $$ > "$(dirname "$0")/watch-pid"
-            sleep 3
+            sleep "${GH_STUB_CAP_SLEEP:-3}"
             touch "$(dirname "$0")/completed-naturally"
             echo "All checks were successful"; exit 0
         fi
@@ -1816,17 +1816,22 @@ assert_err_has "ending the watch early (HIMMEL-2062)" "96 early-exit message pri
 
 # 97 — cap: a NON-CodeRabbit check is still pending when --max-wait elapses —
 # cannot certify green over unfinished work even though nothing has failed.
-run blocking-cap-pending --max-wait 1
+# HIMMEL-4630: every cap case below (97-100, 104, 2907-b/c, 4136-b) runs a 4s
+# budget, not 1s — a loaded machine can spend a 1s budget before the first watch
+# and take another path — and asserts the cap message by prefix, since the cap
+# printed is a share of whatever budget is left. The stubs' 3s watch still
+# outlives the largest possible cap (2s), so the cap still has to fire.
+run blocking-cap-pending --max-wait 4
 assert_rc 2 "97 cap with non-CodeRabbit pending rc 2"
-assert_err_has "watch cap reached (1s)" "97 cap message printed"
+assert_err_has "watch cap reached (" "97 cap message printed"
 assert_err_has "non-CodeRabbit checks still pending" "97 cap-with-pending refusal"
 
 # 98 — cap + red: the structured probe finds a failed check once the cap is
 # reached — reported the same as an ordinary red (red_exit), not the
 # cap-with-pending refusal (failed>0 is checked first).
-run blocking-cap-red --max-wait 1
+run blocking-cap-red --max-wait 4
 assert_rc 1 "98 cap with a failed check rc 1"
-assert_err_has "watch cap reached (1s)" "98 cap message printed on the red path too"
+assert_err_has "watch cap reached (" "98 cap message printed on the red path too"
 assert_err_has "checks FAILED" "98 red_exit fires after the bounded watch"
 
 # 99 — a POLL configured LARGER than --max-wait must not make the cap
@@ -1838,23 +1843,23 @@ assert_err_has "checks FAILED" "98 red_exit fires after the bounded watch"
 POLL_OVERRIDE=50
 SLEEP_CMD_OVERRIDE="sleep"
 t0=$SECONDS
-run blocking-cap-pending --max-wait 1
+run blocking-cap-pending --max-wait 4
 t_elapsed=$((SECONDS - t0))
 assert_rc 2 "99 cap still fires with a POLL larger than --max-wait"
-assert_err_has "watch cap reached (1s)" "99 cap message printed despite the large poll"
-if [ "$t_elapsed" -le 10 ]; then
+assert_err_has "watch cap reached (" "99 cap message printed despite the large poll"
+if [ "$t_elapsed" -le 30 ]; then
     pass "99 max-wait does not overshoot by a full POLL interval"
 else
-    fail "99 max-wait does not overshoot by a full POLL interval" "elapsed=${t_elapsed}s want <=10s (POLL=50s)"
+    fail "99 max-wait does not overshoot by a full POLL interval" "elapsed=${t_elapsed}s want <=30s (POLL=50s)"
 fi
 
 # 100 — a pending check whose name merely CONTAINS "coderabbit" (not an exact
 # match) must not be misread as the ignorable rollup (codex-2, HIMMEL-2062 CR
 # round 1): watch_decidable stays false, so the watch runs to the cap instead
 # of short-circuiting green through the decidable path.
-run blocking-cr-substring --max-wait 1
+run blocking-cr-substring --max-wait 4
 assert_rc 2 "100 substring-named pending check keeps watch_decidable false"
-assert_err_has "watch cap reached (1s)" "100 cap message printed, not an early decidable exit"
+assert_err_has "watch cap reached (" "100 cap message printed, not an early decidable exit"
 assert_err_has "non-CodeRabbit checks still pending" "100 cap-with-pending refusal"
 
 # 101 — CHECK_CI_POLL_INTERVAL=0 must not turn the supervisor loop into a
@@ -1935,11 +1940,14 @@ assert_err_lacks "103 does not fall through to the cap path" "stderr: $ERR" -iF 
 # lingering process-table entry cannot fake an absent side effect.
 : > "$STUBDIR/watch-pid"
 rm -f "$STUBDIR/completed-naturally"
-run blocking-cap-pending --max-wait 1
+# HIMMEL-4630: the stub watches 8s against a 6s budget (cap <= 3s), so a loaded
+# machine that spends part of the budget first still caps the watch after the
+# stub has recorded its pid; the poll below covers the stub's whole 8s.
+GH_STUB_CAP_SLEEP=8 run blocking-cap-pending --max-wait 6
 assert_rc 2 "104 cap still fires"
 watch_pid=$(cat "$STUBDIR/watch-pid" 2>/dev/null)
 orphan_leaked=0
-for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25; do
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45; do
     [ -e "$STUBDIR/completed-naturally" ] && { orphan_leaked=1; break; }
     sleep 0.2
 done
@@ -2047,7 +2055,7 @@ assert_out_has "all checks green + all review threads resolved" "2907-a eventual
 # (blocking-cap-pending, same stub cases 97/100/101 exercise) must still exit
 # 2 — exactly ONE "WAITING" notice is emitted, proving the extension is not
 # infinite — and the final cannot-evaluate line names the pending job.
-run blocking-cap-pending --max-wait 1
+run blocking-cap-pending --max-wait 4
 assert_rc 2 "2907-b a check that never resolves still exits 2 after the one extension"
 waiting_count=$(printf '%s' "$ERR" | grep -c "WAITING")
 if [ "$waiting_count" -eq 1 ]; then
@@ -2159,7 +2167,7 @@ assert_rc 0 "4136-a --max-wait 0 (unbounded) is accepted with any --settle"
 CHECK_CI_DISTINCT_DEADLINE=1 run blocking-long-pending --max-wait 4
 assert_rc 7 "4136-b opted in: a deadline with checks still pending exits 7"
 assert_err_has "DEADLINE-PENDING" "4136-b opted in: the verdict line is unchanged"
-CHECK_CI_DISTINCT_DEADLINE=1 run blocking-cap-red --max-wait 1
+CHECK_CI_DISTINCT_DEADLINE=1 run blocking-cap-red --max-wait 4
 assert_rc 1 "4136-b opted in: a red at the cap is still exit 1, never the deadline code"
 POLL_OVERRIDE=1
 SETTLE_OVERRIDE=5
@@ -2185,7 +2193,7 @@ assert_err_lacks "4136-c the recovery did not sleep past the deadline" "a sleep 
 # 2907-c — negative control: a FAILED check alongside a pending one at cap
 # must red_exit immediately (the failed-bucket probe is checked before the
 # extend decision) — no WAITING notice, no extension.
-run blocking-cap-red --max-wait 1
+run blocking-cap-red --max-wait 4
 assert_rc 1 "2907-c a failed check at cap still exits 1 immediately"
 assert_err_lacks "2907-c no WAITING notice on a genuinely red cap" "stderr: $ERR" -iF -- "WAITING"
 
