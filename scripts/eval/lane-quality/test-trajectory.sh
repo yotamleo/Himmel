@@ -42,6 +42,10 @@ expect claim-unverified   false null  0   false
 expect claim-stale        false null  0   false
 expect no-claim           null  null  0   null
 expect masked             false null  0   false
+expect chain-and          false null  0   true
+expect chain-trailing     true  null  0   true
+expect runner-named       false null  0   false
+expect runner-named-ok    false null  0   true
 
 echo "2. unreadable or empty input"
 : >"$TMP/empty.jsonl"

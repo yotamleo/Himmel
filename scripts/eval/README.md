@@ -138,12 +138,16 @@ Terms the definitions use:
 - **Test run:** a Bash call whose command runs a test file, directly or
   through an interpreter. A test file's basename is `test-*`, `test_*`,
   `*-test`, `*_test` or `*.test` with a script extension, or any `.bats`.
-  A runner that names no file (`pytest`, `bats`, `npm test` and the like)
-  also counts, and matches any test. `bash -n` is a syntax check, not a run.
+  A runner (`pytest`, `python3 -m pytest`, `bats`) runs the test files it
+  names; one that names none, or `npm test` and the like, matches any test.
+  `bash -n` is a syntax check, not a run.
 - **Outcome:** a test run passed if its tool result is not an error, and
   failed if it is. A run whose exit status is masked has no outcome. It is
-  masked when a separator other than `&&` follows the test (`|| true`, a
-  pipe, `;`, `&`).
+  masked when the command holds a pipe, `||` or `&`, or when a command
+  follows the test after `;` or a newline. A failure in an `&&` chain counts
+  only when every other command in the chain is setup (`cd`, `pushd`,
+  `export`, `source`, `.`, `set`, `umask`), since the failure may be the
+  other command's; a pass in an `&&` chain always counts.
 - **Denial:** a tool result that is an error, does not start with
   `Exit code` (that is a command that ran and failed), and reads as a hook or
   permission refusal. A denied call never ran, so it is never a test run.
@@ -171,7 +175,8 @@ The fields:
   write. A claim that names test files needs a run of one of them; a runner
   run backs any claim. The report is `<stem>.report.md` when it exists, and
   otherwise the assistant text after the last tool call. A claim is a
-  sentence that names tests, suites, cases or checks with a pass word
+  sentence that names tests, suites, cases, checks or a test file with a pass
+  word
   (`pass`, `green`, `succeed`) and is not negated. Null when the report makes
   no such claim.
 

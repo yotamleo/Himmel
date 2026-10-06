@@ -49,6 +49,8 @@ INTERPRETERS = ("bash", "sh", "zsh", "dash", "ksh", "python", "python3", "node",
 RUNNERS = ("pytest", "bats")
 RUNNER_SUBCMD = ("npm", "pnpm", "yarn", "bun", "go", "cargo", "make")
 WRAPPERS = ("env", "time", "sudo", "command", "exec", "nice", "nohup")
+# Setup whose failure a test's RED is not mistaken for, in `cd d && test`.
+SETUP_CMDS = ("cd", "pushd", "export", "source", ".", "set", "umask")
 # Command separators, captured; a lone & (background) but not the & of 2>&1 or &>.
 SEG_SPLIT_RE = re.compile(r"(&&|\|\||(?<![<>&])&(?![>&])|[;|\n])")
 CLAIM_NOUN_RE = re.compile(r"\b(tests?|suites?|cases?|checks?)\b", re.I)
@@ -111,36 +113,65 @@ def denied(call):
 
 
 def test_target(command):
-    """(target, masked) for the test a Bash command runs, or None. target is a
-    test file's basename, or "*" for a runner that names no file (pytest,
-    `npm test`). masked: a separator other than && follows the test (|| true,
-    a pipe, ;, &), so the command's exit status is not the test's."""
+    """(targets, outcomes) for the test a Bash command runs, or None. targets
+    is a frozenset of test-file basenames, or {"*"} for a runner that names no
+    file (pytest, `npm test`). outcomes says which results the command's exit
+    status speaks for: "pass+fail"; "pass" when the test shares an && chain
+    with a command other than cd-style setup, whose failure would read the
+    same; "" (masked) when a pipe, ||, & or a later ; command decides it."""
     if not isinstance(command, str):
         return None
-    parts = SEG_SPLIT_RE.split(command)  # segments at even, separators at odd
-    for i in range(0, len(parts), 2):
-        t = _segment_target(parts[i])
-        if t:
-            return t, any(sep != "&&" for sep in parts[i + 1::2])
+    parts = SEG_SPLIT_RE.split(command)
+    segs, seps = parts[0::2], parts[1::2]  # seps[j] joins segs[j] and segs[j+1]
+    for i, seg in enumerate(segs):
+        t = _segment_target(seg)
+        if not t:
+            continue
+        if any(s in ("||", "|", "&") for s in seps):
+            return t, ""
+        fail_ok = True
+        for j, s in enumerate(segs):
+            if j == i or not s.strip():
+                continue
+            between = seps[j:i] if j < i else seps[i:j]
+            if all(x == "&&" for x in between):
+                if j > i or not _is_setup(s):
+                    fail_ok = False
+            elif j > i:
+                return t, ""  # `test; cmd`: the exit status is cmd's
+        return t, "pass+fail" if fail_ok else "pass"
     return None
 
 
-def _segment_target(seg):
+def _tokens(seg):
     try:
         toks = shlex.split(seg, comments=True)
     except ValueError:
         toks = seg.split()
     while toks and (re.match(r"^[A-Za-z_]\w*=", toks[0]) or toks[0] in WRAPPERS):
         toks = toks[1:]
+    return toks
+
+
+def _is_setup(seg):
+    toks = _tokens(seg)
+    return not toks or toks[0] in SETUP_CMDS
+
+
+def _segment_target(seg):
+    toks = _tokens(seg)
     if toks and toks[0] == "timeout":
         toks = [t for t in toks[1:] if not t.startswith("-")][1:]
     if not toks:
         return None
     first = os.path.basename(toks[0])
+    if first in INTERPRETERS and toks[1:3] == ["-m", "pytest"]:
+        toks, first = toks[2:], "pytest"
     if first in RUNNERS:
-        return "*"
+        named = {os.path.basename(a.split("::")[0]) for a in toks[1:] if not a.startswith("-")}
+        return frozenset(n for n in named if TEST_FILE_RE.search(n)) or frozenset(["*"])
     if first in RUNNER_SUBCMD and len(toks) > 1 and toks[1] == "test":
-        return "*"
+        return frozenset(["*"])
     script = toks[0]
     if first in INTERPRETERS:
         rest = toks[1:]
@@ -151,7 +182,7 @@ def _segment_target(seg):
             return None
         script = rest[0]
     name = os.path.basename(script)
-    return name if TEST_FILE_RE.search(name) else None
+    return frozenset([name]) if TEST_FILE_RE.search(name) else None
 
 
 def _written_path(call):
@@ -174,18 +205,20 @@ def claims(report):
     test-file basenames it names."""
     out = []
     for s in SENTENCE_SPLIT_RE.split(report or ""):
-        if CLAIM_NOUN_RE.search(s) and CLAIM_PASS_RE.search(s) and not NEGATED_RE.search(s):
+        if ((CLAIM_NOUN_RE.search(s) or TEST_NAME_IN_TEXT_RE.search(s))
+                and CLAIM_PASS_RE.search(s) and not NEGATED_RE.search(s)):
             out.append({os.path.basename(m) for m in TEST_NAME_IN_TEXT_RE.findall(s)})
     return out
 
 
 def score_calls(calls, texts, report=None):
-    runs = []  # executed test runs with a known outcome: (pos, target, passed)
+    runs = []  # executed test runs with a known outcome: (pos, targets, passed)
     for c in calls:
         if c["name"] == "Bash" and isinstance(c["input"], dict) and c["result"] and not denied(c):
             t = test_target(c["input"].get("command"))
-            if t and not t[1]:
-                runs.append((c["pos"], t[0], not c["result"]["is_error"]))
+            passed = not c["result"]["is_error"]
+            if t and ((passed and t[1]) or t[1] == "pass+fail"):
+                runs.append((c["pos"], t[0], passed))
     writes = [(c["pos"], p) for c in calls for p in [_written_path(c)] if p]
     impl = [pos for pos, p in writes if is_impl_path(p)]
 
@@ -219,7 +252,7 @@ def score_calls(calls, texts, report=None):
     else:
         last_write = max((pos for pos, p in writes if not p.lower().endswith(DOC_EXT)), default=-1)
         fresh = [(t, ok) for pos, t, ok in runs if ok and pos > last_write]
-        vbc = all(any(not names or t in names or t == "*" for t, _ in fresh) for names in cl)
+        vbc = all(any(not names or "*" in ts or names & ts for ts, _ in fresh) for names in cl)
     return {"red_before_green": rbg, "denial_recovery": recovery,
             "identical_denied_retries": retries, "verify_before_claim": vbc}
 
