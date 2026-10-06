@@ -58,6 +58,10 @@
 #      (HIMMEL-2067) — including `sug`, which gate 4 never blocks on. `amend`
 #      records are applied first, same as gate 4. A cleared head must carry a
 #      decision for every finding, not just crit|imp.
+#   4d. Every finding stamped with this branch whose effective verdict is
+#      agreed or fixed, at ANY round head, has a class-sweep record in
+#      <git-common-dir>/cr-class-sweeps/<branch> (HIMMEL-4566; written by
+#      write-verdicts.sh sweep). A legacy row with no branch stamp is exempt.
 #   5. POST-PR ONLY: when a PR already exists for the branch, its head commit
 #      must BE the branch tip certified by the ledger, and check-ci.sh must also return 0 (CI green +
 #      all review threads resolved + no changes-requested). check-ci evaluates
@@ -97,6 +101,8 @@
 #       be reminted before lane selection.
 #       Also (4b, HIMMEL-2067): a finding at that SHA has no recorded verdict
 #       (agree/disprove/defer it, then re-run).
+#       Also (4d, HIMMEL-4566): an agreed-and-fixed finding on this branch has
+#       no class-sweep record (reason=missing-class-sweep).
 #       Also (4c, HIMMEL-3027): review-round.sh promote found a still-open
 #       (unadjudicated or un-re-raised) finding at an EARLIER round head on
 #       this branch — adjudicate it, then re-run. A promote exit other than
@@ -433,7 +439,7 @@ panel_empty=$(CRITICS="$SCRIPT_DIR/critics.json" node -e '
   try { const p = JSON.parse(require("fs").readFileSync(process.env.CRITICS, "utf8")).panel;
         console.log(String(Array.isArray(p) && p.length === 0 ? 1 : 0)); } catch (_) { console.log("0"); }' 2>/dev/null)
 # shellcheck disable=SC2016  # $-refs below are JS inside a single-quoted node script, not shell
-verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANCH="$branch" node -e '
+verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANCH="$branch" node -e '
   const fs = require("fs"), e = process.env;
   const lines = fs.existsSync(e.LEDGER)
       ? fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean) : [];
@@ -533,6 +539,7 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
   // rows independently (codex-1, HIMMEL-2067 CR round) let an old empty-
   // verdict row keep blocking after a newer row recorded the decision.
   const unadjByKey = new Map();
+  const sweptByKey = new Map();
   // HIMMEL-1715: carry each blocking finding FILE alongside the id so the shell
   // can check the row against the head it is blocking. Kept as a separate key
   // rather than folded into the blocking string, which callers/tests match on.
@@ -610,6 +617,14 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
           // off-head-move case.
           applied.push((o.finding_id || "?") + JSON.stringify(amendSet));
       }
+      // HIMMEL-4566 gate 4d: every finding stamped with THIS branch, at ANY
+      // head, whose effective verdict is agreed or fixed. Coalesced on the
+      // same key as unadjByKey plus the head, so a later raw row wins.
+      if (o.kind === "finding" && e.BRANCH && o.branch === e.BRANCH) {
+          sweptByKey.set([String(o.head || ""), o.finding_id || "?", o.artifact || "diff", o.perspective || "off"].join(SEP),
+              { id: o.finding_id || "?", head: String(o.head || "").toLowerCase(),
+                verdict: typeof o.verdict === "string" ? o.verdict.trim() : "" });
+      }
       if (!atHead(o)) continue;
       if (o.kind === "finding") {
         const k2 = [o.finding_id || "?", o.artifact || "diff", o.perspective || "off"].join(SEP);
@@ -684,6 +699,26 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
           unadjudicated.push({ id: v.id, severity: v.severity, file: v.file, artifact: v.artifact, perspective: v.perspective });
       }
   }
+  // HIMMEL-4566 gate 4d: the class-sweep records write-verdicts.sh sweep
+  // appended. JS twin of its sweep_re - keep the two in step. A line that
+  // does not match is not a record. A record covers a finding when the id is
+  // equal and one head is a prefix of the other (ledger heads are often
+  // abbreviated; both sides are at least 7 hex).
+  const SWEEP_RE = /^SWEEP \[([^\]@]+)@([0-9a-f]{7,64})\] class=\S.* :: (sites=[^,]*[^\s,][^,]*(,[^,]*[^\s,][^,]*)+|single-site search=\S.*)$/;
+  const sweeps = [];
+  if (e.SWEEPS && fs.existsSync(e.SWEEPS)) {
+      for (const l of fs.readFileSync(e.SWEEPS, "utf8").split("\n")) {
+          const m = SWEEP_RE.exec(l.replace(/\r$/, ""));
+          if (m) sweeps.push({ id: m[1], head: m[2] });
+      }
+  }
+  const missingSweep = [];
+  for (const v of sweptByKey.values()) {
+      if (v.verdict !== "agreed" && v.verdict !== "fixed") continue;
+      const covered = v.head.length >= 7 && sweeps.some((s) => s.id === v.id &&
+          (s.head.startsWith(v.head) || v.head.startsWith(s.head)));
+      if (!covered) missingSweep.push(v.id + "@" + v.head + "(" + v.verdict + ")");
+  }
   // HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility. Verified-exhaustion
   // classes mirror failure-classify.sh quota/rate-limit buckets (HIMMEL-1176) -
   // a bare "quota" is also accepted for a caller not yet on the finer
@@ -719,7 +754,7 @@ verdict=$(LEDGER="$ledger" FULL_SHA="$tip" PANEL_EMPTY="${panel_empty:-0}" BRANC
   if (emptyPanel) exhaustedLanes.push("empty-panel");
   const floorFallbackEligible = floorOk && (nonClaudeAvailModels.length > 0 || emptyPanel) &&
       nonExhaustedLanes.length === 0 && blocking.length === 0;
-  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, floorFallbackEligible, floorOk, exhaustedLanes, nonExhaustedLanes }));
+  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, missingSweep, floorFallbackEligible, floorOk, exhaustedLanes, nonExhaustedLanes }));
 ' 2>/dev/null)
 if [ -z "$verdict" ]; then
     echo "clear-cr-marker: could not read the CR ledger at $ledger — refusing (cannot certify the review)." >&2
@@ -733,6 +768,9 @@ malformed=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d
 deferred=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).deferred||[]).join(" ")))' 2>/dev/null)
 applied_amends=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).applied||[]).join(" ")))' 2>/dev/null)
 unadjudicated_count=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String((JSON.parse(s).unadjudicated||[]).length)))' 2>/dev/null)
+# HIMMEL-4566 gate 4d. No `||[]` fallback: a verdict without the key is a
+# broken pass, and the node throw leaves this EMPTY, which gate 4d refuses.
+missing_sweep=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s).missingSweep;if(Array.isArray(m))console.log("ok "+m.join(" "));})' 2>/dev/null)
 # HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility (see gate 3b below).
 floor_fallback_eligible=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(String(JSON.parse(s).floorFallbackEligible?1:0)))' 2>/dev/null)
 exhausted_lanes=$(printf '%s' "$verdict" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log((JSON.parse(s).exhaustedLanes||[]).join(" ")))' 2>/dev/null)
@@ -997,6 +1035,31 @@ if [ "${unadjudicated_count:-0}" -gt 0 ]; then
     audit "REFUSED reason=unadjudicated-findings branch=$branch sha=$tip count=$unadjudicated_count"
     exit 14
 fi
+
+# 4d. Class sweep of every agreed-and-fixed finding (HIMMEL-4566). Fixing the
+# one cited line of an agreed finding left its sibling sites for the next
+# round to find. Every finding stamped with this branch, at any round head,
+# whose effective verdict is agreed or fixed needs a record of the sweep in
+# <git-common-dir>/cr-class-sweeps/<branch> (write-verdicts.sh sweep). A
+# deferred, disproved or unadjudicated finding needs none (gates 4/4b own
+# those), and a legacy row with no branch stamp is exempt: it cannot be tied
+# to this branch, and the same rule keeps review-round.sh promote off it.
+# Read-only, so it runs under --dry-run too.
+case "$missing_sweep" in
+    ok|"ok ") ;;
+    ok\ *)
+        echo "clear-cr-marker: agreed-and-fixed finding(s) on $branch have no class-sweep record — refusing:${missing_sweep#ok}" >&2
+        echo "  Sweep each finding's whole class across the tree, then record it at the finding's OWN head:" >&2
+        echo "    SWEEP [<id>@<head>] class=<the class> :: sites=<site>, <site>[, ...]" >&2
+        echo "    SWEEP [<id>@<head>] class=<the class> :: single-site search=<the search that found no other site>" >&2
+        echo "  Write those lines to a file, then: bash scripts/cr/write-verdicts.sh sweep --branch '$branch' --from-file <path>" >&2
+        audit "REFUSED reason=missing-class-sweep branch=$branch sha=$tip findings=${missing_sweep#ok }"
+        exit 14 ;;
+    *)
+        echo "clear-cr-marker: could not evaluate the class-sweep gate for $branch — refusing." >&2
+        audit "REFUSED reason=class-sweep-unreadable branch=$branch sha=$tip"
+        exit 14 ;;
+esac
 
 # 4c. Branch-wide still-open gate (HIMMEL-3027). Gate 4b above only sees the
 # TIP; a finding left unadjudicated (or un-re-raised after an `agreed`) at an
