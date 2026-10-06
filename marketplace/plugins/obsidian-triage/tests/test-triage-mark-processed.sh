@@ -11,7 +11,7 @@ set -u -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOL="$SCRIPT_DIR/../tools/triage-mark-processed.py"
-TMP="$(mktemp -d)" || exit 1
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/triage-mark.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0
@@ -91,7 +91,7 @@ assert "exit 0" "0" "$rc"
 DEST="$V/Clippings/_evidence/$ID.md"
 assert "source name gone" "no" "$([ -e "$CLIP" ] && echo yes || echo no)"
 assert "destination present" "yes" "$([ -f "$DEST" ] && echo yes || echo no)"
-assert "single directory entry (no alias left)" "1" "$(stat -c %h "$DEST" 2>/dev/null || stat -f %l "$DEST")"
+assert "single directory entry (no alias left)" "1" "$(stat -c %h "$DEST" 2>/dev/null || stat -f %l "$DEST")"  # gnu-ok: BSD stat -f fallback on the same line
 assert "processed: true" "yes" "$(has_line "$DEST" "processed: true")"
 assert "triaged_at" "yes" "$(has_line "$DEST" "triaged_at: 2026-10-07")"
 assert "summary_basis: url-only flagged" "yes" "$(has_line "$DEST" "summary_basis: url-only")"

@@ -940,13 +940,13 @@ TOOL_NAME="triage-mark-processed.py"
 section() { awk -v s="$1" -v e="$2" 'index($0,s)==1{p=1} p&&e!=""&&index($0,e)==1&&index($0,s)!=1{exit} p' "$CMD"; }
 for spec in "**Phase 7|**Phase 8" "**Phase 8|### Daily timeline" "### Phase-8 debt drain|### Phase 0"; do
     s="${spec%%|*}"; e="${spec#*|}"
-    if section "$s" "$e" | grep -qF "$TOOL_NAME"; then r=ok; else r=missing; fi
+    out=$(section "$s" "$e" | grep -F "$TOOL_NAME"); if [ -n "$out" ]; then r=ok; else r=missing; fi
     assert "section '$s' routes through $TOOL_NAME" "ok" "$r"
 done
 # shellcheck disable=SC2016 # literal $LAST_WRITE_SHA text is the match target
 if grep -qF -- '--expect-sha "$LAST_WRITE_SHA"' "$CMD"; then r=ok; else r=missing; fi
 assert "runbook passes LAST_WRITE_SHA to the tool" "ok" "$r"
-if grep -qiE 'subagent|fan-out|fan out' "$CMD" && grep -iE 'subagent|fan-out|fan out' "$CMD" | grep -qF "$TOOL_NAME"; then r=ok; else r=missing; fi
+out=$(grep -iE "subagent|fan-out|fan out" "$CMD" | grep -F "$TOOL_NAME"); if [ -n "$out" ]; then r=ok; else r=missing; fi
 assert "fan-out clause binds subagents to the tool" "ok" "$r"
 # shellcheck disable=SC2016 # literal $clip/$dest text is the match target
 if grep -qE '^[[:space:]]*(elif )?ln "\$clip" "\$dest"' "$CMD"; then r=present; else r=gone; fi
