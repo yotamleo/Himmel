@@ -55,7 +55,7 @@ while [ $# -gt 0 ]; do
         *) shift ;;
     esac
 done
-cat >/dev/null
+if [ -n "${PANEL_DIFF_LAST:-}" ]; then cat > "$PANEL_DIFF_LAST"; else cat >/dev/null; fi
 printf '%s\n' "$head_sha" >> "$PANEL_CALLS"
 printf '%s\n' "${CR_REVIEW_ROUND:-<absent>}" >> "$PANEL_ROUNDS"
 ledger="$(git rev-parse --git-common-dir)/cr-critic-scores.jsonl"
@@ -80,6 +80,12 @@ case "${PANEL_MODE:-clean}" in
             --branch "$branch" --head "$head_sha" --model stub --id stub-1 \
             --severity imp --file f.txt --line 2 --verdict "" || exit $?
         printf '# Critic Panel Review\n\n## Critical Issues (0 found)\n\n## Important Issues (1 found)\n- [stub-1]: important fixture defect [f.txt:2]\n\n## Suggestions (0 found)\n'
+        ;;
+    critical)
+        CR_LEDGER="$ledger" bash "$(dirname "$0")/ledger-append.sh" finding \
+            --branch "$branch" --head "$head_sha" --model stub --id stub-1 \
+            --severity crit --file f.txt --line 2 --verdict "" || exit $?
+        printf '# Critic Panel Review\n\n## Critical Issues (1 found)\n- [stub-1]: critical fixture defect [f.txt:2]\n\n## Important Issues (0 found)\n\n## Suggestions (0 found)\n'
         ;;
     *)
         printf '# Critic Panel Review\n\n## Critical Issues (0 found)\n\n## Important Issues (0 found)\n\n## Suggestions (0 found)\n'
@@ -245,10 +251,32 @@ assert_eq "$panel_foreign_rc" "2" "panel-first-pass refuses a --branch not check
 assert_has "$panel_foreign_out" "not the branch checked out" "panel-first-pass foreign-branch refusal names the reason"
 assert_eq "$(cat "$git_dir/cr-review-rounds/other.round")" "$other_round_before" "a refused panel run leaves the other branch's round untouched"
 
-write_real_marker feature "$head3"
-out5="$(cd "$repo" && PANEL_MODE=suggestion-on bash "$SCRIPT" --head "$head3" --branch feature 2>"$tmp/err5")"; rc5=$?
-assert_eq "$rc5" "0" "round-4 suggestion-only panel run succeeds"
-assert_has "$out5" "pr-check: round 4 of 3 on feature" "capped run prints round 4"
+# HIMMEL-4600: a 4th FULL round is refused. Re-reviewing the round-3 head is
+# a full round of code three rounds already saw, so it never runs the panel.
+before_full4_calls="$(wc -l < "$PANEL_CALLS" | tr -d ' ')"
+full4_out="$(cd "$repo" && bash "$SCRIPT" --head "$head3" --branch feature 2>&1)"; full4_rc=$?
+assert_eq "$full4_rc" "8" "a 4th full round at the round-3 head is refused"
+assert_has "$full4_out" "4th full round is refused" "4th-full-round refusal names the reason"
+assert_eq "$(cat "$git_dir/cr-review-rounds/feature.round")" "3" "a refused 4th full round leaves the counter at 3"
+assert_eq "$(wc -l < "$PANEL_CALLS" | tr -d ' ')" "$before_full4_calls" "a refused 4th full round never runs the panel"
+
+# Merge-forward: a head that differs from the round-3 head only by a merge of
+# origin/main gets the ONE delta round, scoped to round-3 head..new head.
+git -C "$repo" checkout -q main
+printf 'main-forward-2\n' > "$repo/main2.txt"
+git -C "$repo" add main2.txt
+git -C "$repo" commit -q -m main-forward-2
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q feature
+git -C "$repo" merge -q --no-edit main
+head4="$(git -C "$repo" rev-parse feature)"
+git -C "$repo" push -q origin feature
+write_real_marker feature "$head4"
+out5="$(cd "$repo" && PANEL_MODE=suggestion-on PANEL_DIFF_LAST="$tmp/delta-diff" bash "$SCRIPT" --head "$head4" --branch feature 2>"$tmp/err5")"; rc5=$?
+assert_eq "$rc5" "0" "merge-forward delta round runs"
+assert_has "$out5" "pr-check: delta round 4 on feature (from $head3)" "merge-forward head gets the one delta round"
+assert_has "$(cat "$tmp/delta-diff")" "main-forward-2" "delta round reviews the round-3 head..new head diff"
+assert_lacks "$(cat "$tmp/delta-diff")" "feature-1" "delta round does not re-review the already-reviewed branch diff"
 assert_lacks "$(cat "$CLEAR_CALLS" 2>/dev/null)" "feature" "first pass never clears before later reviewers finish"
 printf '%s\n' 'VERDICT [kept-1] = disproved' | (cd "$repo" && bash "$fx/scripts/cr/write-verdicts.sh" prior-blocking --branch feature)
 printf '%s\n' 'VERDICT [kept-1] = disproved' | (cd "$repo" && bash "$fx/scripts/cr/write-verdicts.sh" aggregate --branch feature)
@@ -260,76 +288,146 @@ printf 'injected verdict scratch failure\n' >&2
 exit 9
 STUB
 chmod +x "$fx/scripts/cr/write-verdicts.sh"
-(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$head3" --branch feature --defer-to HIMMEL-9000 >"$tmp/defer5-first.out" 2>"$tmp/defer5-first.err"); defer5_first_rc=$?
+(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$head4" --branch feature --defer-to HIMMEL-9000 >"$tmp/defer5-first.out" 2>"$tmp/defer5-first.err"); defer5_first_rc=$?
 if [ "$defer5_first_rc" -ne 0 ]; then pass "post-amendment scratch failure leaves disposition incomplete"; else fail "post-amendment scratch failure leaves disposition incomplete"; fi
 assert_has "$(cat "$git_dir/cr-critic-scores.jsonl" 2>/dev/null)" '"verdict":"deferred"' "failed disposition already persisted the deferred amendment"
 if [ -e "$git_dir/cr-pending/feature" ]; then pass "failed disposition leaves the marker pending"; else fail "failed disposition leaves the marker pending"; fi
 cp "$tmp/write-verdicts.real" "$fx/scripts/cr/write-verdicts.sh"
 chmod +x "$fx/scripts/cr/write-verdicts.sh"
-defer5="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$head3" --branch feature --defer-to HIMMEL-9000 2>"$tmp/defer5.err")"; defer5_rc=$?
+defer5="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$head4" --branch feature --defer-to HIMMEL-9000 2>"$tmp/defer5.err")"; defer5_rc=$?
 assert_eq "$defer5_rc" "0" "retry repairs a post-amendment disposition failure"
-assert_has "$defer5" "clear-cr-marker CLEARED branch=feature sha=$head3" "round-4 disposition retry passes the real marker gates"
-assert_has "$defer5" "clear-cr-marker: CR clean" "round-4 disposition retry uses sanctioned marker clearance"
+assert_has "$defer5" "clear-cr-marker CLEARED branch=feature sha=$head4" "delta-round disposition retry passes the real marker gates"
+assert_has "$defer5" "clear-cr-marker: CR clean" "delta-round disposition retry uses sanctioned marker clearance"
 if [ -e "$git_dir/cr-pending/feature" ]; then
-    fail "round-4 disposition retry clears the marker"
+    fail "delta-round disposition retry clears the marker"
 else
-    pass "round-4 disposition retry clears the marker"
+    pass "delta-round disposition retry clears the marker"
 fi
 ledger="$(cat "$git_dir/cr-critic-scores.jsonl" 2>/dev/null)"
-assert_has "$ledger" '"verdict":"deferred"' "round-4 suggestions record a deferred verdict"
-assert_has "$ledger" '"deferred_to":"HIMMEL-9000"' "round-4 suggestions record the shared defer ticket"
-assert_has "$ledger" '"reason":"Suggestion deferred after the three-round /pr-check cap."' "round-4 suggestions record a finding reason"
+assert_has "$ledger" '"verdict":"deferred"' "delta-round suggestions record a deferred verdict"
+assert_has "$ledger" '"deferred_to":"HIMMEL-9000"' "delta-round suggestions record the shared defer ticket"
+assert_has "$ledger" '"reason":"Finding deferred in the one delta round after the three-round /pr-check cap."' "delta-round suggestions record a finding reason"
 identity_amends="$(LEDGER="$git_dir/cr-critic-scores.jsonl" node -e 'const fs=require("fs"),e=process.env;let n=0;for(const l of fs.readFileSync(e.LEDGER,"utf8").trim().split("\n")){const o=JSON.parse(l);if(o.kind==="amend"&&o.finding_id==="stub-1"&&o.artifact==="spec"&&o.perspective==="on")n++}process.stdout.write(String(n))')"
-assert_eq "$identity_amends" "1" "round-4 recovery preserves non-default artifact and perspective identity"
-assert_has "$(cat "$git_dir/cr-prior-blocking/feature" 2>/dev/null)" "VERDICT [kept-1] = disproved" "round-4 recovery preserves prior-blocking verdicts"
-assert_has "$(cat "$git_dir/cr-aggregate-verdicts/feature" 2>/dev/null)" "VERDICT [kept-1] = disproved" "round-4 recovery preserves aggregate verdicts"
-assert_has "$(cat "$git_dir/cr-prior-blocking/feature" 2>/dev/null)" "VERDICT [stub-1] = deferred -> HIMMEL-9000" "round-4 recovery repairs prior-blocking verdict scratch"
-assert_has "$(cat "$git_dir/cr-aggregate-verdicts/feature" 2>/dev/null)" "VERDICT [stub-1] = deferred -> HIMMEL-9000" "round-4 recovery repairs aggregate verdict scratch"
+assert_eq "$identity_amends" "1" "delta-round recovery preserves non-default artifact and perspective identity"
+assert_has "$(cat "$git_dir/cr-prior-blocking/feature" 2>/dev/null)" "VERDICT [kept-1] = disproved" "delta-round recovery preserves prior-blocking verdicts"
+assert_has "$(cat "$git_dir/cr-aggregate-verdicts/feature" 2>/dev/null)" "VERDICT [kept-1] = disproved" "delta-round recovery preserves aggregate verdicts"
+assert_has "$(cat "$git_dir/cr-prior-blocking/feature" 2>/dev/null)" "VERDICT [stub-1] = deferred -> HIMMEL-9000" "delta-round recovery repairs prior-blocking verdict scratch"
+assert_has "$(cat "$git_dir/cr-aggregate-verdicts/feature" 2>/dev/null)" "VERDICT [stub-1] = deferred -> HIMMEL-9000" "delta-round recovery repairs aggregate verdict scratch"
+
+# A second delta round after the delta round is refused.
+printf 'feature-5\n' >> "$repo/f.txt"
+git -C "$repo" commit -q -am feature-5
+head5="$(git -C "$repo" rev-parse feature)"
+before_delta2_calls="$(wc -l < "$PANEL_CALLS" | tr -d ' ')"
+delta2_out="$(cd "$repo" && bash "$SCRIPT" --head "$head5" --branch feature 2>&1)"; delta2_rc=$?
+assert_eq "$delta2_rc" "8" "a second delta round is refused"
+assert_has "$delta2_out" "delta round was already used" "second-delta refusal names the reason"
+assert_eq "$(wc -l < "$PANEL_CALLS" | tr -d ' ')" "$before_delta2_calls" "a refused second delta round never runs the panel"
+assert_eq "$(cat "$git_dir/cr-review-rounds/feature.round")" "4" "a refused second delta round leaves the counter at 4"
+
+# three_rounds <branch> <round-3 panel mode>: a fresh branch off main with
+# three full rounds at one head (cap_r3_head); fix_commit adds the commit
+# that answers a round-3 finding (cap_fix_head).
+three_rounds() {
+    git -C "$repo" checkout -q -b "$1" main
+    printf '%s\n' "$1" > "$repo/$1.txt"
+    git -C "$repo" add "$1.txt"
+    git -C "$repo" commit -q -m "$1"
+    cap_r3_head="$(git -C "$repo" rev-parse "$1")"
+    for n in 1 2; do
+        (cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$cap_r3_head" --branch "$1" >/dev/null 2>"$tmp/$1-$n.err") || fail "$1 fixture setup round $n"
+    done
+    (cd "$repo" && PANEL_MODE="$2" bash "$SCRIPT" --head "$cap_r3_head" --branch "$1" >/dev/null 2>"$tmp/$1-3.err") || fail "$1 fixture setup round 3"
+}
+fix_commit() {
+    printf 'fix\n' >> "$repo/$1.txt"
+    git -C "$repo" commit -q -am "fix $1"
+    cap_fix_head="$(git -C "$repo" rev-parse "$1")"
+}
+
+# The HIMMEL-4600 RED: three rounds, round 3 raised a finding, the leg fixed
+# it at a new head. clear-cr-marker refuses that head (no critic reviewed it)
+# until the one delta round runs; then it clears through the real gate.
+three_rounds fixpath suggestion
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch fixpath --head "$cap_r3_head" --id stub-1 --set verdict=disproved \
+    --reason 'round-3 finding answered by the fix commit' >/dev/null 2>"$tmp/fixpath-amend.err" \
+    || fail "fixpath round-3 finding disposition"
+fix_commit fixpath
+git -C "$repo" push -q -u origin fixpath
+write_real_marker fixpath "$cap_fix_head"
+(cd "$repo" && bash "$fx/scripts/cr/clear-cr-marker.sh" fixpath >"$tmp/fixpath-clear1.out" 2>&1); fixpath_clear1_rc=$?
+if [ "$fixpath_clear1_rc" -ne 0 ]; then pass "a fix after round 3 cannot clear before the delta round"; else fail "a fix after round 3 cannot clear before the delta round"; fi
+if [ -e "$git_dir/cr-pending/fixpath" ]; then pass "the unreviewed fix head keeps its marker"; else fail "the unreviewed fix head keeps its marker"; fi
+fixpath_out="$(cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$cap_fix_head" --branch fixpath 2>"$tmp/fixpath-delta.err")"; fixpath_rc=$?
+assert_eq "$fixpath_rc" "0" "a fix to a round-3 finding gets the one delta round"
+assert_has "$fixpath_out" "pr-check: delta round 4 on fixpath (from $cap_r3_head)" "fix delta round names its scope"
+(cd "$repo" && bash "$fx/scripts/cr/clear-cr-marker.sh" fixpath >"$tmp/fixpath-clear2.out" 2>&1); fixpath_clear2_rc=$?
+assert_eq "$fixpath_clear2_rc" "0" "the fix head clears after the one delta round"
+if [ -e "$git_dir/cr-pending/fixpath" ]; then fail "the delta round's rows clear the marker"; else pass "the delta round's rows clear the marker"; fi
+
+# A new commit after a CLEAN round 3 is new work, not a fix: no delta round.
+three_rounds newwork clean
+fix_commit newwork
+newwork_out="$(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch newwork 2>&1)"; newwork_rc=$?
+assert_eq "$newwork_rc" "8" "new work after a clean round 3 gets no delta round"
+assert_has "$newwork_out" "neither answers a round-3 finding nor only merges" "no-trigger refusal names the reason"
+assert_eq "$(cat "$git_dir/cr-review-rounds/newwork.round")" "3" "a refused delta leaves the counter at 3"
 
 # Later controls only need to observe whether clearance was attempted; the
-# successful round-4 path above deliberately used the real gate.
+# successful paths above deliberately used the real gate.
 install_clear_stub
 
-# A round-4 Important finding remains blocking and never reaches marker clearance.
-git -C "$repo" checkout -q -b important main
-printf 'important\n' > "$repo/important.txt"
-git -C "$repo" add important.txt
-git -C "$repo" commit -q -m important
-important_head="$(git -C "$repo" rev-parse important)"
-for n in 1 2 3; do
-    (cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$important_head" --branch important >/dev/null 2>"$tmp/important-$n.err") || fail "important fixture setup round $n"
-done
+# In the delta round an Important finding is deferred, not blocking.
+three_rounds important suggestion
+fix_commit important
+important_head="$cap_fix_head"
 printf 'pending\n' > "$git_dir/cr-pending/important"
 out6="$(cd "$repo" && PANEL_MODE=important bash "$SCRIPT" --head "$important_head" --branch important 2>"$tmp/err6")"; rc6=$?
-assert_eq "$rc6" "0" "round-4 Important producer run completes for adjudication"
-assert_has "$out6" "pr-check: round 4 of 3 on important" "Important run prints round 4"
+assert_eq "$rc6" "0" "delta-round Important producer run completes for adjudication"
+assert_has "$out6" "pr-check: delta round 4 on important" "Important run is the delta round"
 (cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$important_head" --branch important --defer-to HIMMEL-9001 >"$tmp/defer6.out" 2>"$tmp/defer6.err"); defer6_rc=$?
-if [ "$defer6_rc" -ne 0 ]; then pass "round-4 Important finding blocks disposition"; else fail "round-4 Important finding blocks disposition"; fi
-assert_has "$(cat "$tmp/defer6.err")" "Critical or Important finding(s) remain blocking" "Important disposition explains the block"
-assert_lacks "$(cat "$CLEAR_CALLS" 2>/dev/null)" "important" "Important finding never invokes marker clearance"
-if [ -e "$git_dir/cr-pending/important" ]; then
-    pass "Important finding leaves the marker pending"
-else
-    fail "Important finding leaves the marker pending"
-fi
+assert_eq "$defer6_rc" "0" "delta-round Important finding is deferred"
+assert_has "$(cat "$CLEAR_CALLS" 2>/dev/null)" "important" "deferred delta-round Important finding reaches marker clearance"
+assert_has "$(cat "$git_dir/cr-critic-scores.jsonl")" '"fu_class":"hardening"' "delta-deferred Important findings are classed hardening"
+
+# A Critical finding still blocks the delta round.
+three_rounds critical suggestion
+fix_commit critical
+critical_head="$cap_fix_head"
+printf 'pending\n' > "$git_dir/cr-pending/critical"
+(cd "$repo" && PANEL_MODE=critical bash "$SCRIPT" --head "$critical_head" --branch critical >/dev/null 2>"$tmp/err-crit") || fail "critical delta producer run"
+(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$critical_head" --branch critical --defer-to HIMMEL-9003 >"$tmp/defer-crit.out" 2>"$tmp/defer-crit.err"); defer_crit_rc=$?
+assert_eq "$defer_crit_rc" "4" "delta-round Critical finding blocks disposition"
+assert_has "$(cat "$tmp/defer-crit.err")" "remain blocking in the delta round" "Critical disposition explains the block"
+assert_lacks "$(cat "$CLEAR_CALLS" 2>/dev/null)" "critical" "Critical finding never invokes marker clearance"
+if [ -e "$git_dir/cr-pending/critical" ]; then pass "Critical finding leaves the marker pending"; else fail "Critical finding leaves the marker pending"; fi
+
+# An Important finding the adjudicator classes escape still blocks it.
+three_rounds escape suggestion
+fix_commit escape
+escape_head="$cap_fix_head"
+printf 'pending\n' > "$git_dir/cr-pending/escape"
+(cd "$repo" && PANEL_MODE=important bash "$SCRIPT" --head "$escape_head" --branch escape >/dev/null 2>"$tmp/err-esc") || fail "escape delta producer run"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch escape --head "$escape_head" --id stub-1 --set fu_class=escape \
+    --reason 'adjudicated escape-class' >/dev/null 2>"$tmp/escape-amend.err" || fail "escape amend"
+(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$escape_head" --branch escape --defer-to HIMMEL-9004 >"$tmp/defer-esc.out" 2>"$tmp/defer-esc.err"); defer_esc_rc=$?
+assert_eq "$defer_esc_rc" "4" "delta-round escape-class finding blocks disposition"
+assert_lacks "$(cat "$CLEAR_CALLS" 2>/dev/null)" "escape" "escape-class finding never invokes marker clearance"
 
 # Missing ticket stops after the producer writes findings, prints the exact Jira
 # command, and can be resumed against those rows without another panel call.
-git -C "$repo" checkout -q -b capped main
-printf 'capped\n' > "$repo/capped.txt"
-git -C "$repo" add capped.txt
-git -C "$repo" commit -q -m capped
-capped_head="$(git -C "$repo" rev-parse capped)"
-for n in 1 2 3; do
-    (cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$capped_head" --branch capped >/dev/null 2>"$tmp/capped-$n.err") || fail "missing-ticket fixture setup round $n"
-done
+three_rounds capped suggestion
+fix_commit capped
+capped_head="$cap_fix_head"
 printf 'pending\n' > "$git_dir/cr-pending/capped"
 before_missing_calls="$(wc -l < "$PANEL_CALLS" | tr -d ' ')"
 out7="$(cd "$repo" && PANEL_MODE=suggestion bash "$SCRIPT" --head "$capped_head" --branch capped 2>"$tmp/err7")"; rc7=$?
-assert_eq "$rc7" "0" "round-4 missing-ticket producer run completes"
-assert_has "$out7" "pr-check: round 4 of 3 on capped" "missing-ticket run still reports its round"
+assert_eq "$rc7" "0" "delta-round missing-ticket producer run completes"
+assert_has "$out7" "pr-check: delta round 4 on capped" "missing-ticket run still reports its round"
 (cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$capped_head" --branch capped >"$tmp/defer7.out" 2>"$tmp/defer7.err"); defer7_rc=$?
-if [ "$defer7_rc" -ne 0 ]; then pass "round-4 suggestions fail disposition without a defer ticket"; else fail "round-4 suggestions fail disposition without a defer ticket"; fi
+if [ "$defer7_rc" -ne 0 ]; then pass "delta-round suggestions fail disposition without a defer ticket"; else fail "delta-round suggestions fail disposition without a defer ticket"; fi
 expected_jira="node '$fx/scripts/jira/dist/index.js' create --type Task --title 'Track deferred /pr-check round 4+ suggestions' --desc 'Track suggestion/nit-only findings deferred after the three-round review cap.'"
 assert_has "$(cat "$tmp/defer7.err")" "$expected_jira" "missing ticket prints the exact non-executed Jira command"
 after_missing_calls="$(wc -l < "$PANEL_CALLS" | tr -d ' ')"
