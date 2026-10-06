@@ -11,15 +11,22 @@
 #
 # Usage:
 #   bash scripts/test-install-symmetry-vm.sh [user@host] [port] [identity]
-#   defaults: localhost 2222 $HOME/.ssh/id_ed25519
+#   defaults: vm.mode's VM (scripts/lib/vm-mode.sh) -- localhost 2222
+#   $HOME/.ssh/id_ed25519 unless ~/.himmel/config.json sets vm.mode remote;
+#   vm.mode none exits 3 (SKIP) before any ssh
 #
 # Exit codes: 0 = all assertions passed; 1 = an assertion failed; 3 = the VM was
 # unreachable (key auth) -- not a code failure, re-run when the VM is provisioned.
 set -uo pipefail
 
-HOSTSPEC="${1:-localhost}"
-PORT="${2:-2222}"
-IDENT="${3:-$HOME/.ssh/id_ed25519}"
+# The default target is vm.mode's VM, not a hardcoded local one; vm.mode=none
+# SKIPs (HIMMEL-4583).
+# shellcheck source=lib/vm-mode.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/lib/vm-mode.sh"
+vm_mode_e2e_guard "$(basename -- "$0")" || exit 3
+HOSTSPEC="${1:-$VM_MODE_HOST}"
+PORT="${2:-$VM_MODE_PORT}"
+IDENT="${3:-$VM_MODE_IDENT}"
 SSH_OPTS="-p $PORT -i $IDENT -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new"
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 REMOTE_DIR="/tmp/himmel-symmetry-vm"

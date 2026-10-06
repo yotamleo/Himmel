@@ -3561,6 +3561,55 @@ check_c52_graphify_ollama() {
     fi
 }
 
+# --- C53-vm-mode: the VM-proof route and whether its VM answers (HIMMEL-4583) ---
+# vm.mode (scripts/lib/vm-mode.sh) says how a VM-proof hold is lifted: on the
+# local test VM, on vm.remote, or (none) by an operator ack plus a rollback
+# point. For local and remote the probe is a read-only TCP connect to the ssh
+# port; it never starts, stops or logs in to a VM. A down local VM is INFO (it
+# is started on demand); a down remote VM is WARN. HIMMEL_DOCTOR_VM_PROBE is a
+# test seam: a command run as `<probe> <host> <port>`; set but not executable =
+# the mode is reported without a probe.
+check_c53_vm_mode() {
+    # shellcheck source=lib/vm-mode.sh
+    . "$SELF_DIR/lib/vm-mode.sh"
+    vm_mode_load
+    if [ -n "$VM_MODE_NOTE" ]; then
+        emit WARN C53-vm-mode "vm.mode resolves to none because $VM_MODE_NOTE — every VM-proof hold stays HELD" \
+            "set vm.mode to local, remote (with vm.remote.ssh) or none in ~/.himmel/config.json (docs/setup/vm-mode.md)"
+        return
+    fi
+    if [ "$VM_MODE" = none ]; then
+        emit INFO C53-vm-mode "vm.mode=none — no VM proof; a VM-proof hold needs an operator ack plus a rollback point and is never auto-released" \
+            "docs/setup/vm-mode.md"
+        return
+    fi
+    local host="${VM_MODE_HOST#*@}" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin
+    if [ -n "$probe" ]; then
+        if [ ! -x "$probe" ]; then
+            emit OK C53-vm-mode "vm.mode=$VM_MODE ($VM_MODE_HOST:$VM_MODE_PORT; reachability not probed)"
+            return
+        fi
+        "$probe" "$host" "$VM_MODE_PORT" >/dev/null 2>&1 || rc=$?
+    else
+        timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
+        if [ -n "$timeout_bin" ]; then
+            # shellcheck disable=SC2016  # $1 $2 expand in the child shell
+            "$timeout_bin" 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$VM_MODE_PORT" >/dev/null 2>&1 || rc=$?
+        else
+            bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$VM_MODE_PORT" >/dev/null 2>&1 || rc=$?
+        fi
+    fi
+    if [ "$rc" -eq 0 ]; then
+        emit OK C53-vm-mode "vm.mode=$VM_MODE, VM ssh port reachable at $VM_MODE_HOST:$VM_MODE_PORT"
+    elif [ "$VM_MODE" = local ]; then
+        emit INFO C53-vm-mode "vm.mode=local, local test VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT (it is started on demand)" \
+            "start it with the himmel-ops:vm skill before a VM-proof step"
+    else
+        emit WARN C53-vm-mode "vm.mode=remote, remote VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT — VM-proof holds cannot be lifted" \
+            "check vm.remote in ~/.himmel/config.json and that the VM is up (docs/setup/vm-mode.md)"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3615,6 +3664,7 @@ check_c49_qmd_embed_model
 check_c50_qmd_fork_stamp
 check_c51_firecrawl_parked
 check_c52_graphify_ollama
+check_c53_vm_mode
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

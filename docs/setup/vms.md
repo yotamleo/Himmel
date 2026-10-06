@@ -6,6 +6,8 @@ Adopters install himmel via the `himmelctl` wizard (`node scripts/himmelctl/bin.
 
 To provision a fresh Ubuntu VM run: `python scripts/machine-setup/ubuntu-vm-setup.py`
 
+No local VM, or proving on a remote one? Set `vm.mode` — see [vm-mode.md](vm-mode.md).
+
 ## Dependency split — test-harness vs user-runtime (HIMMEL-469)
 
 Two **different** dependency sets; do not conflate them:

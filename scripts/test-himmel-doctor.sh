@@ -187,6 +187,9 @@ export HIMMEL_FIRECRAWL_PARKED="$FAKEROOT/no-such-parked.jsonl"
 # Same for C52-graphify-ollama (HIMMEL-4513): never run the operator's real uv
 # graphifyy venv python; an absent venv is OK, dedicated cases point at a fixture.
 export HIMMEL_DOCTOR_GRAPHIFY_VENV="$FAKEROOT/no-such-graphify-venv"
+# Same for C53-vm-mode (HIMMEL-4583): never probe the operator's real VM; an
+# absent probe seam makes C53 report the mode only, dedicated cases stub it.
+export HIMMEL_DOCTOR_VM_PROBE="$FAKEROOT/no-such-vm-probe"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -5815,5 +5818,39 @@ echo "== C52-graphify-ollama: venv imports openai -> OK =="
 out="$(c52_run "$c52_t/ok")"
 if grepq "$out" 'OK   C52-graphify-ollama' && ! grepq "$out" 'WARN C52-graphify-ollama'; then pass "C52 extra present -> OK"; else fail "C52 present -> $(printf '%s' "$out" | grep -A1 C52)"; fi
 rm -rf "$c52_t"
+
+# --- C53-vm-mode (HIMMEL-4583): the mode, and a read-only reachability probe ----
+c53_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c53.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c53_t/home/.himmel" "$c53_t/claude"
+# shellcheck disable=SC2016  # $1 $2 expand in the probe stub
+printf '#!/bin/sh\necho "$1 $2" >> "%s/probe.log"\nexit 0\n' "$c53_t" > "$c53_t/up"
+# shellcheck disable=SC2016  # $1 $2 expand in the probe stub
+printf '#!/bin/sh\necho "$1 $2" >> "%s/probe.log"\nexit 1\n' "$c53_t" > "$c53_t/down"
+chmod +x "$c53_t/up" "$c53_t/down"
+c53_run() { # <config json> <probe>
+    printf '%s\n' "$1" > "$c53_t/home/.himmel/config.json"; : > "$c53_t/probe.log"
+    HIMMEL_DOCTOR_VM_PROBE="$2" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c53_t/claude" HOME="$c53_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C53-vm-mode: unset -> local, probes localhost:2222, reachable -> OK (RED) =="
+out="$(c53_run '{}' "$c53_t/up")"
+if grepq "$out" 'OK   C53-vm-mode' && grepq "$out" -F 'vm.mode=local' && grepq "$(cat "$c53_t/probe.log")" -Fx 'localhost 2222'; then pass "C53 local reachable -> OK"; else fail "C53 local up -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+
+echo "== C53-vm-mode: local unreachable -> INFO (the local VM starts on demand) =="
+out="$(c53_run '{"vm":{"mode":"local"}}' "$c53_t/down")"
+if grepq "$out" 'INFO C53-vm-mode' && grepq "$out" -F 'not reachable'; then pass "C53 local down -> INFO"; else fail "C53 local down -> $(printf '%s' "$out" | grep -A1 C53)"; fi
+
+echo "== C53-vm-mode: remote unreachable -> WARN naming the host, probe gets the bare host =="
+out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example","port":2201}}}' "$c53_t/down")"
+if grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F 'ops@vm.example:2201' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vm.example 2201'; then pass "C53 remote down -> WARN"; else fail "C53 remote down -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+
+echo "== C53-vm-mode: none -> INFO, holds need an operator ack, no probe =="
+out="$(c53_run '{"vm":{"mode":"none"}}' "$c53_t/up")"
+if grepq "$out" 'INFO C53-vm-mode' && grepq "$out" -F 'operator ack' && [ ! -s "$c53_t/probe.log" ]; then pass "C53 none -> INFO, no probe"; else fail "C53 none -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+
+echo "== C53-vm-mode: invalid config -> WARN with the resolver's note =="
+out="$(c53_run '{"vm":{"mode":"cloud"}}' "$c53_t/up")"
+if grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F 'is not local|remote|none'; then pass "C53 invalid -> WARN"; else fail "C53 invalid -> $(printf '%s' "$out" | grep -A1 C53)"; fi
+rm -rf "$c53_t"
 
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi
