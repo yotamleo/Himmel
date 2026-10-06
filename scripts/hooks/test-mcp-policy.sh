@@ -106,8 +106,11 @@ if jq -e '[.servers[] | (.tools // {})[] | select(. != "read" and . != "write" a
 else
     bad "registry has an unknown tool class"
 fi
-bad_prov=$(jq -r --slurpfile m "$MATRIX" '[.servers | to_entries[] | select(.value.provider != null) | select(($m[0].providers | has(.value.provider)) | not) | .key] | join(",")' "$REGISTRY")
-if [ -z "$bad_prov" ]; then ok "every named egress provider exists in egress-matrix.json"; else bad "unknown egress provider on: $bad_prov"; fi
+if bad_prov=$(jq -r --slurpfile m "$MATRIX" '[.servers | to_entries[] | select(.value.provider != null) | .value.provider as $p | select(($m[0].providers | has($p)) | not) | .key] | join(",")' "$REGISTRY"); then
+    if [ -z "$bad_prov" ]; then ok "every named egress provider exists in egress-matrix.json"; else bad "unknown egress provider on: $bad_prov"; fi
+else
+    bad "egress provider check: jq failed"
+fi
 
 # --- 5. enforce mode (fixture registry) denies -------------------------------
 jq '.mode="enforce"
