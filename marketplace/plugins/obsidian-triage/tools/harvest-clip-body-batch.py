@@ -1345,6 +1345,83 @@ def persist_thin_partial(path: Path, text: str, fm: dict, fm_raw: str, body: str
         return False
     return True
 
+# HIMMEL-4675: a deferred partial is retried nightly; after this many deferrals
+# the clip moves to the pending report's needs-attention bucket and is skipped.
+# Five nights covers a work-week of transient outages (credits, a site's bad
+# day) before a human looks, while a clip no enricher can ever fix stops being
+# re-read every night.
+DEFER_ATTENTION_AFTER = 5
+PENDING_REPORT = ".harvest-pending.md"
+
+
+def bump_defer(path: Path) -> int | None:
+    """Increment the clip's harvest_defer_count (frontmatter, so it survives
+    the daily G-5 state rotation) and set harvest_needs_attention at the
+    threshold. Frontmatter-only, G-3 body identity; None when the write was
+    reverted."""
+    text = path.read_text(encoding="utf-8")
+    fm, fm_raw, body, ok = parse_frontmatter(text)
+    if not ok:
+        return None
+    try:
+        n = int(fm.get("harvest_defer_count") or 0) + 1
+    except ValueError:
+        n = 1
+    pairs = [("harvest_status", "harvest_status: partial"),
+             ("harvest_defer_count", f"harvest_defer_count: {n}")]
+    if n >= DEFER_ATTENTION_AFTER:
+        pairs.append(("harvest_needs_attention", "harvest_needs_attention: true"))
+    new_fm = insert_frontmatter_pairs(fm_raw, pairs)
+    path.write_text(f"---\n{new_fm}\n---\n{body}", encoding="utf-8", newline="\n")
+    _dfm, _draw, disk_body, disk_ok = parse_frontmatter(path.read_text(encoding="utf-8"))
+    if not disk_ok or disk_body != body:
+        path.write_text(text, encoding="utf-8", newline="\n")
+        return None
+    return n
+
+
+def defer_suffix(n: int | None) -> str:
+    if n is None:
+        return "; deferred (count write reverted, G-3)"
+    if n >= DEFER_ATTENTION_AFTER:
+        return f"; deferred {n}/{DEFER_ATTENTION_AFTER} -> needs-attention, no longer retried"
+    return f"; deferred {n}/{DEFER_ATTENTION_AFTER}"
+
+
+def pending_reason(fm: dict) -> str:
+    for key in ("ig_media_pending", "x_media_pending"):
+        if fm.get(key) == "true":
+            return key
+    if fm.get("harvest_enricher_gap"):
+        return f"enricher-gap {fm['harvest_enricher_gap']}"
+    return fm.get("harvest_flag") or "partial"
+
+
+def write_pending_report(vault: Path, clips: list) -> tuple[int, int]:
+    """Rebuild <vault>/.harvest-pending.md from the clips' own frontmatter, so
+    it covers every pending clip regardless of --limit. Returns
+    (deferred, needs_attention)."""
+    deferred, attention = [], []
+    for p in clips:
+        try:
+            fm, fm_raw, _b, ok = parse_frontmatter(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not ok or already_harvested(fm_raw) or fm.get("harvest_status") != "partial":
+            continue
+        rel = p.relative_to(vault).with_suffix("").as_posix()
+        line = f"- [[{rel}]] — {pending_reason(fm)}, deferred {fm.get('harvest_defer_count') or 0}/{DEFER_ATTENTION_AFTER}"
+        (attention if fm.get("harvest_needs_attention") == "true" else deferred).append(line)
+    out = [f"# Harvest pending — {TODAY}", "",
+           "Deferred partials do not block .harvest.done; they are retried each run (HIMMEL-4675).", "",
+           "## Deferred", ""] + (deferred or ["(none)"]) + [
+           "", "## Needs attention", "",
+           f"Deferred {DEFER_ATTENTION_AFTER}+ times; no longer retried. Fix the source or the clip, then remove harvest_needs_attention.", ""
+           ] + (attention or ["(none)"])
+    (vault / PENDING_REPORT).write_text("\n".join(out) + "\n", encoding="utf-8")
+    return len(deferred), len(attention)
+
+
 def persist_flag_only(path: Path, text: str, fm_raw: str, body: str, hits: list) -> bool:
     """Write ONLY the harvest_flag + harvest_flag_detail keys into the
     frontmatter (no harvest markers). G-3: re-read from disk, verify the
@@ -1421,6 +1498,8 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park
                 suffix += " [flag-write failed (G-3); reverted]"
         return (glyph, f"{msg}{suffix}", injection_hits)
 
+    if fm.get("harvest_needs_attention") == "true":
+        return flagged_early("o", f"skipped (needs-attention): deferred {fm.get('harvest_defer_count') or '?'} times; see {PENDING_REPORT}")
     source = fm.get("source", "").strip().strip('"')
     if not source:
         return flagged_early("o", "skipped (frontmatter): no source: field")
@@ -1458,7 +1537,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park
                 park(path, e.reason)
             return ("~", f"partial (thin-body): deferred: firecrawl-unavailable ({e.reason}); parked, retried first once credits return", injection_hits)
         except Exception as e:
-            return ("~", f"partial (thin-body): firecrawl fetch failed ({type(e).__name__}: {str(e)[:120]}); re-run to retry", injection_hits)
+            return ("~", f"partial (thin-body): firecrawl fetch failed ({type(e).__name__}: {str(e)[:120]}); re-run to retry{defer_suffix(bump_defer(path))}", injection_hits)
         firecrawl.remaining -= 1
         served_by = getattr(firecrawl, "last_backend", None) or "firecrawl"
         section = (
@@ -1528,7 +1607,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park
         if dry_run:
             return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix} [dry-run]{flag_suffix}", injection_hits)
         if persist_thin_partial(path, text, fm, fm_raw, body, gap_host, injection_hits, is_instagram):
-            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix}{flag_suffix}", injection_hits)
+            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix}{defer_suffix(bump_defer(path))}{flag_suffix}", injection_hits)
         return ("x", f"failed (G-3): thin-body frontmatter mark altered body; reverted{flag_suffix}", injection_hits)
 
     # clip-body path
@@ -1737,6 +1816,7 @@ def main():
                 fc.probed_ok = True
         clips = sorted(clips, key=lambda p: p.relative_to(args.vault).as_posix() not in mine)
 
+    clips_all = clips
     if args.limit > 0:
         clips = clips[: args.limit * 4]  # over-fetch; filter below cuts to limit
 
@@ -1787,6 +1867,12 @@ def main():
         f"\nharvest-clip-body-batch: {ok} ok, {partial} partial, "
         f"{failed} failed, {skipped} skipped. (dry_run={args.dry_run})"
     )
+    if not args.dry_run:
+        # HIMMEL-4675: every partial this tool emits is source-level and
+        # deferred (non-blocking); only FAIL lines block .harvest.done.
+        n_def, n_att = write_pending_report(args.vault, clips_all)
+        print(f"harvest-clip-body-batch: {n_def} deferred (non-blocking), {n_att} needs-attention; "
+              f"pending report: {PENDING_REPORT}")
     if fc is not None and fc.unavailable is None and status is not None and (fc.served or fc.probed_ok):
         parked_append("available", call_site="harvest-clip-body-batch")
     if newly_parked:

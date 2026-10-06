@@ -62,9 +62,14 @@ All paths are quoted; forward-slash paths throughout.
 ### Step 1 - Preflight + dry-run gate
 
 Confirm `<vault>/Clippings/` exists (else exit 0, nothing to enrich). The fetch
-tool owns its own binary/cookie preflight: it exits 2 if `gallery-dl` or
-`ffmpeg` is missing, or if the burner-account cookie file
-(`~/.luna/cookies/instagram.txt`) is absent. Surface that exit-2 message to the
+tool owns its own binary/cookie preflight: it exits 2 if `ffmpeg` is missing,
+or if neither media backend is usable. The primary backend (HIMMEL-4675) is the
+cookieless Scrapling helper `tools/ig-scrapling-media.py`, run with the
+`~/.himmel/scrapling-venv` python (or `IG_SCRAPLING_PYTHON`); it is the
+`local-headless` backend under the HIMMEL-4361 routing, so `HARVEST_SCRAPE_DENY`
+and `.harvest-backends` can switch it off. The fallback is `gallery-dl` with the
+burner-account cookie file (`~/.luna/cookies/instagram.txt`), which is needed
+only when Scrapling is unavailable or fails for a clip. Surface that exit-2 message to the
 operator verbatim and stop - do NOT attempt any per-clip work when preflight
 fails. Under `--dry-run`, run the fetch tool with `--dry-run` only (Step 2's
 dry-run form); take no other action.
@@ -73,6 +78,7 @@ dry-run form); take no other action.
 
 Run the fetch tool over the batch via `Bash`. It selects the
 `ig_media_pending:` / failed / thin IG clips, downloads each reel/carousel via
+Scrapling (no cookie; media fetched from the IG CDN with curl), falling back to
 `gallery-dl` (cookies never printed), transcribes reels locally, recompresses
 carousel slides into `Clippings/_media/<clip-slug>/slide-NN.jpg`, and writes ONE
 `## Crawled content` section per clip under the DISTINCT `media_*` marker

@@ -522,7 +522,8 @@ def whisper_transcribe(wav: Path, model: str):
     uv = shutil.which("uv")
     if not uv:
         return None, "error"
-    cmd = [uv, "run", "--python", "3.12", "--with", "faster-whisper",
+    cmd = [uv, "run", "--python", "3.12", "--with-requirements",
+           str(Path(__file__).with_name("requirements-whisper.txt")),
            "python", str(helper), str(wav), model]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,

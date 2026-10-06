@@ -406,7 +406,7 @@ class FetchHealthTests(unittest.TestCase):
                 raise RuntimeError("stub failure")
 
             results = fetch_health.run_probes(env, http=broken_http, command=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("stub failure")), repo_root=Path(tmp))
-            self.assertEqual(set(results), {"reddit", "x-fxtwitter", "instagram-embed", "instagram-media", "x-media", "x-twitter-cli", "youtube-playwright", "github", "bitbucket", "firecrawl", "jina-reader"})
+            self.assertEqual(set(results), {"reddit", "x-fxtwitter", "instagram-embed", "instagram-media", "instagram-scrapling", "x-media", "x-twitter-cli", "youtube-playwright", "github", "bitbucket", "firecrawl", "jina-reader"})
             self.assertTrue(all(result.status in fetch_health.STATUSES for result in results.values()))
 
     def test_probe_mode_matches_full_run_for_every_source(self):
@@ -765,6 +765,66 @@ class FetchHealthTests(unittest.TestCase):
             result = fetch_health.probe_twitter_cli({"HOME": tmp, "PATH": ""}, forbidden_command)
             self.assertEqual(result.status, "auth-or-cookie-expired")
             self.assertIn("TWITTER_AUTH_TOKEN", result.reason)
+
+
+class InstagramScraplingProbeTests(unittest.TestCase):
+    """HIMMEL-4675: the cookieless Scrapling path the media rung now tries first."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.py = self.tmp / ".himmel" / "scrapling-venv" / "bin" / "python"
+        self.env = {"HOME": str(self.tmp), "PATH": "",
+                    "HIMMEL_IG_THROTTLE_STATE": str(self.tmp / "t.json"),
+                    "HIMMEL_IG_PROBE_CACHE": str(self.tmp / "c.json"),
+                    "HIMMEL_IG_MIN_GAP_S": "0", "HIMMEL_IG_JITTER_S": "0"}
+        self.seen = []
+
+    def venv(self):
+        self.py.parent.mkdir(parents=True)
+        self.py.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.py.chmod(0o755)
+
+    def command(self, returncode, stdout):
+        def run(args, **kwargs):
+            self.seen.append((args, kwargs))
+            return subprocess.CompletedProcess(args, returncode, stdout, "")
+        return run
+
+    def probe(self, command):
+        return fetch_health.run_single_probe("instagram-scrapling", self.env, http=lambda *a, **k: None,
+                                             command=command, repo_root=self.tmp)
+
+    def test_is_a_guarded_instagram_probe(self):
+        self.assertIn("instagram-scrapling", fetch_health.IG_PROBE_SOURCES)
+
+    def test_missing_venv_names_the_venv_and_sends_nothing(self):
+        r = self.probe(lambda *a, **k: self.fail("command should not run"))
+        self.assertEqual(r.status, "transport-fail")
+        self.assertIn("scrapling-venv", r.reason)
+
+    def test_ok_runs_the_plugin_helper_cookieless(self):
+        self.venv()
+        r = self.probe(self.command(0, '{"status": "ok", "caption": null, "items": [{"kind": "image", "url": "u"}]}'))
+        self.assertEqual(r.status, "ok")
+        args, kwargs = self.seen[0]
+        helper = self.tmp / "marketplace/plugins/obsidian-triage/tools/ig-scrapling-media.py"
+        self.assertEqual(args[:2], [str(self.py), str(helper)])
+        self.assertEqual(args[2:], ["--url", fetch_health.DEFAULT_URLS["instagram-media"], "--shortcode", "CG0UU3ylXnv"])
+        self.assertNotIn("--cookies", args)
+
+    def test_login_wall_is_blocked(self):
+        self.venv()
+        r = self.probe(self.command(4, '{"status": "login_wall", "detail": "/accounts/login/"}'))
+        self.assertEqual(r.status, "blocked-or-rate-limited")
+        self.assertIn("login_wall", r.reason)
+
+    def test_helper_without_scrapling_is_transport_fail(self):
+        self.venv()
+        r = self.probe(self.command(3, '{"status": "error", "detail": "scrapling not installed"}'))
+        self.assertEqual(r.status, "transport-fail")
+        self.assertIn("scrapling not installed", r.reason)
 
 
 class InstagramGuardTests(unittest.TestCase):
