@@ -189,18 +189,19 @@ if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__.*") | .hooks[].command 
 else
     bad ".claude/settings.json lacks the mcp__.* registration"
 fi
-if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__.*") | .hooks[].command | select(test("mcp-policy\\.sh"))] | length == 1' "$REPO_ROOT/.codex/hooks.json" >/dev/null; then
-    ok ".codex/hooks.json registers mcp-policy.sh on mcp__.*"
+# Codex keeps its PreToolUse matchers disjoint (test-codex-hook-parity.sh), so
+# there the tracker and the Atlassian redirect share ONE mcp__.* chain:
+# mcp-policy.sh first, so a redirect deny still leaves an audit line.
+if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__.*") | .hooks[].command | select(test("--sandbox mcp-policy\\.sh\\+block-backend-tier\\.sh\\z"))] | length == 1' "$REPO_ROOT/.codex/hooks.json" >/dev/null; then
+    ok ".codex/hooks.json chains mcp-policy.sh then block-backend-tier.sh on mcp__.*"
 else
-    bad ".codex/hooks.json lacks the mcp__.* registration"
+    bad ".codex/hooks.json lacks the mcp__.* chain (mcp-policy.sh+block-backend-tier.sh)"
 fi
-for f in .claude/settings.json .codex/hooks.json; do
-    if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__plugin_atlassian_atlassian__.*") | .hooks[].command | select(test("block-backend-tier\\.sh"))] | length == 1' "$REPO_ROOT/$f" >/dev/null; then
-        ok "$f keeps the Atlassian redirect"
-    else
-        bad "$f lost the Atlassian redirect"
-    fi
-done
+if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__plugin_atlassian_atlassian__.*") | .hooks[].command | select(test("block-backend-tier\\.sh"))] | length == 1' "$REPO_ROOT/.claude/settings.json" >/dev/null; then
+    ok ".claude/settings.json keeps the Atlassian redirect"
+else
+    bad ".claude/settings.json lost the Atlassian redirect"
+fi
 
 # --- 9. latency budget -------------------------------------------------------
 # Budget: p95 under MCP_POLICY_P95_BUDGET_MS (default 300 ms; idle is ~10x
