@@ -88,7 +88,11 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
   return new ReadableStream<Uint8Array>({
     async pull(c) {
       try {
-        fh ??= await open(path, "r");
+        if (!fh) {
+          const h = await open(path, "r");
+          if (closed) { await h.close(); return; } // cancelled while opening: cleanup ran before fh existed
+          fh = h;
+        }
         while (!closed) {
           if (Date.now() - started >= o.maxMs) return end(c);
           const size = (await fh.stat()).size;

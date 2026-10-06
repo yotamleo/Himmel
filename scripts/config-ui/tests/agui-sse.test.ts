@@ -1,9 +1,10 @@
 import { test, expect, afterEach } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
 import { mapFile } from "../agui/journal-mapper.ts";
+import { journalStream } from "../agui/sse.ts";
 
 // HIMMEL-4480 PR2: GET /api/agui/<run> streams a session journal as AG-UI over SSE.
 // seams: env.HOME (a temp HOME whose ~/.claude/projects holds the fixture journals),
@@ -198,4 +199,19 @@ test("secret-shaped strings in the journal are redacted before they leave the se
   const text = await (await get(port, RUN)).text();
   expect(text).toContain("List ");
   expect(text).not.toContain(canary);
+});
+
+test("a cancel that lands while the journal is still opening closes the handle once it opens", async () => {
+  if (!existsSync("/proc/self/fd")) return; // fd count is read from procfs
+  const h = home();
+  const p = journal(h, "-proj", RUN, readFileSync(join(FIX, "happy-path.jsonl"), "utf8"));
+  const fds = () => readdirSync("/proc/self/fd").length;
+  const before = fds();
+  for (let i = 0; i < 20; i++) {
+    const reader = journalStream(p, { threadId: RUN, pollMs: 20, idleMs: 200, maxMs: 10_000, redact: (v) => v, onClose: () => {} }).getReader();
+    await Promise.resolve(); // pull() has started and is awaiting open()
+    await reader.cancel();
+  }
+  await sleep(200);
+  expect(fds() - before).toBeLessThan(5);
 });
