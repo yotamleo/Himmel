@@ -11,9 +11,12 @@
 //   mrr            mean of 1/rank of the first expected doc (0 when absent)
 //   missing        golden queries with no run row for that mode (scored 0)
 // Paths compare case-blind: qmd lowercases the paths it indexes.
+// --ci-out <file>: bootstrap 95% CIs over the ALL queries (hit1, hit5, mrr per
+//   mode) as {"<mode>.hit1":{"lo","hi"},...}, for the eval-runs ledger (HIMMEL-4650).
+// --cases-out <file>: per-query {"<id>":{"<mode>.rr":x}}, for a paired compare.
 // Exit 0 scored, 2 bad input (unreadable file, no expect doc, duplicate id,
 // or a mode where every query errored).
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 export type Golden = { id: string; query: string; collections: string[]; expect: string[] };
 export type Run = { id: string; mode: string; ranked: string[]; error?: string };
@@ -75,6 +78,75 @@ export function score(golden: Golden[], runs: Run[]): Row[] {
   return rows;
 }
 
+// Per-query reciprocal rank and hit flags, per mode (0 when absent or no run row).
+export type Perq = { rr: number; hit1: number; hit5: number };
+export function perQuery(golden: Golden[], runs: Run[]): Map<string, Map<string, Perq>> {
+  const byKey = new Map<string, Run>();
+  const modes: string[] = [];
+  for (const r of runs) {
+    if (!modes.includes(r.mode)) modes.push(r.mode);
+    byKey.set(`${r.mode}\t${r.id}`, r);
+  }
+  const out = new Map<string, Map<string, Perq>>();
+  for (const mode of modes) {
+    const m = new Map<string, Perq>();
+    for (const g of golden) {
+      const run = byKey.get(`${mode}\t${g.id}`);
+      const rank = run ? firstHit(g, run.ranked) : 0;
+      m.set(g.id, { rr: rank ? 1 / rank : 0, hit1: rank === 1 ? 1 : 0, hit5: rank >= 1 && rank <= 5 ? 1 : 0 });
+    }
+    out.set(mode, m);
+  }
+  return out;
+}
+
+// mulberry32: a seeded PRNG, so a CI is identical on every run of the same data.
+function prng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Percentile bootstrap CI of the mean (queries resampled with replacement).
+export function bootstrapCI(xs: number[], level = 0.95, reps = 2000, seed = 1): { lo: number; hi: number } {
+  const n = xs.length;
+  if (n === 0) return { lo: 0, hi: 0 };
+  const rnd = prng(seed);
+  const means: number[] = [];
+  for (let b = 0; b < reps; b++) {
+    let s = 0;
+    for (let i = 0; i < n; i++) s += xs[Math.floor(rnd() * n)]!;
+    means.push(s / n);
+  }
+  means.sort((a, b) => a - b);
+  const a = (1 - level) / 2;
+  return { lo: means[Math.floor(a * reps)]!, hi: means[Math.min(reps - 1, Math.ceil((1 - a) * reps) - 1)]! };
+}
+
+export function ciTable(golden: Golden[], runs: Run[]): Record<string, { lo: number; hi: number }> {
+  const t: Record<string, { lo: number; hi: number }> = {};
+  for (const [mode, m] of perQuery(golden, runs)) {
+    const v = [...m.values()];
+    for (const [name, key] of [["hit1", "hit1"], ["hit5", "hit5"], ["mrr", "rr"]] as const) {
+      const ci = bootstrapCI(v.map((x) => x[key]));
+      t[`${mode}.${name}`] = { lo: +ci.lo.toFixed(6), hi: +ci.hi.toFixed(6) };
+    }
+  }
+  return t;
+}
+
+export function casesTable(golden: Golden[], runs: Run[]): Record<string, Record<string, number>> {
+  const t: Record<string, Record<string, number>> = {};
+  for (const g of golden) t[g.id] = {};
+  for (const [mode, m] of perQuery(golden, runs)) for (const [id, x] of m) t[id]![`${mode}.rr`] = +x.rr.toFixed(6);
+  return t;
+}
+
 export function formatTsv(rows: Row[]): string {
   const f = (x: number) => x.toFixed(3);
   return [
@@ -120,4 +192,7 @@ if (import.meta.main) {
     process.exit(2);
   }
   console.log(formatTsv(score(golden, runs)));
+  const ciOut = arg("--ci-out"), casesOut = arg("--cases-out");
+  if (ciOut) writeFileSync(ciOut, JSON.stringify(ciTable(golden, runs)) + "\n");
+  if (casesOut) writeFileSync(casesOut, JSON.stringify(casesTable(golden, runs)) + "\n");
 }
