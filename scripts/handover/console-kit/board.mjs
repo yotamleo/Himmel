@@ -377,7 +377,8 @@ const labels = [...new Set([...liveLabels, ...locks.keys(), ...tails.keys(), ...
     .sort((a, b) => parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10) || a.localeCompare(b));
 const legs = labels.map((label) => {
     const info = legInfo.get(label) || { ticket: '', last: '', pr: null };
-    const tail = tails.get(label) || '';
+    // HIMMEL-4568: tick marks a READY past the GO-hold `READY!stale`; the board's phase is READY either way.
+    const tail = (tails.get(label) || '').replace(/!stale$/, '');
     const lock = locks.get(label) || '';
     let phase;
     if (tail === 'WRAPPED' || lock === 'WRAPPED') phase = 'WRAPPED';

@@ -279,6 +279,11 @@ fi
 nolive_min="${TICK_NOLIVE_MIN:-10}"
 case "$nolive_min" in ''|*[!0-9]*) nolive_min=10 ;; esac
 nolive_min=$((10#$nolive_min))
+# HIMMEL-4568: the leg preface's GO-hold is 30 minutes; a READY older than that
+# with no GO file reads READY!stale in tails=.
+go_stale_min="${TICK_GO_STALE_MIN:-30}"
+case "$go_stale_min" in ''|*[!0-9]*) go_stale_min=30 ;; esac
+go_stale_min=$((10#$go_stale_min))
 
 # launch_dir_default: the console work dir the <name>.launch.log files live in.
 launch_dir_default() {
@@ -369,6 +374,26 @@ for leg in $LEGS_SPLIT; do
         esac
         tail_status="$(leg_tail_status "$leg_doc")"
         [ -n "$tail_status" ] || tail_status="?"
+        # HIMMEL-4568: a READY whose GO file (<root>/.locks/go/<pr>.<head>) is still
+        # absent after $go_stale_min minutes reads READY!stale. tails= is in the
+        # console-wait action key, so the entry moving once wakes the console.
+        # ponytail: READY age is the leg doc's mtime (a READY leg is idle, so the
+        # READY bullet is the last write); a READY bullet with no `<pr> <head>`
+        # cannot name a GO file and never goes stale; upgrade = parse the
+        # bullet's HH:MM if a doc touched after READY ever hides a stale one.
+        if [ "$tail_status" = READY ]; then
+            ready_line="$(grep -E '^- ([0-9]{1,2}:[0-9]{2}[[:space:]]+)?(\*\*)?READY[^A-Za-z0-9_]' "$leg_doc" 2>/dev/null | tail -n 1)" || ready_line=""  # pipefail-ok: tail reads its input to EOF
+            ready_pr="$(printf '%s\n' "$ready_line" | sed -nE 's/^.*READY[^0-9a-f]*([0-9]+)[[:space:]]+([0-9a-f]{40}).*$/\1/p')"
+            ready_head="$(printf '%s\n' "$ready_line" | sed -nE 's/^.*READY[^0-9a-f]*([0-9]+)[[:space:]]+([0-9a-f]{40}).*$/\2/p')"
+            ready_m="$(stat -c %Y "$leg_doc" 2>/dev/null)" || ready_m=""  # gnu-ok: Linux-only kit
+            if [ -n "$ready_pr" ] && [ -n "$ready_head" ] && [ -n "$root" ] \
+                && [ ! -e "$root/.locks/go/$ready_pr.$ready_head" ]; then
+                case "$ready_m" in
+                    ''|*[!0-9]*) ;;
+                    *) if [ $(( $(date +%s) - ready_m )) -ge $(( go_stale_min * 60 )) ]; then tail_status="READY!stale"; fi ;;
+                esac
+            fi
+        fi
         # HIMMEL-3293: FREE used to cover both "released cleanly at wrap" and "the
         # lock vanished while the leg worked", and only the second is a reason to
         # act. A released lock whose doc's LAST status bullet is WRAPPED is the

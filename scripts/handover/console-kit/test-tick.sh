@@ -1866,6 +1866,25 @@ contains 'verbose labels spare (HIMMEL-4421)' \
 rm -f "$W/repo/scripts/lib/bank-monitor.sh"
 spare_has 'a missing bank-monitor.sh leaves spare= absent and the tick intact (HIMMEL-4421)' "$(bash "$SUT")"
 
+# --- HIMMEL-4568: a READY with no GO file for 30 minutes is a wake. tails= is in the
+# console-wait action key, so the entry moving READY -> READY!stale wakes it once.
+# RED control (pre-fix tick.sh): the old READY leg reads tails=N568:READY.
+d4568="$W/handover/HIMMEL-4568-N568-stale-ready-2026-10-06.md"
+head4568=0123456789abcdef0123456789abcdef01234567
+printf '%s\n' '# leg' '- 10:00 LIVE — working' "- 10:40 READY 4568 $head4568 GREEN" > "$d4568"
+tail4568() { bash "$SUT" --legs "$d4568" 2>/dev/null | sed -E 's/.* tails=([^ ]*) .*/\1/'; }
+contains 'a fresh READY with no GO reads plain READY (HIMMEL-4568)' "$(tail4568)" 'N568:READY'
+case "$(tail4568)" in *'!stale'*) fails=$((fails+1)); printf 'FAIL - a fresh READY must not be stale\n' ;; *) printf 'ok - a fresh READY is not stale (HIMMEL-4568)\n' ;; esac
+touch -d '31 minutes ago' "$d4568"
+contains 'a READY older than 30 minutes with no GO file reads READY!stale (HIMMEL-4568)' "$(tail4568)" 'N568:READY!stale'
+mkdir -p "$W/handover/.locks/go"
+printf 'pr=4568\nhead=%s\n' "$head4568" > "$W/handover/.locks/go/4568.$head4568"
+[ "$(tail4568)" = N568:READY ] && printf 'ok - a READY with its GO file present is plain READY however old (HIMMEL-4568)\n' || { fails=$((fails+1)); printf 'FAIL - GO-present READY went stale\n'; }
+rm -f "$W/handover/.locks/go/4568.$head4568"
+printf '%s\n' '# leg' "- 10:40 READY 4568 $head4568 GREEN" '- 10:41 LIVE — fixing a review finding' > "$d4568"
+touch -d '31 minutes ago' "$d4568"
+[ "$(tail4568)" = N568:LIVE ] && printf 'ok - an old LIVE tail is never marked stale (HIMMEL-4568)\n' || { fails=$((fails+1)); printf 'FAIL - old LIVE went stale\n'; }
+
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'
     exit 0
