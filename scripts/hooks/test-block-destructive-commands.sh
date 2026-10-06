@@ -1132,6 +1132,21 @@ cp "$HOOK" "$nolib/block-destructive-commands.sh"
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-destructive-commands.sh" >/dev/null 2>&1; echo $?)"
 rm -rf "$nolib"
 
+# HIMMEL-4626: bash <= 4.3 treats an empty "${arr[@]}" as unbound under set -u, so a
+# plain `git push` was denied. Needs a real 4.3 binary (BASH43, never installed on the
+# station); skipped when absent.
+BASH43="${BASH43:-$HOME/.cache/himmel/verdicts/J1946/oldbash/src/bash-4.3.30/bash}"
+if [ -x "$BASH43" ]; then
+    for c in "git push" "git push origin feat/x"; do
+        rc=$(printf '%s' "$(j_bash "$c")" | "$BASH43" "$HOOK" >/dev/null 2>&1; echo $?)
+        assert_rc "4626 bash4.3 '$c' not over-denied" 0 "$rc"
+    done
+    rc=$(printf '%s' "$(j_bash 'git push -f origin main')" | "$BASH43" "$HOOK" >/dev/null 2>&1; echo $?)
+    assert_rc "4626 bash4.3 force push to main still denied" 2 "$rc"
+else
+    echo "SKIP 4626 bash4.3 cases (no binary at $BASH43)"
+fi
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

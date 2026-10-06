@@ -870,7 +870,7 @@ git_push_lease_targets_protected() {
     # explicit branch) read as having one. Skip exactly the next token after
     # any of these known value-taking flags.
     local skip_next=0
-    for tok in "${toks[@]}"; do
+    for tok in ${toks[@]+"${toks[@]}"}; do   # HIMMEL-4626: bash <= 4.3 + set -u: empty array
         if [ "$skip_next" -eq 1 ]; then
             skip_next=0
             continue
@@ -972,7 +972,7 @@ git_push_has_plus_refspec() {
     # shellcheck disable=SC2206 # intentional whitespace split, single segment by construction
     toks=($seg)
     local skip_next=0
-    for tok in "${toks[@]}"; do
+    for tok in ${toks[@]+"${toks[@]}"}; do   # HIMMEL-4626: bash <= 4.3 + set -u: empty array
         if [ "$skip_next" -eq 1 ]; then
             skip_next=0
             continue

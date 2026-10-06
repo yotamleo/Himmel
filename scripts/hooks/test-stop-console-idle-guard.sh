@@ -356,6 +356,19 @@ check_waiter "(n) fresh heartbeat, dead pid, leg held"            block 0 "$DEAD
 check_waiter "(q) heartbeat epoch with an embedded colon"         block raw "hb=1:2 pid=$$ key=- tick=ok state=waiting"
 check_waiter "(r) heartbeat epoch with a leading zero (09)"       block raw "hb=09 pid=$$ key=- tick=ok state=waiting"
 check_waiter "(s) heartbeat epoch an hour in the future"          block -3600 "$$" waiting
+# HIMMEL-4617: an epoch past 12 digits (or 0) must be refused before the arithmetic.
+check_waiter "(t) heartbeat epoch of 20 digits (overflows 64-bit)" block raw "hb=99999999999999999999 pid=$$ key=- tick=ok state=waiting"
+check_waiter "(u) heartbeat epoch of 13 digits"                   block raw "hb=1234567890123 pid=$$ key=- tick=ok state=waiting"
+check_waiter "(v) heartbeat epoch of 0"                           block raw "hb=0 pid=$$ key=- tick=ok state=waiting"
+# ...and refused as malformed (no valid heartbeat), not left to the age arithmetic.
+for hb in 99999999999999999999 1234567890123 0; do
+    printf 'hb=%s pid=%s key=- tick=ok state=waiting\n' "$hb" "$$" > "$WAIT_HB"
+    out="$(run_guard "$CONSOLE_PAYLOAD")"
+    case "$out" in
+        *'no valid waiter heartbeat'*) ok "(w) epoch $hb -> refused as malformed" ;;
+        *) bad "(w) epoch $hb -> not refused as malformed: $out" ;;
+    esac
+done
 
 rm -f "$WAIT_HB"
 out="$(run_guard "$CONSOLE_PAYLOAD")"

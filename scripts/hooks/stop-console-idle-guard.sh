@@ -249,6 +249,8 @@ if [ -n "$bridge_root" ]; then
     # value must never reach arithmetic, where it aborts with no note.
     hb_ok=1
     case "$hb_epoch" in ''|*[!0-9]*) hb_ok=0 ;; esac
+    # HIMMEL-4617: past 12 digits (or zero) is no sane epoch and can overflow the age sum.
+    if [ "$hb_ok" -eq 1 ] && { [ "${#hb_epoch}" -gt 12 ] || [ "$((10#$hb_epoch))" -eq 0 ]; }; then hb_ok=0; fi
     case "$hb_pid" in ''|*[!0-9]*) hb_ok=0 ;; esac
     case "$hb_ok" in
         0) waiter_note="no valid waiter heartbeat at $hb_file" ;;
