@@ -254,6 +254,14 @@ jq -e 'has("vm") | not' "$HIMMEL_LUNA_CONFIG_PATH" >/dev/null || fail "d: a loca
 mkprofile '{"mode":"remote","remote":{"ssh":"-x"}}'; runprofile
 if [ "$rc" -eq 0 ] || [ -f "$work/marker" ]; then fail "d: invalid profile vm must fail (rc=$rc): $out"; fi
 ok "d — vm answer persisted only when it changes the config; invalid profile vm refused"
+# a remote answer that omits port/identity means the defaults: it must not keep the previous target's
+got=$(node -e '
+  const d = { vm: { mode: "remote", x: 1, remote: { ssh: "a@h", port: 2222, identity: "/k" } } };
+  const changed = require(process.argv[1]).applyVmAnswer(d, { mode: "remote", remote: { ssh: "b@h" } });
+  console.log(JSON.stringify({ changed, vm: d.vm }));
+' "$wizard" 2>&1)
+[ "$got" = '{"changed":true,"vm":{"mode":"remote","x":1,"remote":{"ssh":"b@h"}}}' ] || fail "d: remote answer without port/identity kept the old ones: $got"
+ok "d — a remote answer that omits port/identity drops the previous target's"
 
 [ "$fails" -eq 0 ] || { echo "$fails check(s) FAILED" >&2; exit 1; }
 echo "PASS"

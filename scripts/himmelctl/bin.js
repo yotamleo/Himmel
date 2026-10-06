@@ -3147,8 +3147,11 @@ function applyVmAnswer(doc, vm) {
   doc.vm = Object.assign({}, doc.vm, { mode: mode });
   if (mode === 'remote') {
     doc.vm.remote = Object.assign({}, doc.vm.remote, { ssh: String(vm.remote.ssh).trim() });
+    // An omitted port/identity means the resolver default, never the previous target's.
     if (vm.remote.port !== undefined) doc.vm.remote.port = Number(vm.remote.port);
+    else delete doc.vm.remote.port;
     if (vm.remote.identity !== undefined) doc.vm.remote.identity = vm.remote.identity;
+    else delete doc.vm.remote.identity;
   }
   return true;
 }
@@ -8145,4 +8148,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust, offeredCadenceRows, askCadences, askVm, sameFsEntry };
+module.exports = { augmentPathForRun, gitGateHooksState, userSlugState, applyWorkspaceTrust, offeredCadenceRows, askCadences, askVm, applyVmAnswer, sameFsEntry };
