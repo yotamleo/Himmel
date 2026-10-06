@@ -126,7 +126,7 @@ go_trust_gate() {
 # returns 1 (fail closed — never a glob over every bucket). Read-only.
 go_verdict_scope() (
     unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
-    local here slug common repo bucket seg
+    local here slug common reponame bucket seg
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
     # shellcheck source=scripts/lib/load-dotenv.sh
     # shellcheck disable=SC1091
@@ -137,8 +137,8 @@ go_verdict_scope() (
     load_dotenv --root "$1" USER_SLUG >/dev/null 2>&1 || true
     slug=$(user_slug 2>/dev/null) || exit 1
     common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1
-    repo=$(basename "$(dirname "$common")")
-    bucket=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+    reponame=$(basename "$(dirname "$common")")
+    bucket=$(printf '%s' "$reponame" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
     for seg in "$slug" "$bucket"; do
         case "$seg" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*|*..*) exit 1 ;; esac
     done
