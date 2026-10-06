@@ -57,6 +57,13 @@ mkf scripts/test-readme-foo.sh 'grep -q foo/README.md x'
 mkf scripts/test-readme-bare.sh 'grep -q README.md x'
 mkf package.json '{}'
 mkf scripts/test-pkg.sh 'grep -q "$root/package.json" x'
+mkf scripts/eval/guard-corpus/diff
+mkf scripts/test-diff-word.sh 'diff -u a b'
+mkf scripts/test-guard-corpus.sh 'bash "$d/eval/guard-corpus/diff"'
+mkf scripts/test-diff-fullpath.sh 'bash scripts/eval/guard-corpus/diff'
+mkf scripts/test-diff-var.sh 'DIFF="$HERE/diff"'
+mkf scripts/claude-fake
+mkf scripts/test-claude-fake.sh "launcher=path.join(scripts,'claude-fake')"
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -164,6 +171,23 @@ if grepq "$err" 'git grep failed'; then pass "the failed search is named on stde
 change package.json
 out="$(run_is "$range")"
 if [ "$out" = "scripts/test-pkg.sh" ]; then pass "root-level package.json -> suite naming package.json"; else fail "root-level generic file reached nothing: $out"; fi
+
+# --- 11b. an extensionless basename takes the path rule (HIMMEL-4606) ---------
+# `diff` is a common word: a suite that merely says `diff -u` must not be listed,
+# one that names guard-corpus/diff (or the full path) must.
+change scripts/eval/guard-corpus/diff
+out="$(run_is "$range")"
+if ! grepq "$out" 'test-diff-word\.sh'; then pass "extensionless diff: a bare common-word mention is not listed"; else fail "bare 'diff' suite over-listed: $out"; fi
+if grepq "$out" '^scripts/test-guard-corpus\.sh$' && grepq "$out" '^scripts/test-diff-fullpath\.sh$'; then pass "extensionless diff: suites naming guard-corpus/diff or the full path stay listed"; else fail "path-naming suite under-listed: $out"; fi
+# A distinctive extensionless name (a `-` in it) keeps the bare match: a quoted
+# 'claude-fake' has no `/` before it, and dropping it was an under-list (J1939 B1).
+change scripts/claude-fake
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/test-claude-fake\.sh$'; then pass "extensionless distinctive name: a quoted bare reference stays listed"; else fail "claude-fake suite under-listed: $out"; fi
+change scripts/eval/guard-corpus/diff
+out="$(run_is "$range")"
+# A suite-local variable ($HERE/diff) still ends in /diff, so it stays listed.
+if grepq "$out" '^scripts/test-diff-var\.sh$'; then pass "extensionless diff: a variable-built \$HERE/diff reference stays listed"; else fail "\$HERE/diff suite under-listed: $out"; fi
 
 # --- 12. the answer does not depend on the cwd it is run from ----------------
 # git ls-tree / git grep are cwd-scoped; from a subdirectory the suites one

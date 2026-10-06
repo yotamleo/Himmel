@@ -487,7 +487,13 @@ generic_re='^(README\.md|CLAUDE\.md|SKILL\.md|CHANGELOG\.md|index\.(js|mjs|ts)|p
 needle_ere() {
     local esc
     esc=$(printf '%s' "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g') || io_fail "escaping a needle"
-    printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])' "$esc"
+    case "$1" in
+        # A `/name` needle (extensionless file, HIMMEL-4606) is its own boundary:
+        # it matches `guard-corpus/diff`, the full path and a variable-built
+        # `$HERE/diff`, but never a bare `diff -u`.
+        /*) printf '%s($|[^A-Za-z0-9_-])' "$esc" ;;
+        *) printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])' "$esc" ;;
+    esac
 }
 # needle_tail_ere <literal> — the needle without its leading boundary, for a
 # caller whose own pattern already ends in the separating character.
@@ -500,8 +506,14 @@ add_needle() {
     { needle_ere "$1"; printf '\n'; } >> "$pats" || io_fail "writing a needle"
 }
 
-# file_literal <path> — the text a suite would use to name the file: its
-# basename, or "<parent>/<name>" for a generic one.
+# file_literal <path> [src] — the text a suite would use to name the file: its
+# basename, or "<parent>/<name>" for a generic one. A single-word extensionless
+# basename (`diff`, `gen`, `gh`: no `.`, `-` or `_`) is a common word, so it is
+# named `/<name>` (HIMMEL-4606: scripts/eval/guard-corpus/diff listed 362 suites
+# on a bare `diff`). A distinctive one (`claude-deepseek`, `BASE_SHA`) keeps the
+# bare name, since a quoted `'claude-deepseek'` has no `/` before it. The source
+# and assignment closures take the same literal (a bare `diff` on an assignment
+# line pulled in hundreds of suites); `cg` wants the parent too.
 file_literal() {
     local f="$1" name="${1##*/}" parent
     if grep -Eq "$generic_re" <<< "$name"; then
@@ -511,6 +523,14 @@ file_literal() {
             # needle — it also matches sub-directory copies (over-approximates).
             *) printf '%s\n' "$name" ;;
         esac
+    elif [ "${f#*/}" != "$f" ] && case "$name" in *[-_.]*) false ;; *) true ;; esac; then
+        # `cg` (the guarded closure scans non-test scripts, where `</diff>` and
+        # `head/diff` matched a bare `/diff`) wants the parent too.
+        if [ "${2:-}" = cg ]; then
+            parent="${f%/*}"; printf '%s/%s\n' "${parent##*/}" "$name"
+        else
+            printf '/%s\n' "$name"
+        fi
     else
         printf '%s\n' "$name"
     fi
@@ -585,9 +605,15 @@ while [ -s "$front" ]; do
     : > "$work/asgpats"
     : > "$work/dirpats"
     while IFS= read -r f; do
-        { printf '%s(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?' "$src_lead"; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
-        { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
-        { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
+        lit=$(file_literal "$f" src)
+        # A `/name` needle brings its own boundary: let the prefix reach right up to it.
+        case "$lit" in
+            /*) src_pre='[^#]*'; dir_pre='[^[:space:]]*' ;;
+            *) src_pre='([^#]*[^A-Za-z0-9_.-])?'; dir_pre='([^[:space:]]*/)?' ;;
+        esac
+        { printf '%s(source|\\.)[[:space:]]%s' "$src_lead" "$src_pre"; needle_tail_ere "$lit"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
+        { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$lit"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
+        { printf 'shellcheck[[:space:]]+source=%s' "$dir_pre"; needle_tail_ere "$lit"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
     done < "$front"
     closure_grep "$work/srcpats" "$work/hit.src" "walking the source closure"
     closure_grep "$work/dirpats" "$work/hit.dir" "reading shellcheck source directives"
@@ -805,7 +831,7 @@ if grep -Fxq -- "$closure_suite" <<< "$suites"; then
                 case "$f" in "$g"|"$g"/*) cg_hit=1; break ;; esac
             done < "$work/guarded"
             [ "$cg_hit" -eq 0 ] || break
-            { needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/cg-pats" || io_fail "writing a guarded-closure needle"
+            { needle_ere "$(file_literal "$f" cg)"; printf '\n'; } >> "$work/cg-pats" || io_fail "writing a guarded-closure needle"
         done <<< "$changed"
         if [ "$cg_hit" -eq 0 ] && [ -s "$work/cg-pats" ]; then
             cg_rc=0
