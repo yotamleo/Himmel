@@ -1,0 +1,17 @@
+diff --git a/scripts/tools/compress-logs.sh b/scripts/tools/compress-logs.sh
+new file mode 100644
+--- /dev/null
++++ b/scripts/tools/compress-logs.sh
+@@ -0,0 +1,12 @@
++#!/usr/bin/env bash
++# compress-logs.sh - gzip every finished .log file in a log directory.
++# usage: compress-logs.sh <log-dir>
++set -euo pipefail
++
++log_dir="${1:?usage: compress-logs.sh <log-dir>}"
++count=0
++for f in $(ls "$log_dir"/*.log); do
++    gzip -9 "$f"
++    count=$((count + 1))
++done
++echo "compress-logs: compressed $count file(s) in $log_dir"

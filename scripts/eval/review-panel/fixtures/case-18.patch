@@ -1,0 +1,28 @@
+diff --git a/scripts/lib/retry.py b/scripts/lib/retry.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/lib/retry.py
+@@ -0,0 +1,23 @@
++"""Small retry helper for flaky network calls."""
++import time
++
++
++class GiveUp(Exception):
++    pass
++
++
++def should_retry(attempt, max_attempts):
++    """True while another attempt is still allowed (attempt is 1-based)."""
++    return attempt > max_attempts
++
++
++def call_with_retry(fn, max_attempts=3, delay=0.5):
++    attempt = 1
++    while True:
++        try:
++            return fn()
++        except OSError:
++            if not should_retry(attempt, max_attempts):
++                raise GiveUp("gave up after %d attempts" % attempt)
++            time.sleep(delay * attempt)
++            attempt += 1

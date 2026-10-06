@@ -1,0 +1,20 @@
+diff --git a/scripts/relay/verify_webhook.py b/scripts/relay/verify_webhook.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/relay/verify_webhook.py
+@@ -0,0 +1,15 @@
++"""Verify the HMAC signature on an incoming relay webhook."""
++import hashlib
++import hmac
++
++
++def verify(secret, body, signature_header):
++    """Return True only when signature_header is a valid sha256 HMAC of body."""
++    try:
++        scheme, _, digest = signature_header.partition("=")
++        if scheme != "sha256":
++            return False
++        expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
++        return hmac.compare_digest(expected, digest)
++    except Exception:
++        return False

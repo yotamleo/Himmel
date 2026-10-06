@@ -1,0 +1,28 @@
+diff --git a/scripts/state/save_state.py b/scripts/state/save_state.py
+new file mode 100644
+--- /dev/null
++++ b/scripts/state/save_state.py
+@@ -0,0 +1,23 @@
++"""Persist the cadence scheduler state between runs."""
++import json
++import os
++import tempfile
++
++STATE_DIR = os.path.join(os.path.expanduser("~"), ".local", "state", "cadence")
++STATE_PATH = os.path.join(STATE_DIR, "state.json")
++
++
++def save_state(state, path=STATE_PATH):
++    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
++    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".state-")
++    with os.fdopen(fd, "w") as fh:
++        json.dump(state, fh)
++    os.replace(tmp, path)
++
++
++def load_state(path=STATE_PATH):
++    try:
++        with open(path) as fh:
++            return json.load(fh)
++    except FileNotFoundError:
++        return {}

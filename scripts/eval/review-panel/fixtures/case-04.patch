@@ -1,0 +1,21 @@
+diff --git a/scripts/cadence/run-once.sh b/scripts/cadence/run-once.sh
+new file mode 100644
+--- /dev/null
++++ b/scripts/cadence/run-once.sh
+@@ -0,0 +1,16 @@
++#!/usr/bin/env bash
++# run-once.sh - run a command unless another instance already holds the lock.
++# usage: run-once.sh <name> <command...>
++set -euo pipefail
++
++name="${1:?usage: run-once.sh <name> <command...>}"; shift
++lock="${XDG_RUNTIME_DIR:-/tmp}/run-once-$name.lock"
++
++if ! mkdir "$lock" 2>/dev/null; then
++    echo "run-once: $name already running (lock $lock)" >&2
++    exit 0
++fi
++trap 'rmdir "$lock"' EXIT
++echo "$$" > "$lock/pid"
++
++"$@"

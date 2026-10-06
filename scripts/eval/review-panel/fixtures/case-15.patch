@@ -1,0 +1,22 @@
+diff --git a/scripts/backup/prune-backups.sh b/scripts/backup/prune-backups.sh
+new file mode 100644
+--- /dev/null
++++ b/scripts/backup/prune-backups.sh
+@@ -0,0 +1,17 @@
++#!/usr/bin/env bash
++# prune-backups.sh - keep the newest N snapshot archives in a directory.
++# usage: prune-backups.sh <dir> [keep]   (keep defaults to 5)
++set -euo pipefail
++
++dir="${1:?usage: prune-backups.sh <dir> [keep]}"
++keep="${2:-5}"
++
++case "$keep" in
++    ''|*[!0-9]*) echo "prune-backups: keep must be a number" >&2; exit 2 ;;
++esac
++
++# Newest first; everything after the first $keep entries is removed.
++ls -1t "$dir"/snapshot-*.tar.gz 2>/dev/null | tail -n +"$keep" | while IFS= read -r old; do
++    rm -f -- "$old"
++    echo "pruned $old"
++done

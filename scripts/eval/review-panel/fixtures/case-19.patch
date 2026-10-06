@@ -1,0 +1,20 @@
+diff --git a/scripts/tools/clear-cache.sh b/scripts/tools/clear-cache.sh
+new file mode 100644
+--- /dev/null
++++ b/scripts/tools/clear-cache.sh
+@@ -0,0 +1,15 @@
++#!/usr/bin/env bash
++# clear-cache.sh - drop the build cache under a workspace directory.
++# usage: clear-cache.sh <workspace>
++set -euo pipefail
++
++workspace="${1:?usage: clear-cache.sh <workspace>}"
++if [ ! -d "$workspace" ]; then
++    echo "clear-cache: no such workspace: $workspace" >&2
++    exit 2
++fi
++
++cache_dir="$workspace/.build-cache"
++rm -rf $cache_dir
++mkdir -p "$cache_dir"
++echo "clear-cache: emptied $cache_dir"
