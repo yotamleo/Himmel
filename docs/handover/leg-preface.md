@@ -463,10 +463,14 @@ it and `--jira-transition` did not (its `jira-transition=` result was `failed`
 or a `skip=` for a missing tool or config). Never close it by hand when the
 result was `skip=never-touch-type` (an Epic or Story is never auto-closed) or
 `skip=cannot-verify-type`: report it to the console instead. Then
-release the lock (paste the line), send `WRAPPED`, print the
-closable-window banner, and **exit**. A leg never idles: if you are gated on
-something outside your control, WRAP with a successor resume brief instead of
-waiting.
+release the lock (paste the line), send `WRAPPED`, and print the
+closable-window banner. Then stop: a leg does not end its own session (no
+`/exit`; SessionEnd hooks are cancelled under load) —
+the console's `close-wrapped-leg.sh` ends the session, after it verifies the
+lock is free, the last marker is `WRAPPED` and `wrap-subtree-check.sh` reports
+`CLOSABLE`
+(HIMMEL-2414, HIMMEL-3572). A leg never idles: if you are gated on something
+outside your control, WRAP with a successor resume brief instead of waiting.
 
 **HALT / WRAP: TaskStop EVERY background task and every agent you spawned,
 then prove the process subtree is clean** (HIMMEL-2761 — TaskStop on an agent
@@ -511,7 +515,7 @@ inviting a redirect or offering to wait, delete that and do the next thing.
 The stops that are wanted are the ones where nothing can move without the
 console, or where the thing blocking you is deliberately protected from you:
 holding for the console's `GO` after `READY`; a `BLOCKED`, or a `FINDING` whose
-ruling every remaining step depends on, already sent; `WRAPPED` and exit; the
+ruling every remaining step depends on, already sent; `WRAPPED` and stop; the
 ≥ 75 % context hand-off. None of this overrides the need for confirmation on
 risky or destructive actions.
 
