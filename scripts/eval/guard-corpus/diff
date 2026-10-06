@@ -342,8 +342,10 @@ def decision(rc, stdout):
 
     Exit 2 is a deny. At exit 0 the hook may still decide through JSON on
     stdout: hookSpecificOutput.permissionDecision (deny/ask/allow) or the
-    legacy top-level decision (block/approve). An explicit allow is
-    `approve`; exit 0 with no decision is `pass` (the normal prompt flow).
+    legacy top-level decision (block/approve). A top-level "continue": false
+    stops the call, so it ranks as deny. An explicit allow is `approve`;
+    exit 0 with no decision (or stdout that is not JSON, which the harness
+    shows as plain output) is `pass` (the normal prompt flow).
     """
     if rc == 2:
         return "deny"
@@ -355,6 +357,8 @@ def decision(rc, stdout):
         return "pass"
     if not isinstance(out, dict):
         return "pass"
+    if out.get("continue") is False:
+        return "deny"
     hso = out.get("hookSpecificOutput")
     d = hso.get("permissionDecision") if isinstance(hso, dict) else None
     if d in ("deny", "ask"):

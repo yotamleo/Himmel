@@ -541,7 +541,20 @@ case "$input" in *SENTINEL_DENY*)
 esac
 exit 0
 STUB
-chmod +x "$TMP/json-deny-hook.sh" "$TMP/json-ask-hook.sh" "$TMP/json-approve-hook.sh"
+cat > "$TMP/json-stop-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+input=$(cat)
+case "$input" in *SENTINEL_DENY*)
+  printf '{"continue":false,"stopReason":"stub"}\n' ;;
+esac
+exit 0
+STUB
+chmod +x "$TMP/json-deny-hook.sh" "$TMP/json-ask-hook.sh" "$TMP/json-approve-hook.sh" "$TMP/json-stop-hook.sh"
+OUT12E=$(python3 "$DIFF" --base "$TMP/json-stop-hook.sh" --head "$TMP/head-hook.sh" \
+        --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC12E=$?
+has "json-decision: a lost continue-false stop is named" "$OUT12E" "base=deny head=pass"
+if [ "$RC12E" = "1" ]; then pass "json-decision: continue-false stop lost by head => exit 1"
+else fail "json-decision: expected exit 1 for stop/allow, got $RC12E"; fi
 OUT12A=$(python3 "$DIFF" --base "$TMP/json-deny-hook.sh" --head "$TMP/head-hook.sh" \
         --corpus "$TMP/corpus.jsonl" --jobs 4 2>&1); RC12A=$?
 has "json-decision: JSON-only deny lost is named" "$OUT12A" "base=deny head=pass"
