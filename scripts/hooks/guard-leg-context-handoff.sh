@@ -156,10 +156,11 @@ for cand in "$dir"/*-RESUME.md; do
     else
         [ "$cand" = "$want" ] || continue
     fi
-    if [ -n "$started" ]; then
-        m=$(mtime "$cand") || continue
-        [ "$m" -ge "$started" ] || continue
-    fi
+    # An unknown session start cannot tell this session's RESUME doc from a
+    # stale one, so no doc counts; the BLOCKED marker (step 3 below) still frees.
+    [ -n "$started" ] || continue
+    m=$(mtime "$cand") || continue
+    [ "$m" -ge "$started" ] || continue
     exit 0
 done
 

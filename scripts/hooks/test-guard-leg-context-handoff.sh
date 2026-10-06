@@ -43,9 +43,10 @@ sha() {
     else printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1; fi
 }
 
-# session <first-user-text> -- a fresh transcript whose first user turn says it
+# session <first-user-text> [timestamp] -- a fresh transcript whose first user turn says it
 session() {
-    jq -cn --arg t "$1" '{type:"user",timestamp:"2026-10-06T10:00:00.000Z",message:{role:"user",content:$t}}' > "$TR"
+    jq -cn --arg t "$1" --arg ts "${2-2026-10-06T10:00:00.000Z}" \
+        '{type:"user",timestamp:$ts,message:{role:"user",content:$t}}' > "$TR"
     printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":1}}}' >> "$TR"
 }
 # fill <pct> -- a fresh HUD snapshot for the transcript at that fill
@@ -146,6 +147,11 @@ printf 'resume\n' > "$RESUME"
 check "fresh N77b RESUME doc -> allow" allow "$LS"
 touch -t 202001010000 "$RESUME"
 check "RESUME doc older than this session -> block" block "$LS"
+session "load $DOC and continue" "2026-10-06T12:00:00+02:00"
+check "session start unparsable + old RESUME doc -> block" block "$LS"
+session "load $DOC and continue" ""
+check "session start missing + old RESUME doc -> block" block "$LS"
+session "load $DOC and continue"
 rm -f "$RESUME"
 printf 'other leg\n' > "$DIR/HIMMEL-9-N78b-thing-2026-10-06-RESUME.md"
 check "another leg's RESUME doc -> block" block "$LS"
