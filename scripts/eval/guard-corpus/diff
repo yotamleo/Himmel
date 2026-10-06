@@ -351,12 +351,20 @@ def decision(rc, stdout):
         return "deny"
     if rc != 0:
         return rc
+    text = stdout.decode("utf-8", "replace")
+    bom = text.startswith("﻿")
     try:
-        out = json.loads(stdout.decode("utf-8", "replace"))
+        out = json.loads(text[1:] if bom else text)
     except ValueError:
         return "pass"
     if not isinstance(out, dict):
         return "pass"
+    if bom:
+        # HIMMEL-4586: the hooks doc says stdout is read as JSON when it starts
+        # with { "ignoring surrounding whitespace" and never mentions a BOM, so
+        # whether the harness honours this decision is undocumented. Inconclusive
+        # (ODD, exit 3), never `pass`: a deny must not score as an allow.
+        return "bom"
     if out.get("continue") is False:
         return "deny"
     hso = out.get("hookSpecificOutput")
@@ -415,21 +423,27 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
         overrides["CHOKEPOINT_REGISTRY"] = registry
     env = _sandbox_env(**overrides)
     t0 = time.time()
-    p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                         start_new_session=True, cwd=cwd, env=env)
-    out = b""
-    try:
-        out, _ = p.communicate(payload.encode("utf-8", "surrogateescape"),
-                               timeout=timeout_run)
-        rc = p.returncode
-    except subprocess.TimeoutExpired:
+    # stdout goes to a temp file, not a pipe: a pipe's EOF waits on every
+    # process holding the write end, so a hook that backgrounds a child would
+    # read as TIMEOUT. The hook's own exit ends the row (HIMMEL-4587); the
+    # group is then killed so the child never outlives the row.
+    with tempfile.TemporaryFile() as outf:
+        p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
+                             stdout=outf, stderr=subprocess.DEVNULL,
+                             start_new_session=True, cwd=cwd, env=env)
+        try:
+            p.communicate(payload.encode("utf-8", "surrogateescape"),
+                          timeout=timeout_run)
+            rc = p.returncode
+        except subprocess.TimeoutExpired:
+            rc = "TIMEOUT"
         try:
             os.killpg(p.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         p.wait()
-        rc = "TIMEOUT"
+        outf.seek(0)
+        out = outf.read()
     return rc, out, time.time() - t0
 
 
@@ -631,7 +645,7 @@ def main(argv):
                   % (r["idx"], r["family"], r["transform"]))
         print("  rc not in {0,2}: %d" % len(odd))
         for r in odd[:50]:
-            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["rb"], r["rh"]))
+            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["base"], r["head"]))
         print("  TIMEOUT RISK (>= %.1fs): %d" % (args.timeout_warn, len(slow)))
         for r in slow[:50]:
             print("    TIMEOUT-RISK idx=%d tb=%.2f th=%.2f transform=%s"
