@@ -2939,12 +2939,15 @@ TP_ROOT=$(cd "$TP_ROOT" && pwd)
 TP_GO="$TP_ROOT/.locks/go"
 TP_CI='[{"filename":".github/workflows/ci.yml"}]'
 tp_mint() { go_write "$TP_ROOT" "$@"; }
+# HIMMEL-4589: the verdict counts only under <user>/<bucket> (USER_SLUG + the primary checkout basename).
+export USER_SLUG=u
+TP_SCOPE="u/$(basename "$(dirname "$(git -C "$(dirname "$0")" rev-parse --path-format=absolute --git-common-dir)")" | tr "[:upper:]" "[:lower:]" | sed -E "s/[^a-z0-9]+/-/g; s/^-+//; s/-+\$//")"
 # HIMMEL-3832: a trust-reviewed GO needs the judge's GO verdict for the head.
-mkdir -p "$TP_ROOT/u/himmel/verdicts/judge-N9"
+mkdir -p "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9"
 # shellcheck disable=SC2016  # literal backticks in the verdict line
-printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_SHA" > "$TP_ROOT/u/himmel/verdicts/judge-N9/a.md"
+printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_SHA" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/a.md"
 # shellcheck disable=SC2016  # literal backticks in the verdict line
-printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_OLD" > "$TP_ROOT/u/himmel/verdicts/judge-N9/b.md"
+printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_OLD" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/b.md"
 tp_run() {
     MOG_ANCHOR_GIT=1 HANDOVER_DIR="$TP_ROOT" STUB_SHA="$GO_SHA" STUB_PR_FILES_JSON="${STUB_PR_FILES_JSON-$TP_CI}" run_mog "$@"
 }

@@ -27,7 +27,7 @@ trap 'rm -rf "$tmp"' EXIT
 tmp="$(cd "$tmp" && pwd)"
 # Sections 14-15 run after section 13 sources go-gate.sh, which assigns its
 # own `tmp`; name their dirs here so nothing below reads `$tmp` past that point.
-ROOT14="$tmp/root14"; ROOT15="$tmp/root15"
+ROOT14="$tmp/root14"; ROOT15="$tmp/root15"; ROOT16="$tmp/root16"
 # HIMMEL-3543: go.sh mints its GO key under $HOME/.config/himmel — keep it off
 # the operator's real key.
 export HOME="$tmp/home"; mkdir -p "$HOME"
@@ -78,10 +78,16 @@ contains() { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: outpu
 # verdict <root> <qid> <verdict line> [<file name>] - a judge's verdict file,
 # as docs/handover/verdict-template.md lays it out.
 verdict() {
-  mkdir -p "$1/u/himmel/verdicts/$2"
+  mkdir -p "$1/$VSCOPE/verdicts/$2"
   printf '# VERDICT %s - judge\n\n## Reason (scope asked)\n\nq\n\n## Verdict\n\n%s\n\nreason\n\n## Evidence checked\n\ne\n' \
-    "$2" "$3" > "$1/u/himmel/verdicts/$2/${4:-HIMMEL-1-judge-$2}.md"
+    "$2" "$3" > "$1/$VSCOPE/verdicts/$2/${4:-HIMMEL-1-judge-$2}.md"
 }
+
+# HIMMEL-4589: a trust verdict counts only under <user>/<bucket>, the user slug
+# and the primary checkout's slugified basename (never a hardcoded bucket).
+export USER_SLUG=u
+VBUCKET="$(basename "$(dirname "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)")" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+VSCOPE="u/$VBUCKET"
 
 SHA=0123456789abcdef0123456789abcdef01234567
 export READY_STUB_HEAD="$SHA"
@@ -369,7 +375,7 @@ t15 "a second judge file says NO-GO" J6
 verdict "$ROOT15" J7 "**GO** for head \`$SHA\`."
 verdict "$ROOT15" J7 "**GO.**" second
 t15 "a second judge file is unparsed" J7
-mkdir -p "$ROOT15/u/himmel/verdicts/J8"
+mkdir -p "$ROOT15/$VSCOPE/verdicts/J8"
 t15 "an empty verdict dir" J8
 verdict "$ROOT15" "judge:J9" "**GO** for head \`$SHA\`."
 t15 "an id that is not a qid path segment" "judge:J9"
@@ -384,12 +390,43 @@ verdict "$ROOT15" J12 "**NO-GO** for head \`$SHA14\`." round1
 verdict "$ROOT15" J12 "**GO** for head \`$SHA\`." round2
 rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J12 83 "$SHA" >/dev/null 2>&1 || rc=$?
 check    "3832: an earlier round's NO-GO on another head is ignored -> exit 0" "$rc" "0"
-mkdir -p "$ROOT15/u/himmel/verdicts/J13"
+mkdir -p "$ROOT15/$VSCOPE/verdicts/J13"
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 printf '# VERDICT J13 - judge\r\n\r\n## Verdict\r\n\r\n**GO** for head `%s`.\r\n\r\nreason\r\n' "$SHA" \
-  > "$ROOT15/u/himmel/verdicts/J13/HIMMEL-1-judge-J13.md"
+  > "$ROOT15/$VSCOPE/verdicts/J13/HIMMEL-1-judge-J13.md"
 rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J13 83 "$SHA" >/dev/null 2>&1 || rc=$?
 check    "3832: a CRLF verdict file -> exit 0" "$rc" "0"
+
+# --- 16. HIMMEL-4589: only this repo's own <user>/<bucket> verdicts count -----
+# A judge can write verdicts/<qid>/ in any bucket; the lookup must not read them.
+t16() {  # <label> <qid> - expect a refusal, nothing written
+  local rc=0
+  out="$(HANDOVER_DIR="$ROOT16" bash "$SCRIPT" --trust-reviewed "$2" 84 "$SHA" 2>&1)" || rc=$?
+  check "4589: $1 -> exit 5" "$rc" "5"
+  check "4589: $1 -> nothing written" "$(find "$ROOT16/.locks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+}
+mkdir -p "$ROOT16"
+other_verdict() {  # <scope> <qid> - a GO for $SHA written under another scope
+  mkdir -p "$ROOT16/$1/verdicts/$2"
+  # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+  printf '# VERDICT %s - judge\n\n## Verdict\n\n**GO** for head `%s`.\n' "$2" "$SHA" > "$ROOT16/$1/verdicts/$2/HIMMEL-1-judge-$2.md"
+}
+other_verdict "u/not-this-repo" K1
+t16 "a GO in another repo bucket" K1
+other_verdict "someone-else/$VBUCKET" K2
+t16 "a GO under another user" K2
+other_verdict "u/not-this-repo" K3
+verdict "$ROOT16" K3 "**NO-GO** for head \`$SHA\`."
+t16 "own-bucket NO-GO beats another bucket's GO" K3
+verdict "$ROOT16" K4 "**GO** for head \`$SHA\`."
+other_verdict "u/not-this-repo" K4
+rc=0; HANDOVER_DIR="$ROOT16" bash "$SCRIPT" --trust-reviewed K4 84 "$SHA" >/dev/null 2>&1 || rc=$?
+check "4589: own-bucket GO still satisfies it -> exit 0" "$rc" "0"
+rm -rf "$ROOT16/.locks"
+other_verdict "u/$VBUCKET" K5
+rc=0; out="$(USER_SLUG='../x' HANDOVER_DIR="$ROOT16" bash "$SCRIPT" --trust-reviewed K5 84 "$SHA" 2>&1)" || rc=$?
+check "4589: an unresolvable user slug fails closed -> exit 5" "$rc" "5"
+contains "4589: and says the scope cannot resolve" "$out" "cannot resolve this repo's <user>/<bucket> verdict scope"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
