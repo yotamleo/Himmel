@@ -742,8 +742,10 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
   //    dropped) exists at the tip or at the finding head, and, for a diff
   //    finding with a file, one site IS that file.
   //  - single-site search=: a plain git grep (whitelisted flags only, no shell
-  //    syntax), re-run here at the tip with no shell; its hits may only be the
-  //    finding file (or one file at most when the finding names none).
+  //    syntax), re-run here at the tip with no shell; its pathspec must span at
+  //    least two text files (a search scoped to the finding file alone cannot
+  //    find a sibling), and its hits may only be the finding file (or one file
+  //    at most when the finding names none).
   // ponytail: residual forgeability - a search with zero hits still passes, and
   // a sites list may name real files nobody opened; the gate proves the record
   // is consistent with the tree, not that a sweep happened. Upgrade path: a
@@ -843,7 +845,14 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
           const pre = e.FULL_SHA + ":";
           const hits = [...new Set(out.split("\n").filter(Boolean)
               .map((l) => l.startsWith(pre) ? l.slice(pre.length) : l))];
-          return { hits };
+          // Text files the pathspec spans at the tip; no pathspec = the tree.
+          let scope = 2;
+          if (pos.length) {
+              try { scope = gitRun(["grep", "-l", "-I", "-e", "", e.FULL_SHA, "--"].concat(pos))
+                  .split("\n").filter(Boolean).length; }
+              catch (x) { if (x && x.status === 1) scope = 0; else return { err: "search-failed" }; }
+          }
+          return { hits, scope };
       })();
       searchCache.set(cmd, r);
       return r;
@@ -865,6 +874,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
       }
       const r = runSearch(s.body.slice("single-site search=".length));
       if (r.err) return r.err;
+      if (r.scope < 2) return "search-scope-single-file";
       const other = r.hits.filter((h) => wantFile ? h !== wantFile : h !== r.hits[0]);
       if (other.length) return "search-hits-other-site:" + other.map(word).join(",");
       return "";

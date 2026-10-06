@@ -2570,7 +2570,8 @@ write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=l
 run_clear "$tmp" 14 "8o a single-site search that is not a git grep is not a record -> exit 14"
 rm -rf "$tmp"
 # 8p. A single-site search the tip falsifies (it hits a file other than the
-# finding's own) -> refused; the same search scoped to the finding's file clears.
+# finding's own) -> refused; a search over the same scope whose only hit is the
+# finding's file clears.
 sweep_fixture
 write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=git grep -n -F \"echo b\" -- b.sh c.sh" "${_r2_ok/\$_tip/$_tip}"
 run_clear "$tmp" 14 "8p a single-site search that hits another file at the tip -> exit 14"
@@ -2579,6 +2580,14 @@ rm -rf "$tmp"
 sweep_fixture
 write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=git grep -n -F 'echo a' -- a.sh b.sh c.sh" "${_r2_ok/\$_tip/$_tip}"
 run_clear "$tmp" 0 "8p a single-site search whose only hit is the finding's own file clears -> exit 0"
+rm -rf "$tmp"
+# 8p-scope. A search scoped to the finding's file alone cannot hit a sibling, so
+# it proves no sweep: b.sh carries the same text the search would have found.
+sweep_fixture
+write_sweeps "$tmp" "SWEEP [r1@$_r1] class=unquoted path :: single-site search=git grep -n -F echo -- a.sh" "${_r2_ok/\$_tip/$_tip}"
+run_clear "$tmp" 14 "8p-scope a search scoped to the finding's file alone is not a sweep -> exit 14"
+if grepq "$LAST_CLEAR_OUT" -F 'search-scope-single-file'; then pass; else
+    fail "8p-scope must name search-scope-single-file: $LAST_CLEAR_OUT"; fi
 rm -rf "$tmp"
 # 8q. A search option that runs a program is refused, and never runs.
 sweep_fixture
