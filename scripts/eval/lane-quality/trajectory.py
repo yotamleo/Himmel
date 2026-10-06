@@ -10,9 +10,15 @@ Four per-run fields; the exact definitions are in scripts/eval/README.md
   verify_before_claim       true | false | null
 
 Usage:
-  trajectory.py score <transcript.jsonl> [--report FILE]
+  trajectory.py score <transcript.jsonl> [--report FILE] [--denials]
       one JSON object on stdout; FILE is the run's final report (run.sh's
-      <stem>.report.md), else the assistant text after the last tool call
+      <stem>.report.md), else the assistant text after the last tool call.
+      --denials adds "denials": one {tool_call_id, recovered, identical} per
+      denied call, in issue order (HIMMEL-4670: the leg digest joins it to the
+      AG-UI mapper's denied events). recovered: the next call differs;
+      identical: the later identical calls that retry this denial (each retry
+      counts against the latest identical denial before it, so the counts sum
+      to identical_denied_retries)
   trajectory.py rescore <run-dir>... [--transcripts DIR]... [--json]
       re-score stored lane-quality runs from their transcripts (found by the
       session_id in <stem>.result.json); prints a per-field summary. Read
@@ -37,6 +43,8 @@ import shlex
 import sys
 
 FIELDS = ("red_before_green", "denial_recovery", "identical_denied_retries", "verify_before_claim")
+# Bumped when a field's definition changes, so an eval-runs series never mixes two meanings (HIMMEL-4670).
+TRAJECTORY_SCHEMA = 1
 
 # A hook or permission refusal: the tool never ran. A result that starts with
 # "Exit code" is a command that ran and failed, whatever its output says.
@@ -251,6 +259,20 @@ def claims(report):
     return out
 
 
+def denial_list(calls):
+    """[{tool_call_id, recovered, identical}] for each denied call, in issue order."""
+    den = [c for c in calls if denied(c)]
+    out = {d["id"]: {"tool_call_id": d["id"], "recovered": True, "identical": 0} for d in den}
+    for d in den:
+        nxt = next((c for c in calls if c["pos"] > d["result"]["pos"]), None)
+        out[d["id"]]["recovered"] = nxt is None or _canon(nxt) != _canon(d)
+    for c in calls:
+        prior = [d for d in den if d["result"]["pos"] < c["pos"] and _canon(d) == _canon(c)]
+        if prior:
+            out[prior[-1]["id"]]["identical"] += 1
+    return [out[d["id"]] for d in den]
+
+
 def score_calls(calls, texts, report=None):
     runs = []  # executed test runs with a known outcome: (pos, targets, passed)
     for c in calls:
@@ -305,15 +327,20 @@ def _read(path):
         return None
 
 
-def score(path, report_path=None):
-    """The four fields for one transcript; all null when it is unreadable."""
+def score(path, report_path=None, denials=False):
+    """The four fields for one transcript; all null when it is unreadable.
+    denials=True adds the per-denial list (empty when unreadable) and the schema version."""
+    extra = {"denials": [], "trajectory_v": TRAJECTORY_SCHEMA} if denials else {}
     if not path or not os.path.isfile(path):
-        return {f: None for f in FIELDS}
+        return dict({f: None for f in FIELDS}, **extra)
     try:
         calls, texts = parse(path)
     except OSError:
-        return {f: None for f in FIELDS}
-    return score_calls(calls, texts, _read(report_path) if report_path else None)
+        return dict({f: None for f in FIELDS}, **extra)
+    out = score_calls(calls, texts, _read(report_path) if report_path else None)
+    if denials:
+        out.update(extra, denials=denial_list(calls))
+    return out
 
 
 def find_transcript(sid, roots):
@@ -377,13 +404,14 @@ def main(argv=None):
     s = sub.add_parser("score")
     s.add_argument("transcript")
     s.add_argument("--report")
+    s.add_argument("--denials", action="store_true")
     r = sub.add_parser("rescore")
     r.add_argument("run_dirs", nargs="+")
     r.add_argument("--transcripts", action="append")
     r.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
     if args.cmd == "score":
-        print(json.dumps(score(args.transcript, args.report)))
+        print(json.dumps(score(args.transcript, args.report, args.denials)))
         return 0
     roots = args.transcripts or [os.path.expanduser("~/.claude/projects"),
                                  os.path.expanduser("~/.claude-openrouter/projects")]

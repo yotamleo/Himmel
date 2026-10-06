@@ -212,3 +212,12 @@ describe("agents and failures", () => {
     expect(texts.filter((t) => t.failure).length).toBe(1);
   });
 });
+
+// HIMMEL-4670: the auto-mode classifier's refusal is a denial, as the trajectory reader counts it.
+test("an auto-mode classifier refusal is classified denied", () => {
+  const evs = mapJournal([
+    '{"type":"assistant","uuid":"c1","sessionId":"s","message":{"id":"m","role":"assistant","content":[{"type":"tool_use","id":"toolu_c","name":"Bash","input":{"command":"bash x.sh"}}]}}',
+    '{"type":"user","uuid":"c2","sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_c","is_error":true,"content":"Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Merge Without Review]."}]}}',
+  ].join("\n") + "\n").events;
+  expect(evs.find((e) => e.type === "TOOL_CALL_RESULT")).toMatchObject({ failure: "denied" });
+});

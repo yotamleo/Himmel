@@ -90,9 +90,11 @@ const SILENT_TYPES = new Set([
   "artifact-autoreact-ledger", "artifact-comment-monitor",
 ]);
 const INTERRUPT = /^\[Request interrupted by user/;
-// A refusal by a PreToolUse/permission hook, or by the operator's permission prompt.
-const DENIED = /^(PreToolUse|PermissionRequest):\w+ hook error|permission to use .* has been denied|doesn't want to proceed|tool use was rejected/i;
-const SUITE = /quiet-run\.sh suite|\bbun test\b|run-shell-tests\.sh|\btest-[\w.-]+\.sh\b|\bplaywright test\b|\bpytest\b|\bnpm (run )?test\b/;
+// Bumped when a failure's classification changes, so an eval-runs series never mixes two meanings (HIMMEL-4670).
+export const MAPPER_SCHEMA = 1;
+// A refusal by a PreToolUse/permission hook, by the operator's permission prompt, or by the auto-mode classifier.
+const DENIED = /^(PreToolUse|PermissionRequest):\w+ hook error|permission to use .* has been denied|doesn't want to proceed|tool use was rejected|was denied by the Claude Code auto mode classifier/i;
+export const SUITE =/quiet-run\.sh suite|\bbun test\b|run-shell-tests\.sh|\btest-[\w.-]+\.sh\b|\bplaywright test\b|\bpytest\b|\bnpm (run )?test\b/;
 // A status line that leads with BLOCKED: a message, or a Results bullet ("- 12:00 BLOCKED ...").
 const BLOCKED = /^\s*(?:-\s+(?:\d\d:\d\d\s+)?)?BLOCKED\b/m;
 

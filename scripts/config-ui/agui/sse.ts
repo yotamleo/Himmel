@@ -17,14 +17,14 @@
 // dependency for it.
 
 import { open, readdir, realpath, stat, type FileHandle } from "node:fs/promises";
-import { basename, dirname, join, sep } from "node:path";
+import { join, sep } from "node:path";
 import { createJournalMapper } from "./journal-mapper.ts";
+import { byTime, stampLines, subagentFiles, type Line } from "./journal-merge.ts";
 import type { AguiEvent } from "./events.ts";
 
 export const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CHUNK = 256 * 1024;
 const HEARTBEAT_MS = 15_000;
-const MAX_SUBAGENTS = 64; // files followed per stream, beside the journal itself
 
 export type Resolved = { path: string } | { status: 400 | 404 | 409 };
 
@@ -74,36 +74,15 @@ export function redactPayload(e: AguiEvent, redact: (value: unknown) => unknown)
     [k, ID_FIELDS.has(k) ? v : AGENT_FIELDS.has(k) ? redactAgent(v, redact) : redact(v)])) as AguiEvent;
 }
 
-// One followed file: the session journal, or one of its subagents' transcripts.
-type Source = { path: string; fh?: FileHandle; offset: number; size: number; tail: string; utf8: TextDecoder; lastTs: number };
-type Line = { text: string; ts: number; order: number };
-const TS = /"timestamp"\s*:\s*"([^"]+)"/;
-
-// A session's subagents write <session>/subagents/agent-<id>.jsonl beside <session>.jsonl. Only plain names
-// are joined, and a file whose realpath leaves the journal's own directory is skipped.
-const SUB_FILE = /^agent-[A-Za-z0-9_-]{1,64}\.jsonl$/;
-async function subagentFiles(journal: string, known: Set<string>): Promise<string[]> {
-  const dir = dirname(journal);
-  const subs = join(dir, basename(journal, ".jsonl"), "subagents");
-  let names: string[];
-  try { names = await readdir(subs); } catch { return []; }
-  const out: string[] = [];
-  for (const name of names.filter((n) => SUB_FILE.test(n)).sort()) {
-    if (known.size - 1 + out.length >= MAX_SUBAGENTS) break; // known holds the journal itself too
-    let real: string;
-    try { real = await realpath(join(subs, name)); } catch { continue; }
-    if (known.has(real) || !real.startsWith(dir + sep)) continue;
-    try { if (!(await stat(real)).isFile()) continue; } catch { continue; }
-    out.push(real);
-  }
-  return out;
-}
+// One followed file: the session journal, or one of its subagents' transcripts. The subagent discovery
+// and the line order are journal-merge.ts's, shared with the leg digest (HIMMEL-4670).
+type Source = { path: string; fh?: FileHandle; offset: number; size: number; tail: string; utf8: TextDecoder; last: { ts: number } };
 
 export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8Array> {
   const mapper = createJournalMapper({ threadId: o.threadId });
   const enc = new TextEncoder();
   const started = Date.now();
-  const src = (p: string): Source => ({ path: p, offset: 0, size: 0, tail: "", utf8: new TextDecoder(), lastTs: -Infinity });
+  const src = (p: string): Source => ({ path: p, offset: 0, size: 0, tail: "", utf8: new TextDecoder(), last: { ts: -Infinity } });
   const main = src(path);
   const subs: Source[] = [];
   const known = new Set<string>([path]);
@@ -148,13 +127,9 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
     grewAt = Date.now();
     const parts = (s.tail + s.utf8.decode(buf.subarray(0, bytesRead), { stream: true })).split("\n");
     s.tail = parts.pop()!;
-    return parts.map((text) => {
-      const ms = Date.parse(TS.exec(text)?.[1] ?? "");
-      if (Number.isFinite(ms)) s.lastTs = ms;
-      return { text, ts: s.lastTs, order: order++ };
-    });
+    return stampLines(parts, s.last, () => order++);
   };
-  const map = (lines: Line[]) => lines.sort((a, b) => a.ts - b.ts || a.order - b.order).flatMap((l) => mapper.pushLine(l.text));
+  const map = (lines: Line[]) => lines.sort(byTime).flatMap((l) => mapper.pushLine(l.text));
   return new ReadableStream<Uint8Array>({
     // pull() is not called while a stalled client leaves the queue full, so the
     // max duration also runs on its own timer to release the fd and the server.
@@ -188,14 +163,14 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
           const live = [main, ...subs].filter((s) => s.offset <= s.size);
           const behind = live.filter((s) => s.offset < s.size);
           const pending = live.filter((s) => s.offset < s.size || s.tail);
-          const cut = pending.length ? Math.min(...pending.map((s) => s.lastTs)) : Infinity;
+          const cut = pending.length ? Math.min(...pending.map((s) => s.last.ts)) : Infinity;
           const ready = held.filter((l) => l.ts <= cut);
           held = held.filter((l) => l.ts > cut);
           const events = map(ready);
           if (events.length) { c.enqueue(frame(events)); return; }
           if (ready.length || behind.length) continue;
           if (!runOpen && Date.now() - grewAt >= o.idleMs) {
-            const rest = [main, ...subs].filter((s) => s.tail).map((s) => ({ text: s.tail, ts: s.lastTs, order: order++ }));
+            const rest = [main, ...subs].filter((s) => s.tail).map((s) => ({ text: s.tail, ts: s.last.ts, order: order++ }));
             for (const s of [main, ...subs]) s.tail = "";
             return end(c, [...map([...held, ...rest]), ...mapper.flush()]);
           }
