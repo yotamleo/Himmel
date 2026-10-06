@@ -639,12 +639,13 @@ out="$(run_is "$range")"
 if ! grepq "$out" "^${GC}\$"; then pass "an unreferenced scripts/lanes file does not select the closure suite"; else fail "closure row over-selected scripts/lanes: $out"; fi
 
 # --- 35. HIMMEL-4533/4534/4535: closure arms. -------------------------------
-# 4534: arm 1 alone. brand-new.sh sits under the guarded scripts/cr dir and no
-# guarded file names it, so arm 2 (a guarded file names the change) cannot fire.
-mkf scripts/cr/brand-new.sh 'echo new'
+# 4534: arm 1 alone. brand-new.sh sits under the guarded scripts/lib dir, no
+# guarded file names it (arm 2 cannot fire) and no scan_roots row maps
+# scripts/lib/* to the closure suite (scripts/cr/* does, so it cannot be used).
+mkf scripts/lib/brand-new.sh 'echo new'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: arm-1 fixture"
-change scripts/cr/brand-new.sh
+change scripts/lib/brand-new.sh
 out="$(run_is "$range")"
 if grepq "$out" "^${GC}\$"; then pass "arm 1 alone: a file inside a guarded dir that nothing names -> closure suite"; else fail "arm 1 alone missed: $out"; fi
 # 4533: arm 2 is not limited to handover/lanes/lib: a guarded file naming
