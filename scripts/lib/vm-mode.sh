@@ -25,6 +25,10 @@
 # ssh/identity carrying whitespace or a leading dash, checked after ~ expands
 # (the VM drivers word-split them into ssh's argv), resolves
 # to `none` with a note saying why — a hold is never released on a guess.
+# vm.remote.identity takes its default only when the key is absent or null;
+# any other non-string or empty value is an error, and so is a glob
+# metacharacter (* ? [) in it, which the drivers' unquoted SSH_OPTS (also
+# handed on as an rsync -e string) would expand (HIMMEL-4601).
 #
 # A resolver error is NOT a configured none (HIMMEL-4597, judge J1932 T1). Both
 # keep every VM-proof hold HELD, but only a configured `none` may offer the
@@ -85,12 +89,15 @@ if m == "remote":
         print("mode=none"); print("note=vm.mode=remote but vm.remote.ssh is not set"); sys.exit(0)
     ssh = ssh.strip()
     port = r.get("port", 22)
-    ident = r.get("identity") or "~/.ssh/id_ed25519"
+    ident = r.get("identity")
+    if ident is None:
+        ident = "~/.ssh/id_ed25519"
     if isinstance(ident, str):
         ident = os.path.expanduser(ident)
     bad = (ssh.startswith("-") or any(c.isspace() for c in ssh)
            or isinstance(port, bool) or not str(port).isdigit() or not 0 < int(port) < 65536
-           or not isinstance(ident, str) or ident.startswith("-") or any(c.isspace() for c in ident))
+           or not isinstance(ident, str) or not ident or ident.startswith("-")
+           or any(c.isspace() or c in "*?[" for c in ident))
     if bad:
         print("mode=none"); print("note=vm.remote has an invalid ssh, port or identity"); sys.exit(0)
     print("host=" + ssh)

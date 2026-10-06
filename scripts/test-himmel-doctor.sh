@@ -5827,14 +5827,28 @@ printf '#!/bin/sh\necho "$1 $2" >> "%s/probe.log"\nexit 0\n' "$c53_t" > "$c53_t/
 # shellcheck disable=SC2016  # $1 $2 expand in the probe stub
 printf '#!/bin/sh\necho "$1 $2" >> "%s/probe.log"\nexit 1\n' "$c53_t" > "$c53_t/down"
 chmod +x "$c53_t/up" "$c53_t/down"
+# A stub ssh (HIMMEL-4599): the operator's real ssh would read their real
+# ~/.ssh/config. It answers only -G, from $c53_t/ssh-g.out when that is set,
+# else as an empty config would; any other call is logged and fails.
+mkdir -p "$c53_t/bin"
+cat > "$c53_t/bin/ssh" <<STUB
+#!/bin/sh
+echo "\$*" >> "$c53_t/ssh.log"
+[ "\$1" = -G ] || exit 255
+[ -s "$c53_t/ssh-g.out" ] && { cat "$c53_t/ssh-g.out"; exit 0; }
+port=22
+while [ \$# -gt 1 ]; do [ "\$1" = -p ] && { port=\$2; shift; }; shift; done
+printf 'user x\nhostname %s\nport %s\n' "\${1#*@}" "\$port"
+STUB
+chmod +x "$c53_t/bin/ssh"
 c53_run() { # <config json> <probe>
-    printf '%s\n' "$1" > "$c53_t/home/.himmel/config.json"; : > "$c53_t/probe.log"
-    HIMMEL_DOCTOR_VM_PROBE="$2" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c53_t/claude" HOME="$c53_t/home" bash "$DOC" --no-color 2>&1
+    printf '%s\n' "$1" > "$c53_t/home/.himmel/config.json"; : > "$c53_t/probe.log"; : > "$c53_t/ssh.log"
+    HIMMEL_DOCTOR_VM_PROBE="$2" PATH="$c53_t/bin:$FAKEBIN:$PATH" CLAUDE_DIR="$c53_t/claude" HOME="$c53_t/home" bash "$DOC" --no-color 2>&1
 }
 
 echo "== C53-vm-mode: unset -> local, probes localhost:2222, reachable -> OK (RED) =="
 out="$(c53_run '{}' "$c53_t/up")"
-if grepq "$out" 'OK   C53-vm-mode' && grepq "$out" -F 'vm.mode=local' && grepq "$(cat "$c53_t/probe.log")" -Fx 'localhost 2222'; then pass "C53 local reachable -> OK"; else fail "C53 local up -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+if grepq "$out" 'OK   C53-vm-mode' && grepq "$out" -F 'vm.mode=local' && grepq "$(cat "$c53_t/probe.log")" -Fx 'localhost 2222' && [ ! -s "$c53_t/ssh.log" ]; then pass "C53 local reachable -> OK"; else fail "C53 local up -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
 
 echo "== C53-vm-mode: local unreachable -> INFO (the local VM starts on demand) =="
 out="$(c53_run '{"vm":{"mode":"local"}}' "$c53_t/down")"
@@ -5843,6 +5857,19 @@ if grepq "$out" 'INFO C53-vm-mode' && grepq "$out" -F 'not reachable'; then pass
 echo "== C53-vm-mode: remote unreachable -> WARN naming the host, probe gets the bare host =="
 out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example","port":2201}}}' "$c53_t/down")"
 if grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F 'ops@vm.example:2201' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vm.example 2201'; then pass "C53 remote down -> WARN"; else fail "C53 remote down -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+
+echo "== C53-vm-mode: an ssh config alias -> the probe gets ssh -G's HostName and port (HIMMEL-4599) =="
+printf 'user ops\nhostname vm.internal.example\nport 2201\n' > "$c53_t/ssh-g.out"
+out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/up")"
+if grepq "$out" 'OK   C53-vm-mode' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vm.internal.example 2201' && grepq "$(cat "$c53_t/ssh.log")" -Fx -- '-G -p 2201 ops@vmalias' && [ "$(wc -l < "$c53_t/ssh.log")" -eq 1 ]; then pass "C53 alias -> probes the resolved HostName, ssh only ever -G"; else fail "C53 alias -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log") ssh=$(cat "$c53_t/ssh.log")"; fi
+
+echo "== C53-vm-mode: ProxyJump / ProxyCommand -> INFO, not an unreachable WARN, no TCP probe (HIMMEL-4599) =="
+for proxy in 'proxyjump bastion' 'proxycommand ssh -W %h:%p bastion'; do
+    printf 'user ops\nhostname vm.internal\nport 22\n%s\n' "$proxy" > "$c53_t/ssh-g.out"
+    out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias"}}}' "$c53_t/down")"
+    if grepq "$out" 'INFO C53-vm-mode' && ! grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F "${proxy%% *}" && [ ! -s "$c53_t/probe.log" ]; then pass "C53 ${proxy%% *} -> INFO, no probe"; else fail "C53 ${proxy%% *} -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+done
+rm -f "$c53_t/ssh-g.out"
 
 echo "== C53-vm-mode: none -> INFO, holds need an operator ack, no probe =="
 out="$(c53_run '{"vm":{"mode":"none"}}' "$c53_t/up")"

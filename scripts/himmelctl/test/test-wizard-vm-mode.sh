@@ -68,6 +68,16 @@ remote-port-neg|{"mode":"remote","remote":{"ssh":"u@h","port":-1}}
 remote-ident-dash|{"mode":"remote","remote":{"ssh":"u@h","identity":"-i"}}
 remote-ident-space|{"mode":"remote","remote":{"ssh":"u@h","identity":"/a b/k"}}
 remote-ident-num|{"mode":"remote","remote":{"ssh":"u@h","identity":5}}
+remote-ident-false|{"mode":"remote","remote":{"ssh":"u@h","identity":false}}
+remote-ident-zero|{"mode":"remote","remote":{"ssh":"u@h","identity":0}}
+remote-ident-empty|{"mode":"remote","remote":{"ssh":"u@h","identity":""}}
+remote-ident-array|{"mode":"remote","remote":{"ssh":"u@h","identity":[]}}
+remote-ident-null|{"mode":"remote","remote":{"ssh":"u@h","identity":null}}
+remote-ident-star|{"mode":"remote","remote":{"ssh":"u@h","identity":"~/.ssh/k*"}}
+remote-ident-qmark|{"mode":"remote","remote":{"ssh":"u@h","identity":"/k?"}}
+remote-ident-bracket|{"mode":"remote","remote":{"ssh":"u@h","identity":"/keys/[ab]"}}
+remote-ssh-trailing-fs|{"mode":"remote","remote":{"ssh":"u@h\u001c"}}
+remote-ssh-trailing-nel|{"mode":"remote","remote":{"ssh":"u@h\u0085"}}
 local-ignores-bad-remote|{"mode":"local","remote":{"ssh":"-x"}}'
 n=0
 while IFS='|' read -r name vmjson; do

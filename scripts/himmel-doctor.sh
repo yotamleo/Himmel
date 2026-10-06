@@ -3566,7 +3566,8 @@ check_c52_graphify_ollama() {
 # local test VM, on vm.remote, or (none) by an operator ack plus a rollback
 # point. For local and remote the probe is a read-only TCP connect to the ssh
 # port; it never starts, stops or logs in to a VM. A down local VM is INFO (it
-# is started on demand); a down remote VM is WARN. HIMMEL_DOCTOR_VM_PROBE is a
+# is started on demand); a down remote VM is WARN, and a remote one routed
+# through a ProxyJump/ProxyCommand is INFO (HIMMEL-4599). HIMMEL_DOCTOR_VM_PROBE is a
 # test seam: a command run as `<probe> <host> <port>`; set but not executable =
 # the mode is reported without a probe.
 check_c53_vm_mode() {
@@ -3583,18 +3584,43 @@ check_c53_vm_mode() {
             "docs/setup/vm-mode.md"
         return
     fi
-    local host="${VM_MODE_HOST#*@}" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin
+    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin g k v via=""
+    timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
+    # A remote target may be an ssh config alias (HIMMEL-4599): `ssh -G` prints
+    # the effective config offline, connecting to nothing, so the probe uses
+    # its HostName and port; a ProxyJump/ProxyCommand route is one a raw TCP
+    # connect cannot follow, so it is reported, not probed. -p mirrors the
+    # drivers, which always pass it. Only under timeout: a Match exec in the ssh
+    # config runs a command, which could stall the doctor.
+    if [ "$VM_MODE" = remote ] && [ -n "$timeout_bin" ] && command -v ssh >/dev/null 2>&1 \
+        && g="$("$timeout_bin" 5 ssh -G -p "$VM_MODE_PORT" "$VM_MODE_HOST" 2>/dev/null)"; then
+        while read -r k v; do
+            case "$k" in
+                hostname) [ -n "$v" ] && host="$v" ;;
+                port) case "$v" in '' | *[!0-9]*) ;; *) port="$v" ;; esac ;;
+                proxyjump | proxycommand) [ -n "$v" ] && [ "$v" != none ] && via="$k" ;;
+            esac
+        done <<EOF
+$g
+EOF
+    fi
+    if [ -n "$via" ]; then
+        emit INFO C53-vm-mode "vm.mode=remote ($VM_MODE_HOST:$VM_MODE_PORT) is reached through an ssh $via — reachability not probed (a TCP probe cannot follow it)" \
+            "check it with: ssh -p $VM_MODE_PORT $VM_MODE_HOST true"
+        return
+    fi
+    local resolved=""
+    [ "$host:$port" = "${VM_MODE_HOST#*@}:$VM_MODE_PORT" ] || resolved=" (ssh config: $host:$port)"
     if [ -n "$probe" ]; then
         if [ ! -x "$probe" ]; then
             emit OK C53-vm-mode "vm.mode=$VM_MODE ($VM_MODE_HOST:$VM_MODE_PORT; reachability not probed)"
             return
         fi
-        "$probe" "$host" "$VM_MODE_PORT" >/dev/null 2>&1 || rc=$?
+        "$probe" "$host" "$port" >/dev/null 2>&1 || rc=$?
     else
-        timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
         if [ -n "$timeout_bin" ]; then
             # shellcheck disable=SC2016  # $1 $2 expand in the child shell
-            "$timeout_bin" 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$VM_MODE_PORT" >/dev/null 2>&1 || rc=$?
+            "$timeout_bin" 5 bash -c 'exec 3<>"/dev/tcp/$1/$2"' _ "$host" "$port" >/dev/null 2>&1 || rc=$?
         else
             # an unbounded connect could stall the whole doctor run
             emit INFO C53-vm-mode "vm.mode=$VM_MODE ($VM_MODE_HOST:$VM_MODE_PORT), reachability not probed: no timeout binary" \
@@ -3603,12 +3629,12 @@ check_c53_vm_mode() {
         fi
     fi
     if [ "$rc" -eq 0 ]; then
-        emit OK C53-vm-mode "vm.mode=$VM_MODE, VM ssh port reachable at $VM_MODE_HOST:$VM_MODE_PORT"
+        emit OK C53-vm-mode "vm.mode=$VM_MODE, VM ssh port reachable at $VM_MODE_HOST:$VM_MODE_PORT$resolved"
     elif [ "$VM_MODE" = local ]; then
         emit INFO C53-vm-mode "vm.mode=local, local test VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT (it is started on demand)" \
             "start it with the himmel-ops:vm skill before a VM-proof step"
     else
-        emit WARN C53-vm-mode "vm.mode=remote, remote VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT — VM-proof holds cannot be lifted" \
+        emit WARN C53-vm-mode "vm.mode=remote, remote VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT$resolved — VM-proof holds cannot be lifted" \
             "check vm.remote in ~/.himmel/config.json and that the VM is up (docs/setup/vm-mode.md)"
     fi
 }
