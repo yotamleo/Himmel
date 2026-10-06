@@ -190,9 +190,10 @@ assert "held exits 10" "10" "$rc"
 assert "exactly one processed: key" "1" "$(grep -c '^processed:' "$V/Clippings/q.md")"
 assert "and it is true" "yes" "$(has_line "$V/Clippings/q.md" "processed: true")"
 
-echo "Test 15: the move + link rewrite waits on the vault lock (parallel workers)"
+echo "Test 15: every write waits on the vault lock (parallel workers)"
 V="$TMP/v15"; make_vault "$V"; CLIP="$V/Clippings/2026-05/$ID.md"
-r="$(python3 - "$TOOL" "$V" "$CLIP" "$(sha_of "$CLIP")" <<'PY'
+before="$(sha_of "$CLIP")"
+r="$(python3 - "$TOOL" "$V" "$CLIP" "$before" <<'PY'
 import fcntl, os, subprocess, sys
 tool, vault, clip, sha = sys.argv[1:]
 fd = os.open(os.path.join(vault, "Clippings"), os.O_RDONLY)
@@ -207,6 +208,14 @@ PY
 )"
 assert "a held lock blocks the move" "waited" "$r"
 assert "clip not moved while locked" "no" "$([ -e "$V/Clippings/_evidence/$ID.md" ] && echo yes || echo no)"
+assert "clip not even marked while locked" "$before" "$(sha_of "$CLIP")"
+
+echo "Test 16: a held flag with an inline YAML comment still holds"
+V="$TMP/v16"; mkdir -p "$V/Clippings"
+printf -- '---\ntitle: c\ntype: instagram\nig_media_pending: true # awaiting enrichment\n---\nbody\n' > "$V/Clippings/c.md"
+python3 "$TOOL" "$V" "$V/Clippings/c.md" --expect-sha "$(sha_of "$V/Clippings/c.md")" >/dev/null 2>&1; rc=$?
+assert "held exits 10" "10" "$rc"
+assert "stays in inbox" "yes" "$([ -f "$V/Clippings/c.md" ] && echo yes || echo no)"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

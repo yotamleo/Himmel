@@ -104,7 +104,7 @@ def fm_lines(fm):
 
 
 def fm_true(fm, key):
-    pat = re.compile(r"^" + re.escape(key) + r":\s*true\s*$")
+    pat = re.compile(r"^" + re.escape(key) + r":\s*true(\s+#.*)?\s*$")
     return any(pat.match(l) for l in fm_lines(fm))
 
 
@@ -360,19 +360,12 @@ def phase8(vault, clip, dry_run, tools_dir):
         return 0, f"DRY-RUN would move → _evidence/{basename}, {links} links would be rewritten"
 
     os.makedirs(evidence, exist_ok=True)
-    # Parallel workers own disjoint clips but share the notes that link to
-    # them: serialise the move + read-modify-replace rewrite + verify on an
-    # exclusive lock held on the Clippings/ directory itself.
-    lock = os.open(clippings, os.O_RDONLY)
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        err = move(clip, dest)
-        if err:
-            raise skip8(MOVE_REASONS[err].format(b=basename))
-        rewrite_links(vault, members, new)
-        left = count_links(vault, members)
-    finally:
-        os.close(lock)
+    err = move(clip, dest)
+    if err:
+        raise skip8(MOVE_REASONS[err].format(b=basename))
+
+    rewrite_links(vault, members, new)
+    left = count_links(vault, members)
     if left:
         raise skip8(f"{left} links pending; will resume next run (evidence_pending set)")
 
@@ -437,7 +430,12 @@ def main(argv):
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", a.today):
         return usage("--today must be YYYY-MM-DD")
 
+    # Parallel workers own disjoint clips but share every note that links to
+    # one, other clips included: every read-modify-replace this run makes
+    # holds one exclusive lock on the Clippings/ directory itself.
+    lock = os.open(clippings, os.O_RDONLY)
     try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
         if a.drain:
             if a.expect_sha or a.summary_basis:
                 return usage("--drain resumes Phase 8 only; it takes no --expect-sha or --summary-basis")
@@ -455,6 +453,8 @@ def main(argv):
     except Stop as s:
         print(s.line)
         return s.code
+    finally:
+        os.close(lock)
     print(line)
     return code
 
