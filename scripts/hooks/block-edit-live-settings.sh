@@ -2665,6 +2665,25 @@ _dc_data_bodies() {
         s=${u//" $t "/}
         [ $(( (${#u} - ${#s}) / (${#t} + 2) )) -lt 2 ] || return 1
     done
+    # J1909 B3: a word with a glob (`gx.s?`, `/tmp/d/gx.*`, `./gx.[s]h`) can
+    # name the file again too. Each such word's leaf is matched against each
+    # written leaf, as the literal names are; a leaf with an extglob group
+    # (`gx.@(sh)`, `|` split or not) is not modelled, so it counts (fail
+    # closed).
+    if [ -n "$tg" ]; then
+        case $- in *f*) s=1 ;; *) s=0 ;; esac
+        set -f
+        for w in ${out//[;&|<>]/ }; do
+            case "$w" in *[*?[]*|*[@+!?*]'('*) : ;; *) continue ;; esac
+            w=${w##*/}
+            case "$w" in *[\(\)]*) [ "$s" = 1 ] || set +f; return 1 ;; esac
+            for t in ${tw[@]+"${tw[@]}"}; do
+                # shellcheck disable=SC2053 # $w is the glob, on purpose
+                if [[ ${t##*/} == $w ]]; then [ "$s" = 1 ] || set +f; return 1; fi
+            done
+        done
+        [ "$s" = 1 ] || set +f
+    fi
     _DCNB=$out _DCBD=$bd
 }
 
@@ -3055,7 +3074,10 @@ _settings_leaf_candidates() {
         # HIMMEL-4394: an extglob group with its operator (`@(…)`, `+(…)`,
         # `!(…)`, `?(…)`, `*(…)`) is read as `*`, a superset of what it
         # matches (`!(x)` included); a stray `(` or `)` (a group the
-        # fallback split cut) is `*` too.
+        # fallback split cut) is `*` too. The fold runs from a group's
+        # operator to the LAST `)` on purpose: one `*` for all of it is a
+        # superset however groups nest or hold `|` (J1909 B1; a first-`)`
+        # fold would keep `|c` of `@(a|b@(x)|c)` as literal text).
         while :; do
             case "$pat" in *'('*) : ;; *) break ;; esac
             pre=${pat%%'('*}
@@ -3075,7 +3097,13 @@ _settings_leaf_candidates() {
         # checks already judge (HIMMEL-3938: it false-denied
         # `unzip -l a.zip .claude/*`, test 145). Any other wildcard leaf
         # (`????????.????`) can spell a settings name and is matched below.
-        case "$pat" in *[!*]*) : ;; *) pat='' ;; esac
+        # J1909 B1: a pattern that is all stars only because extglob groups
+        # folded into them (`@(settings)@(.json)`, `@(settings).js@(on)`
+        # under the greedy fold) is no directory glob: it is kept, and so
+        # matches both names (fail closed). Only a group with its operator
+        # counts: a bare `(` or `)` (a fallback-split `) || true`) opens no
+        # group, so it stays the directory glob it was.
+        case "$pat" in *[!*]*) : ;; *) case "$leaf" in *[@+!?*]'('*) : ;; *) pat='' ;; esac ;; esac
         case "$pat" in
             *[*?[]*)
                 for n in settings.json settings.local.json; do
@@ -3110,6 +3138,98 @@ esac
 if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
     cmd_n=$cmd
+    # _cd_bases — HIMMEL-4394: CD_B lists the directories a cd/pushd in the
+    # command can move a later relative word to (the PreToolUse cwd itself
+    # aside), so `cd ~/.claude && echo x > sett*.json` judges its glob leaf
+    # where it lands. Each cd joins its target onto every base so far (kept
+    # as a union: `cd a || cd b` may take either); a bare cd is $HOME. A
+    # popd, `cd -`, a target with a `$`, backtick or glob, or more than 16
+    # bases sets CD_UNK, and a relative variant leaf then fails closed.
+    # J1909 B2: a `..` in a target (a symlinked parent climbs elsewhere)
+    # and a CDPATH set anywhere (in the text or this environment: `cd .claude`
+    # may then land under it) leave the cwd unproven, CD_UNK too. Computed
+    # before the interpreter bodies below, which run AFTER the cd (`cd
+    # ~/.claude && eval '…'`): each body's run inherits CD_B and CD_UNK
+    # (HIMMEL_LSB_CDB, newline-joined, and HIMMEL_LSB_CDUNK), so its own
+    # relative leaves are judged under the same bases.
+    # ponytail: a `-C <dir>`/`--chdir` (git, make, env) does not move the
+    # shell's own redirect, so it is not a base; changes_directory still voids
+    # the worktree exemption for it. A CDPATH name spelled through an
+    # expansion (`declare CD${x}PATH=`) is not seen. Upgrade path: HIMMEL-3694.
+    CD_B=() CD_UNK=${HIMMEL_LSB_CDUNK:-0} CD_DONE=0
+    if [ -n "${HIMMEL_LSB_CDB:-}" ]; then
+        while IFS= read -r w; do
+            [ -z "$w" ] || CD_B[${#CD_B[@]}]=$w
+        done <<< "$HIMMEL_LSB_CDB"
+    fi
+    _cd_add() { # _cd_add TARGET — every base TARGET can move to
+        local t b
+        local -a nb
+        case "/$1/" in */../*) CD_UNK=1; return 0 ;; esac
+        _exp_home "$1"
+        t=$_EH
+        case "$t" in
+            /*|[A-Za-z]:/*|[A-Za-z]:\\*) nb=("$t") ;;
+            *)
+                nb=("$cwd/$t")
+                for b in ${CD_B[@]+"${CD_B[@]}"}; do nb[${#nb[@]}]="$b/$t"; done
+                ;;
+        esac
+        for b in "${nb[@]}"; do CD_B[${#CD_B[@]}]=$b; done
+        [ "${#CD_B[@]}" -le 16 ] || CD_UNK=1
+    }
+    _cd_bases() {
+        local i=0 j n s=0 t w
+        local -a ws=() sg=() ux=() ro=()
+        CD_DONE=1
+        [ -z "${CDPATH:-}" ] || CD_UNK=1
+        case "${cmd//[\"\'\\]/}" in *CDPATH*) CD_UNK=1 ;; esac
+        if [ "$TOK" = 1 ]; then
+            while [ "$i" -lt "$ST_N" ]; do
+                ws[i]=${ST_W[i]} sg[i]=${ST_S[i]} ro[i]=${ST_RO[i]} ux[i]=0
+                [ "${ST_X[i]}" = 0 ] && [ "${ST_G[i]}" = 0 ] || ux[i]=1
+                i=$((i + 1))
+            done
+        else
+            # the fallback has no segments: `;&|` end one; noglob, as in
+            # the operand scan below
+            case $- in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
+            set -f
+            for w in ${cmd_n//[;&|]/ ; }; do
+                if [ "$w" = ';' ]; then s=$((s + 1)); continue; fi
+                i=${#ws[@]}
+                ws[i]=$w sg[i]=$s ro[i]='' ux[i]=0
+                case "$w" in *[\$\`*?[\{]*) ux[i]=1 ;; esac
+            done
+            if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
+        fi
+        n=${#ws[@]} i=0
+        while [ "$i" -lt "$n" ]; do
+            case "${ws[i]}" in
+                popd) CD_UNK=1 ;;
+                cd|pushd)
+                    t='~' j=$((i + 1))
+                    # a target the tokenizer cut off (`cd $(…)`) is unknown
+                    if [ "$TOK" = 1 ]; then
+                        # shellcheck disable=SC2016 # literal separator text
+                        case "${ST_SEP[sg[i]]-}" in '$('|'`'|'<('|'>(') t='' CD_UNK=1 ;; esac
+                    fi
+                    while [ -n "$t" ] && [ "$j" -lt "$n" ] && [ "${sg[j]}" = "${sg[i]}" ]; do
+                        if [ -n "${ro[j]}" ]; then j=$((j + 1)); continue; fi
+                        case "${ws[j]}" in
+                            -) t='' CD_UNK=1 ;;
+                            -*) j=$((j + 1)); continue ;;
+                            *) if [ "${ux[j]}" = 1 ]; then t='' CD_UNK=1; else t=${ws[j]}; fi ;;
+                        esac
+                        break
+                    done
+                    [ -z "$t" ] || _cd_add "$t"
+                    ;;
+            esac
+            [ "$CD_UNK" = 0 ] || return 0
+            i=$((i + 1))
+        done
+    }
     # ST_LW holds the lowercased words: the lowercased text tokenizes to the
     # same words and segments (case never changes how bash splits), so a
     # second pass over it costs no fork, where a `tr` per word did (J1242).
@@ -3181,6 +3301,10 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # ponytail: a SIGKILLed top-level run leaves its tally file behind
         # (a few bytes in TMPDIR); upgrade path: sweep lsb-tally.* if seen.
         if [ "$TOK" = 1 ]; then
+            # J1909 B2: a body after a cd runs where the cd moved it
+            case "$ST_LOWER" in *cd*|*pushd*|*popd*) _cd_bases ;; esac
+            cdb=''
+            for w in ${CD_B[@]+"${CD_B[@]}"}; do cdb=$cdb$w$'\n'; done
             idepth=${HIMMEL_LSB_DEPTH:-0}
             case "$idepth" in '' | *[!0-9]*) idepth=0 ;; esac
             itally=''
@@ -3213,7 +3337,8 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                     fi
                 elif ! jq -n --arg cmd "$1" --arg cwd "$cwd" \
                     '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
-                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) HIMMEL_LSB_TALLY=$itally bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
+                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) HIMMEL_LSB_TALLY=$itally HIMMEL_LSB_CDB=$cdb HIMMEL_LSB_CDUNK=$CD_UNK \
+                        bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
                     echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c, eval, env -S or herestring in: $cmd" >&2
                     exit 2
                 fi
@@ -3706,8 +3831,15 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # insensitive `DLINK/` spelling (needs a case-insensitive filesystem to
     # model) are not judged; upgrade path: a path-expanding parse (HIMMEL-3934).
     variant_dest=0
+    # _cv_op P — _check_one_operand P, and P with its `..` resolved
+    # lexically too (J1909 B2): `~/.config/../.claude/sett*.json` names the
+    # live file even where the climbed-out parent does not exist yet
+    _cv_op() {
+        _check_one_operand "$1"
+        case "/$1/" in */../*) _check_one_operand "$(lex_resolve "$cwd" "$1")" ;; esac
+    }
     _check_variant() {
-        local w="$1" glob="$2" dir leaf n sd
+        local w="$1" glob="$2" rd="${3:-0}" dir leaf n sd
         case "$w" in
             */*) dir=${w%/*}; leaf=${w##*/}; [ -n "$dir" ] || dir=/ ;;
             *) dir=.; leaf=$w ;;
@@ -3720,95 +3852,24 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         for n in $_SLC; do
             sd=$symlink_dest
             symlink_dest=0
-            _check_one_operand "${dir%/}/$n"
+            _cv_op "${dir%/}/$n"
             # a relative leaf also lands under every directory a cd/pushd in
             # the command can move to (_cd_bases); one it cannot read fails
-            # closed
+            # closed. A plain read's operand (RD=1, J1909: `cd "$d" && ls
+            # *.json`) writes nothing wherever it lands, so it is skipped.
             case "$dir" in
                 /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;;
                 *)
-                    [ "$CD_UNK" = 0 ] || symlink_dest=1
-                    for b in ${CD_B[@]+"${CD_B[@]}"}; do
-                        _check_one_operand "$b/${dir%/}/$n"
-                    done
+                    if [ "$rd" = 0 ]; then
+                        [ "$CD_UNK" = 0 ] || symlink_dest=1
+                        for b in ${CD_B[@]+"${CD_B[@]}"}; do
+                            _cv_op "$b/${dir%/}/$n"
+                        done
+                    fi
                     ;;
             esac
             [ "$symlink_dest" = 0 ] || variant_dest=1
             symlink_dest=$sd
-        done
-    }
-    # _cd_bases — HIMMEL-4394: CD_B lists the directories a cd/pushd in the
-    # command can move a later relative word to (the PreToolUse cwd itself
-    # aside), so `cd ~/.claude && echo x > sett*.json` judges its glob leaf
-    # where it lands. Each cd joins its target onto every base so far (kept
-    # as a union: `cd a || cd b` may take either); a bare cd is $HOME. A
-    # popd, `cd -`, a target with a `$`, backtick or glob, or more than 16
-    # bases sets CD_UNK, and a relative variant leaf then fails closed.
-    # ponytail: a `-C <dir>`/`--chdir` (git, make, env) does not move the
-    # shell's own redirect, so it is not a base; changes_directory still voids
-    # the worktree exemption for it. Upgrade path: HIMMEL-3694.
-    CD_B=() CD_UNK=0
-    _cd_add() { # _cd_add TARGET — every base TARGET can move to
-        local t b
-        local -a nb
-        _exp_home "$1"
-        t=$_EH
-        case "$t" in
-            /*|[A-Za-z]:/*|[A-Za-z]:\\*) nb=("$t") ;;
-            *)
-                nb=("$cwd/$t")
-                for b in ${CD_B[@]+"${CD_B[@]}"}; do nb[${#nb[@]}]="$b/$t"; done
-                ;;
-        esac
-        for b in "${nb[@]}"; do CD_B[${#CD_B[@]}]=$b; done
-        [ "${#CD_B[@]}" -le 16 ] || CD_UNK=1
-    }
-    _cd_bases() {
-        local i=0 j n s=0 t w
-        local -a ws=() sg=() ux=() ro=()
-        if [ "$TOK" = 1 ]; then
-            while [ "$i" -lt "$ST_N" ]; do
-                ws[i]=${ST_W[i]} sg[i]=${ST_S[i]} ro[i]=${ST_RO[i]} ux[i]=0
-                [ "${ST_X[i]}" = 0 ] && [ "${ST_G[i]}" = 0 ] || ux[i]=1
-                i=$((i + 1))
-            done
-        else
-            # the fallback has no segments: `;&|` end one, noglob as above
-            case $- in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
-            set -f
-            for w in ${cmd_n//[;&|]/ ; }; do
-                if [ "$w" = ';' ]; then s=$((s + 1)); continue; fi
-                i=${#ws[@]}
-                ws[i]=$w sg[i]=$s ro[i]='' ux[i]=0
-                case "$w" in *[\$\`*?[\{]*) ux[i]=1 ;; esac
-            done
-            if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
-        fi
-        n=${#ws[@]} i=0
-        while [ "$i" -lt "$n" ]; do
-            case "${ws[i]}" in
-                popd) CD_UNK=1 ;;
-                cd|pushd)
-                    t='~' j=$((i + 1))
-                    # a target the tokenizer cut off (`cd $(…)`) is unknown
-                    if [ "$TOK" = 1 ]; then
-                        # shellcheck disable=SC2016 # literal separator text
-                        case "${ST_SEP[sg[i]]-}" in '$('|'`'|'<('|'>(') t='' CD_UNK=1 ;; esac
-                    fi
-                    while [ -n "$t" ] && [ "$j" -lt "$n" ] && [ "${sg[j]}" = "${sg[i]}" ]; do
-                        if [ -n "${ro[j]}" ]; then j=$((j + 1)); continue; fi
-                        case "${ws[j]}" in
-                            -) t='' CD_UNK=1 ;;
-                            -*) j=$((j + 1)); continue ;;
-                            *) if [ "${ux[j]}" = 1 ]; then t='' CD_UNK=1; else t=${ws[j]}; fi ;;
-                        esac
-                        break
-                    done
-                    [ -z "$t" ] || _cd_add "$t"
-                    ;;
-            esac
-            [ "$CD_UNK" = 0 ] || return 0
-            i=$((i + 1))
         done
     }
     # _tree_copy_seg V — judges the cp/rsync at OPW[V], reading only its own
@@ -3890,10 +3951,31 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         for w in $cmd_n; do OPW[${#OPW[@]}]=$w; OPG[${#OPG[@]}]=1; done
         if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
     fi
-    case "$cmd_lc" in *cd*|*pushd*|*popd*) _cd_bases ;; esac
+    [ "$CD_DONE" = 1 ] || case "$cmd_lc" in *cd*|*pushd*|*popd*) _cd_bases ;; esac
+    # SEGRD[s] — J1909: 1 when segment s's command word is a literal plain
+    # read (ls, cat, head, tail, grep, wc, diff, cut: none takes an option
+    # that writes or runs). Its non-redirect operands are reads, so a cd
+    # before them never makes them a write (_check_variant RD). TOK=1 only:
+    # the fallback has no segments and fails closed as before.
+    SEGRD=()
+    if [ "$TOK" = 1 ]; then
+        widx=0
+        while [ "$widx" -lt "$ST_N" ]; do
+            w=${ST_S[widx]}
+            if [ -z "${SEGRD[w]-}" ] && [ -z "${ST_RO[widx]}" ] && [ "${ST_A[widx]}" = 0 ]; then
+                SEGRD[w]=0
+                if [ "${ST_X[widx]}" = 0 ] && [ "${ST_G[widx]}" = 0 ]; then
+                    case "${ST_LW[widx]}" in ls|cat|head|tail|grep|wc|diff|cut) SEGRD[w]=1 ;; esac
+                fi
+            fi
+            widx=$((widx + 1))
+        done
+    fi
     widx=0
     while [ "$widx" -lt "${#OPW[@]}" ]; do
-        _check_variant "${OPW[widx]}" "${OPG[widx]}"
+        rd=0
+        if [ "$TOK" = 1 ] && [ -z "${ST_RO[widx]}" ] && [ "${SEGRD[ST_S[widx]]-0}" = 1 ]; then rd=1; fi
+        _check_variant "${OPW[widx]}" "${OPG[widx]}" "$rd"
         # HIMMEL-4394: the fallback split leaves operators glued to a word
         # (`…/sett?ngs.json;;` in a `case` arm, `x>~/…`), so each piece
         # between them is judged too; `|` only outside an extglob group

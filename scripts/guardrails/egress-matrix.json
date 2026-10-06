@@ -24,6 +24,7 @@
   },
   "providers": {
     "local-ollama": { "region": "local", "note": "zero egress; includes qmd local GGUF embeddings" },
+    "ollama-cloud": { "region": "US (ollama.com)", "note": "HIMMEL-4185: Ollama's hosted models. graphify-fence.sh classifies `--backend ollama` as ollama-cloud when the model ends in -cloud or :cloud (the local daemon forwards those to ollama.com), or when OLLAMA_BASE_URL/OLLAMA_HOST points at ollama.com. A loopback endpoint with any other model stays local-ollama; any other endpoint is refused before this matrix" },
     "local-speech": { "region": "local", "note": "on-machine speech only — STT via whisper.cpp (push-to-talk) and faster-whisper/CTranslate2 (the always-listening jarvis loop), TTS via chatterbox, all under ~/.himmel. Zero egress; named as a real provider so the voice-audio allow cell is an explicit decision rather than a wildcard gap" },
     "anthropic": { "region": "US", "note": "the operating harness itself (Claude sessions natively read the vaults); recording status quo, not a widening" },
     "openai-codex": { "region": "US", "note": "codex via hermes, paid usage bank" },
@@ -55,6 +56,12 @@
       "why": "HIMMEL-4328: salus/PHI content never reaches the hosted agent-native MCP. Already implied by the salus wildcard below; the explicit row names the provider so the cell that block-agent-native-egress.sh enforces (salus cwd, git toplevel or origin, a .salus marker, a phi-roots/egress-denylist root, or a salus path in the tool payload) is legible here. No override exists"
     },
     {
+      "corpus": "salus", "provider": "ollama-cloud", "purpose": "extraction",
+      "verdict": "conditional",
+      "condition": "persistent user opt-in: graphify.salus_ollama_cloud_ok is the JSON literal true in $HOME/.himmel/config.json (absent, unreadable or malformed = deny). Read by graphify-fence.sh; no env override",
+      "why": "HIMMEL-4185 operator ruling 2026-10-05: salus x ollama-cloud is DENY unless the user has persistently opted in. Not hard (the opt-in is the operator's decision). Placed BEFORE the salus wildcard hard deny so the opt-in can reach it; every other purpose stays on that hard deny"
+    },
+    {
       "corpus": "salus", "provider": "*", "purpose": "*",
       "verdict": "deny", "hard": true,
       "why": "PHI never leaves the machine. No override exists; no operator decision can be recorded here that flips this row"
@@ -83,6 +90,11 @@
       "corpus": "*", "provider": "google-gemini", "purpose": "*",
       "verdict": "deny", "hard": true,
       "why": "gemini de-listed; GEMINI/GOOGLE keys stay unset (621/622 P.7)"
+    },
+    {
+      "corpus": "*", "provider": "ollama-cloud", "purpose": "extraction",
+      "verdict": "allow",
+      "why": "HIMMEL-4185 operator ruling 2026-10-05: ollama-cloud graphify extraction is allowed for every corpus except salus (its conditional row above) and voice-audio (its hard wildcard above). Scoped to extraction, the only purpose graphify-fence.sh evaluates"
     },
     {
       "corpus": "himmel-code", "provider": "openrouter", "purpose": "inference",

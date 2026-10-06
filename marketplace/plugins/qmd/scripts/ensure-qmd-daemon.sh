@@ -61,6 +61,19 @@ case "$QMD_RECYCLE_COOLDOWN_MIN" in ''|*[!0-9]*) QMD_RECYCLE_COOLDOWN_MIN=30 ;; 
 case "$QMD_RSS_CEILING_MB" in ''|*[!0-9]*) QMD_RSS_CEILING_MB=0 ;; esac
 QMD_RSS_CEILING_MB=$((10#$QMD_RSS_CEILING_MB))
 QMD_RECYCLE_COOLDOWN_MIN=$((10#$QMD_RECYCLE_COOLDOWN_MIN))
+
+# ---- Operator opt-out (HIMMEL-4494) ------------------------------------------
+# The flag file (cross-session, no relaunched shells) or QMD_DAEMON_DISABLED=1
+# (one shell) keeps the shared daemon OFF on purpose, e.g. while gaming (its
+# embed/expand/rerank models contend for the GPU). Checked before ANY probe or
+# launch: exit 0, one INFO line, nothing started. qmd-daemon-switch.sh off|on
+# is the operator's one-liner.
+QMD_DAEMON_OFF_FLAG="${QMD_DAEMON_OFF_FLAG:-$HOME/.himmel/state/qmd-daemon.off}"
+if [ "${QMD_DAEMON_DISABLED:-}" = "1" ] || [ -e "$QMD_DAEMON_OFF_FLAG" ]; then
+  echo "ensure-qmd-daemon: INFO - qmd is OFF by operator choice; not launching. Turn it back on: bash \"$(dirname -- "${BASH_SOURCE[0]}")/qmd-daemon-switch.sh\" on (or remove $QMD_DAEMON_OFF_FLAG / unset QMD_DAEMON_DISABLED)"
+  exit 0
+fi
+
 PROBE_TIMEOUT=2
 WAIT_TRIES=5
 PORT_WAIT_TRIES=15

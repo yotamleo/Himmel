@@ -542,6 +542,57 @@ run "1813: env grep of a pr-check pattern with a backslash (no -S) -> no-op" 0 \
 run "1813: the program's own -S-like flag is not env's (git log --stat) -> no-op" 0 \
     "$(payload "env GIT_PAGER=cat git log --stat --grep='pr-check\\|x'" "$WT")" "$HR"
 
+# ---- HIMMEL-4491: env -S inside a nested shell body -----------------------
+# A `bash|sh -c <body>` or `eval <words>` body is ONE quoted word to the outer
+# tokenizer, so its `env` was never a word env_split_option saw, and the 1813
+# deny never fired. Clean root: every deny below is the 1813 message.
+while IFS= read -r v; do
+    run "4491: [$v] clean root -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+    need_in_err "4491: [$v] deny names the unresolvable split string" "cannot be fully resolved"
+done <<'NESTEDSPLIT'
+bash -c "env -S 'bash scripts/handover/merge-on-green.sh\c'"
+sh -c "env -S 'bash scripts/handover/merge-on-green.sh\c'"
+eval "env -S 'bash scripts/handover/merge-on-green.sh\c'"
+eval env -S 'bash scripts/handover/merge-on-green.sh\c'
+bash -c "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
+sh -c "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
+eval "env -S 'bash scripts/cr/clear-cr-marker.sh\c'"
+eval env -S 'bash scripts/cr/clear-cr-marker.sh\c'
+bash -c "env -S 'bash scripts/handover/console-kit/go.sh\c'"
+sh -c "env -S 'bash scripts/handover/console-kit/go.sh\c'"
+eval "env -S 'bash scripts/handover/console-kit/go.sh\c'"
+eval env -S 'bash scripts/handover/console-kit/go.sh\c'
+bash -c "env -S 'bash scripts/cr/pr-check-context.sh\c'"
+sh -c "env -S 'bash scripts/cr/pr-check-context.sh\c'"
+eval "env -S 'bash scripts/cr/pr-check-context.sh\c'"
+eval env -S 'bash scripts/cr/pr-check-context.sh\c'
+bash -c "env --split-string='bash scripts/handover/merge-on-green.sh\c'"
+bash -c "env --split-string 'bash scripts/handover/merge-on-green.sh\c'"
+bash -c 'env -S "bash scripts/handover/merge-on-green.sh\c"'
+bash -lc "env -S 'bash scripts/handover/merge-on-green.sh\c'"
+bash -e -c "env -vS 'bash scripts/handover/merge-on-green.sh\c'"
+/bin/sh -c "\env -S 'bash scripts/handover/merge-on-green.sh\c'"
+bash -c "'env' -S 'bash scripts/handover/merge-on-green.sh\c'"
+bash -c "true; /usr/bin/env -S 'bash scripts/handover/merge-on-green.sh\c'"
+zsh -c "env -S 'bash scripts/handover/merge-on-green.sh\c'"
+eval "true; env -S 'bash scripts/handover/merge-on-green.sh\c'"
+sh -c "bash -c \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""
+eval "bash -c \"env -S 'bash scripts/handover/merge-on-green.sh\\c'\""
+NESTEDSPLIT
+# Controls: a nested env -S naming no target, a nested body with no env -S,
+# and env -S text in an argument no shell re-reads keep their verdicts.
+while IFS= read -r v; do
+    run "4491 control: [$v] clean root -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done <<'NESTEDOK'
+bash -c "env -S 'bash scripts/other/x.sh\c'"
+eval "env -S 'echo hi\c'"
+sh -c 'env -S "echo ${HOME}/x"'
+bash -c 'bash scripts/cr/pr-check-context.sh'
+eval 'bash scripts/cr/pr-check-context.sh'
+git commit -m "note: env -S 'bash scripts/handover/merge-on-green.sh\c'"
+bash scripts/other/x.sh "env -S 'bash scripts/handover/merge-on-green.sh\c'"
+NESTEDOK
+
 # ---- HIMMEL-3913: raw-text backstop - a reader writes text to a file, a later ----
 # ---- executor runs it. The tokenizer reads the quoted here-string as inert, so
 # ---- only the raw scan can see it. Clean root: every deny below is the backstop's.

@@ -2876,6 +2876,12 @@ check_c40_qmd_vec() {
     local url="${HIMMEL_DOCTOR_QMD_URL:-http://localhost:8181/mcp}"
     local curl_bin="${HIMMEL_DOCTOR_QMD_CURL:-curl}"
     local vec_timeout=30 init_timeout=10
+    # HIMMEL-4494: the operator switched the daemon off on purpose (flag file or
+    # QMD_DAEMON_DISABLED=1, same seam as ensure-qmd-daemon.sh): INFO, never WARN.
+    if [ "${QMD_DAEMON_DISABLED:-}" = "1" ] || [ -e "${QMD_DAEMON_OFF_FLAG:-$HOME/.himmel/state/qmd-daemon.off}" ]; then
+        emit INFO C40-qmd-vec "qmd off by operator (qmd-daemon-off flag) -- vector-health check skipped; turn on: bash marketplace/plugins/qmd/scripts/qmd-daemon-switch.sh on"
+        return
+    fi
     # HIMMEL-4383: the initialize budget is a measured loaded figure, not a guess.
     # Live 2026-10-05: idle 0.33-0.39s; under 8 concurrent vec queries the peak was
     # 2.87s, so the old 3s flapped a healthy daemon. 10s is ~2x that peak. A genuine

@@ -322,6 +322,11 @@ jobs:
       # glob matches nothing: a renamed or deleted suite would go green with
       # nothing executed. `ls` on an unexpanded pattern fails, so the step does.
       - run: ls scripts/trust/tests/*.test.mjs && node --test "scripts/trust/tests/*.test.mjs"
+      # HIMMEL-3827: zero-dependency node:test suites no runner executed. `ls`
+      # first for the same vacuous-glob reason as the trust step above.
+      - run: ls scripts/where-are-we/tests/*.test.mjs && node --test "scripts/where-are-we/tests/*.test.mjs"
+      - run: ls scripts/lessons/tests/*.test.mjs && node --test "scripts/lessons/tests/*.test.mjs"
+      - run: ls scripts/op-env-parity.test.mjs scripts/observability/focus-tick-correlate.test.mjs scripts/observability/wire-session-telemetry-hooks.test.mjs && node --test scripts/op-env-parity.test.mjs scripts/observability/focus-tick-correlate.test.mjs scripts/observability/wire-session-telemetry-hooks.test.mjs
       # HIMMEL-3028: the scripts/hooks + scripts/lib node:test suites
       # (HIMMEL-1578) ran ONLY in the local pre-commit hook until now — that
       # hook deliberately skipped ci.yml because Actions was off on the
@@ -469,6 +474,12 @@ jobs:
       - name: telegram-himmel plugin tests (ubuntu only)
         if: matrix.os == 'ubuntu-latest'
         run: cd marketplace/plugins/telegram-himmel && bun install --frozen-lockfile && bun test
+      # HIMMEL-3827: fleet-control (9 files) and observability (bun files) had
+      # no CI step. Repo-root cwd like the suites above; ubuntu only (POSIX
+      # fixtures, spawned servers) so the non-gating Windows leg stays quiet.
+      - name: fleet-control + observability tests (ubuntu only)
+        if: matrix.os == 'ubuntu-latest'
+        run: ls -d scripts/fleet-control scripts/observability && bun test scripts/fleet-control scripts/observability --path-ignore-patterns='scripts/observability/*.test.mjs' --dots
       # A red Windows nightly must not fail silently now that it is non-gating
       # (HIMMEL-3125): upsert one consolidated issue rather than opening a new
       # one per run (same convention as scripts/ci/fork-drift-issue.sh). Two

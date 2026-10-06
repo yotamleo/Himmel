@@ -188,6 +188,8 @@ yaml_exclude() {
 
 # toml_regex <file> <regex> <out> — rc as yaml_exclude.
 toml_regex() {
+    # An empty regex would write '''''' , which allowlists every secret.
+    [ -n "$2" ] || return 4
     if grep -qF "'''$2'''" "$1"; then return 3; fi
     # Only the global [allowlist] table's regexes; a rule-scoped array is not it.
     awk -v re="$2" -v q="'''" '

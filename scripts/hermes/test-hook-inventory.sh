@@ -144,9 +144,12 @@ inv_rc=$?
 # statically from the installed hermes source (never imported — importing it
 # would initialise tools that hold live credentials); when no install is present
 # the fixture controls below still run, and the installed scan is reported SKIP.
-REGISTRY_SRC="${HERMES_AGENT_SRC:-${HERMES_HOME:-$HOME/.hermes}/hermes-agent}"
+# The live-install read is OPT-IN (HIMMEL-4209): a station's own ~/.hermes can run
+# ahead of the guard's classification (it did, with manage_catalog), so a local run
+# never reads it unless HERMES_AGENT_SRC names it; CI and fixtures stay hermetic.
+REGISTRY_SRC="${HERMES_AGENT_SRC:-}"
 
-mkdir -p "$tmpdir/fixture-good/tools" "$tmpdir/fixture-new/tools"
+mkdir -p "$tmpdir/fixture-good/tools" "$tmpdir/fixture-new/tools" "$tmpdir/fixture-catalog/tools"
 cat > "$tmpdir/fixture-good/tools/a.py" <<'EOF'
 registry.register(
     name="terminal",
@@ -163,6 +166,14 @@ registry.register(
     toolset="new",
 )
 registry.register(toolset="new", name='zz_single_quoted_late_name')
+EOF
+# manage_catalog (HIMMEL-4209): a tool the live hermes ships that the guard once
+# left unclassified.
+cat > "$tmpdir/fixture-catalog/tools/cat.py" <<'EOF'
+registry.register(
+    name="manage_catalog",
+    toolset="connectors",
+)
 EOF
 # A subpackage tool the scan must reach, and a computed name it cannot resolve.
 mkdir -p "$tmpdir/fixture-computed/tools/sub"
@@ -187,7 +198,8 @@ EOF
 
 HERMES_HOME="$tmpdir/hermes-home" "$PY" - "$tmpdir/full.yaml" "$GUARD" \
     "$REGISTRY_SRC" "$tmpdir/fixture-good" "$tmpdir/fixture-new" \
-    "$tmpdir/fixture-computed" "$tmpdir/fixture-broken" <<'PY'
+    "$tmpdir/fixture-computed" "$tmpdir/fixture-broken" \
+    "$tmpdir/fixture-catalog" <<'PY'
 import ast
 import glob
 import importlib.util
@@ -196,7 +208,7 @@ import re
 import sys
 
 cfg, guard_path, installed, fixture_good, fixture_new, fixture_computed, \
-    fixture_broken = sys.argv[1:8]
+    fixture_broken, fixture_catalog = sys.argv[1:9]
 
 # The matcher exactly as hermes would read it out of the wired config.
 matcher = None
@@ -333,6 +345,9 @@ check("control: unclassified new registry tools are flagged (any quote style / a
 good = problems(registry_names(fixture_good), matcher or "", guard.classify_tool)
 check("fixture registry (terminal, execute_code) fully covered", good, [])
 
+catalog = problems(registry_names(fixture_catalog), matcher or "", guard.classify_tool)
+check("fixture registry (manage_catalog) fully covered", catalog, [])
+
 # Discovery reaches subpackages and NAMES what it cannot read.
 unres = []
 comp = registry_names(fixture_computed, unres)
@@ -355,7 +370,10 @@ registry_names(fixture_good, None, clean)
 check("control: a parseable tool file is not reported as PARTIAL", clean, [])
 
 # The installed registry: report every gap, not just the first.
-if os.path.isdir(os.path.join(installed, "tools")):
+if not installed:
+    print("  skip: live hermes install not read (opt-in: set HERMES_AGENT_SRC); "
+          "fixture controls above still enforce")
+elif os.path.isdir(os.path.join(installed, "tools")):
     installed_unres = []
     installed_unparsed = []
     names = registry_names(installed, installed_unres, installed_unparsed)

@@ -1202,6 +1202,77 @@ assert_eq "a lock this run did not create survives its exit" "another-instance" 
 rm -rf "$LOCK_L"
 
 # =============================================================================
+# Test 9 (HIMMEL-4185): the semantic step is OFF by default and runs only with
+# --semantic, after the structural refresh, on the dedicated worktree with the
+# local ollama backend. A failure alerts through cadence-alert.sh (HIMMEL-4181)
+# and fails the run; a success clears the leg's alert. Under --semantic the
+# worktree's graphify-out survives the per-run clean, so the semantic manifest
+# (the change gate) persists between fires.
+# =============================================================================
+echo "TEST: semantic step absent by default, present with --semantic, alerts on failure"
+FAKE_SEM="$TMP_ROOT/semantic-update-fake.sh"
+cat > "$FAKE_SEM" <<'FAKESEM'
+#!/usr/bin/env bash
+root=""; prev=""
+for a in "$@"; do [ "$prev" = "--corpus-root" ] && root="$a"; prev="$a"; done
+manifest=absent; [ -f "$root/graphify-out/semantic-manifest.json" ] && manifest=present
+echo "args: $* manifest=$manifest" >> "$FAKE_SEM_LOG"
+mkdir -p "$root/graphify-out" && echo '{}' > "$root/graphify-out/semantic-manifest.json"
+exit "${FAKE_SEM_RC:-0}"
+FAKESEM
+chmod +x "$FAKE_SEM"
+FAKE_SEM_LOG="$TMP_ROOT/semantic.log"
+FAKE_SEND="$TMP_ROOT/alert-send-fake.sh"
+cat > "$FAKE_SEND" <<'FAKESEND'
+#!/usr/bin/env bash
+echo "sent: $*" >> "$FAKE_SEND_LOG"
+FAKESEND
+chmod +x "$FAKE_SEND"
+FAKE_SEND_LOG="$TMP_ROOT/alert-send.log"
+run_sem() { # <tag> [run_gc args...] -- one fixture per tag, seams pinned
+    local tag="$1"; shift
+    FAKE_SEM_LOG="$FAKE_SEM_LOG" FAKE_SEND_LOG="$FAKE_SEND_LOG" \
+    GRAPH_CADENCE_SEMANTIC_UPDATE="$FAKE_SEM" \
+    CADENCE_ALERT_FILE="$TMP_ROOT/t9-$tag-alerts.log" CADENCE_ALERT_DEDUPE_DIR="$TMP_ROOT/t9-$tag-dedupe" \
+    CADENCE_ALERT_SEND_CMD="$FAKE_SEND" \
+    HOME="$TMP_ROOT/t9-$tag-home" GRAPH_CADENCE_HIMMEL_ROOT="$TMP_ROOT/t9-$tag-primary" \
+    GRAPH_CADENCE_LEDGER_ROOT="$TMP_ROOT/t9-$tag-ledger" FAKE_MERGE_RC=0 \
+        run_gc --threshold 10 "$@" 2>&1
+}
+for tag in off on bad; do
+    mkdir -p "$TMP_ROOT/t9-$tag-home" "$TMP_ROOT/t9-$tag-ledger"
+    seed_repo "$TMP_ROOT/t9-$tag-primary" "$TMP_ROOT/t9-$tag-origin.git" 20
+done
+# (a) default: no semantic call at all.
+: > "$FAKE_SEM_LOG"; rc=0
+out=$(run_sem off) || rc=$?
+assert_eq "semantic default-off rc=0" "0" "$rc"
+assert_eq "semantic step absent by default (no semantic-update call)" "" "$(cat "$FAKE_SEM_LOG")"
+# (b) --semantic: called once with the local backend on the dedicated worktree.
+: > "$FAKE_SEM_LOG"; SLUG9=$(corpus_slug_of "$TMP_ROOT/t9-on-primary")
+mkdir -p "$TMP_ROOT/t9-on-dedupe"; : > "$TMP_ROOT/t9-on-dedupe/graph-semantic-$SLUG9.stale"
+rc=0; out=$(run_sem on --semantic) || rc=$?
+assert_eq "semantic opt-in rc=0" "0" "$rc"
+sem_log=$(cat "$FAKE_SEM_LOG")
+assert_contains "semantic step runs with --semantic" "--backend ollama" "$sem_log"
+assert_contains "semantic step targets the dedicated worktree as himmel-code" "--corpus-root $TMP_ROOT/t9-on-home/.claude/graph-cadence/$SLUG9 --corpus-class himmel-code" "$sem_log"
+if [ -e "$TMP_ROOT/t9-on-dedupe/graph-semantic-$SLUG9.stale" ]; then
+    fail "a successful semantic step clears its cadence alert"
+else
+    pass "a successful semantic step clears its cadence alert"
+fi
+# (c) second --semantic fire on the same worktree: the manifest survived the clean.
+: > "$FAKE_SEM_LOG"; rc=0; out=$(run_sem on --semantic) || rc=$?
+assert_contains "semantic manifest survives the per-run clean under --semantic" "manifest=present" "$(cat "$FAKE_SEM_LOG")"
+# (d) a failing semantic step: alert + failed run.
+: > "$FAKE_SEM_LOG"; : > "$FAKE_SEND_LOG"; rc=0
+out=$(FAKE_SEM_RC=2 run_sem bad --semantic) || rc=$?
+assert_eq "failing semantic step rc=3" "3" "$rc"
+assert_contains "failing semantic step ledgers action=failed" '"action":"failed"' "$(tail -n1 "$TMP_ROOT/t9-bad-ledger/.graph-cadence/ledger.jsonl" 2>/dev/null)"
+assert_contains "failing semantic step appends a cadence alert" "graph-semantic-$(corpus_slug_of "$TMP_ROOT/t9-bad-primary")" "$(cat "$TMP_ROOT/t9-bad-alerts.log" 2>/dev/null)"
+assert_contains "failing semantic step sends the alert" "sent: cadence leg failed: graph-semantic-" "$(cat "$FAKE_SEND_LOG")"
+
+# =============================================================================
 # Test 8: usage errors
 # =============================================================================
 echo "TEST: usage errors exit 1"

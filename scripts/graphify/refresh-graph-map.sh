@@ -309,8 +309,12 @@ if [ "$DO_EXTRACT" -eq 1 ]; then
   # the root, or membership in ~/.config/claude-glm/phi-roots /
   # egress-denylist. A salus-derived root fails closed here REGARDLESS of the
   # asserted class or backend (the matrix salus row wildcard-denies every
-  # non-local provider; the local-ollama conditional is out of scope for this
-  # guard, which refuses salus on every backend - stricter than the fence). Non-salus roots
+  # non-local provider; its local-ollama and ollama-cloud conditionals are out
+  # of scope for this guard, which refuses salus on every backend, ollama
+  # included - stricter than the fence). --backend ollama is NOT exempt from
+  # the --eval preflight below (HIMMEL-1789, option 2): the fence classifies it
+  # as local-ollama / ollama-cloud / fail-closed from the endpoint + model, the
+  # same as an agent-typed run. Non-salus roots
   # proceed under the asserted class exactly as before — deriving
   # luna-personal vs himmel-code from a path needs vault-root config this
   # script does not own; salus is the class where a mislabel is catastrophic
