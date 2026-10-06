@@ -101,7 +101,10 @@ if [ "$RC" -eq 2 ]; then ok "unknown flag exits 2"; else bad "unknown flag rc=$R
 # 7b. every documented paste ends `|| true`: a non-zero setup script stops the
 # cloud session from starting, and the clone itself can fail before the script runs.
 TEMPLATE="$ROOT/docs/handover/cloud-brief-template.md"
-pastes="$(grep -h 'bash /tmp/himmel-setup/scripts/cloud/setup-env.sh' "$SETUP" "$TEMPLATE")"
+RECIPE="$ROOT/docs/setup/cloud-environment.md"  # the operator's environment recipe (HIMMEL-4429)
+if [ -f "$RECIPE" ]; then ok "environment recipe exists"; else bad "environment recipe $RECIPE missing"; fi
+case "$(grep -h 'setup-env.sh' "$RECIPE" 2>/dev/null)" in *"--with-plugins || true"*) ok "recipe paste installs the plugin profile" ;; *) bad "recipe paste lacks '--with-plugins || true'" ;; esac
+pastes="$(grep -h 'bash /tmp/himmel-setup/scripts/cloud/setup-env.sh' "$SETUP" "$TEMPLATE" "$RECIPE" 2>/dev/null)"
 unsafe="$(grep -v '|| true$' <<< "$pastes")"
 if [ -z "$pastes" ]; then
   bad "no setup paste line found in the header or $TEMPLATE"

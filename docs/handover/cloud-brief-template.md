@@ -57,6 +57,11 @@ himmel-ops 0.4.22, lean-skills 0.2.2).
 
 ## One-time operator setup
 
+The recommended environment, field by field (name, network, environment
+variables, setup script, CLI default via `/remote-env`, cache refresh), is
+[`docs/setup/cloud-environment.md`](../setup/cloud-environment.md). The steps
+below are the background and the plugin-free variant.
+
 1. **Environment setup script.** At claude.ai, open the cloud environment's
    settings and paste into "Setup script":
 
