@@ -2947,7 +2947,7 @@ _bwimc_is_shc_cflag() {
 # accepts for every other arm (HIMMEL-3648).
 _bwimc_check_interp_body() {
     local kind="$2" toks=() t t2 n i j0 cidx body="" _bwimc_ibody_clause="" _bwimc_ib_text="" _bwimc_ib_texts=() \
-        _bwimc_ibody_clause_sp="" _bwimc_ibc_toks=() _bwimc_ibc_n=0 _bwimc_m="" \
+        _bwimc_ibody_clause_sp="" _bwimc_ibc_toks=() _bwimc_ibc_n=0 _bwimc_m="" _bwimc_ib_cw=0 _bwimc_ib_ro=0 \
         _bwimc_ibody_saved_ecwd="" _bwimc_ibody_saved_unres=""
     toks=()
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
@@ -2959,6 +2959,37 @@ _bwimc_check_interp_body() {
     # string through a shell too. No such token: nothing to scan.
     j0=1
     if [ "$kind" = wrap ]; then
+        # HIMMEL-4476: a grep (leading assignments and keywords skipped) runs
+        # no command, so an `eval`/`sh` word after it is a pattern or a file
+        # operand, not a shell: `grep -n 'eval' <primary>/x` read the path as
+        # an eval body. Its redirects are the outer arms' job. ugrep's
+        # --filter runs commands and --save-config writes a file in the cwd,
+        # so any `--fil…`/`--sa…` option, or a substitution, keeps the scan.
+        i=0
+        while [ "$i" -lt "$n" ]; do
+            case "${toks[$i]}" in
+                [A-Za-z_]*=*|'!'|if|then|elif|else|while|until|do|'{') i=$((i+1)) ;;
+                *) break ;;
+            esac
+        done
+        if [ "$i" -lt "$n" ]; then
+            t=$(_bwimc_unq "${toks[$i]}"); t="${t##*/}"
+            _tolower_ascii "$t"; t="${_TOLOWER_OUT%.exe}"
+            case "$t" in
+                grep|egrep|fgrep)
+                    # Quotes and backslashes are dropped first, so a quoted
+                    # or split '--save-config' still reads as the option.
+                    t="${1//[\'\"\\]/}"
+                    # shellcheck disable=SC2016  # literal `$(` is the glob pattern
+                    case "$1" in
+                        *'`'*|*'$('*|*'<('*|*'>('*) ;;
+                        *) case "$t" in
+                               *--[Ff][Ii][Ll]*|*--[Ss][Aa]*) ;;
+                               *) return 0 ;;
+                           esac ;;
+                    esac ;;
+            esac
+        fi
         kind=""; i=0
         while [ "$i" -lt "$n" ]; do
             t=$(_bwimc_unq "${toks[$i]}"); t="${t##*/}"
@@ -3041,6 +3072,29 @@ _bwimc_check_interp_body() {
         _bwimc_ibc_toks=()
         while IFS= read -r t; do _bwimc_ibc_toks+=("$t"); done < <(_bwimc_tokenize "$_bwimc_ibody_clause_sp")
         _bwimc_ibc_n=${#_bwimc_ibc_toks[@]}
+        # HIMMEL-4476: from the primary cwd every bare word resolves into it,
+        # so a loop keyword (`until`, `do`) or the operand of a command that
+        # writes no file (`sleep 0.1`, `[ -e x ]`) denied. Leading reserved
+        # words are skipped; for a read-only command word (raw, unquoted) in
+        # a clause with no substitution only redirects are checked. Every
+        # other clause keeps the coarse every-token check.
+        _bwimc_ib_cw=0; _bwimc_ib_ro=0
+        while [ "$_bwimc_ib_cw" -lt "$_bwimc_ibc_n" ]; do
+            case "${_bwimc_ibc_toks[$_bwimc_ib_cw]}" in
+                '!'|'{'|'}'|if|then|elif|else|fi|while|until|do|done) _bwimc_ib_cw=$((_bwimc_ib_cw+1)) ;;
+                *) break ;;
+            esac
+        done
+        if [ "$_bwimc_ib_cw" -lt "$_bwimc_ibc_n" ]; then
+            case "${_bwimc_ibc_toks[$_bwimc_ib_cw]}" in
+                sleep|test|'['|'[['|true|false|:|echo|printf)
+                    # shellcheck disable=SC2016  # literal `$(` is the glob pattern
+                    case "$_bwimc_ibody_clause_sp" in
+                        *'`'*|*'$('*|*'<('*|*'>('*) ;;
+                        *) _bwimc_ib_ro=1 ;;
+                    esac ;;
+            esac
+        fi
         i=0
         while [ "$i" -lt "$_bwimc_ibc_n" ]; do
             t="${_bwimc_ibc_toks[$i]}"
@@ -3069,6 +3123,9 @@ _bwimc_check_interp_body() {
                     i=$((i+1))
                 fi
                 continue
+            fi
+            if [ "$i" -lt "$_bwimc_ib_cw" ] || [ "$_bwimc_ib_ro" = 1 ]; then
+                i=$((i+1)); continue
             fi
             case "$t" in
                 -*)
@@ -3843,10 +3900,145 @@ _bwimc_short_has() {
     return 1
 }
 
+# _bwimc_tar_clause_ok CLAUSE — HIMMEL-4476. rc 0 only for a plain
+# `tar -x … -C /tmp/<dir>` extract, read fail-closed: the command word is
+# tar/bsdtar/gtar, every option is from a short list (no member operands, no
+# exec or file-list options, no -P), the archive is stdin, and every -C /
+# --directory is an absolute /tmp path with no `..`, quote or expansion,
+# given before anything else is extracted. Anything else returns 1.
+_bwimc_tar_clause_ok() {
+    local toks=() t n i=1 x=0 c=0 w="" p r
+    while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
+    n=${#toks[@]}
+    [ "$n" -gt 1 ] || return 1
+    case "${toks[0]}" in tar|bsdtar|gtar|/usr/bin/tar|/bin/tar|/usr/bin/bsdtar) ;; *) return 1 ;; esac
+    while [ "$i" -lt "$n" ]; do
+        t="${toks[$i]}"
+        if [ "$w" = dir ]; then
+            case "$t" in
+                /tmp/*) ;;
+                *) return 1 ;;
+            esac
+            case "$t" in
+                *[!A-Za-z0-9_./+@%,:-]*|*/../*|*/..|*/./*|*/.) return 1 ;;
+            esac
+            # A symlink on the way may lead anywhere: resolve the deepest
+            # existing ancestor and require it to stay under /tmp.
+            p="$t"
+            while [ -n "$p" ] && [ ! -d "$p" ]; do p="${p%/*}"; done
+            r=$(cd -P -- "${p:-/}" 2>/dev/null && pwd -P) || return 1
+            case "$r" in /tmp|/tmp/*|/private/tmp|/private/tmp/*) ;; *) return 1 ;; esac
+            c=1; w=""; i=$((i+1)); continue
+        fi
+        if [ "$w" = file ]; then
+            [ "$t" = - ] || return 1
+            w=""; i=$((i+1)); continue
+        fi
+        case "$t" in
+            -C|--directory) w=dir ;;
+            -C*) toks[i]="${t#-C}"; w=dir; continue ;;
+            --directory=*) toks[i]="${t#--directory=}"; w=dir; continue ;;
+            -f|--file) w="file" ;;
+            --file=-) ;;
+            -x|--extract|--get) x=1 ;;
+            -v|--verbose|-z|--gzip|--gunzip|-j|--bzip2|-J|--xz|--zstd|-p|\
+            --preserve-permissions|-o|--no-same-owner|--no-same-permissions|\
+            -k|--keep-old-files|--skip-old-files|-m|--touch) ;;
+            --strip-components=[0-9]|--strip-components=[0-9][0-9]) ;;
+            -[xvzjJpokm]*)
+                case "$t" in -*x*) x=1 ;; esac
+                case "$t" in
+                    -*f) case "${t%f}" in *[!-xvzjJpokm]*) return 1 ;; esac; w="file" ;;
+                    *[!-xvzjJpokm]*) return 1 ;;
+                esac ;;
+            *) return 1 ;;
+        esac
+        i=$((i+1))
+    done
+    [ -z "$w" ] && [ "$x" = 1 ] && [ "$c" = 1 ]
+}
+
+# _bwimc_xtract_ok TEXT — HIMMEL-4476. rc 0 when nothing in TEXT can turn a
+# `git archive` stream or file into writes: with a pipe, every clause is a
+# `git …` or one _bwimc_tar_clause_ok accepts; without one, no clause names an
+# extractor, interpreter, shell, xargs or file copier unless that accepts
+# it; no substitution, no PATH/TAR_OPTIONS/alias/
+# function that could change what `tar` runs, and no TAR_OPTIONS in the
+# hook's own environment. Fail-closed: any doubt is rc 1.
+_BWIMC_XTRACT_RE='(^|[^[:alnum:]_.-])(tar|bsdtar|gtar|star|cpio|bsdcpio|pax|unzip|funzip|bsdunzip|7z|7za|7zr|ar|unar|atool|jar|busybox|toybox|python[0-9.]*|perl|ruby|node|php|xargs|bash|sh|zsh|dash|ksh|fish|eval|source|exec|ln|link|cp|mv|rsync|install)(\.exe)?([^[:alnum:]_-]|$)'
+_bwimc_xtract_ok() {
+    local cl lc lead t pipe
+    [ -z "${TAR_OPTIONS:-}" ] || return 1
+    # shellcheck disable=SC2016  # literal `$(` is the glob pattern
+    case "$1" in
+        *'$('*|*'`'*|*'<('*|*'>('*|*PATH=*|*TAR_OPTIONS*|*alias*|*hash*|*enable*|*'()'*|*function*) return 1 ;;
+    esac
+    # A pipe (quote-blind) may feed the stream to anything that writes what
+    # it reads (patch, xargs, a shell): then every clause must be a plain
+    # `git …` or an accepted tar extract.
+    pipe=0
+    t="${1//||/}"
+    case "$t" in *'|'*) pipe=1 ;; esac
+    while IFS= read -r cl; do
+        cl="${cl#"$_BWIMC_PIPE"}"
+        lead="${cl#"${cl%%[![:space:]]*}"}"
+        [ -n "$lead" ] || continue
+        ! _bwimc_is_colon "$cl" || continue
+        if [ "$pipe" = 1 ]; then
+            case "$lead" in git|git[[:space:]]*) continue ;; esac
+            _bwimc_tar_clause_ok "$cl" || return 1
+            continue
+        fi
+        case "$lead" in .|'. '*|.$'\t'*) return 1 ;; esac
+        _tolower_ascii "$cl"; lc="$_TOLOWER_OUT"
+        if [[ "$lc" =~ $_BWIMC_XTRACT_RE ]]; then
+            _bwimc_tar_clause_ok "$cl" || return 1
+        fi
+    done < <(_bwimc_split_clauses "$1")
+    return 0
+}
+
 _bwimc_git_sub_is_read() {
     local sub="$1"; shift
     local a npos=0 first="" second="" ff=0 skipval=0
     case "$sub" in
+        # HIMMEL-4476: archive writes only its --output (checked by the
+        # caller) or stdout, unless --exec/--remote runs a command or the
+        # stream reaches something that can write it out (_bwimc_xtract_ok).
+        # Only the built-in tar format: any other, zip included (probed on
+        # git 2.56), runs a configured tar.<format>.command. Without
+        # --format, --output picks the format from its extension, so that
+        # must be .tar.
+        archive)
+            local fmt="" out=""
+            for a in "$@"; do
+                case "$skipval" in
+                    f) fmt="$a"; skipval=0; continue ;;
+                    o) out="$a"; skipval=0; continue ;;
+                esac
+                _bwimc_long_is "$a" exec 1 && return 1
+                _bwimc_long_is "$a" remote 1 && return 1
+                if _bwimc_long_is "$a" format 1; then
+                    case "$a" in *=*) fmt="${a#*=}" ;; *) skipval=f ;; esac
+                    continue
+                fi
+                if _bwimc_long_is "$a" output 1; then
+                    case "$a" in *=*) out="${a#*=}" ;; *) skipval=o ;; esac
+                    continue
+                fi
+                case "$a" in
+                    --*) ;;
+                    -o) skipval=o ;;
+                    -*o*) return 1 ;;
+                esac
+            done
+            [ "$skipval" = 0 ] || return 1
+            if [ -n "$fmt" ]; then
+                [ "$fmt" = tar ] || return 1
+            elif [ -n "$out" ]; then
+                case "$out" in *.tar) ;; *) return 1 ;; esac
+            fi
+            [ "${_bwimc_g_xtract_ok:-0}" = 1 ]; return ;;
         ""|status|log|diff|show|rev-parse|rev-list|ls-files|ls-tree|ls-remote|\
         cat-file|blame|annotate|grep|describe|shortlog|whatchanged|for-each-ref|\
         merge-base|name-rev|show-ref|show-branch|cherry|range-diff|diff-tree|\
@@ -4461,6 +4653,10 @@ _bwimc_git_clause() {
         if [ "$ow" = 1 ]; then
             of="$v"; ow=0
         else
+            # HIMMEL-4476: archive takes an abbreviated --output too (`--out=`).
+            if [ "$sub" = archive ] && _bwimc_long_is "$v" output 1; then
+                case "$v" in *=*) v="--output=${v#*=}" ;; *) v=--output ;; esac
+            fi
             case "$v" in
                 # `bundle create -- <file>`: the file still follows `--`.
                 --) [ "$sub:$bc" = bundle:1 ] || break; ow=1; continue ;;
@@ -4534,8 +4730,9 @@ _bwimc_git_clause() {
 
     # A config override (-c, --config-env, GIT_CONFIG*) can repoint the
     # remote or refspec pull/fetch act on, so it voids their carve-out.
+    # A config override can also set tar.<format>.command, which archive runs.
     case "$cfg:$sub" in
-        1:pull|1:fetch) ;;
+        1:pull|1:fetch|1:archive) ;;
         *)
             if [ "${#args[@]}" -gt 0 ]; then
                 [ "$progrun" = 0 ] && _bwimc_git_sub_is_read "$sub" "${args[@]}" && return 0
@@ -4944,6 +5141,10 @@ _bwimc_g_jail=0
 _bwimc_g_wrap=0
 _bwimc_g_xargs=0
 _bwimc_g_xinj=0
+_bwimc_g_xtract_ok=0
+case "$_bwimc_ghb" in
+    *archive*) ! _bwimc_xtract_ok "$_bwimc_ghb" || _bwimc_g_xtract_ok=1 ;;
+esac
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     # HIMMEL-4010: substitution bodies arrive as their own clauses; the

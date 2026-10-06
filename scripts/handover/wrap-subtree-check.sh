@@ -121,6 +121,10 @@ harness_re="${WRAP_SUBTREE_HARNESS_RE:-(^|[ /])(mcp-server[^ ]*|[^ ]*qmd([.][a-z
 # member beneath a non-chain parent, still withholds. A directory merely named
 # claude-hud, or a script merely named statusline-segment.sh elsewhere, is NOT
 # exempt (HIMMEL-3723), and a `/..` anywhere in the argv disqualifies.
+# HIMMEL-4592: every DESCENDANT of a chain-shaped direct child of the session is
+# exempt too (via= names that top), so claude-hud's own `git status --porcelain`
+# child does not withhold; a leg-owned git hangs under a tool-call wrapper or the
+# session, never under a chain top, and still withholds.
 # No backslashes: the value crosses awk -v.
 chain_re='^([^ ]*/)?node /[^ ]*/marketplace/plugins/claude-hud/dist/index[.]js$|^([^ ]*/)?(bash|sh) /[^ ]*/scripts/statusline/hud-custom-lines[.]sh$|^(timeout [0-9]+ )?([^ ]*/)?(bash|sh) /[^ ]*/scripts/where-are-we/statusline-segment[.]sh( --cwd [^ ].*)?$|^(timeout [0-9]+ )?([^ ]*/)?node /[^ ]*/scripts/where-are-we/provision[.]mjs slice( .*)?$'
 
@@ -190,14 +194,14 @@ END {
     for (i = 1; i <= np; i++) {
         pid = order[i]
         if (pid == root) continue
-        p = pid; under = 0; skip = (pid in chain); harness = 0; why = ""; via = ""; allchain = 1
+        p = pid; under = 0; skip = (pid in chain); harness = 0; why = ""; via = ""; allchain = 1; top = ""
         for (h = 0; h < maxh; h++) {
             if (p == self) skip = 1
             if (!ischain(p)) allchain = 0
             if (!harness && isharness(p)) { harness = 1; why = "name-match"; via = p }
             q = ppid[p]
             if (q == root && !harness && isearly(p)) { harness = 1; why = "session-start"; via = p }
-            if (q == root) { under = 1; break }
+            if (q == root) { under = 1; top = p; break }
             if (q == "" || q == 0) break
             p = q
         }
@@ -206,6 +210,11 @@ END {
         if (h >= maxh) under = 1
         if (!under || skip) continue
         if (!harness && allchain) { harness = 1; why = "statusline-chain"; via = pid }
+        # HIMMEL-4592: a descendant of a chain node that is itself the session'"'"'s direct
+        # child (claude-hud'"'"'s `git status --porcelain`) inherits the ignore by its
+        # parent chain; a leg-owned process hangs under a tool-call wrapper or the
+        # session, never under a chain top, so it is not reached.
+        if (!harness && top != "" && ischain(top)) { harness = 1; why = "statusline-chain"; via = top }
         cmd = substr(arg[pid], 1, 100)
         if (harness) {
             m++
