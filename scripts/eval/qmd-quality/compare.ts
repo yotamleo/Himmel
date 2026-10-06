@@ -126,6 +126,11 @@ if (import.meta.main) {
   }
   const bad = validateGolden(golden);
   if (bad) { console.error(`compare: ${bad}`); process.exit(2); }
+  // Same refusal as score.ts: a mode where every query errored is a broken run, not a zero.
+  for (const [label, runs] of [["a", a], ["b", b]] as const) {
+    const broken = [...new Set(runs.map((r) => r.mode))].filter((m) => runs.every((r) => r.mode !== m || r.error));
+    if (broken.length) { console.error(`compare: every query errored in mode(s) ${broken.join(",")} of --${label}; refusing to compare a broken run`); process.exit(2); }
+  }
   const pairs = compare(golden, a, b, arg("--mode"));
   if (pairs.length === 0) { console.error("compare: no mode present in both runs"); process.exit(2); }
   console.log(formatPairs(pairs));

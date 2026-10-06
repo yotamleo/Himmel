@@ -19,7 +19,7 @@ PASS_THROUGH=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --golden) [ "$#" -ge 2 ] || exit 64; GOLDEN="$2"; PASS_THROUGH+=("$1" "$2"); shift 2 ;;
-    --modes | --embed-model | --rerank-model | --index | --scope | --ledger) [ "$#" -ge 2 ] || exit 64; PASS_THROUGH+=("$1" "$2"); shift 2 ;;
+    --modes | --embed-model | --rerank-model | --index | --scope | --candidate-limit | --ledger) [ "$#" -ge 2 ] || exit 64; PASS_THROUGH+=("$1" "$2"); shift 2 ;;
     *) echo "backfill-ledger: unknown argument '$1'" >&2; exit 64 ;;
   esac
 done

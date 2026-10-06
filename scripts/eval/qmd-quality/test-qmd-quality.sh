@@ -192,6 +192,9 @@ eq "compare: a missing --b is a usage error" "$rc" "2"
 printf '{"id":"q1","mode":"lex","ranked":[]}\n' >"$TMP/rlex.jsonl"
 bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" --b "$TMP/rlex.jsonl" >/dev/null 2>&1; rc=$?
 eq "compare: no mode in common is refused" "$rc" "2"
+printf '{"id":"q1","mode":"hybrid","ranked":[],"error":"boom"}\n{"id":"q2","mode":"hybrid","ranked":[],"error":"boom"}\n' >"$TMP/rerr.jsonl"
+bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" --b "$TMP/rerr.jsonl" >/dev/null 2>&1; rc=$?
+eq "compare: a mode where every query errored is refused" "$rc" "2"
 
 # ledger-row.py: CI, cases, and the config stamp land in the row.
 mkdir -p "$TMP/lr"
