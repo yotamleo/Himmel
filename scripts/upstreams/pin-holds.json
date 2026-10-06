@@ -1,5 +1,5 @@
 {
-  "_comment": "A bump held back on purpose (HIMMEL-3807). A hold reads HELD only while the pin is still at `current` AND upstream's newest release is still `latest_reviewed`; anything newer re-raises BEHIND. Drop the row when the bump lands.",
+  "_comment": "A bump held back on purpose (HIMMEL-3807). A hold reads HELD only while the pin is still at `current` AND upstream's newest release is still `latest_reviewed`; anything newer re-raises BEHIND. Drop the row when the bump lands. eco \"upstream\" holds a scripts/upstreams.json tag_release row by its name (HIMMEL-3952). An optional `release` field names the condition that lifts the hold as a token, not prose (e.g. \"vm-proof\"), so a resolver can read it (HIMMEL-4583).",
   "holds": [
     {
       "eco": "gh",
@@ -14,6 +14,15 @@
       "current": "v0.10.0.1",
       "latest_reviewed": "v0.11.0.1",
       "reason": "shellcheck 0.11 adds SC2329 (unused function) across scripts/hooks/*.sh, which need a hook-integrity-bypass leg to fix; own ticket"
+    },
+    {
+      "eco": "upstream",
+      "key": "cli-proxy-api",
+      "current": "7.3.15",
+      "latest_reviewed": "8.0.16",
+      "ticket": "HIMMEL-4579",
+      "release": "vm-proof",
+      "reason": "MAJOR v8; himmel-update sync_cli_proxy rolls the host on merge — VM proof first (HIMMEL-4579)"
     }
   ]
 }

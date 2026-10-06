@@ -25,6 +25,9 @@ unset HIMMEL_CONSOLE_LEG CONSOLE_SESSION_NAME 2>/dev/null || true
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/go-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$tmp"' EXIT
 tmp="$(cd "$tmp" && pwd)"
+# Sections 14-15 run after section 13 sources go-gate.sh, which assigns its
+# own `tmp`; name their dirs here so nothing below reads `$tmp` past that point.
+ROOT14="$tmp/root14"; ROOT15="$tmp/root15"
 # HIMMEL-3543: go.sh mints its GO key under $HOME/.config/himmel — keep it off
 # the operator's real key.
 export HOME="$tmp/home"; mkdir -p "$HOME"
@@ -55,12 +58,34 @@ chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
 export STUB_NWO="o/r"
 
+# HIMMEL-4565: go.sh runs ready-check.sh itself, so every write below runs from
+# a repo whose CR ledger has an ok row for the head, with a gh that answers
+# ready-check's queries green (testlib-ready-pass.sh). Section 14 breaks each.
+# shellcheck source=scripts/handover/console-kit/testlib-ready-pass.sh
+# shellcheck disable=SC1091
+. "$HERE/testlib-ready-pass.sh"
+ready_pass_bin "$tmp/ready-bin"
+export PATH="$tmp/ready-bin:$PATH"
+READY_REPO="$tmp/ready-repo"
+git init -q "$READY_REPO"
+cd "$READY_REPO" || { echo "FAIL: cd $READY_REPO" >&2; exit 1; }
+
 fails=0
 grepq() { local _t="$1"; shift; grep -q "$@" <<< "$_t"; }
 check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 contains() { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)); }; }
 
+# verdict <root> <qid> <verdict line> [<file name>] - a judge's verdict file,
+# as docs/handover/verdict-template.md lays it out.
+verdict() {
+  mkdir -p "$1/u/himmel/verdicts/$2"
+  printf '# VERDICT %s - judge\n\n## Reason (scope asked)\n\nq\n\n## Verdict\n\n%s\n\nreason\n\n## Evidence checked\n\ne\n' \
+    "$2" "$3" > "$1/u/himmel/verdicts/$2/${4:-HIMMEL-1-judge-$2}.md"
+}
+
 SHA=0123456789abcdef0123456789abcdef01234567
+export READY_STUB_HEAD="$SHA"
+ready_pass_ledger "$READY_REPO" "$SHA"
 ROOT="$tmp/root"; mkdir -p "$ROOT"
 GO="$ROOT/.locks/go/77.$SHA"
 
@@ -191,6 +216,8 @@ S10="$tmp/s10"; S10_REAL="$tmp/s10-real"
 mkdir -p "$S10/scripts/handover/console-kit" "$S10/scripts/cr" "$S10/handovers" "$S10_REAL"
 git init -q "$S10"
 cp "$SCRIPT" "$S10/scripts/handover/console-kit/go.sh"
+cp "$HERE/ready-check.sh" "$S10/scripts/handover/console-kit/ready-check.sh"
+ready_pass_ledger "$S10" "$SHA"
 cp -R "$HERE/../../lib" "$S10/scripts/lib"
 cp "$HERE/../../cr/anchor-handoff.sh" "$S10/scripts/cr/anchor-handoff.sh"
 printf 'HANDOVER_DIR=%s\n' "$S10_REAL" > "$S10/.env"
@@ -252,6 +279,9 @@ check "3895: nothing written on usage errors" "$(find "$ROOT13" -type f | wc -l 
 rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" 81 "$SHA" >/dev/null 2>&1 || rc=$?
 MAC_PLAIN=$(sed -n 's/^mac=//p' "$GO13" 2>/dev/null)
 check "3895: an ordinary GO has no trust line" "$(grep -c '^trust-reviewed=' "$GO13" 2>/dev/null)" "0"
+# HIMMEL-3832: a trust-reviewed GO needs the judge's GO verdict for this head.
+verdict "$ROOT13" judge-N9 "**GO** for head \`$SHA\`."
+verdict "$ROOT13" judge-N8 "**GO** for head \`$SHA\`."
 rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" --trust-reviewed judge-N9 81 "$SHA" >/dev/null 2>&1 || rc=$?
 check "3895: --trust-reviewed judge-N9 -> exit 0" "$rc" "0"
 contains "3895: trust-reviewed= line written" "$(cat "$GO13" 2>/dev/null)" "trust-reviewed=judge-N9"
@@ -290,6 +320,76 @@ rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
 unset -f sed
 check "3895: a GO swapped between reads never yields a trust id" "$rc" "2"
 rm -f "$GO13.forged"
+
+# --- 14. HIMMEL-4565: no GO for a head ready-check does not pass ------------
+# The console ran ready-check by convention only; go.sh signed any head. It
+# now runs ready-check itself (check 4 is the CR-ledger ok row at the head)
+# and refuses, exit 4 and nothing written, on anything but PASS.
+mkdir -p "$ROOT14"
+SHA14=1111111111111111111111111111111111111111
+rc=0; out="$(READY_STUB_HEAD="$SHA14" HANDOVER_DIR="$ROOT14" bash "$SCRIPT" 82 "$SHA14" 2>&1)" || rc=$?
+check    "4565: unreviewed head (no ledger ok row) -> exit 4" "$rc" "4"
+contains "4565: names the failed check" "$out" "4. CR ledger"
+check    "4565: unreviewed head -> nothing written" "$(find "$ROOT14" -type f | wc -l | tr -d ' ')" "0"
+ready_pass_ledger "$READY_REPO" "$SHA14"
+rc=0; out="$(READY_STUB_HEAD="$SHA" HANDOVER_DIR="$ROOT14" bash "$SCRIPT" 82 "$SHA14" 2>&1)" || rc=$?
+check    "4565: PR head moved past the sha -> exit 4" "$rc" "4"
+check    "4565: moved head -> nothing written" "$(find "$ROOT14" -type f | wc -l | tr -d ' ')" "0"
+rc=0; out="$(cd "$ROOT14" && READY_STUB_HEAD="$SHA14" HANDOVER_DIR="$ROOT14" bash "$SCRIPT" 82 "$SHA14" 2>&1)" || rc=$?
+check    "4565: run outside any repo (no ledger to read) -> exit 4" "$rc" "4"
+rc=0; out="$(READY_STUB_HEAD="$SHA14" HANDOVER_DIR="$ROOT14" bash "$SCRIPT" 82 "$SHA14" 2>/dev/null)" || rc=$?
+check    "4565: reviewed head -> exit 0" "$rc" "0"
+check    "4565: reviewed head -> the GO path" "$out" "$ROOT14/.locks/go/82.$SHA14"
+
+# --- 15. HIMMEL-3832: --trust-reviewed <qid> needs that judge's GO verdict ---
+# The verdict file is <root>/<user>/<bucket>/verdicts/<qid>/*.md; the first
+# non-blank line under `## Verdict` parses only as **GO**/**NO-GO** for head
+# `<sha>` (a trailing full stop allowed). An unparsed file, a NO-GO on this head,
+# or no GO on this head refuses, exit 5, nothing written; another head's verdict
+# (an earlier round) is ignored.
+mkdir -p "$ROOT15"
+t15() {  # <label> <qid> - expect a refusal, nothing written
+  local rc=0
+  out="$(HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed "$2" 83 "$SHA" 2>&1)" || rc=$?
+  check "3832: $1 -> exit 5" "$rc" "5"
+  check "3832: $1 -> nothing written" "$(find "$ROOT15/.locks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+}
+t15 "no verdict dir" J1
+verdict "$ROOT15" J2 "**NO-GO** for head \`$SHA\`."
+t15 "NO-GO verdict" J2
+verdict "$ROOT15" J3 "**GO** for head \`$SHA14\`."
+t15 "GO for another head" J3
+verdict "$ROOT15" J4 "**GO.**"
+t15 "GO bound to no head (unparsed)" J4
+verdict "$ROOT15" J5 "**GO** for head \`$SHA\`. Ship it."
+t15 "trailing text after the head (unparsed)" J5
+verdict "$ROOT15" J6 "**GO** for head \`$SHA\`."
+verdict "$ROOT15" J6 "**NO-GO** for head \`$SHA\`." second
+t15 "a second judge file says NO-GO" J6
+verdict "$ROOT15" J7 "**GO** for head \`$SHA\`."
+verdict "$ROOT15" J7 "**GO.**" second
+t15 "a second judge file is unparsed" J7
+mkdir -p "$ROOT15/u/himmel/verdicts/J8"
+t15 "an empty verdict dir" J8
+verdict "$ROOT15" "judge:J9" "**GO** for head \`$SHA\`."
+t15 "an id that is not a qid path segment" "judge:J9"
+verdict "$ROOT15" J10 "**GO** for head \`$SHA\`."
+rc=0; out="$(HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J10 83 "$SHA" 2>/dev/null)" || rc=$?
+check    "3832: GO verdict for this head -> exit 0" "$rc" "0"
+contains "3832: trust id signed in" "$(cat "$ROOT15/.locks/go/83.$SHA" 2>/dev/null)" "trust-reviewed=J10"
+verdict "$ROOT15" J11 "**GO** for head \`$SHA\`"
+rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J11 83 "$SHA" >/dev/null 2>&1 || rc=$?
+check    "3832: no trailing full stop -> exit 0" "$rc" "0"
+verdict "$ROOT15" J12 "**NO-GO** for head \`$SHA14\`." round1
+verdict "$ROOT15" J12 "**GO** for head \`$SHA\`." round2
+rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J12 83 "$SHA" >/dev/null 2>&1 || rc=$?
+check    "3832: an earlier round's NO-GO on another head is ignored -> exit 0" "$rc" "0"
+mkdir -p "$ROOT15/u/himmel/verdicts/J13"
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+printf '# VERDICT J13 - judge\r\n\r\n## Verdict\r\n\r\n**GO** for head `%s`.\r\n\r\nreason\r\n' "$SHA" \
+  > "$ROOT15/u/himmel/verdicts/J13/HIMMEL-1-judge-J13.md"
+rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J13 83 "$SHA" >/dev/null 2>&1 || rc=$?
+check    "3832: a CRLF verdict file -> exit 0" "$rc" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

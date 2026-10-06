@@ -601,6 +601,17 @@ check "(m3748) a real change on the new leg set still wakes (rc 0)" "0" "$rc"
 check "(m3748) naming legs" "WAKE tick changed=legs bank=PROCEED" "$(head -n1 "$WORK/m3748.out")"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# --- (l4568) HIMMEL-4568: a READY tail turning READY!stale (30 min, no GO file) is a wake
+reset_stub
+sed 's/ tails=N1:LIVE/ tails=N1:READY/' "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"
+I="$(new_inbox l4568)"
+start "$I" "$WORK/l4568.out" --legs "N1.md"
+wait_hb "$I" || fail "(l4568) no baseline heartbeat"
+sed 's/ tails=N1:READY/ tails=N1:READY!stale/' "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"
+wait_exit "$WPID"
+check "(l4568) a READY going stale wakes the console (rc 0)" "0" "$rc"
+check "(l4568) the wake names tails" "WAKE tick changed=tails bank=PROCEED" "$(head -n1 "$WORK/l4568.out")"
+
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
 check "(k) no inbox argument is a usage error (rc 2)" "2" "$rc"

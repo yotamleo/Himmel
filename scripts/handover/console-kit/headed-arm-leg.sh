@@ -225,7 +225,7 @@ HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 export HEADED_ARM_UNAME
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--fleet <manifest>] [--ignore-denials] [--lane native|claudex|openrouter|deepseek] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--fleet <manifest>] [--ignore-denials] [--no-prior-art-check] [--lane native|claudex|openrouter|deepseek] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
 }
 
 # leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
@@ -311,6 +311,7 @@ CONSULT=0
 READONLY_ROLE=0   # judge or consult: no implementation permissions, raised read clamp
 NO_PROFILE=0
 IGNORE_DENIALS=0
+NO_PRIOR_ART_CHECK=0
 HEADLESS=0
 [ "${LEG_HEADLESS:-}" = "1" ] && HEADLESS=1
 LANE="${LEG_LANE:-native}"
@@ -325,6 +326,7 @@ while :; do
         --consult) CONSULT=1; shift ;;
         --ignore-denials) IGNORE_DENIALS=1; shift ;;
         --no-profile) NO_PROFILE=1; shift ;;
+        --no-prior-art-check) NO_PRIOR_ART_CHECK=1; shift ;;
         --headless) HEADLESS=1; shift ;;
         --fleet)
             if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then usage; exit 2; fi
@@ -643,6 +645,21 @@ if [ -z "$PROFILE" ] && [ "$NO_PROFILE" -eq 0 ]; then
     usage
     echo "headed-arm-leg: refusing an unprofiled launch: pass --profile <name> (or set LEG_PROFILE; names: \`node scripts/lanes/plugin-profiles.mjs --list\`) so the leg gets docs/handover/leg-preface.md and the lean plugin set. Pass --no-profile only when the brief itself carries the preface pasted in." >&2
     exit 2
+fi
+
+# HIMMEL-4573: a leg or judge brief carries a filled `> **Prior art:**` line
+# (brief-lint.sh), so the console's one retrieval at dispatch reaches the leg.
+# Gated on a template-shaped brief (a `> **Contract:**` or `> **Completion
+# condition:**` line) so a bare fixture or hand-typed doc still launches;
+# ponytail: a brief that drops both fields escapes the check, HIMMEL-4573's
+# counter (console-kind qmd calls) measures real use. Relay and consult briefs
+# are not leg/judge briefs.
+if [ "$NO_PRIOR_ART_CHECK" -eq 0 ] && [ "$RELAY" -eq 0 ] && [ "$CONSULT" -eq 0 ] && [ -f "$DOC" ] \
+    && grep -Eq '^> \*\*(Contract|Completion condition):\*\*' "$DOC"; then
+    if ! prior_art_err="$(bash "$(dirname "$0")/brief-lint.sh" "$DOC" 2>&1)"; then
+        echo "headed-arm-leg: refusing launch: $prior_art_err (fill the Prior art line, or pass --no-prior-art-check to launch without it)" >&2
+        exit 2
+    fi
 fi
 
 # --relay defaults MODEL to the Sonnet relay's own default (an explicit model

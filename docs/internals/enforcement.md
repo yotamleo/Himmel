@@ -121,7 +121,7 @@ Stages currently wired:
 - **Oxlint ratchets (pre-commit):** oxlint-complexity-ratchet (no NEW
   function above the audited max; HIMMEL-2154),
   oxlint-hardening-zero-violations (bug-class hardening — zero violations;
-  pinned oxlint 1.86.0, with root/cwd diagnostics; findings and tool/JSON
+  pinned oxlint 1.87.0, with root/cwd diagnostics; findings and tool/JSON
   failures block, while only a missing `bunx` fails open; HIMMEL-2163/2802).
 - **Doctor check-ID + shell platform-guard gates (pre-commit):**
   doctor-check-ids (`check-doctor-check-ids.sh`, scoped to
@@ -1442,6 +1442,35 @@ through `main_checkout_verdict`. The target covers:
 - `GIT_DIR` / `GIT_WORK_TREE` / `GIT_INDEX_FILE` set as a prefix, through
   `env`, or by an earlier `export`
 - the cwd set by an earlier `cd` / `pushd` / `env -C`
+
+- a git behind a wrapper (`timeout`, `nice`, `stdbuf`, `ionice`, `sudo`,
+  `chrt`, `taskset`, or `xargs`) — HIMMEL-4365. The cwd fails closed when the
+  wrapper carries a `GIT_*` word, or when an `xargs -I` string lands in a
+  global option, the subcommand, or `--output` and its operand (attached or
+  the next word). A bare `xargs git` reads its
+  subcommand from stdin, so it fails closed too. When stdin words land among
+  the subcommand's arguments (no `-I` string, or the string sits there), an
+  injected option such as `--output=<primary>/x` could turn a read into a
+  write anywhere, so the clause is denied. The exceptions are subcommands
+  with no file-writing option: `add`/`stage`/`rm`/`checkout`/`restore`
+  (their resolved repo is still checked) and the reads `merge-base`,
+  `ls-tree`, `ls-files`, `rev-parse`, `cat-file`, `status`. Words past a bare
+  `--` or `--end-of-options` are never read as options, so they are exempt,
+  unless the word before is an option that may take it as its operand. The
+  cost: a read such as `… | xargs -I{} git log -1 {}` is denied from any cwd;
+  write `git log -1 --end-of-options {}` (revisions) or `-- {}` (paths)
+  instead.
+
+HIMMEL-4365 also checks the file that `--output <file>` names on a read
+subcommand (`diff`, `log`, `show`) as a write operand. So `git -C <primary>
+diff --output=.claude/settings.json` is denied. HIMMEL-4518 treats
+`archive -o <file>`, `format-patch -o <dir>` / `--output-directory[=]<dir>`
+(also `-o` at the end of a bundled cluster such as `-ko <dir>`) and the file
+operand of `bundle create` the same way. Their repo check alone passed from a
+leg cwd, so `git archive -o <primary>/x.tar HEAD` is now denied, while
+`-o /tmp/x.tar` and leg-local paths are allowed. `restore --staged` writes only
+the primary's index, but it is still denied like `add`: the console's next
+commit would carry what the leg staged.
 
 A `cd` may not have run (`false && cd <leg>; git merge x`), so a write is also
 checked from every cwd an earlier `cd` left. The cost is that
@@ -3090,6 +3119,28 @@ siblings. `merge-on-green.sh` runs the same
 certified — the same head its `--match-head-commit` pins — and `go.sh` uses
 `console_leg` for its refusal, so none of the three can drift on "is this a
 leg" or "what a GO binds" (HIMMEL-3149).
+
+`go.sh` itself refuses to write a GO for a head nobody reviewed (HIMMEL-4565):
+before it signs anything it runs the anchor's own `console-kit/ready-check.sh
+<pr> <head>` from the caller's cwd, and any non-PASS exits 4 with ready-check's
+output and writes nothing. That covers the CR ledger (check 4: an ok row for
+that exact head in `<git-common-dir>/cr-critic-scores.jsonl`), the head and
+merge state, the check rollup, unresolved threads, trailers, ticket ids and
+coverage. It re-runs rather than trusting a recorded PASS, so the console's
+flow is unchanged (ready-check, then go) and no file a leg could write stands
+in for the check. A trust-reviewed GO (`--trust-reviewed <qid>`, HIMMEL-3832)
+also needs the judge's verdict on disk: `go_trust_verdict` reads every
+`<root>/*/*/verdicts/<qid>/*.md`, takes the first non-blank line under
+`## Verdict`, and accepts only `**GO** for head \`<40-hex>\`` or
+`**NO-GO** for head \`<40-hex>\``, with one optional trailing full stop. It
+passes only when no file is unparsed, none is NO-GO for this head, and at least
+one is GO for it. A verdict for another head is ignored as an earlier round.
+Anything else exits 5 and writes nothing: no files, a free-form line, or an id
+that is not a path segment (`[A-Za-z0-9][A-Za-z0-9._-]*`). The id is still
+signed into the trust mac, so the HMAC domains and merge-on-green's exits 17/21
+are unchanged. Residual: the verdict file is plain text under the handover root,
+which the leg's uid can write, so it proves a GO verdict exists, not that a
+judge wrote it. Like the key residual below, that is HIMMEL-3897's.
 
 ### CodeRabbit availability — arm it per repo (HIMMEL-1125)
 
