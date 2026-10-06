@@ -203,3 +203,48 @@ To re-score stored runs (read only, no model call):
 ```bash
 python3 scripts/eval/lane-quality/trajectory.py rescore ~/.himmel/eval/lane-quality/<run-id> --transcripts ~/.claude/projects
 ```
+
+`score --denials` adds `denials`, one `{tool_call_id, recovered, identical}`
+per denied call, and `trajectory_v`. `identical` counts each later identical
+call against the most recent identical denial before it, so the counts sum to
+`identical_denied_retries`. Without the flag the output is unchanged.
+
+## leg-digest: one leg session's failures as class keys (HIMMEL-4670)
+
+`leg-digest/leg-digest.ts` (Bun) reads a leg's journal and its subagent
+transcripts, merged in the order the AG-UI page uses. It maps them with the
+AG-UI mapper and prints one digest JSON. It is read-only, makes no model call
+and writes nothing. Ledger rows come in P2.
+
+```bash
+bun scripts/eval/leg-digest/leg-digest.ts --transcript ~/.claude/projects/<slug>/<session>.jsonl
+bun scripts/eval/leg-digest/leg-digest.ts --session <uuid>   # resolved under ~/.claude/projects
+```
+
+- **Class key** `<failure>/<sub>`. `<sub>` comes from closed vocabularies,
+  never from journal text:
+  - `denied/<hook>`: a `scripts/hooks/*.sh` basename.
+  - `denied/classifier:<category>`: the category is read from the
+    classifier-denials ledger row of the same tool nearest in time, else from the journal's `Reason: [...]`, and is
+    kept only if it is on the digest's fixed list.
+  - `denied/permission-prompt`.
+  - `suite/<tracked test basename>`, with `final_red`.
+  - `blocked/-`.
+  - `error/<allow-listed tool | mcp>`.
+  - `run_error/<listed code>`.
+  - `traj/*` rows, taken from the trajectory fields.
+  - Anything else is `other`.
+- **Recovered / identical retry** on main-agent denied rows come from
+  `trajectory.py score --denials`, joined by `tool_call_id`.
+- **Status** is `ok`, or `partial` (malformed lines, the subagent cap was
+  hit, a file could not be read, `trajectory.py` failed, or the hook or
+  tracked-test lookup failed), or
+  `inconclusive` (no journal, or over 200 MB).
+- **Cross-check:** `stats.denial_divergence` lists the main-agent denials that
+  only one detector saw. `test-leg-digest.sh` fails on any divergence not
+  enumerated in `leg-digest/denial-exceptions.txt`.
+- **Cost:** measured 2026-10-06, 3 runs each:
+  - 0.11–0.21 s wall on three recent leg journals of 3.6–6.5 MB;
+  - 1.50 s wall on the station's largest journal (58 MB).
+
+  The budget is 5 s per leg.

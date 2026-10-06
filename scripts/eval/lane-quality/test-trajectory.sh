@@ -85,5 +85,13 @@ printf '%s\n' '{"task":"a","rep":1,"accept_passed":1,"accept_total":1,"accept_ok
 python3 "$HERE/../lib/eval_runs.py" lane-quality "$TMP/run" --run-id t2 >/dev/null 2>&1
 check "a pre-4651 run dir still writes a row, its fields null" 'jq -s -e ".[-1].metrics | .red_before_green_rate == null and .identical_denied_retries == null" "$HIMMEL_EVAL_RUNS_LEDGER" >/dev/null'
 
+echo "5. score --denials: the per-denial list the leg digest joins by tool_call_id (HIMMEL-4670)"
+check "denial-repeated lists each denial: recovered when the next call differs, identical = the retries it drew" 'python3 "$TR" score "$FX/denial-repeated.jsonl" --denials | jq -e -c ".denials == [{\"tool_call_id\":\"toolu_01\",\"recovered\":false,\"identical\":1},{\"tool_call_id\":\"toolu_02\",\"recovered\":false,\"identical\":1},{\"tool_call_id\":\"toolu_03\",\"recovered\":true,\"identical\":0}]" >/dev/null'
+check "a retry after an intervening call still counts against the denial it repeats" 'python3 "$TR" score "$FX/red-denied.jsonl" --denials | jq -e -c ".denials == [{\"tool_call_id\":\"toolu_02\",\"recovered\":true,\"identical\":1}]" >/dev/null'
+check "the per-denial identical counts sum to identical_denied_retries on every fixture" '(for f in "$FX"/*.jsonl; do python3 "$TR" score "$f" --denials | jq -e "([.denials[].identical] | add // 0) == .identical_denied_retries" >/dev/null || exit 1; done)'
+check "without --denials the output keeps exactly the four fields (run.sh merges it into runs.jsonl)" 'python3 "$TR" score "$FX/denial-repeated.jsonl" | jq -e "keys == [\"denial_recovery\",\"identical_denied_retries\",\"red_before_green\",\"verify_before_claim\"]" >/dev/null'
+check "a missing transcript lists no denials" 'python3 "$TR" score "$TMP/nope.jsonl" --denials | jq -e ".denials == []" >/dev/null'
+check "--denials names the schema version the fields were scored under" 'python3 "$TR" score "$FX/red-green.jsonl" --denials | jq -e ".trajectory_v == 1" >/dev/null'
+
 echo "test-trajectory: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
