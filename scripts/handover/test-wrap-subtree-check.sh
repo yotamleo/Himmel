@@ -413,13 +413,12 @@ eq 'the chain without its hud node is exempt too: rc 0 (HIMMEL-4161)' 0 "$rc"
 # (c) a non-chain child anywhere withholds, and only it (plus anything under it).
 { cat "$W/chain-full.txt"; printf '  510   500       00:00 sleep 100\n'; } > "$W/chain-extra-under-hud.txt"
 out="$(run "$W/chain-extra-under-hud.txt" 101 2>&1)"; rc=$?
-eq 'a non-chain child of the hud node withholds: rc 1 (HIMMEL-4161)' 1 "$rc"
-contains 'exactly the extra child withholds (HIMMEL-4161)' "$out" 'WITHHELD: 1 process(es) still alive under claude pid 101'
-contains 'the extra child is named (HIMMEL-4161)' "$out" '  pid=510 ppid='
+eq 'a non-chain child of the hud node is a chain descendant, ignored: rc 0 (HIMMEL-4592)' 0 "$rc"
+contains 'the extra hud child is listed as ignored via the chain top (HIMMEL-4592)' "$out" 'ignored pid=510 ppid=500 etime=00:00 why=statusline-chain via=500 cmd=sleep 100'
 { cat "$W/chain-full.txt"; printf '  511   505       00:00 sleep 100\n'; } > "$W/chain-extra-deep.txt"
 out="$(run "$W/chain-extra-deep.txt" 101 2>&1)"; rc=$?
-eq 'a non-chain child deep in the chain withholds: rc 1 (HIMMEL-4161)' 1 "$rc"
-contains 'the deep extra child is named (HIMMEL-4161)' "$out" '  pid=511 ppid='
+eq 'a non-chain child deep in the chain is a chain descendant, ignored: rc 0 (HIMMEL-4592)' 0 "$rc"
+contains 'the deep extra child is listed as ignored (HIMMEL-4592)' "$out" 'ignored pid=511 '
 # A chain member beneath a non-chain parent: the parent withholds, the member is
 # NOT laundered by its own shape.
 printf '  520   101    00:10:00 sleep 100\n  521   520       00:00 bash %s/statusline/hud-custom-lines.sh\n' "$SL" > "$W/chain-under-sleep.rows"
@@ -427,6 +426,33 @@ printf '  520   101    00:10:00 sleep 100\n  521   520       00:00 bash %s/statu
 out="$(run "$W/chain-under-sleep.txt" 101 2>&1)"; rc=$?
 eq 'a chain member under a non-chain parent withholds: rc 1 (HIMMEL-4161)' 1 "$rc"
 contains 'both the parent and the member are named (HIMMEL-4161)' "$out" 'WITHHELD: 2 process(es)'
+# (e) HIMMEL-4592: a git/other child the statusline chain itself spawns (claude-hud
+# runs `git status --porcelain` in the session cwd, new pid each render, etime
+# 00:00) is a DESCENDANT of an ignored chain node and inherits the ignore, matched
+# by the parent chain. A leg-owned git (child of a tool-call wrapper or of the
+# session) is not under a chain node and still withholds.
+{ cat "$W/chain-full.txt"; printf '  540   500       00:00 git status --porcelain\n  541   507       00:00 git -C /home/u/w rev-parse HEAD\n'; } > "$W/chain-git-child.txt"
+out="$(run "$W/chain-git-child.txt" 101 2>&1)"; rc=$?
+eq 'a git child of the hud chain is harness: rc 0 (HIMMEL-4592)' 0 "$rc"
+contains 'the hud git children are counted as ignored (HIMMEL-4592)' "$out" 'CLOSABLE: no non-harness process under claude pid 101 (10 harness-owned children ignored)'
+contains 'the hud git child is listed via the chain top (HIMMEL-4592)' "$out" 'ignored pid=540 ppid=500 etime=00:00 why=statusline-chain via=500 cmd=git status --porcelain'
+cat > "$W/leg-git-child.txt" <<FIX
+    1     0 40-00:00:01 /sbin/init
+  101     1    05:00:00 claude --model claude-sonnet-5 -n HIMMEL-111-N61 work
+  500   101       00:00 node $HUD
+  540   500       00:00 git status --porcelain
+  550   101    00:10:00 /usr/bin/zsh -c source /home/u/.claude/shell-snapshots/snapshot-zsh-5-e.sh && eval 'sleep 999 & git log'
+  551   550    00:10:00 git status --porcelain
+  552   550    00:10:00 sleep 999
+  553   101    00:10:00 git status --porcelain
+FIX
+out="$(run "$W/leg-git-child.txt" 101 2>&1)"; rc=$?
+eq 'leg-owned git children still withhold beside a hud git child: rc 1 (HIMMEL-4592)' 1 "$rc"
+contains 'exactly the four leg-owned processes withhold (HIMMEL-4592)' "$out" 'WITHHELD: 4 process(es) still alive under claude pid 101'
+contains 'a git under a leg wrapper is named (HIMMEL-4592)' "$out" '  pid=551 ppid='
+contains 'a leg sleep under a leg wrapper is named (HIMMEL-4592)' "$out" '  pid=552 ppid='
+contains 'a git directly under the session is named (HIMMEL-4592)' "$out" '  pid=553 ppid='
+lacks 'the hud git child is not withheld (HIMMEL-4592)' "$out" '  pid=540 ppid='
 # (d) look-alike paths all withhold.
 cat > "$W/chain-decoys.txt" <<'FIX'
     1     0 40-00:00:01 /sbin/init
