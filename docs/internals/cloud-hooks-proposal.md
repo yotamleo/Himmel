@@ -125,22 +125,31 @@ CLAUDE_PROJECT_DIR=<clone>`, so qmd, graphify, `HIMMEL_REPO`, `HANDOVER_DIR` and
 home state were absent. Each hook got a benign Bash payload, and each guard also got a
 payload it must refuse.
 
-**Not yet observed in a real cloud session.** The cloud probe was refused by
-`bank-preflight.sh` (seven-day bank at 85 %); its brief and the reconciliation of this
-table are HIMMEL-4429. The simulation does not reproduce the cloud's own `/tmp`,
-installed tools, or the connector tool names.
+**Observed in two real cloud sessions on 2026-10-06** (probe P1, HIMMEL-4429;
+reports are HIMMEL-4206 comments 34054 and 34055, from an environment built by the
+`docs/setup/cloud-environment.md` recipe). Both sessions ran all 25 wired hooks
+directly under `CLAUDE_CODE_REMOTE=true` with a benign Bash payload: every one
+exited rc 0 with no stderr, the slowest in 136 ms (`block-write-into-main-checkout`).
+`shadow-ledger` (node) and `session-run-hook` (bun) also exited rc 0. qmd, graphify
+and konsole are absent there; tmux, `at`, node 22, bun 1.3, jq 1.7, shellcheck 0.9.0
+and pre-commit 4.6.2 are present. In the Bash tool's shell, `HIMMEL_REPO` and
+`HANDOVER_DIR` are unset and `CLAUDE_PROJECT_DIR` is empty, but the hook chains still
+resolve `$CLAUDE_PROJECT_DIR`. No SessionStart hook printed anything at startup,
+which matches the silent fail-open rows below. The table keeps the simulation's
+columns. The **Cloud verdict** column now records what the cloud showed; a row marked
+*simulation only* was not exercised by a guard call in the cloud.
 
 | Hook | Reaches for | Benign call | Guard call | Cloud verdict |
 |---|---|---|---|---|
-| block-destructive-commands, block-git-stash | (graphify in a comment only) | rc 0 | `git reset --hard HEAD` / `git stash`: rc 2, denied | **Guard holds** |
-| block-edit-on-main | primary-checkout test | rc 0 | Write in the clone: rc 2, denied | **Fails closed by design**: work in a worktree (template step 3) |
-| block-write-into-main-checkout | anchor / primary | rc 0 | `git checkout -b` in the clone: rc 2, denied | **Fails closed by design** (same remedy) |
-| block-edit-live-settings | primary `.claude/` | rc 0 | Write `.claude/settings.json`: rc 2, denied | **Guard holds** |
-| block-read-secrets, require-quiet-run, block-chokepoint-env-prefix | none | rc 0 | a read of the dotenv file, a bare suite, a seam prefix: rc 2, denied | **Guard holds** |
-| guard-pr-check-literal | `HIMMEL_REPO` (45 refs) | rc 0 | relative `scripts/cr/pr-check-context.sh`: rc 2, "HIMMEL_REPO is unset" | **Fails closed**: a cloud session cannot run `/pr-check`; intended, the shepherd runs it |
+| block-destructive-commands, block-git-stash | (graphify in a comment only) | rc 0 | `git reset --hard HEAD` / `git stash`: rc 2, denied | **Guard holds, observed**: both denied in the cloud; `git status` / `git log` allowed |
+| block-edit-on-main | primary-checkout test | rc 0 | Write in the clone: rc 2, denied | **Fails closed by design, observed**: the cloud clone (`/home/user/Himmel`) is a primary checkout on a `claude/…` branch, so every in-clone Write is denied; work in a worktree (template step 3). A Write outside the clone was allowed |
+| block-write-into-main-checkout | anchor / primary | rc 0 | `git checkout -b` in the clone: rc 2, denied | **Fails closed by design** (same remedy); benign call rc 0 in the cloud, guard call *simulation only* |
+| block-edit-live-settings | primary `.claude/` | rc 0 | Write `.claude/settings.json`: rc 2, denied | **Guard holds**; benign call rc 0 in the cloud, guard call *simulation only* |
+| block-read-secrets, require-quiet-run, block-chokepoint-env-prefix | none | rc 0 | a read of the dotenv file, a bare suite, a seam prefix: rc 2, denied | **Guard holds**. Observed: `require-quiet-run` allowed the `quiet-run` suite call (rc 0, all checks passed). `block-chokepoint-env-prefix` also refused, in both sessions, a heredoc that wrote and ran a read-only probe script (`f="scripts/hooks/$h.sh"`, no seam variable): a false positive, HIMMEL-4572 |
+| guard-pr-check-literal | `HIMMEL_REPO` (45 refs) | rc 0 | relative `scripts/cr/pr-check-context.sh`: rc 2, "HIMMEL_REPO is unset" | **Fails closed**: a cloud session cannot run `/pr-check`; intended, the shepherd runs it. `HIMMEL_REPO` confirmed unset in the cloud; guard call *simulation only* |
 | block-bare-qmd-query | qmd | rc 0 | bare `qmd query`: rc 2 even with qmd absent | **Guard holds** (denies a command that would fail anyway) |
 | auto-approve-safe-bash | `HANDOVER_DIR`, `HIMMEL_REPO`, Jira dist | allow for `true`, 10 ms | n/a | **Fail open, correct**: anchor-dependent branches simply do not match |
-| block-backend-tier | Jira dist | rc 0 | n/a | **Inert**: its matcher is the local plugin's `mcp__plugin_atlassian_atlassian__*`; the cloud connector's tool name differs (to confirm in HIMMEL-4429), and the CLI has no credentials there, so the MCP is the right route |
+| block-backend-tier | Jira dist | rc 0 | n/a | **Inert**: its matcher is the local plugin's `mcp__plugin_atlassian_atlassian__*`; the cloud connector's tool name differs (still unconfirmed: the Atlassian connector was switched off in both probe chats at start-up, so its tool names never loaded), and the CLI has no credentials there, so the MCP is the right route |
 | block-jira-compound-write | Jira dist | rc 0 | n/a | **Inert**: no authenticated CLI in the cloud |
 | auto-arm-on-cap, auto-arm-on-subagent-cap, console-compact-reinject, console-precompact-snapshot, stop-console-idle-guard, guard-relay-writes | handover root | rc 0, silent, 2-72 ms | n/a | **Fail open, correct**: no handover root means no console or relay state to act on |
 | inject-initiative | `HIMMEL_REPO` | rc 0, silent | n/a | Fail open, correct (no initiative in the cloud) |
@@ -153,6 +162,8 @@ installed tools, or the connector tool names.
 and every hook that reaches for absent user-level state went silent with rc 0. Two
 fail closed in the cloud by design (edit-on-main, write-into-main-checkout: the
 worktree step answers both), and one fails closed on purpose (`guard-pr-check-literal`:
-the shepherd owns `/pr-check`). The simulation found **no hook that needs a change**,
-so no hook-change ticket is filed yet; HIMMEL-4429 files one for any row the real
-cloud run contradicts.
+the shepherd owns `/pr-check`). The real cloud run (HIMMEL-4429) contradicts no row:
+no hook crashed, hung or wrote stderr, and every guard it exercised denied. Its one
+wrong refusal is the `block-chokepoint-env-prefix` heredoc false positive, filed as
+HIMMEL-4572 (v1.0.2, label cloud). It is not cloud-specific, and the Write-then-run
+shape the probe brief prescribes avoids it.

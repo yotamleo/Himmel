@@ -45,13 +45,10 @@
 # (HIMMEL-4273): skills load and plugin hooks fire in the session.
 # Test seam: HIMMEL_CLOUD_ROOT (default: this script's repo) is the tree to act
 # on; scripts/cloud/test-setup-env.sh points it at a fixture.
-# HIMMEL_CLOUD_PROFILE_D (default /etc/profile.d) is where step 6 persists the
-# timeouts.
 #
-# ponytail: BASH_DEFAULT_TIMEOUT_MS is persisted via $PROFILE_D, which only
-# reaches shells that source it; the environment's own "Environment variables"
-# field is the documented route and wins, upgrade = drop the profile.d write once
-# a cloud session proves that field alone sets it (HIMMEL-4206).
+# The Bash timeouts are NOT set here: the environment's "Environment variables"
+# field sets them. A cloud probe showed an /etc/profile.d write never reaches
+# the Bash tool's shell (HIMMEL-4429); see docs/setup/cloud-environment.md.
 set -uo pipefail
 
 DRY=0
@@ -70,8 +67,6 @@ while [ "$#" -gt 0 ]; do
 done
 
 ROOT="${HIMMEL_CLOUD_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-PROFILE_D="${HIMMEL_CLOUD_PROFILE_D:-/etc/profile.d}"
-TIMEOUT_MS=600000  # the cloud's Bash maximum; the default is 2 minutes
 failed=0
 TMO=timeout   # gnu-ok: runs only on the Ubuntu 24.04 cloud VM (GNU coreutils, apt)
 
@@ -95,6 +90,23 @@ soft_step() {
   "$@" || echo "setup-env: step $name FAILED (non-fatal, session still starts)" >&2
 }
 
+# build_step: soft_step for the slow npm builds (HIMMEL-4429). Output goes to a
+# log, and a failure prints `step=<name> FAILED <reason>` plus the log tail, so a
+# dead build is never silent in the setup log.
+LOG_D="${TMPDIR:-/tmp}/himmel-setup-logs"
+build_step() {
+  local name="$1" action="$2" detail="$3"; shift 4
+  plan "$name" "$action" "$detail"
+  [ "$DRY" -eq 1 ] && return 0
+  mkdir -p "$LOG_D"
+  local log="$LOG_D/$name.log" rc=0
+  "$@" > "$log" 2>&1 || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  local why="rc=$rc"; [ "$rc" -eq 124 ] && why="timed out (rc=124)"
+  echo "step=$name FAILED $why (non-fatal, session still starts) log=$log" >&2
+  tail -n 20 "$log" >&2
+}
+
 apt_install() { # apt_install <pkg>: plain install first, refresh only on failure
   $TMO 120 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 "$1" \
     || { $TMO 120 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=60 \
@@ -113,33 +125,7 @@ else
   run_step pre-commit install "pip" -- $TMO 120 python3 -m pip install --disable-pip-version-check --break-system-packages pre-commit
 fi
 
-# 4. Jira CLI dist: deps + tsc, offline-capable after install, no secret.
-JIRA_DIR="$ROOT/scripts/jira"
-if [ -f "$JIRA_DIR/dist/index.js" ]; then
-  plan jira-dist skip "built"
-else
-  run_step jira-dist build "npm ci + tsc" -- sh -c "cd '$JIRA_DIR' && $TMO 240 npm ci --no-audit --no-fund && $TMO 120 npm run build"
-fi
-
-# 5. obsidian-triage tool deps (js-yaml + playwright) the marketplace suites import.
-OT="$ROOT/marketplace/plugins/obsidian-triage/tools"
-if [ -d "$OT/node_modules" ]; then
-  plan obsidian-deps skip "present"
-elif [ -f "$OT/ensure-deps.sh" ] || [ "$DRY" -eq 1 ]; then
-  run_step obsidian-deps install "ensure-deps.sh" -- $TMO 240 bash "$OT/ensure-deps.sh"
-else
-  plan obsidian-deps skip "no ensure-deps.sh in this tree"
-fi
-
-# 6. environment: Bash timeouts. Exported for this script, persisted for later shells.
-export BASH_DEFAULT_TIMEOUT_MS="$TIMEOUT_MS" BASH_MAX_TIMEOUT_MS="$TIMEOUT_MS"
-plan env export "BASH_DEFAULT_TIMEOUT_MS=$TIMEOUT_MS BASH_MAX_TIMEOUT_MS=$TIMEOUT_MS"
-if [ "$DRY" -eq 0 ] && [ -d "$PROFILE_D" ] && [ -w "$PROFILE_D" ]; then
-  printf 'export BASH_DEFAULT_TIMEOUT_MS=%s\nexport BASH_MAX_TIMEOUT_MS=%s\n' "$TIMEOUT_MS" "$TIMEOUT_MS" > "$PROFILE_D/himmel-cloud.sh" \
-    || { echo "setup-env: could not persist the Bash timeouts to $PROFILE_D" >&2; failed=$((failed + 1)); }
-fi
-
-# 7. plugin cloud profile (HIMMEL-4273): install exactly $PLUGINS. Non-fatal.
+# 4. plugin cloud profile (HIMMEL-4273): install exactly $PLUGINS. Non-fatal.
 if [ -n "$PLUGINS" ]; then
   if have claude || [ "$DRY" -eq 1 ]; then
     soft_step plugins-marketplace add "$ROOT/marketplace" -- $TMO 120 claude plugin marketplace add "$ROOT/marketplace"
@@ -157,6 +143,27 @@ if [ -n "$PLUGINS" ]; then
   else
     plan plugins skip "claude CLI absent in the setup VM"
   fi
+fi
+
+# 5-6. The slow npm builds run LAST and soft (HIMMEL-4429): a cloud setup died
+# silently inside the jira build and took the plugins with it. A failure prints
+# its reason and log tail and never stops the session.
+# 5. Jira CLI dist: deps + tsc, offline-capable after install, no secret.
+JIRA_DIR="$ROOT/scripts/jira"
+if [ -f "$JIRA_DIR/dist/index.js" ]; then
+  plan jira-dist skip "built"
+else
+  build_step jira-dist build "npm ci + tsc" -- sh -c "cd '$JIRA_DIR' && $TMO 150 npm ci --no-audit --no-fund && $TMO 60 npm run build"
+fi
+
+# 6. obsidian-triage tool deps (js-yaml + playwright) the marketplace suites import.
+OT="$ROOT/marketplace/plugins/obsidian-triage/tools"
+if [ -d "$OT/node_modules" ]; then
+  plan obsidian-deps skip "present"
+elif [ -f "$OT/ensure-deps.sh" ] || [ "$DRY" -eq 1 ]; then
+  build_step obsidian-deps install "ensure-deps.sh" -- $TMO 120 bash "$OT/ensure-deps.sh"
+else
+  plan obsidian-deps skip "no ensure-deps.sh in this tree"
 fi
 
 if [ "$failed" -ne 0 ]; then echo "setup-env: $failed step(s) failed" >&2; exit 1; fi

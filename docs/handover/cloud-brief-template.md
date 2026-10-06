@@ -57,6 +57,11 @@ himmel-ops 0.4.22, lean-skills 0.2.2).
 
 ## One-time operator setup
 
+The recommended environment, field by field (name, network, environment
+variables, setup script, CLI default via `/remote-env`, cache refresh), is
+[`docs/setup/cloud-environment.md`](../setup/cloud-environment.md). The steps
+below are the background and the plugin-free variant.
+
 1. **Environment setup script.** At claude.ai, open the cloud environment's
    settings and paste into "Setup script":
 
@@ -70,11 +75,11 @@ himmel-ops 0.4.22, lean-skills 0.2.2).
    Keep the trailing `|| true`: a non-zero setup script stops the session from
    starting, and a failed clone or step should cost a tool, not the session.
    It installs shellcheck, `at`, pre-commit, builds the Jira CLI dist (no
-   secret), installs the obsidian-triage tool deps and sets
-   `BASH_DEFAULT_TIMEOUT_MS`/`BASH_MAX_TIMEOUT_MS` to 600000. It is idempotent
-   and bounded to fit the platform's roughly 5-minute setup cache. Also set both
-   timeout variables in the environment's own "Environment variables" field: that
-   field is the documented route, the script's profile.d write is a fallback.
+   secret) and installs the obsidian-triage tool deps. It is idempotent and
+   bounded to fit the platform's roughly 5-minute setup cache. Set
+   `BASH_DEFAULT_TIMEOUT_MS=600000` and `BASH_MAX_TIMEOUT_MS=600000` in the
+   environment's own "Environment variables" field: a cloud probe showed that
+   field is the only route that reaches the Bash tool (HIMMEL-4429).
    Network access: "Trusted" is enough for apt, pip and npm.
 2. **Skills.** `bash scripts/cloud/package-skills.sh` writes one zip per skill
    under `${TMPDIR:-/tmp}/himmel-cloud-skills`. Upload each at claude.ai
