@@ -81,6 +81,17 @@ It prints two URLs: the config page, then
 modification time; `--agui <session-id>` picks one session. The server runs in
 the foreground (Ctrl-C to stop); an open stream keeps it from idling out.
 
+![The AG-UI page streaming a run: a prompt, two parallel tool calls on the run strip, then the answer](docs/agui-live-run.gif)
+
+*A live stream over the real SSE path, not a mock: a fixture session journal is
+appended to while the page is open, and the page renders each event as the
+server pushes it.* Regenerate it from your own terminal (needs `ffmpeg`, the
+built `agui-web/dist`, and Playwright's Chromium build 1243):
+
+```bash
+bash scripts/config-ui/tests/e2e/record-agui-gif.sh
+```
+
 The view logic is a pure reducer (`agui-web/src/reducer.ts`) with no runtime
 imports, so its suite runs in CI without an install.
 
@@ -103,6 +114,11 @@ imports, so its suite runs in CI without an install.
   (stub via `CONFIG_UI_HIMMELCTL`; the live station feed never runs). The
   bundle order comes from `scripts/himmelctl/lib/feed-bundles.json`.
   `E2E_BREAK=order` feeds a mis-ordered bundle list: the suite must go red.
+- AG-UI page e2e (HIMMEL-4480, `agui.e2e.ts`, same opt-in suite): needs
+  `agui-web/dist` built (see above; the tests skip when it is absent). Each
+  test boots `himmelctl ui --agui` against a temp `HOME` and appends journal
+  lines while the page is open, asserting the live render, the wrong-token
+  error state, and both themes at desktop and phone width.
 
 ## Manual pass (the same 7 items)
 
