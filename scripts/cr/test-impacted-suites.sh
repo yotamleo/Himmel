@@ -61,6 +61,7 @@ mkf scripts/eval/guard-corpus/diff
 mkf scripts/test-diff-word.sh 'diff -u a b'
 mkf scripts/test-guard-corpus.sh 'bash "$d/eval/guard-corpus/diff"'
 mkf scripts/test-diff-fullpath.sh 'bash scripts/eval/guard-corpus/diff'
+mkf scripts/test-diff-var.sh 'DIFF="$HERE/diff"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -176,6 +177,8 @@ change scripts/eval/guard-corpus/diff
 out="$(run_is "$range")"
 if ! grepq "$out" 'test-diff-word\.sh'; then pass "extensionless diff: a bare common-word mention is not listed"; else fail "bare 'diff' suite over-listed: $out"; fi
 if grepq "$out" '^scripts/test-guard-corpus\.sh$' && grepq "$out" '^scripts/test-diff-fullpath\.sh$'; then pass "extensionless diff: suites naming guard-corpus/diff or the full path stay listed"; else fail "path-naming suite under-listed: $out"; fi
+# A suite-local variable ($HERE/diff) still ends in /diff, so it stays listed.
+if grepq "$out" '^scripts/test-diff-var\.sh$'; then pass "extensionless diff: a variable-built \$HERE/diff reference stays listed"; else fail "\$HERE/diff suite under-listed: $out"; fi
 
 # --- 12. the answer does not depend on the cwd it is run from ----------------
 # git ls-tree / git grep are cwd-scoped; from a subdirectory the suites one

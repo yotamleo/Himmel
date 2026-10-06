@@ -487,7 +487,13 @@ generic_re='^(README\.md|CLAUDE\.md|SKILL\.md|CHANGELOG\.md|index\.(js|mjs|ts)|p
 needle_ere() {
     local esc
     esc=$(printf '%s' "$1" | sed 's/[.[\*^$+?(){}|]/\\&/g') || io_fail "escaping a needle"
-    printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])' "$esc"
+    case "$1" in
+        # A `/name` needle (extensionless file, HIMMEL-4606) is its own boundary:
+        # it matches `guard-corpus/diff`, the full path and a variable-built
+        # `$HERE/diff`, but never a bare `diff -u`.
+        /*) printf '%s($|[^A-Za-z0-9_-])' "$esc" ;;
+        *) printf '(^|[^A-Za-z0-9_.-])%s($|[^A-Za-z0-9_-])' "$esc" ;;
+    esac
 }
 # needle_tail_ere <literal> — the needle without its leading boundary, for a
 # caller whose own pattern already ends in the separating character.
@@ -500,19 +506,22 @@ add_needle() {
     { needle_ere "$1"; printf '\n'; } >> "$pats" || io_fail "writing a needle"
 }
 
-# file_literal <path> — the text a suite would use to name the file: its
+# file_literal <path> [src] — the text a suite would use to name the file: its
 # basename, or "<parent>/<name>" for a generic one. An extensionless basename
-# (`diff`, `gen`) is a common word, so it takes the path rule too (HIMMEL-4606:
-# scripts/eval/guard-corpus/diff listed 362 suites on a bare `diff`).
+# (`diff`, `gen`) is a common word, so it is named `/<name>` (HIMMEL-4606:
+# scripts/eval/guard-corpus/diff listed 362 suites on a bare `diff`); a source
+# or assignment pattern (`src`) keeps the bare name, it is already anchored.
 file_literal() {
     local f="$1" name="${1##*/}" parent
-    if grep -Eq "$generic_re" <<< "$name" || case "$name" in *.*) false ;; *) true ;; esac; then
+    if grep -Eq "$generic_re" <<< "$name"; then
         case "$f" in
             */*) parent="${f%/*}"; printf '%s/%s\n' "${parent##*/}" "$name" ;;
             # Repo root: no parent to qualify it, so the bare name is the only
             # needle — it also matches sub-directory copies (over-approximates).
             *) printf '%s\n' "$name" ;;
         esac
+    elif [ "${2:-}" != src ] && [ "${f#*/}" != "$f" ] && case "$name" in *.*) false ;; *) true ;; esac; then
+        printf '/%s\n' "$name"
     else
         printf '%s\n' "$name"
     fi
@@ -587,9 +596,9 @@ while [ -s "$front" ]; do
     : > "$work/asgpats"
     : > "$work/dirpats"
     while IFS= read -r f; do
-        { printf '%s(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?' "$src_lead"; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
-        { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
-        { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
+        { printf '%s(source|\\.)[[:space:]]([^#]*[^A-Za-z0-9_.-])?' "$src_lead"; needle_tail_ere "$(file_literal "$f" src)"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
+        { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$(file_literal "$f" src)"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
+        { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$(file_literal "$f" src)"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
     done < "$front"
     closure_grep "$work/srcpats" "$work/hit.src" "walking the source closure"
     closure_grep "$work/dirpats" "$work/hit.dir" "reading shellcheck source directives"
