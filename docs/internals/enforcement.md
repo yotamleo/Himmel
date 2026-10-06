@@ -2251,8 +2251,9 @@ names `bank-lift.json` or `bank-lift.sh` ANYWHERE — inside `$( )`, backticks,
 heredoc bodies and pipelines, after quote removal and `$'…'` decoding — the
 command passes only if EVERY clause at every depth (pipeline stages,
 substitution bodies, `-c` bodies, `&&`/`||`/`;` lists) is a reader under the
-limits below or `bash <path>/bank-lift.sh show|clear` (also direct, the
-script word spelled literally), AND no redirect writes anywhere but
+limits below or `bash scripts/lib/bank-lift.sh show|clear` (also direct, the
+script word spelled literally, and only the repo's own copy — see HIMMEL-4458
+below), AND no redirect writes anywhere but
 `/dev/null` (`>`, `>>`, `<>`, `>|`, `&>`, `&>>`; fd dups such as `2>&1` are
 fine). `xargs` is not a wrapper here, so any `xargs` clause denies; so does an
 assignment to a variable a reader or the loader obeys (`LESS*`, `RIPGREP_*`,
@@ -2262,20 +2263,166 @@ assignment to a variable a reader or the loader obeys (`LESS*`, `RIPGREP_*`,
 exactly `/usr/bin/<name>` / `/bin/<name>`: `/tmp/cat`, `./cat`, `~/bin/less`
 or `/tmp/env cat` is whatever was planted there, so it denies (both layers).
 A lift-naming command the
-tokenizer cannot parse reliably (an unclosed quote or substitution, a quoted
-heredoc delimiter containing a space) denies. Over-deny is accepted:
+tokenizer cannot parse reliably (an unclosed quote or substitution, a
+heredoc delimiter whose quote does not close on its line) denies; a quoted
+delimiter with a space (`<<'END MARK'`, `<<"E F"`, `<<"E"' F'`) is read as
+one word, as bash does. Over-deny is accepted:
 `test -f <lift> && echo yes`, `cat <lift> > /tmp/copy`, `set -e; bash
 …/bank-lift.sh show`, a heredoc commit message naming the lift, and a
 write to any lift-NAMED file (`/tmp/x/bank-lift.json`) all deny; split the
 command, or put text in a file. Residual (ponytail): a lift name obfuscated
-by a glob or brace inside a substitution does not trigger this layer; and
-the `bank-lift.sh` script word is still trusted by basename, so a planted
-`/tmp/x/bank-lift.sh show` passes (known gap, HIMMEL-4458).
+by a glob or brace inside a substitution does not trigger this layer.
+HIMMEL-4458 closed these gaps:
+- **Repo-anchored script.** `bank-lift.sh show|clear` passes only when the
+  script word resolves (physically) to `<repo>/scripts/lib/bank-lift.sh` of
+  the checkout the hook runs from, or of one of its `.claude/worktrees/*`:
+  `scripts/lib/bank-lift.sh` or `./scripts/lib/bank-lift.sh` from that root
+  with no `cd` in the command, or an absolute / `~` / `$HOME` path. A planted
+  `/tmp/x/bank-lift.sh show`, a relative path from another cwd, or a
+  `worktrees/w1/../../..` escape denies. The script itself must be a regular
+  file, not a symlink, whose directory resolves physically to that checkout's
+  `scripts/lib`: a symlinked `scripts/lib` or `bank-lift.sh` pointing out of
+  the checkout denies, as does a path that does not resolve. A symlinked path
+  to the checkout itself still passes, since it resolves to the same root.
+- **`cp --parents` / `rsync -R` (`--relative`).** These recreate the source's
+  path under the destination, so the created path (destination + source,
+  rsync's `/./` marking the start) is judged: a glob-spelled
+  `.himmel/state/bank-l?ft.json` copied with `--parents` into `~` denies.
+- **Split names in inline code.** Interpreter / `sed e` code also matches once
+  quotes, `+`, commas, backticks and blanks are dropped, so
+  `"bank"+"-"+"lift"+".json"` and `"ba"+"nk-lift.sh"` deny; prose such as
+  `"bank-lift show"` does not (the joined form needs a separator before `sh`).
+- **Archive extraction.** `tar`/`gtar`/`bsdtar` extracting (`-x`, a bundled or
+  old-style `x`, `--extract`, `--get`; not `-O`/`--to-stdout`), `unzip` (not
+  `-l`/`-t`/`-v`/`-Z`/`-p`/`-c`) and `cpio -i`/`--extract` deny when the
+  destination (`-C`, `-C<dir>`, `--directory[=]`, `-d`, `-d<dir>`, `-D`) is
+  HOME, `~/.himmel` or its state dir — a member can be
+  `.himmel/state/bank-lift.json`. With no destination option the effective
+  cwd counts: the hook's cwd, or — with a directory-changing word in the
+  command — unknown, which denies (see Unproven cwd). An option's operand is never read as a
+  flag: `tar -xf -O -C ~` names the archive `-O` and still denies (tar
+  `-f -C -T -X -b -I` and GNU-only `-H -K -N -V -g -F -L`, the long forms that
+  take one, unzip `-d -P -O -I`, cpio `-F -E -H -I -O -D -R -M -C`). A letter
+  whose arity differs between GNU tar and bsdtar (plain `tar -s`, `-L`, ...),
+  or an unknown long option, makes the next word untrusted as `-O`; a
+  destination option spelled as another option's operand judges the cwd and
+  every later word.
+- **Unproven cwd: relative destinations deny.** The fence does not model the
+  cwd through shell control flow (a cd may fail, be skipped, run in a
+  subshell or go through CDPATH). The cwd is the hook's own cwd unless a
+  directory-changing word appears anywhere in the command — raw text or
+  dequoted tokens: `cd`, `pushd`, `popd`, `eval`, `su`, `runuser`, `chroot`,
+  `CDPATH`, any `chdir`, `find -execdir`, a `(` or backtick (subshell, `$( )`,
+  `<( )`, `$(( ))`), a `{ … }` group, `env`/`sudo` with `-C`/`-i`, or a shell
+  running a `-c` string. Then the cwd is unknown for the whole command, and an
+  extraction with no destination option, or a RELATIVE (or computed `$VAR`)
+  destination of an extraction or of `cp`/`mv`/`install`/`rsync`/`ln`
+  (destination, `--parents` path, link source, missing-ancestor check),
+  denies. An absolute, `~` or `$HOME` destination is judged exactly as with a
+  known cwd, so `cd /x; tar -xf a.tar -C /var/out` is allowed. Remedy (named in
+  the deny): use an absolute destination (`tar -C /abs`, `cp … /abs`), or run
+  the command on its own without the directory-changing word. Over-deny vs the
+  previous per-operator cd modelling, per cwd: p22-samp 66 of 20 601, p22-hot
+  28 of 5 602, p22-hist 27 of 4 789, write-fence templates 4 of 771,
+  suite-1874 2 of 317, p22-gen 0, corpus 0 — mostly `S=/abs; …; cp x "$S/"`
+  (a computed destination) in a command that also has a `$( )`, `(` or cd.
+- **Extraction options are allowlisted.** While extracting, any option the
+  destination check does not model denies, long or short, bundled letters
+  included, so `--one-top-level=DIR`, `--transform`, `-P`/`--absolute-names`,
+  `-h`, `-X`, `-N` and abbreviated long names all deny. Allowed: tar `-x -f -C
+  -z -j -J -v -o -m -k -p` (dashed, bundled or old-style `xzf`), `--extract`,
+  `--get`, `--file`, `--directory`, `--strip-components`, `--gzip`,
+  `--gunzip`, `--bzip2`, `--xz`, `--zstd`, `--verbose`, `--no-same-owner`,
+  `--no-same-permissions`, `--same-permissions`, `--preserve-permissions`,
+  `--touch`, `--keep-old-files`, `--skip-old-files`; unzip `-o -q -n -j -d`.
+  Every cpio extraction denies (below). Value options take `--opt=V`, `--opt V`, `-fV` and `-f V`. List mode
+  (`tar -t`) is not checked. Over-deny of this and the relative-cd rule vs the
+  previous fence: 0 in every recorded corpus (p22-samp 20 601, p22-hot 5 602,
+  p22-hist 4 789, write-fence templates 771, p22-gen 605, corpus 514,
+  suite-1874 317; both cwds).
+- **tar/unzip mode is allowlisted.** tar/gtar/bsdtar and unzip count as
+  extracting unless a non-extract mode is PROVEN by a real option word: tar
+  `-t -c -r -u -d` (dashed, bundled, or an old-style bundle as argv[1]
+  only), the full long names `--list --create --append --update --diff
+  --compare`, or `-O`/`--to-stdout`; unzip `-l -t -v -Z -p -c`. A member or
+  operand word, a word after a non-option or `--`, and the word after an
+  unknown long option never prove a mode, so `tar --extract --file a.tar
+  --directory "$HOME" O .himmel` (member `O`) and `tar --ge -f a.tar -C
+  "$HOME"` (an abbreviation) deny. An explicit `-x`/`--extract`/`--get`
+  keeps the extract reading. Over-deny vs the previous fence: 0 in every
+  recorded corpus, both cwds.
+- **tar/unzip option variables.** When a command names `TAR_OPTIONS`, `UNZIP`,
+  `UNZIPOPT`, `ZIPINFO` or `ZIPINFOOPT` anywhere, every tar/unzip extraction in
+  that command denies. That covers a prefix, `export`, `env`,
+  `declare`/`typeset`/`local -x`, `readonly`, `printf -v`, `read`, a
+  nameref, `+=` and a nested body. A mere mention also denies, such as
+  `echo $TAR_OPTIONS; tar -xf …`; that over-deny is accepted. A proven
+  non-extract mode still allows. The scan matches the bare, case-sensitive
+  name, so the `unzip` command never matches `UNZIP`. It reads the raw text
+  and the dequoted tokens, like the directory-word scan, so a quote-split
+  name still matches. The value is never parsed. A value inherited from the launching environment is
+  out of scope: each Bash call is a fresh shell the hook cannot see.
+- **Chained tar `-C`.** tar applies each `-C`/`--directory` relative to the one
+  before it, so a relative one is judged as the composed path:
+  `tar -xf x -C "$HOME/projects" -C ..` is HOME and denies (also bundled,
+  attached and `--directory=` spellings, and a relative first `-C` against the
+  cwd). A relative `-C` after a computed one (`-C "$d" -C ..`)
+  fails closed. unzip `-d` is last-one-wins and needs no chain.
+- **Absolute member names.** An extraction that keeps absolute (or `../`)
+  member names writes wherever a member names, whatever the destination, so it
+  denies: tar/gtar/bsdtar `-P` (bundled or old-style too), `--absolute-names`,
+  `--absolute-paths`; `unzip -:` and `-^`. Every cpio extraction (`-i`/
+  `--extract`, and `-p` pass mode) denies whatever its destination: GNU cpio
+  keeps absolute and `../` names by default and `--no-absolute-filenames` is
+  not modelled (fail closed; extract with tar or unzip instead). Listing
+  (`-t`, cpio `--list`), stdout extraction and creation stay allowed. Residuals: `pax`, `7z x` and `bsdcpio` are not in the extractor
+  list; symlink-member traversal (a member symlink then a member written through
+  it) relies on GNU tar's and bsdtar's default protections, which `-P` is what
+  disables.
+- **Computed destinations.** An extraction destination that cannot be
+  resolved — `-C "$D"`, `--directory="$D"`, `unzip -d "$D"`, `$(…)` or
+  backticks — denies; `$HOME` spellings still resolve. A variable assigned a
+  literal earlier in the same command is not tracked, so
+  `S=/tmp/s; tar -xf a -C $S/x` denies too: spell the literal path.
+- **Ancestors of HOME.** Members are relative, so a destination that is a
+  strict ancestor of HOME (`/`, `/home`, `~/..`; whole path components, so
+  `/ho` is not one; compared lexically and physically) reaches the lift with a
+  member such as `home/<user>/.himmel/state/bank-lift.json` and denies: `-C`,
+  `--directory`, `unzip -d`, and the extraction cwd (the hook's cwd). A
+  destination inside HOME other than HOME, `~/.himmel` or its state
+  dir (`-C "$HOME/projects"`) stays allowed.
+- **Directory symlinks.** tar `--keep-directory-symlink` (and its `--keep-d…`
+  abbreviations) follows a directory symlink inside the destination and
+  denies on extraction. Ceiling (a `ponytail:` in the hook): a symlink already
+  inside an allowed destination is followed by default for a member's
+  intermediate path (GNU tar with no directory member, unzip, cpio); unzip and
+  cpio have no opt-in flag to deny.
+- **Linear scan.** The per-word lowercase fork in the name rule and the
+  per-clause basename forks are gone, so a 20k-word command takes well under a
+  second instead of a minute (the hook timed out on ~10k words).
+Accepted over-deny (HIMMEL-4458 item 6): a contents copy into bare HOME
+(`cp -r dotfiles/ ~/`, `rsync -a dir/ ~/`, `cp * ~/`) still denies — the same
+copy can create `.himmel/state/…` from the source tree, and `*` matches
+`.himmel` under `dotglob`.
+Out of the hook's reach by design, bounded at runtime instead: Write-tool
+CONTENT that is itself a script writing the lift, a script FILE that writes
+it without being handed its path, variable indirection that never spells the
+name, a bind mount, and interpreter tricks that never spell it. Judge J1855b
+bounds them where the lift is READ (HIMMEL-4423): `bank-preflight.sh`
+honours a lift only when it is account-bound, owner- and mode-checked,
+bounded by the usage cache's seven_day `resets_at`, and well-formed; anything
+else is no lift. A valid lift skips only the seven_day ceiling — five_hour
+still binds and a full seven_day still refuses — so a forged lift buys at
+most the rest of the current 7-day window. Remaining hook gaps
+(ponytail): an edited or planted copy of `scripts/lib/bank-lift.sh` inside a
+worktree is trusted as the repo's script; and a pure-glob source under a
+computed destination (`cp --parents * "$d"`).
 Name rule (console ruling, applied before the rules above on every clause,
 nested ones included): a clause with a word naming `bank-lift.json` or
 `bank-lift.sh` (not a longer name such as `test-bank-lift.sh`) passes only
-when it is `bash <path>/bank-lift.sh show|clear`, the direct
-`<path>/bank-lift.sh show|clear`, or a reader: `cat`, `less` without
+when it is `bash scripts/lib/bank-lift.sh show|clear` or the direct
+`scripts/lib/bank-lift.sh show|clear` (the repo's own copy, as above), or a
+reader: `cat`, `less` without
 `-o`/`-O`/`--log-file`/`+cmd`, `head`, `stat`,
 `ls`, `file`, `wc`, `test`/`[`, `jq` without `-i`/`--in-place`, `tail` without
 `-f`/`-F`/`--follow`, `grep`/`rg` without `--pre`. The command word is
