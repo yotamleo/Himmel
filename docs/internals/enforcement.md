@@ -1443,6 +1443,35 @@ through `main_checkout_verdict`. The target covers:
   `env`, or by an earlier `export`
 - the cwd set by an earlier `cd` / `pushd` / `env -C`
 
+- a git behind a wrapper (`timeout`, `nice`, `stdbuf`, `ionice`, `sudo`,
+  `chrt`, `taskset`, or `xargs`) — HIMMEL-4365. The cwd fails closed when the
+  wrapper carries a `GIT_*` word, or when an `xargs -I` string lands in a
+  global option, the subcommand, or `--output` and its operand (attached or
+  the next word). A bare `xargs git` reads its
+  subcommand from stdin, so it fails closed too. When stdin words land among
+  the subcommand's arguments (no `-I` string, or the string sits there), an
+  injected option such as `--output=<primary>/x` could turn a read into a
+  write anywhere, so the clause is denied. The exceptions are subcommands
+  with no file-writing option: `add`/`stage`/`rm`/`checkout`/`restore`
+  (their resolved repo is still checked) and the reads `merge-base`,
+  `ls-tree`, `ls-files`, `rev-parse`, `cat-file`, `status`. Words past a bare
+  `--` or `--end-of-options` are never read as options, so they are exempt,
+  unless the word before is an option that may take it as its operand. The
+  cost: a read such as `… | xargs -I{} git log -1 {}` is denied from any cwd;
+  write `git log -1 --end-of-options {}` (revisions) or `-- {}` (paths)
+  instead.
+
+HIMMEL-4365 also checks the file that `--output <file>` names on a read
+subcommand (`diff`, `log`, `show`) as a write operand. So `git -C <primary>
+diff --output=.claude/settings.json` is denied. HIMMEL-4518 treats
+`archive -o <file>`, `format-patch -o <dir>` / `--output-directory[=]<dir>`
+(also `-o` at the end of a bundled cluster such as `-ko <dir>`) and the file
+operand of `bundle create` the same way. Their repo check alone passed from a
+leg cwd, so `git archive -o <primary>/x.tar HEAD` is now denied, while
+`-o /tmp/x.tar` and leg-local paths are allowed. `restore --staged` writes only
+the primary's index, but it is still denied like `add`: the console's next
+commit would carry what the leg staged.
+
 A `cd` may not have run (`false && cd <leg>; git merge x`), so a write is also
 checked from every cwd an earlier `cd` left. The cost is that
 `cd <leg> && git merge x` typed from the primary is denied as well.
