@@ -116,21 +116,52 @@ go_trust_gate() {
     printf '%s\n' "$trust"
 }
 
-# go_trust_verdict <go-root> <qid> <head-sha> — HIMMEL-3832. Before go.sh signs
-# a trust-reviewed GO, the judge it names must have ruled GO on that exact head.
-# The verdict line is the first non-blank line under the `## Verdict` heading
-# (docs/handover/verdict-template.md), and it parses only as exactly
+# go_verdict_scope <anchor> — HIMMEL-4589. The `<user>/<bucket>` a trust verdict
+# for the repo at <anchor> may live under: <user> = user_slug (USER_SLUG from the
+# env, else the anchor's .env, else the forge login), <bucket> = the slugified
+# basename of the anchor's PRIMARY checkout (the parent of its git-common-dir, so
+# a linked worktree names its repo, not its own directory) — the same bucket
+# convention console.sh derives. Both must be a plain path segment
+# ([A-Za-z0-9][A-Za-z0-9._-]*, no `..`); anything unresolved prints nothing and
+# returns 1 (fail closed — never a glob over every bucket). Read-only.
+go_verdict_scope() (
+    unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_CEILING_DIRECTORIES
+    local here slug common repo bucket seg
+    here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+    # shellcheck source=scripts/lib/load-dotenv.sh
+    # shellcheck disable=SC1091
+    . "$here/load-dotenv.sh" 2>/dev/null || exit 1
+    # shellcheck source=scripts/lib/user-slug.sh
+    # shellcheck disable=SC1091
+    . "$here/user-slug.sh" 2>/dev/null || exit 1
+    load_dotenv --root "$1" USER_SLUG >/dev/null 2>&1 || true
+    slug=$(user_slug 2>/dev/null) || exit 1
+    common=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 1
+    repo=$(basename "$(dirname "$common")")
+    bucket=$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')
+    for seg in "$slug" "$bucket"; do
+        case "$seg" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*|*..*) exit 1 ;; esac
+    done
+    printf '%s/%s' "$slug" "$bucket"
+)
+
+# go_trust_verdict <go-root> <qid> <head-sha> <anchor> — HIMMEL-3832. Before
+# go.sh signs a trust-reviewed GO, the judge it names must have ruled GO on that
+# exact head. The verdict line is the first non-blank line under the `## Verdict`
+# heading (docs/handover/verdict-template.md), and it parses only as exactly
 #     **GO** for head `<40-hex sha>`   or   **NO-GO** for head `<40-hex sha>`
 # (one trailing full stop allowed). rc 0 iff <qid> is a path segment
 # ([A-Za-z0-9][A-Za-z0-9._-]*, so never `..` or a `/`), and across every *.md
-# in <go-root>/*/*/verdicts/<qid>/ (any <user>/<bucket>): no file is unparsed,
-# none is NO-GO for <head-sha>, and at least one is GO for <head-sha>. A
-# verdict for another head is ignored (an earlier round). Fail closed: a GO
-# naming no head, trailing text, or no verdict line refuses. rc 2 = refused,
-# the reason on stdout. Read-only.
+# in <go-root>/<user>/<bucket>/verdicts/<qid>/ — ONLY the scope go_verdict_scope
+# resolves for <anchor> (HIMMEL-4589: another user's or repo's verdict dir, which
+# a judge there can write for any qid, never counts; an unresolved scope refuses)
+# — no file is unparsed, none is NO-GO for <head-sha>, and at least one is GO for
+# <head-sha>. A verdict for another head is ignored (an earlier round). Fail
+# closed: a GO naming no head, trailing text, or no verdict line refuses. rc 2 =
+# refused, the reason on stdout. Read-only.
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 go_trust_verdict() {
-    local root="$1" qid="$2" sha="$3" f line word head go=0
+    local root="$1" qid="$2" sha="$3" anchor="${4:-}" f line word head go=0 scope
     case "$qid" in
         [A-Za-z0-9]*) ;;
         *) qid="" ;;
@@ -140,7 +171,11 @@ go_trust_verdict() {
         printf 'the trust id '"'"'%s'"'"' is not a judge qid ([A-Za-z0-9][A-Za-z0-9._-]*), so it names no verdicts/<qid>/ directory — pass the qid of the judge that ruled GO on this head.\n' "$2"
         return 2
     fi
-    for f in "$root"/*/*/verdicts/"$qid"/*.md; do
+    if [ -z "$anchor" ] || ! scope=$(go_verdict_scope "$anchor"); then
+        printf 'cannot resolve this repo'"'"'s <user>/<bucket> verdict scope (USER_SLUG, or the primary checkout of '"'"'%s'"'"') — refusing rather than read every bucket'"'"'s verdicts/%s/.\n' "$anchor" "$qid"
+        return 2
+    fi
+    for f in "$root/$scope/verdicts/$qid"/*.md; do
         [ -f "$f" ] || continue
         line=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }')
         word=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `[0-9a-f]{40}`\.?$/\1/p')
@@ -157,7 +192,7 @@ go_trust_verdict() {
         go=1
     done
     if [ "$go" -ne 1 ]; then
-        printf 'no verdict under %s/<user>/<bucket>/verdicts/%s/ rules **GO** for head `%s` — the judge writes that verdict before a trust-reviewed GO.\n' "$root" "$qid" "$sha"
+        printf 'no verdict under %s/%s/verdicts/%s/ rules **GO** for head `%s` — the judge writes that verdict before a trust-reviewed GO.\n' "$root" "$scope" "$qid" "$sha"
         return 2
     fi
 }
