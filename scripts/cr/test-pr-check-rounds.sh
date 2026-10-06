@@ -58,6 +58,7 @@ done
 if [ -n "${PANEL_DIFF_LAST:-}" ]; then cat > "$PANEL_DIFF_LAST"; else cat >/dev/null; fi
 printf '%s\n' "$head_sha" >> "$PANEL_CALLS"
 printf '%s\n' "${CR_REVIEW_ROUND:-<absent>}" >> "$PANEL_ROUNDS"
+[ "${PANEL_MODE:-clean}" = "fail" ] && exit 1
 ledger="$(git rev-parse --git-common-dir)/cr-critic-scores.jsonl"
 CR_LEDGER="$ledger" bash "$(dirname "$0")/ledger-append.sh" avail \
     --branch "$branch" --head "$head_sha" --model stub --status ok || exit $?
@@ -468,29 +469,96 @@ assert_eq "$evil_rc" "8" "a merge that adds its own edit gets no merge-forward d
 assert_has "$evil_out" "neither answers a round-3 finding nor only merges" "evil-merge refusal names the reason"
 assert_eq "$(cat "$git_dir/cr-review-rounds/evilmerge.round")" "3" "a refused evil merge leaves the counter at 3"
 
-# Later controls only need to observe whether clearance was attempted; the
-# successful paths above deliberately used the real gate.
-install_clear_stub
+# HIMMEL-4616: a delta round whose panel produced no rows is still pending, so
+# the SAME <from> <to> pair may start again without a second counter bump; once
+# a critic reviewed the head, or for any other pair, the one delta round is used.
+three_rounds pendingdelta suggestion
+fix_commit pendingdelta
+pd_r3="$cap_r3_head"
+pd_head="$cap_fix_head"
+pd1_out="$(cd "$repo" && PANEL_MODE=fail bash "$SCRIPT" --head "$pd_head" --branch pendingdelta 2>"$tmp/pd1.err")"; pd1_rc=$?
+assert_eq "$pd1_rc" "0" "a failed delta-round panel run fails open"
+assert_has "$pd1_out" "pr-check: delta round 4 on pendingdelta (from $pd_r3)" "the failed run was the delta round"
+pd2_out="$(cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$pd_head" --branch pendingdelta 2>"$tmp/pd2.err")"; pd2_rc=$?
+assert_eq "$pd2_rc" "0" "a failed delta-round panel run does not consume the delta round"
+assert_has "$pd2_out" "pr-check: delta round 4 on pendingdelta (from $pd_r3)" "the same pair reruns as the delta round"
+assert_eq "$(cat "$git_dir/cr-review-rounds/pendingdelta.round")" "4" "a reused delta round leaves the counter at 4"
+pd3_out="$(cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$pd_head" --branch pendingdelta 2>&1)"; pd3_rc=$?
+assert_eq "$pd3_rc" "8" "a delta round the panel reviewed is used up"
+assert_has "$pd3_out" "delta round was already used" "used-up delta refusal names the reason"
+three_rounds pendingother suggestion
+fix_commit pendingother
+(cd "$repo" && PANEL_MODE=fail bash "$SCRIPT" --head "$cap_fix_head" --branch pendingother >/dev/null 2>&1) || fail "pendingother failed delta setup"
+printf 'more\n' >> "$repo/pendingother.txt"
+git -C "$repo" commit -q -am "more pendingother"
+pdo_out="$(cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$(git -C "$repo" rev-parse pendingother)" --branch pendingother 2>&1)"; pdo_rc=$?
+assert_eq "$pdo_rc" "8" "a pending delta round is never reused for a different head"
+assert_has "$pdo_out" "delta round was already used" "different-pair refusal names the reason"
 
-# In the delta round an Important finding is deferred, not blocking.
+# HIMMEL-4634: round-3 findings are keyed by id + artifact + perspective, so
+# settling one finding does not hide another that shares its id.
+three_rounds keyedr3 clean
+for ap in "diff off" "spec on"; do
+    # shellcheck disable=SC2086 # ap splits into the artifact and the perspective on purpose
+    set -- $ap
+    CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" finding \
+        --branch keyedr3 --head "$cap_r3_head" --model stub --id stub-1 --severity sug --file f.txt --line 1 \
+        --verdict "" --artifact "$1" --perspective "$2" >/dev/null 2>"$tmp/keyedr3-finding.err" || fail "keyedr3 finding $ap"
+done
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch keyedr3 --head "$cap_r3_head" --id stub-1 --artifact spec --perspective on --set verdict=disproved \
+    --reason 'settle only the spec finding' >/dev/null 2>"$tmp/keyedr3-amend.err" || fail "keyedr3 amend"
+fix_commit keyedr3
+(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch keyedr3 >/dev/null 2>&1); keyedr3_rc=$?
+assert_eq "$keyedr3_rc" "0" "settling one finding does not hide another with the same id"
+
+# HIMMEL-4635: in the delta round an Important counts as classified only when
+# fu_class is exactly hardening.
+three_rounds polishimp suggestion
+fix_commit polishimp
+polishimp_head="$cap_fix_head"
+printf 'pending\n' > "$git_dir/cr-pending/polishimp"
+(cd "$repo" && PANEL_MODE=important bash "$SCRIPT" --head "$polishimp_head" --branch polishimp >/dev/null 2>"$tmp/err-polish") || fail "polish delta producer run"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch polishimp --head "$polishimp_head" --id stub-1 --set fu_class=polish \
+    --reason 'adjudicated polish' >/dev/null 2>"$tmp/polish-amend.err" || fail "polish amend"
+(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$polishimp_head" --branch polishimp --defer-to HIMMEL-9005 >"$tmp/defer-polish.out" 2>"$tmp/defer-polish.err"); defer_polish_rc=$?
+assert_eq "$defer_polish_rc" "4" "a delta-round Important classed polish is refused"
+assert_has "$(cat "$tmp/defer-polish.err")" "explicit fu_class amend" "polish Important refusal names the remedy"
+if [ -e "$git_dir/cr-pending/polishimp" ]; then pass "polish Important leaves the marker pending"; else fail "polish Important leaves the marker pending"; fi
+
+# HIMMEL-4618: the delta Important deferral clears the new head through the
+# REAL clear-cr-marker.sh, not the stub installed below.
 three_rounds important suggestion
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch important --head "$cap_r3_head" --id stub-1 --set verdict=fixed \
+    --reason 'round-3 finding answered by the fix commit' >/dev/null 2>"$tmp/important-r3.err" || fail "important round-3 disposition"
+printf '%s\n' "SWEEP [stub-1@$cap_r3_head] class=stub :: single-site search=git grep -n stub" \
+    | (cd "$repo" && bash "$fx/scripts/cr/write-verdicts.sh" sweep --branch important) >/dev/null 2>"$tmp/important-sweep.err" \
+    || fail "important round-3 sweep record"
 fix_commit important
 important_head="$cap_fix_head"
-printf 'pending\n' > "$git_dir/cr-pending/important"
+git -C "$repo" push -q -u origin important
+write_real_marker important "$important_head"
 out6="$(cd "$repo" && PANEL_MODE=important bash "$SCRIPT" --head "$important_head" --branch important 2>"$tmp/err6")"; rc6=$?
 assert_eq "$rc6" "0" "delta-round Important producer run completes for adjudication"
 assert_has "$out6" "pr-check: delta round 4 on important" "Important run is the delta round"
 (cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$important_head" --branch important --defer-to HIMMEL-9001 >/dev/null 2>"$tmp/defer6u.err"); defer6u_rc=$?
 assert_eq "$defer6u_rc" "4" "a delta-round Important without an fu_class amend is refused"
 assert_has "$(cat "$tmp/defer6u.err")" "explicit fu_class amend" "unclassified Important refusal names the remedy"
-assert_lacks "$(cat "$CLEAR_CALLS" 2>/dev/null)" "important" "an unclassified Important never reaches marker clearance"
+if [ -e "$git_dir/cr-pending/important" ]; then pass "an unclassified Important leaves the marker pending"; else fail "an unclassified Important leaves the marker pending"; fi
 CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
     --branch important --head "$important_head" --id stub-1 --set fu_class=hardening \
     --reason 'classified hardening by the adjudicator' >/dev/null 2>"$tmp/important-class.err" || fail "important fu_class amend"
-(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$important_head" --branch important --defer-to HIMMEL-9001 >"$tmp/defer6.out" 2>"$tmp/defer6.err"); defer6_rc=$?
+defer6="$(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$important_head" --branch important --defer-to HIMMEL-9001 2>"$tmp/defer6.err")"; defer6_rc=$?
 assert_eq "$defer6_rc" "0" "delta-round Important finding is deferred"
-assert_has "$(cat "$CLEAR_CALLS" 2>/dev/null)" "important" "deferred delta-round Important finding reaches marker clearance"
+assert_has "$defer6" "clear-cr-marker CLEARED branch=important sha=$important_head" "deferred delta-round Important finding clears the new head through the real gate"
+if [ -e "$git_dir/cr-pending/important" ]; then fail "the real gate clears the delta-round Important marker"; else pass "the real gate clears the delta-round Important marker"; fi
 assert_has "$(cat "$git_dir/cr-critic-scores.jsonl")" '"fu_class":"hardening"' "delta-deferred Important findings are classed hardening"
+
+# Later controls only need to observe whether clearance was attempted; the
+# successful paths above deliberately used the real gate.
+install_clear_stub
 
 # A Critical finding still blocks the delta round.
 three_rounds critical suggestion
