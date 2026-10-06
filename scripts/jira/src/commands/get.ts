@@ -8,7 +8,7 @@ import type { JiraIssue } from '../types.js';
 // them — kept local rather than touching types.ts, which this ticket's scope
 // excludes.
 type IssueWithLabels = JiraIssue & {
-  fields: JiraIssue['fields'] & { labels?: string[]; fixVersions?: Array<{ name: string }> };
+  fields: JiraIssue['fields'] & { labels?: string[]; fixVersions?: Array<{ name: string }>; priority?: { name: string } | null };
 };
 
 function labelsLine(issue: IssueWithLabels): string | undefined {
@@ -41,7 +41,7 @@ export function registerGet(program: Command): void {
       try {
         issue = await request<IssueWithLabels>(
           'GET',
-          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description,labels,fixVersions`,
+          `/issue/${key}?fields=summary,status,issuetype,parent,assignee,description,labels,fixVersions,priority`,
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -69,6 +69,7 @@ export function registerGet(program: Command): void {
         console.log(formatIssueWithDescription(issue));
         const ll = labelsLine(issue);
         if (ll) console.log(ll);
+        if (issue.fields.priority) console.log(`Priority: ${issue.fields.priority.name}`);
         const fvl = fixVersionsLine(issue);
         if (fvl) console.log(fvl);
       }

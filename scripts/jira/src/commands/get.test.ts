@@ -138,7 +138,7 @@ describe('get fix versions (HIMMEL-3713)', () => {
     await p.parseAsync(['node', 'jira', 'get', 'HIMMEL-1']);
     const [, path] = mockRequest.mock.calls[0];
     expect(path).toContain(
-      'fields=summary,status,issuetype,parent,assignee,description,labels,fixVersions',
+      'fields=summary,status,issuetype,parent,assignee,description,labels,fixVersions,priority',
     );
   });
 

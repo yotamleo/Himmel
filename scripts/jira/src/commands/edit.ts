@@ -153,6 +153,22 @@ export function registerEdit(program: Command): void {
       }
       if (Object.keys(update).length > 0) body.update = update;
       await request('PUT', `/issue/${key}`, body);
+      // HIMMEL-4640: a 2xx PUT does not prove the field changed (Jira can drop a
+      // field its edit screen or scheme does not take), so read the priority
+      // back and fail loud instead of reporting a silent no-op as "edited".
+      if (options.priority) {
+        const got = await request<{ fields?: { priority?: { name?: string } | null } }>(
+          'GET',
+          `/issue/${key}?fields=priority`,
+        );
+        const actual = got.fields?.priority?.name;
+        if (actual?.toLowerCase() !== options.priority.toLowerCase()) {
+          throw new Error(
+            `Edit ${key}: priority was not changed — requested '${options.priority}' but the ` +
+              `issue still reads '${actual ?? 'none'}' after the PUT.`,
+          );
+        }
+      }
       writeJiraBreadcrumb(key);
       console.log(`${key} edited`);
     });
