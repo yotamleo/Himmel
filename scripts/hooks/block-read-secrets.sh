@@ -398,9 +398,86 @@ is_inplace_token() {
 # tracker only decides whether a word globs. It never hides a literal secret
 # name. Tracking stops at the first ANSI-C `$'`, whose escapes it does not
 # model, so every later word globs as before.
+# HIMMEL-4508: a glob only matters to this fence when something in the clause
+# reads (a reader, an interpreter, xargs, a `<` redirect) or when the command
+# word itself is a glob. `echo */*/* …` reads nothing, so it is not expanded:
+# expanding it cost seconds in a large tree and timed the hook out.
+rs_needs_glob() {
+    local w d hunting=1
+    set -f
+    # shellcheck disable=SC2086 # intentional word split
+    for w in $1; do
+        d=${w//[\'\"\\]/}
+        case "$d" in *'<'*) set +f; return 0 ;; esac
+        d=${d##*/}
+        if is_reader_cmd "$d" || is_interp_cmd "$d"; then set +f; return 0; fi
+        case "$d" in xargs) set +f; return 0 ;; esac
+        if [ "$hunting" = 1 ]; then
+            case "$d" in
+                [A-Za-z_]*=*|-*|sudo|doas|env|time|nice|command|nohup|timeout|exec|if|while|until|then|else|elif|'!') ;;
+                *[*?[]*) set +f; return 0 ;;
+                *) hunting=0 ;;
+            esac
+        fi
+    done
+    set +f
+    return 1
+}
+
+# HIMMEL-4502: after `cd`/`pushd`/`env -C` the shell expands a glob in the
+# NEW directory, so expanding it here proves nothing. rs_shift_glob_secret is
+# 0 when a reader segment (or a `<` redirect) carries an unquoted glob whose
+# last path component could match a secret name. Reads the guard-unwrap
+# tokens (GU_*, ST_*); with none, any glob beside a reader word counts.
+RS_SECRET_PROBES='.env .env.local .envrc id_rsa id_ed25519 credentials.json secrets.yaml secrets.yml x.pem x.key x.p12 x.pfx'
+rs_glob_could_be_secret() {
+    local p=${1##*/} n
+    case "$p" in *'{'*) return 0 ;; esac
+    for n in $RS_SECRET_PROBES; do
+        case "$n" in .*) case "$p" in .*) ;; *) continue ;; esac ;; esac
+        # shellcheck disable=SC2053 # $p is the glob pattern on purpose
+        if [[ $n == $p ]]; then return 0; fi
+    done
+    return 1
+}
+rs_shift_glob_secret() {
+    local s k c core reader nc
+    local -a idx
+    if [ "${GU_TOKENIZED:-0}" != 1 ]; then
+        rs_needs_glob "$1" && [[ $1 == *[\*\?\[\{]* ]]
+        return
+    fi
+    nc=$(shopt -p nocasematch)
+    shopt -s nocasematch
+    s=0
+    while [ "$s" -lt "$ST_NSEG" ]; do
+        read -r -a idx <<<"${GU_SW[s]:-}"
+        reader=0
+        core=${GU_CORE[s]:-0}
+        if [ "${GU_LOOKUP[s]:-0}" = 0 ] && [ "$core" -lt "${#idx[@]}" ]; then
+            c=${ST_W[idx[core]]##*/}
+            if is_reader_cmd "$c" || [ "$c" = xargs ]; then reader=1; fi
+        fi
+        k=0
+        while [ "$k" -lt "$ST_N" ]; do
+            if [ "${ST_S[k]}" = "$s" ] && [ "${ST_G[k]}" = 1 ] \
+                && { [ "$reader" = 1 ] || [ "${ST_RO[k]}" = '<' ]; } \
+                && rs_glob_could_be_secret "${ST_W[k]}"; then
+                eval "$nc"
+                return 0
+            fi
+            k=$((k + 1))
+        done
+        s=$((s + 1))
+    done
+    eval "$nc"
+    return 1
+}
+
 rs_tokens() {
-    local raw q='' tq c pre rest off=0 g
+    local raw q='' tq c pre rest off=0 g glob=1
     RS_TOKS=()
+    rs_needs_glob "$1" || glob=0
     set -f
     # shellcheck disable=SC2086 # intentional word split for tokenisation
     for raw in $1; do
@@ -428,7 +505,7 @@ rs_tokens() {
                 q=$c
             fi
         done
-        if [ "$off" = 0 ] && [ -n "$tq" ]; then
+        if { [ "$off" = 0 ] && [ -n "$tq" ]; } || [ "$glob" = 0 ]; then
             RS_TOKS+=("$raw")
         else
             # HIMMEL-4492: a word whose LAST char opens a quote it never
@@ -591,7 +668,7 @@ scan_clause() {
     local expect_file_val=0     # the NEXT token is -f/--file's value (always a real file)
     # HIMMEL-4492 command hunt: the last wrapper seen, whether the next token
     # is a wrapper flag's VALUE, and whether `timeout` still owes its DURATION.
-    local wrap="" wrap_val=0 need_dur=0
+    local wrap="" wrap_val=0 need_dur=0 xargs_file=0
     # HIMMEL-440 interpreter `-c` body:
     local interp=0          # cmdtok resolved to a shell interpreter
     local found_c=0         # a -c / -*c flag has been seen
@@ -656,7 +733,13 @@ scan_clause() {
             # dequoted copy (HIMMEL-4492): the shell strips the quotes, so
             # `'cat' .env` and `"bash" -c '...'` run cat and bash.
             dtok="${tok//[\'\"\\]/}"
-            if [ "$wrap_val" = "1" ]; then wrap_val=0; prev="$tok"; continue; fi
+            if [ "$wrap_val" = "1" ]; then
+                wrap_val=0
+                # HIMMEL-4510: `xargs -a FILE` reads FILE.
+                if [ "$xargs_file" = 1 ] && is_secret_path "$dtok"; then block=1; fi
+                xargs_file=0
+                prev="$tok"; continue
+            fi
             case "$tok" in
                 "<"|">")                            prev="$tok"; continue ;;
                 [A-Za-z_]*=*)                       prev="$tok"; continue ;;
@@ -668,7 +751,24 @@ scan_clause() {
             if [ -n "$wrap" ]; then
                 case "$dtok" in
                     -*)
+                        # HIMMEL-4509: `command -v/-V` looks a name up and
+                        # runs nothing, so nothing after it is read.
+                        if [ "$wrap" = command ]; then
+                            case "$dtok" in --*) ;; -*[vV]*) return 0 ;; esac
+                        fi
                         if wrapper_flag_takes_value "$wrap" "$dtok"; then wrap_val=1; fi
+                        # HIMMEL-4510: xargs reads its -a/--arg-file operand,
+                        # separate, glued or as a --arg-file prefix.
+                        if [ "$wrap" = xargs ]; then
+                            case "$dtok" in
+                                -a|--a|--ar|--arg|--arg-|--arg-f|--arg-fi|--arg-fil|--arg-file)
+                                    xargs_file=1; wrap_val=1 ;;
+                                --a*=*)
+                                    if is_secret_path "${dtok#*=}"; then block=1; fi ;;
+                                -a?*)
+                                    if is_secret_path "${dtok#-a}"; then block=1; fi ;;
+                            esac
+                        fi
                         prev="$tok"; continue ;;
                 esac
                 if [ "$need_dur" = "1" ]; then need_dur=0; prev="$tok"; continue; fi
@@ -883,6 +983,30 @@ case "$tool" in
     Bash|PowerShell)
         cmd="$_rd_cmd"
         [ -z "$cmd" ] && exit 0
+
+        # HIMMEL-4438: re-read the forms the shell actually runs (quotes
+        # removed, wrappers stripped, `bash -c`/`eval` bodies) through this
+        # same hook. The lib is a must-run dependency: if it cannot be
+        # sourced, deny.
+        if [ "$tool" = Bash ]; then
+            case "${BASH_SOURCE[0]}" in
+                */*) _gu_lib=${BASH_SOURCE[0]%/*}/lib/guard-unwrap.sh ;;
+                *) _gu_lib=lib/guard-unwrap.sh ;;
+            esac
+            # shellcheck source=lib/guard-unwrap.sh
+            if ! { [ -r "$_gu_lib" ] && . "$_gu_lib"; } 2>/dev/null; then
+                echo "block-read-secrets: cannot load $_gu_lib - failing closed" >&2
+                exit 2
+            fi
+            GU_QUOTE_ARGS=1 guard_unwrap "${BASH_SOURCE[0]}" "$cmd" || exit 2
+            if [ "$GU_CWD_UNKNOWN" = 1 ] && rs_shift_glob_secret "$cmd"; then
+                echo "⛔ block-read-secrets: refusing a secret-shaped glob read after a cwd change (cd/pushd/env -C):" >&2
+                echo "    $cmd" >&2
+                echo "    The glob expands in the new directory, which this hook cannot see. Name the file." >&2
+                bypass_hint
+                exit 2
+            fi
+        fi
 
         # Split the command into CLAUSES at shell separators so a reader and a
         # secret in UNRELATED parts of the command don't cross-trip (the old

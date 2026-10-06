@@ -770,6 +770,51 @@ fi
 assert_rc "Bash long uppercase arg (linear fold)" 0 "$(run_case "$(j_bash "node -e 1 --data $BIGTOK")")"
 assert_rc "Bash long uppercase arg + .env still blocks" 2 "$(run_case "$(j_bash "cat $BIGTOK .env")")"
 
+
+# --- HIMMEL-4438: the forms the shell runs, not the text it was given ---
+assert_rc "4438 eval 'cat .env'"              2 "$(run_case "$(j_bash "eval 'cat .env'")")"
+assert_rc "4438 env with a quoted assignment" 2 "$(run_case "$(j_bash "env 'FOO=a b'c cat .env")")"
+assert_rc "4438 exec -a name cat .env"        2 "$(run_case "$(j_bash "exec -a 'cat' cat .env")")"
+assert_rc "4438 backslash-newline before .env" 2 "$(run_case "$(j_bash $'cat \\\n.env')")"
+assert_rc "4438 bash -c doubled bash -c"      2 "$(run_case "$(j_bash "bash -c 'bash -c '\\''cat .env'\\'''")")"
+assert_rc "4438 nested depth 4"               2 "$(run_case "$(j_bash "bash -lc \"zsh -c 'sh -c \\\"bash -c '\\\\''cat .env'\\\\''\\\"'\"")")"
+assert_rc "4438 quote-split c'a't .env"       2 "$(run_case "$(j_bash "c'a't .env")")"
+# HIMMEL-4506: o/O in a short bundle takes the next word before the body.
+assert_rc "4506 bash -co pipefail 'cat .env'" 2 "$(run_case "$(j_bash "bash -co pipefail 'cat .env'")")"
+assert_rc "4506 bash -oc pipefail 'cat .env'" 2 "$(run_case "$(j_bash "bash -oc pipefail 'cat .env'")")"
+# HIMMEL-4507: a body split across quote kinds, or nested in double quotes.
+assert_rc "4507 split body 'cat '.env"        2 "$(run_case "$(j_bash "bash -c 'cat '.env")")"
+assert_rc "4507 split body \"cat\"' .env'"    2 "$(run_case "$(j_bash "bash -c \"cat\"' .env'")")"
+assert_rc "4507 nested double in single"      2 "$(run_case "$(j_bash "sh -c 'bash -c \"cat .env\"'")")"
+# HIMMEL-4509: `command -v` only looks a name up; it reads nothing.
+assert_rc "4509 command -v cat .env allows"   0 "$(run_case "$(j_bash 'command -v cat .env')")"
+assert_rc "4509 command -V cat allows"        0 "$(run_case "$(j_bash 'command -V cat .env')")"
+assert_rc "4509 control: command cat .env"    2 "$(run_case "$(j_bash 'command cat .env')")"
+# HIMMEL-4510: xargs -a / --arg-file reads its operand.
+assert_rc "4510 xargs -a .env"                2 "$(run_case "$(j_bash 'xargs -a .env echo')")"
+assert_rc "4510 xargs -a.env (glued)"         2 "$(run_case "$(j_bash 'xargs -a.env echo')")"
+assert_rc "4510 xargs --arg-file=.env"        2 "$(run_case "$(j_bash 'xargs --arg-file=.env echo')")"
+assert_rc "4510 xargs --arg-file .env"        2 "$(run_case "$(j_bash 'xargs --arg-file .env echo')")"
+assert_rc "4510 control: xargs -a list.txt"   0 "$(run_case "$(j_bash 'xargs -a list.txt echo')")"
+# HIMMEL-4502: after a cwd shift the glob does not expand against this cwd,
+# so a secret-shaped glob is refused unread.
+SHIFTDIR=$(mktemp -d "${TMPDIR:-/tmp}/rs-shift.XXXXXX") || { echo "FATAL: mktemp -d failed" >&2; exit 1; }
+: >"$SHIFTDIR/rows.tsv"
+run_in_shiftdir() { (cd "$SHIFTDIR" && printf '%s' "$(j_bash "$1")" | bash "$HOOK" >/dev/null 2>&1; echo "$?"); }
+assert_rc "4502 cd elsewhere; cat .e*"        2 "$(run_in_shiftdir 'cd /some/repo; cat .e*')"
+assert_rc "4502 cd && cat .env*"              2 "$(run_in_shiftdir 'cd /some/repo && cat .env*')"
+assert_rc "4502 pushd; head *.pem"            2 "$(run_in_shiftdir 'pushd /etc/ssl; head *.pem')"
+assert_rc "4502 env -C dir cat .e*"           2 "$(run_in_shiftdir 'env -C /some/repo cat .e*')"
+assert_rc "4502 env --chdir=dir cat id_*"     2 "$(run_in_shiftdir 'env --chdir=/home/u/.ssh cat id_*')"
+assert_rc "4502 bash -c 'cd x; cat .e*'"      2 "$(run_in_shiftdir "bash -c 'cd /some/repo; cat .e*'")"
+assert_rc "4502 control: cd x; cat *.tsv"     0 "$(run_in_shiftdir 'cd /some/repo; cat *.tsv')"
+assert_rc "4502 control: cat .e* here (no .env)" 0 "$(run_in_shiftdir 'cat .e*')"
+rm -rf "$SHIFTDIR"
+nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
+cp "$HOOK" "$nolib/block-read-secrets.sh"
+assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-read-secrets.sh" >/dev/null 2>&1; echo $?)"
+rm -rf "$nolib"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

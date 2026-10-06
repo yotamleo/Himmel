@@ -93,6 +93,22 @@ esac
 
 [ -z "$cmd" ] && exit 0
 
+# HIMMEL-4438: re-read the forms the shell actually runs (quotes removed,
+# wrappers stripped, `bash -c`/`eval` bodies) through this same hook. The lib
+# is a must-run dependency: if it cannot be sourced, deny.
+if [ "$tool" != PowerShell ]; then
+    case "${BASH_SOURCE[0]}" in
+        */*) _gu_lib=${BASH_SOURCE[0]%/*}/lib/guard-unwrap.sh ;;
+        *) _gu_lib=lib/guard-unwrap.sh ;;
+    esac
+    # shellcheck source=lib/guard-unwrap.sh
+    if ! { [ -r "$_gu_lib" ] && . "$_gu_lib"; } 2>/dev/null; then
+        echo "block-git-stash: cannot load $_gu_lib - failing closed" >&2
+        exit 2
+    fi
+    guard_unwrap "${BASH_SOURCE[0]}" "$cmd" || exit 2
+fi
+
 # Lower-case (git subcommands are case-sensitive, but the surrounding grammar is
 # matched lower-cased for parity with the sibling guards) and fold newlines to
 # ';' so the line-oriented anchors below see one line. HIMMEL-2123: one `tr`

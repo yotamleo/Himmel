@@ -913,6 +913,24 @@ else
     [ -z "${MUTATED:-}" ] || rm -f "$MUTATED"
 fi
 
+
+# --- HIMMEL-4438: the forms the shell runs, not the text it was given ---
+deny "4438 bash -c gate | tail" "bash -c 'bash scripts/check-ci.sh 12 | tail -20'"
+deny "4438 sh -ec gate | tail" "sh -ec 'bash scripts/check-ci.sh 12 | tail -20'"
+deny "4438 nested depth 2 gate | tail" "zsh -c \"bash -c 'bash scripts/check-ci.sh 12 | tail -20'\""
+deny "4438 eval gate | tail" "eval 'bash scripts/check-ci.sh 12 | tail -20'"
+deny "4438 quote-split b'a'sh gate | tail" "b'a'sh scripts/check-ci.sh 12 | tail -20"
+deny "4438 gate in a middle stage" 'echo x | bash scripts/check-ci.sh 12 | tail -20'
+deny "4438 xargs gate in a middle stage" 'echo x | xargs -I{} bash scripts/check-ci.sh {} | tail -20'
+allow "4438 allow: gate as the last stage" 'echo x | bash scripts/check-ci.sh 12'
+allow "4438 allow: bash -c gate unpiped" "bash -c 'bash scripts/check-ci.sh 12'"
+allow "4438 allow: bash -c ls | tail" "bash -c 'ls | tail -3'"
+nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
+cp "$HOOK" "$nolib/block-tail-pipe-on-gates.sh"
+res=$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-tail-pipe-on-gates.sh" >/dev/null 2>&1; echo $?)
+if [ "$res" = 2 ]; then pass "4438 missing guard-unwrap lib denies"; else fail "4438 missing guard-unwrap lib denies — rc=$res"; fi
+rm -rf "$nolib"
+
 if [ "$FAILED" -eq 0 ]; then
     echo "OK block-tail-pipe-on-gates: all cases passed"
     exit 0
