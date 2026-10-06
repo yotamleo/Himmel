@@ -82,6 +82,13 @@ template_version: 3
 > paths and what to take from each. Name what is private and must never reach
 > the tree.>
 
+> **Prior art (required, HIMMEL-4573):** <related tickets, prior fixes and graph
+> neighbours, each with its source. The console fills it at dispatch from one
+> qmd query over `jira-himmel` + `luna` (lex+vec, `-c <name>`), plus one
+> `graphify query` when code structure matters. If the search found nothing,
+> write `none found (<the query you ran>)`; a bare `none`, an empty line or this
+> placeholder is refused at arming by `brief-lint.sh`.>
+
 > **Exemplar (optional):** <one in-repo path — a gate, a suite, a script — that
 > shows the paved path for this change, and what to copy from it. Omit the line
 > when no single file fits.>
@@ -160,6 +167,7 @@ template_version: 3
 | RETASK token | Any text reaching the leg could re-task it; the nonce is what makes a revision authentic. |
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
+| Prior art line (required) | In the 7 days to 2026-10-06 the qmd query tool was called 93 times, 85 of them by 16 of 565 legs and none by a console or judge: nothing in the brief asked for retrieval, so work was re-derived or duplicated (HIMMEL-4479 audit; graphify non-adoption was measured before in HIMMEL-2581). The console runs the retrieval once at dispatch and every leg inherits it. `brief-lint.sh` fails a missing, empty, placeholder or bare `none` line (`none found (<query>)` passes) and `headed-arm-leg.sh` refuses the launch unless `--no-prior-art-check` is passed (HIMMEL-4573). |
 | Exemplar line (optional) | A leg told only to "add a gate" copies the nearest older gate, which may be the stale shape. Naming the one file that shows the paved path (e.g. `scripts/hooks/check-unchecked-mktemp.sh`, `scripts/handover/console-kit/test-ready-check.sh`) makes the leg imitate that. Instructional only, no validator: judge it by drift before anyone gates it (HIMMEL-4428). |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND uses `--no-profile` is a leg running on vibes (a launch with neither is refused). |
 | `completes-ticket:` line | `merge-on-green.sh` closes the ticket only on `--jira-transition` (opt-in, HIMMEL-3143, because a default closes multi-PR tickets early). Without the line every leg guesses whether its PR finishes the ticket: in one shift six merges printed `would-transition` and five were closed by hand (HIMMEL-3271). It is a per-brief decision, never a default. |
