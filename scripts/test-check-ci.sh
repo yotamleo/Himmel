@@ -2143,13 +2143,20 @@ CHECK_CI_MAX_WAIT=10 run register-then-green
 assert_rc 64 "4136-a CHECK_CI_MAX_WAIT below CHECK_CI_SETTLE is refused too"
 # Boundaries: equal is allowed, and --max-wait 0 (unbounded) or --settle 0 never trip it.
 run register-then-green --settle 5 --max-wait 5
-assert_rc 0 "4136-a --max-wait equal to --settle is accepted"
+# Only the ACCEPTANCE is under test, not the run's outcome: the settle wait comes
+# out of a wall-clock deadline of the same length, so under load the run can end
+# rc 2 (DEADLINE-PENDING) for a boundary that was correctly let through (HIMMEL-4594).
+if [ "$RC" -eq 0 ] || [ "$RC" -eq 2 ]; then pass "4136-a --max-wait equal to --settle is accepted"; else fail "4136-a --max-wait equal to --settle is accepted" "rc=$RC want 0 (green) or 2 (deadline), not a usage error or a crash"; fi
+assert_err_lacks "4136-a the equal boundary is not refused as below --settle" "refusal text present" -F "is below --settle"
 run register-then-green --settle 30 --max-wait 0
 assert_rc 0 "4136-a --max-wait 0 (unbounded) is accepted with any --settle"
 
 # 4136-b — CHECK_CI_DISTINCT_DEADLINE=1 (merge-on-green's opt-in) turns ONLY the
 # DEADLINE-PENDING verdict into exit 7; a red stays 1, and the default stays 2.
-CHECK_CI_DISTINCT_DEADLINE=1 run blocking-cap-pending --max-wait 1
+# HIMMEL-4594: the watch must outlive a deadline that a loaded machine cannot
+# eat whole before the first watch — a 1s budget and a 3s stub watch did not.
+# blocking-long-pending holds the check pending far past the 4s budget.
+CHECK_CI_DISTINCT_DEADLINE=1 run blocking-long-pending --max-wait 4
 assert_rc 7 "4136-b opted in: a deadline with checks still pending exits 7"
 assert_err_has "DEADLINE-PENDING" "4136-b opted in: the verdict line is unchanged"
 CHECK_CI_DISTINCT_DEADLINE=1 run blocking-cap-red --max-wait 1
@@ -2159,7 +2166,7 @@ SETTLE_OVERRIDE=5
 SLEEP_CMD_OVERRIDE="sleep"
 CHECK_CI_DISTINCT_DEADLINE=1 run green-then-slow --max-wait 5
 assert_rc 7 "4136-b opted in: a deadline cutting the settle window short exits 7"
-CHECK_CI_DISTINCT_DEADLINE=0 run blocking-cap-pending --max-wait 1
+CHECK_CI_DISTINCT_DEADLINE=0 run blocking-long-pending --max-wait 4
 assert_rc 2 "4136-b not opted in: DEADLINE-PENDING stays exit 2 for every other caller"
 
 # 4136-c — the rate-limit recovery wait is bounded by what is LEFT of
