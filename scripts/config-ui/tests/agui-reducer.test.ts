@@ -1,4 +1,6 @@
-import { test, expect } from "bun:test";
+import { describe, test, expect } from "bun:test";
+import { join } from "node:path";
+import { mapFile } from "../agui/journal-mapper.ts";
 import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, runClock, type View } from "../agui-web/src/reducer";
 import fixture from "../agui-web/src/fixture.json";
 
@@ -16,7 +18,9 @@ test("the full stream ends finished with every event counted", () => {
 
 test("text deltas concatenate per message, open until TEXT_MESSAGE_END", () => {
   const mid = upTo((e) => e.type === "TEXT_MESSAGE_CONTENT" && e.delta.startsWith("The diff"));
-  expect(mid.texts.m1).toEqual({ id: "m1", text: "Reviewing the branch at `6c2bb12`. The diff touches the CI-check cap cases, ", open: true });
+  expect(mid.texts.m1).toEqual({
+    id: "m1", text: "Reviewing the branch at `6c2bb12`. The diff touches the CI-check cap cases, ", open: true, agent: "main", role: "assistant",
+  });
   expect(end.texts.m1.open).toBe(false);
   expect(end.texts.m1.text.endsWith("in parallel.")).toBe(true);
 });
@@ -33,21 +37,28 @@ test("an isError result marks the call errored", () => {
   expect(end.tools.t4.result).toBe("Agent timed out after 300s");
 });
 
-test("timeline: text, a lone call, a group of three parallel calls, text, a lone call", () => {
-  expect(end.entries).toEqual([
+test("timeline: the turn, text, a lone call, three parallel calls, the critics' own work, text, a lone call", () => {
+  const main = end.entries.filter((en) => en.kind !== "text" || end.texts[en.id].agent === "main")
+    .filter((en) => en.kind !== "tools" || end.tools[en.ids[0]].agent === "main");
+  expect(main).toEqual([
+    { kind: "turn", id: "run-7f3a", n: 1, at: 0 },
     { kind: "text", id: "m1" },
     { kind: "tools", ids: ["t1"] },
     { kind: "tools", ids: ["t2", "t3", "t4"] },
     { kind: "text", id: "m2" },
     { kind: "tools", ids: ["t5"] },
   ]);
+  // A subagent's call that starts while the leg's Agent calls run is its own entry, never joined to theirs.
+  expect(end.entries).toContainEqual({ kind: "tools", ids: ["c3a"] });
 });
 
-test("parallel calls take separate lanes; a later call reuses a free lane", () => {
+test("parallel calls take separate lanes within their agent's band; a later call reuses a free lane", () => {
   expect([end.tools.t2.lane, end.tools.t3.lane, end.tools.t4.lane]).toEqual([0, 1, 2]);
   expect(end.tools.t1.lane).toBe(0);
   expect(end.tools.t5.lane).toBe(0);
-  expect(end.lanes).toBe(3);
+  expect(end.agents.main.lanes).toBe(3);
+  expect(end.tools.c1a.lane).toBe(0); // a critic's first call: lane 0 of its own band
+  expect(end.lanes).toBe(Object.values(end.agents).reduce((n, a) => n + a.lanes, 0));
 });
 
 test("times are relative to RUN_STARTED", () => {
@@ -134,7 +145,7 @@ test("a fresh view is idle and empty", () => {
 test("RUN_FINISHED and RUN_ERROR close a text message that never got TEXT_MESSAGE_END", () => {
   const open = [{ type: "RUN_STARTED", runId: "r", timestamp: 0 }, { type: "TEXT_MESSAGE_START", messageId: "m", timestamp: 10 },
     { type: "TEXT_MESSAGE_CONTENT", messageId: "m", delta: "half", timestamp: 20 }];
-  expect(reduceAll([...open, { type: "RUN_FINISHED", timestamp: 30 }]).texts.m).toEqual({ id: "m", text: "half", open: false });
+  expect(reduceAll([...open, { type: "RUN_FINISHED", timestamp: 30 }]).texts.m).toEqual({ id: "m", text: "half", open: false, agent: "main" });
   expect(reduceAll([...open, { type: "RUN_ERROR", message: "x", timestamp: 30 }]).texts.m.open).toBe(false);
 });
 
@@ -158,4 +169,71 @@ test("applyPatch rejects inherited member names instead of traversing or replaci
     expect(() => applyPatch({ a: 1 }, [{ op: "replace", path: `/${k}/x`, value: 1 }])).toThrow();
   }
   expect(applyPatch({ a: 1 }, [{ op: "add", path: "/constructor", value: 2 }])).toHaveProperty("constructor", 2);
+});
+
+// HIMMEL-4669: which agent did what, and where it failed. Driven by the mapper's own output for the
+// agents.jsonl journal, so the reducer is pinned to the fields the mapper emits.
+describe("agents and failures", () => {
+  const { events: mapped } = mapFile(join(import.meta.dir, "fixtures", "agui", "agents.jsonl"));
+  const v = reduceAll(mapped as any);
+
+  test("agents register in order of appearance with name, role and model", () => {
+    expect(v.agentOrder).toEqual(["main", "a1b2c3"]);
+    expect(v.agents.main).toMatchObject({ name: "HIMMEL-4669-roadmap-console", role: "console", model: "claude-opus-5-5" });
+    expect(v.agents.a1b2c3).toMatchObject({ name: "Review the diff", role: "critic", kind: "code-critic", model: "claude-sonnet-5-5", parentToolCallId: "toolu_agent" });
+  });
+
+  test("every call and text is attributed, and calls are counted per agent", () => {
+    expect(v.tools.toolu_s1.agent).toBe("a1b2c3");
+    expect(v.tools.toolu_agent.agent).toBe("main");
+    expect(Object.values(v.texts).filter((t) => t.agent === "a1b2c3").map((t) => t.role)).toEqual(["user", "assistant"]);
+    expect([v.agents.main.calls, v.agents.a1b2c3.calls]).toEqual([5, 1]);
+  });
+
+  test("failures keep their kind, in stream order, and count against their agent", () => {
+    expect(v.failures).toEqual([
+      { kind: "tool", id: "toolu_suite" }, { kind: "tool", id: "toolu_push" }, { kind: "tool", id: "toolu_msg" },
+      { kind: "tool", id: "toolu_cat" }, { kind: "text", id: expect.any(String) },
+    ]);
+    expect([v.tools.toolu_suite.failure, v.tools.toolu_push.failure, v.tools.toolu_msg.failure, v.tools.toolu_cat.failure])
+      .toEqual(["suite", "denied", "blocked", "error"]);
+    expect(v.tools.toolu_msg.status).toBe("done"); // a BLOCKED report is a failure, but the call itself worked
+    expect(v.texts[v.failures[4].id].failure).toBe("blocked");
+    expect([v.agents.main.failures, v.agents.a1b2c3.failures]).toEqual([5, 0]);
+  });
+
+  test("a bare isError result still counts as a failure; a stream with no agent is one agent", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 }, { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Bash", timestamp: 1 },
+      { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "boom", isError: true, timestamp: 2 }]);
+    expect(w.tools.a).toMatchObject({ status: "error", failure: "error", agent: "main" });
+    expect(w.agentOrder).toEqual(["main"]);
+    expect(w.agents.main).toMatchObject({ name: "agent", role: "agent", calls: 1, failures: 1 });
+  });
+
+  test("RUN_ERROR fails the calls it cuts off", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 }, { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Bash", timestamp: 1 },
+      { type: "RUN_ERROR", message: "lost", timestamp: 2 }]);
+    expect(w.failures).toEqual([{ kind: "tool", id: "a" }]);
+  });
+
+  test("a later START with a better name or model updates the agent, keeping its counts", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 },
+      { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Read", agent: { id: "x", name: "agent x", role: "subagent" }, timestamp: 1 },
+      { type: "TOOL_CALL_START", toolCallId: "b", toolCallName: "Read", agent: { id: "x", name: "tests", role: "critic", model: "m" }, timestamp: 2 }]);
+    expect(w.agents.x).toMatchObject({ name: "tests", role: "critic", model: "m", calls: 2 });
+  });
+
+  test("each RUN_STARTED opens a numbered turn", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "a", timestamp: 0 }, { type: "RUN_FINISHED", timestamp: 5 },
+      { type: "RUN_STARTED", runId: "b", timestamp: 9 }]);
+    expect(w.entries).toEqual([{ kind: "turn", id: "a", n: 1, at: 0 }, { kind: "turn", id: "b", n: 2, at: 9 }]);
+  });
+
+  test("a run a background subagent opened is not a turn", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "a", timestamp: 0 }, { type: "RUN_FINISHED", timestamp: 5 },
+      { type: "RUN_STARTED", runId: "x:1", agent: { id: "x", name: "late", role: "subagent" }, timestamp: 6 }, { type: "RUN_FINISHED", timestamp: 7 }]);
+    expect(w.entries.filter((en) => en.kind === "turn").length).toBe(1);
+    expect(w.agentOrder).toEqual(["x"]);
+    expect(w.status).toBe("finished");
+  });
 });

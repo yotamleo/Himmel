@@ -11,6 +11,17 @@ export const AGUI_PROTOCOL_VERSION = "1.0";
 
 type Base = { timestamp?: number; metadata?: Record<string, unknown> };
 
+// Extra fields (the schemas are loose), HIMMEL-4669. `agent` rides every START event and names who acted:
+// the session's own agent (id "main") or a subagent (its journal agentId). `failure` classifies what went
+// wrong: a guardrail or permission refusal, a failing suite, a BLOCKED report, or any other error.
+export type AgentRole = "console" | "leg" | "judge" | "critic" | "subagent" | "agent";
+export type AgentInfo = {
+  id: string; name: string; role: AgentRole;
+  model?: string; kind?: string; // kind: a subagent's subagent_type
+  parentToolCallId?: string; // the Agent call that spawned a subagent
+};
+export type Failure = "denied" | "suite" | "blocked" | "error";
+
 export type RunStartedEvent = Base & { type: "RUN_STARTED"; threadId: string; runId: string };
 export type RunFinishedEvent = Base & {
   type: "RUN_FINISHED";
@@ -25,6 +36,8 @@ export type TextMessageStartEvent = Base & {
   type: "TEXT_MESSAGE_START";
   messageId: string;
   role: "assistant" | "user";
+  agent?: AgentInfo;
+  failure?: "blocked"; // the text reports a BLOCKED status
 };
 export type TextMessageContentEvent = Base & { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string };
 export type TextMessageEndEvent = Base & { type: "TEXT_MESSAGE_END"; messageId: string };
@@ -34,6 +47,7 @@ export type ToolCallStartEvent = Base & {
   toolCallId: string;
   toolCallName: string;
   parentMessageId?: string;
+  agent?: AgentInfo;
 };
 export type ToolCallArgsEvent = Base & { type: "TOOL_CALL_ARGS"; toolCallId: string; delta: string };
 export type ToolCallEndEvent = Base & { type: "TOOL_CALL_END"; toolCallId: string };
@@ -44,6 +58,7 @@ export type ToolCallResultEvent = Base & {
   content: string;
   role: "tool";
   isError?: true; // extra field (the schema is loose): the tool reported a failure
+  failure?: Failure; // set whenever isError is, and on a call that reports BLOCKED
 };
 
 // RFC 6902 operations; the mapper only ever adds.
