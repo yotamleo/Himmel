@@ -186,11 +186,11 @@
 # session through this SAME launcher rather than a separate mechanism. Forces
 # --profile console-judge (a real --profile conflicts, exit 2, same shape as
 # --relay above); an empty MODEL defaults to claude-opus-5-5 at high effort
-# (HIMMEL-3630), but only on the native lane. No new HIMMEL_CONSOLE_JUDGE
-# marker: HIMMEL_CONSOLE_LEG=1 is
+# (HIMMEL-3630), but only on the native lane. HIMMEL_CONSOLE_LEG=1 is
 # already exported for every leg, so Guard E (go.sh refuses under it,
-# merge-on-green.sh demands a console GO) already covers a judge - it is a
-# leg, not a new role the guards need to learn. What DOES differ from a
+# merge-on-green.sh demands a console GO) already covers a judge. A judge
+# also gets HIMMEL_CONSOLE_JUDGE=1 (HIMMEL-4564), the marker the plugin
+# hook guard-judge-writes.sh keys its write-deny on. What DOES differ from a
 # plain leg: no IMPL_GUARD_OK/INLINE_IMPL_OK (a judge does not implement),
 # a raised HIMMEL_READ_CLAMP_LINES (independent reading is the job), and the
 # judge preface instead of the leg preface.
@@ -1165,10 +1165,13 @@ if [ "$READONLY_ROLE" -ne 1 ]; then
 fi
 # HIMMEL_CONSOLE_LEG=1 (HIMMEL-2919): marks the launched process as a
 # console-spawned leg, both lanes - including --judge (design §3.2, "the
-# judge is a leg": this IS Guard E for a judge too, no separate
-# HIMMEL_CONSOLE_JUDGE marker). merge-on-green.sh then merges only on the
-# console's GO file (console-kit/go.sh), and go.sh refuses to run under it.
+# judge is a leg": this IS Guard E for a judge too). merge-on-green.sh then
+# merges only on the console's GO file (console-kit/go.sh), and go.sh refuses
+# to run under it.
 leg_propagate_env HIMMEL_CONSOLE_LEG 1
+# HIMMEL_CONSOLE_JUDGE=1 (HIMMEL-4564): guard-judge-writes.sh denies a judge
+# every push, PR, Jira, inbox and out-of-scope file write.
+[ "$JUDGE" -eq 1 ] && leg_propagate_env HIMMEL_CONSOLE_JUDGE 1
 # HIMMEL_CONSOLE_NAME (HIMMEL-3435): the owning console's session name, so a
 # leg's HIMMEL-3430 merge-block alert (scripts/lib/merge-block-alert.sh,
 # untouched by this ticket - it already reads this var) can route to the

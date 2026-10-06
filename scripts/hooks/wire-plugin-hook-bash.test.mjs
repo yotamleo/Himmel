@@ -62,6 +62,10 @@ function unwire(text) {
       commandHook.command = 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/block-agent-native-egress.sh"';
       continue;
     }
+    if (command.includes('/hooks/guard-judge-writes.sh')) {
+      commandHook.command = 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/guard-judge-writes.sh"';
+      continue;
+    }
     const match = command.match(/scripts\/hooks\/([A-Za-z0-9._-]+\.sh)"/);
     assert.ok(match, `could not extract project hook script from ${command}`);
     const script = match[1];

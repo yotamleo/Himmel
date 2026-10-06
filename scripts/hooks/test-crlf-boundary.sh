@@ -799,6 +799,14 @@ check read-clamp Bash 0 "ca""t $RC_SMALL" "allow a file at/under the limit" \
 check read-clamp Bash 0 "ca""t $RC_BIG" "gate off (HIMMEL_CONSOLE_LEG unset) allows" \
     -u HIMMEL_CONSOLE_LEG HIMMEL_READ_CLAMP_LINES=1
 
+# ── guard-judge-writes.sh — judge-session fence (HIMMEL-4564) ───────────────
+# The verb match splits the command into words; a terminal CR must not glue
+# itself to the last word and turn "push" into an unknown "push\r".
+check guard-judge-writes Bash 2 "gi""t push" "deny push in a judge session" \
+    HIMMEL_CONSOLE_JUDGE=1
+check guard-judge-writes Bash 0 "gi""t status" "allow a read in a judge session" \
+    HIMMEL_CONSOLE_JUDGE=1
+
 # ── Completeness guard ──────────────────────────────────────────────────────
 # The audit's real deliverable. Enumerate the command-text hooks FROM THE
 # SOURCE — this directory's listing, never a list typed from memory — and

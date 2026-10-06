@@ -189,6 +189,7 @@ console_context_leg_env_unset_names() {
         HIMMEL_CONSOLE_NAME \
         HIMMEL_READ_CLAMP_LINES \
         HIMMEL_CONSOLE_RELAY \
+        HIMMEL_CONSOLE_JUDGE \
         CLAUDE_CODE_EFFORT_LEVEL \
         CLAUDEX_LANE_OK \
         LEG_LANE \
