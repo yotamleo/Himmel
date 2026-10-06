@@ -94,6 +94,15 @@ template_version: 1
 > call with no clear precedent, a Sonnet leg returning the question as above
 > its tier.>
 
+> **Prior art (required, HIMMEL-4573):** <related tickets, prior fixes and graph
+> neighbours for THIS question, each with its source — pointers to what exists,
+> never the console's own conclusion (the judge stays blind). The console fills
+> it at dispatch from one qmd query over `jira-himmel` + the vault collection (lex+vec,
+> `-c <name>`), plus one `graphify query` when code structure matters. If the
+> search found nothing, write `none found (<the query you ran>)`; a bare
+> `none`, an empty line or this placeholder is refused at arming by
+> `brief-lint.sh`.>
+
 ## Evidence
 
 <Every file, diff, prior finding, ticket and doc the judge needs to rule —
@@ -298,6 +307,7 @@ gathering, per the rule below.>
 | Part | What goes wrong without it |
 |---|---|
 | Blind-not-thin | A judge given the console's conclusion has nothing to independently confirm or reject — its verdict becomes a rubber stamp, defeating the reason a judge call or session exists. |
+| Prior art line (required) | Console, judge and consult sessions made 0 qmd calls in the 7 days to 2026-10-06 (HIMMEL-4479 audit), so a judge ruled on a question whose related tickets and prior fixes nobody had looked up. The console retrieves once at dispatch; as pointers only, so blindness is kept. `brief-lint.sh` fails a missing, empty, placeholder or bare `none` line (`none found (<query>)` passes) and `headed-arm-leg.sh --judge` refuses the launch unless `--no-prior-art-check` is passed (HIMMEL-4573). |
 | `## Evidence` as a real, numbered section | A judge whose evidence is scattered through prose cannot cite it by number in its verdict's `## Evidence checked`, breaking the verdict template's contract. |
 | Tier line | `headed-arm-leg.sh:239-282` refuses to launch an Opus or Fable session without an exact-lowercase category tag and non-blank free text after it (HIMMEL-2976/HIMMEL-2997) — every judge dispatch launches at one tier or the other (Opus by default since HIMMEL-3630), so this line is never optional. |
 | Completion condition | Without a stated shape for "done", a judge can return a verdict too vague to act on, or keep gathering evidence past the point the question needed — and a condition that only admits one answer produces a judge that cannot say no. |
