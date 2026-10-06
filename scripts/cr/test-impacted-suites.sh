@@ -638,6 +638,34 @@ change scripts/lanes/unrelated.sh
 out="$(run_is "$range")"
 if ! grepq "$out" "^${GC}\$"; then pass "an unreferenced scripts/lanes file does not select the closure suite"; else fail "closure row over-selected scripts/lanes: $out"; fi
 
+# --- 35. HIMMEL-4533/4534/4535: closure arms. -------------------------------
+# 4534: arm 1 alone. brand-new.sh sits under the guarded scripts/lib dir, no
+# guarded file names it (arm 2 cannot fire) and no scan_roots row maps
+# scripts/lib/* to the closure suite (scripts/cr/* does, so it cannot be used).
+mkf scripts/lib/brand-new.sh 'echo new'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: arm-1 fixture"
+change scripts/lib/brand-new.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "arm 1 alone: a file inside a guarded dir that nothing names -> closure suite"; else fail "arm 1 alone missed: $out"; fi
+# 4533: arm 2 is not limited to handover/lanes/lib: a guarded file naming
+# scripts/telegram/status.sh makes a change to it select the closure suite.
+mkf scripts/lanes/names-tg.sh 'bash "$d/../telegram/status.sh"'
+mkf scripts/telegram/status.sh 'echo status'
+mkf scripts/cr/pr-check-context.sh 'cr_guarded="scripts/cr scripts/lib
+scripts/lanes/leg-pr-open.sh scripts/lanes/names-tg.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: telegram fixtures"
+change scripts/telegram/status.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "arm 2 beyond handover/lanes/lib: scripts/telegram/status.sh -> closure suite"; else fail "telegram edge missed: $out"; fi
+# 4535: a head without pr-check-context.sh must not silently skip the suite.
+git -C "$FX" rm -q scripts/cr/pr-check-context.sh
+git -C "$FX" commit -q -m "chore: drop pr-check-context.sh"
+change scripts/lanes/unrelated.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "a head with no pr-check-context.sh still selects the closure suite"; else fail "closure suite skipped on an unreadable guarded set: $out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"
