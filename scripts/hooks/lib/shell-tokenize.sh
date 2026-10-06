@@ -22,7 +22,8 @@
 # every loop here and in the callers is linear and fork-free, so an 8 KiB
 # command tokenizes in a fraction of a second.
 #   ST_N        number of words
-#   ST_W[i]     word i with quotes and escapes removed, nothing expanded
+#   ST_W[i]     word i with quotes and escapes removed (a $'…' body
+#               decoded), nothing expanded
 #   ST_Q[i]     1 when any byte of word i was quoted or escaped
 #   ST_X[i]     1 when word i carries a live `$` (unquoted, or inside "…")
 #   ST_G[i]     1 when word i carries an unquoted * ? [ or { (a glob or
@@ -116,6 +117,15 @@ st_tokenize() {
                             fi
                         done
                         [ "$j" -lt "$n" ] || return 1
+                        # The shell runs the decoded word (`$'\x2dr'` is -r,
+                        # HIMMEL-4576). ${…@E} is bash 4.4+; an older bash
+                        # keeps the raw body, as before (declining here would
+                        # switch guard_unwrap off for the whole command, J1946
+                        # B1). The eval'd text is constant, never input.
+                        if [ "${BASH_VERSINFO[0]}" -gt 4 ] \
+                            || { [ "${BASH_VERSINFO[0]}" = 4 ] && [ "${BASH_VERSINFO[1]}" -ge 4 ]; }; then
+                            eval 'body=${body@E}'
+                        fi
                         _st_q; w=$w$body; i=$((j + 1))
                         ;;
                     '"') _st_q; ctx=${ctx}D; i=$((i + 2)) ;;

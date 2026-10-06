@@ -227,6 +227,21 @@ cp "$HOOK" "$nolib/block-git-stash.sh"
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'git status')" | bash "$nolib/block-git-stash.sh" >/dev/null 2>&1; echo $?)"
 rm -rf "$nolib"
 
+# --- HIMMEL-4576 judge J1946 B1: a trailing $'…' must not switch guard_unwrap
+# off on a bash older than 4.4 (macOS /bin/bash 3.2 is the floor). Set
+# HIMMEL_TEST_OLD_BASH to such a bash to run it there; it runs first in PATH,
+# the way run-hook-with-bash.js resolves bash.
+b1="env FOO=1 g'i't stash; echo \$'x'"
+assert_rc "4576 B1 g'i't stash beside \$'x'" 2 "$(run_case "$(j_bash "$b1")")"
+if [ -n "${HIMMEL_TEST_OLD_BASH:-}" ]; then
+    oldbin=$(cd "$(dirname "$HIMMEL_TEST_OLD_BASH")" && pwd)
+    # shellcheck disable=SC2016 # the old bash expands it, not this shell
+    assert_rc "4576 B1 under $("$HIMMEL_TEST_OLD_BASH" -c 'echo $BASH_VERSION')" 2 \
+        "$(printf '%s' "$(j_bash "$b1")" | PATH="$oldbin:$PATH" "$HIMMEL_TEST_OLD_BASH" "$HOOK" >/dev/null 2>&1; echo $?)"
+else
+    echo "SKIP 4576 B1 under bash < 4.4 (set HIMMEL_TEST_OLD_BASH)"
+fi
+
 # --- BYPASS case ---
 assert_rc "GIT_STASH_OK bypass"       0 "$(run_case "$(j_bash 'git stash drop')" "GIT_STASH_OK=1")"
 
