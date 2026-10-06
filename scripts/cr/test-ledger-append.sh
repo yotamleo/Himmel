@@ -517,7 +517,9 @@ check "  ...and keeps it (never overridden by the checkout)" "$(L="$BR" node -e 
 # A branch-less legacy finding: readers look its amends up in the "" bucket,
 # so any explicit real branch is unreachable - refuse and say to omit it.
 BRL="$tmp/branch-mismatch-legacy.jsonl"; : > "$BRL"
-CR_LEDGER="$BRL" bash "$LA" finding --head BLH1 --model m --id find-brl-1 --severity imp --file f --line 3 --verdict agreed
+# Written raw: the finding verb now always stamps a branch (HIMMEL-4604), and
+# refuses on a detached HEAD (CI's checkout), so only a raw row is branch-less.
+printf '{"kind":"finding","ts":"2020-01-01T00:00:00Z","head":"BLH1","model":"m","finding_id":"find-brl-1","severity":"imp","file":"f","line":3,"verdict":"agreed","artifact":"diff","perspective":"off"}\n' > "$BRL"
 CR_LEDGER="$BRL" bash "$LA" amend --branch some-branch --head BLH1 --id find-brl-1 --set severity=sug --reason x 2>"$tmp/brl.err"
 check "an explicit --branch on a branch-less legacy finding refuses (HIMMEL-3467)" "$?" "3"
 check "  ...and tells the caller to omit --branch" "$(grep -c 'omit --branch' "$tmp/brl.err")" "1"
