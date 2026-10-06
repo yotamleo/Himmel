@@ -14,7 +14,8 @@ grandchild that called setsid; only a subreaper can.
 What this runner does:
   * makes itself a child subreaper (PR_SET_CHILD_SUBREAPER), so any descendant
     orphaned under it is reparented HERE, not to systemd / init;
-  * starts CMD in its own process group;
+  * starts CMD in its own process group, and while it waits reaps every
+    orphan reparented to it, so exited grandchildren do not pile up as zombies;
   * on the deadline: SIGTERM to that group, then SIGKILL after --kill-after
     seconds (the `timeout -s TERM --kill-after` contract), exit 124;
   * on SIGTERM / SIGINT / SIGHUP to the runner itself: the same TERM, then
@@ -149,11 +150,33 @@ def sweep(pgid):
     return left
 
 
+def wait_child(child, timeout):
+    """child.wait(timeout) that also reaps every orphan reparented to this
+    subreaper while it waits; otherwise each one stays a zombie (holding a pid)
+    until the final sweep. Raises subprocess.TimeoutExpired like child.wait."""
+    end = time.monotonic() + timeout
+    while child.returncode is None:
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return child.wait()
+        if pid == child.pid:
+            child.returncode = os.waitstatus_to_exitcode(status)
+            break
+        # Checked on every poll: a steady stream of exiting orphans must not
+        # starve the deadline.
+        if time.monotonic() >= end:
+            raise subprocess.TimeoutExpired(child.args, timeout)
+        if pid == 0:
+            time.sleep(0.05)
+    return child.returncode
+
+
 def stop_group(child, kill_after):
     """SIGTERM the child's group, then give it up to kill_after seconds."""
     signal_group(child.pid, signal.SIGTERM)
     try:
-        child.wait(timeout=kill_after)
+        wait_child(child, kill_after)
     except subprocess.TimeoutExpired:
         pass
 
@@ -169,7 +192,7 @@ def supervise(cmd, deadline, kill_after, box):
         box.append(subprocess.Popen(cmd, start_new_session=True))
         child = box[0]
         try:
-            rc = child.wait(timeout=deadline)
+            rc = wait_child(child, deadline)
             return 128 - rc if rc < 0 else rc
         except subprocess.TimeoutExpired:
             print("harness-run: deadline %ss hit, stopping %s" % (deadline, cmd[0]), file=sys.stderr)
