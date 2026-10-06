@@ -75,6 +75,14 @@ check "the canary fixture carries the canary" '[ "$(grep -c CANARY4670zq "$FX/ca
 digest "$TMP/$SID.c.jsonl" >"$TMP/canary.json" 2>"$TMP/canary.err" || bad "the canary digest exits 0"
 check "the canary digest is non-empty" 'jq -e ".failures | length > 10" "$TMP/canary.json" >/dev/null'
 check "the canary appears nowhere in the digest or its stderr" 'absent CANARY4670zq "$TMP/canary.json" "$TMP/canary.err"'
+# HIMMEL-3724: input_head and the raw reason_tag never leave the host. The digest maps reason_tag onto the closed
+# category list (slugged); every row here also carries input_head, and the off-list tag is a canary.
+jq -c '. + {input_head: "IHEAD4670zq"} | if .reason_tag == "unknown" then .reason_tag = "RTAG4670zq" else . end' "$FX/classifier-denials.jsonl" >"$TMP/egress-ledger.jsonl"
+bun "$DIG" --transcript "$TMP/$SID.jsonl" --denials-ledger "$TMP/egress-ledger.jsonl" >"$TMP/egress.json" 2>"$TMP/egress.err" || bad "the egress digest exits 0"
+check "the egress ledger carries input_head and the canary tag" '[ "$(grep -c IHEAD4670zq "$TMP/egress-ledger.jsonl")" = 4 ] && [ "$(grep -c RTAG4670zq "$TMP/egress-ledger.jsonl")" = 1 ]'
+check "the egress digest still keys the ledger category" '[ "$(jq -c "[.failures[] | select(.class == \"denied/classifier:merge-without-review\")] | length" "$TMP/egress.json")" = 1 ]'
+check "no input_head key or value reaches the digest or its stderr" 'absent -e input_head -e IHEAD4670zq "$TMP/egress.json" "$TMP/egress.err"'
+check "no raw reason_tag reaches the digest or its stderr, only the slugged category" 'absent -e RTAG4670zq -e "Merge Without Review" -e "Session Transcript Tampering" -e reason_tag "$TMP/egress.json" "$TMP/egress.err"'
 
 echo "6. denial cross-check: mapper vs trajectory.py (spec 2.3)"
 : >"$TMP/divergence.txt"
