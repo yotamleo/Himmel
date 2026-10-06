@@ -256,7 +256,11 @@ if [ -n "$bridge_root" ]; then
             hb_age=$(( $(date +%s) - 10#$hb_epoch ))
             case "$hb_state" in
                 waiting|sampling)
-                    if [ "$hb_age" -gt "$WAITER_MAX_AGE_SECS" ]; then
+                    # A future heartbeat is malformed, not fresh: the waiter
+                    # stamps its own clock, and the hook reads the same one.
+                    if [ "$hb_age" -lt -60 ]; then
+                        waiter_note="waiter heartbeat is $(( -hb_age ))s in the future"
+                    elif [ "$hb_age" -gt "$WAITER_MAX_AGE_SECS" ]; then
                         waiter_note="waiter heartbeat is ${hb_age}s old (state=$hb_state)"
                     elif ! kill -0 "$hb_pid" 2>/dev/null; then
                         waiter_note="waiter pid $hb_pid is not alive"

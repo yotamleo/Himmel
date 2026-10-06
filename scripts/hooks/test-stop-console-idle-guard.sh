@@ -242,7 +242,10 @@ if [ -n "$PREFIX_HOOK" ]; then
     out="$(run_guard_hook "$PREFIX_HOOK" "$CONSOLE_PAYLOAD" \
         HIMMEL_STOP_GUARD_BANK_PREFLIGHT="$REPO/scripts/lib/bank-preflight.sh" \
         HIMMEL_STOP_GUARD_QUEUE_LOCK="$REPO/scripts/handover/queue-lock.sh")"
-    if is_block "$out"; then
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        bad "(e) RED: pre-fix hook exited $rc (a crash proves nothing)"
+    elif is_block "$out"; then
         ok "(e) RED: pre-fix hook ($PREDICATE_BASE_SHA) still blocks with a leg held — bug reproduced"
     else
         bad "(e) RED: pre-fix hook did not block with a leg held (expected block to prove the bug) — got: $out"
@@ -323,7 +326,10 @@ check_waiter() {
         out="$(run_guard_hook "$PRE4567_HOOK" "$CONSOLE_PAYLOAD" \
             HIMMEL_STOP_GUARD_BANK_PREFLIGHT="$REPO/scripts/lib/bank-preflight.sh" \
             HIMMEL_STOP_GUARD_QUEUE_LOCK="$REPO/scripts/handover/queue-lock.sh")"
-        if is_block "$out"; then bad "$label RED: pre-fix hook already blocks — got: $out"; else ok "$label RED: pre-fix hook allows (bug reproduced)"; fi
+        rc=$?
+        if [ "$rc" -ne 0 ]; then bad "$label RED: pre-fix hook exited $rc (a crash proves nothing)"
+        elif is_block "$out"; then bad "$label RED: pre-fix hook already blocks — got: $out"
+        else ok "$label RED: pre-fix hook allows (bug reproduced)"; fi
     fi
     out="$(run_guard "$CONSOLE_PAYLOAD")"
     rc=$?
@@ -349,6 +355,7 @@ check_waiter "(n) fresh heartbeat, dead pid, leg held"            block 0 "$DEAD
 # Malformed heartbeats must block, not crash the hook into a silent allow.
 check_waiter "(q) heartbeat epoch with an embedded colon"         block raw "hb=1:2 pid=$$ key=- tick=ok state=waiting"
 check_waiter "(r) heartbeat epoch with a leading zero (09)"       block raw "hb=09 pid=$$ key=- tick=ok state=waiting"
+check_waiter "(s) heartbeat epoch an hour in the future"          block -3600 "$$" waiting
 
 rm -f "$WAIT_HB"
 out="$(run_guard "$CONSOLE_PAYLOAD")"
