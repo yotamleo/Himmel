@@ -352,6 +352,9 @@ check "calibration writes a valid eval-runs row" '[ "$(jq -s -r "map(select(.eva
 : >"$TMP/fake.log"
 bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >"$TMP/cal3.json" 2>/dev/null
 check "a stored second-judge result is reused, never re-judged" '! grep -q -- "--json-schema" "$TMP/fake.log" && jq -e ".metrics.n_kappa == 4" "$TMP/cal3.json" >/dev/null'
+: >"$FX/a.r2.judge2.sonnet-low.json"; : >"$TMP/fake.log"
+bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >/dev/null 2>&1
+check "an empty second-judge result is judged again" '[ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 1 ] && [ -s "$FX/a.r2.judge2.sonnet-low.json" ]'
 : >"$TMP/fake.log"
 LQ_FAKE_TOKEN=SKIPPED-BANK bash "$RUN" calibration "$FX" --judge2-model haiku --json --no-ledger >/dev/null 2>&1
 rc=$?

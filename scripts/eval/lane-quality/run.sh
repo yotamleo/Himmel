@@ -189,9 +189,11 @@ judge_call() {
 }
 
 judge_scores() { # $1 judge result json -> the scores plus cost_usd, or null
-  jq -c '(.structured_output // (.result | fromjson? ) // null) as $s
+  local s  # an empty file makes jq print nothing at rc 0: still null
+  s="$(jq -c '(.structured_output // (.result | fromjson? ) // null) as $s
          | if $s == null then null else $s + {cost_usd: (.total_cost_usd // null)} end' \
-    "$1" 2>/dev/null || echo null
+    "$1" 2>/dev/null)"
+  echo "${s:-null}"
 }
 
 judge() { # $1 file stem, $2 task, $3 worktree, $4 fixture sha, $5 agent report file, $6 out dir, $7 budget -> judge JSON on stdout
