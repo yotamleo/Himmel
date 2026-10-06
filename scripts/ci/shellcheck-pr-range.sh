@@ -12,8 +12,9 @@
 # Fail-safe direction: when in doubt, lint everything (--all-files) if
 #   - the diff cannot be computed or a neighbour lookup errors,
 #   - a changed file has a source line naming no *.sh/*.bash (dynamic, uncertain),
-#   - .pre-commit-config.yaml, .shellcheckrc, the CI workflow or this script changed,
-#   - a path needs quoting (newline/tab/quote in the name) so it cannot be matched.
+#   - .pre-commit-config.yaml, a .shellcheckrc/shellcheckrc at ANY depth (the nearest
+#     rc shadows the root one for untouched files), the CI workflow or this script changed,
+#   - a changed path contains a newline anywhere, or a neighbour path needs quoting.
 # Renames are split into delete+add (--no-renames) so the old path's consumers are
 # found, and `# shellcheck source=` directive edges count as source edges.
 #
@@ -38,7 +39,7 @@ dz=$(mktemp "${TMPDIR:-/tmp}/shellcheck-pr-range.XXXXXX") || run_all "mktemp fai
 trap 'rm -f "$dz"' EXIT
 git diff -z --no-renames --name-only --diff-filter=ACMRTD "$base" HEAD > "$dz" || run_all "git diff failed"
 changed=$(tr '\0' '\n' < "$dz")
-[ "$(tr -cd '\0' < "$dz" | wc -c)" -eq "$(printf '%s' "$changed" | grep -c .)" ] || run_all "newline in a changed path"
+[ "$(tr -d '\0' < "$dz" | wc -c)" -eq "$(tr -d '\0\n' < "$dz" | wc -c)" ] || run_all "newline in a changed path"
 [ -n "$changed" ] || { echo "shellcheck-pr-range: no changed files" >&2; [ "$dry" = 1 ] && echo "FILES"; exit 0; }
 
 case "
@@ -48,6 +49,10 @@ $changed
 .pre-commit-config.yaml
 "* | *"
 .shellcheckrc
+"* | *"
+shellcheckrc
+"* | *"/.shellcheckrc
+"* | *"/shellcheckrc
 "* | *"
 .github/workflows/ci.yml
 "* | *"
