@@ -245,10 +245,15 @@ if [ -n "$bridge_root" ]; then
             esac
         done
     fi
-    case "$hb_epoch:$hb_pid" in
-        :*|*:|*[!0-9:]*) waiter_note="no waiter heartbeat at $hb_file" ;;
+    # Each field digits-only, the epoch read as decimal (10#): a malformed
+    # value must never reach arithmetic, where it aborts with no note.
+    hb_ok=1
+    case "$hb_epoch" in ''|*[!0-9]*) hb_ok=0 ;; esac
+    case "$hb_pid" in ''|*[!0-9]*) hb_ok=0 ;; esac
+    case "$hb_ok" in
+        0) waiter_note="no valid waiter heartbeat at $hb_file" ;;
         *)
-            hb_age=$(( $(date +%s) - hb_epoch ))
+            hb_age=$(( $(date +%s) - 10#$hb_epoch ))
             case "$hb_state" in
                 waiting|sampling)
                     if [ "$hb_age" -gt "$WAITER_MAX_AGE_SECS" ]; then

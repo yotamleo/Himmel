@@ -314,7 +314,11 @@ fi
 # check_waiter <label> <expect block|allow> <hb setup: absent | age pid state>
 check_waiter() {
     local label="$1" expect="$2"; shift 2
-    if [ "$1" = absent ]; then rm -f "$WAIT_HB"; else write_hb "$1" "$2" "$3"; fi
+    case "$1" in
+        absent) rm -f "$WAIT_HB" ;;
+        raw) printf '%s\n' "$2" > "$WAIT_HB" ;;
+        *) write_hb "$1" "$2" "$3" ;;
+    esac
     if [ -n "$PRE4567_HOOK" ] && [ "$expect" = block ]; then
         out="$(run_guard_hook "$PRE4567_HOOK" "$CONSOLE_PAYLOAD" \
             HIMMEL_STOP_GUARD_BANK_PREFLIGHT="$REPO/scripts/lib/bank-preflight.sh" \
@@ -322,8 +326,15 @@ check_waiter() {
         if is_block "$out"; then bad "$label RED: pre-fix hook already blocks — got: $out"; else ok "$label RED: pre-fix hook allows (bug reproduced)"; fi
     fi
     out="$(run_guard "$CONSOLE_PAYLOAD")"
-    if [ "$expect" = block ]; then
+    rc=$?
+    # A crashed hook prints nothing, which reads as allow: require rc 0 first.
+    if [ "$rc" -ne 0 ]; then
+        bad "$label -> hook exited $rc (a crash, not a decision): $out"
+    elif [ "$expect" = block ]; then
         if is_block "$out"; then ok "$label -> block"; else bad "$label -> expected block, got: $out"; fi
+        case "$out" in
+            *'waiter is armed ()'*) bad "$label -> the reason names no waiter cause: $out" ;;
+        esac
     else
         if is_block "$out"; then bad "$label -> expected allow, got: $out"; else ok "$label -> allow"; fi
     fi
@@ -335,6 +346,9 @@ check_waiter "(k) no heartbeat file, leg held"                    block absent
 check_waiter "(l) stale heartbeat (1000 s), pid alive, leg held"  block 1000 "$$" waiting
 check_waiter "(m) fresh heartbeat, state=exited, leg held"        block 0 "$$" exited
 check_waiter "(n) fresh heartbeat, dead pid, leg held"            block 0 "$DEAD_PID" waiting
+# Malformed heartbeats must block, not crash the hook into a silent allow.
+check_waiter "(q) heartbeat epoch with an embedded colon"         block raw "hb=1:2 pid=$$ key=- tick=ok state=waiting"
+check_waiter "(r) heartbeat epoch with a leading zero (09)"       block raw "hb=09 pid=$$ key=- tick=ok state=waiting"
 
 rm -f "$WAIT_HB"
 out="$(run_guard "$CONSOLE_PAYLOAD")"
