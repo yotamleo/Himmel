@@ -418,7 +418,11 @@ by design.
 - On an agreed review finding, **sweep the whole class** across every site
   before the next round and report the other sites, not just the cited line. A
   review round spent enumerating instances of a class you already understood is
-  a round wasted.
+  a round wasted. Record each sweep (HIMMEL-4566) with
+  `write-verdicts.sh sweep`, one line per agreed-or-fixed finding:
+  `SWEEP [<id>@<head>] class=<text> :: sites=<a>, <b>` or
+  `... :: single-site search=<command>`. The CR marker clear refuses (exit 14,
+  `missing-class-sweep`) while any agreed or fixed finding lacks one.
 - Every review finding you fix *or* defer needs a **terminal** ledger verdict
   before READY (`fixed` / `disproved` / `deferred` — `agreed` is not terminal).
 - **Merge only on the console's `GO <pr> <sha>` quoting your token** — whatever

@@ -196,4 +196,31 @@ chmod 644 "$tmp/ff14.txt"
 check "$?" "0" "T15 rc (empty --from-file path)"
 check "$(wc -c <"$git_dir/cr-prior-blocking/t15" | tr -d ' ')" "0" "T15 empty target file"
 
+# 16. HIMMEL-4566: sweep mode APPENDS class-sweep records to
+# cr-class-sweeps/<branch> (never truncates — a later round must not erase an
+# earlier round's record), in both accepted shapes.
+( cd "$repo" && printf 'SWEEP [codex-1@abc1234] class=unquoted path :: sites=a.sh:1, b.sh:4\n' | bash "$SCRIPT" sweep --branch feat/t16 )
+check "$?" "0" "T16 rc (multi-site sweep)"
+printf 'SWEEP [glm-2@abcdef0123] class=stale doc line :: single-site search=git grep -n stale docs/\n' >"$tmp/ff16.txt"
+( cd "$repo" && bash "$SCRIPT" sweep --branch feat/t16 --from-file "$tmp/ff16.txt" )
+check "$?" "0" "T16 rc (single-site sweep)"
+check "$(cat "$git_dir/cr-class-sweeps/feat/t16")" "SWEEP [codex-1@abc1234] class=unquoted path :: sites=a.sh:1, b.sh:4
+SWEEP [glm-2@abcdef0123] class=stale doc line :: single-site search=git grep -n stale docs/" "T16 appended contents"
+
+# 17. A record that names one site with no backing search, no class, no head,
+# or a VERDICT line refuses the whole write (rc=2) and leaves the file as it was.
+for bad in 'SWEEP [codex-1@abc1234] class=x :: sites=a.sh:1' \
+           'SWEEP [codex-1@abc1234] class= :: sites=a.sh:1, b.sh:2' \
+           'SWEEP [codex-1] class=x :: sites=a.sh:1, b.sh:2' \
+           'SWEEP [codex-1@abc1234] class=x :: single-site search=' \
+           'VERDICT [codex-1] = agreed'; do
+  ( cd "$repo" && printf 'SWEEP [ok-1@abc1234] class=x :: sites=a, b\n%s\n' "$bad" | bash "$SCRIPT" sweep --branch feat/t16 ) 2>/dev/null
+  check "$?" "2" "T17 rc for '$bad'"
+done
+check "$(wc -l <"$git_dir/cr-class-sweeps/feat/t16" | tr -d ' ')" "2" "T17 sweep file untouched"
+
+# 18. The verdict modes still refuse a SWEEP line.
+( cd "$repo" && printf 'SWEEP [codex-1@abc1234] class=x :: sites=a, b\n' | bash "$SCRIPT" aggregate --branch t18 ) 2>/dev/null
+check "$?" "2" "T18 rc (SWEEP line in aggregate mode)"
+
 [ "$fail" -eq 0 ] && echo "PASS test-write-verdicts" || exit 1

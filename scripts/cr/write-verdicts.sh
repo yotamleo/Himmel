@@ -15,7 +15,7 @@
 # scripts/cr/ledger-append.sh plays for the CR critic ledger.
 #
 # Usage:
-#   bash scripts/cr/write-verdicts.sh <prior-blocking|aggregate> [--branch <branch>] [--from-file <path>]
+#   bash scripts/cr/write-verdicts.sh <prior-blocking|aggregate|sweep> [--branch <branch>] [--from-file <path>]
 #   Verdict lines come from STDIN by default, or from --from-file <path> when
 #   given (HIMMEL-3798 round 3: the guard's regex-matched inline heredoc/`<`
 #   redirect shapes were cut after a third real bypass in three rounds — see
@@ -61,6 +61,20 @@
 # fences REPLACE the file's contents every run) — no append mode; YAGNI, the
 # runbook never needs one.
 #
+# HIMMEL-4566 — `sweep` mode records the CLASS SWEEP of an agreed finding, to
+# <git-common-dir>/cr-class-sweeps/<branch>. It APPENDS, unlike the two
+# verdict modes: step 0 truncates those every run, and the round that clears
+# the marker is never the round that agreed the finding, so a truncated record
+# would be gone by the time clear-cr-marker.sh gate 4d reads it. Every
+# non-blank line must match EXACTLY ONE of:
+#   SWEEP [<id>@<head>] class=<text> :: sites=<site>, <site>[, ...]
+#   SWEEP [<id>@<head>] class=<text> :: single-site search=<command>
+# (id: no ']' or '@'; head: 7-64 lowercase hex, the head the finding was
+# raised at). A multi-site record names every site checked, so it needs two or
+# more; a one-site claim must carry the search that backs it. Same whole-write
+# refusal as the verdict modes, and a VERDICT line is refused here as a SWEEP
+# line is refused there.
+#
 # Exit codes:
 #   0  wrote the target file (verdict lines, or empty)
 #   2  usage error / malformed verdict line / unresolvable or unsafe branch — NOTHING written
@@ -81,8 +95,8 @@ case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; e
 
 mode="${1:-}"; shift || true
 case "$mode" in
-  prior-blocking|aggregate) ;;
-  *) echo "write-verdicts.sh: first arg must be prior-blocking|aggregate (got '$mode')" >&2; exit 2 ;;
+  prior-blocking|aggregate|sweep) ;;
+  *) echo "write-verdicts.sh: first arg must be prior-blocking|aggregate|sweep (got '$mode')" >&2; exit 2 ;;
 esac
 
 branch=""
@@ -153,6 +167,7 @@ esac
 case "$mode" in
   prior-blocking) subdir="cr-prior-blocking" ;;
   aggregate)      subdir="cr-aggregate-verdicts" ;;
+  sweep)          subdir="cr-class-sweeps" ;;
 esac
 target="$git_dir/$subdir/$branch"
 
@@ -168,6 +183,9 @@ verdict_re='^VERDICT \[[^]]+\] = (agreed|disproved|conflict|unaddressed)$'
 # with the bare word `deferred` and no ticket matches NEITHER regex and falls
 # through to the generic malformed-line refusal below.
 deferred_re='^VERDICT \[[^]]+\] = deferred -> [A-Z][A-Z0-9]*-[0-9]+$'
+# HIMMEL-4566: the sweep grammar. clear-cr-marker.sh gate 4d parses the same
+# shape with a JS twin of this regex - keep the two in step.
+sweep_re='^SWEEP \[[^]@]+@[0-9a-f]{7,64}\] class=[^[:space:]].* :: (sites=[^,]*[^[:space:],][^,]*(,[^,]*[^[:space:],][^,]*)+|single-site search=[^[:space:]].*)$'
 
 lines=""
 nr=0
@@ -180,7 +198,12 @@ while IFS= read -r line || [ -n "$line" ]; do
   # producer process to SIGPIPE.
   trimmed="$line"
   case "$trimmed" in *[![:space:]]*) ;; *) continue ;; esac   # blank line — skipped, not an error
-  if ! grep -qE "$verdict_re" <<< "$line" && ! grep -qE "$deferred_re" <<< "$line"; then
+  if [ "$mode" = sweep ]; then
+    if ! grep -qE "$sweep_re" <<< "$line"; then
+      echo "write-verdicts.sh: malformed sweep line at line $nr (want 'SWEEP [<id>@<head>] class=<text> :: sites=<site>, <site>[, ...]' or 'SWEEP [<id>@<head>] class=<text> :: single-site search=<command>') — refusing the whole write" >&2
+      exit 2
+    fi
+  elif ! grep -qE "$verdict_re" <<< "$line" && ! grep -qE "$deferred_re" <<< "$line"; then
     echo "write-verdicts.sh: malformed verdict line at line $nr (want 'VERDICT [<id>] = agreed|disproved|conflict|unaddressed' or 'VERDICT [<id>] = deferred -> <TICKET>') — refusing the whole write" >&2
     exit 2
   fi
@@ -220,4 +243,8 @@ if [ -L "$target" ]; then
 fi
 
 mkdir -p "$(dirname "$target")"
-printf '%s' "$lines" > "$target"
+if [ "$mode" = sweep ]; then
+  printf '%s' "$lines" >> "$target"
+else
+  printf '%s' "$lines" > "$target"
+fi
