@@ -930,6 +930,30 @@ case "$guard_block" in
 esac
 assert "Phase 7 guard no longer cites the pre-mutation Phase 1 baseline as its comparison point" "ok" "$r"
 
+echo "Test 12: every mark/move route goes through triage-mark-processed.py (HIMMEL-4685)"
+# The 2026-10-07 cadence run fanned triage out to parallel subagents that
+# marked and moved clips with their own helpers, skipping the stale-read SHA
+# check and the ln move. The invariant now lives in ONE tool; the runbook must
+# route Phase 7, Phase 8, the debt drain and any fan-out through it, and must
+# no longer carry a hand-runnable move recipe a subagent could copy instead.
+TOOL_NAME="triage-mark-processed.py"
+section() { awk -v s="$1" -v e="$2" 'index($0,s)==1{p=1} p&&e!=""&&index($0,e)==1&&index($0,s)!=1{exit} p' "$CMD"; }
+for spec in "**Phase 7|**Phase 8" "**Phase 8|### Daily timeline" "### Phase-8 debt drain|### Phase 0"; do
+    s="${spec%%|*}"; e="${spec#*|}"
+    if section "$s" "$e" | grep -qF "$TOOL_NAME"; then r=ok; else r=missing; fi
+    assert "section '$s' routes through $TOOL_NAME" "ok" "$r"
+done
+# shellcheck disable=SC2016 # literal $LAST_WRITE_SHA text is the match target
+if grep -qF -- '--expect-sha "$LAST_WRITE_SHA"' "$CMD"; then r=ok; else r=missing; fi
+assert "runbook passes LAST_WRITE_SHA to the tool" "ok" "$r"
+if grep -qiE 'subagent|fan-out|fan out' "$CMD" && grep -iE 'subagent|fan-out|fan out' "$CMD" | grep -qF "$TOOL_NAME"; then r=ok; else r=missing; fi
+assert "fan-out clause binds subagents to the tool" "ok" "$r"
+# shellcheck disable=SC2016 # literal $clip/$dest text is the match target
+if grep -qE '^[[:space:]]*(elif )?ln "\$clip" "\$dest"' "$CMD"; then r=present; else r=gone; fi
+assert "runbook no longer carries a hand-runnable ln/rm move recipe" "gone" "$r"
+if grep -qF "summary_basis: url-only" "$CMD"; then r=ok; else r=missing; fi
+assert "runbook flags URL-only summaries (summary_basis: url-only)" "ok" "$r"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 if [ "$fail" -gt 0 ]; then
