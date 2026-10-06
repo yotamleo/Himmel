@@ -55,7 +55,8 @@
 # approving a row.
 #
 # REPORT (stdout, human lines + a trailing JSON summary unless --no-json):
-#   - base-deny/head-allow rows  (the headline regression: head loosened)
+#   - regression rows (head looser than base on the deny > ask > pass >
+#     approve rank: a lost deny, deny to ask, ask to pass, pass to approve)
 #   - newly-denied rows          (head denies what base allowed)
 #   - rc other than 0 or 2
 #   - TIMEOUT RISK rows (wall time over --timeout-warn, default 5s)
@@ -64,8 +65,8 @@
 #     deny that BOTH hooks allowed
 #   - over-deny: allow-expected rows (benign twins) either side denied;
 #     reported only, never an exit code
-# Exit 0 clean, 1 if any base-deny/head-allow row exists, 2 on setup error (or
-# an empty corpus), 3 if the run was inconclusive and no regression was seen:
+# Exit 0 clean, 1 if any regression row exists (head looser than base), 2 on
+# setup error (or an empty corpus), 3 if the run was inconclusive and no regression was seen:
 # any hook errored or was hard-killed (rc outside {0,2}), OR a judge supplied
 # deny-expected seeds but the base denied none of them (the positive control
 # never fired, so a clean result proves nothing). Two broken hooks, and a
