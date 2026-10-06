@@ -17,6 +17,7 @@ RUN="$HERE/run.sh"
 REAL_REPO="$(cd "$HERE/../../.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/lane-quality-test.XXXXXX")" || { echo "test-lane-quality: mktemp -d failed" >&2; exit 1; }
 trap 'git -C "$TMP/repo" worktree prune >/dev/null 2>&1; rm -rf "$TMP"' EXIT
+export HIMMEL_EVAL_RUNS_LEDGER="$TMP/eval-runs.jsonl"   # HIMMEL-4647: never the live ledger
 PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; }
@@ -126,6 +127,9 @@ check "worktrees removed" '[ -z "$(ls -A "$TMP/work" 2>/dev/null)" ]'
 check "judge cost counts toward the budget" 'grep -q "spent 1.0400 USD" "$TMP/run1.log"'
 check "judge call is budget-capped" 'grep -- "--json-schema" "$TMP/fake.log" | grep -q -- "--max-budget-usd"'
 check "judge packet hides the model version" '! grep -q "4-5" "$TMP/fake.log.judge"'
+EL="$HIMMEL_EVAL_RUNS_LEDGER"
+check "sweep appends one eval-runs row" '[ "$(jq -s "map(select(.artifact | contains(\"/out1/\"))) | length" "$EL")" = 1 ]'
+check "eval-runs row is a valid lane-quality row (n=2, ok)" '[ "$(jq -s -r "map(select(.artifact | contains(\"/out1/\")))[0] | \"\(.eval) \(.n) \(.status) \(.metrics.accept_ok_rate == 1)\"" "$EL")" = "lane-quality 2 ok true" ] && python3 "$HERE/../lib/eval_runs.py" validate "$EL" >/dev/null'
 check "a clean agent result keeps is_error false" '[ "$(jq -s ".[0].is_error" "$R")" = false ]'
 
 echo "3. guards"
@@ -189,6 +193,7 @@ LQ_FAKE_MU='{"x/unpriced":{"inputTokens":1,"outputTokens":1,"cacheCreationInputT
   LQ_LANE_BIN="$TMP/bin/claude-openrouter" LQ_METERED_PROBE="$TMP/bin/orcost" bash "$RUN" run --lane openrouter \
   --model haiku --tasks shell-red-green,finding-verify --max-usd 2 --out "$TMP/out16" >"$TMP/run16.log" 2>&1
 check "an unpriced openrouter model stops the sweep" '[ "$(wc -l <"$TMP/out16/runs.jsonl" | tr -d " ")" = 1 ] && grep -q "cost unknown" "$TMP/run16.log"'
+check "a stopped sweep records a partial eval-runs row" '[ "$(jq -s -r "map(select(.artifact | contains(\"/out16/\")))[0].status" "$HIMMEL_EVAL_RUNS_LEDGER")" = partial ]'
 # 25k input tokens is 0.025 USD at list, so a reported 0.50 is 20x, not the 5x
 # the per-call factor relies on: the cost is unknown and the sweep stops.
 LQ_FAKE_MU='{"anthropic/claude-haiku-4.5":{"inputTokens":25000,"outputTokens":0,"cacheCreationInputTokens":0,"cacheReadInputTokens":0}}' \

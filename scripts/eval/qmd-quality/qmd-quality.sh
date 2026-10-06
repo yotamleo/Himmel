@@ -172,3 +172,8 @@ bun "$HERE/latency.ts" --runs "$OUT/runs.jsonl" >"$OUT/latency.tsv" || exit 2
 cat "$OUT/scores.tsv"
 echo
 cat "$OUT/latency.tsv"
+# HIMMEL-4647: one eval-runs ledger row per run (scripts/eval/lib/eval_runs.py);
+# a ledger failure warns and never changes the eval's result.
+python3 "$HERE/../lib/eval_runs.py" qmd-quality "$OUT" --golden "$GOLDEN" --modes "$MODES" --scope "$SCOPE" \
+  --candidate-limit "$CAND" --embed-model "${QMD_EMBED_MODEL:-}" --rerank-model "${QMD_RERANK_MODEL:-}" --index "$INDEX" \
+  || echo "qmd-quality: WARNING eval-runs row not written" >&2

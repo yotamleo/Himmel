@@ -1,0 +1,35 @@
+{
+  "_comment": "eval-compare noise bands (HIMMEL-4647). Per eval, a metric name or fnmatch glob -> {higher_is_better, band (absolute) | band_rel (fraction of the baseline)}. A metric with a CI in the ledger is gated by the CI instead; a metric matching nothing is reported as info, never gated. Bands are first guesses from n=1 history (specs/research/HIMMEL-4645-eval-infra.md section 2); HIMMEL-4648/4650 replace them with intervals.",
+  "lane-quality": {
+    "accept_rate": {"higher_is_better": true, "band": 0.15},
+    "accept_ok_rate": {"higher_is_better": true, "band": 0.25},
+    "scope_ok_rate": {"higher_is_better": true, "band": 0.25},
+    "judge_missing": {"higher_is_better": false, "band": 0},
+    "judge_*": {"higher_is_better": true, "band": 1.0},
+    "peeked": {"higher_is_better": false, "band": 0},
+    "cost_usd": {"higher_is_better": false, "band_rel": 0.5}
+  },
+  "qmd-quality": {
+    "*.mrr": {"higher_is_better": true, "band": 0.05},
+    "*.hit1": {"higher_is_better": true, "band": 0.08},
+    "*.hit5": {"higher_is_better": true, "band": 0.08},
+    "*.missing": {"higher_is_better": false, "band": 0},
+    "*.median_ms": {"higher_is_better": false, "band_rel": 0.5},
+    "*.p90_ms": {"higher_is_better": false, "band_rel": 0.5}
+  },
+  "guard-corpus": {
+    "regressions": {"higher_is_better": false, "band": 0},
+    "odd_rc": {"higher_is_better": false, "band": 0},
+    "deny_coverage": {"higher_is_better": true, "band": 0},
+    "over_deny_head": {"higher_is_better": false, "band": 0},
+    "timeout_risk": {"higher_is_better": false, "band": 0}
+  },
+  "scrape-bench": {
+    "success_rate": {"higher_is_better": true, "band": 0.1},
+    "title_match_rate": {"higher_is_better": true, "band": 0.1},
+    "phrase_hit_rate": {"higher_is_better": true, "band": 0.1},
+    "boilerplate_ratio_mean": {"higher_is_better": false, "band": 0.1},
+    "latency_s_median": {"higher_is_better": false, "band_rel": 0.5},
+    "errors": {"higher_is_better": false, "band": 2}
+  }
+}

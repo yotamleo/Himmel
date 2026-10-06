@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""scripts/eval/eval-compare - did this eval run get worse? (HIMMEL-4647)
+
+  eval-compare <eval> [--baseline <run-id> | --best-of N]
+               [--ledger PATH] [--thresholds PATH]
+
+Reads the eval-runs ledger ($HIMMEL_EVAL_RUNS_LEDGER, else
+~/.himmel/eval-runs.jsonl; schema in scripts/eval/lib/eval_runs.py). The
+candidate is the eval's newest row. The baseline is:
+  (default)      the newest earlier "ok" row with the same confighash
+  --baseline ID  that run, whatever its config
+  --best-of N    per metric, the best value among the N newest earlier "ok"
+                 rows with the same confighash
+Prints baseline, candidate and delta per metric. A metric regresses when it
+moves the wrong way past its noise band: the CI bound when the ledger has one
+(below the baseline's lower bound, or the two intervals apart), else the band
+in eval-compare.json. A metric with no direction there is printed as info and
+never gated.
+
+Exit: 0 no regression, 1 a regression, 2 usage error, 3 no candidate or no
+baseline (nothing to compare is not a pass a gate should trust).
+"""
+import argparse
+import fnmatch
+import json
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "lib"))
+import eval_runs  # noqa: E402
+
+EPS = 1e-9
+
+
+def spec_for(table, metric):
+    if metric in table:
+        return table[metric]
+    for pat, spec in table.items():
+        if not pat.startswith("_") and fnmatch.fnmatchcase(metric, pat):
+            return spec
+    return None
+
+
+def better(spec, a, b):
+    """True when a is better than b under spec."""
+    return a > b if spec["higher_is_better"] else a < b
+
+
+def verdict(spec, base, cand, bci, cci):
+    """(verdict, band text)."""
+    if base is None or cand is None:
+        return "n/a", ""
+    if not spec or "higher_is_better" not in spec:
+        return "info", ""
+    hi = spec["higher_is_better"]
+    if bci or cci:
+        if bci and cci:
+            bad = cci["hi"] < bci["lo"] - EPS if hi else cci["lo"] > bci["hi"] + EPS
+            band = "ci [%g,%g] vs [%g,%g]" % (bci["lo"], bci["hi"], cci["lo"], cci["hi"])
+        elif bci:
+            bad = cand < bci["lo"] - EPS if hi else cand > bci["hi"] + EPS
+            band = "base ci [%g,%g]" % (bci["lo"], bci["hi"])
+        else:
+            bad = base > cci["hi"] + EPS if hi else base < cci["lo"] - EPS
+            band = "cand ci [%g,%g]" % (cci["lo"], cci["hi"])
+    else:
+        if "band" in spec:
+            width, band = float(spec["band"]), "±%g" % spec["band"]
+        else:
+            width, band = abs(base) * float(spec.get("band_rel", 0)), "±%g%%" % (100 * float(spec.get("band_rel", 0)))
+        worse = (base - cand) if hi else (cand - base)
+        bad = worse > width + EPS
+    if bad:
+        return "REGRESSION", band
+    if cand != base and better(spec, cand, base):
+        return "better", band
+    return "ok", band
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="eval-compare", description=__doc__.split("\n\n")[0])
+    ap.add_argument("eval")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--baseline", metavar="RUN_ID")
+    g.add_argument("--best-of", type=int, metavar="N")
+    ap.add_argument("--ledger", help="default $%s, else ~/.himmel/eval-runs.jsonl" % eval_runs.LEDGER_ENV)
+    ap.add_argument("--thresholds", default=os.path.join(HERE, "eval-compare.json"))
+    try:
+        args = ap.parse_args(argv)
+    except SystemExit as e:
+        return 2 if e.code else 0
+    if args.best_of is not None and args.best_of < 1:
+        print("eval-compare: --best-of needs N >= 1", file=sys.stderr)
+        return 2
+    try:
+        with open(args.thresholds, encoding="utf-8") as fh:
+            table = json.load(fh).get(args.eval, {})
+    except (OSError, json.JSONDecodeError) as e:
+        print("eval-compare: cannot read thresholds %s: %s" % (args.thresholds, e), file=sys.stderr)
+        return 2
+
+    rows = [r for r in eval_runs.read_rows(args.ledger) if r["eval"] == args.eval]
+    if not rows:
+        print("eval-compare: no run of '%s' in %s" % (args.eval, eval_runs.ledger_path(args.ledger)))
+        return 3
+    cand = rows[-1]
+    earlier = rows[:-1]
+    pool = [r for r in earlier if r["status"] == "ok" and r["confighash"] == cand["confighash"]]
+
+    # base_of[metric] = the row the metric's baseline value comes from.
+    if args.baseline:
+        hits = [r for r in rows if r["run_id"] == args.baseline]
+        if not hits:
+            print("eval-compare: no run '%s' of '%s'" % (args.baseline, args.eval))
+            return 3
+        label, base_of = args.baseline, None
+        fixed = hits[-1]
+    else:
+        if not pool:
+            print("eval-compare: no baseline for %s %s: no earlier ok run with confighash %s"
+                  % (args.eval, cand["run_id"], cand["confighash"]))
+            return 3
+        fixed = pool[-1]
+        label, base_of = fixed["run_id"], None
+        if args.best_of:
+            window = pool[-args.best_of:]
+            label = "best of %d (%s .. %s)" % (len(window), window[0]["run_id"], window[-1]["run_id"])
+            base_of = {}
+            for m in set().union(*(r["metrics"] for r in window)):
+                spec = spec_for(table, m)
+                vals = [r for r in window if r["metrics"].get(m) is not None]
+                if not vals:
+                    continue
+                if spec and "higher_is_better" in spec:
+                    best = vals[0]
+                    for r in vals[1:]:
+                        if better(spec, r["metrics"][m], best["metrics"][m]):
+                            best = r
+                    base_of[m] = best
+                else:
+                    base_of[m] = vals[-1]
+
+    print("eval-compare %s: candidate %s (%s, %s) vs baseline %s"
+          % (args.eval, cand["run_id"], (cand["gitsha"] or "?")[:9], cand["ts"], label))
+    names = sorted(set(cand["metrics"]) | set(fixed["metrics"] if base_of is None else base_of))
+    regressions = 0
+    print("%-28s %12s %12s %12s  %-10s %s" % ("metric", "baseline", "candidate", "delta", "verdict", "band"))
+    for m in names:
+        brow = fixed if base_of is None else base_of.get(m)
+        base = brow["metrics"].get(m) if brow else None
+        c = cand["metrics"].get(m)
+        v, band = verdict(spec_for(table, m), base, c, (brow or {}).get("ci", {}).get(m), cand["ci"].get(m))
+        regressions += v == "REGRESSION"
+        fmt = lambda x: "-" if x is None else "%.6g" % x  # noqa: E731
+        delta = "-" if base is None or c is None else "%+.6g" % (c - base)
+        print("%-28s %12s %12s %12s  %-10s %s" % (m, fmt(base), fmt(c), delta, v, band))
+    if regressions:
+        print("eval-compare: %d REGRESSION(s) beyond the noise band" % regressions)
+        return 1
+    print("eval-compare: no regression beyond the noise band")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -265,6 +265,39 @@ class LocalAdapterTests(unittest.TestCase):
         self.assertEqual(err.getvalue(), "err=LightpandaExit2\n")
 
 
+class LedgerTests(unittest.TestCase):
+    """HIMMEL-4647: each bench.main run appends one valid eval-runs row."""
+
+    def bench(self, d, script_body):
+        script = Path(d) / "engine.sh"
+        script.write_text("#!/bin/sh\n" + script_body, encoding="utf-8")
+        script.chmod(0o755)
+        fixture = Path(d) / "urls.json"
+        fixture.write_text(json.dumps(FIXTURE), encoding="utf-8")
+        ledger = Path(d) / "eval-runs.jsonl"
+        with mock.patch.dict(os.environ, {"HIMMEL_EVAL_RUNS_LEDGER": str(ledger)}), \
+                mock.patch("sys.stdout", io.StringIO()), mock.patch("sys.stderr", io.StringIO()):
+            bench.main(["--provider", "cmd", "--name", "eng", "--cmd", str(script),
+                        "--fixture", str(fixture), "--out", str(Path(d) / "o.jsonl"), "--delay", "0"])
+        return [json.loads(l) for l in ledger.read_text(encoding="utf-8").splitlines()]
+
+    def test_run_appends_one_valid_row(self):
+        import eval_runs
+        with tempfile.TemporaryDirectory() as d:
+            rows = self.bench(d, "cat <<'EOF'\n%s\nEOF\n" % GOOD)
+        self.assertEqual(len(rows), 1)
+        r = rows[0]
+        self.assertEqual(eval_runs.validate(r), [])
+        self.assertEqual((r["eval"], r["n"], r["status"], r["config"]["provider"]), ("scrape-bench", 3, "ok", "eng"))
+        self.assertAlmostEqual(r["metrics"]["title_match_rate"], 2 / 3)
+        self.assertEqual(sorted(r["cases"]), ["a", "b", "c"])
+
+    def test_needs_auth_run_is_partial(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = self.bench(d, "exit 77\n")
+        self.assertEqual((rows[0]["status"], rows[0]["metrics"]["success_rate"]), ("partial", None))
+
+
 class RenderTests(unittest.TestCase):
     def test_table_per_category_and_provider(self):
         rows = [

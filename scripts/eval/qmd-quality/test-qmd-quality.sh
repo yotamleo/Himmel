@@ -128,5 +128,29 @@ else
   echo "SKIP model: sqlite3 not on PATH"
 fi
 
+# --- eval-runs ledger (HIMMEL-4647): a finished run appends one valid row ------
+# A stub bun stands in for run-eval/score/latency, so no qmd and no model loads.
+mkdir -p "$TMP/stub"
+cat >"$TMP/stub/bun" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  *run-eval.ts) while [ $# -gt 0 ]; do [ "$1" = --out ] && : >"$2"; shift; done ;;
+  *score.ts) printf 'mode\tcollection\tn\thit@1\thit@5\tmrr\tmissing\nlex\tALL\t3\t0.333\t0.667\t0.444\t0\n' ;;
+  *latency.ts) printf 'mode\tn\tmedian_ms\tp90_ms\nlex\t3\t25\t40\n' ;;
+esac
+STUB
+chmod +x "$TMP/stub/bun"
+echo x >"$TMP/xdg/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf"
+LEDGER="$TMP/eval-runs.jsonl"
+out=$(HIMMEL_EVAL_RUNS_LEDGER="$LEDGER" PATH="$TMP/stub:$PATH" XDG_CACHE_HOME="$TMP/xdg" bash "$HERE/qmd-quality.sh" \
+  --golden "$FIX/golden.jsonl" --index "$TMP/idx.sqlite" --no-snapshot --modes lex --out "$TMP/l1" 2>&1); rc=$?
+eq "ledger: stubbed run exits 0" "$rc" "0"
+eq "ledger: one row appended" "$(wc -l <"$LEDGER" 2>/dev/null | tr -d ' ')" "1"
+eq "ledger: row carries the run's metrics" \
+  "$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); print(r["eval"], r["n"], r["metrics"]["lex.mrr"], r["metrics"]["lex.median_ms"], r["config"]["modes"])' "$LEDGER" 2>&1)" \
+  "qmd-quality 3 0.444 25.0 lex"
+python3 "$HERE/../lib/eval_runs.py" validate "$LEDGER" >/dev/null 2>&1; rc=$?
+eq "ledger: row passes validate" "$rc" "0"
+
 echo "test-qmd-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

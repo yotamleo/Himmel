@@ -19,6 +19,7 @@ DIFF="$HERE/diff"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/guard-corpus-test.XXXXXX")" || {
   echo "mktemp -d failed" >&2; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
+export HIMMEL_EVAL_RUNS_LEDGER="$TMP/eval-runs.jsonl"   # HIMMEL-4647: never the live ledger
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "PASS $1"; }
@@ -80,6 +81,18 @@ OUT2=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/base-hook.sh" \
 has "regression-control: zero" "$OUT2" "(REGRESSION): 0"
 if [ "$RC2" = "0" ]; then pass "regression-control: exit 0"
 else fail "regression-control: expected exit 0, got $RC2"; fi
+
+# eval-runs ledger (HIMMEL-4647): each diff appends one valid row; a regression
+# is a valid (ok) measurement.
+LROWS=$(python3 -c 'import json,sys
+for l in open(sys.argv[1]):
+    r=json.loads(l); m=r["metrics"]
+    print(r["eval"], r["status"], m["regressions"] > 0, m["deny_coverage"], r["config"]["hook"])' "$HIMMEL_EVAL_RUNS_LEDGER" 2>&1)
+if [ "$LROWS" = "guard-corpus ok True 1.0 head-hook.sh
+guard-corpus ok False 1.0 base-hook.sh" ]; then pass "ledger: one row per diff"
+else fail "ledger: unexpected rows: $LROWS"; fi
+if python3 "$HERE/../lib/eval_runs.py" validate "$HIMMEL_EVAL_RUNS_LEDGER" >/dev/null 2>&1; then pass "ledger: rows pass validate"
+else fail "ledger: rows fail validate"; fi
 
 # --- 3. planted slow stub flagged TIMEOUT RISK --------------------------------
 OUT3=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/slow-hook.sh" \
