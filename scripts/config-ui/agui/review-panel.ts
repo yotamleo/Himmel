@@ -94,6 +94,8 @@ const LEDGER_CALL = scriptCall("ledger-append\\.sh");
 const LEDGER_VERDICTS = new Set<Verdict>(["agreed", "disproved", "conflict", "unaddressed", "deferred", "fixed"]);
 const FLAG_VALUE = `[ =]+(?:'([^']*)'|"([^"]*)"|([^\\s;&|]+))`; // an unquoted value ends at a separator
 const SHA = /^[0-9a-f]{7,40}$/;
+// One shell command: everything up to the first separator outside quotes.
+const SHELL_COMMAND = /^(?:'[^']*'|"[^"]*"|[^;&|\n'"])*/;
 
 // The value after the first --flag, unquoted; undefined when the flag is absent.
 function flag(text: string, name: string): string | undefined {
@@ -119,11 +121,13 @@ export function extractVerdicts(text: string): VerdictUpdate[] {
 // Verdicts a command records in the CR ledger, one per ledger-append.sh
 // invocation: "finding ... --id <id> --verdict <v> [--deferred-to <T>]" or
 // "amend ... --id <id> --set verdict=<v> [--set deferred_to=<T>]". Each
-// invocation's flags are read only up to the next invocation. A row's --head
-// rides along so the caller can skip a row recorded against another review.
+// invocation's flags are read only up to the end of its own shell command. A
+// row's --head rides along so the caller can skip a row recorded against
+// another review.
 export function extractLedgerVerdicts(command: string): VerdictUpdate[] {
   const out: VerdictUpdate[] = [];
-  for (const call of command.split(LEDGER_CALL).slice(1)) {
+  for (const rest of command.split(LEDGER_CALL).slice(1)) {
+    const call = SHELL_COMMAND.exec(rest)![0];
     const verb = /^\S+/.exec(call)?.[0];
     let verdict: string | undefined;
     let ticket: string | undefined;
@@ -148,8 +152,9 @@ export function extractLedgerVerdicts(command: string): VerdictUpdate[] {
 // text itself (a heredoc); ledger-append.sh rows count wherever they appear.
 export function commandVerdicts(command: string, readFile: (path: string) => string | undefined): VerdictUpdate[] {
   const out: VerdictUpdate[] = [];
-  if (WRITE_VERDICTS.test(command)) {
-    const from = flag(command, "from-file");
+  const run = command.split(WRITE_VERDICTS)[1];
+  if (run !== undefined) {
+    const from = flag(SHELL_COMMAND.exec(run)![0], "from-file");
     out.push(...extractVerdicts(from === undefined ? command : (readFile(from) ?? "")));
   }
   out.push(...extractLedgerVerdicts(command));

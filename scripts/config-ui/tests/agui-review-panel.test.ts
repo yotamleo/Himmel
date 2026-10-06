@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { mapFile, mapJournal } from "../agui/journal-mapper.ts";
-import { extractLedgerVerdicts, extractVerdicts, parsePanelReport } from "../agui/review-panel.ts";
+import { commandVerdicts, extractLedgerVerdicts, extractVerdicts, parsePanelReport } from "../agui/review-panel.ts";
 import type { AguiEvent } from "../agui/events.ts";
 import { aguiViolations } from "./agui-schema.ts";
 
@@ -156,6 +156,24 @@ describe("extractLedgerVerdicts", () => {
     expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh finding --id b-2 --verdict agreed&&true")).toEqual([
       { id: "b-2", verdict: "agreed" },
     ]);
+  });
+
+  test("an invocation's flags end at its shell command; a separator inside quotes does not end it", () => {
+    expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh finding --id b-1; echo --verdict fixed")).toEqual([]);
+    expect(extractLedgerVerdicts("bash scripts/cr/ledger-append.sh finding --reason 'a; b' --id b-2 --verdict fixed")).toEqual([
+      { id: "b-2", verdict: "fixed" },
+    ]);
+  });
+});
+
+describe("commandVerdicts", () => {
+  const files = (path: string) => (path === "v.txt" ? "VERDICT [c-1] = agreed" : undefined);
+
+  test("write-verdicts reads its own --from-file, never a later command's", () => {
+    expect(commandVerdicts("bash scripts/cr/write-verdicts.sh aggregate --from-file v.txt", files)).toEqual([
+      { id: "c-1", verdict: "agreed" },
+    ]);
+    expect(commandVerdicts("bash scripts/cr/write-verdicts.sh aggregate; echo --from-file v.txt", files)).toEqual([]);
   });
 
   test("every invocation in one command counts, each with its own flags", () => {
