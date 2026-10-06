@@ -44,6 +44,23 @@ function finish(v: View, id: string, at: number, patch: Partial<Tool>): View {
   return { ...v, laneEnds, tools: { ...v.tools, [id]: { ...t, ...patch, end: at } } };
 }
 
+function closeTexts(v: View): View {
+  const texts = Object.fromEntries(Object.entries(v.texts).map(([id, m]) => [id, m.open ? { ...m, open: false } : m]));
+  return { ...v, texts };
+}
+
+// The page's live clock: `anchor` pairs the last elapsed with the wall time it was seen. It re-anchors
+// when elapsed moves OR the status changes, so a run that starts (elapsed still 0) after an idle wait
+// does not inherit the time spent idle.
+export type ClockAnchor = { elapsed: number; status: View["status"]; wall: number };
+export function runClock(
+  anchor: ClockAnchor | undefined, view: { elapsed: number; status: View["status"] }, wall: number,
+): { anchor: ClockAnchor; now: number } {
+  const a = anchor && anchor.elapsed === view.elapsed && anchor.status === view.status
+    ? anchor : { elapsed: view.elapsed, status: view.status, wall };
+  return { anchor: a, now: view.status === "running" ? view.elapsed + (wall - a.wall) : view.elapsed };
+}
+
 export function reduce(prev: View, e: Ev): View {
   const { t0, at } = clock(prev, e);
   let v: View = { ...prev, t0, elapsed: at, eventCount: prev.eventCount + 1 };
@@ -51,13 +68,14 @@ export function reduce(prev: View, e: Ev): View {
     case "RUN_STARTED":
       return { ...v, status: "running", runId: e.runId };
     // A run that ends closes every call still open: finished ones as done (with no result), failed ones as errors.
+    // Likewise a text message that never got TEXT_MESSAGE_END stops being open.
     case "RUN_FINISHED": {
       for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "done" });
-      return { ...v, status: "finished" };
+      return { ...closeTexts(v), status: "finished" };
     }
     case "RUN_ERROR": {
       for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "error" });
-      return { ...v, status: "error", error: e.message };
+      return { ...closeTexts(v), status: "error", error: e.message };
     }
     case "TEXT_MESSAGE_START":
       if (v.texts[e.messageId]) return v;
@@ -164,10 +182,10 @@ function applyOp(node: any, keys: string[], o: Op): any {
   }
   const copy = { ...node };
   if (rest.length) {
-    if (!(k in copy)) throw new Error(`no member ${k} at ${o.path}`);
+    if (!Object.hasOwn(copy, k)) throw new Error(`no member ${k} at ${o.path}`);
     copy[k] = applyOp(copy[k], rest, o);
   } else if (o.op === "add") copy[k] = o.value;
-  else if (!(k in copy)) throw new Error(`no member ${k} at ${o.path}`);
+  else if (!Object.hasOwn(copy, k)) throw new Error(`no member ${k} at ${o.path}`);
   else if (o.op === "remove") delete copy[k];
   else if (o.op === "replace") copy[k] = o.value;
   else throw new Error(`unsupported op ${o.op}`);

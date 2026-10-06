@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, type View } from "../agui-web/src/reducer";
+import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, runClock, type View } from "../agui-web/src/reducer";
 import fixture from "../agui-web/src/fixture.json";
 
 // HIMMEL-4480 PR3: the page is a pure fold of AG-UI events into view state; these cases pin it on the
@@ -128,4 +128,34 @@ test("settled counts only terminal verdicts", () => {
 
 test("a fresh view is idle and empty", () => {
   expect(initialView()).toMatchObject({ status: "idle", entries: [], eventCount: 0, lanes: 0 });
+});
+
+// HIMMEL-4646: three /pr-check Suggestions deferred from #1961.
+test("RUN_FINISHED and RUN_ERROR close a text message that never got TEXT_MESSAGE_END", () => {
+  const open = [{ type: "RUN_STARTED", runId: "r", timestamp: 0 }, { type: "TEXT_MESSAGE_START", messageId: "m", timestamp: 10 },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: "m", delta: "half", timestamp: 20 }];
+  expect(reduceAll([...open, { type: "RUN_FINISHED", timestamp: 30 }]).texts.m).toEqual({ id: "m", text: "half", open: false });
+  expect(reduceAll([...open, { type: "RUN_ERROR", message: "x", timestamp: 30 }]).texts.m.open).toBe(false);
+});
+
+test("the run clock re-anchors to the wall clock when the run starts, even though elapsed is still zero", () => {
+  const a0 = runClock(undefined, { elapsed: 0, status: "idle" }, 1000).anchor;
+  // The page sat idle for 5s, then RUN_STARTED arrived: elapsed 0, status running.
+  const started = runClock(a0, { elapsed: 0, status: "running" }, 6000);
+  expect(started.now).toBe(0);
+  expect(runClock(started.anchor, { elapsed: 0, status: "running" }, 6500).now).toBe(500);
+  // A new event moves elapsed: re-anchor there.
+  const next = runClock(started.anchor, { elapsed: 800, status: "running" }, 7000);
+  expect(next.now).toBe(800);
+  // Not running: the clock is frozen at elapsed.
+  expect(runClock(next.anchor, { elapsed: 800, status: "finished" }, 9000).now).toBe(800);
+});
+
+test("applyPatch rejects inherited member names instead of traversing or replacing them", () => {
+  for (const k of ["constructor", "__proto__", "toString"]) {
+    expect(() => applyPatch({ a: 1 }, [{ op: "replace", path: `/${k}`, value: 1 }])).toThrow();
+    expect(() => applyPatch({ a: 1 }, [{ op: "remove", path: `/${k}` }])).toThrow();
+    expect(() => applyPatch({ a: 1 }, [{ op: "replace", path: `/${k}/x`, value: 1 }])).toThrow();
+  }
+  expect(applyPatch({ a: 1 }, [{ op: "add", path: "/constructor", value: 2 }])).toHaveProperty("constructor", 2);
 });
