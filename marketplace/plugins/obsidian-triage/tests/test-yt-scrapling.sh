@@ -55,6 +55,10 @@ sed 's/"playabilityStatus": {"status": "OK"}/"playabilityStatus": {"status": "ER
 helper --from-html "$tmp/gone.html" >"$tmp/gone.json"
 assert "ERROR playability exit 5" 5 "$?"
 assert "ERROR playability is removed" removed "$(jq_py "$tmp/gone.json" 'd["status"]')"
+sed 's/"playabilityStatus": {"status": "OK"}/"playabilityStatus": {"status": "UNPLAYABLE"}/' "$FIX/watch.html" >"$tmp/unplayable.html"
+helper --from-html "$tmp/unplayable.html" >"$tmp/unplayable.json"
+assert "UNPLAYABLE (region/age/members) exit 6, retryable" 6 "$?"
+assert "UNPLAYABLE is an error, never removed" error "$(jq_py "$tmp/unplayable.json" 'd["status"]')"
 python3 "$HELPER" --video-id DECOYDECOY1 --from-html "$FIX/watch.html" >"$tmp/decoy.json"
 assert "a decoy blob is not a player response -> exit 6" 6 "$?"
 python3 "$HELPER" --video-id 'x;rm' --from-html "$FIX/watch.html" >/dev/null 2>&1
@@ -171,6 +175,44 @@ make_vault "$tmp/v9"
 crawl "$tmp/v9" >"$tmp/v9.out" 2>"$tmp/v9.err"
 assert "no venv, no storage_state -> exit 2" 2 "$?"
 grep -q 'scrapling-venv' "$tmp/v9.err" && a=ok || a=no; assert "message names the scrapling venv" ok "$a"
+
+# --- fallback rung: a stub playwright module + a storage_state ---------------
+# FAKE_PW_MODE=launch-throws: chromium.launch rejects (no browser binaries).
+# FAKE_PW_MODE=goto-throws: the fallback runs but the page never loads.
+# Every call is logged to $FAKE_PW_LOG so a test can prove the rung ran.
+mkdir -p "$tmp/tools/node_modules/playwright" "$HOME/.luna/playwright-state"
+echo '{}' >"$HOME/.luna/playwright-state/youtube.json"
+echo '{"name":"playwright","version":"0.0.0","type":"module","main":"index.js"}' >"$tmp/tools/node_modules/playwright/package.json"
+cat > "$tmp/tools/node_modules/playwright/index.js" <<'STUB'
+import { appendFileSync } from "node:fs";
+const log = (s) => appendFileSync(process.env.FAKE_PW_LOG, s + "\n");
+const page = { goto: async () => { log("goto"); throw new Error("stub nav failure"); } };
+export const chromium = {
+  launch: async () => {
+    log("launch");
+    if (process.env.FAKE_PW_MODE === "launch-throws") throw new Error("Executable doesn't exist");
+    return { newContext: async () => ({ newPage: async () => page }), close: async () => {} };
+  },
+};
+STUB
+export YT_SCRAPLING_PYTHON="$tmp/scrapling-python" FAKE_PW_LOG="$tmp/pw.log"
+
+# --- Test 10: fallback launch fails -> the scrapling primary still runs ------
+echo "Test 10: crawler, fallback browser cannot launch"
+make_vault "$tmp/v10"; : >"$FAKE_PW_LOG"
+FAKE_PW_MODE=launch-throws crawl "$tmp/v10" >"$tmp/v10.out" 2>"$tmp/v10.err"
+assert "crawl exit 0" 0 "$?"
+grep -q '^crawl_status: ok$' "$tmp/v10/Clippings/clip.md" && a=ok || a=no; assert "scrapling primary still crawled" ok "$a"
+grep -q '^launch$' "$FAKE_PW_LOG" && a=ok || a=no; assert "the fallback launch was attempted" ok "$a"
+
+# --- Test 11: metadata without a transcript -> the fallback is tried ---------
+echo "Test 11: crawler, partial primary tries the fallback"
+make_vault "$tmp/v11"; : >"$FAKE_PW_LOG"
+STUB_JSON="$tmp/notx.json" FAKE_PW_MODE=goto-throws crawl "$tmp/v11" >"$tmp/v11.out" 2>"$tmp/v11.err"
+assert "crawl exit 0" 0 "$?"
+grep -q '^goto$' "$FAKE_PW_LOG" && a=ok || a=no; assert "fallback tried for the missing transcript" ok "$a"
+grep -q '^crawl_status: partial$' "$tmp/v11/Clippings/clip.md" && a=ok || a=no; assert "failed fallback keeps the scrapling partial" ok "$a"
+grep -q '^crawl_skill: scrapling-youtube$' "$tmp/v11/Clippings/clip.md" && a=ok || a=no; assert "partial still credited to scrapling" ok "$a"
 
 echo ""
 echo "yt-scrapling tests: $pass passed, $fail failed"

@@ -110,8 +110,11 @@ def extract_meta(page_html, video_id, final_url=None):
     play = (pr.get("playabilityStatus") or {}).get("status", "")
     if play == "LOGIN_REQUIRED":
         return {"status": "login_wall", "detail": "LOGIN_REQUIRED"}
-    if play in ("ERROR", "UNPLAYABLE"):
+    if play == "ERROR":
         return {"status": "removed", "detail": play}
+    if play == "UNPLAYABLE":
+        # Region, age or members-only: recoverable, so the fallback may still run.
+        return {"status": "error", "detail": play}
     vd = pr.get("videoDetails") or {}
     mf = (pr.get("microformat") or {}).get("playerMicroformatRenderer") or {}
     length = vd.get("lengthSeconds")

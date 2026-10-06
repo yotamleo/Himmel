@@ -55,7 +55,7 @@ def main_article(page_html, status_id):
             continue
         nested = ARTICLE_OPEN.search(page_html, start, close)
         region = page_html[start:nested.start() if nested else close]
-        if f"/status/{status_id}" in region:
+        if re.search(rf"/status/{status_id}(?![0-9])", region):
             return region
     return None
 

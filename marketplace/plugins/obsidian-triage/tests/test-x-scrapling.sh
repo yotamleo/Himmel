@@ -74,8 +74,12 @@ assert "unknown status exit 4" 4 "$?"
 assert "unknown status no_media" no_media "$(jq_py "$tmp/none.json" 'd["status"]')"
 sed 's#https://video.twimg.com/#https://video.twimg.com.evil.example/#g' "$FIX/direct-mp4.html" >"$tmp/evil.html"
 python3 "$HELPER" --from-html "$tmp/evil.html" --status-id 2100888166219886818 >"$tmp/evil.json"
-grep -q evil.example "$tmp/evil.json" && a=leaked || a=refused
-assert "off-host video URL never returned" refused "$a"
+grep -q evil.example "$tmp/evil.html"
+assert "leak matcher control: finds the planted host" 0 "$?"
+grep -q evil.example "$tmp/evil.json"
+assert "off-host video URL never returned (grep rc 1, not an error)" 1 "$?"
+python3 "$HELPER" --from-html "$FIX/direct-mp4.html" --status-id 210088816621988681 >"$tmp/prefix.json"
+assert "a status id that only prefixes another is not that status" no_media "$(jq_py "$tmp/prefix.json" 'd["status"]')"
 python3 "$HELPER" --status-id abc --from-html "$FIX/direct-mp4.html" >/dev/null 2>&1
 assert "non-numeric status id refused" 2 "$?"
 

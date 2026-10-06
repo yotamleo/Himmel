@@ -448,6 +448,10 @@ async function processClip(crawler, clipPath, vault, dryRun) {
   let scrape = crawler.py ? scrapeViaScrapling(crawler.py, url, vault) : null;
   if ((!scrape || !scrape.ok) && !(scrape && scrape.final) && crawler.page) {
     scrape = await scrapeVideo(crawler.page, url);
+  } else if (scrape && scrape.ok && scrape.partial && crawler.page) {
+    // Metadata but no transcript: the logged-in crawl may still have one.
+    const fb = await scrapeVideo(crawler.page, url);
+    if (fb.ok && !fb.partial) scrape = fb;
   } else if (scrape && !scrape.ok && !scrape.final) {
     // No fallback configured: leave the clip unmarked so a later run retries it.
     if (scrape.skipped) return { glyph: "o", message: `${rel} -- skipped (scrapling route denied, no playwright fallback)` };
@@ -574,8 +578,20 @@ async function main() {
     process.exit(0);
   }
 
-  const browser = chromium ? await chromium.launch({ headless: true }) : null;
-  const page = browser ? await (await browser.newContext({ storageState: statePath })).newPage() : null;
+  let browser = null, page = null;
+  if (chromium) {
+    try {
+      browser = await chromium.launch({ headless: true });
+      page = await (await browser.newContext({ storageState: statePath })).newPage();
+    } catch (e) {
+      if (!py) throw e;
+      // The fallback is optional: a missing browser or a bad storage_state
+      // must not stop the cookieless primary.
+      console.error(`crawl-youtube: playwright fallback unavailable, running Scrapling-only: ${e.message}`);
+      if (browser) await browser.close().catch(() => {});
+      browser = null; page = null;
+    }
+  }
   const crawler = { py, page };
 
   let ok = 0, partial = 0, failed = 0, skipped = 0, processed = 0;
