@@ -69,6 +69,8 @@ fi
 state="$git_dir/cr-review-rounds/$branch.round"
 # HIMMEL-4600: "<from> <to> <trigger>" of the one delta round, once it ran.
 delta_state="$git_dir/cr-review-rounds/$branch.delta"
+# HIMMEL-4600: the head the last counted round ran on (start --head).
+head_state="$git_dir/cr-review-rounds/$branch.head"
 state_dir="$(dirname "$state")"
 mkdir -p "$state_dir" || {
     echo "review-round: cannot create state directory $state_dir" >&2
@@ -89,29 +91,37 @@ read_round() {
     return 0
 }
 
-# HIMMEL-4600: with no argument, print the last head a critic actually reviewed
-# on this branch (the newest ok avail row); with a full sha, print "finding"
-# when a finding row on this branch sits at it (full or >=7-char prefix) whose
-# verdict, after amends, is not disproved: a disproved finding needs no fix.
+# HIMMEL-4600: ledger_query <avail|finding> <full sha> reads only critic-panel
+# rows on this branch at that sha (full or >=7-char prefix); claude,
+# claude-floor and codex-adv rows are the session's own and never count (the
+# clear-cr-marker gate 3b exclusion). "avail" prints "ok" when a critic
+# reviewed the sha. "finding" prints "finding" when a critic finding there
+# still asks for a fix: its verdict after amends is agreed, fixed or unset,
+# and no row ever deferred or disproved it.
 ledger_query() {
-    LEDGER="$git_dir/cr-critic-scores.jsonl" BRANCH="$branch" FROM="${1:-}" node -e '
+    LEDGER="$git_dir/cr-critic-scores.jsonl" BRANCH="$branch" MODE="$1" FROM="$2" node -e '
 const fs = require("fs"), e = process.env;
 let lines = [];
 try { lines = fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean); } catch { process.exit(0); }
 const at = (h) => { h = String(h || "").toLowerCase(); return h.length >= 7 && e.FROM.startsWith(h); };
-let last = "";
-const verdicts = new Map();
+const critic = (m) => m !== "claude" && m !== "claude-floor" && m !== "codex-adv";
+let reviewed = false;
+const verdicts = new Map(), settled = new Set();
+const note = (id, v) => {
+  verdicts.set(id, v);
+  if (v === "deferred" || v === "disproved") settled.add(id);
+};
 for (const line of lines) {
   let o;
   try { o = JSON.parse(line); } catch { continue; }
   if (!o || o.branch !== e.BRANCH) continue;
-  if (!e.FROM && o.kind === "avail" && o.status === "ok") last = String(o.head || "");
-  if (e.FROM && o.kind === "finding" && at(o.head)) verdicts.set(String(o.finding_id), String(o.verdict || ""));
-  if (e.FROM && o.kind === "amend" && at(o.target_head) && verdicts.has(String(o.finding_id))
-      && o.set && typeof o.set.verdict === "string") verdicts.set(String(o.finding_id), o.set.verdict);
+  if (o.kind === "avail" && o.status === "ok" && critic(o.model) && at(o.head)) reviewed = true;
+  if (o.kind === "finding" && critic(o.model) && at(o.head)) note(String(o.finding_id), String(o.verdict || ""));
+  if (o.kind === "amend" && at(o.target_head) && verdicts.has(String(o.finding_id))
+      && o.set && typeof o.set.verdict === "string") note(String(o.finding_id), o.set.verdict);
 }
-if (!e.FROM) process.stdout.write(last);
-else if ([...verdicts.values()].some((v) => v !== "disproved")) process.stdout.write("finding");
+if (e.MODE === "avail") { if (reviewed) process.stdout.write("ok"); }
+else if ([...verdicts].some(([id, v]) => !settled.has(id) && (v === "" || v === "agreed" || v === "fixed"))) process.stdout.write("finding");
 '
 }
 
@@ -132,13 +142,15 @@ delta_check() {
         echo "review-round: --head $head_sha does not resolve to a commit" >&2
         return 2
     fi
-    last_reviewed="$(ledger_query)"
+    # The scope starts at the head the last counted round ran on, as start
+    # persisted it - never at a ledger row the session could append itself.
+    last_reviewed="$(cat "$head_state" 2>/dev/null)" || last_reviewed=""
     delta_from=""
     if [ -n "$last_reviewed" ]; then
         delta_from="$(git rev-parse --verify --quiet "$last_reviewed^{commit}" 2>/dev/null)" || delta_from=""
     fi
-    if [ -z "$delta_from" ]; then
-        echo "review-round: no critic-reviewed head on $branch to scope a delta round from - $full_note" >&2
+    if [ -z "$delta_from" ] || [ "$(ledger_query avail "$delta_from")" != "ok" ]; then
+        echo "review-round: no critic-reviewed head of the last counted round on $branch to scope a delta round from - $full_note" >&2
         return 8
     fi
     if [ "$delta_from" = "$delta_to" ]; then
@@ -153,7 +165,7 @@ delta_check() {
         echo "review-round: $delta_from..$delta_to changes nothing - no delta round to run" >&2
         return 8
     fi
-    if [ "$(ledger_query "$delta_from")" = "finding" ]; then
+    if [ "$(ledger_query finding "$delta_from")" = "finding" ]; then
         delta_trigger="fix"
         return 0
     fi
@@ -234,6 +246,19 @@ if [ "$verb" = "start" ]; then
             bash "$lock_lib" release-if-owner "." "$branch" "$lock_owner" >/dev/null 2>&1 || true
         echo "review-round: cannot persist round $round for $branch under the counter lock" >&2
         exit 5
+    fi
+    # Record the head this counted round runs on, the next delta scope's
+    # start. Without --head, or on a failed write, no head is kept, so a later
+    # delta round fails closed instead of scoping from an older round.
+    round_head=""
+    if [ -n "$head_sha" ]; then
+        round_head="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" || round_head=""
+    fi
+    tmp_head="$head_state.tmp.$$"
+    if [ -z "$round_head" ] \
+        || ! printf '%s\n' "$round_head" > "$tmp_head" \
+        || ! mv "$tmp_head" "$head_state"; then
+        rm -f "$tmp_head" "$head_state"
     fi
     if ! SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
         bash "$lock_lib" release-if-owner "." "$branch" "$lock_owner" >/dev/null 2>&1; then
@@ -566,7 +591,7 @@ for (const line of lines) {
   const key = [o.finding_id || "?", o.artifact || "diff", o.perspective || "off"].join(SEP);
   findings.set(key, o);
 }
-const pending = [], capDeferred = [], blocking = [];
+const pending = [], capDeferred = [], blocking = [], unclassified = [];
 const CAP_REASONS = [e.CAP_REASON, e.DELTA_REASON];
 for (const o of findings.values()) {
   const id = String(o.finding_id || "?");
@@ -578,13 +603,17 @@ for (const o of findings.values()) {
   const resolved = verdict === "disproved" || trackedDeferred;
   if (e.DELTA === "1") {
     // HIMMEL-4600: the delta round blocks only on Critical or escape-class;
-    // every other open finding is deferred (Important as hardening).
-    if ((severity === "crit" || o.fu_class === "escape") && !resolved) blocking.push(id);
+    // every other open finding is deferred. An Important needs an explicit
+    // fu_class amend from the adjudicator first: an escape-class Important
+    // is fixed in the PR, so it is never deferred by default.
+    const fuClass = typeof o.fu_class === "string" ? o.fu_class.trim() : "";
+    if ((severity === "crit" || fuClass === "escape") && !resolved) blocking.push(id);
+    else if (!resolved && (!verdict || verdict === "agreed") && severity === "imp" && !fuClass) unclassified.push(id);
     else if (!resolved && (!verdict || verdict === "agreed")) pending.push({
       id,
       artifact: o.artifact || "diff",
       perspective: o.perspective || "off",
-      fu_class: severity === "imp" ? "hardening" : "polish"
+      fu_class: severity === "imp" ? fuClass : "polish"
     });
     else if (trackedDeferred && CAP_REASONS.includes(reason)) capDeferred.push({id, ticket});
     else if (!resolved && verdict !== "fixed") blocking.push(id);
@@ -603,7 +632,7 @@ for (const o of findings.values()) {
   }
   else if (!verdict) blocking.push(id);
 }
-process.stdout.write(JSON.stringify({malformed, pending, capDeferred, blocking}));
+process.stdout.write(JSON.stringify({malformed, pending, capDeferred, blocking, unclassified}));
 ' 2>/dev/null)"
 if [ -z "$analysis" ]; then
     echo "review-round: could not evaluate findings at $full_head" >&2
@@ -623,6 +652,11 @@ if [ "$malformed" -ne 0 ]; then
 fi
 if [ -n "$blocking" ] && [ "$delta_mode" -eq 1 ]; then
     echo "review-round: Critical or escape-class finding(s) remain blocking in the delta round: $blocking" >&2
+    exit 4
+fi
+unclassified="$(printf '%s' "$analysis" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).unclassified.join(" ")))' 2>/dev/null)" || unclassified=""
+if [ -n "$unclassified" ]; then
+    echo "review-round: Important finding(s) in the delta round need an explicit fu_class amend before they can be deferred: $unclassified - amend each with --set fu_class=escape (fix it in this PR) or --set fu_class=hardening, then re-run defer" >&2
     exit 4
 fi
 if [ -n "$blocking" ]; then

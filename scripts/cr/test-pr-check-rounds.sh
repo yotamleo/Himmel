@@ -388,6 +388,68 @@ disproved_out="$(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch di
 assert_eq "$disproved_rc" "8" "a disproved round-3 finding authorizes no delta round"
 assert_has "$disproved_out" "neither answers a round-3 finding nor only merges" "disproved refusal names the reason"
 
+# J1943 P1: a round-3 finding already deferred needs no fix either.
+three_rounds deferredr3 suggestion
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch deferredr3 --head "$cap_r3_head" --id stub-1 --set verdict=deferred --set deferred_to=HIMMEL-9 \
+    --set fu_class=polish --set 'reason=deferred at round 3' --reason 'deferred by /pr-check step 4.5' >/dev/null 2>"$tmp/deferredr3-amend.err" \
+    || fail "deferred round-3 finding disposition"
+fix_commit deferredr3
+(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch deferredr3 >/dev/null 2>&1); deferredr3_rc=$?
+assert_eq "$deferredr3_rc" "8" "a deferred round-3 finding authorizes no delta round"
+
+# J1943 P2: a finding the leg itself wrote (model claude) is not a critic finding.
+three_rounds forgedr3 clean
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch forgedr3 --head "$cap_r3_head" --model claude --id forged-1 --severity sug --file f.txt --line 1 \
+    --verdict agreed >/dev/null 2>"$tmp/forgedr3-finding.err" || fail "forged round-3 finding setup"
+fix_commit forgedr3
+(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch forgedr3 >/dev/null 2>&1); forgedr3_rc=$?
+assert_eq "$forgedr3_rc" "8" "a claude-model round-3 finding authorizes no delta round"
+
+# J1943 P3: a finding once disproved stays disproved for the trigger.
+three_rounds flipr3 suggestion
+for v in disproved agreed; do
+    CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+        --branch flipr3 --head "$cap_r3_head" --id stub-1 --set verdict="$v" \
+        --reason "flip to $v" >/dev/null 2>"$tmp/flipr3-amend.err" || fail "flipr3 amend $v"
+done
+fix_commit flipr3
+(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch flipr3 >/dev/null 2>&1); flipr3_rc=$?
+assert_eq "$flipr3_rc" "8" "a disproved-then-agreed round-3 finding authorizes no delta round"
+
+# J1943 P4: an unreviewed commit plus a leg-written avail row cannot move the
+# delta scope past itself; a merge-forward on top is still refused.
+three_rounds evilavail clean
+printf 'EVIL\n' >> "$repo/evilavail.txt"
+git -C "$repo" commit -q -am EVIL
+evil_sha="$(git -C "$repo" rev-parse evilavail)"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" avail \
+    --branch evilavail --head "$evil_sha" --model claude --status ok >/dev/null 2>"$tmp/evilavail.err" || fail "evilavail avail setup"
+git -C "$repo" checkout -q main
+printf 'main-p4\n' > "$repo/main-p4.txt"
+git -C "$repo" add main-p4.txt
+git -C "$repo" commit -q -m main-p4
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q evilavail
+git -C "$repo" merge -q --no-edit main
+(cd "$repo" && bash "$SCRIPT" --head "$(git -C "$repo" rev-parse evilavail)" --branch evilavail >/dev/null 2>&1); evilavail_rc=$?
+assert_eq "$evilavail_rc" "8" "a leg-written avail row at an unreviewed commit cannot scope a merge-forward delta"
+
+# J1943 P4b: the same with a leg-written claude finding at the unreviewed commit.
+three_rounds evilfind clean
+printf 'EVIL\n' >> "$repo/evilfind.txt"
+git -C "$repo" commit -q -am EVIL
+evil_sha="$(git -C "$repo" rev-parse evilfind)"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" avail \
+    --branch evilfind --head "$evil_sha" --model claude --status ok >/dev/null 2>"$tmp/evilfind.err" || fail "evilfind avail setup"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch evilfind --head "$evil_sha" --model claude --id forged-2 --severity sug --file f.txt --line 1 \
+    --verdict agreed >/dev/null 2>"$tmp/evilfind-finding.err" || fail "evilfind finding setup"
+fix_commit evilfind
+(cd "$repo" && bash "$SCRIPT" --head "$cap_fix_head" --branch evilfind >/dev/null 2>&1); evilfind_rc=$?
+assert_eq "$evilfind_rc" "8" "a leg-written avail and finding at an unreviewed commit authorize no delta round"
+
 # A merge of main that also carries its own edit is new work, not a merge-forward.
 three_rounds evilmerge clean
 git -C "$repo" checkout -q main
@@ -418,6 +480,13 @@ printf 'pending\n' > "$git_dir/cr-pending/important"
 out6="$(cd "$repo" && PANEL_MODE=important bash "$SCRIPT" --head "$important_head" --branch important 2>"$tmp/err6")"; rc6=$?
 assert_eq "$rc6" "0" "delta-round Important producer run completes for adjudication"
 assert_has "$out6" "pr-check: delta round 4 on important" "Important run is the delta round"
+(cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$important_head" --branch important --defer-to HIMMEL-9001 >/dev/null 2>"$tmp/defer6u.err"); defer6u_rc=$?
+assert_eq "$defer6u_rc" "4" "a delta-round Important without an fu_class amend is refused"
+assert_has "$(cat "$tmp/defer6u.err")" "explicit fu_class amend" "unclassified Important refusal names the remedy"
+assert_lacks "$(cat "$CLEAR_CALLS" 2>/dev/null)" "important" "an unclassified Important never reaches marker clearance"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" amend \
+    --branch important --head "$important_head" --id stub-1 --set fu_class=hardening \
+    --reason 'classified hardening by the adjudicator' >/dev/null 2>"$tmp/important-class.err" || fail "important fu_class amend"
 (cd "$repo" && bash "$fx/scripts/cr/review-round.sh" defer --head "$important_head" --branch important --defer-to HIMMEL-9001 >"$tmp/defer6.out" 2>"$tmp/defer6.err"); defer6_rc=$?
 assert_eq "$defer6_rc" "0" "delta-round Important finding is deferred"
 assert_has "$(cat "$CLEAR_CALLS" 2>/dev/null)" "important" "deferred delta-round Important finding reaches marker clearance"
