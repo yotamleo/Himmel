@@ -220,7 +220,8 @@ def append_row(row, path=None):
     # One O_APPEND write per row, so concurrent writers never interleave a line.
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        os.write(fd, line)
+        if os.write(fd, line) != len(line):
+            raise OSError("short write to %s; the last row may be torn" % path)
     finally:
         os.close(fd)
     return path
@@ -238,29 +239,37 @@ def append_safe(row, path=None, who="eval-runs"):
         return None
 
 
-def read_rows(path=None):
-    """Valid rows in file order; malformed lines are skipped (counted on stderr)."""
+def scan_rows(path=None):
+    """(rows, row_lines, bad_lines): valid rows in file order, the 1-based line
+    of each, and the lines that are malformed (bad JSON or an invalid row)."""
     path = ledger_path(path)
-    rows, bad = [], 0
+    rows, lines, bad = [], [], []
     try:
         fh = open(path, encoding="utf-8")
     except FileNotFoundError:
-        return []
+        return rows, lines, bad
     with fh:
-        for line in fh:
+        for nr, line in enumerate(fh, 1):
             if not line.strip():
                 continue
             try:
                 r = json.loads(line)
             except json.JSONDecodeError:
-                bad += 1
+                bad.append(nr)
                 continue
             if validate(r):
-                bad += 1
+                bad.append(nr)
                 continue
             rows.append(r)
+            lines.append(nr)
+    return rows, lines, bad
+
+
+def read_rows(path=None):
+    """Valid rows in file order; malformed lines are skipped (counted on stderr)."""
+    rows, _, bad = scan_rows(path)
     if bad:
-        print("eval-runs: skipped %d malformed row(s) in %s" % (bad, path), file=sys.stderr)
+        print("eval-runs: skipped %d malformed row(s) in %s" % (len(bad), ledger_path(path)), file=sys.stderr)
     return rows
 
 

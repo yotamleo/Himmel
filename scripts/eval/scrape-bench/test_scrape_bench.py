@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 import agent_reach_adapter  # noqa: E402
 import bench  # noqa: E402
 import local_adapters  # noqa: E402
@@ -291,6 +292,19 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual((r["eval"], r["n"], r["status"], r["config"]["provider"]), ("scrape-bench", 3, "ok", "eng"))
         self.assertAlmostEqual(r["metrics"]["title_match_rate"], 2 / 3)
         self.assertEqual(sorted(r["cases"]), ["a", "b", "c"])
+
+    def test_ledger_error_only_warns(self):
+        import eval_runs
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(eval_runs, "file_sha256", side_effect=OSError("gone")):
+            rows = None
+            try:
+                rows = self.bench(d, "cat <<'EOF'\n%s\nEOF\n" % GOOD)
+            except FileNotFoundError:
+                rows = []
+            except OSError as e:
+                self.fail("a ledger error escaped the bench: %s" % e)
+        self.assertEqual(rows, [])
 
     def test_needs_auth_run_is_partial(self):
         with tempfile.TemporaryDirectory() as d:

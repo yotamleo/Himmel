@@ -453,11 +453,14 @@ def _record_run(args, rc, results, metrics):
     is a regression run with odd rows (it did not fully exercise the guard). A
     ledger failure warns and never changes the diff's exit code."""
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
-        import eval_runs
-    except ImportError as e:
+        _record_run_row(args, rc, results, metrics)
+    except Exception as e:  # the row is a by-product; the diff's verdict stands
         print("guard-corpus diff: WARNING eval-runs row not written: %s" % e, file=sys.stderr)
-        return
+
+
+def _record_run_row(args, rc, results, metrics):
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+    import eval_runs
     gitsha = None
     if args.head.startswith("sha:"):
         out = subprocess.run(["git", "-C", args.repo, "rev-parse", "--verify", "-q",

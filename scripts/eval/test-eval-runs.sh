@@ -128,6 +128,18 @@ row "$P" qmd-quality p1 "$C" '{"hybrid.mrr":0.99}' "" partial
 row "$P" qmd-quality p2 "$C" '{"hybrid.mrr":0.70}'
 out=$(python3 "$CMP" qmd-quality --ledger "$P" --thresholds "$TH" 2>&1); rc=$?
 eq "compare: a partial run is skipped as a baseline" "$rc" "3"
+
+# A malformed line after the candidate may be this eval's newest run: refuse.
+G="$TMP/garbage.jsonl"
+row "$G" civ g1 '{}' '{"acc":0.80}'
+echo '{"eval":"civ","torn' >>"$G"
+row "$G" civ g2 '{}' '{"acc":0.80}'
+out=$(python3 "$CMP" civ --ledger "$G" --thresholds "$TH" 2>&1); rc=$?
+eq "compare: a malformed line before the candidate is skipped" "$rc" "0"
+echo '{"eval":"civ","torn' >>"$G"
+out=$(python3 "$CMP" civ --ledger "$G" --thresholds "$TH" 2>&1); rc=$?
+eq "compare: a malformed line after the candidate is exit 3" "$rc" "3"
+has "compare: says a newer line is unreadable" "$out" "malformed"
 out=$(python3 "$CMP" qmd-quality --ledger "$P" --thresholds "$TH" --baseline p1 2>&1); rc=$?
 eq "compare: a named partial baseline is refused" "$rc" "3"
 has "compare: says the named baseline is not ok" "$out" "partial"

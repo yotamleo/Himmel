@@ -17,8 +17,10 @@ moves the wrong way past its noise band: the CI bound when the ledger has one
 in eval-compare.json. A metric with no direction there is printed as info and
 never gated.
 
-Exit: 0 no regression, 1 a regression, 2 usage error, 3 no candidate or no
-baseline (nothing to compare is not a pass a gate should trust).
+Exit: 0 no regression, 1 a regression, 2 usage error, 3 nothing to compare:
+no candidate, no ok baseline, a candidate that is not ok, no gated metric
+valued on both sides, or a malformed line after the candidate (it may be this
+eval's newest run). Nothing to compare is not a pass a gate should trust.
 """
 import argparse
 import fnmatch
@@ -100,11 +102,18 @@ def main(argv=None):
         print("eval-compare: cannot read thresholds %s: %s" % (args.thresholds, e), file=sys.stderr)
         return 2
 
-    rows = [r for r in eval_runs.read_rows(args.ledger) if r["eval"] == args.eval]
+    every, at, bad = eval_runs.scan_rows(args.ledger)
+    mine = [(r, nr) for r, nr in zip(every, at) if r["eval"] == args.eval]
+    rows = [r for r, _ in mine]
     if not rows:
         print("eval-compare: no run of '%s' in %s" % (args.eval, eval_runs.ledger_path(args.ledger)))
         return 3
     cand = rows[-1]
+    later_bad = [nr for nr in bad if nr > mine[-1][1]]
+    if later_bad:
+        print("eval-compare: %d malformed line(s) after candidate %s (line %s); the newest run of '%s' may be unreadable"
+              % (len(later_bad), cand["run_id"], ", ".join(map(str, later_bad)), args.eval))
+        return 3
     if cand["status"] != "ok":
         print("eval-compare: candidate %s is %s, not ok: nothing usable to compare"
               % (cand["run_id"], cand["status"]))

@@ -91,6 +91,13 @@ def record_run(provider_name, a, rows):
     """One eval-runs ledger row per bench run (HIMMEL-4647). Rates are over the
     rows a provider actually tried (ok or error); a capped or needs-auth row
     makes the run partial. A ledger failure warns and never fails the bench."""
+    try:
+        _record_run(provider_name, a, rows)
+    except Exception as e:  # the row is a by-product; the bench result stands
+        print("scrape-bench: WARNING eval-runs row not written: %s" % e, file=sys.stderr)
+
+
+def _record_run(provider_name, a, rows):
     sys.path.insert(0, str(HERE.parent / "lib"))
     import eval_runs
     tried = [r for r in rows if r["status"] in ("ok", "error")]

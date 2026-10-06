@@ -80,4 +80,4 @@ Exit codes:
 | 0 | no regression |
 | 1 | regression |
 | 2 | usage error |
-| 3 | nothing to compare (no candidate, no baseline, a candidate whose status is not `ok`, or no gated metric with a value on both sides); never a pass |
+| 3 | nothing to compare (no candidate, no baseline, a candidate whose status is not `ok`, no gated metric with a value on both sides, or a malformed ledger line after the candidate, which may be this eval's newest run); never a pass |
