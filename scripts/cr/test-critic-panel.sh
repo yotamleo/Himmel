@@ -1308,7 +1308,7 @@ cat > "$B5_STUB" <<'STUBEOF'
 # unified-diff ADDITION prefix '+origin-only-ancestral-marker' is present in the
 # origin/ diff and absent from the bare-local diff.
 input="$(cat)"
-if printf '%s' "$input" | grep -qF '+origin-only-ancestral-marker'; then
+if grep -qF '+origin-only-ancestral-marker' <<<"$input"; then
     ref='ORIGIN-REF-USED'
 else
     ref='LOCAL-REF-USED'
@@ -1357,7 +1357,7 @@ cat > "$B6_STUB" <<'STUBEOF'
 # HEAD); the tag develop (C1) as the base is HEAD's ancestor, so the marker is
 # mere context and the '+...' addition is absent.
 input="$(cat)"
-if printf '%s' "$input" | grep -qF '+tag-only-ancestral-marker'; then
+if grep -qF '+tag-only-ancestral-marker' <<<"$input"; then
     ref='ORIGIN-REF-USED'
 else
     ref='TAG-REF-USED'

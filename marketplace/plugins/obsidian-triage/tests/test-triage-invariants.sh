@@ -239,7 +239,7 @@ if [ -r "$bare_target" ]; then
     # Branch 3 vs Branch 4 disambiguation: line AFTER `tags:` is the signal.
     # Use awk to grab the line immediately following the `tags:` match.
     bare_next="$(awk '/^tags:[[:space:]]*$/ {getline; print; exit}' "$bare_target")"
-    if printf '%s' "$bare_next" | grep -qE "^  - "; then
+    if grep -qE "^  - " <<<"$bare_next"; then
         bare_branch=branch3_block
     else
         bare_branch=branch4_null
@@ -251,7 +251,7 @@ if [ -r "$bare_target" ]; then
     block_lookahead="$TMP/Clippings/Sample reddit with block tags.md"
     if [ -r "$block_lookahead" ]; then
         block_next="$(awk '/^tags:[[:space:]]*$/ {getline; print; exit}' "$block_lookahead")"
-        if printf '%s' "$block_next" | grep -qE "^  - "; then
+        if grep -qE "^  - " <<<"$block_next"; then
             block_branch=branch3_block
         else
             block_branch=branch4_null
@@ -567,9 +567,9 @@ unprocessed=$(find "$TMP/unproc/Clippings" -maxdepth 2 -type f -name '*.md' -pri
 assert "genuinely processed clip is excluded from the unprocessed scan" "" \
   "$(printf '%s\n' "$unprocessed" | grep -F 'real-processed.md' || true)"
 assert "BODY-forged processed marker does NOT suppress triage (still scanned)" "yes" \
-  "$(printf '%s\n' "$unprocessed" | grep -qF 'body-forged.md' && echo yes || echo no)"
+  "$(grep -qF 'body-forged.md' <<<"$unprocessed" && echo yes || echo no)"
 assert "an ordinary fresh clip is still scanned" "yes" \
-  "$(printf '%s\n' "$unprocessed" | grep -qF 'fresh.md' && echo yes || echo no)"
+  "$(grep -qF 'fresh.md' <<<"$unprocessed" && echo yes || echo no)"
 
 echo "Test 8c: CRLF clips are read correctly (HIMMEL-1713)"
 # A vault synced from Windows has CRLF clips. Where awk leaves the \r on the

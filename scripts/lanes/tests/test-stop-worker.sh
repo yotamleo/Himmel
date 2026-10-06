@@ -113,7 +113,7 @@ out=$(run_stop glm/dup); rc=$?
 if [ "$rc" -eq 1 ]; then pass "A6: ambiguous branch match -> exit 1 (refuses to guess)"; else fail "A6: expected rc=1, got $rc" "$out"; fi
 
 out=$(run_stop --list)
-if printf '%s' "$out" | grep -q "glm-done-1" && printf '%s' "$out" | grep -q "claudex-nopid-1"; then
+if grep -q "glm-done-1" <<<"$out" && grep -q "claudex-nopid-1" <<<"$out"; then
     pass "A7: --list enumerates sessions from BOTH lanes"
 else
     fail "A7: --list missed a lane" "$out"

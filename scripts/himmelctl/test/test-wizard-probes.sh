@@ -2194,7 +2194,7 @@ echo "$outGMvalid" | jq -e '.actual == "present"' >/dev/null \
   || fail "cmd:telegram_getme: stub bun 'ok' should read present: (got: $outGMvalid)"
 echo "$outGMvalid" | jq -e '.detail | contains("testbot")' >/dev/null \
   || fail "cmd:telegram_getme: present detail should name the returned username: (got: $outGMvalid)"
-if echo "$outGMvalid" | grep -qF "GOODTOKEN999"; then
+if grep -qF "GOODTOKEN999" <<<"$outGMvalid"; then
   fail "cmd:telegram_getme: the raw token must NEVER appear in probe output (got: $outGMvalid)"
 fi
 echo "ok: cmd:telegram_getme — a valid token (stub bun) reads present, token never leaks into the result"
@@ -2210,7 +2210,7 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGMrejected" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "cmd:telegram_getme: stub bun 'fail' (unauthorized) should read degraded: (got: $outGMrejected)"
-if echo "$outGMrejected" | grep -qF "BADTOKEN000"; then
+if grep -qF "BADTOKEN000" <<<"$outGMrejected"; then
   fail "cmd:telegram_getme: the raw REJECTED token must NEVER appear in probe output (got: $outGMrejected)"
 fi
 echo "ok: cmd:telegram_getme — an unauthorized/rejected token reads degraded, never leaks into the result"
@@ -2264,7 +2264,7 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGMnoBun" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "cmd:telegram_getme: bun absent from PATH should read degraded: (got: $outGMnoBun)"
-if echo "$outGMnoBun" | grep -qF "SOMETOKEN111"; then
+if grep -qF "SOMETOKEN111" <<<"$outGMnoBun"; then
   fail "cmd:telegram_getme: the raw token must NEVER appear even on a bun-missing wiring failure (got: $outGMnoBun)"
 fi
 echo "ok: cmd:telegram_getme — bun missing from PATH reads degraded, token still never leaks"
@@ -2297,7 +2297,7 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGMstderrToken" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "cmd:telegram_getme: a child dumping the raw token to stderr should still read degraded: (got: $outGMstderrToken)"
-if echo "$outGMstderrToken" | grep -qF "LEAKPROBE99887766"; then
+if grep -qF "LEAKPROBE99887766" <<<"$outGMstderrToken"; then
   fail "cmd:telegram_getme: a child that writes the raw token to stderr must NOT leak it into the probe result (got: $outGMstderrToken)"
 fi
 echo "ok: cmd:telegram_getme — a child dumping the raw token to stderr never leaks it into the probe result"
@@ -2322,7 +2322,7 @@ console.log(JSON.stringify(runProbe(item, ctx)));
 ")
 echo "$outGMstderrUrl" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "cmd:telegram_getme: a child echoing a token-bearing URL to stderr should still read degraded: (got: $outGMstderrUrl)"
-if echo "$outGMstderrUrl" | grep -qF "LEAKPROBE99887766"; then
+if grep -qF "LEAKPROBE99887766" <<<"$outGMstderrUrl"; then
   fail "cmd:telegram_getme: a child that echoes a token-bearing request URL to stderr must NOT leak the token into the probe result (got: $outGMstderrUrl)"
 fi
 echo "$outGMstderrUrl" | jq -e '.detail | contains("[REDACTED]")' >/dev/null \
@@ -2363,7 +2363,7 @@ echo "$outGMruntimeNetwork" | jq -e '.detail | (contains("wiring broken") | not)
   || fail "cmd:telegram_getme: a runtime-observed network failure must NOT be reported as probe wiring broken: (got: $outGMruntimeNetwork)"
 echo "$outGMruntimeNetwork" | jq -e '.detail | (contains("connectivity") or contains("ENOTFOUND"))' >/dev/null \
   || fail "cmd:telegram_getme: a runtime-observed network failure detail should carry a connectivity-flavoured hint: (got: $outGMruntimeNetwork)"
-if echo "$outGMruntimeNetwork" | grep -qF "NETFAILTOKEN555"; then
+if grep -qF "NETFAILTOKEN555" <<<"$outGMruntimeNetwork"; then
   fail "cmd:telegram_getme: a runtime-observed network failure must NOT leak the token (got: $outGMruntimeNetwork)"
 fi
 echo "ok: cmd:telegram_getme — a runtime-observed network failure reads degraded with a connectivity detail, not 'probe wiring broken', and never leaks the token"
@@ -2394,7 +2394,7 @@ echo "$outGMwiring" | jq -e '.actual == "degraded"' >/dev/null \
   || fail "cmd:telegram_getme: an import-stage (wiring) failure should read degraded: (got: $outGMwiring)"
 echo "$outGMwiring" | jq -e '.detail | contains("wiring")' >/dev/null \
   || fail "cmd:telegram_getme: an import-stage failure should still be reported as probe wiring broken: (got: $outGMwiring)"
-if echo "$outGMwiring" | grep -qF "WIRINGTOKEN333"; then
+if grep -qF "WIRINGTOKEN333" <<<"$outGMwiring"; then
   fail "cmd:telegram_getme: an import-stage failure must NOT leak the token (got: $outGMwiring)"
 fi
 echo "ok: cmd:telegram_getme — an import-stage (wiring) failure still reads as probe wiring broken, never leaks the token"

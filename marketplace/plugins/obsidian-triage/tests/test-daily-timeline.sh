@@ -131,30 +131,30 @@ assert "exactly one '## Clip pipeline' heading" "1" "$n_sections"
 
 echo "Test 2: captured count (date_clipped == D) = 2"
 cap_line=$(grep -F 'Captured → inbox:' "$DAILY")
-if printf '%s' "$cap_line" | grep -qE '\*\* 2$'; then f=yes; else f=no; fi
+if grep -qE '\*\* 2$' <<<"$cap_line"; then f=yes; else f=no; fi
 assert "captured line shows 2 (cap-a, cap-b; cap-old excluded)  [$cap_line]" "yes" "$f"
 
 echo "Test 3: reviewed total = 3 with by-kind breakdown"
 rev_line=$(grep -F 'Reviewed → evidence:' "$DAILY")
-if printf '%s' "$rev_line" | grep -qE '\*\* 3'; then f=yes; else f=no; fi
+if grep -qE '\*\* 3' <<<"$rev_line"; then f=yes; else f=no; fi
 assert "reviewed total = 3 (ev1/ev2/ev3; ev-old excluded)  [$rev_line]" "yes" "$f"
-if printf '%s' "$rev_line" | grep -q 'concepts 2'; then f=yes; else f=no; fi
+if grep -q 'concepts 2' <<<"$rev_line"; then f=yes; else f=no; fi
 assert "reviewed by-kind shows 'concepts 2'" "yes" "$f"
-if printf '%s' "$rev_line" | grep -q 'tools 2'; then f=yes; else f=no; fi
+if grep -q 'tools 2' <<<"$rev_line"; then f=yes; else f=no; fi
 assert "reviewed by-kind shows 'tools 2'" "yes" "$f"
 
 echo "Test 4: promoted lists today's stub-create subjects as backrefs"
 prom_line=$(grep -F 'Promoted → subjects:' "$DAILY")
-if printf '%s' "$prom_line" | grep -qF '[[30-Resources/Concepts/Context-Windows]]'; then f=yes; else f=no; fi
+if grep -qF '[[30-Resources/Concepts/Context-Windows]]' <<<"$prom_line"; then f=yes; else f=no; fi
 assert "promoted line backrefs Context-Windows" "yes" "$f"
-if printf '%s' "$prom_line" | grep -qF '[[30-Resources/Concepts/Agent-Loops]]'; then f=yes; else f=no; fi
+if grep -qF '[[30-Resources/Concepts/Agent-Loops]]' <<<"$prom_line"; then f=yes; else f=no; fi
 assert "promoted line backrefs Agent-Loops" "yes" "$f"
-if printf '%s' "$prom_line" | grep -qF 'Old-Thing'; then f=leaked; else f=excluded; fi
+if grep -qF 'Old-Thing' <<<"$prom_line"; then f=leaked; else f=excluded; fi
 assert "promoted excludes other-day Old-Thing" "excluded" "$f"
 
 echo "Test 5: densified lists today's densify subjects"
 dens_line=$(grep -F 'Densified subjects:' "$DAILY")
-if printf '%s' "$dens_line" | grep -qF '[[60-Maps/RAG-MOC]]'; then f=yes; else f=no; fi
+if grep -qF '[[60-Maps/RAG-MOC]]' <<<"$dens_line"; then f=yes; else f=no; fi
 assert "densified line backrefs RAG-MOC" "yes" "$f"
 
 echo "Test 6: pre-existing content preserved"
@@ -179,7 +179,7 @@ node "$TOOL" --vault "$tmp" --date "$D" >/dev/null 2>&1
 n_sections=$(grep -c '^## Clip pipeline$' "$DAILY")
 assert "still one section after state change" "1" "$n_sections"
 rev_line=$(grep -F 'Reviewed → evidence:' "$DAILY")
-if printf '%s' "$rev_line" | grep -qE '\*\* 4'; then f=yes; else f=no; fi
+if grep -qE '\*\* 4' <<<"$rev_line"; then f=yes; else f=no; fi
 assert "reviewed total refreshed to 4  [$rev_line]" "yes" "$f"
 
 # ── CRLF preservation ────────────────────────────────────────────────────────
@@ -207,9 +207,9 @@ echo "Test 11: a created-then-reverted stub (page deleted) is NOT listed (no dan
 rm -f "$tmp/30-Resources/Concepts/Agent-Loops.md"   # simulate synthesize-stubs --revert
 node "$TOOL" --vault "$tmp" --date "$D" >/dev/null 2>&1
 prom_line=$(grep -F 'Promoted → subjects:' "$DAILY")
-if printf '%s' "$prom_line" | grep -qF '[[30-Resources/Concepts/Agent-Loops]]'; then f=dangling; else f=dropped; fi
+if grep -qF '[[30-Resources/Concepts/Agent-Loops]]' <<<"$prom_line"; then f=dangling; else f=dropped; fi
 assert "reverted subject dropped from Promoted line" "dropped" "$f"
-if printf '%s' "$prom_line" | grep -qF '[[30-Resources/Concepts/Context-Windows]]'; then f=yes; else f=no; fi
+if grep -qF '[[30-Resources/Concepts/Context-Windows]]' <<<"$prom_line"; then f=yes; else f=no; fi
 assert "surviving subject still listed" "yes" "$f"
 
 # ── Cross-folder captured: a clip captured today but already moved to _evidence ─
@@ -225,7 +225,7 @@ body
 EOF
 node "$TOOL" --vault "$tmp" --date "$D" >/dev/null 2>&1
 cap_line=$(grep -F 'Captured → inbox:' "$DAILY")
-if printf '%s' "$cap_line" | grep -qE '\*\* 3$'; then f=yes; else f=no; fi
+if grep -qE '\*\* 3$' <<<"$cap_line"; then f=yes; else f=no; fi
 assert "captured now 3 (cap-a, cap-b, cap-moved in _evidence)  [$cap_line]" "yes" "$f"
 
 # ── Timezone boundary: ledger UTC ts maps to the operator's LOCAL day ────────

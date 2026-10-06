@@ -36,7 +36,7 @@ help_out=$(HIMMELCTL_REPO_ROOT="$root" node "$root/scripts/himmelctl/bin.js" --h
 rc=$?
 [ "$rc" -eq 0 ] \
   || { echo "FAIL - himmelctl --help exits $rc (got: $help_out)"; exit 1; }
-printf '%s' "$help_out" | grep -q 'usage' \
+grep -q 'usage' <<<"$help_out" \
   || { echo "FAIL - --help no longer prints usage"; exit 1; }
 
 # ── HIMMEL-3400: --version also reports the git describe string + the commit ─

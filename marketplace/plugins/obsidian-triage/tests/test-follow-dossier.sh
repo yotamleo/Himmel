@@ -93,11 +93,11 @@ console.log("CADENCE_DAYS=" + e.cadence_days);
 console.log("STATS_LIKES=" + (e.sample_tweets[0] && e.sample_tweets[0].stats ? e.sample_tweets[0].stats.likes : "MISSING"));
 EOF
 out1="$(FD_VAULT="$vault" node "$tmpdir/evidence.mjs" 2>&1)"
-echo "$out1" | grep -q 'CLIP_COUNT=2' && r=yes || r=no; assert "clip_count==2" yes "$r"
-echo "$out1" | grep -q 'SAMPLE_LEN=2' && r=yes || r=no; assert "sample_tweets.length==2" yes "$r"
-echo "$out1" | grep -q 'CRYPTO_TAGGED=true' && r=yes || r=no; assert "crypto_tagged==true" yes "$r"
-echo "$out1" | grep -q 'CADENCE_DAYS=10' && r=yes || r=no; assert "cadence_days==10 (median gap, 2026-06-01 to 2026-06-11)" yes "$r"
-echo "$out1" | grep -q 'STATS_LIKES=10' && r=yes || r=no; assert "sample_tweets[0].stats.likes==10" yes "$r"
+grep -q 'CLIP_COUNT=2' <<<"$out1" && r=yes || r=no; assert "clip_count==2" yes "$r"
+grep -q 'SAMPLE_LEN=2' <<<"$out1" && r=yes || r=no; assert "sample_tweets.length==2" yes "$r"
+grep -q 'CRYPTO_TAGGED=true' <<<"$out1" && r=yes || r=no; assert "crypto_tagged==true" yes "$r"
+grep -q 'CADENCE_DAYS=10' <<<"$out1" && r=yes || r=no; assert "cadence_days==10 (median gap, 2026-06-01 to 2026-06-11)" yes "$r"
+grep -q 'STATS_LIKES=10' <<<"$out1" && r=yes || r=no; assert "sample_tweets[0].stats.likes==10" yes "$r"
 
 # -- Test 2: emptyDossier / writeDossier / readDossier round-trip -----------
 echo "Test 2: write/read round-trip"
@@ -119,10 +119,10 @@ console.log("CORPUS_CLIP_COUNT_MATCH=" + (back && back.corpus.clip_count === d.c
 console.log("MISSING_HANDLE=" + (readDossier(process.env.FD_VAULT2, "nobody") === null));
 EOF
 out2="$(FD_VAULT2="$vault2" node "$tmpdir/roundtrip.mjs" 2>&1)"
-echo "$out2" | grep -q 'WROTE_EXISTS=true' && r=yes || r=no; assert "writeDossier creates the file" yes "$r"
-echo "$out2" | grep -q 'HANDLE_MATCH=true' && r=yes || r=no; assert "readDossier round-trips handle" yes "$r"
-echo "$out2" | grep -q 'CORPUS_CLIP_COUNT_MATCH=true' && r=yes || r=no; assert "readDossier round-trips corpus.clip_count" yes "$r"
-echo "$out2" | grep -q 'MISSING_HANDLE=true' && r=yes || r=no; assert "readDossier returns null for absent handle" yes "$r"
+grep -q 'WROTE_EXISTS=true' <<<"$out2" && r=yes || r=no; assert "writeDossier creates the file" yes "$r"
+grep -q 'HANDLE_MATCH=true' <<<"$out2" && r=yes || r=no; assert "readDossier round-trips handle" yes "$r"
+grep -q 'CORPUS_CLIP_COUNT_MATCH=true' <<<"$out2" && r=yes || r=no; assert "readDossier round-trips corpus.clip_count" yes "$r"
+grep -q 'MISSING_HANDLE=true' <<<"$out2" && r=yes || r=no; assert "readDossier returns null for absent handle" yes "$r"
 
 # -- Test 3: extractShortLinks -----------------------------------------------
 echo "Test 3: extractShortLinks"
@@ -138,11 +138,11 @@ console.log("NONE_ON_PLAIN=" + (extractShortLinks("no short links here, just git
 console.log("EMPTY_SAFE=" + (extractShortLinks("").length === 0 && extractShortLinks(null).length === 0));
 EOF
 out3="$(node "$tmpdir/shortlinks.mjs" 2>&1)"
-echo "$out3" | grep -q 'COUNT=2' && r=yes || r=no; assert "extractShortLinks: finds both t.co links" yes "$r"
-echo "$out3" | grep -q 'HAS_FIRST=true' && r=yes || r=no; assert "extractShortLinks: returns first t.co url verbatim" yes "$r"
-echo "$out3" | grep -q 'HAS_SECOND=true' && r=yes || r=no; assert "extractShortLinks: returns second t.co url verbatim" yes "$r"
-echo "$out3" | grep -q 'NONE_ON_PLAIN=true' && r=yes || r=no; assert "extractShortLinks: no t.co -> empty array" yes "$r"
-echo "$out3" | grep -q 'EMPTY_SAFE=true' && r=yes || r=no; assert "extractShortLinks: empty/null input -> empty array" yes "$r"
+grep -q 'COUNT=2' <<<"$out3" && r=yes || r=no; assert "extractShortLinks: finds both t.co links" yes "$r"
+grep -q 'HAS_FIRST=true' <<<"$out3" && r=yes || r=no; assert "extractShortLinks: returns first t.co url verbatim" yes "$r"
+grep -q 'HAS_SECOND=true' <<<"$out3" && r=yes || r=no; assert "extractShortLinks: returns second t.co url verbatim" yes "$r"
+grep -q 'NONE_ON_PLAIN=true' <<<"$out3" && r=yes || r=no; assert "extractShortLinks: no t.co -> empty array" yes "$r"
+grep -q 'EMPTY_SAFE=true' <<<"$out3" && r=yes || r=no; assert "extractShortLinks: empty/null input -> empty array" yes "$r"
 
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))

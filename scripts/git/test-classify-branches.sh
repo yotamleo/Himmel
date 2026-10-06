@@ -146,7 +146,7 @@ assert_line "MERGED beats a sibling CLOSED row"     LANDED feat/ahead           
 
 # --pattern narrows the report.
 out4=$(bash "$SUT" --base main --pr-map "$PRMAP" --pattern 'feat/ahead' 2>&1)
-if printf '%s\n' "$out4" | grep -qE '^[A-Z]+ +feat/squashed$'; then
+if grep -qE '^[A-Z]+ +feat/squashed$' <<<"$out4"; then
     echo "FAIL --pattern still reported a non-matching branch"; FAILED=$((FAILED + 1))
 else
     echo "PASS --pattern excludes non-matching branches"

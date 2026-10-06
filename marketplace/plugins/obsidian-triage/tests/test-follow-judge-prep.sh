@@ -85,10 +85,10 @@ out="$(node "$CLI" judge-prep --vault "$vault" 2>&1)"
 r=$?
 assert "judge-prep exits 0" 0 "$r"
 
-echo "$out" | grep -qF "_judge-queue.jsonl" && r=yes || r=no
+grep -qF "_judge-queue.jsonl" <<<"$out" && r=yes || r=no
 assert "judge-prep prints the queue filename to stdout" yes "$r"
 
-echo "$out" | grep -q "2" && r=yes || r=no
+grep -q "2" <<<"$out" && r=yes || r=no
 assert "judge-prep prints the dossier count to stdout" yes "$r"
 
 queue="$scores_dir/_judge-queue.jsonl"
@@ -117,13 +117,13 @@ console.log("A_BIO=" + (byHandle.a && byHandle.a.trimmed_dossier && byHandle.a.t
 ' > "$tmpdir/check-out.txt"
 
 check_out="$(cat "$tmpdir/check-out.txt")"
-echo "$check_out" | grep -q 'VALID_JSON=true' && r=yes || r=no
+grep -q 'VALID_JSON=true' <<<"$check_out" && r=yes || r=no
 assert "each queue line is valid JSON with handle+charter_ref+trimmed_dossier" yes "$r"
 
-echo "$check_out" | grep -qF 'B_BIO=[withheld: injection-suspect]' && r=yes || r=no
+grep -qF 'B_BIO=[withheld: injection-suspect]' <<<"$check_out" && r=yes || r=no
 assert "injection_suspect dossier's trimmed bio is withheld" yes "$r"
 
-echo "$check_out" | grep -qF 'A_BIO=clean account bio' && r=yes || r=no
+grep -qF 'A_BIO=clean account bio' <<<"$check_out" && r=yes || r=no
 assert "clean dossier's trimmed bio passes through" yes "$r"
 
 # -- Results summary -----------------------------------------------------

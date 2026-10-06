@@ -2355,7 +2355,7 @@ grepq "$phiRootsBodyPV3" -F "$vaultPV3" \
 glmPV3Listing=$(ls -a "$glmPV3")
 [ "$(printf '%s\n' "$glmPV3Listing" | grep -c '^phi-roots$')" -eq 1 ] \
   || fail "PV3 [HIMMEL-2347 CR fix 3]: expected exactly one phi-roots file, got: $glmPV3Listing"
-printf '%s\n' "$glmPV3Listing" | grep -q '\.tmp$' \
+grep -q '\.tmp$' <<<"$glmPV3Listing" \
   && fail "PV3 [HIMMEL-2347 CR fix 3]: the atomic-write tmp file must be renamed away, never left behind in the config dir (got: $glmPV3Listing)"
 echo "ok: PV3 a CRLF-saved phi-roots file's existing entries survive the merge, the rewrite normalizes to LF-only, and the atomic-write tmp file is never left behind"
 

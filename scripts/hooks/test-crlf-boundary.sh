@@ -233,7 +233,7 @@ else
     fail "block-read-secrets / multi-clause command with a genuine secret-read line" "rc=$HD_RC, expected 2"
 fi
 
-if printf '%s' "$HD_OUT" | grep -qF "$HD_NEEDLE"; then
+if grep -qF "$HD_NEEDLE" <<<"$HD_OUT"; then
     pass "block-read-secrets / heredoc-adjacent embedded CR survives byte-for-byte in the echoed command (SOH-tail property)"
 else
     fail "block-read-secrets / heredoc-adjacent embedded CR did NOT survive" \

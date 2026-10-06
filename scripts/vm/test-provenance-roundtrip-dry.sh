@@ -212,7 +212,7 @@ run_rt "$BOTH" f73a62f1 --expect-red
 want='stage seed invA install-project install-user invB uninstall invC assert '
 got=$(ssh_order "$LOG")
 if [ "$got" = "$want" ]; then pass "D1 guest step order: $got"; else fail_case "D1 step order: got '$got' want '$want'"; dump; fi
-if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -q '^RED complete: too-much=1 too-little=1'; then
+if [ "$RC" -eq 0 ] && grep -q '^RED complete: too-much=1 too-little=1' <<<"$OUT"; then
     pass "D1b --expect-red with both directions exits 0 with RED complete"
 else
     fail_case "D1b both directions: rc=$RC"; dump
@@ -222,7 +222,7 @@ fi
 # D2 — the printed env is exactly the env passed to both installs (3321)
 # =====================================================================
 envline='env -i HOME=/home/testuser PATH=/home/testuser/.local/bin:/usr/local/bin:/usr/bin:/bin HIMMELCTL_CACHE_DIR=/home/testuser/.claude/himmel'  # leak-allow: home-path fixture guest user testuser, not a real home
-if printf '%s\n' "$OUT" | grep -qxF "[env] $envline" \
+if grep -qxF "[env] $envline" <<<"$OUT" \
    && [ "$(grep '^SSH ' "$LOG" | grep -c "bin.js install" )" -eq 2 ] \
    && [ "$(grep '^SSH ' "$LOG" | grep "bin.js install" | grep -cF "$envline node ")" -eq 2 ] \
    && grep '^SSH ' "$LOG" | grep 'bin.js uninstall' | grep -qF "$envline node "; then
@@ -235,7 +235,7 @@ fi
 # D3 — --expect-red with only the too-much direction: RED incomplete
 # =====================================================================
 run_rt "$ONLY_MUCH" f73a62f1 --expect-red
-if [ "$RC" -ne 0 ] && printf '%s\n' "$OUT" | grep -qxF 'RED incomplete: too-little direction missing'; then
+if [ "$RC" -ne 0 ] && grep -qxF 'RED incomplete: too-little direction missing' <<<"$OUT"; then
     pass "D3 --expect-red with only too-much exits $RC: RED incomplete: too-little direction missing"
 else
     fail_case "D3 only too-much: rc=$RC"; dump
@@ -243,7 +243,7 @@ fi
 
 # D4 — the mirror: only too-little
 run_rt "$ONLY_LITTLE" f73a62f1 --expect-red
-if [ "$RC" -ne 0 ] && printf '%s\n' "$OUT" | grep -qxF 'RED incomplete: too-much direction missing'; then
+if [ "$RC" -ne 0 ] && grep -qxF 'RED incomplete: too-much direction missing' <<<"$OUT"; then
     pass "D4 --expect-red with only too-little exits $RC: RED incomplete: too-much direction missing"
 else
     fail_case "D4 only too-little: rc=$RC"; dump
@@ -322,15 +322,15 @@ fi
 run_rt "$BOTH" f73a62f1 --expect-red
 un=$(grep '^SSH ' "$LOG" | grep 'bin.js uninstall')
 if [[ "$un" == *'bin.js uninstall --yes'* ]] && [[ "$un" != *purge-state* ]] \
-   && printf '%s\n' "$OUT" | grep -qF 'RED complete: too-much=1 too-little=1 variant=(profile=core uninstall=plain)' \
-   && printf '%s\n' "$OUT" | grep -qF '[summary] variant=(profile=core uninstall=plain)' \
-   && printf '%s\n' "$OUT" | grep -qF '[witness] (profile=core uninstall=plain) context7-enabled FAIL pre-halt (predicted)'; then
+   && grep -qF 'RED complete: too-much=1 too-little=1 variant=(profile=core uninstall=plain)' <<<"$OUT" \
+   && grep -qF '[summary] variant=(profile=core uninstall=plain)' <<<"$OUT" \
+   && grep -qF '[witness] (profile=core uninstall=plain) context7-enabled FAIL pre-halt (predicted)' <<<"$OUT"; then
     pass "D7b plain variant: 'uninstall --yes' without --purge-state; directions tagged uninstall=plain"
 else
     fail_case "D7b plain variant: '$un'"; dump
 fi
 run_rt "$BOTH" f73a62f1 --expect-red --purge-state --profile all
-if printf '%s\n' "$OUT" | grep -qF 'variant=(profile=all uninstall=purge-state)'; then
+if grep -qF 'variant=(profile=all uninstall=purge-state)' <<<"$OUT"; then
     pass "D7c purge variant under --profile all is tagged profile=all uninstall=purge-state"
 else
     fail_case "D7c purge variant tag"; dump
@@ -343,7 +343,7 @@ ov='jq --arg v /home/testuser/luna '"'"'.vault = {mode: "default-template", path
 if [ "$(grep '^SSH ' "$LOG" | grep -c "adopter-project.install-profile.json >/tmp/rt-work/profile-all-project.json")" -eq 1 ] \
    && [ "$(grep '^SSH ' "$LOG" | grep -c "adopter-user.install-profile.json >/tmp/rt-work/profile-all-user.json")" -eq 1 ] \
    && grep '^SSH ' "$LOG" | grep 'profile-all-user.json' | grep -qF "$ov" \
-   && printf '%s\n' "$OUT" | grep -qF "[overlay] $ov" \
+   && grep -qF "[overlay] $ov" <<<"$OUT" \
    && grep '^SSH ' "$LOG" | grep -qF 'bin.js install --from-profile /tmp/rt-work/profile-all-user.json --scope user' \
    && ! grep '^SSH ' "$LOG" | grep 'bin.js install' | grep -qE -- '--profile |--yes'; then
     pass "D7d --profile all: guest derives adopter-<scope> + printed overlay, installs --from-profile it"
@@ -414,7 +414,7 @@ run_rt "$BOTH" f73a62f1 --expect-red
 cleanup_order=$(grep -E '^PY vbox\.(power_off|restore_snapshot)' "$LOG" | awk '{print $2}' | tr '\n' ' ')
 lockdir="$WORK/vmlock-$N"
 if [ "$cleanup_order" = 'vbox.restore_snapshot vbox.power_off vbox.restore_snapshot ' ] \
-   && printf '%s\n' "$OUT" | grep -q '^\[cleanup\] himmel-ar-1 powered off, restored to suite-ready-v4, vm-lock released'; then
+   && grep -q '^\[cleanup\] himmel-ar-1 powered off, restored to suite-ready-v4, vm-lock released' <<<"$OUT"; then
     pass "D10 cleanup: power_off then restore_snapshot, lock released"
 else
     fail_case "D10 cleanup order: '$cleanup_order'"; dump
@@ -440,7 +440,7 @@ FAKE_FAIL_MATCH='--scope user' run_rt "$BOTH" f73a62f1 --expect-red
 got=$(ssh_order "$LOG")
 if [ "$RC" -eq 2 ] && [ "$got" = 'stage seed invA install-project install-user ' ] \
    && grep -q '^PY vbox.power_off' "$LOG" \
-   && printf '%s\n' "$OUT" | grep -q 'step install-user failed'; then
+   && grep -q 'step install-user failed' <<<"$OUT"; then
     pass "D12 failed install-user step: rc 2, stops there, cleanup powered off"
 else
     fail_case "D12 failed step: rc=$RC order='$got'"; dump
@@ -475,40 +475,40 @@ CHECK removal too-little FAIL claude-himmel-dir-removed — ~/.claude/himmel pre
 CHECK residue too-little FAIL left:~/.local/bin/himmelctl — 1 path(s) left behind
 EOF
 FAKE_UNINSTALL=halt run_rt "$POST" f73a62f1 --expect-red
-if [ "$RC" -eq 1 ] && printf '%s\n' "$OUT" | grep -qxF 'uninstall-exit rc=2 halted-at=[7/8]' \
+if [ "$RC" -eq 1 ] && grep -qxF 'uninstall-exit rc=2 halted-at=[7/8]' <<<"$OUT" \
    && grep '^SSH ' "$LOG" | grep -q 'inventory.sh C' \
-   && printf '%s\n' "$OUT" | grep -qxF '[halt] post-halt too-little claude-himmel-dir-removed' \
-   && printf '%s\n' "$OUT" | grep -qxF '[halt] post-halt too-little left:~/.local/bin/himmelctl' \
-   && printf '%s\n' "$OUT" | grep -qxF 'RED incomplete: too-little direction missing'; then
+   && grep -qxF '[halt] post-halt too-little claude-himmel-dir-removed' <<<"$OUT" \
+   && grep -qxF '[halt] post-halt too-little left:~/.local/bin/himmelctl' <<<"$OUT" \
+   && grep -qxF 'RED incomplete: too-little direction missing' <<<"$OUT"; then
     pass "D14 halt at [7/8]: rc line printed, inventory C taken, [8/8]/launcher witnesses post-halt, RED incomplete"
 else
     fail_case "D14 halted uninstall rc=$RC"; dump
 fi
 cat "$BOTH" "$POST" >"$WORK/assert-both-post"
 FAKE_UNINSTALL=halt run_rt "$WORK/assert-both-post" f73a62f1 --expect-red
-if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qF 'RED complete: too-much=2 too-little=1 ' \
-   && printf '%s\n' "$OUT" | grep -qF 'hud-allow-extra-cmd-removed FAIL pre-halt (predicted)'; then
+if [ "$RC" -eq 0 ] && grep -qF 'RED complete: too-much=2 too-little=1 ' <<<"$OUT" \
+   && grep -qF 'hud-allow-extra-cmd-removed FAIL pre-halt (predicted)' <<<"$OUT"; then
     pass "D14b halt: a pre-halt too-little witness still completes the RED"
 else
     fail_case "D14b halt with a pre-halt witness rc=$RC"; dump
 fi
 run_rt "$POST" f73a62f1 --expect-red
-if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF 'uninstall-exit rc=0 halted-at=none' \
-   && ! printf '%s\n' "$OUT" | grep -q '^\[halt\]' \
-   && printf '%s\n' "$OUT" | grep -qF 'RED complete: too-much=1 too-little=2 '; then
+if [ "$RC" -eq 0 ] && grep -qxF 'uninstall-exit rc=0 halted-at=none' <<<"$OUT" \
+   && ! grep -q '^\[halt\]' <<<"$OUT" \
+   && grep -qF 'RED complete: too-much=1 too-little=2 ' <<<"$OUT"; then
     pass "D14c no halt: the same witnesses are all pre-halt"
 else
     fail_case "D14c no halt rc=$RC"; dump
 fi
 FAKE_UNINSTALL=rc3 run_rt "$BOTH" f73a62f1 --expect-red
-if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF "step uninstall failed (rc=3) with no 'Halted at:' line" \
+if [ "$RC" -eq 2 ] && grep -qF "step uninstall failed (rc=3) with no 'Halted at:' line" <<<"$OUT" \
    && ! grep '^SSH ' "$LOG" | grep -q 'inventory.sh C'; then
     pass "D14d a failed uninstall with no halt line is a harness failure (rc 2)"
 else
     fail_case "D14d unexplained uninstall failure rc=$RC"; dump
 fi
 FAKE_UNINSTALL=early run_rt "$BOTH" f73a62f1 --expect-red
-if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'uninstall halted at [3/8]; the pre/post-halt owner map only resolves' \
+if [ "$RC" -eq 2 ] && grep -qF 'uninstall halted at [3/8]; the pre/post-halt owner map only resolves' <<<"$OUT" \
    && ! grep '^SSH ' "$LOG" | grep -q 'inventory.sh C'; then
     pass "D14f a halt before [7/8] is refused (rc 2): the owner map cannot attribute it"
 else
@@ -517,20 +517,20 @@ fi
 # D14e/g — HIMMEL-3351: the guest is provisioned by the seed step, so `all` no
 # longer tolerates a failed install nor prints an UNOBSERVABLE witness
 run_rt "$BOTH" f73a62f1 --expect-red --profile all
-if ! printf '%s\n' "$OUT" | grep -q 'UNOBSERVABLE' && ! printf '%s\n' "$OUT" | grep -q '^install-exit '; then
+if ! grep -q 'UNOBSERVABLE' <<<"$OUT" && ! grep -q '^install-exit ' <<<"$OUT"; then
     pass "D14e --profile all: no UNOBSERVABLE witness, no tolerated install exit"
 else
     fail_case "D14e cadence witness"; dump
 fi
 FAKE_FAIL_MATCH='bin.js install' run_rt "$BOTH" f73a62f1 --expect-red --profile all
-if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'step install-project failed (rc=7)' \
+if [ "$RC" -eq 2 ] && grep -qF 'step install-project failed (rc=7)' <<<"$OUT" \
    && ! grep '^SSH ' "$LOG" | grep -q 'inventory.sh C'; then
     pass "D14g --profile all: a failed install ends the run (rc 2) before inventory C"
 else
     fail_case "D14g all-profile install failure rc=$RC"; dump
 fi
 FAKE_FAIL_MATCH='bin.js install' run_rt "$BOTH" f73a62f1 --expect-red
-if [ "$RC" -eq 2 ] && printf '%s\n' "$OUT" | grep -qF 'step install-project failed (rc=7)'; then
+if [ "$RC" -eq 2 ] && grep -qF 'step install-project failed (rc=7)' <<<"$OUT"; then
     pass "D14h --profile core: a failed install still ends the run (rc 2)"
 else
     fail_case "D14h core install failure rc=$RC"; dump
@@ -593,7 +593,7 @@ fi
 # both the seed and assert guest invocations.
 run_rt "$ALL_PASS" f73a62f1 --with-qmd
 qenv='env -i HOME=/home/testuser PATH=/home/testuser/.bun/bin:/home/testuser/.local/bin:/usr/local/bin:/usr/bin:/bin HIMMELCTL_CACHE_DIR=/home/testuser/.claude/himmel'  # leak-allow: home-path fixture guest user testuser, not a real home
-if printf '%s\n' "$OUT" | grep -qxF "[env] $qenv" \
+if grep -qxF "[env] $qenv" <<<"$OUT" \
    && grep '^SSH ' "$LOG" | grep 'seed-provenance.sh' | grep -qF 'RT_QMD=1 bash /tmp/rt-work/seed-provenance.sh' \
    && grep '^SSH ' "$LOG" | grep 'assert-provenance.sh' | grep -qF 'RT_QMD=1 bash /tmp/rt-work/assert-provenance.sh'; then
     pass "D16h --with-qmd prepends bun to PATH and threads RT_QMD=1 into seed + assert"
@@ -605,7 +605,7 @@ fi
 run_rt "$ALL_PASS" f73a62f1
 if grep '^SSH ' "$LOG" | grep 'seed-provenance.sh' | grep -qF 'RT_QMD=0 bash /tmp/rt-work/seed-provenance.sh' \
    && grep '^SSH ' "$LOG" | grep 'assert-provenance.sh' | grep -qF 'RT_QMD=0 bash /tmp/rt-work/assert-provenance.sh' \
-   && ! printf '%s\n' "$OUT" | grep -q '\.bun/bin'; then
+   && ! grep -q '\.bun/bin' <<<"$OUT"; then
     pass "D16i without --with-qmd: RT_QMD=0, no bun on PATH"
 else
     fail_case "D16i baseline PATH/RT_QMD"; dump
@@ -614,19 +614,19 @@ fi
 # D16b — the marketplace-remove observation is printed verbatim, whatever it
 # says, even when absent (the one unverified claim this slice exists to check)
 FAKE_UNINSTALL=mkt run_rt "$ALL_PASS" f73a62f1 --clone-gone
-if printf '%s\n' "$OUT" | grep -qxF '[marketplace-remove] [uninstall-log]   marketplace remove: rt-dir-marketplace'; then
+if grep -qxF '[marketplace-remove] [uninstall-log]   marketplace remove: rt-dir-marketplace' <<<"$OUT"; then
     pass "D16b marketplace-remove line captured verbatim from the uninstall log"
 else
     fail_case "D16b marketplace-remove capture"; dump
 fi
 run_rt "$ALL_PASS" f73a62f1 --clone-gone
-if printf '%s\n' "$OUT" | grep -qxF '[marketplace-remove] no marketplace-related line observed in the uninstall log'; then
+if grep -qxF '[marketplace-remove] no marketplace-related line observed in the uninstall log' <<<"$OUT"; then
     pass "D16c marketplace-remove absence is its own reported observation, not a harness bug"
 else
     fail_case "D16c marketplace-remove absence"; dump
 fi
 run_rt "$ALL_PASS" f73a62f1
-if ! printf '%s\n' "$OUT" | grep -q '^\[marketplace-remove\]'; then
+if ! grep -q '^\[marketplace-remove\]' <<<"$OUT"; then
     pass "D16d without --clone-gone, no marketplace-remove line at all"
 else
     fail_case "D16d marketplace-remove printed without --clone-gone"; dump
@@ -651,7 +651,7 @@ fi
 # HIMMEL-3528, 2026-09-23)
 # =====================================================================
 FAKE_HIMMEL_CONTENTS=config run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
-if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel contents: /home/testuser/.himmel/config.json' \
+if [ "$RC" -eq 0 ] && grep -qxF '[clone-gone-purge] ~/.himmel contents: /home/testuser/.himmel/config.json' <<<"$OUT" \
    && [ "$(printf '%s\n' "$OUT" | grep -n '^\[step\] assert$' | head -n1 | cut -d: -f1)" -lt \
         "$(printf '%s\n' "$OUT" | grep -n '^\[clone-gone-purge\]' | head -n1 | cut -d: -f1)" ]; then
     pass "D17 clone-gone --purge-state: only baseline-A config.json left, checked after the assert step"
@@ -660,7 +660,7 @@ else
 fi
 
 FAKE_HIMMEL_CONTENTS=empty run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
-if [ "$RC" -eq 0 ] && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel contents: (empty)'; then
+if [ "$RC" -eq 0 ] && grep -qxF '[clone-gone-purge] ~/.himmel contents: (empty)' <<<"$OUT"; then
     pass "D17a clone-gone --purge-state: ~/.himmel fully gone also passes (nothing beyond A, vacuously)"
 else
     fail_case "D17a clone-gone-purge pass case (empty): rc=$RC"; dump
@@ -668,10 +668,10 @@ fi
 
 FAKE_HIMMEL_CONTENTS=extra run_rt "$ALL_PASS" f73a62f1 --clone-gone --purge-state
 if [ "$RC" -eq 2 ] \
-   && printf '%s\n' "$OUT" | grep -qxF '[clone-gone-purge] ~/.himmel contents: /home/testuser/.himmel/config.json /home/testuser/.himmel/uninstall /home/testuser/.himmel/uninstall/bundle.json' \
-   && printf '%s\n' "$OUT" | grep -q 'clone-gone --purge-state left unexpected ~/.himmel content:.*uninstall' \
-   && printf '%s\n' "$OUT" | grep -q '^\[step\] assert$' \
-   && printf '%s\n' "$OUT" | grep -q '^CHECK '; then
+   && grep -qxF '[clone-gone-purge] ~/.himmel contents: /home/testuser/.himmel/config.json /home/testuser/.himmel/uninstall /home/testuser/.himmel/uninstall/bundle.json' <<<"$OUT" \
+   && grep -q 'clone-gone --purge-state left unexpected ~/.himmel content:.*uninstall' <<<"$OUT" \
+   && grep -q '^\[step\] assert$' <<<"$OUT" \
+   && grep -q '^CHECK ' <<<"$OUT"; then
     pass "D17b clone-gone-purge failure (rc 2) names the unexpected paths and still preserves the invdiff/assert diagnostic output"
 else
     fail_case "D17b clone-gone-purge fail case: rc=$RC"; dump
@@ -679,7 +679,7 @@ fi
 
 # D17c — plain --clone-gone (no --purge-state) never runs the purge check
 run_rt "$ALL_PASS" f73a62f1 --clone-gone
-if ! printf '%s\n' "$OUT" | grep -q '^\[clone-gone-purge\]'; then
+if ! grep -q '^\[clone-gone-purge\]' <<<"$OUT"; then
     pass "D17c --clone-gone without --purge-state: no clone-gone-purge check"
 else
     fail_case "D17c clone-gone-purge ran without --purge-state"; dump
@@ -712,7 +712,7 @@ FAKE_RUNTIME_NO_INFO=1 run_rt "$BOTH" f73a62f1 --install-from aur
 if [ "$RC" -eq 3 ] && [ "$(grep -cE '^(DOCKER|PODMAN) info$' "$LOG")" -eq 2 ] \
    && ! grep -qE '^(DOCKER|PODMAN) (run|exec|cp|stop)' "$LOG" \
    && ! grep -q '^VBOX ' "$LOG" \
-   && printf '%s\n' "$OUT" | grep -qF 'no container runtime answers'; then
+   && grep -qF 'no container runtime answers' <<<"$OUT"; then
     pass "D18b aur: no container runtime answers refuses (rc=3) after probing docker then podman info, nothing else runs"
 else
     fail_case "D18b aur no-runtime refusal: rc=$RC"; dump
@@ -722,7 +722,7 @@ fi
 # aur mode never stages a clone, so there is nothing for --clone-gone to remove
 run_rt "$BOTH" f73a62f1 --install-from aur --clone-gone
 if [ "$RC" -eq 2 ] && [ ! -s "$LOG" ] \
-   && printf '%s\n' "$OUT" | grep -qF -- '--clone-gone is not supported with --install-from aur'; then
+   && grep -qF -- <<<"$OUT" '--clone-gone is not supported with --install-from aur'; then
     pass "D18b2 aur + --clone-gone refuses (rc=2) before touching any runtime"
 else
     fail_case "D18b2 aur clone-gone: rc=$RC"; dump
@@ -732,7 +732,7 @@ fi
 # order as D1, and the [run] line now names it
 run_rt "$ALL_PASS" f73a62f1
 got=$(ssh_order "$LOG")
-if printf '%s\n' "$OUT" | grep -qE '^\[run\] .*install-from=clone ' \
+if grep -qE '^\[run\] .*install-from=clone ' <<<"$OUT" \
    && [ "$got" = 'stage seed invA install-project install-user invB uninstall invC assert ' ]; then
     pass "D18c default --install-from is clone; guest step order unchanged: $got"
 else
@@ -753,9 +753,9 @@ if [ "$(grep '^SSH ' "$LOG" | grep -c '\.local/share/himmel/current/scripts/himm
     bin_ok=1
 fi
 if [ "$RC" -eq 0 ] && [ "$got" = "$want" ] && [ "$bin_ok" -eq 1 ] \
-   && printf '%s\n' "$OUT" | grep -qE '^\[run\] .*install-from=tarball ' \
-   && printf '%s\n' "$OUT" | grep -qxF '[step] build-tarball' \
-   && printf '%s\n' "$OUT" | grep -qE '^asset: .*himmel-0\.0\.0-rt[0-9a-f]+-linux\.tar\.gz$'; then
+   && grep -qE '^\[run\] .*install-from=tarball ' <<<"$OUT" \
+   && grep -qxF '[step] build-tarball' <<<"$OUT" \
+   && grep -qE '^asset: .*himmel-0\.0\.0-rt[0-9a-f]+-linux\.tar\.gz$' <<<"$OUT"; then
     pass "D18d --install-from tarball: real build-tarball.sh ran, guest installs from the extracted ~/.local/share/himmel/current tree, no stage/git-init: $got"
 else
     fail_case "D18d tarball mode: rc=$RC order='$got' bin_ok=$bin_ok"; dump
@@ -777,12 +777,12 @@ got=$(container_order "$LOG")
 # round trip's guest run is what surfaced this ordering bug.
 want='seed invA install-project install-user invB uninstall pacman-remove invC assert '
 if [ "$RC" -eq 0 ] && [ "$got" = "$want" ] \
-   && printf '%s\n' "$OUT" | grep -qE '^\[run\] .*install-from=aur .*runtime=docker image=archlinux:base-devel guest-user=builder$' \
-   && printf '%s\n' "$OUT" | grep -qxF '[step] container-boot runtime=docker image=archlinux:base-devel' \
-   && printf '%s\n' "$OUT" | grep -qxF '[step] container-setup' \
-   && printf '%s\n' "$OUT" | grep -qxF '[step] makepkg' \
-   && printf '%s\n' "$OUT" | grep -qE '^asset: .*himmel-0\.0\.0-rt[0-9a-f]+-linux\.tar\.gz$' \
-   && printf '%s\n' "$OUT" | grep -qxF '[pacman-payload] /opt/himmel=gone /usr/bin/himmelctl=gone'; then
+   && grep -qE '^\[run\] .*install-from=aur .*runtime=docker image=archlinux:base-devel guest-user=builder$' <<<"$OUT" \
+   && grep -qxF '[step] container-boot runtime=docker image=archlinux:base-devel' <<<"$OUT" \
+   && grep -qxF '[step] container-setup' <<<"$OUT" \
+   && grep -qxF '[step] makepkg' <<<"$OUT" \
+   && grep -qE '^asset: .*himmel-0\.0\.0-rt[0-9a-f]+-linux\.tar\.gz$' <<<"$OUT" \
+   && grep -qxF '[pacman-payload] /opt/himmel=gone /usr/bin/himmelctl=gone' <<<"$OUT"; then
     pass "D19 --install-from aur: full hermetic round trip through the container, guest steps in order: $got"
 else
     fail_case "D19 aur hermetic green: rc=$RC order='$got'"; dump
@@ -790,7 +790,7 @@ fi
 
 # D19b — podman is tried only when docker's `info` refuses (autodetect order)
 FAKE_DOCKER_ONLY_FAIL=1 HIMMEL_RT_TARBALL_NO_BUILD=1 run_rt "$ALL_PASS" "$AUR_REF" --install-from aur
-if printf '%s\n' "$OUT" | grep -qE '^\[run\] .*runtime=podman '; then
+if grep -qE '^\[run\] .*runtime=podman ' <<<"$OUT"; then
     pass "D19b docker refusing 'info' falls back to podman"
 else
     fail_case "D19b docker->podman fallback"; dump

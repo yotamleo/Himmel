@@ -143,7 +143,7 @@ LIB="$LIBURL" FXT="$fxturl" node "$tmp/t3b.mjs" || { echo "delegation test FAILE
 cli="$here/../tools/clip-lookup-cli.mjs"
 node --check "$cli"
 out="$(LIB='' OBSIDIAN_VAULT_PATH="$tmp/vault" node "$cli" "https://x.com/i/status/999")"
-echo "$out" | grep -q '"status":"ok"' || { echo "FAIL: cli hit json: $out"; exit 1; }
+grep -q '"status":"ok"' <<<"$out" || { echo "FAIL: cli hit json: $out"; exit 1; }
 miss="$(OBSIDIAN_VAULT_PATH="$tmp/vault" node "$cli" "https://x.com/none/status/1")"
 [ "$miss" = "null" ] || { echo "FAIL: cli miss should be null: $miss"; exit 1; }
 echo "OK clip-lookup-cli"

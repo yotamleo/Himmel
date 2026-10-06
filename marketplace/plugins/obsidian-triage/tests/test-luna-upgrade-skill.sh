@@ -47,9 +47,9 @@ fi
 
 echo "Test 2: SKILL.md frontmatter has required fields"
 fm_lines=$(awk '/^---$/{c++; next} c==1' "$SKILL")
-if printf '%s\n' "$fm_lines" | grep -qE "^name:[[:space:]]+luna-upgrade[[:space:]]*$"; then name_ok=yes; else name_ok=no; fi
+if grep -qE "^name:[[:space:]]+luna-upgrade[[:space:]]*$" <<<"$fm_lines"; then name_ok=yes; else name_ok=no; fi
 assert "frontmatter name: luna-upgrade" "yes" "$name_ok"
-if printf '%s\n' "$fm_lines" | grep -qE "^description:[[:space:]]+\S"; then desc_ok=yes; else desc_ok=no; fi
+if grep -qE "^description:[[:space:]]+\S" <<<"$fm_lines"; then desc_ok=yes; else desc_ok=no; fi
 assert "frontmatter description: present + non-empty" "yes" "$desc_ok"
 
 echo "Test 3: name matches skill directory (loader convention)"
@@ -57,7 +57,7 @@ skill_dir_name="$(basename "$(dirname "$SKILL")")"
 assert "skill dir = luna-upgrade" "luna-upgrade" "$skill_dir_name"
 
 echo "Test 4: description starts with 'Use when' (CSO best practice)"
-if printf '%s\n' "$fm_lines" | grep -qE "^description:[[:space:]]+Use when"; then cso_ok=yes; else cso_ok=no; fi
+if grep -qE "^description:[[:space:]]+Use when" <<<"$fm_lines"; then cso_ok=yes; else cso_ok=no; fi
 assert "description starts with 'Use when'" "yes" "$cso_ok"
 
 echo "Test 5: slash-command wrapper exists"

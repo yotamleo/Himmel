@@ -188,7 +188,7 @@ assert "dry-run exit 0" "0" "$dry_rc"
 assert "dry-run leaves git tree pristine" "0" "$(porcelain_count)"
 assert "dry-run wrote a manifest" "yes" "$([ -f "$MANIFEST" ] && echo yes || echo no)"
 assert "dry-run printed an _evidence plan line" "yes" \
-    "$(printf '%s\n' "$dry_out" | grep -qF '_evidence/' && echo yes || echo no)"
+    "$(grep -qF '_evidence/' <<<"$dry_out" && echo yes || echo no)"
 assert "dry-run did NOT create _evidence dir contents" "0" \
     "$(find "$VAULT/Clippings/_evidence" -type f 2>/dev/null | wc -l | tr -d ' ')"
 
@@ -197,7 +197,7 @@ echo "Test 3: --apply migrates the 8 eligible clips, rewrites all six forms"
 apply_out="$(node "$ENGINE" "$VAULT" --apply --manifest "$MANIFEST" 2>&1)"; apply_rc=$?
 assert "apply exit 0" "0" "$apply_rc"
 assert "apply reports 8 migrated" "yes" \
-    "$(printf '%s\n' "$apply_out" | grep -qE '8 migrated' && echo yes || echo no)"
+    "$(grep -qE '8 migrated' <<<"$apply_out" && echo yes || echo no)"
 
 # eligible clips now under _evidence/
 assert "ID1 moved to _evidence/"  "yes" "$([ -f "$VAULT/Clippings/_evidence/$ID1.md" ] && echo yes || echo no)"
@@ -264,14 +264,14 @@ echo "Test 4: a second --apply is a no-op (folder-keyed resume)"
 apply2_out="$(node "$ENGINE" "$VAULT" --apply --manifest "$MANIFEST" 2>&1)"; apply2_rc=$?
 assert "second apply exit 0" "0" "$apply2_rc"
 assert "second apply reports 0 migrated" "yes" \
-    "$(printf '%s\n' "$apply2_out" | grep -qE '0 migrated' && echo yes || echo no)"
+    "$(grep -qE '0 migrated' <<<"$apply2_out" && echo yes || echo no)"
 
 # ── Test 5: byte-identical rollback round-trip ───────────────────────────────
 echo "Test 5: --rollback restores the working tree BYTE-FOR-BYTE vs the oracle"
 rb_out="$(node "$ENGINE" "$VAULT" --rollback "$MANIFEST" 2>&1)"; rb_rc=$?
 assert "rollback exit 0" "0" "$rb_rc"
 assert "rollback reports reverts" "yes" \
-    "$(printf '%s\n' "$rb_out" | grep -qE 'reverted' && echo yes || echo no)"
+    "$(grep -qE 'reverted' <<<"$rb_out" && echo yes || echo no)"
 assert "rollback → git tree byte-identical (porcelain empty)" "0" "$(porcelain_count)"
 assert "rollback restored ID1 to top-level" "yes" "$([ -f "$VAULT/Clippings/$ID1.md" ] && echo yes || echo no)"
 assert "rollback emptied _evidence/ of migrated clips" "0" \
@@ -283,7 +283,7 @@ echo "Test 6: --month stages only that month's eligible clips"
 m_out="$(node "$ENGINE" "$VAULT" --apply --month 2026-05 --manifest "$tmp/m1.json" 2>&1)"; m_rc=$?
 assert "month apply exit 0" "0" "$m_rc"
 assert "month apply migrated only the 4 May clips" "yes" \
-    "$(printf '%s\n' "$m_out" | grep -qE '4 migrated' && echo yes || echo no)"
+    "$(grep -qE '4 migrated' <<<"$m_out" && echo yes || echo no)"
 # 2026-05 clips moved
 assert "2026-05 ID1 moved" "yes" "$([ -f "$VAULT/Clippings/_evidence/$ID1.md" ] && echo yes || echo no)"
 assert "2026-05 ID5 moved" "yes" "$([ -f "$VAULT/Clippings/_evidence/$ID5.md" ] && echo yes || echo no)"
@@ -321,18 +321,18 @@ git -C "$VAULT2" -c user.email=t@t.dev -c user.name=test commit -qm "dup oracle"
 c_out="$(node "$ENGINE" "$VAULT2" --dry-run --manifest "$tmp/dup-plan.json" 2>&1)"; c_rc=$?
 assert "dry-run advisory exit code on collision (3)" "3" "$c_rc"
 assert "dry-run prints a COLLISION line" "yes" \
-    "$(printf '%s\n' "$c_out" | grep -qF 'COLLISION:' && echo yes || echo no)"
+    "$(grep -qF 'COLLISION:' <<<"$c_out" && echo yes || echo no)"
 assert "COLLISION names the May source" "yes" \
-    "$(printf '%s\n' "$c_out" | grep -qF "Clippings/2026-05/$DUP.md" && echo yes || echo no)"
+    "$(grep -qF "Clippings/2026-05/$DUP.md" <<<"$c_out" && echo yes || echo no)"
 assert "COLLISION names the June source (both sources named)" "yes" \
-    "$(printf '%s\n' "$c_out" | grep -qF "Clippings/2026-06/$DUP.md" && echo yes || echo no)"
+    "$(grep -qF "Clippings/2026-06/$DUP.md" <<<"$c_out" && echo yes || echo no)"
 assert "dry-run mutated nothing on collision" "0" "$(git -C "$VAULT2" status --porcelain | wc -l | tr -d ' ')"
 
 # apply: must fail safe — refuse BOTH colliding clips, migrate NOTHING (no partial corruption).
 ca_out="$(node "$ENGINE" "$VAULT2" --apply --manifest "$tmp/dup-manifest.json" 2>&1)"; ca_rc=$?
 assert "apply non-zero exit on collision" "3" "$ca_rc"
 assert "apply migrated 0 (no partial)" "yes" \
-    "$(printf '%s\n' "$ca_out" | grep -qE '0 migrated' && echo yes || echo no)"
+    "$(grep -qE '0 migrated' <<<"$ca_out" && echo yes || echo no)"
 assert "apply left May dup in place" "yes" "$([ -f "$VAULT2/Clippings/2026-05/$DUP.md" ] && echo yes || echo no)"
 assert "apply left June dup in place" "yes" "$([ -f "$VAULT2/Clippings/2026-06/$DUP.md" ] && echo yes || echo no)"
 assert "apply wrote no clip into _evidence/ (no partial corruption)" "0" \
@@ -368,7 +368,7 @@ chmod 644 "$VAULT3/30-Resources/Tech/z-readonly.md"   # restore for cleanup/git
 
 assert "apply exits non-zero (4) when a clip fails" "4" "$f8_rc"
 assert "engine does NOT print a bare 'reverted' lie on partial" "yes" \
-    "$(printf '%s\n' "$f8_out" | grep -qE 'reverted \(vault restored|PARTIAL REVERT' && echo yes || echo no)"
+    "$(grep -qE 'reverted \(vault restored|PARTIAL REVERT' <<<"$f8_out" && echo yes || echo no)"
 assert "failed clip moved back to top-level inbox" "yes" \
     "$([ -f "$VAULT3/Clippings/$FID.md" ] && echo yes || echo no)"
 assert "failed clip NOT left in _evidence/" "no" \

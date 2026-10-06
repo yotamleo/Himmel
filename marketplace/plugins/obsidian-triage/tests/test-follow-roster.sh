@@ -34,7 +34,7 @@ import(process.argv[1]).then(m => {
   let ok=1; for (const [i,e] of cases) if (m.normalizeHandle(i)!==e){ok=0;console.log("MISS",i,m.normalizeHandle(i))}
   console.log(ok?"NORM_OK":"NORM_FAIL");
 });' "$lib_url_early" 2>&1)"
-echo "$out" | grep -q "NORM_OK" && r=yes || r=no
+grep -q "NORM_OK" <<<"$out" && r=yes || r=no
 assert "normalizeHandle: all cases match" yes "$r"
 
 # -- Test 2: resolveRoster ----------------------------------------------------
@@ -113,11 +113,11 @@ console.log("BCHERNY_INLIST=" + (byHandle["bcherny"] ? byHandle["bcherny"].inLis
 console.log("THEO_PRESENT=" + (byHandle["theo"] ? "yes" : "no"));
 EOF
 out2="$(FR_VAULT="$vault" FR_LISTFILE="$listfile" node "$tmpdir/roster-min2.mjs" 2>&1)"
-echo "$out2" | grep -q 'AVICHAWLA_COUNT=2' && r=yes || r=no; assert "minClips=2: _avichawla clipCount=2" yes "$r"
-echo "$out2" | grep -q 'AVICHAWLA_INLIST=false' && r=yes || r=no; assert "minClips=2: _avichawla inList=false" yes "$r"
-echo "$out2" | grep -q 'BCHERNY_COUNT=0' && r=yes || r=no; assert "minClips=2: bcherny clipCount=0" yes "$r"
-echo "$out2" | grep -q 'BCHERNY_INLIST=true' && r=yes || r=no; assert "minClips=2: bcherny inList=true" yes "$r"
-echo "$out2" | grep -q 'THEO_PRESENT=no' && r=yes || r=no; assert "minClips=2: theo excluded (1 clip < minClips)" yes "$r"
+grep -q 'AVICHAWLA_COUNT=2' <<<"$out2" && r=yes || r=no; assert "minClips=2: _avichawla clipCount=2" yes "$r"
+grep -q 'AVICHAWLA_INLIST=false' <<<"$out2" && r=yes || r=no; assert "minClips=2: _avichawla inList=false" yes "$r"
+grep -q 'BCHERNY_COUNT=0' <<<"$out2" && r=yes || r=no; assert "minClips=2: bcherny clipCount=0" yes "$r"
+grep -q 'BCHERNY_INLIST=true' <<<"$out2" && r=yes || r=no; assert "minClips=2: bcherny inList=true" yes "$r"
+grep -q 'THEO_PRESENT=no' <<<"$out2" && r=yes || r=no; assert "minClips=2: theo excluded (1 clip < minClips)" yes "$r"
 
 # minClips=1: theo (1 clip, not in list) now included.
 cat > "$tmpdir/roster-min1.mjs" <<EOF
@@ -128,8 +128,8 @@ console.log("THEO_COUNT=" + (byHandle["theo"] ? byHandle["theo"].clipCount : "MI
 console.log("THEO_INLIST=" + (byHandle["theo"] ? byHandle["theo"].inList : "MISSING"));
 EOF
 out1="$(FR_VAULT="$vault" FR_LISTFILE="$listfile" node "$tmpdir/roster-min1.mjs" 2>&1)"
-echo "$out1" | grep -q 'THEO_COUNT=1' && r=yes || r=no; assert "minClips=1: theo clipCount=1" yes "$r"
-echo "$out1" | grep -q 'THEO_INLIST=false' && r=yes || r=no; assert "minClips=1: theo inList=false" yes "$r"
+grep -q 'THEO_COUNT=1' <<<"$out1" && r=yes || r=no; assert "minClips=1: theo clipCount=1" yes "$r"
+grep -q 'THEO_INLIST=false' <<<"$out1" && r=yes || r=no; assert "minClips=1: theo inList=false" yes "$r"
 
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))

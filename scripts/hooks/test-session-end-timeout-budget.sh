@@ -108,7 +108,7 @@ assert_declared_within_clamp() {
     # `[ -z "$offenders" ]` is true and a MALFORMED config reports `pass`
     # (CR round 2, HIMMEL-2492). Catch the parse failure explicitly, distinct
     # from the well-formed-but-empty case.
-    if [ "$n_rc" -ne 0 ] || ! printf '%s' "$n" | grep -qE '^[0-9]+$'; then
+    if [ "$n_rc" -ne 0 ] || ! grep -qE '^[0-9]+$' <<<"$n"; then
         fail "$label: $config did not parse as valid JSON (jq exit $n_rc)"
         return
     fi
@@ -352,7 +352,7 @@ if [ -f "$CODEX_HOOKS" ]; then
     # integer before any numeric test.
     codex_declared_count="$(jq '[.hooks.SessionEnd // [] | .[] | .hooks[] | select(.type == "command")] | length' "$CODEX_HOOKS" 2>/dev/null)"
     codex_declared_rc=$?
-    if [ "$codex_declared_rc" -ne 0 ] || ! printf '%s' "$codex_declared_count" | grep -qE '^[0-9]+$'; then
+    if [ "$codex_declared_rc" -ne 0 ] || ! grep -qE '^[0-9]+$' <<<"$codex_declared_count"; then
         fail "codex session-end coverage: $CODEX_HOOKS did not parse as valid JSON while counting declared SessionEnd command hooks (jq exit $codex_declared_rc)"
     elif [ "$codex_declared_count" -lt 1 ]; then
         fail "codex session-end coverage: expected at least one SessionEnd command hook in $CODEX_HOOKS, found $codex_declared_count"

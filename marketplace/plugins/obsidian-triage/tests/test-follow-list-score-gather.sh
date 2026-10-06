@@ -97,7 +97,7 @@ out3="$(FOLLOW_GH_FIXTURE="$tmpdir/gh-empty.json" \
         node "$CLI" gather --vault "$vault" --dry-run 2>&1)"
 r3=$?
 assert "gather --dry-run exits 0" 0 "$r3"
-echo "$out3" | grep -qi ' x ' && rr=yes || rr=no
+grep -qi ' x ' <<<"$out3" && rr=yes || rr=no
 assert "dry-run prints roster handle 'x'" yes "$rr"
 [ -d "$vault/30-Resources/.follow-scores" ] && dd=exists || dd=absent
 assert "dry-run writes NO dossier dir" absent "$dd"
@@ -152,12 +152,12 @@ console.log("FOLLOWERS=" + (d && d.account && d.account.followers));
 console.log("SCREEN_STATUS=" + (d && d.screen_status));
 EOF
 out5="$(FLS_VAULT="$vault" node "$tmpdir/check.mjs" 2>&1)"
-echo "$out5" | grep -q 'HAS_DOSSIER=true' && r=yes || r=no; assert "dossier round-trips via readDossier" yes "$r"
-echo "$out5" | grep -q 'CLAIMS_NONEMPTY=true' && r=yes || r=no; assert "dossier.claims is non-empty" yes "$r"
-echo "$out5" | grep -q 'HAS_VERIFIED=true' && r=yes || r=no; assert "dossier.claims has >=1 verified entry (extraction+gh-verify ran end-to-end)" yes "$r"
-echo "$out5" | grep -q 'HAS_FOLLOWERS_CLAIM=true' && r=yes || r=no; assert "dossier.claims has a followers claim (bio-only; extractClaims ran AFTER fetchAccount populated bio)" yes "$r"
-echo "$out5" | grep -q 'FOLLOWERS=5000' && r=yes || r=no; assert "dossier.account.followers populated from fetchAccount (fxtwitter fixture)" yes "$r"
-echo "$out5" | grep -q 'SCREEN_STATUS=ok' && r=yes || r=no; assert "dossier.screen_status==ok (screenDossier ran via FOLLOW_SCAN_FIXTURE)" yes "$r"
+grep -q 'HAS_DOSSIER=true' <<<"$out5" && r=yes || r=no; assert "dossier round-trips via readDossier" yes "$r"
+grep -q 'CLAIMS_NONEMPTY=true' <<<"$out5" && r=yes || r=no; assert "dossier.claims is non-empty" yes "$r"
+grep -q 'HAS_VERIFIED=true' <<<"$out5" && r=yes || r=no; assert "dossier.claims has >=1 verified entry (extraction+gh-verify ran end-to-end)" yes "$r"
+grep -q 'HAS_FOLLOWERS_CLAIM=true' <<<"$out5" && r=yes || r=no; assert "dossier.claims has a followers claim (bio-only; extractClaims ran AFTER fetchAccount populated bio)" yes "$r"
+grep -q 'FOLLOWERS=5000' <<<"$out5" && r=yes || r=no; assert "dossier.account.followers populated from fetchAccount (fxtwitter fixture)" yes "$r"
+grep -q 'SCREEN_STATUS=ok' <<<"$out5" && r=yes || r=no; assert "dossier.screen_status==ok (screenDossier ran via FOLLOW_SCAN_FIXTURE)" yes "$r"
 
 # -- Test 5: re-run without --refetch skips the now-fresh dossier -----------
 echo "Test 5: skip-if-fresh (no --refetch)"
@@ -166,7 +166,7 @@ out6="$(FOLLOW_GH_FIXTURE="$tmpdir/gh-fixture.json" \
         FOLLOW_ACCOUNT_FIXTURE="$tmpdir/account-fixture.json" \
         FOLLOW_SCAN_FIXTURE="$tmpdir/scan-clean2.json" \
         node "$CLI" gather --vault "$vault" 2>&1)"
-echo "$out6" | grep -qi 'skip' && r=yes || r=no
+grep -qi 'skip' <<<"$out6" && r=yes || r=no
 assert "re-run without --refetch reports a skip for the fresh handle" yes "$r"
 
 # -- Test 6: Gap B (HIMMEL-703) — an injection-suspect dossier SKIPS the     --
@@ -233,8 +233,8 @@ node "$CLI" gather --vault "$vault2" --refetch >/dev/null 2>&1
 r6a=$?
 assert "6a clean: gather exits 0" 0 "$r6a"
 out_clean="$(FLS_VAULT="$vault2" node "$tmpdir/check-y.mjs" 2>&1)"
-echo "$out_clean" | grep -q 'INJECTION_SUSPECT=false' && r=yes || r=no; assert "6a clean: injection_suspect==false" yes "$r"
-echo "$out_clean" | grep -q 'ROLE_STATUS=verified' && r=yes || r=no; assert "6a clean: web rung ran -> role claim verified" yes "$r"
+grep -q 'INJECTION_SUSPECT=false' <<<"$out_clean" && r=yes || r=no; assert "6a clean: injection_suspect==false" yes "$r"
+grep -q 'ROLE_STATUS=verified' <<<"$out_clean" && r=yes || r=no; assert "6a clean: web rung ran -> role claim verified" yes "$r"
 
 # 6b: injection hit -> injection_suspect -> web rung SKIPPED -> role stays unverified.
 echo 'true' > "$tmpdir/scan-hit-y.json"
@@ -246,8 +246,8 @@ node "$CLI" gather --vault "$vault2" --refetch >/dev/null 2>&1
 r6b=$?
 assert "6b hit: gather exits 0" 0 "$r6b"
 out_hit="$(FLS_VAULT="$vault2" node "$tmpdir/check-y.mjs" 2>&1)"
-echo "$out_hit" | grep -q 'INJECTION_SUSPECT=true' && r=yes || r=no; assert "6b hit: injection_suspect==true" yes "$r"
-echo "$out_hit" | grep -q 'ROLE_STATUS=unverified' && r=yes || r=no; assert "6b hit: web rung skipped -> role claim stays unverified (Gap B)" yes "$r"
+grep -q 'INJECTION_SUSPECT=true' <<<"$out_hit" && r=yes || r=no; assert "6b hit: injection_suspect==true" yes "$r"
+grep -q 'ROLE_STATUS=unverified' <<<"$out_hit" && r=yes || r=no; assert "6b hit: web rung skipped -> role claim stays unverified (Gap B)" yes "$r"
 
 # 6c: fail-closed -- scanner CANNOT run (screen_error) must ALSO skip the web
 # rung, since the gate keys on injection_suspect (set true in both the hit and
@@ -262,9 +262,9 @@ node "$CLI" gather --vault "$vault2" --refetch >/dev/null 2>&1
 r6c=$?
 assert "6c error: gather exits 0" 0 "$r6c"
 out_err="$(FLS_VAULT="$vault2" node "$tmpdir/check-y.mjs" 2>&1)"
-echo "$out_err" | grep -q 'INJECTION_SUSPECT=true' && r=yes || r=no; assert "6c error: injection_suspect==true (fail-closed)" yes "$r"
-echo "$out_err" | grep -q 'SCREEN_STATUS=screen_error' && r=yes || r=no; assert "6c error: screen_status==screen_error" yes "$r"
-echo "$out_err" | grep -q 'ROLE_STATUS=unverified' && r=yes || r=no; assert "6c error: web rung skipped on scanner failure (fail-closed Gap B)" yes "$r"
+grep -q 'INJECTION_SUSPECT=true' <<<"$out_err" && r=yes || r=no; assert "6c error: injection_suspect==true (fail-closed)" yes "$r"
+grep -q 'SCREEN_STATUS=screen_error' <<<"$out_err" && r=yes || r=no; assert "6c error: screen_status==screen_error" yes "$r"
+grep -q 'ROLE_STATUS=unverified' <<<"$out_err" && r=yes || r=no; assert "6c error: web rung skipped on scanner failure (fail-closed Gap B)" yes "$r"
 
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))

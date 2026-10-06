@@ -54,7 +54,7 @@ assert "$CMD exists" "yes" "$exists"
 echo "Test 2: frontmatter allowed-tools includes Edit + Write + Bash (move + rewrite need them)"
 fm=$(awk '/^---$/{c++; next} c==1' "$CMD")
 for tool in Edit Write Bash; do
-    if printf '%s\n' "$fm" | grep -qE "^allowed-tools:.*\b$tool\b"; then found=yes; else found=no; fi
+    if grep -qE "^allowed-tools:.*\b$tool\b" <<<"$fm"; then found=yes; else found=no; fi
     assert "allowed-tools includes $tool" "yes" "$found"
 done
 
@@ -164,12 +164,12 @@ printf -- '---\ntype: synthesis\n---\nproposal\n'                               
 printf -- '---\ntype: pipeline-deferred\n---\nbacklog\n'                             > "$tmp2/Clippings/_deferred.md"
 scan="$(find "$tmp2/Clippings" -maxdepth 3 -type f -name '*.md' \
   -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md')"
-if printf '%s\n' "$scan" | grep -qF "/real.md"; then f=yes; else f=no; fi
+if grep -qF "/real.md" <<<"$scan"; then f=yes; else f=no; fi
 assert "scan keeps top-level inbox clip real.md" "yes" "$f"
-if printf '%s\n' "$scan" | grep -qF "/2026-05/subclip.md"; then f=yes; else f=no; fi
+if grep -qF "/2026-05/subclip.md" <<<"$scan"; then f=yes; else f=no; fi
 assert "scan keeps subfolder clip 2026-05/subclip.md (maxdepth reaches it)" "yes" "$f"
 for bad in "_done" "_synthesis" "_deferred.md"; do
-    if printf '%s\n' "$scan" | grep -qF "$bad"; then f=leaked; else f=excluded; fi
+    if grep -qF "$bad" <<<"$scan"; then f=leaked; else f=excluded; fi
     assert "scan excludes $bad" "excluded" "$f"
 done
 

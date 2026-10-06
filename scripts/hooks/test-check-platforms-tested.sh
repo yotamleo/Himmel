@@ -171,7 +171,7 @@ rm -rf "$d"
 # --- HIMMEL-1115: a >64KB commit-message range must not SIGPIPE the gate ---
 #
 # Regression. The gate used to test the attestation with
-#   printf '%s' "$commit_msgs" | grep -qiE "$ATTEST_RE"
+#   grep -qiE "$ATTEST_RE" <<<"$commit_msgs"
 # under `set -euo pipefail`. Once the range's messages exceed the OS pipe
 # buffer (~64KB), printf BLOCKS mid-write; grep -q matches the attestation
 # early (git log is newest-first and the attestation lives in the NEWEST

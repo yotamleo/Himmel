@@ -86,7 +86,7 @@ if [ -f "$v2/30-Resources/Concepts/Gate B.md" ]; then f=yes; else f=no; fi
 assert "(b) 2-authors/same-domain fires" "yes" "$f"
 if [ -f "$v2/30-Resources/Concepts/Gate C.md" ]; then f=fired; else f=skipped; fi
 assert "(c) same-author/same-domain SKIPPED (floor)" "skipped" "$f"
-if echo "$out2" | grep -qF 'distinct-source floor'; then f=yes; else f=no; fi
+if grep -qF 'distinct-source floor' <<<"$out2"; then f=yes; else f=no; fi
 assert "(c) skip reason is distinct-source floor" "yes" "$f"
 
 # ── Group 3: compound stub -> densify-same-page -> revert ─────────────────────
@@ -160,7 +160,7 @@ assert "sibling-prefix acme/agent-kit-extra row untouched" "1" "$sib"
 sed 's/^- \[x\] acme\/agent-kit .*/- [ ] acme\/agent-kit — REGENERATED/' "$v6/Clippings/_deferred.md" > "$v6/Clippings/_deferred.md.new"
 mv "$v6/Clippings/_deferred.md.new" "$v6/Clippings/_deferred.md"
 rv6="$(node "$TOOL" "$v6" --revert "$v6/.synthesize-stubs.ledger.jsonl" 2>&1)"
-if echo "$rv6" | grep -qiE 'no longer present|regenerated|skipping'; then f=yes; else f=no; fi
+if grep -qiE 'no longer present|regenerated|skipping' <<<"$rv6"; then f=yes; else f=no; fi
 assert "revert gracefully skips a regenerated _deferred row" "yes" "$f"
 
 # ── Group 7: cross-subject promoted_to (shared clip stamped once) ─────────────
@@ -179,7 +179,7 @@ assert "shared clip stamp points at the alphabetically-first subject" "yes" "$f"
 # array so the contributors entry doesn't false-match.
 t2line="$(grep -F 'Topic Two' "$v7/.synthesize-stubs.ledger.jsonl" | head -1)"
 t2stamped="$(echo "$t2line" | grep -oE '"stamped":\[[^]]*\]')"
-if echo "$t2stamped" | grep -qF '_evidence/x.md'; then f=present; else f=absent; fi
+if grep -qF '_evidence/x.md' <<<"$t2stamped"; then f=present; else f=absent; fi
 assert "second subject's stamped[] excludes the already-stamped clip" "absent" "$f"
 
 echo ""

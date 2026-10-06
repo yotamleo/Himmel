@@ -206,7 +206,7 @@ out_d=$( GRAPHIFY_MAP_BIN="$DBIN/graphify" PATH="$DBIN:$PATH" \
 
 [ "$rc_d" -eq 2 ] && pass "T2 the bounded second process (1s timeout) fails with rc=2, not a silent clobber" \
   || fail "T2 bounded process should exit 2 (got $rc_d): $out_d"
-echo "$out_d" | grep -qE "giving up|already extracting" && pass "T2 stderr carries a loud explanation" \
+grep -qE "giving up|already extracting" <<<"$out_d" && pass "T2 stderr carries a loud explanation" \
   || fail "T2 stderr should explain the refusal: $out_d"
 [ -e "$OUT2/graph.json" ] && fail "T2 out dir was written by the failed/blocked process (clobber!)" \
   || pass "T2 out dir untouched by the failed process while C still holds the lock"
@@ -234,7 +234,7 @@ out_e=$( GRAPHIFY_MAP_BIN="$EBIN/graphify" PATH="$EBIN:$PATH" GRAPHIFY_PROMOTE_L
   --maps-dir "$MAPS3" --title "Lock Map 3" --slug lock-map-3 --corpus-tag lock3 2>&1 ); rc_e=$?
 
 [ "$rc_e" -eq 0 ] && pass "T3 refresh succeeds by taking over the stale lock" || fail "T3 should exit 0 (got $rc_e): $out_e"
-if echo "$out_e" | grep -q "stale" && echo "$out_e" | grep -qi "taking over"; then
+if grep -q "stale" <<<"$out_e" && grep -qi "taking over" <<<"$out_e"; then
   pass "T3 stderr carries a loud takeover trail"
 else
   fail "T3 stderr should mention the stale takeover: $out_e"
@@ -438,7 +438,7 @@ out_j=$( GRAPHIFY_MAP_BIN="$JBIN6/graphify" PATH="$JBIN6:$PATH" GRAPHIFY_PROMOTE
   --maps-dir "$MAPS6" --title "Lock Map 6" --slug lock-map-6 --corpus-tag lock6 2>&1 ); rc_j=$?
 [ "$rc_j" -eq 0 ] && pass "T6 refresh reclaims the stamp-less lock and succeeds" \
   || fail "T6 refresh should exit 0 after reclaiming the stamp-less lock (got $rc_j): $out_j"
-if echo "$out_j" | grep -q "no readable acquired stamp" && echo "$out_j" | grep -q "taking over"; then
+if grep -q "no readable acquired stamp" <<<"$out_j" && grep -q "taking over" <<<"$out_j"; then
   pass "T6 stderr carries a loud stamp-less takeover trail"
 else
   fail "T6 stderr should carry the stamp-less takeover trail: $out_j"
@@ -495,7 +495,7 @@ out_l2=$( GRAPHIFY_MAP_BIN="$LBIN7/graphify" PATH="$LBIN7:$PATH" \
   --maps-dir "$MAPS7" --title "Lock Map 7" --slug lock-map-7 --corpus-tag lock7 2>&1 ); rc_l2=$?
 [ "$rc_l2" -eq 0 ] && pass "T7 immediate re-run succeeds (no leftover lock to fight)" \
   || fail "T7 immediate re-run should exit 0 (got $rc_l2): $out_l2"
-if echo "$out_l2" | grep -q -e "stale" -e "taking over" -e "giving up"; then
+if grep -q -e <<<"$out_l2" "stale" -e "taking over" -e "giving up"; then
   fail "T7 re-run hit stale/takeover/timeout handling -- the failed run left lock residue: $out_l2"
 else
   pass "T7 re-run saw a clean lock (no stale/takeover warnings)"
@@ -595,7 +595,7 @@ out_r1=$( GRAPHIFY_PROMOTE_LOCK_TIMEOUT_SECONDS=1 \
   --title "Lock Map 9" --slug lock-map-9 --no-update 2>&1 ); rc_r1=$?
 [ "$rc_r1" -eq 2 ] && pass "T9 bounded --no-update reader fails rc=2 while the writer holds the lock" \
   || fail "T9 bounded reader should exit 2 (got $rc_r1): $out_r1"
-echo "$out_r1" | grep -q "giving up" && pass "T9 bounded reader refusal is loud" \
+grep -q "giving up" <<<"$out_r1" && pass "T9 bounded reader refusal is loud" \
   || fail "T9 bounded reader refusal should explain itself: $out_r1"
 [ -f "$MOC9" ] && fail "T9 bounded reader published a MOC despite the held lock (unserialized read)" \
   || pass "T9 bounded reader published nothing"
@@ -652,9 +652,9 @@ out_f=$( GRAPHIFY_MAP_BIN="$FBIN10/graphify" PATH="$FBIN10:$PATH" GRAPHIFY_EXTRA
 
 [ "$rc_f" -eq 2 ] && pass "T10 the bounded second process (1s timeout) refuses with rc=2, not a silent double-extraction" \
   || fail "T10 bounded process should exit 2 (got $rc_f): $out_f"
-echo "$out_f" | grep -q "extraction lock" && pass "T10 refusal names the extraction lock (not the promote lock)" \
+grep -q "extraction lock" <<<"$out_f" && pass "T10 refusal names the extraction lock (not the promote lock)" \
   || fail "T10 refusal should name the extraction lock: $out_f"
-echo "$out_f" | grep -q "already extracting" && pass "T10 stderr carries a loud explanation" \
+grep -q "already extracting" <<<"$out_f" && pass "T10 stderr carries a loud explanation" \
   || fail "T10 stderr should explain the refusal: $out_f"
 [ -d "$OUT10/.promote.lock" ] && fail "T10 bounded process F reached the promote lock at all -- it should have refused at the extraction gate, before extraction/promote ever started" \
   || pass "T10 bounded process F never reached the promote step (refused at the earlier extraction gate)"

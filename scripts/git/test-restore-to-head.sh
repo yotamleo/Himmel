@@ -170,7 +170,7 @@ fi
 # --- (e) an untracked path is refused, message names it untracked
 printf 'new\n' > "$WT/untracked.txt"
 out=$(run untracked.txt 2>&1); rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'untracked'; then
+if [ "$rc" -ne 0 ] && grep -qi 'untracked' <<<"$out"; then
     pass "(e) untracked path refused, message names it untracked"
 else
     fail "(e) rc=$rc out='$out' (expected refusal naming it untracked)"
@@ -194,7 +194,7 @@ fi
 
 # --- (g) no arguments -> usage, rc != 0
 out=$(run 2>&1); rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'usage'; then
+if [ "$rc" -ne 0 ] && grep -qi 'usage' <<<"$out"; then
     pass "(g) no arguments prints usage and exits non-zero"
 else
     fail "(g) rc=$rc out='$out' (expected usage + non-zero)"
@@ -290,7 +290,7 @@ UNBORN="$TMP/unborn"
 mkdir -p "$UNBORN"
 (cd "$UNBORN" && git init -q -b main . && git config user.email t@t.t && git config user.name t && git config commit.gpgsign false && printf 'x\n' > f.txt && git add f.txt)
 out=$(cd "$UNBORN" && TMPDIR="$BACKUPS" bash "$SUT" f.txt 2>&1); rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi 'HEAD'; then
+if [ "$rc" -ne 0 ] && grep -qi 'HEAD' <<<"$out"; then
     pass "(o) unborn repository is refused with a clear error, not a silent no-op"
 else
     fail "(o) rc=$rc out='$out' (expected refusal naming the missing HEAD)"
@@ -365,7 +365,7 @@ out=$(run sub/a.sh 2>&1); rc=$?
 idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
 idx_mode_path="${idx_path%.index}.index-mode"
 mode_line=$(cat "$idx_mode_path" 2>/dev/null)
-if [ "$rc" -eq 0 ] && printf '%s' "$mode_line" | grep -q '^100755 '; then
+if [ "$rc" -eq 0 ] && grep -q '^100755 ' <<<"$mode_line"; then
     pass "(t) index-only mode change is captured via its ls-files mode line"
 else
     fail "(t) rc=$rc mode_line='$mode_line' idx_mode_path='$idx_mode_path' (expected a 100755 ls-files -s line preserving the staged mode)"
@@ -429,7 +429,7 @@ idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
 recover_staged sub/a.sh "$idx_path"; recovery_rc=$?
 mode_line=$(git -C "$WT" ls-files -s -- sub/a.sh)
 if [ "$rc" -eq 0 ] && [ "$recovery_rc" -eq 0 ] &&
-    printf '%s\n' "$mode_line" | grep -q '^100755 ' &&
+    grep -q '^100755 ' <<<"$mode_line" &&
     cmp -s <(git -C "$WT" show :sub/a.sh) <(printf 'recover-executable\n') &&
     [ -x "$WT/sub/a.sh" ] && cmp -s "$WT/sub/a.sh" <(printf 'recover-executable\n'); then
     pass "(u4) documented staged recovery restores executable index mode 100755 and saved bytes"
@@ -447,7 +447,7 @@ idx_path=$(printf '%s\n' "$out" | grep -o '/[^ ]*\.index' | head -1)
 recover_staged tracked2.txt "$idx_path"; recovery_rc=$?
 mode_line=$(git -C "$WT" ls-files -s -- tracked2.txt)
 if [ "$rc" -eq 0 ] && [ "$recovery_rc" -eq 0 ] &&
-    printf '%s\n' "$mode_line" | grep -q '^120000 ' &&
+    grep -q '^120000 ' <<<"$mode_line" &&
     cmp -s <(git -C "$WT" show :tracked2.txt) <(printf 'tracked3.txt') &&
     [ ! -L "$WT/tracked2.txt" ] && [ "$(cat "$WT/tracked2.txt")" = base2 ] &&
     [ "$(cat "$WT/tracked3.txt")" = base3 ]; then
@@ -517,7 +517,7 @@ printf 'dirty-manifest\n' > "$WT/tracked.txt"
 out=$(cd "$WT" && PATH="$FAULT_BIN:$PATH" FAULT_RUN="$FAULT_RUN" bash "$SUT" tracked.txt 2>&1); rc=$?
 if [ -d "$FAULT_RUN" ] && [ -d "$FAULT_RUN/MANIFEST" ] &&
     [ "$rc" -eq 2 ] && [ "$(cat "$WT/tracked.txt")" = dirty-manifest ] &&
-    printf '%s\n' "$out" | grep -q 'could not create deletion manifest'; then
+    grep -q 'could not create deletion manifest' <<<"$out"; then
     pass "(x) failed MANIFEST creation aborts before discarding dirty bytes"
 else
     fail "(x) rc=$rc content='$(cat "$WT/tracked.txt")' out='$out' (expected MANIFEST failure after run directory creation)"
@@ -550,7 +550,7 @@ for row in deleted present; do
     if [ -f "$FAULT_RUN/created-manifest" ] && [ -d "$FAULT_RUN/MANIFEST" ] && [ "$rc" -eq 2 ] &&
         { { [ "$row" = deleted ] && [ ! -e "$WT/tracked.txt" ]; } ||
           { [ "$row" = present ] && [ "$(cat "$WT/tracked.txt")" = dirty-append ]; }; } &&
-        printf '%s\n' "$out" | grep -q 'aborting before restore'; then
+        grep -q 'aborting before restore' <<<"$out"; then
         pass "(y) failed $row MANIFEST append aborts before restore"
     else
         fail "(y) $row rc=$rc out='$out' (expected successful creation, failed append, and untouched path)"

@@ -103,7 +103,7 @@ assert_recorded() {
     after=$( [ -f "$outbox" ] && wc -l < "$outbox" || echo 0 )
     CASES=$((CASES + 1))
     if [ "$rc" = 2 ] && [ "$decision" != "allow" ] \
-       && printf '%s' "$err" | grep -q "guard recorded your report" \
+       && grep -q "guard recorded your report" <<<"$err" \
        && [ "$after" -eq $((before + 1)) ]; then
         echo "PASS $label (recorded by hook, command denied)"
     else
@@ -121,7 +121,7 @@ assert_rejected_no_append() {
     after=$( [ -f "$outbox" ] && wc -l < "$outbox" || echo 0 )
     CASES=$((CASES + 1))
     if [ "$rc" = 2 ] && [ "$after" -eq "$before" ] \
-       && ! printf '%s' "$err" | grep -q "guard recorded your report"; then
+       && ! grep -q "guard recorded your report" <<<"$err"; then
         echo "PASS $label (fail-closed, nothing appended)"
     else
         echo "FAIL $label — expected rc=2 + no append + no success message, got rc=$rc rows=$before->$after"
@@ -248,7 +248,7 @@ dup_err=$(printf '%s' "$(j_bash "$DUP_CMD")" | env -u ANTHROPIC_BASE_URL -u GLM_
 dup_rc=$?
 dup_after=$(wc -l < "$OWN_OUTBOX")
 CASES=$((CASES + 1))
-if [ "$dup_rc" = 2 ] && [ "$dup_after" -eq "$dup_before" ] && printf '%s' "$dup_err" | grep -q "guard recorded your report"; then
+if [ "$dup_rc" = 2 ] && [ "$dup_after" -eq "$dup_before" ] && grep -q "guard recorded your report" <<<"$dup_err"; then
     echo "PASS F2 immediate retry appends nothing and still reports success"
 else
     echo "FAIL F2 retry — expected rc=2 + no new row + success message, got rc=$dup_rc rows=$dup_before->$dup_after"
@@ -408,7 +408,7 @@ torn_err=$(printf '%s' "$(j_bash "bash \"\$GLM_SESSION_DIR/append-outbox.sh\" $T
       "ANTHROPIC_BASE_URL=$GLM_URL" "GLM_SESSION_DIR=$TORN_SESSION_NATIVE" bash "$HOOK" 2>&1 >/dev/null)
 torn_rc=$?
 CASES=$((CASES + 1))
-if [ "$torn_rc" = 2 ] && printf '%s' "$torn_err" | grep -q "guard recorded your report" \
+if [ "$torn_rc" = 2 ] && grep -q "guard recorded your report" <<<"$torn_err" \
    && tail -1 "$TORN_OUTBOX" | jq -e '.type == "note" and .text == "after the torn tail"' >/dev/null 2>&1; then
     echo "PASS torn tail did not swallow the next acknowledged report"
 else

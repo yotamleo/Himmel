@@ -147,7 +147,7 @@ AA="$DIR/scripts/hooks/auto-approve-safe-bash.sh"
 SC2_IN="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"node $DIR/scripts/jira/dist/index.js transition HIMMEL-1 Done\"}}"
 if command -v jq >/dev/null 2>&1; then
   sc2_out=$(cd /tmp && printf '%s' "$SC2_IN" | bash "$AA" 2>/dev/null)
-  if printf '%s' "$sc2_out" | grep -q '"permissionDecision"[: ]*"allow"'; then
+  if grep -q '"permissionDecision"[: ]*"allow"' <<<"$sc2_out"; then
     echo "PASS  SC2 out-of-repo jira call auto-approved"
   else
     echo "FAIL  SC2 out-of-repo jira call NOT auto-approved: $sc2_out"; fails=$((fails+1))

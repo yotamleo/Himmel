@@ -409,7 +409,7 @@ report=$(UNLANDED_TSV="$u" bash "$SCRIPT" --rows "$ROWS" --dry-run)
 assert_contains "aged row listed"     "feat/himmel-9001-widget"          "$report"
 assert_contains "aged row evidence"   "no PR found; delta applies cleanly" "$report"
 assert_contains "aged row ahead/age"  "+3 commits, age 72h"              "$report"
-if printf '%s\n' "$report" | grep -qF "himmel-9002-old"; then
+if grep -qF "himmel-9002-old" <<<"$report"; then
     fail "non-aged/other-class row leaked into Unlanded work section"
 else
     pass "only AGED UNLANDED-LIVE rows appear in the section"
@@ -419,7 +419,7 @@ fi
 
 echo "TEST: --no-unlanded suppresses the Unlanded work section"
 report=$(UNLANDED_TSV="$u" bash "$SCRIPT" --rows "$ROWS" --dry-run --no-unlanded)
-if printf '%s\n' "$report" | grep -qF "## Unlanded work"; then
+if grep -qF "## Unlanded work" <<<"$report"; then
     fail "--no-unlanded did not suppress the section"
 else
     pass "--no-unlanded suppresses the Unlanded work section"
@@ -430,7 +430,7 @@ fi
 echo "TEST: UNLANDED_TSV points at a missing file -> explicit unavailable line"
 report=$(UNLANDED_TSV="$TMP_ROOT/does-not-exist.tsv" bash "$SCRIPT" --rows "$ROWS" --dry-run)
 assert_contains "unavailable line shown" "_unlanded-work scan unavailable._" "$report"
-if printf '%s\n' "$report" | grep -qF "_None — no aged unlanded branch found._"; then
+if grep -qF "_None — no aged unlanded branch found._" <<<"$report"; then
     fail "missing UNLANDED_TSV silently rendered as None instead of unavailable"
 else
     pass "missing UNLANDED_TSV never silently renders as None"

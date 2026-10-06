@@ -273,10 +273,10 @@ else fail "prompt points the agent at branch-controlled content"; fi
 run clean --timeout 20
 assert_rc 0 "clean run exits 0" "clean-run: $OUT"
 for leg in codex-exec codex-replay claude-print claude-replay; do
-    if printf '%s\n' "$OUT" | grep -qE "^$leg +PASS"; then pass "$leg PASS"; else fail "$leg not PASS: $OUT"; fi
+    if grep -qE "^$leg +PASS" <<<"$OUT"; then pass "$leg PASS"; else fail "$leg not PASS: $OUT"; fi
 done
 # The clean probe fixture carries a FAILING PLUGIN hook; it must not be counted.
-if printf '%s\n' "$OUT" | grep -qE '^codex-replay +PASS +1 +0'; then
+if grep -qE '^codex-replay +PASS +1 +0' <<<"$OUT"; then
     pass "plugin-hook FAIL rows excluded from the project count"
 else
     fail "plugin FAIL leaked into codex-replay: $OUT"
@@ -285,7 +285,7 @@ fi
 # pwsh stub reports a project FAIL unless they were handed the inert
 # environment, so the two PASS rows above are also the INERT_ENV proof - drop
 # the env prefix from either leg and this run turns red.
-if printf '%s\n' "$OUT" | grep -qE '^(codex|claude)-replay +PASS' ; then
+if grep -qE '^(codex|claude)-replay +PASS' <<<"$OUT" ; then
     pass "INERT_ENV reaches the replayed hooks in both harnesses"
 else
     fail "a replay leg ran without the inert environment: $OUT"
@@ -293,7 +293,7 @@ fi
 # Same row, second contract: the fixture hook also exits 9 on a leaked
 # TELEGRAM_BOT_TOKEN / JIRA_API_TOKEN, and on CLAUDE_CODE_OAUTH_TOKEN having
 # been blanked along with them.
-if printf '%s\n' "$OUT" | grep -qE '^claude-replay +PASS' ; then
+if grep -qE '^claude-replay +PASS' <<<"$OUT" ; then
     pass "ambient credentials blanked, Claude auth token preserved"
 else
     fail "credential blanking or auth preservation broke: $OUT"
@@ -302,7 +302,7 @@ fi
 # --- 5: codex hook banner fails the run --------------------------------------
 run codex-banner --timeout 20
 assert_rc 1 "codex hook banner exits 1" "codex-banner"
-if printf '%s\n' "$OUT" | grep -qE '^codex-exec +FAIL'
+if grep -qE '^codex-exec +FAIL' <<<"$OUT"
 then pass "codex-exec FAIL row on a hook banner"; else fail "no codex-exec FAIL row: $OUT"; fi
 
 # --- 6: codex nonzero exit fails the run -------------------------------------
@@ -312,7 +312,7 @@ assert_rc 1 "codex nonzero exit exits 1" "codex-rc"
 # --- 7: missing DONE fails the run -------------------------------------------
 run codex-nodone --timeout 20
 assert_rc 1 "missing DONE exits 1" "codex-nodone"
-if printf '%s\n' "$OUT" | grep -q 'no DONE in reply'
+if grep -q 'no DONE in reply' <<<"$OUT"
 then pass "missing DONE is named in the NOTE column"; else fail "no 'no DONE' note: $OUT"; fi
 
 run codex-notdone --timeout 20
@@ -326,9 +326,9 @@ assert_rc 1 "an 'UNDONE' reply exits 1" "codex-undone"
 # true of a run that tested nothing. DONE alone must not pass.
 run codex-notools --timeout 20
 assert_rc 1 "a bare DONE with no tool-call proof exits 1" "codex-notools"
-if printf '%s\n' "$OUT" | grep -q 'no shell-call proof'
+if grep -q 'no shell-call proof' <<<"$OUT"
 then pass "missing HEAD sha is named in the NOTE column"; else fail "no shell-proof note: $OUT"; fi
-if printf '%s\n' "$OUT" | grep -q 'no file-read proof'
+if grep -q 'no file-read proof' <<<"$OUT"
 then pass "missing token is named in the NOTE column"; else fail "no file-read-proof note: $OUT"; fi
 
 run codex-nosha --timeout 20
@@ -345,7 +345,7 @@ assert_rc 1 "a bare DONE from claude with no tool-call proof exits 1" "claude-no
 # finding it means the scan silently covered stdout only.
 run codex-norollout --timeout 20
 assert_rc 1 "a codex leg with no matching rollout exits 1" "codex-norollout"
-if printf '%s\n' "$OUT" | grep -q 'no session rollout matched'
+if grep -q 'no session rollout matched' <<<"$OUT"
 then pass "the missing rollout is named in the NOTE column"; else fail "rollout miss not named: $OUT"; fi
 
 # CODEX_HOME relocates the whole codex state dir; the scan must follow it rather
@@ -392,7 +392,7 @@ if [ -n "$KEPT" ]; then chmod -R u+w "$KEPT" 2>/dev/null || true; rm -rf "$KEPT"
 # --- 8: claude hook banner / timeout fail the run ----------------------------
 run claude-banner --timeout 20
 assert_rc 1 "claude hook banner exits 1" "claude-banner"
-if printf '%s\n' "$OUT" | grep -qE '^claude-print +FAIL'
+if grep -qE '^claude-print +FAIL' <<<"$OUT"
 then pass "claude-print FAIL row on a hook banner"; else fail "no claude-print FAIL row: $OUT"; fi
 
 run claude-timeout --timeout 20
@@ -402,7 +402,7 @@ assert_rc 1 "claude hook timeout exits 1" "claude-timeout"
 # itself ends in DONE and is echoed back.
 run claude-nodone --timeout 20
 assert_rc 1 "DONE echoed in the log but not in .result exits 1" "claude-nodone"
-if printf '%s\n' "$OUT" | grep -qE '^claude-print +FAIL.*no DONE in reply'
+if grep -qE '^claude-print +FAIL.*no DONE in reply' <<<"$OUT"
 then pass "claude DONE is read from .result, not the log"; else fail "log-wide DONE grep passed: $OUT"; fi
 
 # --- 9: probe findings fail the run ------------------------------------------
@@ -411,7 +411,7 @@ assert_rc 1 "probe lint FAIL on a project hook exits 1" "probe-lintfail"
 
 run probe-replayfail --timeout 20
 assert_rc 1 "probe replay TIMEOUT on a project hook exits 1" "probe-replayfail"
-if printf '%s\n' "$OUT" | grep -q 'TIMEOUT'
+if grep -q 'TIMEOUT' <<<"$OUT"
 then pass "replay TIMEOUT surfaced in the NOTE column"; else fail "TIMEOUT not surfaced: $OUT"; fi
 
 run probe-empty --timeout 20
@@ -419,7 +419,7 @@ assert_rc 1 "probe enumerating zero project hooks exits 1" "probe-empty"
 
 run probe-noreplay --timeout 20
 assert_rc 1 "project hooks enumerated but never replayed exits 1" "probe-noreplay"
-if printf '%s\n' "$OUT" | grep -q '0/2 project hooks replayed'
+if grep -q '0/2 project hooks replayed' <<<"$OUT"
 then pass "unreplayed-hook count surfaced in the NOTE column"; else fail "no replayed-count note: $OUT"; fi
 
 # --- 10: claude-replay hook exit codes ---------------------------------------
@@ -452,9 +452,9 @@ else
         bash "$SMOKE" --from "$FIX" --timeout 20 2>&1)"; RC=$?
     set -e
     assert_rc 1 "a hanging hook is bounded and exits 1" "hook-hang"
-    if printf '%s\n' "$OUT" | grep -qE '^claude-replay +FAIL.*rc=124'
+    if grep -qE '^claude-replay +FAIL.*rc=124' <<<"$OUT"
     then pass "the hanging hook is reported as rc=124, not a hang"; else fail "hang not bounded: $OUT"; fi
-    if printf '%s\n' "$OUT" | grep -qE '^claude-replay +FAIL'
+    if grep -qE '^claude-replay +FAIL' <<<"$OUT"
     then pass "claude-replay FAIL row on a crashing hook"; else fail "no claude-replay FAIL row: $OUT"; fi
 fi
 
@@ -545,7 +545,7 @@ set +e
 OUT="$(PATH="$EMPTY:$TOOLBOX" bash "$SMOKE" --from "$FIX" --codex-only 2>&1)"; RC=$?
 set -e
 assert_rc 2 "all-SKIP run exits 2, not 0" "vacuous-guard: $OUT"
-if printf '%s\n' "$OUT" | grep -q 'NOTHING RAN'
+if grep -q 'NOTHING RAN' <<<"$OUT"
 then pass "all-SKIP run says NOTHING RAN"; else fail "no NOTHING RAN message: $OUT"; fi
 
 # --- 11-guard: the toolbox itself must be genuinely pwsh-less, not just empty -
@@ -580,7 +580,7 @@ cp "$SMOKE" "$FAKEREPO/"
 set +e
 OUT="$(PATH="$BIN:$PATH" SMOKE_STUB_MODE=clean bash "$FAKEREPO/$(basename "$SMOKE")" --from "$FIX" --timeout 20 2>&1)"; RC=$?
 set -e
-if printf '%s\n' "$OUT" | grep -qE '^claude-print +SKIP.*native-auth pin unavailable'
+if grep -qE '^claude-print +SKIP.*native-auth pin unavailable' <<<"$OUT"
 then pass "claude leg skips when the native-auth pin cannot be applied"
 else fail "claude leg launched unpinned: $OUT"; fi
 
@@ -615,7 +615,7 @@ set +e
 OUT="$(PATH="$NOPWSH:$TOOLBOX" SMOKE_STUB_MODE=clean bash "$SMOKE" --from "$FIX" --codex-only --timeout 20 2>&1)"; RC=$?
 set -e
 assert_rc 2 "codex-exec without codex-replay exits 2, not 0" "no-positive-control: $OUT"
-if printf '%s\n' "$OUT" | grep -q 'without its positive control'
+if grep -q 'without its positive control' <<<"$OUT"
 then pass "the missing positive control is named"; else fail "positive control not named: $OUT"; fi
 
 # --- 12: cleanup --------------------------------------------------------------

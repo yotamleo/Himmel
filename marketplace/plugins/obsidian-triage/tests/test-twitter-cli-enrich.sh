@@ -55,14 +55,14 @@ EOF
 # "SKIP ... skipped" line. Assert against the selection (would-enrich) lines.
 out="$(node "$tool" --vault "$vault" --dry-run 2>&1 || true)"
 selected="$(echo "$out" | grep "would enrich" || true)"
-echo "$selected" | grep -q "flagged.md" || { echo "FAIL: flagged not selected"; echo "$out"; exit 1; }
-echo "$selected" | grep -q "plain.md" && { echo "FAIL: plain (no needs_thread) selected"; exit 1; }
-echo "$selected" | grep -q "done.md" && { echo "FAIL: already-crawled selected"; exit 1; }
+grep -q "flagged.md" <<<"$selected" || { echo "FAIL: flagged not selected"; echo "$out"; exit 1; }
+grep -q "plain.md" <<<"$selected" && { echo "FAIL: plain (no needs_thread) selected"; exit 1; }
+grep -q "done.md" <<<"$selected" && { echo "FAIL: already-crawled selected"; exit 1; }
 
 # (b) token guard — no TWITTER_AUTH_TOKEN/CT0 → exit 2 + clear message, no mutation
 before="$(cat "$vault/Clippings/flagged.md")"
 guard="$(env -u TWITTER_AUTH_TOKEN -u TWITTER_CT0 node "$tool" --vault "$vault" 2>&1 || true)"
-echo "$guard" | grep -qi "TWITTER_AUTH_TOKEN" || { echo "FAIL: no token-guard message"; echo "$guard"; exit 1; }
+grep -qi "TWITTER_AUTH_TOKEN" <<<"$guard" || { echo "FAIL: no token-guard message"; echo "$guard"; exit 1; }
 after="$(cat "$vault/Clippings/flagged.md")"
 [ "$before" = "$after" ] || { echo "FAIL: token guard mutated a clip"; exit 1; }
 

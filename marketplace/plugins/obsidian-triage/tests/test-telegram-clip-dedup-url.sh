@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.." || exit 1
 SCRIPT="tools/telegram-clip.mjs"
 pass=0; fail=0
 # ckgrep DESC PATTERN — PASS if $out (set by the caller's `run`) matches PATTERN.
-ckgrep() { if printf '%s' "$out" | grep -q "$2"; then echo "  PASS  $1"; pass=$((pass+1)); else echo "  FAIL  $1"; fail=$((fail+1)); fi; }
+ckgrep() { if grep -q "$2" <<<"$out"; then echo "  PASS  $1"; pass=$((pass+1)); else echo "  FAIL  $1"; fail=$((fail+1)); fi; }
 # ckcount DESC GLOB N — PASS if exactly N inbox clips match GLOB.
 ckcount() { local n; n=$(find "$tmp/Clippings" -maxdepth 1 -name "$2" | wc -l | tr -d ' '); if [ "$n" = "$3" ]; then echo "  PASS  $1"; pass=$((pass+1)); else echo "  FAIL  $1 (got $n, want $3)"; fail=$((fail+1)); fi; }
 

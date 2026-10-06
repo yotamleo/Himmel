@@ -1664,7 +1664,7 @@ assert_allow "4399 256 distinct assignment names (at the cap) stay allowed" "$(j
 run "$(j "$(distinct_asg 257)echo ok")"
 CASES=$((CASES + 1))
 if [ "$RC" = "2" ] && [ "$(printf '%s' "$OUT" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" = "deny" ] \
-   && printf '%s' "$ERR" | grep -q "more than 256 distinct"; then
+   && grep -q "more than 256 distinct" <<<"$ERR"; then
     echo "PASS 4399 257 distinct assignment names deny (cap fails closed)"
 else
     echo "FAIL 4399 257 distinct assignment names -- expected rc=2 + deny + cap reason, got rc=$RC"

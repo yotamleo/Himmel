@@ -144,8 +144,8 @@ console.log("A=" + JSON.stringify(ha));
 console.log("B=" + JSON.stringify(hb));
 EOF
 norm_out="$(node "$tmpdir/norm-test.mjs" 2>&1)"
-echo "$norm_out" | grep -q 'A_EQ_B=yes' && r_eq=yes || r_eq=no
-echo "$norm_out" | grep -q 'A_NEQ_C=yes' && r_neq=yes || r_neq=no
+grep -q 'A_EQ_B=yes' <<<"$norm_out" && r_eq=yes || r_eq=no
+grep -q 'A_NEQ_C=yes' <<<"$norm_out" && r_neq=yes || r_neq=no
 assert "norm: equivalent-scaffold bodies hash-equal" "yes" "$r_eq"
 assert "norm: different bodies hash-unequal"        "yes" "$r_neq"
 if [ "$r_eq" != "yes" ]; then
@@ -219,7 +219,7 @@ dry_rc=$?
 after_a="$(sha256sum "$vault/Clippings/url-dupe-A.md" | cut -d' ' -f1)"
 assert "5a: --dry-run exit 0"                "0" "$dry_rc"
 assert "5a: --dry-run leaves clip identical" "$before_a" "$after_a"
-echo "$out_dry" | grep -q '1 clusters' && r=yes || r=no
+grep -q '1 clusters' <<<"$out_dry" && r=yes || r=no
 assert "5a: --dry-run reports 1 url cluster"  "yes" "$r"
 
 # Idempotency baseline — count "wrote" outcomes on second run.
@@ -276,7 +276,7 @@ after_canonical_sha="$(sha256sum "$vault/Clippings/url-dupe-A.md" | cut -d' ' -f
 assert "5c: re-run leaves dupe identical"      "$before_b_sha" "$after_b_sha"
 assert "5c: re-run leaves canonical identical" "$before_canonical_sha" "$after_canonical_sha"
 # Stdout summary should report 0 writes.
-echo "$out_rerun" | grep -qE '0 writes' && r=yes || r=no
+grep -qE '0 writes' <<<"$out_rerun" && r=yes || r=no
 assert "5c: re-run summary reports 0 writes" "yes" "$r"
 
 # -- Test 6: --report-only mode ---------------------------------------------

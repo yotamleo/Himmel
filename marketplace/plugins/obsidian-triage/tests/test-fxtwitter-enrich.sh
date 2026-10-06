@@ -151,12 +151,12 @@ EOF
 # Use node (NOT bun) because bun may not be on PATH in CI;
 # import.meta.main is bun-only but we don't need it for an import-only test.
 out="$(node "$tmpdir/draft-test.mjs" 2>&1)"
-echo "$out" | grep -q 'FIXTURE1_MATCH=yes' && r1=yes || r1=no
-echo "$out" | grep -q 'FIXTURE2_BOLD=yes' && r2=yes || r2=no
-echo "$out" | grep -q 'FIXTURE2_LINK=yes' && r3=yes || r3=no
-echo "$out" | grep -q 'FIXTURE3_OL=yes' && r4=yes || r4=no
-echo "$out" | grep -q 'FIXTURE4_FALLBACK=yes' && r5=yes || r5=no
-echo "$out" | grep -q 'FIXTURE5_CODE=yes' && r6=yes || r6=no
+grep -q 'FIXTURE1_MATCH=yes' <<<"$out" && r1=yes || r1=no
+grep -q 'FIXTURE2_BOLD=yes' <<<"$out" && r2=yes || r2=no
+grep -q 'FIXTURE2_LINK=yes' <<<"$out" && r3=yes || r3=no
+grep -q 'FIXTURE3_OL=yes' <<<"$out" && r4=yes || r4=no
+grep -q 'FIXTURE4_FALLBACK=yes' <<<"$out" && r5=yes || r5=no
+grep -q 'FIXTURE5_CODE=yes' <<<"$out" && r6=yes || r6=no
 assert "DraftJS: header-two + unstyled + ul block-types" "yes" "$r1"
 assert "DraftJS: BOLD inline-style wrap" "yes" "$r2"
 assert "DraftJS: LINK entity wrap" "yes" "$r3"

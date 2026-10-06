@@ -74,7 +74,7 @@ fail() { echo "  FAIL: $1"; if [ $# -ge 2 ]; then printf '    %s\n' "$2"; fi; FA
 
 assert_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grep -qF -- <<<"$haystack" "$needle"; then
         pass "$name"
     else
         fail "$name" "needle '$needle' missing from haystack"
@@ -83,7 +83,7 @@ assert_contains() {
 
 assert_not_contains() {
     local name="$1" needle="$2" haystack="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grep -qF -- <<<"$haystack" "$needle"; then
         fail "$name" "needle '$needle' unexpectedly present"
     else
         pass "$name"
@@ -456,7 +456,7 @@ assert_eq        "interleaved-publisher rc=8 (rejected, not overwritten)" "8" "$
 assert_contains  "interleaved-publisher message names the collision" "moved on origin" "$out"
 remote_content=$(git -C "$BARE" show "refs/heads/${RACE_BRANCH}:graphify-out/graph.json")
 assert_contains  "concurrent publisher's commit survives on origin" "concurrent-publisher" "$remote_content"
-if printf '%s' "$remote_content" | grep -qF '"ours"'; then
+if grep -qF '"ours"' <<<"$remote_content"; then
     fail "our stale commit did NOT overwrite the concurrent publisher's" "found 'ours' in remote content"
 else
     pass "our stale commit did NOT overwrite the concurrent publisher's"

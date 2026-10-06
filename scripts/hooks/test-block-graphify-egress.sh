@@ -44,14 +44,14 @@ run_hook() {
 }
 
 out="$(run_hook "grep -rn graphify $T/luna" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<<"$out"; then
     ok "a bare mention (grep -rn graphify .) does not reach the fence"
 else
     bad "bare mention: rc=$rc out=$out"
 fi
 
 out="$(run_hook "graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
     ok "a direct invocation reaches the fence"
 else
     bad "direct invocation: rc=$rc out=$out"
@@ -62,14 +62,14 @@ fi
 # wrapped timeout either; that is graphify-fence.sh's own classify_clause,
 # a separate, richer implementation, not this shared regex).
 out="$(run_hook "env FOO=1 graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
     ok "an env-wrapped invocation reaches the fence"
 else
     bad "env-wrapped invocation: rc=$rc out=$out"
 fi
 
 out="$(run_hook "sudo graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
     ok "a sudo-wrapped invocation reaches the fence"
 else
     bad "sudo-wrapped invocation: rc=$rc out=$out"
@@ -81,14 +81,14 @@ fi
 # own comment. The OLD naive substring match caught this case; losing it
 # would be a real regression, unlike the accepted bash -c residual below.
 out="$(run_hook "timeout 10 graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
     ok "a timeout-wrapped invocation reaches the fence"
 else
     bad "timeout-wrapped invocation: rc=$rc out=$out"
 fi
 
 out="$(run_hook "timeout -k 5 30 sudo graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
     ok "a timeout-with-flags + sudo wrapped invocation reaches the fence"
 else
     bad "timeout+flags+sudo wrapped invocation: rc=$rc out=$out"
@@ -97,14 +97,14 @@ fi
 # CR round 2 regression pin (codex-1): `command`/`exec` are transparent
 # no-argument wrappers the OLD substring match also caught.
 out="$(run_hook "command graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
     ok "a command-wrapped invocation reaches the fence"
 else
     bad "command-wrapped invocation: rc=$rc out=$out"
 fi
 
 out="$(run_hook "exec graphify update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
     ok "an exec-wrapped invocation reaches the fence"
 else
     bad "exec-wrapped invocation: rc=$rc out=$out"
@@ -240,14 +240,14 @@ fi
 # NOT unwrapped by this fast gate -- pinned here so the residual stays a
 # known, intentional gap rather than an undocumented drift.
 out="$(run_hook "bash -c 'graphify update $T/luna/journal.md --backend claude'" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<<"$out"; then
     ok "a bash -c wrapped invocation does NOT reach the fence (documented residual)"
 else
     bad "bash -c residual pin: rc=$rc out=$out"
 fi
 
 out="$(run_hook "cd $T/luna" 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -q FENCE_INVOKED; then
+if [ "$rc" -eq 0 ] && ! grep -q FENCE_INVOKED <<<"$out"; then
     ok "an unrelated command does not reach the fence"
 else
     bad "unrelated command: rc=$rc out=$out"

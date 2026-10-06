@@ -50,11 +50,11 @@ const followersClaim = claims.find(c => c.kind === "followers");
 console.log("FOLLOWERS_TEXT=" + (followersClaim ? followersClaim.text : "MISSING"));
 EOF
 out1="$(node "$tmpdir/extract.mjs" 2>&1)"
-echo "$out1" | grep -q 'HAS_REPO=true' && r=yes || r=no; assert "extractClaims: repo kind present" yes "$r"
-echo "$out1" | grep -q 'HAS_FOLLOWERS=true' && r=yes || r=no; assert "extractClaims: followers kind present" yes "$r"
-echo "$out1" | grep -q 'HAS_COURSE=true' && r=yes || r=no; assert "extractClaims: course kind present" yes "$r"
-echo "$out1" | grep -q 'ALL_HAVE_TEXT=true' && r=yes || r=no; assert "extractClaims: every claim carries raw text" yes "$r"
-echo "$out1" | grep -qi 'FOLLOWERS_TEXT=120k followers' && r=yes || r=no; assert "extractClaims: followers claim text captures '120k followers'" yes "$r"
+grep -q 'HAS_REPO=true' <<<"$out1" && r=yes || r=no; assert "extractClaims: repo kind present" yes "$r"
+grep -q 'HAS_FOLLOWERS=true' <<<"$out1" && r=yes || r=no; assert "extractClaims: followers kind present" yes "$r"
+grep -q 'HAS_COURSE=true' <<<"$out1" && r=yes || r=no; assert "extractClaims: course kind present" yes "$r"
+grep -q 'ALL_HAVE_TEXT=true' <<<"$out1" && r=yes || r=no; assert "extractClaims: every claim carries raw text" yes "$r"
+grep -qi 'FOLLOWERS_TEXT=120k followers' <<<"$out1" && r=yes || r=no; assert "extractClaims: followers claim text captures '120k followers'" yes "$r"
 
 # -- Test 2: resolveGithub + fetchRepos (stubbed ghFn) -----------------------
 echo "Test 2: resolveGithub + fetchRepos"
@@ -88,13 +88,13 @@ const nullLogin = resolveGithub("no github mention here", { ghFn });
 console.log("NULL_LOGIN=" + nullLogin.login);
 EOF
 out2="$(node "$tmpdir/repos.mjs" 2>&1)"
-echo "$out2" | grep -q 'LOGIN=x' && r=yes || r=no; assert "resolveGithub: login extracted from bio" yes "$r"
-echo "$out2" | grep -q 'REPO_COUNT=3' && r=yes || r=no; assert "fetchRepos: repo_count==3" yes "$r"
-echo "$out2" | grep -q 'TOTAL_STARS=25' && r=yes || r=no; assert "fetchRepos: total_stars==25" yes "$r"
-echo "$out2" | grep -q 'TOPICAL_HITS_GE1=true' && r=yes || r=no; assert "fetchRepos: topical_hits>=1" yes "$r"
-echo "$out2" | grep -q 'SAMPLE_DESC_LEN_GE1=true' && r=yes || r=no; assert "fetchRepos: sample_descriptions.length>=1" yes "$r"
-echo "$out2" | grep -q 'STATUS=ok' && r=yes || r=no; assert "fetchRepos: status==ok" yes "$r"
-echo "$out2" | grep -q 'NULL_LOGIN=null' && r=yes || r=no; assert "resolveGithub: login null when no github.com mention" yes "$r"
+grep -q 'LOGIN=x' <<<"$out2" && r=yes || r=no; assert "resolveGithub: login extracted from bio" yes "$r"
+grep -q 'REPO_COUNT=3' <<<"$out2" && r=yes || r=no; assert "fetchRepos: repo_count==3" yes "$r"
+grep -q 'TOTAL_STARS=25' <<<"$out2" && r=yes || r=no; assert "fetchRepos: total_stars==25" yes "$r"
+grep -q 'TOPICAL_HITS_GE1=true' <<<"$out2" && r=yes || r=no; assert "fetchRepos: topical_hits>=1" yes "$r"
+grep -q 'SAMPLE_DESC_LEN_GE1=true' <<<"$out2" && r=yes || r=no; assert "fetchRepos: sample_descriptions.length>=1" yes "$r"
+grep -q 'STATUS=ok' <<<"$out2" && r=yes || r=no; assert "fetchRepos: status==ok" yes "$r"
+grep -q 'NULL_LOGIN=null' <<<"$out2" && r=yes || r=no; assert "resolveGithub: login null when no github.com mention" yes "$r"
 
 # -- Test 3: verifyClaims ------------------------------------------------------
 echo "Test 3: verifyClaims"
@@ -152,10 +152,10 @@ const resultB = verifyClaims(dossierB, {
 console.log("B_FOLLOWERS_STATUS=" + resultB.find(c => c.kind === "followers").status);
 EOF
 out3="$(node "$tmpdir/verify.mjs" 2>&1)"
-echo "$out3" | grep -q 'A_REPO_STATUS=verified' && r=yes || r=no; assert "verifyClaims: repo claim verified via ghFn owner match" yes "$r"
-echo "$out3" | grep -q 'A_MISMATCH_FOLLOWERS_STATUS=contradicted' && r=yes || r=no; assert "verifyClaims: spike_result A + mismatch -> contradicted" yes "$r"
-echo "$out3" | grep -q 'A_MATCH_FOLLOWERS_STATUS=verified' && r=yes || r=no; assert "verifyClaims: spike_result A + close match -> verified" yes "$r"
-echo "$out3" | grep -q 'B_FOLLOWERS_STATUS=unverified' && r=yes || r=no; assert "verifyClaims: spike_result B -> unverified (never contradicted)" yes "$r"
+grep -q 'A_REPO_STATUS=verified' <<<"$out3" && r=yes || r=no; assert "verifyClaims: repo claim verified via ghFn owner match" yes "$r"
+grep -q 'A_MISMATCH_FOLLOWERS_STATUS=contradicted' <<<"$out3" && r=yes || r=no; assert "verifyClaims: spike_result A + mismatch -> contradicted" yes "$r"
+grep -q 'A_MATCH_FOLLOWERS_STATUS=verified' <<<"$out3" && r=yes || r=no; assert "verifyClaims: spike_result A + close match -> verified" yes "$r"
+grep -q 'B_FOLLOWERS_STATUS=unverified' <<<"$out3" && r=yes || r=no; assert "verifyClaims: spike_result B -> unverified (never contradicted)" yes "$r"
 
 # -- Test 4: extractClaims role/mention discipline + byline + stars ----------
 echo "Test 4: extractClaims role-mention discipline"
@@ -180,13 +180,13 @@ const starClaim = claims.find(c => c.kind === "stars");
 console.log("STARS_TEXT=" + (starClaim ? starClaim.text : "MISSING"));
 EOF
 out4="$(node "$tmpdir/roles.mjs" 2>&1)"
-echo "$out4" | grep -q 'BIO_MENTION_ROLE=true' && r=yes || r=no; assert "extractClaims: @mention in bio yields a role claim" yes "$r"
-echo "$out4" | grep -q 'TWEET_MENTION_BOB_ROLE=false' && r=yes || r=no; assert "extractClaims: @mention in tweet byline yields NO role claim" yes "$r"
-echo "$out4" | grep -q 'TWEET_MENTION_CAROL_ROLE=false' && r=yes || r=no; assert "extractClaims: @mention in tweet body yields NO role claim" yes "$r"
-echo "$out4" | grep -q 'FOUNDER_BIO_ROLE=true' && r=yes || r=no; assert "extractClaims: 'founder of' role kept from bio" yes "$r"
-echo "$out4" | grep -q 'FOUNDER_TWEET_ROLE=true' && r=yes || r=no; assert "extractClaims: 'founder of' role kept from tweet" yes "$r"
-echo "$out4" | grep -q 'NO_BYLINE_CLAIM=true' && r=yes || r=no; assert "extractClaims: '# Tweet by @handle' byline never produces a claim" yes "$r"
-echo "$out4" | grep -qi 'STARS_TEXT=96k stars' && r=yes || r=no; assert "extractClaims: stars claim text captures '96k stars'" yes "$r"
+grep -q 'BIO_MENTION_ROLE=true' <<<"$out4" && r=yes || r=no; assert "extractClaims: @mention in bio yields a role claim" yes "$r"
+grep -q 'TWEET_MENTION_BOB_ROLE=false' <<<"$out4" && r=yes || r=no; assert "extractClaims: @mention in tweet byline yields NO role claim" yes "$r"
+grep -q 'TWEET_MENTION_CAROL_ROLE=false' <<<"$out4" && r=yes || r=no; assert "extractClaims: @mention in tweet body yields NO role claim" yes "$r"
+grep -q 'FOUNDER_BIO_ROLE=true' <<<"$out4" && r=yes || r=no; assert "extractClaims: 'founder of' role kept from bio" yes "$r"
+grep -q 'FOUNDER_TWEET_ROLE=true' <<<"$out4" && r=yes || r=no; assert "extractClaims: 'founder of' role kept from tweet" yes "$r"
+grep -q 'NO_BYLINE_CLAIM=true' <<<"$out4" && r=yes || r=no; assert "extractClaims: '# Tweet by @handle' byline never produces a claim" yes "$r"
+grep -qi 'STARS_TEXT=96k stars' <<<"$out4" && r=yes || r=no; assert "extractClaims: stars claim text captures '96k stars'" yes "$r"
 
 # -- Test 5: resolveGithub handle-as-login fallback (guarded) -----------------
 echo "Test 5: resolveGithub handle-as-login fallback"
@@ -212,11 +212,11 @@ console.log("COMPAT_LOGIN=" + resolveGithub("github.com/x", { ghFn: ghFnMatch })
 console.log("COMPAT_NULL=" + resolveGithub("no github mention here", { ghFn: ghFnMatch }).login);
 EOF
 out5b="$(node "$tmpdir/resolve-fallback.mjs" 2>&1)"
-echo "$out5b" | grep -q 'ACCEPT_LOGIN=x' && r=yes || r=no; assert "resolveGithub: handle-login fallback ACCEPTS on twitter_username match" yes "$r"
-echo "$out5b" | grep -q 'REJECT_LOGIN=null' && r=yes || r=no; assert "resolveGithub: handle-login fallback REJECTS on twitter_username mismatch" yes "$r"
-echo "$out5b" | grep -q 'DIRECT_LOGIN=realone' && r=yes || r=no; assert "resolveGithub: bio github mention wins over fallback" yes "$r"
-echo "$out5b" | grep -q 'COMPAT_LOGIN=x' && r=yes || r=no; assert "resolveGithub: backward-compat 2-arg opts still extracts from bio" yes "$r"
-echo "$out5b" | grep -q 'COMPAT_NULL=null' && r=yes || r=no; assert "resolveGithub: backward-compat 2-arg opts still returns null when no mention" yes "$r"
+grep -q 'ACCEPT_LOGIN=x' <<<"$out5b" && r=yes || r=no; assert "resolveGithub: handle-login fallback ACCEPTS on twitter_username match" yes "$r"
+grep -q 'REJECT_LOGIN=null' <<<"$out5b" && r=yes || r=no; assert "resolveGithub: handle-login fallback REJECTS on twitter_username mismatch" yes "$r"
+grep -q 'DIRECT_LOGIN=realone' <<<"$out5b" && r=yes || r=no; assert "resolveGithub: bio github mention wins over fallback" yes "$r"
+grep -q 'COMPAT_LOGIN=x' <<<"$out5b" && r=yes || r=no; assert "resolveGithub: backward-compat 2-arg opts still extracts from bio" yes "$r"
+grep -q 'COMPAT_NULL=null' <<<"$out5b" && r=yes || r=no; assert "resolveGithub: backward-compat 2-arg opts still returns null when no mention" yes "$r"
 
 # -- Test 6: verifyClaims — resolved-URL repo + star capture/contradiction ----
 echo "Test 6: verifyClaims stars + resolved-URL repo"
@@ -255,11 +255,11 @@ const verified3 = verifyClaims(dossier3, { ghFn, headFn, accountSource });
 console.log("STAR_UNTIED_STATUS=" + verified3.find(c => c.kind === "stars").status);
 EOF
 out6="$(node "$tmpdir/verify-stars.mjs" 2>&1)"
-echo "$out6" | grep -q 'REPO_STATUS=verified' && r=yes || r=no; assert "verifyClaims: resolved github URL produces a verified repo claim" yes "$r"
-echo "$out6" | grep -q 'REPO_STARS=96000' && r=yes || r=no; assert "verifyClaims: verified repo captures stargazers_count onto claim.stars" yes "$r"
-echo "$out6" | grep -q 'STAR_MATCH_STATUS=verified' && r=yes || r=no; assert "verifyClaims: star claim tied to a verified repo (close match) -> verified" yes "$r"
-echo "$out6" | grep -q 'STAR_CONTRADICT_STATUS=contradicted' && r=yes || r=no; assert "verifyClaims: star claim far from verified repo count -> contradicted" yes "$r"
-echo "$out6" | grep -q 'STAR_UNTIED_STATUS=unverified' && r=yes || r=no; assert "verifyClaims: star claim with no verifiable repo -> unverified" yes "$r"
+grep -q 'REPO_STATUS=verified' <<<"$out6" && r=yes || r=no; assert "verifyClaims: resolved github URL produces a verified repo claim" yes "$r"
+grep -q 'REPO_STARS=96000' <<<"$out6" && r=yes || r=no; assert "verifyClaims: verified repo captures stargazers_count onto claim.stars" yes "$r"
+grep -q 'STAR_MATCH_STATUS=verified' <<<"$out6" && r=yes || r=no; assert "verifyClaims: star claim tied to a verified repo (close match) -> verified" yes "$r"
+grep -q 'STAR_CONTRADICT_STATUS=contradicted' <<<"$out6" && r=yes || r=no; assert "verifyClaims: star claim far from verified repo count -> contradicted" yes "$r"
+grep -q 'STAR_UNTIED_STATUS=unverified' <<<"$out6" && r=yes || r=no; assert "verifyClaims: star claim with no verifiable repo -> unverified" yes "$r"
 
 # -- Test 7: repo ownership + course HEAD status grounding --------------------
 echo "Test 7: repo null-login + course HEAD status"
@@ -295,12 +295,12 @@ for (const [name, code] of Object.entries(codes)) {
 }
 EOF
 out7="$(node "$tmpdir/verify-grounding.mjs" 2>&1)"
-echo "$out7" | grep -q 'NULL_LOGIN_REPO=unverified' && r=yes || r=no; assert "verifyClaims: repo claim with null account login -> unverified (no false ownership)" yes "$r"
-echo "$out7" | grep -q 'COURSE_OK=verified' && r=yes || r=no; assert "verifyClaims: course HEAD 2xx -> verified" yes "$r"
-echo "$out7" | grep -q 'COURSE_GONE=contradicted' && r=yes || r=no; assert "verifyClaims: course HEAD 404 -> contradicted" yes "$r"
-echo "$out7" | grep -q 'COURSE_BLOCKED=unverified' && r=yes || r=no; assert "verifyClaims: course HEAD 403 -> unverified (not false-contradicted)" yes "$r"
-echo "$out7" | grep -q 'COURSE_LIMITED=unverified' && r=yes || r=no; assert "verifyClaims: course HEAD 429 -> unverified" yes "$r"
-echo "$out7" | grep -q 'COURSE_ERR=unverified' && r=yes || r=no; assert "verifyClaims: course HEAD 500 -> unverified" yes "$r"
+grep -q 'NULL_LOGIN_REPO=unverified' <<<"$out7" && r=yes || r=no; assert "verifyClaims: repo claim with null account login -> unverified (no false ownership)" yes "$r"
+grep -q 'COURSE_OK=verified' <<<"$out7" && r=yes || r=no; assert "verifyClaims: course HEAD 2xx -> verified" yes "$r"
+grep -q 'COURSE_GONE=contradicted' <<<"$out7" && r=yes || r=no; assert "verifyClaims: course HEAD 404 -> contradicted" yes "$r"
+grep -q 'COURSE_BLOCKED=unverified' <<<"$out7" && r=yes || r=no; assert "verifyClaims: course HEAD 403 -> unverified (not false-contradicted)" yes "$r"
+grep -q 'COURSE_LIMITED=unverified' <<<"$out7" && r=yes || r=no; assert "verifyClaims: course HEAD 429 -> unverified" yes "$r"
+grep -q 'COURSE_ERR=unverified' <<<"$out7" && r=yes || r=no; assert "verifyClaims: course HEAD 500 -> unverified" yes "$r"
 
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))

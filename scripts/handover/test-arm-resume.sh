@@ -4109,7 +4109,7 @@ EOF
         SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
         bash "$ARM" --time "$(future_time)" --handover "$HO_2113C" 2>&1)
     rc=$?
-    if printf '%s' "$out" | grep -q "shipped-work-preflight="; then
+    if grep -q "shipped-work-preflight=" <<<"$out"; then
         # codex-3: deliberately not tightened to `assert_rc 0` -- this is a
         # REAL (non-dry-run) arm, so it runs the UNSTUBBED live worker census
         # (reconcile-workers.sh against this actual host's real lane workers,
@@ -4225,7 +4225,7 @@ EOF
         SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
         bash "$ARM" --time "$(future_time)" --handover "$HO_2113F" 2>&1)
     rc=$?
-    if printf '%s' "$out" | grep -q "shipped-work-preflight="; then
+    if grep -q "shipped-work-preflight=" <<<"$out"; then
         assert_rc "2113f parent-dir ticket (no frontmatter) still trips the Done refusal (rc=11)" 11 "$rc"
         assert_contains "2113f ERR names the parent-dir ticket" "HIMMEL-9004" "$out"
     else
@@ -4243,7 +4243,7 @@ EOF
         SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
         bash "$ARM" --time "$(future_time)" --handover "$HO_2113F" 2>&1)
     rc=$?
-    if printf '%s' "$out" | grep -q "arms-registry-cross-host="; then
+    if grep -q "arms-registry-cross-host=" <<<"$out"; then
         assert_not_11 "2113f ARM_SHIPPED_OK=1 overrides the parent-dir ticket-status refusal" "$rc"
     else
         echo "PASS 2113f (ARM_SHIPPED_OK case) skipped — run never reached the shipped-work decision point (blocked upstream, e.g. a live/unprobeable worker on this host, rc=$rc); host state, not a fixture bug"
@@ -4292,7 +4292,7 @@ EOF
         SCHTASKS_CMD="$ARMED_STUB/schtasks" PATH="$ARMED_STUB:$PATH" \
         bash "$ARM" --time "$(future_time)" --handover "$HO_2113G" 2>&1)
     rc=$?
-    if printf '%s' "$out" | grep -q "shipped-work-preflight="; then
+    if grep -q "shipped-work-preflight=" <<<"$out"; then
         assert_not_11 "2113g undelimited parent-dir prefix does not false-trip the preflight (rc!=11)" "$rc"
         assert_not_contains "2113g HIMMEL-9004 never gets welded out of HIMMEL-9004foo" "HIMMEL-9004 is 'Done'" "$out"
     else

@@ -116,25 +116,25 @@ CLIP="$(T='check https://example.com/p — cool' libcall "
 const {type,source}=lib.classifyMessage({text:process.env.T});
 process.stdout.write(lib.buildClip({sender:'alice',ts:'2026-05-29T10:00:00Z',msgId:'77',text:process.env.T,type,source,today:'2026-05-29'}));
 ")"
-echo "$CLIP" | grep -q '^type: article$'              && a=ok || a=no; assert "buildClip type line" ok "$a"
-echo "$CLIP" | grep -q '^telegram_msg_id: "77"$'      && a=ok || a=no; assert "buildClip msg-id provenance" ok "$a"
-echo "$CLIP" | grep -q '^telegram_sender: "alice"$'   && a=ok || a=no; assert "buildClip sender provenance" ok "$a"
-echo "$CLIP" | grep -q '^clipped_via: telegram$'      && a=ok || a=no; assert "buildClip clipped_via" ok "$a"
-echo "$CLIP" | grep -q '^source: https://example.com/p$' && a=ok || a=no; assert "buildClip source line" ok "$a"
+grep -q '^type: article$' <<<"$CLIP"              && a=ok || a=no; assert "buildClip type line" ok "$a"
+grep -q '^telegram_msg_id: "77"$' <<<"$CLIP"      && a=ok || a=no; assert "buildClip msg-id provenance" ok "$a"
+grep -q '^telegram_sender: "alice"$' <<<"$CLIP"   && a=ok || a=no; assert "buildClip sender provenance" ok "$a"
+grep -q '^clipped_via: telegram$' <<<"$CLIP"      && a=ok || a=no; assert "buildClip clipped_via" ok "$a"
+grep -q '^source: https://example.com/p$' <<<"$CLIP" && a=ok || a=no; assert "buildClip source line" ok "$a"
 # HIMMEL-769: an instagram URL must build a COMPLETE clip (not just classify) —
 # guards the frozen CLIP_TYPES regression (buildClip throws on unknown type).
 IGCLIP="$(T='https://www.instagram.com/reel/Cxyz/' libcall "
 const {type,source}=lib.classifyMessage({text:process.env.T});
 process.stdout.write(lib.buildClip({sender:'a',ts:'',msgId:'55',text:process.env.T,type,source,today:'2026-07-08'}));
 ")"
-echo "$IGCLIP" | grep -q '^type: instagram$' && a=ok || a=no; assert "buildClip instagram type line" ok "$a"
-echo "$IGCLIP" | grep -q '^source: https://www.instagram.com/reel/Cxyz/$' && a=ok || a=no; assert "buildClip instagram source line" ok "$a"
-echo "$CLIP" | grep -q '^## Source$'                  && a=ok || a=no; assert "buildClip Source section" ok "$a"
-if echo "$CLIP" | grep -q '^harvested_at:'; then a=present; else a=absent; fi
+grep -q '^type: instagram$' <<<"$IGCLIP" && a=ok || a=no; assert "buildClip instagram type line" ok "$a"
+grep -q '^source: https://www.instagram.com/reel/Cxyz/$' <<<"$IGCLIP" && a=ok || a=no; assert "buildClip instagram source line" ok "$a"
+grep -q '^## Source$' <<<"$CLIP"                  && a=ok || a=no; assert "buildClip Source section" ok "$a"
+if grep -q '^harvested_at:' <<<"$CLIP"; then a=present; else a=absent; fi
 assert "buildClip has NO harvested_at (unharvested)" absent "$a"
 # note (no url) → no source line
 NOTECLIP="$(libcall "process.stdout.write(lib.buildClip({sender:'a',ts:'',msgId:'9',text:'plain note',type:'note',source:null,today:'2026-05-29'}))")"
-if echo "$NOTECLIP" | grep -q '^source:'; then a=present; else a=absent; fi
+if grep -q '^source:' <<<"$NOTECLIP"; then a=present; else a=absent; fi
 assert "note clip omits source line" absent "$a"
 # unknown type throws
 libcall "try{lib.buildClip({sender:'a',ts:'',msgId:'1',text:'x',type:'bogus',source:null,today:'2026-05-29'});console.log('nothrow')}catch(e){console.log('threw')}" >"$tmpdir/_tc_throw" 2>&1
@@ -153,7 +153,7 @@ assert "vault without .obsidian exits 2" 2 "$?"
 # dry-run: prints, writes nothing
 out="$(node "$SCRIPT" --vault "$VAULT" --sender alice --msg-id 100 --ts 2026-05-29T10:00:00Z --text 'dry note' --dry-run 2>&1)"; rc=$?
 assert "dry-run exits 0" 0 "$rc"
-echo "$out" | grep -q 'dry-run' && a=ok || a=no; assert "dry-run announces" ok "$a"
+grep -q 'dry-run' <<<"$out" && a=ok || a=no; assert "dry-run announces" ok "$a"
 n=$(find "$VAULT/Clippings" -name '*.md' | wc -l | tr -d ' ')
 assert "dry-run wrote no file" 0 "$n"
 
@@ -168,7 +168,7 @@ grep -q '^type: research$' "$clipfile" && a=ok || a=no; assert "github clip type
 # idempotent re-run (same msg-id, different text/slug) → skip, no new file
 out="$(node "$SCRIPT" --vault "$VAULT" --sender alice --msg-id 100 --ts 2026-05-29T11:00:00Z --text 'edited text https://github.com/o/r' 2>&1)"; rc=$?
 assert "re-run exits 0" 0 "$rc"
-echo "$out" | grep -q 'already-filed' && a=ok || a=no; assert "re-run reports already-filed" ok "$a"
+grep -q 'already-filed' <<<"$out" && a=ok || a=no; assert "re-run reports already-filed" ok "$a"
 n=$(find "$VAULT/Clippings" -name 'telegram-100-*.md' | wc -l | tr -d ' ')
 assert "re-run added no duplicate" 1 "$n"
 
@@ -204,11 +204,11 @@ node "$SCRIPT" --vault "$VAULT" --sender a --msg-id 800 --text 'note in sub' >/d
 # move the just-written clip into a subdir (simulates /triage-clips promotion)
 mv "$(find "$VAULT/Clippings" -maxdepth 1 -name 'telegram-800-*.md')" "$VAULT/Clippings/sub/"
 out="$(node "$SCRIPT" --vault "$VAULT" --sender a --msg-id 800 --text 'note in sub edited' 2>&1)"
-echo "$out" | grep -q 'already-filed' && a=ok || a=no; assert "dedup finds clip in Clippings/ subdir" ok "$a"
+grep -q 'already-filed' <<<"$out" && a=ok || a=no; assert "dedup finds clip in Clippings/ subdir" ok "$a"
 # id present only in BODY must NOT false-positive (frontmatter-scoped match)
 printf -- '---\ntype: note\n---\n# x\ntelegram_msg_id: "900"\n' > "$VAULT/Clippings/decoy.md"
 out="$(node "$SCRIPT" --vault "$VAULT" --sender a --msg-id 900 --text 'real 900' 2>&1)"
-echo "$out" | grep -q '✓' && a=ok || a=no; assert "msg-id in body does NOT false-positive dedup" ok "$a"
+grep -q '✓' <<<"$out" && a=ok || a=no; assert "msg-id in body does NOT false-positive dedup" ok "$a"
 
 # -- Test 9: adversarial msg-id stays contained --------------------------
 echo "Test 9: path-safety + provenance escaping"

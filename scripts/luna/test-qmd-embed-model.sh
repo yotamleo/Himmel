@@ -44,7 +44,7 @@ cat >"$STUBS/pgrep" <<'EOF'
 #!/usr/bin/env bash
 proc="${FAKE_PROC:-}"
 if [ "${FAKE_DAEMON:-0}" = 1 ]; then proc="node /x/qmd.js mcp"; fi
-[ -n "$proc" ] && printf '%s\n' "$proc" | grep -qE -- "${!#}"
+[ -n "$proc" ] && grep -qE -- <<<"$proc" "${!#}"
 EOF
 # nvidia-smi stub: prints $FAKE_VRAM MiB, or fails when it is empty.
 cat >"$STUBS/fake-smi" <<'EOF'

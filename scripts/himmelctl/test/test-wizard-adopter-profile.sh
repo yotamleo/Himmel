@@ -2125,7 +2125,7 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
     [ "$argvProbeOut" = "true true true" ] \
       || fail "caseAS2: argv-capture stub did not read as resolved, got [$argvProbeOut]"
     capturedArgv=$(cat "$asArgv/argv-capture" 2>/dev/null || echo "")
-    printf '%s' "$capturedArgv" | grep -q -F -- "--dotenv-root" \
+    grep -q -F <<<"$capturedArgv" -- "--dotenv-root" \
       || fail "caseAS2: the probe did not pass --dotenv-root, argv was [$capturedArgv]"
     ;;
 esac

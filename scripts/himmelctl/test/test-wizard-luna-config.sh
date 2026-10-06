@@ -105,7 +105,7 @@ lc.save(d);
 const loaded = lc.load();
 console.log(JSON.stringify({ same: JSON.stringify(loaded) === JSON.stringify(d) }));
 ")
-echo "$outA" | grep -q '"same":true' || fail "caseA: save()->load() should round-trip an equivalent document (got: $outA)"
+grep -q '"same":true' <<<"$outA" || fail "caseA: save()->load() should round-trip an equivalent document (got: $outA)"
 [ -f "$cfgA" ] || fail "caseA: config.json should exist after save() (got: missing at $cfgA)"
 echo "ok: caseA save()->load() round-trips an equivalent document"
 
@@ -156,11 +156,11 @@ const hasTmp = fs.readdirSync(dir).some((f) => f.startsWith(base + '.tmp-'));
 
 console.log(JSON.stringify({ threw, originalIntact: before === after, hasBak, bakCount, hasTmp }));
 ")
-echo "$outB" | grep -q '"threw":true' || fail "caseB: interrupted save() should throw (got: $outB)"
-echo "$outB" | grep -q '"originalIntact":true' || fail "caseB: the ORIGINAL file must survive byte-identical across an interrupted save (got: $outB)"
-echo "$outB" | grep -q '"hasBak":true' || fail "caseB: a .bak must be present after an interrupted save (got: $outB)"
-echo "$outB" | grep -q '"bakCount":1' || fail "caseB: exactly ONE .bak must remain after an interrupted save (got: $outB)"
-echo "$outB" | grep -q '"hasTmp":false' || fail "caseB (HIMMEL-2176 CR fix, codex-5): a failed rename must not leave a PID-named .tmp-* file behind (got: $outB)"
+grep -q '"threw":true' <<<"$outB" || fail "caseB: interrupted save() should throw (got: $outB)"
+grep -q '"originalIntact":true' <<<"$outB" || fail "caseB: the ORIGINAL file must survive byte-identical across an interrupted save (got: $outB)"
+grep -q '"hasBak":true' <<<"$outB" || fail "caseB: a .bak must be present after an interrupted save (got: $outB)"
+grep -q '"bakCount":1' <<<"$outB" || fail "caseB: exactly ONE .bak must remain after an interrupted save (got: $outB)"
+grep -q '"hasTmp":false' <<<"$outB" || fail "caseB (HIMMEL-2176 CR fix, codex-5): a failed rename must not leave a PID-named .tmp-* file behind (got: $outB)"
 echo "ok: caseB interrupted save() leaves the original intact with a .bak present"
 
 # ── Case B2: atomic-write interruption — deterministic writeFileSync failure ─
@@ -209,11 +209,11 @@ const hasTmp = fs.readdirSync(dir).some((f) => f.startsWith(base + '.tmp-'));
 
 console.log(JSON.stringify({ threw, originalIntact: before === after, hasBak, bakCount, hasTmp }));
 ")
-echo "$outB2" | grep -q '"threw":true' || fail "caseB2: interrupted (write-failure) save() should throw (got: $outB2)"
-echo "$outB2" | grep -q '"originalIntact":true' || fail "caseB2: the ORIGINAL file must survive byte-identical across an interrupted write (got: $outB2)"
-echo "$outB2" | grep -q '"hasBak":true' || fail "caseB2: a .bak must be present after an interrupted write (got: $outB2)"
-echo "$outB2" | grep -q '"bakCount":1' || fail "caseB2: exactly ONE .bak must remain after an interrupted write (got: $outB2)"
-echo "$outB2" | grep -q '"hasTmp":false' || fail "caseB2 (HIMMEL-2176 CR round 3 fix): a failed WRITE must not leave a PID-named .tmp-* file behind (got: $outB2)"
+grep -q '"threw":true' <<<"$outB2" || fail "caseB2: interrupted (write-failure) save() should throw (got: $outB2)"
+grep -q '"originalIntact":true' <<<"$outB2" || fail "caseB2: the ORIGINAL file must survive byte-identical across an interrupted write (got: $outB2)"
+grep -q '"hasBak":true' <<<"$outB2" || fail "caseB2: a .bak must be present after an interrupted write (got: $outB2)"
+grep -q '"bakCount":1' <<<"$outB2" || fail "caseB2: exactly ONE .bak must remain after an interrupted write (got: $outB2)"
+grep -q '"hasTmp":false' <<<"$outB2" || fail "caseB2 (HIMMEL-2176 CR round 3 fix): a failed WRITE must not leave a PID-named .tmp-* file behind (got: $outB2)"
 echo "ok: caseB2 interrupted (write-failure) save() leaves the original intact with a .bak present, no leftover .tmp-*"
 
 # ── Case B3: PARTIAL write interruption — writeFileSync creates the tmp file
@@ -274,11 +274,11 @@ const hasTmp = fs.readdirSync(dir).some((f) => f.startsWith(base + '.tmp-'));
 
 console.log(JSON.stringify({ threw, originalIntact: before === after, hasBak, bakCount, hasTmp }));
 ")
-echo "$outB3" | grep -q '"threw":true' || fail "caseB3: interrupted (partial-write) save() should throw (got: $outB3)"
-echo "$outB3" | grep -q '"originalIntact":true' || fail "caseB3: the ORIGINAL file must survive byte-identical across a partial write (got: $outB3)"
-echo "$outB3" | grep -q '"hasBak":true' || fail "caseB3: a .bak must be present after a partial write (got: $outB3)"
-echo "$outB3" | grep -q '"bakCount":1' || fail "caseB3: exactly ONE .bak must remain after a partial write (got: $outB3)"
-echo "$outB3" | grep -q '"hasTmp":false' || fail "caseB3 (HIMMEL-2176 CR round 9 fix): a write that CREATES the tmp file then throws must not leak it — the old tmpIsOurs-gated cleanup missed exactly this case (got: $outB3)"
+grep -q '"threw":true' <<<"$outB3" || fail "caseB3: interrupted (partial-write) save() should throw (got: $outB3)"
+grep -q '"originalIntact":true' <<<"$outB3" || fail "caseB3: the ORIGINAL file must survive byte-identical across a partial write (got: $outB3)"
+grep -q '"hasBak":true' <<<"$outB3" || fail "caseB3: a .bak must be present after a partial write (got: $outB3)"
+grep -q '"bakCount":1' <<<"$outB3" || fail "caseB3: exactly ONE .bak must remain after a partial write (got: $outB3)"
+grep -q '"hasTmp":false' <<<"$outB3" || fail "caseB3 (HIMMEL-2176 CR round 9 fix): a write that CREATES the tmp file then throws must not leak it — the old tmpIsOurs-gated cleanup missed exactly this case (got: $outB3)"
 echo "ok: caseB3 a write that creates the tmp file and then throws (partial write) leaves the original intact, no leftover .tmp-*"
 
 # ── Case C: version:99 refusal — loud throw, no write ──────────────────────
@@ -297,8 +297,8 @@ try {
   console.log(JSON.stringify({ threw: true, message: e.message }));
 }
 ")
-echo "$outC" | grep -q '"threw":true' || fail "caseC: load() on version:99 should throw (got: $outC)"
-echo "$outC" | grep -q '99' || fail "caseC: thrown error should name the offending version (got: $outC)"
+grep -q '"threw":true' <<<"$outC" || fail "caseC: load() on version:99 should throw (got: $outC)"
+grep -q '99' <<<"$outC" || fail "caseC: thrown error should name the offending version (got: $outC)"
 after_hash=$(cksum "$cfgC")
 [ "$before_hash" = "$after_hash" ] || fail "caseC: config.json must be byte-identical after a version:99 refusal"
 echo "ok: caseC version:99 refuses loudly and writes nothing"
@@ -318,8 +318,8 @@ try {
   console.log(JSON.stringify({ threw: true, namesPath: e.message.includes(lc.configPath()) }));
 }
 ")
-echo "$outD" | grep -q '"threw":true' || fail "caseD: load() on malformed JSON should throw (got: $outD)"
-echo "$outD" | grep -q '"namesPath":true' || fail "caseD: thrown error should name the offending file path (got: $outD)"
+grep -q '"threw":true' <<<"$outD" || fail "caseD: load() on malformed JSON should throw (got: $outD)"
+grep -q '"namesPath":true' <<<"$outD" || fail "caseD: thrown error should name the offending file path (got: $outD)"
 echo "ok: caseD malformed JSON refusal names the offending file path"
 
 # ── Case E: validator — valid fixture passes, invalid fixture names field ──
@@ -339,9 +339,9 @@ console.log(JSON.stringify({
   namesField: invalidErrors.some((e) => e.includes('luna.cadence.enabled')),
 }));
 ")
-echo "$outE" | grep -q '"validCount":0' || fail "caseE: a valid fixture should validate with zero errors (got: $outE)"
-echo "$outE" | grep -q '"invalidCount":0' && fail "caseE: a deliberately-invalid fixture should produce at least one error (got: $outE)"
-echo "$outE" | grep -q '"namesField":true' || fail "caseE: the invalid-fixture error should name the offending field 'luna.cadence.enabled' (got: $outE)"
+grep -q '"validCount":0' <<<"$outE" || fail "caseE: a valid fixture should validate with zero errors (got: $outE)"
+grep -q '"invalidCount":0' <<<"$outE" && fail "caseE: a deliberately-invalid fixture should produce at least one error (got: $outE)"
+grep -q '"namesField":true' <<<"$outE" || fail "caseE: the invalid-fixture error should name the offending field 'luna.cadence.enabled' (got: $outE)"
 echo "ok: caseE validator passes a valid fixture and names the offending field on an invalid one"
 
 # ── Case F: symlink guard — a pre-existing symlink at the tmp path must NOT
@@ -397,12 +397,12 @@ if (!symlinkAvailable) {
   }));
 }
 ")
-if echo "$outF" | grep -q '"skip":true'; then
+if grep -q '"skip":true' <<<"$outF"; then
   echo "SKIP: caseF symlink guard — symlink creation unavailable on this host (got: $outF); cannot exercise the pre-existing-symlink-at-tmp-path guard"
 else
-  echo "$outF" | grep -q '"threw":true' || fail "caseF: save() must refuse to write through a pre-existing symlink at the tmp path (got: $outF)"
-  echo "$outF" | grep -q '"originalIntact":true' || fail "caseF: the ORIGINAL config must survive untouched when the tmp path is a symlink (got: $outF)"
-  echo "$outF" | grep -q '"victimUntouched":true' || fail "caseF: the symlink's target must NOT be overwritten — save() must not follow it (got: $outF)"
+  grep -q '"threw":true' <<<"$outF" || fail "caseF: save() must refuse to write through a pre-existing symlink at the tmp path (got: $outF)"
+  grep -q '"originalIntact":true' <<<"$outF" || fail "caseF: the ORIGINAL config must survive untouched when the tmp path is a symlink (got: $outF)"
+  grep -q '"victimUntouched":true' <<<"$outF" || fail "caseF: the symlink's target must NOT be overwritten — save() must not follow it (got: $outF)"
   echo "ok: caseF save() refuses a pre-existing symlink at the predictable tmp path rather than writing through it"
 fi
 
@@ -442,9 +442,9 @@ console.log(JSON.stringify({
   tmpLeftBehind: fs.existsSync(tmpPath),
 }));
 ")
-echo "$outG" | grep -q '"threw":false' || fail "caseG: a stale regular tmp file from a previous crash must NOT permanently wedge save() (got: $outG)"
-echo "$outG" | grep -q '"recoveredVaultPath":"/recovered-after-stale-tmp"' || fail "caseG: save() should succeed and the new value should land after clearing the stale tmp file (got: $outG)"
-echo "$outG" | grep -q '"tmpLeftBehind":false' || fail "caseG: the stale tmp file must not be left behind after a successful recovery save() (got: $outG)"
+grep -q '"threw":false' <<<"$outG" || fail "caseG: a stale regular tmp file from a previous crash must NOT permanently wedge save() (got: $outG)"
+grep -q '"recoveredVaultPath":"/recovered-after-stale-tmp"' <<<"$outG" || fail "caseG: save() should succeed and the new value should land after clearing the stale tmp file (got: $outG)"
+grep -q '"tmpLeftBehind":false' <<<"$outG" || fail "caseG: the stale tmp file must not be left behind after a successful recovery save() (got: $outG)"
 echo "ok: caseG a stale regular leftover at the tmp path is cleared and retried, not a permanent wedge"
 
 # ── Case H: backup-before-prune — a failed fs.copyFileSync during
@@ -501,10 +501,10 @@ console.log(JSON.stringify({
   bakCountAfter,
 }));
 ")
-echo "$outH" | grep -q '"threw":true' || fail "caseH: a failed backup copy should make save() throw (got: $outH)"
-echo "$outH" | grep -q '"originalIntact":true' || fail "caseH: the config file must be untouched when backupExisting() fails (got: $outH)"
-echo "$outH" | grep -q '"previousBakSurvived":true' || fail "caseH (HIMMEL-2176 CR round 7): a failed fs.copyFileSync during backup must NOT destroy the previous .bak (got: $outH)"
-echo "$outH" | grep -q '"bakCountAfter":1' || fail "caseH: exactly ONE .bak (the previous one) must remain after a failed backup attempt (got: $outH)"
+grep -q '"threw":true' <<<"$outH" || fail "caseH: a failed backup copy should make save() throw (got: $outH)"
+grep -q '"originalIntact":true' <<<"$outH" || fail "caseH: the config file must be untouched when backupExisting() fails (got: $outH)"
+grep -q '"previousBakSurvived":true' <<<"$outH" || fail "caseH (HIMMEL-2176 CR round 7): a failed fs.copyFileSync during backup must NOT destroy the previous .bak (got: $outH)"
+grep -q '"bakCountAfter":1' <<<"$outH" || fail "caseH: exactly ONE .bak (the previous one) must remain after a failed backup attempt (got: $outH)"
 echo "ok: caseH a failed backup copy leaves the previous .bak and the original config intact"
 
 # ── Case I: exactly ONE .bak survives a successful save (steady state) ─────
@@ -530,7 +530,7 @@ const base = path.basename(lc.configPath());
 const bakCount = fs.readdirSync(dir).filter((f) => f.startsWith(base + '.bak-')).length;
 console.log(JSON.stringify({ bakCount }));
 ")
-echo "$outI" | grep -q '"bakCount":1' || fail "caseI: exactly ONE .bak should remain after repeated successful saves (got: $outI)"
+grep -q '"bakCount":1' <<<"$outI" || fail "caseI: exactly ONE .bak should remain after repeated successful saves (got: $outI)"
 echo "ok: caseI exactly one .bak survives repeated successful saves"
 
 # ── Case J: non-object parsed JSON — null, an array, a bare scalar — must
@@ -559,9 +559,9 @@ try {
   }));
 }
 ")
-  echo "$outJ" | grep -q '"threw":true' || fail "caseJ ($shape): load() on a non-object document should throw (got: $outJ)"
-  echo "$outJ" | grep -q '"isTypeError":false' || fail "caseJ ($shape): the error must be this module's named schema error, not a raw TypeError (got: $outJ)"
-  echo "$outJ" | grep -q '"namesPath":true' || fail "caseJ ($shape): thrown error should name the offending file path (got: $outJ)"
+  grep -q '"threw":true' <<<"$outJ" || fail "caseJ ($shape): load() on a non-object document should throw (got: $outJ)"
+  grep -q '"isTypeError":false' <<<"$outJ" || fail "caseJ ($shape): the error must be this module's named schema error, not a raw TypeError (got: $outJ)"
+  grep -q '"namesPath":true' <<<"$outJ" || fail "caseJ ($shape): thrown error should name the offending file path (got: $outJ)"
 done
 echo "ok: caseJ null/array/scalar JSON documents raise the module's named schema error, not a TypeError"
 
@@ -636,12 +636,12 @@ if (!symlinkAvailable) {
   }));
 }
 ")
-if echo "$outK" | grep -q '"skip":true'; then
+if grep -q '"skip":true' <<<"$outK"; then
   echo "SKIP: caseK backup symlink guard — symlink creation unavailable on this host (got: $outK); cannot exercise the pre-existing-symlink-at-backup-path guard"
 else
-  echo "$outK" | grep -q '"threw":true' || fail "caseK: save() must refuse to back up through a pre-existing symlink at the backup path (got: $outK)"
-  echo "$outK" | grep -q '"originalIntact":true' || fail "caseK: the ORIGINAL config must survive untouched when the backup path is a symlink (got: $outK)"
-  echo "$outK" | grep -q '"victimUntouched":true' || fail "caseK: the symlink's target must NOT be overwritten — backupExisting() must not follow it (got: $outK)"
+  grep -q '"threw":true' <<<"$outK" || fail "caseK: save() must refuse to back up through a pre-existing symlink at the backup path (got: $outK)"
+  grep -q '"originalIntact":true' <<<"$outK" || fail "caseK: the ORIGINAL config must survive untouched when the backup path is a symlink (got: $outK)"
+  grep -q '"victimUntouched":true' <<<"$outK" || fail "caseK: the symlink's target must NOT be overwritten — backupExisting() must not follow it (got: $outK)"
   echo "ok: caseK save() refuses a pre-existing symlink at the predictable backup path rather than backing up through it"
 fi
 
@@ -706,9 +706,9 @@ console.log(JSON.stringify({
   refreshedToSecond: afterDoc.luna.vaultPath === '/second/vault',
 }));
 ")
-echo "$outL" | grep -q '"bakCount":1' || fail "caseL: a same-timestamp backup collision must never leave zero (or more than one) .bak file (got: $outL)"
-echo "$outL" | grep -q '"sameName":true' || fail "caseL: the collided backup keeps the same predictable name (got: $outL)"
-echo "$outL" | grep -q '"refreshedToSecond":true' || fail "caseL: a same-timestamp collision against a plain file must refresh the backup to the pre-collision snapshot, not silently keep the stale one (got: $outL)"
+grep -q '"bakCount":1' <<<"$outL" || fail "caseL: a same-timestamp backup collision must never leave zero (or more than one) .bak file (got: $outL)"
+grep -q '"sameName":true' <<<"$outL" || fail "caseL: the collided backup keeps the same predictable name (got: $outL)"
+grep -q '"refreshedToSecond":true' <<<"$outL" || fail "caseL: a same-timestamp collision against a plain file must refresh the backup to the pre-collision snapshot, not silently keep the stale one (got: $outL)"
 echo "ok: caseL a same-timestamp backup collision refreshes the single .bak rather than erroring or leaving zero backups"
 
 # ── Case M: same-timestamp collision whose REPLACEMENT copy fails —
@@ -794,10 +794,10 @@ console.log(JSON.stringify({
   previousBakSurvived: bakContentBefore === bakContentAfter,
 }));
 ")
-echo "$outM" | grep -q '"threw":true' || fail "caseM: a failed collision-retry copy should make save() throw (got: $outM)"
-echo "$outM" | grep -q '"originalIntact":true' || fail "caseM: the config file must be untouched when the collision-retry copy fails (got: $outM)"
-echo "$outM" | grep -q '"bakCountAfter":1' || fail "caseM (HIMMEL-2176 CR round 12): a failed collision-retry copy must NEVER leave zero backups (got: $outM)"
-echo "$outM" | grep -q '"previousBakSurvived":true' || fail "caseM: the pre-collision backup must survive a failed collision-retry copy untouched (got: $outM)"
+grep -q '"threw":true' <<<"$outM" || fail "caseM: a failed collision-retry copy should make save() throw (got: $outM)"
+grep -q '"originalIntact":true' <<<"$outM" || fail "caseM: the config file must be untouched when the collision-retry copy fails (got: $outM)"
+grep -q '"bakCountAfter":1' <<<"$outM" || fail "caseM (HIMMEL-2176 CR round 12): a failed collision-retry copy must NEVER leave zero backups (got: $outM)"
+grep -q '"previousBakSurvived":true' <<<"$outM" || fail "caseM: the pre-collision backup must survive a failed collision-retry copy untouched (got: $outM)"
 echo "ok: caseM a same-timestamp collision whose replacement copy fails leaves the pre-collision backup intact, never zero"
 
 # ── Case N: staged-rename failure — deterministic renameSync failure during
@@ -880,11 +880,11 @@ console.log(JSON.stringify({
   previousBakSurvived: bakContentBefore === bakContentAfter,
 }));
 ")
-echo "$outN" | grep -q '"threw":true' || fail "caseN: a failed staged rename should make save() throw (got: $outN)"
-echo "$outN" | grep -q '"originalIntact":true' || fail "caseN: the config file must be untouched when the staged rename fails (got: $outN)"
-echo "$outN" | grep -q '"stageFilesLeft":0' || fail "caseN (HIMMEL-2176, retask stage1-build-6d2e): a failed staged rename must not leave a .stage-* file behind (got: $outN)"
-echo "$outN" | grep -q '"bakCountAfter":1' || fail "caseN: exactly ONE .bak must remain after a failed staged rename (got: $outN)"
-echo "$outN" | grep -q '"previousBakSurvived":true' || fail "caseN: the pre-collision backup must survive a failed staged rename untouched (got: $outN)"
+grep -q '"threw":true' <<<"$outN" || fail "caseN: a failed staged rename should make save() throw (got: $outN)"
+grep -q '"originalIntact":true' <<<"$outN" || fail "caseN: the config file must be untouched when the staged rename fails (got: $outN)"
+grep -q '"stageFilesLeft":0' <<<"$outN" || fail "caseN (HIMMEL-2176, retask stage1-build-6d2e): a failed staged rename must not leave a .stage-* file behind (got: $outN)"
+grep -q '"bakCountAfter":1' <<<"$outN" || fail "caseN: exactly ONE .bak must remain after a failed staged rename (got: $outN)"
+grep -q '"previousBakSurvived":true' <<<"$outN" || fail "caseN: the pre-collision backup must survive a failed staged rename untouched (got: $outN)"
 echo "ok: caseN a failed staged-rename during backup collision cleanup leaves no .stage-* artifact and the pre-existing backup intact"
 
 echo "PASS"

@@ -152,24 +152,24 @@ const keyCJK = componentKey({ type: "skill", name: "分析" });
 console.log("KEY_DISTINCT=" + (keySpecial !== keyCJK));
 EOF
 out="$(node "$tmpdir/extract-test.mjs" 2>&1)"
-echo "$out" | grep -q 'SKILL_NAME=Foo Bar'        && r=yes || r=no; assert "skill name from frontmatter" yes "$r"
-echo "$out" | grep -q 'SKILL_DESC=Does the foo.'  && r=yes || r=no; assert "skill description from frontmatter" yes "$r"
-echo "$out" | grep -q 'CMD_NAME=deploy'           && r=yes || r=no; assert "command name basename fallback" yes "$r"
-echo "$out" | grep -q 'MAN_NAME=my-plugin'        && r=yes || r=no; assert "manifest name from JSON" yes "$r"
-echo "$out" | grep -q 'MAN_DESC=A plugin.'        && r=yes || r=no; assert "manifest desc from JSON" yes "$r"
-echo "$out" | grep -q 'BAD_NAME=marketplace'      && r=yes || r=no; assert "malformed JSON -> basename, no throw" yes "$r"
-echo "$out" | grep -q 'BAD_DESC=\[\]'             && r=yes || r=no; assert "malformed JSON -> empty desc" yes "$r"
-echo "$out" | grep -q 'TOOL_NAME=run.mjs'         && r=yes || r=no; assert "tool name = basename" yes "$r"
-echo "$out" | grep -q 'TOOL_DESC=run.mjs — does the thing.' && r=yes || r=no; assert "tool desc = first doc line" yes "$r"
-echo "$out" | grep -q 'KEY=skill:foo-bar'         && r=yes || r=no; assert "componentKey = type:slug" yes "$r"
-echo "$out" | grep -q 'SLUG=foo-bar'              && r=yes || r=no; assert "componentSlug normalises" yes "$r"
-echo "$out" | grep -q 'TRICKY_NAME=Foo'           && r=yes || r=no; assert "I-1: tricky frontmatter name parsed" yes "$r"
-echo "$out" | grep -q 'TRICKY_DESC=has --- dashes' && r=yes || r=no; assert "I-1: tricky frontmatter desc not truncated by inner ---" yes "$r"
-echo "$out" | grep -q 'SLUG_NONEMPTY=true'        && r=yes || r=no; assert "I-2: empty-slug fallback is non-empty" yes "$r"
-echo "$out" | grep -q 'SLUG_FSAFE=true'           && r=yes || r=no; assert "I-2: empty-slug fallback is filesystem-safe" yes "$r"
-echo "$out" | grep -q 'SLUG_DISTINCT=true'        && r=yes || r=no; assert "I-2: distinct special/CJK names -> distinct slugs" yes "$r"
-echo "$out" | grep -q 'SLUG_STABLE=true'          && r=yes || r=no; assert "I-2: identical name -> identical slug (dedup)" yes "$r"
-echo "$out" | grep -q 'KEY_DISTINCT=true'         && r=yes || r=no; assert "I-2: distinct empty-slug names -> distinct componentKeys" yes "$r"
+grep -q 'SKILL_NAME=Foo Bar' <<<"$out"        && r=yes || r=no; assert "skill name from frontmatter" yes "$r"
+grep -q 'SKILL_DESC=Does the foo.' <<<"$out"  && r=yes || r=no; assert "skill description from frontmatter" yes "$r"
+grep -q 'CMD_NAME=deploy' <<<"$out"           && r=yes || r=no; assert "command name basename fallback" yes "$r"
+grep -q 'MAN_NAME=my-plugin' <<<"$out"        && r=yes || r=no; assert "manifest name from JSON" yes "$r"
+grep -q 'MAN_DESC=A plugin.' <<<"$out"        && r=yes || r=no; assert "manifest desc from JSON" yes "$r"
+grep -q 'BAD_NAME=marketplace' <<<"$out"      && r=yes || r=no; assert "malformed JSON -> basename, no throw" yes "$r"
+grep -q 'BAD_DESC=\[\]' <<<"$out"             && r=yes || r=no; assert "malformed JSON -> empty desc" yes "$r"
+grep -q 'TOOL_NAME=run.mjs' <<<"$out"         && r=yes || r=no; assert "tool name = basename" yes "$r"
+grep -q 'TOOL_DESC=run.mjs — does the thing.' <<<"$out" && r=yes || r=no; assert "tool desc = first doc line" yes "$r"
+grep -q 'KEY=skill:foo-bar' <<<"$out"         && r=yes || r=no; assert "componentKey = type:slug" yes "$r"
+grep -q 'SLUG=foo-bar' <<<"$out"              && r=yes || r=no; assert "componentSlug normalises" yes "$r"
+grep -q 'TRICKY_NAME=Foo' <<<"$out"           && r=yes || r=no; assert "I-1: tricky frontmatter name parsed" yes "$r"
+grep -q 'TRICKY_DESC=has --- dashes' <<<"$out" && r=yes || r=no; assert "I-1: tricky frontmatter desc not truncated by inner ---" yes "$r"
+grep -q 'SLUG_NONEMPTY=true' <<<"$out"        && r=yes || r=no; assert "I-2: empty-slug fallback is non-empty" yes "$r"
+grep -q 'SLUG_FSAFE=true' <<<"$out"           && r=yes || r=no; assert "I-2: empty-slug fallback is filesystem-safe" yes "$r"
+grep -q 'SLUG_DISTINCT=true' <<<"$out"        && r=yes || r=no; assert "I-2: distinct special/CJK names -> distinct slugs" yes "$r"
+grep -q 'SLUG_STABLE=true' <<<"$out"          && r=yes || r=no; assert "I-2: identical name -> identical slug (dedup)" yes "$r"
+grep -q 'KEY_DISTINCT=true' <<<"$out"         && r=yes || r=no; assert "I-2: distinct empty-slug names -> distinct componentKeys" yes "$r"
 
 # -- Test 3c: selectComponentPaths (filter + cap + tail-skip) -------------
 echo "Test 3c: selectComponentPaths"
@@ -193,10 +193,10 @@ console.log("ALL=" + all.selected.length);
 console.log("ALL_SKIPPED=" + all.skipped);
 EOF
 out="$(node "$tmpdir/select-test.mjs" 2>&1)"
-echo "$out" | grep -q 'SELECTED=3'    && r=yes || r=no; assert "select respects maxComponents cap" yes "$r"
-echo "$out" | grep -q 'SKIPPED=2'     && r=yes || r=no; assert "select tail-skips beyond cap" yes "$r"
-echo "$out" | grep -q 'ALL=5'         && r=yes || r=no; assert "select finds 5 components (node_modules excluded)" yes "$r"
-echo "$out" | grep -q 'ALL_SKIPPED=0' && r=yes || r=no; assert "select no skip when under cap" yes "$r"
+grep -q 'SELECTED=3' <<<"$out"    && r=yes || r=no; assert "select respects maxComponents cap" yes "$r"
+grep -q 'SKIPPED=2' <<<"$out"     && r=yes || r=no; assert "select tail-skips beyond cap" yes "$r"
+grep -q 'ALL=5' <<<"$out"         && r=yes || r=no; assert "select finds 5 components (node_modules excluded)" yes "$r"
+grep -q 'ALL_SKIPPED=0' <<<"$out" && r=yes || r=no; assert "select no skip when under cap" yes "$r"
 
 # -- Test 4: upsertComponentNote — create, dedup seen_in, idempotent ------
 echo "Test 4: upsertComponentNote"
@@ -216,9 +216,9 @@ EOF
 out="$(node "$tmpdir/upsert-test.mjs" 2>&1)"
 note="$vault/30-Resources/Components/skill/foo-bar.md"
 [ -f "$note" ] && r=yes || r=no;                                   assert "4: note created at type/slug path" yes "$r"
-echo "$out" | grep -q 'R1=true'  && r=yes || r=no;                 assert "4: first upsert writes" yes "$r"
-echo "$out" | grep -q 'R2=false' && r=yes || r=no;                 assert "4: re-upsert same repo idempotent" yes "$r"
-echo "$out" | grep -q 'R3=true'  && r=yes || r=no;                 assert "4: new repo updates seen_in" yes "$r"
+grep -q 'R1=true' <<<"$out"  && r=yes || r=no;                 assert "4: first upsert writes" yes "$r"
+grep -q 'R2=false' <<<"$out" && r=yes || r=no;                 assert "4: re-upsert same repo idempotent" yes "$r"
+grep -q 'R3=true' <<<"$out"  && r=yes || r=no;                 assert "4: new repo updates seen_in" yes "$r"
 grep -q 'alice/repo1' "$note" && grep -q 'bob/repo2' "$note" && r=yes || r=no; assert "4: seen_in lists both repos" yes "$r"
 seen_count=$(grep -cE '^\s+- ' "$note"); [ "$seen_count" -ge 2 ] && r=yes || r=no; assert "4: seen_in has >=2 entries" yes "$r"
 
@@ -252,11 +252,11 @@ const r2 = await upsertComponentNote(recB, opts); console.log("E_R2=" + r2.chang
 EOF
 oute="$(node "$tmpdir/escalate-test.mjs" 2>&1)"
 note4c="$vault4c/30-Resources/Components/tool/tools-risky-mjs.md"
-echo "$oute" | grep -q 'UNIT1=community-thin' && r=yes || r=no; assert "4c: escalateTrustTier(known-author,community-thin)=community-thin" yes "$r"
-echo "$oute" | grep -q 'UNIT2=unknown-risk'   && r=yes || r=no; assert "4c: escalateTrustTier(anything,unknown-risk)=unknown-risk" yes "$r"
-echo "$oute" | grep -q 'ORDER_INDEP=true'     && r=yes || r=no; assert "4c: escalateTrustTier order-independent" yes "$r"
-echo "$oute" | grep -q 'TIEBREAK=unknown-risk' && r=yes || r=no; assert "4c: rank-tie prefers recognised label (garbage,unknown-risk)" yes "$r"
-echo "$oute" | grep -q 'E_R2=true'            && r=yes || r=no; assert "4c: escalating upsert reports changed" yes "$r"
+grep -q 'UNIT1=community-thin' <<<"$oute" && r=yes || r=no; assert "4c: escalateTrustTier(known-author,community-thin)=community-thin" yes "$r"
+grep -q 'UNIT2=unknown-risk' <<<"$oute"   && r=yes || r=no; assert "4c: escalateTrustTier(anything,unknown-risk)=unknown-risk" yes "$r"
+grep -q 'ORDER_INDEP=true' <<<"$oute"     && r=yes || r=no; assert "4c: escalateTrustTier order-independent" yes "$r"
+grep -q 'TIEBREAK=unknown-risk' <<<"$oute" && r=yes || r=no; assert "4c: rank-tie prefers recognised label (garbage,unknown-risk)" yes "$r"
+grep -q 'E_R2=true' <<<"$oute"            && r=yes || r=no; assert "4c: escalating upsert reports changed" yes "$r"
 grep -qE '^trust_tier: "unknown-risk"$' "$note4c"   && r=yes || r=no; assert "4c: trust_tier escalated to unknown-risk via flag (quoted)" yes "$r"
 grep -qE '^safety_flag: "red-team\+agent"$' "$note4c" && r=yes || r=no; assert "4c: safety_flag inherited from later flagged repo (quoted)" yes "$r"
 grep -q 'alice/safe' "$note4c" && grep -q 'bob/sketchy' "$note4c" && r=yes || r=no; assert "4c: seen_in lists both repos" yes "$r"
@@ -350,12 +350,12 @@ console.log("NEG_MSG_HAS_REVERTED=" + negResult.message.includes("reverted"));
 console.log("NEG_FILE_UNCHANGED=" + (negAfter === badContent));
 EOF
 out4b="$(node "$tmpdir/revert-test.mjs" 2>&1)"
-echo "$out4b" | grep -q 'POS_OK=true'              && r=yes || r=no; assert "4b: positive control upsert ok" yes "$r"
-echo "$out4b" | grep -q 'POS_CHANGED=true'          && r=yes || r=no; assert "4b: positive control changed=true" yes "$r"
-echo "$out4b" | grep -q 'POS_HAS_NEW=true'          && r=yes || r=no; assert "4b: positive control new repo in file after valid-YAML write" yes "$r"
-echo "$out4b" | grep -q 'NEG_OK=false'              && r=yes || r=no; assert "4b: malformed frontmatter returns ok:false" yes "$r"
-echo "$out4b" | grep -q 'NEG_MSG_HAS_REVERTED=true' && r=yes || r=no; assert "4b: revert message contains 'reverted'" yes "$r"
-echo "$out4b" | grep -q 'NEG_FILE_UNCHANGED=true'   && r=yes || r=no; assert "4b: file byte-identical after revert" yes "$r"
+grep -q 'POS_OK=true' <<<"$out4b"              && r=yes || r=no; assert "4b: positive control upsert ok" yes "$r"
+grep -q 'POS_CHANGED=true' <<<"$out4b"          && r=yes || r=no; assert "4b: positive control changed=true" yes "$r"
+grep -q 'POS_HAS_NEW=true' <<<"$out4b"          && r=yes || r=no; assert "4b: positive control new repo in file after valid-YAML write" yes "$r"
+grep -q 'NEG_OK=false' <<<"$out4b"              && r=yes || r=no; assert "4b: malformed frontmatter returns ok:false" yes "$r"
+grep -q 'NEG_MSG_HAS_REVERTED=true' <<<"$out4b" && r=yes || r=no; assert "4b: revert message contains 'reverted'" yes "$r"
+grep -q 'NEG_FILE_UNCHANGED=true' <<<"$out4b"   && r=yes || r=no; assert "4b: file byte-identical after revert" yes "$r"
 
 # -- Test 5: path-safety — reject componentsDir escaping the vault --------
 echo "Test 5: path-safety invariant"
@@ -369,7 +369,7 @@ try {
 } catch (e) { console.log("ESCAPE=blocked:" + e.message.slice(0,20)); }
 EOF
 out="$(node "$tmpdir/escape-test.mjs" 2>&1)"
-echo "$out" | grep -q 'ESCAPE=blocked' && r=yes || r=no; assert "5: componentsDir traversal blocked" yes "$r"
+grep -q 'ESCAPE=blocked' <<<"$out" && r=yes || r=no; assert "5: componentsDir traversal blocked" yes "$r"
 
 # -- Test 5b: --dry-run never touches disk --------------------------------
 # Uses os.tmpdir() for the vault (native path) — bash mktemp yields POSIX
@@ -404,10 +404,10 @@ console.log("DRY_UPDATE_CHANGED=" + r2.changed);
 console.log("DRY_UPDATE_BYTES_SAME=" + (after === before));
 EOF
 out5b="$(node "$tmpdir/dryrun-test.mjs" 2>&1)"
-echo "$out5b" | grep -q 'DRY_CREATE_CHANGED=true'    && r=yes || r=no; assert "5b: dry-run create reports changed" yes "$r"
-echo "$out5b" | grep -q 'DRY_CREATE_NOFILE=true'     && r=yes || r=no; assert "5b: dry-run create writes no file" yes "$r"
-echo "$out5b" | grep -q 'DRY_UPDATE_CHANGED=true'    && r=yes || r=no; assert "5b: dry-run escalating update reports changed" yes "$r"
-echo "$out5b" | grep -q 'DRY_UPDATE_BYTES_SAME=true' && r=yes || r=no; assert "5b: dry-run update leaves on-disk bytes unchanged" yes "$r"
+grep -q 'DRY_CREATE_CHANGED=true' <<<"$out5b"    && r=yes || r=no; assert "5b: dry-run create reports changed" yes "$r"
+grep -q 'DRY_CREATE_NOFILE=true' <<<"$out5b"     && r=yes || r=no; assert "5b: dry-run create writes no file" yes "$r"
+grep -q 'DRY_UPDATE_CHANGED=true' <<<"$out5b"    && r=yes || r=no; assert "5b: dry-run escalating update reports changed" yes "$r"
+grep -q 'DRY_UPDATE_BYTES_SAME=true' <<<"$out5b" && r=yes || r=no; assert "5b: dry-run update leaves on-disk bytes unchanged" yes "$r"
 
 # -- Test 5c: CR-1 YAML-escape on create (backslashes) --------------------
 # js-yaml resolves relative to the tools/ dir, so import it by absolute URL.
@@ -440,9 +440,9 @@ console.log("CR1_DESC_ROUNDTRIP=" + (parsed && parsed.description === desc));
 console.log("CR1_ERR=" + err);
 EOF
 out5c="$(node "$tmpdir/yamlesc-test.mjs" 2>&1)"
-echo "$out5c" | grep -q 'CR1_OK=true'             && r=yes || r=no; assert "5c: create with backslash desc returns ok" yes "$r"
-echo "$out5c" | grep -q 'CR1_YAML_VALID=true'     && r=yes || r=no; assert "5c: created note frontmatter parses as valid YAML" yes "$r"
-echo "$out5c" | grep -q 'CR1_DESC_ROUNDTRIP=true' && r=yes || r=no; assert "5c: backslash description round-trips through YAML" yes "$r"
+grep -q 'CR1_OK=true' <<<"$out5c"             && r=yes || r=no; assert "5c: create with backslash desc returns ok" yes "$r"
+grep -q 'CR1_YAML_VALID=true' <<<"$out5c"     && r=yes || r=no; assert "5c: created note frontmatter parses as valid YAML" yes "$r"
+grep -q 'CR1_DESC_ROUNDTRIP=true' <<<"$out5c" && r=yes || r=no; assert "5c: backslash description round-trips through YAML" yes "$r"
 
 # -- Test 6: SKILL.md documents --deep + Phase 3.5 + Components dest -------
 echo "Test 6: SKILL --deep wiring"
@@ -497,17 +497,17 @@ const BS = String.fromCharCode(92);
 console.log("NORM=" + normalizeComponentPath("." + "/tools" + BS + "a//x.mjs"));
 EOF
 out7="$(node "$tmpdir/luna6163-test.mjs" 2>&1)"
-echo "$out7" | grep -q 'TOOL_KEYS_DISTINCT=true'  && r=yes || r=no; assert "7a: LUNA-61 sibling-dir tools get distinct keys" yes "$r"
-echo "$out7" | grep -q 'TOOL_KEY_STABLE=true'     && r=yes || r=no; assert "7a: LUNA-61 tool key stable under ./ spelling" yes "$r"
-echo "$out7" | grep -q 'SKILL_KEYS_MERGE=true'    && r=yes || r=no; assert "7a: LUNA-61 skills still dedup by name across paths" yes "$r"
-echo "$out7" | grep -q 'TRUNC_DISTINCT=true'      && r=yes || r=no; assert "7a: LUNA-61 long-name truncation collision avoided" yes "$r"
-echo "$out7" | grep -q 'TRUNC_BOUNDED=true'       && r=yes || r=no; assert "7a: LUNA-61 truncated slug <= 60 chars" yes "$r"
-echo "$out7" | grep -q 'TRUNC_STABLE=true'        && r=yes || r=no; assert "7a: LUNA-61 truncated slug stable (dedup)" yes "$r"
-echo "$out7" | grep -q 'TYPES_FROZEN=true'        && r=yes || r=no; assert "7a: LUNA-62 COMPONENT_TYPES is frozen" yes "$r"
-echo "$out7" | grep -q 'TYPES_SET=skill,command,agent,plugin-manifest,tool' && r=yes || r=no; assert "7a: LUNA-62 COMPONENT_TYPES complete" yes "$r"
-echo "$out7" | grep -q 'UNKNOWN_TYPE_THROWS=true' && r=yes || r=no; assert "7a: LUNA-62 extractComponent throws on unknown type" yes "$r"
-echo "$out7" | grep -q 'DESC_BOUNDED=true'        && r=yes || r=no; assert "7a: LUNA-63 description bounded to 500 chars" yes "$r"
-echo "$out7" | grep -q 'NORM=tools/a/x.mjs'       && r=yes || r=no; assert "7a: LUNA-63 normalizeComponentPath canonicalises" yes "$r"
+grep -q 'TOOL_KEYS_DISTINCT=true' <<<"$out7"  && r=yes || r=no; assert "7a: LUNA-61 sibling-dir tools get distinct keys" yes "$r"
+grep -q 'TOOL_KEY_STABLE=true' <<<"$out7"     && r=yes || r=no; assert "7a: LUNA-61 tool key stable under ./ spelling" yes "$r"
+grep -q 'SKILL_KEYS_MERGE=true' <<<"$out7"    && r=yes || r=no; assert "7a: LUNA-61 skills still dedup by name across paths" yes "$r"
+grep -q 'TRUNC_DISTINCT=true' <<<"$out7"      && r=yes || r=no; assert "7a: LUNA-61 long-name truncation collision avoided" yes "$r"
+grep -q 'TRUNC_BOUNDED=true' <<<"$out7"       && r=yes || r=no; assert "7a: LUNA-61 truncated slug <= 60 chars" yes "$r"
+grep -q 'TRUNC_STABLE=true' <<<"$out7"        && r=yes || r=no; assert "7a: LUNA-61 truncated slug stable (dedup)" yes "$r"
+grep -q 'TYPES_FROZEN=true' <<<"$out7"        && r=yes || r=no; assert "7a: LUNA-62 COMPONENT_TYPES is frozen" yes "$r"
+grep -q 'TYPES_SET=skill,command,agent,plugin-manifest,tool' <<<"$out7" && r=yes || r=no; assert "7a: LUNA-62 COMPONENT_TYPES complete" yes "$r"
+grep -q 'UNKNOWN_TYPE_THROWS=true' <<<"$out7" && r=yes || r=no; assert "7a: LUNA-62 extractComponent throws on unknown type" yes "$r"
+grep -q 'DESC_BOUNDED=true' <<<"$out7"        && r=yes || r=no; assert "7a: LUNA-63 description bounded to 500 chars" yes "$r"
+grep -q 'NORM=tools/a/x.mjs' <<<"$out7"       && r=yes || r=no; assert "7a: LUNA-63 normalizeComponentPath canonicalises" yes "$r"
 
 echo "Test 7b: seen_in path normalize + trust_tier parse-back (upsert)"
 cat >"$tmpdir/luna63-upsert-test.mjs" <<EOF
@@ -552,11 +552,11 @@ console.log("PARSEBACK_CHANGED=" + r.changed);
 console.log("PARSEBACK_NORMALISED=" + /^trust_tier: "unknown-risk"$/m.test(after));
 EOF
 out7b="$(node "$tmpdir/luna63-upsert-test.mjs" 2>&1)"
-echo "$out7b" | grep -q 'SEEN_NORMALISED=true'     && r=yes || r=no; assert "7b: LUNA-63 seen_in path normalised (no ./ prefix)" yes "$r"
-echo "$out7b" | grep -q 'CREATE_TIER_QUOTED=true'  && r=yes || r=no; assert "7b: LUNA-63 create path quotes trust_tier (symmetry)" yes "$r"
-echo "$out7b" | grep -q 'SIBLING_TWO_FILES=true'   && r=yes || r=no; assert "7b: LUNA-61 sibling-dir tools land in two distinct notes" yes "$r"
-echo "$out7b" | grep -q 'PARSEBACK_CHANGED=true'   && r=yes || r=no; assert "7b: LUNA-63 non-canonical on-disk tier triggers rewrite" yes "$r"
-echo "$out7b" | grep -q 'PARSEBACK_NORMALISED=true' && r=yes || r=no; assert "7b: LUNA-63 parsed-back garbage tier normalised to unknown-risk" yes "$r"
+grep -q 'SEEN_NORMALISED=true' <<<"$out7b"     && r=yes || r=no; assert "7b: LUNA-63 seen_in path normalised (no ./ prefix)" yes "$r"
+grep -q 'CREATE_TIER_QUOTED=true' <<<"$out7b"  && r=yes || r=no; assert "7b: LUNA-63 create path quotes trust_tier (symmetry)" yes "$r"
+grep -q 'SIBLING_TWO_FILES=true' <<<"$out7b"   && r=yes || r=no; assert "7b: LUNA-61 sibling-dir tools land in two distinct notes" yes "$r"
+grep -q 'PARSEBACK_CHANGED=true' <<<"$out7b"   && r=yes || r=no; assert "7b: LUNA-63 non-canonical on-disk tier triggers rewrite" yes "$r"
+grep -q 'PARSEBACK_NORMALISED=true' <<<"$out7b" && r=yes || r=no; assert "7b: LUNA-63 parsed-back garbage tier normalised to unknown-risk" yes "$r"
 
 # -- Results summary -------------------------------------------------------
 total=$((pass + fail))

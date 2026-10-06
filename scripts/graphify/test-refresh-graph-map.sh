@@ -197,7 +197,7 @@ rm -f "$T1C_MAPS/t1c-map.md"
 out=$( GRAPHIFY_MAP_BIN="$T1C_BIN/graphify" bash "$SCRIPT" --name t1c --corpus-root "$T1C_CORPUS" \
   --maps-dir "$T1C_MAPS" --title T1C --slug t1c-map --no-update 2>&1 ); rc=$?
 [ "$rc" -eq 0 ] || fail "T1d no-update run exit 0 (got $rc): $out"
-echo "$out" | grep -q "^harden-graph:" && fail "T1d --no-update must not invoke harden-graph.py" || pass "T1d --no-update skips harden-graph.py"
+grep -q "^harden-graph:" <<<"$out" && fail "T1d --no-update must not invoke harden-graph.py" || pass "T1d --no-update skips harden-graph.py"
 
 # --- T2: --no-update publishes from an existing repo-local report without re-extracting ---
 printf 'SENTINEL-EXISTING' > "$CORPUS/graphify-out/graph.json"   # must NOT be overwritten under --no-update
@@ -412,7 +412,7 @@ out=$( PATH="$HPATH" GRAPHIFY_MAP_BIN="$PBIN/graphify" \
   bash "$SCRIPT" --name hpy --corpus-root "$PCORPUS" --backend claude-cli \
   --maps-dir "$PMAPS" --title "H Map" --slug h-map --corpus-tag h 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T6f python3-less box exits 2" || fail "T6f python3-less box should exit 2 (got $rc): $out"
-echo "$out" | grep -q "python3" && pass "T6f stderr mentions python3" || fail "T6f stderr should mention python3: $out"
+grep -q "python3" <<<"$out" && pass "T6f stderr mentions python3" || fail "T6f stderr should mention python3: $out"
 grep -q "SENTINEL-PRE-PYTHON" "$PCORPUS/graphify-out/graph.json" 2>/dev/null \
   && pass "T6f sentinel graph.json unchanged (no promotion before python3 check)" \
   || fail "T6f sentinel graph.json clobbered (promoted before the python3 check)"
@@ -494,7 +494,7 @@ printf '# WIP\nuncommitted untracked work\n' > "$UCORPUS/wip.md"
 out=$( bash "$SCRIPT" --name upd --corpus-root "$UCORPUS" --backend claude-cli \
   --maps-dir "$UMAPS" --title "U Map" --slug u-map --corpus-tag u 2>&1 ); rc=$?
 [ "$rc" -eq 0 ] || fail "T7 run exit 0 (got $rc): $out"
-echo "$out" | grep -q "not a clean git toplevel" \
+grep -q "not a clean git toplevel" <<<"$out" \
   && pass "T7 untracked work seen despite showUntrackedFiles=no (pull skipped)" \
   || fail "T7 probe was fooled by showUntrackedFiles=no (would pull over untracked work): $out"
 grep -q "uncommitted untracked work" "$UCORPUS/wip.md" 2>/dev/null \
@@ -507,7 +507,7 @@ git_corpus "$CCORPUS"
 out=$( bash "$SCRIPT" --name cln --corpus-root "$CCORPUS" --backend claude-cli \
   --maps-dir "$CMAPS" --title "C Map" --slug c-map --corpus-tag c 2>&1 ); rc=$?
 [ "$rc" -eq 0 ] || fail "T7b run exit 0 (got $rc): $out"
-echo "$out" | grep -q "not a clean git toplevel" \
+grep -q "not a clean git toplevel" <<<"$out" \
   && fail "T7b a clean repo was judged unpullable (probe over-tightened): $out" \
   || pass "T7b clean repo still judged pullable"
 
@@ -688,9 +688,9 @@ out=$( GRAPHIFY_MAP_BIN="$GUARDBIN/graphify" PATH="$GUARDBIN:$PATH" \
   bash "$SCRIPT" --name guardtest --corpus-root "$GUARDCORPUS" --backend claude-cli \
   --maps-dir "$GUARDMAPS" --title "Guard Map" --slug guard-map --corpus-tag guard 2>&1 ); rc=$?
 [ "$rc" -ne 0 ] && pass "T11 host-path-on-body-line refresh fails loudly (rc=$rc)" || fail "T11 leaking refresh should fail loudly (got rc=$rc): $out"
-echo "$out" | grep -q "GRAPH_REPORT.md" \
+grep -q "GRAPH_REPORT.md" <<<"$out" \
   && pass "T11 error names the offending file" || fail "T11 error should name the offending file: $out"
-echo "$out" | grep -q "shouldnotleak" \
+grep -q "shouldnotleak" <<<"$out" \
   && fail "T11 error output exposes the rejected host path: $out" \
   || pass "T11 error output redacts the rejected host path"
 GUARDOUT="$GUARDCORPUS/graphify-out"
@@ -780,7 +780,7 @@ out=$( GRAPHIFY_MAP_BIN="$JSONBIN/graphify" PATH="$JSONBIN:$PATH" \
   --maps-dir "$JSONMAPS" --title "Json Map" --slug json-map --corpus-tag jsontest 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T13 JSON-escaped host path in graph.json fails loudly (rc=2)" \
   || fail "T13 JSON-escaped host path in graph.json should fail loudly with rc=2 (got $rc): $out"
-echo "$out" | grep -q "graph.json" \
+grep -q "graph.json" <<<"$out" \
   && pass "T13 error names graph.json as the offending artifact" || fail "T13 error should name graph.json: $out"
 
 # --- T14 (HIMMEL-1134 CR follow-up, Part 3): the bare `AppData` alternative
@@ -923,7 +923,7 @@ out=$( GRAPHIFY_MAP_BIN="$SCANBIN/graphify" PATH="$SCANFAILBIN:$PATH" \
   --maps-dir "$SCANMAPS" --title "Scan Map" --slug scan-map --corpus-tag scan 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T15 grep scan error fails CLOSED (rc=2), not silently clean" \
   || fail "T15 a grep scan error should fail closed with rc=2 (got $rc) -- guard failed OPEN on scan error: $out"
-echo "$out" | grep -q "SCAN FAILED" \
+grep -q "SCAN FAILED" <<<"$out" \
   && pass "T15 error names the scan failure explicitly" || fail "T15 error should mention SCAN FAILED: $out"
 
 # --- T16 (HIMMEL-1134 CR follow-up round 4): the header-sanitize's
@@ -971,7 +971,7 @@ out=$( GRAPHIFY_MAP_BIN="$AWKBIN/graphify" PATH="$AWKFAILBIN:$PATH" \
   --maps-dir "$AWKMAPS" --title "Awk Map" --slug awk-map --corpus-tag awk 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T16 awk sanitize failure fails loudly (rc=2), not silently" \
   || fail "T16 an awk failure during sanitize should fail loudly with rc=2 (got $rc): $out"
-echo "$out" | grep -q "sanitize report header" \
+grep -q "sanitize report header" <<<"$out" \
   && pass "T16 error names the sanitize failure explicitly" || fail "T16 error should mention the sanitize failure: $out"
 [ -e "$AWKCORPUS/graphify-out/GRAPH_REPORT.md.tmp" ] \
   && fail "T16 stale GRAPH_REPORT.md.tmp left behind after awk failure" \
@@ -1098,7 +1098,7 @@ out=$( GRAPHIFY_MAP_BIN="$MISSBIN/graphify" PATH="$MISSBIN:$PATH" \
 # failure first, not by the later required-scratch-artifact check. Both are
 # fail-closed at rc=2 with graphify-out left unpromoted (proven below); only
 # the message text moved from the guard to harden.
-echo "$out" | grep -q "harden-graph failed -- graphify-out left unpromoted" \
+grep -q "harden-graph failed -- graphify-out left unpromoted" <<<"$out" \
   && pass "T18 error names the harden-graph failure (graph.json unreadable pre-cluster-only)" \
   || fail "T18 error should mention harden-graph failed: $out"
 cmp -s "$MISS_SNAPSHOT/graph.json" "$MISSCORPUS/graphify-out/graph.json" \
@@ -1152,7 +1152,7 @@ out=$( GRAPHIFY_MAP_BIN="$BADHDRBIN/graphify" PATH="$BADHDRBIN:$PATH" \
   --maps-dir "$BADHDRMAPS" --title "BadHdr Map" --slug badhdr-map --corpus-tag badhdr 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T19 unexpected header format fails loudly (rc=2)" \
   || fail "T19 unexpected header format should fail loudly with rc=2 (got $rc): $out"
-echo "$out" | grep -q "unexpected format" \
+grep -q "unexpected format" <<<"$out" \
   && pass "T19 error names the unexpected-format failure" || fail "T19 error should mention unexpected format: $out"
 cmp -s "$BADHDR_SNAPSHOT/graph.json" "$BADHDRCORPUS/graphify-out/graph.json" \
   && pass "T19 prior graph.json byte-identical after rejection" \
@@ -1203,7 +1203,7 @@ out=$( GRAPHIFY_MAP_BIN="$NULBIN/graphify" PATH="$NULBIN:$PATH" \
   --maps-dir "$NULMAPS" --title "Nul Map" --slug nul-map --corpus-tag nul 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T20 NUL-byte report still trips the guard (rc=2)" \
   || fail "T20 NUL-byte report should still trip the guard with rc=2 (got $rc): $out"
-echo "$out" | grep -q "Binary file" \
+grep -q "Binary file" <<<"$out" \
   && fail "T20 guard message leaked 'Binary file <path> matches' (grep fell into binary mode)" \
   || pass "T20 guard stayed in text mode (-a) -- no 'Binary file' leak in the message"
 # CR follow-up round 7 (CodeRabbit App re-review): the "no 'Binary file'"
@@ -1211,7 +1211,7 @@ echo "$out" | grep -q "Binary file" \
 # prove the LEAKED host path itself was redacted from the message (mirrors
 # the T11 "shouldnotleak" token check). The fixture's distinctive token is
 # "nulleak" (from the planted path C:/Users/nulleak/AppData/Local/Temp/x).
-echo "$out" | grep -q "nulleak" \
+grep -q "nulleak" <<<"$out" \
   && fail "T20 error output exposes the rejected host path: $out" \
   || pass "T20 error output redacts the rejected host path"
 
@@ -1226,7 +1226,7 @@ out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=abc bash "$SCRIPT" -
   --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
 [ "$rc" -eq 1 ] && pass "T21a non-numeric GRAPHIFY_MAX_CONCURRENCY rejected (rc=1)" \
   || fail "T21a non-numeric GRAPHIFY_MAX_CONCURRENCY should fail rc=1 (got $rc): $out"
-echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be a positive integer" \
+grep -q "GRAPHIFY_MAX_CONCURRENCY must be a positive integer" <<<"$out" \
   && pass "T21a error names the invalid knob" \
   || fail "T21a error should name GRAPHIFY_MAX_CONCURRENCY: $out"
 [ ! -s "$t21log" ] && pass "T21a invalid value fails before any extraction call" \
@@ -1238,7 +1238,7 @@ echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be a positive integer" \
 : > "$t21log"
 out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=0 bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend claude-cli \
   --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
-{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be"; } \
+{ [ "$rc" -eq 1 ] && grep -q "GRAPHIFY_MAX_CONCURRENCY must be" <<<"$out"; } \
   && pass "T21b zero GRAPHIFY_MAX_CONCURRENCY rejected (rc=1 + validation msg)" \
   || fail "T21b zero GRAPHIFY_MAX_CONCURRENCY should fail rc=1 with the validation msg (got $rc): $out"
 [ ! -s "$t21log" ] && pass "T21b zero value fails before any extraction call" \
@@ -1248,7 +1248,7 @@ out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=0 bash "$SCRIPT" --n
 : > "$t21log"
 out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY='' bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend claude-cli \
   --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
-{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be"; } \
+{ [ "$rc" -eq 1 ] && grep -q "GRAPHIFY_MAX_CONCURRENCY must be" <<<"$out"; } \
   && pass "T21b2 explicitly-empty GRAPHIFY_MAX_CONCURRENCY rejected (rc=1 + validation msg)" \
   || fail "T21b2 empty GRAPHIFY_MAX_CONCURRENCY should fail rc=1 with the validation msg (got $rc): $out"
 [ ! -s "$t21log" ] && pass "T21b2 empty value fails before any extraction call" \
@@ -1258,7 +1258,7 @@ out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY='' bash "$SCRIPT" --
 : > "$t21log"
 out=$( GRAPHIFY_CALL_LOG="$t21log" GRAPHIFY_MAX_CONCURRENCY=-1 bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend claude-cli \
   --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna 2>&1 ); rc=$?
-{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be"; } \
+{ [ "$rc" -eq 1 ] && grep -q "GRAPHIFY_MAX_CONCURRENCY must be" <<<"$out"; } \
   && pass "T21b3 negative GRAPHIFY_MAX_CONCURRENCY rejected (rc=1 + validation msg)" \
   || fail "T21b3 negative GRAPHIFY_MAX_CONCURRENCY should fail rc=1 with the validation msg (got $rc): $out"
 [ ! -s "$t21log" ] && pass "T21b3 negative value fails before any extraction call" \
@@ -1288,7 +1288,7 @@ awk '
 # (the run may still fail later for other reasons, but never on the throttle msg).
 out=$( GRAPHIFY_MAX_CONCURRENCY=abc bash "$SCRIPT" --name luna --corpus-root "$CORPUS" --backend claude-cli \
   --maps-dir "$MAPS" --title "T" --slug graphify-luna-map --corpus-tag luna --no-update 2>&1 ); rc=$?
-echo "$out" | grep -q "GRAPHIFY_MAX_CONCURRENCY must be" \
+grep -q "GRAPHIFY_MAX_CONCURRENCY must be" <<<"$out" \
   && fail "T21d --no-update wrongly validated the irrelevant throttle value: $out" \
   || pass "T21d --no-update skips throttle validation (invalid value tolerated on publish-only path)"
 
@@ -1369,7 +1369,7 @@ out=$( GRAPHIFY_API_TIMEOUT=abc \
   --maps-dir "$T23MAPS" --title "T23" --slug t23c-map --corpus-tag t23c 2>&1 ); rc=$?
 [ "$rc" -eq 1 ] && pass "T23c non-numeric GRAPHIFY_API_TIMEOUT rejected (rc=1)" \
   || fail "T23c non-numeric GRAPHIFY_API_TIMEOUT should fail rc=1 (got $rc): $out"
-echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be a positive integer" \
+grep -q "GRAPHIFY_API_TIMEOUT must be a positive integer" <<<"$out" \
   && pass "T23c error names the invalid knob" \
   || fail "T23c error should name GRAPHIFY_API_TIMEOUT: $out"
 [ ! -s "$t23calls" ] && pass "T23c invalid value fails before any extraction call" \
@@ -1381,7 +1381,7 @@ out=$( GRAPHIFY_API_TIMEOUT=0 \
   GRAPHIFY_CALL_LOG="$t23calls" GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
   bash "$SCRIPT" --name t23c0 --corpus-root "$T23CORPUS" \
   --maps-dir "$T23MAPS" --title "T23" --slug t23c0-map --corpus-tag t23c0 2>&1 ); rc=$?
-{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be"; } \
+{ [ "$rc" -eq 1 ] && grep -q "GRAPHIFY_API_TIMEOUT must be" <<<"$out"; } \
   && pass "T23c2 zero GRAPHIFY_API_TIMEOUT rejected (rc=1 + validation msg)" \
   || fail "T23c2 zero GRAPHIFY_API_TIMEOUT should fail rc=1 with the validation msg (got $rc): $out"
 : > "$t23calls"
@@ -1389,7 +1389,7 @@ out=$( env GRAPHIFY_API_TIMEOUT='' \
   GRAPHIFY_CALL_LOG="$t23calls" GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
   bash "$SCRIPT" --name t23c3 --corpus-root "$T23CORPUS" \
   --maps-dir "$T23MAPS" --title "T23" --slug t23c3-map --corpus-tag t23c3 2>&1 ); rc=$?
-{ [ "$rc" -eq 1 ] && echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be"; } \
+{ [ "$rc" -eq 1 ] && grep -q "GRAPHIFY_API_TIMEOUT must be" <<<"$out"; } \
   && pass "T23c3 explicitly-empty GRAPHIFY_API_TIMEOUT rejected (rc=1 + validation msg, not silently defaulted)" \
   || fail "T23c3 explicitly-empty GRAPHIFY_API_TIMEOUT should fail rc=1 with the validation msg (got $rc): $out"
 # --no-update (publish-only) never makes the extraction call, so an invalid timeout is
@@ -1399,7 +1399,7 @@ out=$( GRAPHIFY_API_TIMEOUT=abc \
   GRAPHIFY_MAP_BIN="$T23BIN/graphify" PATH="$T23BIN:$PATH" \
   bash "$SCRIPT" --name t23d --corpus-root "$T23CORPUS" \
   --maps-dir "$T23MAPS" --title "T23" --slug t23d-map --corpus-tag t23d --no-update 2>&1 ); rc=$?
-echo "$out" | grep -q "GRAPHIFY_API_TIMEOUT must be" \
+grep -q "GRAPHIFY_API_TIMEOUT must be" <<<"$out" \
   && fail "T23d --no-update wrongly validated the irrelevant timeout value: $out" \
   || pass "T23d --no-update skips timeout validation (invalid value tolerated on publish-only path)"
 
@@ -1580,7 +1580,7 @@ out=$( GRAPHIFY_MAP_BIN="$MVFAILBIN/graphify" PATH="$MVFAILBIN:$PATH" \
   --maps-dir "$MVFAILMAPS" --title "Mv Fail Map" --slug mvfail-map --corpus-tag mvfail 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T23a failed sideline mv aborts promotion (rc=2), not a silent rc=0" \
   || fail "T23a a failed sideline mv should abort the promotion with rc=2 (got $rc): $out"
-echo "$out" | grep -q "failed to sideline existing cache" \
+grep -q "failed to sideline existing cache" <<<"$out" \
   && pass "T23a error names the sideline failure explicitly" \
   || fail "T23a error should mention the sideline failure: $out"
 MVFAILOUT="$MVFAILCORPUS/graphify-out"
@@ -1692,7 +1692,7 @@ qdir=$(printf '%s\n' "$out" | grep -oE '/[^ ]*\.quarantine' | head -n1)
 [ -n "$qdir" ] && [ -f "$qdir/.leak-context-GRAPH_REPORT.md.txt" ] \
   && pass "T25 leak context snippet saved into the quarantine copy" \
   || fail "T25 leak context snippet file missing from quarantine copy"
-echo "$out" | grep -q "quarantoken" \
+grep -q "quarantoken" <<<"$out" \
   && fail "T25 refusal/quarantine message exposes the rejected host path: $out" \
   || pass "T25 refusal/quarantine message redacts the rejected host path"
 [ -e "$QCORPUS/graphify-out/graph.json" ] \
@@ -1756,9 +1756,9 @@ out=$( GRAPHIFY_MAP_BIN="$STRUCTBIN/graphify" PATH="$STRUCTBIN:$PATH" \
   --maps-dir "$STRUCTMAPS" --title "Struct Map" --slug struct-map --corpus-tag struct 2>&1 ); rc=$?
 [ "$rc" -eq 2 ] && pass "T26b host path in a structural field (source_file) still refuses (rc=2)" \
   || fail "T26b structural-field host path should still refuse (got rc=$rc): $out"
-echo "$out" | grep -q "graph.json" \
+grep -q "graph.json" <<<"$out" \
   && pass "T26b error names graph.json as the offending artifact" || fail "T26b error should name graph.json: $out"
-echo "$out" | grep -q "structleaktoken" \
+grep -q "structleaktoken" <<<"$out" \
   && fail "T26b error output exposes the rejected host path: $out" \
   || pass "T26b error output redacts the rejected host path"
 [ ! -e "$STRUCTCORPUS/graphify-out/graph.json" ] \
@@ -2270,7 +2270,7 @@ out=$( cd "$T34_CORPUS" && GRAPHIFY_MAP_BIN="$T34BIN/graphify" PATH="$T34BIN:$PA
   bash "$SCRIPT" --name t34a --corpus-root . --backend claude-cli \
   --maps-dir "$T34_OUTSIDE" --title "T34a Map" --slug t34a-map --corpus-tag t34a 2>&1 ); rc=$?
 [ "$rc" -eq 0 ] || fail "T34a run exit 0 (got $rc; a genuinely-outside maps-dir must be a sanctioned no-op, not an error): $out"
-if printf '%s' "$out" | grep -qF "WARN --corpus-root and --maps-dir share no common path"; then
+if grep -qF "WARN --corpus-root and --maps-dir share no common path" <<<"$out"; then
   pass "T34a WARN advisory emitted for a no-prefix, mixed-form (relative vs absolute) corpus-root/maps-dir pair"
 else
   fail "T34a expected a WARN advisory for the ambiguous mixed-form, no-overlap case; none seen: $out"
@@ -2285,7 +2285,7 @@ out=$( GRAPHIFY_MAP_BIN="$T34BIN/graphify" PATH="$T34BIN:$PATH" \
   bash "$SCRIPT" --name t34b --corpus-root "$T34B_CORPUS" --backend claude-cli \
   --maps-dir "$T34_OUTSIDE" --title "T34b Map" --slug t34b-map --corpus-tag t34b 2>&1 ); rc=$?
 [ "$rc" -eq 0 ] || fail "T34b run exit 0 (got $rc; a genuinely-outside maps-dir must be a sanctioned no-op, not an error): $out"
-if printf '%s' "$out" | grep -qF "WARN --corpus-root and --maps-dir share no common path"; then
+if grep -qF "WARN --corpus-root and --maps-dir share no common path" <<<"$out"; then
   fail "T34b unexpected WARN advisory for a same-form (both absolute), no-overlap corpus-root/maps-dir pair: $out"
 else
   pass "T34b no WARN advisory for a same-form, no-overlap corpus-root/maps-dir pair (silent no-op, as designed)"
@@ -2343,7 +2343,7 @@ if [ "$rc" -eq 124 ]; then
   fail "T35a HUNG (timeout killed it, rc=124) on a non-existent drive-absolute --maps-dir"
 elif [ "$rc" -eq 0 ]; then
   pass "T35a terminated (rc=0) on a non-existent drive-absolute --maps-dir"
-elif printf '%s' "$out" | grep -qF "ENOENT" && printf '%s' "$out" | grep -qF "mkdir"; then
+elif grep -qF "ENOENT" <<<"$out" && grep -qF "mkdir" <<<"$out"; then
   # A non-existent DRIVE LETTER can never be created by Node's mkdirSync at
   # publish time (Windows has no notion of creating a new drive root) --
   # this is an EXPECTED, PROMPT downstream failure, not a hang. What T35a

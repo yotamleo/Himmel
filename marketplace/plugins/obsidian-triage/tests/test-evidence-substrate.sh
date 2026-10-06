@@ -80,19 +80,19 @@ harvest_scan="$(find "$tmp/Clippings" -maxdepth 2 -type f -name '*.md' \
   -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
   -not -path '*/_evidence/*')"
 
-if printf '%s\n' "$harvest_scan" | grep -qF "/real.md"; then f=yes; else f=no; fi
+if grep -qF "/real.md" <<<"$harvest_scan"; then f=yes; else f=no; fi
 assert "harvest/triage scan keeps real.md" "yes" "$f"
 
-if printf '%s\n' "$harvest_scan" | grep -qF "/_evidence/"; then f=leaked; else f=excluded; fi
+if grep -qF "/_evidence/" <<<"$harvest_scan"; then f=leaked; else f=excluded; fi
 assert "harvest/triage scan excludes _evidence/" "excluded" "$f"
 
-if printf '%s\n' "$harvest_scan" | grep -qF "/_done/"; then f=leaked; else f=excluded; fi
+if grep -qF "/_done/" <<<"$harvest_scan"; then f=leaked; else f=excluded; fi
 assert "harvest/triage scan excludes _done/" "excluded" "$f"
 
-if printf '%s\n' "$harvest_scan" | grep -qF "/_synthesis/"; then f=leaked; else f=excluded; fi
+if grep -qF "/_synthesis/" <<<"$harvest_scan"; then f=leaked; else f=excluded; fi
 assert "harvest/triage scan excludes _synthesis/" "excluded" "$f"
 
-if printf '%s\n' "$harvest_scan" | grep -qF "_deferred.md"; then f=leaked; else f=excluded; fi
+if grep -qF "_deferred.md" <<<"$harvest_scan"; then f=leaked; else f=excluded; fi
 assert "harvest/triage scan excludes _deferred.md" "excluded" "$f"
 
 echo "Test 9: archive scan (maxdepth 3) excludes _evidence/ (incl. _rejected/); keeps real.md"
@@ -101,13 +101,13 @@ archive_scan="$(find "$tmp/Clippings" -maxdepth 3 -type f -name '*.md' \
   -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
   -not -path '*/_evidence/*')"
 
-if printf '%s\n' "$archive_scan" | grep -qF "/real.md"; then f=yes; else f=no; fi
+if grep -qF "/real.md" <<<"$archive_scan"; then f=yes; else f=no; fi
 assert "archive scan keeps real.md" "yes" "$f"
 
-if printf '%s\n' "$archive_scan" | grep -qF "/_evidence/ev1.md"; then f=leaked; else f=excluded; fi
+if grep -qF "/_evidence/ev1.md" <<<"$archive_scan"; then f=leaked; else f=excluded; fi
 assert "archive scan excludes _evidence/ev1.md" "excluded" "$f"
 
-if printf '%s\n' "$archive_scan" | grep -qF "/_rejected/"; then f=leaked; else f=excluded; fi
+if grep -qF "/_rejected/" <<<"$archive_scan"; then f=leaked; else f=excluded; fi
 assert "archive scan excludes _evidence/_rejected/ (subdir)" "excluded" "$f"
 
 echo "Test 10: synthesize-style scan (maxdepth 3, NO _evidence/ guard) DOES include ev1.md"
@@ -115,7 +115,7 @@ echo "Test 10: synthesize-style scan (maxdepth 3, NO _evidence/ guard) DOES incl
 synth_scan="$(find "$tmp/Clippings" -maxdepth 3 -type f -name '*.md' \
   -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md')"
 
-if printf '%s\n' "$synth_scan" | grep -qF "/_evidence/ev1.md"; then f=visible; else f=missing; fi
+if grep -qF "/_evidence/ev1.md" <<<"$synth_scan"; then f=visible; else f=missing; fi
 assert "synthesize scan includes _evidence/ev1.md (intentionally)" "visible" "$f"
 
 echo ""

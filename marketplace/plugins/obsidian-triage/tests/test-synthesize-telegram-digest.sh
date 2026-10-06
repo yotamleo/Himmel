@@ -118,7 +118,7 @@ DIGEST_B="$B/.synthesize-stubs.telegram-digest.json"
 echo "Test 3: non-telegram promotions produce NO digest"
 out_b="$(node "$TOOL" "$B" --apply 2>&1)"
 # sanity: a stub was actually created (otherwise the test proves nothing)
-if printf '%s' "$out_b" | grep -qE '✓ .*30-Resources/Concepts'; then f=yes; else f=no; fi
+if grep -qE '✓ .*30-Resources/Concepts' <<<"$out_b"; then f=yes; else f=no; fi
 assert "a stub was created from the web clips (test is meaningful)" "yes" "$f"
 if [ -f "$DIGEST_B" ]; then f=present; else f=absent; fi
 assert "no digest file for non-telegram promotions" "absent" "$f"
