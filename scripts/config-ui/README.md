@@ -51,8 +51,35 @@ start, then polls for appends every 500 ms, and ends when the client goes away,
 2 minutes after the file stops growing with no run open, or after 4 hours. A
 `: keepalive` comment every 15 s holds a quiet stream past Bun's idle cut.
 Payload fields (deltas, results, errors, state) pass the same redactor as the
-feed; the id fields are left intact. Serving the built page from config-ui and
-printing its `#t=<token>&run=<id>` URL is PR4's.
+feed; the id fields are left intact.
+
+`GET /agui/` serves the built page from `agui-web/dist` (`/agui` redirects
+there) with the same CSP and frame headers as every other page. It serves only
+regular files whose real path stays inside `dist`, so traversal, a symlink out
+and a directory are `404`; when `dist` is not built it answers `404` with the
+build steps. The page itself is not token-gated (the token rides the URL
+fragment, never a request line); `/api/agui/<run>` stays gated.
+
+### Watching a live run (operator steps)
+
+From your own terminal, outside Claude, in the himmel checkout:
+
+```bash
+# 1. build the page once (and again after agui-web/src changes)
+cd scripts/config-ui/agui-web
+bun install
+bun run build
+cd ../../..
+
+# 2. start config-ui and print the AG-UI URL for the newest session
+node scripts/himmelctl/bin.js ui --port 0 --agui latest
+```
+
+It prints two URLs: the config page, then
+`http://127.0.0.1:<port>/agui/#t=<64 hex>&run=<session-id>`. Open the second.
+`--agui` alone means `latest`, the newest `~/.claude/projects/*/<id>.jsonl` by
+modification time; `--agui <session-id>` picks one session. The server runs in
+the foreground (Ctrl-C to stop); an open stream keeps it from idling out.
 
 The view logic is a pure reducer (`agui-web/src/reducer.ts`) with no runtime
 imports, so its suite runs in CI without an install.
