@@ -9,7 +9,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tool="$here/../tools/harvest-clip-body-batch.py"
 hc="$here/../commands/harvest-clips.md"
-tmp="$(mktemp -d)" || exit 1; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/harvest-deferred.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 
 cat > "$tmp/t.py" <<'PY'
 import importlib.util, subprocess, sys
@@ -142,12 +142,12 @@ table=$(awk '/^### Partial classes/{p=1;next} /^### /{if(p) exit} p' "$hc")
 for row in "thin-body" "enricher-gap" "ig_media_pending" "x_media_pending" "firecrawl" \
            "stale-read" "rate-limited" "failed" "catastrophic" "needs-attention" \
            "harvest_defer_count" ".harvest-pending.md"; do
-    printf '%s' "$table" | grep -qF -- "$row" || { echo "FAIL: class table lacks $row"; exit 1; }
+    grep -qF -- "$row" <<< "$table" || { echo "FAIL: class table lacks $row"; exit 1; }
 done
 for cls in "stale-read" "rate-limited" "catastrophic"; do
-    printf '%s' "$table" | grep -F -- "$cls" | grep -qi "block" \
+    hit=$(grep -F -- "$cls" <<< "$table" | grep -i "block" || true); [ -n "$hit" ] \
         || { echo "FAIL: class table does not mark $cls as blocking"; exit 1; }
 done
 g8=$(awk '/^### G-8/{p=1;next} /^### /{if(p) exit} p' "$hc")
-printf '%s' "$g8" | grep -qi "deferred" || { echo "FAIL: G-8 does not admit deferred partials"; exit 1; }
+grep -qi "deferred" <<< "$g8" || { echo "FAIL: G-8 does not admit deferred partials"; exit 1; }
 echo "HARVEST-DEFERRED PASS"

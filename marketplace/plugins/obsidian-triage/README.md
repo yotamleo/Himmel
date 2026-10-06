@@ -162,7 +162,7 @@ Do this ONCE per machine before the first `/ig-media-enrich` run.
    (first use otherwise blocks on a ~140MB one-time fetch):
 
    ```
-   uv run --python 3.12 --with faster-whisper python -c "from faster_whisper import WhisperModel; WhisperModel('base')"
+   uv run --python 3.12 --with-requirements tools/requirements-whisper.txt python -c "from faster_whisper import WhisperModel; WhisperModel('base')"
    ```
 
 5. **Run the one-shot historical backfill.** `--include-evidence` extends the

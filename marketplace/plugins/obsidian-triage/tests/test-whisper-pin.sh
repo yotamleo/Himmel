@@ -6,7 +6,7 @@
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 tools="$here/../tools"
-tmp="$(mktemp -d)" || exit 1; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/whisper-pin.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 pass=0; fail=0
 ok() { echo "  PASS  $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL  $1"; fail=$((fail + 1)); }
@@ -39,7 +39,7 @@ for name in ("ig-media-fetch.py", "x-media-fetch.py"):
 PY
 out=$(python3 "$tmp/cmd.py" "$tools" "$tmp" 2>&1 || true)
 for n in ig-media-fetch.py x-media-fetch.py; do
-    if printf '%s\n' "$out" | grep -q "^OK $n"; then ok "$n installs the pinned pair"; else no "$n installs the pinned pair"; printf '%s\n' "$out"; fi
+    if grep -q "^OK $n" <<< "$out"; then ok "$n installs the pinned pair"; else no "$n installs the pinned pair"; printf '%s\n' "$out"; fi
 done
 
 # whisper-probe against a fake av that has dropped metadata_errors, then one that has it.
@@ -55,9 +55,9 @@ mk_fakes() { # $1 dir, $2 = "drop" | "keep"
 mk_fakes "$tmp/drop" drop
 mk_fakes "$tmp/keep" keep
 rc=0; out=$(PYTHONPATH="$tmp/drop" python3 "$tools/whisper-probe.py" 2>&1) || rc=$?
-if [ "$rc" = 1 ] && printf '%s' "$out" | grep -q "metadata_errors"; then ok "probe fails on the metadata_errors mismatch"; else no "probe fails on the metadata_errors mismatch (rc=$rc: $out)"; fi
+if [ "$rc" = 1 ] && grep -q "metadata_errors" <<< "$out"; then ok "probe fails on the metadata_errors mismatch"; else no "probe fails on the metadata_errors mismatch (rc=$rc: $out)"; fi
 rc=0; out=$(PYTHONPATH="$tmp/keep" python3 "$tools/whisper-probe.py" 2>&1) || rc=$?
-if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q "whisper-probe: ok faster-whisper=1.2.1 av=18.0.0"; then ok "probe passes on a compatible pair"; else no "probe passes on a compatible pair (rc=$rc: $out)"; fi
+if [ "$rc" = 0 ] && grep -q "whisper-probe: ok faster-whisper=1.2.1 av=18.0.0" <<< "$out"; then ok "probe passes on a compatible pair"; else no "probe passes on a compatible pair (rc=$rc: $out)"; fi
 
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

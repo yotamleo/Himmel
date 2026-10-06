@@ -20,7 +20,7 @@ assert() {
   else echo "  FAIL  $desc"; echo "         expected: $expected"; echo "         actual:   $actual"; fail=$((fail+1)); fi
 }
 
-tmp="$(mktemp -d)"; [ -n "${KEEP_TMP:-}" ] || trap 'rm -rf "$tmp"' EXIT; echo "tmp=$tmp"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/ig-scrapling.XXXXXX")" || exit 1; [ -n "${KEEP_TMP:-}" ] || trap 'rm -rf "$tmp"' EXIT; echo "tmp=$tmp"
 HOME="$tmp/home"; mkdir -p "$HOME/.luna/cookies"; export HOME
 export IG_MEDIA_NO_SLEEP=1 HIMMEL_IG_DAILY_CAP=100000
 unset IG_SCRAPLING_PYTHON HARVEST_SCRAPE_DENY
