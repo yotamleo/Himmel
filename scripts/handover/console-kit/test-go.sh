@@ -383,6 +383,12 @@ verdict "$ROOT15" J12 "**NO-GO** for head \`$SHA14\`." round1
 verdict "$ROOT15" J12 "**GO** for head \`$SHA\`." round2
 rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J12 83 "$SHA" >/dev/null 2>&1 || rc=$?
 check    "3832: an earlier round's NO-GO on another head is ignored -> exit 0" "$rc" "0"
+mkdir -p "$ROOT15/u/himmel/verdicts/J13"
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+printf '# VERDICT J13 - judge\r\n\r\n## Verdict\r\n\r\n**GO** for head `%s`.\r\n\r\nreason\r\n' "$SHA" \
+  > "$ROOT15/u/himmel/verdicts/J13/HIMMEL-1-judge-J13.md"
+rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J13 83 "$SHA" >/dev/null 2>&1 || rc=$?
+check    "3832: a CRLF verdict file -> exit 0" "$rc" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

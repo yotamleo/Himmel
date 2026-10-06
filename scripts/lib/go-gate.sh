@@ -142,7 +142,7 @@ go_trust_verdict() {
     fi
     for f in "$root"/*/*/verdicts/"$qid"/*.md; do
         [ -f "$f" ] || continue
-        line=$(awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }' "$f" 2>/dev/null | tr -d '\r')
+        line=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }')
         word=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `[0-9a-f]{40}`\.?$/\1/p')
         head=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\2/p')
         if [ -z "$word" ] || [ -z "$head" ]; then
