@@ -71,6 +71,14 @@ else
     bad "plugin hook-integrity.js drifted from scripts/hooks/hook-integrity.js"
 fi
 
+# HIMMEL-4564: the judge write guard ships in the plugin (a judge's cwd is
+# outside any checkout) but is authored and tested in scripts/hooks.
+if cmp -s "$HOOKS_DIR/guard-judge-writes.sh" "$PLUGIN_ROOT/hooks/guard-judge-writes.sh"; then
+    ok "plugin guard-judge-writes.sh is byte-identical to scripts/hooks/guard-judge-writes.sh"
+else
+    bad "plugin guard-judge-writes.sh drifted from scripts/hooks/guard-judge-writes.sh"
+fi
+
 # HIMMEL-1952: no hardcoded inventory count here — wire-plugin-hook-bash.mjs's
 # own EXPECTED_HOOKS/EXPECTED_COUNTS (exercised by
 # wire-plugin-hook-bash.test.mjs, which already hardcodes "20" as an

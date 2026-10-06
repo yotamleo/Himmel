@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const EXPECTED_COUNTS = Object.freeze({
-  PreToolUse: 13,
+  PreToolUse: 14,
   SessionStart: 5,
   SessionEnd: 3,
   Notification: 1,
@@ -44,6 +44,9 @@ const EXPECTED_HOOKS = Object.freeze([
   // HIMMEL-4328: plugin-shipped so it fires in a salus session too, where
   // $CLAUDE_PROJECT_DIR/scripts/hooks/ does not exist.
   { event: 'PreToolUse', script: 'block-agent-native-egress.sh', source: 'plugin' },
+  // HIMMEL-4564: plugin-shipped because a judge's cwd is under ~/.cache, outside
+  // any checkout, where project settings and $CLAUDE_PROJECT_DIR never load.
+  { event: 'PreToolUse', script: 'guard-judge-writes.sh', source: 'plugin' },
   { event: 'SessionStart', script: 'inject-where-are-we.sh' },
   { event: 'SessionStart', script: 'inject-doc-freshness.sh' },
   { event: 'SessionStart', script: 'inject-worktree-nudge.sh' },

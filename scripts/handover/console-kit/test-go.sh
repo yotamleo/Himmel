@@ -127,8 +127,9 @@ contains "relay: names the relay" "$out" "console relay"
 check    "relay: no GO file written" "$(find "$ROOT6" -type f | wc -l | tr -d ' ')" "0"
 rm -rf "$ROOT6"
 
-# --- 7. HIMMEL-3133: "the judge is a leg" - no separate HIMMEL_CONSOLE_JUDGE
-# marker exists, so nothing anywhere in go.sh's output should still claim
+# --- 7. HIMMEL-3133: "the judge is a leg" - go.sh's own gate is the leg
+# marker (HIMMEL_CONSOLE_JUDGE, HIMMEL-4564, only feeds guard-judge-writes.sh),
+# so nothing anywhere in go.sh's output should still claim
 # "only the judge writes a GO" (stale pre-3133 wording: only the CONSOLE does,
 # whether the caller is a plain leg, a --judge leg, or a relay).
 if grepq "$out" -F -e "the judge writes"; then
