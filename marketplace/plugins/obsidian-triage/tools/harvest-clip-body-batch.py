@@ -1380,9 +1380,7 @@ def bump_defer(path: Path) -> int | None:
     return n
 
 
-def defer_suffix(n: int | None) -> str:
-    if n is None:
-        return "; deferred (count write reverted, G-3)"
+def defer_suffix(n: int) -> str:
     if n >= DEFER_ATTENTION_AFTER:
         return f"; deferred {n}/{DEFER_ATTENTION_AFTER} -> needs-attention, no longer retried"
     return f"; deferred {n}/{DEFER_ATTENTION_AFTER}"
@@ -1537,7 +1535,10 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park
                 park(path, e.reason)
             return ("~", f"partial (thin-body): deferred: firecrawl-unavailable ({e.reason}); parked, retried first once credits return", injection_hits)
         except Exception as e:
-            return ("~", f"partial (thin-body): firecrawl fetch failed ({type(e).__name__}: {str(e)[:120]}); re-run to retry{defer_suffix(bump_defer(path))}", injection_hits)
+            n = bump_defer(path)
+            if n is None:
+                return ("x", "failed (G-3): defer-count write altered body; reverted", injection_hits)
+            return ("~", f"partial (thin-body): firecrawl fetch failed ({type(e).__name__}: {str(e)[:120]}); re-run to retry{defer_suffix(n)}", injection_hits)
         firecrawl.remaining -= 1
         served_by = getattr(firecrawl, "last_backend", None) or "firecrawl"
         section = (
@@ -1607,7 +1608,10 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park
         if dry_run:
             return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix} [dry-run]{flag_suffix}", injection_hits)
         if persist_thin_partial(path, text, fm, fm_raw, body, gap_host, injection_hits, is_instagram):
-            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix}{defer_suffix(bump_defer(path))}{flag_suffix}", injection_hits)
+            n = bump_defer(path)
+            if n is None:
+                return ("x", f"failed (G-3): defer-count write altered body; reverted{flag_suffix}", injection_hits)
+            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix}{defer_suffix(n)}{flag_suffix}", injection_hits)
         return ("x", f"failed (G-3): thin-body frontmatter mark altered body; reverted{flag_suffix}", injection_hits)
 
     # clip-body path

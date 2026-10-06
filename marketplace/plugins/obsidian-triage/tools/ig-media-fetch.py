@@ -416,12 +416,14 @@ def download_media_scrapling(ig: dict, py: str):
         target = dest / f"{n:02d}{ext}"
         try:
             got = subprocess.run(
-                ["curl", "-fsSL", "--proto", "=https", "--max-time", "120",
+                ["curl", "-fsSL", "--max-redirs", "0", "--proto", "=https", "--max-time", "120",
                  "--max-filesize", str(MEDIA_MAX_BYTES), "-o", str(target),
                  str(item.get("url", ""))],
                 capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
         except subprocess.TimeoutExpired:
             return None, "download_timeout", None
+        except OSError:
+            return None, "curl_missing", None
         if got.returncode != 0 or not target.is_file():
             _emit_stderr_tail("curl", got.stderr)
             return None, "download_error", None

@@ -62,6 +62,15 @@ check("ig media-pending is a deferred partial", g == "~" and "deferred 1/5" in m
       and fm(p).get("ig_media_pending") == "true", msg)
 
 
+# A reverted defer-count write is a G-3 failure: blocking, never a deferred partial.
+real_bump = mod.bump_defer
+mod.bump_defer = lambda _p: None
+p = clip("g3.md", "https://example.com/g3")
+g, msg, _ = mod.process_clip(p, dry_run=False)
+mod.bump_defer = real_bump
+check("reverted defer-count write fails (G-3, blocking)", g == "x" and "G-3" in msg, msg)
+
+
 class Chain:
     def __init__(self, remaining, exc=None):
         self.remaining, self.exc, self.last_backend = remaining, exc, None
@@ -129,7 +138,8 @@ check("failed clip blocks (exit 4)", r.returncode == 4, r.stdout + r.stderr)
 v2 = tmp / "vault2"
 (v2 / "Clippings").mkdir(parents=True)
 (v2 / "Clippings/a.md").write_text("---\ntype: article\nsource: https://example.com/x\n---\nshort.\n")
-subprocess.run([sys.executable, tool, str(v2), "--dry-run"], capture_output=True, text=True)
+r = subprocess.run([sys.executable, tool, str(v2), "--dry-run"], capture_output=True, text=True)
+check("dry-run exits 0", r.returncode == 0, r.stdout + r.stderr)
 check("dry-run writes no pending report", not (v2 / ".harvest-pending.md").exists())
 
 sys.exit(1 if fails else 0)

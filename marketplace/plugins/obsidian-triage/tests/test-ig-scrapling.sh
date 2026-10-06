@@ -65,6 +65,13 @@ python3 "$HELPER" --from-html "$tmp/evil.html" --shortcode REELFIX1 >"$tmp/evil.
 assert "off-CDN media -> exit 4" 4 "$?"
 assert "off-CDN media -> no_media" no_media "$(jq_py "$tmp/evil.json" 'd["status"]')"
 
+# --- Test 4b: a carousel child with no CDN URL -> error, never a short ok --
+echo "Test 4b: incomplete carousel"
+printf '%s' '<script type="application/json">{"x":{"code":"PART0001","carousel_media":[{"image_versions2":{"candidates":[{"url":"https://a.cdninstagram.com/1.jpg"}]}},{"image_versions2":{"candidates":[{"url":"https://evil.example/2.jpg"}]}}]}}</script>' >"$tmp/part.html"
+python3 "$HELPER" --from-html "$tmp/part.html" --shortcode PART0001 >"$tmp/part.json"
+assert "incomplete carousel exit 6" 6 "$?"
+assert "incomplete carousel status error" error "$(jq_py "$tmp/part.json" 'd["status"]')"
+
 # --- Test 5: landing on the login page is a login wall ---------------------
 echo "Test 5: login wall"
 python3 "$HELPER" --from-html "$FIX/reel.html" --shortcode REELFIX1 \
@@ -84,6 +91,7 @@ STUB
 chmod +x "$tmp/scrapling-python"
 cat > "$tmp/bin/curl" <<'STUB'
 #!/usr/bin/env bash
+echo "curl $*" >> "$STUB_CALLS"
 out=""
 while [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1" ;; esac; shift; done
 [ -n "$out" ] || exit 2
@@ -144,6 +152,8 @@ grep -qF "Scrapled caption text" "$tmp/v6/Clippings/clip.md" && a=ok || a=no
 assert "scrapling caption lands in ## Crawled content" ok "$a"
 grep -q -- '--shortcode SCRP0006' "$tmp/calls" && a=ok || a=no
 assert "helper called with the shortcode" ok "$a"
+grep -q -- '^curl .*--max-redirs 0' "$tmp/calls" && a=ok || a=no
+assert "curl follows no redirect off the CDN host" ok "$a"
 
 # --- Test 7: Scrapling login wall -> gallery-dl fallback -------------------
 echo "Test 7: gallery-dl fallback"
@@ -156,6 +166,18 @@ grep -qF "1 slides + 0 transcript [gallery-dl]" "$tmp/v7.out" && a=ok || a=no
 assert "outcome line names the gallery-dl fallback" ok "$a"
 grep -q '^gdl$' "$tmp/calls" && a=ok || a=no
 assert "gallery-dl ran after scrapling" ok "$a"
+
+# --- Test 7b: curl missing -> gallery-dl fallback, no crash ---------------
+echo "Test 7b: curl missing"
+: >"$tmp/calls"; export STUB_JSON="$tmp/ok.json" STUB_RC=0
+cp "$tmp/bin/curl" "$tmp/curl.off"; rm -f "$tmp/bin/curl"
+make_vault "$tmp/v7b" SCRP0071
+run_tool "$tmp/v7b" >"$tmp/v7b.out" 2>"$tmp/v7b.err"
+assert "curl-missing run exit 0" 0 "$?"
+grep -qF "[gallery-dl]" "$tmp/v7b.out" && a=ok || a=no
+assert "gallery-dl served it" ok "$a"
+cp "$tmp/curl.off" "$tmp/bin/curl"
+export STUB_JSON="$tmp/wall.json" STUB_RC=4
 
 # --- Test 8: Scrapling login wall, no fallback -> retryable failure --------
 echo "Test 8: no fallback available"
@@ -186,8 +208,11 @@ echo "Test 10: .harvest-backends route"
 make_vault "$tmp/v10" SCRP0010
 echo "www.instagram.com skip=local-headless" >"$tmp/v10/.harvest-backends"
 run_tool "$tmp/v10" >"$tmp/v10.out" 2>"$tmp/v10.err"
+assert "route-skip run exit 0" 0 "$?"
 grep -q -- '--shortcode' "$tmp/calls" && a=called || a=skipped
 assert "scrapling not called when the route skips it" skipped "$a"
+grep -qF "[gallery-dl]" "$tmp/v10.out" && a=ok || a=no
+assert "gallery-dl served it" ok "$a"
 
 # --- Test 11: preflight: neither backend usable -> exit 2 ------------------
 echo "Test 11: preflight"

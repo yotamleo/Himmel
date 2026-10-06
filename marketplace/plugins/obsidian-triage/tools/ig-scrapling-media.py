@@ -93,6 +93,8 @@ def extract_media(html, shortcode):
     items = [it for it in (_item(c) for c in children) if it]
     if not items:
         return {"status": "no_media", "detail": "media node has no CDN media URL"}
+    if len(items) != len(children):
+        return {"status": "error", "detail": f"{len(children) - len(items)} carousel child(ren) without a CDN media URL"}
     cap = node.get("caption")
     caption = cap.get("text") if isinstance(cap, dict) else None
     return {"status": "ok", "caption": caption or None, "items": items}
