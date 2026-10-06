@@ -436,7 +436,7 @@ run_case "$(j_bash "bash -c 'bash scripts/quiet-run.sh suite -- bash scripts/tes
 assert_rc "4438 allow: bash -c already wrapped" 0 "$RC"
 run_case "$(j_bash "bash -c 'git status'")"
 assert_rc "4438 allow: bash -c git status" 0 "$RC"
-nolib=$(mktemp -d) || exit 1
+nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/require-quiet-run.sh"
 RC=$(printf '%s' "$(j_bash 'git status')" | bash "$nolib/require-quiet-run.sh" >/dev/null 2>&1; echo $?)
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$RC"

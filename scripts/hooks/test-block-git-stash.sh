@@ -222,7 +222,7 @@ big=$(printf 'print(f"line %s")\n' $(seq 1 600))
 assert_rc "4438 >8KiB python heredoc"           0 "$(run_case "$(j_bash "python3 - <<'E'"$'\n'"$big"$'\n'"E")")"
 assert_rc "4438 >8KiB heredoc then g'i't stash" 2 "$(run_case "$(j_bash "python3 - <<'E'"$'\n'"$big"$'\n'"E"$'\n'"g'i't stash")")"
 # The lib is a must-run dependency: a hook copy without it fails closed.
-nolib=$(mktemp -d) || exit 1
+nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/block-git-stash.sh"
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'git status')" | bash "$nolib/block-git-stash.sh" >/dev/null 2>&1; echo $?)"
 rm -rf "$nolib"

@@ -925,7 +925,7 @@ deny "4438 xargs gate in a middle stage" 'echo x | xargs -I{} bash scripts/check
 allow "4438 allow: gate as the last stage" 'echo x | bash scripts/check-ci.sh 12'
 allow "4438 allow: bash -c gate unpiped" "bash -c 'bash scripts/check-ci.sh 12'"
 allow "4438 allow: bash -c ls | tail" "bash -c 'ls | tail -3'"
-nolib=$(mktemp -d) || exit 1
+nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/block-tail-pipe-on-gates.sh"
 res=$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-tail-pipe-on-gates.sh" >/dev/null 2>&1; echo $?)
 if [ "$res" = 2 ]; then pass "4438 missing guard-unwrap lib denies"; else fail "4438 missing guard-unwrap lib denies — rc=$res"; fi

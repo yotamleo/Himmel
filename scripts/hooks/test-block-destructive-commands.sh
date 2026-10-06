@@ -1114,7 +1114,7 @@ assert_rc "4438 env with a quoted assignment" 2 "$(run_case "$(j_bash "env 'FOO=
 assert_rc "4438 exec -a name rm -rf"          2 "$(run_case "$(j_bash "exec -a 'x' rm -rf /tmp/x")")"
 assert_rc "4438 allow: bash -c 'ls -la'"      0 "$(run_case "$(j_bash "bash -c 'ls -la'")")"
 assert_rc "4438 allow: echo 'rm -rf /tmp/x'"  0 "$(run_case "$(j_bash "echo 'rm -rf /tmp/x'")")"
-nolib=$(mktemp -d) || exit 1
+nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/block-destructive-commands.sh"
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-destructive-commands.sh" >/dev/null 2>&1; echo $?)"
 rm -rf "$nolib"

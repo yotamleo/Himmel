@@ -810,7 +810,7 @@ assert_rc "4502 bash -c 'cd x; cat .e*'"      2 "$(run_in_shiftdir "bash -c 'cd 
 assert_rc "4502 control: cd x; cat *.tsv"     0 "$(run_in_shiftdir 'cd /some/repo; cat *.tsv')"
 assert_rc "4502 control: cat .e* here (no .env)" 0 "$(run_in_shiftdir 'cat .e*')"
 rm -rf "$SHIFTDIR"
-nolib=$(mktemp -d) || exit 1
+nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/block-read-secrets.sh"
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-read-secrets.sh" >/dev/null 2>&1; echo $?)"
 rm -rf "$nolib"
