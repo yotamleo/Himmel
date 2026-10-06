@@ -15,11 +15,11 @@
   "audit": { "max_bytes": 1048576 },
   "servers": {
     "qmd": {
-      "verdict": "allow", "egress": "local", "note": "qmd HTTP daemon on localhost:8181 (user-scope registration)",
+      "verdict": "allow", "egress": "local", "note": "qmd HTTP service on localhost:8181 (user-scope registration)",
       "tools": { "query": "read", "get": "read", "multi_get": "read", "status": "read" }
     },
     "plugin_qmd_qmd": {
-      "verdict": "allow", "egress": "local", "note": "qmd@himmel plugin, same daemon",
+      "verdict": "allow", "egress": "local", "note": "qmd@himmel plugin, same service",
       "tools": { "query": "read", "get": "read", "multi_get": "read", "status": "read" }
     },
     "graphify": {
