@@ -15,10 +15,10 @@
 # --trust-reviewed (HIMMEL-3895): a PR touching a CI trust path
 # (scripts/ci/ci-trust-paths.txt, read from the default branch) merges through
 # merge-on-green.sh only on a trust-reviewed GO. The id names the independent
-# review (1-128 of [A-Za-z0-9._:-], e.g. the judge session) and is written as a
-# trust-reviewed= line INSIDE the mac (a separate domain tag, go-gate.sh's
-# go_mac), so it cannot be added to, or edited in, a GO after signing.
-# HIMMEL-3832: the id is the judge's qid, and go.sh refuses (exit 5) unless
+# review and is written as a trust-reviewed= line INSIDE the mac (a separate
+# domain tag, go-gate.sh's go_mac), so it cannot be added to, or edited in, a
+# GO after signing. HIMMEL-3832: the id is the judge's qid, which must match
+# [A-Za-z0-9][A-Za-z0-9._-]* (no colon), and go.sh refuses (exit 5) unless
 # <root>/<user>/<bucket>/verdicts/<qid>/*.md rules GO on that exact head
 # (go-gate.sh's go_trust_verdict holds the parse).
 #
