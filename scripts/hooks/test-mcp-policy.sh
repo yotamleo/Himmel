@@ -192,6 +192,11 @@ fi
 # Codex keeps its PreToolUse matchers disjoint (test-codex-hook-parity.sh), so
 # there the tracker and the Atlassian redirect share ONE mcp__.* chain:
 # mcp-policy.sh first, so a redirect deny still leaves an audit line.
+# ponytail: in Codex only, block-backend-tier's fail-closed branches (jq
+# missing, unparseable hook input) now also cover non-Atlassian MCP calls;
+# upgrade path = a pre-jq tool_name prefix check in block-backend-tier so a
+# non-registered prefix exits allow before those branches (8b pins the
+# well-formed case).
 if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__.*") | .hooks[].command | select(test("--sandbox mcp-policy\\.sh\\+block-backend-tier\\.sh\\z"))] | length == 1' "$REPO_ROOT/.codex/hooks.json" >/dev/null; then
     ok ".codex/hooks.json chains mcp-policy.sh then block-backend-tier.sh on mcp__.*"
 else
@@ -202,6 +207,23 @@ if jq -e '[.hooks.PreToolUse[] | select(.matcher=="mcp__plugin_atlassian_atlassi
 else
     bad ".claude/settings.json lost the Atlassian redirect"
 fi
+
+# --- 8b. the real Codex chain allows well-formed non-Atlassian MCP calls -----
+# Runs .codex/run-hook.sh exactly as .codex/hooks.json wires it, so the
+# adapter, the tracker and block-backend-tier all run.
+CHAIN_CMD="$REPO_ROOT/.codex/run-hook.sh"
+CHAIN_ARG="mcp-policy.sh+block-backend-tier.sh"
+for t in mcp__qmd__query mcp__nosuch__thing mcp__claude_ai_Gmail__send_message mcp__claude_ai_Atlassian_MCP__executeRead; do
+    : > "$MCP_POLICY_AUDIT_LOG"
+    out=$(call "$t" | bash "$CHAIN_CMD" --sandbox "$CHAIN_ARG" 2>&1)
+    rc=$?
+    lines=$(wc -l < "$MCP_POLICY_AUDIT_LOG" | tr -d ' ')
+    if [ "$rc" = 0 ] && ! printf '%s' "$out" | grep -qi 'deny' && [ "$lines" = 1 ]; then
+        ok "codex chain allows $t and audits it"
+    else
+        bad "codex chain on $t: rc=$rc audit-lines=$lines out=$(printf '%s' "$out" | head -c 200)"
+    fi
+done
 
 # --- 9. latency budget -------------------------------------------------------
 # Budget: p95 under MCP_POLICY_P95_BUDGET_MS (default 300 ms; idle is ~10x
@@ -218,6 +240,19 @@ for _ in $(seq 1 40); do
 done
 p95=$(sort -n "$TMP/lat" | awk '{a[NR]=$1} END{i=int(NR*0.95); if (i<1) i=1; print a[i]}')
 if [ "$p95" -lt "$budget" ]; then ok "latency p95 ${p95} ms < ${budget} ms"; else bad "latency p95 ${p95} ms >= ${budget} ms"; fi
+
+# The whole Codex chain (adapter + tracker + block-backend-tier) on a normal
+# call; its 60 s timeout is a ceiling, not the expected cost.
+chain_budget="${MCP_POLICY_CHAIN_P95_BUDGET_MS:-1000}"
+: > "$TMP/clat"
+for _ in $(seq 1 20); do
+    s=$(date +%s%N)
+    printf '%s' "$input" | bash "$CHAIN_CMD" --sandbox "$CHAIN_ARG" >/dev/null 2>&1
+    e=$(date +%s%N)
+    echo $(( (e - s) / 1000000 )) >> "$TMP/clat"
+done
+cp95=$(sort -n "$TMP/clat" | awk '{a[NR]=$1} END{i=int(NR*0.95); if (i<1) i=1; print a[i]}')
+if [ "$cp95" -lt "$chain_budget" ]; then ok "codex chain latency p95 ${cp95} ms < ${chain_budget} ms"; else bad "codex chain latency p95 ${cp95} ms >= ${chain_budget} ms"; fi
 
 echo
 echo "mcp-policy: $PASS passed, $FAIL failed"

@@ -3900,9 +3900,12 @@ if this PreToolUse hook is bypassed or disabled.
 ### MCP policy tracking (HIMMEL-4676)
 
 `scripts/hooks/mcp-policy.sh` is a **tracking + gating seam**, not a gate.
-It fires on every MCP call (matcher `mcp__.*`, wired in both
-`.claude/settings.json` and `.codex/hooks.json`, after
-`block-backend-tier.sh`) and, as shipped, **always allows**. It classifies each
+It fires on every MCP call (matcher `mcp__.*`): in `.claude/settings.json` as
+its own entry after `block-backend-tier.sh`; in `.codex/hooks.json`, whose
+PreToolUse matchers must stay disjoint, as one `mcp__.*` chain
+`mcp-policy.sh+block-backend-tier.sh` (so in Codex, backend-tier's fail-closed
+jq branches also cover non-Atlassian MCP calls — a recorded `ponytail:` in
+`test-mcp-policy.sh` §8). As shipped it **always allows**. It classifies each
 call against the registry `scripts/guardrails/mcp-policy.json` and records what
 it *would* do:
 
