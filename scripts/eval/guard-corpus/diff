@@ -351,12 +351,20 @@ def decision(rc, stdout):
         return "deny"
     if rc != 0:
         return rc
+    text = stdout.decode("utf-8", "replace")
+    bom = text.startswith("﻿")
     try:
-        out = json.loads(stdout.decode("utf-8", "replace"))
+        out = json.loads(text[1:] if bom else text)
     except ValueError:
         return "pass"
     if not isinstance(out, dict):
         return "pass"
+    if bom:
+        # HIMMEL-4586: the hooks doc says stdout is read as JSON when it starts
+        # with { "ignoring surrounding whitespace" and never mentions a BOM, so
+        # whether the harness honours this decision is undocumented. Inconclusive
+        # (ODD, exit 3), never `pass`: a deny must not score as an allow.
+        return "bom"
     if out.get("continue") is False:
         return "deny"
     hso = out.get("hookSpecificOutput")
@@ -631,7 +639,7 @@ def main(argv):
                   % (r["idx"], r["family"], r["transform"]))
         print("  rc not in {0,2}: %d" % len(odd))
         for r in odd[:50]:
-            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["rb"], r["rh"]))
+            print("    ODD-RC idx=%d base=%s head=%s" % (r["idx"], r["base"], r["head"]))
         print("  TIMEOUT RISK (>= %.1fs): %d" % (args.timeout_warn, len(slow)))
         for r in slow[:50]:
             print("    TIMEOUT-RISK idx=%d tb=%.2f th=%.2f transform=%s"

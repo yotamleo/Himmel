@@ -630,6 +630,34 @@ OUT14=$(python3 "$DIFF" --base "$TMP/deny-all-hook.sh" --head "$TMP/deny-all-hoo
 has "over-deny: allow-expected denials counted" "$OUT14" "OVER-DENY idx="
 hasnt "over-deny: count not zero" "$OUT14" "(denied by base 0;"
 
+# --- 15. HIMMEL-4586: BOM-prefixed JSON stdout is inconclusive, never a pass ---
+# Claude Code's docs say stdout is read as JSON when it starts with { and ends
+# with } "ignoring surrounding whitespace" and do not mention a UTF-8 BOM, so
+# whether a BOM-prefixed deny is honoured is undocumented: diff scores it ODD
+# (exit 3), never `pass`.
+printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"echo SENTINEL_DENY"},"expect":"deny"}' \
+  > "$TMP/one-row.jsonl"
+cat > "$TMP/bom-deny-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '\357\273\277{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"}}\n'
+exit 0
+STUB
+cat > "$TMP/bom-allow-hook.sh" <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '\357\273\277{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}\n'
+exit 0
+STUB
+chmod +x "$TMP/bom-deny-hook.sh" "$TMP/bom-allow-hook.sh"
+for kind in deny allow; do
+  OUT15=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/bom-$kind-hook.sh" \
+          --corpus "$TMP/one-row.jsonl" --jobs 1 2>&1); RC15=$?
+  if [ "$RC15" = "3" ]; then pass "bom-$kind: BOM-prefixed JSON is inconclusive => exit 3"
+  else fail "bom-$kind: expected exit 3, got $RC15"; fi
+  has "bom-$kind: row named ODD-RC" "$OUT15" "ODD-RC idx="
+done
+
 echo "----"
 echo "guard-corpus: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
