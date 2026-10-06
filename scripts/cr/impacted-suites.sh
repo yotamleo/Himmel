@@ -501,10 +501,12 @@ add_needle() {
 }
 
 # file_literal <path> — the text a suite would use to name the file: its
-# basename, or "<parent>/<name>" for a generic one.
+# basename, or "<parent>/<name>" for a generic one. An extensionless basename
+# (`diff`, `gen`) is a common word, so it takes the path rule too (HIMMEL-4606:
+# scripts/eval/guard-corpus/diff listed 362 suites on a bare `diff`).
 file_literal() {
     local f="$1" name="${1##*/}" parent
-    if grep -Eq "$generic_re" <<< "$name"; then
+    if grep -Eq "$generic_re" <<< "$name" || case "$name" in *.*) false ;; *) true ;; esac; then
         case "$f" in
             */*) parent="${f%/*}"; printf '%s/%s\n' "${parent##*/}" "$name" ;;
             # Repo root: no parent to qualify it, so the bare name is the only
