@@ -80,7 +80,7 @@ chmod +x "$WS/bin/graphify"
 SCRIPT="$REPO/scripts/graphify/semantic-update.sh"
 export GRAPHIFY_LEDGER="$WS/ledger.jsonl" CLAUDE_GLM_CONFIG_DIR="$WS/glm" TMPDIR="$WS/tmp"
 export GRAPHIFY_SEMANTIC_LOCK_WAIT=0
-unset ANTHROPIC_BASE_URL GRAPHIFY_OUT OLLAMA_HOST OLLAMA_BASE_URL OLLAMA_MODEL
+unset ANTHROPIC_BASE_URL GRAPHIFY_OUT OLLAMA_HOST OLLAMA_BASE_URL OLLAMA_MODEL OLLAMA_API_KEY
 
 # new_corpus <dir>: two docs + a live graph holding an AST node per doc, the
 # code node "code_a", and one stale semantic node for a.md.
