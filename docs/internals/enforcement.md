@@ -1448,7 +1448,18 @@ through `main_checkout_verdict`. The target covers:
   wrapper carries a `GIT_*` word, or when an `xargs -I` string lands in a
   global option, the subcommand, or `--output` and its operand (attached or
   the next word). A bare `xargs git` reads its
-  subcommand from stdin, so it fails closed too.
+  subcommand from stdin, so it fails closed too. When stdin words land among
+  the subcommand's arguments (no `-I` string, or the string sits there), an
+  injected option such as `--output=<primary>/x` could turn a read into a
+  write anywhere, so the clause is denied. The exceptions are subcommands
+  with no file-writing option: `add`/`stage`/`rm`/`checkout`/`restore`
+  (their resolved repo is still checked) and the reads `merge-base`,
+  `ls-tree`, `ls-files`, `rev-parse`, `cat-file`, `status`. Words past a bare
+  `--` or `--end-of-options` are never read as options, so they are exempt,
+  unless the word before is an option that may take it as its operand. The
+  cost: a read such as `… | xargs -I{} git log -1 {}` is denied from any cwd;
+  write `git log -1 --end-of-options {}` (revisions) or `-- {}` (paths)
+  instead.
 
 HIMMEL-4365 also checks the file that `--output <file>` names on a read
 subcommand (`diff`, `log`, `show`) as a write operand. So `git -C <primary>

@@ -3962,7 +3962,7 @@ _bwimc_git_check_common_owner() {
 # parallel, `find -exec`) still hide a git; upgrade path: a wrapper added
 # there is covered here for free.
 _bwimc_git_wrapped() {
-    local wsp wsp0 wdir apfx strip wu=0 t wl k xt=() xi=0 xg="" xa=0 xr=""
+    local wsp wsp0 wdir apfx strip wu=0 t wl k xt=() xi=0 xg="" xa=0 xr="" xj=0
     [ "${_bwimc_g_wrap:-0}" = 0 ] || return 0
     _bwimc_strip_prefix "$1"
     wsp="$_BWIMC_SP"; wsp0="$_BWIMC_SP0"; wdir="$_BWIMC_SPDIR"
@@ -3989,12 +3989,19 @@ _bwimc_git_wrapped() {
             [ "$xi" -gt 0 ] || return 0
             # The replacement string matters where it picks the target: a
             # global option or its operand, the subcommand, or --output and
-            # its operand, attached or the next word (k=4).
+            # its operand, attached or the next word (k=4). Past a bare `--`
+            # or `--end-of-options` (k=5) no word, stdin's included, is read
+            # as an option (a pathspec, or a revision). Elsewhere
+            # in the subcommand's arguments (or appended, with no -I
+            # string) stdin words may be options: xj.
             k=0
             while [ "$xi" -lt "${#xt[@]}" ]; do
                 t="${xt[$xi]}"
-                if [ "$k" != 2 ] || [ "${t#--output}" != "$t" ]; then
+                if [ "$k" = 5 ]; then :
+                elif [ "$k" != 2 ] || [ "${t#--output}" != "$t" ]; then
                     case "$t" in *"${xr:-$'\n'}"*) xa=1 ;; esac
+                elif [ -n "$xr" ]; then
+                    case "$t" in *"$xr"*) xj=1 ;; esac
                 fi
                 if [ "$k" = 0 ]; then k=1
                 elif [ "$k" = 1 ]; then
@@ -4005,10 +4012,17 @@ _bwimc_git_wrapped() {
                     esac
                 elif [ "$k" = 3 ]; then k=1
                 elif [ "$k" = 4 ]; then k=2
+                elif [ "$k" = 5 ]; then :
                 elif [ "$(_bwimc_unq "$t")" = --output ]; then k=4
+                elif [ "$(_bwimc_unq "$t")" = -- ] || [ "$(_bwimc_unq "$t")" = --end-of-options ]; then
+                    # ...unless the word before may be an option taking it as
+                    # its operand (`--grep --`).
+                    case "$(_bwimc_unq "${xt[$((xi-1))]}")" in -*=*|[!-]*) k=5 ;; esac
                 fi
                 xg="$xg$t "; xi=$((xi+1))
-            done ;;
+            done
+            # Without -I/-i/--replace, xargs appends stdin words to git.
+            [ -n "$xr" ] || [ "$k" = 5 ] || xj=1 ;;
         *) return 0 ;;
     esac
     apfx="${1:0:$((${#1} - ${#wsp0}))}"
@@ -4024,9 +4038,9 @@ _bwimc_git_wrapped() {
     fi
     local saved_cwd="$_bwimc_gcwd" saved_unres="$_bwimc_gcwd_unres"
     _bwimc_gcwd="$2"; _bwimc_gcwd_unres="$wu"
-    _bwimc_g_wrap=1; [ -z "$xg" ] || _bwimc_g_xargs=1
+    _bwimc_g_wrap=1; [ -z "$xg" ] || _bwimc_g_xargs=1; _bwimc_g_xinj="$xj"
     if [ -n "$xg" ]; then _bwimc_git_clause "$apfx$xg"; else _bwimc_git_clause "$apfx$wsp"; fi
-    _bwimc_g_wrap=0; _bwimc_g_xargs=0
+    _bwimc_g_wrap=0; _bwimc_g_xargs=0; _bwimc_g_xinj=0
     _bwimc_gcwd="$saved_cwd"; _bwimc_gcwd_unres="$saved_unres"
 }
 
@@ -4319,6 +4333,20 @@ _bwimc_git_clause() {
     if [ "${_bwimc_g_xargs:-0}" = 1 ] && [ -z "$sub" ]; then
         _BWIMC_GIT_SUB="(xargs stdin)"
         _bwimc_deny "unresolved-git-target" "$1" "$dir" ""
+    fi
+    # HIMMEL-4365: xargs puts stdin words among the subcommand's arguments
+    # (no -I string, or the string sits there), so an option such as
+    # `--output=<primary>/x` can turn a read into a write anywhere. Only
+    # subcommands with no option that writes a file keep the normal check:
+    # the index/work-tree writers (whose resolved repo is checked below) and
+    # a few plain reads. grep is not one (-O runs a command), nor rev-list,
+    # which takes --output.
+    if [ "${_bwimc_g_xinj:-0}" = 1 ]; then
+        case "$sub" in
+            add|stage|rm|checkout|restore|merge-base|ls-tree|ls-files|rev-parse|cat-file|status) ;;
+            *) _BWIMC_GIT_SUB="$sub (xargs args)"
+               _bwimc_deny "unresolved-git-target" "$1" "$dir" "" ;;
+        esac
     fi
     # HIMMEL-4365: `--output <file>` (the diff/log/show family) writes FILE,
     # so a read subcommand can still overwrite a primary file (`git -C
@@ -4761,6 +4789,7 @@ _bwimc_g_netop=0
 _bwimc_g_jail=0
 _bwimc_g_wrap=0
 _bwimc_g_xargs=0
+_bwimc_g_xinj=0
 while IFS= read -r _bwimc_clause; do
     [ -n "$(printf '%s' "$_bwimc_clause" | tr -d '[:space:]')" ] || continue
     # HIMMEL-4010: substitution bodies arrive as their own clauses; the
