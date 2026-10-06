@@ -126,7 +126,7 @@ case "$tool" in
         esac
 
         # Words: split on whitespace and shell separators, quotes dropped.
-        words=$(printf '%s' "$cmd" | tr ';|&()<>`"'"'"'\n\t' '            ')
+        words=$(printf '%s' "$cmd" | tr ';|&()<>`"'"'"'\n\t\r' '             ')
 
         if has_word git && has_word push commit merge rebase reset cherry-pick revert; then
             deny "git-write" "mutating git verb"
