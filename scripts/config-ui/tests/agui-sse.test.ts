@@ -255,6 +255,38 @@ test("a subagent file symlinked out of the session directory is not followed", a
   expect(events.some((e) => (e as any).toolCallId === "toolu_s1")).toBe(false);
 });
 
+test("a subagent transcript longer than one read chunk still lands before the journal's later lines", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  // ~400 KB of the critic's reading, timestamped inside its run (before the Agent call's result at 3.5s)
+  const filler = Array.from({ length: 1600 }, (_, i) => JSON.stringify({
+    type: "assistant", isSidechain: true, agentId: "a1b2c3", uuid: `f-${i}`, sessionId: "sess-agents",
+    timestamp: `2026-10-06T12:00:02.${String(500 + Math.floor(i / 4)).padStart(3, "0")}Z`,
+    message: { id: `mf-${i}`, role: "assistant", model: "claude-sonnet-5-5", content: [{ type: "text", text: "x".repeat(220) }] },
+  })).join("\n") + "\n";
+  journal(h, "-proj", RUN, mainBody);
+  subagentFile(h, subBody + filler);
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  const runs = events.filter((e) => String(e.type).startsWith("RUN_"));
+  expect(runs.map((e) => e.type)).toEqual(["RUN_STARTED", "RUN_FINISHED"]); // no late side runs: nothing overtook
+  const lastFiller = events.findLastIndex((e) => e.messageId === "f-1599");
+  const agentResult = events.findIndex((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "toolu_agent");
+  expect(lastFiller).toBeGreaterThan(-1);
+  expect(lastFiller).toBeLessThan(agentResult);
+});
+
+test("a subagent's name is the Agent call's free-text description: it passes the redactor", async () => {
+  const h = home();
+  const canary = "ghp_" + "A1b2".repeat(8);
+  journal(h, "-proj", RUN, readFileSync(join(FIX, "agents.jsonl"), "utf8").replace('"description":"Review the diff"', `"description":"Review ${canary}"`));
+  const { port } = boot(h);
+  const text = await (await get(port, RUN)).text();
+  expect(text).not.toContain(canary);
+  const read = parse(text).find((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_s1") as any;
+  expect(read.agent).toMatchObject({ id: "a1b2c3", role: "critic" });
+});
+
 test("a long agent name is an identifier, not a secret: it is not redacted", async () => {
   const h = home();
   const name = "HIMMEL-4669-N1363-agui-agent-design-and-more";

@@ -42,7 +42,9 @@
 // Failures: TOOL_CALL_RESULT.failure is "denied" (a hook or permission
 // refusal), "suite" (a test run that exited non-zero), "error" (any other
 // is_error), or "blocked" (a call reporting a BLOCKED marker, error or not);
-// an assistant text that reports BLOCKED carries failure "blocked".
+// an assistant text that reports BLOCKED carries failure "blocked", and a
+// subagent's API-error text failure "error". When only an Agent call's result
+// names its subagent, that result carries the identity as `subagent`.
 // threadId is the journal's sessionId (or the caller's), runId the prompt
 // record's uuid. Agent output with no prompt before it opens an implicit run.
 //
@@ -172,15 +174,18 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     return a;
   }
 
-  // An Agent call's result names the subagent it ran: bind it if its prompt did not.
-  function bindResult(rec: Rec, toolCallId: string) {
+  // An Agent call's result names the subagent it ran: bind it if its prompt did not. The identity it learns
+  // rides that result as `subagent`, since the subagent may already have sent its last START.
+  function bindResult(rec: Rec, toolCallId: string): AgentInfo | undefined {
     const spawn = spawns.get(toolCallId);
-    if (!spawn) return;
+    if (!spawn) return undefined;
     spawns.delete(toolCallId);
     const r = isObject(rec.toolUseResult) ? rec.toolUseResult : undefined;
     const id = str(r?.agentId);
-    if (!id || spawn.id) return;
-    agents.set(id, clean({ ...spawn, id, model: agents.get(id)?.model ?? str(r?.resolvedModel) ?? spawn.model }));
+    if (!id || spawn.id) return undefined;
+    const info = clean({ ...spawn, id, model: agents.get(id)?.model ?? str(r?.resolvedModel) ?? spawn.model });
+    agents.set(id, info);
+    return info;
   }
 
   function classify(call: PendingCall | undefined, isError: boolean, text: string): Failure | undefined {
@@ -222,10 +227,10 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     }
   }
 
-  function textMessage(rec: Rec, out: AguiEvent[], messageId: string, role: "user" | "assistant", text: string) {
+  function textMessage(rec: Rec, out: AguiEvent[], messageId: string, role: "user" | "assistant", text: string, failed?: "error") {
     const ts = epochMs(rec);
-    const blocked = role === "assistant" && BLOCKED.test(text);
-    out.push({ type: "TEXT_MESSAGE_START", messageId, role, agent: agentOf(rec), ...(blocked ? { failure: "blocked" as const } : {}), ...ts });
+    const failure = failed ?? (role === "assistant" && BLOCKED.test(text) ? "blocked" as const : undefined);
+    out.push({ type: "TEXT_MESSAGE_START", messageId, role, agent: agentOf(rec), ...(failure ? { failure } : {}), ...ts });
     out.push({ type: "TEXT_MESSAGE_CONTENT", messageId, delta: text, ...ts });
     out.push({ type: "TEXT_MESSAGE_END", messageId, ...ts });
   }
@@ -275,11 +280,12 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
     const call = pending.get(toolCallId);
     const content = resultText(block.content);
     const failure = classify(call, isError, content);
+    const subagent = bindResult(rec, toolCallId);
     out.push({
       type: "TOOL_CALL_RESULT", messageId: `${toolCallId}:result`, toolCallId, role: "tool",
-      content, ...(isError ? { isError: true as const } : {}), ...(failure ? { failure } : {}), ...epochMs(rec),
+      content, ...(isError ? { isError: true as const } : {}), ...(failure ? { failure } : {}),
+      ...(subagent ? { subagent } : {}), ...epochMs(rec),
     });
-    bindResult(rec, toolCallId);
     pending.delete(toolCallId);
     if (isError) return;
     if (call?.write) {
@@ -337,7 +343,7 @@ export function createJournalMapper(opts: MapperOptions = {}): JournalMapper {
       const text = blocks.map((b) => str(b.text) ?? "").join("\n") || "API error";
       if (rec.isSidechain === true) { // a subagent's failure, not the run's
         ensureRun(rec, out);
-        textMessage(rec, out, str(rec.uuid) ?? `error-${stats.lines}`, "assistant", text);
+        textMessage(rec, out, str(rec.uuid) ?? `error-${stats.lines}`, "assistant", text, "error");
         return true;
       }
       out.push({ type: "RUN_ERROR", message: text, ...(str(rec.error) ? { code: str(rec.error) } : {}), ...epochMs(rec) });

@@ -37,7 +37,7 @@ export type TextMessageStartEvent = Base & {
   messageId: string;
   role: "assistant" | "user";
   agent?: AgentInfo;
-  failure?: "blocked"; // the text reports a BLOCKED status
+  failure?: "blocked" | "error"; // the text reports a BLOCKED status, or is a subagent's API error
 };
 export type TextMessageContentEvent = Base & { type: "TEXT_MESSAGE_CONTENT"; messageId: string; delta: string };
 export type TextMessageEndEvent = Base & { type: "TEXT_MESSAGE_END"; messageId: string };
@@ -59,6 +59,7 @@ export type ToolCallResultEvent = Base & {
   role: "tool";
   isError?: true; // extra field (the schema is loose): the tool reported a failure
   failure?: Failure; // set whenever isError is, and on a call that reports BLOCKED
+  subagent?: AgentInfo; // an Agent call's result: the subagent it ran, when only the result named it
 };
 
 // RFC 6902 operations; the mapper only ever adds.

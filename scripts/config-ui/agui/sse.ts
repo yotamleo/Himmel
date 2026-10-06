@@ -56,15 +56,20 @@ export type StreamOpts = {
 // The fields that only identify (ids, names, roles, times). The shared redactor
 // treats any 32+ char run as a secret, which would collapse every session UUID
 // and toolu_ id into one; payload fields (deltas, results, messages, state) pass it.
-// `agent` (who acted: a session or subagent name, role, model) and `failure` (an enum) identify too: a leg's
-// session name is often 32+ chars and would otherwise be redacted to nothing.
-const ID_FIELDS = new Set(["type", "threadId", "runId", "messageId", "toolCallId", "parentMessageId", "toolCallName", "role", "timestamp", "agent", "failure"]);
+// `failure` (an enum) identifies too. `agent` / `subagent` (who acted) are identifiers except a subagent's
+// name, which is the free text of the Agent call's description and so passes the redactor; the session's own
+// name (id "main", its agent-name record) is kept, since a leg's is often 32+ chars and would be blanked.
+const ID_FIELDS = new Set(["type", "threadId", "runId", "messageId", "toolCallId", "parentMessageId", "toolCallName", "role", "timestamp", "failure"]);
+const AGENT_FIELDS = new Set(["agent", "subagent"]);
+const redactAgent = (a: unknown, redact: (value: unknown) => unknown) =>
+  a && typeof a === "object" && (a as { id?: unknown }).id === "main" ? a : { ...(a as object), name: redact((a as { name?: unknown }).name) };
 export function redactPayload(e: AguiEvent, redact: (value: unknown) => unknown): AguiEvent {
-  return Object.fromEntries(Object.entries(e).map(([k, v]) => [k, ID_FIELDS.has(k) ? v : redact(v)])) as AguiEvent;
+  return Object.fromEntries(Object.entries(e).map(([k, v]) =>
+    [k, ID_FIELDS.has(k) ? v : AGENT_FIELDS.has(k) ? redactAgent(v, redact) : redact(v)])) as AguiEvent;
 }
 
 // One followed file: the session journal, or one of its subagents' transcripts.
-type Source = { path: string; fh?: FileHandle; offset: number; tail: string; utf8: TextDecoder; lastTs: number };
+type Source = { path: string; fh?: FileHandle; offset: number; size: number; tail: string; utf8: TextDecoder; lastTs: number };
 type Line = { text: string; ts: number; order: number };
 const TS = /"timestamp"\s*:\s*"([^"]+)"/;
 
@@ -92,11 +97,11 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
   const mapper = createJournalMapper({ threadId: o.threadId });
   const enc = new TextEncoder();
   const started = Date.now();
-  const src = (p: string): Source => ({ path: p, offset: 0, tail: "", utf8: new TextDecoder(), lastTs: -Infinity });
+  const src = (p: string): Source => ({ path: p, offset: 0, size: 0, tail: "", utf8: new TextDecoder(), lastTs: -Infinity });
   const main = src(path);
   const subs: Source[] = [];
   const known = new Set<string>([path]);
-  let held: Line[] = []; // subagent lines newer than the journal has been read to
+  let held: Line[] = []; // lines read but not yet safe to map (see the merge in pull)
   let order = 0, grewAt = started, beatAt = started, runOpen = false, closed = false;
   let timer: ReturnType<typeof setTimeout> | undefined, deadline: ReturnType<typeof setTimeout> | undefined, wake: (() => void) | undefined;
   const cleanup = () => {
@@ -128,7 +133,7 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
       if (closed) { await h.close(); return []; } // cancelled while opening: cleanup ran before fh existed
       s.fh = h;
     }
-    const size = (await s.fh.stat()).size;
+    const size = (s.size = (await s.fh.stat()).size);
     if (size < s.offset) return null;
     if (size === s.offset) return [];
     const buf = Buffer.alloc(Math.min(CHUNK, size - s.offset));
@@ -161,16 +166,18 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
           for (const p of await subagentFiles(path, known)) { known.add(p); subs.push(src(p)); }
           const fromMain = await read(main);
           if (fromMain === null) return end(c); // truncated or replaced: nothing left to follow
+          held.push(...fromMain);
           for (const s of subs) held.push(...((await read(s)) ?? [])); // a shrunk subagent file just stops growing
-          // While the journal still has unread bytes, a subagent line later than its last line waits for them,
-          // so a subagent's records land after the Agent call that spawned it.
-          const behind = main.fh && main.offset < (await main.fh.stat()).size;
-          const cut = behind ? main.lastTs : Infinity;
+          // A file with unread bytes may still hold lines older than another file's: lines are released only
+          // up to the oldest point such a file has been read to, so a later line never overtakes an earlier one
+          // (a subagent's records land after the Agent call that spawned it, and before the turn's end).
+          const behind = [main, ...subs].filter((s) => s.offset < s.size);
+          const cut = behind.length ? Math.min(...behind.map((s) => s.lastTs)) : Infinity;
           const ready = held.filter((l) => l.ts <= cut);
           held = held.filter((l) => l.ts > cut);
-          const events = map([...fromMain, ...ready]);
+          const events = map(ready);
           if (events.length) { c.enqueue(frame(events)); return; }
-          if (fromMain.length || ready.length || behind) continue;
+          if (ready.length || behind.length) continue;
           if (!runOpen && Date.now() - grewAt >= o.idleMs) {
             const rest = [main, ...subs].filter((s) => s.tail).map((s) => ({ text: s.tail, ts: s.lastTs, order: order++ }));
             for (const s of [main, ...subs]) s.tail = "";

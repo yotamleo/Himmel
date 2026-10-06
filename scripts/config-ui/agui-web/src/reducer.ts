@@ -27,6 +27,7 @@ export type View = {
   t0?: number; elapsed: number; eventCount: number;
   entries: Entry[]; texts: Record<string, Text>; tools: Record<string, Tool>;
   agents: Record<string, Agent>; agentOrder: string[]; failures: FailureRef[];
+  sideRun?: boolean; // the open run is a background subagent's one-record run, not a turn
   lanes: number; laneEnds: Record<string, (number | null)[]>; // lanes: the strip's rows, every agent's summed
   state: any;
 };
@@ -106,13 +107,15 @@ export function reduce(prev: View, e: Ev): View {
   switch (e.type) {
     case "RUN_STARTED": {
       // A run a background subagent opened for one late record is not a turn of the session.
-      if (e.agent?.id && e.agent.id !== "main") return withAgent({ ...v, status: "running", runId: e.runId }, e).v;
+      if (e.agent?.id && e.agent.id !== "main") return withAgent({ ...v, status: "running", runId: e.runId, sideRun: true }, e).v;
       const n = v.entries.filter((en) => en.kind === "turn").length + 1;
-      return { ...v, status: "running", runId: e.runId, entries: [...v.entries, { kind: "turn", id: String(e.runId ?? n), n, at }] };
+      return { ...v, status: "running", runId: e.runId, sideRun: false, entries: [...v.entries, { kind: "turn", id: String(e.runId ?? n), n, at }] };
     }
     // A run that ends closes every call still open: finished ones as done (with no result), failed ones as errors.
-    // Likewise a text message that never got TEXT_MESSAGE_END stops being open.
+    // Likewise a text message that never got TEXT_MESSAGE_END stops being open. A background subagent's
+    // one-record run closes nothing: its calls are still running, and their results arrive in later runs.
     case "RUN_FINISHED": {
+      if (v.sideRun) return { ...v, status: "finished", sideRun: false };
       for (const t of Object.values(v.tools)) if (t.status === "running") v = finish(v, t.id, at, { status: "done" });
       return { ...closeTexts(v), status: "finished" };
     }
@@ -169,6 +172,8 @@ export function reduce(prev: View, e: Ev): View {
     case "TOOL_CALL_RESULT": {
       const t = v.tools[e.toolCallId];
       if (!t) return v;
+      // An Agent call's result may be the first event to name the subagent it ran.
+      if (e.subagent?.id) v = withAgent(v, { agent: e.subagent } as Ev).v;
       const failure = failureOf(e);
       return finish(v, t.id, at, { status: e.isError === true ? "error" : "done", result: String(e.content ?? ""), ...(failure ? { failure } : {}) });
     }

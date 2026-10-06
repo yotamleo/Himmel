@@ -185,6 +185,22 @@ describe("agents and failures", () => {
     valid(evs);
   });
 
+  test("a subagent's API error is a failed text of that subagent, never the run's RUN_ERROR", () => {
+    const evs = mapJournal('{"type":"assistant","isSidechain":true,"agentId":"q1","isApiErrorMessage":true,"uuid":"e1","sessionId":"s","message":{"id":"m","role":"assistant","content":[{"type":"text","text":"API Error: 529 overloaded"}]}}\n').events;
+    expect(types(evs)).not.toContain("RUN_ERROR");
+    expect(evs.find((e) => e.type === "TEXT_MESSAGE_START")).toMatchObject({ failure: "error", agent: { id: "q1" } });
+  });
+
+  test("when only the Agent call's result names the subagent, that result carries its identity", () => {
+    const lines = readFileSync(fixture("agents.jsonl"), "utf8").replace(
+      '"content":"Review the diff in scripts/x.sh for correctness."}', '"content":"a brief that matches no spawn prompt"}');
+    const evs = mapJournal(lines).events as any[];
+    expect(evs.find((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_s1").agent.name).toBe("agent a1b2c3");
+    expect(evs.find((e) => e.type === "TOOL_CALL_RESULT" && e.toolCallId === "toolu_agent").subagent)
+      .toMatchObject({ id: "a1b2c3", name: "Review the diff", role: "critic", parentToolCallId: "toolu_agent" });
+    expect(result("toolu_agent").subagent).toBeUndefined(); // bound by its prompt already: nothing new to say
+  });
+
   test("failures are classified: suite, denied, blocked, error", () => {
     expect(result("toolu_s1").failure).toBeUndefined();
     expect(result("toolu_suite")).toMatchObject({ isError: true, failure: "suite" });

@@ -229,6 +229,25 @@ describe("agents and failures", () => {
     expect(w.entries).toEqual([{ kind: "turn", id: "a", n: 1, at: 0 }, { kind: "turn", id: "b", n: 2, at: 9 }]);
   });
 
+  test("a background subagent's one-record run ends without settling its call; the result settles it", () => {
+    const x = { id: "x", name: "late", role: "subagent" };
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "a", timestamp: 0 }, { type: "RUN_FINISHED", timestamp: 5 },
+      { type: "RUN_STARTED", runId: "x:1", agent: x, timestamp: 6 },
+      { type: "TOOL_CALL_START", toolCallId: "b", toolCallName: "Bash", agent: x, timestamp: 6 }, { type: "RUN_FINISHED", timestamp: 6 },
+      { type: "RUN_STARTED", runId: "x:2", agent: x, timestamp: 9 }]);
+    expect(w.tools.b.status).toBe("running");
+    const done = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "b", content: "ok", timestamp: 9 }, { type: "RUN_FINISHED", timestamp: 9 }], w);
+    expect(done.tools.b).toMatchObject({ status: "done", result: "ok", end: 9 });
+  });
+
+  test("an Agent call's result that names its subagent updates that agent", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 },
+      { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Agent", timestamp: 1 },
+      { type: "TOOL_CALL_START", toolCallId: "s", toolCallName: "Read", agent: { id: "q", name: "agent q", role: "subagent" }, timestamp: 2 },
+      { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x", subagent: { id: "q", name: "tests", role: "critic", parentToolCallId: "a" }, timestamp: 3 }]);
+    expect(w.agents.q).toMatchObject({ name: "tests", role: "critic", parentToolCallId: "a", calls: 1 });
+  });
+
   test("a run a background subagent opened is not a turn", () => {
     const w = reduceAll([{ type: "RUN_STARTED", runId: "a", timestamp: 0 }, { type: "RUN_FINISHED", timestamp: 5 },
       { type: "RUN_STARTED", runId: "x:1", agent: { id: "x", name: "late", role: "subagent" }, timestamp: 6 }, { type: "RUN_FINISHED", timestamp: 7 }]);
