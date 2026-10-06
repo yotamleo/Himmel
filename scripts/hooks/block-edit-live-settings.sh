@@ -2217,7 +2217,8 @@ _dc_receiver() {
 # full like any other line.
 _dc_data_bodies() {
     local d=' ' s=$2 line l2 end='' dash='' w seg pre rcv out='' bd='' hre
-    local bb='' bo='' bs='' u ure ore lre fdre
+    local bb='' bo='' bs='' u ure ore lre fdre tg='' t
+    local -a tw
     fdre='>&[[:space:]]*([^12[:space:]-]|[12][^[:space:];&|)<>])'
     hre='<<-?[[:space:]]*['"'"'"\\]([A-Za-z0-9_]+)'
     while [[ $s =~ $hre ]]; do
@@ -2276,9 +2277,8 @@ _dc_data_bodies() {
         case "$u" in *" $w "*) continue ;; esac
         # a body piped on (`| bash`), or written into a process substitution
         # or a file descriptor other than stdout/stderr (`> >(bash)`, `>&3`,
-        # `>&10`, `>&$fd`), is not data
-        # ponytail: a body written to a file the command then runs
-        # (`> x.sh` … `bash x.sh`) still reads as data, as on main; HIMMEL-4299
+        # `>&10`, `>&$fd`), is not data; one written to a file is judged
+        # below, where the file's name is looked for again (HIMMEL-4299)
         case "${line##*<<}" in *'|'*) continue ;; esac
         case "$line" in *'>('*|*/dev/fd/*|*/proc/*/fd*) continue ;; esac
         [[ ! $line =~ $fdre ]] || continue
@@ -2299,6 +2299,19 @@ _dc_data_bodies() {
             case "$pre" in *'(') continue ;; esac
         fi
         end=$w
+        # the files the body is written to: each `>`/`>>` target, and tee's
+        # operands (leaf names only)
+        s=$line
+        while [[ $s =~ \>[\>\|]?[[:space:]]*([^[:space:]\;\&\|\<\>\(\)]+) ]]; do
+            tg="$tg ${BASH_REMATCH[1]##*/}"
+            s=${s#*"${BASH_REMATCH[0]}"}
+        done
+        if [ "$rcv" = tee ]; then
+            read -r -a tw <<< "${seg#*tee}"
+            for s in ${tw[@]+"${tw[@]}"}; do
+                case "$s" in -*) ;; *) tg="$tg ${s##*/}" ;; esac
+            done
+        fi
     done <<< "$1"
     [ -z "$bb" ] || { out=$out$bo bd=$bd$bb _DCNB=x; }
     [ -n "$_DCNB" ] || return 1
@@ -2312,13 +2325,54 @@ _dc_data_bodies() {
     [[ ! $out =~ (^|[;\&[:space:]])(\}|\)|done|fi|esac)[[:space:]]*([0-9]*[\<\>]|\|) ]] || return 1
     [[ ! $out =~ (^|[^a-z0-9_])(alias|hash|enable|function|exec|coproc)([^a-z0-9_]|$) ]] || return 1
     case "$out" in *'>('*|*/dev/fd/*|*/proc/*/fd*) return 1 ;; esac
-    # ponytail: a name spelled through an expansion (`PA$'T'H=`,
-    # `declare -n p=…`) reads as data, as on main; HIMMEL-4304
     u='(^|[^-a-z0-9_./{$])(path|source|eval)([^-a-z0-9_./]|$)'
     [[ ! $out =~ $u ]] || return 1
     u='(^|[;&|({[:space:]])\.[[:space:]]+[^=!<>|&[:space:]]'
     [[ ! $out =~ $u ]] || return 1
     [[ ! $out =~ (^|[^a-z0-9_])(cat|tee|git|gh)[[:space:]]*\([[:space:]]*\) ]] || return 1
+    # HIMMEL-4304: a name spelled through an expansion (`PA${x}TH=`,
+    # `declare PA$'T'H`, `printf -v`, `read`, `declare -n`) can rebind the
+    # receiver unseen, so any `$` or backtick outside the bodies voids the
+    # data read; the `$(cat <<` that opens a body inside a message is not one
+    u=${out//\$(cat <</}
+    u=${u//\$(\/bin\/cat <</}
+    u=${u//\$(\/usr\/bin\/cat <</}
+    case "$u" in *'$'*|*'`'*) return 1 ;; esac
+    # HIMMEL-4299: a body the command can run is not data — any shell or
+    # interpreter word in the command, or the file the body was written to
+    # named again (`> /tmp/x.sh` … `/tmp/x.sh`, `chmod +x x.sh; ./x.sh`)
+    u='(^|[^-a-z0-9_.])(bash|sh|zsh|dash|ksh|mksh|ash|fish|python[0-9.]*|node|nodejs|perl|ruby|php|deno|bun|lua|tclsh|osascript)([^-a-z0-9_]|$)'
+    [[ ! $out =~ $u ]] || return 1
+    # each separator becomes two spaces, so a match consumes only its own
+    # and adjacent names (`>x.sh;x.sh`) both count
+    u="  ${out//[^a-z0-9_.+-]/  }  "
+    read -r -a tw <<< "$tg"
+    for t in ${tw[@]+"${tw[@]}"}; do
+        t=${t//[^a-z0-9_.+-]/ }
+        t=${t##* }
+        [ -n "$t" ] || continue
+        s=${u//" $t "/}
+        [ $(( (${#u} - ${#s}) / (${#t} + 2) )) -lt 2 ] || return 1
+    done
+    # J1909 B3: a word with a glob (`gx.s?`, `/tmp/d/gx.*`, `./gx.[s]h`) can
+    # name the file again too. Each such word's leaf is matched against each
+    # written leaf, as the literal names are; a leaf with an extglob group
+    # (`gx.@(sh)`, `|` split or not) is not modelled, so it counts (fail
+    # closed).
+    if [ -n "$tg" ]; then
+        case $- in *f*) s=1 ;; *) s=0 ;; esac
+        set -f
+        for w in ${out//[;&|<>]/ }; do
+            case "$w" in *[*?[]*|*[@+!?*]'('*) : ;; *) continue ;; esac
+            w=${w##*/}
+            case "$w" in *[\(\)]*) [ "$s" = 1 ] || set +f; return 1 ;; esac
+            for t in ${tw[@]+"${tw[@]}"}; do
+                # shellcheck disable=SC2053 # $w is the glob, on purpose
+                if [[ ${t##*/} == $w ]]; then [ "$s" = 1 ] || set +f; return 1; fi
+            done
+        done
+        [ "$s" = 1 ] || set +f
+    fi
     _DCNB=$out _DCBD=$bd
 }
 
@@ -2629,6 +2683,8 @@ has_brace_climb_word() {
 # this function needed to grow to close the residual.
 # ponytail: a relative `find … -exec` naming `.claude` as its target is still
 # not matched by either mechanism — the remaining documented residual.
+# (A settings-named GLOB leaf behind a cd/pushd is resolved against the cd
+# bases — _cd_bases, HIMMEL-4394; the symlink residual below is unchanged.)
 # ponytail: a cd/pushd/popd/-C matched here relocates the real target
 # directory, but neither _check_write_operand()'s `wabs` nor check_target()'s
 # own relative-join (both use the fixed PreToolUse $cwd) adjust for it — so
@@ -2684,7 +2740,7 @@ _settings_leaf_candidates() {
     local leaf="$1" glob="$2" a pat pre rest nc=0 n
     _SLC=''
     case "$leaf" in
-        *[*?[]*|*'{'*|*'~'*|*:*|*.|*' ') : ;;
+        *[*?[]*|*'{'*|*'~'*|*:*|*.|*' '|*'('*|*')'*) : ;;
         *) return 0 ;;
     esac
     a=${leaf%%:*}
@@ -2704,6 +2760,21 @@ _settings_leaf_candidates() {
     fi
     if [ "$glob" = 1 ]; then
         pat=$leaf
+        # HIMMEL-4394: an extglob group with its operator (`@(…)`, `+(…)`,
+        # `!(…)`, `?(…)`, `*(…)`) is read as `*`, a superset of what it
+        # matches (`!(x)` included); a stray `(` or `)` (a group the
+        # fallback split cut) is `*` too. The fold runs from a group's
+        # operator to the LAST `)` on purpose: one `*` for all of it is a
+        # superset however groups nest or hold `|` (J1909 B1; a first-`)`
+        # fold would keep `|c` of `@(a|b@(x)|c)` as literal text).
+        while :; do
+            case "$pat" in *'('*) : ;; *) break ;; esac
+            pre=${pat%%'('*}
+            rest=${pat#*'('}
+            case "$pre" in *[@+!?*]) pre=${pre%?} ;; esac
+            case "$rest" in *')'*) pat="$pre*${rest##*')'}" ;; *) pat="$pre*$rest" ;; esac
+        done
+        pat=${pat//[)]/*}
         while :; do
             case "$pat" in *'{'*) : ;; *) break ;; esac
             pre=${pat%%'{'*}
@@ -2715,7 +2786,13 @@ _settings_leaf_candidates() {
         # checks already judge (HIMMEL-3938: it false-denied
         # `unzip -l a.zip .claude/*`, test 145). Any other wildcard leaf
         # (`????????.????`) can spell a settings name and is matched below.
-        case "$pat" in *[!*]*) : ;; *) pat='' ;; esac
+        # J1909 B1: a pattern that is all stars only because extglob groups
+        # folded into them (`@(settings)@(.json)`, `@(settings).js@(on)`
+        # under the greedy fold) is no directory glob: it is kept, and so
+        # matches both names (fail closed). Only a group with its operator
+        # counts: a bare `(` or `)` (a fallback-split `) || true`) opens no
+        # group, so it stays the directory glob it was.
+        case "$pat" in *[!*]*) : ;; *) case "$leaf" in *[@+!?*]'('*) : ;; *) pat='' ;; esac ;; esac
         case "$pat" in
             *[*?[]*)
                 for n in settings.json settings.local.json; do
@@ -2750,6 +2827,98 @@ esac
 if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
     cmd_n=$cmd
+    # _cd_bases — HIMMEL-4394: CD_B lists the directories a cd/pushd in the
+    # command can move a later relative word to (the PreToolUse cwd itself
+    # aside), so `cd ~/.claude && echo x > sett*.json` judges its glob leaf
+    # where it lands. Each cd joins its target onto every base so far (kept
+    # as a union: `cd a || cd b` may take either); a bare cd is $HOME. A
+    # popd, `cd -`, a target with a `$`, backtick or glob, or more than 16
+    # bases sets CD_UNK, and a relative variant leaf then fails closed.
+    # J1909 B2: a `..` in a target (a symlinked parent climbs elsewhere)
+    # and a CDPATH set anywhere (in the text or this environment: `cd .claude`
+    # may then land under it) leave the cwd unproven, CD_UNK too. Computed
+    # before the interpreter bodies below, which run AFTER the cd (`cd
+    # ~/.claude && eval '…'`): each body's run inherits CD_B and CD_UNK
+    # (HIMMEL_LSB_CDB, newline-joined, and HIMMEL_LSB_CDUNK), so its own
+    # relative leaves are judged under the same bases.
+    # ponytail: a `-C <dir>`/`--chdir` (git, make, env) does not move the
+    # shell's own redirect, so it is not a base; changes_directory still voids
+    # the worktree exemption for it. A CDPATH name spelled through an
+    # expansion (`declare CD${x}PATH=`) is not seen. Upgrade path: HIMMEL-3694.
+    CD_B=() CD_UNK=${HIMMEL_LSB_CDUNK:-0} CD_DONE=0
+    if [ -n "${HIMMEL_LSB_CDB:-}" ]; then
+        while IFS= read -r w; do
+            [ -z "$w" ] || CD_B[${#CD_B[@]}]=$w
+        done <<< "$HIMMEL_LSB_CDB"
+    fi
+    _cd_add() { # _cd_add TARGET — every base TARGET can move to
+        local t b
+        local -a nb
+        case "/$1/" in */../*) CD_UNK=1; return 0 ;; esac
+        _exp_home "$1"
+        t=$_EH
+        case "$t" in
+            /*|[A-Za-z]:/*|[A-Za-z]:\\*) nb=("$t") ;;
+            *)
+                nb=("$cwd/$t")
+                for b in ${CD_B[@]+"${CD_B[@]}"}; do nb[${#nb[@]}]="$b/$t"; done
+                ;;
+        esac
+        for b in "${nb[@]}"; do CD_B[${#CD_B[@]}]=$b; done
+        [ "${#CD_B[@]}" -le 16 ] || CD_UNK=1
+    }
+    _cd_bases() {
+        local i=0 j n s=0 t w
+        local -a ws=() sg=() ux=() ro=()
+        CD_DONE=1
+        [ -z "${CDPATH:-}" ] || CD_UNK=1
+        case "${cmd//[\"\'\\]/}" in *CDPATH*) CD_UNK=1 ;; esac
+        if [ "$TOK" = 1 ]; then
+            while [ "$i" -lt "$ST_N" ]; do
+                ws[i]=${ST_W[i]} sg[i]=${ST_S[i]} ro[i]=${ST_RO[i]} ux[i]=0
+                [ "${ST_X[i]}" = 0 ] && [ "${ST_G[i]}" = 0 ] || ux[i]=1
+                i=$((i + 1))
+            done
+        else
+            # the fallback has no segments: `;&|` end one; noglob, as in
+            # the operand scan below
+            case $- in *f*) _had_noglob=1 ;; *) _had_noglob=0 ;; esac
+            set -f
+            for w in ${cmd_n//[;&|]/ ; }; do
+                if [ "$w" = ';' ]; then s=$((s + 1)); continue; fi
+                i=${#ws[@]}
+                ws[i]=$w sg[i]=$s ro[i]='' ux[i]=0
+                case "$w" in *[\$\`*?[\{]*) ux[i]=1 ;; esac
+            done
+            if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
+        fi
+        n=${#ws[@]} i=0
+        while [ "$i" -lt "$n" ]; do
+            case "${ws[i]}" in
+                popd) CD_UNK=1 ;;
+                cd|pushd)
+                    t='~' j=$((i + 1))
+                    # a target the tokenizer cut off (`cd $(…)`) is unknown
+                    if [ "$TOK" = 1 ]; then
+                        # shellcheck disable=SC2016 # literal separator text
+                        case "${ST_SEP[sg[i]]-}" in '$('|'`'|'<('|'>(') t='' CD_UNK=1 ;; esac
+                    fi
+                    while [ -n "$t" ] && [ "$j" -lt "$n" ] && [ "${sg[j]}" = "${sg[i]}" ]; do
+                        if [ -n "${ro[j]}" ]; then j=$((j + 1)); continue; fi
+                        case "${ws[j]}" in
+                            -) t='' CD_UNK=1 ;;
+                            -*) j=$((j + 1)); continue ;;
+                            *) if [ "${ux[j]}" = 1 ]; then t='' CD_UNK=1; else t=${ws[j]}; fi ;;
+                        esac
+                        break
+                    done
+                    [ -z "$t" ] || _cd_add "$t"
+                    ;;
+            esac
+            [ "$CD_UNK" = 0 ] || return 0
+            i=$((i + 1))
+        done
+    }
     # ST_LW holds the lowercased words: the lowercased text tokenizes to the
     # same words and segments (case never changes how bash splits), so a
     # second pass over it costs no fork, where a `tr` per word did (J1242).
@@ -2761,6 +2930,25 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                 && [ "$ST_N" = "$lw_n" ] && [ "$ST_NSEG" = "$lw_nseg" ]; then
                 TOK=1
             fi
+        fi
+        # HIMMEL-4394: an extglob group (`@(…)`, `+(…)`, `!(…)`, `?(…)`,
+        # `*(…)`) is one glob word to bash, but the tokenizer ends the word at
+        # the `(` and opens a subshell. A segment cut by `(` whose last word
+        # ends in one of those operators is such a group (with a space between
+        # them, bash refuses it as a syntax error; a lone `!` is negation), so
+        # the command goes to the fallback, which reads every word as a glob.
+        # ponytail: a zsh glob qualifier (`*(.)`) or `$((a*(b)))` takes the
+        # fallback too — stricter only where settings-named text is present;
+        # upgrade path: teach st_tokenize extglob words if one false-denies.
+        if [ "$TOK" = 1 ]; then
+            widx=0
+            while [ "$widx" -lt "$ST_N" ]; do
+                if [ "${ST_SEP[ST_S[widx]]-}" = '(' ] \
+                    && { [ $((widx + 1)) = "$ST_N" ] || [ "${ST_S[widx + 1]}" != "${ST_S[widx]}" ]; }; then
+                    case "${ST_W[widx]}" in '!') ;; *[@+!?*]) TOK=0; break ;; esac
+                fi
+                widx=$((widx + 1))
+            done
         fi
         # HIMMEL-4353: the body of a `bash/sh/zsh/dash -c` or an `eval` is ONE
         # quoted word to the tokenizer, so its words never carry their own
@@ -2778,9 +2966,10 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # ponytail: only shells named here (any path, any wrapper before them)
         # and `eval` have their body re-judged; `su -c`, `ssh host '…'`,
         # `watch '…'` bodies stay one word, and an `eval` behind a construct
-        # the command-word walk below does not know (a `case` pattern, an
-        # unlisted wrapper) is not a body. Upgrade path: add the name when a
-        # bypass report names one.
+        # the command-word walk below does not know (an unlisted wrapper) is
+        # not a body — a `case` arm's `;;` fails the tokenizer, so its body is
+        # judged by the TOK=0 split instead (HIMMEL-4394). Upgrade path: add
+        # the name when a bypass report names one.
         # The scan stays linear (J1818a): `eval` is a body only as a segment's
         # command word (after assignments, `if`/`then`/`do`/`!`/`{` and exec
         # wrappers with their options), and its body's words are not scanned
@@ -2789,9 +2978,29 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         # bash -c`). Nesting is capped: a body found HIMMEL_LSB_DEPTH (the
         # child count above this run) 3 levels down is refused fail-closed.
         if [ "$TOK" = 1 ]; then
+            # J1909 B2: a body after a cd runs where the cd moved it
+            case "$ST_LOWER" in *cd*|*pushd*|*popd*) _cd_bases ;; esac
+            cdb=''
+            for w in ${CD_B[@]+"${CD_B[@]}"}; do cdb=$cdb$w$'\n'; done
             idepth=${HIMMEL_LSB_DEPTH:-0}
             case "$idepth" in '' | *[!0-9]*) idepth=0 ;; esac
-            ii=0 iseg=-1 icmd=0 iwr=0 iwn='' ioa=0
+            # _lsb_body BODY — judge BODY as a command in a run of its own
+            _lsb_body() {
+                [ -n "$1" ] || return 0
+                if [ "$idepth" -ge 3 ]; then
+                    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
+                        deny_message "a $tool_name command" "$cmd" "interpreter bodies (eval, bash -c) nested more than 3 deep are not judged, so they are refused fail-closed; run the innermost command directly"
+                        exit 2
+                    fi
+                elif ! jq -n --arg cmd "$1" --arg cwd "$cwd" \
+                    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) HIMMEL_LSB_CDB=$cdb HIMMEL_LSB_CDUNK=$CD_UNK \
+                        bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
+                    echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c, eval, env -S or herestring in: $cmd" >&2
+                    exit 2
+                fi
+            }
+            ii=0 iseg=-1 icmd=0 iwr=0 iwn='' ioa=0 ishell=0
             while [ "$ii" -lt "$ST_N" ]; do
                 ij=$((ii + 1)) ibw='' icw=0
                 if [ "${ST_S[ii]}" != "$iseg" ]; then
@@ -2803,6 +3012,44 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                         ioa=0
                     elif [ "$iwr" = 1 ] && case "$il" in -* | [0-9]*) true ;; *) false ;; esac; then
                         ! _wrapper_opt_arg "$iwn" "$il" || ioa=1
+                        # HIMMEL-4394: `env -S TEXT` splits TEXT into the
+                        # command it runs, so TEXT (glued, or the next word)
+                        # is a body. A short cluster is read up to its first
+                        # letter that takes an argument (-u, -C); every
+                        # `--s…` is a prefix of `--split-string`.
+                        if [ "$iwn" = env ]; then
+                            case "$il" in
+                                --s*=*) ibw=${ST_W[ii]#*=} ;;
+                                --s*) ibw=${ST_W[ii + 1]-} ;;
+                                --*) ;;
+                                *)
+                                    iopt=${il#-}
+                                    while [ -n "$iopt" ]; do
+                                        case "$iopt" in
+                                            [uc]*) break ;;
+                                            s*)
+                                                ibw=${ST_W[ii]:$((${#il} - ${#iopt} + 1))}
+                                                [ -n "$ibw" ] || ibw=${ST_W[ii + 1]-}
+                                                break
+                                                ;;
+                                        esac
+                                        iopt=${iopt#?}
+                                    done
+                                    ;;
+                            esac
+                            # env decodes its own escapes (`\_` is a space)
+                            # and `${VAR}` in TEXT before it splits, which a
+                            # shell read of TEXT does not, so such TEXT is
+                            # refused fail-closed rather than decoded here
+                            case "$ibw" in
+                                *\\* | *\$\{*)
+                                    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
+                                        deny_message "a $tool_name command" "$cmd" "env -S text carrying a backslash escape or \${VAR} is not judged, so it is refused fail-closed; run the command directly"
+                                        exit 2
+                                    fi
+                                    ;;
+                            esac
+                        fi
                     elif [ "${ST_A[ii]}" != 1 ]; then
                         case "${il##*/}" in
                             if | then | else | elif | do | while | until | '!' | '{') ;;
@@ -2812,6 +3059,9 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                         esac
                     fi
                 fi
+                case "${ST_LW[ii]##*/}" in
+                    bash|sh|zsh|dash|ksh|mksh|ash|fish|eval|source|.) ishell=1 ;;
+                esac
                 case "${ST_LW[ii]##*/}" in
                     bash|sh|zsh|dash|ksh|mksh|ash|fish)
                         ic=0 iskip=0 iunc=0
@@ -2855,21 +3105,21 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
                         fi
                         ;;
                 esac
-                if [ -z "$ibw" ]; then
-                    :
-                elif [ "$idepth" -ge 3 ]; then
-                    if [ "${EDIT_LIVE_SETTINGS_OK:-0}" != "1" ]; then
-                        deny_message "a $tool_name command" "$cmd" "interpreter bodies (eval, bash -c) nested more than 3 deep are not judged, so they are refused fail-closed; run the innermost command directly"
-                        exit 2
-                    fi
-                elif ! jq -n --arg cmd "$ibw" --arg cwd "$cwd" \
-                    '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
-                    | HIMMEL_LSB_DEPTH=$((idepth + 1)) bash "$SCRIPT_DIR/${BASH_SOURCE[0]##*/}"; then
-                    echo "block-edit-live-settings: the refusal above is for the body of a bash/sh/zsh/dash -c or eval in: $cmd" >&2
-                    exit 2
-                fi
+                _lsb_body "$ibw"
                 ii=$((ii + 1))
             done
+            # HIMMEL-4394: a herestring is a shell's script when the shell
+            # reads stdin (`bash -s <<<'…'`), and its text is code when an
+            # eval runs a substitution's output (`eval "$(cat <<<'…')"`).
+            # Whichever word reads it, a command holding a shell, eval, source
+            # or `.` word has every herestring judged as a body too.
+            if [ "$ishell" = 1 ]; then
+                ii=0
+                while [ "$ii" -lt "$ST_N" ]; do
+                    case "${ST_RO[ii]}" in *'<<<') _lsb_body "${ST_W[ii]}" ;; esac
+                    ii=$((ii + 1))
+                done
+            fi
         fi
     fi
     # The shell drops quotes and escapes inside a word (`c\p`, `c""p` and
@@ -3226,8 +3476,15 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
     # insensitive `DLINK/` spelling (needs a case-insensitive filesystem to
     # model) are not judged; upgrade path: a path-expanding parse (HIMMEL-3934).
     variant_dest=0
+    # _cv_op P — _check_one_operand P, and P with its `..` resolved
+    # lexically too (J1909 B2): `~/.config/../.claude/sett*.json` names the
+    # live file even where the climbed-out parent does not exist yet
+    _cv_op() {
+        _check_one_operand "$1"
+        case "/$1/" in */../*) _check_one_operand "$(lex_resolve "$cwd" "$1")" ;; esac
+    }
     _check_variant() {
-        local w="$1" glob="$2" dir leaf n sd
+        local w="$1" glob="$2" rd="${3:-0}" dir leaf n sd
         case "$w" in
             */*) dir=${w%/*}; leaf=${w##*/}; [ -n "$dir" ] || dir=/ ;;
             *) dir=.; leaf=$w ;;
@@ -3240,7 +3497,22 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         for n in $_SLC; do
             sd=$symlink_dest
             symlink_dest=0
-            _check_one_operand "${dir%/}/$n"
+            _cv_op "${dir%/}/$n"
+            # a relative leaf also lands under every directory a cd/pushd in
+            # the command can move to (_cd_bases); one it cannot read fails
+            # closed. A plain read's operand (RD=1, J1909: `cd "$d" && ls
+            # *.json`) writes nothing wherever it lands, so it is skipped.
+            case "$dir" in
+                /*|[A-Za-z]:/*|[A-Za-z]:\\*) ;;
+                *)
+                    if [ "$rd" = 0 ]; then
+                        [ "$CD_UNK" = 0 ] || symlink_dest=1
+                        for b in ${CD_B[@]+"${CD_B[@]}"}; do
+                            _cv_op "$b/${dir%/}/$n"
+                        done
+                    fi
+                    ;;
+            esac
             [ "$symlink_dest" = 0 ] || variant_dest=1
             symlink_dest=$sd
         done
@@ -3324,9 +3596,43 @@ if [ "$tool_name" = "Bash" ] || [ "$tool_name" = "PowerShell" ]; then
         for w in $cmd_n; do OPW[${#OPW[@]}]=$w; OPG[${#OPG[@]}]=1; done
         if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
     fi
+    [ "$CD_DONE" = 1 ] || case "$cmd_lc" in *cd*|*pushd*|*popd*) _cd_bases ;; esac
+    # SEGRD[s] — J1909: 1 when segment s's command word is a literal plain
+    # read (ls, cat, head, tail, grep, wc, diff, cut: none takes an option
+    # that writes or runs). Its non-redirect operands are reads, so a cd
+    # before them never makes them a write (_check_variant RD). TOK=1 only:
+    # the fallback has no segments and fails closed as before.
+    SEGRD=()
+    if [ "$TOK" = 1 ]; then
+        widx=0
+        while [ "$widx" -lt "$ST_N" ]; do
+            w=${ST_S[widx]}
+            if [ -z "${SEGRD[w]-}" ] && [ -z "${ST_RO[widx]}" ] && [ "${ST_A[widx]}" = 0 ]; then
+                SEGRD[w]=0
+                if [ "${ST_X[widx]}" = 0 ] && [ "${ST_G[widx]}" = 0 ]; then
+                    case "${ST_LW[widx]}" in ls|cat|head|tail|grep|wc|diff|cut) SEGRD[w]=1 ;; esac
+                fi
+            fi
+            widx=$((widx + 1))
+        done
+    fi
     widx=0
     while [ "$widx" -lt "${#OPW[@]}" ]; do
-        _check_variant "${OPW[widx]}" "${OPG[widx]}"
+        rd=0
+        if [ "$TOK" = 1 ] && [ -z "${ST_RO[widx]}" ] && [ "${SEGRD[ST_S[widx]]-0}" = 1 ]; then rd=1; fi
+        _check_variant "${OPW[widx]}" "${OPG[widx]}" "$rd"
+        # HIMMEL-4394: the fallback split leaves operators glued to a word
+        # (`…/sett?ngs.json;;` in a `case` arm, `x>~/…`), so each piece
+        # between them is judged too; `|` only outside an extglob group
+        if [ "$TOK" = 0 ]; then
+            w=${OPW[widx]}
+            case "$w" in *'('*) w=${w//[;&<>]/ } ;; *) w=${w//[;&|<>]/ } ;; esac
+            if [ "$w" != "${OPW[widx]}" ]; then
+                set -f
+                for w in $w; do _check_variant "$w" 1; done
+                if [ "$_had_noglob" = 1 ]; then set -f; else set +f; fi
+            fi
+        fi
         widx=$((widx + 1))
     done
     [ "$write_verb" = 0 ] || _check_tree_copy

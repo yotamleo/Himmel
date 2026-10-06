@@ -2925,6 +2925,120 @@ assert_rc "888 primary cwd cp of .claude/settings.{json,bak} denies" 2 \
     "$(bash_rc_of "$PRIMARY" "cp .claude/settings.{json,bak}" HOME="$FAKEHOME")"
 assert_rc "889 primary cwd sh -c cp of .claude/settings.{json,bak} denies" 2 \
     "$(bash_rc_of "$PRIMARY" "sh -c 'cp .claude/settings.{json,bak}'" HOME="$FAKEHOME")"
+# 900-919 (HIMMEL-4394): a glob leaf the shell spells into a live settings
+# file through an `env -S` body, a `case` arm (`;;` is past the tokenizer), a
+# herestring a shell or eval runs, an extglob group, or a cd into a .claude.
+rows_both 900 2 "a glob leaf through env -S, case, herestring, extglob or cd denies" <<'ROWS'
+env -S 'bash -c "echo x > ~/.claude/sett*s.json"'
+env -S "bash -c 'echo x > ~/.claude/sett*s.json'"
+env -vS 'sh -c "echo x > ~/.claude/sett?ngs.json"'
+case a in a) eval "echo x > ~/.claude/sett?ngs.json";; esac
+case a in a) eval 'echo x > ~/.claude/sett*s.json';; esac
+bash -s <<<'echo x > ~/.claude/sett*s.json'
+bash <<<'echo x > ~/.claude/sett*s.json'
+sh <<<'echo x > ~/.claude/sett?ngs.json'
+eval "$(cat <<<'echo x > ~/.claude/sett*s.json')"
+echo x > ~/.claude/@(settings).json
+shopt -s extglob; echo x > ~/.claude/@(settings).json
+echo x > ~/.claude/+(settings).json
+echo x > ~/.claude/!(foo).json
+echo x > @P@/.claude/@(settings).json
+cd ~/.claude && echo x > sett?ngs.json
+cd ~/.claude; echo x > sett*.json
+cd @P@/.claude && echo x > sett?ngs.json
+pushd ~/.claude && echo x > sett*.json
+cd ~ && cd .claude && echo x > sett*.json
+cd && echo x > .claude/sett*.json
+ROWS
+# 920-926 (HIMMEL-4299, HIMMEL-4304): a quoted heredoc body is data only
+# while nothing can run it or rebind its receiver: a shell or interpreter in
+# the command, the file it wrote named again, or any `$`/backtick expansion
+# outside the bodies voids the data read.
+rows_both 920 2 "a heredoc body the command runs, or beside an expansion, denies" <<'ROWS'
+cat <<'EOF' > /tmp/x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nbash /tmp/x.sh
+cat <<'EOF' > /tmp/x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nsh /tmp/x.sh
+cat <<'EOF' > /tmp/x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nchmod +x /tmp/x.sh; /tmp/x.sh
+PA${x}TH=/tmp cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+declare PA$'T'H=/tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+printf -v PA$'T'H /tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+declare -n p=PA$'T'H; p=/tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+read -r PA$'T'H <<<"/tmp"; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+cat <<'EOF' >/tmp/bin/x.sh;x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+ROWS
+# 940-943: env -S text env decodes itself (`\_`, `\t`, `${VAR}`) is refused
+rows_both 940 2 "env -S text carrying an env escape or \${VAR} denies" <<'ROWS'
+env -S 'bash\_-c\_"echo x > ~/.claude/sett*s.json"'
+env --split-string='sh\_-c\_"echo x > ~/.claude/s*.json"'
+env -iS 'bash\t-c\t"echo x > ~/.claude/sett*s.json"'
+env -S 'bash -c ${X}'
+ROWS
+# 9440-9448 (HIMMEL-4394, J1909 B1): an extglob leaf with two or more groups
+# (`@(settings).js@(on)`, `@(settings)@(.json)`) under a live .claude denies.
+rows_both 9440 2 "an extglob leaf with 2+ groups under a live .claude denies" <<'ROWS'
+echo x > ~/.claude/@(settings).js@(on)
+echo x > ~/.claude/@(settings)@(.json)
+echo x > ~/.claude/+(settings).+(json)
+echo x > ~/.claude/!(a).js@(on)
+echo x > ~/.claude/@(settings|x).js@(on|x)
+bash -O extglob -c 'echo x > ~/.claude/@(settings).js@(on)'
+echo x > @P@/.claude/@(settings).js@(on)
+cd ~/.claude && echo x > @(settings).js@(on)
+shopt -s extglob\necho x > ~/.claude/@(settings).js@(on)
+ROWS
+# 9450-9455 (HIMMEL-4394, J1909 B2): a glob write whose cwd a cd moved
+# unprovably (an eval/bash -c body after the cd, a `..` target, CDPATH), and a
+# direct `..` target, deny.
+rows_both 9450 2 "a glob write after an unproven cd, or through a .. target, denies" <<'ROWS'
+cd ~/.claude && eval 'echo x > sett*.json'
+cd ~/.claude && bash -c 'echo x > sett*.json'
+cd ~/.config/../.claude && echo x > sett*.json
+CDPATH=~ cd .claude && echo x > sett*.json
+export CDPATH=~; cd .claude; echo x > sett*.json
+echo x > ~/.config/../.claude/sett*.json
+ROWS
+# 9460-9464 (HIMMEL-4299, J1909 B3): the file a heredoc was written to, run
+# under a glob that matches it, voids the data read.
+rows_both 9460 2 "a written heredoc file run under a glob name denies" <<'ROWS'
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.s?
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.*
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.[s]h
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nchmod +x /tmp/d/gx.s?; /tmp/d/gx.s?
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\n./gx.*
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.@(sh)
+ROWS
+# 9475-9476 (J1909): a plain read's glob after a cd — known or unresolved —
+# writes nothing, so it stays allowed. 9477: a bare `)` the fallback split
+# cut loose is no extglob group, so it stays the directory glob it was
+# (J1909 B1 fix over-denied it under an unresolved cd).
+rows_both 9475 0 "a plain read's glob after a cd allows" <<'ROWS'
+cd "$d" && ls *.json
+cd ~/.claude && ls sett*.json
+) || true\n    cd "$scratch_dir" || { rm -rf "$scratch_dir"; return 1; }
+ROWS
+# 9470-9471: J1909 controls from the nested worktree — a heredoc written but
+# never run, and a later glob that cannot match it, keep base's allow.
+for c in "cat <<'EOF' > /tmp/d/gx.sh
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF" "cat <<'EOF' > /tmp/d/gx.sh
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF
+ls /tmp/d/*.txt"; do
+    assert_rc "9470 nested worktree J1909 control allows: $c" 0 \
+        "$(bash_rc_of "$NESTED_WT" "$c" HOME="$FAKEHOME")"
+done
+# 930-937: controls from the nested worktree — data, a non-.claude glob
+# target or cd, and a read stay allowed.
+for c in "cat <<'EOF'
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF" "git commit -m \"\$(cat <<'EOF'
+fix ~/.cl\$(printf a)ude spelling
+EOF
+)\"" 'git status' 'echo x > docs/settings.json' 'echo x > /tmp/sett*.json' \
+    'cd docs && echo x > sett*.json' 'ls ~/.claude/sett*.json' 'echo x > /tmp/@(settings).json' \
+    "env -S 'bash -c \"echo hi\"'" "env FOO=1 echo 'a\\_b'"; do
+    assert_rc "930 nested worktree control allows: $c" 0 \
+        "$(bash_rc_of "$NESTED_WT" "$c" HOME="$FAKEHOME")"
+done
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.
