@@ -99,25 +99,18 @@ out_dir="${HIMMEL_HOOK_INTEGRITY_DIR:-$HOME/.claude/himmel/hook-integrity}"
 mkdir -p "$out_dir" 2>/dev/null || exit 0
 
 # ---- pins (unchanged pin SOURCE: git-tree blobs at HEAD) ------------------
+# HIMMEL-4575: scripts/lib and scripts/handover too — hooks source libs from
+# both, and the launcher now verifies every file a hook sources, denying one no
+# pin vouches for. Keep this list equal to PIN_DIRS in hook-integrity.js. One jq
+# pass over the listing (it used to be two jq per file, which at ~670 files
+# would have cost SessionStart seconds).
 pins_fresh="$(
-  {
-    printf '{'
-    first=1
-    for dir in scripts/hooks scripts/guardrails; do
-      [ -d "$CLAUDE_PROJECT_DIR/$dir" ] || continue
-      while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        mode_type_sha="$(printf '%s' "$line" | cut -f1)"
-        blob="$(printf '%s' "$mode_type_sha" | awk '{print $3}')"
-        relpath="$(printf '%s' "$line" | cut -f2-)"
-        if [ -z "$blob" ] || [ -z "$relpath" ]; then continue; fi
-        [ "$first" -eq 1 ] || printf ','
-        first=0
-        printf '%s:%s' "$(printf '%s' "$relpath" | jq -Rs '.')" "$(printf '%s' "$blob" | jq -Rs '.')"
-      done < <(git -C "$CLAUDE_PROJECT_DIR" ls-tree -r HEAD -- "$dir" 2>/dev/null | grep -E '\.sh$')
-    done
-    printf '}'
-  }
+  for dir in scripts/hooks scripts/guardrails scripts/lib scripts/handover; do
+    [ -d "$CLAUDE_PROJECT_DIR/$dir" ] || continue
+    git -C "$CLAUDE_PROJECT_DIR" ls-tree -r HEAD -- "$dir" 2>/dev/null
+  done | jq -Rn '[inputs | select(test("\\.sh$")) | split("\t") | select(length >= 2)
+                  | {key: (.[1:] | join("\t")), value: (.[0] | split(" ") | .[2] // "")}
+                  | select(.key != "" and .value != "")] | from_entries'
 )"
 jq -e . >/dev/null 2>&1 <<<"$pins_fresh" || pins_fresh='{}'
 

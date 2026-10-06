@@ -1151,7 +1151,180 @@ function walkIdentities(candidate, resolvedProject, spelledProject) {
   return ids();
 }
 
+// ------------------------------------------------------------- HIMMEL-4575
+//
+// A guard runs the bytes of every file it sources, so verifying only the
+// dispatched member left its libs (scripts/guardrails/lib.sh, scripts/lib/
+// py-armor.sh, scripts/hooks/lib/*.sh, ...) editable without a mismatch. The
+// closure is found statically, from the text of a file whose own bytes have
+// already verified, and every file in it is verified the same way the member
+// is, with two differences: a lib no pin vouches for denies (a member may be
+// new; a lib it sources is guard code), and so does a source statement the
+// walk cannot turn into a file, since the code it would run is unknown.
+//
+// The walk understands the spellings the dispatched hooks use: a path literal
+// relative to a `$VAR`, `${VAR}` or `$(...)` prefix (tried against the
+// sourcing file's directory, the project root, and the path tail of each value
+// assigned to that variable in the same file), and a bare `"$VAR"` whose
+// assignment ends in such a path. test-hook-rewrite-integrity.sh row 46 proves
+// every member .claude/settings.json and the plugin dispatch resolves
+// completely under PIN_DIRS, which is what makes the fail-closed safe to ship.
+// ponytail: static source-statement walk; `eval`, `bash <file>` and a path
+// built from a variable assigned in ANOTHER file are not followed (an
+// unresolvable command-position source denies, any other spelling is
+// invisible) — upgrade path is a closure manifest recorded at SessionStart if
+// a hook ever needs one.
+//
+// PIN_DIRS mirrors the directories record-hook-integrity.sh pins; a closure
+// file outside them could never carry a pin, so row 46 refuses one.
+const PIN_DIRS = ['scripts/hooks', 'scripts/guardrails', 'scripts/lib', 'scripts/handover'];
+const SOURCED_DENY = 'sourced-lib: ';
+const MAX_CLOSURE_FILES = 256;
+const VAR_NAME = '[A-Za-z_][A-Za-z0-9_]*';
+// The longest prefix ending in a `$VAR`, `${...}` or `)`: what follows it is
+// the literal path tail.
+const LAST_REF = new RegExp(`^[\\s\\S]*(?:\\$\\{[^}]*\\}|\\$${VAR_NAME}|\\))`);
+const BARE_VAR = new RegExp(`^\\$\\{?(${VAR_NAME})\\}?$`);
+// A `.`/`source` in command position: unresolvable means deny.
+const SOURCE_CMD = /(?:^|[;&|{(!]|\b(?:then|do|else|if|elif|while|until))\s*(?:\.|source)\s+(?=\S)/g;
+// The same word anywhere else (inside `$( ... )`, after `command`, in a string
+// a hook evals): followed when it resolves, ignored when it does not.
+const SOURCE_ANY = /(?:^|[^A-Za-z0-9_.\/-])(?:\.|source)\s+(?=\S)/g;
+const ASSIGN = new RegExp(`(?:^|[\\s;&|{(])(?:local\\s+|export\\s+|readonly\\s+)?(${VAR_NAME})=(\\S.*)$`, 'g');
+
+function unquoteWord(s) {
+  return s.replace(/["']/g, '');
+}
+
+// The first shell word of an assignment's right-hand side, honouring quotes and
+// nested `$( ... )` so `"$(cd "$(dirname "$0")" && pwd)/../lib/x.sh"` stays one word.
+function firstShellWord(s) {
+  const stack = [];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    const top = stack[stack.length - 1];
+    if (top === "'") { if (c === "'") stack.pop(); continue; }
+    if (c === '\\') { i++; continue; }
+    if (c === '$' && s[i + 1] === '(') { stack.push('('); i++; continue; }
+    if (top === '"') { if (c === '"') stack.pop(); continue; }
+    if (c === '"' || c === "'") { stack.push(c); continue; }
+    if (c === '(') { stack.push('('); continue; }
+    if (c === ')') { if (!stack.length) return s.slice(0, i); stack.pop(); continue; }
+    if (!stack.length && /[\s;&|]/.test(c)) return s.slice(0, i);
+  }
+  return s;
+}
+
+function splitRef(expr) {
+  const e = unquoteWord(expr);
+  const m = e.match(LAST_REF);
+  if (!m) return { ref: null, tail: e };
+  const v = m[0].match(new RegExp(`\\$\\{?(${VAR_NAME})[^}]*\\}?$`));
+  return { ref: v ? v[1] : null, tail: e.slice(m[0].length).replace(/^\/+/, '') };
+}
+
+function isFile(candidate) {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch (_e) {
+    return false;
+  }
+}
+
+function resolveSourceArg(arg, fileDir, root, assigns) {
+  const bare = unquoteWord(arg).match(BARE_VAR);
+  const exprs = bare
+    ? (assigns[bare[1]] || []).filter((v) => /\.sh$/.test(unquoteWord(v)))
+    : [arg];
+  const found = new Set();
+  for (const expr of exprs) {
+    const { ref, tail } = splitRef(expr);
+    if (!/\.sh$/.test(tail)) continue;
+    const bases = [fileDir, root];
+    for (const value of (ref && assigns[ref]) || []) {
+      const t = splitRef(value).tail;
+      bases.push(path.resolve(fileDir, t), path.resolve(root, t));
+    }
+    for (const base of bases) {
+      const candidate = path.resolve(base, tail);
+      if (isFile(candidate)) found.add(candidate);
+    }
+  }
+  return [...found];
+}
+
+// sourcedClosure(file, root) -> { libs: [abs], unresolved: [statement] } for
+// the files `file` itself sources (one level; the caller walks the rest).
+function sourcedClosure(file, root) {
+  const text = fs.readFileSync(file, 'utf8');
+  const lines = text.split('\n').filter((l) => !/^\s*#/.test(l));
+  const assigns = {};
+  for (const line of lines) {
+    for (const m of line.matchAll(ASSIGN)) (assigns[m[1]] = assigns[m[1]] || []).push(firstShellWord(m[2]));
+  }
+  const fileDir = path.dirname(file);
+  const libs = new Set();
+  const unresolved = [];
+  for (const line of lines) {
+    // The argument is the whole next shell word, so a `"$(dirname "$0")/x.sh"`
+    // prefix is kept rather than cut at its first `)`.
+    for (const m of line.matchAll(SOURCE_CMD)) {
+      const arg = firstShellWord(line.slice(m.index + m[0].length));
+      const word = unquoteWord(arg);
+      if (!word.includes('$') && !/\.sh$/.test(word)) continue; // jq's `. == x`, prose
+      const hits = resolveSourceArg(arg, fileDir, root, assigns);
+      if (!hits.length) unresolved.push(line.trim());
+      for (const h of hits) libs.add(h);
+    }
+    for (const m of line.matchAll(SOURCE_ANY)) {
+      const arg = firstShellWord(line.slice(m.index + m[0].length));
+      if (!/\.sh$/.test(unquoteWord(arg))) continue;
+      for (const h of resolveSourceArg(arg, fileDir, root, assigns)) libs.add(h);
+    }
+  }
+  return { libs: [...libs], unresolved };
+}
+
 function verifyIntegrityUnbypassed(scriptPath, sessionId) {
+  const member = verifyOneFile(scriptPath, sessionId, false);
+  if (!member.ok || !member.walk) return member;
+  const root = normalize(resolveReal(process.env.CLAUDE_PROJECT_DIR));
+  const seen = new Set([normalize(resolveReal(scriptPath))]);
+  const queue = [scriptPath];
+  while (queue.length) {
+    const file = queue.shift();
+    let closure;
+    try {
+      closure = sourcedClosure(file, root);
+    } catch (_e) {
+      return { ok: false, relPath: path.relative(root, file), reason: `${SOURCED_DENY}could not read it to find what it sources` };
+    }
+    if (closure.unresolved.length) {
+      return {
+        ok: false,
+        relPath: path.relative(root, file),
+        reason: `${SOURCED_DENY}unresolved source statement \`${closure.unresolved[0]}\``,
+      };
+    }
+    for (const lib of closure.libs) {
+      const key = normalize(resolveReal(lib));
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (seen.size > MAX_CLOSURE_FILES) {
+        return { ok: false, relPath: path.relative(root, lib), reason: `${SOURCED_DENY}the closure exceeds ${MAX_CLOSURE_FILES} files` };
+      }
+      const verdict = verifyOneFile(lib, sessionId, true);
+      if (!verdict.ok) return verdict;
+      queue.push(lib);
+    }
+  }
+  return { ok: true };
+}
+
+// One file's check. `walk` on the result says a pin record exists and the file
+// is project-local, i.e. there is something to verify its closure against.
+// `strict` (a sourced lib): no pin for any of its identities denies.
+function verifyOneFile(scriptPath, sessionId, strict) {
   // ---- FAST PATH: strictly git-free, no child process, on every hook call ----
   const projectDir = process.env.CLAUDE_PROJECT_DIR;
   if (!projectDir) return { ok: true };
@@ -1163,7 +1336,10 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
     // `<project>/…` but leaves it via `..` or a link is neither project-local nor
     // vouched for by any pin, so it is refused, and the bypass cannot rescue it
     // (honourBypass wants the resolved script inside the worktree).
-    if (!normalize(scriptPath).toLowerCase().startsWith(`${normalize(projectDir).toLowerCase()}/`)) return { ok: true };
+    if (!normalize(scriptPath).toLowerCase().startsWith(`${normalize(projectDir).toLowerCase()}/`)) {
+      if (strict) return { ok: false, relPath: normalize(scriptPath), reason: `${SOURCED_DENY}a sourced lib outside the project` };
+      return { ok: true };
+    }
     return {
       ok: false,
       relPath: normalize(scriptPath).slice(normalize(projectDir).length + 1),
@@ -1191,13 +1367,16 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
     }
   }
   let actual;
+  let pinned = false;
   for (const key of keys) {
     const expected = pins[key];
     if (typeof expected !== 'string' || !expected) continue; // unpinned script
+    pinned = true;
     if (actual === undefined) {
       try {
         actual = gitBlobSha1(fs.readFileSync(scriptPath));
       } catch (_e) {
+        if (strict) return { ok: false, relPath: key, reason: `${SOURCED_DENY}a sourced lib could not be read` };
         return { ok: true }; // unreadable/missing — the DELETE vector, already covered by --fail-closed-when
       }
     }
@@ -1213,7 +1392,67 @@ function verifyIntegrityUnbypassed(scriptPath, sessionId) {
       return { ok: false, relPath: key, reason: null };
     }
   }
-  return { ok: true };
+  if (strict && !pinned) {
+    try {
+      return adoptUnpinnedLib({ projectDir, relPath, record, sessionId, scriptPath });
+    } catch (_e) {
+      return { ok: false, relPath, reason: `${SOURCED_DENY}no session pin vouches for this sourced lib` };
+    }
+  }
+  return { ok: true, walk: true };
+}
+
+// A sourced lib with no pin: a record written before its directory was pinned
+// (every live session when HIMMEL-4575 lands), or a lib a legitimate update
+// added after SessionStart. Its bytes are accepted only when they ARE the
+// anchor tip's bytes for that path — the trust root the re-pin path uses — and
+// on a v2 record the pin is then persisted, so the git probe runs once per lib
+// per session rather than on every call. A legacy record has no anchor, so the
+// default-branch ref the recorder bootstrap uses stands in, unpersisted.
+function adoptUnpinnedLib(context) {
+  const { projectDir, relPath, record, sessionId, scriptPath } = context;
+  const deny = (why) => ({ ok: false, relPath, reason: `${SOURCED_DENY}no session pin vouches for this sourced lib (${why})` });
+  let actual;
+  try {
+    actual = gitBlobSha1(fs.readFileSync(scriptPath));
+  } catch (_e) {
+    return deny('it could not be read');
+  }
+  if (!isV2Record(record)) {
+    const ref = bootstrapDefaultRef(projectDir);
+    if (!ref) return deny('no default branch to compare it with');
+    const atRef = gitStdout(runGit(['-C', projectDir, 'rev-parse', '--verify', '--quiet', `${ref}:${relPath}`]));
+    return atRef === actual ? { ok: true, walk: true } : deny(`it is not ${ref}'s version`);
+  }
+  const recordPath = integrityRecordPath(sessionId);
+  if (!recordPath) return deny('no record path');
+  const lockDir = acquireRecordLock(recordPath);
+  if (!lockDir) {
+    const fresh = recordPins(loadIntegrityRecord(sessionId));
+    if (fresh && fresh[relPath] === actual) return { ok: true, walk: true };
+    return deny(`could not take the record lock at ${recordPath}.lock`);
+  }
+  try {
+    const fresh = loadIntegrityRecord(sessionId);
+    const current = isV2Record(fresh) && recordPins(fresh) ? fresh : record;
+    const pins = recordPins(current) || {};
+    if (pins[relPath] === actual) return { ok: true, walk: true };
+    // A sibling pinned it meanwhile with different bytes: that is a mismatch,
+    // and the mismatch path (after this lock is released) owns it.
+    if (nonEmptyString(pins[relPath])) return deny('a pin for it appeared with other bytes');
+    const tip = gitStdout(gitInRecordedRepo(current.git_dir, ['rev-parse', '--verify', '--quiet', current.anchor_ref]));
+    if (!tip) return deny(`the anchor ref ${current.anchor_ref} could not be resolved`);
+    const atTip = gitStdout(gitInRecordedRepo(current.git_dir, ['rev-parse', '--verify', '--quiet', `${tip}:${relPath}`]));
+    if (atTip !== actual) return deny('it is not the anchor tip\'s version');
+    try {
+      persistIntegrityRecord(recordPath, { ...current, pins: { ...pins, [relPath]: actual } });
+    } catch (_e) {
+      return deny(`could not persist its pin under ${hookIntegrityDir()}`);
+    }
+    return { ok: true, walk: true };
+  } finally {
+    releaseRecordLock(lockDir);
+  }
 }
 
 function denyIntegrityMismatch(scriptPath, relPath, reason) {
@@ -1234,6 +1473,15 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
       `run-hook-with-bash: DENY ${path.basename(scriptPath)} — the hook path is spelled inside the project `
       + `(${relPath}) but ${reason.slice(ESCAPES_PROJECT_DENY.length)}, so no session pin can vouch for it. `
       + 'Point the hook at a script inside the project; HIMMEL_HOOK_INTEGRITY_BYPASS_OK does not apply to a path that leaves it.\n',
+    );
+    return;
+  }
+  if (typeof reason === 'string' && reason.indexOf(SOURCED_DENY) === 0) {
+    process.stderr.write(
+      `run-hook-with-bash: DENY ${path.basename(scriptPath)} — a file it sources (${relPath}) cannot be vouched for: `
+      + `${reason.slice(SOURCED_DENY.length)}. A guard runs every lib it sources, so an unverified lib is an `
+      + 'unverified guard (HIMMEL-4575). Legitimate mid-session lib edit: rerun with HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 '
+      + `set in the LAUNCHING shell. ${BYPASS_SCOPE}\n`,
     );
     return;
   }
@@ -1264,6 +1512,7 @@ function denyIntegrityMismatch(scriptPath, relPath, reason) {
 module.exports = {
   LOCK_MAX_WAIT_MS,
   LOCK_POLL_MS,
+  PIN_DIRS,
   SAFE_SESSION_ID,
   acquireRecordLock,
   denyIntegrityMismatch,
@@ -1275,5 +1524,6 @@ module.exports = {
   persistIntegrityRecord,
   reclaimIfDead,
   releaseRecordLock,
+  sourcedClosure,
   verifyProjectHookIntegrity,
 };

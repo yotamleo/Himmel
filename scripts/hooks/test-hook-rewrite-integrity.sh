@@ -1343,5 +1343,135 @@ else
   bad "row 39: release refused a lock we own — the next acquire is wedged: $OUT39"
 fi
 
+# ===========================================================================
+# HIMMEL-4575 — the sourced-lib closure is verified, not only the member
+# ===========================================================================
+# A guard that sources a lib runs that lib's bytes as guard code, so a lib
+# edited mid-session is as tampered as an edited member. The member below
+# reaches each lib by one of the spellings real hooks use: a
+# `$(dirname "${BASH_SOURCE[0]}")`-relative path, a `../guardrails` hop, a
+# variable assigned the path, and a lib that sources a sibling of its own.
+fixture lib-closure
+mkdir -p "$FX_PROJ/scripts/hooks/lib" "$FX_PROJ/scripts/guardrails" "$FX_PROJ/scripts/lib"
+cat > "$FX_PROJ/$REL" <<'LIBG_EOF'
+#!/usr/bin/env bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib/helper.sh"
+if ! { [ -r "$(dirname "${BASH_SOURCE[0]}")/../guardrails/lib.sh" ] && . "$(dirname "${BASH_SOURCE[0]}")/../guardrails/lib.sh"; } 2>/dev/null; then exit 2; fi
+_armor="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/armor.sh"
+. "$_armor"
+exit 0
+LIBG_EOF
+# shellcheck disable=SC2016 # literal shell/JS text for the fixture, expanded by its reader
+printf '#!/usr/bin/env bash\n. "${BASH_SOURCE[0]%%/*}/nested.sh"\n' > "$FX_PROJ/scripts/hooks/lib/helper.sh"
+for lib in scripts/hooks/lib/nested.sh scripts/guardrails/lib.sh scripts/lib/armor.sh; do
+  printf '#!/usr/bin/env bash\n: lib\n' > "$FX_PROJ/$lib"
+done
+git -C "$FX_PROJ" add -A
+git -C "$FX_PROJ" commit -q -m libs
+fx_publish HEAD
+printf '{"session_id":"lib-s1","hook_event_name":"SessionStart"}' \
+  | CLAUDE_PROJECT_DIR="$FX_PROJ" HIMMEL_HOOK_INTEGRITY_DIR="$FX_OUT" bash "$RECORDER" >/dev/null 2>&1
+LIB_REC="$FX_OUT/lib-s1.json"
+if [ -n "$(record_pin "$LIB_REC" scripts/lib/armor.sh)" ] && [ -n "$(jq -r '.anchor_ref // ""' "$LIB_REC")" ]; then
+  ok "row 40: the recorder pins scripts/lib/*.sh too (a v2 record with the lib pin)"
+else
+  bad "row 40: no v2 record with a scripts/lib pin: $(cat "$LIB_REC" 2>/dev/null)"
+fi
+
+launch "$FX_PROJ" "$FX_OUT" lib-s1 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_allow "row 41: a member whose whole sourced closure matches its pins runs"
+
+for lib in scripts/hooks/lib/nested.sh scripts/guardrails/lib.sh scripts/lib/armor.sh scripts/hooks/lib/helper.sh; do
+  cp "$FX_PROJ/$lib" "$T/lib.orig"
+  printf '# tampered\n' >> "$FX_PROJ/$lib"
+  launch "$FX_PROJ" "$FX_OUT" lib-s1 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+  expect_deny "row 42: an edited sourced lib ($lib) denies the member that sources it" "$lib"
+  cp "$T/lib.orig" "$FX_PROJ/$lib"
+done
+launch "$FX_PROJ" "$FX_OUT" lib-s1 "$LAUNCHER" --chain "$FX_PROJ/$REL"
+expect_allow "row 42 control: restored libs run again (the denies above were the edits)"
+
+# The re-pin path covers a lib exactly as it covers a member: a lib advanced
+# to the anchor tip by a legitimate update is accepted and its pin advanced.
+printf '# advanced\n' >> "$FX_PROJ/scripts/lib/armor.sh"
+git -C "$FX_PROJ" commit -q -am 'advance armor'
+fx_publish HEAD
+launch "$FX_PROJ" "$FX_OUT" lib-s1 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_allow "row 43: a lib advanced to the anchor tip re-pins instead of denying"
+expect_pin "$LIB_REC" scripts/lib/armor.sh "$(fx_blob scripts/lib/armor.sh)" "row 43: the lib's pin advanced to the tip blob"
+
+# A closure lib nobody pinned is not vouched for: the member names it, it now
+# exists on disk, and no session-start pin says what its bytes should be.
+# shellcheck disable=SC2016 # literal shell/JS text for the fixture, expanded by its reader
+printf '. "$(dirname "${BASH_SOURCE[0]}")/late.sh"\n' >> "$FX_PROJ/scripts/hooks/lib/helper.sh"
+git -C "$FX_PROJ" commit -q -am 'helper sources late.sh'
+fx_publish HEAD
+printf '#!/usr/bin/env bash\n: late\n' > "$FX_PROJ/scripts/hooks/lib/late.sh"
+launch "$FX_PROJ" "$FX_OUT" lib-s1 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_deny "row 44: a sourced lib with no session pin denies" "scripts/hooks/lib/late.sh"
+rm -f "$FX_PROJ/scripts/hooks/lib/late.sh"
+launch "$FX_PROJ" "$FX_OUT" lib-s1 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_deny "row 44: a sourced lib that is absent everywhere the walk looks denies too" "unresolved"
+git -C "$FX_PROJ" revert --no-edit HEAD >/dev/null
+fx_publish HEAD
+launch "$FX_PROJ" "$FX_OUT" lib-s1 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_allow "row 44 control: with the late.sh source line reverted (and re-pinned to the tip) the member runs"
+
+# A source statement the closure walk cannot resolve to a file leaves part of
+# the guard's code unknown, so it fails closed rather than skipping it.
+REL_U='scripts/hooks/unresolved.sh'
+# shellcheck disable=SC2016 # literal shell/JS text for the fixture, expanded by its reader
+printf '#!/usr/bin/env bash\n. "$SOME_LIB_FROM_NOWHERE"\nexit 0\n' > "$FX_PROJ/$REL_U"
+git -C "$FX_PROJ" add -A
+git -C "$FX_PROJ" commit -q -m unresolved
+fx_publish HEAD
+printf '{"session_id":"lib-s2","hook_event_name":"SessionStart"}' \
+  | CLAUDE_PROJECT_DIR="$FX_PROJ" HIMMEL_HOOK_INTEGRITY_DIR="$FX_OUT" bash "$RECORDER" >/dev/null 2>&1
+launch "$FX_PROJ" "$FX_OUT" lib-s2 "$LAUNCHER" --optional "$FX_PROJ/$REL_U"
+expect_deny "row 45: a source statement that resolves to no file denies" "unresolved"
+
+# A record written before the lib dirs were pinned (every session live when
+# this lands) has no pin for a lib: one whose bytes are the anchor tip's is
+# adopted and its pin persisted; one with other bytes still denies.
+LIB2_REC="$FX_OUT/lib-s2.json"
+jq 'del(.pins["scripts/lib/armor.sh"])' "$LIB2_REC" >"$T/lib-s2.json" && cp "$T/lib-s2.json" "$LIB2_REC"
+launch "$FX_PROJ" "$FX_OUT" lib-s2 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_allow "row 47: an unpinned lib at the anchor tip's bytes is adopted"
+expect_pin "$LIB2_REC" scripts/lib/armor.sh "$(fx_blob scripts/lib/armor.sh)" "row 47: the adopted lib's pin was persisted"
+jq 'del(.pins["scripts/lib/armor.sh"])' "$LIB2_REC" >"$T/lib-s2.json" && cp "$T/lib-s2.json" "$LIB2_REC"
+printf '# off-tip\n' >> "$FX_PROJ/scripts/lib/armor.sh"
+launch "$FX_PROJ" "$FX_OUT" lib-s2 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_deny "row 47: an unpinned lib whose bytes are not the tip's denies" "not the anchor tip"
+git -C "$FX_PROJ" checkout -q -- scripts/lib/armor.sh
+
+# Every member the live settings and the plugin dispatch must have a closure
+# the walk resolves completely, under directories the recorder pins — else
+# row 45's fail-closed denies a real guard on every call.
+# shellcheck disable=SC2016 # literal shell/JS text for the fixture, expanded by its reader
+node -e '
+const m = require(process.argv[1]);
+const fs = require("fs"); const path = require("path");
+const root = process.argv[2];
+const members = new Set();
+for (const f of [".claude/settings.json", "marketplace/plugins/himmel-ops/hooks/hooks.json"]) {
+  for (const x of fs.readFileSync(path.join(root, f), "utf8").matchAll(/scripts\/hooks\/[A-Za-z0-9_.-]+\.sh/g)) members.add(x[0]);
+}
+const bad = [];
+for (const rel of members) {
+  const r = m.sourcedClosure(path.join(root, rel), root);
+  for (const u of r.unresolved) bad.push(`${rel}: unresolved ${u}`);
+  for (const lib of r.libs) {
+    const k = path.relative(root, lib);
+    if (!m.PIN_DIRS.some((d) => k.startsWith(`${d}/`))) bad.push(`${rel}: ${k} is outside the pinned dirs`);
+  }
+}
+console.log(bad.length ? bad.join("\n") : `ok ${members.size}`);
+' "$HOOKS_DIR/hook-integrity.js" "$REPO_ROOT" >"$T/closure.out" 2>&1
+if grep -q '^ok [0-9]' "$T/closure.out"; then
+  ok "row 46: every dispatched member's sourced closure resolves under the pinned dirs ($(cat "$T/closure.out"))"
+else
+  bad "row 46: dispatched closure gaps: $(cat "$T/closure.out")"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
