@@ -84,6 +84,24 @@ sessions recycle, and a stamp blocks another recycle for
 daemon's RSS and uptime and WARNs over the same ceiling. The PowerShell twin does
 not carry the ceiling yet (HIMMEL-3751).
 
+## Turning the daemon off on purpose (HIMMEL-4494)
+
+The SessionStart hook relaunches the daemon in every new session, so killing it
+by hand does not stick. To keep it off (for example while gaming, since its
+embed/expand/rerank models contend for the GPU):
+
+```bash
+bash marketplace/plugins/qmd/scripts/qmd-daemon-switch.sh off   # create the flag, stop the daemon
+bash marketplace/plugins/qmd/scripts/qmd-daemon-switch.sh on    # remove the flag, run ensure-qmd-daemon.sh
+```
+
+While the flag file `~/.himmel/state/qmd-daemon.off` exists (override the path
+with `QMD_DAEMON_OFF_FLAG`), or `QMD_DAEMON_DISABLED=1` is set in one shell,
+`ensure-qmd-daemon.sh` prints one INFO line and exits 0 without probing or
+launching. `himmel-doctor.sh` check `C40-qmd-vec` reads INFO "qmd off by
+operator" in that state. The PowerShell twin (`scripts/qmd/ensure-qmd-daemon.ps1`)
+does not carry the opt-out (Windows development is parked).
+
 ## Upstream watch
 
 The standalone `qmd` CLI installs from a local clone of the carried fork

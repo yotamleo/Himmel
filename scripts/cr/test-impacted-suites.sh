@@ -596,6 +596,76 @@ out="$(run_is "$range")"
 if ! grepq "$out" "^${LSP}\$"; then pass "a dist/ file does not select launch-site-profiles"; else fail "launch-site veto (dist) missed: $out"; fi
 if grepq "$out" "^${PCR}\$"; then pass "a dist/ file still selects pr-check-run"; else fail "pr-check-run lost dist/ file: $out"; fi
 
+# --- 33. HIMMEL-4488: a changed .claude/commands/*.html selects the CR
+# terminology suite (RED control: the .md row alone missed it). ----------------
+TERM=scripts/ci/test-check-cr-terminology\\.sh
+mkf scripts/ci/test-check-cr-terminology.sh 'echo term'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: terminology fixture"
+mkdir -p "$FX/.claude/commands"
+change .claude/commands/x.html
+out="$(run_is "$range")"
+if grepq "$out" "^${TERM}\$"; then pass "a .claude/commands/x.html -> test-check-cr-terminology.sh"; else fail "commands html row missed: $out"; fi
+
+# --- 34. HIMMEL-4453: a change to the CR guarded closure selects
+# test-cr-guarded-closure.sh (#1851: leg-jira-status.sh, reached from the
+# guarded scripts/lanes/leg-pr-open.sh, was added without selecting it). --------
+GC=scripts/cr/test-cr-guarded-closure\\.sh
+mkf scripts/cr/test-cr-guarded-closure.sh 'echo gc'
+mkf scripts/cr/pr-check-context.sh 'cr_guarded="scripts/cr scripts/lib
+scripts/lanes/leg-pr-open.sh"'
+mkf scripts/lanes/leg-pr-open.sh 'bash "$d/../handover/console-kit/leg-jira-status.sh"'
+mkf scripts/lanes/unrelated.sh 'echo unrelated'
+mkf scripts/handover/console-kit/leg-jira-status.sh 'echo jira'
+mkf scripts/handover/console-kit/tracker.py 'print(1)'
+mkf scripts/cr/test-names-tracker.sh 'grep -q tracker.py x'
+mkf .agents/skills/pr-check/SKILL.md 'runbook'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: guarded-closure fixtures"
+change scripts/lanes/leg-pr-open.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "a guarded file (leg-pr-open.sh) -> test-cr-guarded-closure.sh"; else fail "guarded file missed: $out"; fi
+change scripts/handover/console-kit/leg-jira-status.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "the #1851 shape: an unguarded file a guarded file names -> test-cr-guarded-closure.sh"; else fail "#1851 shape missed: $out"; fi
+change .agents/skills/pr-check/SKILL.md
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "the runbook twin -> test-cr-guarded-closure.sh"; else fail "runbook seed missed: $out"; fi
+change scripts/handover/console-kit/tracker.py
+out="$(run_is "$range")"
+if ! grepq "$out" "^${GC}\$"; then pass "tracker.py (named only by a guarded test, reached by no guarded file) does not select the closure suite"; else fail "closure row over-selected tracker.py: $out"; fi
+change scripts/lanes/unrelated.sh
+out="$(run_is "$range")"
+if ! grepq "$out" "^${GC}\$"; then pass "an unreferenced scripts/lanes file does not select the closure suite"; else fail "closure row over-selected scripts/lanes: $out"; fi
+
+# --- 35. HIMMEL-4533/4534/4535: closure arms. -------------------------------
+# 4534: arm 1 alone. brand-new.sh sits under the guarded scripts/lib dir, no
+# guarded file names it (arm 2 cannot fire) and no scan_roots row maps
+# scripts/lib/* to the closure suite (scripts/cr/* does, so it cannot be used).
+mkf scripts/lib/brand-new.sh 'echo new'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: arm-1 fixture"
+change scripts/lib/brand-new.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "arm 1 alone: a file inside a guarded dir that nothing names -> closure suite"; else fail "arm 1 alone missed: $out"; fi
+# 4533: arm 2 is not limited to handover/lanes/lib: a guarded file naming
+# scripts/telegram/status.sh makes a change to it select the closure suite.
+mkf scripts/lanes/names-tg.sh 'bash "$d/../telegram/status.sh"'
+mkf scripts/telegram/status.sh 'echo status'
+mkf scripts/cr/pr-check-context.sh 'cr_guarded="scripts/cr scripts/lib
+scripts/lanes/leg-pr-open.sh scripts/lanes/names-tg.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: telegram fixtures"
+change scripts/telegram/status.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "arm 2 beyond handover/lanes/lib: scripts/telegram/status.sh -> closure suite"; else fail "telegram edge missed: $out"; fi
+# 4535: a head without pr-check-context.sh must not silently skip the suite.
+git -C "$FX" rm -q scripts/cr/pr-check-context.sh
+git -C "$FX" commit -q -m "chore: drop pr-check-context.sh"
+change scripts/lanes/unrelated.sh
+out="$(run_is "$range")"
+if grepq "$out" "^${GC}\$"; then pass "a head with no pr-check-context.sh still selects the closure suite"; else fail "closure suite skipped on an unreadable guarded set: $out"; fi
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"

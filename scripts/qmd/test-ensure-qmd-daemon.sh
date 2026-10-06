@@ -742,4 +742,82 @@ wait "$holder_pid" 2>/dev/null || true
 rm -rf "$swap_lock"
 echo "ok (v): a live holder with no role is refused like a swap"
 
+# ---- (w) operator opt-out (HIMMEL-4494): flag file / env => never launch ------
+off_flag="$home/.himmel/state/qmd-daemon.off"
+mkdir -p "$(dirname "$off_flag")"
+: > "$off_flag"
+rm -f "$state/alive"
+run_ensure sentinel "$bin:$safe"
+[ "$rc" -eq 0 ] || fail "(w) flag present: expected rc 0, got $rc ($out)"
+[ ! -f "$state/qmd-argv.log" ] || fail "(w) flag present: qmd was invoked"
+[ ! -f "$state/alive" ] || fail "(w) flag present: daemon was started"
+case "$out" in *"qmd is OFF"*qmd-daemon-switch.sh*on*) : ;; *) fail "(w) flag present: no INFO line naming how to turn it on ($out)" ;; esac
+[ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] || fail "(w) flag present: expected exactly one line ($out)"
+rm -f "$off_flag"
+run_ensure sentinel "$bin:$safe"
+{ [ "$rc" -eq 0 ] && [ -f "$state/alive" ]; } || fail "(w) flag removed: today's launch behaviour not restored ($out)"
+echo "ok (w): flag file present => exit 0, one INFO line, never launches; absent => launches"
+
+rm -f "$state/alive"
+QMD_DAEMON_DISABLED=1 run_ensure sentinel "$bin:$safe"
+[ "$rc" -eq 0 ] || fail "(w2) env: expected rc 0, got $rc ($out)"
+{ [ ! -f "$state/qmd-argv.log" ] && [ ! -f "$state/alive" ]; } || fail "(w2) QMD_DAEMON_DISABLED=1: daemon launched"
+case "$out" in *"qmd is OFF"*) : ;; *) fail "(w2) env: no INFO line ($out)" ;; esac
+echo "ok (w2): QMD_DAEMON_DISABLED=1 => never launches"
+
+# ---- (x) qmd-daemon-switch.sh off / on ----------------------------------------
+switch="$(dirname "$script")/qmd-daemon-switch.sh"
+[ -f "$switch" ] || fail "(x) $switch not found"
+export XDG_CACHE_HOME="$work/cache"
+mkdir -p "$XDG_CACHE_HOME/qmd"
+real_ps="$(command -v ps)"
+# Stale pid: a live process that is NOT a qmd mcp one must be left alone, and pid 0 refused.
+sleep 60 &
+stale_pid=$!
+STUB_PIDS+=("$stale_pid")
+echo "$stale_pid" > "$XDG_CACHE_HOME/qmd/mcp.pid"
+set +e
+out="$(HOME="$home" PATH="$bin:$safe" QMD_PS="$real_ps" bash "$switch" off 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "(x) stale pid: rc $rc ($out)"
+sleep 0.5
+kill -0 "$stale_pid" 2>/dev/null || fail "(x) stale pid: a non-qmd process was killed"
+case "$out" in *"not a qmd mcp process"*) : ;; *) fail "(x) stale pid: no left-alone message ($out)" ;; esac
+kill "$stale_pid" 2>/dev/null || true
+wait "$stale_pid" 2>/dev/null || true
+echo 0 > "$XDG_CACHE_HOME/qmd/mcp.pid"
+set +e
+out="$(HOME="$home" PATH="$bin:$safe" QMD_PS="$real_ps" bash "$switch" off 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "(x) pid 0: rc $rc ($out)"
+case "$out" in *"no running daemon found"*) : ;; *) fail "(x) pid 0: not refused ($out)" ;; esac
+rm -f "$off_flag"
+# A real qmd mcp-looking daemon (args contain "qmd" then "mcp") is stopped.
+fake_script="$work/qmd-mcp-fake.sh"
+printf '%s\n' "trap 'exit 0' TERM" 'while :; do sleep 1; done' > "$fake_script"
+bash "$fake_script" &
+fake_daemon=$!
+STUB_PIDS+=("$fake_daemon")
+echo "$fake_daemon" > "$XDG_CACHE_HOME/qmd/mcp.pid"
+set +e
+out="$(HOME="$home" PATH="$bin:$safe" QMD_PS="$real_ps" bash "$switch" off 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "(x) off: rc $rc ($out)"
+[ -f "$off_flag" ] || fail "(x) off: flag not created"
+sleep 2
+if kill -0 "$fake_daemon" 2>/dev/null; then fail "(x) off: daemon pid $fake_daemon still alive"; fi
+rm -f "$state/alive" "$state/qmd-argv.log"
+set +e
+out="$(HOME="$home" PATH="$bin:$safe" QMD_CURL="$mock_curl" QMD_MOCK_CURL_MODE=sentinel QMD_MOCK_STATE="$state" QMD_MCP_URL="$test_url" bash "$switch" on 2>&1)"; rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "(x) on: rc $rc ($out)"
+[ ! -f "$off_flag" ] || fail "(x) on: flag still present"
+[ -f "$state/alive" ] || fail "(x) on: ensure script did not start the daemon ($out)"
+set +e
+out="$(HOME="$home" bash "$switch" bogus 2>&1)"; rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "(x) bogus arg: expected nonzero"
+unset XDG_CACHE_HOME
+echo "ok (x): switch off creates flag + stops daemon; on removes flag + runs ensure"
+
 echo "PASS: all ensure-qmd-daemon cases"

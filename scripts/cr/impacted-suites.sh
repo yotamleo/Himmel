@@ -124,8 +124,10 @@ usage() {
 runner_for() {
     local path="$1" rel
     case "$path" in
-        scripts/hooks/*.test.mjs|scripts/lib/*.test.mjs|scripts/lanes/tests/*.test.mjs|scripts/trust/tests/*.test.mjs)
+        scripts/hooks/*.test.mjs|scripts/lib/*.test.mjs|scripts/lanes/tests/*.test.mjs|scripts/trust/tests/*.test.mjs|scripts/where-are-we/tests/*.test.mjs|scripts/lessons/tests/*.test.mjs|scripts/op-env-parity.test.mjs|scripts/observability/*.test.mjs)
             printf 'node --test %q\n' "$path" ;;
+        scripts/fleet-control/*.test.ts|scripts/observability/*.test.ts)
+            printf 'bun test %q --dots\n' "$path" ;;
         scripts/jira/*.test.ts)
             rel="${path#scripts/jira/}"
             printf 'cd scripts/jira && npx vitest run %q\n' "$rel" ;;
@@ -194,6 +196,10 @@ vault-suites|bun-test|bun test scripts/vault/tests --dots
 config-ui-suites|bun-test|bun test scripts/config-ui --dots
 luna-correlate|bun-test|marketplace/plugins/luna-correlate && bun install
 telegram-himmel|bun-test|marketplace/plugins/telegram-himmel && bun install
+where-are-we|node-test|scripts/where-are-we/tests/*.test.mjs
+lessons|node-test|scripts/lessons/tests/*.test.mjs
+op-env-observability-mjs|node-test|op-env-parity.test.mjs
+fleet-control-observability|bun-test|bun test scripts/fleet-control scripts/observability
 EOF
 }
 
@@ -692,6 +698,9 @@ scripts/cr/*.js scripts/guardrails/test-check-git-env-scrub.sh
 docs/*.md scripts/ci/test-check-cr-terminology.sh
 docs/*.html scripts/ci/test-check-cr-terminology.sh
 .claude/commands/*.md scripts/ci/test-check-cr-terminology.sh
+.claude/commands/*.html scripts/ci/test-check-cr-terminology.sh
+.claude/commands/pr-check.md scripts/cr/test-cr-guarded-closure.sh
+.agents/skills/pr-check/SKILL.md scripts/cr/test-cr-guarded-closure.sh
 marketplace/*.md scripts/ci/test-check-cr-terminology.sh
 marketplace/*.html scripts/ci/test-check-cr-terminology.sh
 README.md scripts/ci/test-check-cr-terminology.sh
@@ -755,6 +764,62 @@ while IFS= read -r f; do
         esac
     done < "$work/scan-roots"
 done <<< "$changed"
+
+# The CR guarded closure (HIMMEL-4453): scripts/cr/test-cr-guarded-closure.sh
+# DERIVES its file set by walking the runbook + scripts/cr call graph and never
+# names what it reaches, so no reference grep selects it. Every file that walk
+# reaches must lie inside pr-check-context.sh's cr_guarded set (the suite fails
+# otherwise), so a change that adds or alters an edge is one of: a file inside
+# cr_guarded (the file holding the edge), or a file a cr_guarded file names (the
+# newly reached target, e.g. #1851's leg-jira-status.sh). Select the suite for
+# both. The runbook twins are seeds, rows in scan_roots.
+# ponytail: the second arm matches by basename text in the guarded files, so a
+# basename shared with an unrelated file over-selects (the safe direction); a
+# target named only through an assembled path is the suite's own ponytail gap.
+# The extension is appended below, never written on an assignment line: the suite
+# reads a path stored in a variable as an edge, and an edge to itself would walk
+# its own file list into the closure.
+closure_suite=scripts/cr/test-cr-guarded-closure
+closure_suite="${closure_suite}.sh"
+if grep -Fxq -- "$closure_suite" <<< "$suites"; then
+    # A head whose cr_guarded set cannot be read or parses empty is not proof the
+    # closure is untouched: select the suite, which fails loudly on its own.
+    cg_rc=0
+    git show "${head_sha}:scripts/cr/pr-check-context.sh" > "$work/ctx" 2>/dev/null || cg_rc=$?
+    : > "$work/guarded"
+    if [ "$cg_rc" -eq 0 ]; then
+        sed -n '/^cr_guarded="/,/"$/p' "$work/ctx" | sed 's/^cr_guarded="//; s/"$//' | tr ' ' '\n' | sed '/^$/d' > "$work/guarded" || io_fail "reading cr_guarded"
+    fi
+    if [ ! -s "$work/guarded" ]; then
+        printf '%s\n' "$closure_suite" >> "$found" || io_fail "recording the closure suite"
+    else
+        : > "$work/guarded-specs"
+        : > "$work/cg-pats"
+        while IFS= read -r g; do
+            printf ':(top)%s\n' "$g" >> "$work/guarded-specs" || io_fail "writing the guarded pathspecs"
+        done < "$work/guarded"
+        cg_hit=0
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            while IFS= read -r g; do
+                case "$f" in "$g"|"$g"/*) cg_hit=1; break ;; esac
+            done < "$work/guarded"
+            [ "$cg_hit" -eq 0 ] || break
+            { needle_ere "$(file_literal "$f")"; printf '\n'; } >> "$work/cg-pats" || io_fail "writing a guarded-closure needle"
+        done <<< "$changed"
+        if [ "$cg_hit" -eq 0 ] && [ -s "$work/cg-pats" ]; then
+            cg_rc=0
+            # One search for every changed file; any path a guarded file can name
+            # counts (HIMMEL-4533), not just scripts/handover|lanes|lib.
+            # shellcheck disable=SC2046  # one pathspec per line, split on purpose
+            # The suite's seeds skip test-*, so a test naming the file is no edge.
+            git grep -qE -f "$work/cg-pats" "$head_sha" -- $(tr '\n' ' ' < "$work/guarded-specs") ':(exclude,glob)**/test-*' ':(exclude,glob)**/*.test.*' || cg_rc=$?
+            if [ "$cg_rc" -gt 1 ]; then io_fail "searching the guarded files for the changed files"; fi
+            [ "$cg_rc" -ne 0 ] || cg_hit=1
+        fi
+        if [ "$cg_hit" -eq 1 ]; then printf '%s\n' "$closure_suite" >> "$found" || io_fail "recording the closure suite"; fi
+    fi
+fi
 
 if [ -s "$pats" ]; then
     # git grep on the resolved <head> tree, not the working tree: the answer is

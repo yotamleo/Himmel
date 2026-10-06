@@ -73,6 +73,7 @@ LEDGER="$HOME/.claude/graphify-egress.jsonl"
 CLEAN_ENV="-u GRAPHIFY_SALUS_LOCAL_OK -u GRAPHIFY_CLIPPINGS_GLM_OK -u GRAPHIFY_LEDGER \
 -u GRAPHIFY_TOOL_CWD -u GRAPHIFY_DECLARED_BACKEND \
 -u OPENAI_BASE_URL -u DEEPSEEK_BASE_URL -u ANTHROPIC_BASE_URL -u LUNA_VAULT -u OLLAMA_HOST \
+-u OLLAMA_BASE_URL -u OLLAMA_MODEL \
 -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY \
 -u CLAUDE_CODE_USE_GATEWAY -u CLAUDE_CODE_USE_MANTLE -u CLAUDE_CODE_USE_ANTHROPIC_AWS \
 -u CLAUDE_CODE_USE_COWORK_PLUGINS -u CLAUDE_CODE_USE_POWERSHELL_TOOL \
@@ -2750,6 +2751,69 @@ if [ "$rc" -eq 2 ] && grepq "$out" "egress matrix"; then
 else
     fail "${F1_N}B ;'' padding + real chdir rc=$rc in ${elapsed_s}s, egress-matrix-deny=$(grepq "$out" "egress matrix" && echo yes || echo no) (want rc=2, egress-matrix deny) (F1) out=$out"
 fi
+
+echo "== HIMMEL-4185 ollama endpoint + model classification =="
+# o_eval <name> <want-rc> <want> <corpus> <target> [VAR=val ...] - one --eval
+# call with backend ollama. On rc 0, <want> is the provider the ledger line
+# must name; on rc 2 it is a substring the denial must carry.
+o_eval() {
+    local name="$1" want_rc="$2" want="$3" corpus="$4" target="$5"; shift 5
+    local out rc ok=1
+    rm -f "$LEDGER"
+    # shellcheck disable=SC2086 # CLEAN_ENV is an intentional word-split flag list
+    out=$(env $CLEAN_ENV "$@" "$BASH_BIN" "$FENCE" --eval "$corpus" ollama "$target" semantic-update 2>&1); rc=$?
+    [ "$rc" -eq "$want_rc" ] || ok=0
+    if [ "$want_rc" -eq 0 ]; then
+        grepq "$(cat "$LEDGER" 2>/dev/null)" -F "\"provider\":\"$want\"" || ok=0
+    else
+        grepq "$out" -F "$want" || ok=0
+    fi
+    if [ "$ok" = 1 ]; then pass "$name"; else fail "$name (rc=$rc) out=$out ledger=$(cat "$LEDGER" 2>/dev/null)"; fi
+}
+OPTIN_CFG="$HOME/.himmel/config.json"
+mkdir -p "$HOME/.himmel"
+rm -f "$OPTIN_CFG"
+
+o_eval "O1 local: no endpoint env -> local-ollama" 0 local-ollama luna-personal "$LUNA"
+o_eval "O1b local: loopback BASE_URL + qwen3.6:27b -> local-ollama" 0 local-ollama luna-personal "$LUNA" \
+    OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 OLLAMA_MODEL=qwen3.6:27b
+o_eval "O1c local: OLLAMA_HOST bare port -> local-ollama" 0 local-ollama luna-personal "$LUNA" OLLAMA_HOST=11434
+o_eval "O2 -cloud model on loopback -> ollama-cloud" 0 ollama-cloud luna-personal "$LUNA" OLLAMA_MODEL=gpt-oss:120b-cloud
+o_eval "O2b :cloud tag -> ollama-cloud" 0 ollama-cloud luna-personal "$LUNA" OLLAMA_MODEL=glm-4.6:cloud
+o_eval "O3 ollama.com BASE_URL -> ollama-cloud" 0 ollama-cloud luna-personal "$LUNA" OLLAMA_BASE_URL=https://ollama.com/v1
+o_eval "O4 ollama-cloud allowed on himmel-code" 0 ollama-cloud himmel-code "$HIMMEL" OLLAMA_MODEL=x-cloud
+o_eval "O4 ollama-cloud allowed on luna-clippings" 0 ollama-cloud luna-clippings "$LUNA/Clippings" OLLAMA_MODEL=x-cloud
+o_eval "O4 ollama-cloud allowed on handover-state" 0 ollama-cloud handover-state "$HANDDIR" OLLAMA_MODEL=x-cloud
+o_eval "O5 salus x ollama-cloud, no opt-in -> deny" 2 graphify.salus_ollama_cloud_ok salus "$SALUS/notes" OLLAMA_MODEL=x-cloud
+printf '{"graphify":{"salus_ollama_cloud_ok":true}}\n' > "$OPTIN_CFG"
+o_eval "O6 salus x ollama-cloud, persisted opt-in -> allow" 0 ollama-cloud salus "$SALUS/notes" OLLAMA_MODEL=x-cloud
+o_eval "O6b persisted opt-in does NOT open salus x local-ollama" 2 GRAPHIFY_SALUS_LOCAL_OK salus "$SALUS/notes"
+chmod 000 "$OPTIN_CFG"
+o_eval "O7 salus x ollama-cloud, opt-in file unreadable -> deny" 2 graphify.salus_ollama_cloud_ok salus "$SALUS/notes" OLLAMA_MODEL=x-cloud
+chmod 600 "$OPTIN_CFG"
+printf '{"graphify":{"salus_ollama_cloud_ok":"true"}}\n' > "$OPTIN_CFG"
+o_eval "O7b salus x ollama-cloud, opt-in not literal true -> deny" 2 graphify.salus_ollama_cloud_ok salus "$SALUS/notes" OLLAMA_MODEL=x-cloud
+printf '{not json\n' > "$OPTIN_CFG"
+o_eval "O7c salus x ollama-cloud, opt-in file malformed -> deny" 2 graphify.salus_ollama_cloud_ok salus "$SALUS/notes" OLLAMA_MODEL=x-cloud
+rm -f "$OPTIN_CFG"
+o_eval "O8 LAN OLLAMA_HOST fails closed on himmel-code" 2 "ollama endpoint" himmel-code "$HIMMEL" OLLAMA_HOST=192.0.2.5
+o_eval "O8b LAN OLLAMA_BASE_URL fails closed on luna-personal" 2 "ollama endpoint" luna-personal "$LUNA" \
+    OLLAMA_BASE_URL=http://192.0.2.5:11434/v1
+o_eval "O9 garbage OLLAMA_BASE_URL fails closed" 2 "ollama endpoint" himmel-code "$HIMMEL" "OLLAMA_BASE_URL=not a url"
+o_eval "O9b garbage OLLAMA_HOST fails closed" 2 "ollama endpoint" himmel-code "$HIMMEL" "OLLAMA_HOST=http://[::1"
+o_eval "O9c userinfo endpoint fails closed" 2 "ollama endpoint" himmel-code "$HIMMEL" \
+    OLLAMA_BASE_URL=http://127.0.0.1@evil.example:11434/v1
+o_eval "O9d set-but-empty OLLAMA_BASE_URL fails closed" 2 "ollama endpoint" himmel-code "$HIMMEL" OLLAMA_BASE_URL=
+o_eval "O10 remote BASE_URL + loopback HOST is NOT local" 2 "ollama endpoint" himmel-code "$HIMMEL" \
+    OLLAMA_BASE_URL=http://198.51.100.5:11434/v1 OLLAMA_HOST=127.0.0.1
+# Hook mode: a --model flag picks the model the same way OLLAMA_MODEL does, and a
+# per-call OLLAMA_* prefix is invisible to the fence's own env, so it denies.
+run_fence deny no "$HIMMEL" "O11 hook: --model x-cloud on salus is ollama-cloud, not the local opt-in" \
+    "graphify update $SALUS/notes/patient.md --backend ollama --model x-cloud" GRAPHIFY_SALUS_LOCAL_OK=1
+run_fence deny no "$HIMMEL" "O12 hook: per-call OLLAMA_HOST prefix denies" \
+    "OLLAMA_HOST=192.0.2.5 graphify update $LUNA/journal-2026.md --backend ollama"
+run_fence deny no "$HIMMEL" "O12b hook: env OLLAMA_BASE_URL prefix denies" \
+    "env OLLAMA_BASE_URL=http://198.51.100.5:11434/v1 graphify update $LUNA/journal-2026.md --backend ollama"
 
 if [ "$failures" -eq 0 ]; then
     echo "OK: all cases passed"

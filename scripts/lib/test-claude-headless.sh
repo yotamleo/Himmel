@@ -405,27 +405,73 @@ SH18="$W/shadow18"; mkdir -p "$SH18"
 # The shadows come from the shell-startup file and are installed ONLY in
 # claude-headless.sh itself ($0 test): bank-preflight.sh and the other children
 # must stay intact, or the launch is refused for the wrong reason and the rows
-# go vacuous.
+# go vacuous. They arm from a DEBUG trap at the first command AFTER the
+# HIMMEL-3914 seam guard (SCRIPT_DIR=...): a `return` shadow installed earlier
+# breaks the guard itself, which then refuses (exit 96) before the gate is
+# reached. SHADOW_MARK proves the trap fired.
 # shellcheck disable=SC2016  # the startup file body is written literally
 printf '%s\n' '[[ $0 = *claude-headless.sh ]] || return 0' > "$SH18/gate.sh"
-{ cat "$SH18/gate.sh"; printf '%s\n' 'unset(){ :; }' 'return(){ :; }'; } > "$SH18/funcs.sh"
-{ cat "$SH18/gate.sh"; printf '%s\n' 'shopt -s expand_aliases' 'alias unset=: return=:'; } > "$SH18/alias.sh"
-{ cat "$SH18/gate.sh"; printf '%s\n' 'return(){ :; }' 'readonly ANTHROPIC_BASE_URL'; } > "$SH18/ro.sh"
+arm18() { printf '%s\n' "trap '[[ \$BASH_COMMAND == SCRIPT_DIR=* ]] && { trap - DEBUG; $1; : > \"\${SHADOW_MARK:-/dev/null}\"; }' DEBUG"; }
+{ cat "$SH18/gate.sh"; arm18 'unset(){ :; }; return(){ :; }'; } > "$SH18/funcs.sh"
+{ cat "$SH18/gate.sh"; printf '%s\n' 'shopt -s expand_aliases'; arm18 'alias unset=: return=:'; } > "$SH18/alias.sh"
+{ cat "$SH18/gate.sh"; printf '%s\n' 'readonly ANTHROPIC_BASE_URL'; arm18 'return(){ :; }'; } > "$SH18/ro.sh"
+# shellcheck disable=SC2030  # exports are per-launch, scoped to the subshell on purpose
 shadow_launch() { # <tag> <startup file or ''> -> prints launched|refused
   local art="$W/art18-$1"; rm -f "$art"
   ( [ "${3:-}" = noproxy ] || export ANTHROPIC_BASE_URL=https://evil.example ANTHROPIC_API_KEY=x
-    [ -n "$2" ] && export BASH_ENV="$2"
+    [ -n "$2" ] && export BASH_ENV="$2" SHADOW_MARK="$W/mark18-$1"
     run_sut "$FAKE_OK" "$art" >/dev/null 2>&1 )
   [ -f "$art" ] && echo launched || echo refused
 }
 check "18 startup-file unset+return function shadows: launch refused" "refused" "$(shadow_launch env "$SH18/funcs.sh")"
 check "18 startup-file unset+return alias shadows: launch refused" "refused" "$(shadow_launch ali "$SH18/alias.sh")"
 check "18 readonly base URL + return shadow: launch refused" "refused" "$(shadow_launch ro "$SH18/ro.sh")"
+check "18 shadows armed past the seam guard (env ali ro)" "yes yes yes" \
+  "$(for t in env ali ro; do [ -f "$W/mark18-$t" ] && printf yes || printf no; [ $t = ro ] || printf ' '; done)"
 check "18 control: no shadow, proxy vars stripped, launch happens" "launched" "$(shadow_launch ctl '')"
 # Proxy-free controls WITH the shadows installed: the refusals above must come
 # from the gate, not from the shadows breaking the launch path.
 check "18 control: function shadows installed, no proxy: launch happens" "launched" "$(shadow_launch cf "$SH18/funcs.sh" noproxy)"
 check "18 control: alias shadows installed, no proxy: launch happens" "launched" "$(shadow_launch ca "$SH18/alias.sh" noproxy)"
+rm -f "$LIVE_DIR"/*.json
+
+# --- 19: HIMMEL-4461 the loopback-mock seam gate keeps EXACT names only. With
+# `unset`+`return` shadowed, a name built from the two kept ones
+# (ANTHROPIC_BASE_URLANTHROPIC_API_KEY) must not vanish from the gate the way a
+# substring strip lets it. Needs a loopback-only netns (unshare -rn).
+# shellcheck disable=SC2030,SC2031  # per-launch subshell exports, as in shadow_launch
+seam_launch() { # <tag> [extra variable name] [startup file] -> prints launched|refused
+  local art="$W/art19-$1"; rm -f "$art"
+  ( export NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 ANTHROPIC_BASE_URL=http://127.0.0.1:9 ANTHROPIC_API_KEY=k
+    export BASH_ENV="${3:-$SH18/funcs.sh}" SHADOW_MARK="$W/mark19-$1"
+    [ -n "${2:-}" ] && export "$2=x"
+    FAKE_ARTIFACT="$art" HIMMEL_CLAUDE_BIN="$FAKE_OK" unshare -rn bash "$SUT" \
+      --role test-role --ticket HIMMEL-2178 --worktree "$WORKTREE" \
+      --cwd "$WORKTREE" --artifact "$art" --permission-mode default \
+      --prompt-file "$PROMPT_FILE" ) >/dev/null 2>"$W/err19-$1"
+  [ -f "$art" ] && echo launched || echo refused
+}
+# A readonly gate loop variable (set before the gate, here by the startup file)
+# makes `for _v` fail without discarding the line; the gate must refuse, not
+# launch on an empty survivor list.
+{ cat "$SH18/gate.sh"; arm18 'unset(){ :; }; return(){ :; }; readonly _v='; } > "$SH18/ro19.sh"
+if ! unshare -rn true 2>/dev/null; then
+  SKIP=$((SKIP+1)); echo "skip - 19 (no unshare -rn)"
+else
+  r19=$(seam_launch ctl)
+  if grep -q "cannot read the claude session's cwd" "$W/err19-ctl"; then
+    # Same limit as test-claude-mock-turn.sh case H: from inside a Claude Code
+    # session, bank-preflight's seam guard (HIMMEL-3914) cannot read the
+    # session's cwd across the user namespace. CI has no claude ancestor.
+    SKIP=$((SKIP+1)); echo "skip - 19 run from inside a Claude Code session (seam guard refuses across the netns)"
+  else
+    check "19 control: seam keeps exactly base URL + key, launch happens" "launched" "$r19"
+    check "19 concatenated kept names under the seam: launch refused" "refused" "$(seam_launch cat ANTHROPIC_BASE_URLANTHROPIC_API_KEY)"
+    check "19 readonly loop variable under the seam: launch refused" "refused" "$(seam_launch rov ANTHROPIC_MODEL "$SH18/ro19.sh")"
+    check "19 shadows armed past the seam guard (ctl cat rov)" "yes yes yes" \
+      "$([ -f "$W/mark19-ctl" ] && printf yes || printf no) $([ -f "$W/mark19-cat" ] && printf yes || printf no) $([ -f "$W/mark19-rov" ] && printf yes || printf no)"
+  fi
+fi
 rm -f "$LIVE_DIR"/*.json
 
 echo "--- $PASS passed, $FAIL failed, $SKIP skipped ---"

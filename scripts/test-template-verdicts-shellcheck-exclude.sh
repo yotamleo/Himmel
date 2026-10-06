@@ -72,7 +72,9 @@ else:
 # HIMMEL-3851: legs and consoles write scratch sheets and launch artefacts under
 # handovers/**/logs/; one failing scratch .sh there stalled every vault commit.
 LOGS_PATH = "handovers/x/logs/scratch.sh"
-NOT_LOGS_PATH = "handovers/x/blogs/scratch.sh"
+# HIMMEL-4471 widened the exclude to all of handovers/; the boundary is now the
+# leading path segment, so a handovers/ dir nested elsewhere is still linted.
+NOT_LOGS_PATH = "notes/handovers/scratch.sh"
 
 kept = list(filter_by_include_exclude([LOGS_PATH], "", exclude))
 if kept == []:
@@ -83,7 +85,7 @@ else:
 
 kept = list(filter_by_include_exclude([NOT_LOGS_PATH], "", exclude))
 if kept == [NOT_LOGS_PATH]:
-    print(f"ok - {NOT_LOGS_PATH} is still linted by shellcheck (logs/ match is a whole path segment)")
+    print(f"ok - {NOT_LOGS_PATH} is still linted by shellcheck (the exclude is anchored at the vault root)")
 else:
     print(f"FAIL - {NOT_LOGS_PATH} was wrongly excluded from shellcheck (kept={kept})")
     fails += 1

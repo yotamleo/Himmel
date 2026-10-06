@@ -43,9 +43,28 @@
 # on naming qmd and a verb. A shell fed by a file (`sh <f`) is unread.
 # HIMMEL-4244 adds sg, tmux, screen, at/batch, `builtin`, the prefix
 # wrappers (setpriv … pkexec) and elvish/nu/xonsh/pwsh `-c`.
-# ponytail: a launcher that types or ships its command elsewhere — tmux
-# send-keys, screen -X stuff, pwsh -EncodedCommand, ssh/docker/kubectl exec
-# with a command string — is unread; residual launchers → HIMMEL-4305.
+# HIMMEL-4305: a launcher that types or ships its command elsewhere fails
+# closed on naming qmd and a verb anywhere in its words: tmux (every
+# subcommand; send-keys -H hex decoded), screen (its \ooo, \n and ^X decoded),
+# and the remote and container launchers (ssh, docker, podman, nerdctl,
+# kubectl, oc, lxc, incus, distrobox, toolbox). pwsh/powershell
+# -EncodedCommand is base64-decoded (UTF-16LE) and read as a command.
+# HIMMEL-4330 / HIMMEL-4337: a pipe continues across a newline; the `&` of a
+# redirection (`2>&1`, `&>f`) is no boundary; a piped stage that is no plain
+# filter and holds anything that runs its stdin — a shell, an interpreter
+# (python, perl, node, …, whose -c/-e string is read too), eval, xargs, an
+# expansion as the program, a launcher, a filter given an executing script —
+# fails closed on a producer naming a verb; and a shell or interpreter run on
+# a file the same command wrote (`… > f; sh f`, `… | tee f; bash f`) fails
+# closed on the command naming one.
+# ponytail: an expansion is read as a stage's program only in program
+# position (`| nice $l` is unread), and a written file only as the first
+# operand and only when written by the same command; tracking values across
+# commands and wrappers is HIMMEL-4178.
+# ponytail: names_verb is a substring test, so a launcher whose words merely
+# contain one (`tmux new -s research 'qmd status'`, `ssh research qmd status`)
+# is over-denied — the safe direction; a word-bounded test is the upgrade,
+# taken when such an over-deny is reported.
 # A heredoc makes qmd_words decline and the coarser fallback readings below
 # decide; the shared tokenizer (scripts/hooks/lib/shell-tokenize.sh,
 # HIMMEL-912) models heredocs and can replace qmd_words once a third inlined
@@ -362,7 +381,7 @@ OPTV='([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?)*'
 # and tmux runs the command of a session-starting subcommand.
 TMUXSUB='(new(-session|-window)?|neww|split(-window|w)|respawn(-pane|-window|p|w)|run(-shell)?)'
 TMUXREST="[[:space:]]${TMUXSUB}([[:space:]].*)?\$"
-WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|builtin|busybox|exec|eval|coproc|time|xargs|watch|unbuffer|parallel|systemd-run|systemd-inhibit|su|runuser|script|setpriv|unshare|nsenter|firejail|xvfb-run|strace|ltrace|chpst|cgexec|pkexec|screen|elvish|nu|xonsh|pwsh(\.exe)?|fish|(r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh(\.exe)?)'"$OPTV"
+WRAP='(sudo|doas|nice|ionice|chrt|taskset|stdbuf|setsid|nohup|command|builtin|busybox|exec|eval|coproc|time|xargs|watch|unbuffer|parallel|systemd-run|systemd-inhibit|su|runuser|script|setpriv|unshare|nsenter|firejail|xvfb-run|strace|ltrace|chpst|cgexec|pkexec|screen|elvish|nu|xonsh|pwsh(\.exe)?|powershell(\.exe)?|fish|(r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh(\.exe)?)'"$OPTV"
 WRAP="($WRAP|timeout${OPTV}[[:space:]]+[0-9.]+[smhd]?|(flock|chroot|sg)${OPTV}[[:space:]]+[^-[:space:]][^[:space:]]*|bwrap([[:space:]]+-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*([[:space:]]+[^-[:space:]][^[:space:]]*)?)?)*|tmux${OPTV}[[:space:]]+${TMUXSUB}${OPTV}|env([[:space:]]+(-[^[:space:]]+([[:space:]]+[^-[:space:]][^[:space:]]*)?|$ASSIGN))*|if|then|else|elif|do|while|until|!)"
 # A case arm's `)` is a command position too, and zsh runs `=qmd` as the
 # qmd its PATH finds (HIMMEL-4140).
@@ -453,15 +472,19 @@ CASEWORD='(^|[^[:alnum:]_])case[[:space:]]'
 POSPROG='(^|[|;&()`{])'"$CMDREST"'\$\{?[@*0-9]'
 POSVERB="${CMDPOS}${QMDPROG}${QMDOPTS}${SEP}"'\$\{?[@*0-9]'
 NESTSEP=' '$'\t'';&|()`<>'
-NESTWORD='(^|[^[:alnum:]_.-])((r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh|fish|elvish|nu|xonsh|pwsh|sg|su|runuser|script|flock|source|at|batch|eval|watch|parallel|tmux|env|alias)(\.exe)?([^[:alnum:]_.-]|$)|<<<|<\('
+NESTWORD='(^|[^[:alnum:]_.-])((r?ba|z|da|k|mk|lk|ok|pdk|po|ya|a|tc|c)?sh|fish|elvish|nu|xonsh|pwsh|powershell|sg|su|runuser|script|flock|source|at|batch|eval|watch|parallel|tmux|screen|env|alias|xargs|python[0-9.]*|pypy[0-9]*|perl[0-9.]*|ruby|irb|node|nodejs|bun|deno|php|lua|luajit|tclsh|expect|rscript|osascript|ssh|docker|podman|nerdctl|kubectl|oc|lxc|incus|distrobox|toolbox)(\.exe)?([^[:alnum:]_.-]|$)|<<<|<\('
 # HIMMEL-4166 / HIMMEL-4218: what each word that runs a nested string does
 # with the words after it. sh: a shell, or a launcher taking `-c STRING`
 # (su, runuser, script, flock, sg); it also runs a here-string, a process
 # substitution or, after a `|`, its stdin. src: source and `.`, and at and
 # batch (HIMMEL-4244), which run those three but take no -c. eval: its words
 # joined. run: watch and parallel, which join their words into one command
-# too; tmux: the words after its session-starting subcommand.
+# too; tmux: the words after its session-starting subcommand, and all its
+# words joined fail closed (HIMMEL-4305). screen and rem (ssh, docker, …):
+# their words joined fail closed; the words stay read as the top level reads
+# them. int: an interpreter, whose -c/-e-style string fails closed (HIMMEL-4337).
 # env: its -S string and the words after it. alias: a definition naming qmd.
+# HIMMEL-4337: every mode but env and alias runs a piped stdin.
 # HIMMEL-4245: a pipe consumer stage that is a plain non-executing filter
 # reads a shell word as an operand (`… | grep -v sh`), not as a program. Its
 # program word is bare or /usr/bin- or /bin-prefixed, behind no wrapper but
@@ -533,11 +556,14 @@ ENVSPLIT='^(-[[:alpha:]]*S|--split-string(=|$))'
 # nest_mode WORD — set mode for WORD, or return 1 when it runs nothing nested.
 nest_mode() {
     case "${1%.exe}" in
-        sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish|elvish|nu|xonsh|pwsh|sg|su|runuser|script|flock) mode='sh' ;;
+        sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish|elvish|nu|xonsh|pwsh|powershell|sg|su|runuser|script|flock) mode='sh' ;;
         source|.|at|batch) mode='src' ;;
         eval) mode='eval' ;;
         watch|parallel) mode='run' ;;
         tmux) mode='tmux' ;;
+        screen) mode='screen' ;;
+        ssh|docker|podman|nerdctl|kubectl|oc|lxc|incus|distrobox|toolbox) mode='rem' ;;
+        python|python[0-9]|python[0-9].[0-9]|python[0-9].[0-9][0-9]|pypy|pypy[0-9]|perl|perl[0-9]*|ruby|irb|node|nodejs|bun|deno|php|lua|luajit|tclsh|expect|rscript|osascript) mode='int' ;;
         env) mode='env' ;;
         alias) mode='alias' ;;
         *) return 1 ;;
@@ -551,6 +577,111 @@ names_verb() {
     # shellcheck disable=SC1003 # a literal backslash in the tr set
     s=$(printf '%s' "$1" | LC_ALL=C tr -d '"'\''\\' | LC_ALL=C tr '[:upper:]' '[:lower:]')
     [[ $s == *qmd* ]] && [[ $s == *query* || $s == *search* ]]
+}
+# The helpers below run inside qmd_nested and read its locals (w, dec, n,
+# pipe, pfrom, pp and the caches sk, se, sf, nk, nr).
+# _stage_end START — set se to the end of the simple command holding START:
+# the next `;`, `|`, `(`, `)` or boundary `&` (not a redirection's, HIMMEL-4337)
+# outside a `$(…)`, `<(…)`, `>(…)` or backtick.
+# shellcheck disable=SC2016 # literal $ and ` bytes
+_stage_end() {
+    local k=$1 c pd=0 bq=0
+    while [ "$k" -lt "$n" ]; do
+        c=${w:k:1}
+        if [ "$bq" = 1 ]; then
+            [ "$c" != '`' ] || bq=0
+        elif [ "$pd" -gt 0 ]; then
+            case "$c" in '(') pd=$((pd + 1)) ;; ')') pd=$((pd - 1)) ;; esac
+        else
+            case "$c" in
+                '(') case "${w:k-1:1}" in '$'|'<'|'>') pd=1 ;; *) break ;; esac ;;
+                '`') bq=1 ;;
+                ';'|'|'|')') break ;;
+                '&') case "${w:k-1:1}${w:k+1:1}" in '>'*|'<'*|*'>') ;; *) break ;; esac ;;
+            esac
+        fi
+        k=$((k + 1))
+    done
+    se=$k
+}
+# _filt STAGE DEC — pipe_filter, but a `$` in DEC that STAGE does not hold
+# came from quotes or an escape (awk's '{print $1}'): data, no expansion.
+# shellcheck disable=SC2016 # a literal $ byte
+_filt() {
+    local s=$1 d=$2 m='' x k
+    while [[ $d == *'$'* ]]; do
+        x=${d%%\$*}
+        k=$((${#m} + ${#x}))
+        if [ "${s:k:1}" = '$' ]; then m=$m$x'$'; else m=$m$x'_'; fi
+        d=${d:${#x}+1}
+    done
+    pipe_filter "$s" "$m$d"
+}
+# _prod_verb — succeed when the producer of the current pipe names a verb.
+_prod_verb() {
+    if [ "$nk" != "$pfrom,$pipe" ]; then
+        nk="$pfrom,$pipe" nr=1
+        names_verb "${dec:pfrom+1:pipe-pfrom-1}" || nr=0
+    fi
+    [ "$nr" = 1 ]
+}
+# _qn_runs START — HIMMEL-4337: succeed when the piped stage holding the
+# executing element at START runs its stdin: it is no plain filter, read from
+# the pipe or, for an element in program position, from START, and the
+# producer names a verb. The stage end and its filter verdict are cached per
+# stage, so a stage of many such words is scanned once.
+_qn_runs() {
+    local s=$1
+    if [ "$sk" != "$pipe" ] || [ "$s" -ge "$se" ]; then
+        _stage_end "$s"
+        sk=$pipe sf=0
+        if _filt "${w:pipe+1:se-pipe-1}" "${dec:pipe+1:se-pipe-1}"; then sf=1; fi
+    fi
+    [ "$sf" = 0 ] || return 1
+    if [ "$pp" = 1 ] && _filt "${w:s:se-s}" "${dec:s:se-s}"; then return 1; fi
+    _prod_verb
+}
+# _wr_add WORD — record a file the command writes (`>f`, `>>f`, `tee f`).
+_wr_add() { wr="$wr ${1#./} "; }
+# _ran_written WORD — succeed when WORD, a shell's or interpreter's
+# operand, is a file the command wrote and the command names a verb.
+_ran_written() {
+    case "$wr" in *" ${1#./} "*) names_verb "$w" ;; *) return 1 ;; esac
+}
+# _screen_dec TEXT — set sd to TEXT with screen's \ooo, \n, \r decoded and
+# its ^X dropped (a control byte never spells the verb).
+# shellcheck disable=SC1003 # a literal backslash
+_screen_dec() {
+    local s=$1 i=0 m=${#1} c d k
+    sd=''
+    while [ "$i" -lt "$m" ]; do
+        c=${s:i:1}
+        if [ "$c" = '\' ]; then
+            d=${s:i+1:1} k=1
+            case "$d" in
+                [0-7])
+                    while [ "$k" -lt 3 ]; do
+                        case "${s:i+1+k:1}" in [0-7]) d=$d${s:i+1+k:1}; k=$((k + 1)) ;; *) break ;; esac
+                    done
+                    d=$(( 8#$d & 255 ))
+                    if [ "$d" -gt 32 ] && [ "$d" -lt 127 ]; then
+                        printf -v d '%03o' "$d"
+                        printf -v d '%b' "\\0$d"
+                    else
+                        d=' '
+                    fi
+                    ;;
+                n|r) d=' ' ;;
+            esac
+            sd=$sd$d
+            i=$((i + 1 + k))
+        elif [ "$c" = '^' ] && [ -n "${s:i+1:1}" ]; then
+            i=$((i + 2))
+        else
+            sd=$sd$c
+            i=$((i + 1))
+        fi
+    done
 }
 # qmd_nested WORDS DEC DEPTH — run qmd_check on what each nested shell or
 # eval in WORDS (qmd_words' first line, lower-cased) would run, spelled as in
@@ -579,7 +710,15 @@ qmd_nested() {
     # ponytail: the fallback outlives the group or loop it came from, so a
     # bare shell after it (`echo qmd query x | { cat; }; sh`) is over-denied;
     # match the closing keyword if one is hit.
-    local lb=-1 pipe='' pfrom=-1 fs='' fb='' fr
+    # HIMMEL-4330: pc is set while only blanks follow a lone `|` or `|&`, so a
+    # newline there (printed `;`) continues the pipeline: the stage restarts
+    # after it and the pipe still feeds it. HIMMEL-4337: pp is set while the
+    # next word is in program position; ro while the next word is a `>`
+    # target and te in a tee's words, both recorded in wr for _ran_written.
+    # ri is set while the next word is a `<` target; sw is lb when the
+    # current stage reads a written file on stdin (`< f sh`).
+    local lb=-1 pipe='' pfrom=-1 fs='' fb='' fr pc=0 pp=1 ro=0 te=0 tw ws ri=0 sw='' so sr
+    local sk='' se=0 sf=0 nk='' nr=0 pk=-1 e0 nw enc fo ia ct sj tk hx hs tx sd x
     while [ "$i" -lt "$n" ]; do
         c=${w:i:1}
         case "$NESTSEP" in
@@ -592,15 +731,38 @@ qmd_nested() {
                     '|')
                         if [ "${w:i+1:1}" != '|' ] && [ "$k" != '|' ]; then
                             [ -n "$pipe" ] || pfrom=$lb
-                            pipe=$i
+                            pipe=$i pc=1
                         else
-                            pipe=$fb
+                            pipe=$fb pc=0
                         fi
-                        lb=$i
+                        lb=$i pp=1 te=0 ro=0
+                        # `>|` writes its target too.
+                        [ "$k" != '>' ] || ro=1
                         ;;
-                    '&') [ "$k" = '|' ] || { pipe=$fb; lb=$i; } ;;
-                    ';') pipe=$fb lb=$i ;;
+                    '&')
+                        # HIMMEL-4337: `>&`, `<&` and `&>` are one redirection.
+                        if [ "$k" != '|' ] && [ "$k" != '>' ] && [ "$k" != '<' ] && [ "${w:i+1:1}" != '>' ]; then
+                            pipe=$fb lb=$i pc=0 pp=1 te=0 ro=0
+                        fi
+                        ;;
+                    ';')
+                        if [ "$pc" = 1 ]; then pipe=$i; else pipe=$fb; fi
+                        lb=$i pp=1 te=0 ro=0
+                        ;;
+                    '>') ro=1 pc=0 ;;
+                    '<')
+                        ro=0 pc=0 ri=0
+                        if [ "$k" != '<' ] && [ "${w:i+1:1}" != '<' ]; then ri=1; fi
+                        ;;
                     '('|')'|'`')
+                        pc=0 te=0 ro=0
+                        # A backtick as a piped stage's program runs its output.
+                        if [ "$c" = '`' ] && [ "${fs##*,}" != b ] && [ -n "$pipe" ] && [ "$pp" = 1 ] &&
+                            _qn_runs "$i"; then
+                            deny=1
+                            return 0
+                        fi
+                        pp=1
                         if [ "$c" = ')' ] || { [ "$c" = '`' ] && [ "${fs##*,}" = b ]; }; then
                             if [ -n "$fs" ]; then
                                 fr=${fs##*/} fs=${fs%/*}
@@ -629,14 +791,58 @@ qmd_nested() {
             j=$((j + 1))
         done
         t=${w:i:j-i}
+        tw=$t ws=$i
         i=$j
+        pc=0
         if [ -n "$pipe" ]; then
             case "$t" in '{'|while|until|for|if|case|select) fb=$pipe ;; esac
         fi
+        if [ "$ro" = 1 ]; then
+            _wr_add "$tw"
+        elif [ "$te" = 1 ]; then
+            case "$tw" in -*) ;; *) _wr_add "$tw" ;; esac
+        fi
+        if [ "$ri" = 1 ]; then
+            ri=0
+            case "$wr" in *" ${tw#./} "*) sw=$lb ;; esac
+        fi
         t=${t#=}
         t=${t##*/}
+        [ "$t" != tee ] || te=1
+        # HIMMEL-4337: xargs, a filter as the program, or an expansion as the
+        # program, in a piped stage.
+        if [ -n "$pipe" ]; then
+            x=0
+            if [ "$t" = xargs ]; then
+                x=1
+            elif [ "$pp" = 1 ]; then
+                case "$tw" in
+                    '$'*) x=1 ;;
+                    *) case "$t" in grep|egrep|fgrep|rg|sed|awk|gawk|mawk|nawk|head|tail|wc|sort|uniq|cut|tr|cat|column|jq) x=1 ;; esac ;;
+                esac
+            fi
+            if [ "$x" = 1 ] && _qn_runs "$ws"; then deny=1; return 0; fi
+        fi
+        # Program position: after a keyword or a plain prefix, and kept over
+        # an assignment, a redirection's fd and its target.
+        if [ "$ro" = 1 ]; then
+            ro=0
+        elif [[ $tw =~ ^[[:alnum:]_]+= ]] || { [[ ${w:j:1} == [\<\>] ]] && [[ $tw =~ ^[0-9]+$ ]]; }; then
+            :
+        else
+            case "$tw" in do|then|else|elif|if|while|until|'!'|time|'{'|exec|command|builtin) pp=1 ;; *) pp=0 ;; esac
+        fi
         nest_mode "$t" || continue
-        piped=$pipe
+        pp=0
+        piped=$pipe nw=${t%.exe} e0=$i enc=0 fo=0 ia=0 ct='' sj='' tk=0 hx=0 hs=0 tx=0
+        # so: the program comes from an operand, code string or hand-back;
+        # sr: stdin is a written file or a here-string; ss: sh -s seen.
+        so=0 sr=0 ss=0
+        [ "$sw" != "$lb" ] || sr=1
+        # screen and rem only peek at their words (the walk below resumes
+        # after the launcher word itself); one inside a span an earlier one
+        # peeked at was read with it, so the scan stays linear.
+        if { [ "$mode" = screen ] || [ "$mode" = rem ]; } && [ "$e0" -lt "$pk" ]; then continue; fi
         # The words that follow, to the end of the simple command. A word
         # keeps a `$(…)` or backtick substitution in it whole, blanks and all.
         e=$i hasc=0 scr='' rd=0
@@ -658,10 +864,11 @@ qmd_nested() {
                     case "${w:e:1}" in '<'|'>'|'&'|'|') e=$((e + 1)) ;; *) break ;; esac
                 done
                 rdop=${w:k:e-k}
-                # A process substitution handed to a shell or source runs
-                # its output, which cannot be read: refuse one naming a verb.
+                # A process substitution handed to a shell, source or an
+                # interpreter runs its output, which cannot be read: refuse
+                # one naming a verb.
                 if [ "$rdop" = '<' ] && [ "${w:e:1}" = '(' ] &&
-                    { [ "$mode" = sh ] || [ "$mode" = src ]; }; then
+                    { [ "$mode" = sh ] || [ "$mode" = src ] || [ "$mode" = int ]; }; then
                     k=$e pd=0
                     while [ "$k" -lt "$n" ]; do
                         case "${w:k:1}" in
@@ -699,10 +906,19 @@ qmd_nested() {
             e=$j
             if [ "$rd" = 1 ]; then
                 rd=0
+                [[ $rdop != *'>'* ]] || _wr_add "$t"
+                if [ "$rdop" = '<<<' ]; then
+                    sr=1
+                elif [ "$rdop" = '<' ]; then
+                    case "$wr" in *" ${t#./} "*) sr=1 ;; esac
+                fi
                 if [ "$rdop" = '<<<' ] && { [ "$mode" = sh ] || [ "$mode" = src ]; }; then
                     # A here-string is what a shell reading stdin runs.
                     qmd_check "$v" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
+                elif [ "$rdop" = '<<<' ] && [ "$mode" = int ] && names_verb "$v"; then
+                    deny=1
+                    return 0
                 elif [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; then
                     qmd_check "$t" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
@@ -710,7 +926,34 @@ qmd_nested() {
             elif [[ ${w:e:1} == [\<\>] ]] && [[ $t =~ ^([0-9]+|\{[[:alpha:]_][[:alnum:]_]*\})$ ]]; then
                 # The fd of a redirection (`2>f`, `{fd}<f`), not a word.
                 :
-            elif [ "$mode" = eval ] || [ "$mode" = run ] || [ "$mode" = tmux ]; then
+            elif [ "$mode" = tmux ] || [ "$mode" = screen ] || [ "$mode" = rem ]; then
+                # HIMMEL-4305: every word, decoded, is kept joined (sj) and
+                # concatenated (ct, which catches `send-keys q m d`); tmux's
+                # also feed the TMUXREST reading below. After send-keys -H
+                # each operand is one hex byte.
+                [ "$mode" != tmux ] || scr="$scr $v"
+                case "$t" in *'$'*|*'`'*) tx=1 ;; esac
+                x=$v
+                if [ "$mode" = tmux ]; then
+                    if [ "$v" = ';' ]; then
+                        tk=0 hx=0
+                    elif [ "$hs" = 1 ]; then
+                        hs=0
+                    elif [ "$tk" = 1 ] && [[ $v == -* ]]; then
+                        [[ $v != -*H* ]] || hx=1
+                        [[ ! $v =~ ^-[[:alpha:]]*[tNc]$ ]] || hs=1
+                    elif [ "$hx" = 1 ]; then
+                        if [[ $v =~ ^[0-9a-fA-F]{1,2}$ ]]; then
+                            printf -v x '%b' "\\x$v"
+                        else
+                            deny=1
+                            return 0
+                        fi
+                    fi
+                    case "$t" in send-keys|send) tk=1 ;; esac
+                fi
+                ct=$ct$x sj="$sj $v"
+            elif [ "$mode" = eval ] || [ "$mode" = run ]; then
                 # eval takes one option, the `--` that ends its options.
                 if [ -n "$scr" ] || [ "$mode" != eval ] || [ "$t" != '--' ]; then scr="$scr $v"; fi
             elif [ "$mode" = alias ]; then
@@ -726,16 +969,74 @@ qmd_nested() {
                 # one command line, split by env's own quote rules.
                 mode=run
                 scr=" ${v#"${BASH_REMATCH[0]}"}"
+            elif [ "$enc" = 1 ]; then
+                # HIMMEL-4305: pwsh -EncodedCommand's base64 of UTF-16LE text,
+                # decoded from the case-preserving bytes; a failed decode, or
+                # no base64 to decode it with, fails closed.
+                enc=2 so=1
+                if ! command -v base64 >/dev/null 2>&1 ||
+                    ! x=$(printf '%s' "$v" | base64 -d 2>/dev/null | LC_ALL=C tr -d '\000') ||
+                    [ -z "$x" ] || names_verb "$x"; then
+                    deny=1
+                    return 0
+                fi
+                qmd_check "$x" $((depth + 1))
+                if [ "$deny" = 1 ]; then return 0; fi
+            elif [ "$mode" = int ]; then
+                # HIMMEL-4337: an interpreter's code string — python's -c,
+                # perl's, ruby's and lua's -e, node's and bun's -e/-p/--eval/
+                # --print, php's -r, deno eval — is no shell: refuse one
+                # naming a verb (so is any option word that names one).
+                if [ "$ia" = 1 ]; then
+                    ia=0 so=1
+                    if names_verb "$v"; then deny=1; return 0; fi
+                elif [[ $t == -* ]]; then
+                    if names_verb "$v"; then deny=1; return 0; fi
+                    case "$nw" in
+                        python*|pypy*|tclsh|expect) x=c ;;
+                        node|nodejs|bun) x=ep ;;
+                        php) x=r ;;
+                        *) x=e ;;
+                    esac
+                    if [[ $t =~ ^-[[:alnum:]]*[$x]$ ]] || [[ $t =~ ^--(eval|print)$ ]]; then ia=1; fi
+                elif [ "$nw" = deno ] && [ "$t" = eval ] && [ "$fo" = 0 ]; then
+                    ia=1 fo=1
+                elif [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; then
+                    qmd_check "$t" $((depth + 1))
+                    if [ "$deny" = 1 ]; then return 0; fi
+                else
+                    c=${t#=} k=$mode
+                    if nest_mode "${c##*/}"; then
+                        mode=$k so=1
+                        e=$((j - ${#t}))
+                        break
+                    fi
+                    # Every operand, not only the first: an option's own
+                    # argument (`-I lib`, `-r ./x`) would shift the script.
+                    # An operand naming stdin (/dev/stdin, /dev/fd/0,
+                    # /proc/self/fd/0) is no program source.
+                    fo=1
+                    case "$v" in */dev/*|dev/*|*/proc/*|proc/*) ;; *) so=1 ;; esac
+                    if _ran_written "$t"; then deny=1; return 0; fi
+                fi
             elif [ "$hasc" = 0 ]; then
                 # The string is the first word after an option cluster
                 # holding c or su's C (`-c`, `-ec`, `-lc`, `-C`) or a
                 # `--command` / su's `--session-command`; the later
                 # words ($0 and its arguments) are read too — more reading
                 # only adds denials.
-                if [ "$mode" = sh ] && [[ $t =~ ^-[[:alpha:]]*[cC][[:alpha:]]*$ || $t =~ ^--(session-)?command$ ]]; then
+                # HIMMEL-4305: pwsh's -EncodedCommand (any prefix, -ec, a
+                # `--` or `/` lead) is read first: it would match the -c
+                # cluster.
+                x=${t#-} x=${x#-}
+                [ "$x" != "$t" ] || x=${t#/}
+                if [ "$mode" = sh ] && { [ "$nw" = pwsh ] || [ "$nw" = powershell ]; } && [ "$x" != "$t" ] &&
+                    [[ $x =~ ^[a-z]+$ ]] && { [ "$x" = ec ] || [[ encodedcommand == "$x"* ]]; }; then
+                    enc=1
+                elif [ "$mode" = sh ] && [[ $t =~ ^-[[:alpha:]]*[cC][[:alpha:]]*$ || $t =~ ^--(session-)?command$ ]]; then
                     hasc=1
                 elif [ "$mode" = sh ] && [[ $t =~ ^--(session-)?command= ]]; then
-                    hasc=1
+                    hasc=1 so=1
                     qmd_check "${v#*=}" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
                 elif [ "$mode" != env ] && { [[ $t == *'$('* ]] || [[ $t == *'`'* ]]; }; then
@@ -745,12 +1046,26 @@ qmd_nested() {
                     qmd_check "$t" $((depth + 1))
                     if [ "$deny" = 1 ]; then return 0; fi
                 else
+                    # HIMMEL-4337: a shell's or source's operand that the
+                    # command wrote (`… > f; sh f`). Every operand: an
+                    # option's argument (`-o errexit`) would shift the script.
+                    # After sh -s the operands are positional args, and an
+                    # operand naming stdin (/dev/stdin, /dev/fd/0,
+                    # /proc/self/fd/0) is no program source: both keep the
+                    # stdin check below on.
+                    if [ "$mode" = sh ] && [ "$so" = 0 ] && [[ $t =~ ^-[[:alpha:]]*s[[:alpha:]]*$ ]]; then ss=1; fi
+                    if [ "$mode" != env ] && [[ $t != -* ]]; then
+                        if [ "$ss" = 0 ]; then
+                            case "$v" in */dev/*|dev/*|*/proc/*|proc/*) ;; *) so=1 ;; esac
+                        fi
+                        if _ran_written "$t"; then deny=1; return 0; fi
+                    fi
                     # Another word that runs a nested string, before any -c:
                     # hand it back to the outer loop, so no word is scanned
                     # twice.
                     c=${t#=} k=$mode
                     if nest_mode "${c##*/}"; then
-                        mode=$k
+                        mode=$k so=1
                         e=$((j - ${#t}))
                         break
                     fi
@@ -762,6 +1077,7 @@ qmd_nested() {
                     fi
                 fi
             else
+                so=1
                 # A word with no q, `$` or backtick cannot spell qmd.
                 case "$v" in
                     *[qQ]*|*'$'*|*'`'*) qmd_check "$v" $((depth + 1)) ;;
@@ -771,14 +1087,28 @@ qmd_nested() {
         done
         # Every word to here was read above (eval's in $scr): resume after
         # them, so the scan stays linear in the length of the command.
+        # screen and rem resume after their own word: the words they peeked
+        # at are read again as the top level reads them.
         i=$e
-        # A shell or source with no -c string, fed by a pipe, runs the
-        # producer's output: refuse a producer naming a verb. HIMMEL-4245:
-        # unless the consumer stage, to the end of this command, is a plain
-        # filter (`… | grep -v sh` is no shell).
+        if [ "$mode" = screen ] || [ "$mode" = rem ]; then i=$e0 pk=$e; fi
+        # A shell or interpreter with no program operand or code string
+        # reads its program from stdin (`< f`, `<<<`, a pipe, -s), as does
+        # a source of /dev/stdin; with
+        # none of them, -c's string comes from elsewhere (`xargs -a f sh
+        # -c`). Fails closed on a command that wrote a file and names a verb.
+        if { [ "$mode" = sh ] || [ "$mode" = src ] || [ "$mode" = int ]; } && [ "$so" = 0 ] && [ -n "$wr" ] &&
+            { [ "$sr" = 1 ] || [ -n "$piped" ] || [ "$hasc" = 1 ]; } && names_verb "$w"; then
+            deny=1
+            return 0
+        fi
+        # A shell or source, fed by a pipe, runs the producer's output:
+        # refuse a producer naming a verb. HIMMEL-4245: unless the consumer
+        # stage, to the end of this command, is a plain filter (`… | grep -v
+        # sh` is no shell). HIMMEL-4337: so does every mode but env and
+        # alias, with or without -c.
         # HIMMEL-4244: a stage run on by a later `|` then a newline (printed
         # `;`) reaches the next line, so it is no filter.
-        if [ -n "$piped" ] && [ "$hasc" = 0 ] && { [ "$mode" = sh ] || [ "$mode" = src ]; } &&
+        if [ -n "$piped" ] && [ "$mode" != env ] && [ "$mode" != alias ] &&
             { [[ ${w:e} =~ $PIPENL ]] || ! pipe_filter "${w:piped+1:e-piped-1}" "${dec:piped+1:e-piped-1}"; } &&
             names_verb "${dec:pfrom+1:piped-pfrom-1}"; then
             deny=1
@@ -800,6 +1130,24 @@ qmd_nested() {
             qmd_check "$scr" $((depth + 1))
             if [ "$deny" = 1 ]; then return 0; fi
         fi
+        # HIMMEL-4305: a launcher's words naming qmd and a verb fail closed:
+        # tmux's and screen's concatenated (screen's escapes decoded), rem's
+        # joined and also read as a command; and an expansion among them
+        # fails closed on the command naming one.
+        case "$mode" in
+            tmux|screen)
+                if [ "$mode" = screen ]; then _screen_dec "$ct"; ct=$sd; fi
+                if [[ $ct == *[qQ]* ]] && names_verb "$ct"; then deny=1; return 0; fi
+                ;;
+            rem)
+                if [[ $sj == *[qQ]* ]] && names_verb "$sj"; then deny=1; return 0; fi
+                case "$sj" in
+                    *[qQ]*|*'$'*|*'`'*) qmd_check "$sj" $((depth + 1)) ;;
+                esac
+                if [ "$deny" = 1 ]; then return 0; fi
+                ;;
+        esac
+        if [ "$tx" = 1 ] && names_verb "$w"; then deny=1; return 0; fi
     done
     return 0
 }
@@ -827,9 +1175,11 @@ qmd_check() {
     crude=$(printf '%s' "$crude" | LC_ALL=C tr -d '"'\''\\')
 
     # Cheap pre-filter: no `qmd` anywhere, even with the quotes removed, and no
-    # `$'…'` or `$"…"` that could spell it — nothing to check.
+    # `$'…'` or `$"…"` that could spell it — nothing to check. HIMMEL-4305:
+    # tmux, screen and pwsh decode keys, escapes and base64 that can spell it
+    # with no `qmd` in the text.
     case "$cmd_lc$crude" in
-        *qmd*|*\$\'*|*\$\"*) ;;
+        *qmd*|*\$\'*|*\$\"*|*tmux*|*screen*|*pwsh*|*powershell*) ;;
         *) return 0 ;;
     esac
     # Whether a filter can clear a piped stage (pipe_filter) is read from the
@@ -883,7 +1233,7 @@ qmd_check() {
     return 0
 }
 
-deny=0 checks=0 nested=0 nofilt=0
+deny=0 checks=0 nested=0 nofilt=0 wr=""
 qmd_check "$cmd" 0
 
 if [ "$deny" = 1 ]; then

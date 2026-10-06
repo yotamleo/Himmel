@@ -9,7 +9,7 @@
 # from PyPI onto the operator's own machine -- so the relicense carries no bundled-
 # notice obligation here; it is a pin-review fact, not a compliance gate.
 # This resolver installs it from PyPI pinned to a specific version via
-# `uv tool install --with mcp graphifyy==<version>`. uv tool installs are already
+# `uv tool install --with mcp 'graphifyy[ollama]==<version>'`. uv tool installs are already
 # self-isolating (their own venv + a shim in uv's tool bin dir), so — unlike
 # scripts/lib/qmd-bin.sh's bun-global junction — there is no separate PATH-provider
 # step here: the shim lands in uv's tool bin dir, which setup.sh/adopt.sh already
@@ -52,11 +52,12 @@
 # fork-drift guard stays truthful.
 _graphify_version() { printf '%s\n' "${GRAPHIFY_VERSION:-0.9.75}"; }
 _graphify_pypi_name() { printf '%s\n' "graphifyy"; }
-# No extras by default (HIMMEL-2481): himmel has no Kimi backend -- we use
-# Claude -- so the install spec carries no `[kimi]` extra (which pulled in
-# openai + tiktoken for a backend that does not exist here). Recorded
-# non-empty extras are still preserved verbatim by graphify_update below.
-_graphify_pinned_source() { printf '%s==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
+# The one default extra is `[ollama]` (HIMMEL-4512 item 7 / HIMMEL-4513):
+# graph-cadence's semantic step runs `--backend ollama`, and graphify's ollama
+# backend needs the `openai` client that only this extra installs. No `[kimi]`
+# (HIMMEL-2481): himmel has no Kimi backend. graphify_update preserves any
+# other recorded extras and adds ollama to them.
+_graphify_pinned_source() { printf '%s[ollama]==%s\n' "$(_graphify_pypi_name)" "$(_graphify_version)"; }
 _graphify_bin_name() { printf '%s\n' "graphify"; }
 
 # Prints the manual install recipe (best-effort documentation text embedded
@@ -67,9 +68,10 @@ _graphify_bin_name() { printf '%s\n' "graphify"; }
 # it at startup -- without this the CLI works and the MCP server crashes on every
 # fresh install (hit on all 3 stations in the HIMMEL-985 parity audit; re-confirmed
 # still optional upstream at v0.9.22, HIMMEL-1048). Drop the flag if upstream
-# promotes mcp to a core dependency.
+# promotes mcp to a core dependency. The spec is single-quoted because zsh
+# globs its brackets.
 graphify_install_hint() {
-  printf '%s\n' "uv tool install --with mcp $(_graphify_pinned_source)"
+  printf '%s\n' "uv tool install --with mcp '$(_graphify_pinned_source)'"
 }
 
 # Presence check ONLY -- does not invoke the binary, so a real runtime error
@@ -499,13 +501,12 @@ _graphify_pat_from_path() {
   printf '%s\n' "$out"
 }
 
-_graphify_mcp_holders() {
-  local pat_entry='graphify-mcp' pat_dir tool_name c ps_bin="" _out=""
-  if [ -n "${GRAPHIFY_MCP_HOLDERS:-}" ]; then
-    [ "$GRAPHIFY_MCP_HOLDERS" = "unavailable" ] && return 1
-    printf '%s\n' "$GRAPHIFY_MCP_HOLDERS"
-    return 0
-  fi
+# _graphify_mcp_holder_pats -- the two holder needles, one per line: the
+# entrypoint name, then the tool-dir ERE. The ONE definition both the count
+# (_graphify_mcp_holders) and the naming (_graphify_mcp_holder_details) read,
+# so the pids a SKIP names can never drift from the pids it counted.
+_graphify_mcp_holder_pats() {
+  local tool_name pat_root
   tool_name="$(_graphify_pypi_name)"
   # Two tool-dir needles, OR'd (codex-adv round): the RESOLVED dir plus the
   # default layout as a fallback.
@@ -522,9 +523,20 @@ _graphify_mcp_holders() {
   # `uv tool dir` fails, the resolved value falls back to the default anyway,
   # and an extra alternative can only make the probe match MORE. This guard
   # must fail CLOSED, so a redundant needle is the right kind of wrong.
-  local pat_root
   pat_root="$(_graphify_pat_from_path "$(_graphify_uv_tool_dir)/${tool_name}")"
-  pat_dir="${pat_root}|uv[/\\\\]tools[/\\\\]${tool_name}"
+  printf 'graphify-mcp\n%s\n' "${pat_root}|uv[/\\\\]tools[/\\\\]${tool_name}"
+}
+
+_graphify_mcp_holders() {
+  local pat_entry pat_dir c ps_bin="" _out=""
+  if [ -n "${GRAPHIFY_MCP_HOLDERS:-}" ]; then
+    [ "$GRAPHIFY_MCP_HOLDERS" = "unavailable" ] && return 1
+    printf '%s\n' "$GRAPHIFY_MCP_HOLDERS"
+    return 0
+  fi
+  { read -r pat_entry; read -r pat_dir; } <<EOF
+$(_graphify_mcp_holder_pats)
+EOF
   case "$(uname -s 2>/dev/null || echo)" in
     MINGW*|MSYS*|CYGWIN*)
       for c in pwsh powershell; do command -v "$c" >/dev/null 2>&1 && { ps_bin="$c"; break; }; done
@@ -638,14 +650,117 @@ _graphify_mcp_holders() {
   esac
 }
 
+# _graphify_mcp_holder_details (HIMMEL-4513) -- one line per holder for the
+# SKIP message: `pid <pid>` plus, best-effort, its parent session (ppid, its
+# comm, and its cwd when /proc exposes it). rc 1 when no details can be had;
+# the caller then prints the count alone, so this can never fail an update.
+# POSIX only, via pgrep on the same needles _graphify_mcp_holders counts.
+# Windows keeps the count alone: the only detail source there is another
+# pwsh/CIM round trip, not a cheap one. Test seam: GRAPHIFY_MCP_HOLDER_DETAILS
+# (literal text printed as-is).
+_graphify_mcp_holder_details() {
+  local pat_entry pat_dir pids p pp comm cwd line
+  if [ -n "${GRAPHIFY_MCP_HOLDER_DETAILS:-}" ]; then
+    printf '%s\n' "$GRAPHIFY_MCP_HOLDER_DETAILS"
+    return 0
+  fi
+  [ "$(_graphify_update_platform)" = "posix" ] || return 1
+  command -v pgrep >/dev/null 2>&1 || return 1
+  { read -r pat_entry; read -r pat_dir; } <<EOF
+$(_graphify_mcp_holder_pats)
+EOF
+  pids="$(pgrep -f "$pat_entry|$pat_dir" 2>/dev/null)" || return 1
+  [ -n "$pids" ] || return 1
+  for p in $pids; do
+    line="pid $p"
+    pp="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    if [ -n "$pp" ]; then
+      comm="$(ps -o comm= -p "$pp" 2>/dev/null)"
+      cwd="$(readlink "/proc/$pp/cwd" 2>/dev/null)"
+      line="$line (session: ppid $pp${comm:+ $comm}${cwd:+, cwd $cwd})"
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
 # _graphify_binary_ok (HIMMEL-1274) — does the installed graphify actually RUN?
 # `uv tool install` removes the old distribution's entry points BEFORE it fails
 # on a locked directory, so "the install returned nonzero" and "the binary still
 # works" are INDEPENDENT facts. Presence is not the question: the broken state
 # leaves the PATH shim in place and it throws a runpy traceback when invoked.
+# GRAPHIFY_NO_AUTO_REFRESH=1 (HIMMEL-4513): any graphify run otherwise
+# rewrites the user's skill dirs to ITS version; the skill is refreshed by
+# _graphify_skill_refresh alone, from the venv, after the package settles.
 _graphify_binary_ok() {
   command -v graphify >/dev/null 2>&1 || return 1
-  graphify --version >/dev/null 2>&1
+  GRAPHIFY_NO_AUTO_REFRESH=1 graphify --version >/dev/null 2>&1
+}
+
+# _graphify_update_platform (HIMMEL-4513) -- "posix" (Linux/macOS) or "other".
+# Picks the SKIP wording (HIMMEL-1274 file lock vs codex-1 mixed versions),
+# whether the update stages before the swap (posix only), and whether holder
+# details are probed. Test seam: GRAPHIFY_PLATFORM_OVERRIDE (a `uname -s`
+# value).
+_graphify_update_platform() {
+  case "${GRAPHIFY_PLATFORM_OVERRIDE:-$(uname -s 2>/dev/null || echo)}" in
+    Linux*|Darwin*) printf 'posix\n' ;;
+    *)              printf 'other\n' ;;
+  esac
+}
+
+# _graphify_extras_with_ollama "[a,b]" -> "[a,b,ollama]" ("" -> "[ollama]");
+# an extras list already naming ollama is returned unchanged.
+_graphify_extras_with_ollama() {
+  local inner="$1"
+  inner="${inner#\[}"; inner="${inner%\]}"
+  case ",$inner," in
+    *,ollama,*) ;;
+    *) inner="${inner:+$inner,}ollama" ;;
+  esac
+  printf '[%s]\n' "$inner"
+}
+
+# _graphify_ollama_extra_ok -- can the uv graphifyy venv `import openai` (the
+# dependency the [ollama] extra adds)? rc 0 yes; rc 1 no; rc 2 no venv python
+# found (unknown: callers leave the install alone).
+_graphify_ollama_extra_ok() {
+  local venv c
+  venv="$(_graphify_uv_tool_dir)/$(_graphify_pypi_name)"
+  for c in "$venv/bin/python" "$venv/Scripts/python.exe" "$venv/Scripts/python"; do
+    if [ -x "$c" ]; then
+      "$c" -c 'import openai' >/dev/null 2>&1 && return 0
+      return 1
+    fi
+  done
+  return 2
+}
+
+# _graphify_stage_install <spec> <pin> (HIMMEL-4513) -- install <spec> into a
+# SCRATCH tool dir and prove it there: `graphify --version` reports <pin> and
+# the venv imports mcp + openai. uv entry points carry absolute shebangs, so
+# the staged venv cannot be moved into place; its job is to prove the install
+# resolves BEFORE the live `--force` removes anything (and to warm uv's shared
+# cache for it). Never touches the live install; removes the scratch dir on
+# every path. rc 0 proven; rc 1 with the reason on stdout.
+_graphify_stage_install() {
+  local spec="$1" pin="$2" s got reason=""
+  s="$(mktemp -d "${TMPDIR:-/tmp}/graphify-stage.XXXXXX" 2>/dev/null)" || {
+    printf 'cannot create a scratch dir\n'; return 1; }
+  if ! UV_TOOL_DIR="$s/tools" UV_TOOL_BIN_DIR="$s/bin" uv tool install --with mcp "$spec" >&2; then
+    reason="uv could not install $spec (output above)"
+  else
+    got="$(GRAPHIFY_NO_AUTO_REFRESH=1 "$s/bin/graphify" --version 2>/dev/null \
+      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[0-9A-Za-z.-]*' | head -1)"
+    if [ "$got" != "$pin" ]; then
+      reason="the staged graphify reports '${got:-nothing}', not $pin"
+    elif ! "$s/tools/$(_graphify_pypi_name)/bin/python" -c 'import mcp, openai' >/dev/null 2>&1; then
+      reason="the staged venv cannot import mcp + openai"
+    fi
+  fi
+  rm -rf "$s"
+  [ -z "$reason" ] && return 0
+  printf '%s\n' "$reason"
+  return 1
 }
 
 # _graphify_skill_refresh (HIMMEL-1750) -- keep the Claude skill in step with
@@ -928,91 +1043,36 @@ _graphify_skill_refresh() {
   return 0
 }
 
-# Idempotent + WARN-not-fail by contract (a best-effort himmel-update step).
-graphify_update() {
-  local src installed pin extras spec holders
-  src="$(graphify_source)" || true
-  if [ -z "$src" ]; then
-    # Fresh install: graphify_install installs only the PACKAGE — without the
-    # refresh call the first `himmelctl update` on a new machine would leave
-    # the Claude skill absent until a SECOND update reaches the already-at-pin
-    # path above (CR codex-adv, HIMMEL-1750). Refresh only on success; the
-    # install's own rc is preserved either way.
-    local install_rc=0
-    graphify_install || install_rc=$?
-    [ "$install_rc" -eq 0 ] && _graphify_skill_refresh
-    return "$install_rc"
-  fi
-  pin="$(_graphify_version)"
-  installed="$(_graphify_installed_version)"
-  if [ -n "$installed" ] && [ "$installed" = "$pin" ]; then
-    echo "  graphify already at pinned version $pin -- up to date."
-    _graphify_skill_refresh
-    graphify_wsl_share_store
-    _graphify_pin_skip_reset
-    return 0
-  fi
-  if ! _graphify_uv_has_package; then
-    echo "  graphify present (foreign non-uv install, v${installed:-?}) -- himmel-update leaves it as-is (never clobber pip/pipx/brew)."
-    return 0
-  fi
-  if ! command -v uv >/dev/null 2>&1; then
-    echo "  uv not found -- cannot update graphify." >&2
-    return 1
-  fi
-  # Only ever UPGRADE a strictly-behind install to the pin -- never downgrade or
-  # touch an install that is equal/ahead/unparseable (CR codex-1: a uv graphifyy
-  # at a different version is 'foreign' to graphify_source, so bringing it current
-  # must stay a fail-safe upgrade, not an unconditional clobber). The ==pin case
-  # already returned above; here installed != pin, so this splits behind (upgrade)
-  # from ahead/unknown (leave). Extras are still preserved on the upgrade path.
-  if ! _graphify_version_lt "$installed" "$pin"; then
-    echo "  graphify installed v${installed:-?} is not behind the pin $pin (equal / ahead / unparseable) -- leaving as-is (himmel-update never downgrades or clobbers a non-behind install)."
-    # The PACKAGE is left alone, but the SKILL must still track the installed
-    # version (CR codex-adv, HIMMEL-1750): the motivating case — operator
-    # manually upgraded ahead of the pin — lands exactly here, and skipping the
-    # refresh kept the stale skill emitting per-run version warnings. The
-    # refresh keys on the INSTALLED version, so it never downgrades anything.
-    _graphify_skill_refresh
-    graphify_wsl_share_store
-    _graphify_pin_skip_reset
-    return 0
-  fi
-  extras="$(_graphify_installed_extras)"
-  if [ -n "$extras" ]; then
-    spec="$(_graphify_pypi_name)${extras}==${pin}"
-  else
-    spec="$(_graphify_pypi_name)==${pin}"
-  fi
-  # Every place this spec is PRINTED as a copy-paste repair command single-quotes
-  # it (public-PR CR). With extras recorded it reads `graphifyy[all]==0.9.31`, and
-  # zsh — the macOS default — globs the brackets: pasting the unquoted form dies
-  # with "no matches found" instead of installing. The quotes are for the reader's
-  # shell only; the `uv tool install` this script runs itself passes "$spec" as
-  # one argv word already.
-
-  # PRE-FLIGHT (HIMMEL-1274). `uv tool install --force` removes the old
-  # distribution's entry points, THEN replaces the tool dir. On Windows a live
-  # graphify-mcp holds that directory open, so the removal half-succeeds: the
-  # entry points are gone, the replace fails, and the machine goes from
-  # "graphify present and working" to "graphify absent and broken". Refusing to
-  # start is the only fail-SAFE option — a reinstall that cannot finish is worse
-  # than one never attempted.
-  #
-  # This is the NORMAL case on a busy workstation, not an edge case: every live
-  # Claude Code session spawns a graphify-mcp, and /himmel-update is routinely
-  # run from inside one. The step only ever appeared to work because the pin had
-  # not moved.
+# _graphify_holder_gate <installed> <pin> <spec> <platform> (HIMMEL-4513) --
+# the pre-flight holder decision, run before staging AND again after it.
+# rc 0: clear (or unprobeable with GRAPHIFY_UNPROBED_OK=1), proceed. rc 1:
+# SKIPPED and fully handled (message, WSL store share, skill refresh, skip
+# tracking), so graphify_update returns 0 -- see the PRE-FLIGHT comment there.
+_graphify_holder_gate() {
+  local installed="$1" pin="$2" spec="$3" platform="$4" holders holder_details
   if holders="$(_graphify_mcp_holders)"; then
     case "$holders" in ''|*[!0-9]*) holders=0 ;; esac
     if [ "$holders" -gt 0 ]; then
+      # ponytail: SKIP while graphify-mcp holders are live (codex-1: lazy imports mix versions on a live swap; HIMMEL-1274 on Windows), versioned tool dirs + atomic bin swap -> HIMMEL-4532
       {
         echo "  SKIP: $holders graphify-mcp process(es) hold the uv tool dir — NOT attempting the reinstall."
         echo "        graphify stays at v${installed:-?} and KEEPS WORKING; the pin has NOT advanced to $pin."
-        echo "        uv would delete the old entry points and then fail to replace the locked"
-        echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
-        echo "        To advance the pin: close the Claude Code sessions holding graphify-mcp"
-        echo "        (each live session spawns one), then re-run. Or install by hand once clear:"
+        if [ "$platform" = "posix" ]; then
+          echo "        A live graphify-mcp lazy-imports modules from disk, so swapping the install"
+          echo "        under it would mix versions inside every live session (codex-1). Refusing is"
+          echo "        the safe outcome."
+        else
+          echo "        uv would delete the old entry points and then fail to replace the locked"
+          echo "        directory, leaving graphify broken (HIMMEL-1274). Refusing is the safe outcome."
+        fi
+        echo "        Holders:"
+        if holder_details="$(_graphify_mcp_holder_details 2>/dev/null)" && [ -n "$holder_details" ]; then
+          printf '%s\n' "$holder_details" | sed 's/^/            /'
+        else
+          echo "            (holder details unavailable on this platform; $holders counted)"
+        fi
+        echo "        To advance the pin: reconnect /mcp or quit the holders, then re-run"
+        echo "        (each live Claude Code session spawns one). Or install by hand once clear:"
         echo "            uv tool install --force --with mcp '$spec'"
         for _plat in $(_graphify_present_platforms); do
           echo "            graphify install --platform $_plat"
@@ -1038,11 +1098,11 @@ graphify_update() {
       # that looks identical whether this is the 1st skip or the 400th.
       _graphify_skill_refresh
       _graphify_pin_skip_track "$holders holders"
-      # rc 0: nothing failed and nothing is broken — this is a deliberate,
-      # healthy skip. A nonzero here would print himmel-update's generic
+      # rc 1 = "skipped", which graphify_update turns into ITS rc 0: nothing
+      # failed and nothing is broken — this is a deliberate, healthy skip. A nonzero here would print himmel-update's generic
       # "failed (non-fatal)" warning on top, which is the misleading wording
       # this ticket exists to remove.
-      return 0
+      return 1
     fi
   else
     # FAIL CLOSED when the probe cannot run (HIMMEL-1293). "Could not tell"
@@ -1100,11 +1160,123 @@ graphify_update() {
       # a persisted consecutive-run counter instead of one advisory line.
       _graphify_skill_refresh
       _graphify_pin_skip_track "unprobeable platform"
-      # rc 0 for the same reason as that skip — nothing failed and nothing is
+      # rc 1 -> update rc 0, for the same reason as that skip — nothing failed and nothing is
       # broken. A nonzero would draw himmel-update's generic "failed
       # (non-fatal)" warning on top of a deliberate, healthy decline.
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# Idempotent + WARN-not-fail by contract (a best-effort himmel-update step).
+graphify_update() {
+  local src installed pin extras spec platform stage_err add_ollama=0
+  src="$(graphify_source)" || true
+  if [ -z "$src" ]; then
+    # Fresh install: graphify_install installs only the PACKAGE — without the
+    # refresh call the first `himmelctl update` on a new machine would leave
+    # the Claude skill absent until a SECOND update reaches the already-at-pin
+    # path above (CR codex-adv, HIMMEL-1750). Refresh only on success; the
+    # install's own rc is preserved either way.
+    local install_rc=0
+    graphify_install || install_rc=$?
+    [ "$install_rc" -eq 0 ] && _graphify_skill_refresh
+    return "$install_rc"
+  fi
+  pin="$(_graphify_version)"
+  installed="$(_graphify_installed_version)"
+  if [ -n "$installed" ] && [ "$installed" = "$pin" ]; then
+    # At the pin, the one remaining reason to reinstall is a venv PROVABLY
+    # missing the [ollama] extra (HIMMEL-4513: installs predating it). An
+    # unknown answer (no venv python found) leaves the install alone.
+    local ollama_rc=0
+    _graphify_ollama_extra_ok || ollama_rc=$?
+    if [ "$ollama_rc" -ne 1 ]; then
+      echo "  graphify already at pinned version $pin -- up to date."
+      _graphify_skill_refresh
+      graphify_wsl_share_store
+      _graphify_pin_skip_reset
       return 0
     fi
+    echo "  graphify at pinned version $pin lacks the [ollama] extra (its venv cannot import openai) -- reinstalling at the pin with it."
+    add_ollama=1
+  fi
+  if ! _graphify_uv_has_package; then
+    echo "  graphify present (foreign non-uv install, v${installed:-?}) -- himmel-update leaves it as-is (never clobber pip/pipx/brew)."
+    return 0
+  fi
+  if ! command -v uv >/dev/null 2>&1; then
+    echo "  uv not found -- cannot update graphify." >&2
+    return 1
+  fi
+  # Only ever UPGRADE a strictly-behind install to the pin -- never downgrade or
+  # touch an install that is equal/ahead/unparseable (CR codex-1: a uv graphifyy
+  # at a different version is 'foreign' to graphify_source, so bringing it current
+  # must stay a fail-safe upgrade, not an unconditional clobber). The ==pin case
+  # already returned above; here installed != pin, so this splits behind (upgrade)
+  # from ahead/unknown (leave). Extras are still preserved on the upgrade path.
+  # (add_ollama=1 is the at-pin reinstall above, which is not "behind".)
+  if [ "$add_ollama" -eq 0 ] && ! _graphify_version_lt "$installed" "$pin"; then
+    echo "  graphify installed v${installed:-?} is not behind the pin $pin (equal / ahead / unparseable) -- leaving as-is (himmel-update never downgrades or clobbers a non-behind install)."
+    # The PACKAGE is left alone, but the SKILL must still track the installed
+    # version (CR codex-adv, HIMMEL-1750): the motivating case — operator
+    # manually upgraded ahead of the pin — lands exactly here, and skipping the
+    # refresh kept the stale skill emitting per-run version warnings. The
+    # refresh keys on the INSTALLED version, so it never downgrades anything.
+    _graphify_skill_refresh
+    graphify_wsl_share_store
+    _graphify_pin_skip_reset
+    return 0
+  fi
+  # Recorded extras are preserved, and [ollama] is added to them (HIMMEL-4513).
+  extras="$(_graphify_extras_with_ollama "$(_graphify_installed_extras)")"
+  spec="$(_graphify_pypi_name)${extras}==${pin}"
+  # Every place this spec is PRINTED as a copy-paste repair command single-quotes
+  # it (public-PR CR). It reads `graphifyy[ollama]==0.9.31`, and
+  # zsh — the macOS default — globs the brackets: pasting the unquoted form dies
+  # with "no matches found" instead of installing. The quotes are for the reader's
+  # shell only; the `uv tool install` this script runs itself passes "$spec" as
+  # one argv word already.
+
+  # PRE-FLIGHT (HIMMEL-1274). `uv tool install --force` removes the old
+  # distribution's entry points, THEN replaces the tool dir. On Windows a live
+  # graphify-mcp holds that directory open, so the removal half-succeeds: the
+  # entry points are gone, the replace fails, and the machine goes from
+  # "graphify present and working" to "graphify absent and broken". Refusing to
+  # start is the only fail-SAFE option — a reinstall that cannot finish is worse
+  # than one never attempted.
+  #
+  # POSIX SKIPs too (HIMMEL-4513, codex-1). There the swap itself succeeds --
+  # the holder runs on in the unlinked inodes -- but a holder has only its
+  # already-imported modules in memory, and graphify's serve.py lazy-imports
+  # graphify.prs, graphify.analyze, mcp.server.stdio and starlette inside its
+  # tool handlers. A live swap therefore mixes two versions inside every live
+  # session. So holders > 0 SKIPs on every platform, naming the holders.
+  #
+  # This is the NORMAL case on a busy workstation, not an edge case: every live
+  # Claude Code session spawns a graphify-mcp, and /himmel-update is routinely
+  # run from inside one. Only with no holders (or GRAPHIFY_UNPROBED_OK=1) does
+  # the swap run, and on POSIX the same spec is first staged and proven in a
+  # scratch tool dir, so a network/resolution failure returns before `--force`
+  # removes anything.
+  platform="$(_graphify_update_platform)"
+  _graphify_holder_gate "$installed" "$pin" "$spec" "$platform" || return 0
+  if [ "$platform" = "posix" ] && ! stage_err="$(_graphify_stage_install "$spec" "$pin")"; then
+    _graphify_pin_skip_reset
+    {
+      echo "  WARNING: graphify update to $pin not attempted -- the staged install failed: $stage_err."
+      echo "           The live install is untouched and still at v${installed:-?}. Retry, or by hand:"
+      echo "               uv tool install --force --with mcp '$spec'"
+    } >&2
+    return 1
+  fi
+  # RE-PROBE (pr-check codex-1): staging can take a while (network), and a
+  # graphify-mcp started meanwhile would otherwise get its venv swapped. A
+  # residual window between this probe and `--force` is inherent to the
+  # in-place swap; HIMMEL-4532 (versioned tool dirs) closes it properly.
+  if [ "$platform" = "posix" ]; then
+    _graphify_holder_gate "$installed" "$pin" "$spec" "$platform" || return 0
   fi
 
   echo "  graphify ${installed:-?} -> $pin (uv reinstall at pin, extras='${extras:-none}')..."

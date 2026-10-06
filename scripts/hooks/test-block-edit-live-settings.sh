@@ -2925,6 +2925,227 @@ assert_rc "888 primary cwd cp of .claude/settings.{json,bak} denies" 2 \
     "$(bash_rc_of "$PRIMARY" "cp .claude/settings.{json,bak}" HOME="$FAKEHOME")"
 assert_rc "889 primary cwd sh -c cp of .claude/settings.{json,bak} denies" 2 \
     "$(bash_rc_of "$PRIMARY" "sh -c 'cp .claude/settings.{json,bak}'" HOME="$FAKEHOME")"
+# 900-919 (HIMMEL-4394): a glob leaf the shell spells into a live settings
+# file through an `env -S` body, a `case` arm (`;;` is past the tokenizer), a
+# herestring a shell or eval runs, an extglob group, or a cd into a .claude.
+rows_both 900 2 "a glob leaf through env -S, case, herestring, extglob or cd denies" <<'ROWS'
+env -S 'bash -c "echo x > ~/.claude/sett*s.json"'
+env -S "bash -c 'echo x > ~/.claude/sett*s.json'"
+env -vS 'sh -c "echo x > ~/.claude/sett?ngs.json"'
+case a in a) eval "echo x > ~/.claude/sett?ngs.json";; esac
+case a in a) eval 'echo x > ~/.claude/sett*s.json';; esac
+bash -s <<<'echo x > ~/.claude/sett*s.json'
+bash <<<'echo x > ~/.claude/sett*s.json'
+sh <<<'echo x > ~/.claude/sett?ngs.json'
+eval "$(cat <<<'echo x > ~/.claude/sett*s.json')"
+echo x > ~/.claude/@(settings).json
+shopt -s extglob; echo x > ~/.claude/@(settings).json
+echo x > ~/.claude/+(settings).json
+echo x > ~/.claude/!(foo).json
+echo x > @P@/.claude/@(settings).json
+cd ~/.claude && echo x > sett?ngs.json
+cd ~/.claude; echo x > sett*.json
+cd @P@/.claude && echo x > sett?ngs.json
+pushd ~/.claude && echo x > sett*.json
+cd ~ && cd .claude && echo x > sett*.json
+cd && echo x > .claude/sett*.json
+ROWS
+# 920-926 (HIMMEL-4299, HIMMEL-4304): a quoted heredoc body is data only
+# while nothing can run it or rebind its receiver: a shell or interpreter in
+# the command, the file it wrote named again, or any `$`/backtick expansion
+# outside the bodies voids the data read.
+rows_both 920 2 "a heredoc body the command runs, or beside an expansion, denies" <<'ROWS'
+cat <<'EOF' > /tmp/x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nbash /tmp/x.sh
+cat <<'EOF' > /tmp/x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nsh /tmp/x.sh
+cat <<'EOF' > /tmp/x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nchmod +x /tmp/x.sh; /tmp/x.sh
+PA${x}TH=/tmp cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+declare PA$'T'H=/tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+printf -v PA$'T'H /tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+declare -n p=PA$'T'H; p=/tmp; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+read -r PA$'T'H <<<"/tmp"; cat <<'EOF'\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+cat <<'EOF' >/tmp/bin/x.sh;x.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF
+ROWS
+# 940-943: env -S text env decodes itself (`\_`, `\t`, `${VAR}`) is refused
+rows_both 940 2 "env -S text carrying an env escape or \${VAR} denies" <<'ROWS'
+env -S 'bash\_-c\_"echo x > ~/.claude/sett*s.json"'
+env --split-string='sh\_-c\_"echo x > ~/.claude/s*.json"'
+env -iS 'bash\t-c\t"echo x > ~/.claude/sett*s.json"'
+env -S 'bash -c ${X}'
+ROWS
+# 9440-9448 (HIMMEL-4394, J1909 B1): an extglob leaf with two or more groups
+# (`@(settings).js@(on)`, `@(settings)@(.json)`) under a live .claude denies.
+rows_both 9440 2 "an extglob leaf with 2+ groups under a live .claude denies" <<'ROWS'
+echo x > ~/.claude/@(settings).js@(on)
+echo x > ~/.claude/@(settings)@(.json)
+echo x > ~/.claude/+(settings).+(json)
+echo x > ~/.claude/!(a).js@(on)
+echo x > ~/.claude/@(settings|x).js@(on|x)
+bash -O extglob -c 'echo x > ~/.claude/@(settings).js@(on)'
+echo x > @P@/.claude/@(settings).js@(on)
+cd ~/.claude && echo x > @(settings).js@(on)
+shopt -s extglob\necho x > ~/.claude/@(settings).js@(on)
+ROWS
+# 9450-9455 (HIMMEL-4394, J1909 B2): a glob write whose cwd a cd moved
+# unprovably (an eval/bash -c body after the cd, a `..` target, CDPATH), and a
+# direct `..` target, deny.
+rows_both 9450 2 "a glob write after an unproven cd, or through a .. target, denies" <<'ROWS'
+cd ~/.claude && eval 'echo x > sett*.json'
+cd ~/.claude && bash -c 'echo x > sett*.json'
+cd ~/.config/../.claude && echo x > sett*.json
+CDPATH=~ cd .claude && echo x > sett*.json
+export CDPATH=~; cd .claude; echo x > sett*.json
+echo x > ~/.config/../.claude/sett*.json
+ROWS
+# 9460-9464 (HIMMEL-4299, J1909 B3): the file a heredoc was written to, run
+# under a glob that matches it, voids the data read.
+rows_both 9460 2 "a written heredoc file run under a glob name denies" <<'ROWS'
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.s?
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.*
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.[s]h
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\nchmod +x /tmp/d/gx.s?; /tmp/d/gx.s?
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\n./gx.*
+cat <<'EOF' > /tmp/d/gx.sh\necho x > ~/.cl$(printf a)ude/settings.json\nEOF\ngx.@(sh)
+ROWS
+# 9475-9476 (J1909): a plain read's glob after a cd — known or unresolved —
+# writes nothing, so it stays allowed. 9477: a bare `)` the fallback split
+# cut loose is no extglob group, so it stays the directory glob it was
+# (J1909 B1 fix over-denied it under an unresolved cd).
+rows_both 9475 0 "a plain read's glob after a cd allows" <<'ROWS'
+cd "$d" && ls *.json
+cd ~/.claude && ls sett*.json
+) || true\n    cd "$scratch_dir" || { rm -rf "$scratch_dir"; return 1; }
+ROWS
+# 9470-9471: J1909 controls from the nested worktree — a heredoc written but
+# never run, and a later glob that cannot match it, keep base's allow.
+for c in "cat <<'EOF' > /tmp/d/gx.sh
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF" "cat <<'EOF' > /tmp/d/gx.sh
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF
+ls /tmp/d/*.txt"; do
+    assert_rc "9470 nested worktree J1909 control allows: $c" 0 \
+        "$(bash_rc_of "$NESTED_WT" "$c" HOME="$FAKEHOME")"
+done
+# 930-937: controls from the nested worktree — data, a non-.claude glob
+# target or cd, and a read stay allowed.
+for c in "cat <<'EOF'
+echo x > ~/.cl\$(printf a)ude/settings.json
+EOF" "git commit -m \"\$(cat <<'EOF'
+fix ~/.cl\$(printf a)ude spelling
+EOF
+)\"" 'git status' 'echo x > docs/settings.json' 'echo x > /tmp/sett*.json' \
+    'cd docs && echo x > sett*.json' 'ls ~/.claude/sett*.json' 'echo x > /tmp/@(settings).json' \
+    "env -S 'bash -c \"echo hi\"'" "env FOO=1 echo 'a\\_b'"; do
+    assert_rc "930 nested worktree control allows: $c" 0 \
+        "$(bash_rc_of "$NESTED_WT" "$c" HOME="$FAKEHOME")"
+done
+# 960-962 (HIMMEL-4393): each body is judged by a run of its own, and the
+# runs of one command are capped at 16 across every nesting level, so a
+# command with many bodies is refused fail-closed, naming the cap, instead of
+# spawning hundreds of runs that outlive the hook chain.
+cap_rc() { # cap_rc LABEL CMD — wants rc 2 and the cap's reason on stderr
+    local err rc
+    err=$(jq -n --arg cmd "$2" --arg cwd "$NESTED_WT" \
+        '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+        | env HOME="$FAKEHOME" bash "$HOOK" 2>&1 >/dev/null)
+    rc=$?
+    assert_rc "$1" 2 "$rc"
+    case "$err" in
+        *'more than 16 nested command bodies'*) echo "PASS $1 names the cap (rc=0)" ;;
+        *) echo "FAIL $1 names the cap — expected rc=0, got rc=1"; FAILED=$((FAILED + 1)) ;;
+    esac
+}
+cap_rc "960 forty eval segments deny at the body cap" "$(rep 39 'eval echo hi; ')eval echo hi"
+EV5="bash -c 'eval echo a; eval echo b; eval echo c; eval echo d; eval echo e'"
+cap_rc "961 three bash -c bodies of five evals each (18 runs) deny at the body cap" \
+    "$EV5; $EV5; $EV5"
+for c in 'eval echo a; eval echo b' "bash -c 'echo hi'; eval echo x; bash -c 'eval echo y'" "$EV5"; do
+    assert_rc "962 few bodies allow: $c" 0 \
+        "$(bash_rc_of "$NESTED_WT" "$c" HOME="$FAKEHOME")"
+done
+# 950-952 (HIMMEL-4348): a home API named only inside a string literal is
+# data, not a home read — the interpreter writes a local file and is allowed.
+rows_both 950 0 "home API only inside a string literal allows" <<'ROWS'
+python3 -c "open('docs/x.md','w').write('call Path.home() to get it')"
+node -e "fs.writeFileSync('notes.txt','use os.homedir() for that')"
+python3 -c "import json; json.dump({'tip': 'expanduser(path) and getenv(name)'}, open('out.json','w'))"
+ROWS
+# 953-959: the literal is code, or the reading is unsure — still denied.
+rows_both 953 2 "home API as code, or an unsure literal reading, denies" <<'ROWS'
+python3 -c "import os; open(os.environ['HOME']+'/.cl'+'aude/sett'+'ings.json','w').write('x')"
+python3 -c "import os; open(os.getenv('HOME')+'/.cl'+'aude/sett'+'ings.json','w').write('x')"
+python3 -c "from pathlib import Path; open(f'{Path.home()}/.cl'+'aude/sett'+'ings.json','w').write('x')"
+python3 -c "exec('from pathlib import Path; (Path.home()/chr(120)).write_text(chr(49))')"
+python3 -c "code='''from pathlib import Path; (Path.home()/chr(120)).write_text(chr(49))'''; open('x.py','w').write(code)"
+python3 -c "from pathlib import Path; (Path.home()/'.cl'/'aude'/('sett'+'ings.json')).write_text('x')"
+node -e "/* ' */ fs.writeFileSync(os.homedir()+'/.cl'+'aude/sett'+'ings.json','x') /* ' */"
+ROWS
+# 963-969 (HIMMEL-4348): blanking literals must not hide a real write — the
+# home API is code and only path pieces sit in literals, so each denies.
+rows_both 963 2 "home API as code with the path in literals denies" <<'ROWS'
+python3 -c "import os; open(os.path.join(os.path.expanduser('~'), '.claude', 'settings.json'),'w').write('{}')"
+python3 -c "from pathlib import Path; (Path('~').expanduser() / '.claude' / 'settings.json').write_text('{}')"
+python3 -c "from pathlib import Path as P; (P.home()/'.claude'/'settings.json').write_text('{}')"
+python3 -c "import os; open(os.path.expanduser('~') + '/.cl' + 'aude/sett' + 'ings.json','w').write('{}')"
+node -e "require('fs').writeFileSync(require('os').homedir()+'/.claude/settings.json','{}')"
+node -e "const fs=require('fs'); const h=process.env.HOME; fs.writeFileSync(h+'/.claude/settings.json','{}')"
+node -e "const h=process.env.HOME; fs.writeFileSync(h+'/.cl'+'aude/sett'+'ings.json','{}')"
+ROWS
+# 970-981 (HIMMEL-4475): read-only over-denies. A quoted `$` before a closing
+# quote (`'Passed$'`) is text when no program can re-read it as shell; a
+# git grep -e value or a word after `--` is not the -O pager option; an
+# archive LISTING with an operand from a literal variable writes nothing.
+rows_both 970 0 "quoted dollar, git grep pattern, archive listing allowed" <<'ROWS'
+grep -cE 'Passed$' /tmp/claude-1000/x/pc.txt; git -C /tmp/claude-1000/w commit -F /tmp/m.txt
+git -C /tmp/claude-1000/w commit -F /tmp/m.txt 2>&1 | grep -avE 'Skipped$|Passed$'; git -C /tmp/claude-1000/w log --oneline -3
+cd /tmp/claude-1000/w && grep -c 'ok$' log.txt && git log -1
+grep -v 'a$' claude.txt | sort | uniq -c
+git grep -e '-Open' -- @P@/.claude/settings.json
+git grep -n -e -Open -- @P@/.claude/settings.json
+git grep -- -Open @P@/.claude/settings.json
+git grep --regexp -Open @P@/.claude/settings.json
+S=/tmp/x; tar -tf $S/a.tar | grep @P@/.claude/settings.json
+S=/tmp/x; tar -tf "$S/a.tar" @P@/.claude/settings.json
+S=/tmp/x; tar tvzf ${S}/a.tgz @P@/.claude/settings.json
+S=/tmp/x; unzip -l $S/a.zip @P@/.claude/settings.json
+ROWS
+# 982-999 (HIMMEL-4475): the controls stay denied — the pager option, an
+# archive operand from an unassigned, exported, piped or dash-led variable,
+# an extraction or option word, tar's option env, a pipe into a shell, a
+# prefix assignment, an unlisted program.
+rows_both 982 2 "pager option, unproven archive operand, shell reader denies" <<'ROWS'
+git grep -O -- @P@/.claude/settings.json
+git grep -Oless foo -- @P@/.claude/settings.json
+git grep -nO foo -- @P@/.claude/settings.json
+git grep -e foo -O -- @P@/.claude/settings.json
+git grep --op foo -- @P@/.claude/settings.json
+tar -tf $X/a.tar @P@/.claude/settings.json
+export S=/tmp/x; tar -tf $S/a.tar @P@/.claude/settings.json
+S=/tmp/x; tar -xf $S/a.tar @P@/.claude/settings.json
+S=/tmp/x; tar -tf $S/a.tar --checkpoint-action=exec=sh @P@/.claude/settings.json
+S=; tar -tf a.tar $S--checkpoint-action=exec=sh @P@/.claude/settings.json
+S=/ok | true; tar -tf a.tar $S @P@/.claude/settings.json
+S=-x; tar -tf a.tar $S @P@/.claude/settings.json
+TAR_OPTIONS=-x; tar -tf a.tar @P@/.claude/settings.json
+S=/tmp/x; unzip $S/a.zip @P@/.claude/settings.json
+printf '%s' '$' "'\x2eclaude'" | sh
+cat claude.txt | grep 'a$' | bash
+f=x grep 'x$' claude
+grep 'a$' claude.txt | tee /tmp/claude-1000/o
+ROWS
+# 1000-1002 (HIMMEL-4475, judge J1919 T1): bash extquote decodes a `$'…'`
+# inside a double-quoted `${…}`, so that word is live ANSI-C and the quoted
+# `$'` relaxation must not apply. A plain quoted `$'` stays text; an unquoted
+# one stays denied.
+rows_both 1000 2 "ANSI-C inside a quoted parameter expansion denies" <<'ROWS'
+echo "${x:-$'\x41'}" > claude.txt
+ROWS
+rows_both 1001 0 "a quoted dollar-quote is text" <<'ROWS'
+echo "$'\x41'" > claude.txt
+ROWS
+rows_both 1002 2 "an unquoted ANSI-C word denies" <<'ROWS'
+echo $'\x41' > claude.txt
+ROWS
 # 679-680 (HIMMEL-4298 / HIMMEL-4192): many `$"…"` words and quote-heavy
 # heredocs made the hook quadratic (base: 1500 words 23-37 s, 3000 words over
 # 95 s; a 4 KB python heredoc 25 s). Each must finish inside the budget.

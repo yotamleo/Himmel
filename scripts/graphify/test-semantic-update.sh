@@ -41,6 +41,7 @@ EOF
 cat > "$WS/bin/graphify" <<EOF
 #!/usr/bin/env bash
 echo "graphify \$*" >> "$WS/calls.log"
+echo "OLLAMA_MODEL=\${OLLAMA_MODEL:-}" >> "$WS/env.log"
 [ "\$1" = extract ] || exit 0
 [ -z "\${GRAPHIFY_STUB_RC:-}" ] || exit "\$GRAPHIFY_STUB_RC"
 python3 - "\$2" <<'PY'
@@ -78,7 +79,7 @@ chmod +x "$WS/bin/graphify"
 SCRIPT="$REPO/scripts/graphify/semantic-update.sh"
 export GRAPHIFY_LEDGER="$WS/ledger.jsonl" CLAUDE_GLM_CONFIG_DIR="$WS/glm" TMPDIR="$WS/tmp"
 export GRAPHIFY_SEMANTIC_LOCK_WAIT=0
-unset ANTHROPIC_BASE_URL GRAPHIFY_OUT
+unset ANTHROPIC_BASE_URL GRAPHIFY_OUT OLLAMA_HOST OLLAMA_BASE_URL OLLAMA_MODEL
 
 # new_corpus <dir>: two docs + a live graph holding an AST node per doc, the
 # code node "code_a", and one stale semantic node for a.md.
@@ -241,6 +242,87 @@ out=$(run --name t18 --corpus-root "$C18" --corpus-class himmel-code --seed-mani
 echo "T20: --max-files 00 is not a positive integer"
 out=$(run --name t18 --corpus-root "$C18" --corpus-class himmel-code --max-files 00); rc=$?
 [ "$rc" -eq 1 ] && pass "T20 usage error" || fail "T20 (rc=$rc): $out"
+
+echo "T21: an untouched file's edge to a node the re-extraction restores survives (HIMMEL-4211)"
+C21="$WS/c21"; new_corpus "$C21"
+python3 - "$C21/graphify-out/graph.json" <<'PY'
+import json, sys
+g = json.load(open(sys.argv[1]))
+g["nodes"] += [{"id": "sem_a.md_alpha", "label": "alpha", "file_type": "concept", "_origin": "semantic", "source_file": "a.md"},
+               {"id": "sem_b.md_beta", "label": "beta", "file_type": "concept", "_origin": "semantic", "source_file": "b.md"}]
+g["links"].append({"source": "sem_b.md_beta", "target": "sem_a.md_alpha", "relation": "mentions", "_origin": "semantic", "source_file": "b.md"})
+json.dump(g, open(sys.argv[1], "w"))
+PY
+run --name t21 --corpus-root "$C21" --corpus-class himmel-code --seed-manifest > /dev/null
+printf 'alpha\nmore\n' > "$C21/a.md"
+out=$(run --name t21 --corpus-root "$C21" --corpus-class himmel-code); rc=$?
+got=$(python3 -c 'import json,sys;g=json.load(open(sys.argv[1]));print(sum(1 for e in g["links"] if e["source"]=="sem_b.md_beta" and e["target"]=="sem_a.md_alpha"))' "$C21/graphify-out/graph.json")
+[ "$rc" -eq 0 ] && [ "$got" = 1 ] && pass "T21 b.md edge to restored a.md node kept" || fail "T21 (rc=$rc) edges=$got: $out"
+
+echo "T22: manifest write fails after graph.json landed -> non-zero; the rerun converges to the clean-run graph"
+mkdir -p "$WS/pyfail"
+cat > "$WS/pyfail/sitecustomize.py" <<'PY'
+import os
+_real = os.replace
+def _replace(src, dst, *a, **k):
+    if str(dst).endswith("semantic-manifest.json") and os.path.exists(os.environ.get("FAIL_MANIFEST_FLAG", "/nonexistent")):
+        raise OSError("simulated manifest write failure")
+    return _real(src, dst, *a, **k)
+os.replace = _replace
+PY
+C22="$WS/c22"; C22B="$WS/c22b"; new_corpus "$C22"; new_corpus "$C22B"
+out=$(run --name t22b --corpus-root "$C22B" --corpus-class himmel-code); rc=$?
+[ "$rc" -eq 0 ] || fail "T22 clean run (rc=$rc): $out"
+: > "$WS/fail-manifest"
+export PYTHONPATH="$WS/pyfail" FAIL_MANIFEST_FLAG="$WS/fail-manifest"
+out=$(run --name t22 --corpus-root "$C22" --corpus-class himmel-code); rc=$?
+unset PYTHONPATH FAIL_MANIFEST_FLAG
+norm() { python3 -c 'import json,sys;g=json.load(open(sys.argv[1]));print(json.dumps([sorted(n["id"] for n in g["nodes"]),sorted((e["source"],e["target"]) for e in g["links"])]))' "$1/graphify-out/graph.json"; }
+# graph.json must already hold the new content: the failure came AFTER the graph write.
+[ "$rc" -ne 0 ] && [ ! -e "$C22/graphify-out/semantic-manifest.json" ] && [ "$(norm "$C22")" = "$(norm "$C22B")" ] \
+  && pass "T22 failure is non-zero, graph.json landed, files stay unstamped" || fail "T22 (rc=$rc): $out"
+rm -f "$WS/fail-manifest"
+out=$(run --name t22 --corpus-root "$C22" --corpus-class himmel-code); rc=$?
+m=$(python3 -c 'import json,sys;print(" ".join(sorted(json.load(open(sys.argv[1]))["files"])))' "$C22/graphify-out/semantic-manifest.json" 2>/dev/null)
+[ "$rc" -eq 0 ] && [ "$(norm "$C22")" = "$(norm "$C22B")" ] && [ "$m" = "a.md b.md sub/c.md" ] \
+  && pass "T22 rerun converges, manifest stamped" || fail "T22 rerun (rc=$rc) m='$m': $out"
+
+echo "T23: --backend ollama -> qwen3.6:27b, --max-concurrency 1, no bank-preflight call"
+C23="$WS/c23"; new_corpus "$C23"; : > "$WS/calls.log"; : > "$WS/env.log"
+out=$(run --name t23 --corpus-root "$C23" --corpus-class himmel-code --backend ollama); rc=$?
+ext=$(grep '^graphify extract' "$WS/calls.log")
+[ "$rc" -eq 0 ] && pass "T23 exit 0" || fail "T23 exit 0 (got $rc): $out"
+case "$ext" in *"--backend ollama"*"--max-concurrency 1"*) pass "T23 extract args" ;; *) fail "T23 extract args: $ext" ;; esac
+grep -qx 'OLLAMA_MODEL=qwen3.6:27b' "$WS/env.log" && pass "T23 model qwen3.6:27b" || fail "T23 model: $(cat "$WS/env.log")"
+grep -qx bank "$WS/calls.log" && fail "T23 bank-preflight called on the ollama path" || pass "T23 ollama path does not call bank-preflight"
+
+# ollama_refused <name> <VAR=val...>: the script's OWN endpoint/model check
+# refuses before the fence, the bank, the copy and graphify.
+ollama_refused() {
+  local name="$1"; shift
+  local c="$WS/c-$name"; new_corpus "$c"; : > "$WS/calls.log"
+  out=$(env "$@" PATH="$WS/bin:$PATH" bash "$SCRIPT" --name "$name" --corpus-root "$c" --corpus-class himmel-code --backend ollama 2>&1); rc=$?
+  [ "$rc" -eq 2 ] && [[ "$out" == *"semantic-update: refusing ollama"* ]] && [ ! -s "$WS/calls.log" ] && [ -z "$(scratch)" ] \
+    && pass "$name refused before anything ran" || fail "$name (rc=$rc): $out / $(cat "$WS/calls.log")"
+}
+echo "T24-T28: ollama endpoint/model refusals (independent of the fence)"
+ollama_refused T24-lan-host OLLAMA_HOST=192.0.2.5
+ollama_refused T25-ollama-com OLLAMA_BASE_URL=https://ollama.com/v1
+ollama_refused T26-cloud-model OLLAMA_MODEL=gpt-oss:120b-cloud
+ollama_refused T26b-cloud-tag OLLAMA_MODEL=glm-4.6:cloud
+ollama_refused T27-garbage "OLLAMA_BASE_URL=not a url"
+ollama_refused T28-remote-base-loopback-host OLLAMA_BASE_URL=http://198.51.100.5:11434/v1 OLLAMA_HOST=127.0.0.1
+ollama_refused T28b-userinfo OLLAMA_BASE_URL=http://127.0.0.1@evil.example:11434/v1
+
+echo "T29: salus root on the ollama path -> exit 2 before any copy"
+C29="$WS/c29"; new_corpus "$C29"; touch "$C29/.salus"; : > "$WS/calls.log"
+out=$(HOME="$WS/home" run --name t29 --corpus-root "$C29" --corpus-class himmel-code --backend ollama); rc=$?
+[ "$rc" -eq 2 ] && [ ! -s "$WS/calls.log" ] && [ -z "$(scratch)" ] && pass "T29 salus refused" || fail "T29 (rc=$rc): $out"
+
+echo "T30: loopback OLLAMA_BASE_URL is accepted"
+C30="$WS/c30"; new_corpus "$C30"
+out=$(OLLAMA_BASE_URL=http://127.0.0.1:11434/v1 run --name t30 --corpus-root "$C30" --corpus-class himmel-code --backend ollama); rc=$?
+[ "$rc" -eq 0 ] && pass "T30 loopback accepted" || fail "T30 (rc=$rc): $out"
 
 echo
 [ "$FAILS" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$FAILS FAILED"; exit 1; }

@@ -13,7 +13,18 @@ interface JiraVersion {
   name: string;
   self?: string;
   released?: boolean;
+  archived?: boolean;
   releaseDate?: string;
+}
+
+/**
+ * The default fixVersion for a new Bug (HIMMEL-4489): the earliest version, in
+ * the project's sequence order, that is neither released nor archived.
+ */
+export function earliestUnreleased(
+  versions: Array<{ name: string; released?: boolean; archived?: boolean }>,
+): string | undefined {
+  return versions.find((v) => !v.released && !v.archived)?.name;
 }
 
 export interface VersionCreateOptions {
@@ -63,7 +74,7 @@ export function buildFixVersionBody(
   return { update: { fixVersions: [{ [op]: { name } }] } };
 }
 
-const fetchVersions = (project: string) =>
+export const fetchVersions = (project: string) =>
   request<JiraVersion[]>('GET', `/project/${encodeURIComponent(project)}/versions`);
 
 export async function listVersions(project: string): Promise<string[]> {

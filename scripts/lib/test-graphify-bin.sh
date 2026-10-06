@@ -39,6 +39,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/hermetic-path.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/hermetic-path.sh"
+# The stub uv below reads UV_TOOL_BIN_DIR as "this is the scoped staging
+# install" (HIMMEL-4513), and the platform seam picks the update strategy --
+# neither may leak in from the operator's shell.
+unset UV_TOOL_BIN_DIR GRAPHIFY_PLATFORM_OVERRIDE GRAPHIFY_MCP_HOLDER_DETAILS
 
 pass=0
 fail=0
@@ -60,7 +64,10 @@ assert() {
 fail() { echo "  FATAL: $*" >&2; exit 1; }
 
 tmpdir="$(mktemp -d -t graphify-bin.XXXXXX)"
-trap 'rm -rf "$tmpdir"' EXIT
+# holder_pid: the ONE live process the HIMMEL-4513 holder test spawns. Reaped
+# by its exact pid on any exit, never by pattern.
+holder_pid=""
+trap '[ -n "$holder_pid" ] && kill "$holder_pid" 2>/dev/null; rm -rf "$tmpdir"' EXIT
 
 # ── Hermetic tool floor (HIMMEL-2530) ───────────────────────────────────────
 # scrub_path drops every PATH dir carrying a scrubbed tool WHOLESALE. Where a
@@ -119,8 +126,8 @@ pinned_ver="$(env -u GRAPHIFY_VERSION bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.s
 echo "[test-graphify-bin] graphify_install_hint (HIMMEL-1048: PyPI version pin)"
 hint="$(graphify_install_hint)"
 assert "hint uses uv tool install" grep -q '^uv tool install ' <<<"$hint"
-assert "hint pins the graphifyy package to a specific PyPI version (no [kimi] extra, HIMMEL-2481)" \
-  grep -qE 'graphifyy==[0-9]+\.[0-9]+\.[0-9]+' <<<"$hint"
+assert "hint pins graphifyy[ollama] to a specific PyPI version, single-quoted (no [kimi] extra, HIMMEL-2481/4513)" \
+  grep -qE "'graphifyy\[ollama\]==[0-9]+\.[0-9]+\.[0-9]+'" <<<"$hint"
 # shellcheck disable=SC2016
 # Single quotes intentional -- $1 expands inside the spawned bash -c subshell.
 assert "hint does NOT install from a git source (de-forked)" \
@@ -139,7 +146,7 @@ assert "default GRAPHIFY_VERSION is a semver (X.Y.Z...)" \
 
 echo "[test-graphify-bin] GRAPHIFY_VERSION override"
 override_hint="$(GRAPHIFY_VERSION=9.9.9 graphify_install_hint)"
-assert "hint honors GRAPHIFY_VERSION override" grep -q 'graphifyy==9.9.9' <<<"$override_hint"
+assert "hint honors GRAPHIFY_VERSION override" grep -q 'graphifyy\[ollama\]==9.9.9' <<<"$override_hint"
 
 echo "[test-graphify-bin] has_graphify is presence-only"
 noreal_home="$tmpdir/noreal"; mkdir -p "$noreal_home"
@@ -155,10 +162,23 @@ noreal_out=$(PATH="$utils_bin:$base_path" HOME="$noreal_home" \
 assert "has_graphify=false with no graphify on PATH" grep -q '^HG=no$' <<<"$noreal_out"
 
 # ── Stub uv: logs every call to UV_LOG; `tool list` echoes UV_LIST_FILE;
-#    `tool dir` echoes UV_TOOL_DIR; `tool install ... graphifyy==<ver>` appends a
-#    matching "graphifyy v<ver>" line to UV_LIST_FILE (the provenance signal the
-#    resolver reads after the de-fork), writes a PyPI-shaped receipt, and drops a
+#    `tool dir` echoes UV_TOOL_DIR; `tool install ... graphifyy==<ver>` records
+#    "graphifyy v<ver>" in UV_LIST_FILE (the provenance signal the resolver
+#    reads after the de-fork; it REPLACES an earlier graphifyy line, as real uv
+#    does), writes a PyPI-shaped receipt plus a fake venv python, and drops a
 #    working `graphify` shim into UV_BIN_DIR unless STUB_UV_INSTALL_RC != 0.
+#    HIMMEL-4513 additions:
+#    - a SCOPED install (UV_TOOL_BIN_DIR set: the staging install) puts its
+#      venv under the scoped UV_TOOL_DIR and its shim in UV_TOOL_BIN_DIR, and
+#      never touches UV_LIST_FILE (the live install's provenance);
+#    - `--force` removes the old venv dir first, like real uv (the holder test
+#      needs the live dir genuinely replaced under a live process);
+#    - STUB_UV_STAGE_RC fails only scoped installs, STUB_UV_FORCE_RC only
+#      `--force` ones (before anything is removed); STUB_UV_NO_OPENAI=1 builds
+#      a venv whose python cannot `import openai`, which otherwise imports only
+#      when the spec carries [ollama];
+#    - the shim answers --version with `graphify <ver>` and logs the
+#      GRAPHIFY_NO_AUTO_REFRESH it saw to GRAPHIFY_ENV_LOG (when set).
 # $stub_dir/bin already exists and carries the hermetic tool floor (built above);
 # this adds the stub `uv` alongside it.
 cat > "$stub_dir/bin/uv" <<'STUB'
@@ -174,26 +194,56 @@ if [ "$1" = "tool" ] && [ "$2" = "dir" ]; then
 fi
 if [ "$1" = "tool" ] && [ "$2" = "install" ]; then
   [ "${STUB_UV_INSTALL_RC:-0}" -eq 0 ] || exit "${STUB_UV_INSTALL_RC}"
+  scoped=0; [ -n "${UV_TOOL_BIN_DIR:-}" ] && scoped=1
+  force=0
+  for a in "$@"; do [ "$a" = "--force" ] && force=1; done
+  echo "UVDIR ${UV_TOOL_DIR:-unset} scoped=$scoped" >> "$UV_LOG"
+  [ "$scoped" -eq 1 ] && [ "${STUB_UV_STAGE_RC:-0}" -ne 0 ] && exit "$STUB_UV_STAGE_RC"
+  [ "$force" -eq 1 ] && [ "${STUB_UV_FORCE_RC:-0}" -ne 0 ] && exit "$STUB_UV_FORCE_RC"
   # Scan argv for the graphifyy==<ver> package spec (after the de-fork the
   # install has no --from; the package spec IS the source). Echo the resolved
   # version back into `uv tool list` exactly as a real uv install would, so the
   # resolver's version-based provenance probe is exercised against real output.
-  ver="0.0.0"
+  ver="0.0.0"; has_openai=0
   for a in "$@"; do
     case "$a" in
       graphifyy==*)       ver="${a#graphifyy==}" ;;     # bare pin: graphifyy==X
-      graphifyy\[*\]==*)  ver="${a##*==}" ;;            # extras pin: graphifyy[all]==X
+      graphifyy\[*\]==*)  ver="${a##*==}"               # extras pin: graphifyy[all]==X
+                          case "$a" in *ollama*) has_openai=1 ;; esac ;;
     esac
   done
-  mkdir -p "${UV_TOOL_DIR:?}/graphifyy"
-  printf 'requirements = [{ name = "graphifyy" }]\n' > "${UV_TOOL_DIR}/graphifyy/uv-receipt.toml"
-  printf 'graphifyy v%s\n' "$ver" >> "${UV_LIST_FILE:?}"
-  mkdir -p "${UV_BIN_DIR:?}"
-  cat > "${UV_BIN_DIR}/graphify" <<'INNER'
+  [ -n "${STUB_UV_NO_OPENAI:-}" ] && has_openai=0
+  venv="${UV_TOOL_DIR:?}/graphifyy"
+  [ "$force" -eq 1 ] && rm -rf "$venv"
+  pkg="$venv/lib/site/graphify"
+  mkdir -p "$venv/bin" "$pkg/skills/claude/references"
+  printf 'requirements = [{ name = "graphifyy" }]\n' > "$venv/uv-receipt.toml"
+  printf 'STUB SKILL BODY v%s\n' "$ver" > "$pkg/skill.md"
+  printf 'stub ref v%s\n' "$ver" > "$pkg/skills/claude/references/quickstart.md"
+  cat > "$venv/bin/python" <<PYEOF
 #!/usr/bin/env bash
-echo "GRAPHIFY STUB $*"
+case "\$2" in
+  *__file__*)           printf '%s\n' "$pkg" ;;
+  *importlib.metadata*) printf '%s\n' "$ver" ;;
+  *openai*)             [ "$has_openai" = 1 ] ;;
+  *mcp*)                exit 0 ;;
+  *)                    exit 1 ;;
+esac
+PYEOF
+  chmod +x "$venv/bin/python"
+  if [ "$scoped" -eq 0 ]; then
+    { grep -v '^graphifyy ' "${UV_LIST_FILE:?}" 2>/dev/null; printf 'graphifyy v%s\n' "$ver"; } > "$UV_LIST_FILE.new"
+    mv "$UV_LIST_FILE.new" "$UV_LIST_FILE"
+  fi
+  shim_dir="${UV_TOOL_BIN_DIR:-${UV_BIN_DIR:?}}"
+  mkdir -p "$shim_dir"
+  cat > "$shim_dir/graphify" <<INNER
+#!/usr/bin/env bash
+[ -n "\${GRAPHIFY_ENV_LOG:-}" ] && echo "graphify \$* NO_AUTO_REFRESH=\${GRAPHIFY_NO_AUTO_REFRESH:-unset}" >> "\$GRAPHIFY_ENV_LOG"
+[ "\$1" = "--version" ] && { echo "graphify $ver"; exit 0; }
+echo "GRAPHIFY STUB \$*"
 INNER
-  chmod +x "${UV_BIN_DIR}/graphify"
+  chmod +x "$shim_dir/graphify"
   exit 0
 fi
 exit 0
@@ -213,8 +263,8 @@ out=$(HOME="$fresh_home" PATH="$fresh_path" UV_TOOL_DIR="$fresh_tools" UV_LIST_F
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_install; echo "RC=$?"' 2>&1)
 assert "missing: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "missing: exactly one uv tool install call" test "$(grep -c 'UV tool install' "$fresh_log")" -eq 1
-assert "missing: install argv carries --with mcp + the graphifyy version pin (no [kimi] extra)" \
-  grep -qE 'UV tool install --with mcp graphifyy==[0-9]' "$fresh_log"
+assert "missing: install argv carries --with mcp + graphifyy[ollama] at the version pin (no [kimi] extra)" \
+  grep -qE 'UV tool install --with mcp graphifyy\[ollama\]==[0-9]' "$fresh_log"
 assert "missing: graphify shim landed on PATH" test -x "$fresh_bin/graphify"
 assert "missing: has_graphify true post-install" \
   env PATH="$fresh_path" HOME="$fresh_home" bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; has_graphify'
@@ -409,6 +459,7 @@ make_fake_graphify_venv() { # <tooldir> <version> -> echoes the fake package dir
 case "\$2" in
   *__file__*)              printf '%s\n' "$pkg" ;;
   *importlib.metadata*)    printf '%s\r\n' "$ver" ;;
+  import\ *)               exit 0 ;;   # mcp/openai import probes (HIMMEL-4513): a healthy venv
   *) exit 1 ;;
 esac
 EOF
@@ -665,8 +716,8 @@ out=$(HOME="$gud_home" PATH="$gud_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gu
       UV_BIN_DIR="$gud_bin" UV_LOG="$gud_log" GRAPHIFY_MCP_HOLDERS=0 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "update diff-ver: rc 0" grep -q '^RC=0$' <<<"$out"
-assert "update diff-ver: force-reinstalls at pin preserving [all] extras" \
-  grep -qE 'tool install --force --with mcp graphifyy\[all\]==[0-9]' "$gud_log"
+assert "update diff-ver: force-reinstalls at pin preserving [all] extras plus [ollama] (HIMMEL-4513)" \
+  grep -qE 'tool install --force --with mcp graphifyy\[all,ollama\]==[0-9]' "$gud_log"
 
 echo "[test-graphify-bin] _graphify_installed_extras: a recorded [kimi]-only extra is dropped (HIMMEL-2481)"
 # Existing machines installed with the old [kimi]-by-default spec have "kimi"
@@ -698,6 +749,9 @@ out=$(HOME="$knone_home" PATH="$stub_dir/bin:$base_path" UV_TOOL_DIR="$knone_too
 assert "non-kimi recorded extras pass through unchanged" grep -q '^EXTRAS=\[\[all\]\]$' <<<"$out"
 
 # --- HIMMEL-1274: the pre-flight holder guard + verify-after ----------------
+# These pin GRAPHIFY_PLATFORM_OVERRIDE to a Git Bash uname, so they cover the
+# Windows wording and the no-staging path; the POSIX SKIPs (HIMMEL-4513,
+# codex-1) and POSIX staging are covered further down.
 echo "[test-graphify-bin] graphify_update: live graphify-mcp holders -> SKIP the reinstall, leave the install alone"
 gh_home="$tmpdir/gup-held"; mkdir -p "$gh_home"
 gh_tools="$tmpdir/gup-held-tools"; mkdir -p "$gh_tools/graphifyy"
@@ -707,7 +761,7 @@ gh_bin="$tmpdir/gup-held-bin"; mkdir -p "$gh_bin"
 printf '#!/usr/bin/env bash\necho x\n' > "$gh_bin/graphify"; chmod +x "$gh_bin/graphify"
 gh_log="$tmpdir/gup-held-log"; : > "$gh_log"
 out=$(HOME="$gh_home" PATH="$gh_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gh_tools" UV_LIST_FILE="$gh_list" \
-      UV_BIN_DIR="$gh_bin" UV_LOG="$gh_log" GRAPHIFY_MCP_HOLDERS=3 \
+      UV_BIN_DIR="$gh_bin" UV_LOG="$gh_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=3 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 # rc 0: a deliberate, healthy skip — nothing failed and nothing is broken.
 assert "held: rc 0 (a skip is not a failure)" grep -q '^RC=0$' <<<"$out"
@@ -721,7 +775,7 @@ assert "held: gives the manual repair command" grep -q "uv tool install --force 
 # instead of installing (public-PR CR). Assert the WHOLE spec is single-quoted:
 # matching only the opening quote would still pass if the closing one were lost.
 assert "held: the repair command single-quotes the [all] spec (zsh globs it otherwise)" \
-  grep -qE "uv tool install --force --with mcp 'graphifyy\[all\]==[0-9][^']*'" <<<"$out"
+  grep -qE "uv tool install --force --with mcp 'graphifyy\[all,ollama\]==[0-9][^']*'" <<<"$out"
 # THE POINT: no uv install was attempted, so the entry points were never removed.
 # shellcheck disable=SC2016
 assert "held: NO uv install attempted (this is what keeps graphify working)" \
@@ -744,7 +798,7 @@ ghp_bin="$tmpdir/gup-held-platforms-bin"; mkdir -p "$ghp_bin"
 printf '#!/usr/bin/env bash\necho x\n' > "$ghp_bin/graphify"; chmod +x "$ghp_bin/graphify"
 ghp_log="$tmpdir/gup-held-platforms-log"; : > "$ghp_log"
 out=$(HOME="$ghp_home" PATH="$ghp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$ghp_tools" UV_LIST_FILE="$ghp_list" \
-      UV_BIN_DIR="$ghp_bin" UV_LOG="$ghp_log" GRAPHIFY_MCP_HOLDERS=1 \
+      UV_BIN_DIR="$ghp_bin" UV_LOG="$ghp_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=1 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "held platforms: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "held platforms: names codex's own repair command" grep -q 'graphify install --platform codex' <<<"$out"
@@ -776,7 +830,7 @@ psc_marker="$psc_home/.claude/skills/graphify/.graphify_pin_skip_count"
 # environment that exports it (a routed profile, per the tests above) would
 # otherwise make this sandboxed test read/write REAL machine state.
 out=$(HOME="$psc_home" PATH="$psc_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$psc_tools" UV_LIST_FILE="$psc_list" \
-      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_MCP_HOLDERS=2 \
+      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=2 \
       bash -c 'unset CLAUDE_CONFIG_DIR; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "skip-track 1st: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "skip-track 1st: skill WAS refreshed despite the package skip" \
@@ -787,7 +841,7 @@ assert "skip-track 1st: counter file persisted at 1" test "$(cat "$psc_marker" 2
 
 # Second SKIP (same HOME): counter advances to 2, still visible without logs.
 out2=$(HOME="$psc_home" PATH="$psc_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$psc_tools" UV_LIST_FILE="$psc_list" \
-      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_MCP_HOLDERS=2 \
+      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=2 \
       bash -c 'unset CLAUDE_CONFIG_DIR; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "skip-track 2nd: rc 0" grep -q '^RC=0$' <<<"$out2"
 assert "skip-track 2nd: counter reads 2 consecutive" grep -q 'SKIPPED 2 consecutive' <<<"$out2"
@@ -796,7 +850,7 @@ assert "skip-track 2nd: counter file persisted at 2" test "$(cat "$psc_marker" 2
 # A non-skip outcome (already at pin) resets the counter.
 psc_list_at_pin="$tmpdir/gup-skiptrack-list-atpin"; printf 'graphifyy v%s\n' "$pinned_ver" > "$psc_list_at_pin"
 out3=$(HOME="$psc_home" PATH="$psc_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$psc_tools" UV_LIST_FILE="$psc_list_at_pin" \
-      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_MCP_HOLDERS=2 \
+      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=2 \
       bash -c 'unset CLAUDE_CONFIG_DIR; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "skip-track reset: rc 0" grep -q '^RC=0$' <<<"$out3"
 assert "skip-track reset: counter file removed once the pin is no longer being skipped" \
@@ -804,7 +858,7 @@ assert "skip-track reset: counter file removed once the pin is no longer being s
 
 # The next SKIP after a reset starts back at 1, not 3.
 out4=$(HOME="$psc_home" PATH="$psc_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$psc_tools" UV_LIST_FILE="$psc_list" \
-      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_MCP_HOLDERS=2 \
+      UV_BIN_DIR="$psc_bin" UV_LOG="$psc_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=2 \
       bash -c 'unset CLAUDE_CONFIG_DIR; . "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "skip-track after reset: counter restarts at 1" grep -q 'SKIPPED 1 consecutive' <<<"$out4"
 
@@ -1023,10 +1077,12 @@ gb_log="$tmpdir/gup-broken-log"; : > "$gb_log"
 # different scenario entirely — graphify_source cannot identify the install, so
 # the update path is never even reached. The stub flips once the uv log shows
 # an install ran, which is exactly what uv does when it removes the old entry
-# points and then fails to replace the locked directory.
+# points and then fails to replace the locked directory. Keyed on the LIVE
+# `--force` install: the staging install before it (HIMMEL-4513) never touches
+# the live entry points.
 cat > "$gb_bin/graphify" <<'EOF'
 #!/usr/bin/env bash
-if grep -q "tool install" "${UV_LOG:-/nonexistent}" 2>/dev/null; then
+if grep -q "tool install --force" "${UV_LOG:-/nonexistent}" 2>/dev/null; then
   echo "runpy traceback: No module named graphify.__main__" >&2
   exit 1
 fi
@@ -1042,8 +1098,8 @@ out=$(HOME="$gb_home" PATH="$gb_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gb_t
       UV_BIN_DIR="$gb_uvbin" UV_LOG="$gb_log" GRAPHIFY_MCP_HOLDERS=0 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "broken-after-install: rc 1 (presence is not proof it runs)" grep -q '^RC=1$' <<<"$out"
-assert "empty recorded extras: upgrade uses the bare spec (no [kimi] extra, HIMMEL-2481)" \
-  grep -qE 'tool install --force --with mcp graphifyy==[0-9]' "$gb_log"
+assert "empty recorded extras: upgrade spec is just [ollama] (no [kimi] extra, HIMMEL-2481/4513)" \
+  grep -qE 'tool install --force --with mcp graphifyy\[ollama\]==[0-9]' "$gb_log"
 assert "broken-after-install: names it BROKEN" grep -q 'BROKEN' <<<"$out"
 assert "broken-after-install: gives the repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
 # Assert BOTH quotes, like the held scenario above (CodeRabbit round). Matching
@@ -1051,12 +1107,12 @@ assert "broken-after-install: gives the repair command" grep -q "uv tool install
 # CLOSING quote and still pass — an asymmetry between two assertions that exist
 # for one reason.
 #
-# Deliberately NOT the held scenario's `\[all\]` pattern: this fixture's
-# uv-receipt records no extras, so the spec carries no extras at all
-# (HIMMEL-2481: no [kimi] default). The two scenarios pin quoting for both the
-# operator-preserved [all] shape and the bare no-extras shape.
+# Deliberately NOT the held scenario's `\[all,ollama\]` pattern: this fixture's
+# uv-receipt records no extras, so the spec carries only the always-added
+# [ollama] (HIMMEL-2481: no [kimi] default; HIMMEL-4513: ollama). The two
+# scenarios pin quoting for both the operator-preserved and the default shape.
 assert "broken-after-install: the repair command single-quotes the whole spec" \
-  grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
+  grep -qE "uv tool install --force --with mcp 'graphifyy\[ollama\]==[0-9][^']*'" <<<"$out"
 
 # The fourth corner of the state matrix (public-PR CR): install FAILED but the
 # binary SURVIVED. The other three are covered above and below; without this one
@@ -1071,12 +1127,14 @@ printf 'requirements = [{ name = "graphifyy" }]\n' > "$gs_tools/graphifyy/uv-rec
 gs_list="$tmpdir/gup-survive-list"; printf 'graphifyy v0.0.1\n' > "$gs_list"
 gs_bin="$tmpdir/gup-survive-bin"; mkdir -p "$gs_bin"
 # Unlike the broken-after-install stub above, this one NEVER flips: the install
-# fails and leaves the working entry point untouched.
+# fails and leaves the working entry point untouched. STUB_UV_FORCE_RC fails
+# only the LIVE swap (HIMMEL-4513): the staging install before it succeeds, so
+# this still reaches the post-swap-failure branch it exists to pin.
 printf '#!/usr/bin/env bash\necho x\n' > "$gs_bin/graphify"; chmod +x "$gs_bin/graphify"
 gs_log="$tmpdir/gup-survive-log"; : > "$gs_log"
 gs_uvbin="$tmpdir/gup-survive-uvbin"; mkdir -p "$gs_uvbin"
 out=$(HOME="$gs_home" PATH="$gs_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gs_tools" UV_LIST_FILE="$gs_list" \
-      UV_BIN_DIR="$gs_uvbin" UV_LOG="$gs_log" GRAPHIFY_MCP_HOLDERS=0 STUB_UV_INSTALL_RC=1 \
+      UV_BIN_DIR="$gs_uvbin" UV_LOG="$gs_log" GRAPHIFY_MCP_HOLDERS=0 STUB_UV_FORCE_RC=1 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "install-failed-binary-survives: rc 1 (the pin did not advance)" grep -q '^RC=1$' <<<"$out"
 assert "install-failed-binary-survives: says the install still RUNS" grep -q 'still RUNS' <<<"$out"
@@ -1101,7 +1159,7 @@ gp_bin="$tmpdir/gup-probe-bin"; mkdir -p "$gp_bin"
 printf '#!/usr/bin/env bash\necho x\n' > "$gp_bin/graphify"; chmod +x "$gp_bin/graphify"
 gp_log="$tmpdir/gup-probe-log"; : > "$gp_log"
 out=$(HOME="$gp_home" PATH="$gp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gp_tools" UV_LIST_FILE="$gp_list" \
-      UV_BIN_DIR="$gp_bin" UV_LOG="$gp_log" GRAPHIFY_MCP_HOLDERS=unavailable \
+      UV_BIN_DIR="$gp_bin" UV_LOG="$gp_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=unavailable \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 # rc 0 for the same reason as the holders>0 skip: a deliberate, healthy decline
 # on a still-working install, not a failure worth himmel-update's generic warning.
@@ -1118,7 +1176,7 @@ assert "unprobeable: NO uv install attempted (this is the whole fix)" \
 # operator is told exactly how to get unstuck. A silent decline would recreate
 # the permanent-staleness failure of the HIMMEL-1274 Windows self-match bug.
 assert "unprobeable: gives the manual install command" \
-  grep -qE "uv tool install --force --with mcp 'graphifyy==[0-9][^']*'" <<<"$out"
+  grep -qE "uv tool install --force --with mcp 'graphifyy\[ollama\]==[0-9][^']*'" <<<"$out"
 assert "unprobeable: names the GRAPHIFY_UNPROBED_OK override" grep -q 'GRAPHIFY_UNPROBED_OK=1' <<<"$out"
 
 # CodeRabbit PR #792 finding (PRRT_kwDOS8WKNM6jZ-8T): the unprobeable branch
@@ -1139,7 +1197,7 @@ gpp_bin="$tmpdir/gup-probe-platforms-bin"; mkdir -p "$gpp_bin"
 printf '#!/usr/bin/env bash\necho x\n' > "$gpp_bin/graphify"; chmod +x "$gpp_bin/graphify"
 gpp_log="$tmpdir/gup-probe-platforms-log"; : > "$gpp_log"
 out=$(HOME="$gpp_home" PATH="$gpp_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gpp_tools" UV_LIST_FILE="$gpp_list" \
-      UV_BIN_DIR="$gpp_bin" UV_LOG="$gpp_log" GRAPHIFY_MCP_HOLDERS=unavailable \
+      UV_BIN_DIR="$gpp_bin" UV_LOG="$gpp_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=unavailable \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "unprobeable platforms: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "unprobeable platforms: names codex's own repair command" grep -q 'graphify install --platform codex' <<<"$out"
@@ -1158,7 +1216,7 @@ gpo_bin="$tmpdir/gup-probe-ok-bin"; mkdir -p "$gpo_bin"
 printf '#!/usr/bin/env bash\necho x\n' > "$gpo_bin/graphify"; chmod +x "$gpo_bin/graphify"
 gpo_log="$tmpdir/gup-probe-ok-log"; : > "$gpo_log"
 out=$(HOME="$gpo_home" PATH="$gpo_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gpo_tools" UV_LIST_FILE="$gpo_list" \
-      UV_BIN_DIR="$gpo_bin" UV_LOG="$gpo_log" GRAPHIFY_MCP_HOLDERS=unavailable GRAPHIFY_UNPROBED_OK=1 \
+      UV_BIN_DIR="$gpo_bin" UV_LOG="$gpo_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=unavailable GRAPHIFY_UNPROBED_OK=1 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "unprobeable+override: rc 0" grep -q '^RC=0$' <<<"$out"
 assert "unprobeable+override: performs the install" grep -qE 'tool install --force --with mcp graphifyy' "$gpo_log"
@@ -1178,12 +1236,255 @@ gpv_bin="$tmpdir/gup-probe-veto-bin"; mkdir -p "$gpv_bin"
 printf '#!/usr/bin/env bash\necho x\n' > "$gpv_bin/graphify"; chmod +x "$gpv_bin/graphify"
 gpv_log="$tmpdir/gup-probe-veto-log"; : > "$gpv_log"
 out=$(HOME="$gpv_home" PATH="$gpv_bin:$stub_dir/bin:$base_path" UV_TOOL_DIR="$gpv_tools" UV_LIST_FILE="$gpv_list" \
-      UV_BIN_DIR="$gpv_bin" UV_LOG="$gpv_log" GRAPHIFY_MCP_HOLDERS=2 GRAPHIFY_UNPROBED_OK=1 \
+      UV_BIN_DIR="$gpv_bin" UV_LOG="$gpv_log" GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=2 GRAPHIFY_UNPROBED_OK=1 \
       bash -c '. "'"$SCRIPT_DIR"'/graphify-bin.sh"; graphify_update; echo "RC=$?"' 2>&1)
 assert "holders+override: still reports the holder SKIP" grep -q 'SKIP: 2 graphify-mcp process' <<<"$out"
 # shellcheck disable=SC2016
 assert "holders+override: NO uv install attempted" \
   bash -c '! grep -q "tool install" "$1"' _ "$gpv_log"
+
+# --- HIMMEL-4513: POSIX skips under live holders, stages + swaps when clear --
+# On Linux/macOS `uv tool install --force` over a held venv does not half-fail
+# the way HIMMEL-1274 does on Windows, but it is still unsafe (codex-1): a live
+# graphify-mcp has only its already-imported modules in memory and serve.py
+# lazy-imports the rest inside its tool handlers, so a live swap mixes versions
+# inside every holder. So POSIX SKIPs with holders > 0 too, naming them. With
+# none, the remaining risk is the install failing for an unrelated reason
+# (network, resolution) after uv has already removed the old entry points -- so
+# the upgrade is first STAGED into a scratch tool dir and verified there, and
+# the live install is touched only once the staged one is proven.
+#
+# lf_setup <slug> <installed-ver>: a uv graphifyy at <installed-ver> whose live
+# shim answers --version. lf_run [VAR=val...]: graphify_update in that fixture,
+# with HOME, every skill root and TMPDIR inside it.
+lf_setup() {
+  lf_home="$tmpdir/lf-$1"; mkdir -p "$lf_home"
+  lf_tools="$tmpdir/lf-$1-tools"; mkdir -p "$lf_tools/graphifyy/bin"
+  printf 'requirements = [{ name = "graphifyy" }]\n' > "$lf_tools/graphifyy/uv-receipt.toml"
+  lf_list="$tmpdir/lf-$1-list"; printf 'graphifyy v%s\n' "$2" > "$lf_list"
+  lf_bin="$tmpdir/lf-$1-bin"; mkdir -p "$lf_bin"
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\n[ "$1" = "--version" ] && { echo "graphify %s"; exit 0; }\necho x\n' "$2" > "$lf_bin/graphify"
+  chmod +x "$lf_bin/graphify"
+  lf_log="$tmpdir/lf-$1-log"; : > "$lf_log"
+  lf_tmp="$tmpdir/lf-$1-tmp"; mkdir -p "$lf_tmp"
+  lf_extra_path=""
+}
+lf_run() {
+  # shellcheck disable=SC2016
+  env -u CLAUDE_CONFIG_DIR -u CODEXHOME -u HERMESHOME \
+    HOME="$lf_home" PATH="${lf_extra_path:+$lf_extra_path:}$lf_bin:$stub_dir/bin:$base_path" \
+    UV_TOOL_DIR="$lf_tools" UV_LIST_FILE="$lf_list" UV_BIN_DIR="$lf_bin" UV_LOG="$lf_log" \
+    TMPDIR="$lf_tmp" "$@" \
+    bash -c '. "$1/graphify-bin.sh"; graphify_update; echo "RC=$?"' _ "$SCRIPT_DIR" 2>&1
+}
+lf_live_version() { PATH="$lf_bin:$utils_bin" GRAPHIFY_NO_AUTO_REFRESH=1 graphify --version 2>/dev/null; }
+lf_tmp_empty() { [ -z "$(ls -A "$lf_tmp" 2>/dev/null)" ]; }
+
+echo "[test-graphify-bin] _graphify_extras_with_ollama: preserved extras UNION ollama, deduplicated"
+for _c in "[all]=[all,ollama]" "=[ollama]" "[ollama]=[ollama]" "[pdf,ollama]=[pdf,ollama]" "[ollama,pdf]=[ollama,pdf]"; do
+  _in="${_c%%=*}"; _want="${_c#*=}"
+  # shellcheck disable=SC2016
+  _got="$(bash -c '. "$1/graphify-bin.sh"; _graphify_extras_with_ollama "$2"' _ "$SCRIPT_DIR" "$_in" 2>&1)"
+  assert "extras '${_in:-none}' -> $_want" test "$_got" = "$_want"
+done
+
+case "$(uname -s 2>/dev/null || echo)" in Linux*|Darwin*) lf_posix=1 ;; *) lf_posix=0 ;; esac
+if [ "$lf_posix" -eq 1 ]; then
+  echo "[test-graphify-bin] graphify_update (POSIX): a REAL live process holds the venv dir -> SKIP, names it, venv untouched"
+  lf_setup held-real 0.0.1
+  # The holder: a live process whose argv names graphify-mcp under the venv and
+  # whose cwd is INSIDE the venv dir that `--force` would delete and recreate.
+  # GRAPHIFY_MCP_HOLDERS and GRAPHIFY_MCP_HOLDER_DETAILS are deliberately left
+  # UNSET -- the real probe must find it -- so pgrep/ps (scrubbed with /usr/bin
+  # on hosts that ship uv there) are linked in for this case. The real probe can
+  # also count the developer's own graphify-mcp servers; that only raises N.
+  probe_bin="$tmpdir/probe-bin"; mkdir -p "$probe_bin"
+  link_engine_if_present pgrep "$probe_bin"
+  link_engine_if_present ps "$probe_bin"
+  link_engine_if_present readlink "$probe_bin"
+  link_engine_if_present tr "$probe_bin"
+  printf '#!/usr/bin/env bash\nwhile :; do sleep 1; done\n' > "$lf_tools/graphifyy/bin/graphify-mcp"
+  chmod +x "$lf_tools/graphifyy/bin/graphify-mcp"
+  (cd "$lf_tools/graphifyy" && exec bash "$lf_tools/graphifyy/bin/graphify-mcp") &
+  holder_pid=$!
+  lf_extra_path="$probe_bin"
+  out=$(lf_run env -u GRAPHIFY_MCP_HOLDERS -u GRAPHIFY_MCP_HOLDER_DETAILS)
+  assert "real holder: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "real holder: SKIPs on POSIX too" grep -qE 'SKIP: [0-9]+ graphify-mcp process' <<<"$out"
+  # shellcheck disable=SC2016
+  assert "real holder: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+  # shellcheck disable=SC2016
+  assert "real holder: NO staging install either" bash -c '! grep -q "scoped=1" "$1"' _ "$lf_log"
+  assert "real holder: the venv dir was left alone" test -e "$lf_tools/graphifyy/bin/graphify-mcp"
+  if [ -x "$probe_bin/pgrep" ]; then
+    assert "real holder: names the holder by its pid" grep -qE "^ +pid $holder_pid( |\$)" <<<"$out"
+  fi
+  assert "real holder: the holder is STILL ALIVE" kill -0 "$holder_pid"
+  kill "$holder_pid" 2>/dev/null
+  wait "$holder_pid" 2>/dev/null
+  # shellcheck disable=SC2016
+  assert "real holder: reaped by its exact pid" bash -c '! kill -0 "$1" 2>/dev/null' _ "$holder_pid"
+  holder_pid=""
+
+  echo "[test-graphify-bin] graphify_update (POSIX): holders=3 seam -> SKIP, names the holders + remedy, no staging, no swap"
+  lf_setup held-seam 0.0.1
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=3 GRAPHIFY_MCP_HOLDER_DETAILS="pid 4242 (session: ppid 4200 claude, cwd /work/a)")
+  assert "posix holders=3: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "posix holders=3: SKIP with the holder count" grep -q 'SKIP: 3 graphify-mcp process' <<<"$out"
+  assert "posix holders=3: names the holders (details seam)" grep -q 'pid 4242 (session: ppid 4200 claude, cwd /work/a)' <<<"$out"
+  assert "posix holders=3: gives the remedy" grep -q 'reconnect /mcp or quit the holders, then re-run' <<<"$out"
+  assert "posix holders=3: explains the mixed-version risk" grep -q 'mix' <<<"$out"
+  assert "posix holders=3: keeps the manual repair command" grep -q "uv tool install --force --with mcp 'graphifyy" <<<"$out"
+  # shellcheck disable=SC2016
+  assert "posix holders=3: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+  # shellcheck disable=SC2016
+  assert "posix holders=3: NO staging install" bash -c '! grep -q "scoped=1" "$1"' _ "$lf_log"
+  assert "posix holders=3: the skip is tracked" grep -q 'SKIPPED 1 consecutive' <<<"$out"
+  assert "posix holders=3: the live install still at the old version" grep -q '^graphifyy v0.0.1$' "$lf_list"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): holder details unavailable -> the count still prints"
+  lf_setup held-nodetail 0.0.1
+  # A pgrep that fails (rc 2) makes the details helper unavailable; the count
+  # comes from the GRAPHIFY_MCP_HOLDERS seam, so the SKIP itself is unaffected.
+  nd_bin="$tmpdir/lf-held-nodetail-pgrep"; mkdir -p "$nd_bin"
+  printf '#!/bin/sh\nexit 2\n' > "$nd_bin/pgrep"; chmod +x "$nd_bin/pgrep"
+  lf_extra_path="$nd_bin"
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=2 env -u GRAPHIFY_MCP_HOLDER_DETAILS)
+  assert "no details: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "no details: still prints the count" grep -q 'SKIP: 2 graphify-mcp process' <<<"$out"
+  assert "no details: says the details are unavailable" grep -q 'holder details unavailable' <<<"$out"
+  # shellcheck disable=SC2016
+  assert "no details: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): unprobeable holders -> fail-closed SKIP"
+  lf_setup unprobed 0.0.1
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=unavailable)
+  assert "posix unprobeable: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "posix unprobeable: SKIP" grep -q 'SKIP: cannot probe for graphify-mcp holders' <<<"$out"
+  # shellcheck disable=SC2016
+  assert "posix unprobeable: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): unprobeable + GRAPHIFY_UNPROBED_OK=1 -> stages, then swaps"
+  lf_setup unprobed-ok 0.0.1
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=unavailable GRAPHIFY_UNPROBED_OK=1)
+  assert "posix unprobed-ok: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "posix unprobed-ok: staged first" grep -q 'scoped=1' "$lf_log"
+  assert "posix unprobed-ok: then swapped the live install" grep -q -- '--force' "$lf_log"
+  assert "posix unprobed-ok: the stage ran BEFORE the swap" \
+    test "$(grep -n 'scoped=1' "$lf_log" | head -1 | cut -d: -f1)" -lt "$(grep -n -- '--force' "$lf_log" | head -1 | cut -d: -f1)"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): holders=0 -> stages, then swaps"
+  lf_setup clear 0.0.1
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=0)
+  assert "posix holders=0: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "posix holders=0: staged into a scoped scratch tool dir first" grep -q 'scoped=1' "$lf_log"
+  assert "posix holders=0: then swapped the live install" grep -qE 'tool install --force --with mcp graphifyy\[ollama\]==' "$lf_log"
+  assert "posix holders=0: the stage ran BEFORE the swap" \
+    test "$(grep -n 'scoped=1' "$lf_log" | head -1 | cut -d: -f1)" -lt "$(grep -n -- '--force' "$lf_log" | head -1 | cut -d: -f1)"
+  # shellcheck disable=SC2016
+  assert "posix holders=0: no SKIP" bash -c '! grep -q "SKIP" <<<"$1"' _ "$out"
+  assert "posix holders=0: the staging scratch dir is cleaned up" lf_tmp_empty
+
+  echo "[test-graphify-bin] graphify_update (POSIX): a holder appears DURING staging -> re-probe SKIPs before the swap"
+  lf_setup held-late 0.0.1
+  # A fake pgrep on a call counter: the first probe (before staging) matches
+  # nothing (rc 1, a real zero), every later one reports 3 holders. Both holder
+  # seams stay unset so the real probe -- and the re-probe -- read it.
+  late_bin="$tmpdir/lf-held-late-pgrep"; mkdir -p "$late_bin"
+  late_count="$tmpdir/lf-held-late-count"; : > "$late_count"
+  # shellcheck disable=SC2016
+  printf '#!/bin/sh\necho x >> "%s"\n[ "$(grep -c . "%s")" -le 1 ] && exit 1\nprintf "101\\n102\\n103\\n"\n' \
+    "$late_count" "$late_count" > "$late_bin/pgrep"
+  chmod +x "$late_bin/pgrep"
+  lf_extra_path="$late_bin"
+  out=$(lf_run env -u GRAPHIFY_MCP_HOLDERS -u GRAPHIFY_MCP_HOLDER_DETAILS)
+  assert "late holder: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "late holder: the stage DID run (first probe was clear)" grep -q 'scoped=1' "$lf_log"
+  # shellcheck disable=SC2016
+  assert "late holder: NO --force swap attempted" bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+  assert "late holder: SKIP with the re-probed count" grep -q 'SKIP: 3 graphify-mcp process' <<<"$out"
+  assert "late holder: names the late holders" grep -qE '^ +pid 101' <<<"$out"
+  assert "late holder: gives the remedy" grep -q 'reconnect /mcp or quit the holders, then re-run' <<<"$out"
+  assert "late holder: the skip is tracked" grep -q 'SKIPPED 1 consecutive' <<<"$out"
+  assert "late holder: the live install still at the old version" grep -q '^graphifyy v0.0.1$' "$lf_list"
+  assert "late holder: the staging scratch dir is cleaned up" lf_tmp_empty
+
+  echo "[test-graphify-bin] graphify_update (POSIX): every graphify invocation carries GRAPHIFY_NO_AUTO_REFRESH=1; skill marker == pin"
+  lf_setup noauto 0.0.1
+  gel="$tmpdir/lf-noauto-graphify-env"; : > "$gel"
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=0 GRAPHIFY_ENV_LOG="$gel" env -u GRAPHIFY_NO_AUTO_REFRESH)
+  assert "noauto: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "noauto: graphify ran at least twice (staged + live verify)" test "$(grep -c . "$gel")" -ge 2
+  # shellcheck disable=SC2016
+  assert "noauto: EVERY graphify invocation saw GRAPHIFY_NO_AUTO_REFRESH=1" \
+    bash -c '! grep -qv "NO_AUTO_REFRESH=1$" "$1"' _ "$gel"
+  assert "noauto: skill marker advanced to the pin" \
+    test "$(cat "$lf_home/.claude/skills/graphify/.graphify_version" 2>/dev/null)" = "$pinned_ver"
+  assert "noauto: skill body is the new package's" grep -q "STUB SKILL BODY v$pinned_ver" "$lf_home/.claude/skills/graphify/SKILL.md"
+  assert "noauto: the staging scratch dir is cleaned up" lf_tmp_empty
+
+  echo "[test-graphify-bin] graphify_update (POSIX): the STAGE fails -> live install untouched"
+  for _knob in STUB_UV_STAGE_RC=1 STUB_UV_NO_OPENAI=1; do
+    lf_setup "stagefail-${_knob%%=*}" 0.0.1
+    out=$(lf_run GRAPHIFY_MCP_HOLDERS=0 "$_knob")
+    assert "stage fail ($_knob): rc 1" grep -q '^RC=1$' <<<"$out"
+    # shellcheck disable=SC2016
+    assert "stage fail ($_knob): the live --force install was NEVER attempted" \
+      bash -c '! grep -q -- "--force" "$1"' _ "$lf_log"
+    assert "stage fail ($_knob): uv tool list still reports the old version" grep -q '^graphifyy v0.0.1$' "$lf_list"
+    assert "stage fail ($_knob): the live binary still runs at the old version" grep -q '^graphify 0.0.1$' <<<"$(lf_live_version)"
+    assert "stage fail ($_knob): says the live install is untouched" grep -q 'live install is untouched' <<<"$out"
+    assert "stage fail ($_knob): the staging scratch dir is cleaned up" lf_tmp_empty
+  done
+
+  echo "[test-graphify-bin] graphify_update (POSIX): recorded [all,ollama] -> no duplicate ollama"
+  lf_setup dedup 0.0.1
+  printf 'requirements = [{ name = "graphifyy", extras = ["all", "ollama"] }]\n' > "$lf_tools/graphifyy/uv-receipt.toml"
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=0)
+  assert "dedup: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "dedup: spec is exactly graphifyy[all,ollama]" grep -qE -- '--force --with mcp graphifyy\[all,ollama\]==' "$lf_log"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): AT the pin but the [ollama] extra is missing -> upgraded in place"
+  lf_setup atpin-noollama "$pinned_ver"
+  # shellcheck disable=SC2016
+  printf '#!/usr/bin/env bash\ncase "$2" in *openai*) exit 1 ;; *) exit 0 ;; esac\n' > "$lf_tools/graphifyy/bin/python"
+  chmod +x "$lf_tools/graphifyy/bin/python"
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=0)
+  assert "at-pin no-ollama: rc 0" grep -q '^RC=0$' <<<"$out"
+  assert "at-pin no-ollama: says why" grep -q 'lacks the \[ollama\] extra' <<<"$out"
+  assert "at-pin no-ollama: reinstalls graphifyy[ollama] at the SAME pin" \
+    grep -qE -- "--force --with mcp graphifyy\[ollama\]==$pinned_ver\$" "$lf_log"
+
+  echo "[test-graphify-bin] graphify_update (POSIX): AT the pin WITH the [ollama] extra -> up to date, no install"
+  lf_setup atpin-ollama "$pinned_ver"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$lf_tools/graphifyy/bin/python"; chmod +x "$lf_tools/graphifyy/bin/python"
+  out=$(lf_run GRAPHIFY_MCP_HOLDERS=0)
+  assert "at-pin ollama: up to date" grep -q 'up to date' <<<"$out"
+  # shellcheck disable=SC2016
+  assert "at-pin ollama: no install" bash -c '! grep -q "tool install" "$1"' _ "$lf_log"
+else
+  echo "[test-graphify-bin] SKIP: POSIX stage+swap cases (uname is neither Linux nor Darwin)"
+fi
+
+echo "[test-graphify-bin] graphify_update (Windows seam): AT the pin, [ollama] missing, holders=2 -> SKIP, no install"
+lf_setup win-atpin "$pinned_ver"
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\ncase "$2" in *openai*) exit 1 ;; *) exit 0 ;; esac\n' > "$lf_tools/graphifyy/bin/python"
+chmod +x "$lf_tools/graphifyy/bin/python"
+out=$(lf_run GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=2)
+assert "win at-pin no-ollama + holders: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "win at-pin no-ollama + holders: SKIPs" grep -q 'SKIP: 2 graphify-mcp process' <<<"$out"
+# shellcheck disable=SC2016
+assert "win at-pin no-ollama + holders: NO install attempted" bash -c '! grep -q "tool install" "$1"' _ "$lf_log"
+
+echo "[test-graphify-bin] graphify_update (Windows seam): holders=0 -> swaps directly, no staging"
+lf_setup win-clear 0.0.1
+out=$(lf_run GRAPHIFY_PLATFORM_OVERRIDE=MINGW64_NT-10.0 GRAPHIFY_MCP_HOLDERS=0)
+assert "win clear: rc 0" grep -q '^RC=0$' <<<"$out"
+assert "win clear: swapped" grep -q -- '--force' "$lf_log"
+# shellcheck disable=SC2016
+assert "win clear: no scoped staging install" bash -c '! grep -q "scoped=1" "$1"' _ "$lf_log"
 
 echo "[test-graphify-bin] graphify_update: uv graphifyy AHEAD of pin -> left as-is, no install (CR codex-1: never downgrade/clobber)"
 gua_home="$tmpdir/gup-ahead"; mkdir -p "$gua_home"

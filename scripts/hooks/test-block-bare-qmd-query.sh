@@ -543,13 +543,148 @@ allow 'grep -rn "qmd search" docs | sed -nE /x/p sh'
 allow 'grep -rn "qmd search" docs | sed -n -e /x/p - sh'
 allow 'grep -rln "qmd search" docs | xargs -0 -n 1 grep -c sh'
 allow "grep -rn 'qmd query' . | awk '{print \$1}' | grep -v source"
-# ponytail: a filter that runs its input with no shell word in the stage
+# HIMMEL-4337: a filter that runs its input with no shell word in the stage
 # (sed e, awk system, sort --compress-program=PROG), and a consumer redefined
-# as a function, are unread; residual launchers → HIMMEL-4305.
-allow 'echo qmd query x | sed e'
-allow "echo qmd query x | awk '{system(\$0)}'"
-allow 'echo qmd query x | sort --compress-program=sh'
-allow 'cat() { sh; }; echo qmd query x | cat'
+# as a function, run their stdin: no filter clears them.
+deny 'echo qmd query x | sed e'
+deny "echo qmd query x | awk '{system(\$0)}'"
+deny 'echo qmd query x | sort --compress-program=sh'
+deny 'cat() { sh; }; echo qmd query x | cat'
+deny "echo qmd query x | awk '{print | \"sh\"}'"
+deny "echo qmd query x | awk '{print | \"sh\"}' | cat"
+# HIMMEL-4330: a newline (or CR) after `|` / `|&` continues the pipeline.
+deny $'echo qmd query x |\nsh'
+deny $'echo qmd query x | grep -v y |\n sh'
+deny $'echo qmd query x |&\nsh'
+deny $'echo qmd query x |\r\nsh'
+deny $'echo qmd query x |\n\n  sh'
+allow $'echo qmd query x |\ngrep -v sh'
+allow $'echo qmd query x |\nhead -1'
+# HIMMEL-4337: the `&` of a redirection is no command boundary.
+deny 'echo qmd query x 2>&1 | sh'
+deny 'echo qmd query x 2>&1 | grep -v sh | sh'
+deny 'echo qmd query x &>/dev/null | sh'
+deny 'echo qmd query x >&2 | sh'
+deny 'echo qmd query x 2>&1 |& bash'
+allow 'echo qmd query x 2>&1 | grep y'
+allow 'grep -rn "qmd query" docs 2>&1 | head'
+# HIMMEL-4337: an interpreter, an eval or an expansion that runs its stdin.
+deny 'echo qmd query x | python3'
+deny 'echo qmd query x | python3.12 -'
+deny 'echo qmd query x | perl'
+deny 'echo qmd query x | node'
+deny 'echo qmd query x | ruby'
+deny 'echo qmd query x | php'
+deny 'echo qmd query x | xargs'
+deny 'echo qmd query x | xargs -0'
+deny 'echo qmd query x | while read l; do eval "$l"; done'
+deny 'echo qmd query x | while read l; do $l; done'
+deny 'echo qmd query x | while read -r l; do "$l"; done'
+deny 'echo qmd query x | $(cat)'
+deny 'echo qmd query x | `cat`'
+deny 'echo qmd query x | sed "1e"'
+deny "python3 -c 'import os; os.system(\"qmd query x\")'"
+deny "perl -e 'system(\"qmd search x\")'"
+deny "node -e 'require(\"child_process\").execSync(\"qmd query x\")'"
+deny "ruby -e 'system(\"qmd query x\")'"
+deny "php -r 'system(\"qmd query x\");'"
+deny "perl -le 'system(\"qmd query x\")'"
+allow 'echo qmd status | python3'
+allow "python3 -c 'print(1)'"
+allow "perl -e 'print 1'"
+allow 'echo qmd query x | grep -v sh'
+allow 'echo qmd query x | head'
+allow 'echo qmd query x | wc -l'
+allow 'echo qmd query x | jq .'
+allow 'rg -l x | while read f; do echo "$f"; done'
+allow 'grep -rln "qmd search" docs | while read f; do echo "$f"; done'
+# HIMMEL-4337: a file the same command wrote, then ran.
+deny 'echo qmd query x > /tmp/x.sh; sh /tmp/x.sh'
+deny 'echo qmd query x >> f.sh; bash f.sh'
+deny 'echo qmd query x > f; source f'
+deny 'echo qmd query x > f; . ./f'
+deny 'echo qmd query x | tee f; bash f'
+deny 'echo qmd query x | tee -a f >/dev/null; bash -x f'
+deny "echo 'import os; os.system(\"qmd query x\")' >> f.py; python3 f.py"
+deny 'echo qmd query x >| f; sh f'
+# Stdin-fed shell/interpreter reading a written file (CR round 2 codex-1).
+deny 'echo qmd query x > f; sh < f'
+deny 'echo qmd query x > f; bash 0< f'
+deny 'echo qmd query x > f; python3 < f'
+deny 'echo qmd query x > f; sh <f'
+deny 'echo qmd query x > f; < f sh'
+deny 'echo qmd query x > f; bash -s < f'
+deny 'echo qmd query x > f; cat f | sh'
+deny 'echo qmd query x > f; sh <<< "$(cat f)"'
+deny 'echo qmd query x > f; xargs -a f sh -c'
+allow 'echo qmd status > f; sh < f'
+allow 'echo qmd query x > f; wc -l < f'
+allow 'echo qmd query x > f; grep x < f'
+# bash -s operands are positional args, and an operand naming stdin is no
+# program source, src mode included (CR round 3 codex-1/codex-2).
+deny 'echo qmd query x > f; bash -s ignored < f'
+deny 'echo qmd query x > f; source /dev/stdin < f'
+deny 'echo qmd query x > f; sh /dev/stdin < f'
+deny 'echo qmd query x > f; . /dev/stdin < f'
+deny 'echo qmd query x > f; bash /dev/fd/0 < f'
+deny 'echo qmd query x > f; source /proc/self/fd/0 < f'
+deny 'echo qmd query x > f; sh - < f'
+deny 'echo qmd query x > f; cat f | source /dev/stdin'
+deny "echo 'import os; os.system(\"qmd query x\")' > f; python3 /dev/stdin < f"
+allow 'echo qmd status > f; source /dev/stdin < f'
+allow 'echo qmd status > f; bash -s ignored < f'
+allow 'echo qmd query x > f; cat /dev/stdin < f'
+# An option's own argument does not hide the script operand (codex-1).
+deny 'echo qmd query x > f.sh; bash -o errexit f.sh'
+deny 'echo qmd query x > f.sh; bash --rcfile /dev/null f.sh'
+deny 'echo qmd query x > f.sh; sh -O extglob f.sh'
+deny "echo 'system(\"qmd query x\")' > f.pl; perl -I lib f.pl"
+deny "echo 'require(\"child_process\").execSync(\"qmd query x\")' > f.js; node -r ./x f.js"
+deny "echo 'import os; os.system(\"qmd query x\")' > f.py; python3 -W ignore f.py"
+allow 'echo qmd status > f.sh; bash -o errexit f.sh'
+allow 'echo qmd query x > notes.txt; cat notes.txt'
+allow 'bash scripts/foo.sh'
+allow 'echo qmd status > f.sh; sh f.sh'
+# HIMMEL-4305: launchers that type or ship a command elsewhere.
+deny "tmux send-keys 'qmd query x' Enter"
+deny "tmux send-keys -t s 'qmd \"qu\"ery x' Enter"
+deny 'tmux send-keys q m d Space query Space x Enter'
+deny 'tmux send-keys -H 71 6d 64 20 71 75 65 72 79 0a'
+deny 'tmux send-keys -H -t s 71 6d 64 20 71 75 65 72 79'
+deny 'tmux send-keys -H qq'
+deny 'c=x; tmux send-keys "$c" Enter; echo qmd query'
+deny "tmux if-shell true 'run-shell \"qmd query x\"'"
+deny "screen -X stuff 'qmd query x\\n'"
+deny "screen -S s -X stuff '\\161md query x\\n'"
+deny "screen -X stuff 'q^Mmd query x'"
+deny "pwsh -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+deny "pwsh -enc cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+deny "pwsh -e cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+deny "pwsh -ec cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+deny "pwsh -NoProfile --EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+deny "powershell.exe -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+deny "PowerShell.exe /enc cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+deny "powershell -c 'qmd query x'"
+deny "pwsh -enc '!!not-base64!!'"
+deny 'ssh host qmd query x'
+deny 'ssh -p 22 -i ~/.ssh/k host qmd query x'
+deny "ssh host 'qmd \"qu\"ery x'"
+deny 'docker exec -it c qmd query x'
+deny 'docker run --rm img qmd query x'
+deny 'podman exec c qmd search x'
+deny 'kubectl exec p -- qmd query x'
+deny "echo 'qmd query x' | ssh host"
+deny "echo 'qmd query x' | docker exec -i c"
+deny "ssh host bash -c \"\$'\\x71md' query x\""
+allow "tmux send-keys 'qmd status' Enter"
+allow 'tmux send-keys -H 71 6d 64'
+allow 'ssh host qmd status'
+allow 'docker exec c qmd get x'
+allow "pwsh -EncodedCommand cQBtAGQAIABzAHQAYQB0AHUAcwA="
+allow 'bash scripts/lib/qmd-bounded.sh query -c luna x'
+allow "screen -X stuff 'qmd status\\n'"
+allow 'ssh host uptime'
+allow 'kubectl get pods'
 # ... while the same launchers running anything else stay allowed.
 allow "fish -c 'qmd status'"
 allow "su -c 'qmd status'"

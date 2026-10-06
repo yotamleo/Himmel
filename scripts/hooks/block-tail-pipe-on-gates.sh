@@ -20,9 +20,11 @@
 #
 # CONTRACT:
 #   * DENY (exit 2, reason on stderr) when a logical command line contains a
-#     pipeline whose FIRST stage INVOKES a registered gate command and whose LAST
-#     stage is `tail`/`head`. Intermediate stages are irrelevant — `gate |
-#     grep x | tail` denies too — and `2>&1` is a redirection, not a stage. A
+#     pipeline in which ANY stage before the last INVOKES a registered gate
+#     command and whose LAST stage is `tail`/`head` (HIMMEL-4438: `echo x |
+#     xargs <gate> | tail` truncates the gate too). Stages between are
+#     irrelevant — `gate | grep x | tail` denies too — and `2>&1` is a
+#     redirection, not a stage. A
 #     command substitution or group is its own pipeline, so `RC=$(gate | tail)`
 #     and `( gate | tail )` are caught like the bare form.
 #   * "INVOKES" means COMMAND POSITION, not "mentions": the first stage is
@@ -179,6 +181,22 @@ cmd="${result#*$'\n'}"
 # line break — the continuation lost, the pipeline split in two, the guard
 # silently blind. Drop CRs before anything treats the text as syntax.
 cmd=${cmd//$'\r'/}
+
+# HIMMEL-4438: re-read the forms the shell actually runs (quotes removed,
+# wrappers stripped, `bash -c`/`eval` bodies) through this same hook. The lib
+# is a must-run dependency: if it cannot be sourced, deny.
+if :; then
+    case "${BASH_SOURCE[0]}" in
+        */*) _gu_lib=${BASH_SOURCE[0]%/*}/lib/guard-unwrap.sh ;;
+        *) _gu_lib=lib/guard-unwrap.sh ;;
+    esac
+    # shellcheck source=lib/guard-unwrap.sh
+    if ! { [ -r "$_gu_lib" ] && . "$_gu_lib"; } 2>/dev/null; then
+        echo "block-tail-pipe-on-gates: cannot load $_gu_lib - failing closed" >&2
+        exit 2
+    fi
+    guard_unwrap "${BASH_SOURCE[0]}" "$cmd" || exit 2
+fi
 
 # Registered gate paths, anchored: the token must END with one, at a `/` boundary.
 GATE_RE='(^|/)scripts/(cr/clear-cr-marker\.sh|ci/run-shell-tests\.sh|check-ci\.sh|handover/merge-on-green\.sh|handover/pr-merge\.sh|[A-Za-z0-9._-]+/test-[A-Za-z0-9._-]*\.sh)$'
@@ -713,7 +731,7 @@ stage_mentions_gate() {
 }
 
 scan_line() {
-    local line=$1 stmts pipeline first prog last
+    local line=$1 stmts pipeline first last stages
     # The opt-out survived normalisation only if it was a real shell comment.
     case "$line" in *"$MARK"*) return 0 ;; esac
 
@@ -734,24 +752,38 @@ scan_line() {
             tail | head | */tail | */head | "$ENV_SPLIT_SENTINEL") ;;
             *) continue ;;
         esac
-        first=${pipeline%%|*}
-        if stage_has_unquoted_angle "$first" && stage_mentions_gate "$first"; then
-            offender=$pipeline
-            return 0
-        fi
-        prog=$(invoked_program "$first")
-        [ -n "$prog" ] || continue
-        # HIMMEL-3661: ENV_SPLIT_SENTINEL means "unknown program that may be a
-        # gate" — treat it as a match without consulting GATE_RE.
-        if [ "$prog" != "$ENV_SPLIT_SENTINEL" ]; then
-            gate_match=$(printf '%s' "$prog" | grep -E "$GATE_RE")
-            [ -n "$gate_match" ] || continue
-        fi
-        offender=$pipeline
-        return 0
+        # HIMMEL-4438: every stage before the last, not only the first — a
+        # gate fed by `echo x | xargs <gate> | tail` is truncated all the same.
+        stages=${pipeline%|*}
+        while :; do
+            first=${stages%%|*}
+            first=${first#&}
+            if stage_invokes_gate "$first"; then
+                offender=$pipeline
+                return 0
+            fi
+            case "$stages" in *'|'*) stages=${stages#*|} ;; *) break ;; esac
+        done
     done <<EOF
 $stmts
 EOF
+}
+
+# stage_invokes_gate STAGE — 0 when STAGE runs a registered gate.
+stage_invokes_gate() {
+    local prog
+    if stage_has_unquoted_angle "$1" && stage_mentions_gate "$1"; then
+        return 0
+    fi
+    prog=$(invoked_program "$1")
+    [ -n "$prog" ] || return 1
+    # HIMMEL-3661: ENV_SPLIT_SENTINEL means "unknown program that may be a
+    # gate" — treat it as a match without consulting GATE_RE.
+    if [ "$prog" != "$ENV_SPLIT_SENTINEL" ]; then
+        gate_match=$(printf '%s' "$prog" | grep -E "$GATE_RE")
+        [ -n "$gate_match" ] || return 1
+    fi
+    return 0
 }
 
 # Fold shell line continuations into ONE logical line, so a pipeline written as

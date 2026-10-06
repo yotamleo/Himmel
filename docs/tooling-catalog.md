@@ -1668,6 +1668,17 @@ signalled it. Same runner/scheduler split as the graphify pair above.
   StartWhenAvailable + IgnoreNew XML) / crontab (POSIX); dedup-guarded; hermetic
   test `test-qmd-cadence.sh`. Arming is an operator flip, never auto-armed:
   `bash scripts/luna/qmd-cadence.sh arm` (`--time` / `--force` / `--dry-run`).
+- `scripts/eval/qmd-quality/qmd-quality-cadence.sh run|arm|status|disarm`
+  (HIMMEL-4184) — the weekly retrieval-quality drift check. `run` scores the
+  private golden set with `qmd-quality.sh --scope golden` (read-only snapshot of
+  the index, deleted after the run), appends each mode's hit@1 / hit@5 / MRR to
+  `~/.himmel/state/qmd-quality/metrics.tsv`, and alerts through
+  `scripts/luna/cadence-alert.sh` when a mode's MRR drops by more than
+  `QMD_QUALITY_DRIFT_MRR` (0.05) from the previous run, or the eval fails. Off
+  until an operator arms it: `bash scripts/eval/qmd-quality/qmd-quality-cadence.sh
+  arm --golden <golden.jsonl>` (default Sunday 06:00, after the 05:00 reindex;
+  `--day` / `--time` / `--index` / `--force` / `--dry-run`). Cron only; not in
+  the wizard registry. Test: `test-qmd-quality-cadence.sh`.
 
 ---
 
@@ -1900,6 +1911,28 @@ should monitor it daily not as a puller and with tokens"). Pure bash + `gh` +
   Report-only: repair is `himmel-update`'s drift pass (HIMMEL-4246). Arming is
   operator-invoked: `bash scripts/doctor-cadence.sh arm`. Test:
   `scripts/test-doctor-cadence.sh`.
+- `scripts/luna/vault-stall-cadence.sh run [--vault <p>] [--dry-run]|arm|status|disarm`
+  (HIMMEL-4471) — every 15 min, catches a vault auto-commit stall (staged paths
+  plus a last commit older than `VAULT_STALL_MIN`, default 25 min) and
+  reproduces the refusal with `git hook run pre-commit` (the content fixers
+  are SKIP-ed, so nothing is rewritten). It remediates only two classes, and
+  only under `handovers/`. A shellcheck or check-json finding gets the
+  canonical `^handovers/` exclude. A gitleaks finding whose secret fully
+  matches one entry of a CLOSED shape list (lock token, 40-hex sha, RETASK
+  nonce, the template's own regexes) gets that regex in `.gitleaks.toml`.
+  Remediation is all-or-nothing: the edits are applied, the hook re-run, and
+  `git commit --only` takes just the config files; the staged backlog is left
+  to the next sync. Anything else alerts through
+  `scripts/luna/cadence-alert.sh` with rule, file and line only, never the
+  secret, and commits nothing. The cadence skips as `busy` while
+  `.git/index.lock` exists or another run holds its flock. Each class is
+  remediated at most once per 24 h: a repeat stall alerts instead
+  (`~/.himmel/state/vault-stall/`). Never `--no-verify`, never
+  `pre-commit install`. Registered in `cadence-registry.json` as `vault-stall`
+  and in the observability registry, so doctor C24 reports it when it is armed
+  but absent from cron. Arming is operator-invoked:
+  `bash scripts/luna/vault-stall-cadence.sh arm`. Test:
+  `scripts/luna/test-vault-stall-cadence.sh`.
 
 ---
 

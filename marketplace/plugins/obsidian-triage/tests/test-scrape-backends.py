@@ -155,6 +155,66 @@ check("ledger: transport ok + parse failure counts the credit, ok=false",
       row.get("credits") == mod.FirecrawlClient.SCRAPE_COST and row.get("ok") is False)
 
 # --- local-headless slot: Scrapling stealth fetcher (HIMMEL-4344) -----------
+class FakeRoute:
+    def __init__(self, url, page=None):
+        frame = type("Frame", (), {"page": page})()
+        self.request = type("Req", (), {"url": url, "frame": frame})()
+        self.verdict = None
+
+    def abort(self, *a, **k):
+        self.verdict = "abort"
+
+    def continue_(self, *a, **k):
+        self.verdict = "continue"
+
+
+class FakeCDP:
+    """Stands in for a raw CDP session: records sends, fires Fetch.requestPaused."""
+    def __init__(self):
+        self.sent, self.handlers = [], {}
+
+    def on(self, ev, fn):
+        self.handlers[ev] = fn
+
+    def send(self, method, params=None):
+        self.sent.append((method, params or {}))
+
+    def pause(self, url):
+        self.sent.clear()
+        self.handlers["Fetch.requestPaused"]({"requestId": "r1", "request": {"url": url}})
+        return self.sent[-1][0]
+
+
+class FakeBrowserPage:
+    """Stands in for the Playwright page Scrapling hands to page_setup. Routes
+    are registered on its context, so a popup is covered too."""
+    class _Ctx:
+        def __init__(self, page):
+            self.page = page
+            self.page_listeners = []
+
+        def new_cdp_session(self, _page):
+            self.page.cdp = FakeCDP()
+            return self.page.cdp
+
+        def route(self, pattern, handler):
+            self.page.routes.append((pattern, handler))
+
+        def route_web_socket(self, pattern, handler):
+            self.page.ws_routes.append((pattern, handler))
+
+        def on(self, ev, fn):
+            self.page_listeners.append((ev, fn))
+
+    ctx_class = _Ctx
+
+    def __init__(self):
+        self.routes = []
+        self.ws_routes = []
+        self.cdp = None
+        self.context = self.ctx_class(self)
+
+
 class FakePage:
     def __init__(self, status=200, html="<h1>Real</h1><p>body</p>", url=None):
         self.status = status
@@ -165,13 +225,21 @@ class FakePage:
 
 class FetchRecorder:
     """Stands in for scrapling's StealthyFetcher.fetch + the markdown step."""
-    def __init__(self, page=None, exc=None):
+    def __init__(self, page=None, exc=None, browser=None):
         self.calls = []
         self.page = page or FakePage()
         self.exc = exc
+        self.browser = browser  # the fake Playwright page handed to page_setup
 
     def fetch(self, url, **kw):
         self.calls.append((url, kw))
+        # like Scrapling 0.4.15: run page_setup before navigating, swallow its errors
+        if kw.get("page_setup"):
+            self.browser = self.browser or FakeBrowserPage()
+            try:
+                kw["page_setup"](self.browser)
+            except Exception:
+                pass
         if self.exc:
             raise self.exc
         return self.page
@@ -237,6 +305,126 @@ for label, r, expect in (("HTTP 403", FetchRecorder(page=FakePage(status=403)), 
         check(f"local-headless: {label} raises (chain falls through)", False)
     except Exception as e:
         check(f"local-headless: {label} raises (chain falls through)", expect in str(e))
+
+# --- per-request private-host enforcement (HIMMEL-4477) ---------------------
+def verdict_for(setup, url):
+    bp = FakeBrowserPage()
+    setup(bp)
+    fr = FakeRoute(url, bp)
+    bp.routes[0][1](fr)
+    return fr.verdict
+
+
+rec = FetchRecorder()
+install_local(rec)
+mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
+setup = rec.calls[0][1].get("page_setup")
+check("local-headless: service workers are blocked at context creation",
+      rec.calls[0][1].get("additional_args") == {"service_workers": "block"})
+check("local-headless: fetch registers a page_setup hook (route installed before navigation)", callable(setup))
+if callable(setup):
+    bp = FakeBrowserPage()
+    setup(bp)
+    check("local-headless: one catch-all route covers every request type", [p for p, _ in bp.routes] == ["**/*"])
+    for label, u in (("loopback v4", "http://127.0.0.1:8080/x"),
+                     ("localhost", "http://localhost/x"),
+                     ("RFC1918 192.168", "http://192.168.1.5/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("RFC1918 10.x", "http://10.0.0.9/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("RFC1918 172.16", "http://172.16.4.2/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("link-local metadata", "http://169.254.169.254/latest/meta-data/"),
+                     ("loopback v6", "http://[::1]/x"),
+                     ("IPv6 ULA", "http://[fd00::1]/x"),
+                     ("IPv6 link-local", "http://[fe80::1]/x"),
+                     ("IPv4-mapped IPv6", "http://[::ffff:10.0.0.1]/x"),  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+                     ("decimal-encoded loopback", "http://2130706433/x"),
+                     ("hex-encoded loopback", "http://0x7f.1/x"),
+                     ("short-form loopback", "http://127.1/x"),
+                     ("internal TLD", "http://nas.internal/x"),
+                     ("websocket to a private host", "ws://127.0.0.1:9222/devtools"),
+                     ("basic-auth userinfo on a private host", "http://user:pw@10.0.0.9/x")):  # leak-allow: private-lan-ip test fixture asserting the RFC1918 deny rule
+        check(f"local-headless: request to {label} is aborted", verdict_for(setup, u) == "abort")
+    for label, u in (("public subresource", "https://cdn.example.com/a.png"),
+                     ("public page", "https://example.com/"),
+                     ("public IP literal", "http://93.184.216.34/x"),
+                     ("data: URI", "data:image/png;base64,AAAA"),
+                     ("about:blank", "about:blank"),
+                     ("blob: URL", "blob:https://example.com/1234")):
+        check(f"local-headless: {label} still loads", verdict_for(setup, u) == "continue")
+
+    class ExplodingRoute(FakeRoute):
+        @property
+        def request(self):
+            raise RuntimeError("boom")
+
+        @request.setter
+        def request(self, v):
+            pass
+    bp = FakeBrowserPage()
+    setup(bp)
+    er = ExplodingRoute("http://x/")
+    bp.routes[0][1](er)
+    check("local-headless: a handler that cannot read the request fails closed (abort)", er.verdict == "abort")
+
+    bp = FakeBrowserPage()
+    setup(bp)
+    check("local-headless: websocket route registered when Playwright offers it", [p for p, _ in bp.ws_routes] == ["**/*"])
+
+    class FakeWS:
+        def __init__(self, url):
+            self.url, self.verdict = url, None
+
+        def close(self, *a, **k):
+            self.verdict = "close"
+
+        def connect_to_server(self):
+            self.verdict = "connect"
+    for u, want in (("ws://127.0.0.1:9222/x", "close"), ("wss://cdn.example.com/live", "connect")):
+        w = FakeWS(u)
+        bp.ws_routes[0][1](w)
+        check(f"local-headless: websocket {u} -> {want}", w.verdict == want)
+
+    # redirect hops: page.route never sees them, CDP Fetch.requestPaused does
+    bp = FakeBrowserPage()
+    setup(bp)
+    popup_route = FakeRoute("https://example.com/popup", object())  # a different page than the fetched one
+    bp.routes[0][1](popup_route)
+    check("local-headless: a popup's request is refused even to a public host", popup_route.verdict == "abort")
+    check("local-headless: a popup (context page event) gets its own CDP guard",
+          [e for e, _ in bp.context.page_listeners] == ["page"])
+    check("local-headless: CDP Fetch.enable at Request stage covers redirect hops",
+          ("Fetch.enable", {"patterns": [{"urlPattern": "*", "requestStage": "Request"}]}) in bp.cdp.sent)
+    for u, want in (("http://169.254.169.254/latest/meta-data/", "Fetch.failRequest"),
+                    ("http://127.0.0.1:8080/secret", "Fetch.failRequest"),
+                    ("https://example.com/next", "Fetch.continueRequest")):
+        check(f"local-headless: redirect hop {u} -> {want}", bp.cdp.pause(u) == want)
+
+    class NoWsCtx(FakeBrowserPage._Ctx):
+        route_web_socket = property(lambda self: (_ for _ in ()).throw(AttributeError("route_web_socket")))
+
+    class NoWsPage(FakeBrowserPage):
+        ctx_class = NoWsCtx
+
+    class NoCdpCtx(FakeBrowserPage._Ctx):
+        def new_cdp_session(self, _page):
+            raise RuntimeError("no cdp")
+
+    class NoCdpPage(FakeBrowserPage):
+        ctx_class = NoCdpCtx
+
+    # Scrapling swallows a page_setup exception and navigates anyway, so a failed
+    # install must leave a browser that denies everything and a refused scrape
+    for label, page_cls in (("no websocket routing", NoWsPage), ("CDP session fails", NoCdpPage)):
+        bad = FetchRecorder(browser=page_cls())
+        install_local(bad)
+        try:
+            mod.LocalHeadlessClient(cookie_dir=COOKIES).scrape("https://example.com/")
+            check(f"local-headless: {label} -> scrape refuses (guard did not install)", False)
+        except RuntimeError as e:
+            check(f"local-headless: {label} -> scrape refuses (guard did not install)", "did not install" in str(e))
+        fr = FakeRoute("https://example.com/", bad.browser)
+        bad.browser.routes[0][1](fr)
+        check(f"local-headless: {label} -> deny-all route is already in place, even a public page aborts",
+              fr.verdict == "abort")
 
 uninstall_local()
 try:

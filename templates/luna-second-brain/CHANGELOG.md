@@ -8,6 +8,14 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.69] — 2026-10-05
+
+### Changed
+- `.pre-commit-config.yaml`: the shellcheck exclude now covers all of
+  `handovers/` instead of a growing list of subdirectories. Every `.sh` there is
+  a session artefact, and one lint finding on it stalled every vault commit
+  (HIMMEL-4471).
+
 ## [0.4.68] — 2026-10-05
 
 ### Fixed
