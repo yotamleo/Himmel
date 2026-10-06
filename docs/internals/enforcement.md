@@ -3762,12 +3762,15 @@ Suite: `scripts/hooks/test-guard-leg-wakeup.sh`.
 
 Fires on every tool (`*`), keyed on `HIMMEL_CONSOLE_LEG=1` plus a non-empty
 `HIMMEL_CONSOLE_NAME` (both from `headed-arm-leg.sh`); anything else exits 0
-with no output. Reads fill with `scripts/context-fill.sh --percent` on the
-hook's `transcript_path`. At ≥ 75 % it denies every call except the hand-off
-ones — a Write/Edit/MultiEdit of a `*-RESUME.md`, `SendMessage`, `ListAgents`,
-`ToolSearch`, `TaskStop`, and a bare `bash …/append-results.sh`,
-`queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh` (no
-`&&`, `||`, `$(` or newline) — until the leg has handed off: its doc (the `.md`
+with no output, and so does a call from the leg's in-process subagents (a
+non-empty string `agent_id`), which inherit the leg's env and transcript.
+Reads fill with `scripts/context-fill.sh --percent` on the hook's
+`transcript_path`. At ≥ 75 % it denies every call except the hand-off ones — a
+Write/Edit/MultiEdit of a `*-RESUME.md`, `SendMessage`, `ListAgents`,
+`ToolSearch`, `TaskStop`, a bare `bash …/append-results.sh`,
+`queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh`, and a
+bare `git [-C <dir>] add|commit|push` of WIP (no `&&`, `||`, `$(` or
+newline) — until the leg has handed off: its doc (the `.md`
 path in the transcript's first `load <brief> and continue` turn) ends on a
 `WRAPPED`/`BLOCKED` marker, or a `*-RESUME.md` beside that doc carries the
 doc's leg id (`N1364`, `N1364b` …) and was modified after the session's first

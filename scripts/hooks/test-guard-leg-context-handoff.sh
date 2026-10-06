@@ -182,6 +182,29 @@ check "resumed leg + fresh N77c RESUME doc -> allow" allow "$LS"
 rm -f "$DOC2" "$DIR/HIMMEL-9-N77c-thing-2026-10-06-RESUME.md"
 session "load $DOC and continue"
 
+echo "== in-process subagents (agent_id) are exempt =="
+sub_call() { printf '%s' "$1" | jq -c --arg a "$2" '. + {agent_id:$a}'; }
+check "subagent Bash at 76 % -> allow" allow "$(sub_call "$LS" a1b2c3)"
+check "subagent Read at 76 % -> allow" allow "$(sub_call "$(tool_call Read)" a1b2c3)"
+# shellcheck disable=SC2086
+sub_out="$(sub_call "$LS" a1b2c3 | env $LEG_ENV bash "$HOOK" 2>&1)"
+if [ -z "$sub_out" ]; then ok "subagent -> no deny text, never invited to write a RESUME"; else bad "subagent printed: $sub_out"; fi
+check "subagent RESUME write -> allow" allow "$(sub_call "$(write_call Write "$T/scratch/x-RESUME.md")" a1b2c3)"
+check "parent still blocked after the subagent's RESUME write" block "$LS"
+check "agent_id empty string -> not a subagent, block" block "$(sub_call "$LS" '')"
+check "agent_id non-string -> not a subagent, block" block "$(printf '%s' "$LS" | jq -c '. + {agent_id:true}')"
+
+echo "== WIP commit/push stays allowed at 76 % =="
+check "git add -> allow" allow "$(bash_call 'git add scripts/x.sh')"
+check "git commit -m -> allow" allow "$(bash_call 'git commit -m "wip: context hand-off"')"
+check "git push -> allow" allow "$(bash_call 'git push origin fix/x')"
+check "git -C <dir> commit -> allow" allow "$(bash_call "git -C $T commit -am wip")"
+check "git commit && more -> block" block "$(bash_call 'git commit -m wip && ls')"
+# shellcheck disable=SC2016 # a literal $( is the shape under test
+check "git commit with \$( -> block" block "$(bash_call 'git commit -m "$(cat x)"')"
+check "git status -> block (not a hand-off)" block "$(bash_call 'git status')"
+check "git commitx -> block" block "$(bash_call 'git commitx')"
+
 echo "== fail-open: fill UNKNOWN/STALE, leg doc unknown, junk input =="
 nofill
 check "no HUD snapshot (UNKNOWN) at would-be 76 % -> allow" allow "$LS"

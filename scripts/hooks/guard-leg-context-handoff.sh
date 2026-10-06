@@ -7,7 +7,8 @@
 #
 # Scope: a console-spawned leg only — HIMMEL_CONSOLE_LEG=1 AND a non-empty
 # HIMMEL_CONSOLE_NAME, both exported by headed-arm-leg.sh (HIMMEL-2919,
-# HIMMEL-3435). Anything else returns at once with no output.
+# HIMMEL-3435). Anything else returns at once with no output. The leg's
+# in-process subagents (a non-empty string agent_id) are exempt.
 #
 # The decision, in order:
 #   1. fill = scripts/context-fill.sh --percent on the hook's transcript_path.
@@ -16,7 +17,8 @@
 #      SendMessage, ListAgents (the preface's name check before a send),
 #      ToolSearch (SendMessage is a deferred tool), TaskStop (the wrap reaps
 #      background tasks), and a bare `bash <...>/append-results.sh`,
-#      `queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh`.
+#      `queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh`,
+#      and a bare `git [-C <dir>] add|commit|push` of WIP.
 #   3. The leg's own doc is the `.md` path named in the transcript's first user
 #      turn — the launcher's `load <brief> and continue`. Its last marker
 #      WRAPPED or BLOCKED -> allow.
@@ -66,6 +68,13 @@ warn_allow() {
 command -v jq >/dev/null 2>&1 || warn_allow "jq not on PATH"
 
 input=$(cat)
+# An in-process subagent (worker, judge call) inherits the leg's env and its
+# transcript_path, so it would read the parent's fill and be denied too. It is
+# never the one to hand off: exempt it, keyed on a NON-EMPTY STRING agent_id
+# (the block-subagent-park.sh idiom; `// empty` would read `false` as absent).
+if printf '%s' "$input" | jq -e '(.agent_id | type) == "string" and .agent_id != ""' >/dev/null 2>&1; then
+    exit 0
+fi
 tool=$(printf '%s' "$input" | jq -r '.tool_name // empty' 2>/dev/null) || warn_allow "unparseable hook input"
 [ -n "$tool" ] || warn_allow "no tool_name in hook input"
 transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)
@@ -97,6 +106,10 @@ case "$tool" in
 "*) ;;
             *)
                 if grep -qE '^[[:space:]]*bash[[:space:]]+([^[:space:]]*/)?(scripts/handover/console-kit/append-results\.sh|scripts/handover/queue-lock\.sh[[:space:]]+release|scripts/handover/wrap-subtree-check\.sh|scripts/context-fill\.sh)([[:space:]]|$)' <<< "$cmd"; then
+                    exit 0
+                fi
+                # WIP add/commit/push, so the hand-off leaves nothing uncommitted.
+                if grep -qE '^[[:space:]]*git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?(add|commit|push)([[:space:]]|$)' <<< "$cmd"; then
                     exit 0
                 fi
                 ;;
@@ -164,7 +177,7 @@ for cand in "$dir"/*-RESUME.md; do
     exit 0
 done
 
-deny_msg="leg context hand-off: this session is at ${fill} % context fill (threshold ${THRESHOLD} %). Ordinary tool calls stay denied until you hand off. Do exactly this: 1) Write your resume brief to ${want} (ticket, branch, worktree, committed-vs-dirty, PR/CR state, remaining ordered steps). 2) SendMessage your console ${HIMMEL_CONSOLE_NAME}: context ${fill} %, RESUME at that path. 3) bash scripts/handover/console-kit/append-results.sh ${doc} \"BLOCKED — context ${fill} %, RESUME written: <path>\". 4) Stop. Still allowed meanwhile: SendMessage, ListAgents, ToolSearch, TaskStop, append-results.sh, queue-lock.sh release, wrap-subtree-check.sh, context-fill.sh. Bypass: LEG_CONTEXT_HANDOFF_OK=1 in the launching shell."
+deny_msg="leg context hand-off: this session is at ${fill} % context fill (threshold ${THRESHOLD} %). Ordinary tool calls stay denied until you hand off. Do exactly this: 1) Write your resume brief to ${want} (ticket, branch, worktree, committed-vs-dirty, PR/CR state, remaining ordered steps). 2) SendMessage your console ${HIMMEL_CONSOLE_NAME}: context ${fill} %, RESUME at that path. 3) bash scripts/handover/console-kit/append-results.sh ${doc} \"BLOCKED — context ${fill} %, RESUME written: <path>\". 4) Stop. Still allowed meanwhile: SendMessage, ListAgents, ToolSearch, TaskStop, append-results.sh, queue-lock.sh release, wrap-subtree-check.sh, context-fill.sh, git add/commit/push. Bypass: LEG_CONTEXT_HANDOFF_OK=1 in the launching shell."
 
 reason=$(printf '%s' "$deny_msg" | jq -Rs . 2>/dev/null) \
     || reason='"leg context hand-off: past 75 % context fill - write the RESUME doc, message the console, stop"'
