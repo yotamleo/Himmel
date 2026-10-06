@@ -1,3 +1,4 @@
 {"ts": "2026-10-06T12:00:14Z", "session_id": "4670c1a5-0000-4000-8000-000000000001", "tool": "Bash", "reason_tag": "Merge Without Review"}
+{"ts": "2026-10-06T12:00:16Z", "session_id": "4670c1a5-0000-4000-8000-000000000001", "tool": "WebFetch", "reason_tag": "Merge Without Review"}
 {"ts": "2026-10-06T12:00:16Z", "session_id": "4670c1a5-0000-4000-8000-000000000001", "tool": "Bash", "reason_tag": "unknown"}
 {"ts": "2026-10-06T12:00:14Z", "session_id": "00000000-0000-4000-8000-000000000000", "tool": "Bash", "reason_tag": "Session Transcript Tampering"}

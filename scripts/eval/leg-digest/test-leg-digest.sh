@@ -22,6 +22,8 @@ PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+# absent: grep found no match (status 1); a grep error (status 2) is not proof of absence.
+absent() { grep -q "$@"; [ $? = 1 ]; }
 
 SID=4670c1a5-0000-4000-8000-000000000001
 cp "$FX/classes.jsonl" "$TMP/$SID.jsonl"
@@ -48,7 +50,7 @@ echo "2. classifier sub-class: ledger, then the journal bracket against the fixe
 check "a ledger row with a listed category keys it" '[ "$(row denied/classifier:merge-without-review | jq -c .tool_call_ids)" = "[\"toolu_c1\"]" ]'
 check "a ledger tag of unknown falls back to the journal bracket on the list" '[ "$(row denied/classifier:out-of-place-publication | jq -c .tool_call_ids)" = "[\"toolu_c2\"]" ]'
 check "an off-list bracket and a malformed bracket are classifier:other" '[ "$(row denied/classifier:other | jq -c .tool_call_ids)" = "[\"toolu_c3\",\"toolu_c4\"]" ]'
-check "another session's ledger row is never joined" '! grep -q session-transcript-tampering "$TMP/classes.json"'
+check "another session's ledger row is never joined" 'absent session-transcript-tampering "$TMP/classes.json"'
 
 echo "3. suite rows, the trajectory join, trajectory rows"
 check "a tracked suite that later passes is not final_red" '[ "$(row suite/test-trajectory.sh | jq -c "[.count, .final_red]")" = "[1,false]" ]'
@@ -70,9 +72,9 @@ check "a subagent_type outside the allow-list is kind other" 'jq -e ".agents | m
 echo "5. canary: no journal text reaches the digest (spec 6.1)"
 cp "$FX/canary.jsonl" "$TMP/$SID.c.jsonl"
 check "the canary fixture carries the canary" '[ "$(grep -c CANARY4670zq "$FX/canary.jsonl")" -ge 20 ]'
-digest "$TMP/$SID.c.jsonl" >"$TMP/canary.json" 2>"$TMP/canary.err"
+digest "$TMP/$SID.c.jsonl" >"$TMP/canary.json" 2>"$TMP/canary.err" || bad "the canary digest exits 0"
 check "the canary digest is non-empty" 'jq -e ".failures | length > 10" "$TMP/canary.json" >/dev/null'
-check "the canary appears nowhere in the digest or its stderr" '! grep -q CANARY4670zq "$TMP/canary.json" "$TMP/canary.err"'
+check "the canary appears nowhere in the digest or its stderr" 'absent CANARY4670zq "$TMP/canary.json" "$TMP/canary.err"'
 
 echo "6. denial cross-check: mapper vs trajectory.py (spec 2.3)"
 : >"$TMP/divergence.txt"
@@ -84,7 +86,7 @@ grep -v '^#' "$HERE/denial-exceptions.txt" | grep -v '^$' | awk '{print $1, $2, 
 sort "$TMP/divergence.txt" >"$TMP/seen.txt"
 check "every divergence is an enumerated exception" '[ -z "$(comm -23 "$TMP/seen.txt" "$TMP/allowed.txt")" ] || { comm -23 "$TMP/seen.txt" "$TMP/allowed.txt"; false; }'
 check "every enumerated exception still occurs (no stale lines)" '[ -z "$(comm -13 "$TMP/seen.txt" "$TMP/allowed.txt")" ] || { comm -13 "$TMP/seen.txt" "$TMP/allowed.txt"; false; }'
-check "every exception names its reason" '! grep -v "^#" "$HERE/denial-exceptions.txt" | grep -v "^$" | awk "NF < 4" | grep -q .'
+check "every exception names its reason" 'awk "!/^#/ && NF > 0 && NF < 4 { bad = 1 } END { exit bad }" "$HERE/denial-exceptions.txt"'
 
 echo "7. status and spawns"
 check "a missing journal is inconclusive, exit 0" 'digest "$TMP/nope.jsonl" | jq -e ".status == \"inconclusive\" and .failures == []" >/dev/null'
@@ -92,7 +94,7 @@ check "a journal over the size cap is inconclusive" 'digest "$TMP/$SID.jsonl" --
 { cat "$FX/classes.jsonl"; echo 'not json'; } >"$TMP/$SID.p.jsonl"
 check "a malformed line makes it partial" 'digest "$TMP/$SID.p.jsonl" | jq -e ".status == \"partial\" and .stats.malformed == 1" >/dev/null'
 check "a usage error exits 2" 'bun "$DIG" >/dev/null 2>&1; [ $? = 2 ]'
-check "the digest spawns only git and python3, never a model CLI" '[ "$(grep -oE "spawnSync\(\[\"[a-z0-9]+\"" "$DIG" | sort -u | tr -d "\n")" = "spawnSync([\"git\"spawnSync([\"python3\"" ] && ! grep -qE "\b(claude|codex|gemini)\b.*spawn|spawn.*\b(claude|codex|gemini)\b" "$DIG"'
+check "the digest spawns only git and python3, never a model CLI" '[ "$(grep -oE "spawnSync\(\[\"[a-z0-9]+\"" "$DIG" | sort -u | tr -d "\n")" = "spawnSync([\"git\"spawnSync([\"python3\"" ] && absent -E "\b(claude|codex|gemini)\b.*spawn|spawn.*\b(claude|codex|gemini)\b" "$DIG"'
 
 echo "8. a subagent in its own file, a relative path, more denials than ids, a failed trajectory"
 S2=4670c1a5-0000-4000-8000-000000000002
@@ -101,6 +103,7 @@ cp -R "$FX/split" "$TMP/split"
 srow() { jq -c --arg k "$1" --arg a "${2:-main}" '[.failures[] | select(.class == $k and .agent.id == $a)] | .[0] // empty' "$TMP/split.json"; }
 check "a relative --transcript still follows its subagent file" '[ "$(jq .stats.files "$TMP/split.json")" = 2 ] && [ -n "$(srow denied/permission-prompt sub02)$(srow suite/test-trajectory.sh sub02)" ]'
 check "final_red is per agent: main went green, the subagent stayed red" '[ "$(srow suite/test-trajectory.sh | jq -c "[.count, .final_red]")" = "[1,false]" ] && [ "$(srow suite/test-trajectory.sh sub02 | jq -c "[.count, .final_red]")" = "[1,true]" ]'
+check "two untracked suites on suite/other: one still red keeps the row final_red" '[ "$(srow suite/other | jq -c "[.count, .final_red]")" = "[2,true]" ]'
 check "the trajectory join covers denials past the five tool_call_ids kept" '[ "$(srow denied/read-clamp | jq -c "[.count, (.tool_call_ids | length), .recovered, .identical_retry]")" = "[6,5,false,1]" ]'
 mkdir -p "$TMP/fakebin"
 printf '#!/bin/sh\nexit 1\n' >"$TMP/fakebin/python3"

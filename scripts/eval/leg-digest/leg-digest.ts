@@ -51,7 +51,7 @@ type Row = {
 };
 const allIds = new WeakMap<Row, string[]>(); // every tool_call_id of a row, for the trajectory join; output keeps MAX_IDS
 type Denial = { tool_call_id: string; recovered: boolean; identical: number };
-type LedgerRow = { ts: number; tag: string; used: boolean };
+type LedgerRow = { ts: number; tag: string; tool: string; used: boolean };
 
 function usage(msg: string): never {
   console.error(`leg-digest: ${msg}`);
@@ -102,7 +102,7 @@ function ledgerRows(path: string, session: string): LedgerRow[] {
     let r: Record<string, unknown>;
     try { r = JSON.parse(l); } catch { continue; }
     const ts = Date.parse(String(r?.ts ?? ""));
-    if (r?.session_id === session && Number.isFinite(ts)) out.push({ ts, tag: String(r.reason_tag ?? ""), used: false });
+    if (r?.session_id === session && Number.isFinite(ts)) out.push({ ts, tag: String(r.reason_tag ?? ""), tool: String(r.tool ?? ""), used: false });
   }
   return out;
 }
@@ -190,11 +190,17 @@ async function main() {
     for (const hit of cmd.matchAll(TEST_NAME)) if (tests.has(basename(hit[1]))) return basename(hit[1]);
     return "other";
   };
-  const deniedSub = (text: string, ts: number | undefined): string => {
+  // The suite a command runs, for final_red only (never output): its first test name, else the command itself, so
+  // two untracked suites that share the suite/other row are still told apart.
+  const suiteKey = (agent: Agent, cmd: string): string => {
+    const hit = cmd.matchAll(TEST_NAME).next().value;
+    return `${agent.id}\0${hit ? basename(hit[1]) : cmd}`;
+  };
+  const deniedSub = (text: string, ts: number | undefined, tool: string): string => {
     if (CLASSIFIER.test(text)) {
       let cat: string | undefined;
       if (ts !== undefined) {
-        const row = ledger.filter((r) => !r.used && Math.abs(r.ts - ts) <= LEDGER_SLACK_MS)
+        const row = ledger.filter((r) => !r.used && r.tool === tool && Math.abs(r.ts - ts) <= LEDGER_SLACK_MS)
           .sort((a, b) => Math.abs(a.ts - ts) - Math.abs(b.ts - ts))[0];
         if (row) { row.used = true; if (CLASSIFIER_CATEGORIES.has(slug(row.tag))) cat = slug(row.tag); }
       }
@@ -239,17 +245,17 @@ async function main() {
         const a = callAgent.get(e.toolCallId) ?? seen(agentOf(undefined));
         const cmd = command(e.toolCallId);
         if (!e.failure) {
-          if (SUITE.test(cmd)) { const s = suiteLast.get(`${a.id}\0${suiteSub(cmd)}`); if (s) s.red = false; }
+          if (SUITE.test(cmd)) { const s = suiteLast.get(suiteKey(a, cmd)); if (s) s.red = false; }
           break;
         }
         if (e.failure === "denied") {
           m.fail_denied++;
           if (a.id === "main") mapperDenied.add(e.toolCallId);
-          add(a, `denied/${deniedSub(e.content, e.timestamp)}`, "denied", e.toolCallId, e.timestamp);
+          add(a, `denied/${deniedSub(e.content, e.timestamp, callName.get(e.toolCallId) ?? "")}`, "denied", e.toolCallId, e.timestamp);
         } else if (e.failure === "suite") {
           m.fail_suite++;
           const sub = suiteSub(cmd);
-          suiteLast.set(`${a.id}\0${sub}`, { row: add(a, `suite/${sub}`, "suite", e.toolCallId, e.timestamp), red: true });
+          suiteLast.set(suiteKey(a, cmd), { row: add(a, `suite/${sub}`, "suite", e.toolCallId, e.timestamp), red: true });
         } else if (e.failure === "blocked") {
           m.fail_blocked++;
           add(a, "blocked/-", "blocked", e.toolCallId, e.timestamp);
@@ -263,7 +269,8 @@ async function main() {
     }
   }
   m.subagents = [...agents.keys()].filter((id) => id !== "main").length;
-  for (const { row, red } of suiteLast.values()) row.final_red = red;
+  for (const { row } of suiteLast.values()) row.final_red = false;
+  for (const { row, red } of suiteLast.values()) if (red) row.final_red = true;
 
   // The trajectory join: main-agent denied rows take recovered / identical from trajectory.py by tool_call_id.
   for (const r of rows.values()) {

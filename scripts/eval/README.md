@@ -225,7 +225,7 @@ bun scripts/eval/leg-digest/leg-digest.ts --session <uuid>   # resolved under ~/
   never from journal text:
   - `denied/<hook>`: a `scripts/hooks/*.sh` basename.
   - `denied/classifier:<category>`: the category is read from the
-    classifier-denials ledger, else from the journal's `Reason: [...]`, and is
+    classifier-denials ledger row of the same tool nearest in time, else from the journal's `Reason: [...]`, and is
     kept only if it is on the digest's fixed list.
   - `denied/permission-prompt`.
   - `suite/<tracked test basename>`, with `final_red`.
