@@ -1,0 +1,71 @@
+<!doctype html><html><head><meta property="og:site_name" content="X (formerly Twitter)" nonce="">
+<meta property="og:locale" content="en_US" nonce="">
+<meta property="og:url" content="https://x.com/rossaxbt/status/2106396375269134597" nonce="">
+<meta property="og:type" content="article" nonce="">
+<meta property="og:title" content="testarossa (@rossaxbt) on X" nonce="">
+<meta property="og:description" content="opus 5.5 is insanely good at motion design
+
+this whole video is code, with 0 after effects
+
+i’m open sourcing the prompt template behind these motion designs
+
+grab it and recreate them ↓
+
+&lt;inputs&gt;
+Ask me for: 8 to 12 UI states the shape should turn into (e.g. button, loader, player, slider, toggle,…" nonce="">
+<meta property="og:image" content="https://pbs.twimg.com/amplify_video_thumb/2106366034596839426/img/UUhhRiQYt15hLzy7?format=webp&amp;name=large" nonce="">
+<meta property="og:image:secure_url" content="https://pbs.twimg.com/amplify_video_thumb/2106366034596839426/img/UUhhRiQYt15hLzy7?format=webp&amp;name=large" nonce="">
+<meta property="og:image:type" content="image/webp" nonce="">
+<meta property="og:image:width" content="1440" nonce="">
+<meta property="og:image:height" content="1440" nonce=""></head><body><article><div><div><div><div><div><a id="base-ui-_r_m_" href="/rossaxbt"><div><img alt="@rossaxbt" draggable="false" loading="lazy" srcset="https://pbs.twimg.com/profile_images/2102072203449688064/CALxj35y_normal.jpg 1x, https://pbs.twimg.com/profile_images/2102072203449688064/CALxj35y_x96.jpg 2x, https://pbs.twimg.com/profile_images/2102072203449688064/CALxj35y_reasonably_small.jpg 3x" src="https://pbs.twimg.com/profile_images/2102072203449688064/CALxj35y_normal.jpg"></div></a></div></div><div><div><div id="base-ui-_r_o_"><span><a href="/rossaxbt"><div>testarossa</div></a><div><span id="base-ui-_r_q_"></span></div></span><span><a href="/rossaxbt"><span>@rossaxbt</span></a></span></div><div><button type="button" id="base-ui-_R_3bph7ad4mclhl336_"></button></div></div></div></div><div><span>opus 5.5 is insanely good at motion design
+
+this whole video is code, with 0 after effects
+
+i’m open sourcing the prompt template behind these motion designs
+
+grab it and recreate them ↓
+
+&lt;inputs&gt;
+Ask me for: 8 to 12 UI states the shape should turn into (e.g. button, loader, player, slider, toggle, tabs, chart, command palette, toast), a pure black-and-white palette or one accent color, and a royalty-free track around 120 BPM (e.g. from Mixkit, free for commercial use).
+&lt;/inputs&gt;
+
+&lt;direction&gt;
+Dribbble-level UI motion. One shape, no cuts: each state is the same element changing size, radius and color, while its content swaps with a quick blur. A cursor triggers every change through actual clicks and drags. Use a light warm-gray canvas, black-and-white components and one clean UI font (Geist). Springs throughout, with only a slight overshoot. Zoom the camera so each state fills the frame. Match the final frame to the first for a seamless loop.
+Banned: bouncy easing, particle bursts, glows, gradients on UI chrome, inconsistent icon strokes, dead time, anything that feels like a template.
+&lt;/direction&gt;
+
+&lt;structure&gt;
+120 BPM, 7 bars, with an action on every beat.
+Button → loader → check → dynamic island → music player with a play/pause morph → scrub the progress bar → it turns into a volume slider that stretches when dragged past max → a toggle switches on the beat → its knob becomes a liquid tab indicator → the tabs expand into a chart that draws itself, with a tooltip on hover → it folds into ⌘K → type to filter → enter → toast → back to the button.
+&lt;/structure&gt;
+
+&lt;build&gt;
+1. One HTML file, square 1440x1440. Compute every style from time inside seek(t): no CSS transitions, timers or state carried between frames.
+2. Use closed-form step responses for springs. If a value changes target multiple times, add one spring for each change so it remains a pure function of time.
+3. Give the tab indicator’s two edges separate springs, letting the leading edge stretch ahead of the trailing one. Use the same approach for the toggle knob.
+4. Make drags direct: while the cursor is held down, calculate the value from its position. On release, spring back from that position.
+5. Analyze the song with numpy to find the beat grid and begin on a downbeat. Position each UI sound using its measured peak.
+6. Render with Playwright: 4 subframes per frame, blended with ffmpeg tmix for motion blur at 60fps.
+7. Render one frame per beat before the full render. Fix anything off-grid, cramped or difficult to read.
+&lt;/build&gt;
+
+&lt;gotchas&gt;
+Don’t use will-change on anything the camera scales, or the text will look blurry. Text swapping inside a morphing container needs separate enter and exit timing to avoid overlap. Make the final frame identical to the first including cursor position and speed or the loop will stutter.
+&lt;/gotchas&gt;
+
+&lt;start&gt;
+Ask me for the inputs, then show me the state list on the beat grid before writing any code.
+&lt;/start&gt;</span></div><div><div><div><div><video height="100%" width="100%" disablepictureinpicture="" poster="https://pbs.twimg.com/amplify_video_thumb/2106366034596839426/img/UUhhRiQYt15hLzy7?format=webp&amp;name=medium" playsinline="" src="blob:https://x.com/3ef59440-5362-4b22-a25d-18ced1808fa2"></video><div><button type="button"></button><div><div><div id="base-ui-_r_11_"><div><div></div><div id="base-ui-_r_12_"><input id="base-ui-_r_14_" max="14.101333" min="0" step="0.1" type="range" value="0.058"></div></div></div></div><div><div><button id="base-ui-_r_16_" type="button"></button></div><div><div><div>00:00<span> / 00:14</span></div></div><div><div><button type="button" id="base-ui-_r_1b_"></button></div><button type="button" id="base-ui-_r_1l_"></button><div><div><div inert=""><button id="base-ui-_r_1s_" type="button"></button></div><a href="/rossaxbt/status/2106396375269134597/video/1"></a></div></div><div><div inert=""><button id="base-ui-_r_21_" type="button"></button></div><a href="/rossaxbt/status/2106396375269134597/video/1"></a></div></div></div></div></div></div></div></div></div><div><article><div><div><div><a id="base-ui-_r_s_" href="/0xwhrrari"><div><img alt="@0xwhrrari" draggable="false" loading="lazy" srcset="https://pbs.twimg.com/profile_images/2029005608125431808/RHmOjHaB_mini.jpg 1x, https://pbs.twimg.com/profile_images/2029005608125431808/RHmOjHaB_normal.jpg 2x, https://pbs.twimg.com/profile_images/2029005608125431808/RHmOjHaB_bigger.jpg 3x" src="https://pbs.twimg.com/profile_images/2029005608125431808/RHmOjHaB_normal.jpg"></div></a><div><div id="base-ui-_r_u_"><span><a href="/0xwhrrari"><div>rari</div></a><div><span id="base-ui-_r_10_"></span></div></span><span><a href="/0xwhrrari"><span>@0xwhrrari</span></a></span></div><span><a id="_R_nqa6na7ad4mclhl336_" href="/0xwhrrari/status/2105643919119696297">Oct 1</a></span></div></div><div><span>Opus 5.5 can make a video
+
+The hard part is making the next one better
+
+That takes a studio, not a prompt
+
+I broke down how to build it ↓ </span></div></div></div><a href="/i/article/2105643919119696297"><div><div><img height="600" width="1500" alt="Article cover image" decoding="async" loading="lazy" src="https://pbs.twimg.com/media/HTiwDt_XgAE111a?format=webp&amp;name=medium"></div><div>Article</div></div><div><div>Motion Engineering: Build a Video Studio Around Opus 5.5</div><div>Everybody is sharing videos made with Claude Opus 5.5
+Some are excellent
+Most look like the same demo
+Large text in the center
+A gradient behind it
+Everything fades in
+The logo appears at the end
+The...</div></div></a></article></div></div><div><span><a id="_R_1fb7ad4mclhl336_" href="/rossaxbt/status/2106396375269134597">4:50 PM · Oct 3, 2026</a></span><span>·</span><a id="base-ui-_R_fr7ad4mclhl336_" href="/rossaxbt/status/2106396375269134597"><div>35.5K</div><div>Views</div></a></div></div><div><div><a href="/compose/post?in_reply_to=2106396375269134597"><span><span><span><span>5</span></span></span></span></a></div><div><button type="button" id="base-ui-_R_3rajad4mclhl336_"><span><span><span><span>25</span></span></span></span></button></div><div><button id="base-ui-_R_3rjad4mclhl336_" type="button"><span><span><span><span>398</span></span></span></span></button></div><div><div><div><button id="base-ui-_R_fdjad4mclhl336_" type="button"><span><span><span><span>592</span></span></span></span></button></div></div><button type="button" id="base-ui-_R_dljad4mclhl336_"></button></div></div></div></article></div></li><li><div><div><article><div><div><div><a id="base-ui-_r_4_" href="/twoclipping"><div><img alt="@twoclipping" draggable="false" loading="lazy" srcset="https://pbs.twimg.com/profile_images/2049294356637708288/9ln2v1O0_normal.jpg 1x, https://pbs.twimg.com/profile_images/2049294356637708288/9ln2v1O0_x96.jpg 2x, https://pbs.twimg.com/profile_images/2049294356637708288/9ln2v1O0_reasonably_small.jpg 3x" src="https://pbs.twimg.com/profile_images/2049294356637708288/9ln2v1O0_normal.jpg"></div></a></div></div><div><div><div><div><div id="base-ui-_r_6_"><span><a href="/twoclipping"><div>zero</div></a><div><span id="base-ui-_r_8_"></span></div></span><span><a href="/twoclipping"><span>@twoclipping</span></a></span></div><span><a id="_R_2v556ril4mclhl336_" href="/twoclipping/status/2106735727790760127">Oct 4</a></span></div><div><button type="button" id="base-ui-_R_3bp56ril4mclhl336_"></button></div></div><div><span>cool vid</span></div></div><div><div><a href="/compose/post?in_reply_to=2106735727790760127"></a></div><div><button type="button" id="base-ui-_R_3rairil4mclhl336_"></button></div><div><button id="base-ui-_R_3riril4mclhl336_" type="button"><span><span><span><span>1</span></span></span></span></button></div><div><button id="base-ui-_R_3siril4mclhl336_" type="button"><span><span><span><span>56</span></span></span></span></button></div><div><div><span><button id="base-ui-_R_fdiril4mclhl336_" type="button"></button></span></div><button type="button" id="base-ui-_R_dliril4mclhl336_"></button></div></div></div></div></article></div></div></li><li><div><div><article><div><div><div><a id="base-ui-_r_a_" href="/antona23"><div><img alt="@antona23" draggable="false" loading="lazy" srcset="https://pbs.twimg.com/profile_images/1860079629702430726/tjWN4nXn_normal.jpg 1x, https://pbs.twimg.com/profile_images/1860079629702430726/tjWN4nXn_x96.jpg 2x, https://pbs.twimg.com/profile_images/1860079629702430726/tjWN4nXn_reasonably_small.jpg 3x" src="https://pbs.twimg.com/profile_images/1860079629702430726/tjWN4nXn_normal.jpg"></div></a></div></div><div><div><div><div><div id="base-ui-_r_c_"><span><a href="/antona23"><div>Anton Ansalmar</div></a><div><span id="base-ui-_r_e_"></span></div></span><span><a href="/antona23"><span>@antona23</span></a></span></div><span><a id="_R_2v556rit4mclhl336_" href="/antona23/status/2106527914196156544">Oct 4</a></span></div><div><button type="button" id="base-ui-_R_3bp56rit4mclhl336_"></button></div></div><div><span>Yes your right been suprised at how good it is at video animation generation in general.</span></div></div><div><div><a href="/compose/post?in_reply_to=2106527914196156544"></a></div><div><button type="button" id="base-ui-_R_3rairit4mclhl336_"></button></div><div><button id="base-ui-_R_3ririt4mclhl336_" type="button"></button></div><div><button id="base-ui-_R_3sirit4mclhl336_" type="button"><span><span><span><span>230</span></span></span></span></button></div><div><div><span><button id="base-ui-_R_fdirit4mclhl336_" type="button"></button></span></div><button type="button" id="base-ui-_R_dlirit4mclhl336_"></button></div></div></div></div></article></div></div></li><li><div><div><article><div><div><div><a id="base-ui-_r_g_" href="/Summer_PPG"><div><img alt="@Summer_PPG" draggable="false" loading="lazy" srcset="https://pbs.twimg.com/profile_images/2102652997209878528/km0lu7cW_normal.jpg 1x, https://pbs.twimg.com/profile_images/2102652997209878528/km0lu7cW_x96.jpg 2x, https://pbs.twimg.com/profile_images/2102652997209878528/km0lu7cW_reasonably_small.jpg 3x" src="https://pbs.twimg.com/profile_images/2102652997209878528/km0lu7cW_normal.jpg"></div></a></div></div><div><div><div><div><div id="base-ui-_r_i_"><span><a href="/Summer_PPG"><div>Summer</div></a><div><span id="base-ui-_r_k_"></span></div></span><span><a href="/Summer_PPG"><span>@Summer_PPG</span></a></span></div><span><a id="_R_2v556rj54mclhl336_" href="/Summer_PPG/status/2106746498407092248">Oct 4</a></span></div><div><button type="button" id="base-ui-_R_3bp56rj54mclhl336_"></button></div></div><div><span>全靠代码跑出这种无缝形变，这丝滑度太离谱了</span></div></div><div><div><a href="/compose/post?in_reply_to=2106746498407092248"></a></div><div><button type="button" id="base-ui-_R_3rairj54mclhl336_"></button></div><div><button id="base-ui-_R_3rirj54mclhl336_" type="button"></button></div><div><button id="base-ui-_R_3sirj54mclhl336_" type="button"><span><span><span><span>38</span></span></span></span></button></div><div><div><span><button id="base-ui-_R_fdirj54mclhl336_" type="button"></button></span></div><button type="button" id="base-ui-_R_dlirj54mclhl336_"></button></div></div></div></div></article></body></html>

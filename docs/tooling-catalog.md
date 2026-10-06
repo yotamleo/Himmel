@@ -1491,8 +1491,11 @@ on demand; nothing here runs automatically.
   (`GRAPHIFY_LEDGER`); `deepseek`/`codex` use OpenAI chat/completions, `glm` (via z.ai anthropic-compat)/`claude` use the Anthropic Messages API. DeepSeek off-peak advisory. `--dry-run` first.
 - `scripts/luna/fetch-health.py` — Daily no-LLM health probes for luna
   clip-source fetch integrations. The registry (`build_probe_registry`) carries
-  **twelve** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
-  `x-twitter-cli`, `instagram-embed`, `instagram-media`, `instagram-scrapling` (HIMMEL-4675: the cookieless Scrapling path, run with the scrapling venv), `youtube-playwright`,
+  **fourteen** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
+  `x-scrapling`, `x-twitter-cli`, `instagram-embed`, `instagram-media`, `instagram-scrapling` (HIMMEL-4675: the cookieless Scrapling path, run with the scrapling venv), `youtube-playwright`,
+  `youtube-scrapling` (HIMMEL-4677: cookieless, metadata via Scrapling and the transcript via yt-dlp
+  subtitles; while the scrapling venv (plus yt-dlp for YouTube) is installed, an expired cookie on the `x-media` /
+  `youtube-playwright` fallback rungs reports `ok` with a "fallback only" reason instead of red),
   `github`, `bitbucket`, `firecrawl` (HIMMEL-4335: probes the free
   `/v2/team/credit-usage`, spends no credit, and ledgers credits 0 to
   `firecrawl-ledger.jsonl`), `jina-reader` (keyless). The full run (armed by `pipeline-cadence.sh`'s

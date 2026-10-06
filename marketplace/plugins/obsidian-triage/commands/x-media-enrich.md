@@ -70,9 +70,10 @@ All paths are quoted; forward-slash paths throughout.
 ### Step 1 - Preflight + dry-run gate
 
 Confirm `<vault>/Clippings/` exists (else exit 0, nothing to enrich). The fetch
-tool owns its own binary/cookie preflight: it exits 2 if `gallery-dl` or `ffmpeg`
-is missing, or if the burner-account cookie file (`~/.luna/cookies/twitter.txt`)
-is absent. Surface that exit-2 message to the operator verbatim and stop - do NOT
+tool owns its own binary/cookie preflight: it exits 2 if `ffmpeg` is missing, or
+if neither download backend is usable - the cookieless Scrapling venv
+(`~/.himmel/scrapling-venv`, HIMMEL-4677, the primary) nor `gallery-dl` plus the
+burner-account cookie file (`~/.luna/cookies/twitter.txt`, the fallback). Surface that exit-2 message to the operator verbatim and stop - do NOT
 attempt any per-clip work when preflight fails. Under `--dry-run`, run the fetch
 tool with `--dry-run` only (Step 2's dry-run form); take no other action.
 
@@ -81,7 +82,11 @@ tool with `--dry-run` only (Step 2's dry-run form); take no other action.
 Run the fetch tool over the batch via `Bash`. It selects the X clips (x.com /
 twitter.com status source) whose body references `video.twimg.com` /
 `pbs.twimg.com/media/` and which carry no `media_enriched_at:`, downloads each
-tweet's media via `gallery-dl` (cookies never printed), transcribes videos
+tweet's media - Scrapling first with NO cookie (`tools/x-scrapling-media.py` reads
+the status page under the HIMMEL-4361 `local-headless` route; curl, or ffmpeg for
+an HLS stream, fetches the items), `gallery-dl` with the cookie only as the
+fallback (cookies never printed); the outcome line ends `[scrapling]` or
+`[gallery-dl]` - transcribes videos
 locally, screenshots soundless GIF-like videos, recompresses images into
 `Clippings/_media/<clip-slug>/slide-NN.jpg`, and writes ONE `## Crawled content`
 section per clip under the `media_*` marker namespace (`media_enriched_at` /
