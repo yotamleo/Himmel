@@ -1,11 +1,12 @@
 import { useEffect, useReducer, useRef, useState, type ReactNode } from "react";
-import { initialView, reduce, type Tool, type View } from "./reducer";
+import { initialView, reduce, settledCount, type Tool, type View } from "./reducer";
 import type { Source } from "./stream";
 
+// A transport failure ends the run the same way RUN_ERROR does, so calls still running are marked failed too.
 type Action = { kind: "event"; e: any } | { kind: "reset" } | { kind: "fail"; message: string };
 const step = (v: View, a: Action): View =>
   a.kind === "reset" ? initialView()
-  : a.kind === "fail" ? { ...v, status: "error", error: a.message }
+  : a.kind === "fail" ? reduce(v, { type: "RUN_ERROR", message: a.message, timestamp: Date.now() } as any)
   : reduce(v, a.e);
 
 export function App({ source }: { source: Source }) {
@@ -172,7 +173,7 @@ function ReviewPanel({ review }: { review?: Review }) {
     ...SEVERITIES.map(([k, label]): [string, string, Finding[]] => [k, label, findings.filter((f) => f.severity === k)]),
     ["other", "Other", findings.filter((f) => !known.has(f.severity ?? ""))],
   ];
-  const settled = findings.filter((f) => f.verdict).length;
+  const settled = settledCount(findings);
   const rounds = review?.maxRounds ?? review?.round ?? 0;
   return (
     <aside className="panel" aria-labelledby="panel-title">

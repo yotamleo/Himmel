@@ -107,6 +107,15 @@ export function reduce(prev: View, e: Ev): View {
 
 export const reduceAll = (events: Ev[], from: View = initialView()): View => events.reduce(reduce, from);
 
+// AG-UI timestamps are optional; a live event without one is stamped when it arrives, so durations and lane
+// reuse stay real instead of collapsing to zero.
+export const stampMissing = <E extends { timestamp?: number }>(e: E, now: number): E =>
+  typeof e.timestamp === "number" ? e : { ...e, timestamp: now };
+
+// A finding is settled once it has a terminal verdict; conflict and unaddressed still need a decision.
+const TERMINAL = new Set(["agreed", "fixed", "disproved", "deferred"]);
+export const settledCount = (findings: { verdict?: string }[]) => findings.filter((f) => TERMINAL.has(f.verdict ?? "")).length;
+
 // RFC 6902 add / remove / replace (the ops the mapper emits), copy-on-write: the input is never mutated.
 type Op = { op: string; path: string; value?: unknown };
 const unescape = (s: string) => s.replace(/~1/g, "/").replace(/~0/g, "~");

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { initialView, reduce, reduceAll, applyPatch, type View } from "../agui-web/src/reducer";
+import { initialView, reduce, reduceAll, applyPatch, stampMissing, settledCount, type View } from "../agui-web/src/reducer";
 import fixture from "../agui-web/src/fixture.json";
 
 // HIMMEL-4480 PR3: the page is a pure fold of AG-UI events into view state; these cases pin it on the
@@ -91,6 +91,19 @@ test("applyPatch: add/replace/remove on objects and arrays, '-' appends, escaped
   expect(applyPatch(doc, [{ op: "remove", path: "/a/1" }]).a).toEqual([1]);
   expect(applyPatch(doc, [{ op: "replace", path: "/b~1c/~0d", value: 9 }])["b/c"]).toEqual({ "~d": 9 });
   expect(doc).toEqual({ a: [1, 2], "b/c": { "~d": 1 } });
+});
+
+test("stampMissing gives a timestamp-free event the receive time and keeps an existing one", () => {
+  expect(stampMissing({ type: "TOOL_CALL_START" }, 42)).toEqual({ type: "TOOL_CALL_START", timestamp: 42 });
+  expect(stampMissing({ type: "TOOL_CALL_START", timestamp: 7 }, 42).timestamp).toBe(7);
+  const v = reduceAll([{ type: "RUN_STARTED", runId: "r" }, { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Bash" },
+    { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x" }].map((e, i) => stampMissing(e, 1000 + i * 500)));
+  expect([v.tools.a.start, v.tools.a.end]).toEqual([500, 1000]);
+});
+
+test("settled counts only terminal verdicts", () => {
+  const fs = ["agreed", "fixed", "disproved", "deferred", "conflict", "unaddressed", undefined].map((verdict) => ({ verdict }));
+  expect(settledCount(fs)).toBe(4);
 });
 
 test("a fresh view is idle and empty", () => {
