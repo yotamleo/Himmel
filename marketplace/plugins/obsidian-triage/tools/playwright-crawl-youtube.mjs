@@ -11,6 +11,14 @@
  * a "## Crawled content" section into the clip body BEFORE "## Source" (or
  * "## Comments" if no Source).
  *
+ * Primary path (HIMMEL-4677): tools/yt-scrapling-meta.py, NO cookie: metadata +
+ * description from the watch page via Scrapling, the transcript from yt-dlp
+ * subtitles (json3). It runs under the scrapling venv python
+ * (~/.himmel/scrapling-venv, tools/requirements-scrapling.txt; override
+ * YT_SCRAPLING_PYTHON) and honours the HIMMEL-4361 `local-headless` route. The
+ * logged-in Playwright crawl below is the FALLBACK only, used when the
+ * storage_state exists and the Scrapling path misses (never for a removed video).
+ *
  * Scope (MVP): TRANSCRIPT ONLY. No video download, no STT, no keyframes.
  * If transcript unavailable (no auto-CC, age-gated, etc.): mark partial,
  * skip the transcript block, still capture metadata + comments.
@@ -23,8 +31,8 @@
  * Exit codes:
  *   0 — run completed (may include partial/failed clips; see summary)
  *   1 — bad usage
- *   2 — storage_state missing (run playwright-auth-save.mjs youtube first)
- *   3 — playwright module missing
+ *   2 — neither the scrapling venv nor the storage_state is present
+ *   3 — playwright module missing (and no scrapling venv)
  *
  * LUNA-27.
  */
@@ -32,6 +40,8 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const TODAY = new Date().toISOString().slice(0, 10);
 const NOW_ISO = new Date().toISOString();
@@ -39,11 +49,14 @@ const SLEEP_MIN_MS = 3000;
 const SLEEP_MAX_MS = 5000;
 const NAV_TIMEOUT_MS = 20000;
 const TRANSCRIPT_WAIT_MS = 6000;
+const SCRAPLING_TIMEOUT_MS = 300000;
+const SCRAPLING_HELPER = fileURLToPath(new URL("./yt-scrapling-meta.py", import.meta.url));
 
 function usage(code = 1) {
   console.error("Usage: playwright-crawl-youtube.mjs --vault <path> [--limit N] [--dry-run]");
   console.error("");
-  console.error("Pre-req: ~/.luna/playwright-state/youtube.json (run playwright-auth-save.mjs youtube).");
+  console.error("Pre-req: the scrapling venv ~/.himmel/scrapling-venv (tools/requirements-scrapling.txt) + yt-dlp,");
+  console.error("  or the fallback ~/.luna/playwright-state/youtube.json (run playwright-auth-save.mjs youtube).");
   process.exit(code);
 }
 
@@ -130,6 +143,54 @@ function canonicalYouTubeUrl(sourceVal) {
   m = s.match(/^https?:\/\/(?:www\.)?youtu\.be\/([A-Za-z0-9_-]{6,})/);
   if (m) return `https://www.youtube.com/watch?v=${m[1]}`;
   return null;
+}
+
+function videoIdOf(url) {
+  const m = url.match(/[?&]v=([A-Za-z0-9_-]{6,})/);
+  return m ? m[1] : null;
+}
+
+function scraplingPython() {
+  const override = (process.env.YT_SCRAPLING_PYTHON || "").trim();
+  if (override) return override;
+  const py = join(homedir(), ".himmel", "scrapling-venv", "bin", "python");
+  return existsSync(py) ? py : null;
+}
+
+/**
+ * Primary path (HIMMEL-4677): yt-scrapling-meta.py, cookieless. Returns the
+ * scrapeVideo() shape plus `via`, or { ok: false, error } with `final` (a
+ * removed video: no fallback may run) or `skipped` (the route denied the slot).
+ */
+function scrapeViaScrapling(py, url, vault) {
+  const id = videoIdOf(url);
+  if (!id) return { ok: false, partial: false, error: "no_video_id" };
+  const got = spawnSync(py, [SCRAPLING_HELPER, "--video-id", id, "--vault", vault],
+    { encoding: "utf-8", timeout: SCRAPLING_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+  if (got.error) return { ok: false, partial: false, error: `scrapling_unavailable: ${got.error.code || got.error.message}` };
+  let out;
+  try {
+    out = JSON.parse(got.stdout);
+  } catch {
+    return { ok: false, partial: false, error: `scrapling_error: unparseable output (rc=${got.status})` };
+  }
+  if (out.status === "removed") return { ok: false, partial: false, final: true, error: `removed: ${out.detail || ""}`.trim() };
+  if (out.status === "skipped") return { ok: false, partial: false, skipped: true, error: "scrapling_route_skipped" };
+  if (out.status !== "ok") return { ok: false, partial: false, error: `${out.status || "scrapling_error"}: ${out.detail || ""}`.trim() };
+  const transcript = out.transcript && out.transcript.length > 0 ? out.transcript : null;
+  return {
+    ok: true,
+    partial: transcript === null,
+    error: transcript === null ? (out.transcript_error || "transcript_empty") : null,
+    via: "scrapling",
+    title: out.title,
+    channel: out.channel,
+    duration: out.duration,
+    infoLine: [out.views ? `${out.views} views` : "", out.published ? `published ${out.published}` : ""].filter(Boolean).join(" · "),
+    description: out.description || "",
+    transcript,
+    comments: [],
+  };
 }
 
 function formatYamlValue(v) {
@@ -326,7 +387,9 @@ async function scrapeVideo(page, url) {
 function renderCrawledSection(data) {
   const lines = [
     "## Crawled content",
-    `<!-- crawled ${TODAY} via playwright-youtube (transcript-only MVP) -->`,
+    data.via === "scrapling"
+      ? `<!-- crawled ${TODAY} via scrapling-youtube (metadata) + yt-dlp (transcript) -->`
+      : `<!-- crawled ${TODAY} via playwright-youtube (transcript-only MVP) -->`,
     "",
     "### Metadata",
     "",
@@ -335,9 +398,11 @@ function renderCrawledSection(data) {
     `- Duration: ${data.duration || "_unknown_"}`,
     `- Info: ${data.infoLine || "_unknown_"}`,
     "",
-    "### Transcript",
-    "",
   ];
+  if (data.description) {
+    lines.push("### Description", "", data.description.trim(), "");
+  }
+  lines.push("### Transcript", "");
   if (data.transcript && data.transcript.length > 0) {
     for (const seg of data.transcript) {
       lines.push(`[${seg.ts}] ${seg.tx}`, "");
@@ -357,7 +422,7 @@ function renderCrawledSection(data) {
   return lines.join("\n");
 }
 
-async function processClip(page, clipPath, vault, dryRun) {
+async function processClip(crawler, clipPath, vault, dryRun) {
   const rel = relative(vault, clipPath).split(sep).join("/");
   let text;
   try {
@@ -380,7 +445,18 @@ async function processClip(page, clipPath, vault, dryRun) {
 
   await jitterSleep();
 
-  const scrape = await scrapeVideo(page, url);
+  let scrape = crawler.py ? scrapeViaScrapling(crawler.py, url, vault) : null;
+  if ((!scrape || !scrape.ok) && !(scrape && scrape.final) && crawler.page) {
+    scrape = await scrapeVideo(crawler.page, url);
+  } else if (scrape && scrape.ok && scrape.partial && crawler.page) {
+    // Metadata but no transcript: the logged-in crawl may still have one.
+    const fb = await scrapeVideo(crawler.page, url);
+    if (fb.ok && !fb.partial) scrape = fb;
+  } else if (scrape && !scrape.ok && !scrape.final) {
+    // No fallback configured: leave the clip unmarked so a later run retries it.
+    if (scrape.skipped) return { glyph: "o", message: `${rel} -- skipped (scrapling route denied, no playwright fallback)` };
+    return { glyph: "x", message: `${rel} -- failed (retryable, not marked): ${scrape.error}` };
+  }
   let status, lastError, section;
   if (scrape.ok && !scrape.partial) {
     status = "ok";
@@ -412,7 +488,7 @@ async function processClip(page, clipPath, vault, dryRun) {
 
   const markers = {
     crawled_at: NOW_ISO,
-    crawl_skill: "playwright-youtube",
+    crawl_skill: scrape.via === "scrapling" ? "scrapling-youtube" : "playwright-youtube",
     crawl_status: status,
     last_error: lastError,
   };
@@ -472,19 +548,28 @@ async function main() {
     process.exit(1);
   }
   const statePath = join(homedir(), ".luna", "playwright-state", "youtube.json");
-  if (!existsSync(statePath)) {
+  const py = scraplingPython();
+  const hasState = existsSync(statePath);
+  if (!py && !hasState) {
     console.error(`crawl-youtube: storage_state missing at ${statePath}`);
     console.error(`crawl-youtube: run \`bun playwright-auth-save.mjs youtube\` first.`);
+    console.error("crawl-youtube: or install the cookieless Scrapling path (HIMMEL-4677): " +
+      "~/.himmel/scrapling-venv per tools/requirements-scrapling.txt, plus yt-dlp on PATH.");
     process.exit(2);
   }
 
-  let chromium;
-  try {
-    ({ chromium } = await import("playwright"));
-  } catch (e) {
-    console.error("crawl-youtube: playwright module not installed. Run `bun install` in tools/.");
-    console.error("  underlying:", e.message);
-    process.exit(3);
+  let chromium = null;
+  if (hasState) {
+    try {
+      ({ chromium } = await import("playwright"));
+    } catch (e) {
+      if (!py) {
+        console.error("crawl-youtube: playwright module not installed. Run `bun install` in tools/.");
+        console.error("  underlying:", e.message);
+        process.exit(3);
+      }
+      console.error("crawl-youtube: playwright module not installed; running Scrapling-only (no fallback).");
+    }
   }
 
   const clips = findClips(args.vault);
@@ -493,16 +578,28 @@ async function main() {
     process.exit(0);
   }
 
-  const browser = await chromium.launch({ headless: true });
-  const ctx = await browser.newContext({ storageState: statePath });
-  const page = await ctx.newPage();
+  let browser = null, page = null;
+  if (chromium) {
+    try {
+      browser = await chromium.launch({ headless: true });
+      page = await (await browser.newContext({ storageState: statePath })).newPage();
+    } catch (e) {
+      if (!py) throw e;
+      // The fallback is optional: a missing browser or a bad storage_state
+      // must not stop the cookieless primary.
+      console.error(`crawl-youtube: playwright fallback unavailable, running Scrapling-only: ${e.message}`);
+      if (browser) await browser.close().catch(() => {});
+      browser = null; page = null;
+    }
+  }
+  const crawler = { py, page };
 
   let ok = 0, partial = 0, failed = 0, skipped = 0, processed = 0;
 
   try {
     for (const clip of clips) {
       if (args.limit > 0 && processed >= args.limit) break;
-      const { glyph, message } = await processClip(page, clip, args.vault, args.dryRun);
+      const { glyph, message } = await processClip(crawler, clip, args.vault, args.dryRun);
       const prefix =
         glyph === "v" ? "OK  " :
         glyph === "o" ? "SKIP" :
@@ -516,7 +613,7 @@ async function main() {
       else skipped++;
     }
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
 
   console.log(
