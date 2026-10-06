@@ -128,7 +128,8 @@ if (import.meta.main) {
   if (bad) { console.error(`compare: ${bad}`); process.exit(2); }
   // Same refusal as score.ts: a mode where every query errored is a broken run, not a zero.
   for (const [label, runs] of [["a", a], ["b", b]] as const) {
-    const broken = [...new Set(runs.map((r) => r.mode))].filter((m) => runs.every((r) => r.mode !== m || r.error));
+    const only = arg("--mode");
+    const broken = [...new Set(runs.map((r) => r.mode))].filter((m) => (!only || m === only) && runs.every((r) => r.mode !== m || r.error));
     if (broken.length) { console.error(`compare: every query errored in mode(s) ${broken.join(",")} of --${label}; refusing to compare a broken run`); process.exit(2); }
   }
   const pairs = compare(golden, a, b, arg("--mode"));

@@ -26,5 +26,10 @@ done
 [ -d "$DIR" ] || { echo "backfill-ledger: no out dir '$DIR'" >&2; exit 64; }
 [ -f "$GOLDEN" ] || { echo "backfill-ledger: --golden <golden.jsonl> is required" >&2; exit 64; }
 { [ -f "$DIR/runs.jsonl" ] && [ -f "$DIR/scores.tsv" ]; } || { echo "backfill-ledger: $DIR needs runs.jsonl and scores.tsv" >&2; exit 64; }
-bun "$HERE/score.ts" --golden "$GOLDEN" --runs "$DIR/runs.jsonl" --ci-out "$DIR/ci.json" --cases-out "$DIR/cases.json" >/dev/null || exit 2
-python3 "$HERE/ledger-row.py" "$DIR" --meta-json "{\"backfill\":\"HIMMEL-4650\",\"stored_out\":\"$DIR\"}" "${PASS_THROUGH[@]}"
+FRESH="$(mktemp)" || exit 2
+trap 'rm -f "$FRESH"' EXIT
+bun "$HERE/score.ts" --golden "$GOLDEN" --runs "$DIR/runs.jsonl" --ci-out "$DIR/ci.json" --cases-out "$DIR/cases.json" >"$FRESH" || exit 2
+# The row's metrics come from scores.tsv and its CIs from the rescore: they must describe the same data.
+cmp -s "$FRESH" "$DIR/scores.tsv" || { echo "backfill-ledger: $DIR/scores.tsv does not match runs.jsonl scored against $GOLDEN; refusing a row of mixed data" >&2; exit 2; }
+META="$(python3 -c 'import json,sys; print(json.dumps({"backfill": "HIMMEL-4650", "stored_out": sys.argv[1]}))' "$DIR")" || exit 2
+python3 "$HERE/ledger-row.py" "$DIR" --meta-json "$META" "${PASS_THROUGH[@]}"

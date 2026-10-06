@@ -195,6 +195,11 @@ eq "compare: no mode in common is refused" "$rc" "2"
 printf '{"id":"q1","mode":"hybrid","ranked":[],"error":"boom"}\n{"id":"q2","mode":"hybrid","ranked":[],"error":"boom"}\n' >"$TMP/rerr.jsonl"
 bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" --b "$TMP/rerr.jsonl" >/dev/null 2>&1; rc=$?
 eq "compare: a mode where every query errored is refused" "$rc" "2"
+bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" --b "$TMP/rb.jsonl" --mode hybrid >/dev/null 2>&1; rc=$?
+eq "compare: --mode compares a healthy mode" "$rc" "0"
+cat "$TMP/rb.jsonl" "$TMP/rerr.jsonl" | sed 's/"mode":"hybrid","ranked":\[\],"error"/"mode":"vec","ranked":[],"error"/' >"$TMP/rmix.jsonl"
+bun "$HERE/compare.ts" --golden "$TMP/g8.jsonl" --a "$TMP/ra.jsonl" --b "$TMP/rmix.jsonl" --mode hybrid >/dev/null 2>&1; rc=$?
+eq "compare: an all-error mode other than --mode does not block it" "$rc" "0"
 
 # ledger-row.py: CI, cases, and the config stamp land in the row.
 mkdir -p "$TMP/lr"
@@ -223,6 +228,20 @@ eq "ledger-row: embed model, the DEFAULT rerank model and the index sha are stam
 printf '%s\n' "$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); r["run_id"]="r2"; r["metrics"]["hybrid-rerank.hit1"]=0.45; print(json.dumps(r))' "$LL")" >>"$LL"
 HIMMEL_EVAL_RUNS_LEDGER="$LL" python3 "$HERE/../eval-compare" qmd-quality >/dev/null 2>&1; rc=$?
 eq "eval-compare: a drop inside the bootstrap CI is not a regression" "$rc" "0"
+
+# backfill-ledger.sh: a stored out dir becomes a baseline row; stale scores are refused.
+mkdir -p "$TMP/bf"
+cp "$TMP/ra.jsonl" "$TMP/bf/runs.jsonl"
+bun "$HERE/score.ts" --golden "$TMP/g8.jsonl" --runs "$TMP/bf/runs.jsonl" >"$TMP/bf/scores.tsv"
+BL="$TMP/bf-ledger.jsonl"
+bash "$HERE/backfill-ledger.sh" "$TMP/bf" --golden "$TMP/g8.jsonl" --modes hybrid --embed-model E1 --candidate-limit 25 --ledger "$BL" >/dev/null 2>&1; rc=$?
+eq "backfill: a matching stored dir appends a row" "$rc" "0"
+eq "backfill: the row is marked backfill and keeps --candidate-limit" \
+  "$(python3 -c 'import json,sys; r=json.loads(open(sys.argv[1]).readline()); print(r["meta"]["backfill"], r["config"]["candidate_limit"])' "$BL")" "HIMMEL-4650 25"
+sed -i 's/\t[0-9.]*\t0$/\t0.123\t0/' "$TMP/bf/scores.tsv"
+bash "$HERE/backfill-ledger.sh" "$TMP/bf" --golden "$TMP/g8.jsonl" --modes hybrid --embed-model E1 --ledger "$TMP/bf-ledger2.jsonl" >/dev/null 2>&1; rc=$?
+eq "backfill: scores.tsv that disagrees with the golden set is refused" "$rc" "2"
+eq "backfill: a refused run writes no row" "$([ -s "$TMP/bf-ledger2.jsonl" ] && echo row || echo none)" "none"
 
 echo "test-qmd-quality: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
