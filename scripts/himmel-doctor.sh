@@ -3471,6 +3471,34 @@ check_c47_runaway_procs() {  # t13b-ok: doctor row that reads ps only, kills not
     fi
 }
 
+# --- C54-hook-copy-reaper: orphaned hook copies spinning a core (HIMMEL-4531) ---
+# Runs scripts/handover/console-kit/hook-copy-reaper.sh REPORT-ONLY (never --kill):
+# rc 0 -> OK, rc 1 -> one WARN per pid=/age=/cpu=/script= row, any other rc -> WARN
+# naming the failure (never a silent OK). C47 matches hook.sh by name and misses
+# arbitrarily named /tmp/claude-*/ copies reparented to the user subreaper (HIMMEL-4183).
+# Seam: HIMMEL_DOCTOR_HOOK_REAPER (the reaper script; absent -> silent).
+check_c54_hook_copy_reaper() {  # t13b-ok: doctor row that runs the reaper report-only, kills nothing
+    local reaper="${HIMMEL_DOCTOR_HOOK_REAPER:-$REPO_ROOT/scripts/handover/console-kit/hook-copy-reaper.sh}"
+    local out rc line found=0 shown=0
+    [ -f "$reaper" ] || return 0
+    out="$(bash "$reaper" 2>&1)"; rc=$?
+    case "$rc" in
+        0) emit OK C54-hook-copy-reaper "no orphaned hook copy is spinning a core" ;;
+        1)
+            while IFS= read -r line; do
+                case "$line" in pid=*) ;; *) continue ;; esac
+                found=$((found+1))
+                [ "$shown" -lt 5 ] || continue
+                shown=$((shown+1))
+                emit WARN C54-hook-copy-reaper "orphaned hook copy: ${line:0:200}" "report only, nothing is killed; inspect it, then: bash $REPO_ROOT/scripts/handover/console-kit/hook-copy-reaper.sh --kill"  # t13b-ok: doctor report text, kills nothing
+            done <<< "$out"
+            [ "$found" -le "$shown" ] || emit INFO C54-hook-copy-reaper "$((found - shown)) more orphaned hook copy(ies) not listed"
+            [ "$found" -gt 0 ] || emit WARN C54-hook-copy-reaper "hook-copy-reaper.sh exited rc=1 but printed no pid= rows: ${out:0:160}"
+            ;;
+        *) emit WARN C54-hook-copy-reaper "hook-copy-reaper.sh failed rc=$rc: ${out:0:160}" "run it by hand: bash $REPO_ROOT/scripts/handover/console-kit/hook-copy-reaper.sh" ;;
+    esac
+}
+
 # --- C48-tmp-usage: /tmp at 80 % or more (HIMMEL-4224) --------------------------
 # On 2026-10-03 the /tmp tmpfs filled and fleet Bash hit ENOSPC. WARN at >= 80 % used
 # and name scripts/tmp-reap.sh (dry-run by default) as the remedy. Report only.
@@ -3694,6 +3722,7 @@ check_c50_qmd_fork_stamp
 check_c51_firecrawl_parked
 check_c52_graphify_ollama
 check_c53_vm_mode
+check_c54_hook_copy_reaper
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

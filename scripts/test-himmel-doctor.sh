@@ -171,6 +171,10 @@ export HIMMEL_DOCTOR_QMD_PIDFILE="$FAKEROOT/no-such-pidfile"
 # Same for C47-runaway-procs (HIMMEL-3959): never scan the operator's real
 # process table; an absent ps seam makes C47 silent, dedicated cases stub it.
 export HIMMEL_DOCTOR_RUNAWAY_PS="$FAKEROOT/no-such-ps"
+# Same for C54-hook-copy-reaper (HIMMEL-4531): never run the real reaper over
+# the operator's process table; an absent script makes C54 silent, dedicated
+# cases stub it.
+export HIMMEL_DOCTOR_HOOK_REAPER="$FAKEROOT/no-such-reaper"
 # Same for C48-tmp-usage (HIMMEL-4224): never read the operator's real /tmp
 # fill level; an absent df seam makes C48 silent, dedicated cases stub it.
 export HIMMEL_DOCTOR_TMP_DF="$FAKEROOT/no-such-df"
@@ -5502,6 +5506,54 @@ else
     fail "C47 real loop -> alive=$c47_alive $(printf '%s' "$out" | grep -A1 C47)"
 fi
 rm -rf "$c47_t"
+
+# --- C54-hook-copy-reaper (HIMMEL-4531): orphaned hook copies, report-only ---
+# Runs hook-copy-reaper.sh WITHOUT --kill: rc 0 -> OK, rc 1 -> WARN with each
+# pid=/age=/cpu=/script= row, any other rc -> WARN naming the failure.
+# Seam: HIMMEL_DOCTOR_HOOK_REAPER (a stub; it logs its argv to C54_ARGV).
+c54_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c54.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c54_t/home" "$c54_t/claude"
+cat > "$c54_t/reaper" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$C54_ARGV"
+printf '%s\n' "${C54_OUT:-}"
+exit "${C54_RC:-0}"
+STUB
+chmod +x "$c54_t/reaper"
+c54_run() { # <rc> <stdout>
+    : > "$c54_t/argv"
+    PATH="$FAKEBIN:$PATH" C54_RC="$1" C54_OUT="$2" C54_ARGV="$c54_t/argv" HIMMEL_DOCTOR_HOOK_REAPER="$c54_t/reaper" \
+        CLAUDE_DIR="$c54_t/claude" HOME="$c54_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C54: rc 0 (none) -> OK, reaper run without --kill =="
+out="$(c54_run 0 'hook-copies=none')"
+if grepq "$out" 'OK   C54-hook-copy-reaper' && ! grepq "$out" 'WARN C54' && ! grep -q -- '--kill' "$c54_t/argv"; then
+    pass "C54 rc 0 -> OK, no --kill"
+else
+    fail "C54 rc 0 -> $(printf '%s' "$out" | grep -A1 C54) argv=$(cat "$c54_t/argv")"
+fi
+
+echo "== C54: rc 1 (found) -> WARN surfacing each pid/age/cpu/script row =="
+out="$(c54_run 1 'pid=4242 age=95m cpu=89.0 script=/tmp/claude-1000/x/hook.sh
+pid=4343 age=61m cpu=75.5 script=/tmp/claude-1000/y/guard.sh
+hook-copies=2')"
+if grepq "$out" 'WARN C54-hook-copy-reaper' && grepq "$out" -F 'pid=4242 age=95m cpu=89.0 script=/tmp/claude-1000/x/hook.sh' && grepq "$out" -F 'pid=4343' && ! grep -q -- '--kill' "$c54_t/argv"; then
+    pass "C54 rc 1 -> WARN with each row, no --kill"
+else
+    fail "C54 rc 1 -> $(printf '%s' "$out" | grep -A3 C54) argv=$(cat "$c54_t/argv")"
+fi
+
+echo "== C54: any other rc -> WARN naming the failure, never a silent OK =="
+for c54_rc in 2 3 127; do
+    out="$(c54_run "$c54_rc" 'hook-copies=?')"
+    if grepq "$out" 'WARN C54-hook-copy-reaper' && grepq "$out" -F "rc=$c54_rc" && ! grepq "$out" 'OK   C54'; then
+        pass "C54 rc $c54_rc -> WARN naming rc=$c54_rc"
+    else
+        fail "C54 rc $c54_rc -> $(printf '%s' "$out" | grep -A1 C54)"
+    fi
+done
+rm -rf "$c54_t"
 
 # --- C48-tmp-usage (HIMMEL-4224): /tmp at 80 % or more -> WARN naming tmp-reap.sh ---
 c48_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c48.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
