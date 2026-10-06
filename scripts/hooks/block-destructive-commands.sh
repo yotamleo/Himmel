@@ -100,6 +100,22 @@ esac
 
 [ -z "$cmd" ] && exit 0
 
+# HIMMEL-4438: re-read the forms the shell actually runs (quotes removed,
+# wrappers stripped, `bash -c`/`eval` bodies) through this same hook. The lib
+# is a must-run dependency: if it cannot be sourced, deny.
+if [ "$tool" != PowerShell ]; then
+    case "${BASH_SOURCE[0]}" in
+        */*) _gu_lib=${BASH_SOURCE[0]%/*}/lib/guard-unwrap.sh ;;
+        *) _gu_lib=lib/guard-unwrap.sh ;;
+    esac
+    # shellcheck source=lib/guard-unwrap.sh
+    if ! { [ -r "$_gu_lib" ] && . "$_gu_lib"; } 2>/dev/null; then
+        echo "block-destructive-commands: cannot load $_gu_lib - failing closed" >&2
+        exit 2
+    fi
+    guard_unwrap "${BASH_SOURCE[0]}" "$cmd" || exit 2
+fi
+
 # parity_guard.norm() lower-cases before applying TERMINAL_DESTRUCTIVE. Newlines
 # separate shell commands, so preserve them as semicolon boundaries. HIMMEL-2123:
 # one `tr` call (a single SET1/SET2 char-class mapping covers both the case fold

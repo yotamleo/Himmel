@@ -1101,6 +1101,24 @@ assert_rc 'commit -m "nohup rm -r" allowed' 0 "$(run_case "$(j_bash 'git commit 
 # --- BYPASS case ---
 assert_rc "DESTRUCTIVE_OK bypass"       0 "$(run_case "$(j_bash 'rm -rf /tmp/x')" "DESTRUCTIVE_OK=1")"
 
+
+# --- HIMMEL-4438: the forms the shell runs, not the text it was given ---
+assert_rc "4438 quote-split g'i't reset --hard" 2 "$(run_case "$(j_bash "g'i't reset --hard")")"
+assert_rc "4438 quoted \"rm\" -rf"            2 "$(run_case "$(j_bash '"rm" -rf /tmp/x')")"
+assert_rc "4438 backslash r\\m -rf"           2 "$(run_case "$(j_bash 'r\m -rf /tmp/x')")"
+assert_rc "4438 bash -c 'rm -rf'"             2 "$(run_case "$(j_bash "bash -c 'rm -rf /tmp/x'")")"
+assert_rc "4438 sh -ec 'rm -rf'"              2 "$(run_case "$(j_bash "sh -ec 'rm -rf /tmp/x'")")"
+assert_rc "4438 zsh -c nested bash -c"        2 "$(run_case "$(j_bash "zsh -c \"bash -c 'rm -rf /tmp/x'\"")")"
+assert_rc "4438 eval 'rm -rf'"                2 "$(run_case "$(j_bash "eval 'rm -rf /tmp/x'")")"
+assert_rc "4438 env with a quoted assignment" 2 "$(run_case "$(j_bash "env 'FOO=a b'c rm -rf /tmp/x")")"
+assert_rc "4438 exec -a name rm -rf"          2 "$(run_case "$(j_bash "exec -a 'x' rm -rf /tmp/x")")"
+assert_rc "4438 allow: bash -c 'ls -la'"      0 "$(run_case "$(j_bash "bash -c 'ls -la'")")"
+assert_rc "4438 allow: echo 'rm -rf /tmp/x'"  0 "$(run_case "$(j_bash "echo 'rm -rf /tmp/x'")")"
+nolib=$(mktemp -d) || exit 1
+cp "$HOOK" "$nolib/block-destructive-commands.sh"
+assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$nolib/block-destructive-commands.sh" >/dev/null 2>&1; echo $?)"
+rm -rf "$nolib"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All cases passed."

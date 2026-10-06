@@ -190,6 +190,43 @@ assert_rc "command:false + cmd:ls" 2 "$(run_case '{"tool_name":"Bash","tool_inpu
 # A null command still reads cmd, as `//` did: never allow what main refused.
 assert_rc "command:null + cmd:stash drop" 2 "$(run_case '{"tool_name":"Bash","tool_input":{"command":null,"cmd":"git stash drop"}}')"
 
+# --- HIMMEL-4438: the forms the shell runs, not the text it was given ---
+# Quote removal, wrappers and nested shells reach the same `git stash`; the
+# hook re-reads each through scripts/hooks/lib/guard-unwrap.sh.
+assert_rc "4438 quote-split g'i't stash"      2 "$(run_case "$(j_bash "g'i't stash")")"
+assert_rc "4438 backslash g\\it stash"        2 "$(run_case "$(j_bash 'g\it stash drop')")"
+assert_rc "4438 quoted \"git\" stash"         2 "$(run_case "$(j_bash '"git" "stash" pop')")"
+assert_rc "4438 bash -c 'git stash'"          2 "$(run_case "$(j_bash "bash -c 'git stash'")")"
+assert_rc "4438 sh -ec nested twice"          2 "$(run_case "$(j_bash "sh -ec \"bash -lc 'git stash pop'\"")")"
+assert_rc "4438 eval quoted body"             2 "$(run_case "$(j_bash "eval 'git stash drop'")")"
+assert_rc "4438 env -S string"                2 "$(run_case "$(j_bash "env -S 'git stash clear'")")"
+assert_rc "4438 timeout + nice wrappers"      2 "$(run_case "$(j_bash 'timeout 5 nice -n 3 git stash')")"
+assert_rc "4438 backslash-newline split"      2 "$(run_case "$(j_bash $'git \\\n stash pop')")"
+# Depth cap: a body nested past GU_MAX_DEPTH (8) is refused unread.
+deep='true'
+for _ in 1 2 3 4 5 6 7 8 9 10; do deep="bash -c $(printf '%q' "$deep")"; done
+assert_rc "4438 nested past depth cap denies" 2 "$(run_case "$(j_bash "$deep")")"
+# Variant cap: more than GU_MAX_VARIANTS (32) bodies in one command is refused.
+many=''
+for _ in $(seq 1 40); do many="$many bash -c true;"; done
+assert_rc "4438 past variant cap denies"      2 "$(run_case "$(j_bash "$many")")"
+# Allowed: harmless nested shells and quoted text that is not a command word.
+assert_rc "4438 bash -c 'git status'"         0 "$(run_case "$(j_bash "bash -c 'git status'")")"
+assert_rc "4438 echo 'git stash' (data)"      0 "$(run_case "$(j_bash "echo 'git stash'")")"
+assert_rc "4438 bash -c 'git stash list'"     0 "$(run_case "$(j_bash "bash -c 'git stash list'")")"
+# A keyword-led body must reach a fixpoint, not grow to the depth cap.
+assert_rc "4438 timeout bash -c 'until …' loop" 0 "$(run_case "$(j_bash "timeout 9 bash -c 'until [ \"\$(echo x)\" = x ]; do sleep 1; done'; echo ok")")"
+assert_rc "4438 timeout bash -c 'until … git stash'" 2 "$(run_case "$(j_bash "timeout 9 bash -c 'until false; do git stash; done'")")"
+# A heredoc past the tokenizer's 8 KiB cap is read with its body dropped.
+big=$(printf 'print(f"line %s")\n' $(seq 1 600))
+assert_rc "4438 >8KiB python heredoc"           0 "$(run_case "$(j_bash "python3 - <<'E'"$'\n'"$big"$'\n'"E")")"
+assert_rc "4438 >8KiB heredoc then g'i't stash" 2 "$(run_case "$(j_bash "python3 - <<'E'"$'\n'"$big"$'\n'"E"$'\n'"g'i't stash")")"
+# The lib is a must-run dependency: a hook copy without it fails closed.
+nolib=$(mktemp -d) || exit 1
+cp "$HOOK" "$nolib/block-git-stash.sh"
+assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'git status')" | bash "$nolib/block-git-stash.sh" >/dev/null 2>&1; echo $?)"
+rm -rf "$nolib"
+
 # --- BYPASS case ---
 assert_rc "GIT_STASH_OK bypass"       0 "$(run_case "$(j_bash 'git stash drop')" "GIT_STASH_OK=1")"
 

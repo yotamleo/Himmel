@@ -418,6 +418,30 @@ run_case "$(j_bash "cat <<EOF | bash
 EOF")"
 assert_rc "shell-fed heredoc with \$(...) body still denies (HIMMEL-2322 CR round 3)" 2 "$RC"
 
+
+# --- HIMMEL-4438: the forms the shell runs, not the text it was given ---
+run_case "$(j_bash "bash -c 'bash scripts/test-check-ci.sh'")"
+assert_rc "4438 bash -c suite" 2 "$RC"
+run_case "$(j_bash "sh -ec 'bash scripts/test-check-ci.sh'")"
+assert_rc "4438 sh -ec suite" 2 "$RC"
+run_case "$(j_bash "zsh -c \"bash -c 'bash scripts/test-check-ci.sh'\"")"
+assert_rc "4438 nested depth 2 suite" 2 "$RC"
+run_case "$(j_bash "eval 'bash scripts/test-check-ci.sh'")"
+assert_rc "4438 eval suite" 2 "$RC"
+run_case "$(j_bash 'b\ash scripts/test-check-ci.sh')"
+assert_rc "4438 quote-split b\\ash suite" 2 "$RC"
+run_case "$(j_bash "env 'FOO=a b'c bash scripts/test-check-ci.sh")"
+assert_rc "4438 env quoted assignment suite" 2 "$RC"
+run_case "$(j_bash "bash -c 'bash scripts/quiet-run.sh suite -- bash scripts/test-check-ci.sh'")"
+assert_rc "4438 allow: bash -c already wrapped" 0 "$RC"
+run_case "$(j_bash "bash -c 'git status'")"
+assert_rc "4438 allow: bash -c git status" 0 "$RC"
+nolib=$(mktemp -d) || exit 1
+cp "$HOOK" "$nolib/require-quiet-run.sh"
+RC=$(printf '%s' "$(j_bash 'git status')" | bash "$nolib/require-quiet-run.sh" >/dev/null 2>&1; echo $?)
+assert_rc "4438 missing guard-unwrap lib denies" 2 "$RC"
+rm -rf "$nolib"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All require-quiet-run.sh cases passed."
