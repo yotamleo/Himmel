@@ -18,7 +18,7 @@ HOOK="$SCRIPT_DIR/mcp-policy.sh"
 REGISTRY="$REPO_ROOT/scripts/guardrails/mcp-policy.json"
 MATRIX="$REPO_ROOT/scripts/guardrails/egress-matrix.json"
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/mcp-policy.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 export MCP_POLICY_AUDIT_LOG="$TMP/audit.jsonl"
 unset MCP_POLICY_REGISTRY MCP_POLICY_EGRESS_MATRIX
@@ -63,7 +63,7 @@ run_hook '{"tool_name": "mcp__qmd__query", "tool_input": '
 expect "observe: malformed JSON allowed, would-deny" 0 malformed deny
 run_hook "$(printf '{"session_id":"s","tool_name":"mcp__qmd__\\u001b[31mquery"}')"
 expect "observe: ANSI tool_name allowed, would-deny" 0 malformed deny
-if printf '%s' "$LAST" | grep -q "$(printf '\033')"; then bad "audit line carries a raw ESC"; else ok "audit line strips ESC"; fi
+if grep -q "$(printf '\033')" <<< "$LAST"; then bad "audit line carries a raw ESC"; else ok "audit line strips ESC"; fi
 run_hook '{"session_id":"s","tool_name":42}'
 expect "observe: non-string tool_name allowed, would-deny" 0 malformed deny
 run_hook '{"session_id":"s","tool_name":"mcp__qmd"}'
@@ -218,7 +218,7 @@ for t in mcp__qmd__query mcp__nosuch__thing mcp__claude_ai_Gmail__send_message m
     out=$(call "$t" | bash "$CHAIN_CMD" --sandbox "$CHAIN_ARG" 2>&1)
     rc=$?
     lines=$(wc -l < "$MCP_POLICY_AUDIT_LOG" | tr -d ' ')
-    if [ "$rc" = 0 ] && ! printf '%s' "$out" | grep -qi 'deny' && [ "$lines" = 1 ]; then
+    if [ "$rc" = 0 ] && ! grep -qi 'deny' <<< "$out" && [ "$lines" = 1 ]; then
         ok "codex chain allows $t and audits it"
     else
         bad "codex chain on $t: rc=$rc audit-lines=$lines out=$(printf '%s' "$out" | head -c 200)"
