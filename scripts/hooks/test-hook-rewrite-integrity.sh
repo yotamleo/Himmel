@@ -1430,6 +1430,19 @@ printf '{"session_id":"lib-s2","hook_event_name":"SessionStart"}' \
 launch "$FX_PROJ" "$FX_OUT" lib-s2 "$LAUNCHER" --optional "$FX_PROJ/$REL_U"
 expect_deny "row 45: a source statement that resolves to no file denies" "unresolved"
 
+# A literal source of an existing file the recorder does not pin (no .sh
+# suffix) is code no pin covers, so it denies too.
+REL_N='scripts/hooks/nonsh.sh'
+printf 'exit 0\n' > "$FX_PROJ/scripts/lib/payload"
+printf '#!/usr/bin/env bash\n. scripts/lib/payload\nexit 0\n' > "$FX_PROJ/$REL_N"
+git -C "$FX_PROJ" add -A
+git -C "$FX_PROJ" commit -q -m nonsh
+fx_publish HEAD
+printf '{"session_id":"lib-s3","hook_event_name":"SessionStart"}' \
+  | CLAUDE_PROJECT_DIR="$FX_PROJ" HIMMEL_HOOK_INTEGRITY_DIR="$FX_OUT" bash "$RECORDER" >/dev/null 2>&1
+launch "$FX_PROJ" "$FX_OUT" lib-s3 "$LAUNCHER" --optional "$FX_PROJ/$REL_N"
+expect_deny "row 45b: a literal source of an unpinnable non-.sh file denies" "unresolved"
+
 # A record written before the lib dirs were pinned (every session live when
 # this lands) has no pin for a lib: one whose bytes are the anchor tip's is
 # adopted and its pin persisted; one with other bytes still denies.
@@ -1457,15 +1470,21 @@ for (const f of [".claude/settings.json", "marketplace/plugins/himmel-ops/hooks/
   for (const x of fs.readFileSync(path.join(root, f), "utf8").matchAll(/scripts\/hooks\/[A-Za-z0-9_.-]+\.sh/g)) members.add(x[0]);
 }
 const bad = [];
-for (const rel of members) {
+const seen = new Set();
+const queue = [...members];
+while (queue.length) {
+  const rel = queue.shift();
+  if (seen.has(rel)) continue;
+  seen.add(rel);
   const r = m.sourcedClosure(path.join(root, rel), root);
   for (const u of r.unresolved) bad.push(`${rel}: unresolved ${u}`);
   for (const lib of r.libs) {
     const k = path.relative(root, lib);
     if (!m.PIN_DIRS.some((d) => k.startsWith(`${d}/`))) bad.push(`${rel}: ${k} is outside the pinned dirs`);
+    else queue.push(k);
   }
 }
-console.log(bad.length ? bad.join("\n") : `ok ${members.size}`);
+console.log(bad.length ? bad.join("\n") : `ok ${members.size} members, ${seen.size} files`);
 ' "$HOOKS_DIR/hook-integrity.js" "$REPO_ROOT" >"$T/closure.out" 2>&1
 if grep -q '^ok [0-9]' "$T/closure.out"; then
   ok "row 46: every dispatched member's sourced closure resolves under the pinned dirs ($(cat "$T/closure.out"))"

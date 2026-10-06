@@ -1231,6 +1231,9 @@ function isFile(candidate) {
   }
 }
 
+// ponytail: resolves by the literal path tail, not the shell value of its prefix
+// (a pinned member sourcing an out-of-tree prefix would verify the in-tree twin),
+// HIMMEL-4584 resolves through the ref's own assignment only.
 function resolveSourceArg(arg, fileDir, root, assigns) {
   const bare = unquoteWord(arg).match(BARE_VAR);
   const exprs = bare
@@ -1271,7 +1274,11 @@ function sourcedClosure(file, root) {
     for (const m of line.matchAll(SOURCE_CMD)) {
       const arg = firstShellWord(line.slice(m.index + m[0].length));
       const word = unquoteWord(arg);
-      if (!word.includes('$') && !/\.sh$/.test(word)) continue; // jq's `. == x`, prose
+      if (!word.includes('$') && !/\.sh$/.test(word)) {
+        // jq's `. == x` and prose skip; an existing file no pin covers denies.
+        if ([fileDir, root].some((b) => isFile(path.resolve(b, word)))) unresolved.push(line.trim());
+        continue;
+      }
       const hits = resolveSourceArg(arg, fileDir, root, assigns);
       if (!hits.length) unresolved.push(line.trim());
       for (const h of hits) libs.add(h);
