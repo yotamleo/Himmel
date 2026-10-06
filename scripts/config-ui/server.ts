@@ -75,8 +75,10 @@ function aguiFile(dist: string, path: string): Response {
   let real: string;
   try { real = realpathSync(join(root, rel)); } catch { return new Response("not found", { status: 404 }); }
   const type = AGUI_TYPES[extname(real)];
-  if (!real.startsWith(root + sep) || !type || !statSync(real).isFile()) return new Response("not found", { status: 404 });
-  return new Response(readFileSync(real), { headers: { "content-type": type, "cache-control": "no-store" } });
+  if (!real.startsWith(root + sep) || !type) return new Response("not found", { status: 404 });
+  // A rebuild can remove the file between realpath and read: that is a 404 too, never a thrown 500.
+  try { if (statSync(real).isFile()) return new Response(readFileSync(real), { headers: { "content-type": type, "cache-control": "no-store" } }); } catch { /* gone */ }
+  return new Response("not found", { status: 404 });
 }
 
 type Env = Record<string, string | undefined>;
