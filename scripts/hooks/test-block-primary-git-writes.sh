@@ -932,8 +932,21 @@ for pre in "-C $P " ""; do
     deny "$tag export HOME=<dir>; status"           "$cwd" "export HOME=/tmp/h; git ${pre}status"
     deny "$tag HOME=<dir>; export HOME; status"     "$cwd" "HOME=/tmp/h; export HOME; git ${pre}status"
     deny "$tag XDG_CONFIG_HOME=<dir>; status"       "$cwd" "XDG_CONFIG_HOME=/tmp/h; git ${pre}status"
+    # CR: envs that make git or a spawned program (ssh, the pager, a shell,
+    # the loader) run an attacker-chosen program.
+    deny "$tag SSH_ASKPASS= ls-remote"              "$cwd" "SSH_ASKPASS=x SSH_ASKPASS_REQUIRE=force git ${pre}ls-remote origin"
+    deny "$tag SSH_ASKPASS_REQUIRE=force ls-remote" "$cwd" "SSH_ASKPASS_REQUIRE=force git ${pre}ls-remote origin"
+    deny "$tag LESSOPEN= log"                       "$cwd" "LESSOPEN='|x %s' git ${pre}log"
+    deny "$tag LESSCLOSE= log"                      "$cwd" "LESSCLOSE=x git ${pre}log"
+    deny "$tag LD_PRELOAD= status"                  "$cwd" "LD_PRELOAD=/tmp/x.so git ${pre}status"
+    deny "$tag LD_AUDIT= nice status"               "$cwd" "LD_AUDIT=/tmp/x.so nice git ${pre}status"
+    deny "$tag LD_LIBRARY_PATH= status"             "$cwd" "LD_LIBRARY_PATH=/tmp/x git ${pre}status"
+    deny "$tag BASH_ENV= log"                       "$cwd" "BASH_ENV=/tmp/x git ${pre}log"
+    deny "$tag ENV= log"                            "$cwd" "ENV=/tmp/x git ${pre}log"
+    deny "$tag PATH=<dir> log"                      "$cwd" "PATH=/tmp/evil:/usr/bin git ${pre}log"
+    deny "$tag export LD_PRELOAD=; status"          "$cwd" "export LD_PRELOAD=/tmp/x.so; git ${pre}status"
     # Ordinary reads behind wrappers and safe envs keep the relief.
-    allow "$tag nice log"                           "$cwd" "nice git ${pre}log -1"
+    allow "$tag nice log"                          "$cwd" "nice git ${pre}log -1"
     allow "$tag timeout 5 status"                   "$cwd" "timeout 5 git ${pre}status"
     allow "$tag GIT_PAGER=cat nice log"             "$cwd" "GIT_PAGER=cat nice git ${pre}log -1"
     allow "$tag X=1 nice log"                       "$cwd" "X=1 nice git ${pre}log -1"
@@ -957,6 +970,7 @@ deny "set -a; GIT_DIR=; GIT_WORK_TREE=; reset"        "$W" "set -a; GIT_DIR=$P/.
 # The program runs in the LEG: no primary write.
 allow "GIT_EXTERNAL_DIFF= nice git diff, cwd=leg"     "$W" "GIT_EXTERNAL_DIFF=x nice git diff"
 allow "HOME=<dir> git status, cwd=leg"                "$W" "HOME=/tmp/h git status"
+allow "LD_PRELOAD=<so> git status, cwd=leg"           "$W" "LD_PRELOAD=/tmp/x.so git status"
 allow "ls-remote --upload-pack=<cmd> ., cwd=leg"      "$W" "git ls-remote --upload-pack=x ."
 
 echo "== DENY: unparseable input fails CLOSED in direct-exec mode (adversarial review S6) =="

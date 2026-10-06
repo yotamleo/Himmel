@@ -3844,9 +3844,13 @@ _bwimc_env_prog() {
         # the ext:: transport runs its URL as a command once allowed
         GIT_ALLOW_PROTOCOL) case "$v" in *ext*) return 0 ;; esac; return 1 ;;
         # HOME / XDG_CONFIG_HOME pick another global config, like
-        # GIT_CONFIG_GLOBAL (core.fsmonitor, core.pager, …)
+        # GIT_CONFIG_GLOBAL (core.fsmonitor, core.pager, …). Also the class
+        # that makes git or a child (ssh, less, /bin/sh, the loader) run code:
+        # SSH_ASKPASS*, LESSOPEN/LESSCLOSE, LD_*, BASH_ENV/ENV, PATH.
         GIT_EXTERNAL_DIFF|GIT_EXEC_PATH|GIT_CONFIG_PARAMETERS|GIT_SSH|\
-        GIT_SSH_COMMAND|GIT_ASKPASS|GIT_PROXY_COMMAND|HOME|XDG_CONFIG_HOME) return 0 ;;
+        GIT_SSH_COMMAND|GIT_ASKPASS|GIT_PROXY_COMMAND|HOME|XDG_CONFIG_HOME|\
+        SSH_ASKPASS|SSH_ASKPASS_REQUIRE|LESSOPEN|LESSCLOSE|LD_PRELOAD|\
+        LD_AUDIT|LD_LIBRARY_PATH|BASH_ENV|ENV|PATH) return 0 ;;
     esac
     return 1
 }
