@@ -1447,15 +1447,41 @@ expect_deny "row 45b: a literal source of an unpinnable non-.sh file denies" "un
 # this lands) has no pin for a lib: one whose bytes are the anchor tip's is
 # adopted and its pin persisted; one with other bytes still denies.
 LIB2_REC="$FX_OUT/lib-s2.json"
-jq 'del(.pins["scripts/lib/armor.sh"])' "$LIB2_REC" >"$T/lib-s2.json" && cp "$T/lib-s2.json" "$LIB2_REC"
+# The recorder publishes 0400 records; open it before rewriting, as
+# write_record does, or the cp fails and nothing is unpinned (J1927 T1).
+unpin_armor() {
+  jq 'del(.pins["scripts/lib/armor.sh"])' "$LIB2_REC" >"$T/lib-s2.json" &&
+    chmod 600 "$LIB2_REC" && cp "$T/lib-s2.json" "$LIB2_REC"
+  if [ -n "$(record_pin "$LIB2_REC" scripts/lib/armor.sh)" ]; then
+    bad "row 47 setup: the armor.sh pin is still in the record"
+  fi
+}
+unpin_armor
 launch "$FX_PROJ" "$FX_OUT" lib-s2 "$LAUNCHER" --optional "$FX_PROJ/$REL"
 expect_allow "row 47: an unpinned lib at the anchor tip's bytes is adopted"
 expect_pin "$LIB2_REC" scripts/lib/armor.sh "$(fx_blob scripts/lib/armor.sh)" "row 47: the adopted lib's pin was persisted"
-jq 'del(.pins["scripts/lib/armor.sh"])' "$LIB2_REC" >"$T/lib-s2.json" && cp "$T/lib-s2.json" "$LIB2_REC"
+unpin_armor
 printf '# off-tip\n' >> "$FX_PROJ/scripts/lib/armor.sh"
 launch "$FX_PROJ" "$FX_OUT" lib-s2 "$LAUNCHER" --optional "$FX_PROJ/$REL"
-expect_deny "row 47: an unpinned lib whose bytes are not the tip's denies" "not the anchor tip"
+expect_deny "row 47: an unpinned lib whose bytes are on no anchor-line commit denies" "anchor line"
 git -C "$FX_PROJ" checkout -q -- scripts/lib/armor.sh
+
+# J1927 B1: a record from before the lib dirs were pinned, in a worktree
+# that main has since moved past. The lib is untouched (its bytes are the
+# worktree's own committed version, which is on the anchor line), so it is
+# adopted; judging it against the moved tip alone denied every hook it sat
+# under.
+unpin_armor
+OLD_ARMOR="$(fx_blob scripts/lib/armor.sh)"
+printf '# main moved\n' >> "$FX_PROJ/scripts/lib/armor.sh"
+git -C "$FX_PROJ" commit -q -am 'main moves armor'
+MOVED="$(git -C "$FX_PROJ" rev-parse HEAD)"
+fx_publish HEAD
+git -C "$FX_PROJ" reset -q --hard HEAD~1
+launch "$FX_PROJ" "$FX_OUT" lib-s2 "$LAUNCHER" --optional "$FX_PROJ/$REL"
+expect_allow "row 48: an unpinned lib behind a moved anchor tip, on the anchor line, is adopted"
+expect_pin "$LIB2_REC" scripts/lib/armor.sh "$OLD_ARMOR" "row 48: the adopted lib's pin is its own on-disk blob"
+git -C "$FX_PROJ" reset -q --hard "$MOVED"
 
 # Every member the live settings and the plugin dispatch must have a closure
 # the walk resolves completely, under directories the recorder pins — else

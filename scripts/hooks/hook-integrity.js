@@ -1413,11 +1413,22 @@ function verifyOneFile(scriptPath, sessionId, strict) {
 
 // A sourced lib with no pin: a record written before its directory was pinned
 // (every live session when HIMMEL-4575 lands), or a lib a legitimate update
-// added after SessionStart. Its bytes are accepted only when they ARE the
-// anchor tip's bytes for that path — the trust root the re-pin path uses — and
-// on a v2 record the pin is then persisted, so the git probe runs once per lib
-// per session rather than on every call. A legacy record has no anchor, so the
-// default-branch ref the recorder bootstrap uses stands in, unpersisted.
+// added after SessionStart. Its bytes are accepted only when they are the
+// anchor tip's bytes for that path, or a blob some commit on the anchor line
+// gave that path — the trust root and the history check (c) the member re-pin
+// path uses. Judging by the tip alone denied every untouched lib in a worktree
+// main had since moved past (J1927 B1). On a v2 record the pin is then
+// persisted, so the git probe runs once per lib per session rather than on
+// every call. A legacy record has no anchor, so the default-branch ref the
+// recorder bootstrap uses stands in, unpersisted.
+function onAnchorLine(runIn, tip, relPath, actual) {
+  const atTip = gitStdout(runIn(['rev-parse', '--verify', '--quiet', `${tip}:${relPath}`]));
+  if (atTip === actual) return true;
+  return Boolean(gitStdout(runIn([
+    'log', '--full-history', `--find-object=${actual}`, '--format=%H', '-n', '1', tip, '--', `:(top)${relPath}`,
+  ])));
+}
+
 function adoptUnpinnedLib(context) {
   const { projectDir, relPath, record, sessionId, scriptPath } = context;
   const deny = (why) => ({ ok: false, relPath, reason: `${SOURCED_DENY}no session pin vouches for this sourced lib (${why})` });
@@ -1430,8 +1441,9 @@ function adoptUnpinnedLib(context) {
   if (!isV2Record(record)) {
     const ref = bootstrapDefaultRef(projectDir);
     if (!ref) return deny('no default branch to compare it with');
-    const atRef = gitStdout(runGit(['-C', projectDir, 'rev-parse', '--verify', '--quiet', `${ref}:${relPath}`]));
-    return atRef === actual ? { ok: true, walk: true } : deny(`it is not ${ref}'s version`);
+    const inProject = (args) => runGit(['-C', projectDir, ...args]);
+    return onAnchorLine(inProject, ref, relPath, actual)
+      ? { ok: true, walk: true } : deny(`it is on no commit of ${ref}'s line`);
   }
   const recordPath = integrityRecordPath(sessionId);
   if (!recordPath) return deny('no record path');
@@ -1451,8 +1463,8 @@ function adoptUnpinnedLib(context) {
     if (nonEmptyString(pins[relPath])) return deny('a pin for it appeared with other bytes');
     const tip = gitStdout(gitInRecordedRepo(current.git_dir, ['rev-parse', '--verify', '--quiet', current.anchor_ref]));
     if (!tip) return deny(`the anchor ref ${current.anchor_ref} could not be resolved`);
-    const atTip = gitStdout(gitInRecordedRepo(current.git_dir, ['rev-parse', '--verify', '--quiet', `${tip}:${relPath}`]));
-    if (atTip !== actual) return deny('it is not the anchor tip\'s version');
+    const inRecorded = (args) => gitInRecordedRepo(current.git_dir, args);
+    if (!onAnchorLine(inRecorded, tip, relPath, actual)) return deny('it is on no commit of the anchor line');
     try {
       persistIntegrityRecord(recordPath, { ...current, pins: { ...pins, [relPath]: actual } });
     } catch (_e) {
