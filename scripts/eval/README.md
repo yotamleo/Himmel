@@ -81,3 +81,40 @@ Exit codes:
 | 1 | regression |
 | 2 | usage error |
 | 3 | nothing to compare (no candidate, no baseline, a candidate whose status is not `ok`, no gated metric with a value on both sides, or a malformed ledger line after the candidate, which may be this eval's newest run); never a pass |
+
+## lane-quality: repeats and judge calibration (HIMMEL-4648)
+
+`run.sh run --reps N` runs the task set N times into one run dir. `table`
+then shows the mean and a bootstrap 95% CI over the repeats for each task and
+criterion. It counts the rows with no judge score instead of dropping them.
+
+The ledger row carries:
+
+- `reps`.
+- A stratified bootstrap CI for each run-level metric. The repeats are
+  resampled within each task.
+- From 2 repeats on, per-task metrics: `<task>.judge_<criterion>`,
+  `<task>.accept_frac` and `<task>.judge_missing`.
+
+`run.sh calibration <run-dir>...` measures how far the judge can be trusted:
+
+- **Judge vs acceptance:** the AUC and point-biserial r of each criterion
+  against the hidden acceptance result (`accept_ok`), each with a bootstrap
+  95% CI.
+- **Judge vs judge:** with `--judge2-model` (and optionally
+  `--judge2-effort`), it re-judges every stored judge packet once and reports
+  quadratic weighted kappa per criterion. It reuses stored second-judge
+  results, so a rerun makes no call.
+- **Ledger:** it appends one `lane-quality-calibration` row unless you pass
+  `--no-ledger`.
+
+The first real multi-rep sweep is a console step. Run it on a quiet fleet: 3
+repeats of the 4 tasks on one native lane. That is about 12 agent runs plus
+their judge calls. For scale, one stored native haiku sweep of the 4 tasks
+cost about 0.57 USD API-equivalent. Note the bank reading before and after.
+
+```
+bash scripts/eval/lane-quality/run.sh run --lane native --model claude-haiku-4-5-20251001 --reps 3 --max-usd 3
+bash scripts/eval/lane-quality/run.sh table ~/.himmel/eval/lane-quality/<run-id>
+bash scripts/eval/lane-quality/run.sh calibration ~/.himmel/eval/lane-quality/<run-id> --judge2-model sonnet --max-usd 1
+```

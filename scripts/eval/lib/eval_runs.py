@@ -53,7 +53,8 @@ Usage:
                       [--status S] [--ledger PATH]
   eval_runs.py validate <ledger>
 Exit: 0 written/valid, 1 invalid rows (validate), 2 refused input.
-Python callers import it: append_row(row) / make_row(...) / append_safe(...).
+Python callers import it: append_row(row) / make_row(...) / append_safe(...) /
+bootstrap_ci(values, ...) for a row's ci entries.
 Stdlib only; no network.
 """
 import argparse
@@ -61,6 +62,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import socket
 import statistics
 import subprocess
@@ -273,6 +275,42 @@ def read_rows(path=None):
     return rows
 
 
+def _finite_mean(xs):
+    xs = [x for x in xs if _num(x)]
+    return statistics.fmean(xs) if xs else None
+
+
+def bootstrap_ci(values, stat=None, level=0.95, b=2000, seed=0, strata=False):
+    """Percentile bootstrap interval for stat(values), as a ci entry plus its
+    level and method: {"lo", "hi", "level", "method"}, or None when nothing
+    can vary (no stratum with 2+ items) or no resample gives a number.
+
+    values: a list of items; with strata=True a list of lists, each resampled
+    within itself (a fixed task set with random repeats). stat: a callable on
+    one resample (a list, or the list of resampled lists) returning a number
+    or None; default: the mean of the finite numbers, flattened. Seeded, so
+    the same input gives the same interval."""
+    groups = [list(g) for g in values] if strata else [list(values)]
+    if not any(len(g) >= 2 for g in groups):
+        return None
+    if stat is None:
+        stat = (lambda gs: _finite_mean([x for g in gs for x in g])) if strata else _finite_mean
+    rng = random.Random(seed)
+    out = []
+    for _ in range(b):
+        res = [[g[rng.randrange(len(g))] for _ in g] for g in groups]
+        v = stat(res if strata else res[0])
+        if _num(v):
+            out.append(v)
+    if not out:
+        return None
+    out.sort()
+    a = (1 - level) / 2
+    lo = out[max(0, int(math.floor(a * len(out))))]
+    hi = out[min(len(out) - 1, int(math.ceil((1 - a) * len(out))) - 1)]
+    return {"lo": lo, "hi": hi, "level": level, "method": "bootstrap-percentile"}
+
+
 # --- adapters: an eval's own output -> one row ---------------------------------
 
 def _tsv(path):
@@ -331,8 +369,45 @@ def qmd_quality_row(out_dir, golden, modes, scope="all", candidate_limit=40, emb
 LQ_CRITERIA = ("correctness", "scope_discipline", "test_quality", "honesty")
 
 
+def _lq_judge(t, c):
+    j = t.get("judge")
+    return j.get(c) if isinstance(j, dict) and _num(j.get(c)) else None
+
+
+def _lq_accept_rate(rows):
+    tot = sum(t.get("accept_total") or 0 for t in rows)
+    return (sum(t.get("accept_passed") or 0 for t in rows) / tot) if tot else None
+
+
+def lane_quality_stats(tasks):
+    """Per task id: {"n", "judge_missing", "accept_frac", "accept_ok",
+    "scope_ok", "judge_<c>"...}, each score a {"mean", "ci"}. Repeats
+    (HIMMEL-4648) are rows sharing a task; a row with no judge score counts in
+    judge_missing and is left out of the judge means only."""
+    by = {}
+    for t in tasks:
+        by.setdefault(t["task"], []).append(t)
+    out = {}
+    for tid, rows in sorted(by.items()):
+        s = {"n": len(rows), "judge_missing": sum(1 for t in rows if not isinstance(t.get("judge"), dict))}
+        series = {
+            "accept_frac": [(t["accept_passed"] / t["accept_total"]) if t.get("accept_total") else None for t in rows],
+            "accept_ok": [1.0 if t.get("accept_ok") else 0.0 for t in rows],
+            "scope_ok": [1.0 if t.get("scope_ok") else 0.0 for t in rows],
+        }
+        for c in LQ_CRITERIA:
+            series["judge_" + c] = [_lq_judge(t, c) for t in rows]
+        for k, xs in series.items():
+            xs = [x for x in xs if _num(x)]
+            s[k] = {"mean": _finite_mean(xs), "ci": bootstrap_ci(xs)}
+        out[tid] = s
+    return out
+
+
 def lane_quality_row(run_dir, run_id, judge_model=None, status="ok"):
-    """Row from a lane-quality run dir (runs.jsonl, one row per task)."""
+    """Row from a lane-quality run dir (runs.jsonl, one row per task and
+    repeat). With repeats, ci holds a stratified bootstrap 95% interval per
+    run-level metric (repeats resampled within each task) and per task."""
     path = os.path.join(run_dir, "runs.jsonl")
     with open(path, encoding="utf-8") as fh:
         tasks = [json.loads(l) for l in fh if l.strip()]
@@ -340,19 +415,29 @@ def lane_quality_row(run_dir, run_id, judge_model=None, status="ok"):
         raise ValueError("no task rows in %s" % path)
     first = tasks[0]
 
-    def mean(xs):
-        xs = [x for x in xs if _num(x)]
-        return statistics.fmean(xs) if xs else None
-
     def total(key):
         xs = [t.get(key) for t in tasks]
         return None if any(not _num(x) for x in xs) else sum(xs)
 
-    acc_t = sum(t.get("accept_total") or 0 for t in tasks)
-    metrics = {
-        "accept_rate": (sum(t.get("accept_passed") or 0 for t in tasks) / acc_t) if acc_t else None,
-        "accept_ok_rate": mean([1.0 if t.get("accept_ok") else 0.0 for t in tasks]),
-        "scope_ok_rate": mean([1.0 if t.get("scope_ok") else 0.0 for t in tasks]),
+    by = {}
+    for t in tasks:
+        by.setdefault(t["task"], []).append(t)
+    groups = [by[k] for k in sorted(by)]
+    reps = max(len(g) for g in groups)
+    run_stats = {
+        "accept_rate": _lq_accept_rate,
+        "accept_ok_rate": lambda rs: _finite_mean([1.0 if t.get("accept_ok") else 0.0 for t in rs]),
+        "scope_ok_rate": lambda rs: _finite_mean([1.0 if t.get("scope_ok") else 0.0 for t in rs]),
+    }
+    for c in LQ_CRITERIA:
+        run_stats["judge_" + c] = (lambda c: lambda rs: _finite_mean([_lq_judge(t, c) for t in rs]))(c)
+    metrics, ci = {}, {}
+    for k, f in run_stats.items():
+        metrics[k] = f(tasks)
+        b = bootstrap_ci(groups, stat=lambda gs, f=f: f([t for g in gs for t in g]), strata=True)
+        if b and metrics[k] is not None:
+            ci[k] = {"lo": b["lo"], "hi": b["hi"]}
+    metrics.update({
         "judge_missing": float(sum(1 for t in tasks if not isinstance(t.get("judge"), dict))),
         "cost_usd": total("cost_usd"),
         "wall_s": total("wall_s"),
@@ -360,28 +445,28 @@ def lane_quality_row(run_dir, run_id, judge_model=None, status="ok"):
         "hook_denials": total("hook_denials"),
         "permission_denials": total("permission_denials"),
         "peeked": float(sum(1 for t in tasks if t.get("peeked") is True)),
-    }
-    for c in LQ_CRITERIA:
-        metrics["judge_" + c] = mean([(t.get("judge") or {}).get(c) for t in tasks])
+    })
     cases = {}
-    for t in tasks:
-        j = t.get("judge") if isinstance(t.get("judge"), dict) else {}
-        c = {"accept_frac": (t["accept_passed"] / t["accept_total"]) if t.get("accept_total") else None,
-             "accept_ok": bool(t.get("accept_ok")), "scope_ok": bool(t.get("scope_ok"))}
-        for k in LQ_CRITERIA:
-            c["judge_" + k] = j.get(k) if _num(j.get(k)) else None
-        cases[t["task"]] = c
+    for tid, s in lane_quality_stats(tasks).items():
+        cases[tid] = {k: v["mean"] for k, v in s.items() if isinstance(v, dict)}
+        if reps > 1:
+            metrics[tid + ".judge_missing"] = float(s["judge_missing"])
+            for k in ["accept_frac"] + ["judge_" + c for c in LQ_CRITERIA]:
+                metrics[tid + "." + k] = s[k]["mean"]
+                if s[k]["ci"] and s[k]["mean"] is not None:
+                    ci[tid + "." + k] = {"lo": s[k]["ci"]["lo"], "hi": s[k]["ci"]["hi"]}
     config = {
         "lane": first.get("lane"),
         "model": first.get("model"),
         "effort": first.get("effort") or None,
         "judge_model": judge_model or None,
-        "tasks": sorted(t["task"] for t in tasks),
+        "tasks": sorted(by),
         "base_sha": first.get("base_sha"),
     }
-    return make_row("lane-quality", "scripts/eval/lane-quality/run.sh", config, metrics, n=len(tasks),
+    return make_row("lane-quality", "scripts/eval/lane-quality/run.sh", config, metrics, n=len(by),
                     model=first.get("model"), lane=first.get("lane"), status=status, run_id=run_id,
-                    cases=cases, artifact=os.path.abspath(path))
+                    ci=ci, ci_level=0.95 if ci else None, ci_method="bootstrap-percentile" if ci else None,
+                    cases=cases, artifact=os.path.abspath(path), reps=reps)
 
 
 # --- CLI ----------------------------------------------------------------------
