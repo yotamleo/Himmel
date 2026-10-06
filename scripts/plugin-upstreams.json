@@ -47,7 +47,7 @@
     "standalone": true,
     "upstream_repo": "mattpocock/skills",
     "track": "head",
-    "ref": "d81f3a183412e71a5b1e84ca21bc1a35eea03a60"
+    "ref": "4588b32ecab9ecc9fc8cc6b6c5e7d675b6004b0d"
   },
   "coderabbit": {
     "standalone": true,
@@ -59,7 +59,7 @@
     "standalone": true,
     "upstream_repo": "DietrichGebert/ponytail",
     "track": "release",
-    "synced_base": "v4.10.3",
-    "ref": "ef8ca48fed2321ab6668b2a954f23b1af97d7f6d"
+    "synced_base": "v4.13.0",
+    "ref": "08e952d7a8057a57ce561ff1330d093fd92eec67"
   }
 }

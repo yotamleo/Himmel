@@ -23,7 +23,7 @@ below.
 | Source | Skills vendored | Count |
 |--------|-----------------|-------|
 | [`obra/superpowers`](https://github.com/obra/superpowers) @ 6.4.2 | `brainstorming`, `writing-plans`, `systematic-debugging`, `verification-before-completion` (the 4 himmel invokes) plus `executing-plans`, `finishing-a-development-branch`, `requesting-code-review`, `subagent-driven-development`, `test-driven-development`, `using-git-worktrees`, `writing-skills` (the 7 they hand off to) | 11 of 14 |
-| [`mattpocock/skills`](https://github.com/mattpocock/skills) @ 1.2.3 | `grilling` | 1 of 11 |
+| [`mattpocock/skills`](https://github.com/mattpocock/skills) @ 1.3.1 | `grilling` | 1 of 11 |
 | himmel-authored, no upstream | `context7-mcp` (moved here from `~/.claude/skills` — always-on before per-skill toggling existed, so a plugin profile can scope it) | — |
 
 13 skill directories total, replacing 25 (14 + 11) across the two upstream
@@ -164,7 +164,7 @@ carries two `tag_release`/`mode: base` rows:
 
 ```text
 superpowers-skills   obra/superpowers      synced_base 6.4.2
-mattpocock-skills     mattpocock/skills     synced_base 1.2.3
+mattpocock-skills     mattpocock/skills     synced_base 1.3.1
 ```
 
 `bash scripts/check-plugin-drift.sh` reports BEHIND when the tracked repo's

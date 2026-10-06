@@ -8,7 +8,7 @@ ever check one of the 13 files below). Upstream advance for this plugin is
 detected at the RELEASE level instead, by two scripts/upstreams.json rows:
 
     superpowers-skills   obra/superpowers      synced_base 6.4.2
-    mattpocock-skills    mattpocock/skills     synced_base 1.2.3
+    mattpocock-skills    mattpocock/skills     synced_base 1.3.1
 
 A release-level check is the right grain here because we vendor whole skill
 DIRECTORIES (SKILL.md plus its companion prompts and scripts), not single
@@ -36,7 +36,7 @@ SessionStart injection is the ~700 tok this change reclaims),
 receiving-code-review, dispatching-parallel-agents — nothing vendored
 references them.
 
-vendored_from=mattpocock/skills@1.2.3 path=skills/productivity/grilling
+vendored_from=mattpocock/skills@1.3.1 path=skills/productivity/grilling
 
 grilling only. 0 of the plugin's 11 exposed skills were ever invoked in 1628
 local transcripts; grilling reaches us through the minerva hook's

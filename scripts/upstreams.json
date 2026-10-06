@@ -147,9 +147,9 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "coddingtonbear/obsidian-local-rest-api",
-      "synced_base": "5.2.0",
+      "synced_base": "5.4.0",
       "tier": "A",
-      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/obsidian-local-rest-api. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json is intentionally never shipped. MAJOR 4.x -> 5.x re-vendored under HIMMEL-1652: markdown-patch 1.x targeting is deprecated (old Operation/Target-Type/Target header requests now 400 without `Markdown-Patch-Version: 1`, sunset in 6.0) and the /periodic/ endpoints were removed in 5.0.2. himmel's only first-party consumer, scripts/hooks/end-session-wiki.sh, does a whole-file PUT /vault/<path> and is unaffected; the third-party `uvx mcp-obsidian` server IS affected — see HIMMEL-1660. minAppVersion rises to 1.13.1 (public Obsidian is 1.13.4). 5.1.0 -> 5.2.0 re-vendored HIMMEL-3501: fixes a path-traversal in MCP vault_write (GHSA-j9qv-qgpv-345g) and a vault_read data-loss bug on binary files; adds vault_read_binary/signed URLs/Content-Location, none of which touch the whole-file PUT path end-session-wiki.sh uses. No new breaking change for either first- or third-party consumer beyond what 4.x->5.x already introduced."
+      "note": "Bundled third-party asset at templates/luna-second-brain/.obsidian/plugins/obsidian-local-rest-api. synced_base must match manifest.json version. No version_pin: updates require a reviewed re-vendor; data.json is intentionally never shipped. MAJOR 4.x -> 5.x re-vendored under HIMMEL-1652: markdown-patch 1.x targeting is deprecated (old Operation/Target-Type/Target header requests now 400 without `Markdown-Patch-Version: 1`, sunset in 6.0) and the /periodic/ endpoints were removed in 5.0.2. himmel's only first-party consumer, scripts/hooks/end-session-wiki.sh, does a whole-file PUT /vault/<path> and is unaffected; the third-party `uvx mcp-obsidian` server IS affected — see HIMMEL-1660. minAppVersion rises to 1.13.1 (public Obsidian is 1.13.4). 5.1.0 -> 5.2.0 re-vendored HIMMEL-3501: fixes a path-traversal in MCP vault_write (GHSA-j9qv-qgpv-345g) and a vault_read data-loss bug on binary files; adds vault_read_binary/signed URLs/Content-Location, none of which touch the whole-file PUT path end-session-wiki.sh uses. No new breaking change for either first- or third-party consumer beyond what 4.x->5.x already introduced. 5.2.0 -> 5.4.0 re-vendored HIMMEL-3952: 5.4.0 blocks API access to the vault configuration directory by default (GHSA-66m9-r757-qvq7; 403/40321, opt back in under Advanced settings) and throttles repeated failed auth with 429; 5.3.x adds event streams and extension APIs. end-session-wiki.sh's whole-file PUT /vault/<path> targets notes, never .obsidian/, so it is unaffected."
     },
     {
       "name": "luna-qmd-as-md-obsidian",
@@ -165,7 +165,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "Graphify-Labs/graphify",
-      "synced_base": "0.9.75",
+      "synced_base": "0.9.77",
       "latest_source": "release",
       "version_pin": { "file": "scripts/lib/graphify-bin.sh", "template": "GRAPHIFY_VERSION:-{version}" },
       "tier": "A",
@@ -176,7 +176,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "router-for-me/CLIProxyAPI",
-      "synced_base": "7.3.15",
+      "synced_base": "8.0.16",
       "version_pin": { "file": "scripts/setup/cli-proxy-lane.ps1", "template": "$Version    = '{version}'" },
       "tier": "A",
       "note": "CLIProxyAPI codex-lane proxy (HOST process on 127.0.0.1:8317; installed + run by scripts/setup/cli-proxy-lane.ps1). Added to the nightly drift machinery (HIMMEL-1451) so a new upstream release SURFACES as a drift finding instead of needing manual surgery: v7.2.77 threw ~3-min bursts of instant upstream 502s every ~25 min that killed codex-adv renders (Claude Code retries 502s but the companion's render turn does not), and the validated fix was a manual swap to v7.2.113 -- both legs completed clean that night. AUTO-BUMP policy is deliberately SURFACE-ONLY and matches the existing rows' conservatism: apply-drift-bump.sh moves the in-repo pin literal ($Version in cli-proxy-lane.ps1) and synced_base TOGETHER; the drift leg lands that as a PR. The Linux twin's VERSION + ASSET_SHA256 are bumped by hand alongside the .ps1, enforced by the parity test. Since HIMMEL-2134 (#1928), himmel-update.sh's advisory sync_cli_proxy step DOES roll the host itself, machine-local and pin-aware: every run compares the host's live version stamp to this pin and, when genuinely behind, runs cli-proxy-lane.ps1 -Install -Restart -- never downgrades and never guesses on an uncomparable stamp (rc 1/2 both leave the host alone), and the lane's own Assert-BounceSafe refuses to bounce a live codex-lane render rather than kill it. -Force is the override for the refused-bounce case specifically (it bypasses Assert-BounceSafe only); on Linux without pwsh, sync_cli_proxy runs cli-proxy-lane.sh --install then --restart (assert_bounce_safe refuses a live bounce; --force is the override). A pwsh-less non-Linux host or an unparseable stamp still needs a manual roll, as does an immediate roll ahead of the next update. Default tag-mode (highest stable tag, prereleases excluded -- CLIProxyAPI tags are monotonic, so no latest_source override is needed); synced_base lacks the leading 'v' but the guard normalizes both sides before comparing (v7.2.115 tag == 7.2.115 base). tracked_repo is the TRUE upstream (router-for-me/CLIProxyAPI)."
@@ -212,7 +212,7 @@
       "kind": "tag_release",
       "mode": "base",
       "tracked_repo": "mattpocock/skills",
-      "synced_base": "1.2.3",
+      "synced_base": "1.3.1",
       "tier": "B",
       "note": "ONE skill vendored verbatim at marketplace/plugins/lean-skills/skills/grilling (HIMMEL-3064); the plugin's other 10 exposed skills were invoked 0 times across 1628 local transcripts and are not carried. The upstream skill ships an agents/openai.yaml (Codex interface metadata) dropped here as harness-specific. grilling reaches himmel through inject-minerva-critic.sh's namespace-agnostic `*:grilling|grilling` matcher, which keeps routing the bare vendored name — that matcher is why de-plugining grilling needed no hook change. Tier B (reactive): one short prose skill, so BEHIND is a fine steady state; re-vendor when a release actually touches grilling/SKILL.md. No `version_pin` — same manual-repair discipline as the superpowers-skills row."
     },

@@ -8,7 +8,7 @@
     "start": "(test -d node_modules || bun install --no-summary) && bun server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.0"
+    "@modelcontextprotocol/sdk": "1.32.1"
   },
   "devDependencies": {
     "bun-types": "^1.4.2",

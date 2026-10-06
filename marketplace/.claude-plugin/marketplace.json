@@ -279,9 +279,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/youmind-openlab/ai-image-prompts-skill.git",
-        "sha": "ba500937b40af9e9571019708272b9b0a920d903"
+        "sha": "703e0e29cc53df5e69393e936b9242d043dc89a5"
       },
-      "description": "[youmind-openlab/ai-image-prompts-skill, MIT, vendor + attribution only, no carried delta] Offline AI image prompt library lookups (312 MB clone, no key). Root-skill shape UNPROVEN: add-on profile only. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha ba500937b40a per himmel supply-chain policy (HIMMEL-3069). Design kit, design-imagegen profile (HIMMEL-4012).",
+      "description": "[youmind-openlab/ai-image-prompts-skill, MIT, vendor + attribution only, no carried delta] Offline AI image prompt library lookups (312 MB clone, no key). Root-skill shape UNPROVEN: add-on profile only. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 703e0e29cc53 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-imagegen profile (HIMMEL-4012).",
       "strict": false,
       "skills": [
         "./"
@@ -312,9 +312,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/cathrynlavery/diagram-design.git",
-        "sha": "f903933a534ba92cde1c85a28186267b3a317bb2"
+        "sha": "c27950aaf47754d908ea6a41321835dd2aa4460b"
       },
-      "description": "[cathrynlavery/diagram-design, MIT, vendor + attribution only, no carried delta] Diagram design skill + 5 slash commands (upstream plugin manifest). On-demand python scripts export SVG/PNG. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha f903933a534b per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
+      "description": "[cathrynlavery/diagram-design, MIT, vendor + attribution only, no carried delta] Diagram design skill + 5 slash commands (upstream plugin manifest). On-demand python scripts export SVG/PNG. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha c27950aaf477 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
       "author": {
         "name": "cathrynlavery",
         "url": "https://github.com/cathrynlavery"
@@ -392,9 +392,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/anthropics/skills.git",
-        "sha": "8a1541c4a3ffa5a20a5a91de0dcf3f0bab1d1ef4"
+        "sha": "683bc88e56f3e09ba94f7055977f3d3aa499f202"
       },
-      "description": "[anthropics/skills, mixed per skill LICENSE.txt: Apache-2.0 for the design skills, source-available for docx/pdf/pptx/xlsx, vendor + attribution only, no carried delta] anthropics/skills: the whole upstream skills/ dir loads (a marketplace skills list cannot subset it, HIMMEL-4068), including the source-available docx/pdf/pptx/xlsx; the design ones are theme-factory, brand-guidelines, canvas-design. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 8a1541c4a3ff per himmel supply-chain policy (HIMMEL-3069). Design kit, design-reference profile (HIMMEL-4012).",
+      "description": "[anthropics/skills, mixed per skill LICENSE.txt: Apache-2.0 for the design skills, source-available for docx/pdf/pptx/xlsx, vendor + attribution only, no carried delta] anthropics/skills: the whole upstream skills/ dir loads (a marketplace skills list cannot subset it, HIMMEL-4068), including the source-available docx/pdf/pptx/xlsx; the design ones are theme-factory, brand-guidelines, canvas-design. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 683bc88e56f3 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-reference profile (HIMMEL-4012).",
       "strict": false,
       "author": {
         "name": "anthropics",
