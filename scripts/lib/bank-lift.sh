@@ -30,12 +30,16 @@ _bank_lift_epoch() {
     *) printf '%s' "$v"; return 0 ;;
   esac
   [ -n "$v" ] || return 1
+  # Only a full ISO-8601 stamp WITH an explicit zone is accepted (the lift-file
+  # writer emits Python isoformat, +00:00). An offset-less stamp is local time to
+  # `date -d` but UTC to the BSD path, so both reject it: fail toward the ceiling.
+  [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}[T\ ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}(:?[0-9]{2})?)$ ]] || return 1
   t=$(date -d "$v" +%s 2>/dev/null) && [ -n "$t" ] && { printf '%s' "$t"; return 0; }  # gnu-ok: BSD date -j fallback follows
-  # BSD date: drop fractional seconds, normalise +00:00 / Z to a bare UTC stamp.
-  # A nonzero offset is not parsed (BSD date would drop it and read local time
-  # as UTC): fail toward the ceiling.
-  v=$(printf '%s' "$v" | sed -e 's/\.[0-9]*//' -e 's/[+-]00:00$//' -e 's/Z$//')
-  case "$v" in *[+-][0-9][0-9]:[0-9][0-9]) return 1 ;; esac
+  # BSD date: drop fractional seconds, normalise a zero offset (+00:00, +0000,
+  # +00, minus forms) / Z to a bare UTC stamp. Any other offset survives the sed
+  # and is refused (BSD date would drop it and read local time as UTC).
+  v=$(printf '%s' "$v" | sed -e 's/\.[0-9]*//' -e 's/[+-]00\(:\{0,1\}00\)\{0,1\}$//' -e 's/Z$//' -e 's/ /T/')
+  [[ "$v" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]] || return 1
   t=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$v" +%s 2>/dev/null) && [ -n "$t" ] && { printf '%s' "$t"; return 0; }
   return 1
 }

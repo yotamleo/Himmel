@@ -781,7 +781,16 @@ cat > "$W/bsddate/date" <<'STUB'
 #!/usr/bin/env bash
 [ "$1" = "-d" ] && exit 1
 if [ "$1" = "-j" ]; then
-  v="${4:0:19}"; exec /usr/bin/date -u -d "${v/T/ }" +%s
+  # Portable epoch (days-from-civil), no GNU-only flags: runs on BSD/macOS too.
+  v="${4:0:19}"
+  y=$((10#${v:0:4})); m=$((10#${v:5:2})); d=$((10#${v:8:2}))
+  H=$((10#${v:11:2})); M=$((10#${v:14:2})); S=$((10#${v:17:2}))
+  [ "$m" -le 2 ] && y=$((y-1))
+  era=$((y/400)); yoe=$((y-era*400))
+  mp=$(( (m+9)%12 )); doy=$(( (153*mp+2)/5 + d-1 ))
+  doe=$(( yoe*365 + yoe/4 - yoe/100 + doy ))
+  days=$(( era*146097 + doe - 719468 ))
+  echo $(( days*86400 + H*3600 + M*60 + S )); exit 0
 fi
 exec /usr/bin/date "$@"
 STUB
@@ -791,5 +800,24 @@ check "BSD fallback: +00:00 with fraction -> UTC epoch (control)" 1781006400 "$(
 check "BSD fallback: Z -> UTC epoch (control)" 1781006400 "$(bsd_epoch '2026-06-09T12:00:00Z')"
 check "BSD fallback: +05:30 offset -> rejected, never read as UTC" FAIL "$(bsd_epoch '2026-06-09T12:00:00+05:30')"
 check "BSD fallback: -07:00 offset -> rejected, never read as UTC" FAIL "$(bsd_epoch '2026-06-09T12:00:00.5-07:00')"
+# HIMMEL-4522: every nonzero offset form fails closed, not just +HH:MM.
+check "BSD fallback: +0530 offset -> rejected" FAIL "$(bsd_epoch '2026-06-09T12:00:00+0530')"
+check "BSD fallback: -0700 offset -> rejected" FAIL "$(bsd_epoch '2026-06-09T12:00:00-0700')"
+check "BSD fallback: +05 offset -> rejected" FAIL "$(bsd_epoch '2026-06-09T12:00:00+05')"
+check "BSD fallback: -07 offset -> rejected" FAIL "$(bsd_epoch '2026-06-09T12:00:00-07')"
+check "BSD fallback: +0000 -> UTC epoch (control)" 1781006400 "$(bsd_epoch '2026-06-09T12:00:00+0000')"
+check "BSD fallback: +00 -> UTC epoch (control)" 1781006400 "$(bsd_epoch '2026-06-09T12:00:00+00')"
+# HIMMEL-4524: an offset-less stamp is rejected on BOTH paths (the lift-file
+# writer emits Python isoformat with an explicit offset; local-vs-UTC is ambiguous).
+check "BSD fallback: offset-less -> rejected" FAIL "$(bsd_epoch '2026-06-09T12:00:00')"
+gnu_epoch() { ( . "$REPO/scripts/lib/bank-lift.sh"; _bank_lift_epoch "$1" 2>/dev/null || echo FAIL ); }
+check "GNU path: offset-less -> rejected" FAIL "$(gnu_epoch '2026-06-09T12:00:00')"
+check "GNU path: +00:00 -> UTC epoch (control)" 1781006400 "$(gnu_epoch '2026-06-09T12:00:00+00:00')"
+# a nonzero offset parses only where the host date is GNU (BSD fails closed by design)
+if date -d @0 +%s >/dev/null 2>&1; then  # gnu-ok: probing for GNU date
+  check "GNU path: +05:30 -> parsed correctly (control)" 1780986600 "$(gnu_epoch '2026-06-09T12:00:00+05:30')"
+fi
+# HIMMEL-4523/4499: the BSD stub must not lean on GNU-only `date -d`.
+check "BSD stub is portable (no GNU date -d)" 0 "$(grep -cE 'date .*-u -d|date -d' "$W/bsddate/date")"
 
 echo "passed=$PASS failed=$FAIL"; [ "$FAIL" -eq 0 ]
