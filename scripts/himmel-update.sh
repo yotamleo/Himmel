@@ -1824,6 +1824,44 @@ sys.exit(0 if key(sys.argv[1]) < key(sys.argv[2]) else 1)
 PY
 }
 
+# _vm_proof_gate <step> — the gate in front of a host roll that needs VM proof
+# first (scripts/upstreams/pin-holds.json, HIMMEL-4597). Resolves the route with
+# scripts/lib/vm-mode.sh and returns 0 only when the roll may proceed:
+#   local/remote  the VM-proof route is printed and the roll goes ahead.
+#   none          HELD (rc 1). Never auto-rolls: only `--only <step>` with
+#                 HIMMEL_UPDATE_VM_ACK=<rollback point> (an existing snapshot or
+#                 backup of the touched paths, taken before this run) proceeds.
+#   error         HELD (rc 2), offering only "fix the config"; an ack is ignored.
+# A missing vm-mode.sh is an error, so it fails closed.
+_vm_proof_gate() {
+    local step="$1" lib="$ROOT/scripts/lib/vm-mode.sh" route rc ack="${HIMMEL_UPDATE_VM_ACK:-}"
+    if [ -f "$lib" ]; then
+        # shellcheck source=lib/vm-mode.sh
+        . "$lib"
+        route="$(vm_proof_route)"; rc=$?
+    else
+        route="fix-config: $lib not found"; rc=2
+    fi
+    case "$rc" in
+        0)  echo "    VM-proof route: $route"; return 0 ;;
+        1)  if [ "${only_item:-}" = "$step" ] && [ -n "$ack" ] && [ -e "$ack" ]; then
+                echo "    vm.mode=none: operator ack via HIMMEL_UPDATE_VM_ACK, rollback point $ack — rolling."
+                echo "          if the roll misbehaves, restore from that rollback point."
+                return 0
+            fi
+            echo "    HELD: vm.mode=none — no VM can prove this roll, so it never auto-rolls." >&2
+            if [ -n "$ack" ] && [ ! -e "$ack" ]; then
+                echo "          HIMMEL_UPDATE_VM_ACK=$ack does not exist — take the rollback point first." >&2
+            fi
+            echo "          to roll it: take a rollback point (a snapshot or a backup of the touched paths), then" >&2
+            echo "          HIMMEL_UPDATE_VM_ACK=<rollback point> bash scripts/himmel-update.sh --only $step" >&2
+            return 1 ;;
+        *)  echo "    HELD: vm.mode config error — ${route#fix-config: }" >&2
+            echo "          no roll and no operator-ack route until ~/.himmel/config.json is fixed (docs/setup/vm-mode.md)." >&2
+            return 2 ;;
+    esac
+}
+
 sync_cli_proxy() {
     local mode="${1:-apply}"   # check | apply
     local lane_ps="$ROOT/scripts/setup/cli-proxy-lane.ps1"
@@ -1914,6 +1952,16 @@ sync_cli_proxy() {
         echo "    behind: host v${installed:-?} < pin v$pin — run without --check to roll it."
         _ver_row cli_proxy "v${installed:-?}" "v$pin" behind
         return 0
+    fi
+    # VM proof first (pin-holds.json cli-proxy-api): vm.mode decides whether the
+    # roll may run. A configured none holds it unless acked; an error holds it.
+    local gate_rc
+    _vm_proof_gate cli_proxy; gate_rc=$?
+    if [ "$gate_rc" -ne 0 ]; then
+        echo "    not rolling: host stays on v${installed:-?} (pin v$pin)." >&2
+        # A configured none is a deliberate hold (rc 0); a broken config is not.
+        [ "$gate_rc" -eq 1 ] && return 0
+        return 1
     fi
     # Prefer the existing Windows path whenever pwsh is present. Without pwsh,
     # delegate the whole stop -> install -> restart -> verify sequence to the
@@ -2613,6 +2661,9 @@ Modes:
 
 Environment: HIMMEL_UPDATE_CHANNEL=stable|pre follows release tags instead of the
 branch upstream; HIMMEL_UPDATE_AUTOSTASH=1 autostashes a dirty tree around the pull.
+HIMMEL_UPDATE_VM_ACK=<rollback point> is the operator ack for a VM-proof roll
+(cli_proxy) under vm.mode=none, honoured only with --only cli_proxy; under a
+vm.mode config error nothing rolls (docs/setup/vm-mode.md).
 USAGE
 }
 case "${1:-}" in

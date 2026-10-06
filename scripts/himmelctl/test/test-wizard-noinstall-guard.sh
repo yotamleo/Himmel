@@ -105,6 +105,11 @@ trap cleanup EXIT
 # release-tarball install sources the existing release-lookup primitive (the
 # same fixed URL, tag grammar and version compare the session nudge and
 # himmel-update.sh --check use) instead of reimplementing the lookup in JS.
+#
+# HIMMEL-4597: vm-mode.sh — the `vm_proof` cadence rows ask the vm.mode
+# resolver (`vm-mode.sh route`) whether a VM can prove the step, and read its
+# rc. Same class as the shell-outs above: bin.js invokes the existing
+# primitive; the config parse and validation stay in scripts/lib/vm-mode.sh.
 allow_full="$work/allow-full.txt"
 cat > "$allow_full" <<'NAMES'
 check-user-slug.sh
@@ -126,6 +131,7 @@ remove-retired-plugin.sh
 plugin-profile.sh
 ensure-workspace-trust.sh
 release-check.sh
+vm-mode.sh
 NAMES
 
 # extract_script_targets — every 'name.sh' / "name.sh" / 'name.ps1' /

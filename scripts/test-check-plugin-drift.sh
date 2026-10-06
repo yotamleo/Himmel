@@ -673,6 +673,9 @@ l7="$(run7vm '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example","port":220
 if grepq "$l7" -F 'HELD' && grepq "$l7" -F 'release: vm-proof via remote-vm ops@vm.example:2201'; then ok "vm-proof hold, vm.mode=remote -> remote VM route"; else bad "vm-proof remote route missing; $l7"; fi
 l7="$(run7vm '{"vm":{"mode":"none"}}')"
 if grepq "$l7" -F 'HELD' && grepq "$l7" -F 'vm.mode=none' && grepq "$l7" -F 'operator ack' && grepq "$l7" -F 'never auto-released'; then ok "vm-proof hold, vm.mode=none -> stays HELD, operator ack + rollback point"; else bad "vm-proof none not HELD-with-ack; $l7"; fi
+# HIMMEL-4597 (J1932 T1): a resolver error stays HELD but offers only "fix the config", never the ack route.
+l7="$(run7vm '{"vm":{"mode":"Local"}}')"
+if grepq "$l7" -F 'HELD' && grepq "$l7" -F 'vm.mode config error' && grepq "$l7" -F 'fix ~/.himmel/config.json' && ! grepq "$l7" -F 'operator ack'; then ok "vm-proof hold, vm.mode config error -> HELD, fix config, no ack route"; else bad "vm-proof error offers the ack route or no fix-config; $l7"; fi
 if grepq "$sec7" '^  probe-cur: CURRENT'; then ok "tag_release probe synced -> CURRENT"; else bad "probe-cur not CURRENT"; fi
 if grepq "$sec7" '^  probe-behind: BEHIND'; then ok "tag_release probe stale -> BEHIND"; else bad "probe-behind not BEHIND"; fi
 if grepq "$(printf '%s' "$sec7" | grep 'probe-ahead')" 'CURRENT'; then ok "tag_release probe installed-ahead -> CURRENT (not a phantom BEHIND)"; else bad "probe-ahead not CURRENT; $(printf '%s' "$sec7" | grep probe-ahead)"; fi
@@ -1030,6 +1033,10 @@ printf '{"vm":{"mode":"none"}}\n' > "$W12/vm-none.json"
 HIMMEL_VM_MODE_CONFIG="$W12/vm-none.json" pin_run "$W12/holds-vm.json"
 l12="$(printf '%s\n' "$pin_sec" | grep 'owner/heldrepo')"
 if grepq "$l12" -F ': HELD' && grepq "$l12" -F 'vm.mode=none' && grepq "$l12" -F 'never auto-released'; then ok "pin-scan: vm-proof hold under vm.mode=none stays HELD with the ack route"; else bad "pin-scan vm-proof none; $l12"; fi
+printf '{"vm":\n' > "$W12/vm-err.json"
+HIMMEL_VM_MODE_CONFIG="$W12/vm-err.json" pin_run "$W12/holds-vm.json"
+l12="$(printf '%s\n' "$pin_sec" | grep 'owner/heldrepo')"
+if grepq "$l12" -F ': HELD' && grepq "$l12" -F 'vm.mode config error' && ! grepq "$l12" -F 'operator ack'; then ok "pin-scan: vm-proof hold under a vm.mode config error stays HELD, fix config only"; else bad "pin-scan vm-proof error; $l12"; fi
 printf '{"vm":{"mode":"remote","remote":{"ssh":"ops@vm.example"}}}\n' > "$W12/vm-remote.json"
 HIMMEL_VM_MODE_CONFIG="$W12/vm-remote.json" pin_run "$W12/holds-vm.json"
 l12="$(printf '%s\n' "$pin_sec" | grep 'owner/heldrepo')"
