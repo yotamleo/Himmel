@@ -228,4 +228,24 @@ tail')" \
 check "39: a bare 'usage limit' in prose is not a signal (classify_failure never acts on it alone)" \
     "$(fsl 'The reviewer mentioned a usage limit in passing.')" ""
 
+# ── HIMMEL-4610: cfp's "Raw output: <mktemp path>" must not feed the status
+# regexes. The random suffix can spell a status code ("cfp-raw.x412b"), which
+# flaked test-critic-panel-fallback.sh 11c (empty-response read as http-4xx).
+check "40: empty-body marker + Raw output path spelling 4xx -> empty-response" \
+    "$(classify 1 '' 'critic-first-pass.sh: invoke failed (rc=0) — fail-open, proceed claude-only. Raw output: /tmp/cfp-raw.x412bc')" \
+    "empty-response"
+check "41: malformed marker + Raw output path spelling 5xx -> malformed-output" \
+    "$(classify 1 '' 'critic-first-pass.sh: malformed output — fail-open, proceed claude-only. Raw output: /tmp/cfp-raw.a503bc')" \
+    "malformed-output"
+check "42: empty-body marker + Raw output path spelling 429 -> empty-response" \
+    "$(classify 1 '' 'critic-first-pass.sh: invoke failed (rc=0) — fail-open, proceed claude-only. Raw output: /tmp/cfp-raw.a429bc')" \
+    "empty-response"
+check "43: empty-body marker + Raw output path spelling 401 -> empty-response" \
+    "$(classify 1 '' 'critic-first-pass.sh: invoke failed (rc=0) — fail-open, proceed claude-only. Raw output: /tmp/cfp-raw.a401bc')" \
+    "empty-response"
+check "44: a real 429 on another line still classifies beside a Raw output path" \
+    "$(classify 1 '' 'HTTP 429 Too Many Requests
+critic-first-pass.sh: invoke failed (rc=1) — fail-open, proceed claude-only. Raw output: /tmp/cfp-raw.a123bc')" \
+    "rate-limit"
+
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -74,6 +74,12 @@ classify_failure() {
     [ -n "$_cf_err" ] && [ -f "$_cf_err" ] && _cf_blob="$_cf_blob
 $(cat "$_cf_err" 2>/dev/null)"
 
+    # HIMMEL-4610: drop the path after cfp's "Raw output: " — its random mktemp
+    # suffix can spell a status code ("cfp-raw.x412b") and flip empty-response
+    # or malformed-output to http-4xx/5xx/auth/rate-limit (same skip as
+    # first_signal_line below).
+    _cf_blob="$(printf '%s' "$_cf_blob" | sed 's|Raw output: [^[:space:]]*|Raw output:|g')"
+
     _cf_has() { printf '%s' "$_cf_blob" | grep -qiE "$1"; }
 
     # quota-5h: the existing HIMMEL-729 exhaustion table, the Z.ai 5-hour
