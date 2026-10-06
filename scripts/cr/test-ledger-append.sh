@@ -588,7 +588,9 @@ check "  ...it resolves to the finding currently at that head" "$(L="$RK2" node 
 # stay branch-less to remain visible. That prior fix is what this test now
 # guards against as the regression.)
 LGB="$tmp/legacy-branch-infer.jsonl"; : > "$LGB"
-CR_LEDGER="$LGB" bash "$LA" finding --head LGH1 --model m --id find-legacy-1 --severity imp --file f --line 3 --verdict agreed
+# HIMMEL-4604: the finding verb now stamps the current branch, so a legacy
+# branch-less row is seeded raw, the way such rows predate the stamp.
+printf '{"kind":"finding","ts":"2026-01-01T00:00:00Z","branch":"","head":"LGH1","model":"m","finding_id":"find-legacy-1","severity":"imp","file":"f","line":3,"verdict":"agreed"}\n' > "$LGB"
 check "the legacy finding row was written with an empty branch" "$(L="$LGB" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.kind==="finding");console.log(JSON.stringify(o.branch))')" '""'
 (cd "$CB" && CR_LEDGER="$LGB" bash "$LA" amend --head LGH1 --id find-legacy-1 --set severity=sug --reason "no --branch, caller is on a real branch, only match is branch-less")
 check "amending a branch-less legacy match with no --branch succeeds (HIMMEL-2405 codex-1/round3)" "$?" "0"
@@ -1573,5 +1575,25 @@ pv_amend 6 "measured on bash 3.2.57 and bash 5.3.15: count=0"
 check "version: control - both named versions covered is accepted" "$?" "0"
 pv_amend 7 "measured on dash 0.5.13.4-1.1: count=0"
 check "version: control - dash 0.5.13 finding vs dash 0.5.13.4-1.1 evidence (same major.minor) is accepted" "$?" "0"
+
+# ── HIMMEL-4604: the single-row finding verb holds verdict and branch to the
+# batch writers' bar. A verdict outside the lowercase set is refused (gate 4d
+# compares lowercase), and a missing --branch is stamped with the current
+# branch; with no branch to stamp (detached HEAD) the row is refused.
+VB="$tmp/verdict-branch.jsonl"; : > "$VB"
+CR_LEDGER="$VB" bash "$LA" finding --branch b --head VB1 --model m --id vb-1 --severity major --file f --line 1 --verdict Agreed 2>/dev/null
+check "finding --verdict Agreed (not lowercase) is refused" "$?" "2"
+CR_LEDGER="$VB" bash "$LA" finding --branch b --head VB1 --model m --id vb-2 --severity major --file f --line 1 --verdict bogus 2>/dev/null
+check "finding --verdict outside the set is refused" "$?" "2"
+check "the refused verdict rows wrote nothing" "$(grep -c '"head":"VB1"' "$VB")" "0"
+VR="$tmp/vb-repo"; git init -q -b feat/vb "$VR"; git -C "$VR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+(cd "$VR" && CR_LEDGER="$VB" bash "$LA" finding --head VB2 --model m --id vb-3 --severity major --file f --line 1 --verdict agreed)
+check "finding with no --branch is stamped with the current branch" "$(L="$VB" node -e 'const o=require("fs").readFileSync(process.env.L,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse).find(r=>r.finding_id==="vb-3");console.log(o&&o.branch)')" "feat/vb"
+git -C "$VR" checkout -q --detach
+(cd "$VR" && CR_LEDGER="$VB" bash "$LA" finding --head VB3 --model m --id vb-4 --severity major --file f --line 1 --verdict agreed 2>/dev/null)
+check "finding with no --branch on a detached HEAD is refused" "$?" "2"
+check "the refused empty-branch row wrote nothing" "$(grep -c '"head":"VB3"' "$VB")" "0"
+CR_LEDGER="$VB" bash "$LA" finding --branch b --head VB4 --model m --id vb-5 --severity major --file f --line 1
+check "control: finding with no --verdict (unadjudicated) is accepted" "$?" "0"
 
 [ "$fails" -eq 0 ] && echo "ALL PASS" || { echo "$fails FAILED"; exit 1; }

@@ -102,7 +102,9 @@
 #       Also (4b, HIMMEL-2067): a finding at that SHA has no recorded verdict
 #       (agree/disprove/defer it, then re-run).
 #       Also (4d, HIMMEL-4566): an agreed-and-fixed finding on this branch has
-#       no class-sweep record (reason=missing-class-sweep).
+#       no valid class-sweep record (reason=missing-class-sweep; HIMMEL-4603:
+#       its sites exist at the tip, its search re-runs clean there), or the
+#       record file is unreadable (reason=class-sweep-unreadable).
 #       Also (4c, HIMMEL-3027): review-round.sh promote found a still-open
 #       (unadjudicated or un-re-raised) finding at an EARLIER round head on
 #       this branch — adjudicate it, then re-run. A promote exit other than
@@ -620,10 +622,26 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
       // HIMMEL-4566 gate 4d: every finding stamped with THIS branch, at ANY
       // head, whose effective verdict is agreed or fixed. Coalesced on the
       // same key as unadjByKey plus the head, so a later raw row wins.
+      // HIMMEL-4596: an abbreviated and a full spelling of one head are the
+      // same commit, so a row whose head is prefix-related (both at least 7
+      // hex) to an earlier row of the same id/artifact/perspective replaces
+      // it - the later row wins across spellings too. A head that is not hex
+      // keys on its raw text alone and never coalesces (fail closed).
+      // HIMMEL-4604: the verdict is compared lowercase, so a raw row spelled
+      // Agreed or Fixed still needs its record.
       if (o.kind === "finding" && e.BRANCH && o.branch === e.BRANCH) {
-          sweptByKey.set([String(o.head || ""), o.finding_id || "?", o.artifact || "diff", o.perspective || "off"].join(SEP),
-              { id: o.finding_id || "?", head: String(o.head || "").toLowerCase(),
-                verdict: typeof o.verdict === "string" ? o.verdict.trim() : "" });
+          const sh = String(o.head || "").toLowerCase();
+          const rest = [o.finding_id || "?", o.artifact || "diff", o.perspective || "off"].join(SEP);
+          if (isHex(sh)) {
+              for (const [k, w] of sweptByKey) {
+                  if (w.rest === rest && isHex(w.head) && (w.head.startsWith(sh) || sh.startsWith(w.head))) sweptByKey.delete(k);
+              }
+          }
+          sweptByKey.set([String(o.head || ""), rest].join(SEP),
+              { id: o.finding_id || "?", head: sh, rest,
+                file: typeof o.file === "string" ? o.file.trim().replace(/^(\.\/)+/, "") : "",
+                artifact: o.artifact || "diff",
+                verdict: typeof o.verdict === "string" ? o.verdict.trim().toLowerCase() : "" });
       }
       if (!atHead(o)) continue;
       if (o.kind === "finding") {
@@ -705,19 +723,165 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
   // equal and one head is a prefix of the other (ledger heads are often
   // abbreviated; both sides are at least 7 hex).
   const SWEEP_RE = /^SWEEP \[([^\]@]+)@([0-9a-f]{7,64})\] class=\S.* :: (sites=[^,]*[^\s,][^,]*(,[^,]*[^\s,][^,]*)+|single-site search=\S.*)$/;
+  // HIMMEL-4605: a sweep file that exists but cannot be read (a directory, no
+  // permission) is not "no records" - it leaves missingSweep null, which the
+  // shell audits as class-sweep-unreadable naming the sweep path.
   const sweeps = [];
+  let sweepsUnreadable = false;
   if (e.SWEEPS && fs.existsSync(e.SWEEPS)) {
-      for (const l of fs.readFileSync(e.SWEEPS, "utf8").split("\n")) {
-          const m = SWEEP_RE.exec(l.replace(/\r$/, ""));
-          if (m) sweeps.push({ id: m[1], head: m[2] });
-      }
+      try {
+          for (const l of fs.readFileSync(e.SWEEPS, "utf8").split("\n")) {
+              const m = SWEEP_RE.exec(l.replace(/\r$/, ""));
+              if (m) sweeps.push({ id: m[1], head: m[2], body: m[3] });
+          }
+      } catch { sweepsUnreadable = true; }
   }
+  // HIMMEL-4603: a record is bound to evidence this gate re-checks at the tip,
+  // so a line typed without a sweep no longer clears by its shape alone.
+  //  - sites=: every site path (first word of a site, any :line suffix
+  //    dropped) exists at the tip or at the finding head, and, for a diff
+  //    finding with a file, one site IS that file.
+  //  - single-site search=: a plain git grep (whitelisted flags only, no shell
+  //    syntax), re-run here at the tip with no shell; its hits may only be the
+  //    finding file (or one file at most when the finding names none).
+  // ponytail: residual forgeability - a search with zero hits still passes, and
+  // a sites list may name real files nobody opened; the gate proves the record
+  // is consistent with the tree, not that a sweep happened. Upgrade path: a
+  // second writer countersigning sweeps, or requiring at least one hit once
+  // test-pr-check-rounds.sh zero-hit fixture moves (v1.0.2b follow-up).
+  const SQ = String.fromCharCode(39), DQ = String.fromCharCode(34);
+  const BS = String.fromCharCode(92), BQ = String.fromCharCode(96);
+  const META = ";|&$()<>" + BQ + String.fromCharCode(10, 13, 0);
+  const gitRun = (args) => cp.execFileSync("git", args,
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 20000, maxBuffer: 16 * 1024 * 1024 });
+  const gitOk = (args) => { try { gitRun(args); return true; } catch { return false; } };
+  const word = (s) => s.replace(/\s/g, "_");
+  const safePath = (p) => p.length > 0 && p.indexOf(String.fromCharCode(0)) < 0 &&
+      p[0] !== "/" && p[0] !== "-" && p[0] !== ":" &&
+      !p.split("/").some((s) => s === "." || s === "..");
+  const inTree = (rev, p) => !!rev && gitOk(["cat-file", "-e", rev + ":" + p.replace(/\/+$/, "")]);
+  // POSIX-shell word splitting of the recorded command, refusing anything a
+  // shell would run or expand (unquoted metacharacters, $ or a backquote inside
+  // double quotes, an unbalanced quote). null = refused.
+  const shellSplit = (s) => {
+      const out = [];
+      let cur = null;
+      for (let i = 0; i < s.length; i++) {
+          const c = s[i];
+          if (c === " " || c === "\t") { if (cur !== null) { out.push(cur); cur = null; } continue; }
+          if (cur === null) { if (c === "#" || c === "~") return null; cur = ""; }
+          if (c === SQ) {
+              const j = s.indexOf(SQ, i + 1);
+              if (j < 0) return null;
+              cur += s.slice(i + 1, j); i = j; continue;
+          }
+          if (c === DQ) {
+              let j = i + 1;
+              for (; j < s.length && s[j] !== DQ; j++) {
+                  if (s[j] === "$" || s[j] === BQ) return null;
+                  if (s[j] === BS && (s[j + 1] === DQ || s[j + 1] === BS)) { cur += s[++j]; continue; }
+                  cur += s[j];
+              }
+              if (j >= s.length) return null;
+              i = j; continue;
+          }
+          if (c === BS) { if (i + 1 >= s.length) return null; cur += s[++i]; continue; }
+          if (META.indexOf(c) >= 0) return null;
+          cur += c;
+      }
+      if (cur !== null) out.push(cur);
+      return out;
+  };
+  const SHORT_OK = "niwEFGPIl";
+  const LONG_OK = new Set(["--line-number", "--ignore-case", "--word-regexp", "--extended-regexp",
+      "--fixed-strings", "--basic-regexp", "--perl-regexp"]);
+  // Parse and re-run one search at the tip once: { err } or { hits: [files] }.
+  const searchCache = new Map();
+  const runSearch = (cmd) => {
+      if (searchCache.has(cmd)) return searchCache.get(cmd);
+      const r = (() => {
+          const t = shellSplit(cmd);
+          if (!t || t.length < 3 || t[0] !== "git" || t[1] !== "grep") return { err: "search-not-git-grep" };
+          const flags = [], pats = [], pos = [];
+          let dd = false;
+          for (let i = 2; i < t.length; i++) {
+              const a = t[i];
+              if (dd) { pos.push(a); continue; }
+              if (a === "--") { dd = true; continue; }
+              if (a.startsWith("--")) {
+                  if (!LONG_OK.has(a)) return { err: "search-option-refused:" + word(a) };
+                  flags.push(a); continue;
+              }
+              if (a.length > 1 && a[0] === "-") {
+                  for (let k = 1; k < a.length; k++) {
+                      if (a[k] === "e") {
+                          const p = k + 1 < a.length ? a.slice(k + 1) : t[++i];
+                          if (p === undefined) return { err: "search-option-refused:-e" };
+                          pats.push(p); break;
+                      }
+                      if (SHORT_OK.indexOf(a[k]) < 0) return { err: "search-option-refused:-" + word(a[k]) };
+                      flags.push("-" + a[k]);
+                  }
+                  continue;
+              }
+              pos.push(a);
+          }
+          if (pats.length === 0) {
+              if (pos.length === 0) return { err: "search-no-pattern" };
+              pats.push(pos.shift());
+          }
+          for (const p of pos) {
+              if (!safePath(p)) return { err: "search-pathspec-refused:" + word(p) };
+              if (!/[*?[]/.test(p) && !inTree(e.FULL_SHA, p)) return { err: "search-pathspec-not-at-tip:" + word(p) };
+          }
+          const args = ["grep", "-l", "-I"].concat(flags);
+          for (const p of pats) args.push("-e", p);
+          args.push(e.FULL_SHA, "--");
+          let out = "";
+          try { out = gitRun(args.concat(pos)); }
+          catch (x) { if (x && x.status === 1) out = ""; else return { err: "search-failed" }; }
+          const pre = e.FULL_SHA + ":";
+          const hits = [...new Set(out.split("\n").filter(Boolean)
+              .map((l) => l.startsWith(pre) ? l.slice(pre.length) : l))];
+          return { hits };
+      })();
+      searchCache.set(cmd, r);
+      return r;
+  };
+  // Why one record does not cover finding v; "" = it does.
+  const recordFault = (s, v) => {
+      const wantFile = v.artifact === "diff" ? v.file : "";
+      if (s.body.startsWith("sites=")) {
+          const paths = s.body.slice(6).split(",").map((x) => x.trim()).filter(Boolean)
+              .map((x) => x.split(/\s/)[0].split(":")[0].replace(/^(\.\/)+/, ""));
+          const findingHead = resolve(v.head);
+          for (const p of paths) {
+              if (!safePath(p)) return "site-refused:" + word(p);
+              if (!inTree(e.FULL_SHA, p) && !inTree(findingHead, p)) return "site-not-at-tip:" + word(p);
+          }
+          if (wantFile && paths.indexOf(wantFile) < 0) return "sites-omit-finding-file:" + word(wantFile);
+          return "";
+      }
+      const r = runSearch(s.body.slice("single-site search=".length));
+      if (r.err) return r.err;
+      const other = r.hits.filter((h) => wantFile ? h !== wantFile : h !== r.hits[0]);
+      if (other.length) return "search-hits-other-site:" + other.map(word).join(",");
+      return "";
+  };
   const missingSweep = [];
   for (const v of sweptByKey.values()) {
       if (v.verdict !== "agreed" && v.verdict !== "fixed") continue;
-      const covered = v.head.length >= 7 && sweeps.some((s) => s.id === v.id &&
-          (s.head.startsWith(v.head) || v.head.startsWith(s.head)));
-      if (!covered) missingSweep.push(v.id + "@" + v.head + "(" + v.verdict + ")");
+      const mine = v.head.length >= 7 ? sweeps.filter((s) => s.id === v.id &&
+          (s.head.startsWith(v.head) || v.head.startsWith(s.head))) : [];
+      const faults = [];
+      let covered = false;
+      for (const s of mine) {
+          const f = recordFault(s, v);
+          if (!f) { covered = true; break; }
+          faults.push(f);
+      }
+      if (!covered) missingSweep.push(v.id + "@" + v.head + "(" + v.verdict + ")" +
+          (faults.length ? ":" + faults.join(";") : ""));
   }
   // HIMMEL-2128: CR_FLOOR_FALLBACK=claude-only eligibility. Verified-exhaustion
   // classes mirror failure-classify.sh quota/rate-limit buckets (HIMMEL-1176) -
@@ -754,7 +918,7 @@ verdict=$(LEDGER="$ledger" SWEEPS="$git_dir/cr-class-sweeps/$branch" FULL_SHA="$
   if (emptyPanel) exhaustedLanes.push("empty-panel");
   const floorFallbackEligible = floorOk && (nonClaudeAvailModels.length > 0 || emptyPanel) &&
       nonExhaustedLanes.length === 0 && blocking.length === 0;
-  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, missingSweep, floorFallbackEligible, floorOk, exhaustedLanes, nonExhaustedLanes }));
+  console.log(JSON.stringify({ responders, nonClaudeResponders, blocking, blockingFiles, malformed, deferred, applied, unadjudicated, missingSweep: sweepsUnreadable ? null : missingSweep, floorFallbackEligible, floorOk, exhaustedLanes, nonExhaustedLanes }));
 ' 2>/dev/null)
 if [ -z "$verdict" ]; then
     echo "clear-cr-marker: could not read the CR ledger at $ledger — refusing (cannot certify the review)." >&2
@@ -1044,20 +1208,25 @@ fi
 # deferred, disproved or unadjudicated finding needs none (gates 4/4b own
 # those), and a legacy row with no branch stamp is exempt: it cannot be tied
 # to this branch, and the same rule keeps review-round.sh promote off it.
+# HIMMEL-4603: a record is checked against the tree, not only its shape (see
+# the node pass); a finding whose records all fail lists why after its id.
 # Read-only, so it runs under --dry-run too.
 case "$missing_sweep" in
     ok|"ok ") ;;
     ok\ *)
-        echo "clear-cr-marker: agreed-and-fixed finding(s) on $branch have no class-sweep record — refusing:${missing_sweep#ok}" >&2
+        echo "clear-cr-marker: agreed-and-fixed finding(s) on $branch have no valid class-sweep record — refusing:${missing_sweep#ok}" >&2
         echo "  Sweep each finding's whole class across the tree, then record it at the finding's OWN head:" >&2
-        echo "    SWEEP [<id>@<head>] class=<the class> :: sites=<site>, <site>[, ...]" >&2
-        echo "    SWEEP [<id>@<head>] class=<the class> :: single-site search=<the search that found no other site>" >&2
+        echo "    SWEEP [<id>@<head>] class=<the class> :: sites=<path>[:<line>], <path>[:<line>][, ...]" >&2
+        echo "    SWEEP [<id>@<head>] class=<the class> :: single-site search=git grep [-n -i -w -E -F -e <pat>] <pat> [-- <paths>]" >&2
+        echo "  Each site is a repo path that exists at the tip (or the finding head), and the sites include the finding's own file." >&2
+        echo "  A single-site search is a plain git grep the gate re-runs at the tip; it may hit only the finding's own file." >&2
         echo "  Write those lines to a file, then: bash scripts/cr/write-verdicts.sh sweep --branch '$branch' --from-file <path>" >&2
         audit "REFUSED reason=missing-class-sweep branch=$branch sha=$tip findings=${missing_sweep#ok }"
         exit 14 ;;
     *)
-        echo "clear-cr-marker: could not evaluate the class-sweep gate for $branch — refusing." >&2
-        audit "REFUSED reason=class-sweep-unreadable branch=$branch sha=$tip"
+        # HIMMEL-4605: the record file exists but could not be read.
+        echo "clear-cr-marker: could not read the class-sweep records at $git_dir/cr-class-sweeps/$branch — refusing." >&2
+        audit "REFUSED reason=class-sweep-unreadable branch=$branch sha=$tip path=$git_dir/cr-class-sweeps/$branch"
         exit 14 ;;
 esac
 
