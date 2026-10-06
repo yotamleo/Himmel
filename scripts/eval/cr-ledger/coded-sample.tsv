@@ -1,0 +1,81 @@
+id	critic	class	note
+03e5d0d96d74	codex:gpt-5.6-sol	intent-blind	guard boundary set is a documented deliberate choice
+8d9d25db9b22	codex:gpt-5.6-sol	intent-blind	over-refusal is the fence's stated failure direction
+753d3e08ade3	codex:gpt-5.6-sol	re-raise	third raise of a ruled test-trap finding
+669fb98c2a9f	codex:gpt-6-astra	no-rationale	boilerplate reason only
+b01b6ab52ebf	codex:gpt-6-astra	intent-blind	early return is the documented lock fail-safe
+76be827167bb	codex:gpt-6-astra	re-raise	same claim as an earlier round, re-verified
+962a7d868049	codex:gpt-6-astra	wrong-claim	bash 3.2 measured: empty-array length is safe
+cb8922badc45	codex:gpt-6-astra	no-rationale	boilerplate reason only
+2d3a48311449	codex:gpt-6-astra	no-rationale	boilerplate reason only
+f0de90b83dcd	codex:gpt-6-astra	no-rationale	boilerplate reason only
+d0b8fee31b5c	codex:gpt-6-astra	re-raise	third occurrence of an identical finding
+d926ed24204e	codex:gpt-6-astra	intent-blind	ratio formula is an intentional port, pinned by a test
+5dd101f6c3af	codex:gpt-6-astra	wrong-claim	git rejects attached -C with rc 129
+a8fac6b3a387	sonnet	wrong-claim	cited sentence exists where the finding says it is missing
+0f935b9bcce5	codex:gpt-6-astra	intent-blind	hook fails open on its own state by design
+3067acf254ee	codex:gpt-6-astra	no-rationale	boilerplate reason only
+71b969ba3d00	codex:gpt-6-astra	unreachable	no caller consumes the pasted command's exit status
+6111f85ff388	codex:gpt-6-astra	re-raise	repeat of a round-1 finding with no new evidence
+de4ee227cf15	codex:gpt-6-astra	unreachable	the writer only ever produces absolute paths
+6e3d5c62aa4c	codex:gpt-6-astra	no-rationale	boilerplate reason only
+8223fa97543b	codex:gpt-6-astra	unreachable	every line of the checked file is tool-written and active
+2ca1061a6975	codex:gpt-6-astra	re-raise	same claim as round 1 (attached -C)
+0afd76ee79e4	codex:gpt-6-astra	wrong-claim	apostrophe sits in a quoted heredoc, not a quoted string
+afbb3a22ed25	codex:gpt-6-astra	wrong-claim	same misread of quoting, raised again by another round
+590c26a80ad9	codex:gpt-6-astra	wrong-claim	probed: both attached spellings already deny
+fd03a0390bda	codex:gpt-6-sol	no-rationale	boilerplate reason only
+9b6bc35f5aba	codex	stale-head	row recorded against a head that is not a real commit
+b9c0c04487df	codex:gpt-6-sol	wrong-claim	exit code is captured and checked before the empty check
+f6cef34e48d0	codex:gpt-6-sol	wrong-claim	installer already scopes git to the repo toplevel
+303d2f4a75c0	codex:gpt-6-sol	re-raise	same as round 1; follows the suite's skip convention
+837480c5806d	codex:gpt-6-sol	wrong-claim	measured repro: both spellings deny
+f03a508277de	codex:gpt-6-sol	wrong-claim	value is captured before the failing substitution
+4c49e3322712	codex:gpt-6-sol	re-raise	same disposition as round 2 (brief-authorised tradeoff)
+b55afe9018ad	codex:gpt-6-sol	re-raise	recurrence of a pattern ruled on in rounds 1-3
+270451fcfa21	codex:gpt-6-sol	intent-blind	ticket specifies the excluded denominator term
+7e415398d2b0	codex:gpt-6-sol	no-rationale	boilerplate reason only
+1947f7f4b882	codex:gpt-6-sol	intent-blind	race already documented and accepted in a ponytail comment
+4c35563304d2	codex:gpt-6-sol	no-rationale	boilerplate reason only
+41243e4710b6	codex:gpt-6-sol	no-rationale	boilerplate reason only
+2d7eeb5edcee	codex:gpt-6-sol	no-rationale	boilerplate reason only
+5d6409c74bb3	codex:gpt-6-sol	no-rationale	boilerplate reason only
+035f3d8c5a0d	codex:gpt-6-sol	unreachable	an unreadable target fails earlier cases of the same suite first
+b1e3fdad920b	codex:gpt-6-sol	intent-blind	exit 1 is the designed outcome, so the asked assertion would be wrong
+072cdbb92b59	codex:gpt-6-sol	wrong-claim	the variable is shell-expanded, not a jq variable
+c91b0ae2aead	codex:gpt-6-sol	wrong-claim	stub has no set -u; suite green
+a8cd6e93c460	codex:gpt-6-sol	unreachable	a real record always carries the fields the refusal keys on
+67560d6d200d	codex:gpt-6.1-sol	wrong-claim	measured on macOS: date -r takes a filename
+d6dfd2912ae1	codex:gpt-6.1-sol	wrong-claim	measured on BSD: exit status is passed through
+8b82343bd34d	codex:gpt-6.1-sol	intent-blind	stub behaviour is deliberate; the filter is asserted directly
+b56b84b96af6	codex:gpt-6.1-sol	intent-blind	scan over-denies on purpose (fail-safe)
+b0456804725a	codex:gpt-6.1-sol	intent-blind	measured over-deny is the accepted fail-safe direction
+2360c07ae34d	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
+2b6c12ef4461	codex:gpt-6.1-sol	wrong-claim	quoted spans are masked before the walk (probed)
+ce73ac80f4c0	codex:gpt-6.1-sol	intent-blind	ruled design; the forged value changes no trusted path
+3026afb371bb	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
+bf4db8c52e09	codex:gpt-6.1-sol	intent-blind	deny-leaning by design
+fd80176cfdc0	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
+e0c18ff801cf	codex:gpt-6.1-sol	intent-blind	default class follows a console ruling
+85a189f6bf6f	codex:gpt-6.1-sol	wrong-claim	script runs under errexit, so the failure aborts first
+0e4f3712b570	codex:gpt-6.1-sol	intent-blind	exact anchor is the brief's requirement; failure is retryable
+e1c52a44c93c	codex:gpt-6.1-sol	intent-blind	deliberate one-second floor with a stated reason
+c48a28a1c518	codex:gpt-6.1-sol	re-raise	unchanged re-raise of round 1
+9bc511bd1eac	codex:gpt-6.1-sol	wrong-claim	continuations are joined first; probe denies
+cb6540d2695d	codex:gpt-6.1-sol	unreachable	only one closer ever runs per leg
+7a8e5e1bf588	codex:gpt-6.1-sol	intent-blind	the exported variable is the launcher contract
+033a3fc664dd	codex:gpt-6.1-sol	intent-blind	body scan rejected as a false-positive tradeoff
+05f37716de4f	codex:gpt-6.1-sol	wrong-claim	docs are append-only, so the last match is the newest
+267d9fdec6d8	codex:gpt-6.1-sol	unreachable	data is already world-readable and shown only locally
+cf8f3fa085d4	codex:gpt-6.1-sol	wrong-claim	the probed variables are not in the scrub list
+9aa7a7f08ac7	codex:gpt-6.1-sol	intent-blind	ticket rules that logging never breaks the run
+7d9557c56f84	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
+a1fbe2624625	codex:gpt-6.1-sol	wrong-claim	measured: the cited command is allowed
+4498477f14cb	codex:gpt-6.1-sol	wrong-claim	measured loaded runtime is well inside the budget
+0be2c93b08b5	codex:gpt-6.1-sol	unreachable	the suite only runs on a runtime where the global exists
+9cff96b4be61	codex:gpt-6.1-sol	intent-blind	callers follow the canonical key shape on purpose
+fc6b104dd574	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
+f30823882bb8	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
+82834a9e5f86	codex:gpt-6.1-sol	intent-blind	global scope is the documented posture; tool cannot scope it
+9d995457947f	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
+8d0e6933ebd0	codex:gpt-6.1-sol	no-rationale	boilerplate reason only
