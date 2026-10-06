@@ -57,6 +57,17 @@
         ]
       },
       {
+        "matcher": "mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox mcp-policy.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox mcp-policy.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
         "matcher": ".*",
         "hooks": [
           {

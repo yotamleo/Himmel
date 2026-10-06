@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "jira": "HIMMEL-4676",
+  "doc": "docs/internals/enforcement.md#mcp-policy-tracking-himmel-4676",
+  "semantics": {
+    "mode": "observe = the hook ALWAYS allows and only records what it WOULD do. enforce = the would-verdict is applied (deny exits 2). The top-level mode covers unknown servers and malformed calls; a server's own `mode` overrides it for that server. Nothing ships in enforce (operator ruling 2026-10-06, HIMMEL-4676).",
+    "server_key": "the <server> in mcp__<server>__<tool>: everything after `mcp__` up to the next `__`. Plugin servers are plugin_<plugin>_<server>, claude.ai connectors are claude_ai_<Name>.",
+    "server_verdict": "allow | deny. A deny server would-deny every call.",
+    "tool_class": "read (no state change) | write (creates or changes state) | destructive (deletes, trashes, sends, shares, runs arbitrary code, or is a generic write-anything entry point). A destructive tool would-deny unless it is named in the server's allow_destructive.",
+    "unlisted": "a server missing from `servers`, or a tool missing from its server's `tools`, would-deny. The audit line names the entry to add.",
+    "egress": "local = the server runs on this machine and sends nothing off-box itself. off-box = tool arguments leave the machine; `provider` names an egress-matrix.json provider when one exists (null when the matrix has none). An off-box server whose provider carries a corpus:* purpose:* deny row in egress-matrix.json would-deny. The matrix stays authoritative and is only read here.",
+    "audit": "one JSONL line per call to $HOME/.himmel/state/mcp-audit.jsonl (ts, session, server, tool, class, egress, mode, verdict, reason). Never any tool argument. Rotated to .1 past max_bytes."
+  },
+  "mode": "observe",
+  "audit": { "max_bytes": 1048576 },
+  "servers": {
+    "qmd": {
+      "verdict": "allow", "egress": "local", "note": "qmd HTTP daemon on localhost:8181 (user-scope registration)",
+      "tools": { "query": "read", "get": "read", "multi_get": "read", "status": "read" }
+    },
+    "plugin_qmd_qmd": {
+      "verdict": "allow", "egress": "local", "note": "qmd@himmel plugin, same daemon",
+      "tools": { "query": "read", "get": "read", "multi_get": "read", "status": "read" }
+    },
+    "graphify": {
+      "verdict": "allow", "egress": "local", "note": "graphify-mcp over the local graph.json",
+      "tools": {
+        "query_graph": "read", "get_node": "read", "get_neighbors": "read", "get_community": "read",
+        "god_nodes": "read", "graph_stats": "read", "shortest_path": "read", "list_prs": "read",
+        "get_pr_impact": "read", "triage_prs": "read"
+      }
+    },
+    "obsidian-vault": {
+      "verdict": "allow", "egress": "local", "note": "mcp-obsidian against the local Obsidian REST API; reads luna-personal",
+      "tools": {
+        "obsidian_simple_search": "read", "obsidian_complex_search": "read", "obsidian_search_by_tag": "read",
+        "obsidian_list_files_in_vault": "read", "obsidian_list_files_in_dir": "read",
+        "obsidian_get_file_contents": "read", "obsidian_batch_get_file_contents": "read",
+        "obsidian_get_frontmatter": "read", "obsidian_get_periodic_note": "read",
+        "obsidian_get_recent_periodic_notes": "read", "obsidian_get_recent_changes": "read",
+        "obsidian_append_content": "write", "obsidian_patch_content": "write", "obsidian_put_content": "write",
+        "obsidian_delete_file": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "plugin_obsidian-second-brain_vault": {
+      "verdict": "allow", "egress": "local", "note": "obsidian-second-brain@himmel vault MCP",
+      "tools": {
+        "obsidian_search": "read", "obsidian_read_note": "read", "obsidian_backlinks": "read",
+        "obsidian_list_skills": "read", "obsidian_get_skill": "read", "obsidian_vault_health": "read",
+        "obsidian_validate_note": "read",
+        "obsidian_capture": "write", "obsidian_save_note": "write", "obsidian_update_note": "write",
+        "obsidian_replace_text": "write", "obsidian_move_note": "write"
+      }
+    },
+    "context7": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "Upstash Context7; the query text leaves the box",
+      "tools": { "resolve-library-id": "read", "query-docs": "read" }
+    },
+    "plugin_context7_context7": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "context7@claude-plugins-official",
+      "tools": { "resolve-library-id": "read", "query-docs": "read" }
+    },
+    "claude_ai_Context7": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "claude.ai connector",
+      "tools": { "resolve-library-id": "read", "query-docs": "read" }
+    },
+    "claude_ai_Atlassian_MCP": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "claude.ai Atlassian connector; the Jira CLI is the preferred path",
+      "tools": {
+        "discover": "read", "getAccessibleAtlassianResources": "read", "searchJiraIssuesUsingJql": "read",
+        "executeRead": "read",
+        "editJiraIssue": "write", "addOrEditJiraIssueComment": "write",
+        "executeDestructive": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "plugin_atlassian_atlassian": {
+      "verdict": "allow", "egress": "off-box", "provider": null,
+      "note": "atlassian@claude-plugins-official. block-backend-tier.sh still redirects every call with a CLI equivalent; tools are not enumerated here, so every call records unlisted-tool",
+      "tools": {}
+    },
+    "claude_ai_Claude_Docs": {
+      "verdict": "allow", "egress": "off-box", "provider": "anthropic", "note": "claude.ai Docs connector",
+      "tools": {
+        "guide": "read", "read": "read", "query": "read", "export": "read",
+        "create": "write", "update": "write", "batch": "write",
+        "delete": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "claude_ai_Gmail": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "claude.ai Gmail connector",
+      "tools": {
+        "get_message": "read", "get_thread": "read", "get_draft": "read", "search_threads": "read",
+        "list_labels": "read", "list_drafts": "read",
+        "create_draft": "write", "update_draft": "write", "create_label": "write", "update_label": "write",
+        "label_message": "write", "label_thread": "write", "unlabel_message": "write", "unlabel_thread": "write",
+        "update_message_labels": "write", "apply_sensitive_message_label": "write",
+        "apply_sensitive_thread_label": "write", "mark_message_spam": "write", "mark_thread_spam": "write",
+        "unmark_message_spam": "write", "unmark_thread_spam": "write", "untrash_message": "write",
+        "untrash_thread": "write",
+        "send_message": "destructive", "reply": "destructive", "forward": "destructive",
+        "trash_message": "destructive", "trash_thread": "destructive", "delete_draft": "destructive",
+        "delete_label": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "claude_ai_Google_Calendar": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "claude.ai Google Calendar connector",
+      "tools": {
+        "list_calendars": "read", "list_events": "read", "search_events": "read", "get_event": "read",
+        "suggest_time": "read",
+        "create_event": "write", "update_event": "write", "respond_to_event": "write",
+        "delete_event": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "claude_ai_Google_Drive": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "claude.ai Google Drive connector",
+      "tools": {
+        "search_files": "read", "list_recent_files": "read", "read_file_content": "read",
+        "download_file_content": "read", "get_file_metadata": "read", "get_file_permissions": "read",
+        "create_file": "write", "update_file": "write", "copy_file": "write",
+        "share_file": "destructive", "trash_file": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "claude-in-chrome": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "drives the operator's Chrome; pages it loads are off-box",
+      "tools": {
+        "tabs_context_mcp": "read", "read_page": "read", "read_console_messages": "read",
+        "read_network_requests": "read",
+        "navigate": "write", "tabs_create_mcp": "write", "tabs_close_mcp": "write", "computer": "write",
+        "form_input": "write", "gif_creator": "write",
+        "javascript_tool": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "plugin_playwright_playwright": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "playwright@claude-plugins-official browser",
+      "tools": {
+        "browser_snapshot": "read", "browser_take_screenshot": "read", "browser_console_messages": "read",
+        "browser_network_requests": "read", "browser_network_request": "read", "browser_tabs": "read",
+        "browser_find": "read", "browser_wait_for": "read",
+        "browser_navigate": "write", "browser_navigate_back": "write", "browser_click": "write",
+        "browser_type": "write", "browser_press_key": "write", "browser_hover": "write",
+        "browser_drag": "write", "browser_drop": "write", "browser_select_option": "write",
+        "browser_fill_form": "write", "browser_handle_dialog": "write", "browser_resize": "write",
+        "browser_emulate_media": "write", "browser_close": "write", "browser_file_upload": "write",
+        "browser_evaluate": "destructive", "browser_run_code_unsafe": "destructive"
+      },
+      "allow_destructive": []
+    },
+    "plugin_shadcn-mcp_shadcn": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "shadcn-mcp@himmel registry lookups",
+      "tools": {
+        "get_project_registries": "read", "list_items_in_registries": "read",
+        "search_items_in_registries": "read", "view_items_in_registries": "read",
+        "get_item_examples_from_registries": "read", "get_add_command_for_items": "read",
+        "get_audit_checklist": "read"
+      }
+    },
+    "plugin_builder-visual_agent-native-dispatch": {
+      "verdict": "allow", "egress": "off-box", "provider": "builder-io",
+      "note": "builder-visual@himmel hosted MCP; block-agent-native-egress.sh owns its salus deny. Tools not enumerated",
+      "tools": {}
+    },
+    "plugin_luna-correlate_luna-correlate": {
+      "verdict": "allow", "egress": "local", "note": "luna-correlate@himmel (gated by HIMMEL_MCP_LUNA_CORRELATE)",
+      "tools": { "correlate": "read" }
+    },
+    "plugin_telegram-himmel_telegram": {
+      "verdict": "allow", "egress": "off-box", "provider": null, "note": "telegram-himmel@himmel bot (gated by HIMMEL_MCP_TELEGRAM)",
+      "tools": {
+        "download_attachment": "read",
+        "reply": "destructive", "react": "write", "edit_message": "write"
+      },
+      "allow_destructive": []
+    },
+    "tokensave": {
+      "verdict": "allow", "egress": "local", "note": "tokensave code index",
+      "tools": {
+        "tokensave_search": "read", "tokensave_read": "read", "tokensave_body": "read",
+        "tokensave_module_api": "read", "tokensave_callers": "read", "tokensave_callers_for": "read"
+      }
+    },
+    "himmelprobe": {
+      "verdict": "allow", "egress": "local", "note": "himmel's own MCP-load probe server",
+      "tools": { "himmelprobe_marker": "read" }
+    }
+  }
+}
