@@ -40,7 +40,7 @@ echo "== resolve_powershell: no pwsh, powershell.exe present -> loud fallback ==
 tmp="$(mktemp -d)"; make_fake "$tmp/bin" powershell.exe
 out="$(PATH="$tmp/bin" resolve_powershell 2>"$tmp/stderr.log")"; rc=$?
 warn="$(cat "$tmp/stderr.log" 2>/dev/null)"
-if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/bin/powershell.exe" ] && printf '%s' "$warn" | grep -q 'HIMMEL-2126'; then
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/bin/powershell.exe" ] && grep -q 'HIMMEL-2126' <<<"$warn"; then
     pass "powershell.exe fallback -> '$out', warned (HIMMEL-2126)"
 else
     fail "powershell.exe fallback -> rc=$rc out='$out' stderr='$warn'"
@@ -51,7 +51,7 @@ echo "== resolve_powershell: no pwsh, bare powershell present -> loud fallback =
 tmp="$(mktemp -d)"; make_fake "$tmp/bin" powershell
 out="$(PATH="$tmp/bin" resolve_powershell 2>"$tmp/stderr.log")"; rc=$?
 warn="$(cat "$tmp/stderr.log" 2>/dev/null)"
-if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/bin/powershell" ] && printf '%s' "$warn" | grep -q 'HIMMEL-2126'; then
+if [ "$rc" -eq 0 ] && [ "$out" = "$tmp/bin/powershell" ] && grep -q 'HIMMEL-2126' <<<"$warn"; then
     pass "powershell fallback -> '$out', warned (HIMMEL-2126)"
 else
     fail "powershell fallback -> rc=$rc out='$out' stderr='$warn'"

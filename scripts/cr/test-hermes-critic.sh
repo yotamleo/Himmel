@@ -419,21 +419,21 @@ out="$(STUB_RESPONSE='{"passed": false, "security_concerns": [], "logic_errors":
     PATH="$bindir:$PATH" bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route both)"
 rc=$?
 [ "$rc" -eq 1 ] || fail "route both: expected exit 1 (passed=false wins), got $rc"
-printf '%s' "$out" | grep -q "from-claude" || fail "route both: the claude suggestions were dropped from the merge"
-printf '%s' "$out" | grep -q "from-hermes" || fail "route both: the hermes logic_errors were dropped from the merge"
+grep -q "from-claude" <<<"$out" || fail "route both: the claude suggestions were dropped from the merge"
+grep -q "from-hermes" <<<"$out" || fail "route both: the hermes logic_errors were dropped from the merge"
 # Failed second pass (stub rc!=0) that still printed a body → verdict unchanged.
 out="$(STUB_RESPONSE='{"passed": false, "security_concerns": [], "logic_errors": ["from-failed-hermes"], "architectural_mismatches": [], "suggestions": [], "summary": "hermes"}' STUB_RC=9 \
     PATH="$bindir:$PATH" bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route both)"
 rc=$?
 [ "$rc" -eq 0 ] || fail "route both with a failed second pass: expected the claude verdict (exit 0), got $rc"
-printf '%s' "$out" | grep -q "from-failed-hermes" && fail "route both: a transport-failed second pass altered the claude verdict"
+grep -q "from-failed-hermes" <<<"$out" && fail "route both: a transport-failed second pass altered the claude verdict"
 # A parseable-but-empty second verdict ({}) is not a verdict: it must not be
 # merged in, or the summary advertises a second pass that said nothing.
 out="$(STUB_RESPONSE='{}' PATH="$bindir:$PATH" \
     bash "$CRITIC" --repo "$repo" --base "$base" --goal "test goal" --route both)"
 rc=$?
 [ "$rc" -eq 0 ] || fail "route both with an empty second verdict: expected the claude verdict (exit 0), got $rc"
-printf '%s' "$out" | grep -q "hermes second pass" && fail "route both: an empty {} second verdict was merged as a real pass"
+grep -q "hermes second pass" <<<"$out" && fail "route both: an empty {} second verdict was merged as a real pass"
 # A FAILED primary must skip the second pass entirely: the run exits 3 either
 # way, so invoking hermes would be a paid call whose verdict is then discarded.
 cat > "$bindir/claude" <<'EOF'

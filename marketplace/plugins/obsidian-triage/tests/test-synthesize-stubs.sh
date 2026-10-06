@@ -185,7 +185,7 @@ printf '%s
 if [ -f "$stub" ]; then f=present; else f=removed; fi
 assert "TOUCHED stub is NOT reverted (divergence guard refuses)" "present" "$f"
 
-if echo "$out3" | grep -qiE 'diverg|refus|skip'; then f=yes; else f=no; fi
+if grep -qiE 'diverg|refus|skip' <<<"$out3"; then f=yes; else f=no; fi
 assert "revert reports divergence refusal" "yes" "$f"
 
 # ── 4. Subject-name collision: two distinct tags title-case to one page ───────

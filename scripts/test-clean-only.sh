@@ -88,9 +88,9 @@ mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
 args="$*"
-if echo "$args" | grep -q "auth status"; then exit 0; fi
-if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi
-if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
+if grep -q "auth status" <<<"$args"; then exit 0; fi
+if grep -q "repo view" <<<"$args"; then echo "owner/repo"; exit 0; fi
+if grep -q "api --paginate repos/owner/repo/pulls" <<<"$args"; then
     while IFS=' ' read -r branch sha; do
         printf 'owner/repo\t%s\tmerged\t%s\n' "$branch" "$sha"
     done < <(git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/feat)
@@ -102,8 +102,8 @@ if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
     done < <(git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/closed)
     exit 0
 fi
-if echo "$args" | grep -q -- "--state merged"; then echo "1"; exit 0; fi
-if echo "$args" | grep -q -- "--state open"; then exit 0; fi
+if grep -q -- <<<"$args" "--state merged"; then echo "1"; exit 0; fi
+if grep -q -- <<<"$args" "--state open"; then exit 0; fi
 exit 0
 STUB
 chmod +x "$STUB_DIR/gh"
@@ -116,9 +116,9 @@ mkdir -p "$STUB_DIR_FAIL"
 cat > "$STUB_DIR_FAIL/gh" <<'STUB'
 #!/usr/bin/env bash
 args="$*"
-if echo "$args" | grep -q "auth status"; then exit 0; fi  # pipefail-ok: $args is a small captured argv
-if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi  # pipefail-ok: same $args
-if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then  # pipefail-ok: same $args
+if grep -q "auth status" <<<"$args"; then exit 0; fi  # pipefail-ok: $args is a small captured argv
+if grep -q "repo view" <<<"$args"; then echo "owner/repo"; exit 0; fi  # pipefail-ok: same $args
+if grep -q "api --paginate repos/owner/repo/pulls" <<<"$args"; then  # pipefail-ok: same $args
     exit 1
 fi
 exit 0

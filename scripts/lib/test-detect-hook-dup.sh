@@ -25,9 +25,9 @@ user="$td/user.json"; printf '%s' "$UJSON" > "$user"
 mkdir -p "$td/proj/.claude"
 printf '%s' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bash /proj/scripts/hooks/auto-approve-safe-bash.sh"}]}]}}' > "$td/proj/.claude/settings.json"
 out=$(bash "$det" "$user" "$td/proj/.claude/settings.json" "/opt/himmel" 2>&1)
-printf '%s' "$out" | grep -q "wired at BOTH user and project scope" && check "SC5 warns on non-himmel dup" yes yes || check "SC5 warns on non-himmel dup" no yes
-printf '%s' "$out" | grep -q "auto-approve-safe-bash" && check "SC5 lists the dup hook" yes yes || check "SC5 lists the dup hook" no yes
-printf '%s' "$out" | grep -q "unwire-pretooluse-hooks.sh --scope project --target $td/proj" && check "SC5 prints remediation target" yes yes || check "SC5 remediation" no yes
+grep -q "wired at BOTH user and project scope" <<<"$out" && check "SC5 warns on non-himmel dup" yes yes || check "SC5 warns on non-himmel dup" no yes
+grep -q "auto-approve-safe-bash" <<<"$out" && check "SC5 lists the dup hook" yes yes || check "SC5 lists the dup hook" no yes
+grep -q "unwire-pretooluse-hooks.sh --scope project --target $td/proj" <<<"$out" && check "SC5 prints remediation target" yes yes || check "SC5 remediation" no yes
 
 # ── SC5b: in-repo (project == himmel's own settings) → SILENT ───────────────
 # This case exercises the REAL project settings.json. That file is in
@@ -55,15 +55,15 @@ check "SC5 silent when no shared hook" "$(printf '%s' "$out" | grep -c 'BOTH use
 mkdir -p "$td/proj3/.claude"
 printf '%s' '{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"bash /proj3/scripts/hooks/inject-initiative.sh"}]}]}}' > "$td/proj3/.claude/settings.json"
 out=$(bash "$det" "$user" "$td/proj3/.claude/settings.json" "/opt/himmel" 2>&1)
-printf '%s' "$out" | grep -q "inject-initiative" && check "SC5 detects SessionStart dup" yes yes || check "SC5 detects SessionStart dup" no yes
+grep -q "inject-initiative" <<<"$out" && check "SC5 detects SessionStart dup" yes yes || check "SC5 detects SessionStart dup" no yes
 
 # ── SC5e: HIMMEL-3574 new wired-command shape (missing-script guard) is
 # still recognised as the same himmel hook, not just the old bare `bash "..."` ─
 mkdir -p "$td/proj4/.claude"
 printf '%s' '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"if [ -f \"/proj4/scripts/hooks/auto-approve-safe-bash.sh\" ]; then bash \"/proj4/scripts/hooks/auto-approve-safe-bash.sh\"; else echo \"himmel: hook script missing (/proj4/scripts/hooks/auto-approve-safe-bash.sh) -- re-run the install (himmelctl install) or unwire it (himmelctl uninstall)\" >&2; exit 0; fi"}]}]}}' > "$td/proj4/.claude/settings.json"
 out=$(bash "$det" "$user" "$td/proj4/.claude/settings.json" "/opt/himmel" 2>&1)
-printf '%s' "$out" | grep -q "wired at BOTH user and project scope" && check "SC5e new-shape warns on dup" yes yes || check "SC5e new-shape warns on dup" no yes  # pipefail-ok: $out is already-captured, not a live producer
-printf '%s' "$out" | grep -q "auto-approve-safe-bash" && check "SC5e new-shape lists the dup hook" yes yes || check "SC5e new-shape lists the dup hook" no yes  # pipefail-ok: $out is already-captured, not a live producer
+grep -q "wired at BOTH user and project scope" <<<"$out" && check "SC5e new-shape warns on dup" yes yes || check "SC5e new-shape warns on dup" no yes  # pipefail-ok: $out is already-captured, not a live producer
+grep -q "auto-approve-safe-bash" <<<"$out" && check "SC5e new-shape lists the dup hook" yes yes || check "SC5e new-shape lists the dup hook" no yes  # pipefail-ok: $out is already-captured, not a live producer
 
 # ── SC11: benign double-fire — same hook, same input, twice → same decision ─
 aa="$repo_root/scripts/hooks/auto-approve-safe-bash.sh"
@@ -75,7 +75,7 @@ o1=$(printf '%s' "$ALLOW_IN" | bash "$aa" 2>/dev/null); r1=$?
 o2=$(printf '%s' "$ALLOW_IN" | bash "$aa" 2>/dev/null); r2=$?
 check "SC11 allow-case rc stable"   "$r1" "$r2"
 check "SC11 allow-case output stable" "$o1" "$o2"
-printf '%s' "$o1" | grep -q '"permissionDecision"[: ]*"allow"' && check "SC11 allow-case actually allows" yes yes || check "SC11 allow-case actually allows" no yes
+grep -q '"permissionDecision"[: ]*"allow"' <<<"$o1" && check "SC11 allow-case actually allows" yes yes || check "SC11 allow-case actually allows" no yes
 
 # block-case (read a .env secret): identical exit (block=2) both passes.
 BLOCK_IN='{"tool_name":"Read","tool_input":{"file_path":"/somewhere/.env"}}'

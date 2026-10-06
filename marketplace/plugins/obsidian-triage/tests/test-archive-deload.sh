@@ -94,24 +94,24 @@ scan_out="$(find "$tmp/Clippings" -maxdepth 3 -type f -name '*.md' \
   -not -path '*/_evidence/*' -print0 | tr '\0' '\n')"
 
 echo "Test 7: eligibility scan excludes _evidence/ paths"
-if printf '%s\n' "$scan_out" | grep -qF "/_evidence/"; then f=leaked; else f=excluded; fi
+if grep -qF "/_evidence/" <<<"$scan_out"; then f=leaked; else f=excluded; fi
 assert "eligibility scan excludes _evidence/ paths" "excluded" "$f"
 
 echo "Test 8: eligibility scan sees top-level unprocessed clip (new1.md)"
-if printf '%s\n' "$scan_out" | grep -qF "/new1.md"; then f=yes; else f=no; fi
+if grep -qF "/new1.md" <<<"$scan_out"; then f=yes; else f=no; fi
 assert "eligibility scan sees top-level new1.md" "yes" "$f"
 
 # Test 9 is three sub-checks (one per inbox-internal name), not a single assert.
 echo "Test 9: eligibility scan excludes _done/, _synthesis/, _deferred.md (3 sub-checks)"
 for bad in "_done" "_synthesis" "_deferred.md"; do
-    if printf '%s\n' "$scan_out" | grep -qF "$bad"; then f=leaked; else f=excluded; fi
+    if grep -qF "$bad" <<<"$scan_out"; then f=leaked; else f=excluded; fi
     assert "scan excludes $bad" "excluded" "$f"
 done
 
 echo "Test 10: ev1.md (processed + synthesis-cited) is NOT in the scan set"
 # ev1.md is eligible by the 3 criteria, but _evidence/ guard keeps it invisible.
 # Even though the synthesis page cites it, archive cannot see it to graduate it.
-if printf '%s\n' "$scan_out" | grep -qF "_evidence/ev1.md"; then f=visible; else f=excluded; fi
+if grep -qF "_evidence/ev1.md" <<<"$scan_out"; then f=visible; else f=excluded; fi
 assert "ev1.md excluded from scan despite being processed+cited" "excluded" "$f"
 
 echo "Test 11: new1.md in scan set lacks processed:true (cannot be eligible)"
@@ -135,8 +135,8 @@ while IFS= read -r clip; do
     base_no_ext="$(basename "$clip" .md)"
     rel_no_ext="${clip#"$tmp/Clippings/"}"
     rel_no_ext="${rel_no_ext%.md}"
-    if printf '%s\n' "$synth_refs" | grep -qxF "$rel_no_ext" 2>/dev/null; then :; \
-    elif printf '%s\n' "$synth_refs" | grep -qxF "$base_no_ext" 2>/dev/null; then :; \
+    if grep -qxF "$rel_no_ext" <<<"$synth_refs" 2>/dev/null; then :; \
+    elif grep -qxF "$base_no_ext" <<<"$synth_refs" 2>/dev/null; then :; \
     else continue; fi
     eligible_count=$((eligible_count+1))
 done <<EOF

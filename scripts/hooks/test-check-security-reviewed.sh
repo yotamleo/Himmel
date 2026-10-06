@@ -146,7 +146,7 @@ run_capture() {
 
 assert_msg_contains() {
     local label="$1" haystack="$2" needle="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grep -qF -- <<<"$haystack" "$needle"; then
         echo "PASS $label"
     else
         echo "FAIL $label — message missing expected text: $needle"
@@ -157,7 +157,7 @@ assert_msg_contains() {
 
 assert_msg_absent() {
     local label="$1" haystack="$2" needle="$3"
-    if printf '%s' "$haystack" | grep -qF -- "$needle"; then
+    if grep -qF -- <<<"$haystack" "$needle"; then
         echo "FAIL $label — message unexpectedly contains: $needle"
         echo "     message was: $haystack"
         FAILED=$((FAILED + 1))
@@ -344,7 +344,7 @@ rm -rf "$d"
 # --- HIMMEL-1115: a >64KB commit-message range must not SIGPIPE the gate ---
 #
 # Regression. The gate used to test the attestation with
-#   printf '%s' "$commit_msgs" | grep -qiE "$ATTEST_RE"
+#   grep -qiE "$ATTEST_RE" <<<"$commit_msgs"
 # under `set -euo pipefail`. Once the range's messages exceed the OS pipe
 # buffer (~64KB), printf BLOCKS mid-write; grep -q matches the attestation
 # early (git log is newest-first and the attestation lives in the NEWEST

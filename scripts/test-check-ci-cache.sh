@@ -232,7 +232,7 @@ if [ -n "$CIC_ROWS" ]; then pass "5b rows arrived after the resume"; else fail "
 new_case
 echo err > "$CASE_DIR/mode"
 cic_init "" ; cic_get 60 2>/dev/null; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$CIC_ERR" | grep -q 'error connecting'; then pass "5c non-rate-limit error: rc 1, text kept"; else fail "5c error" "rc=$rc err=$CIC_ERR"; fi
+if [ "$rc" -eq 1 ] && grep -q 'error connecting' <<<"$CIC_ERR"; then pass "5c non-rate-limit error: rc 1, text kept"; else fail "5c error" "rc=$rc err=$CIC_ERR"; fi
 cic_init "" ; cic_get 60 2>/dev/null; n=$(fetches)
 if [ "$n" -eq 2 ]; then pass "5d an error is never cached: the next caller refetches"; else fail "5d err cache" "fetches=$n want 2"; fi
 
@@ -252,7 +252,7 @@ if [ "$rc" -eq 2 ] && [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "6e a real 403 
 new_case
 echo die > "$CASE_DIR/mode"
 cic_init "" ; cic_get 60 2>/dev/null; rc=$?
-if [ "$rc" -eq 1 ] && printf '%s' "$CIC_ERR" | grep -q 'exited 137'; then pass "6c a killed gh is rc 1 with a reason (not an empty-rows rc 0)"; else fail "6c die" "rc=$rc err=$CIC_ERR rows=$CIC_ROWS"; fi
+if [ "$rc" -eq 1 ] && grep -q 'exited 137' <<<"$CIC_ERR"; then pass "6c a killed gh is rc 1 with a reason (not an empty-rows rc 0)"; else fail "6c die" "rc=$rc err=$CIC_ERR rows=$CIC_ROWS"; fi
 
 # 6d — a lock whose holder died before writing its timestamp is broken, not waited out.
 new_case

@@ -204,7 +204,7 @@ out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 100 --sender alice -
   --product "GREEN24 Pfeffer- / Apfel-Minze (Mentha)" --dose "2 caps = 10 ml" 2>&1)"
 rc=$?
 assert "feed write exits 0" 0 "$rc"
-echo "$out" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$out" && a=ok || a=no
 assert "feed write status line" ok "$a"
 
 n=$(grep -c '^| 2026-08-13 |' "$TARGET")
@@ -213,7 +213,7 @@ assert "new row present exactly once" 1 "$n"
 # pipe-lines under ## Log in order are header, separator, data-row-1
 # (original), data-row-2 (new) -> the 4th pipe-line must be our new row.
 row2=$(awk '/^## Log/{f=1;next} f && /^## /{f=0} f' "$TARGET" | grep '^|' | sed -n '4p')
-echo "$row2" | grep -q '^| 2026-08-13 |' && a=ok || a=no
+grep -q '^| 2026-08-13 |' <<<"$row2" && a=ok || a=no
 assert "new row is the 2nd data row (right after the existing one)" ok "$a"
 # ## Products untouched (still exactly one product subsection, unchanged)
 n=$(grep -c '^### GREEN24' "$TARGET")
@@ -230,7 +230,7 @@ before_sha="$(node -e "console.log(require('crypto').createHash('sha256').update
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 100 --sender alice --date 2026-08-13 --vessel x 2>&1)"
 rc=$?
 assert "re-run exits 0" 0 "$rc"
-echo "$out" | grep -q 'already-logged' && a=ok || a=no
+grep -q 'already-logged' <<<"$out" && a=ok || a=no
 assert "re-run reports already-logged" ok "$a"
 after_sha="$(node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "$TARGET")"
 assert "re-run leaves file byte-identical" "$before_sha" "$after_sha"
@@ -242,9 +242,9 @@ out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 101 --sender alice -
   --vessel "Small tent — mint (LECHUZA reservoir)" --ec "1.8" --note-file "$tmpdir/note.txt" 2>&1)"
 assert "sanitized-note write exits 0" 0 "$?"
 row=$(grep '^| 2026-08-14 |' "$TARGET")
-echo "$row" | grep -q 'edge case \\| edge case' && a=UNEXPECTED_DUP || a=ok
+grep -q 'edge case \\| edge case' <<<"$row" && a=UNEXPECTED_DUP || a=ok
 assert "no accidental duplication" ok "$a"
-echo "$row" | grep -q 'a bit high \\| edge case second line' && a=ok || a=no
+grep -q 'a bit high \\| edge case second line' <<<"$row" && a=ok || a=no
 assert "pipe escaped + CRLF/newline collapsed to single space" ok "$a"
 n=$(printf '%s' "$row" | wc -l | tr -d ' ')
 assert "written row has no raw embedded newline" 0 "$n"
@@ -255,7 +255,7 @@ before_sha="$(node -e "console.log(require('crypto').createHash('sha256').update
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 999 --sender alice --date 2026-08-15 --vessel x --dry-run 2>&1)"
 rc=$?
 assert "dry-run exits 0" 0 "$rc"
-echo "$out" | grep -q 'dry-run' && a=ok || a=no
+grep -q 'dry-run' <<<"$out" && a=ok || a=no
 assert "dry-run announces" ok "$a"
 after_sha="$(node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "$TARGET")"
 assert "dry-run wrote nothing (byte-identical)" "$before_sha" "$after_sha"
@@ -266,7 +266,7 @@ printf 'A new veg feed concentrate.\n\n- Cap volume = 5 ml.\n- Label dose: 1 cap
 out="$(node "$SCRIPT" --vault "$VAULT" --mode product --msg-id 200 --sender alice --product "BioBizz Grow" --body-file "$tmpdir/body.txt" 2>&1)"
 rc=$?
 assert "product write exits 0" 0 "$rc"
-echo "$out" | grep -q '^✓ grow-feed-log: appended product section' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended product section' <<<"$out" && a=ok || a=no
 assert "product write status line" ok "$a"
 grep -q '^### BioBizz Grow$' "$TARGET" && a=ok || a=no
 assert "product heading written" ok "$a"
@@ -280,7 +280,7 @@ assert "product section inserted before ## Notes" ok "$a"
 out="$(node "$SCRIPT" --vault "$VAULT" --mode product --msg-id 201 --sender alice --product "BioBizz Grow" --body-file "$tmpdir/body.txt" 2>&1)"
 rc=$?
 assert "product re-run exits 0" 0 "$rc"
-echo "$out" | grep -q 'product-exists' && a=ok || a=no
+grep -q 'product-exists' <<<"$out" && a=ok || a=no
 assert "product re-run reports product-exists" ok "$a"
 n=$(grep -c '^### BioBizz Grow$' "$TARGET")
 assert "no duplicate product heading" 1 "$n"
@@ -306,11 +306,11 @@ echo "Test 10: dedup is mode-scoped + boundary-safe"
 printf 'Fresh concentrate.\n' > "$tmpdir/body2.txt"
 out="$(node "$SCRIPT" --vault "$VAULT" --mode product --msg-id 700 --sender alice --product "NewCo Bloom" --body-file "$tmpdir/body2.txt" 2>&1)"
 assert "combo: product-mode call exits 0" 0 "$?"
-echo "$out" | grep -q '^✓ grow-feed-log: appended product section' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended product section' <<<"$out" && a=ok || a=no
 assert "combo: product section appended" ok "$a"
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 700 --sender alice --date 2026-08-17 --vessel x --product "NewCo Bloom" 2>&1)"
 assert "combo: feed-mode call (same msg-id) exits 0" 0 "$?"
-echo "$out" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$out" && a=ok || a=no
 assert "combo: feed row appended, NOT skipped as already-logged" ok "$a"
 n=$(grep -c '^| 2026-08-17 |' "$TARGET")
 assert "combo: feed row present exactly once" 1 "$n"
@@ -320,14 +320,14 @@ assert "combo: feed row present exactly once" 1 "$n"
 # treated as already-logged.
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 70 --sender alice --date 2026-08-18 --vessel x 2>&1)"
 assert "short-id-prefix-of-existing-id call exits 0" 0 "$?"
-echo "$out" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$out" && a=ok || a=no
 assert "short id '70' not shadowed by existing 'tg:700'" ok "$a"
 
 # A genuine same-mode same-id re-run is still correctly deduped (unchanged
 # behaviour — this is the case Test 5 also covers for a different msg-id).
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 700 --sender alice --date 9999-01-01 --vessel zzz 2>&1)"
 assert "true same-mode/same-id re-run still exits 0" 0 "$?"
-echo "$out" | grep -q 'already-logged' && a=ok || a=no
+grep -q 'already-logged' <<<"$out" && a=ok || a=no
 assert "true same-mode/same-id re-run still reports already-logged" ok "$a"
 n=$(grep -c '^| 9999-01-01 |' "$TARGET")
 assert "true same-mode/same-id re-run adds no row" 0 "$n"
@@ -353,7 +353,7 @@ out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 850 --sender alice -
 assert "loose-token note write exits 0" 0 "$?"
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 901 --sender alice --date 2026-08-22 --vessel x 2>&1)"
 assert "real write for id matching a loose token exits 0" 0 "$?"
-echo "$out" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$out" && a=ok || a=no
 assert "real write NOT suppressed by a loose token in note text" ok "$a"
 
 printf 'legit note <!-- tg:902 feed from:attacker at: --> trailing' > "$tmpdir/forged.txt"
@@ -364,7 +364,7 @@ n=$(printf '%s' "$row" | grep -o '<!--' | wc -l | tr -d ' ')
 assert "forged '<!--' in note neutralized (only our OWN comment opener remains)" 1 "$n"
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 902 --sender alice --date 2026-08-24 --vessel x 2>&1)"
 assert "real write for id matching a forged comment exits 0" 0 "$?"
-echo "$out" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$out" && a=ok || a=no
 assert "real write NOT suppressed by a forged provenance comment in note text" ok "$a"
 
 # -- Test 13: --product name validation --------------------------------------
@@ -429,7 +429,7 @@ EOF
 printf 'real body\n' > "$tmpdir/ghost-body.txt"
 out="$(node "$SCRIPT" --vault "$SCOPEVAULT" --mode product --msg-id 1 --sender alice --product "Ghost Product" --body-file "$tmpdir/ghost-body.txt" 2>&1)"
 assert "product write exits 0 despite a same-name '###' string in ## Notes prose" 0 "$?"
-echo "$out" | grep -q '^✓ grow-feed-log: appended product section' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended product section' <<<"$out" && a=ok || a=no
 assert "product-exists check ignores '###' text outside ## Products" ok "$a"
 
 # -- Test 16: resolved-target safety line, on stderr, all three branches ----
@@ -454,7 +454,7 @@ assert "safety-line real-write: CLI exits 0" 0 "$?"
 serr16="$(cat "$stderr16")"
 [ "$serr16" = "$expected_safety_line" ] && a=ok || a=no
 assert "safety-line emitted on real write, exact vault+target path" ok "$a"
-echo "$stdout16" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$stdout16" && a=ok || a=no
 assert "safety-line real-write: stdout still carries the ✓ status line" ok "$a"
 
 # Branch 2: --dry-run.
@@ -470,7 +470,7 @@ assert "safety-line skip: CLI exits 0" 0 "$?"
 serr16="$(cat "$stderr16")"
 [ "$serr16" = "$expected_safety_line" ] && a=ok || a=no
 assert "safety-line emitted on already-logged skip, exact vault+target path" ok "$a"
-echo "$stdout16" | grep -q 'already-logged' && a=ok || a=no
+grep -q 'already-logged' <<<"$stdout16" && a=ok || a=no
 assert "safety-line skip: stdout still carries the ⊘ status line" ok "$a"
 
 # -- Test 17: required flags validate AFTER trimming, not raw truthiness ----
@@ -498,9 +498,9 @@ out2="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id " " --sender alice 
 rc2=$?
 assert "first whitespace-only msg-id ('  ') exits 1" 1 "$rc1"
 assert "second, DIFFERENT whitespace-only msg-id (' ') also exits 1" 1 "$rc2"
-echo "$out1" | grep -q 'already-logged' && a=COLLIDED || a=ok
+grep -q 'already-logged' <<<"$out1" && a=COLLIDED || a=ok
 assert "first whitespace-only msg-id NOT reported as already-logged" ok "$a"
-echo "$out2" | grep -q 'already-logged' && a=COLLIDED || a=ok
+grep -q 'already-logged' <<<"$out2" && a=COLLIDED || a=ok
 assert "second whitespace-only msg-id NOT reported as already-logged (no collision)" ok "$a"
 n=$(grep -c '^| 2026-08-29 |\|^| 2026-08-30 |' "$TARGET")
 assert "neither whitespace-only attempt wrote a row" 0 "$n"
@@ -549,7 +549,7 @@ if command -v cygpath >/dev/null 2>&1 && MSYS_NO_PATHCONV=1 cmd /c mklink /J "$(
   out="$(node "$SCRIPT" --vault "$JUNCVAULT" --mode feed --msg-id 1 --sender alice --date 2026-08-13 --vessel x 2>&1)"
   rc=$?
   assert "junction-escape write refused (exit 2)" 2 "$rc"
-  echo "$out" | grep -q 'symlink/junction escape' && a=ok || a=no
+  grep -q 'symlink/junction escape' <<<"$out" && a=ok || a=no
   assert "junction-escape error names the real-path containment check" ok "$a"
   n=$(grep -c '^| 2026-08-13 |' "$JUNCOUTSIDE/Grow/Grow-Feeding-Log.md")
   assert "junction-escape refusal wrote nothing outside the vault" 0 "$n"
@@ -574,7 +574,7 @@ LWTARGET="$LWVAULT/20-Areas/Grow/Grow-Feeding-Log.md"
 out="$(GROW_FEED_LOG_SIMULATE_LOST_WRITE=1 node "$SCRIPT" --vault "$LWVAULT" --mode feed --msg-id 1 --sender alice --date 2026-08-13 --vessel x 2>&1)"
 rc=$?
 assert "one simulated lost write: CLI exits 0 (recovered via the retry)" 0 "$rc"
-echo "$out" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$out" && a=ok || a=no
 assert "one simulated lost write: ✓ printed only after the retry genuinely lands the row" ok "$a"
 n=$(grep -c '^| 2026-08-13 |' "$LWTARGET")
 assert "one simulated lost write: the row really is present after recovery" 1 "$n"
@@ -582,9 +582,9 @@ assert "one simulated lost write: the row really is present after recovery" 1 "$
 out="$(GROW_FEED_LOG_SIMULATE_LOST_WRITE=2 node "$SCRIPT" --vault "$LWVAULT" --mode feed --msg-id 2 --sender alice --date 2026-08-14 --vessel x 2>&1)"
 rc=$?
 assert "two simulated lost writes (exhausts the retry): exits 2 (write failure per the header contract, not a usage error)" 2 "$rc"
-echo "$out" | grep -q '✓' && a=FALSE_POSITIVE || a=ok
+grep -q '✓' <<<"$out" && a=FALSE_POSITIVE || a=ok
 assert "two simulated lost writes: does NOT print a false ✓" ok "$a"
-echo "$out" | grep -q 'lost a concurrent-write race' && a=ok || a=no
+grep -q 'lost a concurrent-write race' <<<"$out" && a=ok || a=no
 assert "two simulated lost writes: error names the race explicitly" ok "$a"
 n=$(grep -c '^| 2026-08-14 |' "$LWTARGET")
 assert "two simulated lost writes: no row silently left behind" 0 "$n"
@@ -603,7 +603,7 @@ printf '\n- concurrent Obsidian edit\n' > "$tmpdir/concurrent-append.txt"
 out="$(GROW_FEED_LOG_BEFORE_RENAME_APPEND_FILE="$tmpdir/concurrent-append.txt" node "$SCRIPT" --vault "$FRESHVAULT" --mode feed --msg-id 3 --sender alice --date 2026-08-15 --vessel x 2>&1)"
 rc=$?
 assert "stale snapshot: CLI exits 0 after rebuilding from fresh state" 0 "$rc"
-echo "$out" | grep -q '^✓ grow-feed-log: appended feed row' && a=ok || a=no
+grep -q '^✓ grow-feed-log: appended feed row' <<<"$out" && a=ok || a=no
 assert "stale snapshot: success is reported only after the rebuilt write lands" ok "$a"
 n=$(grep -c '^- concurrent Obsidian edit$' "$FRESHTARGET")
 assert "stale snapshot: concurrent Obsidian edit is preserved exactly once" 1 "$n"
@@ -621,7 +621,7 @@ before_sha="$(node -e "console.log(require('crypto').createHash('sha256').update
 out="$(node "$SCRIPT" --vault "$PRODUCTVAULT" --mode feed --msg-id 4 --sender alice --date 2026-08-16 --vessel x --product "Missing Product" 2>&1)"
 rc=$?
 assert "missing product heading: feed write is refused (exit 2)" 2 "$rc"
-echo "$out" | grep -q 'product not found in ## Products' && a=ok || a=no
+grep -q 'product not found in ## Products' <<<"$out" && a=ok || a=no
 assert "missing product heading: error names the Products authority" ok "$a"
 after_sha="$(node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "$PRODUCTTARGET")"
 assert "missing product heading: refusal leaves file byte-identical" "$before_sha" "$after_sha"
@@ -678,8 +678,8 @@ out="$(node "$tmpdir/contain-cases.mjs" "$SCRIPT" 2>&1)"
 rc=$?
 assert "all containment predicate unit cases hold" 0 "$rc"
 if [ "$rc" -ne 0 ]; then printf '%s\n' "$out" | sed 's/^/         /'; fi
-if echo "$out" | grep -q '^ok cross-drive full is NOT contained'; then a=ok
-elif echo "$out" | grep -q '^SKIP cross-drive'; then a=ok; echo "  SKIP  cross-drive predicate cases (POSIX — announced by the unit runner above)"
+if grep -q '^ok cross-drive full is NOT contained' <<<"$out"; then a=ok
+elif grep -q '^SKIP cross-drive' <<<"$out"; then a=ok; echo "  SKIP  cross-drive predicate cases (POSIX — announced by the unit runner above)"
 else a=no; fi
 assert "cross-drive case ran (win32) or announced its skip (POSIX)" ok "$a"
 
@@ -698,7 +698,7 @@ before_sha="$(node -e "console.log(require('crypto').createHash('sha256').update
 out="$(GROW_FEED_LOG_TMP_SUFFIX='../escape' node "$SCRIPT" --vault "$TSVAULT" --mode feed --msg-id 1 --sender alice --date 2026-08-13 --vessel x 2>&1)"
 rc=$?
 assert "slash-carrying tmp suffix refused (exit 2)" 2 "$rc"
-echo "$out" | grep -q 'path-safety' && a=ok || a=no
+grep -q 'path-safety' <<<"$out" && a=ok || a=no
 assert "slash-suffix refusal names path-safety" ok "$a"
 out="$(GROW_FEED_LOG_TMP_SUFFIX='..\escape' node "$SCRIPT" --vault "$TSVAULT" --mode feed --msg-id 2 --sender alice --date 2026-08-13 --vessel x 2>&1)"
 assert "backslash-carrying tmp suffix refused (exit 2)" 2 "$?"
@@ -742,7 +742,7 @@ assert "--note-file '' exits 1 (not silently treated as no note)" 1 "$?"
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 2003 --sender alice --date 2026-09-02 --vessel x --ec '   ' 2>&1)"
 assert "whitespace-only --ec write exits 0" 0 "$?"
 row=$(grep '^| 2026-09-02 |' "$TARGET")
-echo "$row" | grep -q 'EC' && a=DANGLING || a=ok
+grep -q 'EC' <<<"$row" && a=DANGLING || a=ok
 assert "whitespace-only --ec leaves no dangling 'EC ' prefix in the notes cell" ok "$a"
 
 # -- Test 26: msg-id charset — the dedup key field is unambiguous ------------
@@ -776,7 +776,7 @@ out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 5100 --sender alice 
 assert "plain numeric msg-id still writes (exit 0)" 0 "$?"
 out="$(node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 5100 --sender alice --date 2026-09-03 --vessel x 2>&1)"
 assert "numeric msg-id re-run still exits 0" 0 "$?"
-echo "$out" | grep -q 'already-logged' && a=ok || a=no
+grep -q 'already-logged' <<<"$out" && a=ok || a=no
 assert "numeric msg-id re-run dedups via the exact-field comparison" ok "$a"
 
 # -- Test 27: a flag-shaped token where a value belongs is a usage error -----
@@ -827,7 +827,7 @@ before_sha="$(node -e "console.log(require('crypto').createHash('sha256').update
 out="$(GROW_FEED_LOG_TEST_HOOKS='' GROW_FEED_LOG_SIMULATE_LOST_WRITE=1 node "$SCRIPT" --vault "$VAULT" --mode feed --msg-id 5400 --sender a --date 2026-08-13 --vessel x 2>&1)"
 rc=$?
 assert "stray SIMULATE_LOST_WRITE without the gate exits 2" 2 "$rc"
-echo "$out" | grep -q 'GROW_FEED_LOG_TEST_HOOKS' && a=ok || a=no
+grep -q 'GROW_FEED_LOG_TEST_HOOKS' <<<"$out" && a=ok || a=no
 assert "refusal names the gate and the stray hook" ok "$a"
 after_sha="$(node -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync(process.argv[1])).digest('hex'))" "$TARGET")"
 assert "gated refusal wrote nothing" "$before_sha" "$after_sha"

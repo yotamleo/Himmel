@@ -311,7 +311,7 @@ set +e
 out=$(run_contributor "$sA2" "$hA2" "$fA2" "$pA2" --dry-run); rc=$?
 set -e
 [ "$rc" -eq 0 ] || fail "caseA2: legacy contributor lanes:[] profile must succeed, not exit 2 (got rc=$rc): $out"
-if printf '%s' "$out" | grep -q 'legacy profile has lanes:\[\]'; then
+if grep -q 'legacy profile has lanes:\[\]' <<<"$out"; then
   fail "caseA2: legacy contributor profile must not hit the adopter lanes-placeholder refusal: $out"
 fi
 echo "ok: caseA2 legacy contributor lanes:[] profile is accepted (lanes is adopter-only)"

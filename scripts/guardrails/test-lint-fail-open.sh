@@ -167,17 +167,17 @@ else
         fail "fail-open-lint hook registered in .pre-commit-config.yaml" "the lint is wired to nothing on the private path. Apply the round-2 escalation block: id fail-open-lint · entry bash scripts/hooks/check-fail-open-lint.sh · pass_filenames false · stages [pre-commit] · files ^(scripts/(guardrails|hooks|lanes)/|scripts/graphify/refresh-graph-map\.sh$|scripts/claude-(codex|glm|routed)$|scripts/telegram/spawn-glm\.ts$|\.pre-commit-config\.yaml$)"
     else
         pass "fail-open-lint hook registered in .pre-commit-config.yaml"
-        if printf '%s\n' "$hook_block" | grep -q "entry: bash $GATE_REL"; then
+        if grep -q "entry: bash $GATE_REL" <<<"$hook_block"; then
             pass "hook entry runs the gate script"
         else
             fail "hook entry runs the gate script" "expected: entry: bash $GATE_REL"
         fi
-        if printf '%s\n' "$hook_block" | grep -q 'pass_filenames: false'; then
+        if grep -q 'pass_filenames: false' <<<"$hook_block"; then
             pass "hook runs file-agnostic (pass_filenames false)"
         else
             fail "hook runs file-agnostic (pass_filenames false)" "the gate must scan the guard surfaces, not the staged subset"
         fi
-        if printf '%s\n' "$hook_block" | grep -q 'stages: \[pre-commit\]'; then
+        if grep -q 'stages: \[pre-commit\]' <<<"$hook_block"; then
             pass "hook fires at pre-commit (the private path)"
         else
             fail "hook fires at pre-commit (the private path)" "pre-push is too late for a surface Actions never runs"

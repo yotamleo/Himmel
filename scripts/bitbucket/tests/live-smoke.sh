@@ -87,7 +87,7 @@ if printf '%s' "$MERGE_JSON" | grep -q MERGED; then ok "pr merge → MERGED"; el
 
 echo "smoke: CLI pr list --state MERGED"
 LIST_JSON=$($CLI pr list --state MERGED)
-if printf '%s' "$LIST_JSON" | grep -q "\"id\": $PR_ID"; then
+if grep -q "\"id\": $PR_ID" <<<"$LIST_JSON"; then
     ok "pr list merged contains #$PR_ID"
 else
     bad "pr list merged" "$LIST_JSON"

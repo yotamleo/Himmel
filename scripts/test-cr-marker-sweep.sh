@@ -232,10 +232,10 @@ mkdir -p "$FLAKY_BIN"
 cat > "$FLAKY_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 args="$*"
-if echo "$args" | grep -q "auth status"; then exit 0; fi
-if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi
-if echo "$args" | grep -q "pr list"; then
-    if echo "$args" | grep -q -- "--state merged"; then echo "[]"; exit 0; fi
+if grep -q "auth status" <<<"$args"; then exit 0; fi
+if grep -q "repo view" <<<"$args"; then echo "owner/repo"; exit 0; fi
+if grep -q "pr list" <<<"$args"; then
+    if grep -q -- <<<"$args" "--state merged"; then echo "[]"; exit 0; fi
     echo "gh: connection timed out" >&2
     exit 1
 fi

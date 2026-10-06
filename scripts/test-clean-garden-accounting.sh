@@ -129,14 +129,14 @@ mkdir -p "$STUB_DIR"
 cat > "$STUB_DIR/gh" <<'STUB'
 #!/usr/bin/env bash
 args="$*"
-if echo "$args" | grep -q "auth status"; then exit 0; fi
-if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi
-if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
+if grep -q "auth status" <<<"$args"; then exit 0; fi
+if grep -q "repo view" <<<"$args"; then echo "owner/repo"; exit 0; fi
+if grep -q "api --paginate repos/owner/repo/pulls" <<<"$args"; then
     printf 'origin\n' >> "$GH_CALLS"
     cat "$GH_ROWS_ORIGIN"
     exit 0
 fi
-if echo "$args" | grep -q -- "--state open"; then exit 0; fi
+if grep -q -- <<<"$args" "--state open"; then exit 0; fi
 exit 0
 STUB
 chmod +x "$STUB_DIR/gh"

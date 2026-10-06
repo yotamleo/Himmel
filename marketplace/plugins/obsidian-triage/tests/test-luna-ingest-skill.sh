@@ -60,14 +60,14 @@ echo "Test 2: SKILL.md frontmatter has required fields"
 # Extract frontmatter (between the first two --- delimiters).
 fm_lines=$(awk '/^---$/{c++; next} c==1' "$SKILL")
 
-if printf '%s\n' "$fm_lines" | grep -qE "^name:[[:space:]]+luna-ingest[[:space:]]*$"; then
+if grep -qE "^name:[[:space:]]+luna-ingest[[:space:]]*$" <<<"$fm_lines"; then
     name_ok=yes
 else
     name_ok=no
 fi
 assert "frontmatter name: luna-ingest" "yes" "$name_ok"
 
-if printf '%s\n' "$fm_lines" | grep -qE "^description:[[:space:]]+\S"; then
+if grep -qE "^description:[[:space:]]+\S" <<<"$fm_lines"; then
     desc_ok=yes
 else
     desc_ok=no
@@ -79,7 +79,7 @@ skill_dir_name="$(basename "$(dirname "$SKILL")")"
 assert "skill dir = luna-ingest" "luna-ingest" "$skill_dir_name"
 
 echo "Test 4: description starts with 'Use when' (CSO best practice)"
-if printf '%s\n' "$fm_lines" | grep -qE "^description:[[:space:]]+Use when"; then
+if grep -qE "^description:[[:space:]]+Use when" <<<"$fm_lines"; then
     cso_ok=yes
 else
     cso_ok=no
@@ -166,7 +166,7 @@ for marker in \
 done
 
 # The description must advertise bitbucket so the skill picker routes BB URLs here.
-if printf '%s\n' "$fm_lines" | grep -qF "bitbucket.org"; then
+if grep -qF "bitbucket.org" <<<"$fm_lines"; then
     desc_bb=yes
 else
     desc_bb=no

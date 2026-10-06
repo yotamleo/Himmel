@@ -672,7 +672,7 @@ else
     echo "FAIL f: HIMMEL-3122 -- runner file is GONE after the forced re-arm ($RUNNER_PATH_F); rc=$rc2, output: $out2"; FAILED=$((FAILED + 1))
 fi
 installed2=$(cat "$CRON_STORE" 2>/dev/null || true)
-if printf '%s\n' "$installed2" | grep -qF "# $TASK_NAME_F"; then
+if grep -qF "# $TASK_NAME_F" <<<"$installed2"; then
     if [ -f "$RUNNER_PATH_F" ]; then
         echo "PASS f: the installed crontab entry's runner exists (not dangling)"
     else

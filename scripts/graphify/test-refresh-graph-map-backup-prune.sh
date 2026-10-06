@@ -78,7 +78,7 @@ done
 for d in 2026-09-01 2026-09-02; do
   [ -d "$OUT1/$d" ] && fail "T1 should have pruned $d" || pass "T1 pruned $d"
 done
-echo "$err1" | grep -q "pruned 2 dated backup dir" \
+grep -q "pruned 2 dated backup dir" <<<"$err1" \
   && pass "T1 stderr reports the prune count" \
   || fail "T1 stderr should report 2 pruned: $err1"
 
@@ -132,10 +132,10 @@ echo "T5: non-integer GRAPHIFY_BACKUP_KEEP warns and falls back to 3"
 OUT5="$WS/t5/graphify-out"; mkdir -p "$OUT5"
 for d in 2026-04-01 2026-04-02 2026-04-03 2026-04-04 2026-04-05; do mkdate "$OUT5" "$d"; done
 err5="$(GRAPHIFY_BACKUP_KEEP=nope _prune_graphify_backups "$OUT5" 2>&1 1>/dev/null)"
-echo "$err5" | grep -q "WARN GRAPHIFY_BACKUP_KEEP must be a non-negative integer" \
+grep -q "WARN GRAPHIFY_BACKUP_KEEP must be a non-negative integer" <<<"$err5" \
   && pass "T5 stderr warns about the bad value" \
   || fail "T5 stderr should warn about GRAPHIFY_BACKUP_KEEP=nope: $err5"
-echo "$err5" | grep -q "using default 3" \
+grep -q "using default 3" <<<"$err5" \
   && pass "T5 stderr names the fallback default" \
   || fail "T5 stderr should name the default-3 fallback: $err5"
 for d in 2026-04-03 2026-04-04 2026-04-05; do
@@ -173,7 +173,7 @@ else
   chmod 755 "$OUT7"
   [ "$rc7" -eq 0 ] && pass "T7 function still returns 0 despite an rm failure" \
     || fail "T7 should return 0 even when a prune rm fails (got rc=$rc7)"
-  echo "$err7" | grep -q "WARN could not prune backup dir" \
+  grep -q "WARN could not prune backup dir" <<<"$err7" \
     && pass "T7 stderr WARNs about the failed prune" \
     || fail "T7 stderr should WARN about the failed prune: $err7"
   rm -rf "$OUT7" 2>/dev/null
@@ -191,10 +191,10 @@ for d in 2026-07-01 2026-07-02 2026-07-03 2026-07-04 2026-07-05; do mkdate "$OUT
 err8="$(GRAPHIFY_BACKUP_KEEP=99999999999999999999 _prune_graphify_backups "$OUT8" 2>&1 1>/dev/null)"; rc8=$?
 [ "$rc8" -eq 0 ] && pass "T8 function returns 0 for an oversized value" \
   || fail "T8 should return 0 for an oversized value (got rc=$rc8)"
-echo "$err8" | grep -q "WARN GRAPHIFY_BACKUP_KEEP must be a non-negative integer" \
+grep -q "WARN GRAPHIFY_BACKUP_KEEP must be a non-negative integer" <<<"$err8" \
   && pass "T8 stderr warns about the oversized value" \
   || fail "T8 stderr should warn about the oversized GRAPHIFY_BACKUP_KEEP: $err8"
-echo "$err8" | grep -q "using default 3" \
+grep -q "using default 3" <<<"$err8" \
   && pass "T8 stderr names the fallback default" \
   || fail "T8 stderr should name the default-3 fallback: $err8"
 for d in 2026-07-03 2026-07-04 2026-07-05; do
@@ -214,7 +214,7 @@ for d in 2026-08-01 2026-08-02 2026-08-03 2026-08-04 2026-08-05 2026-08-06 2026-
   mkdate "$OUT9" "$d"
 done
 err9="$(GRAPHIFY_BACKUP_KEEP=010 _prune_graphify_backups "$OUT9" 2>&1 1>/dev/null)"
-echo "$err9" | grep -q "WARN GRAPHIFY_BACKUP_KEEP" \
+grep -q "WARN GRAPHIFY_BACKUP_KEEP" <<<"$err9" \
   && fail "T9 should not warn on a valid leading-zero value: $err9" \
   || pass "T9 no bad-value warning for '010'"
 n9=0; for d in 2026-08-01 2026-08-02 2026-08-03 2026-08-04 2026-08-05 2026-08-06 2026-08-07 2026-08-08 2026-08-09; do

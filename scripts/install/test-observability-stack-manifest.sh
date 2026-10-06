@@ -335,11 +335,11 @@ console.log(JSON.stringify({ win32: plan('win32'), posix: plan('linux') }));
 " "$(winpath "$install_engine_lib")")
 
 winArgs=$(echo "$outJ" | jq -r '.win32.args | join(" ")')
-echo "$winArgs" | grep -qE -- '-File' \
+grep -qE -- <<<"$winArgs" '-File' \
   || fail "case j: win32 plan entry args must include -File, got args: $winArgs (full: $outJ)"
-echo "$winArgs" | grep -qE 'install-stack\.ps1' \
+grep -qE 'install-stack\.ps1' <<<"$winArgs" \
   || fail "case j: win32 plan entry's -File arg must name install-stack.ps1, got args: $winArgs (full: $outJ)"
-echo "$winArgs" | grep -qE -- '-RepoRoot' \
+grep -qE -- <<<"$winArgs" '-RepoRoot' \
   || fail "case j: win32 plan entry args must include -RepoRoot, got args: $winArgs (full: $outJ)"
 [ "$(echo "$outJ" | jq -r '.win32.unrunnable // empty')" = "" ] \
   || fail "case j: win32 plan entry must NOT be unrunnable, got: $outJ"

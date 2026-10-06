@@ -243,18 +243,18 @@ echo "Test 11: triage scan (maxdepth 2, -not -path '*/_evidence/*') excludes mov
 triage_scan=$(find "$tmp/Clippings" -maxdepth 2 -type f -name '*.md' \
     -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
     -not -path '*/_evidence/*' 2>/dev/null)
-if printf '%s\n' "$triage_scan" | grep -qF "/$ID.md"; then f=leaked; else f=excluded; fi
+if grep -qF "/$ID.md" <<<"$triage_scan"; then f=leaked; else f=excluded; fi
 assert "triage scan excludes moved clip" "excluded" "$f"
 
 echo "Test 12: archive eligibility scan (maxdepth 3) also excludes moved clip"
 archive_scan=$(find "$tmp/Clippings" -maxdepth 3 -type f -name '*.md' \
     -not -path '*/_synthesis/*' -not -path '*/_done/*' -not -name '_deferred.md' \
     -not -path '*/_evidence/*' 2>/dev/null)
-if printf '%s\n' "$archive_scan" | grep -qF "/$ID.md"; then f=leaked; else f=excluded; fi
+if grep -qF "/$ID.md" <<<"$archive_scan"; then f=leaked; else f=excluded; fi
 assert "archive scan excludes moved clip (_evidence/ excluded)" "excluded" "$f"
 
 echo "Test 13: sibling remains visible in scans (not accidentally excluded)"
-if printf '%s\n' "$triage_scan" | grep -qF "/$SIB.md"; then f=visible; else f=missing; fi
+if grep -qF "/$SIB.md" <<<"$triage_scan"; then f=visible; else f=missing; fi
 assert "prefix-sibling still visible in triage scan" "visible" "$f"
 
 # HIMMEL-770: ig_media_pending step-0 hold -- a two-clip behavioral mirror of the

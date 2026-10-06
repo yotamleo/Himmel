@@ -201,7 +201,7 @@ new_case
 echo "$(( $(date +%s) + 1000 ))" > "$CASE_DIR/exhausted"
 run_ci green 42 --max-wait 60
 if [ "$RC" -eq 2 ]; then pass "3 rc 2 (cannot evaluate), meaning unchanged"; else fail "3 rc" "rc=$RC want 2"; fi
-if printf '%s' "$ERR" | grep -qi 'budget exhausted'; then pass "3b says the budget is exhausted"; else fail "3b message" "stderr: $ERR"; fi
+if grep -qi 'budget exhausted' <<<"$ERR"; then pass "3b says the budget is exhausted"; else fail "3b message" "stderr: $ERR"; fi
 if ! grep -q -- '--watch' "$CASE_DIR/calls.log"; then pass "3c no watch started"; else fail "3c watch" "a --watch call was made"; fi
 
 # 4 — rate limit reported by gh mid-watch: wait for the reset, retry, not exit 2.

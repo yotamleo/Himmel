@@ -75,21 +75,21 @@ cat > "$STUB_DIR/gh" <<'STUB'
 # pipeline's last command) — HIMMEL-1430 does not reach a shell that never
 # opted into pipefail.
 args="$*"
-if echo "$args" | grep -q "auth status"; then exit 0; fi
-if echo "$args" | grep -q "repo view"; then echo "owner/repo"; exit 0; fi
-if echo "$args" | grep -q "api --paginate repos/owner/repo/pulls"; then
+if grep -q "auth status" <<<"$args"; then exit 0; fi
+if grep -q "repo view" <<<"$args"; then echo "owner/repo"; exit 0; fi
+if grep -q "api --paginate repos/owner/repo/pulls" <<<"$args"; then
     while IFS=' ' read -r branch sha; do
         printf 'owner/repo\t%s\tmerged\t%s\n' "$branch" "$sha"
     done < <(git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/feat)
     exit 0
 fi
-if echo "$args" | grep -q "pr list"; then
+if grep -q "pr list" <<<"$args"; then
     git for-each-ref --format='%(refname:short) %(objectname)' refs/heads/feat \
         | jq -Rn '[inputs | split(" ") | {headRefName: .[0], number: 1, state: "MERGED", headRefOid: .[1], baseRefName: "main"}]'
     exit 0
 fi
-if echo "$args" | grep -q -- "--state merged"; then echo "1"; exit 0; fi
-if echo "$args" | grep -q -- "--state open"; then exit 0; fi
+if grep -q -- <<<"$args" "--state merged"; then echo "1"; exit 0; fi
+if grep -q -- <<<"$args" "--state open"; then exit 0; fi
 exit 0
 STUB
 chmod +x "$STUB_DIR/gh"

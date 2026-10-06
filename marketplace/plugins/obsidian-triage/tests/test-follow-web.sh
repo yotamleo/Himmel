@@ -70,10 +70,10 @@ console.log("PRODUCT=" + byKind.product);
 console.log("RETURNS_NEW_ARRAY=" + (out !== dossier.claims));
 EOF
 out1="$(node "$tmpdir/verify.mjs" 2>&1)"
-echo "$out1" | grep -q 'COURSE=verified' && r=yes || r=no; assert "verifyWebClaims: course verified on corroborating hit" yes "$r"
-echo "$out1" | grep -q 'ROLE=verified' && r=yes || r=no; assert "verifyWebClaims: role ('founder of') verified on corroborating hit" yes "$r"
-echo "$out1" | grep -q 'PRODUCT=verified' && r=yes || r=no; assert "verifyWebClaims: product verified on corroborating hit" yes "$r"
-echo "$out1" | grep -q 'RETURNS_NEW_ARRAY=true' && r=yes || r=no; assert "verifyWebClaims: returns a new claims array" yes "$r"
+grep -q 'COURSE=verified' <<<"$out1" && r=yes || r=no; assert "verifyWebClaims: course verified on corroborating hit" yes "$r"
+grep -q 'ROLE=verified' <<<"$out1" && r=yes || r=no; assert "verifyWebClaims: role ('founder of') verified on corroborating hit" yes "$r"
+grep -q 'PRODUCT=verified' <<<"$out1" && r=yes || r=no; assert "verifyWebClaims: product verified on corroborating hit" yes "$r"
+grep -q 'RETURNS_NEW_ARRAY=true' <<<"$out1" && r=yes || r=no; assert "verifyWebClaims: returns a new claims array" yes "$r"
 
 # -- Test 2: stays unverified on a miss, a webFn error, and a non-corroborating hit --
 echo "Test 2: verifyWebClaims — unverified on miss / error / non-corroboration"
@@ -102,9 +102,9 @@ const noncorr = await verifyWebClaims(claimSet(), { webFn: nonCorroboratingFn })
 console.log("NONCORROBORATING=" + noncorr[0].status);
 EOF
 out2="$(node "$tmpdir/negatives.mjs" 2>&1)"
-echo "$out2" | grep -q 'MISS=unverified' && r=yes || r=no; assert "verifyWebClaims: found:false -> unverified" yes "$r"
-echo "$out2" | grep -q 'ERROR=unverified' && r=yes || r=no; assert "verifyWebClaims: webFn error -> unverified (never fabricates)" yes "$r"
-echo "$out2" | grep -q 'NONCORROBORATING=unverified' && r=yes || r=no; assert "verifyWebClaims: found but non-corroborating -> unverified" yes "$r"
+grep -q 'MISS=unverified' <<<"$out2" && r=yes || r=no; assert "verifyWebClaims: found:false -> unverified" yes "$r"
+grep -q 'ERROR=unverified' <<<"$out2" && r=yes || r=no; assert "verifyWebClaims: webFn error -> unverified (never fabricates)" yes "$r"
+grep -q 'NONCORROBORATING=unverified' <<<"$out2" && r=yes || r=no; assert "verifyWebClaims: found but non-corroborating -> unverified" yes "$r"
 
 # -- Test 3: never verifies a claim with no web evidence; passes through other rungs' verdicts --
 echo "Test 3: verifyWebClaims — no-op cases (no webFn, non-web kinds, already-verified)"
@@ -136,10 +136,10 @@ console.log("FOLLOWERS=" + withWeb.find(c => c.kind === "followers").status);
 console.log("ROLE=" + withWeb.find(c => c.kind === "role").status);
 EOF
 out3="$(node "$tmpdir/passthrough.mjs" 2>&1)"
-echo "$out3" | grep -q 'NOWEB_REPO=verified' && r=yes || r=no; assert "verifyWebClaims: no webFn -> claims pass through unchanged" yes "$r"
-echo "$out3" | grep -q 'REPO=verified' && r=yes || r=no; assert "verifyWebClaims: repo kind never web-checked" yes "$r"
-echo "$out3" | grep -q 'FOLLOWERS=unverified' && r=yes || r=no; assert "verifyWebClaims: followers kind never web-checked (no evidence -> stays unverified)" yes "$r"
-echo "$out3" | grep -q 'ROLE=contradicted' && r=yes || r=no; assert "verifyWebClaims: already-decided claim not overridden" yes "$r"
+grep -q 'NOWEB_REPO=verified' <<<"$out3" && r=yes || r=no; assert "verifyWebClaims: no webFn -> claims pass through unchanged" yes "$r"
+grep -q 'REPO=verified' <<<"$out3" && r=yes || r=no; assert "verifyWebClaims: repo kind never web-checked" yes "$r"
+grep -q 'FOLLOWERS=unverified' <<<"$out3" && r=yes || r=no; assert "verifyWebClaims: followers kind never web-checked (no evidence -> stays unverified)" yes "$r"
+grep -q 'ROLE=contradicted' <<<"$out3" && r=yes || r=no; assert "verifyWebClaims: already-decided claim not overridden" yes "$r"
 
 # -- Test 4: FOLLOW_WEB_FIXTURE seam (makeWebFn) resolves a hermetic webFn ------
 echo "Test 4: makeWebFn — FOLLOW_WEB_FIXTURE hermetic seam"
@@ -162,10 +162,10 @@ console.log("OFF_WHEN_NO_KEY=" + (makeWebFn({}) === null));
 console.log("FIRECRAWL_NULL_NO_KEY=" + (makeFirecrawlWebFn({}) === null));
 EOF
 out4="$(node "$tmpdir/fixture.mjs" 2>&1)"
-echo "$out4" | grep -q 'FIXTURE_HIT=true' && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_FIXTURE returns the mapped result" yes "$r"
-echo "$out4" | grep -q 'FIXTURE_MISS=true' && r=yes || r=no; assert "makeWebFn: fixture miss -> {found:false}" yes "$r"
-echo "$out4" | grep -q 'OFF_WHEN_NO_KEY=true' && r=yes || r=no; assert "makeWebFn: no fixture + no key -> null (rung off)" yes "$r"
-echo "$out4" | grep -q 'FIRECRAWL_NULL_NO_KEY=true' && r=yes || r=no; assert "makeFirecrawlWebFn: null without apiKey (default off)" yes "$r"
+grep -q 'FIXTURE_HIT=true' <<<"$out4" && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_FIXTURE returns the mapped result" yes "$r"
+grep -q 'FIXTURE_MISS=true' <<<"$out4" && r=yes || r=no; assert "makeWebFn: fixture miss -> {found:false}" yes "$r"
+grep -q 'OFF_WHEN_NO_KEY=true' <<<"$out4" && r=yes || r=no; assert "makeWebFn: no fixture + no key -> null (rung off)" yes "$r"
+grep -q 'FIRECRAWL_NULL_NO_KEY=true' <<<"$out4" && r=yes || r=no; assert "makeFirecrawlWebFn: null without apiKey (default off)" yes "$r"
 
 # -- Test 5: chainWebFns — order, short-circuit, fall-through, error-swallow --
 echo "Test 5: chainWebFns — free-first fallback composition"
@@ -209,14 +209,14 @@ r = await fn("q");
 console.log("ASYNC_URL=" + r.url);
 EOF
 out5="$(node "$tmpdir/chain.mjs" 2>&1)"
-echo "$out5" | grep -q 'SHORTCIRCUIT_URL=u' && r=yes || r=no; assert "chainWebFns: returns first found result" yes "$r"
-echo "$out5" | grep -q 'ORDER=a,b$' && r=yes || r=no; assert "chainWebFns: short-circuits — later backends not called" yes "$r"
-echo "$out5" | grep -q 'ALLMISS=true' && r=yes || r=no; assert "chainWebFns: all-miss -> {found:false}" yes "$r"
-echo "$out5" | grep -q 'ALLMISS_ORDER=a,b$' && r=yes || r=no; assert "chainWebFns: tries every backend in order on a miss" yes "$r"
-echo "$out5" | grep -q 'SWALLOW_URL=ok' && r=yes || r=no; assert "chainWebFns: swallows a throwing backend, continues to next" yes "$r"
-echo "$out5" | grep -q 'SWALLOW_ORDER=a,b$' && r=yes || r=no; assert "chainWebFns: thrower counted then next backend tried" yes "$r"
-echo "$out5" | grep -q 'SKIPNULL_URL=nn' && r=yes || r=no; assert "chainWebFns: skips null backends" yes "$r"
-echo "$out5" | grep -q 'ASYNC_URL=async' && r=yes || r=no; assert "chainWebFns: awaits async backends" yes "$r"
+grep -q 'SHORTCIRCUIT_URL=u' <<<"$out5" && r=yes || r=no; assert "chainWebFns: returns first found result" yes "$r"
+grep -q 'ORDER=a,b$' <<<"$out5" && r=yes || r=no; assert "chainWebFns: short-circuits — later backends not called" yes "$r"
+grep -q 'ALLMISS=true' <<<"$out5" && r=yes || r=no; assert "chainWebFns: all-miss -> {found:false}" yes "$r"
+grep -q 'ALLMISS_ORDER=a,b$' <<<"$out5" && r=yes || r=no; assert "chainWebFns: tries every backend in order on a miss" yes "$r"
+grep -q 'SWALLOW_URL=ok' <<<"$out5" && r=yes || r=no; assert "chainWebFns: swallows a throwing backend, continues to next" yes "$r"
+grep -q 'SWALLOW_ORDER=a,b$' <<<"$out5" && r=yes || r=no; assert "chainWebFns: thrower counted then next backend tried" yes "$r"
+grep -q 'SKIPNULL_URL=nn' <<<"$out5" && r=yes || r=no; assert "chainWebFns: skips null backends" yes "$r"
+grep -q 'ASYNC_URL=async' <<<"$out5" && r=yes || r=no; assert "chainWebFns: awaits async backends" yes "$r"
 
 # -- Test 6: makeWebFn — free-first chain assembly + gating -----------------
 echo "Test 6: makeWebFn — chain assembly, gating, fixture precedence"
@@ -240,12 +240,12 @@ console.log("HERMES_ENABLES=" + (typeof makeWebFn({ FOLLOW_WEB_HERMES: "1" }) ==
 console.log("FIRECRAWL_ENABLES=" + (typeof makeWebFn({ FIRECRAWL_API_KEY: "key" }) === "function"));
 EOF
 out6="$(node "$tmpdir/chainfn.mjs" 2>&1)"
-echo "$out6" | grep -q 'NULL_EMPTY=true' && r=yes || r=no; assert "makeWebFn: no backend enabled -> null" yes "$r"
-echo "$out6" | grep -q 'FIXTURE_WINS=true' && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_FIXTURE precedence beats backend flags" yes "$r"
-echo "$out6" | grep -q 'QMD_ENABLES=true' && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_QMD activates the rung" yes "$r"
-echo "$out6" | grep -q 'CLI_ENABLES=true' && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_CLI activates the rung" yes "$r"
-echo "$out6" | grep -q 'HERMES_ENABLES=true' && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_HERMES activates the rung" yes "$r"
-echo "$out6" | grep -q 'FIRECRAWL_ENABLES=true' && r=yes || r=no; assert "makeWebFn: FIRECRAWL_API_KEY activates the rung" yes "$r"
+grep -q 'NULL_EMPTY=true' <<<"$out6" && r=yes || r=no; assert "makeWebFn: no backend enabled -> null" yes "$r"
+grep -q 'FIXTURE_WINS=true' <<<"$out6" && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_FIXTURE precedence beats backend flags" yes "$r"
+grep -q 'QMD_ENABLES=true' <<<"$out6" && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_QMD activates the rung" yes "$r"
+grep -q 'CLI_ENABLES=true' <<<"$out6" && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_CLI activates the rung" yes "$r"
+grep -q 'HERMES_ENABLES=true' <<<"$out6" && r=yes || r=no; assert "makeWebFn: FOLLOW_WEB_HERMES activates the rung" yes "$r"
+grep -q 'FIRECRAWL_ENABLES=true' <<<"$out6" && r=yes || r=no; assert "makeWebFn: FIRECRAWL_API_KEY activates the rung" yes "$r"
 
 # -- Test 7: makeCliWebFn — null-gate, JSON parse, garbage, budget cap ------
 echo "Test 7: makeCliWebFn — external prompt-in/JSON-out adapter"
@@ -287,11 +287,11 @@ console.log("CAP_FIRST=" + (capped("a").found === true));
 console.log("CAP_SECOND=" + (capped("b").found === false));
 EOF
 out7="$(node "$tmpdir/cli.mjs" 2>&1)"
-echo "$out7" | grep -q 'NULL_UNSET=true' && r=yes || r=no; assert "makeCliWebFn: null when FOLLOW_WEB_CLI unset" yes "$r"
-echo "$out7" | grep -q 'GOOD_FOUND=true' && r=yes || r=no; assert "makeCliWebFn: JSON-echoing stub -> {found:true,...}" yes "$r"
-echo "$out7" | grep -q 'GARBAGE=true' && r=yes || r=no; assert "makeCliWebFn: garbage stub -> {found:false}" yes "$r"
-echo "$out7" | grep -q 'CAP_FIRST=true' && r=yes || r=no; assert "makeCliWebFn: budget allows the first call" yes "$r"
-echo "$out7" | grep -q 'CAP_SECOND=true' && r=yes || r=no; assert "makeCliWebFn: budget cap -> {found:false} past the limit" yes "$r"
+grep -q 'NULL_UNSET=true' <<<"$out7" && r=yes || r=no; assert "makeCliWebFn: null when FOLLOW_WEB_CLI unset" yes "$r"
+grep -q 'GOOD_FOUND=true' <<<"$out7" && r=yes || r=no; assert "makeCliWebFn: JSON-echoing stub -> {found:true,...}" yes "$r"
+grep -q 'GARBAGE=true' <<<"$out7" && r=yes || r=no; assert "makeCliWebFn: garbage stub -> {found:false}" yes "$r"
+grep -q 'CAP_FIRST=true' <<<"$out7" && r=yes || r=no; assert "makeCliWebFn: budget allows the first call" yes "$r"
+grep -q 'CAP_SECOND=true' <<<"$out7" && r=yes || r=no; assert "makeCliWebFn: budget cap -> {found:false} past the limit" yes "$r"
 
 # -- Test 8: makeHermesWebFn — null-gate + enabled returns a function --------
 echo "Test 8: makeHermesWebFn — null-gate (no real hermes invoked)"
@@ -305,8 +305,8 @@ console.log("NULL_UNSET=" + (makeHermesWebFn({}) === null));
 console.log("ENABLED_FN=" + (typeof makeHermesWebFn({ FOLLOW_WEB_HERMES: "1" }) === "function"));
 EOF
 out8="$(node "$tmpdir/hermes.mjs" 2>&1)"
-echo "$out8" | grep -q 'NULL_UNSET=true' && r=yes || r=no; assert "makeHermesWebFn: null when FOLLOW_WEB_HERMES unset" yes "$r"
-echo "$out8" | grep -q 'ENABLED_FN=true' && r=yes || r=no; assert "makeHermesWebFn: enabled -> returns a webFn function" yes "$r"
+grep -q 'NULL_UNSET=true' <<<"$out8" && r=yes || r=no; assert "makeHermesWebFn: null when FOLLOW_WEB_HERMES unset" yes "$r"
+grep -q 'ENABLED_FN=true' <<<"$out8" && r=yes || r=no; assert "makeHermesWebFn: enabled -> returns a webFn function" yes "$r"
 
 # -- Test 9: corroboration grounding (claim-token anchor, handle in query) ----
 echo "Test 9: corroboration grounding"
@@ -341,11 +341,11 @@ const c4 = await verifyWebClaims(noTok, { webFn: () => ({ found: true, url: "htt
 console.log("NO_ANCHOR=" + c4.find(c => c.kind === "role").status);
 EOF
 out9="$(node "$tmpdir/corrob.mjs" 2>&1)"
-echo "$out9" | grep -q 'QUERY_HAS_HANDLE=true' && r=yes || r=no; assert "verifyWebClaims: query carries the handle for account-scoped search" yes "$r"
-echo "$out9" | grep -q 'CAMEL_VERIFIED=verified' && r=yes || r=no; assert "corroborates: camelCase claim token matches space-separated result -> verified" yes "$r"
-echo "$out9" | grep -q 'HANDLE_ONLY=unverified' && r=yes || r=no; assert "corroborates: handle in result but not the claim substance -> unverified (no circular)" yes "$r"
-echo "$out9" | grep -q 'NO_URL=unverified' && r=yes || r=no; assert "corroborates: found:true with empty url -> unverified" yes "$r"
-echo "$out9" | grep -q 'NO_ANCHOR=unverified' && r=yes || r=no; assert "corroborates: no salient claim token -> unverified (fail-safe)" yes "$r"
+grep -q 'QUERY_HAS_HANDLE=true' <<<"$out9" && r=yes || r=no; assert "verifyWebClaims: query carries the handle for account-scoped search" yes "$r"
+grep -q 'CAMEL_VERIFIED=verified' <<<"$out9" && r=yes || r=no; assert "corroborates: camelCase claim token matches space-separated result -> verified" yes "$r"
+grep -q 'HANDLE_ONLY=unverified' <<<"$out9" && r=yes || r=no; assert "corroborates: handle in result but not the claim substance -> unverified (no circular)" yes "$r"
+grep -q 'NO_URL=unverified' <<<"$out9" && r=yes || r=no; assert "corroborates: found:true with empty url -> unverified" yes "$r"
+grep -q 'NO_ANCHOR=unverified' <<<"$out9" && r=yes || r=no; assert "corroborates: no salient claim token -> unverified (fail-safe)" yes "$r"
 
 # -- Test 10: Firecrawl search ledger (HIMMEL-4335) ----------------------------
 echo "Test 10: makeFirecrawlWebFn — one ledger line per call, no secrets"

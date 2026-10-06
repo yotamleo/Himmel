@@ -67,20 +67,20 @@ console.log("CLAIM0_KIND=" + trimmed.claims[0].kind);
 console.log("CLAIM0_STATUS=" + trimmed.claims[0].status);
 EOF
 out1="$(node "$tmpdir/dirty.mjs" 2>&1)"
-echo "$out1" | grep -q 'INJECTION_SUSPECT=true' && r=yes || r=no; assert "dirty: injection_suspect==true" yes "$r"
-echo "$out1" | grep -q 'SCREEN_STATUS=ok' && r=yes || r=no; assert "dirty: screen_status==ok (scanner ran fine)" yes "$r"
-echo "$out1" | grep -q 'BIO=\[withheld: injection-suspect\]' && r=yes || r=no; assert "dirty: trimForJudge redacts bio" yes "$r"
-echo "$out1" | grep -q 'DESC0=\[withheld: injection-suspect\]' && r=yes || r=no; assert "dirty: trimForJudge redacts sample_descriptions[0]" yes "$r"
+grep -q 'INJECTION_SUSPECT=true' <<<"$out1" && r=yes || r=no; assert "dirty: injection_suspect==true" yes "$r"
+grep -q 'SCREEN_STATUS=ok' <<<"$out1" && r=yes || r=no; assert "dirty: screen_status==ok (scanner ran fine)" yes "$r"
+grep -q 'BIO=\[withheld: injection-suspect\]' <<<"$out1" && r=yes || r=no; assert "dirty: trimForJudge redacts bio" yes "$r"
+grep -q 'DESC0=\[withheld: injection-suspect\]' <<<"$out1" && r=yes || r=no; assert "dirty: trimForJudge redacts sample_descriptions[0]" yes "$r"
 # Gap C (HIMMEL-703): a suspect dossier's tweet bodies must be withheld too --
 # the injection often lives in the tweet itself.
-echo "$out1" | grep -q 'TWEET0=\[withheld: injection-suspect\]' && r=yes || r=no; assert "dirty: trimForJudge redacts sample_tweets[0].text (Gap C)" yes "$r"
-echo "$out1" | grep -q 'TWEET1=\[withheld: injection-suspect\]' && r=yes || r=no; assert "dirty: trimForJudge redacts sample_tweets[1].text (Gap C)" yes "$r"
+grep -q 'TWEET0=\[withheld: injection-suspect\]' <<<"$out1" && r=yes || r=no; assert "dirty: trimForJudge redacts sample_tweets[0].text (Gap C)" yes "$r"
+grep -q 'TWEET1=\[withheld: injection-suspect\]' <<<"$out1" && r=yes || r=no; assert "dirty: trimForJudge redacts sample_tweets[1].text (Gap C)" yes "$r"
 # CR Critical (HIMMEL-703): claims[] carry regex-extracted spans of the same
 # untrusted text and the judge reads them, so claim.text must be withheld too --
 # with kind/status preserved for the judge's verified/unverified weighting.
-echo "$out1" | grep -q 'CLAIM0=\[withheld: injection-suspect\]' && r=yes || r=no; assert "dirty: trimForJudge redacts claims[0].text (CR Critical)" yes "$r"
-echo "$out1" | grep -q 'CLAIM0_KIND=role' && r=yes || r=no; assert "dirty: trimForJudge preserves claims[0].kind" yes "$r"
-echo "$out1" | grep -q 'CLAIM0_STATUS=unverified' && r=yes || r=no; assert "dirty: trimForJudge preserves claims[0].status" yes "$r"
+grep -q 'CLAIM0=\[withheld: injection-suspect\]' <<<"$out1" && r=yes || r=no; assert "dirty: trimForJudge redacts claims[0].text (CR Critical)" yes "$r"
+grep -q 'CLAIM0_KIND=role' <<<"$out1" && r=yes || r=no; assert "dirty: trimForJudge preserves claims[0].kind" yes "$r"
+grep -q 'CLAIM0_STATUS=unverified' <<<"$out1" && r=yes || r=no; assert "dirty: trimForJudge preserves claims[0].status" yes "$r"
 
 # -- Test 2: clean dossier — passes through unredacted ---------------------
 echo "Test 2: clean dossier -- not flagged, not redacted"
@@ -112,13 +112,13 @@ console.log("TWEET0=" + trimmed.corpus.sample_tweets[0].text);
 console.log("CLAIM0=" + trimmed.claims[0].text);
 EOF
 out2="$(node "$tmpdir/clean.mjs" 2>&1)"
-echo "$out2" | grep -q 'INJECTION_SUSPECT=false' && r=yes || r=no; assert "clean: injection_suspect==false" yes "$r"
-echo "$out2" | grep -q 'SCREEN_STATUS=ok' && r=yes || r=no; assert "clean: screen_status==ok" yes "$r"
-echo "$out2" | grep -q 'BIO=a perfectly normal bio' && r=yes || r=no; assert "clean: trimForJudge passes bio through unredacted" yes "$r"
-echo "$out2" | grep -q 'DESC0=repo one' && r=yes || r=no; assert "clean: trimForJudge passes sample_descriptions through unredacted" yes "$r"
-echo "$out2" | grep -q 'TWEET_COUNT=5' && r=yes || r=no; assert "clean: trimForJudge trims sample_tweets to top-5 (always)" yes "$r"
-echo "$out2" | grep -q 'TWEET0=t1' && r=yes || r=no; assert "clean: trimForJudge passes sample_tweets text through unredacted (Gap C)" yes "$r"
-echo "$out2" | grep -q 'CLAIM0=founder of Acme' && r=yes || r=no; assert "clean: trimForJudge passes claims text through unredacted (CR Critical)" yes "$r"
+grep -q 'INJECTION_SUSPECT=false' <<<"$out2" && r=yes || r=no; assert "clean: injection_suspect==false" yes "$r"
+grep -q 'SCREEN_STATUS=ok' <<<"$out2" && r=yes || r=no; assert "clean: screen_status==ok" yes "$r"
+grep -q 'BIO=a perfectly normal bio' <<<"$out2" && r=yes || r=no; assert "clean: trimForJudge passes bio through unredacted" yes "$r"
+grep -q 'DESC0=repo one' <<<"$out2" && r=yes || r=no; assert "clean: trimForJudge passes sample_descriptions through unredacted" yes "$r"
+grep -q 'TWEET_COUNT=5' <<<"$out2" && r=yes || r=no; assert "clean: trimForJudge trims sample_tweets to top-5 (always)" yes "$r"
+grep -q 'TWEET0=t1' <<<"$out2" && r=yes || r=no; assert "clean: trimForJudge passes sample_tweets text through unredacted (Gap C)" yes "$r"
+grep -q 'CLAIM0=founder of Acme' <<<"$out2" && r=yes || r=no; assert "clean: trimForJudge passes claims text through unredacted (CR Critical)" yes "$r"
 
 # -- Test 3: fail-closed — scanFn throws -----------------------------------
 echo "Test 3: scanFn throws -- fail-closed"
@@ -142,8 +142,8 @@ console.log("INJECTION_SUSPECT=" + screened.injection_suspect);
 console.log("SCREEN_STATUS=" + screened.screen_status);
 EOF
 out3="$(node "$tmpdir/failclosed.mjs" 2>&1)"
-echo "$out3" | grep -q 'INJECTION_SUSPECT=true' && r=yes || r=no; assert "fail-closed: injection_suspect==true when scanFn throws" yes "$r"
-echo "$out3" | grep -q 'SCREEN_STATUS=screen_error' && r=yes || r=no; assert "fail-closed: screen_status==screen_error when scanFn throws" yes "$r"
+grep -q 'INJECTION_SUSPECT=true' <<<"$out3" && r=yes || r=no; assert "fail-closed: injection_suspect==true when scanFn throws" yes "$r"
+grep -q 'SCREEN_STATUS=screen_error' <<<"$out3" && r=yes || r=no; assert "fail-closed: screen_status==screen_error when scanFn throws" yes "$r"
 
 # -- Test 4: tweet-body-only injection — bio clean, sentinel only in a tweet -
 # Proves screenDossier's untrustedText() actually feeds sample_tweets[].text
@@ -176,9 +176,9 @@ console.log("TWEET0=" + trimmed.corpus.sample_tweets[0].text);
 console.log("TWEET1=" + trimmed.corpus.sample_tweets[1].text);
 EOF
 out4="$(node "$tmpdir/tweetbody.mjs" 2>&1)"
-echo "$out4" | grep -q 'INJECTION_SUSPECT=true' && r=yes || r=no; assert "tweet-body: untrustedText scans tweet text -> injection_suspect==true" yes "$r"
-echo "$out4" | grep -q 'BIO=\[withheld: injection-suspect\]' && r=yes || r=no; assert "tweet-body: a tweet hit still withholds bio (whole dossier suspect)" yes "$r"
-echo "$out4" | grep -q 'TWEET1=\[withheld: injection-suspect\]' && r=yes || r=no; assert "tweet-body: the injected tweet body is withheld from the judge" yes "$r"
+grep -q 'INJECTION_SUSPECT=true' <<<"$out4" && r=yes || r=no; assert "tweet-body: untrustedText scans tweet text -> injection_suspect==true" yes "$r"
+grep -q 'BIO=\[withheld: injection-suspect\]' <<<"$out4" && r=yes || r=no; assert "tweet-body: a tweet hit still withholds bio (whole dossier suspect)" yes "$r"
+grep -q 'TWEET1=\[withheld: injection-suspect\]' <<<"$out4" && r=yes || r=no; assert "tweet-body: the injected tweet body is withheld from the judge" yes "$r"
 
 # -- Results summary -----------------------------------------------------
 total=$((pass + fail))
