@@ -2,7 +2,7 @@
 """transcribe.py - local faster-whisper transcript of one WAV. stdout = text.
 
 Invoked by ig-media-fetch.py via:
-  uv run --python 3.12 --with faster-whisper python transcribe.py <wav> [model]
+  uv run --python 3.12 --with-requirements requirements-whisper.txt python transcribe.py <wav> [model]
 
 No network at call time beyond the one-time model-weights fetch uv/faster-whisper
 performs on first use (cached under the HF cache dir thereafter). CPU int8."""

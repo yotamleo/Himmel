@@ -146,6 +146,7 @@ done
 HOME="$tmp/home"
 mkdir -p "$HOME/.luna/cookies"
 export HOME
+unset IG_SCRAPLING_PYTHON   # HIMMEL-4675: these tests pin the gallery-dl path
 
 # Add gallery-dl stub with .bat wrapper for Windows
 # Create .bat wrapper (for Windows) and bash wrapper (for MSYS)

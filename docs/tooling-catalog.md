@@ -1491,8 +1491,8 @@ on demand; nothing here runs automatically.
   (`GRAPHIFY_LEDGER`); `deepseek`/`codex` use OpenAI chat/completions, `glm` (via z.ai anthropic-compat)/`claude` use the Anthropic Messages API. DeepSeek off-peak advisory. `--dry-run` first.
 - `scripts/luna/fetch-health.py` — Daily no-LLM health probes for luna
   clip-source fetch integrations. The registry (`build_probe_registry`) carries
-  **eleven** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
-  `x-twitter-cli`, `instagram-embed`, `instagram-media`, `youtube-playwright`,
+  **twelve** source ids, several per platform: `reddit`, `x-fxtwitter`, `x-media`,
+  `x-twitter-cli`, `instagram-embed`, `instagram-media`, `instagram-scrapling` (HIMMEL-4675: the cookieless Scrapling path, run with the scrapling venv), `youtube-playwright`,
   `github`, `bitbucket`, `firecrawl` (HIMMEL-4335: probes the free
   `/v2/team/credit-usage`, spends no credit, and ledgers credits 0 to
   `firecrawl-ledger.jsonl`), `jina-reader` (keyless). The full run (armed by `pipeline-cadence.sh`'s
