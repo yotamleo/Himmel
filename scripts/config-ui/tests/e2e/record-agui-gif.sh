@@ -6,8 +6,12 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-out="${1:-$here/../../docs/agui-live-run.gif}"
-tmp="$(mktemp -d)" || exit 1
+case "${1:-}" in
+  "") out="$here/../../docs/agui-live-run.gif" ;;
+  /*) out="$1" ;;
+  *) out="$PWD/$1" ;;  # resolved before the cd below, so a relative path means the caller's cwd
+esac
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/agui-gif.XXXXXX")" || exit 1
 trap 'rm -rf "$tmp"' EXIT
 
 [ -f "$here/../../agui-web/dist/index.html" ] || { echo "agui-web/dist missing: cd scripts/config-ui/agui-web && bun install && bun run build" >&2; exit 1; }

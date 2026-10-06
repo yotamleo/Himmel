@@ -1,7 +1,7 @@
 // HIMMEL-4480 PR4: records the README video. Not part of the e2e suite (playwright.record.config.ts
 // matches *.rec.ts only); record-agui-gif.sh runs it and converts the video to a GIF.
 // The run is a fixture journal APPENDED to while the page is open: a live stream over the real SSE path.
-import { test } from "@playwright/test";
+import { test, type BrowserContext } from "@playwright/test";
 import { bootAgui, J } from "./agui-fixtures";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -11,9 +11,10 @@ test("record the AG-UI page streaming a live run", async ({ browser }) => {
   if (!out) throw new Error("AGUI_WEBM (output .webm path) is required; run record-agui-gif.sh");
   const h = await bootAgui();
   const size = { width: 1100, height: 560 };
-  const ctx = await browser.newContext({ colorScheme: "dark", viewport: size, recordVideo: { dir: process.env.AGUI_VIDEO_DIR ?? "/tmp", size } });
-  const page = await ctx.newPage();
+  let ctx: BrowserContext | undefined;
   try {
+    ctx = await browser.newContext({ colorScheme: "dark", viewport: size, recordVideo: { dir: process.env.AGUI_VIDEO_DIR ?? "/tmp", size } });
+    const page = await ctx.newPage();
     await page.goto(h.url);
     await page.getByText("Waiting for the agent's first event.").waitFor();
     await sleep(900);
@@ -33,9 +34,10 @@ test("record the AG-UI page streaming a live run", async ({ browser }) => {
     h.append(J.end());
     await page.getByRole("status").filter({ hasText: "finished" }).waitFor();
     await sleep(1500);
-  } finally {
     await ctx.close();
     await page.video()!.saveAs(out);
+  } finally {
+    await ctx?.close().catch(() => {});
     await h.stop();
   }
 });
