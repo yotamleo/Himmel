@@ -94,6 +94,26 @@ if grep -q 'install lean-skills@himmel' "$TMP/claude.log" 2>/dev/null; then ok "
 case "$OUT" in *"plugin:himmel-ops"*"non-fatal"*) ok "failed plugin install is reported" ;; *) bad "failed plugin install silent: $OUT" ;; esac
 rm -rf "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tools/node_modules"
 
+# 6c. the slow npm builds run LAST (HIMMEL-4429): a cloud setup died silently in
+# jira-dist and every later step (timeouts, plugins) was lost with it.
+run "$EMPTY" --dry-run --with-plugins
+order="$(printf '%s\n' "$OUT" | sed -n 's/^step=\([^ ]*\) .*/\1/p' | tr '\n' ' ')"
+case "$order" in *"env "*"plugin:lean-skills "*"jira-dist "*"obsidian-deps "*) ok "env and plugins run before the npm builds" ;; *) bad "step order puts a build before env/plugins: $order" ;; esac
+
+# 6d. a failing jira build is NON-fatal and says why: a FAILED line with the
+# reason, the npm stderr tail, and the next step still runs.
+NPMF="$TMP/npmfail"; mkdir -p "$NPMF"
+cp "$HAVE"/* "$NPMF/"
+for t in timeout sh tail mkdir bash; do ln -s "$(command -v "$t")" "$NPMF/$t"; done
+printf '#!/bin/sh\necho "npm ERR! registry hang" >&2\nexit 124\n' > "$NPMF/npm"; chmod +x "$NPMF/npm"
+printf '#!/bin/sh\necho ensure-deps-ran\nexit 0\n' > "$FAKE/marketplace/plugins/obsidian-triage/tools/ensure-deps.sh"
+OUT="$(env -i PATH="$NPMF" HIMMEL_CLOUD_ROOT="$FAKE" HIMMEL_CLOUD_PROFILE_D="$TMP/profile.d" TMPDIR="$TMP" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then ok "failing jira build keeps rc 0"; else bad "failing jira build rc=$RC: $OUT"; fi
+case "$OUT" in *"step=jira-dist FAILED"*"timed out"*) ok "jira build failure names its reason" ;; *) bad "no 'step=jira-dist FAILED ... timed out' line: $OUT" ;; esac
+case "$OUT" in *"npm ERR! registry hang"*) ok "jira build failure shows the npm stderr" ;; *) bad "npm stderr not surfaced: $OUT" ;; esac
+if grep -q ensure-deps-ran "$TMP/himmel-setup-logs/obsidian-deps.log" 2>/dev/null; then ok "a failed jira build does not stop the next step"; else bad "obsidian-deps did not run after the jira failure: $OUT"; fi
+rm -f "$FAKE/marketplace/plugins/obsidian-triage/tools/ensure-deps.sh"
+
 # 7. an unknown flag is refused (rc 2) rather than silently ignored.
 run "$EMPTY" --nope
 if [ "$RC" -eq 2 ]; then ok "unknown flag exits 2"; else bad "unknown flag rc=$RC"; fi
