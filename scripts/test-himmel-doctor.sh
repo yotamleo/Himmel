@@ -184,6 +184,9 @@ unset QMD_FORK_REF
 # Same for C51-firecrawl-parked (HIMMEL-4371): never read the operator's real
 # parked-items state; an absent file is OK, dedicated cases point at a fixture.
 export HIMMEL_FIRECRAWL_PARKED="$FAKEROOT/no-such-parked.jsonl"
+# Same for C52-graphify-ollama (HIMMEL-4513): never run the operator's real uv
+# graphifyy venv python; an absent venv is OK, dedicated cases point at a fixture.
+export HIMMEL_DOCTOR_GRAPHIFY_VENV="$FAKEROOT/no-such-graphify-venv"
 
 # Keep unrelated cases from probing the operator's real qmd 'skills'
 # collection for C44 (HIMMEL-2222): most invocations below never override
@@ -5787,5 +5790,30 @@ echo "== C51-firecrawl-parked: follow-web parked query -> WARN =="
 out="$(c51_run "$c51_t/s6.jsonl")"
 if grepq "$out" 'WARN C51-firecrawl-parked'; then pass "C51 follow-web parked -> WARN"; else fail "C51 follow-web -> $(printf '%s' "$out" | grep -A1 C51)"; fi
 rm -rf "$c51_t"
+
+# --- C52-graphify-ollama (HIMMEL-4513): the uv graphifyy venv must import openai
+# (the [ollama] extra graph-cadence's semantic step needs). Seam:
+# HIMMEL_DOCTOR_GRAPHIFY_VENV points at a fixture venv whose bin/python exits 0/1.
+c52_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c52.XXXXXX")" || { fail "C52 setup: mktemp -d failed"; exit 1; }
+mkdir -p "$c52_t/ok/bin" "$c52_t/missing/bin"
+printf '#!/bin/sh\nexit 0\n' > "$c52_t/ok/bin/python"
+printf '#!/bin/sh\nexit 1\n' > "$c52_t/missing/bin/python"
+chmod +x "$c52_t/ok/bin/python" "$c52_t/missing/bin/python"
+c52_run() { # <venv dir>
+    HIMMEL_DOCTOR_GRAPHIFY_VENV="$1" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c52_t/claude" HOME="$c52_t/home" bash "$DOC" --no-color 2>&1
+}
+
+echo "== C52-graphify-ollama: no graphifyy venv -> OK (skipped) =="
+out="$(c52_run "$c52_t/absent")"
+if grepq "$out" 'OK   C52-graphify-ollama' && ! grepq "$out" 'WARN C52-graphify-ollama'; then pass "C52 absent venv -> OK"; else fail "C52 absent -> $(printf '%s' "$out" | grep -A1 C52)"; fi
+
+echo "== C52-graphify-ollama: venv cannot import openai -> WARN + update remedy =="
+out="$(c52_run "$c52_t/missing")"
+if grepq "$out" 'WARN C52-graphify-ollama' && grepq "$out" -F 'bash scripts/himmel-update.sh --only graphify'; then pass "C52 missing extra -> WARN with remedy"; else fail "C52 missing -> $(printf '%s' "$out" | grep -A1 C52)"; fi
+
+echo "== C52-graphify-ollama: venv imports openai -> OK =="
+out="$(c52_run "$c52_t/ok")"
+if grepq "$out" 'OK   C52-graphify-ollama' && ! grepq "$out" 'WARN C52-graphify-ollama'; then pass "C52 extra present -> OK"; else fail "C52 present -> $(printf '%s' "$out" | grep -A1 C52)"; fi
+rm -rf "$c52_t"
 
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

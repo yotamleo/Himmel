@@ -3534,6 +3534,33 @@ check_c51_firecrawl_parked() {
     emit WARN C51-firecrawl-parked "$n item(s) parked: Firecrawl unavailable (${reason:-unknown})" "parked items retry automatically on the next harvest once credits return (reset ${rd:-unknown})"
 }
 
+# --- C52: graphify [ollama] extra (HIMMEL-4513 / HIMMEL-4512 item 7) -----------
+# graph-cadence's semantic step runs `graphify --backend ollama`, which needs the
+# extra's openai client inside the uv graphifyy venv. Never runs graphify itself
+# (a graphify invocation auto-refreshes the user's skill dirs) -- only the venv
+# python. Seams: HIMMEL_DOCTOR_GRAPHIFY_VENV (venv dir), HIMMEL_DOCTOR_UV.
+check_c52_graphify_ollama() {
+    local uv_bin="${HIMMEL_DOCTOR_UV:-uv}" venv tooldir="" py="" c
+    if [ -n "${HIMMEL_DOCTOR_GRAPHIFY_VENV:-}" ]; then
+        venv="$HIMMEL_DOCTOR_GRAPHIFY_VENV"
+    else
+        command -v "$uv_bin" >/dev/null 2>&1 && tooldir="$("$uv_bin" tool dir 2>/dev/null)"
+        venv="${tooldir:-$HOME/.local/share/uv/tools}/graphifyy"
+    fi
+    for c in "$venv/bin/python" "$venv/Scripts/python.exe"; do
+        [ -x "$c" ] && { py="$c"; break; }
+    done
+    if [ -z "$py" ]; then
+        emit OK C52-graphify-ollama "no uv graphifyy venv -- [ollama] extra check skipped"
+        return 0
+    fi
+    if "$py" -c 'import openai' >/dev/null 2>&1; then
+        emit OK C52-graphify-ollama "graphify [ollama] extra present (venv imports openai)"
+    else
+        emit WARN C52-graphify-ollama "graphify venv cannot import openai -- the [ollama] extra is missing, so graph-cadence's semantic step (--backend ollama) cannot run" "bash scripts/himmel-update.sh --only graphify"
+    fi
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3587,6 +3614,7 @@ check_c48_tmp_usage
 check_c49_qmd_embed_model
 check_c50_qmd_fork_stamp
 check_c51_firecrawl_parked
+check_c52_graphify_ollama
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

@@ -1696,9 +1696,10 @@ _probe_tool_row() { PROBE_TOOL_ROWS="${PROBE_TOOL_ROWS}$1|$2|${3//|//}"$'\n'; }
 sync_graphify() {
     local lib="$ROOT/scripts/lib/graphify-bin.sh"
     echo "==> graphify pin sync (HIMMEL-1048)"
-    # HIMMEL-4380: a live Claude session's graphify-mcp holds the uv tool dir, so
-    # this step skips whenever it runs in-session. Name the way to clear it.
-    echo "    (a skip held by a live session clears with: bash scripts/himmel-update.sh --graphify-only — run it with no Claude session live, e.g. from a scheduled slot)"
+    # HIMMEL-4380 / HIMMEL-4513: this step skips while a live Claude session
+    # holds graphify-mcp, on every platform (Windows: the uv tool dir is locked;
+    # Linux/macOS: a live swap mixes versions in the holder). Name the way out.
+    echo "    (skips while a live Claude session holds graphify-mcp; to clear it, reconnect /mcp or quit the holders, then re-run: bash scripts/himmel-update.sh --graphify-only — e.g. with no session live, from a scheduled slot)"
     if [ ! -f "$lib" ]; then
         echo "    skip: graphify-bin.sh not found ($lib)."
         return 0
