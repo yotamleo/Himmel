@@ -77,6 +77,10 @@ printf '%s\n' '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","identity":"~/.ssh
 out="$(HOME="$T/sp home" bash "$LIB" route 2>&1)"; rc=$?
 if [ "$rc" = 1 ] && [ "$out" = "operator-ack+rollback-point" ]; then pass "identity expanding to whitespace -> none"
 else fail "identity expanding to whitespace: rc=$rc '$out'"; fi
+printf '%s\n' '{"vm":{"mode":"remote","remote":{"ssh":"ops@h"}}}' > "$T/sp home/.himmel/config.json"
+out="$(HOME="$T/sp home" bash "$LIB" route 2>&1)"; rc=$?
+if [ "$rc" = 1 ] && [ "$out" = "operator-ack+rollback-point" ]; then pass "remote default identity under a spaced HOME -> none"
+else fail "remote default identity under a spaced HOME: rc=$rc '$out'"; fi
 rm -f "$T/home/.himmel/config.json"; mkdir "$T/home/.himmel/config.json"
 check "config path is a directory -> none" "none" 0 mode
 rmdir "$T/home/.himmel/config.json"; ln -s "$T/missing.json" "$T/home/.himmel/config.json"

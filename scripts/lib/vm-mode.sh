@@ -74,18 +74,17 @@ if m == "remote":
         print("mode=none"); print("note=vm.mode=remote but vm.remote.ssh is not set"); sys.exit(0)
     ssh = ssh.strip()
     port = r.get("port", 22)
-    ident = r.get("identity")
+    ident = r.get("identity") or "~/.ssh/id_ed25519"
     if isinstance(ident, str):
         ident = os.path.expanduser(ident)
-    bad =(ssh.startswith("-") or any(c.isspace() for c in ssh)
+    bad = (ssh.startswith("-") or any(c.isspace() for c in ssh)
            or isinstance(port, bool) or not str(port).isdigit() or not 0 < int(port) < 65536
-           or (ident is not None and (not isinstance(ident, str) or ident.startswith("-") or any(c.isspace() for c in ident))))
+           or not isinstance(ident, str) or ident.startswith("-") or any(c.isspace() for c in ident))
     if bad:
         print("mode=none"); print("note=vm.remote has an invalid ssh, port or identity"); sys.exit(0)
     print("host=" + ssh)
     print("port=%d" % int(port))
-    if ident:
-        print("ident=" + ident)
+    print("ident=" + ident)
 ' "$cfg" 2>/dev/null)" || { VM_MODE=none VM_MODE_NOTE="cannot read $cfg"; return 0; }
     while IFS= read -r line; do
         case "$line" in
