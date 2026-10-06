@@ -2121,3 +2121,23 @@ test("eval-runs families are absent without a ledger", async () => {
   });
   expect(body).not.toContain("himmel_eval_");
 });
+
+test("eval-runs scrape survives a thresholds file that is valid JSON but not an object", async () => {
+  const thresholds = join(tmp, "null-thresholds.json");
+  writeFileSync(thresholds, "null");
+  const ledger = join(tmp, "eval-runs.jsonl");
+  writeFileSync(ledger, evalRow({ run_id: "a1", metrics: { accept_rate: 0.8 } }) + "\n");
+  const body = await renderMetrics({
+    nowMs: NOW,
+    configPath: join(tmp, "missing-observability.json"),
+    flowLedgerPath: join(tmp, "none"),
+    quotaLedgerPath: join(tmp, "none"),
+    lanesPath: join(tmp, "no-lanes.json"),
+    platform: "linux",
+    evalRunsLedgerPath: ledger,
+    evalThresholdsPath: thresholds,
+  });
+  expect(body).toContain('himmel_eval_metric_value{eval="lane-quality",metric="accept_rate"} 0.8');
+  expect(body).not.toContain("himmel_eval_metric_regression{");
+  expect(body).toContain("# himmel_eval_metric_regression omitted: eval-compare.json unreadable");
+});

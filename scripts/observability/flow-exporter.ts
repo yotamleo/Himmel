@@ -2014,7 +2014,9 @@ function evalRunsMetrics(path: string, thresholdsPath: string, nowMs: number): {
   let thresholds: Record<string, Record<string, EvalSpec>> = {};
   let thresholdsOk = true;
   try {
-    thresholds = JSON.parse(readFileSync(thresholdsPath, "utf8")) as Record<string, Record<string, EvalSpec>>;
+    const parsed: unknown = JSON.parse(readFileSync(thresholdsPath, "utf8"));
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+    thresholds = parsed as Record<string, Record<string, EvalSpec>>;
   } catch {
     thresholdsOk = false;
   }

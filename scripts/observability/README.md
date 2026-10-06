@@ -284,8 +284,9 @@ The candidate is the eval's newest `ok` row. Its baseline is the newest earlier
 The regression gauge ports `eval-compare`'s verdict: CI bounds when the ledger
 has them, else the band in `scripts/eval/eval-compare.json`
 (`HIMMEL_EVAL_COMPARE_THRESHOLDS` overrides the path). A metric with no
-direction there is never gated; an unreadable thresholds file omits the family
-with a comment. A newest row that is `partial`/`inconclusive` leaves the values
+direction there is never gated; an unreadable (or non-object) thresholds file
+omits only `himmel_eval_metric_regression`, with a comment, and the other
+series still export. A newest row that is `partial`/`inconclusive` leaves the values
 on the last ok run and shows as `himmel_eval_last_run_ok 0`.
 
 **Rules** (Prometheus `alerts.rules.yml`, Grafana twin in
