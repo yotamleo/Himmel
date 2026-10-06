@@ -747,6 +747,16 @@ deny "-C <leg> archive --outp <primary>/x.tar"           "$P" "git -C $W archive
 deny "-C <primary> archive --remote=. --exec=/tmp/evil"  "$W" "git -C $P archive --remote=. --exec=/tmp/evil HEAD"
 deny "-C <primary> archive --ex=/tmp/evil"               "$W" "git -C $P archive --ex=/tmp/evil HEAD"
 deny "-C <primary> -c tar.tgz.command archive"           "$W" "git -C $P -c tar.tgz.command=/tmp/evil archive --format=tgz -o /tmp/x.tgz HEAD"
+# A non-tar format (zip included) runs any tar.<format>.command already in
+# the repo or global config, so only the built-in tar format is a read.
+deny "-C <primary> archive --format=zip -o /tmp/x.zip"    "$W" "git -C $P archive --format=zip -o /tmp/x4476.zip HEAD"
+deny "archive --format=tgz -o /tmp/x.tgz, cwd=primary"    "$P" "git archive --format=tgz -o /tmp/x4476.tgz HEAD"
+deny "archive --fo zip -o /tmp/x.tar, cwd=primary"        "$P" "git archive --fo zip -o /tmp/x4476.tar HEAD"
+deny "-C <primary> archive -o /tmp/x.zip (by extension)"  "$W" "git -C $P archive -o /tmp/x4476.zip HEAD"
+deny "archive --output=/tmp/x.xyz, cwd=primary"           "$P" "git archive --output=/tmp/x4476.xyz HEAD"
+deny "archive --format=xyz | tar -x -C /tmp/d, cwd=leg"   "$W" "git -C $P archive --format=xyz HEAD | tar -x -C /tmp/d4476"
+deny "archive -vo /tmp/x.tar (bundled -o), cwd=primary"   "$P" "git archive -vo /tmp/x4476.tar HEAD"
+allow "archive --format tar | tar -x -C /tmp/d, cwd=leg"  "$W" "git -C $P archive --format tar HEAD | tar -x -C /tmp/d4476"
 
 echo "== HIMMEL-4365: --output <file> on a read subcommand writes that file =="
 deny "-C <primary> diff --output=<rel>"          "$W" "git -C $P diff --output=.claude/settings.json"

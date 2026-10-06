@@ -527,6 +527,9 @@ _r4476 "4476p grep 'eval' … > primary"                          block "grep -n
 _r4476 "4476q grep …; eval touch primary"                       block "grep -n x /tmp/a; eval 'touch @P@/.github/f'"
 _r4476 "4476r grep \$(eval touch primary)"                      block "grep -n \$(eval 'touch @P@/.github/f') /tmp/a"
 _r4476 "4476s nice eval with a grep word in the body"          block "nice eval 'grep x /tmp/a > @P@/.github/f'"
+# ugrep's --filter / --save-config keep the scan even quoted or split.
+_r4476 "4476t grep '--filter=…' eval touch primary"              block "grep '--filter=x' eval 'touch @P@/.github/f'"
+_r4476 "4476u grep \\-\\-save-config eval touch primary"         block "grep \\-\\-save-config eval 'touch @P@/.github/f'"
 }
 
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="

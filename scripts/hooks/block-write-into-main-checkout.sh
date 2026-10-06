@@ -2977,11 +2977,14 @@ _bwimc_check_interp_body() {
             _tolower_ascii "$t"; t="${_TOLOWER_OUT%.exe}"
             case "$t" in
                 grep|egrep|fgrep)
+                    # Quotes and backslashes are dropped first, so a quoted
+                    # or split '--save-config' still reads as the option.
+                    t="${1//[\'\"\\]/}"
                     # shellcheck disable=SC2016  # literal `$(` is the glob pattern
                     case "$1" in
                         *'`'*|*'$('*|*'<('*|*'>('*) ;;
-                        *) case " $1" in
-                               *[[:space:]]--[Ff][Ii][Ll]*|*[[:space:]]--[Ss][Aa]*) ;;
+                        *) case "$t" in
+                               *--[Ff][Ii][Ll]*|*--[Ss][Aa]*) ;;
                                *) return 0 ;;
                            esac ;;
                     esac ;;
@@ -3911,11 +3914,39 @@ _bwimc_git_sub_is_read() {
         # HIMMEL-4476: archive writes only its --output (checked by the
         # caller) or stdout, unless --exec/--remote runs a command or the
         # stream reaches something that can write it out (_bwimc_xtract_ok).
+        # Only the built-in tar format: any other, zip included (probed on
+        # git 2.56), runs a configured tar.<format>.command. Without
+        # --format, --output picks the format from its extension, so that
+        # must be .tar.
         archive)
+            local fmt="" out=""
             for a in "$@"; do
+                case "$skipval" in
+                    f) fmt="$a"; skipval=0; continue ;;
+                    o) out="$a"; skipval=0; continue ;;
+                esac
                 _bwimc_long_is "$a" exec 1 && return 1
                 _bwimc_long_is "$a" remote 1 && return 1
+                if _bwimc_long_is "$a" format 1; then
+                    case "$a" in *=*) fmt="${a#*=}" ;; *) skipval=f ;; esac
+                    continue
+                fi
+                if _bwimc_long_is "$a" output 1; then
+                    case "$a" in *=*) out="${a#*=}" ;; *) skipval=o ;; esac
+                    continue
+                fi
+                case "$a" in
+                    --*) ;;
+                    -o) skipval=o ;;
+                    -*o*) return 1 ;;
+                esac
             done
+            [ "$skipval" = 0 ] || return 1
+            if [ -n "$fmt" ]; then
+                [ "$fmt" = tar ] || return 1
+            elif [ -n "$out" ]; then
+                case "$out" in *.tar) ;; *) return 1 ;; esac
+            fi
             [ "${_bwimc_g_xtract_ok:-0}" = 1 ]; return ;;
         ""|status|log|diff|show|rev-parse|rev-list|ls-files|ls-tree|ls-remote|\
         cat-file|blame|annotate|grep|describe|shortlog|whatchanged|for-each-ref|\
