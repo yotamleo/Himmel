@@ -3541,6 +3541,14 @@ _bwimc_redir_scan_text "$_bwimc_hb"
 # hooks are code execution in the leg's own process, not a primary-state
 # write, and are out of scope. `worktree move|remove` of the primary is left
 # to git itself, which refuses to move or remove a main working tree.
+# HIMMEL-4504: a read aimed at the primary that RUNS A PROGRAM there (a -c /
+# --config-env key off a safe allowlist, a pager, --exec-path=, --ext-diff /
+# --textconv, `grep -O`, a GIT_PAGER/GIT_EXTERNAL_DIFF/GIT_EXEC_PATH-style
+# env) loses the read relief; `worktree move|add` get their destination's
+# file verdict. ponytail: a program named by config set in an EARLIER
+# command (~/.gitconfig, the primary's own config) or reached via a foreign
+# --git-dir is not seen, and plain `git diff` runs diff.external by default;
+# revisit if a config-provenance check lands (HIMMEL-4504 follow-up).
 # `git clone`/`init` into a path INSIDE the primary from a leg cwd is not
 # modelled. `push` is write-shaped only by DESTINATION: a local path, `.`, a
 # `file://` URL or a `--repo=` path that resolves into the primary is denied,
@@ -3726,6 +3734,89 @@ _bwimc_cfg_key() {
         remote.*.vcs|url.*.insteadof|url.*.pushinsteadof|core.sshcommand|protocol.*)
             _bwimc_g_repoint=1 ;;
     esac
+}
+
+# HIMMEL-4504: a read-shaped git clause can still RUN A PROGRAM — a pager, an
+# external diff or textconv driver, an fsmonitor, a credential helper, a git
+# found via --exec-path — and that program runs with the target repo as its
+# cwd, so aimed at the primary it can write there. Such a clause loses the
+# read relief and gets the ordinary repo-root verdict.
+# _bwimc_pager_ok VALUE — rc 0 for a pager value that runs nothing arbitrary.
+_bwimc_pager_ok() {
+    case "$1" in ""|cat|less|more|"less -R"|"less -FRX") return 0 ;; esac
+    return 1
+}
+
+# _bwimc_cfg_safe KEY[=VALUE] [noval] — rc 0 when a -c / --config-env override
+# cannot make git run a program. An ALLOWLIST: an unknown key fails closed.
+# `noval` (--config-env) means the value comes from the environment, unseen.
+_bwimc_cfg_safe() {
+    local v=""
+    case "$1" in *=*) v="${1#*=}" ;; esac
+    [ "${2:-}" != noval ] || v='$'
+    _tolower_ascii "${1%%=*}"
+    case "$_TOLOWER_OUT" in
+        color.*|column.*|advice.*|pretty.*|format.pretty|safe.directory|\
+        user.name|user.email|core.quotepath|core.abbrev|init.defaultbranch|\
+        i18n.logoutputencoding|log.date|log.decorate|log.abbrevcommit|log.follow|\
+        log.showroot|log.mailmap|diff.renames|diff.renamelimit|diff.noprefix|\
+        diff.mnemonicprefix|diff.algorithm|diff.context|diff.interhunkcontext|\
+        diff.indentheuristic|diff.colormoved|diff.colormovedws|diff.statgraphwidth|\
+        diff.relative|diff.suppressblankempty|grep.linenumber|grep.column|\
+        grep.patterntype|grep.extendedregexp|grep.fullname|status.short|\
+        status.branch|status.showuntrackedfiles|status.relativepaths|\
+        status.aheadbehind|status.renames|gc.auto|maintenance.auto)
+            return 0 ;;
+        core.pager) _bwimc_pager_ok "$v"; return ;;
+        pager.*)
+            case "$v" in true|false|yes|no|on|off|0|1) return 0 ;; esac
+            _bwimc_pager_ok "$v"; return ;;
+    esac
+    return 1
+}
+
+# _bwimc_env_prog NAME=VALUE — rc 0 when an env assignment can make a
+# read-shaped git clause run a program (a blocklist: env is open-ended).
+_bwimc_env_prog() {
+    local v
+    v=$(_bwimc_unq "${1#*=}")
+    case "${1%%=*}" in
+        GIT_PAGER|PAGER) ! _bwimc_pager_ok "$v"; return ;;
+        GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM) [ "$v" != /dev/null ]; return ;;
+        GIT_CONFIG_KEY_*) ! _bwimc_cfg_safe "$v" noval; return ;;
+        GIT_EXTERNAL_DIFF|GIT_EXEC_PATH|GIT_CONFIG_PARAMETERS|GIT_SSH|\
+        GIT_SSH_COMMAND|GIT_ASKPASS|GIT_PROXY_COMMAND) return 0 ;;
+    esac
+    return 1
+}
+
+# _bwimc_git_args_prog SUB ARG... — rc 0 when the subcommand's own options run
+# a program: --ext-diff / --textconv (a configured diff driver), `cat-file
+# --filters` (smudge filters), `grep -O` / --open-files-in-pager[=<cmd>] in
+# any unique abbreviation or short cluster (probed on git 2.56: it runs
+# without a tty).
+_bwimc_git_args_prog() {
+    local sub="$1" a ci; shift
+    for a in "$@"; do
+        case "$a" in
+            --) return 1 ;;
+            --ext-diff|--textconv) return 0 ;;
+        esac
+        case "$sub:$a" in
+            cat-file:--filters) return 0 ;;
+            grep:--*) ! _bwimc_long_is "$a" open-files-in-pager 2 || return 0 ;;
+            grep:-*)
+                ci=1
+                while [ "$ci" -lt "${#a}" ]; do
+                    case "${a:$ci:1}" in
+                        O) return 0 ;;
+                        [efABCm]) break ;;
+                    esac
+                    ci=$((ci+1))
+                done ;;
+        esac
+    done
+    return 1
 }
 
 # A bare remote NAME — not `.`/`..`, a path or a URL.
@@ -4054,6 +4145,7 @@ _bwimc_git_clause() {
     local e_cfgglobal="$_bwimc_genv_cfgglobal" e_cfgsystem="$_bwimc_genv_cfgsystem"
     local cfg="$_bwimc_genv_cfg"
     local cwd="$_bwimc_gcwd"
+    local progrun="$_bwimc_genv_prog"
     # HIMMEL-4329 CR codex-2: a git behind a chroot (`chroot P git -C / add .`,
     # `sudo -R P git …`) runs inside the new root, and none of git's paths
     # are mapped into it, so the prefix loop below cannot see it at all. A
@@ -4143,6 +4235,7 @@ _bwimc_git_clause() {
                         GIT_CONFIG_SYSTEM) _bwimc_genv_cfgsystem="" ;;
                     esac
                 else
+                    case "${toks[$i]}" in [A-Za-z_]*=*) ! _bwimc_env_prog "${toks[$i]}" || _bwimc_genv_prog=1 ;; esac
                     case "${toks[$i]}" in
                         GIT_DIR=*) _bwimc_genv_dir="${toks[$i]#GIT_DIR=}" ;;
                         GIT_WORK_TREE=*) _bwimc_genv_wt="${toks[$i]#GIT_WORK_TREE=}" ;;
@@ -4165,6 +4258,7 @@ _bwimc_git_clause() {
     # and the transparent `command`/`exec`/`nohup`/`time` words.
     while [ "$i" -lt "$n" ]; do
         t="${toks[$i]}"
+        case "$t" in [A-Za-z_]*=*) ! _bwimc_env_prog "$t" || progrun=1 ;; esac
         case "$t" in
             GIT_DIR=*) e_dir="${t#GIT_DIR=}" ;;
             GIT_WORK_TREE=*) e_wt="${t#GIT_WORK_TREE=}" ;;
@@ -4187,9 +4281,10 @@ _bwimc_git_clause() {
                         while [ "$i" -lt "$n" ]; do
                             t=$(_bwimc_unq "${toks[$i]}")
                             local eopt="" eval_="" ci ch
+                            case "$t" in [A-Za-z_]*=*) ! _bwimc_env_prog "$t" || progrun=1 ;; esac
                             case "$t" in
                                 -|-i|--ignore-environment)
-                                    e_dir=""; e_wt=""; e_idx=""; e_cfgglobal=""; e_cfgsystem=""; cfg=0 ;;
+                                    e_dir=""; e_wt=""; e_idx=""; e_cfgglobal=""; e_cfgsystem=""; cfg=0; progrun=0 ;;
                                 --unset=*) eopt=u; eval_="${t#--unset=}" ;;
                                 --unset) eopt=u ;;
                                 --chdir=*) eopt=C; eval_="${t#--chdir=}" ;;
@@ -4204,7 +4299,7 @@ _bwimc_git_clause() {
                                     while [ "$ci" -lt "${#t}" ]; do
                                         ch="${t:$ci:1}"
                                         case "$ch" in
-                                            i) e_dir=""; e_wt=""; e_idx=""; e_cfgglobal=""; e_cfgsystem="" ;;
+                                            i) e_dir=""; e_wt=""; e_idx=""; e_cfgglobal=""; e_cfgsystem=""; progrun=0 ;;
                                             u|C|a|S) eopt="$ch"; eval_="${t:$((ci+1))}"; break ;;
                                         esac
                                         ci=$((ci+1))
@@ -4264,9 +4359,12 @@ _bwimc_git_clause() {
             -C)
                 i=$((i+1))
                 if r=$(_bwimc_resolve_abs "${toks[$i]:-}" "$dir"); then dir="$r"; else unres=1; fi ;;
-            -c|--config-env) cfg=1; i=$((i+1)); _bwimc_cfg_key "$(_bwimc_unq "${toks[$i]:-}")" ;;
-            --config-env=*) cfg=1; _bwimc_cfg_key "${t#--config-env=}" ;;
-            -c*) cfg=1; _bwimc_cfg_key "${t#-c}" ;;
+            -c|--config-env)
+                cfg=1; i=$((i+1)); v=$(_bwimc_unq "${toks[$i]:-}"); _bwimc_cfg_key "$v"
+                if [ "$t" = -c ]; then _bwimc_cfg_safe "$v" || progrun=1; else _bwimc_cfg_safe "$v" noval || progrun=1; fi ;;
+            --config-env=*) cfg=1; _bwimc_cfg_key "${t#--config-env=}"; _bwimc_cfg_safe "${t#--config-env=}" noval || progrun=1 ;;
+            -c*) cfg=1; _bwimc_cfg_key "${t#-c}"; _bwimc_cfg_safe "${t#-c}" || progrun=1 ;;
+            --exec-path=*) progrun=1 ;;
             --git-dir|--work-tree|--namespace|--super-prefix) i=$((i+1)) ;;
             -*) ;;
             *) break ;;
@@ -4398,20 +4496,57 @@ _bwimc_git_clause() {
         _BWIMC_GIT_SUB=""
     done
 
+    # HIMMEL-4504: `worktree move <wt> <dst>` / `worktree add <path>` create a
+    # checkout AT the destination, so it gets the file verdict like --output
+    # (a gitignored or handovers/ path inside the primary stays allowed, as
+    # for every file-operand arm). A sub-option that runs a program (see
+    # _bwimc_git_args_prog) voids the read relief below.
+    if [ "$sub" = worktree ]; then
+        local wt_op="" wt_dst="" wt_n=0 wt_skip=0
+        for v in ${args[@]+"${args[@]}"}; do
+            if [ "$wt_skip" = 1 ]; then wt_skip=0; continue; fi
+            case "$v" in
+                --reason) wt_skip=1; continue ;;
+                -*[bB]) case "$v" in --*) ;; *) wt_skip=1 ;; esac; continue ;;
+                -*) continue ;;
+            esac
+            if [ -z "$wt_op" ]; then wt_op="$v"; continue; fi
+            wt_n=$((wt_n+1))
+            case "$wt_op:$wt_n" in add:1|move:2) wt_dst="$v" ;; esac
+        done
+        if [ -n "$wt_dst" ]; then
+            case "$wt_op" in
+                add|move)
+                    _BWIMC_GIT_SUB="worktree $wt_op"
+                    [ "$_bwimc_g_jail" = 0 ] || _bwimc_deny "chroot-git" "$1" "$dir" ""
+                    case "$wt_dst" in
+                        /*|'~'*|'$'*) ;;
+                        *) [ "$unres" = 0 ] || _bwimc_deny "unresolved-git-target" "$1" "$dir" "" ;;
+                    esac
+                    _bwimc_check_target "$wt_dst" "$dir"
+                    _BWIMC_GIT_SUB="" ;;
+            esac
+        fi
+    fi
+    if [ "$progrun" = 0 ] && [ "${#args[@]}" -gt 0 ] && _bwimc_git_args_prog "$sub" "${args[@]}"; then
+        progrun=1
+    fi
+
     # A config override (-c, --config-env, GIT_CONFIG*) can repoint the
     # remote or refspec pull/fetch act on, so it voids their carve-out.
     case "$cfg:$sub" in
         1:pull|1:fetch) ;;
         *)
             if [ "${#args[@]}" -gt 0 ]; then
-                _bwimc_git_sub_is_read "$sub" "${args[@]}" && return 0
+                [ "$progrun" = 0 ] && _bwimc_git_sub_is_read "$sub" "${args[@]}" && return 0
             else
-                _bwimc_git_sub_is_read "$sub" && return 0
+                [ "$progrun" = 0 ] && _bwimc_git_sub_is_read "$sub" && return 0
             fi ;;
     esac
     [ "$_bwimc_g_jail" = 0 ] || _bwimc_deny "chroot-git" "$1" "$dir" ""
 
     _BWIMC_GIT_SUB="$sub"
+    [ "$progrun" = 0 ] || _BWIMC_GIT_SUB="$sub (runs a program: a -c/--config-env key off the safe list, a pager, --exec-path, --ext-diff/--textconv or a GIT_* program env; HIMMEL-4504)"
     [ -n "$gitdir" ] || gitdir="$e_dir"
     [ -n "$wtree" ] || wtree="$e_wt"
     idx="$e_idx"
@@ -4802,6 +4937,7 @@ _bwimc_genv_idx=""
 _bwimc_genv_cfgglobal=""
 _bwimc_genv_cfgsystem=""
 _bwimc_genv_cfg=0
+_bwimc_genv_prog=0
 _bwimc_g_repoint=0
 _bwimc_g_netop=0
 _bwimc_g_jail=0
