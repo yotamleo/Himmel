@@ -126,12 +126,13 @@ function validateVm(vm) {
   const port = Object.prototype.hasOwnProperty.call(r, 'port') ? r.port : 22;
   const portOk = typeof port === 'number' ? Number.isInteger(port) : (typeof port === 'string' && /^[0-9]+$/.test(port));
   if (!portOk || Number(port) < 1 || Number(port) > 65535) errors.push(`vm.remote.port: must be an integer 1..65535 (got ${JSON.stringify(port)})`);
-  const ident = r.identity || '~/.ssh/id_ed25519';
-  if (typeof ident !== 'string') {
-    errors.push(`vm.remote.identity: must be a string (got ${JSON.stringify(ident)})`);
+  // only an absent or null identity takes the default (HIMMEL-4601)
+  const ident = r.identity === undefined || r.identity === null ? '~/.ssh/id_ed25519' : r.identity;
+  if (typeof ident !== 'string' || ident === '') {
+    errors.push(`vm.remote.identity: must be a non-empty string (got ${JSON.stringify(ident)})`);
   } else {
     const x = expandTilde(ident);
-    if (/\s/.test(x) || x.startsWith('-')) errors.push(`vm.remote.identity: must not contain whitespace or start with "-" after ~ expansion (got ${JSON.stringify(ident)})`);
+    if (/[\s*?[]/.test(x) || x.startsWith('-')) errors.push(`vm.remote.identity: must not contain whitespace or a glob character (* ? [) or start with "-" after ~ expansion (got ${JSON.stringify(ident)})`);
   }
   return errors;
 }

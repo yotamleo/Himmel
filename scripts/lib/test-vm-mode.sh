@@ -127,6 +127,24 @@ printf '%s\n' '{"vm":{"mode":"remote","remote":{"ssh":"ops@h"}}}' > "$T/sp home/
 out="$(HOME="$T/sp home" bash "$LIB" route 2>&1)"; rc=$?
 if [ "$rc" = 2 ] && [ "$out" = "fix-config: vm.remote has an invalid ssh, port or identity -- fix ~/.himmel/config.json (docs/setup/vm-mode.md)" ]; then pass "remote default identity under a spaced HOME -> none"
 else fail "remote default identity under a spaced HOME: rc=$rc '$out'"; fi
+
+echo "== identity: only an absent or null key takes the default (HIMMEL-4601)"
+bad_route="fix-config: vm.remote has an invalid ssh, port or identity -- fix ~/.himmel/config.json (docs/setup/vm-mode.md)"
+for ident in 'false' '0' '[]' '{}' '""' '"~/.ssh/k*"' '"/k?"' '"/keys/[ab]"'; do
+    cfg "{\"vm\":{\"mode\":\"remote\",\"remote\":{\"ssh\":\"ops@h\",\"identity\":$ident}}}"
+    check "identity $ident -> fix-config, never the default" "$bad_route" 2 route
+done
+cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","identity":null}}}'
+check "identity null -> the default" "$(printf 'ops@h\t22\t%s' "$T/home/.ssh/id_ed25519")" 0 target
+
+echo "== J1947b shapes: a float port is an error; a trailing x1c is stripped (both sides agree)"
+cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h","port":22.0}}}'
+check "float port 22.0 -> fix-config" "$bad_route" 2 route
+cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h\u001c"}}}'
+check "trailing \\x1c ssh -> stripped" "remote-vm ops@h:22" 0 route
+cfg '{"vm":{"mode":"remote","remote":{"ssh":"ops@h\u0085"}}}'
+check "trailing \\x85 ssh -> stripped" "remote-vm ops@h:22" 0 route
+
 rm -f "$T/home/.himmel/config.json"; mkdir "$T/home/.himmel/config.json"
 check_mode_err "config path is a directory -> none"
 rmdir "$T/home/.himmel/config.json"; ln -s "$T/missing.json" "$T/home/.himmel/config.json"
