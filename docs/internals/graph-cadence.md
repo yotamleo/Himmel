@@ -192,6 +192,27 @@ default change therefore takes effect on the **very next scheduled fire**,
 with no re-arm needed. (`--threshold <N>` still exists for an ad-hoc manual
 run against a different value — it just isn't what the armed cadence uses.)
 
+## The `--semantic` step: which exit codes alert (HIMMEL-4512)
+
+With `--semantic`, `graph-cadence.sh` runs `semantic-update.sh` on the
+dedicated worktree (local ollama) and classifies its exit code:
+
+| rc | meaning | cadence result |
+|---|---|---|
+| 0 | ok, or no change since the last pass (no-op) | green; clears the `graph-semantic-<slug>` alert |
+| 3 | bank at/over threshold, nothing touched (claude-cli only; the ollama path skips the bank) | benign skip: green, no alert, an existing alert is left standing |
+| 4 | promote lock held by another graph refresh, nothing touched | benign skip: green, no alert, an existing alert is left standing |
+| 1, 2, other | usage/IO, fence deny, graphify or merge failure | alerts (`semantic-update-rc-<n>`), `action=failed`, rc 3 |
+
+A skip is not a recovery, so it never clears a standing alert; only a clean rc 0
+does. On the local ollama path `semantic-update.sh` exports the placeholder
+`OLLAMA_API_KEY=ollama` (a caller-set key wins) so graphify's "no OLLAMA_API_KEY"
+warning stays out of the extract log; that is only done after the loopback and
+non-cloud-model checks, so the cloud path keeps its warning and any real auth
+error. `refresh-graph-map.sh --backend ollama` likewise defaults to
+`--max-concurrency 1` for a local endpoint (the model holds the whole GPU); an
+explicit `GRAPHIFY_MAX_CONCURRENCY` wins, and an ollama-cloud model keeps 6.
+
 ## Where failures show up
 
 - **The armed task's own run log** — `graphmap-cadence.sh status` surfaces

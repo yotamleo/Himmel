@@ -154,7 +154,8 @@
 # graphify-out/, so the semantic manifest (the change gate) persists between
 # fires. A failure alerts through scripts/luna/cadence-alert.sh (HIMMEL-4181,
 # leg graph-semantic-<corpus-slug>) and fails the run (rc 3); a success clears
-# that leg's alert. Without the flag nothing changes for an armed cadence.
+# that leg's alert. semantic-update.sh rc 3 (bank at/over threshold) and rc 4
+# (promote lock held) are benign skips (HIMMEL-4512): no alert, run stays green. Without the flag nothing changes for an armed cadence.
 #
 # THRESHOLD DEFAULT = 15 commits behind. Justified against the measured
 # numbers (HIMMEL-2095 brief): the shipped graph was 36 commits behind
@@ -927,11 +928,17 @@ if [ "$SEMANTIC" -eq 1 ]; then
         --corpus-class himmel-code --backend ollama 2>&1)
     _sem_rc=$?
     printf '%s\n' "$_sem_out"
-    if [ "$_sem_rc" -ne 0 ]; then
-        bash "$CADENCE_ALERT" fail "$_sem_leg" "semantic-update-rc-$_sem_rc" "$LOG_FILE"
-        _fail "semantic-update.sh exited $_sem_rc: $(printf '%s' "$_sem_out" | tail -n 3 | tr '\n' ' ')"
-    fi
-    bash "$CADENCE_ALERT" clear "$_sem_leg"
+    case "$_sem_rc" in
+        0) bash "$CADENCE_ALERT" clear "$_sem_leg" ;;
+        # HIMMEL-4512: 3 = bank at/over threshold, 4 = promote lock held. Nothing
+        # was touched and the next fire retries, so neither alerts nor fails the
+        # run. An existing alert is left standing: a skip is not a recovery.
+        3|4) echo "graph-cadence: semantic step skipped (rc=$_sem_rc, benign: next fire retries)" ;;
+        *)
+            bash "$CADENCE_ALERT" fail "$_sem_leg" "semantic-update-rc-$_sem_rc" "$LOG_FILE"
+            _fail "semantic-update.sh exited $_sem_rc: $(printf '%s' "$_sem_out" | tail -n 3 | tr '\n' ' ')"
+            ;;
+    esac
 fi
 
 # --- 6a. retired publish/merge legs: clean no-op, not a skip ----------------

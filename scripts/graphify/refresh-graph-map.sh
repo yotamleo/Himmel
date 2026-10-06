@@ -410,7 +410,28 @@ GRAPHIFY_MAP="${GRAPHIFY_MAP_BIN:-graphify}"   # test hook: stub graphify
 # parallel `claude -p` subprocesses conflict over session state), so this knob
 # and the --max-concurrency flags below are a NO-OP for claude-cli; they govern
 # the API backends only (claude, the glm remap, deepseek, ...).
-GRAPHIFY_MAX_CONCURRENCY="${GRAPHIFY_MAX_CONCURRENCY-6}"
+# HIMMEL-4512: the LOCAL ollama model holds the whole GPU, so default to 1 there
+# (semantic-update.sh pins the same). Local = a loopback endpoint (OLLAMA_BASE_URL
+# verbatim, else OLLAMA_HOST, else graphify's loopback default) AND a non-cloud
+# model; anything else (ollama-cloud, other backends) keeps 6. An explicit
+# GRAPHIFY_MAX_CONCURRENCY, even an invalid one, still wins and is validated below.
+_ollama_is_local() {
+  local m v
+  m="$(printf '%s' "${OLLAMA_MODEL:-qwen3.6:27b}" | tr '[:upper:]' '[:lower:]')"
+  case "$m" in *-cloud|*:cloud) return 1 ;; esac
+  if [ "${OLLAMA_BASE_URL+set}" = set ]; then
+    v="$(printf '%s' "$OLLAMA_BASE_URL" | tr '[:upper:]' '[:lower:]')"
+    [[ "$v" =~ ^https?://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?(/[a-z0-9._/-]*)?$ ]]
+  elif [ -n "${OLLAMA_HOST:-}" ]; then
+    v="$(printf '%s' "$OLLAMA_HOST" | tr '[:upper:]' '[:lower:]')"
+    [[ "$v" =~ ^((https?://)?(localhost|127\.0\.0\.1|\[::1\])(:[0-9]{1,5})?|:?[0-9]{1,5})/?$ ]]
+  else
+    return 0
+  fi
+}
+_default_concurrency=6
+if [ "$BACKEND" = "ollama" ] && _ollama_is_local; then _default_concurrency=1; fi
+GRAPHIFY_MAX_CONCURRENCY="${GRAPHIFY_MAX_CONCURRENCY-$_default_concurrency}"
 # Validate ONLY on the extraction path (DO_UPDATE=1): the knob feeds the
 # --update + cluster-only graphify calls, which a --no-update publish-only run
 # never makes — so an invalid value is irrelevant there and must not fail an

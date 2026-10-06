@@ -3278,12 +3278,33 @@ if [ "$rc" -eq 2 ] && grep -qF 'egress preflight refused' <<< "$out" && [ ! -s "
 else
   fail "T44e remote OLLAMA_BASE_URL must be refused rc=2 (rc=$rc): $out calls=$(cat "$WS/ol-base.calls")"
 fi
+# T44c2 (HIMMEL-4512 item 5): the LOCAL ollama path holds the whole GPU, so both
+# graphify subprocesses run at --max-concurrency 1 (semantic-update.sh's pin),
+# not the API-backend default 6. An explicit GRAPHIFY_MAX_CONCURRENCY still wins.
+if [ "$(grep -c -- '--max-concurrency 1\( \|$\)' "$WS/ol-local.calls")" -ge 2 ] \
+   && ! grep -q -- '--max-concurrency 6' "$WS/ol-local.calls"; then
+  pass "T44c2 local ollama defaults both graphify calls to --max-concurrency 1"
+else
+  fail "T44c2 local ollama should default to --max-concurrency 1: $(cat "$WS/ol-local.calls")"
+fi
+_ol_run localknob OLLAMA_MODEL=qwen3.6:27b GRAPHIFY_MAX_CONCURRENCY=2
+if grep -q -- '--max-concurrency 2' "$WS/ol-localknob.calls" && ! grep -q -- '--max-concurrency 1' "$WS/ol-localknob.calls"; then
+  pass "T44c3 an explicit GRAPHIFY_MAX_CONCURRENCY still wins on the local ollama path"
+else
+  fail "T44c3 explicit knob should win: $(cat "$WS/ol-localknob.calls")"
+fi
 _ol_run cloud OLLAMA_MODEL=qwen3-coder:480b-cloud
 if [ "$rc" -eq 0 ] && grep -qF '"provider":"ollama-cloud"' "$WS/ol-cloud.ledger" \
    && ! grep -qF '"provider":"local-ollama"' "$WS/ol-cloud.ledger"; then
   pass "T44f a -cloud model is classified ollama-cloud (not local-ollama) on the scheduled path"
 else
   fail "T44f -cloud model must ledger as ollama-cloud (rc=$rc): $out ledger=$(cat "$WS/ol-cloud.ledger")"
+fi
+# T44f2: a cloud model is NOT the local GPU path - concurrency stays the default 6.
+if grep -q -- '--max-concurrency 6' "$WS/ol-cloud.calls"; then
+  pass "T44f2 ollama-cloud keeps the default --max-concurrency 6"
+else
+  fail "T44f2 ollama-cloud should keep concurrency 6: $(cat "$WS/ol-cloud.calls")"
 fi
 OL_ROOT="$SALCORPUS" _ol_run salus OLLAMA_MODEL=qwen3.6:27b
 if [ "$rc" -eq 2 ] && grep -q "SALUS by path" <<< "$out" && [ ! -s "$WS/ol-salus.calls" ]; then
@@ -4170,8 +4191,11 @@ else
       "$1" "$(date +%s)" "$bank_acct" > "$WS/bank85/cache.json"
   }
   bank_run() { # <name> <corpus> <maps>
+    # CADENCE_BANK_MAX_PCT/MAX_AGE pinned (HIMMEL-4512): the 85/10 % fixtures
+    # assume the default threshold; a launching env exporting 95 or 99 made the
+    # 85 % fixture run instead of skip.
     CLAUDE_ACCOUNT_CONFIG="$bank_cfg" CADENCE_BANK_CACHE="$WS/bank85/cache.json" CADENCE_BANK_SKIP_REFRESH=1 \
-      GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" --name "$1" --corpus-root "$2" \
+      CADENCE_BANK_MAX_PCT=85 CADENCE_BANK_MAX_AGE=600 GRAPHIFY_MAP_BIN="$BIN/graphify" bash "$SCRIPT" --name "$1" --corpus-root "$2" \
       --backend claude-cli --maps-dir "$3" --title "Bank $1" --slug "$1-map" 2>&1
   }
   BSCORPUS="$WS/bank85-corpus"; BSMAPS="$WS/bank85-maps"; mkdir -p "$BSCORPUS/notes" "$BSMAPS"
