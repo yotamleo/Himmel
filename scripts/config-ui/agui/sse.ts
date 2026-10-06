@@ -57,12 +57,18 @@ export type StreamOpts = {
 // treats any 32+ char run as a secret, which would collapse every session UUID
 // and toolu_ id into one; payload fields (deltas, results, messages, state) pass it.
 // `failure` (an enum) identifies too. `agent` / `subagent` (who acted) are identifiers except a subagent's
-// name, which is the free text of the Agent call's description and so passes the redactor; the session's own
-// name (id "main", its agent-name record) is kept, since a leg's is often 32+ chars and would be blanked.
+// name, model and kind, which come from the Agent call's free-form input and so pass the redactor; the
+// session's own agent (id "main": its agent-name record, its API model) is kept, since a leg's name is often
+// 32+ chars and would be blanked.
 const ID_FIELDS = new Set(["type", "threadId", "runId", "messageId", "toolCallId", "parentMessageId", "toolCallName", "role", "timestamp", "failure"]);
 const AGENT_FIELDS = new Set(["agent", "subagent"]);
-const redactAgent = (a: unknown, redact: (value: unknown) => unknown) =>
-  a && typeof a === "object" && (a as { id?: unknown }).id === "main" ? a : { ...(a as object), name: redact((a as { name?: unknown }).name) };
+const FREE_AGENT_FIELDS = ["name", "model", "kind"];
+const redactAgent = (a: unknown, redact: (value: unknown) => unknown) => {
+  if (!a || typeof a !== "object" || (a as { id?: unknown }).id === "main") return a;
+  const out: Record<string, unknown> = { ...(a as Record<string, unknown>) };
+  for (const k of FREE_AGENT_FIELDS) if (k in out) out[k] = redact(out[k]);
+  return out;
+};
 export function redactPayload(e: AguiEvent, redact: (value: unknown) => unknown): AguiEvent {
   return Object.fromEntries(Object.entries(e).map(([k, v]) =>
     [k, ID_FIELDS.has(k) ? v : AGENT_FIELDS.has(k) ? redactAgent(v, redact) : redact(v)])) as AguiEvent;
@@ -83,7 +89,7 @@ async function subagentFiles(journal: string, known: Set<string>): Promise<strin
   try { names = await readdir(subs); } catch { return []; }
   const out: string[] = [];
   for (const name of names.filter((n) => SUB_FILE.test(n)).sort()) {
-    if (known.size + out.length >= MAX_SUBAGENTS) break;
+    if (known.size - 1 + out.length >= MAX_SUBAGENTS) break; // known holds the journal itself too
     let real: string;
     try { real = await realpath(join(subs, name)); } catch { continue; }
     if (known.has(real) || !real.startsWith(dir + sep)) continue;
@@ -177,8 +183,12 @@ export function journalStream(path: string, o: StreamOpts): ReadableStream<Uint8
           // A file with unread bytes may still hold lines older than another file's: lines are released only
           // up to the oldest point such a file has been read to, so a later line never overtakes an earlier one
           // (a subagent's records land after the Agent call that spawned it, and before the turn's end).
-          const behind = [main, ...subs].filter((s) => s.offset < s.size);
-          const cut = behind.length ? Math.min(...behind.map((s) => s.lastTs)) : Infinity;
+          // A half-written last line (a tail) holds the merge back the same way: its record may be older than
+          // another file's next line. Only unread bytes keep the loop spinning; a tail waits for the next poll.
+          const live = [main, ...subs].filter((s) => s.offset <= s.size);
+          const behind = live.filter((s) => s.offset < s.size);
+          const pending = live.filter((s) => s.offset < s.size || s.tail);
+          const cut = pending.length ? Math.min(...pending.map((s) => s.lastTs)) : Infinity;
           const ready = held.filter((l) => l.ts <= cut);
           held = held.filter((l) => l.ts > cut);
           const events = map(ready);

@@ -249,6 +249,13 @@ describe("agents and failures", () => {
     expect(reduceAll([{ type: "RUN_ERROR", message: "lost", timestamp: 4 }], w).tools.s.status).toBe("error");
   });
 
+  test("a call failed twice (a run error, then its failed result) is one failure", () => {
+    const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 }, { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Bash", timestamp: 1 },
+      { type: "RUN_ERROR", message: "lost", timestamp: 2 }, { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "boom", isError: true, timestamp: 3 }]);
+    expect(w.failures).toEqual([{ kind: "tool", id: "a" }]);
+    expect(w.agents.main.failures).toBe(1);
+  });
+
   test("an Agent call's result that names its subagent updates that agent", () => {
     const w = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 0 },
       { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Agent", timestamp: 1 },

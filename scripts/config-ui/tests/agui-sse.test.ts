@@ -288,13 +288,52 @@ test("an unreadable subagent transcript is dropped; the journal still streams to
   expect(events.some((e) => e.toolCallId === "toolu_s1")).toBe(false);
 });
 
-test("a subagent's name is the Agent call's free-text description: it passes the redactor", async () => {
+test("a half-written subagent line holds the journal's newer lines until it completes", async () => {
+  const h = home();
+  const { mainBody, subBody } = splitAgents();
+  const mainLines = mainBody.split("\n").filter(Boolean);
+  const subLines = subBody.split("\n").filter(Boolean);
+  // the journal up to both calls, the critic's brief half-written, then the journal's later lines arrive
+  // (driven on journalStream directly: over HTTP the response would not start until the first frame)
+  const p = journal(h, "-proj", RUN, mainLines.slice(0, 5).join("\n") + "\n");
+  const sub = subagentFile(h, subLines[0].slice(0, 60));
+  const stream = journalStream(p, { threadId: RUN, pollMs: 20, idleMs: 300, maxMs: 5000, redact: (v) => v, onClose: () => {} });
+  setTimeout(() => appendFileSync(p, mainLines.slice(5).join("\n") + "\n"), 150);
+  setTimeout(() => appendFileSync(sub, subLines[0].slice(60) + "\n" + subLines.slice(1).join("\n") + "\n"), 300);
+  const events = parse(await new Response(stream).text());
+  const brief = events.findIndex((e) => e.type === "TEXT_MESSAGE_START" && (e as any).agent?.id === "a1b2c3");
+  const finished = events.findIndex((e) => e.type === "RUN_FINISHED");
+  expect(brief).toBeGreaterThan(-1);
+  expect(brief).toBeLessThan(finished);
+  expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(1); // no late side runs
+});
+
+test("at most 64 subagent transcripts are followed, beside the journal", async () => {
+  const h = home();
+  const { mainBody } = splitAgents();
+  journal(h, "-proj", RUN, mainBody);
+  for (let i = 0; i < 70; i++) {
+    const id = `s${String(i).padStart(2, "0")}`;
+    subagentFile(h, JSON.stringify({ type: "assistant", isSidechain: true, agentId: id, uuid: `x-${id}`, sessionId: "sess-agents",
+      timestamp: "2026-10-06T12:00:01.300Z", message: { id: `m-${id}`, role: "assistant", content: [{ type: "text", text: "hi" }] } }) + "\n", `agent-${id}.jsonl`);
+  }
+  const { port } = boot(h);
+  const events = parse(await (await get(port, RUN)).text());
+  const ids = new Set(events.filter((e) => e.type === "TEXT_MESSAGE_START").map((e) => (e as any).agent?.id).filter((id) => /^s\d\d$/.test(id)));
+  expect(ids.size).toBe(64);
+});
+
+test("a subagent's name, model and kind come from free-form Agent input: they pass the redactor", async () => {
   const h = home();
   const canary = "ghp_" + "A1b2".repeat(8);
-  journal(h, "-proj", RUN, readFileSync(join(FIX, "agents.jsonl"), "utf8").replace('"description":"Review the diff"', `"description":"Review ${canary}"`));
+  const canary2 = "ghp_" + "C3d4".repeat(8);
+  journal(h, "-proj", RUN, readFileSync(join(FIX, "agents.jsonl"), "utf8")
+    .replace('"description":"Review the diff"', `"description":"Review ${canary}"`)
+    .replace('"subagent_type":"code-critic"', `"subagent_type":"critic-${canary2}"`));
   const { port } = boot(h);
   const text = await (await get(port, RUN)).text();
   expect(text).not.toContain(canary);
+  expect(text).not.toContain(canary2);
   const read = parse(text).find((e) => e.type === "TOOL_CALL_START" && e.toolCallId === "toolu_s1") as any;
   expect(read.agent).toMatchObject({ id: "a1b2c3", role: "critic" });
 });
