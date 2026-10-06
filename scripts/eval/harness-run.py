@@ -160,6 +160,8 @@ def wait_child(child, timeout):
     # still reaped on the 50 ms cadence. Without pidfd_open it is a plain poll.
     try:
         pidfd = os.pidfd_open(child.pid)
+        poller = select.poll()  # poll, not select: no FD_SETSIZE ceiling
+        poller.register(pidfd, select.POLLIN)
     except (AttributeError, OSError):
         pidfd = None
     try:
@@ -180,7 +182,7 @@ def wait_child(child, timeout):
                 if pidfd is None:
                     time.sleep(0.05)
                 else:
-                    select.select([pidfd], [], [], min(0.05, remaining))
+                    poller.poll(min(0.05, remaining) * 1000)
     finally:
         if pidfd is not None:
             os.close(pidfd)

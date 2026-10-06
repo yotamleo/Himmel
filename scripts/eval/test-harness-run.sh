@@ -142,6 +142,12 @@ if mode == "orphan-stream":
     print("%.1f" % hit[0])
 if mode == "exit-latency":
     # A child that exits at once must be reaped without a poll-interval wait.
+    # Without pidfd_open the runner falls back to the 50 ms poll by design.
+    try:
+        os.close(os.pidfd_open(os.getpid()))
+    except (AttributeError, OSError):
+        print("nopidfd")
+        sys.exit(0)
     lat = []
     for _ in range(9):
         t0 = time.monotonic()
@@ -202,6 +208,7 @@ case "$hit" in 1.*|2.*) pass "orphan stream: deadline hit at ${hit}s" ;; *) fail
 #     few ms; the old poll sat at ~50).
 ms=$(python3 "$W/inproc.py" "$SUT" exit-latency "$W" "$W/child.sh" 2>/dev/null)
 case "$ms" in
+    nopidfd) pass "exit latency: skipped, no pidfd_open on this host (poll fallback)" ;;
     ''|*[!0-9]*) fail "exit latency: no measurement ('$ms')" ;;
     *) if [ "$ms" -lt 30 ]; then pass "exit latency: median ${ms}ms"; else fail "exit latency: median ${ms}ms (want under 30)"; fi ;;
 esac
