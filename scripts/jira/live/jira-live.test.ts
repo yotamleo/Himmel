@@ -106,13 +106,16 @@ describe.skipIf(!ENABLED)('jira CLI live (opt-in, JIRA_LIVE_TEST=1)', () => {
     // create can miss the new issue (seen: empty 355 ms after create, present a
     // minute later). Poll with backoff before asserting; this is index lag, not
     // a CLI defect.
+    const deadline = Date.now() + 20_000;
+    const hasKey = (s: string) => new RegExp(`\\b${key}\\b`).test(s); // HTEST-1 must not match HTEST-10
     let out = '';
-    for (let waitMs = 500, spent = 0; spent <= 20_000; spent += waitMs, waitMs *= 2) {
+    for (let waitMs = 500; ; waitMs *= 2) {
       out = jira('list', '--project', PROJECT, '--limit', '100');
-      if (out.includes(key)) break;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+      const left = deadline - Date.now();
+      if (hasKey(out) || left <= 0) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(waitMs, left));
     }
-    expect(out).toContain(key);
+    expect(hasKey(out)).toBe(true);
   }, 40_000);
 
   it('link: a second issue is linked and links lists it', () => {
