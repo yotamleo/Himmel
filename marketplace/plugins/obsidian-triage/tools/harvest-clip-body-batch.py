@@ -596,6 +596,15 @@ def youtube_scrapling(video_id: str, vault):
         if status == "ok":
             status, detail = "error", f"rc={proc.returncode}"
         return None, f"{status or 'error'}{f' ({detail})' if detail else ''}"
+    # HIMMEL-4722: youtube_section renders these fields directly, so a wrong
+    # type defers the clip instead of raising mid-render.
+    bad = [k for k in ("title", "channel", "description")
+           if out.get(k) is not None and not isinstance(out[k], str)]
+    segs = out.get("transcript")
+    if segs is not None and not (isinstance(segs, list) and all(isinstance(s, dict) for s in segs)):
+        bad.append("transcript")
+    if bad:
+        return None, f"malformed payload ({', '.join(bad)})"
     return out, None
 
 
