@@ -230,7 +230,8 @@ judge_nogo_record() (
     # shellcheck source=scripts/lib/handover-path.sh
     # shellcheck disable=SC1091
     . "$lib/handover-path.sh" 2>/dev/null || exit 1
-    # shellcheck source=scripts/lib/go-gate.sh
+    # Not followed: its function locals (head_sha) read as subshell writes (SC2031).
+    # shellcheck source=/dev/null
     # shellcheck disable=SC1091
     . "$lib/go-gate.sh" 2>/dev/null || exit 1
     root="$(go_resolve_root "$HIMMEL_ROOT")" && [ -n "$root" ] || exit 1
