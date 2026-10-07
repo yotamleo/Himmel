@@ -1073,7 +1073,7 @@ analyze() {
     # hid the verb from these checks (j2031-r6). A pre-pass records, per
     # segment, the verbs seen so far, find's action, and whether a tar, unzip
     # or 7z extraction names its destination.
-    seg_vs=(); seg_vl=(); seg_vli=(); seg_xx=(); seg_xd=(); seg_xn=()
+    seg_vs=(); seg_vl=(); seg_vli=(); seg_xx=(); seg_xd=(); seg_xn=(); seg_xg=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         s=${ST_S[i]}
@@ -1095,9 +1095,12 @@ analyze() {
                     esac ;;
                 unzip) seg_xx[s]=1
                     case "$w" in
-                        --*) ;;
+                        # unzip negates with a - inside the options (--l, -l-l),
+                        # so a negation voids a read-only mode (r11 codex-1)
+                        --*) seg_xg[s]=1 ;;
                         -*) _cluster "$w" "$UNZIP_VAL" d
                             case "$_cpre" in *[ltvzZ]*) seg_xn[s]=1 ;; esac
+                            case "$_cpre" in *-*) seg_xg[s]=1 ;; esac
                             if [ -n "$_cd" ]; then seg_xd[s]=1; fi ;;
                     esac ;;
                 7z) case "$w" in -o*) seg_xd[s]=1 ;; x|e) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;; esac ;;
@@ -1139,7 +1142,8 @@ analyze() {
     done
     # An extraction with no destination writes into the cwd (j2031-r6).
     for s in ${seg_xx[@]+"${!seg_xx[@]}"}; do
-        if [ -n "${seg_xd[s]:-}" ] || [ -n "${seg_xn[s]:-}" ]; then continue; fi
+        if [ -n "${seg_xd[s]:-}" ]; then continue; fi
+        if [ -n "${seg_xn[s]:-}" ] && [ -z "${seg_xg[s]:-}" ]; then continue; fi
         for x in "${CWDS[@]}"; do
             is_key_anc "$x" && deny "key-bash" "an extraction with no destination writes into $x, which holds the key"
         done
