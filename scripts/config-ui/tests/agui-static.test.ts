@@ -119,7 +119,15 @@ async function twoLines(args: string[], h: string): Promise<string[]> {
   }
 }
 
-for (const [label, args, want] of [["--agui (default latest)", ["--agui"], NEW], ["--agui latest", ["--agui", "latest"], NEW], ["--agui <id>", ["--agui", OLD], OLD]] as const) {
+// HIMMEL-4712: --agui with no session id prints the fleet landing (the token, no run).
+test("himmelctl ui --agui with no session id prints the config URL, then the AG-UI fleet URL", async () => {
+  const [config, agui] = await twoLines(["--agui"], home());
+  const m = /^(http:\/\/127\.0\.0\.1:\d+)\/#t=([0-9a-f]{64})$/.exec(config);
+  expect(m).not.toBeNull();
+  expect(agui).toBe(`${m![1]}/agui/#t=${m![2]}`);
+});
+
+for (const [label, args, want] of [["--agui latest", ["--agui", "latest"], NEW], ["--agui <id>", ["--agui", OLD], OLD]] as const) {
   test(`himmelctl ui ${label} prints the config URL, then the AG-UI URL for ${want === NEW ? "the newest" : "that"} session`, async () => {
     const [config, agui] = await twoLines([...args], home());
     const m = /^(http:\/\/127\.0\.0\.1:\d+)\/#t=([0-9a-f]{64})$/.exec(config);

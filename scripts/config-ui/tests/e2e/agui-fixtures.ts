@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fleetFixture } from "../agui-fleet-fixture";
 import { BIN } from "./fixtures";
 
 export const RUN = "0b6e1c2a-3f4d-4e5f-8a9b-0c1d2e3f4a5b";
@@ -43,8 +44,11 @@ export type AguiHarness = {
   stop: () => Promise<void>;
 };
 
-export async function bootAgui(initial = ""): Promise<AguiHarness> {
+// HIMMEL-4712: `fleet` boots `himmelctl ui --agui` with no session id over the fixture fleet (agui-fleet-fixture.ts:
+// its stub census, sessions and journals under this HOME), and waits for the fleet URL (the token, no run).
+export async function bootAgui(initial = "", opts: { fleet?: boolean } = {}): Promise<AguiHarness> {
   const dir = mkdtempSync(join(tmpdir(), "agui-e2e-"));
+  const fleet = opts.fleet ? fleetFixture(dir) : null;
   const home = join(dir, "home");
   const slug = join(home, ".claude", "projects", "e2e-project");
   mkdirSync(slug, { recursive: true });
@@ -53,18 +57,19 @@ export async function bootAgui(initial = ""): Promise<AguiHarness> {
   const env: Record<string, string | undefined> = {
     ...process.env, HOME: home, CONFIG_UI_HIMMELCTL: join(__dirname, "e2e-stub.js"), CONFIG_UI_IDLE_MS: "300000",
     HANDOVER_DIR: join(dir, "handover"), HIMMEL_PROMETHEUS_URL: "http://127.0.0.1:1", HIMMEL_FLOW_EXPORTER_PORT: "1",
-    E2E_FEED: join(dir, "feed.json"), STUB_ARGV: join(dir, "argv"),
+    E2E_FEED: join(dir, "feed.json"), STUB_ARGV: join(dir, "argv"), ...fleet?.env,
   };
   delete env.CADENCE_BANK_LEDGER;
   for (const k of Object.keys(env)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete env[k];
-  const child: ChildProcess = spawn("node", [BIN, "ui", "--port", "0", "--agui", RUN], { env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const child: ChildProcess = spawn("node", [BIN, "ui", "--port", "0", "--agui", ...(fleet ? [] : [RUN])], { env: env as NodeJS.ProcessEnv, stdio: ["ignore", "pipe", "pipe"] });
+  const want = fleet ? /(http:\/\/127\.0\.0\.1:\d+\/agui\/#t=[0-9a-f]{64})$/m : /(http:\/\/127\.0\.0\.1:\d+\/agui\/#t=[0-9a-f]{64}&run=[0-9a-f-]{36})/;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const url = await new Promise<string>((ok, fail) => {
     let buf = "", err = "";
     child.stderr!.on("data", (d) => (err += d));
     child.stdout!.on("data", (d) => {
       buf += d;
-      const m = /(http:\/\/127\.0\.0\.1:\d+\/agui\/#t=[0-9a-f]{64}&run=[0-9a-f-]{36})/.exec(buf);
+      const m = want.exec(buf);
       if (m) ok(m[1]);
     });
     child.on("error", fail);
