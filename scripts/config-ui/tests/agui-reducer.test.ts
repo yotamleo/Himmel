@@ -327,6 +327,14 @@ describe("agent live state", () => {
     expect(runningCount(errored)).toBe(0);
   });
 
+  // HIMMEL-4718: a run end names no agent, yet it is when the calls it closes ended.
+  test("a run end that closes an agent's call marks that agent's last activity", () => {
+    const ended = reduceAll([{ type: "RUN_FINISHED", timestamp: 1800 }], opened);
+    expect([ended.agents.main.last, ended.agents.q.last]).toEqual([800, 300]); // q's Read stays open, untouched
+    const errored = reduceAll([{ type: "RUN_ERROR", message: "lost", timestamp: 1900 }], opened);
+    expect([errored.agents.main.last, errored.agents.q.last]).toEqual([900, 900]);
+  });
+
   test("a background subagent whose Agent call returned at launch fails when the run error kills its open call", () => {
     const launched = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "launched", timestamp: 1400 }], opened);
     expect(agentState(launched, "q")).toBe("running"); // its own Read is still open
