@@ -28,6 +28,8 @@ export HIMMEL_FAILURE_ROUTES_STATE="$TMP/never-state.json"
 export HIMMEL_FAILURE_INBOX="$TMP/never-inbox.md"
 export HIMMEL_FAILURE_REVIEW_DIR="$TMP/never-review"
 export FAILURE_REVIEW_NOTIFY_CMD="$TMP/stub/notify"
+# The router fails closed without a project key (HIMMEL-4754); the suite names one, the no-key cases unset it.
+export JIRA_PROJECT_KEY=HIMMEL
 export CADENCE_ALERT_FILE="$TMP/cadence-alerts.log" CADENCE_ALERT_DEDUPE_DIR="$TMP/alert-sent" CADENCE_ALERT_SEND_CMD="$TMP/stub/notify"
 PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); echo "  ok   $1"; }
@@ -112,6 +114,12 @@ check "the line is one line" '[ "$(tail -n 1 "$STUB/notify.log" | wc -l)" = 1 ]'
 review "$C3" --live >/dev/null 2>&1
 check "a rerun routes nothing new: no second ticket, routed none" '[ "$(calls create)" = 1 ] && digest "$C3" | grep -q "routed: none"'
 
+C3k="$TMP/c3k"; mkdir -p "$C3k"; cp "$C2/ledger.jsonl" "$C3k/ledger.jsonl"
+n3="$(calls create)"
+env -u JIRA_PROJECT_KEY python3 "$FRV" --ledger "$C3k/ledger.jsonl" --state "$C3k/state.json" --log "$C3k/log.jsonl" --inbox "$C3k/inbox.md" \
+  --out-dir "$C3k/out" --now "$NOW" --jira-bin "$STUB/jira" --live >"$C3k/run.out" 2>&1; rc=$?
+check "a live review with no JIRA_PROJECT_KEY fails closed and says the key is missing" '[ "$rc" = 1 ] && grep -q "JIRA_PROJECT_KEY is required" "$C3k/run.out" && digest "$C3k" | grep -q "router: failed" && [ "$(calls create)" = "$n3" ]'
+
 echo "4. a capped day says so"
 C4="$TMP/c4"; mkdir -p "$C4"; cp "$C2/ledger.jsonl" "$C4/ledger.jsonl"
 printf '{"v":1,"classes":{},"created":{"day":"%s","n":3}}\n' "$DAY" >"$C4/state.json"
@@ -188,8 +196,14 @@ check "one tagged crontab entry" '[ "$(grep -c "# HIMMEL-FailureReview" "$CR/tab
 check "the runner routes dry-run by default" '[ -x "$TMP/runner/failure-review-cadence.sh" ] && ! grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh"'
 bash "$CAD" arm --vault "$V" >/dev/null 2>&1; rc=$?
 check "a second arm without --force refuses (rc 3)" '[ "$rc" = 3 ]'
+env -u JIRA_PROJECT_KEY bash "$CAD" arm --vault "$V" --live --force >"$TMP/arm-nokey.out" 2>&1; rc=$?
+check "arm --live with no JIRA_PROJECT_KEY refuses (rc 2) and changes nothing" '[ "$rc" = 2 ] && grep -q JIRA_PROJECT_KEY "$TMP/arm-nokey.out" && ! grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh"'
+JIRA_PROJECT_KEY=bad-key bash "$CAD" arm --vault "$V" --live --force >/dev/null 2>&1; rc=$?
+check "arm --live with a non-project key refuses (rc 2)" '[ "$rc" = 2 ]'
+env -u JIRA_PROJECT_KEY bash "$CAD" arm --vault "$V" --force >/dev/null 2>&1; rc=$?
+check "a dry-run arm needs no key and bakes none" '[ "$rc" = 0 ] && ! grep -q JIRA_PROJECT_KEY "$TMP/runner/failure-review-cadence.sh"'
 bash "$CAD" arm --vault "$V" --live --force >/dev/null 2>&1
-check "--live is baked only on request, still one entry" 'grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh" && [ "$(grep -c "# HIMMEL-FailureReview" "$CR/tab")" = 1 ]'
+check "--live is baked only on request, with the key, still one entry" 'grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh" && grep -q "JIRA_PROJECT_KEY=HIMMEL" "$TMP/runner/failure-review-cadence.sh" && [ "$(grep -c "# HIMMEL-FailureReview" "$CR/tab")" = 1 ]'
 check "status shows it armed" 'bash "$CAD" status | grep -q "^ARMED .*HIMMEL-FailureReview"'
 touch "$CR/fail"
 bash "$CAD" arm --vault "$V" --force >/dev/null 2>&1; rc=$?
