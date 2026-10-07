@@ -88,7 +88,7 @@ row null denied/check-push-target 1; row N100 denied/check-push-target 1
 route >"$TMP/a.out" 2>&1 || bad "route exits 0: $(head -c 400 "$TMP/a.out")"
 check "exactly one create through the stub" '[ "$(calls create)" = 1 ]'
 check "a label search ran before the create, over every status" 'grep -q "^list --jql project = HIMMEL AND labels = \"fl-denied-guard-pr-check-literal\" --limit 5" "$STUB/calls.log"'
-check "the create carries the two labels, Task, no fixVersion" 'grep "^create " "$STUB/calls.log" | grep -q -- "--type Task" && grep "^create " "$STUB/calls.log" | grep -q -- "--labels failure-loop,fl-denied-guard-pr-check-literal" && ! grep -q -- "--fix-version" "$STUB/calls.log"'
+check "the create carries the two labels, Task, no fixVersion" 'grep -q -- "^create .*--type Task" "$STUB/calls.log" && grep -q -- "^create .*--labels failure-loop,fl-denied-guard-pr-check-literal" "$STUB/calls.log" &&! grep -q -- "--fix-version" "$STUB/calls.log"'
 body="$(ls "$STUB"/body.create.* 2>/dev/null | head -n 1)"
 check "the ticket body passes the alphabet check" '[ -n "$body" ] && python3 "$FR" check-body "$body" >/dev/null'
 check "the body names the class, the leg count and both legs" 'grep -q "denied/guard-pr-check-literal" "$body" && grep -q "distinct legs (14 d): 2" "$body" && grep -q "N100, N200" "$body"'
