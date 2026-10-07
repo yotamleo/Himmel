@@ -980,6 +980,14 @@ sed -e "s/$DG_SID/$FB_AFTER/g" -e 's/2026-10-06T12:00:01/2026-10-25T03:00:00/' "
 out_fb=$(TZ=Europe/Berlin bash "$STEP" --doc "$FB_DST" --projects "$DG_PROJ" 2>&1)
 contains "digest-fallback/dst: a session inside the leg is a member" "$out_fb" "$FB_IN digest=ok"
 not_contains "digest-fallback/dst: a fall-back is no midnight - a session after the wrap is not" "$out_fb" "$FB_AFTER"
+# A real midnight early on that 25h day: 24h after 00:30 is still the 25th, so the
+# next date must come from the calendar, not from +86400s.
+mkdir -p "$W/dst2"; FB_DST2="$W/dst2/HIMMEL-9-N1-demo-2026-10-25.md"
+{ printf -- '---\nresume_cwd: %s\n---\n# leg\n## Results\n- 00:30 LIVE - go\n- 00:10 WRAPPED - done\n' "$W/dg-cwd"; } > "$FB_DST2"
+FB_NEXT=4670c3a0-0000-4000-8000-0000000000ee
+sed -e "s/$DG_SID/$FB_NEXT/g" -e 's/2026-10-06T12:00:01/2026-10-25T23:05:00/' "$DG_PROJ/$FB_SLUG/$DG_SID.jsonl" > "$DG_PROJ/$FB_SLUG/$FB_NEXT.jsonl"
+out_fb=$(TZ=Europe/Berlin bash "$STEP" --doc "$FB_DST2" --projects "$DG_PROJ" 2>&1)
+contains "digest-fallback/dst: a midnight early on a 25h day still rolls to the next date" "$out_fb" "$FB_NEXT digest=ok"
 check "digest: the step spawns no model CLI" "$(grep -cE '(^|[^-])\b(claude|codex|gemini) +(-p|--print|--bg|exec)' "$STEP")" "0"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
