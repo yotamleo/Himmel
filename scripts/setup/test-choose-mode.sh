@@ -11,7 +11,7 @@ fails=0
 check(){ [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 unset TRACKER FORGE JIRA_PROJECT_KEY TICKET_ID_REQUIRED TICKET_ID_PATTERN
 
-td="$(mktemp -d)" || exit 1
+td="$(mktemp -d "${TMPDIR:-/tmp}/choose-mode.XXXXXX")" || exit 1
 trap 'rm -rf "$td"' EXIT
 export GIT_CONFIG_GLOBAL="$td/gitconfig" GIT_CONFIG_NOSYSTEM=1
 newrepo() { rm -rf "$td/r"; mkdir -p "$td/r"; git -C "$td/r" init -q; }
