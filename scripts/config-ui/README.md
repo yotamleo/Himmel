@@ -95,9 +95,20 @@ node scripts/himmelctl/bin.js ui --port 0 --agui latest
 
 It prints two URLs: the config page, then
 `http://127.0.0.1:<port>/agui/#t=<64 hex>&run=<session-id>`. Open the second.
-`--agui` alone means `latest`, the newest `~/.claude/projects/*/<id>.jsonl` by
+`--agui latest` picks the newest `~/.claude/projects/*/<id>.jsonl` by
 modification time; `--agui <session-id>` picks one session. The server runs in
 the foreground (Ctrl-C to stop); an open stream keeps it from idling out.
+
+**Fleet view (HIMMEL-4712).** `--agui` with no session id prints the fleet URL,
+`http://127.0.0.1:<port>/agui/#t=<64 hex>` (the token, no `run`): one row per
+live Claude session (console, leg, judge or interactive) with its ticket and PR,
+state (running, idle, waiting for GO, wrapped), latest tool call and its age,
+subagent counts and failure count. Wrapped legs sit in a closed section, never
+in the live list. Clicking a row opens that session's run page. The page polls
+`GET /api/agui/fleet` (token-gated, GET only, read-only, `agui/fleet.ts`),
+whose census is `fleet.sh`: `claude_sessions` plus each leg doc's last marker
+(`leg_tail_status`). A session whose journal has been quiet for an hour is left
+out.
 
 ![The AG-UI page streaming a /pr-check round: a leg and its critic subagent in their own colours and bands, the review panel filling with three findings and their verdicts, and four failures marked by kind](docs/agui-live-run.gif)
 
@@ -139,7 +150,9 @@ imports, so its suite runs in CI without an install.
   error state, and both themes at desktop and phone width. HIMMEL-4669 adds
   a leg with a critic subagent (`SCENE` in `agui-fixtures.ts`, also the GIF's
   run): agent attribution and the filter, failure marking and the jump
-  control, and the long-output control.
+  control, and the long-output control. HIMMEL-4712 adds the fleet landing
+  over a fixture fleet (`agui-fleet-fixture.ts`: 3 live sessions and 1
+  wrapped) and the click through to a run.
 
 ## Manual pass (the same 7 items)
 
