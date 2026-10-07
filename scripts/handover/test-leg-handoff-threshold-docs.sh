@@ -52,9 +52,14 @@ has   "preface describes the compact mode"   "$PREFACE" 'CHECKPOINT <full sha of
 has   "preface describes the handoff mode"   "$PREFACE" '**`handoff`:**'
 has   "preface names the autocompact backstop" "$PREFACE" 'autocompact'
 lacks "preface carries no 60 % hand-off"     "$PREFACE" '60 ?%'
-has   "brief template hands off at 75 %"     "$BRIEF"   '≥75 % fill'
+has   "brief template states the ceiling-derived threshold (HIMMEL-4569)" "$BRIEF" 'Past 65 % of the leg'"'"'s'
+# shellcheck disable=SC2016
+has   "brief template names both modes"     "$BRIEF"   '`handoff` (set `HIMMEL_LEG_CONTEXT_MODE=handoff` when arming)'
+lacks "brief template drops the 75 % fill rule" "$BRIEF" '75 ?% fill'
 lacks "brief template carries no 60 % fill"  "$BRIEF"   '60 ?% fill'
-has   "calibration states the 75 % leg rule" "$CALIB"   'Leg handover is at 75% context fill'
+# shellcheck disable=SC2016
+has  "calibration states the 65 % ceiling rule (HIMMEL-4569)" "$CALIB" 'Leg checkpoint or handover is at 65% of the leg'"'"'s `--autocompact` ceiling'
+lacks "calibration drops the 75 % leg rule"  "$CALIB"   'Leg handover is at 75% context fill'
 has   "preface names close-wrapped-leg.sh as the session end (HIMMEL-2414)" "$PREFACE" "the console's \`close-wrapped-leg.sh\` ends the session"
 lacks "preface does not tell a leg to exit its own session (HIMMEL-2414)" "$PREFACE" 'closable-window banner, and \*\*exit\*\*'
 lacks "calibration drops the 45 % leg rule"  "$CALIB"   'Leg handover is whichever limit arrives first: 45%'

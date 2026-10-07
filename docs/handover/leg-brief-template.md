@@ -179,10 +179,14 @@ template_version: 3
 ## What the console must also do (2026-09-13)
 
 - (a) One plan task per leg, plus the stage-worker rule: run the context-fill
-  probe after every completed step (ruling A1) — at ≥75 % fill the leg commits
-  what is done and hands off to a `b`-suffixed successor brief rather than
-  continuing. A compaction alone is not a hand-off: the leg's `--autocompact`
-  ceiling is the backstop (HIMMEL-4089).
+  probe after every completed step (ruling A1). Past 65 % of the leg's
+  `--autocompact` ceiling (13 % fill for an opus leg pinned at 200000 on its
+  1M window), `guard-leg-context-handoff.sh` blocks ordinary work until the leg
+  acts on its launch mode (HIMMEL-4569): `compact` (default) commits, pushes
+  and writes a `CHECKPOINT <sha> pushed` bullet, then carries on through the
+  compaction; `handoff` (set `HIMMEL_LEG_CONTEXT_MODE=handoff` when arming)
+  writes a `b`-suffixed successor brief and stops. The `--autocompact` ceiling
+  stays the backstop (HIMMEL-4089).
 - (b) The console creates the leg's worktree before arming it, never after.
 - (c) Holding for the console's `GO` ends the leg's turn — never a Bash sleep
   loop; a leg that blocks in one never wakes to receive it.
