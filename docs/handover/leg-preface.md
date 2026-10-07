@@ -221,6 +221,9 @@ for a relay that is not coming.
   turn. Never emit a text-only turn between tool calls. Read files by line
   range, not whole. Your fixed context is re-paid on every API call of a
   session that runs for hours.
+- **Search with Bash, not Grep/Glob (HIMMEL-4784).** A leg has no dedicated
+  `Grep` or `Glob` tool (a call returns "No such tool available"): search with
+  `git grep` / `grep` and list files with `git ls-files` / `find`.
 - **Ship steps are typed exactly as their allow rule is written — no quotes,
   no `VAR=` prefix, no `cd … &&`, no compound operators, no `$(…)`.** A
   relative gate script is `bash scripts/cr/X.sh <args>`, never
