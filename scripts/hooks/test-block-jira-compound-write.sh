@@ -323,7 +323,10 @@ fi"
 run_hook Bash "for f in a b; do
   node $JIRA create --desc \"\$(cat \$f)\"
 done"
-[ "$RC" -eq 0 ] && pass "loop body write left alone" || fail "loop body bounced (rc=$RC)"
+# HIMMEL-4815: a loop now bounces with its OWN recipe (expand into N literal
+# commands, evaluating any condition) — that keeps the meaning a plain "reissue it
+# standalone" would lose, which is why loops used to be left alone.
+[ "$RC" -eq 2 ] && pass "multiline loop body write bounced with the loop recipe" || fail "loop body not bounced (rc=$RC)"
 
 run_hook Bash "case \$x in
   a) node $JIRA create --desc \"\$(cat b)\" ;;
@@ -844,6 +847,123 @@ run_hook Bash "hits=\"\$(grep -rn 'jira/dist/index.js create' scripts/)\" ; echo
 #         wrong block.
 run_hook Bash "node \"/c/Users/John Smith/himmel/scripts/jira/dist/index.js\" create --desc \"\$(cat /tmp/a.md)\" ; echo x"  # leak-allow: home-path test fixture
 [ "$RC" -eq 0 ] && pass "quoted CLI path stays silent (documented gap)" || fail "quoted CLI path bounced with unactionable guidance (rc=$RC)"
+
+# --- 14.5 HIMMEL-4815: LOOP / VARIABLE-BINARY / XARGS shapes over the jira CLI.
+#          Each one fell through to the classifier, which denied it cold as
+#          "[External System Writes]" and told the agent not to retry in pieces;
+#          the same writes as N literal commands auto-approved. The bounce names
+#          the expansion recipe (one literal command per write) instead.
+loop_text() { tr '\n' ' ' < "$ERR"; }
+# The incident itself (BP console, 2026-10-07): `$J` binary inside a for loop.
+run_hook Bash "J=$JIRA; for k in 4801 4802; do node \$J fix-version HIMMEL-\$k --add v1.0.2c; done"
+[ "$RC" -eq 2 ] && pass "incident loop over \$J fix-version bounced" || fail "incident loop shape not bounced (rc=$RC)"
+case "$(loop_text)" in *"a loop"*) pass "deny names the loop" ;; *) fail "deny does not name the loop" ;; esac
+case "$(loop_text)" in *"N writes = N literal commands"*) pass "deny gives the N-literal recipe" ;; *) fail "deny lacks the N-literal recipe" ;; esac
+grep -q "^    node $JIRA fix-version " "$ERR" && pass "retry names the resolved CLI path and the verb" || fail "retry does not name '$JIRA fix-version'"
+grep -q '^    node \$J' "$ERR" && fail "retry example still uses the \$J variable"
+case "$(loop_text)" in *"classifier denial of a loop"*) pass "deny says a classifier loop denial is a shape denial" ;; *) fail "deny omits the classifier-loop line" ;; esac
+
+# A loop over the LITERAL CLI path with plain arguments is already approved by the
+# gateway (the incident's trigger was the `$J` binary), and the hook never narrows
+# the gateway — so it stays silent. The same loop with a refused element bounces.
+run_hook Bash "for k in HIMMEL-1 HIMMEL-2; do node $JIRA transition \$k Done; done"
+[ "$RC" -eq 0 ] && pass "gateway-approved literal-path loop left alone" || fail "approved literal loop bounced (rc=$RC)"
+run_hook Bash "for k in HIMMEL-1 HIMMEL-2; do node $JIRA comment \$k --body \"\$(cat \$k.md)\"; done"
+[ "$RC" -eq 2 ] && pass "for loop with a substituted body bounced" || fail "for loop with \$(…) body not bounced (rc=$RC)"
+
+run_hook Bash "J=$JIRA; while read k; do node \$J comment \$k --comment-file c.md; done < keys.txt"
+[ "$RC" -eq 2 ] && pass "while-read loop over \$J bounced" || fail "while loop not bounced (rc=$RC)"
+
+run_hook Bash "until false; do node $JIRA create --title x --desc-file b.md; break; done"
+[ "$RC" -eq 2 ] && pass "until loop bounced" || fail "until loop not bounced (rc=$RC)"
+
+# A conditional INSIDE the loop keeps its meaning: the recipe says to evaluate it.
+run_hook Bash "for k in 1 2; do if test -f \$k; then node $JIRA comment HIMMEL-\$k --body \"\$(cat \$k)\"; fi; done"
+[ "$RC" -eq 2 ] && pass "loop with a conditional body bounced" || fail "conditional loop body not bounced (rc=$RC)"
+case "$(loop_text)" in *"evaluate"*"condition"*) pass "loop recipe keeps the condition" ;; *) fail "loop recipe would drop the condition" ;; esac
+
+# Variable binary, no loop: `${J}` and a quoted `"\$J"`.
+run_hook Bash "J=$JIRA; node \${J} transition HIMMEL-1 Done"
+[ "$RC" -eq 2 ] && pass "\${J} binary bounced" || fail "\${J} binary not bounced (rc=$RC)"
+case "$(loop_text)" in *"variable CLI path"*) pass "deny names the variable CLI path" ;; *) fail "deny does not name the variable CLI path" ;; esac
+grep -q "^    node $JIRA transition " "$ERR" && pass "\${J} retry writes the path out" || fail "\${J} retry does not write the path out"
+
+run_hook Bash "export J=\"$JIRA\"; node \"\$J\" create --title x --desc-file b.md"
+[ "$RC" -eq 2 ] && pass "quoted \"\$J\" binary bounced" || fail "quoted \"\$J\" binary not bounced (rc=$RC)"
+
+# xargs runs the write once per input line.
+run_hook Bash "printf 'HIMMEL-1\nHIMMEL-2\n' | xargs -I{} node $JIRA fix-version {} --add v1"
+[ "$RC" -eq 2 ] && pass "xargs -I write bounced" || fail "xargs -I write not bounced (rc=$RC)"
+case "$(loop_text)" in *"xargs"*) pass "deny names xargs" ;; *) fail "deny does not name xargs" ;; esac
+
+run_hook Bash "cat keys | xargs -n 1 -P 4 node $JIRA transition Done"
+[ "$RC" -eq 2 ] && pass "xargs -n/-P write bounced" || fail "xargs -n write not bounced (rc=$RC)"
+
+# Must stay SILENT: read-only loops, a variable that is not the jira CLI, an unset
+# variable (nothing to resolve: the command would run `node fix-version` and write
+# nothing), xargs over a read verb, and loop text that is only quoted data.
+run_hook Bash "for k in 1 2; do node $JIRA get HIMMEL-\$k; done"
+[ "$RC" -eq 0 ] && pass "read-only loop left alone" || fail "read-only loop bounced (rc=$RC)"
+
+run_hook Bash "X=/tmp/other/dist/index.js; for k in 1 2; do node \$X create --title \$k; done"
+[ "$RC" -eq 0 ] && pass "loop over a non-jira variable binary left alone" || fail "non-jira variable binary bounced (rc=$RC)"
+
+run_hook Bash "for k in 1 2; do node \$J fix-version HIMMEL-\$k --add v1; done"
+[ "$RC" -eq 0 ] && pass "unresolvable \$J left alone" || fail "unresolvable \$J bounced (rc=$RC)"
+
+run_hook Bash "cat keys | xargs -n1 node $JIRA get"
+[ "$RC" -eq 0 ] && pass "xargs over a read verb left alone" || fail "xargs read bounced (rc=$RC)"
+
+run_hook Bash "echo 'for k in a b; do node $JIRA create --title x; done' > notes.md"
+[ "$RC" -eq 0 ] && pass "loop text inside quotes left alone" || fail "quoted loop text bounced (rc=$RC)"
+
+run_hook Bash "deploy() { for k in 1 2; do node $JIRA create --title \$k; done; }"
+[ "$RC" -eq 0 ] && pass "loop inside a function definition left alone" || fail "function-defined loop bounced (rc=$RC)"
+
+# The literal per-write shape the recipe names is itself approved.
+run_hook Bash "node $JIRA fix-version HIMMEL-4801 --add v1.0.2c"
+[ "$RC" -eq 0 ] && pass "literal fix-version allowed" || fail "literal fix-version bounced (rc=$RC)"
+
+# --- 14.6 the CLI's other mutating verbs are writes too (the incident verb,
+#          fix-version, was missing, so even its non-loop compound shapes fell
+#          through unbounced).
+for verb in fix-version rank unlink resolution version-create version-edit version-release version-archive version-move; do
+  run_hook Bash "node $JIRA $verb HIMMEL-1 --x \"\$(cat /tmp/a.md)\""
+  [ "$RC" -eq 2 ] || fail "write verb '$verb' not bounced (rc=$RC)"
+  grep -q "^    node .* $verb " "$ERR" || fail "retry example for '$verb' does not name that verb"
+done
+pass "fix-version / rank / unlink / resolution / version-* bounced"
+for sub in set sync-sprints; do
+  run_hook Bash "node $JIRA roadmap $sub HIMMEL-1 --x \"\$(cat /tmp/a.md)\""
+  [ "$RC" -eq 2 ] || fail "'roadmap $sub' not bounced (rc=$RC)"
+  grep -q "^    node .* roadmap $sub" "$ERR" || fail "retry example for 'roadmap $sub' drops the subcommand"
+done
+pass "roadmap set / sync-sprints bounced with the full verb"
+for sub in get export; do
+  run_hook Bash "node $JIRA roadmap $sub --x \"\$(cat /tmp/a.md)\""
+  [ "$RC" -eq 0 ] || fail "read 'roadmap $sub' bounced (rc=$RC)"
+done
+pass "roadmap get / export left alone"
+
+# --- 14.7 j2061: a JIRA_* targeting prefix is never "dropped" — dropping
+#          JIRA_BASE_URL / JIRA_BOARD_ID / JIRA_SEVERITY_FIELD silently retargets the
+#          write to another instance, board or field. The recipe is stop-and-ask
+#          (or the CLI's own --board flag), never "drop it".
+for pv in JIRA_BASE_URL=https://other.example JIRA_SEVERITY_FIELD=customfield_1; do
+  run_hook Bash "$pv node $JIRA create --title x --desc-file f.md"
+  [ "$RC" -eq 2 ] || fail "'${pv%%=*}' prefixed write not bounced (rc=$RC)"
+  case "$(loop_text)" in
+      *"${pv%%=*}"*"do NOT drop it"*"stop and ask"*) ;;
+      *) fail "deny for '${pv%%=*}' does not say stop-and-ask" ;;
+  esac
+done
+pass "JIRA_BASE_URL / JIRA_SEVERITY_FIELD prefix: stop and ask, never drop"
+run_hook Bash "JIRA_BOARD_ID=7 node $JIRA sprint HIMMEL-1 --sprint 3"
+[ "$RC" -eq 2 ] && pass "JIRA_BOARD_ID prefixed write bounced" || fail "JIRA_BOARD_ID prefix not bounced (rc=$RC)"
+case "$(loop_text)" in *"--board"*) pass "JIRA_BOARD_ID recipe names --board" ;; *) fail "JIRA_BOARD_ID recipe lacks --board" ;; esac
+# A non-JIRA prefix keeps the plain drop recipe and gets no stop-and-ask line.
+run_hook Bash "FOO=1 node $JIRA comment HIMMEL-1 --comment-file f.md"
+case "$(loop_text)" in *"do NOT drop it"*) fail "FOO= prefix wrongly told to stop and ask" ;; *) pass "non-JIRA prefix keeps the drop recipe" ;; esac
 
 # --- 15. missing dependencies (jq/cat) → FAIL OPEN. A guard that only improves a
 # denial message must never be the reason a sanctioned write cannot run.

@@ -107,7 +107,12 @@ is_write_verb() {
     case "$1" in
         create|comment|transition|edit|link|assign|move|watch|unwatch) return 0 ;;
         attach|project-create|sprint) return 0 ;;
+        # HIMMEL-4815: the incident verb (fix-version) and the rest of the CLI's
+        # mutating surface were missing, so their compound shapes fell through.
+        fix-version|rank|unlink|resolution) return 0 ;;
+        version-create|version-edit|version-release|version-archive|version-move) return 0 ;;
         worklog) case "${2:-}" in add) return 0 ;; esac ;;
+        roadmap) case "${2:-}" in set|sync-sprints) return 0 ;; esac ;;
     esac
     return 1
 }
@@ -514,7 +519,7 @@ quote_mask() {
 segment_has_write() {
     local -a a
     local IFS=$' \t\n' seg="$1"
-    DETECTED_PREFIX=""
+    DETECTED_PREFIX=""; DETECTED_JIRA_PREFIX=""; DETECTED_VAR=""
     # Redirects belong to the simple command, but bind tighter than tokens: `x>out`
     # is `x` + `>out`, and a target may be glued (`>node`). Give the operators their
     # own tokens so both the command position and the verb survive; they are then
@@ -581,6 +586,13 @@ segment_has_write() {
                     *) [[ "${a[$i]}" =~ ^JIRA_PROJECT_KEY=[A-Z][A-Z0-9_]*$ ]] ||
                         DETECTED_PREFIX="${DETECTED_PREFIX:+$DETECTED_PREFIX }$nm=…" ;;
                 esac
+                # j2061: any other JIRA_* prefix (JIRA_BASE_URL, JIRA_BOARD_ID,
+                # JIRA_SEVERITY_FIELD, …) TARGETS the write — dropping it sends it to
+                # another instance, board or field. The deny says stop and ask.
+                case "$nm" in
+                    JIRA_PROJECT_KEY) ;;
+                    JIRA_*) DETECTED_JIRA_PREFIX="${DETECTED_JIRA_PREFIX:+$DETECTED_JIRA_PREFIX }$nm" ;;
+                esac
                 i=$((i + 1)) ;;
             *) break ;;
         esac
@@ -627,6 +639,11 @@ segment_has_write() {
     # into a filed ticket by our own guidance.
     case "$scr" in
         scripts/jira/dist/index.js|*/scripts/jira/dist/index.js) ;;
+        # HIMMEL-4815: a `$J` / `${J}` / `"$J"` binary that bind_cli_vars resolved to
+        # the CLI path assigned in this same command. The retry names that path.
+        __HIMMEL_JIRA_VAR_*__)
+            DETECTED_VAR="${scr#__HIMMEL_JIRA_VAR_}"; DETECTED_VAR="${DETECTED_VAR%__}"
+            scr=$(cli_var_value "$DETECTED_VAR") || return 1 ;;
         *) return 1 ;;
     esac
     # Remember which CLI was actually invoked: the retry must name THAT one. These
@@ -654,6 +671,7 @@ segment_has_write() {
                     # agent STARTED with, never a different mutation.
                     DETECTED_VERB="${a[$j]}"
                     [ "$DETECTED_VERB" = "worklog" ] && DETECTED_VERB="worklog add"
+                    [ "$DETECTED_VERB" = "roadmap" ] && DETECTED_VERB="roadmap ${a[$((j + 1))]}"
                     return 0
                 fi
                 return 1 ;;
@@ -855,6 +873,138 @@ EOF
     return 1
 }
 
+# --- HIMMEL-4815: variable-binary, loop and xargs shapes ---
+# Incident (BP console, 2026-10-07): `for k in …; do node $J fix-version HIMMEL-$k
+# …; done` was not bounced — the loop bailed out of has_jira_write and `$J` never
+# matched the CLI path — so it fell through to the classifier, which denied it cold
+# as "[External System Writes]" and said not to retry in pieces. The same writes as
+# 14 literal commands auto-approved at once. These shapes now get their own recipe.
+
+# CLI_VARS holds "NAME=value" lines for every NAME assigned the jira CLI path in this
+# command. A name assigned twice (or once to a non-CLI value) is ambiguous and left
+# unbound: guessing its value could name the wrong CLI in the retry.
+CLI_VARS=""
+cli_var_value() {  # cli_var_value <NAME> — prints the bound path, rc 1 if unbound
+    local line
+    while IFS= read -r line; do
+        case "$line" in "$1="*) printf '%s' "${line#*=}"; return 0 ;; esac
+    done <<VAREOF
+$CLI_VARS
+VAREOF
+    return 1
+}
+
+# Rewrite every `$NAME` / `${NAME}` / `"$NAME"` / `"${NAME}"` of a bound name into
+# the one token `__HIMMEL_JIRA_VAR_NAME__`, so quote_mask keeps it as code (it blanks
+# `${…}` and quoted spans) and segment_has_write can read it as the CLI. The token
+# carries no shell metacharacter, so the rewrite never changes quote or group state.
+# Reads/writes $cmd.
+bind_cli_vars() {
+    local rest="$cmd" name val re all="" bad="" tok pre post
+    # Hot path: every Bash call reaches here; only a command that assigns the CLI
+    # path can bind anything.
+    case "$cmd" in *=*scripts/jira/dist/index.js*) ;; *) return 0 ;; esac
+    re='(^|[[:space:];&|(])([A-Za-z_][A-Za-z0-9_]*)=([^[:space:];&|]*)'
+    while [[ $rest =~ $re ]]; do
+        name="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
+        rest="${rest#*"${BASH_REMATCH[0]}"}"
+        case "$val" in \"*\"|\'*\') val="${val:1:${#val}-2}" ;; esac
+        case "$all" in *" $name "*) bad="$bad $name " ;; esac
+        case "$val" in
+            scripts/jira/dist/index.js|*/scripts/jira/dist/index.js)
+                all="$all $name "; CLI_VARS="${CLI_VARS:+$CLI_VARS$'\n'}$name=$val" ;;
+            *) all="$all $name "; bad="$bad $name " ;;
+        esac
+    done
+    [ -n "$CLI_VARS" ] || return 0
+    local kept="" line
+    while IFS= read -r line; do
+        name="${line%%=*}"
+        case "$bad" in *" $name "*) continue ;; esac
+        kept="${kept:+$kept$'\n'}$line"
+        tok="__HIMMEL_JIRA_VAR_${name}__"
+        # Longest spellings first, so `"${J}"` is not half-rewritten as `${J}`.
+        cmd="${cmd//\"\$\{$name\}\"/$tok}"
+        cmd="${cmd//\"\$$name\"/$tok}"
+        cmd="${cmd//\$\{$name\}/$tok}"
+        # Bare `$NAME` only where the name ENDS — `$JX` is another variable.
+        re="^(.*)\\\$${name}([^A-Za-z0-9_].*)?\$"
+        while [[ $cmd =~ $re ]]; do
+            pre="${BASH_REMATCH[1]}"; post="${BASH_REMATCH[2]}"
+            cmd="$pre$tok$post"
+        done
+    done <<VAREOF
+$CLI_VARS
+VAREOF
+    CLI_VARS="$kept"
+}
+
+# Does the command run a jira WRITE inside a loop body (for/while/until/select) or
+# as an xargs fan-out? Sets LOOP_SEEN / XARGS_SEEN and the DETECTED_* of the first
+# such write. Unlike has_jira_write this does NOT bail on conditionals: the loop
+# recipe tells the agent to evaluate every condition itself and issue only the
+# writes the original would have run, which keeps the meaning a plain "reissue it
+# standalone" would lose. A write that precedes every loop keyword is not in scope.
+loop_jira_write() {
+    local t stmt kw found=0 xa
+    local -a xt
+    LOOP_SEEN=0; XARGS_SEEN=0
+    t="${1//&>>/>>}"; t="${t//&>/>}"; t="${t//>&/>}"; t="${t//>|/>}"; t="${t//<&/<}"
+    t="${t//&&/$'\n'}"; t="${t//||/$'\n'}"
+    t="${t//[;&|()]/$'\n'}"
+    while IFS= read -r stmt; do
+        kw="${stmt#"${stmt%%[![:space:]]*}"}"
+        while [ -n "$kw" ]; do             # strip reserved words that open a command
+            case "$kw" in
+                # `for k in …` runs no command itself; a `while`/`until` condition
+                # does (it is the rest of the statement), so only the word goes.
+                for|for[[:space:]]*|select|select[[:space:]]*)
+                    LOOP_SEEN=1; kw="" ;;
+                while|until) LOOP_SEEN=1; kw="" ;;
+                while[[:space:]]*|until[[:space:]]*) LOOP_SEEN=1; kw="${kw#*[[:space:]]}" ;;
+                '{'|'!') kw="" ;;
+                '{'[[:space:]]*|'!'[[:space:]]*) kw="${kw#?}" ;;
+                do|then|else|if|elif|time) kw="" ;;
+                do[[:space:]]*|then[[:space:]]*|else[[:space:]]*|\
+                if[[:space:]]*|elif[[:space:]]*|time[[:space:]]*)
+                    kw="${kw#*[[:space:]]}" ;;
+                *) break ;;
+            esac
+            kw="${kw#"${kw%%[![:space:]]*}"}"
+        done
+        [ -n "$kw" ] || continue
+        xa=0
+        case "$kw" in
+            xargs|xargs[[:space:]]*)
+                # Skip xargs and its options; what follows is the command it runs once
+                # per input item. These options take a separate VALUE word.
+                set -f
+                # shellcheck disable=SC2206 # intentional word split for tokenisation
+                xt=($kw)
+                set +f
+                local k=1
+                while [ "$k" -lt "${#xt[@]}" ]; do
+                    case "${xt[$k]}" in
+                        -I|-n|-L|-P|-d|-E|-s|-a|--max-args|--max-procs|--max-lines|\
+                        --delimiter|--arg-file|--eof|--max-chars|--process-slot-var)
+                            k=$((k + 2)) ;;
+                        -*) k=$((k + 1)) ;;
+                        *) break ;;
+                    esac
+                done
+                kw="${xt[*]:$k}"; xa=1 ;;
+        esac
+        [ "$LOOP_SEEN" = 1 ] || [ "$xa" = 1 ] || continue
+        if segment_has_write "$kw"; then
+            [ "$xa" = 1 ] && XARGS_SEEN=1
+            found=1; break
+        fi
+    done <<EOF
+$t
+EOF
+    [ "$found" = 1 ]
+}
+
 # --- Fail open on anything we cannot evaluate ---
 # Drain stdin BEFORE any early exit: bailing out first would SIGPIPE the caller
 # that is still writing the hook input. HIMMEL-2123: a bash builtin `read`
@@ -880,6 +1030,7 @@ cmd="${result#*$'\n'}"
 [ -n "$cmd" ] || exit 0
 
 FN_DEF=0; HEREDOC_SEEN=0; SUBST_SEEN=0; NL_SEEN=0
+bind_cli_vars
 quote_mask "$cmd" || exit 0
 # A function DEFINITION executes nothing: `deploy() { node …/index.js create …; }`
 # merely defines deploy, so bouncing it would order a write the command never
@@ -887,7 +1038,13 @@ quote_mask "$cmd" || exit 0
 # — a `()` inside quoted DATA (`--title 'Fix parse()'`) is not a definition and must
 # not disarm the guard.
 [ "$FN_DEF" = 1 ] && exit 0
-has_jira_write "$MASKED" || exit 0
+# A loop / xargs write gets the expansion recipe; anything else the flat scanner.
+if loop_jira_write "$MASKED"; then
+    SHAPE_LOOP=1
+else
+    SHAPE_LOOP=0
+    has_jira_write "$MASKED" || exit 0
+fi
 
 # --- Would the auto-approve gateway sanction this exact command? ---
 # Consulting it (rather than re-implementing "is this shape safe") keeps ONE
@@ -976,6 +1133,9 @@ case "$verb_label" in
     # project-create takes no positional ticket (--key/--name) — a <TICKET> here
     # would contradict the CLI and bounce the retry straight back.
     project-create) verb_args=' …same arguments as before…' ;;
+    # These take no single ticket first (a version name, two keys, a JQL rank, none).
+    version-*)      verb_args=' <VERSION> …same arguments as before…' ;;
+    rank|unlink|'roadmap sync-sprints') verb_args=' …same arguments as before…' ;;
     *)              verb_args=' <TICKET> …same arguments as before…' ;;
 esac
 # Name only the shapes this command HAS (HIMMEL-4780): a list of shapes it lacks
@@ -992,6 +1152,9 @@ case "$MASKED" in
     *';'*|*'|'*|*'&'*) add_shape 'a chained segment' ;;
     *) [ "$NL_SEEN" = 1 ] && [ "$HEREDOC_SEEN" != 1 ] && add_shape 'a chained segment' ;;
 esac
+[ "${LOOP_SEEN:-0}" = 1 ] && [ "$SHAPE_LOOP" = 1 ] && add_shape 'a loop (for/while/until/select) around the write'
+[ "${XARGS_SEEN:-0}" = 1 ] && add_shape 'an xargs fan-out (one write per input item)'
+[ -n "${DETECTED_VAR:-}" ] && add_shape "a variable CLI path \`\$${DETECTED_VAR}\` (write the path out)"
 [ -n "${DETECTED_PREFIX:-}" ] &&
     add_shape "the env prefix ${DETECTED_PREFIX} (only a literal JIRA_PROJECT_KEY=<KEY> prefix is approvable)"
 [ -n "$shapes" ] || shapes='a shape the auto-approve gateway cannot vet'
@@ -1004,11 +1167,22 @@ esac
     printf 'That makes the permission matcher bail out (HIMMEL-203), so the write falls\n'
     printf 'through to the auto-mode classifier and is denied cold as\n'
     printf '"[External System Writes]". Rerunning it as-is will fail again.\n\n'
+    if [ "$SHAPE_LOOP" = 1 ]; then
+    printf 'Do exactly this — expand it yourself; ONE sanctioned retry shape, no other:\n\n'
+    printf '  1. Work out every write the loop/xargs would perform (its item list, the\n'
+    printf '     lines of its input file), and evaluate any condition in its body\n'
+    printf '     yourself: issue only the writes the original would have run.\n'
+    printf '  2. If a write carries a body, write it to a file with the Write tool.\n'
+    printf '  3. N writes = N literal commands: each one its OWN Bash call (they may go\n'
+    printf '     in parallel in one turn), the CLI path written out, no loop, no xargs,\n'
+    printf '     no $VAR, no chain:\n\n'
+    else
     printf 'Do exactly this — ONE sanctioned retry shape, no other:\n\n'
     printf '  1. If the command carries a body, write it to a file with the Write tool\n'
     printf '     (not a heredoc, not `cat >`).\n'
     printf '  2. Reissue the SAME verb (`%s`) with the SAME arguments as ONE literal\n' "$verb_label"
     printf '     command, body passed by file:\n\n'
+    fi
     printf '    node %s %s%s\n\n' "$jira_cli" "$verb_label" "$verb_args"
     printf '  Keep the verb you started with — do NOT substitute a different mutation,\n'
     printf '  and keep everything else you already had: every argument (--project and\n'
@@ -1016,10 +1190,22 @@ esac
     printf '  prefix if you had one. A JIRA_PROJECT_KEY prefix that is not a bare\n'
     printf '  literal (quoted, $VAR, $(…)) is NOT dropped: rewrite it as the literal\n'
     printf '  JIRA_PROJECT_KEY=<KEY> it resolves to, or the write lands in the default\n'
-    printf '  project. Drop any other VAR=value prefix (LANG/LC_*/TZ aside): it alone\n'
-    printf '  makes the command unapprovable. Only an INLINE BODY moves, from text to\n'
-    printf '  a file.\n'
+    printf '  project. Drop any other non-JIRA_* VAR=value prefix (LANG/LC_*/TZ aside):\n'
+    printf '  it alone makes the command unapprovable. Only an INLINE BODY moves, from\n'
+    printf '  text to a file.\n'
+    if [ -n "${DETECTED_JIRA_PREFIX:-}" ]; then
+    # j2061: dropping a targeting prefix silently retargets the write.
+    printf '  The prefix %s targets Jira itself (instance, board or field):\n' "$DETECTED_JIRA_PREFIX"
+    printf '  do NOT drop it — the write would land somewhere else. Instead stop and ask\n'
+    printf '  your console/operator how to run it'
+    case " $DETECTED_JIRA_PREFIX " in
+        *' JIRA_BOARD_ID '*) printf ' (JIRA_BOARD_ID: pass --board <id> if the verb takes it)' ;;
+    esac
+    printf '.\n'
+    fi
     printf '  Filing/updating N tickets = N literal commands, not a chain.\n\n'
+    [ "$SHAPE_LOOP" = 1 ] &&
+    printf 'A classifier denial of a loop over jira writes is this same shape denial:\n  retry as N literal commands, never as another loop shape.\n\n'
     printf 'That shape auto-approves. Do NOT retry other shapes — a retry sequence across\n'
     printf 'shapes reads to the classifier as tool-shopping and gets denied as an auto-mode\n'
     printf 'bypass. If the literal shape is genuinely impossible, say so and ask.\n\n'
