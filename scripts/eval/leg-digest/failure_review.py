@@ -26,6 +26,13 @@ TELEGRAM: one line through the notifier (--notify-cmd, else $FAILURE_REVIEW_NOTI
 scripts/luna/vault-stall-alert.sh, the existing operator DM path) when a live run routed something
 or a class appeared that the ledger never saw before. A quiet day sends nothing. A dry run's
 would-be routing does not send: the router keeps no state on a dry run, so it would repeat daily.
+DELIVERY (HIMMEL-4790) is kept in <stem>.notify.json beside the router state (--state, else
+$HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state/failure-routes.json), under flock, temp then
+rename: {pending, sent}. The router state advances before the send, so the line is saved in pending
+as soon as the router returns, before the digest is written, and the next run sends it again until
+one is delivered. A delivered new
+class is recorded in sent and not named again for 24 h; a failed send records nothing there. An
+unreadable state file is kept aside as <file>.unreadable.<unique> and a fresh one started.
 
 Exit 0 on a written digest, 1 when the router failed (the digest still says so), 2 on bad input,
 3 when the Telegram line was due but not delivered (the digest is still written; the cadence alerts).
@@ -33,6 +40,7 @@ Exit 0 on a written digest, 1 when the router failed (the digest still says so),
 
 import argparse
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -155,6 +163,27 @@ def build(a, rows, seen_before, rc, decisions, boxed):
     return "\n".join(out) + "\n", new, n, len(fails), routed, boxed
 
 
+def notify_path(a):
+    state = a.state or os.environ.get(failure_router.STATE_ENV) or os.path.expanduser(
+        "~/.himmel/state/failure-routes.json")
+    return os.path.splitext(os.path.abspath(state))[0] + ".notify.json"
+
+
+def load_notify(path):
+    """(state, ok). A missing file is an empty state; anything unreadable is not ok."""
+    if not os.path.exists(path):
+        return {"v": 1, "pending": [], "sent": {}}, True
+    try:
+        with open(path, encoding="utf-8") as fh:
+            s = json.load(fh)
+        if not (isinstance(s, dict) and isinstance(s.get("pending"), list) and isinstance(s.get("sent"), dict)
+                and all(isinstance(p, str) for p in s["pending"])):
+            return None, False
+        return s, True
+    except (OSError, ValueError):
+        return None, False
+
+
 def write_atomic(path, text):
     d = os.path.dirname(os.path.abspath(path))
     os.makedirs(d, exist_ok=True)
@@ -190,6 +219,14 @@ def daily_note(vault, day, section):
     return path
 
 
+def write_outputs(a, day, section):
+    digest = os.path.join(a.out_dir, "failure-review-%s.md" % day)
+    write_atomic(digest, section)
+    print("failure-review: wrote %s" % digest)
+    if a.vault:
+        print("failure-review: daily note %s" % daily_note(a.vault, day, section))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="failure_review.py", description=__doc__.split("\n")[0])
     ap.add_argument("--live", action="store_true")
@@ -217,25 +254,56 @@ def main(argv=None):
     a.ledger = ledger
     rc, decisions, boxed = run_router(a)
     section, new, n, k, routed, boxed = build(a, rows, set(older), rc, decisions, boxed)
-    digest = os.path.join(a.out_dir, "failure-review-%s.md" % day)
-    write_atomic(digest, section)
-    print("failure-review: wrote %s" % digest)
-    if a.vault:
-        print("failure-review: daily note %s" % daily_note(a.vault, day, section))
-    acted = len(routed) + len(boxed) if a.live else 0
-    if acted or new:
-        line = "failure review %s (%s): %d failures in %d classes; %s %d%s" % (
-            day, "live" if a.live else "dry-run", n, k, "routed" if a.live else "would route",
-            len(routed) if a.live else len([d for d in decisions if d["decision"] in ROUTED]),
-            "; new: %s" % ", ".join(new) if new else "")
-        try:
-            sent = subprocess.run([a.notify_cmd, line], capture_output=True, timeout=60).returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            sent = False
-        print("failure-review: telegram %s" % ("sent" if sent else "NOT delivered"),
-              file=sys.stdout if sent else sys.stderr)
-        if rc == 0 and not sent:
-            return 3
+    npath = notify_path(a)
+    os.makedirs(os.path.dirname(npath), exist_ok=True)
+    with open(npath + ".lock", "a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        ns, ns_ok = load_notify(npath)
+        if not ns_ok:
+            # Kept aside under a unique name, never overwritten; a fresh state keeps this run's undelivered lines.
+            fd, kept = tempfile.mkstemp(prefix=os.path.basename(npath) + ".unreadable.", dir=os.path.dirname(npath))
+            os.close(fd)
+            os.replace(npath, kept)
+            print("failure-review: %s is unreadable; kept as %s" % (npath, kept), file=sys.stderr)
+            ns = {"v": 1, "pending": [], "sent": {}}
+        sent = {}
+        for c, t in ns["sent"].items():
+            try:
+                if failure_router.now_utc(t) >= since:
+                    sent[c] = t
+            except (AttributeError, TypeError, ValueError):
+                pass
+        # What this run has to say: its live routing, and the new classes not yet delivered in the window.
+        done = (["%s %s%s" % (d["decision"], d["class"], " " + d["ticket"] if d.get("ticket") else "")
+                 for d in routed] + ["inbox %s" % c for c in boxed]) if a.live else []
+        fresh = [c for c in new if c not in sent]
+        pending = [p for p in ns["pending"] if p not in done and p not in ["new %s" % c for c in fresh]]
+        line = None
+        if done or fresh or pending:
+            line = "failure review %s (%s): %d failures in %d classes; %s %d%s%s" % (
+                day, "live" if a.live else "dry-run", n, k, "routed" if a.live else "would route",
+                len(routed) if a.live else len([d for d in decisions if d["decision"] in ROUTED]),
+                "; undelivered earlier: %s" % ", ".join(pending) if pending else "",
+                "; new: %s" % ", ".join(fresh) if fresh else "")
+            # Saved as soon as the router returns: a run that dies before or during the send leaves its line.
+            ns["pending"] = pending + done + ["new %s" % c for c in fresh]
+            ns["sent"] = sent
+            write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
+        write_outputs(a, day, section)
+        if line:
+            try:
+                ok = subprocess.run([a.notify_cmd, line], capture_output=True, timeout=60).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                ok = False
+            print("failure-review: telegram %s" % ("sent" if ok else "NOT delivered"),
+                  file=sys.stdout if ok else sys.stderr)
+            if ok:
+                ns["pending"] = []
+                for c in fresh + [p[4:] for p in pending if p.startswith("new ")]:
+                    sent[c] = failure_router.iso(a.now)
+                write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
+            if rc == 0 and not ok:
+                return 3
     return 1 if rc != 0 else 0
 
 

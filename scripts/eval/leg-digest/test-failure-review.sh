@@ -10,7 +10,8 @@
 #  6. new vs recurring classes; a quiet day (no new class, nothing routed) sends nothing;
 #  7. the daily-note section is upserted, never duplicated;
 #  8. the cadence: arm/status/disarm against a stub crontab, dry-run by default, --live baked only on request,
-#     and a SKIPPED-BANK preflight skips the run.
+#     and a SKIPPED-BANK preflight skips the run;
+#  9. delivery is persisted: a failed line is retried by the next run, a delivered one is not repeated.
 #
 # check() evals its condition, so the single quotes are deliberate.
 # shellcheck disable=SC2016,SC2034  # check() evals single-quoted asserts that read these vars
@@ -226,6 +227,72 @@ printf '#!/usr/bin/env bash\necho PROCEED\n' >"$STUB/preflight"
 FAILURE_REVIEW_PREFLIGHT="$STUB/preflight" HIMMEL_FAILURE_REVIEW_DIR="$C8/out" HIMMEL_LEG_FAILURES_LEDGER="$C2/ledger.jsonl" \
   HIMMEL_FAILURE_ROUTES_STATE="$C8/state.json" bash "$CAD" run >"$C8/run2.out" 2>&1; rc=$?
 check "a PROCEED preflight runs the review dry-run" '[ "$rc" = 0 ] && ls "$C8/out"/failure-review-*.md >/dev/null 2>&1 && [ ! -e "$C8/state.json" ]'
+
+echo "9. delivery is persisted: a failed line is retried, a delivered one is not repeated (HIMMEL-4790)"
+C9="$TMP/c9"; mkdir -p "$C9"
+row "$C9/ledger.jsonl" N050 denied/guard-recur 1 2026-10-03T08:00:00Z
+row "$C9/ledger.jsonl" N100 denied/guard-recur 1
+row "$C9/ledger.jsonl" N200 denied/guard-recur 1
+review "$C9" --live --notify-cmd "$STUB/notify-fail" >"$C9/run1.out" 2>&1; rc=$?
+check "a recurring class routed live with a failed send: rc 3" '[ "$rc" = 3 ] && digest "$C9" | grep -q "filed denied/guard-recur"'
+s0="$(sends)"
+review "$C9" --live >"$C9/run2.out" 2>&1; rc=$?
+check "the retry sends the undelivered routing although the router routes nothing new" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "filed denied/guard-recur"'
+review "$C9" --live >/dev/null 2>&1
+check "once delivered it is not sent again" '[ "$(sends)" = "$((s0 + 1))" ]'
+C9b="$TMP/c9b"; mkdir -p "$C9b"
+row "$C9b/ledger.jsonl" N400 error/Glob
+s0="$(sends)"
+review "$C9b" >/dev/null 2>&1
+review "$C9b" >/dev/null 2>&1
+check "a new class delivered once is not repeated by a rerun in the window" '[ "$(sends)" = "$((s0 + 1))" ]'
+row "$C9b/ledger.jsonl" N500 error/Grep
+review "$C9b" >/dev/null 2>&1
+check "a second new class still sends, naming only itself" '[ "$(sends)" = "$((s0 + 2))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Grep$"'
+s0="$(sends)"
+review "$C6b" >"$C6b/run2.out" 2>&1; rc=$?
+check "a new class whose send failed is retried by the next run" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Bash"'
+C9c="$TMP/c9c"; mkdir -p "$C9c"
+row "$C9c/ledger.jsonl" N600 error/Edit
+echo 'not json' >"$C9c/state.notify.json"
+review "$C9c" --notify-cmd "$STUB/notify-fail" >"$C9c/run1.out" 2>&1; rc=$?
+check "an unreadable notify state is kept aside, never overwritten" '[ "$rc" = 3 ] && [ "$(cat "$C9c"/state.notify.json.unreadable.*)" = "not json" ]'
+s0="$(sends)"
+review "$C9c" >/dev/null 2>&1; rc=$?
+check "a failed send over an unreadable state is still retried" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Edit"'
+C9d="$TMP/c9d"; mkdir -p "$C9d"
+row "$C9d/ledger.jsonl" N700 error/Write
+echo '{"v":1,"pending":[1],"sent":{}}' >"$C9d/state.notify.json"
+review "$C9d" >"$C9d/run.out" 2>&1; rc=$?
+check "a non-string pending entry is an unreadable state, not a crash" '[ "$rc" = 0 ] && ls "$C9d"/state.notify.json.unreadable.* >/dev/null 2>&1 && ! grep -q Traceback "$C9d/run.out"'
+echo 'still not json' >"$C9c/state.notify.json"
+review "$C9c" >/dev/null 2>&1
+check "a second unreadable state does not overwrite the first one kept aside" '[ "$(ls "$C9c"/state.notify.json.unreadable.* | wc -l)" = 2 ]'
+C9e="$TMP/c9e"; mkdir -p "$C9e"
+row "$C9e/ledger.jsonl" N050 denied/guard-kill 1 2026-10-03T08:00:00Z
+row "$C9e/ledger.jsonl" N100 denied/guard-kill 1
+row "$C9e/ledger.jsonl" N200 denied/guard-kill 1
+printf '#!/usr/bin/env bash\nkill -9 "$PPID"\n' >"$STUB/notify-kill"; chmod +x "$STUB/notify-kill"
+review "$C9e" --live --notify-cmd "$STUB/notify-kill" >/dev/null 2>&1
+s0="$(sends)"
+review "$C9e" --live >/dev/null 2>&1; rc=$?
+check "a review killed during the send still retries its routing on the next run" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "undelivered earlier: filed denied/guard-kill"'
+C9f="$TMP/c9f"; mkdir -p "$C9f"
+row "$C9f/ledger.jsonl" N050 denied/guard-crash 1 2026-10-03T08:00:00Z
+row "$C9f/ledger.jsonl" N100 denied/guard-crash 1
+row "$C9f/ledger.jsonl" N200 denied/guard-crash 1
+touch "$C9f/not-a-vault"
+review "$C9f" --live --vault "$C9f/not-a-vault" >/dev/null 2>&1
+s0="$(sends)"
+review "$C9f" --live >/dev/null 2>&1; rc=$?
+check "a review that dies after routing, before its send, still sends that routing next run" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "undelivered earlier: filed denied/guard-crash"'
+C9g="$TMP/c9g"; mkdir -p "$C9g"
+row "$C9g/ledger.jsonl" N800 error/Read
+: >"$C9g/other-ledger.jsonl"
+review "$C9g" --notify-cmd "$STUB/notify-fail" >/dev/null 2>&1
+s0="$(sends)"
+review "$C9g" --ledger "$C9g/other-ledger.jsonl" --state "$C9g/other.json" >/dev/null 2>&1
+check "a router state file in the same directory does not take another one's pending line" '[ "$(sends)" = "$s0" ] && [ -f "$C9g/state.notify.json" ]'
 
 echo
 echo "test-failure-review: $PASS passed, $FAIL failed"
