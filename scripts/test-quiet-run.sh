@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for scripts/quiet-run.sh's argv path guard (HIMMEL-2967): refuses
 # ".." path components in any argv element, and (label "suite" only) requires
-# a git-tracked test-*.sh when argv is `bash <path> ...`.
+# a git-tracked test-*.sh, or (HIMMEL-4782) an untracked regular test-*.sh that
+# lies inside the current worktree, when argv is `bash <path> ...`.
 #
 # Usage: bash scripts/test-quiet-run.sh
 #
@@ -110,15 +111,43 @@ OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" mylabel -- printf 'a..b' 2>&1)
 RC=$?
 assert_rc "'a..b' filename-shaped element accepted" 0 "$RC"
 
-# 5. label "suite" with an untracked test-*.sh is refused (created under the
-# repo tree, never git-added).
+# 5. label "suite" with an untracked test-*.sh INSIDE the worktree runs
+# (HIMMEL-4782: a RED-first run of a new suite before its first commit).
 UNTRACKED_REL="scripts/hooks/test-untracked-quiet-run-2967-$$.sh"
 UNTRACKED_ABS="$REPO_ROOT/$UNTRACKED_REL"
 printf '#!/usr/bin/env bash\necho hi\n' > "$UNTRACKED_ABS"
 OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$UNTRACKED_REL" 2>&1)
 RC=$?
-assert_rc "suite with untracked test-*.sh" 2 "$RC"
-assert_contains "untracked suite refusal message" "requires a tracked test-*.sh" "$OUT"
+assert_rc "suite with untracked in-worktree test-*.sh" 0 "$RC"
+
+# 5b. The untracked-suite rule keeps the tracked-only rule's protection: the
+# file must resolve inside the worktree, be a regular non-symlink file, and be
+# named test-*.sh. Throwaway nested repo; fixtures are never added to the index.
+NEWREPO="$SCRATCH/newrepo"
+mkdir -p "$NEWREPO/lib" "$NEWREPO/sub" "$SCRATCH/outside"
+git -C "$NEWREPO" init -q
+cp "$QUIET_RUN" "$NEWREPO/quiet-run.sh"
+cp "$(dirname "$QUIET_RUN")/lib/suite-semaphore.sh" "$(dirname "$QUIET_RUN")/lib/proc-tree.sh" "$(dirname "$QUIET_RUN")/lib/chokepoint-seam-guard.sh" "$NEWREPO/lib/"
+for f in "$NEWREPO/test-new.sh" "$NEWREPO/sub/test-new.sh" "$SCRATCH/outside/test-out.sh" "$NEWREPO/helper.sh"; do
+    printf '#!/usr/bin/env bash\necho hi\n' > "$f"
+done
+mkdir -p "$NEWREPO/test-dir.sh"
+ln -s "$SCRATCH/outside/test-out.sh" "$NEWREPO/test-link.sh"
+ln -s "$SCRATCH/outside" "$NEWREPO/linkdir"
+nr() { (cd "$NEWREPO" && bash quiet-run.sh suite -- bash "$1" 2>&1); }
+OUT=$(nr test-new.sh);                 RC=$?; assert_rc "untracked root test-*.sh runs" 0 "$RC"
+OUT=$(nr sub/test-new.sh);             RC=$?; assert_rc "untracked subdir test-*.sh runs" 0 "$RC"
+OUT=$(nr ./sub/test-new.sh);           RC=$?; assert_rc "untracked ./-prefixed test-*.sh runs" 0 "$RC"
+OUT=$(nr "$NEWREPO/sub/test-new.sh");  RC=$?; assert_rc "untracked absolute test-*.sh runs" 0 "$RC"
+OUT=$(cd "$NEWREPO/sub" && bash ../quiet-run.sh suite -- bash "$NEWREPO/test-new.sh" 2>&1); RC=$?
+assert_rc "untracked absolute test-*.sh from a subdirectory cwd runs" 0 "$RC"
+OUT=$(nr "$SCRATCH/outside/test-out.sh"); RC=$?; assert_rc "test-*.sh outside the worktree refused" 2 "$RC"
+assert_contains "outside-worktree refusal message" "requires a tracked test-*.sh" "$OUT"
+OUT=$(nr test-link.sh);                RC=$?; assert_rc "symlink escaping the worktree refused" 2 "$RC"
+OUT=$(nr linkdir/test-out.sh);         RC=$?; assert_rc "symlinked directory escaping the worktree refused" 2 "$RC"
+OUT=$(nr helper.sh);                   RC=$?; assert_rc "untracked non-test name refused" 2 "$RC"
+OUT=$(nr test-dir.sh);                 RC=$?; assert_rc "directory named test-*.sh refused" 2 "$RC"
+OUT=$(nr test-missing.sh);             RC=$?; assert_rc "nonexistent test-*.sh refused" 2 "$RC"
 
 # 6. label "suite" with a tracked test-*.sh passes.
 OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash scripts/hooks/test-require-quiet-run.sh 2>&1)
@@ -179,6 +208,11 @@ else
     RC=$?
     assert_rc "RED: glob-pathspec bypass executes against pre-fix guard" 0 "$RC"
 
+    # HIMMEL-4782: with the literal file present it is an untracked in-worktree
+    # regular file and runs; the bypass is a glob matching ANOTHER tracked file,
+    # so GREEN removes the literal and the glob must resolve to nothing.
+    rm -f "$GLOB_UNTRACKED_ABS"
+    GLOB_CREATED=0
     OUT=$(cd "$REPO_ROOT" && bash "$QUIET_RUN" suite -- bash "$GLOB_UNTRACKED_REL" 2>&1)
     RC=$?
     assert_rc "GREEN: glob-pathspec bypass refused by --literal-pathspecs fix" 2 "$RC"
@@ -255,10 +289,15 @@ cp "$QUIET_RUN" "$DIRBYPASS/quiet-run.sh"
 # HIMMEL-3914: every chokepoint fails closed without its seam-guard lib.
 mkdir -p "$DIRBYPASS/lib"
 cp "$(dirname "$QUIET_RUN")/lib/chokepoint-seam-guard.sh" "$DIRBYPASS/lib/"
+# HIMMEL-4782: the replacement plain file is untracked but inside the worktree
+# and regular, so it now runs on its own merits; what must stay refused is the
+# directory itself standing where the file would be.
+rm -f "$DIRBYPASS/test-x.sh"
+mkdir -p "$DIRBYPASS/test-x.sh"
 OUT=$(cd "$DIRBYPASS" && bash quiet-run.sh suite -- bash test-x.sh 2>&1)
 RC=$?
-assert_rc "directory-pathspec bypass refused" 2 "$RC"
-assert_contains "directory-pathspec bypass refusal message" "requires a tracked test-*.sh" "$OUT"
+assert_rc "directory named like a tracked test-*.sh refused" 2 "$RC"
+assert_contains "directory refusal message" "requires a tracked test-*.sh" "$OUT"
 
 # 11. label "suite" with a `./`-prefixed path to a tracked test-*.sh must
 # still pass - the same file that passes as a bare repo-relative path
