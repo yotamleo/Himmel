@@ -84,7 +84,8 @@ Both indexes are built in the setup clone `/tmp/himmel-setup`, so they show
   `graphify query "<question>" --graph /tmp/himmel-setup/graphify-out/graph.json`,
   or run `graphify update .` in the session's clone for a fresh one (about 25 s
   for this repo on a desktop CPU). Never run a semantic `/graphify` extraction in
-  the cloud: it would send content to a model backend.
+  the cloud: it would send content to a model backend. `/cloud-route` routes a
+  ticket that needs one to LOCAL-NATIVE.
 - **qmd**: `qmd search "<terms>" -c himmel` is BM25 and works. Vector search,
   and the expansion and rerank of `qmd query`, need about 2 GB of models
   (`qmd pull`) plus a CPU embed, which do not fit the ~5 minute cached setup, so

@@ -18,7 +18,9 @@
 //                data never leaves the station), more than 3 asks, or no file
 //                named to scope a brief on. graphify and BM25 qmd over the repo
 //                are not such a need: the cloud setup installs both (HIMMEL-4726).
-//                qmd query, vector search and embeds are: it has no qmd models
+//                qmd query, vector search and embeds are: it has no qmd models.
+//                So is a semantic graphify run (/graphify, --backend): it would
+//                send content to a model backend
 //   CLOUD-OK     everything else
 import { readFileSync, appendFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -31,7 +33,7 @@ const REPO = resolve(HERE, '..', '..');
 const MAX_ASKS = 3;
 const REPO_SLUG = 'yotamleo/Himmel';
 const HOOKS = /^scripts\/hooks\//;
-const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bqmd (?:query|vsearch|embed|pull)\b|vector search/i;
+const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n.]*--backend/i;
 const FILE_RE = /(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|\.claude|\.github|\.codex)\/[\w.+@-]+(?:\/[\w.+@-]+)*\/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)/g;
 
 // The trust list is read as data, one extended regex per line (ci-trust-paths.txt).
@@ -85,7 +87,7 @@ export function classifyTicket(t, ctx) {
   const trust = files.find((f) => (ctx.trust ?? []).some((re) => re.test(f)));
   if (trust) return v('LOCAL-NATIVE', `touches trust path ${trust} — needs a trust-reviewed GO`);
   const need = `${t.title}\n${t.description}`.match(NEEDS);
-  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state and qmd models stay on the station (the cloud has graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
+  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state, qmd models and semantic graphify stay on the station (the cloud has AST-only graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
   if (asks > MAX_ASKS) return v('LOCAL-NATIVE', `${asks} asks (more than ${MAX_ASKS}) — cloud sessions drop second asks`);
   if (ctx.heldUnknown) return v('BLOCKED', 'open-PR file list unavailable (gh failed) — cannot prove the files are free');
   return v('CLOUD-OK', `${files.length} file(s), ${asks} ask(s), no hook, trust path or run-time need, none held`);
