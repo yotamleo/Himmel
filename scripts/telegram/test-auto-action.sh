@@ -247,6 +247,9 @@ assert_rc "launch refuses agent authority" 19 "$rc"
 
 mkdir -p "$TMP/repo" "$TMP/bin"
 git init -q "$TMP/repo"
+git -C "$TMP/repo" checkout -qb feat/example
+LEDGER_WRITER="$(dirname "$AA")/../cr/ledger-append.sh"
+record_review() { (cd "$TMP/repo" || exit; bash "$LEDGER_WRITER" "$@"); }
 mkdir -p "$TMP/repo/.git/cr-review-rounds/feat"
 printf '4\n' > "$TMP/repo/.git/cr-review-rounds/feat/example.round"
 printf 'keep\n' > "$TMP/repo/.git/cr-review-rounds/feat/example.delta"
@@ -275,10 +278,11 @@ printf 'keep-verdicts\n' > "$TMP/repo/.git/cr-review-rounds/feat/example.verdict
 grant_delta() { (cd "$TMP/repo" || exit; unset CLAUDECODE; PATH="$TMP/bin:$PATH" run cr-grant-delta 123 "$REVIEWED"); }
 out=$(grant_delta); rc=$?
 assert_rc "grant refuses unreviewed ancestor" 4 "$rc"
-printf '{"kind":"avail","branch":"feat/example","head":"%s","model":"codex","status":"ok"}\n{"kind":"finding","branch":"feat/example","head":"%s","model":"codex","finding_id":"f1","verdict":"fixed"}\n' "$REVIEWED" "$REVIEWED" > "$TMP/repo/.git/cr-critic-scores.jsonl"
+record_review avail --branch feat/example --head "$REVIEWED" --model codex --status ok
+record_review finding --branch feat/example --head "$REVIEWED" --model codex --id f1 --severity imp --file file --line 1 --verdict fixed
 out=$(grant_delta); rc=$?
 assert_rc "grant refuses an unspent pending delta" 4 "$rc"
-printf '{"kind":"avail","branch":"feat/example","head":"%s","model":"codex","status":"ok"}\n' "$PR_HEAD" >> "$TMP/repo/.git/cr-critic-scores.jsonl"
+record_review avail --branch feat/example --head "$PR_HEAD" --model codex --status ok
 out=$(grant_delta); rc=$?
 assert_rc "grant restores reviewed ancestor and removes spent delta" 0 "$rc"
 assert_contains "grant reports backups" "backup=" "$out"
@@ -300,7 +304,7 @@ out=$(PR_BRANCH=../escape grant_delta); rc=$?
 assert_rc "grant rejects unsafe branch" 1 "$rc"
 out=$(CLAUDECODE=1 run cr-grant-delta 123 "$REVIEWED"); rc=$?
 assert_rc "grant refuses agent authority" 19 "$rc"
-printf '{"kind":"amend","branch":"feat/example","target_head":"%s","finding_id":"f1","set":{"verdict":"disproved"}}\n' "$REVIEWED" >> "$TMP/repo/.git/cr-critic-scores.jsonl"
+record_review amend --branch feat/example --head "$REVIEWED" --id f1 --set verdict=disproved --reason 'negative test fixture'
 out=$(grant_delta); rc=$?
 assert_rc "grant refuses finding later disproved" 4 "$rc"
 rm "$TMP/repo/.git/cr-review-rounds/feat/example.head"
