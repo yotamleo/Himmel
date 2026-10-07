@@ -25,7 +25,7 @@ Every cookie-backed media path is **off by default**. Set
 `HIMMEL_MEDIA_COOKIES=on` (environment variable; trimmed, case-insensitive) to
 turn them back on, which restores the earlier fallback behaviour exactly. Nothing is
 deleted while it is off: cookie files and storage state stay where they are,
-unread.
+and none of their cookies is sent.
 
 | Consumer | While off |
 |---|---|
