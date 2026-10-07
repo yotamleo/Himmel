@@ -63,7 +63,8 @@ const lastStages = (cmd: string): string[] => {
       if (c === "\\" && quote === '"') { cur += c + (cmd[++i] ?? ""); continue; }
       if (c === quote) quote = "";
       cur += c;
-    } else if (c === "\\") cur += c + (cmd[++i] ?? "");
+    } else if (c === "\\" && cmd[i + 1] === "\n") { i++; ws = wordStart; } // a line continuation joins the lines and is not a word boundary
+    else if (c === "\\") cur += c + (cmd[++i] ?? "");
     else if (c === "#" && wordStart) { while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++; }
     else if (c === "'" || c === '"') { quote = c; cur += c; }
     else if (c === ";" || c === "\n") endCommand();
