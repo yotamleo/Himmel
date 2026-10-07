@@ -425,13 +425,14 @@ c3_run() { # $1 = tmp root
 c3_vault() { # $1 = tmp root; sets v
     mkdir -p "$1/claude"; v="$1/home/Documents/luna"; mkdir -p "$v"
     git -C "$v" init -q 2>/dev/null; git -C "$v" config user.email t@t; git -C "$v" config user.name t
-    : > "$v/.single-writer"; echo .single-writer >> "$v/.git/info/exclude"; write_settings "$1/claude" "$WRAPPER"
+    : > "$v/.single-writer"; mkdir -p "$v/.git/info"; echo .single-writer >> "$v/.git/info/exclude"; write_settings "$1/claude" "$WRAPPER"
 }
 
 echo "== C3: stale dirty non-handover path in a single-writer vault -> WARN, no manual-commit advice =="
 t="$(mktemp -d)" || exit 1; c3_vault "$t"
-echo dirty > "$v/note.md"; touch -t 202001010000 "$v/note.md"
-out="$(c3_run "$t")"
+echo dirty > "$v/note.md"
+# ctime cannot be backdated (touch -t stamps a fresh one), so age the check: a clock 2 h ahead
+out="$(HIMMEL_DOCTOR_C3_NOW=$(( $(date +%s) + 7200 )) c3_run "$t")"
 if grepq "$out" 'WARN C3-luna' && ! grepq "$out" 'git -C .* commit'; then pass "C3 -> WARN (stale dirty non-handover)"; else fail "C3 stale -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
 
@@ -443,8 +444,8 @@ rm -rf "$t"
 
 echo "== C3: handovers/-only dirt (even old) -> OK =="
 t="$(mktemp -d)" || exit 1; c3_vault "$t"; mkdir -p "$v/handovers/u/r"
-echo wip > "$v/handovers/u/r/doc.md"; touch -t 202001010000 "$v/handovers/u/r/doc.md"
-out="$(c3_run "$t")"
+echo wip > "$v/handovers/u/r/doc.md"
+out="$(HIMMEL_DOCTOR_C3_NOW=$(( $(date +%s) + 7200 )) c3_run "$t")"
 if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 handovers-only -> OK"; else fail "C3 handovers-only -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
 
@@ -458,7 +459,7 @@ rm -rf "$t"
 
 echo "== C3: freshly moved file (unstaged delete + new path) after a recent commit -> OK =="
 t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo n > "$v/inbox.md"; touch -t 202001010000 "$v/inbox.md"
-git -C "$v" add inbox.md; git -C "$v" commit -qm init; mkdir -p "$v/notes"; mv "$v/inbox.md" "$v/notes/inbox.md"; touch "$v/notes/inbox.md"
+git -C "$v" add inbox.md; git -C "$v" commit -qm init; mkdir -p "$v/notes"; mv "$v/inbox.md" "$v/notes/inbox.md"
 out="$(c3_run "$t")"
 if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 fresh move -> OK"; else fail "C3 fresh move -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
