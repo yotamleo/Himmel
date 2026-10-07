@@ -266,6 +266,8 @@ case "$tool" in
                 file_check "$p" 0
                 a=$(_abs "$p")
                 is_config "$a" && deny "key-file-tool" "Grep over $p"
+                # Grep reads hidden files, so a search rooted above the key reads it.
+                is_key_anc "$a" && deny "key-file-tool" "Grep over $p, which holds the key"
                 ;;
             *) file_check "$p" 1 ;;
         esac
@@ -975,11 +977,14 @@ analyze() {
                 case "$WRAPPERS" in *" $b "*) seg_wrap[s]=$b ;; *)
                     if [ -n "${seg_wrap[s]:-}" ]; then
                         case "$w" in
-                            # -p takes a value only for sudo (its prompt); command -p
-                            # and time -p are flags, so skipping a value there
-                            # swallowed the real command (j2031).
-                            -p) [ "${seg_wrap[s]}" = sudo ] && seg_skip[s]=1 ;;
-                            -[sknugCIPLdEaD]|--signal|--kill-after|--user|--group|--unset|--chdir|--adjustment) seg_skip[s]=1 ;;
+                            # Value-taking short options are per wrapper: a flag such as
+                            # command -p or sudo -n/-E, skipped as if it took a value,
+                            # swallowed the real command (j2031, PR 2031 review).
+                            -?)
+                                case "${seg_wrap[s]}:${w#-}" in
+                                    sudo:[pugCDhTRrt]|doas:[uC]|env:[uCS]|timeout:[sk]|nice:n|exec:a|stdbuf:[ioe]|xargs:[aEdILnPs]) seg_skip[s]=1 ;;
+                                esac ;;
+                            --signal|--kill-after|--user|--group|--unset|--chdir|--adjustment) seg_skip[s]=1 ;;
                             -*|*=*) ;;
                             *) [[ $w =~ ^[0-9.]+[smhd]?$ ]] || { seg_cmd[s]=$b; seg_cmd_i[s]=$i; } ;;
                         esac
