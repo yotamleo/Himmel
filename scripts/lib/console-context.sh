@@ -200,6 +200,7 @@ console_context_leg_env_unset_names() {
         LEG_PROFILE_PREFACE \
         LEG_PROFILE_MCP_CONFIG \
         LEG_PROFILE_NO_SETTING_SOURCES \
+        LEG_SESSION_ID \
         HIMMEL_LEG_PROFILE \
         LEG_CLAUDE_BIN \
         HIMMEL_LEAN_LEG \
@@ -226,6 +227,7 @@ console_context_launch_seam_env_names() {
         LEG_PROFILE_PREFACE \
         LEG_PROFILE_MCP_CONFIG \
         LEG_PROFILE_NO_SETTING_SOURCES \
+        LEG_SESSION_ID \
         LEG_CLAUDE_BIN \
         HEADED_ARM_LAUNCHER \
         HEADED_ARM_LAUNCHER_ENV
