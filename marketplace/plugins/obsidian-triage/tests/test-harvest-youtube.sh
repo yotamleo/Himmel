@@ -113,6 +113,23 @@ p, g, msg = run("v4", "ok.json", dry=True)
 check("dry-run writes nothing", g == "v" and "dry-run" in msg and "harvest_status" not in fm(p), msg)
 check("dry-run never calls the helper", not (tmp / "v4.args").exists())
 
+p, g, msg = run("v6", "ok.json", rc="5")
+check("non-zero helper exit is not a harvest", g == "~" and "deferred 1/5" in msg, msg)
+
+# The evidence clip as harvest left it: a deferred thin-body partial. A retry
+# that harvests it must not keep the stale thin-body flag beside status ok.
+os.environ["STUB_JSON"] = str(tmp / "ok.json")
+os.environ["STUB_RC"] = "0"
+os.environ["STUB_ARGS"] = str(tmp / "v7.args")
+p = clip("v7")
+p.write_text(p.read_text(encoding="utf-8").replace(
+    "clipped_via: telegram\n",
+    "clipped_via: telegram\nharvest_status: partial\nharvest_flag: thin-body\nharvest_defer_count: 1\n"),
+    encoding="utf-8")
+g, msg, _ = mod.process_clip(p, dry_run=False)
+check("retried partial harvested ok", g == "v" and fm(p).get("harvest_status") == "ok", msg)
+check("stale thin-body flag cleared", "harvest_flag" not in fm(p), p.read_text(encoding="utf-8"))
+
 os.environ["YT_SCRAPLING_PYTHON"] = str(tmp / "absent-python")
 p, g, msg = run("v5", "ok.json")
 check("no scrapling python: deferred partial", g == "~" and "deferred 1/5" in msg, msg)

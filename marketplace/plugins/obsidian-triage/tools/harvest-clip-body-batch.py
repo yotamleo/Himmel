@@ -590,9 +590,11 @@ def youtube_scrapling(video_id: str, vault):
         out = json.loads(proc.stdout)
     except ValueError:
         return None, f"unparseable output (rc={proc.returncode})"
-    if not isinstance(out, dict) or out.get("status") != "ok":
+    if not isinstance(out, dict) or out.get("status") != "ok" or proc.returncode != 0:
         status = out.get("status") if isinstance(out, dict) else None
         detail = out.get("detail") if isinstance(out, dict) else None
+        if status == "ok":
+            status, detail = "error", f"rc={proc.returncode}"
         return None, f"{status or 'error'}{f' ({detail})' if detail else ''}"
     return out, None
 
@@ -637,8 +639,13 @@ def write_youtube_harvest(path: Path, text: str, fm_raw: str, body: str, canonic
     if hits:
         markers["harvest_flag"] = "injection-suspect"
         markers["harvest_flag_detail"] = ",".join(hits)
+    new_fm = insert_markers(fm_raw, markers)
+    if not hits:
+        # A retried deferred partial carries harvest_flag: thin-body; it no
+        # longer holds once the clip is harvested ok. injection-suspect stays.
+        new_fm = re.sub(r"^harvest_flag:[ \t]*thin-body[ \t]*\n?", "", new_fm, flags=re.MULTILINE)
     try:
-        path.write_text(f"---\n{insert_markers(fm_raw, markers)}\n---\n{new_body}", encoding="utf-8", newline="\n")
+        path.write_text(f"---\n{new_fm}\n---\n{new_body}", encoding="utf-8", newline="\n")
         _dfm, disk_fm_raw, disk_body, disk_present = parse_frontmatter(path.read_text(encoding="utf-8"))
     except Exception as e:
         _revert(path, text)
