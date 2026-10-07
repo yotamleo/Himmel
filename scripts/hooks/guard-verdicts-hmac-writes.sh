@@ -697,31 +697,189 @@ VRE='/verdicts([^[:alnum:]_.-]|$)'
 WRE='(^|[^[:alnum:]_])(tee|cp|mv|rm|rmdir|install|ln|rsync|scp|dd|truncate|shred|unlink|touch|chmod|chown|patch|sed|python3?|perl|ruby|node)([^[:alnum:]_]|$)'
 # nesting deeper than this (bash -c inside bash -c ...) gets the text scan
 MAX_DEPTH=8
-WRAPPERS=' sudo env command exec nohup nice time timeout stdbuf xargs builtin doas '
+WRAPPERS=' sudo env command exec nohup nice time timeout stdbuf xargs builtin doas setsid '
 # verbs that read, write, remove, move or re-own a tree: a later word naming
 # one of the key's ancestors is refused, whatever precedes the verb
 KVERBS=' cp rsync tar zip unzip 7z scp cpio grep egrep rg ag find du sftp rm rmdir mv shred unlink chmod chown chgrp '
 
-# _cluster <word> <value-letters> <dest-letter> — a short-option cluster (-xzC/d):
-# the first letter in <value-letters> takes the rest of the word (or the next
-# word) as its value, so later letters are not options. Sets _cpre to the flag
-# letters before it, and _cd=1 when that letter is <dest-letter>, with _cdv its
-# attached value (empty = the next word).
-_cluster() {
-    local r=${1#-} c
-    _cpre=; _cd=; _cdv=
-    while [ -n "$r" ]; do
-        c=${r:0:1}; r=${r:1}
-        case "$2" in *"$c"*)
-            if [ "$c" = "$3" ]; then _cd=1; _cdv=$r; fi
-            return 0 ;;
+# Deny-by-default (j2031-r9): in a cwd that holds the key, only these
+# read-only commands run; any other command word (an archiver, interpreter,
+# copier or unknown binary) is refused there. Outside it, a command that is not
+# one of them is refused when any of its words names a key ancestor, whatever
+# its verb.
+READERS=' ls cat head tail less wc stat file grep egrep fgrep rg git echo printf test [ true pwd cd pushd popd tar unzip '
+GIT_RO=' status log diff show rev-parse ls-files ls-tree grep blame describe cat-file merge-base shortlog rev-list show-ref '
+
+# _reader <seg> [1] — 0 when segment <seg> runs a read-only command. Option
+# checks drop a reader's writing or executing modes (git -c, rg --pre, file -C,
+# any less option); tar and unzip count only as pure listers. With 1 (a cwd
+# holds the key) an assignment, xargs or a dynamic word also voids it, and a
+# recursive grep or an rg (both walk the cwd) is no reader.
+_reader() {
+    local s=$1 anc=${2:-} c=${seg_cmd[$1]:-} ci=${seg_cmd_i[$1]:--1} i w r ch n=0 sub='' fv=0 lst=0
+    [ -n "$c" ] || return 1
+    case "$READERS" in *" $c "*) ;; *) return 1 ;; esac
+    # the bare name or a system path: ./cat is not cat
+    case "${ST_W[ci]}" in "$c"|/bin/"$c"|/usr/bin/"$c") ;; *) return 1 ;; esac
+    if [ "$anc" = 1 ]; then
+        i=0
+        while [ "$i" -lt "$ci" ]; do
+            if [ "${ST_S[i]}" = "$s" ] && [ -z "${ST_RO[i]}" ]; then
+                case "${ST_A[i]}:${ST_W[i]}" in 1:*|*=*|*:xargs|*/xargs) return 1 ;; esac
+            fi
+            i=$((i + 1))
+        done
+        [ "$c" = rg ] && return 1
+    fi
+    i=$((ci + 1))
+    while [ "$i" -lt "$ST_N" ]; do
+        if [ "${ST_S[i]}" != "$s" ] || [ -n "${ST_RO[i]}" ]; then i=$((i + 1)); continue; fi
+        w=${ST_W[i]}
+        n=$((n + 1))
+        if [ "$anc" = 1 ] && [ "${ST_X[i]}" = 1 ]; then
+            case "$c" in echo|printf|test|'['|true|pwd|cd|pushd|popd|ls) ;; *) return 1 ;; esac
+        fi
+        case "$c" in
+            less) case "$w" in -*) return 1 ;; esac ;;
+            file) case "$w" in --compile|-[!-]*C*) return 1 ;; esac ;;
+            grep|egrep|fgrep)
+                if [ "$anc" = 1 ]; then
+                    case "$w" in --recursive|--dereference-recursive|--directories*) return 1 ;; --*) ;; -*[rRd]*) return 1 ;; esac
+                fi ;;
+            rg) case "$w" in --pre|--pre=*|--pre-glob*) return 1 ;; esac ;;
+            git)
+                if [ -n "$sub" ]; then
+                    case "$w" in --output*|-O*|--open-files-in-pager*|--no-index|--ext-diff) return 1 ;; esac
+                elif [ "$fv" = 1 ]; then
+                    fv=0
+                else
+                    case "$w" in
+                        -C|--git-dir|--work-tree|--namespace) fv=1 ;;
+                        -c|--config-env*|--exec-path*) return 1 ;;
+                        -*) ;;
+                        *) case "$GIT_RO" in *" $w "*) sub=$w ;; *) return 1 ;; esac ;;
+                    esac
+                fi ;;
+            tar)
+                # a remote archive (host:file) runs a shell command
+                if [ "$fv" = 1 ]; then
+                    fv=0
+                    case "$w" in *:*) return 1 ;; esac
+                    i=$((i + 1)); continue
+                fi
+                case "$w" in
+                    --list) lst=1 ;;
+                    --verbose|--gzip|--bzip2|--xz|--zstd) ;;
+                    --file=*) case "${w#*=}" in *:*) return 1 ;; esac ;;
+                    --file) fv=1 ;;
+                    --*) return 1 ;;
+                    -*)
+                        r=${w#-}
+                        while [ -n "$r" ]; do
+                            ch=${r:0:1}; r=${r:1}
+                            case "$ch" in
+                                t) lst=1 ;;
+                                v|z|j|J) ;;
+                                f)
+                                    if [ -n "$r" ]; then
+                                        case "$r" in *:*) return 1 ;; esac
+                                    else
+                                        fv=1
+                                    fi
+                                    break ;;
+                                *) return 1 ;;
+                            esac
+                        done ;;
+                    *)
+                        # the old-style first word is a cluster too (tf a.tar)
+                        if [ "$n" = 1 ]; then
+                            r=$w
+                            while [ -n "$r" ]; do
+                                ch=${r:0:1}; r=${r:1}
+                                case "$ch" in t) lst=1 ;; v|z|j|J) ;; f) fv=1 ;; *) return 1 ;; esac
+                            done
+                        fi ;;
+                esac ;;
+            unzip)
+                case "$w" in
+                    --*) return 1 ;;
+                    -*)
+                        r=${w#-}
+                        while [ -n "$r" ]; do
+                            ch=${r:0:1}; r=${r:1}
+                            case "$ch" in l|v|t|z) lst=1 ;; q) ;; *) return 1 ;; esac
+                        done ;;
+                esac ;;
         esac
-        _cpre=$_cpre$c
+        i=$((i + 1))
     done
+    case "$c" in tar|unzip) [ "$lst" = 1 ] || return 1 ;; esac
+    return 0
 }
-# tar's and unzip's value-taking short options
-TAR_VAL=bCfFgHIKLNTVX
-UNZIP_VAL=dP
+
+# _dest <seg> — a non-reader's words: an operand, a value after `=` or `:`, or
+# a value attached to a short option (-C/x, -xC~) naming a key ancestor is a
+# destination, whatever the verb. A relative suffix that does not exist cannot
+# be an ancestor, so only an existing one, or a dot-led one, is resolved.
+_dest() {
+    local s=$1 c=${seg_cmd[$1]} ci=${seg_cmd_i[$1]} i w r k x a m g save=$CWD
+    local -a cand
+    i=$((ci + 1))
+    while [ "$i" -lt "$ST_N" ]; do
+        if [ "${ST_S[i]}" != "$s" ] || [ -n "${ST_RO[i]}" ]; then i=$((i + 1)); continue; fi
+        w=${ST_W[i]}
+        cand=("$w")
+        case "$w" in *=*) cand+=("${w#*=}") ;; esac
+        r=${w#*=}
+        case "$r" in *:*)
+            while :; do
+                cand+=("${r%%:*}")
+                case "$r" in *:*) r=${r#*:} ;; *) break ;; esac
+            done ;;
+        esac
+        case "$w" in --*) ;; -?*)
+            k=2
+            while [ "$k" -lt "${#w}" ]; do cand+=("${w:k}"); k=$((k + 1)); done ;;
+        esac
+        for x in "${CWDS[@]}"; do
+            for a in "${cand[@]}"; do
+                case "$a" in
+                    ''|-*) continue ;;
+                    /*|'~'*|'$'*|.*) ;;
+                    *) [ -e "$x/$a" ] || continue ;;
+                esac
+                CWD=$x
+                m=$(_abs "$a")
+                CWD=$save
+                [ -n "$m" ] || continue
+                is_key_anc "$m" && deny "key-bash" "$c names $a, which holds the key: only a read-only command may name a key ancestor"
+                if [ "${ST_G[i]}" = 1 ]; then
+                    while IFS= read -r g; do
+                        is_key_anc "$g" && deny "key-bash" "$c names glob $a, which can match a dir holding the key"
+                    done < <(compgen -G "$m")
+                fi
+            done
+        done
+        i=$((i + 1))
+    done
+    return 0
+}
+
+# _rdest <word> — a write redirect in a cwd that holds the key: refused when
+# its target lands in a key ancestor, or cannot be resolved.
+_rdest() {
+    local w="$1" x a save=$CWD
+    for x in "${CWDS[@]}"; do
+        is_key_anc "$x" || continue
+        CWD=$x
+        a=$(_abs "$w")
+        CWD=$save
+        [ -n "$a" ] || deny "key-bash" "a redirect to $w in $x, which holds the key"
+        a=${a%/*}
+        is_key_anc "${a:-/}" && deny "key-bash" "a redirect to $w writes into a dir holding the key"
+    done
+    return 0
+}
 
 # _kanc <verb> <seg> <word> — the key-ancestor check of one word after <verb>.
 # Over ~/.config: any recursive walker. Over a higher ancestor ($HOME, /): a
@@ -979,9 +1137,13 @@ _cd() {
     local w="$1" d a save=$CWD n=${#CWDS[@]}
     case "$w" in
         *'$'*|*'`'*)
-            case "$w" in *verdicts*) CD_DYN_V=1 ;; esac
-            case "$w" in *.config*|*himmel*) CD_DYN_K=1 ;; esac
-            return 0 ;;
+            if [ -z "$(_abs "$w")" ]; then
+                case "$w" in *verdicts*) CD_DYN_V=1 ;; esac
+                case "$w" in *.config*|*himmel*) CD_DYN_K=1 ;; esac
+                # a dynamic target that may be HOME counts as HOME (j2031-r9)
+                case "$w" in *HOME*|*'~'*|*.config*) CWDS+=("$HOME") ;; esac
+                return 0
+            fi ;;
     esac
     for d in "${CWDS[@]:0:n}"; do
         CWD=$d
@@ -1005,6 +1167,9 @@ analyze() {
     CMD_TEXT=$1
     if [ "$depth" -gt "$MAX_DEPTH" ] || ! st_tokenize "$1"; then
         text_scan "$1"
+        for x in "${CWDS[@]}"; do
+            is_key_anc "$x" && deny "key-bash" "an unmodelled command in $x, which holds the key"
+        done
         return 0
     fi
 
@@ -1067,13 +1232,16 @@ analyze() {
         fi
         i=$((i + 1))
     done
+    # A bare cd goes HOME; cd - and popd go somewhere unknown, counted as HOME.
+    for s in ${seg_cmd[@]+"${!seg_cmd[@]}"}; do
+        case "${seg_cmd[s]}" in cd|pushd|popd) [ -n "${seg_cdone[s]:-}" ] || _cd '~' ;; esac
+    done
 
     # Key-ancestor verbs are found anywhere in a segment, not only as its
-    # command word: an unlisted wrapper (setsid, flock, busybox, ...) in front
-    # hid the verb from these checks (j2031-r6). A pre-pass records, per
-    # segment, the verbs seen so far, find's action, and whether a tar, unzip
-    # or 7z extraction names its destination.
-    seg_vs=(); seg_vl=(); seg_vli=(); seg_xx=(); seg_xd=(); seg_xn=(); seg_xg=()
+    # command word: an unlisted wrapper (flock, busybox, ...) in front hid the
+    # verb from these checks (j2031-r6). A pre-pass records, per segment, the
+    # verbs seen so far and find's action.
+    seg_vs=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         s=${ST_S[i]}
@@ -1082,31 +1250,8 @@ analyze() {
             case "${seg_vs[s]:-}" in *' find '*)
                 case "$w" in -exec*|-ok*|-delete|-fprint*|-fls) seg_fact[s]=1 ;; esac ;;
             esac
-            case "${seg_vl[s]:-}" in
-                tar)
-                    case "$w" in
-                        --extract|--get) seg_xx[s]=1 ;;
-                        --directory*) seg_xd[s]=1 ;;
-                        --*) ;;
-                        -*) _cluster "$w" "$TAR_VAL" C
-                            case "$_cpre" in *x*) seg_xx[s]=1 ;; esac
-                            if [ -n "$_cd" ]; then seg_xd[s]=1; fi ;;
-                        *x*) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;;
-                    esac ;;
-                unzip) seg_xx[s]=1
-                    case "$w" in
-                        # unzip negates with a - inside the options (--l, -l-l),
-                        # so a negation voids a read-only mode (r11 codex-1)
-                        --*) seg_xg[s]=1 ;;
-                        -*) _cluster "$w" "$UNZIP_VAL" d
-                            case "$_cpre" in *[ltvzZ]*) seg_xn[s]=1 ;; esac
-                            case "$_cpre" in *-*) seg_xg[s]=1 ;; esac
-                            if [ -n "$_cd" ]; then seg_xd[s]=1; fi ;;
-                    esac ;;
-                7z) case "$w" in -o*) seg_xd[s]=1 ;; x|e) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;; esac ;;
-            esac
             b=${w##*/}
-            case "$KVERBS" in *" $b "*) seg_vs[s]="${seg_vs[s]:- }$b "; seg_vl[s]=$b; seg_vli[s]=$i ;; esac
+            case "$KVERBS" in *" $b "*) seg_vs[s]="${seg_vs[s]:- }$b " ;; esac
         fi
         i=$((i + 1))
     done
@@ -1122,16 +1267,6 @@ analyze() {
             for b in ${kv[s]}; do
                 _kanc "$b" "$s" "$w"
                 case "$w" in -*=*) _kanc "$b" "$s" "${w#*=}" ;; esac
-                # an attached destination: tar -C/dir, unzip -d/dir, 7z -o/dir
-                # (codex-1), also inside a cluster: tar -xzC/dir, unzip -qd/dir
-                case "$b:$w" in
-                    tar:--*|unzip:--*) ;;
-                    tar:-?*) _cluster "$w" "$TAR_VAL" C
-                        if [ -n "$_cdv" ]; then _kanc "$b" "$s" "$_cdv"; fi ;;
-                    unzip:-?*) _cluster "$w" "$UNZIP_VAL" d
-                        if [ -n "$_cdv" ]; then _kanc "$b" "$s" "$_cdv"; fi ;;
-                    7z:-o?*) _kanc "$b" "$s" "${w#-o}" ;;
-                esac
             done
         fi
         if [ -z "${ST_RO[i]}" ] && [ "${ST_A[i]}" = 0 ]; then
@@ -1140,14 +1275,40 @@ analyze() {
         fi
         i=$((i + 1))
     done
-    # An extraction with no destination writes into the cwd (j2031-r6).
-    for s in ${seg_xx[@]+"${!seg_xx[@]}"}; do
-        if [ -n "${seg_xd[s]:-}" ]; then continue; fi
-        if [ -n "${seg_xn[s]:-}" ] && [ -z "${seg_xg[s]:-}" ]; then continue; fi
-        for x in "${CWDS[@]}"; do
-            is_key_anc "$x" && deny "key-bash" "an extraction with no destination writes into $x, which holds the key"
-        done
+    # Deny-by-default (j2031-r9). In a cwd that holds the key only a reader
+    # runs, and a write redirect may not land in a key ancestor. Elsewhere a
+    # non-reader naming a key ancestor in any word is refused; find and du keep
+    # their own model above, which lets a name listing or a size total through.
+    anc=
+    for x in "${CWDS[@]}"; do
+        if is_key_anc "$x"; then anc=$x; break; fi
     done
+    s=0
+    while [ "$s" -lt "$ST_NSEG" ]; do
+        if [ -n "${seg_cmd[s]+x}" ]; then
+            if _reader "$s" "${anc:+1}"; then
+                :
+            elif [ -n "$anc" ]; then
+                deny "key-bash" "${seg_cmd[s]} in $anc, which holds the key: only a read-only command runs in a key-ancestor cwd"
+            else
+                case "${seg_cmd[s]}" in find|du) ;; *) _dest "$s" ;; esac
+            fi
+        elif [ -n "$anc" ] && [ -n "${seg_wrap[s]:-}" ]; then
+            deny "key-bash" "${seg_wrap[s]} with no command in $anc, which holds the key"
+        fi
+        s=$((s + 1))
+    done
+    if [ -n "$anc" ]; then
+        i=0
+        while [ "$i" -lt "$ST_N" ]; do
+            case "${ST_RO[i]}" in
+                ''|*'<&') ;;
+                *'>&') case "${ST_W[i]}" in *[!0-9-]*) _rdest "${ST_W[i]}" ;; esac ;;
+                *'>'*) _rdest "${ST_W[i]}" ;;
+            esac
+            i=$((i + 1))
+        done
+    fi
 
     # Per-segment operand facts, and the nested scripts to analyse next.
     i=0
