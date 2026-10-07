@@ -3894,6 +3894,26 @@ the clamp is untouched. Joins the existing
 `block-read-secrets.sh` chain on both the `Read|Grep` and `Bash` PreToolUse
 matchers — right after it, so a denied secret read never gets clamp-recorded.
 
+### `guard-verdicts-hmac-writes.sh` — GO key and verdicts/ write fence (HIMMEL-4733)
+
+Fires on `Bash`, `Read|Grep` and `Edit|Write|MultiEdit|NotebookEdit` (Codex:
+`apply_patch`), in every session. Two fences:
+
+- **GO HMAC key.** Any agent-tool read or write of `~/.config/himmel/go-hmac.key`
+  (or its directory, a `.go-hmac*` temp beside it, a glob or symlink that could
+  reach it) is denied. There is no bypass. `console-kit/go.sh` and
+  `scripts/lib/go-gate.sh` read the key inside their own process, which no hook
+  sees.
+- **verdicts/.** A write under any path component named `verdicts` (outside the
+  judge cache `~/.cache/himmel/verdicts/`) is denied unless the session carries
+  `HIMMEL_CONSOLE_JUDGE=1`. The refusal names
+  `console-kit/write-verdict.sh`, whose invocation stays allowed everywhere.
+  Reads stay allowed.
+
+Security fence: fails closed (missing `jq`, malformed JSON, an unmodelled
+command falls to a stricter text scan). Must-run chain member. Suite:
+`scripts/hooks/test-guard-verdicts-hmac-writes.sh`.
+
 ### `block-backend-tier.sh` — service-agnostic backend-routing guard (HIMMEL-400)
 
 Fires on `mcp__plugin_atlassian_atlassian__*` tool calls (and any other

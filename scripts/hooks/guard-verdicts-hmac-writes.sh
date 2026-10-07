@@ -119,13 +119,13 @@ _norm() {
 # deepest existing parent. Falls back to the lexical form.
 _phys() {
     local p="$1" r head tail=""
-    r=$(readlink -f -- "$p" 2>/dev/null) && [ -n "$r" ] && { printf '%s' "$r"; return; }
+    r=$(readlink -f -- "$p" 2>/dev/null) && [ -n "$r" ] && { printf '%s' "$r"; return; }  # gnu-ok: BSD readlink without -f fails here and falls to the lexical path
     head="$p"
     while [ -n "$head" ] && [ "$head" != "/" ] && [ ! -d "$head" ]; do
         tail="/${head##*/}$tail"
         head="${head%/*}"
     done
-    r=$(readlink -f -- "${head:-/}" 2>/dev/null) || r=""
+    r=$(readlink -f -- "${head:-/}" 2>/dev/null) || r=""  # gnu-ok: same fallback as above
     [ -n "$r" ] || { printf '%s' "$p"; return; }
     [ "$r" = "/" ] && r=""
     printf '%s' "$r$tail"
