@@ -51,7 +51,8 @@
 #      to a binary that is either in the read-only safe set below, or
 #      `git <read-subcommand>`, `gh <read-subcommand>`, or the dogfooded
 #      Jira CLI (`node …/scripts/jira/dist/index.js …`, operator
-#      allow-listed in .claude/settings.json).
+#      allow-listed in .claude/settings.json). The jira CLI alone may also
+#      carry a bare literal `JIRA_PROJECT_KEY=<KEY>` prefix (HIMMEL-4780).
 #   The ONE non-read exception (HIMMEL-3131): a lone `queue-lock.sh` lock verb
 #   (`[HANDOVER_DIR=<root>] bash scripts/handover/queue-lock.sh <verb> …`,
 #   literal args) is approved ONLY as the whole command — see
@@ -594,9 +595,9 @@ word_has_brace_expansion() {
 #            locale/timezone var (must fall through to a prompt).
 #   bin   — resolved; RB_BIN is the binary token, RB_IDX its index.
 resolve_seg_binary() {
-    tokenize_seg_words "$1" || { RB_TOKENS=(); RB_BIN=""; RB_IDX=-1; RB_STATUS=unsafe; return 0; }
+    tokenize_seg_words "$1" || { RB_TOKENS=(); RB_BIN=""; RB_IDX=-1; RB_JIRA_KEY=0; RB_STATUS=unsafe; return 0; }
     local -a a=("${RB_TOKENS[@]}")
-    RB_BIN=""; RB_IDX=-1
+    RB_BIN=""; RB_IDX=-1; RB_JIRA_KEY=0
     local n=${#a[@]}
     if [ "$n" -eq 0 ]; then RB_STATUS=empty; return 0; fi
     local i=0 t
@@ -624,8 +625,15 @@ resolve_seg_binary() {
                 # dangerous-env-var set is open-ended.
                 case "$t" in
                     LANG=*|LANGUAGE=*|LC_[A-Z]*=*|TZ=*) i=$((i + 1)); continue ;;
-                    *) RB_STATUS=unsafe; return 0 ;;
-                esac ;;
+                esac
+                # HIMMEL-4780: a bare literal JIRA_PROJECT_KEY=<KEY> only picks
+                # the Jira project (as --project already may). Skipped here, but
+                # segment_is_safe refuses it unless the binary is node, whose
+                # branch approves the jira CLI alone.
+                if [[ "$t" =~ ^JIRA_PROJECT_KEY=[A-Z][A-Z0-9_]*$ ]]; then
+                    RB_JIRA_KEY=1; i=$((i + 1)); continue
+                fi
+                RB_STATUS=unsafe; return 0 ;;
             *) break ;;
         esac
     done
@@ -864,6 +872,10 @@ is_redirect_word() {
 
 segment_is_safe() {
     resolve_seg_binary "$1"
+    # HIMMEL-4780: the JIRA_PROJECT_KEY= prefix is approvable on node only.
+    if [ "$RB_JIRA_KEY" = 1 ] && { [ "$RB_STATUS" != bin ] || [ "$RB_BIN" != node ]; }; then
+        return 1
+    fi
     case "$RB_STATUS" in
         empty|safe) return 0 ;;
         unsafe)     return 1 ;;

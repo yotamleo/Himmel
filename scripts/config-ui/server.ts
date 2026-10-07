@@ -32,6 +32,13 @@ const DEFAULT_IDLE_MS = 30 * 60 * 1000;
 const FEED_TIMEOUT_MS = 300_000;
 const FEED_WAIT_MS = 8_000;
 const FEED_CACHE_MS = 30_000;
+// HIMMEL-4807: with backgroundFeed the report starts at boot and is refreshed every FEED_REFRESH_MS, but only
+// while the console is in use (an authenticated request within the last FEED_REFRESH_MS), so a closed UI idles out.
+const FEED_REFRESH_MS = 10 * 60 * 1000;
+// The progress line probe-progress.cjs writes; anything else on the report's stderr is ignored.
+const PROBE_LINE = "himmel-probe ";
+const PROBE_SOURCE = /^[\w ,.:@-]{1,80}$/;
+const MAX_STDERR_LINE = 4096;
 export const IDLE_TIMEOUT_S = 255;
 const IDLE_MARGIN_S = 10;
 const PREVIEW_TTL_MS = 5 * 60 * 1000;
@@ -136,6 +143,7 @@ type Env = Record<string, string | undefined>;
 export type ServerOpts = {
   port?: number; token?: string; hostname?: string; env?: Env; onIdle?: () => void;
   root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; feedWaitMs?: number; feedTimeoutMs?: number;
+  backgroundFeed?: boolean; feedRefreshMs?: number;
   legsScript?: string; legsTimeoutMs?: number; fleetScript?: string; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number; aguiDist?: string; aguiWeb?: string;
 };
 type Preview = Resolved & { expires: number };
@@ -160,11 +168,33 @@ function himmelctlBin(env: Env): string {
   return env.CONFIG_UI_HIMMELCTL ?? resolve(import.meta.dir, "../himmelctl/bin.js");
 }
 
-function runFeed(env: Env, timeoutMs: number): Promise<string> {
+export type Progress = { i: number; n: number; source: string };
+// HIMMEL-4807: one `himmel-probe {"i","n","source"}` line, validated; null for anything else.
+export function parseProbeLine(line: string): Progress | null {
+  if (!line.startsWith(PROBE_LINE)) return null;
+  let o: unknown;
+  try { o = JSON.parse(line.slice(PROBE_LINE.length)); } catch { return null; }
+  if (!o || typeof o !== "object") return null;
+  const { i, n, source } = o as Record<string, unknown>;
+  if (!Number.isInteger(i) || !Number.isInteger(n) || (i as number) < 1 || (i as number) > (n as number) || (n as number) > 64) return null;
+  if (typeof source !== "string" || !PROBE_SOURCE.test(source)) return null;
+  return { i: i as number, n: n as number, source };
+}
+
+// HIMMEL-4807: the report runs under probe-progress.cjs, whose stderr steps reach onProgress.
+function runFeed(env: Env, timeoutMs: number, onProgress: (p: Progress) => void): Promise<string> {
   return new Promise((ok, fail) => {
-    execFile("node", [himmelctlBin(env), "report", "--json"], { env: env as NodeJS.ProcessEnv, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
+    const argv = ["--require", join(import.meta.dir, "probe-progress.cjs"), himmelctlBin(env), "report", "--json"];
+    const child = execFile("node", argv, { env: env as NodeJS.ProcessEnv, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 }, (err, stdout) => {
       if (err) return fail(err);
       try { ok(JSON.stringify(redactDeep(JSON.parse(stdout)))); } catch (e) { fail(e); }
+    });
+    let buf = "";
+    child.stderr?.on("data", (d: Buffer | string) => {
+      buf += String(d);
+      const lines = buf.split("\n");
+      buf = lines.pop()!.slice(-MAX_STDERR_LINE); // a runaway line without a newline cannot grow the buffer
+      for (const l of lines) { const p = parseProbeLine(l.replace(/\r$/, "")); if (p) onProgress(p); }
     });
   });
 }
@@ -276,25 +306,46 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
 
   // The feed: ONE background report shared by every request, cached briefly.
   // A failure is terminal for that run and never cached, so the next request retries.
-  type FeedRun = { startedAt: number; done: boolean; body?: string; error?: string; at: number; promise: Promise<void> };
+  // HIMMEL-4807: feedLast is the newest good report, answered at once even while a newer one runs
+  // (stale-while-revalidate). An action clears it and bumps feedEpoch: a run started before that never becomes it.
+  type FeedRun = {
+    startedAt: number; done: boolean; body?: string; error?: string; at: number; promise: Promise<void>;
+    epoch: number; progress: Progress | null; waiters: (() => void)[];
+  };
   let feedRun: FeedRun | null = null;
-  function feedStart(): FeedRun {
-    if (feedRun && (!feedRun.done || (feedRun.body !== undefined && now() - feedRun.at < FEED_CACHE_MS))) return feedRun;
-    const run: FeedRun = { startedAt: now(), done: false, at: 0, promise: Promise.resolve() };
+  let feedLast: { body: string; at: number } | null = null;
+  let feedEpoch = 0;
+  const wake = (run: FeedRun) => { for (const w of run.waiters.splice(0)) w(); };
+  // The run in flight, else a new one; null when the cached report is fresh (force skips that check).
+  function feedStart(force = false): FeedRun | null {
+    if (feedRun && !feedRun.done) return feedRun;
+    if (!force && feedLast && now() - feedLast.at < FEED_CACHE_MS) return null;
+    const run: FeedRun = { startedAt: now(), done: false, at: 0, promise: Promise.resolve(), epoch: feedEpoch, progress: null, waiters: [] };
     active++; // a running report keeps the idle timer from shutting the server down
-    run.promise = runFeed(env, opts.feedTimeoutMs ?? FEED_TIMEOUT_MS).then((b) => { run.body = b; }, () => { run.error = "himmelctl report --json failed or timed out"; })
-      .finally(() => { run.done = true; run.at = now(); active--; if (deferred && active === 0) { deferred = false; bump(); } });
+    const onProgress = (p: Progress) => { if (!run.progress || p.i > run.progress.i) { run.progress = p; wake(run); } };
+    run.promise = runFeed(env, opts.feedTimeoutMs ?? FEED_TIMEOUT_MS, onProgress)
+      .then((b) => { run.body = b; if (run.epoch === feedEpoch) feedLast = { body: b, at: now() }; }, () => { run.error = "himmelctl report --json failed or timed out"; })
+      .finally(() => { run.done = true; run.at = now(); wake(run); active--; if (deferred && active === 0) { deferred = false; bump(); } });
     return feedRun = run;
   }
+  const feedBody = (body: string) => new Response(body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
   async function feedRoute(): Promise<Response> {
-    const run = feedStart();
+    const last = feedLast;
+    const run = feedStart(); // an expired cache starts a refresh here
+    if (last) return feedBody(last.body);
+    if (!run) return json({ state: "error", reason: "no report" }, 502); // unreachable: no cached report always starts a run
+    // HIMMEL-4807: answer as soon as the report lands, the step changes, or the wait runs out.
     let t: ReturnType<typeof setTimeout> | undefined;
-    await Promise.race([run.promise, new Promise((r) => { t = setTimeout(r, opts.feedWaitMs ?? FEED_WAIT_MS); })]);
+    await Promise.race([run.promise, new Promise<void>((r) => { run.waiters.push(r); }), new Promise((r) => { t = setTimeout(r, opts.feedWaitMs ?? FEED_WAIT_MS); })]);
     clearTimeout(t);
-    if (!run.done) return json({ state: "running", startedAt: run.startedAt, elapsedMs: now() - run.startedAt }, 202);
-    if (run.body !== undefined) return new Response(run.body, { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    if (!run.done) return json({ state: "running", startedAt: run.startedAt, elapsedMs: now() - run.startedAt, progress: run.progress }, 202);
+    if (run.body !== undefined) return feedBody(run.body);
     return json({ state: "error", reason: run.error }, 502);
   }
+  // HIMMEL-4807: background loading (backgroundFeed): refresh on each tick while the console is in use.
+  let lastSeen = -Infinity;
+  const refreshMs = opts.feedRefreshMs ?? FEED_REFRESH_MS;
+  const refresher = opts.backgroundFeed ? setInterval(() => { if (now() - lastSeen < refreshMs) feedStart(true); }, refreshMs) : undefined;
   async function route(req: Request): Promise<Response> {
     const origin = `http://${LOOPBACK}:${server.port}`;
     if (req.headers.get("host") !== `${LOOPBACK}:${server.port}`) return new Response("bad host", { status: 403 });
@@ -302,6 +353,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     if (path.startsWith("/api/")) {
       if (!sameToken(req.headers.get("x-himmel-token"), token)) return new Response("unauthorized", { status: 401 });
       bump(); // HIMMEL-4350: only an authenticated request keeps the server alive
+      lastSeen = now(); // HIMMEL-4807: and only one keeps the background refresh going
       if (req.method === "GET" && path === "/api/feed") {
         return feedRoute();
       }
@@ -358,7 +410,8 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       if (path === "/api/preview") return previewRoute(b as Record<string, unknown>);
       let started = false;
       const res = await runRoute(b as Record<string, unknown>, () => { started = true; });
-      if (started) feedRun = null; // an action ran: the next feed re-probes, never reusing a cached or in-flight (pre-action) report
+      // An action ran: the next feed re-probes, never reusing a cached or in-flight (pre-action) report.
+      if (started) { feedRun = null; feedLast = null; feedEpoch++; }
       return res;
     }
     if (req.method === "GET" && path === "/agui") return new Response(null, { status: 308, headers: { location: "/agui/" } });
@@ -382,7 +435,8 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
     },
   });
   bump();
-  return { server, port: server.port, token, stop: () => { clearTimeout(idle); server.stop(true); } };
+  if (opts.backgroundFeed) feedStart(true); // HIMMEL-4807: prewarm, so the report is there when the console opens
+  return { server, port: server.port, token, stop: () => { clearTimeout(idle); clearInterval(refresher); server.stop(true); } };
 }
 
 // HIMMEL-4711: `himmelctl ui` prints ONE URL. LANDING is the operator's switch: "fleet" lands on the fleet
@@ -397,7 +451,8 @@ export function launchUrl(base: string, token: string, o: { landing: "fleet" | "
 if (import.meta.main) {
   const i = process.argv.indexOf("--port");
   const a = process.argv.indexOf("--agui");
-  const { port, token } = startServer({ port: i > 0 ? Number(process.argv[i + 1]) : 0 });
+  // HIMMEL-4807: the operator lands on Fleet (another page); the config report loads meanwhile.
+  const { port, token } = startServer({ port: i > 0 ? Number(process.argv[i + 1]) : 0, backgroundFeed: true });
   // himmelctl ui --agui [<run>]: the launcher has already resolved and validated the run id; with none, the
   // fleet landing (HIMMEL-4712).
   const run = a > 0 ? process.argv[a + 1] : undefined;

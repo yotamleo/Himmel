@@ -401,12 +401,14 @@ To clear a choice back to detection: `git config --unset himmel.tracker` (or
 `himmel.forge`).
 
 **`tracker=none` and CI.** With no tracker the resolver prints
-`TICKET_ID_REQUIRED=0`, so commits need no ticket ID. An explicit
-`TICKET_ID_REQUIRED` env value still wins over the resolver, and himmel's own
-workflows pin it: `.github/workflows/ci.yml` and
-`.github/workflows/pr-title-lint.yml` each set `TICKET_ID_REQUIRED: '1'`. An
-adopter on `tracker=none` edits those two lines to `'0'`, or the CI range gate
-and the PR-title lint keep demanding an ID.
+`TICKET_ID_REQUIRED=0`, so commits need no ticket ID. Forcing it back on
+(`TICKET_ID_REQUIRED=1` with `tracker=none` and no `TICKET_ID_PATTERN`) is a
+contradiction: there is no pattern to require, so the commit-message gate
+refuses it with rc 2 and names both settings. himmel's own workflows pin it:
+`.github/workflows/ci.yml` and `.github/workflows/pr-title-lint.yml` each set
+`TICKET_ID_REQUIRED: '1'`. An adopter on `tracker=none` edits those two lines
+to `'0'`, or the CI range gate and the PR-title lint refuse every commit and
+title.
 
 **Review & merge (the CR loop)**
 

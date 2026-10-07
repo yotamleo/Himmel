@@ -374,6 +374,16 @@ expect_mode_rc "FORGE=local-git on a github origin is refused with the resolver'
 expect_mode_rc "TRACKER=jira with no key is refused" 1 "JIRA_PROJECT_KEY is not set" \
   "$R" "chore: [#12] wire the thing" TRACKER=jira
 expect_mode_rc "TRACKER=none makes the ticket optional" 0 "" "$R" "chore: no ticket id here" TRACKER=none
+# HIMMEL-4787: tracker none has no pattern, so a forced requirement would pass
+# every message. The contradiction is refused (rc 2), naming both settings.
+expect_mode_rc "TRACKER=none + TICKET_ID_REQUIRED=1 is refused, never a silent pass" 2 \
+  "TICKET_ID_REQUIRED=1 with TRACKER=none" "$R" "chore: no ticket id here" TRACKER=none TICKET_ID_REQUIRED=1
+expect_mode_rc "TRACKER=none + TICKET_ID_REQUIRED=yes is refused too (any truthy spelling)" 2 \
+  "TRACKER=none" "$R" "chore: [#12] wire the thing" TRACKER=none TICKET_ID_REQUIRED=yes
+expect_mode_rc "TRACKER=none + TICKET_ID_REQUIRED=0 still passes" 0 "" \
+  "$R" "chore: no ticket id here" TRACKER=none TICKET_ID_REQUIRED=0
+expect_mode_rc "TRACKER=none + required + an explicit TICKET_ID_PATTERN still gates on it" 1 \
+  "no ticket reference matched: A-[0-9]+" "$R" "chore: no ticket id here" TRACKER=none TICKET_ID_REQUIRED=1 "TICKET_ID_PATTERN=A-[0-9]+"
 expect_mode_rc "tracker local accepts the LOCAL-N prefix" 0 "" "$R" "chore: LOCAL-7 wire the thing"
 expect_mode_rc "tracker local rejects a prefix glued to a word (NOTLOCAL-7)" 1 "" "$R" "chore: NOTLOCAL-7 wire the thing"
 expect_mode_rc "a multi-line TICKET_ID_PATTERN is refused, never cut to its first line" 1 "multi-line" \

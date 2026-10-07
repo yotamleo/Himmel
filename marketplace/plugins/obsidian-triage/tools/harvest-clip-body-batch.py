@@ -1240,9 +1240,16 @@ class BackendRoutes:
         self.error = error
 
     def match(self, url: str):
-        """(mode, names) of the FIRST matching line, else None."""
-        hit = _rule_match(self.rules, url)
-        return self.actions[hit] if hit is not None else None
+        """(mode, names) of the FIRST matching line, else None. A line also
+        matches the URL's canonical spelling: the batch routes youtube.com,
+        yt-scrapling-meta.py www.youtube.com, and one rule must reach both
+        (HIMMEL-4803). A route only narrows the chain, so a wider match never
+        re-permits a backend."""
+        cands = [c for u in dict.fromkeys((url, canonicalize(url) or url)) for c in _norm_target(u)]
+        for text, rx in self.rules:
+            if any(rx.fullmatch(c) for c in cands):
+                return self.actions[text]
+        return None
 
 
 def load_backend_routes(vault: Path) -> BackendRoutes:

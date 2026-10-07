@@ -181,6 +181,21 @@ assert "devnull suffix write"     PASS "$(decide "$(j_bash 'cat foo >/dev/null.b
 assert "sort plain pipe"          ALLOW "$(decide "$(j_bash 'cat f | sort | uniq -c')")"
 # node running the jira CLI (any subcommand) is operator-allow-listed → ALLOW.
 assert "node jira after flags"    ALLOW "$(decide "$(j_bash 'node --no-warnings scripts/jira/dist/index.js list')")"
+# HIMMEL-4780: a literal JIRA_PROJECT_KEY=<KEY> prefix on the jira CLI approves
+# exactly like the bare form; the key only picks a project, which --project
+# already may. Scoped to the jira CLI and to a bare literal key.
+assert "JIRA_PROJECT_KEY jira comment" ALLOW "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL node /c/repo/scripts/jira/dist/index.js comment HIMMEL-1 --comment-file f.md')")"
+assert "JIRA_PROJECT_KEY jira create"  ALLOW "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL node scripts/jira/dist/index.js create --type Task --title x --desc-file f.md')")"
+assert "JIRA_PROJECT_KEY + LANG jira"  ALLOW "$(decide "$(j_bash 'LANG=C JIRA_PROJECT_KEY=LUNA node scripts/jira/dist/index.js get LUNA-1')")"
+assert "JIRA_PROJECT_KEY on cat"       PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL cat f')")"
+assert "JIRA_PROJECT_KEY on git"       PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL git log')")"
+assert "JIRA_PROJECT_KEY other script" PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL node /tmp/evil.js')")"
+assert "JIRA_PROJECT_KEY node -e"      PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL node -e code scripts/jira/dist/index.js')")"
+assert "JIRA_PROJECT_KEY + NODE_OPTIONS" PASS "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL NODE_OPTIONS=--require=/tmp/x node scripts/jira/dist/index.js get X')")"
+assert "JIRA_PROJECT_KEY var value"    PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY=$K node scripts/jira/dist/index.js get X')")"
+assert "JIRA_PROJECT_KEY empty value"  PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY= node scripts/jira/dist/index.js get X')")"
+assert "JIRA_PROJECT_KEY \$() value"   PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY=$(cat k) node scripts/jira/dist/index.js get X')")"
+assert "JIRA_PROJECT_KEY then rm"      PASS  "$(decide "$(j_bash 'JIRA_PROJECT_KEY=HIMMEL node scripts/jira/dist/index.js get X; rm -rf y')")"
 
 # --- Round-2 locks: git/gh command-execution sinks (config + env vars) ---
 assert "git -c diff.external"     PASS  "$(decide "$(j_bash 'git -c diff.external=touch diff HEAD~1')")"
