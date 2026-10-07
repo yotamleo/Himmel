@@ -30,6 +30,7 @@ IDEMPOTENCE (spec 5.3), all under a per-session flock at <state-dir>/<session>.l
   non-ok digest, is already there; then rewrite the marker.
 
   leg_ledger.py record --digest F [--leg N --ticket K --console C --pr N --doc D --lane L]
+                       [--digest-error timeout|crash|no-journal|bad-json|too-big]
                        [--failures-ledger P] [--eval-ledger P] [--state-dir D]
   leg_ledger.py backfill --since YYYY-MM-DD [--projects D] [--denials-ledger P]
                        [--failures-ledger P] [--eval-ledger P] [--state-dir D]
@@ -73,6 +74,7 @@ CONSOLE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
 MODEL = re.compile(r"^(claude|gpt|gemini|glm|codex|o\d)[a-z0-9.\-\[\]]{0,60}$", re.I)
 TITLE = re.compile(r"^([A-Z][A-Z0-9]+-\d+)-(N\d+[a-z]?)-")
 DIGEST_TIMEOUT = 60
+DIGEST_ERRORS = ("timeout", "crash", "no-journal", "bad-json", "too-big")
 
 
 def ledger_path(path=None):
@@ -252,6 +254,8 @@ def build_rows(digest, who):
             "console": who["console"], "observational": True}
     if who.get("backfill"):
         meta["backfill"] = True
+    if who.get("digest_error"):
+        meta["digest_error"] = who["digest_error"]
     m = _metrics(digest)
     erow = eval_runs.make_row(EVAL_ID, SOURCE, config, m, n=m["turns"] if _int(m["turns"], 0) else None,
                               model=model, lane=who["lane"], status=status, run_id=session,
@@ -417,6 +421,7 @@ def main(argv=None):
     for k in ("leg", "ticket", "console", "doc", "lane"):
         r.add_argument("--" + k)
     r.add_argument("--pr", type=int)
+    r.add_argument("--digest-error", choices=DIGEST_ERRORS)
     b = sub.choices["backfill"]
     b.add_argument("--since", required=True)
     b.add_argument("--projects", default=os.path.join(os.path.expanduser("~"), ".claude", "projects"))
@@ -438,7 +443,7 @@ def main(argv=None):
         with open(a.digest, encoding="utf-8") as fh:
             digest = json.load(fh)
         who = {"leg": a.leg, "ticket": a.ticket, "console": a.console, "pr": a.pr, "doc": a.doc,
-               "lane": a.lane, "state_dir": a.state_dir}
+               "lane": a.lane, "state_dir": a.state_dir, "digest_error": a.digest_error}
         f, e = record(digest, who, a.failures_ledger, a.eval_ledger)
     except (OSError, ValueError) as err:
         print("leg-ledger: %s" % err, file=sys.stderr)

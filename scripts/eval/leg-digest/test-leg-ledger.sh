@@ -126,5 +126,14 @@ check "an unreadable PHI-roots file fails closed: nonzero, nothing written" '[ "
 check "a usage error exits 2" 'python3 "$LL" backfill >/dev/null 2>&1; [ $? = 2 ]'
 check "the writer spawns only bun, never a model CLI" 'absent -E "\"(claude|codex|gemini)\"" "$LL"'
 
+echo "7. --digest-error: a closed-vocabulary reason in meta (HIMMEL-4670 P3)"
+DE=4670c1a5-0000-4000-8000-0000000000de; DX=4670c1a5-0000-4000-8000-0000000000df
+printf '{"digest_v":1,"mapper_v":1,"trajectory_v":null,"session":"%s","status":"inconclusive","model":null,"metrics":{},"failures":[]}\n' "$DE" >"$TMP/de.json"
+rec --digest "$TMP/de.json" --digest-error timeout >/dev/null 2>&1
+check "an accepted reason lands in meta.digest_error" 'jq -e "select(.run_id == \"$DE\") | .status == \"inconclusive\" and .meta.digest_error == \"timeout\"" "$EL" >/dev/null'
+sed "s/$DE/$DX/" "$TMP/de.json" >"$TMP/dx.json"
+python3 "$LL" record --failures-ledger "$FL" --eval-ledger "$EL" --state-dir "$ST" --digest "$TMP/dx.json" --digest-error "boom at line 3" >/dev/null 2>&1; rcx=$?
+check "an unknown reason is refused and writes no row" '[ "$rcx" != 0 ] && absent "$DX" "$EL" && [ ! -f "$ST/$DX.json" ]'
+
 echo "test-leg-ledger: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
