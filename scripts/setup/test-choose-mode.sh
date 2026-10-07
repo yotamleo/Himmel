@@ -63,10 +63,14 @@ out=$(printf '\n\n' | TICKET_ID_REQUIRED=1 choose_mode "$td/r" 2>&1)
 case "$out" in *"need no ticket ID"*) check "none + TICKET_ID_REQUIRED=1: no note" "$out" "no note" ;; *) check "none + TICKET_ID_REQUIRED=1: no note" ok ok ;; esac
 
 # A git config write that fails makes choose_mode fail, so setup.sh warns.
+# A held config.lock blocks the write even for root (a chmod would not).
 newrepo
-chmod a-w "$td/r/.git"
+: > "$td/r/.git/config.lock"
 rc=0; printf 'local\n\n' | choose_mode "$td/r" > /dev/null 2>&1 || rc=$?
-chmod u+w "$td/r/.git"
 check "write failure: choose_mode returns non-zero" "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+# The write failure survives an unresolved mode too (here: jira chosen in env without a key).
+rc=0; printf 'local\n\n' | TRACKER=jira choose_mode "$td/r" > /dev/null 2>&1 || rc=$?
+rm -f "$td/r/.git/config.lock"
+check "write failure + unresolved mode: still non-zero" "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$fails FAILURE(S)"; exit 1; fi

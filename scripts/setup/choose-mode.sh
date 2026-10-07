@@ -51,8 +51,8 @@ choose_mode() {
     [ -f "$_CM_LIB" ] || { echo "  choose-mode: resolver missing ($_CM_LIB); skipped" >&2; return 0; }
     _cm_ask "$root" tracker TRACKER project_mode_tracker 'jira|local|none' || rc=1
     _cm_ask "$root" forge FORGE 'project_mode_forge --quiet' 'github|bitbucket|local-git' || rc=1
-    t=$(_cm_resolve "$root" project_mode_tracker 2>&1) || { echo "  mode unresolved: $t" >&2; return 0; }
-    f=$(_cm_resolve "$root" 'project_mode_forge --quiet' 2>&1) || { echo "  mode unresolved: $f" >&2; return 0; }
+    t=$(_cm_resolve "$root" project_mode_tracker 2>&1) || { echo "  mode unresolved: $t" >&2; return "$rc"; }
+    f=$(_cm_resolve "$root" 'project_mode_forge --quiet' 2>&1) || { echo "  mode unresolved: $f" >&2; return "$rc"; }
     echo "  mode: tracker=$t forge=$f"
     req=$(_cm_resolve "$root" project_mode_id_required 2>/dev/null) || req=1
     if [ "$req" = 0 ]; then
