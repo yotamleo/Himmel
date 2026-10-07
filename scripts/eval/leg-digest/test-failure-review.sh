@@ -148,6 +148,11 @@ row "$C6/ledger.jsonl" N300 blocked/merge-hold
 review "$C6" >/dev/null 2>&1
 check "a class first seen today is new" 'digest "$C6" | grep -q "blocked/merge-hold: 1 rows, legs N300 (new)"'
 check "a new class sends one line naming it" '[ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: blocked/merge-hold"'
+printf '#!/usr/bin/env bash\nexit 1\n' >"$STUB/notify-fail"; chmod +x "$STUB/notify-fail"
+C6b="$TMP/c6b"; mkdir -p "$C6b"
+row "$C6b/ledger.jsonl" N400 error/Bash
+review "$C6b" --notify-cmd "$STUB/notify-fail" >"$C6b/run.out" 2>&1; rc=$?
+check "an undelivered line fails the run (rc 3), the digest still written" '[ "$rc" = 3 ] && [ -f "$C6b/out/failure-review-$DAY.md" ] && grep -q "NOT delivered" "$C6b/run.out"'
 
 echo "7. the daily-note section is upserted, never duplicated"
 V="$TMP/vault"; mkdir -p "$V/50-Journal/Daily"
@@ -166,6 +171,7 @@ CR="$TMP/cron"; mkdir -p "$CR"
 cat >"$STUB/crontab" <<EOF
 #!/usr/bin/env bash
 if [ "\$1" = "-l" ]; then [ -f "$CR/tab" ] && { cat "$CR/tab"; exit 0; }; echo "no crontab for test" >&2; exit 1; fi
+[ -f "$CR/fail" ] && exit 1
 cat >"$CR/tab"
 EOF
 chmod +x "$STUB/crontab"
@@ -180,6 +186,12 @@ check "a second arm without --force refuses (rc 3)" '[ "$rc" = 3 ]'
 bash "$CAD" arm --vault "$V" --live --force >/dev/null 2>&1
 check "--live is baked only on request, still one entry" 'grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh" && [ "$(grep -c "# HIMMEL-FailureReview" "$CR/tab")" = 1 ]'
 check "status shows it armed" 'bash "$CAD" status | grep -q "^ARMED .*HIMMEL-FailureReview"'
+touch "$CR/fail"
+bash "$CAD" arm --vault "$V" --force >/dev/null 2>&1; rc=$?
+rm -f "$CR/fail"
+check "a failed crontab install keeps the old runner (still --live), no temp left" '[ "$rc" = 4 ] && grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh" && [ "$(ls "$TMP/runner" | grep -c "failure-review-cadence.sh")" = 1 ]'
+(cd "$TMP" && bash "$CAD" arm --vault vault --force >/dev/null 2>&1)
+check "a relative --vault is baked as an absolute path" 'grep -qF -- "--vault $V" "$TMP/runner/failure-review-cadence.sh"'
 bash "$CAD" disarm >/dev/null 2>&1
 check "disarm removes the entry and the runner" '! grep -q "HIMMEL-FailureReview" "$CR/tab" && [ ! -f "$TMP/runner/failure-review-cadence.sh" ]'
 printf '#!/usr/bin/env bash\necho SKIPPED-BANK\n' >"$STUB/preflight"; chmod +x "$STUB/preflight"

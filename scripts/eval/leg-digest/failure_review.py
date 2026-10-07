@@ -27,7 +27,8 @@ scripts/luna/vault-stall-alert.sh, the existing operator DM path) when a live ru
 or a class appeared that the ledger never saw before. A quiet day sends nothing. A dry run's
 would-be routing does not send: the router keeps no state on a dry run, so it would repeat daily.
 
-Exit 0 on a written digest, 1 when the router failed (the digest still says so), 2 on bad input.
+Exit 0 on a written digest, 1 when the router failed (the digest still says so), 2 on bad input,
+3 when the Telegram line was due but not delivered (the digest is still written; the cadence alerts).
 """
 
 import argparse
@@ -233,6 +234,8 @@ def main(argv=None):
             sent = False
         print("failure-review: telegram %s" % ("sent" if sent else "NOT delivered"),
               file=sys.stdout if sent else sys.stderr)
+        if rc == 0 and not sent:
+            return 3
     return 1 if rc != 0 else 0
 
 
