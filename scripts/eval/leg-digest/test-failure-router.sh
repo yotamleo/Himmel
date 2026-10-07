@@ -182,6 +182,20 @@ row N3 denied/guard-y 1 false leg 2026-10-20T10:00:00Z; row N4 denied/guard-y 1 
 LED="$SAVE"
 f4 --now 2026-10-21T12:00:00Z
 check "filed on N1+N2, then commented on N3+N4 once N1+N2 left the window" '[ "$(jq -r .decision "$F4/log" | paste -sd " ")" = "filed commented" ]'
+c4="$(calls comment)"
+SAVE="$LED"; LED="$F4/l.jsonl"
+row N5 denied/guard-y 1 false leg 2026-11-05T10:00:00Z; row N6 denied/guard-y 1 false leg 2026-11-05T10:00:00Z
+LED="$SAVE"
+f4 --now 2026-11-06T12:00:00Z
+check "a comment on new legs at the same leg count still writes its decision line" '[ "$(calls comment)" = "$((c4 + 1))" ] && [ "$(jq -r .decision "$F4/log" | paste -sd " ")" = "filed commented commented" ]'
+
+echo "ledger rows dated after the routing time do not count"
+F5="$TMP/f5"; mkdir -p "$F5"; n5="$(calls create)"
+SAVE="$LED"; LED="$F5/l.jsonl"
+row N1 denied/guard-z 1 false leg 2026-10-20T10:00:00Z; row N2 denied/guard-z 1 false leg 2026-10-20T10:00:00Z
+LED="$SAVE"
+python3 "$FR" route --ledger "$F5/l.jsonl" --state "$F5/s.json" --log "$F5/log" --inbox "$F5/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "two future-dated legs file nothing and log nothing" '[ "$(calls create)" = "$n5" ] && [ ! -s "$F5/log" ]'
 
 echo "the routing table is data"
 check "failure-routes.table.json parses and names every spec 4.2 key pattern" 'jq -e "[.routes[].match] | index(\"denied/classifier:*\") and index(\"suite/*\") and index(\"error/*\") and index(\"traj/claim-unverified\")" "$HERE/failure-routes.table.json" >/dev/null'

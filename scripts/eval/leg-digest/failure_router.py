@@ -19,8 +19,8 @@ leg_ledger.py validator are ignored.
 
 DECISIONS, one decision-log line each (P4 contract): filed | commented | capped |
 recurred-after-done | skipped:<why>. A class whose window legs were all acted on
-before makes no decision; a decision equal to the class's last one at
-the same leg count writes no second line. Never-routed and signal-only rows (the
+before makes no decision; a decision equal to the class's last one on
+the same legs writes no second line. Never-routed and signal-only rows (the
 traj/red-before-green and traj/claim-unverified classes among them) decide nothing.
 
   log    $HIMMEL_FAILURE_ROUTES_LOG, else ~/.himmel/state/failure-routes.log.jsonl
@@ -116,7 +116,7 @@ def keep(row, when):
     return True
 
 
-def read_ledger(path, cutoff):
+def read_ledger(path, cutoff, now):
     """Valid rows inside the window, by class."""
     by = {}
     if not os.path.exists(path):
@@ -130,7 +130,7 @@ def read_ledger(path, cutoff):
             if leg_ledger.validate(r):
                 continue
             try:
-                if now_utc(r["ts"]) < cutoff:
+                if not cutoff <= now_utc(r["ts"]) <= now:
                     continue
             except ValueError:
                 continue
@@ -349,7 +349,7 @@ def route(a):
         print("failure-router: JIRA_PROJECT_KEY %r is not a project key" % project, file=sys.stderr)
         return 1
     try:
-        by = read_ledger(a.ledger, now - timedelta(days=table["window_days"]))
+        by = read_ledger(a.ledger, now - timedelta(days=table["window_days"]), now)
     except OSError as e:
         print("failure-router: cannot read the ledger: %s" % e, file=sys.stderr)
         return 1
@@ -383,12 +383,12 @@ def route(a):
                 print(json.dumps({"class": cls, "legs": n, "decision": dec, "ticket": ticket,
                                   "inbox": bool(inbox)}, separators=(",", ":")))
                 continue
-            if (dec, n) == (c.get("last_decision"), c.get("last_legs")):
+            if (dec, legs) == (c.get("last_decision"), c.get("last_legs")):
                 if state_ok:
                     save_state(a.state, state)
                 continue
             if state_ok:
-                c["last_decision"], c["last_legs"] = dec, n
+                c["last_decision"], c["last_legs"] = dec, legs
                 save_state(a.state, state)
             leg_ledger._append(a.log, [{"ts": iso(now), "class": cls, "legs": n, "decision": dec, "ticket": ticket}])
             decisions += 1
