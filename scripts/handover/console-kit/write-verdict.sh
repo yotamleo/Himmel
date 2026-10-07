@@ -121,6 +121,23 @@ for seg in "${SCOPE%%/*}" "${SCOPE#*/}" verdicts "$QID"; do
     fi
 done
 TARGET="$dir/$NAME.md"
+
+# Hold the qid's lock across the scan and the publish: two writers racing on
+# one qid could otherwise both pass the scan, and the last mv erase a NO-GO.
+# mkdir is the portable atomic test-and-set (no flock on macOS).
+lockd="$dir/.write-verdict.lock"
+tmpf=""
+tries=0
+until mkdir "$lockd" 2>/dev/null; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 50 ]; then
+        echo "write-verdict: '$lockd' is held by another writer (or left by a killed one: remove it only if no writer is running)" >&2
+        exit 5
+    fi
+    sleep 0.1
+done
+trap 'rm -f "$tmpf"; rmdir "$lockd" 2>/dev/null' EXIT
+
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then
     echo "write-verdict: refusing - '$TARGET' is a symlink or not a regular file" >&2
     exit 4
@@ -145,17 +162,16 @@ for f in "$dir"/*.md; do
 done
 
 tmpf=$(mktemp "$dir/.write-verdict.XXXXXX") || { echo "write-verdict: cannot create a temp file in '$dir'" >&2; exit 5; }
-trap 'rm -f "$tmpf"' EXIT
+# Each write is checked: a failed header must not publish a partial verdict.
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 if ! {
-    printf '# VERDICT %s - %s\n\n' "$QID" "$NAME"
-    printf 'writer-session: %s\n' "${CLAUDE_CODE_SESSION_ID:-unknown}"
-    printf 'written-at: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '## Verdict\n\n**%s** for head `%s`.\n\n' "$ANSWER" "$HEAD"
+    printf '# VERDICT %s - %s\n\n' "$QID" "$NAME" &&
+    printf 'writer-session: %s\n' "${CLAUDE_CODE_SESSION_ID:-unknown}" &&
+    printf 'written-at: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" &&
+    printf '## Verdict\n\n**%s** for head `%s`.\n\n' "$ANSWER" "$HEAD" &&
     cat "$EVIDENCE"
 } > "$tmpf" || ! mv -f "$tmpf" "$TARGET"; then
     echo "write-verdict: writing '$TARGET' failed" >&2
     exit 5
 fi
-trap - EXIT
 printf '%s\n' "$TARGET"

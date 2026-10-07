@@ -13,7 +13,8 @@
 #   4. a conflicting re-write (same head, other answer) is refused, the file
 #      unchanged; the same answer again, or another head, is accepted
 #   5. a symlinked verdicts/<qid>/ or target file is refused
-#   6. an unparsed verdict beside it is refused (go.sh would refuse anyway)
+#   6. an unparsed verdict beside it is refused (go.sh would refuse anyway);
+#      a held qid lock refuses, so two writers cannot both pass the scan
 #   7. the writer's session is stamped in the file
 #   8. a console leg (HIMMEL_CONSOLE_LEG, not a judge) is refused
 #   9. the writer's command text passes the live Bash guards (each guard
@@ -148,6 +149,14 @@ mkdir -p "$scope_dir/q7"
 printf '## Verdict\n\nlooks fine\n' > "$scope_dir/q7/hand.md"
 rc=0; wv q7 GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
 check "6: unparsed sibling refused rc 4" "$rc" 4
+
+# --- 6b. the scan and the publish hold the qid's lock --------------------
+check "6b: a finished write leaves no lock behind" "$([ -e "$scope_dir/q1/.write-verdict.lock" ] && echo yes || echo no)" no
+mkdir -p "$scope_dir/q9/.write-verdict.lock"
+rc=0; wv q9 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+check "6b: a held lock refuses rc 5" "$rc" 5
+check "6b: nothing written under a held lock" "$(ls "$scope_dir/q9" | wc -l | tr -d ' ')" 0
+check "6b: the other writer's lock is left alone" "$([ -d "$scope_dir/q9/.write-verdict.lock" ] && echo yes || echo no)" yes
 
 # --- 7. session stamp -----------------------------------------------------
 contains "7: writer session stamped" "$(cat "$f1")" "writer-session: sess-4689"
