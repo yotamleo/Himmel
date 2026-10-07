@@ -467,6 +467,29 @@ worktree as in use). `--only` exits non-zero when the target is not a prune
 candidate. A worktree reported "in use" immediately after a wrap is the leg's
 own end-of-session hook still writing — re-run `--only` on it shortly.
 
+After the signal the close also digests the leg's session into the
+failure-loop ledgers (HIMMEL-4670 P3, `console-kit/leg-digest-step.sh`) and
+prints exactly one line about it. The line is informational: it never changes
+the close's exit code or any other output line, and it never delays the close
+past its hard timeout (`CLOSE_WRAPPED_LEG_DIGEST_TIMEOUT`, default 120 s).
+
+| `digest=` line | Meaning |
+|---|---|
+| `digest=ok fails=<n> classes=<k> traj=rbg:<0\|1\|->,dr:<x\|->,idr:<n\|->,vbc:<0\|1\|->` | rows written (or already present: a re-run writes none) |
+| `digest=partial …` | same, but the session never settled; the row says `partial` |
+| `digest=failed:<timeout\|crash\|no-journal\|bad-json>` | an `inconclusive` row with `meta.digest_error` was written |
+| `digest=failed:inconclusive` | the digest itself said inconclusive (e.g. too big) |
+| `digest=failed:ledger` / `digest=failed:step` | the ledger writer, or the step itself, did not complete; nothing to act on |
+| `digest=skipped:no-session` | no session id could be read; nothing written |
+
+A leg closed without the script (or a failed digest you want retried) is
+digested afterwards with `bash scripts/handover/console-kit/leg-digest-step.sh
+--doc <leg-doc>` (spec §1.2 fallback): it finds the leg's sessions by name,
+`resume_cwd` and the doc's LIVE..WRAPPED window and prints one
+`<session> digest=…` line per session, or `digest=skipped:no-chain`. The
+`traj=` fields are recorded only — `rbg` and `vbc` are unreliable (HIMMEL-4698),
+never act on them.
+
 ## Standing rules
 
 - **Operator messages are additive.** A new task is added to the in-flight

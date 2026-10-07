@@ -28,6 +28,14 @@
 # scratch dir) is archived then reaped via tmp-reap.sh, scoped to this leg only
 # (HIMMEL-4235); a reap failure warns and never fails the close.
 #
+# Then the failure-loop digest (HIMMEL-4670 P3): the session id is read from
+# ~/.claude/sessions/<pid>.json BEFORE the TERM, and after it
+# leg-digest-step.sh digests that session into the leg-failures and eval-runs
+# ledgers under a hard timeout (CLOSE_WRAPPED_LEG_DIGEST_TIMEOUT, default 120).
+# It prints exactly one stdout line, `digest=ok|partial ...`,
+# `digest=failed:<reason>` or `digest=skipped:<reason>`, and never changes the
+# exit code or any other output line.
+#
 # Then, if the doc names exactly one worktree path (a
 # `.claude/worktrees/...` path appearing once), runs
 # `scripts/clean.sh --only <worktree> --only-allow-unmerged` and reports (not
@@ -130,6 +138,12 @@ if ! . "$HERE/../../lanes/lib/claude-sessions.sh"; then
     echo "close-wrapped-leg: cannot load scripts/lanes/lib/claude-sessions.sh" >&2
     exit 1
 fi
+# shellcheck source=scripts/handover/console-kit/leg-transcripts.sh
+# shellcheck disable=SC1091
+if ! . "$HERE/leg-transcripts.sh"; then
+    echo "close-wrapped-leg: cannot load scripts/handover/console-kit/leg-transcripts.sh" >&2
+    exit 1
+fi
 
 ident=$(leg_identity "$DOC")
 # HIMMEL-3638 console add-on: leg_identity's names strip -RESUME, but a
@@ -184,69 +198,12 @@ TRANSCRIPT=""
 END_SESSION_WIKI="${END_SESSION_WIKI_BIN:-$HERE/../../hooks/end-session-wiki.sh}"
 PROJECTS_DIR="${CLOSE_WRAPPED_LEG_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
 if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
-    # HIMMEL-3638: a plain `grep -rlF ... "$PROJECTS_DIR"` reads every byte of
-    # every transcript ever written across the whole projects tree (5.6 GB) -
-    # minutes per close. A wrapped leg's own transcript is always from TODAY,
-    # and customTitle (when set) is near the top of the file, so bound both
-    # axes: only today's files (mtime), only their first N lines (head) -
-    # same "exactly one match, else skip" semantics as before.
-    mtime_window="${CLOSE_WRAPPED_LEG_MTIME_DAYS:-1}"
-    head_window="${CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD:-40}"
+    # The two-pass customTitle search lives in leg-transcripts.sh (HIMMEL-4670
+    # P3), shared with leg-digest-step.sh --doc: same "exactly one" semantics.
     candidates=$(printf '%s\n%s\n' "${ident#*$'\t'}" "$doc_stem" | tr ',' '\n' | sed '/^$/d')
-    match_transcripts() {
-        local files="$1" hw="$2" matches="" f hit cand
-        while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            if [ "$hw" -eq 0 ]; then
-                # codex-2: the all-time fallback scans whole-repo-age
-                # transcripts, so grep the file directly per candidate
-                # instead of slurping it into a shell variable first --
-                # a multi-GB transcript otherwise loads entirely into memory
-                # just to be thrown away after one match.
-                while IFS= read -r cand; do
-                    [ -n "$cand" ] || continue
-                    if grep -qF "\"customTitle\":\"$cand\"" "$f" 2>/dev/null; then
-                        matches="${matches}
-${f}"
-                        break
-                    fi
-                done <<EOF
-$candidates
-EOF
-            else
-                hit=$(head -n "$hw" "$f" 2>/dev/null)
-                while IFS= read -r cand; do
-                    [ -n "$cand" ] || continue
-                    if printf '%s' "$hit" | grep -qF "\"customTitle\":\"$cand\""; then  # pipefail-ok: no pipefail here (set -u only); $hit is an already-captured small string, not a live producer
-                        matches="${matches}
-${f}"
-                        break
-                    fi
-                done <<EOF
-$candidates
-EOF
-            fi
-        done <<EOF
-$files
-EOF
-        printf '%s\n' "$matches" | sed '/^$/d' | sort -u
-    }
-    scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' -mtime "-${mtime_window}" 2>/dev/null)
-    transcript_matches=$(match_transcripts "$scan_files" "$head_window")
+    transcript_matches=$(resolve_leg_transcripts "$PROJECTS_DIR" "$candidates" \
+        "${CLOSE_WRAPPED_LEG_MTIME_DAYS:-1}" "${CLOSE_WRAPPED_LEG_CUSTOMTITLE_HEAD:-40}")
     tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
-    if [ "$tcount" -eq 0 ]; then
-        # F3/codex-3: -mtime is a rolling window, not "today", and a target
-        # transcript outside it can be missed even while OTHER, unrelated
-        # transcripts fall inside it (an empty-scan_files check alone would
-        # miss that case). Retry against the full tree whenever the SCOPED
-        # search found no MATCH, not only when it found no files at all.
-        # codex-2 (round 4): the fallback must also drop the head-window
-        # bound - a customTitle past line $head_window is unmatchable in
-        # either pass otherwise. Pass 0 = unbounded (whole file).
-        scan_files=$(find "$PROJECTS_DIR" -type f -name '*.jsonl' 2>/dev/null)
-        transcript_matches=$(match_transcripts "$scan_files" 0)
-        tcount=$(printf '%s\n' "$transcript_matches" | grep -c . || true)
-    fi
     if [ "$tcount" -eq 1 ]; then
         TRANSCRIPT="$transcript_matches"
         cap_cwd=$(jq -r 'select(.cwd != null) | .cwd' "$TRANSCRIPT" 2>/dev/null | head -1)
@@ -295,6 +252,18 @@ if [ -n "$TRANSCRIPT" ]; then
     fi
 fi
 
+# ---------- Session id for the digest step (HIMMEL-4670 P3) ------------------
+# Captured BEFORE the TERM, while the session's own record still exists: the
+# live pid's ~/.claude/sessions/<pid>.json names its sessionId. Unreadable or
+# not a UUID: the transcript resolved above supplies it, else the digest skips.
+digest_sid=""
+sessions_json="${CLOSE_WRAPPED_LEG_SESSIONS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions}/$matched.json"
+digest_sid=$(jq -r '.sessionId // empty' "$sessions_json" 2>/dev/null)
+case "$digest_sid" in
+    ????????-????-????-????-????????????) ;;
+    *) digest_sid="$(basename "${TRANSCRIPT:-none}" .jsonl)" ;;
+esac
+
 if ! "$KILL" -TERM "$matched"; then
     echo "close-wrapped-leg: failed to send TERM to pid $matched" >&2
     exit 1
@@ -341,6 +310,16 @@ reap_leg_scratch() {
     return 0
 }
 reap_leg_scratch || echo "close-wrapped-leg: WARN /tmp reap errored - close continues" >&2
+
+# ---------- Failure-loop digest (HIMMEL-4670 P3, spec 5.3) --------------------
+# One `digest=` line and nothing else: leg-digest-step.sh's stderr is dropped,
+# its rc is ignored, and a hard outer timeout bounds it, so a digest crash,
+# hang or missing journal changes no other output and never the close's rc.
+# It never writes the leg's doc, so its tail stays WRAPPED.
+digest_line=$(timeout -k 5 "${CLOSE_WRAPPED_LEG_DIGEST_TIMEOUT:-120}" bash "${LEG_DIGEST_STEP_BIN:-$HERE/leg-digest-step.sh}" \
+    --session "$digest_sid" --transcript "$TRANSCRIPT" --doc "$DOC" --pid "$matched" --projects "$PROJECTS_DIR" 2>/dev/null \
+    | grep -m 1 '^digest=')
+echo "${digest_line:-digest=failed:step}"
 
 worktrees=$(grep -oE "/[^\` ]*/\.claude/worktrees/[^\`) ]+" "$DOC" | sort -u)
 wt_count=$(printf '%s\n' "$worktrees" | grep -c . || true)
