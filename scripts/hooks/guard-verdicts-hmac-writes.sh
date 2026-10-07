@@ -702,6 +702,27 @@ WRAPPERS=' sudo env command exec nohup nice time timeout stdbuf xargs builtin do
 # one of the key's ancestors is refused, whatever precedes the verb
 KVERBS=' cp rsync tar zip unzip 7z scp cpio grep egrep rg ag find du sftp rm rmdir mv shred unlink chmod chown chgrp '
 
+# _cluster <word> <value-letters> <dest-letter> — a short-option cluster (-xzC/d):
+# the first letter in <value-letters> takes the rest of the word (or the next
+# word) as its value, so later letters are not options. Sets _cpre to the flag
+# letters before it, and _cd=1 when that letter is <dest-letter>, with _cdv its
+# attached value (empty = the next word).
+_cluster() {
+    local r=${1#-} c
+    _cpre=; _cd=; _cdv=
+    while [ -n "$r" ]; do
+        c=${r:0:1}; r=${r:1}
+        case "$2" in *"$c"*)
+            if [ "$c" = "$3" ]; then _cd=1; _cdv=$r; fi
+            return 0 ;;
+        esac
+        _cpre=$_cpre$c
+    done
+}
+# tar's and unzip's value-taking short options
+TAR_VAL=bCfFgHIKLNTVX
+UNZIP_VAL=dP
+
 # _kanc <verb> <seg> <word> — the key-ancestor check of one word after <verb>.
 # Over ~/.config: any recursive walker. Over a higher ancestor ($HOME, /): a
 # verb that reads content or removes, moves or re-owns — du never does, find
@@ -1067,15 +1088,17 @@ analyze() {
                         --extract|--get) seg_xx[s]=1 ;;
                         --directory*) seg_xd[s]=1 ;;
                         --*) ;;
-                        -*) case "$w" in *x*) seg_xx[s]=1 ;; esac
-                            case "$w" in *C*) seg_xd[s]=1 ;; esac ;;
+                        -*) _cluster "$w" "$TAR_VAL" C
+                            case "$_cpre" in *x*) seg_xx[s]=1 ;; esac
+                            if [ -n "$_cd" ]; then seg_xd[s]=1; fi ;;
                         *x*) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;;
                     esac ;;
                 unzip) seg_xx[s]=1
                     case "$w" in
-                        -d*) seg_xd[s]=1 ;;
                         --*) ;;
-                        -*[ltvzZ]*) seg_xn[s]=1 ;;
+                        -*) _cluster "$w" "$UNZIP_VAL" d
+                            case "$_cpre" in *[ltvzZ]*) seg_xn[s]=1 ;; esac
+                            if [ -n "$_cd" ]; then seg_xd[s]=1; fi ;;
                     esac ;;
                 7z) case "$w" in -o*) seg_xd[s]=1 ;; x|e) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;; esac ;;
             esac
@@ -1096,10 +1119,14 @@ analyze() {
             for b in ${kv[s]}; do
                 _kanc "$b" "$s" "$w"
                 case "$w" in -*=*) _kanc "$b" "$s" "${w#*=}" ;; esac
-                # an attached destination: tar -C/dir, unzip -d/dir, 7z -o/dir (codex-1)
+                # an attached destination: tar -C/dir, unzip -d/dir, 7z -o/dir
+                # (codex-1), also inside a cluster: tar -xzC/dir, unzip -qd/dir
                 case "$b:$w" in
-                    tar:-C?*) _kanc "$b" "$s" "${w#-C}" ;;
-                    unzip:-d?*) _kanc "$b" "$s" "${w#-d}" ;;
+                    tar:--*|unzip:--*) ;;
+                    tar:-?*) _cluster "$w" "$TAR_VAL" C
+                        if [ -n "$_cdv" ]; then _kanc "$b" "$s" "$_cdv"; fi ;;
+                    unzip:-?*) _cluster "$w" "$UNZIP_VAL" d
+                        if [ -n "$_cdv" ]; then _kanc "$b" "$s" "$_cdv"; fi ;;
                     7z:-o?*) _kanc "$b" "$s" "${w#-o}" ;;
                 esac
             done
