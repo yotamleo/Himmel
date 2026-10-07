@@ -1033,7 +1033,10 @@ that reads the literal command and decides itself is the structural fix
 (`$(` `` ` `` `<(` `>(`); no interpreter shell-out tell (`system(`
 `popen(` `exec(`); no output redirect to a real file (only `>/dev/null`
 and fd-dups tolerated); and every sub-command (split on `| && || ;`)
-resolves — after skipping shell keywords, redirects, leading `VAR=val` —
+resolves — after skipping shell keywords, redirects, and the innocuous
+leading assignments `LANG`/`LANGUAGE`/`LC_*`/`TZ` (plus a bare literal
+`JIRA_PROJECT_KEY=<KEY>`, honoured only when the binary is the Jira CLI's
+`node`, HIMMEL-4780; any other `VAR=` prefix falls through) —
 to a binary in the read-only safe set, or `git`/`gh` read-subcommand, or
 the dogfooded Jira CLI (`node …/scripts/jira/dist/index.js …`). Variable
 expansion in ARGUMENTS is fine (binary is still a literal); a variable

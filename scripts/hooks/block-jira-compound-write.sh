@@ -198,11 +198,11 @@ quote_mask() {
             # create) + 1 ))` really writes — so it stays visible, same rule as
             # everywhere else. (Nested `$((…))` needs no case: its parens just count.)
             if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${SC[i + 2]-}" != '(' ]; then
-                stk[sp]="5p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="5p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
-                stk[sp]="5b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="5b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             case "$c" in
@@ -236,11 +236,11 @@ quote_mask() {
                 out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then
-                stk[sp]="4p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="4p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
-                stk[sp]="4b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="4b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             case "$c" in
@@ -261,11 +261,11 @@ quote_mask() {
                 out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then
-                stk[sp]="3p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="3p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
-                stk[sp]="3b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="3b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             if [ "$c" = $'\n' ]; then
@@ -294,11 +294,11 @@ quote_mask() {
                 out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then     # …$( → code
-                stk[sp]="2p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="2p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then                        # …` → code
-                stk[sp]="2b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="2b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             [ "$c" = '"' ] && st=0
@@ -334,7 +334,7 @@ quote_mask() {
             # (the write keeps its pre-HIMMEL-1077 denial, nothing gets worse). A
             # real delimiter queue is not worth it for a shape nothing here writes.
             [ "$hd_set" = 1 ] && return 1
-            i=$((i + 2)); out+="  "; hd_q=0; hd_dash=0; hd_set=1
+            i=$((i + 2)); out+="  "; hd_q=0; hd_dash=0; hd_set=1; HEREDOC_SEEN=1
             [ "${SC[i]-}" = '-' ] && { hd_dash=1; out+=" "; i=$((i + 1)); }
             # Bash allows spaces OR tabs between << and the delimiter.
             while [ "$i" -lt "$n" ]; do
@@ -425,6 +425,7 @@ quote_mask() {
             # (`FOO=$(date) node … create`), so that frame must not plant the
             # command-position sentinel on the tail. An ARGUMENT substitution
             # (`echo "$(…)" node …`) must — see the pop.
+            SUBST_SEEN=1
             if [ "$pv" = '=' ]; then stk[sp]="0P"; else stk[sp]="0p"; fi
             sp=$((sp + 1)); out+=""$'\n'" "; i=$((i + 2)); continue
         fi
@@ -436,7 +437,7 @@ quote_mask() {
         # exactly like `$(…)`. Give them the same frame so the body is scanned as the
         # command it is (`read k < <(node …/index.js create …)` really writes).
         if { [ "$c" = '<' ] || [ "$c" = '>' ]; } && [ "$nx" = '(' ]; then
-            stk[sp]="0p"; sp=$((sp + 1))
+            SUBST_SEEN=1; stk[sp]="0p"; sp=$((sp + 1))
             out+=""$'\n'" "; i=$((i + 2)); continue
         fi
         # `name()` / `name ( )` at CODE level opens a function DEFINITION (it defines,
@@ -477,8 +478,9 @@ quote_mask() {
                     *b) sp=$((sp - 1)); st="${top%b}"; out+=""$'\n'"_ "; i=$((i + 1)); continue ;;
                 esac
             fi
-            stk[sp]="0b"; sp=$((sp + 1)); out+=""$'\n'; i=$((i + 1)); continue
+            SUBST_SEEN=1; stk[sp]="0b"; sp=$((sp + 1)); out+=""$'\n'; i=$((i + 1)); continue
         fi
+        case "$c" in $'\n') NL_SEEN=1 ;; esac   # a real code-level line break
         out+="$c"; i=$((i + 1))
     done
     # Unbalanced quotes / unclosed substitution → unparseable, fail open.
@@ -512,6 +514,7 @@ quote_mask() {
 segment_has_write() {
     local -a a
     local IFS=$' \t\n' seg="$1"
+    DETECTED_PREFIX=""
     # Redirects belong to the simple command, but bind tighter than tokens: `x>out`
     # is `x` + `>out`, and a target may be glued (`>node`). Give the operators their
     # own tokens so both the command position and the verb survive; they are then
@@ -569,8 +572,16 @@ segment_has_write() {
                 nm="${a[$i]%%=*}"
                 case "$nm" in
                     ''|[0-9]*|*[!A-Za-z0-9_]*) break ;;
-                    *) i=$((i + 1)) ;;
-                esac ;;
+                esac
+                # HIMMEL-4780: the gateway approves a bare literal
+                # JIRA_PROJECT_KEY=<KEY> and the innocuous locale/TZ names; any
+                # other prefix is a refused shape the deny text must name.
+                case "$nm" in
+                    LANG|LANGUAGE|LC_[A-Z]*|TZ) ;;
+                    *) [[ "${a[$i]}" =~ ^JIRA_PROJECT_KEY=[A-Z][A-Z0-9_]*$ ]] ||
+                        DETECTED_PREFIX="${DETECTED_PREFIX:+$DETECTED_PREFIX }$nm=…" ;;
+                esac
+                i=$((i + 1)) ;;
             *) break ;;
         esac
     done
@@ -868,7 +879,7 @@ cmd="${result#*$'\n'}"
 [ "$tool" = "Bash" ] || exit 0   # PowerShell keeps its own native rules
 [ -n "$cmd" ] || exit 0
 
-FN_DEF=0
+FN_DEF=0; HEREDOC_SEEN=0; SUBST_SEEN=0; NL_SEEN=0
 quote_mask "$cmd" || exit 0
 # A function DEFINITION executes nothing: `deploy() { node …/index.js create …; }`
 # merely defines deploy, so bouncing it would order a write the command never
@@ -967,14 +978,32 @@ case "$verb_label" in
     project-create) verb_args=' …same arguments as before…' ;;
     *)              verb_args=' <TICKET> …same arguments as before…' ;;
 esac
+# Name only the shapes this command HAS (HIMMEL-4780): a list of shapes it lacks
+# sends the agent hunting for the wrong one. quote_mask flags each shape as it
+# parses, so inert text (single quotes, escapes, a quoted-delimiter heredoc body)
+# never counts; separators come from the masked text. Wording only — the bounce
+# decision is the gateway's.
+shapes=""
+add_shape() { shapes="${shapes:+$shapes; }$1"; }
+# shellcheck disable=SC2016 # literal `$(…)` in the message, not an expansion
+[ "$SUBST_SEEN" = 1 ] && add_shape 'command substitution `$(…)`'
+[ "$HEREDOC_SEEN" = 1 ] && add_shape 'a heredoc'
+case "$MASKED" in
+    *';'*|*'|'*|*'&'*) add_shape 'a chained segment' ;;
+    *) [ "$NL_SEEN" = 1 ] && [ "$HEREDOC_SEEN" != 1 ] && add_shape 'a chained segment' ;;
+esac
+[ -n "${DETECTED_PREFIX:-}" ] &&
+    add_shape "the env prefix ${DETECTED_PREFIX} (only a literal JIRA_PROJECT_KEY=<KEY> prefix is approvable)"
+[ -n "$shapes" ] || shapes='a shape the auto-approve gateway cannot vet'
+
 # shellcheck disable=SC2016 # single-quoted `$(…)`/`$1` in the message are literal text, not expansions
 {
     printf 'block-jira-compound-write: refusing this jira WRITE command SHAPE (not the write itself).\n\n'
     printf 'Jira CLI writes are sanctioned (HIMMEL-205). This command is refused because\n'
-    printf 'its shape — command substitution `$(…)`, a heredoc, or a chained segment the\n'
-    printf 'auto-approve gateway cannot vet — makes the permission matcher bail out\n'
-    printf '(HIMMEL-203), so the write falls through to the auto-mode classifier and is\n'
-    printf 'denied cold as "[External System Writes]". Rerunning it as-is will fail again.\n\n'
+    printf 'of its shape: %s.\n' "$shapes"
+    printf 'That makes the permission matcher bail out (HIMMEL-203), so the write falls\n'
+    printf 'through to the auto-mode classifier and is denied cold as\n'
+    printf '"[External System Writes]". Rerunning it as-is will fail again.\n\n'
     printf 'Do exactly this — ONE sanctioned retry shape, no other:\n\n'
     printf '  1. If the command carries a body, write it to a file with the Write tool\n'
     printf '     (not a heredoc, not `cat >`).\n'
@@ -983,8 +1012,13 @@ esac
     printf '    node %s %s%s\n\n' "$jira_cli" "$verb_label" "$verb_args"
     printf '  Keep the verb you started with — do NOT substitute a different mutation,\n'
     printf '  and keep everything else you already had: every argument (--project and\n'
-    printf '  other targeting options included) and any VAR=value prefix such as\n'
-    printf '  JIRA_PROJECT_KEY=…. Only an INLINE BODY moves, from text to a file.\n'
+    printf '  other targeting options included) and a literal JIRA_PROJECT_KEY=<KEY>\n'
+    printf '  prefix if you had one. A JIRA_PROJECT_KEY prefix that is not a bare\n'
+    printf '  literal (quoted, $VAR, $(…)) is NOT dropped: rewrite it as the literal\n'
+    printf '  JIRA_PROJECT_KEY=<KEY> it resolves to, or the write lands in the default\n'
+    printf '  project. Drop any other VAR=value prefix (LANG/LC_*/TZ aside): it alone\n'
+    printf '  makes the command unapprovable. Only an INLINE BODY moves, from text to\n'
+    printf '  a file.\n'
     printf '  Filing/updating N tickets = N literal commands, not a chain.\n\n'
     printf 'That shape auto-approves. Do NOT retry other shapes — a retry sequence across\n'
     printf 'shapes reads to the classifier as tool-shopping and gets denied as an auto-mode\n'
