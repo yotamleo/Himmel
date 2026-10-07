@@ -322,8 +322,14 @@ while [ $# -gt 0 ]; do
         --run)
             if [ $# -lt 2 ] || [ -n "$RUN_ID" ]; then echo "check-ci: --run needs one run id" >&2; exit 64; fi
             case "$2" in ''|*[!0-9]*|0) echo "check-ci: --run needs a positive numeric run id" >&2; exit 64 ;; esac
-            RUN_ID=$((10#$2))
-            if [ "$RUN_ID" -le 0 ]; then echo "check-ci: --run needs a positive numeric run id" >&2; exit 64; fi
+            # Strip leading zeros without arithmetic; reject overflow BEFORE
+            # conversion so a huge selector cannot wrap to another run id.
+            RUN_ID="${2#"${2%%[!0]*}"}"
+            # Equal-length digit strings are compared lexically to avoid overflow.
+            # shellcheck disable=SC2071
+            if [ -z "$RUN_ID" ] || [ "${#RUN_ID}" -gt 19 ] || { [ "${#RUN_ID}" -eq 19 ] && [[ "$RUN_ID" > 9223372036854775807 ]]; }; then
+                echo "check-ci: --run needs a positive run id within the signed 64-bit range" >&2; exit 64
+            fi
             shift 2 ;;
         --job)
             if [ $# -lt 2 ] || [ -z "$2" ] || [ -n "$JOB_NAME" ]; then echo "check-ci: --job needs one job name" >&2; exit 64; fi

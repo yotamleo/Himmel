@@ -12,6 +12,8 @@ bash scripts/check-ci.sh $ARGUMENTS
 ```
 
 Optional `--job <name>` selects an exact job name (matrix suffix included).
+Success waits for the selected jobs (or the whole workflow); a failure exits
+immediately even while other jobs run.
 This is a workflow/job wait, **not a PR merge/review certification**. Do not use
 `run_in_background` or add a poll loop. The shared repository/run-id cache,
 adaptive interval and REST/core budget preflight handle the waiting.

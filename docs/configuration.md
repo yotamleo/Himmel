@@ -334,8 +334,9 @@ bash scripts/check-ci.sh --run 123456 --max-wait 900
 bash scripts/check-ci.sh --run 123456 --job 'shell-unit (1)' --max-wait 900
 ```
 
-`--job` matches an exact job name (including a matrix suffix). Without it, the
-workflow and its jobs must finish; with it, only matching jobs must finish.
+`--job` matches an exact job name (including a matrix suffix). Without it,
+success requires the workflow and its jobs to finish; with it, only matching
+jobs must finish. A failure exits immediately, even while other jobs run.
 This mode is **not a PR merge certification**: no review-thread or merge gates,
 no `--settle`. Exit `0` means success/neutral/skipped, `1` means failed/cancelled
 (the job and `gh run view <id> --log-failed` command are printed), and `2` means

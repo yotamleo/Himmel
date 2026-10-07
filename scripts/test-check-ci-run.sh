@@ -143,7 +143,7 @@ if [ -s "$CASE/sleeps" ]; then ok 'core budget wait uses sleep seam'; else bad '
 
 new_case
 fixture completed success completed success > "$CASE/response"
-for args in '--job unit' '--run nope' '--run 123 42' '--run 123 --threads-only' '--run 123 --run 123'; do
+for args in '--job unit' '--run nope' '--run 123 42' '--run 123 --threads-only' '--run 123 --run 123' '--run 18446744073709551739'; do
     # Intentional splitting of literal argument fixtures.
     # shellcheck disable=SC2086
     run $args
