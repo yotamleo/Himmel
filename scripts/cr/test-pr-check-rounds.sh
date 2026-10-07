@@ -1133,6 +1133,34 @@ jbr_rc=0; start_round "$cap_fix_head" clean jbr2 >/dev/null || jbr_rc=$?
 assert_eq "$jbr_rc" "8" "the same judge record buys no round on a second branch with the same reviewed head"
 assert_eq "$(cat "$git_dir/cr-review-rounds/jbr2.round")" "3" "the refused second-branch round leaves its counter at 3"
 
+# HIMMEL-4738: a consumed-qid scan that fails refuses the record rather than
+# reading as "not consumed". chmod is ignored by root, so a grep shim fails
+# the cross-branch scan and a directory stands in for the per-head file.
+real_grep="$(command -v grep)"
+mkdir -p "$tmp/grepshim"
+cat > "$tmp/grepshim/grep" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do [ "\$a" = "--include=*.verdicts" ] && exit 2; done
+exec "$real_grep" "\$@"
+SHIM
+chmod +x "$tmp/grepshim/grep"
+three_rounds jscan clean
+fix_commit jscan
+judge jscan-1 NO-GO "$cap_r3_head"
+js_rc=0; js_out="$(PATH="$tmp/grepshim:$PATH" start_round "$cap_fix_head" clean jscan)" || js_rc=$?
+assert_eq "$js_rc" "8" "a failed cross-branch consumed-qid scan refuses the judge record"
+assert_has "$js_out" "cannot scan" "the failed cross-branch scan is named"
+assert_eq "$(cat "$git_dir/cr-review-rounds/jscan.round")" "3" "the refused scan-failure round leaves the counter at 3"
+three_rounds jhscan clean
+fix_commit jhscan
+judge jhscan-1 NO-GO "$cap_r3_head"
+mkdir "$git_dir/cr-review-rounds/jhscan.verdicts"
+jh_rc=0; jh_out="$(start_round "$cap_fix_head" clean jhscan)" || jh_rc=$?
+rm -rf "$git_dir/cr-review-rounds/jhscan.verdicts"
+assert_eq "$jh_rc" "8" "an unreadable per-head .verdicts refuses the judge record"
+assert_has "$jh_out" "cannot read" "the unreadable per-head .verdicts is named"
+assert_eq "$(cat "$git_dir/cr-review-rounds/jhscan.round")" "3" "the refused per-head scan-failure round leaves the counter at 3"
+
 # The existing fix trigger is unchanged and still records itself as fix.
 assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"
 assert_has "$(cat "$git_dir/cr-review-rounds/feature.delta")" " merge-forward" "the merge-forward trigger still records merge-forward"
