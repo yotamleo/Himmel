@@ -51,14 +51,37 @@ function journal(m: Member): { main: string; sub?: string } {
 export type FleetFixture = {
   env: Record<string, string>; dir: string; home: string; pgrep: string;
   journal: (m: Member) => string; append: (m: Member, record: Record<string, unknown>) => void;
+  gh: { calls: string; reply: string; rc: string };
 };
 
-export function fleetFixture(dir: string): FleetFixture {
+// HIMMEL-4791: the cloud lane, opt-in ({ cloud: true }). The console's bucket carries cloud-route.jsonl (what
+// cloud-route.mjs appends) and the briefs it wrote; GitHub is a stub gh (CONFIG_UI_GH) that logs each call's argv
+// and answers the batched search with gh-reply.json. HIMMEL-905 reported CLOUD-DONE on open PR 1905 and has a live
+// local shepherd leg; HIMMEL-906 has no PR yet; HIMMEL-907 merged. HIMMEL-908 was routed LOCAL-NATIVE, HIMMEL-909
+// went CLOUD-OK too long ago, and HIMMEL-910's newest routing is BLOCKED: none of the three is a cloud session.
+export const CLOUD = {
+  shepherd: { pid: 4105, name: "HIMMEL-905-N9005-cloud-shepherd-2026-10-07", run: "1a000000-0000-4000-8000-000000000005", model: "sonnet", status: "busy",
+    head: ["", "> **You are N9005.** Your console is **`HIMMEL-nextleg-2026-10-07ZZ-roadmap-console`**."], doc: ["- 10:00 LIVE — shepherding PR 1905"] } satisfies Member,
+  url: "https://claude.ai/code/session_01AbCdEfGhIjKlMnOpQrStUv",
+};
+const HOUR = 60 * 60 * 1000;
+const routed = (ticket: string, cls: string, ago: number, brief: string | null) =>
+  JSON.stringify({ ticket, class: cls, reason: "x", brief, time: new Date(Date.now() - ago).toISOString() }) + "\n";
+const prNode = (number: number, ticket: string, state: string, comments: string[]) =>
+  ({ number, state, title: `feat: [${ticket}] cloud work`, comments: { nodes: comments.map((body) => ({ body })) } });
+// One alias per routed ticket, in ticket order (905, 906, 907); a PR whose title cites another ticket is not its.
+export const GH_REPLY = { data: {
+  t0: { nodes: [prNode(1880, "HIMMEL-9050", "OPEN", [`CLOUD-DONE ${CLOUD.url}`]), prNode(1905, "HIMMEL-905", "OPEN", ["looks fine", `CLOUD-DONE ${CLOUD.url}\n\nHead SHA: abc`])] },
+  t1: { nodes: [] },
+  t2: { nodes: [prNode(1907, "HIMMEL-907", "MERGED", ["CLOUD-DONE https://claude.ai/code/session_07\nok"])] },
+} };
+
+export function fleetFixture(dir: string, opts: { cloud?: boolean } = {}): FleetFixture {
   const home = join(dir, "home"), proc = join(dir, "proc"), root = join(dir, "handover");
   const slug = join(home, ".claude", "projects", "fleet-project");
   const sessions = join(home, ".claude", "sessions");
   for (const d of [slug, sessions, proc, join(root, "yotam", "himmel")]) mkdirSync(d, { recursive: true });
-  const members: Member[] = Object.values(FLEET);
+  const members: Member[] = [...Object.values(FLEET), ...(opts.cloud ? [CLOUD.shepherd] : [])];
   const pgrep = join(dir, "pgrep");
   writeFileSync(pgrep, `#!/bin/sh\nprintf '%s\\n' ${members.map((m) => m.pid).join(" ")}\n`);
   chmodSync(pgrep, 0o755);
@@ -75,9 +98,29 @@ export function fleetFixture(dir: string): FleetFixture {
     }
     if (m.doc) writeFileSync(join(root, "yotam", "himmel", `${m.name}.md`), `# ${m.name} ${(m.head ?? []).join("\n")}\n\n## Results (newest at the bottom)\n\n${m.doc.join("\n")}\n`);
   }
+  const gh = { calls: join(dir, "gh-calls"), reply: join(dir, "gh-reply.json"), rc: join(dir, "gh-rc") };
+  writeFileSync(join(dir, "gh"), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${gh.calls}'\ncat '${gh.reply}'\nexit "$(cat '${gh.rc}')"\n`);
+  chmodSync(join(dir, "gh"), 0o755);
+  writeFileSync(gh.reply, JSON.stringify(GH_REPLY));
+  writeFileSync(gh.rc, "0");
+  if (opts.cloud) {
+    const bucket = join(root, "yotam", "himmel");
+    for (const t of ["HIMMEL-905", "HIMMEL-906", "HIMMEL-907"])
+      writeFileSync(join(bucket, `cloud-brief-${t}.md`), `the line \`cloud-pilot: ${t} (console ${FLEET.console.name})\`, the line\n`);
+    writeFileSync(join(bucket, "cloud-route.jsonl"), [
+      routed("HIMMEL-909", "CLOUD-OK", 100 * HOUR, join(bucket, "cloud-brief-HIMMEL-909.md")),
+      routed("HIMMEL-910", "CLOUD-OK", 2 * HOUR, null),
+      routed("HIMMEL-905", "CLOUD-OK", HOUR, join(bucket, "cloud-brief-HIMMEL-905.md")),
+      routed("HIMMEL-906", "CLOUD-OK", HOUR, join(bucket, "cloud-brief-HIMMEL-906.md")),
+      routed("HIMMEL-907", "CLOUD-OK", HOUR, join(bucket, "cloud-brief-HIMMEL-907.md")),
+      routed("HIMMEL-908", "LOCAL-NATIVE", HOUR, null),
+      routed("HIMMEL-910", "BLOCKED", HOUR / 2, null),
+      "{not json\n",
+    ].join(""));
+  }
   return {
-    env: { HOME: home, HANDOVER_DIR: root, CLAUDE_SESSIONS_PGREP: pgrep, CLAUDE_SESSIONS_PROC: proc },
-    dir, home, pgrep, journal: path,
+    env: { HOME: home, HANDOVER_DIR: root, CLAUDE_SESSIONS_PGREP: pgrep, CLAUDE_SESSIONS_PROC: proc, CONFIG_UI_GH: join(dir, "gh") },
+    dir, home, pgrep, journal: path, gh,
     append: (m, record) => appendFileSync(path(m), rec(m, record)),
   };
 }

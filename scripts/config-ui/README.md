@@ -109,6 +109,18 @@ whose census is `fleet.sh`: `claude_sessions` plus each leg doc's last marker
 (`leg_tail_status`). A session whose journal has been quiet for an hour is left
 out.
 
+**Cloud sessions (HIMMEL-4791).** A `claude --cloud` session has no local
+process, so its node comes from the console buckets' `cloud-route.jsonl` (each
+ticket's newest routing across them; a CLOUD-OK from the last 72 hours) plus its
+PR on GitHub: the newest PR whose title cites the ticket, and the `CLOUD-DONE` /
+`CLOUD-BLOCKED` comment carrying the session link. It hangs under the console
+its brief names, and a local leg on the same ticket (its shepherd) hangs under
+it. Its tokens read "not measured": no source exposes a cloud session's usage.
+GitHub is read in one batched GraphQL query per minute at most
+(`agui/fleet-cloud.ts`, shared and cached); a failed or throttled read, or one
+still running after 2 seconds, shows the nodes as "GitHub status unknown" for
+that poll and never holds up the page longer.
+
 **One app (HIMMEL-4711).** The console and the AG-UI pages share one rail and one
 theme (`public/nav.js`, `public/theme.css`): Config, Health and Fleet, plus Run
 on a run page. Plain `himmelctl ui` prints ONE URL and lands on the fleet when

@@ -2,7 +2,11 @@
 // token usage (usageOf, from the session JSONL usage records). Pure functions over fixture text; the route suite
 // (agui-fleet.test.ts) drives the same fields end to end.
 import { test, expect } from "bun:test";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { graphOf, usageOf } from "../agui/fleet";
+import { CLOUD_RECENT_MS, cloudPrs, cloudQuery, cloudRoutes, GH_TTL_MS, readCloudPrs } from "../agui/fleet-cloud";
 
 const CONSOLE = "HIMMEL-nextleg-2026-10-07BN-roadmap-console";
 const PRIOR = "HIMMEL-nextleg-2026-10-07BM-roadmap-console";
@@ -62,4 +66,101 @@ test("the ceiling: a numeric --autocompact; else the model's window (1m for a [1
 
 test("a journal with no usage records is not measured, never zero", () => {
   expect(usageOf([rec({ type: "user", message: { role: "user", content: "hi" } })], { autocompact: "", model: "" })).toBeNull();
+});
+
+// HIMMEL-4791: the cloud lane's routing log and its GitHub read, as pure functions plus the read's TTL cache.
+const H = 60 * 60 * 1000, NOW = Date.parse("2026-10-07T12:00:00Z");
+const route = (ticket: string, cls: string, ago: number) => rec({ ticket, class: cls, reason: "x", brief: null, time: new Date(NOW - ago).toISOString() });
+
+test("cloud routes: each ticket's newest routing decides; only a CLOUD-OK inside the window is a cloud session", () => {
+  const lines = [
+    route("HIMMEL-1", "CLOUD-OK", 2 * H), route("HIMMEL-1", "BLOCKED", H),
+    route("HIMMEL-2", "BLOCKED", 2 * H), route("HIMMEL-2", "CLOUD-OK", H),
+    route("HIMMEL-3", "CLOUD-OK", CLOUD_RECENT_MS + H),
+    route("HIMMEL-4", "LOCAL-NATIVE", H),
+    route("bad ticket; x", "CLOUD-OK", H),
+    "{not json", "",
+  ];
+  expect(cloudRoutes([{ lines, bucket: "/b" }], NOW).map((r) => r.ticket)).toEqual(["HIMMEL-2"]);
+});
+
+test("cloud routes: the newest routing across every bucket decides, and names the bucket it came from", () => {
+  const got = cloudRoutes([
+    { lines: [route("HIMMEL-5", "CLOUD-OK", 2 * H), route("HIMMEL-6", "CLOUD-OK", 2 * H)], bucket: "/a" },
+    { lines: [route("HIMMEL-5", "LOCAL-NATIVE", H), route("HIMMEL-6", "CLOUD-OK", H)], bucket: "/b" },
+  ], NOW);
+  expect(got.map((r) => [r.ticket, r.bucket])).toEqual([["HIMMEL-6", "/b"]]);
+});
+
+const pr = (number: number, title: string, state: string, comments: string[]) => ({ number, title, state, comments: { nodes: comments.map((body) => ({ body })) } });
+
+test("cloud PRs: the PR whose title cites the ticket; its newest CLOUD comment sets the phase; only a claude.ai session URL is kept", () => {
+  const reply = { data: {
+    t0: { nodes: [pr(10, "feat: [HIMMEL-1] x", "OPEN", ["CLOUD-DONE https://claude.ai/code/session_01A\nhead"]), pr(11, "feat: [HIMMEL-10] y", "OPEN", [])] },
+    t1: { nodes: [pr(20, "fix: [HIMMEL-2] z", "OPEN", ["CLOUD-DONE https://claude.ai/code/session_02", "CLOUD-BLOCKED https://claude.ai/code/session_02\nwhich file?"])] },
+    t2: { nodes: [pr(30, "fix: [HIMMEL-3] z", "CLOSED", ["CLOUD-DONE javascript:alert(1)"])] },
+    t3: { nodes: [] },
+  } };
+  const got = cloudPrs(reply, ["HIMMEL-1", "HIMMEL-2", "HIMMEL-3", "HIMMEL-4"]);
+  expect(got?.get("HIMMEL-1")).toEqual({ pr: 10, phase: "done", url: "https://claude.ai/code/session_01A" });
+  expect(got?.get("HIMMEL-2")).toEqual({ pr: 20, phase: "blocked", url: "https://claude.ai/code/session_02" });
+  expect(got?.get("HIMMEL-3")).toEqual({ pr: 30, phase: "closed", url: null });
+  expect(got?.get("HIMMEL-4")).toEqual({ pr: null, phase: "working", url: null });
+  expect(cloudPrs({ errors: [{ message: "rate limited" }] }, ["HIMMEL-1"])).toBeNull();
+});
+
+test("cloud PRs: the newest PR citing the ticket decides; a missing or malformed alias is unknown, not working", () => {
+  const reply = { data: {
+    t0: { nodes: [pr(10, "feat: [HIMMEL-1] x", "MERGED", ["CLOUD-DONE https://claude.ai/code/session_01A"]), pr(12, "feat: [HIMMEL-1] again", "OPEN", [])] },
+    t1: null,
+    t2: { nodes: "oops" },
+  } };
+  const got = cloudPrs(reply, ["HIMMEL-1", "HIMMEL-2", "HIMMEL-3", "HIMMEL-4"]);
+  expect(got?.get("HIMMEL-1")).toEqual({ pr: 12, phase: "working", url: null });
+  for (const t of ["HIMMEL-2", "HIMMEL-3", "HIMMEL-4"]) expect(got?.get(t)).toEqual({ pr: null, phase: "unknown", url: null });
+});
+
+test("cloud GitHub read: a slow read past waitMs answers null now and fills the cache for the next poll", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-cloud-"));
+  try {
+    const gh = join(dir, "gh");
+    writeFileSync(gh, `#!/bin/sh\nsleep 1\necho '{"data":{"t0":{"nodes":[]}}}'\n`);
+    chmodSync(gh, 0o755);
+    const opts = { gh, env: { PATH: process.env.PATH }, now: NOW + 10 * GH_TTL_MS, waitMs: 100 };
+    const t0 = Date.now();
+    expect(await readCloudPrs(["HIMMEL-7"], opts)).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(800);
+    await Bun.sleep(1500);
+    expect((await readCloudPrs(["HIMMEL-7"], opts))?.get("HIMMEL-7")).toMatchObject({ phase: "working" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("cloud GitHub read: one call per ticket set per TTL window; a failure is cached as unknown too", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-cloud-"));
+  try {
+    const log = join(dir, "calls"), rc = join(dir, "rc"), gh = join(dir, "gh");
+    writeFileSync(rc, "0");
+    writeFileSync(gh, `#!/bin/sh\necho x >> '${log}'\necho '{"data":{"t0":{"nodes":[]}}}'\nexit "$(cat '${rc}')"\n`);
+    chmodSync(gh, 0o755);
+    const calls = () => readFileSync(log, "utf8").trim().split("\n").length;
+    const opts = (now: number) => ({ gh, env: { PATH: process.env.PATH }, now });
+    expect((await readCloudPrs(["HIMMEL-1"], opts(NOW)))?.get("HIMMEL-1")).toMatchObject({ phase: "working" });
+    await readCloudPrs(["HIMMEL-1"], opts(NOW + GH_TTL_MS - 1));
+    expect(calls()).toBe(1);
+    writeFileSync(rc, "1");
+    expect(await readCloudPrs(["HIMMEL-1"], opts(NOW + GH_TTL_MS))).toBeNull();
+    expect(await readCloudPrs(["HIMMEL-1"], opts(NOW + GH_TTL_MS + 1))).toBeNull();
+    expect(calls()).toBe(2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("cloud PRs: the search asks for newest-first; an open PR whose comments did not come back is unknown, not working", () => {
+  expect(cloudQuery(["HIMMEL-1"])).toContain("is:pr in:title HIMMEL-1 sort:created-desc");
+  const reply = { data: {
+    t0: { nodes: [{ number: 10, title: "feat: [HIMMEL-1] x", state: "OPEN", comments: null }] },
+    t1: { nodes: [{ number: 20, title: "feat: [HIMMEL-2] x", state: "MERGED" }] },
+  } };
+  const got = cloudPrs(reply, ["HIMMEL-1", "HIMMEL-2"]);
+  expect(got?.get("HIMMEL-1")).toEqual({ pr: 10, phase: "unknown", url: null });
+  expect(got?.get("HIMMEL-2")).toEqual({ pr: 20, phase: "merged", url: null });
 });
