@@ -162,6 +162,11 @@ check_eq 'resolve: a missing doc falls back to the stem' "$(leg_description "$dt
 if leg_doc_has_run "$d_run"; then ok 'has_run: a Results bullet means the leg has run'; else bad 'has_run: a Results bullet means the leg has run'; fi
 if leg_doc_has_run "$d_fresh"; then bad 'has_run: an empty Results (body list items aside) is a fresh brief'; else ok 'has_run: an empty Results (body list items aside) is a fresh brief'; fi
 if leg_doc_has_run "$dtmp/absent.md"; then bad 'has_run: a missing doc has not run'; else ok 'has_run: a missing doc has not run'; fi
+# Only the terminal leg suffix is stripped from a ticket H1, never a `Leg N` in the subject.
+d_subj="$(mkdoc HIMMEL-1-N13-a-2026-10-07.md '# HIMMEL-1 — Investigate Leg N12 failure')"
+check_eq 'resolve: a ticket H1 subject naming a leg is kept whole' "$(leg_description "$d_subj")" 'Investigate Leg N12 failure'
+d_subjsfx="$(mkdoc HIMMEL-1-N14-a-2026-10-07.md '# HIMMEL-1 — Investigate Leg N12 failure — leg N14 (opus, native), 2026-10-07')"
+check_eq 'resolve: the terminal leg suffix is stripped after a subject naming a leg' "$(leg_description "$d_subjsfx")" 'Investigate Leg N12 failure'
 # A relative path shaped like an awk assignment (k=v.md) is still read as a file.
 mkdoc 'k=v.md' '---' 'description: Assign-shaped name' '---' '## Results' '- 10:00 LIVE — started' >/dev/null
 check_eq 'field: an assignment-shaped relative path is read as a file' "$(cd "$dtmp" && leg_description_field 'k=v.md' </dev/null)" 'Assign-shaped name'

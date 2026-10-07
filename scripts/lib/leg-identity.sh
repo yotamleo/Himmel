@@ -136,7 +136,7 @@ leg_description() {
     val="$(leg_description_field "$doc")"
     if [ -z "$val" ] && [ -r "$doc" ]; then
         val="$(sed -n -E '/^# /{s/^# +//;p;q;}' "$doc" \
-            | sed -E '/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) /{s/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) //; s/( —|\.)? [Ll]eg N[0-9].*$//;}; s/[[:space:]]+$//')"
+            | sed -E '/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) /{s/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) //; s/( —|\.)? [Ll]eg N[0-9]+[a-z]*( \([^)]*\))?(,? [0-9]{4}-[0-9]{2}-[0-9]{2})?$//;}; s/[[:space:]]+$//')"
     fi
     if [ -z "$val" ]; then
         stem="${doc##*/}"
