@@ -186,3 +186,31 @@ test("a dist newer than its source has no banner and no warning; assets never ge
   const old = web(3600, 60);
   expect(await (await fetch(`${bootWeb(old.dir, old.web)}/agui/index-abc.js`)).text()).toBe("console.log(1)");
 });
+
+// HIMMEL-4716: a source file deleted (or renamed) after the build leaves no newer mtime behind, so the build records
+// its source list in dist/.agui-sources and a listed file that is gone marks the page stale. A directory mtime alone
+// is no evidence: an editor's swap file added and removed moves it with no source change.
+function manifest(dir: string, files: string[], age: number) {
+  writeFileSync(join(dir, ".agui-sources"), JSON.stringify(files));
+  const at = Date.now() / 1000;
+  utimesSync(join(dir, "index.html"), at - age, at - age);
+}
+
+test("a source file deleted after the build marks the page stale", async () => {
+  const { dir, web: w } = web(60, 3600);
+  manifest(dir, [join("deep", "App.tsx"), join("deep", "Gone.tsx")], 60);
+  expect(aguiStaleWarning(dir, w)).toMatch(/^himmelctl: ui: the AG-UI page is an old build .*bun run build/);
+  expect(await (await fetch(`${bootWeb(dir, w)}/agui/`)).text()).toContain('id="agui-stale"');
+});
+
+test("a directory touched by a temp file but with every built source present is not stale", () => {
+  const { dir, web: w } = web(60, 3600);
+  manifest(dir, [join("deep", "App.tsx")], 60);
+  writeFileSync(join(w, "src", "deep", ".App.tsx.swp"), "");
+  rmSync(join(w, "src", "deep", ".App.tsx.swp"));
+  expect(aguiStaleWarning(dir, w)).toBeNull();
+  rmSync(join(dir, ".agui-sources")); // an older build with no list: mtimes only, as before
+  expect(aguiStaleWarning(dir, w)).toBeNull();
+  writeFileSync(join(dir, ".agui-sources"), "not json"); // an unreadable list is no evidence
+  expect(aguiStaleWarning(dir, w)).toBeNull();
+});

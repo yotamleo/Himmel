@@ -6,7 +6,7 @@
 // that bound argv under the machine-wide write lock, re-probes the row and
 // appends one audit line.
 import { execFile } from "node:child_process";
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { scrubProviderKeys } from "../fleet-control/server";
@@ -71,12 +71,21 @@ bun run build</pre>
 // as is, but says so: on the launcher's stderr and in a banner the server puts into index.html (the stale bundle
 // cannot know it is stale). Detect and say, never rebuild: a rebuild on start would run bun under the operator's server.
 const BUILD_STEP = "cd scripts/config-ui/agui-web && bun run build";
+function aguiSourceGone(dist: string, web: string): boolean {
+  let listed: unknown;
+  try { listed = JSON.parse(readFileSync(join(dist, ".agui-sources"), "utf8")); } catch { return false; } // an older build, or no evidence
+  return Array.isArray(listed) && listed.some((f) => typeof f === "string" && !existsSync(join(web, "src", f)));
+}
 function aguiStale(dist: string, web: string): { built: Date; changed: Date } | null {
   try {
     const built = statSync(join(dist, "index.html")).mtime;
     const src = readdirSync(join(web, "src"), { recursive: true }).map((f) => join(web, "src", String(f)));
-    const changed = [join(web, "index.html"), ...src].map((f) => statSync(f)).filter((st) => st.isFile())
-      .map((st) => st.mtime).reduce((a, b) => (b > a ? b : a)); // a directory's mtime moves on any add, not an edit
+    const stats = [join(web, "index.html"), ...src].map((f) => statSync(f));
+    const newest = (sts: typeof stats) => sts.map((st) => st.mtime).reduce((a, b) => (b > a ? b : a));
+    // HIMMEL-4716: a deleted or renamed source leaves no newer mtime, so the build lists its sources in
+    // dist/.agui-sources and a listed file that is gone is stale; then the newest directory mtime dates the delete.
+    if (aguiSourceGone(dist, web)) return { built, changed: newest(stats) > built ? newest(stats) : new Date() };
+    const changed = newest(stats.filter((st) => st.isFile())); // a directory's mtime moves on any add, not an edit
     return changed > built ? { built, changed } : null;
   } catch { return null; } // no dist is AGUI_MISSING's case; unreadable source is no evidence
 }
