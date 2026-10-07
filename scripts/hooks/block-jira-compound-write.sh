@@ -139,21 +139,43 @@ hd_is_close() {
     [ "$ln" = "$hd" ]
 }
 
+# split_bytes <text> <length> -- fill the CALLER's local array SC with <text>,
+# one byte per element (HIMMEL-4678). The walkers below step through a command
+# one character at a time, and bash resolves ${s:i:1} by scanning s from its
+# start (decoding it, in a UTF-8 locale), so indexing the string made every
+# walk O(n^2): a 12 KB heredoc of prose took seconds, outran this guard's 15 s
+# chain window under fleet load, and the guard failed closed on a harmless
+# call. One linear read into an array makes each step O(1). The callers run
+# under LC_ALL=C, so ${#s}, SC and ${s:a:b} all count bytes. Walking bytes is
+# the same walk as walking characters: every character a walker tests is
+# ASCII, a UTF-8 multibyte sequence never contains an ASCII byte, so each
+# ASCII byte is its own character either way and every other byte is only
+# ever appended to a word, in order.
+split_bytes() {
+    local c k=0
+    SC=()
+    while [ "$k" -lt "$2" ] && IFS= read -r -d '' -n1 c; do
+        SC[k]=$c; k=$((k + 1))
+    done <<<"$1"
+}
+
 quote_mask() {
-    local s="$1" n i c nx st out top pv hd hd_set ln j hd_q hd_dash ad dq
+    local s="$1" n i c nx st out top pv hd hd_set ln j hd_q hd_dash ad dq LC_ALL=C
+    local -a SC
     local -a stk
     local sp=0
     # hd_set, not `-n "$hd"`, marks "a heredoc is pending": `<<''` is a legal EMPTY
     # delimiter, and testing the delimiter's emptiness would read that as no-heredoc
     # and scan its inert body as code.
     n=${#s}; i=0; st=0; out=""; pv=""; hd=""; hd_set=0; hd_q=0; hd_dash=0; ad=0
+    split_bytes "$s" "$n"
     while [ "$i" -lt "$n" ]; do
-        c="${s:$i:1}"
-        nx="${s:$((i + 1)):1}"
-        pv=""; [ "$i" -gt 0 ] && pv="${s:$((i - 1)):1}"
+        c="${SC[i]-}"
+        nx="${SC[i + 1]-}"
+        pv=""; [ "$i" -gt 0 ] && pv="${SC[i - 1]-}"
         if [ "$st" = 1 ]; then                     # single quotes — always data
             [ "$c" = "'" ] && st=0
-            out="$out "; i=$((i + 1)); continue
+            out+=" "; i=$((i + 1)); continue
         fi
         if [ "$st" = 6 ]; then
             # Inside `${…}` — parameter expansion text is DATA. (A `$(…)` nested in a
@@ -164,7 +186,7 @@ quote_mask() {
                 '{') ad=$((ad + 1)) ;;
                 '}') ad=$((ad - 1)); [ "$ad" -le 0 ] && st=0 ;;
             esac
-            out="$out "; i=$((i + 1)); continue
+            out+=" "; i=$((i + 1)); continue
         fi
         if [ "$st" = 5 ]; then
             # Inside ARITHMETIC — `$((…))` or the `((…))` command. Bash EVALUATES
@@ -175,13 +197,13 @@ quote_mask() {
             # A SUBSTITUTION among the operands still runs, though — `$(( $(node …
             # create) + 1 ))` really writes — so it stays visible, same rule as
             # everywhere else. (Nested `$((…))` needs no case: its parens just count.)
-            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${s:$((i + 2)):1}" != '(' ]; then
+            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${SC[i + 2]-}" != '(' ]; then
                 stk[sp]="5p"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'" "; i=$((i + 2)); continue
+                out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
                 stk[sp]="5b"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'; i=$((i + 1)); continue
+                out+=""$'\n'; i=$((i + 1)); continue
             fi
             case "$c" in
                 '(') ad=$((ad + 1)) ;;
@@ -199,7 +221,7 @@ quote_mask() {
                      fi ;;
                 '$') : ;;   # a bare `$…` operand (e.g. $x) is just data
             esac
-            out="$out "; i=$((i + 1)); continue
+            out+=" "; i=$((i + 1)); continue
         fi
         if [ "$st" = 4 ]; then
             # Inside an ARRAY assignment `args=( … )`. Bash CONSTRUCTS an array
@@ -209,23 +231,23 @@ quote_mask() {
             # guidance to file a ticket the command never attempted.
             # A substitution among the elements IS still executed, so it stays
             # visible — same rule as everywhere else: data is masked, code is not.
-            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${s:$((i + 2)):1}" = '(' ]; then
+            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${SC[i + 2]-}" = '(' ]; then
                 stk[sp]="4a"; sp=$((sp + 1)); ad=2; st=5   # arithmetic → data
-                out="$out   "; i=$((i + 3)); continue
+                out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then
                 stk[sp]="4p"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'" "; i=$((i + 2)); continue
+                out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
                 stk[sp]="4b"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'; i=$((i + 1)); continue
+                out+=""$'\n'; i=$((i + 1)); continue
             fi
             case "$c" in
                 '(') ad=$((ad + 1)) ;;
                 ')') ad=$((ad - 1)); [ "$ad" -le 0 ] && st=0 ;;
             esac
-            out="$out "; i=$((i + 1)); continue
+            out+=" "; i=$((i + 1)); continue
         fi
         if [ "$st" = 3 ]; then
             # Body of an UNQUOTED heredoc (`<<EOF`): bash expands substitutions
@@ -233,67 +255,67 @@ quote_mask() {
             # except literal quotes do not change state and it ends at the
             # delimiter LINE (a quoted `<<'EOF'` body never gets here: it is inert
             # data, blanked wholesale below).
-            if [ "$c" = "\\" ]; then out="$out  "; i=$((i + 2)); continue; fi
-            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${s:$((i + 2)):1}" = '(' ]; then
+            if [ "$c" = "\\" ]; then out+="  "; i=$((i + 2)); continue; fi
+            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${SC[i + 2]-}" = '(' ]; then
                 stk[sp]="3a"; sp=$((sp + 1)); ad=2; st=5   # arithmetic → data
-                out="$out   "; i=$((i + 3)); continue
+                out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then
                 stk[sp]="3p"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'" "; i=$((i + 2)); continue
+                out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
                 stk[sp]="3b"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'; i=$((i + 1)); continue
+                out+=""$'\n'; i=$((i + 1)); continue
             fi
             if [ "$c" = $'\n' ]; then
                 # Peek the next line: the delimiter ends the body.
                 j=$((i + 1)); ln=""
-                while [ "$j" -lt "$n" ] && [ "${s:$j:1}" != $'\n' ]; do
-                    ln="$ln${s:$j:1}"; j=$((j + 1))
+                while [ "$j" -lt "$n" ] && [ "${SC[j]-}" != $'\n' ]; do
+                    ln+="${SC[j]-}"; j=$((j + 1))
                 done
                 if hd_is_close "$ln"; then
                     # Keep this line break as a REAL newline: it separates the
                     # heredoc from whatever command follows, and downstream
                     # tokenisation needs that boundary to see the next command in
                     # COMMAND POSITION. Blank the delimiter line itself.
-                    out="$out"$'\n'; i=$((i + 1))
-                    while [ "$i" -lt "$j" ]; do out="$out "; i=$((i + 1)); done
+                    out+=""$'\n'; i=$((i + 1))
+                    while [ "$i" -lt "$j" ]; do out+=" "; i=$((i + 1)); done
                     st=0; hd=""; hd_set=0; continue
                 fi
-                out="$out "; i=$((i + 1)); continue
+                out+=" "; i=$((i + 1)); continue
             fi
-            out="$out "; i=$((i + 1)); continue
+            out+=" "; i=$((i + 1)); continue
         fi
         if [ "$st" = 2 ]; then                     # double quotes — data, but
-            if [ "$c" = "\\" ]; then out="$out  "; i=$((i + 2)); continue; fi
-            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${s:$((i + 2)):1}" = '(' ]; then
+            if [ "$c" = "\\" ]; then out+="  "; i=$((i + 2)); continue; fi
+            if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${SC[i + 2]-}" = '(' ]; then
                 stk[sp]="2a"; sp=$((sp + 1)); ad=2; st=5   # "$((…))" → arithmetic, data
-                out="$out   "; i=$((i + 3)); continue
+                out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then     # …$( → code
                 stk[sp]="2p"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'" "; i=$((i + 2)); continue
+                out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then                        # …` → code
                 stk[sp]="2b"; sp=$((sp + 1)); st=0
-                out="$out"$'\n'; i=$((i + 1)); continue
+                out+=""$'\n'; i=$((i + 1)); continue
             fi
             [ "$c" = '"' ] && st=0
-            out="$out "; i=$((i + 1)); continue
+            out+=" "; i=$((i + 1)); continue
         fi
         # --- st=0: code ---
-        if [ "$c" = "\\" ]; then out="$out  "; i=$((i + 2)); continue; fi
+        if [ "$c" = "\\" ]; then out+="  "; i=$((i + 2)); continue; fi
         case "$c" in
-            "'") st=1; out="$out "; i=$((i + 1)); continue ;;
-            '"') st=2; out="$out "; i=$((i + 1)); continue ;;
+            "'") st=1; out+=" "; i=$((i + 1)); continue ;;
+            '"') st=2; out+=" "; i=$((i + 1)); continue ;;
         esac
         # A `#` starting a word begins a comment — data to end of line.
         if [ "$c" = '#' ] && [ "$pv" != "$c" ]; then
             case "$pv" in
                 ''|' '|$'\t'|$'\n'|';'|'&'|'|'|'('|')')
-                    while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != $'\n' ]; do
-                        out="$out "; i=$((i + 1))
+                    while [ "$i" -lt "$n" ] && [ "${SC[i]-}" != $'\n' ]; do
+                        out+=" "; i=$((i + 1))
                     done
                     continue ;;
             esac
@@ -304,7 +326,7 @@ quote_mask() {
         # (unquoted) still expands `$(…)`/backticks, so a write nested there really
         # runs and must stay visible. Record the delimiter and which kind it is.
         # `<<<` is a here-string (one word, no body) — not a heredoc.
-        if [ "$c" = '<' ] && [ "$nx" = '<' ] && [ "${s:$((i + 2)):1}" != '<' ]; then
+        if [ "$c" = '<' ] && [ "$nx" = '<' ] && [ "${SC[i + 2]-}" != '<' ]; then
             # `cmd <<A <<B` queues TWO bodies, in order. This scanner tracks ONE
             # delimiter, so a second heredoc on the same line would silently reuse
             # the wrong metadata — which could end a body early and scan inert text
@@ -312,12 +334,12 @@ quote_mask() {
             # (the write keeps its pre-HIMMEL-1077 denial, nothing gets worse). A
             # real delimiter queue is not worth it for a shape nothing here writes.
             [ "$hd_set" = 1 ] && return 1
-            i=$((i + 2)); out="$out  "; hd_q=0; hd_dash=0; hd_set=1
-            [ "${s:$i:1}" = '-' ] && { hd_dash=1; out="$out "; i=$((i + 1)); }
+            i=$((i + 2)); out+="  "; hd_q=0; hd_dash=0; hd_set=1
+            [ "${SC[i]-}" = '-' ] && { hd_dash=1; out+=" "; i=$((i + 1)); }
             # Bash allows spaces OR tabs between << and the delimiter.
             while [ "$i" -lt "$n" ]; do
-                case "${s:$i:1}" in
-                    ' '|$'\t') out="$out "; i=$((i + 1)) ;;
+                case "${SC[i]-}" in
+                    ' '|$'\t') out+=" "; i=$((i + 1)) ;;
                     *) break ;;
                 esac
             done
@@ -331,13 +353,13 @@ quote_mask() {
             # `<<$'EOF'` / `<<$"EOF"` are ANSI-C / locale quoting forms this scanner
             # does not decode: it would record a wrong delimiter, the body would never
             # close, and the rest of the command would be masked as body. Fail open.
-            case "${s:$i:1}" in '$') return 1 ;; esac
+            case "${SC[i]-}" in '$') return 1 ;; esac
             hd=""; dq=""
             while [ "$i" -lt "$n" ]; do
-                c="${s:$i:1}"
+                c="${SC[i]-}"
                 if [ -n "$dq" ]; then                  # inside the delimiter's quotes
-                    if [ "$c" = "$dq" ]; then dq=""; else hd="$hd$c"; fi
-                    out="$out "; i=$((i + 1)); continue
+                    if [ "$c" = "$dq" ]; then dq=""; else hd+="$c"; fi
+                    out+=" "; i=$((i + 1)); continue
                 fi
                 case "$c" in
                     # \r ends it too: a CRLF command would otherwise capture the
@@ -349,13 +371,13 @@ quote_mask() {
                         # Escapes the NEXT character into the delimiter. A trailing
                         # lone backslash has nothing to escape: unparseable, fail open.
                         hd_q=1
-                        i=$((i + 1)); out="$out "
+                        i=$((i + 1)); out+=" "
                         [ "$i" -lt "$n" ] || return 1
-                        hd="$hd${s:$i:1}" ;;
+                        hd+="${SC[i]-}" ;;
                     "'"|'"') hd_q=1; dq="$c" ;;
-                    *) hd="$hd$c" ;;
+                    *) hd+="$c" ;;
                 esac
-                out="$out "; i=$((i + 1))
+                out+=" "; i=$((i + 1))
             done
             [ -n "$dq" ] && return 1        # unterminated quote in the delimiter
             continue
@@ -364,7 +386,7 @@ quote_mask() {
         # delimiter means the body still expands substitutions: hand it to st=3
         # rather than blanking it wholesale.
         if [ "$c" = $'\n' ] && [ "$hd_set" = 1 ] && [ "$hd_q" != 1 ]; then
-            out="$out"$'\n'; i=$((i + 1)); st=3; continue
+            out+=""$'\n'; i=$((i + 1)); st=3; continue
         fi
         # Quoted delimiter → inert body: blank through the delimiter line, then
         # resume normal scanning after it.
@@ -373,13 +395,13 @@ quote_mask() {
             # heredoc from the command that follows, and downstream tokenisation
             # needs those boundaries to see it in COMMAND POSITION. Only the body
             # CONTENT is blanked.
-            out="$out"$'\n'; i=$((i + 1))
+            out+=""$'\n'; i=$((i + 1))
             while [ "$i" -lt "$n" ]; do
                 ln=""
-                while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != $'\n' ]; do
-                    ln="$ln${s:$i:1}"; out="$out "; i=$((i + 1))
+                while [ "$i" -lt "$n" ] && [ "${SC[i]-}" != $'\n' ]; do
+                    ln+="${SC[i]-}"; out+=" "; i=$((i + 1))
                 done
-                [ "$i" -lt "$n" ] && { out="$out"$'\n'; i=$((i + 1)); }
+                [ "$i" -lt "$n" ] && { out+=""$'\n'; i=$((i + 1)); }
                 hd_is_close "$ln" && break
             done
             hd=""; hd_set=0; continue
@@ -388,15 +410,15 @@ quote_mask() {
         # this, a `;` inside one (`echo ${x:-a; node …/index.js create --title y}`)
         # split off a bogus statement that read as a real write and got bounced.
         if [ "$c" = '$' ] && [ "$nx" = '{' ]; then
-            ad=1; st=6; out="$out  "; i=$((i + 2)); continue
+            ad=1; st=6; out+="  "; i=$((i + 2)); continue
         fi
         # Arithmetic first: `$((` is arithmetic EXPANSION, not `$(` around a subshell,
         # and a bare `((` is the arithmetic COMMAND. Both evaluate, neither executes.
-        if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${s:$((i + 2)):1}" = '(' ]; then
-            ad=2; st=5; out="$out   "; i=$((i + 3)); continue
+        if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${SC[i + 2]-}" = '(' ]; then
+            ad=2; st=5; out+="   "; i=$((i + 3)); continue
         fi
         if [ "$c" = '(' ] && [ "$nx" = '(' ]; then
-            ad=2; st=5; out="$out  "; i=$((i + 2)); continue
+            ad=2; st=5; out+="  "; i=$((i + 2)); continue
         fi
         if [ "$c" = '$' ] && [ "$nx" = '(' ]; then
             # `FOO=$(…)` is an assignment VALUE: a command may still follow it
@@ -404,18 +426,18 @@ quote_mask() {
             # command-position sentinel on the tail. An ARGUMENT substitution
             # (`echo "$(…)" node …`) must — see the pop.
             if [ "$pv" = '=' ]; then stk[sp]="0P"; else stk[sp]="0p"; fi
-            sp=$((sp + 1)); out="$out"$'\n'" "; i=$((i + 2)); continue
+            sp=$((sp + 1)); out+=""$'\n'" "; i=$((i + 2)); continue
         fi
         # `name=(` opens an ARRAY assignment: its words are DATA, not a command.
         if [ "$c" = '(' ] && [ "$pv" = '=' ]; then
-            ad=1; st=4; out="$out "; i=$((i + 1)); continue
+            ad=1; st=4; out+=" "; i=$((i + 1)); continue
         fi
         # `<(…)` / `>(…)` are PROCESS substitutions: the command inside really runs,
         # exactly like `$(…)`. Give them the same frame so the body is scanned as the
         # command it is (`read k < <(node …/index.js create …)` really writes).
         if { [ "$c" = '<' ] || [ "$c" = '>' ]; } && [ "$nx" = '(' ]; then
             stk[sp]="0p"; sp=$((sp + 1))
-            out="$out"$'\n'" "; i=$((i + 2)); continue
+            out+=""$'\n'" "; i=$((i + 2)); continue
         fi
         # `name()` / `name ( )` at CODE level opens a function DEFINITION (it defines,
         # it never executes). Detect it structurally here rather than by searching the
@@ -424,40 +446,40 @@ quote_mask() {
         if [ "$c" = '(' ]; then
             j=$((i + 1))
             while [ "$j" -lt "$n" ]; do            # bash allows any blank in `f ( )`
-                case "${s:$j:1}" in
+                case "${SC[j]-}" in
                     ' '|$'\t') j=$((j + 1)) ;;
                     *) break ;;
                 esac
             done
-            [ "${s:$j:1}" = ')' ] && FN_DEF=1
+            [ "${SC[j]-}" = ')' ] && FN_DEF=1
         fi
         # A plain `(` is subshell GROUPING, not a substitution — but it still
         # consumes a `)`. Give it its own frame, or `$( (…) )` pops the
         # substitution at the inner paren and masks the rest of it.
         if [ "$c" = '(' ]; then
-            stk[sp]="0g"; sp=$((sp + 1)); out="$out "; i=$((i + 1)); continue
+            stk[sp]="0g"; sp=$((sp + 1)); out+=" "; i=$((i + 1)); continue
         fi
         if [ "$c" = ')' ] && [ "$sp" -gt 0 ]; then
             top="${stk[$((sp - 1))]}"
             case "$top" in
-                *g) sp=$((sp - 1)); out="$out "; i=$((i + 1)); continue ;;
+                *g) sp=$((sp - 1)); out+=" "; i=$((i + 1)); continue ;;
                 # Argument substitution: the sentinel holds command position so the
                 # outer command's remaining ARGS are not read as a command.
-                *p) sp=$((sp - 1)); st="${top%p}"; out="$out"$'\n'"_ "; i=$((i + 1)); continue ;;
+                *p) sp=$((sp - 1)); st="${top%p}"; out+=""$'\n'"_ "; i=$((i + 1)); continue ;;
                 # Assignment-value substitution: a real command may follow it.
-                *P) sp=$((sp - 1)); st="${top%P}"; out="$out"$'\n'; i=$((i + 1)); continue ;;
+                *P) sp=$((sp - 1)); st="${top%P}"; out+=""$'\n'; i=$((i + 1)); continue ;;
             esac
         fi
         if [ "$c" = '`' ]; then
             if [ "$sp" -gt 0 ]; then
                 top="${stk[$((sp - 1))]}"
                 case "$top" in
-                    *b) sp=$((sp - 1)); st="${top%b}"; out="$out"$'\n'"_ "; i=$((i + 1)); continue ;;
+                    *b) sp=$((sp - 1)); st="${top%b}"; out+=""$'\n'"_ "; i=$((i + 1)); continue ;;
                 esac
             fi
-            stk[sp]="0b"; sp=$((sp + 1)); out="$out"$'\n'; i=$((i + 1)); continue
+            stk[sp]="0b"; sp=$((sp + 1)); out+=""$'\n'; i=$((i + 1)); continue
         fi
-        out="$out$c"; i=$((i + 1))
+        out+="$c"; i=$((i + 1))
     done
     # Unbalanced quotes / unclosed substitution → unparseable, fail open.
     [ "$st" = 0 ] && [ "$sp" -eq 0 ] || return 1
