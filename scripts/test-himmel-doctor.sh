@@ -6014,4 +6014,32 @@ out="$(c53_run '{"vm":{"mode":"cloud"}}' "$c53_t/up")"
 if grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F 'is not local|remote|none'; then pass "C53 invalid -> WARN"; else fail "C53 invalid -> $(printf '%s' "$out" | grep -A1 C53)"; fi
 rm -rf "$c53_t"
 
+# --- C55-project-mode (HIMMEL-4767, HIMMEL-4748 WP8): the resolver's tracker/forge ---
+# The row reads scripts/lib/project-mode.sh in the judged checkout; it never
+# re-derives the mode. A fixture repo carries a copy of the resolver.
+c55_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c55.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c55_t/repo/scripts/lib" "$c55_t/home"
+cp "$REPO_ROOT/scripts/lib/project-mode.sh" "$c55_t/repo/scripts/lib/project-mode.sh"
+git -C "$c55_t/repo" init -q
+git -C "$c55_t/repo" config himmel.tracker local
+c55_run() { (cd "$c55_t/repo" && env -u TRACKER -u FORGE -u JIRA_PROJECT_KEY -u TICKET_ID_REQUIRED -u TICKET_ID_PATTERN "$@" HIMMEL_REPO="$c55_t/repo" HIMMEL_DOCTOR_ROOT="$c55_t/repo" CLAUDE_DIR="$c55_t/home/claude" HOME="$c55_t/home" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null); }
+
+echo "== C55-project-mode: himmel.tracker=local, no origin -> OK tracker=local forge=local-git (RED) =="
+out="$(c55_run)"
+if grepq "$out" -F 'OK   C55-project-mode: tracker=local forge=local-git'; then pass "C55 local/local-git -> OK"; else fail "C55 local/local-git -> $(printf '%s' "$out" | grep -A1 C55)"; fi
+
+echo "== C55-project-mode: tracker=none -> OK, says no ticket ID is required =="
+out="$(c55_run TRACKER=none)"
+if grepq "$out" -F 'OK   C55-project-mode: tracker=none forge=local-git' && grepq "$out" -F 'ticket ID not required'; then pass "C55 none -> OK, ID not required"; else fail "C55 none -> $(printf '%s' "$out" | grep -A1 C55)"; fi
+
+echo "== C55-project-mode: an invalid setting -> WARN carrying the resolver's message =="
+out="$(c55_run TRACKER=bogus)"
+if grepq "$out" -F 'WARN C55-project-mode' && grepq "$out" -F "invalid TRACKER='bogus'" && grepq "$out" -F 'docs/configuration.md'; then pass "C55 invalid -> WARN"; else fail "C55 invalid -> $(printf '%s' "$out" | grep -A1 C55)"; fi
+
+echo "== C55-project-mode: a checkout without the resolver -> no row =="
+rm -f "$c55_t/repo/scripts/lib/project-mode.sh"
+out="$(c55_run)"
+if ! grepq "$out" -F 'C55-project-mode'; then pass "C55 no resolver -> silent"; else fail "C55 no resolver -> $(printf '%s' "$out" | grep -A1 C55)"; fi
+rm -rf "$c55_t"
+
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

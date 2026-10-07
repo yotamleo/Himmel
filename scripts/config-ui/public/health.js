@@ -1,5 +1,5 @@
 // HIMMEL-4405 PR-b: the Health page. Pure rendering, no DOM: renderHealth(feed, health) → HTML.
-// feed = the doctor feed (null until it lands); health = GET /api/health ({bank, legs, monitoring}),
+// feed = the doctor feed (null until it lands); health = GET /api/health ({bank, legs, monitoring, mode}),
 // null while loading. Every value shown comes from its owner (I1): the feed's rows, the bank ledger
 // row, legs.sh, Prometheus. The one verdict lives here (I6) and only counts what those sources say.
 import { esc } from "./render.js";
@@ -37,6 +37,17 @@ function verdictHtml(feed, health) {
     : srcErrs || (m && m.state === "error" ? `<div class="nodata">monitoring unreachable: ${esc(m.reason || "no answer")}</div>` : "");
   return `<div class="vhead"><span class="word st ${v.cls}">${esc(v.word)}</span><span class="inputs">${esc(inputs)}</span>
     <button class="btn" data-act="refresh-health">refresh</button></div>${mon}`;
+}
+
+// The resolver's answer (scripts/lib/project-mode.*), shown as it came: tracker and forge on one row.
+function modeHtml(health) {
+  const m = health && health.mode;
+  let body;
+  if (!m) body = nodata(health ? "server did not report the mode" : "loading");
+  else if (m.state === "ok") body = `<div class="kv">tracker=${esc(m.tracker)} forge=${esc(m.forge)}</div>
+      <div class="ro">ticket ID required: ${m.idRequired === "0" ? "no" : "yes"} · set with TRACKER / FORGE or git config himmel.tracker / himmel.forge</div>`;
+  else body = `<div class="nodata">${esc(m.reason || "mode unresolved")}</div>`;
+  return `<div class="card" id="mode"><h3>Project mode</h3>${body}</div>`;
 }
 
 function brokenHtml(feed, health) {
@@ -97,7 +108,7 @@ function searchHtml(feed) {
 
 export function renderHealth(feed, health) {
   return [
-    section("verdict", "Is himmel healthy?", "One word, from the doctor feed and any firing alerts.", verdictHtml(feed, health)),
+    section("verdict", "Is himmel healthy?", "One word, from the doctor feed and any firing alerts.", verdictHtml(feed, health) + modeHtml(health)),
     section("broken", "What is broken, and what do I do", "Failing and drifting rows, worst first, with the fix to run in your terminal.", brokenHtml(feed, health)),
     section("jobs", "Scheduled jobs", "Cadence jobs as the doctor reports them.", jobsHtml(feed)),
     section("legs-bank", "Legs and the usage bank", "Read-only: the newest bank-preflight ledger row and each leg's last marker.", bankHtml(health) + legsHtml(health)),

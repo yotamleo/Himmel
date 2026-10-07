@@ -87,6 +87,27 @@ assert "a decoy blob is not a player response -> exit 6" 6 "$?"
 python3 "$HELPER" --video-id 'x;rm' --from-html "$FIX/watch.html" >/dev/null 2>&1
 assert "malformed video id refused" 2 "$?"
 
+# HIMMEL-4797: the private check reads English text, so the page must be asked
+# for in English. A stub scrapling records the URL fetch_page navigates to (the
+# stub never arms the guard, so the helper then errors - only the URL matters).
+mkdir -p "$tmp/pylib/scrapling"
+: >"$tmp/pylib/scrapling/__init__.py"
+cat >"$tmp/pylib/scrapling/fetchers.py" <<'STUB'
+import os
+class StealthyFetcher:
+    @staticmethod
+    def fetch(url, **kw):
+        open(os.environ["FETCH_URL_LOG"], "w").write(url)
+        class P: html_content = ""; status = 200
+        return P()
+STUB
+PYTHONPATH="$tmp/pylib" FETCH_URL_LOG="$tmp/fetch.url" helper >/dev/null 2>&1
+fetched="$(cat "$tmp/fetch.url" 2>/dev/null)"
+case "$fetched" in *[?\&]hl=en|*[?\&]hl=en\&*) a=ok ;; *) a="$fetched" ;; esac
+assert "watch page is fetched with hl=en pinned (a localised reason would miss _is_private)" ok "$a"
+case "$fetched" in "https://www.youtube.com/watch?v=$VID"*) a=ok ;; *) a="wrong-url: $fetched" ;; esac
+assert "pinned URL still names this video on www.youtube.com" ok "$a"
+
 # --- Test 3: routing -------------------------------------------------------
 echo "Test 3: HIMMEL-4361 route"
 mkdir -p "$tmp/v3"
@@ -96,6 +117,15 @@ echo "www.youtube.com skip=local-headless" >"$tmp/v3/.harvest-backends"
 helper --vault "$tmp/v3" --from-html "$FIX/watch.html" >"$tmp/route.json"
 assert ".harvest-backends skip -> exit 7" 7 "$?"
 assert "route skip status" skipped "$(jq_py "$tmp/route.json" 'd["status"]')"
+# F1 (j2057): the hl=en pin must not leak into the route gate, or an
+# exact-video rule stops matching and the scrape runs anyway.
+mkdir -p "$tmp/v3b" "$tmp/v3c"
+echo "www.youtube.com/watch?v=$VID skip=local-headless" >"$tmp/v3b/.harvest-backends"
+helper --vault "$tmp/v3b" --from-html "$FIX/watch.html" >/dev/null
+assert "exact-video skip rule still denies with the hl pin" 7 "$?"
+echo "www.youtube.com/watch?v=$VID only=jina" >"$tmp/v3c/.harvest-backends"
+helper --vault "$tmp/v3c" --from-html "$FIX/watch.html" >/dev/null
+assert "exact-video only=jina rule still denies with the hl pin" 7 "$?"
 
 # --- Test 4: the transcript comes from yt-dlp, cookieless ------------------
 echo "Test 4: yt-dlp transcript"

@@ -36,7 +36,8 @@
       "rows": [
         "initiative:*", "handover-wiring", "jira-cli-dist-build", "jira-env-keys", "bitbucket-cli-build",
         "secret:BITBUCKET_*", "doctor:C4-forge", "doctor:C5-handover", "doctor:C7-shipped",
-        "doctor:C10-propagation", "doctor:C23-unlanded", "doctor:C29-child-session", "doctor:C42-sweep-health"
+        "doctor:C10-propagation", "doctor:C23-unlanded", "doctor:C29-child-session", "doctor:C42-sweep-health",
+        "doctor:C55-project-mode"
       ]
     },
     {
