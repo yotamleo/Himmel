@@ -16,14 +16,15 @@ set -u
 printf '%s\n' "$*" >> "$CASE/calls"
 if [ "$1" = api ] && [ "${4:-}" = rate_limit ]; then
     now=$(cat "$CASE/clock")
-    printf '%s %s %s %s\n' "${CORE:-5000}" "$((now + 20))" "${GQL:-5000}" "$((now + 20))"
+    [ "${BUDGET_SLOW:-0}" = 0 ] || sleep "$BUDGET_SLOW"
+    printf '%s %s %s %s\n' "${CORE:-5000}" "$((now + ${BUDGET_RESET:-20}))" "${GQL:-5000}" "$((now + 20))"
     exit 0
 fi
 if [ "$1 $2" != 'run view' ] || [ "$3" != 123 ]; then
     echo "unexpected gh call: $*" >&2; exit 1
 fi
 n=$(grep -c '^run view' "$CASE/calls")
-[ "${SLOW:-0}" = 0 ] || sleep "$SLOW"
+if [ "$n" -gt "${SLOW_AFTER:-0}" ] && [ "${SLOW:-0}" != 0 ]; then sleep "$SLOW"; fi
 if [ -f "$CASE/response.$n" ]; then cat "$CASE/response.$n"; else cat "$CASE/response"; fi
 if [ "${GH_ERROR:-0}" = 1 ]; then echo 'network unreadable' >&2; exit 1; fi
 SH
@@ -45,7 +46,7 @@ new_case() {
     : > "$CASE/calls"; : > "$CASE/sleeps"
     export CIC_CLOCK_FILE="$CASE/clock" CHECK_CI_CACHE_DIR="$CASE/cache"
     export CHECK_CI_RUN_HEARTBEAT="$CASE/heartbeat"
-    unset CORE GQL SLOW GH_ERROR CHECK_CI_DISTINCT_DEADLINE
+    unset CORE GQL SLOW SLOW_AFTER BUDGET_SLOW BUDGET_RESET GH_ERROR CHECK_CI_DISTINCT_DEADLINE
 }
 # Complete fixtures: gh run view --json databaseId,status,conclusion,jobs.
 fixture() {
@@ -168,6 +169,28 @@ run --run 123 --max-wait 10
 export GH_REPO=octo/demo
 run --run 123 --max-wait 10
 if [ "$(grep -c '^run view' "$CASE/calls")" -eq 2 ]; then ok 'same run id in another repo cannot reuse cached green'; else bad 'repository missing from cache key'; fi
+
+# Review codex-1: a slow budget probe must not leave a stale sleep bound.
+new_case
+fixture completed success completed success > "$CASE/response"
+export CORE=0 BUDGET_SLOW=4 BUDGET_RESET=2 CHECK_CI_WATCH_SLEEP_CMD=sleep
+started=$SECONDS
+run --run 123 --max-wait 6
+expect_rc 2 'reset beyond remaining budget cannot evaluate'
+if [ "$((SECONDS - started))" -le 6 ]; then ok 'budget request time is deducted before reset sleep'; else bad 'stale budget wait exceeded max-wait'; fi
+export CHECK_CI_WATCH_SLEEP_CMD=fake_sleep
+
+# Review codex-2: timeout during a re-read after pending is a pending deadline,
+# not an ordinary network failure. An initial unreadable read still exits 2.
+new_case
+fixture in_progress '' in_progress '' > "$CASE/response.1"
+fixture completed success completed success > "$CASE/response"
+unset CIC_CLOCK_FILE
+export SLOW=4 SLOW_AFTER=1 CHECK_CI_WATCH_SLEEP_CMD=sleep CHECK_CI_DISTINCT_DEADLINE=1
+run --run 123 --max-wait 3
+expect_rc 7 'deadline during pending reread retains distinct deadline exit'
+expect_text DEADLINE-PENDING 'pending reread timeout names the deadline'
+export CHECK_CI_WATCH_SLEEP_CMD=fake_sleep
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

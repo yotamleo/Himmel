@@ -56,6 +56,8 @@ CIC_LOCK=""
 CIC_HELD=0
 CIC_HIT_RC=0
 CIC_RUN_ID=""
+# Caller distinguishes a bounded read timeout after pending from unreadable IO.
+export CIC_DEADLINE_HIT=0
 
 # Run snapshots share the same TTL, lock and atomic-write machinery as PRs,
 # but are REST/core reads keyed by repository + run id (not by selected job).
@@ -88,7 +90,7 @@ _cic_run_command() {
     local left
     if [ "${CIC_DEADLINE:-0}" -gt 0 ]; then
         left=$((CIC_DEADLINE - SECONDS))
-        [ "$left" -gt 0 ] || { CIC_ERR="run read deadline exhausted"; return 1; }
+        [ "$left" -gt 0 ] || { echo 'run read deadline exhausted' >&2; return 124; }
         "$_TIMEOUT_BIN" -k 2 "$left" "$@"
     else
         "$@"
@@ -101,6 +103,7 @@ _cic_fetch_run_raw() {
     raw=$(_cic_run_command gh run view "$CIC_RUN_ID" --repo "$CIC_RUN_REPO" --json databaseId,status,conclusion,jobs 2>"$ef"); rc=$?
     CIC_ERR=$(tr '\n' ' ' < "$ef"); rm -f "$ef"
     if [ "$rc" -ne 0 ]; then
+        [ "$rc" -ne 124 ] || CIC_DEADLINE_HIT=1
         CIC_ERR="${CIC_ERR:-gh run view exited $rc}"
         return 1
     fi
@@ -254,7 +257,7 @@ _cic_is_rl() { printf '%s' "${1:-}" | grep -i -E 'rate limit|RATE_LIMITED|abuse 
 _cic_budget_wait() {
     local force="${1:-0}" floor="${CHECK_CI_API_FLOOR:-300}" jmax="${GH_BUDGET_JITTER_MAX:-15}"
     local out core_rem core_reset gql_rem gql_reset reset now wait_s jitter human max="${CIC_MAX_WAIT:-0}"
-    local bucket=graphql rem bucket_reset
+    local bucket=graphql rem bucket_reset rc
     local sleeper="${CIC_SLEEP_CMD:-sleep}"
     case "$floor" in ''|*[!0-9]*) floor=300 ;; esac
     case "$jmax" in ''|*[!0-9]*) jmax=15 ;; esac
@@ -262,10 +265,19 @@ _cic_budget_wait() {
     [ "$floor" -eq 0 ] && [ "$force" != 1 ] && return 0
     if [ -n "$CIC_RUN_ID" ] && [ "${CIC_DEADLINE:-0}" -gt 0 ]; then
         max=$((CIC_DEADLINE - SECONDS))
-        if [ "$max" -le 0 ]; then CIC_ERR="run budget deadline exhausted"; return 2; fi
+        if [ "$max" -le 0 ]; then CIC_ERR="run budget deadline exhausted"; CIC_DEADLINE_HIT=1; return 2; fi
     fi
     if [ -n "$CIC_RUN_ID" ]; then
-        out=$(_cic_run_command gh api --hostname "${CIC_RUN_REPO%%/*}" rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"' 2>&1) || { CIC_ERR="cannot read REST core budget: $out"; return 2; }
+        out=$(_cic_run_command gh api --hostname "${CIC_RUN_REPO%%/*}" rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"' 2>&1) || {
+            rc=$?; [ "$rc" -ne 124 ] || CIC_DEADLINE_HIT=1
+            CIC_ERR="cannot read REST core budget: $out"; return 2
+        }
+        # The request itself consumes the deadline. Recompute BEFORE deciding
+        # whether the reset and jitter fit, not just before issuing the read.
+        if [ "${CIC_DEADLINE:-0}" -gt 0 ]; then
+            max=$((CIC_DEADLINE - SECONDS))
+            if [ "$max" -le 0 ]; then CIC_ERR="run budget deadline exhausted"; CIC_DEADLINE_HIT=1; return 2; fi
+        fi
     else
         out=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"' 2>/dev/null) || out=""
     fi
@@ -294,9 +306,9 @@ _cic_budget_wait() {
     wait_s=$((reset - now + 2))
     [ "$wait_s" -lt 2 ] && wait_s=2
     human=$(date -u -d "@$reset" +%H:%M:%SZ 2>/dev/null || date -u -r "$reset" +%H:%M:%SZ 2>/dev/null || echo "epoch $reset")
-    # The pre-check is advisory: with the reset beyond the bound, fetch and spend what is left
-    # (as the legacy path does); only a real rate-limit error (force=1) refuses to proceed.
-    if [ "$max" -gt 0 ] && [ "$wait_s" -gt "$max" ] && [ "$force" != 1 ]; then return 0; fi
+    # Preserve the advisory PR pre-check. Run mode refuses a reset beyond the
+    # remaining bound, including after a slow rate-limit request.
+    if [ -z "$CIC_RUN_ID" ] && [ "$max" -gt 0 ] && [ "$wait_s" -gt "$max" ] && [ "$force" != 1 ]; then return 0; fi
     if [ "$max" -gt 0 ] && [ "$wait_s" -gt "$max" ]; then
         CIC_ERR="GitHub API budget low ($bucket=$rem, floor=$floor), resets at $human (in ${wait_s}s) — longer than the ${max}s bound; not waiting"
         echo "check-ci: $CIC_ERR" >&"${CIC_NOTICE_FD:-2}"
@@ -314,12 +326,12 @@ _cic_budget_wait() {
 # cic_get <ttl_s> — see the header.
 cic_get() {
     local ttl="${1:-60}" rl_tries=0 brc rc head_after locked left
-    CIC_ROWS=""; CIC_ERR=""
+    CIC_ROWS=""; CIC_ERR=""; CIC_DEADLINE_HIT=0
     if _cic_read "$ttl"; then return "$CIC_HIT_RC"; fi
     while :; do
         if [ -n "$CIC_RUN_ID" ] && [ "${CIC_DEADLINE:-0}" -gt 0 ]; then
             left=$((CIC_DEADLINE - SECONDS))
-            if [ "$left" -le 0 ]; then CIC_ERR="run read deadline exhausted"; return 1; fi
+            if [ "$left" -le 0 ]; then CIC_ERR="run read deadline exhausted"; CIC_DEADLINE_HIT=1; return 1; fi
             CIC_MAX_WAIT="$left"
         fi
         _cic_budget_wait 0; brc=$?

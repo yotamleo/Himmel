@@ -100,6 +100,7 @@ _read() {
     cic_get "$1"
     local rc=$?
     if [ "$rc" -ne 0 ] || [ -z "$CIC_ROWS" ]; then
+        if [ "$RUN_MODE" = 1 ] && [ "${CIC_DEADLINE_HIT:-0}" = 1 ] && [ "${PENDING:-0}" -gt 0 ]; then _deadline; fi
         TICK=fail
         echo "check-ci-watch: ${CIC_ERR:-no checks reported}" >&2
         [ "$RUN_MODE" = 0 ] && exit 1
