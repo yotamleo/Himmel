@@ -1432,18 +1432,34 @@ done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-context.sh
 
 # HIMMEL-4574: a message argument (gh pr/issue comment|create|edit|review|view,
-# the Jira CLI) and a heredoc fed only to a reader are data that mentions a
-# target, not a run of it - allowed outside any checkout too.
-JIRA_CLI=/home/u/himmel/scripts/jira/dist/index.js
+# the anchor's Jira CLI) is data that mentions a target, not a run of it -
+# allowed outside any checkout too.
+JIRA_CLI=$PRIMARY/scripts/jira/dist/index.js
 for v in \
     'gh pr comment 1 --body "ran: bash scripts/handover/console-kit/go.sh 12 abc"' \
     'gh pr create --title "x" --body "a; bash scripts/cr/clear-cr-marker.sh | b"' \
     "gh issue comment 5 --body 'then bash scripts/cr/write-verdicts.sh sweep'" \
-    "node $JIRA_CLI comment HIMMEL-1 \"see bash scripts/cr/clear-cr-marker.sh; then go.sh\"" \
+    "node $JIRA_CLI comment HIMMEL-1 \"see bash scripts/cr/clear-cr-marker.sh; then go.sh\""; do
+    run "HIMMEL-4574 mention [${v%%"$NL"*}] -> allow" 0 "$(payload "$v" "$TMP")" "$HR"
+done
+# j2064 NO-GO: printf -v can write BASH_CMDS (rebinding cat/grep to bash) or a
+# variable later run by ${x@P} / $[x] arithmetic, and cd can plant a
+# $(...) in PWD for ${PWD@P}; so printf, echo and cd are not readers, and a
+# heredoc naming a target is never data-only (the first shape would otherwise
+# run bash on the body).
+# shellcheck disable=SC2016 # the literal `$(...)` text, never expanded here
+for v in \
+    "printf -v 'BASH_CMDS[cat]' %s /bin/bash; cat scripts/cr/write-verdicts.sh sweep" \
+    "printf -v 'BASH_CMDS[grep]' %s /bin/bash; grep scripts/cr/write-verdicts.sh sweep" \
+    "printf -v x %s '\$(bash scripts/cr/write-verdicts.sh sweep)'; echo \"\${x@P}\"" \
+    "printf -v x %s 'a[\$(bash scripts/cr/write-verdicts.sh sweep)]'; echo \$[x]" \
+    "printf -v x %s '\$(bash scripts/cr/write-verdicts.sh sweep)'; cat <<EOF${NL}\${x@P}${NL}EOF" \
+    "printf -v 'BASH_CMDS[cat]' %s /bin/bash; cat <<'EOF'${NL}bash scripts/cr/write-verdicts.sh sweep${NL}EOF" \
+    "cd '/tmp/\$(bash scripts/cr/write-verdicts.sh)' && echo \"\${PWD@P}\"" \
     "cat <<'EOF'${NL}then run bash scripts/cr/write-verdicts.sh sweep${NL}EOF" \
     "cat <<'EOF' | head -3${NL}run bash scripts/handover/console-kit/go.sh 12 abc${NL}EOF" \
-    "wc -l <<'EOF'${NL}a; bash scripts/cr/pr-check-context.sh | x${NL}EOF"; do
-    run "HIMMEL-4574 mention [${v%%"$NL"*}] -> allow" 0 "$(payload "$v" "$TMP")" "$HR"
+    "node /tmp/x/scripts/jira/dist/index.js comment HIMMEL-1 \"bash scripts/cr/write-verdicts.sh sweep\""; do
+    run "HIMMEL-4574 j2064 control [${v%%"$NL"*}] -> deny" 2 "$(payload "$v" "$TMP")" "$HR"
 done
 # A list or pipeline of readers (grep, cat, sed with inert scripts, git
 # grep/log/show/diff, ...) runs nothing, whatever its patterns and file
@@ -1456,7 +1472,7 @@ for v in \
     'sed -n 60,96p scripts/cr/write-verdicts.sh; sed -n 1,9p scripts/cr/clear-cr-marker.sh' \
     'git grep -n "bash scripts/cr/write-verdicts.sh" -- docs | head' \
     'git log --oneline -3 -- scripts/handover/console-kit/go.sh' \
-    'cd /x && git show HEAD:scripts/cr/clear-cr-marker.sh | head -5'; do
+    'git show HEAD:scripts/cr/clear-cr-marker.sh | head -5'; do
     run "HIMMEL-4574 readers [$v] -> allow" 0 "$(payload "$v" "$TMP")" "$HR"
 done
 # ... and a runner after or among the readers, a reader's output written to a

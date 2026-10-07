@@ -638,7 +638,10 @@ if st_tokenize "$cmd" && [ "$ST_NSEG" -eq 1 ] && [ "$ST_SUBST$ST_HEREDOC$ST_ANSI
             node)
                 k=$((tk_cmd + 1))
                 if [ "$k" -lt "$ST_N" ] && [ -z "${ST_RO[k]}" ] && [ "${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 000 ]; then
-                    case "${ST_W[k]}" in */scripts/jira/dist/index.js) tk_msg=1 ;; esac
+                    # only the anchor's own Jira CLI, never one a path can plant
+                    case "${HIMMEL_REPO:-}" in
+                        /*) [ "${ST_W[k]}" != "$HIMMEL_REPO/scripts/jira/dist/index.js" ] || tk_msg=1 ;;
+                    esac
                 fi
                 ;;
         esac
@@ -776,11 +779,8 @@ fi
 # nothing in it can run a file, so a glob or brace in a body (a scratch
 # file's `{}`, a list comprehension's `*`) is data. python/node/jq run their
 # body as code, grep -f reads it as patterns and tee writes it, so none of
-# them qualifies. HIMMEL-4574: the same proof holds when the command names a
-# target or a cr/ or handover/ path - with no runner, no write and only
-# readers, a mention (`cat <<EOF` of a brief that quotes go.sh) is data too.
-# A heredoc fed to anything else (python3, bash, `| sh`, `$(cat <<E)`) still
-# goes to the classification below.
+# them qualifies. Only a command that names no target and no cr/ or
+# handover/ path gets this exit; one that does is classified below.
 HD_READERS='cat head tail wc'
 heredoc_data_only() { # true when only heredoc bodies could make $flat look runnable
     local k sg=-1 cw=-1 w
@@ -829,8 +829,10 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # script inert and there is no -i; git only as grep/log/show/diff without
 # -O/--open-files-in-pager (runs a pager command on the files), --output or
 # --ext-diff. rg (--pre), sort (--compress-program), awk, find and
-# xargs run programs, so none of them is a reader.
-PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq cd echo printf '
+# xargs run programs, so none of them is a reader. Nor are printf (-v writes
+# BASH_CMDS, PATH or a var a later ${x@P} or $[x] runs), echo (it expands
+# ${x@P}) or cd (it plants a $(…) in PWD).
+PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 readers_only() { # true when every command the command line runs is a reader
     local k sg=-1 cw=-1 w
     st_tokenize "$cmd" || return 1
@@ -866,10 +868,10 @@ readers_only() { # true when every command the command line runs is a reader
     done
     return 0
 }
-heredoc_data_only && exit 0
 readers_only && exit 0
 case "$flat" in
-    *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;;
+    *[cC][rR]/*|*[hH]andover/*) ;;
+    *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || ! heredoc_data_only || exit 0 ;;
     *) [ "$mentions" -eq 1 ] || exit 0 ;;
 esac
 
