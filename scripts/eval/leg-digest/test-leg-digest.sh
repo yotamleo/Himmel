@@ -139,9 +139,9 @@ cp "$FX/bash-errors.jsonl" "$TMP/$S9.jsonl"
 digest "$TMP/$S9.jsonl" >"$TMP/be.json" 2>"$TMP/be.err" || bad "digest of bash-errors.jsonl exits 0: $(head -c 300 "$TMP/be.err")"
 berow() { jq -c --arg k "$1" '[.failures[] | select(.class == $k and .agent.id == "main")] | .[0] // empty' "$TMP/be.json"; }
 check "a grep that matched nothing (exit 1, empty output) is not a failure row" '[ "$(jq "[.failures[] | select(.class | test(\"no-match\"))] | length" "$TMP/be.json")" = 0 ] && [ -z "$(berow error/Bash:no-match)" ]'
-check "it is counted as ok_no_match, not as an error" 'jq -e ".metrics.ok_no_match == 4 and .metrics.fail_error == 19" "$TMP/be.json" >/dev/null'
+check "it is counted as ok_no_match, not as an error" 'jq -e ".metrics.ok_no_match == 4 and .metrics.fail_error == 20" "$TMP/be.json" >/dev/null'
 check "no failure row carries an ok/ class" '[ "$(jq "[.failures[] | select(.class | startswith(\"ok/\"))] | length" "$TMP/be.json")" = 0 ]'
-check "a grep with output, a non-grep empty exit 1, a grep followed by a failing command or piped into one or into a parenthesized one, a grep with an apostrophe in a trailing comment followed by a failing command, a usage error that names two tracked scripts and neither in its output, a grep exit 2, an unmatched exit 3 and an untracked script stay error/Bash" '[ "$(berow error/Bash | jq .count)" = 11 ]'
+check "a grep with output, a non-grep empty exit 1, a grep followed by a failing command or piped into one or into a parenthesized one, a grep with an apostrophe in a trailing comment followed by a failing command, a grep whose escaped space makes the # an argument, a usage error that names two tracked scripts and neither in its output, a grep exit 2, an unmatched exit 3 and an untracked script stay error/Bash" '[ "$(berow error/Bash | jq .count)" = 12 ]'
 check "a usage error is keyed by the tracked script, one row per script" '[ "$(berow error/Bash:usage:impacted-suites | jq .count)" = 3 ] && [ "$(berow error/Bash:usage:write-verdicts | jq .count)" = 1 ]'
 check "clear-cr-marker exit 14 is error/Bash:cr-gate-exit-14, another script at 14 is not" '[ "$(berow error/Bash:cr-gate-exit-14 | jq -c "[.count, .tool_call_ids]")" = "[1,[\"toolu_cr1\"]]" ]'
 check "a zsh nomatch is error/Bash:zsh-nomatch, not no-match" '[ "$(berow error/Bash:zsh-nomatch | jq -c .tool_call_ids)" = "[\"toolu_z1\"]" ]'

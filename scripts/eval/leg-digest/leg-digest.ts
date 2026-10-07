@@ -52,23 +52,25 @@ const PASS_THROUGH = /^\s*(?:(?:grep|egrep|fgrep|rg|ugrep|head|tail|sort|uniq|ca
 // whole. ponytail: no `$(...)`, backticks or heredocs, a split inside one still reads as a stage boundary; revisit
 // if the board shows a misclassified row.
 const lastStages = (cmd: string): string[] => {
-  let stages: string[] = [], last: string[] = [""], cur = "", quote = "";
-  const endStage = () => { stages.push(cur); cur = ""; };
+  let stages: string[] = [], last: string[] = [""], cur = "", quote = "", ws = true; // ws: the last char was unescaped whitespace or a boundary
+  const endStage = () => { stages.push(cur); cur = ""; ws = true; };
   const endCommand = () => { endStage(); if (stages.some((s) => s.trim())) last = stages; stages = []; };
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
+    const wordStart = ws;
+    ws = false;
     if (quote) {
       if (c === "\\" && quote === '"') { cur += c + (cmd[++i] ?? ""); continue; }
       if (c === quote) quote = "";
       cur += c;
     } else if (c === "\\") cur += c + (cmd[++i] ?? "");
-    else if (c === "#" && (cur === "" || /\s$/.test(cur))) { while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++; }
+    else if (c === "#" && wordStart) { while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++; }
     else if (c === "'" || c === '"') { quote = c; cur += c; }
     else if (c === ";" || c === "\n") endCommand();
     else if (c === "&" && cmd[i + 1] === "&") { endCommand(); i++; }
     else if (c === "|" && cmd[i + 1] === "|") { endCommand(); i++; }
     else if (c === "|") endStage();
-    else cur += c;
+    else { cur += c; ws = /\s/.test(c); }
   }
   endCommand();
   return last;
