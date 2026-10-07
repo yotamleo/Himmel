@@ -4,7 +4,8 @@
 # checklist by hand ~12 times on 2026-09-18 with zero variance; the fleet cap
 # doubling (4 -> 8) doubles the READYs per hour, so it is worth a script.
 #
-# Read-only. Prints one line per check, then READY-CHECK PASS|FAIL. It does
+# Read-only except the shared PR snapshot cache (HIMMEL-4858). Prints one
+# line per check, then READY-CHECK PASS|FAIL. It does
 # NOT read the three-dot diff — that judgement call stays the console's own,
 # and the script says so on its last line.
 #
@@ -14,7 +15,7 @@
 #   PR body, the same code the console runs. Prints COVERAGE-LINT PASS|FAIL.
 #
 # Checks:
-#   1. gh pr view: headRefOid == <head-sha> (full 40 chars); mergeStateStatus
+#   1. Shared snapshot: headRefOid == <head-sha> (full 40 chars); mergeStateStatus
 #      == CLEAN (retries briefly on UNKNOWN — a transient GitHub computation
 #      state, not a verdict).
 #   2. statusCheckRollup: every check IDENTITY's LATEST run is COMPLETED with
@@ -24,11 +25,9 @@
 #      CheckRun name + workflowName when present, else StatusContext
 #      context. Read via --json, never `gh pr checks` text (a green check
 #      whose name contains a space mislabels under naive text parsing).
-#   3. GraphQL unresolved review threads == 0. Paginated the same way
-#      check-ci.sh's review-thread gate is (scripts/check-ci.sh, "Paginate:
-#      first:100 alone would let unresolved threads beyond page one slip
-#      through") — same query, same cursor/hasNextPage guards, so a >100-
-#      thread PR can't silently short-circuit to a false PASS here either.
+#   3. GraphQL unresolved review threads == 0. The snapshot follows every
+#      page with cursor/hasNextPage guards and the same 50-page ceiling as
+#      check-ci.sh; a >100-thread PR cannot silently short-circuit to PASS.
 #   4. CR ledger: <git-common-dir>/cr-critic-scores.jsonl has >=1 row for
 #      <head-sha> with status "ok" (the shape `scripts/cr/cr-scores.sh` and
 #      friends read — {"kind":"avail","head":...,"status":"ok"}).
@@ -125,6 +124,11 @@ repo="${nwo#*/}"
 
 RESULT=0
 mark_fail() { RESULT=1; }
+SNAPSHOT_SCRIPT="$(cd "$(dirname "$0")/../../lib" && pwd)/gh-pr-snapshot.sh"
+snapshot=""
+if [ "$ONLY7" -eq 0 ]; then
+    snapshot=$(GH_CMD="$GH" bash "$SNAPSHOT_SCRIPT" "$nwo" 60 "$PR" 2>/dev/null) || snapshot=""
+fi
 
 if [ "$ONLY7" -eq 0 ]; then
 
@@ -133,13 +137,15 @@ attempt=0
 head_now=""
 mss=""
 while [ "$attempt" -lt 5 ]; do
-    pv=$("$GH" pr view "$PR" --repo "$nwo" --json headRefOid,mergeStateStatus \
-        --jq '"\(.headRefOid) \(.mergeStateStatus)"' 2>/dev/null)
+    pv=$(printf '%s' "$snapshot" | jq -r '.[0] | "\(.headRefOid) \(.mergeStateStatus)"' 2>/dev/null)
     head_now="${pv%% *}"
     mss="${pv#* }"
     [ "$mss" = "UNKNOWN" ] || break
     attempt=$((attempt + 1))
     sleep 1
+    if [ "$attempt" -lt 5 ]; then
+        snapshot=$(GH_CMD="$GH" bash "$SNAPSHOT_SCRIPT" "$nwo" 0 "$PR" 2>/dev/null) || snapshot=""
+    fi
 done
 if [ -z "$pv" ]; then
     echo "[FAIL] 1. gh pr view #$PR --repo $nwo failed — cannot read headRefOid/mergeStateStatus"
@@ -152,8 +158,7 @@ else
 fi
 
 # ── 2. statusCheckRollup ─────────────────────────────────────────────────────
-rollup=$("$GH" pr view "$PR" --repo "$nwo" --json statusCheckRollup \
-    --jq '.statusCheckRollup' 2>/dev/null)
+rollup=$(printf '%s' "$snapshot" | jq -c '.[0].statusCheckRollup' 2>/dev/null)
 if [ -z "$rollup" ] || [ "$rollup" = "null" ]; then
     echo "[FAIL] 2. statusCheckRollup unreadable (gh pr view --json statusCheckRollup failed)"
     mark_fail
@@ -216,55 +221,11 @@ else
 fi
 
 # ── 3. unresolved review threads (paginated, mirrors scripts/check-ci.sh) ──
-unresolved=0
-cursor=""
-pages=0
 threads_ok=1
-while :; do
-    pages=$((pages + 1))
-    if [ "$pages" -gt 50 ]; then
-        echo "[FAIL] 3. review-thread query did not terminate within 50 pages (cursor cycle?)"
-        threads_ok=0
-        break
-    fi
-    sent_cursor="$cursor"
-    set -- -f o="$owner" -f r="$repo" -F n="$PR"
-    [ -n "$cursor" ] && set -- "$@" -f c="$cursor"
-    # shellcheck disable=SC2016  # $o/$r/$n/$c are GraphQL variables — literal on purpose
-    page=$("$GH" api graphql \
-        -f query='query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved}}}}}' \
-        "$@" \
-        --jq '.data.repository.pullRequest.reviewThreads | "\([.nodes[] | select(.isResolved | not)] | length) \(.pageInfo.hasNextPage) \(.pageInfo.endCursor)"' 2>/dev/null)
-    page_count=${page%% *}
-    rest=${page#* }
-    has_next=${rest%% *}
-    cursor=${rest#* }
-    case "$page_count" in
-        ''|*[!0-9]*)
-            echo "[FAIL] 3. review-thread GraphQL query failed"
-            threads_ok=0
-            break ;;
-    esac
-    case "$has_next" in
-        true|false) ;;
-        *)
-            echo "[FAIL] 3. review-thread query returned a malformed page (hasNextPage='$has_next')"
-            threads_ok=0
-            break ;;
-    esac
-    if [ "$has_next" = "true" ] && { [ -z "$cursor" ] || [ "$cursor" = "null" ]; }; then
-        echo "[FAIL] 3. review-thread query returned a malformed page (hasNextPage=true with no cursor)"
-        threads_ok=0
-        break
-    fi
-    if [ "$has_next" = "true" ] && [ "$cursor" = "$sent_cursor" ]; then
-        echo "[FAIL] 3. review-thread query returned a malformed page (cursor did not advance)"
-        threads_ok=0
-        break
-    fi
-    unresolved=$((unresolved + page_count))
-    [ "$has_next" = "true" ] || break
-done
+unresolved=$(printf '%s' "$snapshot" | jq -er '.[0].reviewThreads.nodes | select(type == "array") | [.[] | select(.isResolved | not)] | length' 2>/dev/null) || {
+    echo "[FAIL] 3. review-thread GraphQL query failed"
+    threads_ok=0
+}
 if [ "$threads_ok" -eq 1 ]; then
     if [ "$unresolved" -eq 0 ]; then
         echo "[PASS] 3. unresolved review threads = 0"
@@ -301,7 +262,7 @@ else
 fi
 
 # ── commits (shared by checks 5 and 6) ──────────────────────────────────────
-commits_json=$("$GH" pr view "$PR" --repo "$nwo" --json commits --jq '.commits' 2>/dev/null)
+commits_json=$(printf '%s' "$snapshot" | jq -c '.[0].commits' 2>/dev/null)
 files_json=$("$GH" api --paginate "repos/$owner/$repo/pulls/$PR/files" --jq '.[].filename' 2>/dev/null)
 
 if [ -z "$commits_json" ] || [ "$commits_json" = "null" ]; then
@@ -363,14 +324,8 @@ else
     fi
     TICKET_PATTERN="${TICKET_PATTERN:-(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)}"
 
-    # Merge commits (>1 parent) are exempt — same signal check-commit-range.sh
-    # uses. `gh pr view --json commits` has no `parents` field, so this is a
-    # separate raw GraphQL query keyed on commit oid.
-    # shellcheck disable=SC2016  # $o/$r/$n are GraphQL variables — literal on purpose
-    merge_oids=$("$GH" api graphql \
-        -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){commits(first:100){nodes{commit{oid parents{totalCount}}}}}}}' \
-        -f o="$owner" -f r="$repo" -F n="$PR" \
-        --jq '.data.repository.pullRequest.commits.nodes[] | select(.commit.parents.totalCount > 1) | .commit.oid' 2>/dev/null)
+    # Parent counts ride the shared snapshot; real merge commits stay exempt.
+    merge_oids=$(printf '%s' "$commits_json" | jq -r '.[] | select(.parents.totalCount > 1) | .oid' 2>/dev/null)
 
     missing=$(printf '%s' "$commits_json" | jq -r --arg merges "$merge_oids" '
         ($merges | split("\n") | map(select(length > 0))) as $m
@@ -410,7 +365,11 @@ cov_shape_help() {
     echo "       (-> is accepted for →; a trailing . or bold is fine). Put any explanation BEFORE the marker."
 }
 
-cov_body=$("$GH" pr view "$PR" --repo "$nwo" --json body --jq '.body' 2>/dev/null | tr -d '\r')
+if [ "$ONLY7" -eq 1 ]; then
+    cov_body=$("$GH" pr view "$PR" --repo "$nwo" --json body --jq '.body' 2>/dev/null | tr -d '\r')
+else
+    cov_body=$(printf '%s' "$snapshot" | jq -r '.[0].body' 2>/dev/null | tr -d '\r')
+fi
 cov_section=$(printf '%s\n' "$cov_body" | awk '
     /^##[ \t]+[Tt]icket [Cc]overage[ \t]*$/ { f = 1; next }
     f && /^#/ { exit }

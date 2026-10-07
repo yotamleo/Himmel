@@ -39,6 +39,7 @@ LEDGER="$REPO/.git/cr-critic-scores.jsonl"
 # ── gh PATH stub ─────────────────────────────────────────────────────────
 mkdir -p "$tmp/bin"
 GH_LOG="$tmp/gh.log"
+export GH_PR_SNAPSHOT_CACHE_DIR="$tmp/snapshot-cache"
 cat > "$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 echo "$*" >> "$GH_LOG"
@@ -54,6 +55,18 @@ case "$args" in
         printf '%s' "${STUB_COMMITS:-[]}" ;;
     *"--json body"*)
         printf '%b' "${STUB_BODY:-}" ;;
+    'api repos/'*'/pulls/'*) printf '%s\n' "${STUB_HEAD:-}" ;;
+    *'p77:pullRequest'*)
+        [ -z "${STUB_SNAPSHOT_FAIL:-}" ] || exit 1
+        jq -n --arg h "$STUB_HEAD" --arg m "${STUB_MSS:-CLEAN}" \
+            --argjson rollup "${STUB_ROLLUP:-[]}" --argjson commits "${STUB_COMMITS:-[]}" \
+            --arg merges "${STUB_MERGE_OIDS:-}" --argjson u "${STUB_UNRESOLVED:-0}" \
+            --arg body "$(printf '%b' "${STUB_BODY:-}")" '
+            {data:{repository:{p77:{number:77,headRefOid:$h,mergeStateStatus:$m,reviewDecision:null,body:$body,
+                commits:{nodes:[$commits[] | . as $commit | {commit:(. + {oid:(.oid // $h),parents:{totalCount:(if (($merges|split("\n")) | index($commit.oid // "")) != null then 2 else 1 end)}})}],pageInfo:{hasNextPage:false,endCursor:null}},
+                reviewThreads:{nodes:[range($u)|{isResolved:false}],pageInfo:{hasNextPage:false,endCursor:null}},
+                statusCheckRollup:{contexts:{nodes:[$rollup[] | . + {__typename:(if has("conclusion") then "CheckRun" else "StatusContext" end)} | if has("workflowName") then . + {checkSuite:{workflowRun:{workflow:{name:.workflowName}}}} else . end],pageInfo:{hasNextPage:false,endCursor:null}}}
+            }}}}' ;;
     *"commits(first:100)"*)
         printf '%s\n' "${STUB_MERGE_OIDS:-}" ;;
     *"api graphql"*)
@@ -116,12 +129,13 @@ run() {
         STUB_FILES_FAIL="${STUB_FILES_FAIL:-}" \
         STUB_BODY="${STUB_BODY-$GREEN_BODY}" \
         JIRA_CMD="$tmp/bin/jira-stub" STUB_JIRA_DB="$JIRA_DB" STUB_JIRA_DOWN="${STUB_JIRA_DOWN:-}" \
-        PATH="$PATH" GH_LOG="$GH_LOG" \
+        PATH="$PATH" GH_LOG="$GH_LOG" GH_PR_SNAPSHOT_CACHE_DIR="$(mktemp -d "$tmp/cache.XXXXXX")" \
+        STUB_SNAPSHOT_FAIL="${STUB_SNAPSHOT_FAIL:-}" \
         bash "$SCRIPT" "$PR" "$SHA")
 }
 
 reset_stubs() {
-    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_MERGE_OIDS STUB_FILES STUB_FILES_FAIL STUB_BODY STUB_JIRA_DOWN
+    unset STUB_HEAD STUB_MSS STUB_ROLLUP STUB_UNRESOLVED STUB_COMMITS STUB_MERGE_OIDS STUB_FILES STUB_FILES_FAIL STUB_BODY STUB_JIRA_DOWN STUB_SNAPSHOT_FAIL
     seed_ledger_ok
 }
 
@@ -136,7 +150,10 @@ done
 
 # --- 0. all-green PR: exit 0, READY-CHECK PASS, all six PASS lines ------
 reset_stubs
+: > "$GH_LOG"
 rc=0; out="$(run)" || rc=$?
+gql_calls=$(grep -Ec '^(repo view|pr view|api graphql)' "$GH_LOG")
+check "green: at most two GraphQL calls" "$((gql_calls <= 2))" "1"
 check "green: exit 0" "$rc" "0"
 contains "green: overall verdict" "$out" "READY-CHECK PASS"
 contains "green: check 1 passes" "$out" "[PASS] 1."
@@ -146,6 +163,15 @@ contains "green: check 4 passes" "$out" "[PASS] 4."
 contains "green: check 5 passes" "$out" "[PASS] 5."
 contains "green: check 6 passes" "$out" "[PASS] 6."
 contains "green: names the diff read as the console's job" "$out" "stays the console's own judgement"
+
+# An unreadable shared snapshot must fail every dependent check, not just head.
+reset_stubs
+STUB_SNAPSHOT_FAIL=1
+rc=0; out="$(run)" || rc=$?
+check "unreadable snapshot: exit 1" "$rc" "1"
+for item in 1 2 3 5 6 7; do
+    contains "unreadable snapshot: check $item fails" "$out" "[FAIL] $item."
+done
 
 # --- 1a. check 1 fails: head mismatch -----------------------------------
 reset_stubs
@@ -303,7 +329,7 @@ contains "missing-ticket: names the offending subject" "$out" "tweak with no tic
 reset_stubs
 MERGE_OID=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
 STUB_FILES="docs/handover/running-a-console.md"
-STUB_COMMITS='[{"oid":"'"$MERGE_OID"'","messageHeadline":"Merge remote-tracking branch '"'"'origin/main'"'"' into fix/x","messageBody":""},{"oid":"1111111111111111111111111111111111111a","messageHeadline":"fix(x): [HIMMEL-1] tweak","messageBody":""}]'
+STUB_COMMITS='[{"oid":"'"$MERGE_OID"'","messageHeadline":"Merge remote-tracking branch '"'"'origin/main'"'"' into fix/x","messageBody":""},{"oid":"111111111111111111111111111111111111111a","messageHeadline":"fix(x): [HIMMEL-1] tweak","messageBody":""}]'
 rc=0; out="$(run)" || rc=$?
 check "merge-commit unexempt (no STUB_MERGE_OIDS): exit 1" "$rc" "1"
 contains "merge-commit unexempt: check 6 fails at base" "$out" "[FAIL] 6."
@@ -317,7 +343,7 @@ contains "merge-commit exempt: check 6 passes" "$out" "[PASS] 6."
 # merge commit is present elsewhere in the range ------------------------
 reset_stubs
 STUB_MERGE_OIDS="$MERGE_OID"
-STUB_COMMITS='[{"oid":"'"$MERGE_OID"'","messageHeadline":"Merge remote-tracking branch '"'"'origin/main'"'"' into fix/x","messageBody":""},{"oid":"1111111111111111111111111111111111111a","messageHeadline":"fix(x): tweak with no ticket","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"}]'
+STUB_COMMITS='[{"oid":"'"$MERGE_OID"'","messageHeadline":"Merge remote-tracking branch '"'"'origin/main'"'"' into fix/x","messageBody":""},{"oid":"111111111111111111111111111111111111111a","messageHeadline":"fix(x): tweak with no ticket","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"}]'
 rc=0; out="$(run)" || rc=$?
 check "merge-plus-unticketed: exit 1" "$rc" "1"
 contains "merge-plus-unticketed: check 6 fails" "$out" "[FAIL] 6."
@@ -472,6 +498,7 @@ own="$tmp/own-checkout"
 mkdir -p "$own/scripts/handover/console-kit" "$own/scripts/lib"
 cp "$SCRIPT" "$own/scripts/handover/console-kit/ready-check.sh"
 cp "$REPO_ROOT/scripts/lib/load-dotenv.sh" "$own/scripts/lib/load-dotenv.sh"
+cp "$REPO_ROOT/scripts/lib/gh-pr-snapshot.sh" "$own/scripts/lib/gh-pr-snapshot.sh"
 printf 'JIRA_PROJECT_KEY=HIMMEL\n' > "$own/.env"
 
 reset_stubs
