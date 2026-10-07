@@ -83,6 +83,11 @@ check "the egress ledger carries input_head and the canary tag" '[ "$(grep -c IH
 check "the egress digest still keys the ledger category" '[ "$(jq -c "[.failures[] | select(.class == \"denied/classifier:merge-without-review\")] | length" "$TMP/egress.json")" = 1 ]'
 check "no input_head key or value reaches the digest or its stderr" 'absent -e input_head -e IHEAD4670zq "$TMP/egress.json" "$TMP/egress.err"'
 check "no raw reason_tag reaches the digest or its stderr, only the slugged category" 'absent -e RTAG4670zq -e "Merge Without Review" -e "Session Transcript Tampering" -e reason_tag "$TMP/egress.json" "$TMP/egress.err"'
+# HIMMEL-4694: an off-list tag falls back to the journal bracket, so the class alone cannot show the canary row joined.
+# The same row (ts, tool, session) with an on-list tag must key toolu_c2, else the absence check above is vacuous.
+jq -c 'if .reason_tag == "RTAG4670zq" then .reason_tag = "Merge Without Review" else . end' "$TMP/egress-ledger.jsonl" >"$TMP/probe-ledger.jsonl"
+bun "$DIG" --transcript "$TMP/$SID.jsonl" --denials-ledger "$TMP/probe-ledger.jsonl" >"$TMP/probe.json" 2>/dev/null || bad "the join-probe digest exits 0"
+check "the canary ledger row is matched to toolu_c2" '[ "$(jq -c "[.failures[] | select(.class == \"denied/classifier:merge-without-review\") | .tool_call_ids[]]" "$TMP/probe.json")" = "[\"toolu_c1\",\"toolu_c2\"]" ]'
 
 echo "6. denial cross-check: mapper vs trajectory.py (spec 2.3)"
 : >"$TMP/divergence.txt"
