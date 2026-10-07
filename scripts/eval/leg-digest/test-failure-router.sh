@@ -29,7 +29,12 @@ ok() { PASS=$((PASS + 1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
 lines() { if [ -f "$1" ]; then grep -c . "$1"; else echo 0; fi; }
+# HIMMEL-4754: decision rows only; the route-intent rows are the pre-send lines.
+dlines() { if [ -f "$1" ]; then grep -c '"kind":"route-decision"' "$1"; else echo 0; fi; }
+decs() { jq -c 'select(.kind == "route-decision")' "$1"; }
 CANARY=CANARY4670zq
+# The router fails closed without a project key; the suite names one, and the no-key cases unset it.
+export JIRA_PROJECT_KEY=HIMMEL
 NOW=2026-10-07T12:00:00Z
 
 # The stub Jira: records every call, answers list from $STUB/list.<label> (and its rc from $STUB/list.rc),
@@ -40,6 +45,8 @@ cat >"$STUB/jira" <<'EOF'
 d="$(dirname "$0")"
 printf '%s\n' "$*" >>"$d/calls.log"
 op="$1"; shift
+# HIMMEL-4754: with LOGPROBE set, record how many intent lines the log held when a send arrived.
+case "$op" in create|comment) [ -n "${LOGPROBE:-}" ] && { grep -c route-intent "$LOGPROBE" 2>/dev/null; true; } >>"$d/intent-seen.log" ;; esac
 grab() { while [ $# -gt 0 ]; do case "$1" in --desc-file|--comment-file) cp "$2" "$d/body.$op.$(wc -l <"$d/calls.log")"; shift 2 ;; *) shift ;; esac; done; }
 case "$op" in
   list) lbl="$(printf '%s' "$*" | sed -n 's/.*labels = "\([^"]*\)".*/\1/p')"; [ -f "$d/list.$lbl" ] && cat "$d/list.$lbl"; exit "$(cat "$d/list.rc" 2>/dev/null || echo 0)" ;;
@@ -93,7 +100,7 @@ body="$(ls "$STUB"/body.create.* 2>/dev/null | head -n 1)"
 check "the ticket body passes the alphabet check" '[ -n "$body" ] && python3 "$FR" check-body "$body" >/dev/null'
 check "the body names the class, the leg count and both legs" 'grep -q "denied/guard-pr-check-literal" "$body" && grep -q "distinct legs (14 d): 2" "$body" && grep -q "N100, N200" "$body"'
 check "no canary in the body, the call log, the state or the decision log" '! grep -q "$CANARY" "$body" "$STUB/calls.log" "$ST" "$LOG"'
-check "one filed line, carrying the ticket" '[ "$(lines "$LOG")" = 1 ] && jq -e "select(.class == \"denied/guard-pr-check-literal\") | .decision == \"filed\" and .ticket == \"HIMMEL-9001\" and .legs == 2 and (.ts | test(\"^2026-10-07T12:00:00\"))" "$LOG" >/dev/null'
+check "one filed line, carrying the ticket" '[ "$(dlines "$LOG")" = 1 ] && decs "$LOG" | jq -e "select(.class == \"denied/guard-pr-check-literal\") | .decision == \"filed\" and .ticket == \"HIMMEL-9001\" and .legs == 2 and (.ts | test(\"^2026-10-07T12:00:00\"))" >/dev/null'
 check "e. N500 + N500b count as one leg: no decision" '! grep -q "denied/guard-gh" "$LOG"'
 check "signal-only, never-routed and run_error classes log nothing" '! grep -Eq "traj/|blocked/|suite/test-tick|run_error/" "$LOG"'
 check "a subagent-role denial does not count" '! grep -q "block-git-stash" "$LOG"'
@@ -103,7 +110,7 @@ check "the state file maps the class to its ticket" 'jq -e ".classes[\"denied/gu
 
 echo "b. a third leg comments once; no new leg writes nothing"
 route >"$TMP/b0.out" 2>&1
-check "a rerun with no new leg makes no call and no line" '[ "$(calls create)" = 1 ] && [ "$(calls comment)" = 0 ] && [ "$(lines "$LOG")" = 1 ]'
+check "a rerun with no new leg makes no call and no line" '[ "$(calls create)" = 1 ] && [ "$(calls comment)" = 0 ] && [ "$(dlines "$LOG")" = 1 ]'
 GL="$STUB/list.fl-denied-guard-pr-check-literal"
 printf 'HIMMEL-9001\tTask\tTo Do\tlegs retype past guard-pr-check-literal\n' >"$GL"
 row N300 denied/guard-pr-check-literal 1
@@ -111,31 +118,32 @@ route >"$TMP/b.out" 2>&1 || bad "route exits 0 on the third leg"
 check "one comment on the ticket, no new create" '[ "$(calls comment)" = 1 ] && [ "$(calls create)" = 1 ] && grep -q "^comment HIMMEL-9001 --comment-file " "$STUB/calls.log"'
 cbody="$(ls "$STUB"/body.comment.* 2>/dev/null | head -n 1)"
 check "the comment body passes the alphabet check and has the new count" '[ -n "$cbody" ] && python3 "$FR" check-body "$cbody" >/dev/null && grep -q "distinct legs (14 d): 3" "$cbody"'
-check "one commented line" '[ "$(lines "$LOG")" = 2 ] && [ "$(jq -r "select(.decision == \"commented\") | .ticket" "$LOG")" = HIMMEL-9001 ]'
+check "one commented line" '[ "$(dlines "$LOG")" = 2 ] && [ "$(decs "$LOG" | jq -r "select(.decision == \"commented\") | .ticket")" = HIMMEL-9001 ]'
 row N400 denied/guard-pr-check-literal 1
 route >/dev/null 2>&1
-check "a fourth leg the same day does not comment twice" '[ "$(calls comment)" = 1 ] && [ "$(jq -r "select(.legs == 4) | .decision" "$LOG")" = skipped:comment-daily ]'
+check "a fourth leg the same day does not comment twice" '[ "$(calls comment)" = 1 ] && [ "$(decs "$LOG" | jq -r "select(.legs == 4) | .decision")" = skipped:comment-daily ]'
 
 echo "c + d. the daily cap and the memory-inbox candidate"
 row N100 suite/test-board.sh 0 false leg 2026-10-06T10:00:00Z true; row N200 suite/test-board.sh 0 false leg 2026-10-06T10:00:00Z true
 row N100 denied/permission-prompt; row N200 denied/permission-prompt
 route >/dev/null 2>&1
-check "two more classes file (3 today)" '[ "$(calls create)" = 3 ] && [ "$(jq -r "select(.decision == \"filed\") | .class" "$LOG" | sort -u | wc -l)" = 3 ]'
+check "two more classes file (3 today)" '[ "$(calls create)" = 3 ] && [ "$(decs "$LOG" | jq -r "select(.decision == \"filed\") | .class" | sort -u | wc -l)" = 3 ]'
 row N100 denied/classifier:merge-without-review; row N200 denied/classifier:merge-without-review
 route >"$TMP/c.out" 2>&1 || bad "route exits 0 on the capped day"
-check "c. the 4th class files nothing and writes one capped line" '[ "$(calls create)" = 3 ] && [ "$(jq -r "select(.class == \"denied/classifier:merge-without-review\") | .decision" "$LOG")" = capped ]'
+check "c. the 4th class files nothing and writes one capped line" '[ "$(calls create)" = 3 ] && [ "$(decs "$LOG" | jq -r "select(.class == \"denied/classifier:merge-without-review\") | .decision")" = capped ]'
 check "d. the classifier recurrence writes one memory-inbox candidate" '[ "$(grep -c "^- " "$INBOX")" = 1 ] && grep -q "denied/classifier:merge-without-review" "$INBOX" && grep -q "shell-and-gate-traps.md" "$INBOX"'
 check "the inbox line carries no canary" '! grep -q "$CANARY" "$INBOX"'
 check "only the classifier class writes to the inbox" '! grep -Eq "permission-prompt|test-board|guard-pr-check" "$INBOX"'
 route >/dev/null 2>&1
-check "a rerun with no new leg adds no inbox line and no log line" '[ "$(grep -c "^- " "$INBOX")" = 1 ] && [ "$(lines "$LOG")" = 6 ]'
+check "a rerun with no new leg adds no inbox line and no log line" '[ "$(grep -c "^- " "$INBOX")" = 1 ] && [ "$(dlines "$LOG")" = 6 ]'
 route --now 2026-10-08T12:00:00Z >/dev/null 2>&1
-check "the next day the capped class files and the open ticket gets its daily comment" '[ "$(calls create)" = 4 ] && [ "$(calls comment)" = 2 ] && [ "$(jq -r "select(.class == \"denied/classifier:merge-without-review\") | .decision" "$LOG" | tail -n 1)" = filed ]'
+check "the next day the capped class files and the open ticket gets its daily comment" '[ "$(calls create)" = 4 ] && [ "$(calls comment)" = 2 ] && [ "$(decs "$LOG" | jq -r "select(.class == \"denied/classifier:merge-without-review\") | .decision" | tail -n 1)" = filed ]'
 check "and it still writes no second inbox candidate" '[ "$(grep -c "^- " "$INBOX")" = 1 ]'
 
 echo "f. every decision has exactly one decision-log line"
-check "the log is 8 lines, one per decision, in order" '[ "$(lines "$LOG")" = 8 ] && [ "$(jq -r .decision "$LOG" | tr "\n" " ")" = "filed commented skipped:comment-daily filed filed capped filed commented " ]'
-check "every line is the standard envelope plus {class,legs,decision,ticket}" '[ "$(jq -c "keys" "$LOG" | sort -u)" = "[\"class\",\"decision\",\"host\",\"kind\",\"legs\",\"source\",\"ticket\",\"ts\",\"v\"]" ] && jq -e -s "length > 0 and all(.[]; .v == 1 and .kind == \"route-decision\" and .source == \"scripts/eval/leg-digest/failure_router.py\" and (.host | length) > 0)" "$LOG" >/dev/null'
+check "the log is 8 lines, one per decision, in order" '[ "$(dlines "$LOG")" = 8 ] && [ "$(decs "$LOG" | jq -r .decision | tr "\n" " ")" = "filed commented skipped:comment-daily filed filed capped filed commented " ]'
+check "every line is the standard envelope plus {class,legs,decision,ticket}" '[ "$(decs "$LOG" | jq -c "keys" | sort -u)" = "[\"class\",\"decision\",\"host\",\"kind\",\"legs\",\"source\",\"ticket\",\"ts\",\"v\"]" ] && decs "$LOG" | jq -e -s "length > 0 and all(.[]; .v == 1 and .kind == \"route-decision\" and .source == \"scripts/eval/leg-digest/failure_router.py\" and (.host | length) > 0)" >/dev/null'
+check "every route-intent line is the standard envelope plus {class,legs,intent}, and each one precedes a decision line" '[ "$(jq -c "select(.kind == \"route-intent\") | keys" "$LOG" | sort -u)" = "[\"class\",\"host\",\"intent\",\"kind\",\"legs\",\"source\",\"ts\",\"v\"]" ] && [ "$(jq -r .kind "$LOG" | grep -c route-intent)" = "$(( $(dlines "$LOG") - $(decs "$LOG" | jq -r .decision | grep -Ec "^(skipped|capped|recurred)") ))" ]'
 
 echo "dry-run writes nothing and calls no Jira"
 row N600 denied/guard-pr-check-literal 1
@@ -148,7 +156,7 @@ check "it prints what it would do" 'grep -q "would-comment" "$TMP/dry.out" && gr
 echo "a Done ticket is never re-filed or reopened"
 printf 'HIMMEL-9001\tTask\tDone\tlegs retype past guard-pr-check-literal\n' >"$GL"
 route --now 2026-10-09T12:00:00Z >/dev/null 2>&1
-check "recurred-after-done, no comment and no create for it" '[ "$(jq -r "select(.class == \"denied/guard-pr-check-literal\") | .decision" "$LOG" | tail -n 1)" = recurred-after-done ] && [ "$(calls comment)" = 2 ] && [ "$(grep -c "fl-denied-guard-pr-check-literal" "$STUB/calls.log")" -ge 1 ] && [ "$(grep "^create " "$STUB/calls.log" | grep -c "fl-denied-guard-pr-check-literal")" = 1 ]'
+check "recurred-after-done, no comment and no create for it" '[ "$(decs "$LOG" | jq -r "select(.class == \"denied/guard-pr-check-literal\") | .decision" | tail -n 1)" = recurred-after-done ] && [ "$(calls comment)" = 2 ] && [ "$(grep -c "fl-denied-guard-pr-check-literal" "$STUB/calls.log")" -ge 1 ] && [ "$(grep "^create " "$STUB/calls.log" | grep -c "fl-denied-guard-pr-check-literal")" = 1 ]'
 
 echo "fail closed for Jira"
 F2="$TMP/f2"; mkdir -p "$F2"; cp "$LED" "$F2/l.jsonl"
@@ -176,18 +184,18 @@ SAVE="$LED"; LED="$F4/l.jsonl"
 row N1 denied/guard-y 1 false leg 2026-10-01T10:00:00Z; row N2 denied/guard-y 1 false leg 2026-10-01T10:00:00Z
 f4() { python3 "$FR" route --ledger "$F4/l.jsonl" --state "$F4/s.json" --log "$F4/log" --inbox "$F4/inbox" --jira-bin "$STUB/jira" "$@" >/dev/null 2>&1; }
 f4 --now 2026-10-02T12:00:00Z
-k4="$(jq -r .ticket "$F4/log" | head -n 1)"
+k4="$(decs "$F4/log" | jq -r .ticket | head -n 1)"
 printf '%s\tTask\tTo Do\tlegs retype past guard-y\n' "$k4" >"$STUB/list.fl-denied-guard-y"
 row N3 denied/guard-y 1 false leg 2026-10-20T10:00:00Z; row N4 denied/guard-y 1 false leg 2026-10-20T10:00:00Z
 LED="$SAVE"
 f4 --now 2026-10-21T12:00:00Z
-check "filed on N1+N2, then commented on N3+N4 once N1+N2 left the window" '[ "$(jq -r .decision "$F4/log" | paste -sd " ")" = "filed commented" ]'
+check "filed on N1+N2, then commented on N3+N4 once N1+N2 left the window" '[ "$(decs "$F4/log" | jq -r .decision | paste -sd " ")" = "filed commented" ]'
 c4="$(calls comment)"
 SAVE="$LED"; LED="$F4/l.jsonl"
 row N5 denied/guard-y 1 false leg 2026-11-05T10:00:00Z; row N6 denied/guard-y 1 false leg 2026-11-05T10:00:00Z
 LED="$SAVE"
 f4 --now 2026-11-06T12:00:00Z
-check "a comment on new legs at the same leg count still writes its decision line" '[ "$(calls comment)" = "$((c4 + 1))" ] && [ "$(jq -r .decision "$F4/log" | paste -sd " ")" = "filed commented commented" ]'
+check "a comment on new legs at the same leg count still writes its decision line" '[ "$(calls comment)" = "$((c4 + 1))" ] && [ "$(decs "$F4/log" | jq -r .decision | paste -sd " ")" = "filed commented commented" ]'
 
 echo "ledger rows dated after the routing time do not count"
 F5="$TMP/f5"; mkdir -p "$F5"; n5="$(calls create)"
@@ -202,6 +210,39 @@ F6="$TMP/f6"; mkdir -p "$F6/log"
 SAVE="$LED"; LED="$F6/l.jsonl"; row N1 denied/guard-w 1; row N2 denied/guard-w 1; LED="$SAVE"
 python3 "$FR" route --ledger "$F6/l.jsonl" --state "$F6/s.json" --log "$F6/log" --inbox "$F6/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
 check "no acted legs are saved for a decision whose log line failed" '[ -z "$(jq -r ".classes[\"denied/guard-w\"].acted // empty" "$F6/s.json" 2>/dev/null)" ]'
+
+echo "HIMMEL-4754: no send without a logged decision"
+F7="$TMP/f7"; mkdir -p "$F7"
+SAVE="$LED"; LED="$F7/l.jsonl"; row N1 denied/guard-v 1; row N2 denied/guard-v 1; LED="$SAVE"
+rm -f "$STUB/intent-seen.log"; n7="$(calls create)"
+LOGPROBE="$F7/log" python3 "$FR" route --ledger "$F7/l.jsonl" --state "$F7/s.json" --log "$F7/log" --inbox "$F7/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "an intent line is already in the log when the create arrives" '[ "$(calls create)" = "$((n7 + 1))" ] && [ "$(tail -n 1 "$STUB/intent-seen.log")" = 1 ]'
+check "the intent line is a route-intent row with the envelope and no decision, and the decision line follows" '[ "$(jq -r .kind "$F7/log" | paste -sd " ")" = "route-intent route-decision" ] && jq -e -s ".[0] | .v == 1 and (.host | length) > 0 and .class == \"denied/guard-v\" and .intent == \"file\" and (has(\"decision\") | not)" "$F7/log" >/dev/null'
+k7="$(decs "$F7/log" | jq -r .ticket | head -n 1)"; printf "%s\tTask\tTo Do\tx\n" "$k7" >"$STUB/list.fl-denied-guard-v"
+SAVE="$LED"; LED="$F7/l.jsonl"; row N3 denied/guard-v 1; LED="$SAVE"
+rm -f "$STUB/intent-seen.log"
+LOGPROBE="$F7/log" python3 "$FR" route --ledger "$F7/l.jsonl" --state "$F7/s.json" --log "$F7/log" --inbox "$F7/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "a comment is preceded by its own intent line too" '[ "$(tail -n 1 "$STUB/intent-seen.log")" = 2 ] && [ "$(jq -r .intent "$F7/log" | grep -c comment)" = 1 ]'
+F8="$TMP/f8"; mkdir -p "$F8/log"
+SAVE="$LED"; LED="$F8/l.jsonl"; row N1 denied/guard-u 1; row N2 denied/guard-u 1; LED="$SAVE"
+n8="$(calls create)"
+python3 "$FR" route --ledger "$F8/l.jsonl" --state "$F8/s.json" --log "$F8/log" --inbox "$F8/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "an unwritable log means no create is sent" '[ "$(calls create)" = "$n8" ]'
+SAVE="$LED"; LED="$F7/l.jsonl"; row N4 denied/guard-v 1; LED="$SAVE"
+c8="$(calls comment)"
+python3 "$FR" route --now 2026-10-08T12:00:00Z --ledger "$F7/l.jsonl" --state "$F7/s.json" --log "$F8/log" --inbox "$F7/inbox" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "an unwritable log means no comment is sent" '[ "$(calls comment)" = "$c8" ]'
+
+echo "HIMMEL-4754: no JIRA_PROJECT_KEY fails closed"
+F9="$TMP/f9"; mkdir -p "$F9"
+SAVE="$LED"; LED="$F9/l.jsonl"; row N1 denied/guard-t 1; row N2 denied/guard-t 1; LED="$SAVE"
+n9="$(lines "$STUB/calls.log")"
+env -u JIRA_PROJECT_KEY python3 "$FR" route --ledger "$F9/l.jsonl" --state "$F9/s.json" --log "$F9/log" --inbox "$F9/inbox" --now "$NOW" --jira-bin "$STUB/jira" >"$TMP/nokey.out" 2>&1; rc9=$?
+check "an unset key exits non-zero, names the key, calls nothing and writes nothing" '[ "$rc9" != 0 ] && grep -q JIRA_PROJECT_KEY "$TMP/nokey.out" && [ "$(lines "$STUB/calls.log")" = "$n9" ] && [ ! -e "$F9/log" ] && [ ! -e "$F9/s.json" ]'
+JIRA_PROJECT_KEY='' python3 "$FR" route --ledger "$F9/l.jsonl" --state "$F9/s.json" --log "$F9/log" --inbox "$F9/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1; rc9=$?
+check "an empty key fails closed the same way" '[ "$rc9" != 0 ] && [ "$(lines "$STUB/calls.log")" = "$n9" ]'
+env -u JIRA_PROJECT_KEY python3 "$FR" route --dry-run --ledger "$F9/l.jsonl" --state "$F9/s.json" --log "$F9/log" --now "$NOW" >"$TMP/nokey-dry.out" 2>&1; rc9=$?
+check "--dry-run still works without a key" '[ "$rc9" = 0 ] && grep -q would-file "$TMP/nokey-dry.out"'
 
 echo "the routing table is data"
 check "failure-routes.table.json parses and names every spec 4.2 key pattern" 'jq -e "[.routes[].match] | index(\"denied/classifier:*\") and index(\"suite/*\") and index(\"error/*\") and index(\"traj/claim-unverified\")" "$HERE/failure-routes.table.json" >/dev/null'
