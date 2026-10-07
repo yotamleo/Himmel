@@ -306,6 +306,13 @@ printf '{"v":1,"pending":["filed denied/old-class"],"sent":{}}\n' >"$C9i/state.n
 s0="$(sends)"
 review "$C9i" >/dev/null 2>&1
 check "a pending line in the pre-HIMMEL-4798 notify file is sent once and the file moves to the new name" '[ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "undelivered earlier: filed denied/old-class" && [ -f "$C9i/state.json.notify.json" ] && [ ! -e "$C9i/state.notify.json" ]'
+C9j="$TMP/c9j"; mkdir -p "$C9j"
+row "$C9j/ledger.jsonl" N920 error/Monitor
+: >"$C9j/other-ledger.jsonl"
+review "$C9j" --state "$C9j/routes.json" --notify-cmd "$STUB/notify-fail" >/dev/null 2>&1
+s0="$(sends)"
+review "$C9j" --ledger "$C9j/other-ledger.jsonl" --state "$C9j/routes.json.state" >/dev/null 2>&1
+check "a state named like another's sidecar stem does not migrate that sidecar away" '[ "$(sends)" = "$s0" ] && [ -f "$C9j/routes.json.notify.json" ]'
 
 echo
 echo "test-failure-review: $PASS passed, $FAIL failed"

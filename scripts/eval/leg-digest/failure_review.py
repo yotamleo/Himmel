@@ -31,7 +31,7 @@ $HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state/failure-routes.json), under f
 rename: {pending, sent}. The router state advances before the send, so the line is saved in pending
 as soon as the router returns, before the digest is written, and the next run sends it again until
 one is delivered. The name appends to the whole state filename, so states differing only in extension
-never share it (HIMMEL-4798); an older <stem>.notify.json is renamed to it on first use. A delivered new
+never share it (HIMMEL-4798); an older v1 <stem>.notify.json is moved to it (as v2) on first use. A delivered new
 class is recorded in sent and not named again for 24 h; a failed send records nothing there. An
 unreadable state file is kept aside as <file>.unreadable.<unique> and a fresh one started.
 
@@ -181,7 +181,7 @@ def legacy_notify_path(a):
 def load_notify(path):
     """(state, ok). A missing file is an empty state; anything unreadable is not ok."""
     if not os.path.exists(path):
-        return {"v": 1, "pending": [], "sent": {}}, True
+        return {"v": 2, "pending": [], "sent": {}}, True
     try:
         with open(path, encoding="utf-8") as fh:
             s = json.load(fh)
@@ -271,8 +271,18 @@ def main(argv=None):
         # states that shared it give it to whichever runs first. Drop once no station can still hold one
         # (HIMMEL-4798, a few weeks after merge).
         legacy = legacy_notify_path(a)
-        if not os.path.exists(npath) and os.path.exists(legacy):
-            os.replace(legacy, npath)
+        # Only a v1 file is legacy: every file this version writes is v2, so another state's new sidecar that
+        # happens to carry this legacy name (routes.json.notify.json for routes.json.state) is never taken.
+        # A sibling state migrating the same legacy file under its own lock may win the race: carry on.
+        if not os.path.exists(npath):
+            old, old_ok = load_notify(legacy)
+            if old_ok and old.get("v") == 1 and os.path.exists(legacy):
+                old["v"] = 2
+                write_atomic(npath, json.dumps(old, indent=1, sort_keys=True) + "\n")
+                try:
+                    os.unlink(legacy)
+                except FileNotFoundError:
+                    pass
         ns, ns_ok = load_notify(npath)
         if not ns_ok:
             # Kept aside under a unique name, never overwritten; a fresh state keeps this run's undelivered lines.
@@ -280,7 +290,8 @@ def main(argv=None):
             os.close(fd)
             os.replace(npath, kept)
             print("failure-review: %s is unreadable; kept as %s" % (npath, kept), file=sys.stderr)
-            ns = {"v": 1, "pending": [], "sent": {}}
+            ns = {"v": 2, "pending": [], "sent": {}}
+        ns["v"] = 2
         sent = {}
         for c, t in ns["sent"].items():
             try:
