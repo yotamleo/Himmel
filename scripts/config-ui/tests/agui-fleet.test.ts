@@ -227,6 +227,14 @@ test("cloud: each recent CLOUD-OK route is a node under its console, from its PR
   expect(by[FLEET.leg.name]).toMatchObject({ parent: FLEET.console.name, cloud: null });
 });
 
+test("a live shepherd whose journal is old remains attached to its cloud session", async () => {
+  const s = boot({}, { cloud: true });
+  const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+  utimesSync(s.journal(CLOUD.shepherd), old, old);
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.name === CLOUD.shepherd.name)).toMatchObject({ live: true, parent: "cloud-HIMMEL-905" });
+});
+
 test("cloud: GitHub is read once per cache window, in one batched query naming only the routed tickets", async () => {
   const s = boot({}, { cloud: true });
   await fleet(s.port);

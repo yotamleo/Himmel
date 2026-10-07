@@ -249,7 +249,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       // Live if any of its files was written recently: a subagent can be busy while the main journal is quiet.
       const { paths } = await sessionFiles(journal);
       const mtimes = await Promise.all(paths.map((p) => stat(p).then((s) => s.mtimeMs, () => 0)));
-      if (opts.now - Math.max(0, ...mtimes) > RECENT_MS && !/-console$/.test(c.name)) return null;
+      if (opts.now - Math.max(0, ...mtimes) > RECENT_MS && roleOf(c.name, c.doc) === "interactive") return null;
       ({ view, tally } = await fold(journal));
     }
     let doc = "", docAt = opts.now;
