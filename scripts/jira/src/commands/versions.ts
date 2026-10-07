@@ -35,7 +35,22 @@ export interface VersionCreateOptions {
 }
 
 // HIMMEL-3890: the start date is what `roadmap sync-sprints` uses as a sprint start.
-export type VersionEditOptions = Pick<VersionCreateOptions, 'description' | 'startDate' | 'releaseDate'>;
+export type VersionEditOptions = Pick<VersionCreateOptions, 'description' | 'startDate' | 'releaseDate'> & {
+  name?: string;
+};
+
+// HIMMEL-4872: a version name must be semver (vX.Y.Z, optional -pre.N) so git can
+// tag it; a letter milestone like v1.0.2b cannot be tagged and drifts from GitHub.
+const SEMVER_VERSION = /^v\d+\.\d+\.\d+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+
+export function checkVersionName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('version name must not be blank');
+  if (!SEMVER_VERSION.test(trimmed)) {
+    throw new Error(`version name "${trimmed}" is not semver (expected vX.Y.Z or vX.Y.Z-pre.N)`);
+  }
+  return trimmed;
+}
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -51,9 +66,7 @@ export function buildVersionCreateBody(
   name: string,
   opts: VersionCreateOptions,
 ): Record<string, unknown> {
-  const trimmed = name.trim();
-  if (!trimmed) throw new Error('version name must not be blank');
-  const body: Record<string, unknown> = { name: trimmed, project };
+  const body: Record<string, unknown> = { name: checkVersionName(name), project };
   Object.assign(body, datedFields(opts));
   if (opts.released !== undefined) body.released = opts.released;
   return body;
@@ -147,8 +160,9 @@ export async function editVersion(
   opts: VersionEditOptions,
 ): Promise<string> {
   const body = datedFields(opts);
+  if (opts.name !== undefined) body.name = checkVersionName(opts.name);
   if (Object.keys(body).length === 0) {
-    throw new Error('version-edit: nothing to edit (pass --start-date, --release-date or --description)');
+    throw new Error('version-edit: nothing to edit (pass --name, --start-date, --release-date or --description)');
   }
   const found = (await fetchVersions(project)).find((v) => v.name === name);
   if (!found) throw new Error(`no version named "${name}" in project ${project}`);
@@ -261,14 +275,16 @@ export function registerVersions(program: Command): void {
 
   program
     .command('version-edit <name>')
-    .description('Edit an existing project version (start date, release date, description)')
+    .description('Edit an existing project version (name, start date, release date, description)')
     .option('--project <key>', 'Project key (default: JIRA_PROJECT_KEY env var)')
+    .option('--name <name>', 'Rename the version (must be semver, vX.Y.Z)')
     .option('--start-date <date>', 'Start date, YYYY-MM-DD')
     .option('--release-date <date>', 'Release date, YYYY-MM-DD')
     .option('--description <text>', 'Version description')
     .action(async (name: string, options: VersionEditOptions & { project?: string }) => {
       console.log(
         await editVersion(options.project ?? projectKey(), name, {
+          name: options.name,
           description: options.description,
           startDate: options.startDate,
           releaseDate: options.releaseDate,

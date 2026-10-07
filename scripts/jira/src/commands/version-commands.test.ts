@@ -52,21 +52,21 @@ describe('version commands + fix-version', () => {
   });
 
   it('version-create: POST /version with name/project/dates/released/description', async () => {
-    mockRequest.mockResolvedValue({ id: '200', name: 'v3' });
-    await run(['version-create', ' v3 ', '--start-date', '2026-02-01', '--release-date', '2026-03-01', '--released', '--description', 'd']);
+    mockRequest.mockResolvedValue({ id: '200', name: 'v3.0.0' });
+    await run(['version-create', ' v3.0.0 ', '--start-date', '2026-02-01', '--release-date', '2026-03-01', '--released', '--description', 'd']);
     expect(mockRequest).toHaveBeenCalledWith('POST', '/version', {
-      name: 'v3',
+      name: 'v3.0.0',
       project: 'HIM',
       description: 'd',
       startDate: '2026-02-01',
       releaseDate: '2026-03-01',
       released: true,
     });
-    expect(console.log).toHaveBeenCalledWith('Created version v3 (id 200)');
+    expect(console.log).toHaveBeenCalledWith('Created version v3.0.0 (id 200)');
   });
 
   it('version-create with a bad date rejects before any request', async () => {
-    await expect(run(['version-create', 'v3', '--release-date', '2026-02-30'])).rejects.toThrow(/--release-date must be YYYY-MM-DD/);
+    await expect(run(['version-create', 'v3.0.0', '--release-date', '2026-02-30'])).rejects.toThrow(/--release-date must be YYYY-MM-DD/);
     expect(mockRequest).not.toHaveBeenCalled();
   });
 
@@ -75,6 +75,23 @@ describe('version commands + fix-version', () => {
     await run(['version-edit', 'v2', '--start-date', '2026-04-01']);
     expect(mockRequest).toHaveBeenCalledWith('PUT', '/version/101', { startDate: '2026-04-01' });
     expect(console.log).toHaveBeenCalledWith('Edited version v2');
+  });
+
+  it('version-edit --name: PUTs the new name in place (HIMMEL-4872)', async () => {
+    mockRequest.mockImplementation(async (m: string) => (m === 'GET' ? VERSIONS : {}));
+    await run(['version-edit', 'v2', '--name', 'v1.1.0']);
+    expect(mockRequest).toHaveBeenCalledWith('PUT', '/version/101', { name: 'v1.1.0' });
+    expect(console.log).toHaveBeenCalledWith('Edited version v2');
+  });
+
+  it('version-edit --name refuses a non-semver name before any request (HIMMEL-4872)', async () => {
+    await expect(run(['version-edit', 'v2', '--name', 'v1.0.2b'])).rejects.toThrow(/semver/);
+    expect(mockRequest).not.toHaveBeenCalled();
+  });
+
+  it('version-create refuses a non-semver name before any request (HIMMEL-4872)', async () => {
+    await expect(run(['version-create', 'v1.0.2i'])).rejects.toThrow(/semver/);
+    expect(mockRequest).not.toHaveBeenCalled();
   });
 
   it('version-edit with nothing to edit rejects without a request', async () => {
