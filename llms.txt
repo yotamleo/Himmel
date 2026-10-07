@@ -53,6 +53,7 @@ Data egress from graph extraction is fenced by one policy file, `scripts/guardra
 - [docs/setup/new-machine.md](docs/setup/new-machine.md) — fresh-machine setup and the contributor path.
 - [.env.example](.env.example) — every operator flag, grouped by how it reaches code.
 - [marketplace/plugins/handover/README.md](marketplace/plugins/handover/README.md) — cross-session handover state.
+- [himmel-bus](marketplace/plugins/himmel-bus/) — local chained message storage for himmel sessions.
 - [marketplace/plugins/shadcn-mcp/README.md](marketplace/plugins/shadcn-mcp/README.md) — the shadcn/ui registry MCP wrapper for the design plugin profile.
 - [docs/telegram-bridge.md](docs/telegram-bridge.md) · [docs/hermes-runbook.md](docs/hermes-runbook.md) · [docs/glm-offload.md](docs/glm-offload.md) — optional remote-control and alternate-model lanes.
 - [docs/README.md](docs/README.md) — the full docs map. [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) — license attribution.

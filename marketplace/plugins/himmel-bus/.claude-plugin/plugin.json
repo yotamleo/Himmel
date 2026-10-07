@@ -1,0 +1,5 @@
+{
+  "name": "himmel-bus",
+  "version": "0.1.0",
+  "description": "Local chained message storage for himmel sessions."
+}
