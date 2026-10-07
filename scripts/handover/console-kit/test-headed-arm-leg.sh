@@ -3905,6 +3905,60 @@ else
   echo "ok - 42f a refused launch never reaches the launcher"
 fi
 
+# --- 43. HIMMEL-4786: each real launch mints a session uuid, records it in the
+# doc's front matter (session_ids:, appended on a relaunch) and hands it to the
+# shim, which passes it to claude as --session-id.
+uuid_re='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+doc43="$tmp/HIMMEL-43-N43-sid-2026-10-07.md"
+printf -- '---\ntemplate_version: 3\n---\n\n# body\n\n## Results\n- 10:00 LIVE body line\n' > "$doc43"
+mkdir -p "$tmp/repo43"
+body43="$(sed '1,/^---$/d' "$doc43" | sed '1,/^---$/d')"
+for i in 1 2; do
+  d43="$tmp/c43-$i"; mk_launch_stubs "$d43" "HIMMEL-43-leg$i"
+  some_doc="$doc43" run_leg "$d43" "$tmp/repo43" "HIMMEL-43-leg$i" "claude-sonnet-5" >/dev/null 2>&1 || true
+  wait_record "$d43" || true
+done
+sids43="$(awk 'NR == 1 { next } /^---$/ { exit } { print }' "$doc43" | sed -n 's/^session_ids: *//p')"
+check "43a two launches record two session ids" "$(printf '%s' "$sids43" | grep -oE "$uuid_re" | sort -u | wc -l | tr -d ' ')" "2"
+check "43b the doc body is untouched" "$(sed '1,/^---$/d' "$doc43" | sed '1,/^---$/d')" "$body43"
+check "43c the front matter still opens on line 1" "$(head -n 1 "$doc43")" "---"
+sid43_2="$(printf '%s' "$sids43" | grep -oE "$uuid_re" | tail -n 1)"
+contains "43d the second launch hands its own uuid to the shim" "$(cat "$tmp/c43-2/record" 2>/dev/null)" "LEG_SESSION_ID=$sid43_2"
+nodoc43="$tmp/HIMMEL-43-N44-nofm.md"
+printf '# no front matter\n' > "$nodoc43"
+d43n="$tmp/c43-n"; mk_launch_stubs "$d43n" "HIMMEL-43-nofm"
+LEG_SESSION_ID=11111111-1111-1111-1111-111111111111 some_doc="$nodoc43" run_leg "$d43n" "$tmp/repo43" "HIMMEL-43-nofm" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d43n" || true
+check "43e0 the no-front-matter launch reached the launcher" "$([ -s "$d43n/record" ] && echo yes)" "yes"
+not_contains "43e a doc without front matter gets no id, and an inherited one is scrubbed" "$(cat "$d43n/record" 2>/dev/null)" "LEG_SESSION_ID="
+check "43f a doc without front matter is left byte-identical" "$(cat "$nodoc43")" "# no front matter"
+shim43="$tmp/shim43-claude"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@"\n' > "$shim43"; chmod 755 "$shim43"
+check "43g the shim passes LEG_SESSION_ID as --session-id" \
+  "$(LEG_CLAUDE_BIN="$shim43" LEG_SESSION_ID=22222222-2222-2222-2222-222222222222 bash "$HERE/../../lanes/leg-claude-launcher.sh" -n x | head -n 2 | tr '\n' ' ')" \
+  "--session-id 22222222-2222-2222-2222-222222222222 "
+check "43h the shim adds nothing without LEG_SESSION_ID" \
+  "$(env -u LEG_SESSION_ID LEG_CLAUDE_BIN="$shim43" bash "$HERE/../../lanes/leg-claude-launcher.sh" -n x | tr '\n' ' ')" "-n x "
+# A symlinked doc is never replaced by the temp file's mv (the link would
+# become a plain copy): no id is recorded and the link survives.
+lnk43t="$tmp/HIMMEL-43-N45-target.md"
+printf -- '---\ntemplate_version: 3\n---\n\n# body\n' > "$lnk43t"
+lnk43="$tmp/HIMMEL-43-N45-link.md"; ln -s "$lnk43t" "$lnk43"
+d43l="$tmp/c43-l"; mk_launch_stubs "$d43l" "HIMMEL-43-link"
+some_doc="$lnk43" run_leg "$d43l" "$tmp/repo43" "HIMMEL-43-link" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d43l" || true
+check "43i0 the symlinked-doc launch reached the launcher" "$([ -s "$d43l/record" ] && echo yes)" "yes"
+check "43i a symlinked doc stays a symlink" "$([ -L "$lnk43" ] && echo link)" "link"
+check "43j a symlinked doc's target is left untouched" "$(grep -c '^session_ids:' "$lnk43t")" "0"
+# The rewrite keeps the doc's mode (the temp file would otherwise take the umask).
+mode43="$tmp/HIMMEL-43-N46-mode.md"
+printf -- '---\ntemplate_version: 3\n---\n\n# body\n' > "$mode43"; chmod 600 "$mode43"
+d43m="$tmp/c43-m"; mk_launch_stubs "$d43m" "HIMMEL-43-mode"
+some_doc="$mode43" run_leg "$d43m" "$tmp/repo43" "HIMMEL-43-mode" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d43m" || true
+check "43k0 the mode-doc launch recorded an id" "$(grep -c '^session_ids:' "$mode43")" "1"
+check "43k the rewrite keeps the doc's mode" "$(stat -c %a "$mode43")" "600"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then
   echo "PASS - test-headed-arm-leg.sh"

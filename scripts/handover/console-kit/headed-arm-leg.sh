@@ -970,7 +970,8 @@ unset -v _leg_env_scrub
 # before any branch, means every path starts clean and the existing
 # leg_propagate_env calls are the only thing that can set them again.
 # LEG_PROFILE_NO_SETTING_SOURCES (HIMMEL-4069) rides the same scrub: only --consult sets it.
-for _leg_env_scrub in LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_PROFILE_NO_SETTING_SOURCES; do
+# LEG_SESSION_ID (HIMMEL-4786) too: a sibling's id reused here would collide.
+for _leg_env_scrub in LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_PROFILE_NO_SETTING_SOURCES LEG_SESSION_ID; do
     unset -v "$_leg_env_scrub"
     leg_env_drop_token "$_leg_env_scrub"
 done
@@ -2035,6 +2036,37 @@ fi
 
 # HIMMEL-3267: a deliberate --no-profile launch looks exactly like a profiled
 # one in headed-arm.sh's own log lines, so record the opt-out here.
+# HIMMEL-4786: mint this launch's session uuid, append it to the doc's front
+# matter (session_ids:, comma-separated, one per launch and relaunch) and hand
+# it to the shim, which passes it to claude as --session-id. The digest step
+# then digests the ids directly instead of searching by name. Only where the
+# shim is the launcher (native + profile, headed, not a consult) and the doc
+# opens on a front matter; the write is one temp file + mv, never the body.
+# A symlinked doc is skipped: the mv would replace the link with a copy.
+if [ "$LANE" = "native" ] && [ -n "$PROFILE" ] && [ "$HEADLESS" -eq 0 ] && [ "$CONSULT" -eq 0 ] \
+    && [ ! -L "$DOC" ] && [ "$(head -n 1 "$DOC" 2>/dev/null)" = "---" ]; then
+    _leg_sid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
+    _leg_sid="$(printf '%s' "$_leg_sid" | tr 'A-F' 'a-f')"
+    # cp -p keeps the doc's mode; the cksum re-check refuses the mv when the
+    # doc changed while it was rewritten (an append there would be lost).
+    _leg_doc_sum="$(cksum < "$DOC" 2>/dev/null)"
+    if printf '%s' "$_leg_sid" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+        && cp -p "$DOC" "$DOC.sid.$$" \
+        && awk -v sid="$_leg_sid" '
+            NR == 1 { print; fm = 1; next }
+            fm && /^session_ids:/ { sub(/[[:space:]]*$/, ""); print $0 "," sid; done = 1; next }
+            fm && /^---$/ { if (!done) print "session_ids: " sid; fm = 0 }
+            { print }' "$DOC" > "$DOC.sid.$$" \
+        && grep -q "^session_ids:.*$_leg_sid" "$DOC.sid.$$" \
+        && [ "$(cksum < "$DOC" 2>/dev/null)" = "$_leg_doc_sum" ] \
+        && mv -f "$DOC.sid.$$" "$DOC"; then
+        leg_propagate_env LEG_SESSION_ID "$_leg_sid"
+    else
+        rm -f "$DOC.sid.$$" 2>/dev/null
+        echo "$(date +%F_%T) headed-arm-leg: WARN session id NOT recorded in $DOC (the digest step falls back to its name search)" >> "$LOG"
+    fi
+fi
+
 if [ "$NO_PROFILE" -eq 1 ]; then
     echo "$(date +%F_%T) headed-arm-leg: WARN --no-profile: docs/handover/leg-preface.md NOT injected and no plugin profile applied (the brief must carry the preface)" >> "$LOG"
 fi

@@ -988,6 +988,39 @@ FB_NEXT=4670c3a0-0000-4000-8000-0000000000ee
 sed -e "s/$DG_SID/$FB_NEXT/g" -e 's/2026-10-06T12:00:01/2026-10-25T23:05:00/' "$DG_PROJ/$FB_SLUG/$DG_SID.jsonl" > "$DG_PROJ/$FB_SLUG/$FB_NEXT.jsonl"
 out_fb=$(TZ=Europe/Berlin bash "$STEP" --doc "$FB_DST2" --projects "$DG_PROJ" 2>&1)
 contains "digest-fallback/dst: a midnight early on a 25h day still rolls to the next date" "$out_fb" "$FB_NEXT digest=ok"
+# HIMMEL-4786: session_ids: in the front matter (the launcher's record) are
+# digested directly - no resume_cwd and no name match needed (a relaunch).
+dg_ledgers ids
+ID_DOC="$W/HIMMEL-9-N1386-relaunch-2026-10-06.md"
+printf -- '---\nsession_ids: %s,%s\n---\n# leg\n## Results\n- 10:00 LIVE - go\n- 11:00 WRAPPED - done\n' "$DG_SID" "$DG_MISSING" > "$ID_DOC"
+out_id=$(bash "$STEP" --doc "$ID_DOC" --projects "$DG_PROJ" 2>&1)
+contains "digest-ids: a recorded id is digested with no resume_cwd and no name match" "$out_id" "$DG_SID digest=ok"
+contains "digest-ids: a recorded id with no journal says so" "$out_id" "$DG_MISSING digest=skipped:no-journal"
+check "digest-ids: one eval-runs row, for the recorded id" "$(jq -r .run_id "$HIMMEL_EVAL_RUNS_LEDGER" 2>/dev/null)" "$DG_SID"
+check "digest-ids: a digested leg logs no skip" "$(dg_rows "$LEG_DIGEST_STATE_DIR/skips.jsonl")" "0"
+# panel round 2 codex-1: a doc launched before the ids existed and relaunched
+# after records only the relaunch - its earlier chain is still searched, and a
+# session both ways is digested once.
+dg_ledgers ids-mixed
+MIX_DOC="$W/mix/HIMMEL-9-N1-demo-2026-10-06.md"; mkdir -p "$W/mix"
+FB_REL=4670c3a0-0000-4000-8000-0000000000a1
+sed "s/$DG_SID/$FB_REL/g" "$DG_PROJ/-w/$DG_SID.jsonl" > "$DG_PROJ/-w/$FB_REL.jsonl"
+printf -- '---\nresume_cwd: %s\nsession_ids: %s,%s\n---\n# leg\n## Results\n- %s LIVE - go\n- %s WRAPPED - done\n' "$W/dg-cwd" "$FB_REL" "$DG_SID" "$FB_LIVE" "$FB_WRAP" > "$MIX_DOC"
+out_id=$(bash "$STEP" --doc "$MIX_DOC" --projects "$DG_PROJ" 2>&1)
+contains "digest-ids/mixed: the recorded relaunch is digested" "$out_id" "$FB_REL digest=ok"
+contains "digest-ids/mixed: the unrecorded earlier session is digested too" "$out_id" "$FB_OLD digest=ok"
+check "digest-ids/mixed: a session both recorded and found is digested once" "$(grep -c "^$DG_SID " <<< "$out_id")" "1"
+# skipped:* outcomes are logged, one row per doc, so the tick can count them
+dg_ledgers skips
+printf -- '---\nsession_ids: %s\n---\n# leg\n## Results\n- 11:00 WRAPPED - done\n' "$DG_MISSING" > "$ID_DOC"
+out_id=$(bash "$STEP" --doc "$ID_DOC" --projects "$DG_PROJ" 2>&1)
+contains "digest-skips: no recorded id has a journal" "$out_id" "digest=skipped:no-journal"
+NOFM_DOC="$W/HIMMEL-9-N2-nofm-2026-10-06.md"
+printf -- '# leg\n## Results\n- 11:00 WRAPPED - done\n' > "$NOFM_DOC"
+out_id=$(bash "$STEP" --doc "$NOFM_DOC" --projects "$DG_PROJ" 2>&1)
+contains "digest-skips: no ids and no resume_cwd" "$out_id" "digest=skipped:no-resume-cwd"
+check "digest-skips: each skip is logged with its doc and reason" "$(jq -r '"\(.doc) \(.reason)"' "$LEG_DIGEST_STATE_DIR/skips.jsonl" 2>/dev/null | tr '\n' ';')" "$(basename "$ID_DOC") no-journal;$(basename "$NOFM_DOC") no-resume-cwd;"
+check "digest-skips: rows carry a UTC ts" "$(jq -r .ts "$LEG_DIGEST_STATE_DIR/skips.jsonl" 2>/dev/null | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')" "2"
 check "digest: the step spawns no model CLI" "$(grep -cE '(^|[^-])\b(claude|codex|gemini) +(-p|--print|--bg|exec)' "$STEP")" "0"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------

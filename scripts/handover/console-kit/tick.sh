@@ -57,13 +57,16 @@ weekly quota the current burn leaves unspent at the reset (bank-monitor.sh
 TICK_SPARE_HOURS hours away (default 24). Advisory: it is not in console-wait's
 action key and wakes nothing.
 
-fails=<n>/<legs>[@<top-class>*<k>][!<recur>] (HIMMEL-4670) sits just before
-spare=: this shift's leg-failures ledger rows (since the console lock's start),
-distinct legs, the class most legs hit, and the classes the failure router acted
-on this shift. fails=none with no rows, fails=? when a ledger or the lock start is
+fails=<n>/<legs>[@<top-class>*<k>][!<recur>][~<skipped>] (HIMMEL-4670) sits just
+before spare=: this shift's leg-failures ledger rows (since the console lock's
+start), distinct legs, the class most legs hit, the classes the failure router
+acted on this shift, and ~<skipped> the leg docs whose wrap digest was skipped
+this shift (HIMMEL-4786, leg-digest-step.sh's skips.jsonl; none~<k> with only
+skips). fails=none with no rows, fails=? when a ledger or the lock start is
 unreadable or the latest wrap digest failed, skip with no --doc. Advisory: not in
 console-wait's action key, so it wakes nothing. Env seams:
-HIMMEL_LEG_FAILURES_LEDGER, HIMMEL_EVAL_RUNS_LEDGER, HIMMEL_FAILURE_ROUTES_LOG.
+HIMMEL_LEG_FAILURES_LEDGER, HIMMEL_EVAL_RUNS_LEDGER, HIMMEL_FAILURE_ROUTES_LOG,
+LEG_DIGEST_STATE_DIR.
 
 gql=<remaining>/<reset HH:MM> (HIMMEL-3197): the GitHub GraphQL budget, read from
 the X-Ratelimit-* headers of ONE `gh api -i graphql` call
@@ -1094,7 +1097,7 @@ if [ -n "$spare_in" ] && [ -n "$spare_pct" ] \
     spare_tail=" spare=$(awk -v p="$spare_pct" 'BEGIN { printf "%d", p }')@$(awk -v h="$spare_in" 'BEGIN { printf "%d", h }')h"
 fi
 
-# HIMMEL-4670 P4: fails=<n>/<legs>[@<top-class>*<k>][!<recur>] -- this shift's
+# HIMMEL-4670 P4: fails=<n>/<legs>[@<top-class>*<k>][!<recur>][~<skipped>] -- this shift's
 # leg-failures ledger rows (ts >= the console lock's `started`): <n> rows, <legs>
 # distinct legs, the class with the most distinct legs (then events, then name),
 # and !<recur> = distinct classes the failure router decided on this shift with a
@@ -1130,10 +1133,17 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                    | sort_by(-.l, -.e, .c) | .[0]) as $top
                 | "\(length)/\($legs)@\($top.c | gsub("[[:space:][:cntrl:]]"; "_"))*\($top.l)"
               end' 2>/dev/null)" || fl_counts=""
+        # HIMMEL-4786: ~<k> = distinct docs whose wrap digest was skipped this
+        # shift (leg-digest-step.sh's skips.jsonl); unreadable reads ? too.
+        fl_skips_log="${LEG_DIGEST_STATE_DIR:-$HOME/.himmel/state/leg-digest}/skips.jsonl"
+        fl_skips=""
+        fl_ok "$fl_skips_log" && { fl_skips="$(fl_rows "$fl_skips_log" | jq -s -r 'map(.doc) | unique | length' 2>/dev/null)" || fl_skips=""; }
         case "$fl_recur" in ''|*[!0-9]*) fl_counts="" ;; esac
+        case "$fl_skips" in ''|*[!0-9]*) fl_counts="" ;; esac
         if [ "$fl_digest" = ok ] && [ -n "$fl_counts" ]; then
             fails_summary="$fl_counts"
             [ "$fl_counts" = none ] || [ "$fl_recur" -eq 0 ] || fails_summary="$fails_summary!$fl_recur"
+            [ "$fl_skips" -eq 0 ] || fails_summary="$fails_summary~$fl_skips"
         fi
     fi
 fi

@@ -11,9 +11,13 @@
 #       bounded, for <pid> to be gone and the journal and its subagent files to
 #       stop changing (spec 1.2); if they never settle the row is `partial`.
 #   leg-digest-step.sh --doc <leg-doc> [--projects <dir>]
-#       The spec 1.2 fallback, for a leg not closed by close-wrapped-leg.sh.
-#       Finds the leg's chain in the project dir of the doc's `resume_cwd` with
-#       the close's own matcher (leg-transcripts.sh). A journal is a member when
+#       For a leg not closed by close-wrapped-leg.sh. When the front matter
+#       carries `session_ids:` (headed-arm-leg.sh's record, HIMMEL-4786) each
+#       id is digested directly, one line each prefixed with its id (an id
+#       with no journal reads `<id> digest=skipped:no-journal`). Then, for
+#       the sessions no id names (a leg launched before the ids existed),
+#       the spec 1.2 fallback finds the leg's chain in the project dir of the
+#       doc's `resume_cwd` with the close's own matcher (leg-transcripts.sh). A journal is a member when
 #       it matches the leg's names, its first `cwd` is `resume_cwd`, and its
 #       first timestamp falls in the doc's first-LIVE .. last-WRAPPED window
 #       (date from the doc name; LEG_DIGEST_CHAIN_SLACK_MIN minutes before LIVE,
@@ -27,7 +31,9 @@
 #                              crash, no-journal, bad-json), or the ledger
 #                              write itself failed (ledger), or the digest came
 #                              back inconclusive (inconclusive)
-#   digest=skipped:<reason>    nothing to digest, nothing written
+#   digest=skipped:<reason>    nothing digested; the only write is one row in
+#                              $LEG_DIGEST_STATE_DIR/skips.jsonl, which
+#                              tick.sh's fails= counts (HIMMEL-4786)
 # Always exits 0 (2 on a usage error): the caller's rc never depends on it.
 # Idempotence and write order belong to leg_ledger.py (per-session flock,
 # marker last), so a re-run or a racing backfill appends nothing new.
@@ -70,17 +76,27 @@ while [ "$#" -gt 0 ]; do
 done
 if [ -z "$DOC" ] || [ ! -r "$DOC" ]; then usage; fi
 
+# skip <reason>: the skipped:* line, plus one row in $STATE_DIR/skips.jsonl so
+# tick.sh's fails= can count undigested wraps (HIMMEL-4786). Then exit 0.
+skip() {
+    echo "digest=skipped:$1"
+    mkdir -p "$STATE_DIR" 2>/dev/null
+    jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg doc "$(basename "$DOC")" --arg r "$1" \
+        '{ts: $ts, doc: $doc, reason: $r}' >> "$STATE_DIR/skips.jsonl" 2>/dev/null
+    exit 0
+}
+
 # shellcheck source=scripts/lib/leg-identity.sh
 # shellcheck disable=SC1091
-. "$HERE/../../lib/leg-identity.sh" || { echo "digest=skipped:no-lib"; exit 0; }
+. "$HERE/../../lib/leg-identity.sh" || skip no-lib
 # shellcheck source=scripts/lib/handover-path.sh
 # shellcheck disable=SC1091
 . "$HERE/../../lib/handover-path.sh" 2>/dev/null || true
 # shellcheck source=scripts/handover/console-kit/leg-transcripts.sh
 # shellcheck disable=SC1091
-. "$HERE/leg-transcripts.sh" || { echo "digest=skipped:no-lib"; exit 0; }
+. "$HERE/leg-transcripts.sh" || skip no-lib
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/leg-digest-step.XXXXXX")" || { echo "digest=skipped:no-tmp"; exit 0; }
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/leg-digest-step.XXXXXX")" || skip no-tmp
 trap 'rm -rf "$WORK"' EXIT
 
 # ---------- who: closed-shape fields only (leg_ledger.py refuses anything else)
@@ -176,7 +192,7 @@ digest_one() { # digest_one <sid> <journal> <pid-or-empty> <wait:0|1>
 
 # ---------- close mode -------------------------------------------------------
 if [ "$SID_SET" = 1 ]; then
-    printf '%s' "$SID" | grep -qE "$UUID_RE" || { echo "digest=skipped:no-session"; exit 0; }
+    printf '%s' "$SID" | grep -qE "$UUID_RE" || skip no-session
     if [ -z "$JOURNAL" ] || [ "$(transcript_sid "$JOURNAL")" != "$SID" ]; then
         JOURNAL="$(find "$PROJECTS" -mindepth 2 -maxdepth 2 -name "$SID.jsonl" 2>/dev/null | head -n 1)"
     fi
@@ -184,13 +200,37 @@ if [ "$SID_SET" = 1 ]; then
     exit 0
 fi
 
+# ---------- the launcher's record: session_ids: in the front matter ----------
+# HIMMEL-4786: headed-arm-leg.sh appends each launch's uuid, so a relaunched
+# leg or a doc with no resume_cwd is still found. Digested directly, any window.
+ids=""
+[ "$(head -n 1 "$DOC")" != "---" ] \
+    || ids="$(awk 'NR == 1 { next } /^---$/ { exit } { print }' "$DOC" | sed -n 's/^session_ids: *//p' | tr ',' '\n' | tr -d ' ' | grep -E "$UUID_RE" | awk '!seen[$0]++')"
+members=0
+while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    j="$(find "$PROJECTS" -mindepth 2 -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -n 1)"
+    if [ -z "$j" ]; then echo "$sid digest=skipped:no-journal"; continue; fi
+    members=$((members + 1))
+    printf '%s %s\n' "$sid" "$(digest_one "$sid" "$j" "" 0)"
+done <<EOF
+$ids
+EOF
+# The search below still runs: a leg launched before the ids existed and
+# relaunched after records only the relaunch. Its outcome is a skip only when
+# the ids found nothing either.
+fb_skip() {
+    [ "$members" -eq 0 ] || exit 0
+    if [ -n "$ids" ]; then skip no-journal; else skip "$1"; fi
+}
+
 # ---------- fallback: the leg's chain from its doc (spec 1.2) ----------------
 cwd="$(sed -n '1,/^---$/{s/^resume_cwd: *//p;}' "$DOC" | head -n 1)"
-[ -n "$cwd" ] || { echo "digest=skipped:no-resume-cwd"; exit 0; }
+[ -n "$cwd" ] || fb_skip no-resume-cwd
 day="$(basename "$DOC" .md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -n 1)"
 live="$(grep -m1 -oE '^- [0-9]{2}:[0-9]{2} LIVE' "$DOC" | grep -oE '[0-9]{2}:[0-9]{2}')"
 wrapped="$(grep -oE '^- [0-9]{2}:[0-9]{2} WRAPPED' "$DOC" | tail -n 1 | grep -oE '[0-9]{2}:[0-9]{2}')"
-if [ -z "$day" ] || [ -z "$live" ] || [ -z "$wrapped" ]; then echo "digest=skipped:no-window"; exit 0; fi
+if [ -z "$day" ] || [ -z "$live" ] || [ -z "$wrapped" ]; then fb_skip no-window; fi
 # wall_after <epoch> <HH:MM>: the first instant at or after <epoch> whose local
 # clock reads HH:MM, on that day or the next. A wall time inside a DST fall-back
 # reads twice an hour apart, so a same-day decrease there is no midnight
@@ -232,14 +272,14 @@ hi=$(( hi + 60 ))
 ident="$(leg_identity "$DOC")"
 candidates="$(printf '%s\n%s\n' "${ident#*$'\t'}" "$(basename "$DOC" .md)" | tr ',' '\n' | sed '/^$/d')"
 slug="$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"
-[ -d "$PROJECTS/$slug" ] || { echo "digest=skipped:no-chain"; exit 0; }
+[ -d "$PROJECTS/$slug" ] || fb_skip no-chain
 # Every file of the leg's own project dir, whole: a chain spans days and
 # renames, so the close's recent-and-head-bounded first pass would hide members.
-members=0
 while IFS= read -r j; do
     [ -n "$j" ] || continue
     sid="$(transcript_sid "$j")"
     printf '%s' "$sid" | grep -qE "$UUID_RE" || continue  # a subagent file, not a session
+    ! printf '%s\n' "$ids" | grep -qxF "$sid" || continue  # already digested by id
     first="$(head -n 40 "$j" | jq -r 'select(type == "object") | [.cwd // empty, .timestamp // empty] | @tsv' 2>/dev/null)"
     jcwd="$(printf '%s\n' "$first" | awk -F'\t' 'NF == 2 { print $1; exit }')"
     jts="$(printf '%s\n' "$first" | awk -F'\t' 'NF == 2 { print $2; exit }')"
@@ -251,5 +291,5 @@ while IFS= read -r j; do
 done <<EOF
 $(match_transcripts "$(find "$PROJECTS/$slug" -type f -name '*.jsonl' 2>/dev/null)" 0 "$candidates")
 EOF
-[ "$members" -gt 0 ] || echo "digest=skipped:no-chain"
+[ "$members" -gt 0 ] || fb_skip no-chain
 exit 0
