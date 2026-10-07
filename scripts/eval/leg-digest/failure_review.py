@@ -30,7 +30,8 @@ DELIVERY (HIMMEL-4790) is kept in failure-review-notify.json beside the router s
 $HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state), under flock, temp then rename: {pending, sent}.
 The router state advances before the send, so a line that is not delivered keeps its routing and its
 new classes in pending, and the next run sends them again until one is delivered. A delivered new
-class is recorded in sent and not named again for 24 h; a failed send records nothing there.
+class is recorded in sent and not named again for 24 h; a failed send records nothing there. An
+unreadable state file is kept aside as <file>.unreadable and a fresh one started.
 
 Exit 0 on a written digest, 1 when the router failed (the digest still says so), 2 on bad input,
 3 when the Telegram line was due but not delivered (the digest is still written; the cadence alerts).
@@ -175,7 +176,8 @@ def load_notify(path):
     try:
         with open(path, encoding="utf-8") as fh:
             s = json.load(fh)
-        if not (isinstance(s, dict) and isinstance(s.get("pending"), list) and isinstance(s.get("sent"), dict)):
+        if not (isinstance(s, dict) and isinstance(s.get("pending"), list) and isinstance(s.get("sent"), dict)
+                and all(isinstance(p, str) for p in s["pending"])):
             return None, False
         return s, True
     except (OSError, ValueError):
@@ -255,7 +257,9 @@ def main(argv=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         ns, ns_ok = load_notify(npath)
         if not ns_ok:
-            print("failure-review: %s is unreadable; left as is, delivery not recorded" % npath, file=sys.stderr)
+            # Kept aside, never overwritten; a fresh state keeps this run's undelivered lines.
+            os.replace(npath, npath + ".unreadable")
+            print("failure-review: %s is unreadable; kept as %s.unreadable" % (npath, npath), file=sys.stderr)
             ns = {"v": 1, "pending": [], "sent": {}}
         sent = {}
         for c, t in ns["sent"].items():
@@ -288,8 +292,7 @@ def main(argv=None):
             else:
                 ns["pending"] = pending + done + ["new %s" % c for c in fresh]
             ns["sent"] = sent
-            if ns_ok:
-                write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
+            write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
             if rc == 0 and not ok:
                 return 3
     return 1 if rc != 0 else 0
