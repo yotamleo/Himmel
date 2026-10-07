@@ -99,6 +99,20 @@ Non-blocking minor items from the HIMMEL-207 PR #222 heavy CR:
   first (so it can't respawn the poller) then the poller, and removes the file.
   (On Windows the scoped `restart-bridge.ps1` remains the preferred lever — it
   also clears 409-conflicting duplicate pollers left by older launches.)
+- **Registry changes need no restart (HIMMEL-3504, HIMMEL-4687).** Every
+  dispatch resolves the `telegram` plugin profile (`--settings` and
+  `--mcp-config`) through `loadPluginProfilesModule`, which re-imports
+  `scripts/lanes/plugin-profiles.mjs` and its lazy local graph from a fresh copy
+  whenever one of those files' mtimes changes. A merge that changes the registry
+  and its validator together is picked up on the next dispatch.
+- **Repeated identical dispatch failure alerts once (HIMMEL-4687).** A run that
+  throws before the worker spawns leaves the message pending, so the session is
+  re-dispatched and fails again on every tick. After
+  `DISPATCH_FAIL_ALERT_AFTER` (5) identical failures in a row for one session,
+  the operator's DM gets one `⚠️ bridge: every dispatch for <session> has
+  failed …` message with the error. It does not repeat for that streak; a clean
+  run or a different error starts a new one. With no operator chat configured it
+  is a log line only.
 
 ## WS-C — why no `--channels` (dev-channels spike result)
 
