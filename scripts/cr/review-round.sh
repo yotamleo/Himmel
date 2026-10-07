@@ -252,7 +252,17 @@ judge_nogo_record() (
         case "$qid" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) continue ;; esac
         # HIMMEL-4720: a qid consumed on any branch buys no other round, so
         # two branches sharing a last reviewed head cannot each spend it.
-        if grep -rqsF --include='*.verdicts' " $qid/" "$git_dir/cr-review-rounds" 2>/dev/null; then continue; fi
+        # HIMMEL-4738: a scan that fails (rc 2) refuses the record - only rc 1
+        # means "not consumed".
+        if [ -d "$git_dir/cr-review-rounds" ]; then
+            scan=0
+            grep -rqsF --include='*.verdicts' " $qid/" "$git_dir/cr-review-rounds" 2>/dev/null || scan=$?
+            if [ "$scan" -eq 0 ]; then continue; fi
+            if [ "$scan" -ne 1 ]; then
+                echo "review-round: cannot scan $git_dir/cr-review-rounds for a consumed $qid (grep rc $scan) - the judge record is refused" >&2
+                exit 1
+            fi
+        fi
         hit="" bad=0
         for f in "$qdir"/*.md; do
             [ -e "$f" ] || [ -L "$f" ] || continue
@@ -367,7 +377,16 @@ delta_check() {
         fi
     fi
     # HIMMEL-4700: one judge-triggered round per last reviewed head.
-    if ! grep -q "^$delta_from " "$verdict_state" 2>/dev/null \
+    # HIMMEL-4738: an unreadable .verdicts refuses, never reads as unconsumed.
+    head_scan=1
+    if [ -e "$verdict_state" ] || [ -L "$verdict_state" ]; then
+        head_scan=0
+        grep -q "^$delta_from " "$verdict_state" 2>/dev/null || head_scan=$?
+        if [ "$head_scan" -gt 1 ]; then
+            echo "review-round: cannot read $verdict_state (grep rc $head_scan) - no judge NO-GO is honoured for $delta_from" >&2
+        fi
+    fi
+    if [ "$head_scan" -eq 1 ] \
         && delta_verdict="$(judge_nogo_record "$delta_from")" && [ -n "$delta_verdict" ]; then
         delta_trigger="verdict:${delta_verdict%%/*}"
         return 0
