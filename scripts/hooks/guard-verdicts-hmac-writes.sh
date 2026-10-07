@@ -131,8 +131,10 @@ _phys() {
     printf '%s' "$r$tail"
 }
 
-# _abs <word> -> absolute lexical path (~, $HOME, ${HOME} expanded; relative
+# _abs <word> [lex] -> absolute path (~, $HOME, ${HOME} expanded; relative
 # words joined to CWD). Prints nothing for any other `$` or backtick word.
+# A `..` is resolved physically, as the kernel does (a symlink before it is
+# followed first); `lex` keeps it lexical, as bash's own cd does.
 # shellcheck disable=SC2088,SC2016 # literal ~ / $HOME spellings are matched as text
 _abs() {
     local w="$1"
@@ -149,6 +151,7 @@ _abs() {
         /*) ;;
         *) w="$CWD/$w" ;;
     esac
+    [ "${2:-}" = lex ] || case "$w/" in */../*) w=$(_phys "$w") ;; esac
     _norm "$w"
 }
 
@@ -172,6 +175,17 @@ is_key() {
 is_config() {
     case "$1" in "$CONFIG"|"$CONFIG_PHYS") return 0 ;; esac
     { [ -d "$CONFIG" ] && [ "$1" -ef "$CONFIG" ]; }
+}
+# is_key_anc <abs> — a directory the key lives under (~/.config, $HOME, /):
+# removing, moving or re-owning it removes or exposes the key (codex-3).
+is_key_anc() {
+    local x
+    for x in "$1" "$(_phys "$1")"; do
+        [ "$x" = / ] && return 0
+        case "$KEY/" in "$x"/*) return 0 ;; esac
+        case "$KEY_PHYS/" in "$x"/*) return 0 ;; esac
+    done
+    return 1
 }
 # glob_hits <abs-pattern> — the pattern could expand to the key, its dir or
 # ~/.config. `*` crosses `/` here, so this over-matches (the safe direction).
@@ -715,6 +729,19 @@ _check_key_word_in() {
     done
 }
 
+# _vcheck <abs> <text> — deny a verdicts/ write target; a glob is checked as
+# every path it expands to now, which is what bash writes to (codex-2).
+_vcheck() {
+    local m
+    is_verdicts "$1" && deny "verdicts-bash" "write target $2"
+    case "$1" in *[*?[]*)
+        while IFS= read -r m; do
+            is_verdicts "$m" && deny "verdicts-bash" "glob write target $2"
+        done < <(compgen -G "$1")
+    esac
+    return 0
+}
+
 # _target <text> — a write target outside a judge session.
 _target() {
     local t="$1" a
@@ -726,7 +753,7 @@ _target() {
     # shellcheck disable=SC2088 # a literal ~ word, expanded by _abs
     case "$t" in
         /*|'~'|'~/'*) a=$(_abs "$t")
-            [ -n "$a" ] && is_verdicts "$a" && deny "verdicts-bash" "write target $t"
+            [ -n "$a" ] && _vcheck "$a" "$t"
             return 0 ;;
     esac
     # A relative target is checked against every directory this command can
@@ -737,7 +764,7 @@ _target() {
         CWD=$d
         a=$(_abs "$t")
         CWD=$save
-        [ -n "$a" ] && is_verdicts "$a" && deny "verdicts-bash" "write target $t"
+        [ -n "$a" ] && _vcheck "$a" "$t"
     done
     return 0
 }
@@ -754,6 +781,8 @@ _cd() {
     esac
     for d in "${CWDS[@]:0:n}"; do
         CWD=$d
+        a=$(_abs "$w" lex)
+        [ -n "$a" ] && CWDS+=("$a")
         a=$(_abs "$w")
         CWD=$save
         [ -n "$a" ] && CWDS+=("$a")
@@ -834,6 +863,15 @@ analyze() {
                         a=$(_abs "${ST_W[i]}")
                         CWD=$t
                         [ -n "$a" ] && is_config "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}"
+                    done
+                    ;;
+                rm|rmdir|mv|shred|unlink|chmod|chown|chgrp)
+                    t=$CWD
+                    for x in "${CWDS[@]}"; do
+                        CWD=$x
+                        a=$(_abs "${ST_W[i]}")
+                        CWD=$t
+                        [ -n "$a" ] && is_key_anc "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}, which holds the key"
                     done
                     ;;
             esac

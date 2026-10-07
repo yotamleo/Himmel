@@ -30,13 +30,15 @@ KEY="$KEYDIR/go-hmac.key"
 ROOT="$TMP/handovers"
 VD="$ROOT/u/himmel/verdicts"
 REPO="$TMP/repo"
-mkdir -p "$KEYDIR" "$VD/q1" "$H/.cache/himmel/verdicts/q1/scratch" "$REPO/scripts" "$TMP/work"
+mkdir -p "$KEYDIR/sub" "$VD/q1/sub" "$H/.cache/himmel/verdicts/q1/scratch" "$REPO/scripts" "$TMP/work"
 printf 'fake\n' > "$KEY"
 printf 'X=1\n' > "$KEYDIR/env"
 printf '# VERDICT\n' > "$VD/q1/judge.md"
 ln -s "$KEY" "$TMP/alias"
 ln -s "$KEYDIR" "$TMP/keydir-link"
 ln -s "$VD" "$TMP/vd-link"
+ln -s "$KEYDIR/sub" "$TMP/keysub-link"
+ln -s "$VD/q1/sub" "$TMP/vsub-link"
 SHA=0123456789abcdef0123456789abcdef01234567
 
 pass=0
@@ -197,6 +199,21 @@ row "eval args joined into a verdict write" 2 0 "$(bash_p "eval 'echo GO >' '$VD
 row "eval of a harmless split command" 0 0 "$(bash_p "eval 'echo' 'hi'")"
 row "cd to ~/.config then copy himmel/" 2 2 "$(bash_p "cd $H/.config && cp -r himmel /tmp/x")"
 row "cd into a dynamic himmel path then read the key" 2 2 "$(bash_p 'cd "$D/.config/himmel" && cat go-hmac.key')"
+
+# ---- 3c. round-2 panel: .. after a symlink, glob write targets, removing the key's parents ----
+row "cat key via symlink then .." 2 2 "$(bash_p "cat $TMP/keysub-link/../go-hmac.key")"
+row "Read key via symlink then .." 2 2 "$(file_p Read "$TMP/keysub-link/../go-hmac.key")"
+row "cat the env via symlink then .." 0 0 "$(bash_p "cat $TMP/keysub-link/../env")"
+row "redirect into a verdict via symlink then .." 2 0 "$(bash_p "echo GO > $TMP/vsub-link/../judge.md")"
+row "redirect into a ? glob of verdicts" 2 0 "$(bash_p "echo GO > $ROOT/u/himmel/verdict?/q1/judge.md")"
+row "tee into a * glob of verdicts" 2 0 "$(bash_p "printf GO | tee $ROOT/u/*/verdicts/q1/judge.md")"
+row "glob write target elsewhere" 0 0 "$(bash_p "echo x > $TMP/wor?/out.txt")"
+row "rm -rf ~/.config" 2 2 "$(bash_p 'rm -rf ~/.config')"
+row "mv ~/.config away" 2 2 "$(bash_p 'mv ~/.config /tmp/c')"
+row "chmod -R the home dir" 2 2 "$(bash_p "chmod -R 777 $H")"
+row "rm -rf relative .config from home" 2 2 "$(bash_p 'rm -rf .config' "$H")"
+row "rm -rf a sibling under ~/.config" 0 0 "$(bash_p 'rm -rf ~/.config/other')"
+row "rm -rf a build dir" 0 0 "$(bash_p "rm -rf $TMP/work/build")"
 
 # ---- 4. fail closed ----
 row "malformed JSON" 2 2 'not json'

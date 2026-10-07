@@ -3901,7 +3901,8 @@ Fires on `Bash`, `Read|Grep` and `Edit|Write|MultiEdit|NotebookEdit` (Codex:
 
 - **GO HMAC key.** Any agent-tool read or write of `~/.config/himmel/go-hmac.key`
   (or its directory, a `.go-hmac*` temp beside it, a glob or symlink that could
-  reach it) is denied. There is no bypass. `console-kit/go.sh` and
+  reach it) is denied, and so is an `rm`/`mv`/`chmod`-class command over a
+  directory that holds it (`~/.config`, `~`). There is no bypass. `console-kit/go.sh` and
   `scripts/lib/go-gate.sh` read the key inside their own process, which no hook
   sees.
 - **verdicts/.** A write under any path component named `verdicts` (outside the
