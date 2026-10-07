@@ -604,6 +604,11 @@ assert_contains "harvest runner fail-opens ig-media-enrich" "must not abort" "$h
 # ig-media, bounded by the same --ig-limit, and fail-opens the same way.
 assert_contains "harvest runner chains /x-media-enrich (HIMMEL-4181)" "/x-media-enrich --limit 10 --include-evidence" "$harvest_sh_plain"
 assert_contains "harvest runner fail-opens x-media-enrich (HIMMEL-4181)" "If /x-media-enrich fails" "$harvest_sh_plain"
+# HIMMEL-4684: a backlog left for later nights is not a failure. The 04:47 run
+# withheld the marker over the X backlog and 3 slides-pending-digest IG clips.
+assert_contains "harvest DONE: a remaining backlog still completes (HIMMEL-4684)" "A backlog left for later runs is not unfinished work" "$harvest_sh_plain"
+assert_contains "harvest DONE: backlog is reported, not withheld (HIMMEL-4684)" "report the remaining counts and still print the marker" "$harvest_sh_plain"
+assert_contains "harvest DONE: a real step failure withholds it (HIMMEL-4684)" "Withhold the marker only when a step itself failed or aborted" "$harvest_sh_plain"
 assert_contains "harvest runner bounded run"         "< /dev/null"    "$harvest_sh"
 assert_contains "synth runner cds into vault" "cd $VAULT || exit 1" "$synth_sh"
 assert_contains "synth runner runs /synthesize-clips" "/synthesize-clips" "$synth_sh"
