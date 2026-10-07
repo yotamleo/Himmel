@@ -122,7 +122,14 @@ cmd_arm() {
     chmod +x "$runner.new" || { rm -f "$runner.new"; echo "ERR failure-review-cadence: cannot chmod the runner $runner.new" >&2; return 4; }
     { printf '%s\n' "$CRON_TAB" | { grep -vF "# $TASK_NAME" || true; } | sed '/^$/d'; printf '%s\n' "$entry"; } | "$CRONTAB_BIN" - \
         || { rm -f "$runner.new"; echo "ERR failure-review-cadence: crontab install failed" >&2; return 4; }
-    mv -f "$runner.new" "$runner" || { rm -f "$runner.new"; echo "ERR failure-review-cadence: cannot install the runner $runner" >&2; return 4; }
+    if ! mv -f "$runner.new" "$runner"; then
+        rm -f "$runner.new"
+        # The new entry must not outlive its runner: put the crontab back as it was read.
+        { printf '%s\n' "$CRON_TAB" | sed '/^$/d'; } | "$CRONTAB_BIN" - \
+            || echo "ERR failure-review-cadence: could not restore the previous crontab; check 'crontab -l'" >&2
+        echo "ERR failure-review-cadence: cannot install the runner $runner (crontab restored)" >&2
+        return 4
+    fi
     echo "failure-review-cadence ARMED: daily $time, $([ "$live" -eq 1 ] && echo LIVE || echo dry-run) routing — $runner"
 }
 

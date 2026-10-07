@@ -197,6 +197,10 @@ rm -f "$CR/fail"
 check "a failed crontab install keeps the old runner (still --live), no temp left" '[ "$rc" = 4 ] && grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh" && [ "$(ls "$TMP/runner" | grep -c "failure-review-cadence.sh")" = 1 ]'
 (cd "$TMP" && bash "$CAD" arm --vault vault --force >/dev/null 2>&1)
 check "a relative --vault is baked as an absolute path" 'grep -qF -- "--vault $V" "$TMP/runner/failure-review-cadence.sh"'
+MVF="$TMP/mvfail"; mkdir -p "$MVF"; printf '#!/usr/bin/env bash\nexit 1\n' >"$MVF/mv"; chmod +x "$MVF/mv"
+cp "$CR/tab" "$TMP/tab.before"
+PATH="$MVF:$PATH" bash "$CAD" arm --vault "$V" --time 07:30 --live --force >/dev/null 2>&1; rc=$?
+check "a failed runner swap restores the previous crontab (rc 4)" '[ "$rc" = 4 ] && cmp -s "$CR/tab" "$TMP/tab.before" && ! grep -q -- "--live" "$TMP/runner/failure-review-cadence.sh"'
 bash "$CAD" disarm >/dev/null 2>&1
 check "disarm removes the entry and the runner" '! grep -q "HIMMEL-FailureReview" "$CR/tab" && [ ! -f "$TMP/runner/failure-review-cadence.sh" ]'
 printf '#!/usr/bin/env bash\necho SKIPPED-BANK\n' >"$STUB/preflight"; chmod +x "$STUB/preflight"
