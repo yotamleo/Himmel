@@ -3902,12 +3902,17 @@ Fires on `Bash`, `Read|Grep` and `Edit|Write|MultiEdit|NotebookEdit` (Codex:
 - **GO HMAC key.** Any agent-tool read or write of `~/.config/himmel/go-hmac.key`
   (or its directory, a `.go-hmac*` temp beside it, a glob or symlink that could
   reach it) is denied, and so is an `rm`/`mv`/`chmod`-class command over a
-  directory that holds it (`~/.config`, `~`). There is no bypass. `console-kit/go.sh` and
+  directory that holds it (`~/.config`, `~`), and a recursive reader or copier
+  (`cp -r`, `grep -r`, `rg`, `tar`, `find` with an action) over one. There is
+  no bypass. `console-kit/go.sh` and
   `scripts/lib/go-gate.sh` read the key inside their own process, which no hook
   sees.
 - **verdicts/.** A write under any path component named `verdicts` (outside the
   judge cache `~/.cache/himmel/verdicts/`) is denied unless the session carries
-  `HIMMEL_CONSOLE_JUDGE=1`. The refusal names
+  `HIMMEL_CONSOLE_JUDGE=1`; so is an `rm`/`mv`-class command over a directory
+  that holds one (up to three layers above it, or above `$HANDOVER_DIR`). A
+  `$( )` or backtick in an unquoted heredoc body is analysed like any other
+  nested script. The refusal names
   `console-kit/write-verdict.sh`, whose invocation stays allowed everywhere.
   Reads stay allowed.
 

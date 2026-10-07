@@ -215,6 +215,31 @@ row "rm -rf relative .config from home" 2 2 "$(bash_p 'rm -rf .config' "$H")"
 row "rm -rf a sibling under ~/.config" 0 0 "$(bash_p 'rm -rf ~/.config/other')"
 row "rm -rf a build dir" 0 0 "$(bash_p "rm -rf $TMP/work/build")"
 
+# ---- 3d. round-3 panel: walkers over the key's parents, verdicts' parents, heredoc bodies ----
+row "cp -r the home dir" 2 2 "$(bash_p "cp -r $H /tmp/backup")"
+row "grep -r over \$HOME" 2 2 "$(bash_p 'grep -r PATTERN "$HOME"')"
+row "rg over ~" 2 2 "$(bash_p 'rg PATTERN ~')"
+row "find over ~ with -exec" 2 2 "$(bash_p 'find ~ -name "*.key" -exec cat {} +')"
+row "find over ~ listing names" 0 0 "$(bash_p 'find ~ -name "*.md"')"
+row "du over ~" 0 0 "$(bash_p 'du -sh ~')"
+row "rm -rf a bucket holding verdicts" 2 0 "$(bash_p "rm -rf $ROOT/u/himmel")"
+row "rm -rf the handover root" 2 0 "$(bash_p "rm -rf $ROOT")"
+row "mv a user dir holding verdicts" 2 0 "$(bash_p "mv $ROOT/u /tmp/u")"
+row "mv a file into the bucket" 0 0 "$(bash_p "mv /tmp/x.md $ROOT/u/himmel")"
+row "rm a handover doc" 0 0 "$(bash_p "rm $ROOT/u/himmel/HIMMEL-1-doc.md")"
+row "heredoc body \$( ) reads the key" 2 2 "$(bash_p "cat <<EOF
+\$(cat $TMP/alias)
+EOF")"
+row "heredoc body \$( ) writes a verdict" 2 0 "$(bash_p "cat <<EOF
+\$(echo GO > $VD/q1/judge.md)
+EOF")"
+row "heredoc body backticks write a verdict" 2 0 "$(bash_p "cat <<EOF
+\`echo GO > $VD/q1/judge.md\`
+EOF")"
+row "heredoc body with a harmless \$( )" 0 0 "$(bash_p "cat <<EOF
+built \$(date +%F)
+EOF")"
+
 # ---- 4. fail closed ----
 row "malformed JSON" 2 2 'not json'
 row "non-object payload" 2 2 '[1]'

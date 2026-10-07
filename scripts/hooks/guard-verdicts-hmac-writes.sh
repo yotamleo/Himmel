@@ -53,6 +53,9 @@
 # only <handover root>/<user>/<bucket>/verdicts/ — no root resolution can fail
 # open, at the cost of refusing a write into an unrelated dir named exactly
 # `verdicts`; narrow it to the resolved root if such a dir ever appears.
+# ponytail: an rm/mv over a parent of verdicts/ is seen only within three
+# layers below it or above $HANDOVER_DIR — a deeper ancestor with the root
+# unset is not; same upgrade path, the separate-uid store (HIMMEL-3578).
 # ponytail: the PowerShell tool is not wired, Windows is parked under
 # HIMMEL-4102 — wire it when Windows legs resume.
 #
@@ -184,6 +187,21 @@ is_key_anc() {
         [ "$x" = / ] && return 0
         case "$KEY/" in "$x"/*) return 0 ;; esac
         case "$KEY_PHYS/" in "$x"/*) return 0 ;; esac
+    done
+    return 1
+}
+# holds_verdicts <abs> — a directory a verdicts/ dir lives under: one of the
+# <root>/<user>/<bucket>/verdicts layers below it, or the handover root's
+# ancestor. Removing, moving or re-owning it removes the verdicts (r3 codex-2).
+holds_verdicts() {
+    local x m
+    [ "$1" = / ] && return 0
+    [ -n "${HANDOVER_DIR:-}" ] && case "${HANDOVER_DIR%/}/" in "$1"/*) return 0 ;; esac
+    [ -d "$1" ] || return 1
+    for x in "$1/verdicts" "$1/*/verdicts" "$1/*/*/verdicts"; do
+        while IFS= read -r m; do
+            is_verdicts "$m" && return 0
+        done < <(compgen -G "$x")
     done
     return 1
 }
@@ -742,6 +760,27 @@ _vcheck() {
     return 0
 }
 
+# _vanc <text> — an operand a destructive command removes, moves or re-owns
+# whole: refused when it holds a verdicts/ dir (r3 codex-2). Each glob match
+# and each directory the line can have cd'd into is checked.
+_vanc() {
+    local t="$1" a d m save=$CWD
+    case "$t" in *'$'*|*'`'*) return 0 ;; esac
+    for d in "${CWDS[@]}"; do
+        CWD=$d
+        a=$(_abs "$t")
+        CWD=$save
+        [ -n "$a" ] || continue
+        holds_verdicts "$a" && deny "verdicts-bash" "$t holds a verdicts/ dir"
+        case "$a" in *[*?[]*)
+            while IFS= read -r m; do
+                holds_verdicts "$m" && deny "verdicts-bash" "glob $t holds a verdicts/ dir"
+            done < <(compgen -G "$a")
+        esac
+    done
+    return 0
+}
+
 # _target <text> — a write target outside a judge session.
 _target() {
     local t="$1" a
@@ -805,7 +844,7 @@ analyze() {
 
     # Segment command words: the first non-assignment, non-redirect word,
     # with wrappers, their options and option arguments skipped.
-    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=(); seg_eval=(); seg_cdone=()
+    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=(); seg_eval=(); seg_cdone=(); seg_fact=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         s=${ST_S[i]}
@@ -844,6 +883,8 @@ analyze() {
                         -*) ;;
                         *) [ -n "${seg_cdone[s]:-}" ] || { seg_cdone[s]=1; _cd "${ST_W[i]}"; } ;;
                     esac ;;
+                find)
+                    case "${ST_W[i]}" in -exec*|-ok*|-delete|-fprint*|-fls) seg_fact[s]=1 ;; esac ;;
             esac
         fi
         i=$((i + 1))
@@ -857,12 +898,21 @@ analyze() {
         if [ "${ST_G[i]}" = 0 ] && [ "$i" != "${seg_cmd_i[s]:--1}" ]; then
             case "${seg_cmd[s]:-}" in
                 cp|rsync|tar|zip|7z|scp|cpio|grep|egrep|rg|ag|find|du|sftp)
+                    # Over ~/.config: any recursive walker. Over a higher
+                    # ancestor ($HOME, /): a walker that reads content — du
+                    # never does, find only with an action (r3 codex-1).
                     t=$CWD
                     for x in "${CWDS[@]}"; do
                         CWD=$x
                         a=$(_abs "${ST_W[i]}")
                         CWD=$t
-                        [ -n "$a" ] && is_config "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}"
+                        [ -n "$a" ] || continue
+                        is_config "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}"
+                        case "${seg_cmd[s]}" in
+                            du) ;;
+                            find) [ "${seg_fact[s]:-}" = 1 ] && is_key_anc "$a" && deny "key-bash" "find with an action over ${ST_W[i]}, which holds the key" ;;
+                            *) is_key_anc "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}, which holds the key" ;;
+                        esac
                     done
                     ;;
                 rm|rmdir|mv|shred|unlink|chmod|chown|chgrp)
@@ -909,6 +959,14 @@ analyze() {
     for s in ${seg_eval[@]+"${!seg_eval[@]}"}; do
         nested[nn]=${seg_eval[s]}; nn=$((nn + 1))
     done
+    # An unquoted heredoc body runs its $( ) and backticks; the tokenizer skips
+    # the body, so each line carrying one is analysed as a script (r3 codex-3).
+    if [ "$ST_HEREDOC" = 1 ] && [ "$ST_SUBST" = 1 ]; then
+        while IFS= read -r x; do
+            # shellcheck disable=SC2016 # literal $( and ` bytes
+            case "$x" in *'$('*|*'`'*) nested[nn]=$x; nn=$((nn + 1)) ;; esac
+        done <<< "$1"
+    fi
 
     # 2. verdicts/ — write targets, outside a judge session.
     if [ "$JUDGE" = 0 ]; then
@@ -934,8 +992,14 @@ analyze() {
             ci=${seg_cmd_i[s]:--1}
             if [ "$ci" -ge 0 ] && [ "$i" -gt "$ci" ]; then
                 case "$c" in
-                    tee|rm|rmdir|mv|truncate|shred|unlink|touch|chmod|chown|patch)
-                        case "$w" in -*) ;; *) _target "$w" ;; esac ;;
+                    tee|rm|rmdir|mv|truncate|shred|unlink|touch|chmod|chown|chgrp|patch)
+                        case "$w" in -*) ;; *)
+                            _target "$w"
+                            case "$c" in
+                                rm|rmdir|shred|unlink|chmod|chown|chgrp) _vanc "$w" ;;
+                                mv) [ "$i" = "${seg_last[s]:-}" ] || _vanc "$w" ;;
+                            esac ;;
+                        esac ;;
                     sed)
                         if [ "${seg_inpl[s]:-}" = 1 ]; then
                             case "$w" in -*) ;; *) _target "$w" ;; esac
