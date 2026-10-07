@@ -40,7 +40,8 @@ while IFS="	" read -r pid name model _; do
     case "$pid" in ''|'#'*) continue ;; esac
     doc="" status=""
     # Only a plain session name is searched for (find -name would read glob characters as a pattern).
-    if [ -n "$root" ] && [ -n "$name" ] && printf '%s' "$name" | grep -Eq '^[A-Za-z0-9._+-]+$'; then
+    case "$name" in ''|*[!A-Za-z0-9._+-]*) plain="" ;; *) plain=1 ;; esac
+    if [ -n "$root" ] && [ -n "$plain" ]; then
         doc=$(find "$root" -maxdepth 4 -type f -name "$name.md" 2>/dev/null | head -1) # gnu-ok: BSD find also supports -maxdepth
         [ -n "$doc" ] && status=$(leg_tail_status "$doc")
     fi
