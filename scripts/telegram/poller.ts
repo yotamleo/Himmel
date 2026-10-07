@@ -1420,11 +1420,12 @@ export type Dispatcher = ((session: string, modelOverride?: ModelOverride) => Pr
 // log line each time. After this many identical failures in a row for one
 // session, the operator is told ONCE; the streak (and the alert) re-arms on a
 // clean run or on a different error.
+// A delivery that throws is retried on the next identical failure (HIMMEL-4706).
 export const DISPATCH_FAIL_ALERT_AFTER = 5;
 export type RepeatedFailureAlert = (session: string, error: string, count: number) => Promise<void> | void;
 export function makeDispatcher(runFn: RunFn, cap: number = positiveEnvInt(process.env.TELEGRAM_MAX_CONCURRENT_RUNS, 2), onRepeatedFailure?: RepeatedFailureAlert, alertAfter: number = DISPATCH_FAIL_ALERT_AFTER): Dispatcher {
   const inFlight = new Set<string>();
-  const streaks = new Map<string, { error: string; count: number }>();
+  const streaks = new Map<string, { error: string; count: number; alerted: boolean }>();
   // `modelOverride` must be declared AND forwarded. Dispatcher is RunFn, which
   // takes it, but the `as Dispatcher` cast below silences the arity mismatch —
   // so a one-parameter dispatch type-checks while dropping the argument on the
@@ -1440,10 +1441,13 @@ export function makeDispatcher(runFn: RunFn, cap: number = positiveEnvInt(proces
         console.error("[poller] dispatched run failed for " + session + ": " + e);
         const error = String(e);
         const prev = streaks.get(session);
-        const count = prev?.error === error ? prev.count + 1 : 1;
-        streaks.set(session, { error, count });
-        if (count !== alertAfter || !onRepeatedFailure) return;
-        try { await onRepeatedFailure(session, error, count); }
+        const same = prev?.error === error;
+        const streak = { error, count: same ? prev.count + 1 : 1, alerted: same ? prev.alerted : false };
+        streaks.set(session, streak);
+        if (streak.count < alertAfter || streak.alerted || !onRepeatedFailure) return;
+        // HIMMEL-4706: mark the alert delivered only on success, so a throwing
+        // delivery is retried on the next identical failure instead of lost.
+        try { await onRepeatedFailure(session, error, streak.count); streak.alerted = true; }
         catch (alertErr) { console.error("[poller] repeated-failure alert failed for " + session + ": " + alertErr); }
       })
       .finally(() => { inFlight.delete(session); });
