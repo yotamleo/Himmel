@@ -352,14 +352,16 @@ is_git_dirty() {
 # is_dirty_owned <vault> <dry_out>: exit 0 if the vault has an uncommitted change
 # under a path the upgrade would touch (HIMMEL-4719). The owned set is read from
 # the engine's own dry-run plan (every indented plan line's path) plus the stamp
-# and the _CLAUDE.md merge sidecar; a vault dirty only elsewhere (handovers/,
+# and the _CLAUDE.md merge sidecar. Only upgrade.sh's own trailing plan annotations
+# are stripped (its PLAN+= lines), so a path that itself contains " (" survives
+# (HIMMEL-4727); a vault dirty only elsewhere (handovers/,
 # notes) is safe to apply. Non-git vault: not dirty.
 is_dirty_owned() {
     local v="$1" plan="$2"
     [ -d "$v/.git" ] || return 1
     local owned; owned="$(printf '%s\n' "$plan" \
         | sed -nE 's/^ +(WRITE-NEW|WRITE|MERGE-JSON|MERGE-3WAY|REPORT|LOCAL-EDIT|KEEP-MINE) +//p' \
-        | sed 's/ (.*$//')"
+        | sed -E 's/ \((kept —|vault has local edits|template changed;|converged:|clean —|CONFLICT —|ERROR —|\+)[^()]*\)$//')"
     owned="$(printf '%s\n.vault-template.json\n_CLAUDE.md.template-merge\n' "$owned")"
     local entry path
     while IFS= read -r -d '' entry; do
