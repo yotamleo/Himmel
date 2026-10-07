@@ -120,7 +120,13 @@ button{font:inherit;color:inherit}
 .agent .dot{grid-row:1;grid-column:1}
 .agent-name{grid-row:1;grid-column:2;font:600 12.5px var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .agent-count{grid-row:1;grid-column:3;font:11.5px var(--mono);color:var(--dim);font-variant-numeric:tabular-nums}
-.agent-meta{grid-row:2;grid-column:2/4;font:11.5px var(--mono);color:var(--dim)}
+.agent-meta{grid-row:2;grid-column:2;font:11.5px var(--mono);color:var(--dim)}
+/* HIMMEL-4711: running / done / failed, in the status colours; the call a running agent is in, or when it last acted. */
+.agent-state{grid-row:2;grid-column:3;font:500 11.5px var(--mono);color:var(--dim)}
+.agent-state.running{color:var(--ok)}.agent-state.failed{color:var(--fail)}
+.agent-now{grid-row:4;grid-column:2/4;font:11.5px var(--mono);color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agents-running{font:500 12px var(--mono);color:var(--dim);margin-left:6px}
+#agui-stale{margin:0;padding:8px 24px;background:color-mix(in srgb,var(--warn) 18%,var(--bg));border-bottom:1px solid var(--warn);font:12.5px var(--mono)}
 .agent-fail{grid-row:3;grid-column:2/4;font:500 11.5px var(--mono);color:var(--fail)}
 .panel-sub{color:var(--dim);font-size:13px;margin:2px 0 12px}
 .settled{display:block}

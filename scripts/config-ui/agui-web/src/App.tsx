@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { initialView, reduce, runClock, settledCount, type Agent, type ClockAnchor, type Entry, type Failure, type Text, type Tool, type View } from "./reducer";
+import { agentState, currentCall, initialView, liveness, reduce, runClock, runningCount, settledCount, type Agent, type ClockAnchor, type Entry, type Failure, type Text, type Tool, type View } from "./reducer";
 import type { Source } from "./stream";
 
 // A transport failure ends the run the same way RUN_ERROR does, so calls still running are marked failed too.
@@ -19,11 +19,14 @@ export function App({ source }: { source: Source }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [only, setOnly] = useState<string | null>(null); // the one agent shown, or everyone
   const [at, setAt] = useState(-1); // the failure last jumped to
-  const now = useRunClock(view);
+  const [closed, setClosed] = useState(false); // HIMMEL-4711: the live stream ended (the server stopped tailing)
+  // A live page between turns keeps ticking too, so "last event Ns ago" stays true.
+  const now = useRunClock(view, view.status === "running" || (source.live && !closed && view.status === "finished"));
 
   useEffect(() => {
     dispatch({ kind: "reset" });
-    return source.start((e) => dispatch({ kind: "event", e }), (message) => dispatch({ kind: "fail", message }));
+    setClosed(false);
+    return source.start((e) => dispatch({ kind: "event", e }), (message) => dispatch({ kind: "fail", message }), () => setClosed(true));
   }, [source, epoch]);
 
   const focus = (id: string) => requestAnimationFrame(() => document.getElementById(id)?.focus());
@@ -46,7 +49,7 @@ export function App({ source }: { source: Source }) {
 
   return (
     <>
-      <TopBar view={view} now={now} source={source} at={at} onJump={jump}
+      <TopBar view={view} now={now} source={source} closed={closed} at={at} onJump={jump}
         onReplay={() => { setOpen({}); setOnly(null); setAt(-1); setEpoch((n) => n + 1); }} />
       <RunStrip view={view} now={now} only={only} onPick={(id) => { if (only && view.tools[id]?.agent !== only) setOnly(null); reveal(id); }} />
       <div className="layout">
@@ -56,7 +59,7 @@ export function App({ source }: { source: Source }) {
           {view.status === "error" && <p className="run-error" role="alert">The run stopped: {view.error || "the stream failed"}.</p>}
         </main>
         <aside className="side">
-          <Agents view={view} only={only} onOnly={setOnly} />
+          <Agents view={view} now={now} only={only} onOnly={setOnly} />
           {view.state?.review && <ReviewPanel review={view.state.review} />}
         </aside>
       </div>
@@ -65,34 +68,38 @@ export function App({ source }: { source: Source }) {
 }
 
 // While the run is live, time keeps moving between events so running bars keep growing.
-function useRunClock(view: View): number {
+function useRunClock(view: View, ticking: boolean): number {
   const [tick, setTick] = useState(0);
   const last = useRef<ClockAnchor | undefined>(undefined);
-  const clock = runClock(last.current, view, Date.now());
+  const clock = runClock(last.current, view, Date.now(), ticking && (view.status === "running" || runningCount(view) > 0));
   last.current = clock.anchor;
   useEffect(() => {
-    if (view.status !== "running") return;
+    if (!ticking) return;
     const id = setInterval(() => setTick((n) => n + 1), 250);
     return () => clearInterval(id);
-  }, [view.status]);
+  }, [ticking]);
   void tick;
   return clock.now;
 }
 
 const secs = (ms: number) => (ms < 10000 ? (ms / 1000).toFixed(1) : Math.round(ms / 1000).toString()) + "s";
-const STATUS: Record<View["status"], string> = { idle: "connecting", running: "streaming", finished: "finished", error: "stopped" };
+// Wall-clock time of a run's moment: the stream's own clock (t0) plus the elapsed ms.
+const clockTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
 
-function TopBar({ view, now, source, at, onJump, onReplay }: {
-  view: View; now: number; source: Source; at: number; onJump: (dir: 1 | -1) => void; onReplay: () => void;
+function TopBar({ view, now, source, closed, at, onJump, onReplay }: {
+  view: View; now: number; source: Source; closed: boolean; at: number; onJump: (dir: 1 | -1) => void; onReplay: () => void;
 }) {
   const n = view.failures.length;
+  const state = liveness(view, { live: source.live, closed }, Date.now());
+  const turns = view.entries.filter((en) => en.kind === "turn").length;
   return (
     <header className="top">
       <span className="brand">himmel</span>
       <span className="run">{source.live ? `run ${source.run}` : "recorded review run"}</span>
-      <span className={`state ${view.status}`} role="status">{STATUS[view.status]}</span>
-      <span className="meta">{view.eventCount} events · {secs(now)}</span>
+      <span className={`state ${state.cls}`} role="status">{state.word}</span>
+      <span className="meta">{[view.t0 !== undefined && `started ${clockTime(view.t0)}`, plural(turns, "turn"), `${view.eventCount} events`, secs(now)]
+        .filter(Boolean).join(" · ")}</span>
       {n > 0 && (
         <span className="fails" role="group" aria-label="Failures">
           <span className="fails-count" aria-live="polite">{plural(n, "failure")}{at >= 0 ? ` · ${Math.min(at, n - 1) + 1} of ${n}` : ""}</span>
@@ -144,15 +151,18 @@ const ROLE: Record<Agent["role"], string> = { console: "console", leg: "leg", ju
 const model = (m?: string) => m?.replace(/^claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?$/, "$1 $2.$3");
 
 // The agent list doubles as the legend and the filter: click one to show only what it did.
-function Agents({ view, only, onOnly }: { view: View; only: string | null; onOnly: (id: string | null) => void }) {
+// HIMMEL-4711: each agent's state; a running one shows the call it is in and for how long, a finished one when it last acted.
+function Agents({ view, now, only, onOnly }: { view: View; now: number; only: string | null; onOnly: (id: string | null) => void }) {
   if (view.agentOrder.length === 0) return null;
   const depth = (a: Agent) => (a.parentToolCallId ? 1 : 0);
   return (
     <section className="agents" aria-labelledby="agents-title">
-      <h2 id="agents-title">Agents</h2>
+      <h2 id="agents-title">Agents <span className="agents-running">{runningCount(view)} running</span></h2>
       <ul>
         {view.agentOrder.map((id) => {
           const a = view.agents[id];
+          const st = agentState(view, id);
+          const cur = st === "running" ? currentCall(view, id) : undefined;
           return (
             <li key={id} style={{ ...agentStyle(view, id), ["--depth" as string]: depth(a) }}>
               <button className="agent" aria-pressed={only === id} onClick={() => onOnly(only === id ? null : id)}
@@ -161,7 +171,10 @@ function Agents({ view, only, onOnly }: { view: View; only: string | null; onOnl
                 <span className="agent-name">{a.name}</span>
                 <span className="agent-meta">{[ROLE[a.role], a.kind && a.kind !== a.role ? a.kind.replace(/^.*:/, "") : "", model(a.model)].filter(Boolean).join(" · ")}</span>
                 <span className="agent-count">{plural(a.calls, "call")}</span>
+                <span className={`agent-state ${st}`}>{st}</span>
                 {a.failures > 0 && <span className="agent-fail">{plural(a.failures, "failure")}</span>}
+                {cur ? <span className="agent-now">{cur.name} {summarize(cur)} · {secs(now - cur.start)}</span>
+                  : view.t0 !== undefined && <span className="agent-now">last active {clockTime(view.t0 + a.last)}</span>}
               </button>
             </li>
           );

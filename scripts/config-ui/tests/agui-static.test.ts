@@ -2,7 +2,7 @@ import { test, expect, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer } from "../server";
+import { aguiStaleWarning, startServer } from "../server";
 
 // HIMMEL-4480: GET /agui/ serves the built AG-UI page (agui-web/dist), and
 // `himmelctl ui --agui` prints its live URL.
@@ -138,4 +138,43 @@ test("himmelctl ui --agui latest with no transcript fails with rc 1", async () =
 test("--agui is refused on a verb other than ui", async () => {
   const p = Bun.spawn(["node", BIN, "report", "--json", "--agui"], { stdout: "ignore", stderr: "pipe" });
   expect(await p.exited).toBe(2);
+});
+
+// HIMMEL-4711: a dist older than the page's source is served with a banner saying so, and the launcher says so on
+// stderr. Detect and say, never rebuild: a rebuild on start would run bun install/build under the operator's server.
+function web(distAge: number, srcAge: number): { dir: string; web: string } {
+  const { dir } = dist();
+  const w = join(dir, "..", "web");
+  mkdirSync(join(w, "src", "deep"), { recursive: true });
+  writeFileSync(join(w, "index.html"), "<!doctype html>");
+  writeFileSync(join(w, "src", "deep", "App.tsx"), "export {}");
+  const at = Date.now() / 1000;
+  utimesSync(join(dir, "index.html"), at - distAge, at - distAge);
+  utimesSync(join(w, "index.html"), at - 9999, at - 9999);
+  utimesSync(join(w, "src", "deep", "App.tsx"), at - srcAge, at - srcAge);
+  return { dir, web: w };
+}
+function bootWeb(aguiDist: string, aguiWeb: string) {
+  const s = startServer({ port: 0, token: TOKEN, aguiDist, aguiWeb, env: { PATH: process.env.PATH, HOME: tmp("agui-home-"), CONFIG_UI_HIMMELCTL: STUB, CONFIG_UI_IDLE_MS: "60000" } });
+  cleanup.push(() => s.stop());
+  return `http://127.0.0.1:${s.port}`;
+}
+
+test("a dist older than agui-web/src is served with a stale-build banner and named on stderr", async () => {
+  const { dir, web: w } = web(3600, 60);
+  const html = await (await fetch(`${bootWeb(dir, w)}/agui/`)).text();
+  expect(html).toContain('id="agui-stale"');
+  expect(html).toContain("bun run build");
+  expect(html).toContain("./index-abc.js"); // the page itself is still served
+  expect(html.startsWith("<!doctype html>")).toBe(true); // a page with no <body> keeps its doctype first (no quirks mode)
+  expect(aguiStaleWarning(dir, w)).toMatch(/^himmelctl: ui: the AG-UI page is an old build .*bun run build/);
+});
+
+test("a dist newer than its source has no banner and no warning; assets never get one", async () => {
+  const { dir, web: w } = web(60, 3600);
+  const base = bootWeb(dir, w);
+  expect(await (await fetch(`${base}/agui/`)).text()).not.toContain("agui-stale");
+  expect(aguiStaleWarning(dir, w)).toBeNull();
+  const old = web(3600, 60);
+  expect(await (await fetch(`${bootWeb(old.dir, old.web)}/agui/index-abc.js`)).text()).toBe("console.log(1)");
 });
