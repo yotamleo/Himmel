@@ -5,10 +5,10 @@
   "bin": "./server.ts",
   "scripts": {
     "test": "bun test",
-    "start": "(test -d node_modules || bun install --no-summary) && bun server.ts"
+    "start": "bun install --frozen-lockfile --no-summary >&2 && bun server.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1"
+    "@modelcontextprotocol/server": "2.3.1"
   },
   "devDependencies": {
     "bun-types": "^1.4.2",
