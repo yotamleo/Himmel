@@ -15,7 +15,8 @@ Usage:
       <stem>.report.md), else the assistant text after the last tool call.
       --denials adds "denials": one {tool_call_id, recovered, identical} per
       denied call, in issue order (HIMMEL-4670: the leg digest joins it to the
-      AG-UI mapper's denied events). recovered: the next call differs;
+      AG-UI mapper's denied events). recovered: the next call issued after
+      its result is not identical to the denied call, or no call follows;
       identical: the later identical calls that retry this denial (each retry
       counts against the latest identical denial before it, so the counts sum
       to identical_denied_retries)

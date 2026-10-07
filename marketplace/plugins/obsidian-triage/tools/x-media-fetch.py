@@ -70,6 +70,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -461,34 +462,209 @@ def download_media(x: dict, cf: Path):
 
 
 MEDIA_HOSTS = ("video.twimg.com", "pbs.twimg.com")
+# HLS segment / init-map extensions kept on the local copies (ffmpeg's hls
+# demuxer picks a format by extension).
+HLS_SEG_EXTS = {".m4s", ".mp4", ".m4a", ".m4v", ".ts", ".aac"}
+URI_ATTR_RE = re.compile(r'URI="([^"]*)"')
 
 
-def _fetch_item(item: dict, target: Path):
-    """One media item into target: curl for a direct file, ffmpeg (stream copy)
-    for an HLS master playlist. Returns None or an error token."""
-    url = str(item.get("url", ""))
+def _media_url_ok(url: str) -> bool:
+    """https on a media host, the netloc exactly that host: no userinfo, no
+    port, nothing a URL parser and curl could read differently."""
     p = urllib.parse.urlparse(url)
-    if p.scheme != "https" or (p.hostname or "").lower() not in MEDIA_HOSTS:
+    return p.scheme == "https" and p.netloc.lower() in MEDIA_HOSTS
+
+
+def _curl(pairs, deadline: float):
+    """Fetch [(url, path)] in ONE curl run: every URL must pass _media_url_ok
+    first, and curl follows no redirect and speaks only https. Returns None or
+    an error token."""
+    if not pairs or not all(_media_url_ok(u) for u, _ in pairs):
         return "download_error"
-    if item.get("hls"):
-        cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
-               "-protocol_whitelist", "https,tls,tcp,crypto", "-i", url,
-               "-c", "copy", "-fs", str(MEDIA_MAX_BYTES), "-y", str(target)]
-        label = "ffmpeg-hls"
-    else:
-        cmd = ["curl", "-fsSL", "--max-redirs", "0", "--proto", "=https", "--max-time", "120",
-               "--max-filesize", str(MEDIA_MAX_BYTES), "-o", str(target), url]
-        label = "curl"
+    cmd = ["curl", "-fsSL", "--fail-early", "--max-redirs", "0", "--proto", "=https",
+           "--max-time", "120", "--max-filesize", str(MEDIA_MAX_BYTES)]
+    for url, path in pairs:
+        cmd += ["-o", str(path), url]
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return "download_timeout"
     try:
-        got = subprocess.run(cmd, capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+        got = subprocess.run(cmd, capture_output=True, text=True, timeout=left)
     except subprocess.TimeoutExpired:
         return "download_timeout"
     except OSError:
-        return f"{label.split('-')[0]}_missing"
+        return "curl_missing"
+    if got.returncode != 0 or not all(Path(p).is_file() and Path(p).stat().st_size
+                                      for _, p in pairs):
+        _emit_stderr_tail("curl", got.stderr)
+        return "download_error"
+    return None
+
+
+def _hls_attrs(line: str) -> dict:
+    """The KEY=value attribute list of an #EXT-X tag line."""
+    rest = line.split(":", 1)[1] if ":" in line else ""
+    return {k: v.strip('"') for k, v in
+            re.findall(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', rest)}
+
+
+def _hls_media(text: str, base: str, work: Path, tag: str):
+    """A media playlist rewritten to local files: (playlist text, [(url, path)])
+    for its init map and segments. Raises ValueError on an encrypted playlist,
+    an unusable segment extension, or a URI off the media hosts."""
+    out, pairs, local = [], [], {}
+
+    def localise(uri):
+        url = urllib.parse.urljoin(base, uri)
+        if not _media_url_ok(url):
+            raise ValueError(f"off-host HLS URI {url[:80]}")
+        if url not in local:
+            ext = Path(urllib.parse.urlparse(url).path).suffix.lower()
+            if ext not in HLS_SEG_EXTS:
+                raise ValueError(f"HLS segment extension {ext!r}")
+            local[url] = work / f"{tag}{len(local):05d}{ext}"
+            pairs.append((url, local[url]))
+        return local[url].name
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            if line.startswith(("#EXT-X-KEY", "#EXT-X-SESSION-KEY")):
+                if _hls_attrs(line).get("METHOD", "NONE") != "NONE":
+                    raise ValueError("encrypted HLS")
+                continue
+            if line.startswith("#EXT-X-MAP"):
+                m = URI_ATTR_RE.search(line)
+                if not m:
+                    raise ValueError("EXT-X-MAP without a URI")
+                line = line[:m.start(1)] + localise(m.group(1)) + line[m.end(1):]
+            elif URI_ATTR_RE.search(line):
+                continue  # parts / preload hints: optional, never fetched
+            out.append(line)
+        else:
+            out.append(localise(line))
+    return "\n".join(out) + "\n", pairs
+
+
+def _hls_variant(text: str):
+    """(stream-inf line, uri, audio media line or None) for the highest-
+    BANDWIDTH video variant (one with a RESOLUTION; an audio-only variant only
+    when there is none) of a master playlist, or None if it lists none."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    best = None
+    for i, line in enumerate(lines):
+        if line.startswith("#EXT-X-STREAM-INF") and i + 1 < len(lines) \
+                and not lines[i + 1].startswith("#"):
+            attrs = _hls_attrs(line)
+            bw = attrs.get("BANDWIDTH", "0")
+            rank = ("RESOLUTION" in attrs, int(bw) if bw.isdigit() else 0)
+            if best is None or rank > best[0]:
+                best = (rank, line, lines[i + 1])
+    if best is None:
+        return None
+    group = _hls_attrs(best[1]).get("AUDIO")
+    audio = [ln for ln in lines if ln.startswith("#EXT-X-MEDIA")
+             and _hls_attrs(ln).get("TYPE") == "AUDIO"
+             and _hls_attrs(ln).get("GROUP-ID") == group and URI_ATTR_RE.search(ln)] if group else []
+    pick = next((ln for ln in audio if _hls_attrs(ln).get("DEFAULT") == "YES"), audio[0] if audio else None)
+    return best[1], best[2], pick
+
+
+def _resolve_hls(url: str, work: Path, deadline: float):
+    """Pre-resolve an HLS master (or media) playlist into work/: every playlist,
+    init map and segment is fetched by _curl (media hosts only, no redirect),
+    and work/master.m3u8 names only those local files. ffmpeg then reads it
+    with the file protocol alone, so no playlist entry or redirect can make it
+    open a network address (HIMMEL-4704). Returns None or an error token."""
+    src = work / "src.m3u8"
+    err = _curl([(url, src)], deadline)
+    if err:
+        return err
+    text = src.read_text(encoding="utf-8", errors="replace")
+    try:
+        variant = _hls_variant(text)
+        if variant is None:
+            body, pairs = _hls_media(text, url, work, "s")
+            master = body
+        else:
+            inf, v_uri, audio = variant
+            v_url = urllib.parse.urljoin(url, v_uri)
+            got = [(v_url, work / "v.src.m3u8")]
+            if audio:
+                a_url = urllib.parse.urljoin(url, URI_ATTR_RE.search(audio).group(1))
+                if a_url == v_url:
+                    audio = None  # the variant already carries that rendition
+                else:
+                    got.append((a_url, work / "a.src.m3u8"))
+            err = _curl(got, deadline)
+            if err:
+                return err
+            pairs = []
+            for (purl, ppath), tag in zip(got, ("v", "a")):
+                body, more = _hls_media(ppath.read_text(encoding="utf-8", errors="replace"),
+                                        purl, work, tag)
+                (work / f"{tag}.m3u8").write_text(body, encoding="utf-8")
+                pairs += more
+            master = "#EXTM3U\n"
+            if audio:
+                m = URI_ATTR_RE.search(audio)
+                master += audio[:m.start(1)] + "a.m3u8" + audio[m.end(1):] + "\n"
+            master += f"{inf}\nv.m3u8\n"
+    except ValueError as e:
+        print(f"  ffmpeg-hls: refused: {e}", file=sys.stderr)
+        return "download_error"
+    if not pairs:
+        return "download_error"
+    err = _curl(pairs, deadline)
+    if err:
+        return err
+    if sum(p.stat().st_size for _, p in pairs) >= MEDIA_MAX_BYTES:
+        print(f"  ffmpeg-hls: segments reach the {MEDIA_MAX_BYTES}-byte cap, refused", file=sys.stderr)
+        return "download_error"
+    (work / "master.m3u8").write_text(master, encoding="utf-8")
+    return None
+
+
+def _fetch_item(item: dict, target: Path):
+    """One media item into target: curl for a direct file; for an HLS master
+    playlist, _resolve_hls then ffmpeg (stream copy) over the local copy.
+    Returns None or an error token."""
+    url = str(item.get("url", ""))
+    if not _media_url_ok(url):
+        return "download_error"
+    if not item.get("hls"):
+        return _curl([(url, target)], time.monotonic() + DOWNLOAD_TIMEOUT)
+    work = target.with_name(target.name + ".hls")
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    try:
+        return _ffmpeg_hls(url, work, target)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _ffmpeg_hls(url: str, work: Path, target: Path):
+    deadline = time.monotonic() + DOWNLOAD_TIMEOUT
+    err = _resolve_hls(url, work, deadline)
+    if err:
+        return err
+    label = "ffmpeg-hls"
+    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error",
+           "-protocol_whitelist", "file", "-i", str(work / "master.m3u8"),
+           "-c", "copy", "-fs", str(MEDIA_MAX_BYTES), "-y", str(target)]
+    try:
+        got = subprocess.run(cmd, capture_output=True, text=True,
+                             timeout=max(1, deadline - time.monotonic()))
+    except subprocess.TimeoutExpired:
+        return "download_timeout"
+    except OSError:
+        return "ffmpeg_missing"
     if got.returncode != 0 or not target.is_file() or target.stat().st_size == 0:
         _emit_stderr_tail(label, got.stderr)
         return "download_error"
-    if item.get("hls") and target.stat().st_size >= MEDIA_MAX_BYTES:
+    if target.stat().st_size >= MEDIA_MAX_BYTES:
         # -fs stops the copy at the cap and still exits 0: the file is truncated.
         print(f"  {label}: stream reached the {MEDIA_MAX_BYTES}-byte cap, refused", file=sys.stderr)
         target.unlink()

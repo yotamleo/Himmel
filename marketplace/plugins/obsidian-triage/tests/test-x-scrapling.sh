@@ -38,12 +38,18 @@ echo "Test 1: extract direct mp4 status"
 python3 "$HELPER" --from-html "$FIX/direct-mp4.html" --status-id 2100888166219886818 >"$tmp/direct.json"
 assert "direct exit 0" 0 "$?"
 assert "direct status ok" ok "$(jq_py "$tmp/direct.json" 'd["status"]')"
-assert "one image then four videos" "image video video video video" \
+# The status is an X Article: its body images use the extension form
+# (media/<id>.jpg), which HIMMEL-4704 codex-3 stopped dropping - 22 images
+# (the header plus 21 body images) and four videos, in article order.
+assert "22 images and four videos, in article order" \
+  "$(printf 'image %.0s' $(seq 20))video video video image video image" \
   "$(jq_py "$tmp/direct.json" '" ".join(i["kind"] for i in d["items"])')"
 assert "image normalised to name=large" "https://pbs.twimg.com/media/HSfaimhaIAAoFk6?format=jpg&name=large" \
   "$(jq_py "$tmp/direct.json" 'd["items"][0]["url"]')"
+assert "an extension-form body image normalised to name=large" "https://pbs.twimg.com/media/HSfOUZDaAAAnYeX?format=jpg&name=large" \
+  "$(jq_py "$tmp/direct.json" 'd["items"][1]["url"]')"
 assert "videos are direct video.twimg.com mp4s" "True" \
-  "$(jq_py "$tmp/direct.json" 'all(i["url"].startswith("https://video.twimg.com/") and ".mp4" in i["url"] and not i["hls"] for i in d["items"][1:])')"
+  "$(jq_py "$tmp/direct.json" 'all(i["url"].startswith("https://video.twimg.com/") and ".mp4" in i["url"] and not i["hls"] for i in d["items"] if i["kind"] == "video")')"
 
 # --- Test 2: streamed video -> captured HLS master; quoted post excluded ----
 echo "Test 2: extract HLS status with a quoted post"
@@ -93,6 +99,16 @@ assert "a status id that only prefixes another is not that status" no_media "$(j
 python3 "$HELPER" --status-id abc --from-html "$FIX/direct-mp4.html" >/dev/null 2>&1
 assert "non-numeric status id refused" 2 "$?"
 
+# --- Test 4b: an extension-bearing pbs media URL is still an image (HIMMEL-4704)
+echo "Test 4b: extension-bearing image URL"
+cat >"$tmp/ext.html" <<'EOF'
+<article><a href="/u/status/42">t</a><img src="https://pbs.twimg.com/media/ExtId_1.jpg"><img src="https://pbs.twimg.com/media/ExtId_2.png?name=small"><img src="https://pbs.twimg.com/media/ExtId_3.exe"></article>
+EOF
+python3 "$HELPER" --from-html "$tmp/ext.html" --status-id 42 >"$tmp/ext.json"
+assert "extension-bearing media URLs normalised, an unknown extension dropped" \
+  "https://pbs.twimg.com/media/ExtId_1?format=jpg&name=large https://pbs.twimg.com/media/ExtId_2?format=jpg&name=large" \
+  "$(jq_py "$tmp/ext.json" '" ".join(i["url"] for i in d.get("items", []))')"
+
 # --- fetch-path stubs ------------------------------------------------------
 mkdir -p "$tmp/bin"
 cat > "$tmp/scrapling-python" <<'STUB'
@@ -102,13 +118,30 @@ cat "$STUB_JSON"
 exit "${STUB_RC:-0}"
 STUB
 chmod +x "$tmp/scrapling-python"
+# curl takes any number of `-o FILE URL` pairs; each URL is logged as a
+# `curl-get` line. A .m3u8 URL is served from $STUB_HLS/<basename> (absent =
+# HTTP 404, rc 22); anything else gets fake media.
 cat > "$tmp/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 echo "curl $*" >> "$STUB_CALLS"
-out=""
-while [ $# -gt 0 ]; do case "$1" in -o) shift; out="$1" ;; esac; shift; done
-[ -n "$out" ] || exit 2
-echo "fake media" > "$out"
+out=""; n=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) shift; out="$1" ;;
+    https://*|http://*)
+      [ -n "$out" ] || exit 2
+      echo "curl-get $1" >> "$STUB_CALLS"; n=$((n+1))
+      path="${1%%\?*}"
+      case "$path" in
+        *.m3u8) [ -f "${STUB_HLS:-/nonexistent}/${path##*/}" ] || exit 22
+                cat "$STUB_HLS/${path##*/}" > "$out" ;;
+        *) echo "fake media" > "$out" ;;
+      esac
+      out="" ;;
+  esac
+  shift
+done
+[ "$n" -gt 0 ] || exit 2
 STUB
 cat > "$tmp/bin/ffmpeg" <<'STUB'
 #!/usr/bin/env bash
@@ -131,7 +164,7 @@ chmod +x "$tmp/bin/curl" "$tmp/bin/ffmpeg" "$tmp/gallery-dl"
 # Sealed PATH: the station's real gallery-dl/curl/ffmpeg/yt-dlp must never be
 # reachable (a leaked real one would hit x.com). Only these tools exist.
 mkdir -p "$tmp/sys"
-for t in python3 bash env cat mkdir rm cp sed grep; do ln -s "$(command -v "$t")" "$tmp/sys/$t"; done
+for t in python3 bash env cat mkdir rm cp sed grep sort tr; do ln -s "$(command -v "$t")" "$tmp/sys/$t"; done
 export PATH="$tmp/bin:$tmp/sys" STUB_CALLS="$tmp/calls"
 cat > "$tmp/ok.json" <<'EOF'
 {"status": "ok", "items": [
@@ -141,6 +174,36 @@ EOF
 echo '{"status": "login_wall", "detail": "/i/flow/login"}' >"$tmp/wall.json"
 echo '{"status": "ok", "items": [{"kind": "video", "url": "https://video.twimg.com/amplify_video/9/pl/M.m3u8?tag=1", "hls": true}]}' >"$tmp/hls-ok.json"
 echo '{"status": "ok", "items": [{"kind": "image", "url": "https://pbs.twimg.com.evil.example/media/A.jpg", "hls": false}]}' >"$tmp/evil-ok.json"
+# A good X-shaped HLS set: a master with two video variants sharing one audio
+# group (plus a higher-BANDWIDTH audio-only variant that must not be picked),
+# each media playlist with an fMP4 init map and relative segment paths.
+mkdir -p "$tmp/hls-good"
+cat >"$tmp/hls-good/M.m3u8" <<'EOF'
+#EXTM3U
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-MEDIA:NAME="Audio",TYPE=AUDIO,GROUP-ID="audio-64000",AUTOSELECT=YES,URI="/amplify_video/9/pl/mp4a/64000/A.m3u8"
+#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=200000,BANDWIDTH=300000,RESOLUTION=320x320,CODECS="mp4a.40.2,avc1.4d001e",AUDIO="audio-64000"
+/amplify_video/9/pl/avc1/320x320/V1.m3u8
+#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=900000,BANDWIDTH=1200000,RESOLUTION=720x720,CODECS="mp4a.40.2,avc1.4d001f",AUDIO="audio-64000"
+/amplify_video/9/pl/avc1/720x720/V2.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=9000000,CODECS="mp4a.40.2",AUDIO="audio-64000"
+/amplify_video/9/pl/mp4a/64000/V3.m3u8
+EOF
+for kind in V2:vid/avc1/720x720 A:aud/mp4a/64000; do
+  cat >"$tmp/hls-good/${kind%%:*}.m3u8" <<EOF
+#EXTM3U
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:3
+#EXT-X-PLAYLIST-TYPE:VOD
+#EXT-X-MAP:URI="/amplify_video/9/${kind#*:}/init.mp4"
+#EXTINF:3.000,
+/amplify_video/9/${kind#*:}/s1.m4s
+#EXTINF:3.000,
+/amplify_video/9/${kind#*:}/s2.m4s
+#EXT-X-ENDLIST
+EOF
+done
+export STUB_HLS="$tmp/hls-good"
 
 make_vault() { # $1 dir, $2 status id
   mkdir -p "$1/Clippings"
@@ -180,8 +243,29 @@ echo "Test 6: HLS item via ffmpeg"
 : >"$tmp/calls"; export STUB_JSON="$tmp/hls-ok.json"
 make_vault "$tmp/v6" 6006
 run_tool "$tmp/v6" >"$tmp/v6.out" 2>"$tmp/v6.err"
-grep -qF -- 'ffmpeg -nostdin -hide_banner -loglevel error -protocol_whitelist https,tls,tcp,crypto -i https://video.twimg.com/amplify_video/9/pl/M.m3u8?tag=1 -c copy' "$tmp/calls" && a=ok || a=no
-assert "ffmpeg stream-copies the master playlist, https-only" ok "$a"
+grep -q '^ffmpeg -nostdin -hide_banner -loglevel error -protocol_whitelist file -i [^ ]*/master\.m3u8 -c copy' "$tmp/calls" && a=ok || a=no
+assert "ffmpeg stream-copies a LOCAL pre-resolved playlist, file protocol only" ok "$a"
+grep '^ffmpeg ' "$tmp/calls" | grep -q 'https\?:' && a=net || a=local
+assert "ffmpeg is never handed a network URL" local "$a"
+grep '^curl-get ' "$tmp/calls" | sed 's/^curl-get //' >"$tmp/v6.got"
+printf '%s\n' \
+  'https://video.twimg.com/amplify_video/9/pl/M.m3u8?tag=1' \
+  'https://video.twimg.com/amplify_video/9/pl/avc1/720x720/V2.m3u8' \
+  'https://video.twimg.com/amplify_video/9/pl/mp4a/64000/A.m3u8' \
+  'https://video.twimg.com/amplify_video/9/vid/avc1/720x720/init.mp4' \
+  'https://video.twimg.com/amplify_video/9/vid/avc1/720x720/s1.m4s' \
+  'https://video.twimg.com/amplify_video/9/vid/avc1/720x720/s2.m4s' \
+  'https://video.twimg.com/amplify_video/9/aud/mp4a/64000/init.mp4' \
+  'https://video.twimg.com/amplify_video/9/aud/mp4a/64000/s1.m4s' \
+  'https://video.twimg.com/amplify_video/9/aud/mp4a/64000/s2.m4s' >"$tmp/v6.want"
+assert "only the best variant, its audio rendition and their segments are fetched" \
+  "$(sort "$tmp/v6.want" | tr '\n' ' ')" "$(sort "$tmp/v6.got" | tr '\n' ' ')"
+grep '^curl ' "$tmp/calls" | grep -vq -- '--max-redirs 0 --proto =https' && a=loose || a=strict
+assert "every HLS fetch follows no redirect and only https" strict "$a"
+# The stub media carries no audio, so the clip then fails on content - past
+# the download, which is what this pins.
+grep -q '^media_last_error: no_media_content$' "$tmp/v6/Clippings/clip.md" && a=ok || a=no
+assert "the HLS download succeeds (the clip fails later, on the stub's empty media)" ok "$a"
 : >"$tmp/calls"; make_vault "$tmp/v6b" 6016
 FAKE_FFMPEG_FULL=1 run_tool "$tmp/v6b" >"$tmp/v6b.out" 2>"$tmp/v6b.err"
 assert "an HLS copy stopped at the size cap is refused, never processed" 1 "$(grep -c '^ffmpeg ' "$tmp/calls")"
@@ -197,6 +281,32 @@ grep -q '^curl ' "$tmp/calls" && a=fetched || a=refused
 assert "off-host URL never fetched" refused "$a"
 grep -q '^x_media_pending: true$' "$tmp/v7/Clippings/clip.md" && a=ok || a=no
 assert "clip stays pending (retryable)" ok "$a"
+
+# --- Test 7b: an HLS playlist naming a private or off-host URL is refused ---
+# (HIMMEL-4704 codex-1) Each case plants one bad URI in an otherwise good
+# playlist set; the bad host must never be fetched and ffmpeg never run.
+echo "Test 7b: HLS playlist entries pass the media-host guard"
+export STUB_JSON="$tmp/hls-ok.json"
+hls_case() { # $1 name, $2 file to edit, $3 sed expression, $4 planted-host pattern
+  rm -rf "$tmp/hls-$1"; cp -r "$tmp/hls-good" "$tmp/hls-$1"
+  sed -i "$3" "$tmp/hls-$1/$2"
+  grep -q "$4" "$tmp/hls-$1/$2" || { echo "  FAIL  control: $1 planted nothing"; fail=$((fail+1)); return; }
+  : >"$tmp/calls"; make_vault "$tmp/v7-$1" 7070
+  STUB_HLS="$tmp/hls-$1" run_tool "$tmp/v7-$1" >"$tmp/v7-$1.out" 2>"$tmp/v7-$1.err"
+  grep -q "^curl-get .*$4" "$tmp/calls" && a=fetched || a=refused
+  assert "$1: the planted host is never fetched" refused "$a"
+  grep -q '^ffmpeg ' "$tmp/calls" && a=ran || a=skipped
+  assert "$1: ffmpeg never runs" skipped "$a"
+  grep -q '^media_last_error: download_error$' "$tmp/v7-$1/Clippings/clip.md" && a=ok || a=no
+  assert "$1: the download is refused (download_error, retryable)" ok "$a"
+}
+hls_case private-segment V2.m3u8 's#^/amplify_video/9/vid/avc1/720x720/s2.m4s$#https://10.0.0.1/s2.m4s#' '10\.0\.0\.1' # leak-allow: private-lan-ip SSRF test fixture, never fetched
+hls_case metadata-variant M.m3u8 's#^/amplify_video/9/pl/avc1/720x720/V2.m3u8$#https://169.254.169.254/V2.m3u8#' '169\.254\.169\.254'
+hls_case http-segment V2.m3u8 's#^/amplify_video/9/vid/avc1/720x720/s1.m4s$#http://video.twimg.com/s1.m4s#' 'http://video'
+hls_case offhost-map V2.m3u8 's#URI="/amplify_video/9/vid/avc1/720x720/init.mp4"#URI="https://video.twimg.com.evil.example/init.mp4"#' 'evil\.example'
+hls_case userinfo-audio M.m3u8 's#URI="/amplify_video/9/pl/mp4a/64000/A.m3u8"#URI="https://video.twimg.com@127.0.0.1/A.m3u8"#' '127\.0\.0\.1'
+hls_case private-audio-seg A.m3u8 's#^/amplify_video/9/aud/mp4a/64000/s1.m4s$#https://192.168.1.1/s1.m4s#' '192\.168\.1\.1' # leak-allow: private-lan-ip SSRF test fixture, never fetched
+hls_case encrypted V2.m3u8 's#^\#EXT-X-MAP#\#EXT-X-KEY:METHOD=AES-128,URI="https://10.9.9.9/k"\n\#EXT-X-MAP#' '10\.9\.9\.9' # leak-allow: private-lan-ip SSRF test fixture, never fetched
 
 # --- Test 8: Scrapling login wall -> gallery-dl fallback -------------------
 echo "Test 8: gallery-dl fallback"
