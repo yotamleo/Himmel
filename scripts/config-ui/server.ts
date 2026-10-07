@@ -6,7 +6,7 @@
 // that bound argv under the machine-wide write lock, re-probes the row and
 // appends one audit line.
 import { execFile } from "node:child_process";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { extname, join, resolve, sep } from "node:path";
 import { scrubProviderKeys } from "../fleet-control/server";
@@ -52,7 +52,8 @@ const STATIC: Record<string, [string, string]> = {
 };
 // GET /agui/ (HIMMEL-4480): the built AG-UI page, agui-web/dist (bun build, untracked).
 // Not token-gated: the page is static and the token rides the URL fragment; /api/agui/<run> stays gated.
-const AGUI_DIST = join(import.meta.dir, "agui-web", "dist");
+const AGUI_WEB = join(import.meta.dir, "agui-web");
+const AGUI_DIST = join(AGUI_WEB, "dist");
 const AGUI_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
   ".map": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2",
@@ -65,8 +66,34 @@ bun install
 bun run build</pre>
 `;
 
+// HIMMEL-4711: dist is untracked and nothing rebuilds it, so a page built before the source last changed is served
+// as is, but says so: on the launcher's stderr and in a banner the server puts into index.html (the stale bundle
+// cannot know it is stale). Detect and say, never rebuild: a rebuild on start would run bun under the operator's server.
+const BUILD_STEP = "cd scripts/config-ui/agui-web && bun run build";
+function aguiStale(dist: string, web: string): { built: Date; changed: Date } | null {
+  try {
+    const built = statSync(join(dist, "index.html")).mtime;
+    const src = readdirSync(join(web, "src"), { recursive: true }).map((f) => join(web, "src", String(f)));
+    const changed = [join(web, "index.html"), ...src].map((f) => statSync(f)).filter((st) => st.isFile())
+      .map((st) => st.mtime).reduce((a, b) => (b > a ? b : a)); // a directory's mtime moves on any add, not an edit
+    return changed > built ? { built, changed } : null;
+  } catch { return null; } // no dist is AGUI_MISSING's case; unreadable source is no evidence
+}
+const stamp = (d: Date) => d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
+export function aguiStaleWarning(dist = AGUI_DIST, web = AGUI_WEB): string | null {
+  const s = aguiStale(dist, web);
+  return s && `himmelctl: ui: the AG-UI page is an old build (dist ${stamp(s.built)}, source changed ${stamp(s.changed)}); rebuild: ${BUILD_STEP}`;
+}
+function staleBanner(html: string, dist: string, web: string): string {
+  const s = aguiStale(dist, web);
+  if (!s) return html;
+  const banner = `<p id="agui-stale" role="alert">This page is an old build: it was built ${stamp(s.built)}, and its source changed ${stamp(s.changed)}. `
+    + `Rebuild it with <code>${BUILD_STEP}</code>, then reload.</p>`;
+  return /<body[^>]*>/i.test(html) ? html.replace(/<body[^>]*>/i, (b) => b + banner) : banner + html;
+}
+
 // Only a regular file whose real path stays inside dist; anything else (traversal, a symlink out, a directory) is a 404.
-function aguiFile(dist: string, path: string): Response {
+function aguiFile(dist: string, path: string, web = AGUI_WEB): Response {
   let root: string;
   try { root = realpathSync(dist); statSync(join(root, "index.html")); }
   catch { return new Response(AGUI_MISSING, { status: 404, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } }); }
@@ -77,7 +104,12 @@ function aguiFile(dist: string, path: string): Response {
   const type = AGUI_TYPES[extname(real)];
   if (!real.startsWith(root + sep) || !type) return new Response("not found", { status: 404 });
   // A rebuild can remove the file between realpath and read: that is a 404 too, never a thrown 500.
-  try { if (statSync(real).isFile()) return new Response(readFileSync(real), { headers: { "content-type": type, "cache-control": "no-store" } }); } catch { /* gone */ }
+  try {
+    if (statSync(real).isFile()) {
+      const body = real === join(root, "index.html") ? staleBanner(readFileSync(real, "utf8"), root, web) : readFileSync(real);
+      return new Response(body, { headers: { "content-type": type, "cache-control": "no-store" } });
+    }
+  } catch { /* gone */ }
   return new Response("not found", { status: 404 });
 }
 
@@ -87,7 +119,7 @@ type Env = Record<string, string | undefined>;
 export type ServerOpts = {
   port?: number; token?: string; hostname?: string; env?: Env; onIdle?: () => void;
   root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; feedWaitMs?: number; feedTimeoutMs?: number;
-  legsScript?: string; legsTimeoutMs?: number; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number; aguiDist?: string;
+  legsScript?: string; legsTimeoutMs?: number; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number; aguiDist?: string; aguiWeb?: string;
 };
 type Preview = Resolved & { expires: number };
 type Probe = Record<string, { installed: string; health: string }>;
@@ -298,7 +330,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       return res;
     }
     if (req.method === "GET" && path === "/agui") return new Response(null, { status: 308, headers: { location: "/agui/" } });
-    if (req.method === "GET" && path.startsWith("/agui/")) return aguiFile(opts.aguiDist ?? AGUI_DIST, path);
+    if (req.method === "GET" && path.startsWith("/agui/")) return aguiFile(opts.aguiDist ?? AGUI_DIST, path, opts.aguiWeb ?? AGUI_WEB);
     const file = STATIC[path];
     if (req.method === "GET" && file) return new Response(readFileSync(join(publicRoot, file[0])), { headers: { "content-type": file[1], "cache-control": "no-store" } });
     return new Response("not found", { status: 404 });
@@ -328,6 +360,8 @@ if (import.meta.main) {
   console.log(`http://${LOOPBACK}:${port}/#t=${token}`);
   // himmelctl ui --agui: the launcher has already resolved and validated the run id.
   if (a > 0) console.log(`http://${LOOPBACK}:${port}/agui/#t=${token}&run=${process.argv[a + 1]}`);
+  const stale = a > 0 ? aguiStaleWarning() : null;
+  if (stale) console.error(stale);
   process.on("SIGINT", () => process.exit(0));
   process.on("SIGTERM", () => process.exit(0));
 }

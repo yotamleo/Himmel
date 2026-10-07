@@ -8,7 +8,11 @@ import { makeStamper } from "./reducer";
 export const AGUI_URL = (run: string) => `/api/agui/${encodeURIComponent(run)}`;
 
 type Ev = { type: string; timestamp?: number; [k: string]: unknown };
-export type Source = { live: boolean; run?: string; start: (onEvent: (e: Ev) => void, onFail: (msg: string) => void) => () => void };
+// onClose: the live stream ended cleanly (the server stopped tailing a finished run).
+export type Source = {
+  live: boolean; run?: string;
+  start: (onEvent: (e: Ev) => void, onFail: (msg: string) => void, onClose?: () => void) => () => void;
+};
 
 // config-ui hands the page its token in the URL fragment (never in a request line): #t=<token>&run=<id>.
 export function sourceFromLocation(hash: string): Source {
@@ -28,7 +32,7 @@ class RunStreamAgent extends HttpAgent {
 function live(run: string, token: string): Source {
   return {
     live: true, run,
-    start(onEvent, onFail) {
+    start(onEvent, onFail, onClose) {
       const agent = new RunStreamAgent({ url: AGUI_URL(run), headers: { "X-Himmel-Token": token } });
       const input = { threadId: run, runId: run, messages: [], tools: [], context: [], state: {}, forwardedProps: {} };
       let ended = false;
@@ -39,7 +43,7 @@ function live(run: string, token: string): Source {
           onEvent(stamp(e as Ev));
         },
         error: (err: unknown) => onFail(String((err as Error)?.message ?? err)),
-        complete: () => { if (!ended) onFail("the stream closed before the run finished"); },
+        complete: () => { if (ended) onClose?.(); else onFail("the stream closed before the run finished"); },
       });
       return () => { sub.unsubscribe(); agent.abortController.abort(); };
     },
