@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { graphOf, usageOf } from "../agui/fleet";
-import { CLOUD_RECENT_MS, cloudPrs, cloudQuery, cloudRoutes, GH_TTL_MS, readCloudPrs } from "../agui/fleet-cloud";
+import { CLOUD_COMMENT_WINDOW, CLOUD_PR_PAGE, CLOUD_RECENT_MS, cloudPrs, cloudQuery, cloudRoutes, GH_TTL_MS, readCloudPrs } from "../agui/fleet-cloud";
 
 const CONSOLE = "HIMMEL-nextleg-2026-10-07BN-roadmap-console";
 const PRIOR = "HIMMEL-nextleg-2026-10-07BM-roadmap-console";
@@ -163,4 +163,29 @@ test("cloud PRs: the search asks for newest-first; an open PR whose comments did
   const got = cloudPrs(reply, ["HIMMEL-1", "HIMMEL-2"]);
   expect(got?.get("HIMMEL-1")).toEqual({ pr: 10, phase: "unknown", url: null });
   expect(got?.get("HIMMEL-2")).toEqual({ pr: 20, phase: "merged", url: null });
+});
+
+test("cloud PRs: a full search page with no exact title match is unknown (truncated), a short page stays working", () => {
+  const other = (n: number) => pr(n, `feat: [HIMMEL-${n + 100}] x`, "OPEN", []);
+  const full = Array.from({ length: CLOUD_PR_PAGE }, (_, i) => other(i + 1));
+  const got = cloudPrs({ data: { t0: { nodes: full }, t1: { nodes: full.slice(1) }, t2: { nodes: [...full.slice(1), pr(99, "feat: [HIMMEL-3] x", "OPEN", [])] } } }, ["HIMMEL-1", "HIMMEL-2", "HIMMEL-3"]);
+  expect(got?.get("HIMMEL-1")).toEqual({ pr: null, phase: "unknown", url: null });
+  expect(got?.get("HIMMEL-2")).toEqual({ pr: null, phase: "working", url: null });
+  expect(got?.get("HIMMEL-3")).toMatchObject({ pr: 99, phase: "working" });
+  expect(cloudQuery(["HIMMEL-1"])).toContain(`first:${CLOUD_PR_PAGE}`);
+});
+
+test("cloud PRs: a full comment window with no CLOUD report is unknown, not working; a report in it still decides", () => {
+  const filler = Array.from({ length: CLOUD_COMMENT_WINDOW }, (_, i) => `chatter ${i}`);
+  const got = cloudPrs({ data: {
+    t0: { nodes: [pr(10, "feat: [HIMMEL-1] x", "OPEN", filler)] },
+    t1: { nodes: [pr(20, "feat: [HIMMEL-2] x", "OPEN", filler.slice(1))] },
+    t2: { nodes: [pr(30, "feat: [HIMMEL-3] x", "OPEN", [...filler.slice(1), "CLOUD-DONE https://claude.ai/code/session_03"])] },
+    t3: { nodes: [pr(40, "feat: [HIMMEL-4] x", "MERGED", filler)] },
+  } }, ["HIMMEL-1", "HIMMEL-2", "HIMMEL-3", "HIMMEL-4"]);
+  expect(got?.get("HIMMEL-1")).toEqual({ pr: 10, phase: "unknown", url: null });
+  expect(got?.get("HIMMEL-2")).toEqual({ pr: 20, phase: "working", url: null });
+  expect(got?.get("HIMMEL-3")).toEqual({ pr: 30, phase: "done", url: "https://claude.ai/code/session_03" });
+  expect(got?.get("HIMMEL-4")).toEqual({ pr: 40, phase: "merged", url: null });
+  expect(cloudQuery(["HIMMEL-1"])).toContain(`last:${CLOUD_COMMENT_WINDOW}`);
 });
