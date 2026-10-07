@@ -234,7 +234,7 @@ test("trusted console outbox receipt routes a Telegram reply to that console, ev
 });
 
 test("explicit control, dispatch and slash commands retain their routing in a console reply thread", async () => {
-  for (const text of ["status", "work on HIMMEL-123", "/restart"]) {
+  for (const text of ["status", "work on HIMMEL-123", "/restart", "/console", " /unknown command"]) {
     const r = root(); const f = heartbeat(r);
     await replyViaOutbox(r, 1, "console answer", NAME);
     await flushOutboxes(r, async () => 777);
