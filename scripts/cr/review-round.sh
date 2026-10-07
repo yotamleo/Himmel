@@ -413,24 +413,41 @@ if [ "$verb" = "start" ]; then
     if [ "$round" -ge 3 ]; then
         delta_check
         delta_rc=$?
-        if [ "$delta_rc" -eq 0 ] && [ "${delta_reuse:-0}" -eq 0 ] && [ -n "$delta_verdict" ]; then
-            # HIMMEL-4700: consume the judge record before the round is recorded.
-            tmp_verdicts="$verdict_state.tmp.$$"
-            if ! { cat "$verdict_state" 2>/dev/null || [ ! -e "$verdict_state" ]; } > "$tmp_verdicts" \
-                || ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_verdict" >> "$tmp_verdicts" \
-                || ! mv "$tmp_verdicts" "$verdict_state"; then
-                rm -f "$tmp_verdicts"
-                echo "review-round: cannot record the judge record $delta_verdict for $branch" >&2
-                delta_rc=5
-            fi
-        fi
         if [ "$delta_rc" -eq 0 ] && [ "${delta_reuse:-0}" -eq 0 ]; then
+            # HIMMEL-4700: the delta round is recorded first and the judge
+            # record consumed after it; a failed consume restores the prior
+            # .delta, so a record is never spent on a round that never started.
+            # Once both land, a failed counter write below is the HIMMEL-4616
+            # pending pair, which restarts without the record.
             tmp_delta="$delta_state.tmp.$$"
-            if ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_trigger" > "$tmp_delta" \
+            bak_delta="$delta_state.bak.$$"
+            had_delta=0
+            if [ -n "$delta_verdict" ] && [ -f "$delta_state" ]; then
+                had_delta=1
+                cp -p "$delta_state" "$bak_delta" 2>/dev/null || delta_rc=5
+            fi
+            if [ "$delta_rc" -ne 0 ] \
+                || ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_trigger" > "$tmp_delta" \
                 || ! mv "$tmp_delta" "$delta_state"; then
-                rm -f "$tmp_delta"
+                rm -f "$tmp_delta" "$bak_delta"
                 echo "review-round: cannot record the delta round for $branch" >&2
                 delta_rc=5
+            elif [ -n "$delta_verdict" ]; then
+                tmp_verdicts="$verdict_state.tmp.$$"
+                if ! { cat "$verdict_state" 2>/dev/null || [ ! -e "$verdict_state" ]; } > "$tmp_verdicts" \
+                    || ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_verdict" >> "$tmp_verdicts" \
+                    || ! mv "$tmp_verdicts" "$verdict_state"; then
+                    rm -f "$tmp_verdicts"
+                    if [ "$had_delta" -eq 1 ]; then
+                        # A failed restore keeps the new pair: still "used".
+                        mv -f "$bak_delta" "$delta_state" 2>/dev/null || true
+                    else
+                        rm -f "$delta_state"
+                    fi
+                    echo "review-round: cannot record the judge record $delta_verdict for $branch" >&2
+                    delta_rc=5
+                fi
+                rm -f "$bak_delta"
             fi
         fi
         if [ "$delta_rc" -ne 0 ]; then

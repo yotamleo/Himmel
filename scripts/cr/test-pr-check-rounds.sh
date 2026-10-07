@@ -1001,6 +1001,22 @@ assert_eq "$jo_rc" "8" "a second delta round on the same judge record is refused
 assert_has "$jo_out" "delta round was already used" "same-record refusal names the used delta"
 assert_eq "$(cat "$git_dir/cr-review-rounds/judgeonce.round")" "4" "the refused second delta leaves the counter at 4"
 
+# A delta round that fails to record does not spend the judge record.
+three_rounds judgekeep clean
+jk_r3="$cap_r3_head"
+fix_commit judgekeep
+judge jk-1 NO-GO "$jk_r3"
+# A read-only directory at the .delta path fails only the delta write.
+mkdir "$git_dir/cr-review-rounds/judgekeep.delta"
+chmod a-w "$git_dir/cr-review-rounds/judgekeep.delta"
+jk_out="$(start_round "$cap_fix_head" clean judgekeep)"; jk_rc=$?
+chmod u+w "$git_dir/cr-review-rounds/judgekeep.delta"
+rm -rf "$git_dir/cr-review-rounds/judgekeep.delta"
+assert_eq "$jk_rc" "5" "an unwritable delta state fails the judge-triggered round"
+jk_out="$(start_round "$cap_fix_head" clean judgekeep)"; jk_rc=$?
+assert_eq "$jk_rc" "0" "the judge record survives a failed delta write and buys the round on retry"
+assert_has "$jk_out" "pr-check: delta round 4 on judgekeep (from $jk_r3)" "the retried judge round is the delta round"
+
 # Forged, unsigned or malformed records are refused.
 judge_refused() {  # <branch> <label>: the fix head after a clean round 3 stays refused
     _jr_out="$(start_round "$cap_fix_head" clean "$1")"; _jr_rc=$?
