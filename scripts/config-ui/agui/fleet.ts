@@ -63,10 +63,10 @@ function stateOf(status: string, busy: boolean): FleetState {
 function summarize(args: string): string {
   let a: Record<string, unknown> | null = null;
   try { const v = JSON.parse(args); a = v && typeof v === "object" ? v : null; } catch { /* streaming */ }
-  if (!a) return args.slice(0, 120);
-  for (const k of ["description", "command", "file_path", "pattern", "url", "query"]) if (typeof a[k] === "string") return (a[k] as string).slice(0, 120);
+  if (!a) return args;
+  for (const k of ["description", "command", "file_path", "pattern", "url", "query"]) if (typeof a[k] === "string") return a[k] as string;
   const first = Object.values(a).find((x) => typeof x === "string");
-  return typeof first === "string" ? first.slice(0, 120) : "";
+  return typeof first === "string" ? first : "";
 }
 
 const folds = new Map<string, { key: string; view: View }>();
@@ -86,6 +86,7 @@ async function fold(journal: string): Promise<View> {
 
 export async function readFleet(opts: { script: string; env: Record<string, string | undefined>; home: string; now: number; redact: (s: string) => string }): Promise<Fleet> {
   const census = await runScript(opts.script, opts.env);
+  const seen = new Set<string>();
   const rows = await Promise.all(census.sessions.map(async (c): Promise<FleetRow | null> => {
     let rec: { sessionId?: unknown; status?: unknown; name?: unknown } = {};
     try { rec = JSON.parse(await readFile(join(opts.home, ".claude", "sessions", `${c.pid}.json`), "utf8")); } catch { /* not yet written */ }
@@ -94,8 +95,11 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     const journal = found && "path" in found ? found.path : null;
     let view: View | null = null;
     if (journal) {
-      const mtime = await stat(journal).then((s) => s.mtimeMs, () => 0);
-      if (opts.now - mtime > RECENT_MS) return null;
+      seen.add(journal);
+      // Live if any of its files was written recently: a subagent can be busy while the main journal is quiet.
+      const { paths } = await sessionFiles(journal);
+      const mtimes = await Promise.all(paths.map((p) => stat(p).then((s) => s.mtimeMs, () => 0)));
+      if (opts.now - Math.max(0, ...mtimes) > RECENT_MS) return null;
       view = await fold(journal);
     }
     const tools = view ? Object.values(view.tools).sort((a, b) => b.start - a.start) : [];
@@ -108,11 +112,13 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       run, pid: Number(c.pid), name, role, model: c.model || null,
       ticket: /^([A-Z][A-Z0-9]+-\d+)\b/.exec(name)?.[1] ?? null, pr: role === "leg" ? await prOf(c.doc) : null,
       state: stateOf(c.status, rec.status === "busy"),
-      activity: tools[0] && t0 !== undefined ? { tool: tools[0].name, summary: opts.redact(summarize(tools[0].args)), at: t0 + tools[0].start } : null,
+      activity: tools[0] && t0 !== undefined ? { tool: tools[0].name, summary: opts.redact(summarize(tools[0].args)).slice(0, 120), at: t0 + tools[0].start } : null,
       lastEventAt: view && t0 !== undefined ? t0 + view.elapsed : null,
       subagents: { total: subs.length, running: view ? subs.filter((id) => agentState(view!, id) === "running").length : 0 },
       failures: view?.failures.length ?? 0,
     };
   }));
+  // Drop the folds of sessions that left the fleet, so the cache does not grow with every session ever seen.
+  for (const journal of folds.keys()) if (!seen.has(journal)) folds.delete(journal);
   return { census: census.census, generatedAt: opts.now, sessions: rows.filter((r): r is FleetRow => r !== null) };
 }

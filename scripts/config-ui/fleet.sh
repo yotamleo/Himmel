@@ -36,7 +36,11 @@ elif [ "$rc" -ne 0 ]; then census=unavailable; out=""
 fi
 
 rows=""
-while IFS="	" read -r pid name model _; do
+# Read on a non-whitespace separator: tab is IFS whitespace, so an empty name
+# column (a session started without -n) would collapse and shift model into it.
+sep=$(printf '\037')
+out=$(printf '%s\n' "$out" | tr '\t' '\037')
+while IFS="$sep" read -r pid name model _; do
     case "$pid" in ''|'#'*) continue ;; esac
     doc="" status=""
     # Only a plain session name is searched for (find -name would read glob characters as a pattern).

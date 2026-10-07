@@ -12,10 +12,10 @@ const TOKEN = "t".repeat(64);
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
 
-function boot() {
+function boot(extra: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agui-fleet-"));
   const fx = fleetFixture(dir);
-  const s = startServer({ port: 0, token: TOKEN, env: { PATH: process.env.PATH, CONFIG_UI_HIMMELCTL: STUB, CONFIG_UI_IDLE_MS: "60000", ...fx.env } });
+  const s = startServer({ port: 0, token: TOKEN, env: { PATH: process.env.PATH, CONFIG_UI_HIMMELCTL: STUB, CONFIG_UI_IDLE_MS: "60000", ...fx.env, ...extra } });
   cleanups.push(() => { s.stop(); rmSync(dir, { recursive: true, force: true }); });
   return { ...s, ...fx };
 }
@@ -80,4 +80,29 @@ test("secrets in the latest call's summary pass the redactor; names are kept", a
   expect(c.activity.tool).toBe("Bash");
   expect(JSON.stringify(c)).not.toContain(secret);
   expect(c.name).toBe(FLEET.console.name);
+});
+
+test("a session started without a name keeps its model and takes the harness's name (empty census columns do not shift)", async () => {
+  const s = boot();
+  writeFileSync(join(s.dir, "proc", String(FLEET.idle.pid), "cmdline"), ["claude", "--model", "sonnet", ""].join("\0"));
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((x: any) => x.pid === FLEET.idle.pid)).toMatchObject({ name: FLEET.idle.name, model: "sonnet", role: "interactive" });
+});
+
+test("a quiet main journal with a subagent still writing stays listed", async () => {
+  const s = boot();
+  const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+  utimesSync(s.journal(FLEET.leg), old, old);
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.map((x: any) => x.name)).toContain(FLEET.leg.name);
+});
+
+test("a secret straddling the summary cut is redacted whole, not left as a fragment", async () => {
+  // Not token-shaped, so only the env literal catches it — and only while it is whole.
+  const secret = "plainvalue" + "q".repeat(40);
+  const s = boot({ FLEET_TEST_SECRET: secret });
+  s.append(FLEET.console, { type: "assistant", message: { id: "m-t", role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id: "toolu_t", name: "Bash", input: { command: "x".repeat(100) + secret } }] } });
+  const b = await (await fleet(s.port)).json();
+  const c = b.sessions.find((x: any) => x.name === FLEET.console.name);
+  expect(c.activity.summary).not.toContain(secret.slice(0, 20));
 });
