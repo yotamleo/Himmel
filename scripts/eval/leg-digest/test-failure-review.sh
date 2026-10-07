@@ -313,7 +313,11 @@ review "$C9j" --state "$C9j/routes.json" --notify-cmd "$STUB/notify-fail" >/dev/
 s0="$(sends)"
 review "$C9j" --ledger "$C9j/other-ledger.jsonl" --state "$C9j/routes.json.state" >/dev/null 2>&1
 check "a state named like another's sidecar stem does not migrate that sidecar away" '[ "$(sends)" = "$s0" ] && [ -f "$C9j/routes.json.notify.json" ]'
+C9k="$TMP/c9k"; mkdir -p "$C9k"
+row "$C9k/ledger.jsonl" N930 error/Task
+review "$C9k" --state "$C9k/routes" >/dev/null 2>&1
+check "an extensionless router state finishes (its legacy and new sidecar names coincide)" '[ -f "$C9k/routes.notify.json" ]'
 
 echo
-echo "test-failure-review: $PASS passed, $FAIL failed"
+echo "test-failure-review:$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -275,7 +275,8 @@ def main(argv=None):
         # happens to carry this legacy name (routes.json.notify.json for routes.json.state) is never taken.
         # Sibling states share the legacy file but not npath's lock, so the carry is serialised by a second lock
         # on the legacy name (always taken after npath's, never before: no cycle) and the file re-read under it.
-        if not os.path.exists(npath):
+        # An extensionless state names the same file both ways: nothing to carry, and a second lock would self-deadlock.
+        if legacy != npath and not os.path.exists(npath):
             with open(legacy + ".lock", "a") as llock:
                 fcntl.flock(llock, fcntl.LOCK_EX)
                 old, old_ok = load_notify(legacy)
