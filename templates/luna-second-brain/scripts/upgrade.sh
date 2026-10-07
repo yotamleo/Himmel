@@ -63,6 +63,7 @@ set -uo pipefail
 TEMPLATE_DIR=""
 VAULT_DIR=""
 DRY_RUN=0
+PLAN_PATHS_OUT=0
 ASSUME_YES=0
 CHECK_ONLY=0
 BACKUP_DIR=""
@@ -85,6 +86,7 @@ while [ $# -gt 0 ]; do
                              KEEP_LIST+=("$2"); shift 2 ;;
         --dry-run)          DRY_RUN=1; shift ;;
         --check)            CHECK_ONLY=1; shift ;;
+        --plan-paths)       PLAN_PATHS_OUT=1; shift ;;
         --with-github-sync) WITH_GITHUB_SYNC=1; shift ;;
         --yes|-y)           ASSUME_YES=1; shift ;;
         -h|--help)
@@ -100,6 +102,8 @@ upgrade.sh — content-preserving vault/template upgrade (HIMMEL-389)
   --check             print a one-line nudge of whether an upgrade is available
                       (no banner, no plan, no changes), then exit 0.
   --dry-run           print the plan, make zero filesystem changes.
+  --plan-paths        after the plan, print one PLAN-PATH<TAB><action><TAB><path>
+                      row per plan entry (annotation-free; for scripts).
   --yes, -y           skip the confirm prompt.
   --backup-dir DIR    (optional) pre-computed backup dest, named in the
                       local-edit-withheld message.
@@ -897,6 +901,16 @@ fi
 n_write=0 n_skip_identical=0 n_skip_exists=0 n_jsonmerge=0 n_report=0 n_threeway=0 n_local_edit=0
 WRITE_FAILURES=0
 declare -a PLAN
+declare -a PLAN_PATHS
+# plan_row <action> <path> [annotation]: one plan entry. The human row is the
+# action padded to 13 columns, the path, then the optional annotation; the
+# machine row (--plan-paths) is <action><TAB><path>, annotation never included.
+plan_row() {
+    local row
+    printf -v row '%-13s%s%s' "$1" "$2" "${3:-}"
+    PLAN+=("$row")
+    PLAN_PATHS+=("$1"$'\t'"$2")
+}
 
 CLAUDE_MERGE_RESULT=""   # set to clean|copied|conflict|error during execute
 
@@ -1119,13 +1133,13 @@ process() {
                     src_sha="sha256:$(sha_of "$src")"
                     prior_kept="$(kept_sha "$rel")" || prior_kept=""
                     if [ -n "$conv" ]; then
-                        PLAN+=("WRITE        $rel$conv"); n_write=$((n_write+1))
+                        plan_row WRITE "$rel" "$conv"; n_write=$((n_write+1))
                         [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                     elif [ -n "$prior_kept" ] && [ "$prior_kept" = "$src_sha" ]; then
                         # HIMMEL-3406: a standing keep-mine decision, still valid
                         # — the template content it was kept against hasn't
                         # changed since. Stays kept, no re-prompt.
-                        PLAN+=("KEEP-MINE    $rel (kept — not overwritten)")
+                        plan_row KEEP-MINE "$rel" " (kept — not overwritten)"
                         [ "$execute" = 1 ] && record_kept "$rel" "$src_sha"
                     elif is_keep_requested "$rel"; then
                         # A fresh (or renewed, post-template-change) keep-mine
@@ -1133,16 +1147,16 @@ process() {
                         # version's sha, not just the vault's content), so a
                         # LATER template change re-surfaces the file instead
                         # of keeping it silently forever.
-                        PLAN+=("KEEP-MINE    $rel (kept — not overwritten; decision recorded)")
+                        plan_row KEEP-MINE "$rel" " (kept — not overwritten; decision recorded)"
                         [ "$execute" = 1 ] && record_kept "$rel" "$src_sha"
                     elif has_local_edit "$rel" "$dst" "$((1 - execute))" || [ -n "$prior_kept" ]; then
                         if [ -n "$prior_kept" ] && [ "$execute" = 0 ]; then
                             echo "  kept previously against $prior_kept, but the template now ships $src_sha — re-run with --keep $rel to renew the keep, or take the template's update"
                         fi
-                        PLAN+=("LOCAL-EDIT   $rel (vault has local edits since last upgrade — NOT overwritten)")
+                        plan_row LOCAL-EDIT "$rel" " (vault has local edits since last upgrade — NOT overwritten)"
                         n_local_edit=$((n_local_edit+1))
                     else
-                        PLAN+=("WRITE        $rel"); n_write=$((n_write+1))
+                        plan_row WRITE "$rel"; n_write=$((n_write+1))
                         [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                     fi
                 else
@@ -1156,15 +1170,15 @@ process() {
                 if [ -f "$dst" ]; then
                     n_skip_exists=$((n_skip_exists+1))
                 else
-                    PLAN+=("WRITE-NEW    $rel"); n_write=$((n_write+1))
+                    plan_row WRITE-NEW "$rel"; n_write=$((n_write+1))
                     [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                 fi ;;
             report)
                 if [ ! -f "$dst" ]; then
-                    PLAN+=("WRITE-NEW    $rel"); n_write=$((n_write+1))
+                    plan_row WRITE-NEW "$rel"; n_write=$((n_write+1))
                     [ "$execute" = 1 ] && { write_file "$src" "$dst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                 elif ! content_equiv "$src" "$dst" "$rel"; then
-                    PLAN+=("REPORT       $rel (template changed; review — not overwritten)"); n_report=$((n_report+1))
+                    plan_row REPORT "$rel" " (template changed; review — not overwritten)"; n_report=$((n_report+1))
                 fi ;;
             jsonmerge|threeway) : ;;  # handled out-of-loop below
         esac
@@ -1177,7 +1191,7 @@ process() {
     if [ -f "$CP_MERGE_SRC" ]; then
         local added; added="$(plugins_merge "$VAULT_DIR/$cp_rel" "$CP_MERGE_SRC" "0")"
         if [ -n "$added" ]; then
-            PLAN+=("MERGE-JSON   $cp_rel (+$(echo "$added" | tr '\n' ',' | sed 's/,$//'))"); n_jsonmerge=$((n_jsonmerge+1))
+            plan_row MERGE-JSON "$cp_rel" " (+$(echo "$added" | tr '\n' ',' | sed 's/,$//'))"; n_jsonmerge=$((n_jsonmerge+1))
             [ "$execute" = 1 ] && plugins_merge "$VAULT_DIR/$cp_rel" "$CP_MERGE_SRC" "1" >/dev/null
         fi
     fi
@@ -1203,7 +1217,7 @@ process() {
                     if [ -f "$gsdst" ]; then
                         n_skip_exists=$((n_skip_exists+1))
                     else
-                        PLAN+=("WRITE-NEW    $gsrel"); n_write=$((n_write+1))
+                        plan_row WRITE-NEW "$gsrel"; n_write=$((n_write+1))
                         [ "$execute" = 1 ] && { write_file "$gsrc" "$gsdst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                     fi ;;
                 *)
@@ -1220,7 +1234,7 @@ process() {
                             if [ -f "$gsdst" ]; then
                                 n_skip_exists=$((n_skip_exists+1))
                             else
-                                PLAN+=("WRITE-NEW    $gsrel"); n_write=$((n_write+1))
+                                plan_row WRITE-NEW "$gsrel"; n_write=$((n_write+1))
                                 [ "$execute" = 1 ] && { write_file "$gsrc" "$gsdst" || WRITE_FAILURES=$((WRITE_FAILURES+1)); }
                             fi ;;
                         *) : ;;
@@ -1232,10 +1246,10 @@ process() {
     # _CLAUDE.md 3-way.
     claude_threeway "$execute"
     case "$CLAUDE_MERGE_RESULT" in
-        copied)   PLAN+=("WRITE-NEW    _CLAUDE.md"); n_threeway=$((n_threeway+1)) ;;
-        clean)    PLAN+=("MERGE-3WAY   _CLAUDE.md (clean — merged)"); n_threeway=$((n_threeway+1)) ;;
-        conflict) PLAN+=("MERGE-3WAY   _CLAUDE.md (CONFLICT — original kept, see _CLAUDE.md.template-merge)"); n_threeway=$((n_threeway+1)) ;;
-        error)    PLAN+=("MERGE-3WAY   _CLAUDE.md (ERROR — git merge-file failed, original kept)"); n_threeway=$((n_threeway+1)) ;;
+        copied)   plan_row WRITE-NEW _CLAUDE.md; n_threeway=$((n_threeway+1)) ;;
+        clean)    plan_row MERGE-3WAY _CLAUDE.md " (clean — merged)"; n_threeway=$((n_threeway+1)) ;;
+        conflict) plan_row MERGE-3WAY _CLAUDE.md " (CONFLICT — original kept, see _CLAUDE.md.template-merge)"; n_threeway=$((n_threeway+1)) ;;
+        error)    plan_row MERGE-3WAY _CLAUDE.md " (ERROR — git merge-file failed, original kept)"; n_threeway=$((n_threeway+1)) ;;
     esac
 }
 
@@ -1247,6 +1261,7 @@ if [ "${#PLAN[@]}" -eq 0 ]; then
 else
     echo "Plan ($((n_write)) write, $n_jsonmerge json-merge, $n_threeway _CLAUDE.md, $n_report report, $n_skip_identical identical, $n_skip_exists user-kept, $n_local_edit local-edit-withheld):"
     printf '  %s\n' "${PLAN[@]}"
+    [ "$PLAN_PATHS_OUT" = 1 ] && printf 'PLAN-PATH\t%s\n' "${PLAN_PATHS[@]}"
 fi
 echo ""
 

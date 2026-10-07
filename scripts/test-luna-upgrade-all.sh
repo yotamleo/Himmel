@@ -837,6 +837,64 @@ else
     fail "T6-c5: annotation-lookalike owned name emits SKIPPED-DIRTY" "got: $t6c5_out"
 fi
 
+# T6-c6: an UNannotated WRITE-NEW row whose path itself ends in an annotation
+# lookalike still blocks (HIMMEL-4796): the engine's machine-readable path column
+# is read, nothing is stripped off the human text.
+T6C6_TMPL="$TMP/t6c6-tmpl"; make_template "$T6C6_TMPL" "1.0.0"
+printf 'paren v1\n' > "$T6C6_TMPL/docs/Note (vault has local edits)"
+T6C6_VAULT="$TMP/t6c6-vault"
+make_luna_vault "$T6C6_VAULT" "0.9.0" "$T6C6_TMPL"
+git_init_dirty_handovers "$T6C6_VAULT"
+rm -f "$T6C6_VAULT/docs/Note (vault has local edits)"
+t6c6_rc=0
+t6c6_out=$(run_engine apply --template-dir "$T6C6_TMPL" --vault "$T6C6_VAULT" 2>&1) || t6c6_rc=$?
+assert_eq "T6-c6: dirty WRITE-NEW lookalike-named file exits 3" "3" "$t6c6_rc"
+if grepq "$t6c6_out" "^SKIPPED-DIRTY	"; then
+    pass "T6-c6: WRITE-NEW lookalike-named file emits SKIPPED-DIRTY"
+else
+    fail "T6-c6: WRITE-NEW lookalike-named file emits SKIPPED-DIRTY" "got: $t6c6_out"
+fi
+
+# T6-c7: back-compat — a template whose upgrade.sh predates --plan-paths (no flag
+# in the file) falls back to stripping the human plan's annotations, so the
+# paren-named owned file of T6-c4 still blocks.
+T6C7_TMPL="$TMP/t6c7-tmpl"; make_template "$T6C7_TMPL" "1.0.0"
+sed 's/--plan-paths/--no-such-flag/g' "$REAL_UPGRADE" > "$T6C7_TMPL/scripts/upgrade.sh"
+printf 'paren v1\n' > "$T6C7_TMPL/docs/Note (1).md"
+T6C7_VAULT="$TMP/t6c7-vault"
+make_luna_vault "$T6C7_VAULT" "0.9.0" "$T6C7_TMPL"
+printf 'paren v2\n' > "$T6C7_TMPL/docs/Note (1).md"
+git_init_dirty_handovers "$T6C7_VAULT"
+printf 'LOCAL EDIT\n' >> "$T6C7_VAULT/docs/Note (1).md"
+t6c7_rc=0
+t6c7_out=$(run_engine apply --template-dir "$T6C7_TMPL" --vault "$T6C7_VAULT" 2>&1) || t6c7_rc=$?
+assert_eq "T6-c7: flagless engine, dirty paren-named owned file exits 3" "3" "$t6c7_rc"
+if grepq "$t6c7_out" "^SKIPPED-DIRTY	"; then
+    pass "T6-c7: flagless engine emits SKIPPED-DIRTY"
+else
+    fail "T6-c7: flagless engine emits SKIPPED-DIRTY" "got: $t6c7_out"
+fi
+
+# T6-c8: --plan-paths is opt-in: the default dry-run output is unchanged, and the
+# flag only appends annotation-free PLAN-PATH <action> <path> rows.
+T6C8_VAULT="$TMP/t6c8-vault"
+make_luna_vault "$T6C8_VAULT" "0.9.0" "$T6C6_TMPL"
+rm -f "$T6C8_VAULT/docs/Note (vault has local edits)"
+t6c8_plain=$(bash "$REAL_UPGRADE" --template-dir "$T6C6_TMPL" --vault-dir "$T6C8_VAULT" --dry-run 2>&1)
+t6c8_flag=$(bash "$REAL_UPGRADE" --template-dir "$T6C6_TMPL" --vault-dir "$T6C8_VAULT" --dry-run --plan-paths 2>&1)
+if grepq "$t6c8_plain" "PLAN-PATH"; then
+    fail "T6-c8: default output has no PLAN-PATH rows" "got: $t6c8_plain"
+else
+    pass "T6-c8: default output has no PLAN-PATH rows"
+fi
+assert_eq "T6-c8: flag output minus PLAN-PATH rows equals default output" \
+    "$t6c8_plain" "$(printf '%s\n' "$t6c8_flag" | grep -v '^PLAN-PATH	')"
+if grepq "$t6c8_flag" "^PLAN-PATH	WRITE	docs/Note (vault has local edits)$"; then
+    pass "T6-c8: flag adds the annotation-free path row"
+else
+    fail "T6-c8: flag adds the annotation-free path row" "got: $t6c8_flag"
+fi
+
 # T6-d: unstamped vault -> exit 2 without --force-unstamped
 T6D_VAULT="$TMP/t6d-vault"
 make_unstamped_vault "$T6D_VAULT"

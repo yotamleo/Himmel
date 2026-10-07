@@ -349,19 +349,37 @@ is_git_dirty() {
 }
 
 # ---------------------------------------------------------------------------
+# dry_run_plan <vault>: the engine's --dry-run output for <vault>, with its
+# machine-readable PLAN-PATH rows when this template's upgrade.sh has the flag.
+dry_run_plan() {
+    if grep -qF -- '--plan-paths' "$UPGRADE" 2>/dev/null; then
+        bash "$UPGRADE" --template-dir "$TEMPLATE_DIR" --vault-dir "$1" --dry-run --plan-paths 2>&1
+    else
+        bash "$UPGRADE" --template-dir "$TEMPLATE_DIR" --vault-dir "$1" --dry-run 2>&1
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # is_dirty_owned <vault> <dry_out>: exit 0 if the vault has an uncommitted change
 # under a path the upgrade would touch (HIMMEL-4719). The owned set is read from
-# the engine's own dry-run plan (every indented plan line's path) plus the stamp
-# and the _CLAUDE.md merge sidecar. Only upgrade.sh's own trailing plan annotations
-# are stripped (its PLAN+= lines), so a path that itself contains " (" survives
-# (HIMMEL-4727); a vault dirty only elsewhere (handovers/,
-# notes) is safe to apply. Non-git vault: not dirty.
+# the engine's own dry-run plan: its PLAN-PATH <action> <path> rows (HIMMEL-4796),
+# plus the stamp and the _CLAUDE.md merge sidecar. A vault dirty only elsewhere
+# (handovers/, notes) is safe to apply. Non-git vault: not dirty.
 is_dirty_owned() {
     local v="$1" plan="$2"
     [ -d "$v/.git" ] || return 1
-    local owned; owned="$(printf '%s\n' "$plan" \
-        | sed -nE 's/^ +(WRITE-NEW|WRITE|MERGE-JSON|MERGE-3WAY|REPORT|LOCAL-EDIT|KEEP-MINE) +//p' \
-        | sed -E 's/ \((kept —|vault has local edits|template changed;|converged:|clean —|CONFLICT —|ERROR —|\+)[^()]*\)$//')"
+    local owned
+    if [[ $'\n'"$plan" == *$'\nPLAN-PATH\t'* ]]; then
+        owned="$(printf '%s\n' "$plan" | sed -nE $'s/^PLAN-PATH\t[^\t]*\t//p')"
+    else
+        # ponytail: a template whose upgrade.sh predates --plan-paths has no path
+        # column, so strip its trailing annotations from the human plan (list
+        # hand-copied from upgrade.sh; an unannotated path ending in a lookalike
+        # is mis-stripped), drop once every shipped template has the flag.
+        owned="$(printf '%s\n' "$plan" \
+            | sed -nE 's/^ +(WRITE-NEW|WRITE|MERGE-JSON|MERGE-3WAY|REPORT|LOCAL-EDIT|KEEP-MINE) +//p' \
+            | sed -E 's/ \((kept —|vault has local edits|template changed;|converged:|clean —|CONFLICT —|ERROR —|\+)[^()]*\)$//')"
+    fi
     owned="$(printf '%s\n.vault-template.json\n_CLAUDE.md.template-merge\n' "$owned")"
     local entry path
     while IFS= read -r -d '' entry; do
@@ -488,9 +506,7 @@ cmd_sweep() {
 
                 # dry-run — best-effort: errors continue
                 dry_rc=0
-                dry_out="$(bash "$UPGRADE" \
-                    --template-dir "$TEMPLATE_DIR" --vault-dir "$v" --dry-run 2>&1)" \
-                    || dry_rc=$?
+                dry_out="$(dry_run_plan "$v")" || dry_rc=$?
 
                 if [ "$dry_rc" -ge 2 ]; then
                     state="error"
@@ -758,9 +774,7 @@ cmd_apply() {
     # Fresh dry-run (NOT a stale plan) — compute plan and banner versions now
     local dry_out dry_rc
     dry_rc=0
-    dry_out="$(bash "$UPGRADE" \
-        --template-dir "$TEMPLATE_DIR" --vault-dir "$vault" --dry-run 2>&1)" \
-        || dry_rc=$?
+    dry_out="$(dry_run_plan "$vault")" || dry_rc=$?
 
     if [ "$dry_rc" -ge 2 ]; then
         echo "apply: upgrade.sh --dry-run failed (rc=$dry_rc) for $vault" >&2

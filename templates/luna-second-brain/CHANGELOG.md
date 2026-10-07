@@ -8,6 +8,14 @@ Version history for the luna-second-brain vault template (published as
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [0.4.70] — 2026-10-07
+
+### Added
+- `scripts/upgrade.sh --plan-paths`: after the plan, prints one
+  `PLAN-PATH<TAB><action><TAB><path>` row per entry, annotation-free, so a
+  caller reads paths without parsing the human text (HIMMEL-4796). Default
+  output is unchanged.
+
 ## [0.4.69] — 2026-10-05
 
 ### Changed
