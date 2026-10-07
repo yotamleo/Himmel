@@ -62,12 +62,15 @@ NO_RUN_FLAGS = ("--collect-only", "--co", "--help", "-h", "--version", "-V", "--
 # `-c` counts tests under bats but names a config file under pytest.
 NO_RUN_FLAGS_BATS = ("-c",)
 RUNNER_SUBCMD = ("npm", "pnpm", "yarn", "bun", "go", "cargo", "make")
+# HIMMEL-4698: quiet-run.sh's one-line outcome (OK ... "(" / ERR ... "exit=N"); a
+# refusal ("ERR quiet-run: ...") or a kill ("... killed by ...") matches neither.
+QUIET_RUN_LINE_RE = re.compile(r"^(OK|ERR) quiet-run ([^\s:]\S*)(?: exit=\d+| \()", re.M)
 WRAPPERS = ("env", "time", "sudo", "command", "exec", "nice", "nohup")
 # Setup whose failure a test's RED is not mistaken for, in `cd d && test`.
 SETUP_CMDS = ("cd", "pushd", "export", "source", ".", "set", "umask")
 # Command separators, captured; a lone & (background) but not the & of 2>&1 or &>.
 SEG_SPLIT_RE = re.compile(r"(&&|\|\||(?<![<>&])&(?![>&])|[;|\n])")
-CLAIM_NOUN_RE = re.compile(r"\b(tests?|suites?|cases?|checks?)\b", re.I)
+CLAIM_NOUN_RE = re.compile(r"\b(tests?|suites?|cases?)\b", re.I)
 CLAIM_PASS_RE = re.compile(r"\b(pass(es|ed|ing)?|green|succeed(s|ed)?)\b", re.I)
 NEGATED_RE = re.compile(r"(\bnot\b|n't\b|\bnever\b)\W+(?:\w+\W+){0,2}?(pass|green|succeed)", re.I)
 SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
@@ -132,7 +135,9 @@ def test_target(command):
     file (pytest, `npm test`). outcomes says which results the command's exit
     status speaks for: "pass+fail"; "pass" when the test shares an && chain
     with a command other than cd-style setup, whose failure would read the
-    same; "" (masked) when a pipe, ||, & or a later ; command decides it."""
+    same; "" (masked) when a pipe, ||, & or a later ; command decides it. A
+    quiet-run.sh-wrapped test is "quiet-run:<label>" whatever the separators or
+    exit status: the wrapper's OK/ERR line is the outcome (HIMMEL-4698)."""
     if not isinstance(command, str):
         return None
     parts = _split(command)
@@ -141,6 +146,14 @@ def test_target(command):
         t = _segment_target(seg)
         if not t:
             continue
+        label = _quiet_label(seg)
+        if label is not None:
+            n = 1
+            for later in segs[i + 1:]:  # one OK/ERR line per wrapped run
+                t2 = _segment_target(later)
+                if t2 and _quiet_label(later) == label:
+                    t, n = t | t2, n + 1
+            return t, "quiet-run:" + label + (" x%d" % n if n > 1 else "")
         if any(s in ("||", "|", "&") for s in seps):
             return t, ""
         fail_ok = True
@@ -201,10 +214,39 @@ def _is_setup(seg):
     return not toks or toks[0] in SETUP_CMDS
 
 
-def _segment_target(seg):
+def _cmd_toks(seg):
     toks = _tokens(seg)
     if toks and toks[0] == "timeout":
         toks = [t for t in toks[1:] if not t.startswith("-")][1:]
+    return toks
+
+
+def _quiet_run(toks):
+    """(label, inner tokens) when toks is `[bash|sh] quiet-run.sh <label> -- cmd`."""
+    i = 0
+    if toks and os.path.basename(toks[0]) in ("bash", "sh"):
+        i = next((k for k, t in enumerate(toks[1:], 1) if not t.startswith("-")), None)
+    if i is None or i >= len(toks) or os.path.basename(toks[i]) != "quiet-run.sh":
+        return None
+    rest = toks[i + 1:]
+    inner = rest[rest.index("--") + 1:] if "--" in rest else []
+    return (rest[0] if rest else ""), inner
+
+
+def _quiet_label(seg):
+    """The quiet-run label when seg wraps a test in quiet-run.sh, else None."""
+    qr = _quiet_run(_cmd_toks(seg))
+    return qr[0] if qr and _toks_target(qr[1]) else None
+
+
+def _segment_target(seg):
+    return _toks_target(_cmd_toks(seg))
+
+
+def _toks_target(toks):
+    qr = _quiet_run(toks)
+    if qr:
+        return _toks_target(qr[1])
     if not toks:
         return None
     first = os.path.basename(toks[0])
@@ -215,6 +257,11 @@ def _segment_target(seg):
         if any(a in no_run for a in toks[1:]):
             return None
         named = {os.path.basename(a.split("::")[0]) for a in toks[1:] if not a.startswith("-")}
+        return frozenset(n for n in named if TEST_FILE_RE.search(n)) or frozenset(["*"])
+    if first == "node" and "--test" in toks[1:]:  # HIMMEL-4698
+        if any(a in NO_RUN_FLAGS for a in toks[1:]):
+            return None
+        named = {os.path.basename(a) for a in toks[1:] if not a.startswith("-")}
         return frozenset(n for n in named if TEST_FILE_RE.search(n)) or frozenset(["*"])
     if first in RUNNER_SUBCMD and len(toks) > 1 and toks[1] == "test":
         return frozenset(["*"])
@@ -279,6 +326,13 @@ def score_calls(calls, texts, report=None):
         if c["name"] == "Bash" and isinstance(c["input"], dict) and c["result"] and not denied(c):
             t = test_target(c["input"].get("command"))
             passed = not c["result"]["is_error"]
+            if t and t[1].startswith("quiet-run:"):  # the OK/ERR line decides (HIMMEL-4698)
+                label, _, n = t[1][10:].partition(" x")
+                ms = [m.group(1) for m in QUIET_RUN_LINE_RE.finditer(c["result"]["text"])
+                      if m.group(2) == label]
+                if len(ms) != int(n or 1):
+                    continue  # refused, killed or a wrapped run skipped: no outcome to credit
+                passed, t = "ERR" not in ms, (t[0], "pass+fail")
             if t and ((passed and t[1]) or t[1] == "pass+fail"):
                 runs.append((c["pos"], t[0], passed))
     writes = [(c["pos"], p) for c in calls for p in [_written_path(c)] if p]
