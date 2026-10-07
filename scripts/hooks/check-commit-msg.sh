@@ -212,15 +212,16 @@ if ! PROJECT_MODE=$(project_mode_env); then
   echo "COMMIT REJECTED: the project mode is invalid (message above, from scripts/lib/project-mode.sh)." >&2
   exit 1
 fi
-IFS=$'\t' read -r _ _ PM_REQUIRED PM_PATTERN <<EOF
+IFS=$'\t' read -r PM_TRACKER _ PM_REQUIRED PM_PATTERN <<EOF
 ${PROJECT_MODE}
 EOF
+PM_TRACKER="${PM_TRACKER#TRACKER=}"
 PM_REQUIRED="${PM_REQUIRED#TICKET_ID_REQUIRED=}"
 PM_PATTERN="${PM_PATTERN#TICKET_ID_PATTERN=}"
 
 # HIMMEL-2442: default ON. An adopter with no .env at all is gated; the
 # explicit opt-out is TICKET_ID_REQUIRED=0 (or TRACKER=none, which the
-# resolver turns into 0 unless TICKET_ID_REQUIRED says otherwise).
+# resolver turns into 0; forcing it back on is refused below, HIMMEL-4787).
 #
 # CR3: normalize case instead of enumerating spellings. This arm used to list
 # only `false|FALSE`, while the .ps1 twin's `switch -Regex` is case-insensitive
@@ -238,6 +239,18 @@ case "${TICKET_REQUIRED}" in
     exit 1
     ;;
 esac
+
+# HIMMEL-4787: tracker none has no ticket pattern, so a forced requirement
+# would pass every message. Refuse the contradiction instead (rc 2, a config
+# error like the resolver's own refusals). An explicit TICKET_ID_PATTERN still
+# gives the gate something to match, so only the patternless case is refused.
+if [ "${PM_TRACKER}" = none ] && [ -z "${PM_PATTERN}" ]; then
+  echo "COMMIT REJECTED: TICKET_ID_REQUIRED=${TICKET_REQUIRED_RAW} with TRACKER=none is contradictory: tracker none has no ticket pattern, so nothing could be required." >&2
+  echo "  Fix one: set TICKET_ID_REQUIRED=0 (or unset it; tracker none then defaults to 0)," >&2
+  echo "  or choose a tracker (TRACKER=jira with JIRA_PROJECT_KEY, or TRACKER=local), or set TICKET_ID_PATTERN." >&2
+  echo "  In CI, edit the workflow's TICKET_ID_REQUIRED line (.github/workflows/ci.yml, pr-title-lint.yml)." >&2
+  exit 2
+fi
 
 AUTHOR_NAME="${TICKET_ID_AUTHOR:-${GIT_AUTHOR_NAME:-}}"
 if [ -z "${AUTHOR_NAME}" ]; then
@@ -272,10 +285,9 @@ fi
 # The resolver's pattern: TICKET_ID_PATTERN, else the escaped JIRA_PROJECT_KEY
 # (tracker jira), else `#N` or <himmel.trackerPrefix>-N (tracker local), else
 # none. CR2: the `#N` boundaries are character classes rather than `\b` so the
-# SAME regex works under GNU `grep -E` and the .ps1 twin's .NET engine. An
-# empty pattern (tracker none with TICKET_ID_REQUIRED forced on) asks for no ID.
+# SAME regex works under GNU `grep -E` and the .ps1 twin's .NET engine. It is
+# never empty here: tracker none with no pattern was refused above.
 TICKET_PATTERN="${PM_PATTERN}"
-[ -n "${TICKET_PATTERN}" ] || exit 0
 
 printf '%s\n' "${COMMIT_MSG}" | grep -Eq "${TICKET_PATTERN}"
 rc=$?
