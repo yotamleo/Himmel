@@ -305,9 +305,19 @@ GitHub quota (5,000/h REST core, 5,000/h GraphQL — `gh pr checks` is GraphQL),
 the wait is cheap by construction: the first waiter in a TTL window fetches a PR's
 checks and every other waiter reads that snapshot from a shared cache (a `cancel`
 bucket is neither red nor pending, as in gh; an unknown bucket is pending); the poll
-interval backs off while the rollup is unchanged; and when the budget runs low it
-sleeps until the reset instead of retrying. **Only cost changes — exit codes and
-every gate decision are unchanged.** All knobs are environment variables (set them
+interval backs off while the rollup is unchanged. **PR polling is REST-first
+(HIMMEL-4857):** latest check runs and combined commit statuses are read by head
+SHA with `If-None-Match`; ETags and validated payloads live beside the cached
+rows. Unchanged responses return `304` without spending primary rate quota.
+GraphQL supplies review/head/base metadata and the required-check producer gate,
+and is the fallback when REST cannot answer (including sets over 100 rows).
+A low core budget switches the rollup to GraphQL, and a low GraphQL budget keeps
+it on REST; a snapshot rotates at most once. Before using GraphQL, the existing
+zero-point header probe verifies its true remaining budget (`rate_limit` can
+misreport it); successful REST polling needs no GraphQL probe. Unreadable responses from both APIs
+fail closed (exit `2`). When both budgets are low, the existing bounded reset wait
+applies. Startup head/base/review/URL fields share one query; post-watch review
+and head verification stay fresh. All knobs are environment variables (set them
 in `.env` or the launching shell):
 
 | Knob | Default | Meaning |
@@ -317,7 +327,7 @@ in `.env` or the launching shell):
 | `CHECK_CI_CACHE_TTL` | `60` | seconds a snapshot serves poll-grade reads |
 | `CHECK_CI_DECIDE_TTL` | `5` | max age of the snapshot a terminal verdict (green/red confirm, required-check gate) may rest on |
 | `CHECK_CI_WATCH_INTERVAL` / `CHECK_CI_WATCH_INTERVAL_MAX` | `30` / `120` | poll-interval floor / ceiling; doubles while the rollup is unchanged, resets on a change |
-| `CHECK_CI_API_FLOOR` | `300` | sleep until the reset when the GraphQL bucket (what `gh pr checks` draws) reports fewer calls than this remaining (or gh answers 403 rate-limit); `0` disables the preemptive check. The wait is bounded by `--max-wait`; past it the gate exits 2 as before |
+| `CHECK_CI_API_FLOOR` | `300` | rotate PR rollup reads to the other API when the preferred bucket has fewer calls remaining; wait only when both are low. Run mode still waits on core. `0` disables preemptive budget reads. Waits are bounded by `--max-wait` |
 | `CHECK_CI_LOCK_WAIT` | `30` | seconds a waiter waits for the fetching peer before fetching itself |
 | `GH_BUDGET_JITTER_MAX` | (existing) | random seconds added to a budget wait so waiters do not wake in lock-step |
 
@@ -338,9 +348,11 @@ bash scripts/check-ci.sh --run 123456 --job 'shell-unit (1)' --max-wait 900
 success requires the workflow and its jobs to finish; with it, only matching
 jobs must finish. A failure exits immediately, even while other jobs run.
 This mode is **not a PR merge certification**: no review-thread or merge gates,
-no `--settle`. Exit `0` means success/neutral/skipped, `1` means failed/cancelled
-(the job and `gh run view <id> --log-failed` command are printed), and `2` means
-an unreadable/unknown response, a missing job in a completed run, or a deadline.
+no `--settle`. Exit `0` means success (whole-run mode also accepts neutral/skipped),
+`1` means failed/cancelled (the job and `gh run view <id> --log-failed` command
+are printed), and `2` means an unreadable/unknown response, a missing job in a
+completed run, a skipped/neutral selected job, or a deadline. A skipped selected
+job is not evidence of success: it may have been skipped because a dependency failed.
 A pending deadline prints `DEADLINE-PENDING`; `CHECK_CI_DISTINCT_DEADLINE=1`
 changes only that verdict to `7`. `--max-wait` defaults to `900`; `0` is unbounded.
 Bounded reads require GNU `timeout`/`gtimeout` (macOS: `brew install coreutils`).
@@ -348,7 +360,8 @@ Bounded reads require GNU `timeout`/`gtimeout` (macOS: `brew install coreutils`)
 Run mode always uses the shared cache, keyed by repository/host/run id, so a
 whole-run waiter and a job waiter share one fetch per TTL. The same adaptive
 backoff and terminal TTL apply. `gh run view` reads REST/core, so the budget
-preflight uses **core**, not GraphQL; this does not change PR-mode reads.
+preflight uses **core**, not GraphQL. Bounded reads use a hard kill at the deadline,
+without a two-second termination grace.
 The heartbeat defaults to a per-process `run-*.rows.<pid>.wait` file under
 `CHECK_CI_CACHE_DIR`; override it with `CHECK_CI_RUN_HEARTBEAT=<path>` (parent
 must exist). It uses console-wait's `hb=<epoch> pid=<pid> key=<run> tick=<ok|fail|->

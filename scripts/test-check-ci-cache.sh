@@ -96,6 +96,7 @@ if [ "$cmd" = "api" ]; then
 fi
 if [ "$cmd" = "pr" ] && [ "${2:-}" = "view" ]; then
     case " $* " in
+        *url,reviewDecision,headRefOid,baseRefName*) printf 'https://github.com/octo/demo/pull/42\tnull\t%s\tmain\n' "$(cat "$D/head" 2>/dev/null || echo sha1)" ;;
         *mergeStateStatus*) echo "$(cat "$D/head" 2>/dev/null || echo sha1) CLEAN" ;;
         *headRefOid*)  cat "$D/head" 2>/dev/null || echo sha1 ;;
         *baseRefName*) echo main ;;
@@ -210,8 +211,8 @@ if ! grep -q "budget low" "$CASE_DIR/err"; then pass "4b no budget line for a RE
 new_case
 echo 1000000090 > "$CASE_DIR/rl_reset"; echo 100 > "$CASE_DIR/rl_gql"
 cic_init "" ; cic_get 60 2>"$CASE_DIR/err"; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(sort -n "$CASE_DIR/sleeps.log" | tail -1)" -ge 90 ] 2>/dev/null; then pass "4c graphql remaining 100 < floor: slept to the reset"; else fail "4c graphql wait" "rc=$rc sleeps=$(sleeps)"; fi
-if grep -q 'budget low' "$CASE_DIR/err"; then pass "4d prints one line saying so"; else fail "4d message" "stderr: $(cat "$CASE_DIR/err")"; fi
+if [ "$rc" -eq 1 ] && [ ! -s "$CASE_DIR/sleeps.log" ]; then pass '4c low GraphQL plus unreadable REST fails closed without sleep'; else fail '4c budget rotation' "rc=$rc sleeps=$(sleeps)"; fi
+if printf '%s' "$CIC_ERR" | grep -q 'alternate API budget unavailable'; then pass '4d unavailable alternate budget is named'; else fail '4d diagnostic' "$CIC_ERR"; fi
 new_case
 echo 300 > "$CASE_DIR/rl_gql"
 cic_init "" ; cic_get 60 2>/dev/null
@@ -225,8 +226,8 @@ if [ ! -s "$CASE_DIR/sleeps.log" ] && ! grep -q rate_limit "$CASE_DIR/calls.log"
 new_case
 echo rl-once > "$CASE_DIR/mode"
 cic_init "" ; cic_get 60 2>"$CASE_DIR/err"; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(sort -n "$CASE_DIR/sleeps.log" | tail -1)" -ge 60 ] 2>/dev/null; then pass "5 403 -> waited for the reset, then resumed rc 0 (sleeps: $(sleeps))"; else fail "5 403" "rc=$rc sleeps=$(sleeps) err=$(cat "$CASE_DIR/err")"; fi
-if [ -n "$CIC_ROWS" ]; then pass "5b rows arrived after the resume"; else fail "5b rows" "CIC_ROWS empty"; fi
+if [ "$rc" -eq 1 ] && [ ! -s "$CASE_DIR/sleeps.log" ] && [ "$(fetches)" -eq 1 ]; then pass '5 unreadable REST and GraphQL 403 stop after one fallback'; else fail '5 fallback cap' "rc=$rc sleeps=$(sleeps)"; fi
+if [ -z "$CIC_ROWS" ]; then pass '5b failed API reads leave no cached green'; else fail '5b rows' "$CIC_ROWS"; fi
 # a plain error is returned (rc 1), is not a wait, and is never cached: it is one caller's
 # failure (a blip, a bad token), not another waiter's exit 2
 new_case
@@ -241,12 +242,12 @@ if [ "$n" -eq 2 ]; then pass "5d an error is never cached: the next caller refet
 new_case
 echo 1000001000 > "$CASE_DIR/rl_reset"; echo 0 > "$CASE_DIR/rl_gql"
 CIC_MAX_WAIT=60 cic_init "" ; CIC_MAX_WAIT=60 cic_get 60 2>"$CASE_DIR/err"; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(fetches)" -eq 1 ]; then pass "6 low budget, reset beyond --max-wait: the pre-check fetches anyway (rc 0)"; else fail "6 rc" "rc=$rc fetches=$(fetches)"; fi
+if [ "$rc" -eq 1 ] && [ "$(fetches)" -eq 0 ]; then pass '6 exhausted GraphQL is not spent after unreadable REST'; else fail '6 rc' "rc=$rc fetches=$(fetches)"; fi
 if [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "6b no sleep"; else fail "6b" "sleeps=$(sleeps)"; fi
 new_case
 echo rl-once > "$CASE_DIR/mode"
 CIC_MAX_WAIT=30 cic_init "" ; CIC_MAX_WAIT=30 cic_get 60 2>"$CASE_DIR/err"; rc=$?
-if [ "$rc" -eq 2 ] && [ ! -s "$CASE_DIR/sleeps.log" ]; then pass "6e a real 403 with the reset beyond --max-wait: rc 2, no sleep"; else fail "6e 403 bound" "rc=$rc sleeps=$(sleeps)"; fi
+if [ "$rc" -eq 1 ] && [ ! -s "$CASE_DIR/sleeps.log" ]; then pass '6e unreadable REST plus GraphQL 403 is fail-closed, no reset sleep'; else fail '6e 403 bound' "rc=$rc sleeps=$(sleeps)"; fi
 
 # 6c — a killed gh (no rows, no stderr, exit above gh's own 1/8) is an error, never "no checks".
 new_case
@@ -306,11 +307,11 @@ else
     new_case
     echo err > "$CASE_DIR/mode"
     timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
-    if [ "$rc" -eq 1 ] && grep -q 'error connecting' "$CASE_DIR/err"; then pass "8d fetch error -> rc 1 with the error on stderr (check-ci maps it to exit 2)"; else fail "8d error" "rc=$rc err=$(cat "$CASE_DIR/err")"; fi
+    if [ "$rc" -eq 2 ] && grep -q 'error connecting' "$CASE_DIR/err"; then pass "8d unreadable fetch -> rc 2 with the error on stderr"; else fail "8d error" "rc=$rc err=$(cat "$CASE_DIR/err")"; fi
     new_case
     : > "$CASE_DIR/rows"
     timeout_run bash "$HELPER" > "$CASE_DIR/out" 2>"$CASE_DIR/err"; rc=$?
-    if [ "$rc" -eq 1 ] && [ -s "$CASE_DIR/err" ]; then pass "8e no rows is an error, never green (fail closed)"; else fail "8e empty" "rc=$rc out=$(cat "$CASE_DIR/out")"; fi
+    if [ "$rc" -eq 2 ] && [ -s "$CASE_DIR/err" ]; then pass "8e no rows is an error, never green (fail closed)"; else fail "8e empty" "rc=$rc out=$(cat "$CASE_DIR/out")"; fi
     new_case
     # A 30 s-old cached "all pass" (inside the 60 s poll TTL, outside the 5 s decide TTL) while
     # the live rollup has a pending check: the confirm read must refetch and NOT certify it.
@@ -350,6 +351,8 @@ else
     run_ci "$CASE_DIR/g" 42 --max-wait 900
     if [ "$(cat "$CASE_DIR/g.rc")" -eq 0 ]; then pass "10 green -> rc 0 through the cache"; else fail "10 green" "rc=$(cat "$CASE_DIR/g.rc") err=$(cat "$CASE_DIR/g.err")"; fi
     if ! grep -q -- '--watch' "$CASE_DIR/calls.log"; then pass "10b no gh --watch was started (the cached helper replaced it)"; else fail "10b watch" "a --watch call was made"; fi
+    n=$(grep -c -- '--json url,reviewDecision,headRefOid,baseRefName' "$CASE_DIR/calls.log" || true)
+    if [ "$n" -eq 1 ] && ! grep -q -- '--json baseRefName' "$CASE_DIR/calls.log"; then pass '10m startup head/base/review/url share one query'; else fail '10m repeated startup metadata reads' "combined queries=$n"; fi
     new_case
     printf 'fail\tunit-tests\npending\tz\n' > "$CASE_DIR/rows"
     run_ci "$CASE_DIR/r" 42 --max-wait 900
@@ -369,7 +372,7 @@ else
     printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
     echo 0 > "$CASE_DIR/rl_gql"
     run_ci "$CASE_DIR/b" 42 --max-wait 60
-    if [ "$(cat "$CASE_DIR/b.rc")" -eq 0 ] && [ "$(maxsleep)" -lt 100 ]; then pass "10i graphql drained, reset beyond --max-wait -> same verdict as legacy (rc 0), no long sleep (max sleep $(maxsleep)s)"; else fail "10i bound" "rc=$(cat "$CASE_DIR/b.rc") maxsleep=$(maxsleep) err=$(cat "$CASE_DIR/b.err")"; fi
+    if [ "$(cat "$CASE_DIR/b.rc")" -eq 2 ] && [ "$(maxsleep)" -eq 0 ]; then pass '10i unreadable REST and exhausted GraphQL cannot evaluate, no reset sleep'; else fail '10i bound' "rc=$(cat "$CASE_DIR/b.rc") maxsleep=$(maxsleep) err=$(cat "$CASE_DIR/b.err")"; fi
     new_case
     printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
     echo 0 > "$CASE_DIR/rl_core"

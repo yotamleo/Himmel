@@ -97,6 +97,7 @@ fi
 if [ "$cmd" = "pr" ] && [ "${2:-}" = "view" ]; then
     log 1 "$@"
     case " $* " in
+        *url,reviewDecision,headRefOid,baseRefName*) printf 'https://github.com/octo/demo/pull/42\tnull\tsha1\tmain\n' ;;
         *mergeStateStatus*) echo "sha1 CLEAN" ;;   # HIMMEL-3473: GitHub's verdict, parsed shape
         *headRefOid*)  echo sha1 ;;
         *author,files*) printf 'MPR_OK\noctocat\nfalse\n1\nREADME.md\n' ;;
