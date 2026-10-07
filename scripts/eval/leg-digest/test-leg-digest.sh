@@ -66,7 +66,7 @@ check "the digest names its versions and the main model" 'jq -e ".digest_v == 1 
 echo "4. the #1976 agents.jsonl fixture"
 cp "$REPO/scripts/config-ui/tests/fixtures/agui/agents.jsonl" "$TMP/agents.jsonl"
 digest "$TMP/agents.jsonl" >"$TMP/agents.json" 2>/dev/null
-check "agents.jsonl digests to its four failures" '[ "$(jq -c "[.failures[] | select(.failure != \"traj\") | .class] | sort" "$TMP/agents.json")" = "[\"blocked/-\",\"denied/check-push-target\",\"error/Bash\",\"suite/other\"]" ]'
+check "agents.jsonl digests to its four failures" '[ "$(jq -c "[.failures[] | select(.failure != \"traj\") | .class] | sort" "$TMP/agents.json")" = "[\"blocked/-\",\"denied/check-push-target\",\"error/Bash:no-such-file\",\"suite/other\"]" ]'
 check "a subagent_type outside the allow-list is kind other" 'jq -e ".agents | map(select(.id == \"a1b2c3\")) | .[0].kind == \"other\"" "$TMP/agents.json" >/dev/null'
 
 echo "5. canary: no journal text reaches the digest (spec 6.1)"
@@ -132,6 +132,23 @@ mkdir -p "$TMP/onlybun"
 ln -s "$(command -v bun)" "$TMP/onlybun/bun"
 check "git and python3 missing from PATH make it partial, exit 0" 'PATH="$TMP/onlybun" digest "$TMP/$SID.jsonl" | jq -e ".status == \"partial\" and .stats.trajectory_failed == true and .stats.lookups_failed == [\"tracked-tests\"]" >/dev/null'
 check "lookups that worked leave lookups_failed empty" 'jq -e ".stats.lookups_failed == []" "$TMP/classes.json" >/dev/null'
+
+echo "9. error/Bash sub-classes and the context-guard denials (HIMMEL-4785)"
+S9=4785c1a5-0000-4000-8000-000000000001
+cp "$FX/bash-errors.jsonl" "$TMP/$S9.jsonl"
+digest "$TMP/$S9.jsonl" >"$TMP/be.json" 2>"$TMP/be.err" || bad "digest of bash-errors.jsonl exits 0: $(head -c 300 "$TMP/be.err")"
+berow() { jq -c --arg k "$1" '[.failures[] | select(.class == $k and .agent.id == "main")] | .[0] // empty' "$TMP/be.json"; }
+check "a grep that matched nothing (exit 1, empty output) is not a failure row" '[ "$(jq "[.failures[] | select(.class | test(\"no-match\"))] | length" "$TMP/be.json")" = 0 ] && [ -z "$(berow error/Bash:no-match)" ]'
+check "it is counted as ok_no_match, not as an error" 'jq -e ".metrics.ok_no_match == 2 and .metrics.fail_error == 18" "$TMP/be.json" >/dev/null'
+check "no failure row carries an ok/ class" '[ "$(jq "[.failures[] | select(.class | startswith(\"ok/\"))] | length" "$TMP/be.json")" = 0 ]'
+check "a grep with output, a non-grep empty exit 1, a grep followed by a failing command or piped into one or into a parenthesized one, a usage error that names two tracked scripts and neither in its output, a grep exit 2, an unmatched exit 3 and an untracked script stay error/Bash" '[ "$(berow error/Bash | jq .count)" = 10 ]'
+check "a usage error is keyed by the tracked script, one row per script" '[ "$(berow error/Bash:usage:impacted-suites | jq .count)" = 3 ] && [ "$(berow error/Bash:usage:write-verdicts | jq .count)" = 1 ]'
+check "clear-cr-marker exit 14 is error/Bash:cr-gate-exit-14, another script at 14 is not" '[ "$(berow error/Bash:cr-gate-exit-14 | jq -c "[.count, .tool_call_ids]")" = "[1,[\"toolu_cr1\"]]" ]'
+check "a zsh nomatch is error/Bash:zsh-nomatch, not no-match" '[ "$(berow error/Bash:zsh-nomatch | jq -c .tool_call_ids)" = "[\"toolu_z1\"]" ]'
+check "a missing path is error/Bash:no-such-file in both spellings" '[ "$(berow error/Bash:no-such-file | jq -c .tool_call_ids)" = "[\"toolu_f1\",\"toolu_f2\"]" ]'
+check "a context-guard refusal is its own denied/ class, three spellings" '[ "$(berow denied/guard-leg-context-handoff | jq -c .tool_call_ids)" = "[\"toolu_c1\",\"toolu_c2\",\"toolu_c3\"]" ]'
+check "an unknown hook is still denied/other" '[ "$(berow denied/other | jq -c .tool_call_ids)" = "[\"toolu_c4\"]" ]'
+check "every sub-class key passes the router alphabet" 'jq -r ".failures[].class" "$TMP/be.json" | grep -Ev "^(denied|suite|blocked|error|run_error|traj)/[A-Za-z0-9._:+-]{1,80}$" | wc -l | grep -qx 0'
 
 echo "test-leg-digest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -42,6 +42,26 @@ const HOOK_PREFIX = /^(?:PreToolUse|PermissionRequest):\w+ hook error: /;
 const CLASSIFIER = /denied by the Claude Code auto mode classifier/;
 const BRACKET = /Reason: \[([^\]\n]{1,80})\]/;
 const TEST_NAME = /[\w./-]*?((?:test-[\w.-]+\.sh)|(?:[\w.-]+\.test\.ts))\b/g;
+const SCRIPT_NAME = /[\w./-]*?([\w.+-]+\.sh)\b/g;
+const GREP_CMD = /(?:^|[\s;&|(])(?:grep|egrep|fgrep|rg|ugrep)\s/;
+// The last stage of a pipeline whose exit status can be a grep's: the grep itself or a filter that passes it through.
+const PASS_THROUGH = /^\s*(?:(?:grep|egrep|fgrep|rg|ugrep|head|tail|sort|uniq|cat)\b)/;
+
+// HIMMEL-4785: a Bash error is sub-classed by this table, first match wins. `out` tests the result text, `cmd` the
+// command; `sub` is a fixed name, so no journal text reaches a class key. "usage" takes its script from SCRIPT_NAME
+// and only when the basename is a tracked scripts file; an unmatched error stays error/Bash.
+const BASH_ERRORS: { sub: string; out: RegExp; cmd?: RegExp }[] = [
+  { sub: "zsh-nomatch", out: /\bzsh:\d+: no matches found\b/ },
+  { sub: "cr-gate-exit-14", out: /^Exit code 14\b/, cmd: /clear-cr-marker\.sh/ },
+  { sub: "usage", out: /\busage:|expected <base>\.\.<head>|\bunknown (?:option|argument)\b|\bcannot set\b|\bunsupported\b/i },
+  { sub: "no-such-file", out: /no such file or directory/i },
+];
+// A grep that matched nothing exits 1 with no output: the compound's answer, not a failure (the HIMMEL-4755 audit's
+// largest error/Bash bucket).
+const NO_MATCH = /^Exit code 1\s*$/;
+// guard-leg-context-handoff words its refusal "leg context checkpoint|hand-off (mode ...)" or "refusing
+// auto-compaction", never "<hook>:", so the hook-name lookup in deniedSub cannot find it.
+const CONTEXT_GUARD = /\bleg context (?:checkpoint|hand-off) \(mode |\brefusing auto-compaction: no CHECKPOINT/;
 
 type Agent = { id: string; role: string; kind: string | null; model: string | null };
 type Row = {
@@ -85,11 +105,15 @@ function hookNames(): Set<string> | null {
 }
 
 // spawnSync throws when the binary is not on PATH, so each spawn sits inside the try.
-function trackedTests(): Set<string> | null {
+function trackedNames(): { tests: Set<string>; scripts: Set<string> } | null {
   try {
     const r = spawnSync(["git", "-C", REPO, "ls-files", "-z"]);
     if (!r.success) return null;
-    return new Set(r.stdout.toString().split("\0").map((p) => basename(p)).filter((n) => /^test-[\w.-]+\.sh$|\.test\.ts$/.test(n)));
+    const names = r.stdout.toString().split("\0").map((p) => basename(p));
+    return {
+      tests: new Set(names.filter((n) => /^test-[\w.-]+\.sh$|\.test\.ts$/.test(n))),
+      scripts: new Set(names.filter((n) => /^[\w.+-]+\.sh$/.test(n))),
+    };
   } catch { return null; }
 }
 
@@ -150,10 +174,11 @@ async function main() {
   const traj = trajOut ?? {};
   const denials = new Map<string, Denial>(((traj.denials as Denial[]) ?? []).map((d) => [d.tool_call_id, d]));
   const hookList = hookNames();
-  const testList = trackedTests();
-  const lookupsFailed = [...(hookList ? [] : ["hooks"]), ...(testList ? [] : ["tracked-tests"])];
+  const names = trackedNames();
+  const lookupsFailed = [...(hookList ? [] : ["hooks"]), ...(names ? [] : ["tracked-tests"])];
   const hooks = hookList ?? new Set<string>();
-  const tests = testList ?? new Set<string>();
+  const tests = names?.tests ?? new Set<string>();
+  const scripts = names?.scripts ?? new Set<string>();
   const ledger = ledgerRows(o.ledger, session);
 
   const agents = new Map<string, Agent>();
@@ -164,7 +189,7 @@ async function main() {
   const suiteLast = new Map<string, { row: Row; red: boolean }>();
   const mapperDenied = new Set<string>();
   const m = { tool_calls: 0, subagents: 0, turns: 0, fail_denied: 0, fail_suite: 0, fail_blocked: 0, fail_error: 0,
-    run_errors: 0, interrupts: 0 };
+    run_errors: 0, interrupts: 0, ok_no_match: 0 };
   let mainModel: string | null = null;
 
   const seen = (a: Agent) => {
@@ -201,6 +226,23 @@ async function main() {
     const hit = cmd.matchAll(TEST_NAME).next().value;
     return `${agent.id}\0${hit ? basename(hit[1]) : cmd}`;
   };
+  // null: not a failure (a grep that matched nothing). Else "" or ":<sub>", appended to error/Bash.
+  const bashErrorSub = (cmd: string, text: string): string | null => {
+    // Only the last stage of the last command can be the grep whose exit 1 this is: in `grep x f; false` or
+    // `grep x f | false` the failure is `false`'s. ponytail: `false && grep x f` still reads as a no-match (the
+    // grep never ran), a sequence cannot be told from `ls && grep x f` without running it; revisit if the board shows it.
+    const stages = (cmd.split(/;|&&|\|\||\n/).filter((s) => s.trim()).pop() ?? "").split("|");
+    if (NO_MATCH.test(text) && GREP_CMD.test(stages.join(" ")) && PASS_THROUGH.test(stages[stages.length - 1])) return null;
+    for (const e of BASH_ERRORS) {
+      if (!e.out.test(text) || (e.cmd && !e.cmd.test(cmd))) continue;
+      if (e.sub !== "usage") return `:${e.sub}`;
+      // The script the usage error is about: the only tracked one in the command, else the one its output names.
+      const named = [...new Set([...cmd.matchAll(SCRIPT_NAME)].map((h) => h[1]).filter((s) => scripts.has(s)))];
+      const hit = named.length === 1 ? named : named.filter((s) => text.includes(s));
+      if (hit.length === 1) return `:usage:${hit[0].replace(/\.sh$/, "")}`;
+    }
+    return "";
+  };
   const deniedSub = (text: string, ts: number | undefined, tool: string): string => {
     if (CLASSIFIER.test(text)) {
       let cat: string | undefined;
@@ -214,6 +256,7 @@ async function main() {
       if (!cat) { const b = BRACKET.exec(text)?.[1]; if (b && CLASSIFIER_CATEGORIES.has(slug(b))) cat = slug(b); }
       return `classifier:${cat ?? "other"}`;
     }
+    if (CONTEXT_GUARD.test(text.slice(0, 2000))) return "guard-leg-context-handoff";
     const pre = HOOK_PREFIX.exec(text);
     if (!pre) return "permission-prompt";
     let rest = text.slice(pre[0].length);
@@ -265,9 +308,11 @@ async function main() {
           m.fail_blocked++;
           add(a, "blocked/-", "blocked", e.toolCallId, e.timestamp);
         } else {
-          m.fail_error++;
           const tool = callName.get(e.toolCallId) ?? "";
-          add(a, `error/${tool.startsWith("mcp__") ? "mcp" : TOOLS.has(tool) ? tool : "other"}`, "error", e.toolCallId, e.timestamp);
+          const sub = tool === "Bash" ? bashErrorSub(cmd, e.content) : "";
+          if (sub === null) { m.ok_no_match++; break; }
+          m.fail_error++;
+          add(a, `error/${tool.startsWith("mcp__") ? "mcp" : TOOLS.has(tool) ? tool : "other"}${sub}`, "error", e.toolCallId, e.timestamp);
         }
         break;
       }
