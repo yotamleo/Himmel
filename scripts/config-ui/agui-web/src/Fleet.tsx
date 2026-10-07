@@ -1,3 +1,5 @@
+// HIMMEL-4751: the live rows render as a tree under the operator (a leg under its console, a console beside the one
+// it succeeded), each with its subagents, context fill and token usage; a parent or successor name jumps to its row.
 // HIMMEL-4712: the fleet landing — /agui/ with a token and no run. Every live session (consoles, legs, judges,
 // interactive sessions) from GET /api/agui/fleet, polled; a row opens that session's run stream. Wrapped legs sit
 // in their own closed section and are never shown as running. HIMMEL-4711: a leg's row also links to the
@@ -11,7 +13,29 @@ type Row = {
   run: string | null; pid: number; name: string; role: string; model: string | null; ticket: string | null; pr: number | null;
   state: "running" | "idle" | "waiting for GO" | "wrapped"; activity: { tool: string; summary: string; at: number } | null;
   lastEventAt: number | null; subagents: { total: number; running: number }; failures: number;
+  parent: string | null; predecessor: string | null; agents: { name: string; role: string; state: string }[];
+  usage: {
+    calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number;
+    resident: number | null; ceiling: number; ceilingFrom: "autocompact" | "window"; fill: number | null;
+  } | null;
 };
+type Node = { row: Row; kids: Node[] };
+
+// HIMMEL-4751: the live rows as a tree under the operator: a row whose parent is a live row sits under it, the
+// rest are roots. A parent link that loops (two docs naming each other) still places every row exactly once.
+function forest(rows: Row[]): Node[] {
+  const live = new Set(rows.map((r) => r.name));
+  const placed = new Set<Row>();
+  const grow = (r: Row): Node => {
+    placed.add(r);
+    return { row: r, kids: rows.filter((k) => k.parent === r.name && !placed.has(k)).map(grow) };
+  };
+  const out = rows.filter((r) => !r.parent || !live.has(r.parent)).map(grow);
+  for (const r of rows) if (!placed.has(r)) out.push(grow(r));
+  return out;
+}
+
+const k = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
 type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: Row[] };
 
 const POLL_MS = 5000;
@@ -71,11 +95,12 @@ export function FleetPage({ token, state }: { token: string; state: FleetState }
         {fleet?.census === "unavailable" && <p className="run-error" role="alert">The process census failed: this list is not the fleet.</p>}
         {fleet?.census === "degraded" && <p className="quiet">Some sessions could not be read; the list may be incomplete.</p>}
         {fleet && open.length === 0 && fleet.census !== "unavailable" && <p className="quiet">No live sessions.</p>}
-        {open.length > 0 && <ul className="fleet-rows" aria-label="Live sessions">{open.map((r) => <FleetRow key={r.pid} row={r} token={token} now={now} />)}</ul>}
+        {open.length > 0 && <p className="fleet-root">operator</p>}
+        {open.length > 0 && <ul className="fleet-rows fleet-tree" aria-label="Live sessions">{forest(open).map((n) => <FleetNode key={n.row.pid} node={n} live={open} token={token} now={now} />)}</ul>}
         {wrapped.length > 0 && (
           <details className="fleet-closed">
             <summary>{`Wrapped (${wrapped.length})`}</summary>
-            <ul className="fleet-rows" aria-label="Wrapped sessions">{wrapped.map((r) => <FleetRow key={r.pid} row={r} token={token} now={now} />)}</ul>
+            <ul className="fleet-rows" aria-label="Wrapped sessions">{wrapped.map((r) => <li key={r.pid}><FleetRow row={r} live={open} token={token} now={now} /></li>)}</ul>
           </details>
         )}
       </main>
@@ -83,7 +108,41 @@ export function FleetPage({ token, state }: { token: string; state: FleetState }
   );
 }
 
-function FleetRow({ row, token, now }: { row: Row; token: string; now: number }) {
+function FleetNode({ node, live, token, now }: { node: Node; live: Row[]; token: string; now: number }) {
+  return (
+    <li className="fleet-node">
+      <FleetRow row={node.row} live={live} token={token} now={now} />
+      {node.kids.length > 0 && (
+        <ul className="fleet-rows fleet-kids" aria-label={`Under ${node.row.name}`}>
+          {node.kids.map((n) => <FleetNode key={n.row.pid} node={n} live={live} token={token} now={now} />)}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+const rowId = (pid: number) => `fleet-${pid}`;
+
+// A link to another session's row when it is live (the hash is the router's, so this scrolls instead), else its name.
+function Rel({ name, live }: { name: string; live: Row[] }) {
+  const r = live.find((x) => x.name === name);
+  if (!r) return <span title="not a live session">{`${name} (not live)`}</span>;
+  return (
+    <button type="button" className="fleet-rel" onClick={() => {
+      const el = document.getElementById(rowId(r.pid));
+      el?.scrollIntoView({ block: "center" });
+      el?.focus();
+    }}>{name}</button>
+  );
+}
+
+// HIMMEL-4751: context fill against the session's ceiling, then the cumulative tokens and their cost-eq.
+function usageText(u: NonNullable<Row["usage"]>): string {
+  const fill = u.fill === null ? "context not measured" : `context ${u.fill}% of ${k(u.ceiling)} (${u.ceilingFrom === "autocompact" ? "autocompact" : "model window"})`;
+  return `${fill} · ${u.calls} call${u.calls === 1 ? "" : "s"} · in ${k(u.input)} · out ${k(u.output)} · cache read ${k(u.cacheRead)} · cache write ${k(u.cacheCreate)} · cost-eq ${k(u.costEq)}`;
+}
+
+function FleetRow({ row, live, token, now }: { row: Row; live: Row[]; token: string; now: number }) {
   const head = (
     <>
       <span className="fleet-name">{row.name}</span>
@@ -92,17 +151,29 @@ function FleetRow({ row, token, now }: { row: Row; token: string; now: number })
     </>
   );
   return (
-    <li className={`fleet-row ${CLS[row.state]}`}>
+    <div className={`fleet-row ${CLS[row.state]}`} id={rowId(row.pid)} tabIndex={-1}>
       {row.run ? <a className="fleet-head" href={runHash(token, row.run)}>{head}</a> : <span className="fleet-head">{head}</span>}
       <span className="fleet-meta">
         {[row.ticket, row.pr !== null && `PR ${row.pr}`].filter(Boolean).join(" · ") || "no ticket"}
         {" · "}{row.subagents.total === 0 ? "no subagents" : `${row.subagents.running} of ${row.subagents.total} subagents running`}
         {row.failures > 0 ? <span className="fleet-fails">{` · ${row.failures} failure${row.failures === 1 ? "" : "s"}`}</span> : " · no failures"}
       </span>
+      <span className="fleet-graph">
+        {row.parent ? <>under <Rel name={row.parent} live={live} /></> : "under the operator"}
+        {row.predecessor && <>{" · successor to "}<Rel name={row.predecessor} live={live} /></>}
+        {live.filter((x) => x.predecessor === row.name).map((x) => <span key={x.pid}>{" · succeeded by "}<Rel name={x.name} live={live} /></span>)}
+      </span>
+      {row.agents.length > 0 && (
+        <span className="fleet-agents">
+          {row.agents.slice(0, 8).map((a, i) => <span key={i} className={`fleet-agent ${a.state}`}>{`${a.role}: ${a.name} (${a.state})`}</span>)}
+          {row.agents.length > 8 && <span className="fleet-agent">{`+${row.agents.length - 8} more`}</span>}
+        </span>
+      )}
+      <span className="fleet-usage">{row.usage ? usageText(row.usage) : "tokens not measured: no usage records in its journal"}</span>
       {row.role === "leg" && <a className="fleet-link" href={pageHref({ here: "agui", token, id: "health" })}>legs and bank on Health</a>}
       <span className="fleet-activity">
         {row.activity ? <><b>{row.activity.tool}</b> {row.activity.summary} <span className="fleet-age">{ago(now - row.activity.at)}</span></> : "no activity yet"}
       </span>
-    </li>
+    </div>
   );
 }
