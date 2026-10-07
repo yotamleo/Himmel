@@ -123,14 +123,14 @@ mk_raw desc_ph '---' 'description: <one plain-language line: what this leg is do
 mk_raw desc_resumed '# brief' "$PA" '> **Contract:** y' '## Results (newest at the bottom)' '- 10:00 LIVE — started'
 expect_rc "5a fresh brief with no description fails" 1 "$tmp/desc_none.md"
 err="$(bash "$LINT" "$tmp/desc_none.md" 2>&1 >/dev/null)"
-printf '%s' "$err" | grep -q 'description:' && ok "5b the failure names the description: field" || bad "5b the failure names the description: field: $err"
+grep -q 'description:' <<< "$err" && ok "5b the failure names the description: field" || bad "5b the failure names the description: field: $err"
 expect_rc "5c placeholder description fails" 1 "$tmp/desc_ph.md"
 expect_rc "5d a resumed doc (Results bullet) passes without a description" 0 "$tmp/desc_resumed.md"
 rc=0; out="$(run_leg "$tmp/desc_none.md" --profile leg-impl)" || rc=$?
-{ [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'description:'; } \
+{ [ "$rc" -eq 2 ] && grep -q 'description:' <<< "$out"; } \
     && ok "5e launcher refuses a fresh brief with no description" || bad "5e launcher refuses a fresh brief with no description (rc=$rc): $out"
 rc=0; out="$(run_leg "$tmp/desc_none.md" --profile leg-impl --no-prior-art-check)" || rc=$?
-{ [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'description:'; } \
+{ [ "$rc" -eq 2 ] && grep -q 'description:' <<< "$out"; } \
     && ok "5f --no-prior-art-check does not bypass the description refusal" || bad "5f --no-prior-art-check bypassed the description refusal (rc=$rc): $out"
 rc=0; out="$(run_leg "$tmp/desc_resumed.md" --profile leg-impl)" || rc=$?
 [ "$rc" -eq 0 ] && ok "5g launcher resumes a doc that has run without a description" || bad "5g launcher resume of a pre-description doc (rc=$rc): $out"
