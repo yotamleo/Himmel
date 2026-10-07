@@ -48,7 +48,7 @@ test('LOCAL-NATIVE: run-time need (luna / vault / handover state / qmd query, ve
 });
 
 test('CLOUD-OK: graphify and repo-only qmd search no longer route local (HIMMEL-4726: the cloud setup installs both)', () => {
-  for (const need of ['It runs graphify update.', 'It calls graphify query at run time.', 'It uses qmd search over the repo docs.']) {
+  for (const need of ['It runs graphify update.', 'It calls graphify query at run time.', 'It uses qmd search over the repo docs.', 'It reads the skills/graphify/SKILL.md text.']) {
     const v = classifyTicket(tk({ description: `Edit scripts/a.sh. ${need}` }), ctx());
     assert.equal(v.class, 'CLOUD-OK', need);
   }
