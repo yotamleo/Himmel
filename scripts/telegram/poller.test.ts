@@ -3406,6 +3406,15 @@ test("dispatcher: N identical dispatch failures in a row alert exactly once; a s
   expect(alerts).toHaveLength(2);       // a fresh streak alerts again, once
 });
 
+test("dispatcher: an alert whose delivery throws is retried on the next identical failure until delivered", async () => {
+  const attempts: number[] = [];
+  const runFn = async () => { throw new Error("plugin-profiles: registry invalid"); };
+  const d = makeDispatcher(runFn, 4, (_s, _err, n) => { attempts.push(n); if (attempts.length < 3) throw new Error("outbox write failed"); }, 3);
+  const once = async () => { await d("S"); for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  for (let i = 0; i < 10; i++) await once();
+  expect(attempts).toEqual([3, 4, 5]);  // two failed deliveries, then one delivered — and no more
+});
+
 test("dispatcher: a DIFFERENT error restarts the count instead of alerting", async () => {
   const alerts: string[] = [];
   let n = 0;
