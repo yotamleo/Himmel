@@ -240,7 +240,13 @@ export async function pending(root, name) {
     try { cur = await cursor(p.cursor); }
     catch (error) { if (error.code === 'BUS_CURSOR_INVALID') return true; throw error; }
     if (cur.halted) return false;
-    const closed = await segments(root, name);
+    let closed;
+    try { closed = await segments(root, name); }
+    catch (error) {
+      if (filesystemError(error)) throw error;
+      // Invalid archive metadata wakes read() to persist the halt and notice.
+      return true;
+    }
     const selected = closed.find(([k]) => k === cur.k);
     if (selected) {
       for (const file of selected[1]) {

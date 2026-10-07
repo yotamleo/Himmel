@@ -372,6 +372,18 @@ test('HIMMEL-4880 pending propagates native metadata failures without a wake', a
   }
 });
 
+test('HIMMEL-4880 invalid segment metadata wakes read to persist one halt', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message());
+  await writeFile(join(root, 'log/leg.9007199254740992.jsonl'), '', { mode: 0o600 });
+  assert.equal(await store.pending(root, 'leg'), true);
+  const got = await store.read(root, 'leg');
+  assert.deepEqual(got.records, []);
+  assert.equal(got.next.halted, 1);
+  assert.match(got.notice, /chain broken/);
+  assert.equal(await store.pending(root, 'leg'), false);
+});
+
 test('appendChained never recreates a missing log', async t => {
   assert.equal(typeof primitive.appendChained, 'function');
   const dir = await mkdtemp(join(tmpdir(), 'bus-missing-'));
