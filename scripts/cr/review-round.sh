@@ -219,6 +219,7 @@ EOF
 # $1, in the exact console-kit/write-verdict.sh format, under this repo's
 # verdict scope; rc 1 when there is none. A qid counts only when every record
 # in it parses, so a hand-written or edited file disqualifies its qid.
+# HIMMEL-4720: a qid already consumed in any branch's .verdicts is skipped.
 # ponytail: same-uid ceiling - the writer's stamp is a format check, not
 # authentication, and any same-uid process can write into verdicts/; the
 # upgrade path is a separate-uid verdict store (HIMMEL-4714 security note,
@@ -249,6 +250,9 @@ judge_nogo_record() (
         qid="${qdir##*/}"
         if [ ! -d "$qdir" ] || [ -L "$qdir" ]; then continue; fi
         case "$qid" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) continue ;; esac
+        # HIMMEL-4720: a qid consumed on any branch buys no other round, so
+        # two branches sharing a last reviewed head cannot each spend it.
+        if grep -rqsF --include='*.verdicts' " $qid/" "$git_dir/cr-review-rounds" 2>/dev/null; then continue; fi
         hit="" bad=0
         for f in "$qdir"/*.md; do
             [ -e "$f" ] || [ -L "$f" ] || continue

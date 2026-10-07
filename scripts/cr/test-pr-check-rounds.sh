@@ -1066,6 +1066,72 @@ judge jlink-1 NO-GO "$cap_r3_head"
 mv "$vscope/jlink-1" "$tmp/jlink-real"
 ln -s "$tmp/jlink-real" "$vscope/jlink-1"
 judge_refused jlink "a symlinked verdict directory is refused"
+# HIMMEL-4720: a record with the writer's layout but a bad stamp is refused.
+three_rounds jstamp clean
+fix_commit jstamp
+judge jstamp-1 NO-GO "$cap_r3_head"
+sed -i.bak 's/^writer-session: .*/writer-session: forged session!/' "$vscope/jstamp-1/judge.md"
+rm -f "$vscope/jstamp-1/judge.md.bak"
+judge_refused jstamp "a laid-out record with a malformed writer-session stamp is refused"
+three_rounds jwhen clean
+fix_commit jwhen
+judge jwhen-1 NO-GO "$cap_r3_head"
+sed -i.bak 's/^written-at: .*/written-at: yesterday/' "$vscope/jwhen-1/judge.md"
+rm -f "$vscope/jwhen-1/judge.md.bak"
+judge_refused jwhen "a laid-out record with a malformed written-at stamp is refused"
+
+# HIMMEL-4720: one record buys one round even when .head never moved. The
+# counter write fails after the delta and verdict writes landed, so the
+# .verdicts line is the only thing refusing a second round from that head,
+# even when a fresh, unconsumed record exists for it.
+real_mv="$(command -v mv)"
+mkdir -p "$tmp/mvshim"
+cat > "$tmp/mvshim/mv" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do case "\$a" in */jonly.round) exit 1 ;; esac; done
+exec "$real_mv" "\$@"
+SHIM
+chmod +x "$tmp/mvshim/mv"
+three_rounds jonly clean
+jy_r3="$cap_r3_head"
+fix_commit jonly
+judge jy-1 NO-GO "$jy_r3"
+jy_rc=0; PATH="$tmp/mvshim:$PATH" start_round "$cap_fix_head" clean jonly >/dev/null || jy_rc=$?
+assert_eq "$jy_rc" "5" "a failed counter write fails the judge-triggered round"
+assert_has "$(cat "$git_dir/cr-review-rounds/jonly.verdicts" 2>/dev/null)" " jy-1/" "the judge record was consumed before the counter write"
+assert_eq "$(cat "$git_dir/cr-review-rounds/jonly.head" 2>/dev/null)" "$jy_r3" "the failed round leaves the last reviewed head in place"
+# A fresh record for the same head: only the per-head .verdicts line refuses it.
+judge jy-2 NO-GO "$jy_r3"
+printf 'another\n' >> "$repo/jonly.txt"
+git -C "$repo" commit -q -am "jonly another"
+jy_rc=0; start_round "$(git -C "$repo" rev-parse jonly)" clean jonly >/dev/null || jy_rc=$?
+assert_eq "$jy_rc" "8" "the consumed record alone refuses a second round from the same head"
+assert_eq "$(cat "$git_dir/cr-review-rounds/jonly.round")" "3" "the refused round leaves the counter at 3"
+
+# HIMMEL-4720: a record is consumed by qid across branches, so two branches
+# with the same last reviewed head cannot each spend the same NO-GO.
+three_rounds jbr1 clean
+jbr_r3="$cap_r3_head"
+git -C "$repo" checkout -q -b jbr2 "$jbr_r3"
+for n in 1 2 3; do
+    (start_round "$jbr_r3" clean jbr2 >/dev/null) || fail "jbr2 fixture setup round $n"
+done
+# The ledger dedups avail on (head,model), so the stub's jbr1 row hides jbr2's:
+# give jbr2 its own critic row at the shared head.
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" avail \
+    --branch jbr2 --head "$jbr_r3" --model stub-jbr2 --status ok >/dev/null 2>"$tmp/jbr2-avail.err" || fail "jbr2 avail setup"
+judge jbr-1 NO-GO "$jbr_r3"
+git -C "$repo" checkout -q jbr1
+fix_commit jbr1
+jbr_rc=0; start_round "$cap_fix_head" clean jbr1 >/dev/null || jbr_rc=$?
+assert_eq "$jbr_rc" "0" "the judge NO-GO buys the delta round on the first branch"
+git -C "$repo" checkout -q jbr2
+printf 'fix2\n' >> "$repo/jbr1.txt"
+git -C "$repo" commit -q -am "fix jbr2"
+cap_fix_head="$(git -C "$repo" rev-parse jbr2)"
+jbr_rc=0; start_round "$cap_fix_head" clean jbr2 >/dev/null || jbr_rc=$?
+assert_eq "$jbr_rc" "8" "the same judge record buys no round on a second branch with the same reviewed head"
+assert_eq "$(cat "$git_dir/cr-review-rounds/jbr2.round")" "3" "the refused second-branch round leaves its counter at 3"
 
 # The existing fix trigger is unchanged and still records itself as fix.
 assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"
