@@ -939,6 +939,133 @@ assert_eq "$promote_rc3" "1" "a malformed ledger row makes promote exit 1"
 assert_has "$(cat "$tmp/promote3.err")" "malformed CR ledger row" "malformed-ledger refusal names the reason"
 assert_eq "$promote_lines_after" "$((promote_lines_before + 1))" "malformed-ledger run appends nothing beyond the injected garbage line"
 
+# HIMMEL-4700: a judge NO-GO on the last reviewed head, as the console-kit
+# verdict writer records it, buys exactly one delta round. The records are
+# written by the real writer from the fixture anchor, so the scope the writer
+# and review-round.sh resolve must agree.
+mkdir -p "$fx/scripts/handover/console-kit"
+cp "$HERE/../handover/console-kit/write-verdict.sh" "$fx/scripts/handover/console-kit/write-verdict.sh"
+for lib in go-gate.sh handover-path.sh user-slug.sh forge.sh forge-github.sh forge-bitbucket.sh; do
+    cp "$HERE/../lib/$lib" "$fx/scripts/lib/$lib"
+done
+git -C "$fx" -c init.defaultBranch=main init -q
+vroot="$tmp/hroot"
+mkdir -p "$vroot"
+HANDOVER_DIR="$vroot" USER_SLUG=tuser
+export HANDOVER_DIR USER_SLUG
+vscope="$vroot/tuser/fx/verdicts"
+printf 'the fix does not hold\n' > "$tmp/judge-evidence.md"
+judge() {
+    env -u HIMMEL_CONSOLE_LEG CLAUDE_CODE_SESSION_ID=judge-sess-4700 \
+        bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$1" "$2" "$3" \
+        --evidence-file "$tmp/judge-evidence.md" >/dev/null 2>"$tmp/judge-$1.err" || fail "judge writes $1 $2"
+}
+start_round() {
+    (cd "$repo" && PANEL_MODE="${2:-clean}" bash "$SCRIPT" --head "$1" --branch "$3" 2>&1)
+}
+
+# RED: a judge NO-GO on the round-3 head enables the delta round for its fix.
+three_rounds judgenogo clean
+jn_r3="$cap_r3_head"
+fix_commit judgenogo
+jn_fix="$cap_fix_head"
+jn_out="$(start_round "$jn_fix" clean judgenogo)"; jn_rc=$?
+assert_eq "$jn_rc" "8" "without a judge record, a fix after a clean round 3 gets no delta round"
+judge jn-1 NO-GO "$jn_r3"
+jn_out="$(start_round "$jn_fix" clean judgenogo)"; jn_rc=$?
+assert_eq "$jn_rc" "0" "a judge NO-GO on the last reviewed head enables the delta round"
+assert_has "$jn_out" "pr-check: delta round 4 on judgenogo (from $jn_r3)" "the judge-triggered round is a delta from the last reviewed head"
+assert_has "$(cat "$git_dir/cr-review-rounds/judgenogo.delta")" "verdict:jn-1" "the delta state names the judge record"
+# Each record buys one round: the reviewed delta head needs its own NO-GO.
+printf 'second fix\n' >> "$repo/judgenogo.txt"
+git -C "$repo" commit -q -am "judgenogo second fix"
+jn_fix2="$(git -C "$repo" rev-parse judgenogo)"
+jn2_out="$(start_round "$jn_fix2" clean judgenogo)"; jn2_rc=$?
+assert_eq "$jn2_rc" "8" "a judge record for an earlier head buys no second delta round"
+assert_has "$jn2_out" "delta round was already used" "second-delta refusal still names the used delta"
+judge jn-2 NO-GO "$jn_fix"
+jn3_out="$(start_round "$jn_fix2" clean judgenogo)"; jn3_rc=$?
+assert_eq "$jn3_rc" "0" "a fresh judge NO-GO on the reviewed delta head buys one more delta round"
+assert_has "$jn3_out" "pr-check: delta round 5 on judgenogo (from $jn_fix)" "the next judge round is scoped from the delta head"
+
+# The same record never buys a second round, even while its round is pending.
+three_rounds judgeonce clean
+jo_r3="$cap_r3_head"
+fix_commit judgeonce
+judge jo-1 NO-GO "$jo_r3"
+(start_round "$cap_fix_head" fail judgeonce >/dev/null) || fail "judgeonce pending delta setup"
+printf 'another\n' >> "$repo/judgeonce.txt"
+git -C "$repo" commit -q -am "judgeonce another"
+jo_out="$(start_round "$(git -C "$repo" rev-parse judgeonce)" clean judgeonce)"; jo_rc=$?
+assert_eq "$jo_rc" "8" "a second delta round on the same judge record is refused"
+assert_has "$jo_out" "delta round was already used" "same-record refusal names the used delta"
+assert_eq "$(cat "$git_dir/cr-review-rounds/judgeonce.round")" "4" "the refused second delta leaves the counter at 4"
+
+# A delta round that fails to record does not spend the judge record.
+three_rounds judgekeep clean
+jk_r3="$cap_r3_head"
+fix_commit judgekeep
+judge jk-1 NO-GO "$jk_r3"
+# A read-only directory at the .delta path fails only the delta write.
+mkdir "$git_dir/cr-review-rounds/judgekeep.delta"
+chmod a-w "$git_dir/cr-review-rounds/judgekeep.delta"
+jk_out="$(start_round "$cap_fix_head" clean judgekeep)"; jk_rc=$?
+chmod u+w "$git_dir/cr-review-rounds/judgekeep.delta"
+rm -rf "$git_dir/cr-review-rounds/judgekeep.delta"
+assert_eq "$jk_rc" "5" "an unwritable delta state fails the judge-triggered round"
+jk_out="$(start_round "$cap_fix_head" clean judgekeep)"; jk_rc=$?
+assert_eq "$jk_rc" "0" "the judge record survives a failed delta write and buys the round on retry"
+assert_has "$jk_out" "pr-check: delta round 4 on judgekeep (from $jk_r3)" "the retried judge round is the delta round"
+
+# Forged, unsigned or malformed records are refused.
+judge_refused() {  # <branch> <label>: the fix head after a clean round 3 stays refused
+    _jr_out="$(start_round "$cap_fix_head" clean "$1")"; _jr_rc=$?
+    assert_eq "$_jr_rc" "8" "$2"
+    assert_eq "$(cat "$git_dir/cr-review-rounds/$1.round")" "3" "$2 (counter stays at 3)"
+}
+three_rounds jhand clean
+fix_commit jhand
+mkdir -p "$vscope/jhand-1"
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+printf '# VERDICT jhand-1 - judge\n\n## Verdict\n\n**NO-GO** for head `%s`.\n' "$cap_r3_head" > "$vscope/jhand-1/judge.md"
+judge_refused jhand "a hand-written record without the writer's stamp is refused"
+three_rounds jbadline clean
+fix_commit jbadline
+judge jbad-1 NO-GO "$cap_r3_head"
+sed -i.bak 's/^\*\*NO-GO\*\* for head/**NO-GO** at head/' "$vscope/jbad-1/judge.md"
+rm -f "$vscope/jbad-1/judge.md.bak"
+judge_refused jbadline "a record whose verdict line does not parse is refused"
+three_rounds jqid clean
+fix_commit jqid
+judge jqid-1 NO-GO "$cap_r3_head"
+mkdir -p "$vscope/jqid-2"
+mv "$vscope/jqid-1/judge.md" "$vscope/jqid-2/judge.md"
+judge_refused jqid "a record moved under another qid is refused"
+three_rounds jgo clean
+fix_commit jgo
+judge jgo-1 GO "$cap_r3_head"
+judge_refused jgo "a judge GO is no delta trigger"
+three_rounds jother clean
+fix_commit jother
+judge jother-1 NO-GO "$cap_fix_head"
+judge_refused jother "a NO-GO for another head is no delta trigger"
+three_rounds jscope clean
+fix_commit jscope
+judge jscope-1 NO-GO "$cap_r3_head"
+mkdir -p "$vroot/tuser/elsewhere/verdicts"
+mv "$vscope/jscope-1" "$vroot/tuser/elsewhere/verdicts/jscope-1"
+judge_refused jscope "a record in another repo's verdict scope is refused"
+three_rounds jlink clean
+fix_commit jlink
+judge jlink-1 NO-GO "$cap_r3_head"
+mv "$vscope/jlink-1" "$tmp/jlink-real"
+ln -s "$tmp/jlink-real" "$vscope/jlink-1"
+judge_refused jlink "a symlinked verdict directory is refused"
+
+# The existing fix trigger is unchanged and still records itself as fix.
+assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"
+assert_has "$(cat "$git_dir/cr-review-rounds/feature.delta")" " merge-forward" "the merge-forward trigger still records merge-forward"
+
 if [ "$fails" -gt 0 ]; then
     printf 'FAIL test-pr-check-rounds (%s failures)\n' "$fails" >&2
     exit 1
