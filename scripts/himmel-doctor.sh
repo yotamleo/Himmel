@@ -201,6 +201,7 @@ check_c3() {
     local now stat_fmt_m stat_fmt_c ts
     now="${HIMMEL_DOCTOR_C3_NOW:-$(date +%s)}"
     case "$now" in ''|*[!0-9]*) now="$(date +%s)" ;; esac
+    now=$(( 10#$now ))
     if stat -c %Y / >/dev/null 2>&1; then stat_fmt_m="-c %Y"; stat_fmt_c="-c %Z"; else stat_fmt_m="-f %m"; stat_fmt_c="-f %c"; fi
     while IFS= read -r -d '' rec; do
         if [ "$skip_orig" = 1 ]; then skip_orig=0; continue; fi
