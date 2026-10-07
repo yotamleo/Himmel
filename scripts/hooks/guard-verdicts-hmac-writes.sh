@@ -56,6 +56,10 @@
 # ponytail: an rm/mv over a parent of verdicts/ is seen only within three
 # layers below it or above $HANDOVER_DIR — a deeper ancestor with the root
 # unset is not; same upgrade path, the separate-uid store (HIMMEL-3578).
+# ponytail: only mv cp install ln get a full option grammar; rsync and scp
+# are checked by their last word alone, patch and sed's `w` command not by
+# their write-file arguments, and a recursive copy that merges a tree holding
+# verdicts/ into an ancestor of one is not seen; same upgrade path (HIMMEL-3578).
 # ponytail: the PowerShell tool is not wired, Windows is parked under
 # HIMMEL-4102 — wire it when Windows legs resume.
 #
@@ -781,11 +785,115 @@ _vanc() {
     return 0
 }
 
-# A short-option cluster whose -t takes the NEXT word (-t, -vt), and one whose
-# -t carries the target attached (-tDIR, -vtDIR). S is left out of the cluster
-# letters because -S takes a value: -St is a suffix, not a target (delta codex-1).
-TCLUS='^-[A-RT-Za-z]*t$'
-TATT='^-[A-RT-Za-z]*t(.+)$'
+# GNU coreutils option tables for mv cp install ln: the short letters that take
+# a value, and every long option (`:` takes a value, `=` an optional attached
+# one). Operands are found the way getopt_long finds them: permuted, `--` ends
+# options, a long option may be any unique prefix, a value letter in a cluster
+# takes the rest of the cluster or the next word.
+OPT_S_cp=St OPT_S_install=Stgmo # mv and ln share cp's St
+OPT_L_mv=" backup= context debug exchange force interactive no-clobber no-copy no-target-directory strip-trailing-slashes suffix: target-directory: update= verbose help version "
+OPT_L_cp=" archive attributes-only backup= copy-contents debug dereference force interactive keep-directory-symlink link no-clobber no-dereference preserve= no-preserve: parents recursive reflink= remove-destination sparse: strip-trailing-slashes symbolic-link suffix: target-directory: no-target-directory update= verbose one-file-system context= help version "
+OPT_L_install=" backup= compare debug directory group: mode: owner: preserve-timestamps strip strip-program: suffix: target-directory: no-target-directory verbose preserve-context context= help version "
+OPT_L_ln=" backup= directory force interactive logical no-dereference physical relative symbolic suffix: target-directory: no-target-directory verbose help version "
+
+# _long <cmd> <name> — print the table entry (name plus `:`/`=`) the long
+# option <name> resolves to: an exact match, else the one entry it prefixes.
+# Unknown or ambiguous prints nothing.
+_long() {
+    local tab e hit="" n=0
+    case "$1" in mv) tab=$OPT_L_mv ;; cp) tab=$OPT_L_cp ;; install) tab=$OPT_L_install ;; *) tab=$OPT_L_ln ;; esac
+    for e in $tab; do
+        [ "${e%[:=]}" = "$2" ] && { printf '%s' "$e"; return 0; }
+        case "$e" in "$2"*) hit=$e; n=$((n + 1)) ;; esac
+    done
+    [ "$n" = 1 ] && printf '%s' "$hit"
+    return 0
+}
+
+# _fgram <seg> <cmd> — the verdicts/ write check of one mv/cp/install/ln
+# segment. The destination (the -t dir, ln's cwd for a lone operand, else the
+# last operand; every operand for install -d) is a write target. mv also
+# writes away every source, and moves it whole (_vanc); --exchange moves the
+# destination too. An option the table cannot resolve, or POSIXLY_CORRECT on
+# the line, makes every operand a target (fail closed).
+_fgram() {
+    local s="$1" c="$2" i ci w n v e short ops=() eoo=0 need="" tdir="" hastd=0 xchg=0 dirm=0 unc=0 last k
+    ci=${seg_cmd_i[s]}
+    case "$c" in install) short=$OPT_S_install ;; *) short=$OPT_S_cp ;; esac
+    case "$CMD_TEXT" in *POSIXLY_CORRECT*) unc=1 ;; esac
+    i=$((ci + 1))
+    while [ "$i" -lt "$ST_N" ] && [ "${ST_S[i]}" = "$s" ]; do
+        w=${ST_W[i]}
+        i=$((i + 1))
+        [ -z "${ST_RO[$((i - 1))]}" ] || continue
+        if [ -n "$need" ]; then
+            [ "$need" = t ] && { tdir=$w; hastd=1; }
+            need=""
+            continue
+        fi
+        case "$eoo:$w" in
+            1:*|0:-|0:[!-]*|0:) ops+=("$w"); continue ;;
+            0:--) eoo=1; continue ;;
+            0:--*)
+                n=${w#--}; v=""
+                case "$n" in *=*) v=${n#*=}; n=${n%%=*} ;; esac
+                e=$(_long "$c" "$n")
+                case "$e" in
+                    '') unc=1 ;;
+                    target-directory:) if [ "$w" != "${w#*=}" ]; then tdir=$v; hastd=1; else need=t; fi ;;
+                    exchange) xchg=1 ;;
+                    directory) [ "$c" = install ] && dirm=1 ;;
+                    *:) [ "$w" != "${w#*=}" ] || need=v ;;
+                esac
+                continue ;;
+        esac
+        # a short cluster
+        n=${w#-}
+        while [ -n "$n" ]; do
+            v=${n:0:1}; n=${n:1}
+            case "$short" in
+                *"$v"*)
+                    if [ -n "$n" ]; then
+                        [ "$v" = t ] && { tdir=$n; hastd=1; }
+                    else
+                        need=$v
+                    fi
+                    break ;;
+            esac
+            [ "$c$v" = installd ] && dirm=1
+        done
+    done
+    n=${#ops[@]}
+    [ "$hastd" = 1 ] && _target "$tdir"
+    if [ "$unc" = 1 ] || [ "$dirm" = 1 ]; then
+        for w in ${ops[@]+"${ops[@]}"}; do
+            _target "$w"
+            [ "$c" = mv ] && _vanc "$w"
+        done
+        return 0
+    fi
+    [ "$n" -gt 0 ] || return 0
+    last=$((n - 1))
+    if [ "$hastd" = 0 ]; then
+        if [ "$c" = ln ] && [ "$n" = 1 ]; then
+            # ln with one operand links it into the cwd, under its own name.
+            w=${ops[0]%"${ops[0]##*[!/]}"}
+            _target "${w##*/}"
+        else
+            _target "${ops[last]}"
+            [ "$c" = mv ] && [ "$xchg" = 1 ] && _vanc "${ops[last]}"
+        fi
+    fi
+    if [ "$c" = mv ]; then
+        k=0
+        while [ "$k" -lt "$n" ]; do
+            _target "${ops[k]}"
+            { [ "$hastd" = 1 ] || [ "$k" != "$last" ]; } && _vanc "${ops[k]}"
+            k=$((k + 1))
+        done
+    fi
+    return 0
+}
 
 # _target <text> — a write target outside a judge session.
 _target() {
@@ -842,7 +950,8 @@ CD_DYN_K=0
 # `bash -c` / `sh -c` script and an `eval` argument are analysed the same way,
 # after this level is done (the tokenizer's state is global).
 analyze() {
-    local depth="$2" nested=() nn=0 k i s w b c ci ro prev a t x
+    local depth="$2" nested=() nn=0 k i s w b c ci ro a t x
+    CMD_TEXT=$1
     if [ "$depth" -gt "$MAX_DEPTH" ] || ! st_tokenize "$1"; then
         text_scan "$1"
         return 0
@@ -850,7 +959,7 @@ analyze() {
 
     # Segment command words: the first non-assignment, non-redirect word,
     # with wrappers, their options and option arguments skipped.
-    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=(); seg_eval=(); seg_cdone=(); seg_fact=(); seg_mvt=()
+    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=(); seg_eval=(); seg_cdone=(); seg_fact=(); seg_eoo=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         s=${ST_S[i]}
@@ -944,8 +1053,6 @@ analyze() {
             w=${ST_W[i]}
             case "$w" in -*) ;; *) seg_last[s]=$i ;; esac
             case "$w" in -i*|--in-place*) seg_inpl[s]=1 ;; esac
-            # mv -t DIR: every other operand is a source, the last one too (delta codex-1).
-            case "$w" in --target-directory*|-[!-]*t*|-t*) seg_mvt[s]=1 ;; esac
             case "${seg_cmd[s]}" in
                 bash|sh|zsh|dash|ksh)
                     case "$w" in
@@ -978,8 +1085,10 @@ analyze() {
 
     # 2. verdicts/ — write targets, outside a judge session.
     if [ "$JUDGE" = 0 ]; then
+        for s in ${seg_cmd[@]+"${!seg_cmd[@]}"}; do
+            case "${seg_cmd[s]}" in mv|cp|install|ln) _fgram "$s" "${seg_cmd[s]}" ;; esac
+        done
         i=0
-        prev=""
         while [ "$i" -lt "$ST_N" ]; do
             s=${ST_S[i]}
             w=${ST_W[i]}
@@ -992,7 +1101,6 @@ analyze() {
                         case "$w" in *[!0-9-]*) _target "$w" ;; esac ;;
                     *'>'*) [ "$w" = /dev/null ] || _target "$w" ;;
                 esac
-                prev=""
                 i=$((i + 1))
                 continue
             fi
@@ -1000,45 +1108,23 @@ analyze() {
             ci=${seg_cmd_i[s]:--1}
             if [ "$ci" -ge 0 ] && [ "$i" -gt "$ci" ]; then
                 case "$c" in
-                    tee|rm|rmdir|mv|truncate|shred|unlink|touch|chmod|chown|chgrp|patch)
-                        case "$w" in
-                        -*)
-                            # An attached target (-tDIR, -vtDIR, --target-directory=DIR).
-                            if [ "$c" = mv ]; then
-                                case "$w" in --target-directory=*) _target "${w#--target-directory=}" ;; esac
-                                [[ $w =~ $TATT ]] && _target "${BASH_REMATCH[1]}"
-                            fi ;;
+                    tee|rm|rmdir|truncate|shred|unlink|touch|chmod|chown|chgrp|patch)
+                        # After `--` a dash-led word is an operand too.
+                        case "${seg_eoo[s]:-}:$w" in
+                        :--) seg_eoo[s]=1 ;;
+                        :-*) ;;
                         *)
                             _target "$w"
                             case "$c" in
                                 rm|rmdir|shred|unlink|chmod|chown|chgrp) _vanc "$w" ;;
-                                mv)
-                                    if [ "${seg_mvt[s]:-}" = 1 ]; then
-                                        [[ $prev =~ $TCLUS ]] || [ "$prev" = --target-directory ] || _vanc "$w"
-                                    else
-                                        [ "$i" = "${seg_last[s]:-}" ] || _vanc "$w"
-                                    fi ;;
                             esac ;;
                         esac ;;
                     sed)
                         if [ "${seg_inpl[s]:-}" = 1 ]; then
                             case "$w" in -*) ;; *) _target "$w" ;; esac
                         fi ;;
-                    cp|install|ln|rsync|scp)
-                        case "$w" in
-                            --target-directory=*) _target "${w#--target-directory=}" ;;
-                            -*)
-                                case "$c" in cp|install|ln)
-                                    [[ $w =~ $TATT ]] && _target "${BASH_REMATCH[1]}" ;;
-                                esac ;;
-                            *)
-                                case "$prev" in -t|--target-directory) _target "$w" ;; esac
-                                case "$c" in cp|install|ln)
-                                    [[ $prev =~ $TCLUS ]] && _target "$w" ;;
-                                esac
-                                [ "$i" = "${seg_last[s]:-}" ] && _target "$w"
-                                ;;
-                        esac ;;
+                    rsync|scp)
+                        [ "$i" = "${seg_last[s]:-}" ] && _target "$w" ;;
                     dd)
                         case "$w" in of=*) _target "${w#of=}" ;; esac ;;
                     python|python2|python3|perl|ruby|node|php|awk|gawk)
@@ -1046,7 +1132,6 @@ analyze() {
                         [[ "$t" =~ $VRE ]] && deny "verdicts-bash" "$c one-liner names verdicts/" ;;
                 esac
             fi
-            prev=$w
             i=$((i + 1))
         done
     fi
