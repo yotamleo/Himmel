@@ -106,6 +106,7 @@ leg_description_field() {
     local doc="$1" val
     [ -r "$doc" ] || return 0
     val="$(awk '
+        { sub(/\r$/, "") }
         NR == 1 { if ($0 != "---") exit; next }
         $0 == "---" { exit }
         /^description:/ { sub(/^description:/, ""); print; exit }

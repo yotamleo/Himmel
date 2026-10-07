@@ -155,6 +155,8 @@ d_qblank="$(mkdoc HIMMEL-1-N10-a-2026-10-07.md '---' 'description: "   "' '---')
 d_h1leg="$(mkdoc HIMMEL-1-N11-a-2026-10-07.md '---' 'resume_cwd: /x' '---' '# Investigate Leg N12 failure')"
 check_eq 'field: a quoted blank description is no description' "$(leg_description_field "$d_qblank")" ''
 check_eq 'resolve: a free-form H1 naming a leg is used whole' "$(leg_description "$d_h1leg")" 'Investigate Leg N12 failure'
+d_crlf="$(mkdoc HIMMEL-1-N12-a-2026-10-07.md $'---\r' $'description: "CRLF text"\r' $'---\r')"
+check_eq 'field: a CRLF front matter still yields its description' "$(leg_description_field "$d_crlf")" 'CRLF text'
 check_eq 'resolve: no H1 falls back to the stem' "$(leg_description "$d_none")" 'HIMMEL-1-N6-a-2026-10-07'
 check_eq 'resolve: a missing doc falls back to the stem' "$(leg_description "$dtmp/HIMMEL-1-N8-gone-2026-10-07.md")" 'HIMMEL-1-N8-gone-2026-10-07'
 if leg_doc_has_run "$d_run"; then ok 'has_run: a Results bullet means the leg has run'; else bad 'has_run: a Results bullet means the leg has run'; fi
