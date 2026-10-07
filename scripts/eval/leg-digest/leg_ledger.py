@@ -267,6 +267,33 @@ def _metrics(digest):
     return out
 
 
+def launch_lane(digest, who):
+    """Only explicit launch provenance, never the model or the recorder's lane."""
+    lanes = ("native", "claudex", "openrouter", "cloud", "unknown")
+    raw = who.get("lane")
+    doc = who.get("doc")
+    if not raw and doc:
+        path = doc if os.path.isabs(doc) else os.path.join(os.environ.get("HANDOVER_DIR", ""), doc)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read(65536)
+            leg = who.get("leg")
+            titles = [line for line in text.splitlines() if line.startswith("# ")
+                      and (not leg or re.search(r"\b" + re.escape(leg) + r"\b", line))]
+            text = titles[0] if titles else ""
+            hit = re.search(r"\b(?:LEG_LANE[=:]\s*|lane:\s*)(native|claudex|codex|openrouter|cloud)\b", text)
+            hit = hit or re.search(r"\b(native|claudex|codex|openrouter|cloud)\s+lane\b", text)
+            hit = hit or re.search(r",\s*(native|claudex|codex|openrouter|cloud)\)", text)
+            if hit:
+                raw = hit.group(1)
+        except OSError:
+            pass
+    raw = raw or digest.get("lane")
+    if raw == "codex":
+        raw = "claudex"
+    return raw if raw in lanes else "unknown"
+
+
 def build_rows(digest, who):
     """(leg-failures rows, eval-runs row) for one digest; raises ValueError."""
     session = digest.get("session")
@@ -300,9 +327,16 @@ def build_rows(digest, who):
         meta["backfill"] = True
     if who.get("digest_error"):
         meta["digest_error"] = who["digest_error"]
+    # Launch metadata is authoritative; model names never determine the lane.
+    lane = launch_lane(digest, who)
+    config["lane"] = lane
+    health = digest.get("tool_health")
+    if isinstance(health, list):
+        meta["tool_health"] = [dict(r, lane=lane) for r in health if isinstance(r, dict)]
+        meta["started_ts"] = digest.get("started_ts")
     m = _metrics(digest)
     erow = eval_runs.make_row(EVAL_ID, SOURCE, config, m, n=m["turns"] if _int(m["turns"], 0) else None,
-                              model=model, lane=who["lane"], status=status, run_id=session,
+                              model=model, lane=lane, status=status, run_id=session,
                               artifact=os.path.join(who["state_dir"], session + ".json"), meta=meta,
                               repo=HERE)
     problems = eval_runs.validate(erow)
@@ -342,7 +376,10 @@ def record(digest, who, failures_ledger, eval_ledger):
             e = 1
         tmp = marker + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(digest, fh, ensure_ascii=False, separators=(",", ":"))
+            saved = dict(digest, lane=erow["lane"])
+            if "tool_health" in erow["meta"]:
+                saved["tool_health"] = erow["meta"]["tool_health"]
+            json.dump(saved, fh, ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp, marker)
         return len(add), e
 
@@ -421,7 +458,9 @@ def run_digest(journal, session, denials):
     if denials:
         cmd += ["--denials-ledger", denials]
     try:
-        r = subprocess.run(cmd, capture_output=True, timeout=DIGEST_TIMEOUT, check=False)
+        # Backfill's launcher is not the historical leg's launcher.
+        r = subprocess.run(cmd, capture_output=True, timeout=DIGEST_TIMEOUT, check=False,
+                           env=dict(os.environ, LEG_LANE="unknown"))
         if r.returncode == 0:
             return json.loads(r.stdout)
     except (OSError, subprocess.TimeoutExpired, ValueError):

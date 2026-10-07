@@ -47,6 +47,26 @@ Monitoring URLs are loopback-only (`HIMMEL_PROMETHEUS_URL`, default
 `http://127.0.0.1:9090`; flow exporter port `HIMMEL_FLOW_EXPORTER_PORT`, default
 9877); a non-loopback URL is refused.
 
+## Tool health page (HIMMEL-4816, `#/toolhealth`)
+
+`GET /api/tool-health` is token-gated and GET-only. It reads the registered
+`eval-runs` and `leg-failures` ledgers: the server, not the browser, rolls up
+calls, failures, error rates and count-weighted known recovery outcomes.
+Filter by model, launch lane, leg-vs-console role and 7/30 UTC calendar days.
+The tool table includes daily trends, top failure classes and links to the
+session view with tool-call ids. Deny-hook rates use Bash calls as their
+explicit denominator. The comparison table shows calls per 100 calls,
+error/denial/recovery rates per lane and deltas relative to native.
+
+No ledger means **No data**. Old digest rows without per-tool counts show
+**—**, not 0 %, including summaries that mix old and new rows. Partial or
+inconclusive digests also lack complete call denominators. Unknown
+recovery outcomes are excluded; trend gaps have no denominator. Day-level
+cohorts cannot certify an intraday shift cutoff, so those denominators stay
+unknown. Lane comes only from launch metadata, never from a model name;
+a document fallback reads the assigned leg's title, not sibling mentions. Ledger overrides:
+`HIMMEL_EVAL_RUNS_LEDGER`, `HIMMEL_LEG_FAILURES_LEDGER`.
+
 ## Agent run view (AG-UI, HIMMEL-4480)
 
 `agui-web/` is a React page that renders an agent run streamed as AG-UI events:

@@ -15,7 +15,7 @@ import { redactDeep, envValues } from "../himmelctl/lib/redact.js";
 import { parseDotEnv } from "../himmelctl/lib/probes.js";
 import { ActionError, buildTable, loadRegistries, resolveAction, type Resolved } from "./actions";
 import { acquireLock, runChild, type Lock } from "./lock";
-import { readBank, readLegs, readMode, readMonitoring } from "./health-sources";
+import { readBank, readLegs, readMode, readMonitoring, readToolHealth } from "./health-sources";
 import { appendAudit } from "./audit";
 import { journalStream, resolveJournal } from "./agui/sse";
 import { readFleet } from "./agui/fleet";
@@ -56,6 +56,7 @@ const STATIC: Record<string, [string, string]> = {
   "/app.js": ["app.js", "application/javascript; charset=utf-8"],
   "/render.js": ["render.js", "application/javascript; charset=utf-8"],
   "/health.js": ["health.js", "application/javascript; charset=utf-8"],
+  "/tool-health.js": ["tool-health.js", "application/javascript; charset=utf-8"],
   "/app.css": ["app.css", "text/css; charset=utf-8"],
   // HIMMEL-4711: the rail and theme the AG-UI pages share (agui-web bundles its own copy at build time).
   "/nav.js": ["nav.js", "application/javascript; charset=utf-8"],
@@ -355,6 +356,10 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
       lastSeen = now(); // HIMMEL-4807: and only one keeps the background refresh going
       if (req.method === "GET" && path === "/api/feed") {
         return feedRoute();
+      }
+      if (path === "/api/tool-health") {
+        if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+        return json(redactOut(readToolHealth(env, new URL(req.url).searchParams, now())));
       }
       if (path === "/api/health") {
         if (req.method !== "GET") return new Response("method not allowed", { status: 405 });

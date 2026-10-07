@@ -46,6 +46,11 @@ check "the main agent row names role and model" '[ "$(row denied/read-clamp | jq
 check "tool_call_ids point back into the journal" '[ "$(row denied/guard-pr-check-literal | jq -c .tool_call_ids)" = "[\"toolu_d1\",\"toolu_d2\"]" ]'
 check "first_ts and last_ts bound the class" 'row denied/guard-pr-check-literal | jq -e ".first_ts < .last_ts" >/dev/null'
 
+echo "tool denominators (HIMMEL-4816)"
+check "calls retain Bash, Read and the exact MCP tool separately" 'jq -e ".metrics.tool_calls_by_tool | .Bash > 0 and .Read > 0 and .mcp__qmd__query == 1" "$TMP/classes.json" >/dev/null'
+check "per-tool calls sum to the session total and unknown lane never comes from a model" 'jq -e "([.metrics.tool_calls_by_tool[]] | add) == .metrics.tool_calls and .lane == \"unknown\" and ([.tool_health[].lane] | unique) == [\"unknown\"]" "$TMP/classes.json" >/dev/null'
+check "per-tool failures exclude text reports and grep no-match" 'jq -e ".metrics.tool_failures_by_tool.Edit == 1 and .metrics.tool_failures_by_tool.mcp__qmd__query == 1" "$TMP/classes.json" >/dev/null'
+
 echo "2. classifier sub-class: ledger, then the journal bracket against the fixed list"
 check "a ledger row with a listed category keys it" '[ "$(row denied/classifier:merge-without-review | jq -c .tool_call_ids)" = "[\"toolu_c1\"]" ]'
 check "a ledger tag of unknown falls back to the journal bracket on the list" '[ "$(row denied/classifier:out-of-place-publication | jq -c .tool_call_ids)" = "[\"toolu_c2\"]" ]'
@@ -61,7 +66,7 @@ check "identical_retry and recovered come from trajectory.py, joined by tool_cal
 check "a subagent row has no trajectory join (main agent only)" '[ "$(row denied/check-push-target sub01 | jq -c "[.identical_retry, .recovered]")" = "[null,null]" ]'
 check "identical_denied_retries >= 1 writes a traj/identical-retry row" '[ "$(row traj/identical-retry | jq -c "[.failure, .count]")" = "[\"traj\",1]" ]'
 check "metrics count the session" 'jq -e ".metrics | .turns == 3 and .subagents == 1 and .fail_denied == 10 and .fail_suite == 3 and .fail_blocked == 1 and .fail_error == 3 and .run_errors == 1 and .interrupts == 1 and .identical_denied_retries == 1" "$TMP/classes.json" >/dev/null'
-check "the digest names its versions and the main model" 'jq -e ".digest_v == 1 and .mapper_v == 1 and .trajectory_v == 1 and .model == \"claude-opus-5-5\" and .session == \"$SID\" and .status == \"ok\"" "$TMP/classes.json" >/dev/null'
+check "the digest names its versions and the main model" 'jq -e ".digest_v == 2 and .mapper_v == 1 and .trajectory_v == 1 and .model == \"claude-opus-5-5\" and .session == \"$SID\" and .status == \"ok\"" "$TMP/classes.json" >/dev/null'
 
 echo "4. the #1976 agents.jsonl fixture"
 cp "$REPO/scripts/config-ui/tests/fixtures/agui/agents.jsonl" "$TMP/agents.jsonl"

@@ -1,6 +1,7 @@
 // HIMMEL-4254 P3/P4: thin DOM glue. All markup comes from render.js.
 import { render, renderNav, renderHeader, renderProbe } from "/render.js";
 import { renderHealth } from "/health.js";
+import { renderToolHealth } from "/tool-health.js";
 import { fleetDot, navLinks, parseLanding } from "/nav.js";
 
 const $ = (s) => document.querySelector(s);
@@ -24,9 +25,12 @@ let fleet = { data: null, error: null };
 // Health renders without a feed (D2): its bank and legs cards do not wait for the doctor report.
 let health = null; // GET /api/health, null while loading
 let healthGen = 0; // declared before route() runs: a reload at #/health calls loadHealth() from it
+let toolHealth = null, toolHealthGen = 0;
+const toolFilters = new URLSearchParams();
 const PAGES = [
   { id: "config", label: "Config", regions: true, render: (f) => render(f, state) },
   { id: "health", label: "Health", needsFeed: false, render: (f) => renderHealth(f, health), onVisit: () => { if (!health) loadHealth(); } },
+  { id: "toolhealth", label: "Tool health", needsFeed: false, render: () => renderToolHealth(toolHealth, token), onVisit: () => { if (!toolHealth) loadToolHealth(); } },
 ];
 let currentPage = PAGES[0];
 
@@ -151,6 +155,24 @@ async function loadHealth() {
   if (currentPage.needsFeed === false) paint();
 }
 
+async function loadToolHealth() {
+  const gen = ++toolHealthGen;
+  let data;
+  try {
+    const r = await fetch("/api/tool-health?" + toolFilters, { headers: { "X-Himmel-Token": token }, cache: "no-store" });
+    data = r.ok ? await r.json() : { state: "error" };
+  } catch (_) { data = { state: "error" }; }
+  if (gen !== toolHealthGen) return;
+  toolHealth = data;
+  if (currentPage.id === "toolhealth") paint();
+}
+document.addEventListener("change", (e) => {
+  const name = e.target.dataset.toolFilter;
+  if (!name) return;
+  toolFilters.set(name, e.target.value);
+  loadToolHealth();
+});
+
 // Two-step write: the dry-run binds a preview id; only confirm runs it.
 async function preview(b) {
   const k = b.dataset.k;
@@ -190,6 +212,7 @@ function go(id) {
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-act],[data-go],[data-f]");
   if (!b) return;
+  if (b.dataset.act === "refresh-toolhealth") return void loadToolHealth();
   if (b.dataset.act === "refresh-health") { loadHealth(); return void loadFeed(); } // the verdict reads the doctor feed too
   if (b.dataset.act === "open-config") {
     state.filt = { health: null, kind: null, q: b.dataset.id, problems: false };
