@@ -417,13 +417,35 @@ out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME=
 if grepq "$out" 'WARN C2-obsidian'; then pass "C2 -> WARN (shadow)"; else fail "C2 -> $(printf '%s' "$out" | grep C2)"; fi
 rm -rf "$t"
 
-echo "== C3: dirty single-writer luna vault -> WARN =="
-t="$(mktemp -d)"; mkdir -p "$t/claude"; v="$t/home/Documents/luna"; mkdir -p "$v"
-git -C "$v" init -q 2>/dev/null; git -C "$v" config user.email t@t; git -C "$v" config user.name t
-: > "$v/.single-writer"; echo dirty > "$v/note.md"
-write_settings "$t/claude" "$WRAPPER"
-out="$(DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if grepq "$out" 'WARN C3-luna'; then pass "C3 -> WARN (dirty single-writer)"; else fail "C3 -> $(printf '%s' "$out" | grep C3)"; fi
+# HIMMEL-4721: C3 ignores handovers/ churn and WARNs only on a non-handover path
+# dirty longer than the sync cadence (default 30 min).
+c3_run() { # $1 = tmp root
+    DOCTOR_MCP_PLUGINS_GLOB="$1/none/*.mcp.json" CLAUDE_DIR="$1/claude" HOME="$1/home" bash "$DOC" --no-color 2>&1
+}
+c3_vault() { # $1 = tmp root; sets v
+    mkdir -p "$1/claude"; v="$1/home/Documents/luna"; mkdir -p "$v"
+    git -C "$v" init -q 2>/dev/null; git -C "$v" config user.email t@t; git -C "$v" config user.name t
+    : > "$v/.single-writer"; echo .single-writer >> "$v/.git/info/exclude"; write_settings "$1/claude" "$WRAPPER"
+}
+
+echo "== C3: stale dirty non-handover path in a single-writer vault -> WARN, no manual-commit advice =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"
+echo dirty > "$v/note.md"; touch -t 202001010000 "$v/note.md"
+out="$(c3_run "$t")"
+if grepq "$out" 'WARN C3-luna' && ! grepq "$out" 'git -C .* commit'; then pass "C3 -> WARN (stale dirty non-handover)"; else fail "C3 stale -> $(printf '%s' "$out" | grep C3)"; fi
+rm -rf "$t"
+
+echo "== C3: fresh dirty non-handover path -> OK =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo dirty > "$v/note.md"
+out="$(c3_run "$t")"
+if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 fresh dirty -> OK"; else fail "C3 fresh -> $(printf '%s' "$out" | grep C3)"; fi
+rm -rf "$t"
+
+echo "== C3: handovers/-only dirt (even old) -> OK =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; mkdir -p "$v/handovers/u/r"
+echo wip > "$v/handovers/u/r/doc.md"; touch -t 202001010000 "$v/handovers/u/r/doc.md"
+out="$(c3_run "$t")"
+if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 handovers-only -> OK"; else fail "C3 handovers-only -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
 
 echo "== C4: forge decided on the origin's HOST, not a URL substring (fixtures/forge-origins.tsv) =="
@@ -5721,6 +5743,23 @@ printf '%s\n' '{"action":"skip","member":"block-read-secrets.sh","reason":"ETIME
 printf '%s\n' '{"action":"skip","member":"/home/test/himmel/scripts/hooks/real-guard.sh","reason":"ETIMEDOUT"}' >> "$n_t/skips-mixed.jsonl"
 out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-mixed.jsonl" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh' && grepq "$out" 'WARN C22-chain-skips.*real-guard.sh' && ! grepq "$out" -E 'WARN C22-chain-skips.*(hang|hog|flood)'; then pass "C22 mixed -> real member only"; else fail "C22 mixed -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C22: old-only log -> OK naming the window and the all-time count (HIMMEL-4721) =="
+printf '%s\n' '{"ts":"2020-01-01T00:00:00.000Z","action":"skip","member":"block-read-secrets.sh","reason":"ETIMEDOUT"}' \
+    '{"ts":"2020-01-02T00:00:00.000Z","action":"skip","member":"block-read-secrets.sh","reason":"ETIMEDOUT"}' > "$n_t/skips-old.jsonl"
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-old.jsonl" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK  *C22-chain-skips.*24 h.*2 older' && ! grepq "$out" 'WARN C22-chain-skips'; then pass "C22 old-only -> OK"; else fail "C22 old-only -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C22: a recent starved row -> WARN; an old row beside it is not counted =="
+now_iso="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+cat "$n_t/skips-old.jsonl" > "$n_t/skips-recent.jsonl"
+printf '{"ts":"%s","action":"skip","member":"recent-guard.sh","reason":"ETIMEDOUT"}\n' "$now_iso" >> "$n_t/skips-recent.jsonl"
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-recent.jsonl" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C22-chain-skips.*recent-guard.sh' && ! grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh'; then pass "C22 recent -> WARN (recent row only)"; else fail "C22 recent -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C22: window is env-overridable =="
+out="$(HIMMEL_DOCTOR_CHAIN_SKIPS_WINDOW_H=999999 PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-old.jsonl" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh'; then pass "C22 wide window -> old rows count again"; else fail "C22 wide window -> $(printf '%s' "$out" | grep C22)"; fi
 
 echo "== C19: observability not desired on this host -> INFO, no WARN =="
 printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"n/a"},{"id":"observability-grafana","desired":false,"severity":"n/a"}]}' > "$n_t/status-na.json"
