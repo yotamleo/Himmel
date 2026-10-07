@@ -452,7 +452,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
       await routeToConsole(root, msg, route, consoleRoute.reply);
       return;
     }
-    if (route.kind === "chat" && msg.reply_to_message_id != null) {
+    if ((route.kind === "chat" || route.kind === "followup") && msg.reply_to_message_id != null) {
       const name = await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id);
       if (name) {
         await routeToConsole(root, msg, { kind: "console", name, text: msg.text, thread: true }, consoleRoute.reply);

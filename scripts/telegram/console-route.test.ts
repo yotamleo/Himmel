@@ -219,16 +219,28 @@ test("first waiter arm queues one announcement per identity, including successor
 });
 
 test("trusted console outbox receipt routes a Telegram reply to that console, even with two live consoles", async () => {
-  const r = root(); const f = heartbeat(r); heartbeat(r, "second");
-  await replyViaOutbox(r, 1, "console answer", NAME);
-  await flushOutboxes(r, async () => 777);
-  await ingestUpdates(r, [{ update_id: 1, message: { from: { id: 1 }, chat: { id: 1 }, text: "thanks, halt", reply_to_message: { message_id: 777 }, date: 1 } }]);
-  const msg = JSON.parse(readFileSync(join(r, "inbound.jsonl"), "utf8").trim());
-  const ran: string[] = [];
-  await handleInbound(r, msg, async s => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate([]));
-  expect(readFileSync(f, "utf8")).toContain("[telegram from=1 chat=1] thanks, halt");
-  expect(readFileSync(join(r, "consoles", "second.md"), "utf8")).toBe("");
-  expect(ran).toEqual([]);
+  for (const text of ["thanks, halt", "HIMMEL-123: halt"]) {
+    const r = root(); const f = heartbeat(r); heartbeat(r, "second");
+    await replyViaOutbox(r, 1, "console answer", NAME);
+    await flushOutboxes(r, async () => 777);
+    await ingestUpdates(r, [{ update_id: 1, message: { from: { id: 1 }, chat: { id: 1 }, text, reply_to_message: { message_id: 777 }, date: 1 } }]);
+    const msg = JSON.parse(readFileSync(join(r, "inbound.jsonl"), "utf8").trim());
+    const ran: string[] = [];
+    await handleInbound(r, msg, async s => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate([]));
+    expect(readFileSync(f, "utf8")).toContain(`[telegram from=1 chat=1] ${text}`);
+    expect(readFileSync(join(r, "consoles", "second.md"), "utf8")).toBe("");
+    expect(ran).toEqual([]);
+  }
+});
+
+test("explicit control, dispatch and slash commands retain their routing in a console reply thread", async () => {
+  for (const text of ["status", "work on HIMMEL-123", "/restart"]) {
+    const r = root(); const f = heartbeat(r);
+    await replyViaOutbox(r, 1, "console answer", NAME);
+    await flushOutboxes(r, async () => 777);
+    await handleInbound(r, say(text, { reply_to_message_id: 777 }), async () => {}, undefined, async () => "spawn-high", undefined, undefined, undefined, undefined, gate([]));
+    expect(readFileSync(f, "utf8")).toBe("");
+  }
 });
 
 test("reply mapping is chat-scoped and never bypasses sender, caption, forwarded or chat gates", async () => {
