@@ -346,6 +346,14 @@ check "13: the earlier GO on A stays vetoed" "$rc" 2
 rc=0; wv q19 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
 check "13: a repeat NO-GO on A rewrites judge.md rc 0" "$rc" 0
 check "13: q19 holds exactly first, judge and judge-<B>" "$(ls "$scope_dir/q19" | tr '\n' ' ')" "first.md judge-$SHA_B.md judge.md "
+# A judge itself named judge-<B> holds a veto for C: the redirect must not land on it.
+SHA_C=fedcba9876543210fedcba9876543210fedcba98
+wv q20 NO-GO "$SHA_C" --evidence-file "$ev" --judge "judge-$SHA_B" >/dev/null 2>&1
+wv q20 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1
+rc=0; out=$(wv q20 GO "$SHA_B" --evidence-file "$ev" 2>&1) || rc=$?
+check "13: GO on B with judge-<B>.md vetoing C is written rc 0" "$rc" 0
+check "13: it lands at judge-<B>-<B>.md" "$out" "$scope_dir/q20/judge-$SHA_B-$SHA_B.md"
+check "13: the head-C NO-GO in judge-<B>.md is kept" "$(grep -c "^\*\*NO-GO\*\* for head \`$SHA_C\`" "$scope_dir/q20/judge-$SHA_B.md")" 1
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"

@@ -218,16 +218,18 @@ printf 'pid=%s at=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lockd/owner" 2
 # HIMMEL-4731: a NO-GO in <name>.md for another head is never replaced - the
 # PR may return to that head, where another judge's GO would then stand alone.
 # The ruling goes to <name>-<head>.md beside it instead; its header names that
-# file, as review-round.sh's judge_nogo_record requires.
-if [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; then
+# file, as review-round.sh's judge_nogo_record requires. The check repeats on
+# the new name, so a judge itself named <name>-<head> loses no veto either.
+while [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; do
     # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
     old=$(tr -d '\r' < "$TARGET" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }' \
         | sed -nE 's/^\*\*NO-GO\*\* for head `([0-9a-f]{40})`\.?$/\1/p')
-    if [ -n "$old" ] && [ "$old" != "$HEAD" ]; then
-        NAME="$NAME-$HEAD"
-        TARGET="$dir/$NAME.md"
+    if [ -z "$old" ] || [ "$old" = "$HEAD" ]; then
+        break
     fi
-fi
+    NAME="$NAME-$HEAD"
+    TARGET="$dir/$NAME.md"
+done
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then
     echo "write-verdict: refusing - '$TARGET' is a symlink or not a regular file" >&2
     exit 4
