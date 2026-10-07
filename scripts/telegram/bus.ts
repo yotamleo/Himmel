@@ -45,7 +45,7 @@ export async function withChainLock<T>(lockFile: string, action: () => Promise<T
   } finally { await handle.close(); }
 }
 
-export async function readPast<T extends ChainRecord = ChainRecord>(file: string | Buffer, cur: ChainCursor): Promise<{ records: T[]; next: ChainCursor; cursors: ChainCursor[] }> {
+export async function readPast<T extends ChainRecord = ChainRecord>(file: string | Buffer, cur: ChainCursor, limit = Infinity): Promise<{ records: T[]; next: ChainCursor; cursors: ChainCursor[] }> {
   if (!Number.isSafeInteger(cur.off) || cur.off < 0) throw new Error("invalid cursor offset");
   let buf: Buffer;
   if (Buffer.isBuffer(file)) buf = file;
@@ -57,7 +57,7 @@ export async function readPast<T extends ChainRecord = ChainRecord>(file: string
   if (cur.off > 0 && buf[cur.off - 1] !== 10) throw new Error("cursor not on record boundary");
   const records: T[] = [], cursors: ChainCursor[] = [];
   let next = { ...cur }, off = cur.off;
-  while (off < buf.length) {
+  while (off < buf.length && records.length < limit) {
     const end = buf.indexOf(10, off);
     if (end < 0) break;
     const record = JSON.parse(buf.subarray(off, end).toString("utf8")) as T;

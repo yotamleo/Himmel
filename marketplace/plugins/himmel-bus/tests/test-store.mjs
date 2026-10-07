@@ -158,6 +158,80 @@ test('withChainLock owns the named lock inode, not a relative filename', async t
   assert.equal(spawnSync('flock', ['-n', lock, 'true']).status, 0);
 });
 
+test('CR codex-1 stale delivery commit cannot clear a persisted halt', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message());
+  const before = await store.read(root, 'leg');
+  const file = join(root, 'log/leg.jsonl');
+  await writeFile(file, (await readFile(file, 'utf8')).replace('hello', 'jello'));
+  await store.read(root, 'leg');
+  await assert.rejects(store.commit(root, 'leg', before.next), /halted|stale/);
+  assert.equal(JSON.parse(await readFile(join(root, 'cur/leg'), 'utf8')).halted, 1);
+  await assert.rejects(store.append(root, 'leg', message()), /halted/);
+});
+
+test('CR codex-1 delivery commits cannot move an already committed cursor backwards', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message());
+  const first = await store.read(root, 'leg');
+  await store.append(root, 'leg', message('second'));
+  const second = await store.read(root, 'leg');
+  await store.commit(root, 'leg', second.next);
+  await assert.rejects(store.commit(root, 'leg', first.next), /stale/);
+  assert.equal(JSON.parse(await readFile(join(root, 'cur/leg'), 'utf8')).n, 2);
+});
+
+test('CR codex-2 pending serializes with a recipient writer lock', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message());
+  let waiting;
+  await primitive.withChainLock(join(root, 'lock/leg'), async () => {
+    let finished = false;
+    waiting = store.pending(root, 'leg').then(value => { finished = true; return value; });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    assert.equal(finished, false);
+  });
+  assert.equal(await waiting, true);
+});
+
+test('CR codex-3 pending wakes on a truncated or missing committed log', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message());
+  await store.commit(root, 'leg', (await store.read(root, 'leg')).next);
+  const file = join(root, 'log/leg.jsonl');
+  await writeFile(file, '');
+  assert.equal(await store.pending(root, 'leg'), true);
+  await rm(file);
+  assert.equal(await store.pending(root, 'leg'), true);
+});
+
+test('CR codex-4 a malformed later record reports its actual sequence', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message('first'));
+  await store.append(root, 'leg', message('second'));
+  const file = join(root, 'log/leg.jsonl');
+  const lines = (await readFile(file, 'utf8')).trimEnd().split('\n');
+  await writeFile(file, lines[0] + '\n{malformed}\n');
+  const got = await store.read(root, 'leg');
+  assert.equal(got.next.halted, 2);
+  assert.deepEqual(got.records, []);
+  assert.equal(got.next.n, 0);
+});
+
+test('a torn undelivered tail halts once rather than leaving a perpetual wake', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message('first'));
+  await store.append(root, 'leg', message('second'));
+  const file = join(root, 'log/leg.jsonl');
+  const lines = (await readFile(file, 'utf8')).trimEnd().split('\n');
+  await writeFile(file, lines[0] + '\n' + lines[1].slice(0, -5));
+  assert.equal(await store.pending(root, 'leg'), true);
+  const got = await store.read(root, 'leg');
+  assert.equal(got.next.halted, 2);
+  assert.deepEqual(got.records, []);
+  assert.equal(await store.pending(root, 'leg'), false);
+});
+
 test('appendChained never recreates a missing log', async t => {
   assert.equal(typeof primitive.appendChained, 'function');
   const dir = await mkdtemp(join(tmpdir(), 'bus-missing-'));

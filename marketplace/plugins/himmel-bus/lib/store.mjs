@@ -150,12 +150,14 @@ export async function read(root, name) {
         if (start > buf.length) throw new Error('cursor beyond EOF');
         if (start > 0 && buf[start - 1] !== 10) throw new Error('cursor not on record boundary');
         next = { ...next, k, off: start };
-        if (k !== liveK && buf.length && buf.at(-1) !== 10) throw new Error('incomplete segment');
-        const batch = await readPast(buf, next);
-        for (let i = 0; i < batch.records.length; i++) {
-          const record = batch.records[i];
+        while (next.off < buf.length) {
+          // Verify each parsed record before reading the next: a malformed
+          // later line must not hide an earlier break or its actual sequence.
+          const batch = await readPast(buf, next, 1);
+          if (!batch.records.length) throw new Error('incomplete log tail');
+          const record = batch.records[0];
           if (record.n !== next.n + 1 || record.h !== chainHash(next.h, record)) throw new Error('chain mismatch');
-          next = batch.cursors[i];
+          next = batch.next;
           records.push(record); cursors.push(next);
         }
       }
@@ -175,16 +177,28 @@ export async function read(root, name) {
 
 export async function commit(root, name, next) {
   const p = await paths(root, name);
-  return withChainLock(p.lock, () => commitCursor(p.cursor, next));
+  return withChainLock(p.lock, async () => {
+    const cur = await cursor(p.cursor);
+    if (cur.halted) throw new Error(`log ${name} halted`);
+    if (next.n < cur.n || next.k < cur.k || (next.k === cur.k && next.off < cur.off) || (next.n === cur.n && next.h !== cur.h)) throw new Error('stale delivery cursor');
+    await commitCursor(p.cursor, next);
+  });
 }
 
 // Shared predicate for the wait CLI: a halted log never creates a hot loop.
 export async function pending(root, name) {
   const p = await paths(root, name);
-  const cur = await cursor(p.cursor);
-  if (cur.halted) return false;
-  const closed = await segments(root, name);
-  const liveK = closed.length ? closed.at(-1)[0] + 1 : 0;
-  const live = await info(p.file);
-  return liveK > cur.k || (live?.size ?? 0) > cur.off;
+  return withChainLock(p.lock, async () => {
+    const cur = await cursor(p.cursor);
+    if (cur.halted) return false;
+    const closed = await segments(root, name);
+    const liveK = closed.length ? closed.at(-1)[0] + 1 : 0;
+    let size = 0;
+    try {
+      const handle = await openChainFile(p.file, constants.O_RDONLY);
+      try { size = (await handle.stat()).size; } finally { await handle.close(); }
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    // Shrinkage/missing bytes wake the reader too, so it can persist a halt.
+    return liveK !== cur.k || size !== cur.off;
+  });
 }
