@@ -37,10 +37,13 @@ DIR="$T/handovers/u/himmel"
 mkdir -p "$CFG/projects/p" "$CFG/plugins/claude-hud/context-cache" "$DIR"
 DOC="$DIR/HIMMEL-9-N77-thing-2026-10-06.md"
 TR="$CFG/projects/p/sess.jsonl"
-LEG_BASE="HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=T-console CLAUDE_CONFIG_DIR=$CFG HANDOVER_DIR=$T/handovers"
-# The RESUME-doc cases below run in handoff mode; compact (the default when the
-# launcher sets no mode) has its own section, run with LEG_BASE alone.
-LEG_ENV="$LEG_BASE HIMMEL_LEG_CONTEXT_MODE=handoff"
+# The guard is OFF unless the launch sets a mode (HIMMEL-4710): LEG_OFF is a
+# leg launched without --context-guard; LEG_BASE turns compact on.
+LEG_OFF="HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=T-console CLAUDE_CONFIG_DIR=$CFG HANDOVER_DIR=$T/handovers"
+LEG_BASE="$LEG_OFF HIMMEL_LEG_CONTEXT_MODE=compact"
+# The RESUME-doc cases below run in handoff mode; compact has its own section,
+# run with LEG_BASE alone.
+LEG_ENV="$LEG_OFF HIMMEL_LEG_CONTEXT_MODE=handoff"
 
 sha() {
     if command -v sha256sum >/dev/null 2>&1; then printf '%s' "$1" | sha256sum | cut -d' ' -f1
@@ -77,7 +80,7 @@ bash_call() { jq -cn --arg c "$1" --arg t "$TR" --arg w "$REPO" '{tool_name:"Bas
 tool_call() { jq -cn --arg n "$1" --arg t "$TR" --arg w "$REPO" '{tool_name:$n,tool_input:{},transcript_path:$t,cwd:$w}'; }
 write_call() { jq -cn --arg n "$1" --arg p "$2" --arg t "$TR" --arg w "$REPO" '{tool_name:$n,tool_input:{file_path:$p,content:"x"},transcript_path:$t,cwd:$w}'; }
 pc_call() { jq -cn --arg g "${1:-auto}" --arg t "$TR" --arg w "$REPO" '{hook_event_name:"PreCompact",trigger:$g,transcript_path:$t,cwd:$w,session_id:"s"}'; }
-# check_c: the same check with no mode in the launch env (compact, the default)
+# check_c: the same check with compact in the launch env
 check_c() { local LEG_ENV="$LEG_BASE"; check "$@"; }
 # deny_text <json> [ENV=val ...] -- the hook's stderr for one call, handoff env
 deny_text() {
@@ -104,6 +107,19 @@ g branch -q --set-upstream-to=origin/main
 session "load $DOC and continue"
 doc "- 10:01 LIVE — working"
 LS="$(bash_call 'ls')"
+
+echo "== off by default: no mode at launch, no guard (HIMMEL-4710) =="
+fill 90
+check_off() { local LEG_ENV="$LEG_OFF"; check "$@"; }
+check_off "no mode, 90 % + ordinary Bash -> allow" allow "$LS"
+check_off "no mode, 90 % + Edit -> allow" allow "$(write_call Edit "$T/notes.md")"
+check_off "no mode, 100 % + Read -> allow" allow "$(tool_call Read)"
+check_off "no mode, PreCompact auto at 90 % -> allow" allow "$(pc_call)"
+check_off "mode none, 90 % -> allow" allow "$LS" HIMMEL_LEG_CONTEXT_MODE=none
+check_off "empty mode, 90 % -> allow" allow "$LS" HIMMEL_LEG_CONTEXT_MODE=
+# shellcheck disable=SC2086
+off_out="$(printf '%s' "$LS" | env $LEG_OFF bash "$HOOK" 2>&1)"
+if [ -z "$off_out" ]; then ok "no mode -> no output at all"; else bad "no mode printed: $off_out"; fi
 
 echo "== the threshold =="
 fill 90; check "90 % + ordinary Bash -> block" block "$LS"
@@ -256,7 +272,7 @@ check "cd <dir>; more -> block" block "$(bash_call "cd $REPO; rm -rf x")"
 check "cd <dir> | more -> block" block "$(bash_call "cd $REPO | ls")"
 check "cd a b -> block" block "$(bash_call 'cd a b')"
 
-echo "== compact mode (the default): a pushed CHECKPOINT of HEAD unlocks =="
+echo "== compact mode: a pushed CHECKPOINT of HEAD unlocks =="
 session "load $DOC and continue"
 doc "- 10:01 LIVE — working"
 rm -f "$RESUME"

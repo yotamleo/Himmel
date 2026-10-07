@@ -225,7 +225,8 @@ HEADED_ARM_UNAME="${HEADED_ARM_UNAME:-$(uname -s 2>/dev/null)}"
 export HEADED_ARM_UNAME
 
 usage() {
-    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--fleet <manifest>] [--ignore-denials] [--no-prior-art-check] [--lane native|claudex|openrouter|deepseek] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "usage: headed-arm-leg.sh [--dry-run] [--headless] [--fleet <manifest>] [--ignore-denials] [--no-prior-art-check] [--lane native|claudex|openrouter|deepseek] (--profile <name[,name...]> | --no-profile) [--relay] [--judge] [--consult] [--console <name>] [--context-guard compact|handoff|none] <session-name> <handover-doc> <signal-file> <deadline-epoch> <log> [model]" >&2
+    echo "  --context-guard: turn the leg context guard on (default none = off); see docs/internals/leg-context-guard.md" >&2
 }
 
 # leg_propagate_env NAME VALUE - HIMMEL-2534: on macOS, `open -a` starts a leg
@@ -317,6 +318,9 @@ HEADLESS=0
 LANE="${LEG_LANE:-native}"
 PROFILE="${LEG_PROFILE:-}"
 CONSOLE_FLAG=""
+# HIMMEL-4710: the leg context guard is off unless the caller asks, by
+# --context-guard or a HIMMEL_LEG_CONTEXT_MODE in the launching env (the flag wins).
+CONTEXT_GUARD="${HIMMEL_LEG_CONTEXT_MODE:-}"
 FLEET_MANIFEST=""
 while :; do
     case "${1:-}" in
@@ -359,6 +363,14 @@ while :; do
                 exit 2
             fi
             CONSOLE_FLAG="$2"; shift 2 ;;
+        --context-guard)
+            # Same missing-value trap as --lane/--profile above.
+            if [ "$#" -lt 2 ]; then
+                usage
+                echo "headed-arm-leg: --context-guard requires a value (compact, handoff or none)" >&2
+                exit 2
+            fi
+            CONTEXT_GUARD="$2"; shift 2 ;;
         *) break ;;
     esac
 done
@@ -1229,18 +1241,25 @@ unset -v CONSOLE_NAME
 unset -f _console_name_ok
 # HIMMEL-4569: guard-leg-context-handoff.sh reads both from its own process env,
 # which is fixed at launch, so a leg cannot flip them mid-session: the resolved
-# --autocompact ceiling its threshold derives from, and the console's context
-# mode (compact, the default, or handoff). A caller-preset launcher token is
-# dropped first, so only the values resolved here reach the leg.
-case "${HIMMEL_LEG_CONTEXT_MODE:-compact}" in
+# --autocompact ceiling its threshold derives from, and the context mode
+# (compact or handoff; HIMMEL-4710: none, the default, leaves the guard off and
+# sets no mode at all). A caller-preset launcher token is dropped first, so only
+# the values resolved here reach the leg.
+case "$CONTEXT_GUARD" in
+    ''|none) CONTEXT_GUARD="" ;;
     compact|handoff) ;;
     *)
-        echo "headed-arm-leg: HIMMEL_LEG_CONTEXT_MODE must be compact or handoff (got ${HIMMEL_LEG_CONTEXT_MODE})" >&2
+        echo "headed-arm-leg: --context-guard / HIMMEL_LEG_CONTEXT_MODE must be compact or handoff, or none for off (got ${CONTEXT_GUARD})" >&2
         exit 2
         ;;
 esac
 leg_env_drop_token HIMMEL_LEG_CONTEXT_MODE
-leg_propagate_env HIMMEL_LEG_CONTEXT_MODE "${HIMMEL_LEG_CONTEXT_MODE:-compact}"
+if [ -n "$CONTEXT_GUARD" ]; then
+    leg_propagate_env HIMMEL_LEG_CONTEXT_MODE "$CONTEXT_GUARD"
+else
+    unset -v HIMMEL_LEG_CONTEXT_MODE
+fi
+unset -v CONTEXT_GUARD
 leg_env_drop_token HIMMEL_LEG_AUTOCOMPACT
 leg_propagate_env HIMMEL_LEG_AUTOCOMPACT "$RESOLVED_AUTOCOMPACT"
 # HIMMEL_READ_CLAMP_LINES (HIMMEL-3133 / design §3.2): raises read-clamp.sh's
@@ -1839,7 +1858,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s HIMMEL_CONSOLE_NAME=%s HIMMEL_LEG_CONTEXT_MODE=%s HIMMEL_LEG_AUTOCOMPACT=%s\n' \
         "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
         "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}" "${HIMMEL_CONSOLE_NAME:-<unset>}" \
-        "$HIMMEL_LEG_CONTEXT_MODE" "$HIMMEL_LEG_AUTOCOMPACT"
+        "${HIMMEL_LEG_CONTEXT_MODE:-<unset>}" "$HIMMEL_LEG_AUTOCOMPACT"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.
