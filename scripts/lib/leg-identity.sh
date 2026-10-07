@@ -110,7 +110,7 @@ leg_description_field() {
         NR == 1 { if ($0 != "---") exit; next }
         $0 == "---" { exit }
         /^description:/ { sub(/^description:/, ""); print; exit }
-    ' "$doc" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    ' < "$doc" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     case "$val" in
         \"*\") val="${val#\"}"; val="${val%\"}" ;;
         \'*\') val="${val#\'}"; val="${val%\'}" ;;
@@ -157,5 +157,5 @@ leg_doc_has_run() {
         inr && /^## / { inr = 0 }
         inr && /^- / { found = 1; exit }
         END { exit found ? 0 : 1 }
-    ' "$1"
+    ' < "$1"
 }

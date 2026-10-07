@@ -162,6 +162,10 @@ check_eq 'resolve: a missing doc falls back to the stem' "$(leg_description "$dt
 if leg_doc_has_run "$d_run"; then ok 'has_run: a Results bullet means the leg has run'; else bad 'has_run: a Results bullet means the leg has run'; fi
 if leg_doc_has_run "$d_fresh"; then bad 'has_run: an empty Results (body list items aside) is a fresh brief'; else ok 'has_run: an empty Results (body list items aside) is a fresh brief'; fi
 if leg_doc_has_run "$dtmp/absent.md"; then bad 'has_run: a missing doc has not run'; else ok 'has_run: a missing doc has not run'; fi
+# A relative path shaped like an awk assignment (k=v.md) is still read as a file.
+mkdoc 'k=v.md' '---' 'description: Assign-shaped name' '---' '## Results' '- 10:00 LIVE — started' >/dev/null
+check_eq 'field: an assignment-shaped relative path is read as a file' "$(cd "$dtmp" && leg_description_field 'k=v.md' </dev/null)" 'Assign-shaped name'
+if (cd "$dtmp" && leg_doc_has_run 'k=v.md' </dev/null); then ok 'has_run: an assignment-shaped relative path is read as a file'; else bad 'has_run: an assignment-shaped relative path is read as a file'; fi
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

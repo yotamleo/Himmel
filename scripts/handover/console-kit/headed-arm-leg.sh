@@ -670,7 +670,7 @@ if [ "$RELAY" -eq 0 ] && [ "$CONSULT" -eq 0 ] && [ -f "$DOC" ] \
     # shellcheck source=../../lib/leg-identity.sh
     . "$(dirname "$0")/../../lib/leg-identity.sh"
     if [ -z "$(leg_description_field "$DOC")" ] && ! leg_doc_has_run "$DOC"; then
-        echo "headed-arm-leg: refusing launch: $DOC has no front-matter 'description:' line. Add one plain-language line saying what this leg is doing and why between the leading '---' lines, e.g. 'description: Add a description line to every leg brief' (docs/handover/leg-brief-template.md, HIMMEL-4749)." >&2
+        echo "headed-arm-leg: refusing launch: $DOC has no front-matter 'description:' line. Add one plain-language line saying what this leg is doing and why between the leading '---' lines (the first must be the file's first line, no blank line or BOM before it), e.g. 'description: Add a description line to every leg brief' (docs/handover/leg-brief-template.md, HIMMEL-4749)." >&2
         exit 2
     fi
 fi

@@ -124,6 +124,7 @@ mk_raw desc_resumed '# brief' "$PA" '> **Contract:** y' '## Results (newest at t
 expect_rc "5a fresh brief with no description fails" 1 "$tmp/desc_none.md"
 err="$(bash "$LINT" "$tmp/desc_none.md" 2>&1 >/dev/null)"
 grep -q 'description:' <<< "$err" && ok "5b the failure names the description: field" || bad "5b the failure names the description: field: $err"
+grep -q 'first line' <<< "$err" && ok "5b2 the failure says the '---' must be the first line" || bad "5b2 the failure does not name the first-line rule: $err"
 expect_rc "5c placeholder description fails" 1 "$tmp/desc_ph.md"
 expect_rc "5d a resumed doc (Results bullet) passes without a description" 0 "$tmp/desc_resumed.md"
 rc=0; out="$(run_leg "$tmp/desc_none.md" --profile leg-impl)" || rc=$?
@@ -136,6 +137,24 @@ rc=0; out="$(run_leg "$tmp/desc_resumed.md" --profile leg-impl)" || rc=$?
 [ "$rc" -eq 0 ] && ok "5g launcher resumes a doc that has run without a description" || bad "5g launcher resume of a pre-description doc (rc=$rc): $out"
 rc=0; out="$(run_leg "$tmp/desc_none.md" --relay)" || rc=$?
 [ "$rc" -eq 0 ] && ok "5h relay launch is not gated on a description" || bad "5h relay launch gated on a description (rc=$rc): $out"
+
+# 6. Every brief template the launcher gates, filled the way a console fills it
+#    (each `<placeholder>` replaced), launches: a template that lacks a field the
+#    gates require would refuse every brief written from it.
+DOCS="$HERE/../../../docs/handover"
+fill_template() { # template out
+    awk '/^```markdown$/ { inb = 1; next } inb && /^```$/ { exit } inb' "$1" \
+        | sed -E 's/<[^>]*>/filled/g; s/<[^>]*$/filled/' > "$2"
+}
+fill_template "$DOCS/leg-brief-template.md" "$tmp/filled_leg.md"
+fill_template "$DOCS/judge-brief-template.md" "$tmp/filled_judge.md"
+grep -Eq '^> \*\*(Contract|Completion condition):\*\*' "$tmp/filled_leg.md" \
+    && grep -Eq '^> \*\*(Contract|Completion condition):\*\*' "$tmp/filled_judge.md" \
+    && ok "6a both filled templates are template-shaped (gated)" || bad "6a a filled template is not gate-shaped"
+rc=0; out="$(run_leg "$tmp/filled_leg.md" --profile leg-impl)" || rc=$?
+[ "$rc" -eq 0 ] && ok "6b a filled leg-brief-template launches" || bad "6b filled leg-brief-template refused (rc=$rc): $out"
+rc=0; out="$(run_leg "$tmp/filled_judge.md" --judge)" || rc=$?
+[ "$rc" -eq 0 ] && ok "6c a filled judge-brief-template launches" || bad "6c filled judge-brief-template refused (rc=$rc): $out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
