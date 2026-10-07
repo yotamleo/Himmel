@@ -121,6 +121,11 @@ v = tmp / "vault"
     "harvest_defer_count: 5\nharvest_needs_attention: true\n---\nshort.\n")
 r = subprocess.run([sys.executable, tool, str(v)], capture_output=True, text=True)
 check("deferred-only batch exits 0", r.returncode == 0, r.stdout + r.stderr)
+# HIMMEL-4684: the tool itself writes .harvest.done when only deferred partials remain.
+done = v / ".harvest.done"
+check("deferred-only batch writes .harvest.done", done.is_file(), r.stdout)
+check(".harvest.done carries a timestamp and a batch hash",
+      done.is_file() and len(done.read_text().split()) == 2, done.read_text() if done.is_file() else "")
 check("summary counts deferred + needs-attention",
       "harvest-clip-body-batch: 2 deferred (non-blocking), 1 needs-attention" in r.stdout, r.stdout)
 rep = v / ".harvest-pending.md"
@@ -133,6 +138,7 @@ check("pending report has needs-attention bucket", len(na) == 2 and "[[Clippings
 (v / "Clippings/d-bad.md").write_text("---\ntype: article\nsource: not a url\n---\nshort.\n")
 r = subprocess.run([sys.executable, tool, str(v)], capture_output=True, text=True)
 check("failed clip blocks (exit 4)", r.returncode == 4, r.stdout + r.stderr)
+check("failed batch leaves no .harvest.done", not (v / ".harvest.done").exists())
 
 # Dry-run writes no report.
 v2 = tmp / "vault2"
@@ -141,6 +147,7 @@ v2 = tmp / "vault2"
 r = subprocess.run([sys.executable, tool, str(v2), "--dry-run"], capture_output=True, text=True)
 check("dry-run exits 0", r.returncode == 0, r.stdout + r.stderr)
 check("dry-run writes no pending report", not (v2 / ".harvest-pending.md").exists())
+check("dry-run writes no .harvest.done", not (v2 / ".harvest.done").exists())
 
 sys.exit(1 if fails else 0)
 PY
