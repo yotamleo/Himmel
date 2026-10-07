@@ -802,6 +802,24 @@ else
     fail "T6-c3: owned type-change emits SKIPPED-DIRTY" "got: $t6c3_out"
 fi
 
+# T6-c4: an owned path whose NAME contains " (" still blocks (HIMMEL-4727): only the
+# plan's trailing annotation is stripped, not everything from the first " (".
+T6C4_TMPL="$TMP/t6c4-tmpl"; make_template "$T6C4_TMPL" "1.0.0"
+printf 'paren v1\n' > "$T6C4_TMPL/docs/Note (1).md"
+T6C4_VAULT="$TMP/t6c4-vault"
+make_luna_vault "$T6C4_VAULT" "0.9.0" "$T6C4_TMPL"
+printf 'paren v2\n' > "$T6C4_TMPL/docs/Note (1).md"
+git_init_dirty_handovers "$T6C4_VAULT"
+printf 'LOCAL EDIT\n' >> "$T6C4_VAULT/docs/Note (1).md"
+t6c4_rc=0
+t6c4_out=$(run_engine apply --template-dir "$T6C4_TMPL" --vault "$T6C4_VAULT" 2>&1) || t6c4_rc=$?
+assert_eq "T6-c4: dirty paren-named owned file exits 3" "3" "$t6c4_rc"
+if grepq "$t6c4_out" "^SKIPPED-DIRTY	"; then
+    pass "T6-c4: paren-named owned file emits SKIPPED-DIRTY"
+else
+    fail "T6-c4: paren-named owned file emits SKIPPED-DIRTY" "got: $t6c4_out"
+fi
+
 # T6-d: unstamped vault -> exit 2 without --force-unstamped
 T6D_VAULT="$TMP/t6d-vault"
 make_unstamped_vault "$T6D_VAULT"
