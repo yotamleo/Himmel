@@ -407,11 +407,6 @@ def backfill(a):
             salus += 1
             continue
         legs += 1
-        # ponytail: recency stands in for "still running" (a leg idle past the window
-        # still freezes), upgrade path: an end-of-session signal in the journal.
-        if journal_last_ts(j) > live_cut:
-            live += 1
-            continue
         try:
             with open(os.path.join(a.state_dir, session + ".json"), encoding="utf-8") as fh:
                 if json.load(fh).get("status") == "ok":
@@ -419,6 +414,11 @@ def backfill(a):
                     continue
         except (OSError, ValueError, AttributeError):
             pass
+        # ponytail: recency stands in for "still running" (a leg idle past the window
+        # still freezes), upgrade path: an end-of-session signal in the journal.
+        if journal_last_ts(j) > live_cut:
+            live += 1
+            continue
         who = {"leg": m.group(2), "ticket": m.group(1), "console": None, "pr": None, "doc": None,
                "lane": None, "state_dir": a.state_dir, "backfill": True}
         try:
@@ -428,8 +428,8 @@ def backfill(a):
             continue
         fa += f
         ea += e
-    print("backfill: journals=%d legs=%d salus=%d already=%d live=%d failures+=%d eval+=%d"
-          % (n, legs, salus, done, live, fa, ea))
+    print("backfill: journals=%d legs=%d salus=%d already=%d failures+=%d eval+=%d live=%d"
+          % (n, legs, salus, done, fa, ea, live))
     return 0
 
 
