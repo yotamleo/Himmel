@@ -602,7 +602,12 @@ run_hook Bash "JIRA_PROJECT_KEY=HIMMEL node $JIRA create --type Task --title x -
 # The deny text names the shape it ACTUALLY refused, never a list of shapes the
 # command does not have, and never tells the agent to keep a refused prefix.
 # shape_has reads only the reason sentence: the retry steps say "not a heredoc".
-shape_has() { tr '\n' ' ' < "$ERR" | sed -n 's/.*of its shape: \(.*\)That makes the permission.*/\1/p' | grep -qF -- "$1"; }
+shape_has() {
+    local reason
+    reason=$(tr '\n' ' ' < "$ERR" | sed -n 's/.*of its shape: \(.*\)That makes the permission.*/\1/p')
+    case "$reason" in *"$1"*) return 0 ;; esac
+    return 1
+}
 run_hook Bash "cat > b.md <<'EOF'
 x
 EOF
