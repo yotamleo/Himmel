@@ -127,7 +127,9 @@ Continue to the next vault.
 
 ### Signal: `SKIPPED-DIRTY\t<vault>`
 
-The vault is a git repo with uncommitted changes. The engine refused — no
+The vault is a git repo with uncommitted changes under a path the upgrade would
+touch (a path in its dry-run plan, or the version stamp; changes elsewhere, e.g.
+`handovers/`, do not block). The engine refused — no
 backup was created, nothing was modified. Tell the operator:
 
 > Skipped (dirty git tree): commit or stash your changes in `<vault>`, then

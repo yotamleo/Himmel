@@ -146,6 +146,27 @@ git_init_dirty() {
     printf 'DIRTY-CONTENT\n' > "$d/dirty-file.txt"
 }
 
+# git_init_dirty_owned <dir>: git_init_dirty plus an uncommitted edit to a
+# template-owned file (HIMMEL-4719: only owned paths block an apply).
+git_init_dirty_owned() {
+    local d="$1"
+    git_init_dirty "$d"
+    printf 'LOCAL EDIT\n' >> "$d/scripts/hooks/check-commit-msg.sh"
+}
+
+# git_init_dirty_handovers <dir>: git init, commit, then dirty ONLY handovers/
+# (a path no template plan ever names).
+git_init_dirty_handovers() {
+    local d="$1"
+    git -C "$d" init -q
+    git -C "$d" config user.email "test@example.com"
+    git -C "$d" config user.name "Test"
+    git -C "$d" add -A
+    git -C "$d" commit -q -m "initial"
+    mkdir -p "$d/handovers/sub"
+    printf 'wip\n' > "$d/handovers/sub/note.md"
+}
+
 # ---------------------------------------------------------------------------
 # run_engine: always sets HOME=$THOME and passes --template-dir
 run_engine() {
@@ -315,7 +336,14 @@ SW_DIRTY="$SW_ROOTS/dirty-vault"
 mkdir -p "$SW_DIRTY"
 make_luna_vault "$SW_DIRTY" "0.9.0" "$T_SW"
 printf 'STALE HOOK\n' > "$SW_DIRTY/scripts/hooks/check-commit-msg.sh"
-git_init_dirty "$SW_DIRTY"
+git_init_dirty_owned "$SW_DIRTY"
+
+# 5b. behind vault dirty ONLY under handovers/ (HIMMEL-4719): not dirty
+SW_HDIRTY="$SW_ROOTS/handovers-dirty-vault"
+mkdir -p "$SW_HDIRTY"
+make_luna_vault "$SW_HDIRTY" "0.9.0" "$T_SW"
+printf 'STALE HOOK\n' > "$SW_HDIRTY/scripts/hooks/check-commit-msg.sh"
+git_init_dirty_handovers "$SW_HDIRTY"
 
 # 6. vault with SPACE in path (tests banner version parse)
 SW_SPACE_DIR="$TMP/sw space roots"; mkdir -p "$SW_SPACE_DIR"
@@ -389,11 +417,15 @@ assert_eq "T-sw unstamped to is empty" "" "$uns_to"
 # git-dirty behind-clean: dirty=true
 dirty_line=$(printf '%s\n' "$sw_out" | grep "$SW_DIRTY" | head -1)
 case "$dirty_line" in
-    clean-upgrade*) pass "T-sw dirty vault still shows clean-upgrade (sweep advisory only)" ;;
-    *) fail "T-sw dirty vault still shows clean-upgrade" "got: $dirty_line" ;;
+    local-config-edits*) pass "T-sw owned-dirty vault still classified (sweep advisory only)" ;;
+    *) fail "T-sw owned-dirty vault still classified" "got: $dirty_line" ;;
 esac
 dirty_col=$(printf '%s\n' "$dirty_line" | cut -f4)
 assert_eq "T-sw dirty vault dirty=true" "true" "$dirty_col"
+
+# handovers-only dirty: dirty=false (HIMMEL-4719)
+hdirty_line=$(printf '%s\n' "$sw_out" | grep "$SW_HDIRTY" | head -1)
+assert_eq "T-sw handovers-only dirty vault dirty=false" "false" "$(printf '%s\n' "$hdirty_line" | cut -f4)"
 
 # space-in-path vault: must appear + have correct from/to parse
 space_line=$(printf '%s\n' "$sw_out" | grep "space vault" | head -1)
@@ -717,7 +749,7 @@ fi
 T6C_TMPL="$TMP/t6c-tmpl"; make_template "$T6C_TMPL" "1.0.0"
 T6C_VAULT="$TMP/t6c-vault"
 make_luna_vault "$T6C_VAULT" "0.9.0" "$T6C_TMPL"
-git_init_dirty "$T6C_VAULT"
+git_init_dirty_owned "$T6C_VAULT"
 
 t6c_rc=0
 t6c_out=$(run_engine apply --template-dir "$T6C_TMPL" --vault "$T6C_VAULT" 2>&1) || t6c_rc=$?
@@ -732,6 +764,26 @@ if grepq "$t6c_out" "^BACKUP	"; then
     fail "T6-c: no backup created for dirty vault" "BACKUP line found: $t6c_out"
 else
     pass "T6-c: no backup created for dirty vault"
+fi
+
+# T6-c2: dirty only under non-owned paths (handovers/, a stray file) -> applies (HIMMEL-4719)
+T6C2_TMPL="$TMP/t6c2-tmpl"; make_template "$T6C2_TMPL" "1.0.0"
+T6C2_VAULT="$TMP/t6c2-vault"
+make_luna_vault "$T6C2_VAULT" "0.9.0" "$T6C2_TMPL"
+git_init_dirty "$T6C2_VAULT"
+mkdir -p "$T6C2_VAULT/handovers/sub"; printf 'wip\n' > "$T6C2_VAULT/handovers/sub/note.md"
+t6c2_rc=0
+t6c2_out=$(run_engine apply --template-dir "$T6C2_TMPL" --vault "$T6C2_VAULT" 2>&1) || t6c2_rc=$?
+assert_eq "T6-c2: non-owned-only dirty applies (exit 0)" "0" "$t6c2_rc"
+if grepq "$t6c2_out" "^OK	"; then
+    pass "T6-c2: apply emits OK"
+else
+    fail "T6-c2: apply emits OK" "got: $t6c2_out"
+fi
+if grepq "$t6c2_out" "SKIPPED-DIRTY"; then
+    fail "T6-c2: no SKIPPED-DIRTY for non-owned dirt" "got: $t6c2_out"
+else
+    pass "T6-c2: no SKIPPED-DIRTY for non-owned dirt"
 fi
 
 # T6-d: unstamped vault -> exit 2 without --force-unstamped

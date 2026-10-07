@@ -349,6 +349,31 @@ is_git_dirty() {
 }
 
 # ---------------------------------------------------------------------------
+# is_dirty_owned <vault> <dry_out>: exit 0 if the vault has an uncommitted change
+# under a path the upgrade would touch (HIMMEL-4719). The owned set is read from
+# the engine's own dry-run plan (every indented plan line's path) plus the stamp
+# and the _CLAUDE.md merge sidecar; a vault dirty only elsewhere (handovers/,
+# notes) is safe to apply. Non-git vault: not dirty.
+is_dirty_owned() {
+    local v="$1" plan="$2"
+    [ -d "$v/.git" ] || return 1
+    local owned; owned="$(printf '%s\n' "$plan" \
+        | sed -nE 's/^ +(WRITE-NEW|WRITE|MERGE-JSON|MERGE-3WAY|REPORT|LOCAL-EDIT|KEEP-MINE) +//p' \
+        | sed 's/ (.*$//')"
+    owned="$(printf '%s\n.vault-template.json\n_CLAUDE.md.template-merge\n' "$owned")"
+    local entry path
+    while IFS= read -r -d '' entry; do
+        # "XY path" entries; a rename/copy's second (origin) entry has no XY prefix.
+        case "$entry" in
+            [\ MADRCU?!][\ MADRCU?!]\ *) path="${entry:3}" ;;
+            *) path="$entry" ;;
+        esac
+        if printf '%s\n' "$owned" | grep -qxF -- "$path"; then return 0; fi
+    done < <(git -C "$v" status --porcelain -z -uall 2>/dev/null)
+    return 1
+}
+
+# ---------------------------------------------------------------------------
 # parse_banner_version <text> <kind>: extract version from banner line.
 # kind: template -> matches "    template :" line
 #       vault    -> matches "    vault    :" line
@@ -457,11 +482,7 @@ cmd_sweep() {
 
             luna-family)
                 sweep_luna_count=$((sweep_luna_count + 1))
-                # Dirty check
                 dirty=""
-                if [ -d "$v/.git" ]; then
-                    if is_git_dirty "$v"; then dirty="true"; else dirty="false"; fi
-                fi
 
                 # dry-run — best-effort: errors continue
                 dry_rc=0
@@ -473,12 +494,21 @@ cmd_sweep() {
                     state="error"
                     sweep_error_count=$((sweep_error_count + 1))
                     vfrom="" vto=""
+                    # No plan to scope by: fall back to the whole-vault check.
+                    if [ -d "$v/.git" ]; then
+                        if is_git_dirty "$v"; then dirty="true"; else dirty="false"; fi
+                    fi
                     if [ "$PORCELAIN" = 1 ]; then
                         printf '%s\t%s\t%s\t%s\t%s\n' "$state" "" "" "$dirty" "$v"
                     else
                         printf '%-16s  %-12s  %-12s  %-7s  %s\n' "$state" "" "" "$dirty" "$v"
                     fi
                     continue
+                fi
+
+                # Dirty = an uncommitted change under a path the upgrade touches.
+                if [ -d "$v/.git" ]; then
+                    if is_dirty_owned "$v" "$dry_out"; then dirty="true"; else dirty="false"; fi
                 fi
 
                 # Check for "already current" / "nothing to do"
@@ -723,15 +753,6 @@ cmd_apply() {
             ;;
     esac
 
-    # Dirty-git precondition (applies to luna-family; unstamped with git also checked)
-    if [ -d "$vault/.git" ]; then
-        local git_status; git_status="$(git -C "$vault" status --porcelain 2>/dev/null)"
-        if [ -n "$git_status" ]; then
-            printf 'SKIPPED-DIRTY\t%s\n' "$vault"
-            exit 3
-        fi
-    fi
-
     # Fresh dry-run (NOT a stale plan) — compute plan and banner versions now
     local dry_out dry_rc
     dry_rc=0
@@ -743,6 +764,13 @@ cmd_apply() {
         echo "apply: upgrade.sh --dry-run failed (rc=$dry_rc) for $vault" >&2
         printf '%s\n' "$dry_out" >&2
         exit "$dry_rc"
+    fi
+
+    # Dirty-git precondition (luna-family; unstamped with git also checked):
+    # only an uncommitted change under a path the upgrade touches blocks (HIMMEL-4719).
+    if is_dirty_owned "$vault" "$dry_out"; then
+        printf 'SKIPPED-DIRTY\t%s\n' "$vault"
+        exit 3
     fi
 
     local vfrom vto
