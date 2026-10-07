@@ -11,7 +11,7 @@ import { useEffect, useState } from "react";
 import { pageHref } from "../../public/nav.js";
 import { FLEET_URL, runHash } from "./stream";
 
-type Row = {
+export type Row = {
   run: string | null; pid: number | null; name: string; role: string; model: string | null; ticket: string | null; pr: number | null;
   state: "running" | "idle" | "waiting for GO" | "wrapped" | "unknown"; activity: { tool: string; summary: string; at: number } | null;
   lastEventAt: number | null; subagents: { total: number; running: number }; failures: number;
@@ -21,7 +21,31 @@ type Row = {
     resident: number | null; ceiling: number; ceilingFrom: "autocompact" | "window"; fill: number | null;
   } | null;
   cloud: { url: string | null; phase: "working" | "done" | "blocked" | "merged" | "closed" | "unknown" } | null;
+  runtime?: { startedAt: number; endedAt: number | null; elapsedMs: number } | null;
+  console?: string | null; live?: boolean; lock?: "held" | "released" | "unknown"; lane?: string;
 };
+
+const consoleName = (r: Row) => r.console === undefined ? r.parent : r.console;
+const isLive = (r: Row) => r.live !== false && r.state !== "wrapped" && r.lock !== "released";
+export const rowHref = (token: string, r: Row) => r.run ? runHash(token, r.run) : r.cloud?.url ?? null;
+export function orphanReason(r: Row, rows: Row[]): string | null {
+  if (r.role === "console" || r.state === "wrapped") return null;
+  if (r.role === "cloud" && !rows.some((s) => s.parent === r.name && isLive(s))) return "cloud session without a shepherd";
+  const name = consoleName(r);
+  if (!name) return "no console edge";
+  const c = rows.find((s) => s.role === "console" && s.name === name);
+  if (c?.state === "wrapped" || c?.lock === "released") return "console wrapped / lock released";
+  return c && isLive(c) ? null : "console process gone";
+}
+export function visibleRows(rows: Row[]): Row[] {
+  return rows.filter((r) => !(r.cloud?.phase === "merged" && !rows.some((c) => c.role === "console" && c.name === consoleName(r) && isLive(c))));
+}
+export function consoleGroups(rows: Row[]): { console: Row; rows: Row[] }[] {
+  const shown = visibleRows(rows);
+  return shown.filter((r) => r.role === "console")
+    .sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || a.name.localeCompare(b.name))
+    .map((c) => ({ console: c, rows: shown.filter((r) => r.role !== "console" && consoleName(r) === c.name && !orphanReason(r, rows)) }));
+}
 type Node = { row: Row; kids: Node[] };
 
 // HIMMEL-4751: the live rows as a tree under the operator: a row whose parent is a live row sits under it, the
@@ -73,7 +97,7 @@ export function useFleet(token: string | null): FleetState {
   return st;
 }
 
-export function FleetPage({ token, state }: { token: string; state: FleetState }) {
+export function FleetPage({ token, state, console: selected = null }: { token: string; state: FleetState; console?: string | null }) {
   const { fleet, error } = state;
   const [now, setNow] = useState(Date.now());
 
@@ -82,14 +106,18 @@ export function FleetPage({ token, state }: { token: string; state: FleetState }
     return () => clearInterval(tick);
   }, []);
 
-  const rows = (fleet?.sessions ?? []).slice().sort((a, b) => (ORDER[a.role] ?? 9) - (ORDER[b.role] ?? 9) || a.name.localeCompare(b.name));
+  const all = visibleRows(fleet?.sessions ?? []);
+  const rows = all.filter((r) => !selected || r.name === selected || consoleName(r) === selected)
+    .sort((a, b) => (ORDER[a.role] ?? 9) - (ORDER[b.role] ?? 9) || a.name.localeCompare(b.name));
   const open = rows.filter((r) => r.state !== "wrapped");
   const wrapped = rows.filter((r) => r.state === "wrapped");
+  const groups = consoleGroups(all).filter((g) => !selected || g.console.name === selected);
+  const orphans = rows.filter((r) => orphanReason(r, all));
   return (
     <>
       <header className="top">
         <span className="brand">himmel</span>
-        <span className="run">fleet</span>
+        <span className="run">{selected ?? "fleet"}</span>
         <span className={`state ${error ? "error" : fleet ? "running" : "idle"}`} role="status">{error ? "stopped" : fleet ? "live" : "connecting"}</span>
         {fleet && <span className="meta">{`${open.length} live · ${wrapped.length} wrapped · updated ${ago(now - fleet.generatedAt)}`}</span>}
       </header>
@@ -98,17 +126,38 @@ export function FleetPage({ token, state }: { token: string; state: FleetState }
         {fleet?.census === "unavailable" && <p className="run-error" role="alert">The process census failed: this list is not the fleet.</p>}
         {fleet?.census === "degraded" && <p className="quiet">Some sessions could not be read; the list may be incomplete.</p>}
         {fleet && open.length === 0 && fleet.census !== "unavailable" && <p className="quiet">No live sessions.</p>}
-        {open.length > 0 && <p className="fleet-root">operator</p>}
-        {open.length > 0 && <ul className="fleet-rows fleet-tree" aria-label="Live sessions">{forest(open).map((n) => <FleetNode key={n.row.name} node={n} live={open} token={token} now={now} />)}</ul>}
-        {wrapped.length > 0 && (
-          <details className="fleet-closed">
-            <summary>{`Wrapped (${wrapped.length})`}</summary>
-            <ul className="fleet-rows" aria-label="Wrapped sessions">{wrapped.map((r) => <li key={r.name}><FleetRow row={r} live={open} token={token} now={now} /></li>)}</ul>
-          </details>
-        )}
+        {selected && groups.length === 0 && <p className="quiet">Console not found: {selected}</p>}
+        {groups.map((g) => (
+          <section className="fleet-console" key={g.console.name} aria-label={g.console.name}>
+            <h2>{g.console.name}</h2>
+            <FleetRow row={g.console} live={all} token={token} now={now} />
+            <FleetMembers rows={g.rows} live={all} token={token} now={now} />
+          </section>
+        ))}
+        {orphans.length > 0 && <section className="fleet-orphans" aria-label="Orphans">
+          <h2>Orphans</h2>
+          <p className="quiet">Adopt via relay, or close the session.</p>
+          <ul className="fleet-rows">{orphans.map((r) => <li key={r.name}>
+            <span className="fleet-orphan-cause">{orphanReason(r, all)} — adopt via relay / close</span>
+            <FleetRow row={r} live={all} token={token} now={now} />
+          </li>)}</ul>
+        </section>}
+        <FleetMembers rows={wrapped.filter((r) => r.role !== "console" && !groups.some((g) => g.rows.includes(r)))} live={all} token={token} now={now} />
       </main>
     </>
   );
+}
+
+function FleetMembers({ rows, live, token, now }: { rows: Row[]; live: Row[]; token: string; now: number }) {
+  const open = rows.filter((r) => r.state !== "wrapped");
+  const wrapped = rows.filter((r) => r.state === "wrapped");
+  return <>
+    {open.length > 0 && <ul className="fleet-rows fleet-tree" aria-label="Live sessions">{forest(open).map((n) => <FleetNode key={n.row.name} node={n} live={live} token={token} now={now} />)}</ul>}
+    {wrapped.length > 0 && <details className="fleet-closed">
+      <summary>{`Wrapped (${wrapped.length})`}</summary>
+      <ul className="fleet-rows" aria-label="Wrapped sessions">{wrapped.map((r) => <li key={r.name}><FleetRow row={r} live={live} token={token} now={now} /></li>)}</ul>
+    </details>}
+  </>;
 }
 
 function FleetNode({ node, live, token, now }: { node: Node; live: Row[]; token: string; now: number }) {
@@ -156,13 +205,14 @@ function FleetRow({ row, live, token, now }: { row: Row; live: Row[]; token: str
   const head = (
     <>
       <span className="fleet-name">{row.name}</span>
-      <span className="fleet-role">{[row.role, row.model].filter(Boolean).join(" · ")}</span>
+      <span className="fleet-role">{[row.role, row.model, row.lane && `${row.lane} bank`].filter(Boolean).join(" · ")}</span>
       <span className={`state ${CLS[row.state]}`}>{row.state}</span>
     </>
   );
   return (
     <div className={`fleet-row ${CLS[row.state]}`} id={rowId(row.name)} tabIndex={-1}>
-      {row.run ? <a className="fleet-head" href={runHash(token, row.run)}>{head}</a> : <span className="fleet-head">{head}</span>}
+      {rowHref(token, row) ? <a className="fleet-head" href={rowHref(token, row)!}>{head}</a> : <span className="fleet-head">{head}</span>}
+      <span className="fleet-runtime">{row.runtime ? `runtime ${Math.floor(Math.max(0, (row.runtime.endedAt ?? now) - row.runtime.startedAt) / 60000)}m${row.runtime.endedAt !== null ? " (ended)" : ""}` : "runtime not measured"}</span>
       {row.cloud ? (
         <span className="fleet-meta">
           {[row.ticket, row.pr !== null && `PR ${row.pr}`].filter(Boolean).join(" · ")}{` · ${PHASE[row.cloud.phase]}`}
