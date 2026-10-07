@@ -55,4 +55,14 @@ case "$bare" in
             || fail "'none found' still carries the '<query>' placeholder: name the query that found nothing"
         ;;
 esac
+
+# HIMMEL-4749: a fresh brief carries a front-matter `description:` line, the
+# plain-language line every surface shows next to the leg's label. A doc whose
+# Results section already holds a bullet has run, and was briefed before the
+# field existed, so it passes without one.
+# shellcheck source=../../lib/leg-identity.sh
+. "$(dirname "$0")/../../lib/leg-identity.sh"
+if [ -z "$(leg_description_field "$doc")" ] && ! leg_doc_has_run "$doc"; then
+    fail "no front-matter 'description:' line (required: one plain-language line saying what this leg is doing and why, e.g. 'description: Add a description line to every leg brief'; put it between the leading '---' lines, see docs/handover/leg-brief-template.md)"
+fi
 exit 0

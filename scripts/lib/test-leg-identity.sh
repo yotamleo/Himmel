@@ -121,5 +121,41 @@ for stem in 'HIMMEL-3269-N191-scorecard-discovery-2026-09-20-RESUME.md' \
     fi
 done
 
+# HIMMEL-4749: leg_description_field reads the doc's `description:` front-matter
+# line; leg_description falls back to the H1 scope, then the stem, never empty;
+# leg_doc_has_run tells a launched doc (a Results bullet) from a fresh brief.
+dtmp="$(mktemp -d "${TMPDIR:-/tmp}/leg-identity.XXXXXX")" || exit 1
+trap 'rm -rf "$dtmp"' EXIT
+mkdoc() { local f="$dtmp/$1"; shift; printf '%s\n' "$@" > "$f"; printf '%s' "$f"; }
+check_eq() { # label got want
+    if [ "$2" = "$3" ]; then ok "$1"; else bad "$1: got [$2] want [$3]"; fi
+}
+d_fm="$(mkdoc HIMMEL-1-N1-a-2026-10-07.md '---' 'resume_cwd: /x' 'description: Add a description line to every leg brief' 'template_version: 3' '---' '' '# HIMMEL-1 — other scope — leg N1 (opus, native), 2026-10-07')"
+d_q="$(mkdoc HIMMEL-1-N2-a-2026-10-07.md '---' 'description:   "Quoted, padded text"  ' '---')"
+d_ph="$(mkdoc HIMMEL-1-N3-a-2026-10-07.md '---' 'description: <one plain-language line: what this leg is doing and why>' '---' '' '# HIMMEL-1 — the scope from the H1 — leg N3 (sonnet, native), 2026-10-07')"
+d_body="$(mkdoc HIMMEL-1-N4-a-2026-10-07.md '---' 'resume_cwd: /x' '---' '' 'description: not front matter' '# HIMMEL-1 — body scope — leg N4 (opus, native), 2026-10-07')"
+d_h1raw="$(mkdoc HIMMEL-1-N5-a-2026-10-07.md '---' 'resume_cwd: /x' '---' '# A free-form heading')"
+d_h1live="$(mkdoc HIMMEL-1-N9-a-2026-10-07.md '---' 'resume_cwd: /x' '---' '# HIMMEL-4797: YouTube private-video detection is language-free. Leg N1446 (sonnet, native, headed), 2026-10-07')"
+d_none="$(mkdoc HIMMEL-1-N6-a-2026-10-07.md 'no heading, no front matter')"
+d_empty="$(mkdoc HIMMEL-1-N7-a-2026-10-07.md '---' 'description:' '---')"
+d_run="$(mkdoc run.md '---' 'resume_cwd: /x' '---' '# x' '> - not a bullet' '## Results (newest at the bottom)' '- 10:00 LIVE — started')"
+d_fresh="$(mkdoc fresh.md '---' 'resume_cwd: /x' '---' '# x' '- a list item in the brief body' '## Results (newest at the bottom)')"
+check_eq 'field: front-matter description' "$(leg_description_field "$d_fm")" 'Add a description line to every leg brief'
+check_eq 'field: quotes and padding stripped' "$(leg_description_field "$d_q")" 'Quoted, padded text'
+check_eq 'field: an unfilled <placeholder> is no description' "$(leg_description_field "$d_ph")" ''
+check_eq 'field: a description: line outside the front matter is ignored' "$(leg_description_field "$d_body")" ''
+check_eq 'field: an empty description is no description' "$(leg_description_field "$d_empty")" ''
+check_eq 'field: a missing doc prints nothing' "$(leg_description_field "$dtmp/absent.md")" ''
+check_eq 'resolve: the description wins over the H1' "$(leg_description "$d_fm")" 'Add a description line to every leg brief'
+check_eq 'resolve: placeholder falls back to the template H1 scope' "$(leg_description "$d_ph")" 'the scope from the H1'
+check_eq 'resolve: no description falls back to the H1 scope' "$(leg_description "$d_body")" 'body scope'
+check_eq 'resolve: a free-form H1 is used whole' "$(leg_description "$d_h1raw")" 'A free-form heading'
+check_eq 'resolve: the KEY: scope. Leg N<k> H1 consoles write drops key and leg suffix' "$(leg_description "$d_h1live")" 'YouTube private-video detection is language-free'
+check_eq 'resolve: no H1 falls back to the stem' "$(leg_description "$d_none")" 'HIMMEL-1-N6-a-2026-10-07'
+check_eq 'resolve: a missing doc falls back to the stem' "$(leg_description "$dtmp/HIMMEL-1-N8-gone-2026-10-07.md")" 'HIMMEL-1-N8-gone-2026-10-07'
+if leg_doc_has_run "$d_run"; then ok 'has_run: a Results bullet means the leg has run'; else bad 'has_run: a Results bullet means the leg has run'; fi
+if leg_doc_has_run "$d_fresh"; then bad 'has_run: an empty Results (body list items aside) is a fresh brief'; else ok 'has_run: an empty Results (body list items aside) is a fresh brief'; fi
+if leg_doc_has_run "$dtmp/absent.md"; then bad 'has_run: a missing doc has not run'; else ok 'has_run: a missing doc has not run'; fi
+
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

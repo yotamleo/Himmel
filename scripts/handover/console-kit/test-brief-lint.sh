@@ -15,6 +15,11 @@
 #      or `> **Completion condition:**` line) that fails the lint, naming
 #      --no-prior-art-check; the flag lets it through; a filled brief passes;
 #      a relay or consult launch and a non-template fixture are not gated.
+#   5. HIMMEL-4749: a fresh brief with no front-matter `description:` (or the
+#      template placeholder) FAILS, naming the field; a doc whose Results already
+#      holds a bullet (a resume) passes without one. headed-arm-leg.sh refuses a
+#      fresh template-shaped launch with no description, --no-prior-art-check
+#      or not, and still resumes a doc that has run.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LINT="$HERE/brief-lint.sh"
@@ -28,9 +33,14 @@ expect_rc() { # label want-rc doc
     err="$(bash "$LINT" "$3" 2>&1 >/dev/null)" || rc=$?
     if [ "$rc" -eq "$2" ]; then ok "$1"; else bad "$1 (rc=$rc want $2): $err"; fi
 }
-mk() { # name lines...
+mk_raw() { # name lines...
     local f="$tmp/$1.md"; shift
     printf '%s\n' "$@" > "$f"
+}
+# A template brief opens with front matter carrying its description (HIMMEL-4749).
+mk() { # name lines...
+    local n="$1"; shift
+    mk_raw "$n" '---' 'description: Check the lint on a test brief' '---' "$@"
 }
 
 mk none '# brief' '> **Why:** x' '> **Contract:** y'
@@ -85,7 +95,7 @@ printf '#!/usr/bin/env bash\necho PROCEED\n' > "$tmp/preflight.sh"; chmod +x "$t
 mk tmpl_bad '# brief' '> **Why:** x' '> **Contract:** y' '## Results'
 mk tmpl_bad_judge '# brief' '> **Completion condition:** z' '## Results'
 mk tmpl_ok '# brief' '> **Prior art:** none found (qmd -c jira-himmel "x")' '> **Contract:** y' '## Results'
-mk fixture_plain '# fixture brief' '## Results'
+mk_raw fixture_plain '# fixture brief' '## Results'
 run_leg() { # doc args...
     local doc="$1"; shift
     HEADED_ARM_LEG_PREFLIGHT="$tmp/preflight.sh" LEG_REPO="$tmp" \
@@ -105,6 +115,27 @@ rc=0; out="$(run_leg "$tmp/fixture_plain.md" --profile leg-impl)" || rc=$?
 [ "$rc" -eq 0 ] && ok "4e non-template fixture is not gated" || bad "4e non-template fixture (rc=$rc): $out"
 rc=0; out="$(run_leg "$tmp/tmpl_bad.md" --relay)" || rc=$?
 { [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -q -- 'no-prior-art-check'; } && ok "4f relay launch is not gated" || bad "4f relay launch is not gated (rc=$rc): $out"
+
+# 5. HIMMEL-4749 description field.
+PA='> **Prior art:** none found (qmd -c jira-himmel "x")'
+mk_raw desc_none '# brief' "$PA" '> **Contract:** y' '## Results (newest at the bottom)'
+mk_raw desc_ph '---' 'description: <one plain-language line: what this leg is doing and why>' '---' '# brief' "$PA" '> **Contract:** y' '## Results (newest at the bottom)'
+mk_raw desc_resumed '# brief' "$PA" '> **Contract:** y' '## Results (newest at the bottom)' '- 10:00 LIVE — started'
+expect_rc "5a fresh brief with no description fails" 1 "$tmp/desc_none.md"
+err="$(bash "$LINT" "$tmp/desc_none.md" 2>&1 >/dev/null)"
+printf '%s' "$err" | grep -q 'description:' && ok "5b the failure names the description: field" || bad "5b the failure names the description: field: $err"
+expect_rc "5c placeholder description fails" 1 "$tmp/desc_ph.md"
+expect_rc "5d a resumed doc (Results bullet) passes without a description" 0 "$tmp/desc_resumed.md"
+rc=0; out="$(run_leg "$tmp/desc_none.md" --profile leg-impl)" || rc=$?
+{ [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'description:'; } \
+    && ok "5e launcher refuses a fresh brief with no description" || bad "5e launcher refuses a fresh brief with no description (rc=$rc): $out"
+rc=0; out="$(run_leg "$tmp/desc_none.md" --profile leg-impl --no-prior-art-check)" || rc=$?
+{ [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'description:'; } \
+    && ok "5f --no-prior-art-check does not bypass the description refusal" || bad "5f --no-prior-art-check bypassed the description refusal (rc=$rc): $out"
+rc=0; out="$(run_leg "$tmp/desc_resumed.md" --profile leg-impl)" || rc=$?
+[ "$rc" -eq 0 ] && ok "5g launcher resumes a doc that has run without a description" || bad "5g launcher resume of a pre-description doc (rc=$rc): $out"
+rc=0; out="$(run_leg "$tmp/desc_none.md" --relay)" || rc=$?
+[ "$rc" -eq 0 ] && ok "5h relay launch is not gated on a description" || bad "5h relay launch gated on a description (rc=$rc): $out"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

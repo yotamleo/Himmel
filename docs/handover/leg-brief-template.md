@@ -43,6 +43,7 @@ always appends [`leg-preface-claudex.md`](leg-preface-claudex.md).
 ```markdown
 ---
 resume_cwd: <absolute path to the leg's worktree>
+description: <one plain-language line: what this leg is doing and why>
 template_version: 3
 ---
 
@@ -169,6 +170,7 @@ template_version: 3
 | RETASK token | Any text reaching the leg could re-task it; the nonce is what makes a revision authentic. |
 | Queue lock + release token | Two sessions edit one handover doc, and the later write wins silently. |
 | Explicit do-nots | Scope widens into a neighbouring leg's files and the fan-out collides. |
+| `description:` line (required) | A leg is named everywhere by its label and ticket (`N1452`, `HIMMEL-4749`), which says nothing about what it is doing, least of all with no tracker or forge to fetch a title from. The front-matter line is the one plain-language description a surface shows NEXT TO the label (never instead: tooling keys on the label); `leg_description` in `scripts/lib/leg-identity.sh` is its only reader. `brief-lint.sh` fails a fresh brief with no line or the `<placeholder>`, and `headed-arm-leg.sh` refuses the launch (no flag skips it). A doc whose `## Results` already holds a bullet has run, so it resumes without one (HIMMEL-4749). |
 | Prior art line (required) | In the 7 days to 2026-10-06 the qmd query tool was called 93 times, 85 of them by 16 of 565 legs and none by a console or judge: nothing in the brief asked for retrieval, so work was re-derived or duplicated (HIMMEL-4479 audit; graphify non-adoption was measured before in HIMMEL-2581). The console runs the retrieval once at dispatch and every leg inherits it. `brief-lint.sh` fails a missing, empty, placeholder or bare `none` line (`none found (<query>)` passes) and `headed-arm-leg.sh` refuses the launch unless `--no-prior-art-check` is passed (HIMMEL-4573). |
 | Exemplar line (optional) | A leg told only to "add a gate" copies the nearest older gate, which may be the stale shape. Naming the one file that shows the paved path (e.g. `scripts/hooks/check-unchecked-mktemp.sh`, `scripts/handover/console-kit/test-ready-check.sh`) makes the leg imitate that. Instructional only, no validator: judge it by drift before anyone gates it (HIMMEL-4428). |
 | The standing preface | Every rule the brief no longer repeats — reporting, RETASK asymmetry, RED-first, trailers in the first commit, GO-gated merge, the fill ceiling. It is injected by `--profile`, so a brief that omits it AND uses `--no-profile` is a leg running on vibes (a launch with neither is refused). |
