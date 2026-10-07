@@ -178,7 +178,7 @@ can inherit into the child.
 
 | Lane | Best for | Effort / notes |
 |---|---|---|
-| Haiku 5.5 | bulk mechanical; scoped read-only verification/extraction; mechanical edits that end in a real check (never delegates further) | low for bulk; `medium` (its default) once a brief has more than a couple of steps — see [Haiku 5.5](#haiku-55-himmel-4881) |
+| Haiku 5.5 | bulk mechanical; scoped read-only verification/extraction; mechanical edits that end in a real check (never delegates further) | low for bulk; `medium` (the model default; override the lane's `low`) once a brief has more than a couple of steps — see [Haiku 5.5](#haiku-55-himmel-4881) |
 | Sonnet 5.5 | scoped research; default implementor for well-specified impl briefs | medium default (a native leg runs at `lanes.json`'s `sonnet` lane effort, `medium`; an explicit `CLAUDE_CODE_EFFORT_LEVEL` in the launching shell overrides it — e.g. `CLAUDE_CODE_EFFORT_LEVEL=high` for a multi-step or guard-grade leg); high for multi-file/long briefs — raise effort before reaching for Opus. Effort is recalibrated vs Sonnet 5: `low` can skip verifying a change, and at `low`/`medium` on long tasks it is likelier to stop and check in (Anthropic migration guide) |
 | Opus 5.5 | multi-step reasoning; default parent | medium default (≈ Opus 5 `high`, HIMMEL-3479); `low` for scoped impl; `high` for heavy parenting; `xhigh`/`max` only where a gain was measured — see [Effort calibration](#effort-calibration) |
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; high for substantial judgment work — not just the hardest; xhigh for the hardest |
