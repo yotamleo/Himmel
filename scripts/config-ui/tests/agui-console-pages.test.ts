@@ -2,6 +2,7 @@
 import { expect, test } from "bun:test";
 import * as page from "../agui-web/src/Fleet";
 import * as stream from "../agui-web/src/stream";
+import { FleetMenu } from "../agui-web/src/FleetMenu";
 import { createRequire } from "node:module";
 const webRequire = createRequire(new URL("../agui-web/package.json", import.meta.url));
 const { createElement } = webRequire("react");
@@ -33,6 +34,13 @@ test("archived and released consoles do not inflate the live count or suppress t
   const html = renderToStaticMarkup(createElement(page.FleetPage, { token: "token", state: { error: null, fleet: { census: "ok", generatedAt: Date.now(), sessions } } }));
   expect(html).toContain("0 live");
   expect(html).toContain("No live sessions.");
+});
+
+test("wrapped sessions with an absent console keep a collapsed sidebar drill-in", () => {
+  const sessions = [row("finished-leg", "leg", "gone-console", { state: "wrapped", live: false })];
+  const html = renderToStaticMarkup(createElement(FleetMenu, { token: "token", selected: null, state: { error: null, fleet: { census: "ok", generatedAt: Date.now(), sessions } } }));
+  expect(html).toContain('href="#t=token&amp;run=run-finished-leg"');
+  expect(html).toContain('<details class="fleet-menu-wrapped">');
 });
 
 test("two console groups retain native, claudex and judge children; recent consoles sort last", () => {

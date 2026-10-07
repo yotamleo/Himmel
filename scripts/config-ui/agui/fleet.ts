@@ -236,9 +236,9 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     } catch { /* unavailable launch record: use doc or manifest */ }
     const lane = /(?:^|\/)\.claude-codex\/?$/.test(launch.CLAUDE_CONFIG_DIR ?? "") ? "claudex" : "native";
     let rec: { sessionId?: unknown; status?: unknown; name?: unknown; startedAt?: unknown } = {};
-    const configs = launch.CLAUDE_CONFIG_DIR ? [lane === "claudex" ? ".claude-codex" : ".claude"] : [".claude", ".claude-codex"];
+    const configs = launch.CLAUDE_CONFIG_DIR ? [launch.CLAUDE_CONFIG_DIR] : [join(opts.home, ".claude"), join(opts.home, ".claude-codex")];
     for (const config of configs) {
-      try { rec = JSON.parse(await readFile(join(opts.home, config, "sessions", `${c.pid}.json`), "utf8")); break; } catch { /* not yet written in this lane */ }
+      try { rec = JSON.parse(await readFile(join(config, "sessions", `${c.pid}.json`), "utf8")); break; } catch { /* not yet written in this lane */ }
     }
     const run = typeof rec.sessionId === "string" ? rec.sessionId : null;
     const found = run ? await resolveJournal(opts.home, run) : null;

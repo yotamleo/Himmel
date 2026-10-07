@@ -171,6 +171,17 @@ test("claudex sessions retain their run, journal usage, console edge and bank la
   await response.body?.cancel();
 });
 
+test("a custom launch config directory wins over an unrelated default PID record", async () => {
+  const s = boot();
+  const config = join(s.home, "custom-config");
+  mkdirSync(join(config, "sessions"), { recursive: true });
+  writeFileSync(join(config, "sessions", `${FLEET.leg.pid}.json`), JSON.stringify({ sessionId: FLEET.leg.run, startedAt: "2026-10-07T08:00:00Z" }));
+  writeFileSync(join(s.home, ".claude", "sessions", `${FLEET.leg.pid}.json`), JSON.stringify({ sessionId: FLEET.idle.run }));
+  writeFileSync(join(s.dir, "proc", String(FLEET.leg.pid), "environ"), `CLAUDE_CONFIG_DIR=${config}\0`);
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.pid === FLEET.leg.pid).run).toBe(FLEET.leg.run);
+});
+
 // HIMMEL-4751: each row's place in the graph and its token usage, from the census's own sources.
 test("graph: the leg hangs under its console, the console names its predecessor, the rest sit under the operator", async () => {
   const { port } = boot();
