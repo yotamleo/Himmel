@@ -166,6 +166,7 @@ test("a dist older than agui-web/src is served with a stale-build banner and nam
   expect(html).toContain('id="agui-stale"');
   expect(html).toContain("bun run build");
   expect(html).toContain("./index-abc.js"); // the page itself is still served
+  expect(html.startsWith("<!doctype html>")).toBe(true); // a page with no <body> keeps its doctype first (no quirks mode)
   expect(aguiStaleWarning(dir, w)).toMatch(/^himmelctl: ui: the AG-UI page is an old build .*bun run build/);
 });
 

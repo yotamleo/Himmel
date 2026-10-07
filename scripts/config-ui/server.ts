@@ -89,7 +89,8 @@ function staleBanner(html: string, dist: string, web: string): string {
   if (!s) return html;
   const banner = `<p id="agui-stale" role="alert">This page is an old build: it was built ${stamp(s.built)}, and its source changed ${stamp(s.changed)}. `
     + `Rebuild it with <code>${BUILD_STEP}</code>, then reload.</p>`;
-  return /<body[^>]*>/i.test(html) ? html.replace(/<body[^>]*>/i, (b) => b + banner) : banner + html;
+  if (/<body[^>]*>/i.test(html)) return html.replace(/<body[^>]*>/i, (b) => b + banner);
+  return html.replace(/^(\s*<!doctype[^>]*>)?/i, (d) => d + banner); // the doctype stays first, or the page drops to quirks mode
 }
 
 // Only a regular file whose real path stays inside dist; anything else (traversal, a symlink out, a directory) is a 404.

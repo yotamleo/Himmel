@@ -2,7 +2,7 @@
 // with its own timing when the page is opened without a run id (a static preview needs no server).
 import { HttpAgent } from "@ag-ui/client";
 import fixture from "./fixture.json";
-import { makeStamper } from "./reducer";
+import { makeStamper, turnEnded } from "./reducer";
 
 // The one place the endpoint shape lives (PR2 serves it from the config-ui server, token-gated).
 export const AGUI_URL = (run: string) => `/api/agui/${encodeURIComponent(run)}`;
@@ -39,7 +39,7 @@ function live(run: string, token: string): Source {
       const stamp = makeStamper(Date.now);
       const sub = agent.run(input).subscribe({
         next: (e) => {
-          if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") ended = true;
+          ended = turnEnded(ended, e.type);
           onEvent(stamp(e as Ev));
         },
         error: (err: unknown) => onFail(String((err as Error)?.message ?? err)),

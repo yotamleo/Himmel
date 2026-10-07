@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { join } from "node:path";
 import { mapFile } from "../agui/journal-mapper.ts";
-import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, runClock, agentState, currentCall, runningCount, liveness, type View } from "../agui-web/src/reducer";
+import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, runClock, agentState, currentCall, runningCount, liveness, turnEnded, type View } from "../agui-web/src/reducer";
 import fixture from "../agui-web/src/fixture.json";
 
 // HIMMEL-4480 PR3: the page is a pure fold of AG-UI events into view state; these cases pin it on the
@@ -345,4 +345,12 @@ describe("agent live state", () => {
     expect(liveness(initialView(), { live: true, closed: false }, 0).word).toBe("connecting");
     expect(liveness(reduceAll([{ type: "RUN_ERROR", message: "x", timestamp: 1900 }], opened), { live: true, closed: false }, 0).word).toBe("stopped");
   });
+});
+
+// HIMMEL-4711: the live stream's close is clean only if the CURRENT turn ended, not an earlier one.
+test("turnEnded resets when a new run starts", () => {
+  const seq = (types: string[]) => types.reduce((e, t) => turnEnded(e, t), false);
+  expect(seq(["RUN_STARTED", "RUN_FINISHED"])).toBe(true);
+  expect(seq(["RUN_STARTED", "RUN_FINISHED", "RUN_STARTED", "TOOL_CALL_START"])).toBe(false);
+  expect(seq(["RUN_STARTED", "RUN_ERROR"])).toBe(true);
 });

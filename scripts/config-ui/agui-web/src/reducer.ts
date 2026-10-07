@@ -231,6 +231,10 @@ export function liveness(v: View, src: { live: boolean; closed: boolean }, wall:
   return { word: `idle · last event ${s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`} ago`, cls: "idle" };
 }
 
+// The live stream's close is clean only if the current turn ended: a new RUN_STARTED reopens it.
+export const turnEnded = (ended: boolean, type: string): boolean =>
+  type === "RUN_STARTED" ? false : type === "RUN_FINISHED" || type === "RUN_ERROR" ? true : ended;
+
 export const reduceAll = (events: Ev[], from: View = initialView()): View => events.reduce(reduce, from);
 
 // AG-UI timestamps are optional; a live event without one is stamped when it arrives, so durations and lane
