@@ -77,20 +77,38 @@ def scrapling_permitted(vault, url):
 
 
 def player_response(page_html, video_id):
-    """The ytInitialPlayerResponse object for this video, or None."""
+    """The ytInitialPlayerResponse object for this video, or None. An
+    unavailable video's response carries no videoDetails at all (HIMMEL-4704):
+    with no response naming this video, the first one without videoDetails but
+    with a playabilityStatus stands in for it. One naming ANOTHER video never
+    does."""
     dec = json.JSONDecoder()
     start = 0
+    fallback = None
     while True:
         i = page_html.find(PLAYER_KEY, start)
         if i < 0:
-            return None
+            return fallback
         start = i + len(PLAYER_KEY)
         try:
             obj, _ = dec.raw_decode(page_html, start)
         except ValueError:
             continue
-        if isinstance(obj, dict) and (obj.get("videoDetails") or {}).get("videoId") == video_id:
+        if not isinstance(obj, dict):
+            continue
+        if (obj.get("videoDetails") or {}).get("videoId") == video_id:
             return obj
+        if (fallback is None and "videoDetails" not in obj
+                and isinstance(obj.get("playabilityStatus"), dict)):
+            fallback = obj
+
+
+def _is_private(ps):
+    """The playabilityStatus names a private video (its reason or messages)."""
+    msgs = ps.get("messages")
+    text = " ".join([str(ps.get("reason") or "")]
+                    + [str(m) for m in (msgs if isinstance(msgs, list) else [])])
+    return "private" in text.lower()
 
 
 def _clock(seconds):
@@ -107,15 +125,22 @@ def extract_meta(page_html, video_id, final_url=None):
     pr = player_response(page_html, video_id)
     if pr is None:
         return {"status": "error", "detail": "no player response for this video"}
-    play = (pr.get("playabilityStatus") or {}).get("status", "")
+    ps = pr.get("playabilityStatus") or {}
+    play = ps.get("status", "")
     if play == "LOGIN_REQUIRED":
         return {"status": "login_wall", "detail": "LOGIN_REQUIRED"}
+    if play == "ERROR" and _is_private(ps):
+        # A private video also reports ERROR (HIMMEL-4704): the logged-in
+        # fallback may still read it, so it is a login wall, never removed.
+        return {"status": "login_wall", "detail": "ERROR: private video"}
     if play == "ERROR":
         return {"status": "removed", "detail": play}
     if play == "UNPLAYABLE":
         # Region, age or members-only: recoverable, so the fallback may still run.
         return {"status": "error", "detail": play}
-    vd = pr.get("videoDetails") or {}
+    vd = pr.get("videoDetails")
+    if not vd:
+        return {"status": "error", "detail": f"no videoDetails ({play or 'no playability status'})"}
     mf = (pr.get("microformat") or {}).get("playerMicroformatRenderer") or {}
     length = vd.get("lengthSeconds")
     return {

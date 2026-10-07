@@ -59,6 +59,29 @@ sed 's/"playabilityStatus": {"status": "OK"}/"playabilityStatus": {"status": "UN
 helper --from-html "$tmp/unplayable.html" >"$tmp/unplayable.json"
 assert "UNPLAYABLE (region/age/members) exit 6, retryable" 6 "$?"
 assert "UNPLAYABLE is an error, never removed" error "$(jq_py "$tmp/unplayable.json" 'd["status"]')"
+# HIMMEL-4704 codex-2: ERROR also covers a private video, which the logged-in
+# fallback may still read - a login wall, never "removed".
+sed 's/"playabilityStatus": {"status": "OK"}/"playabilityStatus": {"status": "ERROR", "reason": "Private video", "messages": ["This is a private video. Please sign in to verify that you may see it."]}/' "$FIX/watch.html" >"$tmp/private.html"
+grep -q '"Private video"' "$tmp/private.html"
+assert "private control: the reason was planted" 0 "$?"
+helper --from-html "$tmp/private.html" >"$tmp/private.json"
+assert "private ERROR exit 4" 4 "$?"
+assert "private ERROR is a login wall (fallback runs), not removed" login_wall "$(jq_py "$tmp/private.json" 'd["status"]')"
+# HIMMEL-4704 codex-4: an unavailable video's player response omits
+# videoDetails; it must still classify, not fall through to a generic error.
+yt_page() { # $1 out file, $2 playabilityStatus JSON
+  printf '<html><body><script>var ytInitialPlayerResponse = {"responseContext": {}, "playabilityStatus": %s};</script></body></html>\n' "$2" >"$1"
+}
+yt_page "$tmp/gone-nodetails.html" '{"status": "ERROR", "reason": "This video isn'"'"'t available anymore"}'
+helper --from-html "$tmp/gone-nodetails.html" >"$tmp/gone-nodetails.json"
+assert "ERROR without videoDetails exit 5" 5 "$?"
+assert "ERROR without videoDetails is removed" removed "$(jq_py "$tmp/gone-nodetails.json" 'd["status"]')"
+yt_page "$tmp/private-nodetails.html" '{"status": "ERROR", "reason": "Private video", "messages": ["This is a private video."]}'
+helper --from-html "$tmp/private-nodetails.html" >"$tmp/private-nodetails.json"
+assert "private without videoDetails is a login wall" login_wall "$(jq_py "$tmp/private-nodetails.json" 'd["status"]')"
+yt_page "$tmp/login-nodetails.html" '{"status": "LOGIN_REQUIRED", "reason": "Sign in to confirm your age"}'
+helper --from-html "$tmp/login-nodetails.html" >"$tmp/login-nodetails.json"
+assert "LOGIN_REQUIRED without videoDetails exit 4" 4 "$?"
 python3 "$HELPER" --video-id DECOYDECOY1 --from-html "$FIX/watch.html" >"$tmp/decoy.json"
 assert "a decoy blob is not a player response -> exit 6" 6 "$?"
 python3 "$HELPER" --video-id 'x;rm' --from-html "$FIX/watch.html" >/dev/null 2>&1

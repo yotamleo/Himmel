@@ -36,7 +36,9 @@ ARTICLE_OPEN = re.compile(r"<article\b")
 MEDIA_TAG = re.compile(r"<video\b[^>]*>(?:.*?</video>)?|<img\b[^>]*>", re.S)
 ATTR = re.compile(r'\b(src|poster)="([^"]*)"')
 SOURCE_SRC = re.compile(r'<source\b[^>]*\bsrc="([^"]*)"')
-IMAGE_RE = re.compile(r"^https://pbs\.twimg\.com/media/([A-Za-z0-9_-]+)(?:\?(.*))?$")
+# The id may carry its format as an extension (media/<id>.jpg), with or without
+# a query (HIMMEL-4704).
+IMAGE_RE = re.compile(r"^https://pbs\.twimg\.com/media/([A-Za-z0-9_-]+)(?:\.(?:jpe?g|png|webp))?(?:\?(.*))?$")
 POSTER_ID = re.compile(r"/(?:amplify_video_thumb|ext_tw_video_thumb)/(\d+)/")
 
 
