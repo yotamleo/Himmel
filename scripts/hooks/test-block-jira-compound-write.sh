@@ -592,6 +592,36 @@ run_hook Bash "JIRA_PROJECT_KEY=OTHER node $JIRA create --desc \"\$(cat body)\""
 [ "$RC" -eq 2 ] && pass "env-prefixed create bounced" || fail "env-prefixed create missed (rc=$RC)"
 grep -q "JIRA_PROJECT_KEY" "$ERR" && pass "guidance preserves a VAR=value prefix" || fail "guidance drops the env prefix"
 
+# HIMMEL-4780: a literal JIRA_PROJECT_KEY=<KEY> prefix on an otherwise literal write
+# is gateway-approved, so it is never bounced (it was rc=2, and the bounce told the
+# agent to keep the very prefix it refused).
+run_hook Bash "JIRA_PROJECT_KEY=HIMMEL node $JIRA comment HIMMEL-1 --comment-file f.md"
+[ "$RC" -eq 0 ] && pass "JIRA_PROJECT_KEY-prefixed literal comment allowed" || fail "JIRA_PROJECT_KEY-prefixed literal comment bounced (rc=$RC)"
+run_hook Bash "JIRA_PROJECT_KEY=HIMMEL node $JIRA create --type Task --title x --desc-file f.md"
+[ "$RC" -eq 0 ] && pass "JIRA_PROJECT_KEY-prefixed literal create allowed" || fail "JIRA_PROJECT_KEY-prefixed literal create bounced (rc=$RC)"
+# The deny text names the shape it ACTUALLY refused, never a list of shapes the
+# command does not have, and never tells the agent to keep a refused prefix.
+# shape_has reads only the reason sentence: the retry steps say "not a heredoc".
+shape_has() { tr '\n' ' ' < "$ERR" | sed -n 's/.*of its shape: \(.*\)That makes the permission.*/\1/p' | grep -qF -- "$1"; }
+run_hook Bash "cat > b.md <<'EOF'
+x
+EOF
+node $JIRA comment HIMMEL-1 --comment-file b.md"
+shape_has "a heredoc" && pass "deny names the heredoc" || fail "deny omits the heredoc"
+run_hook Bash "FOO=1 node $JIRA comment HIMMEL-1 --comment-file f.md"
+[ "$RC" -eq 2 ] && pass "other env prefix on a literal write bounced" || fail "FOO= prefixed write not bounced (rc=$RC)"
+shape_has "FOO=" && pass "deny names the refused FOO= prefix" || fail "deny does not name the FOO= prefix"
+grep -q "any VAR=value prefix" "$ERR" && fail "deny still says to keep any VAR=value prefix"
+shape_has "command substitution" && fail "deny blames command substitution on a prefix-only command"
+shape_has "heredoc" && fail "deny blames a heredoc on a prefix-only command"
+run_hook Bash "node $JIRA comment HIMMEL-1 --body \"\$(cat c.md)\""
+shape_has "command substitution" && pass "deny names command substitution" || fail "deny omits command substitution"
+shape_has "heredoc" && fail "deny blames a heredoc on a substitution-only command"
+run_hook Bash "node $JIRA comment HIMMEL-1 --comment-file c.md; rm -f c.md"
+[ "$RC" -eq 2 ] && pass "chained literal write bounced" || fail "chained write not bounced (rc=$RC)"
+shape_has "chained" && pass "deny names the chain" || fail "deny omits the chain"
+shape_has "command substitution" && fail "deny blames command substitution on a chain-only command"
+
 # --- 5.99999 node MODES that never run the script write nothing: bouncing them would
 #             recommend a literal invocation that DOES (codex round 28 [high]).
 for mode in --check --version --help; do

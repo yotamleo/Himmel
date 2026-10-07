@@ -397,9 +397,9 @@ the script only WARNs and the chain stops at the first green PR. `.env`'s
 `ARMAUTOMERGE` is only the **default** used when `--automerge` was not passed
 on this invocation — an explicit flag always wins over it.
 
-**Jira CLI.** Never a `JIRA_PROJECT_KEY=` env-assignment prefix on the
-invocation (`JIRA_PROJECT_KEY=… node …/index.js …`) —
-`block-jira-compound-write.sh` refuses that command *shape*, not Jira writes
+**Jira CLI.** No env-assignment prefix on the invocation other than a bare
+literal `JIRA_PROJECT_KEY=<KEY>` (HIMMEL-4780) —
+`block-jira-compound-write.sh` refuses any other prefix *shape*, not Jira writes
 themselves. The sanctioned invocation is the plain `node
 <repo-root>/scripts/jira/dist/index.js <op>`, which picks the key up from the
 primary checkout's `.env` (see

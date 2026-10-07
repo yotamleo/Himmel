@@ -107,13 +107,12 @@ edit <key> --priority High` to set the real field. A priority stated only in
 the body text leaves the field empty and the ticket unsorted in any priority
 view.
 
-**A literal `JIRA_PROJECT_KEY=<key>` env-prefix on a CLI call is refused as a
-SHAPE, not resolved.** For a cross-project op (filing into a different
-project from the repo root), use `--project <KEY>` — never a `VAR=value`
-prefix on the command. The permission matcher bails on the env-prefix shape
-and `block-jira-compound-write` refuses it outright; this applies to every
-write verb, including explicit-key verbs (`comment <KEY-N>`, `transition
-<KEY-N>`) which need no project arg at all.
+**A bare literal `JIRA_PROJECT_KEY=<KEY>` env-prefix is the ONE approvable
+prefix (HIMMEL-4780).** `JIRA_PROJECT_KEY=HIMMEL node <repo-root>/scripts/jira/dist/index.js
+comment HIMMEL-1 --comment-file f.md` auto-approves exactly like the bare form;
+`--project <KEY>` remains the plain way to target another project. Any OTHER
+`VAR=value` prefix (or a quoted / `$VAR` / `$(…)` key) makes the permission
+matcher bail, and `block-jira-compound-write` refuses it, naming the prefix.
 
 **A worktree lacks `dist/` — invoke by absolute path from the primary
 checkout.** `scripts/jira/dist/index.js` is an untracked build artifact that
