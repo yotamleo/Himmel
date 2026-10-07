@@ -93,14 +93,15 @@ function closeTexts(v: View): View {
 
 // The page's live clock: `anchor` pairs the last elapsed with the wall time it was seen. It re-anchors
 // when elapsed moves OR the status changes, so a run that starts (elapsed still 0) after an idle wait
-// does not inherit the time spent idle.
+// does not inherit the time spent idle. `busy` also keeps it moving between turns while a background agent runs.
 export type ClockAnchor = { elapsed: number; status: View["status"]; wall: number };
 export function runClock(
   anchor: ClockAnchor | undefined, view: { elapsed: number; status: View["status"] }, wall: number,
+  busy = view.status === "running",
 ): { anchor: ClockAnchor; now: number } {
   const a = anchor && anchor.elapsed === view.elapsed && anchor.status === view.status
     ? anchor : { elapsed: view.elapsed, status: view.status, wall };
-  return { anchor: a, now: view.status === "running" ? view.elapsed + (wall - a.wall) : view.elapsed };
+  return { anchor: a, now: busy ? view.elapsed + (wall - a.wall) : view.elapsed };
 }
 
 // Every event that names an agent, or one of its calls or texts, marks that agent's last activity.
@@ -222,8 +223,8 @@ export function liveness(v: View, src: { live: boolean; closed: boolean }, wall:
   if (v.status === "error") return { word: "stopped", cls: "error" };
   if (v.status === "idle") return { word: "connecting", cls: "idle" };
   if (!src.live) return v.status === "running" ? { word: "streaming", cls: "running" } : { word: "finished", cls: "finished" };
+  if (src.closed) return { word: "finished", cls: "finished" }; // nothing more will arrive, whatever was left open
   if (v.status === "running" || runningCount(v) > 0) return { word: "live", cls: "running" };
-  if (src.closed) return { word: "finished", cls: "finished" };
   const s = Math.max(0, Math.round((wall - (v.t0 ?? wall) - v.elapsed) / 1000));
   return { word: `idle · last event ${s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`} ago`, cls: "idle" };
 }

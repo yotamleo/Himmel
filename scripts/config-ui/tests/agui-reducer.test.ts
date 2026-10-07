@@ -162,6 +162,11 @@ test("the run clock re-anchors to the wall clock when the run starts, even thoug
   expect(runClock(next.anchor, { elapsed: 800, status: "finished" }, 9000).now).toBe(800);
 });
 
+test("the run clock keeps moving between turns while a background agent still runs", () => {
+  const a = runClock(undefined, { elapsed: 800, status: "finished" }, 9000, true).anchor;
+  expect(runClock(a, { elapsed: 800, status: "finished" }, 10500, true).now).toBe(2300);
+});
+
 test("applyPatch rejects inherited member names instead of traversing or replacing them", () => {
   for (const k of ["constructor", "__proto__", "toString"]) {
     expect(() => applyPatch({ a: 1 }, [{ op: "replace", path: `/${k}`, value: 1 }])).toThrow();
@@ -306,6 +311,8 @@ describe("agent live state", () => {
   test("the session agent is done once its turn ends and failed when the run errors", () => {
     const ended = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x", timestamp: 1700 }, { type: "RUN_FINISHED", timestamp: 1800 }], opened);
     expect([agentState(ended, "main"), agentState(ended, "q")]).toEqual(["done", "running"]); // q's own Read is still open
+    // A cleanly closed stream sends nothing more: finished, even with q's call left open.
+    expect(liveness(ended, { live: true, closed: true }, 9e9)).toEqual({ word: "finished", cls: "finished" });
     const errored = reduceAll([{ type: "RUN_ERROR", message: "lost", timestamp: 1800 }], opened);
     expect([agentState(errored, "main"), agentState(errored, "q")]).toEqual(["failed", "failed"]);
     expect(runningCount(errored)).toBe(0);

@@ -71,7 +71,7 @@ export function App({ source }: { source: Source }) {
 function useRunClock(view: View, ticking: boolean): number {
   const [tick, setTick] = useState(0);
   const last = useRef<ClockAnchor | undefined>(undefined);
-  const clock = runClock(last.current, view, Date.now());
+  const clock = runClock(last.current, view, Date.now(), ticking && (view.status === "running" || runningCount(view) > 0));
   last.current = clock.anchor;
   useEffect(() => {
     if (!ticking) return;
