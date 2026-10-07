@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { join } from "path";
-import { TOOLS } from "../server";
+import { createHash } from "node:crypto";
 import pkg from "../package.json";
 
 const ROOT = join(import.meta.dir, "..");
@@ -45,7 +45,10 @@ test("stdio preserves tool schemas, offline series output and boundary errors", 
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     await child.stdin.flush();
     const listed = await request("tools/list", {});
-    expect(listed.tools).toEqual(TOOLS);
+    // v1 1.32.1 baseline: full names, descriptions and JSON schemas, not live source.
+    expect(createHash("sha256").update(JSON.stringify(listed.tools)).digest("hex")).toBe(
+      "4ebc62e55013784ada653ca4da11272aec08aa08fea0d079763ddf850a05537c",
+    );
     expect(listed.tools.map((tool: { name: string }) => tool.name)).toEqual([
       "factors.cache", "series.load", "correlate", "signals.report", "signals.dashboard",
     ]);

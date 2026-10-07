@@ -54,7 +54,8 @@ contract. The five JSON schemas and business logic remain unchanged.
 
 The codemod emits a caret dependency; tighten it to exact **2.3.1**, regenerate
 `bun.lock`, and remove the v1 monolith only after no imports remain. The plugin
-manifest advances from **0.2.6** to **0.2.7**; the existing wire server identity
+manifest advances from **0.2.6** through **0.2.7** to **0.2.8** (independent
+schema-baseline review fix); the existing wire server identity
 is intentionally unchanged. Tests use no client SDK and never pass objects
 between SDK majors. Only `factors.cache` retains the existing public-network
 path; the new stdio test calls no network tool.
