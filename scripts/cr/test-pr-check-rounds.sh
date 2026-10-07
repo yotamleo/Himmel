@@ -333,6 +333,8 @@ three_rounds() {
     git -C "$repo" checkout -q -b "$1" main
     printf '%s\n' "$1" > "$repo/$1.txt"
     git -C "$repo" add "$1.txt"
+    # HIMMEL-4697: an optional third argument bumps the branch's plugin.json.
+    [ -z "${3:-}" ] || write_plugin "$1" "$3"
     git -C "$repo" commit -q -m "$1"
     cap_r3_head="$(git -C "$repo" rev-parse "$1")"
     for n in 1 2; do
@@ -468,6 +470,103 @@ evil_out="$(cd "$repo" && bash "$SCRIPT" --head "$evil_head" --branch evilmerge 
 assert_eq "$evil_rc" "8" "a merge that adds its own edit gets no merge-forward delta round"
 assert_has "$evil_out" "neither answers a round-3 finding nor only merges" "evil-merge refusal names the reason"
 assert_eq "$(cat "$git_dir/cr-review-rounds/evilmerge.round")" "3" "a refused evil merge leaves the counter at 3"
+
+# HIMMEL-4697: plugin-version-bump-required makes a plugin PR bump its
+# plugin.json version inside the merge of main, so that merge never equals a
+# clean merge tree. Only a version-only resolution above both parents passes.
+write_plugin() {
+    mkdir -p "$repo/marketplace/plugins/$1/.claude-plugin"
+    printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "%s"\n}\n' \
+        "$1" "$2" "${3:-fixture}" > "$repo/marketplace/plugins/$1/.claude-plugin/plugin.json"
+    git -C "$repo" add "marketplace/plugins/$1/.claude-plugin/plugin.json"
+}
+# plugin_case <branch> <main version> <branch version> [main-bumps [file]]:
+# plugin.json at 0.1.0 on main, three rounds on a branch at <branch version>,
+# then main moves (a plugin file, the version when main-bumps is set, and its
+# own copy of <file> when given) and the branch merges it with --no-commit,
+# leaving the resolution to the caller.
+plugin_case() {
+    git -C "$repo" checkout -q main
+    write_plugin "$1" 0.1.0
+    git -C "$repo" commit -q -m "$1 plugin base"
+    git -C "$repo" push -q origin main
+    three_rounds "$1" clean "$3"
+    git -C "$repo" checkout -q main
+    printf 'skill\n' > "$repo/marketplace/plugins/$1/SKILL.md"
+    git -C "$repo" add "marketplace/plugins/$1/SKILL.md"
+    [ -z "${4:-}" ] || write_plugin "$1" "$2"
+    if [ -n "${5:-}" ]; then
+        printf 'main copy\n' > "$repo/$5"
+        git -C "$repo" add "$5"
+    fi
+    git -C "$repo" commit -q -m "$1 main moves"
+    git -C "$repo" push -q origin main
+    git -C "$repo" checkout -q "$1"
+    git -C "$repo" merge -q --no-commit main >/dev/null 2>&1 || true
+}
+plugin_merge_commit() {
+    git -C "$repo" commit -q --no-edit
+    plugin_head="$(git -C "$repo" rev-parse HEAD)"
+}
+
+# (1a) Both sides bumped (a conflict), resolved to a version above both: accepted.
+plugin_case pvconflict 0.1.1 0.1.2 main-bumps
+write_plugin pvconflict 0.1.3
+plugin_merge_commit
+pv1_out="$(cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$plugin_head" --branch pvconflict 2>&1)"; pv1_rc=$?
+assert_eq "$pv1_rc" "0" "a version-only conflict resolution above both parents gets the merge-forward delta round"
+assert_has "$pv1_out" "pr-check: delta round 4 on pvconflict (from $cap_r3_head)" "version-only conflict resolution is the delta round"
+assert_has "$(cat "$git_dir/cr-review-rounds/pvconflict.delta" 2>/dev/null)" "merge-forward" "version-only conflict resolution records the merge-forward trigger"
+
+# (1b) A clean merge whose merge commit bumps the version above both: accepted.
+plugin_case pvclean 0.1.0 0.1.2
+write_plugin pvclean 0.1.10
+plugin_merge_commit
+pv2_out="$(cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$plugin_head" --branch pvclean 2>&1)"; pv2_rc=$?
+assert_eq "$pv2_rc" "0" "a clean merge plus a version-only bump gets the merge-forward delta round"
+assert_has "$pv2_out" "pr-check: delta round 4 on pvclean (from $cap_r3_head)" "clean merge plus bump is the delta round"
+assert_has "$(cat "$git_dir/cr-review-rounds/pvclean.delta" 2>/dev/null)" "merge-forward" "clean merge plus bump records the merge-forward trigger"
+
+# (2) The version bump plus one other byte in plugin.json: refused.
+plugin_case pvextra 0.1.1 0.1.2 main-bumps
+write_plugin pvextra 0.1.3 fixturE
+plugin_merge_commit
+pv3_out="$(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvextra 2>&1)"; pv3_rc=$?
+assert_eq "$pv3_rc" "8" "a version bump plus another plugin.json byte gets no merge-forward delta round"
+assert_has "$pv3_out" "neither answers a round-3 finding nor only merges" "version-plus-byte refusal keeps today's message"
+
+# (2b) The version bump plus a byte in another file: refused.
+plugin_case pvother 0.1.1 0.1.2 main-bumps
+write_plugin pvother 0.1.3
+printf 'smuggled\n' >> "$repo/pvother.txt"
+git -C "$repo" add pvother.txt
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvother >/dev/null 2>&1); pv4_rc=$?
+assert_eq "$pv4_rc" "8" "a version bump plus an edit to another file gets no merge-forward delta round"
+
+# (3) A resolved version equal to, or below, either parent: refused.
+plugin_case pvequal 0.1.1 0.1.2 main-bumps
+write_plugin pvequal 0.1.2
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvequal >/dev/null 2>&1); pv5_rc=$?
+assert_eq "$pv5_rc" "8" "a resolved version equal to a parent's gets no merge-forward delta round"
+plugin_case pvlower 0.1.5 0.1.2 main-bumps
+write_plugin pvlower 0.1.4
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvlower >/dev/null 2>&1); pv6_rc=$?
+assert_eq "$pv6_rc" "8" "a resolved version below main's gets no merge-forward delta round"
+assert_eq "$(cat "$git_dir/cr-review-rounds/pvlower.round")" "3" "a refused version resolution leaves the counter at 3"
+
+# (4) A conflict outside plugin.json, even with a valid version bump: refused.
+# main also adds the branch's own pvoutside.txt, so the merge conflicts there.
+plugin_case pvoutside 0.1.1 0.1.2 main-bumps pvoutside.txt
+printf 'pvoutside\n' > "$repo/pvoutside.txt"
+git -C "$repo" add pvoutside.txt
+write_plugin pvoutside 0.1.3
+plugin_merge_commit
+pv7_out="$(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvoutside 2>&1)"; pv7_rc=$?
+assert_eq "$pv7_rc" "8" "a conflict outside plugin.json gets no merge-forward delta round"
+assert_has "$pv7_out" "neither answers a round-3 finding nor only merges" "outside-conflict refusal keeps today's message"
 
 # HIMMEL-4616: a delta round whose panel produced no rows is still pending, so
 # the SAME <from> <to> pair may start again without a second counter bump; once
