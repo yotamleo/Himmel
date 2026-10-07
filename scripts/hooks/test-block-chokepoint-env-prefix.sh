@@ -123,6 +123,17 @@ ${SW_VAR}=9 bash $STOP_WORKER --list")"
 assert_deny "\$CLAUDE_PROJECT_DIR-qualified path"       "$(j "${MOG_VAR}=1 bash \"\$CLAUDE_PROJECT_DIR/$MERGE_ON_GREEN\"")"
 assert_deny "PowerShell tool carrying the same shape"   "$(jp "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
 
+# HIMMEL-4815: the deny names its literal retry (the bare chokepoint), built
+# from registry fields only.
+run "$(j "${MOG_VAR}=1 bash $MERGE_ON_GREEN")"
+CASES=$((CASES + 1))
+if grep -qF ": bash $MERGE_ON_GREEN <same args>" <<<"$ERR"; then
+    echo "PASS deny names the literal bare-chokepoint retry"
+else
+    echo "FAIL deny lacks the literal retry line: $ERR"
+    FAILED=$((FAILED + 1))
+fi
+
 # --- HIMMEL-2927: `env -u`/`--unset` and an in-shell `unset`/`export -n`
 # clear a registered seam with no assignment word, so the assignment
 # predicate above never fires -- same defect class as VAR=x, inside the

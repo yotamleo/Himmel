@@ -107,9 +107,13 @@ command resolves to a recognised-safe binary.
   **whole** command fall through to the auto-mode classifier, which **DENIES**
   external-system writes.
 
-**What to do:** prefer a literal `node …/jira …` (bare or `cd`-prefixed). If a
-Jira write still falls through and is denied, that is a **command-shape problem**
-— defer to the operator, do **not** reshape to dodge the classifier. See
+**What to do:** prefer a literal `node …/jira …` (bare or `cd`-prefixed). A
+shape denial → rewrite as one literal command per write (absolute binary, no
+vars, no loops, body via file) and retry once; a classifier denial on a loop
+shape is a shape denial (HIMMEL-4815: `block-jira-compound-write.sh` now
+bounces loop, `$J` and `xargs` shapes itself with that recipe). If the single
+literal write is still denied, that is not a shape problem — defer to the
+operator, do **not** reshape again to dodge the classifier. See
 [`overnight-mode.md`](../handover/overnight-mode.md) § Auto-mode classifier &
 attestation. Multi-line bodies: use `--comment-file <path>` / `--desc-file
 <path>` so the shell command stays single-line (HIMMEL-209).

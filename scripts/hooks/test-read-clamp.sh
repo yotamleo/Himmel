@@ -76,6 +76,7 @@ rc=$(run_case "$(j_read "$BIG_FILE" sess-wholefile)" "HIMMEL_CONSOLE_LEG=1")
 assert_rc "whole-file read over limit denies" 2 "$rc"
 assert_stderr_contains "whole-file deny names line count" "10 lines"
 assert_stderr_contains "whole-file deny names range shape" "offset=<n> limit=<m>"
+assert_stderr_contains "whole-file deny names the literal retry (HIMMEL-4815)" "Retry: Read file_path=$BIG_FILE offset=1 limit=5"
 
 # 3. whole-file read <= N lines -> allow.
 rc=$(run_case "$(j_read "$SMALL_FILE" sess-smallfile)" "HIMMEL_CONSOLE_LEG=1")

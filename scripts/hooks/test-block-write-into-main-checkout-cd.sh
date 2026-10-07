@@ -218,6 +218,9 @@ check_both "33b same, but absolute write target allows" allow \
 F34_CMD="cd \`echo $FIX/primary\`; echo x > a.txt"
 F34_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F34_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "34 cd \`echo primary\`; echo x > a.txt denies (CodeRabbit #1307)" block "$F34_JSON"
+# HIMMEL-4815: a fail-closed (shape) refusal names its literal retry.
+check_both_reason "34 fail-closed deny names the one-literal-write retry" "$F34_JSON" \
+    "one write per Bash call"
 F34B_CMD="cd \`echo $FIX/primary\`; echo x > $FIX/wt/a.txt"
 F34B_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$F34B_CMD" | jq -Rs .),\"cwd\":\"$FIX/wt\"}}"
 check_both "34b same, but absolute write target allows" allow "$F34B_JSON"

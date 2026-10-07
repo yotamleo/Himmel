@@ -86,7 +86,7 @@ file_line_count() {
 # clamp_deny: the one deny message both the Read whole-file path and the Bash
 # shapes share (brief: "deny with the same message").
 clamp_deny() {  # $1 = path, $2 = line count
-    echo "⛔ read-clamp: $1 has $2 lines (> ${LIMIT_LINES}); read a range instead of the whole file: offset=<n> limit=<m>" >&2
+    echo "⛔ read-clamp: $1 has $2 lines (> ${LIMIT_LINES}); read a range instead of the whole file: offset=<n> limit=<m>. Retry: Read file_path=$1 offset=1 limit=${LIMIT_LINES} (then offset=$((LIMIT_LINES + 1)) for the next range)" >&2
     exit 2
 }
 

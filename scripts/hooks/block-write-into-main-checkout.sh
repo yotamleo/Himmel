@@ -1730,6 +1730,12 @@ _bwimc_deny() {
         fi
         echo "      - set EDIT_ON_MAIN_OK=1 in the LAUNCHING shell (a per-call prefix cannot"
         echo "        reach a hook process)."
+        case "$kind" in
+            unresolved-cd|unresolved-heredoc|marker-byte|shell-ambiguous|unclosed-expansion|unresolved-git-target)
+                # A shape refusal (HIMMEL-4815): the target was unreadable, not proven primary.
+                echo "    Retry (shape, not destination): one write per Bash call, an absolute"
+                echo "    worktree path as the target, no cd/heredoc/\$(…)/\$VAR — body via a file." ;;
+        esac
     } >&2
     exit 2
 }

@@ -234,6 +234,11 @@ for a relay that is not coming.
   exceptions where they appear; everything else stays relative and unquoted.
   The matcher bails on all these shapes and a refused compound runs
   **nothing**.
+- **A shape denial → rewrite as one literal command per write** (absolute
+  binary, no vars, no loops, body via file) **and retry once; a classifier
+  denial on a loop shape is a shape denial** (HIMMEL-4815). N writes = N
+  separate Bash calls. A recipe that drops a meaning-bearing prefix (a
+  `JIRA_BASE_URL=` / `JIRA_BOARD_ID=` target) is not a retry — ask the console.
 - **Never pipe into a gate script.** Write the input to a file with `Write`,
   then pass it as an argument if the script takes one; otherwise pipe into
   the bare unquoted literal only — never `printf ... | bash "..."`.
