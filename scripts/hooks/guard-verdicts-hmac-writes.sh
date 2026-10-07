@@ -698,6 +698,31 @@ WRE='(^|[^[:alnum:]_])(tee|cp|mv|rm|rmdir|install|ln|rsync|scp|dd|truncate|shred
 # nesting deeper than this (bash -c inside bash -c ...) gets the text scan
 MAX_DEPTH=8
 WRAPPERS=' sudo env command exec nohup nice time timeout stdbuf xargs builtin doas '
+# verbs that read, write, remove, move or re-own a tree: a later word naming
+# one of the key's ancestors is refused, whatever precedes the verb
+KVERBS=' cp rsync tar zip unzip 7z scp cpio grep egrep rg ag find du sftp rm rmdir mv shred unlink chmod chown chgrp '
+
+# _kanc <verb> <seg> <word> — the key-ancestor check of one word after <verb>.
+# Over ~/.config: any recursive walker. Over a higher ancestor ($HOME, /): a
+# verb that reads content or removes, moves or re-owns — du never does, find
+# only with an action (r3 codex-1).
+_kanc() {
+    local v="$1" s="$2" w="$3" a x t=$CWD
+    for x in "${CWDS[@]}"; do
+        CWD=$x
+        a=$(_abs "$w")
+        CWD=$t
+        [ -n "$a" ] || continue
+        case "$v" in
+            du) is_config "$a" && deny "key-bash" "du over $w" ;;
+            find)
+                is_config "$a" && deny "key-bash" "find over $w"
+                [ "${seg_fact[s]:-}" = 1 ] && is_key_anc "$a" && deny "key-bash" "find with an action over $w, which holds the key" ;;
+            *) is_key_anc "$a" && deny "key-bash" "$v over $w, which holds the key" ;;
+        esac
+    done
+    return 0
+}
 
 st_lower "$cmd"
 case "$ST_LOWER" in *himmel/go-hmac*) deny "key-bash" "the command text spells himmel/go-hmac" ;; esac
@@ -971,11 +996,18 @@ analyze() {
         if [ -z "${seg_cmd[s]+x}" ] && [ -z "${ST_RO[i]}" ] && [ "${ST_A[i]}" = 0 ]; then
             w=${ST_W[i]}
             b=${w##*/}
-            if [ "${seg_skip[s]:-}" = 1 ]; then
+            if [ -n "${seg_skip[s]:-}" ]; then
+                # env -S's value is itself a command line (j2031-r6).
+                [ "${seg_skip[s]}" = 2 ] && { nested[nn]=$w; nn=$((nn + 1)); }
                 seg_skip[s]=""
             else
                 case "$WRAPPERS" in *" $b "*) seg_wrap[s]=$b ;; *)
                     if [ -n "${seg_wrap[s]:-}" ]; then
+                        case "${seg_wrap[s]}:$w" in
+                            env:-S|env:--split-string) seg_skip[s]=2; i=$((i + 1)); continue ;;
+                            env:-S?*) nested[nn]=${w#-S}; nn=$((nn + 1)); i=$((i + 1)); continue ;;
+                            env:--split-string=*) nested[nn]=${w#*=}; nn=$((nn + 1)); i=$((i + 1)); continue ;;
+                        esac
                         case "$w" in
                             # Value-taking short options are per wrapper: a flag such as
                             # command -p or sudo -n/-E, skipped as if it took a value,
@@ -1010,50 +1042,70 @@ analyze() {
                         -*) ;;
                         *) [ -n "${seg_cdone[s]:-}" ] || { seg_cdone[s]=1; _cd "${ST_W[i]}"; } ;;
                     esac ;;
-                find)
-                    case "${ST_W[i]}" in -exec*|-ok*|-delete|-fprint*|-fls) seg_fact[s]=1 ;; esac ;;
             esac
         fi
         i=$((i + 1))
     done
 
+    # Key-ancestor verbs are found anywhere in a segment, not only as its
+    # command word: an unlisted wrapper (setsid, flock, busybox, ...) in front
+    # hid the verb from these checks (j2031-r6). A pre-pass records, per
+    # segment, the verbs seen so far, find's action, and whether a tar, unzip
+    # or 7z extraction names its destination.
+    seg_vs=(); seg_vl=(); seg_vli=(); seg_xx=(); seg_xd=()
+    i=0
+    while [ "$i" -lt "$ST_N" ]; do
+        s=${ST_S[i]}
+        w=${ST_W[i]}
+        if [ -z "${ST_RO[i]}" ] && [ "${ST_A[i]}" = 0 ]; then
+            case "${seg_vs[s]:-}" in *' find '*)
+                case "$w" in -exec*|-ok*|-delete|-fprint*|-fls) seg_fact[s]=1 ;; esac ;;
+            esac
+            case "${seg_vl[s]:-}" in
+                tar)
+                    case "$w" in
+                        --extract|--get) seg_xx[s]=1 ;;
+                        --directory*) seg_xd[s]=1 ;;
+                        --*) ;;
+                        -*) case "$w" in *x*) seg_xx[s]=1 ;; esac
+                            case "$w" in *C*) seg_xd[s]=1 ;; esac ;;
+                        *x*) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;;
+                    esac ;;
+                unzip) seg_xx[s]=1
+                    case "$w" in -d*) seg_xd[s]=1 ;; esac ;;
+                7z) case "$w" in -o*) seg_xd[s]=1 ;; x|e) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;; esac ;;
+            esac
+            b=${w##*/}
+            case "$KVERBS" in *" $b "*) seg_vs[s]="${seg_vs[s]:- }$b "; seg_vl[s]=$b; seg_vli[s]=$i ;; esac
+        fi
+        i=$((i + 1))
+    done
+
     # 1. the key — every word, in every session.
+    kv=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         _check_key_word "$i"
         s=${ST_S[i]}
-        if [ "${ST_G[i]}" = 0 ] && [ "$i" != "${seg_cmd_i[s]:--1}" ]; then
-            case "${seg_cmd[s]:-}" in
-                cp|rsync|tar|zip|7z|scp|cpio|grep|egrep|rg|ag|find|du|sftp)
-                    # Over ~/.config: any recursive walker. Over a higher
-                    # ancestor ($HOME, /): a walker that reads content — du
-                    # never does, find only with an action (r3 codex-1).
-                    t=$CWD
-                    for x in "${CWDS[@]}"; do
-                        CWD=$x
-                        a=$(_abs "${ST_W[i]}")
-                        CWD=$t
-                        [ -n "$a" ] || continue
-                        is_config "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}"
-                        case "${seg_cmd[s]}" in
-                            du) ;;
-                            find) [ "${seg_fact[s]:-}" = 1 ] && is_key_anc "$a" && deny "key-bash" "find with an action over ${ST_W[i]}, which holds the key" ;;
-                            *) is_key_anc "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}, which holds the key" ;;
-                        esac
-                    done
-                    ;;
-                rm|rmdir|mv|shred|unlink|chmod|chown|chgrp)
-                    t=$CWD
-                    for x in "${CWDS[@]}"; do
-                        CWD=$x
-                        a=$(_abs "${ST_W[i]}")
-                        CWD=$t
-                        [ -n "$a" ] && is_key_anc "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}, which holds the key"
-                    done
-                    ;;
-            esac
+        w=${ST_W[i]}
+        if [ "${ST_G[i]}" = 0 ] && [ -n "${kv[s]:-}" ]; then
+            for b in ${kv[s]}; do
+                _kanc "$b" "$s" "$w"
+                case "$w" in -*=*) _kanc "$b" "$s" "${w#*=}" ;; esac
+            done
+        fi
+        if [ -z "${ST_RO[i]}" ] && [ "${ST_A[i]}" = 0 ]; then
+            b=${w##*/}
+            case "$KVERBS" in *" $b "*) kv[s]="${kv[s]:-} $b" ;; esac
         fi
         i=$((i + 1))
+    done
+    # An extraction with no destination writes into the cwd (j2031-r6).
+    for s in ${seg_xx[@]+"${!seg_xx[@]}"}; do
+        [ -z "${seg_xd[s]:-}" ] || continue
+        for x in "${CWDS[@]}"; do
+            is_key_anc "$x" && deny "key-bash" "an extraction with no destination writes into $x, which holds the key"
+        done
     done
 
     # Per-segment operand facts, and the nested scripts to analyse next.
