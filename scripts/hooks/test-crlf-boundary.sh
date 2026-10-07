@@ -826,7 +826,7 @@ else LCX_SHA="$(printf '%s' "$LCX_TR" | shasum -a 256 | cut -d' ' -f1)"; fi
 printf '{"used_percentage":76,"remaining_percentage":24,"context_window_size":200000,"saved_at":%s000}' \
     "$(date +%s)" > "$LCX/cfg/plugins/claude-hud/context-cache/$LCX_SHA.json"
 CRLF_TP="$LCX_TR"
-check guard-leg-context-handoff Bash 2 "$A_OK" "deny ordinary work at 76 %" \
+check guard-leg-context-handoff Bash 2 "ls -la" "deny ordinary work at 76 %" \
     HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=T-console \
     "CLAUDE_CONFIG_DIR=$LCX/cfg" "HANDOVER_DIR=$LCX/handovers"
 check guard-leg-context-handoff Bash 0 "bash scripts/handover/wrap-subtree-check.sh" "allow a hand-off command at 76 %" \

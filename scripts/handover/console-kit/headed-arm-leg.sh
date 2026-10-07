@@ -985,6 +985,8 @@ for _leg_env_scrub in $(console_context_leg_env_unset_names); do
     case "$_leg_env_scrub" in
         HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|LEG_EFFORT|HEADED_ARM_UNAME) continue ;;
         HIMMEL_CONSOLE_LEG) continue ;;
+        # HIMMEL-4569: the console's chosen context mode is launch input, read below.
+        HIMMEL_LEG_CONTEXT_MODE) continue ;;
         LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG) continue ;;
         HEADED_ARM_LAUNCHER_ENV) continue ;;
     esac
@@ -1225,6 +1227,22 @@ else
 fi
 unset -v CONSOLE_NAME
 unset -f _console_name_ok
+# HIMMEL-4569: guard-leg-context-handoff.sh reads both from its own process env,
+# which is fixed at launch, so a leg cannot flip them mid-session: the resolved
+# --autocompact ceiling its threshold derives from, and the console's context
+# mode (compact, the default, or handoff). A caller-preset launcher token is
+# dropped first, so only the values resolved here reach the leg.
+case "${HIMMEL_LEG_CONTEXT_MODE:-compact}" in
+    compact|handoff) ;;
+    *)
+        echo "headed-arm-leg: HIMMEL_LEG_CONTEXT_MODE must be compact or handoff (got ${HIMMEL_LEG_CONTEXT_MODE})" >&2
+        exit 2
+        ;;
+esac
+leg_env_drop_token HIMMEL_LEG_CONTEXT_MODE
+leg_propagate_env HIMMEL_LEG_CONTEXT_MODE "${HIMMEL_LEG_CONTEXT_MODE:-compact}"
+leg_env_drop_token HIMMEL_LEG_AUTOCOMPACT
+leg_propagate_env HIMMEL_LEG_AUTOCOMPACT "$RESOLVED_AUTOCOMPACT"
 # HIMMEL_READ_CLAMP_LINES (HIMMEL-3133 / design §3.2): raises read-clamp.sh's
 # whole-file limit for a judge - independent reading is the job. 4000 is a
 # judgment call (no source document names a number): ~10x the leg default of
@@ -1817,9 +1835,11 @@ if [ "$DRY_RUN" -eq 1 ]; then
     # HIMMEL-3435: HIMMEL_CONSOLE_NAME folded in the same way - proves the
     # three-source resolution above ran in THIS wrapper's own process, and
     # stays <unset> when no source yielded a well-formed name.
-    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s HIMMEL_CONSOLE_NAME=%s\n' \
+    # HIMMEL-4569: the context mode and ceiling the leg's context guard reads.
+    printf 'headed-arm-leg: env IMPL_GUARD_OK=%s INLINE_IMPL_OK=%s HIMMEL_CONSOLE_LEG=%s HEADED_ARM_REPO=%s scrub=%s CONSOLE_CONTEXT=%s CR_TRIGGER_SUPPRESS=%s HANDOVER_DIR=%s HIMMEL_CONSOLE_NAME=%s HIMMEL_LEG_CONTEXT_MODE=%s HIMMEL_LEG_AUTOCOMPACT=%s\n' \
         "${IMPL_GUARD_OK:-<unset>}" "${INLINE_IMPL_OK:-<unset>}" "$HIMMEL_CONSOLE_LEG" "${HEADED_ARM_REPO:-<derived by headed-arm.sh>}" \
-        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}" "${HIMMEL_CONSOLE_NAME:-<unset>}"
+        "$LEG_ENV_SCRUB" "${CONSOLE_CONTEXT:-<unset>}" "${CR_TRIGGER_SUPPRESS:-<unset>}" "${HANDOVER_DIR:-<unset>}" "${HIMMEL_CONSOLE_NAME:-<unset>}" \
+        "$HIMMEL_LEG_CONTEXT_MODE" "$HIMMEL_LEG_AUTOCOMPACT"
     # Printed ONLY under --relay: with the flag omitted this line is absent and
     # the dry-run report stays byte-identical to today's, same guarantee shape
     # as the --profile line below.

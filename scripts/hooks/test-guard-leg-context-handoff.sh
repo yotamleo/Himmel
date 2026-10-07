@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke suite for scripts/hooks/guard-leg-context-handoff.sh (HIMMEL-4569): a
-# console-spawned leg at >= 75 % context fill is denied ordinary tool calls
+# console-spawned leg past its context threshold is denied ordinary tool calls
 # until its RESUME doc exists or its last marker is WRAPPED/BLOCKED, while the
 # hand-off calls themselves always pass. Every case runs against a synthetic
 # session: a transcript whose first user turn is the launcher's
@@ -20,7 +20,8 @@ HOOK="$HOOKS/guard-leg-context-handoff.sh"
 . "$HOOKS/../lib/override-env.sh"
 scrub_override_env
 unset HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_NAME HANDOVER_DIR CLAUDE_CONFIG_DIR \
-    CONTEXT_FILL_TRANSCRIPT CLAUDE_CODE_SESSION_ID CLAUDE_PID
+    CONTEXT_FILL_TRANSCRIPT CLAUDE_CODE_SESSION_ID CLAUDE_PID \
+    HIMMEL_LEG_CONTEXT_MODE HIMMEL_LEG_AUTOCOMPACT CLAUDE_CODE_AUTO_COMPACT_WINDOW
 [ -f "$HOOK" ] || { echo "hook not found: $HOOK" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 
@@ -36,7 +37,10 @@ DIR="$T/handovers/u/himmel"
 mkdir -p "$CFG/projects/p" "$CFG/plugins/claude-hud/context-cache" "$DIR"
 DOC="$DIR/HIMMEL-9-N77-thing-2026-10-06.md"
 TR="$CFG/projects/p/sess.jsonl"
-LEG_ENV="HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=T-console CLAUDE_CONFIG_DIR=$CFG HANDOVER_DIR=$T/handovers"
+LEG_BASE="HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=T-console CLAUDE_CONFIG_DIR=$CFG HANDOVER_DIR=$T/handovers"
+# The RESUME-doc cases below run in handoff mode; compact (the default when the
+# launcher sets no mode) has its own section, run with LEG_BASE alone.
+LEG_ENV="$LEG_BASE HIMMEL_LEG_CONTEXT_MODE=handoff"
 
 sha() {
     if command -v sha256sum >/dev/null 2>&1; then printf '%s' "$1" | sha256sum | cut -d' ' -f1
@@ -49,10 +53,10 @@ session() {
         '{type:"user",timestamp:$ts,message:{role:"user",content:$t}}' > "$TR"
     printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":1}}}' >> "$TR"
 }
-# fill <pct> -- a fresh HUD snapshot for the transcript at that fill
+# fill <pct> [window] -- a fresh HUD snapshot for the transcript at that fill
 fill() {
-    printf '{"used_percentage":%s,"remaining_percentage":%s,"context_window_size":200000,"saved_at":%s000}' \
-        "$1" "$((100 - $1))" "$(date +%s)" > "$CFG/plugins/claude-hud/context-cache/$(sha "$TR").json"
+    printf '{"used_percentage":%s,"remaining_percentage":%s,"context_window_size":%s,"saved_at":%s000}' \
+        "$1" "$((100 - $1))" "${2:-200000}" "$(date +%s)" > "$CFG/plugins/claude-hud/context-cache/$(sha "$TR").json"
 }
 nofill() { rm -f "$CFG/plugins/claude-hud/context-cache/"*.json; }
 # doc <last bullet>
@@ -68,9 +72,34 @@ check() {
     case "$rc" in 0) got=allow ;; 2) got=block ;; *) got="?(rc=$rc)" ;; esac
     if [ "$got" = "$expect" ]; then ok "$label"; else bad "$label - expected $expect got $got"; fi
 }
-bash_call() { jq -cn --arg c "$1" --arg t "$TR" '{tool_name:"Bash",tool_input:{command:$c},transcript_path:$t}'; }
-tool_call() { jq -cn --arg n "$1" --arg t "$TR" '{tool_name:$n,tool_input:{},transcript_path:$t}'; }
-write_call() { jq -cn --arg n "$1" --arg p "$2" --arg t "$TR" '{tool_name:$n,tool_input:{file_path:$p,content:"x"},transcript_path:$t}'; }
+# Every call carries cwd = the fixture repo, where the CHECKPOINT sha is checked.
+bash_call() { jq -cn --arg c "$1" --arg t "$TR" --arg w "$REPO" '{tool_name:"Bash",tool_input:{command:$c},transcript_path:$t,cwd:$w}'; }
+tool_call() { jq -cn --arg n "$1" --arg t "$TR" --arg w "$REPO" '{tool_name:$n,tool_input:{},transcript_path:$t,cwd:$w}'; }
+write_call() { jq -cn --arg n "$1" --arg p "$2" --arg t "$TR" --arg w "$REPO" '{tool_name:$n,tool_input:{file_path:$p,content:"x"},transcript_path:$t,cwd:$w}'; }
+pc_call() { jq -cn --arg g "${1:-auto}" --arg t "$TR" --arg w "$REPO" '{hook_event_name:"PreCompact",trigger:$g,transcript_path:$t,cwd:$w,session_id:"s"}'; }
+# check_c: the same check with no mode in the launch env (compact, the default)
+check_c() { local LEG_ENV="$LEG_BASE"; check "$@"; }
+# deny_text <json> [ENV=val ...] -- the hook's stderr for one call, handoff env
+deny_text() {
+    local json="$1"; shift
+    # stderr only, stdout dropped: the order is deliberate.
+    # shellcheck disable=SC2086,SC2069
+    printf '%s' "$json" | env $LEG_ENV "$@" bash "$HOOK" 2>&1 >/dev/null
+}
+
+# The leg's worktree: a repo whose branch tracks a bare upstream, so a
+# CHECKPOINT sha can be checked against HEAD and @{u}. Hooks and signing off,
+# all config per call (never written to a shared .git/config).
+REPO="$T/repo"
+g() { git -C "$REPO" -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.email=t@t -c user.name=t "$@"; }
+git init -q --bare "$T/up.git"
+git init -q "$REPO"
+printf 'a\n' > "$REPO/a"
+g add a
+g commit -qm one
+g remote add origin "$T/up.git"
+g push -q -u origin HEAD:refs/heads/main 2>/dev/null
+g branch -q --set-upstream-to=origin/main
 
 session "load $DOC and continue"
 doc "- 10:01 LIVE — working"
@@ -78,9 +107,9 @@ LS="$(bash_call 'ls')"
 
 echo "== the threshold =="
 fill 76; check "76 % + ordinary Bash -> block" block "$LS"
-fill 75; check "75 % (the threshold itself) -> block" block "$LS"
+fill 65; check "65 % (the threshold itself) -> block" block "$LS"
 fill 60; check "60 % -> allow" allow "$LS"
-fill 74; check "74 % -> allow" allow "$LS"
+fill 64; check "64 % -> allow" allow "$LS"
 fill 76
 check "76 % + Read -> block" block "$(tool_call Read)"
 check "76 % + Write to an ordinary file -> block" block "$(write_call Write "$T/notes.md")"
@@ -202,8 +231,137 @@ check "git -C <dir> commit -> allow" allow "$(bash_call "git -C $T commit -am wi
 check "git commit && more -> block" block "$(bash_call 'git commit -m wip && ls')"
 # shellcheck disable=SC2016 # a literal $( is the shape under test
 check "git commit with \$( -> block" block "$(bash_call 'git commit -m "$(cat x)"')"
-check "git status -> block (not a hand-off)" block "$(bash_call 'git status')"
+check "git status -> allow (the checkpoint reads it)" allow "$(bash_call 'git status --short')"
+check "git rev-parse HEAD -> allow (the CHECKPOINT sha)" allow "$(bash_call 'git rev-parse HEAD')"
+check "git log -> block (not a hand-off)" block "$(bash_call 'git log -1')"
 check "git commitx -> block" block "$(bash_call 'git commitx')"
+
+echo "== compact mode (the default): a pushed CHECKPOINT of HEAD unlocks =="
+session "load $DOC and continue"
+doc "- 10:01 LIVE — working"
+rm -f "$RESUME"
+fill 76
+HEAD1="$(g rev-parse HEAD)"
+check_c "compact, no CHECKPOINT -> block" block "$LS"
+printf 'resume\n' > "$RESUME"
+check_c "compact, a fresh RESUME doc is not the unlock -> block" block "$LS"
+rm -f "$RESUME"
+# shellcheck disable=SC2086
+reason="$(printf '%s' "$LS" | env $LEG_BASE bash "$HOOK" 2>&1 >/dev/null)"
+for needle in "mode compact" "git push" "CHECKPOINT <full sha of HEAD> pushed" "append-results.sh $DOC" \
+    HIMMEL_LEG_CONTEXT_MODE "Do exactly this"; do
+    case "$reason" in
+        *"$needle"*) ok "compact deny text names: $needle" ;;
+        *) bad "compact deny text lacks '$needle' - got: $reason" ;;
+    esac
+done
+doc "- 10:01 LIVE — CHECKPOINT $HEAD1 pushed"
+check_c "CHECKPOINT of the pushed HEAD -> allow" allow "$LS"
+check_c "explicit HIMMEL_LEG_CONTEXT_MODE=compact -> allow" allow "$LS" HIMMEL_LEG_CONTEXT_MODE=compact
+doc "- 10:01 LIVE — CHECKPOINT \`$HEAD1\` pushed"
+check_c "backticked CHECKPOINT sha -> allow" allow "$LS"
+check "handoff mode: a CHECKPOINT is not its unlock -> block" block "$LS"
+printf 'b\n' > "$REPO/b"
+g add b
+g commit -qm two
+HEAD2="$(g rev-parse HEAD)"
+doc "- 10:01 LIVE — CHECKPOINT $HEAD1 pushed"
+check_c "stale CHECKPOINT (HEAD moved on) -> block" block "$LS"
+doc "- 10:01 LIVE — CHECKPOINT $HEAD2 pushed"
+check_c "CHECKPOINT of an unpushed HEAD -> block" block "$LS"
+g push -q origin HEAD:refs/heads/main 2>/dev/null
+check_c "the same CHECKPOINT once pushed -> allow" allow "$LS"
+doc "$(printf -- '- 10:01 LIVE — CHECKPOINT %s pushed\n- 10:02 LIVE — CHECKPOINT %s pushed' "$HEAD2" "$HEAD1")"
+check_c "newest CHECKPOINT bullet stale, older one fresh -> block" block "$LS"
+doc "- 10:01 LIVE — CHECKPOINT $(printf '%040d' 7) pushed"
+check_c "CHECKPOINT of a sha that is not this worktree's HEAD -> block" block "$LS"
+doc "- 10:01 LIVE — CHECKPOINT ${HEAD2:0:12} pushed"
+check_c "short CHECKPOINT sha -> block" block "$LS"
+doc "- 10:01 LIVE — CHECKPOINT $HEAD2"
+check_c "CHECKPOINT without 'pushed' -> block" block "$LS"
+doc "CHECKPOINT $HEAD2 pushed"
+check_c "CHECKPOINT outside a bullet -> block" block "$LS"
+doc "- 10:01 LIVE — working"
+printf -- '# other\n\n## Results\n\n- 10:01 LIVE — CHECKPOINT %s pushed\n' "$HEAD2" > "$DIR/HIMMEL-9-N78-other-2026-10-06.md"
+check_c "another leg's doc carries the CHECKPOINT -> block" block "$LS"
+rm -f "$DIR/HIMMEL-9-N78-other-2026-10-06.md"
+doc "- 10:01 WRAPPED — merged"
+check_c "compact, last marker WRAPPED -> allow" allow "$LS"
+doc "- 10:01 LIVE — working"
+check_c "compact, git commit stays allowed" allow "$(bash_call 'git commit -m wip')"
+check_c "compact, append-results.sh stays allowed" allow \
+    "$(bash_call "bash scripts/handover/console-kit/append-results.sh $DOC \"LIVE — CHECKPOINT $HEAD2 pushed\"")"
+
+echo "== the mode is launch-time only =="
+printf 'resume\n' > "$RESUME"
+check "handoff from the launch env + RESUME -> allow" allow "$LS"
+check_c "a Bash call exporting the mode -> block (mode stays compact)" block "$(bash_call 'export HIMMEL_LEG_CONTEXT_MODE=handoff')"
+check_c "a per-call mode prefix -> block" block "$(bash_call 'HIMMEL_LEG_CONTEXT_MODE=handoff ls')"
+doc "$(printf -- 'HIMMEL_LEG_CONTEXT_MODE=handoff\n- 10:01 LIVE — working')"
+check_c "the mode written into the leg doc -> ignored, block" block "$LS"
+doc "- 10:01 LIVE — working"
+check_c "unknown mode value -> compact, RESUME is not the unlock" block "$LS" HIMMEL_LEG_CONTEXT_MODE=bogus
+case "$(deny_text "$LS" HIMMEL_LEG_CONTEXT_MODE=bogus)" in
+    *"mode compact"*) ok "unknown mode value -> the deny text says compact" ;;
+    *) bad "unknown mode value -> deny text does not say compact" ;;
+esac
+rm -f "$RESUME"
+
+echo "== the threshold derives from the autocompact ceiling =="
+fill 13 1000000; check "1M window, default 200000 ceiling, 13 % -> block" block "$LS"
+fill 12 1000000; check "1M window, default 200000 ceiling, 12 % -> allow" allow "$LS"
+fill 13 1000000
+case "$(deny_text "$LS")" in
+    *"threshold 13 %"*"200000"*) ok "deny text names the derived threshold and the ceiling" ;;
+    *) bad "deny text lacks the derived threshold - got: $(deny_text "$LS")" ;;
+esac
+fill 25 1000000; check "400000 ceiling on 1M, 25 % -> allow" allow "$LS" HIMMEL_LEG_AUTOCOMPACT=400000
+fill 26 1000000; check "400000 ceiling on 1M, 26 % -> block" block "$LS" HIMMEL_LEG_AUTOCOMPACT=400000
+fill 64 1000000; check "auto ceiling (the window), 64 % -> allow" allow "$LS" HIMMEL_LEG_AUTOCOMPACT=auto
+fill 65 1000000; check "auto ceiling (the window), 65 % -> block" block "$LS" HIMMEL_LEG_AUTOCOMPACT=auto
+fill 20 1000000; check "CLAUDE_CODE_AUTO_COMPACT_WINDOW 300000 wins, 20 % -> block" block "$LS" \
+    HIMMEL_LEG_AUTOCOMPACT=200000 CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000
+fill 19 1000000; check "CLAUDE_CODE_AUTO_COMPACT_WINDOW 300000 wins, 19 % -> allow" allow "$LS" \
+    HIMMEL_LEG_AUTOCOMPACT=200000 CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000
+fill 64 200000; check "ceiling above the window clamps to it, 64 % -> allow" allow "$LS" HIMMEL_LEG_AUTOCOMPACT=400000
+fill 65 200000; check "ceiling above the window clamps to it, 65 % -> block" block "$LS" HIMMEL_LEG_AUTOCOMPACT=400000
+fill 50 1000000; check "junk ceiling -> the window (fail-open), 50 % -> allow" allow "$LS" HIMMEL_LEG_AUTOCOMPACT=junk
+printf '{"used_percentage":76,"remaining_percentage":24,"saved_at":%s000}' "$(date +%s)" \
+    > "$CFG/plugins/claude-hud/context-cache/$(sha "$TR").json"
+check "no window in the snapshot -> 65 % of the fill, 76 % -> block" block "$LS"
+
+echo "== PreCompact: no auto-compaction past the threshold without CHECKPOINT/RESUME =="
+fill 76
+doc "- 10:01 LIVE — working"
+check_c "PreCompact auto, compact, no CHECKPOINT -> block" block "$(pc_call)"
+# shellcheck disable=SC2086
+case "$(printf '%s' "$(pc_call)" | env $LEG_BASE bash "$HOOK" 2>&1 >/dev/null)" in
+    *CHECKPOINT*) ok "PreCompact refusal names the CHECKPOINT unlock" ;;
+    *) bad "PreCompact refusal does not name CHECKPOINT" ;;
+esac
+check_c "PreCompact manual (operator /compact) -> allow" allow "$(pc_call manual)"
+doc "- 10:01 LIVE — CHECKPOINT $HEAD2 pushed"
+check_c "PreCompact auto + fresh CHECKPOINT -> allow" allow "$(pc_call)"
+doc "- 10:01 LIVE — working"
+check "PreCompact auto, handoff, no RESUME -> block" block "$(pc_call)"
+printf 'resume\n' > "$RESUME"
+check "PreCompact auto, handoff + fresh RESUME -> allow" allow "$(pc_call)"
+check_c "PreCompact auto, compact + fresh RESUME -> allow" allow "$(pc_call)"
+rm -f "$RESUME"
+doc "- 10:01 BLOCKED — waiting"
+check_c "PreCompact auto, last marker BLOCKED -> allow" allow "$(pc_call)"
+doc "- 10:01 LIVE — working"
+fill 60; check_c "PreCompact below the threshold -> allow" allow "$(pc_call)"
+nofill; check_c "PreCompact, fill UNKNOWN -> allow" allow "$(pc_call)"
+fill 76
+# A precomputed string: the hook exits before reading stdin here, and a slower
+# writer would die of SIGPIPE under pipefail.
+PC="$(pc_call)"
+if printf '%s' "$PC" | env CLAUDE_CONFIG_DIR="$CFG" bash "$HOOK" >/dev/null 2>&1; then
+    ok "PreCompact in a non-leg session -> allow"
+else
+    bad "PreCompact in a non-leg session -> blocked"
+fi
 
 echo "== fail-open: fill UNKNOWN/STALE, leg doc unknown, junk input =="
 nofill

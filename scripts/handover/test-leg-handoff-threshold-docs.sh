@@ -7,7 +7,9 @@
 # 399 leg sessions (2026-09-27..10-03): 349 compacted, 309 of those still
 # reached WRAPPED after their last compaction, and every observed compaction
 # fired between 157k and 176k of the 200k window. 75 % (150k) sits below all
-# of them. The old 60 % hand-off was the churn, not the safety.
+# of them. The old 60 % hand-off was the churn, not the safety. HIMMEL-4569
+# moved the leg preface to the hook's rule: 65 % of the --autocompact ceiling
+# (130k), checkpoint (compact mode) or RESUME (handoff mode).
 #
 # The judge preface keeps 60 %: a judge holds design-grade reasoning in
 # context and loses it at compaction (judge-brief-template.md).
@@ -42,7 +44,12 @@ for f in "$PREFACE" "$BRIEF" "$CALIB"; do
     [ -s "$f" ] || { echo "FAIL - missing $f"; exit 1; }
 done
 
-has   "preface hands off at 75 %"            "$PREFACE" '**Context ≥ 75 %:**'
+# The backticks in these needles are literal Markdown.
+# shellcheck disable=SC2016
+has   "preface states the ceiling-derived threshold (HIMMEL-4569)" "$PREFACE" '**Context past 65 % of your `--autocompact` ceiling:**'
+has   "preface describes the compact mode"   "$PREFACE" 'CHECKPOINT <full sha of HEAD> pushed'
+# shellcheck disable=SC2016
+has   "preface describes the handoff mode"   "$PREFACE" '**`handoff`:**'
 has   "preface names the autocompact backstop" "$PREFACE" 'autocompact'
 lacks "preface carries no 60 % hand-off"     "$PREFACE" '60 ?%'
 has   "brief template hands off at 75 %"     "$BRIEF"   '≥75 % fill'
