@@ -136,6 +136,7 @@ order="$(printf '%s\n' "$OUT" | sed -n 's/^step=\([^ ]*\) .*/\1/p' | tr '\n' ' '
 case "$order" in *"graphify graphify-graph "*"qmd qmd-index "*) ok "graph build follows its install, index follows qmd" ;; *) bad "graphify/qmd step order: $order" ;; esac
 # present tools skip their install; an existing himmel collection skips the add.
 GQ="$TMP/gq"; mkdir -p "$GQ"; cp "$HAVE"/* "$GQ/"
+ln -s "$(command -v timeout)" "$GQ/timeout"   # the collection probe is timeout-bounded
 printf '#!/bin/sh\nexit 0\n' > "$GQ/graphify"
 # shellcheck disable=SC2016  # $1/$2 belong to the stub script
 printf '#!/bin/sh\n[ "$1 $2" = "collection list" ] && echo "himmel (qmd://himmel/)"\nexit 0\n' > "$GQ/qmd"
