@@ -213,7 +213,7 @@ check_c3() {
             if [ -z "$commit_old" ]; then
                 commit_old=0
                 last="$(git -C "$v" log -1 --format=%ct 2>/dev/null)"
-                case "$last" in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - last )) -gt $(( dirty_min * 60 )) ] && commit_old=1 ;; esac
+                case "$last" in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - last )) -gt $(( 10#$dirty_min * 60 )) ] && commit_old=1 ;; esac
             fi
             if [ "$commit_old" = 1 ]; then stale="${stale:+$stale, }$p"; else fresh=1; fi
         elif [ -n "$(find "$v/$p" -maxdepth 0 "$age" "+$dirty_min" 2>/dev/null)" ]; then

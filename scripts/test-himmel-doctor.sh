@@ -463,6 +463,12 @@ out="$(c3_run "$t")"
 if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 fresh move -> OK"; else fail "C3 fresh move -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
 
+echo "== C3: a leading-zero dirty window (08) is decimal on the deletion path (HIMMEL-4724) =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo n > "$v/gone.md"; git -C "$v" add gone.md; git -C "$v" commit -qm init; rm "$v/gone.md"
+out="$(HIMMEL_DOCTOR_C3_DIRTY_MIN=08 c3_run "$t")"
+if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" -F 'value too great'; then pass "C3 dirty window 08 -> decimal"; else fail "C3 dirty window 08 -> $(printf '%s' "$out" | grep -E 'C3|value too great')"; fi
+rm -rf "$t"
+
 echo "== C3: freshly staged rename of an old-mtime file -> OK (destination aged by its rename) =="
 t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo n > "$v/inbox.md"; touch -t 202001010000 "$v/inbox.md"
 git -C "$v" add inbox.md; git -C "$v" commit -qm init; mkdir -p "$v/notes"; git -C "$v" mv inbox.md notes/inbox.md
