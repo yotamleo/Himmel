@@ -89,7 +89,8 @@ Both indexes are built in the setup clone `/tmp/himmel-setup`, so they show
   and the expansion and rerank of `qmd query`, need about 2 GB of models
   (`qmd pull`) plus a CPU embed, which do not fit the ~5 minute cached setup, so
   the setup skips them. `qmd query` may try to fetch those models on first use;
-  use `qmd search` in the cloud.
+  use `qmd search` in the cloud. `/cloud-route` still routes a ticket that
+  needs `qmd query`, vector search or an embed to LOCAL-NATIVE.
 
 ## Network policy
 

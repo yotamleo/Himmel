@@ -199,7 +199,7 @@ if have qmd; then
 else
   build_step qmd install "qmd-bin.sh install (pinned fork, bun)" -- $TMO 180 bash "$ROOT/scripts/lib/qmd-bin.sh" install
 fi
-qmd_cols="$([ -x "$QMD_BIN" ] && "$QMD_BIN" collection list 2>/dev/null)"
+qmd_cols="$([ -x "$QMD_BIN" ] && $TMO 30 "$QMD_BIN" collection list 2>/dev/null)"
 if [[ $'\n'"$qmd_cols" == *$'\n'"himmel "* ]]; then
   plan qmd-index skip "himmel collection present"
 elif [ -x "$QMD_BIN" ] || [ "$DRY" -eq 1 ]; then
