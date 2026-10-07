@@ -2,6 +2,111 @@ import { mkdir, readFile, writeFile, rename, appendFile, open } from "node:fs/pr
 import { constants } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+
+export type ChainCursor = { k: number; off: number; n: number; h: string; halted?: number };
+export type ChainRecord = Record<string, any> & { n: number; h: string };
+
+// Stable object-key order, including nested values; h itself is not hashed.
+export function chainHash(previous: string, record: Record<string, any>): string {
+  function canonical(value: any): any {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+    return value;
+  }
+  const { h, ...plain } = record;
+  return createHash("sha256").update(previous).update(JSON.stringify(canonical(plain))).digest("hex");
+}
+
+export async function openChainFile(file: string, flags: number) {
+  // oxlint-disable-next-line oxc/bad-bitwise-operator -- combine integer open(2) flags, not boolean conditions
+  const handle = await open(file, flags | constants.O_NOFOLLOW, 0o600);
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.uid !== process.getuid!() || (info.mode & 0o777) !== 0o600) throw new Error(`unsafe file permissions: ${file}`);
+    return handle;
+  } catch (error) { await handle.close(); throw error; }
+}
+
+// The fd-only flock form locks the inherited open-file description. The
+// parent retains that same description until close, after flock exits.
+export async function withChainLock<T>(lockFile: string, action: () => Promise<T>): Promise<T> {
+  const handle = await openChainFile(lockFile, constants.O_RDWR | constants.O_CREAT);
+  try {
+    const child = spawn("flock", ["-x", "3"], { stdio: ["ignore", "ignore", "pipe", handle.fd] });
+    let stderr = "";
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", code => code === 0 ? resolve() : reject(new Error(`flock failed: ${code}: ${stderr}`)));
+    });
+    return await action();
+  } finally { await handle.close(); }
+}
+
+export async function readPast<T extends ChainRecord = ChainRecord>(file: string | Buffer, cur: ChainCursor, limit = Infinity): Promise<{ records: T[]; next: ChainCursor; cursors: ChainCursor[] }> {
+  if (!Number.isSafeInteger(cur.off) || cur.off < 0) throw new Error("invalid cursor offset");
+  let buf: Buffer;
+  if (Buffer.isBuffer(file)) buf = file;
+  else {
+    const handle = await openChainFile(file, constants.O_RDONLY);
+    try { buf = await handle.readFile(); } finally { await handle.close(); }
+  }
+  if (cur.off > buf.length) throw new Error("cursor beyond EOF");
+  if (cur.off > 0 && buf[cur.off - 1] !== 10) throw new Error("cursor not on record boundary");
+  const records: T[] = [], cursors: ChainCursor[] = [];
+  let next = { ...cur }, off = cur.off;
+  while (off < buf.length && records.length < limit) {
+    const end = buf.indexOf(10, off);
+    if (end < 0) break;
+    const record = JSON.parse(buf.subarray(off, end).toString("utf8")) as T;
+    off = end + 1;
+    next = { ...cur, off, n: record.n, h: record.h };
+    records.push(record); cursors.push(next);
+  }
+  return { records, next, cursors };
+}
+
+// prepare runs under this same lock: the plugin rotates and supplies the
+// previous segment's tail when the live file is empty. Never O_CREAT the log.
+export async function appendChained(file: string, record: Record<string, any>, lockFile: string, prepare?: () => Promise<{ n: number; h: string }>): Promise<ChainRecord> {
+  return withChainLock(lockFile, async () => {
+    let previous = prepare ? await prepare() : { n: 0, h: "" };
+    const handle = await openChainFile(file, constants.O_RDWR | constants.O_APPEND);
+    try {
+      const buf = await handle.readFile();
+      if (buf.length) {
+        if (buf[buf.length - 1] !== 10) throw new Error("incomplete log tail");
+        previous = JSON.parse(buf.subarray(buf.lastIndexOf(10, buf.length - 2) + 1, buf.length - 1).toString("utf8"));
+      }
+      const plain = { ...record, n: previous.n + 1 };
+      const stamped = { ...plain, h: chainHash(previous.h, plain) };
+      const line = Buffer.from(JSON.stringify(stamped) + "\n");
+      const { bytesWritten } = await handle.write(line);
+      if (bytesWritten !== line.length) throw new Error("short chained append");
+      return stamped;
+    } finally { await handle.close(); }
+  });
+}
+
+export async function commitCursor(curFile: string, next: ChainCursor): Promise<void> {
+  try { const existing = await openChainFile(curFile, constants.O_RDONLY); await existing.close(); }
+  catch (error: any) { if (error.code !== "ENOENT") throw error; }
+  // atomicWrite retains the bridge's semantics; create its temporary file
+  // securely first, without following an attacker-planted symlink.
+  const staging = curFile + ".commit-" + randomUUID();
+  const temp = await openChainFile(staging + ".tmp", constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL);
+  await temp.close();
+  try {
+    await atomicWrite(staging, JSON.stringify(next));
+    await rename(staging, curFile);
+  } finally {
+    const { unlink } = await import("node:fs/promises");
+    await unlink(staging + ".tmp").catch(() => {});
+    await unlink(staging).catch(() => {});
+  }
+}
 
 export const defaultRoot = () => process.env.BRIDGE_ROOT ?? join(homedir(), ".claude", "handover", "bridge");
 export const bridgeRoot = defaultRoot;
