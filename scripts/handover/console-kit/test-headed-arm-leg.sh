@@ -3939,6 +3939,17 @@ check "43g the shim passes LEG_SESSION_ID as --session-id" \
   "--session-id 22222222-2222-2222-2222-222222222222 "
 check "43h the shim adds nothing without LEG_SESSION_ID" \
   "$(env -u LEG_SESSION_ID LEG_CLAUDE_BIN="$shim43" bash "$HERE/../../lanes/leg-claude-launcher.sh" -n x | tr '\n' ' ')" "-n x "
+# A symlinked doc is never replaced by the temp file's mv (the link would
+# become a plain copy): no id is recorded and the link survives.
+lnk43t="$tmp/HIMMEL-43-N45-target.md"
+printf -- '---\ntemplate_version: 3\n---\n\n# body\n' > "$lnk43t"
+lnk43="$tmp/HIMMEL-43-N45-link.md"; ln -s "$lnk43t" "$lnk43"
+d43l="$tmp/c43-l"; mk_launch_stubs "$d43l" "HIMMEL-43-link"
+some_doc="$lnk43" run_leg "$d43l" "$tmp/repo43" "HIMMEL-43-link" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d43l" || true
+check "43i0 the symlinked-doc launch reached the launcher" "$([ -s "$d43l/record" ] && echo yes)" "yes"
+check "43i a symlinked doc stays a symlink" "$([ -L "$lnk43" ] && echo link)" "link"
+check "43j a symlinked doc's target is left untouched" "$(grep -c '^session_ids:' "$lnk43t")" "0"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

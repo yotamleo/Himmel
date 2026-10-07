@@ -2042,8 +2042,9 @@ fi
 # then digests the ids directly instead of searching by name. Only where the
 # shim is the launcher (native + profile, headed, not a consult) and the doc
 # opens on a front matter; the write is one temp file + mv, never the body.
+# A symlinked doc is skipped: the mv would replace the link with a copy.
 if [ "$LANE" = "native" ] && [ -n "$PROFILE" ] && [ "$HEADLESS" -eq 0 ] && [ "$CONSULT" -eq 0 ] \
-    && [ "$(head -n 1 "$DOC" 2>/dev/null)" = "---" ]; then
+    && [ ! -L "$DOC" ] && [ "$(head -n 1 "$DOC" 2>/dev/null)" = "---" ]; then
     _leg_sid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
     _leg_sid="$(printf '%s' "$_leg_sid" | tr 'A-F' 'a-f')"
     if printf '%s' "$_leg_sid" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
