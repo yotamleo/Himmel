@@ -820,6 +820,23 @@ else
     fail "T6-c4: paren-named owned file emits SKIPPED-DIRTY" "got: $t6c4_out"
 fi
 
+# T6-c5: a name that itself looks like an annotation prefix must not widen the strip
+T6C5_TMPL="$TMP/t6c5-tmpl"; make_template "$T6C5_TMPL" "1.0.0"
+printf 'paren v1\n' > "$T6C5_TMPL/docs/Note (vault has local edits).md"
+T6C5_VAULT="$TMP/t6c5-vault"
+make_luna_vault "$T6C5_VAULT" "0.9.0" "$T6C5_TMPL"
+printf 'paren v2\n' > "$T6C5_TMPL/docs/Note (vault has local edits).md"
+git_init_dirty_handovers "$T6C5_VAULT"
+printf 'LOCAL EDIT\n' >> "$T6C5_VAULT/docs/Note (vault has local edits).md"
+t6c5_rc=0
+t6c5_out=$(run_engine apply --template-dir "$T6C5_TMPL" --vault "$T6C5_VAULT" 2>&1) || t6c5_rc=$?
+assert_eq "T6-c5: dirty annotation-lookalike owned file exits 3" "3" "$t6c5_rc"
+if grepq "$t6c5_out" "^SKIPPED-DIRTY	"; then
+    pass "T6-c5: annotation-lookalike owned name emits SKIPPED-DIRTY"
+else
+    fail "T6-c5: annotation-lookalike owned name emits SKIPPED-DIRTY" "got: $t6c5_out"
+fi
+
 # T6-d: unstamped vault -> exit 2 without --force-unstamped
 T6D_VAULT="$TMP/t6d-vault"
 make_unstamped_vault "$T6D_VAULT"

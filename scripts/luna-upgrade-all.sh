@@ -361,7 +361,7 @@ is_dirty_owned() {
     [ -d "$v/.git" ] || return 1
     local owned; owned="$(printf '%s\n' "$plan" \
         | sed -nE 's/^ +(WRITE-NEW|WRITE|MERGE-JSON|MERGE-3WAY|REPORT|LOCAL-EDIT|KEEP-MINE) +//p' \
-        | sed -E 's/ \((kept —|vault has local edits|template changed;|converged:|clean —|CONFLICT —|ERROR —|\+).*\)$//')"
+        | sed -E 's/ \((kept —|vault has local edits|template changed;|converged:|clean —|CONFLICT —|ERROR —|\+)[^()]*\)$//')"
     owned="$(printf '%s\n.vault-template.json\n_CLAUDE.md.template-merge\n' "$owned")"
     local entry path
     while IFS= read -r -d '' entry; do
