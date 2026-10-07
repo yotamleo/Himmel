@@ -155,17 +155,17 @@ check "bypass LEG_CONTEXT_HANDOFF_OK=1 -> allow" allow "$LS" LEG_CONTEXT_HANDOFF
 
 echo "== non-leg sessions are untouched =="
 # shellcheck disable=SC2086
-if printf '%s' "$LS" | env CLAUDE_CONFIG_DIR="$CFG" HANDOVER_DIR="$T/handovers" HIMMEL_CONSOLE_LEG=1 bash "$HOOK" >/dev/null 2>&1; then
+if printf '%s' "$LS" | env HIMMEL_LEG_CONTEXT_MODE=compact CLAUDE_CONFIG_DIR="$CFG" HANDOVER_DIR="$T/handovers" HIMMEL_CONSOLE_LEG=1 bash "$HOOK" >/dev/null 2>&1; then
     ok "no HIMMEL_CONSOLE_NAME at 90 % -> allow"
 else
     bad "no HIMMEL_CONSOLE_NAME at 90 % -> blocked"
 fi
-if printf '%s' "$LS" | env CLAUDE_CONFIG_DIR="$CFG" HANDOVER_DIR="$T/handovers" HIMMEL_CONSOLE_NAME=T-console bash "$HOOK" >/dev/null 2>&1; then
+if printf '%s' "$LS" | env HIMMEL_LEG_CONTEXT_MODE=compact CLAUDE_CONFIG_DIR="$CFG" HANDOVER_DIR="$T/handovers" HIMMEL_CONSOLE_NAME=T-console bash "$HOOK" >/dev/null 2>&1; then
     ok "no HIMMEL_CONSOLE_LEG at 90 % -> allow"
 else
     bad "no HIMMEL_CONSOLE_LEG at 90 % -> blocked"
 fi
-silent_out="$(printf '%s' "$LS" | env CLAUDE_CONFIG_DIR="$CFG" bash "$HOOK" 2>&1)"
+silent_out="$(printf '%s' "$LS" | env HIMMEL_LEG_CONTEXT_MODE=compact CLAUDE_CONFIG_DIR="$CFG" bash "$HOOK" 2>&1)"
 if [ -z "$silent_out" ]; then ok "non-leg -> no output at all"; else bad "non-leg printed: $silent_out"; fi
 
 echo "== hand-off calls always pass at 90 % =="
@@ -293,6 +293,10 @@ check "double-quoted bullet with backticks -> block" block \
 check "escaped quote then ; -> block" block "$(bash_call "git status \\'; touch x; echo \\'")"
 check "apostrophe in double quotes then ; -> block" block "$(bash_call "git commit -m \"it's\"; touch x; echo \"'\"")"
 check "unclosed quote -> block" block "$(bash_call "git commit -m 'x")"
+# Round-3 codex-1: ANSI-C quoting lets \' escape, so $'…' is refused outright.
+check "ANSI-C quote then ; -> block" block "$(bash_call "git status \$'a\\'b'; touch x #'")"
+check "ANSI-C quote alone -> block" block "$(bash_call "git commit -m \$'x'")"
+check "dollar-quote inside double quotes is literal -> allow" allow "$(bash_call "git commit -m \"cost \$'x'\"")"
 check "redirect -> block" block "$(bash_call 'git status > x')"
 check "append-results.sh; more -> block" block \
     "$(bash_call "bash scripts/handover/console-kit/append-results.sh $DOC \"LIVE x\"; rm -rf /tmp/x")"

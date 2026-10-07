@@ -86,7 +86,8 @@ are allowed:
 - A bare `git [-C <dir>] add|commit|push|status|rev-parse`.
 - A bare `cd [<dir>]`.
 
-"Bare" means one command: no newline, no unclosed quote, no backtick or `$(`
+"Bare" means one command: no newline, no unclosed quote, no `$'…'` quote, no
+backtick or `$(`
 outside single quotes, and no `&`, `|`, `;`, `<`, `>`, `(` or `)` outside any
 quotes. Quoted text keeps them inert, so a bullet or commit message may say
 `a; b` inside quotes. Put backticks in single quotes: inside double quotes they

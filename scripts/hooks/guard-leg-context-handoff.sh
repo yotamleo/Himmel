@@ -121,8 +121,9 @@ warn_allow() {
     exit 0
 }
 
-# True when $1 is ONE command: no newline, no unclosed quote, no backtick or
-# $( outside single quotes, and no & | ; < > ( ) outside any quotes. Quoted
+# True when $1 is ONE command: no newline, no unclosed quote, no $'…' quote,
+# no backtick or $( outside single quotes, and no & | ; < > ( ) outside any
+# quotes. Quoted
 # text stays usable (a bullet's `;`), but nothing can chain, pipe, background,
 # redirect or substitute a second command.
 is_bare_command() {
@@ -138,6 +139,9 @@ is_bare_command() {
         elif [ "$c" = '`' ]; then
             return 1
         elif [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = '(' ]; then
+            return 1
+        elif [ -z "$q" ] && [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = "'" ]; then
+            # ANSI-C $'…' lets \' escape, so its end cannot be found this way.
             return 1
         elif [ "$q" = '"' ]; then
             [ "$c" = '"' ] && q=''
