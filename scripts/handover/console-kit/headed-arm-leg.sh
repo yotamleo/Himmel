@@ -2043,26 +2043,17 @@ fi
 # shim is the launcher (native + profile, headed, not a consult) and the doc
 # opens on a front matter; the write is one temp file + mv, never the body.
 # A symlinked doc is skipped: the mv would replace the link with a copy.
+# HIMMEL-4795: the rewrite is leg-doc-lock.sh's, under the lock every doc
+# writer shares, so a concurrent append-results.sh bullet is never lost.
 if [ "$LANE" = "native" ] && [ -n "$PROFILE" ] && [ "$HEADLESS" -eq 0 ] && [ "$CONSULT" -eq 0 ] \
     && [ ! -L "$DOC" ] && [ "$(head -n 1 "$DOC" 2>/dev/null)" = "---" ]; then
+    # shellcheck source=scripts/handover/console-kit/leg-doc-lock.sh
+    . "$HERE/leg-doc-lock.sh"
     _leg_sid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
     _leg_sid="$(printf '%s' "$_leg_sid" | tr 'A-F' 'a-f')"
-    # cp -p keeps the doc's mode; the cksum re-check refuses the mv when the
-    # doc changed while it was rewritten (an append there would be lost).
-    _leg_doc_sum="$(cksum < "$DOC" 2>/dev/null)"
-    if printf '%s' "$_leg_sid" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
-        && cp -p "$DOC" "$DOC.sid.$$" \
-        && awk -v sid="$_leg_sid" '
-            NR == 1 { print; fm = 1; next }
-            fm && /^session_ids:/ { sub(/[[:space:]]*$/, ""); print $0 "," sid; done = 1; next }
-            fm && /^---$/ { if (!done) print "session_ids: " sid; fm = 0 }
-            { print }' "$DOC" > "$DOC.sid.$$" \
-        && grep -q "^session_ids:.*$_leg_sid" "$DOC.sid.$$" \
-        && [ "$(cksum < "$DOC" 2>/dev/null)" = "$_leg_doc_sum" ] \
-        && mv -f "$DOC.sid.$$" "$DOC"; then
+    if leg_doc_add_session_id "$DOC" "$_leg_sid"; then
         leg_propagate_env LEG_SESSION_ID "$_leg_sid"
     else
-        rm -f "$DOC.sid.$$" 2>/dev/null
         echo "$(date +%F_%T) headed-arm-leg: WARN session id NOT recorded in $DOC (the digest step falls back to its name search)" >> "$LOG"
     fi
 fi

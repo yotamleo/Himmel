@@ -180,26 +180,28 @@ if [ -n "$doc" ]; then
         exit 2
     fi
     doc="$(realpath -- "$doc")" || exit 2
-    lock_dir="${TMPDIR:-/tmp}/himmel-inbox-doc-$UID"
-    # shellcheck disable=SC2174 # Only the final, per-user directory is ours.
-    if ! mkdir -m 700 -p "$lock_dir" || [ -L "$lock_dir" ] || [ ! -O "$lock_dir" ]; then
-        printf 'inbox-send: cannot secure doc lock directory\n' >&2
-        exit 2
-    fi
-    # mkdir -m only sets the mode at creation; a pre-existing directory (from
-    # an older run, or a looser umask) is accepted above but never
-    # tightened. Chmod it explicitly every time (CodeRabbit, HIMMEL-2790).
-    chmod 700 "$lock_dir" || { printf 'inbox-send: cannot secure doc lock directory\n' >&2; exit 2; }
-    lock_key="$(printf '%s' "$doc" | sha256sum)" || exit 2
-    lock_key="${lock_key%% *}"
-    if ! { exec 9>"$lock_dir/$lock_key.lock"; } || ! flock -x 9; then
-        printf 'inbox-send: cannot lock %s\n' "$doc" >&2
+    # HIMMEL-4795: the lock (directory, key, flock -x on fd 9) is leg-doc-lock.sh's,
+    # shared with append-results.sh, live-state.sh and the launcher's
+    # session_ids: rewrite. Unlike those, a ruling is never mirrored unlocked:
+    # no flock (rc 3) refuses, as before.
+    # shellcheck source=scripts/handover/console-kit/leg-doc-lock.sh
+    . "$HERE/leg-doc-lock.sh"
+    lock_rc=0; doc_lock "$doc" inbox-send || lock_rc=$?
+    if [ "$lock_rc" -ne 0 ]; then
+        [ "$lock_rc" -eq 3 ] && printf 'inbox-send: cannot lock %s: flock not installed\n' "$doc" >&2
         exit 2
     fi
     if grep -q '^## Console Rulings' "$doc"; then
         # Insert as the LAST line of the FIRST "## Console Rulings" section:
         # right before the next "## " heading, or at EOF if none follows.
-        tmp="$doc.tmp.$$"
+        # HIMMEL-4795: a mktemp name beside the doc, not a predictable
+        # $doc.tmp.$$; cp -p gives it the doc's mode (mktemp makes it 0600).
+        tmp=""
+        if ! tmp="$(mktemp "$doc.tmp.XXXXXX")" || ! cp -p "$doc" "$tmp"; then
+            [ -n "$tmp" ] && rm -f "$tmp"
+            printf 'inbox-send: failed to update %s\n' "$doc" >&2
+            exit 2
+        fi
         # bullet is passed via ENVIRON, not -v: awk's -v assignment processes
         # backslash escapes (\n, \t, \\...) in the value, which would mangle
         # arbitrary ruling text containing a literal backslash. ENVIRON is
