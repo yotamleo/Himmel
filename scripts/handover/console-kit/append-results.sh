@@ -89,6 +89,16 @@ esac
 stamp="$(date +%H:%M)"
 bullet="- ${stamp} ${TEXT}"
 
+# HIMMEL-4795: append under the lock every doc writer shares (leg-doc-lock.sh),
+# so a rewrite in flight (the launcher's session_ids:, inbox-send.sh,
+# live-state.sh) finishes its mv first and this bullet lands on the new doc,
+# never on the replaced one. A lock that cannot be taken (rc 1) or no flock
+# (rc 3) appends unlocked, as before: the bullet matters more than the race.
+# shellcheck source=scripts/handover/console-kit/leg-doc-lock.sh
+. "$(dirname "${BASH_SOURCE[0]}")/leg-doc-lock.sh"
+locked=0
+doc_lock "$DOC" append-results && locked=1
+
 # Command substitution strips trailing newlines, so a non-empty result here
 # means the file's last byte is NOT a newline.
 if [ -s "$DOC" ] && [ -n "$(tail -c 1 "$DOC")" ]; then
@@ -99,6 +109,7 @@ if ! printf '%s\n' "$bullet" >> "$DOC"; then
     echo "append-results: write failed for $DOC" >&2
     exit 5
 fi
+[ "$locked" -eq 1 ] && doc_unlock
 echo "append-results: appended to $DOC"
 
 # HIMMEL-4419: a LIVE bullet moves the leg's ticket (the key in the doc name)

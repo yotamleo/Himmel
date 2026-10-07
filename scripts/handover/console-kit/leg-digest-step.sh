@@ -203,6 +203,11 @@ fi
 # ---------- the launcher's record: session_ids: in the front matter ----------
 # HIMMEL-4786: headed-arm-leg.sh appends each launch's uuid, so a relaunched
 # leg or a doc with no resume_cwd is still found. Digested directly, any window.
+# HIMMEL-4795: the doc is writable by the leg it describes, so a leg can list
+# another session's uuid here and that session is then digested under this leg.
+# Documented, not guarded: the digest is attribution only (no gate, merge or
+# permission reads it), and the same leg already writes its own Results
+# bullets, so an id check would not make the doc any more trustworthy.
 ids=""
 [ "$(head -n 1 "$DOC")" != "---" ] \
     || ids="$(awk 'NR == 1 { next } /^---$/ { exit } { print }' "$DOC" | sed -n 's/^session_ids: *//p' | tr ',' '\n' | tr -d ' ' | grep -E "$UUID_RE" | awk '!seen[$0]++')"
