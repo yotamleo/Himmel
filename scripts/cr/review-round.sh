@@ -241,6 +241,8 @@ judge_nogo_record() (
         dir="$dir/$seg"
         [ -d "$dir" ] && [ ! -L "$dir" ] || exit 1
     done
+    re_session='^writer-session: [A-Za-z0-9-]+$'
+    re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
     for qdir in "$dir"/*/; do
         qdir="${qdir%/}"
         qid="${qdir##*/}"
@@ -256,8 +258,7 @@ judge_nogo_record() (
             { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4
               IFS= read -r l5; IFS= read -r l6; IFS= read -r l7; IFS= read -r l8; } < "$f" 2>/dev/null
             if [ "$l1" != "# VERDICT $qid - $name" ] || [ -n "$l2$l5$l7" ] || [ "$l6" != "## Verdict" ] \
-                || ! printf '%s\n' "$l3" | grep -Eq '^writer-session: [A-Za-z0-9-]+$' \
-                || ! printf '%s\n' "$l4" | grep -Eq '^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+                || ! [[ $l3 =~ $re_session ]] || ! [[ $l4 =~ $re_written ]]; then
                 bad=1; break
             fi
             word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
