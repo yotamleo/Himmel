@@ -741,15 +741,15 @@ _reader() {
         fi
         case "$c" in
             less) case "$w" in -*) return 1 ;; esac ;;
-            file) case "$w" in --compile|-[!-]*C*) return 1 ;; esac ;;
+            file) case "$w" in --compile) return 1 ;; --*) ;; -*C*) return 1 ;; esac ;;
             grep|egrep|fgrep)
                 if [ "$anc" = 1 ]; then
                     case "$w" in --recursive|--dereference-recursive|--directories*) return 1 ;; --*) ;; -*[rRd]*) return 1 ;; esac
                 fi ;;
-            rg) case "$w" in --pre|--pre=*|--pre-glob*) return 1 ;; esac ;;
+            rg) case "$w" in --pre|--pre=*|--pre-glob*|--hostname-bin*) return 1 ;; esac ;;
             git)
                 if [ -n "$sub" ]; then
-                    case "$w" in --output*|-O*|--open-files-in-pager*|--no-index|--ext-diff) return 1 ;; esac
+                    case "$w" in --output*|-O*|--open-files-in-pager*|--no-index|--ext-diff|--textconv|--filters) return 1 ;; esac
                 elif [ "$fv" = 1 ]; then
                     fv=0
                 else
