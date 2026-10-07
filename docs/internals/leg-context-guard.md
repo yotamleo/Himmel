@@ -25,7 +25,7 @@ auto-compact anyway, and an always-on guard stopped every opus leg at 13 % fill.
 
 Pass the mode at launch:
 
-```
+```bash
 bash scripts/handover/console-kit/headed-arm-leg.sh --context-guard compact …
 bash scripts/handover/console-kit/headed-arm-leg.sh --context-guard handoff …
 ```
@@ -101,7 +101,7 @@ The deny names:
 multi-line `git commit -m` cannot run. Use `-m` paragraphs and `--trailer`
 instead:
 
-```
+```bash
 git commit -m "<subject>" -m "<body>" --trailer "Platforms tested: <os>" --trailer "Security reviewed: <token> - <what>"
 ```
 

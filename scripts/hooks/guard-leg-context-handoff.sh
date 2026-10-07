@@ -265,7 +265,7 @@ checkpoint_ok() {
     [ "$cp" = "$head" ] || return 1
     up=$(git -C "$wd" rev-parse '@{u}' 2>/dev/null) || up=""
     # shellcheck disable=SC2016
-    if printf '%s' "$line" | grep -qE 'CHECKPOINT `?[0-9a-f]{40}`? pushed'; then
+    if grep -qE 'CHECKPOINT `?[0-9a-f]{40}`? pushed' <<< "$line"; then
         [ -n "$up" ] && [ "$up" = "$head" ]
         return
     fi
