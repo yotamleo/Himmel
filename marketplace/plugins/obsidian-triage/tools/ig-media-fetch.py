@@ -1116,8 +1116,8 @@ def enrich_batch(args, selected, matched_total, remaining):
         print(f"ig-media-fetch: {unstarted} not started (budget {args.budget}s spent; "
               f"pass --budget 0 for no budget)")
     if remaining > 0:
-        print(f"ig-media-fetch: {matched_total} matched, {len(selected)} "
-              f"processed, {remaining} remaining (capped by --limit; pass "
+        print(f"ig-media-fetch: {matched_total} matched, {len(selected) - unstarted} "
+              f"processed, {remaining + unstarted} remaining (capped by --limit; pass "
               f"--limit 0 for all)")
 
 

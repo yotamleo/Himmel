@@ -290,6 +290,15 @@ PY
 )
 assert "spent budget raises TimeoutExpired" raised "$a"
 
+# --- Test 12c: the --limit summary does not count unstarted clips as processed
+echo "Test 12c: --limit summary after a budget stop"
+make_vault "$tmp/v12c" SCRP0014
+sed 's/SCRP0014/SCRP0015/g' "$tmp/v12c/Clippings/clip.md" >"$tmp/v12c/Clippings/clip2.md"
+sed 's/SCRP0014/SCRP0016/g' "$tmp/v12c/Clippings/clip.md" >"$tmp/v12c/Clippings/clip3.md"
+IG_SCRAPLING_PYTHON="$tmp/slow-python" run_tool "$tmp/v12c" --budget 2 --limit 2 >"$tmp/v12c.out" 2>"$tmp/v12c.err"
+grep -qF "3 matched, 1 processed, 2 remaining" "$tmp/v12c.out" && a=ok || a=$(grep -F matched "$tmp/v12c.out")
+assert "unstarted clips count as remaining, not processed" ok "$a"
+
 echo ""
 echo "ig-scrapling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
