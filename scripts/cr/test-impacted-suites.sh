@@ -532,6 +532,27 @@ change scripts/guard-plain.sh
 out="$(run_is "$range")"
 if ! grepq "$out" 'real-home-callers'; then pass "a file without the variable does not pull the callers scan"; else fail "callers scan over-selected: $out"; fi
 
+# --- 28b. HIMMEL-4789: a file spelling a ~/.himmel ledger path pulls in the
+# ledger registry lint, which scans every script and names none of them. ------
+lg_dir=.himmel   # split so this file never spells a ledger path itself
+mkf scripts/observability/test-ledgers-registry.sh 'git ls-files scripts'
+mkf scripts/new-jsonl-writer.sh "echo x"
+mkf scripts/new-log-writer.sh "echo x"
+mkf scripts/no-ledger.sh 'echo nothing'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: ledger fixtures"
+printf '%s\n' "out=\"\$HOME/${lg_dir}/failure-routes.jsonl\"" >> "$FX/scripts/new-jsonl-writer.sh"
+change scripts/new-jsonl-writer.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/observability/test-ledgers-registry\.sh$'; then pass "added .jsonl ledger literal -> ledger registry lint listed"; else fail "4789 jsonl miss: $out"; fi
+printf '%s\n' "log=~/${lg_dir}/sub/run.log" >> "$FX/scripts/new-log-writer.sh"
+change scripts/new-log-writer.sh
+out="$(run_is "$range")"
+if grepq "$out" '^scripts/observability/test-ledgers-registry\.sh$'; then pass "added .log ledger literal -> ledger registry lint listed"; else fail "4789 log miss: $out"; fi
+change scripts/no-ledger.sh
+out="$(run_is "$range")"
+if ! grepq "$out" 'test-ledgers-registry'; then pass "a file without a ledger literal does not pull the registry lint"; else fail "registry lint over-selected: $out"; fi
+
 # --- 29. selector-miss: a red suite the PR's selection skipped is recorded. --
 change scripts/lib/far.sh
 printf 'scripts/test-other.sh\nscripts/test-top.sh\n' > "$FX/red-29.txt"

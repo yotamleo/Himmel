@@ -666,9 +666,17 @@ done
 # content_rules — one `ERE|suite` row per path-scanning suite that never names
 # the files it guards (HIMMEL-3868): a changed file whose text (at the base or
 # the head) matches the ERE lists the suite. Add a row, not a new mechanism.
+# The row splits on its first `|`, so an ERE never spells one: an alternation is
+# one row per branch (the two ledger rows, HIMMEL-4789, mirror the registry
+# lint's own ~/.himmel ledger pattern, .jsonl and .log).
+# ponytail: whole-file, not added-lines — any edit to a file that already spells
+# a ledger path runs the registry lint (0s); upgrade path: diff-hunk matching if
+# a --selector-miss or cost review shows the widening matters.
 content_rules() {
     cat <<'EOF'
 HIMMEL_UNINSTALL_[^A-Za-z]{0,3}REAL_HOME|scripts/test-uninstall-real-home-callers.sh
+\.himmel/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.jsonl|scripts/observability/test-ledgers-registry.sh
+\.himmel/([A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.log|scripts/observability/test-ledgers-registry.sh
 EOF
 }
 while IFS= read -r f; do
