@@ -40,7 +40,7 @@ its separate `or=` reading remains informational. Native and claudex bank
 paths are unchanged (HIMMEL-4081).
 
 The launcher keeps the session pin (`OPENROUTER_MODEL`) separate from subagent
-tiers: `OPENROUTER_HAIKU` defaults to `anthropic/claude-haiku-4.5` (200k context),
+tiers: `OPENROUTER_HAIKU` defaults to `anthropic/claude-haiku-4.5` (200k context; the offline catalog has no verified Haiku 5.5 slug yet, HIMMEL-4881),
 `OPENROUTER_SONNET` to `anthropic/claude-sonnet-5.5` (1M), and `OPENROUTER_OPUS`
 to `anthropic/claude-opus-5.5` (1M). Each independently overrides its
 `ANTHROPIC_DEFAULT_*_MODEL` export, including in managed legs. Tier overrides
@@ -178,7 +178,7 @@ can inherit into the child.
 
 | Lane | Best for | Effort / notes |
 |---|---|---|
-| Haiku | bulk mechanical (never delegates further) | low |
+| Haiku 5.5 | bulk mechanical; scoped read-only verification/extraction; mechanical edits that end in a real check (never delegates further) | low for bulk; `medium` (the model default; override the lane's `low`) once a brief has more than a couple of steps — see [Haiku 5.5](#haiku-55-himmel-4881) |
 | Sonnet 5.5 | scoped research; default implementor for well-specified impl briefs | medium default (a native leg runs at `lanes.json`'s `sonnet` lane effort, `medium`; an explicit `CLAUDE_CODE_EFFORT_LEVEL` in the launching shell overrides it — e.g. `CLAUDE_CODE_EFFORT_LEVEL=high` for a multi-step or guard-grade leg); high for multi-file/long briefs — raise effort before reaching for Opus. Effort is recalibrated vs Sonnet 5: `low` can skip verifying a change, and at `low`/`medium` on long tasks it is likelier to stop and check in (Anthropic migration guide) |
 | Opus 5.5 | multi-step reasoning; default parent | medium default (≈ Opus 5 `high`, HIMMEL-3479); `low` for scoped impl; `high` for heavy parenting; `xhigh`/`max` only where a gain was measured — see [Effort calibration](#effort-calibration) |
 | Fable 5 | judgment, taste — hardest calls; escalation target | scale to the item (operator 2026-07-08, un-capped): medium default; high for substantial judgment work — not just the hardest; xhigh for the hardest |
@@ -186,6 +186,70 @@ can inherit into the child.
 Beyond the Claude tiers the fleet includes machine-specific impl/critic/bulk
 lanes (paid/optional — they exist only where the operator configured them). See
 [Non-Claude lane calibration](#non-claude-lane-calibration) below.
+
+### Haiku 5.5 (HIMMEL-4881)
+
+`haiku` is `claude-haiku-5-5` (released 2026-10-07; the `haiku` alias resolves to
+it on the Anthropic API, needs Claude Code 2.1.293+). Facts, sources and the
+full hard-coded-site audit: the HIMMEL-4881 audit doc in the state repo's
+`specs/research/`. Window **1M** (was 200k; auto-compacts near 967K), 128K
+output, price per MTok $0.10 in / $0.50 out for a prompt up to 100K ($0.50 /
+$2.50 above; Haiku 4.5 was $1 / $5), a tokenizer about 30 % heavier than 4.5, and
+adaptive thinking that cannot be turned off. Anthropic's own pointers: high
+volume classification/extraction/routing is Haiku; agentic coding is Sonnet 5.5
+or Opus 5.5 (Terminal-Bench 4.0: 39 % Haiku 5.5, 71 % Sonnet 5.5).
+
+**Eval (HIMMEL-4090 method, 2026-10-07).** `scripts/eval/lane-quality/run.sh`,
+the 4 frozen tasks, 1 rep per cell, hidden acceptance, blind Opus judge, cost
+is the agent's `total_cost_usd` (API-price equivalent; the runs.jsonl rows carry
+no token counts). n=1 per cell, so read it as a screen, not statistics.
+
+| Cell | Accepted | Agent cost, 4 tasks | Wall s | Judge mean C/S/T/H |
+|---|---|---|---|---|
+| Haiku 5.5 low | 4/4 | $0.064 | 199 | 4.25 / 4.75 / 4.25 / 3.75 |
+| Haiku 5.5 medium | 4/4 | $0.065 | 209 | 4.00 / 4.75 / 4.00 / 4.25 |
+| Haiku 4.5 low | 1/4 | $0.706 | 432 | 3.00 / 4.50 / 2.00 / 3.00 |
+| Sonnet 5.5 medium | 4/4 | $0.955 | 241 | 4.25 / 5.00 / 4.25 / 4.75 |
+
+Cost hypothesis ("about 75 % cheaper than Haiku 4.5"): measured **91 % cheaper**
+on this task set (0.064 vs 0.706), and 15x cheaper than Sonnet 5.5 at the same
+acceptance. Part of the gap is that Haiku 4.5 needed 14-20 tool calls on three
+tasks where Haiku 5.5 needed 6-11; the per-token price ratio alone is 10x.
+`medium` cost no more than `low` here. Judge honesty at low is lower on
+doc-plus-code (2 against 5 at medium), consistent with the verification gap
+Anthropic's guide describes (the judge's reason was not read).
+
+**Routing verdict per work type** (changes only where the eval says ROUTE):
+
+| Work type | Verdict | Condition |
+|---|---|---|
+| Bulk mechanical (rename, reformat, bulk edit) | ROUTE (unchanged) | brief names the exact check to run |
+| Scoped read-only verification / extraction (finding-verify shaped) | ROUTE (new) | 4.0-5.0 judge, 7/7 accepted at both efforts; Sonnet remains the default for open-ended research |
+| Mechanical edit + test (shell-red-green, doc-plus-code shaped) | ROUTE with `medium` | 4/4 accepted; add the verify paragraph below; escalate to Sonnet on the first miss |
+| Well-specified implementation, multi-file | DEFER | stays Sonnet (default implementor); no multi-file or long-brief task in the set, and Anthropic points agentic coding at Sonnet/Opus |
+| Multi-step reasoning, orchestration | DEFER | Opus |
+| Trust paths, hooks, judge, vault, PHI | NEVER | invariant, not an eval result |
+
+hook-refusal (a guardrail-reading task) was accepted 18/18 by Haiku 5.5, but
+that is evidence about the model, not a license: hooks and trust work stay off
+Haiku by invariant.
+
+**Prompting a Haiku 5.5 child** (Anthropic's prompting guide; existing 4.5
+prompts work unchanged). Fold into the brief when it is more than one step:
+- Say what "done" is and add: "Keep working until everything asked for is done;
+  stop to ask only when you cannot go on." At `low` it otherwise stops early on
+  long briefs (raising to `medium` about halved that and doubled output tokens).
+- Add: "Before reporting a change as done, run a real check that exercises it and
+  quote the result." At low/medium it reports changes done without running one.
+- Give today's date if the task searches; do not write blanket "always search".
+- Never put user text inside a tool result; thinking counts toward `max_tokens`;
+  no prefill and no non-default `temperature`/`top_p`/`top_k` on the API.
+- Changing the top-level effort between requests invalidates the prompt cache.
+
+**Known stale rows.** The `[1m]` suffix table below was measured on Haiku 4.5;
+Haiku 5.5 is natively 1M and takes no suffix, and its rows are unmeasured. The
+OpenRouter lane keeps `anthropic/claude-haiku-4.5` until the catalog snapshot is
+refreshed. Haiku 4.5 retirement is "not sooner than 2026-10-15" (no notice yet).
 
 Labels above mirror `scripts/lanes/lanes.json`, which is authoritative. When a
 tier's underlying model ships a new generation, update `lanes.json` first and
@@ -572,7 +636,7 @@ adding that telemetry is outside this PR.
 | `claude-opus-5[1m]` | `claude-opus-5[1m]` | `Opus 5 (1M context)` | yes |
 | `opus[1m]` (alias) | `claude-opus-5[1m]` | `Opus 5 (1M context)` | yes |
 | `claude-opus-4-8[1m]` | `claude-opus-4-8[1m]` | `Opus 4.8 (1M context)` | yes |
-| `claude-haiku-4-5-20251001[1m]` | `claude-haiku-4-5-20251001[1m]` | `Haiku 4.5 (1M context)` | yes |
+| `claude-haiku-4-5-20251001[1m]` | `claude-haiku-4-5-20251001[1m]` | `Haiku 4.5 (1M context)` | yes (4.5 only; 5.5 is natively 1M, unmeasured) |
 | `haiku[1m]` (alias) | `claude-haiku-4-5-20251001[1m]` | `Haiku 4.5 (1M context)` | yes |
 | `claude-sonnet-5[1m]` | `claude-sonnet-5[1m]` | `Sonnet 5` | passed through (Sonnet 5 is natively 1M here) |
 | `sonnet[1m]` (alias) | `claude-sonnet-5[1m]` | `Sonnet 5` | passed through |

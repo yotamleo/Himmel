@@ -57,6 +57,8 @@ test('costUsd applies the spec §0.1 list-price rates', () => {
   const usage = { input_tokens: 1_000_000, output_tokens: 1_000_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
   assert.equal(costUsd('claude-haiku-4-5', usage), RATES['claude-haiku-4-5'].inputPerM + RATES['claude-haiku-4-5'].outputPerM);
   assert.equal(costUsd('gpt-6-luna', usage), RATES['gpt-6-luna'].inputPerM + RATES['gpt-6-luna'].outputPerM);
+  // HIMMEL-4881: Haiku 5.5 list price (prompt up to 100K), 10x below Haiku 4.5.
+  assert.equal(costUsd('claude-haiku-5-5', usage), 0.10 + 0.50);
   assert.equal(costUsd('unknown-model', usage), null);
 });
 
