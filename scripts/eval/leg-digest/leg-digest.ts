@@ -62,6 +62,7 @@ const lastStages = (cmd: string): string[] => {
       if (c === quote) quote = "";
       cur += c;
     } else if (c === "\\") cur += c + (cmd[++i] ?? "");
+    else if (c === "#" && (cur === "" || /\s$/.test(cur))) { while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++; }
     else if (c === "'" || c === '"') { quote = c; cur += c; }
     else if (c === ";" || c === "\n") endCommand();
     else if (c === "&" && cmd[i + 1] === "&") { endCommand(); i++; }
