@@ -12,7 +12,8 @@ pbs.twimg.com/media/ reference and which carry no media_enriched_at: marker:
   - Download the tweet's media: Scrapling first, NO cookie (HIMMEL-4677:
     x-scrapling-media.py reads the status page and its video.twimg.com
     requests; curl / ffmpeg-HLS fetch the items), gallery-dl with the
-    burner-account cookies only as the fallback when it is configured.
+    burner-account cookies only as the fallback when it is configured AND
+    HIMMEL_MEDIA_COOKIES=on (HIMMEL-4708, default off).
   - Video items (incl. GIF-like tweet_video): ffmpeg -> mono 16kHz WAV -> local
     faster-whisper transcript. A SOUNDLESS video (the common tweet_video GIF -
     e.g. an animated UI element) has no audio to transcribe, so its first frame
@@ -327,6 +328,13 @@ def cookie_file() -> Path:
     return _home() / ".luna" / "cookies" / "twitter.txt"
 
 
+def media_cookies_on() -> bool:
+    """HIMMEL-4708: the one switch for every cookie-backed media path. Default
+    off - Scrapling is primary; HIMMEL_MEDIA_COOKIES=on restores the gallery-dl
+    cookie fallback exactly as before."""
+    return (os.environ.get("HIMMEL_MEDIA_COOKIES") or "").strip().lower() == "on"
+
+
 def cache_root() -> Path:
     return _home() / ".luna" / "x-media"
 
@@ -371,7 +379,22 @@ def scrapling_permitted(vault: Path, url: str) -> bool:
 def preflight(scrapling: bool):
     """ffmpeg always; gallery-dl + the cookie only when Scrapling (the primary,
     cookieless backend, HIMMEL-4677) is unavailable - then they are the
-    fallback. Returns the cookie path, or None when gallery-dl is not usable."""
+    fallback. Returns the cookie path, or None when gallery-dl is not usable.
+    With the cookie switch off (HIMMEL-4708) gallery-dl is never used and
+    Scrapling is the only backend."""
+    if not media_cookies_on():
+        missing = [b for b in ("ffmpeg",) if shutil.which(b) is None]
+        if missing or not scrapling:
+            print(
+                "x-media-fetch: " +
+                ("missing required binaries: ffmpeg" if missing else
+                 "no cookieless backend, and the gallery-dl cookie fallback is "
+                 "opted out (HIMMEL_MEDIA_COOKIES=on turns it back on)") +
+                ("" if scrapling else SCRAPLING_HINT),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return None
     missing = [b for b in ("gallery-dl", "ffmpeg")
                if shutil.which(b) is None and (b == "ffmpeg" or not scrapling)]
     if missing:
@@ -515,11 +538,15 @@ def download_media_scrapling(x: dict, py: str):
 
 def fetch_media(x: dict, cf, scrapling):
     """Scrapling first (cookieless); gallery-dl (cookie) is the fallback for any
-    Scrapling miss when it is configured. Returns (files, error, backend)."""
+    Scrapling miss when it is configured. With the cookie switch off
+    (HIMMEL-4708) a miss is returned as scrapling:<error>, never retried with
+    the cookie. Returns (files, error, backend)."""
     if scrapling:
         files, error = download_media_scrapling(x, scrapling)
         if files:
             return files, None, "scrapling"
+        if error != "removed" and not media_cookies_on():
+            return None, f"scrapling:{error}", "scrapling"
         if error == "removed" or cf is None:
             return None, error, "scrapling"
     if cf is None:
@@ -1283,9 +1310,12 @@ def enrich_batch(args, selected, matched_total, remaining):
                 text, has_crlf = read_clip(p)
                 fm, fm_raw, body, present = parse_frontmatter(text)
                 permanent = error == "removed"      # 404/removed is permanent
+                # HIMMEL-4708: a Scrapling miss with the cookie fallback opted
+                # out is deferred (stays pending), naming the backend.
+                status = "deferred" if error.startswith("scrapling:") else "failed"
                 if write_markers(p, text, fm_raw, body, has_crlf,
-                                 status="failed", error=error, permanent=permanent):
-                    print(f"x {relpath}: failed ({error})")
+                                 status=status, error=error, permanent=permanent):
+                    print(f"x {relpath}: {status} ({error})")
                 else:
                     print(f"marker write REVERTED - failure NOT recorded for "
                           f"{relpath}", file=sys.stderr)

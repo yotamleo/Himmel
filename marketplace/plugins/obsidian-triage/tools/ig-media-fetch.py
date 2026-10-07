@@ -6,7 +6,9 @@ Escalation rung AFTER ig-embed-enrich.mjs. For IG clips whose caption rung
 failed OR whose body is still thin (no ### Transcript / ### Slides) and which
 carry no media_enriched_at: marker:
 
-  - Download reel/carousel media via gallery-dl (burner-account cookies).
+  - Download reel/carousel media: Scrapling first, NO cookie (HIMMEL-4675);
+    gallery-dl with the burner-account cookies is the fallback only while
+    HIMMEL_MEDIA_COOKIES=on (HIMMEL-4708, default off).
   - Reels (video): ffmpeg -> mono 16kHz WAV -> local faster-whisper transcript.
   - Carousels (images): ffmpeg recompress <=1600px JPEG, copy into the vault at
     Clippings/_media/<clip-slug>/slide-NN.jpg, embed under ### Slides.
@@ -272,6 +274,13 @@ def cookie_file() -> Path:
     return _home() / ".luna" / "cookies" / "instagram.txt"
 
 
+def media_cookies_on() -> bool:
+    """HIMMEL-4708: the one switch for every cookie-backed media path. Default
+    off - Scrapling is primary; HIMMEL_MEDIA_COOKIES=on restores the gallery-dl
+    cookie fallback exactly as before."""
+    return (os.environ.get("HIMMEL_MEDIA_COOKIES") or "").strip().lower() == "on"
+
+
 def cache_root() -> Path:
     return _home() / ".luna" / "ig-media"
 
@@ -316,7 +325,22 @@ def scrapling_permitted(vault: Path, url: str) -> bool:
 def preflight(scrapling: bool):
     """ffmpeg always; gallery-dl + the cookie only when Scrapling (the primary,
     cookieless backend) is unavailable - then they are the fallback. Returns
-    the cookie path, or None when gallery-dl is not usable."""
+    the cookie path, or None when gallery-dl is not usable. With the cookie
+    switch off (HIMMEL-4708) gallery-dl is never used and Scrapling is the only
+    backend."""
+    if not media_cookies_on():
+        missing = [b for b in ("ffmpeg",) if shutil.which(b) is None]
+        if missing or not scrapling:
+            print(
+                "ig-media-fetch: " +
+                ("missing required binaries: ffmpeg" if missing else
+                 "no cookieless backend, and the gallery-dl cookie fallback is "
+                 "opted out (HIMMEL_MEDIA_COOKIES=on turns it back on)") +
+                ("" if scrapling else SCRAPLING_HINT),
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return None
     missing = [b for b in ("gallery-dl", "ffmpeg")
                if shutil.which(b) is None and (b == "ffmpeg" or not scrapling)]
     if missing:
@@ -460,14 +484,20 @@ def download_media_scrapling(ig: dict, py: str):
 
 def fetch_media(ig: dict, cf, scrapling):
     """Scrapling first (cookieless); gallery-dl (cookie) is the fallback for
-    any Scrapling miss except a throttle stop, which ends the batch.
-    Returns (files, error, caption, backend)."""
+    any Scrapling miss except a throttle stop, which ends the batch. With the
+    cookie switch off (HIMMEL-4708) a miss is returned as scrapling:<error>,
+    never retried with the cookie. Returns (files, error, caption, backend)."""
     error = None
     if scrapling:
         files, error, caption = download_media_scrapling(ig, scrapling)
         if files:
             return files, None, caption, "scrapling"
-        if error.startswith("throttled:") or cf is None:
+        if error.startswith("throttled:"):
+            return None, error, None, "scrapling"
+        if not media_cookies_on():
+            return (None, error if error == "removed" else f"scrapling:{error}",
+                    None, "scrapling")
+        if cf is None:
             return None, error, None, "scrapling"
     if cf is None:
         return None, "gallery_dl_missing", None, "gallery-dl"
@@ -483,7 +513,7 @@ def classify(files):
 
 
 def write_markers(path: Path, text: str, fm_raw: str, body: str, has_crlf: bool,
-                  status: str, error: str, permanent: bool):
+                  status: str, error: str, permanent: bool, backend: str = None):
     """Write frontmatter-only with media enrichment markers. Re-reads after the
     write and verifies the BODY is byte-for-byte identical to the pre-write body
     (Scoped-G-3: everything outside the tool-owned frontmatter region stays
@@ -497,6 +527,8 @@ def write_markers(path: Path, text: str, fm_raw: str, body: str, has_crlf: bool,
         markers["media_last_error"] = error
     if permanent:
         markers["media_enriched_at"] = TODAY
+    if status == "deferred" and backend:
+        markers["ig_media_backend"] = backend   # HIMMEL-4708: name the backend
     new_fm_raw = upsert_media_markers(fm_raw, markers)
     if permanent:
         # A permanent failure (removed/404) will never enrich; release the clip
@@ -973,9 +1005,13 @@ def enrich_batch(args, selected, matched_total, remaining):
                 text, has_crlf = read_clip(p)
                 fm, fm_raw, body, present = parse_frontmatter(text)
                 permanent = error == "removed"      # 404/removed is permanent
+                # HIMMEL-4708: a Scrapling miss with the cookie fallback opted
+                # out is deferred (stays pending), naming the backend.
+                status = "deferred" if error.startswith("scrapling:") else "failed"
                 if write_markers(p, text, fm_raw, body, has_crlf,
-                                 status="failed", error=error, permanent=permanent):
-                    print(f"x {relpath}: failed ({error})")
+                                 status=status, error=error, permanent=permanent,
+                                 backend=backend):
+                    print(f"x {relpath}: {status} ({error})")
                 else:
                     print(f"marker write REVERTED - failure NOT recorded for "
                           f"{relpath}", file=sys.stderr)
