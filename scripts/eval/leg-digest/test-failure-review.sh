@@ -36,6 +36,13 @@ PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); echo "  ok   $1"; }
 bad() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; }
 check() { if eval "$2"; then ok "$1"; else bad "$1"; fi; }
+# Every call that takes the notify lock runs under this bound, so a lock regression (a self-deadlock, HIMMEL-4801)
+# fails the suite with a message instead of hanging it. Measured: the whole suite runs in ~2 s, so no single call
+# takes more than a second; 30 s is well above any loaded run.
+BOUND=30
+exec 3>&1
+# fd 3 is the suite's own stdout: review() runs with its output redirected, and the message must still show.
+hung() { if [ "$1" = 124 ]; then FAIL=$((FAIL + 1)); echo "  FAIL $2 hit the ${BOUND}s bound (rc 124): the notify lock is held or deadlocked" >&3; fi; }
 NOW=2026-10-07T12:00:00Z
 DAY=2026-10-07
 
@@ -74,8 +81,11 @@ row() {
 # review <case dir> [args...]: one run with every path inside the case dir.
 review() {
   local d="$1"; shift
-  python3 "$FRV" --ledger "$d/ledger.jsonl" --state "$d/state.json" --log "$d/log.jsonl" --inbox "$d/inbox.md" \
+  timeout "$BOUND" python3 "$FRV" --ledger "$d/ledger.jsonl" --state "$d/state.json" --log "$d/log.jsonl" --inbox "$d/inbox.md" \
     --out-dir "$d/out" --now "$NOW" --jira-bin "$STUB/jira" "$@"
+  local rc=$?
+  hung "$rc" "review $(basename "$d")"
+  return "$rc"
 }
 digest() { cat "$1/out/failure-review-$DAY.md" 2>/dev/null; }
 
@@ -117,8 +127,9 @@ check "a rerun routes nothing new: no second ticket, routed none" '[ "$(calls cr
 
 C3k="$TMP/c3k"; mkdir -p "$C3k"; cp "$C2/ledger.jsonl" "$C3k/ledger.jsonl"
 n3="$(calls create)"
-env -u JIRA_PROJECT_KEY python3 "$FRV" --ledger "$C3k/ledger.jsonl" --state "$C3k/state.json" --log "$C3k/log.jsonl" --inbox "$C3k/inbox.md" \
+env -u JIRA_PROJECT_KEY timeout "$BOUND" python3 "$FRV" --ledger "$C3k/ledger.jsonl" --state "$C3k/state.json" --log "$C3k/log.jsonl" --inbox "$C3k/inbox.md" \
   --out-dir "$C3k/out" --now "$NOW" --jira-bin "$STUB/jira" --live >"$C3k/run.out" 2>&1; rc=$?
+hung "$rc" "review c3k"
 check "a live review with no JIRA_PROJECT_KEY fails closed and says the key is missing" '[ "$rc" = 1 ] && grep -q "JIRA_PROJECT_KEY is required" "$C3k/run.out" && digest "$C3k" | grep -q "router: failed" && [ "$(calls create)" = "$n3" ]'
 
 echo "4. a capped day says so"
@@ -221,11 +232,13 @@ check "disarm removes the entry and the runner" '! grep -q "HIMMEL-FailureReview
 printf '#!/usr/bin/env bash\necho SKIPPED-BANK\n' >"$STUB/preflight"; chmod +x "$STUB/preflight"
 C8="$TMP/c8"; mkdir -p "$C8"
 FAILURE_REVIEW_PREFLIGHT="$STUB/preflight" HIMMEL_FAILURE_REVIEW_DIR="$C8/out" HIMMEL_LEG_FAILURES_LEDGER="$C2/ledger.jsonl" \
-  bash "$CAD" run >"$C8/run.out" 2>&1; rc=$?
+  timeout "$BOUND" bash "$CAD" run >"$C8/run.out" 2>&1; rc=$?
+hung "$rc" "cadence run (skipped-bank)"
 check "a SKIPPED-BANK preflight skips the run, rc 0, no digest" '[ "$rc" = 0 ] && grep -q "SKIPPED-BANK" "$C8/run.out" && [ ! -d "$C8/out" ]'
 printf '#!/usr/bin/env bash\necho PROCEED\n' >"$STUB/preflight"
 FAILURE_REVIEW_PREFLIGHT="$STUB/preflight" HIMMEL_FAILURE_REVIEW_DIR="$C8/out" HIMMEL_LEG_FAILURES_LEDGER="$C2/ledger.jsonl" \
-  HIMMEL_FAILURE_ROUTES_STATE="$C8/state.json" bash "$CAD" run >"$C8/run2.out" 2>&1; rc=$?
+  HIMMEL_FAILURE_ROUTES_STATE="$C8/state.json" timeout "$BOUND" bash "$CAD" run >"$C8/run2.out" 2>&1; rc=$?
+hung "$rc" "cadence run (proceed)"
 check "a PROCEED preflight runs the review dry-run" '[ "$rc" = 0 ] && ls "$C8/out"/failure-review-*.md >/dev/null 2>&1 && [ ! -e "$C8/state.json" ]'
 
 echo "9. delivery is persisted: a failed line is retried, a delivered one is not repeated (HIMMEL-4790)"
