@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2015  # A && B || C is intentional in check()/contains(), as in test-append-results.sh
 # shellcheck disable=SC2012  # ls over fixture dirs whose names the suite chose
+# shellcheck disable=SC2030,SC2031  # verdict_rc's subshell is deliberate: its export must not leak
 # scripts/handover/console-kit/test-write-verdict.sh - suite for
 # write-verdict.sh (HIMMEL-4689), the sanctioned writer a console-judge call
 # uses for its verdict file:
