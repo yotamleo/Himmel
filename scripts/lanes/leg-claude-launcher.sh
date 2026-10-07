@@ -130,6 +130,9 @@ if [ -n "${LEG_PROFILE_MCP_CONFIG:-}" ]; then
     PRE+=(--mcp-config "$LEG_PROFILE_MCP_CONFIG" --strict-mcp-config)
 fi
 
+# HIMMEL-4786: headed-arm-leg.sh minted this id and already recorded it in the
+# leg doc's front matter, so the digest step finds the session by id.
+[ -z "${LEG_SESSION_ID:-}" ] || PRE+=(--session-id "$LEG_SESSION_ID")
 if [ "${LEG_PROFILE_NO_SETTING_SOURCES:-}" = 1 ]; then
     PRE+=(--setting-sources "")
     # (HIMMEL-4118 F1) The consult is confined only if the FINAL argv carries

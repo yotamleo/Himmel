@@ -188,6 +188,9 @@ export TICK_STATE_DIR="$W/state"
 export HIMMEL_LEG_FAILURES_LEDGER="$W/leg-failures.jsonl"
 export HIMMEL_EVAL_RUNS_LEDGER="$W/eval-runs.jsonl"
 export HIMMEL_FAILURE_ROUTES_LOG="$W/failure-routes.log.jsonl"
+# HIMMEL-4786: fails= ~<k> reads the digest step's skips.jsonl under this dir.
+export LEG_DIGEST_STATE_DIR="$W/leg-digest"
+mkdir -p "$LEG_DIGEST_STATE_DIR"
 export CLAUDE_SESSIONS_PROC="$W/proc"
 # HIMMEL-3167: launch logs live in <work-dir>/<chain>/<name>.launch.log.
 export TICK_LAUNCH_DIR="$W/console-work"
@@ -1949,6 +1952,20 @@ case "$f4670" in *' fails='*' '*) fail "fails= is the last field when spare= is 
 contains 'verbose labels leg failures (HIMMEL-4670)' "$(TOKEN='' bash "$SUT" --doc "$d4670" --verbose 2>/dev/null)" 'leg failures: 1/1@error/Edit*1'
 printf '%s\n' '{"v":1,"ts":"2026-10-07T03:05:00Z","leg":"N8","class":"denied/a b\tc","failure":"denied","count":1}' > "$HIMMEL_LEG_FAILURES_LEDGER"
 same 'whitespace in the top class cannot split the TICK line (HIMMEL-4670)' "$(fails_of "$d4670")" '1/1@denied/a_b_c*1'
+# HIMMEL-4786: ~<k> = legs whose wrap digest was skipped this shift (the step's
+# skips.jsonl, distinct docs), so an undigested wrap is no longer silent.
+{
+    printf '%s\n' '{"ts":"2026-10-07T03:10:00Z","doc":"A.md","reason":"no-chain"}'
+    printf '%s\n' '{"ts":"2026-10-07T03:11:00Z","doc":"A.md","reason":"no-chain"}'
+    printf '%s\n' '{"ts":"2026-10-07T03:12:00Z","doc":"B.md","reason":"no-resume-cwd"}'
+    printf '%s\n' '{"ts":"2026-10-07T02:00:00Z","doc":"C.md","reason":"no-chain"}'
+} > "$LEG_DIGEST_STATE_DIR/skips.jsonl"
+same 'fails= ~<k> counts docs whose digest was skipped this shift (HIMMEL-4786)' "$(fails_of "$d4670")" '1/1@denied/a_b_c*1~2'
+rm -f "$HIMMEL_LEG_FAILURES_LEDGER"
+same 'fails=none~<k> when skips are the only signal (HIMMEL-4786)' "$(fails_of "$d4670")" 'none~2'
+rm -f "$LEG_DIGEST_STATE_DIR/skips.jsonl"; mkdir -p "$LEG_DIGEST_STATE_DIR/skips.jsonl"
+same 'fails=? when the skips log is unreadable (HIMMEL-4786)' "$(fails_of "$d4670")" '?'
+rmdir "$LEG_DIGEST_STATE_DIR/skips.jsonl"
 rm -f "$HIMMEL_LEG_FAILURES_LEDGER" "$HIMMEL_EVAL_RUNS_LEDGER" "$HIMMEL_FAILURE_ROUTES_LOG"
 
 if [ "$fails" -eq 0 ]; then
