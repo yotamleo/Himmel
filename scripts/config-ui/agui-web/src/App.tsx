@@ -1,4 +1,4 @@
-import { useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { agentState, currentCall, initialView, liveness, reduce, runClock, runningCount, settledCount, type Agent, type ClockAnchor, type Entry, type Failure, type Text, type Tool, type View } from "./reducer";
 import type { Source } from "./stream";
 
@@ -29,7 +29,13 @@ export function App({ source }: { source: Source }) {
     return source.start((e) => dispatch({ kind: "event", e }), (message) => dispatch({ kind: "fail", message }), () => setClosed(true));
   }, [source, epoch]);
 
-  const focus = (id: string) => requestAnimationFrame(() => document.getElementById(id)?.focus());
+  const pendingFocus = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!pendingFocus.current) return;
+    document.getElementById(pendingFocus.current)?.focus();
+    pendingFocus.current = null;
+  });
+  const focus = (id: string) => { pendingFocus.current = id; };
   const reveal = (id: string) => {
     setOpen((o) => ({ ...o, [id]: true }));
     focus(`call-${id}`);
