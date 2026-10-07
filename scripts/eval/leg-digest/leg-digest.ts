@@ -44,6 +44,8 @@ const BRACKET = /Reason: \[([^\]\n]{1,80})\]/;
 const TEST_NAME = /[\w./-]*?((?:test-[\w.-]+\.sh)|(?:[\w.-]+\.test\.ts))\b/g;
 const SCRIPT_NAME = /[\w./-]*?([\w.+-]+\.sh)\b/g;
 const GREP_CMD = /(?:^|[\s;&|(])(?:grep|egrep|fgrep|rg|ugrep)\s/;
+// The last stage of a pipeline whose exit status can be a grep's: the grep itself or a filter that passes it through.
+const PASS_THROUGH = /^\s*(?:(?:grep|egrep|fgrep|rg|ugrep|head|tail|sort|uniq|cat)\b|\()/;
 
 // HIMMEL-4785: a Bash error is sub-classed by this table, first match wins. `out` tests the result text, `cmd` the
 // command; `sub` is a fixed name, so no journal text reaches a class key. "usage" takes its script from SCRIPT_NAME
@@ -226,12 +228,18 @@ async function main() {
   };
   // null: not a failure (a grep that matched nothing). Else "" or ":<sub>", appended to error/Bash.
   const bashErrorSub = (cmd: string, text: string): string | null => {
-    // Only the last command of a sequence can be the grep whose exit 1 this is: in `grep x f; false` the failure is `false`'s.
-    if (NO_MATCH.test(text) && GREP_CMD.test(cmd.split(/;|&&|\|\||\n/).filter((s) => s.trim()).pop() ?? "")) return null;
+    // Only the last stage of the last command can be the grep whose exit 1 this is: in `grep x f; false` or
+    // `grep x f | false` the failure is `false`'s. ponytail: `false && grep x f` still reads as a no-match (the
+    // grep never ran), a sequence cannot be told from `ls && grep x f` without running it; revisit if the board shows it.
+    const stages = (cmd.split(/;|&&|\|\||\n/).filter((s) => s.trim()).pop() ?? "").split("|");
+    if (NO_MATCH.test(text) && GREP_CMD.test(stages.join(" ")) && PASS_THROUGH.test(stages[stages.length - 1])) return null;
     for (const e of BASH_ERRORS) {
       if (!e.out.test(text) || (e.cmd && !e.cmd.test(cmd))) continue;
       if (e.sub !== "usage") return `:${e.sub}`;
-      for (const hit of cmd.matchAll(SCRIPT_NAME)) if (scripts.has(hit[1])) return `:usage:${hit[1].replace(/\.sh$/, "")}`;
+      // The script the usage error is about: the only tracked one in the command, else the one its output names.
+      const named = [...new Set([...cmd.matchAll(SCRIPT_NAME)].map((h) => h[1]).filter((s) => scripts.has(s)))];
+      const hit = named.length === 1 ? named : named.filter((s) => text.includes(s));
+      if (hit.length === 1) return `:usage:${hit[0].replace(/\.sh$/, "")}`;
     }
     return "";
   };
