@@ -67,6 +67,8 @@ cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
 case "$1" in
   heartbeat) exit 0 ;;
   status)
+    # HIMMEL-4670 P4: a held console lock prints its owner.json (started = the shift start).
+    case "$2" in *console-fails*) printf '%s\n' '{"session":"s","host":"h","handover":"x","started":"2026-10-07T03:00:00Z","heartbeat":"2026-10-07T03:10:00Z"}' 'status: FRESH'; exit 11 ;; esac
     case "$2" in *N61*|*-N1-*|*-N2-*|*-N191-*|*-leg192-*|*-legN194-*|*odd-name*|*-N301-*|*-N302-*|*-N303-*) printf '%s\n' 'status: FRESH'; exit 11 ;;
     *-N380-*) printf '%s\n' 'held -- UNVERIFIED lock: /r/.locks/queue/x.lock is named for this doc but records /elsewhere/x.md, which does not resolve here'; exit 11 ;; *) printf '%s\n' free; exit 0 ;; esac ;;
 esac
@@ -182,6 +184,10 @@ export PS_FIXTURE="$W/ps-none.txt"
 export TICK_BANK_CACHE_FILE="$W/bank.json"
 # HIMMEL-3840: ciq= keeps the last tick's jobs_in_progress under here; never the real ~/.himmel.
 export TICK_STATE_DIR="$W/state"
+# HIMMEL-4670 P4: fails= reads these three ledgers; never the real ~/.himmel ones.
+export HIMMEL_LEG_FAILURES_LEDGER="$W/leg-failures.jsonl"
+export HIMMEL_EVAL_RUNS_LEDGER="$W/eval-runs.jsonl"
+export HIMMEL_FAILURE_ROUTES_LOG="$W/failure-routes.log.jsonl"
 export CLAUDE_SESSIONS_PROC="$W/proc"
 # HIMMEL-3167: launch logs live in <work-dir>/<chain>/<name>.launch.log.
 export TICK_LAUNCH_DIR="$W/console-work"
@@ -190,7 +196,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown plan-index=skip or=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown plan-index=skip or=skip fails=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1853,7 +1859,7 @@ printf '%s\n' "${STUB_SPARE-seven_day_reset_in=?  unspent_at_reset=?}"
 STUB
 spare_has() { case "$2" in *' spare='*) fail "$1 (out='$2')" ;; *) pass "$1" ;; esac; }
 spare_out="$(STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=33.7' bash "$SUT")"
-contains 'spare= shows when spare >= 10 and reset <= 24h (HIMMEL-4421)' "$spare_out" ' or=skip spare=33@6h'
+contains 'spare= shows when spare >= 10 and reset <= 24h (HIMMEL-4421)' "$spare_out" ' or=skip fails=? spare=33@6h'
 spare_has 'spare= is absent below the spare threshold (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=6.4h unspent_at_reset=9.9' bash "$SUT")"
 spare_has 'spare= is absent when the reset is more than 24h out (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=24.5h unspent_at_reset=60.0' bash "$SUT")"
 spare_has 'spare= is absent when the monitor reads ? (HIMMEL-4421)' "$(STUB_SPARE='seven_day_reset_in=? unspent_at_reset=?' bash "$SUT")"
@@ -1884,6 +1890,53 @@ rm -f "$W/handover/.locks/go/4568.$head4568"
 printf '%s\n' '# leg' "- 10:40 READY 4568 $head4568 GREEN" '- 10:41 LIVE — fixing a review finding' > "$d4568"
 touch -d '31 minutes ago' "$d4568"
 [ "$(tail4568)" = N568:LIVE ] && printf 'ok - an old LIVE tail is never marked stale (HIMMEL-4568)\n' || { fails=$((fails+1)); printf 'FAIL - old LIVE went stale\n'; }
+
+# --- HIMMEL-4670 P4: fails=<n>/<legs>[@<top-class>*<k>][!<recur>] -----------------
+# This shift = leg-failures rows with ts >= the console lock's `started`. The stub
+# queue-lock prints an owner.json for a *console-fails* doc (started 03:00Z) and
+# `free` for any other doc, so a console lock with no start reads fails=?.
+d4670="$W/handover/HIMMEL-4670-console-fails.md"
+d4670_free="$W/handover/HIMMEL-4670-console-nolock.md"
+printf '%s\n' '# console' > "$d4670"
+printf '%s\n' '# console' > "$d4670_free"
+same() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (got '$2', want '$3')"; fi; }
+fails_of() { TOKEN='' bash "$SUT" --doc "$1" 2>/dev/null | sed -E 's/.* fails=([^ ]*).*/\1/'; }
+frow() { printf '{"v":1,"ts":"%s","leg":"%s","class":"%s","failure":"denied","count":%s,"recovered":%s}\n' "$1" "$2" "$3" "$4" "${5:-null}"; }
+rm -f "$HIMMEL_LEG_FAILURES_LEDGER" "$HIMMEL_EVAL_RUNS_LEDGER" "$HIMMEL_FAILURE_ROUTES_LOG"
+same 'fails=none when no ledger exists yet (HIMMEL-4670)' "$(fails_of "$d4670")" 'none'
+same 'fails=? when the console lock has no readable start (HIMMEL-4670)' "$(fails_of "$d4670_free")" '?'
+{
+    frow 2026-10-07T02:59:59Z N1 denied/old-shift 9
+    frow 2026-10-07T03:05:00Z N1 denied/guard-a 2 true
+    frow 2026-10-07T03:06:00Z N2 denied/guard-a 3 false
+    frow 2026-10-07T03:07:00Z N2 suite/test-x.sh 7
+    printf 'not json\n'
+} > "$HIMMEL_LEG_FAILURES_LEDGER"
+same 'fails= counts this shift only: rows, distinct legs, top class by legs (HIMMEL-4670)' "$(fails_of "$d4670")" '3/2@denied/guard-a*2'
+{
+    printf '%s\n' '{"ts":"2026-10-07T03:08:00Z","class":"denied/guard-a","legs":2,"decision":"filed","ticket":"HIMMEL-9001"}'
+    printf '%s\n' '{"ts":"2026-10-07T03:08:00Z","class":"suite/test-x.sh","legs":1,"decision":"skipped:signal","ticket":null}'
+    printf '%s\n' '{"ts":"2026-10-07T03:09:00Z","class":"denied/classifier:ship","legs":2,"decision":"capped","ticket":null}'
+    printf '%s\n' '{"ts":"2026-10-07T03:09:30Z","class":"denied/guard-a","legs":2,"decision":"commented","ticket":"HIMMEL-9001"}'
+    printf '%s\n' '{"ts":"2026-10-07T02:00:00Z","class":"denied/guard-b","legs":3,"decision":"commented","ticket":"HIMMEL-9002"}'
+} > "$HIMMEL_FAILURE_ROUTES_LOG"
+same 'fails= !<recur> = distinct classes the router did not skip this shift (HIMMEL-4670)' "$(fails_of "$d4670")" '3/2@denied/guard-a*2!2'
+printf '%s\n' '{"ts":"2026-10-07T03:20:00Z","eval":"leg-trajectory","status":"inconclusive","meta":{"digest_error":"timeout"}}' > "$HIMMEL_EVAL_RUNS_LEDGER"
+same 'fails=? when the latest wrap digest this shift failed (HIMMEL-4670)' "$(fails_of "$d4670")" '?'
+printf '%s\n' '{"ts":"2026-10-07T03:30:00Z","eval":"leg-trajectory","status":"ok","meta":{}}' >> "$HIMMEL_EVAL_RUNS_LEDGER"
+same 'a later good digest clears fails=? (HIMMEL-4670)' "$(fails_of "$d4670")" '3/2@denied/guard-a*2!2'
+printf '%s\n' '{"ts":"2026-10-07T02:30:00Z","eval":"leg-trajectory","status":"inconclusive","meta":{"digest_error":"crash"}}' > "$HIMMEL_EVAL_RUNS_LEDGER"
+same 'a failed digest from before this shift does not read ? (HIMMEL-4670)' "$(fails_of "$d4670")" '3/2@denied/guard-a*2!2'
+rm -f "$HIMMEL_LEG_FAILURES_LEDGER"; mkdir -p "$HIMMEL_LEG_FAILURES_LEDGER"
+same 'fails=? when the ledger is unreadable (HIMMEL-4670)' "$(fails_of "$d4670")" '?'
+rmdir "$HIMMEL_LEG_FAILURES_LEDGER"
+frow 2026-10-07T03:05:00Z N7 error/Edit 1 > "$HIMMEL_LEG_FAILURES_LEDGER"
+: > "$HIMMEL_FAILURE_ROUTES_LOG"
+f4670="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
+contains 'fails= follows or= (HIMMEL-4670)' "$f4670" ' or=skip fails=1/1@error/Edit*1'
+case "$f4670" in *' fails='*' '*) fail "fails= is the last field when spare= is absent (out='$f4670')" ;; *) pass 'fails= is the last field when spare= is absent (HIMMEL-4670)' ;; esac
+contains 'verbose labels leg failures (HIMMEL-4670)' "$(TOKEN='' bash "$SUT" --doc "$d4670" --verbose 2>/dev/null)" 'leg failures: 1/1@error/Edit*1'
+rm -f "$HIMMEL_LEG_FAILURES_LEDGER" "$HIMMEL_EVAL_RUNS_LEDGER" "$HIMMEL_FAILURE_ROUTES_LOG"
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

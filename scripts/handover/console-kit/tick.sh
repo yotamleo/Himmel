@@ -57,6 +57,14 @@ weekly quota the current burn leaves unspent at the reset (bank-monitor.sh
 TICK_SPARE_HOURS hours away (default 24). Advisory: it is not in console-wait's
 action key and wakes nothing.
 
+fails=<n>/<legs>[@<top-class>*<k>][!<recur>] (HIMMEL-4670) sits just before
+spare=: this shift's leg-failures ledger rows (since the console lock's start),
+distinct legs, the class most legs hit, and the classes the failure router acted
+on this shift. fails=none with no rows, fails=? when a ledger or the lock start is
+unreadable or the latest wrap digest failed, skip with no --doc. Advisory: not in
+console-wait's action key, so it wakes nothing. Env seams:
+HIMMEL_LEG_FAILURES_LEDGER, HIMMEL_EVAL_RUNS_LEDGER, HIMMEL_FAILURE_ROUTES_LOG.
+
 gql=<remaining>/<reset HH:MM> (HIMMEL-3197): the GitHub GraphQL budget, read from
 the X-Ratelimit-* headers of ONE `gh api -i graphql` call
 (gh-graphql-budget.sh ghb_read); gql=? when the headers cannot be read.
@@ -1086,6 +1094,49 @@ if [ -n "$spare_in" ] && [ -n "$spare_pct" ] \
     spare_tail=" spare=$(awk -v p="$spare_pct" 'BEGIN { printf "%d", p }')@$(awk -v h="$spare_in" 'BEGIN { printf "%d", h }')h"
 fi
 
+# HIMMEL-4670 P4: fails=<n>/<legs>[@<top-class>*<k>][!<recur>] -- this shift's
+# leg-failures ledger rows (ts >= the console lock's `started`): <n> rows, <legs>
+# distinct legs, the class with the most distinct legs (then events, then name),
+# and !<recur> = distinct classes the failure router decided on this shift with a
+# decision other than skipped:* (its log, spec section 4.3; absent until P5 writes
+# one). fails=none with no row; fails=? when the lock start, the ledger or the
+# routes log is unreadable, or the latest leg-trajectory eval-runs row this shift
+# carries meta.digest_error; skip with no --doc. Advisory: console-wait.sh's
+# action key does not name it, so it wakes nothing. Each path honours the env
+# seam its writer uses (leg_ledger.py, eval_runs.py).
+fails_summary=skip
+if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
+    fails_summary='?'
+    fails_start="$(bash "$REPO/scripts/handover/queue-lock.sh" status "$console_doc" 2>/dev/null | sed -n 's/.*"started":"\([0-9][0-9TZ:-]*\)".*/\1/p' | head -n 1)"
+    fl_ledger="${HIMMEL_LEG_FAILURES_LEDGER:-$HOME/.himmel/leg-failures.jsonl}"
+    fl_evals="${HIMMEL_EVAL_RUNS_LEDGER:-$HOME/.himmel/eval-runs.jsonl}"
+    fl_routes="${HIMMEL_FAILURE_ROUTES_LOG:-$HOME/.himmel/state/failure-routes.log.jsonl}"
+    # Readable-or-absent: an absent file is an empty one, anything else unreadable is ?.
+    fl_ok() { [ ! -e "$1" ] || { [ -f "$1" ] && [ -r "$1" ]; }; }
+    fl_rows() { [ ! -e "$1" ] || jq -R -c --arg s "$fails_start" 'fromjson? | select(type == "object" and (.ts | type) == "string" and .ts >= $s)' "$1"; }
+    if [ -n "$fails_start" ] && command -v jq >/dev/null 2>&1 \
+       && fl_ok "$fl_ledger" && fl_ok "$fl_evals" && fl_ok "$fl_routes"; then
+        fl_digest="$(fl_rows "$fl_evals" | jq -s -r 'map(select(.eval == "leg-trajectory")) | if length > 0 and (last.meta.digest_error? // null) != null then "failed" else "ok" end' 2>/dev/null)"
+        fl_recur="$(fl_rows "$fl_routes" | jq -s -r 'map(select((.class | type) == "string" and (.decision | type) == "string" and (.decision | startswith("skipped") | not))) | map(.class) | unique | length' 2>/dev/null)"
+        fl_counts="$(fl_rows "$fl_ledger" | jq -s -r '
+            map(select((.class | type) == "string"))
+            | if length == 0 then "none"
+              else
+                (map(.leg) | unique | length) as $legs
+                | (group_by(.class)
+                   | map({c: .[0].class, l: (map(.leg) | unique | length),
+                          e: (map(if (.count | type) == "number" then .count else 1 end) | add)})
+                   | sort_by(-.l, -.e, .c) | .[0]) as $top
+                | "\(length)/\($legs)@\($top.c)*\($top.l)"
+              end' 2>/dev/null)"
+        case "$fl_recur" in ''|*[!0-9]*) fl_counts="" ;; esac
+        if [ "$fl_digest" = ok ] && [ -n "$fl_counts" ]; then
+            fails_summary="$fl_counts"
+            [ "$fl_counts" = none ] || [ "$fl_recur" -eq 0 ] || fails_summary="$fails_summary!$fl_recur"
+        fi
+    fi
+fi
+
 fill="$(bash "$REPO/scripts/context-fill.sh" --percent 2>/dev/null)" || fill=""
 case "$fill" in ''|*[!0-9]*) fill='?' ;; esac
 
@@ -1399,6 +1450,7 @@ if [ "$verbose" -eq 1 ]; then
     printf 'ci queue: %s\n' "$ciq_summary"
     printf 'plan-index: %s\n' "$plan_index_summary"
     printf 'OpenRouter: %s\n' "$openrouter"
+    printf 'leg failures: %s\n' "$fails_summary"
     [ -z "$spare_tail" ] || printf 'spare: %s\n' "${spare_tail# spare=}"
 else
     # `tick=` is always appended (HIMMEL-3144); `burn=` stays APPENDED only
@@ -1408,13 +1460,14 @@ else
     # `orphans=` (HIMMEL-2761) follows, `nonces=` (HIMMEL-3254) follows it, and
     # `legset=` (HIMMEL-3293) follows, `board=` (HIMMEL-3361) follows it, and
     # `tracker=` (HIMMEL-3933) follows `board=`, `denials=` (HIMMEL-3724) follows,
-    # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) is last.
+    # and `ciq=` (HIMMEL-3840) follows, `plan-index=` (HIMMEL-4051) and `or=`
+    # follow, and `fails=` (HIMMEL-4670) closes the line, before the optional `spare=`.
     if [ "$burn" -eq 1 ]; then
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$spare_tail"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s burn=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$burn_summary" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
     else
-        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s%s\n' \
-            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$spare_tail"
+        printf 'TICK %s hb=%s legs=%s livestate=%s procs=%s models=%s %s atq=%s suites=%s prs=%s bank=%s fill=%s tails=%s inbox=%s tick=%s fleet=%s capacity=%s gql=%s orphans=%s nonces=%s legset=%s board=%s tracker=%s denials=%s ciq=%s plan-index=%s or=%s fails=%s%s\n' \
+            "$clock" "$hb" "$legs_summary" "$livestate_summary" "$procs" "$models_summary" "$ceiling_summary" "$at_count" "$suites" "$prs" "$bank" "$fill" "$tails_summary" "$inbox_summary" "$tick_status" "$fleet" "$capacity" "$gql" "$orphans" "$nonces_summary" "$legset_summary" "$board_summary" "$tracker_summary" "$denials_summary" "$ciq_summary" "$plan_index_summary" "$openrouter" "$fails_summary" "$spare_tail"
     fi
 fi
 if [ "$emit_fp" -eq 1 ]; then

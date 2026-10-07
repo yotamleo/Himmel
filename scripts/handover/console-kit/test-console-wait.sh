@@ -65,10 +65,10 @@ chmod +x "$STUB/page.sh"  # the sender seam is exec'd directly, not run via bash
 export CONSOLE_WAIT_PAGE_CMD="$STUB/page.sh" CONSOLE_WAIT_PAGE_TIMEOUT=2
 export HIMMEL_DENIAL_ACK_DIR="$WORK/acks"
 
-# tick_line <legs> <board> [hb] [prs]: a tick line whose action fields are set.
+# tick_line <legs> <board> [hb] [prs] [or] [fails]: a tick line whose action fields are set.
 tick_line() {
-    printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s denials=none or=%s\n' \
-        "${3:-1m}" "$1" "${4:-#10}" "$2" "${5:-skip}" > "$STUB/tick.line"
+    printf 'TICK 03:00 hb=%s legs=%s livestate=ok procs=2 models=x ceiling=ok atq=0 suites=0alive/0dead prs=%s bank=5h8/wk15/codex=? fill=40 tails=N1:LIVE inbox=none tick=UNKNOWN fleet=3/15 capacity=ok gql=4000/04:00 orphans=none nonces=ok legset=ok board=%s denials=none or=%s fails=%s\n' \
+        "${3:-1m}" "$1" "${4:-#10}" "$2" "${5:-skip}" "${6:-none}" > "$STUB/tick.line"
 }
 reset_stub() { rm -f "$STUB/tick.rc" "$STUB/tick.blip" "$STUB/tick.churn" "$STUB/tick.sleep" "$STUB/tick.failafter" "$STUB/tick.ignoreterm"; tick_line "N1:FRESH" "ok"; printf 'PROCEED\n' > "$STUB/bank"; }
 
@@ -189,6 +189,16 @@ wait_exit "$WPID"
 check "(c) heartbeat, board age or exhausted OpenRouter credit does not wake" "running" "$rc"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 check "(c) a TERM is logged as the exit reason" "yes" "$(grep -q 'exit=signal-TERM' "$I.wait" && echo yes)"
+
+# --- (c4670) fails= is advisory: a new failure class or recur wakes nothing -
+reset_stub
+I="$(new_inbox c4670)"
+start "$I" "$WORK/c4670.out" --legs "N1.md"
+wait_hb "$I" || fail "(c4670) no baseline heartbeat"
+tick_line "N1:FRESH" "ok" "1m" '#10' 'skip' '3/2@denied/guard-a*2!1'
+wait_exit "$WPID"
+check "(c4670) a fails= change does not wake (HIMMEL-4670)" "running" "$rc"
+[ "$rc" = running ] && { kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null; }
 
 # --- (d) a one-sample blip (a failed gh read) does not wake -----------------
 reset_stub
