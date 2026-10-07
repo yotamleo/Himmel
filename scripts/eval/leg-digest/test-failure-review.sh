@@ -254,20 +254,20 @@ review "$C6b" >"$C6b/run2.out" 2>&1; rc=$?
 check "a new class whose send failed is retried by the next run" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Bash"'
 C9c="$TMP/c9c"; mkdir -p "$C9c"
 row "$C9c/ledger.jsonl" N600 error/Edit
-echo 'not json' >"$C9c/state.notify.json"
+echo 'not json' >"$C9c/state.json.notify.json"
 review "$C9c" --notify-cmd "$STUB/notify-fail" >"$C9c/run1.out" 2>&1; rc=$?
-check "an unreadable notify state is kept aside, never overwritten" '[ "$rc" = 3 ] && [ "$(cat "$C9c"/state.notify.json.unreadable.*)" = "not json" ]'
+check "an unreadable notify state is kept aside, never overwritten" '[ "$rc" = 3 ] && [ "$(cat "$C9c"/state.json.notify.json.unreadable.*)" = "not json" ]'
 s0="$(sends)"
 review "$C9c" >/dev/null 2>&1; rc=$?
 check "a failed send over an unreadable state is still retried" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Edit"'
 C9d="$TMP/c9d"; mkdir -p "$C9d"
 row "$C9d/ledger.jsonl" N700 error/Write
-echo '{"v":1,"pending":[1],"sent":{}}' >"$C9d/state.notify.json"
+echo '{"v":1,"pending":[1],"sent":{}}' >"$C9d/state.json.notify.json"
 review "$C9d" >"$C9d/run.out" 2>&1; rc=$?
-check "a non-string pending entry is an unreadable state, not a crash" '[ "$rc" = 0 ] && ls "$C9d"/state.notify.json.unreadable.* >/dev/null 2>&1 && ! grep -q Traceback "$C9d/run.out"'
-echo 'still not json' >"$C9c/state.notify.json"
+check "a non-string pending entry is an unreadable state, not a crash" '[ "$rc" = 0 ] && ls "$C9d"/state.json.notify.json.unreadable.* >/dev/null 2>&1 && ! grep -q Traceback "$C9d/run.out"'
+echo 'still not json' >"$C9c/state.json.notify.json"
 review "$C9c" >/dev/null 2>&1
-check "a second unreadable state does not overwrite the first one kept aside" '[ "$(ls "$C9c"/state.notify.json.unreadable.* | wc -l)" = 2 ]'
+check "a second unreadable state does not overwrite the first one kept aside" '[ "$(ls "$C9c"/state.json.notify.json.unreadable.* | wc -l)" = 2 ]'
 C9e="$TMP/c9e"; mkdir -p "$C9e"
 row "$C9e/ledger.jsonl" N050 denied/guard-kill 1 2026-10-03T08:00:00Z
 row "$C9e/ledger.jsonl" N100 denied/guard-kill 1
@@ -292,8 +292,32 @@ row "$C9g/ledger.jsonl" N800 error/Read
 review "$C9g" --notify-cmd "$STUB/notify-fail" >/dev/null 2>&1
 s0="$(sends)"
 review "$C9g" --ledger "$C9g/other-ledger.jsonl" --state "$C9g/other.json" >/dev/null 2>&1
-check "a router state file in the same directory does not take another one's pending line" '[ "$(sends)" = "$s0" ] && [ -f "$C9g/state.notify.json" ]'
+check "a router state file in the same directory does not take another one's pending line" '[ "$(sends)" = "$s0" ] && [ -f "$C9g/state.json.notify.json" ]'
+C9h="$TMP/c9h"; mkdir -p "$C9h"
+row "$C9h/ledger.jsonl" N900 error/Task
+: >"$C9h/other-ledger.jsonl"
+review "$C9h" --state "$C9h/routes.json" --notify-cmd "$STUB/notify-fail" >/dev/null 2>&1
+s0="$(sends)"
+review "$C9h" --ledger "$C9h/other-ledger.jsonl" --state "$C9h/routes.state" >/dev/null 2>&1
+check "two router states differing only in extension keep separate pending lines" '[ "$(sends)" = "$s0" ] && [ -f "$C9h/routes.json.notify.json" ] && [ ! -e "$C9h/routes.state.notify.json" ]'
+C9i="$TMP/c9i"; mkdir -p "$C9i"
+row "$C9i/ledger.jsonl" N910 error/Skill
+printf '{"v":1,"pending":["filed denied/old-class"],"sent":{}}\n' >"$C9i/state.notify.json"
+s0="$(sends)"
+review "$C9i" >/dev/null 2>&1
+check "a pending line in the pre-HIMMEL-4798 notify file is sent once and the file moves to the new name" '[ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "undelivered earlier: filed denied/old-class" && [ -f "$C9i/state.json.notify.json" ] && [ ! -e "$C9i/state.notify.json" ]'
+C9j="$TMP/c9j"; mkdir -p "$C9j"
+row "$C9j/ledger.jsonl" N920 error/Monitor
+: >"$C9j/other-ledger.jsonl"
+review "$C9j" --state "$C9j/routes.json" --notify-cmd "$STUB/notify-fail" >/dev/null 2>&1
+s0="$(sends)"
+review "$C9j" --ledger "$C9j/other-ledger.jsonl" --state "$C9j/routes.json.state" >/dev/null 2>&1
+check "a state named like another's sidecar stem does not migrate that sidecar away" '[ "$(sends)" = "$s0" ] && [ -f "$C9j/routes.json.notify.json" ]'
+C9k="$TMP/c9k"; mkdir -p "$C9k"
+row "$C9k/ledger.jsonl" N930 error/Task
+review "$C9k" --state "$C9k/routes" >/dev/null 2>&1
+check "an extensionless router state finishes (its legacy and new sidecar names coincide)" '[ -f "$C9k/routes.notify.json" ]'
 
 echo
-echo "test-failure-review: $PASS passed, $FAIL failed"
+echo "test-failure-review:$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
