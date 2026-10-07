@@ -81,7 +81,15 @@ test("cloud routes: each ticket's newest routing decides; only a CLOUD-OK inside
     route("bad ticket; x", "CLOUD-OK", H),
     "{not json", "",
   ];
-  expect(cloudRoutes(lines, NOW).map((r) => r.ticket)).toEqual(["HIMMEL-2"]);
+  expect(cloudRoutes([{ lines, bucket: "/b" }], NOW).map((r) => r.ticket)).toEqual(["HIMMEL-2"]);
+});
+
+test("cloud routes: the newest routing across every bucket decides, and names the bucket it came from", () => {
+  const got = cloudRoutes([
+    { lines: [route("HIMMEL-5", "CLOUD-OK", 2 * H), route("HIMMEL-6", "CLOUD-OK", 2 * H)], bucket: "/a" },
+    { lines: [route("HIMMEL-5", "LOCAL-NATIVE", H), route("HIMMEL-6", "CLOUD-OK", H)], bucket: "/b" },
+  ], NOW);
+  expect(got.map((r) => [r.ticket, r.bucket])).toEqual([["HIMMEL-6", "/b"]]);
 });
 
 const pr = (number: number, title: string, state: string, comments: string[]) => ({ number, title, state, comments: { nodes: comments.map((body) => ({ body })) } });
@@ -99,6 +107,32 @@ test("cloud PRs: the PR whose title cites the ticket; its newest CLOUD comment s
   expect(got?.get("HIMMEL-3")).toEqual({ pr: 30, phase: "closed", url: null });
   expect(got?.get("HIMMEL-4")).toEqual({ pr: null, phase: "working", url: null });
   expect(cloudPrs({ errors: [{ message: "rate limited" }] }, ["HIMMEL-1"])).toBeNull();
+});
+
+test("cloud PRs: the newest PR citing the ticket decides; a missing or malformed alias is unknown, not working", () => {
+  const reply = { data: {
+    t0: { nodes: [pr(10, "feat: [HIMMEL-1] x", "MERGED", ["CLOUD-DONE https://claude.ai/code/session_01A"]), pr(12, "feat: [HIMMEL-1] again", "OPEN", [])] },
+    t1: null,
+    t2: { nodes: "oops" },
+  } };
+  const got = cloudPrs(reply, ["HIMMEL-1", "HIMMEL-2", "HIMMEL-3", "HIMMEL-4"]);
+  expect(got?.get("HIMMEL-1")).toEqual({ pr: 12, phase: "working", url: null });
+  for (const t of ["HIMMEL-2", "HIMMEL-3", "HIMMEL-4"]) expect(got?.get(t)).toEqual({ pr: null, phase: "unknown", url: null });
+});
+
+test("cloud GitHub read: a slow read past waitMs answers null now and fills the cache for the next poll", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fleet-cloud-"));
+  try {
+    const gh = join(dir, "gh");
+    writeFileSync(gh, `#!/bin/sh\nsleep 1\necho '{"data":{"t0":{"nodes":[]}}}'\n`);
+    chmodSync(gh, 0o755);
+    const opts = { gh, env: { PATH: process.env.PATH }, now: NOW + 10 * GH_TTL_MS, waitMs: 100 };
+    const t0 = Date.now();
+    expect(await readCloudPrs(["HIMMEL-7"], opts)).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(800);
+    await Bun.sleep(1500);
+    expect((await readCloudPrs(["HIMMEL-7"], opts))?.get("HIMMEL-7")).toMatchObject({ phase: "working" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("cloud GitHub read: one call per ticket set per TTL window; a failure is cached as unknown too", async () => {

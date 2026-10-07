@@ -21,7 +21,7 @@ import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { agentState, initialView, reduce, type View } from "../agui-web/src/reducer.ts";
-import { cloudRoutes, consoleOf, readCloudPrs, type CloudPhase, type CloudRoute } from "./fleet-cloud.ts";
+import { cloudRoutes, consoleOf, GH_WAIT_MS, readCloudPrs, type CloudPhase, type CloudRoute } from "./fleet-cloud.ts";
 import { createJournalMapper } from "./journal-mapper.ts";
 import { mergeJournalFiles, sessionFiles } from "./journal-merge.ts";
 import { resolveJournal } from "./sse.ts";
@@ -116,17 +116,14 @@ function runScript(script: string, env: Record<string, string | undefined>): Pro
 // read that failed leaves every one unknown (no PR, no URL) rather than failing the fleet.
 const CLOUD_STATE: Record<CloudPhase, FleetState> = { working: "running", done: "idle", blocked: "idle", merged: "wrapped", closed: "wrapped", unknown: "unknown" };
 async function cloudRows(logs: string[], env: Record<string, string | undefined>, now: number): Promise<FleetRow[]> {
-  const routes: CloudRoute[] = [];
+  const read: { lines: string[]; bucket: string }[] = [];
   for (const log of logs) {
-    let text = "";
-    try { text = await readFile(log, "utf8"); } catch { continue; }
-    routes.push(...cloudRoutes(text.split("\n"), now, dirname(log)));
+    try { read.push({ lines: (await readFile(log, "utf8")).split("\n"), bucket: dirname(log) }); } catch { /* unreadable: skip */ }
   }
+  const routes: CloudRoute[] = cloudRoutes(read, now);
   if (!routes.length) return [];
-  const tickets = [...new Set(routes.map((r) => r.ticket))].sort();
-  const prs = await readCloudPrs(tickets, { gh: env.CONFIG_UI_GH || "gh", env, now });
-  const seen = new Set<string>();
-  return Promise.all(routes.filter((r) => !seen.has(r.ticket) && seen.add(r.ticket)).map(async (r): Promise<FleetRow> => {
+  const prs = await readCloudPrs(routes.map((r) => r.ticket), { gh: env.CONFIG_UI_GH || "gh", env, now, waitMs: GH_WAIT_MS });
+  return Promise.all(routes.map(async (r): Promise<FleetRow> => {
     const p = prs?.get(r.ticket) ?? { pr: null, phase: "unknown" as const, url: null };
     return {
       run: null, pid: null, name: `cloud-${r.ticket}`, role: "cloud", model: null, ticket: r.ticket, pr: p.pr, state: CLOUD_STATE[p.phase],

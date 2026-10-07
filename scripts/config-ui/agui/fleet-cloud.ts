@@ -20,6 +20,8 @@ import { basename, dirname, join } from "node:path";
 export const CLOUD_RECENT_MS = 72 * 60 * 60 * 1000;
 export const GH_TTL_MS = 60_000;
 const GH_TIMEOUT_MS = 10_000;
+// How long a poll waits on a GitHub read before answering unknown (the read itself runs on, up to GH_TIMEOUT_MS).
+export const GH_WAIT_MS = 2_000;
 // cloud-route.mjs's REPO_SLUG: the repo its briefs open PRs in.
 const REPO = "yotamleo/Himmel";
 const TICKET = /^[A-Z][A-Z0-9]+-\d+$/;
@@ -30,19 +32,22 @@ export type CloudPhase = "working" | "done" | "blocked" | "merged" | "closed" | 
 export type CloudPr = { pr: number | null; phase: CloudPhase; url: string | null };
 export type CloudRoute = { ticket: string; brief: string | null; at: number; bucket: string };
 
-// Each ticket's newest routing decides: re-routed BLOCKED or LOCAL-NATIVE after a CLOUD-OK is no cloud session.
-export function cloudRoutes(lines: string[], now: number, bucket = ""): CloudRoute[] {
-  const newest = new Map<string, { cls: string; brief: string | null; at: number }>();
-  for (const line of lines) {
-    let r: any;
-    try { r = JSON.parse(line); } catch { continue; }
-    const at = Date.parse(r?.time);
-    if (typeof r?.ticket !== "string" || !TICKET.test(r.ticket) || !Number.isFinite(at)) continue;
-    const old = newest.get(r.ticket);
-    if (!old || at >= old.at) newest.set(r.ticket, { cls: String(r.class), brief: typeof r.brief === "string" ? r.brief : null, at });
+// Each ticket's newest routing across every bucket decides: re-routed BLOCKED or LOCAL-NATIVE after a CLOUD-OK is no
+// cloud session.
+export function cloudRoutes(logs: { lines: string[]; bucket: string }[], now: number): CloudRoute[] {
+  const newest = new Map<string, { cls: string; brief: string | null; at: number; bucket: string }>();
+  for (const { lines, bucket } of logs) {
+    for (const line of lines) {
+      let r: any;
+      try { r = JSON.parse(line); } catch { continue; }
+      const at = Date.parse(r?.time);
+      if (typeof r?.ticket !== "string" || !TICKET.test(r.ticket) || !Number.isFinite(at)) continue;
+      const old = newest.get(r.ticket);
+      if (!old || at >= old.at) newest.set(r.ticket, { cls: String(r.class), brief: typeof r.brief === "string" ? r.brief : null, at, bucket });
+    }
   }
   return [...newest].filter(([, v]) => v.cls === "CLOUD-OK" && now - v.at <= CLOUD_RECENT_MS)
-    .map(([ticket, v]) => ({ ticket, brief: v.brief, at: v.at, bucket })).sort((a, b) => a.ticket.localeCompare(b.ticket));
+    .map(([ticket, v]) => ({ ticket, brief: v.brief, at: v.at, bucket: v.bucket })).sort((a, b) => a.ticket.localeCompare(b.ticket));
 }
 
 // The console the brief names (`cloud-pilot: <KEY> (console <name>)`), read from the bucket the log sits in only.
@@ -58,13 +63,15 @@ export async function consoleOf(r: CloudRoute): Promise<string | null> {
 export const cloudQuery = (tickets: string[]) =>
   `query{${tickets.map((t, i) => `t${i}:search(query:"repo:${REPO} is:pr in:title ${t}",type:ISSUE,first:5){nodes{...on PullRequest{number state title comments(last:50){nodes{body}}}}}`).join(" ")}}`;
 
-// The batched reply, per ticket; null when the reply is not a usable answer (an errors-only or malformed body).
+// The batched reply, per ticket; null when the reply is not a usable answer (an errors-only or malformed body). A
+// ticket whose alias is missing or malformed (a partial error) is unknown. The newest PR citing the ticket decides.
 export function cloudPrs(reply: any, tickets: string[]): Map<string, CloudPr> | null {
   const data = reply?.data;
   if (!data || typeof data !== "object") return null;
   const out = new Map<string, CloudPr>();
   tickets.forEach((t, i) => {
-    const nodes: any[] = Array.isArray(data[`t${i}`]?.nodes) ? data[`t${i}`].nodes : [];
+    const nodes = data[`t${i}`]?.nodes;
+    if (!Array.isArray(nodes)) return out.set(t, { pr: null, phase: "unknown", url: null });
     const prs = nodes.filter((n) => Number.isSafeInteger(n?.number) && typeof n.title === "string" && n.title.includes(`[${t}]`))
       .map((n) => {
         const bodies: string[] = (Array.isArray(n.comments?.nodes) ? n.comments.nodes : []).map((c: any) => String(c?.body ?? ""));
@@ -72,7 +79,7 @@ export function cloudPrs(reply: any, tickets: string[]): Map<string, CloudPr> | 
         const [kind, url] = report ? report.split("\n")[0].trim().split(/\s+/) : [];
         return { n, kind, url: url && URL_RE.test(url) ? url : null };
       });
-    const pick = prs.find((p) => p.kind) ?? prs.sort((a, b) => b.n.number - a.n.number)[0];
+    const pick = prs.sort((a, b) => b.n.number - a.n.number)[0];
     if (!pick) return out.set(t, { pr: null, phase: "working", url: null });
     const phase: CloudPhase = pick.n.state === "MERGED" ? "merged" : pick.n.state === "CLOSED" ? "closed"
       : pick.kind === "CLOUD-BLOCKED" ? "blocked" : pick.kind === "CLOUD-DONE" ? "done" : "working";
@@ -83,16 +90,22 @@ export function cloudPrs(reply: any, tickets: string[]): Map<string, CloudPr> | 
 
 let cache: { key: string; at: number; value: Promise<Map<string, CloudPr> | null> } | null = null;
 
-// At most one GitHub call per ticket set per GH_TTL_MS; concurrent polls share the call in flight.
-export function readCloudPrs(tickets: string[], o: { gh: string; env: Record<string, string | undefined>; now: number }): Promise<Map<string, CloudPr> | null> {
+// At most one GitHub call per ticket set per GH_TTL_MS; concurrent polls share the call in flight. With waitMs, a read
+// still running after waitMs answers null (unknown) now and keeps filling the cache for the next poll.
+export function readCloudPrs(tickets: string[], o: { gh: string; env: Record<string, string | undefined>; now: number; waitMs?: number }): Promise<Map<string, CloudPr> | null> {
   const key = `${o.gh}\n${tickets.join(",")}`;
-  if (cache && cache.key === key && o.now - cache.at < GH_TTL_MS) return cache.value;
-  const value = new Promise<Map<string, CloudPr> | null>((ok) => {
-    execFile(o.gh, ["api", "graphql", "-f", `query=${cloudQuery(tickets)}`], { env: o.env as NodeJS.ProcessEnv, timeout: GH_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      if (err) return ok(null);
-      try { ok(cloudPrs(JSON.parse(stdout), tickets)); } catch { ok(null); }
+  if (!cache || cache.key !== key || o.now - cache.at >= GH_TTL_MS) {
+    const value = new Promise<Map<string, CloudPr> | null>((ok) => {
+      execFile(o.gh, ["api", "graphql", "-f", `query=${cloudQuery(tickets)}`], { env: o.env as NodeJS.ProcessEnv, timeout: GH_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+        if (err) return ok(null);
+        try { ok(cloudPrs(JSON.parse(stdout), tickets)); } catch { ok(null); }
+      });
     });
-  });
-  cache = { key, at: o.now, value };
-  return value;
+    cache = { key, at: o.now, value };
+  }
+  const value = cache.value;
+  if (o.waitMs === undefined) return value;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((ok) => { timer = setTimeout(ok, o.waitMs, null); });
+  return Promise.race([value, late]).finally(() => clearTimeout(timer));
 }
