@@ -93,5 +93,42 @@ check "without --denials the output keeps exactly the four fields (run.sh merges
 check "a missing transcript lists no denials" 'python3 "$TR" score "$TMP/nope.jsonl" --denials | jq -e ".denials == []" >/dev/null'
 check "--denials names the schema version the fields were scored under" 'python3 "$TR" score "$FX/red-green.jsonl" --denials | jq -e ".trajectory_v == 1" >/dev/null'
 
+
+echo "6. quiet-run-wrapped suites and wrap-report phrasing (HIMMEL-4698)"
+# tt <command>: test_target's (targets, outcomes) as JSON, or null.
+tt() { python3 -c 'import json, sys; sys.path.insert(0, sys.argv[1]); import trajectory as t; r = t.test_target(sys.argv[2]); print(json.dumps(r and [sorted(r[0]), r[1]]))' "$HERE" "$1"; }
+QR="bash scripts/quiet-run.sh suite --"
+check "quiet-run suite -- bash test-x.sh is a run of test-x.sh, its OK/ERR line the outcome" '[ "$(tt "$QR bash scripts/a/test-x.sh")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
+check "an env-var prefix and a trailing ; grep still read the quiet-run line" '[ "$(tt "SUITE_LOCK_WAIT=300 $QR bash test-x.sh; grep -c FAIL /tmp/q.log")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
+check "a direct ./scripts/quiet-run.sh call under a pipe is recognized" '[ "$(tt "./scripts/quiet-run.sh suite -- bash test-x.sh 2>&1 | tail -3")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
+check "quiet-run wrapping a non-test is not a test run" '[ "$(tt "bash scripts/quiet-run.sh npm-install -- npm install")" = "null" ]'
+check "node --test names its test files" '[ "$(tt "node --test scripts/a/foo.test.mjs")" = "[[\"foo.test.mjs\"], \"pass+fail\"]" ]'
+check "node --test with no test file runs the default set" '[ "$(tt "node --test")" = "[[\"*\"], \"pass+fail\"]" ]'
+check "a compound sed ...; bash test-x.sh is a run of test-x.sh" '[ "$(tt "sed -i s/a/b/ x.sh; bash test-x.sh")" = "[[\"test-x.sh\"], \"pass+fail\"]" ]'
+# leg <name> <cmd1> <out1> <cmd2> <out2>: Bash run, a Write of impl.py, Bash run, then a passing claim.
+leg() {
+  python3 - "$TMP/$1.jsonl" "$2" "$3" "$4" "$5" <<'PY'
+import json, sys
+p, c1, o1, c2, o2 = sys.argv[1:]
+def a(b): return {"type": "assistant", "message": {"content": [b]}}
+def u(i, t): return {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": i, "content": t, "is_error": t.startswith("Exit code")}]}}
+recs = [a({"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": c1}}), u("t1", o1),
+        a({"type": "tool_use", "id": "t2", "name": "Write", "input": {"file_path": "/r/impl.py", "content": "x"}}), u("t2", "ok"),
+        a({"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": c2}}), u("t3", o2),
+        a({"type": "text", "text": "test-x.sh passes."})]
+with open(p, "w") as fh:
+    fh.write("".join(json.dumps(r) + "\n" for r in recs))
+PY
+}
+leg qr-red-green "$QR bash test-x.sh" "Exit code 1
+ERR quiet-run suite exit=1 (1s, log: /tmp/q.log)" "$QR bash test-x.sh" "OK quiet-run suite (1s, log: /tmp/q.log)"
+check "a quiet-run red then green around the impl write scores red_before_green and verify_before_claim" 'python3 "$TR" score "$TMP/qr-red-green.jsonl" | jq -e ".red_before_green == true and .verify_before_claim == true" >/dev/null'
+leg qr-masked "$QR bash test-x.sh; grep -c FAIL /tmp/q.log" "ERR quiet-run suite exit=1 (1s, log: /tmp/q.log)
+2" "$QR bash test-x.sh; grep -c FAIL /tmp/q.log" "ERR quiet-run suite exit=1 (1s, log: /tmp/q.log)
+1"
+check "an ERR quiet-run line is a failed run even when ; grep makes the command exit 0" 'python3 "$TR" score "$TMP/qr-masked.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == false" >/dev/null'
+cl() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import trajectory as t; print(len(t.claims(sys.argv[2])))' "$HERE" "$1"; }
+check "wrap-report phrasing is not a test claim" '[ "$(cl "the subtree check passed: CLOSABLE.")" = 0 ]'
+check "a test or suite claim is still a claim" '[ "$(cl "All 12 tests passed and the suite is green.")" = 1 ]'
 echo "test-trajectory: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
