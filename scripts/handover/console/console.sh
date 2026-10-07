@@ -228,6 +228,13 @@ find_free_letter() {
     done
 }
 
+# Discovery metadata for /consoles. Best-effort; no Telegram message is sent
+# until the new or successor console actually arms its waiter.
+console_metadata() {
+    command -v bun >/dev/null 2>&1 || return 0
+    bun "$repo/scripts/telegram/console-route.ts" register "$1" "$bucket" "${project_dir:-$repo}" >/dev/null 2>&1 || true
+}
+
 # do_arm <session> <doc> <fill-signal> <log> -- launch (or foreground-run,
 # under CONSOLE_ARM_FOREGROUND=1) the headed-arm target and print the armed
 # lines. deadline_epoch/model/workdir are read from the outer resolution
@@ -1141,6 +1148,7 @@ cmd_new() {
         MODEL "$model" \
         PROJECT "$project_doc_value"
 
+    console_metadata "$inbox"
     printf '%s\n' "$lock_out"
 
     echo "launch: $launch_line"
@@ -1443,6 +1451,7 @@ cmd_next() {
     # blocked by "successor doc already exists".
     launch_line=$(launch_cmd "$session" "$doc") || exit $?
     trap - EXIT
+    console_metadata "$inbox"
     echo "launch: $launch_line"
 
     if [ "$ARM" -eq 1 ]; then

@@ -60,25 +60,39 @@ trigger one of these commands.
 
 ## Messaging a running console
 
-`/console <session-name> <text>` delivers `<text>` to a console that is already
-running — it does not start a session. The bridge appends one line to that
+`/console <text>` delivers to the **one live console**, without needing its
+session name. Live means its waiter heartbeat is `waiting` or `sampling` and
+less than five minutes old. With none live, nothing is queued; with several,
+the bridge lists them and asks you to choose `/console <session-name> <text>`.
+The first word names a console only when that inbox already exists; otherwise
+it is part of the bare text. `/consoles` lists live names, heartbeat timestamps,
+and bucket/project (older consoles without launch metadata show `unknown`).
+
+Each console's first waiter arm queues a DM: “Console <name> is live — just
+send /console <text>”. A successor announces its new identity on its first arm;
+restarting the same waiter does not repeat the announcement. Replying to an
+announcement, console acknowledgement, or console answer routes to that
+console using the bridge's saved chat/message-id receipt, not quoted text.
+Explicit slash/control commands keep their own routing when sent as replies.
+
+Neither form starts a session. The bridge appends one line to that
 console's inbox file, `<bridge root>/consoles/<session-name>.md` (default
 `~/.claude/handover/bridge/consoles/`), and the console watches the file with
 the event waiter started in its ACTION ZERO (`console-kit/console-wait.sh`,
 which reads it through `inbox-follow.sh --once` and a read cursor beside the
-file, so a line is never lost across a re-start). Use the console's exact session name
-(`ListAgents`, or the name it printed at launch).
+file, so a line is never lost across a re-start).
 
 - **Who:** only the `allowFrom` operator, in an allowed chat, with a typed (not
   forwarded, not captioned) message. Anyone else's `/console …` is ordinary
   chat, exactly as before. `access.json` remains the only sender gate.
 - **Ack:** `→ console <name>` means the line was queued — not that the console
-  has read it. `⚠️ no console "<name>" is listening` means that console never
-  armed its inbox and nothing was sent; the bridge never creates the file, so
-  a typo cannot open a mailbox nobody reads.
+  has read it. A no-live-console or ambiguous-console response queues nothing;
+  delivery never creates a console inbox.
 - **Reply:** the console answers through the same outbox as every other bridge
   reply (`bun scripts/telegram/console-route.ts reply <chat_id> <text>`); the
-  running poller sends it.
+  running poller sends it. On Linux the CLI resolves the calling session name
+  automatically when its inbox exists. For an explicit identity (including
+  other platforms), use `reply --console <session-name> <chat_id> <text>`.
 - **Authority:** the line carries your authority — a ruling, a halt or new
   work, as if typed in the console's terminal. It never changes the console's
   permissions or settings and never bypasses `merge-on-green.sh`'s own GO

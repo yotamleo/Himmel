@@ -365,6 +365,12 @@ fail_streak=0
 fail_wake="${CONSOLE_WAIT_FAIL_WAKE:-3}"
 next_tick=0
 heartbeat sampling
+# Announce once per inbox identity, not per waiter process (each wake re-arms).
+# The CLI only queues into this inbox's bridge root; it never sends Telegram.
+if [ ! -e "$inbox.announced" ] && command -v bun >/dev/null 2>&1; then
+    : >> "$inbox"
+    timeout -k 2 15 bun "$REPO/scripts/telegram/console-route.ts" announce "$inbox" 9>&- >/dev/null 2>&1 || true  # gnu-ok: Linux-only kit
+fi
 while :; do
     # Telegram first: it is the cheap check and the operator's line. Peek, print
     # the header, then let --once stream the lines: each line is on stdout
