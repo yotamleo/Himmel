@@ -26,10 +26,11 @@ TELEGRAM: one line through the notifier (--notify-cmd, else $FAILURE_REVIEW_NOTI
 scripts/luna/vault-stall-alert.sh, the existing operator DM path) when a live run routed something
 or a class appeared that the ledger never saw before. A quiet day sends nothing. A dry run's
 would-be routing does not send: the router keeps no state on a dry run, so it would repeat daily.
-DELIVERY (HIMMEL-4790) is kept in failure-review-notify.json beside the router state (--state, else
-$HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state), under flock, temp then rename: {pending, sent}.
-The router state advances before the send, so a line that is not delivered keeps its routing and its
-new classes in pending, and the next run sends them again until one is delivered. A delivered new
+DELIVERY (HIMMEL-4790) is kept in <stem>.notify.json beside the router state (--state, else
+$HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state/failure-routes.json), under flock, temp then
+rename: {pending, sent}. The router state advances before the send, so the line is saved in pending
+as soon as the router returns, before the digest is written, and the next run sends it again until
+one is delivered. A delivered new
 class is recorded in sent and not named again for 24 h; a failed send records nothing there. An
 unreadable state file is kept aside as <file>.unreadable.<unique> and a fresh one started.
 
@@ -60,7 +61,6 @@ CAPPED = ("capped", "would-cap")
 LIVE_LINE = re.compile(r"^failure-router: (\S+) legs=(\d+) (\S+)(?: (\S+))?$")
 TOP = 10
 NOTIFIER = os.path.join(HERE, "..", "..", "luna", "vault-stall-alert.sh")
-NOTIFY_STATE = "failure-review-notify.json"
 
 
 def leg_key(leg):
@@ -166,7 +166,7 @@ def build(a, rows, seen_before, rc, decisions, boxed):
 def notify_path(a):
     state = a.state or os.environ.get(failure_router.STATE_ENV) or os.path.expanduser(
         "~/.himmel/state/failure-routes.json")
-    return os.path.join(os.path.dirname(os.path.abspath(state)), NOTIFY_STATE)
+    return os.path.splitext(os.path.abspath(state))[0] + ".notify.json"
 
 
 def load_notify(path):
@@ -219,6 +219,14 @@ def daily_note(vault, day, section):
     return path
 
 
+def write_outputs(a, day, section):
+    digest = os.path.join(a.out_dir, "failure-review-%s.md" % day)
+    write_atomic(digest, section)
+    print("failure-review: wrote %s" % digest)
+    if a.vault:
+        print("failure-review: daily note %s" % daily_note(a.vault, day, section))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="failure_review.py", description=__doc__.split("\n")[0])
     ap.add_argument("--live", action="store_true")
@@ -246,11 +254,6 @@ def main(argv=None):
     a.ledger = ledger
     rc, decisions, boxed = run_router(a)
     section, new, n, k, routed, boxed = build(a, rows, set(older), rc, decisions, boxed)
-    digest = os.path.join(a.out_dir, "failure-review-%s.md" % day)
-    write_atomic(digest, section)
-    print("failure-review: wrote %s" % digest)
-    if a.vault:
-        print("failure-review: daily note %s" % daily_note(a.vault, day, section))
     npath = notify_path(a)
     os.makedirs(os.path.dirname(npath), exist_ok=True)
     with open(npath + ".lock", "a") as lock:
@@ -275,16 +278,19 @@ def main(argv=None):
                  for d in routed] + ["inbox %s" % c for c in boxed]) if a.live else []
         fresh = [c for c in new if c not in sent]
         pending = [p for p in ns["pending"] if p not in done and p not in ["new %s" % c for c in fresh]]
+        line = None
         if done or fresh or pending:
             line = "failure review %s (%s): %d failures in %d classes; %s %d%s%s" % (
                 day, "live" if a.live else "dry-run", n, k, "routed" if a.live else "would route",
                 len(routed) if a.live else len([d for d in decisions if d["decision"] in ROUTED]),
                 "; undelivered earlier: %s" % ", ".join(pending) if pending else "",
                 "; new: %s" % ", ".join(fresh) if fresh else "")
-            # Saved before the send: a run killed mid-send still leaves its line for the next run.
+            # Saved as soon as the router returns: a run that dies before or during the send leaves its line.
             ns["pending"] = pending + done + ["new %s" % c for c in fresh]
             ns["sent"] = sent
             write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
+        write_outputs(a, day, section)
+        if line:
             try:
                 ok = subprocess.run([a.notify_cmd, line], capture_output=True, timeout=60).returncode == 0
             except (OSError, subprocess.SubprocessError):
