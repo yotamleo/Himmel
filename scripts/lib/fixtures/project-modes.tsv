@@ -9,7 +9,8 @@
 #   origin    a URL (git repo with that origin), `-` (git repo, no remote),
 #             or NOGIT (a plain directory outside any work tree)
 #   env       `-` or space-separated KEY=VALUE pairs (nothing else is set)
-#   gitconfig `-` or space-separated key=value pairs, set with `git config`
+#   gitconfig `-` or space-separated key=value pairs, set with `git config`;
+#             `%20` in a value stands for a space (the column is space-split)
 #   expected  stdout, `<empty>` for an empty line, or EXIT2 (refused, rc 2).
 #             In env rows, `\t` stands for a TAB.
 #
@@ -26,6 +27,8 @@ tracker	-	TRACKER=none JIRA_PROJECT_KEY=HIMMEL	-	none
 tracker	-	TRACKER=local JIRA_PROJECT_KEY=HIMMEL	-	local
 tracker	-	JIRA_PROJECT_KEY=HIMMEL	himmel.tracker=none	none
 tracker	-	TRACKER=local	himmel.tracker=none	local
+# --- a padded git config value is not trimmed (the shell's $(...) strips only the trailing newline): both twins refuse
+tracker	-	-	himmel.tracker=%20local%20	EXIT2
 tracker	-	TRACKER=jira JIRA_PROJECT_KEY=ACME	-	jira
 tracker	-	TRACKER=jira	-	EXIT2
 tracker	-	-	himmel.tracker=jira	EXIT2
