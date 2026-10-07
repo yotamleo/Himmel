@@ -150,6 +150,18 @@ export function renderHeader(feed) {
     ${h.checkout ? `<span><span class="k">serving</span> ${esc(h.checkout)}</span>` : ""}${t}`;
 }
 
+// HIMMEL-4807: the status while the report runs. j is the feed's 202 body ({ elapsedMs, progress }); progress
+// ({ i, n, source }, from probe-progress.cjs) is null before the first step. A native <progress>: the CSP
+// (default-src 'self') refuses inline styles.
+export function renderProbe(j) {
+  const p = j && j.progress;
+  const s = Math.round(((j && j.elapsedMs) || 0) / 1000);
+  const step = p && Number.isInteger(p.i) && Number.isInteger(p.n) ? p : null;
+  const text = step ? `probing ${esc(step.source)} (${step.i} of ${step.n}) · ${s}s` : `probing the station · ${s}s`;
+  const bar = step ? `<progress max="${step.n}" value="${step.i}" aria-label="station probe"></progress>` : `<progress aria-label="station probe"></progress>`;
+  return `<div class="probe" id="status" role="status" aria-live="polite"><span>${text}</span>${bar}<span class="sub">the first report can take a couple of minutes</span></div>`;
+}
+
 export function renderNav(feed, current) {
   const { rows, triage, controls } = sets(feed);
   return [["triage", "Triage", triage.length, 1], ["controls", "Controls", controls.length, 2], ["inventory", "Inventory", rows.length, 3]]

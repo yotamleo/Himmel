@@ -4,6 +4,28 @@
 per-launch token). Operator-only: it refuses to start inside a Claude session
 (HIMMEL-4350).
 
+## The config feed (HIMMEL-4807)
+
+The Config page reads `GET /api/feed`: one `himmelctl report --json` shared by
+every request (about two minutes on the station, most of it the doctor).
+
+- **Progress.** The report runs under `probe-progress.cjs` (`node --require`),
+  which writes one stderr line per source as it starts:
+  `himmel-probe {"i":2,"n":8,"source":"doctor checks"}` (install items, doctor
+  checks, each cadence, plugin profile, then lanes, initiative legs, flags and
+  secrets). The steps are inferred from the report's spawns, in its fixed order.
+  While it runs, a `202` carries `progress` and answers as soon as the step
+  changes, and the page shows `probing <source> (i of N)` over a progress bar.
+- **Background loading.** `himmelctl ui` starts the report at launch, so it is
+  ready by the time you go from Fleet to Config. While the console is in use
+  (any authenticated request in the last 10 minutes) the server refreshes it
+  every 10 minutes; once you close it, nothing runs and the server still idles
+  out. The page asks again when you come back to Config or the tab becomes
+  visible, never on a timer.
+- **Stale while revalidate.** Once one report has landed, `/api/feed` answers
+  the newest one at once and refreshes it behind the scenes after 30 s. An
+  action drops it: the next feed waits for a report started after the action.
+
 ## Health page (HIMMEL-4405, `#/health`)
 
 Read-only: every value is rendered from its owner and nothing is re-measured.
@@ -151,6 +173,31 @@ imports, so its suite runs in CI without an install.
 ## Tests
 
 - Unit and server suites: `bun test scripts/config-ui --dots` (CI-gated).
+  `probe-progress.test.ts` drives the preload with a fake report;
+  `feed-background.test.ts` covers the progress `202`, the launch prewarm, the
+  in-use refresh and stale-while-revalidate.
+- Toggles end to end (HIMMEL-4807, `toggles.test.ts`, CI-gated, skipped on
+  Windows): every console toggle through the real `himmelctl` and the real
+  server routes (preview, run), checking that the setting is written, that its
+  owner reads it back, and that the run's re-probe and a fresh feed show it,
+  then the opposite flip. It runs against a temp `HOME` and a temp repo of
+  symlinks, with fake `crontab`, `claude`, `qmd` and `graphify` and a stub
+  doctor, so the checkout's `.env`, `lanes.local.json`, crontab and plugins are
+  never touched. CI flips one plugin and one lane (same argv for each);
+  `CONFIG_UI_TOGGLES_ALL=1` flips every one. Results:
+
+  | Toggle | Works end to end? |
+  |---|---|
+  | cadence arm/disarm (pipeline, qmd, graphmap, doctor; codex-sweep is Windows-only) | yes: a crontab entry, `status` reads `ARMED` / `not armed`, the row flips |
+  | initiative on/off (execute, prcheck, pr, ticket, handover) | yes: `HIMMEL_INITIATIVE` in `.env`, `config get` and the SessionStart hook agree, the row flips |
+  | plugin enable/disable (on-demand tier) | yes: user scope flips, `plugin-profile.sh list` agrees, the row flips |
+  | lane on/off | written and read back (`probe.kind` always / never), but **the row cannot show which**: it reads `local override in lanes.local.json` for both (config-feed.js `laneRows`) |
+
+  `profile.set` is in the action table, but no feed row offers it, so it is not
+  a console toggle. Served from a git **worktree**, initiative and lane toggles
+  look like they did nothing: `config set` writes the worktree's `.env` and
+  `lanes.local.json`, while the feed reads the primary checkout's (its station
+  anchor).
 - Browser e2e (HIMMEL-4400): `scripts/config-ui/tests/e2e/`, Playwright pinned
   to 1.63.0 (Chromium build 1243). **Opt-in, not in CI**: a runner has no
   cached Chromium, and fetching one on every PR would make a download outage
@@ -167,6 +214,9 @@ imports, so its suite runs in CI without an install.
   (stub via `CONFIG_UI_HIMMELCTL`; the live station feed never runs). The
   bundle order comes from `scripts/himmelctl/lib/feed-bundles.json`.
   `E2E_BREAK=order` feeds a mis-ordered bundle list: the suite must go red.
+  HIMMEL-4807 adds the probe progress bar (a held report writes four steps) and
+  background loading (Fleet first, then Config in a new tab: the report is
+  already there).
 - AG-UI page e2e (HIMMEL-4480, `agui.e2e.ts`, same opt-in suite): needs
   `agui-web/dist` built (see above; the tests skip when it is absent). Each
   test boots `himmelctl ui --agui` against a temp `HOME` and appends journal

@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 // @ts-ignore plain browser ES module, no types
-import { render, renderNav, renderHeader, rollup, isOpen } from "../public/render.js";
+import { render, renderNav, renderHeader, renderProbe, rollup, isOpen } from "../public/render.js";
 
 const row = (id: string, health: string, source = "item", control: Record<string, unknown> = { class: "display-only" }, extra: Record<string, unknown> = {}) => ({
   id, source, group: "core", title: id, health,
@@ -361,4 +361,30 @@ test("renderHeader escapes every identity field", () => {
   const x = "<img src=x onerror=1>";
   const h = renderHeader({ ...feed, himmel: { version: x, describe: x, commit: x, checkout: x } });
   expect(h).not.toContain("<img");
+});
+
+// HIMMEL-4807: the probe status while the first report runs.
+test("renderProbe names the step, n of N, with a determinate native progress bar", () => {
+  const h = renderProbe({ elapsedMs: 12_400, progress: { i: 3, n: 8, source: "pipeline cadence" } });
+  expect(h).toMatch(/^<div class="probe" id="status" role="status" aria-live="polite">/);
+  expect(h).toContain("probing pipeline cadence (3 of 8) · 12s");
+  expect(h).toMatch(/<progress max="8" value="3" aria-label="station probe"><\/progress>/);
+  expect(h).toContain("couple of minutes");
+  expect(h).not.toContain("style=");
+});
+test("renderProbe before the first step: the station, an indeterminate bar", () => {
+  for (const j of [{ elapsedMs: 900, progress: null }, { elapsedMs: 900 }, null]) {
+    const h = renderProbe(j);
+    expect(h).toContain("probing the station · ");
+    expect(h).toMatch(/<progress aria-label="station probe"><\/progress>/);
+    expect(h).not.toContain("value=");
+    expect(h).not.toContain("style=");
+  }
+});
+test("renderProbe escapes the source and only takes integer steps", () => {
+  const h = renderProbe({ elapsedMs: 0, progress: { i: 1, n: 2, source: "<img src=x onerror=1>" } });
+  expect(h).not.toContain("<img");
+  expect(h).toContain("&lt;img");
+  const bad = renderProbe({ elapsedMs: 0, progress: { i: '1" onclick="x', n: 2, source: "s" } });
+  expect(bad).not.toContain("onclick");
 });
