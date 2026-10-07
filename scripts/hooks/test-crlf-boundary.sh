@@ -811,6 +811,18 @@ check guard-judge-writes Bash 2 "gi""t push" "deny push in a judge session" \
 check guard-judge-writes Bash 0 "gi""t status" "allow a read in a judge session" \
     HIMMEL_CONSOLE_JUDGE=1
 
+# ── guard-verdicts-hmac-writes.sh — key + verdicts fence (HIMMEL-4733) ──────
+# A terminal CR must not glue itself to the last path and turn the key or a
+# verdicts file into a path the fence does not recognise.
+VH="$TMP/vhmac"
+mkdir -p "$VH/home/.config/himmel" "$VH/handovers/u/b/verdicts/q1"
+check guard-verdicts-hmac-writes Bash 2 "ca""t $VH/home/.config/himmel/go-hmac.key" "deny a key read" \
+    -u HIMMEL_CONSOLE_JUDGE "HOME=$VH/home" "HANDOVER_DIR=$VH/handovers"
+check guard-verdicts-hmac-writes Bash 2 "echo GO > $VH/handovers/u/b/verdicts/q1/judge.md" "deny a verdicts write outside a judge" \
+    -u HIMMEL_CONSOLE_JUDGE "HOME=$VH/home" "HANDOVER_DIR=$VH/handovers"
+check guard-verdicts-hmac-writes Bash 0 "gi""t status" "allow an unrelated command" \
+    -u HIMMEL_CONSOLE_JUDGE "HOME=$VH/home" "HANDOVER_DIR=$VH/handovers"
+
 # guard-leg-context-handoff reads the fill through the transcript, so its rows
 # run against a leg fixture at 90 % with the guard on (it is off by default,
 # HIMMEL-4710): a hand-off command must stay allowed and an ordinary one denied

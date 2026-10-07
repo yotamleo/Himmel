@@ -844,7 +844,7 @@ analyze() {
 
     # Segment command words: the first non-assignment, non-redirect word,
     # with wrappers, their options and option arguments skipped.
-    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=(); seg_eval=(); seg_cdone=(); seg_fact=()
+    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=(); seg_eval=(); seg_cdone=(); seg_fact=(); seg_mvt=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         s=${ST_S[i]}
@@ -938,6 +938,8 @@ analyze() {
             w=${ST_W[i]}
             case "$w" in -*) ;; *) seg_last[s]=$i ;; esac
             case "$w" in -i*|--in-place*) seg_inpl[s]=1 ;; esac
+            # mv -t DIR: every other operand is a source, the last one too (delta codex-1).
+            case "$w" in --target-directory*|-[!-]*t*|-t*) seg_mvt[s]=1 ;; esac
             case "${seg_cmd[s]}" in
                 bash|sh|zsh|dash|ksh)
                     case "$w" in
@@ -997,7 +999,12 @@ analyze() {
                             _target "$w"
                             case "$c" in
                                 rm|rmdir|shred|unlink|chmod|chown|chgrp) _vanc "$w" ;;
-                                mv) [ "$i" = "${seg_last[s]:-}" ] || _vanc "$w" ;;
+                                mv)
+                                    if [ "${seg_mvt[s]:-}" = 1 ]; then
+                                        case "$prev" in -t|--target-directory|-[!-]*t) ;; *) _vanc "$w" ;; esac
+                                    else
+                                        [ "$i" = "${seg_last[s]:-}" ] || _vanc "$w"
+                                    fi ;;
                             esac ;;
                         esac ;;
                     sed)

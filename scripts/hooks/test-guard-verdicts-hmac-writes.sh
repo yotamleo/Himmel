@@ -226,6 +226,11 @@ row "rm -rf a bucket holding verdicts" 2 0 "$(bash_p "rm -rf $ROOT/u/himmel")"
 row "rm -rf the handover root" 2 0 "$(bash_p "rm -rf $ROOT")"
 row "mv a user dir holding verdicts" 2 0 "$(bash_p "mv $ROOT/u /tmp/u")"
 row "mv a file into the bucket" 0 0 "$(bash_p "mv /tmp/x.md $ROOT/u/himmel")"
+row "mv -t moves a bucket out" 2 0 "$(bash_p "mv -t /opt $ROOT/u/himmel")"
+row "mv -vt moves a bucket out" 2 0 "$(bash_p "mv -vt /opt $ROOT/u/himmel")"
+row "mv --target-directory= moves a bucket out" 2 0 "$(bash_p "mv --target-directory=/opt $ROOT/u/himmel")"
+row "mv with a trailing option moves a bucket out" 2 0 "$(bash_p "mv $ROOT/u/himmel /opt -v")"
+row "mv -t into the bucket" 0 0 "$(bash_p "mv -t $ROOT/u/himmel /tmp/x.md")"
 row "rm a handover doc" 0 0 "$(bash_p "rm $ROOT/u/himmel/HIMMEL-1-doc.md")"
 row "heredoc body \$( ) reads the key" 2 2 "$(bash_p "cat <<EOF
 \$(cat $TMP/alias)
