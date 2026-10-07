@@ -91,3 +91,71 @@ leg_base() {
         printf '%s' "$label"
     fi
 }
+
+# HIMMEL-4749: a leg's human description -- one plain-language line saying what
+# the leg is doing and why, shown NEXT TO the label (never instead: tooling keys
+# on the label). It lives in the leg doc's front matter as `description: <text>`
+# (docs/handover/leg-brief-template.md). Every reader goes through these
+# functions; none parses a doc for it itself.
+
+# leg_description_field <leg doc path> -- the front-matter `description:` value,
+# trimmed, one pair of surrounding quotes dropped. Prints nothing when the doc
+# is unreadable, has no front matter or no such key, or the value is empty or
+# still the template's `<placeholder>`. Only the leading `---` block counts.
+leg_description_field() {
+    local doc="$1" val
+    [ -r "$doc" ] || return 0
+    val="$(awk '
+        { sub(/\r$/, "") }
+        NR == 1 { if ($0 != "---") exit; next }
+        $0 == "---" { exit }
+        /^description:/ { sub(/^description:/, ""); print; exit }
+    ' < "$doc" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    case "$val" in
+        \"*\") val="${val#\"}"; val="${val%\"}" ;;
+        \'*\') val="${val#\'}"; val="${val%\'}" ;;
+    esac
+    val="$(printf '%s' "$val" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    case "$val" in
+        "<"*">") val="" ;;
+    esac
+    printf '%s' "$val"
+}
+
+# leg_description <leg doc path> -- the line a surface prints next to the label.
+# Fallback, never empty: the description field; then the brief's H1 scope
+# (`# <TICKET> — <scope> — leg N<k> (...)`, and the `# <TICKET>: <scope>. Leg
+# N<k> (...)` consoles also write, give <scope>; an H1 not led by a ticket key
+# is used whole);
+# then the doc stem.
+# ponytail: the ticket-title and PR-title fallbacks HIMMEL-4749 orders between
+# the field and the H1 need the HIMMEL-4748 tracker/forge seams; slot them in
+# here when WP2/WP4 land.
+leg_description() {
+    local doc="$1" val stem
+    val="$(leg_description_field "$doc")"
+    if [ -z "$val" ] && [ -r "$doc" ]; then
+        val="$(sed -n -E '/^# /{s/^# +//;p;q;}' "$doc" \
+            | sed -E '/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) /{s/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) //; s/( —|\.)? [Ll]eg N[0-9]+[a-z]*( \([^)]*\))?(,? [0-9]{4}-[0-9]{2}-[0-9]{2})?$//;}; s/[[:space:]]+$//')"
+    fi
+    if [ -z "$val" ]; then
+        stem="${doc##*/}"
+        val="${stem%.md}"
+    fi
+    printf '%s' "$val"
+}
+
+# leg_doc_has_run <leg doc path> -- exit 0 when the doc's `## Results` section
+# already holds a `- ` bullet: the leg has been launched and has reported, so a
+# relaunch is a resume. A fresh brief's Results section is empty. A launch gate
+# that is new for fresh briefs uses this so a doc written before the gate
+# existed still resumes.
+leg_doc_has_run() {
+    [ -r "$1" ] || return 1
+    awk '
+        /^## Results/ { inr = 1; next }
+        inr && /^## / { inr = 0 }
+        inr && /^- / { found = 1; exit }
+        END { exit found ? 0 : 1 }
+    ' < "$1"
+}

@@ -659,6 +659,22 @@ if [ -z "$PROFILE" ] && [ "$NO_PROFILE" -eq 0 ]; then
     exit 2
 fi
 
+# HIMMEL-4749: a fresh leg or judge brief carries a front-matter `description:`
+# line (scripts/lib/leg-identity.sh resolves it), so every surface can say what
+# the leg is doing next to its label. Same template-shaped gate as the Prior art
+# check below, but --no-prior-art-check does not skip it. A doc whose Results
+# already holds a bullet has run (leg_doc_has_run): a relaunch of it is a resume
+# of a leg briefed before the field existed, and launches without one.
+if [ "$RELAY" -eq 0 ] && [ "$CONSULT" -eq 0 ] && [ -f "$DOC" ] \
+    && grep -Eq '^> \*\*(Contract|Completion condition):\*\*' "$DOC"; then
+    # shellcheck source=../../lib/leg-identity.sh
+    . "$(dirname "$0")/../../lib/leg-identity.sh"
+    if [ -z "$(leg_description_field "$DOC")" ] && ! leg_doc_has_run "$DOC"; then
+        echo "headed-arm-leg: refusing launch: $DOC has no front-matter 'description:' line. Add one plain-language line saying what this leg is doing and why between the leading '---' lines (the first must be the file's first line, no blank line or BOM before it), e.g. 'description: Add a description line to every leg brief' (docs/handover/leg-brief-template.md, HIMMEL-4749)." >&2
+        exit 2
+    fi
+fi
+
 # HIMMEL-4573: a leg or judge brief carries a filled `> **Prior art:**` line
 # (brief-lint.sh), so the console's one retrieval at dispatch reaches the leg.
 # Gated on a template-shaped brief (a `> **Contract:**` or `> **Completion
