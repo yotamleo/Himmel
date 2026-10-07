@@ -20,6 +20,10 @@ import { basename, dirname, join } from "node:path";
 export const CLOUD_RECENT_MS = 72 * 60 * 60 * 1000;
 export const GH_TTL_MS = 60_000;
 const GH_TIMEOUT_MS = 10_000;
+// The one query's windows: PRs per ticket search, newest comments per PR. A window that came back full may have cut
+// off the answer, so a node that needs what is not in it reads unknown rather than working.
+export const CLOUD_PR_PAGE = 10;
+export const CLOUD_COMMENT_WINDOW = 50;
 // How long a poll waits on a GitHub read before answering unknown (the read itself runs on, up to GH_TIMEOUT_MS).
 export const GH_WAIT_MS = 2_000;
 // cloud-route.mjs's REPO_SLUG: the repo its briefs open PRs in.
@@ -62,7 +66,7 @@ export async function consoleOf(r: CloudRoute): Promise<string | null> {
 // One search per ticket, newest first, aliased t<i> in ticket order, all in one query. Tickets are TICKET-shaped (no
 // quoting).
 export const cloudQuery = (tickets: string[]) =>
-  `query{${tickets.map((t, i) => `t${i}:search(query:"repo:${REPO} is:pr in:title ${t} sort:created-desc",type:ISSUE,first:5){nodes{...on PullRequest{number state title comments(last:50){nodes{body}}}}}`).join(" ")}}`;
+  `query{${tickets.map((t, i) => `t${i}:search(query:"repo:${REPO} is:pr in:title ${t} sort:created-desc",type:ISSUE,first:${CLOUD_PR_PAGE}){nodes{...on PullRequest{number state title comments(last:${CLOUD_COMMENT_WINDOW}){nodes{body}}}}}`).join(" ")}}`;
 
 // The batched reply, per ticket; null when the reply is not a usable answer (an errors-only or malformed body). A
 // ticket whose alias is missing or malformed (a partial error) is unknown. The newest PR citing the ticket decides.
@@ -79,11 +83,14 @@ export function cloudPrs(reply: any, tickets: string[]): Map<string, CloudPr> | 
         if (!Array.isArray(n.comments?.nodes)) return { n, kind: "unknown", url: null };
         const bodies: string[] = n.comments.nodes.map((c: any) => String(c?.body ?? ""));
         const report = bodies.filter((b) => /^CLOUD-(DONE|BLOCKED)\s/.test(b)).at(-1);
+        // A full window with no report in it may have pushed the report out: unknown, not working.
+        if (!report && bodies.length >= CLOUD_COMMENT_WINDOW) return { n, kind: "unknown", url: null };
         const [kind, url] = report ? report.split("\n")[0].trim().split(/\s+/) : [];
         return { n, kind, url: url && URL_RE.test(url) ? url : null };
       });
     const pick = prs.sort((a, b) => b.n.number - a.n.number)[0];
-    if (!pick) return out.set(t, { pr: null, phase: "working", url: null });
+    // No exact title match on a full page: the PR may sit past it, so unknown, not working.
+    if (!pick) return out.set(t, { pr: null, phase: nodes.length >= CLOUD_PR_PAGE ? "unknown" : "working", url: null });
     const phase: CloudPhase = pick.n.state === "MERGED" ? "merged" : pick.n.state === "CLOSED" ? "closed"
       : pick.kind === "unknown" ? "unknown" : pick.kind === "CLOUD-BLOCKED" ? "blocked" : pick.kind === "CLOUD-DONE" ? "done" : "working";
     out.set(t, { pr: pick.n.number, phase, url: pick.url });
