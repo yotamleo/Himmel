@@ -12,6 +12,7 @@
 # other call to the next gh on PATH, so a suite's own gh stub keeps working.
 # Prepend <dir> to PATH for the go.sh call only.
 ready_pass_bin() {
+    export GH_PR_SNAPSHOT_CACHE_DIR="$1/snapshot-cache"
     mkdir -p "$1" || return 1
     cat > "$1/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -23,6 +24,17 @@ case "$*" in
         printf '%s' '[{"messageHeadline":"fix(x): [HIMMEL-1] t (#1)","messageBody":"Platforms tested: linux\nSecurity reviewed: manual"}]'
         exit 0 ;;
     *"--json body"*) printf '## Ticket coverage\n- ask: done\n'; exit 0 ;;
+    'api repos/'*'/pulls/'*) printf '%s\n' "${READY_STUB_HEAD:-}"; exit 0 ;;
+    *':pullRequest(number:'*)
+        jq -n --arg h "${READY_STUB_HEAD:-}" --arg args "$*" '
+            ($args | capture("p(?<n>[0-9]+):pullRequest").n) as $n |
+            {data:{repository:{("p"+$n):{number:($n|tonumber),headRefOid:$h,mergeStateStatus:"CLEAN",reviewDecision:null,
+                body:"## Ticket coverage\n- ask: done\n",
+                commits:{nodes:[{commit:{oid:$h,messageHeadline:"fix(x): [HIMMEL-1] t (#1)",messageBody:"Platforms tested: linux\nSecurity reviewed: manual",parents:{totalCount:1}}}],pageInfo:{hasNextPage:false,endCursor:null}},
+                reviewThreads:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}},
+                statusCheckRollup:{contexts:{nodes:[{__typename:"CheckRun",name:"build",status:"COMPLETED",conclusion:"SUCCESS"}],pageInfo:{hasNextPage:false,endCursor:null}}}
+            }}}}'
+        exit $? ;;
     *"commits(first:100)"*) exit 0 ;;
     *"api graphql"*) printf '0 false null\n'; exit 0 ;;
     *"api --paginate"*"/files"*) printf 'scripts/x.sh\n'; exit 0 ;;
