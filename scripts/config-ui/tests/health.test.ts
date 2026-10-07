@@ -63,3 +63,14 @@ test("each monitoring source's failure is rendered on its own, even when the oth
   const bothOk = renderHealth(feed(r("a", "ok")), mon({ state: "ok", alerts: [] }, { state: "ok" }));
   expect(bothOk).not.toContain("unreachable");
 });
+
+// HIMMEL-4767 (HIMMEL-4748 WP8): the resolver's tracker/forge answer is shown as one row.
+test("renderHealth shows the project mode row from the resolver", () => {
+  const gone = { state: "absent" };
+  const mode = { state: "ok", tracker: "local", forge: "local-git", idRequired: "1" };
+  const html = renderHealth(null, { bank: gone, legs: gone, monitoring: gone, mode });
+  expect(html).toContain("tracker=local forge=local-git");
+  expect(renderHealth(null, { bank: gone, legs: gone, monitoring: gone, mode: { state: "error", reason: "project-mode: invalid TRACKER='x'" } }))
+    .toContain("project-mode: invalid TRACKER=&#39;x&#39;");
+  expect(renderHealth(null, null)).toContain('id="mode"');
+});

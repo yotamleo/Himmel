@@ -15,7 +15,7 @@ import { redactDeep, envValues } from "../himmelctl/lib/redact.js";
 import { parseDotEnv } from "../himmelctl/lib/probes.js";
 import { ActionError, buildTable, loadRegistries, resolveAction, type Resolved } from "./actions";
 import { acquireLock, runChild, type Lock } from "./lock";
-import { readBank, readLegs, readMonitoring } from "./health-sources";
+import { readBank, readLegs, readMode, readMonitoring } from "./health-sources";
 import { appendAudit } from "./audit";
 import { journalStream, resolveJournal } from "./agui/sse";
 import { readFleet } from "./agui/fleet";
@@ -311,7 +311,7 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
           readLegs(opts.legsScript ?? join(CHECKOUT, "scripts/config-ui/legs.sh"), env, opts.legsTimeoutMs),
           readMonitoring(env),
         ]);
-        return json(redactOut({ bank, legs, monitoring }));
+        return json(redactOut({ bank, legs, monitoring, mode: readMode(root, env) }));
       }
       // HIMMEL-4712: every live session, for the fleet landing at /agui/ with no run. Read-only.
       if (path === "/api/agui/fleet") {
