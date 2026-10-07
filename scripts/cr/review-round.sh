@@ -6,6 +6,10 @@
 # merges the base into it. A 4th full round and a second delta are refused.
 # State lives under the repository's shared git common directory, so head
 # commits and merge-forwards do not reset it and linked worktrees agree.
+# HIMMEL-4700: a third trigger - a judge NO-GO on the last reviewed head, as
+# console-kit/write-verdict.sh records it in this repo's verdict scope - buys
+# one more delta round per reviewed head, even after the fix/merge-forward
+# delta was used. Consumed records are kept in <branch>.verdicts.
 # Bash 3.2-safe.
 # Platform guard: requires POSIX Bash 3.2+; on Windows, run under Git Bash.
 set -uo pipefail
@@ -69,6 +73,8 @@ fi
 state="$git_dir/cr-review-rounds/$branch.round"
 # HIMMEL-4600: "<from> <to> <trigger>" of the one delta round, once it ran.
 delta_state="$git_dir/cr-review-rounds/$branch.delta"
+# HIMMEL-4700: "<from> <to> <qid>/<name>", one line per judge-triggered round.
+verdict_state="$git_dir/cr-review-rounds/$branch.verdicts"
 # HIMMEL-4600: the head the last counted round ran on (start --head).
 head_state="$git_dir/cr-review-rounds/$branch.head"
 state_dir="$(dirname "$state")"
@@ -209,12 +215,73 @@ EOF
     [ "$_vo_ok" -eq 1 ]
 }
 
+# HIMMEL-4700: print "<qid>/<name>" of a judge record ruling NO-GO for head
+# $1, in the exact console-kit/write-verdict.sh format, under this repo's
+# verdict scope; rc 1 when there is none. A qid counts only when every record
+# in it parses, so a hand-written or edited file disqualifies its qid.
+# ponytail: same-uid ceiling - the writer's stamp is a format check, not
+# authentication, and any same-uid process can write into verdicts/; the
+# upgrade path is a separate-uid verdict store (HIMMEL-4714 security note,
+# HIMMEL-3578).
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+judge_nogo_record() (
+    want="$1"
+    lib="$HIMMEL_ROOT/scripts/lib"
+    # shellcheck source=scripts/lib/handover-path.sh
+    # shellcheck disable=SC1091
+    . "$lib/handover-path.sh" 2>/dev/null || exit 1
+    # shellcheck source=scripts/lib/go-gate.sh
+    # shellcheck disable=SC1091
+    . "$lib/go-gate.sh" 2>/dev/null || exit 1
+    root="$(go_resolve_root "$HIMMEL_ROOT")" && [ -n "$root" ] || exit 1
+    scope="$(go_verdict_scope "$HIMMEL_ROOT")" && [ -n "$scope" ] || exit 1
+    dir="$root"
+    [ -d "$dir" ] && [ ! -L "$dir" ] || exit 1
+    for seg in "${scope%%/*}" "${scope#*/}" verdicts; do
+        dir="$dir/$seg"
+        [ -d "$dir" ] && [ ! -L "$dir" ] || exit 1
+    done
+    for qdir in "$dir"/*/; do
+        qdir="${qdir%/}"
+        qid="${qdir##*/}"
+        if [ ! -d "$qdir" ] || [ -L "$qdir" ]; then continue; fi
+        case "$qid" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) continue ;; esac
+        hit="" bad=0
+        for f in "$qdir"/*.md; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            if [ -L "$f" ] || [ ! -f "$f" ]; then bad=1; break; fi
+            name="${f##*/}"; name="${name%.md}"
+            case "$name" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) bad=1; break ;; esac
+            l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8=""
+            { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4
+              IFS= read -r l5; IFS= read -r l6; IFS= read -r l7; IFS= read -r l8; } < "$f" 2>/dev/null
+            if [ "$l1" != "# VERDICT $qid - $name" ] || [ -n "$l2$l5$l7" ] || [ "$l6" != "## Verdict" ] \
+                || ! printf '%s\n' "$l3" | grep -Eq '^writer-session: [A-Za-z0-9-]+$' \
+                || ! printf '%s\n' "$l4" | grep -Eq '^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'; then
+                bad=1; break
+            fi
+            word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
+            [ -n "$word" ] || { bad=1; break; }
+            if [ -z "$hit" ] && [ "$word" = "NO-GO $want" ]; then hit="$qid/$name"; fi
+        done
+        if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then
+            printf '%s\n' "$hit"
+            exit 0
+        fi
+    done
+    exit 1
+)
+
 # HIMMEL-4600: decide whether the round after the third may run, as the one
 # delta round. Sets delta_from/delta_to/delta_trigger, or says why not and
-# returns 8 (2 for an unresolvable --head).
+# returns 8 (2 for an unresolvable --head). HIMMEL-4700: a judge NO-GO on the
+# last reviewed head is a third trigger, checked even once the delta was used;
+# it sets delta_verdict.
 delta_check() {
     full_note="a 4th full round is refused (HIMMEL-4600)"
     delta_reuse=0
+    delta_used=""
+    delta_verdict=""
     if [ -f "$delta_state" ]; then
         # HIMMEL-4616: a delta round whose panel produced no critic rows is
         # still pending, so the SAME <from> <to> pair may start again. Any
@@ -230,14 +297,18 @@ delta_check() {
             delta_reuse=1
             return 0
         fi
-        echo "review-round: the one delta round was already used on $branch ($(cat "$delta_state" 2>/dev/null)) - a second delta round is refused, and $full_note; ask the console" >&2
-        return 8
+        delta_used="$(cat "$delta_state" 2>/dev/null)"
+        [ -n "$delta_used" ] || delta_used="unreadable"
     fi
     if [ -z "$head_sha" ]; then
-        echo "review-round: $branch already ran 3 full rounds - $full_note; only a delta round (start --head) can run" >&2
+        delta_refuse "review-round: $branch already ran 3 full rounds - $full_note; only a delta round (start --head) can run"
         return 8
     fi
     if ! delta_to="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" || [ -z "$delta_to" ]; then
+        if [ -n "$delta_used" ]; then
+            delta_refuse ""
+            return 8
+        fi
         echo "review-round: --head $head_sha does not resolve to a commit" >&2
         return 2
     fi
@@ -249,46 +320,64 @@ delta_check() {
         delta_from="$(git rev-parse --verify --quiet "$last_reviewed^{commit}" 2>/dev/null)" || delta_from=""
     fi
     if [ -z "$delta_from" ] || [ "$(ledger_query avail "$delta_from")" != "ok" ]; then
-        echo "review-round: no critic-reviewed head of the last counted round on $branch to scope a delta round from - $full_note" >&2
+        delta_refuse "review-round: no critic-reviewed head of the last counted round on $branch to scope a delta round from - $full_note"
         return 8
     fi
     if [ "$delta_from" = "$delta_to" ]; then
-        echo "review-round: $delta_to is the last reviewed head on $branch - $full_note" >&2
+        delta_refuse "review-round: $delta_to is the last reviewed head on $branch - $full_note"
         return 8
     fi
     if ! git merge-base --is-ancestor "$delta_from" "$delta_to" 2>/dev/null; then
-        echo "review-round: $delta_to does not descend from the last reviewed head $delta_from - $full_note" >&2
+        delta_refuse "review-round: $delta_to does not descend from the last reviewed head $delta_from - $full_note"
         return 8
     fi
     if git diff --quiet "$delta_from" "$delta_to" 2>/dev/null; then
-        echo "review-round: $delta_from..$delta_to changes nothing - no delta round to run" >&2
+        delta_refuse "review-round: $delta_from..$delta_to changes nothing - no delta round to run"
         return 8
     fi
-    if [ "$(ledger_query finding "$delta_from")" = "finding" ]; then
-        delta_trigger="fix"
+    if [ -z "$delta_used" ]; then
+        if [ "$(ledger_query finding "$delta_from")" = "finding" ]; then
+            delta_trigger="fix"
+            return 0
+        fi
+        # Merge-forward: at least one merge since the reviewed head, every
+        # non-merge commit it brought is already on the captured base, and the
+        # new head's tree is exactly a clean merge of the reviewed head with the
+        # base point it merged - so a merge carrying its own edits or conflict
+        # resolutions is new work, not a merge-forward.
+        if [ -n "$base_sha" ] \
+            && [ -n "$(git rev-list --merges "$delta_from..$delta_to" 2>/dev/null)" ] \
+            && [ -z "$(git rev-list --no-merges "$delta_from..$delta_to" "^$base_sha" 2>/dev/null)" ] \
+            && merged_base="$(git merge-base "$delta_to" "$base_sha" 2>/dev/null)"; then
+            if clean_tree="$(git merge-tree --write-tree "$delta_from" "$merged_base" 2>/dev/null)" \
+                && [ "$clean_tree" = "$(git rev-parse "$delta_to^{tree}" 2>/dev/null)" ]; then
+                delta_trigger="merge-forward"
+                return 0
+            fi
+            if version_only_merge "$delta_from" "$merged_base" "$delta_to"; then
+                delta_trigger="merge-forward"
+                return 0
+            fi
+        fi
+    fi
+    # HIMMEL-4700: one judge-triggered round per last reviewed head.
+    if ! grep -q "^$delta_from " "$verdict_state" 2>/dev/null \
+        && delta_verdict="$(judge_nogo_record "$delta_from")" && [ -n "$delta_verdict" ]; then
+        delta_trigger="verdict:${delta_verdict%%/*}"
         return 0
     fi
-    # Merge-forward: at least one merge since the reviewed head, every
-    # non-merge commit it brought is already on the captured base, and the
-    # new head's tree is exactly a clean merge of the reviewed head with the
-    # base point it merged - so a merge carrying its own edits or conflict
-    # resolutions is new work, not a merge-forward.
-    if [ -n "$base_sha" ] \
-        && [ -n "$(git rev-list --merges "$delta_from..$delta_to" 2>/dev/null)" ] \
-        && [ -z "$(git rev-list --no-merges "$delta_from..$delta_to" "^$base_sha" 2>/dev/null)" ] \
-        && merged_base="$(git merge-base "$delta_to" "$base_sha" 2>/dev/null)"; then
-        if clean_tree="$(git merge-tree --write-tree "$delta_from" "$merged_base" 2>/dev/null)" \
-            && [ "$clean_tree" = "$(git rev-parse "$delta_to^{tree}" 2>/dev/null)" ]; then
-            delta_trigger="merge-forward"
-            return 0
-        fi
-        if version_only_merge "$delta_from" "$merged_base" "$delta_to"; then
-            delta_trigger="merge-forward"
-            return 0
-        fi
-    fi
-    echo "review-round: $delta_to neither answers a round-3 finding nor only merges the base into $delta_from - $full_note; new work after the cap goes to the console" >&2
+    delta_verdict=""
+    delta_refuse "review-round: $delta_to neither answers a round-3 finding nor only merges the base into $delta_from, and no judge NO-GO for $delta_from is recorded (console-kit/write-verdict.sh) - $full_note; new work after the cap goes to the console"
     return 8
+}
+
+# Once the delta was used every refusal keeps naming it; otherwise print $1.
+delta_refuse() {
+    if [ -n "$delta_used" ]; then
+        echo "review-round: the one delta round was already used on $branch ($delta_used) - a second delta round is refused, and $full_note; only a judge NO-GO on the last reviewed head (console-kit/write-verdict.sh) buys another; ask the console" >&2
+    else
+        echo "$1" >&2
+    fi
 }
 
 if [ "$verb" = "start" ]; then
@@ -323,6 +412,17 @@ if [ "$verb" = "start" ]; then
     if [ "$round" -ge 3 ]; then
         delta_check
         delta_rc=$?
+        if [ "$delta_rc" -eq 0 ] && [ "${delta_reuse:-0}" -eq 0 ] && [ -n "$delta_verdict" ]; then
+            # HIMMEL-4700: consume the judge record before the round is recorded.
+            tmp_verdicts="$verdict_state.tmp.$$"
+            if ! { cat "$verdict_state" 2>/dev/null || [ ! -e "$verdict_state" ]; } > "$tmp_verdicts" \
+                || ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_verdict" >> "$tmp_verdicts" \
+                || ! mv "$tmp_verdicts" "$verdict_state"; then
+                rm -f "$tmp_verdicts"
+                echo "review-round: cannot record the judge record $delta_verdict for $branch" >&2
+                delta_rc=5
+            fi
+        fi
         if [ "$delta_rc" -eq 0 ] && [ "${delta_reuse:-0}" -eq 0 ]; then
             tmp_delta="$delta_state.tmp.$$"
             if ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_trigger" > "$tmp_delta" \
