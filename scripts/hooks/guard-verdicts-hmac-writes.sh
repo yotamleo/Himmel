@@ -781,6 +781,12 @@ _vanc() {
     return 0
 }
 
+# A short-option cluster whose -t takes the NEXT word (-t, -vt), and one whose
+# -t carries the target attached (-tDIR, -vtDIR). S is left out of the cluster
+# letters because -S takes a value: -St is a suffix, not a target (delta codex-1).
+TCLUS='^-[A-RT-Za-z]*t$'
+TATT='^-[A-RT-Za-z]*t(.+)$'
+
 # _target <text> — a write target outside a judge session.
 _target() {
     local t="$1" a
@@ -995,13 +1001,20 @@ analyze() {
             if [ "$ci" -ge 0 ] && [ "$i" -gt "$ci" ]; then
                 case "$c" in
                     tee|rm|rmdir|mv|truncate|shred|unlink|touch|chmod|chown|chgrp|patch)
-                        case "$w" in -*) ;; *)
+                        case "$w" in
+                        -*)
+                            # An attached target (-tDIR, -vtDIR, --target-directory=DIR).
+                            if [ "$c" = mv ]; then
+                                case "$w" in --target-directory=*) _target "${w#--target-directory=}" ;; esac
+                                [[ $w =~ $TATT ]] && _target "${BASH_REMATCH[1]}"
+                            fi ;;
+                        *)
                             _target "$w"
                             case "$c" in
                                 rm|rmdir|shred|unlink|chmod|chown|chgrp) _vanc "$w" ;;
                                 mv)
                                     if [ "${seg_mvt[s]:-}" = 1 ]; then
-                                        case "$prev" in -t|--target-directory|-[!-]*t) ;; *) _vanc "$w" ;; esac
+                                        [[ $prev =~ $TCLUS ]] || [ "$prev" = --target-directory ] || _vanc "$w"
                                     else
                                         [ "$i" = "${seg_last[s]:-}" ] || _vanc "$w"
                                     fi ;;
@@ -1014,9 +1027,15 @@ analyze() {
                     cp|install|ln|rsync|scp)
                         case "$w" in
                             --target-directory=*) _target "${w#--target-directory=}" ;;
-                            -*) ;;
+                            -*)
+                                case "$c" in cp|install|ln)
+                                    [[ $w =~ $TATT ]] && _target "${BASH_REMATCH[1]}" ;;
+                                esac ;;
                             *)
                                 case "$prev" in -t|--target-directory) _target "$w" ;; esac
+                                case "$c" in cp|install|ln)
+                                    [[ $prev =~ $TCLUS ]] && _target "$w" ;;
+                                esac
                                 [ "$i" = "${seg_last[s]:-}" ] && _target "$w"
                                 ;;
                         esac ;;
