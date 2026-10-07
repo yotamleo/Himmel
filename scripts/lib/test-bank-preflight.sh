@@ -796,6 +796,22 @@ check "operator standing set persists policy in fenced lift file" true "$(jq -r 
 # The old until is now expired, but the policy applies to the fresh window.
 jq '.until=1' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BANK_LIFT_FILE"; chmod 600 "$BANK_LIFT_FILE"
 check "standing policy renews into next current window" 0 "$(lift_rc "$W/lc.json")"
+# Native Windows jq emits CRLF. Keep identity/cache reads unchanged so this
+# isolates the serialized policy fields rather than mocking the validator.
+# shellcheck disable=SC1090,SC2317 # jq function called indirectly by validator
+crlf_lift() { (
+  . "$LIFT"
+  jq() {
+    local arg last=''
+    for arg; do last="$arg"; done
+    if [ "$last" = "$BANK_LIFT_FILE" ]; then command jq "$@" | sed 's/$/\r/'; else command jq "$@"; fi
+  }
+  bank_lift_valid "$W/lc.json"
+  local rc=$?
+  # shellcheck disable=SC2031 # validator sets it in this same subshell
+  printf '%s:%s' "$rc" "$BANK_LIFT_STANDING"
+); }
+check "CRLF jq output renews standing policy" '0:true' "$(crlf_lift)"
 check "standing default ceiling permits both banks at 99" PROCEED "$(CADENCE_BANK_MAX_PCT='' verdict "$(lfx 99 99 "$NOW" "")")"
 check "standing ceiling still refuses full five-hour bank" SKIPPED-BANK "$(CADENCE_BANK_MAX_PCT='' verdict "$(lfx 100 99 "$NOW" "")")"
 check "standing ceiling still refuses full weekly bank" SKIPPED-BANK "$(CADENCE_BANK_MAX_PCT='' verdict "$(lfx 99 100 "$NOW" "")")"

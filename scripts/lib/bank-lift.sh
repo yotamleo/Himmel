@@ -87,7 +87,7 @@ bank_lift_valid() {
     IFS= read -r acct
     IFS= read -r standing
   } <<<"$fields"
-  win=${win%$'\r'}; until=${until%$'\r'}; acct=${acct%$'\r'}
+  win=${win%$'\r'}; until=${until%$'\r'}; acct=${acct%$'\r'}; standing=${standing%$'\r'}
   [ "$win" = "seven_day" ] || { BANK_LIFT_REASON=window; return 1; }
   case "$until" in ''|*[!0-9]*) return 1 ;; esac
   [ -n "$acct" ] || return 1
