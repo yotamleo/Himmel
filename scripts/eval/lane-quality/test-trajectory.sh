@@ -104,6 +104,7 @@ check "a direct ./scripts/quiet-run.sh call under a pipe is recognized" '[ "$(tt
 check "quiet-run wrapping a non-test is not a test run" '[ "$(tt "bash scripts/quiet-run.sh npm-install -- npm install")" = "null" ]'
 check "node --test names its test files" '[ "$(tt "node --test scripts/a/foo.test.mjs")" = "[[\"foo.test.mjs\"], \"pass+fail\"]" ]'
 check "node --test with no test file runs the default set" '[ "$(tt "node --test")" = "[[\"*\"], \"pass+fail\"]" ]'
+check "node --test --help / --version run no tests" '[ "$(tt "node --test --help")" = "null" ] && [ "$(tt "node --test --version")" = "null" ]'
 check "a compound sed ...; bash test-x.sh is a run of test-x.sh" '[ "$(tt "sed -i s/a/b/ x.sh; bash test-x.sh")" = "[[\"test-x.sh\"], \"pass+fail\"]" ]'
 # leg <name> <cmd1> <out1> <cmd2> <out2>: Bash run, a Write of impl.py, Bash run, then a passing claim.
 leg() {
