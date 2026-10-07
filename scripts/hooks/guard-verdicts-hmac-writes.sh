@@ -972,10 +972,14 @@ analyze() {
             if [ "${seg_skip[s]:-}" = 1 ]; then
                 seg_skip[s]=""
             else
-                case "$WRAPPERS" in *" $b "*) seg_wrap[s]=1 ;; *)
+                case "$WRAPPERS" in *" $b "*) seg_wrap[s]=$b ;; *)
                     if [ -n "${seg_wrap[s]:-}" ]; then
                         case "$w" in
-                            -[sknugCIPLdEaDp]|--signal|--kill-after|--user|--group|--unset|--chdir|--adjustment) seg_skip[s]=1 ;;
+                            # -p takes a value only for sudo (its prompt); command -p
+                            # and time -p are flags, so skipping a value there
+                            # swallowed the real command (j2031).
+                            -p) [ "${seg_wrap[s]}" = sudo ] && seg_skip[s]=1 ;;
+                            -[sknugCIPLdEaD]|--signal|--kill-after|--user|--group|--unset|--chdir|--adjustment) seg_skip[s]=1 ;;
                             -*|*=*) ;;
                             *) [[ $w =~ ^[0-9.]+[smhd]?$ ]] || { seg_cmd[s]=$b; seg_cmd_i[s]=$i; } ;;
                         esac
