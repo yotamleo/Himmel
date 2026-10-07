@@ -202,12 +202,14 @@ function fold(prev: View, e: Ev): View {
 // HIMMEL-4711: what is running now. An agent runs while it has a call open, or while the Agent call that spawned
 // it is open (a background subagent's Agent call returns at launch, so its own open calls still count); the
 // session agent ("main") also while its turn is open. An agent whose parent call failed is failed, whatever it
-// left open; otherwise a finished agent failed only if the run errored.
+// left open, and so is one whose open call the run error killed (a background subagent's parent returned at
+// launch); otherwise a finished agent failed only if the run errored.
 export type AgentState = "running" | "done" | "failed";
 export function agentState(v: View, id: string): AgentState {
   const parent = v.tools[v.agents[id]?.parentToolCallId ?? ""];
   if (parent?.status === "error") return "failed";
   if (Object.values(v.tools).some((t) => t.agent === id && t.status === "running")) return "running";
+  if (Object.values(v.tools).some((t) => t.agent === id && t.failure === "error")) return "failed"; // RUN_ERROR's mark
   if (parent) return parent.status === "running" ? "running" : "done";
   if (v.status === "error") return "failed";
   return id === "main" && v.status === "running" && !v.sideRun ? "running" : "done";
