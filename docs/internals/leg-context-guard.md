@@ -86,7 +86,11 @@ are allowed:
 - A bare `git [-C <dir>] add|commit|push|status|rev-parse`.
 - A bare `cd [<dir>]`.
 
-"Bare" means the command contains no `&&`, `||`, `$(` and no newline.
+"Bare" means one command: no newline, no unclosed quote, no backtick or `$(`
+outside single quotes, and no `&`, `|`, `;`, `<`, `>`, `(` or `)` outside any
+quotes. Quoted text keeps them inert, so a bullet or commit message may say
+`a; b` inside quotes. Put backticks in single quotes: inside double quotes they
+run a command and are refused.
 
 The deny names:
 
@@ -152,7 +156,8 @@ The hook is also wired as a PreCompact hook:
   - a RESUME unlock;
   - a last marker of `WRAPPED`.
 
-  A last marker of `BLOCKED` does not let it pass.
+  A last marker of `BLOCKED` is not an unlock by itself. It lets the
+  compaction pass only alongside a CHECKPOINT or RESUME unlock.
 
 Claude Code does not document what follows a refused auto-compaction. This is
 why the threshold sits below the earliest observed compaction and the refusal

@@ -177,10 +177,10 @@ check "ListAgents -> allow" allow "$(tool_call ListAgents)"
 check "TaskStop -> allow" allow "$(tool_call TaskStop)"
 check "ToolSearch -> allow" allow "$(tool_call ToolSearch)"
 check "append-results.sh -> allow" allow \
-    "$(bash_call "bash scripts/handover/console-kit/append-results.sh $DOC \"BLOCKED — context 90 %; ctx; see \`RESUME\`\"")"
+    "$(bash_call "bash scripts/handover/console-kit/append-results.sh $DOC 'BLOCKED — context 90 %; ctx | see \`RESUME\` & (more)'")"
 check "absolute append-results.sh -> allow" allow \
     "$(bash_call "bash /x/himmel/scripts/handover/console-kit/append-results.sh $DOC \"WRAPPED — done\"")"
-check "queue-lock.sh release -> allow" allow "$(bash_call "bash scripts/handover/queue-lock.sh release $DOC \`tok\`")"
+check "queue-lock.sh release -> allow" allow "$(bash_call "bash scripts/handover/queue-lock.sh release $DOC tok")"
 check "wrap-subtree-check.sh -> allow" allow "$(bash_call 'bash scripts/handover/wrap-subtree-check.sh')"
 check "context-fill.sh probe -> allow" allow "$(bash_call 'bash scripts/context-fill.sh --percent')"
 check "queue-lock.sh acquire -> block (not a hand-off)" block "$(bash_call "bash scripts/handover/queue-lock.sh acquire $DOC")"
@@ -275,6 +275,27 @@ check "bare cd -> allow" allow "$(bash_call 'cd')"
 check "cd <dir>; more -> block" block "$(bash_call "cd $REPO; rm -rf x")"
 check "cd <dir> | more -> block" block "$(bash_call "cd $REPO | ls")"
 check "cd a b -> block" block "$(bash_call 'cd a b')"
+# Round-2 codex-1: every command-substitution or chaining shape refuses the
+# whole call, not only && || $( and a newline.
+# shellcheck disable=SC2016 # literal backticks and <( are the shapes under test
+check "cd \`payload\` -> block" block "$(bash_call 'cd `./payload`')"
+# shellcheck disable=SC2016
+check "git commit with backticks -> block" block "$(bash_call 'git commit -m "`id`"')"
+check "git status; more -> block" block "$(bash_call 'git status; touch x')"
+check "git status | more -> block" block "$(bash_call 'git status | sh')"
+check "git push & more -> block" block "$(bash_call 'git push & touch x')"
+check "git commit -F <( -> block" block "$(bash_call 'git commit -F <(echo x)')"
+check "double-quoted bullet with ; -> allow" allow \
+    "$(bash_call "bash scripts/handover/console-kit/append-results.sh $DOC \"LIVE a; b | c\"")"
+# shellcheck disable=SC2016
+check "double-quoted bullet with backticks -> block" block \
+    "$(bash_call "bash scripts/handover/console-kit/append-results.sh $DOC \"LIVE \`id\`\"")"
+check "escaped quote then ; -> block" block "$(bash_call "git status \\'; touch x; echo \\'")"
+check "apostrophe in double quotes then ; -> block" block "$(bash_call "git commit -m \"it's\"; touch x; echo \"'\"")"
+check "unclosed quote -> block" block "$(bash_call "git commit -m 'x")"
+check "redirect -> block" block "$(bash_call 'git status > x')"
+check "append-results.sh; more -> block" block \
+    "$(bash_call "bash scripts/handover/console-kit/append-results.sh $DOC \"LIVE x\"; rm -rf /tmp/x")"
 
 echo "== compact mode: a pushed CHECKPOINT of HEAD unlocks =="
 session "load $DOC and continue"

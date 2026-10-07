@@ -121,6 +121,37 @@ warn_allow() {
     exit 0
 }
 
+# True when $1 is ONE command: no newline, no unclosed quote, no backtick or
+# $( outside single quotes, and no & | ; < > ( ) outside any quotes. Quoted
+# text stays usable (a bullet's `;`), but nothing can chain, pipe, background,
+# redirect or substitute a second command.
+is_bare_command() {
+    local s=$1 n=${#1} i=0 c q=''
+    case "$s" in *"
+"*) return 1 ;; esac
+    while [ "$i" -lt "$n" ]; do
+        c=${s:$i:1}
+        if [ "$q" = "'" ]; then
+            [ "$c" = "'" ] && q=''
+        elif [ "$c" = "\\" ]; then
+            i=$((i + 1))
+        elif [ "$c" = '`' ]; then
+            return 1
+        elif [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = '(' ]; then
+            return 1
+        elif [ "$q" = '"' ]; then
+            [ "$c" = '"' ] && q=''
+        else
+            case "$c" in
+                "'"|'"') q=$c ;;
+                '&'|'|'|';'|'<'|'>'|'('|')') return 1 ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+    [ -z "$q" ]
+}
+
 MODE="${HIMMEL_LEG_CONTEXT_MODE:-}"
 case "$MODE" in
     ''|none) exit 0 ;;
@@ -205,25 +236,21 @@ case "$tool" in
         ;;
     Bash)
         cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
-        # shellcheck disable=SC2016 # literal $( is the pattern, not an expansion
-        case "$cmd" in
-            *'&&'*|*'||'*|*'$('*|*"
-"*) ;;
-            *)
-                if grep -qE '^[[:space:]]*bash[[:space:]]+([^[:space:]]*/)?(scripts/handover/console-kit/append-results\.sh|scripts/handover/queue-lock\.sh[[:space:]]+release|scripts/handover/wrap-subtree-check\.sh|scripts/context-fill\.sh)([[:space:]]|$)' <<< "$cmd"; then
-                    exit 0
-                fi
-                # WIP add/commit/push, and the status/rev-parse reads a
-                # checkpoint needs, so the hand-off leaves nothing uncommitted.
-                if grep -qE '^[[:space:]]*git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?(add|commit|push|status|rev-parse)([[:space:]]|$)' <<< "$cmd"; then
-                    exit 0
-                fi
-                # Back to the worktree: one bare cd, nothing chained after it.
-                if grep -qE '^[[:space:]]*cd([[:space:]]+[^[:space:];&|<>]+)?[[:space:]]*$' <<< "$cmd"; then
-                    exit 0
-                fi
-                ;;
-        esac
+        # A bare call only, or a second command rides the allow.
+        if is_bare_command "$cmd"; then
+            if grep -qE '^[[:space:]]*bash[[:space:]]+([^[:space:]]*/)?(scripts/handover/console-kit/append-results\.sh|scripts/handover/queue-lock\.sh[[:space:]]+release|scripts/handover/wrap-subtree-check\.sh|scripts/context-fill\.sh)([[:space:]]|$)' <<< "$cmd"; then
+                exit 0
+            fi
+            # WIP add/commit/push, and the status/rev-parse reads a
+            # checkpoint needs, so the hand-off leaves nothing uncommitted.
+            if grep -qE '^[[:space:]]*git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?(add|commit|push|status|rev-parse)([[:space:]]|$)' <<< "$cmd"; then
+                exit 0
+            fi
+            # Back to the worktree: one bare cd, nothing chained after it.
+            if grep -qE '^[[:space:]]*cd([[:space:]]+[^[:space:];&|<>]+)?[[:space:]]*$' <<< "$cmd"; then
+                exit 0
+            fi
+        fi
         ;;
 esac
 
