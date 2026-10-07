@@ -1732,9 +1732,9 @@ STUB
         PATH="$W/bin-3361:$PATH" QMD_CALLS="$p4051_calls" ROADMAP_QMD_BIN="$p4051/qmd" TICK_PLAN_INDEX_OUT="$p4051_out" \
             TICK_TRACKER_MIRROR_DIR="$p4051_mir" bash "$SUT" --legs "$W/handover/$b3361.md" "$@"
     }
-    wait4051() {  # the detached refresh writes OUT/.last-run when it ends
+    wait4051() {  # the detached refresh writes OUT/.last-run, then its EXIT trap drops .launch (HIMMEL-4734)
         local i=0
-        while [ ! -f "$p4051_out/.last-run" ] && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
+        while { [ ! -f "$p4051_out/.last-run" ] || [ -d "$p4051_out/.launch" ]; } && [ "$i" -lt 150 ]; do sleep 0.1; i=$((i + 1)); done
     }
     write_console4051
     contains 'no plan dir configured reads plan-index=skip (HIMMEL-4051)' "$(t4051)" ' plan-index=skip'
@@ -1807,6 +1807,17 @@ STUB
     p4051_out="$p4051/o\"x\$(touch $p4051/PWNED)"
     t4051 >/dev/null; wait4051
     [ ! -e "$p4051/PWNED" ] && [ -f "$p4051_out/.last-run" ] && [ ! -d "$p4051_out/.launch" ] && pass 'a hostile --out path is cleaned up without running text (HIMMEL-4059)' || fail 'hostile --out path left .launch or ran text (HIMMEL-4059)'
+    p4051_out="$p4051_out_save"
+
+    # HIMMEL-4734: the wrapper writes .last-run BEFORE its EXIT trap removes .launch, so a wait
+    # on .last-run alone can assert inside that gap under load. RED control: a wrapper copy with
+    # a sleep injected into the trap widens the gap; a .last-run-only wait4051 fails this check
+    p4051_out="$p4051/o4734"; mkdir -p "$p4051_out"
+    sed "s/^trap '/trap 'sleep 1; /" "$wrap4059" > "$p4051/launch4734.sh"
+    bash "$p4051/launch4734.sh" "$p4051_out" true &
+    wait4051
+    [ -f "$p4051_out/.last-run" ] && [ ! -d "$p4051_out/.launch" ] && pass 'wait4051 waits out the .last-run-to-.launch-release gap (HIMMEL-4734)' || fail 'wait4051 returned while .launch was still held (HIMMEL-4734)'
+    wait
     p4051_out="$p4051_out_save"
 
     # HIMMEL-4059 item 3: a launcher that is not installed reads FAIL:no-launcher and writes .last-fail
