@@ -598,6 +598,7 @@ ul { list-style:none; margin:0; padding:0; } li { padding:6px 0; border-top:1px 
 li[data-phase="BLOCKED"] .ph, li[data-phase="WRAPPED, window still open"] .ph, li[data-ci="failing"] .pr { color:var(--bad); } li[data-phase="WRAPPED"] .ph, li[data-phase="MERGED"] .ph, li[data-ci="green"] .pr { color:var(--ok); } li[data-ci="pending"] .pr { color:var(--warn); }
 .bar { height:6px; background:var(--line); border-radius:3px; margin-top:4px; } .bar i { display:block; height:100%; background:var(--accent); border-radius:3px; }
 .wide { grid-column:1 / -1; }
+table { width:100%; border-collapse:collapse; font-size:.85rem; } th, td { text-align:left; padding:4px 6px; border-top:1px solid var(--line); } th { color:var(--muted); font-weight:500; }
 </style>
 </head>
 <body>
@@ -619,6 +620,7 @@ ${ladder}
 </ul>
 </section>
 ${costSection}
+${failuresSection}
 ${panel('Needs the console', needRows, 'nothing waiting on the console')}
 ${panel('Open operator decisions', decisions.map((d) => `<li>${safe(d)}</li>`).join('\n'), 'none recorded (Live state decisions:)')}
 ${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}${releases.map((r) => `\n${releasePanel(r)}`).join('')}
