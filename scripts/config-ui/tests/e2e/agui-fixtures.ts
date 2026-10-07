@@ -46,9 +46,10 @@ export type AguiHarness = {
 
 // HIMMEL-4712: `fleet` boots `himmelctl ui --agui` with no session id over the fixture fleet (agui-fleet-fixture.ts:
 // its stub census, sessions and journals under this HOME), and waits for the fleet URL (the token, no run).
-export async function bootAgui(initial = "", opts: { fleet?: boolean } = {}): Promise<AguiHarness> {
+// HIMMEL-4791: `cloud` adds the fixture's cloud lane (routing log, briefs, stub gh, the shepherd leg).
+export async function bootAgui(initial = "", opts: { fleet?: boolean; cloud?: boolean } = {}): Promise<AguiHarness> {
   const dir = mkdtempSync(join(tmpdir(), "agui-e2e-"));
-  const fleet = opts.fleet ? fleetFixture(dir) : null;
+  const fleet = opts.fleet ? fleetFixture(dir, { cloud: opts.cloud }) : null;
   const home = join(dir, "home");
   const slug = join(home, ".claude", "projects", "e2e-project");
   mkdirSync(slug, { recursive: true });

@@ -1,20 +1,20 @@
 // HIMMEL-4712: GET /api/agui/fleet — every live session on one page. Drives the REAL fleet.sh (claude_sessions,
 // leg_tail_status) through claude-sessions.sh's own seams: a stub pgrep and a fake /proc whose cmdlines carry -n.
 import { test, expect, afterEach } from "bun:test";
-import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
-import { fleetFixture, FLEET, PRIOR_CONSOLE } from "./agui-fleet-fixture";
+import { CLOUD, fleetFixture, FLEET, PRIOR_CONSOLE } from "./agui-fleet-fixture";
 
 const STUB = join(import.meta.dir, "stub-himmelctl.js");
 const TOKEN = "t".repeat(64);
 const cleanups: (() => void)[] = [];
 afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
 
-function boot(extra: Record<string, string> = {}) {
+function boot(extra: Record<string, string> = {}, opts: { cloud?: boolean } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "agui-fleet-"));
-  const fx = fleetFixture(dir);
+  const fx = fleetFixture(dir, opts);
   const s = startServer({ port: 0, token: TOKEN, env: { PATH: process.env.PATH, CONFIG_UI_HIMMELCTL: STUB, CONFIG_UI_IDLE_MS: "60000", ...fx.env, ...extra } });
   cleanups.push(() => { s.stop(); rmSync(dir, { recursive: true, force: true }); });
   return { ...s, ...fx };
@@ -131,4 +131,54 @@ test("usage: summed per API call across the journal and its subagents, filled ag
   expect(by[FLEET.console.name].usage).toMatchObject({ calls: 1, ceiling: 1000000, ceilingFrom: "window", fill: 4 });
   // The idle session's journal carries no usage record: not measured, not zero.
   expect(by[FLEET.idle.name].usage).toBeNull();
+});
+
+// HIMMEL-4791: a cloud session has no local process, so its node comes from the console bucket's cloud-route.jsonl
+// plus the CLOUD-DONE comment on its PR (one batched, cached GitHub read through the stub gh), and its local
+// shepherd leg hangs under it. Its tokens are not measured, never zero.
+test("cloud: each recent CLOUD-OK route is a node under its console, from its PR and CLOUD-DONE comment; its shepherd hangs under it", async () => {
+  const { port } = boot({}, { cloud: true });
+  const b = await (await fleet(port)).json();
+  const by = Object.fromEntries(b.sessions.map((s: any) => [s.name, s]));
+  expect(b.sessions.filter((s: any) => s.role === "cloud").map((s: any) => s.name).sort()).toEqual(["cloud-HIMMEL-905", "cloud-HIMMEL-906", "cloud-HIMMEL-907"]);
+  expect(by["cloud-HIMMEL-905"]).toMatchObject({
+    pid: null, run: null, role: "cloud", model: null, ticket: "HIMMEL-905", pr: 1905, state: "idle",
+    parent: FLEET.console.name, predecessor: null, agents: [], usage: null, cloud: { url: CLOUD.url, phase: "done" },
+  });
+  expect(by["cloud-HIMMEL-906"]).toMatchObject({ pr: null, state: "running", parent: FLEET.console.name, cloud: { url: null, phase: "working" } });
+  expect(by["cloud-HIMMEL-907"]).toMatchObject({ pr: 1907, state: "wrapped", cloud: { phase: "merged" } });
+  // The shepherd's brief names the console; as the cloud session's local shepherd it hangs under the cloud node.
+  expect(by[CLOUD.shepherd.name]).toMatchObject({ role: "leg", ticket: "HIMMEL-905", parent: "cloud-HIMMEL-905", cloud: null });
+  expect(by[FLEET.leg.name]).toMatchObject({ parent: FLEET.console.name, cloud: null });
+});
+
+test("cloud: GitHub is read once per cache window, in one batched query naming only the routed tickets", async () => {
+  const s = boot({}, { cloud: true });
+  await fleet(s.port);
+  await fleet(s.port);
+  const calls = readFileSync(s.gh.calls, "utf8").trim().split("\n");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toMatch(/^api graphql /);
+  for (const t of ["HIMMEL-905", "HIMMEL-906", "HIMMEL-907"]) expect(calls[0]).toContain(t);
+  for (const t of ["HIMMEL-908", "HIMMEL-909", "HIMMEL-910"]) expect(calls[0]).not.toContain(t);
+});
+
+test("cloud: a failed GitHub read degrades every cloud node to unknown and still serves the fleet", async () => {
+  const s = boot({}, { cloud: true });
+  writeFileSync(s.gh.rc, "1");
+  const r = await fleet(s.port);
+  expect(r.status).toBe(200);
+  const b = await r.json();
+  expect(b.census).toBe("ok");
+  const cloud = b.sessions.filter((x: any) => x.role === "cloud");
+  expect(cloud).toHaveLength(3);
+  for (const c of cloud) expect(c).toMatchObject({ pr: null, state: "unknown", usage: null, cloud: { url: null, phase: "unknown" } });
+  expect(b.sessions.find((x: any) => x.name === CLOUD.shepherd.name).parent).toBe("cloud-HIMMEL-905");
+});
+
+test("cloud: no routed cloud ticket, no GitHub read", async () => {
+  const s = boot();
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.some((x: any) => x.role === "cloud")).toBe(false);
+  expect(existsSync(s.gh.calls)).toBe(false);
 });

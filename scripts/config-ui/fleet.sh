@@ -8,7 +8,10 @@
 # leg_tail_status. Prints one JSON object:
 #   {"census": "ok"|"degraded"|"unavailable", "sessions": [{"pid": "<pid>",
 #    "name": "<-n value>", "model": "<--model value>", "doc": "<path>"|"",
-#    "status": "<marker>"|"", "autocompact": "<--autocompact value>"|""}]}
+#    "status": "<marker>"|"", "autocompact": "<--autocompact value>"|""}],
+#    "cloudRoutes": ["<bucket>/cloud-route.jsonl", ...]}
+# cloudRoutes (HIMMEL-4791) = every console bucket's cloud-route.jsonl under the
+# handover root, the routing log fleet-cloud.ts reads the cloud sessions from.
 # census: degraded = some live pid's argv was unreadable (claude_sessions rc 3),
 # unavailable = the scan itself failed. No handover root is not an error: the
 # sessions are still listed, with no doc.
@@ -54,4 +57,6 @@ while IFS="$sep" read -r pid name model autocompact _; do
 done <<EOF
 $out
 EOF
-jq -n --arg census "$census" --arg rows "$rows" '{census: $census, sessions: [$rows | split("\n")[] | select(length > 0) | split("\t") | {pid: .[0], name: .[1], model: .[2], doc: .[3], status: (.[4] // ""), autocompact: (.[5] // "")}]}'
+routes=""
+[ -n "$root" ] && routes=$(find "$root" -maxdepth 4 -type f -name cloud-route.jsonl 2>/dev/null) # gnu-ok: BSD find also supports -maxdepth
+jq -n --arg census "$census" --arg rows "$rows" --arg routes "$routes" '{census: $census, sessions: [$rows | split("\n")[] | select(length > 0) | split("\t") | {pid: .[0], name: .[1], model: .[2], doc: .[3], status: (.[4] // ""), autocompact: (.[5] // "")}], cloudRoutes: [$routes | split("\n")[] | select(length > 0)]}'

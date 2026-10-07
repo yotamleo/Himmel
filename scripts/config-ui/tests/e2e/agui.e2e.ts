@@ -2,7 +2,7 @@
 // while the page is open (a live stream over the real SSE path). Needs agui-web/dist
 // (`cd scripts/config-ui/agui-web && bun install && bun run build`); skipped, loudly, when absent.
 import { test, expect } from "@playwright/test";
-import { FLEET, PRIOR_CONSOLE } from "../agui-fleet-fixture";
+import { CLOUD, FLEET, PRIOR_CONSOLE } from "../agui-fleet-fixture";
 import { aguiBuilt, bootAgui, J, play, type AguiHarness } from "./agui-fixtures";
 
 // HIMMEL-4711: a live page keeps tailing after a turn ends, so it reads idle (never "finished") until the stream closes.
@@ -255,4 +255,23 @@ test("10. console to Fleet to a run view and back: one rail, the token in the fr
 
   expect(lines.length).toBeGreaterThan(0);
   for (const u of lines) expect(new URL(u).pathname + new URL(u).search).not.toContain(tok);
+});
+
+// HIMMEL-4791: a cloud session is a node under its console with its shepherd leg under it; it links its session,
+// says its phase, and says its tokens are not measured (never a zero). A merged one sits with the wrapped.
+test("11. cloud sessions: a node under the console, its shepherd under it, tokens not measured", async ({ page }) => {
+  h = await bootAgui("", { fleet: true, cloud: true });
+  await page.goto(h.url);
+  const live = page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row");
+  const done = live.filter({ hasText: "cloud-HIMMEL-905" }).first();
+  await expect(done.locator(".fleet-role")).toHaveText("cloud");
+  await expect(done.locator(".fleet-meta")).toHaveText("HIMMEL-905 · PR 1905 · CLOUD-DONE, shepherd's turn · cloud session");
+  await expect(done.locator("a.fleet-cloud")).toHaveAttribute("href", CLOUD.url);
+  await expect(done.locator(".fleet-usage")).toHaveText("tokens not measured: a cloud session keeps no local journal and no source exposes its usage");
+  await expect(done.locator(".fleet-graph")).toHaveText(`under ${FLEET.console.name}`);
+  await expect(page.getByRole("list", { name: "Under cloud-HIMMEL-905" }).locator(".fleet-row")).toHaveText([new RegExp(CLOUD.shepherd.name)]);
+  await expect(live.filter({ hasText: "cloud-HIMMEL-906" }).locator(".fleet-meta")).toHaveText("HIMMEL-906 · no CLOUD-DONE yet");
+  await expect(live.filter({ hasText: "cloud-HIMMEL-907" })).toHaveCount(0);
+  await page.locator("details.fleet-closed summary").click();
+  await expect(page.getByRole("list", { name: "Wrapped sessions" }).locator(".fleet-row").filter({ hasText: "cloud-HIMMEL-907" }).locator(".fleet-meta")).toHaveText("HIMMEL-907 · PR 1907 · PR merged · cloud session");
 });

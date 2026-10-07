@@ -11,13 +11,17 @@
 // names, and a console's predecessor) with its in-process subagents, and its token usage (usageOf: the journal's
 // API usage records, per call, priced with the leg-burn weights and filled against its --autocompact ceiling).
 //
+// HIMMEL-4791: cloud sessions join as rows of role "cloud" (fleet-cloud.ts: the console bucket's cloud-route.jsonl
+// plus one cached GitHub read), each under the console its brief names, with its local shepherd leg under it.
+//
 // ponytail: each request re-folds every journal that grew since the last one (cached on the files' sizes), so a
 // fleet of very long journals costs a full read per poll (measured 2026-10-07 on 9 live sessions: 278 ms cold,
 // 202 ms warm); upgrade path: a per-file incremental fold (the SSE tail's offsets) once a fleet poll is slow.
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { agentState, initialView, reduce, type View } from "../agui-web/src/reducer.ts";
+import { cloudRoutes, consoleOf, readCloudPrs, type CloudPhase, type CloudRoute } from "./fleet-cloud.ts";
 import { createJournalMapper } from "./journal-mapper.ts";
 import { mergeJournalFiles, sessionFiles } from "./journal-merge.ts";
 import { resolveJournal } from "./sse.ts";
@@ -25,14 +29,15 @@ import { resolveJournal } from "./sse.ts";
 export const RECENT_MS = 60 * 60 * 1000;
 const SCRIPT_TIMEOUT_MS = 30_000;
 
-export type FleetState = "running" | "idle" | "waiting for GO" | "wrapped";
+export type FleetState = "running" | "idle" | "waiting for GO" | "wrapped" | "unknown";
 export type FleetRow = {
-  run: string | null; pid: number; name: string; role: "console" | "leg" | "judge" | "interactive"; model: string | null;
+  run: string | null; pid: number | null; name: string; role: "console" | "leg" | "judge" | "interactive" | "cloud"; model: string | null;
   ticket: string | null; pr: number | null; state: FleetState;
   activity: { tool: string; summary: string; at: number } | null; lastEventAt: number | null;
   subagents: { total: number; running: number }; failures: number;
   parent: string | null; predecessor: string | null; agents: { name: string; role: string; state: string }[];
   usage: Usage | null;
+  cloud: { url: string | null; phase: CloudPhase } | null;
 };
 export type Usage = {
   calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number;
@@ -40,6 +45,7 @@ export type Usage = {
 };
 export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[] };
 type CensusRow = { pid: string; name: string; model: string; doc: string; status: string; autocompact?: string };
+type Census = { census: Fleet["census"]; sessions: CensusRow[]; cloudRoutes?: string[] };
 
 // A session name as the launchers write it; anything else in a doc is text, never a link.
 const SESSION = /^[A-Za-z0-9._+-]{1,160}$/;
@@ -97,13 +103,37 @@ function finish(t: Tally | null, c: { autocompact: string; model: string }): Usa
 }
 export const usageOf = (lines: string[], c: { autocompact: string; model: string }) => finish(tallyOf(lines), c);
 
-function runScript(script: string, env: Record<string, string | undefined>): Promise<{ census: Fleet["census"]; sessions: CensusRow[] }> {
+function runScript(script: string, env: Record<string, string | undefined>): Promise<Census> {
   return new Promise((ok) => {
     execFile("bash", [script], { env: env as NodeJS.ProcessEnv, timeout: SCRIPT_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
       try { if (!err) return ok(JSON.parse(stdout)); } catch { /* fall through */ }
       ok({ census: "unavailable", sessions: [] });
     });
   });
+}
+
+// The cloud sessions the console buckets' routing logs name, each a row under the console its brief names; a GitHub
+// read that failed leaves every one unknown (no PR, no URL) rather than failing the fleet.
+const CLOUD_STATE: Record<CloudPhase, FleetState> = { working: "running", done: "idle", blocked: "idle", merged: "wrapped", closed: "wrapped", unknown: "unknown" };
+async function cloudRows(logs: string[], env: Record<string, string | undefined>, now: number): Promise<FleetRow[]> {
+  const routes: CloudRoute[] = [];
+  for (const log of logs) {
+    let text = "";
+    try { text = await readFile(log, "utf8"); } catch { continue; }
+    routes.push(...cloudRoutes(text.split("\n"), now, dirname(log)));
+  }
+  if (!routes.length) return [];
+  const tickets = [...new Set(routes.map((r) => r.ticket))].sort();
+  const prs = await readCloudPrs(tickets, { gh: env.CONFIG_UI_GH || "gh", env, now });
+  const seen = new Set<string>();
+  return Promise.all(routes.filter((r) => !seen.has(r.ticket) && seen.add(r.ticket)).map(async (r): Promise<FleetRow> => {
+    const p = prs?.get(r.ticket) ?? { pr: null, phase: "unknown" as const, url: null };
+    return {
+      run: null, pid: null, name: `cloud-${r.ticket}`, role: "cloud", model: null, ticket: r.ticket, pr: p.pr, state: CLOUD_STATE[p.phase],
+      activity: null, lastEventAt: null, subagents: { total: 0, running: 0 }, failures: 0,
+      parent: await consoleOf(r), predecessor: null, agents: [], usage: null, cloud: { url: p.url, phase: p.phase },
+    };
+  }));
 }
 
 const roleOf = (name: string, doc: string): FleetRow["role"] =>
@@ -185,10 +215,16 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       failures: view?.failures.length ?? 0,
       ...graphOf(role, doc),
       agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
-      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model }),
+      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model }), cloud: null,
     };
   }));
+  const cloud = await cloudRows(census.cloudRoutes ?? [], opts.env, opts.now);
+  // A local leg on a cloud session's ticket is its shepherd: it hangs under the cloud node, not the console.
+  for (const r of rows) {
+    const c = r?.role === "leg" && cloud.find((x) => x.ticket === r.ticket);
+    if (r && c) r.parent = c.name;
+  }
   // Drop the folds of sessions that left the fleet, so the cache does not grow with every session ever seen.
   for (const journal of folds.keys()) if (!seen.has(journal)) folds.delete(journal);
-  return { census: census.census, generatedAt: opts.now, sessions: rows.filter((r): r is FleetRow => r !== null) };
+  return { census: census.census, generatedAt: opts.now, sessions: [...rows.filter((r): r is FleetRow => r !== null), ...cloud] };
 }
