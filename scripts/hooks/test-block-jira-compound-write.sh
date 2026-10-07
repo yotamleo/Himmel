@@ -622,6 +622,10 @@ shape_has "heredoc" && fail "deny blames a heredoc on a prefix-only command"
 run_hook Bash "node $JIRA comment HIMMEL-1 --body \"\$(cat c.md)\""
 shape_has "command substitution" && pass "deny names command substitution" || fail "deny omits command substitution"
 shape_has "heredoc" && fail "deny blames a heredoc on a substitution-only command"
+shape_has "chained" && fail "deny blames a chain on a substitution-only command"
+run_hook Bash "node $JIRA comment HIMMEL-1 --comment-file c.md
+rm -f c.md"
+shape_has "chained" && pass "deny names a newline chain" || fail "deny omits a newline chain"
 run_hook Bash "node $JIRA comment HIMMEL-1 --comment-file c.md; rm -f c.md"
 [ "$RC" -eq 2 ] && pass "chained literal write bounced" || fail "chained write not bounced (rc=$RC)"
 shape_has "chained" && pass "deny names the chain" || fail "deny omits the chain"
@@ -631,6 +635,17 @@ run_hook Bash "LANG=C node $JIRA comment HIMMEL-1 --body 'a \$(b)'; rm -f c.md"
 [ "$RC" -eq 2 ] && pass "chained write with a quoted \$( bounced" || fail "chained write with a quoted \$( not bounced (rc=$RC)"
 shape_has "command substitution" && fail "deny blames command substitution on a single-quoted \$(" || pass "single-quoted \$( not named as substitution"
 shape_has "LANG=" && fail "deny names the approvable LANG= prefix" || pass "deny does not name LANG="
+# A quoted-delimiter heredoc body is inert too; an unquoted one still expands.
+run_hook Bash "cat > b.md <<'EOF'
+a \$(b)
+EOF
+node $JIRA comment HIMMEL-1 --comment-file b.md"
+shape_has "command substitution" && fail "deny blames command substitution on a quoted heredoc body" || pass "quoted heredoc body \$( not named as substitution"
+run_hook Bash "cat > b.md <<EOF
+a \$(b)
+EOF
+node $JIRA comment HIMMEL-1 --comment-file b.md"
+shape_has "command substitution" && pass "unquoted heredoc body \$( named as substitution" || fail "deny omits substitution in an unquoted heredoc body"
 
 # --- 5.99999 node MODES that never run the script write nothing: bouncing them would
 #             recommend a literal invocation that DOES (codex round 28 [high]).

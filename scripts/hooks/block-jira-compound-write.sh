@@ -198,11 +198,11 @@ quote_mask() {
             # create) + 1 ))` really writes — so it stays visible, same rule as
             # everywhere else. (Nested `$((…))` needs no case: its parens just count.)
             if [ "$c" = '$' ] && [ "$nx" = '(' ] && [ "${SC[i + 2]-}" != '(' ]; then
-                stk[sp]="5p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="5p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
-                stk[sp]="5b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="5b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             case "$c" in
@@ -236,11 +236,11 @@ quote_mask() {
                 out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then
-                stk[sp]="4p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="4p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
-                stk[sp]="4b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="4b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             case "$c" in
@@ -261,11 +261,11 @@ quote_mask() {
                 out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then
-                stk[sp]="3p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="3p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then
-                stk[sp]="3b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="3b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             if [ "$c" = $'\n' ]; then
@@ -294,11 +294,11 @@ quote_mask() {
                 out+="   "; i=$((i + 3)); continue
             fi
             if [ "$c" = '$' ] && [ "$nx" = '(' ]; then     # …$( → code
-                stk[sp]="2p"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="2p"; sp=$((sp + 1)); st=0
                 out+=""$'\n'" "; i=$((i + 2)); continue
             fi
             if [ "$c" = '`' ]; then                        # …` → code
-                stk[sp]="2b"; sp=$((sp + 1)); st=0
+                SUBST_SEEN=1; stk[sp]="2b"; sp=$((sp + 1)); st=0
                 out+=""$'\n'; i=$((i + 1)); continue
             fi
             [ "$c" = '"' ] && st=0
@@ -425,6 +425,7 @@ quote_mask() {
             # (`FOO=$(date) node … create`), so that frame must not plant the
             # command-position sentinel on the tail. An ARGUMENT substitution
             # (`echo "$(…)" node …`) must — see the pop.
+            SUBST_SEEN=1
             if [ "$pv" = '=' ]; then stk[sp]="0P"; else stk[sp]="0p"; fi
             sp=$((sp + 1)); out+=""$'\n'" "; i=$((i + 2)); continue
         fi
@@ -436,7 +437,7 @@ quote_mask() {
         # exactly like `$(…)`. Give them the same frame so the body is scanned as the
         # command it is (`read k < <(node …/index.js create …)` really writes).
         if { [ "$c" = '<' ] || [ "$c" = '>' ]; } && [ "$nx" = '(' ]; then
-            stk[sp]="0p"; sp=$((sp + 1))
+            SUBST_SEEN=1; stk[sp]="0p"; sp=$((sp + 1))
             out+=""$'\n'" "; i=$((i + 2)); continue
         fi
         # `name()` / `name ( )` at CODE level opens a function DEFINITION (it defines,
@@ -477,8 +478,9 @@ quote_mask() {
                     *b) sp=$((sp - 1)); st="${top%b}"; out+=""$'\n'"_ "; i=$((i + 1)); continue ;;
                 esac
             fi
-            stk[sp]="0b"; sp=$((sp + 1)); out+=""$'\n'; i=$((i + 1)); continue
+            SUBST_SEEN=1; stk[sp]="0b"; sp=$((sp + 1)); out+=""$'\n'; i=$((i + 1)); continue
         fi
+        case "$c" in $'\n') NL_SEEN=1 ;; esac   # a real code-level line break
         out+="$c"; i=$((i + 1))
     done
     # Unbalanced quotes / unclosed substitution → unparseable, fail open.
@@ -877,7 +879,7 @@ cmd="${result#*$'\n'}"
 [ "$tool" = "Bash" ] || exit 0   # PowerShell keeps its own native rules
 [ -n "$cmd" ] || exit 0
 
-FN_DEF=0; HEREDOC_SEEN=0
+FN_DEF=0; HEREDOC_SEEN=0; SUBST_SEEN=0; NL_SEEN=0
 quote_mask "$cmd" || exit 0
 # A function DEFINITION executes nothing: `deploy() { node …/index.js create …; }`
 # merely defines deploy, so bouncing it would order a write the command never
@@ -977,38 +979,18 @@ case "$verb_label" in
     *)              verb_args=' <TICKET> …same arguments as before…' ;;
 esac
 # Name only the shapes this command HAS (HIMMEL-4780): a list of shapes it lacks
-# sends the agent hunting for the wrong one. Substitution is read from the text
-# with single-quoted spans and backslash escapes dropped (inert), but double-quoted
-# spans kept (quote_mask blanks `"$(…)"`, which still runs); heredocs and
-# separators from the masked text (quoted data is not structure). Wording only —
-# the bounce decision is the gateway's.
-unquoted_code() {
-    local s="$1" k=0 n ch sq=0 dq=0 LC_ALL=C
-    n=${#s}; UNSQ=""
-    while [ "$k" -lt "$n" ]; do
-        ch="${s:k:1}"
-        if [ "$sq" = 1 ]; then
-            [ "$ch" = "'" ] && sq=0
-        elif [ "$ch" = "\\" ]; then
-            k=$((k + 2)); continue
-        elif [ "$ch" = "'" ] && [ "$dq" = 0 ]; then
-            sq=1
-        else
-            [ "$ch" = '"' ] && dq=$((1 - dq))
-            UNSQ+="$ch"
-        fi
-        k=$((k + 1))
-    done
-}
+# sends the agent hunting for the wrong one. quote_mask flags each shape as it
+# parses, so inert text (single quotes, escapes, a quoted-delimiter heredoc body)
+# never counts; separators come from the masked text. Wording only — the bounce
+# decision is the gateway's.
 shapes=""
 add_shape() { shapes="${shapes:+$shapes; }$1"; }
-unquoted_code "$cmd"
-# shellcheck disable=SC2016 # literal `$(` / backtick patterns, not expansions
-case "$UNSQ" in *'$('*|*'`'*|*'<('*|*'>('*) add_shape 'command substitution `$(…)`' ;; esac
+# shellcheck disable=SC2016 # literal `$(…)` in the message, not an expansion
+[ "$SUBST_SEEN" = 1 ] && add_shape 'command substitution `$(…)`'
 [ "$HEREDOC_SEEN" = 1 ] && add_shape 'a heredoc'
 case "$MASKED" in
     *';'*|*'|'*|*'&'*) add_shape 'a chained segment' ;;
-    *$'\n'*) [ "$HEREDOC_SEEN" = 1 ] || add_shape 'a chained segment' ;;
+    *) [ "$NL_SEEN" = 1 ] && [ "$HEREDOC_SEEN" != 1 ] && add_shape 'a chained segment' ;;
 esac
 [ -n "${DETECTED_PREFIX:-}" ] &&
     add_shape "the env prefix ${DETECTED_PREFIX} (only a literal JIRA_PROJECT_KEY=<KEY> prefix is approvable)"
