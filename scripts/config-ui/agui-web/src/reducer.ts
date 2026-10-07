@@ -99,14 +99,16 @@ function closeTexts(v: View): View {
 // The page's live clock: `anchor` pairs the last elapsed with the wall time it was seen. It re-anchors
 // when elapsed moves OR the status changes, so a run that starts (elapsed still 0) after an idle wait
 // does not inherit the time spent idle. `busy` also keeps it moving between turns while a background agent runs.
-export type ClockAnchor = { elapsed: number; status: View["status"]; wall: number };
+// When ticking stops with no new event, it holds its last value instead of jumping back to elapsed.
+export type ClockAnchor = { elapsed: number; status: View["status"]; wall: number; now?: number };
 export function runClock(
   anchor: ClockAnchor | undefined, view: { elapsed: number; status: View["status"] }, wall: number,
   busy = view.status === "running",
 ): { anchor: ClockAnchor; now: number } {
   const a = anchor && anchor.elapsed === view.elapsed && anchor.status === view.status
     ? anchor : { elapsed: view.elapsed, status: view.status, wall };
-  return { anchor: a, now: busy ? view.elapsed + (wall - a.wall) : view.elapsed };
+  const now = busy ? view.elapsed + (wall - a.wall) : (a.now ?? view.elapsed);
+  return { anchor: { ...a, now }, now };
 }
 
 // Every event that names an agent, or one of its calls or texts, marks that agent's last activity.
