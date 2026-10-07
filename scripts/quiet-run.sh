@@ -172,6 +172,9 @@ else
     CHILD=$!
     wait "$CHILD" || RC=$?
 fi
+# The one-line `OK quiet-run <label> (...)` / `ERR quiet-run <label> exit=<rc> (...)`
+# shape is read by scripts/eval/lane-quality/trajectory.py as a test run's outcome
+# (HIMMEL-4698) - keep it stable.
 if [ "$RC" -eq 0 ]; then
     DUR=$(( $(date +%s) - START ))
     echo "OK quiet-run $LABEL (${DUR}s, log: $LOG)"

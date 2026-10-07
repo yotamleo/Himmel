@@ -64,7 +64,8 @@ by hand, so use the sanctioned writer (HIMMEL-4689):
 2. Run the primary checkout's copy (the absolute path, as for `judge-dir.sh`
    below):
    `bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <full 40-hex head> --evidence-file <that file>`.
-   It writes `verdicts/<qid>/judge.md` (`--judge <name>` renames it) under the
+   It writes `verdicts/<qid>/judge.md` (`--judge <name>` renames it;
+   `judge-<head>.md` when `judge.md` holds a NO-GO for another head) under the
    exact root and `<user>/<bucket>` that `go.sh` reads, emits the line go.sh
    parses, stamps your session (a breadcrumb, not authentication), and
    refuses a symlinked path, a bad qid or head, or a GO for a head that

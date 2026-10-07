@@ -328,6 +328,26 @@ ASSIGN_RE='^[A-Za-z_][A-Za-z0-9_]*[+]?='
 # ordinary command text (see arith_body / arith_fold below).
 ARITH_TAG=$'\001ARITH\001'
 
+# split_bytes <text> <length> -- fill the CALLER's local array SC with <text>,
+# one byte per element (HIMMEL-4678). The walkers below step through a command
+# one character at a time, and bash resolves ${s:i:1} by scanning s from its
+# start (decoding it, in a UTF-8 locale), so indexing the string made every
+# walk O(n^2): a 12 KB heredoc of prose took seconds, outran this guard's 15 s
+# chain window under fleet load, and the guard failed closed on a harmless
+# call. One linear read into an array makes each step O(1). The callers run
+# under LC_ALL=C, so ${#s}, SC and ${s:a:b} all count bytes. Walking bytes is
+# the same walk as walking characters: every character a walker tests is
+# ASCII, a UTF-8 multibyte sequence never contains an ASCII byte, so each
+# ASCII byte is its own character either way and every other byte is only
+# ever appended to a word, in order.
+split_bytes() {
+    local c k=0
+    SC=()
+    while [ "$k" -lt "$2" ] && IFS= read -r -d '' -n1 c; do
+        SC[k]=$c; k=$((k + 1))
+    done <<<"$1"
+}
+
 # arith_body <text> <index just past the opening `((`> -- set ARITH_BODY to
 # the arithmetic expression up to its matching `))` (grouping parens inside
 # it balanced) and return 0; return 1 when no adjacent `))` closes it (the
@@ -335,19 +355,20 @@ ARITH_TAG=$'\001ARITH\001'
 # keep the segmentation they always had). Quotes are not modelled: a `)`
 # inside a quoted string in an arithmetic body mis-balances (ponytail:
 # documented determined-bypass residual, same posture as the header's
-# string-reconstruction note).
+# string-reconstruction note). Reads segment_cmd's byte array SC (its only
+# caller), so <index> is a byte offset into <text>.
 arith_body() {
     local s="$1" i="$2" n start="$2" d=0 c
     ARITH_BODY=''
     n=${#s}
     while [ "$i" -lt "$n" ]; do
-        c=${s:i:1}
+        c=${SC[i]-}
         case "$c" in
         '(') d=$((d + 1)) ;;
         ')')
             if [ "$d" -gt 0 ]; then
                 d=$((d - 1))
-            elif [ "${s:$((i + 1)):1}" = ")" ]; then
+            elif [ "${SC[i + 1]-}" = ")" ]; then
                 ARITH_BODY=${s:start:$((i - start))}
                 return 0
             else
@@ -480,33 +501,34 @@ arith_fold() {
 segment_cmd() {
     local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}" bdepth=0
     local cmdpos=1 kind='' lb='' nx='' ro=0
-    local -a pkind
-    local ptop=0
+    local -a pkind SC
+    local ptop=0 LC_ALL=C
     n=${#s}
+    split_bytes "$s" "$n"
     i=0
     while [ "$i" -lt "$n" ]; do
-        c=${s:i:1}
+        c=${SC[i]-}
         case "$c" in
         \')
-            seg="$seg$c"; i=$((i + 1))
+            seg+="$c"; i=$((i + 1))
             while [ "$i" -lt "$n" ]; do
-                [ "${s:i:1}" = "'" ] && { seg="$seg'"; i=$((i + 1)); break; }
-                seg="$seg${s:i:1}"; i=$((i + 1))
+                [ "${SC[i]-}" = "'" ] && { seg+="'"; i=$((i + 1)); break; }
+                seg+="${SC[i]-}"; i=$((i + 1))
             done
             cmdpos=0
             ;;
         \")
-            seg="$seg$c"; i=$((i + 1))
+            seg+="$c"; i=$((i + 1))
             sub=0
             while [ "$i" -lt "$n" ]; do
-                c=${s:i:1}
+                c=${SC[i]-}
                 case "$c" in
                 \")
-                    seg="$seg$c"; i=$((i + 1)); break
+                    seg+="$c"; i=$((i + 1)); break
                     ;;
                 \\)
-                    seg="$seg$c"; i=$((i + 1))
-                    [ "$i" -lt "$n" ] && { seg="$seg${s:i:1}"; i=$((i + 1)); }
+                    seg+="$c"; i=$((i + 1))
+                    [ "$i" -lt "$n" ] && { seg+="${SC[i]-}"; i=$((i + 1)); }
                     ;;
                 \`)
                     if [ "$sub" = "0" ]; then
@@ -517,22 +539,22 @@ segment_cmd() {
                     i=$((i + 1))
                     ;;
                 \$)
-                    if [ "${s:$((i + 1)):1}" = "(" ]; then
+                    if [ "${SC[i + 1]-}" = "(" ]; then
                         # HIMMEL-3185: `"$(( ... ))"` -- same lift as the
                         # unquoted `((` arm; the sub=1 split below still runs.
-                        if [ "${s:$((i + 2)):1}" = "(" ] && arith_body "$s" $((i + 3)); then
+                        if [ "${SC[i + 2]-}" = "(" ] && arith_body "$s" $((i + 3)); then
                             printf '%s\t%s\n' "$pdepth" "$ARITH_TAG$ARITH_BODY"
                         fi
                         printf '%s\t%s\n' "$pdepth" "$seg\""; seg=''; sub=1; i=$((i + 2))
                     else
-                        seg="$seg$c"; i=$((i + 1))
+                        seg+="$c"; i=$((i + 1))
                     fi
                     ;;
                 \))
                     if [ "$sub" = "1" ]; then
                         printf '%s\t%s\n' "$pdepth" "$seg"; seg='"'; sub=0
                     else
-                        seg="$seg$c"
+                        seg+="$c"
                     fi
                     i=$((i + 1))
                     ;;
@@ -540,12 +562,12 @@ segment_cmd() {
                     if [ "$sub" = "1" ]; then
                         printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
                     else
-                        seg="$seg$c"
+                        seg+="$c"
                     fi
                     i=$((i + 1))
                     ;;
                 *)
-                    seg="$seg$c"; i=$((i + 1))
+                    seg+="$c"; i=$((i + 1))
                     ;;
                 esac
             done
@@ -564,29 +586,29 @@ segment_cmd() {
             # opens scope; an unterminated `$[` folds forward (safe direction),
             # same as a stray `(`. Any other `$` (including `$(` / `$((`) falls
             # through to the default char handling below, unchanged.
-            if [ "${s:$((i + 1)):1}" = "[" ]; then
-                seg="$seg\$["; i=$((i + 2))
+            if [ "${SC[i + 1]-}" = "[" ]; then
+                seg+="\$["; i=$((i + 2))
                 bdepth=1
                 while [ "$i" -lt "$n" ] && [ "$bdepth" -gt 0 ]; do
-                    c=${s:i:1}
+                    c=${SC[i]-}
                     case "$c" in
                     \[) bdepth=$((bdepth + 1)) ;;
                     \]) bdepth=$((bdepth - 1)) ;;
                     esac
-                    seg="$seg$c"; i=$((i + 1))
+                    seg+="$c"; i=$((i + 1))
                 done
                 cmdpos=0
             else
-                seg="$seg$c"; i=$((i + 1)); cmdpos=0
+                seg+="$c"; i=$((i + 1)); cmdpos=0
             fi
             ;;
         \\)
-            seg="$seg$c"; i=$((i + 1))
-            [ "$i" -lt "$n" ] && { seg="$seg${s:i:1}"; i=$((i + 1)); }
+            seg+="$c"; i=$((i + 1))
+            [ "$i" -lt "$n" ] && { seg+="${SC[i]-}"; i=$((i + 1)); }
             cmdpos=0
             ;;
         \{)
-            seg="$seg$c"; i=$((i + 1)); cmdpos=1
+            seg+="$c"; i=$((i + 1)); cmdpos=1
             ;;
         \()
             # HIMMEL-3185: `((` / `$((` -- lift the arithmetic body out
@@ -599,7 +621,7 @@ segment_cmd() {
             # `bash chokepoint.sh $(( SEAM = 0 ))` the fold must already be
             # in UNSET_NAMES when the segment holding the chokepoint (the
             # text ahead of this `(`) is scanned (CodeRabbit, PR #853).
-            if [ "${s:$((i + 1)):1}" = "(" ] && arith_body "$s" $((i + 2)); then
+            if [ "${SC[i + 1]-}" = "(" ] && arith_body "$s" $((i + 2)); then
                 printf '%s\t%s\n' "$pdepth" "$ARITH_TAG$ARITH_BODY"
             fi
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''
@@ -611,8 +633,8 @@ segment_cmd() {
                     kind='O'
                 elif [ "$cmdpos" = "1" ]; then
                     lb=''
-                    [ "$i" -gt 0 ] && lb="${s:$((i - 1)):1}"
-                    nx="${s:$((i + 1)):1}"
+                    [ "$i" -gt 0 ] && lb="${SC[i - 1]-}"
+                    nx="${SC[i + 1]-}"
                     case "$lb" in
                     '$' | '<' | '>' | '=') kind='O' ;;
                     *)
@@ -650,15 +672,15 @@ segment_cmd() {
         \&)
             # HIMMEL-1813: `>&`, `<&` (after an UNESCAPED < or >) and `&>`
             # are redirection operators, never a command separator.
-            if [ "$ro" = "1" ] || [ "${s:$((i + 1)):1}" = ">" ]; then
-                seg="$seg$c"; i=$((i + 1)); ro=0; continue
+            if [ "$ro" = "1" ] || [ "${SC[i + 1]-}" = ">" ]; then
+                seg+="$c"; i=$((i + 1)); ro=0; continue
             fi
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
             ;;
         \|)
             # HIMMEL-1813: `>|` (noclobber override) is a redirection.
             if [ "$ro" = "1" ]; then
-                seg="$seg$c"; i=$((i + 1)); ro=0; continue
+                seg+="$c"; i=$((i + 1)); ro=0; continue
             fi
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
             ;;
@@ -666,10 +688,10 @@ segment_cmd() {
             printf '%s\t%s\n' "$pdepth" "$seg"; seg=''; cmdpos=1; i=$((i + 1))
             ;;
         ' ' | $'\t')
-            seg="$seg$c"; i=$((i + 1))
+            seg+="$c"; i=$((i + 1))
             ;;
         * )
-            seg="$seg$c"; i=$((i + 1)); cmdpos=0
+            seg+="$c"; i=$((i + 1)); cmdpos=0
             case "$c" in '<'|'>') ro=1; continue ;; esac
             ;;
         esac
@@ -692,11 +714,13 @@ segment_cmd() {
 # newlines), and a dropped empty word shifts every later word's role.
 # Consumers strip the sentinel; requote_words round-trips it.
 tokenize_seg() {
-    local s="$1" w='' c i n have=0 skip_word=0
+    local s="$1" w='' c i n have=0 skip_word=0 LC_ALL=C
+    local -a SC
     n=${#s}
+    split_bytes "$s" "$n"
     i=0
     while [ "$i" -lt "$n" ]; do
-        c=${s:i:1}
+        c=${SC[i]-}
         case "$c" in
         ' '|$'\t')
             if [ "$have" = "1" ]; then
@@ -708,14 +732,14 @@ tokenize_seg() {
         \')
             i=$((i + 1)); have=1
             while [ "$i" -lt "$n" ]; do
-                [ "${s:i:1}" = "'" ] && { i=$((i + 1)); break; }
-                w="$w${s:i:1}"; i=$((i + 1))
+                [ "${SC[i]-}" = "'" ] && { i=$((i + 1)); break; }
+                w+="${SC[i]-}"; i=$((i + 1))
             done
             ;;
         \")
             i=$((i + 1)); have=1
             while [ "$i" -lt "$n" ]; do
-                c=${s:i:1}
+                c=${SC[i]-}
                 if [ "$c" = '"' ]; then i=$((i + 1)); break; fi
                 if [ "$c" = "\\" ]; then
                     # bash drops a double-quoted backslash only before
@@ -724,15 +748,15 @@ tokenize_seg() {
                     # dropping it hid "...\c" from split_unresolvable).
                     i=$((i + 1))
                     if [ "$i" -lt "$n" ]; then
-                        case "${s:i:1}" in
+                        case "${SC[i]-}" in
                         '$'|'`'|'"'|\\) : ;;
-                        *) w="$w\\" ;;
+                        *) w+="\\" ;;
                         esac
-                        w="$w${s:i:1}"; i=$((i + 1))
+                        w+="${SC[i]-}"; i=$((i + 1))
                     fi
                     continue
                 fi
-                w="$w$c"; i=$((i + 1))
+                w+="$c"; i=$((i + 1))
             done
             ;;
         '#')
@@ -741,12 +765,12 @@ tokenize_seg() {
                 # out the rest of the split string.
                 break
             fi
-            w="$w$c"; i=$((i + 1)); have=1
+            w+="$c"; i=$((i + 1)); have=1
             ;;
         \\)
             i=$((i + 1))
             if [ "$i" -lt "$n" ]; then
-                if [ "${TOK_ENV_SPLIT:-0}" = "1" ] && [ "${s:i:1}" = "_" ]; then
+                if [ "${TOK_ENV_SPLIT:-0}" = "1" ] && [ "${SC[i]-}" = "_" ]; then
                     # env -S re-tokenization only: GNU's documented "\_"
                     # is an ARGUMENT SEPARATOR (HIMMEL-1803 r4) -- end the
                     # word instead of collapsing the escape to a literal
@@ -761,7 +785,7 @@ tokenize_seg() {
                     fi
                     i=$((i + 1))
                 else
-                    w="$w${s:i:1}"; i=$((i + 1)); have=1
+                    w+="${SC[i]-}"; i=$((i + 1)); have=1
                 fi
             fi
             ;;
@@ -782,18 +806,18 @@ tokenize_seg() {
                 w=''; have=0
             fi
             while [ "$i" -lt "$n" ]; do
-                case "${s:i:1}" in '<'|'>') i=$((i + 1)) ;; *) break ;; esac
+                case "${SC[i]-}" in '<'|'>') i=$((i + 1)) ;; *) break ;; esac
             done
             # HIMMEL-1813: `>&` / `<&` (fd duplication) -- the '&' is part
             # of the operator; its operand (1, -, a file) is not a word.
             # `>|` likewise: the '|' is part of the operator.
             if [ "${TOK_ENV_SPLIT:-0}" != "1" ]; then
-                case "${s:i:1}" in '&'|'|') i=$((i + 1)) ;; esac
+                case "${SC[i]-}" in '&'|'|') i=$((i + 1)) ;; esac
             fi
             skip_word=1   # the operator's operand is not a word
             ;;
         '&')
-            if [ "${TOK_ENV_SPLIT:-0}" != "1" ] && [ "${s:$((i + 1)):1}" = ">" ]; then
+            if [ "${TOK_ENV_SPLIT:-0}" != "1" ] && [ "${SC[i + 1]-}" = ">" ]; then
                 # HIMMEL-1813: `&>` / `&>>` redirect stdout+stderr: a word
                 # before it ends there, the operator and operand are dropped.
                 if [ "$have" = "1" ]; then
@@ -802,15 +826,15 @@ tokenize_seg() {
                 fi
                 i=$((i + 1))
                 while [ "$i" -lt "$n" ]; do
-                    case "${s:i:1}" in '>') i=$((i + 1)) ;; *) break ;; esac
+                    case "${SC[i]-}" in '>') i=$((i + 1)) ;; *) break ;; esac
                 done
                 skip_word=1
             else
-                w="$w$c"; i=$((i + 1)); have=1
+                w+="$c"; i=$((i + 1)); have=1
             fi
             ;;
         * )
-            w="$w$c"; i=$((i + 1)); have=1
+            w+="$c"; i=$((i + 1)); have=1
             ;;
         esac
     done

@@ -27,6 +27,11 @@
 #      replaces is denied (the control)
 #  10. --evidence-file outside /tmp/claude-<uid>/, through a symlink, or
 #      with a .. segment is refused
+#  11. a scratch root other users can reach is refused (HIMMEL-4714)
+#  12. the root's mode is read with stat, so macOS's xattr `@` passes and an
+#      ACL `+` is still refused (HIMMEL-4723)
+#  13. a NO-GO survives the same judge's ruling for another head, which lands
+#      in <name>-<head>.md (HIMMEL-4731)
 #
 # Hermetic: temp dir only; the guard scripts are run, never edited.
 # Platform guard: POSIX bash 3.2+.
@@ -285,6 +290,70 @@ printf 'evidence\n' > "$fake_scratch/open/evidence.md"
 rc=0; PATH="$tmp/bin:$PATH" wv q14 NO-GO "$SHA_A" --evidence-file "$fake_scratch/open/evidence.md" >/dev/null 2>&1 || rc=$?
 check "11: a scratch root others can traverse refused rc 2" "$rc" 2
 check "11: nothing written for q14" "$([ -e "$scope_dir/q14" ] && echo yes || echo no)" no
+
+# --- 12. HIMMEL-4723: the mode is read portably --------------------------
+# macOS `ls -ld` appends `@` to a directory with extended attributes; a stub
+# ls prints that shape, and a stub stat answers only BSD's `-f %Lp`.
+chmod 700 "$fake_scratch"
+mkdir -p "$tmp/macbin" "$tmp/aclbin"
+cp "$tmp/bin/id" "$tmp/macbin/id" && cp "$tmp/bin/id" "$tmp/aclbin/id"
+# shellcheck disable=SC2016  # $1/$2 belong to the stub scripts, not this shell
+{
+    printf '#!/bin/sh\necho "drwx------@ 3 u staff 96 Oct  7 12:00 $2"\n' > "$tmp/macbin/ls"
+    printf '#!/bin/sh\n[ "$1" = -f ] && [ "$2" = %%Lp ] || exit 1\necho 700\n' > "$tmp/macbin/stat"
+    printf '#!/bin/sh\necho "drwx------+ 3 u u 96 Oct  7 12:00 $2"\n' > "$tmp/aclbin/ls"
+}
+chmod +x "$tmp/macbin/ls" "$tmp/macbin/stat" "$tmp/aclbin/ls"
+rc=0; PATH="$tmp/macbin:$PATH" wv q16 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "12: a 0700 root with the macOS xattr @ is accepted (BSD stat)" "$rc" 0
+rc=0; PATH="$tmp/aclbin:$PATH" wv q17 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "12: a 0700 root carrying an ACL (+) is still refused rc 2" "$rc" 2
+chmod 750 "$fake_scratch"
+rc=0; PATH="$tmp/macbin:$PATH" wv q17 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "12: the stub stat is what decides (control: a real 0750 root, stub says 700)" "$rc" 0
+rc=0; PATH="$tmp/bin:$PATH" wv q18 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "12: a 0750 root refused by the GNU stat read rc 2" "$rc" 2
+check "12: nothing written for q18" "$([ -e "$scope_dir/q18" ] && echo yes || echo no)" no
+chmod 700 "$fake_scratch"
+
+# --- 13. HIMMEL-4731: a NO-GO survives a same-judge ruling for another head
+# Order from the ticket: judge NO-GO on A, the same judge rules on B, then a
+# second judge's GO on A. Before the fix the B ruling replaced judge.md.
+for ans in GO NO-GO; do
+    q="q15${ans}"
+    wv "$q" NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1
+    rc=0; out=$(wv "$q" "$ans" "$SHA_B" --evidence-file "$ev" 2>&1) || rc=$?
+    check "13 ($ans): the same judge's ruling for head B is written rc 0" "$rc" 0
+    fb="$scope_dir/$q/judge-$SHA_B.md"
+    check "13 ($ans): it lands beside the NO-GO, at judge-<head>.md" "$out" "$fb"
+    check "13 ($ans): its header names the file it is in" "$(sed -n 1p "$fb")" "# VERDICT $q - judge-$SHA_B"
+    check "13 ($ans): the head-A NO-GO is kept" "$(grep -c "^\*\*NO-GO\*\* for head \`$SHA_A\`" "$scope_dir/$q/judge.md")" 1
+    rc=0; wv "$q" GO "$SHA_A" --evidence-file "$ev" --judge second >/dev/null 2>&1 || rc=$?
+    check "13 ($ans): a second judge's GO on A is refused rc 4" "$rc" 4
+    rc=0; verdict_rc "$q" "$SHA_A" || rc=$?
+    check "13 ($ans): go_trust_verdict at head A still refuses" "$rc" 2
+done
+rc=0; verdict_rc q15GO "$SHA_B" || rc=$?
+check "13: the head-B GO is honoured on head B" "$rc" 0
+# A GO already on A, then the same judge's NO-GO on A, then its ruling on B.
+wv q19 GO "$SHA_A" --evidence-file "$ev" --judge first >/dev/null 2>&1
+wv q19 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1
+rc=0; wv q19 GO "$SHA_B" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+check "13: GO on B after the veto on A is written rc 0" "$rc" 0
+rc=0; verdict_rc q19 "$SHA_A" || rc=$?
+check "13: the earlier GO on A stays vetoed" "$rc" 2
+# The same judge's ruling for the head its NO-GO names still goes to judge.md.
+rc=0; wv q19 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+check "13: a repeat NO-GO on A rewrites judge.md rc 0" "$rc" 0
+check "13: q19 holds exactly first, judge and judge-<B>" "$(ls "$scope_dir/q19" | tr '\n' ' ')" "first.md judge-$SHA_B.md judge.md "
+# A judge itself named judge-<B> holds a veto for C: the redirect must not land on it.
+SHA_C=fedcba9876543210fedcba9876543210fedcba98
+wv q20 NO-GO "$SHA_C" --evidence-file "$ev" --judge "judge-$SHA_B" >/dev/null 2>&1
+wv q20 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1
+rc=0; out=$(wv q20 GO "$SHA_B" --evidence-file "$ev" 2>&1) || rc=$?
+check "13: GO on B with judge-<B>.md vetoing C is written rc 0" "$rc" 0
+check "13: it lands at judge-<B>-<B>.md" "$out" "$scope_dir/q20/judge-$SHA_B-$SHA_B.md"
+check "13: the head-C NO-GO in judge-<B>.md is kept" "$(grep -c "^\*\*NO-GO\*\* for head \`$SHA_C\`" "$scope_dir/q20/judge-$SHA_B.md")" 1
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"

@@ -10,9 +10,10 @@
 # Usage: write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <path> [--judge <name>]
 #
 # Writes <root>/<user>/<bucket>/verdicts/<qid>/<name>.md (name defaults to
-# `judge`), where <root> and <user>/<bucket> are what go.sh resolves for this
-# checkout (go-gate.sh's go_resolve_root and go_verdict_scope, so the writer
-# and the reader can never disagree on the directory):
+# `judge`; <name>-<head>.md beside a NO-GO for another head), where <root>
+# and <user>/<bucket> are what go.sh resolves for this checkout (go-gate.sh's
+# go_resolve_root and go_verdict_scope, so the writer and the reader can never
+# disagree on the directory):
 #
 #     # VERDICT <qid> - <name>
 #
@@ -47,7 +48,9 @@
 # A NO-GO is always written past those last two (HIMMEL-4714): go.sh treats
 # any NO-GO as a veto, so it only narrows, and refusing it would leave a
 # forged or mistaken GO alone on disk. The same answer again, or a verdict
-# for another head, is written.
+# for another head, is written. When <name>.md holds a NO-GO for another
+# head, the new ruling is written to <name>-<head>.md instead, so that veto
+# survives the PR returning to its head (HIMMEL-4731).
 # ponytail: same-uid ceiling - the symlink and conflict checks run before an
 # atomic rename, so a same-uid process racing the directory can still swap it
 # between check and rename; a separate-uid verdict store is the upgrade path
@@ -110,12 +113,21 @@ if [ -L "$SCRATCH" ] || [ ! -d "$SCRATCH" ] || [ ! -O "$SCRATCH" ]; then
 fi
 # No other user may reach anything below the root: under a root only this uid
 # can enter, nobody else can swap a path segment between these checks and the
-# cat, however a descendant is permissioned. A trailing `+` (an ACL that may
-# grant others access) is refused too.
-case "$(ls -ld "$SCRATCH" 2>/dev/null)" in
-    d???------\ *|d???------.*) ;;
-    *) echo "write-verdict: '$SCRATCH' is accessible to group or other users (want 0700) - refusing" >&2; exit 2 ;;
+# cat, however a descendant is permissioned. The mode is read with stat
+# (GNU `-c %a`, else BSD `-f %Lp`), not `ls -ld`, whose macOS `@` suffix for
+# extended attributes refused every write (HIMMEL-4723). A `+` after the mode
+# in `ls -ld` (an ACL that may grant others access) is still refused.
+# ponytail: macOS ls prints `@` in place of `+` when a directory has both
+# xattrs and an ACL, so an ACL behind xattrs passes there; the upgrade path is
+# an `ls -lde` ACL read on BSD (HIMMEL-4742).
+ev_mode=$(stat -c %a "$SCRATCH" 2>/dev/null) || ev_mode=$(stat -f %Lp "$SCRATCH" 2>/dev/null) || ev_mode=""
+case "$ev_mode:$(ls -ld "$SCRATCH" 2>/dev/null)" in
+    700:d?????????+*) ev_mode=acl ;;
 esac
+if [ "$ev_mode" != 700 ]; then
+    echo "write-verdict: '$SCRATCH' is accessible to group or other users (want 0700) - refusing" >&2
+    exit 2
+fi
 ev_dir=$SCRATCH
 ev_rest=${EVIDENCE#"$SCRATCH"/}
 while :; do
@@ -203,6 +215,21 @@ done
 trap 'rm -f "$tmpf" "$lockd/owner"; rmdir "$lockd" 2>/dev/null' EXIT
 printf 'pid=%s at=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lockd/owner" 2>/dev/null || true
 
+# HIMMEL-4731: a NO-GO in <name>.md for another head is never replaced - the
+# PR may return to that head, where another judge's GO would then stand alone.
+# The ruling goes to <name>-<head>.md beside it instead; its header names that
+# file, as review-round.sh's judge_nogo_record requires. The check repeats on
+# the new name, so a judge itself named <name>-<head> loses no veto either.
+while [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; do
+    # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+    old=$(tr -d '\r' < "$TARGET" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }' \
+        | sed -nE 's/^\*\*NO-GO\*\* for head `([0-9a-f]{40})`\.?$/\1/p')
+    if [ -z "$old" ] || [ "$old" = "$HEAD" ]; then
+        break
+    fi
+    NAME="$NAME-$HEAD"
+    TARGET="$dir/$NAME.md"
+done
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then
     echo "write-verdict: refusing - '$TARGET' is a symlink or not a regular file" >&2
     exit 4

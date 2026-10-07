@@ -115,6 +115,49 @@ case "$OUT" in *"npm ERR! registry hang"*) ok "jira build failure shows the npm 
 if grep -q ensure-deps-ran "$TMP/himmel-setup-logs/obsidian-deps.log" 2>/dev/null; then ok "a failed jira build does not stop the next step"; else bad "obsidian-deps did not run after the jira failure: $OUT"; fi
 rm -f "$FAKE/marketplace/plugins/obsidian-triage/tools/ensure-deps.sh"
 
+# 6e. graphify + repo-only qmd (HIMMEL-4726). graphify installs at the in-repo
+# pin and builds AST-only; qmd indexes this repo as `himmel` and nothing else,
+# BM25 only (no model pull, no embed).
+mkdir -p "$FAKE/scripts/lib"
+# shellcheck disable=SC2016  # literal fixture text, expanded by nothing
+printf '%s\n' '_graphify_version() { printf '"'"'%s\n'"'"' "${GRAPHIFY_VERSION:-9.8.7}"; }' > "$FAKE/scripts/lib/graphify-bin.sh"
+run "$EMPTY" --dry-run
+for step in graphify graphify-graph qmd qmd-index; do
+  case "$OUT" in *"step=$step "*) ok "dry-run plans step $step" ;; *) bad "dry-run omits step $step: $OUT" ;; esac
+done
+case "$OUT" in *"step=graphify action=install graphifyy==9.8.7 "*) ok "graphify installs at the in-repo pin" ;; *) bad "graphify not at the in-repo pin: $OUT" ;; esac
+case "$OUT" in *"graphifyy["*) bad "graphify installs a backend extra: $OUT" ;; *) ok "graphify installs no semantic-backend extra" ;; esac
+case "$OUT" in *"step=graphify-graph action=build graphify update "*) ok "graph build is the AST-only update" ;; *) bad "graph build is not 'graphify update': $OUT" ;; esac
+case "$OUT" in *"--backend"*|*"/graphify "*) bad "setup plans a semantic graphify run: $OUT" ;; *) ok "no semantic graphify run planned" ;; esac
+case "$OUT" in *"step=qmd-index action=add $FAKE --name himmel"*) ok "qmd indexes only this repo as himmel" ;; *) bad "qmd-index not the repo-only himmel collection: $OUT" ;; esac
+case "$OUT" in *luna*|*vault*|*HANDOVER*) bad "setup plans a vault or handover path: $OUT" ;; *) ok "no vault or handover path planned" ;; esac
+case "$OUT" in *"qmd pull"*|*"qmd embed"*) bad "setup plans a model pull or embed: $OUT" ;; *) ok "qmd stays BM25-only (no pull, no embed)" ;; esac
+order="$(printf '%s\n' "$OUT" | sed -n 's/^step=\([^ ]*\) .*/\1/p' | tr '\n' ' ')"
+case "$order" in *"graphify graphify-graph "*"qmd qmd-index "*) ok "graph build follows its install, index follows qmd" ;; *) bad "graphify/qmd step order: $order" ;; esac
+# present tools skip their install; an existing himmel collection skips the add.
+GQ="$TMP/gq"; mkdir -p "$GQ"; cp "$HAVE"/* "$GQ/"
+ln -s "$(command -v timeout)" "$GQ/timeout"   # the collection probe is timeout-bounded
+printf '#!/bin/sh\nexit 0\n' > "$GQ/graphify"
+# shellcheck disable=SC2016  # $1/$2 belong to the stub script
+printf '#!/bin/sh\n[ "$1 $2" = "collection list" ] && echo "himmel (qmd://himmel/)"\nexit 0\n' > "$GQ/qmd"
+chmod +x "$GQ/graphify" "$GQ/qmd"
+run "$GQ" --dry-run
+case "$OUT" in *"step=graphify action=skip"*) ok "present graphify is skipped" ;; *) bad "present graphify not skipped: $OUT" ;; esac
+case "$OUT" in *"step=qmd action=skip"*) ok "present qmd is skipped" ;; *) bad "present qmd not skipped: $OUT" ;; esac
+case "$OUT" in *"step=qmd-index action=refresh $FAKE --name himmel"*) ok "an existing himmel collection is rebuilt from this clone" ;; *) bad "existing himmel collection not refreshed (stale index): $OUT" ;; esac
+# a failing graphify / qmd install is NON-fatal and does not stop the next step.
+GF="$TMP/gfail"; mkdir -p "$GF"; cp "$HAVE"/* "$GF/"
+for t in timeout sh tail mkdir bash; do ln -s "$(command -v "$t")" "$GF/$t"; done
+printf '#!/bin/sh\necho "pip boom" >&2\nexit 1\n' > "$GF/python3"; chmod +x "$GF/python3"
+printf '#!/bin/sh\nexit 0\n' > "$GF/qmd"; chmod +x "$GF/qmd"
+mkdir -p "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tools/node_modules"; : > "$FAKE/scripts/jira/dist/index.js"
+OUT="$(env -i PATH="$GF" HIMMEL_CLOUD_ROOT="$FAKE" TMPDIR="$TMP" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ]; then ok "failing graphify install keeps rc 0"; else bad "failing graphify install rc=$RC: $OUT"; fi
+case "$OUT" in *"step=graphify FAILED"*) ok "graphify install failure is reported" ;; *) bad "graphify install failure silent: $OUT" ;; esac
+case "$OUT" in *"step=graphify-graph action=skip"*) ok "no graph build without graphify" ;; *) bad "graph build attempted without graphify: $OUT" ;; esac
+case "$OUT" in *"step=qmd-index action=add"*) ok "a failed graphify install does not stop qmd" ;; *) bad "qmd-index not reached after the graphify failure: $OUT" ;; esac
+rm -rf "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tools/node_modules" "$FAKE/scripts/lib"
+
 # 7. an unknown flag is refused (rc 2) rather than silently ignored.
 run "$EMPTY" --nope
 if [ "$RC" -eq 2 ]; then ok "unknown flag exits 2"; else bad "unknown flag rc=$RC"; fi

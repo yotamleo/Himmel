@@ -217,6 +217,26 @@ offender=""
 # command that size is not the incident shape this guard exists for.
 [ "${#cmd}" -gt 16000 ] && exit 0
 
+# split_bytes <text> <length> -- fill the CALLER's local array SC with <text>,
+# one byte per element (HIMMEL-4678). The walkers below step through a command
+# one character at a time, and bash resolves ${s:i:1} by scanning s from its
+# start (decoding it, in a UTF-8 locale), so indexing the string made every
+# walk O(n^2): a 12 KB heredoc of prose took seconds, outran this guard's 15 s
+# chain window under fleet load, and the guard failed closed on a harmless
+# call. One linear read into an array makes each step O(1). The callers run
+# under LC_ALL=C, so ${#s}, SC and ${s:a:b} all count bytes. Walking bytes is
+# the same walk as walking characters: every character a walker tests is
+# ASCII, a UTF-8 multibyte sequence never contains an ASCII byte, so each
+# ASCII byte is its own character either way and every other byte is only
+# ever appended to a word, in order.
+split_bytes() {
+    local c k=0
+    SC=()
+    while [ "$k" -lt "$2" ] && IFS= read -r -d '' -n1 c; do
+        SC[k]=$c; k=$((k + 1))
+    done <<<"$1"
+}
+
 # ONE quote-aware pass over the WHOLE command (not per physical line, so a quote
 # or a pipeline that spans newlines is tracked correctly — panel r3, codex-2/3):
 #   * operators carried INSIDE quotes (`|`, `;`, `&`, newline) become spaces —
@@ -230,10 +250,12 @@ offender=""
 #     collapses to the bare `#tail-pipe-ok:` token, which is how the bypass
 #     survives comment stripping while a quoted lookalike does not.
 normalise() {
-    local s=$1
+    local s=$1 LC_ALL=C
+    local -a SC
     local n=${#s} i=0 j d c ch qq p=$NL q='' out='' extra='' ctext
+    split_bytes "$s" "$n"
     while [ "$i" -lt "$n" ]; do
-        c=${s:$i:1}
+        c=${SC[i]-}
         # A command substitution runs a pipeline of its OWN, and
         # `RC=$(gate | tail)` swallows the status exactly like the bare form
         # (panel r4, codex-2). Lift its body out to be scanned as a separate
@@ -249,20 +271,20 @@ normalise() {
             if [ "$c" = '`' ]; then
                 j=$((i + 1))
                 while [ "$j" -lt "$n" ]; do
-                    case ${s:$j:1} in
+                    case ${SC[j]-} in
                         \\) j=$((j + 1)) ;;
                         '`') break ;;
                     esac
                     j=$((j + 1))
                 done
-                extra="$extra$NL$(normalise "${s:$((i + 1)):$((j - i - 1))}")"
-            elif [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = '(' ]; then
+                extra+="$NL$(normalise "${s:$((i + 1)):$((j - i - 1))}")"
+            elif [ "$c" = '$' ] && [ "${SC[i + 1]-}" = '(' ]; then
                 # `$((…))` is ARITHMETIC, not a command: its body must not be
                 # scanned as shell (an `x << 2` shift there used to read as a
                 # heredoc and switch the guard off — panel r8, codex-2).
                 j=$((i + 2)); d=1; qq=''
                 while [ "$j" -lt "$n" ]; do
-                    ch=${s:$j:1}
+                    ch=${SC[j]-}
                     if [ -n "$qq" ]; then
                         [ "$ch" = "$qq" ] && qq=''
                     else
@@ -277,7 +299,7 @@ normalise() {
                     fi
                     j=$((j + 1))
                 done
-                if [ "${s:$((i + 2)):1}" = '(' ]; then
+                if [ "${SC[i + 2]-}" = '(' ]; then
                     # Arithmetic itself is inert, but bash still RUNS a command
                     # substitution nested inside it (panel r11, codex-1), so the
                     # body is still scanned — with `<`/`>` blanked first, since
@@ -286,11 +308,11 @@ normalise() {
                     ctext=${s:$((i + 2)):$((j - i - 1))}
                     ctext=${ctext//</ }
                     ctext=${ctext//>/ }
-                    extra="$extra$NL$(normalise "$ctext")"
+                    extra+="$NL$(normalise "$ctext")"
                     out=${out}ARITH
                     p=' '; i=$((j + 1)); continue
                 fi
-                extra="$extra$NL$(normalise "${s:$((i + 2)):$((j - i - 2))}")"
+                extra+="$NL$(normalise "${s:$((i + 2)):$((j - i - 2))}")"
             fi
             if [ "$j" -ge 0 ]; then
                 out=${out}SUBST
@@ -302,7 +324,7 @@ normalise() {
             # `"a \" | tail"` is one quoted argument and the `"` does not close
             # the span (panel r6, codex-3). Single quotes have no escapes.
             if [ "$q" = '"' ] && [ "$c" = "\\" ]; then
-                c=${s:$((i + 1)):1}
+                c=${SC[i + 1]-}
                 # An escaped character is DATA. Emitting an escaped QUOTE as a
                 # RAW quote left every later quote-state walk unbalanced, and an
                 # unbalanced walk never resolves a command at all -- so
@@ -313,14 +335,14 @@ normalise() {
                     '|' | ';' | '&' | "$NL") c=' ' ;;
                     '"' | "'") c='_' ;;
                 esac
-                out=$out$c; p=$c; i=$((i + 2)); continue
+                out+=$c; p=$c; i=$((i + 2)); continue
             fi
             if [ "$c" = "$q" ]; then
                 q=''
             else
                 case $c in '|' | ';' | '&' | "$NL") c=' ' ;; esac
             fi
-            out=$out$c; p=$c; i=$((i + 1)); continue
+            out+=$c; p=$c; i=$((i + 1)); continue
         fi
         case $c in
             "'" | '"') q=$c ;;
@@ -332,7 +354,7 @@ normalise() {
                 # look-behind and the look-ahead.
                 case $p in
                     '>' | '|' | '&') ;;
-                    *) case ${s:$((i + 1)):1} in
+                    *) case ${SC[i + 1]-} in
                            '&' | '>') ;;   # `&&`, and bash's `&>`/`&>>` (panel r7, codex-3)
                            *) c=$NL ;;
                        esac ;;
@@ -347,9 +369,9 @@ normalise() {
                 # `<<<` is a HERE-STRING: its operand is a word, not a body, so
                 # it stays scannable and must not switch the guard off
                 # (panel r8, codex-2).
-                if [ "${s:$((i + 1)):1}" = '<' ]; then
-                    if [ "${s:$((i + 2)):1}" = '<' ]; then
-                        out=$out'<<<'          # here-string: consume all three
+                if [ "${SC[i + 1]-}" = '<' ]; then
+                    if [ "${SC[i + 2]-}" = '<' ]; then
+                        out+='<<<'          # here-string: consume all three
                         p=' '; i=$((i + 3)); continue
                     fi
                     out=${out}${HEREDOC_MARK}
@@ -362,9 +384,9 @@ normalise() {
                 # is also why the fold below only has to handle a trailing `|`.
                 # An escaped operator is DATA, so it must not read as syntax
                 # (panel r4, codex-3): `--pattern \| tail` is one command.
-                if [ "${s:$((i + 1)):1}" = "$NL" ]; then i=$((i + 2)); continue; fi
-                case ${s:$((i + 1)):1} in
-                    '|' | ';' | '&' | '#') out="$out " ;;
+                if [ "${SC[i + 1]-}" = "$NL" ]; then i=$((i + 2)); continue; fi
+                case ${SC[i + 1]-} in
+                    '|' | ';' | '&' | '#') out+=" " ;;
                     # An escaped SPACE/TAB does not separate words, so emitting
                     # the whitespace itself split `FOO=a\ b bash <gate>` and hid
                     # the gate behind the fragment (panel r11, codex-2). `_`
@@ -372,8 +394,8 @@ normalise() {
                     # command name we look for. An escaped QUOTE is data for
                     # the same reason, and emitting it raw unbalanced the same
                     # later walks (HIMMEL-1979).
-                    ' ' | "$TAB" | '"' | "'") out="${out}_" ;;
-                    *) out=$out${s:$((i + 1)):1} ;;
+                    ' ' | "$TAB" | '"' | "'") out+="_" ;;
+                    *) out+=${SC[i + 1]-} ;;
                 esac
                 # `p` records the previous character for the word-initial test
                 # below. An escaped character — an escaped SPACE above all —
@@ -387,7 +409,7 @@ normalise() {
                 case $p in
                     ' ' | "$TAB" | "$NL" | '(' | '{' | ';' | '|' | '&')
                         j=$i
-                        while [ "$j" -lt "$n" ] && [ "${s:$j:1}" != "$NL" ]; do j=$((j + 1)); done
+                        while [ "$j" -lt "$n" ] && [ "${SC[j]-}" != "$NL" ]; do j=$((j + 1)); done
                         # The marker must OPEN the comment, as documented. A
                         # mere mention — `# no tail-pipe-ok: marker supplied` —
                         # is prose, not an opt-out (panel r11, codex-4).
@@ -398,14 +420,14 @@ normalise() {
                                 *) break ;;
                             esac
                         done
-                        case $ctext in 'tail-pipe-ok:'*) out=$out$MARK ;; esac
+                        case $ctext in 'tail-pipe-ok:'*) out+=$MARK ;; esac
                         i=$j; p=$NL
                         continue
                         ;;
                 esac
                 ;;
         esac
-        out=$out$c
+        out+=$c
         p=$c
         i=$((i + 1))
     done
@@ -697,13 +719,15 @@ invoked_program() {
 # line by normalise(), and `$((...))` bodies to an `ARITH`-marked line, so
 # neither is present in STAGE here — no extra placeholder-skipping needed.
 stage_has_unquoted_angle() {
-    local str=$1 i=0 n dq=''
+    local str=$1 i=0 n dq='' LC_ALL=C
+    local -a SC
     n=${#str}
+    split_bytes "$str" "$n"
     while [ "$i" -lt "$n" ]; do
-        case ${str:$i:1} in
+        case ${SC[i]-} in
             "'" | '"')
-                if [ -z "$dq" ]; then dq=${str:$i:1}
-                elif [ "$dq" = "${str:$i:1}" ]; then dq=''
+                if [ -z "$dq" ]; then dq=${SC[i]-}
+                elif [ "$dq" = "${SC[i]-}" ]; then dq=''
                 fi
                 ;;
             '<' | '>')

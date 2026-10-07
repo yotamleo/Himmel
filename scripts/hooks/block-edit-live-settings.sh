@@ -2287,6 +2287,16 @@ _dc_can_be_claude() {
     return "$r"
 }
 
+# _dc_split_words TEXT -- the CALLER's local array f is TEXT split at every
+# space, in the C locale (HIMMEL-4678): in a UTF-8 locale bash's ${1// /…}
+# re-decodes the text for every match, which took 2.5 s on a 45 KB heredoc of
+# prose, against 5 ms byte-wise. A space byte never occurs inside a UTF-8
+# multibyte sequence, so the bytes come out the same either way.
+_dc_split_words() {
+    local LC_ALL=C s=$'\037'
+    IFS=$s read -r -d '' -a f <<< "${1// /$s}" || true
+}
+
 # _dc_name_fold TEXT — _DCF is TEXT with every path component that can expand
 # to `.claude` (_dc_can_be_claude) written as the literal `.claude`, so every
 # rule below judges `~/.c?aude`, `~/.cl*/`, `~/.c[l]aude` and `~/.cl{a,}ude`
@@ -2320,7 +2330,7 @@ _dc_name_fold() {
     local s=$'\037' i n w acc='' res='' kp='' d=0 b=0 fb=-1 lb=-1
     local -a f
     case "$1" in *"$s"*) _dc_fold_one "$1"; return 0 ;; esac
-    IFS=$s read -r -d '' -a f <<< "${1// /$s}" || true
+    _dc_split_words "$1"
     n=${#f[@]}
     f[n - 1]=${f[n - 1]%$'\n'}
     for ((i = 0; i < n; i++)); do
@@ -2331,15 +2341,15 @@ _dc_name_fold() {
     [ "$fb" -ge 0 ] || fb=$n
     for ((i = 0; i < n; i++)); do
         w=${f[i]}
-        acc=$acc$w
+        acc+=$w
         case "$w" in *[\(\)\{\}]*) _dc_depth "$w" ;; esac
         [ "$i" -lt $((n - 1)) ] || break
         if [ "${#acc}" -ge 1024 ] && [ "$d" = 0 ] && [ "$b" = 0 ] \
             && { [ "$i" -lt "$fb" ] || [ "$i" -ge "$lb" ]; }; then
             _dc_fold_one "$acc "
-            res=$res$_DCO kp=$kp$_DCK acc=''
+            res+=$_DCO kp+=$_DCK acc=''
         else
-            acc="$acc "
+            acc+=" "
         fi
     done
     _dc_fold_one "$acc"

@@ -20,8 +20,8 @@ CLOUD-OK ticket and prints the launch line.
 | The clone's `CLAUDE.md`, `.claude/{skills,agents,commands,rules}`, `.mcp.json` (single-repo session only) | Plugins not in the environment's profile; claude.ai-uploaded plugins (sync as `@synced` only) |
 | The repo's `.claude/settings.json` hooks and permissions | Your local `~/.claude` state; `settings.local.json` |
 | Plugins the environment setup script installs (`--with-plugins` / `--plugins <list>`) and their hooks | Plugin hooks of plugins outside the profile (see [`cloud-hooks-proposal.md`](../internals/cloud-hooks-proposal.md)) |
-| Skills enabled on claude.ai; the Atlassian MCP (full Jira scope: read, comment, file follow-ups, transition) and context7 MCP connectors | The local jira CLI, qmd, graphify, luna, the console inbox |
-| The environment setup script's installs; `CLAUDE_CODE_REMOTE=true` | Handover state |
+| Skills enabled on claude.ai; the Atlassian MCP (full Jira scope: read, comment, file follow-ups, transition) and context7 MCP connectors | The local jira CLI, luna, the console inbox |
+| The environment setup script's installs (graphify, AST-only; qmd over the repo only, BM25); `CLAUDE_CODE_REMOTE=true` | Handover state; qmd over any vault; qmd vector search |
 
 So the local shepherd stays mandatory: it runs `/pr-check`, the CR gate and the
 merge. The cloud session ships a PR and stops.

@@ -344,39 +344,61 @@ gh_subcmd_is_read() {
     return 1
 }
 
+# split_bytes <text> <length> -- fill the CALLER's local array SC with <text>,
+# one byte per element (HIMMEL-4678). The walkers below step through a command
+# one character at a time, and bash resolves ${s:i:1} by scanning s from its
+# start (decoding it, in a UTF-8 locale), so indexing the string made every
+# walk O(n^2): a 12 KB heredoc of prose took seconds, outran this guard's 15 s
+# chain window under fleet load, and the guard failed closed on a harmless
+# call. One linear read into an array makes each step O(1). The callers run
+# under LC_ALL=C, so ${#s}, SC and ${s:a:b} all count bytes. Walking bytes is
+# the same walk as walking characters: every character a walker tests is
+# ASCII, a UTF-8 multibyte sequence never contains an ASCII byte, so each
+# ASCII byte is its own character either way and every other byte is only
+# ever appended to a word, in order.
+split_bytes() {
+    local c k=0
+    SC=()
+    while [ "$k" -lt "$2" ] && IFS= read -r -d '' -n1 c; do
+        SC[k]=$c; k=$((k + 1))
+    done <<<"$1"
+}
+
 # Split one command segment into shell WORDS without evaluating it. Whitespace
 # delimits words only when unquoted; quote delimiters and escapes stay in each
 # raw token so shell_word_value can simulate their argv value and expansion
 # semantics. Adjacent fragments (`/''`, `"$HOME"/`) remain one word.
 tokenize_seg_words() {
-    local s="$1" n i c nx st word have
+    local s="$1" n i c nx st word have LC_ALL=C
+    local -a SC
     n=${#s}; i=0; st=0; word=""; have=0; RB_TOKENS=()
+    split_bytes "$s" "$n"
     while [ "$i" -lt "$n" ]; do
-        c="${s:$i:1}"
+        c="${SC[i]-}"
         if [ "$st" = 1 ]; then                       # inside single quotes
-            word="$word$c"; have=1
+            word+="$c"; have=1
             [ "$c" = "'" ] && st=0
             i=$((i + 1)); continue
         fi
         if [ "$st" = 2 ]; then                       # inside double quotes
             if [ "$c" = "\\" ]; then
-                nx="${s:$((i + 1)):1}"
-                word="$word$c$nx"; have=1; i=$((i + 2)); continue
+                nx="${SC[i + 1]-}"
+                word+="$c$nx"; have=1; i=$((i + 2)); continue
             fi
-            word="$word$c"; have=1
+            word+="$c"; have=1
             [ "$c" = '"' ] && st=0
             i=$((i + 1)); continue
         fi
         case "$c" in
-            "'") st=1; word="$word$c"; have=1 ;;
-            '"') st=2; word="$word$c"; have=1 ;;
+            "'") st=1; word+="$c"; have=1 ;;
+            '"') st=2; word+="$c"; have=1 ;;
             "\\")
-                nx="${s:$((i + 1)):1}"
+                nx="${SC[i + 1]-}"
                 # Keep the established Git-Bash/Windows `find C:\ <expr>`
                 # spelling as a drive-root token; the following space still
                 # delimits the next word instead of being consumed here.
-                case "$nx" in [[:space:]]) word="$word$c"; have=1; i=$((i + 1)); continue ;; esac
-                word="$word$c$nx"; have=1; i=$((i + 2)); continue ;;
+                case "$nx" in [[:space:]]) word+="$c"; have=1; i=$((i + 1)); continue ;; esac
+                word+="$c$nx"; have=1; i=$((i + 2)); continue ;;
             # ponytail: splits on CR where bash does not (safe direction: a
             # bash word still starts with its first sub-token, so a leading
             # flag stays visible); revisit when any flag check relies on a
@@ -385,7 +407,7 @@ tokenize_seg_words() {
                 if [ "$have" -eq 1 ]; then
                     RB_TOKENS+=("$word"); word=""; have=0
                 fi ;;
-            *) word="$word$c"; have=1 ;;
+            *) word+="$c"; have=1 ;;
         esac
         i=$((i + 1))
     done
@@ -401,16 +423,18 @@ tokenize_seg_words() {
 # rather than identical-looking text protected by single quotes or a backslash.
 # shellcheck disable=SC2016 # every variable spelling below is inspected literally; nothing is expanded
 shell_word_value() {
-    local s="$1" n i c nx st=0 bd=0 bf=0
+    local s="$1" n i c nx st=0 bd=0 bf=0 LC_ALL=C
+    local -a SC
     n=${#s}; i=0; SW_VALUE=""; SW_EXPANDS_HOME=0; SW_EXPANDS_TILDE=0; SW_HAS_UNQUOTED_GLOB=0
+    split_bytes "$s" "$n"
     while [ "$i" -lt "$n" ]; do
-        c="${s:$i:1}"
+        c="${SC[i]-}"
         if [ "$st" = 1 ]; then
-            if [ "$c" = "'" ]; then st=0; else SW_VALUE="$SW_VALUE$c"; fi
+            if [ "$c" = "'" ]; then st=0; else SW_VALUE+="$c"; fi
             i=$((i + 1)); continue
         fi
         if [ "$st" = 0 ] && [ "$c" = '$' ]; then
-            nx="${s:$((i + 1)):1}"
+            nx="${SC[i + 1]-}"
             # ANSI-C and locale quotes have values that cannot be safely
             # classified statically; leave them for the approval prompt.
             case "$nx" in "'"|'"') return 1 ;; esac
@@ -422,15 +446,15 @@ shell_word_value() {
                 if [ "$st" = 2 ]; then st=0; else st=2; fi
                 i=$((i + 1)); continue ;;
             "\\")
-                nx="${s:$((i + 1)):1}"
+                nx="${SC[i + 1]-}"
                 if [ "$st" = 0 ]; then
                     if [ -z "$nx" ]; then
-                        SW_VALUE="$SW_VALUE$c"; i=$((i + 1)); continue
+                        SW_VALUE+="$c"; i=$((i + 1)); continue
                     fi
-                    SW_VALUE="$SW_VALUE$nx"; i=$((i + 2)); continue
+                    SW_VALUE+="$nx"; i=$((i + 2)); continue
                 fi
                 case "$nx" in
-                    '$'|'`'|'"'|"\\") SW_VALUE="$SW_VALUE$nx"; i=$((i + 2)); continue ;;
+                    '$'|'`'|'"'|"\\") SW_VALUE+="$nx"; i=$((i + 2)); continue ;;
                 esac ;;
         esac
         # HIMMEL-3660: brace expansion (`{a,b}`, `{1..5}`) explodes ONE raw
@@ -449,7 +473,7 @@ shell_word_value() {
                         [ "$bf" = 1 ] && return 1
                     fi ;;
                 ',') [ "$bd" -gt 0 ] && bf=1 ;;
-                '.') [ "$bd" -gt 0 ] && [ "${s:$((i + 1)):1}" = '.' ] && bf=1 ;;
+                '.') [ "$bd" -gt 0 ] && [ "${SC[i + 1]-}" = '.' ] && bf=1 ;;
                 # HIMMEL-3660: an unquoted glob metacharacter can expand this
                 # word into several argv words, one of which may be a
                 # `-`-leading name that reads as a flag (`sort -* f` with a
@@ -460,39 +484,39 @@ shell_word_value() {
             esac
         fi
         if [ "$c" = '~' ] && [ "$st" = 0 ] && [ "$i" -eq 0 ]; then
-            case "${s:$((i + 1)):1}" in ''|'/'|"'"|'"') SW_EXPANDS_TILDE=1 ;; esac
+            case "${SC[i + 1]-}" in ''|'/'|"'"|'"') SW_EXPANDS_TILDE=1 ;; esac
         fi
         if [ "$c" = '$' ]; then
-            nx="${s:$((i + 1)):1}"
+            nx="${SC[i + 1]-}"
             # `$(...)` command substitution is a distinct expansion kind, out
             # of this ticket's scope; HIMMEL-2121's rootwalk-find scan already
             # tolerates it as opaque literal text, so keep that behavior and
             # only fail closed on PARAMETER expansion (`${…}`, bare `$VAR`)
             # below.
             if [ "$nx" = '(' ]; then
-                SW_VALUE="$SW_VALUE$c"; i=$((i + 1)); continue
+                SW_VALUE+="$c"; i=$((i + 1)); continue
             fi
             if [ "${s:$i:14}" = '${USERPROFILE}' ]; then
-                SW_VALUE="$SW_VALUE"'${USERPROFILE}'; SW_EXPANDS_HOME=1
+                SW_VALUE+=""'${USERPROFILE}'; SW_EXPANDS_HOME=1
                 i=$((i + 14)); continue
             fi
             if [ "${s:$i:12}" = '$USERPROFILE' ]; then
-                case "${s:$((i + 12)):1}" in
+                case "${SC[i + 12]-}" in
                     [A-Za-z0-9_]) ;;
                     *)
-                        SW_VALUE="$SW_VALUE"'$USERPROFILE'; SW_EXPANDS_HOME=1
+                        SW_VALUE+=""'$USERPROFILE'; SW_EXPANDS_HOME=1
                         i=$((i + 12)); continue ;;
                 esac
             fi
             if [ "${s:$i:7}" = '${HOME}' ]; then
-                SW_VALUE="$SW_VALUE"'${HOME}'; SW_EXPANDS_HOME=1
+                SW_VALUE+=""'${HOME}'; SW_EXPANDS_HOME=1
                 i=$((i + 7)); continue
             fi
             if [ "${s:$i:5}" = '$HOME' ]; then
-                case "${s:$((i + 5)):1}" in
+                case "${SC[i + 5]-}" in
                     [A-Za-z0-9_]) ;;
                     *)
-                        SW_VALUE="$SW_VALUE"'$HOME'; SW_EXPANDS_HOME=1
+                        SW_VALUE+=""'$HOME'; SW_EXPANDS_HOME=1
                         i=$((i + 5)); continue ;;
                 esac
             fi
@@ -502,7 +526,7 @@ shell_word_value() {
             # statically. Fail closed rather than cook it as literal text.
             return 1
         fi
-        SW_VALUE="$SW_VALUE$c"; i=$((i + 1))
+        SW_VALUE+="$c"; i=$((i + 1))
     done
     [ "$st" = 0 ]
 }
@@ -519,10 +543,12 @@ shell_word_value() {
 # and newline, the bytes bash itself splits on (a CR, FF or VT stays inside
 # the brace word).
 word_has_brace_expansion() {
-    local s="$1" n i=0 c st=0 bd=0 bf=0
+    local s="$1" n i=0 c st=0 bd=0 bf=0 LC_ALL=C
+    local -a SC
     n=${#s}
+    split_bytes "$s" "$n"
     while [ "$i" -lt "$n" ]; do
-        c="${s:$i:1}"
+        c="${SC[i]-}"
         if [ "$st" = 1 ]; then                       # inside single quotes
             [ "$c" = "'" ] && st=0
             i=$((i + 1)); continue
@@ -546,7 +572,7 @@ word_has_brace_expansion() {
                     [ "$bf" = 1 ] && return 0
                 fi ;;
             ',') [ "$bd" -gt 0 ] && bf=1 ;;
-            '.') [ "$bd" -gt 0 ] && [ "${s:$((i + 1)):1}" = '.' ] && bf=1 ;;
+            '.') [ "$bd" -gt 0 ] && [ "${SC[i + 1]-}" = '.' ] && bf=1 ;;
         esac
         i=$((i + 1))
     done
@@ -1026,62 +1052,64 @@ segment_is_safe() {
 # (no separator, no backslash-continuation) until the terminating newline,
 # which still ends the comment AND breaks the segment as it always did.
 scan_cmd() {
-    local s="$1" n i c nx p ppe st seg NL cm aws pesc
+    local s="$1" n i c nx p ppe st seg NL cm aws pesc LC_ALL=C
+    local -a SC
     NL=$'\n'
     n=${#s}; i=0; st=0; cm=0; aws=1; seg=""; SCAN_SEGS=""; SCAN_MASK=""; SCAN_ESC_AMP=0; pesc=0
+    split_bytes "$s" "$n"
     while [ "$i" -lt "$n" ]; do
-        c="${s:$i:1}"
+        c="${SC[i]-}"
         # HIMMEL-3777: was s[i-1] itself the escaped byte of a `\x` pair (so it
         # is data, not a live operator char)? Captured before this iteration's
         # own escape branch (if any) resets pesc for the NEXT iteration.
         ppe="$pesc"; pesc=0
         if [ "$st" = 1 ]; then                       # inside single quotes
-            seg="$seg${c/"$NL"/ }"; SCAN_MASK="$SCAN_MASK "
+            seg+="${c/"$NL"/ }"; SCAN_MASK+=" "
             [ "$c" = "'" ] && st=0
             aws=0
             i=$((i + 1)); continue
         fi
         if [ "$st" = 2 ]; then                       # inside double quotes
             if [ "$c" = "\\" ]; then                 # \<x> keeps next char literal
-                nx="${s:$((i + 1)):1}"
+                nx="${SC[i + 1]-}"
                 if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
-                    SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
+                    SCAN_MASK+="  "; i=$((i + 2)); continue
                 fi
-                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK  "
+                seg+="${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK+="  "
                 aws=0; pesc=1; i=$((i + 2)); continue
             fi
-            seg="$seg${c/"$NL"/ }"; SCAN_MASK="$SCAN_MASK "
+            seg+="${c/"$NL"/ }"; SCAN_MASK+=" "
             [ "$c" = '"' ] && st=0
             aws=0
             i=$((i + 1)); continue
         fi
         # --- unquoted ---
-        nx="${s:$((i + 1)):1}"
+        nx="${SC[i + 1]-}"
         if [ "$cm" = 1 ] && [ "$c" = "$NL" ]; then   # a newline always ends a comment
             cm=0
-            SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-            SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue
+            SCAN_SEGS+="$seg$NL"; seg=""
+            SCAN_MASK+="$c"; aws=1; i=$((i + 1)); continue
         fi
         case "$c" in
             "'")
                 if [ "$cm" = 1 ]; then                   # inside a comment: no quote semantics
-                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue
+                    seg+="$c"; SCAN_MASK+="$c"; aws=0; i=$((i + 1)); continue
                 fi
-                st=1; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
+                st=1; seg+="$c"; SCAN_MASK+=" "; aws=0; i=$((i + 1)); continue ;;
             '"')
                 if [ "$cm" = 1 ]; then                   # inside a comment: no quote semantics
-                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue
+                    seg+="$c"; SCAN_MASK+="$c"; aws=0; i=$((i + 1)); continue
                 fi
-                st=2; seg="$seg$c"; SCAN_MASK="$SCAN_MASK "; aws=0; i=$((i + 1)); continue ;;
+                st=2; seg+="$c"; SCAN_MASK+=" "; aws=0; i=$((i + 1)); continue ;;
             '#')
                 [ "$aws" = 1 ] && cm=1
-                seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue ;;
+                seg+="$c"; SCAN_MASK+="$c"; aws=0; i=$((i + 1)); continue ;;
             "\\")
                 if [ "$cm" = 1 ]; then               # inside a comment: no continuation fold
-                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"; aws=0; i=$((i + 1)); continue
+                    seg+="$c"; SCAN_MASK+="$c"; aws=0; i=$((i + 1)); continue
                 fi
                 if [ "$nx" = "$NL" ]; then          # line continuation: remove both bytes
-                    SCAN_MASK="$SCAN_MASK  "; i=$((i + 2)); continue
+                    SCAN_MASK+="  "; i=$((i + 2)); continue
                 fi
                 # HIMMEL-3793 (J1397A finding 4): keep the backslash itself
                 # LITERAL in SCAN_MASK (blank only the escaped byte it
@@ -1098,24 +1126,24 @@ scan_cmd() {
                 # file (`uniq -c f \&` creates `&`). Flag it so the walk's
                 # caller falls through instead of approving.
                 [ "$nx" = '&' ] && SCAN_ESC_AMP=1
-                seg="$seg${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK="$SCAN_MASK\\ "; aws=0; pesc=1; i=$((i + 2)); continue ;;
+                seg+="${c/"$NL"/ }${nx/"$NL"/ }"; SCAN_MASK+="\\ "; aws=0; pesc=1; i=$((i + 2)); continue ;;
             ';'|"$NL")                               # statement separator
-                SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-                SCAN_MASK="$SCAN_MASK$c"; aws=1; i=$((i + 1)); continue ;;
+                SCAN_SEGS+="$seg$NL"; seg=""
+                SCAN_MASK+="$c"; aws=1; i=$((i + 1)); continue ;;
             '|')                                     # | or || → one break
-                SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-                SCAN_MASK="$SCAN_MASK|"; aws=1
-                if [ "$nx" = '|' ]; then SCAN_MASK="$SCAN_MASK|"; i=$((i + 2)); else i=$((i + 1)); fi
+                SCAN_SEGS+="$seg$NL"; seg=""
+                SCAN_MASK+="|"; aws=1
+                if [ "$nx" = '|' ]; then SCAN_MASK+="|"; i=$((i + 2)); else i=$((i + 1)); fi
                 continue ;;
             '&')
                 if [ "$nx" = '&' ]; then             # && logical-AND → break
-                    SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""
-                    SCAN_MASK="$SCAN_MASK&&"; aws=1; i=$((i + 2)); continue
+                    SCAN_SEGS+="$seg$NL"; seg=""
+                    SCAN_MASK+="&&"; aws=1; i=$((i + 2)); continue
                 fi
                 if [ "$nx" = '>' ]; then             # &> redirect form → keep with seg
-                    seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; aws=0; i=$((i + 1)); continue
+                    seg+="$c"; SCAN_MASK+="&"; aws=0; i=$((i + 1)); continue
                 fi
-                p=""; [ "$i" -gt 0 ] && p="${s:$((i - 1)):1}"
+                p=""; [ "$i" -gt 0 ] && p="${SC[i - 1]-}"
                 # HIMMEL-3777: a raw '>'/'<'/'&' immediately before is only a
                 # live fd-dup neighbor when it was NOT itself the escaped
                 # payload of a preceding `\x` — otherwise `\&&` reads its
@@ -1123,13 +1151,13 @@ scan_cmd() {
                 # LIVE &, hiding it from the bare-& break below.
                 if [ "$ppe" != 1 ]; then
                     case "$p" in                     # fd-dup 2>&1 / >&2 → keep
-                        '>'|'<'|'&') seg="$seg$c"; SCAN_MASK="$SCAN_MASK&"; aws=0; i=$((i + 1)); continue ;;
+                        '>'|'<'|'&') seg+="$c"; SCAN_MASK+="&"; aws=0; i=$((i + 1)); continue ;;
                     esac
                 fi
-                SCAN_SEGS="$SCAN_SEGS$seg$NL"; seg=""    # bare & separator → break
-                SCAN_MASK="$SCAN_MASK&"; aws=1; i=$((i + 1)); continue ;;
+                SCAN_SEGS+="$seg$NL"; seg=""    # bare & separator → break
+                SCAN_MASK+="&"; aws=1; i=$((i + 1)); continue ;;
         esac
-        seg="$seg$c"; SCAN_MASK="$SCAN_MASK$c"
+        seg+="$c"; SCAN_MASK+="$c"
         case "$c" in
             ' '|$'\t'|'('|')'|'<'|'>') aws=1 ;;
             *) aws=0 ;;
@@ -1137,7 +1165,7 @@ scan_cmd() {
         i=$((i + 1))
     done
     [ "$st" = 0 ] || return 1                        # unbalanced quote → fail closed
-    SCAN_SEGS="$SCAN_SEGS$seg"
+    SCAN_SEGS+="$seg"
     return 0
 }
 
@@ -1498,12 +1526,14 @@ guard_is_long_abbrev() {
 # backslashes) is copied through verbatim until the terminating newline,
 # which is copied too and never folded.
 fold_backslash_newline() {
-    local s="$1" out="" i=0 n c j run k nc in_sq=0 in_dq=0 in_cm=0 aws=1 bs=$'\\'
+    local s="$1" out="" i=0 n c j run k nc in_sq=0 in_dq=0 in_cm=0 aws=1 bs=$'\\' LC_ALL=C
+    local -a SC
     n=${#s}
+    split_bytes "$s" "$n"
     while [ "$i" -lt "$n" ]; do
-        c="${s:$i:1}"
+        c="${SC[i]-}"
         if [ "$in_cm" = 1 ]; then
-            out="$out$c"
+            out+="$c"
             if [ "$c" = $'\n' ]; then
                 in_cm=0
                 aws=1
@@ -1512,7 +1542,7 @@ fold_backslash_newline() {
             continue
         fi
         if [ "$in_sq" = 1 ]; then
-            out="$out$c"
+            out+="$c"
             [ "$c" = "'" ] && in_sq=0
             aws=0
             i=$((i + 1))
@@ -1520,32 +1550,32 @@ fold_backslash_newline() {
         fi
         if [ "$c" = "'" ] && [ "$in_dq" = 0 ]; then
             in_sq=1
-            out="$out$c"
+            out+="$c"
             aws=0
             i=$((i + 1))
             continue
         fi
         if [ "$c" = '"' ]; then
             [ "$in_dq" = 0 ] && in_dq=1 || in_dq=0
-            out="$out$c"
+            out+="$c"
             aws=0
             i=$((i + 1))
             continue
         fi
         if [ "$c" = '#' ] && [ "$in_dq" = 0 ] && [ "$aws" = 1 ]; then
             in_cm=1
-            out="$out$c"
+            out+="$c"
             i=$((i + 1))
             continue
         fi
         if [ "$c" = "$bs" ]; then
             run=0
             j=$i
-            while [ "${s:$j:1}" = "$bs" ]; do
+            while [ "${SC[j]-}" = "$bs" ]; do
                 run=$((run + 1))
                 j=$((j + 1))
             done
-            if [ "${s:$j:1}" = $'\n' ] && [ $((run % 2)) -eq 1 ]; then
+            if [ "${SC[j]-}" = $'\n' ] && [ $((run % 2)) -eq 1 ]; then
                 # An odd run of N backslashes folds in real shell parsing as
                 # the final lone backslash+newline being the continuation
                 # that disappears, leaving the other (N-1, always even)
@@ -1561,35 +1591,35 @@ fold_backslash_newline() {
                 # unescaped.
                 k=0
                 while [ "$k" -lt "$((run - 1))" ]; do
-                    out="$out\\"
+                    out+="\\"
                     k=$((k + 1))
                 done
                 [ "$run" -gt 1 ] && aws=0
                 i=$((j + 1))
                 continue
             fi
-            nc="${s:$j:1}"
+            nc="${SC[j]-}"
             if [ $((run % 2)) -eq 1 ] && { [ "$nc" = "'" ] || [ "$nc" = '"' ]; }; then
                 k=0
                 while [ "$k" -lt "$((run - 1))" ]; do
-                    out="$out\\"
+                    out+="\\"
                     k=$((k + 1))
                 done
-                out="$out\\$nc"
+                out+="\\$nc"
                 aws=0
                 i=$((j + 1))
                 continue
             fi
             k=0
             while [ "$k" -lt "$run" ]; do
-                out="$out\\"
+                out+="\\"
                 k=$((k + 1))
             done
             aws=0
             i=$j
             continue
         fi
-        out="$out$c"
+        out+="$c"
         case "$c" in
             ' '|$'\t'|$'\n'|';'|'|'|'&'|'('|')'|'<'|'>') aws=1 ;;
             *) aws=0 ;;
