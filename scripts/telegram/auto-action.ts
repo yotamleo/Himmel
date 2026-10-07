@@ -27,6 +27,8 @@ export const OPS: Record<string, { script: string | null }> = {
   "arm-resume": { script: "arm-resume" },
   "merge-public": { script: "merge-public" },
   "restart": { script: null },
+  "launch-bypass-leg": { script: "launch-bypass-leg" },
+  "cr-grant-delta": { script: "cr-grant-delta" },
 };
 export const KNOWN_OPS = new Set(Object.keys(OPS));
 
@@ -42,7 +44,7 @@ export const KNOWN_OPS = new Set(Object.keys(OPS));
 // the ordinary tier, so `=1`/`all` enables it. The DoS shape (a restart loop) is
 // bounded by the same operator-only sender check every auto-command carries, plus
 // the supervisor's POLLER_MAX_FAILS breaker as the backstop.
-export const EXPLICIT_ONLY_OPS = new Set(["merge-public"]);
+export const EXPLICIT_ONLY_OPS = new Set(["merge-public", "launch-bypass-leg", "cr-grant-delta"]);
 
 // Ops executed by the poller ITSELF rather than by shelling auto-action.sh.
 // dispatchAutoAction refuses these (they must never be laundered into a script
@@ -123,7 +125,7 @@ export function isExecutableAutoCommand(route: Route, forwarded: boolean, captio
 export type RunScriptResult = { code: number; stdout: string; stderr: string };
 export type RunScriptFn = (op: string, arg: string, time: string) => Promise<RunScriptResult>;
 export type AutoActionRoute = { op: string; arg: string; time: string };
-export type AutoResult = { ok: boolean; rc: number; message: string; resolved?: string };
+export type AutoResult = { ok: boolean; rc: number; message: string; resolved?: string; backups?: string };
 
 const firstLine = (s: string) => (s || "").split("\n").map((x) => x.trim()).find(Boolean) ?? "";
 function parseResolved(stdout: string): string | undefined {
@@ -161,6 +163,17 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
   if (SELF_EXECUTED_OPS.has(route.op)) return { ok: false, rc: 2, message: `⚠️ ${route.op} is not script-dispatched` };
   const { code, stdout, stderr } = await deps.runScript(route.op, route.arg, route.time);
   if (route.op === "merge-public") return mapMergePublicResult(route.arg, route.time, code, stdout, stderr);
+  if (route.op === "launch-bypass-leg" || route.op === "cr-grant-delta") {
+    const log = stdout.match(/^log=(.+)$/m)?.[1];
+    const backups = [...stdout.matchAll(/^backup=(.+)$/gm)].map((m) => m[1]).join(",") || undefined;
+    const action = route.op === "launch-bypass-leg" ? "launched leg" : `granted fix delta for PR #${route.arg}`;
+    return {
+      ok: code === 0, rc: code, backups,
+      message: code === 0
+        ? `✅ ${action} (rc=0)${log ? `; log: ${log}` : ""}`
+        : `⚠️ ${route.op} refused/failed (rc=${code}): ${firstLine(stderr) || firstLine(stdout) || `exit ${code}`}${log ? `; log: ${log}` : ""}`,
+    };
+  }
   const resolved = parseResolved(stdout);
   switch (code) {
     case 0:  return { ok: true, rc: 0, resolved, message: `✅ armed: ${resolved ?? route.arg} (${route.time})` };
@@ -179,10 +192,10 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
 // correct. The labels below are the closed union both ops draw from.
 export type AuditResult = "armed" | "already-armed" | "ambiguous" | "refused-forwarded" | "no-match" | "error"
   | "merged" | "not-green" | "head-moved" | "no-open-pr"
-  | "restarting" | "restart-unsupported";
+  | "restarting" | "restart-unsupported" | "launched" | "delta-granted";
 export type AuditFields = {
   chat_id: number; user: number; forwarded: boolean; op: string;
-  arg: string; resolved?: string; time: string; rc: number; result: string;
+  arg: string; resolved?: string; backups?: string; time: string; rc: number; result: string;
 };
 
 // Strip control chars (newlines/tabs/etc.) so a crafted arg can't forge a second audit
@@ -207,6 +220,7 @@ export function formatAuditLine(f: AuditFields, now: string): string {
     `time=${sanitize(f.time)}`,
     `rc=${f.rc}`,
     `result=${sanitize(f.result)}`,
+    ...(f.backups ? [`backups=${sanitize(f.backups)}`] : []),
   ].join(" ");
 }
 

@@ -12,12 +12,13 @@ AA="$(cd "$(dirname "$0")" && pwd)/auto-action.sh"
 [ -x "$AA" ] || chmod +x "$AA" 2>/dev/null || true
 
 TMP=$(mktemp -d)
+export TMPDIR="$TMP"
 trap 'rm -rf "$TMP"' EXIT
 
 assert_rc() {
     local label="$1" expected="$2" actual="$3"
     if [ "$actual" = "$expected" ]; then echo "PASS $label (rc=$actual)"
-    else echo "FAIL $label — expected rc=$expected, got rc=$actual"; FAILED=$((FAILED + 1)); fi
+    else echo "FAIL $label — expected rc=$expected, got rc=$actual"; cat "$TMP/err"; FAILED=$((FAILED + 1)); fi
 }
 assert_contains() {
     local label="$1" needle="$2" haystack="$3"
@@ -201,6 +202,112 @@ out=$(MERGE_STUB_RC=15 runmp merge-public 123 abcdef123456); rc=$?
 assert_rc "T16b chokepoint rc 15 (head-moved) relayed verbatim" 15 "$rc"
 out=$(MERGE_STUB_RC=19 runmp merge-public 123 abcdef123456); rc=$?
 assert_rc "T16c chokepoint rc 19 (CLAUDECODE self-refusal) relayed verbatim" 19 "$rc"
+
+# Privileged typed ops: invalid inputs must fail before any side effect.
+out=$(run launch-bypass-leg "$INSIDE" UNKNOWN_OK); rc=$?
+assert_rc "launch rejects unknown bypass variable" 1 "$rc"
+out=$(run launch-bypass-leg "$OUTSIDE" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); rc=$?
+assert_rc "launch rejects outside doc" 3 "$rc"
+out=$(run launch-bypass-leg "$HANDOVER_DIR/yotam/himmel/../himmel/2026-06-20-himmel-777-resume.md" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); rc=$?
+assert_rc "launch rejects dot-dot even within root" 3 "$rc"
+out=$(run cr-grant-delta 123 abcdef123456); rc=$?
+assert_rc "reset requires full SHA" 1 "$rc"
+
+# A launcher stub observes the real op's argv/env without launching a session.
+export USER_SLUG=yotam
+LAUNCH_STUB="$TMP/launch-stub.sh"
+cat > "$LAUNCH_STUB" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$LAUNCH_ARGS_FILE"
+printf '%s|%s|%s\n' "${HIMMEL_HOOK_INTEGRITY_BYPASS_OK:-}" "${TELEGRAM_BOT_TOKEN:-}" "${TELEGRAM_OWN_POLLER:-}" > "$LAUNCH_ENV_FILE"
+[ -f "$5" ] || exit 8
+exit "${LAUNCH_STUB_RC:-0}"
+EOF
+export AUTO_ACTION_LAUNCH_CMD="bash $LAUNCH_STUB"
+export LAUNCH_ARGS_FILE="$TMP/launch-args" LAUNCH_ENV_FILE="$TMP/launch-env"
+launch() { (unset CLAUDECODE; run launch-bypass-leg "$1" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); }
+out=$(launch "$INSIDE"); rc=$?
+assert_rc "launch passes validated doc and touches its signal" 0 "$rc"
+assert_contains "launch returns log path" "log=" "$out"
+assert_contains "launch chooses leg-impl profile" "leg-impl" "$(cat "$LAUNCH_ARGS_FILE" 2>/dev/null)"
+assert_contains "launch only sets closed bypass and strips bridge secrets" "1||" "$(cat "$LAUNCH_ENV_FILE" 2>/dev/null)"
+out=$(LAUNCH_STUB_RC=12 launch "$INSIDE"); rc=$?
+assert_rc "launcher brief-lint refusal is relayed" 12 "$rc"
+ln -s "$OUTSIDE" "$HANDOVER_DIR/yotam/himmel/escape.md"
+out=$(launch "$HANDOVER_DIR/yotam/himmel/escape.md"); rc=$?
+assert_rc "launch rejects symlink escape" 3 "$rc"
+mkdir -p "$HANDOVER_DIR/other/himmel"
+cp "$INSIDE" "$HANDOVER_DIR/other/himmel/leg.md"
+out=$(launch "$HANDOVER_DIR/other/himmel/leg.md"); rc=$?
+assert_rc "launch rejects another user's bucket" 3 "$rc"
+rm -f "$LAUNCH_ARGS_FILE"
+out=$(CLAUDECODE=1 run launch-bypass-leg "$INSIDE" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); rc=$?
+assert_rc "launch refuses agent authority" 19 "$rc"
+[ ! -f "$LAUNCH_ARGS_FILE" ] || FAILED=$((FAILED + 1))
+
+mkdir -p "$TMP/repo" "$TMP/bin"
+git init -q "$TMP/repo"
+mkdir -p "$TMP/repo/.git/cr-review-rounds/feat"
+printf '4\n' > "$TMP/repo/.git/cr-review-rounds/feat/example.round"
+printf 'keep\n' > "$TMP/repo/.git/cr-review-rounds/feat/example.delta"
+cat > "$TMP/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '{"headRefOid":"%s","headRefName":"%s","isCrossRepository":%s}\n' "${PR_HEAD:-0123456789abcdef0123456789abcdef01234567}" "${PR_BRANCH:-feat/example}" "${PR_FORK:-false}"
+EOF
+chmod +x "$TMP/bin/gh"
+reset_rounds() { (cd "$TMP/repo" || exit; unset CLAUDECODE; PATH="$TMP/bin:$PATH" run cr-grant-delta 123 "$SHA40"); }
+out=$(PR_HEAD=ffffffffffffffffffffffffffffffffffffffff reset_rounds); rc=$?
+assert_rc "reset refuses stale SHA" 15 "$rc"
+assert_contains "stale grant leaves counter" "4" "$(cat "$TMP/repo/.git/cr-review-rounds/feat/example.round")"
+git -C "$TMP/repo" config user.name tester
+git -C "$TMP/repo" config user.email tester@example.invalid
+printf 'before\n' > "$TMP/repo/file"
+git -C "$TMP/repo" add file
+git -C "$TMP/repo" commit -qm 'test fixture reviewed'
+REVIEWED=$(git -C "$TMP/repo" rev-parse HEAD)
+printf 'after\n' > "$TMP/repo/file"
+git -C "$TMP/repo" commit -qam 'test fixture fixed'
+PR_HEAD=$(git -C "$TMP/repo" rev-parse HEAD)
+export PR_HEAD
+printf '%s\n' "$PR_HEAD" > "$TMP/repo/.git/cr-review-rounds/feat/example.head"
+printf '%s %s fix\n' "$REVIEWED" "$PR_HEAD" > "$TMP/repo/.git/cr-review-rounds/feat/example.delta"
+printf 'keep-verdicts\n' > "$TMP/repo/.git/cr-review-rounds/feat/example.verdicts"
+grant_delta() { (cd "$TMP/repo" || exit; unset CLAUDECODE; PATH="$TMP/bin:$PATH" run cr-grant-delta 123 "$REVIEWED"); }
+out=$(grant_delta); rc=$?
+assert_rc "grant refuses unreviewed ancestor" 4 "$rc"
+printf '{"kind":"avail","branch":"feat/example","head":"%s","model":"codex","status":"ok"}\n{"kind":"finding","branch":"feat/example","head":"%s","model":"codex","finding_id":"f1","verdict":"fixed"}\n' "$REVIEWED" "$REVIEWED" > "$TMP/repo/.git/cr-critic-scores.jsonl"
+out=$(grant_delta); rc=$?
+assert_rc "grant refuses an unspent pending delta" 4 "$rc"
+printf '{"kind":"avail","branch":"feat/example","head":"%s","model":"codex","status":"ok"}\n' "$PR_HEAD" >> "$TMP/repo/.git/cr-critic-scores.jsonl"
+out=$(grant_delta); rc=$?
+assert_rc "grant restores reviewed ancestor and removes spent delta" 0 "$rc"
+assert_contains "grant reports backups" "backup=" "$out"
+assert_contains "grant keeps round counter" "4" "$(cat "$TMP/repo/.git/cr-review-rounds/feat/example.round")"
+assert_contains "grant keeps consumed verdicts" "keep-verdicts" "$(cat "$TMP/repo/.git/cr-review-rounds/feat/example.verdicts")"
+assert_contains "grant sets reviewed head" "$REVIEWED" "$(cat "$TMP/repo/.git/cr-review-rounds/feat/example.head")"
+[ ! -e "$TMP/repo/.git/cr-review-rounds/feat/example.delta" ] || FAILED=$((FAILED + 1))
+for backup in "$TMP/repo/.git/cr-review-rounds/feat/example.head."*; do
+    assert_contains "head backup preserves previous head" "$PR_HEAD" "$(cat "$backup")"
+done
+for backup in "$TMP/repo/.git/cr-review-rounds/feat/example.delta."*; do
+    assert_contains "delta backup preserves spent pair" "$REVIEWED $PR_HEAD fix" "$(cat "$backup")"
+done
+out=$(PR_FORK=true grant_delta); rc=$?
+assert_rc "grant refuses fork PR" 13 "$rc"
+out=$(PR_BRANCH=feat/missing grant_delta); rc=$?
+assert_rc "grant refuses branch without round state" 3 "$rc"
+out=$(PR_BRANCH=../escape grant_delta); rc=$?
+assert_rc "grant rejects unsafe branch" 1 "$rc"
+out=$(CLAUDECODE=1 run cr-grant-delta 123 "$REVIEWED"); rc=$?
+assert_rc "grant refuses agent authority" 19 "$rc"
+printf '{"kind":"amend","branch":"feat/example","target_head":"%s","finding_id":"f1","set":{"verdict":"disproved"}}\n' "$REVIEWED" >> "$TMP/repo/.git/cr-critic-scores.jsonl"
+out=$(grant_delta); rc=$?
+assert_rc "grant refuses finding later disproved" 4 "$rc"
+rm "$TMP/repo/.git/cr-review-rounds/feat/example.head"
+ln -s "$OUTSIDE" "$TMP/repo/.git/cr-review-rounds/feat/example.head"
+out=$(grant_delta); rc=$?
+assert_rc "grant rejects symlinked state" 3 "$rc"
+assert_contains "grant leaves symlink target untouched" "x" "$(cat "$OUTSIDE")"
 
 echo "----"
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; else echo "$FAILED FAILED"; exit 1; fi

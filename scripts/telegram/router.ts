@@ -15,6 +15,7 @@ export type Route =
   | { kind: "auto"; op: "arm-resume"; arg: string; time: string }
   | { kind: "auto"; op: "merge-public"; arg: string; time: string }
   | { kind: "auto"; op: "restart"; arg: string; time: string }
+  | { kind: "auto"; op: "launch-bypass-leg" | "cr-grant-delta"; arg: string; time: string }
   | { kind: "console"; name: string; text: string }
   | { kind: "chat"; text: string };
 
@@ -88,6 +89,11 @@ export function classify(raw: string): Route {
   // normalized HERE, else it classifies as executable then fails downstream
   // validation (HIMMEL-1213 codex CR-2). arg (PR digits) has no case.
   if (mergepub) return { kind: "auto", op: "merge-public", arg: mergepub[1], time: mergepub[2].toLowerCase() };
+  // Closed typed ops; the shell half validates containment and the live PR head.
+  const launch = t.match(/^\/launch-bypass-leg\s+(\S+)\s+([A-Z][A-Z0-9_]+)$/);
+  if (launch) return { kind: "auto", op: "launch-bypass-leg", arg: launch[1], time: launch[2] };
+  const grant = t.match(/^\/cr-grant-delta\s+#?(\d{1,6})\s+([0-9a-f]{40})$/i);
+  if (grant) return { kind: "auto", op: "cr-grant-delta", arg: grant[1], time: grant[2].toLowerCase() };
   const restart = t.match(RESTART);
   // Bare `/restart` => rung 1 ("poller"); `/restart full` => rung 2 ("full").
   if (restart) return { kind: "auto", op: "restart", arg: restart[1] ? "full" : "poller", time: "-" };

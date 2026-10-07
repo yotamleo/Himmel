@@ -6,7 +6,64 @@ import {
   OPS, KNOWN_OPS, EXPLICIT_ONLY_OPS, SELF_EXECUTED_OPS, parseEnabledOps, describeEnabledOps, isExecutableAutoCommand,
   dispatchAutoAction, formatAuditLine, appendAuditLine, type AuditFields,
 } from "./auto-action";
-import type { Route } from "./router";
+import { classify, type Route } from "./router";
+import { handleInbound, handleAutoCommand } from "./poller";
+
+test("privileged typed ops never execute for non-operators, disabled ops or forwarded messages; attempts audit once", async () => {
+  for (const [text, op, label] of [
+    ["/launch-bypass-leg /handovers/operator/himmel/leg.md HIMMEL_HOOK_INTEGRITY_BYPASS_OK", "launch-bypass-leg", "launched"],
+    ["/cr-grant-delta 123 0123456789abcdef0123456789abcdef01234567", "cr-grant-delta", "delta-granted"],
+  ]) {
+    for (const [from, enabled, want] of [[2, true, false], [1, false, false], [1, true, true]] as const) {
+      const root = await mkdtemp(join(tmpdir(), "typed-gate-"));
+      let fired = false;
+      await handleInbound(root, { from, chat_id: 7, text, caption: false, forwarded: false }, async () => {}, {
+        authorize: (sender) => sender === 1,
+        enabledOps: new Set(enabled ? [op] : []),
+        fire: () => { fired = true; },
+      }, async () => "spawn-low");
+      expect(fired).toBe(want);
+    }
+    const route = classify(text);
+    if (route.kind !== "auto") throw new Error("missing typed route");
+    for (const forwarded of [true, false]) {
+      let ran = false;
+      const audits: string[] = [];
+      await handleAutoCommand("/root", { from: 1, chat_id: 7, text, caption: false, forwarded }, route, {
+        runScript: async () => { ran = true; return { code: 0, stdout: "", stderr: "" }; },
+        reply: async () => {},
+        audit: async (f) => { audits.push(f.result); },
+      });
+      expect(ran).toBe(!forwarded);
+      expect(audits).toEqual([forwarded ? "refused-forwarded" : label]);
+    }
+  }
+});
+
+test("typed privileged ops require individual opt-in and reject forwarded/caption origins", async () => {
+  for (const [text, op] of [
+    ["/launch-bypass-leg /handovers/operator/himmel/leg.md HIMMEL_HOOK_INTEGRITY_BYPASS_OK", "launch-bypass-leg"],
+    ["/cr-grant-delta 123 0123456789abcdef0123456789abcdef01234567", "cr-grant-delta"],
+  ]) {
+    const route = classify(text);
+    expect(route.kind).toBe("auto");
+    if (route.kind !== "auto") throw new Error("missing typed route");
+    expect(route.op).toBe(op);
+    for (const flag of [undefined, "all", "1", "arm-resume", "merge-public"])
+      expect(parseEnabledOps(flag, KNOWN_OPS).has(op)).toBe(false);
+    expect(parseEnabledOps(op, KNOWN_OPS).has(op)).toBe(true);
+    expect(isExecutableAutoCommand(route, true, false)).toBe(false);
+    expect(isExecutableAutoCommand(route, false, true)).toBe(false);
+    const ok = await dispatchAutoAction({ runScript: async () => ({ code: 0, stdout: "log=/tmp/launch.log\n", stderr: "" }) }, route);
+    expect(ok.ok).toBe(true);
+    expect(ok.message).not.toContain("armed");
+    const refused = await dispatchAutoAction({ runScript: async () => ({ code: 15, stdout: "", stderr: "head moved" }) }, route);
+    expect(refused.ok).toBe(false);
+    expect(refused.rc).toBe(15);
+  }
+  expect(classify("/cr-grant-delta 123 abcdef123456").kind).toBe("chat");
+  expect(classify("prose /launch-bypass-leg /x.md X").kind).toBe("chat");
+});
 
 // Return the narrowed auto member of Route: assignable BOTH to Route (for
 // isExecutableAutoCommand) and to AutoActionRoute {op,arg,time} (for
@@ -18,8 +75,16 @@ const armRoute = (over: Partial<{ arg: string; time: string }> = {}): Extract<Ro
 const mergePublicRoute = (over: Partial<{ pr: string; sha: string }> = {}): Extract<Route, { kind: "auto" }> =>
   ({ kind: "auto", op: "merge-public", arg: over.pr ?? "123", time: over.sha ?? "abcdef123456" });
 
+test("delta grant carries backup names through result and sanitized audit", async () => {
+  const route = { op: "cr-grant-delta", arg: "123", time: "a".repeat(40) };
+  const result = await dispatchAutoAction({ runScript: async () => ({ code: 0, stdout: "backup=/state/feat.head.123\nbackup=/state/feat.delta.123\n", stderr: "" }) }, route);
+  expect(result.backups).toBe("/state/feat.head.123,/state/feat.delta.123");
+  const line = formatAuditLine({ chat_id: 1, user: 1, forwarded: false, ...route, rc: 0, result: "delta-granted", backups: result.backups }, "now");
+  expect(line).toContain("backups=/state/feat.head.123,/state/feat.delta.123");
+});
+
 test("OPS table seeds the closed op allow-list", () => {
-  expect([...KNOWN_OPS].sort()).toEqual(["arm-resume", "merge-public", "restart"]);
+  expect([...KNOWN_OPS].sort()).toEqual(["arm-resume", "cr-grant-delta", "launch-bypass-leg", "merge-public", "restart"]);
   expect(OPS["arm-resume"].script).toBe("arm-resume");
   expect(OPS["merge-public"].script).toBe("merge-public");
 });

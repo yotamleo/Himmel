@@ -585,6 +585,10 @@ function auditResult(op: string, rc: number): string {
       default: return "error";
     }
   }
+  if (op === "launch-bypass-leg" || op === "cr-grant-delta") {
+    if (rc === 15) return "head-moved";
+    return rc === 0 ? (op === "launch-bypass-leg" ? "launched" : "delta-granted") : "error";
+  }
   if (op === "merge-public") {
     switch (rc) {
       case 0:  return "merged";
@@ -688,7 +692,7 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
     return;
   }
   const res = await dispatchAutoAction({ runScript: deps.runScript }, route);
-  await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, time: route.time, rc: res.rc, result: auditResult(route.op, res.rc) });
+  await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, backups: res.backups, time: route.time, rc: res.rc, result: auditResult(route.op, res.rc) });
   await reply(res.message);
 }
 
