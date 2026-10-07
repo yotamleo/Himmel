@@ -53,11 +53,14 @@ command -v jq >/dev/null 2>&1 || { echo "FAIL fixture: jq not found"; exit 1; }
 
 # A UTF-8 locale: the quadratic cost is worst there, and it is what the station
 # and the CI runners run hooks under.
+# Without one the test would time the cheap path and pass vacuously, so no
+# locale is a fixture failure, not a fallback.
+LOCALES=$(locale -a 2>/dev/null)
 UTF8_LOCALE=''
 for l in C.UTF-8 C.utf8 en_US.UTF-8 en_US.utf8; do
-    if locale -a 2>/dev/null | grep -qx "$l"; then UTF8_LOCALE=$l; break; fi
+    if printf '%s\n' "$LOCALES" | grep -x -- "$l" >/dev/null; then UTF8_LOCALE=$l; break; fi
 done
-[ -n "$UTF8_LOCALE" ] || UTF8_LOCALE=C.UTF-8
+[ -n "$UTF8_LOCALE" ] || { echo "FAIL fixture: no UTF-8 locale (tried C.UTF-8, C.utf8, en_US.UTF-8, en_US.utf8)"; exit 1; }
 
 SANDBOX=$(mktemp -d "${TMPDIR:-/tmp}/hook-latency.XXXXXX") || { echo "FAIL fixture: mktemp"; exit 1; }
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -101,18 +104,26 @@ n=0
 for c in "${CORPUS[@]}"; do payload "$c" "$SANDBOX/c$n.json"; n=$((n + 1)); done
 
 MS=0
+BAD_RC=''
 # The role flags switch on the members gated to a leg or a relay session
 # (read-clamp.sh, guard-relay-writes.sh), so their real path is timed rather
 # than their first-line exit.
+# A member answers 0 (allow / no opinion) or 2 (deny). Any other status is a
+# broken member (a syntax error, a missing dependency) that exits fast and
+# would otherwise pass both checks; the first one is kept in BAD_RC.
 run_ms() {  # run_ms <member> <payload file> -- wall ms into MS
-    local t0 t1
+    local t0 t1 rc
     t0=${EPOCHREALTIME//[!0-9]/}
     env -i PATH="$PATH" HOME="$SANDBOX/home" TMPDIR="${TMPDIR:-/tmp}" \
         LANG="$UTF8_LOCALE" LC_ALL="$UTF8_LOCALE" CLAUDE_PROJECT_DIR="$ROOT" \
         HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_RELAY=1 \
         bash "$ROOT/$1" < "$2" > /dev/null 2>&1
+    rc=$?
     t1=${EPOCHREALTIME//[!0-9]/}
     MS=$(( (t1 - t0) / 1000 ))
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ -z "$BAD_RC" ]; then
+        BAD_RC="exit $rc on ${2##*/}"
+    fi
 }
 min_ms() {  # min_ms <member> <payload file> -- min of RUNS runs into MS
     local k best=''
@@ -126,6 +137,7 @@ min_ms() {  # min_ms <member> <payload file> -- min of RUNS runs into MS
 for m in $MEMBERS; do
     name=${m##*/}
     if [ ! -f "$ROOT/$m" ]; then fail "$name: wired in settings.json but missing"; continue; fi
+    BAD_RC=''
     min_ms "$m" "$SANDBOX/small.json"; small=$MS
     min_ms "$m" "$SANDBOX/big.json"; big=$MS
     # +50ms of slack so a member that costs nothing at either size cannot fail
@@ -148,6 +160,9 @@ for m in $MEMBERS; do
         pass "$name p95 ${p95}ms over $total runs (<= ${P95_BUDGET_MS}ms)"
     else
         fail "$name p95 ${p95}ms over $total runs (> ${P95_BUDGET_MS}ms)"
+    fi
+    if [ -n "$BAD_RC" ]; then
+        fail "$name: $BAD_RC (a member answers 0 or 2; anything else is broken)"
     fi
 done
 
