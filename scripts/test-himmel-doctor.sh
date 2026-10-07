@@ -1403,7 +1403,10 @@ case "$url" in
 esac
 EOF
 chmod +x "$t/bin/curl"
-out="$(DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+# HIMMEL-4668: the assets were seeded from THIS tree, so judge this tree — the
+# doctor otherwise compares against the primary checkout (HIMMEL-4382), which
+# drifts from a leg worktree whose base predates the primary's head.
+out="$(HIMMEL_DOCTOR_ROOT="$REPO_ROOT" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
     GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
     DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
     CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -1458,7 +1461,7 @@ case "$url" in
 esac
 EOF
     chmod +x "$t/bin/curl"
-    out="$(PATH="$NOCMPDIFF" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
+    out="$(PATH="$NOCMPDIFF" HIMMEL_DOCTOR_ROOT="$REPO_ROOT" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_OBSERVABILITY_DESIRED=1 DOCTOR_OBSERVABILITY_INSTALL_DIR="$t/install" DOCTOR_CURL_BIN="$t/bin/curl" \
         GRAFANA_TELEGRAM_BOT_TOKEN="test-token" GRAFANA_TELEGRAM_CHAT_ID="123" \
         DOCTOR_WORKTREE_ROOT="$C14_WT_ROOT" DOCTOR_MCP_PLUGINS_GLOB="$t/none/*.mcp.json" \
         CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"; rc=$?
@@ -5795,8 +5798,8 @@ case "$url" in
 esac
 EOF
 chmod +x "$n_t/gbin/curl"
-c19g() { # <xdg dir>
-    DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-graf.json" XDG_DATA_HOME="$1" DOCTOR_CURL_BIN="$n_t/gbin/curl" \
+c19g() { # <xdg dir> -- HIMMEL_DOCTOR_ROOT: the assets were seeded from this tree (HIMMEL-4668)
+    HIMMEL_DOCTOR_ROOT="$REPO_ROOT" DOCTOR_OBSERVABILITY_DESIRED="" DOCTOR_OBSERVABILITY_SKIP=0 DOCTOR_STATUS_JSON="$n_t/status-graf.json" XDG_DATA_HOME="$1" DOCTOR_CURL_BIN="$n_t/gbin/curl" \
         GRAFANA_TELEGRAM_BOT_TOKEN="" GRAFANA_TELEGRAM_CHAT_ID="" PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" bash "$DOC" --no-color 2>&1
 }
 out="$(c19g "$n_t/xdg-none")"
