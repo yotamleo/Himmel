@@ -189,19 +189,39 @@ check_c3() {
     # continuously between github-sync ticks (the plugin owns the commits), so
     # handovers/ churn is ignored. Any other dirty path is a finding only once it
     # is older than the sync cadence (HIMMEL_DOCTOR_C3_DIRTY_MIN, default 30 min).
-    local dirty_min="${HIMMEL_DOCTOR_C3_DIRTY_MIN:-30}" line p stale="" fresh=0
+    local dirty_min="${HIMMEL_DOCTOR_C3_DIRTY_MIN:-30}" rec p age last stale="" fresh=0 skip_orig=0 commit_old=""
     case "$dirty_min" in ''|*[!0-9]*) dirty_min=30 ;; esac
-    while IFS= read -r line; do
-        p="${line:3}"; p="${p##* -> }"; p="${p#\"}"; p="${p%\"}"
+    # HIMMEL-4724: porcelain v2 -z — paths arrive raw (never C-quoted), so a
+    # non-ASCII or quote-bearing name resolves. A rename ("2") record is followed
+    # by its origPath record, which is skipped; its destination is aged by ctime
+    # (a move keeps the old mtime but stamps ctime).
+    while IFS= read -r -d '' rec; do
+        if [ "$skip_orig" = 1 ]; then skip_orig=0; continue; fi
+        age=-mmin
+        case "$rec" in
+            '1 '*) p="${rec#* * * * * * * * }" ;;
+            '2 '*) p="${rec#* * * * * * * * * }"; skip_orig=1; age=-cmin ;;
+            'u '*) p="${rec#* * * * * * * * * * }" ;;
+            '? '*) p="${rec#? }" ;;
+            *) continue ;;
+        esac
         [ -n "$p" ] || continue
         case "$p" in handovers/*) continue ;; esac
-        # a deleted path has no mtime to age: count it as stale rather than hide it
-        if [ ! -e "$v/$p" ] || [ -n "$(find "$v/$p" -maxdepth 0 -mmin "+$dirty_min" 2>/dev/null)" ]; then
+        if [ ! -e "$v/$p" ]; then
+            # a deletion has no mtime to age: it is stale only once the vault's
+            # last commit (the sync tick) is older than the window too
+            if [ -z "$commit_old" ]; then
+                commit_old=0
+                last="$(git -C "$v" log -1 --format=%ct 2>/dev/null)"
+                case "$last" in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - last )) -gt $(( 10#$dirty_min * 60 )) ] && commit_old=1 ;; esac
+            fi
+            if [ "$commit_old" = 1 ]; then stale="${stale:+$stale, }$p"; else fresh=1; fi
+        elif [ -n "$(find "$v/$p" -maxdepth 0 "$age" "+$dirty_min" 2>/dev/null)" ]; then
             stale="${stale:+$stale, }$p"
         else
             fresh=1
         fi
-    done < <(git -C "$v" status --porcelain -uall 2>/dev/null)
+    done < <(git -C "$v" status --porcelain=v2 -z -uall 2>/dev/null)
     if [ -n "$stale" ]; then
         emit WARN C3-luna "luna vault ($v) has non-handover change(s) dirty over ${dirty_min} min: $stale — the vault's sync plugin owns its commits, so a stall here means the sync is stuck" "check the vault sync (github-sync / scripts/luna/vault-stall-cadence.sh status); do not hand-commit"
     elif [ "$fresh" = 1 ]; then
@@ -1206,6 +1226,7 @@ check_c22() {
     command -v jq >/dev/null 2>&1 || { emit INFO C22-chain-skips "hook-chain-skips.jsonl present but jq missing — counts not checked"; return; }
     local summary jq_rc=0 window_h="${HIMMEL_DOCTOR_CHAIN_SKIPS_WINDOW_H:-24}" total cutoff
     case "$window_h" in ''|*[!0-9]*) window_h=24 ;; esac
+    window_h=$((10#$window_h))  # HIMMEL-4724: 08/09 are decimal, not invalid octal
     cutoff=$(( $(date +%s) - window_h * 3600 ))
     # HIMMEL-4721: only rows inside the recent window are a finding. The log is
     # append-only and written by the hook chain (scripts/hooks, HIMMEL-4678), so
