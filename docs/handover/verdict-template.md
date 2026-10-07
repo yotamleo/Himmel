@@ -23,7 +23,9 @@ stamp and the `## Verdict` line itself, and appends the evidence file verbatim
 (so the evidence file carries the other sections below). The evidence file
 must be an absolute path under `/tmp/claude-<uid>/` reached without a symlink.
 A NO-GO is always written; a GO is refused once a NO-GO exists for that head
-(HIMMEL-4714). A console-judge call
+(HIMMEL-4714). When `<judge-name>.md` already holds a NO-GO for another head,
+the new ruling lands in `<judge-name>-<head>.md` beside it, so the veto
+survives the PR returning to that head (HIMMEL-4731). A console-judge call
 has no Write tool and the Bash guards refuse the verdict line typed by hand, so
 the writer is its only path.
 
