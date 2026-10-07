@@ -1,6 +1,8 @@
 import { test, expect } from "bun:test";
 import { join } from "path";
 import { createHash } from "node:crypto";
+import { cp, mkdir, mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import pkg from "../package.json";
 
 const ROOT = join(import.meta.dir, "..");
@@ -9,8 +11,14 @@ test("pilot pins stable SDK v2 without the v1 monolith", () => {
   expect(pkg.dependencies).toEqual({ "@modelcontextprotocol/server": "2.3.1" });
 });
 
-test("stdio preserves tool schemas, offline series output and boundary errors", async () => {
-  const child = Bun.spawn([process.execPath, join(ROOT, "server.ts")], {
+test("stdio start refreshes an old dependency directory and preserves the v1 contract", async () => {
+  const installed = await mkdtemp(join(tmpdir(), "luna-correlate-upgrade-"));
+  for (const file of ["package.json", "bun.lock", "server.ts", "src"]) {
+    await cp(join(ROOT, file), join(installed, file), { recursive: true });
+  }
+  // An existing directory is not proof that the newly pinned SDK is installed.
+  await mkdir(join(installed, "node_modules"));
+  const child = Bun.spawn([process.execPath, "run", "--cwd", installed, "--silent", "start"], {
     stdin: "pipe", stdout: "pipe", stderr: "pipe",
   });
   const lines = child.stdout.pipeThrough(new TextDecoderStream()).getReader();
@@ -72,10 +80,11 @@ test("stdio preserves tool schemas, offline series output and boundary errors", 
     });
     await child.stdin.end();
     expect(await child.exited).toBe(0);
-    expect(await new Response(child.stderr).text()).toBe("");
+    expect(await new Response(child.stderr).text()).not.toContain("Cannot find module");
   } finally {
     child.kill();
     await child.exited;
     lines.releaseLock();
+    // Leave the isolated upgrade fixture for host temporary-directory cleanup.
   }
-}, 10000);
+}, 30000);

@@ -54,11 +54,17 @@ contract. The five JSON schemas and business logic remain unchanged.
 
 The codemod emits a caret dependency; tighten it to exact **2.3.1**, regenerate
 `bun.lock`, and remove the v1 monolith only after no imports remain. The plugin
-manifest advances from **0.2.6** through **0.2.7** to **0.2.8** (independent
-schema-baseline review fix); the existing wire server identity
+manifest advances from **0.2.6** through **0.2.7** and **0.2.8** to **0.2.9**
+(schema-baseline and warm-upgrade review fixes); the existing wire server identity
 is intentionally unchanged. Tests use no client SDK and never pass objects
-between SDK majors. Only `factors.cache` retains the existing public-network
-path; the new stdio test calls no network tool.
+between SDK majors. Startup always refreshes dependencies with
+`bun install --frozen-lockfile --no-summary`, sending installer diagnostics to
+stderr so stdout remains JSON-RPC-only. An existing `node_modules` directory
+is not evidence that the new dependency is installed. The stdio regression
+starts an isolated package with an existing but empty dependency directory.
+Dependency installation may contact the package registry; it is separate from
+tool egress. Only `factors.cache` retains the existing public-network tool path;
+the new stdio test calls no network tool.
 
 ## Staged completion
 
