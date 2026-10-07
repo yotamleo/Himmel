@@ -108,11 +108,13 @@ if [ -L "$SCRATCH" ] || [ ! -d "$SCRATCH" ] || [ ! -O "$SCRATCH" ]; then
     echo "write-verdict: '$SCRATCH' is not a directory this uid owns (or is a symlink)" >&2
     exit 2
 fi
-# No other user may write the root: below a root only this uid can write,
-# nobody else can swap a path segment between these checks and the cat.
+# No other user may reach anything below the root: under a root only this uid
+# can enter, nobody else can swap a path segment between these checks and the
+# cat, however a descendant is permissioned. A trailing `+` (an ACL that may
+# grant others access) is refused too.
 case "$(ls -ld "$SCRATCH" 2>/dev/null)" in
-    d????-??-*) ;;
-    *) echo "write-verdict: '$SCRATCH' is writable by group or other users - refusing" >&2; exit 2 ;;
+    d???------\ *|d???------.*) ;;
+    *) echo "write-verdict: '$SCRATCH' is accessible to group or other users (want 0700) - refusing" >&2; exit 2 ;;
 esac
 ev_dir=$SCRATCH
 ev_rest=${EVIDENCE#"$SCRATCH"/}

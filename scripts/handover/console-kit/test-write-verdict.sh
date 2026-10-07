@@ -260,7 +260,7 @@ rc=0; wv q12 NO-GO "$SHA_A" --evidence-file "${evd#/tmp/}/evidence.md" >/dev/nul
 check "10: a relative path refused rc 2" "$rc" 2
 check "10: nothing written for q12" "$([ -e "$scope_dir/q12" ] && echo yes || echo no)" no
 
-# --- 11. a scratch root other users can write to is refused --------------
+# --- 11. a scratch root other users can reach is refused -----------------
 # A stub `id` points the writer at a scratch root this test owns, so the real
 # /tmp/claude-<uid> is never chmod-ed.
 fake_uid="99$$"
@@ -278,6 +278,12 @@ check "11: a group-writable scratch root refused rc 2" "$rc" 2
 chmod 707 "$fake_scratch"
 rc=0; PATH="$tmp/bin:$PATH" wv q14 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
 check "11: a world-writable scratch root refused rc 2" "$rc" 2
+# A root others can only traverse still exposes a writable descendant to them.
+chmod 755 "$fake_scratch"
+mkdir -m 777 "$fake_scratch/open"
+printf 'evidence\n' > "$fake_scratch/open/evidence.md"
+rc=0; PATH="$tmp/bin:$PATH" wv q14 NO-GO "$SHA_A" --evidence-file "$fake_scratch/open/evidence.md" >/dev/null 2>&1 || rc=$?
+check "11: a scratch root others can traverse refused rc 2" "$rc" 2
 check "11: nothing written for q14" "$([ -e "$scope_dir/q14" ] && echo yes || echo no)" no
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
