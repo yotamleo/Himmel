@@ -82,6 +82,9 @@ mkdir -p "$STATE"
 #   fail-embed    the FIRST `qmd embed` exits nonzero
 #   fail-verify   the SECOND `qmd embed` (the completeness assert) exits nonzero
 #   incomplete    every `qmd embed` reports work remaining (never the all-clear)
+#   tail-once     the first verify pass finds a small tail (HIMMEL-4860); the
+#                 retry pass reports the all-clear
+#   fail-cleanup  `qmd cleanup` exits nonzero
 #   did-work      the first embed reports it embedded chunks (the realistic
 #                 happy path); the verify pass still reports the all-clear
 FAKE_QMD="$TMP_ROOT/qmd"
@@ -116,6 +119,10 @@ case "${1:-}" in
             echo "qmd: verify embed exploded" >&2
             exit 9
         fi
+        if [ -e "$STATE/tail-once" ] && [ "$n" -eq 2 ]; then
+            echo "Embedded 6 chunks from 2 documents in 2s"
+            exit 0
+        fi
         if [ -e "$STATE/incomplete" ]; then
             echo "Embedded 100 chunks from 20 documents in 5s"
             exit 0
@@ -133,6 +140,13 @@ case "${1:-}" in
             exit 0
         fi
         echo "All content hashes already have embeddings."
+        ;;
+    cleanup)
+        if [ -e "$STATE/fail-cleanup" ]; then
+            echo "qmd: cleanup exploded" >&2
+            exit 9
+        fi
+        echo "Cleaned up 10618 orphaned embedding chunks"
         ;;
     *)
         echo "qmd-fake: unsupported argv: $*" >&2
@@ -275,8 +289,8 @@ assert_contains "step 2 labelled" "[2/3] qmd embed" "$out"
 assert_contains "step 3 labelled" "[3/3] verifying embed completeness" "$out"
 # Order + count: exactly `update`, then `embed`, then `embed`.
 got_calls=$(calls | tr '\n' ',')
-if [ "$got_calls" = "update,embed,embed," ]; then
-    pass "call sequence is update -> embed -> embed(verify)"
+if [ "$got_calls" = "update,embed,embed,cleanup," ]; then
+    pass "call sequence is update -> embed -> embed(verify) -> cleanup"
 else
     fail "wrong call sequence" "got: $got_calls"
 fi
@@ -504,6 +518,51 @@ if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then
     pass "failing verify pass writes no refresh stamp"
 else
     fail "failing verify pass writes no refresh stamp" "stamp exists after a failing verify pass"
+fi
+
+# HIMMEL-4860: a 1-2 doc tail after the first verify pass must not fail the run,
+# and orphaned embedding chunks must be cleaned up -----------------------------
+echo "TEST: a small tail after the first verify pass is retried once, then OK"
+reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
+touch "$STATE/tail-once"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "tail-once rc 0" 0 "$rc"
+assert_contains "tail-once reports success" "index refreshed, all content hashes embedded" "$out"
+got_calls=$(calls | tr '\n' ',')
+if [ "$got_calls" = "update,embed,embed,embed,cleanup," ]; then
+    pass "tail-once call sequence retries the verify embed exactly once"
+else
+    fail "tail-once call sequence" "got: $got_calls"
+fi
+
+echo "TEST: a verify pass still finding work after the one retry stays rc 5 (bounded)"
+reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
+touch "$STATE/incomplete"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "persistent tail rc 5" 5 "$rc"
+assert_not_contains "persistent tail never claims success" "index refreshed, all content hashes embedded" "$out"
+got_calls=$(calls | tr '\n' ',')
+if [ "$got_calls" = "update,embed,embed,embed," ]; then
+    pass "persistent tail embeds exactly 3 times and never runs cleanup"
+else
+    fail "persistent tail call sequence" "got: $got_calls"
+fi
+
+echo "TEST: a failing qmd cleanup exits 8, distinct from embed (4/5/6) failures"
+reset_state
+rm -rf "$HOME/.cache/qmd" 2>/dev/null || true
+touch "$STATE/fail-cleanup"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "cleanup failure rc 8" 8 "$rc"
+assert_contains "cleanup failure has its own log line" "ERR qmd-reindex: 'qmd cleanup' failed" "$out"
+assert_not_contains "cleanup failure is not misreported as incomplete embed" "embed INCOMPLETE" "$out"
+assert_not_contains "cleanup failure never claims full success" "index refreshed, all content hashes embedded" "$out"
+if [ -f "$HOME/.cache/qmd/refresh-stamp" ]; then
+    pass "cleanup failure keeps the refresh stamp (vectors ARE complete)"
+else
+    fail "cleanup failure keeps the refresh stamp (vectors ARE complete)" "no stamp"
 fi
 
 # HIMMEL-4232: a configured embed model that differs from the index's vectors

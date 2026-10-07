@@ -115,6 +115,8 @@
 #      output) — distinct from 5 on purpose; see the sentinel note below
 #   7  MODEL MISMATCH — the index holds vectors from an embed model other
 #      than the configured one (HIMMEL-4232); nothing was run
+#   8  `qmd cleanup` failed (HIMMEL-4860) — vectors ARE complete and the
+#      refresh stamp is written; only the orphaned chunks remain
 set -euo pipefail
 
 QMD_BIN=""
@@ -167,6 +169,7 @@ Exit: 0 ok | 1 usage | 2 qmd unusable | 3 update failed | 4 embed failed
       5 embed incomplete (vectors still pending)
       6 completeness assert could not read its verifier (qmd output reworded)
       7 model mismatch (index vectors from another embed model; nothing run)
+      8 qmd cleanup failed (vectors complete; orphaned chunks remain)
 EOF
 }
 
@@ -343,7 +346,8 @@ write_refresh_stamp() {
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "DRY qmd-reindex: would run: $(qmd_desc) update"
     echo "DRY qmd-reindex: would run: $(qmd_desc) embed"
-    echo "DRY qmd-reindex: would re-run: $(qmd_desc) embed   (completeness assert)"
+    echo "DRY qmd-reindex: would re-run: $(qmd_desc) embed   (completeness assert, one retry if it did work)"
+    echo "DRY qmd-reindex: would run: $(qmd_desc) cleanup"
     echo "qmd-reindex: dry-run complete (no changes made)"
     exit 0
 fi
@@ -389,14 +393,25 @@ fi
 # ASCII substring only: the real line is prefixed with a UTF-8 check mark, and
 # this output is read under the OEM codepage when the cadence fires from cmd.exe.
 echo "qmd-reindex: [3/3] verifying embed completeness"
+# HIMMEL-4860: the first pass can leave a 1-2 document tail that the verify
+# pass then embeds (observed with the daemon down, so not a concurrent writer);
+# the nightly run exited 5 and nothing retried it until the next day. Retry the
+# verify ONCE when it did work; a second did-work is still rc 5 below. Bounded
+# on purpose: never an unbounded loop, never success with vectors pending.
 VERIFY_OUT=""
-VERIFY_RC=0
-VERIFY_OUT=$(run_qmd embed 2>&1) || VERIFY_RC=$?
-if [ "$VERIFY_RC" -ne 0 ]; then
-    echo "ERR qmd-reindex: completeness re-check ('qmd embed') failed (rc=$VERIFY_RC):" >&2
-    printf '%s\n' "$VERIFY_OUT" >&2
-    exit 4
-fi
+for VERIFY_TRY in 1 2; do
+    VERIFY_RC=0
+    VERIFY_OUT=$(run_qmd embed 2>&1) || VERIFY_RC=$?
+    if [ "$VERIFY_RC" -ne 0 ]; then
+        echo "ERR qmd-reindex: completeness re-check ('qmd embed') failed (rc=$VERIFY_RC):" >&2
+        printf '%s\n' "$VERIFY_OUT" >&2
+        exit 4
+    fi
+    if grep -qF -- "$QMD_SENTINEL_COMPLETE" <<<"$VERIFY_OUT" || ! grep -qE -- "$QMD_SENTINEL_DID_WORK" <<<"$VERIFY_OUT"; then
+        break
+    fi
+    [ "$VERIFY_TRY" -eq 1 ] && echo "qmd-reindex: verify pass embedded a tail; re-verifying once"
+done
 # Match with a HERE-STRING, not `printf … | grep -q` (HIMMEL-1115, same class
 # already fixed in check-security-reviewed.sh). Under `set -o pipefail`, grep -q
 # exits early on a match, printf takes SIGPIPE (141), and pipefail surfaces 141
@@ -445,5 +460,18 @@ else
     exit 6
 fi
 
+# The stamp certifies lex+vec freshness, which is true here, so it is written
+# BEFORE cleanup: a cleanup failure (rc 8) must not make staleness checks read a
+# complete index as stale.
 write_refresh_stamp
+
+# --- 4. drop orphaned embedding chunks (HIMMEL-4860) ------------------------
+# `qmd update` cleans orphaned content hashes but not the vectors behind them;
+# only `qmd cleanup` does, and nothing ran it (10,618 chunks, 6 %). Own exit
+# code so a cleanup failure never reads as an embed problem.
+echo "qmd-reindex: [4/4] qmd cleanup"
+if ! run_qmd cleanup; then
+    echo "ERR qmd-reindex: 'qmd cleanup' failed — vectors are complete but orphaned embedding chunks were NOT removed." >&2
+    exit 8
+fi
 echo "qmd-reindex: OK $(stamp) — index refreshed, all content hashes embedded"

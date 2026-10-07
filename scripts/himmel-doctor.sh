@@ -3096,7 +3096,17 @@ check_c40_qmd_vec() {
     local pending
     pending="$(printf '%s' "$instr" | sed -n 's/.*Note: \([0-9][0-9]*\) documents need embedding.*/\1/p' | head -1)"
     if [ -n "$pending" ]; then
-        emit INFO C40-qmd-vec "$pending documents are not yet embedded -- invisible to vec queries until embedded" "qmd embed"
+        # HIMMEL-4860: un-embedded docs are invisible to vec search, a real degradation,
+        # but the nightly reindex leaves up to a day of fresh notes (~45 docs measured
+        # 2026-10-07: 25 new + 18 updated), so only a backlog at/above the floor WARNs.
+        # HIMMEL_DOCTOR_QMD_PENDING_WARN overrides the floor (positive integer).
+        local floor="${HIMMEL_DOCTOR_QMD_PENDING_WARN:-50}"
+        [[ "$floor" =~ ^[1-9][0-9]*$ ]] || floor=50
+        if [ "$((10#$pending))" -ge "$floor" ]; then
+            emit WARN C40-qmd-vec "$pending docs not embedded, invisible to vec search" "bash scripts/luna/qmd-reindex.sh   # update + embed + cleanup"
+        else
+            emit INFO C40-qmd-vec "$pending documents are not yet embedded -- invisible to vec queries until embedded" "qmd embed"
+        fi
     fi
 }
 
@@ -3158,6 +3168,44 @@ check_c49_qmd_embed_model() {
                 "bash scripts/luna/qmd-embed-model.sh check   # then reembed + swap, or set the config back (docs/internals/qmd-embed-model.md)" ;;
         *) emit INFO C49-qmd-embed-model "could not verify the qmd index's embed model (rc $rc) -- check skipped" ;;
     esac
+}
+
+# --- C56-qmd-orphans: orphaned embedding chunks (HIMMEL-4860) ------------------
+# Orphans are vectors whose content hash no longer exists; qmd-reindex.sh now runs
+# `qmd cleanup`, and before that nothing did (10,618 chunks, 6 % on 2026-10-07).
+# They bloat the index and slow vec scans but never hide a document, so this is
+# its own row, apart from C40 (pending docs). WARN at >= 5 % of vectors (a
+# healthy nightly leaves ~0; 5 % is where the index is visibly carrying dead
+# weight), INFO below it, OK at none. Silent when there is no index (like C49).
+# Seams: HIMMEL_DOCTOR_QMD_INDEX gates the row; HIMMEL_DOCTOR_QMD_STATUS is a
+# command whose stdout is `qmd status` (default: the resolved qmd).
+check_c56_qmd_orphans() {
+    local idx="${HIMMEL_DOCTOR_QMD_INDEX:-${INDEX_PATH:-${XDG_CACHE_HOME:-$HOME/.cache}/qmd/index.sqlite}}"
+    local out line n pct
+    [ -f "$idx" ] || return 0
+    if [ -n "${HIMMEL_DOCTOR_QMD_STATUS:-}" ]; then
+        out="$("$HIMMEL_DOCTOR_QMD_STATUS" 2>/dev/null)" || return 0
+    else
+        # shellcheck disable=SC1090,SC1091
+        out="$( . "$REPO_ROOT/scripts/lib/qmd-bin.sh" >/dev/null 2>&1 && qmd_cmd status 2>/dev/null)" || return 0
+    fi
+    line="$(printf '%s\n' "$out" | grep -E '^ *Orphaned:' | head -1)"
+    [ -n "$out" ] || return 0
+    if [ -z "$line" ]; then
+        emit OK C56-qmd-orphans "no orphaned embedding chunks"
+        return 0
+    fi
+    n="$(printf '%s' "$line" | sed -n 's/^ *Orphaned: *\([0-9][0-9]*\) .*/\1/p')"
+    pct="$(printf '%s' "$line" | sed -n 's/.*(\([0-9][0-9]*\)%).*/\1/p')"
+    if [ -z "$n" ] || [ -z "$pct" ]; then
+        emit INFO C56-qmd-orphans "could not parse qmd status's Orphaned line -- check skipped"
+        return 0
+    fi
+    if [ "$((10#$pct))" -ge 5 ]; then
+        emit WARN C56-qmd-orphans "$n orphaned embedding chunks ($pct %), cleanup missed" "bash scripts/luna/qmd-reindex.sh   # runs qmd cleanup"
+    else
+        emit INFO C56-qmd-orphans "$n orphaned embedding chunks ($pct %) -- below the 5 % WARN threshold"
+    fi
 }
 
 # --- C50-qmd-fork-stamp: build stamp vs deployed HEAD vs the pin (HIMMEL-4268) ---
@@ -3799,6 +3847,7 @@ check_c46_plugin_enabled_missing
 check_c47_runaway_procs  # t13b-ok: doctor row that reads ps only, kills nothing
 check_c48_tmp_usage
 check_c49_qmd_embed_model
+check_c56_qmd_orphans
 check_c50_qmd_fork_stamp
 check_c51_firecrawl_parked
 check_c52_graphify_ollama

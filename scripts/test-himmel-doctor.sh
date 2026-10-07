@@ -4549,7 +4549,7 @@ finish() { [ -n "$w" ] && printf '%s' "$1"; exit "${2:-0}"; }
 pfx() { [ "${C40_FRAME:-sse}" = sse ] && printf 'event: message\ndata: '; return 0; }
 note=""
 [ "$mode" = novec ] && note=" Note: No vector embeddings yet. Run \`qmd embed\` to enable semantic search."
-[ "$mode" = stale ] && note=" Note: 12 documents need embedding. Run \`qmd embed\`."
+[ "$mode" = stale ] && note=" Note: ${C40_PENDING:-12} documents need embedding. Run \`qmd embed\`."
 case "$d" in
     *'"method":"initialize"'*)
         echo "init m=$m" >> "$C40_LOG"
@@ -4600,7 +4600,7 @@ c40_run() { # <mode>
         foreign) c40_status true degraded "a process answers but it is NOT qmd (initialize reply has no qmd serverInfo)" ;;
         *) c40_status true present "initialize answered in 0.3s" ;;
     esac
-    PATH="$FAKEBIN:$PATH" C40_MODE="$1" C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" DOCTOR_STATUS_JSON="$c40_t/status.json" \
+    PATH="$FAKEBIN:$PATH" C40_MODE="$1" C40_PENDING="${C40_PENDING:-12}" C40_LOG="$c40_t/log" HIMMEL_DOCTOR_QMD_CURL="$c40_t/curl" DOCTOR_STATUS_JSON="$c40_t/status.json" \
         CLAUDE_DIR="$c40_t/claude" HOME="$c40_t/home" bash "$DOC" --no-color 2>&1
 }
 c40_precond() { # <mode> — the stub must answer the init payload the way the mode says
@@ -4752,6 +4752,37 @@ else
         pass "C40 no vector index -> WARN with the qmd embed remedy"
     else
         fail "C40 no vector index -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+fi
+rm -rf "$c40_t"
+
+echo "== C40 (HIMMEL-4860): documents awaiting embedding at/above the floor -> WARN with count + fix =="
+c40_setup
+if ! c40_precond stale; then fail "C40 backlog: precondition — stub did not answer init"
+else
+    out="$(C40_PENDING=462 c40_run stale)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F '462 docs not embedded, invisible to vec search' && grepq "$out" -F 'qmd-reindex.sh'; then
+        pass "C40 backlog 462 -> WARN naming count and the fix"
+    else
+        fail "C40 backlog 462 -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+    out="$(C40_PENDING=50 c40_run stale)"
+    if grepq "$out" 'WARN C40-qmd-vec' && grepq "$out" -F '50 docs not embedded'; then
+        pass "C40 backlog at the floor (50) -> WARN"
+    else
+        fail "C40 backlog at floor -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+    out="$(C40_PENDING=49 c40_run stale)"
+    if grepq "$out" 'INFO C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec'; then
+        pass "C40 backlog just under the floor (49) -> INFO only"
+    else
+        fail "C40 backlog 49 -> $(printf '%s' "$out" | grep -A1 C40)"
+    fi
+    out="$(C40_PENDING=462 HIMMEL_DOCTOR_QMD_PENDING_WARN=1000 c40_run stale)"
+    if grepq "$out" 'INFO C40-qmd-vec' && ! grepq "$out" 'WARN C40-qmd-vec'; then
+        pass "C40 HIMMEL_DOCTOR_QMD_PENDING_WARN raises the floor"
+    else
+        fail "C40 floor override -> $(printf '%s' "$out" | grep -A1 C40)"
     fi
 fi
 rm -rf "$c40_t"
@@ -5694,6 +5725,41 @@ if command -v sqlite3 >/dev/null 2>&1; then
 else
     pass "C49 skipped: sqlite3 not installed"
 fi
+
+# --- C56-qmd-orphans (HIMMEL-4860): orphaned embedding chunks ------------------
+# Orphans are vectors whose content hash no longer exists. They bloat the index
+# and slow vec scans but never hide a document, so the row is separate from
+# C40 (pending docs). Seams: HIMMEL_DOCTOR_QMD_INDEX gates the row (silent when
+# absent, like C49); HIMMEL_DOCTOR_QMD_STATUS names a command whose stdout is
+# `qmd status` output (default: the resolved qmd).
+c56_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c56.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c56_t/home" "$c56_t/claude"; : > "$c56_t/index.sqlite"
+c56_run() { # <orphaned line or empty>
+    if [ -n "$1" ]; then printf 'QMD Status\n\nDocuments\n  Total:    33783 files indexed\n  Vectors:  168567 embedded\n%s\n  Pending:  0 need embedding\n' "$1" > "$c56_t/status.txt"
+    else printf 'QMD Status\n\nDocuments\n  Total:    10 files indexed\n  Vectors:  100 embedded\n' > "$c56_t/status.txt"; fi
+    printf '#!/bin/sh\ncat "%s"\n' "$c56_t/status.txt" > "$c56_t/qmd-status"; chmod +x "$c56_t/qmd-status"
+    PATH="$FAKEBIN:$PATH" HIMMEL_DOCTOR_QMD_INDEX="$c56_t/index.sqlite" HIMMEL_DOCTOR_QMD_STATUS="$c56_t/qmd-status" \
+        CLAUDE_DIR="$c56_t/claude" HOME="$c56_t/home" bash "$DOC" --no-color 2>&1
+}
+echo "== C56-qmd-orphans: 6 % orphaned -> WARN with count, percent and fix =="
+out="$(c56_run "  Orphaned: 10618 embedding chunks (6%) — run 'qmd cleanup'")"
+if grepq "$out" 'WARN C56-qmd-orphans' && grepq "$out" -F '10618 orphaned embedding chunks (6 %), cleanup missed' && grepq "$out" -F 'qmd cleanup'; then
+    pass "C56 6 % -> WARN naming count, percent and fix"
+else
+    fail "C56 6 % -> $(printf '%s' "$out" | grep -A1 C56)"
+fi
+echo "== C56-qmd-orphans: exactly 5 % -> WARN; 4 % -> INFO =="
+out="$(c56_run "  Orphaned: 500 embedding chunks (5%) — run 'qmd cleanup'")"
+if grepq "$out" 'WARN C56-qmd-orphans'; then pass "C56 5 % -> WARN"; else fail "C56 5 % -> $(printf '%s' "$out" | grep -A1 C56)"; fi
+out="$(c56_run "  Orphaned: 400 embedding chunks (4%) — run 'qmd cleanup'")"
+if grepq "$out" 'INFO C56-qmd-orphans' && ! grepq "$out" 'WARN C56-qmd-orphans'; then pass "C56 4 % -> INFO only"; else fail "C56 4 % -> $(printf '%s' "$out" | grep -A1 C56)"; fi
+echo "== C56-qmd-orphans: no Orphaned line -> OK =="
+out="$(c56_run '')"
+if grepq "$out" 'OK   C56-qmd-orphans'; then pass "C56 no orphans -> OK"; else fail "C56 none -> $(printf '%s' "$out" | grep -A1 C56)"; fi
+echo "== C56-qmd-orphans: no index -> silent =="
+out="$(PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$c56_t/claude" HOME="$c56_t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'C56-qmd-orphans'; then fail "C56 no index -> $(printf '%s' "$out" | grep -A1 C56)"; else pass "C56 no index -> silent"; fi
+rm -rf "$c56_t"
 
 # --- C50-qmd-fork-stamp (HIMMEL-4268): build stamp vs deployed HEAD vs pin ------
 # Fixture fork clone (a throwaway git repo: commit A older, B newer), a fixture
