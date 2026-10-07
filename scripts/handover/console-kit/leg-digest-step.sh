@@ -191,18 +191,44 @@ day="$(basename "$DOC" .md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -n 1)"
 live="$(grep -m1 -oE '^- [0-9]{2}:[0-9]{2} LIVE' "$DOC" | grep -oE '[0-9]{2}:[0-9]{2}')"
 wrapped="$(grep -oE '^- [0-9]{2}:[0-9]{2} WRAPPED' "$DOC" | tail -n 1 | grep -oE '[0-9]{2}:[0-9]{2}')"
 if [ -z "$day" ] || [ -z "$live" ] || [ -z "$wrapped" ]; then echo "digest=skipped:no-window"; exit 0; fi
-# Midnights the leg crossed: each HH:MM bullet, first LIVE .. last WRAPPED, that
-# reads earlier than the bullet before it is a day roll-over (HIMMEL-4705).
+# wall_after <epoch> <HH:MM>: the first instant at or after <epoch> whose local
+# clock reads HH:MM, on that day or the next. A wall time inside a DST fall-back
+# reads twice an hour apart, so a same-day decrease there is no midnight
+# (HIMMEL-4730); a decrease no same-day instant explains is one (HIMMEL-4705).
+wall_after() {
+    local d e c best="" today
+    today="$(date -d "@$1" +%F)"
+    for d in "$today" "$(date -d "$today +1 day" +%F)"; do
+        e="$(date -d "$d $2" +%s 2>/dev/null)" || continue
+        for c in $((e - 3600)) $((e - 1800)) "$e" $((e + 1800)) $((e + 3600)); do
+            [ "$c" -ge "$1" ] || continue
+            [ "$(date -d "@$c" '+%F %H:%M')" = "$d $2" ] || continue
+            if [ -z "$best" ] || [ "$c" -lt "$best" ]; then best="$c"; fi
+        done
+        [ -z "$best" ] || break
+    done
+    printf '%s' "$best"
+}
+# Walk the HH:MM bullets, first LIVE .. last WRAPPED, as real instants: LIVE is
+# its earliest reading on the doc's day, each later bullet the first instant at
+# or after the one before it.
 # ponytail: a >24h gap with no bullet in between still counts as one day, upgrade path: full dates in the Results bullets if such a leg is seen
-rolls="$(awk '/^- [0-9][0-9]:[0-9][0-9] / {
-        m = substr($2, 1, 2) * 60 + substr($2, 4, 2)
-        if (!on) { if ($3 ~ /^LIVE/) { on = 1; prev = m }; next }
-        if (m < prev) d++
-        prev = m
-        if ($3 ~ /^WRAPPED/) last = d
-    } END { print last + 0 }' "$DOC")"
-lo=$(( $(date -d "$day $live" +%s) - ${LEG_DIGEST_CHAIN_SLACK_MIN:-30} * 60 ))
-hi=$(( $(date -d "$day $wrapped" +%s) + rolls * 86400 + 60 ))
+lo="$(date -d "$day $live" +%s)"
+cur="" hi=""
+while read -r _ hm word _; do
+    if [ -z "$cur" ]; then
+        case "$word" in LIVE*) cur="$(wall_after "$(date -d "$day 00:00" +%s)" "$hm")"; [ -n "$cur" ] || cur="$(date -d "$day $hm" +%s)"; lo="$cur" ;; esac
+        continue
+    fi
+    t="$(wall_after "$cur" "$hm")"
+    [ -z "$t" ] || cur="$t"
+    case "$word" in WRAPPED*) hi="$cur" ;; esac
+done <<EOF
+$(grep -E '^- [0-9]{2}:[0-9]{2} ' "$DOC")
+EOF
+[ -n "$hi" ] || hi="$(date -d "$day $wrapped" +%s)"
+lo=$(( lo - ${LEG_DIGEST_CHAIN_SLACK_MIN:-30} * 60 ))
+hi=$(( hi + 60 ))
 ident="$(leg_identity "$DOC")"
 candidates="$(printf '%s\n%s\n' "${ident#*$'\t'}" "$(basename "$DOC" .md)" | tr ',' '\n' | sed '/^$/d')"
 slug="$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"
