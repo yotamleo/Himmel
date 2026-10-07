@@ -134,6 +134,24 @@ test("daily hook rates include successful sessions in the same lane population",
   expect(data.daily_hooks.find((r: any) => r.lane === "native")).toMatchObject({ day: "2026-10-07", calls: 20, failures: 2, rate: 0.1 });
 });
 
+test("partial digests preserve observations without claiming complete denominators", () => {
+  const env = seed();
+  const rows = readFileSync(env.HIMMEL_EVAL_RUNS_LEDGER, "utf8").trim().split("\n").map((l: string) => JSON.parse(l));
+  rows[0].status = "partial";
+  writeFileSync(env.HIMMEL_EVAL_RUNS_LEDGER, rows.map(JSON.stringify).join("\n") + "\n");
+  const data = read(env);
+  expect(data.tools.find((r: any) => r.tool === "Bash")).toMatchObject({ calls: null, failures: 8, rate: null });
+  expect(data.hooks[0].calls).toBeNull();
+});
+
+test("out-of-range numeric timestamps skip malformed rows instead of throwing", () => {
+  const env = seed();
+  const rows = readFileSync(env.HIMMEL_EVAL_RUNS_LEDGER, "utf8").trim().split("\n").map((l: string) => JSON.parse(l));
+  rows[0].meta.started_ts = 1e30;
+  writeFileSync(env.HIMMEL_EVAL_RUNS_LEDGER, rows.map(JSON.stringify).join("\n") + "\n");
+  expect(read(env).tools.find((r: any) => r.tool === "Bash")).toMatchObject({ calls: 40, failures: 5 });
+});
+
 test("missing ledgers degrade to no data", () => {
   expect(read({ HIMMEL_EVAL_RUNS_LEDGER: "/no/evals", HIMMEL_LEG_FAILURES_LEDGER: "/no/failures" })).toMatchObject({ state: "absent", tools: [] });
 });

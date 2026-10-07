@@ -283,6 +283,8 @@ known class outcomes (the ledger's boolean describes the entire class row);
 unknown outcomes are excluded. Daily rows carry lane; summary rows aggregate
 the explicitly selected lanes. Old digests without denominators retain their
 failure counts but show no rate, including mixed old/new populations.
+Partial/inconclusive digests preserve observations but cannot certify complete
+denominators either.
 A `since` cutoff uses day cohorts; a partial first UTC day has unknown
 call denominators because daily data cannot certify an intraday shift rate.
 

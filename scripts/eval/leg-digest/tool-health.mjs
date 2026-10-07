@@ -7,7 +7,7 @@ import { join } from 'node:path';
 export const LANES = ['native', 'claudex', 'openrouter', 'cloud', 'unknown'];
 const num = (n) => Number.isSafeInteger(n) && n >= 0;
 const rate = (n, d) => d !== null && d > 0 ? n / d : null;
-const dayOf = (t) => Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : null;
+const dayOf = (t) => Number.isFinite(t) && Math.abs(t) <= 8640000000000000 ? new Date(t).toISOString().slice(0, 10) : null;
 const inferredTool = (cls) => cls.startsWith('error/') ? cls.slice(6).split(':')[0] : /^(denied|suite)\//.test(cls) ? 'Bash' : null;
 function readRows(path) {
   try { return readFileSync(path, 'utf8').split('\n').flatMap((l) => { try { const r = JSON.parse(l); return r && typeof r === 'object' ? [r] : []; } catch { return []; } }); }
@@ -43,7 +43,7 @@ export function rollupToolHealth(evals, failures, query = new URLSearchParams(),
       if (!/^\d{4}-\d{2}-\d{2}$/.test(cohort) || cohort < firstDay || cohort > lastDay) return null;
       const key = `${session}\0${agent}\0${cohort}`;
       if (!slots.has(key)) {
-        const slot = { session, agent, day: cohort, lane, role, model: model || 'unknown', known: Array.isArray(r.meta?.tool_health), incomplete: !!since && cohort === firstDay && Date.parse(since) !== Date.parse(firstDay), tools: new Map(), failures: [] };
+        const slot = { session, agent, day: cohort, lane, role, model: model || 'unknown', known: Array.isArray(r.meta?.tool_health), incomplete: r.status !== 'ok' || (!!since && cohort === firstDay && Date.parse(since) !== Date.parse(firstDay)), tools: new Map(), failures: [] };
         slots.set(key, slot);
         const agentKey = `${session}\0${agent}`, cohorts = byAgent.get(agentKey) || [];
         cohorts.push(slot); byAgent.set(agentKey, cohorts);

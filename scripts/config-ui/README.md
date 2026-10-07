@@ -59,7 +59,8 @@ explicit denominator. The comparison table shows calls per 100 calls,
 error/denial/recovery rates per lane and deltas relative to native.
 
 No ledger means **No data**. Old digest rows without per-tool counts show
-**—**, not 0 %, including summaries that mix old and new rows. Unknown
+**—**, not 0 %, including summaries that mix old and new rows. Partial or
+inconclusive digests also lack complete call denominators. Unknown
 recovery outcomes are excluded; trend gaps have no denominator. Day-level
 cohorts cannot certify an intraday shift cutoff, so those denominators stay
 unknown. Lane comes only from launch metadata, never from a model name;
