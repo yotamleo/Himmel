@@ -127,6 +127,9 @@ Notes on each unlock:
 - **BLOCKED.** A `BLOCKED` is a hand-off to the console, not an unlock. N1383
   wrote `BLOCKED` and then kept editing. A leg that cannot commit or push
   should `SendMessage` its console, append a `BLOCKED` bullet and stop.
+  While `BLOCKED` is the last marker, an earlier CHECKPOINT or a RESUME doc
+  does not reopen ordinary work either. They still let an auto-compaction
+  through, because the state is saved.
 
 ## The two modes
 

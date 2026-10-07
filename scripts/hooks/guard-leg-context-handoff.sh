@@ -30,7 +30,8 @@
 # In both modes a last marker of WRAPPED frees the leg. A last marker of
 # BLOCKED frees only the hand-off calls and reads (Read, Grep, Glob): BLOCKED
 # is a hand-off to the console, not an unlock (N1383 wrote BLOCKED and then
-# went on editing, HIMMEL-4710).
+# went on editing, HIMMEL-4710), and while it is the last marker neither
+# unlock above reopens ordinary work; a saved state still lets PreCompact pass.
 #
 # The threshold is 75 % of the leg's autocompact ceiling, not of the model
 # window: an opus leg launched with --autocompact 200000 reports a 1000000-token
@@ -239,6 +240,7 @@ if [ -z "$doc" ] || [ ! -f "$doc" ] || [ ! -r "$doc" ]; then
     warn_allow "leg handover doc not found or unreadable in the first turn"
 fi
 
+blocked=0
 tail_lib="$HERE/../lib/leg-tail-status.sh"
 # shellcheck source=../lib/leg-tail-status.sh
 if { [ -r "$tail_lib" ] && . "$tail_lib"; } 2>/dev/null; then
@@ -246,6 +248,7 @@ if { [ -r "$tail_lib" ] && . "$tail_lib"; } 2>/dev/null; then
         WRAPPED) exit 0 ;;
         BLOCKED)
             case "$tool" in Read|Grep|Glob) exit 0 ;; esac
+            blocked=1
             ;;
     esac
 fi
@@ -313,7 +316,7 @@ resume_ok() {
             [ "$cand" = "$want" ] || continue
         fi
         # An unknown session start cannot tell this session's RESUME doc from a
-        # stale one, so no doc counts; the BLOCKED marker (step 3) still frees.
+        # stale one, so no doc counts.
         [ -n "$started" ] || continue
         m=$(mtime "$cand") || continue
         [ "$m" -ge "$started" ] || continue
@@ -325,6 +328,9 @@ resume_ok() {
 if [ "$event" = "PreCompact" ]; then
     checkpoint_ok && exit 0
     resume_ok && exit 0
+elif [ "$blocked" = 1 ]; then
+    # BLOCKED is a hand-off: neither unlock reopens ordinary work after it.
+    :
 elif [ "$MODE" = "compact" ]; then
     checkpoint_ok && exit 0
 else

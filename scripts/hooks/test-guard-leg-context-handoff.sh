@@ -195,6 +195,10 @@ check "echo naming append-results.sh -> block" block "$(bash_call 'echo scripts/
 echo "== the exemptions: a RESUME doc exists, or the last marker is WRAPPED/BLOCKED =="
 printf 'resume\n' > "$RESUME"
 check "fresh N77b RESUME doc -> allow" allow "$LS"
+doc "- 10:01 BLOCKED — context 90 %, RESUME written"
+check "fresh RESUME then BLOCKED + Edit -> block" block "$(write_call Edit "$T/notes.txt")"
+check "fresh RESUME then BLOCKED, PreCompact auto -> allow" allow "$(pc_call)"
+doc "- 10:01 LIVE — working"
 touch -t 202001010000 "$RESUME"
 check "RESUME doc older than this session -> block" block "$LS"
 session "load $DOC and continue" "2026-10-06T12:00:00+02:00"
@@ -298,6 +302,14 @@ check_c "CHECKPOINT of the pushed HEAD -> allow" allow "$LS"
 check_c "explicit HIMMEL_LEG_CONTEXT_MODE=compact -> allow" allow "$LS" HIMMEL_LEG_CONTEXT_MODE=compact
 doc "- 10:01 LIVE — CHECKPOINT \`$HEAD1\` pushed"
 check_c "backticked CHECKPOINT sha -> allow" allow "$LS"
+# A BLOCKED after a valid CHECKPOINT is still a hand-off: the checkpoint unlock
+# must not reopen ordinary work, though a safe auto-compaction may proceed.
+doc "$(printf -- '- 10:01 LIVE — CHECKPOINT %s pushed\n- 10:02 BLOCKED — waiting on console' "$HEAD1")"
+check_c "CHECKPOINT then BLOCKED + Edit -> block" block "$(write_call Edit "$T/notes.txt")"
+check_c "CHECKPOINT then BLOCKED + ordinary Bash -> block" block "$LS"
+check_c "CHECKPOINT then BLOCKED + Read -> allow" allow "$(tool_call Read)"
+check_c "CHECKPOINT then BLOCKED, PreCompact auto -> allow" allow "$(pc_call)"
+doc "- 10:01 LIVE — CHECKPOINT $HEAD1 pushed"
 check "handoff mode: a CHECKPOINT is not its unlock -> block" block "$LS"
 printf 'b\n' > "$REPO/b"
 g add b
