@@ -1127,10 +1127,62 @@ assert_allow "3921 I1 control: plain chokepoint call" "$(j "bash $MERGE_ON_GREEN
 # position (after an env-like word), so these ordinary commands stop over-denying.
 # HIMMEL-4095: this was denied only because --id read as --i*; it is not env-clearing.
 assert_allow "4095 no relief (glob/quote): ledger-append amend: --id, --set k=v, ? in the reason" "$(j "bash scripts/cr/ledger-append.sh amend --id 4 --set verdict=deferred --set deferred_to=HIMMEL-3929 --reason \"see scripts/hooks/x? why?\"")"
-assert_deny "3955 no relief (glob/quote), main verdict: grep -i over a scripts glob"      "$(j "grep -i foo scripts/hooks/*.sh")"
-assert_deny "3955 no relief (glob/quote), main verdict: sed -i over a scripts glob (not a seam or env write)" "$(j "sed -i s/a/b/ scripts/hooks/*.sh")"
-assert_deny "3955 no relief (glob/quote), main verdict: diff -u over a scripts glob"      "$(j "diff -u scripts/a.sh scripts/b*.sh")"
-assert_deny "3955 no relief (glob/quote), main verdict: ls -i / sort -u over a scripts glob" "$(j "ls -i scripts/hooks/*.sh; sort -u scripts/hooks/*.sh")"
+# HIMMEL-4779: these were the 3955 "no relief, main verdict" pins; the
+# pobf_relief stages now place each -i/-u in a read-only stage or among sed's
+# own options, so none of them clears an environment.
+assert_allow "4779 grep -i over a scripts glob"      "$(j "grep -i foo scripts/hooks/*.sh")"
+assert_allow "4779 sed -i over a scripts glob (not a seam or env write)" "$(j "sed -i s/a/b/ scripts/hooks/*.sh")"
+assert_allow "4779 diff -u over a scripts glob"      "$(j "diff -u scripts/a.sh scripts/b*.sh")"
+assert_allow "4779 ls -i / sort -u over a scripts glob" "$(j "ls -i scripts/hooks/*.sh; sort -u scripts/hooks/*.sh")"
+assert_allow "4779 grep -n -i with a quoted pattern beside a chokepoint word" "$(j "grep -n -i 'title' $MERGE_ON_GREEN")"
+assert_allow "4779 sed -n beside a chokepoint word, piped into grep -i -E" "$(j "sed -n 1,60p $MERGE_ON_GREEN | grep -i -E '^#'")"
+assert_allow "4779 sed -i on a scratch file, then a scripts glob" "$(j "sed -i 's/a/b/' /tmp/scratch.txt; ls scripts/hooks/g*.sh")"
+assert_allow "4779 python3 - heredoc reading a chokepoint file" "$(j "python3 - $MERGE_ON_GREEN <<'EOF'
+import sys
+print(open(sys.argv[1]).read()[:80])
+EOF")"
+assert_allow "4779 gh api -i beside a scripts glob" "$(j "gh api -i repos/o/r; ls scripts/hooks/g*.sh")"
+# 4779 keep-denied twins: the nearest real env-clear for each relief above.
+assert_deny "4779 sed e command running env -i over a scripts glob" "$(j "sed '1e env -i bash' scripts/hooks/x*.sh")"
+# shellcheck disable=SC2016 # the $E is probe text, not an expansion
+assert_deny "4779 sed e command running \$E -i (no env word)" "$(j 'sed -n "1e $E -i bash" scripts/hooks/x*.sh')"
+assert_deny "4779 sed e command running env -i beside a chokepoint word" "$(j "sed '1e env -i bash x' $MERGE_ON_GREEN")"
+assert_deny "4779 grep -i into a file that is then run" "$(j "grep -i x scripts/hooks/*.sh > /tmp/r.sh; bash /tmp/r.sh")"
+assert_deny "4779 grep -i piped into sh" "$(j "grep -i x scripts/hooks/*.sh | sh")"
+assert_deny "4779 sudo -u before grep -i" "$(j "sudo -u root grep -i x scripts/hooks/*.sh")"
+assert_deny "4779 xargs -i over a scripts glob" "$(j "ls f | xargs -i bash scripts/hooks/g*.sh")"
+assert_deny "4779 sudo -i beside a chokepoint word" "$(j "grep -n x f; sudo -i bash $MERGE_ON_GREEN")"
+assert_deny "4779 an assignment prefix voids the git relief" "$(j "PAGER='env -i' git log -i scripts/hooks/*.sh")"
+assert_deny "4779 an exec-capable interpreter keeps its -i counted" "$(j "python3 -c 'import os; os.execvp(\"x\", [])' -i $MERGE_ON_GREEN")"
+# shellcheck disable=SC2016 # the $( is probe text, not an expansion
+assert_deny "4779 -i in a substitution's output stage" "$(j 'cat $(grep -il x f) scripts/hooks/*.sh; $(echo env) -i bash scripts/hooks/g*.sh')"
+# HIMMEL-4572: a verb glued to a path or name with - . or / on its side is a
+# filename (block-chokepoint-env-prefix, scripts/eval/, block-read-secrets,
+# .env), not the verb; a verb at /usr/bin/env still counts.
+assert_allow "4572 env inside a hyphenated file name beside a scripts glob" "$(j "git grep -l block-chokepoint-env-prefix -- 'scripts/*test*'")"
+assert_allow "4572 eval as a directory name" "$(j "cat scripts/eval/*.sh")"
+assert_allow "4572 read inside a hyphenated file name" "$(j "ls scripts/hooks/block-read-secrets*")"
+assert_allow "4572 .env beside a scripts glob" "$(j "cat .env.example scripts/hooks/g*.sh")"
+assert_deny "4572 /usr/bin/env still counts as the env verb" "$(j "/usr/bin/env FOO=1 bash scripts/hooks/g*.sh")"
+assert_deny "4572 eval after a separator still counts" "$(j "true;eval bash scripts/hooks/g*.sh")"
+assert_deny "4572 printf -v still counts" "$(j "printf -v X 1; bash scripts/hooks/x*.sh")"
+# 4572's own probe shape stays denied by design: the heredoc is written and run
+# in one call, so its printf is live code that can feed a shell. The refusal
+# now names the trigger.
+# shellcheck disable=SC2016 # the $h, $P and $f are probe text, not expansions
+assert_deny "4572 a heredoc probe that is then run stays denied" "$(j 'cat > /tmp/hookprobe.sh <<'"'"'EOF'"'"'
+h=block-x
+f="scripts/hooks/$h.sh"
+printf '"'"'%s'"'"' "$P" | timeout 30 bash "$f"
+EOF
+bash /tmp/hookprobe.sh')"
+CASES=$((CASES + 1))
+if grep -q "it matched the word printf" <<<"$ERR"; then
+    echo "PASS 4572 the probe refusal names its trigger"
+else
+    echo "FAIL 4572 the probe refusal names its trigger -- got: $ERR"
+    FAILED=$((FAILED + 1))
+fi
 assert_allow "3955 grep -n of a chokepoint file"     "$(j "grep -n deferred scripts/cr/clear-cr-marker.sh")"
 assert_allow "3955 grep -i beside a chokepoint word" "$(j "grep -i deferred scripts/cr/clear-cr-marker.sh")"
 assert_allow "3955 diff -u beside a chokepoint word" "$(j "diff -u $MERGE_ON_GREEN /tmp/x.sh")"
