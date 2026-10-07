@@ -166,5 +166,47 @@ else
   plan obsidian-deps skip "no ensure-deps.sh in this tree"
 fi
 
+# 7-8. graphify, AST-only (HIMMEL-4726). Pinned to the version
+# scripts/lib/graphify-bin.sh carries, with no backend extra: `graphify update`
+# parses code locally and calls no model, so no repo content leaves the VM. The
+# graph lands in $ROOT/graphify-out (the setup clone, frozen with the cache); a
+# session queries it with --graph or rebuilds its own clone the same way.
+GV=""
+while IFS= read -r line; do
+  if [[ "$line" =~ GRAPHIFY_VERSION:-([0-9][0-9.]*)\} ]]; then GV="${BASH_REMATCH[1]}"; break; fi
+done < "$ROOT/scripts/lib/graphify-bin.sh" 2>/dev/null
+if have graphify; then
+  plan graphify skip "present"
+elif [ -z "$GV" ]; then
+  plan graphify skip "no graphify pin in this tree"
+else
+  build_step graphify install "graphifyy==$GV (pip, no backend extra)" -- $TMO 180 python3 -m pip install --disable-pip-version-check --break-system-packages "graphifyy==$GV"
+fi
+if have graphify || [ "$DRY" -eq 1 ]; then
+  build_step graphify-graph build "graphify update . (AST-only, in $ROOT)" -- sh -c "cd '$ROOT' && $TMO 180 graphify update ."
+else
+  plan graphify-graph skip "graphify absent"
+fi
+
+# 9-10. qmd over THIS repo only (HIMMEL-4726): the pinned fork via
+# scripts/lib/qmd-bin.sh (bun is preinstalled), then one collection, `himmel`,
+# on $ROOT. Never a vault: luna and handover state stay on the station. BM25
+# only: no `qmd pull` (~2 GB of models) and no embed, which do not fit the
+# ~5 min cached setup, so `qmd search -c himmel` works and vector search does not.
+QMD_BIN="$(command -v qmd 2>/dev/null || echo "${BUN_INSTALL:-${HOME:-/root}/.bun}/bin/qmd")"
+if have qmd; then
+  plan qmd skip "present"
+else
+  build_step qmd install "qmd-bin.sh install (pinned fork, bun)" -- $TMO 180 bash "$ROOT/scripts/lib/qmd-bin.sh" install
+fi
+qmd_cols="$([ -x "$QMD_BIN" ] && "$QMD_BIN" collection list 2>/dev/null)"
+if [[ $'\n'"$qmd_cols" == *$'\n'"himmel "* ]]; then
+  plan qmd-index skip "himmel collection present"
+elif [ -x "$QMD_BIN" ] || [ "$DRY" -eq 1 ]; then
+  build_step qmd-index add "$ROOT --name himmel (BM25 only, no embed)" -- $TMO 180 "$QMD_BIN" collection add "$ROOT" --name himmel
+else
+  plan qmd-index skip "qmd absent"
+fi
+
 if [ "$failed" -ne 0 ]; then echo "setup-env: $failed step(s) failed" >&2; exit 1; fi
 echo "setup-env: done (dry-run=$DRY)" >&2
