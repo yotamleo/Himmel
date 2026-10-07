@@ -921,6 +921,19 @@ assignment_at_command_position() {
     return 1
 }
 
+# Is the text after an assignment only more assignments up to a terminator (or the
+# end)? Then the assignment is a statement and persists; otherwise it prefixes a
+# command. A quoted later value reads as "not a statement" — fail open.
+assignment_is_statement() {
+    local s="$1" re='^[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*'
+    while :; do
+        s="${s#"${s%%[![:space:]]*}"}"
+        case "$s" in ''|[\;\&\|\)]*|$'\n'*) return 0 ;; esac
+        [[ $s =~ $re ]] || return 1
+        s="${s:${#BASH_REMATCH[0]}}"
+    done
+}
+
 # Rewrite every `$NAME` / `${NAME}` / `"$NAME"` / `"${NAME}"` of a bound name into
 # the one token `__HIMMEL_JIRA_VAR_NAME__`, so quote_mask keeps it as code (it blanks
 # `${…}` and quoted spans) and segment_has_write can read it as the CLI. The token
@@ -942,6 +955,10 @@ bind_cli_vars() {
         # (`echo "J=…"`) and at command position (`echo J=…` is an argument).
         # Anything else is skipped, leaving `$NAME` unbound — fail open.
         assignment_at_command_position "${done%"$name=$val"}" || continue
+        # A prefix assignment (`J=… node $J …`) applies only to that one command,
+        # AFTER its words are expanded, so `$J` there is not the CLI: it must be a
+        # statement of its own (assignments up to a terminator).
+        assignment_is_statement "$rest" || continue
         case "$val" in \"*\"|\'*\') val="${val:1:${#val}-2}" ;; esac
         case "$all" in *" $name "*) bad="$bad $name " ;; esac
         case "$val" in
@@ -955,6 +972,9 @@ bind_cli_vars() {
     while IFS= read -r line; do
         name="${line%%=*}"
         case "$bad" in *" $name "*) continue ;; esac
+        # `unset J` anywhere means a later `$J` may be empty: leave it unbound.
+        re="(^|[[:space:];&|(])unset[[:space:]]([^;&|]*[[:space:]])?${name}([[:space:];&|)]|\$)"
+        [[ $cmd =~ $re ]] && continue
         kept="${kept:+$kept$'\n'}$line"
         tok="__HIMMEL_JIRA_VAR_${name}__"
         # Longest spellings first, so `"${J}"` is not half-rewritten as `${J}`.
@@ -1211,8 +1231,9 @@ esac
     if [ "$SHAPE_LOOP" = 1 ]; then
     printf 'Do exactly this — expand it yourself; ONE sanctioned retry shape, no other:\n\n'
     printf '  1. Work out every write the loop/xargs would perform (its item list, the\n'
-    printf '     lines of its input file), and evaluate any condition in its body\n'
-    printf '     yourself: issue only the writes the original would have run.\n'
+    printf '     lines of its input file), and evaluate every condition yourself, both\n'
+    printf '     in its body and around it (an enclosing if, a && or || before it):\n'
+    printf '     issue only the writes the original would have run, maybe none.\n'
     printf '  2. If a write carries a body, write it to a file with the Write tool.\n'
     printf '  3. N writes = N literal commands: each one its OWN Bash call, issued one\n'
     printf '     after another in the original order, the CLI path written out, no\n'

@@ -859,6 +859,7 @@ run_hook Bash "J=$JIRA; for k in 4801 4802; do node \$J fix-version HIMMEL-\$k -
 [ "$RC" -eq 2 ] && pass "incident loop over \$J fix-version bounced" || fail "incident loop shape not bounced (rc=$RC)"
 case "$(loop_text)" in *"a loop"*) pass "deny names the loop" ;; *) fail "deny does not name the loop" ;; esac
 case "$(loop_text)" in *"N writes = N literal commands"*) pass "deny gives the N-literal recipe" ;; *) fail "deny lacks the N-literal recipe" ;; esac
+case "$(loop_text)" in *"in its body and around it"*) pass "loop recipe covers enclosing conditions" ;; *) fail "loop recipe ignores enclosing conditions" ;; esac
 case "$(loop_text)" in *"in the original order"*) pass "loop recipe keeps the write order" ;; *) fail "loop recipe does not keep the write order" ;; esac
 grep -q "^    node $JIRA fix-version " "$ERR" && pass "retry names the resolved CLI path and the verb" || fail "retry does not name '$JIRA fix-version'"
 grep -q '^    node \$J' "$ERR"; [ "$?" -eq 1 ] && pass "retry example drops the \$J variable" || fail "retry example still uses the \$J variable (or grep errored)"
@@ -937,6 +938,13 @@ run_hook Bash "echo J=/other/scripts/jira/dist/index.js; node \$J comment HIMMEL
 [ "$RC" -eq 0 ] && pass "J= as an echo argument does not bind \$J" || fail "echo-argument J= bound \$J (rc=$RC)"
 run_hook Bash "echo 'x; J=/other/scripts/jira/dist/index.js'; node \$J comment HIMMEL-1 --comment-file c.md"
 [ "$RC" -eq 0 ] && pass "J= after a quoted separator does not bind \$J" || fail "quoted-separator J= bound \$J (rc=$RC)"
+# A prefix assignment applies after expansion: `$J` in that same command is not the CLI.
+run_hook Bash "J=/other/scripts/jira/dist/index.js node \$J comment HIMMEL-1 --comment-file c.md"
+[ "$RC" -eq 0 ] && pass "prefix J= on the same command does not bind \$J" || fail "prefix J= bound \$J (rc=$RC)"
+run_hook Bash "J=/other/scripts/jira/dist/index.js K=1; node \$J comment HIMMEL-1 --comment-file c.md"
+[ "$RC" -eq 2 ] && pass "statement J= followed by another assignment still binds" || fail "statement J= K=1 did not bind (rc=$RC)"
+run_hook Bash "J=/other/scripts/jira/dist/index.js; unset J; node \$J comment HIMMEL-1 --comment-file c.md"
+[ "$RC" -eq 0 ] && pass "an unset J leaves \$J unbound" || fail "unset J still bound \$J (rc=$RC)"
 
 # The literal per-write shape the recipe names is itself approved.
 run_hook Bash "node $JIRA fix-version HIMMEL-4801 --add v1.0.2c"
