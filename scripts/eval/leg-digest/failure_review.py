@@ -273,16 +273,16 @@ def main(argv=None):
         legacy = legacy_notify_path(a)
         # Only a v1 file is legacy: every file this version writes is v2, so another state's new sidecar that
         # happens to carry this legacy name (routes.json.notify.json for routes.json.state) is never taken.
-        # A sibling state migrating the same legacy file under its own lock may win the race: carry on.
+        # Sibling states share the legacy file but not npath's lock, so the carry is serialised by a second lock
+        # on the legacy name (always taken after npath's, never before: no cycle) and the file re-read under it.
         if not os.path.exists(npath):
-            old, old_ok = load_notify(legacy)
-            if old_ok and old.get("v") == 1 and os.path.exists(legacy):
-                old["v"] = 2
-                write_atomic(npath, json.dumps(old, indent=1, sort_keys=True) + "\n")
-                try:
+            with open(legacy + ".lock", "a") as llock:
+                fcntl.flock(llock, fcntl.LOCK_EX)
+                old, old_ok = load_notify(legacy)
+                if old_ok and old.get("v") == 1 and os.path.exists(legacy):
+                    old["v"] = 2
+                    write_atomic(npath, json.dumps(old, indent=1, sort_keys=True) + "\n")
                     os.unlink(legacy)
-                except FileNotFoundError:
-                    pass
         ns, ns_ok = load_notify(npath)
         if not ns_ok:
             # Kept aside under a unique name, never overwritten; a fresh state keeps this run's undelivered lines.
