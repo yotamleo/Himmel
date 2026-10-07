@@ -31,7 +31,7 @@ $HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state), under flock, temp then rena
 The router state advances before the send, so a line that is not delivered keeps its routing and its
 new classes in pending, and the next run sends them again until one is delivered. A delivered new
 class is recorded in sent and not named again for 24 h; a failed send records nothing there. An
-unreadable state file is kept aside as <file>.unreadable and a fresh one started.
+unreadable state file is kept aside as <file>.unreadable.<unique> and a fresh one started.
 
 Exit 0 on a written digest, 1 when the router failed (the digest still says so), 2 on bad input,
 3 when the Telegram line was due but not delivered (the digest is still written; the cadence alerts).
@@ -257,9 +257,11 @@ def main(argv=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         ns, ns_ok = load_notify(npath)
         if not ns_ok:
-            # Kept aside, never overwritten; a fresh state keeps this run's undelivered lines.
-            os.replace(npath, npath + ".unreadable")
-            print("failure-review: %s is unreadable; kept as %s.unreadable" % (npath, npath), file=sys.stderr)
+            # Kept aside under a unique name, never overwritten; a fresh state keeps this run's undelivered lines.
+            fd, kept = tempfile.mkstemp(prefix=os.path.basename(npath) + ".unreadable.", dir=os.path.dirname(npath))
+            os.close(fd)
+            os.replace(npath, kept)
+            print("failure-review: %s is unreadable; kept as %s" % (npath, kept), file=sys.stderr)
             ns = {"v": 1, "pending": [], "sent": {}}
         sent = {}
         for c, t in ns["sent"].items():
@@ -279,6 +281,10 @@ def main(argv=None):
                 len(routed) if a.live else len([d for d in decisions if d["decision"] in ROUTED]),
                 "; undelivered earlier: %s" % ", ".join(pending) if pending else "",
                 "; new: %s" % ", ".join(fresh) if fresh else "")
+            # Saved before the send: a run killed mid-send still leaves its line for the next run.
+            ns["pending"] = pending + done + ["new %s" % c for c in fresh]
+            ns["sent"] = sent
+            write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
             try:
                 ok = subprocess.run([a.notify_cmd, line], capture_output=True, timeout=60).returncode == 0
             except (OSError, subprocess.SubprocessError):
@@ -289,10 +295,7 @@ def main(argv=None):
                 ns["pending"] = []
                 for c in fresh + [p[4:] for p in pending if p.startswith("new ")]:
                     sent[c] = failure_router.iso(a.now)
-            else:
-                ns["pending"] = pending + done + ["new %s" % c for c in fresh]
-            ns["sent"] = sent
-            write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
+                write_atomic(npath, json.dumps(ns, indent=1, sort_keys=True) + "\n")
             if rc == 0 and not ok:
                 return 3
     return 1 if rc != 0 else 0

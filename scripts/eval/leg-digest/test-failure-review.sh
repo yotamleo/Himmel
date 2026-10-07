@@ -256,7 +256,7 @@ C9c="$TMP/c9c"; mkdir -p "$C9c"
 row "$C9c/ledger.jsonl" N600 error/Edit
 echo 'not json' >"$C9c/failure-review-notify.json"
 review "$C9c" --notify-cmd "$STUB/notify-fail" >"$C9c/run1.out" 2>&1; rc=$?
-check "an unreadable notify state is kept aside, never overwritten" '[ "$rc" = 3 ] && [ "$(cat "$C9c/failure-review-notify.json.unreadable")" = "not json" ]'
+check "an unreadable notify state is kept aside, never overwritten" '[ "$rc" = 3 ] && [ "$(cat "$C9c"/failure-review-notify.json.unreadable.*)" = "not json" ]'
 s0="$(sends)"
 review "$C9c" >/dev/null 2>&1; rc=$?
 check "a failed send over an unreadable state is still retried" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Edit"'
@@ -264,7 +264,19 @@ C9d="$TMP/c9d"; mkdir -p "$C9d"
 row "$C9d/ledger.jsonl" N700 error/Write
 echo '{"v":1,"pending":[1],"sent":{}}' >"$C9d/failure-review-notify.json"
 review "$C9d" >"$C9d/run.out" 2>&1; rc=$?
-check "a non-string pending entry is an unreadable state, not a crash" '[ "$rc" = 0 ] && [ -e "$C9d/failure-review-notify.json.unreadable" ] && ! grep -q Traceback "$C9d/run.out"'
+check "a non-string pending entry is an unreadable state, not a crash" '[ "$rc" = 0 ] && ls "$C9d"/failure-review-notify.json.unreadable.* >/dev/null 2>&1 && ! grep -q Traceback "$C9d/run.out"'
+echo 'still not json' >"$C9c/failure-review-notify.json"
+review "$C9c" >/dev/null 2>&1
+check "a second unreadable state does not overwrite the first one kept aside" '[ "$(ls "$C9c"/failure-review-notify.json.unreadable.* | wc -l)" = 2 ]'
+C9e="$TMP/c9e"; mkdir -p "$C9e"
+row "$C9e/ledger.jsonl" N050 denied/guard-kill 1 2026-10-03T08:00:00Z
+row "$C9e/ledger.jsonl" N100 denied/guard-kill 1
+row "$C9e/ledger.jsonl" N200 denied/guard-kill 1
+printf '#!/usr/bin/env bash\nkill -9 "$PPID"\n' >"$STUB/notify-kill"; chmod +x "$STUB/notify-kill"
+review "$C9e" --live --notify-cmd "$STUB/notify-kill" >/dev/null 2>&1
+s0="$(sends)"
+review "$C9e" --live >/dev/null 2>&1; rc=$?
+check "a review killed during the send still retries its routing on the next run" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "undelivered earlier: filed denied/guard-kill"'
 
 echo
 echo "test-failure-review: $PASS passed, $FAIL failed"
