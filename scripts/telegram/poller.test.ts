@@ -3347,3 +3347,70 @@ test("loadPluginProfilesModule serves the SAME cached import when the file's mti
   const [a, b] = await Promise.all([loadPluginProfilesModule(fixture), loadPluginProfilesModule(fixture)]);
   expect(a).toBe(b);
 });
+
+// --- HIMMEL-4687: the dispatch path's profile resolution is fresh, and a ----
+// --- repeated identical dispatch failure alerts the operator once ----------
+
+// The 10-05 incident, replayed under a running poller: a merge changes BOTH
+// plugin-profiles.json (a new leg-shaped profile with gateAllow) and the
+// validator (LEG_PROFILES learns its name). A poller still holding the OLD
+// validator fails every dispatch with "gateAllow is restricted to leg-shaped
+// profiles"; a fresh import validates and picks up the new registry.
+test("cold runFn: a registry + validator change under a running poller still validates, with no restart", async () => {
+  const lanes = mkdtempSync(join(tmpdir(), "lanes-fixture-"));
+  const src = join(import.meta.dir, "..", "lanes");
+  for (const f of ["plugin-profiles.mjs", "plugin-profiles.json", "skill-listing.mjs", "role-requires.mjs", "skill-cost.mjs"]) {
+    await writeFile(join(lanes, f), await readFile(join(src, f), "utf8"));
+  }
+  const t0 = new Date(Date.now() - 60_000);
+  for (const f of ["plugin-profiles.mjs", "plugin-profiles.json"]) await utimes(join(lanes, f), t0, t0);
+
+  const r = root(); await ensureSession(r, "HIMMEL-4687");
+  await writeMeta(r, "HIMMEL-4687", { chat_id:9, status:"idle", last_run_pid:null, last_run_at:null, task_name:null, retry_at:null });
+  const sd = sessionDir(r, "HIMMEL-4687");
+  const captured: (string | undefined)[] = [];
+  const fakeRun = async (_p: string, _c: string, _pm?: any, _l?: any, _mo?: any, settings?: string) => { captured.push(settings); return { code:0, capped:false, pid:1 }; };
+  const runFn = makeRunFn(r, "/repo", fakeRun, undefined, undefined, undefined, undefined, undefined, undefined, lanes);
+
+  await appendLine(join(sd, "inbox.jsonl"), JSON.stringify({ text:"before" }));
+  await runFn("HIMMEL-4687");
+  expect(JSON.parse(captured[0]!).enabledPlugins["obsidian-second-brain@himmel"]).toBe(true);
+
+  const reg = JSON.parse(await readFile(join(lanes, "plugin-profiles.json"), "utf8"));
+  reg.profiles["leg-x4687"] = reg.profiles["leg-e2e"];
+  reg.profiles.telegram.enable = reg.profiles.telegram.enable.filter((id: string) => id !== "obsidian-second-brain@himmel");
+  await writeFile(join(lanes, "plugin-profiles.json"), JSON.stringify(reg, null, 2));
+  const mjs = await readFile(join(lanes, "plugin-profiles.mjs"), "utf8");
+  expect(mjs).toContain("'console-relay']);");
+  await writeFile(join(lanes, "plugin-profiles.mjs"), mjs.replace("'console-relay']);", "'console-relay', 'leg-x4687']);"));
+
+  await appendLine(join(sd, "inbox.jsonl"), JSON.stringify({ text:"after" }));
+  await runFn("HIMMEL-4687");
+  expect(captured).toHaveLength(2);
+  expect(JSON.parse(captured[1]!).enabledPlugins["obsidian-second-brain@himmel"]).toBe(false);
+});
+
+test("dispatcher: N identical dispatch failures in a row alert exactly once; a success re-arms it", async () => {
+  const alerts: [string, string, number][] = [];
+  let fail = true;
+  const runFn = async () => { if (fail) throw new Error("plugin-profiles: registry invalid"); };
+  const d = makeDispatcher(runFn, 4, (s, err, n) => { alerts.push([s, err, n]); }, 3);
+  const once = async () => { await d("group_-1"); for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  for (let i = 0; i < 10; i++) await once();
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0][0]).toBe("group_-1");
+  expect(alerts[0][1]).toContain("registry invalid");
+  expect(alerts[0][2]).toBe(3);
+  fail = false; await once();           // a clean run ends the streak
+  fail = true; for (let i = 0; i < 3; i++) await once();
+  expect(alerts).toHaveLength(2);       // a fresh streak alerts again, once
+});
+
+test("dispatcher: a DIFFERENT error restarts the count instead of alerting", async () => {
+  const alerts: string[] = [];
+  let n = 0;
+  const runFn = async () => { throw new Error(n++ % 2 ? "error A" : "error B"); };
+  const d = makeDispatcher(runFn, 4, (_s, err) => { alerts.push(err); }, 3);
+  for (let i = 0; i < 6; i++) { await d("S"); for (let j = 0; j < 10; j++) await Promise.resolve(); }
+  expect(alerts).toHaveLength(0);
+});

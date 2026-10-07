@@ -1,6 +1,6 @@
 import { readFile, writeFile, rename, mkdir, readdir, unlink, stat, mkdtemp, copyFile, rm } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, repairCursorBeyondEof, truncateFullyConsumed, type Meta, type OnCursorReset } from "./bus";
@@ -15,13 +15,17 @@ import { classifyForSpawn, type TriageVerdict, type TriageModelOverride, type Mo
 import { transcribe } from "./transcribe";
 import { checkStaleHeartbeats, censusSessionAlive, DEFAULT_STALE_MS, type AlertedState, type AlertFn } from "./console-heartbeat-watch";
 // HIMMEL-2961: resolve the bridge's own plugin profile per dispatch (lever-b,
-// HIMMEL-1040), the same seam spawn-claudex.ts already uses — instead of the
-// previous hardcoded `undefined` (no --settings => full operator ~/.claude
-// injected into every cold bridge run, unlean). Entry-point inventory (RULING
-// 2, HIMMEL-2961): auto-action.ts spawns no claude, and hermes is dormant
-// with no plugin-profile seam — the bridge dispatch below is the ONLY wired
-// entry point.
-import { resolveProfileSettings } from "./spawn-glm";
+// HIMMEL-1040) — instead of the previous hardcoded `undefined` (no --settings
+// => full operator ~/.claude injected into every cold bridge run, unlean).
+// Entry-point inventory (RULING 2, HIMMEL-2961): auto-action.ts spawns no
+// claude, and hermes is dormant with no plugin-profile seam — the bridge
+// dispatch below is the ONLY wired entry point. HIMMEL-4687: it resolves via
+// the fresh-import loader (resolveTelegramProfileSettings), never spawn-glm's
+// static import of plugin-profiles.mjs.
+// ponytail: the skill-cost SCANNER stays a static import (it produces data,
+// it validates nothing, so it cannot fail a dispatch); route it through the
+// cachebust dir too if its entries shape ever changes in step with skill-listing.
+import { scanSkillCosts } from "../lanes/skill-cost.mjs";
 
 // Retry backoff for a capped session (ms). On a cap, settle retry_at = now + RETRY_MS
 // so deliverAllPending's isRetryDue re-runs the session later instead of re-spawning a
@@ -1121,9 +1125,11 @@ const TELEGRAM_PROFILE = "telegram";
 // function (loadRegistry/validateRegistry/mcpServersForProfile/
 // collectMcpServerDefs) comes from the SAME fresh import, so they can never
 // drift out of sync with each other. plugin-profiles.mjs's only STATIC imports are
-// node:* builtins (HIMMEL-4038: skill-listing.mjs/skill-cost.mjs load lazily,
-// only for a caller passing opts.skillEntries, which this loader never does), so
-// busting on its own mtime alone is sufficient — there is no local import graph to combine.
+// node:* builtins; its LAZY local graph (HIMMEL-4038: loadListingLib() ->
+// skill-listing.mjs -> role-requires.mjs + skill-cost.mjs) is needed since
+// HIMMEL-4687 routed the dispatch's --settings resolution (opts.skillEntries)
+// through here too, so those siblings are copied beside it under their own
+// names (the relative imports must resolve) and their mtimes join the cache key.
 //
 // A `?v=<mtime>` query-string on the specifier does NOT bust Bun's dynamic
 // import() cache (measured: two imports of the same path differing only by
@@ -1138,9 +1144,17 @@ const pluginProfilesModuleCache = new Map<string, Promise<PluginProfilesModule>>
 // modulePath can clean up the now-unreachable prior one (HIMMEL-3504 codex-2:
 // otherwise every distinct mtime leaks its tmp dir for the bridge's lifetime).
 const pluginProfilesTempDirs = new Map<string, string>();
+// plugin-profiles.mjs's lazy local import graph, copied beside it when present
+// (a single-file fixture has none) — see the HIMMEL-4687 note above.
+const PLUGIN_PROFILES_LAZY_GRAPH = ["skill-listing.mjs", "role-requires.mjs", "skill-cost.mjs"];
 export async function loadPluginProfilesModule(modulePath: string = join(REPO_ROOT, "scripts", "lanes", "plugin-profiles.mjs")): Promise<PluginProfilesModule> {
   const mtimeMs = (await stat(modulePath)).mtimeMs;
-  const cacheKey = `${modulePath}@${mtimeMs}`;
+  const siblings: [string, number][] = [];
+  for (const name of PLUGIN_PROFILES_LAZY_GRAPH) {
+    const st = await stat(join(dirname(modulePath), name)).catch(() => null);
+    if (st) siblings.push([name, st.mtimeMs]);
+  }
+  const cacheKey = `${modulePath}@${mtimeMs}` + siblings.map(([n, m]) => `+${n}@${m}`).join("");
   let cached = pluginProfilesModuleCache.get(cacheKey);
   if (!cached) {
     cached = (async () => {
@@ -1148,6 +1162,7 @@ export async function loadPluginProfilesModule(modulePath: string = join(REPO_RO
       pluginProfilesTempDirs.set(cacheKey, dir);
       const dest = join(dir, `plugin-profiles.${mtimeMs}.mjs`);
       await copyFile(modulePath, dest);
+      for (const [name] of siblings) await copyFile(join(dirname(modulePath), name), join(dir, name));
       return import(pathToFileURL(dest).href) as Promise<PluginProfilesModule>;
     })().catch((err) => {
       // HIMMEL-3504 codex-1: a failed copy/import must NOT stick — evict the
@@ -1178,12 +1193,12 @@ export async function loadPluginProfilesModule(modulePath: string = join(REPO_RO
 // both). undefined when the profile declares no allowlist at all (distinct
 // from an explicit [], which would still apply --strict-mcp-config with zero
 // servers). Throws on an invalid registry, exactly like resolveProfileByName.
-async function resolveTelegramMcpConfig(cwd: string): Promise<string | undefined> {
-  const { loadRegistry, validateRegistry, mcpServersForProfile, collectMcpServerDefs } = await loadPluginProfilesModule();
+async function resolveTelegramMcpConfig(cwd: string, lanesDir: string): Promise<string | undefined> {
+  const { loadRegistry, validateRegistry, mcpServersForProfile, collectMcpServerDefs } = await loadPluginProfilesModule(join(lanesDir, "plugin-profiles.mjs"));
   // The copied module runs from a tmp dir, so its own SCRIPT_DIR-relative
   // REGISTRY default resolves to nothing there — pass the real json path
   // explicitly (loadRegistry accepts one) rather than relying on that default.
-  const registry = loadRegistry(join(REPO_ROOT, "scripts", "lanes", "plugin-profiles.json"));
+  const registry = loadRegistry(join(lanesDir, "plugin-profiles.json"));
   const errors = validateRegistry(registry);
   if (errors.length) throw new Error(`plugin-profiles: registry invalid:\n  - ${errors.join("\n  - ")}`);
   const names = mcpServersForProfile(registry, TELEGRAM_PROFILE);
@@ -1196,7 +1211,27 @@ async function resolveTelegramMcpConfig(cwd: string): Promise<string | undefined
   return JSON.stringify(cfg);
 }
 
-export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: undefined, extraEnv?: Record<string, string>, mcpConfig?: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn, isHeld: (s: string) => boolean = () => false, cwdFor?: CwdForFn): RunFn {
+// HIMMEL-4687: the bridge's --settings payload, resolved through the SAME
+// fresh-import loader as resolveTelegramMcpConfig. It used to go through
+// spawn-glm's resolveProfileSettings, whose plugin-profiles.mjs is a STATIC
+// import: after HIMMEL-4400 added leg-e2e to both files on 10-05, the running
+// bridge validated the new json with its startup-time validator and failed
+// every AI TODO dispatch until a restart. Same output as resolveProfileSettings
+// (no overlay, the live plugin universe as the deny-by-default baseline, the
+// skill scan for skillOverrides); only the module is fresh.
+async function resolveTelegramProfileSettings(cwd: string, lanesDir: string): Promise<string | undefined> {
+  const mod = await loadPluginProfilesModule(join(lanesDir, "plugin-profiles.mjs"));
+  await mod.loadListingLib();
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+  const settings = mod.resolveProfileByName(TELEGRAM_PROFILE, {
+    installed: mod.readEnabledPluginIds(homedir(), cwd, process.env.CLAUDE_CONFIG_DIR),
+    skillEntries: scanSkillCosts({ cwd, configDir }).entries,
+    configDir, cwd,
+  }, join(lanesDir, "plugin-profiles.json"));
+  return settings === null ? undefined : JSON.stringify(settings);
+}
+
+export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: string, cwd: string, permissionMode?: PermissionMode, lane?: "glm", modelOverride?: string, settings?: string, observe?: undefined, extraEnv?: Record<string, string>, mcpConfig?: string) => Promise<RunResult> = runSession, deadlineMs: number = RUN_DEADLINE_MS, notify?: NotifyFn, maxRetries: number = MAX_RETRIES, vaultFor?: VaultForFn, isHeld: (s: string) => boolean = () => false, cwdFor?: CwdForFn, lanesDir: string = join(REPO_ROOT, "scripts", "lanes")): RunFn {
   const retryAt = () => new Date(Date.now() + RETRY_MS).toISOString();
   const noticed = new Set<string>();
   const safeNotify = async (session: string, retryAtIso: string, kind: NotifyKind) => {
@@ -1270,7 +1305,7 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     // HIMMEL-2961: the profile itself (TELEGRAM_PROFILE's enable list) is the
     // BRIDGE's own fixed lean set, independent of which cwd/vault this dispatch
     // routes into — but the deny-by-default baseline (opts.installed) must be
-    // discovered from sessionCwd, not repoCwd (CR codex-1): resolveProfileSettings
+    // discovered from sessionCwd, not repoCwd (CR codex-1): resolveTelegramProfileSettings
     // widens the deny-by-default set with whatever is enabled in the passed
     // cwd's OWN settings ancestry. When routedCwd/vault sends this spawn into a
     // directory other than the himmel checkout (grow-tent repo, luna vault),
@@ -1279,8 +1314,8 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     // free to inherit "enabled" from Claude Code's own resolution for the
     // actual session cwd, defeating deny-by-default for exactly the routed
     // spawns that most need it.
-    const settings = resolveProfileSettings(TELEGRAM_PROFILE, [], sessionCwd);
-    const mcpConfig = await resolveTelegramMcpConfig(repoCwd);
+    const settings = await resolveTelegramProfileSettings(sessionCwd, lanesDir);
+    const mcpConfig = await resolveTelegramMcpConfig(repoCwd, lanesDir);
     const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, settings, undefined, extraEnv, mcpConfig), deadlineMs), undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
     // run's stdout/stderr vanished and failures were undebuggable
@@ -1379,8 +1414,17 @@ export async function signalTyping(root: string, isInFlight: (s: string) => bool
 // coalesced model override — that is lost unless whoever holds it keeps it.
 export type Dispatcher = ((session: string, modelOverride?: ModelOverride) => Promise<boolean>)
   & { inFlightCount: () => number; isInFlight: (s: string) => boolean };
-export function makeDispatcher(runFn: RunFn, cap: number = positiveEnvInt(process.env.TELEGRAM_MAX_CONCURRENT_RUNS, 2)): Dispatcher {
+// HIMMEL-4687: a run that THROWS (a setup failure before the worker spawns,
+// e.g. "registry invalid") leaves the session idle with its pending intact, so
+// the next tick re-dispatches it and fails the same way, forever, with only a
+// log line each time. After this many identical failures in a row for one
+// session, the operator is told ONCE; the streak (and the alert) re-arms on a
+// clean run or on a different error.
+export const DISPATCH_FAIL_ALERT_AFTER = 5;
+export type RepeatedFailureAlert = (session: string, error: string, count: number) => Promise<void> | void;
+export function makeDispatcher(runFn: RunFn, cap: number = positiveEnvInt(process.env.TELEGRAM_MAX_CONCURRENT_RUNS, 2), onRepeatedFailure?: RepeatedFailureAlert, alertAfter: number = DISPATCH_FAIL_ALERT_AFTER): Dispatcher {
   const inFlight = new Set<string>();
+  const streaks = new Map<string, { error: string; count: number }>();
   // `modelOverride` must be declared AND forwarded. Dispatcher is RunFn, which
   // takes it, but the `as Dispatcher` cast below silences the arity mismatch —
   // so a one-parameter dispatch type-checks while dropping the argument on the
@@ -1391,7 +1435,17 @@ export function makeDispatcher(runFn: RunFn, cap: number = positiveEnvInt(proces
     if (inFlight.size >= cap) return false;       // cap reached — next tick retries
     inFlight.add(session);
     runFn(session, modelOverride)
-      .catch((e) => { console.error("[poller] dispatched run failed for " + session + ": " + e); })
+      .then(() => { streaks.delete(session); })
+      .catch(async (e) => {
+        console.error("[poller] dispatched run failed for " + session + ": " + e);
+        const error = String(e);
+        const prev = streaks.get(session);
+        const count = prev?.error === error ? prev.count + 1 : 1;
+        streaks.set(session, { error, count });
+        if (count !== alertAfter || !onRepeatedFailure) return;
+        try { await onRepeatedFailure(session, error, count); }
+        catch (alertErr) { console.error("[poller] repeated-failure alert failed for " + session + ": " + alertErr); }
+      })
       .finally(() => { inFlight.delete(session); });
     return true;
   }) as Dispatcher;
@@ -1913,7 +1967,15 @@ export async function main(): Promise<void> {
   // constructed, and no run can have started either.
   let isHeldRef: (s: string) => boolean = () => false;
   const runFn = makeRunFn(root, repoCwd, undefined, undefined, notify, undefined, vaultFor, (s) => isHeldRef(s), cwdFor);
-  const dispatch = makeDispatcher(runFn);
+  // HIMMEL-4687: a session failing the same way DISPATCH_FAIL_ALERT_AFTER times
+  // in a row tells the operator's DM once (outbox-routed, like the heartbeat
+  // alert below), instead of retrying silently forever.
+  const repeatedFailureAlert: RepeatedFailureAlert = async (session, error, count) => {
+    const chat = operatorChatId(access);
+    if (chat === null) { console.error(`[poller] ${session} failed ${count}x with the same error but there is no operator chat to alert`); return; }
+    await replyViaOutbox(root, chat, `⚠️ bridge: every dispatch for ${session} has failed ${count} times in a row with the same error, and it keeps retrying:\n${error.slice(0, 500)}\nIf this names plugin-profiles or another module, restart-bridge.sh may clear it; check the poller log.`);
+  };
+  const dispatch = makeDispatcher(runFn, undefined, repeatedFailureAlert);
   await reconcile(root, isAlive);
   // photo downloads land in a shared root-level attachments/ (named by update_id —
   // unique + dedup-stable); the session is only routed later, in handleInbound
