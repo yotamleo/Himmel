@@ -53,7 +53,7 @@ fixture() {
 }
 run() { OUT=$(bash "$HERE/check-ci.sh" "$@" 2>&1); RC=$?; }
 expect_rc() { if [ "$RC" = "$1" ]; then ok "$2"; else bad "$2 (rc=$RC want $1)"; fi; }
-expect_text() { if printf '%s\n' "$OUT" | grep -Fq -- "$1"; then ok "$2"; else bad "$2"; fi; }
+expect_text() { if printf '%s\n' "$OUT" | grep -F -- "$1" >/dev/null; then ok "$2"; else bad "$2"; fi; }
 
 echo test-check-ci-run.sh
 new_case
