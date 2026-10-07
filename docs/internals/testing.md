@@ -112,6 +112,28 @@ red:
 plan without executing anything — use it to check what a change would trigger
 before committing to the long run.
 
+## Running a brand-new suite before its first commit (HIMMEL-4782)
+
+`bash scripts/quiet-run.sh suite -- bash <path>` accepts a git-tracked
+`test-*.sh`, **or** an untracked one that lies inside the current worktree, so
+the RED-first run of a new suite works before anything is committed:
+
+```bash
+bash scripts/quiet-run.sh suite -- bash scripts/test-new-thing.sh
+```
+
+The untracked file must be named `test-*.sh`, be a regular file (a directory or
+a symlink — even one pointing inside the tree — is refused), and its physical
+path (parent symlinks resolved) must sit under the worktree's top level. A
+`test-*.sh` outside the worktree, a non-test name, or a missing path is refused
+with rc 2, exactly as before. Spell the path as a relative, `./`-relative or
+absolute path; all three resolve.
+
+`scripts/ci/run-shell-tests.sh --impacted <base>..<head>` reads a **committed**
+range, so a suite still untracked is not listed and not run by it — commit the
+new suite first (or run it by the `quiet-run` form above), then the range
+selects it.
+
 ## Impacted suites — which suites a change actually reaches (HIMMEL-2821)
 
 `bash scripts/cr/impacted-suites.sh <base>..<head>` lists every suite

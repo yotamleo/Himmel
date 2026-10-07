@@ -46,8 +46,26 @@ for arg in "$@"; do
     esac
 done
 
+# HIMMEL-4782: an untracked test-*.sh is accepted when it is a regular,
+# non-symlink file whose physical path lies inside the worktree, so a RED-first
+# run of a new suite works before its first commit. $1 is the path exactly as
+# bash will execute it (relative to the cwd); $2 the worktree top level.
+# Anything outside the worktree, any symlink (a link can be retargeted after
+# this check) and any link in a parent directory that leaves the worktree is
+# refused - the reason the tracked-only rule existed (HIMMEL-2967).
+untracked_suite_in_worktree() {
+    local path="$1" top="$2" dir real_top real_dir
+    [ -f "$path" ] && [ ! -L "$path" ] || return 1
+    case "$path" in */*) dir="${path%/*}"; [ -n "$dir" ] || dir=/ ;; *) dir=. ;; esac
+    real_dir=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+    real_top=$(cd "$top" 2>/dev/null && pwd -P) || return 1
+    case "$real_dir/" in "$real_top"/*) return 0 ;; esac
+    return 1
+}
+
 if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
     SUITE_PATH="${2:-}"
+    EXEC_PATH="$SUITE_PATH"
     BASENAME="${SUITE_PATH##*/}"
     case "$BASENAME" in
         test-*.sh) : ;;
@@ -75,14 +93,15 @@ if [ "$LABEL" = "suite" ] && [ "${1:-}" = "bash" ]; then
                     "$REPO_TOPLEVEL"/*) SUITE_PATH="${SUITE_PATH#"$REPO_TOPLEVEL"/}" ;;
                     *) SUITE_PATH="${SUITE_PATH#"$REPO_TOPLEVEL_POSIX"/}" ;;
                 esac
-                TRACKED_MATCH=$(git -C "$REPO_TOPLEVEL" --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
+                TRACKED_MATCH=$(git -C "$REPO_TOPLEVEL" --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null) || TRACKED_MATCH=""
                 ;;
             *)
-                TRACKED_MATCH=$(git --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null)
+                TRACKED_MATCH=$(git --literal-pathspecs ls-files -- "$SUITE_PATH" 2>/dev/null) || TRACKED_MATCH=""
                 ;;
         esac
-        if [ "$TRACKED_MATCH" != "$SUITE_PATH" ]; then
-            echo "ERR quiet-run: label 'suite' requires a tracked test-*.sh, got: $SUITE_PATH" >&2
+        if [ "$TRACKED_MATCH" != "$SUITE_PATH" ] \
+            && ! untracked_suite_in_worktree "$EXEC_PATH" "$REPO_TOPLEVEL_POSIX"; then
+            echo "ERR quiet-run: label 'suite' requires a tracked test-*.sh (or an untracked regular one inside the worktree), got: $SUITE_PATH" >&2
             exit 2
         fi
     else
