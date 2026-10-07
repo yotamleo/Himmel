@@ -318,6 +318,17 @@ describe("agent live state", () => {
     expect(runningCount(errored)).toBe(0);
   });
 
+  test("a background subagent whose Agent call returned at launch fails when the run error kills its open call", () => {
+    const launched = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "launched", timestamp: 1400 }], opened);
+    expect(agentState(launched, "q")).toBe("running"); // its own Read is still open
+    const errored = reduceAll([{ type: "RUN_ERROR", message: "lost", timestamp: 1800 }], launched);
+    expect(agentState(errored, "q")).toBe("failed");
+    // A subagent that had finished before the run error stays done.
+    const finished = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "s", content: "ok", timestamp: 1500 },
+      { type: "RUN_ERROR", message: "lost", timestamp: 1800 }], launched);
+    expect(agentState(finished, "q")).toBe("done");
+  });
+
   test("the top bar: live while anything runs, idle with the last event's age while tailed, finished once closed", () => {
     const ended = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "s", content: "ok", timestamp: 1500 },
       { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x", timestamp: 1700 }, { type: "RUN_FINISHED", timestamp: 1800 }], opened);
