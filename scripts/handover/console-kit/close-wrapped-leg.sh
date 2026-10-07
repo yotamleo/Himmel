@@ -207,7 +207,7 @@ if [ -r "$END_SESSION_WIKI" ] && [ -d "$PROJECTS_DIR" ]; then
     if [ "$tcount" -eq 1 ]; then
         TRANSCRIPT="$transcript_matches"
         cap_cwd=$(jq -r 'select(.cwd != null) | .cwd' "$TRANSCRIPT" 2>/dev/null | head -1)
-        cap_sid=$(basename "$TRANSCRIPT" .jsonl)
+        cap_sid=$(transcript_sid "$TRANSCRIPT")
         if [ -n "$cap_cwd" ]; then
             cap_payload=$(jq -n --arg t "$TRANSCRIPT" --arg s "$cap_sid" --arg c "$cap_cwd" --arg r "leg-close" \
                 '{transcript_path:$t, session_id:$s, cwd:$c, reason:$r}')
@@ -241,7 +241,7 @@ if [ -n "$TRANSCRIPT" ]; then
         echo "close-wrapped-leg: WARN cannot load leg-cost-row.sh - no cost ledger row" >&2
     elif ! ledger=$(leg_cost_ledger_path "$DOC"); then
         echo "close-wrapped-leg: WARN cannot resolve the cost ledger path - no cost ledger row" >&2
-    elif [ -f "$ledger" ] && grep -qF "\"session\":\"$(basename "$TRANSCRIPT" .jsonl)\"" "$ledger"; then
+    elif [ -f "$ledger" ] && grep -qF "\"session\":\"$(transcript_sid "$TRANSCRIPT")\"" "$ledger"; then
         echo "close-wrapped-leg: cost ledger already has a row for this transcript"
     elif ! row=$(leg_cost_row "$TRANSCRIPT" "$DOC"); then
         echo "close-wrapped-leg: WARN leg-burn failed - no cost ledger row" >&2
@@ -261,7 +261,7 @@ sessions_json="${CLOSE_WRAPPED_LEG_SESSIONS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.cla
 digest_sid=$(jq -r '.sessionId // empty' "$sessions_json" 2>/dev/null)
 case "$digest_sid" in
     ????????-????-????-????-????????????) ;;
-    *) digest_sid="$(basename "${TRANSCRIPT:-none}" .jsonl)" ;;
+    *) digest_sid="$(transcript_sid "${TRANSCRIPT:-none}")" ;;
 esac
 
 if ! "$KILL" -TERM "$matched"; then
@@ -283,7 +283,7 @@ reap_leg_scratch() {
     if [ -n "$pr" ]; then args+=(--judge "$pr")
     else echo "close-wrapped-leg: no PR in the leg doc - reaping no judge dir, never guessing"; fi
     if [ -n "$TRANSCRIPT" ]; then
-        sid="$(basename "$TRANSCRIPT" .jsonl)"
+        sid="$(transcript_sid "$TRANSCRIPT")"
         case "$sid" in
             ????????-????-????-????-????????????) args+=(--session "$sid") ;;
         esac

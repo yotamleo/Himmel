@@ -11,6 +11,9 @@
 #       The two-pass search close-wrapped-leg.sh has always used: *.jsonl under
 #       <dir> changed in the last [mtime-days] (default 1), first [head-window]
 #       lines (default 40); on no MATCH, the whole tree, whole files.
+#   transcript_sid <journal>
+#       The session id a journal belongs to: its basename without .jsonl
+#       (close-wrapped-leg.sh's cap_sid and the digest step's members).
 #
 # <candidates> is a newline list of session names. Never guesses: callers
 # treat anything but exactly one match as unresolved.
@@ -78,4 +81,8 @@ resolve_leg_transcripts() {
         found=$(match_transcripts "$scan_files" 0 "$candidates")
     fi
     [ -z "$found" ] || printf '%s\n' "$found"
+}
+
+transcript_sid() {
+    basename "$1" .jsonl
 }

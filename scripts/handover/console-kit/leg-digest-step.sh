@@ -177,7 +177,7 @@ digest_one() { # digest_one <sid> <journal> <pid-or-empty> <wait:0|1>
 # ---------- close mode -------------------------------------------------------
 if [ "$SID_SET" = 1 ]; then
     printf '%s' "$SID" | grep -qE "$UUID_RE" || { echo "digest=skipped:no-session"; exit 0; }
-    if [ -z "$JOURNAL" ] || [ "$(basename "$JOURNAL" .jsonl)" != "$SID" ]; then
+    if [ -z "$JOURNAL" ] || [ "$(transcript_sid "$JOURNAL")" != "$SID" ]; then
         JOURNAL="$(find "$PROJECTS" -mindepth 2 -maxdepth 2 -name "$SID.jsonl" 2>/dev/null | head -n 1)"
     fi
     digest_one "$SID" "$JOURNAL" "$PID" 1
@@ -201,7 +201,7 @@ slug="$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"
 members=0
 while IFS= read -r j; do
     [ -n "$j" ] || continue
-    sid="$(basename "$j" .jsonl)"
+    sid="$(transcript_sid "$j")"
     printf '%s' "$sid" | grep -qE "$UUID_RE" || continue  # a subagent file, not a session
     first="$(head -n 40 "$j" | jq -r 'select(type == "object") | [.cwd // empty, .timestamp // empty] | @tsv' 2>/dev/null)"
     jcwd="$(printf '%s\n' "$first" | awk -F'\t' 'NF == 2 { print $1; exit }')"
