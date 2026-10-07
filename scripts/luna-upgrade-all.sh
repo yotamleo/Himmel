@@ -369,7 +369,7 @@ is_dirty_owned() {
     local v="$1" plan="$2"
     [ -d "$v/.git" ] || return 1
     local owned
-    if printf '%s\n' "$plan" | grep -q $'^PLAN-PATH\t'; then
+    if [[ $'\n'"$plan" == *$'\nPLAN-PATH\t'* ]]; then
         owned="$(printf '%s\n' "$plan" | sed -nE $'s/^PLAN-PATH\t[^\t]*\t//p')"
     else
         # ponytail: a template whose upgrade.sh predates --plan-paths has no path
