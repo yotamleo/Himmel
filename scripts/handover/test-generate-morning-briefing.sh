@@ -47,6 +47,8 @@ assert_contains() {
 
 TMP_ROOT=$(mktemp -d)
 if command -v cygpath >/dev/null 2>&1; then TMP_ROOT=$(cygpath -m "$TMP_ROOT"); fi
+# Hermetic: the operator's real failure-review digests must not leak in (HIMMEL-4713).
+export HIMMEL_FAILURE_REVIEW_DIR="$TMP_ROOT/failure-review"
 
 # Fake gh + jira + claude CLIs -----------------------------------------
 
@@ -421,6 +423,24 @@ echo "TEST: no awk -v carries the raw multi-line annotated_branches"
 # shellcheck disable=SC2016  # the pattern is a literal, not an expansion
 raw_v=$(grep -nE 'awk .*-v [A-Za-z_]+="\$annotated_branches"' "$SCRIPT" || true)
 if [ -z "$raw_v" ]; then pass "annotated_branches not passed raw via awk -v"; else fail "raw multi-line awk -v" "$raw_v"; fi
+
+# HIMMEL-4713: the daily failure-review digest nests under its own section.
+echo "TEST: failure review section embeds today's digest, else says none"
+OUT_FR0="$TMP_ROOT/fr0.md"
+run_script --since "$MARKER" --out "$OUT_FR0" >/dev/null
+file=$(cat "$OUT_FR0")
+assert_contains "failure review: section"   "Failure review"                 "$file"
+assert_contains "failure review: none"      "No failure review digest for"   "$file"
+mkdir -p "$HIMMEL_FAILURE_REVIEW_DIR"
+printf '## Failure review\n\n- failures: 3 rows, 2 classes, 2 legs\n\n### Top classes\n\n- error/Edit: 2 rows\n' \
+    > "$HIMMEL_FAILURE_REVIEW_DIR/failure-review-$(date +%F).md"
+OUT_FR1="$TMP_ROOT/fr1.md"
+run_script --since "$MARKER" --out "$OUT_FR1" >/dev/null
+file=$(cat "$OUT_FR1")
+assert_contains "failure review: digest body"   "- failures: 3 rows, 2 classes, 2 legs" "$file"
+assert_contains "failure review: demoted"       "#### Top classes"                     "$file"
+if grepq "$file" -x '## Failure review'; then fail "failure review: inner heading not dropped"; else pass "failure review: inner heading dropped"; fi
+rm -rf "$HIMMEL_FAILURE_REVIEW_DIR"
 
 # Summary --------------------------------------------------------------
 
