@@ -510,6 +510,65 @@ const costSection = (() => {
     } catch { return ''; }
 })();
 
+// Failure classes this shift (HIMMEL-4670 P4, spec section 5.2): the leg-failures
+// ledger (HIMMEL_LEG_FAILURES_LEDGER, the seam leg_ledger.py writes through) since
+// the console lock's `started`, grouped by class -- distinct legs, events (sum of
+// count), recovered share, and the failure router's latest decision for the class
+// from its log (HIMMEL_FAILURE_ROUTES_LOG; "signal" until P5 routes one). At most 10
+// rows, by legs then events. A line under the table counts the memory inbox's `- `
+// lines (<bucket>/failure-loop/memory-inbox.md). No lock start or an unreadable
+// ledger reads "leg failures unavailable"; never fatal; not part of the fingerprint.
+const failuresSection = (() => {
+    const title = '<h2>Failure classes — this shift</h2>';
+    const unavailable = `<section data-failures="?">${title}<p class="none">leg failures unavailable</p></section>`;
+    const jsonRows = (path, start) => {
+        if (!existsSync(path)) return [];
+        const rows = [];
+        for (const line of readFileSync(path, 'utf8').split('\n')) {
+            let r;
+            try { r = JSON.parse(line); } catch { continue; }
+            if (r && typeof r === 'object' && typeof r.ts === 'string' && r.ts >= start && typeof r.class === 'string') rows.push(r);
+        }
+        return rows;
+    };
+    try {
+        let lock = '';
+        try {
+            lock = execFileSync('bash', [join(repo, 'scripts', 'handover', 'queue-lock.sh'), 'status', docPath],
+                { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] });
+        } catch (e) { lock = String(e.stdout || ''); }
+        const start = (/"started":"([0-9TZ:-]+)"/.exec(lock) || [])[1];
+        if (!start) return unavailable;
+        const home = process.env.HOME || '';
+        const rows = jsonRows(process.env.HIMMEL_LEG_FAILURES_LEDGER || join(home, '.himmel', 'leg-failures.jsonl'), start);
+        const routes = jsonRows(process.env.HIMMEL_FAILURE_ROUTES_LOG || join(home, '.himmel', 'state', 'failure-routes.log.jsonl'), start);
+        const byClass = new Map();
+        for (const r of rows) {
+            const c = byClass.get(r.class) || { legs: new Set(), events: 0, rec: 0, known: 0 };
+            c.legs.add(r.leg);
+            c.events += typeof r.count === 'number' ? r.count : 1;
+            if (typeof r.recovered === 'boolean') { c.known += 1; if (r.recovered) c.rec += 1; }
+            byClass.set(r.class, c);
+        }
+        const lastRoute = new Map();
+        for (const r of routes) if (typeof r.decision === 'string') lastRoute.set(r.class, r);
+        const sorted = [...byClass].sort(([a, x], [b, y]) => y.legs.size - x.legs.size || y.events - x.events || (a < b ? -1 : a > b ? 1 : 0)).slice(0, 10);
+        const route = (cls) => {
+            const r = lastRoute.get(cls);
+            if (!r) return 'signal';
+            const at = `${r.decision} ${r.ts.slice(11, 16)}`;
+            return typeof r.ticket === 'string' && r.ticket ? `${r.ticket} (${at})` : at;
+        };
+        let inbox = 0;
+        const inboxPath = join(bucket, 'failure-loop', 'memory-inbox.md');
+        if (existsSync(inboxPath)) inbox = readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.startsWith('- ')).length;
+        const inboxLine = `<p class="sub">memory inbox: ${inbox} pending</p>`;
+        if (!sorted.length) return `<section data-failures="0">${title}<p class="none">no leg failures this shift</p>${inboxLine}</section>`;
+        const tr = sorted.map(([cls, c]) => `<tr data-class="${safe(cls, 80)}"><td>${safe(cls, 80)}</td><td>${c.legs.size}</td><td>${c.events}</td><td>${c.known ? `${Math.round((c.rec / c.known) * 100)} %` : '—'}</td><td>${safe(route(cls), 60)}</td></tr>`).join('\n');
+        return `<section data-failures="${sorted.length}">${title}<table><tr><th>class</th><th>legs</th><th>events</th><th>recovered</th><th>route</th></tr>\n${tr}\n</table>${inboxLine}</section>`;
+    } catch { return unavailable; }
+})();
+
 const html = `<!doctype html>
 <html lang="en">
 <head>
@@ -539,6 +598,7 @@ ul { list-style:none; margin:0; padding:0; } li { padding:6px 0; border-top:1px 
 li[data-phase="BLOCKED"] .ph, li[data-phase="WRAPPED, window still open"] .ph, li[data-ci="failing"] .pr { color:var(--bad); } li[data-phase="WRAPPED"] .ph, li[data-phase="MERGED"] .ph, li[data-ci="green"] .pr { color:var(--ok); } li[data-ci="pending"] .pr { color:var(--warn); }
 .bar { height:6px; background:var(--line); border-radius:3px; margin-top:4px; } .bar i { display:block; height:100%; background:var(--accent); border-radius:3px; }
 .wide { grid-column:1 / -1; }
+table { width:100%; border-collapse:collapse; font-size:.85rem; } th, td { text-align:left; padding:4px 6px; border-top:1px solid var(--line); } th { color:var(--muted); font-weight:500; }
 </style>
 </head>
 <body>
@@ -560,6 +620,7 @@ ${ladder}
 </ul>
 </section>
 ${costSection}
+${failuresSection}
 ${panel('Needs the console', needRows, 'nothing waiting on the console')}
 ${panel('Open operator decisions', decisions.map((d) => `<li>${safe(d)}</li>`).join('\n'), 'none recorded (Live state decisions:)')}
 ${epics.length ? panel('Epics — merged / total', epicRows, '') : ''}${releases.map((r) => `\n${releasePanel(r)}`).join('')}
