@@ -226,7 +226,8 @@ async function main() {
   };
   // null: not a failure (a grep that matched nothing). Else "" or ":<sub>", appended to error/Bash.
   const bashErrorSub = (cmd: string, text: string): string | null => {
-    if (NO_MATCH.test(text) && GREP_CMD.test(cmd)) return null;
+    // Only the last command of a sequence can be the grep whose exit 1 this is: in `grep x f; false` the failure is `false`'s.
+    if (NO_MATCH.test(text) && GREP_CMD.test(cmd.split(/;|&&|\|\||\n/).filter((s) => s.trim()).pop() ?? "")) return null;
     for (const e of BASH_ERRORS) {
       if (!e.out.test(text) || (e.cmd && !e.cmd.test(cmd))) continue;
       if (e.sub !== "usage") return `:${e.sub}`;

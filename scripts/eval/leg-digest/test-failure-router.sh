@@ -250,13 +250,13 @@ SAVE="$LED"; LED="$F10/l.jsonl"
 for c in error/Bash:usage:impacted-suites error/Bash:zsh-nomatch error/Bash:no-such-file error/Bash error/Edit; do
   row N1 "$c"; row N2 "$c"; row N3 "$c"
 done
-row N1 error/Bash:cr-gate-exit-14; row N2 error/Bash:cr-gate-exit-14; row N3 error/Bash:cr-gate-exit-14
+for n in N1 N2 N3 N4 N5; do row "$n" error/Bash:cr-gate-exit-14; done
 row N1 denied/guard-leg-context-handoff 1; row N2 denied/guard-leg-context-handoff 1
 LED="$SAVE"
 DRY10="$TMP/dry10.out"
 python3 "$FR" route --dry-run --ledger "$F10/l.jsonl" --state "$F10/s.json" --log "$F10/log" --inbox "$F10/inbox" --now "$NOW" >"$DRY10" 2>&1
 wf10() { jq -e --arg c "$1" "select(.class == \$c and .decision == \"would-file\")" "$DRY10" >/dev/null; }
-check "each sub-class would be filed under its own class" 'for c in error/Bash:usage:impacted-suites error/Bash:zsh-nomatch error/Bash:no-such-file error/Bash:cr-gate-exit-14; do wf10 "$c" || return 1; done'
+check "each sub-class would be filed under its own class" '[ -z "$(for c in error/Bash:usage:impacted-suites error/Bash:zsh-nomatch error/Bash:no-such-file error/Bash:cr-gate-exit-14; do wf10 "$c" || echo "$c"; done)" ]'
 check "the usage ticket names the script and the fix, not just Bash errors" 'jq -er ".routes[] | select(.match == \"error/Bash:usage:*\") | .summary" "$HERE/failure-routes.table.json" | grep -q "{sub}" && ! jq -er ".routes[] | select(.match == \"error/Bash:usage:*\") | .summary" "$HERE/failure-routes.table.json" | grep -q "errors recur"'
 check "every error/Bash:* row carries its own summary, none is the generic one" '[ "$(jq "[.routes[] | select(.match | startswith(\"error/Bash:\")) | .summary] | map(select(contains(\"errors recur\"))) | length" "$HERE/failure-routes.table.json")" = 0 ] && [ "$(jq "[.routes[] | select(.match | startswith(\"error/Bash:\"))] | length" "$HERE/failure-routes.table.json")" -ge 4 ]'
 check "the sub-class rows sit before the generic error/* row" '[ "$(jq "[.routes[].match] | (index(\"error/Bash:usage:*\") != null) and index(\"error/Bash:usage:*\") < index(\"error/*\")" "$HERE/failure-routes.table.json")" = true ]'
