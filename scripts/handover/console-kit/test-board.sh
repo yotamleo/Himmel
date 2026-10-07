@@ -34,6 +34,8 @@ same() {
 
 B="$W/bucket"
 mkdir -p "$B" "$W/bin" "$W/repo"
+# HIMMEL-4670: the failures panel reads these ledgers; never the operator's own.
+export HIMMEL_LEG_FAILURES_LEDGER="$W/leg-failures.jsonl" HIMMEL_FAILURE_ROUTES_LOG="$W/failure-routes.log.jsonl"
 
 # The tick stub records its argv and prints a fixed line + fingerprint. N1..N7
 # cover every phase; the fleet is 9/15 with six idle slots. N12 (issue #1336):
@@ -566,6 +568,55 @@ contains 'cost line: class names like constructor/__proto__ do not suppress the 
 printf 'not json\n' > "$LC"
 LEG_COST_LEDGER="$LC" mrun >/dev/null; rc=$?
 lacks 'cost line: a ledger with no usable row today renders nothing' "$(cat "$M/board.html")" 'data-cost-legs'
+
+# --- failure classes this shift (HIMMEL-4670): the leg-failures ledger since the
+# console lock's start, the router log's latest decision per class, the memory
+# inbox count. Never fatal; not part of the fingerprint.
+mkdir -p "$W/repo/scripts/handover"
+cat > "$W/repo/scripts/handover/queue-lock.sh" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = status ] || exit 2
+[ -n "${QL_STUB_STARTED:-}" ] || { echo free; exit 0; }
+printf '{"session":"s","host":"h","handover":"x","started":"%s","heartbeat":"%s"}\n' "$QL_STUB_STARTED" "$QL_STUB_STARTED"
+echo 'status: FRESH'; exit 11
+STUB
+FL="$W/leg-failures.jsonl"
+frow() { printf '{"ts":"%s","leg":"%s","class":"%s","failure":"x","count":%s,"recovered":%s}\n' "$1" "$2" "$3" "$4" "$5"; }
+{
+    frow 2026-10-07T02:00:00Z N0 old/before-shift 9 false
+    frow 2026-10-07T03:01:00Z N1 denied/guard-a 3 true
+    frow 2026-10-07T03:02:00Z N2 denied/guard-a 2 false
+    frow 2026-10-07T03:03:00Z N2 'suite/test-<b>x</b>.sh' 3 null
+    echo 'not json'
+} > "$FL"
+{
+    printf '{"ts":"2026-10-07T02:30:00Z","class":"denied/guard-a","legs":1,"decision":"commented","ticket":"HIMMEL-1"}\n'
+    printf '{"ts":"2026-10-07T03:04:00Z","class":"denied/guard-a","legs":2,"decision":"filed","ticket":"HIMMEL-4799"}\n'
+} > "$W/failure-routes.log.jsonl"
+mkdir -p "$M/failure-loop"
+printf '%s\n' '# memory inbox' '- one' '- two' > "$M/failure-loop/memory-inbox.md"
+QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null; rc=$?
+same 'failures panel: render succeeds, rc 0' "$rc" "0"
+fhtml="$(cat "$M/board.html")"
+fsnap="$(printf '%s\n' "$fhtml" | sed -n '/data-failures=/,/<\/section>/p')"
+same 'failures panel: snapshot (HIMMEL-4670)' "$fsnap" '<section data-failures="2"><h2>Failure classes — this shift</h2><table><tr><th>class</th><th>legs</th><th>events</th><th>recovered</th><th>route</th></tr>
+<tr data-class="denied/guard-a"><td>denied/guard-a</td><td>2</td><td>5</td><td>50 %</td><td>HIMMEL-4799 (filed 03:04)</td></tr>
+<tr data-class="suite/test-&lt;b&gt;x&lt;/b&gt;.sh"><td>suite/test-&lt;b&gt;x&lt;/b&gt;.sh</td><td>1</td><td>3</td><td>—</td><td>signal</td></tr>
+</table><p class="sub">memory inbox: 2 pending</p></section>'
+: > "$FL"
+QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null
+contains 'failures panel: no rows this shift reads the empty line' "$(cat "$M/board.html")" '<p class="none">no leg failures this shift</p>'
+mrun >/dev/null; rc=$?
+same 'failures panel: no lock start, rc 0' "$rc" "0"
+contains 'failures panel: no lock start reads unavailable' "$(cat "$M/board.html")" 'leg failures unavailable'
+mkdir -p "$W/fl-dir"
+QL_STUB_STARTED=2026-10-07T03:00:00Z HIMMEL_LEG_FAILURES_LEDGER="$W/fl-dir" mrun >/dev/null; rc=$?
+same 'failures panel: unreadable ledger, rc 0' "$rc" "0"
+contains 'failures panel: unreadable ledger reads unavailable' "$(cat "$M/board.html")" 'leg failures unavailable'
+for i in $(seq 1 12); do frow 2026-10-07T03:10:00Z "N$i" "c/k$(printf '%02d' "$i")" 1 false; done > "$FL"
+QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null
+same 'failures panel: at most 10 rows' "$(grep -o '<tr data-class=' "$M/board.html" | wc -l | tr -d ' ')" "10"
+: > "$FL"
 
 # --- a console FOR another checkout shows that checkout's PRs, not himmel's.
 # console.sh records the project on the doc's project line; every gh call must
