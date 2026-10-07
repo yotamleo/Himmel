@@ -337,8 +337,11 @@ assert "preflight names the switch" ok "$a"
 : >"$tmp/calls"
 make_vault "$tmp/v13c" SCRP0132
 HIMMEL_MEDIA_COOKIES=off run_tool "$tmp/v13c" >"$tmp/v13c.out" 2>"$tmp/v13c.err"
+assert "HIMMEL_MEDIA_COOKIES=off exits 0" 0 "$?"
 grep -q '^gdl$' "$tmp/calls" && a=called || a=skipped
 assert "HIMMEL_MEDIA_COOKIES=off never calls gallery-dl" skipped "$a"
+grep -q '^ig_media_pending: true$' "$tmp/v13c/Clippings/clip.md" && a=ok || a=no
+assert "HIMMEL_MEDIA_COOKIES=off clip stays pending" ok "$a"
 
 echo ""
 echo "ig-scrapling tests: $pass passed, $fail failed"
