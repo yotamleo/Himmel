@@ -101,7 +101,7 @@ QR="bash scripts/quiet-run.sh suite --"
 check "quiet-run suite -- bash test-x.sh is a run of test-x.sh, its OK/ERR line the outcome" '[ "$(tt "$QR bash scripts/a/test-x.sh")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
 check "an env-var prefix and a trailing ; grep still read the quiet-run line" '[ "$(tt "SUITE_LOCK_WAIT=300 $QR bash test-x.sh; grep -c FAIL /tmp/q.log")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
 check "a direct ./scripts/quiet-run.sh call under a pipe is recognized" '[ "$(tt "./scripts/quiet-run.sh suite -- bash test-x.sh 2>&1 | tail -3")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
-check "two quiet-run suites in one command are one run of both test files" '[ "$(tt "$QR bash test-a.sh; $QR bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"quiet-run:suite\"]" ]'
+check "two quiet-run suites in one command are one run of both test files" '[ "$(tt "$QR bash test-a.sh; $QR bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"quiet-run:suite x2\"]" ]'
 check "quiet-run wrapping a non-test is not a test run" '[ "$(tt "bash scripts/quiet-run.sh npm-install -- npm install")" = "null" ]'
 check "node --test names its test files" '[ "$(tt "node --test scripts/a/foo.test.mjs")" = "[[\"foo.test.mjs\"], \"pass+fail\"]" ]'
 check "node --test with no test file runs the default set" '[ "$(tt "node --test")" = "[[\"*\"], \"pass+fail\"]" ]'
@@ -129,6 +129,9 @@ leg qr-masked "$QR bash test-x.sh; grep -c FAIL /tmp/q.log" "ERR quiet-run suite
 2" "$QR bash test-x.sh; grep -c FAIL /tmp/q.log" "ERR quiet-run suite exit=1 (1s, log: /tmp/q.log)
 1"
 check "an ERR quiet-run line is a failed run even when ; grep makes the command exit 0" 'python3 "$TR" score "$TMP/qr-masked.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == false" >/dev/null'
+leg qr-skipped "$QR bash test-x.sh" "Exit code 1
+ERR quiet-run suite exit=1 (1s, log: /tmp/q.log)" "$QR bash test-x.sh; false && $QR bash test-y.sh" "OK quiet-run suite (1s, log: /tmp/q.log)"
+check "one OK line for two wrapped suites credits neither as a pass" 'python3 "$TR" score "$TMP/qr-skipped.jsonl" | jq -e ".verify_before_claim == false" >/dev/null'
 cl() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import trajectory as t; print(len(t.claims(sys.argv[2])))' "$HERE" "$1"; }
 check "wrap-report phrasing is not a test claim" '[ "$(cl "the subtree check passed: CLOSABLE.")" = 0 ]'
 check "a test or suite claim is still a claim" '[ "$(cl "All 12 tests passed and the suite is green.")" = 1 ]'

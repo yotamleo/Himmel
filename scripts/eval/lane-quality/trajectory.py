@@ -148,11 +148,12 @@ def test_target(command):
             continue
         label = _quiet_label(seg)
         if label is not None:
-            for later in segs[i + 1:]:  # one OK/ERR line per wrapped run: speak for all of them
+            n = 1
+            for later in segs[i + 1:]:  # one OK/ERR line per wrapped run
                 t2 = _segment_target(later)
                 if t2 and _quiet_label(later) == label:
-                    t = t | t2
-            return t, "quiet-run:" + label
+                    t, n = t | t2, n + 1
+            return t, "quiet-run:" + label + (" x%d" % n if n > 1 else "")
         if any(s in ("||", "|", "&") for s in seps):
             return t, ""
         fail_ok = True
@@ -326,10 +327,11 @@ def score_calls(calls, texts, report=None):
             t = test_target(c["input"].get("command"))
             passed = not c["result"]["is_error"]
             if t and t[1].startswith("quiet-run:"):  # the OK/ERR line decides (HIMMEL-4698)
+                label, _, n = t[1][10:].partition(" x")
                 ms = [m.group(1) for m in QUIET_RUN_LINE_RE.finditer(c["result"]["text"])
-                      if m.group(2) == t[1][10:]]
-                if not ms:
-                    continue  # refused or killed: no test ran
+                      if m.group(2) == label]
+                if len(ms) != int(n or 1):
+                    continue  # refused, killed or a wrapped run skipped: no outcome to credit
                 passed, t = "ERR" not in ms, (t[0], "pass+fail")
             if t and ((passed and t[1]) or t[1] == "pass+fail"):
                 runs.append((c["pos"], t[0], passed))
