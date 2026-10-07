@@ -40,7 +40,7 @@ test('exactly 3 asks is still cloud-eligible', () => {
 });
 
 test('LOCAL-NATIVE: run-time need (luna / vault / handover state / qmd query, vector, embed)', () => {
-  for (const need of ['It reads the luna vault.', 'It reads the vault notes.', 'It reads handover state.', 'It writes under $HANDOVER_DIR.', 'It runs qmd query -c luna.', 'It calls qmd query -c himmel at run time.', 'It needs qmd vector search.', 'It runs qmd embed.', 'It runs qmd  query twice.', 'It runs /graphify on the docs.', 'It needs a semantic graphify extraction.', 'It runs graphify extract --backend gemini.']) {
+  for (const need of ['It reads the luna vault.', 'It reads the vault notes.', 'It reads handover state.', 'It writes under $HANDOVER_DIR.', 'It runs qmd query -c luna.', 'It calls qmd query -c himmel at run time.', 'It needs qmd vector search.', 'It runs qmd embed.', 'It runs qmd  query twice.', 'It runs /graphify on the docs.', 'It needs a semantic graphify extraction.', 'It runs graphify extract --backend gemini.', 'It runs graphify extract ./docs --backend gemini.']) {
     const v = classifyTicket(tk({ description: `Edit scripts/a.sh. ${need}` }), ctx());
     assert.equal(v.class, 'LOCAL-NATIVE', need);
     assert.match(v.reason, /run-time/);
