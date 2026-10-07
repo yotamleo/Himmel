@@ -861,7 +861,7 @@ case "$(loop_text)" in *"a loop"*) pass "deny names the loop" ;; *) fail "deny d
 case "$(loop_text)" in *"N writes = N literal commands"*) pass "deny gives the N-literal recipe" ;; *) fail "deny lacks the N-literal recipe" ;; esac
 case "$(loop_text)" in *"in the original order"*) pass "loop recipe keeps the write order" ;; *) fail "loop recipe does not keep the write order" ;; esac
 grep -q "^    node $JIRA fix-version " "$ERR" && pass "retry names the resolved CLI path and the verb" || fail "retry does not name '$JIRA fix-version'"
-grep -q '^    node \$J' "$ERR" && fail "retry example still uses the \$J variable"
+grep -q '^    node \$J' "$ERR"; [ "$?" -eq 1 ] && pass "retry example drops the \$J variable" || fail "retry example still uses the \$J variable (or grep errored)"
 case "$(loop_text)" in *"classifier denial of a loop"*) pass "deny says a classifier loop denial is a shape denial" ;; *) fail "deny omits the classifier-loop line" ;; esac
 
 # A loop over the LITERAL CLI path with plain arguments is already approved by the
@@ -871,6 +871,14 @@ run_hook Bash "for k in HIMMEL-1 HIMMEL-2; do node $JIRA transition \$k Done; do
 [ "$RC" -eq 0 ] && pass "gateway-approved literal-path loop left alone" || fail "approved literal loop bounced (rc=$RC)"
 run_hook Bash "for k in HIMMEL-1 HIMMEL-2; do node $JIRA comment \$k --body \"\$(cat \$k.md)\"; done"
 [ "$RC" -eq 2 ] && pass "for loop with a substituted body bounced" || fail "for loop with \$(…) body not bounced (rc=$RC)"
+# A write AFTER the loop's `done` is not in the loop: it goes to the flat scanner,
+# which keeps its base fail-open on loop/conditional keywords (codex round 2).
+run_hook Bash "for k in 1 2; do echo \$k; done; node $JIRA create --project HIMMEL --summary \"\$(cat s.md)\""
+[ "$RC" -eq 0 ] && pass "write after a finished loop left to the flat scanner (base behaviour)" || fail "write after done bounced as a loop write (rc=$RC)"
+run_hook Bash "if false; then for k in 1; do echo \$k; done; node $JIRA create --project HIMMEL --summary \"\$(cat s.md)\"; fi"
+[ "$RC" -eq 0 ] && pass "conditional write after a finished loop left to the flat scanner" || fail "conditional write after done bounced as a loop (rc=$RC)"
+run_hook Bash "for a in 1; do for b in 2; do echo; done; node $JIRA comment HIMMEL-\$a --body \"\$(cat b.md)\"; done"
+[ "$RC" -eq 2 ] && pass "write after an inner done is still in the outer loop" || fail "write in the outer loop after an inner done not bounced (rc=$RC)"
 
 run_hook Bash "J=$JIRA; while read k; do node \$J comment \$k --comment-file c.md; done < keys.txt"
 [ "$RC" -eq 2 ] && pass "while-read loop over \$J bounced" || fail "while loop not bounced (rc=$RC)"

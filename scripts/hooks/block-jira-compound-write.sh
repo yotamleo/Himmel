@@ -978,9 +978,10 @@ VAREOF
 # such write. Unlike has_jira_write this does NOT bail on conditionals: the loop
 # recipe tells the agent to evaluate every condition itself and issue only the
 # writes the original would have run, which keeps the meaning a plain "reissue it
-# standalone" would lose. A write that precedes every loop keyword is not in scope.
+# standalone" would lose. A write before a loop opens or after its `done` is not
+# in scope.
 loop_jira_write() {
-    local t stmt kw found=0 xa
+    local t stmt kw found=0 xa depth=0
     local -a xt
     LOOP_SEEN=0; XARGS_SEEN=0
     t="${1//&>>/>>}"; t="${t//&>/>}"; t="${t//>&/>}"; t="${t//>|/>}"; t="${t//<&/<}"
@@ -992,10 +993,15 @@ loop_jira_write() {
             case "$kw" in
                 # `for k in …` runs no command itself; a `while`/`until` condition
                 # does (it is the rest of the statement), so only the word goes.
+                # depth counts open loop bodies: a write after the matching `done`
+                # is outside the loop and goes to the flat scanner.
                 for|for[[:space:]]*|select|select[[:space:]]*)
-                    LOOP_SEEN=1; kw="" ;;
-                while|until) LOOP_SEEN=1; kw="" ;;
-                while[[:space:]]*|until[[:space:]]*) LOOP_SEEN=1; kw="${kw#*[[:space:]]}" ;;
+                    depth=$((depth + 1)); kw="" ;;
+                while|until) depth=$((depth + 1)); kw="" ;;
+                while[[:space:]]*|until[[:space:]]*) depth=$((depth + 1)); kw="${kw#*[[:space:]]}" ;;
+                done|done[[:space:]]*)
+                    [ "$depth" -gt 0 ] && depth=$((depth - 1))
+                    kw="${kw#done}" ;;
                 '{'|'!') kw="" ;;
                 '{'[[:space:]]*|'!'[[:space:]]*) kw="${kw#?}" ;;
                 do|then|else|if|elif|time) kw="" ;;
@@ -1028,8 +1034,9 @@ loop_jira_write() {
                 done
                 kw="${xt[*]:$k}"; xa=1 ;;
         esac
-        [ "$LOOP_SEEN" = 1 ] || [ "$xa" = 1 ] || continue
+        [ "$depth" -gt 0 ] || [ "$xa" = 1 ] || continue
         if segment_has_write "$kw"; then
+            [ "$depth" -gt 0 ] && LOOP_SEEN=1
             [ "$xa" = 1 ] && XARGS_SEEN=1
             found=1; break
         fi
