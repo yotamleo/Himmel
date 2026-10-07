@@ -197,6 +197,12 @@ LED="$SAVE"
 python3 "$FR" route --ledger "$F5/l.jsonl" --state "$F5/s.json" --log "$F5/log" --inbox "$F5/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
 check "two future-dated legs file nothing and log nothing" '[ "$(calls create)" = "$n5" ] && [ ! -s "$F5/log" ]'
 
+echo "a decision-log write that fails leaves the class unacted, so the next run decides again"
+F6="$TMP/f6"; mkdir -p "$F6/log"
+SAVE="$LED"; LED="$F6/l.jsonl"; row N1 denied/guard-w 1; row N2 denied/guard-w 1; LED="$SAVE"
+python3 "$FR" route --ledger "$F6/l.jsonl" --state "$F6/s.json" --log "$F6/log" --inbox "$F6/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "no acted legs are saved for a decision whose log line failed" '[ -z "$(jq -r ".classes[\"denied/guard-w\"].acted // empty" "$F6/s.json" 2>/dev/null)" ]'
+
 echo "the routing table is data"
 check "failure-routes.table.json parses and names every spec 4.2 key pattern" 'jq -e "[.routes[].match] | index(\"denied/classifier:*\") and index(\"suite/*\") and index(\"error/*\") and index(\"traj/claim-unverified\")" "$HERE/failure-routes.table.json" >/dev/null'
 check "the window is 14 days and the cap is 3" 'jq -e ".window_days == 14 and .daily_cap == 3" "$HERE/failure-routes.table.json" >/dev/null'

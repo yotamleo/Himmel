@@ -387,10 +387,11 @@ def route(a):
                 if state_ok:
                     save_state(a.state, state)
                 continue
+            # Log before saving the state: a failed log write must leave the class unacted, not a silent send.
+            leg_ledger._append(a.log, [{"ts": iso(now), "class": cls, "legs": n, "decision": dec, "ticket": ticket}])
             if state_ok:
                 c["last_decision"], c["last_legs"] = dec, legs
                 save_state(a.state, state)
-            leg_ledger._append(a.log, [{"ts": iso(now), "class": cls, "legs": n, "decision": dec, "ticket": ticket}])
             decisions += 1
             print("failure-router: %s legs=%d %s%s" % (cls, n, dec, " " + ticket if ticket else ""))
         if not a.dry_run:
