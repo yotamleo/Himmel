@@ -190,6 +190,11 @@ set -uo pipefail
 usage() {
     cat >&2 <<'EOF'
 usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only]
+       check-ci.sh --run <run-id> [--job <name>] [--max-wait <sec>]
+run mode: foreground workflow/job wait, no PR merge/review gates or settle.
+          0 = success/skipped/neutral, 1 = failed/cancelled, 2 = cannot evaluate.
+          DEADLINE-PENDING = 2 (7 with CHECK_CI_DISTINCT_DEADLINE=1).
+          CHECK_CI_RUN_HEARTBEAT overrides the per-process cache-dir heartbeat.
 exit codes: 0 = checks green + all review threads resolved
                 + no outside-diff-range body finding left undispositioned (an exact-head ledger
                   deferred/disproved disposition counts, HIMMEL-3124 — see exit 3).
@@ -310,8 +315,25 @@ esac
 trap 'echo "check-ci: verdict exit=$?"' EXIT
 
 selector=""
+RUN_ID=""
+JOB_NAME=""
 while [ $# -gt 0 ]; do
     case "$1" in
+        --run)
+            if [ $# -lt 2 ] || [ -n "$RUN_ID" ]; then echo "check-ci: --run needs one run id" >&2; exit 64; fi
+            case "$2" in ''|*[!0-9]*|0) echo "check-ci: --run needs a positive numeric run id" >&2; exit 64 ;; esac
+            # Strip leading zeros without arithmetic; reject overflow BEFORE
+            # conversion so a huge selector cannot wrap to another run id.
+            RUN_ID="${2#"${2%%[!0]*}"}"
+            # Equal-length digit strings are compared lexically to avoid overflow.
+            # shellcheck disable=SC2071
+            if [ -z "$RUN_ID" ] || [ "${#RUN_ID}" -gt 19 ] || { [ "${#RUN_ID}" -eq 19 ] && [[ "$RUN_ID" > 9223372036854775807 ]]; }; then
+                echo "check-ci: --run needs a positive run id within the signed 64-bit range" >&2; exit 64
+            fi
+            shift 2 ;;
+        --job)
+            if [ $# -lt 2 ] || [ -z "$2" ] || [ -n "$JOB_NAME" ]; then echo "check-ci: --job needs one job name" >&2; exit 64; fi
+            JOB_NAME="$2"; shift 2 ;;
         --grace)
             if [ $# -lt 2 ]; then echo "check-ci: --grace needs a value" >&2; usage; exit 64; fi
             GRACE="$2"; shift 2 ;;
@@ -341,6 +363,17 @@ case "$MAX_WAIT" in
     ''|*[!0-9]*) echo "check-ci: --max-wait must be a non-negative integer, got '$MAX_WAIT'" >&2; exit 64 ;;
 esac
 MAX_WAIT=$((10#$MAX_WAIT))   # a leading zero (08) must not read as octal below
+if [ -n "$RUN_ID" ]; then
+    if [ -n "$selector" ] || [ "$THREADS_ONLY" = 1 ]; then
+        echo "check-ci: --run cannot be combined with a PR selector or --threads-only" >&2
+        exit 64
+    fi
+    # Run mode has no settle/review gates: reuse the cache-backed watch in the
+    # foreground, before any PR-only GraphQL preflight or head read.
+    bash "$(cd "$(dirname "$0")" && pwd)/lib/check-ci-watch.sh" --run "$RUN_ID" "$JOB_NAME" "$MAX_WAIT"
+    exit $?
+fi
+if [ -n "$JOB_NAME" ]; then echo "check-ci: --job requires --run" >&2; exit 64; fi
 # HIMMEL-4136: the settle wait comes out of the same deadline, so a deadline
 # shorter than it can never certify green — every run would exit 2. Refuse the
 # combination here (flags or the env defaults alike) instead.

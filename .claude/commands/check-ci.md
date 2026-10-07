@@ -1,7 +1,34 @@
 ---
 description: Token-free PR merge-gate watcher — loops gh pr checks --watch, verifies threads resolved, returns one exit code.
-argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only]
+argument-hint: [pr-number|branch|url] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only] | --run <run-id> [--job <name>] [--max-wait <sec>]
 ---
+
+## Workflow/job mode (HIMMEL-4856)
+
+When `$ARGUMENTS` contains `--run <run-id>`, run **one foreground** Bash command:
+
+```bash
+bash scripts/check-ci.sh $ARGUMENTS
+```
+
+Optional `--job <name>` selects an exact job name (matrix suffix included).
+Success waits for the selected jobs (or the whole workflow); a failure exits
+immediately even while other jobs run.
+This is a workflow/job wait, **not a PR merge/review certification**. Do not use
+`run_in_background` or add a poll loop. The shared repository/run-id cache,
+adaptive interval and REST/core budget preflight handle the waiting.
+`--max-wait` defaults to 900 seconds (`0` unbounded); no PR settle/review gates
+apply. `0` = success/neutral/skipped, `1` = failed/cancelled (job and
+`gh run view <id> --log-failed` command printed), `2` = cannot evaluate
+(unreadable/unknown response, missing job in a completed run, or deadline).
+Pending at the deadline prints `DEADLINE-PENDING` (`7` instead of `2` with
+`CHECK_CI_DISTINCT_DEADLINE=1`). Bounded reads require GNU timeout/gtimeout.
+The heartbeat path is printed at launch; `CHECK_CI_RUN_HEARTBEAT` overrides it.
+Its `hb=... pid=... key=... tick=... state=... [exit=...]` shape matches
+console-wait; an abandoned sampling/waiting heartbeat never means success.
+Return the verdict; the PR-specific instructions below do not apply in this mode.
+
+## PR mode
 
 CodeRabbit is best effort (HIMMEL-3360): it is one reviewer among several, CI-only,
 never run locally, and this script neither pauses for its status to settle nor
