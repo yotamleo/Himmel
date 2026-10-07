@@ -258,8 +258,31 @@ test("health: returning to Config before the feed lands shows loading, not Healt
   await page.locator("nav.pages a", { hasText: "Config" }).click();
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
   await expect(page.locator("main #verdict")).toHaveCount(0);
-  await expect(page.locator("#status")).toHaveText("loading…");
+  // HIMMEL-4807: the pending state is the probe status (or plain loading before its first step).
+  await expect(page.locator("#status")).toHaveText(/^(loading…|probing .*)/);
   await expect(page.locator("#inventory .bhead").first()).toBeVisible({ timeout: 20_000 }); // the feed lands and Config paints
+});
+
+// HIMMEL-4807: the probe progress bar, and the feed loading in the background.
+test("probe progress bar: while the report runs, Config names the step, n of N, over a progress bar", async ({ page }) => {
+  h = await boot({}, { feedDelayMs: 6000 });
+  await page.goto(h.url);
+  await expect(page.locator("#status progress")).toBeVisible();
+  await expect(page.locator("#status")).toHaveText(/probing (install items|doctor checks|pipeline cadence|plugin profile) \(\d of 4\)/);
+  await expect(page.locator("#status progress")).toHaveAttribute("max", "4");
+  await expect(page.locator("#status")).toHaveText(/\((?:[2-4]) of 4\)/, { timeout: 6_000 }); // it advances
+  await expect(page.locator("#inventory .bhead").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator("#status")).toHaveCount(0);
+});
+
+test("background loading: the report loads while the operator is on another page; Config then has it at once", async ({ page }) => {
+  h = await boot({}, { feedDelayMs: 4000 });
+  await page.goto(h.url.replace("/#", "/agui/#")); // the Fleet landing, another document (its build page when dist is unbuilt)
+  await page.waitForTimeout(5000); // past the report's 4 s, without the console ever asking
+  const config = await page.context().newPage();
+  await config.goto(h.url);
+  await expect(config.locator("#inventory .bhead").first()).toBeVisible({ timeout: 1500 });
+  await config.close();
 });
 
 test("health: a firing page alert makes the verdict Act now and shows its summary", async ({ page }) => {
