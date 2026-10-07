@@ -1045,14 +1045,17 @@ if grepq "$l12" -F ': HELD' && grepq "$l12" -F 'release: vm-proof via remote-vm 
 printf 'owner/hookrepo=v1.3.0\nowner/heldrepo=v3.0.0\nowner/act=v3.4.1\nowner/act2=v2.0.0\n' > "$W12/state/rel"
 pin_run "$W12/holds.json"
 if grepq "$pin_sec" '^  gh:owner/heldrepo v1\.0\.0 .*: BEHIND'; then ok "pin-scan: hold expires once upstream moves past the reviewed release"; else bad "expired hold still HELD; $(printf '%s' "$pin_sec" | grep heldrepo)"; fi
-# Coverage: every tracked package.json directory in THIS repo is discovered.
+# Coverage: every tracked package.json with dependency pins is discovered.
+# Dependency-free packages have no pins and intentionally emit no scanner row.
 cov_out="$(PINSTATE="$W12/state" PINSTATE_DEFAULT=0.0.0 PATH="$W12/bin:$PATH" python3 "$ROOT/scripts/upstreams/pin-scan.py" "$ROOT" "" 2>&1)"
 cov_missing=""
 while IFS= read -r pj; do
+  has_pins="$(python3 -I -c 'import json,sys; p=json.load(open(sys.argv[1])); print("yes" if p.get("dependencies") or p.get("devDependencies") else "no")' "$ROOT/$pj")" || { bad "cannot read dependency pins: $pj"; continue; }
+  [ "$has_pins" = no ] && continue
   d="$(dirname "$pj")"
   grepq "$cov_out" -F "$d" || cov_missing="$cov_missing $d"
 done < <(git -C "$ROOT" ls-files '*package.json' | grep -v -e '^node_modules/' -e '/fixtures/')
-if [ -z "$cov_missing" ]; then ok "pin-scan discovers every tracked package.json directory"; else bad "pin-scan missed:$cov_missing"; fi
+if [ -z "$cov_missing" ]; then ok "pin-scan discovers every tracked package.json directory with dependency pins"; else bad "pin-scan missed:$cov_missing"; fi
 if grepq "$cov_out" -F 'scripts/hooks/check-oxlint-complexity.sh' && grepq "$cov_out" -F 'scripts/hooks/check-oxlint-hardening.sh'; then ok "pin-scan discovers both oxlint hook pins"; else bad "oxlint hook pins not discovered"; fi
 if grepq "$cov_out" -E '^  gh:gitleaks/gitleaks v[0-9.]+ \([^)]*\.github/workflows/ci\.yml[^)]*\.pre-commit-config\.yaml'; then ok "pin-scan reads the ci.yml gitleaks literal into the same row as the hook rev"; else bad "ci.yml gitleaks pin not discovered with the hook rev; $(printf '%s' "$cov_out" | grep gitleaks)"; fi
 rm -rf "$W12" "$PIN_EMPTY"
