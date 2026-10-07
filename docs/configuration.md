@@ -327,6 +327,34 @@ prints the live budget as one read-only line (`gh-api: remaining=R/5000 reset=HH
 Never run your own `gh pr checks` poll loop in the background — that is the spend
 this replaces; call `scripts/check-ci.sh` in the foreground.
 
+**Workflow/job wait (HIMMEL-4856).** Run the same entrypoint in the foreground:
+
+```bash
+bash scripts/check-ci.sh --run 123456 --max-wait 900
+bash scripts/check-ci.sh --run 123456 --job 'shell-unit (1)' --max-wait 900
+```
+
+`--job` matches an exact job name (including a matrix suffix). Without it, the
+workflow and its jobs must finish; with it, only matching jobs must finish.
+This mode is **not a PR merge certification**: no review-thread or merge gates,
+no `--settle`. Exit `0` means success/neutral/skipped, `1` means failed/cancelled
+(the job and `gh run view <id> --log-failed` command are printed), and `2` means
+an unreadable/unknown response, a missing job in a completed run, or a deadline.
+A pending deadline prints `DEADLINE-PENDING`; `CHECK_CI_DISTINCT_DEADLINE=1`
+changes only that verdict to `7`. `--max-wait` defaults to `900`; `0` is unbounded.
+Bounded reads require GNU `timeout`/`gtimeout` (macOS: `brew install coreutils`).
+
+Run mode always uses the shared cache, keyed by repository/host/run id, so a
+whole-run waiter and a job waiter share one fetch per TTL. The same adaptive
+backoff and terminal TTL apply. `gh run view` reads REST/core, so the budget
+preflight uses **core**, not GraphQL; this does not change PR-mode reads.
+The heartbeat defaults to a per-process `run-*.rows.<pid>.wait` file under
+`CHECK_CI_CACHE_DIR`; override it with `CHECK_CI_RUN_HEARTBEAT=<path>` (parent
+must exist). It uses console-wait's `hb=<epoch> pid=<pid> key=<run> tick=<ok|fail|->
+state=<sampling|waiting|exited> [exit=<code>]` shape. A dead process leaving a
+waiting/sampling heartbeat is not success. Do not wrap this command in a poll
+loop or use `run_in_background`.
+
 ## 4. The control surface
 
 ### 4.1 `.env` — the file-based config
