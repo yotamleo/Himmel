@@ -194,15 +194,23 @@ check_c3() {
     # HIMMEL-4724: porcelain v2 -z — paths arrive raw (never C-quoted), so a
     # non-ASCII or quote-bearing name resolves. A rename ("2") record is followed
     # by its origPath record, which is skipped; its destination is aged by ctime
-    # (a move keeps the old mtime but stamps ctime).
+    # (a move keeps the old mtime but stamps ctime). HIMMEL-4736: so is an
+    # untracked path, an unstaged mv's destination. Ages are stat-based against
+    # now (HIMMEL_DOCTOR_C3_NOW, an epoch, is a test-only clock seam: a ctime
+    # cannot be backdated); stat -c is GNU, stat -f is BSD/macOS.
+    local now stat_fmt_m stat_fmt_c ts
+    now="${HIMMEL_DOCTOR_C3_NOW:-$(date +%s)}"
+    case "$now" in ''|*[!0-9]*) now="$(date +%s)" ;; esac
+    now=$(( 10#$now ))
+    if stat -c %Y / >/dev/null 2>&1; then stat_fmt_m="-c %Y"; stat_fmt_c="-c %Z"; else stat_fmt_m="-f %m"; stat_fmt_c="-f %c"; fi
     while IFS= read -r -d '' rec; do
         if [ "$skip_orig" = 1 ]; then skip_orig=0; continue; fi
-        age=-mmin
+        age="$stat_fmt_m"
         case "$rec" in
             '1 '*) p="${rec#* * * * * * * * }" ;;
-            '2 '*) p="${rec#* * * * * * * * * }"; skip_orig=1; age=-cmin ;;
+            '2 '*) p="${rec#* * * * * * * * * }"; skip_orig=1; age="$stat_fmt_c" ;;
             'u '*) p="${rec#* * * * * * * * * * }" ;;
-            '? '*) p="${rec#? }" ;;
+            '? '*) p="${rec#? }"; age="$stat_fmt_c" ;;
             *) continue ;;
         esac
         [ -n "$p" ] || continue
@@ -213,13 +221,14 @@ check_c3() {
             if [ -z "$commit_old" ]; then
                 commit_old=0
                 last="$(git -C "$v" log -1 --format=%ct 2>/dev/null)"
-                case "$last" in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - last )) -gt $(( 10#$dirty_min * 60 )) ] && commit_old=1 ;; esac
+                case "$last" in ''|*[!0-9]*) ;; *) [ $(( now - last )) -gt $(( 10#$dirty_min * 60 )) ] && commit_old=1 ;; esac
             fi
             if [ "$commit_old" = 1 ]; then stale="${stale:+$stale, }$p"; else fresh=1; fi
-        elif [ -n "$(find "$v/$p" -maxdepth 0 "$age" "+$dirty_min" 2>/dev/null)" ]; then
-            stale="${stale:+$stale, }$p"
         else
-            fresh=1
+            # shellcheck disable=SC2086  # $age is a two-word stat format, split on purpose
+            ts="$(stat $age "$v/$p" 2>/dev/null)"
+            case "$ts" in ''|*[!0-9]*) ts="$now" ;; esac
+            if [ $(( now - ts )) -gt $(( 10#$dirty_min * 60 )) ]; then stale="${stale:+$stale, }$p"; else fresh=1; fi
         fi
     done < <(git -C "$v" status --porcelain=v2 -z -uall 2>/dev/null)
     if [ -n "$stale" ]; then

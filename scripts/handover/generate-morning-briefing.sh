@@ -470,6 +470,17 @@ EOF_WIP
         printf '_No mapped-source-vs-doc drift since %s._\n' "$SINCE_SHA"
     fi
 
+    # Failure review (HIMMEL-4713) --------------------------------------------
+    # The digest the daily failure-review cadence wrote today; its headings drop
+    # one level so it nests under this section.
+    printf '\n## 🧯 Failure review\n\n'
+    failure_review="${HIMMEL_FAILURE_REVIEW_DIR:-$HOME/.himmel/state/failure-review}/failure-review-$today.md"
+    if [ -f "$failure_review" ]; then
+        sed -e '/^## Failure review$/d' -e 's/^### /#### /' "$failure_review" | sed '/./,$!d'
+    else
+        printf '_No failure review digest for %s (scripts/eval/leg-digest/failure-review-cadence.sh)._\n' "$today"
+    fi
+
     # Suggested order ---------------------------------------------------------
     printf '\n## Suggested order\n\n%s\n' "$order_final"
 )

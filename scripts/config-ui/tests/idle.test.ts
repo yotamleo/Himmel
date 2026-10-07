@@ -14,8 +14,9 @@ async function launch() {
   const reader = p.stdout.getReader();
   const line = new TextDecoder().decode((await reader.read()).value);
   const url = line.trim();
-  expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/#t=[0-9a-f]{64}$/);
-  const [base, frag] = url.split("/#t=");
+  // HIMMEL-4711: the one URL lands on the fleet (/agui/) when its page is built, else on the console.
+  expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/(?:agui\/)?#t=[0-9a-f]{64}$/);
+  const [base, frag] = url.split(/\/(?:agui\/)?#t=/);
   return { p, base, token: frag, started: Date.now() };
 }
 const exitedBy = (p: ReturnType<typeof Bun.spawn>, started: number, at: number) =>

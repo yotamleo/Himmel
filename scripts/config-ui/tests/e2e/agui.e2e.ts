@@ -205,3 +205,45 @@ test("9. the fleet landing lists 3 live sessions and 1 wrapped one, and a row op
   await expect(page.locator(".top .run")).toHaveText(`run ${FLEET.leg.run}`);
   await expect(page.locator(".call", { hasText: "Push" })).toBeVisible();
 });
+
+// HIMMEL-4711: one app across two documents. The console's rail reaches the fleet, a fleet row reaches its run view,
+// the rail there reaches back to Config and Health, and the token never rides a request line.
+test("10. console to Fleet to a run view and back: one rail, the token in the fragment only", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  const tok = /#t=([0-9a-f]{64})/.exec(h.url)![1];
+  const lines: string[] = [];
+  page.on("request", (r) => lines.push(r.url()));
+  await page.goto(h.url.replace("/agui/#t=", "/#t="));
+  const rail = page.locator("nav.pages a");
+  await expect(rail).toHaveText(["Config", "Health", "Fleet"]);
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
+  expect(await page.evaluate(() => location.hash)).toBe("#/config");
+  await expect(rail.filter({ hasText: "Fleet" }).locator(".st-dot")).toHaveClass(/\bok\b/);
+
+  await rail.filter({ hasText: "Fleet" }).click();
+  await expect(page).toHaveURL(new RegExp(`/agui/#t=${tok}$`));
+  await expect(rail).toHaveText(["Config", "Health", "Fleet"]);
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Fleet");
+  const leg = page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row").filter({ hasText: FLEET.leg.name });
+  await expect(leg.locator("a.fleet-link")).toHaveAttribute("href", `/#t=${tok}&page=health`);
+
+  await leg.locator("a.fleet-head").click();
+  await expect(page).toHaveURL(new RegExp(`&run=${FLEET.leg.run}$`));
+  await expect(rail).toHaveText(["Config", "Health", "Fleet", "Run"]);
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Run");
+  await expect(page.locator(".call", { hasText: "Push" })).toBeVisible();
+
+  await rail.filter({ hasText: "Config" }).click();
+  await expect(page).toHaveURL(/\/#\/config$/);
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Config");
+  await page.goBack();
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Run");
+
+  await page.goto(h.url);
+  await page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row").filter({ hasText: FLEET.leg.name }).locator("a.fleet-link").click();
+  await expect(page).toHaveURL(/\/#\/health$/);
+  await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Health");
+
+  expect(lines.length).toBeGreaterThan(0);
+  for (const u of lines) expect(new URL(u).pathname + new URL(u).search).not.toContain(tok);
+});

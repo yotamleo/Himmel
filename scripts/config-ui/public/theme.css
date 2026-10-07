@@ -1,0 +1,33 @@
+/* HIMMEL-4711: the one theme and rail of config-ui. The config console links it before app.css; the AG-UI page
+   (agui-web) bundles it before styles.css. Dark-first; light by preference or data-theme. */
+:root{
+  --bg:#121416; --panel:#191c1f; --line:#2a2f34; --fg:#e8e2d6; --dim:#8e959c;
+  --accent:#9fb7cf; --ok:#7fae8a; --warn:#d1a85f; --fail:#d9796b; --off:#6f767d;
+  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+  --sans:"IBM Plex Sans",system-ui,sans-serif;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
+  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; color-scheme:light}}
+:root[data-theme="light"]{
+  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
+  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; color-scheme:light}
+
+/* The shell: a sticky left rail (brand, the page links) beside one scrolling column. */
+.shell{display:grid;grid-template-columns:200px minmax(0,1fr);gap:0;min-height:100vh}
+.rail{position:sticky;top:env(safe-area-inset-top,0px);align-self:start;padding:20px 16px;border-right:1px solid var(--line);height:100vh;display:flex;flex-direction:column;gap:18px;font:13px/1.5 var(--mono)}
+.rail .brand{font:600 13px var(--mono);letter-spacing:.04em}
+.rail .brand small{display:block;color:var(--dim);font-weight:400}
+.pages{display:flex;flex-direction:column;gap:2px}
+.pages a{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:3px;color:var(--dim);text-decoration:none;font-weight:600}
+.pages a[aria-current="page"]{color:var(--fg);background:var(--panel);box-shadow:inset 2px 0 0 var(--accent)}
+.pages a:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
+/* A page's status dot, in the status colours. */
+.st-dot{flex:none;width:7px;height:7px;border-radius:50%;background:currentColor}
+.st-dot.ok{color:var(--ok)}.st-dot.warn{color:var(--warn)}.st-dot.fail{color:var(--fail)}.st-dot.off{color:var(--off)}
+@media (max-width:760px){
+  .shell{grid-template-columns:1fr}
+  .rail{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap;align-items:center;padding:12px 16px}
+  .pages{flex-direction:row;flex-wrap:wrap}
+}

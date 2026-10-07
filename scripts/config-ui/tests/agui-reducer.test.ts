@@ -335,6 +335,13 @@ describe("agent live state", () => {
     expect([errored.agents.main.last, errored.agents.q.last]).toEqual([900, 900]);
   });
 
+  // HIMMEL-4756: closing a call never moves its agent's last activity backward.
+  test("a run end that closes a call earlier than the agent's last activity leaves last where it was", () => {
+    const later = { ...opened, agents: { ...opened.agents, main: { ...opened.agents.main, last: 5000 } } };
+    const ended = reduceAll([{ type: "RUN_FINISHED", timestamp: 1800 }], later);
+    expect(ended.agents.main.last).toBe(5000);
+  });
+
   test("a background subagent whose Agent call returned at launch fails when the run error kills its open call", () => {
     const launched = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "launched", timestamp: 1400 }], opened);
     expect(agentState(launched, "q")).toBe("running"); // its own Read is still open

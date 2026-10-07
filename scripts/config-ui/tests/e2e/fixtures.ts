@@ -121,8 +121,9 @@ export async function boot(v: Variant = {}, o: BootOpts = {}): Promise<Harness> 
     child.stderr!.on("data", (d) => (err += d));
     child.stdout!.on("data", (d) => {
       buf += d;
-      const m = /(http:\/\/127\.0\.0\.1:\d+\/#t=[0-9a-f]{64})/.exec(buf);
-      if (m) ok(m[1]);
+      // HIMMEL-4711: the one printed URL may land on the fleet (/agui/); these tests open the console.
+      const m = /(http:\/\/127\.0\.0\.1:\d+)\/(?:agui\/)?(#t=[0-9a-f]{64})/.exec(buf);
+      if (m) ok(`${m[1]}/${m[2]}`);
     });
     child.on("error", fail);
     child.on("exit", (c) => fail(new Error(`himmelctl ui exited ${c}: ${err}`)));
