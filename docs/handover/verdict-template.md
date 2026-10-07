@@ -15,6 +15,15 @@ is the judge's session name (`HIMMEL-<ticket>-judge-<qid>` for a session,
 or the dispatching console's own session name for an in-process judge call).
 The console reads this path — never a message — to learn the verdict.
 
+A judge writes a merge-question verdict with
+`scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <path> [--judge <name>]`
+(HIMMEL-4689): it resolves the same `<root>/<user>/<bucket>/verdicts/<qid>/`
+that `go.sh --trust-reviewed` reads, writes the header, a `writer-session:`
+stamp and the `## Verdict` line itself, and appends the evidence file verbatim
+(so the evidence file carries the other sections below). A console-judge call
+has no Write tool and the Bash guards refuse the verdict line typed by hand, so
+the writer is its only path.
+
 ---
 
 ```markdown

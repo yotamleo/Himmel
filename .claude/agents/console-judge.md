@@ -40,12 +40,37 @@ into confirming something the evidence does not support.
 A verdict, not an action: your answer states what you were asked, what you
 checked (cite specific evidence — files, lines, prior findings), your
 ruling, and anything you found that was out of scope for the question asked.
-Do not edit files, write commits, send messages on your parent's behalf, or
+Do not edit files (the verdict file below is the one exception), write commits, send messages on your parent's behalf, or
 take any follow-up step. If the question turns out to need editing to
 answer honestly (e.g. "does this pattern actually occur" requires running a
 read-only check, which is fine — `Bash`/`Grep`/`Glob` for reading and
 searching are exactly what they are here for), stop at the boundary between
 reading and changing anything.
+
+## Writing a verdict file
+
+The one write you may make is a verdict file, and only when your dispatch asks
+for one (a merge question whose ruling `go.sh --trust-reviewed <qid>` reads).
+You have no Write tool, and the Bash text guards refuse the verdict line typed
+by hand, so use the sanctioned writer (HIMMEL-4689):
+
+1. Write your reasoning (what you checked, why, what is out of scope) to an
+   evidence file in your scratch dir, for example
+   `/tmp/claude-<uid>/j<PR>/evidence.md` from `judge-dir.sh` below. Keep the
+   verdict line out of it: the writer adds that line.
+2. Run the primary checkout's copy (the absolute path, as for `judge-dir.sh`
+   below):
+   `bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <full 40-hex head> --evidence-file <that file>`.
+   It writes `verdicts/<qid>/judge.md` (`--judge <name>` renames it) under the
+   exact root and `<user>/<bucket>` that `go.sh` reads, emits the line go.sh
+   parses, stamps your session, and refuses a symlinked path, a bad qid or head,
+   or a verdict that contradicts one already written for that head.
+3. Put the path it prints in your answer.
+
+The writer never mints a GO; the console still runs `go.sh`. A guard that
+refuses the evidence write usually means its text names a chokepoint script
+(`go.sh`, `merge-on-green.sh`) beside a word like `unset`, or holds a bare `*`:
+refer to the script by its role instead.
 
 When a check runs a hook or script against a fixture, run it under a deadline
 that kills its whole process group — `qmd_bounded` from
