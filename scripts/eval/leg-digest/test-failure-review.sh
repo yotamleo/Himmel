@@ -10,7 +10,8 @@
 #  6. new vs recurring classes; a quiet day (no new class, nothing routed) sends nothing;
 #  7. the daily-note section is upserted, never duplicated;
 #  8. the cadence: arm/status/disarm against a stub crontab, dry-run by default, --live baked only on request,
-#     and a SKIPPED-BANK preflight skips the run.
+#     and a SKIPPED-BANK preflight skips the run;
+#  9. delivery is persisted: a failed line is retried by the next run, a delivered one is not repeated.
 #
 # check() evals its condition, so the single quotes are deliberate.
 # shellcheck disable=SC2016,SC2034  # check() evals single-quoted asserts that read these vars
@@ -226,6 +227,31 @@ printf '#!/usr/bin/env bash\necho PROCEED\n' >"$STUB/preflight"
 FAILURE_REVIEW_PREFLIGHT="$STUB/preflight" HIMMEL_FAILURE_REVIEW_DIR="$C8/out" HIMMEL_LEG_FAILURES_LEDGER="$C2/ledger.jsonl" \
   HIMMEL_FAILURE_ROUTES_STATE="$C8/state.json" bash "$CAD" run >"$C8/run2.out" 2>&1; rc=$?
 check "a PROCEED preflight runs the review dry-run" '[ "$rc" = 0 ] && ls "$C8/out"/failure-review-*.md >/dev/null 2>&1 && [ ! -e "$C8/state.json" ]'
+
+echo "9. delivery is persisted: a failed line is retried, a delivered one is not repeated (HIMMEL-4790)"
+C9="$TMP/c9"; mkdir -p "$C9"
+row "$C9/ledger.jsonl" N050 denied/guard-recur 1 2026-10-03T08:00:00Z
+row "$C9/ledger.jsonl" N100 denied/guard-recur 1
+row "$C9/ledger.jsonl" N200 denied/guard-recur 1
+review "$C9" --live --notify-cmd "$STUB/notify-fail" >"$C9/run1.out" 2>&1; rc=$?
+check "a recurring class routed live with a failed send: rc 3" '[ "$rc" = 3 ] && digest "$C9" | grep -q "filed denied/guard-recur"'
+s0="$(sends)"
+review "$C9" --live >"$C9/run2.out" 2>&1; rc=$?
+check "the retry sends the undelivered routing although the router routes nothing new" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "filed denied/guard-recur"'
+review "$C9" --live >/dev/null 2>&1
+check "once delivered it is not sent again" '[ "$(sends)" = "$((s0 + 1))" ]'
+C9b="$TMP/c9b"; mkdir -p "$C9b"
+row "$C9b/ledger.jsonl" N400 error/Glob
+s0="$(sends)"
+review "$C9b" >/dev/null 2>&1
+review "$C9b" >/dev/null 2>&1
+check "a new class delivered once is not repeated by a rerun in the window" '[ "$(sends)" = "$((s0 + 1))" ]'
+row "$C9b/ledger.jsonl" N500 error/Grep
+review "$C9b" >/dev/null 2>&1
+check "a second new class still sends, naming only itself" '[ "$(sends)" = "$((s0 + 2))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Grep$"'
+s0="$(sends)"
+review "$C6b" >"$C6b/run2.out" 2>&1; rc=$?
+check "a new class whose send failed is retried by the next run" '[ "$rc" = 0 ] && [ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: error/Bash"'
 
 echo
 echo "test-failure-review: $PASS passed, $FAIL failed"
