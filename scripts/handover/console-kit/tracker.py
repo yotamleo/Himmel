@@ -41,8 +41,8 @@ LUNA = os.path.expanduser('~/Documents/luna')
 HANDOVERS = ''
 LAYERS = ['bugs', 'enhancements', 'features', 'misc', 'audit']
 VER_RE = re.compile(r'^v1\.0\.(\d+)([a-z]?)$')  # a trail '<version>a', 'b', ... takes its parent's overflow (HIMMEL-4026)
-# HIMMEL-4872: the train is v1.0.x plus the v1.1.x line (ex v1.0.2b..h), which Jira orders right after v1.0.2.
-TRAIN_RE = re.compile(r'^v1\.[01]\.\d+[a-z]?$')
+# HIMMEL-4872/4873: the train is every v1.N.x: v1.0.x, the v1.1.x line (ex v1.0.2b..h) and the milestone minors v1.2.0+.
+TRAIN_RE = re.compile(r'^v1\.\d+\.\d+[a-z]?$')
 SKIP_RE = re.compile(r'HIMMEL-3882|/dashboard|/artifacts|backlog|\.bak|/graphify-out/')
 KEY_RE = re.compile(r'HIMMEL-\d+')
 MAX_NOTES, TTL = 5, 7 * 86400
@@ -240,7 +240,10 @@ def ver_key(v):
     if m:
         return (0, int(m.group(1)), m.group(2))
     m = re.match(r'^v1\.1\.(\d+)$', v)
-    return (0, 2, chr(ord('b') + int(m.group(1)))) if m else (1, 0, '')
+    if m:
+        return (0, 2, chr(ord('b') + int(m.group(1))))
+    m = re.match(r'^v1\.([2-9]|\d{2,})\.(\d+)([a-z]?)$', v)  # HIMMEL-4873: the milestone minors follow, numerically
+    return (0, 1000 + int(m.group(1)), '%012d%s' % (int(m.group(2)), m.group(3))) if m else (1, 0, '')
 
 
 def trail_parent(v):
@@ -952,7 +955,7 @@ function model(D){
  var V=D.V,P=D.P,T=D.T,LEG=D.LEG||{};
  var KIND=["bugs","improvements","features","other","audits"];
  var READY=["no plan yet","problem stated","fix named, not yet checked","plan audited","spec ready"];
- function train(i){return /^v1\.[01]\.\d+[a-z]?$/.test(V[i])}
+ function train(i){return /^v1\.\d+\.\d+[a-z]?$/.test(V[i])}
  // vname(i): a trail (v1.0.2b, c, ...) reads as its parent's overflow, not a new release.
  function vname(i){var m=/^(v1\.0\.\d+)([a-z])$/.exec(V[i]);return m?m[1]+" · overflow"+(m[2]<="b"?"":" "+(m[2].charCodeAt(0)-97)):V[i]}
  function keep(rem){return function(p){return !rem||p[2]!=2}}
