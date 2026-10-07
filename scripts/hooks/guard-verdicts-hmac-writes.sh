@@ -682,6 +682,20 @@ text_scan() {
 
 # _check_key_word <i> — the word itself, and the value after its first `=`.
 _check_key_word() {
+    local i="$1" w="${ST_W[$1]}" save=$CWD x
+    case "$w" in
+        /*|'~'*|'$'*) _check_key_word_in "$i" ;;
+        *)
+            # relative: against every directory this line can have cd'd into
+            [ "$CD_DYN_K" = 0 ] || case "$w" in *go-hmac*) deny "key-bash" "$w after a cd into a dynamic himmel config path" ;; esac
+            for x in "${CWDS[@]}"; do
+                CWD=$x
+                _check_key_word_in "$i"
+                CWD=$save
+            done ;;
+    esac
+}
+_check_key_word_in() {
     local i="$1" w="${ST_W[$1]}" c a d
     for c in "$w" "${w#*=}"; do
         [ -n "$c" ] || continue
@@ -709,16 +723,52 @@ _target() {
             case "$t" in *verdicts*) deny "verdicts-bash" "dynamic write target $t" ;; esac
             return 0 ;;
     esac
-    a=$(_abs "$t")
-    [ -n "$a" ] && is_verdicts "$a" && deny "verdicts-bash" "write target $t"
+    # shellcheck disable=SC2088 # a literal ~ word, expanded by _abs
+    case "$t" in
+        /*|'~'|'~/'*) a=$(_abs "$t")
+            [ -n "$a" ] && is_verdicts "$a" && deny "verdicts-bash" "write target $t"
+            return 0 ;;
+    esac
+    # A relative target is checked against every directory this command can
+    # have cd'd into, not only the session cwd (codex-2).
+    [ "$CD_DYN_V" = 0 ] || deny "verdicts-bash" "write target $t after a cd into a dynamic verdicts path"
+    local d save=$CWD
+    for d in "${CWDS[@]}"; do
+        CWD=$d
+        a=$(_abs "$t")
+        CWD=$save
+        [ -n "$a" ] && is_verdicts "$a" && deny "verdicts-bash" "write target $t"
+    done
     return 0
 }
+
+# _cd <word> — record a cd/pushd target as a directory later relative write
+# targets may resolve against. A dynamic target naming verdicts sets CD_DYN_V.
+_cd() {
+    local w="$1" d a save=$CWD n=${#CWDS[@]}
+    case "$w" in
+        *'$'*|*'`'*)
+            case "$w" in *verdicts*) CD_DYN_V=1 ;; esac
+            case "$w" in *.config*|*himmel*) CD_DYN_K=1 ;; esac
+            return 0 ;;
+    esac
+    for d in "${CWDS[@]:0:n}"; do
+        CWD=$d
+        a=$(_abs "$w")
+        CWD=$save
+        [ -n "$a" ] && CWDS+=("$a")
+    done
+    return 0
+}
+CWDS=("$CWD")
+CD_DYN_V=0
+CD_DYN_K=0
 
 # analyze <cmd> <depth> — tokenize and check one command line. A nested
 # `bash -c` / `sh -c` script and an `eval` argument are analysed the same way,
 # after this level is done (the tokenizer's state is global).
 analyze() {
-    local depth="$2" nested=() nn=0 k i s w b c ci ro prev a t
+    local depth="$2" nested=() nn=0 k i s w b c ci ro prev a t x
     if [ "$depth" -gt "$MAX_DEPTH" ] || ! st_tokenize "$1"; then
         text_scan "$1"
         return 0
@@ -726,7 +776,7 @@ analyze() {
 
     # Segment command words: the first non-assignment, non-redirect word,
     # with wrappers, their options and option arguments skipped.
-    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=()
+    seg_cmd=(); seg_cmd_i=(); seg_wrap=(); seg_skip=(); seg_last=(); seg_inpl=(); seg_cflag=(); seg_eval=(); seg_cdone=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         s=${ST_S[i]}
@@ -752,6 +802,24 @@ analyze() {
         i=$((i + 1))
     done
 
+    # cd/pushd targets, recorded before either fence resolves a relative word
+    # (codex-2). A cd anywhere in the line counts, whatever its position.
+    i=0
+    while [ "$i" -lt "$ST_N" ]; do
+        s=${ST_S[i]}
+        ci=${seg_cmd_i[s]:--1}
+        if [ -z "${ST_RO[i]}" ] && [ "$ci" -ge 0 ] && [ "$i" -gt "$ci" ]; then
+            case "${seg_cmd[s]}" in
+                cd|pushd)
+                    case "${ST_W[i]}" in
+                        -*) ;;
+                        *) [ -n "${seg_cdone[s]:-}" ] || { seg_cdone[s]=1; _cd "${ST_W[i]}"; } ;;
+                    esac ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+
     # 1. the key — every word, in every session.
     i=0
     while [ "$i" -lt "$ST_N" ]; do
@@ -760,8 +828,13 @@ analyze() {
         if [ "${ST_G[i]}" = 0 ] && [ "$i" != "${seg_cmd_i[s]:--1}" ]; then
             case "${seg_cmd[s]:-}" in
                 cp|rsync|tar|zip|7z|scp|cpio|grep|egrep|rg|ag|find|du|sftp)
-                    a=$(_abs "${ST_W[i]}")
-                    [ -n "$a" ] && is_config "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}"
+                    t=$CWD
+                    for x in "${CWDS[@]}"; do
+                        CWD=$x
+                        a=$(_abs "${ST_W[i]}")
+                        CWD=$t
+                        [ -n "$a" ] && is_config "$a" && deny "key-bash" "${seg_cmd[s]} over ${ST_W[i]}"
+                    done
                     ;;
             esac
         fi
@@ -789,10 +862,14 @@ analyze() {
                             fi ;;
                     esac ;;
                 eval)
-                    nested[nn]=$w; nn=$((nn + 1)) ;;
+                    # eval runs its arguments joined by spaces, as one script (codex-3).
+                    seg_eval[s]="${seg_eval[s]:-} $w" ;;
             esac
         fi
         i=$((i + 1))
+    done
+    for s in ${seg_eval[@]+"${!seg_eval[@]}"}; do
+        nested[nn]=${seg_eval[s]}; nn=$((nn + 1))
     done
 
     # 2. verdicts/ — write targets, outside a judge session.
@@ -805,7 +882,10 @@ analyze() {
             ro=${ST_RO[i]}
             if [ -n "$ro" ]; then
                 case "$ro" in
-                    *'>&'|*'<&') ;;
+                    *'<&') ;;
+                    *'>&')
+                        # `>& file` writes the file; only an fd number or `-` duplicates (codex-1).
+                        case "$w" in *[!0-9-]*) _target "$w" ;; esac ;;
                     *'>'*) [ "$w" = /dev/null ] || _target "$w" ;;
                 esac
                 prev=""

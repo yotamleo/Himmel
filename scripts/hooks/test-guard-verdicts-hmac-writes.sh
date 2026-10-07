@@ -186,6 +186,18 @@ row "glob elsewhere" 0 0 "$(bash_p 'ls /tmp/*.md')"
 row "Write in worktree" 0 0 "$(file_p Write "$REPO/scripts/x.sh")"
 row "git status" 0 0 "$(bash_p 'git status --short')"
 
+# ---- 3b. round-1 panel: >& file, cd-relative targets, split eval ----
+row ">& file into a verdict" 2 0 "$(bash_p "echo GO >& $VD/q1/judge.md")"
+row ">&2 stays an fd dup" 0 0 "$(bash_p 'echo hi >&2')"
+row "cd into verdicts then relative write" 2 0 "$(bash_p "cd $VD/q1 && echo GO > judge.md")"
+row "pushd into verdicts then relative touch" 2 0 "$(bash_p "pushd $VD && touch q1/judge.md")"
+row "cd into a dynamic verdicts path then write" 2 0 "$(bash_p 'cd "$D/verdicts" && echo GO > judge.md')"
+row "cd elsewhere then relative write" 0 0 "$(bash_p 'cd /tmp && echo x > out.txt')"
+row "eval args joined into a verdict write" 2 0 "$(bash_p "eval 'echo GO >' '$VD/q1/judge.md'")"
+row "eval of a harmless split command" 0 0 "$(bash_p "eval 'echo' 'hi'")"
+row "cd to ~/.config then copy himmel/" 2 2 "$(bash_p "cd $H/.config && cp -r himmel /tmp/x")"
+row "cd into a dynamic himmel path then read the key" 2 2 "$(bash_p 'cd "$D/.config/himmel" && cat go-hmac.key')"
+
 # ---- 4. fail closed ----
 row "malformed JSON" 2 2 'not json'
 row "non-object payload" 2 2 '[1]'
