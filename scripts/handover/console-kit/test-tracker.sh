@@ -303,7 +303,20 @@ contains 'a v1.0.1a ticket renders (HIMMEL-4026)' "$thtml" '"trail a ticket"'
 contains 'a v1.0.2b ticket renders (HIMMEL-4026)' "$thtml" '"trail b ticket"'
 contains 'trail versions sit in train order (HIMMEL-4026)' "$thtml" '"v1.0.1","v1.0.1a","v1.0.1b","v1.0.2","v1.0.2b"'
 contains 'the whole-train ledger counts trail tickets (HIMMEL-4026)' "$tstdout" 'Whole v1.0.x train: 1 of 8 done'
-contains 'the JS train test accepts a trail suffix (HIMMEL-4026)' "$thtml" '/^v1\.0\.\d+[a-z]?$/'
+contains 'the JS train test accepts a trail suffix (HIMMEL-4026)' "$thtml" '\d+[a-z]?$/.test(V[i])'
+
+# --- HIMMEL-4872: the v1.1.x line (ex v1.0.2b..h) is train, sorted right after v1.0.2 and before v1.0.3.
+cp "$plan/stage3/versions.tsv" "$W/versions.tsv.keep"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' version load_bugs load_enhancements load_features load_misc load_audit load_total est_legs \
+    v1.0.1 0.1 0 0 0 0 0.1 1 v1.0.1a 0 0 0 0 0 0 0 v1.0.1b 0.01 0 0 0 0 0.01 1 v1.0.2 0 0 0 0 0 0 0 v1.0.3 0 0 0 0 0 0 0 v1.1.0 0 0 0 0 0 0 0 v2/v3 0 0 0 0 0 0 0 > "$plan/stage3/versions.tsv"
+mk 14 'To Do' '["v1.1.0"]' 'minor line ticket'
+tstdout="$(render)"
+thtml="$(cat "$out" 2>/dev/null)"
+contains 'a v1.1.0 ticket renders (HIMMEL-4872)' "$thtml" '"minor line ticket"'
+contains 'v1.1.x sits between v1.0.2 and v1.0.3 (HIMMEL-4872)' "$thtml" '"v1.0.2","v1.1.0","v1.0.3"'
+contains 'the whole-train ledger counts v1.1.x (HIMMEL-4872)' "$tstdout" 'Whole v1.0.x train: 1 of 8 done'
+contains 'the JS train test accepts v1.1.x (HIMMEL-4872)' "$thtml" '/^v1\.[01]\.\d+[a-z]?$/'
+cp "$W/versions.tsv.keep" "$plan/stage3/versions.tsv"; rm -f "$mdir/HIMMEL-14.md"
 
 # --- HIMMEL-3990: version-first page. Versions and release state come from Jira (mirror fixVersions + a `jira versions`
 # snapshot in <mirror-dir>.versions.tsv); the main view answers "which version are we working on".
