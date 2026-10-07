@@ -71,6 +71,8 @@ export CODEX_HOME=""
 # dedicated C33 case overrides it.
 HIMMEL_DOCTOR_NOOP_HANDOVER="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-tests-handover.XXXXXX")"
 export HANDOVER_DIR="$HIMMEL_DOCTOR_NOOP_HANDOVER"
+# Never inspect the operator's bank policy in unrelated doctor fixtures.
+export BANK_LIFT_FILE="$HIMMEL_DOCTOR_NOOP_HANDOVER/no-lift.json"
 
 # Hermeticity: C14 reads OLLAMA_NO_CLOUD from the live env — never let an
 # inherited value from the launching shell leak into the default test runs.
@@ -3933,6 +3935,21 @@ run_doctor_fake_repo() {
     # run_doctor_fake_repo <fake-repo-root> <home-scratch-dir>
     (cd "$1" && HIMMEL_REPO="$1" HIMMEL_DOCTOR_ROOT="$1" CLAUDE_DIR="$2/claude" HOME="$2" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null)
 }
+
+# HIMMEL-4868: missing validation/reporting would hide a configured invalid lift.
+echo "== C34: configured lift reports validation reason =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-lift.XXXXXX")" || exit 1
+c32_fixture_base "$t"
+mkdir -p "$t/scripts/lib" "$t/home/.himmel/state"
+cp "$REPO_ROOT/scripts/lib/bank-lift.sh" "$REPO_ROOT/scripts/lib/usage-cache-identity.sh" "$t/scripts/lib/"
+printf '%s' '{broken' > "$t/home/.himmel/state/bank-lift.json"
+chmod 600 "$t/home/.himmel/state/bank-lift.json"
+out="$(BANK_LIFT_FILE="$t/home/.himmel/state/bank-lift.json" CADENCE_BANK_CACHE="$t/cache.json" run_doctor_fake_repo "$t" "$t/home")"
+if grepq "$out" -F 'lift set but INVALID: parse'; then pass "C34 explains malformed lift"; else fail "C34 missing invalid lift reason"; fi
+chmod 666 "$t/home/.himmel/state/bank-lift.json"
+out="$(BANK_LIFT_FILE="$t/home/.himmel/state/bank-lift.json" CADENCE_BANK_CACHE="$t/cache.json" run_doctor_fake_repo "$t" "$t/home")"
+if grepq "$out" -F 'lift set but INVALID: trust'; then pass "C34 explains untrusted lift"; else fail "C34 missing trust reason"; fi
+rm -rf "$t"
 
 echo "== C34: everything wired (real copies of the 3 target files) -> all three rows OK =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c32.XXXXXX")" || { fail "C34 all-wired: mktemp -d failed"; exit 1; }

@@ -2741,6 +2741,17 @@ check_c34() {
     local subagent_guard="$REPO_ROOT/scripts/hooks/guard-subagent-model.sh"
     local impl_guard="$REPO_ROOT/scripts/hooks/guard-implementor-dispatch.sh"
     local ctx_fill="$REPO_ROOT/scripts/context-fill.sh"
+    local lift_lib="$REPO_ROOT/scripts/lib/bank-lift.sh"
+    # Read the same fenced policy and validation reason as the launch gate.
+    # shellcheck disable=SC1090
+    if [ -r "$lift_lib" ] && . "$lift_lib" && [ -f "$(bank_lift_file)" ]; then
+        if bank_lift_valid; then
+            emit OK C34-cost-guards "lift set and VALID (standing=${BANK_LIFT_STANDING:-false})"
+        else
+            emit WARN C34-cost-guards "lift set but INVALID: ${BANK_LIFT_REASON:-unknown}" \
+                "operator: inspect bank-lift.sh show; clear or re-set for the current account"
+        fi
+    fi
 
     if [ -r "$subagent_guard" ] && [ -f "$hooks_json" ] && _c34_subagent_guard_registered "$hooks_json"; then
         emit OK C34-cost-guards "guard-subagent-model.sh exists and is registered under PreToolUse/Agent in hooks.json"

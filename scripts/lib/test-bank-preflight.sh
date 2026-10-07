@@ -708,8 +708,8 @@ check "lift + CADENCE_BANK_MAX_PCT=95 still binds five_hour" SKIPPED-BANK \
 write_lift 9999999999 "$ACCT"
 check "far-future until (hand-written) outlives resets_at -> SKIPPED-BANK" SKIPPED-BANK \
  "$(verdict "$(lfx 10 98 "$NOW" "")")"
-write_lift $((LRESET+1)) "$ACCT"
-check "until one second past resets_at -> SKIPPED-BANK" SKIPPED-BANK \
+write_lift $((LRESET+2)) "$ACCT"
+check "until beyond one-second jitter -> SKIPPED-BANK" SKIPPED-BANK \
  "$(verdict "$(lfx 10 98 "$NOW" "")")"
 write_lift "$LRESET" "$ACCT"
 check "until == resets_at -> PROCEED" PROCEED \
@@ -773,6 +773,81 @@ check "bank-lift clear removes the file" absent "$([ -e "$BANK_LIFT_FILE" ] && e
 printf '%s' "{\"account\":\"deadbeefdeadbeef\",\"seven_day\":{\"resets_at\":\"$RESET_ISO\"}}" > "$W/lc2.json"
 bash "$LIFT" set "$W/lc2.json" >/dev/null 2>&1
 check "bank-lift set refuses another account's cache" absent "$([ -e "$BANK_LIFT_FILE" ] && echo present || echo absent)"
+
+# HIMMEL-4868: catches strict reset comparison, nonpersistent standing policy,
+# and validators that discard the reason. All writes stay in the scratch HOME.
+printf '%s' "{\"account\":\"$ACCT\",\"seven_day\":{\"resets_at\":\"2026-10-09T20:59:59.996777+00:00\"}}" > "$W/jitter.json"
+# shellcheck disable=SC1090,SC2317 # sourced fixture; date override invoked by validator
+jitter_rc() { ( . "$LIFT"; date() { if [ "$*" = '+%s' ]; then echo 1791400000; else command date "$@"; fi; }; bank_lift_valid "$W/jitter.json"; echo $? ); }
+write_lift 1791579600 "$ACCT"
+check "exact live 4ms reset jitter remains valid" 0 "$(jitter_rc)"
+write_lift 1790974800 "$ACCT"
+check "previous weekly window remains invalid" 1 "$(jitter_rc)"
+write_lift 1792184400 "$ACCT"
+check "next weekly window remains invalid" 1 "$(jitter_rc)"
+# set floors fractional timestamps once; validating its result must agree.
+RESET_996="${RESET_ISO%%.*}.996777+00:00"
+printf '%s' "{\"account\":\"$ACCT\",\"seven_day\":{\"resets_at\":\"$RESET_996\"}}" > "$W/lc.json"
+bash "$LIFT" set "$W/lc.json" >/dev/null 2>&1
+check "set against .996 timestamp records stable whole seconds" "$((NOW+7200))" "$(jq -r '.until' "$BANK_LIFT_FILE")"
+check "set against .996 then validate" 0 "$(lift_rc "$W/lc.json")"
+bash "$LIFT" set --standing "$W/lc.json" >/dev/null 2>&1
+check "operator standing set persists policy in fenced lift file" true "$(jq -r '.standing' "$BANK_LIFT_FILE")"
+# The old until is now expired, but the policy applies to the fresh window.
+jq '.until=1' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BANK_LIFT_FILE"; chmod 600 "$BANK_LIFT_FILE"
+check "standing policy renews into next current window" 0 "$(lift_rc "$W/lc.json")"
+# Native Windows jq emits CRLF. Keep identity/cache reads unchanged so this
+# isolates the serialized policy fields rather than mocking the validator.
+# shellcheck disable=SC1090,SC2317 # jq function called indirectly by validator
+crlf_lift() { (
+  . "$LIFT"
+  jq() {
+    local arg last=''
+    for arg; do last="$arg"; done
+    if [ "$last" = "$BANK_LIFT_FILE" ]; then command jq "$@" | sed 's/$/\r/'; else command jq "$@"; fi
+  }
+  bank_lift_valid "$W/lc.json"
+  local rc=$?
+  # shellcheck disable=SC2031 # validator sets it in this same subshell
+  printf '%s:%s' "$rc" "$BANK_LIFT_STANDING"
+); }
+check "CRLF jq output renews standing policy" '0:true' "$(crlf_lift)"
+check "standing default ceiling permits both banks at 99" PROCEED "$(CADENCE_BANK_MAX_PCT='' verdict "$(lfx 99 99 "$NOW" "")")"
+check "standing ceiling still refuses full five-hour bank" SKIPPED-BANK "$(CADENCE_BANK_MAX_PCT='' verdict "$(lfx 100 99 "$NOW" "")")"
+check "standing ceiling still refuses full weekly bank" SKIPPED-BANK "$(CADENCE_BANK_MAX_PCT='' verdict "$(lfx 99 100 "$NOW" "")")"
+check "standing preserves explicit five-hour ceiling" SKIPPED-BANK "$(verdict "$(lfx 90 99 "$NOW" "")")"
+jq '.account="deadbeef"' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BANK_LIFT_FILE"; chmod 600 "$BANK_LIFT_FILE"
+check "standing remains account bound after renewal" 1 "$(lift_rc "$W/lc.json")"
+jq --arg a "$ACCT" '.account=$a' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BANK_LIFT_FILE"; chmod 666 "$BANK_LIFT_FILE"
+check "standing cannot renew from untrusted file" 1 "$(lift_rc "$W/lc.json")"
+chmod 600 "$BANK_LIFT_FILE"
+check "standing cannot renew without a current reset" 1 "$(lift_rc "$W/absent.json")"
+jq '.seven_day.resets_at=1' "$W/lc.json" > "$W/old-window.json"
+check "standing cannot renew against an expired cache reset" 1 "$(lift_rc "$W/old-window.json")"
+write_lift "$((NOW+3600))" "$ACCT"
+jq --arg a "$ACCT" '.account=($a+"\ntrue")' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BANK_LIFT_FILE"; chmod 600 "$BANK_LIFT_FILE"
+check "multiline account cannot smuggle standing authorization" 1 "$(lift_rc "$W/lc.json")"
+write_lift "$((NOW+3600))" "$ACCT"
+jq --arg a "$ACCT" --arg u "$((NOW+3600))" '.window=("seven_day\n"+$u+"\n"+$a+"\ntrue")' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BANK_LIFT_FILE"; chmod 600 "$BANK_LIFT_FILE"
+check "multiline window cannot smuggle standing authorization" 1 "$(lift_rc "$W/lc.json")"
+write_lift "$((NOW+3600))" "$ACCT"
+printf '\n%s' "{\"window\":\"seven_day\",\"until\":1,\"account\":\"$ACCT\",\"standing\":true}" >> "$BANK_LIFT_FILE"
+check "multiple lift objects cannot smuggle standing policy" 1 "$(lift_rc "$W/lc.json")"
+write_lift "$((NOW+3600))" "$ACCT"
+jq '.standing="true"' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BANK_LIFT_FILE"; chmod 600 "$BANK_LIFT_FILE"
+check "string standing flag fails closed" 1 "$(lift_rc "$W/lc.json")"
+write_lift $((NOW-10)) "$ACCT"
+check "show explains expired lift" 'bank-lift: INVALID: expired' "$(bash "$LIFT" show "$W/lc.json" | tail -1)"
+write_lift $((NOW+3600)) deadbeefdeadbeef
+check "show explains account mismatch" 'bank-lift: INVALID: account' "$(bash "$LIFT" show "$W/lc.json" | tail -1)"
+write_lift $((NOW+604800)) "$ACCT"
+check "show explains wrong reset window" 'bank-lift: INVALID: window' "$(bash "$LIFT" show "$W/lc.json" | tail -1)"
+chmod 666 "$BANK_LIFT_FILE"
+check "show explains untrusted file" 'bank-lift: INVALID: trust' "$(bash "$LIFT" show "$W/lc.json" | tail -1)"
+chmod 600 "$BANK_LIFT_FILE"
+printf '%s' '{broken' > "$BANK_LIFT_FILE"
+check "show explains malformed file" 'bank-lift: INVALID: parse' "$(bash "$LIFT" show "$W/lc.json" | tail -1)"
+rm -f "$BANK_LIFT_FILE"
 
 # HIMMEL-4450: BSD `date -j` fallback. Stub `date` so GNU `-d` fails and `-j -f`
 # behaves like BSD (trailing characters after the seconds are silently ignored).

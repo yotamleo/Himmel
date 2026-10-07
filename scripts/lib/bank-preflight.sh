@@ -1198,7 +1198,12 @@ over() { is_num "$1" && awk -v a="$1" -v b="$MAX_PCT" 'BEGIN{exit !(a>=b)}'; }
 lift=false
 # shellcheck source=bank-lift.sh
 # shellcheck disable=SC1091
-if { . "$REPO/scripts/lib/bank-lift.sh"; } 2>/dev/null && bank_lift_valid "$CACHE"; then lift=true; fi
+if { . "$REPO/scripts/lib/bank-lift.sh"; } 2>/dev/null && bank_lift_valid "$CACHE"; then
+  lift=true
+  # Standing operator policy spends both banks to 100 by default. Explicit
+  # CADENCE_BANK_MAX_PCT still controls five_hour; neither bank spends extra_usage.
+  if [ "$BANK_LIFT_STANDING" = true ] && [ -z "${CADENCE_BANK_MAX_PCT:-}" ]; then MAX_PCT=100; fi
+fi
 over_fh=false; over_sd=false
 over "$fh" && over_fh=true
 if [ "$lift" = true ]; then

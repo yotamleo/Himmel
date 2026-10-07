@@ -475,8 +475,26 @@ set one (`bank-lift.sh set`). Verify:
 bash scripts/lib/bank-lift.sh show
 ```
 
-Expect `bank-lift: not valid`. A stale file is harmless but can be removed with
-`bash scripts/lib/bank-lift.sh clear`. A lift never relaxes `five_hour`.
+Expect `bank-lift: INVALID: account` after an account switch. Other invalid
+reasons are `expired`, `window`, `trust`, `parse` (or `missing` when unset).
+The doctor reports `lift set but INVALID: <reason>`. A stale file is harmless
+and can be removed with `bash scripts/lib/bank-lift.sh clear`.
+
+A one-window lift skips only the weekly ceiling; `five_hour` still binds.
+Whole-second reset values tolerate up to one second of fractional API jitter,
+not a different weekly window. Only the operator can enable the standing
+"spend to 100 %" policy:
+
+```bash
+bash scripts/lib/bank-lift.sh set --standing
+```
+
+It records `standing:true` in the same operator-only, account-bound lift file
+(no new state path or hook bypass). The policy applies to every fresh window
+for that account and defaults `CADENCE_BANK_MAX_PCT` to 100 for launch checks.
+An explicit ceiling still controls `five_hour`; either bank at 100 refuses,
+so extra usage is never spent. Plain `set` replaces it with a one-window lift;
+`clear` disables it. Agents must never run either form of `set`.
 
 The Done-when for HIMMEL-4430 needs the operator to walk this once at a real
 switch and record the result (and the cache-probe verdict from step 1) in the PR.
