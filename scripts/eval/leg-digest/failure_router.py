@@ -46,6 +46,7 @@ import fcntl
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -58,6 +59,7 @@ import leg_ledger  # noqa: E402
 TABLE = os.path.join(HERE, "failure-routes.table.json")
 PLAYBOOK = os.path.join(HERE, "..", "..", "..", "docs", "internals", "stuck-playbook.md")
 LOG_ENV, STATE_ENV, INBOX_ENV = "HIMMEL_FAILURE_ROUTES_LOG", "HIMMEL_FAILURE_ROUTES_STATE", "HIMMEL_FAILURE_INBOX"
+SOURCE = "scripts/eval/leg-digest/failure_router.py"
 DONE = ("done", "closed", "resolved", "won't do", "cancelled", "canceled")
 JIRA_TIMEOUT = 60
 
@@ -388,7 +390,9 @@ def route(a):
                     save_state(a.state, state)
                 continue
             # Log before saving the state: a failed log write must leave the class unacted, not a silent send.
-            leg_ledger._append(a.log, [{"ts": iso(now), "class": cls, "legs": n, "decision": dec, "ticket": ticket}])
+            leg_ledger._append(a.log, [{"v": 1, "ts": iso(now), "host": socket.gethostname(), "source": SOURCE,
+                                        "kind": "route-decision", "class": cls, "legs": n, "decision": dec,
+                                        "ticket": ticket}])
             if state_ok:
                 c["last_decision"], c["last_legs"] = dec, legs
                 save_state(a.state, state)

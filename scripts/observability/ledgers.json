@@ -197,6 +197,19 @@
       "schema_version": 1,
       "envelope": ["v", "ts", "host", "source", "kind"],
       "grandfathered": false
+    },
+    {
+      "id": "failure-routes",
+      "default_path": "~/.himmel/state/failure-routes.log.jsonl",
+      "override_env": "HIMMEL_FAILURE_ROUTES_LOG",
+      "writer": "scripts/eval/leg-digest/failure_router.py",
+      "readers": ["scripts/handover/console-kit/tick.sh"],
+      "format": "jsonl",
+      "rotation": "none",
+      "retention": "unbounded",
+      "schema_version": 1,
+      "envelope": ["v", "ts", "host", "source", "kind"],
+      "grandfathered": false
     }
   ]
 }

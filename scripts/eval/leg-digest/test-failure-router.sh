@@ -135,7 +135,7 @@ check "and it still writes no second inbox candidate" '[ "$(grep -c "^- " "$INBO
 
 echo "f. every decision has exactly one decision-log line"
 check "the log is 8 lines, one per decision, in order" '[ "$(lines "$LOG")" = 8 ] && [ "$(jq -r .decision "$LOG" | tr "\n" " ")" = "filed commented skipped:comment-daily filed filed capped filed commented " ]'
-check "every line is {ts,class,legs,decision,ticket}" '[ "$(jq -c "keys" "$LOG" | sort -u)" = "[\"class\",\"decision\",\"legs\",\"ticket\",\"ts\"]" ]'
+check "every line is the standard envelope plus {class,legs,decision,ticket}" '[ "$(jq -c "keys" "$LOG" | sort -u)" = "[\"class\",\"decision\",\"host\",\"kind\",\"legs\",\"source\",\"ticket\",\"ts\",\"v\"]" ] && jq -e "select(.v == 1 and .kind == \"route-decision\" and .source == \"scripts/eval/leg-digest/failure_router.py\" and (.host | length) > 0)" "$LOG" >/dev/null'
 
 echo "dry-run writes nothing and calls no Jira"
 row N600 denied/guard-pr-check-literal 1
