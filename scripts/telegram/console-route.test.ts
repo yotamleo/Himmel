@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classify } from "./router";
+import { BASH_BIN } from "./run";
 import { handleInbound, replyViaOutbox, flushOutboxes, ingestUpdates } from "./poller";
 import { consoleInboxPath, foldLine, type ConsoleRouteGate } from "./console-route";
 
@@ -203,7 +204,7 @@ test("first waiter arm queues one announcement per identity, including successor
     // timing probe. First-arm announcement must happen before its first wake.
     writeFileSync(inbox, "wake\n");
     writeFileSync(inbox + ".cursor", "0");
-    const p = Bun.spawn(["bash", join(import.meta.dir, "../handover/console-kit/console-wait.sh"), inbox], {
+    const p = Bun.spawn([BASH_BIN, join(import.meta.dir, "../handover/console-kit/console-wait.sh"), inbox], {
       env: { ...process.env, BRIDGE_ROOT: r, TELEGRAM_ACCESS_PATH: access, CONSOLE_WAIT_TICK: tick, CONSOLE_WAIT_BANK: bank }, stdout: "pipe", stderr: "pipe",
     });
     await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text()]);

@@ -2,6 +2,7 @@ import { join, dirname, basename, resolve } from "node:path";
 import { readdir, readFile, stat, mkdir, open, unlink } from "node:fs/promises";
 import { appendIfExists, atomicWrite, defaultRoot } from "./bus";
 import { loadAccess, operatorChatId } from "./gate";
+import { BASH_BIN } from "./run";
 
 // HIMMEL-3355: operator Telegram message -> a named RUNNING console.
 //
@@ -180,7 +181,7 @@ export async function announceConsole(inbox: string): Promise<void> {
 
 async function currentConsoleName(root: string): Promise<string | undefined> {
   try {
-    const p = Bun.spawn(["bash", "-c", '. "$1"; current_session_name', "console-reply", join(import.meta.dir, "../lib/session-name.sh")], { stdout: "pipe", stderr: "ignore" });
+    const p = Bun.spawn([BASH_BIN, "-c", '. "$1"; current_session_name', "console-reply", join(import.meta.dir, "../lib/session-name.sh")], { stdout: "pipe", stderr: "ignore" });
     const name = (await new Response(p.stdout).text()).trim();
     const file = consoleInboxPath(root, name);
     if (await p.exited === 0 && file && await stat(file).then(s => s.isFile(), () => false)) return name;
