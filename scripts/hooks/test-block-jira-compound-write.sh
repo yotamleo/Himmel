@@ -626,6 +626,11 @@ run_hook Bash "node $JIRA comment HIMMEL-1 --comment-file c.md; rm -f c.md"
 [ "$RC" -eq 2 ] && pass "chained literal write bounced" || fail "chained write not bounced (rc=$RC)"
 shape_has "chained" && pass "deny names the chain" || fail "deny omits the chain"
 shape_has "command substitution" && fail "deny blames command substitution on a chain-only command"
+# A single-quoted `$(…)` is inert data, not substitution; LANG= is an approvable prefix.
+run_hook Bash "LANG=C node $JIRA comment HIMMEL-1 --body 'a \$(b)'; rm -f c.md"
+[ "$RC" -eq 2 ] && pass "chained write with a quoted \$( bounced" || fail "chained write with a quoted \$( not bounced (rc=$RC)"
+shape_has "command substitution" && fail "deny blames command substitution on a single-quoted \$(" || pass "single-quoted \$( not named as substitution"
+shape_has "LANG=" && fail "deny names the approvable LANG= prefix" || pass "deny does not name LANG="
 
 # --- 5.99999 node MODES that never run the script write nothing: bouncing them would
 #             recommend a literal invocation that DOES (codex round 28 [high]).

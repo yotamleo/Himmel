@@ -108,9 +108,11 @@ the body text leaves the field empty and the ticket unsorted in any priority
 view.
 
 **A bare literal `JIRA_PROJECT_KEY=<KEY>` env-prefix is the ONE approvable
-prefix (HIMMEL-4780).** `JIRA_PROJECT_KEY=HIMMEL node <repo-root>/scripts/jira/dist/index.js
+non-locale prefix (HIMMEL-4780).** `JIRA_PROJECT_KEY=HIMMEL node <repo-root>/scripts/jira/dist/index.js
 comment HIMMEL-1 --comment-file f.md` auto-approves exactly like the bare form;
-`--project <KEY>` remains the plain way to target another project. Any OTHER
+`--project <KEY>` remains the plain way to target another project. The innocuous
+locale/timezone prefixes (`LANG`, `LANGUAGE`, `LC_*`, `TZ`) stay approvable beside
+it. Any OTHER
 `VAR=value` prefix (or a quoted / `$VAR` / `$(…)` key) makes the permission
 matcher bail, and `block-jira-compound-write` refuses it, naming the prefix.
 

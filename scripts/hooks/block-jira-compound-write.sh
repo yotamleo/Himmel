@@ -572,10 +572,13 @@ segment_has_write() {
                     ''|[0-9]*|*[!A-Za-z0-9_]*) break ;;
                 esac
                 # HIMMEL-4780: the gateway approves a bare literal
-                # JIRA_PROJECT_KEY=<KEY>; any other prefix is a refused shape the
-                # deny text must name.
-                [[ "${a[$i]}" =~ ^JIRA_PROJECT_KEY=[A-Z][A-Z0-9_]*$ ]] ||
-                    DETECTED_PREFIX="${DETECTED_PREFIX:+$DETECTED_PREFIX }$nm=…"
+                # JIRA_PROJECT_KEY=<KEY> and the innocuous locale/TZ names; any
+                # other prefix is a refused shape the deny text must name.
+                case "$nm" in
+                    LANG|LANGUAGE|LC_[A-Z]*|TZ) ;;
+                    *) [[ "${a[$i]}" =~ ^JIRA_PROJECT_KEY=[A-Z][A-Z0-9_]*$ ]] ||
+                        DETECTED_PREFIX="${DETECTED_PREFIX:+$DETECTED_PREFIX }$nm=…" ;;
+                esac
                 i=$((i + 1)) ;;
             *) break ;;
         esac
@@ -974,13 +977,34 @@ case "$verb_label" in
     *)              verb_args=' <TICKET> …same arguments as before…' ;;
 esac
 # Name only the shapes this command HAS (HIMMEL-4780): a list of shapes it lacks
-# sends the agent hunting for the wrong one. Raw text for substitution (quote_mask
-# blanks a quoted `"$(…)"`), masked text for heredocs and separators (quoted data
-# is not structure). Wording only — the bounce decision is the gateway's.
+# sends the agent hunting for the wrong one. Substitution is read from the text
+# with single-quoted spans and backslash escapes dropped (inert), but double-quoted
+# spans kept (quote_mask blanks `"$(…)"`, which still runs); heredocs and
+# separators from the masked text (quoted data is not structure). Wording only —
+# the bounce decision is the gateway's.
+unquoted_code() {
+    local s="$1" k=0 n ch sq=0 dq=0 LC_ALL=C
+    n=${#s}; UNSQ=""
+    while [ "$k" -lt "$n" ]; do
+        ch="${s:k:1}"
+        if [ "$sq" = 1 ]; then
+            [ "$ch" = "'" ] && sq=0
+        elif [ "$ch" = "\\" ]; then
+            k=$((k + 2)); continue
+        elif [ "$ch" = "'" ] && [ "$dq" = 0 ]; then
+            sq=1
+        else
+            [ "$ch" = '"' ] && dq=$((1 - dq))
+            UNSQ+="$ch"
+        fi
+        k=$((k + 1))
+    done
+}
 shapes=""
 add_shape() { shapes="${shapes:+$shapes; }$1"; }
+unquoted_code "$cmd"
 # shellcheck disable=SC2016 # literal `$(` / backtick patterns, not expansions
-case "$cmd" in *'$('*|*'`'*|*'<('*|*'>('*) add_shape 'command substitution `$(…)`' ;; esac
+case "$UNSQ" in *'$('*|*'`'*|*'<('*|*'>('*) add_shape 'command substitution `$(…)`' ;; esac
 [ "$HEREDOC_SEEN" = 1 ] && add_shape 'a heredoc'
 case "$MASKED" in
     *';'*|*'|'*|*'&'*) add_shape 'a chained segment' ;;
@@ -1007,8 +1031,9 @@ esac
     printf '  Keep the verb you started with — do NOT substitute a different mutation,\n'
     printf '  and keep everything else you already had: every argument (--project and\n'
     printf '  other targeting options included) and a literal JIRA_PROJECT_KEY=<KEY>\n'
-    printf '  prefix if you had one. Drop any other VAR=value prefix: it alone makes\n'
-    printf '  the command unapprovable. Only an INLINE BODY moves, from text to a file.\n'
+    printf '  prefix if you had one. Drop any other VAR=value prefix (LANG/LC_*/TZ\n'
+    printf '  aside): it alone makes the command unapprovable. Only an INLINE BODY\n'
+    printf '  moves, from text to a file.\n'
     printf '  Filing/updating N tickets = N literal commands, not a chain.\n\n'
     printf 'That shape auto-approves. Do NOT retry other shapes — a retry sequence across\n'
     printf 'shapes reads to the classifier as tool-shopping and gets denied as an auto-mode\n'

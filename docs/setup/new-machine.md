@@ -398,7 +398,8 @@ the script only WARNs and the chain stops at the first green PR. `.env`'s
 on this invocation — an explicit flag always wins over it.
 
 **Jira CLI.** No env-assignment prefix on the invocation other than a bare
-literal `JIRA_PROJECT_KEY=<KEY>` (HIMMEL-4780) —
+literal `JIRA_PROJECT_KEY=<KEY>` (HIMMEL-4780) and the innocuous
+`LANG`/`LANGUAGE`/`LC_*`/`TZ` locale prefixes —
 `block-jira-compound-write.sh` refuses any other prefix *shape*, not Jira writes
 themselves. The sanctioned invocation is the plain `node
 <repo-root>/scripts/jira/dist/index.js <op>`, which picks the key up from the
