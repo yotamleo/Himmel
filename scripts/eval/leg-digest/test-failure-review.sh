@@ -148,6 +148,11 @@ row "$C6/ledger.jsonl" N300 blocked/merge-hold
 review "$C6" >/dev/null 2>&1
 check "a class first seen today is new" 'digest "$C6" | grep -q "blocked/merge-hold: 1 rows, legs N300 (new)"'
 check "a new class sends one line naming it" '[ "$(sends)" = "$((s0 + 1))" ] && tail -n 1 "$STUB/notify.log" | grep -q "new: blocked/merge-hold"'
+C6c="$TMP/c6c"; mkdir -p "$C6c"
+row "$C6c/ledger.jsonl" N100 error/Read 0 2026-10-06T11:59:59.500000Z
+row "$C6c/ledger.jsonl" N200 error/Read
+review "$C6c" >/dev/null 2>&1
+check "a row in the last second before the window still makes the class recurring" 'digest "$C6c" | grep -q "error/Read: 1 rows, legs N200 (recurring)"'
 printf '#!/usr/bin/env bash\nexit 1\n' >"$STUB/notify-fail"; chmod +x "$STUB/notify-fail"
 C6b="$TMP/c6b"; mkdir -p "$C6b"
 row "$C6b/ledger.jsonl" N400 error/Bash

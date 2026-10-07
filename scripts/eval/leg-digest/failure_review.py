@@ -210,7 +210,7 @@ def main(argv=None):
     try:
         rows = failure_router.read_ledger(ledger, since, a.now)
         older = failure_router.read_ledger(ledger, datetime(1970, 1, 1, tzinfo=timezone.utc),
-                                           since - timedelta(seconds=1))
+                                           since - timedelta(microseconds=1))
     except OSError as e:
         print("failure-review: cannot read the ledger: %s" % e, file=sys.stderr)
         return 2
