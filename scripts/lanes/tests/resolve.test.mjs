@@ -471,6 +471,8 @@ test('every structured context in the registry is valid and carries no legacy de
       `${l.id} context.overflow must be explicit`);
   }
   assert.equal(REG.lanes.find((l) => l.id === 'glm').context.windowTokens, 1000000);
+  // HIMMEL-4881: Haiku 5.5 has a 1M window (Haiku 4.5 was 200k).
+  assert.deepEqual(REG.lanes.find((l) => l.id === 'haiku').context, { windowTokens: 1000000, overflow: 'hard-limit' });
   for (const id of ['claudex', 'codex', 'codex-exec', 'codex-wsl', 'hermes-oneshot']) {
     assert.deepEqual(REG.lanes.find((l) => l.id === id).context, { windowTokens: 900000, overflow: 'compact-continue' });
   }

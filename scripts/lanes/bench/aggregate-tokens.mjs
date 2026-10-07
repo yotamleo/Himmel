@@ -29,6 +29,8 @@ import { listRunManifests } from './run-manifest.mjs';
 // spec §0.1, retrieved 2026-08-11 — $/M tokens (first-party list price).
 export const RATES = {
   'claude-haiku-4-5': { inputPerM: 1.00, outputPerM: 5.00 },
+  // HIMMEL-4881: list price for a prompt up to 100K; above 100K it is $0.50 / $2.50.
+  'claude-haiku-5-5': { inputPerM: 0.10, outputPerM: 0.50 },
   // gpt-5.6-luna: pre-HIMMEL-3500 pin, kept so a manifest recorded before the
   // repin (a9edf228) still resolves a real cost instead of null.
   'gpt-5.6-luna': { inputPerM: 0.20, outputPerM: 1.20 },
