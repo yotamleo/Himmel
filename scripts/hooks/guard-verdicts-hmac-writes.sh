@@ -1052,7 +1052,7 @@ analyze() {
     # hid the verb from these checks (j2031-r6). A pre-pass records, per
     # segment, the verbs seen so far, find's action, and whether a tar, unzip
     # or 7z extraction names its destination.
-    seg_vs=(); seg_vl=(); seg_vli=(); seg_xx=(); seg_xd=()
+    seg_vs=(); seg_vl=(); seg_vli=(); seg_xx=(); seg_xd=(); seg_xn=()
     i=0
     while [ "$i" -lt "$ST_N" ]; do
         s=${ST_S[i]}
@@ -1072,7 +1072,11 @@ analyze() {
                         *x*) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;;
                     esac ;;
                 unzip) seg_xx[s]=1
-                    case "$w" in -d*) seg_xd[s]=1 ;; esac ;;
+                    case "$w" in
+                        -d*) seg_xd[s]=1 ;;
+                        --*) ;;
+                        -*[ltvzZ]*) seg_xn[s]=1 ;;
+                    esac ;;
                 7z) case "$w" in -o*) seg_xd[s]=1 ;; x|e) [ "$i" = "$((seg_vli[s] + 1))" ] && seg_xx[s]=1 ;; esac ;;
             esac
             b=${w##*/}
@@ -1092,6 +1096,12 @@ analyze() {
             for b in ${kv[s]}; do
                 _kanc "$b" "$s" "$w"
                 case "$w" in -*=*) _kanc "$b" "$s" "${w#*=}" ;; esac
+                # an attached destination: tar -C/dir, unzip -d/dir, 7z -o/dir (codex-1)
+                case "$b:$w" in
+                    tar:-C?*) _kanc "$b" "$s" "${w#-C}" ;;
+                    unzip:-d?*) _kanc "$b" "$s" "${w#-d}" ;;
+                    7z:-o?*) _kanc "$b" "$s" "${w#-o}" ;;
+                esac
             done
         fi
         if [ -z "${ST_RO[i]}" ] && [ "${ST_A[i]}" = 0 ]; then
@@ -1102,7 +1112,7 @@ analyze() {
     done
     # An extraction with no destination writes into the cwd (j2031-r6).
     for s in ${seg_xx[@]+"${!seg_xx[@]}"}; do
-        [ -z "${seg_xd[s]:-}" ] || continue
+        if [ -n "${seg_xd[s]:-}" ] || [ -n "${seg_xn[s]:-}" ]; then continue; fi
         for x in "${CWDS[@]}"; do
             is_key_anc "$x" && deny "key-bash" "an extraction with no destination writes into $x, which holds the key"
         done
