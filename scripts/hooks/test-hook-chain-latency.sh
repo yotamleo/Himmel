@@ -20,9 +20,15 @@
 #   * p95 PIN: across a corpus of everyday commands, the member's p95 wall time
 #     stays under P95_BUDGET_MS.
 #
-# Budgets are LOADED figures x2 (the run-shell-tests.sh rule), measured on the
-# station at load average ~8 with parallel suites; see the HIMMEL-4678 PR. Env
-# overrides exist for slower boxes, never to make a red go green.
+# Budgets, measured 2026-10-07 on the station at load average 8-10 with two
+# copies of this test running concurrently (HIMMEL-4678):
+#   * p95: the slowest member (block-write-into-main-checkout.sh) peaked at
+#     292 ms loaded; the budget is that x2 (the run-shell-tests.sh rule).
+#   * SCALE_MAX is a ratio, which load mostly cancels, so it is NOT doubled:
+#     the quadratic walkers this test was written against ran 9-14x, and the
+#     highest linear-ish member measured 5.4x loaded (block-bank-lift-writes.sh,
+#     whose remaining UTF-8 pattern-op cost is HIMMEL-4729).
+# Env overrides exist for slower boxes, never to make a red go green.
 #
 # Exit codes: 0 all cases passed, 1 at least one failed.
 set -uo pipefail
@@ -32,7 +38,7 @@ ROOT="$(cd "$HERE/../.." && pwd -P)"
 SETTINGS="$ROOT/.claude/settings.json"
 
 SCALE_MAX=${HOOK_LATENCY_SCALE_MAX:-6}
-P95_BUDGET_MS=${HOOK_LATENCY_P95_BUDGET_MS:-1500}
+P95_BUDGET_MS=${HOOK_LATENCY_P95_BUDGET_MS:-600}
 RUNS=3
 
 FAILED=0
