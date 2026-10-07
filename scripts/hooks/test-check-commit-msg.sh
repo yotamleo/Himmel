@@ -378,6 +378,10 @@ expect_mode_rc "tracker local accepts the LOCAL-N prefix" 0 "" "$R" "chore: LOCA
 expect_mode_rc "tracker local rejects a prefix glued to a word (NOTLOCAL-7)" 1 "" "$R" "chore: NOTLOCAL-7 wire the thing"
 expect_mode_rc "a multi-line TICKET_ID_PATTERN is refused, never cut to its first line" 1 "multi-line" \
   "$R" "chore: A-1 wire the thing" "TICKET_ID_PATTERN=A-[0-9]+"$'\n'"B-[0-9]+"
+expect_mode_rc "a multi-line TICKET_ID_REQUIRED fails closed, never drops the pattern" 1 "TICKET_ID_REQUIRED" \
+  "$R" "chore: no ticket id here" JIRA_PROJECT_KEY=HIMMEL "TICKET_ID_REQUIRED=1"$'\n'"x"
+expect_mode_rc "a TAB in TICKET_ID_REQUIRED fails closed, never shifts the pattern" 1 "TICKET_ID_REQUIRED" \
+  "$R" "chore: no ticket id here" JIRA_PROJECT_KEY=HIMMEL "TICKET_ID_REQUIRED=1"$'\t'"x"
 # Fail CLOSED when the resolver is not installed beside the hook (an adopter
 # payload from before HIMMEL-4758): never a silent env-only fallback.
 NOLIB=$(fixture_mktemp_dir) || exit 1

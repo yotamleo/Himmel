@@ -111,3 +111,10 @@ test('a multi-line TICKET_ID_PATTERN is refused, never cut to its first line', (
   const cwd = makeDir('-', '-');
   assert.throws(() => projectModeIdPattern({ cwd, env: { ...BASE_ENV, TICKET_ID_PATTERN: 'A-[0-9]+\nB-[0-9]+' } }), /multi-line/);
 });
+
+test('a TICKET_ID_REQUIRED carrying a newline or TAB is refused', () => {
+  const cwd = makeDir('-', '-');
+  for (const v of ['1\nx', '1\tx']) {
+    assert.throws(() => projectModeIdRequired({ cwd, env: { ...BASE_ENV, TICKET_ID_REQUIRED: v } }), /TICKET_ID_REQUIRED/);
+  }
+});

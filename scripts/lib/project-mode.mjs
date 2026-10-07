@@ -130,7 +130,10 @@ export function projectModeIdPattern(o) {
 
 export function projectModeIdRequired(o) {
   o = opts(o);
-  if (o.env.TICKET_ID_REQUIRED) return o.env.TICKET_ID_REQUIRED;
+  if (o.env.TICKET_ID_REQUIRED) {
+    if (/[\n\t]/.test(o.env.TICKET_ID_REQUIRED)) throw refuse('TICKET_ID_REQUIRED carries a newline or TAB (expected 1|0)');
+    return o.env.TICKET_ID_REQUIRED;
+  }
   return projectModeTracker(o) === 'none' ? '0' : '1';
 }
 

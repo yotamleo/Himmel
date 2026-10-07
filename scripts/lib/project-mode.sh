@@ -178,6 +178,15 @@ project_mode_id_pattern() {
 project_mode_id_required() {
     local t
     if [ -n "${TICKET_ID_REQUIRED:-}" ]; then
+        # A newline or TAB would split project_mode_env's one line and drop
+        # the pattern after it: refuse, as the bare value was refused before.
+        case "$TICKET_ID_REQUIRED" in
+            *"
+"*|*"	"*)
+                echo "project-mode: TICKET_ID_REQUIRED carries a newline or TAB (expected 1|0)" >&2
+                return 2
+                ;;
+        esac
         printf '%s\n' "$TICKET_ID_REQUIRED"
         return 0
     fi
