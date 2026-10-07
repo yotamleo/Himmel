@@ -89,11 +89,17 @@ DEADLINE = None   # time.monotonic() deadline; None = unbounded
 
 
 def _t(timeout: float) -> float:
-    """A subprocess timeout capped by the time left in the batch budget."""
+    """A subprocess timeout capped by the time left in the batch budget.
+
+    A spent budget raises TimeoutExpired, which every call site handles as a
+    timed-out stage, so the clip in flight ends without starting more work."""
     if DEADLINE is None:
         return timeout
     import time
-    return max(1.0, min(timeout, DEADLINE - time.monotonic()))
+    left = DEADLINE - time.monotonic()
+    if left <= 0:
+        raise subprocess.TimeoutExpired("ig-media-fetch budget", 0)
+    return min(timeout, left)
 
 IG_URL_RE = re.compile(
     r"^https?://(?:www\.|m\.)?instagram\.com/(p|reel|reels|tv)/([A-Za-z0-9_-]+)"

@@ -273,6 +273,23 @@ assert "clip after the budget stop is not started" untouched "$a"
 grep -q '^ig_media_pending: true$' "$tmp/v12/Clippings/clip2.md" && a=ok || a=no
 assert "unstarted clip stays pending" ok "$a"
 
+# --- Test 12b: a spent budget grants no further subprocess time -------------
+# Once the deadline has passed, _t raises TimeoutExpired (every call site
+# already handles it) instead of granting each remaining stage a floor.
+echo "Test 12b: spent budget"
+a=$(python3 - "$TOOL" <<'PY'
+import importlib.util, subprocess, sys, time
+spec = importlib.util.spec_from_file_location("igmf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.DEADLINE = time.monotonic() - 1
+try:
+    print("granted", m._t(60))
+except subprocess.TimeoutExpired:
+    print("raised")
+PY
+)
+assert "spent budget raises TimeoutExpired" raised "$a"
+
 echo ""
 echo "ig-scrapling tests: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
