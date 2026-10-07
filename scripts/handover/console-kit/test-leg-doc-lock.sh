@@ -84,8 +84,9 @@ check "2d the doc still opens on its front matter" "$(head -n 1 "$d2")" "---"
 # --- 3. no temp file left, mode kept -------------------------------------
 d3="$tmp/d3.md"; mkdoc "$d3"; chmod 640 "$d3"
 rewrite "$d3" 3
-check "3a no temp file is left beside the doc" "$(find "$tmp" -maxdepth 1 -name 'd3.md?*' | wc -l | tr -d ' ')" "0"
-check "3b the rewrite keeps the doc's mode" "$(stat -c %a "$d3")" "640"
+left=0; for f in "$tmp"/d3.md?*; do [ -e "$f" ] && left=$((left+1)); done
+check "3a no temp file is left beside the doc" "$left" "0"
+check "3b the rewrite keeps the doc's mode" "$(stat -c %a "$d3" 2>/dev/null || stat -f %Lp "$d3")" "640"
 
 # --- 4. no flock: today's unlocked writes, never a failure ---------------
 mkdir -p "$tmp/noflock-bin"
@@ -107,10 +108,18 @@ check "4d the unlocked id is written" "$(sids_in "$d4")" "1"
 # written until the lock is released.
 # shellcheck source=scripts/handover/console-kit/leg-doc-lock.sh
 hold() { ( . "$LIB"; doc_lock "$1" test && { : > "$tmp/held"; while [ ! -e "$tmp/release" ]; do sleep 0.05; done; } ) & }
+# wait_held: the holder must have the lock before a writer starts, or a
+# "waits" check below could pass on a slow writer with no lock held at all.
+held_n=0
+wait_held() {
+    held_n=$((held_n+1))
+    i=0; while [ ! -e "$tmp/held" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+    check "5.$held_n the test holds the lock before the writer starts" "$([ -e "$tmp/held" ] && echo yes)" "yes"
+}
 d5="$tmp/HIMMEL-5-N5-x-console.md"
 printf '# console\n\n## Live state\nlegs: none\n\n## Results\n' > "$d5"
 rm -f "$tmp/held" "$tmp/release"; hold "$d5"; hp=$!
-i=0; while [ ! -e "$tmp/held" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+wait_held
 bash "$APPEND" "$d5" "MERGED held" >/dev/null 2>&1 & ap=$!
 sleep 0.5
 check "5a append-results.sh waits while the lock is held" "$(grep -c 'MERGED held' "$d5")" "0"
@@ -120,7 +129,7 @@ check "5b append-results.sh writes once it is released" "$(grep -c 'MERGED held'
 printf '{"legs":[]}\n' > "${d5%.md}.fleet.json"
 printf '# console\n\n## Live state\nlegs: old\n\n## Results\n' > "$d5"
 rm -f "$tmp/held" "$tmp/release"; hold "$d5"; hp=$!
-i=0; while [ ! -e "$tmp/held" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+wait_held
 bash "$HERE/live-state.sh" "$d5" >/dev/null 2>&1 & lp=$!
 sleep 0.5
 check "5c live-state.sh waits while the lock is held" "$(grep -c '^legs: none old$' "$d5")" "0"
@@ -130,7 +139,7 @@ check "5d live-state.sh rewrites once it is released" "$(grep -c '^legs: none ol
 d6="$tmp/d6.md"; mkdoc "$d6"
 mkdir -p "$tmp/root"
 rm -f "$tmp/held" "$tmp/release"; hold "$d6"; hp=$!
-i=0; while [ ! -e "$tmp/held" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i+1)); done
+wait_held
 HANDOVER_DIR="$tmp/root" bash "$HERE/inbox-send.sh" leg-six "ruling held" --doc "$d6" >/dev/null 2>&1 & ip=$!
 sleep 0.5
 check "5e inbox-send.sh --doc waits while the lock is held" "$(grep -c 'ruling held' "$d6")" "0"

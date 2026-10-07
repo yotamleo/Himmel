@@ -71,6 +71,7 @@ doc_unlock() {
 # `$DOC.sid.$$` name was predictable), and cp -p first gives it the doc's mode.
 leg_doc_add_session_id() {
     local _ls_doc="$1" _ls_sid="$2" _ls_sum _ls_tmp="" _ls_rc=1 _ls_lock=0
+    # pipefail-ok: a 36-byte printf is fully written before grep can exit, so no SIGPIPE
     printf '%s' "$_ls_sid" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || return 1
     # rc 3 (no flock) writes unlocked, as before HIMMEL-4795; rc 1 records nothing.
     doc_lock "$_ls_doc" leg-doc-lock || _ls_lock=$?
