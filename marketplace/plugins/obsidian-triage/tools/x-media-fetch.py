@@ -465,6 +465,7 @@ MEDIA_HOSTS = ("video.twimg.com", "pbs.twimg.com")
 # HLS segment / init-map extensions kept on the local copies (ffmpeg's hls
 # demuxer picks a format by extension).
 HLS_SEG_EXTS = {".m4s", ".mp4", ".m4a", ".m4v", ".ts", ".aac"}
+HLS_PLAYLIST_MAX_BYTES = 4 * 1024 * 1024
 URI_ATTR_RE = re.compile(r'URI="([^"]*)"')
 
 
@@ -475,14 +476,14 @@ def _media_url_ok(url: str) -> bool:
     return p.scheme == "https" and p.netloc.lower() in MEDIA_HOSTS
 
 
-def _curl(pairs, deadline: float):
+def _curl(pairs, deadline: float, max_bytes: int = MEDIA_MAX_BYTES):
     """Fetch [(url, path)] in ONE curl run: every URL must pass _media_url_ok
-    first, and curl follows no redirect and speaks only https. Returns None or
-    an error token."""
+    first, curl follows no redirect, speaks only https, and refuses a file over
+    max_bytes. Returns None or an error token."""
     if not pairs or not all(_media_url_ok(u) for u, _ in pairs):
         return "download_error"
     cmd = ["curl", "-fsSL", "--fail-early", "--max-redirs", "0", "--proto", "=https",
-           "--max-time", "120", "--max-filesize", str(MEDIA_MAX_BYTES)]
+           "--max-time", "120", "--max-filesize", str(max_bytes)]
     for url, path in pairs:
         cmd += ["-o", str(path), url]
     left = deadline - time.monotonic()
@@ -579,7 +580,7 @@ def _resolve_hls(url: str, work: Path, deadline: float):
     with the file protocol alone, so no playlist entry or redirect can make it
     open a network address (HIMMEL-4704). Returns None or an error token."""
     src = work / "src.m3u8"
-    err = _curl([(url, src)], deadline)
+    err = _curl([(url, src)], deadline, HLS_PLAYLIST_MAX_BYTES)
     if err:
         return err
     text = src.read_text(encoding="utf-8", errors="replace")
@@ -598,7 +599,7 @@ def _resolve_hls(url: str, work: Path, deadline: float):
                     audio = None  # the variant already carries that rendition
                 else:
                     got.append((a_url, work / "a.src.m3u8"))
-            err = _curl(got, deadline)
+            err = _curl(got, deadline, HLS_PLAYLIST_MAX_BYTES)
             if err:
                 return err
             pairs = []
@@ -617,12 +618,17 @@ def _resolve_hls(url: str, work: Path, deadline: float):
         return "download_error"
     if not pairs:
         return "download_error"
-    err = _curl(pairs, deadline)
-    if err:
-        return err
-    if sum(p.stat().st_size for _, p in pairs) >= MEDIA_MAX_BYTES:
-        print(f"  ffmpeg-hls: segments reach the {MEDIA_MAX_BYTES}-byte cap, refused", file=sys.stderr)
-        return "download_error"
+    # One file per curl run, each capped at what is left of the budget, so the
+    # segments together never take more than MEDIA_MAX_BYTES of disk.
+    total = 0
+    for pair in pairs:
+        err = _curl([pair], deadline, MEDIA_MAX_BYTES - total)
+        if err:
+            return err
+        total += pair[1].stat().st_size
+        if total >= MEDIA_MAX_BYTES:
+            print(f"  ffmpeg-hls: segments reach the {MEDIA_MAX_BYTES}-byte cap, refused", file=sys.stderr)
+            return "download_error"
     (work / "master.m3u8").write_text(master, encoding="utf-8")
     return None
 

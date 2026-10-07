@@ -120,14 +120,17 @@ STUB
 chmod +x "$tmp/scrapling-python"
 # curl takes any number of `-o FILE URL` pairs; each URL is logged as a
 # `curl-get` line. A .m3u8 URL is served from $STUB_HLS/<basename> (absent =
-# HTTP 404, rc 22); anything else gets fake media.
+# HTTP 404, rc 22); anything else gets fake media, or with STUB_SEG_BYTES a
+# sparse file that size - refused like real curl (rc 63, nothing written) when
+# it is over --max-filesize.
 cat > "$tmp/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 echo "curl $*" >> "$STUB_CALLS"
-out=""; n=0
+out=""; n=0; max=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -o) shift; out="$1" ;;
+    --max-filesize) shift; max="$1" ;;
     https://*|http://*)
       [ -n "$out" ] || exit 2
       echo "curl-get $1" >> "$STUB_CALLS"; n=$((n+1))
@@ -135,7 +138,12 @@ while [ $# -gt 0 ]; do
       case "$path" in
         *.m3u8) [ -f "${STUB_HLS:-/nonexistent}/${path##*/}" ] || exit 22
                 cat "$STUB_HLS/${path##*/}" > "$out" ;;
-        *) echo "fake media" > "$out" ;;
+        *) if [ -n "${STUB_SEG_BYTES:-}" ]; then
+             [ -z "$max" ] || [ "$STUB_SEG_BYTES" -le "$max" ] || exit 63
+             python3 -c 'import sys; open(sys.argv[1], "wb").truncate(int(sys.argv[2]))' "$out" "$STUB_SEG_BYTES"
+           else
+             echo "fake media" > "$out"
+           fi ;;
       esac
       out="" ;;
   esac
@@ -245,7 +253,7 @@ make_vault "$tmp/v6" 6006
 run_tool "$tmp/v6" >"$tmp/v6.out" 2>"$tmp/v6.err"
 grep -q '^ffmpeg -nostdin -hide_banner -loglevel error -protocol_whitelist file -i [^ ]*/master\.m3u8 -c copy' "$tmp/calls" && a=ok || a=no
 assert "ffmpeg stream-copies a LOCAL pre-resolved playlist, file protocol only" ok "$a"
-grep '^ffmpeg ' "$tmp/calls" | grep -q 'https\?:' && a=net || a=local
+net=$(grep '^ffmpeg ' "$tmp/calls" | grep 'https\?:'); [ -n "$net" ] && a=net || a=local
 assert "ffmpeg is never handed a network URL" local "$a"
 grep '^curl-get ' "$tmp/calls" | sed 's/^curl-get //' >"$tmp/v6.got"
 printf '%s\n' \
@@ -260,8 +268,10 @@ printf '%s\n' \
   'https://video.twimg.com/amplify_video/9/aud/mp4a/64000/s2.m4s' >"$tmp/v6.want"
 assert "only the best variant, its audio rendition and their segments are fetched" \
   "$(sort "$tmp/v6.want" | tr '\n' ' ')" "$(sort "$tmp/v6.got" | tr '\n' ' ')"
-grep '^curl ' "$tmp/calls" | grep -vq -- '--max-redirs 0 --proto =https' && a=loose || a=strict
+loose=$(grep '^curl ' "$tmp/calls" | grep -v -- '--max-redirs 0 --proto =https'); [ -n "$loose" ] && a=loose || a=strict
 assert "every HLS fetch follows no redirect and only https" strict "$a"
+grep -q -- '^curl .*--max-filesize 4194304 .*-o [^ ]*/src\.m3u8 https://video\.twimg\.com/amplify_video/9/pl/M\.m3u8' "$tmp/calls" && a=ok || a=no
+assert "a playlist fetch is capped far below the media cap" ok "$a"
 # The stub media carries no audio, so the clip then fails on content - past
 # the download, which is what this pins.
 grep -q '^media_last_error: no_media_content$' "$tmp/v6/Clippings/clip.md" && a=ok || a=no
@@ -271,6 +281,19 @@ FAKE_FFMPEG_FULL=1 run_tool "$tmp/v6b" >"$tmp/v6b.out" 2>"$tmp/v6b.err"
 assert "an HLS copy stopped at the size cap is refused, never processed" 1 "$(grep -c '^ffmpeg ' "$tmp/calls")"
 grep -q '^x_media_pending: true$' "$tmp/v6b/Clippings/clip.md" && a=ok || a=no
 assert "the capped clip stays pending" ok "$a"
+# (HIMMEL-4704 round-1 codex-1) 200 MiB per media file: init + s1 fill 400 of
+# the 500 MiB cap, so the third file is over the remaining budget. The
+# fetch must stop there - never the 1.2 GB a per-file cap alone would allow.
+: >"$tmp/calls"; make_vault "$tmp/v6c" 6026
+STUB_SEG_BYTES=209715200 run_tool "$tmp/v6c" >"$tmp/v6c.out" 2>"$tmp/v6c.err"
+assert "segment fetches stop once the aggregate budget is spent" 3 \
+  "$(grep '^curl-get ' "$tmp/calls" | grep -vc '\.m3u8')"
+grep -q '^ffmpeg ' "$tmp/calls" && a=ran || a=skipped
+assert "over-budget HLS never reaches ffmpeg" skipped "$a"
+grep -q '^media_last_error: download_error$' "$tmp/v6c/Clippings/clip.md" && a=ok || a=no
+assert "the over-budget clip is a retryable download_error" ok "$a"
+assert "no HLS workdir is left behind" 0 \
+  "$(python3 -c 'import sys, pathlib; print(len(list(pathlib.Path(sys.argv[1]).rglob("*.hls"))))' "$tmp/v6c")"
 
 # --- Test 7: an off-host item URL is refused before any download ------------
 echo "Test 7: media host allowlist in the fetcher"
@@ -289,7 +312,7 @@ echo "Test 7b: HLS playlist entries pass the media-host guard"
 export STUB_JSON="$tmp/hls-ok.json"
 hls_case() { # $1 name, $2 file to edit, $3 sed expression, $4 planted-host pattern
   rm -rf "$tmp/hls-$1"; cp -r "$tmp/hls-good" "$tmp/hls-$1"
-  sed -i "$3" "$tmp/hls-$1/$2"
+  sed "$3" "$tmp/hls-good/$2" >"$tmp/hls-$1/$2"
   grep -q "$4" "$tmp/hls-$1/$2" || { echo "  FAIL  control: $1 planted nothing"; fail=$((fail+1)); return; }
   : >"$tmp/calls"; make_vault "$tmp/v7-$1" 7070
   STUB_HLS="$tmp/hls-$1" run_tool "$tmp/v7-$1" >"$tmp/v7-$1.out" 2>"$tmp/v7-$1.err"
