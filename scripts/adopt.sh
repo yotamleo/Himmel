@@ -160,6 +160,7 @@ PORTABLE_FILES=(
   scripts/hooks/block-edit-on-main.sh
   scripts/hooks/block-read-secrets.sh
   scripts/hooks/check-commit-msg.sh
+  scripts/lib/project-mode.sh
   scripts/hooks/check-worktree-isolation.sh
   scripts/hooks/check-push-target.sh
   scripts/guardrails/lib.sh
@@ -824,7 +825,7 @@ install_native_hooks() {
     # Preserve the relative layout: check-worktree-isolation.sh and
     # check-push-target.sh both `source "$SCRIPT_DIR/../guardrails/lib.sh"`,
     # so a flat copy would break them.
-    for payload_file in scripts/hooks/check-commit-msg.sh scripts/hooks/check-worktree-isolation.sh scripts/hooks/check-push-target.sh scripts/guardrails/lib.sh; do
+    for payload_file in scripts/hooks/check-commit-msg.sh scripts/hooks/check-worktree-isolation.sh scripts/hooks/check-push-target.sh scripts/guardrails/lib.sh scripts/lib/project-mode.sh; do
       if ! mkdir -p "$payload_dir/$(dirname "$payload_file")" || ! cp "$HIMMEL_ROOT/$payload_file" "$payload_dir/$payload_file"; then
         echo "  git gate hooks — FAILED (native: cannot copy $payload_file into $payload_dir)" >&2
         return 1
@@ -844,7 +845,7 @@ install_native_hooks() {
   # User scope normally references this clone; native Git gates must survive
   # its removal too. Project scope already copied these portable files.
   if [[ "$SCOPE" == "user" && ! "$TARGET" -ef "$HIMMEL_ROOT" ]]; then
-    for script in scripts/hooks/check-commit-msg.sh scripts/hooks/check-worktree-isolation.sh scripts/hooks/check-push-target.sh scripts/guardrails/lib.sh; do
+    for script in scripts/hooks/check-commit-msg.sh scripts/hooks/check-worktree-isolation.sh scripts/hooks/check-push-target.sh scripts/guardrails/lib.sh scripts/lib/project-mode.sh; do
       if ! copy_recorded "$script"; then
         echo "  git gate hooks — FAILED (native: cannot copy $script into $TARGET)" >&2
         return 1

@@ -343,6 +343,55 @@ else
   printf '  SKIP  primary .env is not JIRA_PROJECT_KEY-driven (no key, or TICKET_ID_PATTERN / TICKET_ID_REQUIRED=0 overrides it)\n'
 fi
 
+# HIMMEL-4758: the gate reads its tracker from scripts/lib/project-mode.sh.
+# G is a repo with a github.com origin; the Jira credentials are stripped so the
+# jira verdict is proven to come from JIRA_PROJECT_KEY alone.
+G=$(fixture_mktemp_dir) || exit 1
+trap 'rm -rf "$R" "$G"' EXIT
+git -C "$G" init -q
+git -C "$G" remote add origin https://github.com/o/r
+expect_mode_rc() {
+  local name="$1" want="$2" grep_for="$3" dir="$4" message="$5" out rc=0
+  shift 5
+  printf '%s\n' "$message" > "$MSG"
+  out=$( ( cd "$dir" && env -u TICKET_ID_REQUIRED -u TICKET_ID_PATTERN \
+      -u TICKET_ID_EXEMPT_AUTHORS -u TICKET_ID_AUTHOR -u TICKET_ID_TRUSTED_AUTHOR -u JIRA_PROJECT_KEY \
+      -u TRACKER -u FORGE -u JIRA_API_TOKEN -u JIRA_EMAIL -u JIRA_BASE_URL \
+      "$@" bash "$SCRIPT" "$MSG" ) 2>&1 ) || rc=$?
+  if [ "$rc" -eq "$want" ] && { [ -z "$grep_for" ] || printf '%s' "$out" | grep -q -- "$grep_for"; }; then
+    printf '  PASS  %s\n' "$name"
+  else
+    printf '  FAIL  %s (rc=%s, want %s; output: %s)\n' "$name" "$rc" "$want" "$out"
+    failures=$((failures + 1))
+  fi
+}
+expect_mode_rc "github origin + JIRA_PROJECT_KEY, no Jira creds, accepts PROJECT-N" 0 "" \
+  "$G" "chore: HIMMEL-1 wire the thing" JIRA_PROJECT_KEY=HIMMEL
+expect_mode_rc "github origin + JIRA_PROJECT_KEY, no Jira creds, rejects a ticketless message" 1 \
+  "no ticket reference matched: HIMMEL-\[0-9\]+" "$G" "chore: no ticket id here" JIRA_PROJECT_KEY=HIMMEL
+expect_mode_rc "FORGE=local-git on a github origin is refused with the resolver's I8 message" 1 \
+  "local-git refused" "$G" "chore: HIMMEL-1 wire the thing" JIRA_PROJECT_KEY=HIMMEL FORGE=local-git
+expect_mode_rc "TRACKER=jira with no key is refused" 1 "JIRA_PROJECT_KEY is not set" \
+  "$R" "chore: [#12] wire the thing" TRACKER=jira
+expect_mode_rc "TRACKER=none makes the ticket optional" 0 "" "$R" "chore: no ticket id here" TRACKER=none
+expect_mode_rc "tracker local accepts the LOCAL-N prefix" 0 "" "$R" "chore: LOCAL-7 wire the thing"
+# Fail CLOSED when the resolver is not installed beside the hook (an adopter
+# payload from before HIMMEL-4758): never a silent env-only fallback.
+NOLIB=$(fixture_mktemp_dir) || exit 1
+trap 'rm -rf "$R" "$G" "$NOLIB"' EXIT
+mkdir -p "$NOLIB/hooks"
+cp "$SCRIPT" "$NOLIB/hooks/check-commit-msg.sh"
+printf 'chore: [#12] wire the thing\n' > "$MSG"
+NOLIB_RC=0
+NOLIB_OUT=$( ( cd "$R" && bash "$NOLIB/hooks/check-commit-msg.sh" "$MSG" ) 2>&1 ) || NOLIB_RC=$?
+case "$NOLIB_RC:$NOLIB_OUT" in
+  1:*project-mode.sh*adopt.sh*) printf '  PASS  %s\n' "a missing project-mode.sh fails CLOSED naming the file and the fix" ;;
+  *)
+    printf '  FAIL  %s (rc=%s, output: %s)\n' "a missing project-mode.sh fails CLOSED naming the file and the fix" "$NOLIB_RC" "$NOLIB_OUT"
+    failures=$((failures + 1))
+    ;;
+esac
+
 if [ "$failures" -eq 0 ]; then
   echo "OK: all cases passed"
   exit 0

@@ -89,31 +89,46 @@ function expandHome(p) {
   return p;
 }
 
-// HIMMEL-3307: bitbucket-cli-build is opt-in ONLY for a target that does not
-// use Bitbucket Cloud. Same rule scripts/lib/forge.sh forge_detect applies: an
-// explicit FORGE=bitbucket, else an `origin` remote on bitbucket.org.
-// HIMMEL-3325: the origin's HOST must be bitbucket.org or a subdomain of it — a
-// URL that merely contains it in a path segment or a longer hostname is not. Same
-// host extraction as forge.sh _forge_origin_host; scripts/lib/fixtures/forge-origins.tsv
-// holds the answers both must give, and test-wizard-statusreport.sh case m3c
-// holds the two to agreement.
-// ponytail: looks at `origin` only (like forge_detect); a Bitbucket remote under
-// another name, or an origin that cannot be read (no repo, git missing, 5 s
-// timeout), reads as "not Bitbucket" and the row downgrades to n/a.
-function originHost(url) {
-  const u = String(url).trim().toLowerCase();
-  const scheme = /^([a-z0-9+.-]+):\/\/([^/]*)/.exec(u); // scheme://[userinfo@]host[:port]/…
-  // else scp-like [userinfo@]host:path — needs a `:` before the first `/`; `host/path` is a local path
-  const authority = scheme ? scheme[2] : (u.split('/')[0].includes(':') ? u.split(':')[0] : '');
-  return authority.replace(/^.*@/, '').replace(/:.*$/, '').replace(/\.$/, ''); // one terminal DNS dot (HIMMEL-3358)
+// HIMMEL-4758: the target's tracker and forge come from the one resolver,
+// scripts/lib/project-mode.mjs (the twin of project-mode.sh). It is ESM and
+// this file is CommonJS on a Node 18 floor (no require(esm)), so it runs as a
+// child: `node project-mode.mjs <fn>` in the target dir, memoized per call.
+// Resolved beside THIS file, not under repoRoot(): HIMMELCTL_REPO_ROOT points
+// at a fixture tree that carries no scripts/lib.
+// ponytail: a resolver that cannot run (node missing, 5 s timeout, rc 2 on an
+// invalid setting) answers null, and each caller below reads null as the
+// opt-in default (n/a), as an unreadable origin did before; upgrade when
+// status grows a row for an invalid project mode.
+const PROJECT_MODE_MJS = path.resolve(__dirname, '..', '..', 'lib', 'project-mode.mjs');
+const projectModeCache = new Map();
+function projectMode(targetPath, fn, env) {
+  const key = JSON.stringify([targetPath, fn, env || null]);
+  if (!projectModeCache.has(key)) {
+    const r = spawnSync(process.execPath, [PROJECT_MODE_MJS, fn], {
+      cwd: targetPath, encoding: 'utf8', timeout: 5000, env: env || process.env,
+    });
+    projectModeCache.set(key, r.status === 0 ? String(r.stdout || '').trim() : null);
+  }
+  return projectModeCache.get(key);
 }
 
+// HIMMEL-3307: bitbucket-cli-build is opt-in ONLY for a target that does not
+// use Bitbucket Cloud: the resolved forge is bitbucket (FORGE, git config
+// himmel.forge, else an `origin` whose HOST is that domain or a subdomain of
+// it, HIMMEL-3325). test-wizard-statusreport.sh case m3c walks
+// scripts/lib/fixtures/forge-origins.tsv to hold this to forge_detect.
 function targetUsesBitbucket(targetPath) {
-  if (String(process.env.FORGE || '').toLowerCase() === 'bitbucket') return true;
-  const r = spawnSync('git', ['-C', targetPath, 'remote', 'get-url', 'origin'], { encoding: 'utf8', timeout: 5000 });
-  if (r.status !== 0) return false;
-  const host = originHost(r.stdout || '');
-  return host === 'bitbucket.org' || host.endsWith('.bitbucket.org');
+  return projectMode(targetPath, 'forge') === 'bitbucket';
+}
+
+// jira-env-keys is opt-in when the tracker is EXPLICITLY not jira (TRACKER or
+// git config himmel.tracker). The key itself lives in <himmel>/.env, not in
+// this process's env, so detection cannot be asked here: a placeholder key
+// forces detection (and an explicit TRACKER=jira) to jira, and only an
+// explicit local/none answers otherwise.
+function trackerIsExplicitlyNotJira(targetPath) {
+  const t = projectMode(targetPath, 'tracker', { ...process.env, JIRA_PROJECT_KEY: 'X' });
+  return t === 'local' || t === 'none';
 }
 
 // The ONE place per-item probe ctx is constructed. Special case (and the
@@ -434,7 +449,7 @@ function statusReport({ manifest, scope, targetPath, answers, itemIds, state: pa
       //                          its directory just does not exist yet). Gated
       //                          on the recorded profile saying `inline`; with
       //                          no answers to consult it fails open to red.
-      if (item.id === 'jira-env-keys' && probe.cleanAbsence) {
+      if (item.id === 'jira-env-keys' && (probe.cleanAbsence || trackerIsExplicitlyNotJira(targetPath))) {
         severity = 'n/a';
         detail = `${probe.detail} — opt-in (Jira integration: add JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY to <himmel>/.env to use the Jira CLI)`;
       }

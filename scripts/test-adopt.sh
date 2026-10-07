@@ -287,6 +287,8 @@ HOME="$base_home" bash "$adopt" --profile core --scope project --target "$proj" 
 for f in scripts/hooks/block-edit-on-main.sh scripts/guardrails/lib.sh scripts/worktree.sh; do
   [ -f "$proj/$f" ] || fail "core/project did not copy $f"
 done
+# HIMMEL-4758: check-commit-msg.sh sources the resolver; a target without it fails closed.
+[ -f "$proj/scripts/lib/project-mode.sh" ] || fail "core/project did not copy scripts/lib/project-mode.sh"
 s="$proj/.claude/settings.json"
 [ -f "$s" ] || fail "core/project did not write $s"
 [ "$(jq '.hooks.PreToolUse | length' "$s")" = "3" ] || fail "expected 3 PreToolUse hooks"
@@ -2107,6 +2109,8 @@ set -e
   || fail "HIMMEL-2814 gap1 shared-payload: adopt exited $rc against the PRIMARY checkout: $out"
 [ -x "$crprimaryG1/.git/hooks/himmel-payload/scripts/hooks/check-commit-msg.sh" ] \
   || fail "HIMMEL-2814 gap1 shared-payload: no fallback payload was left beside the PRIMARY's own (shared) hooks dir"
+[ -f "$crprimaryG1/.git/hooks/himmel-payload/scripts/lib/project-mode.sh" ] \
+  || fail "HIMMEL-4758 shared-payload: the payload carries check-commit-msg.sh without the scripts/lib/project-mode.sh it sources"
 HOME="$pchome" git -C "$crprimaryG1" worktree add -q "$crwtG1" -b cr2814g1-worktree-branch
 
 # Resolve the hooks dir from the SIBLING's own view (it is the same physical
@@ -2325,8 +2329,8 @@ p4bk="$(jq -r '.pre.backup' <<< "$row")"
 row="$(prov_row "$p4led/provenance.jsonl" /scripts/hooks/block-edit-on-main.sh)"
 [ "$(jq -r '[.op,.pre.state,.class]|join(",")' <<< "$row")" = "create,absent,code" ] \
   || fail "HIMMEL-3332 S4: a copy into a clean target must be a create row: $row"
-[ "$(jq -sr '[.[]|select(.kind=="file" and .manifest_row=="adopter-scripts")]|length' "$p4led/provenance.jsonl")" = "21" ] \
-  || fail "HIMMEL-3332 S4: expected 21 file rows (one per PORTABLE_FILES entry)"
+[ "$(jq -sr '[.[]|select(.kind=="file" and .manifest_row=="adopter-scripts")]|length' "$p4led/provenance.jsonl")" = "22" ] \
+  || fail "HIMMEL-3332 S4: expected 22 file rows (one per PORTABLE_FILES entry)"
 echo "ok: HIMMEL-3332 S4 copy_portable records create + replace rows; the user's bytes and mode are backed up"
 
 # a re-run finds our own bytes already there: noop rows, and NO new backups
