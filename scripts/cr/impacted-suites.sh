@@ -452,8 +452,12 @@ if [ -z "$range" ]; then
         exit 2
     fi
     if ! default_mb=$(git merge-base "$default_ref" HEAD); then
-        echo "impacted-suites.sh: no range given and ${default_ref} shares no history with HEAD; run: git fetch --unshallow origin" >&2
-        echo "  then re-run: bash scripts/cr/impacted-suites.sh" >&2
+        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+            echo "impacted-suites.sh: no range given and ${default_ref} shares no history with this shallow HEAD; run: git fetch --unshallow origin" >&2
+            echo "  then re-run: bash scripts/cr/impacted-suites.sh" >&2
+        else
+            echo "impacted-suites.sh: no range given and ${default_ref} shares no history with HEAD (unrelated, not shallow); pass an explicit range: bash scripts/cr/impacted-suites.sh <base>..HEAD" >&2
+        fi
         exit 2
     fi
     range="${default_mb}..HEAD"

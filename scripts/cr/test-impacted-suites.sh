@@ -729,7 +729,16 @@ if ( cd "$FX" && bash "$IS" >/dev/null 2>&1 ); then
 else
     pass "no-arg run with no merge-base exits non-zero"
 fi
-if grepq "$err" -F 'git fetch --unshallow origin'; then pass "no merge-base: error names the filled command"; else fail "no merge-base: no filled command in: $err"; fi
+if grepq "$err" -F 'pass an explicit range' && ! grepq "$err" -F 'unshallow'; then pass "unrelated history: error asks for an explicit range, not --unshallow"; else fail "unrelated history: wrong remedy in: $err"; fi
+# (e) the same in a shallow clone: --unshallow is the remedy.
+SHD="$(fixture_mktemp_dir)" || exit 1
+trap 'rm -rf "$FX" "$SHIM" "$SHIM2" "$SHD"' EXIT
+SH="$SHD/c"
+git clone -q --depth 1 "file://$FX" "$SH"
+git -C "$SH" symbolic-ref -d refs/remotes/origin/HEAD
+git -C "$SH" update-ref refs/remotes/origin/main "$(git -C "$SH" commit-tree -m orphan "$(git -C "$SH" mktree </dev/null)")"
+err="$( ( cd "$SH" && { bash "$IS" >/dev/null; } 2>&1 ) )"
+if grepq "$err" -F 'git fetch --unshallow origin'; then pass "shallow clone: error names git fetch --unshallow origin"; else fail "shallow clone: no unshallow command in: $err"; fi
 git -C "$FX" update-ref -d refs/remotes/origin/main
 
 echo
