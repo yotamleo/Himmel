@@ -17,6 +17,7 @@ export type Route =
   | { kind: "auto"; op: "restart"; arg: string; time: string }
   | { kind: "auto"; op: "launch-bypass-leg" | "cr-grant-delta"; arg: string; time: string }
   | { kind: "console"; name: string; text: string }
+  | { kind: "consoles" }
   | { kind: "chat"; text: string };
 
 // Structured auto-command (HIMMEL-424 B2): `/arm <ticket|path> [at HH:MM|auto|smart]`.
@@ -97,8 +98,11 @@ export function classify(raw: string): Route {
   const restart = t.match(RESTART);
   // Bare `/restart` => rung 1 ("poller"); `/restart full` => rung 2 ("full").
   if (restart) return { kind: "auto", op: "restart", arg: restart[1] ? "full" : "poller", time: "-" };
+  if (t === "/consoles") return { kind: "consoles" };
   const con = t.match(CONSOLE);
   if (con) return { kind: "console", name: con[1], text: con[2] };
+  const bare = t.match(/^\/console\s+([\s\S]+)$/);
+  if (bare) return { kind: "console", name: "", text: bare[1] };
   const fu = t.match(/^([A-Z][A-Z0-9]+-[0-9]+):\s*([\s\S]+)$/);
   if (fu) return { kind: "followup", ticket: fu[1], text: fu[2] };
   return { kind: "chat", text: t };

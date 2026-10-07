@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, repairCursorBeyondEof, truncateFullyConsumed, type Meta, type OnCursorReset } from "./bus";
 import { classify, type Route } from "./router";
-import { routeToConsole, type ConsoleRouteGate } from "./console-route";
+import { routeToConsole, consoleReplyTarget, rememberConsoleReply, type ConsoleRouteGate } from "./console-route";
 import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, getMe, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { installTimestampedLogging } from "./log-timestamp";
@@ -44,7 +44,7 @@ const RETRY_MS = Number(process.env.TELEGRAM_RETRY_MS ?? 15 * 60 * 1000);
 // present (the injection-refuse signal). `caption` = the text came from a media caption
 // or voice transcript, NOT a genuinely typed m.text. Both fail toward "not a typed
 // command" so an undefined-deserialized value can never fail OPEN.
-export type Inbound = { from: number; chat_id: number; text: string; ts: number; update_id: number; sender_chat?: number; forwarded: boolean; caption: boolean; image_path?: string; document_path?: string; document_name?: string };
+export type Inbound = { from: number; chat_id: number; text: string; ts: number; update_id: number; sender_chat?: number; reply_to_message_id?: number; forwarded: boolean; caption: boolean; image_path?: string; document_path?: string; document_name?: string };
 export type AllowFn = (fromId: number, chatId: number) => boolean;
 // Downloads a photo by file_id, returns the local path (null on failure).
 export type FetchImageFn = (file_id: string, update_id: number) => Promise<string | null>;
@@ -255,7 +255,7 @@ export async function ingestUpdates(root: string, updates: any[], allow: AllowFn
            : m.text;
       // caption:true iff the text came from a media caption (photo/doc present), else it
       // is a genuinely typed m.text (caption:false) — the only auto-command-eligible shape.
-      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: !!(photo || doc), ...(senderChat != null ? { sender_chat: senderChat } : {}) });
+      ready.push({ from: fromId, chat_id: chatId, text, ts: m.date ?? 0, update_id: u.update_id, forwarded, caption: !!(photo || doc), ...(senderChat != null ? { sender_chat: senderChat } : {}), ...(Number.isSafeInteger(m.reply_to_message?.message_id) && m.reply_to_message.message_id > 0 ? { reply_to_message_id: m.reply_to_message.message_id } : {}) });
     }
   }
   // Write all non-photo inbox entries.
@@ -308,7 +308,7 @@ export async function repairThenIngest(root: string, updates: any[], allow: Allo
   await ingestUpdates(root, updates, allow, fetchImage, fetchVoice, fetchDoc, notifyDocFail);
 }
 
-export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; sender_chat?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
+export type DeliveredMsg = { from: number; chat_id: number; text: string; ts?: number; sender_chat?: number; reply_to_message_id?: number; forwarded?: boolean; caption?: boolean; image_path?: string; document_path?: string; document_name?: string };
 export type RunFn = (session: string, modelOverride?: ModelOverride) => Promise<void>;
 // fromOperator selects the classifier's prompt framing (HIMMEL-1296 CR
 // codex-adv-1) — operator framing must not be told to a shared group's ordinary
@@ -447,9 +447,18 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
   // (caption===false), not forwarded, no leading `model:` tag — and the same
   // fall-through: any condition false ⇒ ordinary chat, exactly today's path.
   // gate.ts stays the sole sender gate; the branch is inert unless main() wires it.
-  if (!tagged && route.kind === "console" && consoleRoute && consoleRoute.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded) {
-    await routeToConsole(root, msg, route, consoleRoute.reply);
-    return;
+  if (!tagged && consoleRoute && consoleRoute.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded) {
+    if (route.kind === "console" || route.kind === "consoles") {
+      await routeToConsole(root, msg, route, consoleRoute.reply);
+      return;
+    }
+    if ((route.kind === "chat" || route.kind === "followup") && !msg.text.trimStart().startsWith("/") && msg.reply_to_message_id != null) {
+      const name = await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id);
+      if (name) {
+        await routeToConsole(root, msg, { kind: "console", name, text: msg.text, thread: true }, consoleRoute.reply);
+        return;
+      }
+    }
   }
   // Auto-command (HIMMEL-424 B2): a message AUTHORIZED by auto.authorize(from, chat_id)
   // — the sender is the allowlisted operator (global allowFrom) AND the chat is
@@ -804,7 +813,7 @@ export async function runAndSettle(root: string, session: string, run: Runner, n
   return res;
 }
 
-export type SendFn = (chat_id: number, text: string) => Promise<void>;
+export type SendFn = (chat_id: number, text: string) => Promise<void | number>;
 
 // Send-then-commit: send each complete outbox line, advance the byte-cursor only
 // AFTER the send resolves (at-least-once on crash). Per-chat throttle is the caller's job.
@@ -828,9 +837,12 @@ export async function flushOutboxes(root: string, send: SendFn): Promise<void> {
       for (const ln of complete.split("\n")) {
         const bytes = Buffer.byteLength(ln + "\n", "utf8");
         if (ln.trim()) {
-          let text: string | null = null;
-          try { text = JSON.parse(ln).text ?? ""; } catch { text = null; }
-          if (text !== null) { await send(meta.chat_id, text); }   // send BEFORE committing
+          let out: { text?: string; console?: string } | null = null;
+          try { out = JSON.parse(ln); } catch {}
+          if (out) {
+            const messageId = await send(meta.chat_id, out.text ?? ""); // send BEFORE committing
+            if (out.console && typeof messageId === "number") await rememberConsoleReply(root, meta.chat_id, messageId, out.console);
+          }
         }
         pos += bytes;
         await atomicWrite(curFile, String(pos));                    // commit after this line
@@ -1882,14 +1894,14 @@ async function sessionsList(root: string): Promise<string[]> {
 // block polling. Routes to the SAME session the chat uses (group_<id> for a group, so a
 // group `/arm` reply lands in that group and its per-group context is preserved;
 // __chat__ for a DM) — mirrors handleInbound's chatSession routing.
-export async function replyViaOutbox(root: string, chat_id: number, text: string): Promise<void> {
+export async function replyViaOutbox(root: string, chat_id: number, text: string, consoleName?: string): Promise<void> {
   const session = chat_id < 0 ? `group_${chat_id}` : "__chat__";
   const { created } = await ensureSession(root, session);
   const meta = await readMeta(root, session);
   if (created || !meta) {
     await writeMeta(root, session, { chat_id, status: "idle", last_run_pid: null, last_run_at: null, task_name: null, retry_at: null });
   }
-  await appendLine(join(sessionDir(root, session), "outbox.jsonl"), JSON.stringify({ text }));
+  await appendLine(join(sessionDir(root, session), "outbox.jsonl"), JSON.stringify({ text, ...(consoleName ? { console: consoleName } : {}) }));
 }
 
 // --- getUpdates outage handling (HIMMEL-1401) ---
@@ -2027,7 +2039,11 @@ export async function main(): Promise<void> {
   const notifyDocFail: NotifyDocFailFn = async (chatId, name) => {
     await sendMessage(token, chatId, `⚠️ couldn't download "${name}" (it may exceed Telegram's ~20MB limit) — I forwarded your caption only.`);
   };
-  const send = async (chat: number, text: string) => { await sendMessage(token, chat, text); };
+  const send: SendFn = async (chat, text) => {
+    let messageId: number | undefined;
+    await sendMessage(token, chat, text, undefined, undefined, id => { messageId = id; });
+    return messageId;
+  };
   // HIMMEL-2580: inbound.jsonl's cursor is ROOT-scoped, not chat-scoped, so a
   // "your messages were dropped" notice has no originating chat to reply into.
   // It goes to the operator's own DM: in a DM Telegram's chat_id IS the sender
@@ -2094,7 +2110,7 @@ export async function main(): Promise<void> {
   // Operator -> console routing (HIMMEL-3355). Same authorize as /arm — global
   // allowFrom sender AND an allowed chat — so the gate is unchanged; the ack rides
   // the per-chat outbox like every other bridge reply.
-  const consoleGate: ConsoleRouteGate = { authorize: autoGate.authorize, reply: (chat, text) => replyViaOutbox(root, chat, text) };
+  const consoleGate: ConsoleRouteGate = { authorize: autoGate.authorize, reply: (chat, text, name) => replyViaOutbox(root, chat, text, name) };
   // Burst coalescing (HIMMEL-1273): handleInbound requests through this instead
   // of dispatching per message, so a burst becomes ONE run.
   const coalesce = makeBurstCoalescer(dispatch);
@@ -2200,7 +2216,7 @@ export async function main(): Promise<void> {
     // the rest of the already-consumed batch with it (HIMMEL-1296 CR).
     await handleBatch(
       fresh,
-      (i) => handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, sender_chat: i.sender_chat, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate, undefined, (from, chat_id, sender_chat) => isOperatorIdentity(access, from, chat_id, sender_chat), (chatId, text) => sendMessage(token, chatId, text).then(() => undefined), requireMentionFor, botUsername, consoleGate),
+      (i) => handleInbound(root, { from: i.from, chat_id: i.chat_id, text: i.text, ts: i.ts, sender_chat: i.sender_chat, reply_to_message_id: i.reply_to_message_id, forwarded: i.forwarded, caption: i.caption, image_path: i.image_path, document_path: i.document_path, document_name: i.document_name }, coalesce, autoGate, undefined, (from, chat_id, sender_chat) => isOperatorIdentity(access, from, chat_id, sender_chat), (chatId, text) => sendMessage(token, chatId, text).then(() => undefined), requireMentionFor, botUsername, consoleGate),
       // sendMessage, NOT replyViaOutbox (CR codex-adv-1 round 6): the outbox is
       // written INTO the same session directory whose failure caused the drop,
       // so on an unwritable session it fails too — and the bridge would then eat

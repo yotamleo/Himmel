@@ -70,7 +70,7 @@ export const redactChatId = (chat_id: number): string => {
 // know delivery happened (e.g. luna-sync-alert's cooldown state) can gate on it.
 
 export async function sendMessage(token: string, chat_id: number, text: string,
-    f: F = fetch, sleep: (ms:number)=>Promise<void> = (ms)=>Bun.sleep(ms)): Promise<boolean> {
+    f: F = fetch, sleep: (ms:number)=>Promise<void> = (ms)=>Bun.sleep(ms), receipt?: (messageId: number) => void): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
     let res: Response;
     try {
@@ -82,7 +82,10 @@ export async function sendMessage(token: string, chat_id: number, text: string,
       return false;
     }
     const j: any = await res.json().catch(() => ({}));
-    if (res.ok && j?.ok === true) return true;
+    if (res.ok && j?.ok === true) {
+      if (Number.isSafeInteger(j.result?.message_id) && j.result.message_id > 0) receipt?.(j.result.message_id);
+      return true;
+    }
     if (res.status === 429) { if (attempt < 4) await sleep((j?.parameters?.retry_after ?? 1) * 1000); continue; }
     if (res.status >= 400 && res.status < 500) {           // permanent client error → log + drop (never loop)
       console.error(`[telegram] sendMessage ${res.status} chat=${redactChatId(chat_id)}: ${j?.description ?? ""}`);

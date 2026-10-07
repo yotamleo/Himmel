@@ -123,6 +123,7 @@ docB="$root/tester/demorepo/DEMO-nextleg-${today}B-console.md"
 
 out1="$(console new --bucket demorepo)"
 check "1 new writes the console doc" "$([ -f "$docA" ] && echo yes)" "yes"
+check "1 Telegram metadata records the console bucket" "$(grep -c '"bucket":"demorepo"' "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}A-console.md.meta.json" 2>/dev/null || true)" "1"
 check "2 doc has no surviving placeholder" "$(grep -c '{{' "$docA" 2>/dev/null)" "0"
 # HIMMEL-4204: the step-10/11 commands carry the RESOLVED literal inbox path,
 # never a ${BRIDGE_ROOT:-...} expansion guard-pr-check-literal denies.
@@ -254,6 +255,7 @@ out6a="$(console new --bucket nextrepo)"
 token6a="$(token_of "$out6a")"
 console next --bucket nextrepo >/dev/null
 check "6 next writes successor stub" "$([ -f "$doc6B" ] && echo yes)" "yes"
+check "6 Telegram metadata records the successor bucket" "$(grep -c '"bucket":' "$BRIDGE_ROOT/consoles/DEMO-nextleg-${today}B-console.md.meta.json" 2>/dev/null || true)" "1"
 check "6 next writes predecessor HANDOFF" "$([ -f "$handoff6A" ] && echo yes)" "yes"
 check "6 successor stub names the predecessor" "$(grep -c "DEMO-nextleg-${today}A-console.md" "$doc6B")" "1"
 check "6 successor has no surviving placeholder" "$(grep -c '{{' "$doc6B" 2>/dev/null)" "0"

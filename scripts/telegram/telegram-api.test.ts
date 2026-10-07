@@ -1,6 +1,16 @@
 import { expect, test, spyOn, mock } from "bun:test";
 import { getUpdates, sendMessage, sendChatAction } from "./telegram-api";
 
+test("sendMessage exposes the accepted message id for console reply threading only on success", async () => {
+  const ids: number[] = [];
+  const fetchOk = async () => new Response(JSON.stringify({ ok: true, result: { message_id: 777 } }));
+  expect(await sendMessage("T", 1, "answer", fetchOk as any, async () => {}, id => { ids.push(id); })).toBe(true);
+  expect(ids).toEqual([777]);
+  const fetchFail = async () => new Response(JSON.stringify({ ok: false, result: { message_id: 888 } }), { status: 400 });
+  expect(await sendMessage("T", 1, "answer", fetchFail as any, async () => {}, id => { ids.push(id); })).toBe(false);
+  expect(ids).toEqual([777]);
+});
+
 test("sendChatAction posts chat_id + action; failure is swallowed (best-effort)", async () => {
   const bodies: any[] = [];
   const fakeFetch = async (_url: string, init: any) => { bodies.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true })); };
