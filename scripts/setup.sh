@@ -187,6 +187,14 @@ if ! bash "$REPO_ROOT/scripts/setup/check-jira-key.sh" "$_jira_mode"; then
 fi
 echo ""
 
+# --- tracker / forge (HIMMEL-4767, HIMMEL-4748 WP8) ---
+# Asks for both and writes git config himmel.tracker / himmel.forge; an
+# existing value is the default and Enter keeps it. Non-interactive shells
+# skip. Never fatal: an unset mode is auto-detected by scripts/lib/project-mode.sh.
+echo "[0.45/9] Choosing the tracker and forge..."
+bash "$REPO_ROOT/scripts/setup/choose-mode.sh" "$REPO_ROOT" || echo "  WARNING: choose-mode failed; continuing." >&2
+echo ""
+
 # --- USER_SLUG resolution (HIMMEL-145; advisory per HIMMEL-2537) ---
 # Verify the operator's user slug resolves at setup time so paths in
 # handover bucket layout, registry.json, and overnight artifacts line

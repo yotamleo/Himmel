@@ -378,6 +378,36 @@ each bridged var's own comment there names its bridging reader.
 | `CONFLUENCE_EMAIL` / `CONFLUENCE_API_TOKEN` | falls back to `JIRA_*` | `.env` | Confluence ops in the Jira CLI |
 | `ORGANIZATION_ID` | legacy — **no active reader** (self-flagged in the file) | `.env` | nothing in-repo |
 
+#### Tracker and forge
+
+Which ticket tracker and which code forge a repo uses. One resolver owns the
+answer, `scripts/lib/project-mode.sh` (JS twin `project-mode.mjs`); every
+reader asks it rather than testing `JIRA_PROJECT_KEY` or the origin host
+itself. Precedence per key: the env var, then the repo's git config, then
+detection. `bash scripts/setup.sh` asks for both and writes the git config (an
+existing value is the default; Enter keeps it). `himmel-doctor` row
+`C55-project-mode` and the config UI's Health page show the resolved pair.
+
+| Knob | Default | Set in | Effect |
+|---|---|---|---|
+| `TRACKER=jira\|local\|none` | detected: `jira` when `JIRA_PROJECT_KEY` is set, else `local` | env | the tracker for this run; beats `himmel.tracker`. `jira` without `JIRA_PROJECT_KEY` is refused |
+| `FORGE=github\|bitbucket\|local-git\|none` | detected from the origin host: `github.com` → `github`, `bitbucket.org` → `bitbucket`, any other origin (or none) inside a work tree → `local-git`, outside one → `none` | env | the forge for this run; beats `himmel.forge`. `local-git` on a github.com / bitbucket.org origin is refused |
+| `himmel.tracker` | unset (detected) | `git config` (per repo) | the persistent `TRACKER` choice: `jira`, `local` or `none` |
+| `himmel.forge` | unset (detected) | `git config` (per repo) | the persistent `FORGE` choice: `github`, `bitbucket` or `local-git` (`none` is env-only) |
+| `himmel.trackerPrefix` | `LOCAL` | `git config` (per repo) | the ID prefix for `tracker=local` (`LOCAL-12`); an uppercase letter, then `A-Z`/`0-9`. `#N` is always accepted too |
+| `himmel.localCheck` | unset — **no default** | `git config` (per repo) | read by WP5a (`scripts/lib/local-checks.sh`, not yet merged): the test command run at a head for `forge=local-git`. Unset, the local check refuses and READY is impossible |
+
+To clear a choice back to detection: `git config --unset himmel.tracker` (or
+`himmel.forge`).
+
+**`tracker=none` and CI.** With no tracker the resolver prints
+`TICKET_ID_REQUIRED=0`, so commits need no ticket ID. An explicit
+`TICKET_ID_REQUIRED` env value still wins over the resolver, and himmel's own
+workflows pin it: `.github/workflows/ci.yml` and
+`.github/workflows/pr-title-lint.yml` each set `TICKET_ID_REQUIRED: '1'`. An
+adopter on `tracker=none` edits those two lines to `'0'`, or the CI range gate
+and the PR-title lint keep demanding an ID.
+
 **Review & merge (the CR loop)**
 
 | Knob | Default | Set in | Effect |

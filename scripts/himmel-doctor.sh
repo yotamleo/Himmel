@@ -3559,6 +3559,27 @@ check_c54_hook_copy_reaper() {  # t13b-ok: doctor row that runs the reaper repor
     esac
 }
 
+# --- C55-project-mode (HIMMEL-4767, HIMMEL-4748 WP8): which tracker, which forge -
+# Reports scripts/lib/project-mode.sh's answer for the judged checkout; the
+# resolver is the one owner (HIMMEL-4758), this row never re-derives it. A
+# refusal (rc 2: an invalid or contradictory setting) is a WARN carrying the
+# resolver's own message. A checkout without the resolver gets no row.
+check_c55_project_mode() {
+    local lib="$REPO_ROOT/scripts/lib/project-mode.sh" out rc=0 tracker forge req
+    [ -f "$lib" ] || return 0
+    # shellcheck disable=SC1090  # the judged checkout's resolver
+    out=$( { cd "$REPO_ROOT" && . "$lib" && t=$(project_mode_tracker) && f=$(project_mode_forge --quiet) \
+        && r=$(project_mode_id_required) && printf '%s %s %s\n' "$t" "$f" "$r"; } 2>&1) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        emit WARN C55-project-mode "tracker/forge unresolved: $(printf '%s' "$out" | tail -n 1)" \
+            "fix TRACKER / FORGE or git config himmel.tracker / himmel.forge (docs/configuration.md#tracker-and-forge)"
+        return
+    fi
+    read -r tracker forge req <<< "$out"
+    if [ "$req" = 0 ]; then req="ticket ID not required"; else req="ticket ID required"; fi
+    emit OK C55-project-mode "tracker=$tracker forge=$forge ($req)"
+}
+
 # --- C48-tmp-usage: /tmp at 80 % or more (HIMMEL-4224) --------------------------
 # On 2026-10-03 the /tmp tmpfs filled and fleet Bash hit ENOSPC. WARN at >= 80 % used
 # and name scripts/tmp-reap.sh (dry-run by default) as the remedy. Report only.
@@ -3783,6 +3804,7 @@ check_c51_firecrawl_parked
 check_c52_graphify_ollama
 check_c53_vm_mode
 check_c54_hook_copy_reaper
+check_c55_project_mode
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

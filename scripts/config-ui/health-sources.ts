@@ -1,4 +1,4 @@
-// health-sources.ts — the three read-only sources behind GET /api/health (HIMMEL-4405).
+// health-sources.ts — the read-only sources behind GET /api/health (HIMMEL-4405; mode, HIMMEL-4767).
 // Each section is {state: ok|absent|error, reason?, ...data} and degrades alone (I3).
 // Nothing here computes a verdict or runs a probe: the bank row is read from the
 // ledger bank-preflight already wrote (I2), the legs from legs.sh, monitoring over loopback (I7).
@@ -6,6 +6,9 @@ import { spawn } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+// The one owner of tracker/forge (HIMMEL-4758); read here, never re-derived.
+// @ts-ignore plain ES module, no types
+import { projectModeTracker, projectModeForge, projectModeIdRequired } from "../lib/project-mode.mjs";
 
 type Env = Record<string, string | undefined>;
 export type Section = { state: "ok" | "absent" | "error"; reason?: string; [k: string]: unknown };
@@ -38,6 +41,16 @@ export function readBank(env: Env): Section {
     return { state: "ok", row: { ts, verdict, five_hour, seven_day, age, degraded } };
   }
   return { state: "absent", reason: "no bank-preflight ledger row with bank numbers" };
+}
+
+// The resolver's tracker and forge for the checkout at cwd; its refusal (code 2) is an error section.
+export function readMode(cwd: string, env: Env): Section {
+  const o = { cwd, env };
+  try {
+    return { state: "ok", tracker: projectModeTracker(o), forge: projectModeForge({ ...o, quiet: true }), idRequired: projectModeIdRequired(o) };
+  } catch (e) {
+    return { state: "error", reason: String((e as Error)?.message || e) };
+  }
 }
 
 // legs.sh in its own process group, so a hung child cannot hold the response past the budget.
