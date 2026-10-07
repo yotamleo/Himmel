@@ -958,6 +958,13 @@ out_fb=$(bash "$STEP" --doc "$FB_DOC" --projects "$DG_PROJ" 2>&1)
 contains "digest-fallback: the member is digested" "$out_fb" "$DG_SID digest=ok"
 not_contains "digest-fallback: a journal from another cwd is not a member" "$out_fb" "$FB_OTHER"
 check "digest-fallback: one eval-runs row" "$(jq -r .run_id "$HIMMEL_EVAL_RUNS_LEDGER" 2>/dev/null)" "$DG_SID"
+# codex-1: a member outside the resolver's recent-mtime pass must not be hidden
+# by a recent member that the bounded pass did find
+FB_OLD=4670c3a0-0000-4000-8000-0000000000bb
+sed "s/$DG_SID/$FB_OLD/g" "$DG_PROJ/$FB_SLUG/$DG_SID.jsonl" > "$DG_PROJ/$FB_SLUG/$FB_OLD.jsonl"
+touch -d '3 days ago' "$DG_PROJ/$FB_SLUG/$FB_OLD.jsonl"  # gnu-ok: console kit is Linux-only
+out_fb=$(bash "$STEP" --doc "$FB_DOC" --projects "$DG_PROJ" 2>&1)
+contains "digest-fallback: an older member beside a recent one is digested too" "$out_fb" "$FB_OLD digest=ok"
 FB_LATE="$W/HIMMEL-9-N1-demo-2026-10-07.md"
 cp "$FB_DOC" "$FB_LATE"
 out_fb=$(bash "$STEP" --doc "$FB_LATE" --projects "$DG_PROJ" 2>&1)

@@ -198,6 +198,8 @@ ident="$(leg_identity "$DOC")"
 candidates="$(printf '%s\n%s\n' "${ident#*$'\t'}" "$(basename "$DOC" .md)" | tr ',' '\n' | sed '/^$/d')"
 slug="$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"
 [ -d "$PROJECTS/$slug" ] || { echo "digest=skipped:no-chain"; exit 0; }
+# Every file of the leg's own project dir, whole: a chain spans days and
+# renames, so the close's recent-and-head-bounded first pass would hide members.
 members=0
 while IFS= read -r j; do
     [ -n "$j" ] || continue
@@ -212,7 +214,7 @@ while IFS= read -r j; do
     members=$((members + 1))
     printf '%s %s\n' "$sid" "$(digest_one "$sid" "$j" "" 0)"
 done <<EOF
-$(resolve_leg_transcripts "$PROJECTS/$slug" "$candidates" 1 40)
+$(match_transcripts "$(find "$PROJECTS/$slug" -type f -name '*.jsonl' 2>/dev/null)" 0 "$candidates")
 EOF
 [ "$members" -gt 0 ] || echo "digest=skipped:no-chain"
 exit 0
