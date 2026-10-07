@@ -957,7 +957,7 @@ vscope="$vroot/tuser/fx/verdicts"
 # The writer takes evidence only from /tmp/claude-<uid>/ (HIMMEL-4714).
 jscratch="/tmp/claude-$(id -u)"
 [ -d "$jscratch" ] || mkdir -m 700 "$jscratch" || fail "cannot create $jscratch"
-jev="$(mktemp -d "$jscratch/pr-check-rounds.XXXXXX")" || fail "mktemp -d in $jscratch"
+jev="$(mktemp -d "$jscratch/pr-check-rounds.XXXXXX")" || { fail "mktemp -d in $jscratch"; exit 1; }
 trap 'rm -rf "$tmp" "$jev"' EXIT
 printf 'the fix does not hold\n' > "$jev/judge-evidence.md"
 judge() {

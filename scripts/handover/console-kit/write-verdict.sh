@@ -108,6 +108,12 @@ if [ -L "$SCRATCH" ] || [ ! -d "$SCRATCH" ] || [ ! -O "$SCRATCH" ]; then
     echo "write-verdict: '$SCRATCH' is not a directory this uid owns (or is a symlink)" >&2
     exit 2
 fi
+# No other user may write the root: below a root only this uid can write,
+# nobody else can swap a path segment between these checks and the cat.
+case "$(ls -ld "$SCRATCH" 2>/dev/null)" in
+    d????-??-*) ;;
+    *) echo "write-verdict: '$SCRATCH' is writable by group or other users - refusing" >&2; exit 2 ;;
+esac
 ev_dir=$SCRATCH
 ev_rest=${EVIDENCE#"$SCRATCH"/}
 while :; do

@@ -260,6 +260,26 @@ rc=0; wv q12 NO-GO "$SHA_A" --evidence-file "${evd#/tmp/}/evidence.md" >/dev/nul
 check "10: a relative path refused rc 2" "$rc" 2
 check "10: nothing written for q12" "$([ -e "$scope_dir/q12" ] && echo yes || echo no)" no
 
+# --- 11. a scratch root other users can write to is refused --------------
+# A stub `id` points the writer at a scratch root this test owns, so the real
+# /tmp/claude-<uid> is never chmod-ed.
+fake_uid="99$$"
+fake_scratch="/tmp/claude-$fake_uid"
+mkdir -p "$tmp/bin" && mkdir -m 700 "$fake_scratch" || { echo "FAIL: cannot create $fake_scratch" >&2; exit 1; }
+trap 'rm -rf "$tmp" "$evd" "$outd" "$fake_scratch"' EXIT
+printf '#!/bin/sh\necho %s\n' "$fake_uid" > "$tmp/bin/id"
+chmod +x "$tmp/bin/id"
+printf 'evidence\n' > "$fake_scratch/evidence.md"
+rc=0; PATH="$tmp/bin:$PATH" wv q13 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "11: control - a 0700 stub root is accepted" "$rc" 0
+chmod 770 "$fake_scratch"
+rc=0; PATH="$tmp/bin:$PATH" wv q14 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "11: a group-writable scratch root refused rc 2" "$rc" 2
+chmod 707 "$fake_scratch"
+rc=0; PATH="$tmp/bin:$PATH" wv q14 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "11: a world-writable scratch root refused rc 2" "$rc" 2
+check "11: nothing written for q14" "$([ -e "$scope_dir/q14" ] && echo yes || echo no)" no
+
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"
 exit 1
