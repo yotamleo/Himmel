@@ -26,7 +26,9 @@
 # not a shell parser, with the siblings' residuals in both directions: a
 # separator inside quoted data (`git commit -m "a; qmd query b"`) reads as a
 # command boundary and is a false DENY — the safe direction — and variable
-# indirection (`q=qmd; $q query`) is a miss (HIMMEL-4178).
+# indirection (`q=qmd; $q query`) is a miss (HIMMEL-4178). HIMMEL-4574 drops
+# that false DENY where every command run is a reader (readers_only below):
+# `grep -E 'a|qmd query' f | head` is a pattern, not a boundary.
 #
 # HIMMEL-4121: the regex also runs over the command's words after bash-style
 # quote removal (qmd_words below), so a verb or program spelled through
@@ -1152,12 +1154,37 @@ qmd_nested() {
     return 0
 }
 
+# readers_only WORDS — succeed when every command qmd_words' reading of the
+# command runs is a reader that never runs an argument (HIMMEL-4574). Quoted
+# data there is only ever a pattern or a file name, so the raw-text reading
+# (whose job is a separator or a nested `bash -c` inside quotes) is skipped:
+# `ls | grep 'a|qmd query'` is a mention. WORDS prints quoted operators as `_`,
+# so only real separators split it, and `$(`, a backtick, `<(`, a brace group
+# or a function body each start a command of their own. A VAR= prefix, a
+# redirect before the program, a path or any other program is no reader.
+# echo and printf are deliberately not readers: their output is commonly
+# piped on, and the J1666 rows keep `echo "x; qmd query"` denied.
+QREADERS=' grep egrep fgrep cat head tail wc ls '
+readers_only() {
+    local t=$1 seg w
+    # An fd dup or an &> redirect is no command boundary.
+    t=${t//'>&'/'> '}
+    t=${t//'&>'/' >'}
+    t=${t//[|;&()\{\}\`]/$'\n'}
+    while IFS= read -r seg; do
+        read -r w _ <<<"$seg" || true
+        [ -n "$w" ] || continue
+        case "$QREADERS" in *" $w "*) ;; *) return 1 ;; esac
+    done <<<"$t"
+    return 0
+}
+
 # qmd_check CMD DEPTH — set deny=1 when CMD runs a bare search verb. DEPTH is
 # 0 for the tool call's command and counts nested strings. It always returns
 # 0 and is called bare, so set -e still stops the hook (and the EXIT trap
 # denies) on a failure inside it.
 qmd_check() {
-    local cmd=$1 depth=$2 cmd_lc crude res words words_lc dec aq
+    local cmd=$1 depth=$2 cmd_lc crude res words words_lc dec aq raw
     # A work bound, refused when hit: the chain skips a member past its
     # budget, so a slow scan must deny rather than run out the clock.
     checks=$((checks + 1))
@@ -1203,9 +1230,13 @@ qmd_check() {
         dec=${dec%.}
         res=${res%%$'\n'*}
         words_lc=$(printf '%s' "$words" | LC_ALL=C tr '[:upper:]' '[:lower:]')
-        if [[ $words_lc =~ $BARE$BOUND ]] || [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
+        raw=1
+        readers_only "$words_lc" && raw=0
+        if [[ $words_lc =~ $BARE$BOUND ]]; then
             deny=1
-        elif qp_deny "${res#:}"; then
+        elif [ "$raw" = 1 ] && [[ $cmd_lc =~ $BARE$RAWBOUND ]]; then
+            deny=1
+        elif [ "$raw" = 1 ] && qp_deny "${res#:}"; then
             deny=1
         elif [ "$depth" -gt 0 ] && [[ $words_lc =~ $SUBPROG ]]; then
             deny=1

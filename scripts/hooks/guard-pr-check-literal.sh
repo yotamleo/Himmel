@@ -602,7 +602,7 @@ _st_sed_script() { # one sed script at word $1 with text $2, in st_sed_args's sc
 # Anything else keeps the old text, so every command that was not one
 # simple command still is not, and a redirect is re-emitted with its target.
 if st_tokenize "$cmd" && [ "$ST_NSEG" -eq 1 ] && [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ]; then
-    tk_cmd=-1 tk_path=-1 tk_pre=0 tk_dropped=0 tk_flat='' ST_SED_SCRIPTS=''
+    tk_cmd=-1 tk_path=-1 tk_pre=0 tk_msg=0 tk_dropped=0 tk_flat='' ST_SED_SCRIPTS=''
     k=0
     while [ "$k" -lt "$ST_N" ]; do
         if [ -z "${ST_RO[k]}" ]; then
@@ -626,6 +626,21 @@ if st_tokenize "$cmd" && [ "$ST_NSEG" -eq 1 ] && [ "$ST_SUBST$ST_HEREDOC$ST_ANSI
                 ;;
             *.sh) [ "${ST_Q[tk_cmd]}" = 1 ] || tk_path=$tk_cmd ;;
             sed) st_sed_args "$tk_cmd" 1 || ST_SED_SCRIPTS='' ;;
+            gh)
+                if [ "$((tk_cmd + 2))" -lt "$ST_N" ] && [ -z "${ST_RO[tk_cmd + 1]}${ST_RO[tk_cmd + 2]}" ] \
+                    && [ "${ST_Q[tk_cmd + 1]}${ST_X[tk_cmd + 1]}${ST_G[tk_cmd + 1]}${ST_Q[tk_cmd + 2]}${ST_X[tk_cmd + 2]}${ST_G[tk_cmd + 2]}" = 000000 ]; then
+                    case "${ST_W[tk_cmd + 1]} ${ST_W[tk_cmd + 2]}" in
+                        'pr comment' | 'pr create' | 'pr edit' | 'pr review' | 'pr view' | \
+                            'issue comment' | 'issue create' | 'issue edit' | 'issue view') tk_msg=1 ;;
+                    esac
+                fi
+                ;;
+            node)
+                k=$((tk_cmd + 1))
+                if [ "$k" -lt "$ST_N" ] && [ -z "${ST_RO[k]}" ] && [ "${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 000 ]; then
+                    case "${ST_W[k]}" in */scripts/jira/dist/index.js) tk_msg=1 ;; esac
+                fi
+                ;;
         esac
         k=0
         while [ "$k" -lt "$ST_N" ]; do
@@ -634,7 +649,10 @@ if st_tokenize "$cmd" && [ "$ST_NSEG" -eq 1 ] && [ "$ST_SUBST$ST_HEREDOC$ST_ANSI
                 case "${ST_W[tk_cmd]}" in
                     echo|printf|grep|egrep|fgrep|jq|cat|head|tail|wc) tk_inert=1 ;;
                     sed) case "$ST_SED_SCRIPTS " in *" $k "*) tk_inert=1 ;; esac ;;
-                    *) [ "$tk_path" -lt 0 ] || [ "$k" -le "$tk_path" ] || tk_inert=1 ;;
+                    *)
+                        [ "$tk_msg" = 0 ] || tk_inert=1
+                        [ "$tk_path" -lt 0 ] || [ "$k" -le "$tk_path" ] || tk_inert=1
+                        ;;
                 esac
             fi
             if [ "$tk_inert" = 1 ]; then
@@ -758,8 +776,11 @@ fi
 # nothing in it can run a file, so a glob or brace in a body (a scratch
 # file's `{}`, a list comprehension's `*`) is data. python/node/jq run their
 # body as code, grep -f reads it as patterns and tee writes it, so none of
-# them qualifies. Only a command that names no target and no cr/ or
-# handover/ path gets this exit; one that does is classified below.
+# them qualifies. HIMMEL-4574: the same proof holds when the command names a
+# target or a cr/ or handover/ path - with no runner, no write and only
+# readers, a mention (`cat <<EOF` of a brief that quotes go.sh) is data too.
+# A heredoc fed to anything else (python3, bash, `| sh`, `$(cat <<E)`) still
+# goes to the classification below.
 HD_READERS='cat head tail wc'
 heredoc_data_only() { # true when only heredoc bodies could make $flat look runnable
     local k sg=-1 cw=-1 w
@@ -798,9 +819,57 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
     done
     return 0
 }
+# HIMMEL-4574: a pipeline or list in which every segment's command word is a
+# reader that never runs an argument runs nothing, so a target its words name
+# (`grep -n 'write-verdicts.sh' .claude/commands/pr-check.md | head`, `cat
+# scripts/cr/*.sh | wc -l`) is a mention. The proof is heredoc_data_only's
+# without a heredoc: no substitution, no $'…' word, no comment, no write
+# redirect but an fd dup or /dev/null, and each command word plain (no VAR=
+# prefix, quote, `$` or glob). sed counts only when st_sed_args proves every
+# script inert and there is no -i; git only as grep/log/show/diff without
+# -O/--open-files-in-pager (runs a pager command on the files), --output or
+# --ext-diff. rg (--pre), sort (--compress-program), awk, find and
+# xargs run programs, so none of them is a reader.
+PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq cd echo printf '
+readers_only() { # true when every command the command line runs is a reader
+    local k sg=-1 cw=-1 w
+    st_tokenize "$cmd" || return 1
+    [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        if [ "${ST_S[k]}" != "$sg" ]; then sg=${ST_S[k]}; cw=-1; fi
+        w=${ST_W[k]}
+        case "${ST_RO[k]}" in
+            *'>&') case "$w" in *[!0-9-]* | '') return 1 ;; esac ;;
+            *'>' | *'>|') [ "$w" = /dev/null ] || return 1 ;;
+        esac
+        if [ -z "${ST_RO[k]}" ]; then
+            if [ "$cw" -lt 0 ]; then
+                [ "${ST_A[k]}${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 0000 ] || return 1
+                case "$w" in
+                    sed) st_sed_args "$k" 0 || return 1 ;;
+                    git)
+                        [ "$((k + 1))" -lt "$ST_N" ] && [ "${ST_S[k + 1]}" = "$sg" ] && [ -z "${ST_RO[k + 1]}" ] \
+                            && [ "${ST_Q[k + 1]}${ST_X[k + 1]}${ST_G[k + 1]}" = 000 ] || return 1
+                        case "${ST_W[k + 1]}" in grep|log|show|diff) ;; *) return 1 ;; esac
+                        ;;
+                    *) case "$PR_READERS" in *" $w "*) ;; *) return 1 ;; esac ;;
+                esac
+                cw=$k
+            elif [ "${ST_W[cw]}" = git ]; then
+                # git takes a unique prefix of a long option and bundled
+                # short flags, so any --o…/--ext… word and any -…O… is out.
+                case "$w" in --o* | --ext* | -O* | -[!-]*O*) return 1 ;; esac
+            fi
+        fi
+        k=$((k + 1))
+    done
+    return 0
+}
+heredoc_data_only && exit 0
+readers_only && exit 0
 case "$flat" in
-    *[cC][rR]/*|*[hH]andover/*) ;;
-    *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || ! heredoc_data_only || exit 0 ;;
+    *[cC][rR]/*|*[hH]andover/*|*[][*?]*|*'{'*) ;;
     *) [ "$mentions" -eq 1 ] || exit 0 ;;
 esac
 

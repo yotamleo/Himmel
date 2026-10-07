@@ -1431,6 +1431,79 @@ for v in \
 done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-context.sh
 
+# HIMMEL-4574: a message argument (gh pr/issue comment|create|edit|review|view,
+# the Jira CLI) and a heredoc fed only to a reader are data that mentions a
+# target, not a run of it - allowed outside any checkout too.
+JIRA_CLI=/home/u/himmel/scripts/jira/dist/index.js
+for v in \
+    'gh pr comment 1 --body "ran: bash scripts/handover/console-kit/go.sh 12 abc"' \
+    'gh pr create --title "x" --body "a; bash scripts/cr/clear-cr-marker.sh | b"' \
+    "gh issue comment 5 --body 'then bash scripts/cr/write-verdicts.sh sweep'" \
+    "node $JIRA_CLI comment HIMMEL-1 \"see bash scripts/cr/clear-cr-marker.sh; then go.sh\"" \
+    "cat <<'EOF'${NL}then run bash scripts/cr/write-verdicts.sh sweep${NL}EOF" \
+    "cat <<'EOF' | head -3${NL}run bash scripts/handover/console-kit/go.sh 12 abc${NL}EOF" \
+    "wc -l <<'EOF'${NL}a; bash scripts/cr/pr-check-context.sh | x${NL}EOF"; do
+    run "HIMMEL-4574 mention [${v%%"$NL"*}] -> allow" 0 "$(payload "$v" "$TMP")" "$HR"
+done
+# A list or pipeline of readers (grep, cat, sed with inert scripts, git
+# grep/log/show/diff, ...) runs nothing, whatever its patterns and file
+# operands name.
+for v in \
+    "grep -n 'write-verdicts\\|ledger-append.sh' .claude/commands/pr-check.md | head -30" \
+    'grep -nE "avail --branch|--status ok" /x/.claude/commands/pr-check.md | head -12' \
+    'cat scripts/cr/write-verdicts.sh | wc -l' \
+    'grep -n x scripts/cr/*.sh 2>/dev/null | cut -c1-80' \
+    'sed -n 60,96p scripts/cr/write-verdicts.sh; sed -n 1,9p scripts/cr/clear-cr-marker.sh' \
+    'git grep -n "bash scripts/cr/write-verdicts.sh" -- docs | head' \
+    'git log --oneline -3 -- scripts/handover/console-kit/go.sh' \
+    'cd /x && git show HEAD:scripts/cr/clear-cr-marker.sh | head -5'; do
+    run "HIMMEL-4574 readers [$v] -> allow" 0 "$(payload "$v" "$TMP")" "$HR"
+done
+# ... and a runner after or among the readers, a reader's output written to a
+# file, a substitution, and git grep's -O (it runs its argument on the matched
+# files) keep the classification.
+# shellcheck disable=SC2016 # the literal `$(...)` text, never expanded here
+for v in \
+    'grep -n x scripts/cr/write-verdicts.sh | bash' \
+    'cat scripts/cr/write-verdicts.sh | sh' \
+    'grep -l x scripts/cr/*.sh | xargs bash' \
+    'cat scripts/cr/write-verdicts.sh; bash scripts/cr/write-verdicts.sh sweep' \
+    'cat scripts/cr/write-verdicts.sh 2>/tmp/f' \
+    'cat "$(bash scripts/cr/write-verdicts.sh)"' \
+    'git grep -O bash -e x -- scripts/cr/write-verdicts.sh' \
+    'git grep -O bash -e x -- scripts/cr/write-verdicts.sh | head' \
+    'rg --pre bash x scripts/cr/write-verdicts.sh'; do
+    run "HIMMEL-4574 readers control [$v] -> deny" 2 "$(payload "$v" "$TMP")" "$HR"
+done
+# ... but the same text piped or substituted into an interpreter, a real
+# separator outside the quotes, a non-message gh/node, a VAR= prefix, a write
+# and git commit's message (it lands in .git/COMMIT_EDITMSG; -F is the remedy)
+# all stay denied. The python3 heredoc is a deliberate keep: python runs its
+# body as code.
+# shellcheck disable=SC2016 # the literal `$(...)` text, never expanded here
+for v in \
+    "cat <<'EOF' | bash${NL}bash scripts/cr/write-verdicts.sh sweep${NL}EOF" \
+    "cat <<'EOF' | sh${NL}bash scripts/cr/write-verdicts.sh sweep${NL}EOF" \
+    "cat <<'EOF' | xargs bash${NL}scripts/cr/write-verdicts.sh${NL}EOF" \
+    "bash -c \"\$(cat <<'EOF'${NL}bash scripts/cr/write-verdicts.sh sweep${NL}EOF${NL})\"" \
+    "eval \"\$(cat <<'EOF'${NL}bash scripts/cr/write-verdicts.sh sweep${NL}EOF${NL})\"" \
+    "cat <<'EOF'; bash scripts/cr/write-verdicts.sh sweep${NL}x${NL}EOF" \
+    "python3 - <<'EOF'${NL}print('bash scripts/handover/console-kit/go.sh 1 abc')${NL}EOF" \
+    "cat > /tmp/x.md <<'EOF'${NL}then run bash scripts/cr/write-verdicts.sh sweep${NL}EOF" \
+    'gh pr comment 1 --body "x"; bash scripts/cr/write-verdicts.sh sweep' \
+    'gh pr comment 1 --body "x" | bash scripts/cr/write-verdicts.sh sweep' \
+    'gh pr comment 1 --body "a; bash scripts/cr/write-verdicts.sh" | sh' \
+    'gh pr comment 1 --body "a; bash scripts/cr/write-verdicts.sh" | xargs' \
+    'gh pr comment 1 --body "$(bash scripts/cr/write-verdicts.sh sweep)"' \
+    'gh pr comment 1 --body "bash scripts/cr/write-verdicts.sh" > /tmp/f' \
+    'eval "gh pr comment 1 --body x; bash scripts/cr/write-verdicts.sh"' \
+    'node -e "require(1)" "bash scripts/cr/write-verdicts.sh"' \
+    'node /tmp/evil.js comment X "bash scripts/cr/write-verdicts.sh"' \
+    'X=1 gh pr comment 1 --body "bash scripts/cr/write-verdicts.sh"' \
+    'git commit -m "fix: x; bash scripts/cr/write-verdicts.sh"'; do
+    run "HIMMEL-4574 control [${v%%"$NL"*}] -> deny" 2 "$(payload "$v" "$TMP")" "$HR"
+done
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "all guard-pr-check-literal cases passed"
