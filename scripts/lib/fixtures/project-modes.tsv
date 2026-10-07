@@ -1,0 +1,87 @@
+# HIMMEL-4758 (HIMMEL-4748 spec section 1): project-mode resolver answers, one
+# case per line, read by BOTH resolvers so they cannot drift apart:
+# scripts/lib/test-project-mode.sh (project-mode.sh) and
+# scripts/lib/project-mode.test.mjs (project-mode.mjs). Both ALSO walk every
+# origin of forge-origins.tsv (github/bitbucket as listed, none -> local-git).
+#
+# Columns (TAB-separated):
+#   fn        tracker | forge | forge-guard | pattern | required | phases | env
+#   origin    a URL (git repo with that origin), `-` (git repo, no remote),
+#             or NOGIT (a plain directory outside any work tree)
+#   env       `-` or space-separated KEY=VALUE pairs (nothing else is set)
+#   gitconfig `-` or space-separated key=value pairs, set with `git config`
+#   expected  stdout, `<empty>` for an empty line, or EXIT2 (refused, rc 2).
+#             In env rows, `\t` stands for a TAB.
+#
+# --- RED: no TRACKER, no JIRA_PROJECT_KEY -> local
+tracker	-	-	-	local
+tracker	NOGIT	-	-	local
+# --- CI row: key set, no Jira creds -> jira (creds are never consulted)
+tracker	https://github.com/o/r	JIRA_PROJECT_KEY=HIMMEL	-	jira
+pattern	https://github.com/o/r	JIRA_PROJECT_KEY=HIMMEL	-	HIMMEL-[0-9]+
+required	https://github.com/o/r	JIRA_PROJECT_KEY=HIMMEL	-	1
+env	https://github.com/o/r	JIRA_PROJECT_KEY=HIMMEL	-	TRACKER=jira\tFORGE=github\tTICKET_ID_REQUIRED=1\tTICKET_ID_PATTERN=HIMMEL-[0-9]+
+# --- tracker precedence: env > git config > detection
+tracker	-	TRACKER=none JIRA_PROJECT_KEY=HIMMEL	-	none
+tracker	-	TRACKER=local JIRA_PROJECT_KEY=HIMMEL	-	local
+tracker	-	JIRA_PROJECT_KEY=HIMMEL	himmel.tracker=none	none
+tracker	-	TRACKER=local	himmel.tracker=none	local
+tracker	-	TRACKER=jira JIRA_PROJECT_KEY=ACME	-	jira
+tracker	-	TRACKER=jira	-	EXIT2
+tracker	-	-	himmel.tracker=jira	EXIT2
+tracker	-	TRACKER=notion	-	EXIT2
+tracker	-	-	himmel.tracker=bogus	EXIT2
+# --- ID pattern: override > jira key > local prefix alternated with #N > none
+pattern	-	-	-	(^|[^0-9A-Za-z_])(#|LOCAL-)[0-9]+([^0-9A-Za-z_]|$)
+pattern	-	-	himmel.trackerPrefix=ACME	(^|[^0-9A-Za-z_])(#|ACME-)[0-9]+([^0-9A-Za-z_]|$)
+pattern	-	-	himmel.trackerPrefix=acme	EXIT2
+pattern	-	JIRA_PROJECT_KEY=A.B	-	A\.B-[0-9]+
+pattern	-	JIRA_PROJECT_KEY=HIMMEL TICKET_ID_PATTERN=X-[0-9]+	-	X-[0-9]+
+pattern	-	TRACKER=none	-	<empty>
+pattern	-	TRACKER=none TICKET_ID_PATTERN=X-[0-9]+	-	X-[0-9]+
+# --- ID required: explicit env value verbatim > none -> 0 > 1
+required	-	-	-	1
+required	-	TRACKER=none	-	0
+required	-	TRACKER=none TICKET_ID_REQUIRED=1	-	1
+required	-	TICKET_ID_REQUIRED=False	-	False
+env	-	-	-	TRACKER=local\tFORGE=local-git\tTICKET_ID_REQUIRED=1\tTICKET_ID_PATTERN=(^|[^0-9A-Za-z_])(#|LOCAL-)[0-9]+([^0-9A-Za-z_]|$)
+env	NOGIT	TRACKER=none	-	TRACKER=none\tFORGE=none\tTICKET_ID_REQUIRED=0\tTICKET_ID_PATTERN=
+env	https://github.com/o/r	FORGE=local-git	-	EXIT2
+# --- forge precedence: env > git config > detection
+forge	NOGIT	-	-	none
+forge	-	-	-	local-git
+forge	https://gitea.example.com/o/r.git	-	-	local-git
+forge	https://gitea.example.com/o/r.git	FORGE=github	-	github
+forge	https://gitea.example.com/o/r.git	-	himmel.forge=bitbucket	bitbucket
+forge	-	FORGE=none	-	none
+forge	-	-	himmel.forge=none	EXIT2
+forge	-	FORGE=gitlab	-	EXIT2
+forge	-	-	himmel.forge=gitlab	EXIT2
+forge	https://github.com/o/r	FORGE=bitbucket	-	bitbucket
+forge	https://github.com/o/r	-	himmel.forge=github	github
+# --- I8: local-git is never selected on a github.com / bitbucket.org origin
+forge	https://github.com/o/r	FORGE=local-git	-	EXIT2
+forge	https://github.com/o/r	-	himmel.forge=local-git	EXIT2
+forge	https://bitbucket.org/o/r	FORGE=local-git	-	EXIT2
+forge	https://bitbucket.org/o/r	-	himmel.forge=local-git	EXIT2
+# --- I8: --for-guard reads detection only; env and git config never steer it
+forge-guard	https://github.com/o/r	FORGE=local-git	-	github
+forge-guard	https://bitbucket.org/o/r	-	himmel.forge=local-git	bitbucket
+forge-guard	NOGIT	FORGE=github	-	none
+forge-guard	-	-	himmel.forge=none	local-git
+forge-guard	-	-	himmel.forge=github	local-git
+forge-guard	-	-	himmel.forge=bitbucket	local-git
+forge-guard	-	FORGE=none	-	local-git
+forge-guard	-	FORGE=github	-	local-git
+forge-guard	-	FORGE=bitbucket	-	local-git
+forge-guard	https://gitea.example.com/o/r.git	-	himmel.forge=none	local-git
+forge-guard	https://gitea.example.com/o/r.git	-	himmel.forge=github	local-git
+forge-guard	https://gitea.example.com/o/r.git	-	himmel.forge=bitbucket	local-git
+forge-guard	https://gitea.example.com/o/r.git	FORGE=none	-	local-git
+forge-guard	https://gitea.example.com/o/r.git	FORGE=github	-	local-git
+forge-guard	https://gitea.example.com/o/r.git	FORGE=bitbucket	-	local-git
+# --- phase sets by forge (spec section 4)
+phases	https://github.com/o/r	-	-	LIVE PR-OPEN CI READY GO MERGED WRAPPED
+phases	https://bitbucket.org/o/r	-	-	LIVE PR-OPEN CI READY GO MERGED WRAPPED
+phases	-	-	-	LIVE READY GO MERGED WRAPPED
+phases	NOGIT	-	-	LIVE READY WRAPPED

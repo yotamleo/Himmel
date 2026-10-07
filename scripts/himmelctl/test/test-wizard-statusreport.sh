@@ -1047,6 +1047,26 @@ done < "$origins_tsv"
 [ "$n_m3c" -ge 30 ] || fail "case m3c: only $n_m3c origin cases were read from $origins_tsv"
 echo "ok: case m3c — targetUsesBitbucket and forge_detect agree on all $n_m3c origin shapes (host-anchored: real Bitbucket/GitHub shapes kept, path-segment + hostname-suffix look-alikes rejected)"
 
+# m3d (HIMMEL-4758): both rows read the target's mode from scripts/lib/project-mode.mjs.
+# git config himmel.forge=bitbucket makes an unbuilt CLI red with no Bitbucket
+# origin; an explicit non-jira tracker makes a half-filled .env opt-in (n/a),
+# while TRACKER=jira keeps it red. A present (green) row is never downgraded.
+git -C "$targetM" config himmel.forge bitbucket
+outM3d=$(run_m "$repoM3b" "$answersM_inline")
+git -C "$targetM" config --unset himmel.forge
+[ "$(sev_m "$outM3d" bitbucket-cli-build)" = red ] || fail "case m3d: git config himmel.forge=bitbucket with an unbuilt CLI must stay red (got: $outM3d)"
+repoM3t=$(new_repoM 3t)
+printf 'JIRA_BASE_URL=https://example.atlassian.net\nJIRA_PROJECT_KEY=HIMMEL\n' > "$repoM3t/.env"
+outM3t=$(run_m "$repoM3t" "$answersM_inline" TRACKER=none)
+[ "$(sev_m "$outM3t" jira-env-keys)" = n/a ] || fail "case m3d: TRACKER=none must make jira-env-keys opt-in (got: $outM3t)"
+git -C "$targetM" config himmel.tracker local
+outM3l=$(run_m "$repoM3t" "$answersM_inline")
+git -C "$targetM" config --unset himmel.tracker
+[ "$(sev_m "$outM3l" jira-env-keys)" = n/a ] || fail "case m3d: git config himmel.tracker=local must make jira-env-keys opt-in (got: $outM3l)"
+outM3j=$(run_m "$repoM3t" "$answersM_inline" TRACKER=jira)
+[ "$(sev_m "$outM3j" jira-env-keys)" = red ] || fail "case m3d: TRACKER=jira keeps a half-filled .env red (got: $outM3j)"
+echo "ok: case m3d — git config himmel.forge and an explicit non-jira tracker steer the bitbucket and Jira rows"
+
 
 # m4: handover-wiring stays red for every case that is NOT 'inline dir not yet
 # created': a HANDOVER_DIR pointing nowhere, an external-mode profile with the

@@ -86,6 +86,23 @@ OUT=$(env -u JIRA_PROJECT_KEY bash "$SCRIPT" 2>&1) || RC=$?
 assert_rc "no-arg default exit code" 0 "$RC"
 assert_contains "no-arg skip notice" "Skipped: JIRA_PROJECT_KEY not set" "$OUT"
 
+echo "TEST 7 (HIMMEL-4758): an explicit non-jira tracker overrides a set key"
+RC=0
+OUT=$(TRACKER=local JIRA_PROJECT_KEY=ACME bash "$SCRIPT" optional 2>&1) || RC=$?
+assert_rc "TRACKER=local optional exit code" 0 "$RC"
+assert_contains "TRACKER=local skips" "Skipped: the tracker is not jira" "$OUT"
+assert_contains "names the resolver" "tracker resolved to 'local'" "$OUT"
+RC=0
+OUT=$(TRACKER=none JIRA_PROJECT_KEY=ACME bash "$SCRIPT" required 2>&1) || RC=$?
+assert_rc "TRACKER=none required exit code" 1 "$RC"
+assert_contains "TRACKER=none required error" "ERROR: --with-jira needs the jira tracker" "$OUT"
+
+echo "TEST 8 (HIMMEL-4758): TRACKER=jira with no key is refused by the resolver"
+RC=0
+OUT=$(env -u JIRA_PROJECT_KEY TRACKER=jira bash "$SCRIPT" optional 2>&1) || RC=$?
+assert_rc "TRACKER=jira no key exit code" 1 "$RC"
+assert_contains "resolver message" "TRACKER=jira but JIRA_PROJECT_KEY is not set" "$OUT"
+
 echo
 echo "===================================="
 echo "test summary: $PASS passed, $FAIL failed"

@@ -268,6 +268,8 @@ mog_build_fixture() {
     # above), never the real checkout.
     cp "$SCRIPT_DIR/../lib/check-pr-title.sh" "$tmp/scripts/lib/check-pr-title.sh"
     cp "$SCRIPT_DIR/../hooks/check-commit-msg.sh" "$tmp/scripts/hooks/check-commit-msg.sh"
+    # HIMMEL-4758: check-commit-msg.sh fails closed without its resolver.
+    cp "$SCRIPT_DIR/../lib/project-mode.sh" "$tmp/scripts/lib/project-mode.sh"
     chmod +x "$tmp/scripts/lib/check-pr-title.sh" "$tmp/scripts/hooks/check-commit-msg.sh"
     # HIMMEL-3895: what the gh stub serves as the DEFAULT branch's trust list.
     cp "$SCRIPT_DIR/../ci/ci-trust-paths.txt" "$tmp/trust-paths.base"

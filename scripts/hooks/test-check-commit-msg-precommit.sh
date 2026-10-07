@@ -46,6 +46,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$REPO_ROOT/.." && pwd)"
 HOOK="$SCRIPT_DIR/check-commit-msg.sh"
 LOADER="$REPO_ROOT/scripts/lib/load-dotenv.sh"
+MODE_LIB="$REPO_ROOT/scripts/lib/project-mode.sh"
 CONFIG="$REPO_ROOT/.pre-commit-config.yaml"
 ENV_EXAMPLE="$REPO_ROOT/.env.example"
 
@@ -116,6 +117,7 @@ build_repo() {
     git -C "$REPO" config commit.gpgsign false
     cp "$HOOK" "$REPO/scripts/hooks/check-commit-msg.sh"
     cp "$LOADER" "$REPO/scripts/lib/load-dotenv.sh"
+    cp "$MODE_LIB" "$REPO/scripts/lib/project-mode.sh"
     {
         printf 'repos:\n'
         printf '  - repo: local\n'

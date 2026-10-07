@@ -5,6 +5,7 @@
 # opts out. The pattern comes from TICKET_ID_PATTERN, else JIRA_PROJECT_KEY
 # (PROJECT-N), else himmel's own `#N` enumeration — the no-Jira ticket system
 # the handover skill's new-epic/new-task allocates, not a relaxed fallback.
+# scripts/lib/project-mode.sh resolves all of it (HIMMEL-4758).
 # Skips: merge commits and revert commits. fixup/squash skip only the shape check.
 
 # HIMMEL-2461: resolve the message file, and FAIL CLOSED when there is not one.
@@ -40,7 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/load-dotenv.sh
 # shellcheck disable=SC1091
 if . "$SCRIPT_DIR/../lib/load-dotenv.sh" 2>/dev/null; then
-  load_dotenv TICKET_ID_REQUIRED TICKET_ID_PATTERN TICKET_ID_EXEMPT_AUTHORS JIRA_PROJECT_KEY || true
+  load_dotenv TICKET_ID_REQUIRED TICKET_ID_PATTERN TICKET_ID_EXEMPT_AUTHORS JIRA_PROJECT_KEY TRACKER || true
 fi
 
 # HIMMEL-2183: WARN-only negative-existence claim linter. Never blocks (exit
@@ -195,8 +196,31 @@ if [ "${SKIP_CONVENTIONAL}" -eq 0 ] && ! printf '%s\n' "${FIRST_LINE}" | grep -E
   exit 1
 fi
 
+# HIMMEL-4758: the tracker, and from it the ticket requirement and pattern,
+# come from scripts/lib/project-mode.sh — the one owner of that decision. A
+# missing resolver fails CLOSED: an env-only fallback would quietly gate a
+# repo on rules nobody chose. adopt.sh ships the resolver beside this hook.
+PROJECT_MODE_LIB="$SCRIPT_DIR/../lib/project-mode.sh"
+# shellcheck source=../lib/project-mode.sh
+# shellcheck disable=SC1091
+if ! { [ -r "$PROJECT_MODE_LIB" ] && . "$PROJECT_MODE_LIB"; } 2>/dev/null; then
+  echo "COMMIT REJECTED: the ticket gate's resolver is missing: ${PROJECT_MODE_LIB}" >&2
+  echo "  Re-run himmel's scripts/adopt.sh on this repo to install it beside this hook." >&2
+  exit 1
+fi
+if ! PROJECT_MODE=$(project_mode_env); then
+  echo "COMMIT REJECTED: the project mode is invalid (message above, from scripts/lib/project-mode.sh)." >&2
+  exit 1
+fi
+IFS=$'\t' read -r _ _ PM_REQUIRED PM_PATTERN <<EOF
+${PROJECT_MODE}
+EOF
+PM_REQUIRED="${PM_REQUIRED#TICKET_ID_REQUIRED=}"
+PM_PATTERN="${PM_PATTERN#TICKET_ID_PATTERN=}"
+
 # HIMMEL-2442: default ON. An adopter with no .env at all is gated; the
-# explicit opt-out is TICKET_ID_REQUIRED=0.
+# explicit opt-out is TICKET_ID_REQUIRED=0 (or TRACKER=none, which the
+# resolver turns into 0 unless TICKET_ID_REQUIRED says otherwise).
 #
 # CR3: normalize case instead of enumerating spellings. This arm used to list
 # only `false|FALSE`, while the .ps1 twin's `switch -Regex` is case-insensitive
@@ -204,7 +228,7 @@ fi
 # gate on Windows and rejected the commit as invalid config under bash. A
 # half-enumerated grammar is what diverged; normalizing closes it for every
 # spelling at once rather than adding two more arms.
-TICKET_REQUIRED_RAW="${TICKET_ID_REQUIRED:-1}"
+TICKET_REQUIRED_RAW="${PM_REQUIRED}"
 TICKET_REQUIRED=$(printf '%s' "${TICKET_REQUIRED_RAW}" | tr '[:upper:]' '[:lower:]')
 case "${TICKET_REQUIRED}" in
   0|false|off|no) exit 0 ;;
@@ -245,19 +269,13 @@ if [ "$AUTHOR_EXEMPT" -eq 1 ] && { [ -z "${TICKET_ID_TRUSTED_AUTHOR+x}" ] || [ "
   exit 0
 fi
 
-TICKET_PATTERN="${TICKET_ID_PATTERN:-}"
-if [ -z "${TICKET_PATTERN}" ] && [ -n "${JIRA_PROJECT_KEY:-}" ]; then
-  ESCAPED_PROJECT_KEY=$(printf '%s' "${JIRA_PROJECT_KEY}" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
-  TICKET_PATTERN="${ESCAPED_PROJECT_KEY}-[0-9]+"
-fi
-# CR2: a bare `#[0-9]+` matches INSIDE a longer token, so a CSS colour like
-# `#123abc` satisfies the gate as ticket "#123" — defeating the traceability
-# this default exists to provide, in exactly the no-Jira repos it targets. The
-# boundaries are spelled with character classes rather than `\b` so the SAME
-# regex works under GNU `grep -E` and the .ps1 twin's .NET engine. The
-# JIRA_PROJECT_KEY-derived pattern above has the same looseness; that is
-# pre-existing behaviour and deliberately not changed here.
-TICKET_PATTERN="${TICKET_PATTERN:-(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)}"
+# The resolver's pattern: TICKET_ID_PATTERN, else the escaped JIRA_PROJECT_KEY
+# (tracker jira), else `#N` or <himmel.trackerPrefix>-N (tracker local), else
+# none. CR2: the `#N` boundaries are character classes rather than `\b` so the
+# SAME regex works under GNU `grep -E` and the .ps1 twin's .NET engine. An
+# empty pattern (tracker none with TICKET_ID_REQUIRED forced on) asks for no ID.
+TICKET_PATTERN="${PM_PATTERN}"
+[ -n "${TICKET_PATTERN}" ] || exit 0
 
 printf '%s\n' "${COMMIT_MSG}" | grep -Eq "${TICKET_PATTERN}"
 rc=$?
