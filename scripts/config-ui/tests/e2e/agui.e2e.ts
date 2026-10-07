@@ -176,6 +176,38 @@ test("8. a running subagent shows running with its current call, then flips to d
 
 // HIMMEL-4712: `himmelctl ui --agui` with no session id opens the fleet landing over the fixture fleet (3 live +
 // 1 wrapped); the wrapped leg sits in the closed section, never in the live list; a row opens its run's stream.
+test("archived and released consoles show zero live sessions", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  await page.route("**/api/agui/fleet", async (route) => {
+    const response = await route.fetch();
+    const fleet = await response.json();
+    const console = fleet.sessions.find((r: any) => r.role === "console");
+    fleet.sessions = [
+      { ...console, name: "archived-console", console: "archived-console", live: false, state: "unknown" },
+      { ...console, name: "released-console", console: "released-console", lock: "released" },
+    ];
+    await route.fulfill({ response, json: fleet });
+  });
+  await page.goto(h.url);
+  await expect(page.locator(".top .meta")).toContainText("0 live");
+  await expect(page.getByText("No live sessions.", { exact: true })).toBeVisible();
+});
+
+test("a wrapped session with no console retains a collapsed sidebar drill-in", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  await page.route("**/api/agui/fleet", async (route) => {
+    const response = await route.fetch();
+    const fleet = await response.json();
+    const wrapped = fleet.sessions.find((r: any) => r.state === "wrapped");
+    fleet.sessions = [{ ...wrapped, console: "gone-console", parent: "gone-console" }];
+    await route.fulfill({ response, json: fleet });
+  });
+  await page.goto(h.url);
+  const wrapped = page.locator(".fleet-menu .fleet-menu-wrapped");
+  await expect(wrapped).not.toHaveAttribute("open", "");
+  await wrapped.locator("summary").click();
+  await expect(wrapped.getByRole("link", { name: FLEET.wrapped.name, exact: true })).toHaveAttribute("href", new RegExp(`&run=${FLEET.wrapped.run}$`));
+});
 test("9. the fleet landing lists 3 live sessions and 1 wrapped one, and a row opens that session's stream", async ({ page }) => {
   h = await bootAgui("", { fleet: true });
   expect(h.url).not.toContain("&run=");

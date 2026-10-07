@@ -1,12 +1,7 @@
 // HIMMEL-4808: actual fleet grouping and router functions over a two-console fixture.
 import { expect, test } from "bun:test";
-import * as page from "../agui-web/src/Fleet";
-import * as stream from "../agui-web/src/stream";
-import { FleetMenu } from "../agui-web/src/FleetMenu";
-import { createRequire } from "node:module";
-const webRequire = createRequire(new URL("../agui-web/package.json", import.meta.url));
-const { createElement } = webRequire("react");
-const { renderToStaticMarkup } = webRequire("react-dom/server");
+import * as page from "../agui-web/src/fleet-model";
+import * as stream from "../agui-web/src/fleet-model";
 
 const row = (name: string, role: string, console: string | null, extra: any = {}) => ({
   name, role, console, parent: console, live: true, lock: "unknown", lane: "native",
@@ -28,20 +23,6 @@ const rows = [
   row("old-cloud", "cloud", "wrapped-console", { state: "wrapped", live: false, cloud: { phase: "merged", url: null } }),
   row("wrapped-leg", "leg", "roadmap-console", { state: "wrapped", live: false }),
 ];
-
-test("archived and released consoles do not inflate the live count or suppress the empty message", () => {
-  const sessions = [row("archived-console", "console", "archived-console", { live: false, state: "unknown" }), row("released-console", "console", "released-console", { lock: "released" })];
-  const html = renderToStaticMarkup(createElement(page.FleetPage, { token: "token", state: { error: null, fleet: { census: "ok", generatedAt: Date.now(), sessions } } }));
-  expect(html).toContain("0 live");
-  expect(html).toContain("No live sessions.");
-});
-
-test("wrapped sessions with an absent console keep a collapsed sidebar drill-in", () => {
-  const sessions = [row("finished-leg", "leg", "gone-console", { state: "wrapped", live: false })];
-  const html = renderToStaticMarkup(createElement(FleetMenu, { token: "token", selected: null, state: { error: null, fleet: { census: "ok", generatedAt: Date.now(), sessions } } }));
-  expect(html).toContain('href="#t=token&amp;run=run-finished-leg"');
-  expect(html).toContain('<details class="fleet-menu-wrapped">');
-});
 
 test("two console groups retain native, claudex and judge children; recent consoles sort last", () => {
   const groups = (page as any).consoleGroups?.(rows);

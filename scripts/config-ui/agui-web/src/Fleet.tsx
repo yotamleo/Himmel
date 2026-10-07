@@ -9,43 +9,9 @@
 import { useEffect, useState } from "react";
 // @ts-expect-error: plain ES module shared with the console (no types).
 import { pageHref } from "../../public/nav.js";
-import { FLEET_URL, runHash } from "./stream";
-
-export type Row = {
-  run: string | null; pid: number | null; name: string; role: string; model: string | null; ticket: string | null; pr: number | null;
-  state: "running" | "idle" | "waiting for GO" | "wrapped" | "unknown"; activity: { tool: string; summary: string; at: number } | null;
-  lastEventAt: number | null; subagents: { total: number; running: number }; failures: number;
-  parent: string | null; predecessor: string | null; agents: { name: string; role: string; state: string }[];
-  usage: {
-    calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number;
-    resident: number | null; ceiling: number; ceilingFrom: "autocompact" | "window"; fill: number | null;
-  } | null;
-  cloud: { url: string | null; phase: "working" | "done" | "blocked" | "merged" | "closed" | "unknown" } | null;
-  runtime?: { startedAt: number; endedAt: number | null; elapsedMs: number } | null;
-  console?: string | null; live?: boolean; lock?: "held" | "released" | "unknown"; lane?: string;
-};
-
-const consoleName = (r: Row) => r.console === undefined ? r.parent : r.console;
-const isLive = (r: Row) => r.live !== false && r.state !== "wrapped" && r.lock !== "released";
-export const rowHref = (token: string, r: Row) => r.run ? runHash(token, r.run) : r.cloud?.url ?? null;
-export function orphanReason(r: Row, rows: Row[]): string | null {
-  if (r.role === "console" || r.state === "wrapped") return null;
-  if (r.role === "cloud" && !rows.some((s) => s.parent === r.name && isLive(s))) return "cloud session without a shepherd";
-  const name = consoleName(r);
-  if (!name) return "no console edge";
-  const c = rows.find((s) => s.role === "console" && s.name === name);
-  if (c?.state === "wrapped" || c?.lock === "released") return "console wrapped / lock released";
-  return c && isLive(c) ? null : "console process gone";
-}
-export function visibleRows(rows: Row[]): Row[] {
-  return rows.filter((r) => !(r.cloud?.phase === "merged" && !rows.some((c) => c.role === "console" && c.name === consoleName(r) && isLive(c))));
-}
-export function consoleGroups(rows: Row[]): { console: Row; rows: Row[] }[] {
-  const shown = visibleRows(rows);
-  return shown.filter((r) => r.role === "console")
-    .sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || a.name.localeCompare(b.name))
-    .map((c) => ({ console: c, rows: shown.filter((r) => r.role !== "console" && consoleName(r) === c.name && !orphanReason(r, rows)) }));
-}
+import { FLEET_URL } from "./stream";
+import { consoleName, isLive, rowHref, orphanReason, visibleRows, consoleGroups, type Row } from "./fleet-model";
+export { rowHref, orphanReason, visibleRows, consoleGroups, type Row } from "./fleet-model";
 type Node = { row: Row; kids: Node[] };
 
 // HIMMEL-4751: the live rows as a tree under the operator: a row whose parent is a live row sits under it, the
