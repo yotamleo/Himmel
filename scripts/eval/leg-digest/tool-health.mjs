@@ -35,7 +35,7 @@ export function rollupToolHealth(evals, failures, query = new URLSearchParams(),
   for (const [session, r] of sessions) {
     const ts = typeof r.meta?.started_ts === 'number' ? r.meta.started_ts : Date.parse(r.ts);
     const day = dayOf(ts);
-    if (!day || (since && ts < Date.parse(since))) continue;
+    if (!day) continue;
     const lane = LANES.includes(r.lane) ? r.lane : 'unknown';
     const role = r.meta?.leg ? 'leg' : 'console';
     const health = Array.isArray(r.meta?.tool_health) ? r.meta.tool_health : [];
@@ -67,7 +67,7 @@ export function rollupToolHealth(evals, failures, query = new URLSearchParams(),
     // Legacy subagent failures still show with unknown denominators.
     if (!candidates.length) {
       const main = byAgent.get(`${r.session}\0main`)?.[0];
-      if (main) {
+      if (main && !main.known) {
         const slot = { ...main, agent: r.agent.id, model: r.agent.model || 'unknown', known: false, tools: new Map(), failures: [] };
         models.add(slot.model); slots.set(`${r.session}\0${r.agent.id}\0${slot.day}`, slot); candidates = [slot]; byAgent.set(`${r.session}\0${r.agent.id}`, candidates);
       }

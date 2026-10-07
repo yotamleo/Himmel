@@ -102,6 +102,25 @@ test("a session spanning midnight assigns each call cohort to its actual UTC day
   expect(data.daily.find((r: any) => r.day === "2026-10-07" && r.lane === "native" && r.tool === "Bash")).toMatchObject({ calls: 10, failures: 1 });
 });
 
+test("since retains current-day tool cohorts from sessions started before the cutoff", () => {
+  const env = seed();
+  const rows = readFileSync(env.HIMMEL_EVAL_RUNS_LEDGER, "utf8").trim().split("\n").map((l: string) => JSON.parse(l));
+  rows[0].meta.started_ts = Date.parse("2026-10-06T23:00:00Z");
+  for (const h of rows[0].meta.tool_health) h.day = "2026-10-07";
+  writeFileSync(env.HIMMEL_EVAL_RUNS_LEDGER, rows.map(JSON.stringify).join("\n") + "\n");
+  const data = read(env, new URLSearchParams({ since: "2026-10-07T00:00:00Z" }));
+  expect(data.tools.find((r: any) => r.tool === "Bash")).toMatchObject({ calls: 50, failures: 8 });
+});
+
+test("v2 text-only subagent failures do not poison complete tool denominators", () => {
+  const env = seed();
+  const textFailure = { session: "48160000-0000-4000-8000-000000000000", agent: { ...agent, id: "child" }, class: "blocked/report", failure: "blocked", count: 1, recovered: null };
+  writeFileSync(env.HIMMEL_LEG_FAILURES_LEDGER, readFileSync(env.HIMMEL_LEG_FAILURES_LEDGER, "utf8") + JSON.stringify(textFailure) + "\n");
+  const data = read(env);
+  expect(data.tools.find((r: any) => r.tool === "Bash")).toMatchObject({ calls: 50, rate: 0.16 });
+  expect(data.hooks[0]).toMatchObject({ calls: 50, rate: 0.1 });
+});
+
 test("daily hook rates include successful sessions in the same lane population", () => {
   const data = read(seed());
   expect(data.daily_hooks.find((r: any) => r.lane === "native")).toMatchObject({ day: "2026-10-07", calls: 20, failures: 2, rate: 0.1 });
