@@ -618,6 +618,7 @@ test('MUST_RUN_CHAIN_MEMBERS covers exactly the deny-capable security guards', (
       'guard-memory-capture.sh',
       'guard-pr-check-literal.sh',
       'guard-relay-writes.sh',
+      'guard-verdicts-hmac-writes.sh',
     ].sort(),
   );
 });

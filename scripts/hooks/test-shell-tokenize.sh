@@ -20,7 +20,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 LIB="$HERE/lib/shell-tokenize.sh"
-HOOKS=("$HERE/block-edit-live-settings.sh" "$HERE/guard-pr-check-literal.sh")
+HOOKS=("$HERE/block-edit-live-settings.sh" "$HERE/guard-pr-check-literal.sh" "$HERE/guard-verdicts-hmac-writes.sh")
 BEGIN_LINE='# >>> BEGIN shell-tokenize (HIMMEL-3546; canonical: scripts/hooks/lib/shell-tokenize.sh) >>>'
 END_LINE='# <<< END shell-tokenize <<<'
 

@@ -278,6 +278,9 @@ const MUST_RUN_CHAIN_MEMBERS = new Set([
   // HIMMEL-3669 (J1295O): Guard D — self-describes as a SECURITY FENCE that
   // fails CLOSED; a starved run let its relay write-deny be skipped.
   'guard-relay-writes.sh',
+  // HIMMEL-4733: fails CLOSED; a starved run let a write to verdicts/ or a
+  // read of the GO HMAC key through unchecked.
+  'guard-verdicts-hmac-writes.sh',
   // HIMMEL-3669: self-describes as "this security hook" and fails CLOSED on
   // a missing lib; a starved run let an edit on main slip through unchecked.
   'block-edit-on-main.sh',

@@ -80,6 +80,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // console state via Bash — see the sibling entry on the
   // Edit|Write|MultiEdit|NotebookEdit chain below.
   'guard-relay-writes.sh',
+  // HIMMEL-4733: no agent tool touches the GO HMAC key, and verdicts/ is
+  // judge-only — see the sibling entries on the Read|Grep and
+  // Edit|Write|MultiEdit|NotebookEdit chains below.
+  'guard-verdicts-hmac-writes.sh',
   // HIMMEL-3383: re-checks /pr-check step 0's three bare-literal conditions
   // (himmel lane, worktree root, no scripts/cr/ or lib.sh diff) when the
   // allow-listed `bash scripts/cr/pr-check-context.sh` is typed; no-op on any
@@ -99,6 +103,8 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // PreToolUse `Read|Grep`.
   'block-read-secrets.sh',
   'read-clamp.sh',
+  // HIMMEL-4733: Read/Grep of the GO HMAC key (no READ_SECRETS_OK bypass).
+  'guard-verdicts-hmac-writes.sh',
   // PreToolUse `Edit|Write|MultiEdit|NotebookEdit` chain.
   'block-edit-on-main.sh',
   // HIMMEL-2360: denies writes to a LIVE settings.json/settings.local.json
@@ -114,6 +120,9 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // HIMMEL-2975 Guard D: denies a console relay direct writes to the inbox,
   // leg handover docs, and the console rundir (marker-gated no-op otherwise).
   'guard-relay-writes.sh',
+  // HIMMEL-4733: file-tool writes to the GO HMAC key (every session) and to
+  // verdicts/ (every session but a judge).
+  'guard-verdicts-hmac-writes.sh',
   // PreToolUse `Edit|Write|NotebookEdit` — its own entry, NOT folded into the
   // chain above: it does not guard MultiEdit, and widening a guard's matcher is
   // not something a launch-count refactor gets to do.
