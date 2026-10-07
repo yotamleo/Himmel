@@ -619,6 +619,15 @@ shape_has "FOO=" && pass "deny names the refused FOO= prefix" || fail "deny does
 grep -q "any VAR=value prefix" "$ERR" && fail "deny still says to keep any VAR=value prefix"
 shape_has "command substitution" && fail "deny blames command substitution on a prefix-only command"
 shape_has "heredoc" && fail "deny blames a heredoc on a prefix-only command"
+# A non-literal project key is a refused prefix, but dropping it retargets the
+# write to the default project: the retry step must say to make it literal.
+run_hook Bash "JIRA_PROJECT_KEY=\$K node $JIRA create --type Task --title x --desc-file f.md"
+[ "$RC" -eq 2 ] && pass "non-literal JIRA_PROJECT_KEY prefix bounced" || fail "non-literal JIRA_PROJECT_KEY prefix not bounced (rc=$RC)"
+shape_has "JIRA_PROJECT_KEY=" && pass "deny names the non-literal key prefix" || fail "deny does not name the non-literal key prefix"
+case "$(tr '\n' ' ' < "$ERR")" in
+    *"is NOT dropped: rewrite it as the literal"*) pass "retry keeps the project key as a literal" ;;
+    *) fail "retry step would drop a non-literal project key" ;;
+esac
 run_hook Bash "node $JIRA comment HIMMEL-1 --body \"\$(cat c.md)\""
 shape_has "command substitution" && pass "deny names command substitution" || fail "deny omits command substitution"
 shape_has "heredoc" && fail "deny blames a heredoc on a substitution-only command"
