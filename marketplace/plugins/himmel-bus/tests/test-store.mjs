@@ -232,6 +232,22 @@ test('a torn undelivered tail halts once rather than leaving a perpetual wake', 
   assert.equal(await store.pending(root, 'leg'), false);
 });
 
+test('CR round-2 codex-2 append refuses missing or truncated committed live bytes', async t => {
+  for (const missing of [true, false]) {
+    const { store, root } = await fixture(t);
+    await store.append(root, 'leg', message());
+    await store.commit(root, 'leg', (await store.read(root, 'leg')).next);
+    const file = join(root, 'log/leg.jsonl');
+    if (missing) await rm(file); else await writeFile(file, '');
+    await assert.rejects(store.append(root, 'leg', message('again')), /committed.*missing|truncated/);
+    if (missing) await assert.rejects(readFile(file), { code: 'ENOENT' });
+    else assert.equal(await readFile(file, 'utf8'), '');
+    const broken = await store.read(root, 'leg');
+    assert.equal(broken.next.halted, 2);
+    assert.deepEqual(broken.records, []);
+  }
+});
+
 test('appendChained never recreates a missing log', async t => {
   assert.equal(typeof primitive.appendChained, 'function');
   const dir = await mkdtemp(join(tmpdir(), 'bus-missing-'));

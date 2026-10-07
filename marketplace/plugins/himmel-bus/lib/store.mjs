@@ -101,12 +101,18 @@ async function cursor(file) {
 export async function append(root, name, record) {
   const p = await paths(root, name);
   return appendChained(p.file, record, p.lock, async () => {
-    if ((await cursor(p.cursor)).halted) throw new Error(`log ${name} halted`);
+    const cur = await cursor(p.cursor);
+    if (cur.halted) throw new Error(`log ${name} halted`);
     const closed = await segments(root, name);
     const k = closed.length ? closed.at(-1)[0] + 1 : 0;
     let live;
     try { live = await bytes(p.file); }
-    catch (error) { if (error.code !== 'ENOENT') throw error; await create(p.file); live = Buffer.alloc(0); }
+    catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      if (cur.k === k && cur.off > 0) throw new Error('committed live bytes missing');
+      await create(p.file); live = Buffer.alloc(0);
+    }
+    if (cur.k === k && live.length < cur.off) throw new Error('committed live bytes truncated');
     if (live.length >= ROTATE_BYTES) {
       const plain = join(root, 'log', `${name}.${k}.jsonl`);
       if (await info(plain)) throw new Error('segment already exists');
