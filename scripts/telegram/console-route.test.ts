@@ -45,9 +45,11 @@ test("bare /console routes the whole text to the sole fresh waiting or sampling 
 });
 
 test("bare /console accepts non-ASCII and punctuation text without inventing a name", async () => {
-  const r = root(); const f = heartbeat(r);
-  await handleInbound(r, say("/console 🙏 halt, please"), async () => {}, undefined, undefined, undefined, undefined, undefined, undefined, gate([]));
-  expect(readFileSync(f, "utf8")).toContain("🙏 halt, please");
+  for (const text of ["🙏 halt, please", "a..b hi", "../escape hi"]) {
+    const r = root(); const f = heartbeat(r);
+    await handleInbound(r, say(`/console ${text}`), async () => {}, undefined, undefined, undefined, undefined, undefined, undefined, gate([]));
+    expect(readFileSync(f, "utf8")).toContain(text);
+  }
 });
 
 test("bare /console with zero or two live consoles lists the problem without queuing", async () => {
@@ -160,8 +162,8 @@ test("a traversal-shaped console name is refused: nothing written outside consol
   const r = root(); const replies: string[] = []; const ran: string[] = [];
   mkdirSync(join(r, "consoles"), { recursive: true });
   writeFileSync(join(r, "escape.md"), "");
-  // `../escape` is bare text, never a path; with no live console it queues
-  // nothing. `a..b` matches the named shape and is refused downstream.
+  // Invalid first words are bare text, never paths; with no live console
+  // they queue nothing.
   await handleInbound(r, say("/console ../escape hi"), async (s: string) => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate(replies));
   expect(ran).toEqual([]);
   replies.length = 0;
@@ -169,7 +171,7 @@ test("a traversal-shaped console name is refused: nothing written outside consol
   expect(readFileSync(join(r, "escape.md"), "utf8")).toBe("");
   expect(ran).toEqual([]);
   expect(replies.length).toBe(1);
-  expect(replies[0]).toContain("not a valid console name");
+  expect(replies[0]).toContain("no live console");
   expect(consoleInboxPath(r, "../escape")).toBeNull();
   expect(consoleInboxPath(r, "a..b")).toBeNull();
   expect(consoleInboxPath(r, "")).toBeNull();

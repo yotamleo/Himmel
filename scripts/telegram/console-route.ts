@@ -100,7 +100,6 @@ export async function routeToConsole(
   let name = route.name;
   let text = route.text;
   let file = name ? consoleInboxPath(root, name) : null;
-  if (name && !file) { await say(`⚠️ refused: "${name}" is not a valid console name — nothing was sent.`); return; }
   // Preserve explicit addressing of an armed inbox. Otherwise the first word
   // is part of the bare command, not an invented session name.
   const named = file && await stat(file).then(s => s.isFile(), () => false);
