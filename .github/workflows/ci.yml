@@ -229,11 +229,14 @@ jobs:
             dir: plugins/himmel-gh
           - pkg: himmel-jira
             dir: plugins/himmel-jira
+          - pkg: himmel-bus
+            dir: marketplace/plugins/himmel-bus
+            node: '24'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node || '22' }}
           cache: 'npm'
           cache-dependency-path: ${{ matrix.dir || format('scripts/{0}', matrix.pkg) }}/package-lock.json
       - run: npm ci

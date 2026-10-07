@@ -76,10 +76,8 @@ async function segments(root, name) {
     if (!match) continue;
     const k = Number(match[1]);
     if (!Number.isSafeInteger(k) || k < 0) throw new Error('invalid segment number');
-    const raw = await bytes(join(root, 'log', file));
-    const data = match[2] === 'zst' ? zlib.zstdDecompressSync(raw) : match[2] === 'gz' ? zlib.gunzipSync(raw) : raw;
-    if (found.has(k) && !found.get(k).equals(data)) throw new Error(`conflicting segment #${k}`);
-    found.set(k, data);
+    if (!found.has(k)) found.set(k, []);
+    found.get(k).push(join(root, 'log', file));
   }
   return [...found].sort((a, b) => a[0] - b[0]);
 }
@@ -90,12 +88,37 @@ function tail(buf) {
   return JSON.parse(buf.subarray(buf.lastIndexOf(10, buf.length - 2) + 1, buf.length - 1).toString('utf8'));
 }
 
+async function segment(files) {
+  let data;
+  for (const file of files) {
+    const raw = await bytes(file);
+    const decoded = file.endsWith('.zst') ? zlib.zstdDecompressSync(raw) : file.endsWith('.gz') ? zlib.gunzipSync(raw) : raw;
+    if (data && !data.equals(decoded)) throw new Error('conflicting segment');
+    data = decoded;
+  }
+  return data;
+}
+
+function validateCursor(cur) {
+  if (!cur || typeof cur !== 'object' || Array.isArray(cur) || !Number.isSafeInteger(cur.k) || cur.k < 0 || !Number.isSafeInteger(cur.off) || cur.off < 0 || !Number.isSafeInteger(cur.n) || cur.n < 0 || typeof cur.h !== 'string' || (cur.n === 0 ? cur.h !== '' : !/^[0-9a-f]{64}$/.test(cur.h)) || (cur.halted !== undefined && (!Number.isSafeInteger(cur.halted) || cur.halted < 1))) {
+    throw Object.assign(new Error('invalid bus cursor'), { code: 'BUS_CURSOR_INVALID' });
+  }
+  return cur;
+}
+
+function filesystemError(error) {
+  return ['EACCES', 'EPERM', 'EIO', 'EMFILE', 'ENFILE', 'ELOOP'].includes(error.code) || /permissions|symlink/.test(error.message);
+}
+
 async function cursor(file) {
   let cur;
   try { cur = JSON.parse((await bytes(file)).toString('utf8')); }
-  catch (error) { if (error.code === 'ENOENT') return initial(); throw error; }
-  if (!Number.isSafeInteger(cur.k) || cur.k < 0 || !Number.isSafeInteger(cur.off) || cur.off < 0 || !Number.isSafeInteger(cur.n) || cur.n < 0 || typeof cur.h !== 'string' || (cur.n === 0 ? cur.h !== '' : !/^[0-9a-f]{64}$/.test(cur.h)) || (cur.halted !== undefined && (!Number.isSafeInteger(cur.halted) || cur.halted < 1))) throw new Error('invalid bus cursor');
-  return cur;
+  catch (error) {
+    if (error.code === 'ENOENT') return initial();
+    if (error instanceof SyntaxError) throw Object.assign(new Error('invalid bus cursor: unreadable JSON'), { code: 'BUS_CURSOR_INVALID' });
+    throw error;
+  }
+  return validateCursor(cur);
 }
 
 export async function append(root, name, record) {
@@ -129,48 +152,53 @@ export async function append(root, name, record) {
       await unlink(plain);
       return tail(live);
     }
-    return closed.length ? tail(closed.at(-1)[1]) : { n: 0, h: '' };
+    return live.length ? tail(live) : closed.length ? tail(await segment(closed.at(-1)[1])) : { n: 0, h: '' };
   });
 }
 
 export async function read(root, name) {
   const p = await paths(root, name);
   return withChainLock(p.lock, async () => {
-    const cur = await cursor(p.cursor);
+    let cur;
+    try { cur = await cursor(p.cursor); }
+    catch (error) {
+      if (error.code !== 'BUS_CURSOR_INVALID') throw error;
+      const next = { ...initial(), halted: 1 };
+      await commitCursor(p.cursor, next);
+      return { records: [], next, cursors: [], notice: `bus: log ${name} halted: ${error.message}; explicit unhalt replays from the beginning` };
+    }
     if (cur.halted) return { records: [], next: cur, cursors: [] };
     const records = [], cursors = [];
     let next = { ...cur };
     try {
       const closed = await segments(root, name);
       const liveK = closed.length ? closed.at(-1)[0] + 1 : 0;
-      let live;
-      try { live = await bytes(p.file); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; live = Buffer.alloc(0); }
-      const all = [...closed, [liveK, live]];
-      if (!all.some(([k]) => k === cur.k)) throw new Error('cursor segment missing');
-      let expectedK = cur.k;
-      for (const [k, buf] of all) {
-        if (k < cur.k) continue;
-        if (k !== expectedK++) throw new Error('segment gap');
-        const start = k === cur.k ? cur.off : 0;
-        if (start > buf.length) throw new Error('cursor beyond EOF');
-        if (start > 0 && buf[start - 1] !== 10) throw new Error('cursor not on record boundary');
-        next = { ...next, k, off: start };
-        while (next.off < buf.length) {
-          // Verify each parsed record before reading the next: a malformed
-          // later line must not hide an earlier break or its actual sequence.
-          const batch = await readPast(buf, next, 1);
-          if (!batch.records.length) throw new Error('incomplete log tail');
-          const record = batch.records[0];
-          if (record.n !== next.n + 1 || record.h !== chainHash(next.h, record)) throw new Error('chain mismatch');
-          next = batch.next;
-          records.push(record); cursors.push(next);
-        }
+      const selected = closed.find(([k]) => k === cur.k);
+      let buf;
+      if (selected) buf = await segment(selected[1]);
+      else {
+        if (cur.k !== liveK) throw new Error('cursor segment missing');
+        try { buf = await bytes(p.file); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; buf = Buffer.alloc(0); }
       }
+      // One segment per batch bounds decompression independently of backlog.
+      if (cur.off > buf.length) throw new Error('cursor beyond EOF');
+      if (cur.off > 0 && buf[cur.off - 1] !== 10) throw new Error('cursor not on record boundary');
+      while (next.off < buf.length) {
+        // Verify each parsed record before reading the next: a malformed
+        // later line must not hide an earlier break or its actual sequence.
+        const batch = await readPast(buf, next, 1);
+        if (!batch.records.length) throw new Error('incomplete log tail');
+        const record = batch.records[0];
+        if (record.n !== next.n + 1 || record.h !== chainHash(next.h, record)) throw new Error('chain mismatch');
+        next = batch.next;
+        records.push(record); cursors.push(next);
+      }
+      if (selected) next = { ...next, k: cur.k + 1, off: 0 };
       return { records, next, cursors };
     } catch (error) {
-      // Filesystem access-policy errors are refused, not mislabelled as tamper.
-      if (error.code === 'ELOOP' || /permissions|symlink/.test(error.message)) throw error;
+      // Filesystem failures are retryable errors, not evidence of tampering.
+      if (filesystemError(error)) throw error;
       const halted = next.n + 1;
       next = { ...cur, halted };
       await commitCursor(p.cursor, next);
@@ -182,6 +210,8 @@ export async function read(root, name) {
 }
 
 export async function commit(root, name, next) {
+  validateCursor(next);
+  if (next.halted !== undefined) throw new Error('invalid bus cursor: delivery cannot halt a log');
   const p = await paths(root, name);
   return withChainLock(p.lock, async () => {
     const cur = await cursor(p.cursor);
@@ -191,17 +221,32 @@ export async function commit(root, name, next) {
   });
 }
 
+// Explicit retry after repair; read still verifies the chain before delivery.
+export async function unhalt(root, name) {
+  const p = await paths(root, name);
+  return withChainLock(p.lock, async () => {
+    const cur = await cursor(p.cursor);
+    const { halted, ...next } = cur;
+    if (halted) await commitCursor(p.cursor, next);
+    return next;
+  });
+}
+
 // Shared predicate for the wait CLI: a halted log never creates a hot loop.
 export async function pending(root, name) {
   const p = await paths(root, name);
   return withChainLock(p.lock, async () => {
-    const cur = await cursor(p.cursor);
+    let cur;
+    try { cur = await cursor(p.cursor); }
+    catch (error) { if (error.code === 'BUS_CURSOR_INVALID') return true; throw error; }
     if (cur.halted) return false;
-    let closed;
-    try { closed = await segments(root, name); }
-    catch (error) {
-      if (error.code === 'ELOOP' || /permissions|symlink/.test(error.message)) throw error;
-      // Wake on damaged archives too; read() owns persisting the halt/notice.
+    const closed = await segments(root, name);
+    const selected = closed.find(([k]) => k === cur.k);
+    if (selected) {
+      for (const file of selected[1]) {
+        const stat = await info(file);
+        if (!stat?.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o777) !== 0o600) throw new Error(`unsafe file permissions: ${file}`);
+      }
       return true;
     }
     const liveK = closed.length ? closed.at(-1)[0] + 1 : 0;
