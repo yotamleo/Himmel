@@ -69,7 +69,7 @@ test("legacy digests keep failures visible without inventing a zero rate", () =>
 test("recorded leg-doc lane overrides extractor provenance and stamps every persisted tool row", () => {
   const env = seed(), dir = dirs[dirs.length - 1];
   const doc = join(dir, "leg.md"), file = join(dir, "digest0.json"), evals = join(dir, "doc-eval.jsonl"), state = join(dir, "doc-state");
-  writeFileSync(doc, "# N1 (gpt-6.1-sol, cloud lane, headed)\n");
+  writeFileSync(doc, "> Sibling N2 uses native lane.\n# N1 (gpt-6.1-sol, cloud lane, headed)\n");
   const r = Bun.spawnSync(["python3", resolve(import.meta.dir, "../../eval/leg-digest/leg_ledger.py"), "record", "--digest", file, "--doc", doc, "--leg", "N1", "--failures-ledger", join(dir, "doc-fail.jsonl"), "--eval-ledger", evals, "--state-dir", state]);
   expect(r.exitCode).toBe(0);
   const row = JSON.parse(readFileSync(evals, "utf8"));
@@ -110,6 +110,14 @@ test("since retains current-day tool cohorts from sessions started before the cu
   writeFileSync(env.HIMMEL_EVAL_RUNS_LEDGER, rows.map(JSON.stringify).join("\n") + "\n");
   const data = read(env, new URLSearchParams({ since: "2026-10-07T00:00:00Z" }));
   expect(data.tools.find((r: any) => r.tool === "Bash")).toMatchObject({ calls: 50, failures: 8 });
+});
+
+test("intraday since never presents whole-day calls as an exact shift denominator", () => {
+  const data = read(seed(), new URLSearchParams({ since: "2026-10-07T13:00:00Z" }));
+  expect(data.tools.find((r: any) => r.tool === "Bash")).toMatchObject({ calls: null, failures: 8, rate: null });
+  expect(data.hooks[0]).toMatchObject({ calls: null, rate: null });
+  expect(data.daily.find((r: any) => r.tool === "Bash").calls).toBeNull();
+  expect(data.daily_hooks[0].calls).toBeNull();
 });
 
 test("v2 text-only subagent failures do not poison complete tool denominators", () => {

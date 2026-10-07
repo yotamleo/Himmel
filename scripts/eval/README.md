@@ -269,9 +269,10 @@ no-match remains a successful call.
 ledger's `meta.tool_health`, with the session's first timestamp in
 `meta.started_ts`. No new ledger or writer is introduced. The recorder stamps
 the persisted digest and its tool rows with launch provenance: explicit
-`--lane`, else the leg doc's lane, else the extractor's `LEG_LANE`; missing
-provenance is `unknown`. Canonical lanes are native, claudex, openrouter,
-cloud and unknown; the historical codex launch label normalizes to claudex.
+`--lane`, else the assigned leg's title in the leg doc, else the extractor's
+`LEG_LANE`; missing provenance is `unknown`. Canonical environment lanes are
+native, claudex, openrouter, cloud and unknown; the recorder normalizes the
+historical codex label in explicit recorder input or document titles to claudex.
 Backfill never borrows its own launcher's lane or guesses from a model.
 
 `leg-digest/tool-health.mjs` reads eval-runs and leg-failures and computes UTC
@@ -282,6 +283,8 @@ known class outcomes (the ledger's boolean describes the entire class row);
 unknown outcomes are excluded. Daily rows carry lane; summary rows aggregate
 the explicitly selected lanes. Old digests without denominators retain their
 failure counts but show no rate, including mixed old/new populations.
+A `since` cutoff uses day cohorts; a partial first UTC day has unknown
+call denominators because daily data cannot certify an intraday shift rate.
 
 The config-ui Tool health page and console board share this reader. The
 page shows 7/30-day trends, top classes and session/tool-call-id drill-down,

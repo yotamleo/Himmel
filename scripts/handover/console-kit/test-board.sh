@@ -608,7 +608,9 @@ cat > "$HIMMEL_EVAL_RUNS_LEDGER" <<'RATES'
 RATES
 printf '%s\n' '{"ts":"2026-10-07T03:01:00Z","session":"s1","agent":{"id":"main"},"leg":"N1","class":"denied/guard-a","failure":"denied","count":5,"recovered":true}' > "$FL"
 QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null
-contains 'failure rate uses the Bash denominator' "$(cat "$M/board.html")" '<td>5</td><td>10.0 %</td>'
+contains 'intraday shift cannot use a whole-day denominator' "$(cat "$M/board.html")" '<td>5</td><td>—</td>'
+QL_STUB_STARTED=2026-10-07T00:00:00Z mrun >/dev/null
+contains 'failure rate uses the aligned-day Bash denominator' "$(cat "$M/board.html")" '<td>5</td><td>10.0 %</td>'
 : > "$HIMMEL_EVAL_RUNS_LEDGER"
 : > "$FL"
 QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null

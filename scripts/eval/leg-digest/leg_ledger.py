@@ -277,6 +277,10 @@ def launch_lane(digest, who):
         try:
             with open(path, encoding="utf-8") as fh:
                 text = fh.read(65536)
+            leg = who.get("leg")
+            titles = [line for line in text.splitlines() if line.startswith("# ")
+                      and (not leg or re.search(r"\b" + re.escape(leg) + r"\b", line))]
+            text = titles[0] if titles else ""
             hit = re.search(r"\b(?:LEG_LANE[=:]\s*|lane:\s*)(native|claudex|codex|openrouter|cloud)\b", text)
             hit = hit or re.search(r"\b(native|claudex|codex|openrouter|cloud)\s+lane\b", text)
             hit = hit or re.search(r",\s*(native|claudex|codex|openrouter|cloud)\)", text)

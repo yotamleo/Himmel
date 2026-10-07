@@ -43,7 +43,7 @@ export function rollupToolHealth(evals, failures, query = new URLSearchParams(),
       if (!/^\d{4}-\d{2}-\d{2}$/.test(cohort) || cohort < firstDay || cohort > lastDay) return null;
       const key = `${session}\0${agent}\0${cohort}`;
       if (!slots.has(key)) {
-        const slot = { session, agent, day: cohort, lane, role, model: model || 'unknown', known: Array.isArray(r.meta?.tool_health), tools: new Map(), failures: [] };
+        const slot = { session, agent, day: cohort, lane, role, model: model || 'unknown', known: Array.isArray(r.meta?.tool_health), incomplete: !!since && cohort === firstDay && Date.parse(since) !== Date.parse(firstDay), tools: new Map(), failures: [] };
         slots.set(key, slot);
         const agentKey = `${session}\0${agent}`, cohorts = byAgent.get(agentKey) || [];
         cohorts.push(slot); byAgent.set(agentKey, cohorts);
@@ -93,7 +93,7 @@ export function rollupToolHealth(evals, failures, query = new URLSearchParams(),
     let bashCalls = 0, totalCalls = 0;
     for (const s of list) {
       const group = `${s.day}\0${s.model}\0${s.lane}\0${s.role}`;
-      const bash = s.tools.get('Bash'), calls = s.known ? bash ? bash.calls : 0 : null;
+      const bash = s.tools.get('Bash'), calls = s.known && !s.incomplete ? bash ? bash.calls : 0 : null;
       bashCalls = sumCalls(bashCalls, calls);
       bashByGroup.set(group, sumCalls(bashByGroup.has(group) ? bashByGroup.get(group) : 0, calls));
       for (const h of s.tools.values()) {
@@ -126,11 +126,11 @@ export function rollupToolHealth(evals, failures, query = new URLSearchParams(),
         hooks.set(f.class, h); dailyHooks.set(key, d);
       }
     }
-    if (list.some((s) => !s.known)) {
+    if (list.some((s) => !s.known || s.incomplete)) {
       for (const t of tools.values()) t.calls = null;
       bashCalls = null; totalCalls = null;
     }
-    const unknownGroups = new Set(list.filter((s) => !s.known).map((s) => `${s.day}\0${s.model}\0${s.lane}\0${s.role}`));
+    const unknownGroups = new Set(list.filter((s) => !s.known || s.incomplete).map((s) => `${s.day}\0${s.model}\0${s.lane}\0${s.role}`));
     for (const d of daily.values()) if (unknownGroups.has(`${d.day}\0${d.model}\0${d.lane}\0${d.role}`)) d.calls = null;
     return { tools: [...tools.values()].map(finish), daily: [...daily.values()].map(finish), hooks: [...hooks.values()].map((h) => finish({ ...h, calls: bashCalls })), daily_hooks: [...dailyHooks.values()].map(({ group, ...h }) => finish({ ...h, calls: bashByGroup.get(group) })), totalCalls };
   }

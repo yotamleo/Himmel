@@ -60,8 +60,10 @@ error/denial/recovery rates per lane and deltas relative to native.
 
 No ledger means **No data**. Old digest rows without per-tool counts show
 **—**, not 0 %, including summaries that mix old and new rows. Unknown
-recovery outcomes are excluded; trend gaps have no denominator. Lane comes
-only from launch metadata, never from a model name. Ledger overrides:
+recovery outcomes are excluded; trend gaps have no denominator. Day-level
+cohorts cannot certify an intraday shift cutoff, so those denominators stay
+unknown. Lane comes only from launch metadata, never from a model name;
+a document fallback reads the assigned leg's title, not sibling mentions. Ledger overrides:
 `HIMMEL_EVAL_RUNS_LEDGER`, `HIMMEL_LEG_FAILURES_LEDGER`.
 
 ## Agent run view (AG-UI, HIMMEL-4480)
