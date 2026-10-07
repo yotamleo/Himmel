@@ -101,6 +101,7 @@ QR="bash scripts/quiet-run.sh suite --"
 check "quiet-run suite -- bash test-x.sh is a run of test-x.sh, its OK/ERR line the outcome" '[ "$(tt "$QR bash scripts/a/test-x.sh")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
 check "an env-var prefix and a trailing ; grep still read the quiet-run line" '[ "$(tt "SUITE_LOCK_WAIT=300 $QR bash test-x.sh; grep -c FAIL /tmp/q.log")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
 check "a direct ./scripts/quiet-run.sh call under a pipe is recognized" '[ "$(tt "./scripts/quiet-run.sh suite -- bash test-x.sh 2>&1 | tail -3")" = "[[\"test-x.sh\"], \"quiet-run:suite\"]" ]'
+check "two quiet-run suites in one command are one run of both test files" '[ "$(tt "$QR bash test-a.sh; $QR bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"quiet-run:suite\"]" ]'
 check "quiet-run wrapping a non-test is not a test run" '[ "$(tt "bash scripts/quiet-run.sh npm-install -- npm install")" = "null" ]'
 check "node --test names its test files" '[ "$(tt "node --test scripts/a/foo.test.mjs")" = "[[\"foo.test.mjs\"], \"pass+fail\"]" ]'
 check "node --test with no test file runs the default set" '[ "$(tt "node --test")" = "[[\"*\"], \"pass+fail\"]" ]'

@@ -148,6 +148,10 @@ def test_target(command):
             continue
         label = _quiet_label(seg)
         if label is not None:
+            for later in segs[i + 1:]:  # one OK/ERR line per wrapped run: speak for all of them
+                t2 = _segment_target(later)
+                if t2 and _quiet_label(later) == label:
+                    t = t | t2
             return t, "quiet-run:" + label
         if any(s in ("||", "|", "&") for s in seps):
             return t, ""
