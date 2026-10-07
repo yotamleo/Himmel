@@ -358,7 +358,7 @@ expect_mode_rc() {
       -u TICKET_ID_EXEMPT_AUTHORS -u TICKET_ID_AUTHOR -u TICKET_ID_TRUSTED_AUTHOR -u JIRA_PROJECT_KEY \
       -u TRACKER -u FORGE -u JIRA_API_TOKEN -u JIRA_EMAIL -u JIRA_BASE_URL \
       "$@" bash "$SCRIPT" "$MSG" ) 2>&1 ) || rc=$?
-  if [ "$rc" -eq "$want" ] && { [ -z "$grep_for" ] || printf '%s' "$out" | grep -q -- "$grep_for"; }; then
+  if [ "$rc" -eq "$want" ] && { [ -z "$grep_for" ] || [[ "$out" == *"$grep_for"* ]]; }; then
     printf '  PASS  %s\n' "$name"
   else
     printf '  FAIL  %s (rc=%s, want %s; output: %s)\n' "$name" "$rc" "$want" "$out"
@@ -368,7 +368,7 @@ expect_mode_rc() {
 expect_mode_rc "github origin + JIRA_PROJECT_KEY, no Jira creds, accepts PROJECT-N" 0 "" \
   "$G" "chore: HIMMEL-1 wire the thing" JIRA_PROJECT_KEY=HIMMEL
 expect_mode_rc "github origin + JIRA_PROJECT_KEY, no Jira creds, rejects a ticketless message" 1 \
-  "no ticket reference matched: HIMMEL-\[0-9\]+" "$G" "chore: no ticket id here" JIRA_PROJECT_KEY=HIMMEL
+  "no ticket reference matched: HIMMEL-[0-9]+" "$G" "chore: no ticket id here" JIRA_PROJECT_KEY=HIMMEL
 expect_mode_rc "FORGE=local-git on a github origin is refused with the resolver's I8 message" 1 \
   "local-git refused" "$G" "chore: HIMMEL-1 wire the thing" JIRA_PROJECT_KEY=HIMMEL FORGE=local-git
 expect_mode_rc "TRACKER=jira with no key is refused" 1 "JIRA_PROJECT_KEY is not set" \

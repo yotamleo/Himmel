@@ -43,7 +43,7 @@ scan() {
 FAIL=0
 
 echo "TEST: RED control — the patterns fire on a surface that decides the mode itself"
-T=$(mktemp -d) || exit 1
+T=$(mktemp -d "${TMPDIR:-/tmp}/mode-owner.XXXXXX") || exit 1
 trap 'rm -rf "$T"' EXIT
 # shellcheck disable=SC2016  # the control file must hold the literal $JIRA_PROJECT_KEY
 printf '#!/usr/bin/env bash\n# [ -n "$JIRA_PROJECT_KEY" ] in a comment is fine\nif [ -n "${JIRA_PROJECT_KEY:-}" ]; then :; fi\ncase "$h" in github.com) ;; esac\n' > "$T/red.sh"
