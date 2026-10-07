@@ -32,13 +32,16 @@ IDEMPOTENCE (spec 5.3), all under a per-session flock at <state-dir>/<session>.l
   leg_ledger.py record --digest F [--leg N --ticket K --console C --pr N --doc D --lane L]
                        [--digest-error timeout|crash|no-journal|bad-json|too-big]
                        [--failures-ledger P] [--eval-ledger P] [--state-dir D]
-  leg_ledger.py backfill --since YYYY-MM-DD [--projects D] [--denials-ledger P]
+  leg_ledger.py backfill --since YYYY-MM-DD [--projects D] [--denials-ledger P] [--live-minutes N]
                        [--failures-ledger P] [--eval-ledger P] [--state-dir D]
   leg_ledger.py validate <leg-failures ledger>
 
 backfill digests every leg-titled main journal under --projects whose first
 timestamp is on or after --since, through `bun leg-digest.ts`. It reads the
 journals only, and refuses one whose cwd sits under a salus root (spec 6.1).
+It skips a journal whose last timestamp is under --live-minutes (default 30) old:
+an ok digest of a still-live session would write the final marker and freeze the
+leg before its remaining failures land (HIMMEL-4699).
 """
 
 import argparse
@@ -74,6 +77,7 @@ CONSOLE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
 MODEL = re.compile(r"^(claude|gpt|gemini|glm|codex|o\d)[a-z0-9.\-\[\]]{0,60}$", re.I)
 TITLE = re.compile(r"^([A-Z][A-Z0-9]+-\d+)-(N\d+[a-z]?)-")
 DIGEST_TIMEOUT = 60
+LIVE_MINUTES = 30
 DIGEST_ERRORS = ("timeout", "crash", "no-journal", "bad-json", "too-big")
 
 
@@ -350,6 +354,21 @@ def journal_head(path, limit=40):
     return title, ts, cwd
 
 
+def journal_last_ts(path, tail=65536):
+    """Epoch seconds of the journal's last timestamped entry, else its mtime."""
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        fh.seek(max(0, fh.tell() - tail))
+        lines = fh.read().decode("utf-8", errors="replace").splitlines()
+    for line in reversed(lines):
+        try:
+            ts = json.loads(line)["timestamp"]
+            return datetime.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc).timestamp()
+        except (ValueError, TypeError, KeyError):
+            continue
+    return os.path.getmtime(path)
+
+
 def run_digest(journal, session, denials):
     cmd = ["bun", os.path.join(HERE, "leg-digest.ts"), "--transcript", journal]
     if denials:
@@ -367,7 +386,8 @@ def run_digest(journal, session, denials):
 def backfill(a):
     since = datetime.strptime(a.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     roots = _roots("phi-roots") + _roots("egress-denylist")
-    n = legs = salus = done = fa = ea = 0
+    live_cut = datetime.now(timezone.utc).timestamp() - a.live_minutes * 60
+    n = legs = salus = done = live = fa = ea = 0
     for j in sorted(glob.glob(os.path.join(a.projects, "*", "*.jsonl"))):
         session = os.path.basename(j)[:-len(".jsonl")]
         if not UUID.match(session) or os.path.getmtime(j) < since.timestamp():
@@ -387,6 +407,11 @@ def backfill(a):
             salus += 1
             continue
         legs += 1
+        # ponytail: recency stands in for "still running" (a leg idle past the window
+        # still freezes), upgrade path: an end-of-session signal in the journal.
+        if journal_last_ts(j) > live_cut:
+            live += 1
+            continue
         try:
             with open(os.path.join(a.state_dir, session + ".json"), encoding="utf-8") as fh:
                 if json.load(fh).get("status") == "ok":
@@ -403,8 +428,8 @@ def backfill(a):
             continue
         fa += f
         ea += e
-    print("backfill: journals=%d legs=%d salus=%d already=%d failures+=%d eval+=%d"
-          % (n, legs, salus, done, fa, ea))
+    print("backfill: journals=%d legs=%d salus=%d already=%d live=%d failures+=%d eval+=%d"
+          % (n, legs, salus, done, live, fa, ea))
     return 0
 
 
@@ -426,6 +451,7 @@ def main(argv=None):
     b.add_argument("--since", required=True)
     b.add_argument("--projects", default=os.path.join(os.path.expanduser("~"), ".claude", "projects"))
     b.add_argument("--denials-ledger")
+    b.add_argument("--live-minutes", type=int, default=LIVE_MINUTES)
     v = sub.add_parser("validate")
     v.add_argument("ledger")
     a = ap.parse_args(argv)
