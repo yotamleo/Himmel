@@ -117,6 +117,8 @@ seed_ledger_missing() {
 }
 
 run() {
+    local cache
+    cache=$(mktemp -d "$tmp/cache.XXXXXX") || return 1
     (cd "$REPO" && env -u TICKET_ID_PATTERN \
         JIRA_PROJECT_KEY=HIMMEL \
         STUB_NWO="$NWO" \
@@ -129,7 +131,7 @@ run() {
         STUB_FILES_FAIL="${STUB_FILES_FAIL:-}" \
         STUB_BODY="${STUB_BODY-$GREEN_BODY}" \
         JIRA_CMD="$tmp/bin/jira-stub" STUB_JIRA_DB="$JIRA_DB" STUB_JIRA_DOWN="${STUB_JIRA_DOWN:-}" \
-        PATH="$PATH" GH_LOG="$GH_LOG" GH_PR_SNAPSHOT_CACHE_DIR="$(mktemp -d "$tmp/cache.XXXXXX")" \
+        PATH="$PATH" GH_LOG="$GH_LOG" GH_PR_SNAPSHOT_CACHE_DIR="$cache" \
         STUB_SNAPSHOT_FAIL="${STUB_SNAPSHOT_FAIL:-}" \
         bash "$SCRIPT" "$PR" "$SHA")
 }

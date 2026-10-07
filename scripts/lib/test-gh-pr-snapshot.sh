@@ -15,7 +15,9 @@ printf '%s\n' "$*" >> "$GH_LOG"
 case "$*" in
     *'pullRequest(number:$n)'*) cat "$PAGE_FILE" ;;
     'api graphql'*) cat "$REPLY_FILE"; [ -z "${CHANGE_HEAD:-}" ] || printf '%s\n' "$CHANGE_HEAD" > "$HEAD_FILE" ;;
-    'api repos/'*) cat "$HEAD_FILE" ;;
+    'api repos/'*)
+        cat "$HEAD_FILE"
+        if [ -n "${FAIL_FINAL_HEAD:-}" ] && [ "$(grep -c '^api repos/' "$GH_LOG")" -eq 2 ]; then exit 1; fi ;;
     *) exit 1 ;;
 esac
 STUB
@@ -125,5 +127,10 @@ done
 printf '%s\n' '{"errors":[{"message":"unreadable"}]}' > "$REPLY_FILE"
 rc=0; out=$(run 77) || rc=$?
 check 'foreign repository cache tag is never served' "$rc" 1
+fixture "$NEW"
+: > "$GH_LOG"
+rc=0; out=$(FAIL_FINAL_HEAD=1 bash "$HERE/gh-pr-snapshot.sh" acme/repo 0 77) || rc=$?
+check 'failed final head read with valid stdout still fails closed' "$rc" 1
+check 'failed final head read publishes nothing' "$out" ''
 [ "$fails" -eq 0 ] || exit 1
 printf 'ALL PASS\n'

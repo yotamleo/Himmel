@@ -114,7 +114,8 @@ fi
 # Never publish or cache a reply across a push, including multi-PR batches.
 for pr in "$@"; do
     head=$(cat "$work/$pr.head")
-    [ "$(head_now "$pr")" = "$head" ] || exit 1
+    head_after=$(head_now "$pr") || exit 1
+    [ "$head_after" = "$head" ] || exit 1
 done
 for pr in $misses; do
     head=$(cat "$work/$pr.head")
