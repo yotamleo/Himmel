@@ -425,7 +425,7 @@ c3_run() { # $1 = tmp root
 c3_vault() { # $1 = tmp root; sets v
     mkdir -p "$1/claude"; v="$1/home/Documents/luna"; mkdir -p "$v"
     git -C "$v" init -q 2>/dev/null; git -C "$v" config user.email t@t; git -C "$v" config user.name t
-    : > "$v/.single-writer"; echo .single-writer >> "$v/.git/info/exclude"; write_settings "$1/claude" "$WRAPPER"
+    : > "$v/.single-writer"; mkdir -p "$v/.git/info"; echo .single-writer >> "$v/.git/info/exclude"; write_settings "$1/claude" "$WRAPPER"
 }
 
 echo "== C3: stale dirty non-handover path in a single-writer vault -> WARN, no manual-commit advice =="
