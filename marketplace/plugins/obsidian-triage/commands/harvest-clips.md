@@ -373,7 +373,7 @@ mv "$marker_tmp" "<vault>/.harvest.done"
 
 `$batch_hash` is then the same clip-batch hash G-2 wrote into `<vault>/.harvest.lock` for this run.
 
-On any other exit path (1/2/3/4/5) the marker MUST NOT exist at exit — it already stands invalidated from G-2's start-of-run deletion, so a partial/failed/interrupted run leaves downstream gated closed until a clean harvest completes. No operator override flag — keep it minimal.
+On any other exit path (1/2/3/4/5) MUST NOT write the marker, and it must not exist at exit — it already stands invalidated from G-2's start-of-run deletion, so a partial/failed/interrupted run leaves downstream gated closed until a clean harvest completes. No operator override flag — keep it minimal.
 
 ### Notes for the agent
 
