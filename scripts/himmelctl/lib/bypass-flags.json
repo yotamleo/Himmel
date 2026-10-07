@@ -248,7 +248,7 @@
       "hooks": [
         "scripts/hooks/guard-leg-context-handoff.sh"
       ],
-      "bypasses": "Lets a console-spawned leg past 75 % context fill keep working without writing its RESUME doc first.",
+      "bypasses": "Lets a console-spawned leg launched with the context guard on keep working past its threshold (75 % of its autocompact ceiling) without a CHECKPOINT or RESUME doc first.",
       "remedy": "LEG_CONTEXT_HANDOFF_OK=1 claude   # set in the launching shell; a per-call prefix does not reach the hook"
     },
     {

@@ -681,18 +681,20 @@ not edit — passes for that one exec, and it switches the internal
 to the resolved `auto`. The arm log and the `--dry-run` report both record
 `context=1m (operator-ruling)` plus the reason text.
 
-**Leg checkpoint or handover is at 65% of the leg's `--autocompact` ceiling
-(130,000 input tokens of the 200k pin), with that ceiling as the backstop
-(HIMMEL-4089, HIMMEL-4569).** Measured 2026-09-27..10-03 over 399 leg
+**Leg checkpoint or handover is at 75% of the leg's `--autocompact` ceiling
+(150,000 input tokens of the 200k pin), with that ceiling as the backstop,
+when the launch turns the guard on (HIMMEL-4089, HIMMEL-4569, HIMMEL-4710).** Measured 2026-09-27..10-03 over 399 leg
 sessions: 349 compacted, 309 of those still reached WRAPPED after their last
 compaction, and every compaction fired between 157k and 176k. The earlier 60%
-hand-off only added relaunches; 75% (150k) cleared the earliest compaction by
-just 7k, so HIMMEL-4569 moved to 65%, 27k (13.5 pp) of headroom for the
-commit and push. The share is of the ceiling, not the window: an opus leg
-reports a 1,000,000-token window, so the 200k ceiling is 20% fill and the
-threshold 13%. `guard-leg-context-handoff.sh` enforces it in two launch-time
-modes, `compact` (default: commit, push, a `CHECKPOINT <sha> pushed` bullet,
-then compact and carry on) and `handoff` (a RESUME brief, then stop). The absolute turn count is
+hand-off only added relaunches. HIMMEL-4569 moved to 65% (27k of headroom),
+which stopped every opus leg at 13% fill; HIMMEL-4710 set 75% (150k), 7k
+before the earliest compaction, and made the guard off by default. The share is
+of the ceiling, not the window: an opus leg reports a 1,000,000-token window,
+so the 200k ceiling is 20% fill and the threshold 15%.
+`guard-leg-context-handoff.sh` enforces it in two modes chosen at launch with
+`--context-guard`: `compact` (commit, push, a `CHECKPOINT <sha> pushed` bullet,
+then compact and carry on) and `handoff` (a RESUME brief, then stop). Reference:
+[`leg-context-guard.md`](leg-context-guard.md). The absolute turn count is
 `message.usage.input_tokens + cache_read_input_tokens +
 cache_creation_input_tokens` from the last assistant message in that session's
 own transcript; it excludes output tokens and is not cumulative spend.
