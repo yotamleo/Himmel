@@ -70,9 +70,12 @@ collapse under concurrency is the **process count**: 4 separate node cold
 starts happen regardless, since each is a distinct OS process the kernel has
 to schedule and tear down.
 
-Regression guard: `scripts/hooks/bench-hook-stack.test.mjs` — "exactly 4
+Since HIMMEL-4569 a second `*` group (`guard-leg-context-handoff.sh`, its own
+process because `auto-arm-on-cap.sh` stays out of every chain) makes it **5**.
+
+Regression guard: `scripts/hooks/bench-hook-stack.test.mjs` — "exactly 5
 PreToolUse matcher groups in .claude/settings.json match the Bash tool" pins
-the matcher list itself (`Bash`, `*`,
+the matcher list itself (`Bash`, `*`, `*`,
 `Bash|Edit|Write|MultiEdit|NotebookEdit`, `Bash|Monitor`, in that order), so a
 future edit that silently drops or adds Bash-tool coverage is caught here.
 

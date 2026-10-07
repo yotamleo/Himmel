@@ -60,6 +60,10 @@ _rc() {
     local json
     json=$(printf '{"tool_name":%s,"tool_input":{"command":%s}}' \
         "$(printf '%s' "$tool" | jq -Rs .)" "$(printf '%s' "$cmd" | jq -Rs .)")
+    # A hook that reads the session transcript gets one when a row sets CRLF_TP.
+    if [ -n "${CRLF_TP:-}" ]; then
+        json=$(printf '%s' "$json" | jq -c --arg t "$CRLF_TP" '. + {transcript_path:$t}')
+    fi
     if [ $# -gt 0 ]; then
         printf '%s' "$json" | env "$@" bash "$SCRIPT_DIR/$hook.sh" >/dev/null 2>&1
     else
@@ -806,6 +810,29 @@ check guard-judge-writes Bash 2 "gi""t push" "deny push in a judge session" \
     HIMMEL_CONSOLE_JUDGE=1
 check guard-judge-writes Bash 0 "gi""t status" "allow a read in a judge session" \
     HIMMEL_CONSOLE_JUDGE=1
+
+# guard-leg-context-handoff reads the fill through the transcript, so its rows
+# run against a leg fixture at 76 %: a hand-off command must stay allowed and
+# an ordinary one denied whatever the line endings.
+LCX="$TMP/legctx"
+mkdir -p "$LCX/cfg/projects/p" "$LCX/cfg/plugins/claude-hud/context-cache" "$LCX/handovers/u/b"
+LCX_DOC="$LCX/handovers/u/b/HIMMEL-9-N77-crlf-2026-10-06.md"
+LCX_TR="$LCX/cfg/projects/p/sess.jsonl"
+printf -- '---\n---\n# brief\n\n## Results\n\n- 10:01 LIVE — working\n' > "$LCX_DOC"
+jq -cn --arg t "load $LCX_DOC and continue" '{type:"user",timestamp:"2026-10-06T10:00:00.000Z",message:{role:"user",content:$t}}' > "$LCX_TR"
+printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":1}}}' >> "$LCX_TR"
+if command -v sha256sum >/dev/null 2>&1; then LCX_SHA="$(printf '%s' "$LCX_TR" | sha256sum | cut -d' ' -f1)"
+else LCX_SHA="$(printf '%s' "$LCX_TR" | shasum -a 256 | cut -d' ' -f1)"; fi
+printf '{"used_percentage":76,"remaining_percentage":24,"context_window_size":200000,"saved_at":%s000}' \
+    "$(date +%s)" > "$LCX/cfg/plugins/claude-hud/context-cache/$LCX_SHA.json"
+CRLF_TP="$LCX_TR"
+check guard-leg-context-handoff Bash 2 "ls -la" "deny ordinary work at 76 %" \
+    HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=T-console \
+    "CLAUDE_CONFIG_DIR=$LCX/cfg" "HANDOVER_DIR=$LCX/handovers"
+check guard-leg-context-handoff Bash 0 "bash scripts/handover/wrap-subtree-check.sh" "allow a hand-off command at 76 %" \
+    HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_NAME=T-console \
+    "CLAUDE_CONFIG_DIR=$LCX/cfg" "HANDOVER_DIR=$LCX/handovers"
+CRLF_TP=""
 
 # ── Completeness guard ──────────────────────────────────────────────────────
 # The audit's real deliverable. Enumerate the command-text hooks FROM THE

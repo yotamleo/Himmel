@@ -66,6 +66,17 @@
             "timeout": 60
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox guard-leg-context-handoff.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox guard-leg-context-handoff.sh",
+            "timeout": 15
+          }
+        ]
       }
     ],
     "PostToolUse": [

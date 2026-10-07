@@ -135,6 +135,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   'block-backend-tier.sh',
   'mcp-policy.sh',
   'auto-arm-on-cap.sh',
+  // PreToolUse `*` — its own entry (HIMMEL-4569): denies a console-spawned
+  // leg's non-hand-off calls at >= 75 % context fill until its RESUME doc
+  // exists or its last marker is WRAPPED/BLOCKED. Fails open.
+  'guard-leg-context-handoff.sh',
   // PreToolUse `Bash|Monitor` — its own matcher (HIMMEL-2140): denies a
   // subagent (agent_id present) from backgrounding a Bash call or reaching
   // for Monitor — the parking pathology. Parents (no agent_id) are

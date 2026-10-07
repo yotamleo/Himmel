@@ -375,10 +375,12 @@ for (const config of CONFIGS) {
 // (shadow-ledger.mjs, invoked directly — not through the chain dispatcher),
 // and `Bash|Monitor` (block-subagent-park.sh) — each its own cold node
 // process, so the real per-Bash-call cost is 4 process starts, not the 1 a
-// reader of only the `Bash` chain would assume. Docs:
+// reader of only the `Bash` chain would assume. HIMMEL-4569 added a second `*`
+// group (guard-leg-context-handoff.sh) — its own process because
+// auto-arm-on-cap.sh stays out of every chain — so the count is now 5. Docs:
 // docs/internals/hook-cost-baseline.md. Pins the count so a future matcher
 // edit that silently drops or adds Bash coverage is caught here.
-test('exactly 4 PreToolUse matcher groups in .claude/settings.json match the Bash tool', (t) => {
+test('exactly 5 PreToolUse matcher groups in .claude/settings.json match the Bash tool', (t) => {
   const config = join(REPO, '.claude', 'settings.json');
   if (!existsSync(config)) return t.skip('config not present in this checkout');
   const settings = JSON.parse(readFileSync(config, 'utf8'));
@@ -386,6 +388,6 @@ test('exactly 4 PreToolUse matcher groups in .claude/settings.json match the Bas
   const bashGroups = groups.filter((g) => toolNamesFor(g.matcher).includes('Bash'));
   assert.deepEqual(
     bashGroups.map((g) => g.matcher),
-    ['Bash', '*', 'Bash|Edit|Write|MultiEdit|NotebookEdit', 'Bash|Monitor'],
+    ['Bash', '*', '*', 'Bash|Edit|Write|MultiEdit|NotebookEdit', 'Bash|Monitor'],
   );
 });
