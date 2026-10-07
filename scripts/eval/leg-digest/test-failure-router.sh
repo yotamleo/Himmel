@@ -244,6 +244,26 @@ check "an empty key fails closed the same way" '[ "$rc9" != 0 ] && [ "$(lines "$
 env -u JIRA_PROJECT_KEY python3 "$FR" route --dry-run --ledger "$F9/l.jsonl" --state "$F9/s.json" --log "$F9/log" --now "$NOW" >"$TMP/nokey-dry.out" 2>&1; rc9=$?
 check "--dry-run still works without a key" '[ "$rc9" = 0 ] && grep -q would-file "$TMP/nokey-dry.out"'
 
+echo "HIMMEL-4785: error/Bash sub-classes file one actionable ticket each"
+F10="$TMP/f10"; mkdir -p "$F10"
+SAVE="$LED"; LED="$F10/l.jsonl"
+for c in error/Bash:usage:impacted-suites error/Bash:zsh-nomatch error/Bash:no-such-file error/Bash error/Edit; do
+  row N1 "$c"; row N2 "$c"; row N3 "$c"
+done
+row N1 error/Bash:cr-gate-exit-14; row N2 error/Bash:cr-gate-exit-14; row N3 error/Bash:cr-gate-exit-14
+row N1 denied/guard-leg-context-handoff 1; row N2 denied/guard-leg-context-handoff 1
+LED="$SAVE"
+DRY10="$TMP/dry10.out"
+python3 "$FR" route --dry-run --ledger "$F10/l.jsonl" --state "$F10/s.json" --log "$F10/log" --inbox "$F10/inbox" --now "$NOW" >"$DRY10" 2>&1
+wf10() { jq -e --arg c "$1" "select(.class == \$c and .decision == \"would-file\")" "$DRY10" >/dev/null; }
+check "each sub-class would be filed under its own class" 'for c in error/Bash:usage:impacted-suites error/Bash:zsh-nomatch error/Bash:no-such-file error/Bash:cr-gate-exit-14; do wf10 "$c" || return 1; done'
+check "the usage ticket names the script and the fix, not just Bash errors" 'jq -er ".routes[] | select(.match == \"error/Bash:usage:*\") | .summary" "$HERE/failure-routes.table.json" | grep -q "{sub}" && ! jq -er ".routes[] | select(.match == \"error/Bash:usage:*\") | .summary" "$HERE/failure-routes.table.json" | grep -q "errors recur"'
+check "every error/Bash:* row carries its own summary, none is the generic one" '[ "$(jq "[.routes[] | select(.match | startswith(\"error/Bash:\")) | .summary] | map(select(contains(\"errors recur\"))) | length" "$HERE/failure-routes.table.json")" = 0 ] && [ "$(jq "[.routes[] | select(.match | startswith(\"error/Bash:\"))] | length" "$HERE/failure-routes.table.json")" -ge 4 ]'
+check "the sub-class rows sit before the generic error/* row" '[ "$(jq "[.routes[].match] | (index(\"error/Bash:usage:*\") != null) and index(\"error/Bash:usage:*\") < index(\"error/*\")" "$HERE/failure-routes.table.json")" = true ]'
+check "a plain error/Bash and error/Edit still route through the generic row" 'wf10 error/Bash && wf10 error/Edit'
+check "the context-guard denial is routed as its own named hook" 'wf10 denied/guard-leg-context-handoff'
+check "ok/no-match is never a routable class: the ledger refuses it and the table has no ticket row for it" '! grep -q "\"ok/" "$DRY10" && ! python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import failure_router as f, json; t = json.load(open(sys.argv[2])); sys.exit(0 if any(r[\"route\"] == \"ticket\" and f.fits(r[\"match\"], \"ok/no-match\") for r in t[\"routes\"]) else 1)" "$HERE" "$HERE/failure-routes.table.json"'
+
 echo "the routing table is data"
 check "failure-routes.table.json parses and names every spec 4.2 key pattern" 'jq -e "[.routes[].match] | index(\"denied/classifier:*\") and index(\"suite/*\") and index(\"error/*\") and index(\"traj/claim-unverified\")" "$HERE/failure-routes.table.json" >/dev/null'
 check "the window is 14 days and the cap is 3" 'jq -e ".window_days == 14 and .daily_cap == 3" "$HERE/failure-routes.table.json" >/dev/null'
