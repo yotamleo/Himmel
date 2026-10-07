@@ -122,7 +122,7 @@ export function projectModeIdPattern(o) {
   if (!/^[A-Z][A-Z0-9]*$/.test(prefix)) {
     throw refuse('invalid git config himmel.trackerPrefix (expected an uppercase letter, then A-Z/0-9)');
   }
-  return `(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)|${prefix}-[0-9]+`;
+  return `(^|[^0-9A-Za-z_])(#|${prefix}-)[0-9]+([^0-9A-Za-z_]|$)`;
 }
 
 export function projectModeIdRequired(o) {

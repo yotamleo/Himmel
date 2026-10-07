@@ -32,8 +32,8 @@ tracker	-	-	himmel.tracker=jira	EXIT2
 tracker	-	TRACKER=notion	-	EXIT2
 tracker	-	-	himmel.tracker=bogus	EXIT2
 # --- ID pattern: override > jira key > local prefix alternated with #N > none
-pattern	-	-	-	(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)|LOCAL-[0-9]+
-pattern	-	-	himmel.trackerPrefix=ACME	(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)|ACME-[0-9]+
+pattern	-	-	-	(^|[^0-9A-Za-z_])(#|LOCAL-)[0-9]+([^0-9A-Za-z_]|$)
+pattern	-	-	himmel.trackerPrefix=ACME	(^|[^0-9A-Za-z_])(#|ACME-)[0-9]+([^0-9A-Za-z_]|$)
 pattern	-	-	himmel.trackerPrefix=acme	EXIT2
 pattern	-	JIRA_PROJECT_KEY=A.B	-	A\.B-[0-9]+
 pattern	-	JIRA_PROJECT_KEY=HIMMEL TICKET_ID_PATTERN=X-[0-9]+	-	X-[0-9]+
@@ -44,7 +44,7 @@ required	-	-	-	1
 required	-	TRACKER=none	-	0
 required	-	TRACKER=none TICKET_ID_REQUIRED=1	-	1
 required	-	TICKET_ID_REQUIRED=False	-	False
-env	-	-	-	TRACKER=local\tFORGE=local-git\tTICKET_ID_REQUIRED=1\tTICKET_ID_PATTERN=(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)|LOCAL-[0-9]+
+env	-	-	-	TRACKER=local\tFORGE=local-git\tTICKET_ID_REQUIRED=1\tTICKET_ID_PATTERN=(^|[^0-9A-Za-z_])(#|LOCAL-)[0-9]+([^0-9A-Za-z_]|$)
 env	NOGIT	TRACKER=none	-	TRACKER=none\tFORGE=none\tTICKET_ID_REQUIRED=0\tTICKET_ID_PATTERN=
 env	https://github.com/o/r	FORGE=local-git	-	EXIT2
 # --- forge precedence: env > git config > detection

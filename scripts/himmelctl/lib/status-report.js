@@ -92,7 +92,9 @@ function expandHome(p) {
 // HIMMEL-4758: the target's tracker and forge come from the one resolver,
 // scripts/lib/project-mode.mjs (the twin of project-mode.sh). It is ESM and
 // this file is CommonJS on a Node 18 floor (no require(esm)), so it runs as a
-// child: `node project-mode.mjs <fn>` in the target dir, memoized per call.
+// child: `node project-mode.mjs <fn>` in the target dir. Not memoized: each
+// caller runs once per report, and a cache would outlive a FORGE or git
+// config change in a long-lived process.
 // Resolved beside THIS file, not under repoRoot(): HIMMELCTL_REPO_ROOT points
 // at a fixture tree that carries no scripts/lib.
 // ponytail: a resolver that cannot run (node missing, 5 s timeout, rc 2 on an
@@ -100,16 +102,11 @@ function expandHome(p) {
 // opt-in default (n/a), as an unreadable origin did before; upgrade when
 // status grows a row for an invalid project mode.
 const PROJECT_MODE_MJS = path.resolve(__dirname, '..', '..', 'lib', 'project-mode.mjs');
-const projectModeCache = new Map();
 function projectMode(targetPath, fn, env) {
-  const key = JSON.stringify([targetPath, fn, env || null]);
-  if (!projectModeCache.has(key)) {
-    const r = spawnSync(process.execPath, [PROJECT_MODE_MJS, fn], {
-      cwd: targetPath, encoding: 'utf8', timeout: 5000, env: env || process.env,
-    });
-    projectModeCache.set(key, r.status === 0 ? String(r.stdout || '').trim() : null);
-  }
-  return projectModeCache.get(key);
+  const r = spawnSync(process.execPath, [PROJECT_MODE_MJS, fn], {
+    cwd: targetPath, encoding: 'utf8', timeout: 5000, env: env || process.env,
+  });
+  return r.status === 0 ? String(r.stdout || '').trim() : null;
 }
 
 // HIMMEL-3307: bitbucket-cli-build is opt-in ONLY for a target that does not

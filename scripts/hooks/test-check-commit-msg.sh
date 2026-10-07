@@ -375,6 +375,7 @@ expect_mode_rc "TRACKER=jira with no key is refused" 1 "JIRA_PROJECT_KEY is not 
   "$R" "chore: [#12] wire the thing" TRACKER=jira
 expect_mode_rc "TRACKER=none makes the ticket optional" 0 "" "$R" "chore: no ticket id here" TRACKER=none
 expect_mode_rc "tracker local accepts the LOCAL-N prefix" 0 "" "$R" "chore: LOCAL-7 wire the thing"
+expect_mode_rc "tracker local rejects a prefix glued to a word (NOTLOCAL-7)" 1 "" "$R" "chore: NOTLOCAL-7 wire the thing"
 # Fail CLOSED when the resolver is not installed beside the hook (an adopter
 # payload from before HIMMEL-4758): never a silent env-only fallback.
 NOLIB=$(fixture_mktemp_dir) || exit 1

@@ -160,7 +160,7 @@ project_mode_id_pattern() {
                     return 2
                     ;;
             esac
-            printf '(^|[^0-9A-Za-z_])#[0-9]+([^0-9A-Za-z_]|$)|%s-[0-9]+\n' "$prefix"
+            printf '(^|[^0-9A-Za-z_])(#|%s-)[0-9]+([^0-9A-Za-z_]|$)\n' "$prefix"
             ;;
         none) printf '\n' ;;
     esac
