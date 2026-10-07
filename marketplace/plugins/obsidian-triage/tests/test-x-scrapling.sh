@@ -24,6 +24,9 @@ assert() {
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/x-scrapling.XXXXXX")" || exit 1; [ -n "${KEEP_TMP:-}" ] || trap 'rm -rf "$tmp"' EXIT; echo "tmp=$tmp"
 HOME="$tmp/home"; mkdir -p "$HOME/.luna/cookies"; export HOME
 export X_MEDIA_NO_SLEEP=1
+# HIMMEL-4708: Tests 5-13 pin the cookie switch ON - today's gallery-dl
+# fallback, unchanged. Test 14 runs with it off (the default).
+export HIMMEL_MEDIA_COOKIES=on
 unset X_SCRAPLING_PYTHON HARVEST_SCRAPE_DENY
 
 jq_py() { # $1 = json file, $2 = python expression over `d`
@@ -259,6 +262,36 @@ run_tool "$tmp/v13" >"$tmp/v13.out" 2>"$tmp/v13.err"
 assert "no scrapling venv, no gallery-dl -> exit 2" 2 "$?"
 grep -q "scrapling-venv" "$tmp/v13.err" && a=ok || a=no
 assert "preflight names the scrapling venv install" ok "$a"
+
+# --- Test 14: cookie switch off (HIMMEL-4708 default) -----------------------
+# gallery-dl and the cookie file are both present; with the switch off a
+# Scrapling miss must never reach them - the clip is deferred, naming scrapling.
+echo "Test 14: cookie switch off"
+unset HIMMEL_MEDIA_COOKIES
+: >"$tmp/calls"; export X_SCRAPLING_PYTHON="$tmp/scrapling-python" STUB_JSON="$tmp/wall.json" STUB_RC=4
+cp "$tmp/gallery-dl" "$tmp/bin/gallery-dl"; echo DUMMY >"$HOME/.luna/cookies/twitter.txt"
+make_vault "$tmp/v14" 1414
+run_tool "$tmp/v14" >"$tmp/v14.out" 2>"$tmp/v14.err"
+assert "switch-off run exit 0" 0 "$?"
+grep -q -- '--status-id' "$tmp/calls" && a=ok || a=no
+assert "scrapling still tried first" ok "$a"
+grep -q '^gdl$' "$tmp/calls" && a=called || a=skipped
+assert "gallery-dl (cookie) never called with the switch off" skipped "$a"
+grep -q '^media_enrichment_status: deferred$' "$tmp/v14/Clippings/clip.md" && a=ok || a=no
+assert "clip recorded deferred" ok "$a"
+grep -q '^media_last_error: scrapling:login_wall$' "$tmp/v14/Clippings/clip.md" && a=ok || a=no
+assert "error names the scrapling backend" ok "$a"
+grep -q '^x_media_pending: true$' "$tmp/v14/Clippings/clip.md" && a=ok || a=no
+assert "deferred clip stays pending" ok "$a"
+# Scrapling unavailable and cookies off: preflight refuses, never touches gallery-dl.
+: >"$tmp/calls"
+make_vault "$tmp/v14b" 1415
+HARVEST_SCRAPE_DENY=all run_tool "$tmp/v14b" >"$tmp/v14b.out" 2>"$tmp/v14b.err"
+assert "no scrapling + switch off -> exit 2" 2 "$?"
+grep -q '^gdl$' "$tmp/calls" && a=called || a=skipped
+assert "gallery-dl not called on the preflight stop" skipped "$a"
+grep -q "HIMMEL_MEDIA_COOKIES=on" "$tmp/v14b.err" && a=ok || a=no
+assert "preflight names the switch" ok "$a"
 
 echo ""
 echo "x-scrapling tests: $pass passed, $fail failed"

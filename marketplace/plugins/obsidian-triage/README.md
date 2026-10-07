@@ -19,6 +19,33 @@ Together: harvest → **enrich** (X body-fill via `tools/fxtwitter-enrich.mjs` �
 
 The **enrich** stage runs `fxtwitter-enrich.mjs` (X), `ig-embed-enrich.mjs` (Instagram) and `reddit-enrich.mjs` (Reddit — cookie-authenticated `.json`, burner-account cookies at `~/.luna/cookies/reddit.txt`) between harvest and triage. For X it fills a thin telegram bare-URL stub's `## The Idea` from the tweet text and de-anonymizes `author`/`title` (the `x.com/i/status/<id>` forwards), so triage tags a rich body on its first pass. The same enrich also fires **inline** at `telegram-clip` filing time (best-effort) so group links are usually born rich. Authenticated long tail (protected tweets, login-walled IG) defers to the `playwright-crawl-*` rung. Reddit's anonymous `.json` is 403-blocked (verified 2026-07-08); the rung uses exported burner cookies. If cookies prove brittle, the escalation path is a free official OAuth script app (100 QPM, app registration) — documented here, not built; `--firecrawl-thin` treating reddit as article-like is the noisy, credit-metered last resort.
 
+### Media cookie switch: `HIMMEL_MEDIA_COOKIES` (HIMMEL-4708)
+
+Every cookie-backed media path is **off by default**. Set
+`HIMMEL_MEDIA_COOKIES=on` (environment variable; trimmed, case-insensitive) to
+turn them back on, which restores the earlier fallback behaviour exactly. Nothing is
+deleted while it is off: cookie files and storage state stay where they are,
+and none of their cookies is sent.
+
+| Consumer | While off |
+|---|---|
+| `tools/ig-media-fetch.py`, `tools/x-media-fetch.py` | Scrapling only, never the `gallery-dl --cookies` fallback; a Scrapling miss is recorded as deferred with the error `scrapling:<reason>`; with no Scrapling venv the preflight exits 2 naming the switch |
+| `tools/playwright-crawl-youtube.mjs` | Scrapling + yt-dlp only, never the logged-in Playwright fallback; a miss is recorded as partial (or left retryable on a login wall); with no Scrapling venv it exits 2 naming the switch |
+| `tools/twitter-cli-enrich.mjs` | Exits 2: its burner `auth_token`/`ct0` are cookies. `fxtwitter-enrich.mjs` is the cookieless path |
+| `tools/harvest-clip-body-batch.py` (`local-headless`) | Sends no jar cookie for `instagram.com`, `x.com`, `twitter.com` or `youtube.com`; other hosts keep their jar cookies |
+| `scripts/luna/fetch-health.py` | `instagram-media`, `x-media`, `x-twitter-cli`, `youtube-playwright` report `off` (not probed, exit 0, not red); doctor C16 and the `himmelctl` secrets walk say off, with no WARN |
+
+These stay on whatever the switch says:
+
+- `tools/reddit-enrich.mjs` has no cookieless path, because Reddit's anonymous
+  `.json` is 403-blocked. Its cookie is the only way the rung works, and the
+  `reddit` health probe stays live.
+- `tools/lib/cookie-jar.mjs` only parses a jar. Each caller decides whether
+  to read one.
+- `tools/lib/follow-web.mjs` sends no cookies.
+- `tools/playwright-auth-save.mjs` and `scripts/luna/youtube-state-from-chrome.py`
+  are operator-run savers that write the state. They are not a fetch path.
+
 ### Daily fetch health (HIMMEL-1449)
 
 `scripts/luna/fetch-health.py` runs one cheap known-good probe for every live
@@ -50,7 +77,8 @@ duplicate-key and empty-placeholder rules are in
 [`docs/internals/environment-gotchas.md`](../../../docs/internals/environment-gotchas.md).
 
 Every result is classified as exactly `ok`, `auth-or-cookie-expired`,
-`blocked-or-rate-limited`, or `transport-fail`. Missing credentials, cookie
+`blocked-or-rate-limited`, or `transport-fail`, or `off` for a cookie source
+opted out by `HIMMEL_MEDIA_COOKIES` (see above). Missing credentials, cookie
 files, storage state, or required CLIs become classified health failures rather
 than crashes. Current status and the preserved last-success epoch are written
 atomically to `~/.himmel/fetch-health.json` (override:

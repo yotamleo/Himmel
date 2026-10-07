@@ -2596,6 +2596,7 @@ function probeLunaSources(item, ctx) {
   const unrecognized = [];
   const unconfigured = [];
   const cooling = [];
+  const optedOut = [];
   let evaluated = 0;
   for (const source of sources) {
     const envForSpawn = Object.assign({}, env, {
@@ -2633,6 +2634,10 @@ function probeLunaSources(item, ctx) {
         // (a 429/challenge, the daily cap, or a spacing/backoff window) — a wait,
         // not a fault, so it never joins `problems`.
         cooling.push(`${source} (${reason || 'cooldown'})`);
+      } else if (status === 'off') {
+        // HIMMEL-4708: a cookie source opted out by HIMMEL_MEDIA_COOKIES is
+        // deliberately unused — off, never a fault and never a warn.
+        optedOut.push(source);
       } else if (status === 'auth-or-cookie-expired' && UNCONFIGURED_REASON_RE.test(reason || '')) {
         unconfigured.push(`${source} (${reason})`);
       } else {
@@ -2680,15 +2685,18 @@ function probeLunaSources(item, ctx) {
   // turns 'absent' into a warn, 'degraded' into a fail — see that file's
   // luna-sources block). Covers both "some configured, some not" and "every
   // named source unconfigured" — both benign, both warn.
+  const offNote = optedOut.length > 0
+    ? `; ${optedOut.length} cookie source(s) off, opted out by HIMMEL_MEDIA_COOKIES (no action needed): ${optedOut.join(', ')}`
+    : '';
   if (unconfigured.length > 0 || cooling.length > 0) {
-    const healthy = evaluated - unconfigured.length - cooling.length;
+    const healthy = evaluated - unconfigured.length - cooling.length - optedOut.length;
     const healthyNote = healthy > 0 ? `; ${healthy} other configured source(s) healthy` : '';
     const parts = [];
     if (unconfigured.length > 0) parts.push(`${unconfigured.length} not configured yet, skippable (fix by configuring credentials, or ignore if intentionally unused): ${unconfigured.join('; ')}`);
     if (cooling.length > 0) parts.push(`${cooling.length} on cooldown, waiting (no action needed): ${cooling.join('; ')}`);
-    return { actual: 'absent', detail: `${parts.join(' | ')}${healthyNote}` };
+    return { actual: 'absent', detail: `${parts.join(' | ')}${healthyNote}${offNote}`, optedOut };
   }
-  return { actual: 'present', detail: `all ${evaluated} configured luna source(s) healthy` };
+  return { actual: 'present', detail: `all ${evaluated - optedOut.length} configured luna source(s) healthy${offNote}`, optedOut };
 }
 
 // ── cadence-coherence / engine-allowlist shared helper ──────────────────

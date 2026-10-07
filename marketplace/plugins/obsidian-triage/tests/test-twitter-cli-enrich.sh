@@ -3,6 +3,7 @@
 # test-twitter-cli-enrich.sh — CLI-level behaviours for twitter-cli-enrich.mjs:
 #   (a) --dry-run selects ONLY needs_thread + not-already-crawled X clips
 #   (b) the burner-token guard refuses to run without TWITTER_AUTH_TOKEN/CT0
+#   (c) with HIMMEL_MEDIA_COOKIES off (the default) it refuses even with tokens
 #
 # Both paths short-circuit before any `twitter` call, so no fake binary / live X
 # is needed. The full fetch→map→fold→G-3 path is covered by the JS-level
@@ -61,9 +62,17 @@ grep -q "done.md" <<<"$selected" && { echo "FAIL: already-crawled selected"; exi
 
 # (b) token guard — no TWITTER_AUTH_TOKEN/CT0 → exit 2 + clear message, no mutation
 before="$(cat "$vault/Clippings/flagged.md")"
-guard="$(env -u TWITTER_AUTH_TOKEN -u TWITTER_CT0 node "$tool" --vault "$vault" 2>&1 || true)"
+guard="$(env -u TWITTER_AUTH_TOKEN -u TWITTER_CT0 HIMMEL_MEDIA_COOKIES=on node "$tool" --vault "$vault" 2>&1 || true)"
 grep -qi "TWITTER_AUTH_TOKEN" <<<"$guard" || { echo "FAIL: no token-guard message"; echo "$guard"; exit 1; }
 after="$(cat "$vault/Clippings/flagged.md")"
 [ "$before" = "$after" ] || { echo "FAIL: token guard mutated a clip"; exit 1; }
+
+# (c) HIMMEL-4708: the burner tokens ARE cookies (auth_token + ct0), so with
+# HIMMEL_MEDIA_COOKIES unset (default off) the tool refuses even when they are
+# set, names the switch, and touches nothing.
+optout="$(env -u HIMMEL_MEDIA_COOKIES TWITTER_AUTH_TOKEN=fixture TWITTER_CT0=fixture node "$tool" --vault "$vault" 2>&1)" && rc=0 || rc=$?
+[ "$rc" = 2 ] || { echo "FAIL: opted-out run rc=$rc, want 2"; echo "$optout"; exit 1; }
+grep -q "HIMMEL_MEDIA_COOKIES=on" <<<"$optout" || { echo "FAIL: opted-out message does not name the switch"; echo "$optout"; exit 1; }
+[ "$before" = "$(cat "$vault/Clippings/flagged.md")" ] || { echo "FAIL: opted-out run mutated a clip"; exit 1; }
 
 echo "test-twitter-cli-enrich.sh: PASS"

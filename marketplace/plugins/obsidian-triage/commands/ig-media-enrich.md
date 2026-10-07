@@ -76,7 +76,10 @@ cookieless Scrapling helper `tools/ig-scrapling-media.py`, run with the
 `local-headless` backend under the HIMMEL-4361 routing, so `HARVEST_SCRAPE_DENY`
 and `.harvest-backends` can switch it off. The fallback is `gallery-dl` with the
 burner-account cookie file (`~/.luna/cookies/instagram.txt`), which is needed
-only when Scrapling is unavailable or fails for a clip. Surface that exit-2 message to the
+only when Scrapling is unavailable or fails for a clip, and only while
+`HIMMEL_MEDIA_COOKIES=on` (HIMMEL-4708; default off: a Scrapling miss is
+recorded as deferred, and with no Scrapling venv preflight exits 2 naming the
+switch). Surface that exit-2 message to the
 operator verbatim and stop - do NOT attempt any per-clip work when preflight
 fails. Under `--dry-run`, run the fetch tool with `--dry-run` only (Step 2's
 dry-run form); take no other action.

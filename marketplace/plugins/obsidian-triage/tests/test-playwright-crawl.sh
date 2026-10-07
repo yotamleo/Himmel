@@ -108,7 +108,7 @@ assert "crawl-x.mjs rc=2 on missing storage_state" "2" "$x_rc"
 if grep -qi 'storage_state missing\|playwright-auth-save' "$tmpdir/x.err"; then x_msg=yes; else x_msg=no; fi
 assert "crawl-x.mjs error msg mentions auth-save" "yes" "$x_msg"
 
-HOME="$tmpdir" USERPROFILE="$tmpdir" node "$cy" --vault "$fake_vault" --dry-run >/dev/null 2>"$tmpdir/y.err"
+HOME="$tmpdir" USERPROFILE="$tmpdir" HIMMEL_MEDIA_COOKIES=on node "$cy" --vault "$fake_vault" --dry-run >/dev/null 2>"$tmpdir/y.err"
 y_rc=$?
 HOME="$HOME_SAVED"
 assert "crawl-youtube.mjs rc=2 on missing storage_state" "2" "$y_rc"

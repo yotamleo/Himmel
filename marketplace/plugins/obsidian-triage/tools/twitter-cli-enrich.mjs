@@ -42,7 +42,8 @@
  * Exit codes:
  *   0 — run completed (may include partial/failed clips; see summary)
  *   1 — bad usage
- *   2 — missing burner credentials (TWITTER_AUTH_TOKEN / TWITTER_CT0)
+ *   2 — missing burner credentials (TWITTER_AUTH_TOKEN / TWITTER_CT0), or the
+ *       cookie path is opted out (HIMMEL_MEDIA_COOKIES not "on", HIMMEL-4708)
  *
  * LUNA-27. Sister scripts: fxtwitter-enrich.mjs (default auth-free X path),
  * playwright-crawl-youtube.mjs.
@@ -383,6 +384,17 @@ export function fetchThread(id, n = 20) {
  * Windows). Exits 2.
  */
 function requireBurnerTokens() {
+  // HIMMEL-4708: the burner tokens are cookies (auth_token + ct0), so this
+  // whole path is opted out unless HIMMEL_MEDIA_COOKIES=on (default off). The
+  // cookieless X text path is fxtwitter-enrich.mjs.
+  if ((process.env.HIMMEL_MEDIA_COOKIES || "").trim().toLowerCase() !== "on") {
+    console.error(
+      "twitter-cli-enrich: cookie-backed X path is opted out " +
+        "(HIMMEL_MEDIA_COOKIES=on turns it back on); use fxtwitter-enrich.mjs " +
+        "for the cookieless path.",
+    );
+    process.exit(2);
+  }
   if (!process.env.TWITTER_AUTH_TOKEN || !process.env.TWITTER_CT0) {
     console.error(
       "twitter-cli-enrich: refusing to run without burner credentials. " +

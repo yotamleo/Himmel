@@ -2729,6 +2729,10 @@ case "$source_name" in
     printf '{"status":"cooldown","reason":"instagram cooldown (http-429) until 2026-10-05T00:00:00Z; probe skipped"}\n'
     exit 0
     ;;
+  opted-out-source)
+    printf '{"status":"off","reason":"cookie path opted out (HIMMEL_MEDIA_COOKIES=on turns it back on); not probed"}\n'
+    exit 0
+    ;;
   ghost-source)
     echo "fetch-health.py: error: unknown probe source: 'ghost-source' (valid sources: bitbucket, firecrawl, github, reddit, ...)" >&2
     exit 2
@@ -2804,6 +2808,36 @@ echo "$outLunaCooldown" | jq -e '.actual == "absent"' >/dev/null \
 echo "$outLunaCooldown" | jq -e '.detail | contains("cooldown-source") and test("cooldown"; "i") and (test("unhealthy"; "i") | not)' >/dev/null \
   || fail "luna-sources: cooldown detail should name the source and say cooldown, never unhealthy (got: $outLunaCooldown)"
 echo "ok: luna-sources — a source on cooldown reads absent (warn), never degraded"
+
+# HIMMEL-4708: a cookie source opted out by HIMMEL_MEDIA_COOKIES reports
+# status "off" — deliberately unused, so it reads neither red nor warn.
+outLunaOff=$(PATH="$pathLuna" "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['reddit', 'opted-out-source'], pythonCmd: 'python' } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaOff" | jq -e '.actual == "present"' >/dev/null \
+  || fail "luna-sources: an opted-out source must read present (no WARN), not absent/degraded: (got: $outLunaOff)"
+echo "$outLunaOff" | jq -e '.detail | contains("opted-out-source") and test("opted out"; "i") and (test("unhealthy"; "i") | not)' >/dev/null \
+  || fail "luna-sources: the detail should name the opted-out source as off, never unhealthy (got: $outLunaOff)"
+echo "$outLunaOff" | jq -e '.optedOut == ["opted-out-source"]' >/dev/null \
+  || fail "luna-sources: the result should list the opted-out sources so the secrets walk can say off (got: $outLunaOff)"
+echo "ok: luna-sources — an opted-out cookie source reads present, named as off"
+
+# HIMMEL-4708 end to end: the REAL fetch-health.py, an expired IG cookie in a
+# fixture HOME, the switch off -> C16 stays quiet (present), nothing probed.
+lunaOffHome="$work/luna-off-home"; mkdir -p "$lunaOffHome/.luna/cookies"
+printf '# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t1\tsessionid\texpired\n' >"$lunaOffHome/.luna/cookies/instagram.txt"
+outLunaOffReal=$(HOME="$lunaOffHome" HIMMEL_MEDIA_COOKIES=off "$node_bin" -e "
+const { runProbe } = require('$probes_lib_w');
+const item = { id: 'luna-sources', probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: ['instagram-media'] } };
+const ctx = { repoRoot: '$repo_root_w', targetPath: '$repo_root_w', scope: 'user', env: process.env };
+console.log(JSON.stringify(runProbe(item, ctx)));
+")
+echo "$outLunaOffReal" | jq -e '.actual == "present"' >/dev/null \
+  || fail "luna-sources: an expired IG cookie while opted out must keep C16 quiet (present): (got: $outLunaOffReal)"
+echo "ok: luna-sources — real fetch-health.py, expired IG cookie, switch off -> present"
 
 # Nothing configured at all: every named source is unconfigured (no problems,
 # no healthy sources either) — still warn (absent), same tier as the mixed

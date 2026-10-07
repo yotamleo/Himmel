@@ -23,6 +23,9 @@ assert() {
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ig-scrapling.XXXXXX")" || exit 1; [ -n "${KEEP_TMP:-}" ] || trap 'rm -rf "$tmp"' EXIT; echo "tmp=$tmp"
 HOME="$tmp/home"; mkdir -p "$HOME/.luna/cookies"; export HOME
 export IG_MEDIA_NO_SLEEP=1 HIMMEL_IG_DAILY_CAP=100000
+# HIMMEL-4708: Tests 6-12 pin the cookie switch ON - today's gallery-dl
+# fallback, unchanged. Test 13 runs with it off (the default).
+export HIMMEL_MEDIA_COOKIES=on
 unset IG_SCRAPLING_PYTHON HARVEST_SCRAPE_DENY
 
 jq_py() { # $1 = json file, $2 = python expression over `d`
@@ -298,6 +301,47 @@ sed 's/SCRP0014/SCRP0016/g' "$tmp/v12c/Clippings/clip.md" >"$tmp/v12c/Clippings/
 IG_SCRAPLING_PYTHON="$tmp/slow-python" run_tool "$tmp/v12c" --budget 2 --limit 2 >"$tmp/v12c.out" 2>"$tmp/v12c.err"
 grep -qF "3 matched, 1 processed, 2 remaining" "$tmp/v12c.out" && a=ok || a=$(grep -F matched "$tmp/v12c.out")
 assert "unstarted clips count as remaining, not processed" ok "$a"
+
+# --- Test 13: cookie switch off (HIMMEL-4708 default) -----------------------
+# gallery-dl and the cookie file are both present; with the switch off a
+# Scrapling miss must never reach them - the clip is deferred, naming scrapling.
+echo "Test 13: cookie switch off"
+unset HIMMEL_MEDIA_COOKIES
+: >"$tmp/calls"; export IG_SCRAPLING_PYTHON="$tmp/scrapling-python" STUB_JSON="$tmp/wall.json" STUB_RC=4
+cp "$tmp/gallery-dl" "$tmp/bin/gallery-dl"; echo DUMMY >"$HOME/.luna/cookies/instagram.txt"
+make_vault "$tmp/v13" SCRP0130
+run_tool "$tmp/v13" >"$tmp/v13.out" 2>"$tmp/v13.err"
+assert "switch-off run exit 0" 0 "$?"
+grep -q -- '--shortcode SCRP0130' "$tmp/calls" && a=ok || a=no
+assert "scrapling still tried first" ok "$a"
+grep -q '^gdl$' "$tmp/calls" && a=called || a=skipped
+assert "gallery-dl (cookie) never called with the switch off" skipped "$a"
+grep -q '^media_enrichment_status: deferred$' "$tmp/v13/Clippings/clip.md" && a=ok || a=no
+assert "clip recorded deferred" ok "$a"
+grep -q '^media_last_error: scrapling:login_wall$' "$tmp/v13/Clippings/clip.md" && a=ok || a=no
+assert "error names the scrapling backend" ok "$a"
+grep -q '^ig_media_backend: scrapling$' "$tmp/v13/Clippings/clip.md" && a=ok || a=no
+assert "clip records ig_media_backend: scrapling" ok "$a"
+grep -q '^ig_media_pending: true$' "$tmp/v13/Clippings/clip.md" && a=ok || a=no
+assert "deferred clip stays pending" ok "$a"
+# Scrapling unavailable and cookies off: preflight refuses, never touches gallery-dl.
+: >"$tmp/calls"
+make_vault "$tmp/v13b" SCRP0131
+HARVEST_SCRAPE_DENY=all run_tool "$tmp/v13b" >"$tmp/v13b.out" 2>"$tmp/v13b.err"
+assert "no scrapling + switch off -> exit 2" 2 "$?"
+grep -q '^gdl$' "$tmp/calls" && a=called || a=skipped
+assert "gallery-dl not called on the preflight stop" skipped "$a"
+grep -q "HIMMEL_MEDIA_COOKIES=on" "$tmp/v13b.err" && a=ok || a=no
+assert "preflight names the switch" ok "$a"
+# Explicit off behaves as unset.
+: >"$tmp/calls"
+make_vault "$tmp/v13c" SCRP0132
+HIMMEL_MEDIA_COOKIES=off run_tool "$tmp/v13c" >"$tmp/v13c.out" 2>"$tmp/v13c.err"
+assert "HIMMEL_MEDIA_COOKIES=off exits 0" 0 "$?"
+grep -q '^gdl$' "$tmp/calls" && a=called || a=skipped
+assert "HIMMEL_MEDIA_COOKIES=off never calls gallery-dl" skipped "$a"
+grep -q '^ig_media_pending: true$' "$tmp/v13c/Clippings/clip.md" && a=ok || a=no
+assert "HIMMEL_MEDIA_COOKIES=off clip stays pending" ok "$a"
 
 echo ""
 echo "ig-scrapling tests: $pass passed, $fail failed"
