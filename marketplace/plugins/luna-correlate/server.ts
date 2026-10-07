@@ -10,12 +10,8 @@
  * are candidate signals only — never a diagnosis, never causation.
  */
 
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { Server, type Tool } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import {
   factorsCacheLogic,
   seriesLoadLogic,
@@ -25,7 +21,7 @@ import {
 } from "./src/mcp";
 import type { DateRange } from "./src/fetchFactors";
 
-export const TOOLS = [
+export const TOOLS: Tool[] = [
   {
     name: "factors.cache",
     description:
@@ -120,7 +116,7 @@ export const TOOLS = [
       required: [],
     },
   },
-] as const;
+];
 
 type Args = Record<string, unknown>;
 
@@ -211,9 +207,9 @@ const mcp = new Server(
   },
 );
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+mcp.setRequestHandler('tools/list', async () => ({ tools: TOOLS }));
 
-mcp.setRequestHandler(CallToolRequestSchema, async req => {
+mcp.setRequestHandler('tools/call', async req => {
   try {
     const out = await callTool(req.params.name, (req.params.arguments ?? {}) as Args);
     return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };

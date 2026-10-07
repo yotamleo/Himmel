@@ -1,0 +1,78 @@
+import { test, expect } from "bun:test";
+import { join } from "path";
+import { TOOLS } from "../server";
+import pkg from "../package.json";
+
+const ROOT = join(import.meta.dir, "..");
+
+test("pilot pins stable SDK v2 without the v1 monolith", () => {
+  expect(pkg.dependencies).toEqual({ "@modelcontextprotocol/server": "2.3.1" });
+});
+
+test("stdio preserves tool schemas, offline series output and boundary errors", async () => {
+  const child = Bun.spawn([process.execPath, join(ROOT, "server.ts")], {
+    stdin: "pipe", stdout: "pipe", stderr: "pipe",
+  });
+  const lines = child.stdout.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let id = 0;
+  async function request(method: string, params: Record<string, unknown>) {
+    const requestId = ++id;
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }) + "\n");
+    await child.stdin.flush();
+    for (;;) {
+      const newline = buffer.indexOf("\n");
+      if (newline >= 0) {
+        const response = JSON.parse(buffer.slice(0, newline));
+        buffer = buffer.slice(newline + 1);
+        if (response.id === requestId) {
+          expect(response.error).toBeUndefined();
+          return response.result;
+        }
+      } else {
+        const next = await lines.read();
+        if (next.done) throw new Error("server closed before responding");
+        buffer += next.value;
+      }
+    }
+  }
+  try {
+    const initialized = await request("initialize", {
+      protocolVersion: "2025-11-25", capabilities: {},
+      clientInfo: { name: "stdio-regression", version: "1.0.0" },
+    });
+    expect(initialized.protocolVersion).toBe("2025-11-25");
+    child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    await child.stdin.flush();
+    const listed = await request("tools/list", {});
+    expect(listed.tools).toEqual(TOOLS);
+    expect(listed.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "factors.cache", "series.load", "correlate", "signals.report", "signals.dashboard",
+    ]);
+    const output = await request("tools/call", {
+      name: "series.load", arguments: { name: "pain-fixture", dir: join(import.meta.dir, "fixtures") },
+    });
+    expect(output.isError).toBeUndefined();
+    expect(output.content).toHaveLength(1);
+    expect(output.content[0].type).toBe("text");
+    const series = JSON.parse(output.content[0].text);
+    expect(series.n).toBe(10);
+    expect(series.points[0]).toEqual({ date: "2026-05-01", value: 2 });
+    expect(output.content[0].text).toBe(JSON.stringify(series, null, 2));
+    const invalid = await request("tools/call", { name: "series.load", arguments: { name: 42 } });
+    expect(invalid).toEqual({
+      content: [{ type: "text", text: 'series.load failed: "name" must be a string' }], isError: true,
+    });
+    const unknown = await request("tools/call", { name: "nope", arguments: {} });
+    expect(unknown).toEqual({
+      content: [{ type: "text", text: "nope failed: unknown tool: nope" }], isError: true,
+    });
+    await child.stdin.end();
+    expect(await child.exited).toBe(0);
+    expect(await new Response(child.stderr).text()).toBe("");
+  } finally {
+    child.kill();
+    await child.exited;
+    lines.releaseLock();
+  }
+}, 10000);
