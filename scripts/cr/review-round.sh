@@ -128,6 +128,87 @@ else if ([...verdicts].some(([id, v]) => !settled.has(id) && (v === "" || v === 
 '
 }
 
+# HIMMEL-4697: plugin-version-bump-required makes a plugin PR bump its
+# plugin.json version inside its merge of the base, so that merge never equals
+# a clean merge tree. version_only_merge <ours> <theirs> <new> succeeds only
+# when every path where <new>'s tree differs from the merge of <ours> and
+# <theirs>, and every path that merge conflicts on, is a
+# marketplace/plugins/<p>/.claude-plugin/plugin.json whose "version" in <new>
+# is strictly above the version in both <ours> and <theirs>, and whose other
+# bytes are exactly the clean three-way merge once the version values are set
+# aside. Anything else fails, so the caller keeps refusing it.
+plugin_json_path() {
+    case "$1" in
+        marketplace/plugins/*/.claude-plugin/plugin.json) ;;
+        *) return 1 ;;
+    esac
+    _pj_name="${1#marketplace/plugins/}"
+    _pj_name="${_pj_name%/.claude-plugin/plugin.json}"
+    case "$_pj_name" in ''|*/*) return 1 ;; esac
+    return 0
+}
+# plugin_version <file>: prints the one "version" value, which must sit alone
+# on its line as plain X.Y.Z; fails on any other shape or a second version key.
+plugin_version() {
+    [ "$(awk '/"version"[[:space:]]*:/ { n++ } END { print n + 0 }' "$1")" = "1" ] || return 1
+    _pv_v="$(sed -n -E 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9})"[[:space:]]*,?[[:space:]]*$/\1/p' "$1")"
+    [ -n "$_pv_v" ] || return 1
+    printf '%s\n' "$_pv_v"
+}
+# semver_gt <a> <b>: a > b for two plain X.Y.Z values.
+semver_gt() {
+    _sg_a="$1"; _sg_b="$2"
+    for _sg_i in 1 2 3; do
+        _sg_x="${_sg_a%%.*}"; _sg_y="${_sg_b%%.*}"
+        _sg_a="${_sg_a#*.}"; _sg_b="${_sg_b#*.}"
+        [ "$((10#$_sg_x))" -gt "$((10#$_sg_y))" ] && return 0
+        [ "$((10#$_sg_x))" -lt "$((10#$_sg_y))" ] && return 1
+    done
+    return 1
+}
+version_only_merge() {
+    _vo_out="$(git merge-tree --write-tree --name-only --no-messages "$1" "$2" 2>/dev/null)"
+    _vo_rc=$?
+    [ "$_vo_rc" -eq 0 ] || [ "$_vo_rc" -eq 1 ] || return 1
+    _vo_tree="$(printf '%s\n' "$_vo_out" | sed -n '1p')"
+    _vo_new_tree="$(git rev-parse --verify --quiet "$3^{tree}" 2>/dev/null)" || return 1
+    _vo_changed="$(git diff-tree -r --name-only --no-renames "$_vo_tree" "$_vo_new_tree" 2>/dev/null)" || return 1
+    _vo_paths="$( { printf '%s\n' "$_vo_out" | sed '1d'; printf '%s\n' "$_vo_changed"; } | sed '/^$/d' | sort -u)"
+    [ -n "$_vo_paths" ] || return 1
+    _vo_mb="$(git merge-base --all "$1" "$2" 2>/dev/null)" || return 1
+    case "$_vo_mb" in ''|*"
+"*) return 1 ;; esac
+    _vo_tmp="$(mktemp -d "${TMPDIR:-/tmp}/review-round.XXXXXX")" || return 1
+    _vo_ok=0
+    while IFS= read -r _vo_p; do
+        _vo_ok=1
+        plugin_json_path "$_vo_p" || { _vo_ok=0; break; }
+        for _vo_side in "$_vo_mb:base" "$1:ours" "$2:theirs" "$3:new"; do
+            _vo_c="${_vo_side%:*}"
+            if [ "${_vo_side##*:}" != base ] \
+                && [ "$(git ls-tree "$_vo_c" -- "$_vo_p" 2>/dev/null | cut -c1-6)" != "100644" ]; then
+                _vo_ok=0; break
+            fi
+            git cat-file blob "$_vo_c:$_vo_p" > "$_vo_tmp/${_vo_side##*:}" 2>/dev/null || { _vo_ok=0; break; }
+            plugin_version "$_vo_tmp/${_vo_side##*:}" > "$_vo_tmp/${_vo_side##*:}.v" || { _vo_ok=0; break; }
+            sed -E 's/^([[:space:]]*"version"[[:space:]]*:[[:space:]]*")[0-9.]*"/\1"/' \
+                "$_vo_tmp/${_vo_side##*:}" > "$_vo_tmp/${_vo_side##*:}.n" || { _vo_ok=0; break; }
+        done
+        [ "$_vo_ok" -eq 1 ] || break
+        _vo_vn="$(cat "$_vo_tmp/new.v")"
+        if ! semver_gt "$_vo_vn" "$(cat "$_vo_tmp/ours.v")" \
+            || ! semver_gt "$_vo_vn" "$(cat "$_vo_tmp/theirs.v")" \
+            || ! git merge-file -p "$_vo_tmp/ours.n" "$_vo_tmp/base.n" "$_vo_tmp/theirs.n" > "$_vo_tmp/merged.n" 2>/dev/null \
+            || ! cmp -s "$_vo_tmp/merged.n" "$_vo_tmp/new.n"; then
+            _vo_ok=0; break
+        fi
+    done <<EOF
+$_vo_paths
+EOF
+    rm -rf "$_vo_tmp"
+    [ "$_vo_ok" -eq 1 ]
+}
+
 # HIMMEL-4600: decide whether the round after the third may run, as the one
 # delta round. Sets delta_from/delta_to/delta_trigger, or says why not and
 # returns 8 (2 for an unresolvable --head).
@@ -195,11 +276,16 @@ delta_check() {
     if [ -n "$base_sha" ] \
         && [ -n "$(git rev-list --merges "$delta_from..$delta_to" 2>/dev/null)" ] \
         && [ -z "$(git rev-list --no-merges "$delta_from..$delta_to" "^$base_sha" 2>/dev/null)" ] \
-        && merged_base="$(git merge-base "$delta_to" "$base_sha" 2>/dev/null)" \
-        && clean_tree="$(git merge-tree --write-tree "$delta_from" "$merged_base" 2>/dev/null)" \
-        && [ "$clean_tree" = "$(git rev-parse "$delta_to^{tree}" 2>/dev/null)" ]; then
-        delta_trigger="merge-forward"
-        return 0
+        && merged_base="$(git merge-base "$delta_to" "$base_sha" 2>/dev/null)"; then
+        if clean_tree="$(git merge-tree --write-tree "$delta_from" "$merged_base" 2>/dev/null)" \
+            && [ "$clean_tree" = "$(git rev-parse "$delta_to^{tree}" 2>/dev/null)" ]; then
+            delta_trigger="merge-forward"
+            return 0
+        fi
+        if version_only_merge "$delta_from" "$merged_base" "$delta_to"; then
+            delta_trigger="merge-forward"
+            return 0
+        fi
     fi
     echo "review-round: $delta_to neither answers a round-3 finding nor only merges the base into $delta_from - $full_note; new work after the cap goes to the console" >&2
     return 8
