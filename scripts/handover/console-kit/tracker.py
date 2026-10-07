@@ -41,6 +41,8 @@ LUNA = os.path.expanduser('~/Documents/luna')
 HANDOVERS = ''
 LAYERS = ['bugs', 'enhancements', 'features', 'misc', 'audit']
 VER_RE = re.compile(r'^v1\.0\.(\d+)([a-z]?)$')  # a trail '<version>a', 'b', ... takes its parent's overflow (HIMMEL-4026)
+# HIMMEL-4872: the train is v1.0.x plus the v1.1.x line (ex v1.0.2b..h), which Jira orders right after v1.0.2.
+TRAIN_RE = re.compile(r'^v1\.[01]\.\d+[a-z]?$')
 SKIP_RE = re.compile(r'HIMMEL-3882|/dashboard|/artifacts|backlog|\.bak|/graphify-out/')
 KEY_RE = re.compile(r'HIMMEL-\d+')
 MAX_NOTES, TTL = 5, 7 * 86400
@@ -235,7 +237,10 @@ def intg(x):
 def ver_key(v):
     """Plan order (HIMMEL-3990): v1.0.1 < v1.0.1b < v1.0.2 < v1.0.10; buckets such as v2/v3 follow the train."""
     m = VER_RE.match(v)
-    return (0, int(m.group(1)), m.group(2)) if m else (1, 0, '')
+    if m:
+        return (0, int(m.group(1)), m.group(2))
+    m = re.match(r'^v1\.1\.(\d+)$', v)
+    return (0, 2, chr(ord('b') + int(m.group(1)))) if m else (1, 0, '')
 
 
 def trail_parent(v):
@@ -258,7 +263,7 @@ def version_caps(r, vers):
     A trail keeps its parent's caps, overrides included, unless the overrides name the trail itself."""
     out = []
     for v in vers:
-        if not VER_RE.match(v):
+        if not TRAIN_RE.match(v):
             out.append(None)
             continue
         ov = r['over'].get(v if v in r['over'] else trail_parent(v)) or {}
@@ -298,7 +303,7 @@ def capacity_text(r, deferred, trails=()):
 
 def ledger_lines(rows, vers):
     """Header ledger (HIMMEL-3957): the running version, the whole v1.0.x train, and drift/unplanned only when non-zero."""
-    train = [i for i, v in enumerate(vers) if VER_RE.match(v)]
+    train = [i for i, v in enumerate(vers) if TRAIN_RE.match(v)]
 
     def line(label, sel):
         a = [r for r in rows if r[3] in sel]
@@ -341,11 +346,11 @@ def read_versions(path, mir):
         lines = [l.rstrip('\n').split('\t') for l in open(path, encoding='utf-8')]
     except OSError:
         lines = []
-    if not any(len(f) >= 2 and VER_RE.match(f[0]) and f[0] != 'v1.0.0' for f in lines):
-        names = sorted({v for m in mir.values() for v in m['fv'] if VER_RE.match(v) and v != 'v1.0.0'}, key=ver_key)
+    if not any(len(f) >= 2 and TRAIN_RE.match(f[0]) and f[0] != 'v1.0.0' for f in lines):
+        names = sorted({v for m in mir.values() for v in m['fv'] if TRAIN_RE.match(v) and v != 'v1.0.0'}, key=ver_key)
         return [dict(n=v, rel=False, date='') for v in names], True
     return [dict(n=f[0], rel=f[1] == 'true', date=f[2] if len(f) > 2 else '') for f in lines
-            if len(f) >= 2 and VER_RE.match(f[0]) and f[0] != 'v1.0.0'], False
+            if len(f) >= 2 and TRAIN_RE.match(f[0]) and f[0] != 'v1.0.0'], False
 
 
 def jira_view(mir, legs, vers, prows, vnames):
@@ -605,7 +610,7 @@ def main():
     for k, m in mir.items():
         if k in planned:
             continue
-        hit = [v for v in m['fv'] if VER_RE.match(v) and v in vidx]
+        hit = [v for v in m['fv'] if TRAIN_RE.match(v) and v in vidx]
         if hit:
             rows.append([num(k), clip(m['title'], 62), m['st'], vidx[hit[0]],
                          0 if m['type'] == 'Bug' else 3, tidx.get(theme.get(k), tidx['(unplanned)']),
@@ -634,7 +639,7 @@ def main():
                 LEG={str(n): v for n, v in sorted(legs.items())}, ACT={str(n): v for n, v in sorted(actuals().items())}, L=LAYERS, T=themes, P=rows,
                 U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur, JV=jv, JT=jt, JC=jc, JN=jn, JA=ja, RU=ru,
                 CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
-                         text=capacity_text(rules, [v for v in vers if not VER_RE.match(v)],
+                         text=capacity_text(rules, [v for v in vers if not TRAIN_RE.match(v)],
                                             [v for v in vers if trail_parent(v)])),
                 VP=[p90.get(v) if isinstance(p90.get(v), (int, float)) else None for v in vers],
                 PIN=sorted(num(r['key']) for r in placed if re.search(r'\bpinned to ' + re.escape(r['version']) + r'\b', r.get('reason') or '')),
@@ -947,7 +952,7 @@ function model(D){
  var V=D.V,P=D.P,T=D.T,LEG=D.LEG||{};
  var KIND=["bugs","improvements","features","other","audits"];
  var READY=["no plan yet","problem stated","fix named, not yet checked","plan audited","spec ready"];
- function train(i){return /^v1\.0\.\d+[a-z]?$/.test(V[i])}
+ function train(i){return /^v1\.[01]\.\d+[a-z]?$/.test(V[i])}
  // vname(i): a trail (v1.0.2b, c, ...) reads as its parent's overflow, not a new release.
  function vname(i){var m=/^(v1\.0\.\d+)([a-z])$/.exec(V[i]);return m?m[1]+" · overflow"+(m[2]<="b"?"":" "+(m[2].charCodeAt(0)-97)):V[i]}
  function keep(rem){return function(p){return !rem||p[2]!=2}}

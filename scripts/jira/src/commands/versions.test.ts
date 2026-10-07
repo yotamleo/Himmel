@@ -83,13 +83,13 @@ describe('buildVersionCreateBody', () => {
 
   it('rejects a release date that is not YYYY-MM-DD', () => {
     expect(() =>
-      buildVersionCreateBody('HIMMEL', 'v1', { releaseDate: '09/10/2026' }),
+      buildVersionCreateBody('HIMMEL', 'v1.0.0', { releaseDate: '09/10/2026' }),
     ).toThrow(/YYYY-MM-DD/);
   });
 
   it('rejects a well-shaped date that is not a calendar day', () => {
     expect(() =>
-      buildVersionCreateBody('HIMMEL', 'v1', { startDate: '2026-02-30' }),
+      buildVersionCreateBody('HIMMEL', 'v1.0.0', { startDate: '2026-02-30' }),
     ).toThrow(/YYYY-MM-DD/);
   });
 
@@ -228,7 +228,7 @@ describe('start date + version-edit (HIMMEL-3890)', () => {
       startDate: '2026-10-05',
       releaseDate: '2026-10-08',
     });
-    expect(() => buildVersionCreateBody('HIMMEL', 'v1', { startDate: '5 Oct' })).toThrow(/--start-date/);
+    expect(() => buildVersionCreateBody('HIMMEL', 'v1.0.0', { startDate: '5 Oct' })).toThrow(/--start-date/);
   });
 
   it('PUTs only the given fields on the named version', async () => {
