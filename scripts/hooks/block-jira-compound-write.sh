@@ -894,6 +894,33 @@ VAREOF
     return 1
 }
 
+# assignment_at_command_position <text before NAME=> — rc 0 when that text ends
+# outside any quote and leaves NAME= in command position: at the start, after a
+# separator, after a declaration builtin or opening reserved word, or after another
+# leading assignment. A flat scan; anything it cannot place returns 1 (unbound).
+assignment_at_command_position() {
+    local s="$1" i n c q="" w
+    n=${#s}; i=0
+    while [ "$i" -lt "$n" ]; do
+        c="${s:i:1}"
+        case "$q" in
+            "'") [ "$c" = "'" ] && q="" ;;
+            '"') case "$c" in \\) i=$((i + 1)) ;; '"') q="" ;; esac ;;
+            *) case "$c" in \\) i=$((i + 1)) ;; "'"|'"') q="$c" ;; esac ;;
+        esac
+        i=$((i + 1))
+    done
+    [ -z "$q" ] || return 1
+    s="${s%"${s##*[![:space:]]}"}"
+    case "$s" in ''|*[\;\&\|\(]|*$'\n') return 0 ;; esac
+    w="${s##*[[:space:];&|(]}"
+    case "$w" in
+        export|local|declare|readonly|typeset|do|then|else|'{'|'!') return 0 ;;
+        [A-Za-z_]*=*) case "${w%%=*}" in *[!A-Za-z0-9_]*) return 1 ;; esac; return 0 ;;
+    esac
+    return 1
+}
+
 # Rewrite every `$NAME` / `${NAME}` / `"$NAME"` / `"${NAME}"` of a bound name into
 # the one token `__HIMMEL_JIRA_VAR_NAME__`, so quote_mask keeps it as code (it blanks
 # `${…}` and quoted spans) and segment_has_write can read it as the CLI. The token
@@ -905,9 +932,16 @@ bind_cli_vars() {
     # path can bind anything.
     case "$cmd" in *=*scripts/jira/dist/index.js*) ;; *) return 0 ;; esac
     re='(^|[[:space:];&|(])([A-Za-z_][A-Za-z0-9_]*)=([^[:space:];&|]*)'
+    local done="" head
     while [[ $rest =~ $re ]]; do
         name="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
+        head="${rest%%"${BASH_REMATCH[0]}"*}${BASH_REMATCH[1]}"
         rest="${rest#*"${BASH_REMATCH[0]}"}"
+        done="$done$head$name=$val"
+        # Only an assignment the shell would EXECUTE binds: one outside quoted data
+        # (`echo "J=…"`) and at command position (`echo J=…` is an argument).
+        # Anything else is skipped, leaving `$NAME` unbound — fail open.
+        assignment_at_command_position "${done%"$name=$val"}" || continue
         case "$val" in \"*\"|\'*\') val="${val:1:${#val}-2}" ;; esac
         case "$all" in *" $name "*) bad="$bad $name " ;; esac
         case "$val" in
@@ -1173,9 +1207,9 @@ esac
     printf '     lines of its input file), and evaluate any condition in its body\n'
     printf '     yourself: issue only the writes the original would have run.\n'
     printf '  2. If a write carries a body, write it to a file with the Write tool.\n'
-    printf '  3. N writes = N literal commands: each one its OWN Bash call (they may go\n'
-    printf '     in parallel in one turn), the CLI path written out, no loop, no xargs,\n'
-    printf '     no $VAR, no chain:\n\n'
+    printf '  3. N writes = N literal commands: each one its OWN Bash call, issued one\n'
+    printf '     after another in the original order, the CLI path written out, no\n'
+    printf '     loop, no xargs, no $VAR, no chain:\n\n'
     else
     printf 'Do exactly this — ONE sanctioned retry shape, no other:\n\n'
     printf '  1. If the command carries a body, write it to a file with the Write tool\n'

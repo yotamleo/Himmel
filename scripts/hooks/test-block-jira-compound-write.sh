@@ -859,6 +859,7 @@ run_hook Bash "J=$JIRA; for k in 4801 4802; do node \$J fix-version HIMMEL-\$k -
 [ "$RC" -eq 2 ] && pass "incident loop over \$J fix-version bounced" || fail "incident loop shape not bounced (rc=$RC)"
 case "$(loop_text)" in *"a loop"*) pass "deny names the loop" ;; *) fail "deny does not name the loop" ;; esac
 case "$(loop_text)" in *"N writes = N literal commands"*) pass "deny gives the N-literal recipe" ;; *) fail "deny lacks the N-literal recipe" ;; esac
+case "$(loop_text)" in *"in the original order"*) pass "loop recipe keeps the write order" ;; *) fail "loop recipe does not keep the write order" ;; esac
 grep -q "^    node $JIRA fix-version " "$ERR" && pass "retry names the resolved CLI path and the verb" || fail "retry does not name '$JIRA fix-version'"
 grep -q '^    node \$J' "$ERR" && fail "retry example still uses the \$J variable"
 case "$(loop_text)" in *"classifier denial of a loop"*) pass "deny says a classifier loop denial is a shape denial" ;; *) fail "deny omits the classifier-loop line" ;; esac
@@ -919,6 +920,15 @@ run_hook Bash "echo 'for k in a b; do node $JIRA create --title x; done' > notes
 
 run_hook Bash "deploy() { for k in 1 2; do node $JIRA create --title \$k; done; }"
 [ "$RC" -eq 0 ] && pass "loop inside a function definition left alone" || fail "function-defined loop bounced (rc=$RC)"
+
+# Only a real assignment binds: `J=…` inside quoted data or as an argument of
+# another command never ran, so a retry naming that path would be a guess.
+run_hook Bash "echo \"J=/other/scripts/jira/dist/index.js\"; node \$J comment HIMMEL-1 --comment-file c.md"
+[ "$RC" -eq 0 ] && pass "quoted J= data does not bind \$J" || fail "quoted J= data bound \$J (rc=$RC)"
+run_hook Bash "echo J=/other/scripts/jira/dist/index.js; node \$J comment HIMMEL-1 --comment-file c.md"
+[ "$RC" -eq 0 ] && pass "J= as an echo argument does not bind \$J" || fail "echo-argument J= bound \$J (rc=$RC)"
+run_hook Bash "echo 'x; J=/other/scripts/jira/dist/index.js'; node \$J comment HIMMEL-1 --comment-file c.md"
+[ "$RC" -eq 0 ] && pass "J= after a quoted separator does not bind \$J" || fail "quoted-separator J= bound \$J (rc=$RC)"
 
 # The literal per-write shape the recipe names is itself approved.
 run_hook Bash "node $JIRA fix-version HIMMEL-4801 --add v1.0.2c"
