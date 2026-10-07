@@ -1101,7 +1101,8 @@ fi
 # decision other than skipped:* (its log, spec section 4.3; absent until P5 writes
 # one). fails=none with no row; fails=? when the lock start, the ledger or the
 # routes log is unreadable, or the latest leg-trajectory eval-runs row this shift
-# carries meta.digest_error; skip with no --doc. Advisory: console-wait.sh's
+# carries meta.digest_error (a failed read under pipefail reads ? too); skip with
+# no --doc. Whitespace in a class prints as _ so the TICK line stays one line. Advisory: console-wait.sh's
 # action key does not name it, so it wakes nothing. Each path honours the env
 # seam its writer uses (leg_ledger.py, eval_runs.py).
 fails_summary=skip
@@ -1116,8 +1117,8 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
     fl_rows() { [ ! -e "$1" ] || jq -R -c --arg s "$fails_start" 'fromjson? | select(type == "object" and (.ts | type) == "string" and .ts >= $s)' "$1"; }
     if [ -n "$fails_start" ] && command -v jq >/dev/null 2>&1 \
        && fl_ok "$fl_ledger" && fl_ok "$fl_evals" && fl_ok "$fl_routes"; then
-        fl_digest="$(fl_rows "$fl_evals" | jq -s -r 'map(select(.eval == "leg-trajectory")) | if length > 0 and (last.meta.digest_error? // null) != null then "failed" else "ok" end' 2>/dev/null)"
-        fl_recur="$(fl_rows "$fl_routes" | jq -s -r 'map(select((.class | type) == "string" and (.decision | type) == "string" and (.decision | startswith("skipped") | not))) | map(.class) | unique | length' 2>/dev/null)"
+        fl_digest="$(fl_rows "$fl_evals" | jq -s -r 'map(select(.eval == "leg-trajectory")) | if length > 0 and (last.meta.digest_error? // null) != null then "failed" else "ok" end' 2>/dev/null)" || fl_digest=""
+        fl_recur="$(fl_rows "$fl_routes" | jq -s -r 'map(select((.class | type) == "string" and (.decision | type) == "string" and (.decision | startswith("skipped") | not))) | map(.class) | unique | length' 2>/dev/null)" || fl_recur=""
         fl_counts="$(fl_rows "$fl_ledger" | jq -s -r '
             map(select((.class | type) == "string"))
             | if length == 0 then "none"
@@ -1127,8 +1128,8 @@ if [ -n "$console_doc" ] && [ -f "$console_doc" ]; then
                    | map({c: .[0].class, l: (map(.leg) | unique | length),
                           e: (map(if (.count | type) == "number" then .count else 1 end) | add)})
                    | sort_by(-.l, -.e, .c) | .[0]) as $top
-                | "\(length)/\($legs)@\($top.c)*\($top.l)"
-              end' 2>/dev/null)"
+                | "\(length)/\($legs)@\($top.c | gsub("[[:space:][:cntrl:]]"; "_"))*\($top.l)"
+              end' 2>/dev/null)" || fl_counts=""
         case "$fl_recur" in ''|*[!0-9]*) fl_counts="" ;; esac
         if [ "$fl_digest" = ok ] && [ -n "$fl_counts" ]; then
             fails_summary="$fl_counts"

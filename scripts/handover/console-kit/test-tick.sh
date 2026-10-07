@@ -1936,6 +1936,8 @@ f4670="$(TOKEN='' bash "$SUT" --doc "$d4670" 2>/dev/null)"
 contains 'fails= follows or= (HIMMEL-4670)' "$f4670" ' or=skip fails=1/1@error/Edit*1'
 case "$f4670" in *' fails='*' '*) fail "fails= is the last field when spare= is absent (out='$f4670')" ;; *) pass 'fails= is the last field when spare= is absent (HIMMEL-4670)' ;; esac
 contains 'verbose labels leg failures (HIMMEL-4670)' "$(TOKEN='' bash "$SUT" --doc "$d4670" --verbose 2>/dev/null)" 'leg failures: 1/1@error/Edit*1'
+printf '%s\n' '{"v":1,"ts":"2026-10-07T03:05:00Z","leg":"N8","class":"denied/a b\tc","failure":"denied","count":1}' > "$HIMMEL_LEG_FAILURES_LEDGER"
+same 'whitespace in the top class cannot split the TICK line (HIMMEL-4670)' "$(fails_of "$d4670")" '1/1@denied/a_b_c*1'
 rm -f "$HIMMEL_LEG_FAILURES_LEDGER" "$HIMMEL_EVAL_RUNS_LEDGER" "$HIMMEL_FAILURE_ROUTES_LOG"
 
 if [ "$fails" -eq 0 ]; then
