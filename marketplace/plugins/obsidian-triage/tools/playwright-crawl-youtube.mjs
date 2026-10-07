@@ -17,7 +17,8 @@
  * (~/.himmel/scrapling-venv, tools/requirements-scrapling.txt; override
  * YT_SCRAPLING_PYTHON) and honours the HIMMEL-4361 `local-headless` route. The
  * logged-in Playwright crawl below is the FALLBACK only, used when the
- * storage_state exists and the Scrapling path misses (never for a removed video).
+ * storage_state exists and the Scrapling path misses (never for a removed video),
+ * and only while HIMMEL_MEDIA_COOKIES=on (HIMMEL-4708; default off).
  *
  * Scope (MVP): TRANSCRIPT ONLY. No video download, no STT, no keyframes.
  * If transcript unavailable (no auto-CC, age-gated, etc.): mark partial,
@@ -549,7 +550,17 @@ async function main() {
   }
   const statePath = join(homedir(), ".luna", "playwright-state", "youtube.json");
   const py = scraplingPython();
-  const hasState = existsSync(statePath);
+  // HIMMEL-4708: the storage_state (logged-in cookie) fallback runs only while
+  // HIMMEL_MEDIA_COOKIES=on; default off, so a Scrapling miss stays retryable.
+  const cookiesOn = (process.env.HIMMEL_MEDIA_COOKIES || "").trim().toLowerCase() === "on";
+  const hasState = cookiesOn && existsSync(statePath);
+  if (!py && !cookiesOn) {
+    console.error("crawl-youtube: no cookieless Scrapling path, and the storage_state cookie fallback is " +
+      "opted out (HIMMEL_MEDIA_COOKIES=on turns it back on).");
+    console.error("crawl-youtube: install the Scrapling path (HIMMEL-4677): " +
+      "~/.himmel/scrapling-venv per tools/requirements-scrapling.txt, plus yt-dlp on PATH.");
+    process.exit(2);
+  }
   if (!py && !hasState) {
     console.error(`crawl-youtube: storage_state missing at ${statePath}`);
     console.error(`crawl-youtube: run \`bun playwright-auth-save.mjs youtube\` first.`);

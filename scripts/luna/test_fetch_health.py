@@ -469,7 +469,7 @@ class FetchHealthTests(unittest.TestCase):
     def test_probe_mode_exit_code_zero_when_status_ok(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            env = {"HOME": tmp, "PATH": "/bin", "TWITTER_AUTH_TOKEN": "token", "TWITTER_CT0": "ct0"}
+            env = {"HOME": tmp, "PATH": "/bin", "TWITTER_AUTH_TOKEN": "token", "TWITTER_CT0": "ct0", "HIMMEL_MEDIA_COOKIES": "on"}
             completed = subprocess.CompletedProcess(["twitter"], 0, "{}", "")
             with patch.object(fetch_health, "primary_repo_root", return_value=root):
                 with patch.object(fetch_health.shutil, "which", return_value="/bin/twitter"):
@@ -509,7 +509,7 @@ class FetchHealthTests(unittest.TestCase):
                     with patch.object(fetch_health.urllib.request, "build_opener", lambda *a, **k: _StubOpener(firecrawl_body)):
                         with patch.object(fetch_health.shutil, "which", return_value="/bin/twitter"):
                             with patch.object(fetch_health.subprocess, "run", return_value=completed):
-                                with patch.dict(os.environ, {"HOME": tmp, "PATH": "/bin", "HIMMEL_FIRECRAWL_LEDGER": str(root / "ledger.jsonl")}, clear=True):
+                                with patch.dict(os.environ, {"HOME": tmp, "PATH": "/bin", "HIMMEL_FIRECRAWL_LEDGER": str(root / "ledger.jsonl"), "HIMMEL_MEDIA_COOKIES": "on"}, clear=True):
                                     stdout = io.StringIO()
                                     with redirect_stdout(stdout):
                                         code = fetch_health.main(["--probe", source])
@@ -680,7 +680,7 @@ class FetchHealthTests(unittest.TestCase):
             def which_stub(binary, path=None):
                 return f"/bin/{binary}"
 
-            base_env = {"HOME": tmp, "PATH": "/bin"}
+            base_env = {"HOME": tmp, "PATH": "/bin", "HIMMEL_MEDIA_COOKIES": "on"}
             with patch.object(fetch_health.shutil, "which", which_stub):
                 registry = fetch_health.build_probe_registry(
                     base_env, lambda *a, **k: fetch_health.HttpResult(200, b""), command, root
@@ -838,7 +838,8 @@ class XYouTubeScraplingProbeTests(unittest.TestCase):
         self.py = self.tmp / ".himmel" / "scrapling-venv" / "bin" / "python"
         self.bin = self.tmp / "bin"
         self.bin.mkdir()
-        self.env = {"HOME": str(self.tmp), "PATH": str(self.bin)}
+        # HIMMEL-4708: these pin the cookie fallback rungs on (today's behaviour).
+        self.env = {"HOME": str(self.tmp), "PATH": str(self.bin), "HIMMEL_MEDIA_COOKIES": "on"}
         self.seen = []
 
     def venv(self):
@@ -958,6 +959,7 @@ class InstagramGuardTests(unittest.TestCase):
         self.env = {
             "HOME": str(self.tmp),
             "PATH": str(binary.parent),
+            "HIMMEL_MEDIA_COOKIES": "on",  # HIMMEL-4708: the gallery-dl rung is a cookie path
             "HIMMEL_IG_THROTTLE_STATE": str(self.tmp / "throttle.json"),
             "HIMMEL_IG_PROBE_CACHE": str(self.tmp / "probe-cache.json"),
             "HIMMEL_IG_MIN_GAP_S": "0",
@@ -1191,6 +1193,70 @@ class ErrorLineAllSourcesTests(unittest.TestCase):
                     r = self.run_probe(source, f"[twitter][error] HttpError: '401' for url: {url}")
                     self.assertNotIn(self.SECRET, r.reason)
                     self.assertNotIn("/api/v1", r.reason)
+
+
+class MediaCookieOptOutTests(unittest.TestCase):
+    """HIMMEL-4708: with HIMMEL_MEDIA_COOKIES not "on" (the default) the
+    cookie-backed probes report "off" without touching a cookie, a binary or
+    the network; reddit has no cookieless path and stays probed."""
+
+    COOKIE_SOURCES = ("instagram-media", "x-media", "x-twitter-cli", "youtube-playwright")
+
+    def _registry(self, tmp: str, extra: dict[str, str]):
+        home = Path(tmp)
+        for name in ("instagram.txt", "twitter.txt"):
+            cookie = home / ".luna" / "cookies" / name
+            cookie.parent.mkdir(parents=True, exist_ok=True)
+            cookie.write_text("# Netscape HTTP Cookie File\n.instagram.com\tTRUE\t/\tTRUE\t1\tsessionid\texpired\n", encoding="utf-8")
+        state = home / ".luna" / "playwright-state" / "youtube.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text('{"cookies": []}', encoding="utf-8")
+        calls: list[str] = []
+
+        def command(args, **kwargs):
+            calls.append(args[0])
+            return subprocess.CompletedProcess(args, 1, "", "[instagram][error] HttpError: '401 Unauthorized'")
+
+        def http(url, **kwargs):
+            calls.append(url)
+            return fetch_health.HttpResult(401, b"")
+
+        env = {"HOME": tmp, "PATH": "/bin", "TWITTER_AUTH_TOKEN": "t", "TWITTER_CT0": "c",
+               "HIMMEL_IG_THROTTLE_STATE": str(home / "t.json"), "HIMMEL_IG_PROBE_CACHE": str(home / "c.json"), **extra}
+        with patch.object(fetch_health.shutil, "which", lambda b, path=None: f"/bin/{b}"):
+            registry = fetch_health.build_probe_registry(env, http, command, home)
+            results = {s: registry[s]() for s in self.COOKIE_SOURCES}
+        return results, calls
+
+    def test_opted_out_cookie_sources_report_off_without_any_call(self):
+        for extra in ({}, {"HIMMEL_MEDIA_COOKIES": "off"}):
+            with tempfile.TemporaryDirectory() as tmp, self.subTest(extra=extra):
+                results, calls = self._registry(tmp, extra)
+                self.assertEqual(calls, [])
+                for source, result in results.items():
+                    self.assertEqual(result.status, "off", source)
+                    self.assertIn("HIMMEL_MEDIA_COOKIES", result.reason, source)
+
+    def test_switch_on_keeps_todays_probes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results, calls = self._registry(tmp, {"HIMMEL_MEDIA_COOKIES": "on"})
+            self.assertTrue(calls)
+            for source, result in results.items():
+                self.assertNotEqual(result.status, "off", source)
+
+    def test_probe_mode_exits_zero_for_off_and_reddit_stays_on(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(fetch_health, "primary_repo_root", return_value=Path(tmp)):
+                with patch.dict(os.environ, {"HOME": tmp, "PATH": ""}, clear=True):
+                    stdout = io.StringIO()
+                    with redirect_stdout(stdout):
+                        code = fetch_health.main(["--probe", "instagram-media"])
+                    self.assertEqual(code, 0)
+                    self.assertEqual(json.loads(stdout.getvalue())["status"], "off")
+                    stdout = io.StringIO()
+                    with redirect_stdout(stdout):
+                        fetch_health.main(["--probe", "reddit"])
+                    self.assertEqual(json.loads(stdout.getvalue())["status"], "auth-or-cookie-expired")
 
 
 if __name__ == "__main__":

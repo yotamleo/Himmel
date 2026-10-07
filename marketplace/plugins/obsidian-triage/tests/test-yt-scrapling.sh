@@ -196,6 +196,9 @@ export const chromium = {
 };
 STUB
 export YT_SCRAPLING_PYTHON="$tmp/scrapling-python" FAKE_PW_LOG="$tmp/pw.log"
+# The storage_state fallback is a cookie path: on only behind HIMMEL_MEDIA_COOKIES=on
+# (HIMMEL-4708). Tests 10-11 pin it on; Test 12 proves the default never uses it.
+export HIMMEL_MEDIA_COOKIES=on
 
 # --- Test 10: fallback launch fails -> the scrapling primary still runs ------
 echo "Test 10: crawler, fallback browser cannot launch"
@@ -213,6 +216,26 @@ assert "crawl exit 0" 0 "$?"
 grep -q '^goto$' "$FAKE_PW_LOG" && a=ok || a=no; assert "fallback tried for the missing transcript" ok "$a"
 grep -q '^crawl_status: partial$' "$tmp/v11/Clippings/clip.md" && a=ok || a=no; assert "failed fallback keeps the scrapling partial" ok "$a"
 grep -q '^crawl_skill: scrapling-youtube$' "$tmp/v11/Clippings/clip.md" && a=ok || a=no; assert "partial still credited to scrapling" ok "$a"
+
+# --- Test 12: switch off (the default) -> the storage_state fallback never runs
+echo "Test 12: crawler, HIMMEL_MEDIA_COOKIES unset"
+unset HIMMEL_MEDIA_COOKIES
+make_vault "$tmp/v12"; : >"$FAKE_PW_LOG"
+STUB_JSON="$tmp/notx.json" FAKE_PW_MODE=goto-throws crawl "$tmp/v12" >"$tmp/v12.out" 2>"$tmp/v12.err"
+assert "crawl exit 0" 0 "$?"
+assert "playwright never launched" "" "$(cat "$FAKE_PW_LOG")"
+grep -q '^crawl_status: partial$' "$tmp/v12/Clippings/clip.md" && a=ok || a=no; assert "scrapling partial recorded" ok "$a"
+grep -q '^crawl_skill: scrapling-youtube$' "$tmp/v12/Clippings/clip.md" && a=ok || a=no; assert "partial names the scrapling backend" ok "$a"
+make_vault "$tmp/v12b"; : >"$FAKE_PW_LOG"; before="$(cat "$tmp/v12b/Clippings/clip.md")"
+STUB_JSON="$tmp/wall.json" STUB_RC=4 crawl "$tmp/v12b" >"$tmp/v12b.out" 2>"$tmp/v12b.err"
+assert "login wall: playwright never launched" "" "$(cat "$FAKE_PW_LOG")"
+assert "login wall: clip left for a retry" "$before" "$(cat "$tmp/v12b/Clippings/clip.md")"
+grep -q 'retryable, not marked' "$tmp/v12b.err" && a=ok || a=no; assert "login wall: failure says retryable" ok "$a"
+unset YT_SCRAPLING_PYTHON
+make_vault "$tmp/v12c"
+crawl "$tmp/v12c" >"$tmp/v12c.out" 2>"$tmp/v12c.err"
+assert "no venv + opted out -> exit 2 despite a storage_state" 2 "$?"
+grep -q 'HIMMEL_MEDIA_COOKIES=on' "$tmp/v12c.err" && a=ok || a=no; assert "message names the switch" ok "$a"
 
 echo ""
 echo "yt-scrapling tests: $pass passed, $fail failed"

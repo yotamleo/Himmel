@@ -73,7 +73,10 @@ Confirm `<vault>/Clippings/` exists (else exit 0, nothing to enrich). The fetch
 tool owns its own binary/cookie preflight: it exits 2 if `ffmpeg` is missing, or
 if neither download backend is usable - the cookieless Scrapling venv
 (`~/.himmel/scrapling-venv`, HIMMEL-4677, the primary) nor `gallery-dl` plus the
-burner-account cookie file (`~/.luna/cookies/twitter.txt`, the fallback). Surface that exit-2 message to the operator verbatim and stop - do NOT
+burner-account cookie file (`~/.luna/cookies/twitter.txt`, the fallback, used
+only while `HIMMEL_MEDIA_COOKIES=on` - HIMMEL-4708; default off: a Scrapling
+miss is recorded as deferred, and with no Scrapling venv preflight exits 2
+naming the switch). Surface that exit-2 message to the operator verbatim and stop - do NOT
 attempt any per-clip work when preflight fails. Under `--dry-run`, run the fetch
 tool with `--dry-run` only (Step 2's dry-run form); take no other action.
 

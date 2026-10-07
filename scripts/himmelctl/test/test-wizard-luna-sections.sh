@@ -522,6 +522,33 @@ echo "$outV11f" | jq -e '.skipped | map(select(contains("REDDIT_COOKIE_FILE"))) 
   && fail "V11f [codex-1] control: an UNPAIRED secret must NOT get the paired wording (got: $outV11f)"
 echo "ok: V11f [codex-1] a paired credential's unconfigured wording names the pair and admits the probe can't tell them apart; an unpaired secret keeps the plain wording"
 
+# ── V11-off (HIMMEL-4708) — a cookie secret whose every source is opted out by
+# HIMMEL_MEDIA_COOKIES reports 'off': never a manual fix, never "unconfigured",
+# and the line names the switch that turns it back on.
+outV11off=$("$node_bin" -e "
+const ap = require('$adopter_profile_lib_w');
+const answers = {
+  role: 'adopter', scope: 'project',
+  vault: { mode: 'none', path: '' },
+  handover: { mode: 'inline', path: '' },
+  pluginSet: 'lean',
+  secretsWalk: 'run',
+  bridge: { enabled: false },
+};
+const summary = ap.buildSummary(answers, [], {
+  dryRun: false,
+  secretsWalkResults: [
+    { name: 'INSTAGRAM_COOKIE_FILE', status: 'off', detail: 'instagram-media opted out', obtain: 'export a cookie jar' },
+  ],
+});
+console.log(JSON.stringify(summary));
+")
+echo "$outV11off" | jq -e '.skipped | any(.[]; contains("INSTAGRAM_COOKIE_FILE") and contains("off") and contains("HIMMEL_MEDIA_COOKIES=on") and (contains("unconfigured") | not))' >/dev/null \
+  || fail "V11-off: an opted-out cookie secret should read off and name the switch, never unconfigured (got: $outV11off)"
+echo "$outV11off" | jq -e '[.manual[]? | .what | select(contains("INSTAGRAM_COOKIE_FILE"))] | length == 0' >/dev/null \
+  || fail "V11-off: an opted-out cookie secret must not be a manual fix (got: $outV11off)"
+echo "ok: V11-off an opted-out cookie secret reads off, names HIMMEL_MEDIA_COOKIES=on, and asks for nothing"
+
 # ── V11g (RETASK stage1-build-6d2e round 11 [codex-2]) — the PHI checklist
 # text must describe what luna.phi.declared ACTUALLY records (the adopter's
 # yes/no answer to the PHI question), never the old "checklist was shown"

@@ -72,6 +72,8 @@ exit /b 9
 STUB
 
 export PATH="$tmp/bin:$PATH"
+# HIMMEL-4708: this suite exercises the gallery-dl cookie path - pin the switch on.
+export HIMMEL_MEDIA_COOKIES=on
 
 run_tool() { PYTHONUTF8=1 uv run --python 3.12 python "$TOOL" "$@"; }
 

@@ -766,6 +766,24 @@ def load_jar_cookies(cookie_dir: Path, url: str, now=None) -> list:
     return out
 
 
+# HIMMEL-4708: the burner-account media hosts whose jar cookies are sent only
+# while HIMMEL_MEDIA_COOKIES=on (default off); every other host keeps its jar.
+MEDIA_COOKIE_DOMAINS = ("instagram.com", "x.com", "twitter.com", "youtube.com")
+
+
+def media_cookies_on(env=None) -> bool:
+    env = os.environ if env is None else env
+    return (env.get("HIMMEL_MEDIA_COOKIES") or "").strip().lower() == "on"
+
+
+def drop_media_cookies(cookies: list) -> list:
+    """`cookies` minus those for a MEDIA_COOKIE_DOMAINS host (or its subdomains)."""
+    def media(c):
+        dom = c["domain"].lower().lstrip(".")
+        return any(dom == d or dom.endswith("." + d) for d in MEDIA_COOKIE_DOMAINS)
+    return [c for c in cookies if not media(c)]
+
+
 def _block_private_requests(page, state):
     """Scrapling page_setup hook (runs before navigation). Aborts the browser's
     navigations, redirect hops and same-process subresources to a private host,
@@ -868,8 +886,11 @@ class LocalHeadlessClient:
         except ImportError:
             raise BackendNotImplemented("scrapling is not installed")
         state = {"armed": False}
+        cookies = load_jar_cookies(self.cookie_dir, url)
+        if not media_cookies_on():
+            cookies = drop_media_cookies(cookies)
         page = fetch(url, headless=True, timeout=self.TIMEOUT_MS,
-                     cookies=load_jar_cookies(self.cookie_dir, url),
+                     cookies=cookies,
                      page_setup=lambda pg: _block_private_requests(pg, state),
                      # a service worker's traffic bypasses every route/CDP guard
                      additional_args={"service_workers": "block"})

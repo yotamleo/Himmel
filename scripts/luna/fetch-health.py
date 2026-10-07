@@ -37,6 +37,9 @@ STATUSES = (
     "transport-fail",
     # HIMMEL-4306: the Instagram throttle is holding requests back. Not a fault.
     "cooldown",
+    # HIMMEL-4708: a cookie-backed source while HIMMEL_MEDIA_COOKIES is not "on".
+    # Deliberately unused, so not a fault and never probed.
+    "off",
 )
 TIMEOUT_SECONDS = 30
 USER_AGENT = "himmel-fetch-health/1.0"
@@ -901,6 +904,15 @@ def probe_x_media(
     return result
 
 
+# HIMMEL-4708: the cookie-backed sources behind the HIMMEL_MEDIA_COOKIES switch.
+# reddit stays probed: it has no cookieless path, so its cookie is not opted out.
+MEDIA_COOKIE_SOURCES = ("instagram-media", "x-media", "x-twitter-cli", "youtube-playwright")
+
+
+def media_cookies_on(env: dict[str, str]) -> bool:
+    return (env.get("HIMMEL_MEDIA_COOKIES") or "").strip().lower() == "on"
+
+
 def build_probe_registry(
     env: dict[str, str],
     http: Callable[..., HttpResult],
@@ -943,6 +955,9 @@ def build_probe_registry(
     }
     for source in IG_PROBE_SOURCES:
         registry[source] = (lambda s, p: lambda: guarded_instagram_probe(s, effective, p))(source, registry[source])
+    if not media_cookies_on(effective):
+        for source in MEDIA_COOKIE_SOURCES:
+            registry[source] = lambda: ProbeResult("off", "cookie path opted out (HIMMEL_MEDIA_COOKIES=on turns it back on); not probed")
     return registry
 
 
@@ -1036,14 +1051,14 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as error:
             parser.error(str(error))
         print(json.dumps({"status": result.status, "reason": result.reason}))
-        return 0 if result.status in ("ok", "cooldown") else 1
+        return 0 if result.status in ("ok", "cooldown", "off") else 1
 
     path = Path(args.state) if args.state else state_path(env)
     results = run_probes(env)
     write_state(path, results, utc_now())
     for source, result in sorted(results.items()):
         print(f"{source}: {result.status} ({result.reason})")
-    return 0 if all(result.status in ("ok", "cooldown") for result in results.values()) else 1
+    return 0 if all(result.status in ("ok", "cooldown", "off") for result in results.values()) else 1
 
 
 if __name__ == "__main__":

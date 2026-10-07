@@ -27,14 +27,18 @@ Batch tooling for the obsidian-triage plugin. Several flavors:
   reply/thread rung** (LUNA-27). Consumes clips fxtwitter flagged
   `needs_thread: true`; runs `twitter tweet <id> --json` (public-clis/twitter-cli,
   cookie+HTTP) with **burner** credentials to capture the author self-thread +
-  first link-bearing reply that fxtwitter can't see. Burner account ONLY. See
+  first link-bearing reply that fxtwitter can't see. Burner account ONLY. The
+  tokens are cookies, so it exits 2 unless `HIMMEL_MEDIA_COOKIES=on`. See
   "twitter-cli X thread/reply escalation" below.
 - **Playwright crawlers** (`playwright-*.mjs`) — authenticated batch enrich.
   LUNA-27. `playwright-crawl-youtube.mjs` is the **default YouTube path**; since
   HIMMEL-4677 it runs `yt-scrapling-meta.py` first with NO cookie (metadata +
   description via Scrapling in `~/.himmel/scrapling-venv`, transcript via
   `yt-dlp` subtitles, `crawl_skill: scrapling-youtube`), and the logged-in
-  Playwright crawl is the fallback only when a storage state exists.
+  Playwright crawl is the fallback only when a storage state exists and
+  `HIMMEL_MEDIA_COOKIES=on`.
+  Every cookie-backed media path is off by default; the switch and the full
+  consumer table are in the plugin README ("Media cookie switch", HIMMEL-4708).
   `playwright-crawl-x.mjs` is **DEPRECATED** (LUNA-35) and superseded for X
   reply/thread capture by `twitter-cli-enrich.mjs`: X/Google anti-automation
   blocks login on automation-controlled browsers, so a burner session can't be

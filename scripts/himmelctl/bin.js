@@ -3024,6 +3024,12 @@ function probeOneSecret(entry, bridge) {
         { probe: { type: 'luna-sources', script: 'scripts/luna/fetch-health.py', sources: entry.sources } },
         { repoRoot: repoRoot(), targetPath: repoRoot(), scope: 'project', platform: process.platform, env: process.env },
       );
+      // HIMMEL-4708: every source this credential unlocks is opted out by
+      // HIMMEL_MEDIA_COOKIES — deliberately unused, so neither configured
+      // nor unconfigured.
+      if (Array.isArray(r.optedOut) && entry.sources.every((s) => r.optedOut.includes(s))) {
+        return { status: 'off', detail: r.detail };
+      }
       if (r.actual === 'present') return { status: 'configured', detail: r.detail };
       if (r.actual === 'absent') return { status: 'unconfigured', detail: r.detail };
       // 'degraded' — configured (or partially configured) but the probe
