@@ -14,7 +14,8 @@
 #       For a leg not closed by close-wrapped-leg.sh. When the front matter
 #       carries `session_ids:` (headed-arm-leg.sh's record, HIMMEL-4786) each
 #       id is digested directly, one line each prefixed with its id (an id
-#       with no journal reads `<id> digest=skipped:no-journal`). Otherwise
+#       with no journal reads `<id> digest=skipped:no-journal`). Then, for
+#       the sessions no id names (a leg launched before the ids existed),
 #       the spec 1.2 fallback finds the leg's chain in the project dir of the
 #       doc's `resume_cwd` with the close's own matcher (leg-transcripts.sh). A journal is a member when
 #       it matches the leg's names, its first `cwd` is `resume_cwd`, and its
@@ -205,27 +206,31 @@ fi
 ids=""
 [ "$(head -n 1 "$DOC")" != "---" ] \
     || ids="$(awk 'NR == 1 { next } /^---$/ { exit } { print }' "$DOC" | sed -n 's/^session_ids: *//p' | tr ',' '\n' | tr -d ' ' | grep -E "$UUID_RE" | awk '!seen[$0]++')"
-if [ -n "$ids" ]; then
-    members=0
-    while IFS= read -r sid; do
-        j="$(find "$PROJECTS" -mindepth 2 -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -n 1)"
-        if [ -z "$j" ]; then echo "$sid digest=skipped:no-journal"; continue; fi
-        members=$((members + 1))
-        printf '%s %s\n' "$sid" "$(digest_one "$sid" "$j" "" 0)"
-    done <<EOF
+members=0
+while IFS= read -r sid; do
+    [ -n "$sid" ] || continue
+    j="$(find "$PROJECTS" -mindepth 2 -maxdepth 2 -name "$sid.jsonl" 2>/dev/null | head -n 1)"
+    if [ -z "$j" ]; then echo "$sid digest=skipped:no-journal"; continue; fi
+    members=$((members + 1))
+    printf '%s %s\n' "$sid" "$(digest_one "$sid" "$j" "" 0)"
+done <<EOF
 $ids
 EOF
-    [ "$members" -gt 0 ] || skip no-journal
-    exit 0
-fi
+# The search below still runs: a leg launched before the ids existed and
+# relaunched after records only the relaunch. Its outcome is a skip only when
+# the ids found nothing either.
+fb_skip() {
+    [ "$members" -eq 0 ] || exit 0
+    if [ -n "$ids" ]; then skip no-journal; else skip "$1"; fi
+}
 
 # ---------- fallback: the leg's chain from its doc (spec 1.2) ----------------
 cwd="$(sed -n '1,/^---$/{s/^resume_cwd: *//p;}' "$DOC" | head -n 1)"
-[ -n "$cwd" ] || skip no-resume-cwd
+[ -n "$cwd" ] || fb_skip no-resume-cwd
 day="$(basename "$DOC" .md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -n 1)"
 live="$(grep -m1 -oE '^- [0-9]{2}:[0-9]{2} LIVE' "$DOC" | grep -oE '[0-9]{2}:[0-9]{2}')"
 wrapped="$(grep -oE '^- [0-9]{2}:[0-9]{2} WRAPPED' "$DOC" | tail -n 1 | grep -oE '[0-9]{2}:[0-9]{2}')"
-if [ -z "$day" ] || [ -z "$live" ] || [ -z "$wrapped" ]; then skip no-window; fi
+if [ -z "$day" ] || [ -z "$live" ] || [ -z "$wrapped" ]; then fb_skip no-window; fi
 # wall_after <epoch> <HH:MM>: the first instant at or after <epoch> whose local
 # clock reads HH:MM, on that day or the next. A wall time inside a DST fall-back
 # reads twice an hour apart, so a same-day decrease there is no midnight
@@ -267,14 +272,14 @@ hi=$(( hi + 60 ))
 ident="$(leg_identity "$DOC")"
 candidates="$(printf '%s\n%s\n' "${ident#*$'\t'}" "$(basename "$DOC" .md)" | tr ',' '\n' | sed '/^$/d')"
 slug="$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"
-[ -d "$PROJECTS/$slug" ] || skip no-chain
+[ -d "$PROJECTS/$slug" ] || fb_skip no-chain
 # Every file of the leg's own project dir, whole: a chain spans days and
 # renames, so the close's recent-and-head-bounded first pass would hide members.
-members=0
 while IFS= read -r j; do
     [ -n "$j" ] || continue
     sid="$(transcript_sid "$j")"
     printf '%s' "$sid" | grep -qE "$UUID_RE" || continue  # a subagent file, not a session
+    ! printf '%s\n' "$ids" | grep -qxF "$sid" || continue  # already digested by id
     first="$(head -n 40 "$j" | jq -r 'select(type == "object") | [.cwd // empty, .timestamp // empty] | @tsv' 2>/dev/null)"
     jcwd="$(printf '%s\n' "$first" | awk -F'\t' 'NF == 2 { print $1; exit }')"
     jts="$(printf '%s\n' "$first" | awk -F'\t' 'NF == 2 { print $2; exit }')"
@@ -286,5 +291,5 @@ while IFS= read -r j; do
 done <<EOF
 $(match_transcripts "$(find "$PROJECTS/$slug" -type f -name '*.jsonl' 2>/dev/null)" 0 "$candidates")
 EOF
-[ "$members" -gt 0 ] || skip no-chain
+[ "$members" -gt 0 ] || fb_skip no-chain
 exit 0

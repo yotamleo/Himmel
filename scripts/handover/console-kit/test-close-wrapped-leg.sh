@@ -998,6 +998,18 @@ contains "digest-ids: a recorded id is digested with no resume_cwd and no name m
 contains "digest-ids: a recorded id with no journal says so" "$out_id" "$DG_MISSING digest=skipped:no-journal"
 check "digest-ids: one eval-runs row, for the recorded id" "$(jq -r .run_id "$HIMMEL_EVAL_RUNS_LEDGER" 2>/dev/null)" "$DG_SID"
 check "digest-ids: a digested leg logs no skip" "$(dg_rows "$LEG_DIGEST_STATE_DIR/skips.jsonl")" "0"
+# panel round 2 codex-1: a doc launched before the ids existed and relaunched
+# after records only the relaunch - its earlier chain is still searched, and a
+# session both ways is digested once.
+dg_ledgers ids-mixed
+MIX_DOC="$W/mix/HIMMEL-9-N1-demo-2026-10-06.md"; mkdir -p "$W/mix"
+FB_REL=4670c3a0-0000-4000-8000-0000000000a1
+sed "s/$DG_SID/$FB_REL/g" "$DG_PROJ/-w/$DG_SID.jsonl" > "$DG_PROJ/-w/$FB_REL.jsonl"
+printf -- '---\nresume_cwd: %s\nsession_ids: %s,%s\n---\n# leg\n## Results\n- %s LIVE - go\n- %s WRAPPED - done\n' "$W/dg-cwd" "$FB_REL" "$DG_SID" "$FB_LIVE" "$FB_WRAP" > "$MIX_DOC"
+out_id=$(bash "$STEP" --doc "$MIX_DOC" --projects "$DG_PROJ" 2>&1)
+contains "digest-ids/mixed: the recorded relaunch is digested" "$out_id" "$FB_REL digest=ok"
+contains "digest-ids/mixed: the unrecorded earlier session is digested too" "$out_id" "$FB_OLD digest=ok"
+check "digest-ids/mixed: a session both recorded and found is digested once" "$(grep -c "^$DG_SID " <<< "$out_id")" "1"
 # skipped:* outcomes are logged, one row per doc, so the tick can count them
 dg_ledgers skips
 printf -- '---\nsession_ids: %s\n---\n# leg\n## Results\n- 11:00 WRAPPED - done\n' "$DG_MISSING" > "$ID_DOC"
