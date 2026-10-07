@@ -448,6 +448,41 @@ out="$(c3_run "$t")"
 if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 handovers-only -> OK"; else fail "C3 handovers-only -> $(printf '%s' "$out" | grep C3)"; fi
 rm -rf "$t"
 
+# HIMMEL-4724: porcelain paths are read NUL-delimited (never quoted), renames
+# age their destination, and a deletion ages by the vault's last commit.
+echo "== C3: fresh dirty non-ASCII / quote-bearing names -> OK (not resolved as a missing quoted path) =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo dirty > "$v/café.md"; echo dirty > "$v/say \"hi\".md"
+out="$(c3_run "$t")"
+if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 escaped names -> OK"; else fail "C3 escaped names -> $(printf '%s' "$out" | grep C3)"; fi
+rm -rf "$t"
+
+echo "== C3: freshly moved file (unstaged delete + new path) after a recent commit -> OK =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo n > "$v/inbox.md"; touch -t 202001010000 "$v/inbox.md"
+git -C "$v" add inbox.md; git -C "$v" commit -qm init; mkdir -p "$v/notes"; mv "$v/inbox.md" "$v/notes/inbox.md"; touch "$v/notes/inbox.md"
+out="$(c3_run "$t")"
+if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 fresh move -> OK"; else fail "C3 fresh move -> $(printf '%s' "$out" | grep C3)"; fi
+rm -rf "$t"
+
+echo "== C3: a leading-zero dirty window (08) is decimal on the deletion path (HIMMEL-4724) =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo n > "$v/gone.md"; git -C "$v" add gone.md; git -C "$v" commit -qm init; rm "$v/gone.md"
+out="$(HIMMEL_DOCTOR_C3_DIRTY_MIN=08 c3_run "$t")"
+if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" -F 'value too great'; then pass "C3 dirty window 08 -> decimal"; else fail "C3 dirty window 08 -> $(printf '%s' "$out" | grep -E 'C3|value too great')"; fi
+rm -rf "$t"
+
+echo "== C3: freshly staged rename of an old-mtime file -> OK (destination aged by its rename) =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo n > "$v/inbox.md"; touch -t 202001010000 "$v/inbox.md"
+git -C "$v" add inbox.md; git -C "$v" commit -qm init; mkdir -p "$v/notes"; git -C "$v" mv inbox.md notes/inbox.md
+out="$(c3_run "$t")"
+if grepq "$out" 'OK  *C3-luna' && ! grepq "$out" 'WARN C3-luna'; then pass "C3 fresh rename -> OK"; else fail "C3 fresh rename -> $(printf '%s' "$out" | grep C3)"; fi
+rm -rf "$t"
+
+echo "== C3: deletion when the vault's last commit is older than the window -> WARN =="
+t="$(mktemp -d)" || exit 1; c3_vault "$t"; echo n > "$v/gone.md"; git -C "$v" add gone.md
+GIT_AUTHOR_DATE=2020-01-01T00:00:00Z GIT_COMMITTER_DATE=2020-01-01T00:00:00Z git -C "$v" commit -qm init; rm "$v/gone.md"
+out="$(c3_run "$t")"
+if grepq "$out" 'WARN C3-luna.*gone.md'; then pass "C3 old deletion -> WARN"; else fail "C3 old deletion -> $(printf '%s' "$out" | grep C3)"; fi
+rm -rf "$t"
+
 echo "== C4: forge decided on the origin's HOST, not a URL substring (fixtures/forge-origins.tsv) =="
 # HIMMEL-3337: check_c4 is run in isolation (the whole doctor is ~12 s a run) with a
 # stub emit, once per row of the answer table forge.sh's and status-report's suites
@@ -5760,6 +5795,10 @@ if grepq "$out" 'WARN C22-chain-skips.*recent-guard.sh' && ! grepq "$out" 'WARN 
 echo "== C22: window is env-overridable =="
 out="$(HIMMEL_DOCTOR_CHAIN_SKIPS_WINDOW_H=999999 PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-old.jsonl" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'WARN C22-chain-skips.*block-read-secrets.sh'; then pass "C22 wide window -> old rows count again"; else fail "C22 wide window -> $(printf '%s' "$out" | grep C22)"; fi
+
+echo "== C22: a leading-zero window (08) is decimal, not invalid octal (HIMMEL-4724) =="
+out="$(HIMMEL_DOCTOR_CHAIN_SKIPS_WINDOW_H=08 PATH="$FAKEBIN:$PATH" CLAUDE_DIR="$n_t/claude" HOME="$n_t/home" HIMMEL_DOCTOR_MCP_ROOT="$n_t/root" HIMMEL_DOCTOR_CHAIN_SKIPS_LOG="$n_t/skips-old.jsonl" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK  *C22-chain-skips.* 8 h.*2 older' && ! grepq "$out" -F 'value too great'; then pass "C22 window 08 -> 8 h"; else fail "C22 window 08 -> $(printf '%s' "$out" | grep -E 'C22|value too great')"; fi
 
 echo "== C19: observability not desired on this host -> INFO, no WARN =="
 printf '%s\n' '{"items":[{"id":"observability-stack","desired":true,"severity":"n/a"},{"id":"observability-grafana","desired":false,"severity":"n/a"}]}' > "$n_t/status-na.json"

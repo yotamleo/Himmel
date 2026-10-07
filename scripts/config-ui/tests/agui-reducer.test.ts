@@ -167,6 +167,15 @@ test("the run clock keeps moving between turns while a background agent still ru
   expect(runClock(a, { elapsed: 800, status: "finished" }, 10500, true).now).toBe(2300);
 });
 
+// HIMMEL-4717: the live stream closes while a background call is still open, so ticking stops.
+test("the run clock holds its last value when ticking stops, instead of jumping back to elapsed", () => {
+  const a = runClock(undefined, { elapsed: 800, status: "finished" }, 9000, true).anchor;
+  const ticked = runClock(a, { elapsed: 800, status: "finished" }, 10500, true);
+  expect(runClock(ticked.anchor, { elapsed: 800, status: "finished" }, 12000, false).now).toBe(2300);
+  // A new event still re-anchors at its own elapsed.
+  expect(runClock(ticked.anchor, { elapsed: 3000, status: "finished" }, 12000, false).now).toBe(3000);
+});
+
 test("applyPatch rejects inherited member names instead of traversing or replacing them", () => {
   for (const k of ["constructor", "__proto__", "toString"]) {
     expect(() => applyPatch({ a: 1 }, [{ op: "replace", path: `/${k}`, value: 1 }])).toThrow();
