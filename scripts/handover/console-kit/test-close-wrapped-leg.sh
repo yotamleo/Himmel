@@ -969,6 +969,17 @@ FB_LATE="$W/HIMMEL-9-N1-demo-2026-10-07.md"
 cp "$FB_DOC" "$FB_LATE"
 out_fb=$(bash "$STEP" --doc "$FB_LATE" --projects "$DG_PROJ" 2>&1)
 contains "digest-fallback: outside the doc's window nothing qualifies" "$out_fb" "digest=skipped:no-chain"
+# HIMMEL-4730: a DST fall-back inside the leg (Berlin, 2026-10-25 03:00 CEST ->
+# 02:00 CET) makes 02:50 -> 02:10 a repeated hour, not a midnight. LIVE 02:40 is
+# the first 02:40 (00:40Z), WRAPPED 02:10 the second 02:10 (01:10Z).
+FB_DST="$W/HIMMEL-9-N1-demo-2026-10-25.md"
+{ printf -- '---\nresume_cwd: %s\n---\n# leg\n## Results\n- 02:40 LIVE - go\n- 02:50 READY - PR 9 abc GREEN\n- 02:10 WRAPPED - done\n' "$W/dg-cwd"; } > "$FB_DST"
+FB_IN=4670c3a0-0000-4000-8000-0000000000cc FB_AFTER=4670c3a0-0000-4000-8000-0000000000dd
+sed -e "s/$DG_SID/$FB_IN/g" -e 's/2026-10-06T12:00:01/2026-10-25T00:45:00/' "$DG_PROJ/$FB_SLUG/$DG_SID.jsonl" > "$DG_PROJ/$FB_SLUG/$FB_IN.jsonl"
+sed -e "s/$DG_SID/$FB_AFTER/g" -e 's/2026-10-06T12:00:01/2026-10-25T03:00:00/' "$DG_PROJ/$FB_SLUG/$DG_SID.jsonl" > "$DG_PROJ/$FB_SLUG/$FB_AFTER.jsonl"
+out_fb=$(TZ=Europe/Berlin bash "$STEP" --doc "$FB_DST" --projects "$DG_PROJ" 2>&1)
+contains "digest-fallback/dst: a session inside the leg is a member" "$out_fb" "$FB_IN digest=ok"
+not_contains "digest-fallback/dst: a fall-back is no midnight - a session after the wrap is not" "$out_fb" "$FB_AFTER"
 check "digest: the step spawns no model CLI" "$(grep -cE '(^|[^-])\b(claude|codex|gemini) +(-p|--print|--bg|exec)' "$STEP")" "0"
 
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
