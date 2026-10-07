@@ -58,4 +58,15 @@ out=$(printf 'none\n\n' | choose_mode "$td/r" 2>&1)
 check "none: tracker written" "$(cfg tracker)" "none"
 case "$out" in *"TICKET_ID_REQUIRED"*) check "none: workflow-edit note shown" ok ok ;; *) check "none: workflow-edit note shown" "$out" "TICKET_ID_REQUIRED" ;; esac
 
+# An explicit TICKET_ID_REQUIRED=1 still requires an ID: no "need no ticket ID" note.
+out=$(printf '\n\n' | TICKET_ID_REQUIRED=1 choose_mode "$td/r" 2>&1)
+case "$out" in *"need no ticket ID"*) check "none + TICKET_ID_REQUIRED=1: no note" "$out" "no note" ;; *) check "none + TICKET_ID_REQUIRED=1: no note" ok ok ;; esac
+
+# A git config write that fails makes choose_mode fail, so setup.sh warns.
+newrepo
+chmod a-w "$td/r/.git"
+rc=0; printf 'local\n\n' | choose_mode "$td/r" > /dev/null 2>&1 || rc=$?
+chmod u+w "$td/r/.git"
+check "write failure: choose_mode returns non-zero" "$([ "$rc" -ne 0 ] && echo nonzero || echo zero)" "nonzero"
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$fails FAILURE(S)"; exit 1; fi

@@ -42,20 +42,23 @@ _cm_ask() {
         echo "  ${msg:-project-mode refused $key=$ans}; kept ${cur:-auto}" >&2
         return 0
     fi
-    git -C "$root" config "himmel.$key" "$ans" && echo "  wrote git config himmel.$key=$ans"
+    git -C "$root" config "himmel.$key" "$ans" || { echo "  could not write git config himmel.$key" >&2; return 1; }
+    echo "  wrote git config himmel.$key=$ans"
 }
 
 choose_mode() {
-    local root="$1" t f
+    local root="$1" t f req rc=0
     [ -f "$_CM_LIB" ] || { echo "  choose-mode: resolver missing ($_CM_LIB); skipped" >&2; return 0; }
-    _cm_ask "$root" tracker TRACKER project_mode_tracker 'jira|local|none'
-    _cm_ask "$root" forge FORGE 'project_mode_forge --quiet' 'github|bitbucket|local-git'
+    _cm_ask "$root" tracker TRACKER project_mode_tracker 'jira|local|none' || rc=1
+    _cm_ask "$root" forge FORGE 'project_mode_forge --quiet' 'github|bitbucket|local-git' || rc=1
     t=$(_cm_resolve "$root" project_mode_tracker 2>&1) || { echo "  mode unresolved: $t" >&2; return 0; }
     f=$(_cm_resolve "$root" 'project_mode_forge --quiet' 2>&1) || { echo "  mode unresolved: $f" >&2; return 0; }
     echo "  mode: tracker=$t forge=$f"
-    if [ "$t" = none ]; then
+    req=$(_cm_resolve "$root" project_mode_id_required 2>/dev/null) || req=1
+    if [ "$req" = 0 ]; then
         echo "  tracker=none: commits need no ticket ID locally; set TICKET_ID_REQUIRED=0 in your CI workflow too (docs/configuration.md#tracker-and-forge)"
     fi
+    return "$rc"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
