@@ -191,9 +191,18 @@ day="$(basename "$DOC" .md | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | tail -n 1)"
 live="$(grep -m1 -oE '^- [0-9]{2}:[0-9]{2} LIVE' "$DOC" | grep -oE '[0-9]{2}:[0-9]{2}')"
 wrapped="$(grep -oE '^- [0-9]{2}:[0-9]{2} WRAPPED' "$DOC" | tail -n 1 | grep -oE '[0-9]{2}:[0-9]{2}')"
 if [ -z "$day" ] || [ -z "$live" ] || [ -z "$wrapped" ]; then echo "digest=skipped:no-window"; exit 0; fi
+# Midnights the leg crossed: each HH:MM bullet, first LIVE .. last WRAPPED, that
+# reads earlier than the bullet before it is a day roll-over (HIMMEL-4705).
+# ponytail: a >24h gap with no bullet in between still counts as one day, upgrade path: full dates in the Results bullets if such a leg is seen
+rolls="$(awk '/^- [0-9][0-9]:[0-9][0-9] / {
+        m = substr($2, 1, 2) * 60 + substr($2, 4, 2)
+        if (!on) { if ($3 ~ /^LIVE/) { on = 1; prev = m }; next }
+        if (m < prev) d++
+        prev = m
+        if ($3 ~ /^WRAPPED/) last = d
+    } END { print last + 0 }' "$DOC")"
 lo=$(( $(date -d "$day $live" +%s) - ${LEG_DIGEST_CHAIN_SLACK_MIN:-30} * 60 ))
-hi=$(( $(date -d "$day $wrapped" +%s) + 60 ))
-[ "$hi" -gt "$((lo + ${LEG_DIGEST_CHAIN_SLACK_MIN:-30} * 60))" ] || hi=$((hi + 86400))  # a window across midnight
+hi=$(( $(date -d "$day $wrapped" +%s) + rolls * 86400 + 60 ))
 ident="$(leg_identity "$DOC")"
 candidates="$(printf '%s\n%s\n' "${ident#*$'\t'}" "$(basename "$DOC" .md)" | tr ',' '\n' | sed '/^$/d')"
 slug="$(printf '%s' "$cwd" | sed 's/[^A-Za-z0-9]/-/g')"
