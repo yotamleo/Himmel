@@ -90,6 +90,9 @@ fi
 
 # Privileged ops must never turn an agent's shell call into operator authority.
 # Keep CLAUDECODE intact, as on merge-public: the trusted bridge has no agent marker.
+# ponytail: CLAUDECODE absence is not authenticated bridge provenance (same trust
+# model as merge-public); upgrade = signed operator approval via the bus,
+# HIMMEL-4820 design. These ops stay explicit-only/default-off pending that design.
 if [ "$OP" = "launch-bypass-leg" ]; then
     case "$TIME" in
         HIMMEL_HOOK_INTEGRITY_BYPASS_OK) ;;
@@ -218,7 +221,9 @@ let reviewed = false, spent = deltaTo === "";
 const note = (id, v) => { verdicts.set(id, v); if (["deferred", "disproved"].includes(v)) settled.add(id); };
 for (const line of lines) {
   let o; try { o = JSON.parse(line); } catch { continue; }
-  if (!o || o.branch !== branch) continue;
+  // Legacy branchless amendments apply to every branch; the current sole
+  // writer always stamps a branch, so scoped amendments follow the legacy rows.
+  if (!o || (o.branch !== branch && !(o.kind === "amend" && !o.branch))) continue;
   if (o.kind === "avail" && o.status === "ok" && critic(o.model)) {
     if (at(o.head)) reviewed = true;
     if (typeof o.head === "string" && /^[0-9a-f]{7,40}$/.test(o.head) && deltaTo.startsWith(o.head)) spent = true;

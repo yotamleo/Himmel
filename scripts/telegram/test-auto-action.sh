@@ -307,6 +307,15 @@ assert_rc "grant refuses agent authority" 19 "$rc"
 record_review amend --branch feat/example --head "$REVIEWED" --id f1 --set verdict=disproved --reason 'negative test fixture'
 out=$(grant_delta); rc=$?
 assert_rc "grant refuses finding later disproved" 4 "$rc"
+# Historical fixture: the current writer no longer emits branchless amendments.
+# Seed a complete legacy snapshot, never append a row outside the sole writer.
+cat > "$TMP/repo/.git/cr-critic-scores.jsonl" <<EOF
+{"kind":"avail","branch":"feat/example","head":"$REVIEWED","model":"codex","status":"ok"}
+{"kind":"finding","branch":"feat/example","head":"$REVIEWED","model":"codex","finding_id":"legacy-1","verdict":"fixed"}
+{"kind":"amend","branch":"","target_head":"$REVIEWED","finding_id":"legacy-1","set":{"verdict":"disproved"}}
+EOF
+out=$(grant_delta); rc=$?
+assert_rc "grant honors historical branchless disproval" 4 "$rc"
 rm "$TMP/repo/.git/cr-review-rounds/feat/example.head"
 ln -s "$OUTSIDE" "$TMP/repo/.git/cr-review-rounds/feat/example.head"
 out=$(grant_delta); rc=$?

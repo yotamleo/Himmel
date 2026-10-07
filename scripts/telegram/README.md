@@ -29,7 +29,12 @@ Both ops are **off by default** and require their individual names in
 Only a whole, typed, non-forwarded message from the allowlisted operator in
 an allowed chat enters the trusted bridge path. Captions, forwarded commands,
 non-operators and free text cannot authorize these actions. The agent is not
-in the trust path; direct calls from an agent session refuse with rc=19.
+in the trust path; direct calls carrying the Claude Code agent marker refuse
+with rc=19. **Accepted trust ceiling:** like `merge-public`, this script relies
+on the trusted bridge and the inherited `CLAUDECODE` marker, not cryptographic
+caller provenance. A caller able to remove that marker is outside this check's
+protection. Signed operator approvals via the bus are the HIMMEL-4820 design
+upgrade; both ops stay default-off, with an independent Opus judge before merge.
 
 - `/launch-bypass-leg <absolute-leg-doc.md> HIMMEL_HOOK_INTEGRITY_BYPASS_OK`
   launches through `headed-arm-leg.sh --profile leg-impl`. This is the only
