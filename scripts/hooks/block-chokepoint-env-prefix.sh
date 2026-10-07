@@ -1015,7 +1015,18 @@ env_clear_opt() { # <text> [<text the allowlist gates on; default <text>>]
     local t="$1" w prev head=0 hit=1
     local long='(ignore-environment|unset)[[:alnum:]_-]*|(i|ig|ign|igno|ignor|ignore|ignore-|ignore-e|ignore-en|ignore-env|ignore-envi|ignore-envir|ignore-enviro|ignore-environ|ignore-environm|ignore-environme|ignore-environmen|u|un|uns|unse)([^[:alnum:]_-]|$)'
     local opt="(^|[^[:alnum:]_-]|\\\$[[:alnum:]_]+)-([ui]|[[:space:]]|\$|-($long))"
-    if relief_off "${2-$t}"; then [[ $t =~ $opt ]]; return; fi
+    if relief_off "${2-$t}"; then
+        [[ $t =~ $opt ]] || return 1
+        # HIMMEL-4779: a text the allowlist keeps out (a quote, a pipe, sed,
+        # sort, git) still clears nothing when pobf_relief's stages put every
+        # such token in a read-only stage or among sed's, gh's or an
+        # interpreter's own options (grep -n -i 'x', sed -i s/a/b/ f,
+        # sort -u, python3 - <<EOF). Anything it cannot model keeps the deny.
+        case $- in *f*) pobf_relief "${2-$t}" "$opt" && return 1 ;;
+            *) set -f; pobf_relief "${2-$t}" "$opt" && { set +f; return 1; }; set +f ;;
+        esac
+        return 0
+    fi
     prev=''
     for w in $t; do
         if [[ $w =~ $opt ]] && [ "$head" = 1 ]; then hit=0; break; fi
@@ -1140,7 +1151,7 @@ pobf_put() {
 # theirs); a function may not shadow one.
 POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du jq basename dirname realpath readlink test tr column nl tac rev fold fmt paste rm find git bash sh zsh dash ksh mksh gh printf sort rg sed gsed awk gawk mawk python python3 node perl ruby command builtin time'
 
-# pobf_relief <raw text> -- HIMMEL-4157 over-deny relief (judge J1685d: the
+# pobf_relief <raw text> [<env-clear regex>] -- HIMMEL-4157 over-deny relief (judge J1685d: the
 # anchor-less arm denied 134 of 164 HANDOVER_DIR history rows, because its
 # quote-blind word split counted quoted sed/grep regexes, python programs and
 # heredoc prose as path words). Runs ONLY when that arm is about to deny and
@@ -1188,8 +1199,8 @@ POBF_NAMES='ls cat grep egrep fgrep head tail wc echo diff uniq cut stat file du
 # shellcheck disable=SC2016,SC1003,SC2295
 pobf_relief() {
     local t="$1" F='' L rest q md=U body='' n=0 hn=0 hi=0 hb='' cmp i j k c c2 w s x cls nf ostk bqi sub=0 bq=0 stack='' ap wr=0
-    local PX p tl rd=0 ea sa
-    local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO XP
+    local PX p tl rd=0 ea sa eo=${2-} z
+    local -a TOK HD HDASH HQ HIX ST SP SS CL CW C2 FL CO XP ED
     local SQ="'" DQ='"' BQ='`' T1=$'\001' T2=$'\002' TAB=$'\t'
     # Each scan cuts at the first special char with a glob (the prefix up to
     # the first char of the set), not a ^(..)(.*)$ regex, and reads a long
@@ -1404,8 +1415,10 @@ pobf_relief() {
         # program the command then runs; only a shell on a literal script keeps
         # its relief (BASH_ENV/ENV/PATH are refused above).
         [ "$ap" = 1 ] && case "$c" in bash|sh|zsh|dash|ksh|mksh) ;; *) cls=0 ;; esac
+        ED[j]=0
+        [ "$ap" = 0 ] && case "$c" in sed|gsed) ED[j]=1 ;; esac
         if [ "${CO[j]-}" -ge 0 ] 2>/dev/null && [ "${CO[j]}" -lt "$j" ]; then
-            cls=${CL[CO[j]]}; c=${CW[CO[j]]}; c2=${C2[CO[j]]}
+            cls=${CL[CO[j]]}; c=${CW[CO[j]]}; c2=${C2[CO[j]]}; ED[j]=${ED[CO[j]]}
         fi
         CL[j]=$cls; CW[j]=$c; C2[j]=$c2
         [ "$cls" = 2 ] && FL[j]=1
@@ -1487,6 +1500,34 @@ pobf_relief() {
         # gh): no stage there has relief, every token is scanned (CR rounds
         # 10, 11).
         [ "${SS[j]}" = 1 ] && cls=0
+        if [ -n "$eo" ]; then
+            # Env mode (HIMMEL-4779, env_clear_opt): the question is whether a
+            # -u/-i/bare - token can clear an environment, not where a path
+            # word stands. A read-only stage's words are its own data; sed's,
+            # gh's and an interpreter's unquoted option words are their own
+            # options (sed -i, python3 -), so only a token left in their
+            # quoted or heredoc text counts (sed '1e env -i ..'); any other
+            # stage (env, sudo, su, timeout, xargs, $E, a substitution's
+            # output) gets no relief.
+            # ponytail: a quoted text an interpreter or sed's e command runs
+            # is read only for a LITERAL token (an escape like \055i slips
+            # past, as it did the old whole-text match), the HIMMEL-3930
+            # structural parse closes it.
+            [ "$cls$nf${SS[j]}${ED[j]}" = 0001 ] && cls=1
+            case "$cls" in
+                2) ;;
+                1) z=''
+                   for w in ${ST[j]}; do
+                       case "$w" in *"$T1"*) ;; -*) continue ;; esac
+                       z="$z $w"
+                   done
+                   pobf_exp "$z" p
+                   [[ $PX =~ $eo ]] && return 1 ;;
+                *) [[ ${XP[j]} =~ $eo ]] && return 1 ;;
+            esac
+            j=$((j + 1))
+            continue
+        fi
         case "$cls" in
             2) ;;
             1) pobf_exp "${ST[j]}" s
@@ -1517,9 +1558,10 @@ pobf_relief() {
 # -i) beside an anchor-less path, and zsh <-> numeric ranges (the tr splits
 # at <); close them with the structural guard once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d u kw ov cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 so=0 SQ="'"
+    local t="$1" w rest v wv clr d u kw ov tw='' cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 so=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
-    wv='(^|[^[:alnum:]_])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_]|$)'
+    wv='(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)'
+    wv="(^|[^[:alnum:]_/-])$wv([^[:alnum:]_]|$)|[/-]$wv([^[:alnum:]_./-]|$)"
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
     for w in $(printf '%s' "$t" | tr ';|&()<>' '       '); do
@@ -1658,21 +1700,36 @@ raw_obfuscated() {
     # HIMMEL-4135 tracks a proven-safe shape or the HIMMEL-3930 structural parse.
     # Not even --reason '<no quote inside>' is safe on raw text: in
     # echo $'a --reason ' ; export SEAM=1 ; echo 'b' that "value" is live code.
-    [[ $t =~ $wv ]] && write=1
+    # HIMMEL-4572: a verb is part of a name only when BOTH sides join it to
+    # one, - or / on its left AND - . or / on its right (block-chokepoint-
+    # env-prefix, scripts/eval/, pr-check-env.sh). One joined side is not
+    # enough: -printf and --printf= are printf options that read escapes,
+    # .env is process.env/os.env, /usr/bin/env is env. A heredoc or quoted body is not
+    # skipped: written and run in one call (cat >f <<EOF .. EOF; bash f) it
+    # is live code, and its printf can feed a shell a seam name no other arm
+    # sees (printf '\101..=1 ..' | sh), so that deny is intended. The refusal
+    # names the trigger, always a word from the fixed sets below.
+    if [[ $t =~ $wv ]]; then
+        write=1
+        tw=${BASH_REMATCH[2]:-${BASH_REMATCH[4]}}
+        case "$tw" in BASH_FUNC_*) tw='BASH_FUNC_*' ;; esac
+        tw="the word $tw"
+    fi
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
     # or verb): standalone -u*/-i*/--unset*/--ignore-environment/bare -, declare/typeset +x,
     # export -n, exec -<opt>, ${! (same set as raw_mention's clear arm). The
     # standalone -u*/-i*/--unset*/--ignore-environment/bare - token counts only in env position
     # (env_clear_opt, HIMMEL-3955); a seam NAME= counts as an assignment, not
     # as a --long-option's value (seam_assigned).
-    [[ $t =~ $clr ]] && write=1
-    env_clear_opt "$t" && write=1
+    # shellcheck disable=SC2016 # ${! is the literal trigger text, not an expansion
+    [[ $t =~ $clr ]] && { write=1; tw=${tw:-'declare +x, export -n, exec - or ${!'}; }
+    env_clear_opt "$t" && { write=1; tw=${tw:-'an env-clearing -u, -i, --unset, --ignore-environment or bare -'}; }
     for v in $ALL_SEAM_VARS; do
         case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
-        seam_assigned "$t" "$v" && write=1
+        seam_assigned "$t" "$v" && { write=1; tw="the seam variable $v"; }
     done
     [ "$write" = 1 ] || return 0
-    deny_text_layer "writes a seam variable beside an obfuscated (glob, brace, ANSI-C or \$var) path under scripts/"
+    deny_text_layer "writes a seam variable beside an obfuscated (glob, brace, ANSI-C or \$var) path under scripts/ (it matched $tw)"
 }
 
 # raw_mention <text> <any> -- HIMMEL-1813 parse-independent backstop (console
