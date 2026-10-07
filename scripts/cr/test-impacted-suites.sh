@@ -690,6 +690,48 @@ change scripts/lanes/unrelated.sh
 out="$(run_is "$range")"
 if grepq "$out" "^${GC}\$"; then pass "a head with no pr-check-context.sh still selects the closure suite"; else fail "closure suite skipped on an unreadable guarded set: $out"; fi
 
+# --- HIMMEL-4781: no range argument defaults to merge-base(default)..HEAD ----
+# The default branch is resolved by scripts/lib/cr-default-base.sh (origin/HEAD,
+# else origin/main).
+run_is_err() { ( cd "$FX" && { bash "$IS" "$@" >/dev/null; } 2>&1 ); }
+# (a) no origin ref at all: refuse non-zero, name the filled fetch command.
+err="$(run_is_err)"
+if ( cd "$FX" && bash "$IS" >/dev/null 2>&1 ); then
+    fail "no-arg run with no default ref exited 0"
+else
+    pass "no-arg run with no default ref exits non-zero"
+fi
+if grepq "$err" -F 'git fetch origin'; then pass "no default ref: error names the filled fetch command"; else fail "no default ref: no fetch command in: $err"; fi
+# (b) origin/main behind HEAD: the default is merge-base..HEAD, printed to stderr.
+mb_sha="$(git -C "$FX" rev-parse HEAD)"
+git -C "$FX" update-ref refs/remotes/origin/main "$mb_sha"
+change scripts/machine-setup/uninstall-plugins.sh
+want="$(run_is "${mb_sha}..HEAD")"
+got="$(run_is)"
+if [ -n "$want" ] && [ "$got" = "$want" ]; then pass "no-arg run lists the same suites as merge-base..HEAD"; else fail "no-arg output differs: want [$want] got [$got]"; fi
+err="$(run_is_err)"
+if grepq "$err" -F "${mb_sha}..HEAD"; then pass "no-arg run prints the chosen range to stderr"; else fail "chosen range not on stderr: $err"; fi
+err="$(run_is_err "${mb_sha}..HEAD")"
+if [ -z "$err" ]; then pass "explicit range: stderr unchanged (empty)"; else fail "explicit range wrote to stderr: $err"; fi
+# (c) origin/HEAD names another branch: it wins over origin/main.
+git -C "$FX" update-ref refs/remotes/origin/trunk "$(git -C "$FX" rev-parse HEAD~3)"
+git -C "$FX" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+trunk_mb="$(git -C "$FX" rev-parse HEAD~3)"
+err="$(run_is_err)"
+if grepq "$err" -F "${trunk_mb}..HEAD"; then pass "origin/HEAD's target is the default branch"; else fail "origin/HEAD ignored: $err"; fi
+git -C "$FX" symbolic-ref -d refs/remotes/origin/HEAD
+# (d) default ref shares no history with HEAD: refuse with a filled command.
+orphan="$(git -C "$FX" commit-tree -m orphan "$(git -C "$FX" mktree </dev/null)")"
+git -C "$FX" update-ref refs/remotes/origin/main "$orphan"
+err="$(run_is_err)"
+if ( cd "$FX" && bash "$IS" >/dev/null 2>&1 ); then
+    fail "no-arg run with no merge-base exited 0"
+else
+    pass "no-arg run with no merge-base exits non-zero"
+fi
+if grepq "$err" -F 'git fetch --unshallow origin'; then pass "no merge-base: error names the filled command"; else fail "no merge-base: no filled command in: $err"; fi
+git -C "$FX" update-ref -d refs/remotes/origin/main
+
 echo
 if [ "$failures" -eq 0 ]; then echo "OK: all cases passed"; exit 0; fi
 echo "FAIL: $failures case(s) failed"
