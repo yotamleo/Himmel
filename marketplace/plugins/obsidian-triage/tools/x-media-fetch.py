@@ -509,6 +509,23 @@ def _hls_attrs(line: str) -> dict:
             re.findall(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', rest)}
 
 
+def _uri_count(line: str) -> int:
+    """How many URI attributes a tag line carries. Raises ValueError when one
+    is not a plain quoted URI="...": an unquoted or doubled URI would reach
+    ffmpeg un-rewritten, and it would open it as a local file."""
+    n = line.count("URI=")
+    if n != len(URI_ATTR_RE.findall(line)):
+        raise ValueError("HLS URI attribute not quoted")
+    return n
+
+
+def _one_uri(line: str):
+    """The match of a tag line's one quoted URI; ValueError on none or two."""
+    if _uri_count(line) != 1:
+        raise ValueError("HLS tag without exactly one URI")
+    return URI_ATTR_RE.search(line)
+
+
 def _hls_media(text: str, base: str, work: Path, tag: str):
     """A media playlist rewritten to local files: (playlist text, [(url, path)])
     for its init map and segments. Raises ValueError on an encrypted playlist,
@@ -537,11 +554,9 @@ def _hls_media(text: str, base: str, work: Path, tag: str):
                     raise ValueError("encrypted HLS")
                 continue
             if line.startswith("#EXT-X-MAP"):
-                m = URI_ATTR_RE.search(line)
-                if not m:
-                    raise ValueError("EXT-X-MAP without a URI")
+                m = _one_uri(line)
                 line = line[:m.start(1)] + localise(m.group(1)) + line[m.end(1):]
-            elif URI_ATTR_RE.search(line):
+            elif _uri_count(line):
                 continue  # parts / preload hints: optional, never fetched
             out.append(line)
         else:
@@ -591,10 +606,12 @@ def _resolve_hls(url: str, work: Path, deadline: float):
             master = body
         else:
             inf, v_uri, audio = variant
+            if _uri_count(inf):
+                raise ValueError("EXT-X-STREAM-INF with a URI")
             v_url = urllib.parse.urljoin(url, v_uri)
             got = [(v_url, work / "v.src.m3u8")]
             if audio:
-                a_url = urllib.parse.urljoin(url, URI_ATTR_RE.search(audio).group(1))
+                a_url = urllib.parse.urljoin(url, _one_uri(audio).group(1))
                 if a_url == v_url:
                     audio = None  # the variant already carries that rendition
                 else:
@@ -610,7 +627,7 @@ def _resolve_hls(url: str, work: Path, deadline: float):
                 pairs += more
             master = "#EXTM3U\n"
             if audio:
-                m = URI_ATTR_RE.search(audio)
+                m = _one_uri(audio)
                 master += audio[:m.start(1)] + "a.m3u8" + audio[m.end(1):] + "\n"
             master += f"{inf}\nv.m3u8\n"
     except ValueError as e:

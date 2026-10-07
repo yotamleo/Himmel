@@ -330,6 +330,11 @@ hls_case offhost-map V2.m3u8 's#URI="/amplify_video/9/vid/avc1/720x720/init.mp4"
 hls_case userinfo-audio M.m3u8 's#URI="/amplify_video/9/pl/mp4a/64000/A.m3u8"#URI="https://video.twimg.com@127.0.0.1/A.m3u8"#' '127\.0\.0\.1'
 hls_case private-audio-seg A.m3u8 's#^/amplify_video/9/aud/mp4a/64000/s1.m4s$#https://192.168.1.1/s1.m4s#' '192\.168\.1\.1' # leak-allow: private-lan-ip SSRF test fixture, never fetched
 hls_case encrypted V2.m3u8 's#^\#EXT-X-MAP#\#EXT-X-KEY:METHOD=AES-128,URI="https://10.9.9.9/k"\n\#EXT-X-MAP#' '10\.9\.9\.9' # leak-allow: private-lan-ip SSRF test fixture, never fetched
+# (HIMMEL-4704 round-2 codex-1) A second URI on one tag, or an unquoted one,
+# would reach ffmpeg un-rewritten and open a local file over the file protocol.
+hls_case dup-uri-map V2.m3u8 's#^\(\#EXT-X-MAP:.*\)$#\1,URI="/etc/passwd"#' '/etc/passwd'
+hls_case dup-uri-audio M.m3u8 's#^\(\#EXT-X-MEDIA:.*\)$#\1,URI="/etc/hostname"#' '/etc/hostname'
+hls_case unquoted-uri-tag V2.m3u8 's#^\#EXT-X-MAP#\#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="g",URI=/etc/passwd\n\#EXT-X-MAP#' 'URI=/etc/passwd'
 
 # --- Test 8: Scrapling login wall -> gallery-dl fallback -------------------
 echo "Test 8: gallery-dl fallback"
