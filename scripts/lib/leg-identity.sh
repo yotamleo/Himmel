@@ -114,6 +114,7 @@ leg_description_field() {
         \"*\") val="${val#\"}"; val="${val%\"}" ;;
         \'*\') val="${val#\'}"; val="${val%\'}" ;;
     esac
+    val="$(printf '%s' "$val" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
     case "$val" in
         "<"*">") val="" ;;
     esac
@@ -123,7 +124,8 @@ leg_description_field() {
 # leg_description <leg doc path> -- the line a surface prints next to the label.
 # Fallback, never empty: the description field; then the brief's H1 scope
 # (`# <TICKET> — <scope> — leg N<k> (...)`, and the `# <TICKET>: <scope>. Leg
-# N<k> (...)` consoles also write, give <scope>; any other H1 whole);
+# N<k> (...)` consoles also write, give <scope>; an H1 not led by a ticket key
+# is used whole);
 # then the doc stem.
 # ponytail: the ticket-title and PR-title fallbacks HIMMEL-4749 orders between
 # the field and the H1 need the HIMMEL-4748 tracker/forge seams; slot them in
@@ -133,7 +135,7 @@ leg_description() {
     val="$(leg_description_field "$doc")"
     if [ -z "$val" ] && [ -r "$doc" ]; then
         val="$(sed -n -E '/^# /{s/^# +//;p;q;}' "$doc" \
-            | sed -E 's/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) //; s/( —|\.)? [Ll]eg N[0-9].*$//; s/[[:space:]]+$//')"
+            | sed -E '/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) /{s/^[A-Za-z][A-Za-z0-9]*-[0-9]+( —|:) //; s/( —|\.)? [Ll]eg N[0-9].*$//;}; s/[[:space:]]+$//')"
     fi
     if [ -z "$val" ]; then
         stem="${doc##*/}"

@@ -151,6 +151,10 @@ check_eq 'resolve: placeholder falls back to the template H1 scope' "$(leg_descr
 check_eq 'resolve: no description falls back to the H1 scope' "$(leg_description "$d_body")" 'body scope'
 check_eq 'resolve: a free-form H1 is used whole' "$(leg_description "$d_h1raw")" 'A free-form heading'
 check_eq 'resolve: the KEY: scope. Leg N<k> H1 consoles write drops key and leg suffix' "$(leg_description "$d_h1live")" 'YouTube private-video detection is language-free'
+d_qblank="$(mkdoc HIMMEL-1-N10-a-2026-10-07.md '---' 'description: "   "' '---')"
+d_h1leg="$(mkdoc HIMMEL-1-N11-a-2026-10-07.md '---' 'resume_cwd: /x' '---' '# Investigate Leg N12 failure')"
+check_eq 'field: a quoted blank description is no description' "$(leg_description_field "$d_qblank")" ''
+check_eq 'resolve: a free-form H1 naming a leg is used whole' "$(leg_description "$d_h1leg")" 'Investigate Leg N12 failure'
 check_eq 'resolve: no H1 falls back to the stem' "$(leg_description "$d_none")" 'HIMMEL-1-N6-a-2026-10-07'
 check_eq 'resolve: a missing doc falls back to the stem' "$(leg_description "$dtmp/HIMMEL-1-N8-gone-2026-10-07.md")" 'HIMMEL-1-N8-gone-2026-10-07'
 if leg_doc_has_run "$d_run"; then ok 'has_run: a Results bullet means the leg has run'; else bad 'has_run: a Results bullet means the leg has run'; fi
