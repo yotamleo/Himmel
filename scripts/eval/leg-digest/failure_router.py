@@ -18,8 +18,8 @@ main; a row marked any_role (suite/*) counts every role. Rows that fail the
 leg_ledger.py validator are ignored.
 
 DECISIONS, one decision-log line each (P4 contract): filed | commented | capped |
-recurred-after-done | skipped:<why>. A class whose leg count has not grown since its
-last acted decision makes no decision; a decision equal to the class's last one at
+recurred-after-done | skipped:<why>. A class whose window legs were all acted on
+before makes no decision; a decision equal to the class's last one at
 the same leg count writes no second line. Never-routed and signal-only rows (the
 traj/red-before-green and traj/claim-unverified classes among them) decide nothing.
 
@@ -274,10 +274,18 @@ def search(jbin, project, cls):
         return None
     hits = []
     for line in out.splitlines():
+        if not line.strip():
+            continue
         f = line.split("\t")
-        if len(f) >= 3 and TICKET.match(f[0]):
-            hits.append((f[0], f[2].strip().lower()))
+        if len(f) < 3 or not TICKET.match(f[0]):
+            return None  # the CLI prints only ticket rows (nothing on zero hits): anything else is an error
+        hits.append((f[0], f[2].strip().lower()))
     return hits
+
+
+def acted(c, legs):
+    """Record the legs a decision acted on, so the same legs never fire twice but new ones do."""
+    c["acted"] = sorted(set(c.get("acted", [])) | set(legs))
 
 
 def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project):
@@ -301,14 +309,15 @@ def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, pro
     if key:
         c["ticket"] = key
         if dict(hits)[key] in DONE:
-            c["acted_legs"] = n
+            acted(c, legs)
             return "recurred-after-done", key
         body = build_body(table, t, cls, legs, counted, True)
         if check_body(body, table):
             return "skipped:alphabet", key
         if with_file(body, lambda f: jira(jbin, ["comment", key, "--comment-file", f])) is None:
             return "skipped:jira-error", key
-        c["acted_legs"], c["last_comment_day"] = n, today
+        acted(c, legs)
+        c["last_comment_day"] = today
         return "commented", key
     if state["created"].get("day") != today:
         state["created"] = {"day": today, "n": 0}
@@ -326,7 +335,8 @@ def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, pro
     if not m:
         return "skipped:jira-error", None
     state["created"]["n"] += 1
-    c["ticket"], c["acted_legs"] = m.group(1), n
+    c["ticket"] = m.group(1)
+    acted(c, legs)
     return "filed", m.group(1)
 
 
@@ -359,7 +369,7 @@ def route(a):
             t, legs, counted = fire
             n = len(legs)
             c = state["classes"].setdefault(cls, {}) if state_ok else {}
-            if n <= c.get("acted_legs", 0):
+            if set(legs) <= set(c.get("acted", [])):
                 continue
             inbox = a.inbox if t.get("inbox") and state_ok and not c.get("inbox") else None
             if inbox and not a.dry_run:

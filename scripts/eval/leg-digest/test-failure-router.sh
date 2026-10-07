@@ -164,6 +164,25 @@ check "check-body refuses a line outside the alphabet" '! python3 "$FR" check-bo
 printf -- '- class: denied/x\n- legs: N1, rm -rf /\n' >"$TMP/badbody2"
 check "check-body refuses a value outside its label's alphabet" '! python3 "$FR" check-body "$TMP/badbody2" >/dev/null 2>&1'
 
+F3="$TMP/f3"; mkdir -p "$F3"; n0="$(calls create)"
+SAVE="$LED"; LED="$F3/l.jsonl"; row N1 denied/guard-x 1; row N2 denied/guard-x 1; LED="$SAVE"
+printf 'Error: unexpected response\n' >"$STUB/list.fl-denied-guard-x"
+python3 "$FR" route --ledger "$F3/l.jsonl" --state "$F3/s.json" --log "$F3/log" --inbox "$F3/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "search output that is not ticket rows files nothing and logs skipped:search-error" '[ "$(calls create)" = "$n0" ] && [ "$(jq -r .decision "$F3/log")" = skipped:search-error ]'
+
+echo "a recurrence in new legs after the old ones aged out still acts"
+F4="$TMP/f4"; mkdir -p "$F4"
+SAVE="$LED"; LED="$F4/l.jsonl"
+row N1 denied/guard-y 1 false leg 2026-10-01T10:00:00Z; row N2 denied/guard-y 1 false leg 2026-10-01T10:00:00Z
+f4() { python3 "$FR" route --ledger "$F4/l.jsonl" --state "$F4/s.json" --log "$F4/log" --inbox "$F4/inbox" --jira-bin "$STUB/jira" "$@" >/dev/null 2>&1; }
+f4 --now 2026-10-02T12:00:00Z
+k4="$(jq -r .ticket "$F4/log" | head -n 1)"
+printf '%s\tTask\tTo Do\tlegs retype past guard-y\n' "$k4" >"$STUB/list.fl-denied-guard-y"
+row N3 denied/guard-y 1 false leg 2026-10-20T10:00:00Z; row N4 denied/guard-y 1 false leg 2026-10-20T10:00:00Z
+LED="$SAVE"
+f4 --now 2026-10-21T12:00:00Z
+check "filed on N1+N2, then commented on N3+N4 once N1+N2 left the window" '[ "$(jq -r .decision "$F4/log" | paste -sd " ")" = "filed commented" ]'
+
 echo "the routing table is data"
 check "failure-routes.table.json parses and names every spec 4.2 key pattern" 'jq -e "[.routes[].match] | index(\"denied/classifier:*\") and index(\"suite/*\") and index(\"error/*\") and index(\"traj/claim-unverified\")" "$HERE/failure-routes.table.json" >/dev/null'
 check "the window is 14 days and the cap is 3" 'jq -e ".window_days == 14 and .daily_cap == 3" "$HERE/failure-routes.table.json" >/dev/null'
