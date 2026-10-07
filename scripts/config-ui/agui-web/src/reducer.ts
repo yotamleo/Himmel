@@ -85,7 +85,7 @@ function finish(v: View, id: string, at: number, patch: Partial<Tool>): View {
   const a = v.agents[t.agent];
   const out = {
     ...v, laneEnds: { ...v.laneEnds, [t.agent]: ends }, tools: { ...v.tools, [id]: { ...t, ...patch, end: at } },
-    agents: a ? { ...v.agents, [t.agent]: { ...a, last: at } } : v.agents,
+    agents: a ? { ...v.agents, [t.agent]: { ...a, last: Math.max(a.last ?? at, at) } } : v.agents,
   };
   // A call counts as one failure however many times it is failed (a result after a run error already failed it).
   return patch.failure && !t.failure ? addFailure(out, { kind: "tool", id }, t.agent) : out;
