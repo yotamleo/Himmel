@@ -19,7 +19,11 @@ import { resolveJournal } from "../../config-ui/agui/sse.ts";
 import type { AgentInfo, AguiEvent } from "../../config-ui/agui/events.ts";
 
 const { spawnSync } = Bun;
-const DIGEST_SCHEMA = 1;
+const DIGEST_SCHEMA = 2;
+const LANES = new Set(["native", "claudex", "openrouter", "cloud", "unknown"]);
+const lane = LANES.has(process.env.LEG_LANE ?? "") ? process.env.LEG_LANE! : "unknown";
+// Only conventional lowercase MCP identifiers, never result/argument text (HIMMEL-4816).
+const toolKey = (s: string) => TOOLS.has(s) ? s : /^mcp__[a-z0-9_]{1,160}$/.test(s) ? s : s.startsWith("mcp__") ? "mcp" : "other";
 const REPO = resolve(import.meta.dir, "../../..");
 const TRAJECTORY = join(REPO, "scripts/eval/lane-quality/trajectory.py");
 const MAX_BYTES = 200 * 1024 * 1024;
@@ -221,6 +225,16 @@ async function main() {
   const m = { tool_calls: 0, subagents: 0, turns: 0, fail_denied: 0, fail_suite: 0, fail_blocked: 0, fail_error: 0,
     run_errors: 0, interrupts: 0, ok_no_match: 0 };
   let mainModel: string | null = null;
+  const callsByTool: Record<string, number> = Object.create(null);
+  const failuresByTool: Record<string, number> = Object.create(null);
+  const callDay = new Map<string, string | null>();
+  const health = new Map<string, { agent: Agent; lane: string; day: string | null; tool: string; calls: number; failures: number; errors: number; denials: number; classes: Record<string, number> }>();
+  const toolRow = (agent: Agent, tool: string, day: string | null) => {
+    const key = `${agent.id}\0${day}\0${tool}`;
+    let r = health.get(key);
+    if (!r) { r = { agent, lane, day, tool, calls: 0, failures: 0, errors: 0, denials: 0, classes: Object.create(null) }; health.set(key, r); }
+    return r;
+  };
 
   const seen = (a: Agent) => {
     const prev = agents.get(a.id);
@@ -238,6 +252,15 @@ async function main() {
     }
     r.agent = agents.get(agent.id) ?? agent;
     r.count++;
+    if (id && callName.has(id)) {
+      const tool = toolKey(callName.get(id)!);
+      failuresByTool[tool] = (failuresByTool[tool] ?? 0) + 1;
+      const h = toolRow(agent, tool, callDay.get(id) ?? null);
+      h.failures++;
+      h.classes[cls] = (h.classes[cls] ?? 0) + 1;
+      if (failure === "error" || failure === "suite") h.errors++;
+      if (failure === "denied") h.denials++;
+    }
     if (ts !== undefined) { r.first_ts ??= ts; r.last_ts = ts; }
     if (id && r.tool_call_ids.length < MAX_IDS) r.tool_call_ids.push(id);
     if (id) { const all = allIds.get(r) ?? []; all.push(id); allIds.set(r, all); }
@@ -315,6 +338,11 @@ async function main() {
         const a = seen(agentOf(e.agent));
         callAgent.set(e.toolCallId, a);
         callName.set(e.toolCallId, e.toolCallName);
+        const tool = toolKey(e.toolCallName);
+        callsByTool[tool] = (callsByTool[tool] ?? 0) + 1;
+        const day = typeof e.timestamp === "number" && Number.isFinite(e.timestamp) ? new Date(e.timestamp).toISOString().slice(0, 10) : null;
+        callDay.set(e.toolCallId, day);
+        toolRow(a, tool, day).calls++;
         break;
       }
       case "TOOL_CALL_ARGS": callArgs.set(e.toolCallId, (callArgs.get(e.toolCallId) ?? "") + e.delta); break;
@@ -380,8 +408,10 @@ async function main() {
     digest_v: DIGEST_SCHEMA, mapper_v: MAPPER_SCHEMA, trajectory_v: traj.trajectory_v ?? null, session,
     status: mapper.stats.malformed > 0 || capped || merged.skipped > 0 || trajOut === null || lookupsFailed.length > 0
       ? "partial" : "ok",
-    model: mainModel,
-    metrics: { ...m, red_before_green: bool(traj.red_before_green), denial_recovery: traj.denial_recovery ?? null,
+    model: mainModel, lane,
+    started_ts: events.find((e) => typeof e.timestamp === "number")?.timestamp ?? null,
+    tool_health: [...health.values()].map((r) => ({ ...r, agent: agents.get(r.agent.id) ?? r.agent })),
+    metrics: { ...m, tool_calls_by_tool: callsByTool, tool_failures_by_tool: failuresByTool, red_before_green: bool(traj.red_before_green), denial_recovery: traj.denial_recovery ?? null,
       identical_denied_retries: traj.identical_denied_retries ?? null, verify_before_claim: bool(traj.verify_before_claim) },
     agents: [...agents.values()], failures, stats,
   };

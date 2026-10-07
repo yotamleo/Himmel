@@ -4,9 +4,10 @@
 export const PAGES = [
   { id: "config", label: "Config" },
   { id: "health", label: "Health" },
+  { id: "toolhealth", label: "Tool health" },
   { id: "fleet", label: "Fleet" },
 ];
-const CONSOLE = ["config", "health"];
+const CONSOLE = ["config", "health", "toolhealth"];
 
 const frag = (o) => "#" + new URLSearchParams(o).toString();
 

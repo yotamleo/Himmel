@@ -42,7 +42,7 @@ check "validate passes on the leg-failures ledger" 'python3 "$LL" validate "$FL"
 check "validate passes on the eval-runs ledger" 'python3 "$EVR" validate "$EL" >/dev/null'
 check "a leg-failures row carries the envelope and the leg fields" 'jq -e "select(.class == \"denied/guard-pr-check-literal\") | .v == 1 and .kind == \"leg-failure\" and .source == \"scripts/eval/leg-digest/leg_ledger.py\" and (.host | length > 0) and (.ts | length > 0) and .session == \"$SID\" and .leg == \"N1373\" and .ticket == \"HIMMEL-4670\" and .console == \"demo-console\" and .pr == 1990 and .count == 2 and .identical_retry == 1 and .recovered == false" "$FL" >/dev/null'
 check "a suite row keeps final_red" 'jq -e "select(.class == \"suite/test-eval-runs.sh\") | .final_red == true" "$FL" >/dev/null'
-check "the eval-runs row is the observational leg-trajectory row keyed by session" 'jq -e ".eval == \"leg-trajectory\" and .run_id == \"$SID\" and .status == \"ok\" and .meta.observational == true and .meta.leg == \"N1373\" and .meta.pr == 1990 and .n == 3 and .reps == 1 and .cases == null and .config.digest_v == 1 and .model == \"claude-opus-5-5\"" "$EL" >/dev/null'
+check "the eval-runs row is the observational leg-trajectory row keyed by session" 'jq -e ".eval == \"leg-trajectory\" and .run_id == \"$SID\" and .status == \"ok\" and .meta.observational == true and .meta.leg == \"N1373\" and .meta.pr == 1990 and .n == 3 and .reps == 1 and .cases == null and .config.digest_v == 2 and .model == \"claude-opus-5-5\"" "$EL" >/dev/null'
 check "its metrics are the digest metrics, booleans as 1/0" 'jq -e ".metrics | .fail_denied == 10 and .turns == 3 and .identical_denied_retries == 1 and has(\"red_before_green\") and has(\"verify_before_claim\")" "$EL" >/dev/null'
 check "the digest file is written last and the row points at it" '[ -f "$ST/$SID.json" ] && [ "$(jq -r .artifact "$EL")" = "$ST/$SID.json" ]'
 
@@ -124,7 +124,8 @@ mkdir -p "$TMP/h/.config/claude-glm/phi-roots"
 HOME="$TMP/h" python3 "$LL" backfill --since 2026-10-01 --projects "$P" --denials-ledger "$FX/classifier-denials.jsonl" --failures-ledger "$TMP/bf3-f.jsonl" --eval-ledger "$TMP/bf3-e.jsonl" --state-dir "$TMP/bf3-s" >"$TMP/bf3.out" 2>&1; rc3=$?
 check "an unreadable PHI-roots file fails closed: nonzero, nothing written" '[ "$rc3" != 0 ] && [ ! -s "$TMP/bf3-e.jsonl" ]'
 check "a usage error exits 2" 'python3 "$LL" backfill >/dev/null 2>&1; [ $? = 2 ]'
-check "the writer spawns only bun, never a model CLI" 'absent -E "\"(claude|codex|gemini)\"" "$LL"'
+# Lane labels can name codex; check the subprocess call and its argv instead.
+check "the writer spawns only bun, never a model CLI" 'python3 -c "import ast,sys; t=ast.parse(open(sys.argv[1]).read()); calls=[n for n in ast.walk(t) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Name) and n.func.value.id==\"subprocess\"]; assert len(calls)==1 and calls[0].func.attr==\"run\" and isinstance(calls[0].args[0],ast.Name) and calls[0].args[0].id==\"cmd\"; assignments=[n for n in ast.walk(t) if isinstance(n,ast.Assign) and any(isinstance(x,ast.Name) and x.id==\"cmd\" for x in n.targets)]; assert len(assignments)==1 and isinstance(assignments[0].value,ast.List) and assignments[0].value.elts[0].value==\"bun\"" "$LL"'
 
 echo "7. --digest-error: a closed-vocabulary reason in meta (HIMMEL-4670 P3)"
 DE=4670c1a5-0000-4000-8000-0000000000de; DX=4670c1a5-0000-4000-8000-0000000000df

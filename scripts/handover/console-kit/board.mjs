@@ -51,6 +51,7 @@ import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileS
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gitClean } from '../../lanes/git-clean.mjs';
+import { readToolHealth } from '../../eval/leg-digest/tool-health.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -564,8 +565,10 @@ const failuresSection = (() => {
         if (existsSync(inboxPath)) inbox = readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.startsWith('- ')).length;
         const inboxLine = `<p class="sub">memory inbox: ${inbox} pending</p>`;
         if (!sorted.length) return `<section data-failures="0">${title}<p class="none">no leg failures this shift</p>${inboxLine}</section>`;
-        const tr = sorted.map(([cls, c]) => `<tr data-class="${safe(cls, 80)}"><td>${safe(cls, 80)}</td><td>${c.legs.size}</td><td>${c.events}</td><td>${c.known ? `${Math.round((c.rec / c.known) * 100)} %` : '—'}</td><td>${safe(route(cls), 60)}</td></tr>`).join('\n');
-        return `<section data-failures="${sorted.length}">${title}<table><tr><th>class</th><th>legs</th><th>events</th><th>recovered</th><th>route</th></tr>\n${tr}\n</table>${inboxLine}</section>`;
+        const toolHealth = readToolHealth(process.env, new URLSearchParams({ since: start }));
+        const rates = toolHealth.class_rates || {}, counts = toolHealth.class_counts || {};
+        const tr = sorted.map(([cls, c]) => `<tr data-class="${safe(cls, 80)}"><td>${safe(cls, 80)}</td><td>${c.legs.size}</td><td>${c.events}</td><td>${typeof rates[cls] === 'number' && counts[cls] === c.events ? `${(rates[cls] * 100).toFixed(1)} %` : '—'}</td><td>${c.known ? `${Math.round((c.rec / c.known) * 100)} %` : '—'}</td><td>${safe(route(cls), 60)}</td></tr>`).join('\n');
+        return `<section data-failures="${sorted.length}">${title}<table><tr><th>class</th><th>legs</th><th>events</th><th>rate</th><th>recovered</th><th>route</th></tr>\n${tr}\n</table>${inboxLine}</section>`;
     } catch { return unavailable; }
 })();
 

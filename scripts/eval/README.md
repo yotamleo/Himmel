@@ -255,6 +255,40 @@ bun scripts/eval/leg-digest/leg-digest.ts --session <uuid>   # resolved under ~/
 
   The budget is 5 s per leg.
 
+### Tool health (HIMMEL-4816)
+
+Digest v2 adds `metrics.tool_calls_by_tool`, `metrics.tool_failures_by_tool`
+and per-agent `tool_health` rows (tool, calls, failures, errors, denials,
+class counts and lane). Built-in tools and conventional lowercase MCP tool
+identifiers stay separate; other MCP identifiers use `mcp`, unlisted tools
+use `other`. Arguments and result text never become tool keys. Text-only
+blocked reports and trajectory findings are not tool failures; a grep
+no-match remains a successful call.
+
+`leg_ledger.py` stores these rows in the existing registered eval-runs
+ledger's `meta.tool_health`, with the session's first timestamp in
+`meta.started_ts`. No new ledger or writer is introduced. The recorder stamps
+the persisted digest and its tool rows with launch provenance: explicit
+`--lane`, else the leg doc's lane, else the extractor's `LEG_LANE`; missing
+provenance is `unknown`. Canonical lanes are native, claudex, openrouter,
+cloud and unknown; the historical codex launch label normalizes to claudex.
+Backfill never borrows its own launcher's lane or guesses from a model.
+
+`leg-digest/tool-health.mjs` reads eval-runs and leg-failures and computes UTC
+calendar-day rollups by model, lane and leg-vs-console role. Rates use summed
+counts, never averages of session percentages. Deny-hook rates divide by
+Bash calls across the selected population. Recovery is count-weighted over
+known class outcomes (the ledger's boolean describes the entire class row);
+unknown outcomes are excluded. Daily rows carry lane; summary rows aggregate
+the explicitly selected lanes. Old digests without denominators retain their
+failure counts but show no rate, including mixed old/new populations.
+
+The config-ui Tool health page and console board share this reader. The
+page shows 7/30-day trends, top classes and session/tool-call-id drill-down,
+plus per-lane comparisons and deltas relative to native. All rate math stays
+on the server; the page is read-only. Overrides are
+`HIMMEL_EVAL_RUNS_LEDGER` and `HIMMEL_LEG_FAILURES_LEDGER`.
+
 ## leg_ledger: digests into the leg ledgers (HIMMEL-4670 P2)
 
 `leg-digest/leg_ledger.py` writes one digest as:

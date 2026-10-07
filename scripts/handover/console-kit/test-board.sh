@@ -35,7 +35,7 @@ same() {
 B="$W/bucket"
 mkdir -p "$B" "$W/bin" "$W/repo"
 # HIMMEL-4670: the failures panel reads these ledgers; never the operator's own.
-export HIMMEL_LEG_FAILURES_LEDGER="$W/leg-failures.jsonl" HIMMEL_FAILURE_ROUTES_LOG="$W/failure-routes.log.jsonl"
+export HIMMEL_LEG_FAILURES_LEDGER="$W/leg-failures.jsonl" HIMMEL_FAILURE_ROUTES_LOG="$W/failure-routes.log.jsonl" HIMMEL_EVAL_RUNS_LEDGER="$W/eval-runs.jsonl"
 
 # The tick stub records its argv and prints a fixed line + fingerprint. N1..N7
 # cover every phase; the fleet is 9/15 with six idle slots. N12 (issue #1336):
@@ -599,10 +599,17 @@ QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null; rc=$?
 same 'failures panel: render succeeds, rc 0' "$rc" "0"
 fhtml="$(cat "$M/board.html")"
 fsnap="$(printf '%s\n' "$fhtml" | sed -n '/data-failures=/,/<\/section>/p')"
-same 'failures panel: snapshot (HIMMEL-4670)' "$fsnap" '<section data-failures="2"><h2>Failure classes — this shift</h2><table><tr><th>class</th><th>legs</th><th>events</th><th>recovered</th><th>route</th></tr>
-<tr data-class="denied/guard-a"><td>denied/guard-a</td><td>2</td><td>5</td><td>50 %</td><td>HIMMEL-4799 (filed 03:04)</td></tr>
-<tr data-class="suite/test-&lt;b&gt;x&lt;/b&gt;.sh"><td>suite/test-&lt;b&gt;x&lt;/b&gt;.sh</td><td>1</td><td>3</td><td>—</td><td>signal</td></tr>
+same 'failures panel: snapshot (HIMMEL-4670)' "$fsnap" '<section data-failures="2"><h2>Failure classes — this shift</h2><table><tr><th>class</th><th>legs</th><th>events</th><th>rate</th><th>recovered</th><th>route</th></tr>
+<tr data-class="denied/guard-a"><td>denied/guard-a</td><td>2</td><td>5</td><td>—</td><td>50 %</td><td>HIMMEL-4799 (filed 03:04)</td></tr>
+<tr data-class="suite/test-&lt;b&gt;x&lt;/b&gt;.sh"><td>suite/test-&lt;b&gt;x&lt;/b&gt;.sh</td><td>1</td><td>3</td><td>—</td><td>—</td><td>signal</td></tr>
 </table><p class="sub">memory inbox: 2 pending</p></section>'
+cat > "$HIMMEL_EVAL_RUNS_LEDGER" <<'RATES'
+{"eval":"leg-trajectory","run_id":"s1","status":"ok","ts":"2026-10-07T03:01:00Z","lane":"claudex","model":"gpt-6.1-sol","meta":{"leg":"N1","tool_health":[{"agent":{"id":"main","model":"gpt-6.1-sol"},"tool":"Bash","calls":50,"failures":5,"errors":0,"denials":5,"classes":{"denied/guard-a":5}}]}}
+RATES
+printf '%s\n' '{"ts":"2026-10-07T03:01:00Z","session":"s1","agent":{"id":"main"},"leg":"N1","class":"denied/guard-a","failure":"denied","count":5,"recovered":true}' > "$FL"
+QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null
+contains 'failure rate uses the Bash denominator' "$(cat "$M/board.html")" '<td>5</td><td>10.0 %</td>'
+: > "$HIMMEL_EVAL_RUNS_LEDGER"
 : > "$FL"
 QL_STUB_STARTED=2026-10-07T03:00:00Z mrun >/dev/null
 contains 'failures panel: no rows this shift reads the empty line' "$(cat "$M/board.html")" '<p class="none">no leg failures this shift</p>'
