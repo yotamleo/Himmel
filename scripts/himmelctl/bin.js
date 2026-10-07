@@ -248,7 +248,8 @@ commands:
                           session env unless --allow-agent-session). Runs in the foreground,
                           Ctrl-C or 30 min idle exits. --agui [<session-id>|latest]
                           also prints the AG-UI run page URL for that session
-                          (default latest: the newest ~/.claude/projects transcript)
+                          (latest: the newest ~/.claude/projects transcript);
+                          with no id, the fleet page of every live session
   gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
@@ -410,7 +411,7 @@ function parseArgs(argv) {
     purgeState: false, // uninstall: --purge-state (also remove operator state; default keeps it — HIMMEL-3058)
     port: null,        // ui: --port N (null = ephemeral, HIMMEL-4254)
     allowAgentSession: false, // ui: --allow-agent-session (operator override of the agent-session refusal, HIMMEL-4350)
-    agui: null,        // ui: --agui [<session-id>|latest] (also print the AG-UI page URL, HIMMEL-4480)
+    agui: null,        // ui: --agui [<session-id>|latest] (also print the AG-UI page URL, HIMMEL-4480; 'fleet' = no id, HIMMEL-4712)
   };
   // CR fix (CodeRabbit round 17, item 4): the last process.exit(2) sites in
   // this parser, converted to the process.exitCode + return pattern the
@@ -493,10 +494,11 @@ function parseArgs(argv) {
         break;
       }
       // HIMMEL-4480: --agui [<session-id>|latest]; the value is optional, so only
-      // 'latest' or a session UUID is consumed (default 'latest').
+      // 'latest' or a session UUID is consumed. With neither, the URL is the fleet
+      // landing (HIMMEL-4712).
       case '--agui': {
         const next = argv[i + 1];
-        args.agui = next !== undefined && (next === 'latest' || AGUI_RUN_ID.test(next)) ? argv[++i] : 'latest';
+        args.agui = next !== undefined && (next === 'latest' || AGUI_RUN_ID.test(next)) ? argv[++i] : 'fleet';
         break;
       }
       case 'scope':
@@ -5435,7 +5437,8 @@ function cmdUi(args) {
       return 1;
     }
   }
-  const serverArgs = [server, '--port', String(args.port === null ? 0 : args.port), ...(run ? ['--agui', run] : [])];
+  const agui = run === 'fleet' ? ['--agui'] : run ? ['--agui', run] : [];
+  const serverArgs = [server, '--port', String(args.port === null ? 0 : args.port), ...agui];
   return new Promise((resolve) => {
     const child = require('child_process').spawn('bun', serverArgs, { stdio: 'inherit' });
     // A signal to this wrapper must reach the server, never orphan it.

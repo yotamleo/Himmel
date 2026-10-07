@@ -185,10 +185,49 @@ check_c3() {
     done
     [ -n "$v" ] || { emit OK C3-luna "no local luna vault found (skipped)"; return; }
     if [ ! -f "$v/.single-writer" ]; then emit OK C3-luna "luna vault present, not single-writer (skipped)"; return; fi
-    if [ -n "$(git -C "$v" status --porcelain 2>/dev/null)" ]; then
-        emit WARN C3-luna "luna vault ($v) has uncommitted changes — single-writer vaults are NOT auto-committed (e.g. after /luna-upgrade)" "commit it: git -C '$v' add -A && git -C '$v' commit -m 'chore: vault update'"
+    # HIMMEL-4721: the vault holds the handover root, which legs write to
+    # continuously between github-sync ticks (the plugin owns the commits), so
+    # handovers/ churn is ignored. Any other dirty path is a finding only once it
+    # is older than the sync cadence (HIMMEL_DOCTOR_C3_DIRTY_MIN, default 30 min).
+    local dirty_min="${HIMMEL_DOCTOR_C3_DIRTY_MIN:-30}" rec p age last stale="" fresh=0 skip_orig=0 commit_old=""
+    case "$dirty_min" in ''|*[!0-9]*) dirty_min=30 ;; esac
+    # HIMMEL-4724: porcelain v2 -z — paths arrive raw (never C-quoted), so a
+    # non-ASCII or quote-bearing name resolves. A rename ("2") record is followed
+    # by its origPath record, which is skipped; its destination is aged by ctime
+    # (a move keeps the old mtime but stamps ctime).
+    while IFS= read -r -d '' rec; do
+        if [ "$skip_orig" = 1 ]; then skip_orig=0; continue; fi
+        age=-mmin
+        case "$rec" in
+            '1 '*) p="${rec#* * * * * * * * }" ;;
+            '2 '*) p="${rec#* * * * * * * * * }"; skip_orig=1; age=-cmin ;;
+            'u '*) p="${rec#* * * * * * * * * * }" ;;
+            '? '*) p="${rec#? }" ;;
+            *) continue ;;
+        esac
+        [ -n "$p" ] || continue
+        case "$p" in handovers/*) continue ;; esac
+        if [ ! -e "$v/$p" ]; then
+            # a deletion has no mtime to age: it is stale only once the vault's
+            # last commit (the sync tick) is older than the window too
+            if [ -z "$commit_old" ]; then
+                commit_old=0
+                last="$(git -C "$v" log -1 --format=%ct 2>/dev/null)"
+                case "$last" in ''|*[!0-9]*) ;; *) [ $(( $(date +%s) - last )) -gt $(( 10#$dirty_min * 60 )) ] && commit_old=1 ;; esac
+            fi
+            if [ "$commit_old" = 1 ]; then stale="${stale:+$stale, }$p"; else fresh=1; fi
+        elif [ -n "$(find "$v/$p" -maxdepth 0 "$age" "+$dirty_min" 2>/dev/null)" ]; then
+            stale="${stale:+$stale, }$p"
+        else
+            fresh=1
+        fi
+    done < <(git -C "$v" status --porcelain=v2 -z -uall 2>/dev/null)
+    if [ -n "$stale" ]; then
+        emit WARN C3-luna "luna vault ($v) has non-handover change(s) dirty over ${dirty_min} min: $stale — the vault's sync plugin owns its commits, so a stall here means the sync is stuck" "check the vault sync (github-sync / scripts/luna/vault-stall-cadence.sh status); do not hand-commit"
+    elif [ "$fresh" = 1 ]; then
+        emit OK C3-luna "luna vault has only fresh (under ${dirty_min} min) non-handover changes — sync tick pending"
     else
-        emit OK C3-luna "luna vault clean"
+        emit OK C3-luna "luna vault clean (handovers/ churn ignored)"
     fi
 }
 
@@ -1185,7 +1224,14 @@ check_c22() {
     local log="${HIMMEL_DOCTOR_CHAIN_SKIPS_LOG:-$REPO_ROOT/.claude/logs/hook-chain-skips.jsonl}"
     [ -f "$log" ] || { emit OK C22-chain-skips "no hook-chain-skips.jsonl — no starved chain member recorded"; return; }
     command -v jq >/dev/null 2>&1 || { emit INFO C22-chain-skips "hook-chain-skips.jsonl present but jq missing — counts not checked"; return; }
-    local summary jq_rc=0
+    local summary jq_rc=0 window_h="${HIMMEL_DOCTOR_CHAIN_SKIPS_WINDOW_H:-24}" total cutoff
+    case "$window_h" in ''|*[!0-9]*) window_h=24 ;; esac
+    window_h=$((10#$window_h))  # HIMMEL-4724: 08/09 are decimal, not invalid octal
+    cutoff=$(( $(date +%s) - window_h * 3600 ))
+    # HIMMEL-4721: only rows inside the recent window are a finding. The log is
+    # append-only and written by the hook chain (scripts/hooks, HIMMEL-4678), so
+    # it is not rotated here — the window makes its age harmless to this check.
+    # A row with a missing/unparseable ts cannot be proven old, so it counts.
     # Grouped by reason too (HIMMEL-2060 CR round 5, codex-2): an ENOBUFS row
     # is an output-buffer overflow (a chatty hook), not budget starvation —
     # folding both into one "starved" label made the remedy text below
@@ -1193,7 +1239,7 @@ check_c22() {
     # HIMMEL-4287: the log also records the hook suites' own fixture members
     # (hang/hog/flood and anything under a scripts/**/test or fixtures dir); only a real
     # hook's starvation is a finding, so those rows are dropped before counting.
-    summary="$(jq -rs 'map(select((.member // "") | test("^(hang[0-9]*|hog[0-9]*|flood[0-9]*)\\.sh$|(^|/)scripts/([^/]+/)*(tests?|fixtures?)/") | not)) | group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
+    summary="$(jq -rs --argjson cut "$cutoff" 'map(select((.member // "") | test("^(hang[0-9]*|hog[0-9]*|flood[0-9]*)\\.sh$|(^|/)scripts/([^/]+/)*(tests?|fixtures?)/") | not)) | map(select((try (.ts | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch 9999999999) >= $cut)) | group_by(.action + "/" + .member + "/" + (.reason // "?")) | map({action: .[0].action, member: .[0].member, reason: (.[0].reason // "?"), n: length}) | sort_by(-.n) | .[] | "\(.n)x \(.action) \(.member) (\(.reason))"' "$log" 2>/dev/null)" || jq_rc=$?
     # A malformed/partially-written row makes the WHOLE `jq -s` slurp fail
     # (HIMMEL-2060 CR round 1, codex-2) — distinguish that from a genuinely
     # empty log rather than reporting both as the same clean OK.
@@ -1202,10 +1248,15 @@ check_c22() {
         return
     fi
     if [ -z "$summary" ]; then
-        emit OK C22-chain-skips "hook-chain-skips.jsonl present but empty"
+        total="$(jq -rs 'map(select((.member // "") | test("^(hang[0-9]*|hog[0-9]*|flood[0-9]*)\\.sh$|(^|/)scripts/([^/]+/)*(tests?|fixtures?)/") | not)) | length' "$log" 2>/dev/null)" || total=0
+        if [ "${total:-0}" -gt 0 ]; then
+            emit OK C22-chain-skips "no chain member events in the last ${window_h} h (${total} older all-time; window via HIMMEL_DOCTOR_CHAIN_SKIPS_WINDOW_H)"
+        else
+            emit OK C22-chain-skips "hook-chain-skips.jsonl present but empty"
+        fi
         return
     fi
-    emit WARN C22-chain-skips "chain member event(s) recorded: $(printf '%s' "$summary" | tr '\n' ';' | sed 's/;/; /g')" \
+    emit WARN C22-chain-skips "chain member event(s) recorded in the last ${window_h} h: $(printf '%s' "$summary" | tr '\n' ';' | sed 's/;/; /g')" \
         "reason=ETIMEDOUT is budget starvation (see HIMMEL-2060 / DEFAULT_CHAIN_BUDGET_MS in scripts/hooks/run-hook-with-bash.js); reason=ENOBUFS is an output-buffer overflow (a chatty hook), not a budget problem; a 'deny' action means a must-run security guard hit either one and the chain failed closed"
 }
 

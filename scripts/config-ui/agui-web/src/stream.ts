@@ -2,13 +2,25 @@
 // with its own timing when the page is opened without a run id (a static preview needs no server).
 import { HttpAgent } from "@ag-ui/client";
 import fixture from "./fixture.json";
-import { makeStamper } from "./reducer";
+import { makeStamper, turnEnded } from "./reducer";
 
 // The one place the endpoint shape lives (PR2 serves it from the config-ui server, token-gated).
 export const AGUI_URL = (run: string) => `/api/agui/${encodeURIComponent(run)}`;
+// HIMMEL-4712: the fleet landing's census, and the fragment a fleet row opens.
+export const FLEET_URL = "/api/agui/fleet";
+export const runHash = (token: string, run: string) => `#${new URLSearchParams({ t: token, run })}`;
+// A token with no run is the fleet landing; null otherwise (a run opens its stream, no token replays the fixture).
+export function fleetToken(hash: string): string | null {
+  const p = new URLSearchParams(hash.replace(/^#/, ""));
+  return p.get("t") && !p.get("run") ? p.get("t") : null;
+}
 
 type Ev = { type: string; timestamp?: number; [k: string]: unknown };
-export type Source = { live: boolean; run?: string; start: (onEvent: (e: Ev) => void, onFail: (msg: string) => void) => () => void };
+// onClose: the live stream ended cleanly (the server stopped tailing a finished run).
+export type Source = {
+  live: boolean; run?: string;
+  start: (onEvent: (e: Ev) => void, onFail: (msg: string) => void, onClose?: () => void) => () => void;
+};
 
 // config-ui hands the page its token in the URL fragment (never in a request line): #t=<token>&run=<id>.
 export function sourceFromLocation(hash: string): Source {
@@ -28,18 +40,18 @@ class RunStreamAgent extends HttpAgent {
 function live(run: string, token: string): Source {
   return {
     live: true, run,
-    start(onEvent, onFail) {
+    start(onEvent, onFail, onClose) {
       const agent = new RunStreamAgent({ url: AGUI_URL(run), headers: { "X-Himmel-Token": token } });
       const input = { threadId: run, runId: run, messages: [], tools: [], context: [], state: {}, forwardedProps: {} };
       let ended = false;
       const stamp = makeStamper(Date.now);
       const sub = agent.run(input).subscribe({
         next: (e) => {
-          if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") ended = true;
+          ended = turnEnded(ended, e.type);
           onEvent(stamp(e as Ev));
         },
         error: (err: unknown) => onFail(String((err as Error)?.message ?? err)),
-        complete: () => { if (!ended) onFail("the stream closed before the run finished"); },
+        complete: () => { if (ended) onClose?.(); else onFail("the stream closed before the run finished"); },
       });
       return () => { sub.unsubscribe(); agent.abortController.abort(); };
     },

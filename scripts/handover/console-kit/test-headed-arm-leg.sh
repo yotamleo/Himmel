@@ -363,10 +363,24 @@ not_contains "dry-run default: no HIMMEL_CONSOLE_RELAY without --relay" "$out" "
 contains "dry-run default: scrub list names CONSOLE_CONTEXT" "$out" "scrub=CONSOLE_CONTEXT"
 contains "dry-run default: no console-name source -> HIMMEL_CONSOLE_NAME absent" "$out" "HIMMEL_CONSOLE_NAME=<unset>"
 # HIMMEL-4569: the leg's context guard reads its mode and ceiling from the
-# launch env - compact and the 200000 pin by default, the console's handoff
-# when set, and a junk mode refuses the launch rather than reaching the leg.
-contains "dry-run default: context mode compact" "$out" "HIMMEL_LEG_CONTEXT_MODE=compact"
+# launch env - the 200000 pin by default, the console's mode when set, and a
+# junk mode refuses the launch rather than reaching the leg. HIMMEL-4710: the
+# guard is OFF by default - no mode reaches the leg unless the caller asks.
+contains "dry-run default: no context mode (the guard is off)" "$out" "HIMMEL_LEG_CONTEXT_MODE=<unset>"
 contains "dry-run default: the guard's ceiling is the 200000 pin" "$out" "HIMMEL_LEG_AUTOCOMPACT=200000"
+rc=0; out="$(LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --context-guard compact HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --context-guard compact: exit 0" "$rc" "0"
+contains "dry-run --context-guard compact: propagated" "$out" "HIMMEL_LEG_CONTEXT_MODE=compact"
+rc=0; out="$(LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --context-guard handoff HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+contains "dry-run --context-guard handoff: propagated" "$out" "HIMMEL_LEG_CONTEXT_MODE=handoff"
+rc=0; out="$(HIMMEL_LEG_CONTEXT_MODE=compact LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --context-guard none HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --context-guard none over an env mode: exit 0" "$rc" "0"
+contains "dry-run --context-guard none: the flag wins, no mode reaches the leg" "$out" "HIMMEL_LEG_CONTEXT_MODE=<unset>"
+rc=0; out="$(LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --context-guard bogus HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
+check "dry-run --context-guard bogus: refused" "$rc" "2"
+rc=0; out="$(LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile --context-guard 2>&1)" || rc=$?
+check "dry-run --context-guard with no value: refused" "$rc" "2"
+contains "usage names --context-guard and its reference doc" "$out" "docs/internals/leg-context-guard.md"
 rc=0; out="$(HIMMEL_LEG_CONTEXT_MODE=handoff LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run HIMMEL_LEG_CONTEXT_MODE=handoff: exit 0" "$rc" "0"
 contains "dry-run HIMMEL_LEG_CONTEXT_MODE=handoff: propagated" "$out" "HIMMEL_LEG_CONTEXT_MODE=handoff"

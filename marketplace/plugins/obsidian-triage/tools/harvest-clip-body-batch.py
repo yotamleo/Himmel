@@ -552,6 +552,130 @@ def insert_harvested_section(body: str, section_md: str):
     return before + block + after, (before + after == body)
 
 
+# HIMMEL-4677: a thin YouTube clip (a bare watch link, e.g. Telegram-clipped)
+# gets its metadata and transcript during the harvest from the cookieless
+# helper tools/yt-scrapling-meta.py (Scrapling page fetch + yt-dlp json3), run
+# under the scrapling venv python (YT_SCRAPLING_PYTHON overrides). A miss leaves
+# the clip the usual deferred thin-body partial, so a later run retries it.
+YT_HELPER = Path(__file__).with_name("yt-scrapling-meta.py")
+YT_HELPER_TIMEOUT = 300
+YT_WATCH_RE = re.compile(r"^https://youtube\.com/watch\?v=([A-Za-z0-9_-]{6,20})$")
+
+
+def yt_scrapling_python():
+    override = os.environ.get("YT_SCRAPLING_PYTHON", "").strip()
+    if override:
+        return override
+    py = Path(os.environ.get("HOME") or Path.home()) / ".himmel" / "scrapling-venv" / "bin" / "python"
+    return str(py) if py.exists() else None
+
+
+def youtube_scrapling(video_id: str, vault):
+    """(helper JSON, None) when the helper reports status ok, else (None, reason)."""
+    import json
+    import subprocess
+    py = yt_scrapling_python()
+    if py is None:
+        return None, "scrapling venv missing"
+    cmd = [py, str(YT_HELPER), "--video-id", video_id]
+    if vault is not None:
+        cmd += ["--vault", str(vault)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=YT_HELPER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, "timeout"
+    except OSError as e:
+        return None, f"unavailable ({type(e).__name__})"
+    try:
+        out = json.loads(proc.stdout)
+    except ValueError:
+        return None, f"unparseable output (rc={proc.returncode})"
+    if not isinstance(out, dict) or out.get("status") != "ok" or proc.returncode != 0:
+        status = out.get("status") if isinstance(out, dict) else None
+        detail = out.get("detail") if isinstance(out, dict) else None
+        if status == "ok":
+            status, detail = "error", f"rc={proc.returncode}"
+        return None, f"{status or 'error'}{f' ({detail})' if detail else ''}"
+    # HIMMEL-4722: youtube_section renders these fields directly, so a wrong
+    # type defers the clip instead of raising mid-render.
+    bad = [k for k in ("title", "channel", "description")
+           if out.get(k) is not None and not isinstance(out[k], str)]
+    segs = out.get("transcript")
+    if segs is not None and not (isinstance(segs, list) and all(isinstance(s, dict) for s in segs)):
+        bad.append("transcript")
+    if bad:
+        return None, f"malformed payload ({', '.join(bad)})"
+    return out, None
+
+
+def youtube_section(canonical: str, out: dict) -> str:
+    info = " · ".join(x for x in (
+        out.get("duration") or "",
+        f"{out['views']} views" if out.get("views") else "",
+        f"published {out['published']}" if out.get("published") else "") if x)
+    lines = ["## Harvested content",
+             f"<!-- harvest-clips {TODAY} via youtube-scrapling ({canonical}) -->", "",
+             f"**Title:** {out.get('title') or '(none)'}",
+             f"**Channel:** {out.get('channel') or '(none)'}"]
+    if info:
+        lines.append(f"**Info:** {info}")
+    if out.get("description"):
+        lines += ["", "### Description", "", out["description"].strip()]
+    lines += ["", "### Transcript", ""]
+    segs = out.get("transcript") or []
+    if segs:
+        lines += [f"- [{s.get('ts', '')}] {s.get('tx', '')}" for s in segs]
+    else:
+        lines.append(f"_Transcript unavailable: {out.get('transcript_error') or 'transcript_empty'}_")
+    return "\n".join(lines) + "\n\n"
+
+
+def write_youtube_harvest(path: Path, text: str, fm_raw: str, body: str, canonical: str,
+                          out: dict, injection_hits: list) -> tuple[str, str, list]:
+    """Insert the YouTube section + ok markers; G-3 body check, revert on failure."""
+    section = youtube_section(canonical, out)
+    new_body, insert_ok = insert_harvested_section(body, section)
+    if not insert_ok:
+        return ("x", "failed (G-3): youtube-scrapling insert altered original body content", injection_hits)
+    # Page metadata and captions are untrusted web text: screen them too.
+    hits = injection_hits + [h for h in scan_injection(section) if h not in injection_hits]
+    markers = {
+        "harvested_at": TODAY,
+        "harvest_skill": "youtube-scrapling",
+        "harvest_url_canonical": canonical,
+        "harvest_status": "ok",
+    }
+    if hits:
+        markers["harvest_flag"] = "injection-suspect"
+        markers["harvest_flag_detail"] = ",".join(hits)
+    new_fm = insert_markers(fm_raw, markers)
+    if not hits:
+        # A retried deferred partial carries harvest_flag: thin-body; it no
+        # longer holds once the clip is harvested ok. injection-suspect stays.
+        new_fm = re.sub(r"^harvest_flag:[ \t]*thin-body[ \t]*\n?", "", new_fm, flags=re.MULTILINE)
+    try:
+        path.write_text(f"---\n{new_fm}\n---\n{new_body}", encoding="utf-8", newline="\n")
+        _dfm, disk_fm_raw, disk_body, disk_present = parse_frontmatter(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        _revert(path, text)
+        return ("x", f"failed (write): {e}; reverted", hits)
+    if not disk_present or disk_body != new_body:
+        _revert(path, text)
+        return ("x", "failed (G-3): youtube-scrapling post-write body mismatch; reverted", hits)
+    try:
+        import yaml  # type: ignore
+        yaml.safe_load(disk_fm_raw)
+    except ImportError:
+        pass
+    except Exception as e:
+        _revert(path, text)
+        return ("x", f"failed (frontmatter-yaml-write): {e}; reverted", hits)
+    tx = len(out.get("transcript") or [])
+    tx_note = f"{tx} transcript lines" if tx else f"no transcript ({out.get('transcript_error') or 'transcript_empty'})"
+    suffix = f" [injection-suspect: {', '.join(hits)}]" if hits else ""
+    return ("v", f"harvested via youtube-scrapling (thin-body), {tx_note}, harvest_status=ok{suffix}", hits)
+
+
 def ledger_path():
     """Per-call Firecrawl ledger (HIMMEL-4335). Same ~/.himmel/state/ root the
     other luna tools keep state under; HIMMEL_FIRECRAWL_LEDGER overrides it
@@ -1620,6 +1744,17 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park
         fc_suffix = f" [injection-suspect: {', '.join(merged_hits)}]" if merged_hits else ""
         return ("v", f"harvested via {served_by}, {len(md.encode('utf-8'))}b fetched (thin-body escalation), harvest_status=ok{fc_suffix}", merged_hits)
 
+    yt_miss = ""
+    yt = YT_WATCH_RE.match(canonical)
+    if yt and is_thin_body(body):
+        if dry_run:
+            return ("v", f"would harvest via youtube-scrapling (thin-body): {canonical} [dry-run]{flag_suffix}", injection_hits)
+        vault = next((q.parent for q in path.parents if q.name == "Clippings"), None)
+        out, reason = youtube_scrapling(yt.group(1), vault)
+        if out is not None:
+            return write_youtube_harvest(path, text, fm_raw, body, canonical, out, injection_hits)
+        yt_miss = f"; youtube-scrapling: {reason}"
+
     if is_thin_body(body):
         gap_host = enricher_gap_host(canonical)
         gap_suffix = f"; harvest_enricher_gap={gap_host}" if gap_host else ""
@@ -1632,7 +1767,7 @@ def process_clip(path: Path, dry_run: bool, firecrawl=None, url_rules=None, park
             n = bump_defer(path)
             if n is None:
                 return ("x", f"failed (G-3): defer-count write altered body; reverted{flag_suffix}", injection_hits)
-            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix}{defer_suffix(n)}{flag_suffix}", injection_hits)
+            return ("~", f"partial (thin-body): clipper captured only a skeleton{gap_suffix}{ig_suffix}{yt_miss}{defer_suffix(n)}{flag_suffix}", injection_hits)
         return ("x", f"failed (G-3): thin-body frontmatter mark altered body; reverted{flag_suffix}", injection_hits)
 
     # clip-body path

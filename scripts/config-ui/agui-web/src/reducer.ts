@@ -11,6 +11,7 @@ export type Role = "console" | "leg" | "judge" | "critic" | "subagent" | "agent"
 export type Agent = {
   id: string; name: string; role: Role; model?: string; kind?: string; parentToolCallId?: string;
   calls: number; failures: number; lanes: number; // lanes: its rows in the run strip
+  last: number; // HIMMEL-4711: elapsed ms of the last event that touched it
 };
 export type Text = { id: string; text: string; open: boolean; agent: string; role?: "user" | "assistant"; failure?: Failure };
 export type ToolStatus = "running" | "done" | "error";
@@ -47,7 +48,7 @@ function withAgent(v: View, e: Ev): { v: View; id: string } {
   const prev = v.agents[a.id];
   const pick = (k: string) => (typeof a[k] === "string" ? { [k]: a[k] } : {});
   const agent: Agent = {
-    ...(prev ?? { id: a.id, name: "agent", role: "agent", calls: 0, failures: 0, lanes: 0 }),
+    ...(prev ?? { id: a.id, name: "agent", role: "agent", calls: 0, failures: 0, lanes: 0, last: v.elapsed }),
     ...pick("name"), ...pick("model"), ...pick("kind"), ...pick("parentToolCallId"),
     ...(ROLES.has(a.role) ? { role: a.role } : {}),
   };
@@ -92,17 +93,26 @@ function closeTexts(v: View): View {
 
 // The page's live clock: `anchor` pairs the last elapsed with the wall time it was seen. It re-anchors
 // when elapsed moves OR the status changes, so a run that starts (elapsed still 0) after an idle wait
-// does not inherit the time spent idle.
+// does not inherit the time spent idle. `busy` also keeps it moving between turns while a background agent runs.
 export type ClockAnchor = { elapsed: number; status: View["status"]; wall: number };
 export function runClock(
   anchor: ClockAnchor | undefined, view: { elapsed: number; status: View["status"] }, wall: number,
+  busy = view.status === "running",
 ): { anchor: ClockAnchor; now: number } {
   const a = anchor && anchor.elapsed === view.elapsed && anchor.status === view.status
     ? anchor : { elapsed: view.elapsed, status: view.status, wall };
-  return { anchor: a, now: view.status === "running" ? view.elapsed + (wall - a.wall) : view.elapsed };
+  return { anchor: a, now: busy ? view.elapsed + (wall - a.wall) : view.elapsed };
 }
 
+// Every event that names an agent, or one of its calls or texts, marks that agent's last activity.
 export function reduce(prev: View, e: Ev): View {
+  const v = fold(prev, e);
+  const id = e.agent?.id ?? v.tools[e.toolCallId]?.agent ?? v.texts[e.messageId]?.agent;
+  const a = typeof id === "string" ? v.agents[id] : undefined;
+  return a ? { ...v, agents: { ...v.agents, [a.id]: { ...a, last: v.elapsed } } } : v;
+}
+
+function fold(prev: View, e: Ev): View {
   const { t0, at } = clock(prev, e);
   let v: View = { ...prev, t0, elapsed: at, eventCount: prev.eventCount + 1 };
   switch (e.type) {
@@ -188,6 +198,42 @@ export function reduce(prev: View, e: Ev): View {
       return v; // TOOL_CALL_END, steps, snapshots of messages and anything newer: counted, not rendered
   }
 }
+
+// HIMMEL-4711: what is running now. An agent runs while it has a call open, or while the Agent call that spawned
+// it is open (a background subagent's Agent call returns at launch, so its own open calls still count); the
+// session agent ("main") also while its turn is open. An agent whose parent call failed is failed, whatever it
+// left open, and so is one whose open call the run error killed (a background subagent's parent returned at
+// launch); otherwise a finished agent failed only if the run errored.
+export type AgentState = "running" | "done" | "failed";
+export function agentState(v: View, id: string): AgentState {
+  const parent = v.tools[v.agents[id]?.parentToolCallId ?? ""];
+  if (parent?.status === "error") return "failed";
+  if (Object.values(v.tools).some((t) => t.agent === id && t.status === "running")) return "running";
+  if (Object.values(v.tools).some((t) => t.agent === id && t.failure === "error")) return "failed"; // RUN_ERROR's mark
+  if (parent) return parent.status === "running" ? "running" : "done";
+  if (v.status === "error") return "failed";
+  return id === "main" && v.status === "running" && !v.sideRun ? "running" : "done";
+}
+export const runningCount = (v: View) => v.agentOrder.filter((id) => agentState(v, id) === "running").length;
+// The agent's newest call still open, if any.
+export const currentCall = (v: View, id: string): Tool | undefined =>
+  Object.values(v.tools).filter((t) => t.agent === id && t.status === "running").sort((a, b) => b.start - a.start)[0];
+
+// The top bar's state word. A live page keeps tailing the journal after a turn ends, so it is never "finished"
+// until the stream itself closes: between turns it is idle, with the age of the last event.
+export function liveness(v: View, src: { live: boolean; closed: boolean }, wall: number): { word: string; cls: View["status"] } {
+  if (v.status === "error") return { word: "stopped", cls: "error" };
+  if (v.status === "idle") return { word: "connecting", cls: "idle" };
+  if (!src.live) return v.status === "running" ? { word: "streaming", cls: "running" } : { word: "finished", cls: "finished" };
+  if (src.closed) return { word: "finished", cls: "finished" }; // nothing more will arrive, whatever was left open
+  if (v.status === "running" || runningCount(v) > 0) return { word: "live", cls: "running" };
+  const s = Math.max(0, Math.round((wall - (v.t0 ?? wall) - v.elapsed) / 1000));
+  return { word: `idle · last event ${s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`} ago`, cls: "idle" };
+}
+
+// The live stream's close is clean only if the current turn ended: a new RUN_STARTED reopens it.
+export const turnEnded = (ended: boolean, type: string): boolean =>
+  type === "RUN_STARTED" ? false : type === "RUN_FINISHED" || type === "RUN_ERROR" ? true : ended;
 
 export const reduceAll = (events: Ev[], from: View = initialView()): View => events.reduce(reduce, from);
 

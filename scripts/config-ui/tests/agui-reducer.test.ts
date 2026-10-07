@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { join } from "node:path";
 import { mapFile } from "../agui/journal-mapper.ts";
-import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, runClock, type View } from "../agui-web/src/reducer";
+import { initialView, reduce, reduceAll, applyPatch, makeStamper, settledCount, runClock, agentState, currentCall, runningCount, liveness, turnEnded, type View } from "../agui-web/src/reducer";
 import fixture from "../agui-web/src/fixture.json";
 
 // HIMMEL-4480 PR3: the page is a pure fold of AG-UI events into view state; these cases pin it on the
@@ -162,6 +162,11 @@ test("the run clock re-anchors to the wall clock when the run starts, even thoug
   expect(runClock(next.anchor, { elapsed: 800, status: "finished" }, 9000).now).toBe(800);
 });
 
+test("the run clock keeps moving between turns while a background agent still runs", () => {
+  const a = runClock(undefined, { elapsed: 800, status: "finished" }, 9000, true).anchor;
+  expect(runClock(a, { elapsed: 800, status: "finished" }, 10500, true).now).toBe(2300);
+});
+
 test("applyPatch rejects inherited member names instead of traversing or replacing them", () => {
   for (const k of ["constructor", "__proto__", "toString"]) {
     expect(() => applyPatch({ a: 1 }, [{ op: "replace", path: `/${k}`, value: 1 }])).toThrow();
@@ -271,4 +276,81 @@ describe("agents and failures", () => {
     expect(w.agentOrder).toEqual(["x"]);
     expect(w.status).toBe("finished");
   });
+});
+
+// HIMMEL-4711: what is running now. An agent's state is derived: running while it has a call open or its
+// parent Agent call is open (the session agent: while its turn is open); otherwise done, or failed if its
+// parent call failed or the run errored.
+describe("agent live state", () => {
+  const q = { id: "q", name: "critic", role: "critic", parentToolCallId: "a" };
+  const opened = reduceAll([{ type: "RUN_STARTED", runId: "r", timestamp: 1000 },
+    { type: "TOOL_CALL_START", toolCallId: "a", toolCallName: "Agent", timestamp: 1100 },
+    { type: "TOOL_CALL_START", toolCallId: "s", toolCallName: "Read", agent: q, timestamp: 1200 },
+    { type: "TOOL_CALL_ARGS", toolCallId: "s", delta: '{"file_path":"x.sh"}', timestamp: 1300 }]);
+
+  test("a subagent runs while its call is open, and still while its parent Agent call is open", () => {
+    expect([agentState(opened, "main"), agentState(opened, "q")]).toEqual(["running", "running"]);
+    expect(currentCall(opened, "q")?.id).toBe("s");
+    expect(runningCount(opened)).toBe(2);
+    const between = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "s", content: "ok", timestamp: 1500 }], opened);
+    expect(agentState(between, "q")).toBe("running");
+    expect(currentCall(between, "q")).toBeUndefined();
+    expect(between.agents.q.last).toBe(500);
+  });
+
+  test("the parent's result flips the subagent to done; a failed parent call marks it failed", () => {
+    const done = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "s", content: "ok", timestamp: 1500 },
+      { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "found it", timestamp: 1700 }], opened);
+    expect([agentState(done, "main"), agentState(done, "q")]).toEqual(["running", "done"]);
+    expect(runningCount(done)).toBe(1);
+    expect(done.agents.main.last).toBe(700);
+    const failed = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "timed out", isError: true, timestamp: 1700 }], opened);
+    expect(agentState(failed, "q")).toBe("failed");
+  });
+
+  test("the session agent is done once its turn ends and failed when the run errors", () => {
+    const ended = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x", timestamp: 1700 }, { type: "RUN_FINISHED", timestamp: 1800 }], opened);
+    expect([agentState(ended, "main"), agentState(ended, "q")]).toEqual(["done", "running"]); // q's own Read is still open
+    // A cleanly closed stream sends nothing more: finished, even with q's call left open.
+    expect(liveness(ended, { live: true, closed: true }, 9e9)).toEqual({ word: "finished", cls: "finished" });
+    const errored = reduceAll([{ type: "RUN_ERROR", message: "lost", timestamp: 1800 }], opened);
+    expect([agentState(errored, "main"), agentState(errored, "q")]).toEqual(["failed", "failed"]);
+    expect(runningCount(errored)).toBe(0);
+  });
+
+  test("a background subagent whose Agent call returned at launch fails when the run error kills its open call", () => {
+    const launched = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "launched", timestamp: 1400 }], opened);
+    expect(agentState(launched, "q")).toBe("running"); // its own Read is still open
+    const errored = reduceAll([{ type: "RUN_ERROR", message: "lost", timestamp: 1800 }], launched);
+    expect(agentState(errored, "q")).toBe("failed");
+    // A subagent that had finished before the run error stays done.
+    const finished = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "s", content: "ok", timestamp: 1500 },
+      { type: "RUN_ERROR", message: "lost", timestamp: 1800 }], launched);
+    expect(agentState(finished, "q")).toBe("done");
+  });
+
+  test("the top bar: live while anything runs, idle with the last event's age while tailed, finished once closed", () => {
+    const ended = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "s", content: "ok", timestamp: 1500 },
+      { type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x", timestamp: 1700 }, { type: "RUN_FINISHED", timestamp: 1800 }], opened);
+    expect(liveness(opened, { live: true, closed: false }, 5000)).toEqual({ word: "live", cls: "running" });
+    expect(liveness(ended, { live: true, closed: false }, 1800 + 42_000)).toEqual({ word: "idle · last event 42s ago", cls: "idle" });
+    expect(liveness(ended, { live: true, closed: false }, 1800 + 125_000).word).toBe("idle · last event 2m 5s ago");
+    expect(liveness(ended, { live: true, closed: true }, 9e9)).toEqual({ word: "finished", cls: "finished" });
+    // a turn that ended while a background subagent still has a call open is live, not idle
+    const bg = reduceAll([{ type: "TOOL_CALL_RESULT", toolCallId: "a", content: "x", timestamp: 1700 }, { type: "RUN_FINISHED", timestamp: 1800 }], opened);
+    expect(liveness(bg, { live: true, closed: false }, 5000).word).toBe("live");
+    // the recorded preview keeps its own words; a fresh view is connecting, an error is stopped
+    expect(liveness(opened, { live: false, closed: false }, 0).word).toBe("streaming");
+    expect(liveness(ended, { live: false, closed: false }, 0).word).toBe("finished");
+    expect(liveness(initialView(), { live: true, closed: false }, 0).word).toBe("connecting");
+    expect(liveness(reduceAll([{ type: "RUN_ERROR", message: "x", timestamp: 1900 }], opened), { live: true, closed: false }, 0).word).toBe("stopped");
+  });
+});
+
+// HIMMEL-4711: the live stream's close is clean only if the CURRENT turn ended, not an earlier one.
+test("turnEnded resets when a new run starts", () => {
+  const seq = (types: string[]) => types.reduce((e, t) => turnEnded(e, t), false);
+  expect(seq(["RUN_STARTED", "RUN_FINISHED"])).toBe(true);
+  expect(seq(["RUN_STARTED", "RUN_FINISHED", "RUN_STARTED", "TOOL_CALL_START"])).toBe(false);
+  expect(seq(["RUN_STARTED", "RUN_ERROR"])).toBe(true);
 });
