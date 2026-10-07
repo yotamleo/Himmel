@@ -197,7 +197,13 @@ export async function pending(root, name) {
   return withChainLock(p.lock, async () => {
     const cur = await cursor(p.cursor);
     if (cur.halted) return false;
-    const closed = await segments(root, name);
+    let closed;
+    try { closed = await segments(root, name); }
+    catch (error) {
+      if (error.code === 'ELOOP' || /permissions|symlink/.test(error.message)) throw error;
+      // Wake on damaged archives too; read() owns persisting the halt/notice.
+      return true;
+    }
     const liveK = closed.length ? closed.at(-1)[0] + 1 : 0;
     let size = 0;
     try {

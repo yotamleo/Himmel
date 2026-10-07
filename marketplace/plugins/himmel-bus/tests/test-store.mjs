@@ -248,6 +248,20 @@ test('CR round-2 codex-2 append refuses missing or truncated committed live byte
   }
 });
 
+test('CR round-3 codex-2 corrupt compressed bytes wake the reader to persist a halt', async t => {
+  const { store, root } = await fixture(t);
+  for (let i = 0; i < 6; i++) await store.append(root, 'leg', message('x'.repeat(64000)));
+  const file = (await readdir(join(root, 'log'))).find(n => /\.jsonl\.(zst|gz)$/.test(n));
+  assert.ok(file);
+  await writeFile(join(root, 'log', file), 'not compressed data');
+  assert.equal(await store.pending(root, 'leg'), true);
+  const broken = await store.read(root, 'leg');
+  assert.equal(broken.next.halted, 1);
+  assert.match(broken.notice, /chain broken at #1/);
+  assert.equal(await store.pending(root, 'leg'), false);
+  assert.equal((await store.read(root, 'leg')).notice, undefined);
+});
+
 test('appendChained never recreates a missing log', async t => {
   assert.equal(typeof primitive.appendChained, 'function');
   const dir = await mkdtemp(join(tmpdir(), 'bus-missing-'));
