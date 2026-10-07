@@ -7,6 +7,10 @@
 // A session whose journal has not been written for RECENT_MS is not live and is left out; one with no journal
 // yet is listed bare. Read-only: nothing here writes.
 //
+// HIMMEL-4751: a row also carries its place in the agent graph (graphOf: the parent console its own handover doc
+// names, and a console's predecessor) with its in-process subagents, and its token usage (usageOf: the journal's
+// API usage records, per call, priced with the leg-burn weights and filled against its --autocompact ceiling).
+//
 // ponytail: each request re-folds every journal that grew since the last one (cached on the files' sizes), so a
 // fleet of very long journals costs a full read per poll (measured 2026-10-07 on 9 live sessions: 278 ms cold,
 // 202 ms warm); upgrade path: a per-file incremental fold (the SSE tail's offsets) once a fleet poll is slow.
@@ -27,9 +31,71 @@ export type FleetRow = {
   ticket: string | null; pr: number | null; state: FleetState;
   activity: { tool: string; summary: string; at: number } | null; lastEventAt: number | null;
   subagents: { total: number; running: number }; failures: number;
+  parent: string | null; predecessor: string | null; agents: { name: string; role: string; state: string }[];
+  usage: Usage | null;
+};
+export type Usage = {
+  calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number;
+  resident: number | null; ceiling: number; ceilingFrom: "autocompact" | "window"; fill: number | null;
 };
 export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[] };
-type CensusRow = { pid: string; name: string; model: string; doc: string; status: string };
+type CensusRow = { pid: string; name: string; model: string; doc: string; status: string; autocompact?: string };
+
+// A session name as the launchers write it; anything else in a doc is text, never a link.
+const SESSION = /^[A-Za-z0-9._+-]{1,160}$/;
+const plain = (s: string | undefined) => (s && SESSION.test(s) ? s : null);
+
+// Where a session sits, read from its own doc only. A leg's console is the one its brief names, or the newest
+// console it accepted in a `SUCCESSION accepted: <new> replaces <old>` bullet; a judge's is the console that
+// dispatched it; a console hangs under the operator (parent null) and names the console it succeeded.
+export function graphOf(role: FleetRow["role"], doc: string): { parent: string | null; predecessor: string | null } {
+  if (role === "console") return { parent: null, predecessor: plain(/successor to `?([^\s`]+?)(?:\.md)?`?[\s(]/.exec(doc)?.[1]) };
+  let parent: string | null = null;
+  if (role === "leg") {
+    parent = plain(/your console is\W*`([^`]+)`/i.exec(doc)?.[1]);
+    for (const m of doc.matchAll(/^- (?:[\d:]+ )?SUCCESSION accepted: `?([^\s`]+)`? replaces/gm)) parent = plain(m[1]) ?? parent;
+  } else if (role === "judge") parent = plain(/dispatched by\s*(?:>\s*)?`([^`]+)`/.exec(doc)?.[1]);
+  return { parent, predecessor: null };
+}
+
+// scripts/lanes/lib/burn-weights.sh's defaults: the price-weighted token-equivalent leg-burn.sh reports.
+const W = { input: 1, cacheRead: 0.1, cacheCreate: 1.25, output: 5 };
+const WINDOW_1M = 1_000_000, WINDOW = 200_000;
+type Tally = Omit<Usage, "costEq" | "ceiling" | "ceilingFrom" | "fill">;
+const count = (x: unknown) => (Number.isSafeInteger(x) && (x as number) >= 0 ? (x as number) : 0);
+
+// One API call writes one record per content block, all with its message id and usage: each id counts once.
+// resident = the input side of the newest main-thread call (input + cache read + cache create), the tokens in
+// the window on that turn (context-fill.sh's per-turn count); subagent calls run in their own windows.
+function tallyOf(lines: string[]): Tally | null {
+  const t: Tally = { calls: 0, input: 0, output: 0, cacheRead: 0, cacheCreate: 0, resident: null };
+  const seen = new Set<string>();
+  for (const line of lines) {
+    let r: any;
+    try { r = JSON.parse(line); } catch { continue; }
+    const u = r?.type === "assistant" ? r.message?.usage : undefined, id = r?.message?.id;
+    if (!u || typeof u !== "object" || typeof id !== "string" || seen.has(id)) continue;
+    seen.add(id);
+    t.calls++;
+    t.input += count(u.input_tokens); t.output += count(u.output_tokens);
+    t.cacheRead += count(u.cache_read_input_tokens); t.cacheCreate += count(u.cache_creation_input_tokens);
+    if (r.isSidechain !== true) t.resident = count(u.input_tokens) + count(u.cache_read_input_tokens) + count(u.cache_creation_input_tokens);
+  }
+  return t.calls ? t : null;
+}
+
+// The ceiling is the session's numeric --autocompact; without one (absent or `auto`) it is the model's window.
+function finish(t: Tally | null, c: { autocompact: string; model: string }): Usage | null {
+  if (!t) return null;
+  const ac = /^\d+$/.test(c.autocompact) ? Number(c.autocompact) : 0;
+  const ceiling = ac > 0 ? ac : /\[1m\]$/i.test(c.model) ? WINDOW_1M : WINDOW;
+  return {
+    ...t, costEq: Math.round(t.input * W.input + t.cacheRead * W.cacheRead + t.cacheCreate * W.cacheCreate + t.output * W.output),
+    ceiling, ceilingFrom: ac > 0 ? "autocompact" : "window",
+    fill: t.resident === null ? null : Math.round((t.resident / ceiling) * 1000) / 10,
+  };
+}
+export const usageOf = (lines: string[], c: { autocompact: string; model: string }) => finish(tallyOf(lines), c);
 
 function runScript(script: string, env: Record<string, string | undefined>): Promise<{ census: Fleet["census"]; sessions: CensusRow[] }> {
   return new Promise((ok) => {
@@ -44,10 +110,7 @@ const roleOf = (name: string, doc: string): FleetRow["role"] =>
   /-console$/.test(name) ? "console" : /(^|-)judge(-|$)|(^|-)J\d+(-|$)/i.test(name) ? "judge" : doc ? "leg" : "interactive";
 
 // The PR a leg doc names last: `READY <pr> ...` or `PR <n>` / `PR #<n>` in its bullets.
-async function prOf(doc: string): Promise<number | null> {
-  if (!doc) return null;
-  let text: string;
-  try { text = await readFile(doc, "utf8"); } catch { return null; }
+function prOf(text: string): number | null {
   let pr: number | null = null;
   for (const m of text.matchAll(/^- .*?\b(?:READY|PR) #?(\d+)\b/gm)) pr = Number(m[1]);
   return pr;
@@ -69,19 +132,21 @@ function summarize(args: string): string {
   return typeof first === "string" ? first : "";
 }
 
-const folds = new Map<string, { key: string; view: View }>();
-async function fold(journal: string): Promise<View> {
+type Folded = { view: View; tally: Tally | null };
+const folds = new Map<string, { key: string } & Folded>();
+async function fold(journal: string): Promise<Folded> {
   const { paths } = await sessionFiles(journal);
   const sizes = await Promise.all(paths.map((p) => stat(p).then((s) => s.size, () => -1)));
   const key = paths.map((p, i) => `${p}:${sizes[i]}`).join("|");
   const hit = folds.get(journal);
-  if (hit?.key === key) return hit.view;
+  if (hit?.key === key) return hit;
   const { lines } = await mergeJournalFiles(paths);
   const mapper = createJournalMapper();
   let view = initialView();
   for (const l of lines) for (const e of mapper.pushLine(l)) view = reduce(view, e as never);
-  folds.set(journal, { key, view });
-  return view;
+  const out = { key, view, tally: tallyOf(lines) };
+  folds.set(journal, out);
+  return out;
 }
 
 export async function readFleet(opts: { script: string; env: Record<string, string | undefined>; home: string; now: number; redact: (s: string) => string }): Promise<Fleet> {
@@ -93,15 +158,17 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     const run = typeof rec.sessionId === "string" ? rec.sessionId : null;
     const found = run ? await resolveJournal(opts.home, run) : null;
     const journal = found && "path" in found ? found.path : null;
-    let view: View | null = null;
+    let view: View | null = null, tally: Tally | null = null;
     if (journal) {
       seen.add(journal);
       // Live if any of its files was written recently: a subagent can be busy while the main journal is quiet.
       const { paths } = await sessionFiles(journal);
       const mtimes = await Promise.all(paths.map((p) => stat(p).then((s) => s.mtimeMs, () => 0)));
       if (opts.now - Math.max(0, ...mtimes) > RECENT_MS) return null;
-      view = await fold(journal);
+      ({ view, tally } = await fold(journal));
     }
+    let doc = "";
+    if (c.doc) try { doc = await readFile(c.doc, "utf8"); } catch { /* moved or gone: no doc */ }
     const tools = view ? Object.values(view.tools).sort((a, b) => b.start - a.start) : [];
     const subs = view ? view.agentOrder.filter((id) => id !== "main") : [];
     const t0 = view?.t0;
@@ -110,12 +177,15 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     const role = roleOf(name, c.doc);
     return {
       run, pid: Number(c.pid), name, role, model: c.model || null,
-      ticket: /^([A-Z][A-Z0-9]+-\d+)\b/.exec(name)?.[1] ?? null, pr: role === "leg" ? await prOf(c.doc) : null,
+      ticket: /^([A-Z][A-Z0-9]+-\d+)\b/.exec(name)?.[1] ?? null, pr: role === "leg" ? prOf(doc) : null,
       state: stateOf(c.status, rec.status === "busy"),
       activity: tools[0] && t0 !== undefined ? { tool: tools[0].name, summary: opts.redact(summarize(tools[0].args)).slice(0, 120), at: t0 + tools[0].start } : null,
       lastEventAt: view && t0 !== undefined ? t0 + view.elapsed : null,
       subagents: { total: subs.length, running: view ? subs.filter((id) => agentState(view!, id) === "running").length : 0 },
       failures: view?.failures.length ?? 0,
+      ...graphOf(role, doc),
+      agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
+      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model }),
     };
   }));
   // Drop the folds of sessions that left the fleet, so the cache does not grow with every session ever seen.

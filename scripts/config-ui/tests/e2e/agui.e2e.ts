@@ -2,7 +2,7 @@
 // while the page is open (a live stream over the real SSE path). Needs agui-web/dist
 // (`cd scripts/config-ui/agui-web && bun install && bun run build`); skipped, loudly, when absent.
 import { test, expect } from "@playwright/test";
-import { FLEET } from "../agui-fleet-fixture";
+import { FLEET, PRIOR_CONSOLE } from "../agui-fleet-fixture";
 import { aguiBuilt, bootAgui, J, play, type AguiHarness } from "./agui-fixtures";
 
 // HIMMEL-4711: a live page keeps tailing after a turn ends, so it reads idle (never "finished") until the stream closes.
@@ -191,6 +191,15 @@ test("9. the fleet landing lists 3 live sessions and 1 wrapped one, and a row op
   await expect(leg.locator(".state")).toHaveText("running");
   await expect(live.filter({ hasText: FLEET.idle.name }).locator(".state")).toHaveText("idle");
   await expect(live.filter({ hasText: FLEET.wrapped.name })).toHaveCount(0);
+  // HIMMEL-4751: the leg sits in its console's subtree; each row says where it hangs and what it has spent.
+  await expect(page.getByRole("list", { name: `Under ${FLEET.console.name}` }).locator(".fleet-row")).toHaveText([new RegExp(FLEET.leg.name)]);
+  await expect(leg.locator(".fleet-graph")).toHaveText(`under ${FLEET.console.name}`);
+  await expect(live.nth(0).locator(".fleet-graph")).toHaveText(`under the operator · successor to ${PRIOR_CONSOLE} (not live)`);
+  await expect(leg.locator(".fleet-usage")).toHaveText("context 20% of 200.0k (autocompact) · 3 calls · in 30 · out 300 · cache read 120.0k · cache write 0 · cost-eq 13.5k");
+  await expect(leg.locator(".fleet-agent")).toHaveCount(1);
+  await expect(live.filter({ hasText: FLEET.idle.name }).locator(".fleet-usage")).toHaveText(/not measured/);
+  await leg.locator(".fleet-rel").click();
+  await expect(live.nth(0)).toBeFocused();
 
   const closed = page.locator("details.fleet-closed");
   await expect(closed.locator("summary")).toHaveText("Wrapped (1)");

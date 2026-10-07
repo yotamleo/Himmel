@@ -8,7 +8,7 @@
 # leg_tail_status. Prints one JSON object:
 #   {"census": "ok"|"degraded"|"unavailable", "sessions": [{"pid": "<pid>",
 #    "name": "<-n value>", "model": "<--model value>", "doc": "<path>"|"",
-#    "status": "<marker>"|""}]}
+#    "status": "<marker>"|"", "autocompact": "<--autocompact value>"|""}]}
 # census: degraded = some live pid's argv was unreadable (claude_sessions rc 3),
 # unavailable = the scan itself failed. No handover root is not an error: the
 # sessions are still listed, with no doc.
@@ -40,7 +40,7 @@ rows=""
 # column (a session started without -n) would collapse and shift model into it.
 sep=$(printf '\037')
 out=$(printf '%s\n' "$out" | tr '\t' '\037')
-while IFS="$sep" read -r pid name model _; do
+while IFS="$sep" read -r pid name model autocompact _; do
     case "$pid" in ''|'#'*) continue ;; esac
     doc="" status=""
     # Only a plain session name is searched for (find -name would read glob characters as a pattern).
@@ -49,9 +49,9 @@ while IFS="$sep" read -r pid name model _; do
         doc=$(find "$root" -maxdepth 4 -type f -name "$name.md" 2>/dev/null | head -1) # gnu-ok: BSD find also supports -maxdepth
         [ -n "$doc" ] && status=$(leg_tail_status "$doc")
     fi
-    rows="$rows$pid	$name	$model	$doc	$status
+    rows="$rows$pid	$name	$model	$doc	$status	$autocompact
 "
 done <<EOF
 $out
 EOF
-jq -n --arg census "$census" --arg rows "$rows" '{census: $census, sessions: [$rows | split("\n")[] | select(length > 0) | split("\t") | {pid: .[0], name: .[1], model: .[2], doc: .[3], status: (.[4] // "")}]}'
+jq -n --arg census "$census" --arg rows "$rows" '{census: $census, sessions: [$rows | split("\n")[] | select(length > 0) | split("\t") | {pid: .[0], name: .[1], model: .[2], doc: .[3], status: (.[4] // ""), autocompact: (.[5] // "")}]}'

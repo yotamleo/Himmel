@@ -106,6 +106,10 @@
 #       exit 15 on --dry-run and a real launch alike, before konsole runs;
 #       ~/.cache scratch, a leg worktree, a string-prefix sibling of the root,
 #       a .. escape and a doc with no resume_cwd all launch unchanged.
+#   42. HIMMEL-4783: a doc whose resume_cwd names a leg worktree path that is not
+#       an existing git worktree is refused with exit 2 (dry-run and real) and
+#       the refusal prints the clean-garden create command; an existing
+#       worktree, judge scratch and a doc with no resume_cwd launch unchanged.
 #
 # Platform guard (gitbash-only): POSIX bash 3.2+, same as headed-arm.sh
 # itself (konsole is Linux/KDE-only) - no .ps1 twin.
@@ -3071,7 +3075,14 @@ fi
 # acked record, a REPEAT, and an unreadable record all launch (fail open).
 # Dry-run is enough: the refusal runs before the --dry-run exit.
 doc38="$tmp/c38-doc.md"
-printf -- '---\nresume_cwd: /x/.claude/worktrees/feat+leg-38\ntemplate_version: 3\n---\n' > "$doc38"
+# HIMMEL-4783: the launcher refuses a resume_cwd that names a non-existent leg
+# worktree, so the fixtures below name REAL worktrees of one throwaway repo.
+repo4783="$tmp/repo4783"; mkdir -p "$repo4783/.claude/worktrees"
+git -C "$repo4783" init -q
+git -C "$repo4783" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$repo4783" worktree add -q -b feat/leg-38 "$repo4783/.claude/worktrees/feat+leg-38"
+git -C "$repo4783" worktree add -q -b feat/leg-39 "$repo4783/.claude/worktrees/feat+leg-39"
+printf -- '---\nresume_cwd: %s\ntemplate_version: 3\n---\n' "$repo4783/.claude/worktrees/feat+leg-38" > "$doc38"
 acks38="$HIMMEL_DENIAL_ACK_DIR"
 now38="$(date +%s)"
 page38() { # <label> <class> <ts>
@@ -3162,7 +3173,7 @@ dry39 "$tmp/home39/.cache/himmel/verdicts/q1/link/sub"
 check "39e a symlink under ~/.cache pointing into the root -> exit 15" "$rc39" "15"
 dry39 "$tmp/rootlink39/u/himmel/scratch"
 check "39f a path reached through a symlink TO the root -> exit 15" "$rc39" "15"
-dry39 "$tmp/wt39/.claude/worktrees/feat+leg-39"
+dry39 "$repo4783/.claude/worktrees/feat+leg-39"
 check "39g a normal leg worktree resume_cwd launches (rc 0)" "$rc39" "0"
 dry39 "${root39}-sibling/x"
 check "39h a string-prefix sibling of the root is NOT inside it (rc 0)" "$rc39" "0"
@@ -3854,6 +3865,45 @@ check "41f relay: a benign answer starting with 'ready to go' is refused (conser
 # The envelope is the same one the preface promises: both documents exist and say so.
 check "41e consult-preface.md exists" "$([ -f "$HERE/../../../docs/handover/consult-preface.md" ] && echo yes || echo no)" "yes"
 check "41e leg-preface documents the CONSULT request" "$(grep -c 'CONSULT' "$HERE/../../../docs/handover/leg-preface.md" | tr -d '[:space:]' | awk '{print ($1>0)}')" "1"
+
+# --- 42 (HIMMEL-4783). A doc whose resume_cwd names a leg worktree path
+# (.../.claude/worktrees/<type>+<slug>) that is not an existing git worktree is
+# refused with exit 2, on --dry-run and a real launch alike, and the refusal
+# prints the exact create command. An existing worktree launches; a doc with no
+# resume_cwd and a non-worktree scratch path (judge scratch) are unaffected.
+repo42="$tmp/repo42"; mkdir -p "$repo42/.claude/worktrees"
+git -C "$repo42" init -q
+git -C "$repo42" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$repo42" worktree add -q -b feat/leg-42 "$repo42/.claude/worktrees/feat+leg-42"
+mkdir -p "$repo42/.claude/worktrees/fix+plain-dir"
+dry42() { # <resume_cwd> -> sets rc42/out42
+  printf -- '---\nresume_cwd: %s\ntemplate_version: 1\n---\n' "$1" > "$tmp/c42-doc.md"
+  rc42=0
+  out42="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-42-leg "$tmp/c42-doc.md" /tmp/nosig 99999999999 "$tmp/c42.log" claude-sonnet-5 2>&1)" || rc42=$?
+}
+dry42 "$repo42/.claude/worktrees/feat+missing-42"
+check "42a resume_cwd names a worktree that does not exist -> exit 2" "$rc42" "2"
+contains "42a the refusal prints the create command" "$out42" "bash scripts/clean-garden.sh feat/missing-42 --no-prune"
+dry42 "$repo42/.claude/worktrees/fix+plain-dir"
+check "42b an existing dir that is not a git worktree -> exit 2" "$rc42" "2"
+contains "42b the refusal names the slug derived from the path" "$out42" "clean-garden.sh fix/plain-dir --no-prune"
+dry42 "$repo42/.claude/worktrees/feat+leg-42"
+check "42c an existing git worktree launches (rc 0)" "$rc42" "0"
+dry42 "$tmp/home39/.cache/himmel/verdicts/q1/scratch"
+check "42d a non-worktree scratch resume_cwd is unaffected (rc 0)" "$rc42" "0"
+printf -- '---\ntemplate_version: 1\n---\n' > "$tmp/c42-doc.md"
+rc42=0; out42="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-42-leg "$tmp/c42-doc.md" /tmp/nosig 99999999999 "$tmp/c42.log" claude-sonnet-5 2>&1)" || rc42=$?
+check "42e a doc with no resume_cwd is unaffected (rc 0)" "$rc42" "0"
+printf -- '---\nresume_cwd: %s\ntemplate_version: 1\n---\n' "$repo42/.claude/worktrees/feat+missing-42" > "$tmp/c42-doc.md"
+d42="$tmp/c42"; mk_launch_stubs "$d42" "HIMMEL-42-real"
+rc=0
+some_doc="$tmp/c42-doc.md" RUN_LEG_ARGS='--no-profile' run_leg "$d42" "$repo42" "HIMMEL-42-real" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+check "42f a REAL launch with a missing worktree is refused (rc 2)" "$rc" "2"
+if [ -e "$d42/env-record" ]; then
+  echo "FAIL - 42f a refused launch must not reach the launcher"; fails=$((fails+1))
+else
+  echo "ok - 42f a refused launch never reaches the launcher"
+fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then
