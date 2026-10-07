@@ -25,18 +25,29 @@
 #
 #     <the evidence file, verbatim>
 #
+# The writer-session stamp is a breadcrumb, not authentication: an in-process
+# judge call shares the console's environment, so it names the session the
+# writer ran in, nothing more. Anything outside [A-Za-z0-9-] is stamped
+# `invalid` (a newline must not inject a line above the real verdict).
+#
 # Refuses, writing nothing:
 #   - <qid> or <name> not a path segment ([A-Za-z0-9][A-Za-z0-9._-]*, the
 #     go_trust_verdict rule), <head> not 40 lowercase hex, an answer other
 #     than GO / NO-GO, an evidence file that is missing, not a regular file
-#     or empty;
+#     or empty, not an absolute path under /tmp/claude-<uid>/, carrying a
+#     `.` or `..` segment, or reached through a symlink (so a secret is never
+#     copied into the handover state repo);
 #   - a console leg (HIMMEL_CONSOLE_LEG) that is not a judge session
 #     (HIMMEL_CONSOLE_JUDGE=1): a leg must not certify its own trust-path PR;
+#     and a console relay (HIMMEL_CONSOLE_RELAY), as go.sh refuses one;
 #   - any directory from <root>/<user> down to the target file that is a
 #     symlink, so the write cannot leave verdicts/<qid>/;
-#   - an existing verdict in verdicts/<qid>/ for the same head with the other
-#     answer, or one that does not parse (go.sh refuses on either anyway).
-# The same answer again, or a verdict for another head, is written.
+#   - a GO when verdicts/<qid>/ already holds a NO-GO for the same head, or a
+#     verdict that does not parse (go.sh refuses on either anyway).
+# A NO-GO is always written past those last two (HIMMEL-4714): go.sh treats
+# any NO-GO as a veto, so it only narrows, and refusing it would leave a
+# forged or mistaken GO alone on disk. The same answer again, or a verdict
+# for another head, is written.
 # ponytail: same-uid ceiling - the symlink and conflict checks run before an
 # atomic rename, so a same-uid process racing the directory can still swap it
 # between check and rename; a separate-uid verdict store is the upgrade path
@@ -45,7 +56,7 @@
 # Exit codes:
 #   0  written (the path on stdout)
 #   2  usage / validation
-#   3  refused: a console leg, or the root / <user>/<bucket> scope is unresolved
+#   3  refused: a console leg or relay, or the root / <user>/<bucket> scope is unresolved
 #   4  refused: symlink, conflicting or unparsed verdict
 #   5  write failed
 #
@@ -83,10 +94,43 @@ if [ "$HEAD_OK" -ne 1 ] || [ "${#HEAD}" -ne 40 ]; then
     exit 2
 fi
 [ -n "$EVIDENCE" ] || { echo "write-verdict: --evidence-file <path> is required" >&2; exit 2; }
+# The evidence must live in this uid's Claude scratch root, reached without a
+# symlink at any step from that root down.
+SCRATCH="/tmp/claude-$(id -u)"
+case "$EVIDENCE" in
+    "$SCRATCH"/*) ;;
+    *) echo "write-verdict: evidence file '$EVIDENCE' must be an absolute path under $SCRATCH/" >&2; exit 2 ;;
+esac
+case "/$EVIDENCE/" in
+    */./*|*/../*) echo "write-verdict: evidence file '$EVIDENCE' carries a . or .. segment" >&2; exit 2 ;;
+esac
+if [ -L "$SCRATCH" ] || [ ! -d "$SCRATCH" ] || [ ! -O "$SCRATCH" ]; then
+    echo "write-verdict: '$SCRATCH' is not a directory this uid owns (or is a symlink)" >&2
+    exit 2
+fi
+ev_dir=$SCRATCH
+ev_rest=${EVIDENCE#"$SCRATCH"/}
+while :; do
+    case "$ev_rest" in */*) ev_seg=${ev_rest%%/*}; ev_rest=${ev_rest#*/} ;; *) ev_seg=$ev_rest; ev_rest="" ;; esac
+    [ -n "$ev_seg" ] && ev_dir="$ev_dir/$ev_seg"
+    if [ -L "$ev_dir" ]; then
+        echo "write-verdict: evidence path '$ev_dir' is a symlink - refusing" >&2
+        exit 2
+    fi
+    [ -n "$ev_rest" ] || break
+done
 if [ ! -f "$EVIDENCE" ] || [ ! -r "$EVIDENCE" ] || [ ! -s "$EVIDENCE" ]; then
     echo "write-verdict: evidence file '$EVIDENCE' is missing, unreadable, not a regular file or empty" >&2
     exit 2
 fi
+case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
+    ''|0|false|off|no) ;;
+    *)
+        echo "write-verdict: refusing - this is a console relay (HIMMEL_CONSOLE_RELAY is set); a relay never writes a verdict." >&2
+        exit 3 ;;
+esac
+SESSION=${CLAUDE_CODE_SESSION_ID:-unknown}
+case "$SESSION" in *[!A-Za-z0-9-]*) SESSION=invalid ;; esac
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=scripts/lib/go-gate.sh
@@ -125,28 +169,43 @@ TARGET="$dir/$NAME.md"
 # Hold the qid's lock across the scan and the publish: two writers racing on
 # one qid could otherwise both pass the scan, and the last mv erase a NO-GO.
 # mkdir is the portable atomic test-and-set (no flock on macOS).
+# The lock records its owner (pid=<pid> at=<UTC time>) so a stale one says
+# whose it was and whether that writer is still running.
 lockd="$dir/.write-verdict.lock"
 tmpf=""
 tries=0
 until mkdir "$lockd" 2>/dev/null; do
     tries=$((tries + 1))
     if [ "$tries" -ge 50 ]; then
-        echo "write-verdict: '$lockd' is held by another writer (or left by a killed one: remove it only if no writer is running)" >&2
+        owner=$(head -n 1 "$lockd/owner" 2>/dev/null)
+        opid=$(printf '%s\n' "$owner" | sed -nE 's/^pid=([0-9]+) .*/\1/p')
+        if [ -z "$owner" ]; then
+            state="its owner is unrecorded (a writer killed before it recorded one)"
+        elif [ -n "$opid" ] && ! kill -0 "$opid" 2>/dev/null; then
+            state="held by $owner; pid $opid is not running, so the lock is stale"
+        else
+            state="held by $owner; that writer may still be running - wait for it"
+        fi
+        echo "write-verdict: '$lockd' is held: $state" >&2
+        echo "write-verdict: once no writer is running, recover with: rm -r '$lockd'" >&2
         exit 5
     fi
     sleep 0.1
 done
-trap 'rm -f "$tmpf"; rmdir "$lockd" 2>/dev/null' EXIT
+trap 'rm -f "$tmpf" "$lockd/owner"; rmdir "$lockd" 2>/dev/null' EXIT
+printf 'pid=%s at=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lockd/owner" 2>/dev/null || true
 
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then
     echo "write-verdict: refusing - '$TARGET' is a symlink or not a regular file" >&2
     exit 4
 fi
 
-# Every verdict already here must parse; none may rule the other way on HEAD.
+# Before a GO, every verdict already here must parse and none may rule NO-GO
+# on HEAD. A NO-GO skips the scan: it only narrows (HIMMEL-4714).
 # The parse is go_trust_verdict's, line for line.
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 for f in "$dir"/*.md; do
+    [ "$ANSWER" = GO ] || break
     [ -f "$f" ] || continue
     line=$(tr -d '\r' < "$f" 2>/dev/null | awk '/^## Verdict[[:space:]]*$/ { p = 1; next } p && NF { print; exit }')
     word=$(printf '%s\n' "$line" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `[0-9a-f]{40}`\.?$/\1/p')
@@ -155,8 +214,8 @@ for f in "$dir"/*.md; do
         echo "write-verdict: refusing - '$f' does not parse as a verdict (go.sh would refuse the qid); fix or remove it first" >&2
         exit 4
     fi
-    if [ "$head" = "$HEAD" ] && [ "$word" != "$ANSWER" ]; then
-        echo "write-verdict: refusing - '$f' already rules $word for head $HEAD; a verdict is not rewritten the other way" >&2
+    if [ "$head" = "$HEAD" ] && [ "$word" = NO-GO ]; then
+        echo "write-verdict: refusing - '$f' already rules NO-GO for head $HEAD; a GO never overrides a veto" >&2
         exit 4
     fi
 done
@@ -166,7 +225,7 @@ tmpf=$(mktemp "$dir/.write-verdict.XXXXXX") || { echo "write-verdict: cannot cre
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 if ! {
     printf '# VERDICT %s - %s\n\n' "$QID" "$NAME" &&
-    printf 'writer-session: %s\n' "${CLAUDE_CODE_SESSION_ID:-unknown}" &&
+    printf 'writer-session: %s\n' "$SESSION" &&
     printf 'written-at: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" &&
     printf '## Verdict\n\n**%s** for head `%s`.\n\n' "$ANSWER" "$HEAD" &&
     cat "$EVIDENCE"
