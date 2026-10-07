@@ -1,31 +1,10 @@
-/* Layout: sticky left rail (three regions + live counts) beside one scrolling column of fixed-grid monospace rows. Dark-first. */
-:root{
-  --bg:#121416; --panel:#191c1f; --line:#2a2f34; --fg:#e8e2d6; --dim:#8e959c;
-  --accent:#9fb7cf; --ok:#7fae8a; --warn:#d1a85f; --fail:#d9796b; --off:#6f767d;
-  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
-  --sans:"IBM Plex Sans",system-ui,sans-serif;
-  color-scheme:dark;
-}
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
-  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
-  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; color-scheme:light}}
-:root[data-theme="light"]{
-  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
-  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; color-scheme:light}
+/* Theme tokens and the rail: theme.css (HIMMEL-4711). Layout: sticky left rail (three regions + live counts) beside one scrolling column of fixed-grid monospace rows. Dark-first. */
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);font:13px/1.5 var(--mono);margin:0}
-.shell{display:grid;grid-template-columns:200px minmax(0,1fr);gap:0;min-height:100vh}
-.rail{position:sticky;top:env(safe-area-inset-top,0px);align-self:start;padding:20px 16px;border-right:1px solid var(--line);height:100vh;display:flex;flex-direction:column;gap:18px}
-.brand{font:600 13px var(--mono);letter-spacing:.04em}
-.brand small{display:block;color:var(--dim);font-weight:400}
 .top{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline;padding:10px 24px;border-bottom:1px solid var(--line);font-size:12px;overflow-wrap:anywhere}
 .top .ver{font-weight:600;color:var(--fg)}
 .top .k{color:var(--dim)}
 .top .unk{color:var(--warn)}
-.pages{display:flex;flex-direction:column;gap:2px}
-.pages a{display:block;padding:6px 8px;border-radius:3px;color:var(--dim);text-decoration:none;font-weight:600}
-.pages a[aria-current="page"]{color:var(--fg);background:var(--panel);box-shadow:inset 2px 0 0 var(--accent)}
-.pages a:focus-visible{outline:1px solid var(--accent);outline-offset:1px}
 .nav{display:flex;flex-direction:column;gap:2px}
 .nav button{all:unset;cursor:pointer;display:flex;justify-content:space-between;padding:6px 8px;border-radius:3px;color:var(--dim)}
 .nav button[aria-current="true"]{color:var(--fg);background:var(--panel)}
@@ -78,9 +57,7 @@ h2{font:600 13px var(--mono);letter-spacing:.06em;text-transform:uppercase;margi
 .empty{color:var(--dim);padding:8px 4px}
 .toast{position:fixed;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--panel);border:1px solid var(--line);padding:8px 12px;font-size:12px}
 @media (max-width:760px){
-  .shell{grid-template-columns:1fr}
-  .rail{position:static;height:auto;border-right:0;border-bottom:1px solid var(--line);flex-direction:row;flex-wrap:wrap;align-items:center;padding:12px 16px}
-  .pages,.nav{flex-direction:row;flex-wrap:wrap}
+  .nav{flex-direction:row;flex-wrap:wrap}
   .top{padding-inline:16px}
   .railfoot{display:none}
   main{padding-inline:16px}

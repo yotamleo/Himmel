@@ -19,7 +19,7 @@ test("himmelctl ui --port 0 prints a tokened URL that serves the feed, then dies
   let base = "";
   try {
     const url = new TextDecoder().decode((await p.stdout.getReader().read()).value).trim();
-    const m = /^(http:\/\/127\.0\.0\.1:\d+)\/#t=([0-9a-f]{64})$/.exec(url);
+    const m = /^(http:\/\/127\.0\.0\.1:\d+)\/(?:agui\/)?#t=([0-9a-f]{64})$/.exec(url);
     expect(m).not.toBeNull();
     let token: string;
     [, base, token] = m!;
@@ -69,7 +69,7 @@ test("himmelctl ui --allow-agent-session starts under a Claude session env", asy
       if (done) break;
       out += dec.decode(value);
     }
-    expect(out.trim()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/#t=[0-9a-f]{64}$/);
+    expect(out.trim()).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/(?:agui\/)?#t=[0-9a-f]{64}$/);
   } finally {
     p.kill("SIGTERM");
     await p.exited;

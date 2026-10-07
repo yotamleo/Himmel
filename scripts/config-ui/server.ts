@@ -50,6 +50,9 @@ const STATIC: Record<string, [string, string]> = {
   "/render.js": ["render.js", "application/javascript; charset=utf-8"],
   "/health.js": ["health.js", "application/javascript; charset=utf-8"],
   "/app.css": ["app.css", "text/css; charset=utf-8"],
+  // HIMMEL-4711: the rail and theme the AG-UI pages share (agui-web bundles its own copy at build time).
+  "/nav.js": ["nav.js", "application/javascript; charset=utf-8"],
+  "/theme.css": ["theme.css", "text/css; charset=utf-8"],
 };
 // GET /agui/ (HIMMEL-4480): the built AG-UI page, agui-web/dist (bun build, untracked).
 // Not token-gated: the page is static and the token rides the URL fragment; /api/agui/<run> stays gated.
@@ -80,7 +83,9 @@ function aguiStale(dist: string, web: string): { built: Date; changed: Date } | 
   try {
     const built = statSync(join(dist, "index.html")).mtime;
     const src = readdirSync(join(web, "src"), { recursive: true }).map((f) => join(web, "src", String(f)));
-    const stats = [join(web, "index.html"), ...src].map((f) => statSync(f));
+    // HIMMEL-4711: the page also bundles the console's rail and theme from public/.
+    const shared = ["nav.js", "theme.css"].map((f) => join(web, "..", "public", f)).filter((f) => existsSync(f));
+    const stats = [join(web, "index.html"), ...src, ...shared].map((f) => statSync(f));
     const newest = (sts: typeof stats) => sts.map((st) => st.mtime).reduce((a, b) => (b > a ? b : a));
     // HIMMEL-4716: a deleted or renamed source leaves no newer mtime, so the build lists its sources in
     // dist/.agui-sources and a listed file that is gone is stale; then the newest directory mtime dates the delete.
@@ -375,16 +380,26 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
   return { server, port: server.port, token, stop: () => { clearTimeout(idle); server.stop(true); } };
 }
 
+// HIMMEL-4711: `himmelctl ui` prints ONE URL. LANDING is the operator's switch: "fleet" lands on the fleet
+// (Config and Health one click away in the rail), "config" on the config page. The fleet is the landing only
+// when agui-web/dist is built; else the console, whose Fleet link answers with the build steps.
+export const LANDING: "fleet" | "config" = "fleet";
+export function launchUrl(base: string, token: string, o: { landing: "fleet" | "config"; built: boolean; agui?: string }): string {
+  if (o.agui && o.agui !== "fleet") return `${base}/agui/#t=${token}&run=${o.agui}`;
+  return o.agui === "fleet" || (o.landing === "fleet" && o.built) ? `${base}/agui/#t=${token}` : `${base}/#t=${token}`;
+}
+
 if (import.meta.main) {
   const i = process.argv.indexOf("--port");
   const a = process.argv.indexOf("--agui");
   const { port, token } = startServer({ port: i > 0 ? Number(process.argv[i + 1]) : 0 });
-  console.log(`http://${LOOPBACK}:${port}/#t=${token}`);
   // himmelctl ui --agui [<run>]: the launcher has already resolved and validated the run id; with none, the
   // fleet landing (HIMMEL-4712).
   const run = a > 0 ? process.argv[a + 1] : undefined;
-  if (a > 0) console.log(`http://${LOOPBACK}:${port}/agui/#t=${token}${run && !run.startsWith("--") ? `&run=${run}` : ""}`);
-  const stale = a > 0 ? aguiStaleWarning() : null;
+  const agui = a > 0 ? (run && !run.startsWith("--") ? run : "fleet") : undefined;
+  const url = launchUrl(`http://${LOOPBACK}:${port}`, token, { landing: LANDING, built: existsSync(join(AGUI_DIST, "index.html")), agui });
+  console.log(url);
+  const stale = url.includes("/agui/") ? aguiStaleWarning() : null;
   if (stale) console.error(stale);
   process.on("SIGINT", () => process.exit(0));
   process.on("SIGTERM", () => process.exit(0));

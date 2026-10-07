@@ -93,8 +93,7 @@ cd ../../..
 node scripts/himmelctl/bin.js ui --port 0 --agui latest
 ```
 
-It prints two URLs: the config page, then
-`http://127.0.0.1:<port>/agui/#t=<64 hex>&run=<session-id>`. Open the second.
+It prints one URL, `http://127.0.0.1:<port>/agui/#t=<64 hex>&run=<session-id>`.
 `--agui latest` picks the newest `~/.claude/projects/*/<id>.jsonl` by
 modification time; `--agui <session-id>` picks one session. The server runs in
 the foreground (Ctrl-C to stop); an open stream keeps it from idling out.
@@ -109,6 +108,19 @@ in the live list. Clicking a row opens that session's run page. The page polls
 whose census is `fleet.sh`: `claude_sessions` plus each leg doc's last marker
 (`leg_tail_status`). A session whose journal has been quiet for an hour is left
 out.
+
+**One app (HIMMEL-4711).** The console and the AG-UI pages share one rail and one
+theme (`public/nav.js`, `public/theme.css`): Config, Health and Fleet, plus Run
+on a run page. Plain `himmelctl ui` prints ONE URL and lands on the fleet when
+`agui-web/dist` is built, on the console when it is not; `LANDING` in
+`server.ts` is the one-line switch (`"config"` lands on the console). The token
+only ever travels in the URL fragment: the console reads `#t=<token>[&page=<id>]`
+and clears it from the address bar, the AG-UI page keeps `#t=<token>`, and
+requests carry it in the `X-Himmel-Token` header. The rail's Fleet dot is the
+census health (ok, degraded = warn, unavailable or unreachable = fail, not yet
+read = off), in the status colours; on the console it is read on load and on
+each page change, never polled, so an open console still idles out. A leg's
+fleet row also links to the Health page (its legs and bank cards).
 
 ![The AG-UI page streaming a /pr-check round: a leg and its critic subagent in their own colours and bands, the review panel filling with three findings and their verdicts, and four failures marked by kind](docs/agui-live-run.gif)
 
@@ -152,7 +164,9 @@ imports, so its suite runs in CI without an install.
   run): agent attribution and the filter, failure marking and the jump
   control, and the long-output control. HIMMEL-4712 adds the fleet landing
   over a fixture fleet (`agui-fleet-fixture.ts`: 3 live sessions and 1
-  wrapped) and the click through to a run.
+  wrapped) and the click through to a run. HIMMEL-4711 adds the walk console to
+  Fleet to a run and back over the shared rail, and checks no request line
+  carries the token.
 
 ## Manual pass (the same 7 items)
 
@@ -173,5 +187,5 @@ the fragment). The first report can take a couple of minutes.
 - [ ] 6. Tab to a header; Enter or Space toggles it; focus stays on that header after the repaint.
 - [ ] 7. Unsorted is absent with 0 unmapped rows; when one exists it is always open and last.
 - [ ] Header: above the page, one line shows `himmel <version> · <describe>`, the 12-char commit, the served checkout and the feed time; a feed without `himmel` reads `version unknown (feed has no himmel identity)`.
-- [ ] Page links: the rail lists the pages (Config and Health), the current one is highlighted, and the address bar reads `#/config` (the token never stays in the URL).
+- [ ] Page links: the rail lists the pages (Config, Health and Fleet, with the Fleet dot in a status colour), the current one is highlighted, and the address bar reads `#/config` (the token never stays in the URL).
 - [ ] Safety: click a toggle: only a dry-run plan appears; confirm stays disabled until you type the target; cancel clears it.

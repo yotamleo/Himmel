@@ -1,24 +1,15 @@
-/* The AG-UI run view. Evolves config-ui's tokens (public/app.css): same palette and Plex pair, but prose is set
+/* The AG-UI run view. The palette, the Plex pair and the rail are config-ui's (public/theme.css, HIMMEL-4711), but prose is set
    in Plex Sans and only machine text (tool names, args, paths) in Plex Mono. The one bold element is the run
    strip: parallel tool calls as lanes over time, one band per agent (HIMMEL-4669). Each agent carries one of six
    colours (--ag0..5, none of them the status green or red) on its band, its row in the agent list and the rail
    beside its work; failures alone are red (errors, failed suites) or amber (denials, BLOCKED reports).
    Motion is limited to bars growing and the text caret. */
-:root{
-  --bg:#121416; --panel:#191c1f; --line:#2a2f34; --fg:#e8e2d6; --dim:#8e959c;
-  --accent:#9fb7cf; --ok:#7fae8a; --warn:#d1a85f; --fail:#d9796b; --off:#6f767d;
-  --mono:"IBM Plex Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
-  --sans:"IBM Plex Sans",system-ui,sans-serif;
-  --tint:18%; color-scheme:dark;
+:root{--tint:18%;
   --ag0:#9fb7cf; --ag1:#c3a0dc; --ag2:#76c2bd; --ag3:#e3a0b7; --ag4:#c2b87a; --ag5:#a3abe9;
 }
-@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
-  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
-  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light;
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--tint:14%;
   --ag0:#365a7d; --ag1:#6f4596; --ag2:#1f6f69; --ag3:#94405f; --ag4:#6b6320; --ag5:#424fa3;}}
-:root[data-theme="light"]{
-  --bg:#f5f4f0; --panel:#ecebe6; --line:#d6d4cc; --fg:#1f2326; --dim:#5f666d;
-  --accent:#365a7d; --ok:#2f6b3f; --warn:#8a5d0e; --fail:#a3392b; --off:#7a8087; --tint:14%; color-scheme:light;
+:root[data-theme="light"]{--tint:14%;
   --ag0:#365a7d; --ag1:#6f4596; --ag2:#1f6f69; --ag3:#94405f; --ag4:#6b6320; --ag5:#424fa3;}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
@@ -174,3 +165,6 @@ a.fleet-head:hover .fleet-name,a.fleet-head:focus-visible .fleet-name{text-decor
   .bar,.band{transition:none}
   .caret{animation:none}
 }
+/* HIMMEL-4711: the page column beside the shared rail, and a fleet row's link to the console. */
+.pane{min-width:0}
+.fleet-link{justify-self:start;color:var(--accent);font:12px var(--mono)}

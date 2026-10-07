@@ -246,10 +246,13 @@ commands:
                           per-launch token. The OPERATOR runs this from a
                           terminal; agents must not (refused under a Claude
                           session env unless --allow-agent-session). Runs in the foreground,
-                          Ctrl-C or 30 min idle exits. --agui [<session-id>|latest]
-                          also prints the AG-UI run page URL for that session
-                          (latest: the newest ~/.claude/projects transcript);
-                          with no id, the fleet page of every live session
+                          Ctrl-C or 30 min idle exits. Prints ONE URL: the fleet
+                          page of every live session when the AG-UI page is
+                          built, else the config page; both share one rail.
+                          --agui [<session-id>|latest] prints the AG-UI run page
+                          URL for that session instead (latest: the newest
+                          ~/.claude/projects transcript); with no id, the fleet
+                          page itself
   gaps                    read-only report: what does THIS setup not get from
                           the reference machine? Diffs the saved install
                           profile against a reference profile (default
