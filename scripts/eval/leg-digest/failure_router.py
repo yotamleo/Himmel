@@ -24,7 +24,10 @@ the same legs writes no second line. Never-routed and signal-only rows (the
 traj/red-before-green and traj/claim-unverified classes among them) decide nothing.
 
   log    $HIMMEL_FAILURE_ROUTES_LOG, else ~/.himmel/state/failure-routes.log.jsonl
-         {ts, class, legs, decision, ticket}, one O_APPEND write per line
+         {ts, class, legs, decision, ticket}, one O_APPEND write per line. Before a Jira
+         comment or create a kind=route-intent row {class, legs, intent} (no decision key,
+         so readers skip it) is written first; if that write fails nothing is sent and the
+         decision is skipped:log-error. JIRA_PROJECT_KEY is required (no default) unless --dry-run.
   state  $HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state/failure-routes.json
          class -> ticket and counts, plus the day's create count; flock, temp then rename
   inbox  $HIMMEL_FAILURE_INBOX, else --inbox (<bucket>/failure-loop/memory-inbox.md);
@@ -290,8 +293,11 @@ def acted(c, legs):
     c["acted"] = sorted(set(c.get("acted", [])) | set(legs))
 
 
-def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project):
-    """(decision, ticket). Mutates the class entry c and the state's create count."""
+def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project, intent):
+    """(decision, ticket). Mutates the class entry c and the state's create count.
+
+    intent(kind) logs the send before it happens and returns False when the log write failed:
+    no Jira write is made without it."""
     n = len(legs)
     if not state_ok:
         return "skipped:state-unreadable", None
@@ -316,6 +322,8 @@ def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, pro
         body = build_body(table, t, cls, legs, counted, True)
         if check_body(body, table):
             return "skipped:alphabet", key
+        if not intent("comment"):
+            return "skipped:log-error", key
         if with_file(body, lambda f: jira(jbin, ["comment", key, "--comment-file", f])) is None:
             return "skipped:jira-error", key
         acted(c, legs)
@@ -330,6 +338,8 @@ def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, pro
     body = build_body(table, t, cls, legs, counted, False)
     if check_body(body, table) or not summary_rx(t["summary"]).match(title):
         return "skipped:alphabet", None
+    if not intent("file"):
+        return "skipped:log-error", None
     out = with_file(body, lambda f: jira(jbin, ["create", "--type", "Task", "--title", title, "--desc-file", f,
                                                  "--labels", "failure-loop,fl-%s" % slug(cls),
                                                  "--project", project]))
@@ -346,8 +356,11 @@ def route(a):
     table = load_table(a.table)
     now = now_utc(a.now)
     today = now.strftime("%Y-%m-%d")
-    project = os.environ.get("JIRA_PROJECT_KEY") or "HIMMEL"
-    if not PROJECT.match(project):
+    project = os.environ.get("JIRA_PROJECT_KEY")
+    if not project and not a.dry_run:
+        print("failure-router: JIRA_PROJECT_KEY is required (no default); nothing routed", file=sys.stderr)
+        return 1
+    if project and not PROJECT.match(project):
         print("failure-router: JIRA_PROJECT_KEY %r is not a project key" % project, file=sys.stderr)
         return 1
     try:
@@ -380,7 +393,18 @@ def route(a):
                 if INBOX_LINE.match(line):
                     append_inbox(inbox, line)
                     c["inbox"] = True
-            dec, ticket = decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project)
+            def intent(kind, cls=cls, n=n):
+                # The intent line is written before the Jira call; the decision line after it confirms.
+                try:
+                    leg_ledger._append(a.log, [{"v": 1, "ts": iso(now), "host": socket.gethostname(),
+                                                "source": SOURCE, "kind": "route-intent", "class": cls,
+                                                "legs": n, "intent": kind}])
+                    return True
+                except OSError as e:
+                    print("failure-router: cannot log the intent, nothing sent: %s" % e, file=sys.stderr)
+                    return False
+
+            dec, ticket = decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project, intent)
             if a.dry_run:
                 print(json.dumps({"class": cls, "legs": n, "decision": dec, "ticket": ticket,
                                   "inbox": bool(inbox)}, separators=(",", ":")))
