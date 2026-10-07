@@ -67,7 +67,7 @@ rm -rf /tmp/himmel-setup \
 |---|---|
 | Hooks | The repo's `.claude/settings.json`; plugin hooks through `--with-plugins` (probed, HIMMEL-4273) |
 | graphify | Installed at the in-repo pin (`scripts/lib/graphify-bin.sh`) with no backend extra. The setup builds the graph AST-only (`graphify update .`): it parses code locally and calls no model, so nothing is sent anywhere |
-| qmd, repo only | The pinned fork (`scripts/lib/qmd-bin.sh install`) and one collection, `himmel`, on the repo. BM25 only, see below |
+| qmd, repo only | The pinned fork (`scripts/lib/qmd-bin.sh install`) and one collection, `himmel`, on the repo, rebuilt on every setup run so it never serves an older clone. BM25 only, see below. A ticket that names another collection (`-c luna`) routes LOCAL-NATIVE |
 | Jira | The claude.ai Atlassian MCP connector, not the local jira CLI |
 
 | Stays local | Why |

@@ -144,7 +144,7 @@ chmod +x "$GQ/graphify" "$GQ/qmd"
 run "$GQ" --dry-run
 case "$OUT" in *"step=graphify action=skip"*) ok "present graphify is skipped" ;; *) bad "present graphify not skipped: $OUT" ;; esac
 case "$OUT" in *"step=qmd action=skip"*) ok "present qmd is skipped" ;; *) bad "present qmd not skipped: $OUT" ;; esac
-case "$OUT" in *"step=qmd-index action=skip"*) ok "an existing himmel collection is not re-added" ;; *) bad "existing himmel collection re-added: $OUT" ;; esac
+case "$OUT" in *"step=qmd-index action=refresh $FAKE --name himmel"*) ok "an existing himmel collection is rebuilt from this clone" ;; *) bad "existing himmel collection not refreshed (stale index): $OUT" ;; esac
 # a failing graphify / qmd install is NON-fatal and does not stop the next step.
 GF="$TMP/gfail"; mkdir -p "$GF"; cp "$HAVE"/* "$GF/"
 for t in timeout sh tail mkdir bash; do ln -s "$(command -v "$t")" "$GF/$t"; done

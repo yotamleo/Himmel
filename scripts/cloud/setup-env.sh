@@ -201,7 +201,8 @@ else
 fi
 qmd_cols="$([ -x "$QMD_BIN" ] && $TMO 30 "$QMD_BIN" collection list 2>/dev/null)"
 if [[ $'\n'"$qmd_cols" == *$'\n'"himmel "* ]]; then
-  plan qmd-index skip "himmel collection present"
+  # rebuilt, not skipped: the cached collection may index an older clone or path
+  build_step qmd-index refresh "$ROOT --name himmel (BM25 only, no embed)" -- sh -c "$TMO 30 '$QMD_BIN' collection remove himmel && $TMO 180 '$QMD_BIN' collection add '$ROOT' --name himmel"
 elif [ -x "$QMD_BIN" ] || [ "$DRY" -eq 1 ]; then
   build_step qmd-index add "$ROOT --name himmel (BM25 only, no embed)" -- $TMO 180 "$QMD_BIN" collection add "$ROOT" --name himmel
 else
