@@ -1560,7 +1560,8 @@ pobf_relief() {
 raw_obfuscated() {
     local t="$1" w rest v wv clr d u kw ov tw='' cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 so=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
-    wv='(^|[^[:alnum:]_.-])(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)([^[:alnum:]_./-]|$)'
+    wv='(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)'
+    wv="(^|[^[:alnum:]_/-])$wv([^[:alnum:]_]|$)|[/-]$wv([^[:alnum:]_./-]|$)"
     local ansi_esc="\\\\[^ntr\\\\${SQ}\"abfv]"
     set -f
     for w in $(printf '%s' "$t" | tr ';|&()<>' '       '); do
@@ -1699,16 +1700,19 @@ raw_obfuscated() {
     # HIMMEL-4135 tracks a proven-safe shape or the HIMMEL-3930 structural parse.
     # Not even --reason '<no quote inside>' is safe on raw text: in
     # echo $'a --reason ' ; export SEAM=1 ; echo 'b' that "value" is live code.
-    # HIMMEL-4572: a verb with - . or / on its right, or - or . on its left, is
-    # part of a name (block-chokepoint-env-prefix, scripts/eval/, .env), not
-    # the verb; /usr/bin/env still counts. A heredoc or quoted body is not
+    # HIMMEL-4572: a verb is part of a name only when BOTH sides join it to
+    # one, - or / on its left AND - . or / on its right (block-chokepoint-
+    # env-prefix, scripts/eval/, pr-check-env.sh). One joined side is not
+    # enough: -printf and --printf= are printf options that read escapes,
+    # .env is process.env/os.env, /usr/bin/env is env. A heredoc or quoted body is not
     # skipped: written and run in one call (cat >f <<EOF .. EOF; bash f) it
     # is live code, and its printf can feed a shell a seam name no other arm
     # sees (printf '\101..=1 ..' | sh), so that deny is intended. The refusal
     # names the trigger, always a word from the fixed sets below.
     if [[ $t =~ $wv ]]; then
         write=1
-        case "${BASH_REMATCH[2]}" in BASH_FUNC_*) tw='BASH_FUNC_*' ;; *) tw=${BASH_REMATCH[2]} ;; esac
+        tw=${BASH_REMATCH[2]:-${BASH_REMATCH[4]}}
+        case "$tw" in BASH_FUNC_*) tw='BASH_FUNC_*' ;; esac
         tw="the word $tw"
     fi
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word

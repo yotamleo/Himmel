@@ -1156,13 +1156,21 @@ assert_deny "4779 an assignment prefix voids the git relief" "$(j "PAGER='env -i
 assert_deny "4779 an exec-capable interpreter keeps its -i counted" "$(j "python3 -c 'import os; os.execvp(\"x\", [])' -i $MERGE_ON_GREEN")"
 # shellcheck disable=SC2016 # the $( is probe text, not an expansion
 assert_deny "4779 -i in a substitution's output stage" "$(j 'cat $(grep -il x f) scripts/hooks/*.sh; $(echo env) -i bash scripts/hooks/g*.sh')"
-# HIMMEL-4572: a verb glued to a path or name with - . or / on its side is a
-# filename (block-chokepoint-env-prefix, scripts/eval/, block-read-secrets,
-# .env), not the verb; a verb at /usr/bin/env still counts.
+# HIMMEL-4572: a verb joined into a name on BOTH sides (- or / left, - . or /
+# right: block-chokepoint-env-prefix, scripts/eval/, block-read-secrets,
+# pr-check-env.sh) is a filename, not the verb; a verb at /usr/bin/env still
+# counts, and one joined side is not enough (judge on PR 2032): -printf and
+# --printf= read escapes, .env is an interpreter's environment object.
 assert_allow "4572 env inside a hyphenated file name beside a scripts glob" "$(j "git grep -l block-chokepoint-env-prefix -- 'scripts/*test*'")"
 assert_allow "4572 eval as a directory name" "$(j "cat scripts/eval/*.sh")"
 assert_allow "4572 read inside a hyphenated file name" "$(j "ls scripts/hooks/block-read-secrets*")"
-assert_allow "4572 .env beside a scripts glob" "$(j "cat .env.example scripts/hooks/g*.sh")"
+assert_allow "4572 env inside a dotted file name beside a scripts glob" "$(j "cat scripts/cr/pr-check-env.sh scripts/hooks/g*.sh")"
+assert_deny "4572 find -printf beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf '%p'")"
+assert_deny "4572 stat --printf= beside a scripts glob" "$(j "stat --printf='%n' scripts/hooks/g*.sh")"
+assert_deny "4572 a -printf at a word end beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf")"
+assert_deny "4572 process.env beside a scripts glob" "$(j "node -e 'process.env.FOO=1' scripts/hooks/g*.sh")"
+assert_deny "4572 a bare .env beside a scripts glob" "$(j "cat .env scripts/hooks/g*.sh")"
+assert_deny "4572 .env.example (one joined side) stays denied" "$(j "cat .env.example scripts/hooks/g*.sh")"
 assert_deny "4572 /usr/bin/env still counts as the env verb" "$(j "/usr/bin/env FOO=1 bash scripts/hooks/g*.sh")"
 assert_deny "4572 eval after a separator still counts" "$(j "true;eval bash scripts/hooks/g*.sh")"
 assert_deny "4572 printf -v still counts" "$(j "printf -v X 1; bash scripts/hooks/x*.sh")"
