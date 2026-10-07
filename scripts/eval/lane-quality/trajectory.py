@@ -254,6 +254,8 @@ def _toks_target(toks):
         named = {os.path.basename(a.split("::")[0]) for a in toks[1:] if not a.startswith("-")}
         return frozenset(n for n in named if TEST_FILE_RE.search(n)) or frozenset(["*"])
     if first == "node" and "--test" in toks[1:]:  # HIMMEL-4698
+        if any(a in NO_RUN_FLAGS for a in toks[1:]):
+            return None
         named = {os.path.basename(a) for a in toks[1:] if not a.startswith("-")}
         return frozenset(n for n in named if TEST_FILE_RE.search(n)) or frozenset(["*"])
     if first in RUNNER_SUBCMD and len(toks) > 1 and toks[1] == "test":
