@@ -143,8 +143,25 @@ button{font:inherit;color:inherit}
 .verdict.open{color:var(--warn)}.verdict.agreed,.verdict.fixed{color:var(--ok)}.verdict.deferred{color:var(--accent)}
 .verdict.disproved{color:var(--off);border-color:var(--line)}.verdict.conflict,.verdict.unaddressed{color:var(--fail)}
 
+/* HIMMEL-4712: the fleet landing */
+.fleet{max-width:1100px;margin:0 auto;padding:20px 24px}
+.fleet-rows{list-style:none;margin:0;padding:0}
+.fleet-row{display:grid;gap:2px;padding:10px 0;border-bottom:1px solid var(--line);min-width:0}
+.fleet-head{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;color:var(--fg);text-decoration:none;min-width:0}
+a.fleet-head:hover .fleet-name,a.fleet-head:focus-visible .fleet-name{text-decoration:underline}
+.fleet-name{font:600 14px var(--mono);overflow-wrap:anywhere}
+.fleet-role,.fleet-meta,.fleet-age{color:var(--dim);font:12px var(--mono)}
+.fleet-head .state{font:12px var(--mono)}
+.state.waiting{color:var(--accent)}
+.fleet-activity{font-size:13.5px;overflow-wrap:anywhere}
+.fleet-activity b{font:600 12.5px var(--mono);margin-right:4px}
+.fleet-fails{color:var(--fail)}
+.fleet-closed{margin-top:20px}
+.fleet-closed summary{cursor:pointer;color:var(--dim);font:12.5px var(--mono);padding:6px 0}
+
 @media (max-width:760px){
   .top,.strip{padding-inline:16px}
+  .fleet{padding:16px}
   .layout{grid-template-columns:minmax(0,1fr);gap:24px;padding:16px}
   .side{position:static;order:-1}
   .band{grid-template-columns:minmax(0,1fr);gap:2px}

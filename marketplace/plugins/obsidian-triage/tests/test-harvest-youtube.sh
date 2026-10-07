@@ -21,6 +21,8 @@ cat > "$tmp/notx.json" <<'JSON'
  "transcript_error": "transcript_empty"}
 JSON
 echo '{"status": "login_wall", "detail": "LOGIN_REQUIRED"}' > "$tmp/wall.json"
+# HIMMEL-4722: status ok but the wrong field types must not crash the render.
+echo '{"status": "ok", "title": "Probe Talk", "channel": "Probe Channel", "description": ["x"], "transcript": ["hello"]}' > "$tmp/badtypes.json"
 cat > "$tmp/scrapling-python" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$STUB_ARGS"
@@ -129,6 +131,10 @@ p.write_text(p.read_text(encoding="utf-8").replace(
 g, msg, _ = mod.process_clip(p, dry_run=False)
 check("retried partial harvested ok", g == "v" and fm(p).get("harvest_status") == "ok", msg)
 check("stale thin-body flag cleared", "harvest_flag" not in fm(p), p.read_text(encoding="utf-8"))
+
+p, g, msg = run("v8", "badtypes.json")
+check("malformed ok payload stays a deferred thin partial", g == "~" and "deferred 1/5" in msg
+      and "malformed payload" in msg and fm(p).get("harvest_flag") == "thin-body", msg)
 
 os.environ["YT_SCRAPLING_PYTHON"] = str(tmp / "absent-python")
 p, g, msg = run("v5", "ok.json")

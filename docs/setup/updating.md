@@ -61,9 +61,11 @@ sweeps them all in **one best-effort, dry-run-first pass** instead of running
    committing — or abandon the whole upgrade with
    `luna-upgrade-all.sh restore --vault <path>`.
 
-It is **best-effort**: a vault with uncommitted git changes still appears in the
-sweep table (flagged `dirty=true`, plan shown), but `apply` refuses it until the
-working tree is clean — commit or stash first. A vault that errors during its
+It is **best-effort**: a vault with uncommitted git changes under a path the
+upgrade would touch (any path in its dry-run plan, the version stamp) still
+appears in the sweep table (flagged `dirty=true`, plan shown), but `apply`
+refuses it until those paths are committed or stashed. Uncommitted changes
+elsewhere (e.g. `handovers/`, your notes) do not block an apply. A vault that errors during its
 dry-run is reported with `error` state and the sweep continues to the rest. Your
 notes, journal, and data are never touched — only template-owned files are
 refreshed. Obsidian vaults without a luna stamp show as `unstamped` and are left

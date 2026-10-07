@@ -3767,24 +3767,33 @@ non-empty string `agent_id`), which inherit the leg's env and transcript.
 Reads fill with `scripts/context-fill.sh --percent` on the hook's
 `transcript_path`, and the window from the same claude-hud snapshot.
 
-**Threshold — 65 % of the autocompact ceiling, not of the window.** The ceiling
+**Off by default (HIMMEL-4710).** With no `HIMMEL_LEG_CONTEXT_MODE` (or
+`none`) the hook exits 0 with no output for PreToolUse and PreCompact at any
+fill; `headed-arm-leg.sh --context-guard compact|handoff` turns it on. One
+reference: [`leg-context-guard.md`](leg-context-guard.md).
+
+**Threshold — 75 % of the autocompact ceiling, not of the window.** The ceiling
 is `CLAUDE_CODE_AUTO_COMPACT_WINDOW` when numeric (it outranks the flag), else
 `HIMMEL_LEG_AUTOCOMPACT` (the launcher's resolved `--autocompact`; unset = the
 200000 pin, `auto` = the window, junk = the window with a warning), clamped to
-the window; threshold % = ceil(65 × ceiling / window). An opus leg pinned at
-200000 reports a 1000000-token window, so the ceiling is 20 % fill and the old
-flat 75 % never fired; it now fires at 13 % (130k). Headroom: compactions were
-observed from 157k of 200k (HIMMEL-4089), so 65 % leaves 27k tokens (13.5 pp of
-the ceiling) for the checkpoint, where 75 % left 7k. No window in the snapshot
-→ 65 % of the fill.
+the window; threshold % = ceil(share × ceiling / window), share =
+`HIMMEL_LEG_CONTEXT_SHARE` (1-100, else 75). An opus leg pinned at 200000
+reports a 1000000-token window, so the ceiling is 20 % fill and a flat 75 % of
+the window never fired; it now fires at 15 % (150k). Headroom: compactions were
+observed from 157k of 200k (HIMMEL-4089), so 75 % leaves 7k tokens for the
+checkpoint; 85 % would let a compaction fire first, and HIMMEL-4569's 65 %
+stopped every opus leg at 13 %. No window in the snapshot → 75 % of the fill.
 
 **Two modes, `HIMMEL_LEG_CONTEXT_MODE`,** set by the console at launch
-(`headed-arm-leg.sh` validates and propagates it, default `compact`) and read
-only from the hook process's env, so a leg cannot flip it in-session.
+(`headed-arm-leg.sh --context-guard`, which validates it and propagates it only
+when set) and read only from the hook process's env, so a leg cannot flip it
+in-session.
 
-- `compact`: unlocked by a `CHECKPOINT <full sha> pushed` Results bullet (the
-  newest one) whose sha equals `git rev-parse HEAD` and `@{u}` in the call's
-  `cwd`. The session then compacts at its ceiling and carries on.
+- `compact`: unlocked by the newest CHECKPOINT Results bullet: `CHECKPOINT
+  <full sha> pushed` whose sha equals `git rev-parse HEAD` and `@{u}` in the
+  call's `cwd`, or `CHECKPOINT <full sha> clean` whose sha is HEAD while the
+  tree is clean and HEAD equals `@{u}` or is in `origin/main`. The session then
+  compacts at its ceiling and carries on.
 - `handoff`: unlocked by a `*-RESUME.md` beside the leg doc that carries the
   doc's leg id (`N1364`, `N1364b` …) and was modified after the session's first
   turn.
@@ -3792,18 +3801,20 @@ only from the hook process's env, so a leg cannot flip it in-session.
 Past the threshold it denies every call except the hand-off ones — a
 Write/Edit/MultiEdit of a `*-RESUME.md`, `SendMessage`, `ListAgents`,
 `ToolSearch`, `TaskStop`, a bare `bash …/append-results.sh`,
-`queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh`, and a
-bare `git [-C <dir>] add|commit|push|status|rev-parse` (no `&&`, `||`, `$(` or
-newline) — until the mode's unlock holds or the leg doc (the `.md` path in the
-transcript's first `load <brief> and continue` turn) ends on a
-`WRAPPED`/`BLOCKED` marker. The deny names the mode, the fill, the threshold
-and its basis, and the exact unlock steps (compact: commit, push, rev-parse,
-the CHECKPOINT bullet; handoff: the RESUME path with the next id letter, the
-console and the marker command).
+`queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh`, a bare
+`git [-C <dir>] add|commit|push|status|rev-parse` and a bare `cd [<dir>]` (no
+`&&`, `||`, `$(` or newline) — until the mode's unlock holds or the leg doc
+(the `.md` path in the transcript's first `load <brief> and continue` turn)
+ends on a `WRAPPED` marker. A last `BLOCKED` frees only those hand-off calls
+plus Read, Grep and Glob (HIMMEL-4710). The deny names the mode, the fill, the
+threshold and its basis, the exact unlock steps (compact: commit, push,
+rev-parse, the CHECKPOINT bullet; handoff: the RESUME path with the next id
+letter, the console and the marker command), the one-line commit form (`-m`
+paragraphs plus `--trailer`) and the BLOCKED route.
 
 **PreCompact.** Also wired as a PreCompact hook: past the threshold an `auto`
 compaction is refused (`{"decision":"block"}`, exit 2) until a CHECKPOINT or
-RESUME unlock holds, so WIP is pushed before context is summarised; a `manual`
+RESUME unlock holds or the last marker is `WRAPPED`, so WIP is pushed before context is summarised; a `manual`
 compaction is always allowed. What the harness does after a refused
 auto-compaction is undocumented (`ponytail:` in the header). Codex has no
 PreCompact event. Fails open with one stderr line when fill

@@ -1,36 +1,53 @@
 #!/usr/bin/env bash
 # guard-leg-context-handoff.sh — PreToolUse hook (matcher "*") and PreCompact
-# hook: a console-spawned leg past its context threshold is denied every
-# NON-hand-off tool call, and its auto-compaction is refused, until it has
-# checkpointed or handed off (HIMMEL-4569). The leg preface's "Context >= 75 %:
-# write a RESUME brief, message the console, stop" was prose only.
+# hook: a console-spawned leg that was launched with the guard ON, once past its
+# context threshold, is denied every NON-hand-off tool call, and its
+# auto-compaction is refused, until it has checkpointed or handed off
+# (HIMMEL-4569). Its job: a pushed checkpoint before a lossy compaction.
+# OFF BY DEFAULT (operator ruling 2026-10-07, HIMMEL-4710): legs auto-compact
+# anyway, so the guard runs only when the launch turned it on. Reference:
+# docs/internals/leg-context-guard.md.
 #
 # Scope: a console-spawned leg only — HIMMEL_CONSOLE_LEG=1 AND a non-empty
 # HIMMEL_CONSOLE_NAME, both exported by headed-arm-leg.sh (HIMMEL-2919,
 # HIMMEL-3435). Anything else returns at once with no output. The leg's
 # in-process subagents (a non-empty string agent_id) are exempt.
 #
-# Two modes, HIMMEL_LEG_CONTEXT_MODE, set by the console at launch
-# (headed-arm-leg.sh propagates it) and read only from this hook's own process
-# env, so a leg cannot flip it mid-session (an export or a per-call prefix
-# never reaches a hook process). An unset or unknown value is compact.
-#   compact  (default) unlock = a `CHECKPOINT <full sha> pushed` Results bullet
-#            whose sha is the worktree's HEAD and equals its upstream; the
-#            session then compacts at its ceiling and carries on.
+# Two modes, HIMMEL_LEG_CONTEXT_MODE, set at launch by
+# `headed-arm-leg.sh --context-guard compact|handoff` and read only from this
+# hook's own process env, so a leg cannot flip it mid-session (an export or a
+# per-call prefix never reaches a hook process). Unset, empty or `none` = the
+# guard is off (exit 0, no output); any other unknown value is compact, with
+# one stderr line (someone asked for the guard).
+#   compact  unlock = a `CHECKPOINT <full sha> pushed` Results bullet
+#            whose sha is the worktree's HEAD and equals its upstream, or a
+#            `CHECKPOINT <full sha> clean` bullet whose sha is HEAD while the
+#            tree is clean and nothing is unpushed (HEAD = its upstream, or
+#            HEAD is in origin/main); the session then compacts at its
+#            ceiling and carries on.
 #   handoff  unlock = a RESUME doc for this leg (the leg stops; a successor
 #            resumes from the doc).
-# In both modes a last marker of WRAPPED or BLOCKED frees the leg.
+# In both modes a last marker of WRAPPED frees the leg. A last marker of
+# BLOCKED frees only the hand-off calls and reads (Read, Grep, Glob): BLOCKED
+# is a hand-off to the console, not an unlock (N1383 wrote BLOCKED and then
+# went on editing, HIMMEL-4710), and while it is the last marker neither
+# unlock above reopens ordinary work; a saved state still lets PreCompact pass.
 #
-# The threshold is 65 % of the leg's autocompact ceiling, not of the model
+# The threshold is 75 % of the leg's autocompact ceiling, not of the model
 # window: an opus leg launched with --autocompact 200000 reports a 1000000-token
-# window, so the ceiling sits at 20 % fill and a flat 75 % never fired. Ceiling
-# = CLAUDE_CODE_AUTO_COMPACT_WINDOW if numeric (it outranks the flag), else
-# HIMMEL_LEG_AUTOCOMPACT (the launcher's resolved --autocompact; unset = the
-# 200000 pin, `auto` = the window), clamped to the window. 65 % of 200000 is
-# 130000 tokens (13 % fill on a 1M window). Compactions were observed firing
-# from 157k of a 200k ceiling (HIMMEL-4089: 157k-176k over 349 compactions),
-# so 65 % leaves 27000 tokens (13.5 pp of the ceiling) before the earliest one
-# for commit + push + the CHECKPOINT bullet; 75 % (150000) left only 7000.
+# window, so the ceiling sits at 20 % fill and a flat % of the window never
+# fired. Ceiling = CLAUDE_CODE_AUTO_COMPACT_WINDOW if numeric (it outranks the
+# flag), else HIMMEL_LEG_AUTOCOMPACT (the launcher's resolved --autocompact;
+# unset = the 200000 pin, `auto` = the window), clamped to the window. The share
+# is HIMMEL_LEG_CONTEXT_SHARE (1-100, launch env only; anything else = 75).
+# 75 % of 200000 is 150000 tokens (15 % fill on a 1M window). Compactions were
+# observed firing from 157k of a 200k ceiling (HIMMEL-4089: 157k-176k over 349
+# compactions), so 75 % leaves 7000 tokens (3.5 pp of the ceiling) before the
+# earliest one for commit + push + the CHECKPOINT bullet. The deny must land
+# BEFORE the earliest compaction: a higher share (85 % = 170000) would let a
+# compaction fire first and be refused blind (ruling 2026-10-07). 65 % (130000)
+# left 27000 but stopped every opus leg at 13 % fill. More headroom than 7000
+# comes from a higher launcher ceiling, an operator decision.
 #
 # The decision (PreToolUse), in order:
 #   1. fill = scripts/context-fill.sh --percent on the hook's transcript_path.
@@ -40,10 +57,11 @@
 #      ToolSearch (SendMessage is a deferred tool), TaskStop (the wrap reaps
 #      background tasks), and a bare `bash <...>/append-results.sh`,
 #      `queue-lock.sh release`, `wrap-subtree-check.sh` or `context-fill.sh`,
-#      and a bare `git [-C <dir>] add|commit|push|status|rev-parse`.
+#      a bare `git [-C <dir>] add|commit|push|status|rev-parse`, and a bare
+#      `cd [<dir>]` (a leg whose cwd drifted is checked against the wrong HEAD).
 #   3. The leg's own doc is the `.md` path named in the transcript's first user
 #      turn — the launcher's `load <brief> and continue`. Its last marker
-#      WRAPPED or BLOCKED -> allow.
+#      WRAPPED -> allow; BLOCKED -> allow a Read, Grep or Glob only.
 #   4. The mode's unlock holds -> allow. A RESUME doc counts when it sits beside
 #      the doc, is not the doc itself, carries the doc's leg id (N1364, J1950b
 #      ...) with any one-letter suffix, and was modified after this session's
@@ -71,9 +89,10 @@
 # with no new commit keeps counting; upgrade path: key it to the transcript's
 # compact_boundary if a leg is seen coasting on an old checkpoint.
 # ponytail: Claude Code does not document what follows a refused auto-compaction
-# (retry, error, overflow), which is why the threshold keeps 25 pp of headroom
-# below the ceiling and the PreCompact refusal is only the second line; upgrade
-# path: measure it on a VM leg and narrow the headroom once it is known.
+# (retry, error, overflow), which is why the threshold sits below the earliest
+# observed compaction and the PreCompact refusal is only the second line, past
+# the threshold only (below it the leg was never told to checkpoint); upgrade
+# path: measure it on a VM leg (HIMMEL-4710 item 7) and re-derive the share.
 #
 # Bypass: LEG_CONTEXT_HANDOFF_OK=1 in the launching shell (session-sticky; a
 # per-call prefix does not reach this hook process).
@@ -90,7 +109,10 @@ set -uo pipefail
 [ -n "${HIMMEL_CONSOLE_NAME:-}" ] || exit 0
 [ "${LEG_CONTEXT_HANDOFF_OK:-0}" = "1" ] && exit 0
 
-CEILING_SHARE=65
+CEILING_SHARE=75
+case "${HIMMEL_LEG_CONTEXT_SHARE:-}" in
+    [1-9]|[1-9][0-9]|100) CEILING_SHARE="$HIMMEL_LEG_CONTEXT_SHARE" ;;
+esac
 PIN_AUTOCOMPACT=200000
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -99,8 +121,44 @@ warn_allow() {
     exit 0
 }
 
-MODE="${HIMMEL_LEG_CONTEXT_MODE:-compact}"
+# True when $1 is ONE command: no newline, no unclosed quote, no $'…' quote,
+# no backtick or $( outside single quotes, and no & | ; < > ( ) outside any
+# quotes. Quoted
+# text stays usable (a bullet's `;`), but nothing can chain, pipe, background,
+# redirect or substitute a second command.
+is_bare_command() {
+    local s=$1 n=${#1} i=0 c q=''
+    case "$s" in *"
+"*) return 1 ;; esac
+    while [ "$i" -lt "$n" ]; do
+        c=${s:$i:1}
+        if [ "$q" = "'" ]; then
+            [ "$c" = "'" ] && q=''
+        elif [ "$c" = "\\" ]; then
+            i=$((i + 1))
+        elif [ "$c" = '`' ]; then
+            return 1
+        elif [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = '(' ]; then
+            return 1
+        elif [ -z "$q" ] && [ "$c" = '$' ] && [ "${s:$((i + 1)):1}" = "'" ]; then
+            # ANSI-C $'…' lets \' escape, so its end cannot be found this way.
+            return 1
+        elif [ "$q" = '"' ]; then
+            [ "$c" = '"' ] && q=''
+        else
+            case "$c" in
+                "'"|'"') q=$c ;;
+                '&'|'|'|';'|'<'|'>'|'('|')') return 1 ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+    [ -z "$q" ]
+}
+
+MODE="${HIMMEL_LEG_CONTEXT_MODE:-}"
 case "$MODE" in
+    ''|none) exit 0 ;;
     compact|handoff) ;;
     *)
         printf 'guard-leg-context-handoff: unknown HIMMEL_LEG_CONTEXT_MODE %s - using compact\n' "$MODE" >&2
@@ -182,21 +240,21 @@ case "$tool" in
         ;;
     Bash)
         cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null)
-        # shellcheck disable=SC2016 # literal $( is the pattern, not an expansion
-        case "$cmd" in
-            *'&&'*|*'||'*|*'$('*|*"
-"*) ;;
-            *)
-                if grep -qE '^[[:space:]]*bash[[:space:]]+([^[:space:]]*/)?(scripts/handover/console-kit/append-results\.sh|scripts/handover/queue-lock\.sh[[:space:]]+release|scripts/handover/wrap-subtree-check\.sh|scripts/context-fill\.sh)([[:space:]]|$)' <<< "$cmd"; then
-                    exit 0
-                fi
-                # WIP add/commit/push, and the status/rev-parse reads a
-                # checkpoint needs, so the hand-off leaves nothing uncommitted.
-                if grep -qE '^[[:space:]]*git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?(add|commit|push|status|rev-parse)([[:space:]]|$)' <<< "$cmd"; then
-                    exit 0
-                fi
-                ;;
-        esac
+        # A bare call only, or a second command rides the allow.
+        if is_bare_command "$cmd"; then
+            if grep -qE '^[[:space:]]*bash[[:space:]]+([^[:space:]]*/)?(scripts/handover/console-kit/append-results\.sh|scripts/handover/queue-lock\.sh[[:space:]]+release|scripts/handover/wrap-subtree-check\.sh|scripts/context-fill\.sh)([[:space:]]|$)' <<< "$cmd"; then
+                exit 0
+            fi
+            # WIP add/commit/push, and the status/rev-parse reads a
+            # checkpoint needs, so the hand-off leaves nothing uncommitted.
+            if grep -qE '^[[:space:]]*git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?(add|commit|push|status|rev-parse)([[:space:]]|$)' <<< "$cmd"; then
+                exit 0
+            fi
+            # Back to the worktree: one bare cd, nothing chained after it.
+            if grep -qE '^[[:space:]]*cd([[:space:]]+[^[:space:];&|<>]+)?[[:space:]]*$' <<< "$cmd"; then
+                exit 0
+            fi
+        fi
         ;;
 esac
 
@@ -213,27 +271,46 @@ if [ -z "$doc" ] || [ ! -f "$doc" ] || [ ! -r "$doc" ]; then
     warn_allow "leg handover doc not found or unreadable in the first turn"
 fi
 
+blocked=0
 tail_lib="$HERE/../lib/leg-tail-status.sh"
 # shellcheck source=../lib/leg-tail-status.sh
 if { [ -r "$tail_lib" ] && . "$tail_lib"; } 2>/dev/null; then
     case "$(leg_tail_status "$doc")" in
-        WRAPPED|BLOCKED) exit 0 ;;
+        WRAPPED) exit 0 ;;
+        BLOCKED)
+            case "$tool" in Read|Grep|Glob) exit 0 ;; esac
+            blocked=1
+            ;;
     esac
 fi
 
-# --- compact's unlock: the newest CHECKPOINT bullet names a pushed HEAD -----
+# --- compact's unlock: the newest CHECKPOINT bullet names a pushed HEAD, or
+# HEAD on a clean tree with nothing unpushed ----------------------------------
 checkpoint_ok() {
-    local cp head up
+    local line cp head up porcelain
     # An inherited GIT_DIR/GIT_WORK_TREE would read another repo's HEAD.
     unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
     # shellcheck disable=SC2016  # the backticks are literal Markdown
-    cp=$(grep -E '^- .*CHECKPOINT `?[0-9a-f]{40}`? pushed' "$doc" 2>/dev/null | tail -n 1 \
-        | grep -oE 'CHECKPOINT `?[0-9a-f]{40}' | grep -oE '[0-9a-f]{40}')
+    line=$(grep -E '^- .*CHECKPOINT `?[0-9a-f]{40}`? (pushed|clean)' "$doc" 2>/dev/null | tail -n 1)
+    # shellcheck disable=SC2016
+    cp=$(printf '%s' "$line" | grep -oE 'CHECKPOINT `?[0-9a-f]{40}' | grep -oE '[0-9a-f]{40}')
     [ -n "$cp" ] || return 1
     head=$(git -C "$wd" rev-parse HEAD 2>/dev/null) || return 1
     [ "$cp" = "$head" ] || return 1
-    up=$(git -C "$wd" rev-parse '@{u}' 2>/dev/null) || return 1
-    [ "$up" = "$head" ]
+    up=$(git -C "$wd" rev-parse '@{u}' 2>/dev/null) || up=""
+    # shellcheck disable=SC2016
+    if grep -qE 'CHECKPOINT `?[0-9a-f]{40}`? pushed' <<< "$line"; then
+        [ -n "$up" ] && [ "$up" = "$head" ]
+        return
+    fi
+    # `clean` (HIMMEL-4710): a leg that has only read has nothing to commit, and
+    # the pre-push CR gate refuses an empty push (N1386). It needs a clean tree
+    # and nothing unpushed: HEAD is its upstream, or HEAD is already in
+    # origin/main (a fresh branch at its base).
+    porcelain=$(git -C "$wd" status --porcelain 2>/dev/null) || return 1
+    [ -z "$porcelain" ] || return 1
+    [ -n "$up" ] && [ "$up" = "$head" ] && return 0
+    git -C "$wd" merge-base --is-ancestor HEAD refs/remotes/origin/main 2>/dev/null
 }
 
 # --- handoff's unlock: a RESUME doc written by this session -----------------
@@ -270,7 +347,7 @@ resume_ok() {
             [ "$cand" = "$want" ] || continue
         fi
         # An unknown session start cannot tell this session's RESUME doc from a
-        # stale one, so no doc counts; the BLOCKED marker (step 3) still frees.
+        # stale one, so no doc counts.
         [ -n "$started" ] || continue
         m=$(mtime "$cand") || continue
         [ "$m" -ge "$started" ] || continue
@@ -282,18 +359,23 @@ resume_ok() {
 if [ "$event" = "PreCompact" ]; then
     checkpoint_ok && exit 0
     resume_ok && exit 0
+elif [ "$blocked" = 1 ]; then
+    # BLOCKED is a hand-off: neither unlock reopens ordinary work after it.
+    :
 elif [ "$MODE" = "compact" ]; then
     checkpoint_ok && exit 0
 else
     resume_ok && exit 0
 fi
 
-allowed="SendMessage, ListAgents, ToolSearch, TaskStop, append-results.sh, queue-lock.sh release, wrap-subtree-check.sh, context-fill.sh, git add/commit/push/status/rev-parse"
+allowed="SendMessage, ListAgents, ToolSearch, TaskStop, append-results.sh, queue-lock.sh release, wrap-subtree-check.sh, context-fill.sh, git add/commit/push/status/rev-parse, a bare cd"
+commit_form='A commit is one line (a newline in the command is denied): git commit -m "<subject>" -m "<body>" --trailer "Platforms tested: <os>" --trailer "Security reviewed: <token> - <what>".'
+stuck_note="If you cannot push or commit (a moved upstream, a refused attestation or pre-commit gate), do not work around it: SendMessage your console ${HIMMEL_CONSOLE_NAME} what blocks you, then bash scripts/handover/console-kit/append-results.sh ${doc} \"BLOCKED — <why>\" and stop. BLOCKED frees only these hand-off calls and reads (Read, Grep, Glob), not your work; WRAPPED (after the merge) frees everything."
 mode_note="The mode is set at launch by the console (HIMMEL_LEG_CONTEXT_MODE); it cannot be changed in-session."
 if [ "$MODE" = "compact" ]; then
-    deny_msg="leg context checkpoint (mode compact): this session is at ${fill} % context fill (threshold ${threshold} % = ${basis}). Ordinary tool calls stay denied until you checkpoint. Do exactly this: 1) git add and git commit your WIP, then git push. 2) git rev-parse HEAD. 3) bash scripts/handover/console-kit/append-results.sh ${doc} \"LIVE — CHECKPOINT <full sha of HEAD> pushed\". 4) Carry on with your work: the session compacts at its ceiling and continues. A new commit after the checkpoint needs a push and a fresh CHECKPOINT bullet. Still allowed meanwhile: ${allowed}. ${mode_note} Bypass: LEG_CONTEXT_HANDOFF_OK=1 in the launching shell."
+    deny_msg="leg context checkpoint (mode compact): this session is at ${fill} % context fill (threshold ${threshold} % = ${basis}). Ordinary tool calls stay denied until you checkpoint. Do exactly this: 1) git add and git commit your WIP, then git push. ${commit_form} 2) git rev-parse HEAD. 3) bash scripts/handover/console-kit/append-results.sh ${doc} \"LIVE — CHECKPOINT <full sha of HEAD> pushed\". 4) Carry on with your work: the session compacts at its ceiling and continues. A new commit after the checkpoint needs a push and a fresh CHECKPOINT bullet. Nothing to commit and nothing unpushed (git status clean, HEAD on its upstream or in origin/main)? Skip 1 and write \"LIVE — CHECKPOINT <full sha of HEAD> clean\" instead. ${stuck_note} Still allowed meanwhile: ${allowed}. ${mode_note} Bypass: LEG_CONTEXT_HANDOFF_OK=1 in the launching shell."
 else
-    deny_msg="leg context hand-off (mode handoff): this session is at ${fill} % context fill (threshold ${threshold} % = ${basis}). Ordinary tool calls stay denied until you hand off. Do exactly this: 1) Write your resume brief to ${want} (ticket, branch, worktree, committed-vs-dirty, PR/CR state, remaining ordered steps). 2) SendMessage your console ${HIMMEL_CONSOLE_NAME}: context ${fill} %, RESUME at that path. 3) bash scripts/handover/console-kit/append-results.sh ${doc} \"BLOCKED — context ${fill} %, RESUME written: <path>\". 4) Stop. Still allowed meanwhile: ${allowed}. ${mode_note} Bypass: LEG_CONTEXT_HANDOFF_OK=1 in the launching shell."
+    deny_msg="leg context hand-off (mode handoff): this session is at ${fill} % context fill (threshold ${threshold} % = ${basis}). Ordinary tool calls stay denied until you hand off. Do exactly this: 1) Write your resume brief to ${want} (ticket, branch, worktree, committed-vs-dirty, PR/CR state, remaining ordered steps). 2) SendMessage your console ${HIMMEL_CONSOLE_NAME}: context ${fill} %, RESUME at that path. 3) bash scripts/handover/console-kit/append-results.sh ${doc} \"BLOCKED — context ${fill} %, RESUME written: <path>\". 4) Stop. Still allowed meanwhile: ${allowed}. ${commit_form} ${mode_note} Bypass: LEG_CONTEXT_HANDOFF_OK=1 in the launching shell."
 fi
 
 if [ "$event" = "PreCompact" ]; then

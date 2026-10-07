@@ -18,6 +18,7 @@ import { acquireLock, runChild, type Lock } from "./lock";
 import { readBank, readLegs, readMonitoring } from "./health-sources";
 import { appendAudit } from "./audit";
 import { journalStream, resolveJournal } from "./agui/sse";
+import { readFleet } from "./agui/fleet";
 
 const LOOPBACK = "127.0.0.1";
 const DEFAULT_IDLE_MS = 30 * 60 * 1000;
@@ -120,7 +121,7 @@ type Env = Record<string, string | undefined>;
 export type ServerOpts = {
   port?: number; token?: string; hostname?: string; env?: Env; onIdle?: () => void;
   root?: string; now?: () => number; actionTimeoutMs?: number; reprobeBudgetMs?: number; feedWaitMs?: number; feedTimeoutMs?: number;
-  legsScript?: string; legsTimeoutMs?: number; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number; aguiDist?: string; aguiWeb?: string;
+  legsScript?: string; legsTimeoutMs?: number; fleetScript?: string; aguiPollMs?: number; aguiIdleMs?: number; aguiMaxMs?: number; aguiDist?: string; aguiWeb?: string;
 };
 type Preview = Resolved & { expires: number };
 type Probe = Record<string, { installed: string; health: string }>;
@@ -298,6 +299,17 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
         ]);
         return json(redactOut({ bank, legs, monitoring }));
       }
+      // HIMMEL-4712: every live session, for the fleet landing at /agui/ with no run. Read-only.
+      if (path === "/api/agui/fleet") {
+        if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+        let raw = "";
+        try { raw = readFileSync(join(root, ".env"), "utf8"); } catch { /* no .env */ }
+        const literals = envValues(raw, parseDotEnv, env);
+        return json(await readFleet({
+          script: opts.fleetScript ?? join(CHECKOUT, "scripts/config-ui/fleet.sh"), env, home: env.HOME || homedir(), now: now(),
+          redact: (v) => String(redactDeep(v, { literals })),
+        }));
+      }
       if (path.startsWith("/api/agui/")) {
         if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
         const run = path.slice("/api/agui/".length);
@@ -359,8 +371,10 @@ if (import.meta.main) {
   const a = process.argv.indexOf("--agui");
   const { port, token } = startServer({ port: i > 0 ? Number(process.argv[i + 1]) : 0 });
   console.log(`http://${LOOPBACK}:${port}/#t=${token}`);
-  // himmelctl ui --agui: the launcher has already resolved and validated the run id.
-  if (a > 0) console.log(`http://${LOOPBACK}:${port}/agui/#t=${token}&run=${process.argv[a + 1]}`);
+  // himmelctl ui --agui [<run>]: the launcher has already resolved and validated the run id; with none, the
+  // fleet landing (HIMMEL-4712).
+  const run = a > 0 ? process.argv[a + 1] : undefined;
+  if (a > 0) console.log(`http://${LOOPBACK}:${port}/agui/#t=${token}${run && !run.startsWith("--") ? `&run=${run}` : ""}`);
   const stale = a > 0 ? aguiStaleWarning() : null;
   if (stale) console.error(stale);
   process.on("SIGINT", () => process.exit(0));

@@ -2,6 +2,7 @@
 // while the page is open (a live stream over the real SSE path). Needs agui-web/dist
 // (`cd scripts/config-ui/agui-web && bun install && bun run build`); skipped, loudly, when absent.
 import { test, expect } from "@playwright/test";
+import { FLEET } from "../agui-fleet-fixture";
 import { aguiBuilt, bootAgui, J, play, type AguiHarness } from "./agui-fixtures";
 
 // HIMMEL-4711: a live page keeps tailing after a turn ends, so it reads idle (never "finished") until the stream closes.
@@ -171,4 +172,36 @@ test("8. a running subagent shows running with its current call, then flips to d
   h.append(J.end());
   await expect(page.locator(".agents-running")).toHaveText("0 running");
   await expect(page.getByRole("status")).toHaveText(IDLE);
+});
+
+// HIMMEL-4712: `himmelctl ui --agui` with no session id opens the fleet landing over the fixture fleet (3 live +
+// 1 wrapped); the wrapped leg sits in the closed section, never in the live list; a row opens its run's stream.
+test("9. the fleet landing lists 3 live sessions and 1 wrapped one, and a row opens that session's stream", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  expect(h.url).not.toContain("&run=");
+  await page.goto(h.url);
+  const live = page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row");
+  await expect(live).toHaveCount(3);
+  await expect(live.nth(0)).toContainText(FLEET.console.name);
+  await expect(live.nth(0)).toContainText("console");
+  const leg = live.filter({ hasText: FLEET.leg.name });
+  await expect(leg).toContainText("HIMMEL-901 · PR 1901");
+  await expect(leg).toContainText("1 of 1 subagents running");
+  await expect(leg).toContainText("1 failure");
+  await expect(leg.locator(".state")).toHaveText("running");
+  await expect(live.filter({ hasText: FLEET.idle.name }).locator(".state")).toHaveText("idle");
+  await expect(live.filter({ hasText: FLEET.wrapped.name })).toHaveCount(0);
+
+  const closed = page.locator("details.fleet-closed");
+  await expect(closed.locator("summary")).toHaveText("Wrapped (1)");
+  await expect(closed).not.toHaveAttribute("open", "");
+  await closed.locator("summary").click();
+  const wrapped = page.getByRole("list", { name: "Wrapped sessions" }).locator(".fleet-row");
+  await expect(wrapped).toHaveCount(1);
+  await expect(wrapped.locator(".state")).toHaveText("wrapped");
+
+  await leg.locator("a.fleet-head").click();
+  await expect(page).toHaveURL(new RegExp(`&run=${FLEET.leg.run}$`));
+  await expect(page.locator(".top .run")).toHaveText(`run ${FLEET.leg.run}`);
+  await expect(page.locator(".call", { hasText: "Push" })).toBeVisible();
 });
