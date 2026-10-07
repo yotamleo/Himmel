@@ -26,11 +26,12 @@ TELEGRAM: one line through the notifier (--notify-cmd, else $FAILURE_REVIEW_NOTI
 scripts/luna/vault-stall-alert.sh, the existing operator DM path) when a live run routed something
 or a class appeared that the ledger never saw before. A quiet day sends nothing. A dry run's
 would-be routing does not send: the router keeps no state on a dry run, so it would repeat daily.
-DELIVERY (HIMMEL-4790) is kept in <stem>.notify.json beside the router state (--state, else
+DELIVERY (HIMMEL-4790) is kept in <state file>.notify.json beside the router state (--state, else
 $HIMMEL_FAILURE_ROUTES_STATE, else ~/.himmel/state/failure-routes.json), under flock, temp then
 rename: {pending, sent}. The router state advances before the send, so the line is saved in pending
 as soon as the router returns, before the digest is written, and the next run sends it again until
-one is delivered. A delivered new
+one is delivered. The name appends to the whole state filename, so states differing only in extension
+never share it (HIMMEL-4798); an older <stem>.notify.json is renamed to it on first use. A delivered new
 class is recorded in sent and not named again for 24 h; a failed send records nothing there. An
 unreadable state file is kept aside as <file>.unreadable.<unique> and a fresh one started.
 
@@ -163,10 +164,18 @@ def build(a, rows, seen_before, rc, decisions, boxed):
     return "\n".join(out) + "\n", new, n, len(fails), routed, boxed
 
 
+def state_file(a):
+    return os.path.abspath(a.state or os.environ.get(failure_router.STATE_ENV) or os.path.expanduser(
+        "~/.himmel/state/failure-routes.json"))
+
+
 def notify_path(a):
-    state = a.state or os.environ.get(failure_router.STATE_ENV) or os.path.expanduser(
-        "~/.himmel/state/failure-routes.json")
-    return os.path.splitext(os.path.abspath(state))[0] + ".notify.json"
+    return state_file(a) + ".notify.json"
+
+
+def legacy_notify_path(a):
+    # HIMMEL-4790 named it after the state file's stem, so routes.json and routes.state shared one.
+    return os.path.splitext(state_file(a))[0] + ".notify.json"
 
 
 def load_notify(path):
@@ -258,6 +267,12 @@ def main(argv=None):
     os.makedirs(os.path.dirname(npath), exist_ok=True)
     with open(npath + ".lock", "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        # ponytail: one-time carry of the HIMMEL-4790 stem-named file so its pending line is not dropped; two
+        # states that shared it give it to whichever runs first. Drop once no station can still hold one
+        # (HIMMEL-4798, a few weeks after merge).
+        legacy = legacy_notify_path(a)
+        if not os.path.exists(npath) and os.path.exists(legacy):
+            os.replace(legacy, npath)
         ns, ns_ok = load_notify(npath)
         if not ns_ok:
             # Kept aside under a unique name, never overwritten; a fresh state keeps this run's undelivered lines.
