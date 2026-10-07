@@ -10,7 +10,7 @@ How himmel releases are named in Jira (fix versions), tags and the tracker.
 | minor (`v1.M.0`) | A milestone: a named body of planned work that ships together. | `v1.2.0` |
 | major (`vN.0.0`) | A breaking change, or a new-platform line. | `v2.0.0` (the Windows line) |
 
-A trailing letter (`v1.0.1b`) is the trail form of the original v1.0.x plan
+A trailing letter (`v1.0.1b`) is the legacy form of the original v1.0.x plan
 and is not used for new versions.
 
 ## Renumber (2026-10-07)

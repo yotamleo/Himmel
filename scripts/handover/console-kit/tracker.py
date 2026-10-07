@@ -242,8 +242,8 @@ def ver_key(v):
     m = re.match(r'^v1\.1\.(\d+)$', v)
     if m:
         return (0, 2, chr(ord('b') + int(m.group(1))))
-    m = re.match(r'^v1\.([2-9]|\d{2,})\.(\d+)$', v)  # HIMMEL-4873: the milestone minors follow, numerically
-    return (0, 1000 + int(m.group(1)), '%06d' % int(m.group(2))) if m else (1, 0, '')
+    m = re.match(r'^v1\.([2-9]|\d{2,})\.(\d+)([a-z]?)$', v)  # HIMMEL-4873: the milestone minors follow, numerically
+    return (0, 1000 + int(m.group(1)), '%012d%s' % (int(m.group(2)), m.group(3))) if m else (1, 0, '')
 
 
 def trail_parent(v):
