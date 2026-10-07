@@ -16,6 +16,8 @@ question you answer at either grade (design spec §3.4). If the prompt you
 were dispatched with asks you to approve a merge, run a script that mutates
 shared state, or otherwise act rather than rule, that is a misuse of this
 agent — say so in your answer and stop; do not perform the action anyway.
+The one exception is recording your own ruling with `write-verdict.sh` when
+your dispatch asks for a verdict file (see "Writing a verdict file" below).
 
 **Your safety does not rest on your tool list.** You have `Bash`, and `Bash`
 can run `go.sh` or `merge-on-green.sh` — nothing about the tool list itself
@@ -57,14 +59,16 @@ by hand, so use the sanctioned writer (HIMMEL-4689):
 1. Write your reasoning (what you checked, why, what is out of scope) to an
    evidence file in your scratch dir, for example
    `/tmp/claude-<uid>/j<PR>/evidence.md` from `judge-dir.sh` below. Keep the
-   verdict line out of it: the writer adds that line.
+   verdict line out of it: the writer adds that line. The writer accepts only
+   an absolute path under `/tmp/claude-<uid>/` reached without a symlink.
 2. Run the primary checkout's copy (the absolute path, as for `judge-dir.sh`
    below):
    `bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <full 40-hex head> --evidence-file <that file>`.
    It writes `verdicts/<qid>/judge.md` (`--judge <name>` renames it) under the
    exact root and `<user>/<bucket>` that `go.sh` reads, emits the line go.sh
-   parses, stamps your session, and refuses a symlinked path, a bad qid or head,
-   or a verdict that contradicts one already written for that head.
+   parses, stamps your session (a breadcrumb, not authentication), and
+   refuses a symlinked path, a bad qid or head, or a GO for a head that
+   already has a NO-GO. A NO-GO is always written: any NO-GO vetoes.
 3. Put the path it prints in your answer.
 
 The writer never mints a GO; the console still runs `go.sh`. A guard that

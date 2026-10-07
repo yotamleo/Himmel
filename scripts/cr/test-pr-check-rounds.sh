@@ -954,11 +954,16 @@ mkdir -p "$vroot"
 HANDOVER_DIR="$vroot" USER_SLUG=tuser
 export HANDOVER_DIR USER_SLUG
 vscope="$vroot/tuser/fx/verdicts"
-printf 'the fix does not hold\n' > "$tmp/judge-evidence.md"
+# The writer takes evidence only from /tmp/claude-<uid>/ (HIMMEL-4714).
+jscratch="/tmp/claude-$(id -u)"
+[ -d "$jscratch" ] || mkdir -m 700 "$jscratch" || fail "cannot create $jscratch"
+jev="$(mktemp -d "$jscratch/pr-check-rounds.XXXXXX")" || { fail "mktemp -d in $jscratch"; exit 1; }
+trap 'rm -rf "$tmp" "$jev"' EXIT
+printf 'the fix does not hold\n' > "$jev/judge-evidence.md"
 judge() {
-    env -u HIMMEL_CONSOLE_LEG CLAUDE_CODE_SESSION_ID=judge-sess-4700 \
+    env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_RELAY CLAUDE_CODE_SESSION_ID=judge-sess-4700 \
         bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$1" "$2" "$3" \
-        --evidence-file "$tmp/judge-evidence.md" >/dev/null 2>"$tmp/judge-$1.err" || fail "judge writes $1 $2"
+        --evidence-file "$jev/judge-evidence.md" >/dev/null 2>"$tmp/judge-$1.err" || fail "judge writes $1 $2"
 }
 start_round() {
     (cd "$repo" && PANEL_MODE="${2:-clean}" bash "$SCRIPT" --head "$1" --branch "$3" 2>&1)
