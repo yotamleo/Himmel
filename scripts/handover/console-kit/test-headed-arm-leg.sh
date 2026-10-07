@@ -3950,6 +3950,14 @@ wait_record "$d43l" || true
 check "43i0 the symlinked-doc launch reached the launcher" "$([ -s "$d43l/record" ] && echo yes)" "yes"
 check "43i a symlinked doc stays a symlink" "$([ -L "$lnk43" ] && echo link)" "link"
 check "43j a symlinked doc's target is left untouched" "$(grep -c '^session_ids:' "$lnk43t")" "0"
+# The rewrite keeps the doc's mode (the temp file would otherwise take the umask).
+mode43="$tmp/HIMMEL-43-N46-mode.md"
+printf -- '---\ntemplate_version: 3\n---\n\n# body\n' > "$mode43"; chmod 600 "$mode43"
+d43m="$tmp/c43-m"; mk_launch_stubs "$d43m" "HIMMEL-43-mode"
+some_doc="$mode43" run_leg "$d43m" "$tmp/repo43" "HIMMEL-43-mode" "claude-sonnet-5" >/dev/null 2>&1 || true
+wait_record "$d43m" || true
+check "43k0 the mode-doc launch recorded an id" "$(grep -c '^session_ids:' "$mode43")" "1"
+check "43k the rewrite keeps the doc's mode" "$(stat -c %a "$mode43")" "600"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

@@ -2047,13 +2047,18 @@ if [ "$LANE" = "native" ] && [ -n "$PROFILE" ] && [ "$HEADLESS" -eq 0 ] && [ "$C
     && [ ! -L "$DOC" ] && [ "$(head -n 1 "$DOC" 2>/dev/null)" = "---" ]; then
     _leg_sid="$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null)"
     _leg_sid="$(printf '%s' "$_leg_sid" | tr 'A-F' 'a-f')"
+    # cp -p keeps the doc's mode; the cksum re-check refuses the mv when the
+    # doc changed while it was rewritten (an append there would be lost).
+    _leg_doc_sum="$(cksum < "$DOC" 2>/dev/null)"
     if printf '%s' "$_leg_sid" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' \
+        && cp -p "$DOC" "$DOC.sid.$$" \
         && awk -v sid="$_leg_sid" '
             NR == 1 { print; fm = 1; next }
             fm && /^session_ids:/ { sub(/[[:space:]]*$/, ""); print $0 "," sid; done = 1; next }
             fm && /^---$/ { if (!done) print "session_ids: " sid; fm = 0 }
             { print }' "$DOC" > "$DOC.sid.$$" \
         && grep -q "^session_ids:.*$_leg_sid" "$DOC.sid.$$" \
+        && [ "$(cksum < "$DOC" 2>/dev/null)" = "$_leg_doc_sum" ] \
         && mv -f "$DOC.sid.$$" "$DOC"; then
         leg_propagate_env LEG_SESSION_ID "$_leg_sid"
     else
