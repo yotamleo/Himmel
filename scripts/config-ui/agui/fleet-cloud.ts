@@ -59,9 +59,10 @@ export async function consoleOf(r: CloudRoute): Promise<string | null> {
   return name && SESSION.test(name) ? name : null;
 }
 
-// One search per ticket, aliased t<i> in ticket order, all in one query. Tickets are TICKET-shaped (no quoting).
+// One search per ticket, newest first, aliased t<i> in ticket order, all in one query. Tickets are TICKET-shaped (no
+// quoting).
 export const cloudQuery = (tickets: string[]) =>
-  `query{${tickets.map((t, i) => `t${i}:search(query:"repo:${REPO} is:pr in:title ${t}",type:ISSUE,first:5){nodes{...on PullRequest{number state title comments(last:50){nodes{body}}}}}`).join(" ")}}`;
+  `query{${tickets.map((t, i) => `t${i}:search(query:"repo:${REPO} is:pr in:title ${t} sort:created-desc",type:ISSUE,first:5){nodes{...on PullRequest{number state title comments(last:50){nodes{body}}}}}`).join(" ")}}`;
 
 // The batched reply, per ticket; null when the reply is not a usable answer (an errors-only or malformed body). A
 // ticket whose alias is missing or malformed (a partial error) is unknown. The newest PR citing the ticket decides.
@@ -74,7 +75,9 @@ export function cloudPrs(reply: any, tickets: string[]): Map<string, CloudPr> | 
     if (!Array.isArray(nodes)) return out.set(t, { pr: null, phase: "unknown", url: null });
     const prs = nodes.filter((n) => Number.isSafeInteger(n?.number) && typeof n.title === "string" && n.title.includes(`[${t}]`))
       .map((n) => {
-        const bodies: string[] = (Array.isArray(n.comments?.nodes) ? n.comments.nodes : []).map((c: any) => String(c?.body ?? ""));
+        // Comments that did not come back (a partial error) leave an open PR's phase unknown.
+        if (!Array.isArray(n.comments?.nodes)) return { n, kind: "unknown", url: null };
+        const bodies: string[] = n.comments.nodes.map((c: any) => String(c?.body ?? ""));
         const report = bodies.filter((b) => /^CLOUD-(DONE|BLOCKED)\s/.test(b)).at(-1);
         const [kind, url] = report ? report.split("\n")[0].trim().split(/\s+/) : [];
         return { n, kind, url: url && URL_RE.test(url) ? url : null };
@@ -82,7 +85,7 @@ export function cloudPrs(reply: any, tickets: string[]): Map<string, CloudPr> | 
     const pick = prs.sort((a, b) => b.n.number - a.n.number)[0];
     if (!pick) return out.set(t, { pr: null, phase: "working", url: null });
     const phase: CloudPhase = pick.n.state === "MERGED" ? "merged" : pick.n.state === "CLOSED" ? "closed"
-      : pick.kind === "CLOUD-BLOCKED" ? "blocked" : pick.kind === "CLOUD-DONE" ? "done" : "working";
+      : pick.kind === "unknown" ? "unknown" : pick.kind === "CLOUD-BLOCKED" ? "blocked" : pick.kind === "CLOUD-DONE" ? "done" : "working";
     out.set(t, { pr: pick.n.number, phase, url: pick.url });
   });
   return out;

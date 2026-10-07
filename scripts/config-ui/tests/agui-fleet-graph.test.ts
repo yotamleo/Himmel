@@ -6,7 +6,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { graphOf, usageOf } from "../agui/fleet";
-import { CLOUD_RECENT_MS, cloudPrs, cloudRoutes, GH_TTL_MS, readCloudPrs } from "../agui/fleet-cloud";
+import { CLOUD_RECENT_MS, cloudPrs, cloudQuery, cloudRoutes, GH_TTL_MS, readCloudPrs } from "../agui/fleet-cloud";
 
 const CONSOLE = "HIMMEL-nextleg-2026-10-07BN-roadmap-console";
 const PRIOR = "HIMMEL-nextleg-2026-10-07BM-roadmap-console";
@@ -152,4 +152,15 @@ test("cloud GitHub read: one call per ticket set per TTL window; a failure is ca
     expect(await readCloudPrs(["HIMMEL-1"], opts(NOW + GH_TTL_MS + 1))).toBeNull();
     expect(calls()).toBe(2);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("cloud PRs: the search asks for newest-first; an open PR whose comments did not come back is unknown, not working", () => {
+  expect(cloudQuery(["HIMMEL-1"])).toContain("is:pr in:title HIMMEL-1 sort:created-desc");
+  const reply = { data: {
+    t0: { nodes: [{ number: 10, title: "feat: [HIMMEL-1] x", state: "OPEN", comments: null }] },
+    t1: { nodes: [{ number: 20, title: "feat: [HIMMEL-2] x", state: "MERGED" }] },
+  } };
+  const got = cloudPrs(reply, ["HIMMEL-1", "HIMMEL-2"]);
+  expect(got?.get("HIMMEL-1")).toEqual({ pr: 10, phase: "unknown", url: null });
+  expect(got?.get("HIMMEL-2")).toEqual({ pr: 20, phase: "merged", url: null });
 });
