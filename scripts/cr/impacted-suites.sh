@@ -11,7 +11,9 @@
 # structural replacement.
 #
 # Usage:
-#   impacted-suites.sh <base>..<head> [--shell]
+#   impacted-suites.sh [<base>..<head>] [--shell]
+#       With no range (HIMMEL-4781), use $(git merge-base origin/main HEAD)..HEAD
+#       — origin/HEAD's target when set — and print that range to stderr.
 #       Print the union, one repo-relative path per line, sorted. For every
 #       file changed between merge-base(<base>,<head>) and <head> (deletions
 #       included, renames counted as delete+add), list each suite at <head>
@@ -434,6 +436,32 @@ if [ -n "$run_path" ]; then
     cd "$top" || exit 2
     run_suite "$run_path"
     exit $?
+fi
+
+# HIMMEL-4781: no range = merge-base(default branch, HEAD)..HEAD, announced on
+# stderr. Sourced only here: CI always passes a range, and its base-extracted
+# copy (scripts/ci/impacted-selection.sh) carries no scripts/lib.
+if [ -z "$range" ]; then
+    # shellcheck source=scripts/lib/cr-default-base.sh
+    # shellcheck disable=SC1091
+    case "${BASH_SOURCE[0]}" in */*) _is_d="${BASH_SOURCE[0]%/*}" ;; *) _is_d=. ;; esac
+    . "$_is_d/../lib/cr-default-base.sh" || exit 2
+    if ! default_ref=$(cr_default_base_ref); then
+        echo "impacted-suites.sh: no range given and neither origin/HEAD nor origin/main resolves; run: git fetch origin" >&2
+        echo "  then re-run: bash scripts/cr/impacted-suites.sh" >&2
+        exit 2
+    fi
+    if ! default_mb=$(git merge-base "$default_ref" HEAD); then
+        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+            echo "impacted-suites.sh: no range given and ${default_ref} shares no history with this shallow HEAD; run: git fetch --unshallow origin" >&2
+            echo "  then re-run: bash scripts/cr/impacted-suites.sh" >&2
+        else
+            echo "impacted-suites.sh: no range given and ${default_ref} shares no history with HEAD (unrelated, not shallow); pass an explicit range: bash scripts/cr/impacted-suites.sh <base>..HEAD" >&2
+        fi
+        exit 2
+    fi
+    range="${default_mb}..HEAD"
+    echo "impacted-suites.sh: no range given; using ${range} (merge-base of ${default_ref#refs/remotes/} and HEAD)" >&2
 fi
 
 case "$range" in

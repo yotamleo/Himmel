@@ -289,7 +289,9 @@ hand-rolled `HOME=… cmd`, which keeps every other operator variable.
 
 **Impacted suites = every suite that references a file you touched**
 (`git grep -l` from the worktree), not the suites in the directory you edited.
-Run those and name them with their counts, each as one literal
+`bash scripts/cr/impacted-suites.sh` lists them; with no argument it uses
+`$(git merge-base origin/main HEAD)..HEAD` (`origin/HEAD`'s target in place
+of `origin/main` when set) and prints that range to stderr (HIMMEL-4781), and an explicit `<base sha>..HEAD` works the same. Run those and name them with their counts, each as one literal
 `bash scripts/quiet-run.sh suite -- bash <tracked test-*.sh>` — nothing
 appended: no `>`, no `2>&1`, no `; echo`, no `sleep N;` prefix, no `| tail`.
 `quiet-run` already captures the output. The label is always the literal
