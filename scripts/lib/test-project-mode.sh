@@ -25,17 +25,28 @@ FAIL=0
 
 # make_dir <origin> <gitconfig> — prints a fresh directory in the state the
 # row describes: NOGIT = plain dir; `-` = repo with no remote; else that origin.
+# Returns non-zero when any step fails, so a fixture that was not built can
+# never back an assertion. `%20` in a config value stands for a space.
 make_dir() {
-    local origin="$1" cfg="$2" d kv
+    local origin="$1" cfg="$2" d kv v
     d=$(mktemp -d "$T/row.XXXXXX") || return 1
     if [ "$origin" != NOGIT ]; then
-        git init -q "$d"
-        [ "$origin" = - ] || git -C "$d" remote add origin "$origin"
+        git init -q "$d" || return 1
+        if [ "$origin" != - ]; then git -C "$d" remote add origin "$origin" || return 1; fi
         if [ "$cfg" != - ]; then
-            for kv in $cfg; do git -C "$d" config "${kv%%=*}" "${kv#*=}"; done
+            for kv in $cfg; do
+                v="${kv#*=}"
+                git -C "$d" config "${kv%%=*}" "${v//%20/ }" || return 1
+            done
         fi
     fi
     printf '%s\n' "$d"
+}
+
+# fixture_fail <what> — a fixture that could not be built is a failure.
+fixture_fail() {
+    FAIL=$((FAIL + 1))
+    printf '  FAIL  fixture not built: %s\n' "$1"
 }
 
 # resolve <dir> <env> <fn> — the resolver's answer, in the fixture's encoding.
@@ -73,14 +84,14 @@ check() {
 }
 
 echo "TEST: RED — TRACKER and JIRA_PROJECT_KEY unset resolve the tracker to local"
-d=$(make_dir - -)
+d=$(make_dir - -) || fixture_fail "unset tracker"
 check "unset tracker -> local" local "$(resolve "$d" - tracker)"
 
 echo "TEST: every row of fixtures/project-modes.tsv"
 rows=0
 while IFS=$'\t' read -r fn origin envs cfg want; do
     case "$fn" in ''|'#'*) continue ;; esac
-    d=$(make_dir "$origin" "$cfg")
+    d=$(make_dir "$origin" "$cfg") || { fixture_fail "$fn origin=$origin cfg=$cfg"; continue; }
     check "$fn origin=$origin env=$envs cfg=$cfg" "$want" "$(resolve "$d" "$envs" "$fn")"
     rows=$((rows + 1))
 done < "$MODES_TSV"
@@ -91,7 +102,7 @@ origins=0
 while IFS=$'\t' read -r want url; do
     case "$want" in ''|'#'*) continue ;; esac
     [ "$want" = none ] && want=local-git
-    d=$(make_dir "$url" -)
+    d=$(make_dir "$url" -) || { fixture_fail "origin $url"; continue; }
     check "forge $url" "$want" "$(resolve "$d" - forge)"
     check "forge-guard $url" "$want" "$(resolve "$d" - forge-guard)"
     origins=$((origins + 1))
@@ -99,7 +110,7 @@ done < "$ORIGINS_TSV"
 [ "$origins" -ge 30 ] || { echo "  FAIL  only $origins origins read from $ORIGINS_TSV"; FAIL=$((FAIL + 1)); }
 
 echo "TEST: the I8 refusal names the rule on stderr"
-d=$(make_dir https://github.com/o/r -)
+d=$(make_dir https://github.com/o/r -) || fixture_fail "I8 repo"
 # shellcheck disable=SC2016  # $1 belongs to the inner bash -c
 msg=$(cd "$d" && env -i PATH="$PATH" HOME="$T" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
     FORGE=local-git bash -c '. "$1"; project_mode_forge' _ "$LIB" 2>&1 >/dev/null)

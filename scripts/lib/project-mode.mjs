@@ -24,9 +24,11 @@ function refuse(message) {
   return err;
 }
 
+// Strips only the trailing newline, as the shell twin's $(git config --get …)
+// does: a padded value (" local ") must reach the validation untrimmed.
 function git(args, { cwd, env }) {
   try {
-    return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).replace(/\n+$/, '');
   } catch {
     return '';
   }

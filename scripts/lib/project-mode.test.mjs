@@ -32,7 +32,7 @@ function makeDir(origin, cfg) {
   if (cfg !== '-') {
     for (const kv of cfg.split(' ')) {
       const i = kv.indexOf('=');
-      g('config', kv.slice(0, i), kv.slice(i + 1));
+      g('config', kv.slice(0, i), kv.slice(i + 1).replaceAll('%20', ' '));
     }
   }
   return d;
