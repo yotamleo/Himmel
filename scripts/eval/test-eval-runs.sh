@@ -185,6 +185,33 @@ eq "compare: no run of the eval at all is exit 3" "$rc" "3"
 out=$(python3 "$CMP" --ledger "$U" 2>&1); rc=$?
 eq "compare: no eval named is a usage error" "$rc" "2"
 
+# --- eval-compare: observational rows get a series, never a verdict (HIMMEL-4670) ---
+O="$TMP/obs.jsonl"
+cat >"$TMP/obs-th.json" <<'EOF'
+{"leg-trajectory": {"fail_denied": {"higher_is_better": false, "band": 0}}}
+EOF
+orow() { python3 "$LIB" append --ledger "$O" --eval leg-trajectory --run-id "$1" --source s --config-json '{"digest_v":1}' \
+  --metrics-json "$2" --meta-json '{"observational":true,"leg":"N1"}' ${3:+--status "$3"} >/dev/null 2>&1 || fail "fixture row $1 not written"; }
+orow s1 '{"fail_denied":1,"verify_before_claim":1}'
+orow s2 '{"fail_denied":3,"verify_before_claim":0}'
+orow s3 '{"fail_denied":9,"verify_before_claim":null}'
+out=$(python3 "$CMP" leg-trajectory --ledger "$O" --thresholds "$TMP/obs-th.json" 2>&1); rc=$?
+eq "compare: an observational series is not a pass (exit 3)" "$rc" "3"
+has "compare: lists the leg-trajectory series" "$out" "observational series"
+has "compare: the series names its runs" "$out" "3 runs"
+has "compare: per-metric line for the series" "$out" "fail_denied"
+case "$out" in *REGRESSION*|*better*) fail "compare: an observational series printed a verdict: $out";; *) pass "compare: an observational series prints no verdict";; esac
+out=$(python3 "$CMP" leg-trajectory --ledger "$O" --thresholds "$TMP/obs-th.json" --baseline s1 2>&1); rc=$?
+eq "compare: --baseline on an observational series still gives no verdict" "$rc" "3"
+orow s4 '{"fail_denied":2}' partial
+out=$(python3 "$CMP" leg-trajectory --ledger "$O" --thresholds "$TMP/obs-th.json" 2>&1); rc=$?
+eq "compare: a partial newest observational row still lists the series" "$rc" "3"
+has "compare: the series counts ok runs only" "$out" "3 runs"
+orow s5 '{"fail_denied":5}'
+orow s1 '{"fail_denied":7}'
+out=$(python3 "$CMP" leg-trajectory --ledger "$O" --thresholds "$TMP/obs-th.json" 2>&1)
+eq "compare: a superseding row for an older run_id becomes the latest" "$(printf '%s\n' "$out" | awk '$1 == "fail_denied" {print $4}')" "7"
+
 # The shipped thresholds table parses and names every wired eval.
 for e in lane-quality qmd-quality guard-corpus scrape-bench; do
   if python3 -c 'import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1])) else 1)' "$HERE/eval-compare.json" "$e"; then pass "thresholds: $e has an entry"; else fail "thresholds: $e has no entry"; fi

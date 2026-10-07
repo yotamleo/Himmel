@@ -16,6 +16,8 @@ moves the wrong way past its noise band: the CI bound when the ledger has one
 (below the baseline's lower bound, or the two intervals apart), else the band
 in eval-compare.json. A metric with no direction there is printed as info and
 never gated.
+A candidate with meta.observational true (leg-trajectory, HIMMEL-4670) is
+listed as a series with no verdict, and exits 3.
 
 Exit: 0 no regression, 1 a regression, 2 usage error, 3 nothing to compare:
 no candidate, no ok baseline, a candidate that is not ok, no gated metric
@@ -80,6 +82,29 @@ def verdict(spec, base, cand, bci, cci):
     return "ok", band
 
 
+def observational(eval_id, rows):
+    """A meta.observational series (HIMMEL-4670 spec 3.1): one ok row per run_id,
+    latest wins, listed per metric. No baseline, no verdict: exit 3."""
+    latest = {}
+    for r in rows:
+        latest.pop(r["run_id"], None)  # a superseding row moves its run to the end
+        latest[r["run_id"]] = r
+    ok = [r for r in latest.values() if r["status"] == "ok"]
+    if ok:
+        h = ok[-1]["confighash"]
+        ok = [r for r in ok if r["confighash"] == h]
+    print("eval-compare %s: observational series, %d runs (confighash %s), no regression verdict"
+          % (eval_id, len(ok), ok[-1]["confighash"] if ok else "-"))
+    print("%-28s %6s %12s %12s  %s" % ("metric", "runs", "mean", "latest", "verdict"))
+    fmt = lambda x: "-" if x is None else "%.6g" % x  # noqa: E731
+    for m in sorted(set().union(*(r["metrics"] for r in ok)) if ok else ()):
+        vals = [r["metrics"].get(m) for r in ok if r["metrics"].get(m) is not None]
+        mean = sum(vals) / len(vals) if vals else None
+        print("%-28s %6d %12s %12s  %s" % (m, len(vals), fmt(mean), fmt(ok[-1]["metrics"].get(m)), "observational"))
+    print("eval-compare: observational rows are a series, not a gate: no regression verdict")
+    return 3
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="eval-compare", description=__doc__.split("\n\n")[0])
     ap.add_argument("eval")
@@ -114,6 +139,8 @@ def main(argv=None):
         print("eval-compare: %d malformed line(s) after candidate %s (line %s); the newest run of '%s' may be unreadable"
               % (len(later_bad), cand["run_id"], ", ".join(map(str, later_bad)), args.eval))
         return 3
+    if (cand.get("meta") or {}).get("observational") is True:
+        return observational(args.eval, rows)
     if cand["status"] != "ok":
         print("eval-compare: candidate %s is %s, not ok: nothing usable to compare"
               % (cand["run_id"], cand["status"]))
