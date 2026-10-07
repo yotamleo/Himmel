@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
-import { fleetFixture, FLEET } from "./agui-fleet-fixture";
+import { fleetFixture, FLEET, PRIOR_CONSOLE } from "./agui-fleet-fixture";
 
 const STUB = join(import.meta.dir, "stub-himmelctl.js");
 const TOKEN = "t".repeat(64);
@@ -105,4 +105,30 @@ test("a secret straddling the summary cut is redacted whole, not left as a fragm
   const b = await (await fleet(s.port)).json();
   const c = b.sessions.find((x: any) => x.name === FLEET.console.name);
   expect(c.activity.summary).not.toContain(secret.slice(0, 20));
+});
+
+// HIMMEL-4751: each row's place in the graph and its token usage, from the census's own sources.
+test("graph: the leg hangs under its console, the console names its predecessor, the rest sit under the operator", async () => {
+  const { port } = boot();
+  const by = Object.fromEntries((await (await fleet(port)).json()).sessions.map((s: any) => [s.name, s]));
+  expect(by[FLEET.leg.name]).toMatchObject({ parent: FLEET.console.name, predecessor: null });
+  expect(by[FLEET.console.name]).toMatchObject({ parent: null, predecessor: PRIOR_CONSOLE });
+  expect(by[FLEET.idle.name]).toMatchObject({ parent: null, predecessor: null });
+  // The leg's in-process children: its one subagent, still running.
+  expect(by[FLEET.leg.name].agents).toEqual([expect.objectContaining({ state: "running" })]);
+  expect(by[FLEET.idle.name].agents).toEqual([]);
+});
+
+test("usage: summed per API call across the journal and its subagents, filled against the session's own ceiling", async () => {
+  const { port } = boot();
+  const by = Object.fromEntries((await (await fleet(port)).json()).sessions.map((s: any) => [s.name, s]));
+  // Leg: 2 main calls + 1 subagent call, each 10 in / 100 out / 40000 cache read; --autocompact 200000.
+  expect(by[FLEET.leg.name].usage).toEqual({
+    calls: 3, input: 30, output: 300, cacheRead: 120000, cacheCreate: 0, costEq: Math.round(30 + 12000 + 1500),
+    resident: 40010, ceiling: 200000, ceilingFrom: "autocompact", fill: 20,
+  });
+  // Console: --autocompact auto on a [1m] model runs against the 1m window.
+  expect(by[FLEET.console.name].usage).toMatchObject({ calls: 1, ceiling: 1000000, ceilingFrom: "window", fill: 4 });
+  // The idle session's journal carries no usage record: not measured, not zero.
+  expect(by[FLEET.idle.name].usage).toBeNull();
 });

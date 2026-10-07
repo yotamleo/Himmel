@@ -6,10 +6,15 @@
 import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-type Member = { pid: number; name: string; run: string; model: string; status: "busy" | "idle"; doc?: string[] };
+// HIMMEL-4751: head = the doc's title tail and brief lines above Results (the graph link); autocompact = the
+// --autocompact argv. The console succeeded a console that is no longer live; the leg's brief names the console.
+type Member = { pid: number; name: string; run: string; model: string; status: "busy" | "idle"; doc?: string[]; head?: string[]; autocompact?: string };
+export const PRIOR_CONSOLE = "HIMMEL-nextleg-2026-10-07ZY-roadmap-console";
 export const FLEET = {
-  console: { pid: 4101, name: "HIMMEL-nextleg-2026-10-07ZZ-roadmap-console", run: "1a000000-0000-4000-8000-000000000001", model: "opus", status: "busy" },
+  console: { pid: 4101, name: "HIMMEL-nextleg-2026-10-07ZZ-roadmap-console", run: "1a000000-0000-4000-8000-000000000001", model: "claude-opus-5-5[1m]", status: "busy",
+    autocompact: "auto", head: [`— CONSOLE — successor to ${PRIOR_CONSOLE}.md (fill signal 45 %)`], doc: [] },
   leg: { pid: 4102, name: "HIMMEL-901-N9001-fleet-leg-2026-10-07", run: "1a000000-0000-4000-8000-000000000002", model: "opus", status: "busy",
+    autocompact: "200000", head: ["", "> **You are N9001.** Your console is **`HIMMEL-nextleg-2026-10-07ZZ-roadmap-console`**."],
     doc: ["- 09:00 LIVE — started", "- 09:40 LIVE — PR 1901 open, watching CI"] },
   idle: { pid: 4103, name: "scratch-session", run: "1a000000-0000-4000-8000-000000000003", model: "sonnet", status: "idle" },
   wrapped: { pid: 4104, name: "HIMMEL-903-N9003-done-leg-2026-10-07", run: "1a000000-0000-4000-8000-000000000004", model: "opus", status: "idle",
@@ -20,8 +25,10 @@ let seq = 0;
 const rec = (m: Member, o: Record<string, unknown>) =>
   JSON.stringify({ isSidechain: false, sessionId: m.run, timestamp: new Date(Date.now() - 60_000 + seq * 10).toISOString(), uuid: `u-${++seq}`, ...o }) + "\n";
 const prompt = (m: Member, text: string, side = {}) => rec(m, { type: "user", parentUuid: null, ...side, message: { role: "user", content: text } });
+// HIMMEL-4751: every call carries the usage record a real transcript writes on it.
+export const USAGE = { input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 40000, cache_creation_input_tokens: 0 };
 const call = (m: Member, id: string, name: string, input: Record<string, unknown>, side = {}) =>
-  rec(m, { type: "assistant", ...side, message: { id: `m-${id}`, role: "assistant", stop_reason: "tool_use", model: "claude-opus-5-5", content: [{ type: "tool_use", id, name, input }] } });
+  rec(m, { type: "assistant", ...side, message: { id: `m-${id}`, role: "assistant", stop_reason: "tool_use", model: "claude-opus-5-5", usage: USAGE, content: [{ type: "tool_use", id, name, input }] } });
 const result = (m: Member, id: string, content: string, error = false, side = {}) =>
   rec(m, { type: "user", ...side, message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, is_error: error }] } });
 const end = (m: Member) => rec(m, { type: "system", subtype: "turn_duration", durationMs: 1000 });
@@ -58,7 +65,7 @@ export function fleetFixture(dir: string): FleetFixture {
   const path = (m: Member) => join(slug, `${m.run}.jsonl`);
   for (const m of members) {
     mkdirSync(join(proc, String(m.pid)));
-    writeFileSync(join(proc, String(m.pid), "cmdline"), ["claude", "-n", m.name, "--model", m.model, ""].join("\0"));
+    writeFileSync(join(proc, String(m.pid), "cmdline"), ["claude", "-n", m.name, "--model", m.model, ...(m.autocompact ? ["--autocompact", m.autocompact] : []), ""].join("\0"));
     writeFileSync(join(sessions, `${m.pid}.json`), JSON.stringify({ pid: m.pid, sessionId: m.run, cwd: dir, name: m.name, status: m.status, kind: "interactive" }));
     const j = journal(m);
     writeFileSync(path(m), j.main);
@@ -66,7 +73,7 @@ export function fleetFixture(dir: string): FleetFixture {
       mkdirSync(join(slug, m.run, "subagents"), { recursive: true });
       writeFileSync(join(slug, m.run, "subagents", "agent-a9001.jsonl"), j.sub);
     }
-    if (m.doc) writeFileSync(join(root, "yotam", "himmel", `${m.name}.md`), `# ${m.name}\n\n## Results (newest at the bottom)\n\n${m.doc.join("\n")}\n`);
+    if (m.doc) writeFileSync(join(root, "yotam", "himmel", `${m.name}.md`), `# ${m.name} ${(m.head ?? []).join("\n")}\n\n## Results (newest at the bottom)\n\n${m.doc.join("\n")}\n`);
   }
   return {
     env: { HOME: home, HANDOVER_DIR: root, CLAUDE_SESSIONS_PGREP: pgrep, CLAUDE_SESSIONS_PROC: proc },
