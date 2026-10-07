@@ -274,6 +274,8 @@ row "ln single operand hard-links into verdict dir" 2 0 "$(bash_p "ln /tmp/x" "$
 row "ln -s -- single operand links into verdict dir" 2 0 "$(bash_p "ln -s -- /tmp/x" "$VD/q1")"
 row "mv --exchange swaps a bucket out" 2 0 "$(bash_p "mv --exchange /tmp/x $ROOT/u/himmel")"
 row "mv --exch abbreviated swaps a bucket out" 2 0 "$(bash_p "mv --exch /tmp/x $ROOT/u/himmel")"
+row "mv --exchange -t swaps a bucket out of the target dir" 2 0 "$(bash_p "mv --exchange -t $ROOT/u /tmp/himmel")"
+row "mv -t --exchange swaps a bucket out of the target dir" 2 0 "$(bash_p "mv --target-directory=$ROOT/u --exchange /tmp/himmel")"
 row "cp -T onto a verdict" 2 0 "$(bash_p "cp -T /tmp/x $VD/q1/judge.md")"
 row "install -d creates a dir under verdicts, not last" 2 0 "$(bash_p "install -d $VD/q1/new /tmp/a")"
 row "install --dir abbreviated creates a dir under verdicts" 2 0 "$(bash_p "install --dir $VD/q1/new /tmp/a")"

@@ -865,6 +865,9 @@ _fgram() {
     done
     n=${#ops[@]}
     [ "$hastd" = 1 ] && _target "$tdir"
+    # --exchange with -t swaps <tdir>/<name>, so tdir is held to the same
+    # ancestor check as an exchanged last operand.
+    [ "$hastd" = 1 ] && [ "$c" = mv ] && [ "$xchg" = 1 ] && _vanc "$tdir"
     if [ "$unc" = 1 ] || [ "$dirm" = 1 ]; then
         for w in ${ops[@]+"${ops[@]}"}; do
             _target "$w"
