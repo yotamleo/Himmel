@@ -10,6 +10,8 @@
 #                             tracker comes from scripts/lib/project-mode.sh
 #                             (TRACKER > git config himmel.tracker > jira when
 #                             the key is set); required -> rc=1, optional -> skip
+#   TRACKER=jira, no key     rc=1 in EITHER mode: an explicit jira tracker
+#                             without a key is a config error, not a skip
 #
 # Extracted from setup.sh step 0.4 so the gating logic is hermetic-
 # testable (test-check-jira-key.sh).

@@ -114,7 +114,10 @@ export function projectModeForge(o = {}) {
 
 export function projectModeIdPattern(o) {
   o = opts(o);
-  if (o.env.TICKET_ID_PATTERN) return o.env.TICKET_ID_PATTERN;
+  if (o.env.TICKET_ID_PATTERN) {
+    if (o.env.TICKET_ID_PATTERN.includes('\n')) throw refuse('TICKET_ID_PATTERN is multi-line (expected one ERE; join alternatives with |)');
+    return o.env.TICKET_ID_PATTERN;
+  }
   const t = projectModeTracker(o);
   if (t === 'jira') return `${o.env.JIRA_PROJECT_KEY.replace(/[\][\\.^$*+?(){}|]/g, '\\$&')}-[0-9]+`;
   if (t === 'none') return '';

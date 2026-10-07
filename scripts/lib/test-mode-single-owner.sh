@@ -37,7 +37,13 @@ scan() {
         *.js|*.mjs) pat="$JS_KEY_READ|$HOST_LITERAL"; comment='[[:space:]]*(//|\*|/\*)' ;;
         *)          pat="$SHELL_KEY_TEST|$HOST_LITERAL"; comment='[[:space:]]*#' ;;
     esac
-    grep -nE -- "$pat" "$f" | grep -vE -- "^[0-9]+:$comment"
+    # grep exits 1 on no match; 2 is a read error, which must not pass as clean.
+    local out rc=0
+    out=$(grep -nE -- "$pat" "$f") || rc=$?
+    [ "$rc" -le 1 ] || return 2
+    [ -n "$out" ] || return 0
+    printf '%s\n' "$out" | grep -vE -- "^[0-9]+:$comment"
+    return 0
 }
 
 FAIL=0
@@ -65,7 +71,11 @@ for rel in $SURFACES; do
         FAIL=$((FAIL + 1))
         continue
     fi
-    hits=$(scan "$f")
+    if ! hits=$(scan "$f"); then
+        echo "  FAIL  $rel could not be scanned"
+        FAIL=$((FAIL + 1))
+        continue
+    fi
     case "$ALLOW" in
         *"
 $rel

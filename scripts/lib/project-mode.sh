@@ -135,8 +135,17 @@ project_mode_forge() {
 }
 
 project_mode_id_pattern() {
-    local t key prefix
+    local t key prefix nl='
+'
     if [ -n "${TICKET_ID_PATTERN:-}" ]; then
+        # One line only: project_mode_env carries it on one line, and grep -E
+        # would read a newline as an alternative the hook never sees.
+        case "$TICKET_ID_PATTERN" in
+            *"$nl"*)
+                echo "project-mode: TICKET_ID_PATTERN is multi-line (expected one ERE; join alternatives with |)" >&2
+                return 2
+                ;;
+        esac
         printf '%s\n' "$TICKET_ID_PATTERN"
         return 0
     fi

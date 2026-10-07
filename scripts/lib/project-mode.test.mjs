@@ -106,3 +106,8 @@ test('CLI: prints the answer, and exits 2 with the I8 message on a refusal', () 
   assert.equal(bad.status, 2);
   assert.match(bad.stderr, /local-git.*github\.com/);
 });
+
+test('a multi-line TICKET_ID_PATTERN is refused, never cut to its first line', () => {
+  const cwd = makeDir('-', '-');
+  assert.throws(() => projectModeIdPattern({ cwd, env: { ...BASE_ENV, TICKET_ID_PATTERN: 'A-[0-9]+\nB-[0-9]+' } }), /multi-line/);
+});
