@@ -856,8 +856,31 @@ if [ -n "$_leg_rcwd" ] && [ -n "$_leg_vroot" ]; then
         esac
     fi
 fi
+# HIMMEL-4783: refuse (exit 2) a leg whose resume_cwd names a leg worktree path
+# (.../.claude/worktrees/<type>+<slug>) that is not an existing git worktree: 8
+# of 38 audited legs failed their first call on exactly this, and the leg then
+# spends one to three turns creating it at the most expensive moment. Verify and
+# refuse, never create: the launcher stays read-only on the repo. Only that path
+# shape is checked, so a judge's scratch dir and a doc with no resume_cwd launch
+# unchanged. Runs before --dry-run's exit so a console's dry-run sees it.
+# ponytail: the slug rule assumes the clean-garden `<type>+<slug>` basename, so a
+# differently named worktree dir gets a best-effort create command, upgrade path:
+# read the branch from `git worktree list` once a case needs it.
+# shellcheck source=../../lib/git-clean.sh
+. "$HERE/../../lib/git-clean.sh"
+case "$_leg_rcwd" in
+*/.claude/worktrees/*)
+    _leg_wt_top="$(git_clean -C "$_leg_rcwd" rev-parse --show-toplevel 2>/dev/null)" || _leg_wt_top=""
+    _leg_wt_phys="$(cd -P "$_leg_rcwd" 2>/dev/null && pwd -P)" || _leg_wt_phys=""
+    if [ -z "$_leg_wt_top" ] || [ "$_leg_wt_top" != "$_leg_wt_phys" ]; then
+        _leg_wt_base="${_leg_rcwd%/}"; _leg_wt_base="${_leg_wt_base##*/}"
+        echo "headed-arm-leg: refusing to launch $NAME: the doc's resume_cwd ($_leg_rcwd) is not an existing git worktree (HIMMEL-4783). Create it first, from the repo's primary checkout: bash scripts/clean-garden.sh ${_leg_wt_base/+//} --no-prune" >&2
+        exit 2
+    fi
+    ;;
+esac
 unset -f _leg_phys_path
-unset -v _leg_rcwd _leg_rcwd_phys _leg_vroot _leg_vroot_phys
+unset -v _leg_rcwd _leg_rcwd_phys _leg_vroot _leg_vroot_phys _leg_wt_top _leg_wt_phys _leg_wt_base
 
 # Context resolution (HIMMEL-2766/HIMMEL-2779): off-values stay standard;
 # the one old 1m opt-in is resolved explicitly so the argv guard below can
