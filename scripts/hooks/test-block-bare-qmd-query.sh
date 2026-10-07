@@ -786,6 +786,32 @@ allow "bash </dev/null -c 'qmd status' 2>&1"
 allow "qmd status; bash -c 'IFS=\$'\"'\"'\\t'\"'\"' read -r a <<E
 x
 E'"
+# HIMMEL-4574: a quoted separator in a reader's argument is a pattern, not a
+# command boundary, when every command run is a reader (grep, cat, head, …).
+allow "grep -n 'a\\|qmd query' x"
+allow 'grep -E "qmd-query|qmd query" x'
+allow "grep -E 'a|qmd search' x | head -5"
+allow "ls scripts/hooks | grep -E 'bare|qmd vsearch'"
+allow "grep -n 'x; qmd query' f 2>&1 | wc -l"
+allow "cat f | grep 'a|qmd query'"
+allow "{ grep 'a;qmd query' f; }"
+# The HIMMEL-4479 audit shapes (already allowed on main; kept as regressions).
+allow 'ls scripts/hooks | grep block-bare-qmd-query'
+allow 'git grep -n mcp__qmd__query'
+# ... but a non-reader anywhere, a real separator or an interpreter still denies.
+deny "grep 'a|b' f; qmd query x"
+deny "grep 'a|b' f | qmd query x"
+deny "grep 'a; qmd query' f | sh"
+deny "grep 'a; qmd query' f | bash"
+deny "grep 'a; qmd query' f | xargs"
+deny "grep 'a; qmd query' f; eval 'x; qmd query'"
+deny "grep \"\$(bash -c 'x; qmd query')\" f"
+deny "grep 'a|qmd query' <(sh) f"
+deny "grep 'a|qmd query' f | sed e"
+deny "PATH=/tmp; grep 'a|qmd query' f"
+deny "grep() { sh; }; grep 'a|qmd query' f"
+deny "echo 'x; qmd query' | grep x"
+deny "bash -c 'grep x f; qmd query'"
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \
