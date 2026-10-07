@@ -87,6 +87,27 @@ assert "a decoy blob is not a player response -> exit 6" 6 "$?"
 python3 "$HELPER" --video-id 'x;rm' --from-html "$FIX/watch.html" >/dev/null 2>&1
 assert "malformed video id refused" 2 "$?"
 
+# HIMMEL-4797: the private check reads English text, so the page must be asked
+# for in English. A stub scrapling records the URL fetch_page navigates to (the
+# stub never arms the guard, so the helper then errors - only the URL matters).
+mkdir -p "$tmp/pylib/scrapling"
+: >"$tmp/pylib/scrapling/__init__.py"
+cat >"$tmp/pylib/scrapling/fetchers.py" <<'STUB'
+import os
+class StealthyFetcher:
+    @staticmethod
+    def fetch(url, **kw):
+        open(os.environ["FETCH_URL_LOG"], "w").write(url)
+        class P: html_content = ""; status = 200
+        return P()
+STUB
+PYTHONPATH="$tmp/pylib" FETCH_URL_LOG="$tmp/fetch.url" helper >/dev/null 2>&1
+fetched="$(cat "$tmp/fetch.url" 2>/dev/null)"
+case "$fetched" in *[?\&]hl=en|*[?\&]hl=en\&*) a=ok ;; *) a="$fetched" ;; esac
+assert "watch page is fetched with hl=en pinned (a localised reason would miss _is_private)" ok "$a"
+case "$fetched" in "https://www.youtube.com/watch?v=$VID"*) a=ok ;; *) a="wrong-url: $fetched" ;; esac
+assert "pinned URL still names this video on www.youtube.com" ok "$a"
+
 # --- Test 3: routing -------------------------------------------------------
 echo "Test 3: HIMMEL-4361 route"
 mkdir -p "$tmp/v3"

@@ -234,7 +234,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if not VIDEO_ID_RE.match(args.video_id):
         ap.error("--video-id must be a YouTube video id")
-    url = f"https://www.youtube.com/watch?v={args.video_id}"
+    # hl=en: _is_private reads the English reason text, so ask for English
+    # (HIMMEL-4797). ponytail: no language-independent private signal is known
+    # in playabilityStatus, so a pinned locale it is; revisit if YouTube ignores hl.
+    url = f"https://www.youtube.com/watch?v={args.video_id}&hl=en"
     if not scrapling_permitted(args.vault, url):
         out = {"status": "skipped", "detail": "local-headless denied by route or kill switch"}
         print(json.dumps(out))

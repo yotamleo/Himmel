@@ -529,7 +529,8 @@ def _one_uri(line: str):
 def _hls_media(text: str, base: str, work: Path, tag: str):
     """A media playlist rewritten to local files: (playlist text, [(url, path)])
     for its init map and segments. Raises ValueError on an encrypted playlist,
-    an unusable segment extension, or a URI off the media hosts."""
+    an unusable segment extension, a URI off the media hosts, or a master-only
+    STREAM-INF tag."""
     out, pairs, local = [], [], {}
 
     def localise(uri):
@@ -549,6 +550,10 @@ def _hls_media(text: str, base: str, work: Path, tag: str):
         if not line:
             continue
         if line.startswith("#"):
+            if line.startswith(("#EXT-X-STREAM-INF", "#EXT-X-I-FRAME-STREAM-INF")):
+                # Master-only tags (HIMMEL-4797): the URL under one would be
+                # fetched as a segment and could itself be a nested playlist.
+                raise ValueError("nested playlist tag in a media playlist")
             if line.startswith(("#EXT-X-KEY", "#EXT-X-SESSION-KEY")):
                 if _hls_attrs(line).get("METHOD", "NONE") != "NONE":
                     raise ValueError("encrypted HLS")

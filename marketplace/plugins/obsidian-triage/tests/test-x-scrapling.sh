@@ -328,6 +328,11 @@ hls_case metadata-variant M.m3u8 's#^/amplify_video/9/pl/avc1/720x720/V2.m3u8$#h
 hls_case http-segment V2.m3u8 's#^/amplify_video/9/vid/avc1/720x720/s1.m4s$#http://video.twimg.com/s1.m4s#' 'http://video'
 hls_case offhost-map V2.m3u8 's#URI="/amplify_video/9/vid/avc1/720x720/init.mp4"#URI="https://video.twimg.com.evil.example/init.mp4"#' 'evil\.example'
 hls_case userinfo-audio M.m3u8 's#URI="/amplify_video/9/pl/mp4a/64000/A.m3u8"#URI="https://video.twimg.com@127.0.0.1/A.m3u8"#' '127\.0\.0\.1'
+# (HIMMEL-4797, judge S1) A nested-playlist tag inside a MEDIA playlist: the URL
+# under it would be fetched as a segment and could itself be a playlist.
+nl=$'\n'
+hls_case nested-stream-inf V2.m3u8 "s#^/amplify_video/9/vid/avc1/720x720/s2.m4s\$#\\#EXT-X-STREAM-INF:BANDWIDTH=1\\${nl}/amplify_video/9/nested/N.m4s#" 'nested/N'
+hls_case nested-iframe-inf V2.m3u8 "s#^\#EXT-X-ENDLIST\$#\\#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1,URI=\"/amplify_video/9/nested/I.m4s\"\\${nl}\\#EXT-X-ENDLIST#" 'nested/I'
 hls_case private-audio-seg A.m3u8 's#^/amplify_video/9/aud/mp4a/64000/s1.m4s$#https://192.168.1.1/s1.m4s#' '192\.168\.1\.1' # leak-allow: private-lan-ip SSRF test fixture, never fetched
 hls_case encrypted V2.m3u8 's#^\#EXT-X-MAP#\#EXT-X-KEY:METHOD=AES-128,URI="https://10.9.9.9/k"\n\#EXT-X-MAP#' '10\.9\.9\.9' # leak-allow: private-lan-ip SSRF test fixture, never fetched
 # (HIMMEL-4704 round-2 codex-1) A second URI on one tag, or an unquoted one,
