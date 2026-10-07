@@ -117,6 +117,15 @@ echo "www.youtube.com skip=local-headless" >"$tmp/v3/.harvest-backends"
 helper --vault "$tmp/v3" --from-html "$FIX/watch.html" >"$tmp/route.json"
 assert ".harvest-backends skip -> exit 7" 7 "$?"
 assert "route skip status" skipped "$(jq_py "$tmp/route.json" 'd["status"]')"
+# F1 (j2057): the hl=en pin must not leak into the route gate, or an
+# exact-video rule stops matching and the scrape runs anyway.
+mkdir -p "$tmp/v3b" "$tmp/v3c"
+echo "www.youtube.com/watch?v=$VID skip=local-headless" >"$tmp/v3b/.harvest-backends"
+helper --vault "$tmp/v3b" --from-html "$FIX/watch.html" >/dev/null
+assert "exact-video skip rule still denies with the hl pin" 7 "$?"
+echo "www.youtube.com/watch?v=$VID only=jina" >"$tmp/v3c/.harvest-backends"
+helper --vault "$tmp/v3c" --from-html "$FIX/watch.html" >/dev/null
+assert "exact-video only=jina rule still denies with the hl pin" 7 "$?"
 
 # --- Test 4: the transcript comes from yt-dlp, cookieless ------------------
 echo "Test 4: yt-dlp transcript"
