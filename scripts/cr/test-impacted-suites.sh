@@ -736,7 +736,7 @@ trap 'rm -rf "$FX" "$SHIM" "$SHIM2" "$SHD"' EXIT
 SH="$SHD/c"
 git clone -q --depth 1 "file://$FX" "$SH"
 git -C "$SH" symbolic-ref -d refs/remotes/origin/HEAD
-git -C "$SH" update-ref refs/remotes/origin/main "$(git -C "$SH" commit-tree -m orphan "$(git -C "$SH" mktree </dev/null)")"
+git -C "$SH" update-ref refs/remotes/origin/main "$(git -C "$SH" -c user.name=t -c user.email=t@e commit-tree -m orphan "$(git -C "$SH" mktree </dev/null)")"
 err="$( ( cd "$SH" && { bash "$IS" >/dev/null; } 2>&1 ) )"
 if grepq "$err" -F 'git fetch --unshallow origin'; then pass "shallow clone: error names git fetch --unshallow origin"; else fail "shallow clone: no unshallow command in: $err"; fi
 git -C "$FX" update-ref -d refs/remotes/origin/main
