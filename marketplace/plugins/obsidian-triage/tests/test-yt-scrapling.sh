@@ -126,6 +126,12 @@ assert "exact-video skip rule still denies with the hl pin" 7 "$?"
 echo "www.youtube.com/watch?v=$VID only=jina" >"$tmp/v3c/.harvest-backends"
 helper --vault "$tmp/v3c" --from-html "$FIX/watch.html" >/dev/null
 assert "exact-video only=jina rule still denies with the hl pin" 7 "$?"
+# HIMMEL-4803: the batch canonicalises to youtube.com, so an operator writes
+# host-only rules on that spelling; the helper's www.youtube.com gate must obey it.
+mkdir -p "$tmp/v3d"
+echo "youtube.com skip=local-headless" >"$tmp/v3d/.harvest-backends"
+helper --vault "$tmp/v3d" --from-html "$FIX/watch.html" >/dev/null
+assert "host-only youtube.com skip rule denies the helper" 7 "$?"
 
 # --- Test 4: the transcript comes from yt-dlp, cookieless ------------------
 echo "Test 4: yt-dlp transcript"
