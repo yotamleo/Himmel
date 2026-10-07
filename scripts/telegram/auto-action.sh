@@ -41,7 +41,7 @@ fi
 
 # Closed op allow-list (defense-in-depth vs the bridge parse layer).
 case "$OP" in
-    arm-resume|merge-public) ;;
+    arm-resume|merge-public|launch-bypass-leg|cr-grant-delta) ;;
     *) echo "ERR auto-action: unknown op: $OP" >&2; exit 2 ;;
 esac
 
@@ -86,6 +86,177 @@ if [ "$OP" = "merge-public" ]; then
     rc=$?
     printf '%s\n' "$out"
     exit "$rc"
+fi
+
+# Privileged ops must never turn an agent's shell call into operator authority.
+# Keep CLAUDECODE intact, as on merge-public: the trusted bridge has no agent marker.
+# ponytail: CLAUDECODE absence is not authenticated bridge provenance (same trust
+# model as merge-public); upgrade = signed operator approval via the bus,
+# HIMMEL-4820 design. These ops stay explicit-only/default-off pending that design.
+if [ "$OP" = "launch-bypass-leg" ]; then
+    case "$TIME" in
+        HIMMEL_HOOK_INTEGRITY_BYPASS_OK) ;;
+        *) echo "ERR auto-action: unknown bypass variable" >&2; exit 1 ;;
+    esac
+    case "/$ARG/" in
+        */../*|*/./*) echo "ERR auto-action: non-canonical doc path" >&2; exit 3 ;;
+    esac
+    case "$ARG" in
+        /*.md) ;;
+        *) echo "ERR auto-action: expected absolute .md doc path" >&2; exit 3 ;;
+    esac
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/load-dotenv.sh"
+    load_dotenv HANDOVER_DIR USER_SLUG 2>/dev/null || true
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/handover-path.sh"
+    # shellcheck disable=SC1091
+    . "$SCRIPT_DIR/../lib/user-slug.sh"
+    ROOT=$(handover_root) || exit 3
+    USER_BUCKET=$(user_slug) || exit 3
+    case "$USER_BUCKET" in
+        ''|.|..|*[!a-zA-Z0-9_-]*) echo "ERR auto-action: invalid user bucket" >&2; exit 3 ;;
+    esac
+    ROOT=$(realpath "$ROOT") || exit 3
+    DOC=$(realpath "$ARG" 2>/dev/null) || exit 3
+    case "$DOC" in
+        "$ROOT/$USER_BUCKET/"*.md) ;;
+        *) echo "ERR auto-action: doc outside operator handover bucket" >&2; exit 3 ;;
+    esac
+    [ -f "$DOC" ] || exit 3
+    if [ -n "${CLAUDECODE:-}" ]; then
+        echo "ERR auto-action: agent session cannot authorize launch-bypass-leg" >&2
+        exit 19
+    fi
+    MODEL=$(sed -n -E 's/^> \*\*Tier:\*\* ([a-zA-Z0-9.-]+) — .*/\1/p' "$DOC" | head -n 1)
+    case "$MODEL" in
+        '') MODEL_ARGS=() ;;
+        sonnet|claude-sonnet-5-5) MODEL_ARGS=(claude-sonnet-5-5) ;;
+        opus|claude-opus-5-5) MODEL_ARGS=(claude-opus-5-5) ;;
+        fable|claude-fable-5-1) MODEL_ARGS=(claude-fable-5-1) ;;
+        *) echo "ERR auto-action: unsupported Tier model" >&2; exit 1 ;;
+    esac
+    LAUNCH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/telegram-leg.XXXXXXXX") || exit 6
+    LOG="$LAUNCH_DIR/launch.log"
+    SIGNAL="$LAUNCH_DIR/start.signal"
+    touch "$SIGNAL" || exit 6
+    LAUNCH_CMD="${AUTO_ACTION_LAUNCH_CMD:-bash $SCRIPT_DIR/../handover/console-kit/headed-arm-leg.sh}"
+    # Same command+args seam as ARM_CMD; no Telegram text is interpreted as a command.
+    # shellcheck disable=SC2086
+    TELEGRAM_BOT_TOKEN="" TELEGRAM_OWN_POLLER="" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
+        $LAUNCH_CMD --profile leg-impl "telegram-leg-${LAUNCH_DIR##*.}" "$DOC" "$SIGNAL" "$(date +%s)" "$LAUNCH_DIR/session.log" "${MODEL_ARGS[@]}" >"$LOG" 2>&1
+    rc=$?
+    echo "log=$LOG"
+    echo "rc=$rc"
+    exit "$rc"
+fi
+
+# Operator-only post-cap fix grant. Never reset the full-round counter or
+# consumed judge verdicts; the next review-round reads this .head + absent .delta.
+if [ "$OP" = "cr-grant-delta" ]; then
+    case "$ARG" in ''|*[!0-9]*) echo "ERR auto-action: bad PR number" >&2; exit 1 ;; esac
+    case "$TIME" in ''|*[!0-9a-f]*) echo "ERR auto-action: bad reviewed SHA" >&2; exit 1 ;; esac
+    [ "${#TIME}" -eq 40 ] || { echo "ERR auto-action: full reviewed SHA required" >&2; exit 1; }
+    if [ -n "${CLAUDECODE:-}" ]; then
+        echo "ERR auto-action: agent session cannot authorize cr-grant-delta" >&2
+        exit 19
+    fi
+    PR_JSON=$(gh pr view "$ARG" --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || exit 13
+    PR_HEAD=$(printf '%s' "$PR_JSON" | jq -er '.headRefOid | select(type == "string")') || exit 13
+    BRANCH=$(printf '%s' "$PR_JSON" | jq -er '.headRefName | select(type == "string")') || exit 13
+    [ "$(printf '%s' "$PR_JSON" | jq -r '.isCrossRepository')" = "false" ] || exit 13
+    git check-ref-format --branch "$BRANCH" >/dev/null 2>&1 || exit 1
+    case "$PR_HEAD" in ''|*[!0-9a-f]*) exit 13 ;; esac
+    [ "${#PR_HEAD}" -eq 40 ] || exit 13
+    if [ "$TIME" = "$PR_HEAD" ] || ! git merge-base --is-ancestor "$TIME" "$PR_HEAD" 2>/dev/null; then
+        echo "ERR auto-action: reviewed SHA is not a prior ancestor of the PR head" >&2
+        exit 15
+    fi
+    COMMON=$(git rev-parse --path-format=absolute --git-common-dir) || exit 3
+    COMMON=$(realpath "$COMMON") || exit 3
+    STATE="$COMMON/cr-review-rounds/$BRANCH"
+    LOCK_LIB="$SCRIPT_DIR/../lib/shared-branch-lock.sh"
+    SHARED_BRANCH_LOCK_NS=himmel-cr-review-round SHARED_BRANCH_LOCK_HOLDER_PID=$$ \
+        bash "$LOCK_LIB" acquire-wait . "$BRANCH" telegram-cr-grant 10 300 >&2 || exit 6
+    LOCK_OWNER=$(SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status . "$BRANCH" || true)
+    case "$LOCK_OWNER" in '{"pid":'*) ;; *) echo "ERR auto-action: unreadable counter lock owner" >&2; exit 6 ;; esac
+    HEAD_TMP=""
+    # shellcheck disable=SC2317,SC2329 # invoked by the EXIT trap
+    release_grant_lock() {
+        [ -z "$HEAD_TMP" ] || rm -f "$HEAD_TMP"
+        SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" release-if-owner . "$BRANCH" "$LOCK_OWNER" >/dev/null 2>&1
+    }
+    trap release_grant_lock EXIT
+    # Validate under the same lock as review-round, not before a waiting acquire.
+    for SUFFIX in round head delta; do
+        FILE="$STATE.$SUFFIX"
+        if [ -e "$FILE" ] || [ -L "$FILE" ]; then
+            [ -f "$FILE" ] && [ "$(realpath "$FILE")" = "$FILE" ] || exit 3
+        elif [ "$SUFFIX" != "delta" ]; then
+            echo "ERR auto-action: missing branch .$SUFFIX state" >&2
+            exit 3
+        fi
+    done
+    # Same branch/head/model and finding identity semantics as review-round's
+    # ledger_query; here only a FIXED, never deferred/disproved, critic finding
+    # authorizes the operator's narrower grant. An avail row is also required.
+    if ! node - "$COMMON/cr-critic-scores.jsonl" "$BRANCH" "$TIME" "$STATE.delta" <<'NODE'
+const fs = require("fs");
+const [file, branch, head, deltaFile] = process.argv.slice(2);
+let deltaTo = "";
+if (fs.existsSync(deltaFile)) {
+  try {
+    const pair = fs.readFileSync(deltaFile, "utf8").trim().split(/\s+/);
+    if (pair.length < 3 || !pair.slice(0, 2).every(h => /^[0-9a-f]{40}$/.test(h))) process.exit(1);
+    deltaTo = pair[1];
+  } catch { process.exit(1); }
+}
+let lines;
+try { lines = fs.readFileSync(file, "utf8").split("\n"); } catch { process.exit(1); }
+const at = (h) => typeof h === "string" && /^[0-9a-f]{7,40}$/.test(h) && head.startsWith(h);
+const critic = (m) => typeof m === "string" && !["claude", "claude-floor", "codex-adv"].includes(m);
+const key = (o) => [String(o.finding_id), o.artifact || "diff", o.perspective || "off"].join("\u001f");
+const verdicts = new Map(), settled = new Set();
+let reviewed = false, spent = deltaTo === "";
+const note = (id, v) => { verdicts.set(id, v); if (["deferred", "disproved"].includes(v)) settled.add(id); };
+for (const line of lines) {
+  let o; try { o = JSON.parse(line); } catch { continue; }
+  // Legacy branchless amendments apply to every branch; the current sole
+  // writer always stamps a branch, so scoped amendments follow the legacy rows.
+  if (!o || (o.branch !== branch && !(o.kind === "amend" && !o.branch))) continue;
+  if (o.kind === "avail" && o.status === "ok" && critic(o.model)) {
+    if (at(o.head)) reviewed = true;
+    if (typeof o.head === "string" && /^[0-9a-f]{7,40}$/.test(o.head) && deltaTo.startsWith(o.head)) spent = true;
+  }
+  if (o.kind === "finding" && critic(o.model) && at(o.head)) note(key(o), String(o.verdict || ""));
+  if (o.kind === "amend" && at(o.target_head) && verdicts.has(key(o)) && typeof o.set?.verdict === "string") note(key(o), o.set.verdict);
+}
+process.exit(spent && reviewed && [...verdicts].some(([id, v]) => v === "fixed" && !settled.has(id)) ? 0 : 1);
+NODE
+    then
+        echo "ERR auto-action: no critic-reviewed head with a fixed finding on this branch" >&2
+        exit 4
+    fi
+    # Re-query under the counter lock: do not mutate against an outdated PR head.
+    FRESH=$(gh pr view "$ARG" --json headRefOid,headRefName,isCrossRepository 2>/dev/null) || exit 13
+    [ "$FRESH" = "$PR_JSON" ] || { echo "ERR auto-action: PR head moved" >&2; exit 15; }
+    STAMP="$(date +%Y%m%dT%H%M%S).$$"
+    for SUFFIX in head delta; do
+        FILE="$STATE.$SUFFIX"
+        if [ -e "$FILE" ]; then
+            BACKUP="$FILE.$STAMP"
+            (set -C; cat "$FILE" > "$BACKUP") || exit 6
+            echo "backup=$BACKUP"
+        fi
+    done
+    CURRENT_OWNER=$(SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status . "$BRANCH" || true)
+    [ "$CURRENT_OWNER" = "$LOCK_OWNER" ] || { echo "ERR auto-action: counter lock changed owner" >&2; exit 6; }
+    HEAD_TMP=$(mktemp "$STATE.head.grant.XXXXXXXX") || exit 6
+    printf '%s\n' "$TIME" > "$HEAD_TMP" && mv -f "$HEAD_TMP" "$STATE.head" || exit 6
+    HEAD_TMP=""
+    if [ -e "$STATE.delta" ]; then rm "$STATE.delta" || exit 6; fi
+    echo "reviewed=$TIME"
+    exit 0
 fi
 
 # --- arm-resume path (below) ---

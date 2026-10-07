@@ -22,6 +22,48 @@ see below.
 
 ---
 
+## Typed privileged Telegram ops (HIMMEL-4820)
+
+Both ops are **off by default** and require their individual names in
+`TELEGRAM_AUTO_ACTIONS`; `1`, `all`, `on` and `yes` never enable them.
+Only a whole, typed, non-forwarded message from the allowlisted operator in
+an allowed chat enters the trusted bridge path. Captions, forwarded commands,
+non-operators and free text cannot authorize these actions. The agent is not
+in the trust path; direct calls carrying the Claude Code agent marker refuse
+with rc=19. **Accepted trust ceiling:** like `merge-public`, this script relies
+on the trusted bridge and the inherited `CLAUDECODE` marker, not cryptographic
+caller provenance. A caller able to remove that marker is outside this check's
+protection. Signed operator approvals via the bus are the HIMMEL-4820 design
+upgrade; both ops stay default-off, with an independent Opus judge before merge.
+
+- `/launch-bypass-leg <absolute-leg-doc.md> HIMMEL_HOOK_INTEGRITY_BYPASS_OK`
+  launches through `headed-arm-leg.sh --profile leg-impl`. This is the only
+  accepted bypass variable. The existing document must be inside the resolved
+  handover root's **operator user bucket**; dot-dot paths and symlink escapes
+  refuse. A supported Tier line selects Sonnet/Opus/Fable; absent Tier uses
+  the launcher's leg default. The op creates its own ready signal, does not
+  skip the launcher's brief lint, and replies with the launcher rc and log path.
+- `/cr-grant-delta <pr> <full-reviewed-head-sha>` grants the operator's
+  **post-cap fix delta**, not fresh full review rounds. The SHA must be a prior
+  ancestor of the live PR head, with a successful critic review and a fixed
+  (not deferred/disproved) finding on that PR's branch in the CR ledger.
+  The PR must be in this repository (not a fork), and its branch must already
+  have `.round` and `.head` state. An unspent/pending `.delta` refuses.
+  Under the existing review-counter lock, the op rechecks the PR head, backs
+  up `.head` and any spent `.delta` using timestamp suffixes in the same
+  directory, writes the reviewed SHA to `.head`, and removes the spent
+  `.delta`. **`.round` and `.verdicts` remain untouched.** Backup paths are
+  included in the bridge audit line. It never fetches missing commits.
+
+Every executed or forwarded-refused attempt produces the existing bridge
+`auto-action-audit.log` record. Results distinguish `launched`, `delta-granted`,
+`head-moved` and `error`; replies preserve the executor rc. Bad argument shape
+returns 1, invalid paths/state 3, missing eligible review or pending delta 4,
+local I/O/lock failures 6, PR query/fork refusal 13, non-ancestor/equal or moved
+head 15, and agent-session refusal 19. Launch failures relay the launcher's
+own rc unchanged. Enabling either op is an operator step after security review;
+adding its name to the dispatch table does not enable it.
+
 ## Human — quick commands (Windows / PowerShell)
 
 ```powershell
