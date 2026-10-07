@@ -48,7 +48,7 @@ export type Usage = {
 };
 export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[] };
 type CensusRow = { pid: string; name: string; model: string; doc: string; status: string; autocompact?: string; startedAt?: number | null };
-type Census = { census: Fleet["census"]; sessions: CensusRow[]; cloudRoutes?: string[]; manifests?: string[]; consoleDocs?: string[]; lockFiles?: string[] };
+type Census = { census: Fleet["census"]; sessions: CensusRow[]; cloudRoutes?: string[]; manifests?: string[]; consoleDocs?: string[] };
 
 // A session name as the launchers write it; anything else in a doc is text, never a link.
 const SESSION = /^[A-Za-z0-9._+-]{1,160}$/;
@@ -202,15 +202,18 @@ async function fold(journal: string): Promise<Folded> {
 export async function readFleet(opts: { script: string; env: Record<string, string | undefined>; home: string; now: number; redact: (s: string) => string }): Promise<Fleet> {
   const census = await runScript(opts.script, opts.env);
   if (census.census === "unavailable") return { census: "unavailable", generatedAt: opts.now, sessions: [] };
-  const held = new Set<string>();
-  for (const file of census.lockFiles ?? []) {
-    try {
-      const owner = JSON.parse(await readFile(file, "utf8"));
-      if (typeof owner.handover === "string") held.add(owner.handover);
-    } catch { /* unreadable owner is not evidence of a live console */ }
-  }
-  const lockOf = (file: string, doc: string, wrapped: boolean): FleetRow["lock"] =>
-    wrapped ? "released" : held.has(file) ? "held" : /^- .*\b(?:lock|release-token)\b.*`[^`]+`/m.test(doc) ? "released" : "unknown";
+  const lockOf = (file: string, doc: string, wrapped: boolean): Promise<FleetRow["lock"]> => {
+    if (wrapped) return Promise.resolve("released");
+    if (!/^- .*\b(?:lock|release-token)\b.*`[^`]+`/m.test(doc)) return Promise.resolve("unknown");
+    return new Promise((ok) => {
+      // The lock owner resolves legacy keys and distinguishes free from corrupt or unreadable.
+      execFile("bash", [join(dirname(opts.script), "../handover/queue-lock.sh"), "status", file],
+        { env: opts.env as NodeJS.ProcessEnv, timeout: 3000, maxBuffer: 64 * 1024 }, (err, stdout) => {
+          if (!err && stdout.trim() === "free") return ok("released");
+          ok(/status: FRESH/.test(stdout) ? "held" : "unknown");
+        });
+    });
+  };
   const edges = new Map<string, { console: string; at: number | undefined }>();
   for (const file of census.manifests ?? []) {
     const console = plain(basename(file, ".fleet.json"));
@@ -226,8 +229,15 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
   }
   const seen = new Set<string>();
   const rows = await Promise.all(census.sessions.map(async (c): Promise<FleetRow | null> => {
+    let launch: Record<string, string> = {};
+    try {
+      const env = (await readFile(join(opts.env.CLAUDE_SESSIONS_PROC || "/proc", c.pid, "environ"), "utf8")).split("\0");
+      launch = Object.fromEntries(env.filter((v) => v.includes("=")).map((v) => { const i = v.indexOf("="); return [v.slice(0, i), v.slice(i + 1)]; }));
+    } catch { /* unavailable launch record: use doc or manifest */ }
+    const lane = /(?:^|\/)\.claude-codex\/?$/.test(launch.CLAUDE_CONFIG_DIR ?? "") ? "claudex" : "native";
     let rec: { sessionId?: unknown; status?: unknown; name?: unknown; startedAt?: unknown } = {};
-    for (const config of [".claude", ".claude-codex"]) {
+    const configs = launch.CLAUDE_CONFIG_DIR ? [lane === "claudex" ? ".claude-codex" : ".claude"] : [".claude", ".claude-codex"];
+    for (const config of configs) {
       try { rec = JSON.parse(await readFile(join(opts.home, config, "sessions", `${c.pid}.json`), "utf8")); break; } catch { /* not yet written in this lane */ }
     }
     const run = typeof rec.sessionId === "string" ? rec.sessionId : null;
@@ -250,11 +260,6 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     // A session started without -n still has the name the harness gave it.
     const name = c.name || (typeof rec.name === "string" ? rec.name : "") || `pid ${c.pid}`;
     const role = roleOf(name, c.doc);
-    let launch: Record<string, string> = {};
-    try {
-      const env = (await readFile(join(opts.env.CLAUDE_SESSIONS_PROC || "/proc", c.pid, "environ"), "utf8")).split("\0");
-      launch = Object.fromEntries(env.map((v) => { const i = v.indexOf("="); return [v.slice(0, i), v.slice(i + 1)]; }));
-    } catch { /* unavailable launch record: use doc or manifest */ }
     const graph = graphOf(role, doc);
     // Accepted succession in the doc overrides the original launch environment.
     const parent = role === "console" ? null : graph.parent ?? plain(launch.HIMMEL_CONSOLE_NAME) ?? edges.get(c.doc)?.console ?? null;
@@ -266,8 +271,8 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       lastEventAt: view && t0 !== undefined ? t0 + view.elapsed : null,
       subagents: { total: subs.length, running: view ? subs.filter((id) => agentState(view!, id) === "running").length : 0 },
       failures: view?.failures.length ?? 0,
-      ...graph, parent, console: role === "console" ? name : parent, live: c.status !== "WRAPPED", lock: role === "console" ? lockOf(c.doc, doc, c.status === "WRAPPED") : "unknown",
-      lane: /claude-codex/.test(launch.CLAUDE_CONFIG_DIR ?? "") ? "claudex" : "native",
+      ...graph, parent, console: role === "console" ? name : parent, live: c.status !== "WRAPPED", lock: role === "console" ? await lockOf(c.doc, doc, c.status === "WRAPPED") : "unknown",
+      lane,
       agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
       usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model }), cloud: null,
       runtime: runtimeOf(rec.startedAt ?? c.startedAt, edges.get(c.doc)?.at ?? t0, doc, c.status === "WRAPPED", opts.now, docAt),
@@ -286,7 +291,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
         state: wrapped ? "wrapped" : "unknown", activity: null, lastEventAt: null,
         subagents: { total: 0, running: 0 }, failures: 0, ...graphOf("console", doc),
         agents: [], usage: null, cloud: null, runtime: null, console: name, live: false,
-        lock: lockOf(file, doc, wrapped), lane: "native",
+        lock: await lockOf(file, doc, wrapped), lane: "native",
       });
     } catch { /* archived console moved or unreadable */ }
   }

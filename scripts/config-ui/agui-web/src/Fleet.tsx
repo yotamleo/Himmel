@@ -109,7 +109,7 @@ export function FleetPage({ token, state, console: selected = null }: { token: s
   const all = visibleRows(fleet?.sessions ?? []);
   const rows = all.filter((r) => !selected || r.name === selected || consoleName(r) === selected)
     .sort((a, b) => (ORDER[a.role] ?? 9) - (ORDER[b.role] ?? 9) || a.name.localeCompare(b.name));
-  const open = rows.filter((r) => r.state !== "wrapped");
+  const open = rows.filter(isLive);
   const wrapped = rows.filter((r) => r.state === "wrapped");
   const groups = consoleGroups(all).filter((g) => !selected || g.console.name === selected);
   const orphans = rows.filter((r) => orphanReason(r, all));

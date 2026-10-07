@@ -148,9 +148,21 @@ test("a console that released its lock is retired even while its process is aliv
   expect(b.sessions.find((r: any) => r.name === FLEET.console.name).lock).toBe("released");
 });
 
+test("a corrupt held lock directory is unknown, never proof the console released it", async () => {
+  const s = boot();
+  const root = join(s.dir, "handover");
+  const file = join(root, "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
+  mkdirSync(join(root, ".locks", "queue", `yotam__himmel__${FLEET.console.name}.lock`), { recursive: true });
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.name === FLEET.console.name).lock).toBe("unknown");
+});
+
 test("claudex sessions retain their run, journal usage, console edge and bank lane", async () => {
   const s = boot();
   renameSync(join(s.home, ".claude"), join(s.home, ".claude-codex"));
+  mkdirSync(join(s.home, ".claude", "sessions"), { recursive: true });
+  writeFileSync(join(s.home, ".claude", "sessions", `${FLEET.leg.pid}.json`), JSON.stringify({ sessionId: FLEET.idle.run, startedAt: "2000-01-01T00:00:00Z" }));
   writeFileSync(join(s.dir, "proc", String(FLEET.leg.pid), "environ"), `CLAUDE_CONFIG_DIR=${s.home}/.claude-codex\0`);
   const b = await (await fleet(s.port)).json();
   expect(b.sessions.find((r: any) => r.pid === FLEET.leg.pid)).toMatchObject({ run: FLEET.leg.run, lane: "claudex", console: FLEET.console.name, usage: { calls: 3 } });
