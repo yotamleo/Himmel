@@ -786,6 +786,22 @@ else
     pass "T6-c2: no SKIPPED-DIRTY for non-owned dirt"
 fi
 
+# T6-c3: an owned file replaced by a symlink (porcelain type-change ' T') still blocks
+T6C3_TMPL="$TMP/t6c3-tmpl"; make_template "$T6C3_TMPL" "1.0.0"
+T6C3_VAULT="$TMP/t6c3-vault"
+make_luna_vault "$T6C3_VAULT" "0.9.0" "$T6C3_TMPL"
+git_init_dirty_handovers "$T6C3_VAULT"
+rm -f "$T6C3_VAULT/scripts/hooks/check-commit-msg.sh"
+ln -s /dev/null "$T6C3_VAULT/scripts/hooks/check-commit-msg.sh"
+t6c3_rc=0
+t6c3_out=$(run_engine apply --template-dir "$T6C3_TMPL" --vault "$T6C3_VAULT" 2>&1) || t6c3_rc=$?
+assert_eq "T6-c3: owned type-change dirty exits 3" "3" "$t6c3_rc"
+if grepq "$t6c3_out" "^SKIPPED-DIRTY	"; then
+    pass "T6-c3: owned type-change emits SKIPPED-DIRTY"
+else
+    fail "T6-c3: owned type-change emits SKIPPED-DIRTY" "got: $t6c3_out"
+fi
+
 # T6-d: unstamped vault -> exit 2 without --force-unstamped
 T6D_VAULT="$TMP/t6d-vault"
 make_unstamped_vault "$T6D_VAULT"

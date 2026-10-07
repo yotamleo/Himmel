@@ -365,7 +365,7 @@ is_dirty_owned() {
     while IFS= read -r -d '' entry; do
         # "XY path" entries; a rename/copy's second (origin) entry has no XY prefix.
         case "$entry" in
-            [\ MADRCU?!][\ MADRCU?!]\ *) path="${entry:3}" ;;
+            [\ MTADRCU?!][\ MTADRCU?!]\ *) path="${entry:3}" ;;
             *) path="$entry" ;;
         esac
         if printf '%s\n' "$owned" | grep -qxF -- "$path"; then return 0; fi
