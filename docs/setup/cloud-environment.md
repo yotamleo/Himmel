@@ -42,7 +42,7 @@ BASH_MAX_TIMEOUT_MS=600000
 
 ```bash
 #!/bin/bash
-# rev: 3
+# rev: 4
 rm -rf /tmp/himmel-setup \
   && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
   && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh --with-plugins || true
@@ -54,9 +54,44 @@ rm -rf /tmp/himmel-setup \
   the obsidian-triage tool deps, and installs the lean plugin profile
   (himmel-ops, lean-skills) into the VM's `~/.claude`. A claude.ai plugin upload
   does not do this: it never loads in a cloud session.
+- It also installs graphify and qmd and indexes the repo with each (HIMMEL-4726,
+  see [What the cloud has](#what-the-cloud-has-and-what-stays-local)). Both run
+  last, are bounded by `timeout`, and a failure costs only that tool.
 - The Jira dist builds inside `/tmp/himmel-setup`, not in the session's clone
   (`/home/user/Himmel`), because the clone does not exist yet when the script
   runs. Cloud sessions use the Atlassian connector for Jira anyway.
+
+## What the cloud has, and what stays local
+
+| The cloud has | How |
+|---|---|
+| Hooks | The repo's `.claude/settings.json`; plugin hooks through `--with-plugins` (probed, HIMMEL-4273) |
+| graphify | Installed at the in-repo pin (`scripts/lib/graphify-bin.sh`) with no backend extra. The setup builds the graph AST-only (`graphify update .`): it parses code locally and calls no model, so nothing is sent anywhere |
+| qmd, repo only | The pinned fork (`scripts/lib/qmd-bin.sh install`) and one collection, `himmel`, on the repo, rebuilt on every setup run so it never serves an older clone. BM25 only, see below. A ticket that names another collection (`-c luna`) routes LOCAL-NATIVE |
+| Jira | The claude.ai Atlassian MCP connector, not the local jira CLI |
+
+| Stays local | Why |
+|---|---|
+| luna and any other vault | Private vault data never leaves the station (`scripts/guardrails/egress-matrix.json`). qmd in the cloud never indexes or fetches a vault |
+| Handover state | It lives in the luna state repo, which the cloud cannot reach; a cloud session reports through its PR instead |
+| The console bridge | The console inbox and `SendMessage` reach local sessions only |
+| The hook-integrity bypass | It is a launching-shell variable on the station; a ticket that edits `scripts/hooks/` routes HOOK-BYPASS |
+
+Both indexes are built in the setup clone `/tmp/himmel-setup`, so they show
+`main` as it was when the environment was cached, not the session's branch:
+
+- **graphify**: query the cached graph with
+  `graphify query "<question>" --graph /tmp/himmel-setup/graphify-out/graph.json`,
+  or run `graphify update .` in the session's clone for a fresh one (about 25 s
+  for this repo on a desktop CPU). Never run a semantic `/graphify` extraction in
+  the cloud: it would send content to a model backend. `/cloud-route` routes a
+  ticket that needs one to LOCAL-NATIVE.
+- **qmd**: `qmd search "<terms>" -c himmel` is BM25 and works. Vector search,
+  and the expansion and rerank of `qmd query`, need about 2 GB of models
+  (`qmd pull`) plus a CPU embed, which do not fit the ~5 minute cached setup, so
+  the setup skips them. `qmd query` may try to fetch those models on first use;
+  use `qmd search` in the cloud. `/cloud-route` still routes a ticket that
+  needs `qmd query`, vector search or an embed to LOCAL-NATIVE.
 
 ## Network policy
 
@@ -100,5 +135,15 @@ ls ~/.claude/plugins
 ```
 
 Expect `CLAUDE_CODE_REMOTE=true`, `BASH_DEFAULT_TIMEOUT_MS=600000`, a shellcheck
-version, and a plugins directory. Then ask it to list its skills: the
+version, and a plugins directory. Then check graphify and qmd:
+
+```bash
+graphify query "cloud route classification" --graph /tmp/himmel-setup/graphify-out/graph.json | head -3
+qmd collection list
+qmd search "cloud environment" -c himmel | head -5
+```
+
+Expect a `Graph: ... nodes` line, exactly one collection (`himmel`), and hits
+from `docs/`. If a tool is missing, the setup log under
+`/tmp/himmel-setup-logs/` names the step that failed. Then ask it to list its skills: the
 `himmel-ops:` and `lean-skills:` skills should be there.
