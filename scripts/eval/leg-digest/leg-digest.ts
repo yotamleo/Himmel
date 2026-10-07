@@ -47,6 +47,36 @@ const GREP_CMD = /(?:^|[\s;&|(])(?:grep|egrep|fgrep|rg|ugrep)\s/;
 // The last stage of a pipeline whose exit status can be a grep's: the grep itself or a filter that passes it through.
 const PASS_THROUGH = /^\s*(?:(?:grep|egrep|fgrep|rg|ugrep|head|tail|sort|uniq|cat)\b)/;
 
+// HIMMEL-4793: the pipeline stages of the last command in `cmd`. Commands split on `;`, `&&`, `||` and newline,
+// stages on `|`, never inside single quotes, double quotes or after a backslash, so a grep pattern like 'a|b' stays
+// whole. ponytail: no `$(...)`, backticks or heredocs, a split inside one still reads as a stage boundary; revisit
+// if the board shows a misclassified row.
+const lastStages = (cmd: string): string[] => {
+  let stages: string[] = [], last: string[] = [""], cur = "", quote = "", ws = true; // ws: the last char was unescaped whitespace or a boundary
+  const endStage = () => { stages.push(cur); cur = ""; ws = true; };
+  const endCommand = () => { endStage(); if (stages.some((s) => s.trim())) last = stages; stages = []; };
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    const wordStart = ws;
+    ws = false;
+    if (quote) {
+      if (c === "\\" && quote === '"') { cur += c + (cmd[++i] ?? ""); continue; }
+      if (c === quote) quote = "";
+      cur += c;
+    } else if (c === "\\" && cmd[i + 1] === "\n") { i++; ws = wordStart; } // a line continuation joins the lines and is not a word boundary
+    else if (c === "\\") cur += c + (cmd[++i] ?? "");
+    else if (c === "#" && wordStart) { while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++; }
+    else if (c === "'" || c === '"') { quote = c; cur += c; }
+    else if (c === ";" || c === "\n") endCommand();
+    else if (c === "&" && cmd[i + 1] === "&") { endCommand(); i++; }
+    else if (c === "|" && cmd[i + 1] === "|") { endCommand(); i++; }
+    else if (c === "|") endStage();
+    else { cur += c; ws = /\s/.test(c); }
+  }
+  endCommand();
+  return last;
+};
+
 // HIMMEL-4785: a Bash error is sub-classed by this table, first match wins. `out` tests the result text, `cmd` the
 // command; `sub` is a fixed name, so no journal text reaches a class key. "usage" takes its script from SCRIPT_NAME
 // and only when the basename is a tracked scripts file; an unmatched error stays error/Bash.
@@ -231,7 +261,7 @@ async function main() {
     // Only the last stage of the last command can be the grep whose exit 1 this is: in `grep x f; false` or
     // `grep x f | false` the failure is `false`'s. ponytail: `false && grep x f` still reads as a no-match (the
     // grep never ran), a sequence cannot be told from `ls && grep x f` without running it; revisit if the board shows it.
-    const stages = (cmd.split(/;|&&|\|\||\n/).filter((s) => s.trim()).pop() ?? "").split("|");
+    const stages = lastStages(cmd);
     if (NO_MATCH.test(text) && GREP_CMD.test(stages.join(" ")) && PASS_THROUGH.test(stages[stages.length - 1])) return null;
     for (const e of BASH_ERRORS) {
       if (!e.out.test(text) || (e.cmd && !e.cmd.test(cmd))) continue;
