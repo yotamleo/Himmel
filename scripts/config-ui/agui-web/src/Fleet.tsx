@@ -1,7 +1,10 @@
 // HIMMEL-4712: the fleet landing — /agui/ with a token and no run. Every live session (consoles, legs, judges,
 // interactive sessions) from GET /api/agui/fleet, polled; a row opens that session's run stream. Wrapped legs sit
-// in their own closed section and are never shown as running.
+// in their own closed section and are never shown as running. HIMMEL-4711: a leg's row also links to the
+// console's Health page, whose legs card reads the same handover docs.
 import { useEffect, useState } from "react";
+// @ts-expect-error: plain ES module shared with the console (no types).
+import { pageHref } from "../../public/nav.js";
 import { FLEET_URL, runHash } from "./stream";
 
 type Row = {
@@ -20,26 +23,37 @@ const ago = (ms: number) => {
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.floor(s / 60)}m ago` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ago`;
 };
 
-export function FleetPage({ token }: { token: string }) {
-  const [fleet, setFleet] = useState<Fleet | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [now, setNow] = useState(Date.now());
+export type FleetState = { fleet: Fleet | null; error: string | null };
 
+// HIMMEL-4711: polled once for the page (the rail's Fleet dot reads it on every page, the fleet list on this one).
+export function useFleet(token: string | null): FleetState {
+  const [st, setSt] = useState<FleetState>({ fleet: null, error: null });
   useEffect(() => {
+    if (!token) return;
     let live = true, timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
         const r = await fetch(FLEET_URL, { headers: { "X-Himmel-Token": token }, cache: "no-store" });
         if (!r.ok) throw new Error(r.status === 401 ? "the token was refused" : `the server answered ${r.status}`);
         const f = (await r.json()) as Fleet;
-        if (live) { setFleet(f); setError(null); setNow(Date.now()); }
-      } catch (e) { if (live) setError(String((e as Error).message ?? e)); }
+        if (live) setSt({ fleet: f, error: null });
+      } catch (e) { if (live) setSt((s) => ({ ...s, error: String((e as Error).message ?? e) })); }
       if (live) timer = setTimeout(poll, POLL_MS);
     };
     poll();
-    const tick = setInterval(() => setNow(Date.now()), 1000);
-    return () => { live = false; clearTimeout(timer); clearInterval(tick); };
+    return () => { live = false; clearTimeout(timer); };
   }, [token]);
+  return st;
+}
+
+export function FleetPage({ token, state }: { token: string; state: FleetState }) {
+  const { fleet, error } = state;
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const tick = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, []);
 
   const rows = (fleet?.sessions ?? []).slice().sort((a, b) => (ORDER[a.role] ?? 9) - (ORDER[b.role] ?? 9) || a.name.localeCompare(b.name));
   const open = rows.filter((r) => r.state !== "wrapped");
@@ -85,6 +99,7 @@ function FleetRow({ row, token, now }: { row: Row; token: string; now: number })
         {" · "}{row.subagents.total === 0 ? "no subagents" : `${row.subagents.running} of ${row.subagents.total} subagents running`}
         {row.failures > 0 ? <span className="fleet-fails">{` · ${row.failures} failure${row.failures === 1 ? "" : "s"}`}</span> : " · no failures"}
       </span>
+      {row.role === "leg" && <a className="fleet-link" href={pageHref({ here: "agui", token, id: "health" })}>legs and bank on Health</a>}
       <span className="fleet-activity">
         {row.activity ? <><b>{row.activity.tool}</b> {row.activity.summary} <span className="fleet-age">{ago(now - row.activity.at)}</span></> : "no activity yet"}
       </span>

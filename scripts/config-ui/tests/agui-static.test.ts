@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { aguiStaleWarning, startServer } from "../server";
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 // HIMMEL-4480: GET /agui/ serves the built AG-UI page (agui-web/dist), and
 // `himmelctl ui --agui` prints its live URL.
 // seams: aguiDist (a temp dist), env.HOME (a temp ~/.claude/projects), CONFIG_UI_HIMMELCTL (stub, never shelled here).
@@ -101,18 +103,20 @@ function uiEnv(h: string) {
   for (const k of Object.keys(e)) if (k === "CLAUDECODE" || k.startsWith("CLAUDE_CODE_")) delete e[k];
   return e;
 }
-async function twoLines(args: string[], h: string): Promise<string[]> {
+// HIMMEL-4711: `himmelctl ui` prints ONE URL; read the first line, then make sure no second one follows.
+async function oneLine(args: string[], h: string): Promise<string[]> {
   const p = Bun.spawn(["node", BIN, "ui", "--port", "0", ...args], { env: uiEnv(h), stdout: "pipe", stderr: "pipe" });
   try {
     const reader = p.stdout.getReader();
     const dec = new TextDecoder();
     let out = "";
-    while (out.split("\n").length < 3) {
+    while (!out.includes("\n")) {
       const { value, done } = await reader.read();
       if (done) break;
       out += dec.decode(value);
     }
-    return out.trim().split("\n");
+    const more = await Promise.race([reader.read().then(({ value }) => dec.decode(value)), sleep(300).then(() => "")]);
+    return (out + more).trim().split("\n");
   } finally {
     p.kill("SIGTERM");
     await p.exited;
@@ -120,19 +124,17 @@ async function twoLines(args: string[], h: string): Promise<string[]> {
 }
 
 // HIMMEL-4712: --agui with no session id prints the fleet landing (the token, no run).
-test("himmelctl ui --agui with no session id prints the config URL, then the AG-UI fleet URL", async () => {
-  const [config, agui] = await twoLines(["--agui"], home());
-  const m = /^(http:\/\/127\.0\.0\.1:\d+)\/#t=([0-9a-f]{64})$/.exec(config);
-  expect(m).not.toBeNull();
-  expect(agui).toBe(`${m![1]}/agui/#t=${m![2]}`);
+test("himmelctl ui --agui with no session id prints one URL: the AG-UI fleet", async () => {
+  const lines = await oneLine(["--agui"], home());
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/agui\/#t=[0-9a-f]{64}$/);
 });
 
 for (const [label, args, want] of [["--agui latest", ["--agui", "latest"], NEW], ["--agui <id>", ["--agui", OLD], OLD]] as const) {
-  test(`himmelctl ui ${label} prints the config URL, then the AG-UI URL for ${want === NEW ? "the newest" : "that"} session`, async () => {
-    const [config, agui] = await twoLines([...args], home());
-    const m = /^(http:\/\/127\.0\.0\.1:\d+)\/#t=([0-9a-f]{64})$/.exec(config);
-    expect(m).not.toBeNull();
-    expect(agui).toBe(`${m![1]}/agui/#t=${m![2]}&run=${want}`);
+  test(`himmelctl ui ${label} prints one URL: the AG-UI run of ${want === NEW ? "the newest" : "that"} session`, async () => {
+    const lines = await oneLine([...args], home());
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(new RegExp(`^http://127\\.0\\.0\\.1:\\d+/agui/#t=[0-9a-f]{64}&run=${want}$`));
   });
 }
 
@@ -185,6 +187,17 @@ test("a dist newer than its source has no banner and no warning; assets never ge
   expect(aguiStaleWarning(dir, w)).toBeNull();
   const old = web(3600, 60);
   expect(await (await fetch(`${bootWeb(old.dir, old.web)}/agui/index-abc.js`)).text()).toBe("console.log(1)");
+});
+
+// HIMMEL-4711: the page bundles the console's rail and theme from public/, so a newer one of those is a newer source.
+test("a dist older than public/nav.js or public/theme.css is stale", () => {
+  for (const f of ["nav.js", "theme.css"]) {
+    const { dir, web: w } = web(3600, 7200);
+    expect(aguiStaleWarning(dir, w)).toBeNull();
+    mkdirSync(join(w, "..", "public"), { recursive: true });
+    writeFileSync(join(w, "..", "public", f), "");
+    expect(aguiStaleWarning(dir, w)).toMatch(/^himmelctl: ui: the AG-UI page is an old build .*bun run build/);
+  }
 });
 
 // HIMMEL-4716: a source file deleted (or renamed) after the build leaves no newer mtime behind, so the build records

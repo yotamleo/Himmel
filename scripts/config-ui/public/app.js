@@ -1,6 +1,7 @@
 // HIMMEL-4254 P3/P4: thin DOM glue. All markup comes from render.js.
 import { render, renderNav, renderHeader } from "/render.js";
 import { renderHealth } from "/health.js";
+import { fleetDot, navLinks, parseLanding } from "/nav.js";
 
 const $ = (s) => document.querySelector(s);
 const state = { open: new Set(), bundles: {}, filt: { health: null, kind: null, q: "", problems: false }, plans: {} };
@@ -8,10 +9,14 @@ let feed = null;
 let current = "triage";
 
 // The token rides the URL fragment (never sent in a request line); keep it in
-// memory only and clear it from the address bar.
-const m = /#t=([0-9a-f]+)/.exec(location.hash);
-const token = m ? m[1] : "";
-if (m) history.replaceState(null, "", location.pathname + location.search + "#/config");
+// memory only and clear it from the address bar. HIMMEL-4711: the AG-UI rail
+// links here as #t=<token>&page=<id>, landing on that page.
+const landing = parseLanding(location.hash);
+const token = landing ? landing.token : "";
+if (landing) history.replaceState(null, "", location.pathname + location.search + "#/" + landing.page);
+// HIMMEL-4711: the Fleet link's status dot, read on load and on each page change (never polled: an open
+// console must still let the server idle out).
+let fleet = { data: null, error: null };
 
 // Pages: one entry each (id = the `#/<id>` route). `regions` keeps the Config
 // region nav and its 1/2/3 keys on that page only.
@@ -28,13 +33,29 @@ function route() {
   const id = (/^#\/(\w+)/.exec(location.hash) || [])[1];
   currentPage = PAGES.find((p) => p.id === id) || PAGES[0];
   if (id !== currentPage.id) history.replaceState(null, "", location.pathname + location.search + "#/" + currentPage.id);
-  $("#pages").innerHTML = PAGES.map((p) => `<a href="#/${p.id}"${p === currentPage ? ' aria-current="page"' : ""}>${p.label}</a>`).join("");
+  renderPages();
+  loadFleet();
   if (currentPage.onVisit) currentPage.onVisit();
   if (feed || currentPage.needsFeed === false) paint();
   else { $("#main").innerHTML = `<p class="sub" id="status">loading…</p>`; $("#nav").innerHTML = ""; } // no stale page under this tab
 }
 addEventListener("hashchange", route);
 route();
+
+// The rail (nav.js, shared with the AG-UI page): Config and Health are routes here, Fleet is /agui/.
+function renderPages() {
+  const dot = fleetDot(fleet.data, fleet.error);
+  $("#pages").innerHTML = navLinks({ here: "console", token, current: currentPage.id }).map((l) =>
+    `<a href="${l.href}"${l.current ? ' aria-current="page"' : ""}>${l.label}${l.id === "fleet" ? `<span class="st-dot ${dot.cls}" title="${dot.title}"></span>` : ""}</a>`).join("");
+}
+
+async function loadFleet() {
+  try {
+    const r = await fetch("/api/agui/fleet", { headers: { "X-Himmel-Token": token }, cache: "no-store" });
+    fleet = r.ok ? { data: await r.json(), error: null } : { data: null, error: r.status === 401 ? "the token was refused" : `the server answered ${r.status}` };
+  } catch (_) { fleet = { data: null, error: "server unreachable" }; }
+  renderPages();
+}
 
 function paint() {
   const keep = document.activeElement && document.activeElement.id === "q" ? document.activeElement.selectionStart : null;
