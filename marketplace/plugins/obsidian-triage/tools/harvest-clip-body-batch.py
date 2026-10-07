@@ -1721,6 +1721,27 @@ def run_rescan_flags(clips: list, vault: Path, dry_run: bool) -> int:
     return 4 if failed else 0
 
 
+def write_done_marker(vault: Path, clips: list, failed: int) -> None:
+    """harvest-clips.md G-8 (HIMMEL-4684): the batch tool owns .harvest.done.
+    Every PART line it prints is deferred-class, so a run with no FAIL writes
+    the marker (timestamp + batch hash, atomically); a run with a FAIL removes
+    any marker, so downstream stays gated closed."""
+    import datetime
+    import hashlib
+    import os
+    marker = vault / ".harvest.done"
+    if failed:
+        marker.unlink(missing_ok=True)
+        return
+    rels = "\n".join(c.relative_to(vault).as_posix() for c in clips)
+    batch_hash = hashlib.sha256(rels.encode("utf-8")).hexdigest()[:16]
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tmp = vault / f".harvest.done.tmp.{os.getpid()}"
+    tmp.write_text(f"{ts} {batch_hash}\n", encoding="utf-8")
+    os.replace(tmp, marker)
+    print(f"harvest-clip-body-batch: wrote .harvest.done ({batch_hash})")
+
+
 def main():
     global TODAY
     ap = argparse.ArgumentParser()
@@ -1889,6 +1910,8 @@ def main():
         )
     if args.dry_run:
         print("  (DRY-RUN — no files modified)")
+    else:
+        write_done_marker(args.vault, clips, failed)
     if failed > 0:
         sys.exit(4)
     sys.exit(0)

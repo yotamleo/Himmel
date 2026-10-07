@@ -97,6 +97,12 @@ cat "$STUB_JSON"
 exit "${STUB_RC:-0}"
 STUB
 chmod +x "$tmp/scrapling-python"
+# Hanging helper for the --budget test (Test 12).
+cat > "$tmp/slow-python" <<'STUB'
+#!/usr/bin/env bash
+exec python3 -c "import time; time.sleep(30)"
+STUB
+chmod +x "$tmp/slow-python"
 cat > "$tmp/bin/curl" <<'STUB'
 #!/usr/bin/env bash
 echo "curl $*" >> "$STUB_CALLS"
@@ -162,6 +168,8 @@ grep -q -- '--shortcode SCRP0006' "$tmp/calls" && a=ok || a=no
 assert "helper called with the shortcode" ok "$a"
 grep -q -- '^curl .*--max-redirs 0' "$tmp/calls" && a=ok || a=no
 assert "curl follows no redirect off the CDN host" ok "$a"
+grep -q '^ig_media_backend: scrapling$' "$tmp/v6/Clippings/clip.md" && a=ok || a=no
+assert "clip records ig_media_backend: scrapling (HIMMEL-4684)" ok "$a"
 
 # --- Test 7: Scrapling login wall -> gallery-dl fallback -------------------
 echo "Test 7: gallery-dl fallback"
@@ -174,6 +182,8 @@ grep -qF "1 slides + 0 transcript [gallery-dl]" "$tmp/v7.out" && a=ok || a=no
 assert "outcome line names the gallery-dl fallback" ok "$a"
 grep -q '^gdl$' "$tmp/calls" && a=ok || a=no
 assert "gallery-dl ran after scrapling" ok "$a"
+grep -q '^ig_media_backend: gallery-dl$' "$tmp/v7/Clippings/clip.md" && a=ok || a=no
+assert "clip records ig_media_backend: gallery-dl (HIMMEL-4684)" ok "$a"
 
 # --- Test 7b: curl missing -> gallery-dl fallback, no crash ---------------
 echo "Test 7b: curl missing"
@@ -241,6 +251,53 @@ run_tool "$tmp/v11" >"$tmp/v11b.out" 2>"$tmp/v11b.err"
 assert "no scrapling venv, no gallery-dl -> exit 2" 2 "$?"
 grep -q "scrapling-venv" "$tmp/v11b.err" && a=ok || a=no
 assert "preflight names the scrapling venv install" ok "$a"
+
+# --- Test 12: wall-clock budget stops the batch and still prints the summary
+# (HIMMEL-4684). The stub helper hangs; the per-clip timeout is capped by what
+# is left of the budget, and no clip starts once it is spent.
+echo "Test 12: --budget"
+make_vault "$tmp/v12" SCRP0012
+sed 's/SCRP0012/SCRP0013/g' "$tmp/v12/Clippings/clip.md" >"$tmp/v12/Clippings/clip2.md"
+t0=$SECONDS
+IG_SCRAPLING_PYTHON="$tmp/slow-python" run_tool "$tmp/v12" --budget 2 >"$tmp/v12.out" 2>"$tmp/v12.err"
+rc=$?; took=$((SECONDS - t0))
+assert "budget run exit 0" 0 "$rc"
+[ "$took" -lt 15 ] && a=ok || a="took ${took}s"
+assert "budget run stops inside its budget, not the 180s download timeout" ok "$a"
+grep -qF "ig-media-fetch: 2 selected" "$tmp/v12.out" && a=ok || a=no
+assert "summary printed after a budget stop" ok "$a"
+grep -qF "budget" "$tmp/v12.out" && a=ok || a=no
+assert "budget stop is reported" ok "$a"
+grep -q '^media_' "$tmp/v12/Clippings/clip2.md" && a=touched || a=untouched
+assert "clip after the budget stop is not started" untouched "$a"
+grep -q '^ig_media_pending: true$' "$tmp/v12/Clippings/clip2.md" && a=ok || a=no
+assert "unstarted clip stays pending" ok "$a"
+
+# --- Test 12b: a spent budget grants no further subprocess time -------------
+# Once the deadline has passed, _t raises TimeoutExpired (every call site
+# already handles it) instead of granting each remaining stage a floor.
+echo "Test 12b: spent budget"
+a=$(python3 - "$TOOL" <<'PY'
+import importlib.util, subprocess, sys, time
+spec = importlib.util.spec_from_file_location("igmf", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.DEADLINE = time.monotonic() - 1
+try:
+    print("granted", m._t(60))
+except subprocess.TimeoutExpired:
+    print("raised")
+PY
+)
+assert "spent budget raises TimeoutExpired" raised "$a"
+
+# --- Test 12c: the --limit summary does not count unstarted clips as processed
+echo "Test 12c: --limit summary after a budget stop"
+make_vault "$tmp/v12c" SCRP0014
+sed 's/SCRP0014/SCRP0015/g' "$tmp/v12c/Clippings/clip.md" >"$tmp/v12c/Clippings/clip2.md"
+sed 's/SCRP0014/SCRP0016/g' "$tmp/v12c/Clippings/clip.md" >"$tmp/v12c/Clippings/clip3.md"
+IG_SCRAPLING_PYTHON="$tmp/slow-python" run_tool "$tmp/v12c" --budget 2 --limit 2 >"$tmp/v12c.out" 2>"$tmp/v12c.err"
+grep -qF "3 matched, 1 processed, 2 remaining" "$tmp/v12c.out" && a=ok || a=$(grep -F matched "$tmp/v12c.out")
+assert "unstarted clips count as remaining, not processed" ok "$a"
 
 echo ""
 echo "ig-scrapling tests: $pass passed, $fail failed"

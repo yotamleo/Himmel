@@ -71,7 +71,7 @@ A source-level, per-clip partial (the source cannot give more today) is **deferr
 
 **Retry count.** Each deferred, counted partial increments `harvest_defer_count` in the clip's own frontmatter — not the daily G-5 state file, which rotates at midnight and would reset it. At `harvest_defer_count: 5` the batch tool also writes `harvest_needs_attention: true`, and from then on the clip is skipped (`⊘ skipped (needs-attention)`) instead of re-read every night. Five nights covers a work-week of transient outages before a human looks. A needs-attention clip is never silently dropped: it stays listed. To retry it, fix the source or clip and delete `harvest_needs_attention`.
 
-**Pending report.** Every non-dry run of `harvest-clip-body-batch.py` rebuilds `<vault>/.harvest-pending.md` from the clips' frontmatter: a `## Deferred` list (reason, count) and a `## Needs attention` bucket. The batch summary adds `harvest-clip-body-batch: D deferred (non-blocking), A needs-attention; pending report: .harvest-pending.md`. Every `PART` line the batch tool prints is deferred-class; only its `FAIL` lines (exit 4) block.
+**Pending report.** Every non-dry run of `harvest-clip-body-batch.py` rebuilds `<vault>/.harvest-pending.md` from the clips' frontmatter: a `## Deferred` list (reason, count) and a `## Needs attention` bucket. The batch summary adds `harvest-clip-body-batch: D deferred (non-blocking), A needs-attention; pending report: .harvest-pending.md`. Every `PART` line the batch tool prints is deferred-class; only its `FAIL` lines (exit 4) block. The batch tool also owns `.harvest.done` (G-8, HIMMEL-4684): a non-dry run with no `FAIL` writes it, a run with a `FAIL` removes it.
 
 ### Date substitution rule
 
@@ -359,7 +359,11 @@ After the run, append one line to `<vault>/log.md` (if it exists):
 
 Downstream stages (`/triage-clips`, `/synthesize-clips`, `/archive-clips`) refuse to run against a harvest that never finished cleanly. This is the run's final step, after the Tracking append.
 
-If this run is exiting 0 — a clean run: every unharvested clip landed at `ok`, was skipped, or is a **deferred** partial (the class table above: thin-body, enricher-gap, IG/X media-pending, firecrawl), with no blocking partial, no `failed`, no catastrophic abort — write `<vault>/.harvest.done` atomically:
+If this run is exiting 0 — a clean run: every unharvested clip landed at `ok`, was skipped, or is a **deferred** partial (the class table above: thin-body, enricher-gap, IG/X media-pending, firecrawl), with no blocking partial, no `failed`, no catastrophic abort — `<vault>/.harvest.done` must exist at exit.
+
+**The batch tool writes it (HIMMEL-4684).** A non-dry run of `harvest-clip-body-batch.py` with no `FAIL` line writes the marker itself, atomically, as `<ISO timestamp> <batch hash>` (the hash is over the clip paths it scanned), and prints `harvest-clip-body-batch: wrote .harvest.done (<hash>)`. A run with a `FAIL` (exit 4) removes it. Do NOT write it by hand after a batch-tool run.
+
+If a **blocking** class happens in this run AFTER the batch tool wrote the marker (a `stale-read`, a `rate-limited` dispatch, a catastrophic abort — see the class table), remove it before exiting: `rm -f "<vault>/.harvest.done"`. Only when this run harvested without the batch tool at all does the agent write the marker itself, the same way:
 
 ```bash
 marker_tmp="<vault>/.harvest.done.tmp.$$"
@@ -367,9 +371,9 @@ printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$batch_hash" > "$marker_tmp"
 mv "$marker_tmp" "<vault>/.harvest.done"
 ```
 
-`$batch_hash` is the same clip-batch hash G-2 wrote into `<vault>/.harvest.lock` for this run.
+`$batch_hash` is then the same clip-batch hash G-2 wrote into `<vault>/.harvest.lock` for this run.
 
-On any other exit path (1/2/3/4/5) MUST NOT write the marker — it already stands invalidated from G-2's start-of-run deletion, so a partial/failed/interrupted run leaves downstream gated closed until a clean harvest completes. No operator override flag — keep it minimal.
+On any other exit path (1/2/3/4/5) MUST NOT write the marker, and it must not exist at exit — it already stands invalidated from G-2's start-of-run deletion, so a partial/failed/interrupted run leaves downstream gated closed until a clean harvest completes. No operator override flag — keep it minimal.
 
 ### Notes for the agent
 

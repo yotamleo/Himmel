@@ -46,7 +46,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
 import ig_throttle  # noqa: E402
 
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # line_buffering: a caller that kills the run still sees every per-clip line.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 TODAY = datetime.date.today().isoformat()
@@ -79,6 +80,26 @@ FFMPEG_TIMEOUT = int(os.environ.get("IG_MEDIA_FFMPEG_TIMEOUT", "300"))
 # frame-extract subprocess below; every other call site keeps FFMPEG_TIMEOUT.
 FRAME_TIMEOUT = int(os.environ.get("IG_MEDIA_FRAME_TIMEOUT", str(FFMPEG_TIMEOUT)))
 WHISPER_TIMEOUT = 1800
+# HIMMEL-4684: a wall-clock budget for the whole batch, so the run stops cleanly
+# and prints its summary inside the cadence agent's foreground window (its
+# command timeout is 540s). No clip starts once it is spent, and every
+# subprocess timeout is capped by what is left of it (see _t).
+DEFAULT_BUDGET_S = int(os.environ.get("IG_MEDIA_BUDGET_S", "420"))
+DEADLINE = None   # time.monotonic() deadline; None = unbounded
+
+
+def _t(timeout: float) -> float:
+    """A subprocess timeout capped by the time left in the batch budget.
+
+    A spent budget raises TimeoutExpired, which every call site handles as a
+    timed-out stage, so the clip in flight ends without starting more work."""
+    if DEADLINE is None:
+        return timeout
+    import time
+    left = DEADLINE - time.monotonic()
+    if left <= 0:
+        raise subprocess.TimeoutExpired("ig-media-fetch budget", 0)
+    return min(timeout, left)
 
 IG_URL_RE = re.compile(
     r"^https?://(?:www\.|m\.)?instagram\.com/(p|reel|reels|tv)/([A-Za-z0-9_-]+)"
@@ -86,7 +107,8 @@ IG_URL_RE = re.compile(
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
 
-MEDIA_KEYS = ["media_enriched_at", "media_enrichment_status", "media_last_error"]
+MEDIA_KEYS = ["media_enriched_at", "media_enrichment_status", "media_last_error",
+              "ig_media_backend"]
 HARVEST_FLAG_KEYS = ["harvest_flag", "harvest_flag_detail"]
 
 
@@ -160,7 +182,8 @@ def already_media_enriched(fm_raw: str) -> bool:
 
 def upsert_media_markers(fm_raw: str, markers: dict) -> str:
     """Replace any existing media_* key in place; append the rest after the
-    last non-empty frontmatter line. A None value drops the key."""
+    last non-empty frontmatter line. A None value drops the key; a key absent
+    from `markers` is kept as is (a failed retry keeps ig_media_backend)."""
     lines = fm_raw.split("\n")
     seen = set()
     out = []
@@ -170,7 +193,7 @@ def upsert_media_markers(fm_raw: str, markers: dict) -> str:
             if line.startswith(k + ":"):
                 matched = k
                 break
-        if matched is None:
+        if matched is None or matched not in markers:
             out.append(line)
             continue
         seen.add(matched)
@@ -349,7 +372,7 @@ def download_media(ig: dict, cf: Path):
         return None, f"throttled:{slot.reason}"   # nothing sent; caller stops the batch
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=DOWNLOAD_TIMEOUT)
+                              timeout=_t(DOWNLOAD_TIMEOUT))
     except subprocess.TimeoutExpired:
         ig_throttle.record(ok=False)
         return None, "download_timeout"
@@ -390,7 +413,7 @@ def download_media_scrapling(ig: dict, py: str):
         return None, f"throttled:{slot.reason}", None
     try:
         proc = subprocess.run([py, helper, "--url", url, "--shortcode", ig["shortcode"]],
-                              capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+                              capture_output=True, text=True, timeout=_t(DOWNLOAD_TIMEOUT))
     except subprocess.TimeoutExpired:
         ig_throttle.record(ok=False)
         return None, "download_timeout", None
@@ -421,7 +444,7 @@ def download_media_scrapling(ig: dict, py: str):
                 ["curl", "-fsSL", "--max-redirs", "0", "--proto", "=https", "--max-time", "120",
                  "--max-filesize", str(MEDIA_MAX_BYTES), "-o", str(target),
                  str(item.get("url", ""))],
-                capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
+                capture_output=True, text=True, timeout=_t(DOWNLOAD_TIMEOUT))
         except subprocess.TimeoutExpired:
             return None, "download_timeout", None
         except OSError:
@@ -505,7 +528,7 @@ def extract_wav(video: Path, wav: Path) -> bool:
            "-vn", str(wav)]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=FFMPEG_TIMEOUT)
+                           timeout=_t(FFMPEG_TIMEOUT))
     except subprocess.TimeoutExpired:
         return False
     if p.returncode != 0:
@@ -531,7 +554,7 @@ def whisper_transcribe(wav: Path, model: str):
            "python", str(helper), str(wav), model]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=WHISPER_TIMEOUT)
+                           timeout=_t(WHISPER_TIMEOUT))
     except subprocess.TimeoutExpired:
         return None, "error"
     if p.returncode != 0:
@@ -566,7 +589,7 @@ def _probe_audio(video: Path):
            "-f", "null", "-"]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=FFMPEG_TIMEOUT,
+                           timeout=_t(FFMPEG_TIMEOUT),
                            env={**os.environ, "LC_ALL": "C", "LANG": "C"})
     except subprocess.TimeoutExpired:
         print(f"ffmpeg(probe): timed out after {FFMPEG_TIMEOUT}s",
@@ -602,7 +625,7 @@ def soundless_video_frame(video: Path):
     cmd = [ffmpeg, "-y", "-i", str(video), "-frames:v", "1", str(frame)]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=FRAME_TIMEOUT)
+                           timeout=_t(FRAME_TIMEOUT))
     except subprocess.TimeoutExpired:
         print(f"ffmpeg(frame): timed out after {FRAME_TIMEOUT}s",
               file=sys.stderr)
@@ -659,7 +682,7 @@ def recompress_slide(src: Path, dst: Path) -> bool:
            "-qscale:v", "5", str(dst)]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True,
-                           timeout=FFMPEG_TIMEOUT)
+                           timeout=_t(FFMPEG_TIMEOUT))
     except subprocess.TimeoutExpired:
         return False
     if p.returncode != 0:
@@ -801,7 +824,7 @@ def _splice_crawled(body: str, section: str) -> str:
 
 def write_crawled(path: Path, text: str, fm_raw: str, body: str, section: str,
                   has_crlf: bool, status: str = "ok", last_error: str = "null",
-                  enriched: bool = True) -> bool:
+                  enriched: bool = True, backend: str = None) -> bool:
     """Splice the ## Crawled content section into `body`, write the media_*
     markers, then re-read and verify: the new body is exactly what we wrote,
     the frontmatter still parses carrying every marker, and everything OUTSIDE
@@ -821,6 +844,8 @@ def write_crawled(path: Path, text: str, fm_raw: str, body: str, section: str,
     }
     if enriched:
         markers["media_enriched_at"] = TODAY
+    if backend:
+        markers["ig_media_backend"] = backend   # HIMMEL-4684: which backend fetched it
     new_fm_raw = upsert_media_markers(fm_raw, markers)
     if enriched:
         new_fm_raw = drop_ig_media_pending(new_fm_raw)
@@ -894,6 +919,9 @@ def parse_args(argv):
     ap.add_argument("--digest-file", type=Path, default=None, metavar="FILE")
     ap.add_argument("--flag-screen", type=Path, default=None, metavar="CLIP")
     ap.add_argument("--detail", default=None, metavar="DETAIL")
+    ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET_S, metavar="SECONDS",
+                    help="wall-clock budget for the batch; 0 = unbounded "
+                         "(default IG_MEDIA_BUDGET_S, else 420)")
     return ap.parse_args(argv)
 
 
@@ -911,6 +939,9 @@ def enrich_batch(args, selected, matched_total, remaining):
     dropped) is written honestly as media_enrichment_status: partial and KEEPS
     ig_media_pending for retry - it is never stamped a full success."""
     import time
+    global DEADLINE
+    if args.budget > 0:
+        DEADLINE = time.monotonic() + args.budget
     py = scrapling_python()
     scrapling = (py if py and scrapling_permitted(args.vault, "https://www.instagram.com/")
                  else None)
@@ -918,8 +949,14 @@ def enrich_batch(args, selected, matched_total, remaining):
     enriched = 0
     partial = 0
     failed = 0
-    for p, ig in selected:
+    unstarted = 0
+    for n, (p, ig) in enumerate(selected):
         relpath = p.relative_to(args.vault).as_posix()
+        if DEADLINE is not None and time.monotonic() >= DEADLINE:
+            unstarted = len(selected) - n
+            print(f"~ budget of {args.budget}s spent - stopping the batch; "
+                  f"{unstarted} clip(s) not started stay pending")
+            break
         try:
             # Rate limit before each download
             if RATE_LIMIT_S > 0:
@@ -1048,7 +1085,7 @@ def enrich_batch(args, selected, matched_total, remaining):
                 ok = write_crawled(p, text, fm_raw, body, section, has_crlf,
                                    status="partial",
                                    last_error="partial_media:" + descriptor,
-                                   enriched=False)
+                                   enriched=False, backend=backend)
                 if ok:
                     print(f"~ {relpath}: partial "
                           f"({len(slide_embeds)}/{expected_images} slides"
@@ -1060,7 +1097,8 @@ def enrich_batch(args, selected, matched_total, remaining):
                     _cleanup_orphan_media(media_dir, slide_embeds,
                                           media_pre_existed, relpath)
                     failed += 1
-            elif write_crawled(p, text, fm_raw, body, section, has_crlf):
+            elif write_crawled(p, text, fm_raw, body, section, has_crlf,
+                               backend=backend):
                 print(f"v {relpath}: {len(slide_embeds)} slides{qual_suffix} + "
                       f"{len(transcripts)} transcript [{backend}]")
                 enriched += 1
@@ -1074,9 +1112,12 @@ def enrich_batch(args, selected, matched_total, remaining):
             continue
     print(f"\nig-media-fetch: {len(selected)} selected, {enriched} enriched, "
           f"{partial} partial, {failed} failed")
+    if unstarted:
+        print(f"ig-media-fetch: {unstarted} not started (budget {args.budget}s spent; "
+              f"pass --budget 0 for no budget)")
     if remaining > 0:
-        print(f"ig-media-fetch: {matched_total} matched, {len(selected)} "
-              f"processed, {remaining} remaining (capped by --limit; pass "
+        print(f"ig-media-fetch: {matched_total} matched, {len(selected) - unstarted} "
+              f"processed, {remaining + unstarted} remaining (capped by --limit; pass "
               f"--limit 0 for all)")
 
 

@@ -1,7 +1,7 @@
 ---
 allowed-tools: Bash, Read, Write
 description: Instagram media enrichment — download parked IG reels/carousels, transcribe locally, apply a slide digest. Lean-invoke.
-argument-hint: "[vault-path] [--limit N] [--dry-run] [--include-evidence] [--whisper-model M]"
+argument-hint: "[vault-path] [--limit N] [--budget S] [--dry-run] [--include-evidence] [--whisper-model M]"
 ---
 
 ## Your task
@@ -22,6 +22,13 @@ selected clips (`--limit 10`; IG rate-limits aggressively). Pass `--limit 0` to
 process every selected clip (e.g. the one-time backfill). When the `--limit`
 cap leaves clips unprocessed, the tool prints an
 `N matched, K processed, R remaining` line so the withheld clips are visible.
+`--budget S` (HIMMEL-4684; default `IG_MEDIA_BUDGET_S`, else 420) is a
+wall-clock budget for the whole batch: no clip starts once it is spent, every
+download/ffmpeg/whisper timeout is capped by what is left of it, and the tool
+still prints its summary plus an `N not started` line. The unstarted clips keep
+`ig_media_pending` for the next run. 420s keeps the run inside a 540s agent
+command timeout and the cadence's 10-minute foreground window; `--budget 0`
+removes the cap (e.g. a hand-run backfill).
 With `--dry-run`: report the fetch plan, write nothing. `--include-evidence`
 extends selection into the reviewed-evidence pool (`Clippings/_evidence/`,
 never its `_rejected/` subfolder). `--whisper-model M` overrides the local
@@ -83,7 +90,10 @@ Scrapling (no cookie; media fetched from the IG CDN with curl), falling back to
 carousel slides into `Clippings/_media/<clip-slug>/slide-NN.jpg`, and writes ONE
 `## Crawled content` section per clip under the DISTINCT `media_*` marker
 namespace (`media_enriched_at` / `media_enrichment_status` / `media_last_error`
-- never ig-embed's `enriched_at` / `enrichment_status`). On a verified
+- never ig-embed's `enriched_at` / `enrichment_status`), plus
+`ig_media_backend: scrapling|gallery-dl` naming the backend that fetched the
+media (HIMMEL-4684; written on every ok or partial write, kept on a failed
+retry). On a verified
 enrichment success the tool clears `ig_media_pending` on the same frontmatter
 write, releasing the clip back into the pipeline. A RETRYABLE failure (login
 wall, download/no-media error) KEEPS the flag so the clip is retried; a
@@ -91,7 +101,7 @@ PERMANENT failure (`removed` / 404 - the media is gone) also RELEASES the clip
 so it parks as caption-only evidence instead of stranding in the inbox forever.
 
 ```bash
-PYTHONUTF8=1 uv run --python 3.12 python <plugin>/tools/ig-media-fetch.py "<vault>" [--limit N] [--include-evidence] [--whisper-model M]
+PYTHONUTF8=1 uv run --python 3.12 python <plugin>/tools/ig-media-fetch.py "<vault>" [--limit N] [--budget S] [--include-evidence] [--whisper-model M]
 ```
 
 (`uv run --python 3.12` because Windows bare `python3` is a flaky Store stub.)
