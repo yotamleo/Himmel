@@ -25,6 +25,8 @@ Unknown keys are refused, so a field carrying free text cannot ride in.
 IDEMPOTENCE (spec 5.3), all under a per-session flock at <state-dir>/<session>.lock:
   marker present with status ok          -> append nothing
   marker non-ok, new digest non-ok       -> append nothing
+  an ok digest over a non-ok marker replaces the session's leg-failures rows (a partial
+  digest's stale classes and counts go, other sessions' rows stay; HIMMEL-4701);
   otherwise append only the leg-failures rows missing by (session, agent.id, class)
   and the eval-runs row unless an ok one, or one of a non-ok status beside a
   non-ok digest, is already there; then rewrite the marker.
@@ -178,19 +180,57 @@ def validate_file(path):
     return 1 if bad else 0
 
 
+def _ledger_lock(path, mode):
+    """Held by every writer of the ledger: appends share it, a rewrite owns it, so a rewrite
+    never drops a row another session appended meanwhile."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    lk = open(path + ".lock", "w")
+    fcntl.flock(lk, mode)
+    return lk
+
+
+def _dump(r):
+    return (json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+
+
 def _append(path, rows):
     if not rows:
         return
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-    try:
-        for r in rows:
-            line = (json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-            # One O_APPEND write per row, so concurrent writers never interleave a line.
-            if os.write(fd, line) != len(line):
-                raise OSError("short write to %s; the last row may be torn" % path)
-    finally:
-        os.close(fd)
+    with _ledger_lock(path, fcntl.LOCK_SH):
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            for r in rows:
+                line = _dump(r)
+                # One O_APPEND write per row, so concurrent writers never interleave a line.
+                if os.write(fd, line) != len(line):
+                    raise OSError("short write to %s; the last row may be torn" % path)
+        finally:
+            os.close(fd)
+
+
+def _replace_session(path, session, rows):
+    """Drop every row of this session from the ledger, then add rows, atomically."""
+    with _ledger_lock(path, fcntl.LOCK_EX):
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as out:
+            try:
+                fh = open(path, "rb")
+            except FileNotFoundError:
+                fh = None
+            if fh:
+                with fh:
+                    for line in fh:
+                        if session.encode() in line:
+                            try:
+                                r = json.loads(line)
+                            except ValueError:
+                                r = None
+                            if isinstance(r, dict) and r.get("session") == session:
+                                continue
+                        out.write(line)
+            for r in rows:
+                out.write(_dump(r))
+        os.replace(tmp, path)
 
 
 def failure_keys(path, session):
@@ -286,9 +326,15 @@ def record(digest, who, failures_ledger, eval_ledger):
             prev = None
         if prev == "ok" or (prev is not None and status != "ok"):
             return 0, 0
-        have = failure_keys(failures_ledger, session)
-        add = [r for r in frows if (r["agent"]["id"], r["class"]) not in have]
-        _append(failures_ledger, add)
+        if status == "ok" and prev is not None:
+            # A non-ok digest left rows the ok one may no longer have, or with other counts:
+            # replace the session's rows so readers see only the final digest (HIMMEL-4701).
+            add = frows
+            _replace_session(failures_ledger, session, add)
+        else:
+            have = failure_keys(failures_ledger, session)
+            add = [r for r in frows if (r["agent"]["id"], r["class"]) not in have]
+            _append(failures_ledger, add)
         seen = eval_statuses(eval_ledger, session)
         e = 0
         if not ("ok" in seen or (seen and status != "ok")):
@@ -333,23 +379,24 @@ def salus_rooted(cwd, roots):
 
 
 def journal_head(path, limit=40):
-    """(title, first timestamp, cwd) from the journal's first lines."""
+    """(title, first timestamp, cwd): the LAST title in the whole journal (a rename lands late),
+    the first timestamp and cwd from its first lines. Streams; never holds the file."""
     title = ts = cwd = None
     with open(path, encoding="utf-8", errors="replace") as fh:
         for i, line in enumerate(fh):
-            if i >= limit or (title and ts and cwd):
-                break
+            if i >= limit and "customTitle" not in line:
+                continue
             try:
                 r = json.loads(line)
             except json.JSONDecodeError:
                 continue
             if not isinstance(r, dict):
                 continue
-            if title is None and isinstance(r.get("customTitle"), str):
+            if isinstance(r.get("customTitle"), str):
                 title = r["customTitle"]
-            if ts is None and isinstance(r.get("timestamp"), str):
+            if i < limit and ts is None and isinstance(r.get("timestamp"), str):
                 ts = r["timestamp"]
-            if cwd is None and isinstance(r.get("cwd"), str):
+            if i < limit and cwd is None and isinstance(r.get("cwd"), str):
                 cwd = r["cwd"]
     return title, ts, cwd
 

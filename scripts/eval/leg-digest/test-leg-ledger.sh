@@ -135,5 +135,45 @@ sed "s/$DE/$DX/" "$TMP/de.json" >"$TMP/dx.json"
 python3 "$LL" record --failures-ledger "$FL" --eval-ledger "$EL" --state-dir "$ST" --digest "$TMP/dx.json" --digest-error "boom at line 3" >/dev/null 2>&1; rcx=$?
 check "an unknown reason is refused and writes no row" '[ "$rcx" != 0 ] && absent "$DX" "$EL" && [ ! -f "$ST/$DX.json" ]'
 
+echo "8. a partial-to-ok upgrade replaces the session's rows (HIMMEL-4701)"
+US=4670c1a5-0000-4000-8000-0000000000e1; OS=4670c1a5-0000-4000-8000-0000000000e2
+UF="$TMP/up-fail.jsonl"; UE="$TMP/up-eval.jsonl"; US_ST="$TMP/up-state"
+urec() { python3 "$LL" record --failures-ledger "$UF" --eval-ledger "$UE" --state-dir "$US_ST" "$@"; }
+jq -c --arg s "$US" '.session = $s | .status = "partial" | .failures = [(.failures | map(select(.failure == "denied")) | .[0] | .count = 99), (.failures | map(select(.failure == "denied")) | .[0] | .class = "denied/stale-class")]' "$TMP/digest.json" >"$TMP/up-partial.json"
+jq -c --arg s "$US" '.session = $s' "$TMP/digest.json" >"$TMP/up-ok.json"
+jq -c --arg s "$OS" '.session = $s | .status = "partial" | .failures = (.failures | map(select(.failure == "denied")) | .[0:1])' "$TMP/digest.json" >"$TMP/other-partial.json"
+urec --digest "$TMP/other-partial.json" >/dev/null 2>&1
+urec --digest "$TMP/up-partial.json" >/dev/null 2>&1 || bad "the partial record exits 0"
+check "the partial digest wrote its two rows" '[ "$(grep -c "\"session\":\"$US\"" "$UF")" = 2 ]'
+urec --digest "$TMP/up-ok.json" >"$TMP/up.out" 2>&1 || bad "the upgrading record exits 0: $(head -c 300 "$TMP/up.out")"
+check "after the upgrade the session has exactly the ok digest rows" '[ "$(grep -c "\"session\":\"$US\"" "$UF")" = "$(jq ".failures | length" "$TMP/up-ok.json")" ]'
+check "no stale class survives the upgrade" 'absent "denied/stale-class" "$UF"'
+check "no stale count survives the upgrade" 'absent "\"count\":99" "$UF"'
+check "another session's rows are untouched" '[ "$(grep -c "\"session\":\"$OS\"" "$UF")" = 1 ]'
+check "the upgraded ledger still validates" 'python3 "$LL" validate "$UF" >/dev/null'
+urec --digest "$TMP/up-ok.json" >/dev/null 2>&1
+check "a second ok run changes nothing" '[ "$(grep -c "\"session\":\"$US\"" "$UF")" = "$(jq ".failures | length" "$TMP/up-ok.json")" ]'
+
+echo "9. backfill reads the LAST title in the whole journal (HIMMEL-4701)"
+P2="$TMP/projects2"; mkdir -p "$P2/-home-x-himmel"
+T1=4670b000-0000-4000-8000-000000000011
+{ title HIMMEL-1-N1-scratch "$T1"; sed "s#\"sessionId\"#\"cwd\": \"$TMP/w\", \"sessionId\"#" "$FX/classes.jsonl"; title HIMMEL-4701-N1418-late-title "$T1"; } >"$P2/-home-x-himmel/$T1.jsonl"
+check "the fixture's final title sits past line 40" '[ "$(grep -n "late-title" "$P2/-home-x-himmel/$T1.jsonl" | cut -d: -f1)" -gt 40 ]'
+python3 "$LL" backfill --since 2026-10-01 --projects "$P2" --denials-ledger "$FX/classifier-denials.jsonl" --failures-ledger "$TMP/t-fail.jsonl" --eval-ledger "$TMP/t-eval.jsonl" --state-dir "$TMP/t-state" >"$TMP/t.out" 2>&1 || bad "title backfill exits 0"
+check "the title after line 40 wins: leg and ticket come from it" 'jq -e ".meta.leg == \"N1418\" and .meta.ticket == \"HIMMEL-4701\"" "$TMP/t-eval.jsonl" >/dev/null'
+
+echo "10. backfill --live-minutes skips a still-live journal (HIMMEL-4699, HIMMEL-4701)"
+P3="$TMP/projects3"; mkdir -p "$P3/-home-x-himmel"
+L1=4670b000-0000-4000-8000-000000000021; L2=4670b000-0000-4000-8000-000000000022
+NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+{ title HIMMEL-4701-N1-live "$L1"; jq -c --arg n "$NOW" --arg c "$TMP/w" '.cwd = $c | if has("timestamp") then .timestamp = $n else . end' "$FX/classes.jsonl"; } >"$P3/-home-x-himmel/$L1.jsonl"
+{ title HIMMEL-4701-N2-old "$L2"; sed "s#\"sessionId\"#\"cwd\": \"$TMP/w\", \"sessionId\"#" "$FX/classes.jsonl"; } >"$P3/-home-x-himmel/$L2.jsonl"
+lbf() { python3 "$LL" backfill --since 2026-10-01 --projects "$P3" --denials-ledger "$FX/classifier-denials.jsonl" --failures-ledger "$TMP/l-fail.jsonl" --eval-ledger "$TMP/l-eval.jsonl" --state-dir "$TMP/l-state" "$@"; }
+lbf >"$TMP/l1.out" 2>&1 || bad "live backfill exits 0: $(head -c 300 "$TMP/l1.out")"
+check "the recent journal is counted live=1 and the old one is digested" 'grep -qE "legs=2 .*eval\+=1 live=1" "$TMP/l1.out" && [ "$(jq -r .run_id "$TMP/l-eval.jsonl")" = "$L2" ]'
+check "the live journal has no marker and no rows in either ledger" '[ ! -e "$TMP/l-state/$L1.json" ] && absent "$L1" "$TMP/l-fail.jsonl" "$TMP/l-eval.jsonl"'
+lbf --live-minutes 0 >"$TMP/l2.out" 2>&1
+check "control: with the skip disabled (--live-minutes 0) the same journal is digested" 'grep -q "live=0" "$TMP/l2.out" && [ -f "$TMP/l-state/$L1.json" ] && grep -q "$L1" "$TMP/l-eval.jsonl"'
+
 echo "test-leg-ledger: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
