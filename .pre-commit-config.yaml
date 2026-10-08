@@ -177,6 +177,14 @@ repos:
         files: test-.*\.sh$
         pass_filenames: true
 
+      - id: no-mcp-sdk-v1
+        name: no new v1 @modelcontextprotocol/sdk dependency or import (himmel-dev only)
+        # HIMMEL-4866
+        entry: bash scripts/lint/check-mcp-sdk-v1.sh
+        language: system
+        files: (package\.json|package-lock\.json|npm-shrinkwrap\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml|\.(ts|tsx|js|jsx|mjs|cjs|mts|cts))$
+        pass_filenames: false
+
       - id: no-ticket-id-in-user-strings
         name: adopter-facing strings stay free of raw ticket IDs (himmel-dev only)
         # HIMMEL-2371
