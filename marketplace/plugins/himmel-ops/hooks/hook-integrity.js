@@ -1229,7 +1229,53 @@ function splitRef(expr) {
 // to scanning every character — a parse problem never hides a real statement.
 const HEREDOC_OP = new RegExp(`^<<(-?)[ \\t]*(?:'([^'\\n]*)'|"([^"\\n]*)"|(\\\\?)(${VAR_NAME}))`);
 const BODY_ESCAPE_SPAN = /^\$\(/;
-const EVAL_BEFORE = /(?:^|[\s;&|(])(?:eval(?:\s+--)?|(?:\S*\/)?(?:ba|da|z|k|a)?sh\s+(?:-\S+\s+)*-[A-Za-z]*c[A-Za-z]*(?:\s+--)?)\s+$/;
+// Quoted and heredoc text is CODE unless its context provably never runs it, so
+// a form this list does not know costs a false deny and never a pass.
+const TAIL_RUNS = /[|<]|>\(|\\\s*$/;
+const ECHO_CMD = /^\s*(?:echo|printf|:)(?:\s|$)/;
+const DATA_USE = /^\s*(?:echo|printf|:|\[\[?|test|return|exit)(?:\s|$)/;
+const ASSIGN_HEAD = new RegExp(`^\\s*(?:(?:local|export|readonly|declare|typeset)\\s+(?:-\\w+\\s+)*)?(${VAR_NAME})=\\S*$`);
+
+// The command text before `i`, back to the last separator.
+function segmentBefore(text, i) {
+  for (let k = i - 1; k >= 0; k--) if (/[\n;&|({]/.test(text[k])) return text.slice(k + 1, i);
+  return text.slice(0, i);
+}
+
+function lineEndFrom(text, i) {
+  const e = text.indexOf('\n', i);
+  return e < 0 ? text.length : e;
+}
+
+// True when every use of $name in the file is an echo/printf/test argument.
+function varOnlyData(text, name) {
+  if (/\$\{!/.test(text) || /\b(?:declare|local|typeset)\s+-\w*n\b/.test(text)) return false;
+  const use = new RegExp(`\\$\\{?${name}(?![A-Za-z0-9_])`, 'g');
+  let m;
+  while ((m = use.exec(text))) {
+    const lineStart = text.lastIndexOf('\n', m.index - 1) + 1;
+    if (TAIL_RUNS.test(text.slice(lineStart, lineEndFrom(text, m.index)))) return false;
+    if (!DATA_USE.test(segmentBefore(text, m.index))) return false;
+  }
+  return true;
+}
+
+// The context of a quote opened at `i`: 'echo' (an argument of echo/printf/:),
+// 'assign' (the value of a plain assignment only ever read as data) or ''
+// (anything else: scanned as code).
+function inertContext(text, i, topLevel) {
+  if (!topLevel) return '';
+  const seg = segmentBefore(text, i);
+  if (ECHO_CMD.test(seg)) return 'echo';
+  const m = seg.match(ASSIGN_HEAD);
+  return m && varOnlyData(text, m[1]) ? 'assign' : '';
+}
+
+// An echo argument stays code when its line pipes or redirects into something
+// that could run it.
+function closeQuote(text, f, i, mask) {
+  if (f.echo && TAIL_RUNS.test(text.slice(i + 1, lineEndFrom(text, i + 1)))) mask.fill(0, f.start, i);
+}
 
 function maskHeredocBody(text, from, to, quoted, mask) {
   if (quoted) { mask.fill(1, from, to); return true; }
@@ -1269,13 +1315,13 @@ function inertMask(text) {
     const f = stack[stack.length - 1];
     const c = text[i];
     if (f.t === 'sq') {
-      if (c === "'") stack.pop(); else if (!f.live) mask[i] = 1;
+      if (c === "'") { stack.pop(); closeQuote(text, f, i, mask); } else if (!f.live) mask[i] = 1;
       i++;
       continue;
     }
     if (f.t === 'dq') {
       if (c === '\\') { if (!f.live) { mask[i] = 1; if (i + 1 < n) mask[i + 1] = 1; } i += 2; continue; }
-      if (c === '"') { stack.pop(); i++; continue; }
+      if (c === '"') { stack.pop(); closeQuote(text, f, i, mask); i++; continue; }
       if (c === '$' && text[i + 1] === '(') { stack.push({ t: 'cmd', depth: 0 }); i += 2; continue; }
       if (c === '`') {
         const end = text.indexOf('`', i + 1);
@@ -1290,9 +1336,8 @@ function inertMask(text) {
     // code or cmd
     if (c === '\\') { i += 2; continue; }
     if (c === "'" || c === '"') {
-      // The argument of `eval` / `sh -c` is code Bash runs, so it stays scanned.
-      const before = text.slice(text.lastIndexOf('\n', i - 1) + 1, i);
-      stack.push({ t: c === "'" ? 'sq' : 'dq', live: EVAL_BEFORE.test(before) });
+      const ctx = inertContext(text, i, stack.length === 1);
+      stack.push({ t: c === "'" ? 'sq' : 'dq', live: !ctx, echo: ctx === 'echo', start: i + 1 });
       i++;
       continue;
     }
@@ -1317,7 +1362,7 @@ function inertMask(text) {
       if (text[i + 2] === '<') { i += 3; continue; }
       const h = text.slice(i, i + 200).match(HEREDOC_OP);
       if (!h) return null;
-      pending.push({ word: h[2] !== undefined ? h[2] : h[3] !== undefined ? h[3] : h[5], tabs: h[1] === '-', quoted: h[2] !== undefined || h[3] !== undefined || h[4] === '\\' });
+      pending.push({ inert: stack.length === 1 && /^\s*(?:cat|tee)(?:\s|$)/.test(segmentBefore(text, i)) && !TAIL_RUNS.test(text.slice(i + h[0].length, lineEndFrom(text, i))), word: h[2] !== undefined ? h[2] : h[3] !== undefined ? h[3] : h[5], tabs: h[1] === '-', quoted: h[2] !== undefined || h[3] !== undefined || h[4] === '\\' });
       i += h[0].length;
       continue;
     }
@@ -1331,7 +1376,7 @@ function inertMask(text) {
           if (e < 0) e = n;
           const lineText = hd.tabs ? text.slice(i, e).replace(/^\t+/, '') : text.slice(i, e);
           if (lineText === hd.word) {
-            if (!maskHeredocBody(text, start, i, hd.quoted, mask)) return null;
+            if (hd.inert && !maskHeredocBody(text, start, i, hd.quoted, mask)) return null;
             i = Math.min(e + 1, n);
             found = true;
             break;

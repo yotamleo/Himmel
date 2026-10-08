@@ -1692,6 +1692,46 @@ E
 sc_case "row 58: eval after -- runs its source" 0 1 <<'E'
 eval -- 'true; source "$MISSING"'
 E
+sc_case "row 62: a shell option with an argument before -c runs its source" 0 1 <<'E'
+bash -o pipefail -c 'true; source "$MISSING"'
+E
+sc_case "row 62: bash -O extglob -c runs its source" 0 1 <<'E'
+bash -O extglob -c 'true; source "$MISSING"'
+E
+sc_case "row 62: a line continuation before the string still runs its source" 0 1 <<'E'
+bash -c \
+  'true; source "$MISSING"'
+E
+sc_case "row 62: a quoted \$BASH -c runs its source" 0 1 <<'E'
+"$BASH" -c 'true; source "$MISSING"'
+E
+sc_case "row 62: mksh -c runs its source" 0 1 <<'E'
+mksh -c 'true; source "$MISSING"'
+E
+sc_case "row 62: a trap string runs its source" 0 1 <<'E'
+trap 'true; source "$MISSING"' EXIT
+E
+sc_case "row 62: a variable later eval-ed runs its source" 0 1 <<'E'
+cmd='true; source "$MISSING"'
+eval "$cmd"
+E
+sc_case "row 62: a heredoc fed to bash runs its source" 0 1 <<'E'
+bash <<EOT
+source "$MISSING"
+EOT
+E
+sc_case "row 62: echo piped into bash runs its source" 0 1 <<'E'
+echo 'true; source "$MISSING"' | bash
+E
+sc_case "row 62 control: a plain assignment never run is data" 0 0 <<'E'
+msg='true; source "$MISSING"'
+echo "$msg"
+E
+sc_case "row 62 control: cat of a heredoc into a file is data" 0 0 <<'E'
+cat > out.txt <<EOT
+true; source "$MISSING"
+EOT
+E
 sc_case "row 58 control: echo of the same string does not" 0 0 <<'E'
 echo "true; source \"$MISSING\""
 E
