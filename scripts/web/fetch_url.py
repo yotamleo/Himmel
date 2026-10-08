@@ -81,6 +81,8 @@ class Posts(HTMLParser):
         if self.depth != 1:
             return
         if tag in VOID:
+            if tag == "br" and "text" in {r for _, r in self.stack if r}:
+                self.cur["text"][-1] += "\n"
             self._media(tag, a)
             return
         role = None
@@ -101,6 +103,8 @@ class Posts(HTMLParser):
 
     def handle_startendtag(self, tag, attrs):
         if self.depth == 1 and tag != "article":
+            if tag == "br" and "text" in {r for _, r in self.stack if r}:
+                self.cur["text"][-1] += "\n"
             self._media(tag, dict(attrs))
 
     def _media(self, tag, a):
@@ -227,7 +231,7 @@ def render_walled(page_html):
     posts = parse_x(page_html)
     if posts:
         return render_x(posts)
-    return render_meta(page_html) or html_to_text(page_html)
+    return render_meta(page_html)
 
 
 def fetch_walled(url):
@@ -273,7 +277,11 @@ def main(argv=None):
         if status and status >= 400:
             print(f"fetch failed: HTTP {status}", file=sys.stderr)
             return 4
-        print(render_walled(page_html))
+        rendered = render_walled(page_html)
+        if not rendered.strip():
+            print("fetch failed: no usable content (empty or challenge page)", file=sys.stderr)
+            return 4
+        print(rendered)
         return 0
     try:
         body, ctype = fetch_plain(args.url)

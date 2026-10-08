@@ -58,9 +58,21 @@ echo "== exit codes =="
 python3 -I "$PY" >/dev/null 2>&1; [ $? = 2 ] && ok "no url -> 2" || bad "no url exit"
 python3 -I "$PY" 'file:///etc/passwd' >/dev/null 2>&1; [ $? = 2 ] && ok "non-http scheme -> 2" || bad "scheme exit"
 mkdir -p "$tmp/home"
-err="$(HOME="$tmp/home" bash "$FETCH" 'https://x.com/a/status/1' 2>&1 >/dev/null)"; rc=$?
+# Hermetic: block the scrapling import in-process, so a host python that has it installed never touches the network.
+harness='import sys; sys.modules["scrapling"]=None; sys.modules["scrapling.fetchers"]=None; sys.path.insert(0,sys.argv[1]); import fetch_url; sys.exit(fetch_url.main([sys.argv[2]]))'
+err="$(python3 -I -c "$harness" "$(dirname "$PY")" 'https://x.com/a/status/1' 2>&1 >/dev/null)"; rc=$?
 [ "$rc" = 3 ] && ok "walled host without scrapling -> 3" || bad "expected 3 got $rc ($err)"
 has "scrapling-venv" "$err" "exit 3 carries the install hint"
+# A 200 with an empty / challenge page is a failed fetch, not a success.
+harness2='import sys; sys.path.insert(0,sys.argv[1]); import fetch_url; fetch_url.fetch_walled=lambda u: ("<html><body>checking your browser</body></html>", u, 200); sys.exit(fetch_url.main([sys.argv[2]]))'
+python3 -I -c "$harness2" "$(dirname "$PY")" 'https://x.com/a/status/1' >/dev/null 2>&1; rc=$?
+[ "$rc" = 4 ] && ok "walled 200 with no usable content -> 4" || bad "empty-content expected 4 got $rc"
+# <br> inside a post's text keeps the line break.
+printf '<article><div class="whitespace-pre-wrap" dir="auto">first<br>second<br/>third</div></article>' >"$tmp/br.html"
+out="$(python3 -I "$PY" --from-html "$tmp/br.html")"
+has "first
+second
+third" "$out" "br keeps line breaks in post text"
 
 echo "== plain host =="
 mkdir -p "$tmp/www"
