@@ -2768,13 +2768,39 @@ else
 fi
 rm -rf "$t"
 
+echo "== C29: an orphaned headless claude (-p / --print) or a daemon service with the marker -> no WARN =="
+# Neither is a human-launched interactive session: a stub or print-mode claude
+# started from a session (at/setsid) and `claude daemon run` carry the marker by
+# inheritance and have no transcript to lose.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 headless: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5101 "p-mode" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'claude\0-p\0hello\0' > "$t/proc/5101/cmdline"
+c29_mkproc "$t/proc" 5102 "print-mode" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'claude\0--print\0hello\0' > "$t/proc/5102/cmdline"
+c29_mkproc "$t/proc" 5103 "daemon" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'claude\0daemon\0run\0' > "$t/proc/5103/cmdline"
+c29_mkproc "$t/proc" 5104 "npm-daemon" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf 'node\0/x/cli.js\0daemon\0run\0' > "$t/proc/5104/cmdline"
+c29_mkproc "$t/proc" 5105 "interactive" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session: 1 running' && grepq "$out" 'pid 5105 (interactive)' \
+    && ! grepq "$out" 'pid 5101' && ! grepq "$out" 'pid 5102' && ! grepq "$out" 'pid 5103' && ! grepq "$out" 'pid 5104'; then
+    pass "C29 -> headless and daemon roots skipped, the interactive one still flagged"
+else
+    fail "C29 headless -> $(printf '%s' "$out" | grep -A6 C29)"
+fi
+rm -rf "$t"
+
 echo "== C29 (macOS route): no procfs -> ps -axo tree + ps -E environ; only the marked ROOT claude is flagged =="
 # Fake ps answering the four shapes check_c29 issues, from $fix. -E prints
 # the command line then the env, space-joined, like the real macOS ps.
 #   200 claude in a terminal tab, marked             -> WARN
 #   300 claude under claude 200 (Bash-tool child)    -> skipped
 #   400 claude whose PROMPT holds the marker text    -> skipped (args stripped)
-#   500 claude by full path, persistence forced      -> skipped
+#   500 claude by full path, marker, no persistence  -> WARN (comm path stripped)
+# headless-claude-ok: prose naming the argv shape, starts nothing
+#   700 claude -p, 800 claude daemon run, both marked -> skipped
 t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 ps-route: mktemp -d failed"; exit 1; }
 write_settings "$t/claude" "$WRAPPER"
 fix="$t/fix"; mkdir -p "$fix"
@@ -2788,17 +2814,22 @@ cat > "$fix/table" <<'TABLE'
   400     1 claude
   500     1 /Users/x/.local/bin/claude
   600     1 /Applications/Obsidian.app/Contents/MacOS/Obsidian Helper (GPU)
+  700     1 claude
+  800     1 claude
 TABLE
 printf 'claude' > "$fix/200.args"; printf 'TERM=xterm CLAUDE_PID=89183 CLAUDE_CODE_CHILD_SESSION=1' > "$fix/200.env"
 printf 'claude --model m hi' > "$fix/300.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/300.env"
 printf 'claude say CLAUDE_CODE_CHILD_SESSION=1 here' > "$fix/400.args"; printf 'HOME=/x' > "$fix/400.env"
-printf 'claude' > "$fix/500.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1' > "$fix/500.env"
+printf 'claude' > "$fix/500.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/500.env"
+# headless-claude-ok: stub ps output naming the argv C29 skips, starts nothing
+printf 'claude -p hello' > "$fix/700.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/700.env"
+printf 'claude daemon run' > "$fix/800.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/800.env"
 cat > "$t/ps" <<PS
 #!/usr/bin/env bash
 fix="$fix"
 a="\$*"; p="\${a##* }"
 case "\$*" in
-    "-axo pid=,ppid=,comm=") cat "\$fix/table" ;;
+    "-ww -axo pid=,ppid=,comm=") cat "\$fix/table" ;;
     "-E -ww -o command= -p "*) [ -f "\$fix/\$p.args" ] || exit 0
         printf '%s %s\n' "\$(cat "\$fix/\$p.args")" "\$(cat "\$fix/\$p.env")" ;;
     "-ww -o command= -p "*) [ -f "\$fix/\$p.args" ] || exit 1; cat "\$fix/\$p.args"; echo ;;
@@ -2808,9 +2839,9 @@ esac
 PS
 chmod +x "$t/ps"
 out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" HIMMEL_DOCTOR_PS="$t/ps" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
-if grepq "$out" 'WARN C29-child-session: 1 running' && grepq "$out" 'pid 200 (tty ttys200)' \
-    && ! grepq "$out" 'pid 300' && ! grepq "$out" 'pid 400' && ! grepq "$out" 'pid 500'; then
-    pass "C29 -> WARN on macOS names only the marked root claude, by tty"
+if grepq "$out" 'WARN C29-child-session: 2 running' && grepq "$out" 'pid 200 (tty ttys200)' && grepq "$out" 'pid 500 (tty ttys500)' \
+    && ! grepq "$out" 'pid 300' && ! grepq "$out" 'pid 400' && ! grepq "$out" 'pid 700' && ! grepq "$out" 'pid 800'; then
+    pass "C29 -> WARN on macOS names only the marked interactive root claudes, by tty"
 else
     fail "C29 ps-route -> $(printf '%s' "$out" | grep -A6 C29)"
 fi

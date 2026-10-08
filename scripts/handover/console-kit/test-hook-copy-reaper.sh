@@ -54,6 +54,7 @@ cat > "$W/ps.txt" <<'FIX'
   506   700    05:00:00 99.0 bash     bash /tmp/claude-1000/j/owned.sh
   507  1304    05:00:00 99.0 bash     bash /home/u/himmel/scripts/hooks/real.sh
   508  1304    05:00:00 99.0 node     node /tmp/claude-1000/j/x.sh.js
+  509  1304  1-00:00:00 60.0 bash     bash /tmp/claude-1000/j/dayold.sh
 FIX
 
 run() { PATH="$W/bin:$PATH" PS_FIXTURE="$W/ps.txt" KILL_LOG="$W/kill.log" \
@@ -63,17 +64,18 @@ out="$(run)"; rc=$?
 eq 'report: rc 1 when copies are found' 1 "$rc"
 contains 'report: the subreaper-parented spinner' "$out" 'pid=501 age=300m cpu=89.5 script=/tmp/claude-1000/j1677/base/scripts/hooks/block-chokepoint-env-prefix.sh'
 contains 'report: the init-parented spinner' "$out" 'pid=503 age=150m cpu=95.0 script=/tmp/claude-1000/-home-u/6c7d2135/scratchpad/hook.sh'
-contains 'report: summary line' "$out" 'hook-copies=2'
+contains 'report: a day-form etime (1-00:00:00) is 1440m and counted' "$out" 'pid=509 age=1440m cpu=60.0 script=/tmp/claude-1000/j/dayold.sh'
+contains 'report: summary line' "$out" 'hook-copies=3'
 for p in 502 504 505 506 507 508; do lacks "report: pid $p excluded" "$out" "pid=$p "; done
 lacks 'report: never kills by default' "$out" 'killed='
 if [ -e "$W/kill.log" ]; then fail 'report: kill stub was called'; else pass 'report: kill stub untouched'; fi
 
 out="$(run --kill)"; rc=$?
 eq '--kill: rc 1 (copies were found)' 1 "$rc"
-eq '--kill: SIGKILLs each copy and its descendants' '-KILL 501 502 503' "$(cat "$W/kill.log")"
-contains '--kill: says what it killed' "$out" 'killed=501,502,503'
+eq '--kill: SIGKILLs each copy and its descendants' '-KILL 501 502 503 509' "$(cat "$W/kill.log")"
+contains '--kill: says what it killed' "$out" 'killed=501,502,503,509'
 
-out="$(run --min 400)"; rc=$?
+out="$(run --min 2000)"; rc=$?
 eq '--min above every age: none' 'hook-copies=none' "$out"
 eq '--min above every age: rc 0' 0 "$rc"
 
@@ -88,7 +90,7 @@ eq 'unreadable process table: rc 3' 3 "$rc"
 rm -f "$W/kill.log"
 out="$(KILL_RC=1 run --kill)"; rc=$?
 eq '--kill failing: rc 3' 3 "$rc"
-contains '--kill failing: says so' "$out" 'kill-failed=501,502,503'
+contains '--kill failing: says so' "$out" 'kill-failed=501,502,503,509'
 lacks '--kill failing: never claims killed=' "$out" 'killed='
 
 out="$(PATH="$W/badbin:$PATH" run)"; rc=$?

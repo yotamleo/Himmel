@@ -1972,8 +1972,12 @@ check_c28_guardrail_consent() {
 #
 # Where /proc is absent (macOS) the same facts come from ps: `ps -axo` for
 # the process tree and `ps -E` for a process's environment (readable for the
-# current user's own processes). Where neither works (Git Bash ps has no -E)
-# this is a clean skip, never a false WARN.
+# current user's own processes). Git Bash has an MSYS /proc and takes the proc
+# route; only a platform with neither procfs nor `ps -E` skips cleanly, never
+# a false WARN.
+# headless-claude-ok: prose naming the argv shape C29 skips, starts nothing
+# An orphaned `claude -p`/`--print` or `claude daemon run` root
+# is not an interactive session and is left alone.
 #
 # r11-codex-3 (accuracy, not a false-WARN risk - the WARN itself is already
 # gated below on comm==claude PLUS the environ check, both exact; this can
@@ -2015,7 +2019,7 @@ _c29_argv_n_value() { # _c29_argv_n_value <cmdline-file> - echoes the value
 _c29_table() {
     local d pid ppid comm stat
     if [ "$1" = ps ]; then
-        "$c29_ps" -axo pid=,ppid=,comm= 2>/dev/null
+        "$c29_ps" -ww -axo pid=,ppid=,comm= 2>/dev/null
         return 0
     fi
     for d in "$c29_proc"/[0-9]*; do
@@ -2060,6 +2064,36 @@ _c29_environ() {
     printf '%s\n' "${full#"$args"}" | tr ' ' '\n'
 }
 
+# _c29_headless <proc|ps> <pid> - rc 0 when the claude is not a human-launched
+# session: the `daemon run` service or a `-p`/`--print` run. Either inherits the
+# marker from whatever spawned it and has no interactive transcript to lose, so
+# an orphaned one must not read as a launcher missing persistence. procfs reads
+# the real argv (the service test is chokepoint-seam-guard's own); ps only has
+# the flattened command line, so its words are split on spaces.
+_c29_headless() {
+    local w a1="" a2="" a3="" n=0
+    if [ "$1" = proc ]; then
+        [ -r "$REPO_ROOT/scripts/lib/chokepoint-seam-guard.sh" ] && {
+            # shellcheck source=lib/chokepoint-seam-guard.sh
+            . "$REPO_ROOT/scripts/lib/chokepoint-seam-guard.sh"
+            _csg_is_bg_service "$c29_proc" "$2" && return 0
+        }
+        [ -r "$c29_proc/$2/cmdline" ] || return 1
+        while IFS= read -r -d '' w; do
+            case "$w" in -p | --print) return 0 ;; esac
+        done < "$c29_proc/$2/cmdline"
+        return 1
+    fi
+    for w in $("$c29_ps" -ww -o command= -p "$2" 2>/dev/null); do
+        n=$((n+1))
+        case $n in 2) a1="$w" ;; 3) a2="$w" ;; 4) a3="$w" ;; esac
+        case "$w" in -p | --print) return 0 ;; esac
+    done
+    [ "$a1" = daemon ] && [ "$a2" = run ] && return 0
+    [ "$a2" = daemon ] && [ "$a3" = run ] && return 0
+    return 1
+}
+
 # Test seams: HIMMEL_DOCTOR_PROC overrides the proc root (default /proc) and
 # HIMMEL_DOCTOR_PS the ps binary, so the suite can point either at a stub.
 check_c29() {
@@ -2074,6 +2108,7 @@ check_c29() {
         return
     fi
     for c29_pid in $(_c29_table "$src" | _c29_roots); do
+        _c29_headless "$src" "$c29_pid" && continue
         c29_environ="$(_c29_environ "$src" "$c29_pid")" || continue
         grep -q '^CLAUDE_CODE_CHILD_SESSION=1$' <<< "$c29_environ" || continue
         # r3-codex-4: an EMPTY value is absent, not present - matches
