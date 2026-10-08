@@ -3639,6 +3639,23 @@ check_c55_project_mode() {
     emit OK C55-project-mode "tracker=$tracker forge=$forge ($req)"
 }
 
+# --- C57-mcp-sdk-v1 (HIMMEL-4866): no v1 MCP SDK dependency or import -----------
+# Runs scripts/lint/check-mcp-sdk-v1.sh against the judged checkout. A finding
+# is a WARN naming the hits; the gate is also enforced at commit time. Vendored
+# and externally configured servers are NOTEs of the gate, never a compliance
+# claim. A checkout without the gate gets no row.
+check_c57_mcp_sdk_v1() {
+    local lint="$REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" out rc=0
+    [ -f "$lint" ] || return 0
+    out="$(bash "$lint" "$REPO_ROOT" 2>&1)" || rc=$?
+    case "$rc" in
+        0) emit OK C57-mcp-sdk-v1 "no @modelcontextprotocol/sdk (v1) dependency or import" ;;
+        1) emit WARN C57-mcp-sdk-v1 "v1 MCP SDK in tracked files: $(printf '%s' "$out" | grep -v '^NOTE' | head -n 3 | tr '\n' ';')" \
+               "migrate to @modelcontextprotocol/server 2.3.1 (docs/internals/mcp-servers.md), then: bash $REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" ;;
+        *) emit WARN C57-mcp-sdk-v1 "check-mcp-sdk-v1.sh could not evaluate rc=$rc: ${out:0:160}" ;;
+    esac
+}
+
 # --- C48-tmp-usage: /tmp at 80 % or more (HIMMEL-4224) --------------------------
 # On 2026-10-03 the /tmp tmpfs filled and fleet Bash hit ENOSPC. WARN at >= 80 % used
 # and name scripts/tmp-reap.sh (dry-run by default) as the remedy. Report only.
@@ -3872,6 +3889,7 @@ check_c52_graphify_ollama
 check_c53_vm_mode
 check_c54_hook_copy_reaper
 check_c55_project_mode
+check_c57_mcp_sdk_v1
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

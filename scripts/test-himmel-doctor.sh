@@ -6133,4 +6133,29 @@ out="$(c55_run)"
 if ! grepq "$out" -F 'C55-project-mode'; then pass "C55 no resolver -> silent"; else fail "C55 no resolver -> $(printf '%s' "$out" | grep -A1 C55)"; fi
 rm -rf "$c55_t"
 
+# --- C57-mcp-sdk-v1 (HIMMEL-4866): the v1 MCP SDK gate row ---
+c57_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c57.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c57_t/repo/scripts/lint" "$c57_t/home"
+cp "$REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" "$c57_t/repo/scripts/lint/check-mcp-sdk-v1.sh"
+git -C "$c57_t/repo" init -q
+c57_run() { (cd "$c57_t/repo" && env HIMMEL_REPO="$c57_t/repo" HIMMEL_DOCTOR_ROOT="$c57_t/repo" CLAUDE_DIR="$c57_t/home/claude" HOME="$c57_t/home" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null); }
+
+echo "== C57-mcp-sdk-v1: a v1 dependency -> WARN naming the file (RED) =="
+printf '%s\n' '{"dependencies":{"@modelcontextprotocol/sdk":"^1.32.1"}}' > "$c57_t/repo/package.json"
+git -C "$c57_t/repo" add package.json
+out="$(c57_run)"
+if grepq "$out" -F 'WARN C57-mcp-sdk-v1' && grepq "$out" -F 'package.json:1'; then pass "C57 v1 dependency -> WARN"; else fail "C57 v1 dependency -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+
+echo "== C57-mcp-sdk-v1: v2 dependency -> OK =="
+printf '%s\n' '{"dependencies":{"@modelcontextprotocol/server":"2.3.1"}}' > "$c57_t/repo/package.json"
+git -C "$c57_t/repo" add package.json
+out="$(c57_run)"
+if grepq "$out" -F 'OK   C57-mcp-sdk-v1'; then pass "C57 v2 -> OK"; else fail "C57 v2 -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+
+echo "== C57-mcp-sdk-v1: a checkout without the gate -> no row =="
+rm -f "$c57_t/repo/scripts/lint/check-mcp-sdk-v1.sh"
+out="$(c57_run)"
+if ! grepq "$out" -F 'C57-mcp-sdk-v1'; then pass "C57 no gate -> silent"; else fail "C57 no gate -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+rm -rf "$c57_t"
+
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi
