@@ -1398,8 +1398,15 @@ _uj_dest() {
 # split, whose words cannot be placed) every word to the end. 0 when one is
 # the `.claude` dir.
 _uj_tok_dests() {
-    local k=$1 sc=$2 sg=${ST_S[$1]} w=0 hit=1 lw rem
+    local k=$1 sc=$2 sg=${ST_S[$1]} w=$1 hit=1 lw rem
+    # HIMMEL-4192: start at the segment's first word and, outside the SC=1 tail
+    # scan, stop at its last (words of other segments never qualified), so a
+    # line of N segments costs O(N), not O(N^2). An earlier SC=1 scan already
+    # recorded every word a later one would, and returned 1 or the caller left.
+    [ "$sc" != 1 ] || [ "${UJ_SC_DONE:-0}" != 1 ] || return 1
+    while [ "$w" -gt 0 ] && [ "${ST_S[w-1]}" = "$sg" ]; do w=$((w - 1)); done
     while [ "$w" -lt "$ST_N" ]; do
+        [ "$sc" = 1 ] || [ "${ST_S[w]}" -le "$sg" ] || break
         if [ "${ST_S[w]}" = "$sg" ] || { [ "$sc" = 1 ] && [ "${ST_S[w]}" -gt "$sg" ]; }; then
             lw=${ST_LW[w]}
             if [ -n "${ST_RO[w]}" ]; then
@@ -1423,6 +1430,7 @@ _uj_tok_dests() {
         fi
         w=$((w + 1))
     done
+    [ "$sc" != 1 ] || UJ_SC_DONE=1
     return "$hit"
 }
 
@@ -1497,7 +1505,7 @@ _uj_text_dests() {
 _tok_unjudged_verb() {
     local k sg cur=-1 done_seg=0 wrapped=0 wname='' oparg=0 wpos=0 txt ntxt w g sc=0 nog=0 i n skip all
     local -a pieces
-    UJ_DEST=()
+    UJ_DEST=() UJ_SC_DONE=0
     if [ "$TOK" = 1 ]; then
         k=0
         while [ "$k" -lt "$ST_N" ]; do
