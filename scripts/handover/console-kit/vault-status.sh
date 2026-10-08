@@ -50,17 +50,20 @@ now="$(date +%s)"
 stall_min="${TICK_VAULT_STALL_MIN:-20}"; lag_min="${TICK_VAULT_PUSHLAG_MIN:-60}"
 case "$stall_min" in ''|*[!0-9]*) stall_min=20 ;; esac
 case "$lag_min" in ''|*[!0-9]*) lag_min=60 ;; esac
+stall_min=$((10#$stall_min)); lag_min=$((10#$lag_min))   # 08/09 are not octal
 
 g rev-parse --git-dir >/dev/null 2>&1 || { printf 'unknown\n'; exit 0; }
-staged="$(g diff --cached --name-only 2>/dev/null)" || { printf 'unknown\n'; exit 0; }
-dirty="$(g diff --name-only 2>/dev/null)" || { printf 'unknown\n'; exit 0; }
+staged="$(g -c core.quotepath=false diff --cached --name-only 2>/dev/null)" || { printf 'unknown\n'; exit 0; }
+dirty="$(g -c core.quotepath=false diff --name-only 2>/dev/null)" || { printf 'unknown\n'; exit 0; }
+idx="$(g rev-parse --path-format=absolute --git-path index 2>/dev/null)" || idx=""
 
 files="$(printf '%s\n%s\n' "$staged" "$dirty" | sed '/^$/d' | sort -u)"
 n=0; oldest=""
 if [ -n "$files" ]; then
     while IFS= read -r f; do
         n=$((n + 1))
-        m="$(stat -c %Y "$vault/$f" 2>/dev/null)" || continue  # gnu-ok: console kit is Linux-only
+        # a deleted path has no mtime of its own: the index's stands in for it
+        m="$(stat -c %Y "$vault/$f" 2>/dev/null)" || m="$(stat -c %Y "$idx" 2>/dev/null)" || continue  # gnu-ok: console kit is Linux-only
         if [ -z "$oldest" ] || [ "$m" -lt "$oldest" ]; then oldest="$m"; fi
     done <<EOF
 $files
@@ -72,7 +75,8 @@ if [ "$n" -gt 0 ] && [ -n "$oldest" ]; then
 fi
 
 if g rev-parse --verify -q '@{u}' >/dev/null 2>&1; then
-    first="$(g log '@{u}..HEAD' --format=%ct 2>/dev/null | tail -n 1)" || { printf 'unknown\n'; exit 0; }
+    ahead="$(g log '@{u}..HEAD' --format=%ct 2>/dev/null)" || { printf 'unknown\n'; exit 0; }
+    first="$(printf '%s\n' "$ahead" | tail -n 1)"
     if [ -n "$first" ]; then
         age=$((now - first))
         if [ "$age" -ge $((lag_min * 60)) ]; then printf 'PUSH-LAG:%s\n' "$(fmt_age "$age")"; exit 0; fi

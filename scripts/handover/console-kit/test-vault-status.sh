@@ -86,5 +86,14 @@ check 'a missing file exits 2' '2' "$rc"
 cp "$W/cfg.toml" "$W/v/.gitleaks.toml"
 check 'the vault .gitleaks.toml is the default config' 'GITLEAKS FINDING generic-api-key' "$(TICK_VAULT_DIR="$W/v" bash "$BG" "$W/fp.md")"
 
+# HIMMEL-4911 CR round 1: deleted and non-ASCII paths, leading-zero thresholds
+mkvault q
+echo u > "$W/q/ünï.md"; git -C "$W/q" "${GA[@]}" add 'ünï.md'; git -C "$W/q" "${GA[@]}" commit -q -m u; git -C "$W/q" push -q 2>/dev/null
+echo v2 >> "$W/q/ünï.md"; touch -d '50 minutes ago' "$W/q/ünï.md"  # gnu-ok
+check 'a non-ASCII dirty path is counted, not skipped' 'STALL:50m,1' "$(vs q)"
+git -C "$W/q" checkout -q -- 'ünï.md' 2>/dev/null; git -C "$W/q" rm -q --cached 'ünï.md'; rm -f "$W/q/ünï.md"; touch -d '50 minutes ago' "$W/q/.git/index"  # gnu-ok
+check 'a deleted staged path still reads STALL via the index mtime' 'STALL:50m,1' "$(vs q)"
+check 'a leading-zero threshold is read as decimal' 'STALL:50m,1' "$(TICK_VAULT_STALL_MIN=08 TICK_VAULT_DIR="$W/q" bash "$VS")"
+
 if [ "$fails" -eq 0 ]; then printf 'ALL PASS\n'; exit 0; fi
 printf '%s FAILED\n' "$fails"; exit 1
