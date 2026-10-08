@@ -153,7 +153,9 @@ check 'a git dir given a commondir is refused' '! bash "$HERE/sandbox.sh" argv "
 rm -f "$gd/commondir"
 check 'the restored worktree builds its jail again (control)' 'bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
 echo secret >"$TMP/secret"
+live=0
 if bwrap --ro-bind / / true 2>/dev/null; then
+  live=1
   R1=(bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env")
   check 'live: the primary dotenv file is absent in the sandbox' '[ -f "$TMP/repo/.env" ] && "${R1[@]}" test -d "$TMP/repo" && ! "${R1[@]}" test -e "$TMP/repo/.env"'
   check 'live: the untracked MCP profile is absent in the sandbox' '[ -f "$TMP/repo/.claude/mcp-profiles/local.vault.json" ] && ! "${R1[@]}" test -e "$TMP/repo/.claude/mcp-profiles/local.vault.json"'
@@ -221,8 +223,14 @@ check 'transcript found and its tool calls counted' '[ "$(jq -r .tool_calls "$R"
 check 'reading its own brief under the pilot root is not peeking' '[ "$(jq -r .peeked "$R")" = false ]'
 check 'a vault read is flagged as uncontained' '[ "$(jq -r .contained "$R")" = false ]'
 check 'the wrap is recorded' '[ "$(jq -r .wrapped "$R")" = true ]'
-check 'acceptance recorded as passed' '[ "$(jq -r .accept_ok "$R")" = true ]'
-check 'scope recorded clean' '[ "$(jq -r .scope_ok "$R")" = true ]'
+if [ "$live" = 1 ]; then
+  check 'acceptance recorded as passed' '[ "$(jq -r .accept_ok "$R")" = true ]'
+  check 'scope recorded clean' '[ "$(jq -r .scope_ok "$R")" = true ]'
+else
+  # No jail here (CI): the acceptor and the scope diff cannot run, so both
+  # fail closed rather than reading an empty diff as a clean scope.
+  check 'without a jail, acceptance and scope fail closed' '[ "$(jq -r .accept_ok "$R")" = false ] && [ "$(jq -r .scope_ok "$R")" = false ]'
+fi
 check 'cost is the launcher balance delta' '[ "$(jq -r .deepseek_usd "$R")" = 0.25 ]'
 pk="$(jq -r .packet "$R")"
 check 'packet exists under an opaque id' '[ -f "$TMP/root/packets/$pk.md" ] && ! printf %s "$pk" | grep -q p01'

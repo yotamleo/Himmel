@@ -340,7 +340,12 @@ cmd_finish() {
   timeout 120 "${jail[@]}" bash "$acc_sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$? # gnu-ok: the pilot is Linux-only (its rows run in a bwrap jail)
   acc="$(grep -E '^accept: [0-9]+/[0-9]+$' "$ROOT/private/$row.accept.log" | tail -1)"
   "${jail[@]}" git add -A -- . ':!.claude/settings.local.json'
-  scope="$("${jail[@]}" git diff --cached --name-only "$FIX" -- . ':!.claude/settings.local.json' | grep -v '^lq-work/' | jq -R . | jq -sc .)"
+  # A diff that could not run is not a clean scope.
+  if "${jail[@]}" git diff --cached --name-only "$FIX" -- . ':!.claude/settings.local.json' >"$ROOT/private/$row.scope.txt"; then
+    scope="$(grep -v '^lq-work/' "$ROOT/private/$row.scope.txt" | jq -R . | jq -sc .)"
+  else
+    scope='["(scope diff failed)"]'
+  fi
   # Every session of this row (a relaunch adds one), in launch order, scored as
   # one transcript so a read in an earlier session still counts.
   tr=""
