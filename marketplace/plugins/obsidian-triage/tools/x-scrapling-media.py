@@ -4,7 +4,7 @@
 Sibling of ig-scrapling-media.py. Fetches a public x.com status page with
 Scrapling's stealth fetcher (NO cookies), records every video.twimg.com URL the
 page loads, and pulls the status's own media out of its <article> (a quoted
-post's nested <article> is excluded). Prints one JSON object:
+post's nested <article> is cut out). Prints one JSON object:
 
   {"status": "ok", "items": [{"kind": "video"|"image", "url": str, "hls": bool}]}
   {"status": "login_wall"|"removed"|"no_media"|"error", "detail": str}
@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 TIMEOUT_MS = 60000
 VIDEO_HOST = "video.twimg.com"
 ARTICLE_OPEN = re.compile(r"<article\b")
+ARTICLE_TAG = re.compile(r"<article\b|</article>")
 # Media tags in document order: a <video ...> (with its poster/src) or an <img>.
 MEDIA_TAG = re.compile(r"<video\b[^>]*>(?:.*?</video>)?|<img\b[^>]*>", re.S)
 ATTR = re.compile(r'\b(src|poster)="([^"]*)"')
@@ -47,26 +48,35 @@ def _https_host(u, host):
     return p.scheme == "https" and (p.hostname or "").lower() == host
 
 
+def _article_body(page_html, start):
+    """The <article> opened just before `start`, up to its own close, with
+    every nested <article> (a quoted post) cut out. None when it never closes."""
+    parts, depth, cut = [], 0, start
+    for t in ARTICLE_TAG.finditer(page_html, start):
+        if t.group(0) != "</article>":
+            if depth == 0:
+                parts.append(page_html[cut:t.start()])
+            depth += 1
+        elif depth:
+            depth -= 1
+            if depth == 0:
+                cut = t.end()
+        else:
+            parts.append(page_html[cut:t.start()])
+            return "".join(parts)
+    return None
+
+
 def main_article(page_html, status_id):
-    """The status's own <article> up to its first nested <article> (a quoted
-    post) or its close, whichever comes first. None when no article names it.
-    The article is identified by its own permalink, which may also sit AFTER
-    the quoted post (a focal tweet's timestamp): that tail is searched too."""
+    """The status's own <article> with any quoted post's nested <article> cut
+    out, so its media before AND after the quote is kept (HIMMEL-4688). None
+    when no article names it. The article is identified by its own permalink,
+    which may sit after the quoted post (a focal tweet's timestamp)."""
     own = re.compile(rf"/status/{status_id}(?![0-9])")
     for m in ARTICLE_OPEN.finditer(page_html):
-        start = m.end()
-        close = page_html.find("</article>", start)
-        if close < 0:
-            continue
-        nested = ARTICLE_OPEN.search(page_html, start, close)
-        region = page_html[start:nested.start() if nested else close]
-        if own.search(region):
+        region = _article_body(page_html, m.end())
+        if region is not None and own.search(region):
             return region
-        if nested:
-            tail_start = close + len("</article>")
-            nxt = ARTICLE_OPEN.search(page_html, tail_start)
-            if own.search(page_html, tail_start, nxt.start() if nxt else len(page_html)):
-                return region
     return None
 
 
