@@ -255,6 +255,54 @@ Labels above mirror `scripts/lanes/lanes.json`, which is authoritative. When a
 tier's underlying model ships a new generation, update `lanes.json` first and
 this table follows — never the reverse.
 
+### Lane-fit eval: Haiku 5.5 vs Sonnet 5.5 vs codex gpt-6.1-sol (HIMMEL-4906, 2026-10-08)
+
+Same harness, now 7 tasks (the 4 above plus `cr-fix`, `class-sweep`,
+`guard-cmd`; the real himmel hooks are live in the worktree, so denials are
+counted), `medium` effort, 2 reps per cell (14 runs each), rep 1 judged by the
+blind Opus judge, rep 2 unjudged. Codex runs through the claudex launcher
+(`CLAUDEX_LANE_OK=1`, now accepted by `run.sh --lane claudex`). Raw rows:
+the state repo's `specs/research/HIMMEL-4906-*` bundle.
+
+| Cell | Accepted | Agent cost, 14 runs | Mean turns | Mean wall s | Hook denials | Judge mean C/S/T/H (rep 1) |
+|---|---|---|---|---|---|---|
+| Haiku 5.5 | 14/14 | $0.19 | 10.3 | 41 | 7 | 4.71 / 4.57 / 4.14 / 4.57 |
+| Sonnet 5.5 | 14/14 | $2.98 | 7.2 | 49 | 9 | 4.43 / 4.86 / 3.86 / 4.29 |
+| codex gpt-6.1-sol | 14/14 | not priceable (see below) | 11.8 | 112 | 10 | 4.43 / 4.86 / 3.71 / 4.00 |
+
+- **Pass rate does not discriminate.** Every cell cleared the hidden checks on
+  every task, so the set cannot rank the lanes on correctness. The separation is
+  in cost, turns, wall time and the judge's test-quality and honesty scores.
+- **Haiku 5.5 is about 15x cheaper than Sonnet 5.5** ($0.19 against $2.98) at
+  equal acceptance, and needed more turns (10.3 against 7.2) to get there. Its
+  judge scores were not below Sonnet's on this set (n=7 judged, so a screen).
+- **Codex dollar figures are Claude Code's guess**: it does not price the
+  `gpt-6.1-sol` slug, so its `cost_usd` ($0.14-$0.96 per run) is not a bill. The
+  rows carry token counts instead; codex wrote 0.5-5K output tokens per run
+  against Haiku's 0.9-13K. Its draw is on the codex weekly bank, which the
+  preflight did not report (`codex=?`), so no bank delta was measured.
+  Codex was the slowest (about 2.7x Haiku's wall time) and the weakest on judge
+  test quality (3.71) and honesty (4.00, with two 3s).
+- **Harness note.** The first codex `shell-red-green` run tripped the per-task
+  `--max-usd` cap on that mispriced figure (1 turn, 0/14) and was re-run; a codex
+  `--max-usd` is a guard against the estimate, not against real spend.
+- **Denials are not a lane signal.** All three lanes were denied by the live
+  hooks on `class-sweep`, `doc-plus-code` and `hook-refusal` (7, 9 and 10 in
+  14 runs); the counts are too close and too noisy to rank lanes.
+
+**Routing update.** The verdict table above stands; this eval adds:
+
+| Work type | Verdict | Evidence |
+|---|---|---|
+| CR-fix and class-sweep shaped (`cr-fix`, `class-sweep`) | ROUTE to Haiku 5.5 `medium` with a named check | 4/4 accepted across both reps; all six `cr-fix` runs (every lane) cleared acceptance and scope, so none acted on the R3 trap finding |
+| One guard-shaped command (`guard-cmd`) | ROUTE to Haiku 5.5 | 2/2 accepted, 0 hook denials, $0.009 per run |
+| Codex as an implementor | Not preferred on quality | no pass-rate gain over Haiku, 2.7x slower, lowest judge test quality; use it for bank diversification, not for fit |
+| Sonnet 5.5 | Keeps open-ended and multi-file work | fewest turns, best scope discipline; no pass-rate edge on this set |
+
+Limits: n=2 per cell, small tasks, one reviewer model; a set where every lane
+passes cannot show a Haiku ceiling. Add a harder multi-file task before
+promoting Haiku past the rows above.
+
 ## Non-Claude lane calibration
 
 Every lane `scripts/lanes/lanes.json` registers gets a row here. The columns
