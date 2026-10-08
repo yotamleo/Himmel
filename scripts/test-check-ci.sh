@@ -537,6 +537,14 @@ if [ "$cmd" = "pr" ] && [ "${2:-}" = "view" ]; then
                 *)          printf 'MPR_OK\noctocat\nfalse\n1\nREADME.md\n' ;;
             esac
             exit 0 ;;
+        *url,reviewDecision,headRefOid,baseRefName*)
+            head=sha1
+            if [ "${GH_STUB_HEAD:-stable}" = moving ]; then
+                h=$(cat "$GH_STUB_HEADC" 2>/dev/null); h=${h:-0}
+                echo $((h+1)) > "$GH_STUB_HEADC"; head="sha$((h+1))"
+            fi
+            printf 'https://github.com/octo/demo/pull/42\t%s\t%s\tmain\n' "${GH_STUB_DECISION:-null}" "$head"
+            exit 0 ;;
         *"baseRefName"*) echo "main"; exit 0 ;;
         # HIMMEL-3473: GitHub's own merge verdict, in check-ci's parsed shape
         # "<head> <state>". GH_STUB_MERGE_STATE is a comma list consumed one
