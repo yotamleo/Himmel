@@ -14,8 +14,8 @@
 //   HOOK-BYPASS  touches scripts/hooks/ (hooks do not run in the cloud, and the
 //                integrity guard locks hook edits out of a normal leg)
 //   LOCAL-NATIVE a trust path (needs a trust-reviewed GO), a run-time need the
-//                cloud lacks by design (luna, a vault, handover state: private
-//                data never leaves the station), more than 3 asks, or no file
+//                cloud lacks by design (luna, a vault, handover state, the state repo
+//                or its specs: private data never leaves the station), more than 3 asks, or no file
 //                named to scope a brief on. graphify and BM25 qmd over the repo
 //                are not such a need: the cloud setup installs both (HIMMEL-4726).
 //                qmd query, vector search and embeds are: it has no qmd models.
@@ -36,7 +36,7 @@ const REPO = resolve(HERE, '..', '..');
 const MAX_ASKS = 3;
 const REPO_SLUG = 'yotamleo/Himmel';
 const HOOKS = /^scripts\/hooks\//;
-const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n]*--backend|\bqmd\b[^\n]*?(?<![\w-])(?:-c|--collections?)[\s=]+['"]?(?!himmel(?![\w-]))[\w-]|(?:~|\$HOME|\$\{HOME\})\/\.(?:himmel|cache)\/|\btest VMs?\b|himmel-ops:vm|\bvmsdk\b|\bVBoxManage\b|\bLIVE\b[^\n.]{0,40}\bledger\b|\barm(?:s|ed|ing)?\b[^\n.]{0,40}\bcadence\b|\bsystemd[ -](?:timer|unit|service)s?\b|\batrm\b/i;
+const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bstate[ -]repo\b|(?<![\w./-])handovers\/[\w.-]+\/|(?<![\w./-])specs\/HIMMEL-\d|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n]*--backend|\bqmd\b[^\n]*?(?<![\w-])(?:-c|--collections?)[\s=]+['"]?(?!himmel(?![\w-]))[\w-]|(?:~|\$HOME|\$\{HOME\})\/\.(?:himmel|cache)\/|\btest VMs?\b|himmel-ops:vm|\bvmsdk\b|\bVBoxManage\b|\bLIVE\b[^\n.]{0,40}\bledger\b|\barm(?:s|ed|ing)?\b[^\n.]{0,40}\bcadence\b|\bsystemd[ -](?:timer|unit|service)s?\b|\batrm\b/i;
 const FILE_RE = /(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|\.claude|\.github|\.codex)\/[\w.+@-]+(?:\/[\w.+@-]+)*\/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)/g;
 
 // The trust list is read as data, one extended regex per line (ci-trust-paths.txt).
@@ -90,7 +90,7 @@ export function classifyTicket(t, ctx) {
   const trust = files.find((f) => (ctx.trust ?? []).some((re) => re.test(f)));
   if (trust) return v('LOCAL-NATIVE', `touches trust path ${trust} — needs a trust-reviewed GO`);
   const need = `${t.title}\n${t.description}`.match(NEEDS);
-  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state, qmd models, semantic graphify, ~/.himmel state, test VMs, live ledgers and cadence arming stay on the station (the cloud has AST-only graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
+  if (need) return v('LOCAL-NATIVE', `run-time need '${need[0]}' — luna, vaults, handover state, the state repo, qmd models, semantic graphify, ~/.himmel state, test VMs, live ledgers and cadence arming stay on the station (the cloud has AST-only graphify and BM25 qmd search over the repo only: no qmd models, so no qmd query, vector search or embed)`);
   if (asks > MAX_ASKS) return v('LOCAL-NATIVE', `${asks} asks (more than ${MAX_ASKS}) — cloud sessions drop second asks`);
   if (ctx.heldUnknown) return v('BLOCKED', 'open-PR file list unavailable (gh failed) — cannot prove the files are free');
   return v('CLOUD-OK', `${files.length} file(s), ${asks} ask(s), no hook, trust path or run-time need, none held`);

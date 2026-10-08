@@ -280,3 +280,26 @@ test('CLI: --held file blocks without gh, and --classify-only writes nothing', (
   assert.match(r.stdout, /HIMMEL-9001\s+BLOCKED/);
   assert.ok(!existsSync(join(bucket, 'cloud-route.jsonl')));
 });
+
+// HIMMEL-4996: fixture text of the real tickets (no live Jira).
+const STATE_SPEC = 'Spec, threat model, token budget and plan: state repo handovers/yotamleo/himmel/specs/HIMMEL-4818/.';
+const T4827 = { key: 'HIMMEL-4827', type: 'Task', status: 'To Do', title: 'himmel-bus T4: MCP server', description: `Add the server in scripts/bus/server.mjs.\n${STATE_SPEC}` };
+const T4836 = { key: 'HIMMEL-4836', type: 'Task', status: 'To Do', title: 'himmel-bus T13: docs', description: `Document it in docs/internals/bus.md.\n${STATE_SPEC}` };
+
+test('LOCAL-NATIVE: a ticket that cites the state-repo spec (HIMMEL-4827, HIMMEL-4836)', () => {
+  for (const t of [T4827, T4836]) {
+    const v = classifyTicket(t, ctx());
+    assert.equal(v.class, 'LOCAL-NATIVE', t.key);
+    assert.match(v.reason, /run-time/);
+  }
+});
+
+test('LOCAL-NATIVE: each state-repo reference alone routes local', () => {
+  for (const need of ['See the state repo for the plan.', 'Plan is in the state-repo.', 'Read handovers/yotamleo/himmel/x.md.', 'Spec at specs/HIMMEL-4818/plan.md.']) {
+    assert.equal(classifyTicket(tk({ description: `Edit scripts/a.sh. ${need}` }), ctx()).class, 'LOCAL-NATIVE', need);
+  }
+});
+
+test('CLOUD-OK: repo paths that merely resemble handover state stay cloud', () => {
+  for (const t of ['Edit scripts/handover/console-kit/tick.sh.', 'Edit docs/handover/overnight-mode.md.', 'Edit scripts/a.sh and scripts/lanes/specs/foo.sh.']) assert.equal(classifyTicket(tk({ description: t }), ctx()).class, 'CLOUD-OK', t);
+});
