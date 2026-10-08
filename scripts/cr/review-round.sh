@@ -264,7 +264,14 @@ try {
     if (head !== e.WANT) prior.push(...records(record.split("/")[0]).filter(r => r.nogo && r.head === head));
   }
   for (const r of candidateRecords) {
-    if (r.nogo && r.head !== e.WANT && cp.spawnSync("git", ["merge-base", "--is-ancestor", r.head, e.WANT]).status === 0) prior.push(r);
+    if (!r.nogo || r.head === e.WANT) continue;
+    // HIMMEL-4945: only a clean exit 1 means "not an ancestor"; a git error
+    // (128: missing or shallow history), a spawn error or a signal keeps the
+    // record, so an unreadable history never drops an earlier NO-GO.
+    const anc = cp.spawnSync("git", ["merge-base", "--is-ancestor", r.head, e.WANT]);
+    if (anc.status === 1) continue;
+    if (anc.status !== 0) console.error(`review-round: ancestry check could not run for ${r.head} (${anc.error ? anc.error.message : anc.signal || "git exit " + anc.status}) - keeping its NO-GO record (HIMMEL-4945)`);
+    prior.push(r);
   }
   const repeated = [...new Set(prior.flatMap(r => r.classes).filter(c => classes.has(c)))];
   if (repeated.length) {
