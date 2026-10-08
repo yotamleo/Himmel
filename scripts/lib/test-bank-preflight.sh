@@ -777,7 +777,7 @@ check "bank-lift set refuses another account's cache" absent "$([ -e "$BANK_LIFT
 # HIMMEL-4868: catches strict reset comparison, nonpersistent standing policy,
 # and validators that discard the reason. All writes stay in the scratch HOME.
 printf '%s' "{\"account\":\"$ACCT\",\"seven_day\":{\"resets_at\":\"2026-10-09T20:59:59.996777+00:00\"}}" > "$W/jitter.json"
-# shellcheck disable=SC1090,SC2317 # sourced fixture; date override invoked by validator
+# shellcheck disable=SC1090,SC2317,SC2329 # sourced fixture; date override invoked by validator
 jitter_rc() { ( . "$LIFT"; date() { if [ "$*" = '+%s' ]; then echo 1791400000; else command date "$@"; fi; }; bank_lift_valid "$W/jitter.json"; echo $? ); }
 write_lift 1791579600 "$ACCT"
 check "exact live 4ms reset jitter remains valid" 0 "$(jitter_rc)"
@@ -798,7 +798,7 @@ jq '.until=1' "$BANK_LIFT_FILE" > "$W/standing.json"; mv "$W/standing.json" "$BA
 check "standing policy renews into next current window" 0 "$(lift_rc "$W/lc.json")"
 # Native Windows jq emits CRLF. Keep identity/cache reads unchanged so this
 # isolates the serialized policy fields rather than mocking the validator.
-# shellcheck disable=SC1090,SC2317 # jq function called indirectly by validator
+# shellcheck disable=SC1090,SC2317,SC2329 # jq function called indirectly by validator
 crlf_lift() { (
   . "$LIFT"
   jq() {

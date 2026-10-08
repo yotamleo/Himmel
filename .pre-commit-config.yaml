@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       # Vendored Obsidian plugin bundles (minified js/css) and the vendored
       # claude-hud tree (HIMMEL-718, pinned byte-for-byte — drift guard hashes
@@ -31,7 +31,7 @@ repos:
       - id: check-shebang-scripts-are-executable
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.10.0.1
+    rev: v0.11.0.1
     hooks:
       # Vendored statusline bar (HIMMEL-331) is third-party code (upstream
       # nilbuild/claude-statusline; the yotamleo fork is archived, HIMMEL-1233)

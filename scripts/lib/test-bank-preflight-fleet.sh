@@ -346,7 +346,7 @@ fi
 slots_k="$(mktemp -d "$W/slots-k.XXXXXX")" || { echo "FAIL - could not create slots-k scratch dir" >&2; exit 1; }
 : > "$W/err.log"
 k_out="$(
-  # shellcheck disable=SC2317,SC2059  # exported into the run_pf bash; shadows the builtin only inside this subshell. No apostrophe here: bash 3.2 reads one inside a $( ) comment as an open quote.
+  # shellcheck disable=SC2317,SC2329,SC2059  # exported into the run_pf bash; shadows the builtin only inside this subshell. No apostrophe here: bash 3.2 reads one inside a $( ) comment as an open quote.
   printf() { if [ "${1:-}" = '%s\n' ] && [ "${2:-}" = 424242 ]; then return 1; fi; builtin printf "$@"; }
   export -f printf
   run_pf "$slots_k" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9020-pidwritefail HIMMEL_FLEET_CAP=4 CADENCE_BANK_CALLER_PID=424242
@@ -361,7 +361,7 @@ fi
 # shim, so the case above fails for the pid write and not for the harness.
 slots_k2="$(mktemp -d "$W/slots-k2.XXXXXX")" || { echo "FAIL - could not create slots-k2 scratch dir" >&2; exit 1; }
 k2_out="$(
-  # shellcheck disable=SC2317,SC2059  # exported into the run_pf bash; shadows the builtin only inside this subshell (no apostrophe in a $( ) comment, bash 3.2)
+  # shellcheck disable=SC2317,SC2329,SC2059  # exported into the run_pf bash; shadows the builtin only inside this subshell (no apostrophe in a $( ) comment, bash 3.2)
   printf() { if [ "${1:-}" = '%s\n' ] && [ "${2:-}" = 424242 ]; then return 1; fi; builtin printf "$@"; }
   export -f printf
   run_pf "$slots_k2" "$p0" CADENCE_BANK_LAUNCH=1 CADENCE_BANK_LEG=HIMMEL-9020-pidwriteok HIMMEL_FLEET_CAP=4 CADENCE_BANK_CALLER_PID=424243

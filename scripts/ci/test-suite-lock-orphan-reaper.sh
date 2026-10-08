@@ -28,7 +28,7 @@ fail() { printf '  FAIL  %s\n' "$1"; failures=$((failures + 1)); }
 
 sandboxes=()
 bgpids=()
-# shellcheck disable=SC2317  # invoked via the EXIT trap below
+# shellcheck disable=SC2317,SC2329  # invoked via the EXIT trap below
 cleanup() {
   local d p
   for p in ${bgpids[@]+"${bgpids[@]}"}; do kill "$p" 2>/dev/null; done
