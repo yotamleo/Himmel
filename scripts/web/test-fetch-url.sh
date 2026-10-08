@@ -53,6 +53,12 @@ echo "== instagram fixture =="
 out="$(python3 -I "$PY" --from-html "$FIX/ig-post.html")"
 has 'og:title: Fixture User on Instagram: "a caption"' "$out" "og:title"
 has "og:image: https://scontent.cdninstagram.com/v/fix.jpg" "$out" "og:image"
+printf '<article><div></div></article><meta property="og:title" content="shell fallback">' >"$tmp/shell.html"
+has "og:title: shell fallback" "$(python3 -I "$PY" --from-html "$tmp/shell.html")" "empty article shell falls back to og tags"
+printf '<p>first</p>second' >"$tmp/pl.html"
+out="$(python3 -I -c 'import sys; sys.path.insert(0,sys.argv[1]); import fetch_url; print(fetch_url.html_to_text(open(sys.argv[2]).read()))' "$(dirname "$PY")" "$tmp/pl.html")"
+has "first
+second" "$out" "closing block tag keeps a word boundary"
 printf "<meta property='og:title' content='single quoted'>" >"$tmp/sq.html"
 has "og:title: single quoted" "$(python3 -I "$PY" --from-html "$tmp/sq.html")" "single-quoted og tag"
 

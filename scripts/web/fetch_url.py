@@ -214,6 +214,8 @@ class Text(HTMLParser):
     def handle_endtag(self, tag):
         if tag in SKIP:
             self.skip = max(0, self.skip - 1)
+        elif tag in ("p", "div", "li", "h1", "h2", "h3", "h4", "tr"):
+            self.parts.append("\n")
 
     def handle_data(self, data):
         if not self.skip:
@@ -228,7 +230,8 @@ def html_to_text(page_html):
 
 
 def render_walled(page_html):
-    posts = parse_x(page_html)
+    posts = [p for p in parse_x(page_html)
+             if p["author"] or p["handle"] or p["date"] or p["media"] or any(t.strip() for t in p["text"])]
     if posts:
         return render_x(posts)
     return render_meta(page_html)
@@ -275,7 +278,7 @@ def main(argv=None):
             print(f"fetch failed: {type(e).__name__}: {str(e)[:160]}", file=sys.stderr)
             return 4
         path = urlparse(final).path
-        if path.startswith(("/i/flow/login", "/login", "/account/access")):
+        if path.startswith(("/i/flow/login", "/login", "/account/access", "/accounts/login")):
             print(f"fetch failed: login wall ({path})", file=sys.stderr)
             return 4
         if status and status >= 400:
