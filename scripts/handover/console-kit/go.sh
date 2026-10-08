@@ -157,8 +157,9 @@ if _go_in_harness "$ROOT" "$ANCHOR"; then
 fi
 
 # HIMMEL-3832: a trust-reviewed GO only on the named judge's GO verdict for
-# this exact head (go_trust_verdict parses it, failing closed).
-if [ "$TRUST_SET" -eq 1 ] && ! REASON=$(go_trust_verdict "$ROOT" "$TRUST" "$SHA" "$ANCHOR"); then
+# this exact head (go_trust_verdict parses it, failing closed). HIMMEL-4928: and
+# for this PR - a verdict that names another PR, or none, refuses.
+if [ "$TRUST_SET" -eq 1 ] && ! REASON=$(go_trust_verdict "$ROOT" "$TRUST" "$SHA" "$ANCHOR" "$PR"); then
     echo "go: refusing the trust-reviewed GO for PR #$PR at $SHA - $REASON No GO written." >&2
     exit 5
 fi

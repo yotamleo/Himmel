@@ -963,7 +963,7 @@ printf 'class: option-parsing\n\nthe fix does not hold\n' > "$jev/judge-evidence
 judge() {
     env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_RELAY CLAUDE_CODE_SESSION_ID=judge-sess-4700 \
         bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$1" "$2" "$3" \
-        --evidence-file "$jev/judge-evidence.md" >/dev/null 2>"$tmp/judge-$1.err" || fail "judge writes $1 $2"
+        --pr 1 --evidence-file "$jev/judge-evidence.md" >/dev/null 2>"$tmp/judge-$1.err" || fail "judge writes $1 $2"
 }
 start_round() {
     (cd "$repo" && PANEL_MODE="${2:-clean}" bash "$SCRIPT" --head "$1" --branch "$3" 2>&1)
