@@ -793,11 +793,17 @@ _lift_lib="$hook_dir/../lib/bank-lift.sh"
 if { [ -r "$_lift_lib" ] && . "$_lift_lib"; } 2>/dev/null; then
     if bank_lift_valid "$CACHE_PATH"; then
         if [ -z "${IMPL_GUARD_WEEKLY_HARD:-}" ]; then WEEKLY_HARD=100; fi
-        if [ "$BANK_LIFT_STANDING" = true ] && [ -z "${IMPL_GUARD_HARD:-}" ]; then
+        if [ "${BANK_LIFT_STANDING:-false}" = true ] && [ -z "${IMPL_GUARD_HARD:-}" ]; then
             HARD=$(valid_threshold "${CADENCE_BANK_MAX_PCT:-100}" 80 CADENCE_BANK_MAX_PCT)
+            # HIMMEL-4920: a ceiling above 100 could never trip — clamp to 100.
+            if awk -v v="$HARD" 'BEGIN{ exit !(v+0 > 100) }'; then HARD=100; fi
         fi
-    elif [ "$BANK_LIFT_REASON" != missing ]; then
-        warn "bank lift invalid ($BANK_LIFT_REASON) — retaining default HARD thresholds unless explicitly overridden"
+    # HIMMEL-4920: default the lib-set reason — a bare read under `set -u` aborts
+    # the hook with exit 1, which Claude Code treats as non-blocking (fail OPEN).
+    # With the default, a missing validator (rc 127 in the `if`) lands here and
+    # the default HARD thresholds stay in force: the deny direction is kept.
+    elif [ "${BANK_LIFT_REASON:-unknown}" != missing ]; then
+        warn "bank lift invalid (${BANK_LIFT_REASON:-unknown}) — retaining default HARD thresholds unless explicitly overridden"
     fi
 else
     warn "bank lift validator unreadable — retaining default HARD thresholds unless explicitly overridden"
