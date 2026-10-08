@@ -354,10 +354,12 @@ grep -q 'sha256sum -c' "$BODY" && grep -q 'converge-check.sh' "$BODY" && ok "T8 
 # call and report rc 3 as VACUOUS, not as "did not converge". Static: the
 # container itself is not runnable here.
 PKGT="$ROOT/packaging/aur/test-pkgbuild.sh"
-seed_first=$(awk '/^  for s in clone tarball aur; do$/{f=1} f&&/\.git\/hooks\/commit-msg/{h=1} f&&/converge-check\.sh/{print h+0; exit}' "$PKGT")
+seed_first=$(awk '/\.git\/hooks\/commit-msg/{h=1} /src\/scripts\/release\/converge-check\.sh/{print h+0; exit}' "$PKGT")
 [ "$seed_first" = 1 ] \
   && ok "T9 test-pkgbuild.sh seeds a git hook into every target before converge-check" || bad "T9 test-pkgbuild.sh calls converge-check on hook-less targets (vacuous)"
 grep -q 'VACUOUS (rc 3)' "$PKGT" && ok "T9 test-pkgbuild.sh reports converge-check rc 3 as VACUOUS" || bad "T9 rc 3 is folded into 'did not converge'"
+grep -q 'find \. -type f ! -name lanes.local.json' "$ROOT/scripts/release/converge-check.sh" \
+  && ok "T9 converge-check's seed list skips lanes.local.json (packaged prefix keeps it in the cache dir by design)" || bad "T9 converge-check compares the lane overlay location"
 grep -q '^  useradd -m builder' "$PKGT" && ! grep -q 'useradd -m -d /build' "$PKGT" \
   && ok "T9 builder's passwd home is outside the /build work dir (real-home check (c) stays armed)" || bad "T9 builder's home contains the work dir"
 
