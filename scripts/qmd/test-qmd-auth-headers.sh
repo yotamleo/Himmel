@@ -14,7 +14,7 @@ set -u
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 plugin="$repo_root/marketplace/plugins/qmd"
 helper="$plugin/scripts/qmd-auth-headers.sh"
-ensure="$plugin/scripts/ensure-qmd-daemon.sh"
+ensure="$plugin/scripts/ensure-qmd-daemon.sh" # t13b-ok: path of the existing ensure script, not a service start
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/qmd-auth-headers.XXXXXX")" || exit 1
