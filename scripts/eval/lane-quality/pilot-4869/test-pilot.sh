@@ -310,7 +310,15 @@ check 'sandbox modes create no file at a planted symlink target' '[ -z "$(ls -A 
 (. "$TMP/root/rows/p03.env"; rm -rf -- "$GITOBJ/info"; ln -s "$V/dir" "$GITOBJ/info")
 for m in argv run check; do bash "$HERE/sandbox.sh" "$m" "$E3" true >/dev/null 2>&1; done
 check 'sandbox modes write nothing through a symlinked info dir' '[ -z "$(ls -A "$V/dir")" ]'
-bash "$P" finish p03 >/dev/null 2>&1
+# A lane still running can put .git back in the gap after restore_git removes
+# it, as a symlink to a FIFO: a redirect would follow it (noclobber passes a
+# non-regular target) and the host would block. An rm shim plays the lane.
+mkdir -p "$TMP/lanebin"; mkfifo "$TMP/lane.fifo"
+printf '%s\n' '#!/usr/bin/env bash' 'command -p rm "$@" || exit' \
+  'for a; do case "$a" in */.git) [ -e "$LANE_FIFO.done" ] || { : >"$LANE_FIFO.done"; ln -s "$LANE_FIFO" "$a"; } ;; esac; done' >"$TMP/lanebin/rm"
+chmod +x "$TMP/lanebin/rm"
+LANE_FIFO="$TMP/lane.fifo" PATH="$TMP/lanebin:$PATH" timeout 60 bash "$P" finish p03 >/dev/null 2>&1; rc=$? # gnu-ok: Linux-only kit
+check 'finish never follows a .git symlink put back in the gap' '[ -e "$TMP/lane.fifo.done" ] && [ "$rc" != 124 ]'
 check 'finish creates no file at a planted symlink target' '[ -z "$(ls -A "$V" | grep -vx dir)" ] && [ -z "$(ls -A "$V/dir")" ]'
 check 'finish still scores the row' '[ -f "$TMP/root/results/p03.json" ]'
 

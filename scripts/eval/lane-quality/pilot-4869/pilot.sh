@@ -252,8 +252,14 @@ restore_git() {
   case "$GITDIR" in */..|*/../*|"$REPO"|"$REPO"/*) die "git dir $GITDIR is not the row's own" ;; /*) ;; *) die "git dir $GITDIR is not absolute" ;; esac
   { [ -d "$GITDIR" ] && [ ! -L "$GITDIR" ] && [ -d "$WT" ] && [ ! -L "$WT" ]; } || die "$WT or $GITDIR is missing or a symlink"
   rm -rf -- "$WT/.git" "$GITDIR/commondir" || die "cannot reset the git pointers of $WT"
-  # noclobber opens with O_EXCL, so a symlink put back in the gap is never followed.
-  (set -C; printf 'gitdir: %s\n' "$GITDIR" >"$WT/.git") || die "cannot restore the git pointers of $WT"
+  # The pointer is written beside the worktree (no jail binds it) and renamed
+  # in: rename replaces whatever the lane put back in the gap and never follows
+  # it, where a redirect follows a symlink to a FIFO or device even under noclobber.
+  local tmp
+  tmp="$(mktemp "$(dirname "$WT")/.gitptr.XXXXXX")" || die "cannot stage the git pointer of $WT"
+  if ! { printf 'gitdir: %s\n' "$GITDIR" >"$tmp" && mv -T -- "$tmp" "$WT/.git"; }; then # gnu-ok: Linux-only kit
+    rm -f -- "$tmp"; die "cannot restore the git pointers of $WT"
+  fi
 }
 
 find_transcripts() { # $1 lane, $2 worktree, $3 row doc, $4 row transcript dir -> this row's transcripts, one per line
