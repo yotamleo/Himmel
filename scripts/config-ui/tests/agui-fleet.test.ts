@@ -1,7 +1,7 @@
 // HIMMEL-4712: GET /api/agui/fleet — every live session on one page. Drives the REAL fleet.sh (claude_sessions,
 // leg_tail_status) through claude-sessions.sh's own seams: a stub pgrep and a fake /proc whose cmdlines carry -n.
 import { test, expect, afterEach } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer } from "../server";
@@ -107,6 +107,81 @@ test("a secret straddling the summary cut is redacted whole, not left as a fragm
   expect(c.activity.summary).not.toContain(secret.slice(0, 20));
 });
 
+test("runtime uses the launch record, freezes a wrapped session and excludes Chrome helpers", async () => {
+  const s = boot();
+  const startedAt = new Date("2026-10-06T08:00:00").toISOString();
+  const wrappedDoc = join(s.dir, "handover", "yotam", "himmel", `${FLEET.wrapped.name}.md`);
+  const wrappedDay = new Date("2026-10-07T08:30:00");
+  utimesSync(wrappedDoc, wrappedDay, wrappedDay);
+  for (const m of [FLEET.console, FLEET.wrapped]) {
+    const path = join(s.home, ".claude", "sessions", `${m.pid}.json`);
+    writeFileSync(path, JSON.stringify({ sessionId: m.run, status: m.status, startedAt }));
+  }
+  writeFileSync(join(s.dir, "proc", String(FLEET.idle.pid), "cmdline"), ["claude", "--chrome-native-host", ""].join("\0"));
+  const b = await (await fleet(s.port)).json();
+  const c = b.sessions.find((r: any) => r.name === FLEET.console.name);
+  expect(c.runtime).toMatchObject({ startedAt: Date.parse(startedAt), endedAt: null });
+  expect(c.runtime.elapsedMs).toBe(b.generatedAt - Date.parse(startedAt));
+  expect(b.sessions.find((r: any) => r.name === FLEET.wrapped.name).runtime).toMatchObject({ endedAt: new Date("2026-10-07T08:30:00").getTime(), elapsedMs: 88200000 });
+  expect(b.sessions.some((r: any) => r.pid === FLEET.idle.pid)).toBe(false);
+});
+
+test("launch environment and manifest edges group two consoles without timing guesses", async () => {
+  const s = boot();
+  const bucket = join(s.dir, "handover", "yotam", "himmel");
+  const other = "HIMMEL-project-console";
+  writeFileSync(join(bucket, `${other}.md`), `# ${other}\n## Results\n- 09:00 LIVE — started\n`);
+  writeFileSync(join(bucket, `${other}.fleet.json`), JSON.stringify({ schema: 1, legs: [{ doc: join(bucket, `${FLEET.wrapped.name}.md`), label: "N9003", added: "2026-10-07T08:00:00Z" }] }));
+  writeFileSync(join(s.dir, "proc", String(FLEET.idle.pid), "environ"), `HIMMEL_CONSOLE_NAME=${other}\0`);
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.pid === FLEET.idle.pid)).toMatchObject({ parent: other, console: other });
+  expect(b.sessions.find((r: any) => r.name === FLEET.wrapped.name).console).toBe(other);
+  expect(b.sessions.find((r: any) => r.name === FLEET.leg.name).console).toBe(FLEET.console.name);
+  expect(b.sessions.find((r: any) => r.name === other)).toMatchObject({ role: "console", live: false });
+});
+
+test("a console that released its lock is retired even while its process is alive", async () => {
+  const s = boot();
+  const file = join(s.dir, "handover", "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.name === FLEET.console.name).lock).toBe("released");
+});
+
+test("a corrupt held lock directory is unknown, never proof the console released it", async () => {
+  const s = boot();
+  const root = join(s.dir, "handover");
+  const file = join(root, "yotam", "himmel", `${FLEET.console.name}.md`);
+  writeFileSync(file, "# console\n## Results\n- 09:00 LIVE — lock `fixture-lock`\n");
+  mkdirSync(join(root, ".locks", "queue", `yotam__himmel__${FLEET.console.name}.lock`), { recursive: true });
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.name === FLEET.console.name).lock).toBe("unknown");
+});
+
+test("claudex sessions retain their run, journal usage, console edge and bank lane", async () => {
+  const s = boot();
+  renameSync(join(s.home, ".claude"), join(s.home, ".claude-codex"));
+  mkdirSync(join(s.home, ".claude", "sessions"), { recursive: true });
+  writeFileSync(join(s.home, ".claude", "sessions", `${FLEET.leg.pid}.json`), JSON.stringify({ sessionId: FLEET.idle.run, startedAt: "2000-01-01T00:00:00Z" }));
+  writeFileSync(join(s.dir, "proc", String(FLEET.leg.pid), "environ"), `CLAUDE_CONFIG_DIR=${s.home}/.claude-codex\0`);
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.pid === FLEET.leg.pid)).toMatchObject({ run: FLEET.leg.run, lane: "claudex", console: FLEET.console.name, usage: { calls: 3 } });
+  const response = await fetch(`http://127.0.0.1:${s.port}/api/agui/${FLEET.leg.run}`, { headers: { "X-Himmel-Token": TOKEN } });
+  expect(response.status).toBe(200);
+  await response.body?.cancel();
+});
+
+test("a custom launch config directory wins over an unrelated default PID record", async () => {
+  const s = boot();
+  const config = join(s.home, "custom-config");
+  mkdirSync(join(config, "sessions"), { recursive: true });
+  writeFileSync(join(config, "sessions", `${FLEET.leg.pid}.json`), JSON.stringify({ sessionId: FLEET.leg.run, startedAt: "2026-10-07T08:00:00Z" }));
+  writeFileSync(join(s.home, ".claude", "sessions", `${FLEET.leg.pid}.json`), JSON.stringify({ sessionId: FLEET.idle.run }));
+  writeFileSync(join(s.dir, "proc", String(FLEET.leg.pid), "environ"), `CLAUDE_CONFIG_DIR=${config}\0`);
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.pid === FLEET.leg.pid).run).toBe(FLEET.leg.run);
+});
+
 // HIMMEL-4751: each row's place in the graph and its token usage, from the census's own sources.
 test("graph: the leg hangs under its console, the console names its predecessor, the rest sit under the operator", async () => {
   const { port } = boot();
@@ -150,6 +225,14 @@ test("cloud: each recent CLOUD-OK route is a node under its console, from its PR
   // The shepherd's brief names the console; as the cloud session's local shepherd it hangs under the cloud node.
   expect(by[CLOUD.shepherd.name]).toMatchObject({ role: "leg", ticket: "HIMMEL-905", parent: "cloud-HIMMEL-905", cloud: null });
   expect(by[FLEET.leg.name]).toMatchObject({ parent: FLEET.console.name, cloud: null });
+});
+
+test("a live shepherd whose journal is old remains attached to its cloud session", async () => {
+  const s = boot({}, { cloud: true });
+  const old = (Date.now() - 2 * 60 * 60 * 1000) / 1000;
+  utimesSync(s.journal(CLOUD.shepherd), old, old);
+  const b = await (await fleet(s.port)).json();
+  expect(b.sessions.find((r: any) => r.name === CLOUD.shepherd.name)).toMatchObject({ live: true, parent: "cloud-HIMMEL-905" });
 });
 
 test("cloud: GitHub is read once per cache window, in one batched query naming only the routed tickets", async () => {

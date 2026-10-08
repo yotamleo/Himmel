@@ -19,7 +19,7 @@
 // 202 ms warm); upgrade path: a per-file incremental fold (the SSE tail's offsets) once a fleet poll is slow.
 import { execFile } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { agentState, initialView, reduce, type View } from "../agui-web/src/reducer.ts";
 import { cloudRoutes, consoleOf, GH_WAIT_MS, readCloudPrs, type CloudPhase, type CloudRoute } from "./fleet-cloud.ts";
 import { createJournalMapper } from "./journal-mapper.ts";
@@ -31,21 +31,24 @@ const SCRIPT_TIMEOUT_MS = 30_000;
 
 export type FleetState = "running" | "idle" | "waiting for GO" | "wrapped" | "unknown";
 export type FleetRow = {
-  run: string | null; pid: number | null; name: string; role: "console" | "leg" | "judge" | "interactive" | "cloud"; model: string | null;
+  run: string | null; pid: number | null; name: string; role: "console" | "leg" | "judge" | "consult" | "interactive" | "cloud"; model: string | null;
   ticket: string | null; pr: number | null; state: FleetState;
   activity: { tool: string; summary: string; at: number } | null; lastEventAt: number | null;
   subagents: { total: number; running: number }; failures: number;
   parent: string | null; predecessor: string | null; agents: { name: string; role: string; state: string }[];
   usage: Usage | null;
   cloud: { url: string | null; phase: CloudPhase } | null;
+  runtime: { startedAt: number; endedAt: number | null; elapsedMs: number } | null;
+  console: string | null; live: boolean; lock: "held" | "released" | "unknown";
+  lane: "native" | "claudex" | "cloud";
 };
 export type Usage = {
   calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number;
   resident: number | null; ceiling: number; ceilingFrom: "autocompact" | "window"; fill: number | null;
 };
 export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[] };
-type CensusRow = { pid: string; name: string; model: string; doc: string; status: string; autocompact?: string };
-type Census = { census: Fleet["census"]; sessions: CensusRow[]; cloudRoutes?: string[] };
+type CensusRow = { pid: string; name: string; model: string; doc: string; status: string; autocompact?: string; startedAt?: number | null };
+type Census = { census: Fleet["census"]; sessions: CensusRow[]; cloudRoutes?: string[]; manifests?: string[]; consoleDocs?: string[] };
 
 // A session name as the launchers write it; anything else in a doc is text, never a link.
 const SESSION = /^[A-Za-z0-9._+-]{1,160}$/;
@@ -56,11 +59,11 @@ const plain = (s: string | undefined) => (s && SESSION.test(s) ? s : null);
 // dispatched it; a console hangs under the operator (parent null) and names the console it succeeded.
 export function graphOf(role: FleetRow["role"], doc: string): { parent: string | null; predecessor: string | null } {
   if (role === "console") return { parent: null, predecessor: plain(/successor to `?([^\s`]+?)(?:\.md)?`?[\s(]/.exec(doc)?.[1]) };
-  let parent: string | null = null;
-  if (role === "leg") {
-    parent = plain(/your console is\W*`([^`]+)`/i.exec(doc)?.[1]);
-    for (const m of doc.matchAll(/^- (?:[\d:]+ )?SUCCESSION accepted: `?([^\s`]+)`? replaces/gm)) parent = plain(m[1]) ?? parent;
-  } else if (role === "judge") parent = plain(/dispatched by\s*(?:>\s*)?`([^`]+)`/.exec(doc)?.[1]);
+  let parent = plain(/your console is\W*`([^`]+)`/i.exec(doc)?.[1]);
+  if (role === "judge" || role === "consult") parent ??= plain(/dispatched by\s*(?:>\s*)?`([^`]+)`/.exec(doc)?.[1]);
+  if (role === "leg" || role === "judge" || role === "consult") {
+    for (const m of doc.matchAll(/^- (?:[\d:]+ )?(?:LIVE — )?SUCCESSION accepted: `?([^\s`]+)`? replaces/gm)) parent = plain(m[1]) ?? parent;
+  }
   return { parent, predecessor: null };
 }
 
@@ -129,18 +132,38 @@ async function cloudRows(logs: string[], env: Record<string, string | undefined>
       run: null, pid: null, name: `cloud-${r.ticket}`, role: "cloud", model: null, ticket: r.ticket, pr: p.pr, state: CLOUD_STATE[p.phase],
       activity: null, lastEventAt: null, subagents: { total: 0, running: 0 }, failures: 0,
       parent: await consoleOf(r), predecessor: null, agents: [], usage: null, cloud: { url: p.url, phase: p.phase },
+      runtime: p.phase === "merged" || p.phase === "closed" ? null : { startedAt: r.at, endedAt: null, elapsedMs: Math.max(0, now - r.at) },
+      console: await consoleOf(r), live: p.phase !== "merged" && p.phase !== "closed", lock: "unknown", lane: "cloud",
     };
   }));
 }
 
 const roleOf = (name: string, doc: string): FleetRow["role"] =>
-  /-console$/.test(name) ? "console" : /(^|-)judge(-|$)|(^|-)J\d+(-|$)/i.test(name) ? "judge" : doc ? "leg" : "interactive";
+  /-console$/.test(name) ? "console" : /(^|-)consult(-|$)/i.test(name) ? "consult" : /(^|-)judge(-|$)|(^|-)J\d+(-|$)/i.test(name) ? "judge" : doc ? "leg" : "interactive";
 
 // The PR a leg doc names last: `READY <pr> ...` or `PR <n>` / `PR #<n>` in its bullets.
 function prOf(text: string): number | null {
   let pr: number | null = null;
   for (const m of text.matchAll(/^- .*?\b(?:READY|PR) #?(\d+)\b/gm)) pr = Number(m[1]);
   return pr;
+}
+
+function runtimeOf(start: unknown, fallback: number | undefined, doc: string, wrapped: boolean, now: number, docAt: number): FleetRow["runtime"] {
+  const parsed = typeof start === "string" ? Date.parse(start) : typeof start === "number" ? start : NaN;
+  const startedAt = Number.isFinite(parsed) ? parsed : fallback;
+  if (startedAt === undefined || !Number.isFinite(startedAt)) return null;
+  let endedAt: number | null = null;
+  if (wrapped) {
+    const time = [...doc.matchAll(/^- (\d\d):(\d\d) WRAPPED\b/gm)].at(-1);
+    if (!time) return null; // Unknown end is not a running clock.
+    // ponytail: Results markers carry HH:MM only, so the doc's write-day supplies
+    // the date; upgrade to an explicit WRAPPED timestamp when the writer records one.
+    const end = new Date(docAt);
+    end.setHours(Number(time[1]), Number(time[2]), 0, 0);
+    endedAt = end.getTime();
+    if (endedAt < startedAt || endedAt > now) return null;
+  }
+  return { startedAt, endedAt, elapsedMs: Math.max(0, (endedAt ?? now) - startedAt) };
 }
 
 function stateOf(status: string, busy: boolean): FleetState {
@@ -178,10 +201,45 @@ async function fold(journal: string): Promise<Folded> {
 
 export async function readFleet(opts: { script: string; env: Record<string, string | undefined>; home: string; now: number; redact: (s: string) => string }): Promise<Fleet> {
   const census = await runScript(opts.script, opts.env);
+  if (census.census === "unavailable") return { census: "unavailable", generatedAt: opts.now, sessions: [] };
+  const lockOf = (file: string, doc: string, wrapped: boolean): Promise<FleetRow["lock"]> => {
+    if (wrapped) return Promise.resolve("released");
+    if (!/^- .*\b(?:lock|release-token)\b.*`[^`]+`/m.test(doc)) return Promise.resolve("unknown");
+    return new Promise((ok) => {
+      // The lock owner resolves legacy keys and distinguishes free from corrupt or unreadable.
+      execFile("bash", [join(dirname(opts.script), "../handover/queue-lock.sh"), "status", file],
+        { env: opts.env as NodeJS.ProcessEnv, timeout: 3000, maxBuffer: 64 * 1024 }, (err, stdout) => {
+          if (!err && stdout.trim() === "free") return ok("released");
+          ok(/status: FRESH/.test(stdout) ? "held" : "unknown");
+        });
+    });
+  };
+  const edges = new Map<string, { console: string; at: number | undefined }>();
+  for (const file of census.manifests ?? []) {
+    const console = plain(basename(file, ".fleet.json"));
+    if (!console) continue;
+    try {
+      const m = JSON.parse(await readFile(file, "utf8"));
+      if (m.schema !== 1 || !Array.isArray(m.legs)) continue;
+      for (const l of m.legs) if (typeof l.doc === "string") {
+        const at = Date.parse(l.added);
+        edges.set(l.doc, { console, at: Number.isFinite(at) ? at : undefined });
+      }
+    } catch { /* malformed or unreadable manifest: no edge */ }
+  }
   const seen = new Set<string>();
   const rows = await Promise.all(census.sessions.map(async (c): Promise<FleetRow | null> => {
-    let rec: { sessionId?: unknown; status?: unknown; name?: unknown } = {};
-    try { rec = JSON.parse(await readFile(join(opts.home, ".claude", "sessions", `${c.pid}.json`), "utf8")); } catch { /* not yet written */ }
+    let launch: Record<string, string> = {};
+    try {
+      const env = (await readFile(join(opts.env.CLAUDE_SESSIONS_PROC || "/proc", c.pid, "environ"), "utf8")).split("\0");
+      launch = Object.fromEntries(env.filter((v) => v.includes("=")).map((v) => { const i = v.indexOf("="); return [v.slice(0, i), v.slice(i + 1)]; }));
+    } catch { /* unavailable launch record: use doc or manifest */ }
+    const lane = /(?:^|\/)\.claude-codex\/?$/.test(launch.CLAUDE_CONFIG_DIR ?? "") ? "claudex" : "native";
+    let rec: { sessionId?: unknown; status?: unknown; name?: unknown; startedAt?: unknown } = {};
+    const configs = launch.CLAUDE_CONFIG_DIR ? [launch.CLAUDE_CONFIG_DIR] : [join(opts.home, ".claude"), join(opts.home, ".claude-codex")];
+    for (const config of configs) {
+      try { rec = JSON.parse(await readFile(join(config, "sessions", `${c.pid}.json`), "utf8")); break; } catch { /* not yet written in this lane */ }
+    }
     const run = typeof rec.sessionId === "string" ? rec.sessionId : null;
     const found = run ? await resolveJournal(opts.home, run) : null;
     const journal = found && "path" in found ? found.path : null;
@@ -191,17 +249,20 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       // Live if any of its files was written recently: a subagent can be busy while the main journal is quiet.
       const { paths } = await sessionFiles(journal);
       const mtimes = await Promise.all(paths.map((p) => stat(p).then((s) => s.mtimeMs, () => 0)));
-      if (opts.now - Math.max(0, ...mtimes) > RECENT_MS) return null;
+      if (opts.now - Math.max(0, ...mtimes) > RECENT_MS && roleOf(c.name, c.doc) === "interactive") return null;
       ({ view, tally } = await fold(journal));
     }
-    let doc = "";
-    if (c.doc) try { doc = await readFile(c.doc, "utf8"); } catch { /* moved or gone: no doc */ }
+    let doc = "", docAt = opts.now;
+    if (c.doc) try { doc = await readFile(c.doc, "utf8"); docAt = (await stat(c.doc)).mtimeMs; } catch { /* moved or gone: no doc */ }
     const tools = view ? Object.values(view.tools).sort((a, b) => b.start - a.start) : [];
     const subs = view ? view.agentOrder.filter((id) => id !== "main") : [];
     const t0 = view?.t0;
     // A session started without -n still has the name the harness gave it.
     const name = c.name || (typeof rec.name === "string" ? rec.name : "") || `pid ${c.pid}`;
     const role = roleOf(name, c.doc);
+    const graph = graphOf(role, doc);
+    // Accepted succession in the doc overrides the original launch environment.
+    const parent = role === "console" ? null : graph.parent ?? plain(launch.HIMMEL_CONSOLE_NAME) ?? edges.get(c.doc)?.console ?? null;
     return {
       run, pid: Number(c.pid), name, role, model: c.model || null,
       ticket: /^([A-Z][A-Z0-9]+-\d+)\b/.exec(name)?.[1] ?? null, pr: role === "leg" ? prOf(doc) : null,
@@ -210,16 +271,35 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       lastEventAt: view && t0 !== undefined ? t0 + view.elapsed : null,
       subagents: { total: subs.length, running: view ? subs.filter((id) => agentState(view!, id) === "running").length : 0 },
       failures: view?.failures.length ?? 0,
-      ...graphOf(role, doc),
+      ...graph, parent, console: role === "console" ? name : parent, live: c.status !== "WRAPPED", lock: role === "console" ? await lockOf(c.doc, doc, c.status === "WRAPPED") : "unknown",
+      lane,
       agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
       usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model }), cloud: null,
+      runtime: runtimeOf(rec.startedAt ?? c.startedAt, edges.get(c.doc)?.at ?? t0, doc, c.status === "WRAPPED", opts.now, docAt),
     };
   }));
+  for (const file of census.consoleDocs ?? []) {
+    const name = plain(basename(file, ".md"));
+    if (!name || rows.some((r) => r?.name === name)) continue;
+    try {
+      const s = await stat(file);
+      if (opts.now - s.mtimeMs > 72 * RECENT_MS) continue;
+      const doc = await readFile(file, "utf8");
+      const wrapped = /^- (?:[\d:]+ )?WRAPPED\b/m.test(doc);
+      rows.push({
+        name, role: "console", pid: null, run: null, model: null, ticket: null, pr: null,
+        state: wrapped ? "wrapped" : "unknown", activity: null, lastEventAt: null,
+        subagents: { total: 0, running: 0 }, failures: 0, ...graphOf("console", doc),
+        agents: [], usage: null, cloud: null, runtime: null, console: name, live: false,
+        lock: await lockOf(file, doc, wrapped), lane: "native",
+      });
+    } catch { /* archived console moved or unreadable */ }
+  }
   const cloud = await cloudRows(census.cloudRoutes ?? [], opts.env, opts.now);
   // A local leg on a cloud session's ticket is its shepherd: it hangs under the cloud node, not the console.
   for (const r of rows) {
     const c = r?.role === "leg" && cloud.find((x) => x.ticket === r.ticket);
-    if (r && c) r.parent = c.name;
+    if (r && c && r.console === c.console) r.parent = c.name;
   }
   // Drop the folds of sessions that left the fleet, so the cache does not grow with every session ever seen.
   for (const journal of folds.keys()) if (!seen.has(journal)) folds.delete(journal);

@@ -4,8 +4,9 @@ import type { ReactNode } from "react";
 // @ts-expect-error: plain ES module shared with the console (no types).
 import { fleetDot, navLinks } from "../../public/nav.js";
 import type { FleetState } from "./Fleet";
+import { FleetMenu } from "./FleetMenu";
 
-export function Shell({ token, run, fleet, children }: { token: string | null; run: string | null; fleet: FleetState; children: ReactNode }) {
+export function Shell({ token, run, fleet, children, console: selected = null }: { token: string | null; run: string | null; fleet: FleetState; children: ReactNode; console?: string | null }) {
   const dot = fleetDot(fleet.fleet, fleet.error);
   const links: { id: string; label: string; href: string; current: boolean }[] = token ? navLinks({ here: "agui", token, current: run ? "run" : "fleet", run }) : [];
   return (
@@ -22,6 +23,7 @@ export function Shell({ token, run, fleet, children }: { token: string | null; r
             ))}
           </nav>
         )}
+        {token && <FleetMenu token={token} state={fleet} selected={selected} />}
       </aside>
       <div className="pane">{children}</div>
     </div>

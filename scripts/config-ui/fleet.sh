@@ -45,6 +45,21 @@ sep=$(printf '\037')
 out=$(printf '%s\n' "$out" | tr '\t' '\037')
 while IFS="$sep" read -r pid name model autocompact _; do
     case "$pid" in ''|'#'*) continue ;; esac
+    # Helpers share the claude executable but are not sessions. Inspect argv boundaries,
+    # not prompt substrings; a helper flag used as a prompt value is not a flag.
+    helper=0 expect=""
+    cmdline="${CLAUDE_SESSIONS_PROC:-/proc}/$pid/cmdline"
+    if [ -r "$cmdline" ]; then
+        while IFS= read -r -d '' arg; do
+            if [ -n "$expect" ]; then expect=""; continue; fi
+            case "$arg" in
+                --) break ;;
+                --chrome-native-host|--claude-in-chrome-mcp|--mcp-server) helper=1 ;;
+                -n|--model|--autocompact|--append-system-prompt|--append-system-prompt-file|--system-prompt|--system-prompt-file) expect=skip ;;
+            esac
+        done < "$cmdline"
+    fi
+    [ "$helper" -eq 1 ] && continue
     doc="" status=""
     # Only a plain session name is searched for (find -name would read glob characters as a pattern).
     case "$name" in ''|*[!A-Za-z0-9._+-]*) plain="" ;; *) plain=1 ;; esac
@@ -52,11 +67,19 @@ while IFS="$sep" read -r pid name model autocompact _; do
         doc=$(find "$root" -maxdepth 4 -type f -name "$name.md" 2>/dev/null | head -1) # gnu-ok: BSD find also supports -maxdepth
         [ -n "$doc" ] && status=$(leg_tail_status "$doc")
     fi
-    rows="$rows$pid	$name	$model	$doc	$status	$autocompact
+    started=""
+    elapsed=$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    case "$elapsed" in ''|*[!0-9]*) ;; *) started=$(( $(date +%s) - elapsed )) ;; esac
+    rows="$rows$pid	$name	$model	$doc	$status	$autocompact	$started
 "
 done <<EOF
 $out
 EOF
 routes=""
 [ -n "$root" ] && routes=$(find "$root" -maxdepth 4 -type f -name cloud-route.jsonl 2>/dev/null) # gnu-ok: BSD find also supports -maxdepth
-jq -n --arg census "$census" --arg rows "$rows" --arg routes "$routes" '{census: $census, sessions: [$rows | split("\n")[] | select(length > 0) | split("\t") | {pid: .[0], name: .[1], model: .[2], doc: .[3], status: (.[4] // ""), autocompact: (.[5] // "")}], cloudRoutes: [$routes | split("\n")[] | select(length > 0)]}'
+manifests="" consoles=""
+if [ -n "$root" ]; then
+    manifests=$(find "$root" -maxdepth 4 -type f -name '*.fleet.json' 2>/dev/null) # gnu-ok: BSD find supports -maxdepth
+    consoles=$(find "$root" -maxdepth 4 -type f -name '*-console.md' 2>/dev/null) # gnu-ok: BSD find supports -maxdepth
+fi
+jq -n --arg census "$census" --arg rows "$rows" --arg routes "$routes" --arg manifests "$manifests" --arg consoles "$consoles" '{census: $census, sessions: [$rows | split("\n")[] | select(length > 0) | split("\t") | {pid: .[0], name: .[1], model: .[2], doc: .[3], status: (.[4] // ""), autocompact: (.[5] // ""), startedAt: (if (.[6] // "") == "" then null else (.[6] | tonumber) * 1000 end)}], cloudRoutes: [$routes | split("\n")[] | select(length > 0)], manifests: [$manifests | split("\n")[] | select(length > 0)], consoleDocs: [$consoles | split("\n")[] | select(length > 0)]}'

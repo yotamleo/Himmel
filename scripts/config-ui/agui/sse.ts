@@ -30,18 +30,20 @@ export type Resolved = { path: string } | { status: 400 | 404 | 409 };
 
 export async function resolveJournal(home: string, run: string): Promise<Resolved> {
   if (!RUN_ID.test(run)) return { status: 400 };
-  let root: string, slugs: string[];
-  try {
-    root = await realpath(join(home, ".claude", "projects"));
-    slugs = await readdir(root);
-  } catch { return { status: 404 }; }
   const found: string[] = [];
-  for (const slug of slugs) {
-    let real: string;
-    try { real = await realpath(join(root, slug, `${run}.jsonl`)); } catch { continue; }
-    if (!real.startsWith(root + sep)) continue;
-    try { if (!(await stat(real)).isFile()) continue; } catch { continue; }
-    found.push(real);
+  for (const config of [".claude", ".claude-codex"]) {
+    let root: string, slugs: string[];
+    try {
+      root = await realpath(join(home, config, "projects"));
+      slugs = await readdir(root);
+    } catch { continue; }
+    for (const slug of slugs) {
+      let real: string;
+      try { real = await realpath(join(root, slug, `${run}.jsonl`)); } catch { continue; }
+      if (!real.startsWith(root + sep)) continue;
+      try { if (!(await stat(real)).isFile()) continue; } catch { continue; }
+      if (!found.includes(real)) found.push(real);
+    }
   }
   if (found.length === 0) return { status: 404 };
   if (found.length > 1) return { status: 409 };

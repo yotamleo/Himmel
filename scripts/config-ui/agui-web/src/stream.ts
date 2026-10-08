@@ -8,12 +8,7 @@ import { makeStamper, turnEnded } from "./reducer";
 export const AGUI_URL = (run: string) => `/api/agui/${encodeURIComponent(run)}`;
 // HIMMEL-4712: the fleet landing's census, and the fragment a fleet row opens.
 export const FLEET_URL = "/api/agui/fleet";
-export const runHash = (token: string, run: string) => `#${new URLSearchParams({ t: token, run })}`;
-// A token with no run is the fleet landing; null otherwise (a run opens its stream, no token replays the fixture).
-export function fleetToken(hash: string): string | null {
-  const p = new URLSearchParams(hash.replace(/^#/, ""));
-  return p.get("t") && !p.get("run") ? p.get("t") : null;
-}
+export { runHash, consoleHash, consoleFromHash, fleetToken } from "./fleet-model";
 
 type Ev = { type: string; timestamp?: number; [k: string]: unknown };
 // onClose: the live stream ended cleanly (the server stopped tailing a finished run).
