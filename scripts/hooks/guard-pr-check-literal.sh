@@ -843,7 +843,10 @@ git_mentions_only() { # git_mentions_only <command-word index>
         if [ "${ST_X[j]}${ST_G[j]}" != 00 ]; then
             # HIMMEL-4950: an expanded word that can begin with `-` may become
             # an exec-capable option (`-O{bash,x}`, `{-O,x}bash`, `--ext-d?ff`).
-            case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'*) PR_GIT_UNSAFE=1 ;; esac
+            # After --, words are pathspec operands, not options.
+            if [ "$paths" != 1 ]; then
+                case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'*) PR_GIT_UNSAFE=1 ;; esac
+            fi
             return 1
         fi
         # After --, option-shaped words are literal pathspec operands.

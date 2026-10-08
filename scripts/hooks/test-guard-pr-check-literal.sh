@@ -1576,6 +1576,9 @@ for v in \
     'git diff --ext-di?f -- scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4950 brace option [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
+# After --, an expanded operand is a pathspec, not an option: not flagged unsafe.
+run "HIMMEL-4950 brace operand after -- keeps prior verdict" 0 \
+    "$(payload 'git add -- --foo{a,b} scripts/cr/pr-check-env.sh' "$WT")" "$HR"
 # A brace word that is not option-shaped keeps its prior verdict (allow).
 run "HIMMEL-4950 non-option brace word keeps prior verdict" 0 \
     "$(payload 'git add docs/{a,b}.md scripts/cr/pr-check-env.sh' "$WT")" "$HR"
