@@ -17,6 +17,8 @@ import * as edges from '../lib/edges.mjs';
 const MAX_BODY = 64 * 1024;
 const INLINE_CAP = 1500;
 const MAX_SUMMARY = 300;
+// A 64 KiB body of control characters JSON-escapes to six bytes each (384 KiB).
+export const MAX_BUFFER = 512 * 1024;
 const bytes = text => Buffer.byteLength(text);
 
 const SendInput = z.strictObject({
@@ -71,8 +73,12 @@ async function send({ root, proc, pid }, args) {
     record.re = own.i;
   }
   const stamped = await store.append(root, to, record);
-  if (record.re) await writeAck(root, me.name, { i: record.re, re: record.i, t: record.t });
-  return { content: [{ type: 'text', text: `sent #${stamped.n} to ${to}` }], structuredContent: { n: stamped.n, to } };
+  // The message is already delivered: a failed ack must not read as a failed send.
+  let note = '';
+  if (record.re) {
+    try { await writeAck(root, me.name, { i: record.re, re: record.i, t: record.t }); } catch (error) { note = ` (ack not recorded: ${error.message})`; }
+  }
+  return { content: [{ type: 'text', text: `sent #${stamped.n} to ${to}${note}` }], structuredContent: { n: stamped.n, to } };
 }
 
 async function readOne({ root, proc, pid }, { n }) {
@@ -110,7 +116,7 @@ async function guarded(action) {
 
 async function main() {
   const root = await store.busRoot();
-  await createServer({ root }).connect(new StdioServerTransport(undefined, undefined, { maxBufferSize: 256 * 1024 }));
+  await createServer({ root }).connect(new StdioServerTransport(undefined, undefined, { maxBufferSize: MAX_BUFFER }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -7,9 +7,9 @@ const self = fileURLToPath(import.meta.url);
 
 if (process.argv[2] === '--serve') {
   const [, , , root, proc, pid] = process.argv;
-  const { createServer } = await import('../server/index.mjs');
+  const { createServer, MAX_BUFFER } = await import('../server/index.mjs');
   const { StdioServerTransport } = await import('@modelcontextprotocol/server/stdio');
-  await createServer({ root, proc, pid: Number(pid) }).connect(new StdioServerTransport());
+  await createServer({ root, proc, pid: Number(pid) }).connect(new StdioServerTransport(undefined, undefined, { maxBufferSize: MAX_BUFFER }));
 } else {
   await run();
 }
@@ -155,6 +155,25 @@ async function run() {
     const rows = (await readFile(join(fx.root, 'ack', 'leg.jsonl'), 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].i, ruling.i); assert.equal(rows[0].re, back.i);
+  });
+
+  test('a failed ack write after delivery still reports the send, not an error', async t => {
+    const fx = await fixture(t);
+    const con = await connect(t, fx, 'con');
+    const leg = await connect(t, fx, 'leg');
+    await con.callTool({ name: 'send', arguments: { to: 'leg', b: 'ruling' } });
+    await mkdir(join(fx.root, 'ack', 'leg.jsonl'), { recursive: true });   // ack file unopenable
+    const reply = await leg.callTool({ name: 'send', arguments: { to: 'con', b: 'quote-back', re: 1 } });
+    assert.equal(reply.isError, undefined);
+    assert.match(reply.content[0].text, /^sent #1 to con \(ack not recorded/);
+    assert.equal((await store.scan(fx.root, 'con')).length, 1);
+  });
+
+  test('a 64 KiB body of control characters fits the production transport buffer', async t => {
+    const fx = await fixture(t);
+    const con = await connect(t, fx, 'con');
+    const reply = await con.callTool({ name: 'send', arguments: { to: 'leg', b: '\u0001'.repeat(64 * 1024 - 1), s: 'big' } });
+    assert.equal(reply.isError, undefined);
   });
 
   test('ack of a record not addressed to the acker is isError and acks nothing', async t => {

@@ -27,6 +27,7 @@ for line in "import http from 'node:http';" "await fetch('https://x.test');" "im
 done
 
 for dir in server lib; do
+  if [ -z "$(find "$HERE/$dir" -name '*.mjs' -print -quit 2>/dev/null)" ]; then fail "$dir/ has no sources to scan"; continue; fi
   found="$(hits "$HERE/$dir")"
   if [ -z "$found" ]; then pass "$dir/ has no network code"; else fail "$dir/ has network code:"; printf '%s\n' "$found"; fi
 done
