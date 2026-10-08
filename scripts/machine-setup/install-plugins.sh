@@ -325,6 +325,7 @@ while IFS= read -r MKT_LINE; do
   # the template's makes `marketplace add` fail — that is drift, not an install
   # failure. Report both sides and the reconcile command, leave the entry alone,
   # and carry on (no provenance row: we registered nothing).
+  # HIMMEL-4279: compare the {source type, value} pair, not the string alone.
   EXISTING_SRC=$(jq -r --arg n "$MKT_NAME" '
     (.extraKnownMarketplaces // {})[$n].source // empty
     | if type != "object" then empty
@@ -332,7 +333,11 @@ while IFS= read -r MKT_LINE; do
       elif .source == "directory" then .path
       elif .source == "url"       then .url
       else empty end' "$PROV_SETTINGS_FILE" 2>/dev/null | tr -d '\r') || EXISTING_SRC=""
-  if [[ -n "$EXISTING_SRC" && "$EXISTING_SRC" != "$SRC" ]]; then
+  # shellcheck disable=SC2016  # $n is a jq variable (--arg), not a shell expansion
+  SRC_TYPE=$(echo "$EXPANDED" | jq -r --arg n "$MKT_NAME" '.extraKnownMarketplaces[$n].source | if type == "object" then .source // empty else empty end' 2>/dev/null | tr -d '\r') || SRC_TYPE=""
+  # shellcheck disable=SC2016  # $n is a jq variable (--arg), not a shell expansion
+  EXISTING_TYPE=$(jq -r --arg n "$MKT_NAME" '(.extraKnownMarketplaces // {})[$n].source | if type == "object" then .source // empty else empty end' "$PROV_SETTINGS_FILE" 2>/dev/null | tr -d '\r') || EXISTING_TYPE=""
+  if [[ -n "$EXISTING_SRC" && ( "$EXISTING_SRC" != "$SRC" || "$EXISTING_TYPE" != "$SRC_TYPE" ) ]]; then
     MKT_DRIFT+=("$MKT_NAME")
     RECONCILE="claude plugin marketplace remove $(printf '%q' "$MKT_NAME") --scope $SCOPE && claude plugin marketplace add $(printf '%q' "$SRC") --scope $SCOPE"
     echo "  DRIFT: marketplace '$MKT_NAME' source mismatch — settings has '$EXISTING_SRC', template wants '$SRC' ($PROV_SETTINGS_FILE)" >&2

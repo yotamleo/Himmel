@@ -820,9 +820,12 @@ sk2_equal="$work/sk2-equal"; mkdir -p "$sk2_equal/.claude"
 printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"github","repo":"kepano/obsidian-skills"}}}}' > "$sk2_equal/.claude/settings.json"
 sk2_dir="$work/sk2-dir"; mkdir -p "$sk2_dir/.claude"
 printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"directory","path":"/opt/kepano/obsidian-skills"}}}}' > "$sk2_dir/.claude/settings.json"
+# HIMMEL-4279: the same string under a different source type is still drift.
+sk2_typeonly="$work/sk2-typeonly"; mkdir -p "$sk2_typeonly/.claude"
+printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"directory","path":"https://github.com/kepano/obsidian-skills.git"}}}}' > "$sk2_typeonly/.claude/settings.json"
 sk2_nodrift="$work/sk2-nodrift"; mkdir -p "$sk2_nodrift/.claude"
 printf '{"enabledPlugins":{"foo@bar":true},"extraKnownMarketplaces":{"obsidian-skills":{"source":{"source":"url","url":"https://github.com/kepano/obsidian-skills.git"}}}}' > "$sk2_nodrift/.claude/settings.json"
-for sk2_case in drift nodrift equal dir; do
+for sk2_case in drift nodrift equal dir typeonly; do
   sk2_case_target="$work/sk2-$sk2_case"
   outSK2d=$("$node_bin" -e "
 const { runProbe } = require('$probes_lib_w');
@@ -832,7 +835,7 @@ const env = Object.assign({}, process.env, { HOME: '$sk2_home_w' });
 const ctx = { repoRoot: '$(winpath "$sk2_drift_repo")', targetPath: '$(winpath "$sk2_case_target")', scope: 'project', env };
 console.log(JSON.stringify(runProbe(item, ctx)));
 ")
-  if [ "$sk2_case" = drift ] || [ "$sk2_case" = dir ]; then
+  if [ "$sk2_case" = drift ] || [ "$sk2_case" = dir ] || [ "$sk2_case" = typeonly ]; then
     echo "$outSK2d" | jq -e '.actual == "degraded" and (.detail | contains("obsidian-skills") and contains("source drift") and contains("claude plugin marketplace remove obsidian-skills"))' >/dev/null \
       || fail "settings-key verifyPluginSet: a marketplace source mismatch must read degraded with the remedy (got: $outSK2d)"
   else
