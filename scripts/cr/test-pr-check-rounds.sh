@@ -1550,6 +1550,28 @@ scope_judge cp-1 "$cp_head" merge-resolution "$cp_r3"
 cp_rc=0; start_round "$cp_head" clean cmplain >/dev/null || cp_rc=$?
 assert_eq "$cp_rc" "8" "a merge-resolution record cannot admit a delta that is not a merge of main"
 
+# A merge whose parents are both the PR's own commits (no parent on main) is not
+# a merge of main, so a merge-resolution record cannot admit it either.
+git -C "$repo" checkout -q -b cmoff main
+printf 'a\n' > "$repo/cmoff.txt"
+git -C "$repo" add cmoff.txt
+git -C "$repo" commit -q -m "cmoff a"
+co_a="$(git -C "$repo" rev-parse cmoff)"
+printf 'b\n' >> "$repo/cmoff.txt"
+git -C "$repo" commit -q -am "cmoff b"
+co_b="$(git -C "$repo" rev-parse cmoff)"
+for n in 1 2 3; do
+    (cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$co_b" --branch cmoff >/dev/null 2>"$tmp/cmoff-$n.err") || fail "cmoff fixture setup round $n"
+done
+printf 'edited\n' >> "$repo/cmoff.txt"
+git -C "$repo" add cmoff.txt
+co_tree="$(git -C "$repo" write-tree)"
+co_m="$(git -C "$repo" commit-tree "$co_tree" -p "$co_b" -p "$co_a" -m "cmoff internal merge")"
+git -C "$repo" reset -q --hard "$co_m"
+scope_judge co-1 "$co_m" merge-resolution "$co_b"
+co_rc=0; start_round "$co_m" clean cmoff >/dev/null || co_rc=$?
+assert_eq "$co_rc" "8" "a merge-resolution record cannot admit a merge with no parent on main"
+
 # HIMMEL-4638 T1: an inherited delta_reuse never skips the counter bump on a
 # round before the cap (delta_reuse was only initialised inside delta_check).
 git -C "$repo" checkout -q -b t1init main

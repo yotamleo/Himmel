@@ -389,6 +389,13 @@ merge_forward_shape() {
     [ -n "$base_sha" ] || return 1
     [ -n "$(git rev-list --merges "$1..$2" 2>/dev/null)" ] || return 1
     [ -z "$(git rev-list --no-merges "$1..$2" "^$base_sha" 2>/dev/null)" ] || return 1
+    for _mf_m in $(git rev-list --merges "$1..$2" 2>/dev/null); do
+        _mf_ok=0
+        for _mf_p in $(git rev-list --parents -n 1 "$_mf_m" 2>/dev/null | cut -d' ' -f2-); do
+            ! git merge-base --is-ancestor "$_mf_p" "$base_sha" 2>/dev/null || _mf_ok=1
+        done
+        [ "$_mf_ok" = 1 ] || return 1
+    done
     mf_merged_base="$(git merge-base "$2" "$base_sha" 2>/dev/null)" || return 1
     [ -n "$mf_merged_base" ]
 }
