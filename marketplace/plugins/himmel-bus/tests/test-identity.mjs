@@ -191,6 +191,37 @@ test('adopt: a relay must name the new console as a whole word', async t => {
   await assert.rejects(identity.adopt(root, 'leg', 'new', { proc: live }), /not gone/);
 });
 
+test('adopt finds a relay the hook already delivered and committed', async t => {
+  const { root } = await fixture(t);
+  const live = await fakeProc(t, chain);
+  await bound(root, live);
+  await identity.register(root, 'new', { role: 'console', predecessor: 'con' });
+  await store.append(root, 'leg', { i: 'x', t: 1, f: 'con', r: 'leg', c: 1, b: 'handing over to new' });
+  const delivered = await store.read(root, 'leg');
+  assert.equal(delivered.records.length, 1);
+  await store.commit(root, 'leg', delivered.next);
+  await identity.adopt(root, 'leg', 'new', { proc: live });
+  assert.equal((await identity.loadPeers(root)).leg.console, 'new');
+});
+
+test('adopt refuses a console that does not succeed the old one', async t => {
+  const { root } = await fixture(t);
+  const live = await fakeProc(t, chain);
+  await bound(root, live);
+  await identity.register(root, 'other', { role: 'console' });
+  const gone = await fakeProc(t, [P(1, 0, 'init', 1), P(200, 1, 'claude', 2000)]);
+  await assert.rejects(identity.adopt(root, 'leg', 'other', { proc: gone }), /does not succeed con/);
+  assert.equal((await identity.loadPeers(root)).leg.console, 'con');
+});
+
+test('rebind refuses a console name', async t => {
+  const { root } = await fixture(t);
+  const live = await fakeProc(t, chain);
+  await bound(root, live);
+  const after = await fakeProc(t, [P(1, 0, 'init', 1), P(201, 1, 'claude', 2500)]);
+  await assert.rejects(identity.rebind(root, 'con', 201, { proc: after }), /console/);
+});
+
 test('adopt refuses a destination that is not a console', async t => {
   const { root } = await fixture(t);
   const live = await fakeProc(t, chain);

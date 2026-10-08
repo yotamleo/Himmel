@@ -134,6 +134,7 @@ export async function bind(root, name, pid, { proc = '/proc' } = {}) {
 export async function rebind(root, name, pid, { proc = '/proc' } = {}) {
   const begun = await start(proc, pid);
   return update(root, name, async peer => {
+    if (peer.role === 'console') throw new Error(`a console name cannot be rebound: ${name}`);
     if (peer.pid === undefined) throw new Error(`not bound yet (use bind): ${name}`);
     if (await status(root, name, { proc }) === 'live') throw new Error(`bound pid is still live: ${name}`);
     await unclaimed(root, name, pid, begun);
@@ -151,8 +152,9 @@ export async function adopt(root, name, next, { proc = '/proc' } = {}) {
     const target = await readPeer(root, next);
     if (!target) throw new Error(`unknown session: ${next}`);
     if (target.role !== 'console') throw new Error(`${next} is not a console`);
+    if (target.predecessor !== old) throw new Error(`${next} does not succeed ${old}`);
     const names = new RegExp(`(^|[^A-Za-z0-9._-])${next.replace(/[.]/g, '\\.')}($|[^A-Za-z0-9._-])`);
-    const relayed = async () => (await store.read(root, name)).records.some(r => r.f === old && typeof r.b === 'string' && names.test(r.b));
+    const relayed = async () => (await store.scan(root, name)).some(r => r.f === old && typeof r.b === 'string' && names.test(r.b));
     if (await status(root, old, { proc }) !== 'gone' && !await relayed()) throw new Error(`old console ${old} is not gone and sent no relay naming ${next}`);
     return { ...peer, console: next };
   });
