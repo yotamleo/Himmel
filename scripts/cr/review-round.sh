@@ -378,6 +378,100 @@ judge_nogo_record() (
     printf '%s\n' "$hits"
 )
 
+# HIMMEL-4952: print "<qid>/<name> <scope>" for a judge GO on head $2 (the
+# delta's new head) written by console-kit/write-verdict.sh, whose evidence
+# carries exactly one `delta-scope: test-only|lint-only` and one
+# `delta-from: $1` line; rc 1 when there is none, rc 8 when a record is
+# refused. A test-only record also needs every changed path to be a test path,
+# checked here and not taken from the record. A qid already consumed on any
+# branch is skipped, so one record buys one round.
+# ponytail: lint-only has no path rule (lint is not recognisable from a path),
+# so the judge's record alone admits it, same-uid ceiling as judge_nogo_record;
+# the upgrade path is a lint-config path allowlist plus HIMMEL-3578.
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+judge_scope_record() (
+    from="$1" want="$2"
+    lib="$HIMMEL_ROOT/scripts/lib"
+    # shellcheck source=scripts/lib/handover-path.sh
+    # shellcheck disable=SC1091
+    . "$lib/handover-path.sh" 2>/dev/null || exit 1
+    # shellcheck source=/dev/null
+    # shellcheck disable=SC1091
+    . "$lib/go-gate.sh" 2>/dev/null || exit 1
+    root="$(go_resolve_root "$HIMMEL_ROOT")" && [ -n "$root" ] || exit 1
+    scope="$(go_verdict_scope "$HIMMEL_ROOT")" && [ -n "$scope" ] || exit 1
+    dir="$root"
+    [ -d "$dir" ] && [ ! -L "$dir" ] || exit 1
+    for seg in "${scope%%/*}" "${scope#*/}" verdicts; do
+        dir="$dir/$seg"
+        [ -d "$dir" ] && [ ! -L "$dir" ] || exit 1
+    done
+    re_session='^writer-session: [A-Za-z0-9-]+$'
+    re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+    for qdir in "$dir"/*/; do
+        qdir="${qdir%/}"
+        qid="${qdir##*/}"
+        if [ ! -d "$qdir" ] || [ -L "$qdir" ]; then continue; fi
+        case "$qid" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) continue ;; esac
+        if [ -d "$git_dir/cr-review-rounds" ]; then
+            scan=0
+            grep -rqsF --include='*.verdicts' " $qid/" "$git_dir/cr-review-rounds" 2>/dev/null || scan=$?
+            [ "$scan" -ne 0 ] || continue
+            if [ "$scan" -ne 1 ]; then
+                echo "review-round: cannot scan $git_dir/cr-review-rounds for a consumed $qid (grep rc $scan) - the scope record is refused" >&2
+                exit 8
+            fi
+        fi
+        hit="" bad=0
+        for f in "$qdir"/*.md; do
+            [ -e "$f" ] || [ -L "$f" ] || continue
+            if [ -L "$f" ] || [ ! -f "$f" ]; then bad=1; break; fi
+            name="${f##*/}"; name="${name%.md}"
+            case "$name" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) bad=1; break ;; esac
+            l1="" l2="" l3="" l4="" l5="" l6="" l7="" l8=""
+            { IFS= read -r l1; IFS= read -r l2; IFS= read -r l3; IFS= read -r l4
+              IFS= read -r l5; IFS= read -r l6; IFS= read -r l7; IFS= read -r l8; } < "$f" 2>/dev/null
+            if [ "$l1" != "# VERDICT $qid - $name" ] || [ -n "$l2$l5$l7" ] || [ "$l6" != "## Verdict" ] \
+                || ! [[ $l3 =~ $re_session ]] || ! [[ $l4 =~ $re_written ]]; then
+                bad=1; break
+            fi
+            word="$(printf '%s\n' "$l8" | sed -nE 's/^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/\1 \2/p')"
+            [ -n "$word" ] || { bad=1; break; }
+            if [ -n "$hit" ] || [ "$word" != "GO $want" ]; then continue; fi
+            evidence="$(sed -n '9,$p' "$f")"
+            n_from="$(printf '%s\n' "$evidence" | grep -cE '^delta-from: ')"
+            n_from_ok="$(printf '%s\n' "$evidence" | grep -cFx "delta-from: $from")"
+            n_scope="$(printf '%s\n' "$evidence" | grep -cE '^delta-scope: ')"
+            if [ "$n_from" -eq 1 ] && [ "$n_from_ok" -eq 1 ] && [ "$n_scope" -eq 1 ]; then
+                kind="$(printf '%s\n' "$evidence" | sed -nE 's/^delta-scope: (test-only|lint-only)$/\1/p')"
+                [ -z "$kind" ] || hit="$qid/$name $kind"
+            fi
+        done
+        if [ "$bad" -ne 0 ] || [ -z "$hit" ]; then continue; fi
+        if [ "${hit#* }" = "test-only" ]; then
+            while IFS= read -r changed; do
+                # filename patterns match the basename only: * crosses / in case
+                scope_ok=0
+                case "$changed" in
+                    */tests/*|tests/*|*/test/*|test/*|*/__tests__/*) scope_ok=1 ;;
+                esac
+                case "${changed##*/}" in
+                    test-*.sh|*.test.[a-z]*) scope_ok=1 ;;
+                esac
+                if [ "$scope_ok" -ne 1 ]; then
+                    echo "review-round: scope record ${hit%% *} is test-only but $from..$want changes non-test path $changed - delta round refused (HIMMEL-4952)" >&2
+                    exit 8
+                fi
+            done <<EOF
+$(git -c core.quotepath=off diff --no-renames --name-only "$from" "$want" 2>/dev/null)
+EOF
+        fi
+        printf '%s\n' "$hit"
+        exit 0
+    done
+    exit 1
+)
+
 # HIMMEL-4600: decide whether the round after the third may run, as the one
 # delta round. Sets delta_from/delta_to/delta_trigger, or says why not and
 # returns 8 (2 for an unresolvable --head). HIMMEL-4700: a judge NO-GO on the
@@ -496,6 +590,16 @@ delta_check() {
     if [ "$head_scan" -eq 1 ] && [ "$judge_rc" -eq 0 ] && [ -n "$delta_verdict" ]; then
         first_verdict="${delta_verdict%% *}"
         delta_trigger="verdict:${first_verdict%%/*}"
+        return 0
+    fi
+    # HIMMEL-4952: a judge-signed test- or lint-only record for the new head.
+    scope_hit="$(judge_scope_record "$delta_from" "$delta_to")"
+    scope_rc=$?
+    [ "$scope_rc" -ne 8 ] || return 8
+    if [ "$scope_rc" -eq 0 ] && [ -n "$scope_hit" ]; then
+        scope_hit="${scope_hit%% *}"
+        delta_verdict="$scope_hit"
+        delta_trigger="scope:${scope_hit%%/*}"
         return 0
     fi
     delta_verdict=""
