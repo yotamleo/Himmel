@@ -49,8 +49,13 @@ const launcher = path.join(repoRoot, "scripts", "mcp", "secret-launch.mjs");
 function externalizeSecrets(key, spec) {
   const env = spec.env || {};
   const secretNames = Object.keys(env).filter((n) => SECRET_VAR.test(n));
-  if (secretNames.length === 0 || spec.type === "http" || spec.type === "sse") return spec;
+  if (spec.type === "http" || spec.type === "sse") return spec;
   const dir = path.join(secretsRoot, key);
+  if (secretNames.length === 0) {
+    // The last secret was removed from the source config: drop its stale files too.
+    if (fs.existsSync(dir)) for (const old of fs.readdirSync(dir)) fs.rmSync(path.join(dir, old), { force: true });
+    return spec;
+  }
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.chmodSync(secretsRoot, 0o700);
   fs.chmodSync(dir, 0o700);

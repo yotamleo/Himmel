@@ -45,5 +45,12 @@ const r=spawnSync(p.command,p.args,{env:{...process.env,...(p.env||{})},encoding
 process.stdout.write(String(r.status))' "$P")"
 if [ "$out" = "1" ]; then ok "launcher refuses a 0644 secret file"; else bad "launcher accepted a 0644 secret file (status $out)"; fi
 
+# Removing the last secret from the source config removes its file on regeneration.
+cat >"$T/home/.claude.json" <<EOF
+{"mcpServers":{"obsidian-vault":{"type":"stdio","command":"node","args":["-e","0"],"env":{"OBSIDIAN_HOST":"127.0.0.1"}}}}
+EOF
+node "$HERE/build-mcp-profiles.mjs" >"$T/gen2.log" 2>&1
+if [ ! -e "$S" ]; then ok "stale secret file removed when the last secret is dropped"; else bad "stale secret file survived"; fi
+
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]
