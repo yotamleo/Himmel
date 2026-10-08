@@ -467,6 +467,16 @@ run_case "$(j_bash "pgrep -f check-ci.sh")"
 assert_rc "4970 allow: one-shot pgrep -f" 0 "$RC"
 run_case "$(j_bash "until ! pgrep -f 'check-ci.sh 2152' >/dev/null; do sleep 5; done")" "QUIET_RUN_BYPASS=1"
 assert_rc "4970 bypass" 0 "$RC"
+# CR round 1: only the polarities that hang are refused; the loop head alone is
+# scanned; a finite `for ... do :; done` is not a busy loop.
+run_case "$(j_bash "until pgrep -f check-ci.sh >/dev/null; do sleep 2; done")"
+assert_rc "4970 allow: until pgrep (self-match ends it)" 0 "$RC"
+run_case "$(j_bash "while ! pgrep -f check-ci.sh >/dev/null; do sleep 2; done")"
+assert_rc "4970 allow: while ! pgrep (self-match ends it)" 0 "$RC"
+run_case "$(j_bash "until ! pgrep -f '[c]lear-cr-marker.sh'; do sleep 2; done; pgrep -f check-ci.sh")"
+assert_rc "4970 allow: bracket wait then one-shot pgrep" 0 "$RC"
+run_case "$(j_bash "for x in a b; do :; done")"
+assert_rc "4970 allow: finite for do :" 0 "$RC"
 
 echo ""
 if [ "$FAILED" -eq 0 ]; then

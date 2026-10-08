@@ -462,18 +462,21 @@ cmd_norm=$(tr '\n\r' ';;' <<<"$cmd_stage2")
 # the harness runs every Bash call as `<shell> -c "... eval '<command>'"`, so
 # the wrapper shell's command line contains <pat> and pgrep -f (which excludes
 # only itself) always finds it. A bracketed pattern (`[c]lear-cr-marker.sh`)
-# does not match its own literal text and passes. (2) a `do :; done` /
+# does not match its own literal text and passes. Only these polarities hang
+# (`until pgrep` / `while ! pgrep` end at once on a self-match), and only the
+# loop head is scanned. (2) a `while`/`until ...; do :; done` /
 # `do true; done` loop with no sleep, which busy-loops a core.
 # ponytail: the loop gate reads quote-neutralized text, so prose that quotes
 # a whole `until pgrep -f x; do ...` loop can false-positive, and a pgrep
 # option that takes a value (`-u user`) is read as the pattern; tighten with
 # a real shell tokenizer if either shows up.
-PGREP_WAIT_RE='(^|[^[:alnum:]_-])(until|while)[[:space:]][^;]*pgrep[[:space:]]'
+PGREP_WAIT_RE='(^|[^[:alnum:]_-])(until[[:space:]]+![^;]*|while[[:space:]]+([^![:space:]][^;]*)?)pgrep[[:space:]]'
+PGREP_HEAD_RE='(until[[:space:]]+!|while[[:space:]]+)[^;]*'
 PGREP_ARG_RE="pgrep[[:space:]]+((-[[:alnum:]]+[[:space:]]+)*)('([^']*)'|\"([^\"]*)\"|([^[:space:];&|)]+))"
-BUSY_LOOP_RE='(^|[^[:alnum:]_-])do[[:space:]]+(:|true)[[:space:];]*done([^[:alnum:]_]|$)'
+BUSY_LOOP_RE='(^|[^[:alnum:]_-])(while|until)[[:space:]][^;]*[;[:space:]]+do[[:space:]]+(:|true)[[:space:];]*done([^[:alnum:]_]|$)'
 
-if [[ $cmd_stage2 =~ $PGREP_WAIT_RE ]]; then
-    rest=$cmd_stage1
+if [[ $cmd_stage2 =~ $PGREP_WAIT_RE && $cmd_stage1 =~ $PGREP_HEAD_RE ]]; then
+    rest=${BASH_REMATCH[0]}
     while [[ $rest =~ $PGREP_ARG_RE ]]; do
         wait_flags=${BASH_REMATCH[1]}
         wait_pat=${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}
