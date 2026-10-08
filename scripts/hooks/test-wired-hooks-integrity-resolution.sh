@@ -58,7 +58,7 @@ wired_scripts() {
     const root = process.argv[1], out = new Set();
     const cmds = (f) => {
       const p = path.join(root, f);
-      if (!fs.existsSync(p)) return [];
+      if (!fs.existsSync(p)) { console.error("missing wiring file: " + f); process.exit(3); }
       const j = JSON.parse(fs.readFileSync(p, "utf8"));
       const r = [];
       const walk = (n) => { if (Array.isArray(n)) n.forEach(walk); else if (n && typeof n === "object") { if (typeof n.command === "string") r.push(n.command); Object.values(n).forEach(walk); } };
@@ -76,7 +76,7 @@ wired_scripts() {
 }
 
 echo "== fixture rows (the resolver must flag what it flagged on 2026-10-08)"
-FX="$(mktemp -d)" || exit 1
+FX="$(mktemp -d "${TMPDIR:-/tmp}/wired-hooks-integrity.XXXXXX")" || exit 1
 trap 'rm -rf "$FX"' EXIT
 mkdir -p "$FX/scripts/hooks" "$FX/scripts/lib"
 cp "$ROOT/scripts/hooks/hook-integrity.js" "$FX/scripts/hooks/"
@@ -89,8 +89,8 @@ if [ -n "$(check_closure "$FX" "$FX/scripts/hooks/bad.sh")" ]; then ok "the #220
 if [ -z "$(check_closure "$FX" "$FX/scripts/hooks/good.sh")" ]; then ok "a dirname-relative source of a real lib resolves"; else bad "a resolvable source form was flagged"; fi
 
 echo "== every wired hook script resolves"
-SCRIPTS="$(wired_scripts "$ROOT")"
 N=0
+if ! SCRIPTS="$(wired_scripts "$ROOT" 2>&1)"; then bad "wiring enumeration failed: $SCRIPTS"; SCRIPTS=""; fi
 if [ -z "$SCRIPTS" ]; then bad "no wired hook scripts found in settings.json / hooks.json"; fi
 while IFS= read -r rel; do
   [ -n "$rel" ] || continue
@@ -102,14 +102,14 @@ while IFS= read -r rel; do
     *) continue ;;
   esac
   N=$((N + 1))
-  if [ ! -f "$ROOT/$rel" ]; then
-    # run-hook-with-bash treats an absent --optional hook as a no-op; a wired
-    # path with no file is reported, not failed, so an optional carve-out is safe.
-    echo "  skip $rel (not present)"
-    continue
+  # No wired command uses --optional today, so a wired path with no file is a
+  # defect (deleted or misspelled hook), not a no-op.
+  if [ ! -f "$ROOT/$rel" ]; then bad "$rel (wired but not present)"; continue; fi
+  if out="$(check_closure "$ROOT" "$ROOT/$rel" 2>&1)"; then
+    if [ -z "$out" ]; then ok "$rel"; else bad "$rel"; printf '       %s\n' "$out"; fi
+  else
+    bad "$rel (resolver failed to run)"; printf '       %s\n' "$out"
   fi
-  out="$(check_closure "$ROOT" "$ROOT/$rel")"
-  if [ -z "$out" ]; then ok "$rel"; else bad "$rel"; printf '       %s\n' "$out"; fi
 done <<< "$SCRIPTS"
 if [ "$N" -ge 10 ]; then ok "enumerated $N wired hook scripts"; else bad "only $N wired hook scripts enumerated (parser drift?)"; fi
 
