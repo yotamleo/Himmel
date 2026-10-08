@@ -70,10 +70,11 @@ _QMDBIN_LIB_DIR="${BASH_SOURCE[0]%/*}"
 # an equivalent launcher signal fix); then pin back to tobi/qmd at that SHA --
 # HIMMEL-3982. upstream-watch reports #1030 merging; the upstreams.json qmd
 # `fork` block keeps /fork-resync auditing the delta meanwhile.
-# The pin is the tip of origin/fix/launcher-forward-signals (the fork's pin
-# branch), not fork main.
+# The pin is the tip of origin/himmel/pin-http-auth (HIMMEL-5002: the former pin
+# 932839a, the tip of fix/launcher-forward-signals, plus the HTTP bearer-token
+# commit of fork PR #14), not fork main.
 _qmd_fork_repo() { printf '%s\n' "${QMD_FORK_REPO:-https://github.com/yotamleo/qmd.git}"; }
-_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-932839a2a4cc4b894b1fd5fb2a86758321985c56}"; }
+_qmd_fork_ref() { printf '%s\n' "${QMD_FORK_REF:-791fdf8ae5dfc93d442a586a5eb8dc29f51d8e90}"; }
 _qmd_fork_dir() { printf '%s\n' "${QMD_FORK_DIR:-$HOME/.himmel/qmd-fork}"; }
 # An owned clone's origin may be either known qmd remote -- upstream tobi/qmd
 # or the himmel fork yotamleo/qmd -- in the forms seen in the wild (with or

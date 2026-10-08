@@ -82,6 +82,20 @@ INIT_PAYLOAD='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolV
 
 # Echo the raw probe response body (empty on connection failure).
 probe_body() {
+  # The daemon requires a bearer token (HIMMEL-5002); read it per probe so the
+  # file the daemon creates on first start is picked up. The header goes via a
+  # curl config on stdin, never argv (visible in ps).
+  local tok
+  tok="$(bash "$(dirname "${BASH_SOURCE[0]}")/qmd-auth-headers.sh" --token 2>/dev/null)"
+  if [ -n "$tok" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$tok" | "$QMD_CURL" -s -m "$PROBE_TIMEOUT" -X POST \
+      -K - \
+      -H 'Content-Type: application/json' \
+      -H 'Accept: application/json, text/event-stream' \
+      -d "$INIT_PAYLOAD" \
+      "$QMD_MCP_URL" 2>/dev/null
+    return
+  fi
   "$QMD_CURL" -s -m "$PROBE_TIMEOUT" -X POST \
     -H 'Content-Type: application/json' \
     -H 'Accept: application/json, text/event-stream' \

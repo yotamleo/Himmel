@@ -22,6 +22,13 @@ shared **HTTP** endpoint instead of a per-session stdio process
 ```
 
 All sessions now address ONE `qmd mcp --http --daemon` on `localhost:8181`.
+The daemon requires `Authorization: Bearer <token>` (HIMMEL-5002; 401 without
+it, `/health` stays open). The token is a 0600 file the daemon generates on
+first start (`$QMD_HTTP_TOKEN_FILE`, else `~/.config/qmd/http-token`). The
+plugin's `.mcp.json` sends it through `headersHelper`
+(`scripts/qmd-auth-headers.sh`), and `ensure-qmd-daemon.sh` probes with it, so
+the secret is never in the repo or on a command line. Restart the daemon once
+after the fork pin moves (`qmd mcp stop`, then the next session start).
 The daemon is brought up lazily by the plugin's own SessionStart hook
 (`hooks/hooks.json` -> `${CLAUDE_PLUGIN_ROOT}/scripts/ensure-qmd-daemon.sh`),
 so the startup path ships INSIDE the plugin and works from ANY session in ANY

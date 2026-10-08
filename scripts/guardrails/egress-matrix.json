@@ -64,6 +64,11 @@
       "why": "HIMMEL-4185 operator ruling 2026-10-05: salus x ollama-cloud is DENY unless the user has persistently opted in. Not hard (the opt-in is the operator's decision). Placed BEFORE the salus wildcard hard deny so the opt-in can reach it; every other purpose stays on that hard deny"
     },
     {
+      "corpus": "salus", "provider": "openai-codex", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-5002 operator ruling 2026-10-08 (interactive): codex (claudex lane, provider openai-codex) is supported for luna and salus, inference only. Every other provider and purpose keeps its existing deny (the hard salus wildcard below still governs them)"
+    },
+    {
       "corpus": "salus", "provider": "*", "purpose": "*",
       "verdict": "deny", "hard": true,
       "why": "PHI never leaves the machine. No override exists; no operator decision can be recorded here that flips this row"
@@ -168,6 +173,11 @@
       "verdict": "allow", "why": "operating substrate"
     },
     {
+      "corpus": "luna-clippings", "provider": "openai-codex", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-5002 operator ruling 2026-10-08 (interactive): codex (claudex lane, provider openai-codex) is supported for luna and salus, inference only. Every other provider and purpose keeps its existing deny"
+    },
+    {
       "corpus": "luna-clippings", "provider": "firecrawl", "purpose": "enrichment",
       "verdict": "allow+log",
       "why": "HIMMEL-4335: the thin-body clip escalation sends a clip's own public source URL to Firecrawl. Only URLs that pass the tool's own checks are sent: http(s) scheme, no basic-auth, not on the skip-host list, not a private host. The vault's .harvest-deny and .harvest-allow lists are NOT enforced by the tool (follow-up). The ledger obligation is met by ~/.himmel/state/firecrawl-ledger.jsonl (tool = call_site; corpus and purpose are fixed per call site). Extraction, embedding and every other purpose stay default-deny."
@@ -214,6 +224,11 @@
     {
       "corpus": "luna-personal", "provider": "anthropic", "purpose": "*",
       "verdict": "allow", "why": "operating substrate (Claude sessions read the vault natively every day)"
+    },
+    {
+      "corpus": "luna-personal", "provider": "openai-codex", "purpose": "inference",
+      "verdict": "allow",
+      "why": "HIMMEL-5002 operator ruling 2026-10-08 (interactive): codex (claudex lane, provider openai-codex) is supported for luna and salus, inference only. Every other provider and purpose keeps its existing deny"
     },
     {
       "corpus": "luna-personal", "provider": "deepseek", "purpose": "extraction",
