@@ -196,6 +196,9 @@ cmd_prepare() {
   fi
   wt="$WT_ROOT/lq-pilot-$row"
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $row"
+  # Recorded now, before any lane runs: sandbox.sh binds this dir and never
+  # re-reads the worktree's own .git file, which the lane can rewrite.
+  gitdir="$(git -C "$wt" rev-parse --absolute-git-dir)" || die "no git dir for $row"
   fix="$(materialize_row "$task" "$wt")" || die "fixture for $row failed"
   fix="$(printf '%s\n' "$fix" | tail -1)"
   nonce="LQ-$row-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
@@ -205,9 +208,9 @@ cmd_prepare() {
   mkdir -p "$DOCS/$row" "$run" "$tx" "$conf" || die "cannot create the $row dirs"
   ensure_export
   write_brief "$row" "$wt" "$task" "$nonce" "$PILOT_CONSOLE" >"$doc"
-  printf 'LANE=%q\nMODEL=%q\nEFFORT=%q\nTASK=%q\nWT=%q\nFIX=%q\nDOC=%q\nSNAP0=%q\nT0=%q\nREPO=%q\nRUN=%q\nTX=%q\nROWCONF=%q\nEXPORT=%q\nGITOBJ=%q\n' \
+  printf 'LANE=%q\nMODEL=%q\nEFFORT=%q\nTASK=%q\nWT=%q\nFIX=%q\nDOC=%q\nSNAP0=%q\nT0=%q\nREPO=%q\nRUN=%q\nTX=%q\nROWCONF=%q\nEXPORT=%q\nGITOBJ=%q\nGITDIR=%q\n' \
     "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" "$REPO" "$run" "$tx" "$conf" \
-    "$ROOT/repo" "$ROOT/gitobj/$row" >"$ROOT/rows/$row.env"
+    "$ROOT/repo" "$ROOT/gitobj/$row" "$gitdir" >"$ROOT/rows/$row.env"
   prefix=""
   [ "$lane" = deepseek ] && prefix="HIMMEL_DEEPSEEK_INFERENCE_OK=1 "
   [ "$lane" = deepseek ] || prefix="${prefix}LEG_EFFORT=$(printf %q "$effort") "

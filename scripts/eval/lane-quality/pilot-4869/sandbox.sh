@@ -54,7 +54,7 @@ case "${LANE:-}" in
   native)   [ "$mode" = check ] || die "a native row runs unsandboxed; only its acceptor runs in the jail (check)" ;;
   *) die "unknown lane '${LANE:-}'" ;;
 esac
-for v in REPO WT DOC RUN TX ROWCONF EXPORT GITOBJ; do [ -n "${!v:-}" ] || die "$envf has no $v"; done
+for v in REPO WT DOC RUN TX ROWCONF EXPORT GITOBJ GITDIR; do [ -n "${!v:-}" ] || die "$envf has no $v"; done
 [ -d "$EXPORT/.git" ] || die "no repo export at $EXPORT (pilot.sh prepare makes it)"
 
 # Never put back a path that is, or sits under, one of these.
@@ -93,9 +93,17 @@ mnt "$REPO/.git/host-objects" dir
 A+=(--ro-bind "$REPO/.git/objects" "$REPO/.git/host-objects" --bind "$GITOBJ" "$REPO/.git/objects")
 A+=(--ro-bind "$REPO/.git/refs" "$REPO/.git/refs")
 if [ -f "$REPO/.git/packed-refs" ]; then mnt "$REPO/.git/packed-refs" file; A+=(--ro-bind "$REPO/.git/packed-refs" "$REPO/.git/packed-refs"); fi
-gitdir="$(git -C "$WT" rev-parse --absolute-git-dir 2>/dev/null)" || die "$WT is not a git worktree"
-mnt "$WT" dir; mnt "$gitdir" dir
-A+=(--bind "$WT" "$WT" --bind "$gitdir" "$gitdir")
+# The worktree's git dir is the one prepare recorded, never what the
+# worktree's .git file (which the lane can rewrite) says now: a repointed
+# .git or commondir would otherwise bind the primary .git read-write.
+case "$GITDIR" in "$REPO/.git/worktrees/"*/*|*/../*|*/..) die "git dir $GITDIR is not a worktree of $REPO" ;;
+                  "$REPO/.git/worktrees/"?*) ;; *) die "git dir $GITDIR is not a worktree of $REPO" ;; esac
+{ [ -d "$GITDIR" ] && [ ! -L "$GITDIR" ]; } || die "git dir $GITDIR is missing or a symlink"
+[ "$(cat "$WT/.git" 2>/dev/null)" = "gitdir: $GITDIR" ] || die "$WT/.git no longer points at $GITDIR"
+[ "$(cat "$GITDIR/commondir" 2>/dev/null)" = "../.." ] || die "$GITDIR/commondir was rewritten"
+[ "$(cat "$GITDIR/gitdir" 2>/dev/null)" = "$WT/.git" ] || die "$GITDIR/gitdir no longer points at $WT"
+mnt "$WT" dir; mnt "$GITDIR" dir
+A+=(--bind "$WT" "$WT" --bind "$GITDIR" "$GITDIR")
 
 if [ "$mode" = check ]; then
   # The acceptor jail: the kit it runs, read-only, and nothing of the lane.
@@ -119,7 +127,7 @@ else
   for d in "${EGRESS[@]}"; do A+=(--ro-bind-try "$d" "$d"); done
   A+=(--bind "$(dirname "$DOC")" "$(dirname "$DOC")" --ro-bind "$RUN" "$RUN")
   A+=(--bind "$ROWCONF" "$CONF" --bind "$TX" "$CONF/projects")
-  { printf '127.0.0.1 localhost\n::1 localhost\n'; [ -n "$TUN_HOST" ] && printf '127.0.0.1 %s\n' "$TUN_HOST"; } >"$RUN/hosts" \
+  { printf '127.0.0.1 localhost\n::1 localhost\n'; if [ -n "$TUN_HOST" ]; then printf '127.0.0.1 %s\n' "$TUN_HOST"; fi; } >"$RUN/hosts" \
     || die "cannot write $RUN/hosts"
   A+=(--ro-bind "$RUN/hosts" /etc/hosts)
 fi

@@ -136,6 +136,18 @@ check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | gr
 check 'sandbox never binds the primary checkout; the repo is its tracked export' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qxF "$TMP/repo" && after --ro-bind 2 | grep -qxF "$TMP/root/repo"'
 check 'the export drops the eval kit and the handover stub, keeps the launcher' '[ ! -e "$TMP/root/repo/scripts/eval" ] && [ ! -e "$TMP/root/repo/handovers" ] && [ -f "$TMP/root/repo/scripts/claude-deepseek" ] && [ ! -e "$TMP/root/repo/.env" ]'
 check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
+sed 's/^LANE=.*/LANE=claudex/' "$TMP/root/rows/p01.env" >"$TMP/claudex.env"
+check 'a claudex row builds its jail (no API host to map)' 'bash "$HERE/sandbox.sh" argv "$TMP/claudex.env" >/dev/null 2>&1 && ! grep -q api "$TMP/root/run/p01/hosts"'
+cp "$wt/.git" "$TMP/dotgit"
+printf 'gitdir: %s\n' "$TMP/repo/.git" >"$wt/.git"
+check 'a worktree repointed at the primary .git is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
+cp "$TMP/dotgit" "$wt/.git"
+gd="$(git -C "$wt" rev-parse --absolute-git-dir)"
+cp "$gd/commondir" "$TMP/commondir"
+printf '%s\n' "$TMP/elsewhere" >"$gd/commondir"
+check 'a worktree whose commondir was rewritten is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
+cp "$TMP/commondir" "$gd/commondir"
+check 'the restored worktree builds its jail again (control)' 'bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
 echo secret >"$TMP/secret"
 if bwrap --ro-bind / / true 2>/dev/null; then
   R1=(bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env")
