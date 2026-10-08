@@ -2268,7 +2268,7 @@ _bwimc_jail_canon() {
 # many arguments; zsh: two-arg substitution), a relative target while the
 # CDPATH taint is set (the lookup may resolve elsewhere), or a target that is
 # not an existing, searchable directory. Args: ABS(0|1) TARGET BASECWD [EXTRA-TOKENS...];
-# a /dev/null redirection is no operand. Fail direction: only ever narrows trust.
+# a /dev/null redirection of fd 0-2 is no operand (a larger fd can be out of range). Fail direction: only ever narrows trust.
 _bwimc_cd_would_fail() {
     local cabs="$1" carg="$2" base="$3" x r
     shift 3
@@ -2277,7 +2277,7 @@ _bwimc_cd_would_fail() {
             # A /dev/null redirection cannot fail and is no operand; any other
             # one (a file target, or an fd dup of a possibly closed fd) stops
             # the cd from running.
-            [0-9]*[\<\>]/dev/null|[0-9]*\>\>/dev/null|\>/dev/null|\>\>/dev/null|\&\>/dev/null|\</dev/null) ;;
+            [0-2][\<\>]/dev/null|[0-2]\>\>/dev/null|\>/dev/null|\>\>/dev/null|\&\>/dev/null|\</dev/null) ;;
             *) return 0 ;;
         esac
     done
