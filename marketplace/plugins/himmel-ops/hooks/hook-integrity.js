@@ -1343,7 +1343,7 @@ function inertMask(text) {
 // CLAUDE_PROJECT_DIR/BASH_SOURCE, or a `$VAR` assigned in this file — which
 // resolves only through its assignments, each prefix checked the same way.
 const SELF_DIR_REFS = new Set(['BASH_SOURCE', 'CLAUDE_PROJECT_DIR']);
-const SIMPLE_REF = new RegExp(`^\\$(?:(${VAR_NAME})|\\{(${VAR_NAME})(?:\\[[0-9@*]+\\])?(?::?-(?:\\$0|\\$\\{0\\})?|%%?[^}]*|##?[^}]*)?\\})$`);
+const SIMPLE_REF = new RegExp(`^\\$(?:(${VAR_NAME})|\\{(${VAR_NAME})(?:\\[[0-9@*]+\\])?(:?-(?:\\$0|\\$\\{0\\})?|%/\\*)?\\})$`);
 
 // A `$( cd ... dirname ... pwd )` over $0/BASH_SOURCE and in-file refs that
 // themselves resolve to a modelled directory.
@@ -1362,6 +1362,7 @@ function assignedInside(v, fileDir, root, assigns, depth) {
 
 function isSelfDirSubst(prefix, fileDir, root, assigns, depth) {
   if (!/^\$\(/.test(prefix) || !/dirname|\bcd\b/.test(prefix)) return false;
+  if (/\bcd\s+(?:-P\s+)?["']?[\/.~]/.test(prefix)) return false;
   const rest = prefix
     .replace(/\$\{BASH_SOURCE(?:\[[0-9@*]+\])?\}|\$BASH_SOURCE\b|\$\{0\}|\$0\b/g, '')
     .replace(new RegExp(`\\$\\{?(${VAR_NAME})\\}?`, 'g'), (all, v) =>
@@ -1382,6 +1383,8 @@ function prefixBases(prefix, fileDir, root, assigns, depth) {
   const m = prefix.match(SIMPLE_REF);
   if (!m) return null;
   const name = m[1] || m[2];
+  // `%/*` is dirname only on a file path; on any other ref it names a parent.
+  if (m[3] === '%/*' && name !== 'BASH_SOURCE') return null;
   if (assigns[name]) {
     const bases = [];
     for (const value of assigns[name]) {

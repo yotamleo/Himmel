@@ -1624,6 +1624,18 @@ E
 sc_case "row 53 control: a source inside bash -c quotes still joins the closure (the any-position pass reads quoted text on purpose)" 1 0 <<'E'
 bash -c '. ../lib/armor.sh'
 E
+sc_case "row 54: a self-dir subst whose cd target is a literal absolute path denies" 0 1 <<'E'
+source "$(cd / && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 54: a self-dir subst whose cd target is a cwd-relative path denies" 0 1 <<'E'
+source "$(cd ../../.. && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 54: a suffix strip on CLAUDE_PROJECT_DIR names its parent, not the checkout" 0 1 <<'E'
+source "${CLAUDE_PROJECT_DIR%/*}/scripts/lib/armor.sh"
+E
+sc_case "row 54 control: BASH_SOURCE suffix strip is the file's own dirname" 1 0 <<'E'
+source "${BASH_SOURCE[0]%/*}/../lib/armor.sh"
+E
 }
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
