@@ -7,7 +7,7 @@ set -uo pipefail
 
 HOOK="$(cd "$(dirname "$0")" && pwd)/memory-bash-line-check.sh"
 FAILED=0
-SB="$(mktemp -d)" || exit 1; trap 'rm -rf "$SB"' EXIT
+SB="$(mktemp -d "${TMPDIR:-/tmp}/memory-bash-line-check.XXXXXX")" || exit 1; trap 'rm -rf "$SB"' EXIT
 export HOME="$SB"   # hermetic: never touches the real auto-memory
 MEM="$SB/.claude/projects/proj/memory"; mkdir -p "$MEM"
 IDX="$MEM/MEMORY.md"
