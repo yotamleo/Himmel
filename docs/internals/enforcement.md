@@ -4192,10 +4192,9 @@ sqlite read, so the per-session cost is one cheap subprocess.
 
 Never blocks, always exits 0. A station with no qmd installed (guard rc 2) is
 silent — adopters who do not use qmd are never nagged about a tool they never
-installed. The notice explicitly tells a *receiving* station NOT to reindex:
-it embeds ~50x slower than the host, so the fix is a host-side push
-(`scripts/luna/ship-index.sh`, armable via `qmd-cadence.sh arm --ship-to`),
-never a local rebuild.
+installed. The local guard advises refreshing the index with
+`scripts/luna/qmd-reindex.sh`. The hook's older receiver advisory is pending
+separate hook-integrity-authorized cleanup (HIMMEL-4896).
 
 **rc 2 is the ONLY silent non-verdict — and only while no qmd policy is
 declared.** Everything else that is not a freshness verdict is reported as
