@@ -2263,6 +2263,34 @@ _bwimc_jail_canon() {
     done
     printf '%s\n' "${cur:-/}"
 }
+# HIMMEL-4956: true when the shell would NOT land a literal `cd`/`pushd` on its
+# target, so the modelled cwd must not move: more than one operand (bash: too
+# many arguments; zsh: two-arg substitution), a relative target while the
+# CDPATH taint is set (the lookup may resolve elsewhere), or a target that is
+# not an existing, searchable directory. Args: ABS(0|1) TARGET BASECWD [EXTRA-TOKENS...];
+# a /dev/null redirection of fd 0-2 is no operand (a larger fd can be out of range). Fail direction: only ever narrows trust.
+_bwimc_cd_would_fail() {
+    local cabs="$1" carg="$2" base="$3" x r
+    shift 3
+    for x in "$@"; do
+        case "$x" in
+            # A /dev/null redirection cannot fail and is no operand; any other
+            # one (a file target, or an fd dup of a possibly closed fd) stops
+            # the cd from running.
+            [0-2][\<\>]/dev/null|[0-2]\>\>/dev/null|\>/dev/null|\>\>/dev/null|\&\>/dev/null|\</dev/null) ;;
+            *) return 0 ;;
+        esac
+    done
+    if [ "$cabs" = 0 ] && [ "${_bwimc_cdpath_taint:-0}" = 1 ]; then
+        case "$carg" in
+            .|..|./*|../*) ;;
+            *) return 0 ;;
+        esac
+    fi
+    r=$(_bwimc_resolve_abs "$carg" "$base") || return 1
+    [ -d "$r" ] && [ -x "$r" ] || return 0
+    return 1
+}
 _bwimc_ecwd_track() {
     local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
@@ -2355,6 +2383,12 @@ _bwimc_ecwd_track() {
                         [ "$tu" = pushd ] && _bwimc_ecwd_pushn=$((_bwimc_ecwd_pushn+1))
                         if [ "$cabs" = 0 ] && [ "$_bwimc_ecwd_unres" = 1 ]; then
                             :
+                        elif _bwimc_cd_would_fail "$cabs" "$carg" "$_bwimc_ecwd" "${toks[@]:$((i+1))}"; then
+                            # HIMMEL-4956: the shell fails this cd (extra
+                            # operand, CDPATH lookup, missing directory) and
+                            # the real cwd stays put - the target is no
+                            # evidence of where a later relative write lands.
+                            _bwimc_ecwd_unres=1
                         elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
                             _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
                         else
@@ -2832,6 +2866,18 @@ if [[ "$cmd" =~ $_bwimc_home_re ]]; then
 else
     case "$cmd" in
         *OME*|*"\$'"*) [[ "$(_bwimc_unq "$cmd")" =~ $_bwimc_home_re ]] && _bwimc_home_taint=1 ;;
+    esac
+fi
+
+# HIMMEL-4956: a CD-search-path assignment (or one inherited by the hook) makes
+# a relative `cd` search elsewhere; same order-blind taint as the HOME one.
+_bwimc_cdpath_taint=0
+_bwimc_cdpath_re='(^|[^A-Za-z0-9_$])CDPATH[+]?='
+if [ -n "${CDPATH:-}" ] || [[ "$cmd" =~ $_bwimc_cdpath_re ]]; then
+    _bwimc_cdpath_taint=1
+else
+    case "$cmd" in
+        *DPATH*|*"\$'"*) [[ "$(_bwimc_unq "$cmd")" =~ $_bwimc_cdpath_re ]] && _bwimc_cdpath_taint=1 ;;
     esac
 fi
 
