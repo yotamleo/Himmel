@@ -14,6 +14,10 @@
 // HIMMEL-4791: cloud sessions join as rows of role "cloud" (fleet-cloud.ts: the console bucket's cloud-route.jsonl
 // plus one cached GitHub read), each under the console its brief names, with its local shepherd leg under it.
 //
+// HIMMEL-4817: a row carries its lane and how it was found (laneOf: the launch record, never the model string), the
+// backend model, a cost row (a claudex leg priced from the codex weekly bank delta, never at Claude weights) and an
+// eval row (the per-lane quality measure); the fleet carries the one codex bank reading they were priced against.
+//
 // ponytail: each request re-folds every journal that grew since the last one (cached on the files' sizes), so a
 // fleet of very long journals costs a full read per poll (measured 2026-10-07 on 9 live sessions: 278 ms cold,
 // 202 ms warm); upgrade path: a per-file incremental fold (the SSE tail's offsets) once a fleet poll is slow.
@@ -24,6 +28,7 @@ import { agentState, initialView, reduce, type View } from "../agui-web/src/redu
 import { cloudRoutes, consoleOf, GH_WAIT_MS, readCloudPrs, type CloudPhase, type CloudRoute } from "./fleet-cloud.ts";
 import { createJournalMapper } from "./journal-mapper.ts";
 import { mergeJournalFiles, sessionFiles } from "./journal-merge.ts";
+import { backendModelOf, codexStartOf, costRowOf, evalRowOf, laneOf, readCodexBank, W, type CodexBank, type CostRow, type EvalRow, type Lane, type LaneFrom } from "./lane.ts";
 import { resolveJournal } from "./sse.ts";
 
 export const RECENT_MS = 60 * 60 * 1000;
@@ -40,17 +45,17 @@ export type FleetRow = {
   cloud: { url: string | null; phase: CloudPhase } | null;
   runtime: { startedAt: number; endedAt: number | null; elapsedMs: number } | null;
   console: string | null; live: boolean; lock: "held" | "released" | "unknown";
-  lane: "native" | "claudex" | "cloud";
+  lane: Lane; laneFrom: LaneFrom | null; backendModel: string | null; cost: CostRow | null; eval: EvalRow | null;
   // HIMMEL-4925: the doc's last Results marker (leg_tail_status), the doc's last write, and the PR's URL.
   marker: string | null; lastSeenAt: number | null; prUrl: string | null;
 };
 export type ProcessOrphan = { pid: number; owner: string; ageMin: number };
 export type Usage = {
-  calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number;
+  calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number | null;
   resident: number | null; ceiling: number; ceilingFrom: "autocompact" | "window"; fill: number | null;
 };
 // processOrphans (HIMMEL-4925): tick's stale shell-tool wrappers; null when the inventory could not be read.
-export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[]; processOrphans: ProcessOrphan[] | null };
+export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[]; processOrphans: ProcessOrphan[] | null; banks: { codex: CodexBank | null } };
 type CensusRow = { pid: string; name: string; model: string; doc: string; status: string; autocompact?: string; startedAt?: number | null };
 type Census = { census: Fleet["census"]; sessions: CensusRow[]; cloudRoutes?: string[]; manifests?: string[]; consoleDocs?: string[] };
 
@@ -71,8 +76,6 @@ export function graphOf(role: FleetRow["role"], doc: string): { parent: string |
   return { parent, predecessor: null };
 }
 
-// scripts/lanes/lib/burn-weights.sh's defaults: the price-weighted token-equivalent leg-burn.sh reports.
-const W = { input: 1, cacheRead: 0.1, cacheCreate: 1.25, output: 5 };
 const WINDOW_1M = 1_000_000, WINDOW = 200_000;
 type Tally = Omit<Usage, "costEq" | "ceiling" | "ceilingFrom" | "fill">;
 const count = (x: unknown) => (Number.isSafeInteger(x) && (x as number) >= 0 ? (x as number) : 0);
@@ -101,19 +104,19 @@ function tallyOf(lines: string[]): Tally | null {
 // claudex session honours over --autocompact); else the session's numeric --autocompact; else a Claude model's window.
 // A non-Claude model nobody declared a window for, or a fill past 100 % (so the ceiling is wrong), is not measured.
 const num = (s: string | undefined) => (s && /^\d+$/.test(s) ? Number(s) : 0);
-function finish(t: Tally | null, c: { autocompact: string; model: string; window?: string }): Usage | null {
+function finish(t: Tally | null, c: { autocompact: string; model: string; window?: string; priced?: boolean }): Usage | null {
   if (!t) return null;
   const declared = num(c.window), ac = num(c.autocompact);
   const claude = /claude|opus|sonnet|haiku|fable/i.test(c.model) || c.model === "";
   const ceiling = declared || ac || (/\[1m\]$/i.test(c.model) ? WINDOW_1M : WINDOW);
   const fill = t.resident === null || (!declared && !ac && !claude) ? null : Math.round((t.resident / ceiling) * 1000) / 10;
   return {
-    ...t, costEq: Math.round(t.input * W.input + t.cacheRead * W.cacheRead + t.cacheCreate * W.cacheCreate + t.output * W.output),
+    ...t, costEq: c.priced === false ? null : Math.round(t.input * W.input + t.cacheRead * W.cacheRead + t.cacheCreate * W.cacheCreate + t.output * W.output),
     ceiling, ceilingFrom: !declared && ac ? "autocompact" : "window",
     fill: fill !== null && fill > 100 ? null : fill,
   };
 }
-export const usageOf = (lines: string[], c: { autocompact: string; model: string; window?: string }) => finish(tallyOf(lines), c);
+export const usageOf = (lines: string[], c: { autocompact: string; model: string; window?: string; priced?: boolean }) => finish(tallyOf(lines), c);
 
 function runScript(script: string, env: Record<string, string | undefined>): Promise<Census> {
   return new Promise((ok) => {
@@ -175,7 +178,7 @@ async function cloudRows(logs: string[], env: Record<string, string | undefined>
       activity: null, lastEventAt: null, subagents: { total: 0, running: 0 }, failures: 0,
       parent: await consoleOf(r), predecessor: null, agents: [], usage: null, cloud: { url: p.url, phase: p.phase },
       runtime: p.phase === "merged" || p.phase === "closed" ? null : { startedAt: r.at, endedAt: null, elapsedMs: Math.max(0, now - r.at) },
-      console: await consoleOf(r), live: p.phase !== "merged" && p.phase !== "closed", lock: "unknown", lane: "cloud",
+      console: await consoleOf(r), live: p.phase !== "merged" && p.phase !== "closed", lock: "unknown", lane: "cloud", laneFrom: null, backendModel: null, cost: null, eval: null,
       marker: null, lastSeenAt: null, prUrl: null,
     };
   }));
@@ -225,7 +228,7 @@ function summarize(args: string): string {
   return typeof first === "string" ? first : "";
 }
 
-type Folded = { view: View; tally: Tally | null };
+type Folded = { view: View; tally: Tally | null; rounds: number[] };
 const folds = new Map<string, { key: string } & Folded>();
 async function fold(journal: string): Promise<Folded> {
   const { paths } = await sessionFiles(journal);
@@ -236,15 +239,27 @@ async function fold(journal: string): Promise<Folded> {
   const { lines } = await mergeJournalFiles(paths);
   const mapper = createJournalMapper();
   let view = initialView();
-  for (const l of lines) for (const e of mapper.pushLine(l)) view = reduce(view, e as never);
-  const out = { key, view, tally: tallyOf(lines) };
+  const rounds: number[] = []; // HIMMEL-4817: the findings count of every critic-panel report, in order
+  for (const l of lines) for (const e of mapper.pushLine(l)) {
+    const review = e.type === "STATE_SNAPSHOT" ? (e.snapshot as { review?: { findings?: unknown[] } } | undefined)?.review : undefined;
+    if (review) rounds.push(review.findings?.length ?? 0);
+    view = reduce(view, e as never);
+  }
+  const out = { key, view, tally: tallyOf(lines), rounds };
   folds.set(journal, out);
   return out;
 }
 
 export async function readFleet(opts: { script: string; env: Record<string, string | undefined>; home: string; now: number; redact: (s: string) => string }): Promise<Fleet> {
   const census = await runScript(opts.script, opts.env);
-  if (census.census === "unavailable") return { census: "unavailable", generatedAt: opts.now, sessions: [], processOrphans: await processOrphansOf(opts) };
+  // HIMMEL-4817: the codex probe's cache, read once per request; unreadable, stale or reset is null.
+  const ttl = Number(opts.env.CODEX_BANK_CACHE_TTL_SECONDS);
+  let codex: CodexBank | null = null;
+  try {
+    codex = readCodexBank(await readFile(opts.env.CODEX_BANK_CACHE || join(opts.home, ".himmel", "cache", "codex-bank.json"), "utf8"), opts.now, ttl > 0 ? ttl : undefined);
+  } catch { /* no probe cache: unmeasured */ }
+  const banks = { codex };
+  if (census.census === "unavailable") return { census: "unavailable", generatedAt: opts.now, sessions: [], processOrphans: await processOrphansOf(opts), banks };
   const lockOf = (file: string, doc: string, wrapped: boolean): Promise<FleetRow["lock"]> => {
     if (wrapped) return Promise.resolve("released");
     if (!/^- .*\b(?:lock|release-token)\b.*`[^`]+`/m.test(doc)) return Promise.resolve("unknown");
@@ -277,7 +292,6 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       const env = (await readFile(join(opts.env.CLAUDE_SESSIONS_PROC || "/proc", c.pid, "environ"), "utf8")).split("\0");
       launch = Object.fromEntries(env.filter((v) => v.includes("=")).map((v) => { const i = v.indexOf("="); return [v.slice(0, i), v.slice(i + 1)]; }));
     } catch { /* unavailable launch record: use doc or manifest */ }
-    const lane = /(?:^|\/)\.claude-codex\/?$/.test(launch.CLAUDE_CONFIG_DIR ?? "") ? "claudex" : "native";
     let rec: { sessionId?: unknown; status?: unknown; name?: unknown; startedAt?: unknown } = {};
     const configs = launch.CLAUDE_CONFIG_DIR ? [launch.CLAUDE_CONFIG_DIR] : [join(opts.home, ".claude"), join(opts.home, ".claude-codex")];
     for (const config of configs) {
@@ -286,7 +300,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     const run = typeof rec.sessionId === "string" ? rec.sessionId : null;
     const found = run ? await resolveJournal(opts.home, run) : null;
     const journal = found && "path" in found ? found.path : null;
-    let view: View | null = null, tally: Tally | null = null;
+    let view: View | null = null, tally: Tally | null = null, rounds: number[] = [];
     if (journal) {
       // Live if any of its files was written recently: a subagent can be busy while the main journal is quiet.
       const { paths } = await sessionFiles(journal);
@@ -294,31 +308,37 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       if (opts.now - Math.max(0, ...mtimes) > RECENT_MS && roleOf(c.name, c.doc) === "interactive") return null;
       // Only a listed session keeps its fold: a quiet one left off the page drops out of the cache below.
       seen.add(journal);
-      ({ view, tally } = await fold(journal));
+      ({ view, tally, rounds } = await fold(journal));
     }
     let doc = "", docAt = opts.now;
     if (c.doc) try { doc = await readFile(c.doc, "utf8"); docAt = (await stat(c.doc)).mtimeMs; } catch { /* moved or gone: no doc */ }
+    const { lane, laneFrom } = laneOf(launch, doc);
+    const backendModel = backendModelOf(lane, launch, c.model || null);
     const tools = view ? Object.values(view.tools).sort((a, b) => b.start - a.start) : [];
     const subs = view ? view.agentOrder.filter((id) => id !== "main") : [];
     const t0 = view?.t0;
     // A session started without -n still has the name the harness gave it.
     const name = c.name || (typeof rec.name === "string" ? rec.name : "") || `pid ${c.pid}`;
     const role = roleOf(name, c.doc);
+    const ticket = /^([A-Z][A-Z0-9]+-\d+)\b/.exec(name)?.[1] ?? null;
+    const ids = { session: run ?? `pid ${c.pid}`, leg: name, ticket, model: backendModel };
     const graph = graphOf(role, doc);
     // Accepted succession in the doc overrides the original launch environment.
     const parent = role === "console" ? null : graph.parent ?? plain(launch.HIMMEL_CONSOLE_NAME) ?? edges.get(c.doc)?.console ?? null;
     return {
       run, pid: Number(c.pid), name, role, model: c.model || null,
-      ticket: /^([A-Z][A-Z0-9]+-\d+)\b/.exec(name)?.[1] ?? null, pr: role === "leg" ? prOf(doc) : null,
+      ticket, pr: role === "leg" ? prOf(doc) : null,
       state: stateOf(c.status, rec.status === "busy"),
       activity: tools[0] && t0 !== undefined ? { tool: tools[0].name, summary: opts.redact(summarize(tools[0].args)).slice(0, 120), at: t0 + tools[0].start } : null,
       lastEventAt: view && t0 !== undefined ? t0 + view.elapsed : null,
       subagents: { total: subs.length, running: view ? subs.filter((id) => agentState(view!, id) === "running").length : 0 },
       failures: view?.failures.length ?? 0,
       ...graph, parent, console: role === "console" ? name : parent, live: c.status !== "WRAPPED", lock: role === "console" ? await lockOf(c.doc, doc, c.status === "WRAPPED") : "unknown",
-      lane, marker: c.status || null, lastSeenAt: c.doc && doc ? docAt : null, prUrl: null,
+      lane, laneFrom, backendModel, marker: c.status || null, lastSeenAt: c.doc && doc ? docAt : null, prUrl: null,
       agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
-      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model, window: launch.CLAUDE_CODE_MAX_CONTEXT_TOKENS }), cloud: null,
+      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model, window: launch.CLAUDE_CODE_MAX_CONTEXT_TOKENS, priced: lane === "native" }), cloud: null,
+      cost: tally ? costRowOf({ ...ids, lane, tally, codexStart: codexStartOf(launch), codexNow: lane === "claudex" ? codex : null }) : null,
+      eval: role === "leg" || role === "judge" ? evalRowOf({ ...ids, lane, rounds, view, doc }) : null,
       runtime: runtimeOf(rec.startedAt ?? c.startedAt, edges.get(c.doc)?.at ?? t0, doc, c.status === "WRAPPED", opts.now, docAt),
     };
   }));
@@ -335,7 +355,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
         state: wrapped ? "wrapped" : "unknown", activity: null, lastEventAt: null,
         subagents: { total: 0, running: 0 }, failures: 0, ...graphOf("console", doc),
         agents: [], usage: null, cloud: null, runtime: null, console: name, live: false,
-        lock: await lockOf(file, doc, wrapped), lane: "native",
+        lock: await lockOf(file, doc, wrapped), lane: "native", laneFrom: null, backendModel: null, cost: null, eval: null,
         marker: wrapped ? "WRAPPED" : null, lastSeenAt: s.mtimeMs, prUrl: null,
       });
     } catch { /* archived console moved or unreadable */ }
@@ -351,5 +371,5 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
   const sessions = [...rows.filter((r): r is FleetRow => r !== null), ...cloud];
   const slug = await repoSlugOf(join(dirname(opts.script), "../.."), opts.env);
   for (const r of sessions) r.prUrl = prUrlOf(slug, r.pr);
-  return { census: census.census, generatedAt: opts.now, sessions, processOrphans: await processOrphansOf(opts) };
+  return { census: census.census, generatedAt: opts.now, sessions, processOrphans: await processOrphansOf(opts), banks };
 }
