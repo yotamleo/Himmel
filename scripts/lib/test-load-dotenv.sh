@@ -59,10 +59,12 @@ printf 'HANDOVER_DIR=/first\nHANDOVER_DIR=/second\n' > "$REPO/.env"
 got=$( cd "$REPO" && unset HANDOVER_DIR && load_dotenv HANDOVER_DIR && printf '%s' "$HANDOVER_DIR" )
 assert_eq "T6 first match wins" "/first" "$got"
 
-# T7: default keys (no args) load HANDOVER_DIR + USER_SLUG.
-printf 'HANDOVER_DIR=/c/h\nUSER_SLUG=tester\n' > "$REPO/.env"
-got=$( cd "$REPO" && unset HANDOVER_DIR USER_SLUG && load_dotenv && printf '%s|%s' "$HANDOVER_DIR" "$USER_SLUG" )
-assert_eq "T7 default keys" "/c/h|tester" "$got"
+# T7: without an explicit allowlist, even the old defaults stay unset.
+printf 'HANDOVER_DIR=/c/h\nUSER_SLUG=tester\nTEST_ANTHROPIC_API_KEY=dummy\n' > "$REPO/.env"
+got=$( cd "$REPO" && unset HANDOVER_DIR USER_SLUG TEST_ANTHROPIC_API_KEY && load_dotenv && printf '%s|%s|%s' "${HANDOVER_DIR:-<unset>}" "${USER_SLUG:-<unset>}" "${TEST_ANTHROPIC_API_KEY:-<unset>}" )
+assert_eq "shared-loader-without-list-exports-nothing" "<unset>|<unset>|<unset>" "$got"
+got=$( unset HANDOVER_DIR USER_SLUG && load_dotenv --root "$REPO" && printf '%s|%s' "${HANDOVER_DIR:-<unset>}" "${USER_SLUG:-<unset>}" )
+assert_eq "shared-loader-root-without-list-exports-nothing" "<unset>|<unset>" "$got"
 
 # T8: only requested keys are loaded (others stay unset).
 printf 'HANDOVER_DIR=/c/h\nOTHER_KEY=should-not-load\n' > "$REPO/.env"

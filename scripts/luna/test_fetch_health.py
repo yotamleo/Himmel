@@ -52,6 +52,23 @@ class _StubOpener:
 
 
 class FetchHealthTests(unittest.TestCase):
+    def test_consumer_keys_still_load_without_unrelated_api_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".env").write_text(
+                "BITBUCKET_EMAIL=fixture@example.invalid\n"
+                "BITBUCKET_API_TOKEN=dummy\nFIRECRAWL_API_KEY=dummy-firecrawl\n"
+                "FETCH_HEALTH_REDDIT_URL=https://fixture.invalid\n"
+                "TEST_ANTHROPIC_API_KEY=dummy-unrelated\nUNRELATED_API_KEY=dummy-other\n"
+            )
+            loaded = fetch_health.load_repo_env({}, root)
+            self.assertEqual(loaded["BITBUCKET_EMAIL"], "fixture@example.invalid")
+            self.assertEqual(loaded["BITBUCKET_API_TOKEN"], "dummy")
+            self.assertEqual(loaded["FIRECRAWL_API_KEY"], "dummy-firecrawl")
+            self.assertEqual(loaded["FETCH_HEALTH_REDDIT_URL"], "https://fixture.invalid")
+            self.assertNotIn("TEST_ANTHROPIC_API_KEY", loaded)
+            self.assertNotIn("UNRELATED_API_KEY", loaded)
+
     def test_http_classifier_covers_exact_status_taxonomy(self):
         valid = lambda body: body == b"ok"
         self.assertEqual(fetch_health.classify_http(fetch_health.HttpResult(200, b"ok"), auth_required=True, valid_body=valid).status, "ok")

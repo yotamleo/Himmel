@@ -92,6 +92,14 @@ done
 out5c="$(env -u CR_REQUIRE_CROSS_MODEL HIMMEL_REPO="$bare" bash "$run_bare" CR_REQUIRE_CROSS_MODEL | tail -1)"
 check "$out5c" "pr-check-env: CR_REQUIRE_CROSS_MODEL_NORMALISED=0" "T5c normalised=0 for truly empty"
 
+# Only policy keys may be requested: a syntactically valid secret name must
+# fail before loading or printing any value (HIMMEL-4910).
+printf 'TEST_ANTHROPIC_API_KEY=dummy-test\n' >> "$fixture/.env"
+rc_secret=0
+out_secret="$(env -u TEST_ANTHROPIC_API_KEY HIMMEL_REPO="$fixture" bash "$run" TEST_ANTHROPIC_API_KEY 2>"$tmp/err-secret.txt")" || rc_secret=$?
+check "$rc_secret" "2" "unlisted key refused before loading"
+check "$out_secret" "" "unlisted key never printed"
+
 # 6. Invalid variable name exits 2 (and prints nothing to stdout).
 out6="$(HIMMEL_REPO="$fixture" bash "$run" 'bad name' 2>"$tmp/err6.txt")"
 rc6=$?

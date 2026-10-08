@@ -3807,6 +3807,23 @@ EOF
     fi
 }
 
+# C57 — every loader must name its own keys; diagnostics never print values.
+check_c57_dotenv_allowlists() {
+    local audit="$REPO_ROOT/scripts/lib/dotenv-audit.mjs" rows sev msg node_bin
+    if [ ! -f "$audit" ]; then
+        emit WARN C57-dotenv-allowlists "dotenv consumer audit is missing" "run himmel-update"
+        return
+    fi
+    if ! node_bin="$(resolve_node 2>/dev/null)" || ! rows="$("$node_bin" "$audit" "$REPO_ROOT" 2>/dev/null)"; then
+        emit WARN C57-dotenv-allowlists "could not audit .env consumer allowlists" "check the Node runtime and scripts/lib/dotenv-audit.mjs"
+        return
+    fi
+    while IFS=$'\t' read -r sev msg; do
+        [ -n "$sev" ] || continue
+        emit "$sev" C57-dotenv-allowlists "$msg" "each loader must name its consumed keys; unused names can be intentional (for example a future API lane)"
+    done <<< "$rows"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3865,6 +3882,7 @@ check_c52_graphify_ollama
 check_c53_vm_mode
 check_c54_hook_copy_reaper
 check_c55_project_mode
+check_c57_dotenv_allowlists
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 
