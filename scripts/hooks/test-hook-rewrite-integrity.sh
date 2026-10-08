@@ -1518,5 +1518,317 @@ else
   bad "row 46: dispatched closure gaps: $(cat "$T/closure.out")"
 fi
 
+# HIMMEL-4584 — a sourced path resolves only through the ref's real value.
+# HIMMEL-4585 ships only the fail-closed half: the source scan reads quoted
+# spans and heredoc bodies as code, exactly as before, so a `source` inside
+# them still denies (judge j2149c: a text mask for "this is data" fails open by
+# construction — HIMMEL-4998 owns solving the false denies at a non-text
+# layer). Unit rows against sourcedClosure: a throwaway root with one pinnable
+# lib, one member file per case.
+SC="$T/sc"
+mkdir -p "$SC/scripts/hooks" "$SC/scripts/lib"
+printf '#!/usr/bin/env bash\n: lib\n' > "$SC/scripts/lib/armor.sh"
+sc_case() {   # <label> <want libs> <want unresolved> — the member text is on stdin
+  cat > "$SC/scripts/hooks/m.sh"
+  local got
+  got="$(node -e '
+const m = require(process.argv[1]);
+const r = m.sourcedClosure(process.argv[2] + "/scripts/hooks/m.sh", process.argv[2]);
+console.log(r.libs.length + " " + r.unresolved.length);
+' "$HOOKS_DIR/hook-integrity.js" "$SC" 2>&1)"
+  if [ "$got" = "$2 $3" ]; then ok "$1"; else bad "$1: want libs/unresolved '$2 $3', got '$got'"; fi
+}
+# shellcheck disable=SC2016 # literal shell text for the fixtures, expanded by their reader
+{
+# Row 49 on origin/main denied these (quoted text is scanned). An earlier
+# revision of this PR masked them as data; that mask was fail-open (j2149c), so
+# the rows now pin the deny.
+sc_case "row 49: a source inside a single-quoted string still denies (scanned as code, as on main)" 0 1 <<'E'
+echo 'if source "$MISSING"'
+E
+sc_case "row 49: a source inside a double-quoted string still denies" 0 1 <<'E'
+echo "then source $MISSING_LIB"
+E
+sc_case "row 49: a source inside a quoted heredoc body still denies (both lines)" 0 2 <<'E'
+cat <<'EOT'
+source "$MISSING"
+. "$ALSO_MISSING"
+EOT
+E
+sc_case "row 49: a source in plain text of an unquoted heredoc body still denies" 0 1 <<'E'
+cat <<-EOT
+	source "$MISSING"
+	EOT
+E
+sc_case "row 49 control: a real command-position source of an unresolvable ref denies" 0 1 <<'E'
+source "$MISSING"
+E
+sc_case "row 49 control: a source after a heredoc ends is a real statement" 0 1 <<'E'
+cat <<'EOT'
+text
+EOT
+source "$MISSING"
+E
+sc_case "row 49 control: a source inside a command substitution in a double-quoted string denies" 0 1 <<'E'
+x="$(. "$MISSING")"
+E
+sc_case "row 49 control: a source inside a command substitution in an unquoted heredoc body denies" 0 1 <<'E'
+cat <<EOT
+$(. "$MISSING")
+EOT
+E
+sc_case "row 49 control: an unterminated quote scans as before and denies" 0 1 <<'E'
+echo 'oops
+source "$MISSING"
+E
+sc_case "row 50: a command-substitution prefix that is not a self-dir form denies" 0 1 <<'E'
+source "$(printf /outside)/scripts/lib/armor.sh"
+E
+sc_case "row 50: a ref neither assigned in-file nor a known self-dir form denies" 0 1 <<'E'
+source "$NOWHERE_REF/scripts/lib/armor.sh"
+E
+sc_case "row 50: a ref assigned a non-self-dir command substitution denies" 0 1 <<'E'
+X="$(printf /outside)"
+source "$X/scripts/lib/armor.sh"
+E
+sc_case "row 50: an assigned ref resolves only through its assignment (no file-dir or root fallback)" 0 1 <<'E'
+X="$(dirname "$0")/nowhere"
+source "$X/scripts/lib/armor.sh"
+E
+sc_case "row 50 control: a ref assigned a self-dir form resolves" 1 0 <<'E'
+D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$D/../lib/armor.sh"
+E
+sc_case "row 50 control: a dirname-of-zero prefix resolves" 1 0 <<'E'
+source "$(dirname "$0")/../lib/armor.sh"
+E
+sc_case "row 50 control: CLAUDE_PROJECT_DIR resolves" 1 0 <<'E'
+source "${CLAUDE_PROJECT_DIR}/scripts/lib/armor.sh"
+E
+sc_case "row 51: comment-looking lines inside a quoted string do not hide a later real source" 0 1 <<'E'
+echo 'x
+# '
+source "$MISSING"
+echo 'y
+# '
+E
+sc_case "row 52: a self-dir subst over a ref assigned an absolute path denies (cd resolves outside the checkout)" 0 1 <<'E'
+X=/outside; source "$(cd $X && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 52 control: a self-dir subst over a ref assigned a self-dir form resolves" 1 0 <<'E'
+X="$(dirname "$0")"; source "$(cd "$X" && pwd)/../lib/armor.sh"
+E
+sc_case "row 53: a parameter-expansion operator on CLAUDE_PROJECT_DIR is not the plain value" 0 1 <<'E'
+source "${CLAUDE_PROJECT_DIR:+/outside}/scripts/lib/armor.sh"
+E
+sc_case "row 53: a parameter-expansion operator on BASH_SOURCE inside a self-dir subst denies" 0 1 <<'E'
+source "$(dirname ${BASH_SOURCE:+/outside})/../lib/armor.sh"
+E
+sc_case "row 53 control: an empty-default CLAUDE_PROJECT_DIR resolves" 1 0 <<'E'
+source "${CLAUDE_PROJECT_DIR:-}/scripts/lib/armor.sh"
+E
+sc_case "row 53 control: a source inside bash -c quotes still joins the closure (the any-position pass reads quoted text on purpose)" 1 0 <<'E'
+bash -c '. ../lib/armor.sh'
+E
+sc_case "row 54: a self-dir subst whose cd target is a literal absolute path denies" 0 1 <<'E'
+source "$(cd / && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 54: a self-dir subst whose cd target is a cwd-relative path denies" 0 1 <<'E'
+source "$(cd ../../.. && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 54: a suffix strip on CLAUDE_PROJECT_DIR names its parent, not the checkout" 0 1 <<'E'
+source "${CLAUDE_PROJECT_DIR%/*}/scripts/lib/armor.sh"
+E
+sc_case "row 54 control: BASH_SOURCE suffix strip is the file's own dirname" 1 0 <<'E'
+source "${BASH_SOURCE[0]%/*}/../lib/armor.sh"
+E
+sc_case "row 55: a dirname subst with no self reference denies" 0 1 <<'E'
+source "$(dirname /)/scripts/lib/armor.sh"
+E
+sc_case "row 55: a bare cd subst with no self reference denies" 0 1 <<'E'
+source "$(cd && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 55 control: a nested-quote dirname of $0 resolves" 1 0 <<'E'
+source "$(cd "$(dirname "$0")" && pwd)/../lib/armor.sh"
+E
+sc_case "row 56: an apostrophe in a comment after a case-arm paren does not hide a later real source" 0 1 <<'E'
+case $x in
+x)# don't
+source "$MISSING" ;;
+y)# won't
+esac
+E
+sc_case "row 56: the same with a command-substitution operand outside the checkout" 0 1 <<'E'
+case $x in
+x)# don't
+source "$(printf /outside)/scripts/lib/armor.sh" ;;
+y)# won't
+esac
+E
+sc_case "row 56: a comment after a redirection operator is a comment" 0 1 <<'E'
+true >/dev/null <# don't
+source "$MISSING"
+true >/dev/null <# won't
+E
+sc_case "row 57: a left shift inside (( )) does not hide a later real source" 0 1 <<'E'
+(( n = 1 << b ))
+source "$MISSING"
+b
+E
+sc_case "row 57: a left shift inside an arithmetic substitution does not hide a later real source" 0 1 <<'E'
+x=$(( 1 << b ))
+source "$MISSING"
+b
+E
+# Row 58/62: every way to run quoted text as code (the j2149 and j2149b shapes).
+sc_case "row 58: eval of a double-quoted string runs its source" 0 1 <<'E'
+eval "true; source \"$MISSING\""
+E
+sc_case "row 58: bash -c of a single-quoted string runs its source" 0 1 <<'E'
+bash -c 'true; source "$MISSING"'
+E
+sc_case "row 58: sh -lc of a double-quoted string runs its source" 0 1 <<'E'
+sh -lc "true; source $MISSING"
+E
+sc_case "row 58: a path-qualified shell -c runs its source" 0 1 <<'E'
+/bin/bash -c 'true; source "$MISSING"'
+E
+sc_case "row 58: a flag cluster after c still runs its source" 0 1 <<'E'
+bash -cl 'true; source "$MISSING"'
+E
+sc_case "row 58: eval after -- runs its source" 0 1 <<'E'
+eval -- 'true; source "$MISSING"'
+E
+sc_case "row 62: a shell option with an argument before -c runs its source" 0 1 <<'E'
+bash -o pipefail -c 'true; source "$MISSING"'
+E
+sc_case "row 62: bash -O extglob -c runs its source" 0 1 <<'E'
+bash -O extglob -c 'true; source "$MISSING"'
+E
+sc_case "row 62: a line continuation before the string still runs its source" 0 1 <<'E'
+bash -c \
+  'true; source "$MISSING"'
+E
+sc_case "row 62: a quoted \$BASH -c runs its source" 0 1 <<'E'
+"$BASH" -c 'true; source "$MISSING"'
+E
+sc_case "row 62: mksh -c runs its source" 0 1 <<'E'
+mksh -c 'true; source "$MISSING"'
+E
+sc_case "row 62: a trap string runs its source" 0 1 <<'E'
+trap 'true; source "$MISSING"' EXIT
+E
+sc_case "row 62: a variable later eval-ed runs its source" 0 1 <<'E'
+cmd='true; source "$MISSING"'
+eval "$cmd"
+E
+sc_case "row 62: a heredoc fed to bash runs its source" 0 1 <<'E'
+bash <<EOT
+source "$MISSING"
+EOT
+E
+sc_case "row 62: echo piped into bash runs its source" 0 1 <<'E'
+echo 'true; source "$MISSING"' | bash
+E
+sc_case "row 62: a plain assignment of source text still denies (cannot prove it is never run)" 0 1 <<'E'
+msg='true; source "$MISSING"'
+echo "$msg"
+E
+sc_case "row 62: cat of a heredoc into a file still denies" 0 1 <<'E'
+cat > out.txt <<EOT
+true; source "$MISSING"
+EOT
+E
+sc_case "row 58: echo of the same string still denies" 0 1 <<'E'
+echo "true; source \"$MISSING\""
+E
+sc_case "row 59: a heredoc with a double-quoted delimiter still denies" 0 1 <<'E'
+cat <<"EOT"
+source "$MISSING"
+EOT
+E
+sc_case "row 59: a heredoc with a backslash delimiter still denies" 0 1 <<'E'
+cat <<\EOT
+source "$MISSING"
+EOT
+E
+sc_case "row 60: a source in a backtick span inside double quotes runs" 0 1 <<'E'
+x="`true; source $MISSING`"
+E
+sc_case "row 60: a source in a backtick span in an unquoted heredoc body runs" 0 1 <<'E'
+cat <<EOT
+`true; source $MISSING`
+EOT
+E
+sc_case "row 61 control: a real assignment after a quoted word on the same line is one" 1 0 <<'E'
+echo 'x'; D="$(dirname "$0")"
+source "$D/../lib/armor.sh"
+E
+# Row 63 — judge j2149c: 13 ways a text mask passed a quoted `source` as data
+# while Bash ran it. With no mask each one denies.
+sc_case "row 63 a01: a brace group piped into bash" 0 1 <<'E'
+{ echo '
+source $X/y.sh'
+} | bash
+E
+sc_case "row 63 a02: a backtick span that echoes the text, then eval" 0 1 <<'E'
+x=`:;echo '; source $X/y.sh'`
+eval "$x"
+E
+sc_case "row 63 a03: printf -v into a variable, then eval" 0 1 <<'E'
+cmd='; source $X/y.sh'
+printf -v run '%s' "$cmd"
+eval "$run"
+E
+sc_case "row 63 a04: echo into a file, then bash the file" 0 1 <<'E'
+echo '; source $X/y.sh' > /tmp/zz.sh
+bash /tmp/zz.sh
+E
+sc_case "row 63 a05: cat a heredoc into a file, then bash the file" 0 1 <<'E'
+cat > /tmp/zz.sh <<'EOF'
+source $X/y.sh
+EOF
+bash /tmp/zz.sh
+E
+sc_case "row 63 a06: echo into a bash process substitution on fd 3" 0 1 <<'E'
+exec 3> >(bash)
+echo '; source $X/y.sh' >&3
+E
+sc_case "row 63 a07: a colon default assigns the text, then eval" 0 1 <<'E'
+: "${x:=; source $X/y.sh}"
+eval "$x"
+E
+sc_case "row 63 a08: a function shadows echo with eval" 0 1 <<'E'
+echo() { eval "$*"; }
+echo '; source $X/y.sh'
+E
+sc_case "row 63 a09: PS4 with set -x runs a command substitution" 0 1 <<'E'
+PS4='$(source $X/y.sh)'
+set -x
+:
+E
+sc_case "row 63 a10: an arithmetic test subscript runs a command substitution" 0 1 <<'E'
+x='a[$(source $X/y.sh)]'
+[[ "$x" -eq 0 ]]
+E
+sc_case "row 63 a11: the prompt-expansion operator runs a command substitution" 0 1 <<'E'
+x='$(source $X/y.sh)'
+echo "${x@P}"
+E
+sc_case "row 63 a12: an exported variable consumed by another script" 0 1 <<'E'
+export CMD='; source $X/y.sh'
+bash ./other.sh
+E
+sc_case "row 63 a13: cat a heredoc into a bash process substitution on fd 3" 0 1 <<'E'
+exec 3> >(bash)
+cat >&3 <<'EOF'
+source $X/y.sh
+EOF
+E
+sc_case "row 63 control: a bare source of the same unresolvable ref denies" 0 1 <<'E'
+source $X/y.sh
+E
+}
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

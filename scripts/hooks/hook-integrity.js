@@ -1218,9 +1218,79 @@ function firstShellWord(s) {
 function splitRef(expr) {
   const e = unquoteWord(expr);
   const m = e.match(LAST_REF);
-  if (!m) return { ref: null, tail: e };
-  const v = m[0].match(new RegExp(`\\$\\{?(${VAR_NAME})[^}]*\\}?$`));
-  return { ref: v ? v[1] : null, tail: e.slice(m[0].length).replace(/^\/+/, '') };
+  if (!m) return { prefix: '', tail: e };
+  return { prefix: m[0], tail: e.slice(m[0].length).replace(/^\/+/, '') };
+}
+
+// The directories a sourced path's prefix can stand for, or null when its real
+// value cannot be modelled (HIMMEL-4584). A prefix is one of: nothing (a
+// literal relative tail), a self-dir `$( ... )` (dirname of $0/BASH_SOURCE),
+// CLAUDE_PROJECT_DIR/BASH_SOURCE, or a `$VAR` assigned in this file — which
+// resolves only through its assignments, each prefix checked the same way.
+const SELF_DIR_REFS = new Set(['BASH_SOURCE', 'CLAUDE_PROJECT_DIR']);
+const SIMPLE_REF = new RegExp(`^\\$(?:(${VAR_NAME})|\\{(${VAR_NAME})(?:\\[[0-9@*]+\\])?(:?-(?:\\$0|\\$\\{0\\})?|%/\\*)?\\})$`);
+
+// A `$( cd ... dirname ... pwd )` over $0/BASH_SOURCE and in-file refs that
+// themselves resolve to a modelled directory.
+function within(base, dir) {
+  const r = path.relative(dir, base);
+  return r === '' || (!r.startsWith('..') && !path.isAbsolute(r));
+}
+
+// An assigned ref inside a self-dir subst counts only when every base it can
+// take stays inside the checkout or the file's own directory.
+function assignedInside(v, fileDir, root, assigns, depth) {
+  if (!assigns[v]) return false;
+  const b = prefixBases(`$${v}`, fileDir, root, assigns, depth + 1);
+  return !!b && b.every((x) => within(x, root) || within(x, fileDir));
+}
+
+function isSelfDirSubst(prefix, fileDir, root, assigns, depth) {
+  if (!/^\$\(/.test(prefix) || !/dirname|\bcd\b/.test(prefix)) return false;
+  if (/\bcd\s+(?:-P\s+)?["']?[\/.~]/.test(prefix)) return false;
+  // The subst must read a self reference; `$(dirname /)` or a bare `cd` names no file.
+  let selfRef = false;
+  const rest = prefix
+    .replace(/\$\{BASH_SOURCE(?:\[[0-9@*]+\])?\}|\$BASH_SOURCE\b|\$\{0\}|\$0\b/g, () => { selfRef = true; return ''; })
+    .replace(new RegExp(`\\$\\{?(${VAR_NAME})\\}?`, 'g'), (all, v) => {
+      if (!assignedInside(v, fileDir, root, assigns, depth)) return all;
+      selfRef = true;
+      return '';
+    })
+    .replace(/2>\/dev\/null|\bcd\s+-P\b|\b(?:dirname|cd|pwd)\b|&&|\$\(|[)\s;.\/-]/g, '');
+  return selfRef && rest === '';
+}
+
+// ponytail: a positional parameter ($1..$9) is caller-supplied and its real
+// value is not modelled, so it resolves like a self-dir; scripts/lib/go-gate.sh
+// sources through one. Upgrade path: pin that call site and drop this form.
+const POSITIONAL_REF = /^\$(?:[1-9]|\{[1-9][^}]*\})$/;
+
+function prefixBases(prefix, fileDir, root, assigns, depth) {
+  if (depth > 4) return null;
+  if (prefix === '' || POSITIONAL_REF.test(prefix)) return [fileDir, root];
+  if (isSelfDirSubst(prefix, fileDir, root, assigns, depth)) return [fileDir, root];
+  const m = prefix.match(SIMPLE_REF);
+  if (!m) return null;
+  const name = m[1] || m[2];
+  // `%/*` is dirname only on a file path; on any other ref it names a parent.
+  if (m[3] === '%/*' && name !== 'BASH_SOURCE') return null;
+  if (assigns[name]) {
+    const bases = [];
+    for (const value of assigns[name]) {
+      if (POSITIONAL_REF.test(unquoteWord(value))) { bases.push(fileDir, root); continue; }
+      const sp = splitRef(value);
+      const own = sp.prefix.match(SIMPLE_REF);
+      // `X="${X:-}"` re-reads the environment value, which is the unassigned meaning.
+      const inner = own && (own[1] || own[2]) === name
+        ? (SELF_DIR_REFS.has(name) ? [fileDir, root] : null)
+        : prefixBases(sp.prefix, fileDir, root, assigns, depth + 1);
+      if (!inner) return null;
+      for (const b of inner) bases.push(path.resolve(b, sp.tail));
+    }
+    return bases;
+  }
+  return SELF_DIR_REFS.has(name) ? [fileDir, root] : null;
 }
 
 function isFile(candidate) {
@@ -1231,29 +1301,26 @@ function isFile(candidate) {
   }
 }
 
-// ponytail: resolves by the literal path tail, not the shell value of its prefix
-// (a pinned member sourcing an out-of-tree prefix would verify the in-tree twin),
-// HIMMEL-4584 resolves through the ref's own assignment only.
+// -> { hits: [abs], bad } ; `bad` is set when a spelling's prefix has no
+// modelled real value (see prefixBases), which the caller treats as unresolved.
 function resolveSourceArg(arg, fileDir, root, assigns) {
   const bare = unquoteWord(arg).match(BARE_VAR);
   const exprs = bare
     ? (assigns[bare[1]] || []).filter((v) => /\.sh$/.test(unquoteWord(v)))
     : [arg];
   const found = new Set();
+  let bad = false;
   for (const expr of exprs) {
-    const { ref, tail } = splitRef(expr);
+    const { prefix, tail } = splitRef(expr);
     if (!/\.sh$/.test(tail)) continue;
-    const bases = [fileDir, root];
-    for (const value of (ref && assigns[ref]) || []) {
-      const t = splitRef(value).tail;
-      bases.push(path.resolve(fileDir, t), path.resolve(root, t));
-    }
+    const bases = prefixBases(prefix, fileDir, root, assigns, 0);
+    if (!bases) { bad = true; continue; }
     for (const base of bases) {
       const candidate = path.resolve(base, tail);
       if (isFile(candidate)) found.add(candidate);
     }
   }
-  return [...found];
+  return { hits: [...found], bad };
 }
 
 // sourcedClosure(file, root) -> { libs: [abs], unresolved: [statement] } for
@@ -1279,14 +1346,14 @@ function sourcedClosure(file, root) {
         if ([fileDir, root].some((b) => isFile(path.resolve(b, word)))) unresolved.push(line.trim());
         continue;
       }
-      const hits = resolveSourceArg(arg, fileDir, root, assigns);
-      if (!hits.length) unresolved.push(line.trim());
+      const { hits, bad } = resolveSourceArg(arg, fileDir, root, assigns);
+      if (bad || !hits.length) unresolved.push(line.trim());
       for (const h of hits) libs.add(h);
     }
     for (const m of line.matchAll(SOURCE_ANY)) {
       const arg = firstShellWord(line.slice(m.index + m[0].length));
       if (!/\.sh$/.test(unquoteWord(arg))) continue;
-      for (const h of resolveSourceArg(arg, fileDir, root, assigns)) libs.add(h);
+      for (const h of resolveSourceArg(arg, fileDir, root, assigns).hits) libs.add(h);
     }
   }
   return { libs: [...libs], unresolved };
