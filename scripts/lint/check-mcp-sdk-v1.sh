@@ -11,7 +11,9 @@
 #   - npm / bun / yarn / pnpm lockfiles : any v1 entry, direct OR transitive
 #   - source (.ts .tsx .js .jsx .mjs .cjs .mts .cts) : import / require /
 #     dynamic import of the v1 specifier. A mere mention (a test asserting
-#     its absence, prose, a comment) is not a hit.
+#     its absence, prose) is not a hit. The scan is line-based and does not
+#     parse comments: commented-out import syntax is refused too (fail-closed;
+#     delete the dead line).
 #
 # Vendored third-party bundles (any `*/.obsidian/plugins/*`) are compiled
 # upstream output: the source/manifest rules do not apply, but a bundle that
@@ -52,7 +54,7 @@ scan "v1 lock entry" "$V1" -- '*package-lock.json' '*npm-shrinkwrap.json' '*bun.
 scan "v1 import" "(from|import|require)[[:space:]]*[(]?[[:space:]]*['\"]${V1}['\"/]" \
     -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.mts' '*.cts' "${VENDOR_X[@]}"
 # A specifier alone on its own line: the multiline require(\n'...')/import(\n'...') form.
-scan "v1 import" "^[[:space:]]*['\"]${V1}(/[^'\"]*)?['\"][[:space:]]*[,)]*[[:space:]]*$" \
+scan "v1 import" "^[[:space:]]*['\"]${V1}(/[^'\"]*)?['\"][[:space:]]*[,)]*[[:space:]]*(//.*|/[*].*)?$" \
     -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.mts' '*.cts' "${VENDOR_X[@]}"
 scan "vendored bundle embeds v1 SDK" "node_modules/${V1}[/@]" -- '*/.obsidian/plugins/*' '.obsidian/plugins/*'
 
