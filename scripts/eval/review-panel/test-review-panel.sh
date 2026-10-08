@@ -191,6 +191,12 @@ eq "unscored: fewer bullets than a heading declares is unscored" "$(metric "$TMP
 printf '# Critic Panel Review (1/1 critics responded)\n\n## Critical Issues (0 found)\n\n## Important Issues (1 found)\n- [codex-1]: off-by-one with no citation\n\n## Suggestions (0 found)\n' > "$O4b/$LA.md"
 python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA" --no-ledger --json "$TMP/s4d.json" >/dev/null 2>&1
 eq "unscored: a declared bullet without [file:line] is unscored" "$(metric "$TMP/s4d.json" unscored)" "1"
+# A finding-shaped bullet BULLET rejects, under a heading whose count omits it
+# ((0 found) + one malformed bullet), would still count 0 == 0: flag it apart
+# from the declared count.
+printf '# Critic Panel Review (1/1 critics responded)\n\n## Critical Issues (0 found)\n\n## Important Issues (0 found)\n- [codex-1]: off-by-one with no citation\n\n## Suggestions (0 found)\n' > "$O4b/$LA.md"
+python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA" --no-ledger --json "$TMP/s4e.json" >/dev/null 2>&1
+eq "unscored: a malformed bullet the heading count omits is unscored" "$(metric "$TMP/s4e.json" unscored)" "1"
 
 # A transcript that touches the key is flagged and the run marked inconclusive.
 O5="$TMP/out5"; mkdir -p "$O5"
