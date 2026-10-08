@@ -261,7 +261,7 @@ if [ "$mode" = in-container ]; then
   case "$crc" in
     0) ok "clone, tarball and AUR installs CONVERGED" ;;
     3) bad "converge-check refused the run as VACUOUS (rc 3)" "$(tail -2 /tmp/converge.log | tr '\n' '|')" ;;
-    *) bad "the three installs did not converge (rc $crc)" "$(tail -3 /tmp/converge.log | tr '\n' '|')" ;;
+    *) bad "the three installs did not converge (rc $crc)" "$(grep -E '^[-+]' /tmp/converge.log | head -12 | tr '\n' '|')" ;;
   esac
   # Every lib a hook in the installed project tree sources must be installed with it (HIMMEL-4994).
   [ -f "$w/target-aur/scripts/hooks/lib/guard-unwrap.sh" ] && ok "the installed project tree carries scripts/hooks/lib/guard-unwrap.sh" || bad "the installed project tree lacks scripts/hooks/lib/guard-unwrap.sh"
@@ -277,6 +277,9 @@ if [ "$mode" = in-container ]; then
   echo "CLAUDE_PROJECT_DIR=$w/target-aur" >> /tmp/hook.env
   cd "$w/target-aur" && hooks_fail_open project "$w/target-aur/.claude/settings.json" /tmp/hook.env
 
+  # uninstall's plugin step halts the teardown when no claude CLI resolves. The container has none and this
+  # test is about hook/settings unwiring, so a stub that reports no plugins and accepts the rest stands in.
+  printf '#!/bin/sh\ncase "$*" in *list*) echo "[]" ;; esac\nexit 0\n' > /usr/local/bin/claude; chmod 755 /usr/local/bin/claude
   su builder -c "HOME=$w/home-aur $w/home-aur/.local/bin/himmelctl uninstall --yes </dev/null" >/tmp/uninstall.log 2>&1 \
     && ok "himmelctl uninstall via the per-user launcher works after pacman -R (~/.himmel/uninstall/ fallback)" || bad "uninstall after removal failed" "$(grep -E "ERROR|FAIL|halt|HALT|refus" /tmp/uninstall.log | head -6 | tr "\n" "|")"
   ! jq -e '[(.hooks // {}) | .[] | length] | add // 0 | . > 0' "$w/home-aur/.claude/settings.json" >/dev/null 2>&1 \
