@@ -636,5 +636,52 @@ check_both "94m fromW: cd primary; cd wt 2>&9; echo x > a.txt (dup of a closed f
 check_both "94n fromW: cd primary; cd wt 999999999999999999999>/dev/null; echo x > a.txt (out-of-range fd) denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt 999999999999999999999>/dev/null; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# 95 (HIMMEL-4976): four more cd forms the shell does NOT land where the hook
+# models. Each deny row is paired with a REAL bash run (payload cwd = wt) that
+# proves the write lands in the primary, so the deny is not a guess.
+_real_lands() {  # _real_lands <label> <file-in-primary> <command>
+    local label="$1" file="$2" cmd="$3" got
+    printf 'orig\n' > "$file"
+    ( cd "$FIX/wt" && timeout 20 bash -c "$cmd" ) >/dev/null 2>&1
+    got=$(cat "$file" 2>/dev/null)
+    if [ "$got" = x ]; then ok "$label (real bash writes into primary)"; else bad "$label — real bash did NOT write into primary (got: $got)"; fi
+    printf 'orig\n' > "$file"
+}
+_deny_row() {  # _deny_row <label> <file-in-primary> <command>
+    local json
+    json=$(jq -cn --arg c "$3" --arg d "$FIX/wt" '{tool_name:"Bash",tool_input:{command:$c,cwd:$d}}')
+    check_both "$1 denies" block "$json"
+    _real_lands "$1" "$2" "$3"
+}
+mkdir -p "$FIX/primary/scripts" "$FIX/wt/scripts"
+
+# 95a-b: cd +N / -N with a path suffix is no stack move; bash/zsh stay put.
+_deny_row "95a cd +0/../../wt" "$FIX/primary/a.txt" "cd $FIX/primary; cd +0/../../wt; echo x > a.txt"
+_deny_row "95b cd -1/../../wt" "$FIX/primary/a.txt" "cd $FIX/primary; cd -1/../../wt; echo x > a.txt"
+# 95c-e: CDPATH set without an `=` (read, printf -v) or declared.
+_deny_row "95c read CDPATH <<<" "$FIX/primary/scripts/a.txt" "read CDPATH <<< $FIX/primary; cd scripts && echo x > a.txt"
+_deny_row "95d printf -v CDPATH" "$FIX/primary/scripts/a.txt" "printf -v CDPATH %s $FIX/primary; cd scripts && echo x > a.txt"
+_deny_row "95e declare CDPATH" "$FIX/primary/scripts/a.txt" "declare -x CDPATH=$FIX/primary; cd scripts && echo x > a.txt"
+# 95f: cd -P resolves physically, so a symlink component then .. lands in the link target's parent.
+_deny_row "95f cd -P wt/dirlink/.." "$FIX/primary/a.txt" "cd -P $FIX/wt/dirlink/..; echo x > a.txt"
+# 95g-i: the target is removed / made unsearchable / moved earlier in the same command.
+mkdir -p "$FIX/wt/emptysub"
+_deny_row "95g rmdir then cd" "$FIX/primary/a.txt" "cd $FIX/primary; rmdir $FIX/wt/emptysub; cd $FIX/wt/emptysub; echo x > a.txt"
+mkdir -p "$FIX/wt/realsub2"
+_deny_row "95h chmod 0 then cd" "$FIX/primary/a.txt" "cd $FIX/primary; chmod 0 $FIX/wt/realsub2; cd $FIX/wt/realsub2; echo x > a.txt"
+chmod 755 "$FIX/wt/realsub2"
+mkdir -p "$FIX/wt/realsub3"
+_deny_row "95i mv then cd" "$FIX/primary/a.txt" "cd $FIX/primary; mv $FIX/wt/realsub3 $FIX/wt/r3; cd $FIX/wt/realsub3; echo x > a.txt"
+rm -rf "$FIX/wt/r3"
+# 95l: a dash-leading operand after `--` is still the mutated path.
+mkdir -p "$FIX/wt/-victim"
+_deny_row "95l rmdir -- -victim then cd" "$FIX/primary/a.txt" "cd $FIX/wt; rmdir -- -victim; cd $FIX/primary; cd $FIX/wt/-victim; echo x > a.txt"
+# Controls that must stay allowed: a mutation of an UNRELATED path before the
+# cd, and a physical cd with no symlink and no `..`.
+check_both "95j cd wt/realsub after rm of an unrelated file allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -f $FIX/wt/unrelated; cd $FIX/wt/realsub && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "95k cd -P wt/realsub (no symlink, no ..) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd -P $FIX/wt/realsub && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
