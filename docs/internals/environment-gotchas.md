@@ -537,6 +537,27 @@ the worktree dir). Habit: before multi-step git surgery in a worktree, capture
 `git diff --cached > <scratchpad>/patch` first — if a concurrent prune hits,
 the patch is the only thing that survives. (HIMMEL-849 tracks a prune guard.)
 
+## git: a fixture `git config` run from the primary checkout poisons every worktree
+
+Every worktree inherits the primary checkout's `.git/config`. A review or probe
+subagent told only "read-only, fixtures under the scratchpad" still starts with
+its cwd in the primary, and one `git config` without `-C` writes there. One
+such run set `diff.external=/bin/true`, `core.bigfilethreshold=1`,
+`core.attributesfile` and a textconv driver, so every session's `git diff`
+(review gates, impacted-suite listing, commit gates) silently printed nothing
+until the keys were removed. A prose "read-only" is not a sandbox.
+
+**What to do:** a brief that builds git fixtures carries a hard sandbox: one
+script per experiment that exports `HOME=<scratch>/home`,
+`GIT_CONFIG_GLOBAL=<scratch file>` and `GIT_CONFIG_NOSYSTEM=1`, runs `git init`
+on a scratch repo, and uses `git -C <scratch repo>` for EVERY git call,
+`config` included. After each script, check the primary with
+`git -C <primary> status --short` and
+`git -C <primary> config --local --get-regexp '^(diff|core\.attributesfile|core\.bigfilethreshold)'`
+and stop on any output. To recover: stop the agent, save
+`git config --local --list`, unset the injected keys, restore the index and
+files, then tell every session that diffed in the window to redo it.
+
 ## MSYS mangles `git show "rev:.dotfile"` — read dotfiles by blob SHA
 
 Paths starting with `.` in a `rev:path` spec get MSYS path-mangled and the
