@@ -148,7 +148,9 @@ export async function adopt(root, name, next, { proc = '/proc' } = {}) {
   return update(root, name, async peer => {
     const old = peer.console;
     if (!old) throw new Error(`${name} has no console to replace`);
-    if (!await readPeer(root, next)) throw new Error(`unknown session: ${next}`);
+    const target = await readPeer(root, next);
+    if (!target) throw new Error(`unknown session: ${next}`);
+    if (target.role !== 'console') throw new Error(`${next} is not a console`);
     const names = new RegExp(`(^|[^A-Za-z0-9._-])${next.replace(/[.]/g, '\\.')}($|[^A-Za-z0-9._-])`);
     const relayed = async () => (await store.read(root, name)).records.some(r => r.f === old && typeof r.b === 'string' && names.test(r.b));
     if (await status(root, old, { proc }) !== 'gone' && !await relayed()) throw new Error(`old console ${old} is not gone and sent no relay naming ${next}`);

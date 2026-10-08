@@ -191,6 +191,16 @@ test('adopt: a relay must name the new console as a whole word', async t => {
   await assert.rejects(identity.adopt(root, 'leg', 'new', { proc: live }), /not gone/);
 });
 
+test('adopt refuses a destination that is not a console', async t => {
+  const { root } = await fixture(t);
+  const live = await fakeProc(t, chain);
+  await bound(root, live);
+  await identity.register(root, 'other', { role: 'leg', console: 'con' });
+  const gone = await fakeProc(t, [P(1, 0, 'init', 1), P(200, 1, 'claude', 2000)]);
+  await assert.rejects(identity.adopt(root, 'leg', 'other', { proc: gone }), /not a console/);
+  assert.equal((await identity.loadPeers(root)).leg.console, 'con');
+});
+
 test('CLI: register, bind, status, peers, rebind against real processes', async t => {
   const state = await mkdtemp(join(tmpdir(), 'bus-cli-'));
   t.after(() => rm(state, { recursive: true, force: true }));
