@@ -206,6 +206,20 @@ else
   ok "SKIP earlier-green case (jq not installed)"
 fi
 
+# 11. A CANCELLED sweep (operator cancel) is not main's health: the shell-unit
+# aggregator runs under if: always() and fails on a cancelled rollup, but the
+# run's own conclusion is `cancelled`, so no issue may be opened, edited or closed.
+newcase cancelled-run
+printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cancelled https://github.com/o/r/actions/runs/900" > "$STUB/run.txt"
+printf 'failure%sshell-unit\ncancelled%slint\nsuccess%sdoc-invariants\n' "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+if [ "$rc" -eq 0 ]; then ok "a cancelled run exits 0"; else bad "a cancelled run exits $rc: $out"; fi
+hasnt "issue create" "$log" "a cancelled run with a failed aggregator opens no issue"
+hasnt "issue edit" "$log" "a cancelled run edits no issue"
+hasnt "issue comment" "$log" "a cancelled run comments on no issue"
+hasnt "issue close" "$log" "a cancelled run closes no issue"
+hasnt "issue list" "$log" "a cancelled run does not even look up the issue"
+
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
 echo "all checks passed."

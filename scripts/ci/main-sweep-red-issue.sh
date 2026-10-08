@@ -62,6 +62,14 @@ fi
 SHA="${run_line%% *}"; rest="${run_line#* }"
 RUN_CONCLUSION="${rest%% *}"; RUN_URL="${rest#* }"
 
+# A cancelled sweep (an operator cancel) says nothing about main's health: the
+# shell-unit aggregator runs under if: always() and fails on a cancelled rollup,
+# so its job conclusion would read as a red. Touch no issue.
+if [ "$RUN_CONCLUSION" = "cancelled" ]; then
+  echo "main-sweep-red-issue: run $RUN_ID was cancelled -- not a verdict on main; nothing to report."
+  exit 0
+fi
+
 if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
     --jq '.jobs[] | "\(.conclusion // "none")\t\(.name)"' > "$TMP/jobs"; then
   echo "main-sweep-red-issue: could not read the jobs of run $RUN_ID (gh api failed)" >&2

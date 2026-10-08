@@ -4,10 +4,10 @@
 # HIMMEL-3226 per-PR).
 #
 # Three run classes get three DISJOINT groups: push-to-main runs share ONE group
-# (ci-refs/heads/main); a newer main push cancels the superseded run, running or
-# pending (HIMMEL-5036: only the newest main head holds runner slots; the
-# main-red sweep reads the range since the last GREEN sweep, so a cancelled
-# sweep leaves no hole in it); a newer push to a PR cancels that PR's superseded run (one
+# (ci-refs/heads/main) and are queued, never cancelled while running
+# (HIMMEL-3841 slice E: at most one sweep running + one pending, a newer pending
+# sweep replaces the older pending one, so completed sweeps cover contiguous
+# ranges of merges); a newer push to a PR cancels that PR's superseded run (one
 # group per PR number, so two PRs never touch each other, HIMMEL-3226);
 # schedule / dispatch runs keep a unique per-run group and are never cancelled.
 # Pure text assertions over
@@ -54,14 +54,15 @@ case "$group" in
   *"|| github.run_id"*) ok "other runs fall back to a unique group (run_id)" ;;
   *) bad "other runs do not get a unique group; group='$group'" ;;
 esac
-# cancel-in-progress covers pull_request AND push (HIMMEL-5036): back-to-back
-# main merges must leave exactly one main run going. It stays an explicit
-# two-event expression, never a bare `true`, so schedule / dispatch (unique
-# groups) can never be cancelled by a future shared group.
-if [ "$cancel" = "\${{ github.event_name == 'pull_request' || github.event_name == 'push' }}" ]; then
-  ok "cancel-in-progress is scoped to pull_request and push (a newer main sweep cancels the older)"
+# cancel-in-progress is scoped to pull_request alone (HIMMEL-3841 slice E): a
+# bare `true`, or `push` in the expression, would cancel a RUNNING main sweep on
+# every merge -- the sweep would then never complete and a red on main would
+# never be attributed to a range. A superseded PENDING push run is replaced by
+# GitHub regardless of this flag.
+if [ "$cancel" = "\${{ github.event_name == 'pull_request' }}" ]; then
+  ok "cancel-in-progress is scoped to pull_request only (main sweeps are queued, not cancelled)"
 else
-  bad "cancel-in-progress is not scoped to pull_request and push; got '$cancel'"
+  bad "cancel-in-progress is not scoped to pull_request only; got '$cancel'"
 fi
 
 # The group key includes github.ref, so branches stay isolated from each other
@@ -117,14 +118,14 @@ if g["main-a"] != g["main-b"]: errs.append("two main pushes do not share a group
 if g["main-a"] in (g["pr5-a"], g["pr6"]): errs.append("a main push shares a group with a PR")
 if len({g["nightly"], g["dispatch"], g["pr5-a"], g["pr6"], g["main-a"]}) != 5:
     errs.append("nightly/dispatch group collides with another class")
-for k in ("pr5-a", "pr6", "main-a", "main-b"):
+for k in ("pr5-a", "pr6"):
     if c[k] != "True": errs.append(f"{k} does not cancel in progress (got {c[k]})")
-for k in ("nightly", "dispatch"):
+for k in ("main-a", "main-b", "nightly", "dispatch"):
     if c[k] != "False": errs.append(f"{k} cancels in progress (got {c[k]})")
 if errs:
     print("FAIL - " + "; ".join(errs) + f"; groups={g}")
     sys.exit(1)
-print(f"ok - PR / main-push / nightly+dispatch groups are disjoint; only PR and main-push runs cancel in progress; groups={g}")
+print(f"ok - PR / main-push / nightly+dispatch groups are disjoint; only PRs cancel in progress; groups={g}")
 PY
 then :; else bad "resolved-group disjointness check failed (see output above)"; fi
 
@@ -143,7 +144,7 @@ print((on.get("push") or {}).get("branches"))
 PY
 )"
   want="ci-\${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || github.run_id }}
-\${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+\${{ github.event_name == 'pull_request' }}
 ['main']"
   if [ "$parsed" = "$want" ]; then ok "parsed YAML: group, cancel-in-progress and push branches match"
   else bad "parsed YAML mismatch; got: $parsed"; fi
