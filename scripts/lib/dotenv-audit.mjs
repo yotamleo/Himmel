@@ -52,7 +52,7 @@ export function auditDotenv(root) {
         // Exclude definitions, probes and prose: only actual loader calls.
         const call = line.match(/(?:^|[;]|then\s+|&&\s+|!\s+)\s*(?:if\s+)?load_dotenv\b(?!\s*\()(.*)/);
         if (!call) continue;
-        const args = call[1].split(/;|\|\|/)[0]
+        const args = call[1].split(/;|\|\||&&/)[0]
           .replace(/--root\s+(?:"\$\([\s\S]*?\)"|"[^"]*"|'[^']*'|\S+)/, '')
           .replace(/\s*\d*>[^\s]+/g, '').trim();
         if (!args) { warn(path, i + 1); continue; }
