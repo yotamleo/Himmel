@@ -1239,7 +1239,7 @@ watch_round() {
 # One startup snapshot supplies head, base, URL and the first review decision.
 # Post-watch review and head reads remain fresh: these facts can change while
 # the immutable commit endpoints are being watched.
-initial_pr=$(pr_view --json url,reviewDecision,headRefOid,baseRefName --jq '[.url, (.reviewDecision // "null"), .headRefOid, .baseRefName] | @tsv' 2>&1) || {
+initial_pr=$(pr_view --json url,reviewDecision,headRefOid,baseRefName --jq '[.url, (if (.reviewDecision // "") == "" then "null" else .reviewDecision end), .headRefOid, .baseRefName] | @tsv' 2>&1) || {
     echo "check-ci: cannot resolve the PR — cannot evaluate: $initial_pr" >&2; exit 2
 }
 IFS=$'\t' read -r initial_url initial_decision initial_head initial_base <<EOF

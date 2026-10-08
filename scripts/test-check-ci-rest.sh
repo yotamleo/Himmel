@@ -114,5 +114,16 @@ export PAGED=1
 cic_get 60; rc=$?
 if [ "$rc" = 0 ] && [ "$(count 'pr checks')" = 1 ]; then ok 'truncated REST page falls back instead of dropping checks'; else bad 'pagination ceiling failed'; fi
 
+# Startup snapshot: an EMPTY reviewDecision (no review yet) must not collapse the
+# tab-separated read and shift head/base out of their fields.
+snap_filter=$(grep -o "\[\.url, (if[^']*" "$HERE/check-ci.sh" | head -1)
+snap=$(printf '{"url":"https://github.com/o/r/pull/1","reviewDecision":"","headRefOid":"abc","baseRefName":"main"}' | jq -r "$snap_filter")
+IFS=$'\t' read -r _ s_dec s_head s_base <<<"$snap"
+if [ -n "$snap_filter" ] && [ "$s_head" = abc ] && [ "$s_base" = main ] && [ "$s_dec" = null ]; then
+  ok 'empty reviewDecision keeps startup snapshot fields aligned'
+else
+  bad "startup snapshot misaligned head=$s_head base=$s_base dec=$s_dec"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
