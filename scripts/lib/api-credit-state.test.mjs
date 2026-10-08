@@ -131,6 +131,19 @@ test('reservations isolated by A/B account and no subscription bank consulted', 
   assert.equal(f.call().available_est_usd, '0.300000');
 });
 
+test('committed reservation outcome survives snapshot freshness boundary during save', async (t) => {
+  const f = fixture();
+  const { creditState } = await import('./api-credit-state.mjs');
+  let calls = 0;
+  t.mock.method(Date, 'now', () => (calls++ === 0 ? f.now : f.now + 601) * 1000);
+  const result = creditState('reserve', { id: 'job', usd: '0.40' }, f.env);
+  assert.equal(result.verdict, 'PROCEED');
+  assert.equal(result.job_id, 'job');
+  assert.equal(result.reserved_usd, '0.400000');
+  assert.equal(result.available_est_usd, '0.600000');
+  assert.equal(JSON.parse(readFileSync(f.paths.state)).accounts.A.jobs.job.status, 'reserved');
+});
+
 test('duplicate reservation never overwrites or re-admits a job', () => {
   const f = fixture();
   f.call('reserve', ['--id', 'job', '--usd', '0.40']);

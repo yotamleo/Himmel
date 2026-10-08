@@ -178,7 +178,10 @@ export function creditState(command, options = {}, env = process.env) {
       }
       a.jobs[options.id] = { status: 'reserved', maximum_usd: usd(maximum) };
       save(statePath, state, lock);
-      return { ...row(c, snapshot, a, account, Math.floor(Date.now() / 1000)), verdict: 'PROCEED', job_id: options.id };
+      // Report the committed admission, not a second clock-dependent verdict.
+      return { ...result, verdict: 'PROCEED', job_id: options.id,
+        reserved_usd: usd(money(result.reserved_usd) + maximum),
+        available_est_usd: usd(money(result.available_est_usd) - maximum) };
     }
     id(options.id);
     if (!a || !own(a.jobs, options.id)) refuse('missing-job');
