@@ -46,16 +46,21 @@ export function auditDotenv(root) {
       for (const m of text.matchAll(/Get-DotenvKey[^\n]*-Name\s+["']([A-Za-z_][A-Za-z0-9_]*)["']/g)) used.add(m[1]);
     }
     if (path.endsWith('.sh') || /\/claude-[^/.]+$/.test(path)) {
-      const lines = text.replace(/\\\r?\n/g, ' ').split('\n');
+      const lines = text.split('\n');
       for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].replace(/^\s*#.*$/, '');
+        const lineNumber = i + 1;
+        let line = lines[i];
+        while (/\\\r?$/.test(line) && i + 1 < lines.length) {
+          line = line.replace(/\\\r?$/, ' ') + lines[++i];
+        }
+        line = line.replace(/^\s*#.*$/, '');
         // Exclude definitions, probes and prose: only actual loader calls.
         const call = line.match(/(?:^|[;]|then\s+|&&\s+|!\s+)\s*(?:if\s+)?load_dotenv\b(?!\s*\()(.*)/);
         if (!call) continue;
         const args = call[1].split(/;|\|\||&&/)[0]
           .replace(/--root\s+(?:"\$\([\s\S]*?\)"|"[^"]*"|'[^']*'|\S+)/, '')
           .replace(/\s*\d*>[^\s]+/g, '').trim();
-        if (!args) { warn(path, i + 1); continue; }
+        if (!args) { warn(path, lineNumber); continue; }
         for (const word of args.matchAll(/\b([A-Z][A-Z0-9_]*|himmel_github_token_vm)\b/g)) {
           if (!args.includes(`$${word[1]}`) && !args.includes(`\${${word[1]}`)) used.add(word[1]);
         }

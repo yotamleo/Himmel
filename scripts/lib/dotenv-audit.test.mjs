@@ -31,6 +31,16 @@ test('doctor warns when an empty loader call precedes shell operators', () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('doctor warnings retain physical line numbers after continuations', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dotenv-audit-'));
+  try {
+    mkdirSync(join(root, 'scripts'));
+    writeFileSync(join(root, 'scripts/consumer.sh'), 'load_dotenv HANDOVER_DIR \\\n USER_SLUG\nload_dotenv\n');
+    const rows = audit(root);
+    assert.ok(rows.some(r => r.sev === 'WARN' && r.msg.endsWith('consumer.sh:3')));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('doctor recognizes explicit consumer keys, including multiline lists', () => {
   const root = mkdtempSync(join(tmpdir(), 'dotenv-audit-'));
   try {
