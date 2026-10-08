@@ -24,7 +24,7 @@ lint() {
     while IFS= read -r rc; do
       [ -n "$rc" ] || continue
       jq -e --arg s "$script" --arg r "$rc" '.scripts[$s].codes | has($r)' "$reg" >/dev/null || { echo "$script $rc"; miss=1; }
-    done < <(sed -nE 's/^#[[:space:]]+([0-9]{1,3})[[:space:]]+[-—–]+[[:space:]].*/\1/p' "$REPO/$script" | sort -un)
+    done < <(sed -nE 's/^#[[:space:]]+([0-9]{1,3})[[:space:]]+(-|—|–)+[[:space:]].*/\1/p' "$REPO/$script" | sort -un)
   done < <(jq -r '.scripts | to_entries[] | select(.value.table == true) | .key' "$reg")
   return $miss
 }
@@ -43,6 +43,8 @@ check "the shipped registry documents every table rc ($out)" '[ "$rc" = 0 ]'
 jq 'del(.scripts["scripts/check-ci.sh"].codes["6"])' "$REG" >"$TMP/missing.json"
 out=$(lint "$TMP/missing.json"); rc=$?
 check "RED control: a row removed from the registry fails the lint and names it" '[ "$rc" = 1 ] && [ "$out" = "scripts/check-ci.sh 6" ]'
+out=$(LC_ALL=C lint "$TMP/missing.json"); rc=$?
+check "the same RED control holds under LC_ALL=C (the dash separators are locale-independent)" '[ "$rc" = 1 ] && [ "$out" = "scripts/check-ci.sh 6" ]'
 
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" = 0 ]

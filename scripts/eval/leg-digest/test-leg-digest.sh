@@ -165,13 +165,13 @@ echo "10. by-design exit codes come from the registry, not the failure count (HI
 S10=4853c1a5-0000-4000-8000-000000000001
 cp "$FX/exit-codes.jsonl" "$TMP/$S10.jsonl"
 digest "$TMP/$S10.jsonl" >"$TMP/ec.json" 2>"$TMP/ec.err" || bad "digest of exit-codes.jsonl exits 0: $(head -c 300 "$TMP/ec.err")"
-check "result and retry rcs are counted apart: 7 result, 2 retry" 'jq -e ".metrics.ok_result == 7 and .metrics.ok_retry == 2" "$TMP/ec.json" >/dev/null'
-check "only the 5 real failures stay: a check-ci 1, an unlisted rc, a refusal, an unregistered script and a suite red" 'jq -e ".metrics.fail_error == 4 and .metrics.fail_suite == 1 and ([.failures[].count] | add) == 5" "$TMP/ec.json" >/dev/null'
+check "result and retry rcs are counted apart: 5 result, 2 retry" 'jq -e ".metrics.ok_result == 5 and .metrics.ok_retry == 2" "$TMP/ec.json" >/dev/null'
+check "only the 7 real failures stay: a check-ci 1, an unlisted rc, a refusal, an unregistered script, two compound chains and a suite red" 'jq -e ".metrics.fail_error == 6 and .metrics.fail_suite == 1 and ([.failures[].count] | add) == 7" "$TMP/ec.json" >/dev/null'
 check "quiet-run 75 (a suite run) is a retry, the same suite's exit 1 is still suite/other" 'jq -e "([.by_design[] | select(.script == \"quiet-run.sh\")] | .[0] | [.rc, .class, .count]) == [\"75\",\"retry\",1] and ([.failures[] | select(.class == \"suite/other\")] | .[0].count) == 1" "$TMP/ec.json" >/dev/null'
 check "by_design rows carry script, rc, class and count only" 'jq -e "[.by_design[] | keys | join(\",\")] | unique == [\"class,count,rc,script\"]" "$TMP/ec.json" >/dev/null'
-check "an rc listed by only one of two named scripts takes the class of the script that lists it" 'jq -e "([.by_design[] | select(.script == \"check-ci.sh\" and .rc == \"3\")] | .[0].count) == 2 and ([.by_design[] | select(.script == \"queue-lock.sh\" and .rc == \"11\")] | .[0].count) == 2" "$TMP/ec.json" >/dev/null'
-check "a refusal rc (merge-on-green 17) and an unlisted rc (check-ci 9) stay error/Bash" '[ "$(jq "[.failures[] | select(.class == \"error/Bash\")] | .[0].count" "$TMP/ec.json")" = 4 ]'
-check "no failure row exists for a result or retry rc, so the router never sees one" 'jq -e "[.failures[] | select(.failure == \"error\" or .failure == \"suite\")] | map(.count) | add == 5" "$TMP/ec.json" >/dev/null'
+check "a compound command stays an error unless every segment resolves: check-ci then queue-lock status at rc 3 or 11 is not by design" 'jq -e "([.by_design[] | select(.script == \"check-ci.sh\" and .rc == \"3\")] | .[0].count) == 1 and ([.by_design[] | select(.script == \"queue-lock.sh\" and .rc == \"11\")] | .[0].count) == 1" "$TMP/ec.json" >/dev/null'
+check "a refusal rc (merge-on-green 17) and an unlisted rc (check-ci 9) stay error/Bash" '[ "$(jq "[.failures[] | select(.class == \"error/Bash\")] | .[0].count" "$TMP/ec.json")" = 6 ]'
+check "no failure row exists for a result or retry rc, so the router never sees one" 'jq -e "[.failures[] | select(.failure == \"error\" or .failure == \"suite\")] | map(.count) | add == 7" "$TMP/ec.json" >/dev/null'
 
 echo "test-leg-digest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

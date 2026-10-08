@@ -107,12 +107,17 @@ function exitCodes(): Registry | null {
   } catch { return null; }
 }
 // "result" | "retry" when every registered script named in `cmd` that lists this rc agrees on one of those classes.
+// A compound command (; && || |, newline) must resolve in EVERY segment: the rc belongs to one of them and which is
+// unknowable from the journal, so an unresolved segment stays an error. ponytail: splits on separators even inside
+// quotes (an over-split only keeps a failure), upgrade path is a shell-aware tokenizer if by-design counts undershoot.
 const byDesign = (reg: Registry, cmd: string, text: string): { script: string; rc: string; cls: string } | null => {
   const rc = /^Exit code (\d+)\b/.exec(text)?.[1];
   if (!rc) return null;
-  const hits = [...new Set([...cmd.matchAll(SCRIPT_NAME)].map((h) => h[1]))]
-    .flatMap((s) => { const c = reg.get(s)?.get(rc); return c ? [{ script: s, rc, cls: c }] : []; });
-  return hits.length > 0 && hits.every((h) => h.cls === hits[0].cls && (h.cls === "result" || h.cls === "retry")) ? hits[0] : null;
+  const segs = cmd.split(/[;&|\n]+/).filter((s) => s.trim() !== "");
+  const hits = segs.map((seg) => [...new Set([...seg.matchAll(SCRIPT_NAME)].map((h) => h[1]))]
+    .flatMap((s) => { const c = reg.get(s)?.get(rc); return c ? [{ script: s, rc, cls: c }] : []; }));
+  const all = hits.flat();
+  return hits.length > 0 && hits.every((h) => h.length > 0) && all.every((h) => h.cls === all[0].cls && (h.cls === "result" || h.cls === "retry")) ? all[0] : null;
 };
 // guard-leg-context-handoff words its refusal "leg context checkpoint|hand-off (mode ...)" or "refusing
 // auto-compaction", never "<hook>:", so the hook-name lookup in deniedSub cannot find it.
