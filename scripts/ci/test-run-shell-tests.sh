@@ -1054,6 +1054,11 @@ else
   check_timeout_2267 "scripts/ci/test-suite-concurrency.sh" "1500"
   check_timeout_2267 "/repo/scripts/ci/test-suite-concurrency.sh" "1500"
 
+  # HIMMEL-4912: per-hook namespace/runtime inspection measured 1407s alone
+  # and 1434s with another suite; 3000s clears twice the loaded completion.
+  check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "3000"
+  check_timeout_2267 "/repo/scripts/eval/guard-corpus/test-guard-corpus.sh" "3000"
+
   # HIMMEL-3175 (nightly #843): the 1879 suite previously had no dedicated arm,
   # so the 600s default killed it on every OS (603s on ubuntu). Its tier comment
   # records 843s idle.

@@ -289,6 +289,12 @@ _suite_timeout_for() {
   fi
 
   case "${1#./}" in
+    scripts/eval/guard-corpus/test-guard-corpus.sh|*/scripts/eval/guard-corpus/test-guard-corpus.sh)
+      # HIMMEL-4912: runtime IPC masking scans before every fresh hook sandbox.
+      # Linux measured 1407s sequential, 1434s alongside the classification
+      # suite (2026-10-08); twice the loaded figure is 2868s, rounded to 3000.
+      # Do not cache scans or drop masks to fit the generic 600s cap.
+      printf '3000' ;;
     scripts/handover/test-arm-resume-identity.sh|*/scripts/handover/test-arm-resume-identity.sh)
       # HIMMEL-2120 Task-6 fresh-boot idle benchmark (2026-08-27): new idle
       # 814s, rc=0 (reproduced at 802s, rc=0, same day). The prior 08-26 idle

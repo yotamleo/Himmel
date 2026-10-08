@@ -779,12 +779,15 @@ jobs:
     # legs are far slower than the fast-tier push/PR runs: ubuntu shard 8 took
     # 35-38 min and windows shards 79-115 min (run 36579691044; 128 min in run
     # 36443339522). suite-durations.tsv is the fast tier only (~18 min slowest
-    # shard). ubuntu 60 is ~1.7x the slowest nightly shard; windows 180 clears
+    # shard). HIMMEL-4912: ubuntu 120 also clears the new replay cap (50 min),
+    # the prior slowest nightly shard (38 min), and apt setup (13 min); runtime
+    # masking remains per-launch, measured replay 1407s alone / 1434s loaded.
+    # windows 180 clears
     # the 128 min max. A timed-out job is `cancelled`, which continue-on-error
     # does not absorb, so a windows cap below its real duration would turn the
     # aggregate red every night. There are no macos rows in this matrix
     # (macos-cadence.yml / os-verify.yml carry their own 120).
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 60 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 120 }}
     steps:
       # fetch-depth: 0 (not the default shallow clone) so --changed-since below
       # can resolve a pull_request's base SHA, which a depth-1 checkout of the
