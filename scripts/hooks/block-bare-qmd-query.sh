@@ -1077,8 +1077,9 @@ qmd_nested() {
                         oa=1
                     elif [ "$atw" = 1 ]; then
                         # at and batch take a time spec, not a program; only
-                        # -f names the job file that replaces stdin.
-                        [[ $t != -*f ]] || so=1
+                        # a bare -f names the job file that replaces stdin;
+                        # a cluster such as -qf is a queue letter, not a file.
+                        if [[ $t = -f || $t = --file ]]; then so=1; fi
                         if _ran_written "$t"; then deny=1; return 0; fi
                     elif [ "$mode" != env ] && [[ $t != -* ]]; then
                         if [ "$ss" = 0 ]; then
