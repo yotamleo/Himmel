@@ -844,8 +844,10 @@ git_mentions_only() { # git_mentions_only <command-word index>
             # HIMMEL-4950: an expanded word that can begin with `-` may become
             # an exec-capable option (`-O{bash,x}`, `{-O,x}bash`, `--ext-d?ff`).
             # After --, words are pathspec operands, not options.
+            # A `$` anywhere in the word word-splits (`echo$IFS-Obash`), so it
+            # is unsafe wherever it appears, not only at the start.
             if [ "$paths" != 1 ]; then
-                case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'*) PR_GIT_UNSAFE=1 ;; esac
+                case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_UNSAFE=1 ;; esac
             fi
             return 1
         fi
@@ -888,7 +890,10 @@ git_mentions_only() { # git_mentions_only <command-word index>
 }
 readers_only() { # true when every command the command line runs is a reader
     local k sg=-1 cw=-1 w
-    st_tokenize "$cmd" || return 1
+    # HIMMEL-4950: a `${…}` the tokenizer cannot parse (zsh `${=IFS}`) on a git
+    # command line may word-split into an exec option; flag it unsafe.
+    # shellcheck disable=SC2016 # a literal ${ is matched, never expanded
+    st_tokenize "$cmd" || { case "$cmd" in *git*'${'*) PR_GIT_UNSAFE=1 ;; esac; return 1; }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
     k=0
     while [ "$k" -lt "$ST_N" ]; do

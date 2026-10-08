@@ -1573,7 +1573,11 @@ for v in \
     'git grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
     'git grep --open-files-in-pager={bash,x} -- scripts/cr/pr-check-env.sh' \
     'git log -p --ext-d{iff,iff} -- scripts/cr/pr-check-env.sh' \
-    'git diff --ext-di?f -- scripts/cr/pr-check-env.sh'; do
+    'git diff --ext-di?f -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$IFS-O{x,bash} -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$IFS-Obash -- scripts/cr/pr-check-env.sh' \
+    'git log HEAD$IFS--output=scripts/cr/pr-check-env.sh -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo${=IFS}-Obash -- scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4950 brace option [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # After --, an expanded operand is a pathspec, not an option: not flagged unsafe.
