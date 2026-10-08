@@ -16,7 +16,7 @@ or the dispatching console's own session name for an in-process judge call).
 The console reads this path — never a message — to learn the verdict.
 
 A judge writes a merge-question verdict with
-`bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <path> [--judge <name>]`
+`bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head> --pr <n> --evidence-file <path> [--judge <name>] [--branch <name>]`
 (HIMMEL-4689): it resolves the same `<root>/<user>/<bucket>/verdicts/<qid>/`
 that `go.sh --trust-reviewed` reads, writes the header, a `writer-session:`
 stamp and the `## Verdict` line itself, and appends the evidence file verbatim
@@ -27,6 +27,13 @@ or comma set from `option-parsing, cwd-indirection, shell-parsing, tool-defaults
 reader-allowlist, other` (HIMMEL-4885). A classless NO-GO is refused (exit 2);
 add the required class to the evidence and retry the writer. Keep the earlier
 class of a repeated finding rather than relabeling it to buy another round.
+`--pr <n>` is required (HIMMEL-4928): the writer records `pr: <n>` (and
+`branch: <name>` when `--branch` is given) as the two lines after the verdict
+line, so two PRs on one head are told apart. `go.sh --trust-reviewed` reads that
+line and refuses a GO that names another PR (`the verdict in <file> names PR
+#<a>, not PR #<b>.`). A verdict file with no `pr:` line (written before the
+field existed) is refused too, fail closed: the judge rewrites it with `--pr`.
+A NO-GO vetoes whatever PR it names, since it only narrows.
 A GO is refused once a NO-GO exists for that head (HIMMEL-4714).
 When `<judge-name>.md` already holds a NO-GO for another head,
 the new ruling lands in `<judge-name>-<head>.md` beside it, so the veto
@@ -52,7 +59,8 @@ among named options. This is the field the console acts on.
 For a merge question, the first line is exactly **GO** for head `<40-hex sha>`.
 or **NO-GO** for head `<40-hex sha>`. with the reason on the following lines.
 `go.sh --trust-reviewed <qid>` parses only that line and refuses on anything
-else (HIMMEL-3832).>
+else (HIMMEL-3832). For a merge question a `pr: <n>` line follows two lines
+below it (HIMMEL-4928).>
 
 ## Evidence checked
 

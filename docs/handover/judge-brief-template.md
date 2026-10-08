@@ -299,8 +299,8 @@ gathering, per the rule below.>
 
 > **Lifecycle — the one rule.** Write your verdict file per
 > `docs/handover/verdict-template.md` — for a merge question, through
-> `bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <scratch file> --judge <your session name>`
-> (HIMMEL-4689), which emits the exact line `go.sh --trust-reviewed` parses
+> `bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head> --pr <the PR number> --evidence-file <scratch file> --judge <your session name>`
+> (HIMMEL-4689; `--pr` is required, HIMMEL-4928), which emits the exact line `go.sh --trust-reviewed` parses
 > and refuses a path outside `verdicts/<qid>/` — release your own-doc lock, and **end
 > your turn.** Do not wait for an ack, do not open a PR, do not merge
 > anything. The console kills your window when it reads the verdict — a

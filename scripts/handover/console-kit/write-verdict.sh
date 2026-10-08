@@ -7,7 +7,7 @@
 # generates that line itself; the judge's prose comes from a file it wrote to
 # its scratch, so the command a judge types names nothing the guards key on.
 #
-# Usage: write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <path> [--judge <name>]
+# Usage: write-verdict.sh <qid> <GO|NO-GO> <head> --pr <n> --evidence-file <path> [--judge <name>] [--branch <name>]
 #
 # Writes <root>/<user>/<bucket>/verdicts/<qid>/<name>.md (name defaults to
 # `judge`; <name>-<head>.md beside a NO-GO for another head), where <root>
@@ -24,7 +24,16 @@
 #
 #     **GO** for head `<head>`.
 #
+#     pr: <n>
+#     branch: <name>            (only when --branch is given)
+#
 #     <the evidence file, verbatim>
+#
+# HIMMEL-4928: the `pr:` line sits at a fixed place, two lines after the verdict
+# line, where go.sh --trust-reviewed reads it and refuses a verdict naming
+# another PR. review-round.sh reads only the first eight lines, so it is
+# unaffected. A verdict file with no `pr:` line (written before this field
+# existed) is refused by go.sh; the judge rewrites it with --pr.
 #
 # The writer-session stamp is a breadcrumb, not authentication: an in-process
 # judge call shares the console's environment, so it names the session the
@@ -73,7 +82,7 @@ case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; e
 . "$_ah_d/../../cr/anchor-handoff.sh" || exit 2
 
 usage() {
-    echo "usage: write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <path> [--judge <name>]" >&2
+    echo "usage: write-verdict.sh <qid> <GO|NO-GO> <head> --pr <n> --evidence-file <path> [--judge <name>] [--branch <name>]" >&2
     exit 2
 }
 seg_ok() {
@@ -83,9 +92,11 @@ seg_ok() {
 [ "$#" -ge 3 ] || usage
 QID=$1 ANSWER=$2 HEAD=$3
 shift 3
-EVIDENCE="" NAME=judge
+EVIDENCE="" NAME=judge PR="" BRANCH=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --pr) [ "$#" -ge 2 ] || usage; PR=$2; shift 2 ;;
+        --branch) [ "$#" -ge 2 ] || usage; BRANCH=$2; shift 2 ;;
         --evidence-file) [ "$#" -ge 2 ] || usage; EVIDENCE=$2; shift 2 ;;
         --judge) [ "$#" -ge 2 ] || usage; NAME=$2; shift 2 ;;
         *) usage ;;
@@ -100,6 +111,14 @@ if [ "$HEAD_OK" -ne 1 ] || [ "${#HEAD}" -ne 40 ]; then
     exit 2
 fi
 [ -n "$EVIDENCE" ] || { echo "write-verdict: --evidence-file <path> is required" >&2; exit 2; }
+# HIMMEL-4928: the verdict names its PR, as go.sh's PR argument is spelled
+# (no leading zero), so two PRs on one head are told apart.
+case "$PR" in
+    ''|0*|*[!0-9]*) echo "write-verdict: --pr <n> is required and must be a PR number without a leading zero (got '$PR')" >&2; exit 2 ;;
+esac
+case "$BRANCH" in
+    *[!A-Za-z0-9._/-]*|*..*|/*|*/) echo "write-verdict: --branch '$BRANCH' is not a plain branch name ([A-Za-z0-9._/-], no '..')" >&2; exit 2 ;;
+esac
 # The evidence must live in this uid's Claude scratch root, reached without a
 # symlink at any step from that root down.
 SCRATCH="/tmp/claude-$(id -u)"
@@ -278,6 +297,9 @@ if ! {
     printf 'writer-session: %s\n' "$SESSION" &&
     printf 'written-at: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" &&
     printf '## Verdict\n\n**%s** for head `%s`.\n\n' "$ANSWER" "$HEAD" &&
+    printf 'pr: %s\n' "$PR" &&
+    { [ -z "$BRANCH" ] || printf 'branch: %s\n' "$BRANCH"; } &&
+    printf '\n' &&
     cat "$EVIDENCE"
 } > "$tmpf" || ! mv -f "$tmpf" "$TARGET"; then
     echo "write-verdict: writing '$TARGET' failed" >&2
