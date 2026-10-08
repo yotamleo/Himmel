@@ -2853,6 +2853,13 @@ Fails OPEN on anything this
 hook cannot evaluate (missing `jq`, unparseable JSON, non-Bash tool) — a
 workflow nudge, not a security fence. Bypass: `QUIET_RUN_BYPASS=1`
 (launching shell, session-sticky). Spec: `scripts/hooks/test-require-quiet-run.sh`.
+Two wait shapes that never end are also refused (HIMMEL-4970): `until ! pgrep
+-f <pat>` / `while pgrep -f <pat>` whose `<pat>` occurs in the same command
+(the harness runs every Bash call as `<shell> -c "... eval '<command>'"`, so
+the wrapper shell self-matches; a bracketed `[c]lear-cr-marker.sh` does not),
+and a `while`/`until ...; do :; done` (or `do true`) loop with no `sleep`. The
+deny names `tail --pid=<pid> -f /dev/null`, the task's own output file, and
+the bracket trick.
 `scripts/quiet-run.sh` itself (HIMMEL-2967) fails closed on any argv element
 with a `..` path component and, for the label `suite` when argv is
 `bash <path> …`, requires `<path>` to be a git-tracked `test-*.sh` — closing the
