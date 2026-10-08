@@ -1942,8 +1942,16 @@ check_c28_guardrail_consent() {
 # /handover-resume-armed has nothing to read. The fix (headed-arm.sh,
 # arm-resume.sh) launches through
 # `env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 ...`.
-# This check sweeps for a NAMED session (a `-n HIMMEL-...` claude process)
-# that inherited the marker anyway — a launcher that forgot the clears.
+# This check sweeps for a claude session that inherited the marker anyway — a
+# launcher that forgot the clears.
+#
+# A ROOT session, not a named one: a claude process with no live claude
+# ancestor. A genuine child (a print-mode claude from a Bash tool) has its
+# parent claude above it and is meant to be a throwaway; a session with no claude
+# above it cannot be one, whatever its name. The old `-n HIMMEL-` gate missed
+# adopters' ticket keys and unnamed sessions — including the macOS case
+# where a GUI app (a launcher like Raycast, then the terminal it opens)
+# inherited a claude's env and every tab started marked.
 #
 # THE TRAP (verified this session): reading $CLAUDE_CODE_CHILD_SESSION from
 # THIS SCRIPT's own environment tells us nothing — claude sets it in every
@@ -1962,9 +1970,14 @@ check_c28_guardrail_consent() {
 # reported broken via its own launcher's stale marker. Same comm guard as
 # context-fill.sh's own launched_as_child_session().
 #
-# procfs-only (Linux). Where /proc is absent (macOS, Git Bash) this is a
-# clean skip, never a false WARN — same procfs-or-silence contract as
-# context-fill.sh's own launched_as_child_session().
+# Where /proc is absent (macOS) the same facts come from ps: `ps -axo` for
+# the process tree and `ps -E` for a process's environment (readable for the
+# current user's own processes). Git Bash has an MSYS /proc and takes the proc
+# route; only a platform with neither procfs nor `ps -E` skips cleanly, never
+# a false WARN.
+# headless-claude-ok: prose naming the argv shape C29 skips, starts nothing
+# An orphaned `claude -p`/`--print` or `claude daemon run` root
+# is not an interactive session and is left alone.
 #
 # r11-codex-3 (accuracy, not a false-WARN risk - the WARN itself is already
 # gated below on comm==claude PLUS the environ check, both exact; this can
@@ -2000,38 +2013,103 @@ _c29_argv_n_value() { # _c29_argv_n_value <cmdline-file> - echoes the value
     done < "$f"
 }
 
-# Test seam: HIMMEL_DOCTOR_PROC overrides the proc root (default /proc) so
-# the suite can point this at a stubbed tree.
-check_c29() {
-    local proc_root="${HIMMEL_DOCTOR_PROC:-/proc}"
-    if [ ! -d "$proc_root" ]; then
-        emit OK C29-child-session "no procfs on this platform — child-session launcher scan skipped"
+# _c29_table <proc|ps> - one "pid ppid comm" line per process. From procfs,
+# ppid is the second field after the LAST ") " of stat (comm itself may hold
+# ") "); a missing stat reads as ppid 0, i.e. no known parent.
+_c29_table() {
+    local d pid ppid comm stat
+    if [ "$1" = ps ]; then
+        "$c29_ps" -ww -axo pid=,ppid=,comm= 2>/dev/null
+        return 0
+    fi
+    for d in "$c29_proc"/[0-9]*; do
+        [ -r "$d/comm" ] || continue
+        pid="${d##*/}"
+        comm="$(cat "$d/comm" 2>/dev/null)" || continue
+        ppid=0
+        if [ -r "$d/stat" ]; then
+            stat="$(cat "$d/stat" 2>/dev/null)"
+            read -r _ ppid _ <<< "${stat##*) }"
+        fi
+        printf '%s %s %s\n' "$pid" "${ppid:-0}" "$comm"
+    done
+}
+
+# _c29_roots - reads _c29_table rows on stdin, prints the pid of every claude
+# process with no claude ancestor (the comm gate: see the konsole trap above).
+_c29_roots() {
+    awk '{ c = $0; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/, "", c); sub(/.*\//, "", c)
+           par[$1] = $2; if (c == "claude") cl[$1] = 1 }
+         END { for (p in cl) { a = par[p]; anc = 0
+                 for (d = 0; d < 64 && (a in par) && a + 0 > 1; d++) {
+                     if (a in cl) { anc = 1; break }
+                     a = par[a] }
+                 if (!anc) print p } }' | sort -n
+}
+
+# _c29_environ <proc|ps> <pid> - the process's environment, one KEY=VALUE per
+# line. `ps -E` prints the command line THEN the environment, space-joined, so
+# the plain command line is stripped off the front first: a prompt argument
+# can never be read as an env entry. rc 1 when it cannot be read.
+_c29_environ() {
+    if [ "$1" = proc ]; then
+        [ -r "$c29_proc/$2/environ" ] || return 1
+        tr '\0' '\n' < "$c29_proc/$2/environ" 2>/dev/null
         return
     fi
-    local c29_dir c29_pid c29_comm c29_cmdline c29_environ c29_name rows="" n=0
-    for c29_dir in "$proc_root"/[0-9]*; do
-        [ -d "$c29_dir" ] || continue
-        c29_pid="${c29_dir##*/}"
-        # The process must actually BE claude, not merely a launcher whose
-        # cmdline happens to quote a claude invocation (e.g. konsole's own
-        # `-e env ... claude ... -n HIMMEL-...` argv, which also inherits the
-        # CLAUDE_CODE_CHILD_SESSION marker from whatever armed it). Same comm
-        # guard as context-fill.sh's own launched_as_child_session() — see
-        # HIMMEL-2545 panel finding: without it, every headed-arm.sh launch
-        # double-counts (the konsole launcher AND the claude it spawns), and
-        # a correctly-launched session (claude carries ONLY
-        # CLAUDE_CODE_FORCE_SESSION_PERSISTENCE) gets falsely reported broken
-        # via its own launcher's stale marker.
-        [ -r "$c29_dir/comm" ] || continue
-        c29_comm="$(cat "$c29_dir/comm" 2>/dev/null)" || continue
-        [ "$c29_comm" = "claude" ] || continue
-        [ -r "$c29_dir/cmdline" ] || continue
-        c29_cmdline="$(tr '\0' ' ' < "$c29_dir/cmdline" 2>/dev/null)" || continue
-        [ -n "$c29_cmdline" ] || continue
-        grep -Eq 'claude ' <<< "$c29_cmdline" || continue
-        grep -Eq -- '-n HIMMEL-' <<< "$c29_cmdline" || continue
-        [ -r "$c29_dir/environ" ] || continue
-        c29_environ="$(tr '\0' '\n' < "$c29_dir/environ" 2>/dev/null)" || continue
+    local args full
+    args="$("$c29_ps" -ww -o command= -p "$2" 2>/dev/null)" || return 1
+    full="$("$c29_ps" -E -ww -o command= -p "$2" 2>/dev/null)" || return 1
+    case "$full" in "$args"*) ;; *) return 1 ;; esac
+    printf '%s\n' "${full#"$args"}" | tr ' ' '\n'
+}
+
+# _c29_headless <proc|ps> <pid> - rc 0 when the claude is not a human-launched
+# session: the `daemon run` service or a `-p`/`--print` run. Either inherits the
+# marker from whatever spawned it and has no interactive transcript to lose, so
+# an orphaned one must not read as a launcher missing persistence. procfs reads
+# the real argv (the service test is chokepoint-seam-guard's own); ps only has
+# the flattened command line, so its words are split on spaces.
+_c29_headless() {
+    local w a1="" a2="" a3="" n=0
+    if [ "$1" = proc ]; then
+        [ -r "$REPO_ROOT/scripts/lib/chokepoint-seam-guard.sh" ] && {
+            # shellcheck source=lib/chokepoint-seam-guard.sh
+            . "$REPO_ROOT/scripts/lib/chokepoint-seam-guard.sh"
+            _csg_is_bg_service "$c29_proc" "$2" && return 0
+        }
+        [ -r "$c29_proc/$2/cmdline" ] || return 1
+        while IFS= read -r -d '' w; do
+            case "$w" in -p | --print) return 0 ;; esac
+        done < "$c29_proc/$2/cmdline"
+        return 1
+    fi
+    for w in $("$c29_ps" -ww -o command= -p "$2" 2>/dev/null); do
+        n=$((n+1))
+        case $n in 2) a1="$w" ;; 3) a2="$w" ;; 4) a3="$w" ;; esac
+        case "$w" in -p | --print) return 0 ;; esac
+    done
+    [ "$a1" = daemon ] && [ "$a2" = run ] && return 0 # t13b-ok: matches an argv word to skip an existing claude daemon, starts none
+    [ "$a2" = daemon ] && [ "$a3" = run ] && return 0 # t13b-ok: matches an argv word to skip an existing claude daemon, starts none
+    return 1
+}
+
+# Test seams: HIMMEL_DOCTOR_PROC overrides the proc root (default /proc) and
+# HIMMEL_DOCTOR_PS the ps binary, so the suite can point either at a stub.
+check_c29() {
+    local c29_proc="${HIMMEL_DOCTOR_PROC:-/proc}" c29_ps="${HIMMEL_DOCTOR_PS:-ps}"
+    local src c29_pid c29_environ c29_name rows="" n=0
+    if [ -d "$c29_proc" ]; then
+        src="proc"
+    elif "$c29_ps" -E -ww -o command= -p "$$" >/dev/null 2>&1; then
+        src="ps"
+    else
+        emit OK C29-child-session "no procfs and no ps -E on this platform — child-session launcher scan skipped"
+        return
+    fi
+    for c29_pid in $(_c29_table "$src" | _c29_roots); do
+        _c29_headless "$src" "$c29_pid" && continue
+        c29_environ="$(_c29_environ "$src" "$c29_pid")" || continue
         grep -q '^CLAUDE_CODE_CHILD_SESSION=1$' <<< "$c29_environ" || continue
         # r3-codex-4: an EMPTY value is absent, not present - matches
         # context-fill.sh's launched_as_child_session() contract exactly
@@ -2040,7 +2118,14 @@ check_c29() {
         # PR disagreeing about the same variable would be worse than either
         # rule alone.
         grep -q '^CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=.' <<< "$c29_environ" && continue
-        c29_name="$(_c29_argv_n_value "$c29_dir/cmdline")"
+        if [ "$src" = proc ]; then
+            c29_name="$(_c29_argv_n_value "$c29_proc/$c29_pid/cmdline")"
+            c29_name="${c29_name:-unnamed}"
+        else
+            # ps flattens argv, so a `-n` value cannot be read reliably
+            # (r11-codex-3); the tty finds the window just as well.
+            c29_name="tty $("$c29_ps" -o tty= -p "$c29_pid" 2>/dev/null | tr -d ' ')"
+        fi
         n=$((n+1))
         # A plain $(...) here would swallow the trailing newline (each
         # appended row then runs into the next on one line) -- keep the
@@ -2054,7 +2139,7 @@ check_c29() {
     fi
     emit WARN C29-child-session \
         "$n running claude session(s) launched as a child session; transcript not saved (HIMMEL-2545)" \
-        "relaunch through: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ..."
+        "relaunch through: env -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_PID CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1 claude ... (macOS: a GUI app can carry the marker too — quit the terminal AND the launcher that opened it, e.g. Raycast, and reopen both from the Dock)"
     printf '%s' "$rows"
 }
 
@@ -3770,8 +3855,12 @@ check_c53_vm_mode() {
             "docs/setup/vm-mode.md"
         return
     fi
-    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin g k v via="" unresolved=""
-    timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
+    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin="" t g k v via="" unresolved=""
+    # macOS ships no `timeout`; coreutils installs `gtimeout` (as C39 checks).
+    for t in ${HIMMEL_DOCTOR_TIMEOUT_BINS:-timeout gtimeout}; do
+        timeout_bin="$(command -v "$t" 2>/dev/null)" && break
+        timeout_bin=""
+    done
     # A remote target may be an ssh config alias (HIMMEL-4599): `ssh -G` prints
     # the effective config offline, connecting to nothing, so the probe uses
     # its HostName and port; a ProxyJump/ProxyCommand route is one a raw TCP
