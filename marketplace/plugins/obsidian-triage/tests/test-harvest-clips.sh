@@ -720,13 +720,15 @@ fi
 assert "G-8 marker written only on a clean (exit 0) run" "yes" "$marker_clean_only"
 
 echo "Test 17: G-8 promotes a provisional marker; G-2 clears both (HIMMEL-4707)"
-if printf '%s' "$g8_section" | grep -qF 'mv "<vault>/.harvest.done.provisional" "<vault>/.harvest.done"'; then
+out=$(printf '%s' "$g8_section" | grep -F 'mv "<vault>/.harvest.done.provisional" "<vault>/.harvest.done"')
+if [ -n "$out" ]; then
     marker_promote=yes
 else
     marker_promote=no
 fi
 assert "G-8 promotes .harvest.done.provisional with mv" "yes" "$marker_promote"
-if printf '%s' "$g2_section" | grep -qF '.harvest.done.provisional'; then
+out=$(printf '%s' "$g2_section" | grep -F '.harvest.done.provisional')
+if [ -n "$out" ]; then
     marker_g2_prov=yes
 else
     marker_g2_prov=no
