@@ -50,7 +50,9 @@ done
 [ "$hit" = 1 ] || exit 0
 
 quoted="'$(printf '%s' "$url" | sed "s/'/'\\\\''/g")'"
-deny_msg="WebFetch is walled on this host (HTTP 402/login wall). Fetch it with the stealth fetcher instead, then work from its output: bash scripts/web/fetch-url.sh $quoted  (HIMMEL-4908; bypass: HIMMEL_WEBFETCH_WALLED_OK=1 in the launching shell)"
+fetcher="$(cd "$(dirname "$0")" && pwd)/../web/fetch-url.sh"
+qfetcher="'$(printf '%s' "$fetcher" | sed "s/'/'\\\\''/g")'"
+deny_msg="WebFetch is walled on this host (HTTP 402/login wall). Fetch it with the stealth fetcher instead, then work from its output: bash $qfetcher $quoted (HIMMEL-4908; bypass: HIMMEL_WEBFETCH_WALLED_OK=1 in the launching shell)"
 reason=$(printf '%s' "$deny_msg" | jq -Rs . 2>/dev/null) \
     || reason='"redirect-webfetch-walled-hosts: use bash scripts/web/fetch-url.sh <url>"'
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' "$reason"

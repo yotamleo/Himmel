@@ -33,7 +33,7 @@ run "$(wf 'https://x.com/Voxyz_ai/status/2107939019091005836')"
 [ "$rc" = 2 ] && ok "x.com denied (rc=2)" || bad "x.com expected rc=2 got $rc"
 reason="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision + "|" + .hookSpecificOutput.permissionDecisionReason' 2>/dev/null)"
 case "$reason" in
-    deny\|*"bash scripts/web/fetch-url.sh 'https://x.com/Voxyz_ai/status/2107939019091005836'"*) ok "deny reason carries the paste-ready command" ;;
+    deny\|*"bash '$(cd "$(dirname "$HOOK")" && pwd)/../web/fetch-url.sh' 'https://x.com/Voxyz_ai/status/2107939019091005836'"*) ok "deny reason carries the paste-ready command" ;;
     *) bad "reason missing command: $reason" ;;
 esac
 for u in 'https://twitter.com/a/status/1' 'https://mobile.twitter.com/a/status/1' 'https://www.instagram.com/p/ABC/' 'https://WWW.X.COM/a/status/1'; do
@@ -54,8 +54,9 @@ want="https://x.com/a/status/1?q=it's'; touch /tmp/pwned #"
 run "$(wf "$want")"
 [ "$rc" = 2 ] && ok "quote url denied" || bad "quote url rc=$rc"
 reason_txt="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecisionReason')"
-args="${reason_txt#*bash scripts/web/fetch-url.sh }"
-args="${args%  (HIMMEL-4908*}"
+sq="'"
+args="${reason_txt#*fetch-url.sh"$sq" }"
+args="${args% (HIMMEL-4908*}"
 # The quoted arg must round-trip to the exact URL through the shell's own parser.
 rt="$(eval "set -- $args; printf '%s' \"\$1\"" 2>/dev/null)"
 [ "$rt" = "$want" ] && ok "quoted arg round-trips to the exact URL" || bad "round-trip mismatch: [$rt]"
