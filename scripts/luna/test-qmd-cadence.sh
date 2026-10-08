@@ -331,68 +331,15 @@ assert_contains "dry-run marker" "# HIMMEL-Qmd-Reindex" "$out"
 assert_contains "dry-run fires qmd-reindex.sh" "qmd-reindex.sh" "$out"
 assert_contains "dry-run pins the qmd binary" "--qmd-bin" "$out"
 
-# Test C4b: --ship-to swaps the runner, keeping ONE task (HIMMEL-1286) ---------
-#
-# The push-only transport needs the host to ship on a cadence. It stays a SINGLE
-# task because ship-index.sh's step 1 IS qmd-reindex.sh — a second task on a
-# later clock would ship whatever was on disk instead of what the reindex just
-# built. The pin must ride along: ship-index.sh forwards --qmd-bin/--qmd-js to
-# its own reindex leg, and without it the unattended run dies at rc 3 (the
-# resolver needs bun on PATH, and a scheduler has none).
-echo "TEST: --ship-to arms ship-index.sh with the pin AND the host"
-out=$(run_cron arm --ship-to win2 --dry-run)
-assert_contains "ship mode fires ship-index.sh" "ship-index.sh" "$out"
-assert_contains "ship mode passes the host" "--host win2" "$out"
-assert_contains "ship mode still pins qmd" "--qmd-bin" "$out"
-# Anchored on the SCRIPT PATH, not the bare filename: the emitted runner file is
-# named qmd-reindex.sh in both modes (disarm finds it by that name), so a bare
-# "qmd-reindex.sh" needle matches the runner's own path and proves nothing.
-assert_not_contains "ship mode does not ALSO invoke the bare reindex" "luna/qmd-reindex.sh" "$out"
-assert_contains "ship mode keeps the single task marker" "# HIMMEL-Qmd-Reindex" "$out"
-assert_contains "ship mode keeps the daily slot" "00 05 * * *" "$out"
+# HIMMEL-4896: a retired receiver option must fail, never arm a ship task.
+echo "TEST: retired --ship-to is rejected before arming"
+rc=0; out=$(run_cron arm --ship-to receiver --dry-run 2>&1) || rc=$?
+assert_rc "retired receiver cadence is rc 1" 1 "$rc"
+assert_contains "retired receiver option is unknown" "unknown arg: --ship-to" "$out"
+rc=0; out=$(run_cron arm --ship-to=receiver --dry-run 2>&1) || rc=$?
+assert_rc "retired receiver equals form is rc 1" 1 "$rc"
+assert_contains "retired equals option is unknown" "unknown arg: --ship-to=receiver" "$out"
 
-echo "TEST: without --ship-to nothing ship-related is emitted"
-out=$(run_cron arm --dry-run)
-assert_not_contains "default mode emits no ship runner" "ship-index.sh" "$out"
-assert_not_contains "default mode emits no --host" "--host" "$out"
-
-echo "TEST: --ship-to demands a value"
-# BOTH spellings must validate identically. The `=` form was the hole: an unset
-# var expanding to `--ship-to=` set SHIP_TO empty and silently armed
-# reindex-ONLY, so the operator asked for a ship cadence and got a scheduler
-# that never ships, with no error to notice.
-rc=0; run_cron arm --ship-to --dry-run >/dev/null 2>&1 || rc=$?
-assert_rc "--ship-to without a host is rc 1" 1 "$rc"
-rc=0; run_cron arm --ship-to= --dry-run >/dev/null 2>&1 || rc=$?
-assert_rc "--ship-to= (empty, = form) is rc 1, not a silent no-op" 1 "$rc"
-rc=0; run_cron arm "--ship-to=--dry-run" >/dev/null 2>&1 || rc=$?
-assert_rc "--ship-to=--dry-run (flag-shaped, = form) is rc 1" 1 "$rc"
-# And the flag-shaped space form must not eat the following flag.
-rc=0; run_cron arm --ship-to --force >/dev/null 2>&1 || rc=$?
-assert_rc "--ship-to --force does not swallow --force as a host" 1 "$rc"
-
-echo "TEST: --ship-to refuses anything that is not a plain ssh host"
-# This is the ONE operator-supplied string baked into a PERSISTENT scheduled
-# .bat, and cadence_cmd_escape's header states the rule outright: backslash
-# does not escape a quote for cmd.exe, so "do not extend this function to a
-# value that can carry an arbitrary quote — refuse instead". A host carrying a
-# quote would terminate the quoted argument and expose command metacharacters,
-# i.e. arbitrary execution under the operator's account on every fire.
-# shellcheck disable=SC2016  # the metacharacters are the FIXTURE — they must stay unexpanded
-for bad in 'win2"&calc' 'win2;rm -rf /' 'win2|whoami' 'win2$(id)' 'win2`id`' 'win2 extra' 'win2%PATH%'; do
-    rc=0; out=$(run_cron arm --ship-to "$bad" --dry-run 2>&1) || rc=$?
-    assert_rc "rejects --ship-to '$bad'" 1 "$rc"
-done
-# And still accepts the shapes a real ssh target takes.
-for good in win2 my-host.example.com user@win2 10.0.0.5 host_1; do  # leak-allow: private-lan-ip fixture: accepted-shape ssh-target list
-    rc=0; run_cron arm --ship-to "$good" --dry-run >/dev/null 2>&1 || rc=$?
-    assert_rc "accepts --ship-to '$good'" 0 "$rc"
-done
-# Belt and braces on the actual artifact: no rejected character can reach the
-# generated runner, because none of them can get past the validator.
-rc=0; out=$(run_cron arm --ship-to 'win2"&calc' 2>&1) || rc=$?
-assert_rc "a hostile host never arms anything" 1 "$rc"
-assert_not_contains "and never reaches a runner" "calc" "$(cat "$CRON_DIR/qmd-reindex.sh" 2>/dev/null || echo NONE)"
 if [ ! -f "$CSTATE/crontab" ]; then
     pass "dry-run installed no crontab"
 else
@@ -485,9 +432,7 @@ assert_contains "runner pins the resolved qmd absolute path" \
     "--qmd-bin $QMD_BIN_DIR_PATH/qmd" "$runner_plain"
 assert_contains "runner cds into himmel root" "cd $HIMMEL_ROOT_EXP" "$runner_plain"
 # Self-overlap guard. cron has no MultipleInstancesPolicy, so unlike the
-# Windows task the POSIX runner has to serialize itself — and once --ship-to
-# points it at ship-index.sh, two overlapping runs race on the receiver's
-# single `<target>.preship` rollback copy and can leave no recoverable index.
+# Windows task the POSIX runner has to serialize local reindexes itself.
 # shellcheck disable=SC2016  # literal $lock/$log needles — expanded at fire time
 assert_contains "runner takes a self-overlap lock" 'mkdir "$lock"' "$runner"
 # shellcheck disable=SC2016
@@ -584,9 +529,8 @@ done
 # Behavioural, like C6b, and for the same reason: the textual assertions above
 # prove the lock code is PRESENT, which is not the same as proving it works —
 # and a concurrency guard that is merely present is the kind that gets found
-# out in production. cron has no MultipleInstancesPolicy, so once --ship-to
-# points this runner at ship-index.sh, two overlapping fires race on the
-# receiver's single `<target>.preship` rollback copy.
+# out in production. cron has no MultipleInstancesPolicy, so local
+# reindexes need the runner's self-overlap guard.
 #
 # The probe swaps the payload for a marker-then-sleep so a second fire lands
 # squarely inside the first one's critical section.
@@ -934,23 +878,6 @@ env OSTYPE=linux-gnu QMD_CADENCE_CRONTAB="$FAKE_CRONTAB" \
     QMD_CADENCE_BAT_DIR="$CRON_DIR" BUN_INSTALL="$BUN_ROOT" \
     PATH="$BUN_BIN_PATH:$STUB_DIR_PATH:$PATH_NOQMD" \
     "$REAL_BASH" "$SCRIPT" disarm >/dev/null 2>&1 || true
-
-# Test C19b: the ARM BANNER names the runner that was actually armed ----------
-#
-# The banner's "the entry fires bash + <script>" line was hard-coded to
-# qmd-reindex.sh in BOTH emitters, so arming a SHIP cadence contradicted itself
-# two lines apart — the arrow line said "reindex + SHIP to win2" and the
-# sentence under it said a plain reindex. That sentence is the one place the
-# operator reads to confirm what will actually run unattended, so a stale
-# literal there is worse than no sentence. Asserted on a REAL arm: --dry-run
-# returns before the banner is printed.
-echo "TEST: ship-mode arm banner names ship-index.sh (C19b)"
-rc=0; out=$(run_cron arm --ship-to win2 --force 2>&1) || rc=$?
-assert_rc "ship-mode arm succeeds" 0 "$rc"
-assert_contains "banner arrow line names the ship runner" "SHIP to win2" "$out"
-assert_contains "banner sentence names the ship runner too" "fires bash + ship-index.sh" "$out"
-assert_not_contains "banner no longer claims a plain reindex" "fires bash + qmd-reindex.sh" "$out"
-run_cron disarm >/dev/null 2>&1 || true
 
 # Test C17: unknown platform exits 2 ----------------------------------------------
 

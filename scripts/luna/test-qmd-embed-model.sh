@@ -196,6 +196,10 @@ assert_contains "set rewrites embed under a commented models: line" "embed: $GEM
 assert_rc "set leaves one models block" 1 "$(grep -c '^models:' "$(CFG)")"
 
 echo "== reembed"
+# HIMMEL-4896: retired collection filtering must fail before creating a copy.
+rc=0; out=$(run bash "$SCRIPT" reembed --model qwen --collections luna --qmd-bin "$STUBS/qmd" 2>&1) || rc=$?
+assert_rc "reembed rejects retired --collections" 1 "$rc"
+assert_contains "retired filtering is an unknown option" "reembed: unknown arg '--collections'" "$out"
 new_home 11
 make_index "$(IDX)" 768 "$GEMMA" "$GEMMA"
 printf 'models:\n  embed: %s\n' "$GEMMA" >"$(CFG)"
