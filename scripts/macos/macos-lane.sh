@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # macos-lane.sh — HIMMEL-4980. Console-owned local macOS test lane over
-# sickcodes/docker-osx (naked image, SSH-only). Plan + cost + EULA note:
+# sickcodes/docker-osx (SSH-only; needs a one-time interactive macOS install, so NOT usable
+# unattended). Plan + cost + EULA note:
 # docs/internals/macos-local-lane.md.
 #
 # Subcommands: start | wait-ssh | sync-worktree <dir> | run-suites <suite>...
@@ -28,7 +29,7 @@ TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
 
 LANE_DIR="${HIMMEL_MACOS_LANE_DIR:-${TMPDIR:-/tmp}/himmel-macos-lane}"
 NAME="${HIMMEL_MACOS_LANE_NAME:-himmel-macos-lane}"
-IMAGE="${HIMMEL_MACOS_LANE_IMAGE:-sickcodes/docker-osx:naked-auto}"
+IMAGE="${HIMMEL_MACOS_LANE_IMAGE:-sickcodes/docker-osx:latest}"
 DISK="${HIMMEL_MACOS_LANE_DISK:-$LANE_DIR/mac_hdd_ng.img}"
 SSH_PORT="${HIMMEL_MACOS_LANE_PORT:-50922}"
 SSH_USER="${HIMMEL_MACOS_LANE_USER:-user}"

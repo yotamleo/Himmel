@@ -6,8 +6,16 @@ A console-owned way to get a real macOS proof for BSD-userland, `ps`/`stat`/`sed
 self-hosted runner on a public repo is a risk — the GitHub macOS dispatch in
 `.github/workflows/os-verify.yml` stays the CI path).
 
-**Status: plan + runner only. Nothing is installed.** The first `docker pull`,
-image build and KVM use wait for the operator's explicit go through the console.
+**Status: not usable unattended (first real run, 2026-10-08).** The runner is
+untouched by a real guest: no macOS disk exists on the station. The image the
+plan named, `sickcodes/docker-osx:naked-auto`, is gone from Docker Hub (the only
+tags are `latest`, `master` and one sha, all pushed 2025-11-11), and `latest`
+ships no `BaseSystem.img` or `mac_hdd_ng.img`. A bootable disk needs a **one-time
+interactive macOS install** (VNC on port 5900 for docker-osx, the browser viewer
+on port 8006 for `dockur/macos`) with the installer fetched from Apple, then
+Remote Login enabled by hand. Until someone does that, the lane cannot run a
+suite. The operator chose not to pursue it: macOS proof goes to GitHub Actions
+macOS runners (a nightly os-verify macOS run), which is the CI path named above.
 
 ## Image choice
 
@@ -20,12 +28,13 @@ image build and KVM use wait for the operator's explicit go through the console.
 | Maintenance | ~53k stars, GPL-3.0, last push 2025-11-11 (luna note, revalidated 2026-09-14) = **community-thin, stale** | Active, 622 commits; commit dates not visible on the README page |
 | EULA text | luna note flags the licensing risk | README: "only run this container on Apple hardware" |
 
-**Choice: `sickcodes/docker-osx:naked-auto`**, pinned to **Monterey (12)** for the
-disk build (the most-exercised path; macOS 12 is old enough that bash 3.2 + BSD
-tools match what macOS users run, and Homebrew still supports it as tier 3).
-Reason: it is the only candidate with a documented headless SSH mode, which is
-what a console-driven runner needs. Staleness is the accepted risk — the lane
-only needs the container to boot an image we already own. If it stops booting,
+**Choice: `sickcodes/docker-osx:latest`** (the `naked-auto` tag no longer exists),
+pinned to **Monterey (12)** for the disk build (the most-exercised path; macOS 12
+is old enough that bash 3.2 + BSD tools match what macOS users run, and Homebrew
+still supports it as tier 3). Reason: it has a documented SSH mode once a disk
+exists, which is what a console-driven runner needs; the disk itself comes from a
+one-time interactive install (see Status). Staleness is the accepted risk — the
+lane only needs the container to boot an image we already own. If it stops booting,
 `dockur/macos` is the fallback, but it needs a manual first install and an SSH
 setup inside the guest. **Re-verify the flags below on the first real run.**
 
@@ -50,9 +59,10 @@ setup inside the guest. **Re-verify the flags below on the first real run.**
 ## One-time setup (needs the operator go; run from a console shell, never a leg)
 
 1. `export HIMMEL_MACOS_LANE_OK=1` in the launching shell.
-2. Pull `sickcodes/docker-osx:naked-auto`; produce `mac_hdd_ng.img` under
-   `HIMMEL_MACOS_LANE_DIR` (default `$TMPDIR/himmel-macos-lane`) per the upstream
-   README (Monterey). Use a persistent dir, not tmp, for the real disk.
+2. Pull `sickcodes/docker-osx:latest`; produce `mac_hdd_ng.img` under
+   `HIMMEL_MACOS_LANE_DIR` (default `$TMPDIR/himmel-macos-lane`) by running the
+   interactive macOS install over VNC per the upstream README (Monterey). This
+   step is manual and unproven here. Use a persistent dir, not tmp, for the real disk.
 3. Boot once, create the `user` account, enable Remote Login.
 4. Generate the lane key: `ssh-keygen -t ed25519 -N '' -f $HIMMEL_MACOS_LANE_DIR/id_ed25519`
    and install the public key in the guest. The runner never uses the host's keys or `~/.ssh`.
@@ -96,6 +106,5 @@ local testing; this doc does not make the licensing question go away.
 
 ## Not done yet
 
-- The `himmel-ops:vm`-style entry (item 3 of the ticket) and the real first run
-  (`scripts/test-himmel-doctor.sh`, `test-hook-copy-reaper.sh`) wait for the
-  operator's go; HIMMEL-4980 stays open.
+- The `himmel-ops:vm`-style entry (item 3 of the ticket) and any suite run in a
+  guest: blocked on the interactive install above. HIMMEL-4980 stays open.
