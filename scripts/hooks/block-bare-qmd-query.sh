@@ -1299,14 +1299,14 @@ _dyn_body() {
 # qmd_words decline and skips this reading entirely (HIMMEL-4989).
 dyn_check() {
     local LC_ALL=C t=$1 dp=$2 ar=${3:-0} n i=0 j c pd bq pp=1 w nx k s inner subs sp lastd tail nm r
-    local adang=' ' fdang=' ' vdyn=' ' wo=0 al=0 vm=0 fn=0 bd
+    local adang=' ' fdang=' ' vdyn=' ' wopt=0 wx=0 wo=0 al=0 vm=0 fn=0 bd
     n=${#t}
     if [ "$dp" -gt 4 ]; then deny=1; return 0; fi
     while [ "$i" -lt "$n" ]; do
         c=${t:i:1}
         case "$c" in
             ' '|$'\t') i=$((i + 1)); continue ;;
-            ';'|'|'|'&'|'{'|'}'|'('|')') pp=1 wo=0 al=0 vm=0; i=$((i + 1)); continue ;;
+            ';'|'|'|'&'|'{'|'}'|'('|')') pp=1 wo=0 wopt=0 al=0 vm=0; i=$((i + 1)); continue ;;
             '<'|'>')
                 while [ "$i" -lt "$n" ]; do
                     case "${t:i:1}" in '<'|'>'|'&'|'|') i=$((i + 1)) ;; *) break ;; esac
@@ -1370,9 +1370,11 @@ dyn_check() {
             # A case arm's pattern (`*)`) is no program.
             if [ "$nx" = ')' ] && [ -z "$subs" ]; then i=$j; continue; fi
             if [ "$wo" = 1 ] && { [[ $w == -* ]] || [[ $w =~ ^[0-9.]+[smhd]?$ ]]; }; then
-                i=$j; continue
+                wopt=1; i=$j; continue
             fi
-            wo=0
+            # A wrapper option may take an operand (`env -u HOME`), so the word
+            # after one is read as a program and the next is read as one too.
+            wx=$wopt wopt=0 wo=0
             if [[ $w =~ ^[a-z_][a-z0-9_]*= ]]; then
                 nm=${w%%=*}
                 case "${w#*=}" in *'$'*|*'`'*) vdyn="$vdyn$nm " ;; esac
@@ -1410,7 +1412,7 @@ dyn_check() {
                 fi
             fi
             if _dyn_glob "$w"; then deny=1; return 0; fi
-            pp=0
+            if [ "$wx" = 1 ]; then wo=1; else pp=0; fi
         else
             if [ "$al" = 1 ] && [[ $w == *=* ]]; then
                 nm=${w%%=*} r=${w#*=}
