@@ -2089,8 +2089,8 @@ _c29_headless() {
         case $n in 2) a1="$w" ;; 3) a2="$w" ;; 4) a3="$w" ;; esac
         case "$w" in -p | --print) return 0 ;; esac
     done
-    [ "$a1" = daemon ] && [ "$a2" = run ] && return 0
-    [ "$a2" = daemon ] && [ "$a3" = run ] && return 0
+    [ "$a1" = daemon ] && [ "$a2" = run ] && return 0 # t13b-ok: matches an argv word to skip an existing claude daemon, starts none
+    [ "$a2" = daemon ] && [ "$a3" = run ] && return 0 # t13b-ok: matches an argv word to skip an existing claude daemon, starts none
     return 1
 }
 
