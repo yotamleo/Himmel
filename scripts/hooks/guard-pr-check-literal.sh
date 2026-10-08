@@ -936,11 +936,9 @@ if [ "$PR_TOKFAIL" = 0 ]; then
     k=0 sg=-1 cw=-1
     # A substitution can build an option word or the command word itself
     # (`$(printf %s -Obash)`, `$G grep`), and no word of it is classified, so
-    # a line that has a git word or a substitution at all fails closed.
+    # a line with ANY substitution fails closed, git word or not (`g$(echo i)t`).
     # Fail direction: closed (deny only when a guarded script is mentioned).
-    if [ "$ST_SUBST" = 1 ]; then
-        [[ $cmd =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
-    fi
+    [ "$ST_SUBST" = 1 ] && PR_GIT_UNSAFE=1
     while [ "$k" -lt "$ST_N" ]; do
         if [ "${ST_S[k]}" != "$sg" ]; then sg=${ST_S[k]}; cw=-1; fi
         if [ -z "${ST_RO[k]}" ]; then
@@ -953,11 +951,6 @@ if [ "$PR_TOKFAIL" = 0 ]; then
         fi
         k=$((k + 1))
     done
-fi
-if [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
-    shown=${cmd//$'\n'/ }
-    shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
 fi
 case "$flat" in
     *[cC][rR]/*|*[hH]andover/*) ;;
@@ -975,6 +968,17 @@ done
 fence=${fence# }
 fence=${fence% }
 [[ "$fence" =~ $FENCE_RE ]] && exit 0
+
+# After the fence exemption: the canonical fence's own `$(printenv ...)` is a
+# substitution naming a guarded script, not a git command. An env -S line is
+# deferred to the check after the env -S deny, which words the cause better.
+envs_deferred=0
+[[ $cmd =~ (^|[^[:alnum:]_])env[[:space:]].*(-S|--split-string) ]] && envs_deferred=1
+if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+    shown=${cmd//$'\n'/ }
+    shown=${shown:0:200}
+    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+fi
 
 # norm <path> - drop empty and . segments. A .. is kept, so the path no longer
 # reads as scripts/cr/<script> and denies: the kernel resolves .. after
@@ -1525,6 +1529,13 @@ herestring_split_mention() { # herestring_split_mention <raw command> - true
 if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \
     && { split_unresolvable_mention "$cmd" || herestring_split_mention "$cmd"; }; then
     deny "an env -S / --split-string string naming a guarded target cannot be fully resolved (a backslash escape, '#' or '\$' - GNU env -S: \\c ignores the rest, '#' comments, \${VAR} expands), so which script runs is unprovable; run the target by its literal spelling with no env -S wrapper (HIMMEL-1813)."
+fi
+# An env -S line deferred here from the early check, so the more specific
+# env -S deny above names the cause when it applies.
+if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+    shown=${cmd//$'\n'/ }
+    shown=${shown:0:200}
+    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
 fi
 [ "$hit" -eq 1 ] || exit 0
 # ponytail: a glob through a directory symlink the text does not spell as

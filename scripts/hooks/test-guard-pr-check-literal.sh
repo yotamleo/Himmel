@@ -1621,7 +1621,11 @@ for v in \
     'git grep -e echo$((IFS=1))-Obash -- scripts/cr/pr-check-env.sh' \
     'G=git; $G grep -Obash -- scripts/cr/pr-check-env.sh' \
     '${G:-git} grep -Obash -- scripts/cr/pr-check-env.sh' \
-    '$(echo git) grep -Obash -- scripts/cr/pr-check-env.sh'; do
+    '$(echo git) grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '$(printf %s g i t) grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '$(echo g)it grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'g$(echo i)t grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'g`echo i`t grep -Obash -- scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4953 unwalked git segment [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # Pathspec mentions and the HIMMEL-4950 allow cases stay allowed.
@@ -1636,6 +1640,11 @@ for v in \
     'git add -- --foo{a,b} scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4953 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a
+# guarded mention is unsafe, since it can assemble the git word; split the command.
+# shellcheck disable=SC2016 # the $( is literal hook input
+run "HIMMEL-4953 accepted over-deny [wc + unrelated substitution] -> deny" 2 \
+    "$(payload 'wc -l scripts/cr/pr-check-env.sh; echo $(date)' "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo
