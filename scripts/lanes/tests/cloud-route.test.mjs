@@ -295,7 +295,7 @@ test('LOCAL-NATIVE: a ticket that cites the state-repo spec (HIMMEL-4827, HIMMEL
 });
 
 test('LOCAL-NATIVE: each state-repo reference alone routes local', () => {
-  for (const need of ['See the state repo for the plan.', 'Plan is in the state-repo.', 'Read handovers/yotamleo/himmel/x.md.', 'Spec at specs/HIMMEL-4818/plan.md.']) {
+  for (const need of ['See the state repo for the plan.', 'Plan is in the state-repo.', 'Read handovers/yotamleo/himmel/x.md.', 'Spec at specs/HIMMEL-4818/plan.md.', 'Read /home/u/state/handovers/yotamleo/himmel/specs/HIMMEL-4818/plan.md.']) {
     assert.equal(classifyTicket(tk({ description: `Edit scripts/a.sh. ${need}` }), ctx()).class, 'LOCAL-NATIVE', need);
   }
 });

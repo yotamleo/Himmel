@@ -36,7 +36,7 @@ const REPO = resolve(HERE, '..', '..');
 const MAX_ASKS = 3;
 const REPO_SLUG = 'yotamleo/Himmel';
 const HOOKS = /^scripts\/hooks\//;
-const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bstate[ -]repo\b|(?<![\w./-])handovers\/[\w.-]+\/|(?<![\w./-])specs\/HIMMEL-\d|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n]*--backend|\bqmd\b[^\n]*?(?<![\w-])(?:-c|--collections?)[\s=]+['"]?(?!himmel(?![\w-]))[\w-]|(?:~|\$HOME|\$\{HOME\})\/\.(?:himmel|cache)\/|\btest VMs?\b|himmel-ops:vm|\bvmsdk\b|\bVBoxManage\b|\bLIVE\b[^\n.]{0,40}\bledger\b|\barm(?:s|ed|ing)?\b[^\n.]{0,40}\bcadence\b|\bsystemd[ -](?:timer|unit|service)s?\b|\batrm\b/i;
+const NEEDS = /\bluna\b|\bvault\b|handover state|\$HANDOVER_DIR|\bstate[ -]repo\b|(?<![\w.-])handovers\/[\w.-]+\/|(?<![\w.-])specs\/HIMMEL-\d|\bqmd\s+(?:query|vsearch|embed|pull)\b|vector search|(?<![\w.-])\/graphify\b|semantic (?:graphify|extraction)|\bgraphify\b[^\n]*--backend|\bqmd\b[^\n]*?(?<![\w-])(?:-c|--collections?)[\s=]+['"]?(?!himmel(?![\w-]))[\w-]|(?:~|\$HOME|\$\{HOME\})\/\.(?:himmel|cache)\/|\btest VMs?\b|himmel-ops:vm|\bvmsdk\b|\bVBoxManage\b|\bLIVE\b[^\n.]{0,40}\bledger\b|\barm(?:s|ed|ing)?\b[^\n.]{0,40}\bcadence\b|\bsystemd[ -](?:timer|unit|service)s?\b|\batrm\b/i;
 const FILE_RE = /(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|\.claude|\.github|\.codex)\/[\w.+@-]+(?:\/[\w.+@-]+)*\/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)/g;
 
 // The trust list is read as data, one extended regex per line (ci-trust-paths.txt).
