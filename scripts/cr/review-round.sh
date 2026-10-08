@@ -225,7 +225,7 @@ judge_class_check() {
 const fs = require("fs"), path = require("path"), cp = require("child_process"), e = process.env;
 const allowed = new Set(["option-parsing", "cwd-indirection", "shell-parsing", "tool-defaults", "reader-allowlist", "other"]);
 const seg = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const candidate = e.CANDIDATE.split("/")[0];
+const candidates = e.CANDIDATE.split(" ").map(r => r.split("/")[0]);
 const records = (qid) => {
   const dir = path.join(e.VERDICT_DIR, qid);
   if (!seg.test(qid) || !fs.lstatSync(dir).isDirectory() || fs.lstatSync(dir).isSymbolicLink()) throw Error("invalid history qid " + qid);
@@ -251,7 +251,8 @@ const records = (qid) => {
   });
 };
 try {
-  const current = records(candidate).filter(r => r.nogo && r.head === e.WANT);
+  const candidateRecords = candidates.flatMap(records);
+  const current = candidateRecords.filter(r => r.nogo && r.head === e.WANT);
   if (current.some(r => r.decision)) process.exit(0);
   const classes = new Set(current.flatMap(r => r.classes));
   const prior = [];
@@ -262,7 +263,7 @@ try {
     if (!record || !/^[0-9a-f]{40}$/.test(head)) throw Error("invalid consumed verdict history");
     if (head !== e.WANT) prior.push(...records(record.split("/")[0]).filter(r => r.nogo && r.head === head));
   }
-  for (const r of records(candidate)) {
+  for (const r of candidateRecords) {
     if (r.nogo && r.head !== e.WANT && cp.spawnSync("git", ["merge-base", "--is-ancestor", r.head, e.WANT]).status === 0) prior.push(r);
   }
   const repeated = [...new Set(prior.flatMap(r => r.classes).filter(c => classes.has(c)))];
@@ -277,8 +278,8 @@ try {
 '
 }
 
-# HIMMEL-4700: print "<qid>/<name>" of a judge record ruling NO-GO for head
-# $1, in the exact console-kit/write-verdict.sh format, under this repo's
+# HIMMEL-4700: print space-separated "<qid>/<name>" records ruling NO-GO for
+# head $1 (one per qid), in console-kit/write-verdict.sh format, under this repo's
 # verdict scope; rc 1 when there is none. A qid counts only when every record
 # in it parses, so a hand-written or edited file disqualifies its qid.
 # HIMMEL-4720: a qid already consumed in any branch's .verdicts is skipped.
@@ -307,6 +308,7 @@ judge_nogo_record() (
     done
     re_session='^writer-session: [A-Za-z0-9-]+$'
     re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+    hits=""
     for qdir in "$dir"/*/; do
         qdir="${qdir%/}"
         qid="${qdir##*/}"
@@ -343,12 +345,12 @@ judge_nogo_record() (
             if [ -z "$hit" ] && [ "$word" = "NO-GO $want" ]; then hit="$qid/$name"; fi
         done
         if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then
-            judge_class_check "$hit" "$want" || exit 8
-            printf '%s\n' "$hit"
-            exit 0
+            hits="${hits:+$hits }$hit"
         fi
     done
-    exit 1
+    [ -n "$hits" ] || exit 1
+    judge_class_check "$hits" "$want" || exit 8
+    printf '%s\n' "$hits"
 )
 
 # HIMMEL-4600: decide whether the round after the third may run, as the one
@@ -421,7 +423,6 @@ delta_check() {
     [ "$judge_rc" -ne 8 ] || return 8
     if [ -z "$delta_used" ]; then
         if [ "$(ledger_query finding "$delta_from")" = "finding" ]; then
-            delta_verdict=""
             delta_trigger="fix"
             return 0
         fi
@@ -437,12 +438,10 @@ delta_check() {
             if clean_tree="$(git merge-tree --write-tree "$delta_from" "$merged_base" 2>/dev/null)" \
                 && [ "$clean_tree" = "$(git rev-parse "$delta_to^{tree}" 2>/dev/null)" ]; then
                 delta_trigger="merge-forward"
-                delta_verdict=""
                 return 0
             fi
             if version_only_merge "$delta_from" "$merged_base" "$delta_to"; then
                 delta_trigger="merge-forward"
-                delta_verdict=""
                 return 0
             fi
         fi
@@ -458,7 +457,8 @@ delta_check() {
         fi
     fi
     if [ "$head_scan" -eq 1 ] && [ "$judge_rc" -eq 0 ] && [ -n "$delta_verdict" ]; then
-        delta_trigger="verdict:${delta_verdict%%/*}"
+        first_verdict="${delta_verdict%% *}"
+        delta_trigger="verdict:${first_verdict%%/*}"
         return 0
     fi
     delta_verdict=""
@@ -529,7 +529,9 @@ if [ "$verb" = "start" ]; then
             elif [ -n "$delta_verdict" ]; then
                 tmp_verdicts="$verdict_state.tmp.$$"
                 if ! { cat "$verdict_state" 2>/dev/null || [ ! -e "$verdict_state" ]; } > "$tmp_verdicts" \
-                    || ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_verdict" >> "$tmp_verdicts" \
+                    || ! ( for record in $delta_verdict; do
+                        printf '%s %s %s\n' "$delta_from" "$delta_to" "$record" || exit 1
+                    done ) >> "$tmp_verdicts" \
                     || ! mv "$tmp_verdicts" "$verdict_state"; then
                     rm -f "$tmp_verdicts"
                     if [ "$had_delta" -eq 1 ]; then

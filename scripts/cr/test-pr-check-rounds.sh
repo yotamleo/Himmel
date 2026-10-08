@@ -1015,8 +1015,10 @@ assert_has "$cr_out" "option-parsing" "class repeat refusal names the class"
 assert_has "$cr_out" "layer-decision:" "class repeat refusal names the way out"
 # Keep the first head's history on this branch, but use a different class
 # for other positive controls so unrelated fixture qids cannot stop them.
-for class_case in different-class-allowed layer-decision-unlocks other-repeat-refused class-set-overlap-refused legacy-classless-nogo-never-matches; do
-    three_rounds "$class_case" clean
+for class_case in different-class-allowed layer-decision-unlocks other-repeat-refused class-set-overlap-refused legacy-classless-nogo-never-matches finding-trigger-history-retained second-candidate-repeat-refused candidate-class-history-retained; do
+    cc_panel=clean
+    [ "$class_case" != finding-trigger-history-retained ] || cc_panel=suggestion
+    three_rounds "$class_case" "$cc_panel"
     cc_first="$cap_r3_head"
     fix_commit "$class_case"
     cc_second="$cap_fix_head"
@@ -1033,6 +1035,10 @@ for class_case in different-class-allowed layer-decision-unlocks other-repeat-re
     esac
     printf 'class: %s\n\nfirst finding\n' "$cc_first_class" > "$jev/judge-evidence.md"
     judge "$class_case-first" NO-GO "$cc_first"
+    if [ "$class_case" = candidate-class-history-retained ]; then
+        printf 'class: cwd-indirection\n\nfirst candidate\n' > "$jev/judge-evidence.md"
+        judge "a-$class_case-first" NO-GO "$cc_first"
+    fi
     if [ "$class_case" = legacy-classless-nogo-never-matches ]; then
         # Model a record written before class: existed, retaining its stamp.
         sed -i.bak '/^class:/d' "$vscope/$class_case-first/judge.md"
@@ -1045,6 +1051,10 @@ for class_case in different-class-allowed layer-decision-unlocks other-repeat-re
     cc_third="$(git -C "$repo" rev-parse "$class_case")"
     printf 'class: %s\n%s\n\nnext finding\n' "$cc_next_class" "$cc_layer" > "$jev/judge-evidence.md"
     judge "$class_case-next" NO-GO "$cc_second"
+    if [ "$class_case" = second-candidate-repeat-refused ]; then
+        printf 'class: cwd-indirection\n\nanother current candidate\n' > "$jev/judge-evidence.md"
+        judge "a-$class_case-next" NO-GO "$cc_second"
+    fi
     cc_out="$(start_round "$cc_third" clean "$class_case")"; cc_rc=$?
     assert_eq "$cc_rc" "$cc_want" "$class_case"
     if [ "$cc_want" = 8 ]; then
