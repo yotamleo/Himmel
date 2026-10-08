@@ -577,11 +577,11 @@ _prune_cache_dir() {
         case "$f" in
             *.wait) ;;
             *) for w in "$f".*.wait; do
-                   [ -f "$w" ] && [ ! -L "$w" ] && [ -z "$(find "$w" -maxdepth 0 -mmin +"$mins" 2>/dev/null)" ] && continue 2
+                   [ -f "$w" ] && [ ! -L "$w" ] && [ -z "$(find "$w" -maxdepth 0 -mmin +"$mins" 2>/dev/null)" ] && continue 2  # gnu-ok: -maxdepth/-mmin are in BSD find too
                done ;;
         esac
         rm -f -- "$f" 2>/dev/null
-    done < <(find "$dir" -maxdepth 1 -type f \( -name 'pr-*' -o -name 'run-*' \) -mmin +"$mins" -print0 2>/dev/null)
+    done < <(find "$dir" -maxdepth 1 -type f \( -name 'pr-*' -o -name 'run-*' \) -mmin +"$mins" -print0 2>/dev/null)  # gnu-ok: -maxdepth/-mmin/-print0 are in BSD find too
     return 0
 }
 if [ "$CACHE_ON" -eq 1 ]; then _prune_cache_dir "${CHECK_CI_CACHE_DIR:-${HOME:-/tmp}/.himmel/state/ci-cache}"; fi
