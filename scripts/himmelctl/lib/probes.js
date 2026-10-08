@@ -638,7 +638,10 @@ function marketplaceSourceDrift(settings, template, ctx) {
   for (const name of Object.keys(want)) {
     const wantSrc = marketplaceSource(want[name]).replace(/<himmel-path>/g, ctx.repoRoot);
     const haveSrc = marketplaceSource(have[name]);
-    if (!wantSrc || !haveSrc || wantSrc === haveSrc) continue;
+    // HIMMEL-4279: compare the {source, value} pair — the same string under a
+    // github vs a directory source is not the same marketplace.
+    if (!wantSrc || !haveSrc) continue;
+    if (wantSrc === haveSrc && want[name].source.source === have[name].source.source) continue;
     if (name !== 'himmel' && marketplaceIdentity(want[name]) === marketplaceIdentity(have[name])) continue;
     const reconcile = `claude plugin marketplace remove ${shq(name)} --scope ${scope} && claude plugin marketplace add ${shq(wantSrc)} --scope ${scope}`;
     out.push(name === 'himmel'
