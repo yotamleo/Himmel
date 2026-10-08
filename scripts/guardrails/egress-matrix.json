@@ -118,6 +118,11 @@
       "why": "HIMMEL-4084 operator ruling 2026-10-02: substrate-shaped DeepSeek sessions may read/write work artifacts only under the explicit station process-environment flag. This inference cell does not reopen extraction or enrichment; nested vault handovers still classify as vaults."
     },
     {
+      "corpus": "himmel-code", "provider": "atlassian-mcp", "purpose": "*",
+      "verdict": "deny",
+      "why": "HIMMEL-4938: the Atlassian MCP server is reachable only for the tool-catalog fetch (the mcp-tool-catalog allow row at the end). Placed before the himmel-code wildcard allow below so that wildcard cannot open tools/call or any other use of this provider"
+    },
+    {
       "corpus": "himmel-code", "provider": "*", "purpose": "*",
       "verdict": "allow",
       "why": "public-propagated code/docs; impl lanes (codex/GLM/alibaba) are ratified consumers. Caveat rides the lane guards: debrand content-not-name; secrets are excluded by block-read-secrets, not by this matrix"

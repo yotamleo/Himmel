@@ -403,9 +403,9 @@ for (const u of purposes.filter(x => x !== "catalog-fetch")) {
   assert(evaluate("mcp-tool-catalog", "atlassian-mcp", u).effective === "deny",
     `mcp-tool-catalog x atlassian-mcp x ${u} must stay deny — only tools/list is permitted`);
 }
-// himmel-code is excluded: its pre-existing himmel-code x * x * allow row (public
-// code) already covers every provider; this change neither widens nor narrows it.
-for (const c of corpora.filter(x => x !== "mcp-tool-catalog" && x !== "himmel-code")) {
+// himmel-code included: an explicit himmel-code x atlassian-mcp x * deny sits before
+// the himmel-code x * x * wildcard allow, so that wildcard cannot reach this provider.
+for (const c of corpora.filter(x => x !== "mcp-tool-catalog")) {
   for (const u of purposes) {
     assert(evaluate(c, "atlassian-mcp", u).effective === "deny",
       `${c} x atlassian-mcp x ${u} must be deny — the allow is scoped to the tool catalog`);
