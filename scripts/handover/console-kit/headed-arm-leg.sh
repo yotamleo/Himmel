@@ -2168,6 +2168,17 @@ if [ "$HEADLESS" -eq 1 ] && [ -n "$_ll_cache" ]; then
     export HEADED_ARM_LAUNCH_RECORD="$_ll_cache/launch-logs/$NAME.log"
 fi
 
+# (HIMMEL-5056) Pre-accept the folder/hooks trust prompt for the leg's cwd, on
+# the config the lane's claude reads, so a fresh worktree or eval clone does not
+# park a headed leg at a prompt nobody answers. leg-pretrust.sh refuses any cwd
+# that is not a console worktree or an eval clone. Non-fatal by design: a failure
+# only costs the prompt this used to cost. A consult never runs in a leg cwd.
+# With no LEG_REPO the leg runs in the primary checkout, which never qualifies.
+if [ "$CONSULT" -ne 1 ] && [ -n "${HEADED_ARM_REPO:-}" ]; then
+    bash "$HERE/leg-pretrust.sh" "$LANE" "$HEADED_ARM_REPO" \
+        || echo "headed-arm-leg: WARN trust pre-accept not applied (see above); the leg may stop at the folder-trust prompt" >&2
+fi
+
 # Paired with this exec's PID: headed-arm.sh ignores stale ambient values.
 export HEADED_ARM_CONTEXT_PID="$$" HEADED_ARM_LEG_PROFILES="$PROFILES_MJS"
 # (HIMMEL-4152) A consult runs headed-arm.sh on the pinned runtime: an absolute
