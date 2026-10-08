@@ -105,6 +105,9 @@ resolve_console_doc() {
         # a doc named after THIS session.
     fi
 
+    # HIMMEL-4449: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+    # shellcheck disable=SC1091
+    if . "$REPO/scripts/lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
     # shellcheck source=scripts/lib/handover-path.sh
     . "$REPO/scripts/lib/handover-path.sh" || return 1
     local primary hit
