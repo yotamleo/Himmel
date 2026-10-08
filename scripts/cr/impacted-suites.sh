@@ -495,10 +495,10 @@ fi
 # and exited 0. -z output is raw; tr turns it into the one-per-line lists the
 # loops below read. ponytail: a name holding a newline still splits in two (a
 # bogus path, never a missed one); upgrade path is NUL-reading loops if one ever appears.
-if ! changed=$(git diff -z --name-only --no-renames "$mb" "$head_sha" | tr '\0' '\n'; [ "${PIPESTATUS[0]}" -eq 0 ]); then
+if ! changed=$(git diff -z --name-only --no-renames "$mb" "$head_sha" | tr '\0' '\n'); then
     echo "impacted-suites.sh: git diff ${mb}..${head_sha} failed" >&2; exit 2
 fi
-if ! tree=$(git ls-tree -r -z --name-only "$head_sha" | tr '\0' '\n'; [ "${PIPESTATUS[0]}" -eq 0 ]); then
+if ! tree=$(git ls-tree -r -z --name-only "$head_sha" | tr '\0' '\n'); then
     echo "impacted-suites.sh: git ls-tree ${head_sha} failed" >&2; exit 2
 fi
 
