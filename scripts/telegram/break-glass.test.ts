@@ -88,6 +88,7 @@ function harness(code = 0, stdout = "ok\n", stderr = ""): Harness {
     reply: async (_c, text) => { h.replies.push(text); },
     audit: async (f) => { h.audits.push(f); },
     now: () => h.clock.t,
+    enabledOps: new Set(BREAK_GLASS),
   };
   return h;
 }
@@ -180,6 +181,16 @@ test("a forwarded mutating op issues no code; a new op replaces an older pending
   const pending = JSON.parse(await readFile(join(root, "break-glass-pending.json"), "utf8").catch(() => "{}"));
   expect(pending.op).toBeUndefined();
   void second;
+});
+
+test("a pending code for an op disabled since it was issued refuses at /confirm", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-revoked-"));
+  const h = harness();
+  const code = await issue(root, h, "/revert-main 2202");
+  h.deps.enabledOps = new Set(["repin-hooks"]);
+  await confirm(root, h, code);
+  expect(h.runs).toEqual([]);
+  expect(h.audits[h.audits.length - 1].result).toBe("confirm-refused");
 });
 
 test("the agent marker refusal (rc 19) and other failures are reported, never as success", async () => {

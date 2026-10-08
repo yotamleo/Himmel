@@ -97,7 +97,12 @@ echo dirty >> "$PRIMARY/scripts/hooks/h.sh"
 bg repin-hooks - - >/dev/null; assert_rc "R2 a primary with tracked changes is left alone" 21 "$?"
 git -C "$PRIMARY" checkout -q -- scripts/hooks/h.sh
 touch "$PRIMARY/untracked-note"
+# shellcheck disable=SC2016 # the hook expands these at run time, not here
+printf '#!/usr/bin/env bash\necho "other=${OTHER_GUARD_OK:-unset} token=${TELEGRAM_BOT_TOKEN:-unset}" > "%s"\n' "$TMP/hookenv" > "$PRIMARY/.git/hooks/post-merge"
+chmod +x "$PRIMARY/.git/hooks/post-merge"
 out=$(bg repin-hooks - -); rc=$?
+assert_contains "R7 repin-hooks scrubs *_OK and the bot token before git runs" "other=unset token=unset" "$(cat "$TMP/hookenv" 2>/dev/null)"
+rm -f "$PRIMARY/.git/hooks/post-merge"
 assert_rc "R3 a clean primary (untracked files allowed) fast-forwards" 0 "$rc"
 assert_contains "R4 it prints the new primary head" "primary=$TIP" "$out"
 assert_contains "R5 the hooks on disk are the origin tip's" "v2" "$(cat "$PRIMARY/scripts/hooks/h.sh")"
@@ -231,6 +236,10 @@ assert_rc "Z7 an open same-repo PR with state is reset" 0 "$rc"
 assert_contains "Z9 the old round is backed up with a timestamp suffix" "3" "$(cat "$STATE"/feat/leg-x.round.bak-* 2>/dev/null)"
 out=$(GH_VIEW='{"headRefName":"feat/leg-x","isCrossRepository":false,"state":"OPEN"}' BREAK_GLASS_CR_RESET="$CRR" CR_RESET_PRIMARY="$PRIMARY" CR_RESET_GH="$TMP/bin/gh" CR_RESET_LOCK_LIB="$LOCK_LIB" bg cr-reset 5 -); rc=$?
 assert_rc "Z10 break-glass cr-reset relays cr-reset.sh (nothing left to reset)" 12 "$rc"
+echo 4 > "$STATE/feat/leg-x.round"
+GH_VIEW='{"headRefName":"feat/leg-x","isCrossRepository":false,"state":"OPEN"}' crr 5 >/dev/null
+n=$(find "$STATE/feat" -name 'leg-x.round.bak-*' | wc -l | tr -d ' ')
+[ "$n" = 2 ] && echo "PASS Z11 a second reset keeps the first backup" || { echo "FAIL Z11 expected 2 round backups, got $n"; FAILED=$((FAILED + 1)); }
 
 git -C "$PRIMARY" worktree remove --force "$TMP/wt" 2>/dev/null
 echo

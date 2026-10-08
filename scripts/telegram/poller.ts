@@ -683,6 +683,9 @@ export type AutoCommandDeps = {
   restart?: RestartFn;
   scheduleWatchdog?: ScheduleWatchdogFn;
   now?: () => number;   // ms clock for the break-glass confirm expiry (tests inject it)
+  // The ops enabled NOW: /confirm refuses a pending op that was disabled since
+  // its code was issued (the pending file outlives a restart). Absent = none.
+  enabledOps?: Set<string>;
 };
 
 // Break-glass confirm codes (HIMMEL-5047). One pending challenge per bridge
@@ -791,7 +794,7 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
   }
   if (route.op === "confirm") {
     const p = await takeConfirm(root);
-    if (!confirmMatches(p, msg, route.arg, nowMs())) {
+    if (!confirmMatches(p, msg, route.arg, nowMs()) || !deps.enabledOps?.has(p.op)) {
       await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: p?.op ?? "confirm", arg: p?.arg ?? "-", time: p?.time ?? "-", rc: -1, result: "confirm-refused" });
       await reply("⚠️ confirm refused — no matching pending command (wrong, expired or already used). Nothing ran; send the command again for a new code.");
       return;
@@ -2212,7 +2215,7 @@ export async function main(): Promise<void> {
   // long before the timer fires, and a ref'd timer would hold it open in between.
   const scheduleWatchdog: ScheduleWatchdogFn = (afterMs, fire) => { setTimeout(fire, afterMs).unref?.(); };
   const autoFire: AutoFire = (msg, route) => {
-    void handleAutoCommand(root, msg, route, { runScript, reply: (chat, text) => replyViaOutbox(root, chat, text), audit: auditFn, restart, scheduleWatchdog })
+    void handleAutoCommand(root, msg, route, { runScript, reply: (chat, text) => replyViaOutbox(root, chat, text), audit: auditFn, restart, scheduleWatchdog, enabledOps })
       .catch((e) => console.error(`[poller] auto-action failed for op ${route.op}: ${e}`));
   };
   // authorize = operator-identity (global allowFrom) AND chat-allowlisted (makeAllow):

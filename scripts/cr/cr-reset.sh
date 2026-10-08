@@ -69,7 +69,8 @@ if ! (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round SHARED_BRANC
 fi
 owner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$branch" 2>/dev/null)"
 
-ts="$(date +%Y%m%dT%H%M%S)"
+# The pid suffix keeps two resets in the same second from overwriting a backup.
+ts="$(date +%Y%m%dT%H%M%S)-$$"
 rc=0
 moved=""
 for f in head round delta; do

@@ -353,6 +353,9 @@ op_restart_bridge() {
     echo "bridge restart scheduled in 3s"
 }
 
+# Every op runs scrubbed (launch-leg re-exports its one bypass after this).
+scrub_env
+
 case "$OP" in
     station-status) op_station_status ;;
     revert-main) op_revert_main ;;
