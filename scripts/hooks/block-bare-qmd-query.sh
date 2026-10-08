@@ -1069,12 +1069,16 @@ qmd_nested() {
                     # /proc/self/fd/0) is no program source: both keep the
                     # stdin check below on.
                     if [ "$mode" = sh ] && [ "$so" = 0 ] && [[ $t =~ ^-[[:alpha:]]*s[[:alpha:]]*$ ]]; then ss=1; fi
-                    if [ "$oa" = 1 ]; then
-                        # A shell option's argument is no program operand.
+                    if [ "$oa" != 0 ]; then
+                        # A shell option's argument is no program operand;
+                        # an rc file (oa=2) is still run, so a written one
+                        # denies.
+                        if [ "$oa" = 2 ] && _ran_written "$t"; then deny=1; return 0; fi
                         oa=0
                     elif [ "$mode" = sh ] && [[ $nw =~ ^(sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish)$ ]] &&
                         [[ $t =~ ^[-+][[:alpha:]]*[oO]$ || $t =~ ^--(rcfile|init-file)$ ]]; then
                         oa=1
+                        [[ $t == --* ]] && oa=2
                     elif [ "$atw" = 1 ]; then
                         # at and batch take a time spec, not a program; only
                         # a bare -f names the job file that replaces stdin;
@@ -1285,7 +1289,8 @@ qmd_check() {
         { { [[ $crude == *qmd* ]] &&
             { [[ $crude == *query* || $crude == *search* ]] || [[ $cmd == *"\$'"* || $cmd == *'$"'* ]]; }; } ||
             [[ $cmd_lc$crude == *tmux* || $cmd_lc$crude == *screen* ||
-                $cmd_lc$crude == *pwsh* || $cmd_lc$crude == *powershell* ]]; }; then
+                $cmd_lc$crude == *pwsh* || $cmd_lc$crude == *powershell* ]] ||
+            [[ $cmd == *"\$'"* ]]; }; then
         # HIMMEL-4526: qmd_words declines past 16 KiB, which leaves only the
         # bare readings; every pipe, redirect, launcher and stdin reading
         # would be skipped. An oversized command naming qmd and a verb (or an

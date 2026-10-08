@@ -744,6 +744,8 @@ deny "${w}bash +o errexit < f"
 deny "${w}bash +O extglob < f"
 deny "${w}bash --rcfile r < f"
 deny "${w}bash --init-file r < f"
+deny "${w}bash --rcfile f -i < /dev/null"
+deny "${w}bash --init-file f -i < /dev/null"
 deny "${w}sh -o errexit < f"
 deny "${w}at now < f"
 deny "${w}at -q a now < f"
@@ -800,6 +802,13 @@ for pad_c in 2740 3334 6667; do
     size_deny "$pad_n pwsh encoded" "${pad}; pwsh -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
     size_deny "$pad_n powershell encoded" "${pad}; powershell -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
     size_deny "$pad_n tmux before pad" "tmux send-keys -t a q m d Space q u e r y Enter; ${pad}"
+    # ANSI-C escapes spell the program without the literal text: any $' fails closed.
+    size_deny "$pad_n ansi hex tmux" "${pad}; "'$'"'\\x74mux' send-keys -t a q m d Space q u e r y Space x Enter"
+    size_deny "$pad_n ansi octal tmux" "${pad}; "'$'"'\\164mux' send-keys -t a q m d Enter"
+    size_deny "$pad_n ansi mid tmux" "${pad}; "'$'"'t\\x6dux' send-keys -t a q m d Enter"
+    size_deny "$pad_n ansi split tmux" "${pad}; "'$'"'\\x74'mux send-keys -t a q m d Enter"
+    size_deny "$pad_n ansi pwsh" "${pad}; "'$'"'\\x70wsh' -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+    size_deny "$pad_n ansi powershell" "${pad}; "'$'"'\\x70owershell' -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
     size_allow "$pad_n no reader" "${pad}; echo hi | cat"
 done
 
