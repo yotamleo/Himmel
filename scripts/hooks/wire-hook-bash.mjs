@@ -169,6 +169,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // call in every session; see the script's own header for the fail-open
   // cost model.
   'claudex-inbox-hook.sh',
+  // PostToolUse `*`, right after the inbox hook (HIMMEL-4828): delivers this
+  // session's himmel-bus log. Dark unless HIMMEL_BUS_NAME is set; cheap bash
+  // fast path, fails open.
+  'bus-deliver-hook.sh',
   // SessionStart chain (HIMMEL-2003).
   'check-update-available.sh',
   'inject-initiative.sh',
@@ -182,6 +186,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // claudex-inbox-hook.sh above — same cursor file, so a bullet delivered by
   // one is never re-delivered by the other.
   'claudex-inbox-sessionstart.sh',
+  // SessionStart mirror of bus-deliver-hook.sh above (HIMMEL-4828). A separate
+  // file, not a second listing of the same name: the installer anchors a script
+  // by its first position, which would be the PostToolUse one.
+  'bus-deliver-sessionstart.sh',
   // SessionStart, own matcher "compact" (HIMMEL-2973 S1): re-injects a
   // console's `## Live state` after an autocompact, the console-side twin of
   // the per-leg contract cat headed-arm-leg.sh already wires (HIMMEL-2990).
@@ -427,6 +435,10 @@ function bareCommand(script) {
 // EXPECTED_SCRIPT_ORDER scripts with zero present entries (HIMMEL-1643:
 // install-when-missing). Order-preserving so installMissingEntries() can
 // process them in EXPECTED_SCRIPT_ORDER order and chain anchors correctly.
+// Scripts whose install target is not SessionStart (HIMMEL-4828). A script not
+// named here installs under SessionStart.
+const INSTALL_EVENT = Object.freeze({ 'bus-deliver-hook.sh': 'PostToolUse' });
+
 function missingOwnedScripts(entries) {
   const present = new Set(entries.flatMap((e) => e.classified.scripts));
   // De-duplicated: EXPECTED_SCRIPT_ORDER repeats a guardrail once per matcher
@@ -494,9 +506,10 @@ function matchingBracket(text, openIdx) {
 // pass below treats it like any other unwired command and folds it into the
 // same `changed` count -- no separate "installed" bookkeeping needed.
 //
-// SessionStart ONLY (own-only invariant, minimally extended): this tool has
-// no general "which event does script X belong to" table, so it only knows
-// how to install into the one event its current inventory tail lives in. A
+// SessionStart by default (own-only invariant, minimally extended): this tool
+// has no general "which event does script X belong to" table, only the small
+// INSTALL_EVENT override below (HIMMEL-4828); any other script installs into
+// the event its inventory tail lives in. A
 // missing script with NO preceding present SessionStart entry to anchor on
 // (e.g. a PostToolUse/PreToolUse script that vanished) is refused rather than
 // guessed at -- see the fail() below.
@@ -504,17 +517,17 @@ function matchingBracket(text, openIdx) {
 // Confines the reformatting blast radius to the hooks.SessionStart array's
 // OWN text span (located via matchingBracket): every other byte in the file
 // is untouched, matching the rest of this tool's minimal-diff philosophy.
-function installMissingEntries(text, missing) {
-  const keyMatch = text.match(/"SessionStart"\s*:\s*\[/);
-  if (!keyMatch) fail('cannot install: hooks.SessionStart array not found in settings text');
+function installMissingEntries(text, missing, event = 'SessionStart') {
+  const keyMatch = text.match(new RegExp(`"${event}"\\s*:\\s*\\[`));
+  if (!keyMatch) fail(`cannot install: hooks.${event} array not found in settings text`);
   const openIdx = keyMatch.index + keyMatch[0].length - 1; // index of '['
   const closeIdx = matchingBracket(text, openIdx);
-  if (closeIdx === -1) fail('cannot install: hooks.SessionStart array is not balanced');
+  if (closeIdx === -1) fail(`cannot install: hooks.${event} array is not balanced`);
 
   const lineStart = text.lastIndexOf('\n', keyMatch.index) + 1;
   const baseIndent = text.slice(lineStart, keyMatch.index).match(/^\s*/)[0];
 
-  const groups = parseJson(text.slice(openIdx, closeIdx + 1), 'hooks.SessionStart array');
+  const groups = parseJson(text.slice(openIdx, closeIdx + 1), `hooks.${event} array`);
 
   // Flat, anchorable list of {group, hookIndex, script} for OWNED entries
   // currently in this array, in document order. Only classification is
@@ -537,7 +550,7 @@ function installMissingEntries(text, missing) {
       if (candidate) { anchor = candidate; break; }
     }
     if (!anchor) {
-      fail(`cannot install ${script}: no preceding EXPECTED_SCRIPT_ORDER script is present in hooks.SessionStart to anchor after`);
+      fail(`cannot install ${script}: no preceding EXPECTED_SCRIPT_ORDER script is present in hooks.${event} to anchor after`);
     }
     // timeout: 30 (codex-adv-3): every hand-wired SessionStart sibling carries
     // an explicit, bounded timeout (10/15/30 here). An installed entry WITHOUT
@@ -636,7 +649,11 @@ export function rewriteSettingsText(text) {
   // unwired command and land in the SAME `changed` count — no separate
   // "installed N" message needed. text/before/entries are re-derived from the
   // post-install text for everything that follows.
-  const workingText = missing.length > 0 ? installMissingEntries(text, missing) : text;
+  let workingText = text;
+  for (const event of ['PostToolUse', 'SessionStart']) {
+    const forEvent = missing.filter((s) => (INSTALL_EVENT[s] || 'SessionStart') === event);
+    if (forEvent.length > 0) workingText = installMissingEntries(workingText, forEvent, event);
+  }
   const before = parseJson(workingText, 'settings input (post-install)');
   const entries = hookEntries(before);
   // Defensive re-check: install must have produced EXACTLY the full inventory,

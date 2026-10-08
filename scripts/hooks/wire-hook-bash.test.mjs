@@ -347,6 +347,45 @@ test('installs a missing owned SessionStart entry back into place', () => {
   });
 });
 
+// HIMMEL-4828: bus-deliver-hook.sh is a PostToolUse script, installed through
+// INSTALL_EVENT; its SessionStart twin takes the default path. The repo's own
+// settings.json carries neither line yet (a child ticket adds it), so this
+// fixture is exactly the "registered by the wirer, not by hand" case.
+test('installs the bus delivery hooks into PostToolUse and SessionStart, dark and idempotent', () => {
+  withFixture((fixture) => {
+    const strip = JSON.parse(readFileSync(fixture, 'utf8'));
+    for (const event of ['PostToolUse', 'SessionStart']) {
+      for (const group of strip.hooks[event]) {
+        group.hooks = group.hooks.filter((h) => !/bus-deliver-(hook|sessionstart)\.sh/.test(h.command ?? ''));
+      }
+    }
+    writeFileSync(fixture, `${JSON.stringify(strip, null, 2)}\n`);
+
+    const result = invoke(fixture);
+    assert.equal(result.status, 0, result.stderr);
+    const after = JSON.parse(readFileSync(fixture, 'utf8'));
+    const find = (event, name) => {
+      for (const group of after.hooks[event]) {
+        const idx = group.hooks.findIndex((h) => (h.command ?? '').includes(name));
+        if (idx !== -1) return { hooks: group.hooks, idx };
+      }
+      return null;
+    };
+    const post = find('PostToolUse', 'bus-deliver-hook.sh');
+    assert.ok(post, 'bus-deliver-hook.sh installed under PostToolUse');
+    assert.match(post.hooks[post.idx - 1].command, /claudex-inbox-hook\.sh/);
+    assert.equal(post.hooks[post.idx].timeout, 30);
+    const start = find('SessionStart', 'bus-deliver-sessionstart.sh');
+    assert.ok(start, 'bus-deliver-sessionstart.sh installed under SessionStart');
+    assert.match(start.hooks[start.idx - 1].command, /claudex-inbox-sessionstart\.sh/);
+    assert.ok(!find('SessionStart', 'bus-deliver-hook.sh'), 'the PostToolUse script is not installed under SessionStart');
+
+    const again = invoke(fixture);
+    assert.equal(again.status, 0, again.stderr);
+    assert.match(again.stdout, /already wired; no change made/);
+  });
+});
+
 test('installs a missing entry without disturbing an unrelated foreign SessionStart hook', () => {
   withFixture((fixture) => {
     const settings = withoutScript(readFileSync(fixture, 'utf8'), 'qmd-staleness-notice.sh');
