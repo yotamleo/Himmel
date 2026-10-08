@@ -642,7 +642,7 @@ if [ -n "$round_cwd" ]; then
         fi
     fi
     if [ -z "$round_cmd" ]; then
-        printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate could not be evaluated for this implementor dispatch (bun missing, scripts/telegram/round-guard.ts missing, or a temp file could not be created; dispatch cwd: %s) — fix the environment and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_cwd" >&2
+        printf 'guard-implementor-dispatch: REFUSED (round guard): the reviewed-round predicate could not be evaluated for this implementor dispatch (bun missing, scripts/telegram/round-guard.ts missing, or a temp file could not be created; dispatch cwd: %s) — fix the environment and re-dispatch, or IMPL_GUARD_DISABLE=1 to bypass every check in this hook.\n' "$round_cwd" >&2
         [ -n "$round_task_path" ] && rm -f "$round_task_path" 2>/dev/null
         exit 2
     fi
@@ -658,7 +658,7 @@ if [ -n "$round_cwd" ]; then
             exit 2
             ;;
         *)
-            printf 'guard-implementor-dispatch: REFUSED (round guard, HIMMEL-1568): the reviewed-round predicate did not finish cleanly (rc=%s) for this implementor dispatch — failing CLOSED. Output: %s\n' "$round_rc" "$round_out" >&2
+            printf 'guard-implementor-dispatch: REFUSED (round guard): the reviewed-round predicate did not finish cleanly (rc=%s) for this implementor dispatch — failing CLOSED. Output: %s\n' "$round_rc" "$round_out" >&2
             exit 2
             ;;
     esac
@@ -784,6 +784,25 @@ fi
 # contribute" on every ordinary call would be new noise on every existing
 # cache, not a fix.
 #
+# HIMMEL-4894: reuse the admission gate's account/mode/window validator.
+# Window lifts spend only seven_day to 100; standing lifts also spend five_hour
+# to 100 unless CADENCE_BANK_MAX_PCT is explicit. Hook-specific overrides win.
+_lift_lib="$hook_dir/../lib/bank-lift.sh"
+# shellcheck source=../lib/bank-lift.sh
+# shellcheck disable=SC1091
+if { [ -r "$_lift_lib" ] && . "$_lift_lib"; } 2>/dev/null; then
+    if bank_lift_valid "$CACHE_PATH"; then
+        if [ -z "${IMPL_GUARD_WEEKLY_HARD:-}" ]; then WEEKLY_HARD=100; fi
+        if [ "$BANK_LIFT_STANDING" = true ] && [ -z "${IMPL_GUARD_HARD:-}" ]; then
+            HARD=$(valid_threshold "${CADENCE_BANK_MAX_PCT:-100}" 80 CADENCE_BANK_MAX_PCT)
+        fi
+    elif [ "$BANK_LIFT_REASON" != missing ]; then
+        warn "bank lift invalid ($BANK_LIFT_REASON) — retaining default HARD thresholds unless explicitly overridden"
+    fi
+else
+    warn "bank lift validator unreadable — retaining default HARD thresholds unless explicitly overridden"
+fi
+
 # five_hour ---------------------------------------------------------------
 FIVE_USABLE=0
 FIVE_RESETS_LIVE=0

@@ -3573,7 +3573,13 @@ that cannot execute.
 **Retained bank policy (HIMMEL-920):** when no lane is available (registry-
 absent or unrunnable), the guard falls through to the pre-existing bank-aware
 cost guard instead of allowing unconditionally. `IMPL_GUARD_HARD` (default 80)
-refuses an eligible implementor-shaped dispatch outright; `IMPL_GUARD_WARN`
+and `IMPL_GUARD_WEEKLY_HARD` (default 85) refuse at their respective bank ceilings.
+A lift validated by `scripts/lib/bank-lift.sh` raises weekly HARD to 100;
+a standing lift also raises five-hour HARD to `CADENCE_BANK_MAX_PCT` (default
+100). Explicit `IMPL_GUARD_*` overrides win; invalid overrides retain their
+original defaults. Invalid/unreadable lifts warn and retain defaults; absent
+lifts retain the existing policy and refusal message. WARN is unchanged.
+The guard refuses an eligible implementor-shaped dispatch outright; `IMPL_GUARD_WARN`
 (default 65) attaches a visible advisory instead of blocking. Both require a
 fresh `IMPL_GUARD_CACHE_PATH` usage cache (default max age 300s) and a
 provably live `five_hour.resets_at` window — a missing/unparseable
