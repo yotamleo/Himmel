@@ -19,6 +19,7 @@ export type Route =
   | { kind: "console"; name: string; text: string }
   | { kind: "consoles" }
   | { kind: "fleet"; verb: "status" | "legs" | "go?" | "push" | "halt"; leg?: string }
+  | { kind: "fleet-malformed" }
   | { kind: "lockdown" }
   | { kind: "chat"; text: string };
 
@@ -84,6 +85,11 @@ export function classify(raw: string): Route {
   if (t === "/halt") return { kind: "fleet", verb: "halt" };
   const fleet = t.match(/^\/(go|push|halt) ([A-Za-z0-9_.-]{1,64})$/);
   if (fleet && !fleet[2].includes("..")) return { kind: "fleet", verb: fleet[1] === "go" ? "go?" : fleet[1] as "push" | "halt", leg: fleet[2] };
+  // HIMMEL-4947: a reserved fleet verb with any other shape (bad/oversized/
+  // traversal label, control char, extra args, missing label, wrong case) is a
+  // terminal refusal, never agent chat. The next char must not continue a
+  // word, so `/gopher` and `/legsx` stay ordinary chat.
+  if (/^\/(?:go|push|halt|fleet|legs)(?![A-Za-z0-9_@])/i.test(t)) return { kind: "fleet-malformed" };
   if (t === "status" || t === "sessions") return { kind: "control", verb: t as "status" | "sessions" };
   const stop = t.match(/^stop\s+(\S+)$/i);
   if (stop && KEY.test(stop[1])) return { kind: "control", verb: "stop", ticket: stop[1] };

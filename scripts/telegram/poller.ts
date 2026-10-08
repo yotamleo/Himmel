@@ -397,7 +397,7 @@ function lockdownEnabled(root: string): boolean {
 
 // Closed console verbs never fall through to an agent; lockdown also closes
 // ordinary chat and the auto path. Keep the policy together before dispatch.
-async function handleConsolePolicy(root: string, msg: DeliveredMsg, route: Route, tagged: boolean, consoleRoute?: ConsoleRouteGate, auto?: AutoGate, notifyChat?: NotifyChatFn): Promise<boolean> {
+async function handleConsolePolicy(root: string, msg: DeliveredMsg, route: Route, tagged: boolean, fromOperator: boolean, consoleRoute?: ConsoleRouteGate, auto?: AutoGate, notifyChat?: NotifyChatFn): Promise<boolean> {
   const eligible = !tagged && consoleRoute && consoleRoute.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded;
   const reply: ConsoleReplyFn = (chat, text, name) => consoleRoute!.reply(chat, text, name, msg.message_id);
   if (route.kind === "lockdown" && consoleRoute?.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded) {
@@ -408,11 +408,17 @@ async function handleConsolePolicy(root: string, msg: DeliveredMsg, route: Route
   }
   // Any entry, even a dangling symlink, locks; reset is station-local.
   if (lockdownEnabled(root)) {
-    if (consoleRoute) await reply(msg.chat_id, "locked, reset at the station");
-    else if (notifyChat) await notifyChat(msg.chat_id, "locked, reset at the station");
+    // Station policy (HIMMEL-4947): every sender stays blocked, but only the
+    // operator is told why; nonoperators in a shared group get silence.
+    if (consoleRoute) { if (consoleRoute.authorize(msg.from, msg.chat_id)) await reply(msg.chat_id, "locked, reset at the station"); }
+    else if (notifyChat && fromOperator) await notifyChat(msg.chat_id, "locked, reset at the station");
     return true;
   }
-  if (["fleet", "lockdown", "console", "consoles"].includes(route.kind) && !eligible) return true;
+  if (["fleet", "fleet-malformed", "lockdown", "console", "consoles"].includes(route.kind) && !eligible) return true;
+  if (route.kind === "fleet-malformed") {
+    await reply(msg.chat_id, "⚠️ malformed fleet command — nothing was queued. Use /go, /push or /halt with one label of 1–64 letters, digits, _ . or - (no ..).");
+    return true;
+  }
   const threadName = eligible && (route.kind === "chat" || route.kind === "followup") && !msg.text.trimStart().startsWith("/") && msg.reply_to_message_id != null
     ? await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id) : null;
   const typedAuto = !tagged && route.kind === "auto" && auto?.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded;
@@ -485,7 +491,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
     console.error(`[poller] require-mention drop for ${session}`);
     return;
   }
-  if (await handleConsolePolicy(root, msg, route, tagged, consoleRoute, auto, notifyChat)) return;
+  if (await handleConsolePolicy(root, msg, route, tagged, fromOperator, consoleRoute, auto, notifyChat)) return;
   // control verbs act directly; minimal handling for v2.2 (status/sessions/stop)
   if (route.kind === "control") {
     if (route.verb === "stop" && "ticket" in route) {
@@ -1369,15 +1375,23 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     const settings = await resolveTelegramProfileSettings(sessionCwd, lanesDir);
     const mcpConfig = await resolveTelegramMcpConfig(repoCwd, lanesDir);
     if (lockdownEnabled(root)) return;
+    let lockedAtSpawn = false;
     const res = await runAndSettle(root, session, () => {
       // Settlement performs async I/O too: recheck immediately before spawn.
-      if (lockdownEnabled(root)) return Promise.resolve({ code: 1, capped: false, blocked: true, pid: 0, tail: "locked, reset at the station" });
+      // Not a content-filter block and no agent ran: code 0 settles the session
+      // back to idle with its pending lines uncommitted (HIMMEL-4947).
+      if (lockdownEnabled(root)) { lockedAtSpawn = true; return Promise.resolve({ code: 0, capped: false, pid: 0, tail: "locked, reset at the station" }); }
       return withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, settings, undefined, extraEnv, mcpConfig), deadlineMs);
     }, undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
     // run's stdout/stderr vanished and failures were undebuggable
     const logHead = `[${new Date().toISOString()}] session=${session} code=${res.code} capped=${res.capped} blocked=${res.blocked ?? false} pid=${res.pid}\n`;
     await atomicWrite(join(sd, "run.log"), logHead + (res.tail ?? "(no output captured — run hung or was killed at the deadline)") + "\n");
+    if (lockedAtSpawn) {
+      noticed.delete(session);
+      console.error(`[poller] lockdown arrived before spawn for ${session}; no agent ran, pending left queued`);
+      return;
+    }
     if (res.blocked) {
       // Content-filter block (HIMMEL-313): runAndSettle already parked this run as
       // "failed" directly (never transiting the transient "capped" back-off, so no
