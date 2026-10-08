@@ -53,7 +53,8 @@ check "usage without --root exits 2" "2" "$(bash "$AZ" --doc "$DOC" >/dev/null 2
 # HIMMEL-4919: a hung probe is bounded, prints a stable TIMEOUT line, and the
 # remaining sections still run. The stubs sleep as a grandchild (no exec), the
 # shape that holds a $(...) pipe open if only the parent is killed.
-. "$HERE/../../lib/timeout-bin.sh" 2>/dev/null
+# Resolved in a subshell: a source edge would pull check-ci-watch.sh into the lint set.
+_TIMEOUT_BIN="$(bash -c '. "$1" >/dev/null 2>&1; printf %s "$_TIMEOUT_BIN"' _ "$HERE/../../lib/timeout-bin.sh" 2>/dev/null)"
 if [ -n "${_TIMEOUT_BIN:-}" ]; then
     printf '#!/usr/bin/env bash\nsleep 30\necho late\n' > "$WORK/hang.sh"
     t0=$SECONDS
