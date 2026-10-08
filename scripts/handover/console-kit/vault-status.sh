@@ -76,7 +76,10 @@ if [ "$n" -gt 0 ] && [ -n "$oldest" ]; then
     if [ "$age" -ge $((stall_min * 60)) ]; then printf 'STALL:%s,%s\n' "$(fmt_age "$age")" "$n"; exit 0; fi
 fi
 
-if g rev-parse --verify -q '@{u}' >/dev/null 2>&1; then
+g rev-parse --verify -q '@{u}' >/dev/null 2>&1; up_rc=$?
+# rc 1 = no upstream configured (nothing to lag behind); any other rc is a failed read
+case "$up_rc" in 0|1) : ;; *) printf 'unknown\n'; exit 0 ;; esac
+if [ "$up_rc" -eq 0 ]; then
     ahead="$(g log '@{u}..HEAD' --format=%ct 2>/dev/null)" || { printf 'unknown\n'; exit 0; }
     first="$(printf '%s\n' "$ahead" | tail -n 1)"
     if [ -n "$first" ]; then

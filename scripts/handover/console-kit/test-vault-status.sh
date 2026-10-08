@@ -98,5 +98,14 @@ mkvault r
 tabf="$(printf 'a\tb.md')"; echo t > "$W/r/$tabf"; git -C "$W/r" "${GA[@]}" add -- "$tabf"; git -C "$W/r" "${GA[@]}" commit -q -m t; echo t2 >> "$W/r/$tabf"; touch -d '50 minutes ago' "$W/r/$tabf"  # gnu-ok
 check 'a tab in a path is counted with its real mtime' 'STALL:50m,1' "$(vs r)"
 
+# HIMMEL-4911 CR round 3: a failed upstream read is unknown, a missing upstream is ok
+git init -q -b main "$W/nu"; echo x > "$W/nu/x.md"; git -C "$W/nu" add x.md; git -C "$W/nu" "${GA[@]}" commit -q -m x
+check 'a vault with no upstream reads ok' 'ok' "$(vs nu)"
+mkvault w
+REAL_GIT="$(command -v git)"; mkdir -p "$W/shim"
+printf '#!/bin/sh\ncase "$*" in *"@{u}"*"--verify"*|*"--verify"*"@{u}"*) exit 124 ;; esac\nexec "%s" "$@"\n' "$REAL_GIT" > "$W/shim/git"
+chmod +x "$W/shim/git"
+check 'a failed upstream read reads unknown, not ok' 'unknown' "$(PATH="$W/shim:$PATH" TICK_VAULT_DIR="$W/w" bash "$VS")"
+
 if [ "$fails" -eq 0 ]; then printf 'ALL PASS\n'; exit 0; fi
 printf '%s FAILED\n' "$fails"; exit 1
