@@ -9,12 +9,14 @@
 #   qmd-auth-headers.sh           -> {"Authorization":"Bearer <token>"}  (or {} when no token yet)
 #   qmd-auth-headers.sh --token   -> the bare token (empty when absent)
 #
-# Token path: $QMD_HTTP_TOKEN_FILE, else ${XDG_CONFIG_HOME:-$HOME/.config}/qmd/http-token
+# Token path: $QMD_HTTP_AUTH_FILE (Claude Code strips env vars named *TOKEN* from a
+# headersHelper, so a custom daemon QMD_HTTP_TOKEN_FILE needs the same path here
+# under this name), else $QMD_HTTP_TOKEN_FILE, else ${XDG_CONFIG_HOME:-$HOME/.config}/qmd/http-token
 # - the same resolution the daemon uses. A group/world-readable file is not
 # trusted (the daemon refuses it too): print no token, never the secret.
 set -u
 
-token_file="${QMD_HTTP_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/qmd/http-token}"
+token_file="${QMD_HTTP_AUTH_FILE:-${QMD_HTTP_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/qmd/http-token}}"
 token=""
 if [ -f "$token_file" ]; then
   mode="$(stat -c '%a' "$token_file" 2>/dev/null || stat -f '%Lp' "$token_file" 2>/dev/null || echo 777)" # gnu-ok: BSD stat -f fallback on the same line

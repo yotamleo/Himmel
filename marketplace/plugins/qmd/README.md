@@ -24,7 +24,7 @@ shared **HTTP** endpoint instead of a per-session stdio process
 All sessions now address ONE `qmd mcp --http --daemon` on `localhost:8181`.
 The daemon requires `Authorization: Bearer <token>` (HIMMEL-5002; 401 without
 it, `/health` stays open). The token is a 0600 file the daemon generates on
-first start (`$QMD_HTTP_TOKEN_FILE`, else `~/.config/qmd/http-token`). The
+first start (`$QMD_HTTP_TOKEN_FILE`, else `~/.config/qmd/http-token`; Claude Code strips `*TOKEN*` env vars from the headers helper, so a custom path also needs `QMD_HTTP_AUTH_FILE` set to the same file). The
 plugin's `.mcp.json` sends it through `headersHelper`
 (`scripts/qmd-auth-headers.sh`), and `ensure-qmd-daemon.sh` probes with it, so
 the secret is never in the repo or on a command line. Restart the daemon once

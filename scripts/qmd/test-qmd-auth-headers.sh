@@ -33,6 +33,11 @@ out="$(HOME="$home" QMD_HTTP_TOKEN_FILE="$tok" bash "$helper")"
 [ "$out" = "{\"Authorization\":\"Bearer $SECRET\"}" ] || fail "(a) header json wrong: [$out]"
 [ "$(HOME="$home" QMD_HTTP_TOKEN_FILE="$tok" bash "$helper" --token)" = "$SECRET" ] || fail "(a) --token wrong"
 
+# (d) Claude Code strips *TOKEN* env vars from a headersHelper: QMD_HTTP_AUTH_FILE carries the custom path
+chmod 600 "$tok"
+out="$(HOME="$home" QMD_HTTP_AUTH_FILE="$tok" bash "$helper")"
+[ "$out" = "{\"Authorization\":\"Bearer $SECRET\"}" ] || fail "(d) QMD_HTTP_AUTH_FILE not honoured: [$out]"
+
 # (b) world-readable file is refused
 chmod 644 "$tok"
 out="$(HOME="$home" QMD_HTTP_TOKEN_FILE="$tok" bash "$helper")"

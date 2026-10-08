@@ -17,14 +17,14 @@ cat >"$T/home/.claude.json" <<EOF
 {"mcpServers":{"obsidian-vault":{"type":"stdio","command":"node","args":["-e","process.stdout.write(process.env.OBSIDIAN_API_KEY+'|'+process.env.OBSIDIAN_HOST)"],"env":{"OBSIDIAN_API_KEY":"$FAKE","OBSIDIAN_HOST":"127.0.0.1"}}}}
 EOF
 unset HIMMEL_MCP_SECRETS_DIR # an inherited override could point at the real secret store
-export HOME="$T/home" HIMMEL_MCP_PROFILES_OUT="$T/out"
+export HOME="$T/home" USERPROFILE="$T/home" HIMMEL_MCP_PROFILES_OUT="$T/out"
 
 node "$HERE/build-mcp-profiles.mjs" >"$T/gen.log" 2>&1
 P="$T/out/local.vault.json"
 
 if [ -f "$P" ] && lacks "$FAKE" "$P" "$T/gen.log"; then ok "profile and log carry no secret value"; else bad "secret value leaked into profile or log"; fi
 S="$T/home/.config/himmel/mcp-secrets/obsidian-vault/OBSIDIAN_API_KEY"
-mode="$(stat -c %a "$S")" # gnu-ok: linux-only test
+mode="$(stat -c %a "$S" 2>/dev/null || stat -f %Lp "$S")" # gnu-ok: BSD stat -f fallback
 if [ -f "$S" ] && [ "$mode" = "600" ] && [ "$(cat "$S")" = "$FAKE" ]; then ok "secret stored 0600 under ~/.config"; else bad "secret file missing or not 0600"; fi
 if [ -f "$P" ] && grep -q '"OBSIDIAN_HOST": "127.0.0.1"' "$P"; then ok "non-secret env stays in the profile"; else bad "non-secret env dropped"; fi
 
