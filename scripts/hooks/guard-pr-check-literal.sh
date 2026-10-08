@@ -836,11 +836,22 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
-        [ "${ST_X[j]}${ST_G[j]}" = 00 ] || return 1
+        if [ "${ST_X[j]}${ST_G[j]}" != 00 ]; then
+            # HIMMEL-4950: an expanded word that can begin with `-` may become
+            # an exec-capable option (`-O{bash,x}`, `{-O,x}bash`, `--ext-d?ff`).
+            # After --, words are pathspec operands, not options.
+            # A `$` anywhere in the word word-splits (`echo$IFS-Obash`), so it
+            # is unsafe wherever it appears, not only at the start.
+            if [ "$paths" != 1 ]; then
+                case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_UNSAFE=1 ;; esac
+            fi
+            # Keep scanning: a later word may be an exec option (`docs/{a,b} -O{x,y}`).
+            xp=1; j=$((j + 1)); continue
+        fi
         # After --, option-shaped words are literal pathspec operands.
         if [ "$paths" = 1 ]; then j=$((j + 1)); continue; fi
         # Refuse these even when the older text classifier cannot see a
@@ -875,12 +886,15 @@ git_mentions_only() { # git_mentions_only <command-word index>
         fi
         j=$((j + 1))
     done
-    [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
+    [ "$xp" = 0 ] && [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
     [ "$sub" != rm ] || [ "$cached" = 1 ]
 }
 readers_only() { # true when every command the command line runs is a reader
     local k sg=-1 cw=-1 w
-    st_tokenize "$cmd" || return 1
+    # HIMMEL-4950: a `${…}` the tokenizer cannot parse (zsh `${=IFS}`) on a git
+    # command line may word-split into an exec option; flag it unsafe.
+    # shellcheck disable=SC2016 # a literal ${ is matched, never expanded
+    st_tokenize "$cmd" || { case "$cmd" in *git*'${'*) PR_GIT_UNSAFE=1 ;; esac; return 1; }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
     k=0
     while [ "$k" -lt "$ST_N" ]; do
