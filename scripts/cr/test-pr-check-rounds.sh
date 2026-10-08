@@ -1329,6 +1329,8 @@ assert_has "$t2_out" "delta round was already used" "finding-row refusal names t
 three_rounds t3conc suggestion
 fix_commit t3conc
 (start_round "$cap_fix_head" fail t3conc >/dev/null) || fail "t3conc pending delta setup"
+t3_claim="$(grep -Ec '^[0-9]+$' "$git_dir/cr-review-rounds/t3conc.delta.run" 2>/dev/null)"
+assert_eq "$t3_claim" "1" "a real delta start records its caller pid"
 sleep 60 &
 t3_pid=$!
 printf '%s\n' "$t3_pid" > "$git_dir/cr-review-rounds/t3conc.delta.run"
