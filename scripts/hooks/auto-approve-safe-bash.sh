@@ -1708,13 +1708,16 @@ esac
 # makes them see different words than the shell runs. No allow for those
 # bytes. CR is left to tokenize_seg_words' ponytail note (CRLF inputs must
 # keep their verdict, test-crlf-boundary.sh).
+# HIMMEL-4967: abstain AFTER the root-walk DENY below, never before it -- an
+# early exit would downgrade that deny to no opinion.
+abstain=0
 case "$cmd" in
-    *[$'\f\v']*) exit 0 ;;
+    *[$'\f\v']*) abstain=1 ;;
 esac
 # HIMMEL-4752 (judge j2011): U+2028 (LINE SEPARATOR, bytes e2 80 a8) is a word
 # character to bash but a space to some tokenizers; abstain rather than guess.
 case "$cmd" in
-    *$'\xe2\x80\xa8'*) exit 0 ;;
+    *$'\xe2\x80\xa8'*) abstain=1 ;;
 esac
 # HIMMEL-3750 round 3 (codex-1): a backslash-newline continuation is folded
 # away by the shell before parsing even INSIDE double quotes, so a quoted
@@ -1735,7 +1738,7 @@ cmd="$(fold_backslash_newline "$cmd")"
 # came, before the CRLF→LF fold above, so any CR at all refuses it.
 case "$cmd" in
     bash*impacted-suites.sh*)
-        cmd_is_impacted_suites "${result#*$'\n'}" && emit_allow "pr-check impacted-suites literal (HIMMEL-3486): ${cmd%%$'\n'*}" ;;
+        [ "$abstain" = 0 ] && cmd_is_impacted_suites "${result#*$'\n'}" && emit_allow "pr-check impacted-suites literal (HIMMEL-3486): ${cmd%%$'\n'*}" ;;
 esac
 
 # Quote-aware structural scan (HIMMEL-209): produces SCAN_SEGS (split only at
@@ -1775,6 +1778,9 @@ $SCAN_SEGS
 EOF
         ;;
 esac
+
+# HIMMEL-4967: the deny scan is done; the FF/VT/U+2028 abstain applies now.
+[ "$abstain" = 1 ] && exit 0
 
 # --- Global tripwires: never auto-approve dynamic execution / file writes ---
 # shellcheck disable=SC2016 # the single-quoted $( etc. are literal match patterns, not expansions
