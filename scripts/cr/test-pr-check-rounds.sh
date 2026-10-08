@@ -265,7 +265,11 @@ assert_eq "$(wc -l < "$PANEL_CALLS" | tr -d ' ')" "$before_full4_calls" "a refus
 # origin/main gets the ONE delta round, scoped to round-3 head..new head.
 git -C "$repo" checkout -q main
 printf 'main-forward-2\n' > "$repo/main2.txt"
-git -C "$repo" add main2.txt
+# HIMMEL-4995: main also adds a line above the branch's hunk, so the branch's
+# own diff shifts (a changed context line) and this merge is not a free
+# clean-merge - it keeps the one delta round, as before.
+printf 'top\nbase\n' > "$repo/f.txt"
+git -C "$repo" add main2.txt f.txt
 git -C "$repo" commit -q -m main-forward-2
 git -C "$repo" push -q origin main
 git -C "$repo" checkout -q feature
@@ -277,7 +281,7 @@ out5="$(cd "$repo" && PANEL_MODE=suggestion-on PANEL_DIFF_LAST="$tmp/delta-diff"
 assert_eq "$rc5" "0" "merge-forward delta round runs"
 assert_has "$out5" "pr-check: delta round 4 on feature (from $head3)" "merge-forward head gets the one delta round"
 assert_has "$(cat "$tmp/delta-diff")" "main-forward-2" "delta round reviews the round-3 head..new head diff"
-assert_lacks "$(cat "$tmp/delta-diff")" "feature-1" "delta round does not re-review the already-reviewed branch diff"
+assert_lacks "$(cat "$tmp/delta-diff")" "+feature-1" "delta round does not re-review the already-reviewed branch diff"
 assert_lacks "$(cat "$CLEAR_CALLS" 2>/dev/null)" "feature" "first pass never clears before later reviewers finish"
 printf '%s\n' 'VERDICT [kept-1] = disproved' | (cd "$repo" && bash "$fx/scripts/cr/write-verdicts.sh" prior-blocking --branch feature)
 printf '%s\n' 'VERDICT [kept-1] = disproved' | (cd "$repo" && bash "$fx/scripts/cr/write-verdicts.sh" aggregate --branch feature)
@@ -1444,6 +1448,107 @@ assert_has "$(cat "$git_dir/cr-review-rounds/scopelint.delta")" "scope:sl-1" "th
 # The existing fix trigger is unchanged and still records itself as fix.
 assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"
 assert_has "$(cat "$git_dir/cr-review-rounds/feature.delta")" " merge-forward" "the merge-forward trigger still records merge-forward"
+
+# HIMMEL-4995: a CLEAN merge of main past the cap is admitted without spending
+# the one delta round; a merge that changes the PR's own diff or resolves a
+# conflict is not, unless a judge-signed merge-resolution record binds it.
+main_commit() {
+    # main_commit <file> <content>: commit <file> on main, push, return to the branch
+    mm_back="$(git -C "$repo" branch --show-current)"
+    git -C "$repo" checkout -q main
+    printf '%s\n' "$2" > "$repo/$1"
+    git -C "$repo" add "$1"
+    git -C "$repo" commit -q -m "main $1"
+    git -C "$repo" push -q origin main
+    git -C "$repo" checkout -q "$mm_back"
+}
+
+# Clean merge: admitted, repeatable, and the delta round stays unspent.
+three_rounds cmok clean
+cm_r3="$cap_r3_head"
+main_commit cm-main-1.txt one
+git -C "$repo" merge -q --no-edit main
+cm_head="$(git -C "$repo" rev-parse cmok)"
+cm_out="$(start_round "$cm_head" clean cmok)"; cm_rc=$?
+assert_eq "$cm_rc" "0" "a clean merge of main after the cap is admitted"
+assert_has "$cm_out" "pr-check: delta round 4 on cmok (from $cm_r3)" "the clean merge is scoped from the last reviewed head"
+if [ -e "$git_dir/cr-review-rounds/cmok.delta" ]; then fail "a clean merge leaves the delta round unspent"; else pass "a clean merge leaves the delta round unspent"; fi
+main_commit cm-main-2.txt two
+git -C "$repo" merge -q --no-edit main
+cm_head2="$(git -C "$repo" rev-parse cmok)"
+cm_out="$(start_round "$cm_head2" clean cmok)"; cm_rc=$?
+assert_eq "$cm_rc" "0" "a second clean merge is admitted too"
+
+# The one delta round is still there for a real fix after the clean merges.
+printf 'fix\n' >> "$repo/cmok.txt"
+git -C "$repo" commit -q -am "fix cmok"
+cm_fix="$(git -C "$repo" rev-parse cmok)"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch cmok --head "$cm_head2" --model stub --id stub-cm --severity sug --file f.txt --line 1 \
+    --verdict agreed >/dev/null 2>"$tmp/cmok-finding.err" || fail "cmok finding setup"
+cm_out="$(start_round "$cm_fix" clean cmok)"; cm_rc=$?
+assert_eq "$cm_rc" "0" "the unspent delta round still buys a fix after clean merges"
+assert_has "$(cat "$git_dir/cr-review-rounds/cmok.delta" 2>/dev/null)" " fix" "that fix records the fix trigger"
+
+# Delta already spent: a clean merge is still admitted, one that changes the
+# PR's own diff is not (main lands the same f.txt line the PR appended).
+three_rounds cmused suggestion
+printf 'fix\n' >> "$repo/cmused.txt"
+printf 'extra\n' >> "$repo/f.txt"
+git -C "$repo" commit -q -am "fix cmused"
+cap_fix_head="$(git -C "$repo" rev-parse cmused)"
+start_round "$cap_fix_head" clean cmused >/dev/null || fail "cmused delta setup"
+main_commit cm-used-1.txt one
+git -C "$repo" merge -q --no-edit main
+cu_head="$(git -C "$repo" rev-parse cmused)"
+cu_rc=0; start_round "$cu_head" clean cmused >/dev/null || cu_rc=$?
+assert_eq "$cu_rc" "0" "a clean merge is admitted after the delta round was spent"
+main_commit f.txt "$(git -C "$repo" show main:f.txt; echo extra)"
+git -C "$repo" merge -q --no-edit main
+cu_head2="$(git -C "$repo" rev-parse cmused)"
+cu_rc=0; start_round "$cu_head2" clean cmused >/dev/null || cu_rc=$?
+assert_eq "$cu_rc" "8" "a merge that changes the PR's own diff is not admitted after the delta was spent"
+
+# Conflict merge: refused without a record, admitted with a bound one.
+three_rounds cmconf clean
+cc_r3="$cap_r3_head"
+main_commit cmconf.txt "from main"
+git -C "$repo" merge -q --no-commit main >/dev/null 2>&1 || true
+printf 'resolved\n' > "$repo/cmconf.txt"
+git -C "$repo" add cmconf.txt
+git -C "$repo" commit -q --no-edit
+cc_head="$(git -C "$repo" rev-parse cmconf)"
+cc_out="$(start_round "$cc_head" clean cmconf)"; cc_rc=$?
+assert_eq "$cc_rc" "8" "a conflict-resolving merge gets no round without a record"
+scope_judge cc-1 "$cc_head" merge-resolution "$cc_r3"
+cc_out="$(start_round "$cc_head" clean cmconf)"; cc_rc=$?
+assert_eq "$cc_rc" "0" "a judge-signed merge-resolution record admits the conflict merge"
+assert_has "$(cat "$git_dir/cr-review-rounds/cmconf.delta")" "scope:cc-1" "the delta state names the merge-resolution record"
+
+# A merge-resolution record for another head, or another delta-from, is refused.
+three_rounds cmhead clean
+ch_r3="$cap_r3_head"
+main_commit cmhead.txt "from main"
+git -C "$repo" merge -q --no-commit main >/dev/null 2>&1 || true
+printf 'resolved\n' > "$repo/cmhead.txt"
+git -C "$repo" add cmhead.txt
+git -C "$repo" commit -q --no-edit
+ch_head="$(git -C "$repo" rev-parse cmhead)"
+scope_judge ch-1 "$ch_r3" merge-resolution "$ch_r3"
+ch_rc=0; start_round "$ch_head" clean cmhead >/dev/null || ch_rc=$?
+assert_eq "$ch_rc" "8" "a merge-resolution record for another head is refused"
+scope_judge ch-2 "$ch_head" merge-resolution "$ch_head"
+ch_rc=0; start_round "$ch_head" clean cmhead >/dev/null || ch_rc=$?
+assert_eq "$ch_rc" "8" "a merge-resolution record naming another delta-from is refused"
+
+# A merge-resolution record cannot admit a delta that is not a merge of main.
+three_rounds cmplain clean
+cp_r3="$cap_r3_head"
+scope_commit cmplain cmplain-extra.txt
+cp_head="$scope_head"
+scope_judge cp-1 "$cp_head" merge-resolution "$cp_r3"
+cp_rc=0; start_round "$cp_head" clean cmplain >/dev/null || cp_rc=$?
+assert_eq "$cp_rc" "8" "a merge-resolution record cannot admit a delta that is not a merge of main"
 
 # HIMMEL-4638 T1: an inherited delta_reuse never skips the counter bump on a
 # round before the cap (delta_reuse was only initialised inside delta_check).

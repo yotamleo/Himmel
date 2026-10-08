@@ -10,6 +10,10 @@
 # console-kit/write-verdict.sh records it in this repo's verdict scope - buys
 # one more delta round per reviewed head, even after the fix/merge-forward
 # delta was used. Consumed records are kept in <branch>.verdicts.
+# HIMMEL-4995: a CLEAN merge of the base (conflict-free, the PR's own diff
+# unchanged) is admitted past the cap without spending the one delta round; a
+# conflict-resolving merge needs a judge GO carrying `delta-scope:
+# merge-resolution` and `delta-from:`, bound like the HIMMEL-4952 scope records.
 # Bash 3.2-safe.
 # Platform guard: requires POSIX Bash 3.2+; on Windows, run under Git Bash.
 set -uo pipefail
@@ -378,6 +382,37 @@ judge_nogo_record() (
     printf '%s\n' "$hits"
 )
 
+# HIMMEL-4995: merge_forward_shape <from> <to> succeeds when <to> merges the
+# captured base into <from> and nothing else: at least one merge, every
+# non-merge commit it brought already on the base. Sets mf_merged_base.
+merge_forward_shape() {
+    [ -n "$base_sha" ] || return 1
+    [ -n "$(git rev-list --merges "$1..$2" 2>/dev/null)" ] || return 1
+    [ -z "$(git rev-list --no-merges "$1..$2" "^$base_sha" 2>/dev/null)" ] || return 1
+    mf_merged_base="$(git merge-base "$2" "$base_sha" 2>/dev/null)" || return 1
+    [ -n "$mf_merged_base" ]
+}
+# own_diff <base> <head>: the PR's own diff as text, minus the index and
+# hunk-header lines a moved base shifts.
+own_diff() {
+    git diff --no-ext-diff --no-color --no-renames "$1" "$2" 2>/dev/null \
+        | sed -e '/^index /d' -e 's/^@@ [^@]* @@.*$/@@/'
+}
+# clean_merge_forward <from> <to> succeeds only for a CLEAN merge-forward:
+# <to>'s tree is exactly the conflict-free merge of <from> with the base point
+# it merged, and the PR's own diff is the same text at <to> as at <from>. A
+# merge that edits or resolves anything fails.
+clean_merge_forward() {
+    merge_forward_shape "$1" "$2" || return 1
+    _cm_tree="$(git merge-tree --write-tree "$1" "$mf_merged_base" 2>/dev/null)" || return 1
+    [ "$_cm_tree" = "$(git rev-parse "$2^{tree}" 2>/dev/null)" ] || return 1
+    _cm_old="$(git merge-base "$1" "$base_sha" 2>/dev/null)" || return 1
+    [ -n "$_cm_old" ] || return 1
+    _cm_a="$(own_diff "$_cm_old" "$1"; echo "rc=$?")"
+    _cm_b="$(own_diff "$mf_merged_base" "$2"; echo "rc=$?")"
+    [ "$_cm_a" = "$_cm_b" ]
+}
+
 # HIMMEL-4952: print "<qid>/<name> <scope>" for a judge GO on head $2 (the
 # delta's new head) written by console-kit/write-verdict.sh, whose evidence
 # carries exactly one `delta-scope: test-only|lint-only` and one
@@ -443,7 +478,7 @@ judge_scope_record() (
             n_from_ok="$(printf '%s\n' "$evidence" | grep -cFx "delta-from: $from")"
             n_scope="$(printf '%s\n' "$evidence" | grep -cE '^delta-scope: ')"
             if [ "$n_from" -eq 1 ] && [ "$n_from_ok" -eq 1 ] && [ "$n_scope" -eq 1 ]; then
-                kind="$(printf '%s\n' "$evidence" | sed -nE 's/^delta-scope: (test-only|lint-only)$/\1/p')"
+                kind="$(printf '%s\n' "$evidence" | sed -nE 's/^delta-scope: (test-only|lint-only|merge-resolution)$/\1/p')"
                 [ -z "$kind" ] || hit="$qid/$name $kind"
             fi
         done
@@ -466,6 +501,10 @@ judge_scope_record() (
 $(git -c core.quotepath=off diff --no-renames --name-only "$from" "$want" 2>/dev/null)
 EOF
         fi
+        if [ "${hit#* }" = "merge-resolution" ] && ! merge_forward_shape "$from" "$want"; then
+            echo "review-round: scope record ${hit%% *} is merge-resolution but $want is not a merge of the base into $from - delta round refused (HIMMEL-4995)" >&2
+            exit 8
+        fi
         printf '%s\n' "$hit"
         exit 0
     done
@@ -480,6 +519,7 @@ EOF
 delta_check() {
     full_note="a 4th full round is refused (HIMMEL-4600)"
     delta_reuse=0
+    delta_free=0
     delta_used=""
     delta_verdict=""
     if [ -f "$delta_state" ]; then
@@ -557,6 +597,15 @@ delta_check() {
             delta_trigger="fix"
             return 0
         fi
+    fi
+    # HIMMEL-4995: a clean merge-forward is admitted without spending the one
+    # delta round, whether or not it was already used.
+    if clean_merge_forward "$delta_from" "$delta_to"; then
+        delta_trigger="clean-merge"
+        delta_free=1
+        return 0
+    fi
+    if [ -z "$delta_used" ]; then
         # Merge-forward: at least one merge since the reviewed head, every
         # non-merge commit it brought is already on the captured base, and the
         # new head's tree is exactly a clean merge of the reviewed head with the
@@ -646,10 +695,11 @@ if [ "$verb" = "start" ]; then
     fi
     delta_from=""
     delta_reuse=0
+    delta_free=0
     if [ "$round" -ge 3 ]; then
         delta_check
         delta_rc=$?
-        if [ "$delta_rc" -eq 0 ] && [ "${delta_reuse:-0}" -eq 0 ]; then
+        if [ "$delta_rc" -eq 0 ] && [ "${delta_reuse:-0}" -eq 0 ] && [ "${delta_free:-0}" -eq 0 ]; then
             # HIMMEL-4700: the delta round is recorded first and the judge
             # record consumed after it; a failed consume restores the prior
             # .delta, so a record is never spent on a round that never started.
