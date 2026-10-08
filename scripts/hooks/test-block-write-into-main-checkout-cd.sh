@@ -627,6 +627,10 @@ check_both "94i fromW: cd wt 2>/dev/null && echo x > a.txt (redirect is no opera
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt 2>/dev/null && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 check_both "94j fromW: cd wt/realsub (existing subdir) && echo x > a.txt allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/realsub && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94k fromW: cd primary; cd wt 2>/nonexistent/err; echo x > a.txt (failing redirect) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt 2>/nonexistent/err; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94l fromW: cd primary; cd wt < /nonexistent; echo x > a.txt (failing input redirect) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt </nonexistent; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

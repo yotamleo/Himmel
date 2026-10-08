@@ -2267,14 +2267,16 @@ _bwimc_jail_canon() {
 # target, so the modelled cwd must not move: more than one operand (bash: too
 # many arguments; zsh: two-arg substitution), a relative target while the
 # CDPATH taint is set (the lookup may resolve elsewhere), or a target that is
-# not an existing directory. Args: ABS(0|1) TARGET BASECWD [EXTRA-TOKENS...];
-# a redirection token is no operand. Fail direction: only ever narrows trust.
+# not an existing, searchable directory. Args: ABS(0|1) TARGET BASECWD [EXTRA-TOKENS...];
+# a redirection that cannot fail is no operand. Fail direction: only ever narrows trust.
 _bwimc_cd_would_fail() {
     local cabs="$1" carg="$2" base="$3" x r
     shift 3
     for x in "$@"; do
         case "$x" in
-            [0-9]*[\<\>]*|[\<\>]*|\&[\<\>]*) ;;
+            # A redirection that cannot fail is no operand; any other one (a
+            # file target the shell may fail to open) stops the cd from running.
+            [0-9]*\>\&[0-9-]|[0-9]*[\<\>]/dev/null|[0-9]*\>\>/dev/null|\>/dev/null|\>\>/dev/null|\&\>/dev/null|\>\&[0-9-]|\</dev/null) ;;
             *) return 0 ;;
         esac
     done
@@ -2285,7 +2287,7 @@ _bwimc_cd_would_fail() {
         esac
     fi
     r=$(_bwimc_resolve_abs "$carg" "$base") || return 1
-    [ -d "$r" ] || return 0
+    [ -d "$r" ] && [ -x "$r" ] || return 0
     return 1
 }
 _bwimc_ecwd_track() {
