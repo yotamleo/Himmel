@@ -68,6 +68,7 @@ def plan_globs():
     return (sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.tsv'))) +
             sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.explain.tsv'))) +
             sorted(glob.glob(os.path.join(ROOT, 'stage2', 'C??.tsv'))) +
+            sorted(glob.glob(os.path.join(ROOT, 'stage1', 'themes-overlay.tsv'))) +
             [p for p in [os.path.join(ROOT, 'tools', 'stage3', f) for f in ('place.py', 'common.py')]
              if os.path.exists(p)])
 
@@ -152,6 +153,7 @@ def live_legs():
 
 TS_RE = re.compile(r'^- (\d{1,2}):(\d{2})\b')
 IDLE_MIN = 180
+ACT_NEWEST = 0.0  # newest mtime among the wrapped-leg docs actuals() last read (HIMMEL-4930)
 
 
 def actuals():
@@ -159,7 +161,9 @@ def actuals():
 
     Minutes are the gaps between a leg doc's timestamped Results bullets; a gap over IDLE_MIN is idle time, not work.
     ponytail: bullet gaps are a proxy for leg wall time, upgrade to the PR body's leg-burn cost-eq when it is mirrored."""
+    global ACT_NEWEST
     out = {}
+    ACT_NEWEST = 0.0
     docs = glob.glob(os.path.join(HANDOVERS, 'HIMMEL-*-N*-*.md')) + glob.glob(os.path.join(HANDOVERS, 'logs', 'HIMMEL-*-N*-*.md'))
     for p in sorted(docs):
         m = LEG_RE.match(os.path.basename(p))
@@ -175,6 +179,10 @@ def actuals():
         r = out.setdefault(int(m.group(1)), [0, 0])
         r[0] += 1
         r[1] += mins
+        try:
+            ACT_NEWEST = max(ACT_NEWEST, os.path.getmtime(p))
+        except OSError:
+            pass
     return out
 
 
@@ -261,12 +269,13 @@ def vlabel(v):
     return 'v1.0.%s · overflow%s' % (m.group(1), '' if k <= 1 else ' %d' % k)
 
 
-def version_caps(r, vers):
+def version_caps(r, vers, released=()):
     """Per-version caps (HIMMEL-3979): the plan default with its VERSION_CAP_OVERRIDES applied; None = deferred bucket.
-    A trail keeps its parent's caps, overrides included, unless the overrides name the trail itself."""
+    A trail keeps its parent's caps, overrides included, unless the overrides name the trail itself.
+    A released version has none (HIMMEL-4930): its tickets already shipped, so a cap there is not a decision."""
     out = []
     for v in vers:
-        if not TRAIN_RE.match(v):
+        if v in released or not TRAIN_RE.match(v):
             out.append(None)
             continue
         ov = r['over'].get(v if v in r['over'] else trail_parent(v)) or {}
@@ -304,7 +313,41 @@ def capacity_text(r, deferred, trails=()):
     return out
 
 
-def ledger_lines(rows, vers):
+def drift_log(path, drift, unplanned, unthemed):
+    """Append this render's counts to the drift log when they changed or the last row is over an hour old; return the
+    last 30 rows as [stamp, drift, unplanned, unthemed]. An unwritable log just yields no new row."""
+    path = path or os.path.join(HANDOVERS, 'roadmap-drift.tsv')
+    rows = []
+    try:
+        for l in open(path, encoding='utf-8').read().splitlines()[1:]:
+            f = l.split('\t')
+            if len(f) == 4 and all(x.isdigit() for x in f[1:]):
+                rows.append([f[0]] + [int(x) for x in f[1:]])
+    except OSError:
+        pass
+    now = datetime.now(timezone.utc)
+    cur = [now.strftime('%Y-%m-%dT%H:%M:%SZ'), drift, unplanned, unthemed]
+    fresh = False
+    if rows:
+        try:
+            fresh = (now - datetime.strptime(rows[-1][0], '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=timezone.utc)).total_seconds() < 3600
+        except ValueError:
+            pass
+    if not rows or rows[-1][1:] != cur[1:] or not fresh:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            new = not os.path.exists(path)
+            with open(path, 'a', encoding='utf-8') as fh:
+                if new:
+                    fh.write('utc\tdrift\tunplanned\tunthemed\n')
+                fh.write('\t'.join(str(x) for x in cur) + '\n')
+            rows.append(cur)
+        except OSError:
+            pass
+    return rows[-30:]
+
+
+def ledger_lines(rows, vers, unthemed=0):
     """Header ledger (HIMMEL-3957): the running version, the whole v1.0.x train, and drift/unplanned only when non-zero."""
     train = [i for i, v in enumerate(vers) if TRAIN_RE.match(v)]
 
@@ -323,6 +366,8 @@ def ledger_lines(rows, vers):
         att.append('%d %s from the plan (Jira names another version)' % (dr, 'ticket drifted' if dr == 1 else 'tickets drifted'))
     if un:
         att.append('%d open %s in a version but not in the plan' % (un, 'ticket sits' if un == 1 else 'tickets sit'))
+    if unthemed:
+        att.append('%d open %s no theme' % (unthemed, 'ticket has' if unthemed == 1 else 'tickets have'))
     if att:
         out.append('Needs attention: ' + '; '.join(att) + '.')
     return out, cur
@@ -526,6 +571,8 @@ def main():
     ap.add_argument('--handovers', default=os.environ.get('TRACKER_HANDOVERS_DIR', ''),
                     help='handover tree to grep for notes and live legs (default $TRACKER_HANDOVERS_DIR, '
                          'else <luna-root>/handovers/yotamleo/himmel)')
+    ap.add_argument('--drift-log', default=None,
+                    help='append-only drift/unplanned/unthemed counts per render (default <handovers>/roadmap-drift.tsv)')
     ap.add_argument('--refresh-luna', action='store_true')
     ap.add_argument('--emit-fp', action='store_true')
     a = ap.parse_args()
@@ -559,6 +606,11 @@ def main():
             theme[r['key']] = r.get('theme', '') or '(no theme)'
             if (r.get('impact') or '').isdigit():
                 impact[r['key']] = int(r['impact'])
+    # HIMMEL-4930: the reconcile overlay themes tickets no stage1 file covers; it never overrides a stage1 theme.
+    ovp = os.path.join(ROOT, 'stage1', 'themes-overlay.tsv')
+    for r in read_tsv(ovp)[1] if os.path.exists(ovp) else []:
+        if r.get('theme') and theme.get(r['key'], '(no theme)') == '(no theme)':
+            theme[r['key']] = r['theme']
     # HIMMEL-3957 row fields: user-facing impact (stage1 explain), readiness + T-shirt range (stage2).
     for p in sorted(glob.glob(os.path.join(ROOT, 'stage1', 'C??.explain.tsv'))):
         for r in read_tsv(p)[1]:
@@ -580,7 +632,7 @@ def main():
         # Under an effort model the placer's effort_mid already is the slice's mean (overrun included), so it is used as is.
         ld = None if rules['per'] is None else round((seqm.get(sl, 0) if sl and not rules['model'] else mid) * rules['per'], 4)
         return [uimp.get(k, ''), erange.get(k, ''), ready.get(k), impact.get(k), sl, plain.get(k, ''), ld]
-    themes = sorted(set(theme.values()) | {'(no theme)', '(unplanned)'})
+    themes = sorted(set(theme.values()) | {'(no theme)'})
     tidx = {t: i for i, t in enumerate(themes)}
 
     placed = read_tsv(os.path.join(S, 'placement.tsv'))[1]
@@ -616,7 +668,7 @@ def main():
         hit = [v for v in m['fv'] if TRAIN_RE.match(v) and v in vidx]
         if hit:
             rows.append([num(k), clip(m['title'], 62), m['st'], vidx[hit[0]],
-                         0 if m['type'] == 'Bug' else 3, tidx.get(theme.get(k), tidx['(unplanned)']),
+                         0 if m['type'] == 'Bug' else 3, tidx[theme.get(k) or '(no theme)'],
                          0, 2, []] + fields(k)[:-1] + [0])
     unpl = []
     for r in read_tsv(os.path.join(S, 'unplaced.tsv'))[1]:
@@ -632,13 +684,18 @@ def main():
                      clip(r.get('close_evidence', ''), 70)])
 
     upd = max((m['upd'] for m in mir.values()), default='')
-    lg, cur = ledger_lines(rows, vers)
+    nothm = sum(1 for r in rows if r[5] == tidx['(no theme)'] and r[2] != 2)  # open only
+    lg, cur = ledger_lines(rows, vers, nothm)
     seq = rules['seq']
     jv, ru = read_versions(VERSIONS, mir)
+    dt = drift_log(a.drift_log, sum(1 for r in rows if r[7] == 1), sum(1 for r in rows if r[7] == 2 and r[2] != 2), nothm)
+    if dt:
+        lg.append('Drift over time (drift / unplanned / unthemed): ' + ' → '.join('%d/%d/%d' % tuple(x[1:]) for x in dt[-6:]) + '.')
     jt, jc, jn, ja = jira_view(mir, legs, jv, rows[:n_plan], vers)
     p90 = meta.get('version_p90_fw') if isinstance(meta.get('version_p90_fw'), dict) else {}
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
-                sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, VC=version_caps(rules, vers),
+                sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, VC=version_caps(rules, vers, {x['n'] for x in jv if x['rel']}), DT=dt,
+                ATS=datetime.fromtimestamp(ACT_NEWEST, timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if ACT_NEWEST else '',
                 LEG={str(n): v for n, v in sorted(legs.items())}, ACT={str(n): v for n, v in sorted(actuals().items())}, L=LAYERS, T=themes, P=rows,
                 U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur, JV=jv, JT=jt, JC=jc, JN=jn, JA=ja, RU=ru,
                 CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
@@ -657,8 +714,10 @@ def main():
     unp = sum(1 for r in rows if r[7] == 2 and r[2] != 2)  # open only
     drift = sum(1 for r in rows if r[7] == 1)
     cov = sum(1 for r in rows[:n_plan] if r[8])
-    print('wrote %s (%.1f KB): %d planned, %d unplanned, %d drift, %d unplaced; mirror %d issues'
-          % (outp, os.path.getsize(outp) / 1024, n_plan, unp, drift, len(unpl), len(mir)))
+    print('wrote %s (%.1f KB): %d planned, %d unplanned, %d drift, %d unthemed, %d unplaced; mirror %d issues'
+          % (outp, os.path.getsize(outp) / 1024, n_plan, unp, drift, nothm, len(unpl), len(mir)))
+    if dt:
+        print('drift trend: ' + ' → '.join('%s %d/%d/%d' % (x[0][:10], x[1], x[2], x[3]) for x in dt[-6:]) + ' (drift/unplanned/unthemed)')
     for l in lg:
         print('ledger: ' + l)
     print('luna-map coverage: %d/%d placed keys with >=1 note; %d distinct notes; %.1fs'
@@ -1057,7 +1116,7 @@ function model(D){
   function near(i){return i==cur||i==nx}
   P.forEach(function(p){var lg=leg(p);if(lg&&(lg[1]=="BLOCKED"||lg[1]=="FINDING"))out.push({band:0,type:"leg",i:p[3],p:p,s:lg[1]=="BLOCKED"?0:1})});
   V.forEach(function(_,i){var b=breaches(i,stats(i,inV(i)));if(b.length)out.push({band:near(i)?1:2,type:"cap",i:i,b:b})});
-  P.forEach(function(p){if(p[7]&&p[2]!=2&&train(p[3]))out.push({band:near(p[3])?1:2,type:"drift",i:p[3],p:p})});
+  P.forEach(function(p){if(p[7]==1&&p[2]!=2&&train(p[3]))out.push({band:near(p[3])?1:2,type:"drift",i:p[3],p:p})});
   V.forEach(function(_,i){var f=fold(i);if(f.length)out.push({band:2,type:"fold",i:i,f:f})});
   var u=(D.U||[]).filter(function(x){return x[2]!=2});if(u.length)out.push({band:2,type:"unplaced",i:u.length,u:u,last:1});
   var TR={leg:0,cap:1,drift:2,fold:3,unplaced:4};
@@ -1170,6 +1229,7 @@ function num(x){return x==null?"–":x===Math.round(x)?String(x):f2(x)}
 function bw(b){return b.what+" "+num(b.used)+" of "+num(b.cap)}
 function fmtMin(m){return m==null?"–":m<60?Math.round(m)+" min":(Math.round(m/6)/10)+" h"}
 function renderAcc(){var h=$("accb"),ac=M.accuracy(),mx=1;h.textContent="";
+ h.appendChild(el("p","fact","Re-read from the Jira mirror and the wrapped-leg docs on every render. Jira "+D.mir+" · newest wrapped-leg doc "+(D.ATS||"none")+"."));
  if(!ac.length){h.appendChild(el("p","fact","No done ticket has both a size estimate and a wrapped leg yet."));return}
  ac.forEach(function(x){x.rows.forEach(function(r){mx=Math.max(mx,r.min)})});
  ac.forEach(function(x){var r=el("div","ar"),tr=el("div","atr"),m=el("b");tr.setAttribute("role","img");
