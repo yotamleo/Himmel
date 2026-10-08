@@ -1018,7 +1018,10 @@ test('CLI: --mcp-config resolves leg-impl\'s qmd definition from the marketplace
   const home = makeTmpDir('pp-cli-mcp-home-');
   const run = spawnSync(process.execPath, [cli, 'leg-impl', '--mcp-config'], { encoding: 'utf8', cwd, env: { ...process.env, HOME: home, USERPROFILE: home } });
   assert.equal(run.status, 0, run.stderr);
-  assert.deepEqual(JSON.parse(run.stdout), { mcpServers: { qmd: { type: 'http', url: 'http://localhost:8181/mcp' } } });
+  // HIMMEL-5002: headersHelper is expanded to the plugin dir (a standalone --mcp-config has no ${CLAUDE_PLUGIN_ROOT}).
+  const qmd = JSON.parse(run.stdout).mcpServers.qmd;
+  assert.deepEqual({ ...qmd, headersHelper: undefined }, { type: 'http', url: 'http://localhost:8181/mcp', headersHelper: undefined });
+  assert.equal(qmd.headersHelper, `bash "${join(cwd, 'marketplace', 'plugins', 'qmd')}/scripts/qmd-auth-headers.sh"`);
 });
 
 test('CLI: --mcp-servers / --mcp-config reject trailing argv instead of silently ignoring it', () => {
