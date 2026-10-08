@@ -100,6 +100,65 @@ file, so a line is never lost across a re-start).
 - **A wrapped console leaves its file behind**, so a line to one is acked but
   read by no one; check the console is live before relying on it.
 
+## Slash console requests and emergency lockdown
+
+These **slash forms only** carry the same authority as free `/console` text:
+
+| Command | Queued console request |
+|---|---|
+| `/fleet` | fleet status |
+| `/legs` | list legs |
+| `/go <leg>` | ask whether GO is pending; never write GO or a grant |
+| `/push <leg>` | request a push through the console's normal gates |
+| `/halt [<leg>]` | request a halt of that leg, or the wave |
+
+Leg labels are 1–64 ASCII letters, digits, underscores, dots or hyphens; `..`,
+path separators and controls refuse the command shape. Bare `fleet`, `legs`,
+`go`, `push` and `halt` remain chat; existing `status` still reports bridge
+session status. Messages must pass the existing operator/allowed-chat gate,
+be typed, unforwarded and without a `model:` tag.
+
+A trusted reply receipt selects its original console **only while fresh**;
+otherwise exactly one fresh console must be live. Zero or multiple live
+consoles queue nothing. Reply to the chosen console's announcement or answer
+to disambiguate. Unlike explicitly named `/console`, these requests refuse
+stale targets. Their acknowledgement says **queued**, never completed, and
+replies thread to the inbound message while retaining the same console receipt
+owner. No handler launches a session, runs git, or grants approval.
+
+An inbound command older than `TELEGRAM_VERB_MAX_AGE_S` (default **300 seconds**)
+is refused with **“stale, resend”**, preventing outage replay. Missing/invalid
+or future message dates also refuse; invalid/nonpositive configuration uses
+300 seconds. This window applies to the five console verbs, not existing
+free `/console` text. `/lockdown` remains narrowing-only even when replayed.
+
+`/lockdown` sets `<bridge root>/lockdown` and confirms it. While present, the
+bridge drops console routes (including trusted reply threads), console verbs,
+and all typed auto-actions, including `/mergepub`, `/cr-grant-delta`, `/arm`
+and the retired typed launch. It does not cancel already-running actions or
+disable ordinary chat. The flag survives bridge restart. **Reset at the station
+only**, after securing the Telegram account:
+
+```bash
+rm -- "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/lockdown"
+```
+
+No remote unlock exists. End the compromised Telegram sessions from a second
+trusted device. `/launch-bypass-leg …` is retired and always refuses, even if
+explicitly enabled: **start hook legs at the station**. Telegram never ratifies
+a hook-bypass launch.
+
+**Threat ceiling:** a same-uid process can forge an inbox line or remove the
+station-local flag. The flag is emergency narrowing, not a protected privilege
+boundary. A queued command never carries more authority than free-text
+`/console` and never bypasses PR, CR or GO gates. If the Telegram account is
+taken over, `/console` free text, `/mergepub` and `/cr-grant-delta` remain
+one-factor operator authority until lockdown; this slice adds no approval
+capability or second factor.
+
+After deploying an updated bridge, restart it **at the station** on Linux:
+`bash scripts/telegram/restart-bridge.sh` (do not start a second poller).
+
 ## The one-poller-per-token trap
 
 Telegram allows exactly **one** `getUpdates` consumer per bot token. Do not

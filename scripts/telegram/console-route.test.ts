@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classify } from "./router";
 import { BASH_BIN } from "./run";
+import { sendMessage } from "./telegram-api";
 import { handleInbound, replyViaOutbox, flushOutboxes, ingestUpdates } from "./poller";
 import { consoleInboxPath, foldLine, type ConsoleRouteGate } from "./console-route";
 
@@ -11,6 +12,105 @@ import { consoleInboxPath, foldLine, type ConsoleRouteGate } from "./console-rou
 // seam — never the real ~/.claude/handover/bridge, never Telegram.
 const root = () => mkdtempSync(join(tmpdir(), "console-route-"));
 const NAME = "HIMMEL-nextleg-2026-09-21V-console";
+
+const verbs = ["/fleet", "/legs", "/go N1490", "/push N1490", "/halt", "/halt N1490"];
+const fresh = (text: string, extra: Record<string, unknown> = {}) => say(text, { ts: Math.floor(Date.now() / 1000), message_id: 123, ...extra });
+
+async function inbound(r: string, msg: ReturnType<typeof say>, replies: string[] = [], ran: string[] = [], fired: string[] = []) {
+  const g: ConsoleRouteGate = { authorize: (from, chat) => from === 1 && [1, -1].includes(chat), reply: (chat, text, name, replyTo) => replyViaOutbox(r, chat, text, name, replyTo) };
+  await handleInbound(r, msg, async s => { ran.push(s); }, { authorize: g.authorize, enabledOps: new Set(["arm-resume", "merge-public", "cr-grant-delta", "launch-bypass-leg"]), fire: async (_msg, route) => { fired.push(route.op); } }, async () => "spawn-high", from => from === 1, undefined, undefined, undefined, g);
+  await flushOutboxes(r, async (_chat, text) => { replies.push(text); return 777; });
+}
+
+test("short-verbs-auth-targeting", async () => {
+  const requests = ["fleet status", "legs", "go? N1490", "push N1490", "halt", "halt N1490"];
+  for (let i = 0; i < verbs.length; i++) {
+    const r = root(); const f = heartbeat(r); const replies: string[] = []; const ran: string[] = [];
+    await inbound(r, fresh(verbs[i]), replies, ran);
+    expect(readFileSync(f, "utf8")).toContain(`] ${requests[i]}\n`);
+    expect(ran).toEqual([]);
+    expect(replies.join("\n")).toContain("queued");
+    expect(replies.join("\n")).not.toContain("completed");
+    expect(existsSync(join(r, "go"))).toBe(false);
+    expect(existsSync(join(r, "grants"))).toBe(false);
+    for (const extra of [{ from: 999 }, { chat_id: -99 }, { forwarded: true }, { caption: true }, { text: `model:opus ${verbs[i]}` }]) {
+      writeFileSync(f, "");
+      await inbound(r, fresh(verbs[i], extra));
+      expect(readFileSync(f, "utf8")).toBe("");
+    }
+    writeFileSync(f, "");
+    await inbound(r, fresh(verbs[i], { chat_id: -1 }));
+    expect(readFileSync(f, "utf8")).toContain(`[telegram from=1 chat=-1] ${requests[i]}`);
+  }
+  for (const count of [0, 2]) {
+    const r = root(); const old = heartbeat(r, "old", "waiting", 301); const ran: string[] = [];
+    if (count) { heartbeat(r); heartbeat(r, "second"); }
+    for (const text of verbs) await inbound(r, fresh(text), [], ran);
+    expect(readFileSync(old, "utf8")).toBe("");
+    if (count) expect(readFileSync(join(r, "consoles", `${NAME}.md`), "utf8")).toBe("");
+    expect(ran).toEqual([]);
+  }
+});
+
+test("slash-only-plain-words-are-chat", () => {
+  for (const text of ["fleet", "legs", "go N1490", "push N1490", "halt", "lockdown", "/go ../escape", "/push a..b", "/halt a/b", `/go ${"a".repeat(65)}`, "/push a\u0000b"]) expect(classify(text).kind).toBe("chat");
+  expect(classify("status")).toEqual({ kind: "control", verb: "status" });
+  for (const text of verbs) expect(classify(text).kind).toBe("fleet");
+});
+
+test("stale-verb-refused", async () => {
+  for (const ts of [Math.floor(Date.now() / 1000) - 301, 0, undefined, Math.floor(Date.now() / 1000) + 60]) {
+    const r = root(); const f = heartbeat(r); const replies: string[] = []; const ran: string[] = [];
+    for (const text of verbs) await inbound(r, fresh(text, { ts }), replies, ran);
+    expect(readFileSync(f, "utf8")).toBe("");
+    expect(ran).toEqual([]);
+    expect(replies.join("\n")).toContain("stale, resend");
+  }
+});
+
+test("lockdown-drops-privileged-routes", async () => {
+  const r = root(); const f = heartbeat(r); const replies: string[] = []; const ran: string[] = []; const fired: string[] = [];
+  await replyViaOutbox(r, 1, "answer", NAME);
+  await flushOutboxes(r, async () => 777);
+  await inbound(r, fresh("/lockdown"), replies, ran, fired);
+  expect(replies.join("\n")).toContain("lockdown");
+  for (const text of [...verbs, "/console halt", "/consoles", "/mergepub 12 abcdef123456", "/cr-grant-delta 12 " + "a".repeat(40), "/launch-bypass-leg /tmp/leg.md HIMMEL_HOOK_INTEGRITY_BYPASS_OK", "/arm HIMMEL-123", "halt"]) {
+    await inbound(r, fresh(text, { reply_to_message_id: 777 }), replies, ran, fired);
+  }
+  expect(readFileSync(f, "utf8")).toBe("");
+  expect(fired).toEqual([]);
+  expect(ran).toEqual([]);
+});
+
+test("legacy-bypass-without-claim-refused in the real inbound handler", async () => {
+  const r = root(); heartbeat(r); const replies: string[] = []; const ran: string[] = []; const fired: string[] = [];
+  await inbound(r, fresh("/launch-bypass-leg /tmp/leg.md HIMMEL_HOOK_INTEGRITY_BYPASS_OK"), replies, ran, fired);
+  expect(fired).toEqual([]);
+  expect(ran).toEqual([]);
+  expect(replies.join("\n")).toContain("station");
+});
+
+test("reply-threads-retain-receipt-owner", async () => {
+  const r = root(); const f = heartbeat(r); const second = heartbeat(r, "second");
+  await replyViaOutbox(r, 1, "answer", NAME, 123);
+  const bodies: any[] = [];
+  await flushOutboxes(r, async (chat, text, replyTo) => {
+    let id: number | undefined;
+    await sendMessage("T", chat, text, (async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return Response.json({ ok: true, result: { message_id: 777 } }); }) as typeof fetch, async () => {}, n => { id = n; }, replyTo);
+    return id;
+  });
+  expect(bodies).toEqual([{ chat_id: 1, text: "answer", reply_parameters: { message_id: 123 } }]);
+  await inbound(r, fresh("/push N1490", { reply_to_message_id: 777 }));
+  expect(readFileSync(f, "utf8")).toContain("] push N1490\n");
+  expect(readFileSync(second, "utf8")).toBe("");
+  writeFileSync(f, "");
+  await inbound(r, fresh("/halt", { chat_id: -1, reply_to_message_id: 777 }));
+  expect(readFileSync(f, "utf8")).toBe("");
+  writeFileSync(f + ".wait", "hb=1 pid=123 key=- tick=- state=waiting\n");
+  await inbound(r, fresh("/push N1490", { reply_to_message_id: 777 }));
+  expect(readFileSync(f, "utf8")).toBe("");
+  expect(readFileSync(second, "utf8")).toBe("");
+});
 
 // A console "arms" its inbox by creating the file (ACTION ZERO); the bridge
 // only ever appends to one that exists.
