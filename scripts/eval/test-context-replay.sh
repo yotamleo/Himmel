@@ -4,7 +4,7 @@
 # Platform guard: POSIX bash + python3; no .ps1 twin (eval tooling, linux only).
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-TMP="$(mktemp -d)" || exit 1
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/context-replay.XXXXXX")" || exit 1
 trap 'rm -rf "$TMP"' EXIT
 fail=0
 ok() { echo "ok   $1"; }
