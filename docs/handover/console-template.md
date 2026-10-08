@@ -109,6 +109,12 @@ Run these, in order, and write the result as the first bullet under
    release its lock and wrap. Sending `LIVE` first lets the predecessor leave
    before the legs have been re-briefed; the tick then reads
    `nonces=UNCONFIRMED:<leg>`.
+   **Then close the predecessor's window (HIMMEL-4968).** Once its doc's lock is
+   free and its last Results bullet reads `WRAPPED`, run
+   `bash scripts/handover/console-kit/close-wrapped-leg.sh --console <predecessor doc>`
+   (same checks as a leg: it refuses while the lock is held, the tail is not
+   `WRAPPED`, or not exactly one live session carries its name; exit 6 means
+   retry shortly). Left open, the wrapped session is idle-compacted at full cost.
 10. **Start the event waiter now** (HIMMEL-3509; it replaces the `tick` and
     `telegram` Monitor loops). Loops are pure code, never model turns: a
     `Monitor` arm is capped at 30 min, and every expiry woke this full-context
