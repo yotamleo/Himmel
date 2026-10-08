@@ -22,8 +22,13 @@ that `go.sh --trust-reviewed` reads, writes the header, a `writer-session:`
 stamp and the `## Verdict` line itself, and appends the evidence file verbatim
 (so the evidence file carries the other sections below). The evidence file
 must be an absolute path under `/tmp/claude-<uid>/` reached without a symlink.
-A NO-GO is always written; a GO is refused once a NO-GO exists for that head
-(HIMMEL-4714). When `<judge-name>.md` already holds a NO-GO for another head,
+Every new NO-GO evidence file must carry exactly one `class:` field: a value
+or comma set from `option-parsing, cwd-indirection, shell-parsing, tool-defaults,
+reader-allowlist, other` (HIMMEL-4885). A classless NO-GO is refused (exit 2);
+add the required class to the evidence and retry the writer. Keep the earlier
+class of a repeated finding rather than relabeling it to buy another round.
+A GO is refused once a NO-GO exists for that head (HIMMEL-4714).
+When `<judge-name>.md` already holds a NO-GO for another head,
 the new ruling lands in `<judge-name>-<head>.md` beside it, so the veto
 survives the PR returning to that head (HIMMEL-4731). A console-judge call
 has no Write tool and the Bash guards refuse the verdict line typed by hand, so

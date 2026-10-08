@@ -215,11 +215,75 @@ EOF
     [ "$_vo_ok" -eq 1 ]
 }
 
-# HIMMEL-4700: print "<qid>/<name>" of a judge record ruling NO-GO for head
-# $1, in the exact console-kit/write-verdict.sh format, under this repo's
+# HIMMEL-4885: a branch is one PR. Its consumed qids plus the candidate
+# qid are its verdict history, not every other PR in the verdict scope.
+# Legacy classless records contribute no classes. A decision in the current
+# candidate evidence is the explicit way out of a repeated-class stop.
+# shellcheck disable=SC2016  # JavaScript template fields are literal here
+judge_class_check() {
+    VERDICT_DIR="$dir" HISTORY="$verdict_state" CANDIDATE="$1" WANT="$2" node -e '
+const fs = require("fs"), path = require("path"), cp = require("child_process"), e = process.env;
+const allowed = new Set(["option-parsing", "cwd-indirection", "shell-parsing", "tool-defaults", "reader-allowlist", "other"]);
+const seg = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const candidates = e.CANDIDATE.split(" ").map(r => r.split("/")[0]);
+const records = (qid) => {
+  const dir = path.join(e.VERDICT_DIR, qid);
+  if (!seg.test(qid) || !fs.lstatSync(dir).isDirectory() || fs.lstatSync(dir).isSymbolicLink()) throw Error("invalid history qid " + qid);
+  return fs.readdirSync(dir).filter(n => n.endsWith(".md")).map(n => {
+    const file = path.join(dir, n), name = n.slice(0, -3);
+    const stat = fs.lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink()) throw Error("invalid history file " + file);
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    if (!seg.test(name) || lines[0] !== `# VERDICT ${qid} - ${name}` || lines[1] || lines[4] || lines[6]
+        || !/^writer-session: [A-Za-z0-9-]+$/.test(lines[2])
+        || !/^written-at: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(lines[3]) || lines[5] !== "## Verdict") throw Error("invalid history record " + file);
+    const verdict = /^\*\*(GO|NO-GO)\*\* for head `([0-9a-f]{40})`\.?$/.exec(lines[7]);
+    if (!verdict) throw Error("invalid history verdict " + file);
+    const evidence = lines.slice(8);
+    const fields = evidence.filter(l => l.startsWith("class:"));
+    let classes = [];
+    if (verdict[1] === "NO-GO" && fields.length) {
+      classes = fields[0].slice(6).trim().split(",").map(s => s.trim());
+      if (fields.length !== 1 || classes.some(c => !allowed.has(c))) throw Error("invalid history class " + file);
+    }
+    return { head: verdict[2], nogo: verdict[1] === "NO-GO", classes,
+      decision: evidence.some(l => /^layer-decision: (text|os|classifier|accept)\s+\S.*$/.test(l)) };
+  });
+};
+try {
+  const candidateRecords = candidates.flatMap(records);
+  const current = candidateRecords.filter(r => r.nogo && r.head === e.WANT);
+  if (current.some(r => r.decision)) process.exit(0);
+  const classes = new Set(current.flatMap(r => r.classes));
+  const prior = [];
+  let history = "";
+  try { history = fs.readFileSync(e.HISTORY, "utf8"); } catch (err) { if (err.code !== "ENOENT") throw err; }
+  for (const line of history.split("\n").filter(Boolean)) {
+    const [head, , record] = line.split(" ");
+    if (!record || !/^[0-9a-f]{40}$/.test(head)) throw Error("invalid consumed verdict history");
+    if (head !== e.WANT) prior.push(...records(record.split("/")[0]).filter(r => r.nogo && r.head === head));
+  }
+  for (const r of candidateRecords) {
+    if (r.nogo && r.head !== e.WANT && cp.spawnSync("git", ["merge-base", "--is-ancestor", r.head, e.WANT]).status === 0) prior.push(r);
+  }
+  const repeated = [...new Set(prior.flatMap(r => r.classes).filter(c => classes.has(c)))];
+  if (repeated.length) {
+    console.error(`review-round: repeated NO-GO class ${repeated.join(", ")} across heads of this PR - delta round refused (HIMMEL-4885); record layer-decision: text|os|classifier|accept <reason> in the candidate evidence`);
+    process.exit(8);
+  }
+} catch (err) {
+  console.error("review-round: cannot read class history - delta round refused: " + err.message);
+  process.exit(8);
+}
+'
+}
+
+# HIMMEL-4700: print space-separated "<qid>/<name>" records ruling NO-GO for
+# head $1 (one per qid), in console-kit/write-verdict.sh format, under this repo's
 # verdict scope; rc 1 when there is none. A qid counts only when every record
 # in it parses, so a hand-written or edited file disqualifies its qid.
-# HIMMEL-4720: a qid already consumed in any branch's .verdicts is skipped.
+# HIMMEL-4720: a consumed qid buys no other round. HIMMEL-4885: a qid
+# consumed on this branch still contributes current-head class vetoes.
 # ponytail: same-uid ceiling - the writer's stamp is a format check, not
 # authentication, and any same-uid process can write into verdicts/; the
 # upgrade path is a separate-uid verdict store (HIMMEL-4714 security note,
@@ -245,6 +309,7 @@ judge_nogo_record() (
     done
     re_session='^writer-session: [A-Za-z0-9-]+$'
     re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
+    hits="" check_hits=""
     for qdir in "$dir"/*/; do
         qdir="${qdir%/}"
         qid="${qdir##*/}"
@@ -254,11 +319,23 @@ judge_nogo_record() (
         # two branches sharing a last reviewed head cannot each spend it.
         # HIMMEL-4738: a scan that fails (rc 2) refuses the record - only rc 1
         # means "not consumed".
+        consumed=0
         if [ -d "$git_dir/cr-review-rounds" ]; then
             scan=0
             grep -rqsF --include='*.verdicts' " $qid/" "$git_dir/cr-review-rounds" 2>/dev/null || scan=$?
-            if [ "$scan" -eq 0 ]; then continue; fi
-            if [ "$scan" -ne 1 ]; then
+            if [ "$scan" -eq 0 ]; then
+                consumed=1
+                local_scan=1
+                if [ -e "$verdict_state" ] || [ -L "$verdict_state" ]; then
+                    local_scan=0
+                    grep -qsF " $qid/" "$verdict_state" 2>/dev/null || local_scan=$?
+                fi
+                [ "$local_scan" -ne 1 ] || continue
+                if [ "$local_scan" -ne 0 ]; then
+                    echo "review-round: cannot read $verdict_state for class history - delta round refused" >&2
+                    exit 8
+                fi
+            elif [ "$scan" -ne 1 ]; then
                 echo "review-round: cannot scan $git_dir/cr-review-rounds for a consumed $qid (grep rc $scan) - the judge record is refused" >&2
                 exit 1
             fi
@@ -281,11 +358,14 @@ judge_nogo_record() (
             if [ -z "$hit" ] && [ "$word" = "NO-GO $want" ]; then hit="$qid/$name"; fi
         done
         if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then
-            printf '%s\n' "$hit"
-            exit 0
+            check_hits="${check_hits:+$check_hits }$hit"
+            if [ "$consumed" -eq 0 ]; then hits="${hits:+$hits }$hit"; fi
         fi
     done
-    exit 1
+    [ -n "$check_hits" ] || exit 1
+    judge_class_check "$check_hits" "$want" || exit 8
+    [ -n "$hits" ] || exit 1
+    printf '%s\n' "$hits"
 )
 
 # HIMMEL-4600: decide whether the round after the third may run, as the one
@@ -351,6 +431,11 @@ delta_check() {
         delta_refuse "review-round: $delta_from..$delta_to changes nothing - no delta round to run"
         return 8
     fi
+    # A repeated-class veto also applies when a finding or merge-forward
+    # could otherwise buy the delta: changing the trigger must not evade it.
+    delta_verdict="$(judge_nogo_record "$delta_from")"
+    judge_rc=$?
+    [ "$judge_rc" -ne 8 ] || return 8
     if [ -z "$delta_used" ]; then
         if [ "$(ledger_query finding "$delta_from")" = "finding" ]; then
             delta_trigger="fix"
@@ -386,9 +471,9 @@ delta_check() {
             echo "review-round: cannot read $verdict_state (grep rc $head_scan) - no judge NO-GO is honoured for $delta_from" >&2
         fi
     fi
-    if [ "$head_scan" -eq 1 ] \
-        && delta_verdict="$(judge_nogo_record "$delta_from")" && [ -n "$delta_verdict" ]; then
-        delta_trigger="verdict:${delta_verdict%%/*}"
+    if [ "$head_scan" -eq 1 ] && [ "$judge_rc" -eq 0 ] && [ -n "$delta_verdict" ]; then
+        first_verdict="${delta_verdict%% *}"
+        delta_trigger="verdict:${first_verdict%%/*}"
         return 0
     fi
     delta_verdict=""
@@ -459,7 +544,9 @@ if [ "$verb" = "start" ]; then
             elif [ -n "$delta_verdict" ]; then
                 tmp_verdicts="$verdict_state.tmp.$$"
                 if ! { cat "$verdict_state" 2>/dev/null || [ ! -e "$verdict_state" ]; } > "$tmp_verdicts" \
-                    || ! printf '%s %s %s\n' "$delta_from" "$delta_to" "$delta_verdict" >> "$tmp_verdicts" \
+                    || ! ( for record in $delta_verdict; do
+                        printf '%s %s %s\n' "$delta_from" "$delta_to" "$record" || exit 1
+                    done ) >> "$tmp_verdicts" \
                     || ! mv "$tmp_verdicts" "$verdict_state"; then
                     rm -f "$tmp_verdicts"
                     if [ "$had_delta" -eq 1 ]; then

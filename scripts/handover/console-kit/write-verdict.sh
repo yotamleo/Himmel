@@ -45,7 +45,10 @@
 #     symlink, so the write cannot leave verdicts/<qid>/;
 #   - a GO when verdicts/<qid>/ already holds a NO-GO for the same head, or a
 #     verdict that does not parse (go.sh refuses on either anyway).
-# A NO-GO is always written past those last two (HIMMEL-4714): go.sh treats
+# HIMMEL-4885: a new NO-GO evidence file must carry exactly one class: field,
+# one value or a comma set from option-parsing, cwd-indirection, shell-parsing,
+# tool-defaults, reader-allowlist, other; missing or invalid classes exit 2.
+# A valid NO-GO is always written past those last two (HIMMEL-4714): go.sh treats
 # any NO-GO as a veto, so it only narrows, and refusing it would leave a
 # forged or mistaken GO alone on disk. The same answer again, or a verdict
 # for another head, is written. When <name>.md holds a NO-GO for another
@@ -142,6 +145,18 @@ done
 if [ ! -f "$EVIDENCE" ] || [ ! -r "$EVIDENCE" ] || [ ! -s "$EVIDENCE" ]; then
     echo "write-verdict: evidence file '$EVIDENCE' is missing, unreadable, not a regular file or empty" >&2
     exit 2
+fi
+# HIMMEL-4885: every new NO-GO names the finding class before it can buy
+# a delta round. GO evidence need not carry a class. Keep one unambiguous
+# field; unknown labels and empty members cannot become a fresh class.
+if [ "$ANSWER" = NO-GO ]; then
+    classes=$(awk '/^class:/ { sub(/^class:[ \t]*/, ""); sub(/[ \t\r]+$/, ""); print }' "$EVIDENCE")
+    class_word='(option-parsing|cwd-indirection|shell-parsing|tool-defaults|reader-allowlist|other)'
+    class_re="^$class_word([[:blank:]]*,[[:blank:]]*$class_word)*$"
+    if [ "$(grep -c '^class:' "$EVIDENCE")" != 1 ] || ! [[ $classes =~ $class_re ]]; then
+        echo "write-verdict: NO-GO requires one class: field, a comma set from option-parsing, cwd-indirection, shell-parsing, tool-defaults, reader-allowlist, other" >&2
+        exit 2
+    fi
 fi
 case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
     ''|0|false|off|no) ;;
