@@ -132,7 +132,8 @@ export function fleetSections(all: Row[], selected: string | null = null, filter
   // (a leg's by chainKey, finished consoles by their predecessor links), newest hop first, its earlier hops oldest first.
   const done = rows.filter((r) => finished(r) && shown(r)).sort(finishedOrder);
   const hops: Record<string, Row[]> = {};
-  const liveHop = new Map(running.flatMap((r) => { const k = chainKey(r.name); return k ? [[k, r.name] as const] : []; }));
+  // Only a live hop that is shown can carry its earlier hops; a filtered-out one leaves them in Finished.
+  const liveHop = new Map(groups.flatMap((g) => g.rows).flatMap((r) => { const k = chainKey(r.name); return k ? [[k, r.name] as const] : []; }));
   const consoles = new Set(done.filter((r) => r.role === "console").map((r) => r.name));
   const rootOf = (r: Row) => {
     let n = r.name;
@@ -159,9 +160,13 @@ export function fleetSections(all: Row[], selected: string | null = null, filter
     .sort(byUrgency).map(({ r, w }) => ({ row: r, why: w[1] }));
   const orphans = rows.filter(shown).flatMap((r) => { const o = orphanOf(r); return o ? [{ r, w: [0, o] as [number, string] }] : []; })
     .sort(byUrgency).map(({ r, w }) => ({ row: r, why: w[1] }));
+  // A wrapper follows the same filters as its owning session; one with no live owner has no lane and matches by pid.
   const owners = new Set(rows.filter(mine).map((r) => r.name));
+  const ownerOf = (p: ProcessOrphan) => rows.find((r) => r.name === p.owner);
   const processOrphans = procs.filter((p) => (!selected || p.owner === "orphan" || owners.has(p.owner))
-    && (!filters.states.length || filters.states.includes("orphaned")));
+    && (!filters.states.length || filters.states.includes("orphaned"))
+    && (!filters.lanes.length || (!!ownerOf(p) && filters.lanes.includes(laneOf(ownerOf(p)!))))
+    && (!text || [p.owner, shortName(p.owner), String(p.pid)].some((s) => s.toLowerCase().includes(text))));
   const live = groups.flatMap((g) => [...(g.showConsole && g.console ? [g.console] : []), ...g.rows]);
   return {
     attention, orphans, processOrphans, running: groups, finished: finishedEntries, hops,

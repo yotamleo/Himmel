@@ -131,6 +131,22 @@ test("leg chains: the live hop carries its finished hops, which leave the Finish
   expect(chainKey("scratch-session")).toBeNull();
 });
 
+test("filters apply to every section alike: a hidden live hop leaves its finished hops in Finished; process orphans follow lane and text", () => {
+  const chain = [
+    row(BU, "console", BU, { state: "running" }),
+    row("HIMMEL-4904-N1494-api-lane-core-2026-10-08", "leg", BU, { state: "wrapped", live: false }),
+    row("HIMMEL-4904-N1494b-api-lane-core-2026-10-08-RESUME", "leg", BU, { state: "running", lane: "claudex" }),
+  ];
+  const s = fleetSections(chain, null, { lanes: [], states: [], text: "N1494-api" });
+  expect(s.running).toEqual([]);
+  expect(s.finished.map((e) => e.row.name)).toEqual(["HIMMEL-4904-N1494-api-lane-core-2026-10-08"]);
+
+  const procs = [{ pid: 7, owner: "running-old", ageMin: 45 }, { pid: 8, owner: "orphan", ageMin: 90 }, { pid: 9, owner: "idle-new", ageMin: 31 }];
+  expect(fleetSections(rows, null, { lanes: ["claudex"], states: [], text: "" }, procs).processOrphans.map((p) => p.pid)).toEqual([7]);
+  expect(fleetSections(rows, null, { lanes: [], states: [], text: "idle-n" }, procs).processOrphans.map((p) => p.pid)).toEqual([9]);
+  expect(fleetSections(rows, null, { lanes: [], states: [], text: "8" }, procs).processOrphans.map((p) => p.pid)).toEqual([8]);
+});
+
 test("sibling order: running, waiting, idle, unknown; newest first; then name", () => {
   const order = [row("u", "leg", BU, { state: "unknown" }), row("b", "leg", BU), row("a", "leg", BU), row("w", "leg", BU, { state: "waiting for GO" })];
   expect(order.sort(siblingOrder as any).map((r) => r.name)).toEqual(["w", "a", "b", "u"]);
