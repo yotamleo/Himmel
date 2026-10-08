@@ -1190,7 +1190,9 @@ const SOURCE_CMD = /(?:^|[;&|{(!]|\b(?:then|do|else|if|elif|while|until))\s*(?:\
 // The same word anywhere else (inside `$( ... )`, after `command`, in a string
 // a hook evals): followed when it resolves, ignored when it does not.
 const SOURCE_ANY = /(?:^|[^A-Za-z0-9_.\/-])(?:\.|source)\s+(?=\S)/g;
-const ASSIGN = new RegExp(`(?:^|[\\s;&|{(])(?:local\\s+|export\\s+|readonly\\s+)?(${VAR_NAME})=(\\S.*)$`, 'g');
+// The value is a lookahead so one match does not swallow the rest of the line:
+// every assignment on it is recorded, not only the leftmost (HIMMEL-4993).
+const ASSIGN = new RegExp(`(?:^|[\\s;&|{(])(?:local\\s+|export\\s+|readonly\\s+)?(${VAR_NAME})=(?=(\\S.*)$)`, 'g');
 
 function unquoteWord(s) {
   return s.replace(/["']/g, '');
@@ -1248,6 +1250,11 @@ function assignedInside(v, fileDir, root, assigns, depth) {
 function isSelfDirSubst(prefix, fileDir, root, assigns, depth) {
   if (!/^\$\(/.test(prefix) || !/dirname|\bcd\b/.test(prefix)) return false;
   if (/\bcd\s+(?:-P\s+)?["']?[\/.~]/.test(prefix)) return false;
+  // One cd only: a second (`cd -`, a bare `cd`) lands on OLDPWD or HOME. The
+  // `..` climbs stay inside the checkout (HIMMEL-4993).
+  if ((prefix.match(/\bcd\b/g) || []).length > 1) return false;
+  const ups = (prefix.match(/\/\.\.(?=[\/"'\s)]|$)/g) || []).length;
+  if (ups && !within(path.resolve(fileDir, ...Array(ups).fill('..')), root)) return false;
   // The subst must read a self reference; `$(dirname /)` or a bare `cd` names no file.
   let selfRef = false;
   const rest = prefix
