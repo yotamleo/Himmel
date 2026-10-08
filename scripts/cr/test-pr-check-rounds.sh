@@ -1062,6 +1062,42 @@ for class_case in different-class-allowed layer-decision-unlocks other-repeat-re
         assert_has "$cc_out" "layer-decision:" "$class_case names decision remedy"
     fi
 done
+# A consumed qid cannot buy another round, but later NO-GOs in that
+# same-PR qid must still veto a fresh, different-class judge trigger.
+for consumed_case in consumed-qid-repeat-refused consumed-qid-layer-unlocks; do
+    three_rounds "$consumed_case" clean
+    cq_first="$cap_r3_head"
+    fix_commit "$consumed_case"
+    cq_second="$cap_fix_head"
+    printf 'class: option-parsing\n\nfirst finding\n' > "$jev/judge-evidence.md"
+    judge "$consumed_case" NO-GO "$cq_first"
+    cq_out="$(start_round "$cq_second" clean "$consumed_case")"; cq_rc=$?
+    assert_eq "$cq_rc" "0" "$consumed_case first round setup"
+    printf 'next fix\n' >> "$repo/$consumed_case.txt"
+    git -C "$repo" commit -q -am "$consumed_case next fix"
+    cq_third="$(git -C "$repo" rev-parse "$consumed_case")"
+    cq_layer=""
+    cq_want=8
+    if [ "$consumed_case" = consumed-qid-layer-unlocks ]; then
+        cq_layer='layer-decision: os same-uid access belongs at the OS layer'
+        cq_want=0
+    fi
+    printf 'class: option-parsing\n%s\n\nrepeated finding\n' "$cq_layer" > "$jev/judge-evidence.md"
+    judge "$consumed_case" NO-GO "$cq_second"
+    if [ "$cq_want" = 8 ]; then
+        cq_out="$(start_round "$cq_third" clean "$consumed_case")"; cq_rc=$?
+        assert_eq "$cq_rc" "8" "consumed-only qid cannot spend again"
+        assert_has "$cq_out" "layer-decision:" "consumed-only repeat still names class remedy"
+    fi
+    printf 'class: cwd-indirection\n\nfresh different-class trigger\n' > "$jev/judge-evidence.md"
+    judge "$consumed_case-next" NO-GO "$cq_second"
+    cq_out="$(start_round "$cq_third" clean "$consumed_case")"; cq_rc=$?
+    assert_eq "$cq_rc" "$cq_want" "$consumed_case"
+    if [ "$cq_want" = 8 ]; then
+        assert_eq "$(cat "$git_dir/cr-review-rounds/$consumed_case.round")" "4" "$consumed_case leaves counter unchanged"
+        assert_has "$cq_out" "layer-decision:" "$consumed_case names class remedy"
+    fi
+done
 three_rounds same-head-not-a-repeat clean
 sh_first="$cap_r3_head"
 fix_commit same-head-not-a-repeat

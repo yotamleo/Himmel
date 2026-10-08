@@ -282,7 +282,8 @@ try {
 # head $1 (one per qid), in console-kit/write-verdict.sh format, under this repo's
 # verdict scope; rc 1 when there is none. A qid counts only when every record
 # in it parses, so a hand-written or edited file disqualifies its qid.
-# HIMMEL-4720: a qid already consumed in any branch's .verdicts is skipped.
+# HIMMEL-4720: a consumed qid buys no other round. HIMMEL-4885: a qid
+# consumed on this branch still contributes current-head class vetoes.
 # ponytail: same-uid ceiling - the writer's stamp is a format check, not
 # authentication, and any same-uid process can write into verdicts/; the
 # upgrade path is a separate-uid verdict store (HIMMEL-4714 security note,
@@ -308,7 +309,7 @@ judge_nogo_record() (
     done
     re_session='^writer-session: [A-Za-z0-9-]+$'
     re_written='^written-at: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
-    hits=""
+    hits="" check_hits=""
     for qdir in "$dir"/*/; do
         qdir="${qdir%/}"
         qid="${qdir##*/}"
@@ -318,11 +319,23 @@ judge_nogo_record() (
         # two branches sharing a last reviewed head cannot each spend it.
         # HIMMEL-4738: a scan that fails (rc 2) refuses the record - only rc 1
         # means "not consumed".
+        consumed=0
         if [ -d "$git_dir/cr-review-rounds" ]; then
             scan=0
             grep -rqsF --include='*.verdicts' " $qid/" "$git_dir/cr-review-rounds" 2>/dev/null || scan=$?
-            if [ "$scan" -eq 0 ]; then continue; fi
-            if [ "$scan" -ne 1 ]; then
+            if [ "$scan" -eq 0 ]; then
+                consumed=1
+                local_scan=1
+                if [ -e "$verdict_state" ] || [ -L "$verdict_state" ]; then
+                    local_scan=0
+                    grep -qsF " $qid/" "$verdict_state" 2>/dev/null || local_scan=$?
+                fi
+                [ "$local_scan" -ne 1 ] || continue
+                if [ "$local_scan" -ne 0 ]; then
+                    echo "review-round: cannot read $verdict_state for class history - delta round refused" >&2
+                    exit 8
+                fi
+            elif [ "$scan" -ne 1 ]; then
                 echo "review-round: cannot scan $git_dir/cr-review-rounds for a consumed $qid (grep rc $scan) - the judge record is refused" >&2
                 exit 1
             fi
@@ -345,11 +358,13 @@ judge_nogo_record() (
             if [ -z "$hit" ] && [ "$word" = "NO-GO $want" ]; then hit="$qid/$name"; fi
         done
         if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then
-            hits="${hits:+$hits }$hit"
+            check_hits="${check_hits:+$check_hits }$hit"
+            if [ "$consumed" -eq 0 ]; then hits="${hits:+$hits }$hit"; fi
         fi
     done
+    [ -n "$check_hits" ] || exit 1
+    judge_class_check "$check_hits" "$want" || exit 8
     [ -n "$hits" ] || exit 1
-    judge_class_check "$hits" "$want" || exit 8
     printf '%s\n' "$hits"
 )
 
