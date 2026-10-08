@@ -34,6 +34,7 @@
 #      in <name>-<head>.md (HIMMEL-4731)
 #  15. an ls -ld that fails or prints nothing refuses the scratch root (HIMMEL-4753)
 #  16. a long --judge name is bounded so no redirect target exceeds 255 bytes (HIMMEL-4753)
+#  17. an ls -ld that exits 0 with no mode string refuses the scratch root (HIMMEL-4962)
 #
 # Hermetic: temp dir only; the guard scripts are run, never edited.
 # Platform guard: POSIX bash 3.2+.
@@ -451,6 +452,23 @@ SHA_C=fedcba9876543210fedcba9876543210fedcba98
 rc=0; wv q22 NO-GO "$SHA_C" --evidence-file "$ev" --judge "$long" >/dev/null 2>&1 || rc=$?
 check "16: a third head's ruling is written rc 0 (the redirect repeats)" "$rc" 0
 check "16: still every filename under 255 bytes" "$(ls "$scope_dir/q22" | awk 'length($0) > 255' | wc -l | tr -d ' ')" 0
+
+# --- 17. HIMMEL-4962: the ACL probe matches a real mode line --------------
+# An `ls -ld` that exits 0 but prints no mode string (garbage, a space) cannot
+# show the root free of an ACL, so the writer refuses; real output with and
+# without `+` behaves as before.
+mkdir -p "$tmp/junkbin" "$tmp/spacebin"
+cp "$tmp/bin/id" "$tmp/junkbin/id" && cp "$tmp/bin/id" "$tmp/spacebin/id"
+printf '#!/bin/sh\necho garbage\n' > "$tmp/junkbin/ls"
+printf '#!/bin/sh\necho " "\n' > "$tmp/spacebin/ls"
+chmod +x "$tmp/junkbin/ls" "$tmp/spacebin/ls"
+rc=0; PATH="$tmp/junkbin:$PATH" wv q23 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "17: a garbage ls -ld line on a 0700 root refused rc 2" "$rc" 2
+rc=0; PATH="$tmp/spacebin:$PATH" wv q23 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "17: a blank ls -ld line on a 0700 root refused rc 2" "$rc" 2
+check "17: nothing written for q23" "$([ -e "$scope_dir/q23" ] && echo yes || echo no)" no
+rc=0; PATH="$tmp/bin:$PATH" wv q23 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "17: control - the real ls -ld on a 0700 root is accepted" "$rc" 0
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"
