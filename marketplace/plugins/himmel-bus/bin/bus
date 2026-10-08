@@ -1,0 +1,37 @@
+#!/usr/bin/env node
+// himmel-bus CLI: register | bind | rebind | adopt | status | peers
+import { parseArgs } from 'node:util';
+import * as store from '../lib/store.mjs';
+import * as identity from '../lib/identity.mjs';
+import * as edges from '../lib/edges.mjs';
+
+const USAGE = `usage: bus register <name> --role leg|console|judge|consult [--console <c>] [--pair <leg>] [--predecessor <old>]
+       bus bind <name> <pid> | rebind <name> <pid> | adopt <new-console> | status <name> | peers`;
+
+async function main() {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: { role: { type: 'string' }, console: { type: 'string' }, pair: { type: 'string' }, predecessor: { type: 'string' } },
+  });
+  const [verb, name, extra] = positionals;
+  const root = await store.busRoot();
+  const pid = () => { if (!/^\d+$/.test(extra ?? '')) throw new Error(USAGE); return Number(extra); };
+  const need = value => { if (!value) throw new Error(USAGE); return value; };
+  switch (verb) {
+    case 'register': await identity.register(root, need(name), values); return;
+    case 'bind': await identity.bind(root, need(name), pid()); return;
+    case 'rebind': await identity.rebind(root, need(name), pid()); return;
+    case 'status': console.log(await identity.status(root, need(name))); return;
+    case 'adopt': case 'peers': {
+      // Both act as the calling session: a descendant of a bound claude.
+      const me = await identity.resolveIdentity(root);
+      if (me.error) throw new Error(me.error);
+      if (verb === 'peers') { console.log(edges.edgeList(await identity.loadPeers(root), me.name).join('\n')); return; }
+      await identity.adopt(root, me.name, need(name));
+      return;
+    }
+    default: throw new Error(USAGE);
+  }
+}
+
+main().catch(error => { console.error(`bus: ${error.message}`); process.exit(error.message === USAGE ? 64 : 1); });
