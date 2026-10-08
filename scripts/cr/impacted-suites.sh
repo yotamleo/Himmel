@@ -490,10 +490,15 @@ fi
 if ! mb=$(git merge-base "$base_sha" "$head_sha"); then
     echo "impacted-suites.sh: no merge-base between '${base}' and '${head}'" >&2; exit 2
 fi
-if ! changed=$(git -c core.quotepath=off diff --name-only --no-renames "$mb" "$head_sha"); then
+# HIMMEL-4978: -z, because without it git C-quotes a name holding a double quote,
+# backslash or tab ("a\"b.sh"): no needle matched it and the run listed nothing
+# and exited 0. -z output is raw; tr turns it into the one-per-line lists the
+# loops below read. ponytail: a name holding a newline still splits in two (a
+# bogus path, never a missed one); upgrade path is NUL-reading loops if one ever appears.
+if ! changed=$(git diff -z --name-only --no-renames "$mb" "$head_sha" | tr '\0' '\n'; [ "${PIPESTATUS[0]}" -eq 0 ]); then
     echo "impacted-suites.sh: git diff ${mb}..${head_sha} failed" >&2; exit 2
 fi
-if ! tree=$(git -c core.quotepath=off ls-tree -r --name-only "$head_sha"); then
+if ! tree=$(git ls-tree -r -z --name-only "$head_sha" | tr '\0' '\n'; [ "${PIPESTATUS[0]}" -eq 0 ]); then
     echo "impacted-suites.sh: git ls-tree ${head_sha} failed" >&2; exit 2
 fi
 
@@ -579,7 +584,7 @@ bare_source_ere() {
     [ "${f#*/}" != "$f" ] || return 0
     grep -Eq "$generic_re" <<< "$name" && return 0
     case "$name" in *[-_.]*) return 0 ;; esac
-    { printf '%s(source|\\.)[[:space:]]+["'"'"']?([^[:space:]"'"'"']*/)?' "$src_lead"; needle_tail_ere "$name"; printf '\n'; } || return 1
+    { printf '%s(source|\\.)[[:space:]]+(--[[:space:]]+)?["'"'"']?([^[:space:]"'"'"']*/)?' "$src_lead"; needle_tail_ere "$name"; printf '\n'; } || return 1
     { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$name"; printf '\n'; } || return 1
 }
 
