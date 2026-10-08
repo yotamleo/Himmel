@@ -248,9 +248,9 @@ cmd_finish() {
   wrapped=false
   grep '^- ' "$DOC" | tail -1 | grep -qE '^- [0-9][0-9]:[0-9][0-9] WRAPPED' && wrapped=true
   if [ "$TASK" = bench-t4 ]; then
-    timeout 120 bash "$HERE/tasks/bench-t4/accept.sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$?
+    timeout 120 bash "$HERE/tasks/bench-t4/accept.sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$? # gnu-ok: the pilot is Linux-only (its rows run in a bwrap jail)
   else
-    timeout 120 bash "$LQ/tasks/$TASK/accept.sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$?
+    timeout 120 bash "$LQ/tasks/$TASK/accept.sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$? # gnu-ok: the pilot is Linux-only (its rows run in a bwrap jail)
   fi
   acc="$(grep -E '^accept: [0-9]+/[0-9]+$' "$ROOT/private/$row.accept.log" | tail -1)"
   git -C "$WT" add -A
