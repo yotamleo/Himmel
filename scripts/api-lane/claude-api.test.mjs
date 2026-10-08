@@ -191,6 +191,26 @@ test('unverified completion keeps the full reservation as unknown', () => {
   assert.equal(error.status().reserved_usd, '0.100000');
 });
 
+test('a cost above the reservation is recorded as overrun, never as settled', () => {
+  const f = fixture();
+  const r = f.run(f.good, { STUB_OUT: JSON.stringify({ type: 'result', is_error: false, total_cost_usd: 0.5 }) });
+  assert.equal(r.status, 0);
+  assert.match(r.stderr, /exceeded the reservation/);
+  assert.equal(JSON.parse(f.record().trim()).outcome, 'overrun');
+});
+
+test('model and job id with JSON-unsafe characters refuse before any spawn', () => {
+  const f = fixture();
+  const bad = f.run(['-p', 'x', '--model', 'm"x', '--permission-mode', 'plan', '--max-budget-usd', '0.10']);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /--model has characters/);
+  const job = f.run(f.good, { HIMMEL_API_JOB_ID: 'j"1' });
+  assert.equal(job.status, 2);
+  assert.match(job.stderr, /job id has characters/);
+  assert.equal(f.called(), false);
+  assert.equal(existsSync(join(f.dir, 'launches.jsonl')), false);
+});
+
 test('a budget above the available credit refuses at reservation', () => {
   const f = fixture();
   const r = f.run(['-p', 'x', '--model', 'm', '--permission-mode', 'plan', '--max-budget-usd', '5.00']);

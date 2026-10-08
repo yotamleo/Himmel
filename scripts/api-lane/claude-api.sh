@@ -57,6 +57,7 @@ done
 [ -n "$MODE" ] || refuse "--permission-mode is required"
 [ "$MODE" != "bypassPermissions" ] || refuse "permission mode bypassPermissions is not allowed"
 [ -n "$MODEL" ] || refuse "--model is required"
+case "$MODEL" in *[!A-Za-z0-9._:/@-]*) refuse "--model has characters outside [A-Za-z0-9._:/@-]" ;; esac
 [ -n "$BUDGET" ] || refuse "--max-budget-usd is required"
 case "$FORMAT" in ""|json) ;; *) refuse "--output-format must be json" ;; esac
 
@@ -76,18 +77,19 @@ EOF
 
 # --- API bank gate: the credit row decides; the native bank is never consulted ---
 JOB_ID="${HIMMEL_API_JOB_ID:-api-$(date +%s)-$$}"
+case "$JOB_ID" in ""|*[!A-Za-z0-9._:-]*) refuse "job id has characters outside [A-Za-z0-9._:-]" ;; esac
 BANK_VERDICT="$(CADENCE_BANK_LANE=api CADENCE_BANK_LAUNCH=1 LEG_LANE=api \
   CADENCE_BANK_LEG="${CADENCE_BANK_LEG:-claude-api:$JOB_ID}" \
   bash "$REPO/scripts/lib/bank-preflight.sh")" || BANK_VERDICT=BANK-UNKNOWN
 [ "$BANK_VERDICT" = "PROCEED" ] || refuse "api bank gate said $BANK_VERDICT"
 
+OUT="$(mktemp "${TMPDIR:-/tmp}/claude-api-out.XXXXXX")" || refuse "no scratch file"
+trap 'rm -f "$OUT"' EXIT
+
 # --- reserve the full budget before spending; refusal here means no launch ---
 state() { node "$REPO/scripts/lib/api-credit-state.mjs" "$@"; }
 RESERVED="$(state reserve --id "$JOB_ID" --usd "$BUDGET")"
 case "$RESERVED" in *'"verdict":"PROCEED"'*) ;; *) refuse "reservation refused: $RESERVED" ;; esac
-
-OUT="$(mktemp "${TMPDIR:-/tmp}/claude-api-out.XXXXXX")" || refuse "no scratch file"
-trap 'rm -f "$OUT"' EXIT
 
 # --- launch: provider vars removed, endpoint pinned, only the key carried in ---
 # headless-claude-ok: HIMMEL-4985 one-shot API-credit launch; bank gate, reservation and explicit --permission-mode above
@@ -101,7 +103,13 @@ RC=$?
 # --- settle on verified cost, otherwise keep the reservation as unknown ---
 COST="$(node "$REPO/scripts/api-lane/outcome.mjs" "$OUT")"
 if [ "$RC" -eq 0 ] && [ -n "$COST" ]; then
-  state settle --id "$JOB_ID" --usd "$COST" --completion verified >/dev/null; OUTCOME=settled
+  SETTLED="$(state settle --id "$JOB_ID" --usd "$COST" --completion verified)"
+  case "$SETTLED" in
+    *'"reason":"settled"'*) OUTCOME=settled ;;
+    *'"reason":"reservation-overrun"'*) OUTCOME=overrun; echo "claude-api: warning: cost exceeded the reservation; ledger flagged" >&2 ;;
+    *) echo "claude-api: warning: settle failed ($SETTLED); keeping the reservation as unknown" >&2
+       state unknown --id "$JOB_ID" >/dev/null; OUTCOME=unknown ;;
+  esac
 else
   state unknown --id "$JOB_ID" >/dev/null; OUTCOME=unknown
 fi
