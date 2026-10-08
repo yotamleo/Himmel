@@ -273,23 +273,22 @@ gate; adopting it is a WS6-gated tool decision, not a WS7 build item.
 
 ## 9. Deferred structural enforcement
 
-The lane-marker hook
-(`scripts/hooks/block-cheap-lane-pr-without-verdict.sh`) is BUILT but NOT wired:
-HIMMEL-195 escalates instructional→structural on the SECOND observed drift. v1 =
-behavioral (validating-session discipline).
+The GLM-only lane-marker hook
+(`scripts/hooks/block-cheap-lane-pr-without-verdict.sh`) and its paired suite
+were removed in HIMMEL-4899: the GLM implementation lane is gone, and the hook
+was never wired into either hook inventory. Removal changes no dispatched
+protection.
 
-**Scope: `cheap-glm` ONLY** — only glm has a session substrate (spawn-glm meta
-under `glm-sessions/`) to look a verdict up in. `cheap-codex` structural
-enforcement WAITS on the FUTURE hermes task→branch record (spec D1.1/SC2), so
-`codex/*` PRs pass this hook and rely on the behavioral verdict discipline until
-that record ships.
+The live claudex implementation lane runs through the Claude Code harness
+([lane calibration](lane-calibration.md#claudex-leg--implementor-default-operating-model-himmel-2782)),
+with publication subject to its permission classifier. The console's
+`scripts/handover/console-kit/ready-check.sh` separately refuses a head without
+an `ok` CR-ledger row. These cover publication authorization and CR readiness,
+not the historical GLM `d1_verdict` field.
 
-**Wiring (OPERATOR-executed, only after a second observed drift — a cheap-lane
-PR opened with no `d1_verdict` record):** a guarded `Bash|PowerShell` entry in
-`marketplace/plugins/himmel-ops/hooks/hooks.json` (live after `/himmel-update` +
-a fresh session), never `.claude/settings.json` (an agent-executed
-settings.json edit is a classifier-vetoed self-modification). Until then this
-stays "built, not wired." See §1 enforcement-honesty.
+D1 lane-rubric verdict persistence remains behavioral (validating-session
+discipline); historical `cheap-codex` structural provenance enforcement still
+waits on a hermes task→branch record (spec D1.1/SC2). See §1 enforcement-honesty.
 
 ## Forks awaiting ratification
 
