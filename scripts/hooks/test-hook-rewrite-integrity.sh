@@ -1599,6 +1599,31 @@ E
 sc_case "row 50 control: CLAUDE_PROJECT_DIR resolves" 1 0 <<'E'
 source "${CLAUDE_PROJECT_DIR}/scripts/lib/armor.sh"
 E
+sc_case "row 51: comment-looking lines inside a quoted string do not flip the quote parity of a later real source" 0 1 <<'E'
+echo 'x
+# '
+source "$MISSING"
+echo 'y
+# '
+E
+sc_case "row 52: a self-dir subst over a ref assigned an absolute path denies (cd resolves outside the checkout)" 0 1 <<'E'
+X=/outside; source "$(cd $X && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 52 control: a self-dir subst over a ref assigned a self-dir form resolves" 1 0 <<'E'
+X="$(dirname "$0")"; source "$(cd "$X" && pwd)/../lib/armor.sh"
+E
+sc_case "row 53: a parameter-expansion operator on CLAUDE_PROJECT_DIR is not the plain value" 0 1 <<'E'
+source "${CLAUDE_PROJECT_DIR:+/outside}/scripts/lib/armor.sh"
+E
+sc_case "row 53: a parameter-expansion operator on BASH_SOURCE inside a self-dir subst denies" 0 1 <<'E'
+source "$(dirname ${BASH_SOURCE:+/outside})/../lib/armor.sh"
+E
+sc_case "row 53 control: an empty-default CLAUDE_PROJECT_DIR resolves" 1 0 <<'E'
+source "${CLAUDE_PROJECT_DIR:-}/scripts/lib/armor.sh"
+E
+sc_case "row 53 control: a source inside bash -c quotes still joins the closure (the any-position pass reads quoted text on purpose)" 1 0 <<'E'
+bash -c '. ../lib/armor.sh'
+E
 }
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

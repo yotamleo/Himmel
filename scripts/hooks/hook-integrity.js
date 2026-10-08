@@ -1343,16 +1343,29 @@ function inertMask(text) {
 // CLAUDE_PROJECT_DIR/BASH_SOURCE, or a `$VAR` assigned in this file — which
 // resolves only through its assignments, each prefix checked the same way.
 const SELF_DIR_REFS = new Set(['BASH_SOURCE', 'CLAUDE_PROJECT_DIR']);
-const SIMPLE_REF = new RegExp(`^\\$(?:(${VAR_NAME})|\\{(${VAR_NAME})[^}]*\\})$`);
+const SIMPLE_REF = new RegExp(`^\\$(?:(${VAR_NAME})|\\{(${VAR_NAME})(?:\\[[0-9@*]+\\])?(?::?-(?:\\$0|\\$\\{0\\})?|%%?[^}]*|##?[^}]*)?\\})$`);
 
 // A `$( cd ... dirname ... pwd )` over $0/BASH_SOURCE and in-file refs that
 // themselves resolve to a modelled directory.
+function within(base, dir) {
+  const r = path.relative(dir, base);
+  return r === '' || (!r.startsWith('..') && !path.isAbsolute(r));
+}
+
+// An assigned ref inside a self-dir subst counts only when every base it can
+// take stays inside the checkout or the file's own directory.
+function assignedInside(v, fileDir, root, assigns, depth) {
+  if (!assigns[v]) return false;
+  const b = prefixBases(`$${v}`, fileDir, root, assigns, depth + 1);
+  return !!b && b.every((x) => within(x, root) || within(x, fileDir));
+}
+
 function isSelfDirSubst(prefix, fileDir, root, assigns, depth) {
   if (!/^\$\(/.test(prefix) || !/dirname|\bcd\b/.test(prefix)) return false;
   const rest = prefix
-    .replace(/\$\{BASH_SOURCE[^}]*\}|\$BASH_SOURCE\b|\$\{0\}|\$0\b/g, '')
+    .replace(/\$\{BASH_SOURCE(?:\[[0-9@*]+\])?\}|\$BASH_SOURCE\b|\$\{0\}|\$0\b/g, '')
     .replace(new RegExp(`\\$\\{?(${VAR_NAME})\\}?`, 'g'), (all, v) =>
-      (assigns[v] && prefixBases(`$${v}`, fileDir, root, assigns, depth + 1) ? '' : all))
+      (assignedInside(v, fileDir, root, assigns, depth) ? '' : all))
     .replace(/2>\/dev\/null|\bcd\s+-P\b|\b(?:dirname|cd|pwd)\b|&&|\$\(|[)\s;.\/-]/g, '');
   return rest === '';
 }
@@ -1421,14 +1434,20 @@ function resolveSourceArg(arg, fileDir, root, assigns) {
 // the files `file` itself sources (one level; the caller walks the rest).
 function sourcedClosure(file, root) {
   const text = fs.readFileSync(file, 'utf8');
-  const lines = text.split('\n').filter((l) => !/^\s*#/.test(l));
+  // Every line stays in the text the tokenizer sees: a comment-looking line
+  // inside a quoted string is data, and dropping it would flip quote parity.
+  const lines = text.split('\n');
   // HIMMEL-4585: a statement Bash never runs (quoted text, a heredoc body) is
   // not a source statement. null (unparseable) leaves every line scanned.
-  const mask = inertMask(lines.join('\n')) || new Uint8Array(lines.join('\n').length);
+  const full = inertMask(text);
+  const mask = full || new Uint8Array(text.length);
   const offsets = [];
   lines.reduce((at, l) => { offsets.push(at); return at + l.length + 1; }, 0);
+  // A `#` line is a comment only where the tokenizer did not mask it as quoted data.
+  const isComment = (line, n) => /^\s*#/.test(line) && !(full && mask[offsets[n] + line.search(/\S/)]);
   const assigns = {};
   lines.forEach((line, n) => {
+    if (isComment(line, n)) return;
     for (const m of line.matchAll(ASSIGN)) {
       if (mask[offsets[n] + m.index + m[0].length - m[2].length - m[1].length - 1]) continue;
       (assigns[m[1]] = assigns[m[1]] || []).push(firstShellWord(m[2]));
@@ -1438,6 +1457,7 @@ function sourcedClosure(file, root) {
   const libs = new Set();
   const unresolved = [];
   lines.forEach((line, n) => {
+    if (isComment(line, n)) return;
     // The argument is the whole next shell word, so a `"$(dirname "$0")/x.sh"`
     // prefix is kept rather than cut at its first `)`.
     for (const m of line.matchAll(SOURCE_CMD)) {
