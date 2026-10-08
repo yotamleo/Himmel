@@ -336,7 +336,7 @@ def drift_log(path, drift, unplanned, unthemed):
     if not rows or rows[-1][1:] != cur[1:] or not fresh:
         try:
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-            new =not os.path.exists(path)
+            new = not os.path.exists(path) or os.path.getsize(path) == 0
             with open(path, 'a', encoding='utf-8') as fh:
                 if new:
                     fh.write('utc\tdrift\tunplanned\tunthemed\n')
