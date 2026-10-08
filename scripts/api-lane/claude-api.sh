@@ -79,7 +79,7 @@ EOF
 # --- API bank gate: the credit row decides; the native bank is never consulted ---
 JOB_ID="${HIMMEL_API_JOB_ID:-api-$(date +%s)-$$}"
 case "$JOB_ID" in ""|*[!A-Za-z0-9._:-]*) refuse "job id has characters outside [A-Za-z0-9._:-]" ;; esac
-BANK_VERDICT="$(CADENCE_BANK_LANE=api CADENCE_BANK_LAUNCH=1 LEG_LANE=api \
+BANK_VERDICT="$(env -u CLAUDE_CODE_OAUTH_TOKEN CADENCE_BANK_LANE=api CADENCE_BANK_LAUNCH=1 LEG_LANE=api \
   CADENCE_BANK_LEG="${CADENCE_BANK_LEG:-claude-api:$JOB_ID}" \
   bash "$REPO/scripts/lib/bank-preflight.sh")" || BANK_VERDICT=BANK-UNKNOWN
 [ "$BANK_VERDICT" = "PROCEED" ] || refuse "api bank gate said $BANK_VERDICT"
