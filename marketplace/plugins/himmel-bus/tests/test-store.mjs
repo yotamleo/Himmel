@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as primitive from '../../../../scripts/telegram/bus.ts';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 
 const storeUrl = new URL('../lib/store.mjs', import.meta.url);
 async function fixture(t) {
@@ -88,9 +90,13 @@ test('T6.4 chain crosses rotated compressed segments from a committed hash', asy
   for (let i = 0; i < 6; i++) await store.append(root, 'leg', message('x'.repeat(64000)));
   assert.ok((await readdir(join(root, 'log'))).some(n => /\.jsonl\.(zst|gz)$/.test(n)));
   const got = await store.read(root, 'leg');
-  assert.deepEqual(got.records.map(r => r.n), [2, 3, 4, 5, 6, 7]);
-  assert.equal(got.next.n, 7);
+  assert.deepEqual(got.records.map(r => r.n), [2, 3, 4, 5, 6]);
   assert.equal(got.next.halted, undefined);
+  await store.commit(root, 'leg', got.next);
+  const live = await store.read(root, 'leg');
+  assert.deepEqual(live.records.map(r => r.n), [7]);
+  assert.equal(live.next.n, 7);
+  assert.equal(live.next.halted, undefined);
 });
 
 test('T6.5 halted log refuses new sends and exposes no pending wake', async t => {
@@ -260,6 +266,122 @@ test('CR round-3 codex-2 corrupt compressed bytes wake the reader to persist a h
   assert.match(broken.notice, /chain broken at #1/);
   assert.equal(await store.pending(root, 'leg'), false);
   assert.equal((await store.read(root, 'leg')).notice, undefined);
+});
+
+test('HIMMEL-4880 malformed delivery cursors are refused before persistence', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message());
+  const { next } = await store.read(root, 'leg');
+  for (const bad of [null, {}, { ...next, h: 'zz' }, { ...next, off: -1 }, { ...next, k: 0.5 }, { ...next, halted: 1 }]) {
+    await assert.rejects(store.commit(root, 'leg', bad), /invalid bus cursor/);
+    await assert.rejects(readFile(join(root, 'cur/leg')), { code: 'ENOENT' });
+  }
+  await store.commit(root, 'leg', next);
+  assert.equal(await store.pending(root, 'leg'), false);
+});
+
+test('HIMMEL-4880 unreadable cursors halt once and explicit unhalt permits replay', async t => {
+  for (const raw of ['', 'null', '{"k":0}', '{broken']) {
+    const { store, root } = await fixture(t);
+    await store.append(root, 'leg', message());
+    await writeFile(join(root, 'cur/leg'), raw, { mode: 0o600 });
+    assert.equal(await store.pending(root, 'leg'), true);
+    const got = await store.read(root, 'leg');
+    assert.deepEqual(got.records, []);
+    assert.match(got.notice, /invalid bus cursor/);
+    assert.equal(await store.pending(root, 'leg'), false);
+    assert.equal((await store.read(root, 'leg')).notice, undefined);
+    await store.unhalt(root, 'leg');
+    assert.deepEqual((await store.read(root, 'leg')).records.map(r => r.n), [1]);
+  }
+});
+
+test('HIMMEL-4880 native filesystem errors propagate without a sticky halt', async t => {
+  const { store, root } = await fixture(t);
+  for (let i = 0; i < 6; i++) await store.append(root, 'leg', message('x'.repeat(64000)));
+  const archive = join(root, 'log', (await readdir(join(root, 'log'))).find(n => /\.jsonl\.(zst|gz)$/.test(n)));
+  const original = fs.open;
+  for (const code of ['EACCES', 'EPERM', 'EIO']) {
+    const mocked = t.mock.method(fs, 'open', async (path, ...args) => {
+      if (path === archive) throw Object.assign(new Error('native filesystem failure'), { code });
+      return original(path, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(store.read(root, 'leg'), { code });
+      await assert.rejects(readFile(join(root, 'cur/leg')), { code: 'ENOENT' });
+    } finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+  }
+  assert.equal((await store.read(root, 'leg')).next.halted, undefined);
+});
+
+test('HIMMEL-4880 pending uses metadata and read loads only one undelivered segment', async t => {
+  const { store, root } = await fixture(t);
+  for (let i = 0; i < 12; i++) await store.append(root, 'leg', message('x'.repeat(64000)));
+  const original = fs.open;
+  let archiveOpens = 0;
+  const mocked = t.mock.method(fs, 'open', async (path, ...args) => {
+    if (/\.jsonl\.(zst|gz)$/.test(path)) archiveOpens++;
+    return original(path, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(await store.pending(root, 'leg'), true);
+    assert.equal(archiveOpens, 0);
+    const got = await store.read(root, 'leg');
+    assert.equal(archiveOpens, 1);
+    assert.deepEqual(got.records.map(r => r.n), [1, 2, 3, 4, 5]);
+    await store.commit(root, 'leg', got.next);
+    const second = await store.read(root, 'leg');
+    assert.deepEqual(second.records.map(r => r.n), [6, 7, 8, 9, 10]);
+    await store.commit(root, 'leg', second.next);
+    assert.deepEqual((await store.read(root, 'leg')).records.map(r => r.n), [11, 12]);
+  } finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test('HIMMEL-4880 unhalt preserves the delivery position and rechecks repaired bytes', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message('first'));
+  await store.commit(root, 'leg', (await store.read(root, 'leg')).next);
+  await store.append(root, 'leg', message('second'));
+  const file = join(root, 'log/leg.jsonl');
+  const original = await readFile(file, 'utf8');
+  await writeFile(file, original.replace('second', 'tamper'));
+  assert.equal((await store.read(root, 'leg')).next.halted, 2);
+  assert.equal((await store.unhalt(root, 'leg')).n, 1);
+  assert.equal((await store.read(root, 'leg')).next.halted, 2);
+  await writeFile(file, original);
+  await store.unhalt(root, 'leg');
+  assert.deepEqual((await store.read(root, 'leg')).records.map(r => r.n), [2]);
+});
+
+test('HIMMEL-4880 pending propagates native metadata failures without a wake', async t => {
+  const { store, root } = await fixture(t);
+  for (let i = 0; i < 6; i++) await store.append(root, 'leg', message('x'.repeat(64000)));
+  const original = fs.lstat;
+  for (const code of ['EACCES', 'EPERM']) {
+    const mocked = t.mock.method(fs, 'lstat', async (path, ...args) => {
+      if (/\.jsonl\.(zst|gz)$/.test(path)) throw Object.assign(new Error('native metadata failure'), { code });
+      return original(path, ...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(store.pending(root, 'leg'), { code });
+      await assert.rejects(readFile(join(root, 'cur/leg')), { code: 'ENOENT' });
+    } finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+  }
+});
+
+test('HIMMEL-4880 invalid segment metadata wakes read to persist one halt', async t => {
+  const { store, root } = await fixture(t);
+  await store.append(root, 'leg', message());
+  await writeFile(join(root, 'log/leg.9007199254740992.jsonl'), '', { mode: 0o600 });
+  assert.equal(await store.pending(root, 'leg'), true);
+  const got = await store.read(root, 'leg');
+  assert.deepEqual(got.records, []);
+  assert.equal(got.next.halted, 1);
+  assert.match(got.notice, /chain broken/);
+  assert.equal(await store.pending(root, 'leg'), false);
 });
 
 test('appendChained never recreates a missing log', async t => {
