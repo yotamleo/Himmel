@@ -38,7 +38,7 @@ while [ "$#" -gt 0 ]; do
   case "$a" in
     -p|--print) PRINT=1; ARGS+=("$a"); continue ;;
     --) refuse "the -- argument terminator would turn the enforced options into positionals" ;;
-    --bg|--background|--cloud|--daemon|--dangerously-skip-permissions|--allow-dangerously-skip-permissions)
+    --bg|--background|--cloud|--daemon|--dangerously-skip-permissions|--allow-dangerously-skip-permissions) # t13b-ok: refuses the flag, starts no service
       refuse "flag $a is not allowed on the api lane" ;;
     --permission-mode|--model|--max-budget-usd|--output-format)
       [ "$#" -gt 0 ] || refuse "$a needs a value"

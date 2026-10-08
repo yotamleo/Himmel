@@ -880,7 +880,7 @@ echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex openrout
 # only reaches the credit-state verdict below; it never reads the native bank.
 # Refuse before creating a fleet reservation for a launch that cannot happen.
 if [ "$LANE" = api ] && [ "$LAUNCH_INTENT" = "1" ] && [ "${HIMMEL_API_LANE:-}" != "on" ]; then
-  echo "bank-preflight: api dispatch is OFF (set by scripts/api-lane/claude-api.sh only) — leg=$LEG refusing" >&2
+  echo "bank-preflight: api dispatch is OFF (set by the reviewed api-lane launcher only) — leg=$LEG refusing" >&2
   if [ "$_fleet_admitted" -eq 1 ]; then
     _fleet_release_admit "$SLOTS/.admit"
   fi
