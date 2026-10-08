@@ -34,25 +34,24 @@ permissions:
 #   pull_request -> ci-pr-<PR number>: a PR's newer push cancels that PR's
 #                   older run, and never another PR's;
 #   push         -> ci-<github.ref>: push is restricted to `main` above, so
-#                   these runs share ONE group (ci-refs/heads/main) and are
-#                   NOT cancelled while running (HIMMEL-3841 slice E): at most
-#                   one sweep runs and one waits, and a newer pending sweep
-#                   replaces the older pending one (verified on #1429: a
-#                   superseded pending run cancels with 0 jobs and leaves no
-#                   context). Each completed sweep therefore tests the tip at
-#                   its start, so the completed sweeps cover contiguous ranges
-#                   of merges and a red on main is always attributed to a
-#                   range (see main-sweep-red.yml);
+#                   these runs share ONE group (ci-refs/heads/main) and a newer
+#                   main push CANCELS the older run, running or pending
+#                   (HIMMEL-5036: back-to-back merges each ran a full sweep and
+#                   pinned half the 20-job cap on superseded heads). Only the
+#                   newest head's sweep completes; a cancelled sweep reports
+#                   nothing, and main-sweep-red.yml attributes a red to the
+#                   range since the last GREEN sweep, so the merges a cancelled
+#                   sweep covered fall into the next completed sweep's range;
 #   everything else (schedule, workflow_dispatch) -> ci-<run_id>: unique to the
 #                   run, so the nightly / a dispatch is never cancelled nor
 #                   queued behind anything.
-# cancel-in-progress is scoped to pull_request alone, so it stays inert for the
-# push and run_id groups. A cancelled run only ever belongs to a superseded
-# head: the required checks (incl. the `shell-unit` aggregator) are evaluated
-# on the PR's current head, whose own run this never cancels.
+# cancel-in-progress is scoped to pull_request and push, so it stays inert for
+# the run_id group. A cancelled run only ever belongs to a superseded head: the
+# required checks (incl. the `shell-unit` aggregator) are evaluated on the PR's
+# current head, whose own run this never cancels.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   secret-scan:
