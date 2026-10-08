@@ -156,7 +156,8 @@ export function fleetSections(all: Row[], selected: string | null = null, filter
   const finishedEntries = [...chains.values()].map(([row, ...rest]) => ({ row, hops: rest.reverse() }))
     .sort((a, b) => finishedOrder(a.row, b.row));
 
-  const attention = rows.filter((r) => shown(r) && !orphanOf(r)).flatMap((r) => { const w = why(r); return w ? [{ r, w }] : []; })
+  // An orphan's own alarm (BLOCKED, high context) still reaches Needs attention, beside its Orphans row.
+  const attention = rows.filter(shown).flatMap((r) => { const w = why(r); return w ? [{ r, w }] : []; })
     .sort(byUrgency).map(({ r, w }) => ({ row: r, why: w[1] }));
   const orphans = rows.filter(shown).flatMap((r) => { const o = orphanOf(r); return o ? [{ r, w: [0, o] as [number, string] }] : []; })
     .sort(byUrgency).map(({ r, w }) => ({ row: r, why: w[1] }));

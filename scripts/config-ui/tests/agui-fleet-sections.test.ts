@@ -147,6 +147,13 @@ test("filters apply to every section alike: a hidden live hop leaves its finishe
   expect(fleetSections(rows, null, { lanes: [], states: [], text: "8" }, procs).processOrphans.map((p) => p.pid)).toEqual([8]);
 });
 
+test("an orphan's own alarm (BLOCKED, high context) still reaches Needs attention, beside its Orphans row", () => {
+  const withAlarm = rows.map((r) => (r.name === "orphan-leg" ? { ...r, marker: "BLOCKED" } : r));
+  const s = fleetSections(withAlarm);
+  expect(s.attention.map((a) => [a.row.name, a.why])).toContainEqual(["orphan-leg", "BLOCKED"]);
+  expect(s.orphans.map((o) => o.row.name)).toEqual(["orphan-leg"]);
+});
+
 test("sibling order: running, waiting, idle, unknown; newest first; then name", () => {
   const order = [row("u", "leg", BU, { state: "unknown" }), row("b", "leg", BU), row("a", "leg", BU), row("w", "leg", BU, { state: "waiting for GO" })];
   expect(order.sort(siblingOrder as any).map((r) => r.name)).toEqual(["w", "a", "b", "u"]);
