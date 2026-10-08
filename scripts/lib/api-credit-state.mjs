@@ -8,8 +8,8 @@ import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
   lstatSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { userInfo } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 const SCALE = 1000000n;
@@ -38,6 +38,7 @@ function id(value) {
 }
 function configs(config) {
   if (!object(config) || config.version !== 1 || !object(config.accounts)) refuse('invalid-config');
+  if (typeof config.ledger_path !== 'string' || !isAbsolute(config.ledger_path)) refuse('ledger-path-required');
   const orgs = new Set();
   const names = Object.keys(config.accounts);
   if (names.length === 0) refuse('missing-account-config');
@@ -46,6 +47,7 @@ function configs(config) {
     const c = config.accounts[account];
     if (!object(c)) refuse('invalid-account-config');
     id(c.organization_id); id(c.cycle_id); money(c.cap_usd);
+    if (own(c, 'key_id')) id(c.key_id);  // non-secret provider key identifier, never the key
     if (orgs.has(c.organization_id)) refuse('duplicate-organization');
     orgs.add(c.organization_id);
   }
@@ -113,13 +115,16 @@ function syncDirectory(path) {
   const fd = openSync(path, 'r');
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
-function save(statePath, state, lock) {
-  // Sentinel precedes the first write: missing/corrupt ledger after a crash must
-  // never look like an unused grant. Keep it through every cycle/settlement.
-  const sentinel = `${statePath}.initialized`;
-  if (!existsSync(sentinel)) {
-    durableFile(sentinel, 'api-credit-ledger-v1\n');
-    syncDirectory(dirname(statePath));
+function save(statePath, state, lock, sentinels) {
+  // Sentinels precede the first write: missing/corrupt ledger after a crash must
+  // never look like an unused grant. Keep them through every cycle/settlement.
+  // Two independent files (beside the ledger and beside the config) so deleting
+  // the ledger and one sentinel still refuses.
+  for (const sentinel of sentinels) {
+    if (!existsSync(sentinel)) {
+      durableFile(sentinel, 'api-credit-ledger-v1\n');
+      syncDirectory(dirname(sentinel));
+    }
   }
   const temporary = join(lock, 'ledger.json');
   durableFile(temporary, `${JSON.stringify(state)}\n`);
@@ -127,22 +132,48 @@ function save(statePath, state, lock) {
   syncDirectory(dirname(statePath));
 }
 
+const stateRoot = () => join(userInfo().homedir, '.himmel/state/api-credit');
+const configPathFor = (env) => resolve(env.HIMMEL_API_CREDIT_CONFIG || join(stateRoot(), 'config.json'));
+
+// HIMMEL-4985: the secret-free roster entry for HIMMEL_API_ACCOUNT, or a refusal.
+export function configuredAccount(env = process.env) {
+  try {
+    const account = env.HIMMEL_API_ACCOUNT;
+    if (!['A', 'B'].includes(account)) refuse('account-required');
+    const config = read(configPathFor(env));
+    configs(config);
+    if (!own(config.accounts, account)) refuse('account-not-configured');
+    return { account, ledger_path: config.ledger_path, ...config.accounts[account] };
+  } catch (e) {
+    return { verdict: e.verdict || 'BANK-UNKNOWN', reason: e.verdict ? e.message : 'state-io-failure' };
+  }
+}
+
 export function creditState(command, options = {}, env = process.env) {
-  const root = join(env.HOME || homedir(), '.himmel/state/api-credit');
+  // Account home, not $HOME: a changed HOME must not select a different config.
+  const root = stateRoot();
   let lock, held = false;
   try {
     const account = env.HIMMEL_API_ACCOUNT;
     if (!['A', 'B'].includes(account)) refuse('account-required');
     if (!['status', 'reserve', 'unknown', 'settle'].includes(command)) refuse('invalid-command');
-    const config = read(env.HIMMEL_API_CREDIT_CONFIG || join(root, 'config.json'));
+    const configPath = configPathFor(env);
+    const config = read(configPath);
     configs(config);
     if (!own(config.accounts, account)) refuse('account-not-configured');
     const c = config.accounts[account];
-    let statePath = resolve(env.HIMMEL_API_CREDIT_STATE || join(root, 'ledger.json'));
+    // The config pins the one ledger; an env override may only restate it.
+    let statePath = resolve(config.ledger_path);
     mkdirSync(dirname(statePath), { recursive: true, mode: 0o700 });
+    const canonical = (p) => join(realpathSync(dirname(p)), basename(p));
+    if (env.HIMMEL_API_CREDIT_STATE) {
+      const requested = resolve(env.HIMMEL_API_CREDIT_STATE);
+      mkdirSync(dirname(requested), { recursive: true, mode: 0o700 });
+      if (canonical(requested) !== canonical(statePath)) refuse('ledger-path-mismatch');
+    }
     // Canonicalise the parent so aliases through symlinked directories share
     // the same transaction lock. The operator must use one ledger for the fleet.
-    statePath = join(realpathSync(dirname(statePath)), basename(statePath));
+    statePath = canonical(statePath);
     lock = `${statePath}.lock`;
     try { mkdirSync(lock, { mode: 0o700 }); held = true; } catch { refuse('ledger-locked-or-unwritable'); }
     // A file symlink/hardlink alias has another basename and therefore another
@@ -151,9 +182,11 @@ export function creditState(command, options = {}, env = process.env) {
       const stat = lstatSync(statePath);
       if (!stat.isFile() || stat.nlink !== 1) refuse('aliased-or-invalid-ledger');
     } catch (e) { if (e.code !== 'ENOENT') throw e; }
-    const sentinel = `${statePath}.initialized`;
-    if (existsSync(sentinel) && readFileSync(sentinel, 'utf8') !== 'api-credit-ledger-v1\n') refuse('invalid-ledger-sentinel');
-    if (!existsSync(statePath) && existsSync(sentinel)) refuse('missing-initialized-ledger');
+    const sentinels = [`${statePath}.initialized`, join(realpathSync(dirname(configPath)), `${basename(statePath)}.config-initialized`)];
+    for (const sentinel of sentinels) {
+      if (existsSync(sentinel) && readFileSync(sentinel, 'utf8') !== 'api-credit-ledger-v1\n') refuse('invalid-ledger-sentinel');
+    }
+    if (!existsSync(statePath) && sentinels.some((sentinel) => existsSync(sentinel))) refuse('missing-initialized-ledger');
     const state = existsSync(statePath) ? read(statePath) : { version: 1, accounts: {} };
     ledgerCheck(state);
     // Changing a configured identity cannot hide a previous cycle's obligations.
@@ -177,7 +210,7 @@ export function creditState(command, options = {}, env = process.env) {
         state.accounts[account] = a;
       }
       a.jobs[options.id] = { status: 'reserved', maximum_usd: usd(maximum) };
-      save(statePath, state, lock);
+      save(statePath, state, lock, sentinels);
       // Report the committed admission, not a second clock-dependent verdict.
       return { ...result, verdict: 'PROCEED', job_id: options.id,
         reserved_usd: usd(money(result.reserved_usd) + maximum),
@@ -188,14 +221,14 @@ export function creditState(command, options = {}, env = process.env) {
     const job = a.jobs[options.id];
     if (job.status === 'settled') refuse('already-settled');
     if (command === 'unknown') {
-      job.status = 'unknown'; save(statePath, state, lock);
+      job.status = 'unknown'; save(statePath, state, lock, sentinels);
       return { verdict: 'PROCEED', account, job_id: options.id, reserved_usd: usd(totals(a).reserved) };
     }
     if (options.completion !== 'verified') refuse('terminal-completion-required');
     const actual = money(options.usd);
     job.status = 'settled'; job.actual_usd = usd(actual);
     if (actual > money(job.maximum_usd)) a.discrepancy = true;
-    save(statePath, state, lock);
+    save(statePath, state, lock, sentinels);
     return { verdict: a.discrepancy ? 'BANK-UNKNOWN' : 'PROCEED', account, job_id: options.id,
       reason: a.discrepancy ? 'reservation-overrun' : 'settled' };
   } catch (e) {

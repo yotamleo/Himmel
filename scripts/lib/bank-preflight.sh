@@ -875,11 +875,12 @@ fi
 
 echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex openrouter=$fleet_openrouter reserved=$fleet_reserved total=$fleet_n/$FLEET_CAP" >&2
 
-# HIMMEL-4904: task 1 exposes credit accounting only. No env opt-in can
-# dispatch API work until the reviewed one-shot launcher/auth isolation ships.
+# HIMMEL-4904/4985: api dispatch is OFF unless the reviewed one-shot launcher
+# (scripts/api-lane/claude-api.sh) opts in with HIMMEL_API_LANE=on. The opt-in
+# only reaches the credit-state verdict below; it never reads the native bank.
 # Refuse before creating a fleet reservation for a launch that cannot happen.
-if [ "$LANE" = api ] && [ "$LAUNCH_INTENT" = "1" ]; then
-  echo "bank-preflight: api dispatch is OFF (credit accounting only) — leg=$LEG refusing" >&2
+if [ "$LANE" = api ] && [ "$LAUNCH_INTENT" = "1" ] && [ "${HIMMEL_API_LANE:-}" != "on" ]; then
+  echo "bank-preflight: api dispatch is OFF (set by scripts/api-lane/claude-api.sh only) — leg=$LEG refusing" >&2
   if [ "$_fleet_admitted" -eq 1 ]; then
     _fleet_release_admit "$SLOTS/.admit"
   fi
