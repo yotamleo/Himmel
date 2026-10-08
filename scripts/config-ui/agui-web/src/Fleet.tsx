@@ -232,6 +232,8 @@ function Rel({ name, live }: { name: string; live: Row[] }) {
   return (
     <button type="button" className="fleet-rel" title={name} onClick={() => {
       const el = document.getElementById(rowId(r.name));
+      // A row inside a collapsed section or console group is revealed first.
+      for (let d = el?.parentElement?.closest("details"); d; d = d.parentElement?.closest("details")) d.open = true;
       el?.scrollIntoView({ block: "center" });
       el?.focus();
     }}>{shortName(name)}</button>

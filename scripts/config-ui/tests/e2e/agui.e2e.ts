@@ -302,6 +302,26 @@ test("10. console to Fleet to a run view and back: one rail, the token in the fr
   for (const u of lines) expect(new URL(u).pathname + new URL(u).search).not.toContain(tok);
 });
 
+// HIMMEL-4925: a lineage link reveals its target even when the target's console group is collapsed.
+test("a succession link opens the collapsed console group it points into", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  const next = "HIMMEL-nextleg-2026-10-07ZZZ-roadmap-console";
+  await page.route("**/api/agui/fleet", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const console = body.sessions.find((r: any) => r.name === FLEET.console.name);
+    body.sessions.push({ ...console, name: next, console: next, run: null, predecessor: FLEET.console.name });
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(h.url);
+  const group = page.locator(`details.fleet-console[aria-label="${next}"]`);
+  await group.locator("> summary").click();
+  await expect(group).not.toHaveAttribute("open", "");
+  await card(page, FLEET.console.name).locator(".fleet-succession .fleet-rel").click();
+  await expect(group).toHaveAttribute("open", "");
+  await expect(card(page, next)).toBeFocused();
+});
+
 test("12. two-console side menu, deep-linked page, and identical menu/row drill-in", async ({ page }) => {
   h = await bootAgui("", { fleet: true });
   const other = "HIMMEL-project-console";
