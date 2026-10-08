@@ -14,7 +14,7 @@ AA="$HERE/auto-action.sh"
 CRR="${CR_RESET_SUT:-$HERE/../cr/cr-reset.sh}"
 LOCK_LIB="$HERE/../lib/shared-branch-lock.sh"
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/test-break-glass.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 FAILED=0
 assert_rc() {

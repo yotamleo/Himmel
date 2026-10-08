@@ -105,7 +105,7 @@ scrub_env() {
 
 age_of() {
     local f="$1" m
-    m="$(stat -c %Y "$f" 2>/dev/null)" || { echo "absent"; return 0; }
+    m="$(stat -c %Y "$f" 2>/dev/null)" || { echo "absent"; return 0; } # gnu-ok: the bridge runs only on the Linux station
     echo "$(( $(date +%s) - m ))s"
 }
 
@@ -145,7 +145,7 @@ op_station_status() {
     bank="${BREAK_GLASS_BANK_CMD:-bash $PRIMARY/scripts/lib/bank-preflight.sh}"
     echo "bank:"
     # shellcheck disable=SC2086 # the seam is a command line by design
-    timeout 20 $bank 2>&1 | head -n 8 | sed 's/^/  /'
+    timeout 20 $bank 2>&1 | head -n 8 | sed 's/^/  /' # gnu-ok: the bridge runs only on the Linux station
     echo "consoles:"
     bash "$PRIMARY/scripts/telegram/console-census.sh" 2>/dev/null | head -n 10 | sed 's/^/  /'
     echo "last tick: $(age_of "$HOME/.himmel/state/tick-ciq-last") ago"
@@ -205,6 +205,7 @@ fleet_manifest() {
         . "$PRIMARY/scripts/lib/handover-path.sh"
         # ponytail: newest *-console.fleet.json by mtime stands in for "the current
         # console", upgrade path: a console pointer file if two consoles ever run.
+        # gnu-ok: the bridge runs only on the Linux station (find -printf)
         fleet="$(find "$(handover_root)" -maxdepth 4 -name '*-console.fleet.json' -printf '%T@ %p\n' 2>/dev/null \
             | sort -rn | head -n 1 | cut -d' ' -f2-)"
     fi
@@ -328,7 +329,7 @@ op_close_wrapped() {
 op_relaunch_console() {
     local name="$ARG" cmd
     [ "$name" = "-" ] && name="console"
-    if ! printf '%s' "$name" | grep -qxE '[a-z0-9][a-z0-9-]{0,63}'; then
+    if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]]; then
         echo "ERR break-glass: bad console name: '$name'" >&2
         return 1
     fi

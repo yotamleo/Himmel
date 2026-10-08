@@ -48,7 +48,7 @@ if [ "$state" != "OPEN" ]; then
     echo "ERR cr-reset: PR $PR is $state, not OPEN" >&2
     exit 12
 fi
-if ! printf '%s' "$branch" | grep -qxE '[a-z]+/[A-Za-z0-9._+-]+'; then
+if ! [[ "$branch" =~ ^[a-z]+/[A-Za-z0-9._+-]+$ ]]; then
     echo "ERR cr-reset: PR $PR head branch '$branch' is not a type/slug branch" >&2
     exit 12
 fi
