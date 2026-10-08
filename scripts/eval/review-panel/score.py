@@ -5,7 +5,7 @@ per class and for the panel as a whole, with n and Wilson 95% intervals; one
 row per sweep into the eval-runs ledger (scripts/eval/lib/eval_runs.py).
 
   score.py lint  [--fixtures DIR] [--key FILE]
-  score.py score --outputs DIR [--fixtures DIR] [--key FILE] [--critics a,b]
+  score.py score --outputs DIR --critics a,b [--fixtures DIR] [--key FILE]
                  [--only case-01,case-02] [--window N] [--json OUT]
                  [--ledger PATH | --no-ledger] [--meta-json J]
 
@@ -198,13 +198,15 @@ def parse_review(text):
         if u and (in_note or not performed):
             unavailable.add(u.group(1))
             continue
-        if sev and line.startswith("- [") and not line.startswith("- [citation-guard"):
-            counted[sev] += 1
+        # Count only bullets BULLET parses: a malformed one (no [file:line])
+        # leaves the count short of the heading, so the case is unscored
+        # rather than scored with that finding lost.
         b = BULLET.match(line)
         if b and sev:
             critic = b.group(1)
             if critic.startswith("citation-guard"):
                 continue
+            counted[sev] += 1
             findings.append({"critic": critic, "sev": sev, "text": b.group(3),
                              "file": norm_path(b.group(4)), "line": int(b.group(5))})
     # The panel prints all three severity headings, each with its bullet count,
@@ -390,6 +392,10 @@ def main(argv=None):
         if not isinstance(meta, dict):
             raise ValueError("--meta-json must be an object")
         critics = [c for c in a.critics.split(",") if c]
+        # The panel header carries counts, not names: without the roster a
+        # responding critic with zero findings would drop out of the metrics.
+        if not critics:
+            raise ValueError("--critics is required (the panel roster)")
         only = [c for c in a.only.split(",") if c]
         res = score(a.outputs, a.fixtures, a.key, critics, only or None, a.window)
     except (OSError, ValueError) as e:
