@@ -10,6 +10,11 @@ set -uo pipefail
 
 HOOKS="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$HOOKS/redirect-webfetch-walled-hosts.sh"
+# A leg's launching shell may export the bypass; clear it before any case runs.
+# shellcheck source=../lib/override-env.sh
+# shellcheck disable=SC1091
+. "$HOOKS/../lib/override-env.sh"
+scrub_override_env
 [ -f "$HOOK" ] || { echo "hook not found: $HOOK" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not on PATH"; exit 0; }
 
