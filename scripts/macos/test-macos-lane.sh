@@ -48,6 +48,13 @@ contains "gate: message names the var" "$OUT" "HIMMEL_MACOS_LANE_OK=1"
 OK=0 run stop
 eq "gate: =0 also refuses" 2 "$RC"
 
+: > "$LOG"
+SPACE_OUT=$(env -i PATH="$PATH" STUB_LOG="$LOG" HIMMEL_MACOS_LANE_OK=1 \
+  HIMMEL_MACOS_LANE_DIR="$W/lane dir" DOCKER="$W/docker" SSH="$W/ssh" RSYNC="$W/rsync" TIMEOUT_BIN="$W/timeout" \
+  bash "$SUT" plan 2>&1)
+eq "lane dir with whitespace refused" 1 "$?"
+contains "whitespace refusal names the cause" "$SPACE_OUT" "whitespace"
+
 # 2. start: refuses without a persistent disk, then builds the docker plan
 run start
 eq "start: no disk -> fails" 1 "$RC"
@@ -81,7 +88,8 @@ run run-suites scripts/test-a.sh scripts/handover/console-kit/test-b.sh
 eq "run-suites: rc 0" 0 "$RC"
 contains "run-suites: first suite" "$CALLS" "bash scripts/test-a.sh"
 contains "run-suites: second suite" "$CALLS" "bash scripts/handover/console-kit/test-b.sh"
-contains "run-suites: suite timeout" "$CALLS" "timeout 900"
+contains "run-suites: ssh deadline leaves guest cleanup time" "$CALLS" "timeout 930"
+contains "run-suites: results dir reset per run" "$CALLS" "rm -rf himmel-results"
 contains "run-suites: guest-side deadline" "$CALLS" "alarm shift; exec @ARGV' 900 bash scripts/test-a.sh"
 # shellcheck disable=SC2016  # the literal text '$rc' is what the remote command carries
 contains "run-suites: suite status returned through ssh" "$CALLS" 'exit $rc'

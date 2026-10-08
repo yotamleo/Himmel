@@ -46,6 +46,9 @@ T_STOP="${HIMMEL_MACOS_LANE_T_STOP:-60}"
 
 die() { echo "macos-lane: $*" >&2; exit 1; }
 
+# ssh_opts is a word-split string, so a path with whitespace would break ssh and rsync.
+case "$LANE_DIR$KEY" in *[[:space:]]*) die "lane dir and key paths must not contain whitespace" ;; esac
+
 mkdir -p "$LANE_DIR" || die "cannot create $LANE_DIR"
 
 # ssh opts as a string so rsync -e can reuse it; no operator ssh config, no real HOME.
@@ -105,13 +108,14 @@ cmd_run_suites() {
     esac
     case "$s" in *[!A-Za-z0-9._/-]*) die "suite path has unsafe characters: $s" ;; esac
   done
-  remote 30 "mkdir -p $REMOTE_RESULTS" || die "cannot create remote results dir"
+  # fresh results dir per run so fetch-results never returns an earlier run's evidence
+  remote 30 "rm -rf $REMOTE_RESULTS && mkdir -p $REMOTE_RESULTS" || die "cannot reset remote results dir"
   for s in "$@"; do
     name=$(printf '%s' "$s" | tr '/' '_')
     # macOS has no coreutils timeout, so the guest-side deadline is perl's alarm
     # (perl ships with macOS); the outer ssh timeout stays as the backstop. The
     # suite's own exit status is kept in the .rc file AND returned through ssh.
-    if remote "$T_SUITE" "cd $REMOTE_DIR && perl -e 'alarm shift; exec @ARGV' $T_SUITE bash $s > ../$REMOTE_RESULTS/$name.log 2>&1; rc=\$?; echo \$rc > ../$REMOTE_RESULTS/$name.rc; exit \$rc"; then
+    if remote "$((10#$T_SUITE + 30))" "cd $REMOTE_DIR && perl -e 'alarm shift; exec @ARGV' $T_SUITE bash $s > ../$REMOTE_RESULTS/$name.log 2>&1; rc=\$?; echo \$rc > ../$REMOTE_RESULTS/$name.rc; exit \$rc"; then
       echo "macos-lane: ran $s"
     else
       echo "macos-lane: $s failed or timed out" >&2; rc=1
