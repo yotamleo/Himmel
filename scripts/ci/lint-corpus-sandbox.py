@@ -36,9 +36,27 @@ def python_launches(text):
         if not isinstance(node, ast.Name):
             return False
         values = assignments.get(node.id, [])
-        return len(values) == 1 and any(
-            isinstance(part, ast.Constant) and part.value == "sandbox-run.sh"
-            for part in ast.walk(values[0]))
+        def path_expression(value):
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return True
+            if isinstance(value, ast.Name) and value.id == "__file__":
+                return True
+            return (isinstance(value, ast.Call) and not value.keywords
+                    and ast.unparse(value.func) in ("os.path.join", "os.path.dirname", "os.path.abspath")
+                    and bool(value.args) and all(path_expression(arg) for arg in value.args))
+
+        def runner_expression(value):
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                return pathlib.PurePosixPath(value.value).name == "sandbox-run.sh"
+            if not (isinstance(value, ast.Call) and path_expression(value)):
+                return False
+            name = ast.unparse(value.func)
+            if name == "os.path.abspath" and len(value.args) == 1:
+                return runner_expression(value.args[0])
+            return (name == "os.path.join" and isinstance(value.args[-1], ast.Constant)
+                    and value.args[-1].value == "sandbox-run.sh")
+
+        return len(values) == 1 and runner_expression(values[0])
 
     errors = []
     for node in ast.walk(tree):

@@ -48,6 +48,13 @@ argv = ["bash", hook_path]
 subprocess.Popen(argv)
 PY
 if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then bad 'unsafe named Python argv accepted'; else ok 'unsafe named Python argv rejected'; fi
+cat > "$PY_FIXTURE" <<'PY'
+import subprocess
+runner = "sandbox-run.sh" if False else "/tmp/not-the-runner.sh"
+argv = ["bash", runner]
+subprocess.Popen(argv)
+PY
+if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then bad 'conditional marker falsely certifies another executable'; else ok 'conditional marker does not certify runner'; fi
 if python3 -I "$LINT" "$ROOT"; then ok 'owned real harnesses routed, others warned'; else bad 'real corpus sandbox lint'; fi
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]
