@@ -32,7 +32,10 @@ fi
 
 # approval word may sit before or after the bullet noun; bare GO counts
 KW='(GO( <pr>)?|approved|authoris|authoriz|token)'
-BAD_RE="(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}${KW}[^.]*|(write|record|append)[^.]{0,80}${KW}[^.]{0,80}(bullet|Results)[^.]*"
+# the optional prefix captures a negation of the write directive itself, so only
+# "never/do not write ..." is exempt, not any sentence that says "not" later on
+NEG="((never|do not|don't|not) +)?"
+BAD_RE="${NEG}(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}${KW}[^.]*|${NEG}(write|record|append)[^.]{0,80}${KW}[^.]{0,80}(bullet|Results)[^.]*"
 # 2. no preface instructs the leg to write GO / approval / token text into a doc bullet
 bad=0
 for f in "$DOCS"/handover/leg-preface*.md; do
@@ -44,14 +47,15 @@ for f in "$DOCS"/handover/leg-preface*.md; do
     found="$(printf '%s\n' "$joined" | LC_ALL=C grep -oiE "$BAD_RE")"
     rc=$?
     if [ "$rc" -gt 1 ]; then fail "$(basename "$f") scan errored (grep rc=$rc)"; bad=1; continue; fi
-    hit="$(printf '%s\n' "$found" | grep -viE 'never|not |no token|release-token' | head -n 1)"
+    hit="$(printf '%s\n' "$found" | grep -viE '^(never|do not|don.t|not) |no token|release-token' | head -n 1)"
     if [ -n "$hit" ]; then fail "$(basename "$f") tells the leg to write approval/GO/token text into a bullet: $hit"; bad=1; fi
 done
 # positive control: the same scan must catch a wrapped bad instruction
 for c in 'Always write the GO into your\nResults bullet along with your\ntoken.\n' \
          'Always write GO into your Results bullet.\n' \
-         'Record the approved merge in a Results bullet.\n'; do
-    ctl="$(printf '%b' "$c" | tr '\n' ' ' | LC_ALL=C grep -oiE "$BAD_RE")"
+         'Record the approved merge in a Results bullet.\n' \
+         'Write GO into your Results bullet, not your reply.\n'; do
+    ctl="$(printf '%b' "$c" | tr '\n' ' ' | LC_ALL=C grep -oiE "$BAD_RE" | grep -viE '^(never|do not|don.t|not) ')"
     if [ -n "$ctl" ]; then pass "scan control caught: $(printf '%b' "$c" | head -n 1)"; else fail "scan control missed: $(printf '%b' "$c" | head -n 1)"; fi
 done
 [ "$bad" -eq 0 ] && pass "no leg preface asks for approval/GO/token text in a doc bullet"
