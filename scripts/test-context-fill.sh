@@ -164,16 +164,39 @@ now_s="$(date +%s)"
 stale_ms="$(awk -v s="$now_s" 'BEGIN{printf "%.0f", (s-4000)*1000}')"
 backdate "$CFG/projects/C--fixture-repo/$SID_A.jsonl" "$((now_s - 4000))"
 place "$SID_A" "$(snapshot 42 500000 58 "$stale_ms" "leg-A")" > /dev/null
+# HIMMEL-4955: a stale snapshot with usable transcript usage is no longer a bare
+# STALE. The latest assistant turn's input tokens (69000) over the snapshot's
+# window (500000) give a labelled ESTIMATE on stdout, exit 5 - never exit 0, so
+# a caller that only trusts rc 0 as "measured" (guard, tick, /context-hop) is
+# unchanged. The 42% last-known number must still never be reported as current.
 out="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" 2>/dev/null)"; rc=$?
-check "stale snapshot: exit 3"              "$rc" "3"
-check "stale snapshot: stdout is EMPTY"     "$out" ""
+check "stale snapshot + transcript usage: exit 5 (estimate)" "$rc" "5"
+contains "stale + usage: stdout labels the estimate"  "$out" "~14% (est)"
+not_contains "stale + usage: stdout never claims the stale 42%" "$out" "42%"
 err="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" 2>&1 >/dev/null)"
 contains "stale: says STALE"                     "$err" "STALE"
 contains "stale: says treat as UNKNOWN"          "$err" "treat it as UNKNOWN"
 contains "stale: labels the last-known number"   "$err" "last known fill was 42%"
+contains "stale: says the figure is an ESTIMATE" "$err" "ESTIMATE"
 outp="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --percent 2>/dev/null)"; rcp=$?
-check "stale: --percent exit 3"               "$rcp" "3"
-check "stale: --percent stdout EMPTY"         "$outp" ""
+check "stale + usage: --percent exit 5"       "$rcp" "5"
+check "stale + usage: --percent stdout is the labelled estimate" "$outp" "~14% (est)"
+
+# No transcript usage -> the old STALE contract holds exactly: exit 3, empty stdout.
+SID_N="dddddddd-0000-1111-2222-333333333333"
+printf '%s\n' '{"type":"user","message":{"content":"no usage here"}}' \
+  > "$CFG/projects/C--fixture-repo/$SID_N.jsonl"
+backdate "$CFG/projects/C--fixture-repo/$SID_N.jsonl" "$((now_s - 4000))"
+place "$SID_N" "$(snapshot 42 500000 58 "$stale_ms" "leg-N")" > /dev/null
+outn="$(CLAUDE_CODE_SESSION_ID="$SID_N" bash "$SCRIPT" --percent 2>/dev/null)"; rcn=$?
+check "stale, no transcript usage: --percent exit 3"     "$rcn" "3"
+check "stale, no transcript usage: --percent stdout EMPTY" "$outn" ""
+# A snapshot without a usable window cannot turn tokens into a percent either.
+place "$SID_A" "$(snapshot 42 0 58 "$stale_ms" "leg-A")" > /dev/null
+outn="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --percent 2>/dev/null)"; rcn=$?
+check "stale, window 0: --percent exit 3"       "$rcn" "3"
+check "stale, window 0: --percent stdout EMPTY" "$outn" ""
+place "$SID_A" "$(snapshot 42 500000 58 "$stale_ms" "leg-A")" > /dev/null
 
 # The freshness window is tunable, and the SAME snapshot reads fresh under a
 # wider one - so exit 3 is a staleness verdict, not an unrelated failure.
@@ -274,8 +297,8 @@ not_contains "no saved_at: never reports the number as current" "$out" "42"
 stale_ms="$(awk -v s="$(date +%s)" 'BEGIN{printf "%.0f", (s-4000)*1000}')"
 place "$SID_A" "$(snapshot 42 500000 58 "$stale_ms" "leg-A")" > /dev/null
 outp="$(CLAUDE_CODE_SESSION_ID="$SID_A" CONTEXT_FILL_MAX_AGE_SECONDS=abc bash "$SCRIPT" --percent 2>/dev/null)"; rcp=$?
-check "non-numeric freshness window: still STALE (exit 3)" "$rcp" "3"
-check "non-numeric freshness window: stdout is EMPTY"      "$outp" ""
+check "non-numeric freshness window: still STALE (estimate, exit 5)" "$rcp" "5"
+check "non-numeric freshness window: stdout is the labelled estimate" "$outp" "~14% (est)"
 err="$(CLAUDE_CODE_SESSION_ID="$SID_A" CONTEXT_FILL_MAX_AGE_SECONDS=abc bash "$SCRIPT" --percent 2>&1 >/dev/null)"
 contains "non-numeric freshness window: falls back to 900" "$err" "900"
 
@@ -448,8 +471,9 @@ touch -m "$CFG/projects/C--fixture-repo/$SID_A.jsonl"
 lag_ms="$(awk -v s="$(date +%s)" 'BEGIN{printf "%.0f", (s-300)*1000}')"
 place "$SID_A" "$(snapshot 38 200000 62 "$lag_ms" "leg-A")" > /dev/null
 out="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" --percent 2>/dev/null)"; rc=$?
-check "frozen snapshot: --percent exit 3"       "$rc" "3"
-check "frozen snapshot: --percent stdout EMPTY" "$out" ""
+check "frozen snapshot: --percent exit 5 (estimate)" "$rc" "5"
+contains "frozen snapshot: --percent stdout is a labelled estimate" "$out" "(est)"
+not_contains "frozen snapshot: never claims the frozen 38%" "$out" "38%"
 err="$(CLAUDE_CODE_SESSION_ID="$SID_A" bash "$SCRIPT" 2>&1 >/dev/null)"
 contains "frozen snapshot: says STALE"            "$err" "STALE"
 contains "frozen snapshot: names the freeze"      "$err" "frozen"
@@ -576,5 +600,6 @@ outh="$(bash "$SCRIPT" --help 2>&1)"; rc=$?
 check "--help exit 0" "$rc" "0"
 contains "--help names the spend-budget distinction" "$outh" "spend"
 contains "--help documents the exit codes"           "$outh" "exit 3 = STALE"
+contains "--help documents the estimate exit"         "$outh" "exit 5 = ESTIMATE"
 
 [ "$fails" -eq 0 ] && { echo "ALL PASS"; exit 0; } || { echo "$fails FAILED"; exit 1; }

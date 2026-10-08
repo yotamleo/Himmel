@@ -99,6 +99,12 @@
             "command": ".codex/run-hook.sh --sandbox detect-dirty-primary.sh",
             "commandWindows": ".codex/run-hook.cmd --sandbox detect-dirty-primary.sh",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": ".codex/run-hook.sh --sandbox memory-bash-line-check.sh",
+            "commandWindows": ".codex/run-hook.cmd --sandbox memory-bash-line-check.sh",
+            "timeout": 15
           }
         ]
       }

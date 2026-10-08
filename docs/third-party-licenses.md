@@ -5,7 +5,7 @@ Covers every tracked `package.json` in the repo (`git ls-files "*package.json"
 | grep -v node_modules`, `node_modules` excluded) — 16 manifests, 19 unique
 npm deps including devDependencies. **Scope: direct dependencies only**
 (the ticket's own measured surface) — the transitive tree (e.g. everything
-`@modelcontextprotocol/sdk` or `playwright` pulls in) was NOT walked or
+`@modelcontextprotocol/server` or `playwright` pulls in) was NOT walked or
 audited; a permissive direct dependency can still depend on a copyleft
 transitive, so this scope limitation is a real gap, not a cleared risk, and a
 future pass should run `license-checker` (or equivalent) over the full
@@ -24,7 +24,7 @@ WTFPL — is called out explicitly below rather than silently folded in).
 
 | Dep | Version declared → **locked** | License | Manifest(s) | Runtime/Dev | Verdict |
 |---|---|---|---|---|---|
-| `@modelcontextprotocol/sdk` | `^1.0.0` → **1.29.0**; `^1.29.0` → **1.30.0** | MIT | marketplace/plugins/luna-correlate, marketplace/plugins/telegram-himmel, scripts/jira | runtime | COMPATIBLE |
+| `@modelcontextprotocol/server` | `2.3.1` (exact) → **2.3.1** | Apache-2.0 | marketplace/plugins/luna-correlate, marketplace/plugins/telegram-himmel, scripts/jira | runtime | COMPATIBLE |
 | `commander` | `^15.0.0` → **15.0.0**; `9.4.1` (T6 fixture, exact, no lockfile) | MIT | scripts/bitbucket, scripts/himmel-run, scripts/jira, scripts/lanes/bench/fixtures/T6/.../tools/codegen/scripts | runtime | COMPATIBLE |
 | `@coderabbitai/bitbucket` | `^1.1.4` → **1.1.4** | Apache-2.0 | scripts/bitbucket | runtime | COMPATIBLE |
 | `env-paths` | `^4.0.0` → **4.0.0** | MIT | scripts/himmel-run | runtime | COMPATIBLE |
@@ -82,8 +82,8 @@ FUTURE change bundles the CLI (e.g. an esbuild/pkg step that inlines
 `node_modules` into a standalone distributable) — at that point the audit
 would need to cover the **full resolved transitive tree** of whatever gets
 inlined, not just the two direct runtime deps. Today those direct runtime
-deps are `@modelcontextprotocol/sdk` (MIT) and `commander` (MIT) — both
-permissive, no NOTICE obligation — but that list is a starting point for a
+deps are `@modelcontextprotocol/server` (Apache-2.0) and `commander` (MIT) — both
+permissive (a bundled Apache-2.0 dep must carry its NOTICE, if it ships one) — but that list is a starting point for a
 future bundling audit, not a substitute for one; see the transitive-tree gap
 noted above. `@types/node`, `typescript`, `vitest` are devDependencies used
 only for type-checking, compiling, and testing — the CLI's runtime source

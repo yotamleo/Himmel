@@ -374,15 +374,24 @@ rc=$?
 check "second-judge pass judges every stored packet once" '[ "$rc" -eq 0 ] && [ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 4 ]'
 check "second judge uses the given model and effort, budget-capped, no tools" 'grep -- "--json-schema" "$TMP/fake.log" | grep -- "--model sonnet" | grep -- "--effort low" | grep -q -- "--max-budget-usd"'
 check "second judge rescores the stored packet" 'grep -q "packet a.r2" "$TMP/fake.log.judge"'
-check "second judge result stored per row" '[ -s "$FX/a.r2.judge2.sonnet-low.json" ]'
+check "second judge result stored per row" '[ -s "$FX/a.r2.judge2.sonnet__low.json" ]'
 check "weighted kappa against a constant second judge is 0" 'jq -e ".metrics.kappa_correctness == 0 and .metrics.n_kappa == 4" "$TMP/cal2.json" >/dev/null'
 check "calibration writes a valid eval-runs row" '[ "$(jq -s -r "map(select(.eval == \"lane-quality-calibration\")) | length" "$EL")" = 1 ] && python3 "$HERE/../lib/eval_runs.py" validate "$EL" >/dev/null'
 : >"$TMP/fake.log"
 bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >"$TMP/cal3.json" 2>/dev/null
 check "a stored second-judge result is reused, never re-judged" '! grep -q -- "--json-schema" "$TMP/fake.log" && jq -e ".metrics.n_kappa == 4" "$TMP/cal3.json" >/dev/null'
-: >"$FX/a.r2.judge2.sonnet-low.json"; : >"$TMP/fake.log"
+: >"$FX/a.r2.judge2.sonnet__low.json"; : >"$TMP/fake.log"
 bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >/dev/null 2>&1
-check "an empty second-judge result is judged again" '[ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 1 ] && [ -s "$FX/a.r2.judge2.sonnet-low.json" ]'
+check "an empty second-judge result is judged again" '[ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 1 ] && [ -s "$FX/a.r2.judge2.sonnet__low.json" ]'
+# HIMMEL-4665: model "a-b" with no effort and model "a" at effort "b" once
+# shared one label, so the second silently reused the first's scores.
+: >"$TMP/fake.log"
+bash "$RUN" calibration "$FX" --judge2-model a-b --json --no-ledger >/dev/null 2>&1
+bash "$RUN" calibration "$FX" --judge2-model a --judge2-effort b --json --no-ledger >/dev/null 2>&1
+check "colliding second-judge configurations each make their own calls" '[ "$(grep -- "--json-schema" "$TMP/fake.log" | grep -c -- "--model a-b")" = 4 ] && [ "$(grep -- "--json-schema" "$TMP/fake.log" | grep -- "--model a " | grep -c -- "--effort b")" = 4 ]'
+: >"$TMP/fake.log"
+bash "$RUN" calibration "$FX" --judge2-model a --judge2-effort b --json --no-ledger >"$TMP/cal-ab.json" 2>/dev/null
+check "an exact rerun of either configuration reuses its stored result" '! grep -q -- "--json-schema" "$TMP/fake.log" && jq -e ".metrics.n_kappa == 4" "$TMP/cal-ab.json" >/dev/null'
 : >"$TMP/fake.log"
 LQ_FAKE_TOKEN=SKIPPED-BANK bash "$RUN" calibration "$FX" --judge2-model haiku --json --no-ledger >/dev/null 2>&1
 rc=$?

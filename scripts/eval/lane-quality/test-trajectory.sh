@@ -173,5 +173,13 @@ check "one OK line for two wrapped suites credits neither as a pass" 'python3 "$
 cl() { python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import trajectory as t; print(len(t.claims(sys.argv[2])))' "$HERE" "$1"; }
 check "wrap-report phrasing is not a test claim" '[ "$(cl "the subtree check passed: CLOSABLE.")" = 0 ]'
 check "a test or suite claim is still a claim" '[ "$(cl "All 12 tests passed and the suite is green.")" = 1 ]'
+echo "7. a passing && chain backs every test it runs (HIMMEL-4673)"
+check "test-a && test-b is one run of both, its pass the only outcome it speaks for" '[ "$(tt "bash test-a.sh && bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"pass\"]" ]'
+check "cd-style setup before the chain keeps the union" '[ "$(tt "cd d && bash test-a.sh && bash test-b.sh")" = "[[\"test-a.sh\", \"test-b.sh\"], \"pass\"]" ]'
+leg chain-union "bash test-a.sh" "ok" "bash test-a.sh && bash test-x.sh" "ok"
+check "a passing test-a && test-x backs a claim that test-x.sh passes" 'python3 "$TR" score "$TMP/chain-union.jsonl" | jq -e ".verify_before_claim == true" >/dev/null'
+leg chain-union-red "bash test-x.sh && bash test-a.sh" "Exit code 1
+FAIL" "bash test-x.sh && bash test-a.sh" "ok"
+check "a failing test-x && test-a chain proves no RED" 'python3 "$TR" score "$TMP/chain-union-red.jsonl" | jq -e ".red_before_green == false and .verify_before_claim == true" >/dev/null'
 echo "test-trajectory: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

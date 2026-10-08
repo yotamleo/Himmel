@@ -503,7 +503,13 @@ cmd_calibration() {
   case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be positive whole seconds" ;; esac
   [ "$((10#$TIMEOUT))" -gt 0 ] || die "--timeout must be positive whole seconds"
   if [ -n "$j2model" ]; then
-    label="$(printf '%s%s' "$j2model" "${j2effort:+-$j2effort}" | tr -c 'A-Za-z0-9.-' '_')"
+    # HIMMEL-4665: the stored-result label must be injective in (model, effort),
+    # or one configuration reuses another's scores. Each byte outside
+    # [A-Za-z0-9.-] becomes _<hex> (so a lone "_" is always an escape), and
+    # "__", which no escaped part contains, joins model and effort.
+    label="$(python3 -c 'import os, re, sys
+enc = lambda s: re.sub(rb"[^A-Za-z0-9.-]", lambda m: b"_%02x" % m.group()[0], os.fsencode(s)).decode()
+print("__".join(enc(a) for a in sys.argv[1:] if a))' "$j2model" "$j2effort")" || die "cannot build the second-judge label"
     init_env
     for d in "${dirs[@]}"; do
       while IFS= read -r stem; do

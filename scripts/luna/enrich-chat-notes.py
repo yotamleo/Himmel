@@ -82,7 +82,7 @@ PROVIDERS = {
     "claude": {
         "api_style": "anthropic",
         "url": "https://api.anthropic.com/v1/messages",
-        "model": "claude-haiku-4-5",
+        "model": "claude-haiku-5-5",
         "key_env": "ANTHROPIC_API_KEY",
         "egress": "anthropic",
         "auth": "x-api-key",

@@ -476,8 +476,14 @@ assert_eq "$(cat "$git_dir/cr-review-rounds/evilmerge.round")" "3" "a refused ev
 # clean merge tree. Only a version-only resolution above both parents passes.
 write_plugin() {
     mkdir -p "$repo/marketplace/plugins/$1/.claude-plugin"
-    printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "%s"\n}\n' \
-        "$1" "$2" "${3:-fixture}" > "$repo/marketplace/plugins/$1/.claude-plugin/plugin.json"
+    # HIMMEL-4703: plugin_nested=1 nests the only version key under "meta".
+    if [ -n "${plugin_nested:-}" ]; then
+        printf '{\n  "name": "%s",\n  "meta": {\n    "version": "%s"\n  },\n  "description": "%s"\n}\n' \
+            "$1" "$2" "${3:-fixture}" > "$repo/marketplace/plugins/$1/.claude-plugin/plugin.json"
+    else
+        printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "%s"\n}\n' \
+            "$1" "$2" "${3:-fixture}" > "$repo/marketplace/plugins/$1/.claude-plugin/plugin.json"
+    fi
     git -C "$repo" add "marketplace/plugins/$1/.claude-plugin/plugin.json"
 }
 # plugin_case <branch> <main version> <branch version> [main-bumps [file]]:
@@ -567,6 +573,88 @@ plugin_merge_commit
 pv7_out="$(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvoutside 2>&1)"; pv7_rc=$?
 assert_eq "$pv7_rc" "8" "a conflict outside plugin.json gets no merge-forward delta round"
 assert_has "$pv7_out" "neither answers a round-3 finding nor only merges" "outside-conflict refusal keeps today's message"
+
+# HIMMEL-4703: the refusals HIMMEL-4697's merge judge read in the code.
+# (5) A prerelease or v-prefixed resolved version: refused.
+for pv in pvrc:0.1.3-rc1 pvvprefix:v0.1.3; do
+    plugin_case "${pv%%:*}" 0.1.1 0.1.2 main-bumps
+    write_plugin "${pv%%:*}" "${pv#*:}"
+    plugin_merge_commit
+    (cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch "${pv%%:*}" >/dev/null 2>&1); pv_rc=$?
+    assert_eq "$pv_rc" "8" "a resolved version of ${pv#*:} gets no merge-forward delta round"
+done
+
+# (6) A symlink, or a mode change, on plugin.json: refused.
+plugin_case pvlink 0.1.1 0.1.2 main-bumps
+rm -f "$repo/marketplace/plugins/pvlink/.claude-plugin/plugin.json"
+ln -s ../SKILL.md "$repo/marketplace/plugins/pvlink/.claude-plugin/plugin.json"
+git -C "$repo" add marketplace/plugins/pvlink/.claude-plugin/plugin.json
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvlink >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a plugin.json turned into a symlink gets no merge-forward delta round"
+plugin_case pvmode 0.1.1 0.1.2 main-bumps
+write_plugin pvmode 0.1.3
+chmod +x "$repo/marketplace/plugins/pvmode/.claude-plugin/plugin.json"
+git -C "$repo" add marketplace/plugins/pvmode/.claude-plugin/plugin.json
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvmode >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a valid version bump plus a mode change on plugin.json gets no merge-forward delta round"
+
+# (7) Two plugin.json files, one valid and one with an invalid version: the
+# merge is refused as a whole.
+git -C "$repo" checkout -q main
+write_plugin pvtwo-b 0.1.0
+git -C "$repo" commit -q -m "pvtwo-b plugin base"
+git -C "$repo" push -q origin main
+plugin_case pvtwo 0.1.1 0.1.2 main-bumps
+write_plugin pvtwo 0.1.3
+write_plugin pvtwo-b 0.1.1-rc1
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvtwo >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a valid bump beside a second plugin.json with an invalid version gets no merge-forward delta round"
+
+# (8) A criss-cross merge (two merge bases): refused. The reviewed head X
+# merges main's Q into the branch's P, main then merges P back (Y), and the
+# branch merges Y with a version-only bump that would otherwise pass.
+git -C "$repo" checkout -q main
+write_plugin pvcross 0.1.0
+git -C "$repo" commit -q -m "pvcross plugin base"
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q -b pvcross main
+printf 'pvcross\n' > "$repo/pvcross.txt"
+git -C "$repo" add pvcross.txt
+git -C "$repo" commit -q -m pvcross
+cross_p="$(git -C "$repo" rev-parse pvcross)"
+git -C "$repo" checkout -q main
+printf 'skill\n' > "$repo/marketplace/plugins/pvcross/SKILL.md"
+git -C "$repo" add marketplace/plugins/pvcross/SKILL.md
+git -C "$repo" commit -q -m "pvcross main moves"
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q pvcross
+git -C "$repo" merge -q --no-edit main >/dev/null 2>&1 || fail "pvcross fixture merge X"
+cap_r3_head="$(git -C "$repo" rev-parse pvcross)"
+for n in 1 2 3; do
+    (cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$cap_r3_head" --branch pvcross >/dev/null 2>"$tmp/pvcross-$n.err") || fail "pvcross fixture setup round $n"
+done
+git -C "$repo" checkout -q main
+git -C "$repo" merge -q --no-ff --no-edit "$cross_p" >/dev/null 2>&1 || fail "pvcross fixture merge Y"
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q pvcross
+git -C "$repo" merge -q --no-commit main >/dev/null 2>&1 || true
+write_plugin pvcross 0.1.1
+plugin_merge_commit
+assert_eq "$(git -C "$repo" merge-base --all "$cap_r3_head" main | wc -l | tr -d ' ')" "2" "the pvcross fixture is a criss-cross"
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvcross >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a criss-cross merge with a version-only bump gets no merge-forward delta round"
+
+# (9) A plugin.json whose only "version" key is nested: refused.
+plugin_nested=1
+plugin_case pvnested 0.1.1 0.1.2 main-bumps
+write_plugin pvnested 0.1.3
+plugin_merge_commit
+plugin_nested=
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvnested >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a plugin.json with only a nested version key gets no merge-forward delta round"
 
 # HIMMEL-4616: a delta round whose panel produced no rows is still pending, so
 # the SAME <from> <to> pair may start again without a second counter bump; once
@@ -1300,6 +1388,146 @@ rm -rf "$git_dir/cr-review-rounds/jhscan.verdicts"
 assert_eq "$jh_rc" "8" "an unreadable per-head .verdicts refuses the judge record"
 assert_has "$jh_out" "cannot read" "the unreadable per-head .verdicts is named"
 assert_eq "$(cat "$git_dir/cr-review-rounds/jhscan.round")" "3" "the refused per-head scan-failure round leaves the counter at 3"
+
+# HIMMEL-4952: a judge-signed record admits ONE post-cap delta round for a
+# test- or lint-only delta. The record is a GO written by the real writer for
+# the delta's NEW head, carrying `delta-scope:` and `delta-from:` evidence lines.
+scope_commit() {
+    # scope_commit <branch> <path> : commit a change to <path>, set scope_head
+    mkdir -p "$(dirname "$repo/$2")"
+    printf '%s\n' "$2" >> "$repo/$2"
+    git -C "$repo" add "$2"
+    git -C "$repo" commit -q -m "scope change $2"
+    scope_head="$(git -C "$repo" rev-parse "$1")"
+}
+scope_judge() {
+    # scope_judge <qid> <head> <scope> <from>
+    printf 'delta-scope: %s\ndelta-from: %s\n\nthe delta changes no production path\n' "$3" "$4" > "$jev/judge-evidence.md"
+    judge "$1" GO "$2"
+}
+
+# RED: without a record a clean test-only commit after the cap gets no round.
+three_rounds scopeok clean
+sc_r3="$cap_r3_head"
+scope_commit scopeok tests/test-scope.sh
+sc_head="$scope_head"
+sc_out="$(start_round "$sc_head" clean scopeok)"; sc_rc=$?
+assert_eq "$sc_rc" "8" "a test-only delta with no judge record gets no round after the cap"
+scope_judge sc-1 "$sc_head" test-only "$sc_r3"
+sc_out="$(start_round "$sc_head" clean scopeok)"; sc_rc=$?
+assert_eq "$sc_rc" "0" "a judge-signed test-only delta is admitted after the cap"
+assert_has "$sc_out" "pr-check: delta round 4 on scopeok (from $sc_r3)" "the scope round is a delta from the last reviewed head"
+assert_has "$(cat "$git_dir/cr-review-rounds/scopeok.delta")" "scope:sc-1" "the delta state names the scope record"
+# Second use: the record is spent, and a further test-only commit needs its own.
+scope_commit scopeok tests/test-scope-two.sh
+sc_head2="$scope_head"
+sc_out="$(start_round "$sc_head2" clean scopeok)"; sc_rc=$?
+assert_eq "$sc_rc" "8" "a spent scope record buys no second round"
+assert_has "$sc_out" "delta round was already used" "the second-use refusal names the used delta"
+
+# A delta that touches production code is refused even with a test-only record.
+three_rounds scopeprod clean
+sp_r3="$cap_r3_head"
+scope_commit scopeprod scopeprod.txt
+sp_head="$scope_head"
+scope_judge sp-1 "$sp_head" test-only "$sp_r3"
+sp_out="$(start_round "$sp_head" clean scopeprod)"; sp_rc=$?
+assert_eq "$sp_rc" "8" "a test-only record cannot admit a delta that changes a non-test path"
+assert_has "$sp_out" "non-test" "the refusal names the non-test path"
+
+# A record for another head is refused.
+three_rounds scopehead clean
+sh_r3="$cap_r3_head"
+scope_commit scopehead tests/test-scope-a.sh
+sh_a="$scope_head"
+scope_commit scopehead tests/test-scope-b.sh
+sh_b="$scope_head"
+scope_judge sh-1 "$sh_a" test-only "$sh_r3"
+sh_out="$(start_round "$sh_b" clean scopehead)"; sh_rc=$?
+assert_eq "$sh_rc" "8" "a scope record for another head is refused"
+
+# A record whose delta-from is not the last reviewed head is refused.
+three_rounds scopefrom clean
+scope_commit scopefrom tests/test-scope-f.sh
+sf_head="$scope_head"
+scope_judge sf-1 "$sf_head" test-only "$sf_head"
+sf_rc=0; start_round "$sf_head" clean scopefrom >/dev/null || sf_rc=$?
+assert_eq "$sf_rc" "8" "a scope record naming another delta-from is refused"
+
+# A hand-written file (not the writer's format) is refused.
+three_rounds scopeforge clean
+sg_r3="$cap_r3_head"
+scope_commit scopeforge tests/test-scope-g.sh
+sg_head="$scope_head"
+mkdir -p "$vscope/sg-1"
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+printf '# VERDICT sg-1 - judge\n\n**GO** for head `%s`.\n\ndelta-scope: test-only\ndelta-from: %s\n' "$sg_head" "$sg_r3" > "$vscope/sg-1/judge.md"
+sg_rc=0; start_round "$sg_head" clean scopeforge >/dev/null || sg_rc=$?
+assert_eq "$sg_rc" "8" "a hand-written scope record is refused"
+rm -rf "$vscope/sg-1"
+
+# An unknown scope word is refused.
+three_rounds scopeword clean
+sw_r3="$cap_r3_head"
+scope_commit scopeword tests/test-scope-w.sh
+sw_head="$scope_head"
+scope_judge sw-1 "$sw_head" anything "$sw_r3"
+sw_rc=0; start_round "$sw_head" clean scopeword >/dev/null || sw_rc=$?
+assert_eq "$sw_rc" "8" "a scope record with an unknown delta-scope is refused"
+
+# Moving a production file into tests/ is a rename git reports as its
+# destination only; the scope check must still see the production path leave.
+three_rounds scoperen clean
+sn_r3="$cap_r3_head"
+mkdir -p "$repo/tests"
+git -C "$repo" mv scoperen.txt tests/test-scoperen.sh
+git -C "$repo" commit -q -m "move scoperen into tests"
+sn_head="$(git -C "$repo" rev-parse scoperen)"
+scope_judge sn-1 "$sn_head" test-only "$sn_r3"
+sn_out="$(start_round "$sn_head" clean scoperen)"; sn_rc=$?
+assert_eq "$sn_rc" "8" "a rename of a production file into tests/ is not a test-only delta"
+assert_has "$sn_out" "non-test" "the rename refusal names the removed production path"
+
+# A second, conflicting delta-from line in the evidence is refused.
+three_rounds scopedup clean
+sd_r3="$cap_r3_head"
+scope_commit scopedup tests/test-scope-d.sh
+sd_head="$scope_head"
+printf 'delta-scope: test-only\ndelta-from: %s\ndelta-from: %s\n\nno production path\n' "$sd_r3" "$sd_head" > "$jev/judge-evidence.md"
+judge sd-1 GO "$sd_head"
+start_round "$sd_head" clean scopedup >/dev/null; sd_rc=$?
+assert_eq "$sd_rc" "8" "a scope record with two delta-from lines is refused"
+
+# A test path with a non-ASCII name is still a test path (git would quote it).
+three_rounds scopeuni clean
+su_r3="$cap_r3_head"
+scope_commit scopeuni "tests/test-caf$(printf '\303\251').sh"
+su_head="$scope_head"
+scope_judge su-1 "$su_head" test-only "$su_r3"
+start_round "$su_head" clean scopeuni >/dev/null; su_rc=$?
+assert_eq "$su_rc" "0" "a test-only delta with a non-ASCII test path is admitted"
+
+# A filename pattern must not match across a directory: a production file under
+# a test-named directory is not a test file.
+three_rounds scopedir clean
+sdr_r3="$cap_r3_head"
+scope_commit scopedir src/module.test.js/production.js
+sdr_head="$scope_head"
+scope_judge sdr-1 "$sdr_head" test-only "$sdr_r3"
+sdr_out="$(start_round "$sdr_head" clean scopedir)"; sdr_rc=$?
+assert_eq "$sdr_rc" "8" "a production file under a .test.js directory is not a test-only delta"
+assert_has "$sdr_out" "non-test" "the directory-pattern refusal names the non-test path"
+
+# lint-only: the judge's record alone admits it (no path rule can tell lint
+# from behaviour).
+three_rounds scopelint clean
+sl_r3="$cap_r3_head"
+scope_commit scopelint scopelint.txt
+sl_head="$scope_head"
+scope_judge sl-1 "$sl_head" lint-only "$sl_r3"
+sl_rc=0; start_round "$sl_head" clean scopelint >/dev/null || sl_rc=$?
+assert_eq "$sl_rc" "0" "a judge-signed lint-only delta is admitted after the cap"
+assert_has "$(cat "$git_dir/cr-review-rounds/scopelint.delta")" "scope:sl-1" "the lint-only delta state names the scope record"
 
 # The existing fix trigger is unchanged and still records itself as fix.
 assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"

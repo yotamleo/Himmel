@@ -1829,6 +1829,8 @@ assert_err_has "ending the watch early (HIMMEL-2062)" "96 early-exit message pri
 # and take another path — and asserts the cap message by prefix, since the cap
 # printed is a share of whatever budget is left. The stubs' 3s watch still
 # outlives the largest possible cap (2s), so the cap still has to fire.
+# Exception: case 104 runs a 6s budget against an 8s stub watch
+# (GH_STUB_CAP_SLEEP=8) — see its own comment.
 run blocking-cap-pending --max-wait 4
 assert_rc 2 "97 cap with non-CodeRabbit pending rc 2"
 assert_err_has "watch cap reached (" "97 cap message printed"

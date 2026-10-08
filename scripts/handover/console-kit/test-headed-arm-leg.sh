@@ -197,7 +197,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|LEG_PROFILE_NO_SETTING_SOURCES|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|HEADED_ARM_LEG_CLAUDE_BIN|HIMMEL_CONSOLE_JUDGE_EFFORT|HIMMEL_CONSOLE_JUDGE|HIMMEL_LEG_CONTEXT_MODE|HIMMEL_LEG_AUTOCOMPACT|LEG_LANE|CADENCE_BANK_LANE)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|LEG_PROFILE_NO_SETTING_SOURCES|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|HEADED_ARM_LEG_CLAUDE_BIN|HIMMEL_CONSOLE_JUDGE_EFFORT|HIMMEL_CONSOLE_JUDGE_DOC|HIMMEL_CONSOLE_JUDGE_QID|HIMMEL_CONSOLE_JUDGE|HIMMEL_LEG_CONTEXT_MODE|HIMMEL_LEG_AUTOCOMPACT|LEG_LANE|CADENCE_BANK_LANE)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -403,7 +403,7 @@ contains "dry-run HIMMEL_LEG_CONTEXT_MODE=bogus: names the allowed modes" "$out"
 # this exact assertion, not a vaguer one.
 rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
-contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT CONSOLE_CONTEXT=<unset>"
+contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT HIMMEL_CONSOLE_JUDGE_DOC HIMMEL_CONSOLE_JUDGE_QID CONSOLE_CONTEXT=<unset>"
 not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
 
 # --- HIMMEL-3435: HIMMEL_CONSOLE_NAME resolution (--console, launching
@@ -2471,6 +2471,7 @@ contains "28f --judge launch is recorded role=judge" "$rec28d" " role=judge "
 # exported in that leg's shell, must not reach a native judge it arms.
 d28e="$tmp/c28e"; mk_launch_stubs "$d28e" "HIMMEL-3795-N1-binleak"; mkdir -p "$tmp/repo28e"
 rc=0
+HIMMEL_CONSOLE_JUDGE_QID=ambient-sibling HIMMEL_CONSOLE_JUDGE_DOC=/tmp/ambient-sibling-judge-1.md \
 LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin \
   RUN_LEG_ARGS='--judge' run_leg "$d28e" "$tmp/repo28e" "HIMMEL-3795-N1-binleak" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d28e" || true
@@ -2479,6 +2480,23 @@ check "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: exit 0" "$rc" "
 contains "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: env-record was actually produced (judge still gets its high default)" "$env28e" "CLAUDE_CODE_EFFORT_LEVEL=high"
 not_contains "HIMMEL-3795: full --judge launch, ambient LEG_CLAUDE_BIN: does not reach the armed process env" "$env28e" "LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin"
 contains "HIMMEL-4564: full --judge launch exports HIMMEL_CONSOLE_JUDGE=1 (guard-judge-writes.sh marker)" "$env28e" "HIMMEL_CONSOLE_JUDGE=1"
+# HIMMEL-4608: the judge guard is bound to THIS judge's doc and qid. A doc
+# whose resume_cwd is ~/.cache/himmel/verdicts/<qid>/scratch yields both; a
+# plain leg gets neither; a judge doc with another resume_cwd gets the doc only.
+mkdir -p "$tmp/home4608/.cache/himmel/verdicts/Q4608/scratch"
+printf -- '---\nresume_cwd: %s\ndescription: x\ntemplate_version: 3\n---\n' "$tmp/home4608/.cache/himmel/verdicts/Q4608/scratch" > "$tmp/c4608-doc.md"
+d4608="$tmp/c4608"; mk_launch_stubs "$d4608" "HIMMEL-4608-N1-bind"; mkdir -p "$tmp/repo4608"
+rc=0
+some_doc="$tmp/c4608-doc.md" RUN_LEG_ARGS="--judge" run_leg "$d4608" "$tmp/repo4608" "HIMMEL-4608-N1-bind" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
+wait_record "$d4608" || true
+env4608="$(cat "$d4608/env-record" 2>/dev/null || true)"
+check "HIMMEL-4608: full --judge launch with a verdicts scratch resume_cwd: exit 0" "$rc" "0"
+contains "HIMMEL-4608: --judge launch exports its own doc" "$env4608" "HIMMEL_CONSOLE_JUDGE_DOC=$tmp/c4608-doc.md"
+contains "HIMMEL-4608: --judge launch exports its qid" "$env4608" "HIMMEL_CONSOLE_JUDGE_QID=Q4608"
+contains "HIMMEL-4608 control: the env-record was produced by a judge launch" "$env4608" "HIMMEL_CONSOLE_JUDGE=1"
+not_contains "HIMMEL-4608: full --judge launch (other doc) carries no binding to a qid it cannot derive" "$env28e" "HIMMEL_CONSOLE_JUDGE_QID="
+not_contains "HIMMEL-4608: an ambient sibling qid never reaches a judge whose qid is underivable" "$env28e" "ambient-sibling"
+not_contains "HIMMEL-4608: an ambient sibling doc never reaches the armed judge" "$env28e" "HIMMEL_CONSOLE_JUDGE_DOC=/tmp/ambient-sibling-judge-1.md"
 
 # Same leak, native --profile leg-impl instead of --judge (the ticket's other
 # named case).

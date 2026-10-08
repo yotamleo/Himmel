@@ -834,9 +834,11 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # BASH_CMDS, PATH or a var a later ${x@P} or $[x] runs), echo (it expands
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
-PR_GIT_UNSAFE=0
+PR_GIT_UNSAFE=0 PR_TOKFAIL=0
+# A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
+PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -859,17 +861,17 @@ git_mentions_only() { # git_mentions_only <command-word index>
         case "$w" in
             --oneline) ;;
             -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
-                --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; return 1 ;;
+                --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; bad=1 ;;
         esac
         if [ "$dir" = 1 ]; then
             dir=0
         elif [ -z "$sub" ]; then
-            [ "${ST_Q[j]}" = 0 ] || return 1
+            [ "${ST_Q[j]}" = 0 ] || bad=1
             case "$w" in
                 -C) dir=1 ;;
                 --no-pager) ;;
                 grep|log|show|diff|add|restore|rm) sub=$w ;;
-                *) return 1 ;;
+                *) bad=1 ;;
             esac
         elif [ "$w" = -- ]; then
             # An unknown option may consume -- as its value (-e/-S, ...),
@@ -877,7 +879,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
             if ! [[ ${ST_W[j - 1]} =~ ^-[0-9]+$ ]]; then
                 case "${ST_W[j - 1]}" in
                     --cached|--staged|--oneline|--name-only|--name-status|--follow|--*=*|-n|-p|-A|-a|-u|-w|--stat) ;;
-                    -*) PR_GIT_UNSAFE=1; return 1 ;;
+                    -*) PR_GIT_UNSAFE=1; bad=1 ;;
                 esac
             fi
             paths=1
@@ -886,7 +888,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
         fi
         j=$((j + 1))
     done
-    [ "$xp" = 0 ] && [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
+    [ "$bad" = 0 ] && [ "$xp" = 0 ] && [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
     [ "$sub" != rm ] || [ "$cached" = 1 ]
 }
 readers_only() { # true when every command the command line runs is a reader
@@ -894,7 +896,13 @@ readers_only() { # true when every command the command line runs is a reader
     # HIMMEL-4950: a `${…}` the tokenizer cannot parse (zsh `${=IFS}`) on a git
     # command line may word-split into an exec option; flag it unsafe.
     # shellcheck disable=SC2016 # a literal ${ is matched, never expanded
-    st_tokenize "$cmd" || { case "$cmd" in *git*'${'*) PR_GIT_UNSAFE=1 ;; esac; return 1; }
+    # HIMMEL-4953: any tokenizer bail on a line with a git word fails closed:
+    # no word is known, so no option can be proven a pathspec mention.
+    st_tokenize "$cmd" || {
+        PR_TOKFAIL=1
+        [[ $cmd =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
+        return 1
+    }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
     k=0
     while [ "$k" -lt "$ST_N" ]; do
@@ -920,10 +928,29 @@ readers_only() { # true when every command the command line runs is a reader
     return 0
 }
 readers_only && exit 0
-if [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
-    shown=${cmd//$'\n'/ }
-    shown=${shown:0:200}
-    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+# HIMMEL-4953: readers_only returns at the first non-reader, comment, $'…'
+# word, substitution or unknown git global option, before it reaches a later
+# git segment. The option check must not depend on that walk, so scan every
+# git word here; only the PR_GIT_UNSAFE side effect is used. Fails closed.
+if [ "$PR_TOKFAIL" = 0 ]; then
+    k=0 sg=-1 cw=-1
+    # A substitution can build an option word or the command word itself
+    # (`$(printf %s -Obash)`, `$G grep`), and no word of it is classified, so
+    # a line with ANY substitution fails closed, git word or not (`g$(echo i)t`).
+    # Fail direction: closed (deny only when a guarded script is mentioned).
+    [ "$ST_SUBST" = 1 ] && PR_GIT_UNSAFE=1
+    while [ "$k" -lt "$ST_N" ]; do
+        if [ "${ST_S[k]}" != "$sg" ]; then sg=${ST_S[k]}; cw=-1; fi
+        if [ -z "${ST_RO[k]}" ]; then
+            # HIMMEL-4953: an expanded command word may be git (`G=git; $G`).
+            if [ "$cw" -lt 0 ]; then
+                [ "${ST_X[k]}${ST_G[k]}" = 00 ] || [ "${ST_W[k]}" = '{' ] || PR_GIT_UNSAFE=1
+                cw=$k
+            fi
+            case "${ST_W[k]##*/}" in git) git_mentions_only "$k" || : ;; esac
+        fi
+        k=$((k + 1))
+    done
 fi
 case "$flat" in
     *[cC][rR]/*|*[hH]andover/*) ;;
@@ -941,6 +968,17 @@ done
 fence=${fence# }
 fence=${fence% }
 [[ "$fence" =~ $FENCE_RE ]] && exit 0
+
+# After the fence exemption: the canonical fence's own `$(printenv ...)` is a
+# substitution naming a guarded script, not a git command. An env -S line is
+# deferred to the check after the env -S deny, which words the cause better.
+envs_deferred=0
+[[ $cmd =~ (^|[^[:alnum:]_])env[[:space:]].*(-S|--split-string) ]] && envs_deferred=1
+if [ "$envs_deferred" = 0 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+    shown=${cmd//$'\n'/ }
+    shown=${shown:0:200}
+    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+fi
 
 # norm <path> - drop empty and . segments. A .. is kept, so the path no longer
 # reads as scripts/cr/<script> and denies: the kernel resolves .. after
@@ -1491,6 +1529,13 @@ herestring_split_mention() { # herestring_split_mention <raw command> - true
 if [ "$hit" -eq 0 ] && [ "$mentions" -eq 1 ] && [ "$wrapped" -eq 1 ] \
     && { split_unresolvable_mention "$cmd" || herestring_split_mention "$cmd"; }; then
     deny "an env -S / --split-string string naming a guarded target cannot be fully resolved (a backslash escape, '#' or '\$' - GNU env -S: \\c ignores the rest, '#' comments, \${VAR} expands), so which script runs is unprovable; run the target by its literal spelling with no env -S wrapper (HIMMEL-1813)."
+fi
+# An env -S line deferred here from the early check, so the more specific
+# env -S deny above names the cause when it applies.
+if [ "$envs_deferred" = 1 ] && [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+    shown=${cmd//$'\n'/ }
+    shown=${shown:0:200}
+    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
 fi
 [ "$hit" -eq 1 ] || exit 0
 # ponytail: a glob through a directory symlink the text does not spell as

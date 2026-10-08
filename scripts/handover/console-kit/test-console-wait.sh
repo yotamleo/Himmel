@@ -606,6 +606,70 @@ wait_exit "$WPID"
 check "(w3) a tick line with no tracker= field is still a valid sample" "running" "$rc"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# --- (x) HIMMEL-4911: vault= wakes on a class change TO STALL or PUSH-LAG, never on
+# age/count alone, never on a move back to ok/skip/unknown, and its absence
+# (an older tick.sh) is still a valid sample. The wake names the reproduce
+# command. RED control (console-wait.sh before this change): the STALL move
+# below never woke ("running"). ------------------------------------------------
+vault_line() { sed "s/ denials=none/ vault=$1 denials=none/" "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"; }
+reset_stub
+vault_line ok
+I="$(new_inbox x)"
+start "$I" "$WORK/x.out" --legs "N1.md"
+wait_hb "$I" || fail "(x) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line STALL:25m,3
+wait_exit "$WPID"
+check "(x) a vault move to STALL ends the wait" "0" "$rc"
+check "(x) the wake names vault" "WAKE tick changed=vault bank=PROCEED" "$(head -n1 "$WORK/x.out")"
+check "(x) the wake names the reproduce command" "yes" "$(grep -q 'git -C .* hook run pre-commit' "$WORK/x.out" && echo yes)"
+
+reset_stub
+tick_line "N1:FRESH" "ok"
+vault_line STALL:25m,3
+I="$(new_inbox x2)"
+start "$I" "$WORK/x2.out" --legs "N1.md"
+wait_hb "$I" || fail "(x2) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line STALL:2h,90
+wait_exit "$WPID"
+check "(x2) a STALL age/count change alone does not wake" "running" "$rc"
+tick_line "N1:FRESH" "ok"
+vault_line ok
+wait_exit "$WPID"
+check "(x2) a vault move back to ok alone does not wake" "running" "$rc"
+check "(x2) the saved key still moved to vault=ok" "yes" "$(grep -q 'vault=ok' "$I.wait.state" && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+reset_stub
+vault_line ok
+I="$(new_inbox x3)"
+start "$I" "$WORK/x3.out" --legs "N1.md"
+wait_hb "$I" || fail "(x3) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line PUSH-LAG:3h
+wait_exit "$WPID"
+check "(x3) a vault move to PUSH-LAG wakes" "WAKE tick changed=vault bank=PROCEED" "$(head -n1 "$WORK/x3.out")"
+
+reset_stub
+vault_line ok
+I="$(new_inbox x4)"
+start "$I" "$WORK/x4.out" --legs "N1.md"
+wait_hb "$I" || fail "(x4) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line unknown
+wait_exit "$WPID"
+check "(x4) a vault move to unknown does not wake" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+reset_stub
+I="$(new_inbox x5)"
+start "$I" "$WORK/x5.out" --legs "N1.md"
+wait_hb "$I" || fail "(x5) no baseline heartbeat"
+wait_exit "$WPID"
+check "(x5) a tick line with no vault= field is still a valid sample" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
 # --- (m3748) a leg-set change made through --legs-from is a silent baseline --
 # HIMMEL-3748: with --legs-from the argv never changes, so the waiter folds the
 # manifest's leg list into its args hash each sample. A dispatch (manifest add)
