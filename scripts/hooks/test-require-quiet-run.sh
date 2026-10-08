@@ -442,6 +442,46 @@ RC=$(printf '%s' "$(j_bash 'git status')" | bash "$nolib/require-quiet-run.sh" >
 assert_rc "4438 missing guard-unwrap lib denies" 2 "$RC"
 rm -rf "$nolib"
 
+# HIMMEL-4970: a pgrep -f wait whose pattern occurs in its own command text
+# self-matches the wrapper shell and never ends; a sleepless `do :; done` busy
+# loops. Pid waits and the [c]lear bracket trick stay allowed.
+run_case "$(j_bash "until ! pgrep -f 'check-ci.sh 2152' >/dev/null; do sleep 5; done; echo done")"
+assert_rc "4970 until ! pgrep -f self-match" 2 "$RC"
+assert_contains "4970 self-match names the pid wait" "tail --pid" "$ERR"
+run_case "$(j_bash "while pgrep -f clear-cr-marker.sh; do sleep 2; done")"
+assert_rc "4970 while pgrep -f self-match" 2 "$RC"
+run_case "$(j_bash "until pgrep -f clear-cr-marker.sh && false; do :; done")"
+assert_rc "4970 busy do : loop" 2 "$RC"
+run_case "$(j_bash "until [ -f /tmp/x ]; do :; done")"
+assert_rc "4970 busy do : loop, no pgrep" 2 "$RC"
+assert_contains "4970 busy loop names sleep" "sleep" "$ERR"
+run_case "$(j_bash "while true; do true; done")"
+assert_rc "4970 busy do true loop" 2 "$RC"
+run_case "$(j_bash "until ! pgrep -f '[c]lear-cr-marker.sh' >/dev/null; do sleep 2; done")"
+assert_rc "4970 allow: bracket trick" 0 "$RC"
+run_case "$(j_bash "tail --pid=1234 -f /dev/null")"
+assert_rc "4970 allow: tail --pid" 0 "$RC"
+run_case "$(j_bash "while kill -0 1234 2>/dev/null; do sleep 2; done")"
+assert_rc "4970 allow: kill -0 wait" 0 "$RC"
+run_case "$(j_bash "pgrep -f check-ci.sh")"
+assert_rc "4970 allow: one-shot pgrep -f" 0 "$RC"
+run_case "$(j_bash "until ! pgrep -f 'check-ci.sh 2152' >/dev/null; do sleep 5; done")" "QUIET_RUN_BYPASS=1"
+assert_rc "4970 bypass" 0 "$RC"
+# CR round 1: only the polarities that hang are refused; the loop head alone is
+# scanned; a finite `for ... do :; done` is not a busy loop.
+run_case "$(j_bash "until pgrep -f check-ci.sh >/dev/null; do sleep 2; done")"
+assert_rc "4970 allow: until pgrep (self-match ends it)" 0 "$RC"
+run_case "$(j_bash "while ! pgrep -f check-ci.sh >/dev/null; do sleep 2; done")"
+assert_rc "4970 allow: while ! pgrep (self-match ends it)" 0 "$RC"
+run_case "$(j_bash "until ! pgrep -f '[c]lear-cr-marker.sh'; do sleep 2; done; pgrep -f check-ci.sh")"
+assert_rc "4970 allow: bracket wait then one-shot pgrep" 0 "$RC"
+run_case "$(j_bash "while kill -0 123; do sleep 1; done; while pgrep -f foo; do sleep 1; done")"
+assert_rc "4970 deny: self-match in a later loop" 2 "$RC"
+run_case "$(j_bash "while pgrep -xf foo; do sleep 1; done")"
+assert_rc "4970 allow: pgrep -x exact match cannot self-match" 0 "$RC"
+run_case "$(j_bash "for x in a b; do :; done")"
+assert_rc "4970 allow: finite for do :" 0 "$RC"
+
 echo ""
 if [ "$FAILED" -eq 0 ]; then
     echo "All require-quiet-run.sh cases passed."
