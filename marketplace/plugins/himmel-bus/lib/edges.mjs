@@ -1,17 +1,26 @@
 // The one edge table (spec §3), shared by the server and the CLI. `peers` maps
 // name -> registration {role, console?, pair?, predecessor?}. An edge is
 // symmetric: (a) leg/judge/consult <-> its console, (c) leg <-> its pair,
-// (d) console <-> its predecessor/successor console. Nothing else is allowed.
-export function edgeList(peers, name) {
+// (d) console <-> its predecessor/successor console. A pair never involves a
+// console, and a leg is always one end of it. Nothing else is allowed,
+// so a declaration only counts when both endpoints hold the role it requires.
+const role = (peers, name) => peers[name]?.role;
+
+function declared(peers, name) {
   const me = peers[name];
-  if (!me) return [];
-  const out = new Set();
-  const add = other => { if (other && other !== name && peers[other]) out.add(other); };
-  add(me.console);
-  add(me.pair);
-  add(me.predecessor);
-  for (const [other, p] of Object.entries(peers)) {
-    if (p.console === name || p.pair === name || p.predecessor === name) add(other);
+  const out = [];
+  if (me.console && me.role !== 'console' && role(peers, me.console) === 'console') out.push(me.console);
+  const mate = role(peers, me.pair);
+  if (me.pair && mate && me.role !== 'console' && mate !== 'console' && (me.role === 'leg' || mate === 'leg')) out.push(me.pair);
+  if (me.predecessor && me.role === 'console' && role(peers, me.predecessor) === 'console') out.push(me.predecessor);
+  return out.filter(other => other !== name);
+}
+
+export function edgeList(peers, name) {
+  if (!peers[name]) return [];
+  const out = new Set(declared(peers, name));
+  for (const other of Object.keys(peers)) {
+    if (declared(peers, other).includes(name)) out.add(other);
   }
   return [...out].sort();
 }

@@ -106,6 +106,13 @@ async function start(proc, pid) {
   return st.start;
 }
 
+// One process identity, one name: refuse a bind that another session already holds.
+async function unclaimed(root, name, pid, begun) {
+  for (const [other, p] of Object.entries(await loadPeers(root))) {
+    if (other !== name && p.pid === pid && p.start === begun) throw new Error(`process ${pid} is already bound to ${other}`);
+  }
+}
+
 export async function status(root, name, { proc = '/proc' } = {}) {
   const peer = await readPeer(root, name);
   if (!peer) throw new Error(`unknown session: ${name}`);
@@ -116,8 +123,9 @@ export async function status(root, name, { proc = '/proc' } = {}) {
 
 export async function bind(root, name, pid, { proc = '/proc' } = {}) {
   const begun = await start(proc, pid);
-  return update(root, name, peer => {
+  return update(root, name, async peer => {
     if (peer.pid !== undefined) throw new Error(`already bound: ${name}`);
+    await unclaimed(root, name, pid, begun);
     return { ...peer, pid, start: begun };
   });
 }
@@ -128,6 +136,7 @@ export async function rebind(root, name, pid, { proc = '/proc' } = {}) {
   return update(root, name, async peer => {
     if (peer.pid === undefined) throw new Error(`not bound yet (use bind): ${name}`);
     if (await status(root, name, { proc }) === 'live') throw new Error(`bound pid is still live: ${name}`);
+    await unclaimed(root, name, pid, begun);
     return { ...peer, pid, start: begun };
   });
 }
@@ -140,7 +149,8 @@ export async function adopt(root, name, next, { proc = '/proc' } = {}) {
     const old = peer.console;
     if (!old) throw new Error(`${name} has no console to replace`);
     if (!await readPeer(root, next)) throw new Error(`unknown session: ${next}`);
-    const relayed = async () => (await store.read(root, name)).records.some(r => r.f === old && typeof r.b === 'string' && r.b.includes(next));
+    const names = new RegExp(`(^|[^A-Za-z0-9._-])${next.replace(/[.]/g, '\\.')}($|[^A-Za-z0-9._-])`);
+    const relayed = async () => (await store.read(root, name)).records.some(r => r.f === old && typeof r.b === 'string' && names.test(r.b));
     if (await status(root, old, { proc }) !== 'gone' && !await relayed()) throw new Error(`old console ${old} is not gone and sent no relay naming ${next}`);
     return { ...peer, console: next };
   });
@@ -150,6 +160,6 @@ export async function adopt(root, name, next, { proc = '/proc' } = {}) {
 export async function resolveIdentity(root, { proc = '/proc', pid = process.pid } = {}) {
   const claude = await nearestClaude(proc, pid);
   if (!claude) return UNBOUND;
-  const match = Object.entries(await loadPeers(root)).find(([, p]) => p.pid === claude.pid && p.start === claude.start);
-  return match ? { name: match[0] } : UNBOUND;
+  const matches = Object.entries(await loadPeers(root)).filter(([, p]) => p.pid === claude.pid && p.start === claude.start);
+  return matches.length === 1 ? { name: matches[0][0] } : UNBOUND;
 }

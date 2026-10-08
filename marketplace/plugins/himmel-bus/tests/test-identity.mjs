@@ -118,6 +118,30 @@ test('edges: predecessor link creates console to console edge both ways', async 
   assert.equal(edges.check(peers, 'next', 'old').ok, true);
 });
 
+test('edges: a declaration only counts when both endpoints hold the required role', async t => {
+  const { root } = await fixture(t);
+  await identity.register(root, 'con', { role: 'console' });
+  await identity.register(root, 'a', { role: 'leg', console: 'con' });
+  await identity.register(root, 'b', { role: 'leg', console: 'a' });
+  await identity.register(root, 'c', { role: 'leg', console: 'con', predecessor: 'a' });
+  await identity.register(root, 'j', { role: 'judge', console: 'con', pair: 'con' });
+  const peers = await identity.loadPeers(root);
+  assert.equal(edges.check(peers, 'b', 'a').ok, false);
+  assert.equal(edges.check(peers, 'a', 'b').ok, false);
+  assert.equal(edges.check(peers, 'c', 'a').ok, false);
+  assert.equal(edges.check(peers, 'j', 'a').ok, false);
+  assert.equal(edges.check(peers, 'c', 'con').ok, true);
+});
+
+test('one process identity cannot be bound to two names', async t => {
+  const { root } = await fixture(t);
+  const proc = await fakeProc(t, chain);
+  await bound(root, proc);
+  await identity.register(root, 'twin', { role: 'leg', console: 'con' });
+  await assert.rejects(identity.bind(root, 'twin', 200, { proc }), /already bound to leg/);
+  assert.deepEqual(await identity.resolveIdentity(root, { proc, pid: 300 }), { name: 'leg' });
+});
+
 test('rebind only when the bound pid is gone', async t => {
   const { root } = await fixture(t);
   const proc = await fakeProc(t, chain);
@@ -155,6 +179,15 @@ test('adopt refuses a record from someone else naming the new console', async t 
   await bound(root, live);
   await identity.register(root, 'new', { role: 'console', predecessor: 'con' });
   await store.append(root, 'leg', { i: 'x', t: 1, f: 'rogue', r: 'leg', c: 1, b: 'adopt new' });
+  await assert.rejects(identity.adopt(root, 'leg', 'new', { proc: live }), /not gone/);
+});
+
+test('adopt: a relay must name the new console as a whole word', async t => {
+  const { root } = await fixture(t);
+  const live = await fakeProc(t, chain);
+  await bound(root, live);
+  await identity.register(root, 'new', { role: 'console', predecessor: 'con' });
+  await store.append(root, 'leg', { i: 'x', t: 1, f: 'con', r: 'leg', c: 1, b: 'a newer console is coming' });
   await assert.rejects(identity.adopt(root, 'leg', 'new', { proc: live }), /not gone/);
 });
 
