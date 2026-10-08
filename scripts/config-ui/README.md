@@ -219,10 +219,10 @@ imports, so its suite runs in CI without an install.
   `lanes.local.json`, while the feed reads the primary checkout's (its station
   anchor).
 - Browser e2e (HIMMEL-4400): `scripts/config-ui/tests/e2e/`, Playwright pinned
-  to 1.63.0 (Chromium build 1243). **Opt-in, not in CI**: a runner has no
+  to 1.64.0. **Opt-in, not in CI**: a runner has no
   cached Chromium, and fetching one on every PR would make a download outage
-  red-flake the fleet. Run it where `~/.cache/ms-playwright` already holds
-  build 1243:
+  red-flake the fleet. Provision the matching browser in a VM first (operator
+  step), then run it where `~/.cache/ms-playwright` already holds that build:
 
   ```bash
   cd scripts/config-ui/tests/e2e
