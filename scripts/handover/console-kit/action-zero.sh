@@ -72,7 +72,12 @@ echo "== BANK"
 bank_cmd="${ACTION_ZERO_BANK:-$repo/scripts/lib/bank-preflight.sh}"
 bout="$(bounded bank "$bank_t" bash "$bank_cmd")"; brc=$?
 printf '%s\n' "$bout"
-if [ "$brc" -ne 0 ] && ! printf '%s\n' "$bout" | grep -q '^TIMEOUT bank'; then echo "unavailable"; fi
+if [ "$brc" -ne 0 ]; then
+    case "$bout" in
+        *"TIMEOUT bank after"*) ;;
+        *) echo "unavailable" ;;
+    esac
+fi
 
 echo "== PROCS"
 if [ -n "$prefix" ]; then pgrep -af "claude .*-n ${prefix}-" 2>/dev/null || echo "none"; else echo "skipped (no --prefix)"; fi
@@ -80,7 +85,9 @@ if [ -n "$prefix" ]; then pgrep -af "claude .*-n ${prefix}-" 2>/dev/null || echo
 echo "== C29"
 doctor_cmd="${ACTION_ZERO_DOCTOR:-$repo/scripts/himmel-doctor.sh}"
 out="$(bounded doctor "$doctor_t" bash "$doctor_cmd")"; drc=$?
-c29="$(printf '%s\n' "$out" | grep -E 'C29|^TIMEOUT doctor|^WARN no timeout')"
+dwarn="$(printf '%s\n' "$out" | grep '^WARN no timeout')"
+[ -z "$dwarn" ] || printf '%s\n' "$dwarn"
+c29="$(printf '%s\n' "$out" | grep -E 'C29|^TIMEOUT doctor')"
 if [ -n "$c29" ]; then printf '%s\n' "$c29"
 elif [ "$drc" -ne 0 ]; then echo "unavailable (doctor exited $drc)"
 else echo "none"; fi
