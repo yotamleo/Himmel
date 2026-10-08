@@ -67,7 +67,7 @@ cmd_start() {
   [ -f "$DISK" ] || die "no persistent disk at $DISK — run the one-time setup in docs/internals/macos-local-lane.md first"
   "$TIMEOUT_BIN" "$T_START" "$DOCKER" run -d --name "$NAME" \
     --device /dev/kvm \
-    --memory "$((RAM_GB + 2))g" --cpus "$CPUS" --pids-limit 4096 \
+    --memory "$((10#$RAM_GB + 2))g" --cpus "$CPUS" --pids-limit 4096 \
     -p "127.0.0.1:$SSH_PORT:10022" \
     -v "$DISK:/image" \
     -e IMAGE_PATH=/image -e NOPICKER=true \

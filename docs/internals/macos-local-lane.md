@@ -61,7 +61,7 @@ setup inside the guest. **Re-verify the flags below on the first real run.**
 
 ## Per run
 
-```
+```bash
 export HIMMEL_MACOS_LANE_OK=1
 L=scripts/macos/macos-lane.sh
 bash $L start && bash $L wait-ssh
