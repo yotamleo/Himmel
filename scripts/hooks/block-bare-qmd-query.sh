@@ -1281,12 +1281,17 @@ qmd_check() {
     elif [[ $cmd == *"\\c'"* ]] && [[ $crude == *qmd* ]]; then
         # qmd_words declines an ANSI-C `\c'`: bash and zsh split it apart.
         deny=1
-    elif [[ $crude == *qmd* ]] && [ "$(printf '%s' "$cmd" | LC_ALL=C wc -c)" -gt 16384 ] &&
-        { [[ $crude == *query* || $crude == *search* ]] || [[ $cmd == *"\$'"* || $cmd == *'$"'* ]]; }; then
+    elif [ "$(printf '%s' "$cmd" | LC_ALL=C wc -c)" -gt 16384 ] &&
+        { { [[ $crude == *qmd* ]] &&
+            { [[ $crude == *query* || $crude == *search* ]] || [[ $cmd == *"\$'"* || $cmd == *'$"'* ]]; }; } ||
+            [[ $cmd_lc$crude == *tmux* || $cmd_lc$crude == *screen* ||
+                $cmd_lc$crude == *pwsh* || $cmd_lc$crude == *powershell* ]]; }; then
         # HIMMEL-4526: qmd_words declines past 16 KiB, which leaves only the
         # bare readings; every pipe, redirect, launcher and stdin reading
         # would be skipped. An oversized command naming qmd and a verb (or an
         # ANSI-C string that could spell one) is no legitimate allow case.
+        # tmux, screen and pwsh spell qmd with keys, escapes or base64 and
+        # cannot be decoded here, so naming one at all fails closed.
         deny=1
     elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
         deny=1

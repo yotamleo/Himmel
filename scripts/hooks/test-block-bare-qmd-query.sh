@@ -788,6 +788,20 @@ for pad_k in t u; do
     size_allow "$pad_n no qmd" "${pad}; echo hi | sh"
     size_allow "$pad_n verb without qmd" "${pad}; echo query search"
 done
+# Past 16 KiB tmux, screen and pwsh spell the program with keys, escapes or
+# base64 that never contain qmd: naming one at all fails closed.
+for pad_c in 2740 3334 6667; do
+    pad=$(printf 'true; %.0s' $(seq "$pad_c"))
+    pad_n=">16KB x$pad_c"
+    size_deny "$pad_n tmux keys" "${pad}; tmux send-keys -t a q m d Space q u e r y Space x Enter"
+    size_deny "$pad_n tmux split keys" "${pad}; tmux send-keys -t a \"qmd que\" \"ry x\" Enter"
+    size_deny "$pad_n tmux hex keys" "${pad}; tmux send-keys -t a 0x71 m d Space 0x71 uery Enter"
+    size_deny "$pad_n screen stuff" "${pad}; screen -X stuff '\\161md query x\\n'"
+    size_deny "$pad_n pwsh encoded" "${pad}; pwsh -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+    size_deny "$pad_n powershell encoded" "${pad}; powershell -EncodedCommand cQBtAGQAIABxAHUAZQByAHkAIAB4AA=="
+    size_deny "$pad_n tmux before pad" "tmux send-keys -t a q m d Space q u e r y Enter; ${pad}"
+    size_allow "$pad_n no reader" "${pad}; echo hi | cat"
+done
 
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
