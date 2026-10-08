@@ -344,7 +344,7 @@ api_dry_run() {
   echo "  account $HIMMEL_API_ACCOUNT, key id $HIMMEL_API_KEY_ID, model $MODEL${EFFORT:+, effort $EFFORT}"
   echo "  tasks ($n x $REPS reps): $1 from $TASKS at $BASE_SHA"
   echo "  cap $MAX_USD USD for the sweep (ceiling $API_PILOT_CAP); each call gets the remainder as --max-budget-usd"
-  echo "  command: $AGENT_BIN -p <task prompt> --model $MODEL --permission-mode auto --output-format json --max-budget-usd <remainder>"
+  echo "  command: $AGENT_BIN -p <task prompt> --model $MODEL --permission-mode auto --output-format json --max-budget-usd <remainder>${EFFORT:+ --effort $EFFORT}"
 }
 
 init_env() { # the claude binary, the repo, the bank preflight and the native-auth pin
