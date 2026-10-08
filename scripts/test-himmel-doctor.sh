@@ -2661,10 +2661,10 @@ else
 fi
 rm -rf "$t"
 
-echo "== C29 CONTROL: absent proc root -> clean skip, never a false WARN =="
+echo "== C29 CONTROL: absent proc root and no ps -E -> clean skip, never a false WARN =="
 t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-absent: mktemp -d failed"; exit 1; }
 write_settings "$t/claude" "$WRAPPER"
-out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" HIMMEL_DOCTOR_PS="$t/no-such-ps" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
 if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
     pass "C29 -> OK (no procfs on this platform, clean skip)"
 else
@@ -2728,6 +2728,91 @@ if grepq "$out" 'WARN C29-child-session' && grepq "$out" 'pid 5006' && grepq "$o
     pass "C29 -> WARN names the genuine session (HIMMEL-real), never the decoy prompt text"
 else
     fail "C29 decoy-name -> $(printf '%s' "$out" | grep C29)"
+fi
+rm -rf "$t"
+
+echo "== C29: UNNAMED session and an adopter's ticket key are both flagged (no HIMMEL- gate) =="
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 any-key: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 5007 "ACME-7-leg" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+mkdir -p "$t/proc/5008"
+printf '%s\n' claude > "$t/proc/5008/comm"
+printf 'claude\0' > "$t/proc/5008/cmdline"
+printf 'CLAUDE_CODE_CHILD_SESSION=1\0' > "$t/proc/5008/environ"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session: 2 running' && grepq "$out" 'pid 5007 (ACME-7-leg)' && grepq "$out" 'pid 5008 (unnamed)'; then
+    pass "C29 -> WARN names the ACME- session and the unnamed one"
+else
+    fail "C29 any-key -> $(printf '%s' "$out" | grep -A3 C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 CONTROL: a genuine child (a claude ANCESTOR via stat ppid) -> no WARN =="
+# claude 6001 -> bash 6002 -> claude 6003: 6003 is a Bash-tool print-mode claude,
+# meant to be a throwaway, so its marker is correct. stat's comm holds ") "
+# to prove ppid is read after the LAST paren.
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 control-child: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+c29_mkproc "$t/proc" 6001 "parent" claude
+printf '6001 (claude) S 1 6001\n' > "$t/proc/6001/stat"
+mkdir -p "$t/proc/6002"
+printf '%s\n' 'b) S 9 (x' > "$t/proc/6002/comm"
+printf '6002 (b) S 9 (x) S 6001 6002\n' > "$t/proc/6002/stat"
+c29_mkproc "$t/proc" 6003 "child" claude 'CLAUDE_CODE_CHILD_SESSION=1'
+printf '6003 (claude) S 6002 6003\n' > "$t/proc/6003/stat"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/proc" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'OK   C29-child-session' && ! grepq "$out" 'WARN C29-child-session'; then
+    pass "C29 -> OK (a claude under a claude is a real child session)"
+else
+    fail "C29 control-child -> $(printf '%s' "$out" | grep -A3 C29)"
+fi
+rm -rf "$t"
+
+echo "== C29 (macOS route): no procfs -> ps -axo tree + ps -E environ; only the marked ROOT claude is flagged =="
+# Fake ps answering the four shapes check_c29 issues, from $fix. -E prints
+# the command line then the env, space-joined, like the real macOS ps.
+#   200 claude in a terminal tab, marked             -> WARN
+#   300 claude under claude 200 (Bash-tool child)    -> skipped
+#   400 claude whose PROMPT holds the marker text    -> skipped (args stripped)
+#   500 claude by full path, persistence forced      -> skipped
+t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c29.XXXXXX")" || { fail "C29 ps-route: mktemp -d failed"; exit 1; }
+write_settings "$t/claude" "$WRAPPER"
+fix="$t/fix"; mkdir -p "$fix"
+cat > "$fix/table" <<'TABLE'
+    1     0 /sbin/launchd
+  100     1 /Applications/iTerm.app/Contents/MacOS/iTerm2
+  150   100 -zsh
+  200   150 claude
+  250   200 /bin/zsh
+  300   250 claude
+  400     1 claude
+  500     1 /Users/x/.local/bin/claude
+  600     1 /Applications/Obsidian.app/Contents/MacOS/Obsidian Helper (GPU)
+TABLE
+printf 'claude' > "$fix/200.args"; printf 'TERM=xterm CLAUDE_PID=89183 CLAUDE_CODE_CHILD_SESSION=1' > "$fix/200.env"
+printf 'claude --model m hi' > "$fix/300.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1' > "$fix/300.env"
+printf 'claude say CLAUDE_CODE_CHILD_SESSION=1 here' > "$fix/400.args"; printf 'HOME=/x' > "$fix/400.env"
+printf 'claude' > "$fix/500.args"; printf 'CLAUDE_CODE_CHILD_SESSION=1 CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1' > "$fix/500.env"
+cat > "$t/ps" <<PS
+#!/usr/bin/env bash
+fix="$fix"
+a="\$*"; p="\${a##* }"
+case "\$*" in
+    "-axo pid=,ppid=,comm=") cat "\$fix/table" ;;
+    "-E -ww -o command= -p "*) [ -f "\$fix/\$p.args" ] || exit 0
+        printf '%s %s\n' "\$(cat "\$fix/\$p.args")" "\$(cat "\$fix/\$p.env")" ;;
+    "-ww -o command= -p "*) [ -f "\$fix/\$p.args" ] || exit 1; cat "\$fix/\$p.args"; echo ;;
+    "-o tty= -p "*) printf 'ttys%03d \n' "\$p" ;;
+    *) exit 1 ;;
+esac
+PS
+chmod +x "$t/ps"
+out="$(RESOLVE_NODE_PROBE_DIRS="$FAKENODE" HIMMEL_DOCTOR_PROC="$t/no-such-proc" HIMMEL_DOCTOR_PS="$t/ps" CLAUDE_DIR="$t/claude" HOME="$t/home" bash "$DOC" --no-color 2>&1)"
+if grepq "$out" 'WARN C29-child-session: 1 running' && grepq "$out" 'pid 200 (tty ttys200)' \
+    && ! grepq "$out" 'pid 300' && ! grepq "$out" 'pid 400' && ! grepq "$out" 'pid 500'; then
+    pass "C29 -> WARN on macOS names only the marked root claude, by tty"
+else
+    fail "C29 ps-route -> $(printf '%s' "$out" | grep -A6 C29)"
 fi
 rm -rf "$t"
 

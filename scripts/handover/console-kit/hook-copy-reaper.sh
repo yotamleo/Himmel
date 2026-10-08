@@ -30,8 +30,8 @@
 # between the snapshot and the kill can have its pid reused by another
 # same-uid process; upgrade = signal through pidfds opened at selection
 # time (HIMMEL-4195).
-# PLATFORM GUARD: no .ps1 twin, by design. Linux-only (procps ps), like the
-# rest of the console kit. Bash 3.2-compatible.
+# PLATFORM GUARD: no .ps1 twin, by design. procps or macOS ps (launchd is
+# pid 1 there, so a reparented copy has ppid 1). Bash 3.2-compatible.
 set -uo pipefail
 
 usage() {
@@ -56,7 +56,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-table=$(ps -u "$(id -u)" -o pid=,ppid=,etimes=,pcpu=,comm=,args= 2>/dev/null) || {
+# etime ([[dd-]hh:]mm:ss), not etimes: macOS ps has no etimes keyword.
+table=$(ps -u "$(id -u)" -o pid=,ppid=,etime=,pcpu=,comm=,args= 2>/dev/null) || {
     echo 'hook-copies=?'; exit 3
 }
 
@@ -64,8 +65,15 @@ table=$(ps -u "$(id -u)" -o pid=,ppid=,etimes=,pcpu=,comm=,args= 2>/dev/null) ||
 # descendants), so it runs as one awk pass. It prints the report rows, then
 # one `kill <pid…>` line naming every copy and its descendants.
 result=$(printf '%s\n' "$table" | awk -v min="$min" -v cpu="$cpu" '
+    function secs(e,    d, n, a) {
+        d = 0
+        if (index(e, "-")) { d = substr(e, 1, index(e, "-") - 1); e = substr(e, index(e, "-") + 1) }
+        n = split(e, a, ":")
+        return d * 86400 + (n == 3 ? a[1] * 3600 + a[2] * 60 + a[3] : a[1] * 60 + a[2])
+    }
     $1 ~ /^[0-9]+$/ {
-        pid = $1; ppid[pid] = $2; age[pid] = $3; pc[pid] = $4; comm[pid] = $5
+        pid = $1; ppid[pid] = $2; age[pid] = secs($3); pc[pid] = $4
+        comm[pid] = $5; sub(/.*\//, "", comm[pid])  # macOS ps prints a path
         order[++n] = pid
         script[pid] = ""
         for (i = 6; i <= NF; i++)
