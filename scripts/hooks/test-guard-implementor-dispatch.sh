@@ -903,6 +903,34 @@ assert_rc 'standing lift still refuses full five-hour bank' 2 "$(lift_hook lift-
 lift_cache 10 100
 assert_rc 'standing lift still refuses full weekly bank' 2 "$(lift_hook lift-weekly-full)"
 
+# HIMMEL-4920: a lift library that defines no validator must leave the guard
+# refusing (thresholds stay default), never abort it — an aborted hook exits 1,
+# which Claude Code treats as a non-blocking error, i.e. a fail-OPEN.
+NOVAL_ROOT="$TMP/noval-repo"
+mkdir -p "$NOVAL_ROOT/scripts/hooks" "$NOVAL_ROOT/scripts/lib"
+cp "$HOOK" "$NOVAL_ROOT/scripts/hooks/guard-implementor-dispatch.sh"
+cp "$REPO_ROOT/scripts/lib/py-armor.sh" "$NOVAL_ROOT/scripts/lib/py-armor.sh"
+printf '%s\n' '# fixture: sources fine, defines no bank_lift_valid' > "$NOVAL_ROOT/scripts/lib/bank-lift.sh"
+lift_cache 10 90
+lift_policy 1 "$LIFT_ACCOUNT" true
+REAL_HOOK="$HOOK"
+HOOK="$NOVAL_ROOT/scripts/hooks/guard-implementor-dispatch.sh"
+assert_rc 'lib without validator still refuses weekly 90 (fail closed)' 2 "$(lift_hook lift-noval)"
+HOOK="$REAL_HOOK"
+if grepq "$(cat "$TMP/err-lift-noval")" -F 'unbound variable'; then
+    echo "FAIL lib without validator must not hit an unbound variable"; fail=$((fail + 1))
+else
+    echo "ok   lib without validator has no unbound variable"; pass=$((pass + 1))
+fi
+lift_policy 1 "$LIFT_ACCOUNT" true
+lift_cache 100 10
+assert_rc 'CADENCE_BANK_MAX_PCT=150 clamps to 100 and refuses full five-hour' 2 "$(lift_hook lift-cadence-150 CADENCE_BANK_MAX_PCT=150)"
+lift_cache 90 10
+assert_rc 'CADENCE_BANK_MAX_PCT=-5 falls back to default HARD' 2 "$(lift_hook lift-cadence-neg CADENCE_BANK_MAX_PCT=-5)"
+assert_contains 'negative cadence ceiling warns' 'CADENCE_BANK_MAX_PCT=-5 is not a positive number' "$(cat "$TMP/err-lift-cadence-neg")"
+assert_rc 'CADENCE_BANK_MAX_PCT=abc falls back to default HARD' 2 "$(lift_hook lift-cadence-abc CADENCE_BANK_MAX_PCT=abc)"
+assert_contains 'non-numeric cadence ceiling warns' 'CADENCE_BANK_MAX_PCT=abc is not a positive number' "$(cat "$TMP/err-lift-cadence-abc")"
+
 echo "=== HIMMEL-2653: weekly (seven_day) bank ceiling ==="
 
 # THE headline case: the fleet burned 73% of its weekly bank while five-hour

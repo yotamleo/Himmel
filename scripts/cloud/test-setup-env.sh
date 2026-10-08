@@ -219,6 +219,28 @@ recipe_text="$(cat "$RECIPE")"
 case "$recipe_text" in *'bash scripts/cloud/setup-env.sh'*'graphify query "cloud route classification" --graph graphify-out/graph.json'*) ok "probe builds and queries the classified session graph" ;; *) bad "probe still queries the unclassified cached graph" ;; esac
 case "$recipe_text" in *'bash scripts/lib/qmd-bounded.sh search "cloud environment" -c himmel'*) ok "probe searches through bounded repo-only qmd" ;; *) bad "probe does not use bounded scoped search" ;; esac
 
+# 7b. HIMMEL-4744: paths reach `sh -c` as positional args, never interpolated into
+# its source. A clone path with a quote, a space and `$x` must be entered verbatim
+# by both sh -c steps (jira build, graphify update) and must not run as shell.
+HOST="$TMP/it's a \$x dir"
+mkdir -p "$HOST/scripts/jira" "$HOST/scripts/lib" "$HOST/marketplace/plugins/obsidian-triage/tools/node_modules"
+: > "$HOST/scripts/jira/package.json"
+cp "$FAKE/scripts/lib/"* "$HOST/scripts/lib/"
+HB="$TMP/hostile"; mkdir -p "$HB"; cp "$HAVE"/* "$HB/"
+for t in timeout sh tail mkdir bash dirname pwd; do ln -s "$(command -v "$t")" "$HB/$t"; done
+# shellcheck disable=SC2016  # stub script text, expanded when the stub runs
+printf '#!/bin/sh\necho "jira:$(pwd)" >> "$HIMMEL_PWD_LOG"\nexit 0\n' > "$HB/npm"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\necho "graphify:$(pwd)" >> "$HIMMEL_PWD_LOG"\nexit 0\n' > "$HB/graphify"
+printf '#!/bin/sh\nexit 0\n' > "$HB/qmd"
+chmod +x "$HB/npm" "$HB/graphify" "$HB/qmd"
+: > "$TMP/pwd.log"
+OUT="$(env -i PATH="$HB" HIMMEL_CLOUD_ROOT="$HOST" TMPDIR="$TMP" HIMMEL_PWD_LOG="$TMP/pwd.log" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+case "$OUT" in *"step=jira-dist FAILED"*) bad "jira build broke on a hostile clone path: $OUT" ;; *) ok "jira build survives a quote/space/\$ clone path" ;; esac
+case "$OUT" in *"step=graphify-graph FAILED"*) bad "graphify update broke on a hostile clone path: $OUT" ;; *) ok "graphify update survives a quote/space/\$ clone path" ;; esac
+if grep -qxF "graphify:$HOST" "$TMP/pwd.log"; then ok "graphify ran in the verbatim clone path"; else bad "graphify did not run in the verbatim path: $(cat "$TMP/pwd.log")"; fi
+if grep -qxF "jira:$HOST/scripts/jira" "$TMP/pwd.log"; then ok "jira build ran in the verbatim jira dir"; else bad "jira build did not run in the verbatim path: $(cat "$TMP/pwd.log")"; fi
+
 # 8. syntax + lint.
 if bash -n "$SETUP"; then ok "bash -n clean"; else bad "bash -n failed"; fi
 if command -v shellcheck >/dev/null 2>&1; then

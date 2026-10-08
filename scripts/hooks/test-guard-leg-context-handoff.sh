@@ -275,6 +275,20 @@ check "bare cd -> allow" allow "$(bash_call 'cd')"
 check "cd <dir>; more -> block" block "$(bash_call "cd $REPO; rm -rf x")"
 check "cd <dir> | more -> block" block "$(bash_call "cd $REPO | ls")"
 check "cd a b -> block" block "$(bash_call 'cd a b')"
+# HIMMEL-4725: a quoted literal path is still one bare cd; a variable or a
+# compound after it stays refused.
+check "cd \"<dir with space>\" -> allow" allow "$(bash_call 'cd "/tmp/a b/c"')"
+check "cd '<dir with space>' -> allow" allow "$(bash_call "cd '/tmp/a b/c'")"
+check "cd \"<dir>\" -> allow" allow "$(bash_call "cd \"$REPO\"")"
+check "cd \"<dir>\"; more -> block" block "$(bash_call 'cd "/tmp/a b"; rm -rf x')"
+check "cd '<dir>' && more -> block" block "$(bash_call "cd '/tmp/a b' && ls")"
+check "cd \"<dir>\" x -> block" block "$(bash_call 'cd "/tmp/a" x')"
+# shellcheck disable=SC2016 # a literal $VAR / $( is the shape under test
+check 'cd "$VAR" -> block' block "$(bash_call 'cd "$VAR"')"
+# shellcheck disable=SC2016
+check 'cd $VAR -> block' block "$(bash_call 'cd $VAR')"
+# shellcheck disable=SC2016
+check 'cd "$(pwd)" -> block' block "$(bash_call 'cd "$(pwd)"')"
 # Round-2 codex-1: every command-substitution or chaining shape refuses the
 # whole call, not only && || $( and a newline.
 # shellcheck disable=SC2016 # literal backticks and <( are the shapes under test

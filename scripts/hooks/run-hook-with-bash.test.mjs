@@ -13,6 +13,7 @@ const {
   DEFAULT_CHAIN_BUDGET_MS,
   MIN_MEMBER_TIMEOUT_MS,
   MUST_RUN_CHAIN_MEMBERS,
+  memberTimeoutMs,
   isKnownBadWindowsBash,
   isRecoverableEpipe,
   isUsable,
@@ -25,6 +26,25 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const LAUNCHER = join(HERE, 'run-hook-with-bash.js');
 
 const norm = (value) => String(value).replace(/\\/g, '/');
+
+// HIMMEL-4935: a ~15 KB heredoc command timed out the chokepoint text guard's
+// 15 s window (257 logged denies, nothing ran). The window scales with payload.
+test('member window grows with payload size, is capped, and a pin disables scaling (HIMMEL-4935)', () => {
+  const saved = process.env.RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS;
+  delete process.env.RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS;
+  try {
+    assert.equal(memberTimeoutMs(0), 15_000, 'a small payload keeps the base window');
+    assert.equal(memberTimeoutMs(4096), 15_000, 'the free allowance is unchanged');
+    assert.ok(memberTimeoutMs(15 * 1024) > 15_000, 'a 15 KB payload gets more than the base window');
+    assert.equal(memberTimeoutMs(15 * 1024), 15_000 + 11_000);
+    assert.equal(memberTimeoutMs(10 * 1024 * 1024), 45_000, 'the extra is capped');
+    process.env.RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS = '2000';
+    assert.equal(memberTimeoutMs(15 * 1024), 2000, 'an explicit pin wins over scaling');
+  } finally {
+    if (saved === undefined) delete process.env.RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS;
+    else process.env.RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS = saved;
+  }
+});
 
 test('Windows resolver refuses WSL and WindowsApps bash aliases', () => {
   assert.equal(isKnownBadWindowsBash('C:\\Windows\\System32\\bash.exe'), true);

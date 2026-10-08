@@ -88,6 +88,7 @@ SECTION = re.compile(r"^## (Critical Issues|Important Issues|Suggestions|"
                      r"Already Dispositioned Re-raises|Dropped Citations|Note|REVIEW NOT PERFORMED)")
 SEV = {"Critical Issues": "crit", "Important Issues": "imp", "Suggestions": "sug"}
 BULLET = re.compile(r"^- \[([A-Za-z0-9._]+(?:-[A-Za-z0-9._]+)*?)-(\d+)\]: (.*?)\s*\[([^\]\s]+):(\d+)\]\s*$")
+FINDING_SHAPED = re.compile(r"^- \[[A-Za-z0-9._-]+-\d+\]")
 UNAVAILABLE = re.compile(r"^- ([A-Za-z0-9._-]+): unavailable\b")
 
 
@@ -177,7 +178,7 @@ def parse_review(text):
     critic, sev, file, line, text; bullets outside the three severity
     sections (re-raises, dropped citations) are not findings."""
     findings, unavailable, performed, sev, in_note = [], set(), True, None, False
-    declared, counted = {}, {}
+    declared, counted, malformed = {}, {}, 0
     for line in text.splitlines():
         m = SECTION.match(line)
         if m:
@@ -209,11 +210,15 @@ def parse_review(text):
             counted[sev] += 1
             findings.append({"critic": critic, "sev": sev, "text": b.group(3),
                              "file": norm_path(b.group(4)), "line": int(b.group(5))})
+        elif sev and FINDING_SHAPED.match(line):
+            # Finding-shaped but rejected by BULLET: flagged apart from the
+            # declared count, which a hand-edited heading can make agree.
+            malformed += 1
     # The panel prints all three severity headings, each with its bullet count,
     # on every completed review; a transcript missing a heading or a bullet was
     # cut short and is not a zero-finding review.
     if not text.lstrip().startswith("# Critic Panel Review") or set(SEV.values()) - set(declared) \
-            or declared != counted:
+            or declared != counted or malformed:
         performed = False
     return findings, unavailable, performed
 

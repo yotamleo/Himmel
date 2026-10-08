@@ -959,11 +959,11 @@ jscratch="/tmp/claude-$(id -u)"
 [ -d "$jscratch" ] || mkdir -m 700 "$jscratch" || fail "cannot create $jscratch"
 jev="$(mktemp -d "$jscratch/pr-check-rounds.XXXXXX")" || { fail "mktemp -d in $jscratch"; exit 1; }
 trap 'rm -rf "$tmp" "$jev"' EXIT
-printf 'the fix does not hold\n' > "$jev/judge-evidence.md"
+printf 'class: option-parsing\n\nthe fix does not hold\n' > "$jev/judge-evidence.md"
 judge() {
     env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_RELAY CLAUDE_CODE_SESSION_ID=judge-sess-4700 \
         bash "$fx/scripts/handover/console-kit/write-verdict.sh" "$1" "$2" "$3" \
-        --evidence-file "$jev/judge-evidence.md" >/dev/null 2>"$tmp/judge-$1.err" || fail "judge writes $1 $2"
+        --pr 1 --evidence-file "$jev/judge-evidence.md" >/dev/null 2>"$tmp/judge-$1.err" || fail "judge writes $1 $2"
 }
 start_round() {
     (cd "$repo" && PANEL_MODE="${2:-clean}" bash "$SCRIPT" --head "$1" --branch "$3" 2>&1)
@@ -988,10 +988,150 @@ jn_fix2="$(git -C "$repo" rev-parse judgenogo)"
 jn2_out="$(start_round "$jn_fix2" clean judgenogo)"; jn2_rc=$?
 assert_eq "$jn2_rc" "8" "a judge record for an earlier head buys no second delta round"
 assert_has "$jn2_out" "delta round was already used" "second-delta refusal still names the used delta"
+printf 'class: cwd-indirection\n\na different finding\n' > "$jev/judge-evidence.md"
 judge jn-2 NO-GO "$jn_fix"
 jn3_out="$(start_round "$jn_fix2" clean judgenogo)"; jn3_rc=$?
 assert_eq "$jn3_rc" "0" "a fresh judge NO-GO on the reviewed delta head buys one more delta round"
 assert_has "$jn3_out" "pr-check: delta round 5 on judgenogo (from $jn_fix)" "the next judge round is scoped from the delta head"
+
+# HIMMEL-4885: real writer records on two reviewed heads must not buy
+# repeated rounds for the same class. Without the class stop this reaches 5.
+three_rounds classrepeat clean
+cr_first="$cap_r3_head"
+fix_commit classrepeat
+cr_second="$cap_fix_head"
+printf 'class: option-parsing\n\nfirst option-parsing finding\n' > "$jev/judge-evidence.md"
+judge class-repeat NO-GO "$cr_first"
+cr_out="$(start_round "$cr_second" clean classrepeat)"; cr_rc=$?
+assert_eq "$cr_rc" "0" "first class delta is allowed"
+printf 'another fix\n' >> "$repo/classrepeat.txt"
+git -C "$repo" commit -q -am "classrepeat another fix"
+cr_third="$(git -C "$repo" rev-parse classrepeat)"
+printf 'class: option-parsing\n\nsecond option-parsing finding\n' > "$jev/judge-evidence.md"
+judge class-repeat-next NO-GO "$cr_second"
+cr_out="$(start_round "$cr_third" clean classrepeat)"; cr_rc=$?
+assert_eq "$cr_rc" "8" "class-repeat-across-heads-refused"
+assert_has "$cr_out" "option-parsing" "class repeat refusal names the class"
+assert_has "$cr_out" "layer-decision:" "class repeat refusal names the way out"
+# Keep the first head's history on this branch, but use a different class
+# for other positive controls so unrelated fixture qids cannot stop them.
+for class_case in different-class-allowed layer-decision-unlocks other-repeat-refused class-set-overlap-refused legacy-classless-nogo-never-matches finding-trigger-history-retained second-candidate-repeat-refused candidate-class-history-retained; do
+    cc_panel=clean
+    [ "$class_case" != finding-trigger-history-retained ] || cc_panel=suggestion
+    three_rounds "$class_case" "$cc_panel"
+    cc_first="$cap_r3_head"
+    fix_commit "$class_case"
+    cc_second="$cap_fix_head"
+    cc_first_class=option-parsing
+    cc_next_class=option-parsing
+    cc_want=8
+    cc_layer=""
+    case "$class_case" in
+        different-class-allowed) cc_next_class=cwd-indirection; cc_want=0 ;;
+        layer-decision-unlocks) cc_layer='layer-decision: os same-uid file access belongs at the OS layer'; cc_want=0 ;;
+        other-repeat-refused) cc_first_class=other; cc_next_class=other ;;
+        class-set-overlap-refused) cc_first_class='shell-parsing, option-parsing'; cc_next_class='reader-allowlist, shell-parsing' ;;
+        legacy-classless-nogo-never-matches) cc_want=0 ;;
+    esac
+    printf 'class: %s\n\nfirst finding\n' "$cc_first_class" > "$jev/judge-evidence.md"
+    judge "$class_case-first" NO-GO "$cc_first"
+    if [ "$class_case" = candidate-class-history-retained ]; then
+        printf 'class: cwd-indirection\n\nfirst candidate\n' > "$jev/judge-evidence.md"
+        judge "a-$class_case-first" NO-GO "$cc_first"
+    fi
+    if [ "$class_case" = legacy-classless-nogo-never-matches ]; then
+        # Model a record written before class: existed, retaining its stamp.
+        sed -i.bak '/^class:/d' "$vscope/$class_case-first/judge.md"
+        rm -f "$vscope/$class_case-first/judge.md.bak"
+    fi
+    cc_out="$(start_round "$cc_second" clean "$class_case")"; cc_rc=$?
+    assert_eq "$cc_rc" "0" "$class_case first round setup"
+    printf 'next fix\n' >> "$repo/$class_case.txt"
+    git -C "$repo" commit -q -am "$class_case next fix"
+    cc_third="$(git -C "$repo" rev-parse "$class_case")"
+    printf 'class: %s\n%s\n\nnext finding\n' "$cc_next_class" "$cc_layer" > "$jev/judge-evidence.md"
+    judge "$class_case-next" NO-GO "$cc_second"
+    if [ "$class_case" = second-candidate-repeat-refused ]; then
+        printf 'class: cwd-indirection\n\nanother current candidate\n' > "$jev/judge-evidence.md"
+        judge "a-$class_case-next" NO-GO "$cc_second"
+    fi
+    cc_out="$(start_round "$cc_third" clean "$class_case")"; cc_rc=$?
+    assert_eq "$cc_rc" "$cc_want" "$class_case"
+    if [ "$cc_want" = 8 ]; then
+        assert_eq "$(cat "$git_dir/cr-review-rounds/$class_case.round")" "4" "$class_case leaves counter unchanged"
+        assert_has "$cc_out" "layer-decision:" "$class_case names decision remedy"
+    fi
+done
+# A consumed qid cannot buy another round, but later NO-GOs in that
+# same-PR qid must still veto a fresh, different-class judge trigger.
+for consumed_case in consumed-qid-repeat-refused consumed-qid-layer-unlocks; do
+    three_rounds "$consumed_case" clean
+    cq_first="$cap_r3_head"
+    fix_commit "$consumed_case"
+    cq_second="$cap_fix_head"
+    printf 'class: option-parsing\n\nfirst finding\n' > "$jev/judge-evidence.md"
+    judge "$consumed_case" NO-GO "$cq_first"
+    cq_out="$(start_round "$cq_second" clean "$consumed_case")"; cq_rc=$?
+    assert_eq "$cq_rc" "0" "$consumed_case first round setup"
+    printf 'next fix\n' >> "$repo/$consumed_case.txt"
+    git -C "$repo" commit -q -am "$consumed_case next fix"
+    cq_third="$(git -C "$repo" rev-parse "$consumed_case")"
+    cq_layer=""
+    cq_want=8
+    if [ "$consumed_case" = consumed-qid-layer-unlocks ]; then
+        cq_layer='layer-decision: os same-uid access belongs at the OS layer'
+        cq_want=0
+    fi
+    printf 'class: option-parsing\n%s\n\nrepeated finding\n' "$cq_layer" > "$jev/judge-evidence.md"
+    judge "$consumed_case" NO-GO "$cq_second"
+    if [ "$cq_want" = 8 ]; then
+        cq_out="$(start_round "$cq_third" clean "$consumed_case")"; cq_rc=$?
+        assert_eq "$cq_rc" "8" "consumed-only qid cannot spend again"
+        assert_has "$cq_out" "layer-decision:" "consumed-only repeat still names class remedy"
+    fi
+    printf 'class: cwd-indirection\n\nfresh different-class trigger\n' > "$jev/judge-evidence.md"
+    judge "$consumed_case-next" NO-GO "$cq_second"
+    cq_out="$(start_round "$cq_third" clean "$consumed_case")"; cq_rc=$?
+    assert_eq "$cq_rc" "$cq_want" "$consumed_case"
+    if [ "$cq_want" = 8 ]; then
+        assert_eq "$(cat "$git_dir/cr-review-rounds/$consumed_case.round")" "4" "$consumed_case leaves counter unchanged"
+        assert_has "$cq_out" "layer-decision:" "$consumed_case names class remedy"
+    fi
+done
+# HIMMEL-4945: a git error (exit 128: the earlier head is missing from this
+# clone) is not proof the earlier NO-GO is off this PR. The record must keep
+# its class veto; only a clean exit 1 drops it.
+three_rounds ancestry-error-keeps-record clean
+ae_first="$cap_r3_head"
+fix_commit ancestry-error-keeps-record
+ae_second="$cap_fix_head"
+printf 'class: cwd-indirection\n\nfirst finding\n' > "$jev/judge-evidence.md"
+judge ancestry-error-first NO-GO "$ae_first"
+ae_out="$(start_round "$ae_second" clean ancestry-error-keeps-record)"; ae_rc=$?
+assert_eq "$ae_rc" "0" "ancestry-error first round setup"
+printf 'next fix\n' >> "$repo/ancestry-error-keeps-record.txt"
+git -C "$repo" commit -q -am "ancestry-error next fix"
+ae_third="$(git -C "$repo" rev-parse ancestry-error-keeps-record)"
+ae_missing="$(printf 'b%.0s' $(seq 1 40))"
+printf 'class: option-parsing\n\nearlier head absent from this clone\n' > "$jev/judge-evidence.md"
+judge ancestry-error-candidate NO-GO "$ae_missing"
+printf 'class: option-parsing\n\ncurrent repeat\n' > "$jev/judge-evidence.md"
+judge ancestry-error-candidate NO-GO "$ae_second"
+ae_out="$(start_round "$ae_third" clean ancestry-error-keeps-record)"; ae_rc=$?
+assert_eq "$ae_rc" "8" "a git error on the ancestry check keeps the earlier NO-GO"
+assert_has "$ae_out" "ancestry check could not run" "git-error line is stable and names the check"
+assert_has "$ae_out" "option-parsing" "git-error refusal names the retained class"
+
+three_rounds same-head-not-a-repeat clean
+sh_first="$cap_r3_head"
+fix_commit same-head-not-a-repeat
+printf 'class: option-parsing\n\nsame head findings\n' > "$jev/judge-evidence.md"
+judge same-head-one NO-GO "$sh_first"
+judge same-head-two NO-GO "$sh_first"
+sh_out="$(start_round "$cap_fix_head" clean same-head-not-a-repeat)"; sh_rc=$?
+assert_eq "$sh_rc" "0" "same-head-not-a-repeat"
+assert_has "$sh_out" "delta round 4" "same-head NO-GOs buy the first delta only"
+printf 'class: option-parsing\n\nthe fix does not hold\n' > "$jev/judge-evidence.md"
 
 # The same record never buys a second round, even while its round is pending.
 three_rounds judgeonce clean
@@ -1164,6 +1304,43 @@ assert_eq "$(cat "$git_dir/cr-review-rounds/jhscan.round")" "3" "the refused per
 # The existing fix trigger is unchanged and still records itself as fix.
 assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"
 assert_has "$(cat "$git_dir/cr-review-rounds/feature.delta")" " merge-forward" "the merge-forward trigger still records merge-forward"
+
+# HIMMEL-4638 T1: an inherited delta_reuse never skips the counter bump on a
+# round before the cap (delta_reuse was only initialised inside delta_check).
+git -C "$repo" checkout -q -b t1init main
+(cd "$repo" && delta_reuse=1 bash "$fx/scripts/cr/review-round.sh" start --branch t1init >/dev/null 2>&1); t1_rc=$?
+assert_eq "$t1_rc" "0" "an exported delta_reuse does not break a round-1 start"
+assert_eq "$(cat "$git_dir/cr-review-rounds/t1init.round")" "1" "an exported delta_reuse does not skip the round-1 counter bump"
+
+# HIMMEL-4638 T2: a pending delta pair is reusable only while no critic finding
+# row exists at its head, even if the avail row never landed.
+three_rounds t2row suggestion
+fix_commit t2row
+(start_round "$cap_fix_head" fail t2row >/dev/null) || fail "t2row pending delta setup"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch t2row --head "$cap_fix_head" --model stub --id stub-t2 \
+    --severity sug --file f.txt --line 2 --verdict "" >/dev/null 2>"$tmp/t2row-finding.err" || fail "t2row finding row setup"
+t2_out="$(start_round "$cap_fix_head" clean t2row)"; t2_rc=$?
+assert_eq "$t2_rc" "8" "a critic finding row at the pending head makes the delta round used"
+assert_has "$t2_out" "delta round was already used" "finding-row refusal names the used delta"
+
+# HIMMEL-4638 T3: a second start on a pending pair whose first start's caller
+# is still alive is refused; once that caller is gone the pair restarts.
+three_rounds t3conc suggestion
+fix_commit t3conc
+(start_round "$cap_fix_head" fail t3conc >/dev/null) || fail "t3conc pending delta setup"
+t3_claim="$(grep -Ec '^[0-9]+$' "$git_dir/cr-review-rounds/t3conc.delta.run" 2>/dev/null)"
+assert_eq "$t3_claim" "1" "a real delta start records its caller pid"
+sleep 60 &
+t3_pid=$!
+printf '%s\n' "$t3_pid" > "$git_dir/cr-review-rounds/t3conc.delta.run"
+t3_out="$(start_round "$cap_fix_head" clean t3conc)"; t3_rc=$?
+assert_eq "$t3_rc" "8" "a concurrent start on a pending delta round is refused"
+assert_has "$t3_out" "already running" "concurrent-start refusal names the running round"
+kill "$t3_pid" 2>/dev/null; wait "$t3_pid" 2>/dev/null
+t3b_out="$(start_round "$cap_fix_head" clean t3conc)"; t3b_rc=$?
+assert_eq "$t3b_rc" "0" "a pending delta round restarts once the earlier start's caller is gone"
+assert_has "$t3b_out" "delta round 4 on t3conc" "the restarted pair is still the delta round"
 
 if [ "$fails" -gt 0 ]; then
     printf 'FAIL test-pr-check-rounds (%s failures)\n' "$fails" >&2

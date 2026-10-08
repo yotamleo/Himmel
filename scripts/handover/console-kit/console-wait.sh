@@ -19,6 +19,11 @@
 #   WAKE tick changed=<f,...>   the tick's ACTION KEY changed and the change
 #     bank=<verdict>            held for two consecutive samples; bank= is the
 #   TICK ...                    bank-preflight verdict word the key carries.
+#   WAKE underfilled capacity=UNDERFILLED:<n>   (HIMMEL-4959) the tick's capacity
+#   <tick line>                 field says live < cap with no launch for
+#   <next-dispatchable.sh out>  TICK_UNDERFILL_MIN; once per streak, with the
+#                               ranked dispatchable list (CONSOLE_WAIT_DISPATCH
+#                               replaces the command, tests; it never launches).
 #   WAKE tick-fail samples=<n>  CONSOLE_WAIT_FAIL_WAKE consecutive samples
 #                               failed (tick or bank read): the monitor is
 #                               broken. Once per streak; the re-arm stays quiet
@@ -208,7 +213,7 @@ field() { # <name> <tick line>
 # sample: sets tick_line and key (empty on a failed tick).
 sample() {
     local f v raw bank
-    key=""
+    key=""; cap_val=""
     # A tick that exits non-zero failed, whatever it printed first.
     raw="$(timeout -k 5 "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null)" || { tick_state=fail; return; }  # gnu-ok: Linux-only kit
     tick_line="$(printf '%s\n' "$raw" | grep '^TICK ' | head -n 1)"
@@ -216,6 +221,7 @@ sample() {
     # A failed or garbled bank read is a failed sample, not a verdict.
     bank="$(bank_word)" || { tick_state=fail; return; }
     tick_state=ok
+    cap_val="$(field capacity "$tick_line")"
     for f in legs livestate prs tails legset board tracker vault denials; do
         v="$(field "$f" "$tick_line")"
         # HIMMEL-3933: tracker= is newer than the other fields; a tick line
@@ -358,6 +364,19 @@ page_denials() {
     done
 }
 
+# HIMMEL-4959: capacity=UNDERFILLED:<n> (tick.sh already folds TICK_UNDERFILL_MIN
+# into it) wakes once per streak. The marker file outlives the waiter, so a
+# re-arm inside the same streak stays quiet; capacity=ok removes it.
+underfill_file="$inbox.wait.underfill"
+dispatch_cmd="${CONSOLE_WAIT_DISPATCH:-$HERE/next-dispatchable.sh}"
+underfill_wake() { # prints the WAKE block; fail-open on the dispatchable list
+    printf 'WAKE underfilled capacity=%s\n%s\n' "$cap_val" "$tick_line"
+    [ -r "$dispatch_cmd" ] || return 0
+    local lf=()
+    [ -z "$legs_from" ] || lf=(--legs-from "$legs_from")  # live legs' files must reach the collision check
+    timeout -k 2 "${CONSOLE_WAIT_DISPATCH_TIMEOUT:-420}" bash "$dispatch_cmd" ${lf[@]+"${lf[@]}"} </dev/null 2>/dev/null 9>&- || true  # gnu-ok: Linux-only kit
+}
+
 saved=""
 if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
@@ -421,6 +440,15 @@ while :; do
         if [ -n "$key" ]; then
             fail_streak=0
             fail_woke && save_key "${saved:-$key}"
+            case "$cap_val" in
+                UNDERFILLED:*)
+                    if [ ! -e "$underfill_file" ]; then
+                        : > "$underfill_file" 2>/dev/null
+                        underfill_wake
+                        exit_reason='wake-underfilled'; exit 0
+                    fi ;;
+                ok) rm -f "$underfill_file" ;;
+            esac
             cur_hash="$(printf '%s' "$key" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit
             if [ -z "$saved" ]; then
                 saved="$key"; save_key "$key"

@@ -826,16 +826,75 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # without a heredoc: no substitution, no $'…' word, no comment, no write
 # redirect but an fd dup or /dev/null, and each command word plain (no VAR=
 # prefix, quote, `$` or glob). sed counts only when st_sed_args proves every
-# script inert and there is no -i; git only as grep/log/show/diff without
-# -O/--open-files-in-pager (runs a pager command on the files), --output or
-# --ext-diff. rg (--pre), sort (--compress-program), awk, find and
+# script inert and there is no -i; git's grep/log/show/diff and non-exec
+# pathspec operations add/restore/rm --cached qualify (HIMMEL-4916), without
+# execution/config options, -O/--open-files-in-pager, --output or --ext-diff.
+# rg (--pre), sort (--compress-program), awk, find and
 # xargs run programs, so none of them is a reader. Nor are printf (-v writes
 # BASH_CMDS, PATH or a var a later ${x@P} or $[x] runs), echo (it expands
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
+PR_GIT_UNSAFE=0
+git_mentions_only() { # git_mentions_only <command-word index>
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0
+    while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
+        w=${ST_W[j]}
+        if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
+        if [ "${ST_X[j]}${ST_G[j]}" != 00 ]; then
+            # HIMMEL-4950: an expanded word that can begin with `-` may become
+            # an exec-capable option (`-O{bash,x}`, `{-O,x}bash`, `--ext-d?ff`).
+            # After --, words are pathspec operands, not options.
+            # A `$` anywhere in the word word-splits (`echo$IFS-Obash`), so it
+            # is unsafe wherever it appears, not only at the start.
+            if [ "$paths" != 1 ]; then
+                case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_UNSAFE=1 ;; esac
+            fi
+            # Keep scanning: a later word may be an exec option (`docs/{a,b} -O{x,y}`).
+            xp=1; j=$((j + 1)); continue
+        fi
+        # After --, option-shaped words are literal pathspec operands.
+        if [ "$paths" = 1 ]; then j=$((j + 1)); continue; fi
+        # Refuse these even when the older text classifier cannot see a
+        # runner: git aliases/config and helper options can execute operands.
+        case "$w" in
+            --oneline) ;;
+            -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
+                --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; return 1 ;;
+        esac
+        if [ "$dir" = 1 ]; then
+            dir=0
+        elif [ -z "$sub" ]; then
+            [ "${ST_Q[j]}" = 0 ] || return 1
+            case "$w" in
+                -C) dir=1 ;;
+                --no-pager) ;;
+                grep|log|show|diff|add|restore|rm) sub=$w ;;
+                *) return 1 ;;
+            esac
+        elif [ "$w" = -- ]; then
+            # An unknown option may consume -- as its value (-e/-S, ...),
+            # rather than end options. Keep that ambiguous shape fenced.
+            if ! [[ ${ST_W[j - 1]} =~ ^-[0-9]+$ ]]; then
+                case "${ST_W[j - 1]}" in
+                    --cached|--staged|--oneline|--name-only|--name-status|--follow|--*=*|-n|-p|-A|-a|-u|-w|--stat) ;;
+                    -*) PR_GIT_UNSAFE=1; return 1 ;;
+                esac
+            fi
+            paths=1
+        elif [ "$w" = --cached ]; then
+            cached=1
+        fi
+        j=$((j + 1))
+    done
+    [ "$xp" = 0 ] && [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
+    [ "$sub" != rm ] || [ "$cached" = 1 ]
+}
 readers_only() { # true when every command the command line runs is a reader
     local k sg=-1 cw=-1 w
-    st_tokenize "$cmd" || return 1
+    # HIMMEL-4950: a `${…}` the tokenizer cannot parse (zsh `${=IFS}`) on a git
+    # command line may word-split into an exec option; flag it unsafe.
+    # shellcheck disable=SC2016 # a literal ${ is matched, never expanded
+    st_tokenize "$cmd" || { case "$cmd" in *git*'${'*) PR_GIT_UNSAFE=1 ;; esac; return 1; }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
     k=0
     while [ "$k" -lt "$ST_N" ]; do
@@ -850,18 +909,10 @@ readers_only() { # true when every command the command line runs is a reader
                 [ "${ST_A[k]}${ST_Q[k]}${ST_X[k]}${ST_G[k]}" = 0000 ] || return 1
                 case "$w" in
                     sed) st_sed_args "$k" 0 || return 1 ;;
-                    git)
-                        [ "$((k + 1))" -lt "$ST_N" ] && [ "${ST_S[k + 1]}" = "$sg" ] && [ -z "${ST_RO[k + 1]}" ] \
-                            && [ "${ST_Q[k + 1]}${ST_X[k + 1]}${ST_G[k + 1]}" = 000 ] || return 1
-                        case "${ST_W[k + 1]}" in grep|log|show|diff) ;; *) return 1 ;; esac
-                        ;;
+                    git|/usr/bin/git) git_mentions_only "$k" || return 1 ;;
                     *) case "$PR_READERS" in *" $w "*) ;; *) return 1 ;; esac ;;
                 esac
                 cw=$k
-            elif [ "${ST_W[cw]}" = git ]; then
-                # git takes a unique prefix of a long option and bundled
-                # short flags, so any --o…/--ext… word and any -…O… is out.
-                case "$w" in --o* | --ext* | -O* | -[!-]*O*) return 1 ;; esac
             fi
         fi
         k=$((k + 1))
@@ -869,6 +920,11 @@ readers_only() { # true when every command the command line runs is a reader
     return 0
 }
 readers_only && exit 0
+if [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
+    shown=${cmd//$'\n'/ }
+    shown=${shown:0:200}
+    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+fi
 case "$flat" in
     *[cC][rR]/*|*[hH]andover/*) ;;
     *[][*?]*|*'{'*) [ "$mentions" -eq 1 ] || ! heredoc_data_only || exit 0 ;;

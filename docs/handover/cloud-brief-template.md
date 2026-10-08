@@ -26,6 +26,16 @@ CLOUD-OK ticket and prints the launch line.
 So the local shepherd stays mandatory: it runs `/pr-check`, the CR gate and the
 merge. The cloud session ships a PR and stops.
 
+The mechanical half of the shepherd is scripted (HIMMEL-4942):
+`bash scripts/handover/console-kit/shepherd.sh <pr>` makes a detached worktree of
+the PR head, runs the coverage lint, the impacted shell suites, `check-ci.sh` and
+`ready-check.sh`, and prints one `SHEPHERD <pr> <head> READY-CANDIDATE|NEEDS-LEG
+<reasons>` block (exit 0 / 1; 2 = usage or infra). It skips `CLOUD-ACK` steering
+only when `CLOUD-DONE` is already posted, and it is read-only toward the PR. It
+cannot run `/pr-check` (a model-session runbook): with no `ok` CR-ledger row for
+the head it reports `panel: NOT-RUN` and the PR still needs a `/pr-check` round.
+A clean candidate needs no shepherd leg; the console reads the diff, GOs and merges.
+
 ## Plugin hooks in the cloud (probed 2026-10-04, HIMMEL-4273)
 
 Probed from a cloud session started in a `--with-plugins` environment:

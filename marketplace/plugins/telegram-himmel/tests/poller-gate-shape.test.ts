@@ -44,7 +44,7 @@ const src = await Bun.file(serverPath).text()
 // broken `bun install` there can never become a silent skip.
 const depMissing = (() => {
   try {
-    import.meta.resolveSync('@modelcontextprotocol/sdk/server/index.js', serverPath)
+    import.meta.resolveSync('@modelcontextprotocol/server', serverPath)
     return false
   } catch {
     return true
@@ -54,7 +54,7 @@ const inCI = !!process.env.CI
 const skipNoDeps = depMissing && !inCI
 if (skipNoDeps) {
   console.warn(
-    `SKIP poller-gate-shape: @modelcontextprotocol/sdk not installed in ${serverDir} — run \`bun install --frozen-lockfile\` there`,
+    `SKIP poller-gate-shape: @modelcontextprotocol/server not installed in ${serverDir} — run \`bun install --frozen-lockfile\` there`,
   )
 }
 

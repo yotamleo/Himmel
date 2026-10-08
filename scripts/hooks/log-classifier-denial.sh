@@ -43,7 +43,10 @@ IFS= read -r -d '' input 2>/dev/null || true
 session_id=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || exit 0
 tool=$(printf '%s' "$input" | jq -r '.tool_name // ""' 2>/dev/null) || exit 0
 cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || exit 0
-denial_reason=$(printf '%s' "$input" | jq -r '.denial_reason // ""' 2>/dev/null) || exit 0
+# The PermissionDenied payload carries the denial text in `reason` (Claude Code
+# hooks reference); `denial_reason` is the name this hook wrongly read until
+# HIMMEL-4681, kept as a fallback.
+denial_reason=$(printf '%s' "$input" | jq -r '.reason // .denial_reason // ""' 2>/dev/null) || exit 0
 tool_input_flat=$(printf '%s' "$input" | jq -r '[.tool_input // {} | .. | strings] | join(" ")' 2>/dev/null) || exit 0
 
 [ -n "$tool" ] || exit 0

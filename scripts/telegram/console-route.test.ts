@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, spyOn } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -39,7 +39,8 @@ test("judge: lockdown blocks every inbound agent route for every sender", async 
     expect(ran).toEqual([]);
     expect(fired).toEqual([]);
     expect(existsSync(join(r, "sessions", "HIMMEL-1", "inbox.jsonl"))).toBe(false);
-    expect(replies).toHaveLength(6);
+    // HIMMEL-4947 station policy: only the operator is told; others get silence.
+    expect(replies).toHaveLength(from === 1 ? 6 : 0);
     expect(replies.every(t => t.includes("locked, reset at the station"))).toBe(true);
   }
   unlinkSync(join(r, "lockdown"));
@@ -150,7 +151,7 @@ test("short-verbs-auth-targeting", async () => {
 });
 
 test("slash-only-plain-words-are-chat", () => {
-  for (const text of ["fleet", "legs", "go N1490", "push N1490", "halt", "lockdown", "/go ../escape", "/push a..b", "/halt a/b", `/go ${"a".repeat(65)}`, "/push a\u0000b"]) expect(classify(text).kind).toBe("chat");
+  for (const text of ["fleet", "legs", "go N1490", "push N1490", "halt", "lockdown", "/gopher", "/legsx", "/halting now", "/go@bridge_bot x"]) expect(classify(text).kind).toBe("chat");
   expect(classify("status")).toEqual({ kind: "control", verb: "status" });
   for (const text of verbs) expect(classify(text).kind).toBe("fleet");
 });
@@ -486,4 +487,56 @@ test("reply CLI appends one line to the chat's outbox under a scratch BRIDGE_ROO
   expect(out.map((l) => JSON.parse(l))).toEqual([{ text: "done with PR 12" }]);
   const meta = JSON.parse(readFileSync(join(r, "sessions", "__chat__", "meta.json"), "utf8"));
   expect(meta.chat_id).toBe(1);
+});
+
+// HIMMEL-4947: every malformed reserved fleet shape is a terminal refusal.
+const malformed = ["/go foo..bar", "/go ../escape", "/push a..b", "/halt a/b", "/go a\\b", `/go ${"a".repeat(65)}`, "/push a\u0000b", "/halt a\nb", "/go", "/push", "/go a b", "/halt a b", "/fleet now", "/legs x", "/GO foo", "/go  foo", "/push foo‮"];
+
+test("malformed-fleet-shapes-classify-terminal", () => {
+  for (const text of malformed) expect(classify(text).kind).toBe("fleet-malformed");
+  for (const text of ["/go a.b-c_1", "/push " + "a".repeat(64), "/halt", "/fleet", "/legs"]) expect(classify(text).kind).toBe("fleet");
+});
+
+test("malformed-fleet-inbound-refused-no-queue-no-spawn", async () => {
+  for (const text of malformed) {
+    const r = root(); const f = heartbeat(r); const replies: string[] = []; const ran: string[] = []; const fired: string[] = [];
+    await inbound(r, fresh(text), replies, ran, fired);
+    expect(readFileSync(f, "utf8")).toBe("");
+    expect(ran).toEqual([]);
+    expect(fired).toEqual([]);
+    expect(existsSync(join(r, "sessions", "__chat__", "inbox.jsonl"))).toBe(false);
+    expect(replies.join("\n")).toContain("malformed fleet command");
+    for (const extra of [{ from: 999 }, { chat_id: -99 }, { forwarded: true }, { caption: true }, { text: `model:opus ${text}` }]) {
+      const quiet: string[] = [];
+      await inbound(r, fresh(text, extra), quiet, ran, fired);
+      expect(quiet).toEqual([]);
+    }
+    expect(readFileSync(f, "utf8")).toBe("");
+    expect(ran).toEqual([]);
+  }
+});
+
+test("lockdown-arriving-in-settlement-gap-is-not-a-content-filter-block", async () => {
+  const r = root(); await ensureSession(r, "__chat__");
+  await writeMeta(r, "__chat__", { chat_id: 1, status: "idle", last_run_pid: null, last_run_at: null, task_name: null });
+  await appendLine(join(sessionDir(r, "__chat__"), "inbox.jsonl"), JSON.stringify({ text: "hello", from: 1, ts: 1 }));
+  const ran: string[] = []; const notices: string[] = [];
+  // runAndSettle stamps last_run_at via now() -> toISOString() AFTER makeRunFn's
+  // last lockdown check and BEFORE the spawn closure: lock exactly there.
+  const real = Date.prototype.toISOString;
+  const stderr = spyOn(console, "error").mockImplementation(() => {});
+  const spy = spyOn(Date.prototype, "toISOString").mockImplementation(function (this: Date) {
+    if (new Error().stack?.includes("runAndSettle") && !existsSync(join(r, "lockdown"))) writeFileSync(join(r, "lockdown"), "locked\n");
+    return real.call(this);
+  });
+  try {
+    const run = makeRunFn(r, r, async prompt => { ran.push(prompt); return { code: 0, capped: false, pid: 1 }; }, undefined, async (_s, _t, kind) => { notices.push(kind); }, undefined, undefined, undefined, () => r);
+    await run("__chat__");
+  } finally { spy.mockRestore(); stderr.mockRestore(); }
+  expect(existsSync(join(r, "lockdown"))).toBe(true);
+  expect(ran).toEqual([]);
+  expect(notices).toEqual([]);
+  const meta = JSON.parse(readFileSync(join(sessionDir(r, "__chat__"), "meta.json"), "utf8"));
+  expect(meta.status).toBe("idle");
+  expect(readFileSync(join(sessionDir(r, "__chat__"), "inbox.jsonl"), "utf8")).toContain("hello");
 });

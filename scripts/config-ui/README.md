@@ -145,7 +145,7 @@ the foreground (Ctrl-C to stop); an open stream keeps it from idling out.
 live Claude session (console, leg, judge or interactive) with its ticket and PR,
 state (running, idle, waiting for GO, wrapped), latest tool call and its age,
 subagent counts and failure count. Wrapped legs sit in a closed section, never
-in the live list. Clicking a row opens that session's run page. The page polls
+in the live list. Clicking a row's name opens that session's run page. The page polls
 `GET /api/agui/fleet` (token-gated, GET only, read-only, `agui/fleet.ts`),
 whose census is `fleet.sh`: `claude_sessions` plus each leg doc's last marker
 (`leg_tail_status`). A session whose journal has been quiet for an hour is left
@@ -162,6 +162,34 @@ GitHub is read in one batched GraphQL query per minute at most
 (`agui/fleet-cloud.ts`, shared and cached); a failed or throttled read, or one
 still running after 2 seconds, shows the nodes as "GitHub status unknown" for
 that poll and never holds up the page longer.
+
+**Sections, orphans and filters (HIMMEL-4925).** The page has four sections:
+
+- **Needs attention** lists sessions that want a console action, by severity:
+  - a `BLOCKED` or `FINDING` marker;
+  - context at 85 % or more of the session's real window (the launch's declared
+    `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, then `--autocompact`, then the model's);
+  - a `CLOUD-DONE` PR awaiting its shepherd.
+- **Orphans** lists live sessions no live console watches, with the reason and
+  "adopt via relay / close". It also lists the shell-tool wrappers the console
+  tick reports, read from the console kit's `orphan-loops.sh --list`, with pid,
+  owner, age and how to close each. The page never signals a process.
+- **Running** groups sessions per live console.
+- **Finished** is closed by default.
+
+Cloud is a lane like native and claudex. A cloud session is never an orphan for
+want of a shepherd.
+
+Each card is one line: its name links to the run page (a cloud session's to its
+cloud session) and its chevron expands the status and lineage detail. A leg's
+hops (`N1494`, `N1494b`, `-RESUME`) and a console's succession chain each fold
+into one entry, with every hop linked.
+
+The rail's filters (lane, state, text, finished inline) narrow every section.
+They are kept per viewer in the browser.
+
+A finished row links its PR to this checkout's GitHub origin
+(`CONFIG_UI_GITHUB_REPO=<owner>/<name>` overrides it).
 
 **One app (HIMMEL-4711).** The console and the AG-UI pages share one rail and one
 theme (`public/nav.js`, `public/theme.css`): Config, Health and Fleet, plus Run
