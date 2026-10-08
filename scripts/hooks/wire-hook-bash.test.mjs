@@ -118,6 +118,21 @@ function commands(settings) {
   );
 }
 
+test('backend routing dispatches both Jira connector prefixes, not unrelated MCP tools', () => {
+  const settings = JSON.parse(readFileSync(SETTINGS, 'utf8'));
+  const backendGroups = settings.hooks.PreToolUse.filter((group) =>
+    group.hooks.some((hook) => hook.command.includes('/block-backend-tier.sh'))
+  );
+  for (const name of [
+    'mcp__plugin_atlassian_atlassian__createJiraIssue',
+    'mcp__claude_ai_Atlassian_MCP__createJiraIssue',
+    'mcp__claude_ai_Atlassian_MCP__lookupJiraAccountId',
+  ]) {
+    assert.equal(backendGroups.filter((group) => new RegExp(group.matcher).test(name)).length, 1, name);
+  }
+  assert.equal(backendGroups.filter((group) => new RegExp(group.matcher).test('mcp__qmd__query')).length, 0);
+});
+
 test('rewrites the known hook inventory through the Bash resolver', () => {
   withFixture((fixture) => {
     const before = JSON.parse(readFileSync(fixture, 'utf8'));

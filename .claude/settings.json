@@ -285,7 +285,7 @@
         ]
       },
       {
-        "matcher": "mcp__plugin_atlassian_atlassian__.*",
+        "matcher": "mcp__plugin_atlassian_atlassian__.*|mcp__claude_ai_Atlassian_MCP__.*",
         "hooks": [
           {
             "type": "command",
