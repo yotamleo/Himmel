@@ -1546,6 +1546,9 @@ for v in \
     "env -S 'bash scripts/cr/pr-check-env.sh'" \
     'git --exec-path=scripts/cr/pr-check-env.sh add x' \
     'git -c core.hooksPath=scripts/cr/pr-check-env.sh add x' \
+    "git -c filter.x.clean='bash scripts/cr/pr-check-env.sh' add x" \
+    "git -c filter.x.smudge='bash scripts/cr/pr-check-env.sh' restore x" \
+    "git -c diff.x.textconv='bash scripts/cr/pr-check-env.sh' show HEAD:x" \
     'git --config-env=core.pager=RUN show scripts/cr/pr-check-env.sh' \
     'git diff --ext-diff -- scripts/cr/pr-check-env.sh' \
     'git diff --upload-pack=scripts/cr/pr-check-env.sh x' \
