@@ -303,6 +303,7 @@ row "eval_runs.py append JSON (4750)" allow "python3 scripts/eval/lib/eval_runs.
 row "interp JSON arg, one key (4750)" allow "python3 x.py '{\"a\":1}'"
 row "brace alt naming the lift still denies (interp)" deny "python3 x.py {bank-lift.json,y}"
 row "brace alt naming the lift still denies (cp)"     deny "cp $T/src/other.txt ~/.himmel/state/{bank-lift.json,y}"
+row "nested brace alt naming the lift still denies"   deny "cp $T/src/other.txt ~/.himmel/state/{bank-{lift,other}.json,y}"
 row "brace alt with quote still denies (interp)"      deny "python3 x.py {bank-lift.json,\\\"}"
 row "mv the lift away (over-deny r6)" deny "mv ~/.himmel/state/bank-lift.json /tmp/old-lift.json"
 row "redirect to \$OUT"            allow "echo x > \"\$OUT\""

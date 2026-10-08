@@ -159,6 +159,8 @@ _glob_from_word() {
                 # any string, so a JSON argument ({"a":1,"b":2}) is not read as
                 # a glob over the lift name. Pattern syntax inside -> old `*`.
                 body="${s#*\{}"; body="${body%%\}*}"
+                # Nested group: fail closed, `*` over the span to the LAST `}`.
+                case "$body" in *'{'*) out="$out${s%%\{*}*"; s="${s##*\}}"; continue ;; esac
                 case "$body" in
                     *,*) case "$body" in *'('*|*')'*|*'|'*) body="" ;; *) body="@(${body//,/|})" ;; esac ;;
                     *) body="" ;;
