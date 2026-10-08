@@ -395,8 +395,8 @@ merge_forward_shape() {
 # own_diff <base> <head>: the PR's own diff as text, minus the index and
 # hunk-header lines a moved base shifts.
 own_diff() {
-    git diff --no-ext-diff --no-color --no-renames "$1" "$2" 2>/dev/null \
-        | sed -e '/^index /d' -e 's/^@@ [^@]* @@.*$/@@/'
+    _od_raw="$(git diff --no-ext-diff --no-color --no-renames "$1" "$2" 2>/dev/null)" || return 1
+    printf '%s\n' "$_od_raw" | sed -e '/^index /d' -e 's/^@@ [^@]* @@.*$/@@/'
 }
 # clean_merge_forward <from> <to> succeeds only for a CLEAN merge-forward:
 # <to>'s tree is exactly the conflict-free merge of <from> with the base point
@@ -408,8 +408,8 @@ clean_merge_forward() {
     [ "$_cm_tree" = "$(git rev-parse "$2^{tree}" 2>/dev/null)" ] || return 1
     _cm_old="$(git merge-base "$1" "$base_sha" 2>/dev/null)" || return 1
     [ -n "$_cm_old" ] || return 1
-    _cm_a="$(own_diff "$_cm_old" "$1"; echo "rc=$?")"
-    _cm_b="$(own_diff "$mf_merged_base" "$2"; echo "rc=$?")"
+    _cm_a="$(own_diff "$_cm_old" "$1")" || return 1
+    _cm_b="$(own_diff "$mf_merged_base" "$2")" || return 1
     [ "$_cm_a" = "$_cm_b" ]
 }
 
