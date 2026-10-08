@@ -13,7 +13,9 @@ Your reporting channel is **your handover document**. Write every milestone
 `WRAPPED`) as a `- ` bullet at the bottom of its `## Results` section, starting
 the bullet with the milestone word. The console polls that document and acts on
 the newest bullet by its leading marker word. Retire a `FINDING` the console
-has ruled on with a `RESOLVED` bullet (until then it reads as unanswered), and
+has ruled on with a `RESOLVED — ruling received, see console message` bullet
+(until then it reads as unanswered; never copy the ruling, a GO or a token into
+a bullet, HIMMEL-4931), and
 coin no other marker (`SHIPPED`, `MERGED`): between GREEN and `READY` you are
 `LIVE`, after the merge `WRAPPED`. Report at milestones only. A BLOCKED, a permission prompt,
 or a question of your own goes to the console through that document FIRST —
