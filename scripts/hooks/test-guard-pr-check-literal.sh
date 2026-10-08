@@ -1520,6 +1520,41 @@ for v in \
     run "HIMMEL-4574 control [${v%%"$NL"*}] -> deny" 2 "$(payload "$v" "$TMP")" "$HR"
 done
 
+# HIMMEL-4916: staging/pathspec operands mention a changed policy file;
+# exempting a git segment must never exempt an executor beside or inside it.
+echo ': changed policy' >>"$WT/scripts/cr/pr-check-env.sh"
+for v in \
+    'git add scripts/cr/pr-check-env.sh docs/a.md' \
+    "git -C $WT add -- scripts/cr/pr-check-env.sh docs/a.md" \
+    '/usr/bin/git add scripts/cr/pr-check-env.sh docs/a.md' \
+    'git restore --staged scripts/cr/pr-check-env.sh' \
+    'git diff -- scripts/cr/pr-check-env.sh' \
+    'git rm --cached scripts/cr/pr-check-env.sh' \
+    'git log -- scripts/cr/pr-check-env.sh' \
+    'git show HEAD:scripts/cr/pr-check-env.sh' \
+    'git add "scripts/cr/pr-check-env.sh" docs/a.md'; do
+    run "HIMMEL-4916 pathspec [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
+# shellcheck disable=SC2016 # literal attack payloads, never expanded here
+for v in \
+    'bash scripts/cr/pr-check-env.sh' \
+    'git add x && bash scripts/cr/pr-check-env.sh' \
+    "git -c alias.x='!bash scripts/cr/pr-check-env.sh' x" \
+    'git add $(bash scripts/cr/pr-check-env.sh)' \
+    'git add <(bash scripts/cr/pr-check-env.sh)' \
+    'git add x | xargs bash scripts/cr/pr-check-env.sh' \
+    "env -S 'bash scripts/cr/pr-check-env.sh'" \
+    'git --exec-path=scripts/cr/pr-check-env.sh add x' \
+    'git -c core.hooksPath=scripts/cr/pr-check-env.sh add x' \
+    'git --config-env=core.pager=RUN show scripts/cr/pr-check-env.sh' \
+    'git diff --ext-diff -- scripts/cr/pr-check-env.sh' \
+    'git diff --upload-pack=scripts/cr/pr-check-env.sh x' \
+    'git log ext::scripts/cr/pr-check-env.sh' \
+    'git grep -O bash -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4916 exec control [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
+
 echo
 if [ "$FAILED" -eq 0 ]; then
     echo "all guard-pr-check-literal cases passed"
