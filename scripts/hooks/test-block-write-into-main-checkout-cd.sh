@@ -575,6 +575,34 @@ check_both "92c fromW: cd wt || exit; echo x > a.txt still allows (control)" all
 check_both "92d fromW: cd wt; echo x 2>&1 > a.txt still allows (redirect & is not a background &)" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; echo x 2>&1 > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# 93 (HIMMEL-4934): a single `|` taints only the clause on its LEFT (a pipeline
+# member runs its cd in a subshell) and everything after it; an earlier cd stays
+# trusted, so `cd wt && git status | cat && write` is no longer a blanket deny.
+check_both "93 fromW: cd wt && git status | cat && echo x > a.txt (cd precedes the pipe) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && git status | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93b fromW: cd wt | cat && echo x > a.txt (cd is the pipe's left member) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93c fromW: cd wt && ls | head && cd - && echo x > a (unresolved cd after a pipe) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && ls | head && cd - && echo x > a\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93d fromW: cd \$UNSET_VAR && git status | cat && echo x > a.txt (dynamic cd target) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd \\\"\$UNSET_VAR\\\" \\u0026\\u0026 git status | cat \\u0026\\u0026 echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93e fromW: cd primary && git status | cat && echo x > a.txt (cd into primary) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary \\u0026\\u0026 git status | cat \\u0026\\u0026 echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
+# 93f-j (HIMMEL-4934 judge NO-GO): a redirect `&` on the pipe's left member is
+# no boundary, so the whole member (`cd wt 2>&1`) is tainted, not just its tail.
+check_both "93f fromW: cd wt 2>&1 | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt 2>&1 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93g fromW: cd wt &>/dev/null | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt &>/dev/null | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93h fromW: cd wt >&2 | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt >&2 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93i fromW: cd wt 2>&- | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt 2>&- | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93j fromW: cd wt; cd wt 2>&1 | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; cd $FIX/wt 2>&1 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93k fromW: cd wt && git status 2>&1 | cat && echo x > a.txt (cd precedes) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && git status 2>&1 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
