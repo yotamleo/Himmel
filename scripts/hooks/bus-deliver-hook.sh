@@ -27,17 +27,21 @@ case "$name" in *[!A-Za-z0-9._-]* | [!A-Za-z0-9]*) exit 0 ;; esac
 root="${XDG_STATE_HOME:-${HOME:-}/.local/state}/himmel/bus"
 log="$root/log/$name.jsonl"
 cur="$root/cur/$name"
-[ -f "$log" ] || exit 0  # fail-open-ok: a delivery nudge, not a fence; an unreadable log means no mail is shown, never a permission granted
-size="$(wc -c < "$log" 2>/dev/null | tr -d ' ')"
-[ "${size:-0}" -gt 0 ] || exit 0
-
-if [ -f "$cur" ]; then
-  cur_json="$(cat "$cur" 2>/dev/null)"
-  case "$cur_json" in *'"halted"'*) exit 0 ;; esac
-  off="$(printf '%s' "$cur_json" | sed -n 's/.*"off":\([0-9][0-9]*\).*/\1/p')"
-  k="$(printf '%s' "$cur_json" | sed -n 's/.*"k":\([0-9][0-9]*\).*/\1/p')"
-  if [ "${off:-x}" = "$size" ] && [ "${k:-x}" = "0" ] && ! ls "$root/log/$name".[0-9]* >/dev/null 2>&1; then
-    exit 0
+cur_json=""
+[ -f "$cur" ] && cur_json="$(cat "$cur" 2>/dev/null)"
+case "$cur_json" in *'"halted"'*) exit 0 ;; esac
+# Closed (rotated) segments can hold unread mail while the active log is absent
+# or empty, so their presence always falls through to the worker.
+if ! ls "$root/log/$name".[0-9]* >/dev/null 2>&1; then
+  [ -f "$log" ] || exit 0  # fail-open-ok: a delivery nudge, not a fence; an unreadable log means no mail is shown, never a permission granted
+  size="$(wc -c < "$log" 2>/dev/null | tr -d ' ')"
+  [ "${size:-0}" -gt 0 ] || exit 0
+  if [ -n "$cur_json" ]; then
+    off="$(printf '%s' "$cur_json" | sed -n 's/.*"off":\([0-9][0-9]*\).*/\1/p')"
+    k="$(printf '%s' "$cur_json" | sed -n 's/.*"k":\([0-9][0-9]*\).*/\1/p')"
+    if [ "${off:-x}" = "$size" ] && [ "${k:-x}" = "0" ]; then
+      exit 0
+    fi
   fi
 fi
 

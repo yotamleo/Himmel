@@ -20,9 +20,12 @@ if [ ! -d /proc/self ]; then echo "SKIP: needs /proc"; exit 0; fi
 command -v node >/dev/null 2>&1 || { echo "SKIP: needs node"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bus-deliver-test.XXXXXX")" || { echo "mktemp -d failed" >&2; exit 1; }
-SESSIONS=""
 cleanup() {
-    for p in $SESSIONS; do kill "$p" 2>/dev/null; done
+    # start_session runs in a command substitution, so a variable it set is lost;
+    # the fake claudes record their own pid in $WORK/req/<name>.pid instead.
+    for f in "$WORK"/req/*.pid; do
+        [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null
+    done
     rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -46,6 +49,9 @@ if (verb === 'append') {
   const rec = JSON.parse(a[1]);
   await store.append(root, a[0], { i: randomBytes(8).toString('hex'), t: Date.now(), r: a[0], ...rec });
 }
+if (verb === 'fill') {
+  for (let n = 0; n < Number(a[1]); n++) await store.append(root, a[0], { i: randomBytes(8).toString('hex'), t: Date.now(), r: a[0], f: 'con', c: 1, b: 'z'.repeat(Number(a[2])) });
+}
 EOF
 sed -i "s#__REPO__#$REPO_ROOT#g" "$WORK/h.mjs"
 h() { node "$WORK/h.mjs" "$@"; }
@@ -62,7 +68,6 @@ start_session() {
             echo $? > "$f.rc"
             : > "$f.done"
         done <> "$1.fifo"' _ "$WORK/req/$name" "$name" "$HOOK" > /dev/null 2>&1 &
-    SESSIONS="$SESSIONS $!"
     local i=0
     while [ ! -s "$WORK/req/$name.pid" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
     cat "$WORK/req/$name.pid"
@@ -214,6 +219,25 @@ if [ -z "$out" ]; then pass "lib integrity: pin mismatch on lib/store.mjs delive
 rm -f "$WORK/integ/s1.json"
 run_as leg6 "$(post)"
 if ctx | grep -qF '| pinned'; then pass "lib integrity: no pin record -> fails open and delivers"; else fail "no-pin delivery (out='$out')"; fi
+
+# --- a many-line record is clipped to its own line cap, so one record cannot bust 200 lines
+h register leg8 leg con; L8="$(start_session leg8)"; h bind leg8 "$L8"
+h append leg8 "$(node -e 'console.log(JSON.stringify({f:"con",c:1,b:"a\n".repeat(700)}))')"
+h append leg8 '{"f":"con","c":1,"b":"after the long one"}'
+run_as leg8 "$(post)"; text="$(ctx)"
+nl="$(printf '%s\n' "$text" | wc -l | tr -d ' ')"
+if [ "$nl" -le 200 ] && printf '%s' "$text" | grep -qF '[clipped; full: read 1]'; then
+    pass "many-line record: $nl lines (<= 200), clipped with a read pointer"
+else fail "many-line record (lines=$nl)"; fi
+
+# --- closed segments with an empty active log still deliver (fast path must not stop at size 0)
+h register leg9 leg con; L9="$(start_session leg9)"; h bind leg9 "$L9"
+h fill leg9 230 1200
+if ls "$ROOT/log/leg9".[0-9]* >/dev/null 2>&1; then : > "$ROOT/log/leg9.jsonl"; fi
+run_as leg9 "$(post)"; text="$(ctx)"
+if ls "$ROOT/log/leg9".[0-9]* >/dev/null 2>&1 && printf '%s' "$text" | grep -q '^bus #1 from con:$'; then
+    pass "rotated segment + empty active log -> pending mail delivered"
+else fail "segment delivery (out='$out')"; fi
 
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi
