@@ -126,6 +126,7 @@ ${named}
 1. Read \`CLAUDE.md\` and these files in full before editing: ${files.join(' ')}
 2. Claim the ticket: through the Atlassian MCP, transition ${t.key} to \`In Progress\` (a cloud session has no handover doc and no queue lock; the ticket status is the claim).
 3. Create the branch as a worktree BEFORE any edit: \`git worktree add -b ${branch} .claude/worktrees/himmel-${n} origin/main\`, and work inside it (the repo's edit-on-main guard denies edits in the cloud's primary clone, even on a feature branch).
+   If you need repo retrieval, run \`bash scripts/cloud/setup-env.sh\` from this worktree first; it rebuilds the AST graph and repo-only index here. Query \`graphify query "<question>" --graph graphify-out/graph.json\`, never the unclassified cached /tmp graph. Search with \`bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel\`, never bare qmd search or a vault collection.
 4. Edit ONLY these files: ${files.join(' ')}. Keep the diff minimal and match the surrounding style.
 5. Write the new or changed test FIRST and show it RED without the fix, then green. Run \`shellcheck\` on every \`.sh\` file you touch. Report rc and the PASS/FAIL tail of each.
 6. Make exactly ONE commit, never amend it. Before pushing, run the impacted suites: \`bash scripts/cr/impacted-suites.sh origin/main..HEAD --shell\` lists every suite that references a changed file, and \`bash scripts/ci/run-shell-tests.sh --impacted origin/main..HEAD\` runs them. A red suite is fixed in a NEW commit, never an amend.

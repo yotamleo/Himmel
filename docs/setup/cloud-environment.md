@@ -42,7 +42,7 @@ BASH_MAX_TIMEOUT_MS=600000
 
 ```bash
 #!/bin/bash
-# rev: 4
+# rev: 5
 rm -rf /tmp/himmel-setup \
   && git clone --depth 1 https://github.com/yotamleo/Himmel /tmp/himmel-setup \
   && bash /tmp/himmel-setup/scripts/cloud/setup-env.sh --with-plugins || true
@@ -77,21 +77,27 @@ rm -rf /tmp/himmel-setup \
 | The console bridge | The console inbox and `SendMessage` reach local sessions only |
 | The hook-integrity bypass | It is a launching-shell variable on the station; a ticket that edits `scripts/hooks/` routes HOOK-BYPASS |
 
-Both indexes are built in the setup clone `/tmp/himmel-setup`, so they show
-`main` as it was when the environment was cached, not the session's branch:
+The cached setup builds indexes in `/tmp/himmel-setup`, not the session's
+branch. Once inside the session's repo worktree, run
+`bash scripts/cloud/setup-env.sh` to rebuild both indexes against that checkout.
+This keeps the graph inside the fence's already-classified repo root; the
+unclassified cached `/tmp` graph stays denied. No vault path is registered.
 
-- **graphify**: query the cached graph with
-  `graphify query "<question>" --graph /tmp/himmel-setup/graphify-out/graph.json`,
-  or run `graphify update .` in the session's clone for a fresh one (about 25 s
-  for this repo on a desktop CPU). Never run a semantic `/graphify` extraction in
+- **graphify**: query the session graph with
+  `graphify query "<question>" --graph graphify-out/graph.json`.
+  AST-only rebuilding takes about 25 s for this repo on a desktop CPU.
+  Never run a semantic `/graphify` extraction in
   the cloud: it would send content to a model backend. `/cloud-route` routes a
   ticket that needs one to LOCAL-NATIVE.
-- **qmd**: `qmd search "<terms>" -c himmel` is BM25 and works. Vector search,
+- **qmd**: `bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel`
+  is bounded BM25 search. The wrapper resolves the installed bun-global tool
+  even when no qmd shim is on PATH. Vector search,
   and the expansion and rerank of `qmd query`, need about 2 GB of models
   (`qmd pull`) plus a CPU embed, which do not fit the ~5 minute cached setup, so
   the setup skips them. `qmd query` may try to fetch those models on first use;
-  use `qmd search` in the cloud. `/cloud-route` still routes a ticket that
-  needs `qmd query`, vector search or an embed to LOCAL-NATIVE.
+  use `bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel` in the cloud.
+  `/cloud-route` still routes a ticket that needs `qmd query`, vector search or
+  an embed to LOCAL-NATIVE.
 
 ## Network policy
 
@@ -138,9 +144,11 @@ Expect `CLAUDE_CODE_REMOTE=true`, `BASH_DEFAULT_TIMEOUT_MS=600000`, a shellcheck
 version, and a plugins directory. Then check graphify and qmd:
 
 ```bash
-graphify query "cloud route classification" --graph /tmp/himmel-setup/graphify-out/graph.json | head -3
-qmd collection list
-qmd search "cloud environment" -c himmel | head -5
+# Inside the session's repo worktree, not /tmp/himmel-setup:
+bash scripts/cloud/setup-env.sh
+graphify query "cloud route classification" --graph graphify-out/graph.json
+bash scripts/lib/qmd-bounded.sh collection list
+bash scripts/lib/qmd-bounded.sh search "cloud environment" -c himmel
 ```
 
 Expect a `Graph: ... nodes` line, exactly one collection (`himmel`), and hits
