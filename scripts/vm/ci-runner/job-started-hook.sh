@@ -11,14 +11,28 @@
 #
 # Allowed (everything else exits 1):
 #   push              to refs/heads/main only
-#   pull_request      whose head repo IS this repo (never a fork)
-#   workflow_dispatch / schedule   (on ANY ref a writer pushed: accepted
-#                     because only the repo owner has write; revisit if a
-#                     collaborator is ever added)
+#   pull_request      whose head repo IS this repo (never a fork), started by
+#                     the operator's accounts (below)
+#   workflow_dispatch started by the operator's accounts (below), any ref
+#   schedule          (runs the default branch's workflow)
+# The operator's accounts are yotamleo and yotamleo11-test: GITHUB_ACTOR (who
+# started the run) and, when set, GITHUB_TRIGGERING_ACTOR (who re-ran it) must
+# both be one of them. A same-repo branch can carry any workflow and a
+# collaborator's PR is same-repo, so repo membership alone is not trusted.
 # GITHUB_REPOSITORY must equal HIMMEL_CI_RUNNER_REPO (baked into the image).
 set -u
 
 deny() { echo "himmel-vm fork guard: REFUSED — $1" >&2; exit 1; }
+
+owner_only() {
+    local a
+    for a in "${GITHUB_ACTOR:-}" "${GITHUB_TRIGGERING_ACTOR:-${GITHUB_ACTOR:-}}"; do
+        case "$a" in
+            yotamleo|yotamleo11-test) ;;
+            *) deny "$GITHUB_EVENT_NAME started by '${a:-<none>}', not an operator account" ;;
+        esac
+    done
+}
 
 want="${HIMMEL_CI_RUNNER_REPO:-}"
 [ -n "$want" ] || deny "HIMMEL_CI_RUNNER_REPO is not set in the runner environment"
@@ -39,8 +53,10 @@ except Exception:
     pass
 ' "$GITHUB_EVENT_PATH")
         [ "$head" = "$want" ] || deny "pull_request head repo '${head:-<none>}' is not '$want' (fork PRs run on hosted runners)"
+        owner_only
         ;;
-    workflow_dispatch|schedule) ;;
+    workflow_dispatch) owner_only ;;
+    schedule) ;;
     *) deny "event '${GITHUB_EVENT_NAME:-}' is not routed to this runner" ;;
 esac
 echo "himmel-vm fork guard: allowed ${GITHUB_EVENT_NAME} on ${GITHUB_REPOSITORY} (${GITHUB_REF:-})"

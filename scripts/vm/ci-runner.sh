@@ -11,18 +11,25 @@
 #      the local stop file is absent;
 #   2. preflight: the repo's fork-PR approval policy must still be
 #      all_external_contributors (a weaker policy refuses, exit 3);
-#   3. restore ci-runner-v1, boot;
+#   3. restore ci-runner-v1, hide the station loopback, turn the VirtualBox
+#      clipboard and drag-and-drop off (each asserted, fail closed), boot, and
+#      check the guest's himmel_egress nft table is loaded (else refuse);
 #   4. mint a single-use, repo-level JIT runner config (labels self-hosted,
 #      himmel-vm) and hand it to the guest on ssh STDIN — never an argv on this
 #      host, never a file, never a log line;
 #   5. the guest runs ONE job as the non-root `runner` user (its job-started
-#      hook refuses fork PRs), bounded by HIMMEL_CI_RUNNER_JOB_MAX seconds;
+#      hook refuses fork PRs and non-owner actors), bounded by
+#      HIMMEL_CI_RUNNER_JOB_MAX seconds; while it waits, a watcher re-reads the
+#      kill switch every HIMMEL_CI_RUNNER_WATCH_SECS (30) and deregisters the
+#      runner at once when it is off (a runner mid-job is refused by GitHub and
+#      finishes that job);
 #   6. deregister the runner, power off. The next iteration restores again, so
 #      nothing one job leaves on the disk reaches the next.
 #
 # Kill switch (one action, both halves): `gh variable set HIMMEL_VM_RUNNER
-# --body off` stops this loop at its next iteration, and ci.yml routes on the
-# same variable. A local `touch $HIMMEL_CI_RUNNER_STOP_FILE` stops the loop alone.
+# --body off` stops this loop at its next iteration (an idle registered runner
+# is deregistered within the watch interval), and ci.yml routes on the same
+# variable. A local `touch $HIMMEL_CI_RUNNER_STOP_FILE` stops the loop alone.
 #
 # Platform guard (linux-only): drives VirtualBox through scripts/vm/lib/vm-clone.sh.
 #
@@ -39,6 +46,7 @@ BASE_SNAPSHOT="suite-ready-v4"
 RUNNER_SNAPSHOT="ci-runner-v1"
 GUEST_USER="himmel"
 JOB_MAX="${HIMMEL_CI_RUNNER_JOB_MAX:-4500}"
+WATCH="${HIMMEL_CI_RUNNER_WATCH_SECS:-30}"
 STOP_FILE="${HIMMEL_CI_RUNNER_STOP_FILE:-$HOME/.himmel/ci-runner.stop}"
 LABEL="himmel-vm"
 # shellcheck disable=SC2034 # read by the sourced vm-clone.sh
@@ -67,6 +75,17 @@ else
     }
     localhost_unreachable() {
         (cd "$HOME" && "$VBOXMANAGE" showvminfo "$CLONE_NAME" --machinereadable) | grep -qx 'localhostReachable="0"'
+    }
+    # Clipboard and drag-and-drop are MACHINE CONFIG a restore reverts to the
+    # snapshot's value; the ci-runner-v1 snapshot is baked with both off, and
+    # this sets and asserts them again after every restore, powered off.
+    clipboard_dnd_off() {
+        (cd "$HOME" && "$VBOXMANAGE" modifyvm "$CLONE_NAME" --clipboard-mode disabled --drag-and-drop disabled)
+    }
+    clipboard_dnd_disabled() {
+        local info
+        info=$(cd "$HOME" && "$VBOXMANAGE" showvminfo "$CLONE_NAME" --machinereadable) || return 1
+        printf '%s\n' "$info" | grep -qx 'clipboard="disabled"' && printf '%s\n' "$info" | grep -qx 'draganddrop="disabled"'
     }
     # Succeeds only once the clone is really off: the lock must never be
     # released over a VM that is still running a job.
@@ -127,12 +146,18 @@ lock_clone() {
 }
 
 one_job() {
-    local jit="" rc
+    local jit="" rc tick off=0
     lock_clone
     vm_restore "$RUNNER_SNAPSHOT"
     nat_localhost_off || die "could not make the station loopback unreachable from $CLONE_NAME"
     localhost_unreachable || die "$CLONE_NAME still reaches the station loopback — not serving a job"
+    clipboard_dnd_off || die "could not turn the clipboard and drag-and-drop off on $CLONE_NAME"
+    clipboard_dnd_disabled || die "$CLONE_NAME still has the clipboard or drag-and-drop on — not serving a job"
     vm_boot
+    # Per boot, not per image: a guest whose egress filter did not load would
+    # reach the station LAN.
+    vm_ssh "sudo nft list table inet himmel_egress | grep -q reject" \
+        || die "the himmel_egress nft table is not loaded in $CLONE_NAME — not minting a runner"
     { IFS= read -r RUNNER_ID && IFS= read -r jit; } < <(
         gh api -X POST "repos/$REPO/actions/runners/generate-jitconfig" \
             -f "name=$LABEL-$(date +%s)" -F runner_group_id=1 \
@@ -145,9 +170,25 @@ one_job() {
     printf '%s\n' "$jit" | vm_ssh sudo /usr/local/sbin/himmel-ci-run-job "$JOB_MAX" &
     JOB_PID=$!
     jit=""
+    # Poll in 1s steps so a signal is handled at once; the kill switch is
+    # re-read only every $WATCH seconds.
+    tick=0
+    while kill -0 "$JOB_PID" 2>/dev/null; do
+        sleep 1
+        tick=$((tick + 1))
+        if [ $((tick % WATCH)) -eq 0 ] && ! kill_switch_on >/dev/null; then
+            if gh api -X DELETE "repos/$REPO/actions/runners/$RUNNER_ID" >/dev/null 2>&1; then
+                echo "ci-runner: runner $RUNNER_ID deregistered — kill switch off"
+                RUNNER_ID=""
+                off=1
+                break
+            fi
+        fi
+    done
     wait "$JOB_PID"
     rc=$?
     JOB_PID=""
+    [ "$off" = 1 ] && rc=0
     echo "ci-runner: runner $RUNNER_ID done (rc=$rc)"
     cleanup || exit 1
     return "$rc"
@@ -159,6 +200,7 @@ build() {
     lock_clone
     vm_clone_ensure "$BASE_SNAPSHOT"
     vm_restore "$BASE_SNAPSHOT"
+    clipboard_dnd_off || die "could not turn the clipboard and drag-and-drop off on $CLONE_NAME"
     vm_boot
     vm_ssh "rm -rf $stage && mkdir -p $stage" || die "could not stage in the guest"
     for f in guest-provision.sh job-started-hook.sh; do
@@ -181,6 +223,9 @@ run() {
     [ "${1:-}" = "--once" ] && once=1
     case "$JOB_MAX" in
         ''|*[!0-9]*|0*) die "HIMMEL_CI_RUNNER_JOB_MAX='$JOB_MAX' is not a positive number of seconds" 2 ;;
+    esac
+    case "$WATCH" in
+        ''|*[!0-9]*|0*) die "HIMMEL_CI_RUNNER_WATCH_SECS='$WATCH' is not a positive number of seconds" 2 ;;
     esac
     vm_env_init
     while :; do

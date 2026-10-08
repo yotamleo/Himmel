@@ -26,6 +26,7 @@ hook_case() {
     local label="$1" want="$2" ev="$3" ref="$4" json="$5" rc
     printf '%s' "$json" > "$TMP/event.json"
     GITHUB_EVENT_NAME="$ev" GITHUB_REF="$ref" GITHUB_REPOSITORY="yotamleo/Himmel" \
+        GITHUB_ACTOR="${HOOK_ACTOR-yotamleo}" GITHUB_TRIGGERING_ACTOR="${HOOK_TRIG-yotamleo}" \
         GITHUB_EVENT_PATH="$TMP/event.json" HIMMEL_CI_RUNNER_REPO="yotamleo/Himmel" \
         bash "$HOOK" >"$TMP/hook.out" 2>&1
     rc=$?
@@ -47,6 +48,13 @@ hook_case "push to a branch refused"     1 push refs/heads/feat/x '{}'
 hook_case "pull_request_target refused"  1 pull_request_target refs/heads/main "$same"
 hook_case "workflow_dispatch runs"       0 workflow_dispatch refs/heads/main '{}'
 hook_case "schedule runs"                0 schedule refs/heads/main '{}'
+# R3: workflow_dispatch and same-repo PRs run only for the operator's accounts.
+HOOK_ACTOR=mallory HOOK_TRIG=mallory hook_case "dispatch by a non-owner refused" 1 workflow_dispatch refs/heads/main '{}'
+HOOK_ACTOR=mallory HOOK_TRIG=mallory hook_case "same-repo PR by a non-owner refused" 1 pull_request refs/pull/1/merge "$same"
+HOOK_ACTOR=yotamleo11-test HOOK_TRIG=yotamleo11-test hook_case "same-repo PR by the test account runs" 0 pull_request refs/pull/1/merge "$same"
+HOOK_ACTOR=yotamleo HOOK_TRIG=mallory hook_case "dispatch re-run by a non-owner refused" 1 workflow_dispatch refs/heads/main '{}'
+HOOK_ACTOR='' HOOK_TRIG='' hook_case "dispatch with no actor refused" 1 workflow_dispatch refs/heads/main '{}'
+HOOK_ACTOR=mallory HOOK_TRIG=mallory hook_case "push to main needs no owner" 0 push refs/heads/main '{}'
 # The repository itself must be the pinned one, whatever the event says.
 printf '%s' "$same" > "$TMP/event.json"
 GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/1/merge GITHUB_REPOSITORY=mallory/Himmel \
@@ -71,9 +79,9 @@ case "$*" in
     *fork-pr-contributor-approval*) echo "${GH_APPROVAL:-all_external_contributors}" ;;
     *actions/variables/HIMMEL_VM_RUNNER*)
         [ -n "${GH_KILL:-}" ] || exit 1
-        echo "$GH_KILL" ;;
+        if [ -e "$STUB_LOG/kill-off" ]; then echo off; else echo "$GH_KILL"; fi ;;
     *generate-jitconfig*) printf '%s\n%s\n' 4242 "JITSECRET-not-for-argv" ;;
-    *"-X DELETE"*) exit 0 ;;
+    *"-X DELETE"*) : > "$STUB_LOG/deleted"; exit 0 ;;
     *) exit 0 ;;
 esac
 EOF
@@ -87,10 +95,15 @@ vm_restore()   { echo "restore $1" >> "$STUB_LOG/vm.calls"; PORT=2299; }
 vm_boot()      { echo "boot" >> "$STUB_LOG/vm.calls"; }
 vm_poweroff()  { echo "poweroff" >> "$STUB_LOG/vm.calls"; return "${STUB_POWEROFF_RC:-0}"; }
 nat_localhost_off() { echo "nat-localhost-off" >> "$STUB_LOG/vm.calls"; }
+clipboard_dnd_off() { echo "clipboard-dnd-off" >> "$STUB_LOG/vm.calls"; }
+clipboard_dnd_disabled() { [ -z "${STUB_CLIPBOARD_ON:-}" ]; }
 localhost_unreachable() { [ -z "${STUB_LOCALHOST_REACHABLE:-}" ]; }
 vm_ssh() {
     printf '%s\n' "$*" >> "$STUB_LOG/ssh.argv"; cat >> "$STUB_LOG/ssh.stdin"
-    [ -z "${STUB_SSH_SLEEP:-}" ] || sleep "$STUB_SSH_SLEEP"
+    case "$*" in *"nft list table inet himmel_egress"*) [ -z "${STUB_NO_EGRESS:-}" ]; return ;; esac
+    if [ -n "${STUB_SSH_SLEEP:-}" ]; then
+        for _ in $(seq 1 $((STUB_SSH_SLEEP * 5))); do [ -e "$STUB_LOG/deleted" ] && break; sleep 0.2; done
+    fi
     return "${STUB_SSH_RC:-0}"
 }
 EOF
@@ -139,8 +152,8 @@ reset_log
 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then ok "run --once exits 0"; else bad "run --once rc=$rc: $(cat "$TMP/out")"; fi
-if [ "$(tr '\n' '|' < "$TMP/log/vm.calls" 2>/dev/null)" = "restore ci-runner-v1|nat-localhost-off|boot|poweroff|release|" ]; then
-    ok "restored ci-runner-v1, hid the station loopback, booted, powered off, released the lock"
+if [ "$(tr '\n' '|' < "$TMP/log/vm.calls" 2>/dev/null)" = "restore ci-runner-v1|nat-localhost-off|clipboard-dnd-off|boot|poweroff|release|" ]; then
+    ok "restored ci-runner-v1, hid the station loopback, turned clipboard and drag-and-drop off, booted, powered off, released the lock"
 else
     bad "vm calls: $(tr '\n' '|' < "$TMP/log/vm.calls" 2>/dev/null)"
 fi
@@ -184,6 +197,44 @@ else
     bad "loopback-reachable image: rc=$rc, gh=$(tr '\n' '|' < "$TMP/log/gh.argv")"
 fi
 
+echo "T4g R1: a restore with the clipboard or drag-and-drop on refuses to serve"
+reset_log
+STUB_CLIPBOARD_ON=1 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && ! grep -q generate-jitconfig "$TMP/log/gh.argv" && grep -q "clipboard" "$TMP/out"; then
+    ok "clipboard on after restore: refused before mint (rc=$rc)"
+else
+    bad "clipboard on: rc=$rc, gh=$(tr '\n' '|' < "$TMP/log/gh.argv")"
+fi
+
+echo "T4h R2: a boot without the himmel_egress table refuses to mint"
+reset_log
+STUB_NO_EGRESS=1 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && ! grep -q generate-jitconfig "$TMP/log/gh.argv" && grep -q "himmel_egress" "$TMP/out" && grep -qx poweroff "$TMP/log/vm.calls"; then
+    ok "no egress table in the guest: refused before mint, VM powered off (rc=$rc)"
+else
+    bad "no egress table: rc=$rc, gh=$(tr '\n' '|' < "$TMP/log/gh.argv")"
+fi
+grep -q "nft list table inet himmel_egress" "$TMP/log/ssh.argv" 2>/dev/null || bad "egress check never ran"
+
+echo "T4i R5: off during the job wait deregisters the idle runner promptly"
+reset_log
+STUB_SSH_SLEEP=20 GH_KILL=on STUB_LOG="$TMP/log" PATH="$TMP/bin:$PATH" CI_RUNNER_VM_LIB="$TMP/vmlib.sh" \
+    HIMMEL_CI_RUNNER_WATCH_SECS=1 HIMMEL_CI_RUNNER_REPO=yotamleo/Himmel HIMMEL_CI_RUNNER_STOP_FILE="$TMP/stop" \
+    bash "$LOOP" run --once >"$TMP/out" 2>&1 &
+loop_pid=$!
+for _ in $(seq 1 50); do grep -q himmel-ci-run-job "$TMP/log/ssh.argv" 2>/dev/null && break; sleep 0.2; done
+t0=$SECONDS
+: > "$TMP/log/kill-off"
+wait "$loop_pid"
+rc=$?
+if [ "$rc" -eq 0 ] && [ $((SECONDS - t0)) -lt 10 ] && [ "$(grep -c -- "-X DELETE" "$TMP/log/gh.argv")" = 1 ]; then
+    ok "off: runner deregistered once within $((SECONDS - t0))s, loop ended (rc=$rc)"
+else
+    bad "off during wait: rc=$rc after $((SECONDS - t0))s, gh=$(tr '\n' '|' < "$TMP/log/gh.argv")"
+fi
+
 echo "T4c a failed guest job fails run --once, and still cleans up"
 reset_log
 STUB_SSH_RC=7 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
@@ -212,7 +263,7 @@ STUB_SSH_SLEEP=5 GH_KILL=on STUB_LOG="$TMP/log" PATH="$TMP/bin:$PATH" CI_RUNNER_
     bash "$LOOP" run --once >"$TMP/out" 2>&1 &
 loop_pid=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    [ -s "$TMP/log/ssh.argv" ] && break
+    grep -q himmel-ci-run-job "$TMP/log/ssh.argv" 2>/dev/null && break
     sleep 0.2
 done
 kill -TERM "$loop_pid" 2>/dev/null
@@ -248,6 +299,23 @@ if [ "$rc" -eq 3 ] && grep -q "not a VM" "$TMP/out"; then
     ok "bare metal refused (rc=$rc)"
 else
     bad "bare metal: rc=$rc: $(cat "$TMP/out")"
+fi
+
+echo "T6 R1/R6 static: image purges guest utils, build disables clipboard before the snapshot, no jitconfig argv"
+if grep -q 'apt-get purge.*virtualbox-guest-utils' "$PROVISION"; then ok "provisioner removes virtualbox-guest-utils"; else bad "provisioner keeps virtualbox-guest-utils"; fi
+bstart=$(grep -n '^build()' "$LOOP" | cut -d: -f1)
+# shellcheck disable=SC2016 # literal text to find in ci-runner.sh
+tline=$(grep -n 'take "$RUNNER_SNAPSHOT"' "$LOOP" | head -1 | cut -d: -f1)
+if [ -n "$bstart" ] && [ -n "$tline" ] && sed -n "${bstart},${tline}p" "$LOOP" | grep -q '^[[:space:]]*clipboard_dnd_off'; then
+    ok "build turns clipboard and drag-and-drop off before the snapshot"
+else
+    bad "build does not disable clipboard before snapshotting"
+fi
+wrapper=$(sed -n '/^cat > \/usr\/local\/sbin\/himmel-ci-run-job/,/^EOF/p' "$PROVISION")
+if ! printf '%s\n' "$wrapper" | grep -v '^#' | grep -q -- '--jitconfig' && printf '%s\n' "$wrapper" | grep -q ACTIONS_RUNNER_INPUT_JITCONFIG; then
+    ok "run-job wrapper hands the JIT config over by environment, not argv"
+else
+    bad "run-job wrapper still passes --jitconfig in argv"
 fi
 
 echo
