@@ -116,6 +116,14 @@ test('explicit files override text extraction', () => {
   assert.deepEqual(v.files, ['docs/x.md']);
 });
 
+test('brief uses bounded repo-only search and the session checkout graph', () => {
+  const brief = buildBrief(tk({ files: ['docs/x.md'], raw: 'ticket' }), { date: '2026-10-07' });
+  assert.match(brief, /bash scripts\/lib\/qmd-bounded\.sh search "<terms>" -c himmel/);
+  assert.match(brief, /bash scripts\/cloud\/setup-env\.sh/);
+  assert.match(brief, /--graph graphify-out\/graph\.json/);
+  assert.doesNotMatch(brief, /--graph \/tmp\/himmel-setup/);
+});
+
 test('parseJiraGet splits the header and keeps the body verbatim', () => {
   const raw = 'HIMMEL-9001\tBug\tTo Do\tA title\n\nBody line\nLabels: cloud\nFix versions: v1.0.1\n';
   const p = parseJiraGet(raw);

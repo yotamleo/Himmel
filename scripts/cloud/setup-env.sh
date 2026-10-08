@@ -193,20 +193,32 @@ fi
 # on $ROOT. Never a vault: luna and handover state stay on the station. BM25
 # only: no `qmd pull` (~2 GB of models) and no embed, which do not fit the
 # ~5 min cached setup, so `qmd search -c himmel` works and vector search does not.
-QMD_BIN="$(command -v qmd 2>/dev/null || echo "${BUN_INSTALL:-${HOME:-/root}/.bun}/bin/qmd")"
+# Use the shared resolver: bun's installed JS may exist without a global shim
+# on PATH (HIMMEL-4814). The same bounded route is used by the session probe.
+cloud_qmd() { QMD_TIMEOUT_SECS="${QMD_TIMEOUT_SECS:-180}" "$BASH" "$ROOT/scripts/lib/qmd-bounded.sh" "$@"; }
+qmd_index() {
+  if [[ $'\n'"$qmd_cols" == *$'\n'"himmel "* ]]; then
+    cloud_qmd collection remove himmel || return $?
+  fi
+  cloud_qmd collection add "$ROOT" --name himmel || return $?
+  local cols
+  cols="$(cloud_qmd collection list)" || return $?
+  if [[ $'\n'"$cols" != *$'\n'"himmel "* ]]; then
+    echo "setup-env: himmel collection missing after setup" >&2
+    return 1
+  fi
+}
 if have qmd; then
   plan qmd skip "present"
 else
   build_step qmd install "qmd-bin.sh install (pinned fork, bun)" -- $TMO 180 bash "$ROOT/scripts/lib/qmd-bin.sh" install
 fi
-qmd_cols="$([ -x "$QMD_BIN" ] && $TMO 30 "$QMD_BIN" collection list 2>/dev/null)"
+qmd_cols="$(QMD_TIMEOUT_SECS=30 cloud_qmd collection list 2>/dev/null)"
 if [[ $'\n'"$qmd_cols" == *$'\n'"himmel "* ]]; then
   # rebuilt, not skipped: the cached collection may index an older clone or path
-  build_step qmd-index refresh "$ROOT --name himmel (BM25 only, no embed)" -- sh -c "$TMO 30 '$QMD_BIN' collection remove himmel && $TMO 180 '$QMD_BIN' collection add '$ROOT' --name himmel"
-elif [ -x "$QMD_BIN" ] || [ "$DRY" -eq 1 ]; then
-  build_step qmd-index add "$ROOT --name himmel (BM25 only, no embed)" -- $TMO 180 "$QMD_BIN" collection add "$ROOT" --name himmel
+  build_step qmd-index refresh "$ROOT --name himmel (BM25 only, no embed)" -- qmd_index
 else
-  plan qmd-index skip "qmd absent"
+  build_step qmd-index add "$ROOT --name himmel (BM25 only, no embed)" -- qmd_index
 fi
 
 if [ "$failed" -ne 0 ]; then echo "setup-env: $failed step(s) failed" >&2; exit 1; fi

@@ -137,6 +137,7 @@ REPORTED_RATIO=5
 
 agent_cost() { # $1 result json -> the agent's real cost in USD, or null
   if [ "$LANE" = native ]; then jq -r '.total_cost_usd // null' "$1"; return; fi
+  if [ "$LANE" = claudex ]; then jq -r '.total_cost_usd // 0' "$1"; return; fi
   jq -r --argjson p "$PRICES" --argjson mk "$METERED_MARKUP" --argjson rr "$REPORTED_RATIO" '
     .total_cost_usd as $rep
     | if (.modelUsage // {}) == {} then null
@@ -296,6 +297,7 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
         subtype: ($r.subtype // null),
         accept_passed: (($acc | capture("(?<p>[0-9]+)/").p? | tonumber?) // 0),
         accept_total: (($acc | capture("/(?<t>[0-9]+)").t? | tonumber?) // 0),
+        tokens: ([($r.modelUsage // {}) | to_entries[] | .value] | {input: (map(.inputTokens // 0) | add // 0), output: (map(.outputTokens // 0) | add // 0), cache_read: (map(.cacheReadInputTokens // 0) | add // 0), cache_create: (map(.cacheCreationInputTokens // 0) | add // 0)}),
         accept_ok: ($accrc == 0), scope_ok: ($scope | length == 0), out_of_scope: $scope,
         judge: $j, judge_model: (if $nojudge == 1 then null else $jm end), kept_worktree: $wt } + $m' >>"$OUT/runs.jsonl" || die "$task: could not record its runs.jsonl row"
   # "unknown" when the agent, or a judge that was launched, left no cost
@@ -313,14 +315,41 @@ init_env() { # the claude binary, the repo, the bank preflight and the native-au
   . "$HERE/../../lib/native-auth-pin.sh" || die "cannot source native-auth-pin.sh"
 }
 
+# HIMMEL-4906: run --config FILE. A JSON object with optional keys, so a second
+# task set can share this driver without env-prefix knobs:
+#   tasks_dir   task directory, relative to this dir, must stay under it
+#   base_sha    40-hex commit the fixture worktrees are cut from
+#   transcripts transcript root searched for the agent session
+apply_config() {
+  local f="$1" td bs tr_ root
+  [ -f "$f" ] || die "--config: no such file '$f'"
+  jq -e 'type == "object"' "$f" >/dev/null 2>&1 || die "--config: '$f' is not a JSON object"
+  td="$(jq -r '.tasks_dir // empty' "$f")"
+  bs="$(jq -r '.base_sha // empty' "$f")"
+  tr_="$(jq -r '.transcripts // empty' "$f")"
+  if [ -n "$td" ]; then
+    root="$(realpath -m "$HERE")"
+    td="$(realpath -m "$HERE/$td")"
+    case "$td" in "$root"/*) ;; *) die "--config: tasks_dir must stay under $root" ;; esac
+    [ -d "$td" ] || die "--config: tasks_dir '$td' is not a directory"
+    TASKS="$td"
+  fi
+  if [ -n "$bs" ]; then
+    printf '%s' "$bs" | grep -Eq '^[0-9a-f]{40}$' || die "--config: base_sha must be 40 hex characters"
+    BASE_SHA="$bs"
+  fi
+  [ -z "$tr_" ] || TRANSCRIPTS="$tr_"
+}
+
 cmd_run() {
   LANE=""; MODEL=""; TASK_LIST=""; EFFORT=""; MAX_USD=3; TIMEOUT=1800; JUDGE_MODEL=opus
-  NO_JUDGE=0; KEEP=0; OUT=""; REPS=1
+  NO_JUDGE=0; KEEP=0; OUT=""; REPS=1; CONFIG=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --lane|--model|--tasks|--effort|--max-usd|--timeout|--judge-model|--out|--reps)
+      --lane|--model|--tasks|--effort|--max-usd|--timeout|--judge-model|--out|--reps|--config)
         [ $# -ge 2 ] || die "$1 needs a value"
         case "$1" in
+          --config) CONFIG="$2" ;;
           --lane) LANE="$2" ;; --model) MODEL="$2" ;; --tasks) TASK_LIST="$2" ;;
           --effort) EFFORT="$2" ;; --max-usd) MAX_USD="$2" ;; --timeout) TIMEOUT="$2" ;;
           --judge-model) JUDGE_MODEL="$2" ;; --out) OUT="$2" ;; --reps) REPS="$2" ;;
@@ -333,10 +362,16 @@ cmd_run() {
   [ -n "$MODEL" ] || die "--model is required"
   case "$LANE" in
     native|openrouter) ;;
-    deepseek|claudex)
+    claudex)
+      # HIMMEL-4906: the per-dispatch lane opt-in the dispatcher reads.
+      if [ "${CLAUDEX_LANE_OK:-}" != 1 ]; then
+        echo "lane-quality: lane claudex needs CLAUDEX_LANE_OK=1 on the command (HIMMEL-4906)" >&2
+        exit 3
+      fi ;;
+    deepseek)
       echo "lane-quality: lane '$LANE' is not enabled (HIMMEL-4090): it needs the operator's go; see docs/internals/lane-calibration.md" >&2
       exit 3 ;;
-    *) die "--lane must be native or openrouter; got '$LANE'" ;;
+    *) die "--lane must be native, openrouter or claudex; got '$LANE'" ;;
   esac
   awk -v m="$MAX_USD" 'BEGIN{exit !(m+0 > 0)}' || die "--max-usd must be a positive number"
   case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
@@ -362,6 +397,15 @@ cmd_run() {
     BUDGET_FACTOR=4
     echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
   fi
+  if [ "$LANE" = claudex ]; then
+    # The claudex launcher wraps claude, so -p and --output-format json work
+    # unchanged. Claude Code cannot price the gpt slug, so the sweep cap counts
+    # its reported figure when present and 0 otherwise; read tokens and the
+    # codex bank instead of dollars.
+    AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/claude-codex}"
+    TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude-codex/projects}"
+  fi
+  [ -z "$CONFIG" ] || apply_config "$CONFIG"
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9.-' '_')"
   OUT="${OUT:-$HOME/.himmel/eval/lane-quality/$RUN_ID}"
   mkdir -p "$OUT" || die "cannot create $OUT"

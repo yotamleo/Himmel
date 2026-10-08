@@ -7,8 +7,8 @@
 # written that week were simply not searchable. Measured 2026-07-26 the win2
 # station was 23h stale, missing an entire collection, and carrying 2722
 # un-embedded chunks — semantic search there was quietly degraded and NOTHING
-# signalled it. scripts/luna/qmd-reindex.sh fixes a stale index and
-# scripts/luna/ship-index.sh delivers one; what was missing is the cheap READ
+# signalled it. scripts/luna/qmd-reindex.sh refreshes the local index;
+# what was missing is the cheap READ
 # that tells a session its substrate cannot be trusted before it answers off it.
 # This is that read.
 #
@@ -18,14 +18,11 @@
 # is current, which is exactly what this script establishes.
 #
 # THIS SCRIPT NEVER WRITES. It runs `qmd status` and parses it. It does not
-# reindex, embed, or ship — deliberately. On the receiving station a reindex is
-# the WRONG reaction (win2 embeds at ~5 docs/min vs ~256 on the host, so an
-# in-place rebuild there was projected at ~17 hours and killed mid-run); the
-# right reaction is to say so and let the host push. The notice therefore tells
-# the reader NOT to reindex rather than offering to.
+# reindex or embed — deliberately. The notice points to the local refresh
+# runner; this read never starts it.
 #
-# SHAPE: a deterministic script, like its siblings qmd-reindex.sh and
-# ship-index.sh — no claude session, no NUL stdin, no settings fragment.
+# SHAPE: a deterministic script, like its sibling qmd-reindex.sh — no claude
+# session, no NUL stdin, no settings fragment.
 # HIMMEL-128 (headless-claude billing) does not apply; nothing here invokes
 # claude.
 #
@@ -53,14 +50,13 @@
 #     partial coverage.
 #
 # The honest fix is a durable timestamp written ONLY after a verified refresh
-# (host, qmd-reindex.sh) or a verified receipt (station, ship-index.sh) —
+# (qmd-reindex.sh) —
 # HIMMEL-1307. This script now prefers that stamp (QMD_REFRESH_STAMP) when one
 # is present and readable, and falls back to the MAX(mtime) proxy below when it
 # is absent or malformed — printing which source it used either way, since the
 # two are not equally trustworthy. The signal is still worth having on the
-# fallback path: for the RECEIVING station this was written for, an index that
-# stopped arriving while the source corpus kept moving is exactly the case the
-# proxy detects correctly.
+# fallback path: an index that stopped refreshing while the source corpus
+# kept moving is exactly the case the proxy detects correctly.
 #
 # PARSING IS COUPLED TO HUMAN-READABLE OUTPUT, ON PURPOSE AND UNDER PROTEST:
 # `qmd status` has no machine format. `--format json` is a SEARCH option; there
@@ -146,7 +142,7 @@ QUIET=0
 QMD_BIN=""
 QMD_JS=""
 REQUIRE_COLLECTIONS=""
-# HIMMEL-1307: same path convention ship-index.sh/qmd-reindex.sh use for their
+# HIMMEL-1307: same path convention qmd-reindex.sh uses for its
 # own index default, so the stamp lands next to the index data without a
 # separate env var to keep in sync on a station that never overrides either.
 QMD_INDEX_PATH_DEFAULT="${QMD_INDEX_PATH:-$HOME/.cache/qmd/index.sqlite}"
@@ -169,7 +165,7 @@ while [ $# -gt 0 ]; do
         # An EXPLICITLY EMPTY operand is rejected on all three flags, not just a
         # missing one. `--qmd-bin ""` would otherwise fall through to PATH
         # resolution — a caller that passed the flag to PIN qmd ends up
-        # unpinned, silently (the qmd-reindex.sh / ship-index.sh lesson); and
+        # unpinned, silently (the qmd-reindex.sh lesson); and
         # `--require-collections ""` would skip the very check it was asked to
         # perform. A flag that was passed must never be a no-op.
         --qmd-bin)
@@ -449,9 +445,9 @@ if [ -r "$QMD_REFRESH_STAMP" ]; then
         stamp_epoch_dec=$(( 10#$stamp_epoch ))
         # HIMMEL-3725: the regex above validates the ISO date and the epoch's
         # SHAPE independently -- it never checks the epoch actually names the
-        # ISO date it is paired with. Both real writers (qmd-reindex.sh,
-        # ship-index.sh) derive iso+epoch from the same `date` invocation, so
-        # they always agree; a hand-edited or foreign-written stamp might not.
+        # ISO date it is paired with. The refresh writer (qmd-reindex.sh)
+        # derives iso+epoch from the same `date` invocation, so they always agree;
+        # a hand-edited or foreign-written stamp might not.
         # Cross-validate within a 1-hour tolerance (clock skew / truncation
         # slop, not a wrong-epoch cover); an unparsable ISO date is treated as
         # a mismatch, same as a wrong epoch, not partially trusted. Kept tight
@@ -501,9 +497,8 @@ fi
 
 # --- required collections ---------------------------------------------------
 # OPT-IN, because the required set is a per-station policy this script cannot
-# infer: the host carries himmel+luna+salus, win2 deliberately carries no salus
-# at all, and an adopter carries whatever they registered. Absent the flag,
-# nothing here runs.
+# infer: each station carries the collections its operator registered.
+# Absent the flag, nothing here runs.
 #
 # WHY IT EXISTS: freshness and completeness are properties of the documents that
 # ARE indexed, so a station missing an ENTIRE collection scores perfectly on
@@ -629,9 +624,7 @@ fi
         echo "  (lex) search over them still works."
     fi
     echo
-    echo "  Do NOT reindex on a receiving station — it embeds ~50x slower than the"
-    echo "  host. The host publishes: scripts/luna/qmd-reindex.sh then"
-    echo "  scripts/luna/ship-index.sh (HIMMEL-1286)."
+    echo "  Refresh the local index: bash scripts/luna/qmd-reindex.sh"
     echo "=============================================================================="
 } >&2
 
