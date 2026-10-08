@@ -16,8 +16,8 @@ PY_FIXTURE="$TMP/scripts/eval/guard-corpus/diff"
 cat > "$PY_FIXTURE" <<'PY'
 import subprocess
 runner = "sandbox-run.sh"
-argv = ["bash", runner]
-subprocess.Popen(argv)
+argv = ["--", "bash", hook_path]
+subprocess.Popen(["bash", runner] + argv)
 PY
 cat > "$SHELL_FIXTURE" <<'SH'
 RUNNER="sandbox-run.sh"
@@ -51,10 +51,20 @@ if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then bad 'unsafe named Python argv
 cat > "$PY_FIXTURE" <<'PY'
 import subprocess
 runner = "sandbox-run.sh" if False else "/tmp/not-the-runner.sh"
-argv = ["bash", runner]
-subprocess.Popen(argv)
+subprocess.Popen(["bash", runner])
 PY
 if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then bad 'conditional marker falsely certifies another executable'; else ok 'conditional marker does not certify runner'; fi
+for mutation in 'argv[0] = "sh"' 'argv[1] = hook_path' 'del argv[0]' \
+    'argv.clear()' 'argv.insert(0, "sh")' 'argv.pop(1)' \
+    'alias = argv; alias[1] = hook_path' 'rewrite(argv)'; do
+    cat > "$PY_FIXTURE" <<'PY'
+import subprocess
+runner = "sandbox-run.sh"
+argv = ["bash", runner]
+PY
+    printf '%s\nsubprocess.Popen(argv)\n' "$mutation" >> "$PY_FIXTURE"
+    if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then bad "mutated argv prefix falsely certified: $mutation"; else ok "mutated argv prefix rejected: $mutation"; fi
+done
 if python3 -I "$LINT" "$ROOT"; then ok 'owned real harnesses routed, others warned'; else bad 'real corpus sandbox lint'; fi
 printf '%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" = 0 ]

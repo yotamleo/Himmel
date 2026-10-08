@@ -23,10 +23,13 @@ commands is VM-only (HIMMEL-4886). Feeding command text to a classification hook
 is not execution, but a hook or harness bug must still meet a filesystem fence.
 Invoke `bash scripts/lib/sandbox-run.sh -- <command> [args...]`: Linux bubblewrap
 namespaces, read-only runtime directories and worktree, fresh tmpfs HOME and
-scratch, no host Unix sockets or network, and address-space/CPU/process limits.
+scratch, runtime IPC masks and network isolation, and address-space/CPU/process limits.
 Additional immutable fixtures use repeatable `--read-only <path>` arguments;
-socket/device/FIFO inputs and broad namespace paths are refused. There is no
-wholesale host-root bind: read-only socket inodes would still permit IPC. Missing
+socket/device/FIFO inputs and broad namespace paths are refused. Runtime special
+nodes are masked with null-device overlays; unreadable runtime directories become
+read-only empty tmpfs. A runtime scan error refuses execution, as do fixture scan
+errors. There is no wholesale host-root bind: read-only socket inodes would still
+permit IPC. Missing
 bubblewrap, prlimit, or namespace support refuses execution, never falls back to
 the host.
 Outputs leave through stdout/stderr; writable fixtures remain inside tmpfs.
@@ -39,6 +42,10 @@ smoke/PowerShell replay paths before treating those as station-safe. Missing
 bubblewrap is a loud runner-level capability skip on non-Linux CI hosts, never an
 unsandboxed fallback. Resource bounds are per process, not aggregate cgroup
 limits; do not use this classification runner for stress or destructive exec.
+The inode scans are preflight observations, not atomic filesystem snapshots.
+Concurrent changes to mounted runtime or fixture trees are outside this runner's
+containment guarantee; use an immutable VM environment for adversarial execution
+(HIMMEL-4886).
 
 ## Chokepoint fixtures and the seam guard (HIMMEL-3914)
 

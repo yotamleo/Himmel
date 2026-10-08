@@ -66,9 +66,7 @@ def python_launches(text):
                 and node.func.attr in ("Popen", "run", "call", "check_call", "check_output")):
             continue
         args = node.args[0] if node.args else None
-        if isinstance(args, ast.Name):
-            values = assignments.get(args.id, [])
-            args = values[0] if len(values) == 1 else None
+        # Require the prefix at the call site, never infer it from a mutable argv.
         while isinstance(args, ast.BinOp) and isinstance(args.op, ast.Add):
             args = args.left
         if isinstance(args, (ast.List, ast.Tuple)) and args.elts:

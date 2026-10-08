@@ -426,7 +426,7 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
                                          "..", "..", "lib", "sandbox-run.sh"))
     scripts_root = _find_scripts_root(hook_path)
     hook_tree = os.path.dirname(scripts_root) if scripts_root else os.path.dirname(hook_path)
-    argv = ["bash", runner]
+    argv = []
     for path in dict.fromkeys((hook_tree, anchor, cwd)):
         argv.extend(["--read-only", path])
     # HOME/TMPDIR come from the runner, never from host fixture paths.
@@ -444,7 +444,7 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
     # read as TIMEOUT. The hook's own exit ends the row (HIMMEL-4587); the
     # group is then killed so the child never outlives the row.
     with tempfile.TemporaryFile() as outf:
-        p = subprocess.Popen(argv, stdin=subprocess.PIPE,
+        p = subprocess.Popen(["bash", runner] + argv, stdin=subprocess.PIPE,
                              stdout=outf, stderr=subprocess.DEVNULL,
                              start_new_session=True, cwd=cwd, env=launch_env)
         try:

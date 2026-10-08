@@ -55,6 +55,27 @@ if [ "$RC" -ne 0 ] && [[ "$OUT" == *WRITE_STARTED* ]] && [[ "$OUT" == *'Read-onl
 else bad "fixture bind writable or command did not run: rc=$RC $OUT"; fi
 OUT=$(bash "$RUNNER" --read-only "$TMP/host.sock" -- /usr/bin/true 2>&1); RC=$?
 if [ "$RC" = 125 ] && [[ "$OUT" == *'refusing socket/device/FIFO input'* ]]; then ok 'socket input refused'; else bad "socket input: rc=$RC $OUT"; fi
+# Give the runner a real socket-bearing /etc in an outer namespace, never on
+# the station. No dependency mock or production-only injection flag is needed.
+mkdir -p "$TMP/runtime/hidden"
+touch "$TMP/runtime/hidden/canary"
+chmod 111 "$TMP/runtime/hidden"
+python3 -I -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()' "$TMP/runtime/host.sock"
+OUTER=()
+for input in /usr /bin /sbin /lib /lib64; do
+    [ ! -e "$input" ] || OUTER+=(--ro-bind "$input" "$input")
+done
+OUT=$(bwrap "${OUTER[@]}" --ro-bind "$TMP/runtime" /etc --ro-bind "$ROOT" "$ROOT" \
+    --unshare-all --unshare-user --die-with-parent --proc /proc --dev /dev \
+    --tmpfs /tmp --chdir "$ROOT" -- bash "$RUNNER" -- \
+    bash -c 'if test -S /etc/host.sock; then echo RUNTIME_SOCKET_VISIBLE; else echo RUNTIME_MASKED; fi; if test -d /etc/hidden && test ! -e /etc/hidden/canary; then echo HIDDEN_MASKED; else echo HIDDEN_CANARY_VISIBLE; fi' 2>&1); RC=$?
+chmod 700 "$TMP/runtime/hidden"
+if [ "$RC" = 0 ] && [[ "$OUT" == *RUNTIME_MASKED* ]]; then
+    ok 'runtime Unix socket masked'
+else bad "runtime socket input: rc=$RC $OUT"; fi
+if [ "$RC" = 0 ] && [[ "$OUT" == *HIDDEN_MASKED* ]]; then
+    ok 'unreadable runtime directory masked'
+else bad "unreadable runtime directory: rc=$RC $OUT"; fi
 OUT=$(bash "$RUNNER" -- python3 -I -c 'import resource; assert resource.getrlimit(resource.RLIMIT_AS)==(1073741824,1073741824); assert resource.getrlimit(resource.RLIMIT_CPU)==(60,60); assert resource.getrlimit(resource.RLIMIT_NPROC)==(128,128)' 2>&1); RC=$?
 if [ "$RC" = 0 ]; then ok 'child address-space CPU and process limits enforced'; else bad "resource limits: rc=$RC $OUT"; fi
 printf '%s passed, %s failed\n' "$pass" "$fail"

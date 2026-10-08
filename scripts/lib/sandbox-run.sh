@@ -55,10 +55,28 @@ if [ -e "$canary" ] || [ -L "$canary" ]; then
 fi
 
 runtime=()
+runtime_inputs=()
+runtime_masks=()
 binds=()
 for input in /usr /bin /sbin /lib /lib64 /etc; do
-    [ ! -e "$input" ] || runtime+=(--ro-bind "$input" "$input")
+    if [ -e "$input" ]; then
+        runtime+=(--ro-bind "$input" "$input")
+        runtime_inputs+=("$input")
+    fi
 done
+# Read-only runtime sockets still permit IPC. Hide special nodes and directories
+# whose contents cannot be inspected; never assume an unreadable tree is safe.
+mask_list="$scratch_root/runtime-masks"
+find "${runtime_inputs[@]}" \
+    \( -type d \( ! -readable -o ! -executable \) -printf 'd\0%p\0' -prune \) \
+    -o \( ! -type f ! -type d ! -type l -printf 'f\0%p\0' \) > "$mask_list" || exit 125
+while IFS= read -r -d '' kind && IFS= read -r -d '' input; do
+    case "$kind" in
+        d) runtime_masks+=(--tmpfs "$input" --remount-ro "$input") ;;
+        f) runtime_masks+=(--ro-bind /dev/null "$input") ;;
+        *) exit 125 ;;
+    esac
+done < "$mask_list"
 for input in "${inputs[@]}"; do
     # Read-only sockets still accept connections. Never expose one via fixtures
     # or the worktree; also reject devices/FIFOs, which are not replay inputs.
@@ -80,7 +98,7 @@ prlimit --as=1073741824 --cpu=60 -- \
     --proc /proc --remount-ro /proc --dev /dev --remount-ro /dev \
     --size 67108864 --tmpfs /tmp \
     --size 67108864 --tmpfs /sandbox/home \
-    --tmpfs /run --remount-ro /run --symlink /run /var/run "${binds[@]}" \
+    --tmpfs /run --remount-ro /run --symlink /run /var/run "${binds[@]}" "${runtime_masks[@]}" \
     --clearenv --setenv PATH /usr/bin:/bin --setenv LANG C.UTF-8 \
     --setenv HOME /sandbox/home --setenv TMPDIR /tmp \
     --setenv SANDBOX_CANARY "$canary" --chdir "$PWD" \
