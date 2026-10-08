@@ -1419,6 +1419,17 @@ scope_judge su-1 "$su_head" test-only "$su_r3"
 start_round "$su_head" clean scopeuni >/dev/null; su_rc=$?
 assert_eq "$su_rc" "0" "a test-only delta with a non-ASCII test path is admitted"
 
+# A filename pattern must not match across a directory: a production file under
+# a test-named directory is not a test file.
+three_rounds scopedir clean
+sdr_r3="$cap_r3_head"
+scope_commit scopedir src/module.test.js/production.js
+sdr_head="$scope_head"
+scope_judge sdr-1 "$sdr_head" test-only "$sdr_r3"
+sdr_out="$(start_round "$sdr_head" clean scopedir)"; sdr_rc=$?
+assert_eq "$sdr_rc" "8" "a production file under a .test.js directory is not a test-only delta"
+assert_has "$sdr_out" "non-test" "the directory-pattern refusal names the non-test path"
+
 # lint-only: the judge's record alone admits it (no path rule can tell lint
 # from behaviour).
 three_rounds scopelint clean

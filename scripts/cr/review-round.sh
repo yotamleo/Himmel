@@ -450,13 +450,18 @@ judge_scope_record() (
         if [ "$bad" -ne 0 ] || [ -z "$hit" ]; then continue; fi
         if [ "${hit#* }" = "test-only" ]; then
             while IFS= read -r changed; do
+                # filename patterns match the basename only: * crosses / in case
+                scope_ok=0
                 case "$changed" in
-                    test-*.sh|*/test-*.sh|*.test.[a-z]*|*/tests/*|tests/*|*/test/*|test/*|*/__tests__/*) ;;
-                    *)
-                        echo "review-round: scope record ${hit%% *} is test-only but $from..$want changes non-test path $changed - delta round refused (HIMMEL-4952)" >&2
-                        exit 8
-                        ;;
+                    */tests/*|tests/*|*/test/*|test/*|*/__tests__/*) scope_ok=1 ;;
                 esac
+                case "${changed##*/}" in
+                    test-*.sh|*.test.[a-z]*) scope_ok=1 ;;
+                esac
+                if [ "$scope_ok" -ne 1 ]; then
+                    echo "review-round: scope record ${hit%% *} is test-only but $from..$want changes non-test path $changed - delta round refused (HIMMEL-4952)" >&2
+                    exit 8
+                fi
             done <<EOF
 $(git -c core.quotepath=off diff --no-renames --name-only "$from" "$want" 2>/dev/null)
 EOF
