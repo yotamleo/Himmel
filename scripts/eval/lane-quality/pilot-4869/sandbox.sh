@@ -86,6 +86,18 @@ for r in "${roots[@]}"; do
   if [ -d "$r" ]; then A+=(--tmpfs "$r"); elif [ -e "$r" ]; then A+=(--ro-bind /dev/null "$r"); fi
 done
 
+# The environment: only the terminal basics and the harness and lane families
+# reach the jail, minus anything credential-shaped except the lane key itself.
+# Names go in the argv, never values (bwrap unsets them from its own env).
+KEEP='^(PATH|HOME|USER|LOGNAME|SHELL|TERM|COLORTERM|LANG|LANGUAGE|LC_[A-Z]+|TZ|NO_COLOR|FORCE_COLOR|(HIMMEL|LEG|HANDOVER|CLAUDE|ANTHROPIC|CODEX|DEEPSEEK|HEADED_ARM_LEG|LUNA_VAULT)[A-Z0-9_]*)$'
+SECRET='TOKEN|SECRET|PASSW|CREDENTIAL|COOKIE|API_KEY|AUTH'
+while IFS= read -r v; do
+  [ "$v" = "$KEY" ] && continue
+  if ! printf '%s\n' "$v" | grep -qE "$KEEP" || printf '%s\n' "$v" | grep -qE "$SECRET"; then
+    A+=(--unsetenv "$v")
+  fi
+done < <(compgen -e)
+
 # The jail must not put back anything it exists to hide.
 i=0
 while [ "$i" -lt "${#A[@]}" ]; do

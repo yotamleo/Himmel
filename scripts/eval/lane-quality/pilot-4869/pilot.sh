@@ -89,7 +89,8 @@ cmd_init() {
   [ -n "$b" ] || die "the DeepSeek launcher printed no balance; nothing sized"
   a="$(awk -v b="$b" -v f="$floor" 'BEGIN { x = b - f - 0.50; if (x < 0) x = 0; if (x > 3) x = 3; printf "%.2f", x }')"
   mkdir -p "$ROOT"/{rows,results,packets,judged,private} "$DOCS"
-  printf 'PILOT_B0=%s\nPILOT_F=%s\nPILOT_A=%s\nPILOT_CONSOLE=%s\nPILOT_AT=%s\n' \
+  # Sourced later, so every value is shell-quoted.
+  printf 'PILOT_B0=%q\nPILOT_F=%q\nPILOT_A=%q\nPILOT_CONSOLE=%q\nPILOT_AT=%q\n' \
     "$b" "$floor" "$a" "$console" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$ROOT/pilot.env"
   echo "pilot: B=$b F=$floor A=$a (DeepSeek spend cap for the whole pilot)"
 }
@@ -144,6 +145,7 @@ EOF
 
 cmd_prepare() {
   local row="$1" lane model effort task wt fix doc nonce snap prefix seen est spent r
+  cmd_verify >/dev/null
   load_env
   lane="$(row_field "$row" 2)"; [ -n "$lane" ] || die "unknown row '$row'"
   model="$(row_field "$row" 3)"; effort="$(row_field "$row" 4)"; task="$(row_field "$row" 5)"
@@ -175,21 +177,23 @@ cmd_prepare() {
   doc="$DOCS/$row/HIMMEL-4869-pilot-$row.md"; run="$ROOT/run/$row"; tx="$ROOT/tx/$row"
   mkdir -p "$DOCS/$row" "$run" "$tx" || die "cannot create the $row dirs"
   write_brief "$row" "$wt" "$task" "$nonce" "$PILOT_CONSOLE" >"$doc"
-  printf 'LANE=%s\nMODEL=%s\nEFFORT=%s\nTASK=%s\nWT=%s\nFIX=%s\nDOC=%s\nSNAP0=%s\nT0=%s\nREPO=%s\nRUN=%s\nTX=%s\n' \
+  printf 'LANE=%q\nMODEL=%q\nEFFORT=%q\nTASK=%q\nWT=%q\nFIX=%q\nDOC=%q\nSNAP0=%q\nT0=%q\nREPO=%q\nRUN=%q\nTX=%q\n' \
     "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" "$REPO" "$run" "$tx" >"$ROOT/rows/$row.env"
   prefix=""
   [ "$lane" = deepseek ] && prefix="HIMMEL_DEEPSEEK_INFERENCE_OK=1 "
-  [ "$lane" = deepseek ] || prefix="${prefix}LEG_EFFORT=$effort "
+  [ "$lane" = deepseek ] || prefix="${prefix}LEG_EFFORT=$(printf %q "$effort") "
   # deepseek and claudex rows run in the bubblewrap jail (sandbox.sh); native
   # rows run unsandboxed.
   if [ "$lane" != native ]; then
     printf '#!/usr/bin/env bash\nexec bash %q launch %q "$@"\n' "$HERE/sandbox.sh" "$ROOT/rows/$row.env" >"$ROOT/rows/$row.sandbox"
     chmod +x "$ROOT/rows/$row.sandbox"
     bash "$HERE/sandbox.sh" argv "$ROOT/rows/$row.env" >/dev/null || die "no sandbox for $row; not launchable"
-    prefix="${prefix}HEADED_ARM_LEG_$(printf %s "$lane" | tr '[:lower:]' '[:upper:]')_BIN=$ROOT/rows/$row.sandbox "
+    prefix="${prefix}HEADED_ARM_LEG_$(printf %s "$lane" | tr '[:lower:]' '[:upper:]')_BIN=$(printf %q "$ROOT/rows/$row.sandbox") "
   fi
-  printf '%sHANDOVER_DIR=%s LEG_REPO=%s setsid nohup bash %s/scripts/handover/console-kit/headed-arm-leg.sh --lane %s --profile console-relay --console %s HIMMEL-4869-pilot-%s %s %s/rows/%s.signal 1 %s/%s.log %s >/dev/null 2>&1 &\n' \
-    "$prefix" "$ROOT/handovers" "$wt" "$REPO" "$lane" "$PILOT_CONSOLE" "$row" "$doc" "$ROOT" "$row" "$run" "$row" "$model"
+  # The console runs this line, so every value is shell-quoted.
+  printf '%sHANDOVER_DIR=%q LEG_REPO=%q setsid nohup bash %q --lane %q --profile console-relay --console %q %q %q %q 1 %q %q >/dev/null 2>&1 &\n' \
+    "$prefix" "$ROOT/handovers" "$wt" "$REPO/scripts/handover/console-kit/headed-arm-leg.sh" "$lane" "$PILOT_CONSOLE" \
+    "HIMMEL-4869-pilot-$row" "$doc" "$ROOT/rows/$row.signal" "$run/$row.log" "$model"
 }
 
 find_transcript() { # $1 worktree -> newest transcript of a session run there
@@ -226,6 +230,7 @@ metrics() { # $1 transcript or empty, $2 report -> JSON
 
 cmd_finish() {
   local row="$1" LANE MODEL EFFORT TASK WT FIX DOC SNAP0 T0 REPO TX snap1 usd tr rep acc acc_rc scope wrapped pk m
+  cmd_verify >/dev/null
   load_env
   [ -r "$ROOT/rows/$row.env" ] || die "$row was never prepared"
   # shellcheck source=/dev/null

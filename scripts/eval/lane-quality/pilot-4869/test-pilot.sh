@@ -46,9 +46,15 @@ export PILOT_DEEPSEEK_BIN="$TMP/fake-deepseek" PILOT_PREFLIGHT="$TMP/fake-prefli
 
 echo "1. frozen hashes"
 check 'verify passes on the committed tree' 'bash "$P" verify >/dev/null 2>&1'
-cp -R "$LQ" "$TMP/lq-copy"
-echo drift >>"$TMP/lq-copy/tasks/shell-red-green/prompt.md"
-check 'verify fails on a drifted prompt' '! bash "$TMP/lq-copy/pilot-4869/pilot.sh" verify >/dev/null 2>&1'
+# A copy keeps the scripts/ layout: FROZEN.sha256 also hashes the bench T4 fixture.
+C="$TMP/copy/scripts"
+mkdir -p "$C/eval" "$C/lanes/bench/fixtures"
+cp -R "$LQ" "$C/eval/lane-quality"; cp -R "$LQ/../../lanes/bench/fixtures/T4" "$C/lanes/bench/fixtures/T4"
+check 'verify passes on an unchanged copy (control)' 'bash "$C/eval/lane-quality/pilot-4869/pilot.sh" verify >/dev/null 2>&1'
+echo drift >>"$C/eval/lane-quality/tasks/shell-red-green/prompt.md"
+check 'verify fails on a drifted prompt' '! bash "$C/eval/lane-quality/pilot-4869/pilot.sh" verify >/dev/null 2>&1'
+check 'prepare refuses a drifted kit' 'bash "$C/eval/lane-quality/pilot-4869/pilot.sh" prepare p02 2>&1 | grep -q drifted'
+check 'finish refuses a drifted kit' 'bash "$C/eval/lane-quality/pilot-4869/pilot.sh" finish p02 2>&1 | grep -q drifted'
 
 echo "2. bench-t4 acceptor discriminates"
 T4="$LQ/../../lanes/bench/fixtures/T4"
@@ -63,6 +69,13 @@ check 'B=43.77 gives A=3.00' '[ "$(a_for 43.77)" = 3.00 ]'
 check 'B=5.00 gives A=1.50' '[ "$(a_for 5.00)" = 1.50 ]'
 check 'B=3.20 gives A=0.00' '[ "$(a_for 3.20)" = 0.00 ]'
 rm -rf "$TMP/root"; echo 43.77 >"$FAKE_BAL"
+evil="c 1;touch $TMP/pwned"
+bash "$P" init --console "$evil" >/dev/null 2>&1
+check 'pilot.env round-trips a console name with shell metacharacters' '[ "$(bash -c ". \"\$1/pilot.env\"; printf %s \"\$PILOT_CONSOLE\"" _ "$TMP/root")" = "$evil" ] && [ ! -e "$TMP/pwned" ]'
+eline="$(PILOT_WT_ROOT="$TMP/wt-evil" bash "$P" prepare p02 2>/dev/null)"
+check 'the launch line shell-quotes the console name' 'printf "%s" "$eline" | grep -qF -- "--console $(printf %q "$evil") "'
+git -C "$TMP/repo" worktree remove --force "$TMP/wt-evil/lq-pilot-p02" >/dev/null 2>&1
+rm -rf "$TMP/root"
 bash "$P" init --console c1-console >/dev/null 2>&1
 check 'a second init refuses' '! bash "$P" init --console c1-console >/dev/null 2>&1'
 
@@ -85,8 +98,9 @@ SB="$TMP/root/rows/p01.sandbox"
 mkdir -p "$TMP/repo/scripts/eval" "$TMP/repo/scripts/lanes/bench/fixtures" "$TMP/repo/.claude/worktrees"
 check 'the deepseek launch goes through the row sandbox' 'printf "%s" "$line" | grep -qF "HEADED_ARM_LEG_DEEPSEEK_BIN=$SB " && [ -x "$SB" ]'
 check 'a native launch is not sandboxed' '! printf "%s" "$line2" | grep -q "_BIN="'
-argv="$(bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" 2>&1)"
+argv="$(LEAK_TOKEN=leak LEAK_PLAIN=x DEEPSEEK_API_KEY=k bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" 2>&1)"
 after() { printf '%s\n' "$argv" | grep -A"$2" -x -- "$1"; } # $1 flag, $2 operand count
+check 'sandbox drops a credential and an unlisted variable, keeps PATH and the lane key' 'after --unsetenv 1 | grep -qx LEAK_TOKEN && after --unsetenv 1 | grep -qx LEAK_PLAIN && ! after --unsetenv 1 | grep -qxE "PATH|DEEPSEEK_API_KEY"'
 check 'sandbox hides /home and /tmp' 'after --tmpfs 1 | grep -qx /home && after --tmpfs 1 | grep -qx /tmp'
 check 'sandbox binds the worktree and the row doc dir read-write' 'after --bind 2 | grep -qxF "$wt" && after --bind 2 | grep -qxF "$(dirname "$doc")"'
 check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qE "Documents/(luna|salus)|/\.claude/projects|/\.himmel/state|$TMP/vault"'
@@ -98,6 +112,7 @@ echo secret >"$TMP/secret"
 if bwrap --ro-bind / / true 2>/dev/null; then
   check 'live: a file outside the binds is invisible in the sandbox' '! bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" cat "$TMP/secret" >/dev/null 2>&1'
   check 'live: the vault root exists but is empty in the sandbox' 'bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" test -d "$TMP/vault" && ! bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" cat "$TMP/vault/hot.md" >/dev/null 2>&1'
+  check 'live: a host credential is not in the sandbox environment' '! LEAK_TOKEN=leak bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" env | grep -q LEAK_TOKEN'
   check 'live: the worktree is writable in the sandbox' 'bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" touch "$wt/probe" && [ -e "$wt/probe" ] && rm -f "$wt/probe"'
 else
   echo "  skip live sandbox checks: bwrap cannot create a namespace here"
