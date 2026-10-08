@@ -584,6 +584,36 @@ else
     bad "4591 ${#_big}-byte payload: got $_got in ${_el}s (want allow within 12s)"
 fi
 
+echo "== HIMMEL-4921: nested-quote \${:-} redirect, truncate, tar -C, /tmp symlink into the primary =="
+_j4921() {  # _j4921 <command> <cwd> -> hook JSON
+    printf '{"tool_name":"Bash","tool_input":{"command":%s,"cwd":"%s"}}' "$(printf '%s' "$1" | jq -Rs .)" "$2"
+}
+# A. nested double quotes inside a ${x:-...} expansion desynced the redirect scan.
+check_both "4921 A echo \"\${x:-\"it's\"}\" > primary/f (cwd=wt) denies" block \
+    "$(_j4921 "echo \"\${x:-\"it's\"}\" > $FIX/primary/f4921" "$FIX/wt")"
+check_both "4921 A mirror: same redirect into the worktree allows" allow \
+    "$(_j4921 "echo \"\${x:-\"it's\"}\" > $FIX/wt/f4921" "$FIX/wt")"
+# B. truncate has no arm.
+check_both "4921 B truncate -s0 primary/README.md (cwd=wt) denies" block \
+    "$(_j4921 "truncate -s0 $FIX/primary/README.md" "$FIX/wt")"
+check_both "4921 B mirror: truncate a worktree file allows" allow \
+    "$(_j4921 "truncate -s0 $FIX/wt/wtfile.txt" "$FIX/wt")"
+# C. tar -C destination is a write target in extract mode.
+check_both "4921 C tar -xf x.tar -C primary (cwd=wt) denies" block \
+    "$(_j4921 "tar -xf x.tar -C $FIX/primary" "$FIX/wt")"
+check_both "4921 C git archive HEAD | tar -x -C primary (cwd=wt) denies" block \
+    "$(_j4921 "git archive HEAD | tar -x -C $FIX/primary" "$FIX/wt")"
+check_both "4921 C mirror: tar -xf x.tar -C worktree allows" allow \
+    "$(_j4921 "tar -xf x.tar -C $FIX/wt" "$FIX/wt")"
+check_both "4921 C mirror: tar -cf out.tar -C primary . (create, a read) allows" allow \
+    "$(_j4921 "tar -cf out.tar -C $FIX/primary ." "$FIX/wt")"
+# D. a /tmp symlink resolving into the primary: the /tmp exemption fired first.
+ln -sfn "$FIX/primary" "$TMPFIX/plink"
+check_both "4921 D echo x > /tmp-symlink-to-primary/f (cwd=wt) denies" block \
+    "$(_j4921 "echo x > $TMPFIX/plink/f4921" "$FIX/wt")"
+check_both "4921 D mirror: echo x > plain /tmp dir/f allows" allow \
+    "$(_j4921 "echo x > $TMPFIX/f4921" "$FIX/wt")"
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
