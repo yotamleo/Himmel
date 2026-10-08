@@ -96,6 +96,12 @@ put "$r" a.mjs "const m = await import(
 run "$r"
 if [ "$RC" -eq 1 ] && has 'a.mjs:2'; then pass "multiline specifier with trailing comment refused"; else fail "multiline+comment -> rc=$RC: $OUT"; fi
 
+r="$(mkrepo multisemi)"
+put "$r" a.mjs "const m = await import(
+  '@modelcontextprotocol/sdk/client/index.js');"
+run "$r"
+if [ "$RC" -eq 1 ] && has 'a.mjs:2'; then pass "multiline specifier with semicolon refused"; else fail "multiline+semicolon -> rc=$RC: $OUT"; fi
+
 echo "== 4. npm transitive lock entry =="
 r="$(mkrepo npmlock)"
 put "$r" a/package-lock.json '{"packages":{"node_modules/foo":{"dependencies":{"@modelcontextprotocol/sdk":"^1.0.0"}},"node_modules/@modelcontextprotocol/sdk":{"version":"1.29.0"}}}'

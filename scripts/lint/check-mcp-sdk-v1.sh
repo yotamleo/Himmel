@@ -54,7 +54,7 @@ scan "v1 lock entry" "$V1" -- '*package-lock.json' '*npm-shrinkwrap.json' '*bun.
 scan "v1 import" "(from|import|require)[[:space:]]*[(]?[[:space:]]*['\"]${V1}['\"/]" \
     -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.mts' '*.cts' "${VENDOR_X[@]}"
 # A specifier alone on its own line: the multiline require(\n'...')/import(\n'...') form.
-scan "v1 import" "^[[:space:]]*['\"]${V1}(/[^'\"]*)?['\"][[:space:]]*[,)]*[[:space:]]*(//.*|/[*].*)?$" \
+scan "v1 import" "^[[:space:]]*['\"]${V1}(/[^'\"]*)?['\"][[:space:]]*[,);]*[[:space:]]*(//.*|/[*].*)?$" \
     -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' '*.cjs' '*.mts' '*.cts' "${VENDOR_X[@]}"
 scan "vendored bundle embeds v1 SDK" "node_modules/${V1}[/@]" -- '*/.obsidian/plugins/*' '.obsidian/plugins/*'
 
