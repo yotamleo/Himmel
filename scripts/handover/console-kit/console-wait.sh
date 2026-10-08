@@ -79,6 +79,8 @@
 #                        Written atomically: temp file in the same dir, then
 #                        `mv`, so a kill mid-write never leaves it torn.
 #   <inbox>.wait.lock    the one-waiter flock (the file stays; the lock does not).
+#   <inbox>.handover     handover mode (HIMMEL-4902): while it exists the waiter
+#                        skips tick/bank/page sampling and wakes only on Telegram.
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
 # 2 = usage; 3 = another waiter is already live on this inbox (its pid is named).
@@ -383,7 +385,11 @@ while :; do
     elif [ "$rc" -ne 1 ]; then
         exit_reason='inbox-error'; exit 1
     fi
-    if [ "$(date +%s)" -ge "$next_tick" ]; then
+    # HIMMEL-4902: <inbox>.handover (written by `console.sh next` once the
+    # successor validated) puts this waiter in handover mode: no tick, bank or
+    # page work (an outgoing console only waits for LIVE; a tick wake costs it
+    # a full-context turn), while the Telegram check above still wakes it.
+    if [ ! -e "$inbox.handover" ] && [ "$(date +%s)" -ge "$next_tick" ]; then
         next_tick=$(( $(date +%s) + interval ))
         # The Telegram path is blocked while a tick runs (up to twice
         # CONSOLE_WAIT_TICK_TIMEOUT with the bank read); say so in the heartbeat.

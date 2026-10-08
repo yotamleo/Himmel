@@ -5,8 +5,8 @@
 > reads this, and only falls back to the Results tail bottom-up if a section
 > here is empty.
 
-**Head:** `<sha>` on `<branch>` at `{{REPO}}`, remote `<origin url>`.
-**Bank at write:** 5-hour `<n>` %, 7-day `<n>` %.
+**Head:** {{HEAD_LINE}}
+**Bank at write:** {{BANK_LINE}}
 **Operator:** `<at the station / away / asleep>`.
 
 ## How {{LETTER}} starts
@@ -32,20 +32,31 @@ every leg that has not been re-briefed (HIMMEL-3254).
 
 <Copied verbatim from the predecessor's `## Live state` (HIMMEL-2973 S1) —
 each leg's nonce, lock release token and pid are already there; do not
-retype them. Add here what Live state does not carry: each leg's model,
-ticket, worktree + branch, brief path, what it last reported and what it
-owes next. A leg not listed above is not alive — the successor confirms with
+retype them. A leg not listed above is not alive — the successor confirms with
 ListAgents regardless.>
 
-## Rulings made this shift
+**Legs** (fleet manifest, last Results marker of each; `console.sh next`
+filled this, HIMMEL-4902):
 
-<Numbered, one line each. These are binding on the successor.>
+{{LEG_LIST}}
 
-## Held queue (launch order)
+**Open PRs:**
 
-<Numbered. Each entry: ticket, one-line scope, the model tier it should get,
-and the files it owns — so the successor can collision-check the fan-out
-without re-deriving it.>
+{{OPEN_PRS}}
+
+**Held queue:** {{QUEUE_LINE}}
+**Last GO:** {{LAST_GO}}
+
+## This shift (the console's last Results bullets)
+
+{{SHIFT_SUMMARY}}
+
+## Rulings and judgement notes — the only part the console writes
+
+<Numbered, one line each: the operator rulings binding on the successor, and
+anything the pre-filled sections above cannot know — each leg's model, brief
+path and what it owes next; the held queue's model tiers and owned files so
+the successor can collision-check the fan-out. One Edit replaces this block.>
 
 ## Wrapped this shift
 
