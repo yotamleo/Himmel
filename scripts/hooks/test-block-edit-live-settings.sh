@@ -1434,6 +1434,37 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# 217b: HIMMEL-4752 — _dc_split_words (the linear space split, HIMMEL-4678) has
+# a RED control: it must give every space-separated word (a multibyte word
+# kept whole, an empty field between double spaces kept) and a deliberately
+# broken split must fail the same check, so the check can fail. Output is
+# "<count>|w1|w2|…" for the text 'a  é b' (two spaces, then a UTF-8 word).
+DCSW_SRC="$SANDBOX/dc_split_words_extract.sh"
+sed -n '/^_dc_split_words() {/,/^}/p' "$HOOK" > "$DCSW_SRC"
+DCSW_BAD="$SANDBOX/dc_split_words_broken.sh"
+# broken: drops the space-to-separator rewrite, so every word merges into one
+sed 's|\${1// /\$s}|${1}|' "$DCSW_SRC" > "$DCSW_BAD"
+dcsw_run() {
+    bash -c '
+        source "$1"
+        f=()
+        _dc_split_words "a  é b"
+        out=${#f[@]}
+        for w in "${f[@]}"; do out="$out|$w"; done
+        printf "%s" "$out"
+    ' _ "$1" 2>/dev/null
+}
+DCSW_WANT=$'4|a||é|b\n'
+DCSW_WANT=${DCSW_WANT%$'\n'}
+DCSW_GOT=$(dcsw_run "$DCSW_SRC")
+DCSW_BROKE=$(dcsw_run "$DCSW_BAD")
+if [ -s "$DCSW_BAD" ] && ! cmp -s "$DCSW_SRC" "$DCSW_BAD" && [ "$DCSW_GOT" = "$DCSW_WANT" ] && [ "$DCSW_BROKE" != "$DCSW_WANT" ]; then
+    echo "PASS 217b _dc_split_words splits every space and a broken split fails the control (got $DCSW_GOT; broken $DCSW_BROKE)"
+else
+    echo "FAIL 217b _dc_split_words — want $DCSW_WANT, got $DCSW_GOT; broken variant gave $DCSW_BROKE"
+    FAILED=$((FAILED + 1))
+fi
+
 # 218: HIMMEL-3686 CodeRabbit (round-6) — the TOK=0 fallback's own
 # `for w in $cmd_n; do _check_write_operand "$w"; done` (used whenever the
 # tokenizer can't fully vouch for the command text, e.g. a heredoc is

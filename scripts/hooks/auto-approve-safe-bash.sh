@@ -1711,6 +1711,11 @@ esac
 case "$cmd" in
     *[$'\f\v']*) exit 0 ;;
 esac
+# HIMMEL-4752 (judge j2011): U+2028 (LINE SEPARATOR, bytes e2 80 a8) is a word
+# character to bash but a space to some tokenizers; abstain rather than guess.
+case "$cmd" in
+    *$'\xe2\x80\xa8'*) exit 0 ;;
+esac
 # HIMMEL-3750 round 3 (codex-1): a backslash-newline continuation is folded
 # away by the shell before parsing even INSIDE double quotes, so a quoted
 # `"$\<NL>=x"` reaches the shell as `"$=x"` — the raw-text tripwires below
