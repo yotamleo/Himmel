@@ -55,7 +55,7 @@ DeepSeek + Alibaba entirely — see the provider-policy note in Semantics.)*
   - `luna-personal × zai-glm × inference` stayed **deny** — extraction only,
     and it still denies by *default* (HIMMEL-2224 added explicit deny rows only
     for the four cells that were open, it did not invent new rows).
-  - `salus × * × *` stays **deny, hard** — untouched, and no override can flip it.
+  - `salus × * × *` stays **deny, hard** — no override can flip it. The one carve-out is the explicit `salus × openai-codex × inference` allow row ahead of it (HIMMEL-5002, operator ruling 2026-10-08).
   - **Not a default.** `refresh-graph-map.sh` keeps `BACKEND=claude-cli`
     (HIMMEL-1049, the claude-only adopter story). GLM is a per-run opt-in for an
     operator who has a Coding Plan; an adopter without one is never expected to
@@ -257,7 +257,10 @@ verdicts — `scripts/guardrails/egress-matrix.json` is authoritative.
 ## Invariants (enforced by the test)
 
 - `default` is `deny`; salus × any-cloud × anything is a **hard** deny with
-  no recordable override; google-gemini is denied everywhere (keys stay
+  no recordable override, except `salus × openai-codex × inference` (an
+  explicit allow row ahead of the wildcard, HIMMEL-5002 operator ruling
+  2026-10-08, which also allows `luna-personal` and `luna-clippings` for
+  codex inference only); google-gemini is denied everywhere (keys stay
   unset); there are now **zero `pending-operator` cells** (the five HIMMEL-765
   Alibaba cells were demoted to explicit `deny` by HIMMEL-1257); **DeepSeek +
   Alibaba are de-listed** for vault/handover egress (explicit `deny`), and stay

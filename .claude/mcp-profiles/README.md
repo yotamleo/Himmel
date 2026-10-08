@@ -24,9 +24,16 @@ node scripts/mcp/build-mcp-profiles.mjs --list   # show profile → servers
 
 The generator reads your live `~/.claude.json` for the real (absolute-path,
 secret-bearing) server specs and writes `local.<name>.json` here. **Those are
-gitignored** — they carry your `OBSIDIAN_API_KEY` and `C:\Users\…` paths, which
-must never hit git. Only the generator + `profiles.json` manifest + this README
-are committed.
+gitignored** — they carry `C:\Users\…` paths, which must never hit git. Only the
+generator + `profiles.json` manifest + this README are committed.
+
+Secrets are NOT written into the profile (HIMMEL-5002). An env var named
+`*API_KEY`, `*TOKEN`, `*SECRET` or `*PASSWORD` goes to a 0600 file at
+`~/.config/himmel/mcp-secrets/<server>/<VAR>` (override the root with
+`HIMMEL_MCP_SECRETS_DIR`), and the profile starts the server through
+`scripts/mcp/secret-launch.mjs`, which reads those files at launch, refuses a
+group/world-readable one, and injects them into the server's env. Re-run the
+generator after changing a key.
 
 `minimal` resolves to **context7-remote** — it is a key in this generator's
 own `PLUGIN_SERVERS` map (above), so it resolves with no machine state, no

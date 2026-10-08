@@ -57,8 +57,8 @@ assert "default QMD_FORK_REF is a full 40-hex SHA" \
 default_repo="$(env -u QMD_FORK_REPO bash -c '. "'"$SCRIPT_DIR"'/qmd-bin.sh"; _qmd_fork_repo')"
 assert "default QMD_FORK_REPO is the carried fork yotamleo/qmd" \
   test "$default_repo" = "https://github.com/yotamleo/qmd.git"
-assert "default QMD_FORK_REF is the fix/launcher-forward-signals commit" \
-  test "$default_ref" = "932839a2a4cc4b894b1fd5fb2a86758321985c56"
+assert "default QMD_FORK_REF is the himmel/pin-http-auth commit" \
+  test "$default_ref" = "791fdf8ae5dfc93d442a586a5eb8dc29f51d8e90"
 
 echo "[test-qmd-bin] qmd_cmd resolver — prefer bun"
 tmpdir="$(mktemp -d)"

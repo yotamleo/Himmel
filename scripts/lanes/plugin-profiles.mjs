@@ -699,7 +699,12 @@ export function collectMcpServerDefs(names, { homeConfigPath, repoMcpPath, marke
       } else if (!Object.hasOwn(manifest, name)) {
         throw new Error(`plugin-profiles: mcpServers entry "${name}" is not defined in ${homeConfigPath}, ${repoMcpPath}, or ${manifestPath}`);
       }
-      else def = manifest[name];
+      else {
+        def = manifest[name];
+        // HIMMEL-5002: headersHelper runs a script shipped in the plugin; a standalone
+        // --mcp-config gets no ${CLAUDE_PLUGIN_ROOT} expansion, so point it at the plugin dir.
+        if (hasToken(def.headersHelper)) def = { ...def, headersHelper: def.headersHelper.replaceAll(PLUGIN_ROOT_TOKEN, join(marketplaceDir, name)) };
+      }
     }
     refuseIfPluginRootRef(name, def);
     mcpServers[name] = def;
