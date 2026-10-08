@@ -471,17 +471,21 @@ cmd_norm=$(tr '\n\r' ';;' <<<"$cmd_stage2")
 # option that takes a value (`-u user`) is read as the pattern; tighten with
 # a real shell tokenizer if either shows up.
 PGREP_WAIT_RE='(^|[^[:alnum:]_-])(until[[:space:]]+![^;]*|while[[:space:]]+([^![:space:]][^;]*)?)pgrep[[:space:]]'
-PGREP_HEAD_RE='(until[[:space:]]+!|while[[:space:]]+)[^;]*'
+PGREP_HEAD_RE='(until[[:space:]]+!|while[[:space:]]+[^![:space:]])[^;]*'
 PGREP_ARG_RE="pgrep[[:space:]]+((-[[:alnum:]]+[[:space:]]+)*)('([^']*)'|\"([^\"]*)\"|([^[:space:];&|)]+))"
 BUSY_LOOP_RE='(^|[^[:alnum:]_-])(while|until)[[:space:]][^;]*[;[:space:]]+do[[:space:]]+(:|true)[[:space:];]*done([^[:alnum:]_]|$)'
 
-if [[ $cmd_stage2 =~ $PGREP_WAIT_RE && $cmd_stage1 =~ $PGREP_HEAD_RE ]]; then
+if [[ $cmd_stage2 =~ $PGREP_WAIT_RE ]]; then
+  heads=$cmd_stage1
+  while [[ $heads =~ $PGREP_HEAD_RE ]]; do
     rest=${BASH_REMATCH[0]}
+    heads=${heads#*"$rest"}
     while [[ $rest =~ $PGREP_ARG_RE ]]; do
         wait_flags=${BASH_REMATCH[1]}
         wait_pat=${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}
         rest=${rest#*"${BASH_REMATCH[0]}"}
-        case $wait_flags in *f*) ;; *) continue ;; esac
+        # -x matches the whole command line, which the wrapper's never equals.
+        case $wait_flags in *x*) continue ;; *f*) ;; *) continue ;; esac
         [ -n "$wait_pat" ] || continue
         if [[ $cmd =~ $wait_pat ]]; then
             {
@@ -497,6 +501,7 @@ if [[ $cmd_stage2 =~ $PGREP_WAIT_RE && $cmd_stage1 =~ $PGREP_HEAD_RE ]]; then
             exit 2
         fi
     done
+  done
 fi
 
 if [[ $cmd_stage2 =~ $BUSY_LOOP_RE ]]; then
