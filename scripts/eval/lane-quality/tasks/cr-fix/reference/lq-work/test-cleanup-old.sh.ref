@@ -2,8 +2,8 @@
 # test-cleanup-old.sh - regression test for cleanup-old.sh
 S="$(dirname "$0")/cleanup-old.sh"
 fail=0
-d="$(mktemp -d)"
-touch -d '10 days ago' "$d/old file.log"
+d="$(mktemp -d)" || exit 1
+touch -d '10 days ago' "$d/old file.log" || exit 1
 touch "$d/new.log"
 bash "$S" "$d" 5
 [ ! -e "$d/old file.log" ] || { echo "FAIL old file with a space survives"; fail=1; }

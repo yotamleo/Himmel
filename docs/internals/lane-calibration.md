@@ -275,7 +275,8 @@ the state repo's `specs/research/HIMMEL-4906-*` bundle.
   in cost, turns, wall time and the judge's test-quality and honesty scores.
 - **Haiku 5.5 is about 15x cheaper than Sonnet 5.5** ($0.19 against $2.98) at
   equal acceptance, and needed more turns (10.3 against 7.2) to get there. Its
-  judge scores were not below Sonnet's on this set (n=7 judged, so a screen).
+  judge scores matched or beat Sonnet's except scope (4.57 against 4.86) on
+  this set (n=7 judged, so a screen).
 - **Codex dollar figures are Claude Code's guess**: it does not price the
   `gpt-6.1-sol` slug, so its `cost_usd` ($0.14-$0.96 per run) is not a bill. The
   rows carry token counts instead; codex wrote 0.5-5K output tokens per run
