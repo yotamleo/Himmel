@@ -142,7 +142,7 @@ cat > "$tmp/bin/yt-dlp" <<'STUB'
 echo "$*" > "$YTDLP_CALLS"
 tmpl=""
 while [ $# -gt 0 ]; do case "$1" in -o) shift; tmpl="$1" ;; esac; shift; done
-cp "$YTDLP_SUBS" "$(dirname "$tmpl")/Xxuxg8PcBvc.en-orig.json3"
+for lang in ${YTDLP_LANGS:-en-orig}; do cp "$YTDLP_SUBS" "$(dirname "$tmpl")/Xxuxg8PcBvc.$lang.json3"; done
 STUB
 chmod +x "$tmp/bin/yt-dlp"
 PATH="$tmp/bin:$tmp/sys" YTDLP_CALLS="$tmp/ytdlp.calls" YTDLP_SUBS="$FIX/$VID.en.json3" \
@@ -154,6 +154,18 @@ case "$calls" in *--no-config*--skip-download*--sub-format\ json3*"-- https://ww
 assert "yt-dlp: no config, no download, json3, URL after --" ok "$a"
 case "$calls" in *cookie*) a=cookie ;; *) a=none ;; esac
 assert "yt-dlp gets no cookie" none "$a"
+assert "en-orig track recorded as en" en "$(jq_py "$tmp/ytdlp.json" 'd["transcript_lang"]')"
+# HIMMEL-4688 codex-3: a non-English video with no English track still gets
+# its original-language auto track, picked last, its language recorded.
+case "$calls" in *"--sub-langs en.*,en,.*-orig "*) a=ok ;; *) a="$calls" ;; esac
+assert "yt-dlp also asks for the original-language auto track" ok "$a"
+PATH="$tmp/bin:$tmp/sys" YTDLP_CALLS="$tmp/ytdlp.calls" YTDLP_SUBS="$FIX/$VID.en.json3" YTDLP_LANGS="ja-orig" \
+  helper --from-html "$FIX/watch.html" >"$tmp/ytdlp-ja.json"
+assert "non-English orig track parsed" "20 None" "$(jq_py "$tmp/ytdlp-ja.json" 'str(len(d["transcript"]))+" "+str(d["transcript_error"])')"
+assert "non-English orig track language recorded" ja "$(jq_py "$tmp/ytdlp-ja.json" 'd["transcript_lang"]')"
+PATH="$tmp/bin:$tmp/sys" YTDLP_CALLS="$tmp/ytdlp.calls" YTDLP_SUBS="$FIX/$VID.en.json3" YTDLP_LANGS="ja-orig en-GB" \
+  helper --from-html "$FIX/watch.html" >"$tmp/ytdlp-both.json"
+assert "an English track still wins over the orig track" en-GB "$(jq_py "$tmp/ytdlp-both.json" 'd["transcript_lang"]')"
 PATH="$tmp/sys" helper --from-html "$FIX/watch.html" >"$tmp/noytdlp.json"
 assert "no yt-dlp: metadata still ok" ok "$(jq_py "$tmp/noytdlp.json" 'd["status"]')"
 assert "no yt-dlp: transcript error named" yt_dlp_missing "$(jq_py "$tmp/noytdlp.json" 'd["transcript_error"]')"
