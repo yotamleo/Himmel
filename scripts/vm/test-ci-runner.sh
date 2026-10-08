@@ -13,7 +13,7 @@ HOOK="$REPO_ROOT/scripts/vm/ci-runner/job-started-hook.sh"
 LOOP="$REPO_ROOT/scripts/vm/ci-runner.sh"
 PROVISION="$REPO_ROOT/scripts/vm/ci-runner/guest-provision.sh"
 
-TMP=$(mktemp -d) || { echo "FAIL: mktemp"; exit 1; }
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/test-ci-runner.XXXXXX") || { echo "FAIL: mktemp"; exit 1; }
 trap 'rm -rf "$TMP"' EXIT
 
 pass=0; fail=0
