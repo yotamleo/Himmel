@@ -205,6 +205,11 @@ def _tokens(seg):
         toks = shlex.split(seg, comments=True)
     except ValueError:
         toks = seg.split()
+    return _strip_prefix(toks)
+
+
+def _strip_prefix(toks):
+    """toks without leading VAR= assignments and WRAPPERS (env, time, ...)."""
     while toks and (re.match(r"^[A-Za-z_]\w*=", toks[0]) or toks[0] in WRAPPERS):
         toks = toks[1:]
     return toks
@@ -230,7 +235,7 @@ def _quiet_run(toks):
     if i is None or i >= len(toks) or os.path.basename(toks[i]) != "quiet-run.sh":
         return None
     rest = toks[i + 1:]
-    inner = rest[rest.index("--") + 1:] if "--" in rest else []
+    inner = _strip_prefix(rest[rest.index("--") + 1:]) if "--" in rest else []  # HIMMEL-4740
     return (rest[0] if rest else ""), inner
 
 
