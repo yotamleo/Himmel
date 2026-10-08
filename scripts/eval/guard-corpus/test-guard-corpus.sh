@@ -197,14 +197,15 @@ else fail "hookspath: scratch commit executed inherited core.hooksPath hook ($SE
 # codex (round 6): a blocklist is whack-a-mole. diff launches hooks and the
 # scratch git under a positive allowlist, so BASH_ENV/ENV (bash sources them at
 # startup), LD_PRELOAD and GIT_TEMPLATE_DIR cannot reach a child. A probe hook
-# dumps its own environment; prove none of the four seams survive. Benign
+# checks its own environment; prove none of the four seams survive. Benign
 # corpus so the deny positive-control does not fire (base==head always allows).
 python3 "$GEN" --seed 7 -o "$TMP/benign-probe.jsonl"
-ENVDUMP="$TMP/envdump"
-cat > "$TMP/probe-hook.sh" <<HK
+cat > "$TMP/probe-hook.sh" <<'HK'
 #!/usr/bin/env bash
 cat >/dev/null
-env > "$ENVDUMP"
+for seam in BASH_ENV ENV LD_PRELOAD GIT_TEMPLATE_DIR; do
+    if env | grep -q "^$seam="; then exit 7; fi
+done
 exit 0
 HK
 chmod +x "$TMP/probe-hook.sh"
@@ -214,11 +215,10 @@ GIT_TEMPLATE_DIR=/tmp/seam-template \
   --corpus "$TMP/benign-probe.jsonl" --jobs 1 >/dev/null 2>&1; RC_AL=$?
 if [ "$RC_AL" = "0" ]; then pass "allowlist: diff ran to completion (exit 0)"
 else fail "allowlist: diff did not complete clean, exit $RC_AL (seam checks would be vacuous)"; fi
-for seam in BASH_ENV ENV LD_PRELOAD GIT_TEMPLATE_DIR; do
-  if [ -e "$ENVDUMP" ] && grep -q "^$seam=" "$ENVDUMP"; then
-    fail "allowlist: $seam leaked into launched hook env"
-  else pass "allowlist: $seam scrubbed from launched hook env"; fi
-done
+# The probe returns an odd rc if ANY seam survives. Host files are read-only;
+# inspecting a missing envdump would otherwise be a vacuous passing assertion.
+if [ "$RC_AL" = 0 ]; then pass "allowlist: all four execution seams absent in hook"
+else fail "allowlist: probe detected a leaked execution seam"; fi
 
 # --- 1e. inherited GIT_TEMPLATE_DIR must NOT seed the scratch repo's hooks ----
 # codex (round 6): `git init` copies GIT_TEMPLATE_DIR/hooks into the new .git,
@@ -297,6 +297,23 @@ if [ "$RC_NX" = "0" ]; then pass "no-exec: diff ran to completion (exit 0)"
 else fail "no-exec: diff did not complete clean, exit $RC_NX (sentinel check would be vacuous)"; fi
 if [ -e "$SENT" ]; then fail "no-exec: diff EXECUTED a generated command (sentinel created)"
 else pass "no-exec: no generated command was executed"; fi
+
+# HIMMEL-4912: a buggy hook that EXECUTES a harmless tmp-only touch is fenced,
+# even though it still returns a real deny. The row itself is never executed.
+cat > "$TMP/buggy-hook.sh" <<HK
+#!/usr/bin/env bash
+cat >/dev/null
+touch "$TMP/hook-escape-canary"
+exit 2
+HK
+printf '%s\n' '{"tool_input":{"command":"echo benign"},"expect":"deny"}' > "$TMP/fence-row.jsonl"
+OUT_FENCE=$(python3 "$DIFF" --base "$TMP/buggy-hook.sh" --head "$TMP/buggy-hook.sh" \
+    --corpus "$TMP/fence-row.jsonl" --jobs 1 2>&1); RC_FENCE=$?
+if [ "$RC_FENCE" = 0 ] && [[ "$OUT_FENCE" == *'base denied 1;'* ]] && [ ! -e "$TMP/hook-escape-canary" ]; then
+    pass "sandbox: buggy executing hook cannot touch host canary, deny exercised"
+else
+    fail "sandbox: buggy hook escaped or replay incomplete: rc=$RC_FENCE ($OUT_FENCE)"
+fi
 
 # --- 5. gen --seeds-file applies transforms to a supplied seed ----------------
 cat > "$TMP/one-seed.txt" <<'SEEDS'

@@ -6,7 +6,7 @@
 # piped to a hook copy on STDIN as the hook's JSON input; the hook, not this
 # tool, decides. J1672c's exec step once escaped its fixture and wrote into the
 # primary checkout, so there is deliberately no code path here that executes a
-# row's command. The only subprocess this tool launches is `bash <hook-copy>`.
+# row's command. Hook copies launch only through scripts/lib/sandbox-run.sh.
 #
 # ISOLATION. Every hook run gets its OWN fresh sandbox (base and head each, per
 # row -- never shared), so a hook that writes state cannot contaminate another
@@ -25,15 +25,12 @@
 # not on the allowlist is closed by default. The real primary checkout is never
 # cwd and is never written.
 #
-# ponytail: the per-row sandbox copies HOME, HANDOVER_DIR and the scratch
-# primary (cwd), but the materialised hook/dependency TREE (base_dir/head_dir)
-# is built once and shared across rows, so a hook that writes state beside its
-# own script could contaminate later rows or race concurrent ones; and a few
-# residual diff exit-code edges remain (invalid-UTF-8 corpus -> uncaught
-# UnicodeDecodeError instead of setup-error 2). These residual hardening items,
-# plus the gen transform-fidelity and test-assertion follow-ups, are tracked in
-# HIMMEL-4179 -- upgrade path: copy the hook tree per invocation too, fold the
-# UTF-8 decode into the corpus-read exit-2 handler.
+# HIMMEL-4912 adds a kernel boundary per hook: the materialised hook tree and
+# scratch primary are read-only inputs; HOME/HANDOVER_DIR live in fresh tmpfs.
+# Host filesystem Unix sockets are not bound, and networking is unshared.
+# ponytail: invalid-UTF-8 corpus -> uncaught UnicodeDecodeError instead of
+# setup-error 2, tracked with gen transform-fidelity/test follow-ups in
+# HIMMEL-4179 -- upgrade path: fold UTF-8 decode into the corpus-read handler.
 #
 # A hook source is given either as a path to a .sh file, or as `sha:PATH` where
 # PATH is a repo-relative hook path materialised from that git SHA into a
@@ -392,8 +389,8 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
     """Pipe a JSON payload to the hook on stdin.
 
     Returns (rc, stdout, wall_seconds); rc is the hook's exit code, or the
-    string 'TIMEOUT'. Nothing from the payload is ever executed; the only
-    process launched is bash <hook_path>.
+    string 'TIMEOUT'. Nothing from the payload is ever executed; the hook
+    launches through the fail-closed sandbox runner.
     """
     body = {
         "tool_name": tool_name,
@@ -422,15 +419,34 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
     if os.path.isfile(registry):
         overrides["CHOKEPOINT_REGISTRY"] = registry
     env = _sandbox_env(**overrides)
+    launch_env = env.copy()
+    # HIMMEL-4912: classify every row behind the kernel filesystem/network
+    # fence. Only immutable hook/cwd inputs cross it; state lives in tmpfs.
+    runner = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                         "..", "..", "lib", "sandbox-run.sh"))
+    scripts_root = _find_scripts_root(hook_path)
+    hook_tree = os.path.dirname(scripts_root) if scripts_root else os.path.dirname(hook_path)
+    argv = ["bash", runner]
+    for path in dict.fromkeys((hook_tree, anchor, cwd)):
+        argv.extend(["--read-only", path])
+    # HOME/TMPDIR come from the runner, never from host fixture paths.
+    env.pop("HOME", None)
+    env.pop("TMPDIR", None)
+    env.pop("TMP", None)
+    env.pop("TEMP", None)
+    env.pop("PATH", None)
+    env["HANDOVER_DIR"] = "/tmp/handover"
+    argv.extend(["--", "/usr/bin/env"] + ["%s=%s" % item for item in env.items()])
+    argv.extend(["bash", "-c", 'mkdir -p "$HANDOVER_DIR"; exec bash "$1"', "sandbox-hook", hook_path])
     t0 = time.time()
     # stdout goes to a temp file, not a pipe: a pipe's EOF waits on every
     # process holding the write end, so a hook that backgrounds a child would
     # read as TIMEOUT. The hook's own exit ends the row (HIMMEL-4587); the
     # group is then killed so the child never outlives the row.
     with tempfile.TemporaryFile() as outf:
-        p = subprocess.Popen(["bash", hook_path], stdin=subprocess.PIPE,
+        p = subprocess.Popen(argv, stdin=subprocess.PIPE,
                              stdout=outf, stderr=subprocess.DEVNULL,
-                             start_new_session=True, cwd=cwd, env=env)
+                             start_new_session=True, cwd=cwd, env=launch_env)
         try:
             p.communicate(payload.encode("utf-8", "surrogateescape"),
                           timeout=timeout_run)
