@@ -617,14 +617,18 @@ if [ "$verb" = "start" ]; then
         || ! mv "$tmp_head" "$head_state"; then
         rm -f "$tmp_head" "$head_state"
     fi
+    if [ -n "$delta_from" ]; then
+        # HIMMEL-4638: written under the counter lock, so the pid check in
+        # delta_check and this claim cannot interleave between two starts.
+        # Best effort - a failed write only loses the guard.
+        printf '%s\n' "$PPID" > "$delta_run" 2>/dev/null || rm -f "$delta_run" 2>/dev/null
+    fi
     if ! SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
         bash "$lock_lib" release-if-owner "." "$branch" "$lock_owner" >/dev/null 2>&1; then
         echo "review-round: persisted round $round for $branch but could not release its counter lock" >&2
         exit 5
     fi
     if [ -n "$delta_from" ]; then
-        # HIMMEL-4638: best effort - a failed write only loses the guard.
-        printf '%s\n' "$PPID" > "$delta_run" 2>/dev/null || rm -f "$delta_run" 2>/dev/null
         printf '%s delta %s\n' "$round" "$delta_from"
     else
         printf '%s\n' "$round"
