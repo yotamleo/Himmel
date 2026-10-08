@@ -66,7 +66,7 @@ run run-suites scripts/test-a.sh
 contains "ssh: ignores operator config" "$CALLS" "-F /dev/null"
 contains "ssh: lane-private known_hosts" "$CALLS" "UserKnownHostsFile=$W/lane/known_hosts"
 contains "ssh: lane-private key" "$CALLS" "-i $W/lane/id_ed25519"
-lacks "ssh: no real HOME" "$CALLS" "$HOME"
+lacks "ssh: no operator ~/.ssh" "$CALLS" "$HOME/.ssh"
 
 # 4. sync-worktree / run-suites / fetch-results / stop plans
 mkdir -p "$W/wt"
@@ -99,7 +99,9 @@ run fetch-results "$W/out"
 contains "fetch: rsync from remote results" "$CALLS" "user@127.0.0.1:himmel-results/"
 run stop
 contains "stop: docker stop" "$CALLS" "docker stop himmel-macos-lane"
-contains "stop: docker rm" "$CALLS" "docker rm himmel-macos-lane"
+contains "stop: docker rm -f" "$CALLS" "docker rm -f himmel-macos-lane"
+STUB_RC=1 run stop
+eq "stop: failed removal propagates" 1 "$RC"
 
 # 5. wait-ssh gives up after the boot budget
 STUB_RC=1 run wait-ssh

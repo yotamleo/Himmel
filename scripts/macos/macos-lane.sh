@@ -131,7 +131,8 @@ cmd_fetch_results() {
 
 cmd_stop() {
   "$TIMEOUT_BIN" "$T_STOP" "$DOCKER" stop "$NAME" || echo "macos-lane: stop failed (already gone?)" >&2
-  "$TIMEOUT_BIN" "$T_STOP" "$DOCKER" rm "$NAME" || echo "macos-lane: rm failed (already gone?)" >&2
+  # rm -f succeeds on a container that is already gone and fails if it cannot be removed.
+  "$TIMEOUT_BIN" "$T_STOP" "$DOCKER" rm -f "$NAME" || die "docker rm -f $NAME failed — container may still be running"
 }
 
 sub="${1:-}"
