@@ -673,6 +673,9 @@ chmod 755 "$FIX/wt/realsub2"
 mkdir -p "$FIX/wt/realsub3"
 _deny_row "95i mv then cd" "$FIX/primary/a.txt" "cd $FIX/primary; mv $FIX/wt/realsub3 $FIX/wt/r3; cd $FIX/wt/realsub3; echo x > a.txt"
 rm -rf "$FIX/wt/r3"
+# 95l: a dash-leading operand after `--` is still the mutated path.
+mkdir -p "$FIX/wt/-victim"
+_deny_row "95l rmdir -- -victim then cd" "$FIX/primary/a.txt" "cd $FIX/wt; rmdir -- -victim; cd $FIX/primary; cd $FIX/wt/-victim; echo x > a.txt"
 # Controls that must stay allowed: a mutation of an UNRELATED path before the
 # cd, and a physical cd with no symlink and no `..`.
 check_both "95j cd wt/realsub after rm of an unrelated file allows" allow \

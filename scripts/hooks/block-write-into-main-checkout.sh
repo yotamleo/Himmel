@@ -2297,11 +2297,12 @@ _bwimc_cd_would_fail() {
 # target (or an ancestor) was touched by then fails closed. _bwimc_fsmut_note
 # TOKENS... records one clause; _bwimc_fsmut_hit ABS tests a cd target.
 _bwimc_fsmut_note() {
-    local t u b verb=0 fnd=0 r c
+    local t u b verb=0 fnd=0 r c dd=0
     for t in "$@"; do
         u=$(_bwimc_unq "$t"); b="${u##*/}"
         if [ "$verb" = 1 ]; then
-            case "$u" in ''|-*) continue ;; esac
+            if [ "$dd" = 0 ] && [ "$u" = -- ]; then dd=1; continue; fi
+            case "$u" in '') continue ;; -*) [ "$dd" = 1 ] || continue ;; esac
             case "$t" in *'$'*|*'`'*|*[*?[]*|*\\*) _bwimc_fsmut='*'; continue ;; esac
             if [ "$_bwimc_ecwd_unres" = 1 ] && case "$u" in /*) false ;; *) true ;; esac; then
                 _bwimc_fsmut='*'
