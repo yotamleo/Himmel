@@ -1636,6 +1636,15 @@ E
 sc_case "row 54 control: BASH_SOURCE suffix strip is the file's own dirname" 1 0 <<'E'
 source "${BASH_SOURCE[0]%/*}/../lib/armor.sh"
 E
+sc_case "row 55: a dirname subst with no self reference denies" 0 1 <<'E'
+source "$(dirname /)/scripts/lib/armor.sh"
+E
+sc_case "row 55: a bare cd subst with no self reference denies" 0 1 <<'E'
+source "$(cd && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 55 control: a nested-quote dirname of $0 resolves" 1 0 <<'E'
+source "$(cd "$(dirname "$0")" && pwd)/../lib/armor.sh"
+E
 }
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

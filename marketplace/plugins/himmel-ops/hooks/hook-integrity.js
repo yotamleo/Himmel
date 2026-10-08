@@ -1363,12 +1363,17 @@ function assignedInside(v, fileDir, root, assigns, depth) {
 function isSelfDirSubst(prefix, fileDir, root, assigns, depth) {
   if (!/^\$\(/.test(prefix) || !/dirname|\bcd\b/.test(prefix)) return false;
   if (/\bcd\s+(?:-P\s+)?["']?[\/.~]/.test(prefix)) return false;
+  // The subst must read a self reference; `$(dirname /)` or a bare `cd` names no file.
+  let selfRef = false;
   const rest = prefix
-    .replace(/\$\{BASH_SOURCE(?:\[[0-9@*]+\])?\}|\$BASH_SOURCE\b|\$\{0\}|\$0\b/g, '')
-    .replace(new RegExp(`\\$\\{?(${VAR_NAME})\\}?`, 'g'), (all, v) =>
-      (assignedInside(v, fileDir, root, assigns, depth) ? '' : all))
+    .replace(/\$\{BASH_SOURCE(?:\[[0-9@*]+\])?\}|\$BASH_SOURCE\b|\$\{0\}|\$0\b/g, () => { selfRef = true; return ''; })
+    .replace(new RegExp(`\\$\\{?(${VAR_NAME})\\}?`, 'g'), (all, v) => {
+      if (!assignedInside(v, fileDir, root, assigns, depth)) return all;
+      selfRef = true;
+      return '';
+    })
     .replace(/2>\/dev\/null|\bcd\s+-P\b|\b(?:dirname|cd|pwd)\b|&&|\$\(|[)\s;.\/-]/g, '');
-  return rest === '';
+  return selfRef && rest === '';
 }
 
 // ponytail: a positional parameter ($1..$9) is caller-supplied and its real
