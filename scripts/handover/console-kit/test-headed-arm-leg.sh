@@ -403,7 +403,7 @@ contains "dry-run HIMMEL_LEG_CONTEXT_MODE=bogus: names the allowed modes" "$out"
 # this exact assertion, not a vaguer one.
 rc=0; out="$(CONSOLE_CONTEXT=1m LEG_CONTEXT='' LEG_REPO='' bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 check "dry-run, ambient CONSOLE_CONTEXT=1m: exit 0 (a leg is unaffected by it)" "$rc" "0"
-contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT CONSOLE_CONTEXT=<unset>"
+contains "dry-run, ambient CONSOLE_CONTEXT=1m: scrubbed to <unset> in the wrapper's own env" "$out" "scrub=CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT HIMMEL_CONSOLE_JUDGE_DOC HIMMEL_CONSOLE_JUDGE_QID CONSOLE_CONTEXT=<unset>"
 not_contains "dry-run, ambient CONSOLE_CONTEXT=1m: never reported as still set" "$out" "CONSOLE_CONTEXT=1m"
 
 # --- HIMMEL-3435: HIMMEL_CONSOLE_NAME resolution (--console, launching
@@ -2471,6 +2471,7 @@ contains "28f --judge launch is recorded role=judge" "$rec28d" " role=judge "
 # exported in that leg's shell, must not reach a native judge it arms.
 d28e="$tmp/c28e"; mk_launch_stubs "$d28e" "HIMMEL-3795-N1-binleak"; mkdir -p "$tmp/repo28e"
 rc=0
+HIMMEL_CONSOLE_JUDGE_QID=ambient-sibling HIMMEL_CONSOLE_JUDGE_DOC=/tmp/ambient-sibling-judge-1.md \
 LEG_CLAUDE_BIN=/tmp/stale-claude-codex-bin \
   RUN_LEG_ARGS='--judge' run_leg "$d28e" "$tmp/repo28e" "HIMMEL-3795-N1-binleak" "claude-sonnet-5" >/dev/null 2>&1 || rc=$?
 wait_record "$d28e" || true
@@ -2494,6 +2495,8 @@ contains "HIMMEL-4608: --judge launch exports its own doc" "$env4608" "HIMMEL_CO
 contains "HIMMEL-4608: --judge launch exports its qid" "$env4608" "HIMMEL_CONSOLE_JUDGE_QID=Q4608"
 contains "HIMMEL-4608 control: the env-record was produced by a judge launch" "$env4608" "HIMMEL_CONSOLE_JUDGE=1"
 not_contains "HIMMEL-4608: full --judge launch (other doc) carries no binding to a qid it cannot derive" "$env28e" "HIMMEL_CONSOLE_JUDGE_QID="
+not_contains "HIMMEL-4608: an ambient sibling qid never reaches a judge whose qid is underivable" "$env28e" "ambient-sibling"
+not_contains "HIMMEL-4608: an ambient sibling doc never reaches the armed judge" "$env28e" "HIMMEL_CONSOLE_JUDGE_DOC=/tmp/ambient-sibling-judge-1.md"
 
 # Same leak, native --profile leg-impl instead of --judge (the ticket's other
 # named case).

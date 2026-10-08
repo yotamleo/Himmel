@@ -979,7 +979,7 @@ fi
 # nested judge would otherwise have its ambient (inherited, not deliberate)
 # HIMMEL_CONSOLE_JUDGE_EFFORT silently win again, the exact same "ambient
 # looks deliberate" failure this ticket closes for CLAUDE_CODE_EFFORT_LEVEL.
-LEG_ENV_SCRUB="CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT"
+LEG_ENV_SCRUB="CONSOLE_CONTEXT HIMMEL_CONSOLE_JUDGE_EFFORT HIMMEL_CONSOLE_JUDGE_DOC HIMMEL_CONSOLE_JUDGE_QID"
 for _leg_env_scrub in $LEG_ENV_SCRUB; do
     unset "$_leg_env_scrub"
     leg_env_drop_token "$_leg_env_scrub"
