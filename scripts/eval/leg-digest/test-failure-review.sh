@@ -29,6 +29,8 @@ export HIMMEL_FAILURE_ROUTES_STATE="$TMP/never-state.json"
 export HIMMEL_FAILURE_INBOX="$TMP/never-inbox.md"
 export HIMMEL_FAILURE_REVIEW_DIR="$TMP/never-review"
 export FAILURE_REVIEW_NOTIFY_CMD="$TMP/stub/notify"
+# The friction subsection reads the real session transcripts; off unless a case sets a stub (HIMMEL-4926).
+export FAILURE_REVIEW_FRICTION_CMD=""
 # The router fails closed without a project key (HIMMEL-4754); the suite names one, the no-key cases unset it.
 export JIRA_PROJECT_KEY=HIMMEL
 export CADENCE_ALERT_FILE="$TMP/cadence-alerts.log" CADENCE_ALERT_DEDUPE_DIR="$TMP/alert-sent" CADENCE_ALERT_SEND_CMD="$TMP/stub/notify"
@@ -332,5 +334,19 @@ review "$C9k" --state "$C9k/routes" >/dev/null 2>&1
 check "an extensionless router state finishes (its legacy and new sidecar names coincide)" '[ -f "$C9k/routes.notify.json" ]'
 
 echo
+echo "friction subsection (HIMMEL-4926)"
+CF="$TMP/cf"; mkdir -p "$CF"; : >"$CF/ledger.jsonl"
+printf '#!/usr/bin/env bash\nprintf "### Friction (last 7 days)\\n\\n- hook:x / y: 3 refusals\\n"\n' >"$STUB/friction-ok"
+printf '#!/usr/bin/env bash\nexit 7\n' >"$STUB/friction-bad"
+chmod +x "$STUB/friction-ok" "$STUB/friction-bad"
+FAILURE_REVIEW_FRICTION_CMD="$STUB/friction-ok" review "$CF" >"$CF/run.out" 2>&1
+check "the digest carries the friction subsection" 'digest "$CF" | grep -q "^- hook:x / y: 3 refusals"'
+CG="$TMP/cg"; mkdir -p "$CG"; : >"$CG/ledger.jsonl"
+FAILURE_REVIEW_FRICTION_CMD="$STUB/friction-bad" review "$CG" >"$CG/run.out" 2>&1
+check "a failing friction command leaves one line and the review still exits 0" 'digest "$CG" | grep -q "unavailable: rc 7"'
+CH="$TMP/ch"; mkdir -p "$CH"; : >"$CH/ledger.jsonl"
+review "$CH" >"$CH/run.out" 2>&1
+check "an empty command turns the subsection off" '! digest "$CH" | grep -q "Friction"'
+
 echo "test-failure-review:$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
