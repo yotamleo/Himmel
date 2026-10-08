@@ -52,7 +52,6 @@ SHELL:scripts/hooks/auto-approve-safe-bash.sh
 SHELL:scripts/hooks/auto-arm-on-cap.sh
 SHELL:scripts/hooks/auto-arm-on-subagent-cap.sh
 SHELL:scripts/hooks/block-backend-tier.sh
-SHELL:scripts/hooks/block-cheap-lane-pr-without-verdict.sh
 SHELL:scripts/hooks/block-destructive-commands.sh
 SHELL:scripts/hooks/block-edit-live-settings.sh
 SHELL:scripts/hooks/block-edit-on-main.sh

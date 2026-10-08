@@ -176,11 +176,43 @@ test("8. a running subagent shows running with its current call, then flips to d
 
 // HIMMEL-4712: `himmelctl ui --agui` with no session id opens the fleet landing over the fixture fleet (3 live +
 // 1 wrapped); the wrapped leg sits in the closed section, never in the live list; a row opens its run's stream.
+test("archived and released consoles show zero live sessions", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  await page.route("**/api/agui/fleet", async (route) => {
+    const response = await route.fetch();
+    const fleet = await response.json();
+    const console = fleet.sessions.find((r: any) => r.role === "console");
+    fleet.sessions = [
+      { ...console, name: "archived-console", console: "archived-console", live: false, state: "unknown" },
+      { ...console, name: "released-console", console: "released-console", lock: "released" },
+    ];
+    await route.fulfill({ response, json: fleet });
+  });
+  await page.goto(h.url);
+  await expect(page.locator(".top .meta")).toContainText("0 live");
+  await expect(page.getByText("No live sessions.", { exact: true })).toBeVisible();
+});
+
+test("a wrapped session with no console retains a collapsed sidebar drill-in", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  await page.route("**/api/agui/fleet", async (route) => {
+    const response = await route.fetch();
+    const fleet = await response.json();
+    const wrapped = fleet.sessions.find((r: any) => r.state === "wrapped");
+    fleet.sessions = [{ ...wrapped, console: "gone-console", parent: "gone-console" }];
+    await route.fulfill({ response, json: fleet });
+  });
+  await page.goto(h.url);
+  const wrapped = page.locator(".fleet-menu .fleet-menu-wrapped");
+  await expect(wrapped).not.toHaveAttribute("open", "");
+  await wrapped.locator("summary").click();
+  await expect(wrapped.getByRole("link", { name: FLEET.wrapped.name, exact: true })).toHaveAttribute("href", new RegExp(`&run=${FLEET.wrapped.run}$`));
+});
 test("9. the fleet landing lists 3 live sessions and 1 wrapped one, and a row opens that session's stream", async ({ page }) => {
   h = await bootAgui("", { fleet: true });
   expect(h.url).not.toContain("&run=");
   await page.goto(h.url);
-  const live = page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row");
+  const live = page.locator(".fleet .fleet-row:not(.finished)");
   await expect(live).toHaveCount(3);
   await expect(live.nth(0)).toContainText(FLEET.console.name);
   await expect(live.nth(0)).toContainText("console");
@@ -192,7 +224,7 @@ test("9. the fleet landing lists 3 live sessions and 1 wrapped one, and a row op
   await expect(live.filter({ hasText: FLEET.idle.name }).locator(".state")).toHaveText("idle");
   await expect(live.filter({ hasText: FLEET.wrapped.name })).toHaveCount(0);
   // HIMMEL-4751: the leg sits in its console's subtree; each row says where it hangs and what it has spent.
-  await expect(page.getByRole("list", { name: `Under ${FLEET.console.name}` }).locator(".fleet-row")).toHaveText([new RegExp(FLEET.leg.name)]);
+  await expect(page.getByRole("region", { name: FLEET.console.name }).getByRole("list", { name: "Live sessions" }).locator(".fleet-row")).toHaveText([new RegExp(FLEET.leg.name)]);
   await expect(leg.locator(".fleet-graph")).toHaveText(`under ${FLEET.console.name}`);
   await expect(live.nth(0).locator(".fleet-graph")).toHaveText(`under the operator · successor to ${PRIOR_CONSOLE} (not live)`);
   await expect(leg.locator(".fleet-usage")).toHaveText("context 20% of 200.0k (autocompact) · 3 calls · in 30 · out 300 · cache read 120.0k · cache write 0 · cost-eq 13.5k");
@@ -233,7 +265,7 @@ test("10. console to Fleet to a run view and back: one rail, the token in the fr
   await expect(page).toHaveURL(new RegExp(`/agui/#t=${tok}$`));
   await expect(rail).toHaveText(["Config", "Health", "Fleet"]);
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Fleet");
-  const leg = page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row").filter({ hasText: FLEET.leg.name });
+  const leg = page.locator(".fleet .fleet-row:not(.finished)").filter({ hasText: FLEET.leg.name });
   await expect(leg.locator("a.fleet-link")).toHaveAttribute("href", `/#t=${tok}&page=health`);
 
   await leg.locator("a.fleet-head").click();
@@ -249,7 +281,7 @@ test("10. console to Fleet to a run view and back: one rail, the token in the fr
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Run");
 
   await page.goto(h.url);
-  await page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row").filter({ hasText: FLEET.leg.name }).locator("a.fleet-link").click();
+  await page.locator(".fleet .fleet-row:not(.finished)").filter({ hasText: FLEET.leg.name }).locator("a.fleet-link").click();
   await expect(page).toHaveURL(/\/#\/health$/);
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Health");
 
@@ -257,21 +289,55 @@ test("10. console to Fleet to a run view and back: one rail, the token in the fr
   for (const u of lines) expect(new URL(u).pathname + new URL(u).search).not.toContain(tok);
 });
 
+test("12. two-console side menu, deep-linked page, and identical menu/row drill-in", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  const other = "HIMMEL-project-console";
+  await page.route("**/api/agui/fleet", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const console = body.sessions.find((r: any) => r.name === FLEET.console.name);
+    body.sessions.push({ ...console, name: other, console: other, predecessor: null });
+    const child = body.sessions.find((r: any) => r.name === FLEET.idle.name);
+    Object.assign(child, { role: "leg", parent: other, console: other, lane: "claudex" });
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(`${h.url}&console=${other}`);
+  await expect(page.locator(".top .run")).toHaveText(other);
+  await expect(page.locator(".fleet-console h2")).toHaveText(other);
+  await expect(page.locator(".fleet")).toContainText(FLEET.idle.name);
+  await expect(page.locator(".fleet")).not.toContainText(FLEET.leg.name);
+  const menu = page.getByRole("navigation", { name: "Consoles" });
+  await expect(menu.locator("a.console-page")).toHaveCount(2);
+  await menu.locator("a.console-page", { hasText: FLEET.console.name }).click();
+  await expect(page.locator(".fleet-console h2")).toHaveText(FLEET.console.name);
+  const leg = page.locator(".fleet .fleet-row", { hasText: FLEET.leg.name });
+  const rowHref = await leg.locator("a.fleet-head").getAttribute("href");
+  const menuLeg = menu.getByRole("link", { name: FLEET.leg.name, exact: true });
+  await expect(menuLeg).toHaveAttribute("href", rowHref!);
+  await menuLeg.click();
+  await expect(page.locator(".top .run")).toHaveText(`run ${FLEET.leg.run}`);
+  await expect(page.locator(".call", { hasText: "Push" })).toBeVisible();
+  await menu.getByRole("link", { name: FLEET.console.name, exact: true }).last().click();
+  await expect(page.locator(".top .run")).toHaveText(`run ${FLEET.console.run}`);
+});
+
 // HIMMEL-4791: a cloud session is a node under its console with its shepherd leg under it; it links its session,
 // says its phase, and says its tokens are not measured (never a zero). A merged one sits with the wrapped.
 test("11. cloud sessions: a node under the console, its shepherd under it, tokens not measured", async ({ page }) => {
   h = await bootAgui("", { fleet: true, cloud: true });
   await page.goto(h.url);
-  const live = page.getByRole("list", { name: "Live sessions" }).locator(".fleet-row");
+  const live = page.locator(".fleet .fleet-row:not(.finished)");
   const done = live.filter({ hasText: "cloud-HIMMEL-905" }).first();
-  await expect(done.locator(".fleet-role")).toHaveText("cloud");
+  await expect(done.locator(".fleet-role")).toHaveText("cloud · cloud bank");
   await expect(done.locator(".fleet-meta")).toHaveText("HIMMEL-905 · PR 1905 · CLOUD-DONE, shepherd's turn · cloud session");
   await expect(done.locator("a.fleet-cloud")).toHaveAttribute("href", CLOUD.url);
   await expect(done.locator(".fleet-usage")).toHaveText("tokens not measured: a cloud session keeps no local journal and no source exposes its usage");
   await expect(done.locator(".fleet-graph")).toHaveText(`under ${FLEET.console.name}`);
   await expect(page.getByRole("list", { name: "Under cloud-HIMMEL-905" }).locator(".fleet-row")).toHaveText([new RegExp(CLOUD.shepherd.name)]);
   await expect(live.filter({ hasText: "cloud-HIMMEL-906" }).locator(".fleet-meta")).toHaveText("HIMMEL-906 · no CLOUD-DONE yet");
+  await expect(page.getByRole("region", { name: "Orphans" }).filter({ has: page.locator(".fleet-row") })).toContainText("cloud session without a shepherd");
   await expect(live.filter({ hasText: "cloud-HIMMEL-907" })).toHaveCount(0);
-  await page.locator("details.fleet-closed summary").click();
-  await expect(page.getByRole("list", { name: "Wrapped sessions" }).locator(".fleet-row").filter({ hasText: "cloud-HIMMEL-907" }).locator(".fleet-meta")).toHaveText("HIMMEL-907 · PR 1907 · PR merged · cloud session");
+  const console = page.getByRole("region", { name: FLEET.console.name });
+  await console.locator("details.fleet-closed summary").click();
+  await expect(console.getByRole("list", { name: "Wrapped sessions" }).locator(".fleet-row").filter({ hasText: "cloud-HIMMEL-907" }).locator(".fleet-meta")).toHaveText("HIMMEL-907 · PR 1907 · PR merged · cloud session");
 });

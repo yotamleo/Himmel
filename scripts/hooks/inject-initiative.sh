@@ -115,7 +115,7 @@ active=$(resolve_legs "${HIMMEL_INITIATIVE:-}" "${HIMMEL_INITIATIVE_OVERNIGHT:-}
 # Only reached once we know we're about to inject (the OFF path above already
 # exited silently, so there is nothing to dedup there). Extraction mirrors
 # the jq-first / grep -oP-fallback convention used elsewhere in this dir
-# (scripts/hooks/block-cheap-lane-pr-without-verdict.sh's extract_command).
+# (scripts/hooks/check-cr-marker-on-pr-create.sh's extract_command).
 _ii_extract_session_id() {
     local input="$1"
     if command -v jq >/dev/null 2>&1; then

@@ -195,6 +195,7 @@ console_context_leg_env_unset_names() {
         CLAUDE_CODE_EFFORT_LEVEL \
         CLAUDEX_LANE_OK \
         LEG_LANE \
+        CADENCE_BANK_LANE \
         OPENROUTER_MODEL \
         LEG_PROFILE_SETTINGS \
         LEG_PROFILE_PREFACE \

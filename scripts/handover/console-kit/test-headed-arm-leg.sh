@@ -125,7 +125,7 @@ unset HIMMEL_CONSOLE_DOC 2>/dev/null || true
 . "$HERE/../../lib/timeout-bin.sh"
 # The suite owns every launcher input; an ambient leg shell must not silently
 # turn default-native cases into claudex cases.
-unset LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_PROFILE_NO_SETTING_SOURCES LEG_SESSION_ID LEG_HEADLESS LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE CLAUDE_CODE_EFFORT_LEVEL HIMMEL_LEG_CONTEXT_MODE HIMMEL_LEG_AUTOCOMPACT 2>/dev/null || true
+unset CADENCE_BANK_LANE LEG_LANE LEG_CONTEXT LEG_REPO LEG_EFFORT HEADED_ARM_LAUNCHER HEADED_ARM_LAUNCHER_ENV HEADED_ARM_RECORDER IMPL_GUARD_OK INLINE_IMPL_OK HIMMEL_CONSOLE_LEG HIMMEL_LEAN_LEG LEG_CLAUDE_BIN LEG_PROFILE LEG_PROFILE_SETTINGS LEG_PROFILE_PREFACE LEG_PROFILE_MCP_CONFIG LEG_PROFILE_NO_SETTING_SOURCES LEG_SESSION_ID LEG_HEADLESS LEG_SUPPRESS_CR_TRIGGER CR_TRIGGER_SUPPRESS HIMMEL_CONSOLE_NAME CLAUDE_PID SESSION_NAME_CMDLINE_FILE CLAUDE_CODE_EFFORT_LEVEL HIMMEL_LEG_CONTEXT_MODE HIMMEL_LEG_AUTOCOMPACT 2>/dev/null || true
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/headed-arm-leg-test.XXXXXX")" || { echo "FAIL: mktemp -d failed" >&2; exit 1; }
 # The launcher resolves every path it writes physically; macOS's TMPDIR sits
@@ -197,7 +197,7 @@ mk_launch_stubs() {
   cat > "$dir/konsole" <<'KONSOLE_EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$(dirname "$0")/record"
-env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|LEG_PROFILE_NO_SETTING_SOURCES|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|HEADED_ARM_LEG_CLAUDE_BIN|HIMMEL_CONSOLE_JUDGE_EFFORT|HIMMEL_CONSOLE_JUDGE|HIMMEL_LEG_CONTEXT_MODE|HIMMEL_LEG_AUTOCOMPACT)=' > "$(dirname "$0")/env-record"
+env | grep -E '^(IMPL_GUARD_OK|INLINE_IMPL_OK|HIMMEL_CONSOLE_LEG|HEADED_ARM_REQUIRED_AUTOCOMPACT|HIMMEL_LEAN_LEG|LEG_CLAUDE_BIN|LEG_PROFILE_SETTINGS|LEG_PROFILE_PREFACE|LEG_PROFILE_MCP_CONFIG|LEG_PROFILE_NO_SETTING_SOURCES|CONSOLE_CONTEXT|HANDOVER_DIR|HIMMEL_CONSOLE_NAME|CLAUDE_CODE_EFFORT_LEVEL|HEADED_ARM_LEG_CLAUDE_BIN|HIMMEL_CONSOLE_JUDGE_EFFORT|HIMMEL_CONSOLE_JUDGE|HIMMEL_LEG_CONTEXT_MODE|HIMMEL_LEG_AUTOCOMPACT|LEG_LANE|CADENCE_BANK_LANE)=' > "$(dirname "$0")/env-record"
 : > "$(dirname "$0")/confirmable"
 sleep 5
 KONSOLE_EOF
@@ -826,6 +826,8 @@ contains "full launch, sanctioned Context line: arm log records context=1m (oper
 
 # --- 10. IMPL_GUARD_OK reaches the konsole invocation's own environment ----
 env8="$(cat "$d8/env-record" 2>/dev/null || true)"
+not_contains "full launch, native: no added lane env" "$env8" "LEG_LANE="
+not_contains "full launch, native: no added bank lane env" "$env8" "CADENCE_BANK_LANE="
 contains "full launch: IMPL_GUARD_OK=1 in the konsole invocation's env" "$env8" "IMPL_GUARD_OK=1"
 contains "full launch: INLINE_IMPL_OK=1 in the konsole invocation's env" "$env8" "INLINE_IMPL_OK=1"
 contains "full launch: HIMMEL_CONSOLE_LEG=1 in the konsole invocation's env" "$env8" "HIMMEL_CONSOLE_LEG=1"
@@ -933,8 +935,17 @@ check "dry-run --lane claudex: exit 0 (flag wins over LEG_LANE=native)" "$rc" "0
 contains "dry-run --lane claudex: reports lane=claudex" "$out" "lane=claudex"
 contains "dry-run --lane claudex: resolved launcher names claude-codex" "$out" "claude-codex"
 contains "dry-run --lane claudex: env carries CLAUDEX_LANE_OK=1" "$out" "CLAUDEX_LANE_OK=1"
+contains "dry-run --lane claudex: resolved lane overrides ambient native" "$out" "LEG_LANE=claudex"
+contains "dry-run --lane claudex: bank lane is claudex" "$out" "CADENCE_BANK_LANE=claudex"
 contains "dry-run --lane claudex: env carries CLAUDE_CODE_EFFORT_LEVEL=medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=medium"
 contains "dry-run --lane claudex: MODEL defaults to gpt-6.1-sol" "$out" "gpt-6.1-sol"
+
+rc=0; out="$(CADENCE_BANK_LANE=native HEADED_ARM_LAUNCHER_ENV='LEG_LANE=native CADENCE_BANK_LANE=native' bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
+check "claudex: stale caller lane tokens do not refuse launch" "$rc" "0"
+contains "claudex: resolved lane replaces stale launcher token" "$out" "LEG_LANE=claudex"
+contains "claudex: resolved bank replaces stale launcher token" "$out" "CADENCE_BANK_LANE=claudex"
+not_contains "claudex: stale lane token is absent" "$out" "LEG_LANE=native"
+not_contains "claudex: stale bank token is absent" "$out" "CADENCE_BANK_LANE=native"
 
 rc=0; out="$(LEG_EFFORT=high bash "$SCRIPT" --dry-run --no-profile --lane claudex HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log 2>&1)" || rc=$?
 contains "dry-run --lane claudex: LEG_EFFORT overrides the medium default" "$out" "CLAUDE_CODE_EFFORT_LEVEL=high"
@@ -946,12 +957,15 @@ not_contains "dry-run --lane claudex: an explicit model is NOT overridden" "$out
 rc=0; out="$(bash "$SCRIPT" --dry-run --no-profile HIMMEL-9999-leg some/doc.md /tmp/nosig 99999999999 /tmp/leg.log claude-sonnet-5 2>&1)" || rc=$?
 contains "dry-run, no --lane: reports lane=native" "$out" "lane=native"
 not_contains "dry-run, no --lane: no claude-codex launcher" "$out" "claude-codex"
+not_contains "dry-run, native: no added lane env" "$out" "LEG_LANE="
+not_contains "dry-run, native: no added bank lane env" "$out" "CADENCE_BANK_LANE="
 
 # HIMMEL-4076: a lane typo, missing model mapping or dropped backend must
 # never silently start a native/subscription session. Dry runs make no calls.
 rc=0; out="$(LEG_LANE=native bash "$SCRIPT" --dry-run --no-profile --lane openrouter HIMMEL-9999-or "$some_doc" "$tmp/no-signal" "$PAST" "$tmp/or.log" 2>&1)" || rc=$?
 check "openrouter: flag selects lane" "$rc" "0"
 contains "openrouter: lane reported" "$out" "lane=openrouter"
+contains "openrouter: bank lane remains openrouter" "$out" "CADENCE_BANK_LANE=openrouter"
 contains "openrouter: default Sonnet slug pinned" "$out" "OPENROUTER_MODEL=anthropic/claude-sonnet-5.5"
 contains "openrouter: backend is claude-openrouter" "$out" "claude-openrouter"
 contains "openrouter: alias route uses sonnet" "$out" " sonnet "
@@ -974,6 +988,7 @@ check "deepseek: registry admits the lane" "$rc" "0"
 contains "deepseek: lane reported" "$out" "lane=deepseek"
 contains "deepseek: launcher is claude-deepseek" "$out" "claude-deepseek"
 contains "deepseek: LEG_LANE exported" "$out" "LEG_LANE=deepseek"
+contains "deepseek: bank lane keeps openrouter mapping" "$out" "CADENCE_BANK_LANE=openrouter"
 contains "deepseek: recorder enabled" "$out" "recorder=1"
 not_contains "deepseek: no codex env" "$out" "CLAUDEX_LANE_OK"
 ds_stub="$tmp/ds-stub"; printf "#!/bin/sh\nexport ANTHROPIC_MODEL='stub-model'\nexit 0\n" > "$ds_stub"; chmod +x "$ds_stub"
@@ -1141,6 +1156,11 @@ not_contains "full launch, --lane claudex: launcher not force-wrapped in bash (e
 contains "full launch, --lane claudex: --model defaults to gpt-6.1-sol" "$rec16" "--model gpt-6.1-sol"
 contains "full launch, --lane claudex: --autocompact 200000 (standard context ceiling)" "$rec16" "--autocompact 200000"
 contains "full launch, --lane claudex: CLAUDEX_LANE_OK=1 reaches the konsole argv" "$rec16" "CLAUDEX_LANE_OK=1"
+contains "full launch, --lane claudex: lane reaches launcher argv" "$rec16" "LEG_LANE=claudex"
+contains "full launch, --lane claudex: bank lane reaches launcher argv" "$rec16" "CADENCE_BANK_LANE=claudex"
+env16="$(cat "$d16/env-record" 2>/dev/null || true)"
+contains "full launch, --lane claudex: lane reaches child env" "$env16" "LEG_LANE=claudex"
+contains "full launch, --lane claudex: bank lane reaches child env" "$env16" "CADENCE_BANK_LANE=claudex"
 contains "full launch, --lane claudex: CLAUDE_CODE_EFFORT_LEVEL=medium reaches the konsole argv" "$rec16" "CLAUDE_CODE_EFFORT_LEVEL=medium"
 
 # --- 17 (HIMMEL-2830). --profile <name>: a plugin profile + the standing leg

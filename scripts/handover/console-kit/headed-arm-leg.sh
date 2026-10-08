@@ -1357,6 +1357,17 @@ if [ "$LANE" = "native" ]; then
     fi
 fi
 
+# HIMMEL-4867: the leg's own bank-preflight reads CADENCE_BANK_LANE before
+# LEG_LANE. Propagate the resolved registry values, including DeepSeek's
+# existing openrouter bank gate, rather than inheriting the console's lane.
+# Native launches keep their environment unchanged.
+if [ "$LANE" != "native" ]; then
+    leg_env_drop_token LEG_LANE
+    leg_env_drop_token CADENCE_BANK_LANE
+    leg_propagate_env LEG_LANE "$LANE"
+    leg_propagate_env CADENCE_BANK_LANE "$LANE_BANK_GATE"
+fi
+
 # claudex lane (HIMMEL-2782): see the --lane header comment above.
 if [ "$LANE" = "claudex" ]; then
     LANE_BIN="${LANE_BIN_OVERRIDE:-$HERE/../../$LANE_BIN_NAME}"
@@ -1388,7 +1399,6 @@ if [ "$LANE" = "openrouter" ]; then
     export HEADED_ARM_LAUNCHER="$LANE_BIN"
     leg_env_drop_token OPENROUTER_MODEL
     leg_propagate_env OPENROUTER_MODEL "$OR_MODEL"
-    leg_propagate_env LEG_LANE openrouter
     leg_propagate_env CLAUDE_CODE_EFFORT_LEVEL "${LEG_EFFORT:-medium}"
     export HEADED_ARM_RECORDER=1
 fi
@@ -1408,7 +1418,6 @@ if [ "$LANE" = "deepseek" ]; then
             exit 2
         fi
     fi
-    leg_propagate_env LEG_LANE deepseek
     export HEADED_ARM_RECORDER=1
 fi
 

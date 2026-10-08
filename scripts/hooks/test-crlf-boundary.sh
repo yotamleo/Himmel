@@ -415,30 +415,6 @@ check_verdict _decide_cadence cadence-approve-engines ALLOW \
     "$(printf 'cd /tmp\npython "%s" vault' "$CADENCE_ENGINE_BS")" \
     "allow across a nav-then-engine two-line command"
 
-# ── block-cheap-lane-pr-without-verdict.sh ───────────────────────────────────
-# The regression: --head as the LAST token on the line. `set -- $cmd`
-# word-splitting glues a stray CR onto that last token, so the branch/slug
-# lookup misses — a VERDICT-PRESENT branch (should ALLOW) blocked instead
-# under CRLF. That was the actual HIMMEL-2234 finding; pin it in both
-# directions so a regression trips whichever way it slides.
-BRIDGE_ROOT="$TMP/bridge"
-mkdir -p "$BRIDGE_ROOT/glm-sessions/glm-spike-1"
-
-printf '{"lane":"glm","task_name":"spike","d1_verdict":null}' \
-    > "$BRIDGE_ROOT/glm-sessions/glm-spike-1/meta.json"
-check_bounded block-cheap-lane-pr-without-verdict Bash 2 \
-    "gh pr crea""te --head glm/spike" "no d1_verdict blocks" BRIDGE_ROOT="$BRIDGE_ROOT"
-
-printf '{"lane":"glm","task_name":"spike","d1_verdict":"pass"}' \
-    > "$BRIDGE_ROOT/glm-sessions/glm-spike-1/meta.json"
-check_bounded block-cheap-lane-pr-without-verdict Bash 0 \
-    "gh pr crea""te --head glm/spike" \
-    "verdict present + --head as the last token still allows (HIMMEL-2234 regression)" \
-    BRIDGE_ROOT="$BRIDGE_ROOT"
-
-check_bounded block-cheap-lane-pr-without-verdict Bash 0 "gi""t status" \
-    "unrelated command fast-path allows" BRIDGE_ROOT="$BRIDGE_ROOT"
-
 # ── check-cr-marker-on-pr-create.sh ──────────────────────────────────────────
 # Same --head-as-last-token family, the dangerous direction this time: a
 # marker that IS pending must still block a PR create when a stray CR lands

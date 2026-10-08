@@ -203,7 +203,7 @@ rm -f "$STAMP_FILE"
 echo "== a stamp with a mismatched epoch (shape-valid, wrong value) falls back to the proxy (HIMMEL-3725) =="
 # Shape-valid (`^ISO EPOCH$` both individually well-formed) but the epoch does
 # NOT correspond to the paired ISO date -- a hand-edited or foreign-written
-# stamp, since both real writers (qmd-reindex.sh, ship-index.sh) always derive
+# stamp, since the refresh writer (qmd-reindex.sh) always derives
 # iso+epoch from the same `date` invocation. Off by ~6 years, far past any
 # reasonable tolerance -- must fall back to the MAX(mtime) proxy, not be
 # trusted as a direct measurement.
@@ -271,7 +271,7 @@ assert_contains "and the quiet-corpus reading" "corpus" "$out"
 assert_contains "names the underlying figure" "MAX(source-file mtime)" "$out"
 assert_not_contains "never asserts staleness as fact" "index is STALE" "$out"
 assert_contains "warns misses are unproven" "MISSES AS UNPROVEN" "$out"
-assert_contains "steers away from reindexing on a station" "Do NOT reindex on a receiving station" "$out"
+assert_contains "advises refreshing this station locally" "bash scripts/luna/qmd-reindex.sh" "$out"
 assert_not_contains "does not claim incompleteness" "INCOMPLETE" "$out"
 
 echo "== --quiet still prints the notice =="
@@ -290,6 +290,9 @@ assert_contains "names INCOMPLETE" "qmd index is INCOMPLETE" "$out"
 assert_contains "cites the pending count" "1193 chunks still need embedding" "$out"
 assert_not_contains "2h is not stale under a 36h budget" "may be STALE" "$out"
 assert_contains "explains lex still works" "lexical" "$out"
+assert_contains "advises the local refresh runner" "Refresh the local index: bash scripts/luna/qmd-reindex.sh" "$out"
+assert_not_contains "does not advise a retired receiver transport" "ship-index.sh" "$out"
+assert_not_contains "does not forbid local refresh" "Do NOT reindex" "$out"
 
 echo "== a floored 'Nd' age is read at its WORST case, not its floor =="
 # qmd's formatter FLOORS (formatTimeAgo: days = Math.floor(hours / 24)), so

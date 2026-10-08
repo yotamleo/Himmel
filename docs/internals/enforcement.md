@@ -3573,7 +3573,13 @@ that cannot execute.
 **Retained bank policy (HIMMEL-920):** when no lane is available (registry-
 absent or unrunnable), the guard falls through to the pre-existing bank-aware
 cost guard instead of allowing unconditionally. `IMPL_GUARD_HARD` (default 80)
-refuses an eligible implementor-shaped dispatch outright; `IMPL_GUARD_WARN`
+and `IMPL_GUARD_WEEKLY_HARD` (default 85) refuse at their respective bank ceilings.
+A lift validated by `scripts/lib/bank-lift.sh` raises weekly HARD to 100;
+a standing lift also raises five-hour HARD to `CADENCE_BANK_MAX_PCT` (default
+100). Explicit `IMPL_GUARD_*` overrides win; invalid overrides retain their
+original defaults. Invalid/unreadable lifts warn and retain defaults; absent
+lifts retain the existing policy and refusal message. WARN is unchanged.
+The guard refuses an eligible implementor-shaped dispatch outright; `IMPL_GUARD_WARN`
 (default 65) attaches a visible advisory instead of blocking. Both require a
 fresh `IMPL_GUARD_CACHE_PATH` usage cache (default max age 300s) and a
 provably live `five_hour.resets_at` window — a missing/unparseable
@@ -4192,10 +4198,9 @@ sqlite read, so the per-session cost is one cheap subprocess.
 
 Never blocks, always exits 0. A station with no qmd installed (guard rc 2) is
 silent — adopters who do not use qmd are never nagged about a tool they never
-installed. The notice explicitly tells a *receiving* station NOT to reindex:
-it embeds ~50x slower than the host, so the fix is a host-side push
-(`scripts/luna/ship-index.sh`, armable via `qmd-cadence.sh arm --ship-to`),
-never a local rebuild.
+installed. The local guard advises refreshing the index with
+`scripts/luna/qmd-reindex.sh`. The hook's older receiver advisory is pending
+separate hook-integrity-authorized cleanup (HIMMEL-4896).
 
 **rc 2 is the ONLY silent non-verdict — and only while no qmd policy is
 declared.** Everything else that is not a freshness verdict is reported as

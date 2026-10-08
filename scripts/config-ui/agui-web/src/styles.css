@@ -179,3 +179,18 @@ a.fleet-head:hover .fleet-name,a.fleet-head:focus-visible .fleet-name{text-decor
 /* HIMMEL-4711: the page column beside the shared rail, and a fleet row's link to the console. */
 .pane{min-width:0}
 .fleet-link{justify-self:start;color:var(--accent);font:12px var(--mono)}
+/* HIMMEL-4808: console sections and their fleet rail. */
+.fleet-console,.fleet-orphans{margin-bottom:24px}
+.fleet-console h2,.fleet-orphans h2{font:600 14px var(--mono);overflow-wrap:anywhere;border-bottom:2px solid var(--accent);padding-bottom:8px}
+.fleet-runtime{color:var(--dim);font:12px var(--mono)}
+.fleet-orphan-cause{color:var(--warn);font:12px var(--mono)}
+.fleet-menu{margin-top:20px;font:12px var(--mono);overflow-wrap:anywhere}
+.fleet-menu h2{font:600 12px var(--mono);color:var(--dim)}
+.fleet-menu details{margin:8px 0}
+.fleet-menu summary{cursor:pointer;font-weight:600;padding:4px 0}
+.fleet-menu ul{list-style:none;margin:4px 0;padding-left:10px;border-left:1px solid var(--line)}
+.fleet-menu li{margin:8px 0}
+.fleet-menu a{display:block;color:var(--accent);padding:3px 0}
+.fleet-menu small{display:block;color:var(--dim);font-size:11px}
+.fleet-menu a[aria-current=page]{color:var(--fg);font-weight:600}
+.rail:has(.fleet-menu){overflow-y:auto;max-height:100vh}
