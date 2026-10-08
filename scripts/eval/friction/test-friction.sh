@@ -58,7 +58,9 @@ OUT2="$TMP/out2.json"
 python3 -I "$FRICTION" --repo "$REPO" --now 2026-10-08T00:00:00Z --days 7 \
   --projects "$FIX/proj2" --docs "$FIX/docs" --json "$OUT2" --md "$TMP/out2.md" >/dev/null 2>&1
 field2() { python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$OUT2" "$1"; }
-eq "rows after --now are excluded" "$(field2 '[c["count"] for c in d["by_class"] if c["class"]=="suite-slot-busy"]')" "[2]"
+eq "rows after --now are excluded" "$(field2 '[c["count"] for c in d["by_class"] if c["class"]=="suite-slot-busy"]')" "[3]"
+eq "a recovery after --now does not resolve an in-window refusal" \
+  "$(field2 '[c["median_recovery_min"] for c in d["by_class"] if c["class"]=="suite-slot-busy"]')" "[4.5]"
 eq "every refusal in a retry chain gets a recovery time" \
   "$(field2 '[c["median_recovery_min"] for c in d["by_class"] if c["class"]=="suite-slot-busy"]')" "[4.5]"
 python3 -I "$FRICTION" --repo "$REPO" --now notatime --projects "$FIX/proj2" --docs "$FIX/docs" >/dev/null 2>&1

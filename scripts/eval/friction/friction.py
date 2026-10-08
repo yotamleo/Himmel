@@ -168,7 +168,7 @@ def scan_transcript(path, lane, since, until=None):
                 if b.get('is_error') or o.get('toolDenialKind'):
                     refused = classify(block_text(b), o.get('toolDenialKind'))
                 if refused is None:
-                    if pending and not b.get('is_error'):
+                    if pending and not b.get('is_error') and (until is None or ts < until):
                         for prow, pts in pending:
                             prow['recovery_s'] = min(RECOVERY_CAP_S, (ts - pts).total_seconds())
                         pending = []
