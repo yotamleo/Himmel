@@ -1534,7 +1534,12 @@ for v in \
     'git show HEAD:scripts/cr/pr-check-env.sh' \
     'git add "scripts/cr/pr-check-env.sh" docs/a.md' \
     'git add -- -config.md scripts/cr/pr-check-env.sh' \
-    'git diff -- --ext-diff scripts/cr/pr-check-env.sh'; do
+    'git diff -- --ext-diff scripts/cr/pr-check-env.sh' \
+    'git diff --name-only -- scripts/cr/pr-check-env.sh' \
+    'git diff --name-status -- scripts/cr/pr-check-env.sh' \
+    'git log --follow -- scripts/cr/pr-check-env.sh' \
+    'git diff -w -- scripts/cr/pr-check-env.sh' \
+    'git diff --stat=80 -- scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4916 pathspec [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
 # shellcheck disable=SC2016 # literal attack payloads, never expanded here

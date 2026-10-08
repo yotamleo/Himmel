@@ -865,7 +865,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
             # rather than end options. Keep that ambiguous shape fenced.
             if ! [[ ${ST_W[j - 1]} =~ ^-[0-9]+$ ]]; then
                 case "${ST_W[j - 1]}" in
-                    --cached|--staged|--oneline|-n|-p|-A|-a|-u|--stat) ;;
+                    --cached|--staged|--oneline|--name-only|--name-status|--follow|--*=*|-n|-p|-A|-a|-u|-w|--stat) ;;
                     -*) PR_GIT_UNSAFE=1; return 1 ;;
                 esac
             fi
@@ -909,7 +909,7 @@ readers_only && exit 0
 if [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}
-    deny "git execution/config options naming a guarded script are not pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
+    deny "git execution/config options or ambiguous option-value boundaries naming a guarded script cannot be proven to be pathspec mentions; run the script as its own literal command (HIMMEL-4916)."
 fi
 case "$flat" in
     *[cC][rR]/*|*[hH]andover/*) ;;
