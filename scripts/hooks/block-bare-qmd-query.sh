@@ -1442,29 +1442,48 @@ dyn_early() {
 # variable the command assigns a plain literal replaced by that value, so
 # `a=tm; ${a}ux …` reads as `tmux …`. Succeed when anything was replaced.
 _resolve_vars() {
-    local LC_ALL=C r=$1 rest=$1 nm val out pre post
+    local LC_ALL=C r=$1 rest=$1 nm val out pre post m head tail base=0 k=0 n pos
+    local -a ends=() nms=() vals=()
     rcmd=$1
     [[ $r == *=* && $r == *'$'* ]] || return 1
     [ "${#r}" -le 16384 ] || return 1
     while [[ $rest =~ $VARASSIGN ]]; do
-        nm=${BASH_REMATCH[2]} val=${BASH_REMATCH[3]}
-        rest=${rest#*"${BASH_REMATCH[0]}"}
+        m=${BASH_REMATCH[0]} nm=${BASH_REMATCH[2]} val=${BASH_REMATCH[3]}
+        pre=${rest%%"$m"*}
+        base=$((base + ${#pre} + ${#m}))
+        rest=${rest#*"$m"}
         case "$val" in
             \"*\") val=${val#\"} val=${val%\"} ;;
             \'*\') val=${val#\'} val=${val%\'} ;;
         esac
-        r=${r//"\${$nm}"/$val}
+        ends[k]=$base nms[k]=$nm vals[k]=$val
+        k=$((k + 1))
+    done
+    # Last assignment first, each only into the text after it, so a variable
+    # assigned twice reads as the value in force at each use.
+    # A control-character placeholder stands in for the value until every
+    # assignment is done, so a later value never counts as a name character.
+    n=$k
+    while [ "$k" -gt 0 ]; do
+        k=$((k - 1))
+        pos=${ends[k]} nm=${nms[k]} val=$'\001'$k$'\002'
+        head=${r:0:pos} tail=${r:pos}
+        tail=${tail//"\${$nm}"/$val}
         out=''
-        while [[ $r == *"\$$nm"* ]]; do
-            pre=${r%%"\$$nm"*}
-            post=${r#*"\$$nm"}
+        while [[ $tail == *"\$$nm"* ]]; do
+            pre=${tail%%"\$$nm"*}
+            post=${tail#*"\$$nm"}
             case "${post:0:1}" in
                 [A-Za-z0-9_]) out="$out$pre\$$nm" ;;
                 *) out=$out$pre$val ;;
             esac
-            r=$post
+            tail=$post
         done
-        r=$out$r
+        r=$head$out$tail
+    done
+    while [ "$k" -lt "$n" ]; do
+        r=${r//$'\001'$k$'\002'/${vals[k]}}
+        k=$((k + 1))
     done
     rcmd=$r
     [ "$rcmd" != "$1" ]
