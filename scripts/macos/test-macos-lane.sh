@@ -67,6 +67,8 @@ contains "start: loopback-only ssh port" "$CALLS" "-p 127.0.0.1:50922:10022"
 contains "start: disk mounted from lane dir" "$CALLS" "-v $W/lane/mac_hdd_ng.img:/image"
 contains "start: memory cap" "$CALLS" "--memory 10g"
 contains "start: bounded by timeout" "$CALLS" "timeout 120"
+contains "start: default image is the one that exists on Docker Hub" "$CALLS" "sickcodes/docker-osx:latest"
+lacks "start: no naked-auto tag (gone from Docker Hub)" "$CALLS" "naked-auto"
 
 # 3. ssh never reads the operator config or real HOME
 run run-suites scripts/test-a.sh
