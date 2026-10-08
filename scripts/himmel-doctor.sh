@@ -3735,7 +3735,8 @@ check_c52_graphify_ollama() {
 # point. For local and remote the probe is a read-only TCP connect to the ssh
 # port; it never starts, stops or logs in to a VM. A down local VM is INFO (it
 # is started on demand); a down remote VM is WARN, and a remote one routed
-# through a ProxyJump/ProxyCommand is INFO (HIMMEL-4599). HIMMEL_DOCTOR_VM_PROBE is a
+# through a ProxyJump/ProxyCommand is INFO (HIMMEL-4599), as is a down remote one
+# whose ssh -G lookup failed (HIMMEL-4631). HIMMEL_DOCTOR_VM_PROBE is a
 # test seam: a command run as `<probe> <host> <port>`; set but not executable =
 # the mode is reported without a probe.
 check_c53_vm_mode() {
@@ -3752,16 +3753,19 @@ check_c53_vm_mode() {
             "docs/setup/vm-mode.md"
         return
     fi
-    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin g k v via=""
+    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin g k v via="" unresolved=""
     timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
     # A remote target may be an ssh config alias (HIMMEL-4599): `ssh -G` prints
     # the effective config offline, connecting to nothing, so the probe uses
     # its HostName and port; a ProxyJump/ProxyCommand route is one a raw TCP
     # connect cannot follow, so it is reported, not probed. -p mirrors the
     # drivers, which always pass it. Only under timeout: a Match exec in the ssh
-    # config runs a command, which could stall the doctor.
-    if [ "$VM_MODE" = remote ] && [ -n "$timeout_bin" ] && command -v ssh >/dev/null 2>&1 \
-        && g="$("$timeout_bin" 5 ssh -G -p "$VM_MODE_PORT" "$VM_MODE_HOST" 2>/dev/null)"; then
+    # config runs a command, which could stall the doctor. A failed or timed-out
+    # lookup leaves the host as written, possibly an unresolved alias, so the
+    # result says so and a down probe is INFO, not WARN (HIMMEL-4631).
+    if [ "$VM_MODE" = remote ] && [ -n "$timeout_bin" ] && command -v ssh >/dev/null 2>&1; then
+        g="$("$timeout_bin" 5 ssh -G -p "$VM_MODE_PORT" "$VM_MODE_HOST" 2>/dev/null)" \
+            || { g=""; unresolved="; ssh -G failed, probed the configured host as written"; }
         while read -r k v; do
             case "$k" in
                 hostname) [ -n "$v" ] && host="$v" ;;
@@ -3797,7 +3801,10 @@ EOF
         fi
     fi
     if [ "$rc" -eq 0 ]; then
-        emit OK C53-vm-mode "vm.mode=$VM_MODE, VM ssh port reachable at $VM_MODE_HOST:$VM_MODE_PORT$resolved"
+        emit OK C53-vm-mode "vm.mode=$VM_MODE, VM ssh port reachable at $VM_MODE_HOST:$VM_MODE_PORT$resolved$unresolved"
+    elif [ -n "$unresolved" ]; then
+        emit INFO C53-vm-mode "vm.mode=remote, remote VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT$unresolved" \
+            "check the target with: ssh -G -p $VM_MODE_PORT $VM_MODE_HOST, then: ssh -p $VM_MODE_PORT $VM_MODE_HOST true"
     elif [ "$VM_MODE" = local ]; then
         emit INFO C53-vm-mode "vm.mode=local, local test VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT (it is started on demand)" \
             "start it with the himmel-ops:vm skill before a VM-proof step"
