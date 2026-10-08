@@ -695,8 +695,15 @@ qmd_nested() {
     # bash copies $w on every index below, so the scan is quadratic in its
     # length: a long command holding a shell or eval word is refused, not
     # scanned against the chain's budget.
+    # HIMMEL-4526: it also refuses one naming qmd and a verb (a reader with no
+    # NESTWORD, `| awk '{system($0)}'`, `| sed e`, `| $x`), unless every
+    # command it runs is a plain reader.
     if [ "$n" -gt 8192 ]; then
-        if [[ $w =~ $NESTWORD ]]; then deny=1; fi
+        if [[ $w =~ $NESTWORD ]]; then
+            deny=1
+        elif names_verb "$dec" && ! readers_only "$w"; then
+            deny=1
+        fi
         return 0
     fi
     # lb is the last command boundary seen; pipe, while set, is the offset of
@@ -720,7 +727,7 @@ qmd_nested() {
     # ri is set while the next word is a `<` target; sw is lb when the
     # current stage reads a written file on stdin (`< f sh`).
     local lb=-1 pipe='' pfrom=-1 fs='' fb='' fr pc=0 pp=1 ro=0 te=0 tw ws ri=0 sw='' so sr
-    local sk='' se=0 sf=0 nk='' nr=0 pk=-1 e0 nw enc fo ia ct sj tk hx hs tx sd x
+    local sk='' se=0 sf=0 nk='' nr=0 pk=-1 e0 nw enc fo ia ct sj tk hx hs tx sd x oa sx atw
     while [ "$i" -lt "$n" ]; do
         c=${w:i:1}
         case "$NESTSEP" in
@@ -840,6 +847,12 @@ qmd_nested() {
         # so: the program comes from an operand, code string or hand-back;
         # sr: stdin is a written file or a here-string; ss: sh -s seen.
         so=0 sr=0 ss=0
+        # HIMMEL-4505: oa: the next word is an option's argument (`-o
+        # errexit`), no program operand; sx: the -c string reads stdin
+        # (`. /dev/stdin`, a nested shell); atw: at and batch, which read
+        # their job from stdin unless given -f.
+        oa=0 sx=0 atw=0
+        case "$nw" in at|batch) atw=1 ;; esac
         [ "$sw" != "$lb" ] || sr=1
         # screen and rem only peek at their words (the walk below resumes
         # after the launcher word itself); one inside a span an earlier one
@@ -1056,7 +1069,18 @@ qmd_nested() {
                     # /proc/self/fd/0) is no program source: both keep the
                     # stdin check below on.
                     if [ "$mode" = sh ] && [ "$so" = 0 ] && [[ $t =~ ^-[[:alpha:]]*s[[:alpha:]]*$ ]]; then ss=1; fi
-                    if [ "$mode" != env ] && [[ $t != -* ]]; then
+                    if [ "$oa" = 1 ]; then
+                        # A shell option's argument is no program operand.
+                        oa=0
+                    elif [ "$mode" = sh ] && [[ $nw =~ ^(sh|bash|rbash|zsh|dash|ksh|mksh|lksh|oksh|pdksh|ash|yash|posh|csh|tcsh|fish)$ ]] &&
+                        [[ $t =~ ^[-+][[:alpha:]]*[oO]$ || $t =~ ^--(rcfile|init-file)$ ]]; then
+                        oa=1
+                    elif [ "$atw" = 1 ]; then
+                        # at and batch take a time spec, not a program; only
+                        # -f names the job file that replaces stdin.
+                        [[ $t != -*f ]] || so=1
+                        if _ran_written "$t"; then deny=1; return 0; fi
+                    elif [ "$mode" != env ] && [[ $t != -* ]]; then
                         if [ "$ss" = 0 ]; then
                             case "$v" in */dev/*|dev/*|*/proc/*|proc/*) ;; *) so=1 ;; esac
                         fi
@@ -1079,7 +1103,10 @@ qmd_nested() {
                     fi
                 fi
             else
-                so=1
+                # A string that reads stdin (`. /dev/stdin`, a nested shell)
+                # is not the program source: stdin is, so keep the check on.
+                if [[ $v =~ /dev/stdin|/dev/fd/0|/proc/[^[:space:]]*/fd/0 || $v =~ $NESTWORD ]]; then sx=1; fi
+                [ "$sx" = 1 ] || so=1
                 # A word with no q, `$` or backtick cannot spell qmd.
                 case "$v" in
                     *[qQ]*|*'$'*|*'`'*) qmd_check "$v" $((depth + 1)) ;;
@@ -1252,6 +1279,13 @@ qmd_check() {
         deny=1
     elif [[ $cmd == *"\\c'"* ]] && [[ $crude == *qmd* ]]; then
         # qmd_words declines an ANSI-C `\c'`: bash and zsh split it apart.
+        deny=1
+    elif [[ $crude == *qmd* ]] && [ "$(printf '%s' "$cmd" | LC_ALL=C wc -c)" -gt 16384 ] &&
+        { [[ $crude == *query* || $crude == *search* ]] || [[ $cmd == *"\$'"* || $cmd == *'$"'* ]]; }; then
+        # HIMMEL-4526: qmd_words declines past 16 KiB, which leaves only the
+        # bare readings; every pipe, redirect, launcher and stdin reading
+        # would be skipped. An oversized command naming qmd and a verb (or an
+        # ANSI-C string that could spell one) is no legitimate allow case.
         deny=1
     elif [[ $cmd_lc =~ $BARE$BOUND ]] || [[ $crude =~ $BARE$BOUND ]]; then
         deny=1

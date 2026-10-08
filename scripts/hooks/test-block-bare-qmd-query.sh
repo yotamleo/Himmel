@@ -734,6 +734,59 @@ timed 0 'allow: qmd status, then 700 sh words' "qmd status; echo ${pad_sh}"
 timed 0 'allow: qmd status, then 2000 words' "qmd status; echo ${pad_w}"
 timed 0 'allow: qmd status, bash -c and 2000 words' "qmd status; bash -c 'echo \$0' ${pad_w}"
 
+# HIMMEL-4505: stdin-fed residuals. A shell option's argument (-o errexit,
+# -O extglob, --rcfile f) is no program operand, at/batch read their job from
+# stdin, and a -c string that itself reads stdin is not the program source.
+w='echo qmd query x > f; '
+deny "${w}bash -o errexit < f"
+deny "${w}bash -O extglob < f"
+deny "${w}bash +o errexit < f"
+deny "${w}bash +O extglob < f"
+deny "${w}bash --rcfile r < f"
+deny "${w}bash --init-file r < f"
+deny "${w}sh -o errexit < f"
+deny "${w}at now < f"
+deny "${w}at -q a now < f"
+deny "${w}batch < f"
+deny "${w}sh -c '. /dev/stdin' < f"
+deny "${w}sh -c 'source /dev/stdin' < f"
+deny "${w}bash -c '. /dev/fd/0' < f"
+deny "${w}sh -c 'sh' < f"
+deny "${w}sh -c 'exec bash -s' < f"
+# Controls: no verb written, a program operand, or a program file given to at.
+allow 'echo qmd status > f; bash -o errexit < f'
+allow 'echo qmd status > f; at now < f'
+allow 'echo hi > f; sh -c ". /dev/stdin" < f'
+allow "${w}bash -o errexit other.sh"
+allow "${w}bash --rcfile r other.sh"
+allow "${w}at -f job.sh now"
+allow "${w}sh -c 'echo hi' < g"
+allow "bash -o errexit -c 'qmd status'"
+
+# HIMMEL-4526: past the 8 KB (nested scan) and 16 KB (normaliser) budgets a
+# command naming qmd and a verb denies instead of falling back to a narrower
+# reading. size_deny/size_allow LABEL CMD keep the padded payload out of the log.
+size_deny() { assert_rc "deny: $1" 2 "$(run_case "$(j_bash "$2")")"; }
+size_allow() { assert_rc "allow: $1" 0 "$(run_case "$(j_bash "$2")")"; }
+pad_t=$(printf 'true %.0s' $(seq 2000))
+pad_u=$(printf 'true %.0s' $(seq 4000))
+for pad_k in t u; do
+    case "$pad_k" in t) pad=$pad_t pad_n='>8KB' ;; *) pad=$pad_u pad_n='>16KB' ;; esac
+    size_deny "$pad_n awk system reader" "${pad}; echo qmd query x | awk '{system(\$0)}'"
+    size_deny "$pad_n sed e reader" "${pad}; echo qmd query x | sed e"
+    size_deny "$pad_n expansion program" "${pad}; l=sh; echo qmd query x | \$l"
+    size_deny "$pad_n pipe to sh" "${pad}; echo qmd query x | sh"
+    size_deny "$pad_n 2>&1 pipe to sh" "${pad}; echo qmd query x 2>&1 | sh"
+    size_deny "$pad_n ssh launcher" "${pad}; ssh host qmd query x"
+    size_deny "$pad_n tmux launcher" "${pad}; tmux new -d 'qmd query x'"
+    size_deny "$pad_n written file run" "${pad}; echo qmd query x > f; sh f"
+    size_deny "$pad_n stdin file" "${pad}; echo qmd query x > f; sh < f"
+    size_deny "$pad_n bare verb" "${pad}; qmd query x"
+    size_allow "$pad_n no verb" "${pad}; qmd status; echo hi | cat"
+    size_allow "$pad_n no qmd" "${pad}; echo hi | sh"
+    size_allow "$pad_n verb without qmd" "${pad}; echo query search"
+done
+
 # --- ALLOW: the bounded paths, the non-search verbs, and mere mentions ---
 allow 'bash scripts/lib/qmd-bounded.sh query -c luna "x"'
 allow 'bash /home/u/himmel/scripts/lib/qmd-bounded.sh search x'
