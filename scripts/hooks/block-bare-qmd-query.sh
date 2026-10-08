@@ -1299,14 +1299,14 @@ _dyn_body() {
 # qmd_words decline and skips this reading entirely (HIMMEL-4989).
 dyn_check() {
     local LC_ALL=C t=$1 dp=$2 ar=${3:-0} n i=0 j c pd bq pp=1 w nx k s inner subs sp lastd tail nm r
-    local adang=' ' fdang=' ' vdyn=' ' wopt=0 wx=0 wo=0 al=0 vm=0 fn=0 bd
+    local adang=' ' fdang=' ' vdyn=' ' wopt=0 wx=0 aln='' wo=0 al=0 vm=0 fn=0 bd
     n=${#t}
     if [ "$dp" -gt 4 ]; then deny=1; return 0; fi
     while [ "$i" -lt "$n" ]; do
         c=${t:i:1}
         case "$c" in
             ' '|$'\t') i=$((i + 1)); continue ;;
-            ';'|'|'|'&'|'{'|'}'|'('|')') pp=1 wo=0 wopt=0 al=0 vm=0; i=$((i + 1)); continue ;;
+            ';'|'|'|'&'|'{'|'}'|'('|')') pp=1 wo=0 wopt=0 al=0 aln='' vm=0; i=$((i + 1)); continue ;;
             '<'|'>')
                 while [ "$i" -lt "$n" ]; do
                     case "${t:i:1}" in '<'|'>'|'&'|'|') i=$((i + 1)) ;; *) break ;; esac
@@ -1416,9 +1416,22 @@ dyn_check() {
         else
             if [ "$al" = 1 ] && [[ $w == *=* ]]; then
                 nm=${w%%=*} r=${w#*=}
-                if _dyn_cand "${r%%_*}" || [[ $r == *'$'* || $r == *'`'* ]] || _dyn_glob "${r%%_*}"; then
+                # qmd_words joins a quoted value's words with `_`: read each.
+                if [[ $r =~ $DYNBODY ]] || [[ $r == *'$'* || $r == *'`'* ]]; then
                     adang="$adang${nm##*/} "
                 fi
+                while :; do
+                    if _dyn_cand "${r%%_*}" || _dyn_glob "${r%%_*}"; then
+                        adang="$adang${nm##*/} "
+                        break
+                    fi
+                    [[ $r == *_* ]] || break
+                    r=${r#*_}
+                done
+                aln=${nm##*/}
+            elif [ "$al" = 1 ] && [ -n "$aln" ] && { _dyn_cand "$w" || _dyn_glob "$w"; }; then
+                # the rest of a quoted alias value arrives as separate words
+                adang="$adang$aln "
             fi
             case "$vm" in
                 1) [[ $w == -* ]] || vdyn="$vdyn$w " ;;
