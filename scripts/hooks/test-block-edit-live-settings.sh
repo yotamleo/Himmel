@@ -3231,6 +3231,15 @@ if command -v node >/dev/null 2>&1; then
         timed_rc "683/$sz quote-heavy heredoc into live settings denies" 2 \
             "$(pad_to "cat <<'EOF' > ~/.claude/settings.json"$'\n' "$QU" 'EOF' "$sz")"
     done
+    # 4192a (HIMMEL-4192): _uj_tok_dests rescanned every word once per segment, so
+    # a paren-heavy line (one segment per `(…)`) was quadratic: 4 KB took 9.7 s
+    # alone against the 15 s hook budget. Each must finish well inside 3 s.
+    ob=$TIMING_BUDGET_MS TIMING_BUDGET_MS=3000
+    for sz in 1300 4000; do
+        timed_rc "4192a/$sz paren-heavy line (one segment per paren)" 0 \
+            "echo $(rep "$((sz / 19))" '(a) ((b)) {c} [d] ')"
+    done
+    TIMING_BUDGET_MS=$ob
     # 831-832 (HIMMEL-4353, J1818a): each eval re-judged every later eval in
     # its segment, so the cost doubled per eval word (8 words 2.7 s, 10 words
     # 22 s). An eval word that is not the command is not a body, and nesting

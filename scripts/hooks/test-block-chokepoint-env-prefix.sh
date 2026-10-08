@@ -1714,6 +1714,27 @@ if [ -n "${EPOCHREALTIME:-}" ]; then
         echo "FAIL 4447: 19.5 KB of digit-token redirects beside a seam name -- expected rc=0 with relief under 8500 ms, got rc=$RC, relief $(((T2 - T1 - (T1 - T0)) / 1000)) ms (total $(((T2 - T1) / 1000)) ms)"
         FAILED=$((FAILED + 1))
     fi
+    # HIMMEL-4192: quote-heavy 1.3 KB and 4 KB heredocs timed out the guard
+    # chain in practice. Alone this hook takes 0.5 s (1.3 KB) and 1.4 s (4 KB)
+    # on the worst shape ($(...) and quotes), so a 6 s bound is the 4 KB figure
+    # x4 for fleet load, still far under the 15 s hook budget.
+    # shellcheck disable=SC2016 # literal $ and ` bytes are the payload
+    QH_UNIT='it'\''s "q" `x` $(y '\''z'\'') ${w} "$(d)" (a) '
+    for sz in 1300 4000; do
+        QH_BODY=$(rep_text "$QH_UNIT" $((sz / ${#QH_UNIT} + 1)))
+        T0=${EPOCHREALTIME/[.,]/}
+        run "$(j "cat > /tmp/n.md <<'EOF'
+$QH_BODY
+EOF")"
+        T1=${EPOCHREALTIME/[.,]/}
+        CASES=$((CASES + 1))
+        if [ "$RC" = "0" ] && [ $((T1 - T0)) -lt 6000000 ]; then
+            echo "PASS 4192: quote-heavy $sz-byte heredoc allowed in $(((T1 - T0) / 1000)) ms"
+        else
+            echo "FAIL 4192: quote-heavy $sz-byte heredoc -- expected rc=0 under 6000 ms, got rc=$RC in $(((T1 - T0) / 1000)) ms"
+            FAILED=$((FAILED + 1))
+        fi
+    done
 else
     echo "WARN 4157 J1685 timing rows skipped: no EPOCHREALTIME (bash < 5)"
 fi
