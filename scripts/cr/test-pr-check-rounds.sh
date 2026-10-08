@@ -1387,6 +1387,29 @@ scope_judge sw-1 "$sw_head" anything "$sw_r3"
 sw_rc=0; start_round "$sw_head" clean scopeword >/dev/null || sw_rc=$?
 assert_eq "$sw_rc" "8" "a scope record with an unknown delta-scope is refused"
 
+# Moving a production file into tests/ is a rename git reports as its
+# destination only; the scope check must still see the production path leave.
+three_rounds scoperen clean
+sn_r3="$cap_r3_head"
+mkdir -p "$repo/tests"
+git -C "$repo" mv scoperen.txt tests/test-scoperen.sh
+git -C "$repo" commit -q -m "move scoperen into tests"
+sn_head="$(git -C "$repo" rev-parse scoperen)"
+scope_judge sn-1 "$sn_head" test-only "$sn_r3"
+sn_out="$(start_round "$sn_head" clean scoperen)"; sn_rc=$?
+assert_eq "$sn_rc" "8" "a rename of a production file into tests/ is not a test-only delta"
+assert_has "$sn_out" "non-test" "the rename refusal names the removed production path"
+
+# A second, conflicting delta-from line in the evidence is refused.
+three_rounds scopedup clean
+sd_r3="$cap_r3_head"
+scope_commit scopedup tests/test-scope-d.sh
+sd_head="$scope_head"
+printf 'delta-scope: test-only\ndelta-from: %s\ndelta-from: %s\n\nno production path\n' "$sd_r3" "$sd_head" > "$jev/judge-evidence.md"
+judge sd-1 GO "$sd_head"
+start_round "$sd_head" clean scopedup >/dev/null; sd_rc=$?
+assert_eq "$sd_rc" "8" "a scope record with two delta-from lines is refused"
+
 # lint-only: the judge's record alone admits it (no path rule can tell lint
 # from behaviour).
 three_rounds scopelint clean

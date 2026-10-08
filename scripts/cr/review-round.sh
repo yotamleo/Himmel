@@ -439,9 +439,10 @@ judge_scope_record() (
             [ -n "$word" ] || { bad=1; break; }
             if [ -n "$hit" ] || [ "$word" != "GO $want" ]; then continue; fi
             evidence="$(sed -n '9,$p' "$f")"
-            n_from="$(printf '%s\n' "$evidence" | grep -cFx "delta-from: $from")"
+            n_from="$(printf '%s\n' "$evidence" | grep -cE '^delta-from: ')"
+            n_from_ok="$(printf '%s\n' "$evidence" | grep -cFx "delta-from: $from")"
             n_scope="$(printf '%s\n' "$evidence" | grep -cE '^delta-scope: ')"
-            if [ "$n_from" -eq 1 ] && [ "$n_scope" -eq 1 ]; then
+            if [ "$n_from" -eq 1 ] && [ "$n_from_ok" -eq 1 ] && [ "$n_scope" -eq 1 ]; then
                 kind="$(printf '%s\n' "$evidence" | sed -nE 's/^delta-scope: (test-only|lint-only)$/\1/p')"
                 [ -z "$kind" ] || hit="$qid/$name $kind"
             fi
@@ -457,7 +458,7 @@ judge_scope_record() (
                         ;;
                 esac
             done <<EOF
-$(git diff --name-only "$from" "$want" 2>/dev/null)
+$(git diff --no-renames --name-only "$from" "$want" 2>/dev/null)
 EOF
         fi
         printf '%s\n' "$hit"
