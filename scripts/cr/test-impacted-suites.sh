@@ -244,6 +244,20 @@ change scripts/uniq-widget.sh
 out="$(run_is "$range" --shell)"
 if [ "$out" = "scripts/test-café.sh" ]; then pass "non-ASCII suite path is emitted verbatim"; else fail "non-ASCII suite path mangled: $out"; fi
 
+# --- 13b. a SUITE path git grep -l would C-quote (HIMMEL-4997) ----------------
+# A suite file name holding a double quote, backslash or tab came back quoted
+# ("scripts/test-q\"x.sh") and the runner filtered it out as "not a suite".
+mkf scripts/uniq-quoter.sh
+mkf 'scripts/test-qg"x.sh' 'bash "$d/uniq-quoter.sh"'
+mkf 'scripts/test-qg\y.sh' 'bash "$d/uniq-quoter.sh"'
+mkf $'scripts/test-qg\tz.sh' 'bash "$d/uniq-quoter.sh"'
+git -C "$FX" add -A
+git -C "$FX" commit -q -m "chore: add quoter + quoted suites"
+change scripts/uniq-quoter.sh
+out="$(run_is "$range" --shell)"
+want=$'scripts/test-qg\tz.sh\nscripts/test-qg"x.sh\nscripts/test-qg\\y.sh'
+if [ "$(printf '%s\n' "$out" | LC_ALL=C sort)" = "$(printf '%s\n' "$want" | LC_ALL=C sort)" ]; then pass "suite paths with a double quote, backslash and tab are emitted verbatim"; else fail "quoted suite paths mangled: $out"; fi
+
 # --- 14. a step that builds the list and fails is an error, not a short list --
 # A `sort` shim that fails: the shell-only filter used to end in `|| true`, so
 # an empty impacted set (rc 0) was the result of a pipeline that never ran.
