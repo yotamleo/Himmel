@@ -52,7 +52,12 @@ check "per-tool calls sum to the session total and unknown lane never comes from
 check "per-tool failures exclude text reports and grep no-match" 'jq -e ".metrics.tool_failures_by_tool.Edit == 1 and .metrics.tool_failures_by_tool.mcp__qmd__query == 1" "$TMP/classes.json" >/dev/null'
 
 echo "2. classifier sub-class: ledger, then the journal bracket against the fixed list"
-check "a ledger row with a listed category keys it" '[ "$(row denied/classifier:merge-without-review | jq -c .tool_call_ids)" = "[\"toolu_c1\"]" ]'
+# HIMMEL-4683: the fixture's ledger row and journal bracket for toolu_c1 share one category, so a broken ledger join
+# would still pass via the bracket fallback. Rewrite the bracket to another listed category; the ledger's must win.
+mkdir -p "$TMP/lw"  # the digest keys the ledger by the journal basename, so the copy keeps "$SID.jsonl"
+sed 's/Reason: \[Merge Without Review\]\./Reason: [Security Weaken]./' "$TMP/$SID.jsonl" >"$TMP/lw/$SID.jsonl"
+digest "$TMP/lw/$SID.jsonl" >"$TMP/ledger-wins.json" 2>/dev/null || bad "the ledger-priority digest exits 0"
+check "a ledger row with a listed category keys it" '[ "$(grep -c "Reason: \[Security Weaken\]" "$TMP/lw/$SID.jsonl")" = 1 ] && [ "$(jq -c "[.failures[] | select(.class | startswith(\"denied/classifier:\")) | [.class, .tool_call_ids]] | map(select(.[1] | index(\"toolu_c1\")))" "$TMP/ledger-wins.json")" = "[[\"denied/classifier:merge-without-review\",[\"toolu_c1\"]]]" ]'
 check "a ledger tag of unknown falls back to the journal bracket on the list" '[ "$(row denied/classifier:out-of-place-publication | jq -c .tool_call_ids)" = "[\"toolu_c2\"]" ]'
 check "an off-list bracket and a malformed bracket are classifier:other" '[ "$(row denied/classifier:other | jq -c .tool_call_ids)" = "[\"toolu_c3\",\"toolu_c4\"]" ]'
 check "another session's ledger row is never joined" 'absent session-transcript-tampering "$TMP/classes.json"'
