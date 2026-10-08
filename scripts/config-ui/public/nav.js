@@ -6,8 +6,9 @@ export const PAGES = [
   { id: "health", label: "Health" },
   { id: "toolhealth", label: "Tool health" },
   { id: "fleet", label: "Fleet" },
+  { id: "roadmap", label: "Roadmap" }, // HIMMEL-4943
 ];
-const CONSOLE = ["config", "health", "toolhealth"];
+const CONSOLE = ["config", "health", "toolhealth", "roadmap"];
 
 const frag = (o) => "#" + new URLSearchParams(o).toString();
 
