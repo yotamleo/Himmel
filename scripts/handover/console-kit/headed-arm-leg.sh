@@ -895,6 +895,23 @@ case "$_leg_rcwd" in
     fi
     ;;
 esac
+# HIMMEL-4608: the judge's own doc and qid, resolved while _leg_phys_path
+# exists; exported for guard-judge-writes.sh with the judge marker below. A
+# qid is the <qid> of a resume_cwd ~/.cache/himmel/verdicts/<qid>/scratch,
+# and stays empty (the guard then allows no verdict write) when it is not.
+_judge_doc=""; _judge_qid=""
+if [ "$JUDGE" -eq 1 ]; then
+    _judge_doc="$(_leg_phys_path "$DOC")" || _judge_doc=""
+    if [ -n "$_leg_rcwd" ]; then
+        _judge_rcwd="$(_leg_phys_path "$_leg_rcwd")" || _judge_rcwd=""
+        case "$_judge_rcwd" in
+            */.cache/himmel/verdicts/*/scratch)
+                _judge_qid="${_judge_rcwd%/scratch}"; _judge_qid="${_judge_qid##*/}"
+                case "$_judge_qid" in "" | *[!A-Za-z0-9._-]*) _judge_qid="" ;; esac
+                ;;
+        esac
+    fi
+fi
 unset -f _leg_phys_path
 unset -v _leg_rcwd _leg_rcwd_phys _leg_vroot _leg_vroot_phys _leg_wt_top _leg_wt_phys _leg_wt_base
 
@@ -1226,6 +1243,13 @@ leg_propagate_env HIMMEL_CONSOLE_LEG 1
 # HIMMEL_CONSOLE_JUDGE=1 (HIMMEL-4564): guard-judge-writes.sh denies a judge
 # every push, PR, Jira, inbox and out-of-scope file write.
 [ "$JUDGE" -eq 1 ] && leg_propagate_env HIMMEL_CONSOLE_JUDGE 1
+# HIMMEL-4608: bind that guard to THIS judge - the doc and qid resolved above.
+# A value the launcher could not derive stays unexported and the guard then
+# allows nothing under the handover root (fail closed).
+if [ "$JUDGE" -eq 1 ]; then
+    case "$_judge_doc" in /*) leg_propagate_env HIMMEL_CONSOLE_JUDGE_DOC "$_judge_doc" ;; esac
+    [ -n "$_judge_qid" ] && leg_propagate_env HIMMEL_CONSOLE_JUDGE_QID "$_judge_qid"
+fi
 # HIMMEL_CONSOLE_NAME (HIMMEL-3435): the owning console's session name, so a
 # leg's HIMMEL-3430 merge-block alert (scripts/lib/merge-block-alert.sh,
 # untouched by this ticket - it already reads this var) can route to the
