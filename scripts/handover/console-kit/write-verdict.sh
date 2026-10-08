@@ -148,9 +148,13 @@ fi
 # free of an ACL, so it refuses like the stat branch does.
 ev_mode=$(stat -c %a "$SCRATCH" 2>/dev/null) || ev_mode=$(stat -f %Lp "$SCRATCH" 2>/dev/null) || ev_mode=""
 ev_ls=$(ls -ld "$SCRATCH" 2>/dev/null) || ev_ls=""
-[ -n "$ev_ls" ] || ev_mode=unreadable
-case "$ev_mode:$ev_ls" in
-    700:d?????????+*) ev_mode=acl ;;
+# HIMMEL-4962: an `ls` that exits 0 with a non-mode line (garbage, a space) is
+# no better, so the first field must be a directory mode string, `d` and nine
+# permission characters, optionally followed by `+`, `.` or `@`.
+ev_modestr=${ev_ls%%[[:space:]]*}
+[[ $ev_modestr =~ ^d[-rwxsStT]{9}[+.@]?$ ]] || ev_mode=unreadable
+case "$ev_mode:$ev_modestr" in
+    700:*+) ev_mode=acl ;;
 esac
 if [ "$ev_mode" != 700 ]; then
     echo "write-verdict: '$SCRATCH' is accessible to group or other users (want 0700) - refusing" >&2
