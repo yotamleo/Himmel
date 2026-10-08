@@ -78,6 +78,9 @@ case "$field" in
     legs)
         manifest="${doc%.md}.fleet.json"
         if [ ! -f "$manifest" ]; then echo "none — no fleet manifest"; exit 0; fi
+        if ! rows="$(jq -r '.legs[] | "\(.label)\t\(.doc)"' "$manifest" 2>/dev/null)"; then
+            echo "unavailable — manifest unreadable (jq missing or malformed): $manifest"; exit 0
+        fi
         n=0
         while IFS="$(printf '\t')" read -r label ldoc; do
             [ -n "$ldoc" ] || continue
@@ -85,16 +88,22 @@ case "$field" in
             marker="$(leg_tail_status "$ldoc")"
             last="$(sed -nE '/^- /p' "$ldoc" 2>/dev/null | tail -n 1 | sed 's/`[^`]*`/`…`/g' | cut -c1-200)"
             printf -- '- %s: %s — %s (%s)\n' "$label" "${marker:-no marker}" "$last" "$(basename "$ldoc")"
-        done < <(jq -r '.legs[] | "\(.label)\t\(.doc)"' "$manifest" 2>/dev/null)
+        done <<EOF_ROWS
+$rows
+EOF_ROWS
         [ "$n" -gt 0 ] || echo "none — manifest lists no legs"
         ;;
     prs)
+        prs_limit="${HANDOFF_FACTS_PRS_LIMIT:-200}"
         if [ -n "${HANDOFF_FACTS_PRS:-}" ]; then
             out="$(bash "$HANDOFF_FACTS_PRS" 2>/dev/null)" || out=""
         else
-            out="$(cd "$repo" && timeout -k 2 30 gh pr list --state open --limit 30 --json number,title,headRefName --jq '.[] | "#\(.number) \(.title) (\(.headRefName))"' 2>/dev/null)" || out=""  # gnu-ok: Linux-only kit
+            out="$(cd "$repo" && timeout -k 2 30 gh pr list --state open --limit "$prs_limit" --json number,title,headRefName --jq '.[] | "#\(.number) \(.title) (\(.headRefName))"' 2>/dev/null)" || out=""  # gnu-ok: Linux-only kit
         fi
-        if [ -n "$out" ]; then printf '%s\n' "$out"; else echo "unavailable or none — run gh pr list"; fi
+        if [ -n "$out" ]; then
+            printf '%s\n' "$out"
+            [ "$(printf '%s\n' "$out" | wc -l)" -lt "$prs_limit" ] || echo "(list truncated at $prs_limit — run gh pr list for the rest)"
+        else echo "unavailable or none — run gh pr list"; fi
         ;;
     summary)
         awk '/^## Results/ { s = 1; next } s && /^## / { exit } s && /^- / { print }' "$doc" \
