@@ -184,6 +184,8 @@ def main():
         l['wt'] = '%s/.claude/worktrees/%s' % (a.repo, l['branch'].replace('/', '+'))
         if os.path.exists(os.path.join(a.bucket, l['stem'] + '.md')):
             die('%s already exists in the bucket; refusing to overwrite a live leg doc' % (l['stem'] + '.md'))
+        if os.path.exists(os.path.join(a.bucket, 'launch-%s.sh' % l['label'])):
+            die('launch-%s.sh already exists in the bucket; refusing to overwrite a launcher' % l['label'])
 
     wt_cmd = os.environ.get('GEN_BRIEFS_WORKTREE_CMD')
     for l in legs:
@@ -194,6 +196,11 @@ def main():
             print('%s worktree: %s' % (l['label'], tail[-1][:90] if tail else 'rc=%d' % r.returncode))
             if r.returncode != 0:
                 die('worktree for %s failed (rc=%d); no brief written for it or the legs after it' % (l['label'], r.returncode))
+            if not wt_cmd:
+                # A reused branch can sit on an older base; the brief claims a.base, so verify it.
+                anc = subprocess.run(['git', '-C', l['wt'], 'merge-base', '--is-ancestor', a.base, 'HEAD'], capture_output=True)
+                if anc.returncode != 0:
+                    die('worktree %s is not based on %s; no brief written for %s or the legs after it' % (l['wt'], a.base, l['label']))
         doc = os.path.join(a.bucket, l['stem'] + '.md')
         with open(doc, 'w') as f:
             f.write(render_brief(l, ctx))

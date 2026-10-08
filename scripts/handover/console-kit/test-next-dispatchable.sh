@@ -103,5 +103,33 @@ lacks "--held excludes a colliding ticket" "$hl" "HIMMEL-1	"
 bash "$SUT" --bogus >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && pass "an unknown flag is a usage error (rc 2)" || fail "unknown flag rc=$rc"
 
+bash "$SUT" --top 0 >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && pass "--top 0 is a usage error (rc 2)" || fail "--top 0 rc=$rc"
+bash "$SUT" --top x >/dev/null 2>&1; rc=$?
+[ "$rc" = 2 ] && pass "--top non-numeric is a usage error (rc 2)" || fail "--top x rc=$rc"
+
+# unknown blocker fails closed; later survivors still surface past an all-BLOCKED first chunk
+M2="$WORK/m2/HIMMEL"; mkdir -p "$M2"
+M_SAVE="$M"; M="$M2"
+mk HIMMEL-20 "To Do" Highest '[]' '[]' '[]' "blocked by classifier a" "Edit scripts/lib/a1.sh."
+mk HIMMEL-21 "To Do" Highest '[]' '[]' '[]' "blocked by classifier b" "Edit scripts/lib/a2.sh."
+mk HIMMEL-22 "To Do" Highest '[]' '[]' '[]' "blocked by classifier c" "Edit scripts/lib/a3.sh."
+mk HIMMEL-23 "To Do" High '[]' '[]' '[]' "survivor" "Edit scripts/lib/a4.sh."
+mk HIMMEL-24 "To Do" Medium '[]' '[]' '["blocked by HIMMEL-9999"]' "unknown blocker" "Edit scripts/lib/a5.sh."
+M="$M_SAVE"
+cat > "$WORK/classify2" <<'EOF'
+#!/usr/bin/env bash
+for k in "$@"; do
+    case "$k" in
+        HIMMEL-20|HIMMEL-21|HIMMEL-22) printf '%s\tBLOCKED\tstub\n' "$k" ;;
+        *) printf '%s\tLOCAL-NATIVE\tstub\n' "$k" ;;
+    esac
+done
+EOF
+chmod +x "$WORK/classify2"
+ch="$(NEXT_DISPATCH_MIRROR="$M2" NEXT_DISPATCH_GH_CMD="$WORK/gh" NEXT_DISPATCH_CLASSIFY_CMD="$WORK/classify2" bash "$SUT" --top 1 2>/dev/null)"
+has "a BLOCKED first chunk does not hide a later survivor" "$ch" "LOCAL	HIMMEL-23"
+lacks "a ticket with an unknown blocker is excluded" "$ch" "HIMMEL-24	"
+
 printf '\n%d failure(s)\n' "$fails"
 [ "$fails" -eq 0 ]

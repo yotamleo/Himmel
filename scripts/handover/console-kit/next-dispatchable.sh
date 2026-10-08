@@ -52,7 +52,7 @@ while [ "$#" -gt 0 ]; do
         *) echo "usage: next-dispatchable.sh [--top N] [--mirror DIR] [--legs-from MANIFEST] [--held FILE] [--no-classify]" >&2; exit 2 ;;
     esac
 done
-case "$top" in ''|*[!0-9]*) echo "next-dispatchable: --top needs a number" >&2; exit 2 ;; esac
+case "$top" in ''|*[!0-9]*|0*) echo "next-dispatchable: --top needs a positive number" >&2; exit 2 ;; esac
 
 export ND_TOP="$top" ND_MIRROR="$mirror" ND_LEGS_FROM="$legs_from" ND_HELD="$held" ND_CLASSIFY="$classify" ND_REPO="$REPO"
 exec python3 -I - <<'PY'
@@ -128,7 +128,7 @@ for i in issues.values():
         continue
     if i['labels'] & excl:
         continue
-    if any(issues.get(b, {}).get('status') != 'Done' for b in i['blocked_by'] if b in issues):
+    if any(issues.get(b, {}).get('status') != 'Done' for b in i['blocked_by']):
         continue
     cands.append(i)
 cands.sort(key=rank)
@@ -168,9 +168,8 @@ for i in cands:
         continue
     free.append(i)
 
-batch = free[:max(top * 3, top)]
-cls = {}
-if os.environ.get('ND_CLASSIFY') == '1' and batch:
+def classify(batch):
+    cls = {}
     cmd = os.environ.get('NEXT_DISPATCH_CLASSIFY_CMD')
     argv = [cmd] if cmd else ['node', os.path.join(repo, 'scripts/lanes/cloud-route.mjs'), '--classify-only']
     hfile = None
@@ -190,19 +189,28 @@ if os.environ.get('ND_CLASSIFY') == '1' and batch:
         pass
     if hfile:
         os.unlink(hfile)
+    return cls
 
 print('# next-dispatchable: %d To Do candidate(s), %d collision-free%s' % (len(cands), len(free), ', open PRs unknown (gh failed)' if pr_unknown else ''))
 n = 0
-for i in batch:
-    c = cls.get(i['key'])
-    if os.environ.get('ND_CLASSIFY') == '1':
-        if c is None or c == 'BLOCKED':
-            continue
-        lane = 'CLOUD' if c == 'CLOUD-OK' else 'LOCAL'
-    else:
-        lane, c = 'LOCAL?', ''
-    print('\t'.join([lane, i['key'], i['prio'] or '-', ','.join(i['ver']) or '-', i['title'], 'files=' + (','.join(i['files']) or '-')] + (['hook'] if c == 'HOOK-BYPASS' else [])))
-    n += 1
+classified = os.environ.get('ND_CLASSIFY') == '1'
+# Walk the collision-free list in chunks so BLOCKED rows in an early chunk do not
+# leave the list short while later candidates are dispatchable.
+for start in range(0, len(free), top * 3):
+    batch = free[start:start + top * 3]
+    cls = classify(batch) if classified else {}
+    for i in batch:
+        c = cls.get(i['key'])
+        if classified:
+            if c is None or c == 'BLOCKED':
+                continue
+            lane = 'CLOUD' if c == 'CLOUD-OK' else 'LOCAL'
+        else:
+            lane, c = 'LOCAL?', ''
+        print('\t'.join([lane, i['key'], i['prio'] or '-', ','.join(i['ver']) or '-', i['title'], 'files=' + (','.join(i['files']) or '-')] + (['hook'] if c == 'HOOK-BYPASS' else [])))
+        n += 1
+        if n >= top:
+            break
     if n >= top:
         break
 PY
