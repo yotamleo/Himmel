@@ -83,7 +83,9 @@ and the HIMMEL-4216 rerank timeout never fired.
 
 Never re-embed the live index in place: `qmd embed --force` drops every vector
 first, so search is broken for the whole embed (hours). Build a copy instead,
-then swap it in. `reembed` consistently backs up the whole local index with\nSQLite's `.backup`; receiver-only `--collections` filtering was retired with\nthe ship transport (HIMMEL-4896).
+then swap it in. `reembed` consistently backs up the whole local index with
+SQLite's `.backup`; receiver-only `--collections` filtering was retired with
+the ship transport (HIMMEL-4896).
 
 ```bash
 # 0. Is this host build-capable?
