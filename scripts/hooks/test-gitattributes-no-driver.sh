@@ -30,8 +30,13 @@ lint_file() {
 
 check() { # check <label> <want-bad 0|1> <file>
     local out bad=0
-    out=$(lint_file "$3")
-    [ -z "$out" ] || bad=1
+    if [ -r "$3" ]; then
+        out=$(lint_file "$3")
+        [ -z "$out" ] || bad=1
+    else
+        out="unreadable"
+        bad=1
+    fi
     if [ "$bad" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1 - drivers: ${out:-none}"; FAILED=1; fi
 }
 
@@ -47,6 +52,7 @@ check "fixture comment -> clean" 0 "$TMP/comment"
 check "fixture filter=evil -> flagged" 1 "$TMP/filter"
 check "fixture diff=pdf -> flagged" 1 "$TMP/diff"
 check "fixture mixed -> flagged" 1 "$TMP/mixed"
+check "fixture missing file -> flagged" 1 "$TMP/absent"
 
 while IFS= read -r f; do
     check "tracked $f" 0 "$ROOT/$f"
