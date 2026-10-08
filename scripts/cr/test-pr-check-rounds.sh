@@ -1301,6 +1301,103 @@ assert_eq "$jh_rc" "8" "an unreadable per-head .verdicts refuses the judge recor
 assert_has "$jh_out" "cannot read" "the unreadable per-head .verdicts is named"
 assert_eq "$(cat "$git_dir/cr-review-rounds/jhscan.round")" "3" "the refused per-head scan-failure round leaves the counter at 3"
 
+# HIMMEL-4952: a judge-signed record admits ONE post-cap delta round for a
+# test- or lint-only delta. The record is a GO written by the real writer for
+# the delta's NEW head, carrying `delta-scope:` and `delta-from:` evidence lines.
+scope_commit() {
+    # scope_commit <branch> <path> : commit a change to <path>, set scope_head
+    mkdir -p "$(dirname "$repo/$2")"
+    printf '%s\n' "$2" >> "$repo/$2"
+    git -C "$repo" add "$2"
+    git -C "$repo" commit -q -m "scope change $2"
+    scope_head="$(git -C "$repo" rev-parse "$1")"
+}
+scope_judge() {
+    # scope_judge <qid> <head> <scope> <from>
+    printf 'delta-scope: %s\ndelta-from: %s\n\nthe delta changes no production path\n' "$3" "$4" > "$jev/judge-evidence.md"
+    judge "$1" GO "$2"
+}
+
+# RED: without a record a clean test-only commit after the cap gets no round.
+three_rounds scopeok clean
+sc_r3="$cap_r3_head"
+scope_commit scopeok tests/test-scope.sh
+sc_head="$scope_head"
+sc_out="$(start_round "$sc_head" clean scopeok)"; sc_rc=$?
+assert_eq "$sc_rc" "8" "a test-only delta with no judge record gets no round after the cap"
+scope_judge sc-1 "$sc_head" test-only "$sc_r3"
+sc_out="$(start_round "$sc_head" clean scopeok)"; sc_rc=$?
+assert_eq "$sc_rc" "0" "a judge-signed test-only delta is admitted after the cap"
+assert_has "$sc_out" "pr-check: delta round 4 on scopeok (from $sc_r3)" "the scope round is a delta from the last reviewed head"
+assert_has "$(cat "$git_dir/cr-review-rounds/scopeok.delta")" "scope:sc-1" "the delta state names the scope record"
+# Second use: the record is spent, and a further test-only commit needs its own.
+scope_commit scopeok tests/test-scope-two.sh
+sc_head2="$scope_head"
+sc_out="$(start_round "$sc_head2" clean scopeok)"; sc_rc=$?
+assert_eq "$sc_rc" "8" "a spent scope record buys no second round"
+assert_has "$sc_out" "delta round was already used" "the second-use refusal names the used delta"
+
+# A delta that touches production code is refused even with a test-only record.
+three_rounds scopeprod clean
+sp_r3="$cap_r3_head"
+scope_commit scopeprod scopeprod.txt
+sp_head="$scope_head"
+scope_judge sp-1 "$sp_head" test-only "$sp_r3"
+sp_out="$(start_round "$sp_head" clean scopeprod)"; sp_rc=$?
+assert_eq "$sp_rc" "8" "a test-only record cannot admit a delta that changes a non-test path"
+assert_has "$sp_out" "non-test" "the refusal names the non-test path"
+
+# A record for another head is refused.
+three_rounds scopehead clean
+sh_r3="$cap_r3_head"
+scope_commit scopehead tests/test-scope-a.sh
+sh_a="$scope_head"
+scope_commit scopehead tests/test-scope-b.sh
+sh_b="$scope_head"
+scope_judge sh-1 "$sh_a" test-only "$sh_r3"
+sh_out="$(start_round "$sh_b" clean scopehead)"; sh_rc=$?
+assert_eq "$sh_rc" "8" "a scope record for another head is refused"
+
+# A record whose delta-from is not the last reviewed head is refused.
+three_rounds scopefrom clean
+scope_commit scopefrom tests/test-scope-f.sh
+sf_head="$scope_head"
+scope_judge sf-1 "$sf_head" test-only "$sf_head"
+sf_rc=0; start_round "$sf_head" clean scopefrom >/dev/null || sf_rc=$?
+assert_eq "$sf_rc" "8" "a scope record naming another delta-from is refused"
+
+# A hand-written file (not the writer's format) is refused.
+three_rounds scopeforge clean
+sg_r3="$cap_r3_head"
+scope_commit scopeforge tests/test-scope-g.sh
+sg_head="$scope_head"
+mkdir -p "$vscope/sg-1"
+# shellcheck disable=SC2016  # the backticks are the verdict line's literal text
+printf '# VERDICT sg-1 - judge\n\n**GO** for head `%s`.\n\ndelta-scope: test-only\ndelta-from: %s\n' "$sg_head" "$sg_r3" > "$vscope/sg-1/judge.md"
+sg_rc=0; start_round "$sg_head" clean scopeforge >/dev/null || sg_rc=$?
+assert_eq "$sg_rc" "8" "a hand-written scope record is refused"
+rm -rf "$vscope/sg-1"
+
+# An unknown scope word is refused.
+three_rounds scopeword clean
+sw_r3="$cap_r3_head"
+scope_commit scopeword tests/test-scope-w.sh
+sw_head="$scope_head"
+scope_judge sw-1 "$sw_head" anything "$sw_r3"
+sw_rc=0; start_round "$sw_head" clean scopeword >/dev/null || sw_rc=$?
+assert_eq "$sw_rc" "8" "a scope record with an unknown delta-scope is refused"
+
+# lint-only: the judge's record alone admits it (no path rule can tell lint
+# from behaviour).
+three_rounds scopelint clean
+sl_r3="$cap_r3_head"
+scope_commit scopelint scopelint.txt
+sl_head="$scope_head"
+scope_judge sl-1 "$sl_head" lint-only "$sl_r3"
+sl_rc=0; start_round "$sl_head" clean scopelint >/dev/null || sl_rc=$?
+assert_eq "$sl_rc" "0" "a judge-signed lint-only delta is admitted after the cap"
+assert_has "$(cat "$git_dir/cr-review-rounds/scopelint.delta")" "scope:sl-1" "the lint-only delta state names the scope record"
+
 # The existing fix trigger is unchanged and still records itself as fix.
 assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"
 assert_has "$(cat "$git_dir/cr-review-rounds/feature.delta")" " merge-forward" "the merge-forward trigger still records merge-forward"
