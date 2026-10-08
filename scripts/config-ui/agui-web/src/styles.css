@@ -146,41 +146,76 @@ button{font:inherit;color:inherit}
 .fleet-count{color:var(--dim);font:12px var(--mono);text-transform:none;letter-spacing:0}
 .fleet-sec>summary .fleet-count{color:var(--fg)}
 .fleet-attention>summary{color:var(--warn)}
-.fleet-attn-list{list-style:none;margin:8px 0;padding:2px 0 2px 12px;border-left:3px solid var(--warn);font:12.5px var(--mono)}
-.fleet-attn{padding:3px 0;overflow-wrap:anywhere}
-.fleet-attn a{color:var(--accent)}
-.fleet-why{color:var(--warn);font-weight:600}
+.fleet-attn-list{list-style:none;margin:6px 0;padding:0;font:12.5px var(--mono)}
+.fleet-attn{padding:4px 0;border-bottom:1px dashed var(--line);overflow-wrap:anywhere}
+.fleet-attn .fleet-head{display:inline}
+.fleet-why{color:var(--warn);font-weight:600}.fleet-why.fail{color:var(--fail)}
 .fleet-attn .fleet-meter{display:block;max-width:220px}
-.fleet-stale-orphans summary{cursor:pointer;color:var(--dim);padding:3px 0}
-.fleet-stale-orphans .fleet-attn-list{border-left:0;padding-left:8px}
+/* HIMMEL-4925: orphans — sessions no live console watches, then tick's stale shell-tool wrappers. */
+.fleet-orphans>summary{color:var(--fail)}
+.fleet-orphan-list{list-style:none;margin:6px 0;padding:0;font:12.5px var(--mono)}
+.fleet-orphan{display:flex;flex-wrap:wrap;gap:2px 10px;align-items:baseline;padding:5px 0;border-bottom:1px dashed var(--line)}
+.fleet-orphan .fleet-head{display:inline}
+.fleet-kind{font:11px var(--mono);padding:0 6px;border:1px solid var(--line);border-radius:10px;color:var(--dim)}
+.fleet-action{color:var(--accent);white-space:nowrap}
+.fleet-orphan .fleet-action{margin-left:auto}
+.fleet-procs{width:100%;border-collapse:collapse;margin:8px 0 2px;font:12.5px var(--mono)}
+.fleet-procs th{text-align:left;font-weight:400;font-size:11.5px;color:var(--dim);padding:3px 10px 3px 0;border-bottom:1px solid var(--line)}
+.fleet-procs td{padding:5px 10px 5px 0;border-bottom:1px dashed var(--line)}
+.fleet-orphan-count{color:var(--fail)}
 .fleet-jump{all:unset;cursor:pointer;text-decoration:underline;text-decoration-color:var(--line)}
 .fleet-jump:focus-visible{outline:1px solid var(--accent)}
 .fleet-attn-count{color:var(--warn)}
 .meta.stale{opacity:.55}
 .fleet-skel{display:grid;gap:8px}
 .fleet-skel i{display:block;height:72px;border-radius:4px;background:var(--panel)}
-.fleet-row{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:4px 24px;padding:10px 12px;margin:6px 0;min-width:0;
-  background:var(--panel);border-radius:4px;border-left:3px solid var(--off)}
-.fleet-row.running{border-left-color:var(--ok)}.fleet-row.waiting{border-left-color:var(--accent)}.fleet-row.idle{border-left-color:var(--warn)}
-.fleet-row>.fleet-head{grid-column:1/-1}
-.fleet-head .state{margin-left:auto;white-space:nowrap}
+/* A card is one line (chevron, state dot, name link, activity, context, state); its chevron opens the detail below. */
+.fleet-row{margin:4px 0;min-width:0;background:var(--panel);border-radius:4px}
+.fleet-line{display:grid;grid-template-columns:14px 10px minmax(0,auto) minmax(0,1fr) 56px auto;gap:4px 10px;align-items:center;padding:7px 10px;font:12.5px var(--mono)}
+.fleet-chev{all:unset;cursor:pointer;color:var(--dim);font:12px var(--mono);width:14px}
+.fleet-chev:focus-visible{outline:1px solid var(--accent)}
+.fleet-dot{width:8px;height:8px;border-radius:50%;background:var(--off)}
+.fleet-dot.running{background:var(--ok)}.fleet-dot.waiting{background:var(--accent)}.fleet-dot.idle{background:var(--warn)}.fleet-dot.blocked{background:var(--fail)}
+.fleet-who{display:flex;gap:8px;align-items:baseline;min-width:0;overflow:hidden;white-space:nowrap}
+.fleet-act{color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fleet-line .fleet-meter{margin:0}
+.fleet-line .state{white-space:nowrap;font:11.5px var(--mono)}
+.state.blocked{color:var(--fail)}
+.fleet-hops-badge{font:11px var(--mono);padding:0 6px;border:1px solid var(--line);border-radius:10px;color:var(--accent)}
+.fleet-detail{display:grid;grid-template-columns:minmax(0,1fr) 240px;gap:6px 24px;padding:4px 12px 10px 34px}
+.fleet-detail-head{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline}
+.fleet-runlink{color:var(--accent);font:12px var(--mono);margin-left:auto}
+.fleet-hops{grid-column:1/-1;font:12px var(--mono);color:var(--dim);border-top:1px dashed var(--line);padding-top:6px}
+.fleet-hops a,.fleet-attn a,.fleet-orphan a{color:var(--accent)}
 .fleet-chip{font:11.5px var(--mono);padding:0 6px;border:1px solid var(--line);border-radius:3px;color:var(--dim)}
 .fleet-status{display:flex;flex-direction:column;gap:2px;min-width:0}
 .fleet-lineage{display:flex;flex-direction:column;gap:2px;min-width:0;padding-left:12px;border-left:1px solid var(--line);font:12px var(--mono);color:var(--dim)}
+/* The rail: wider on the fleet, with its filters. */
+.shell:has(.fleet-menu){grid-template-columns:280px minmax(0,1fr)}
+.fleet-filters{display:grid;gap:6px;margin:12px 0 16px}
+.fleet-search{width:100%;padding:5px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);font:12px var(--mono)}
+.fleet-chips{display:flex;flex-wrap:wrap;gap:5px}
+.fleet-chip-btn{font:11.5px var(--mono);padding:2px 8px;border:1px solid var(--line);border-radius:12px;color:var(--dim);background:none;cursor:pointer}
+.fleet-chip-btn.on{color:var(--fg);border-color:var(--accent);background:var(--panel)}
+.fleet-chip-btn .fleet-count{margin-left:5px}
+.fleet-clear{all:unset;cursor:pointer;color:var(--accent);text-decoration:underline;font:11.5px var(--mono);justify-self:start}
+.fleet-console-counts{margin-bottom:4px}
 .fleet-graph b{color:var(--fg)}
 .fleet-meter{display:block;height:5px;margin-top:2px;background:var(--bg);border-radius:3px;overflow:hidden}
 .fleet-meter i{display:block;height:100%;background:var(--ok)}
 .fleet-meter.warn i{background:var(--warn)}.fleet-meter.fail i{background:var(--fail)}
 .fleet-more summary{cursor:pointer;color:var(--dim)}
 .fleet-more[open]{display:grid;gap:4px}
-.fleet-finished .fleet-row{grid-template-columns:minmax(0,1fr) auto;align-items:baseline;padding:5px 0;margin:0;background:none;border-radius:0;border-left:0;border-bottom:1px solid var(--line)}
-.fleet-finished .fleet-row>.fleet-head{grid-column:auto}
+.fleet-finished .fleet-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;align-items:baseline;padding:5px 0;margin:0;background:none;border-radius:0;border-bottom:1px solid var(--line)}
+.fleet-finished .fleet-who{flex-wrap:wrap;white-space:normal}
 .fleet-finished .fleet-name{font-size:12.5px}
+.fleet-finished .fleet-hops{border:0;padding:0}
 .fleet-finished .fleet-meta a,.fleet-cloud{color:var(--accent)}
 .fleet-more-btn{margin-top:8px;font:12px var(--mono);color:var(--accent);background:none;border:1px solid var(--line);border-radius:3px;padding:3px 10px;cursor:pointer}
-.fleet-head{display:flex;flex-wrap:wrap;gap:4px 12px;align-items:baseline;color:var(--fg);text-decoration:none;min-width:0}
-a.fleet-head:hover .fleet-name,a.fleet-head:focus-visible .fleet-name{text-decoration:underline}
-.fleet-name{font:600 14px var(--mono);overflow-wrap:anywhere}
+.fleet-head{color:var(--fg);text-decoration:none;min-width:0;overflow:hidden;text-overflow:ellipsis}
+a.fleet-head .fleet-name{text-decoration:underline;text-decoration-color:var(--line)}
+a.fleet-head:hover .fleet-name,a.fleet-head:focus-visible .fleet-name{text-decoration-color:var(--accent)}
+.fleet-name{font:600 13px var(--mono)}
 .fleet-role,.fleet-meta,.fleet-age{color:var(--dim);font:12px var(--mono)}
 .fleet-head .state{font:12px var(--mono)}
 .state.waiting{color:var(--accent)}
@@ -202,10 +237,21 @@ a.fleet-head:hover .fleet-name,a.fleet-head:focus-visible .fleet-name{text-decor
 @media (max-width:760px){
   .top,.strip{padding-inline:16px}
   .fleet{padding:16px}
-  .fleet-row{grid-template-columns:minmax(0,1fr)}
-  .fleet-head .state{margin-left:0}
+  .shell:has(.fleet-menu){grid-template-columns:1fr}
+  .fleet-line{grid-template-columns:12px 10px minmax(0,1fr) auto}
+  .fleet-act{display:none}
+  .fleet-line .fleet-meter,.fleet-line .fleet-nometer{grid-column:3/-1;grid-row:2}
+  .fleet-line .state{grid-column:4;grid-row:1}
+  .fleet-line .fleet-who .fleet-chip,.fleet-line .fleet-who .fleet-age{display:none}
+  .fleet-detail{grid-template-columns:minmax(0,1fr);padding-left:12px}
+  .fleet-runlink{margin-left:0}
   .fleet-lineage{padding:4px 0 0;border-left:0;border-top:1px dashed var(--line)}
   .fleet-kids{margin-left:4px;padding-left:8px}
+  .fleet-orphan .fleet-action{margin-left:0}
+  .fleet-procs,.fleet-procs tbody,.fleet-procs tr,.fleet-procs td{display:block;width:100%}
+  .fleet-procs thead{display:none}
+  .fleet-procs tr{padding:5px 0;border-bottom:1px dashed var(--line)}
+  .fleet-procs td{border:0;padding:1px 0}
   .layout{grid-template-columns:minmax(0,1fr);gap:24px;padding:16px}
   .side{position:static;order:-1}
   .band{grid-template-columns:minmax(0,1fr);gap:2px}

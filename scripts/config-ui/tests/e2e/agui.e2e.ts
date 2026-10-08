@@ -9,6 +9,8 @@ import type { Page } from "@playwright/test";
 
 // HIMMEL-4925: a card shows a session's short name (the full one is its title), so rows are found by their id.
 const card = (page: Page, name: string) => page.locator(`[id="fleet-${name}"]`);
+// A card is one line until its chevron opens the status and lineage detail (the name itself links to the run page).
+const expand = (page: Page, name: string) => card(page, name).locator("> .fleet-line .fleet-chev").click();
 
 // HIMMEL-4711: a live page keeps tailing after a turn ends, so it reads idle (never "finished") until the stream closes.
 const IDLE = /^idle · last event \d+s ago$/;
@@ -228,6 +230,13 @@ test("9. the fleet landing lists 3 live sessions and 1 wrapped one, and a row op
   await expect(live.nth(0)).toContainText("console");
   const leg = card(page, FLEET.leg.name);
   await expect(leg.locator(".fleet-chip")).toHaveText("HIMMEL-901");
+  // HIMMEL-4925: a card is one line; its chevron, not its name, opens the detail, and the detail names the run page.
+  await expect(leg.locator(".fleet-detail")).toHaveCount(0);
+  await expand(page, FLEET.leg.name);
+  await expect(leg.locator(".fleet-chev")).toHaveAttribute("aria-expanded", "true");
+  await expect(leg.locator("a.fleet-runlink")).toHaveAttribute("href", new RegExp(`&run=${FLEET.leg.run}$`));
+  await expand(page, FLEET.console.name);
+  await expand(page, FLEET.idle.name);
   // HIMMEL-4925: the status column (activity, then facts) and the lineage column are separate blocks.
   await expect(leg.locator(".fleet-status .fleet-meta")).toContainText("PR 1901 · 1 of 1 subagents running · 1 tool error");
   await expect(leg.locator(".fleet-status .fleet-fails")).toHaveCount(0);
@@ -279,6 +288,7 @@ test("10. console to Fleet to a run view and back: one rail, the token in the fr
   await expect(rail).toHaveText(["Config", "Health", "Tool health", "Fleet"]);
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Fleet");
   const leg = card(page, FLEET.leg.name);
+  await expand(page, FLEET.leg.name);
   await expect(leg.locator("a.fleet-link")).toHaveAttribute("href", `/#t=${tok}&page=health`);
 
   await leg.locator("a.fleet-head").click();
@@ -294,6 +304,7 @@ test("10. console to Fleet to a run view and back: one rail, the token in the fr
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Run");
 
   await page.goto(h.url);
+  // The open card stays open across the reload (kept per viewer).
   await card(page, FLEET.leg.name).locator("a.fleet-link").click();
   await expect(page).toHaveURL(/\/#\/health$/);
   await expect(page.locator('nav.pages a[aria-current="page"]')).toHaveText("Health");
@@ -317,9 +328,41 @@ test("a succession link opens the collapsed console group it points into", async
   const group = page.locator(`details.fleet-console[aria-label="${next}"]`);
   await group.locator("> summary").click();
   await expect(group).not.toHaveAttribute("open", "");
+  await expand(page, FLEET.console.name);
   await card(page, FLEET.console.name).locator(".fleet-succession .fleet-rel").click();
   await expect(group).toHaveAttribute("open", "");
   await expect(card(page, next)).toBeFocused();
+});
+
+// HIMMEL-4925: orphans have their own section above Running (a session with its reason and action, a stale wrapper
+// with its pid, owner and age), and the rail's filters narrow the page and survive a reload.
+test("orphans section, and a lane filter that narrows the page and is kept", async ({ page }) => {
+  h = await bootAgui("", { fleet: true });
+  await page.route("**/api/agui/fleet", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    Object.assign(body.sessions.find((r: any) => r.name === FLEET.leg.name), { console: "gone-console", parent: "gone-console" });
+    body.processOrphans = [{ pid: 4242, owner: "orphan", ageMin: 95 }];
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(h.url);
+  const orphans = page.locator("#fleet-sec-orphans");
+  await expect(orphans.getByRole("list", { name: "Orphan sessions" })).toContainText(`${shortName(FLEET.leg.name)}`);
+  await expect(orphans.getByRole("list", { name: "Orphan sessions" })).toContainText("console process gone");
+  await expect(orphans.getByRole("list", { name: "Orphan sessions" })).toContainText("adopt via relay / close");
+  await expect(orphans.getByRole("table", { name: "Orphan processes" })).toContainText("close: kill 4242");
+  await expect(page.locator(".top .meta")).toContainText("2 orphaned");
+  await expect(page.locator("#fleet-sec-running")).not.toContainText(shortName(FLEET.leg.name));
+
+  const lane = page.getByRole("group", { name: "Filters" }).getByRole("button", { name: /^claudex/ });
+  await lane.click();
+  await expect(lane).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator(".top .meta")).toContainText("(filters on)");
+  await expect(page.locator(".fleet .fleet-row:not(.finished)")).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("group", { name: "Filters" }).getByRole("button", { name: /^claudex/ })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "clear filters" }).click();
+  await expect(page.locator(".fleet .fleet-row:not(.finished)")).toHaveCount(2);
 });
 
 test("12. two-console side menu, deep-linked page, and identical menu/row drill-in", async ({ page }) => {
@@ -362,6 +405,12 @@ test("11. cloud sessions: a node under the console, its shepherd under it, token
   const live = page.locator(".fleet .fleet-row:not(.finished)");
   const done = card(page, "cloud-HIMMEL-905");
   await expect(done.locator(".fleet-chip")).toHaveText("HIMMEL-905");
+  // HIMMEL-4925: cloud is a lane with its own phases; a shepherded CLOUD-DONE PR is nobody's alarm.
+  await expect(done.locator("> .fleet-line .state")).toHaveText("shepherded");
+  await expect(card(page, "cloud-HIMMEL-906").locator("> .fleet-line .state")).toHaveText("working");
+  await expect(done.locator("> .fleet-line a.fleet-head")).toHaveAttribute("href", CLOUD.url);
+  await expand(page, "cloud-HIMMEL-905");
+  await expand(page, "cloud-HIMMEL-906");
   await expect(done.locator(".fleet-role")).toHaveText("cloud · cloud bank");
   await expect(done.locator(".fleet-cloud-phase")).toHaveText("PR 1905 · CLOUD-DONE, shepherd's turn · cloud session");
   await expect(done.locator("a.fleet-cloud")).toHaveAttribute("href", CLOUD.url);
@@ -370,8 +419,9 @@ test("11. cloud sessions: a node under the console, its shepherd under it, token
   await expect(done.locator(".fleet-graph")).toHaveText(`operator › ${shortName(FLEET.console.name)} › cloud-HIMMEL-905`);
   await expect(page.getByRole("list", { name: "Under cloud-HIMMEL-905" }).locator(".fleet-row")).toHaveText([new RegExp(shortName(CLOUD.shepherd.name))]);
   await expect(card(page, "cloud-HIMMEL-906").locator(".fleet-cloud-phase")).toHaveText("no CLOUD-DONE yet");
-  // HIMMEL-4925: an orphan is one line in Needs attention, not a second card.
-  await expect(page.getByRole("list", { name: "Needs attention" })).toContainText("cloud session without a shepherd · cloud-HIMMEL-906");
+  // HIMMEL-4925: a cloud session still working without a shepherd is normal: no attention line, no orphan.
+  await expect(page.locator("#fleet-sec-attention")).toHaveCount(0);
+  await expect(page.locator("#fleet-sec-orphans")).toHaveCount(0);
   await expect(live.filter({ has: page.locator('[title="cloud-HIMMEL-907"]') })).toHaveCount(0);
   await page.locator("details.fleet-closed > summary").click();
   await expect(page.getByRole("list", { name: "Finished sessions" }).locator('[id="fleet-cloud-HIMMEL-907"] .fleet-meta')).toHaveText("PR merged · PR 1907");
