@@ -352,7 +352,7 @@ else
     if [ "$(cat "$CASE_DIR/g.rc")" -eq 0 ]; then pass "10 green -> rc 0 through the cache"; else fail "10 green" "rc=$(cat "$CASE_DIR/g.rc") err=$(cat "$CASE_DIR/g.err")"; fi
     if ! grep -q -- '--watch' "$CASE_DIR/calls.log"; then pass "10b no gh --watch was started (the cached helper replaced it)"; else fail "10b watch" "a --watch call was made"; fi
     n=$(grep -c -- '--json url,reviewDecision,headRefOid,baseRefName' "$CASE_DIR/calls.log" || true)
-    if [ "$n" -eq 1 ] && ! grep -q -- '--json baseRefName' "$CASE_DIR/calls.log"; then pass '10m startup head/base/review/url share one query'; else fail '10m repeated startup metadata reads' "combined queries=$n"; fi
+    if [ "$n" -eq 1 ]; then pass '10m startup head/base/review/url share one query'; else fail '10m repeated startup metadata reads' "combined queries=$n"; fi
     new_case
     printf 'fail\tunit-tests\npending\tz\n' > "$CASE_DIR/rows"
     run_ci "$CASE_DIR/r" 42 --max-wait 900

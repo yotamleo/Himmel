@@ -608,7 +608,7 @@ _alert() { merge_watch_alert "${owner:-?}/${repo:-?}" "${num:-?}" "${head0:-}" "
 # there is no opt-out knob; the fail-closed choice is deliberate (HIMMEL-3381).
 required_set() {
     local base rules classic
-    base="$initial_base"
+    base=$(pr_view --json baseRefName --jq .baseRefName 2>/dev/null) || return 1
     [ -n "$base" ] || return 1
     rules=$(gh api "repos/$owner/$repo/rules/branches/$base" \
         --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]? | "\(.context)\t\(.integration_id // "")"' 2>&1) || return 1
