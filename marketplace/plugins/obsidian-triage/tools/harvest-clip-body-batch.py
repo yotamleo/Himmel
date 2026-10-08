@@ -48,7 +48,7 @@ import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote, quote
 
 # Force UTF-8 stdout on Windows so clip filenames + URLs containing
 # non-ASCII (en-dash, arrow, emoji) don't crash the print() pipeline
@@ -208,15 +208,17 @@ def canonicalize(url: str):
             path = m.group(1)
         return urlunparse(("https", "x.com", path, "", "", ""))
 
-    # youtube.com / youtu.be → youtube.com/watch?v=<id>
+    # youtube.com / youtu.be → youtube.com/watch?v=<id>. The id is re-encoded,
+    # so a crafted v=X%26a%3Db stays one value and a second pass is a no-op
+    # (HIMMEL-4851).
     if host in {"youtu.be", "www.youtu.be"}:
-        vid = path.lstrip("/").split("/")[0]
-        return f"https://youtube.com/watch?v={vid}" if vid else url
+        vid = unquote(path.lstrip("/").split("/")[0])
+        return f"https://youtube.com/watch?v={quote(vid, safe='')}" if vid else url
     if host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
         params = dict(parse_qsl(query))
         vid = params.get("v")
         if vid:
-            return f"https://youtube.com/watch?v={vid}"
+            return f"https://youtube.com/watch?v={quote(vid, safe='')}"
         return url
 
     # github.com — strip /tree/<branch>, KEEP /blob/<branch>/<path>, trailing /, lowercase owner/repo.
@@ -1239,17 +1241,26 @@ class BackendRoutes:
         self.actions = actions or {}
         self.error = error
 
-    def match(self, url: str):
-        """(mode, names) of the FIRST matching line, else None. A line also
-        matches the URL's canonical spelling: the batch routes youtube.com,
-        yt-scrapling-meta.py www.youtube.com, and one rule must reach both
-        (HIMMEL-4803). A route only narrows the chain, so a wider match never
-        re-permits a backend."""
-        cands = [c for u in dict.fromkeys((url, canonicalize(url) or url)) for c in _norm_target(u)]
+    def _first(self, url: str):
+        cands = _norm_target(url)
         for text, rx in self.rules:
             if any(rx.fullmatch(c) for c in cands):
                 return self.actions[text]
         return None
+
+    def match(self, url: str):
+        """(mode, names) of the FIRST matching line, else None. The URL and its
+        canonical spelling are routed separately: the batch routes youtube.com,
+        yt-scrapling-meta.py www.youtube.com, and one rule must reach both
+        (HIMMEL-4803). When the spellings' lines differ, the result is
+        `only=` the backends BOTH permit, so a backend either spelling refuses
+        stays refused whatever the line order (HIMMEL-4851)."""
+        hits = [self._first(u) for u in dict.fromkeys((url, canonicalize(url) or url))]
+        if all(h == hits[0] for h in hits):
+            return hits[0]
+        permitted = [n for n in BACKEND_REGISTRY
+                     if all(h is None or (n in h[1]) == (h[0] == "only") for h in hits)]
+        return ("only", permitted)
 
 
 def load_backend_routes(vault: Path) -> BackendRoutes:
