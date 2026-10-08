@@ -1130,6 +1130,77 @@ HOME="$HOME_B" AUTO_ARM_STATE_DIR="$S" AUTO_ARM_CACHE="$C" \
 assert_rc "account-mismatched cache run exits 0" 0 $?
 assert_file "no arm call on account mismatch" absent "$ARM_LOG"
 
+# --- HIMMEL-4948: the validated bank lift raises the trip point to 100 -------
+# Fixture lift file + a cache whose seven_day reset is in the FUTURE (the shared
+# write_cache fixture's 2026-06-13 reset is long past, so bank_lift_valid would
+# reject it). Never the operator's real lift file.
+LIFT_NOW="$(date +%s)"
+LIFT_RESET="$(date -u -d "@$((LIFT_NOW + 259200))" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null)"  # gnu-ok: test fixture
+LIFT_FILE="$TMP/lift-fixture.json"
+
+write_lift_cache() {  # $1 path, $2 five_hour util, $3 seven_day util
+    cat > "$1" <<EOF2
+{"five_hour":{"utilization":$2,"resets_at":"$LIFT_RESET"},"seven_day":{"utilization":$3,"resets_at":"$LIFT_RESET"},"account":"$ACCT"}
+EOF2
+}
+
+write_lift() {  # $1 until (epoch), $2 account, $3 standing (true|false)
+    printf '{"window":"seven_day","until":%s,"account":"%s","standing":%s}\n' "$1" "$2" "$3" > "$LIFT_FILE"
+    chmod 600 "$LIFT_FILE"
+}
+
+# $1 label, $2 five util, $3 seven util, $4 expected rc, $5 arm log expectation
+lift_case() {
+    local label="$1" fh="$2" sd="$3" want_rc="$4" want_arm="$5" S C
+    S="$TMP/s4948-$label"; mkdir -p "$S"
+    C="$TMP/c4948-$label.json"; write_lift_cache "$C" "$fh" "$sd"
+    rm -f "$ARM_LOG"
+    BANK_LIFT_FILE="$LIFT_FILE" AUTO_ARM_THRESHOLD=97 run_hook "$S" "$C"
+    assert_rc "$label: exit code" "$want_rc" $?
+    assert_file "$label: arm log" "$want_arm" "$ARM_LOG"
+    rm -f "$ARM_LOG"
+}
+
+echo "Test 42: HIMMEL-4948 valid lift at seven_day 97 with threshold 97 — NO arm"
+write_lift "$((LIFT_NOW + 100000))" "$ACCT" false
+lift_case lift-valid-97 9 97 0 absent
+
+echo "Test 43: valid lift, seven_day 100 — arms (a lift never spends past 100)"
+lift_case lift-valid-100 9 100 2 present
+
+echo "Test 44: expired lift at 97 — arms (today's threshold)"
+write_lift "$((LIFT_NOW - 100))" "$ACCT" false
+lift_case lift-expired-97 9 97 2 present
+
+echo "Test 45: account-mismatched lift at 97 — arms"
+write_lift "$((LIFT_NOW + 100000))" "0123456789abcdef" false
+lift_case lift-account-97 9 97 2 present
+
+echo "Test 46: no lift file at 97 — arms"
+rm -f "$LIFT_FILE"
+lift_case lift-none-97 9 97 2 present
+
+echo "Test 47: unreadable (malformed) lift at 97 — fail-open to today's behaviour, arms"
+printf 'not json{' > "$LIFT_FILE"; chmod 600 "$LIFT_FILE"
+lift_case lift-garbage-97 9 97 2 present
+
+echo "Test 48: window lift does NOT lift five_hour — five_hour 97 still arms"
+write_lift "$((LIFT_NOW + 100000))" "$ACCT" false
+lift_case lift-window-fh97 97 20 2 present
+
+echo "Test 49: standing lift spends five_hour to 100 too — five_hour 97 does not arm"
+write_lift "$((LIFT_NOW + 100000))" "$ACCT" true
+lift_case lift-standing-fh97 97 20 0 absent
+
+echo "Test 50: standing lift with explicit CADENCE_BANK_MAX_PCT keeps five_hour at the threshold — arms"
+S="$TMP/s4948-explicit"; mkdir -p "$S"
+C="$TMP/c4948-explicit.json"; write_lift_cache "$C" 97 20
+rm -f "$ARM_LOG"
+CADENCE_BANK_MAX_PCT=90 BANK_LIFT_FILE="$LIFT_FILE" AUTO_ARM_THRESHOLD=97 run_hook "$S" "$C"
+assert_rc "explicit CADENCE_BANK_MAX_PCT: five_hour 97 trips (exit 2)" 2 $?
+assert_file "explicit CADENCE_BANK_MAX_PCT: arm called" present "$ARM_LOG"
+rm -f "$ARM_LOG"
+
 # --- HIMMEL-687: leak guard -- real ledger untouched by the suite -----------
 echo "Test 40: quota-gauge ledger isolation -- real ~/.himmel/quota-gauge.jsonl untouched"
 if [ -f "$REAL_LEDGER" ]; then REAL_LEDGER_AFTER="$(wc -c < "$REAL_LEDGER" | tr -d ' ')"; else REAL_LEDGER_AFTER="ABSENT"; fi
