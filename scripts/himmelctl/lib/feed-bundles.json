@@ -49,7 +49,7 @@
         "doctor:C1-guardrail", "doctor:C6-hooks", "doctor:C13-plugin-hooks", "doctor:C14-ollama-no-cloud",
         "doctor:C22-chain-skips", "doctor:C27-guard-signals", "doctor:C28-guardrail-consent",
         "probe-disagree:C28-guardrail-consent", "doctor:C32-main-ref-guard", "doctor:C34-cost-guards",
-        "doctor:C41-mcp-argv-key", "doctor:C43-rtk-hook"
+        "doctor:C41-mcp-argv-key", "doctor:C43-rtk-hook", "doctor:C57-dotenv-allowlists", "doctor:C58-mcp-sdk-v1"
       ]
     },
     {

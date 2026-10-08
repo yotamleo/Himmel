@@ -198,7 +198,9 @@ if [ "$base" = "MEMORY.md" ]; then
         { if (count[$0] > 0) { count[$0]--; } else { print } }
     ' <(printf '%s\n' "$old_pointer_lines") <(printf '%s\n' "$new_pointer_lines") 2>/dev/null)" ||
         deny "diff-failed" "The multiset diff between old and new pointer lines failed to compute — denying rather than silently skipping the line-length check."
-    if printf '%s\n' "$added_lines" | awk -v m="$LINE_MAX" '/^- /{s=$0; gsub(/[\200-\277]/,"",s); if (length(s)>m) exit 1}'; then :; else
+    #    The rule itself lives in memory-line-check.sh (HIMMEL-4891), shared with
+    #    the Bash-write re-check memory-bash-line-check.sh.
+    if printf '%s\n' "$added_lines" | MEMORY_LINE_MAX="$LINE_MAX" bash "$(dirname "$0")/memory-line-check.sh" >/dev/null; then :; else
         deny "line-too-long" "An added/changed pointer line exceeds ${LINE_MAX} chars. The index routes; it does not store — split the fact into its theme topic file."
     fi
 

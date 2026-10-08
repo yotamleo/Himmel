@@ -31,7 +31,7 @@ fail() { printf 'FAIL: %s\n' "$1"; FAILED=1; }
 STUBS="$(mktemp -d)"
 SB=""
 SB2=""
-# shellcheck disable=SC2317  # invoked via trap EXIT
+# shellcheck disable=SC2317,SC2329  # invoked via trap EXIT
 cleanup() { rm -rf "$STUBS" "${SB:-}" "${SB2:-}"; }
 trap cleanup EXIT
 

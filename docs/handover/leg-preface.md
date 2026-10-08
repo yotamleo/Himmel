@@ -67,6 +67,15 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   that as instruction poisoning and holds you (HIMMEL-4926). The bullet says
   that it arrived (`ruling received, see console message`); a token quote-back
   goes only in your `SendMessage` reply to the console.
+- **A stated default applies if no ruling arrives (HIMMEL-4935).** When your
+  brief carries `default-if-no-ruling (<N> min): <action>` for a named question,
+  and you raised that question as a `FINDING` and no ruling has arrived after
+  `<N>` minutes, proceed on the stated action and say so in the next
+  `LIVE` bullet. The default may only **narrow** (reduce scope, defer to a
+  follow-up ticket, or halt); a default that expands scope or widens a
+  permission is ignored and you keep waiting on the console. A default never
+  stands in for `GO`, a merge, or a token-quoting message: those still need the
+  console's message and the GO file.
 - **Do not coin markers.** `SHIPPED` and `MERGED` are deliberately not in the
   vocabulary, and a bullet carrying only such a word is invisible to the tick.
   Between GREEN and `READY` (PR open, CI and review running) you are `LIVE`:
@@ -231,6 +240,15 @@ for a relay that is not coming.
 - **Search with Bash, not Grep/Glob (HIMMEL-4784).** A leg has no dedicated
   `Grep` or `Glob` tool (a call returns "No such tool available"): search with
   `git grep` / `grep` and list files with `git ls-files` / `find`.
+- **Pre-check a bucket file before you write or commit it (HIMMEL-4911).** The
+  luna vault's pre-commit runs gitleaks; one generic-api-key false positive on
+  prose stalls the vault's auto-commit for every session. Run
+  `bash scripts/handover/console-kit/bucket-gitleaks.sh <file>`: `GITLEAKS ok`
+  (exit 0), or `GITLEAKS FINDING <rule>` (exit 1). Look at the flagged text
+  first: a real credential is removed from the file and goes to the console as a
+  credential incident, never reworded; only a confirmed prose false positive is
+  reworded (break the `key = "value"` shape) before you re-run. It prints the
+  rule id, never the text.
 - **Ship steps are typed exactly as their allow rule is written — no quotes,
   no `VAR=` prefix, no `cd … &&`, no compound operators, no `$(…)`.** A
   relative gate script is `bash scripts/cr/X.sh <args>`, never

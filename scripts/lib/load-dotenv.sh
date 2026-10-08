@@ -17,7 +17,9 @@
 # Usage — source this file, then:
 #   load_dotenv [KEY ...]
 #   load_dotenv --root <dir> [KEY ...]
-# With no keys, loads the default keys: HANDOVER_DIR USER_SLUG.
+# With no keys, does nothing: every consumer must name its allowlist.
+# ponytail: Bun auto-loads cwd .env before any explicit reader;
+# HIMMEL-4915 audits launch sites and passes --no-env-file.
 #
 # The .env path is resolved like the Jira CLI: the parent of
 # `git rev-parse --git-common-dir`, so from inside a git worktree it still
@@ -114,7 +116,7 @@ load_dotenv() {
         _ld_root="$2"; shift 2
     fi
     local _ld_keys=("$@")
-    [ "${#_ld_keys[@]}" -eq 0 ] && _ld_keys=(HANDOVER_DIR USER_SLUG)
+    [ "${#_ld_keys[@]}" -gt 0 ] || return 0
 
     local _ld_envfile
     # An explicit --root bypasses CWD git resolution (never trust the CWD repo).

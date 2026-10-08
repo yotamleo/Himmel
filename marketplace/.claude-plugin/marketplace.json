@@ -186,9 +186,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/Leonxlnx/taste-skill.git",
-        "sha": "ce26fc25c0e5e8cab638f883de62d9a86ee5e45b"
+        "sha": "b482f7a970abb98c4108d4a9f761e458c64cefc8"
       },
-      "description": "[Leonxlnx/taste-skill, MIT, vendor + attribution only, no carried delta] Taste Skill: all 13 upstream skills (taste-skill, redesign-skill, output-skill, soft/minimalist/brutalist, imagegen and image-to-code sets, brandkit, stitch). strict:true because upstream ships a plugin.json: with strict:false plus a marketplace skills list Claude Code reports a manifest conflict and loads nothing, and the upstream default skills/ directory always loads in full, so a skills subset never restricted anything (HIMMEL-4067). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha ce26fc25c0e5 per himmel supply-chain policy (HIMMEL-3069). Design kit, design profile (HIMMEL-4012).",
+      "description": "[Leonxlnx/taste-skill, MIT, vendor + attribution only, no carried delta] Taste Skill: all 13 upstream skills (taste-skill, redesign-skill, output-skill, soft/minimalist/brutalist, imagegen and image-to-code sets, brandkit, stitch). strict:true because upstream ships a plugin.json: with strict:false plus a marketplace skills list Claude Code reports a manifest conflict and loads nothing, and the upstream default skills/ directory always loads in full, so a skills subset never restricted anything (HIMMEL-4067). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha b482f7a970ab per himmel supply-chain policy (HIMMEL-3069). Design kit, design profile (HIMMEL-4012).",
       "strict": true,
       "author": {
         "name": "Leonxlnx",
@@ -279,9 +279,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/youmind-openlab/ai-image-prompts-skill.git",
-        "sha": "703e0e29cc53df5e69393e936b9242d043dc89a5"
+        "sha": "738626adc6588a8e21e7198d10ba6a3cdc242ee3"
       },
-      "description": "[youmind-openlab/ai-image-prompts-skill, MIT, vendor + attribution only, no carried delta] Offline AI image prompt library lookups (312 MB clone, no key). Root-skill shape UNPROVEN: add-on profile only. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 703e0e29cc53 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-imagegen profile (HIMMEL-4012).",
+      "description": "[youmind-openlab/ai-image-prompts-skill, MIT, vendor + attribution only, no carried delta] Offline AI image prompt library lookups (312 MB clone, no key). Root-skill shape UNPROVEN: add-on profile only. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 738626adc658 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-imagegen profile (HIMMEL-4012).",
       "strict": false,
       "skills": [
         "./"
@@ -312,9 +312,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/cathrynlavery/diagram-design.git",
-        "sha": "c27950aaf47754d908ea6a41321835dd2aa4460b"
+        "sha": "f4547ee95f88e5b28a52517feff6b6c11cc657f9"
       },
-      "description": "[cathrynlavery/diagram-design, MIT, vendor + attribution only, no carried delta] Diagram design skill + 5 slash commands (upstream plugin manifest). On-demand python scripts export SVG/PNG. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha c27950aaf477 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
+      "description": "[cathrynlavery/diagram-design, MIT, vendor + attribution only, no carried delta] Diagram design skill + 5 slash commands (upstream plugin manifest). On-demand python scripts export SVG/PNG. Explicit HTTPS git url (HIMMEL-549), pinned to a full sha f4547ee95f88 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
       "author": {
         "name": "cathrynlavery",
         "url": "https://github.com/cathrynlavery"
@@ -326,9 +326,9 @@
       "source": {
         "source": "url",
         "url": "https://github.com/BuilderIO/skills.git",
-        "sha": "530d9eee0453be9672960ef7b0a265c949cd8b08"
+        "sha": "da158ca431a310b0f3a6d4e26352bd8faf5c50e6"
       },
-      "description": "[BuilderIO/skills, MIT, vendor + attribution only, no carried delta] Builder.io skills: all upstream skills load, including visual-plan and visual-recap. strict:true because upstream ships a plugin.json: strict:false plus a marketplace skills list is a manifest conflict that loads nothing (HIMMEL-4068). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha 530d9eee0453 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
+      "description": "[BuilderIO/skills, MIT, vendor + attribution only, no carried delta] Builder.io skills: all upstream skills load, including visual-plan and visual-recap. strict:true because upstream ships a plugin.json: strict:false plus a marketplace skills list is a manifest conflict that loads nothing (HIMMEL-4068). Explicit HTTPS git url (HIMMEL-549), pinned to a full sha da158ca431a3 per himmel supply-chain policy (HIMMEL-3069). Design kit, design-diagram profile (HIMMEL-4012).",
       "strict": true,
       "author": {
         "name": "BuilderIO",

@@ -81,8 +81,12 @@ authorization; merge gates and tool permissions are unchanged.
 
 **Lane git (HIMMEL-2953):** never run `git fetch`, `git pull`, or `git rebase`.
 Use `/usr/bin/git` by absolute path for status, diff, add, commit, log, show,
-and ls-files. Make exactly ONE push attempt for your branch. If the lane
-classifier refuses it, post `BLOCKED lane:` with the commit SHA (or
+and ls-files. Make exactly ONE push attempt per head of your branch. A second
+push is allowed only as a same-head fixup (HIMMEL-4935): a plain fast-forward
+whose parent chain contains the head you already pushed (a fixup commit on top,
+for example after a review finding), never a rewritten, rebased, amended or
+different-base head, which stays refused. If the lane
+classifier refuses a push, post `BLOCKED lane:` with the commit SHA (or
 `LIVE PR-READY <head>` if your brief specifies that publication handoff) and
 use the bounded own-inbox hold above. The console owns the next publication
 step and sends a RUN note naming the resume point; wrap only on the hold cap

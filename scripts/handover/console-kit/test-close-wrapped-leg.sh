@@ -1031,6 +1031,61 @@ check "digest-skips: each skip is logged with its doc and reason" "$(jq -r '"\(.
 check "digest-skips: rows carry a UTC ts" "$(jq -r .ts "$LEG_DIGEST_STATE_DIR/skips.jsonl" 2>/dev/null | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$')" "2"
 check "digest: the step spawns no model CLI" "$(grep -cE '(^|[^-])\b(claude|codex|gemini) +(-p|--print|--bg|exec)' "$STEP")" "0"
 
+# --- 25. --console: close a wrapped PREDECESSOR console (HIMMEL-4968) --------
+# Same checks as a leg (free lock, WRAPPED tail, exactly one session); none of
+# the leg-only steps (no worktree prune, no digest, no /tmp reap, no cost row).
+CDOC="$W/HIMMEL-nextleg-2026-10-08BY-roadmap-console.md"
+CNAME="HIMMEL-nextleg-2026-10-08BY-roadmap-console"
+mkcdoc() { # mkcdoc <last-marker-line>
+    { echo "# console BY"; echo; echo "Worktree: $WT/.claude/worktrees/demo"; echo
+      echo "## Results (newest at the bottom)"; echo; echo "- 09:00 LIVE - starting"; echo "$1"; } > "$CDOC"
+}
+rm -rf "$W/proc"; mkdir -p "$W/proc"
+mkcmdline 230 claude -n "$CNAME" work
+mkcmdline 231 claude -n SOME-OTHER-SESSION work
+pgrep_x_stub 230 231
+
+mkcdoc "- 10:00 WRAPPED - done"
+reset_calls
+rc=0; out=$(run --console "$CDOC" 2>&1) || rc=$?
+check "console: wrapped + free lock + one match -> rc 0" "$rc" "0"
+calls25="$(cat "$CALLS")"
+exact_count "console: only the matching pid is signalled" "$calls25" "kill -TERM 230" "1"
+not_contains "console: the non-matching session is never signalled" "$calls25" "231"
+not_contains "console: no worktree prune" "$calls25" "clean.sh"
+not_contains "console: no leg digest line" "$out" "digest="
+check "console: no /tmp reap" "$(cat "$CALLS.reap")" ""
+
+mkcdoc "- 10:00 LIVE - still going"
+reset_calls
+rc=0; out=$(run --console "$CDOC" 2>&1) || rc=$?
+check "console: non-WRAPPED tail -> rc 4" "$rc" "4"
+not_contains "console: non-WRAPPED -> nothing signalled" "$(cat "$CALLS")" "kill"
+
+mkcdoc "- 10:00 WRAPPED - done"
+reset_calls
+acq_out="$(HANDOVER_DIR="$W/handover-root" bash "$QL" acquire "$CDOC" "cwl-test-holder" 2>&1)"
+token="$(printf '%s' "$acq_out" | sed -n "s/.*release-token: \`\([^\`]*\)\`.*/\\1/p")"
+rc=0; out=$(run --console "$CDOC" 2>&1) || rc=$?
+check "console: held lock -> rc 3" "$rc" "3"
+not_contains "console: held lock -> nothing signalled" "$(cat "$CALLS")" "kill"
+[ -n "$token" ] && HANDOVER_DIR="$W/handover-root" bash "$QL" release "$CDOC" "$token" >/dev/null 2>&1
+
+mkcmdline 232 claude -n "$CNAME" work
+pgrep_x_stub 230 231 232
+reset_calls
+rc=0; out=$(run --console "$CDOC" 2>&1) || rc=$?
+check "console: two matching sessions -> rc 5" "$rc" "5"
+not_contains "console: two matches -> nothing signalled" "$(cat "$CALLS")" "kill"
+rm -rf "$W/proc/232"; pgrep_x_stub 230 231
+
+CWL_SUBTREE_MODE=withheld
+reset_calls
+rc=0; out=$(run --console "$CDOC" 2>&1) || rc=$?
+unset CWL_SUBTREE_MODE
+check "console: a live non-harness child -> rc 6" "$rc" "6"
+not_contains "console: withheld -> nothing signalled" "$(cat "$CALLS")" "kill"
+
 # --- 24: no handovers/ leaked into the real repo (HIMMEL-3667) ----------------
 post_handovers=absent
 [ -n "$REPO_ROOT" ] && [ -e "$REPO_ROOT/handovers" ] && post_handovers=present

@@ -80,12 +80,18 @@ def _env_path():
     return here.parents[1] / ".env"
 
 
+DOTENV_KEYS = ("ubuntu_vm_user", "ubuntu_vm_pass")
+
+
 def _load_dotenv():
     try:
-        from dotenv import load_dotenv
+        from dotenv import dotenv_values
     except ImportError:
         sys.exit("Missing: pip install python-dotenv (or use ~/.himmel/vm-venv)")
-    load_dotenv(_env_path())
+    values = dotenv_values(_env_path(), interpolate=False)
+    for key in DOTENV_KEYS:
+        if values.get(key) is not None:
+            os.environ.setdefault(key, values[key])
 
 
 def _read_password_file(path):

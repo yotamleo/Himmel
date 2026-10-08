@@ -109,6 +109,12 @@ Run these, in order, and write the result as the first bullet under
    release its lock and wrap. Sending `LIVE` first lets the predecessor leave
    before the legs have been re-briefed; the tick then reads
    `nonces=UNCONFIRMED:<leg>`.
+   **Then close the predecessor's window (HIMMEL-4968).** Once its doc's lock is
+   free and its last Results bullet reads `WRAPPED`, run
+   `bash scripts/handover/console-kit/close-wrapped-leg.sh --console <predecessor doc>`
+   (same checks as a leg: it refuses while the lock is held, the tail is not
+   `WRAPPED`, or not exactly one live session carries its name; exit 6 means
+   retry shortly). Left open, the wrapped session is idle-compacted at full cost.
 10. **Start the event waiter now** (HIMMEL-3509; it replaces the `tick` and
     `telegram` Monitor loops). Loops are pure code, never model turns: a
     `Monitor` arm is capped at 30 min, and every expiry woke this full-context
@@ -121,6 +127,9 @@ Run these, in order, and write the result as the first bullet under
     silent while nothing happens and **exits on the first real event**,
     printing one block: `WAKE telegram` plus the operator's line(s), or
     `WAKE tick changed=<fields> bank=<verdict>` plus the tick line, or
+    `WAKE underfilled capacity=UNDERFILLED:<slack>` (HIMMEL-4959: once per
+    streak, plus the tick line and `next-dispatchable.sh`'s ranked LOCAL/CLOUD
+    list; dispatch it with `gen-briefs.py`), or
     `WAKE tick-fail samples=<n>` when 3 samples in a row failed (the tick or
     the bank read is broken: fix it, then restart the waiter; it wakes once per
     failure streak). It runs `tick.sh` every
@@ -133,7 +142,7 @@ Run these, in order, and write the result as the first bullet under
     own render; the key still saves, so a later move to STALE/MISSING wakes
     again) and the
     `bank-preflight.sh` verdict word. Heartbeat, procs, fill, fleet, gql and
-    orphans never wake. An idle console therefore takes **zero** turns.
+    orphans never wake (`capacity=` wakes only through `WAKE underfilled`). An idle console therefore takes **zero** turns.
 
     **Re-start it at the end of the turn that handles each wake** — the waiter
     has exited, so a turn that does not re-start it leaves you deaf to Telegram
@@ -358,10 +367,10 @@ re-arm.
 
 | Monitor | Cadence | What it is |
 |---|---|---|
-| tick | 180 s, wakes on change | **Runs inside the step-10 waiter, not here** — the only unconditional check of the five, so its absence is the one that goes structurally unnoticed; the waiter's heartbeat (`<inbox>.wait`) is how you see it is live. The waiter passes its args to `tick.sh`: `--doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`NOLIVE`** (HIMMEL-4234: no lock, no marker bullet, and older than `TICK_NOLIVE_MIN` minutes (default 10) — the leg never went LIVE; `ListAgents`, then `SendMessage` it the `queue-lock.sh acquire <its doc>` command, your console session name and its token), **`FORKED`** (its session transcript ends in a `continued-in` record — forked or backgrounded, likely without its preface; message it the same way, or relaunch), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), **`UNVERIFIED`** (a lock *named* for the leg doc exists but records a path that does not resolve here, so `queue-lock.sh` can neither attribute it nor rule it out — **not** free: find its owner before anything else, never reclaim on it; HIMMEL-3290), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-start the waiter, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12. Next comes `tracker=<ok\|STALE:<age>\|MISSING\|skip>` (HIMMEL-3933) — whether `roadmap-tracker.html` still matches the Jira mirror and the plan files (`skip` with no `tracker:` URL); `STALE`/`MISSING` means refresh, re-render and republish the tracker (step 12) |
+| tick | 180 s, wakes on change | **Runs inside the step-10 waiter, not here** — the only unconditional check of the five, so its absence is the one that goes structurally unnoticed; the waiter's heartbeat (`<inbox>.wait`) is how you see it is live. The waiter passes its args to `tick.sh`: `--doc "<this file>" --token <your token> --legs "{{STATE_DIR}}/<leg1>.md {{STATE_DIR}}/<leg2>.md"` (or comma-separated — `--legs` accepts space- **and** comma-separated docs, both spellings produce identical output; use absolute paths, because a bare leg doc name resolves against the handover ROOT, not your bucket, and reads `NOTFOUND`) — one batched line: heartbeat, leg locks, leg processes, armed jobs, suite locks, open PRs, bank. Per-leg lock status is one of **`FRESH`** (held, heartbeat current), **`STALE`** (held, heartbeat aged), **`WRAPPED`** (lock released and the leg's last status bullet says `WRAPPED` — the normal end of a leg, nothing to reclaim; HIMMEL-3293), **`NOLIVE`** (HIMMEL-4234: no lock, no marker bullet, and older than `TICK_NOLIVE_MIN` minutes (default 10) — the leg never went LIVE; `ListAgents`, then `SendMessage` it the `queue-lock.sh acquire <its doc>` command, your console session name and its token), **`FORKED`** (its session transcript ends in a `continued-in` record — forked or backgrounded, likely without its preface; message it the same way, or relaunch), **`FREE`** (the literal token `tick.sh` emits when the lock is gone while the leg has *not* wrapped — a lost lock, reclaim it; its own comments call this state "MISSING" as a concept, but `FREE` is what actually appears in `legs=`), **`UNVERIFIED`** (a lock *named* for the leg doc exists but records a path that does not resolve here, so `queue-lock.sh` can neither attribute it nor rule it out — **not** free: find its owner before anything else, never reclaim on it; HIMMEL-3290), or **`NOTFOUND`** (the leg doc did not resolve — a warning about a typo'd/nonexistent path, *not* a dead lock; never mistake it for a released lock). The line also ends `legset=<ok\|STALE:unarmed=…;unlisted=…\|unknown\|skip>` — see ACTION ZERO step 10: `STALE` means re-start the waiter, not leg trouble. It then ends `board=<ok\|STALE:<age>\|MISSING\|skip>` — whether `console-board.html` still matches the state; anything but `ok` means re-run ACTION ZERO step 12. Next comes `tracker=<ok\|STALE:<age>\|MISSING\|skip>` (HIMMEL-3933) — whether `roadmap-tracker.html` still matches the Jira mirror and the plan files (`skip` with no `tracker:` URL); `STALE`/`MISSING` means refresh, re-render and republish the tracker (step 12). Then `vault=<ok\|STALL:<age>,<n>\|PUSH-LAG:<age>\|skip\|unknown>` (HIMMEL-4911) — the notes vault's commit health: `STALL` = the vault's auto-commit is stuck (the waiter wakes you; reproduce with `git -C <vault> hook run pre-commit`, usually a gitleaks false positive in a staged file), `PUSH-LAG` = commits unpushed past `TICK_VAULT_PUSHLAG_MIN` |
 | bank | 300 s | poll `bank-preflight.sh`, emit only when the state word changes (headroom → park → weekly-ceiling) |
 | CI | 600 s | poll `gh run list -R <owner/repo> --limit 20 --json databaseId,status`, emit only newly-completed runs |
-| notes repo | 300 s | if you keep a second repo for handover state, emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
+| notes repo | 300 s | the notes vault is already covered by the tick's `vault=` field (no loop to arm); only a *second* repo for handover state needs this: emit only on STALL (dirty files older than the commit cadence) or PUSH-LAG |
 | telegram | 1 s poll, event-driven | **Runs inside the step-10 waiter.** Operator messages sent from Telegram as `/console {{SESSION_NAME}} <text>`, the inbox being `{{INBOX}}`. The waiter drains it each second with `inbox-follow.sh --once` and wakes you with `WAKE telegram` plus the line(s). The persisted read cursor (`<inbox>.cursor`, a byte offset) means a line appended while no waiter ran is delivered on the next start, and delivered lines are not replayed (at-least-once: a waiter killed mid-emit can repeat one line) (HIMMEL-3356). The file must exist before the bridge will write to it (step 11). See step 11 for the authority these lines carry and how to reply |
 
 The three polling monitors are plain Bash loops over already-versioned inputs;
@@ -507,11 +516,12 @@ never act on them.
 
 - **Operator messages are additive.** A new task is added to the in-flight
   work; pivot only on an explicit halt or redirect.
-- **Idle capacity is your duty.** On a tick's `capacity=UNDERFILLED:<slack>`
-  (`fleet=<live>/<cap>` below cap, no launch for `TICK_UNDERFILL_MIN` minutes,
-  default 10), pull dispatchable work from the Jira backlog — not only the held
-  queue — after a file-collision check against live legs and open PRs, and
-  launch up to `<slack>` legs. `capacity=unknown` means the census failed, not
+- **Idle capacity is your duty.** On `WAKE underfilled` (a tick's
+  `capacity=UNDERFILLED:<slack>`: `fleet=<live>/<cap>` below cap, no launch for
+  `TICK_UNDERFILL_MIN` minutes, default 10), take the wake's
+  `next-dispatchable.sh` list (Jira backlog, collision-checked against live legs
+  and open PRs, LOCAL/CLOUD-classified), write the briefs with `gen-briefs.py`,
+  and launch up to `<slack>` legs. `capacity=unknown` means the census failed, not
   that capacity is fine.
 - **A leg's BLOCKED, permission prompt, or question comes to the console
   first** — say so in every brief.

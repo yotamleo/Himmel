@@ -606,6 +606,70 @@ wait_exit "$WPID"
 check "(w3) a tick line with no tracker= field is still a valid sample" "running" "$rc"
 kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# --- (x) HIMMEL-4911: vault= wakes on a class change TO STALL or PUSH-LAG, never on
+# age/count alone, never on a move back to ok/skip/unknown, and its absence
+# (an older tick.sh) is still a valid sample. The wake names the reproduce
+# command. RED control (console-wait.sh before this change): the STALL move
+# below never woke ("running"). ------------------------------------------------
+vault_line() { sed "s/ denials=none/ vault=$1 denials=none/" "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"; }
+reset_stub
+vault_line ok
+I="$(new_inbox x)"
+start "$I" "$WORK/x.out" --legs "N1.md"
+wait_hb "$I" || fail "(x) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line STALL:25m,3
+wait_exit "$WPID"
+check "(x) a vault move to STALL ends the wait" "0" "$rc"
+check "(x) the wake names vault" "WAKE tick changed=vault bank=PROCEED" "$(head -n1 "$WORK/x.out")"
+check "(x) the wake names the reproduce command" "yes" "$(grep -q 'git -C .* hook run pre-commit' "$WORK/x.out" && echo yes)"
+
+reset_stub
+tick_line "N1:FRESH" "ok"
+vault_line STALL:25m,3
+I="$(new_inbox x2)"
+start "$I" "$WORK/x2.out" --legs "N1.md"
+wait_hb "$I" || fail "(x2) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line STALL:2h,90
+wait_exit "$WPID"
+check "(x2) a STALL age/count change alone does not wake" "running" "$rc"
+tick_line "N1:FRESH" "ok"
+vault_line ok
+wait_exit "$WPID"
+check "(x2) a vault move back to ok alone does not wake" "running" "$rc"
+check "(x2) the saved key still moved to vault=ok" "yes" "$(grep -q 'vault=ok' "$I.wait.state" && echo yes)"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+reset_stub
+vault_line ok
+I="$(new_inbox x3)"
+start "$I" "$WORK/x3.out" --legs "N1.md"
+wait_hb "$I" || fail "(x3) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line PUSH-LAG:3h
+wait_exit "$WPID"
+check "(x3) a vault move to PUSH-LAG wakes" "WAKE tick changed=vault bank=PROCEED" "$(head -n1 "$WORK/x3.out")"
+
+reset_stub
+vault_line ok
+I="$(new_inbox x4)"
+start "$I" "$WORK/x4.out" --legs "N1.md"
+wait_hb "$I" || fail "(x4) no baseline heartbeat"
+tick_line "N1:FRESH" "ok"
+vault_line unknown
+wait_exit "$WPID"
+check "(x4) a vault move to unknown does not wake" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
+reset_stub
+I="$(new_inbox x5)"
+start "$I" "$WORK/x5.out" --legs "N1.md"
+wait_hb "$I" || fail "(x5) no baseline heartbeat"
+wait_exit "$WPID"
+check "(x5) a tick line with no vault= field is still a valid sample" "running" "$rc"
+kill "$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
+
 # --- (m3748) a leg-set change made through --legs-from is a silent baseline --
 # HIMMEL-3748: with --legs-from the argv never changes, so the waiter folds the
 # manifest's leg list into its args hash each sample. A dispatch (manifest add)
@@ -652,6 +716,50 @@ sed 's/ tails=N1:READY/ tails=N1:READY!stale/' "$STUB/tick.line" > "$STUB/tick.l
 wait_exit "$WPID"
 check "(l4568) a READY going stale wakes the console (rc 0)" "0" "$rc"
 check "(l4568) the wake names tails" "WAKE tick changed=tails bank=PROCEED" "$(head -n1 "$WORK/l4568.out")"
+
+# --- (u4959) HIMMEL-4959: a sustained capacity=UNDERFILLED wakes, once per streak
+# tick.sh already folds TICK_UNDERFILL_MIN into capacity=; the waiter wakes on the
+# first UNDERFILLED sample, prints the dispatchable list (stubbed here), and a
+# re-arm during the same streak stays quiet until capacity returns to ok.
+cat > "$STUB/dispatch.sh" <<'EOF2'
+#!/usr/bin/env bash
+printf 'LOCAL HIMMEL-9001 stub-ticket\n'
+EOF2
+export CONSOLE_WAIT_DISPATCH="$STUB/dispatch.sh"
+under_line() { sed "s/ capacity=[^ ]*/ capacity=$1/" "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"; }
+reset_stub
+I="$(new_inbox u4959)"
+start "$I" "$WORK/u4959.out" --legs "N1.md"
+wait_hb "$I" || fail "(u4959) no baseline heartbeat"
+under_line "UNDERFILLED:12"
+wait_exit "$WPID"
+check "(u4959) a sustained UNDERFILLED capacity wakes the console (rc 0)" "0" "$rc"
+check "(u4959) the wake names the slack" "WAKE underfilled capacity=UNDERFILLED:12" "$(head -n1 "$WORK/u4959.out")"
+check "(u4959) the wake carries the dispatchable list" "yes" "$(grep -q '^LOCAL HIMMEL-9001' "$WORK/u4959.out" && echo yes)"
+timeout 4 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/u4959b.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(u4959) the re-arm in the same streak does not wake again" "" "$(cat "$WORK/u4959b.out")"
+check "(u4959) and is still waiting (rc 124)" "124" "$rc"
+under_line "ok"
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/u4959c.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+under_line "UNDERFILLED:5"
+start "$I" "$WORK/u4959d.out" --legs "N1.md"
+wait_exit "$WPID"
+check "(u4959) a new streak after capacity returned to ok wakes again" "WAKE underfilled capacity=UNDERFILLED:5" "$(head -n1 "$WORK/u4959d.out")"
+reset_stub
+I="$(new_inbox u4959u)"
+under_line "unknown"
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/u4959e.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(u4959) capacity=unknown (failed census) never wakes" "" "$(cat "$WORK/u4959e.out")"
+
+# the manifest reaches the dispatch command, so live legs' files join the collision check
+printf '#!/usr/bin/env bash\nprintf "ARGS %%s\\n" "$*"\n' > "$STUB/dispatch.sh"
+reset_stub
+I="$(new_inbox u4959m)"
+start "$I" "$WORK/u4959m.out" --legs-from "$WORK/u4959-fleet.json"
+wait_hb "$I" || fail "(u4959) no baseline heartbeat (manifest)"
+under_line "UNDERFILLED:7"
+wait_exit "$WPID"
+check "(u4959) the dispatch command receives --legs-from" "ARGS --legs-from $WORK/u4959-fleet.json" "$(grep '^ARGS' "$WORK/u4959m.out")"
 
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?

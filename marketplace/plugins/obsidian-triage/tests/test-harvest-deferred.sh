@@ -121,11 +121,18 @@ v = tmp / "vault"
     "harvest_defer_count: 5\nharvest_needs_attention: true\n---\nshort.\n")
 r = subprocess.run([sys.executable, tool, str(v)], capture_output=True, text=True)
 check("deferred-only batch exits 0", r.returncode == 0, r.stdout + r.stderr)
-# HIMMEL-4684: the tool itself writes .harvest.done when only deferred partials remain.
+# HIMMEL-4707: the tool writes only a PROVISIONAL marker; a run that dies before
+# G-8 promotes it (a rename) leaves no .harvest.done, so downstream stays gated closed.
 done = v / ".harvest.done"
-check("deferred-only batch writes .harvest.done", done.is_file(), r.stdout)
-check(".harvest.done carries a timestamp and a batch hash",
-      done.is_file() and len(done.read_text().split()) == 2, done.read_text() if done.is_file() else "")
+prov = v / ".harvest.done.provisional"
+check("deferred-only batch writes the provisional marker", prov.is_file(), r.stdout)
+check("aborted run (no promote) leaves no .harvest.done", not done.exists())
+check("provisional marker carries a timestamp and a batch hash",
+      prov.is_file() and len(prov.read_text().split()) == 2, prov.read_text() if prov.is_file() else "")
+prov.rename(done)  # what the G-8 runbook step does
+check("promote renames the provisional marker to .harvest.done", done.is_file() and not prov.exists())
+check(".harvest.done keeps the timestamp and batch hash",
+      len(done.read_text().split()) == 2, done.read_text())
 check("summary counts deferred + needs-attention",
       "harvest-clip-body-batch: 2 deferred (non-blocking), 1 needs-attention" in r.stdout, r.stdout)
 rep = v / ".harvest-pending.md"
@@ -139,6 +146,7 @@ check("pending report has needs-attention bucket", len(na) == 2 and "[[Clippings
 r = subprocess.run([sys.executable, tool, str(v)], capture_output=True, text=True)
 check("failed clip blocks (exit 4)", r.returncode == 4, r.stdout + r.stderr)
 check("failed batch leaves no .harvest.done", not (v / ".harvest.done").exists())
+check("failed batch leaves no provisional marker", not (v / ".harvest.done.provisional").exists())
 
 # Dry-run writes no report.
 v2 = tmp / "vault2"
@@ -148,6 +156,7 @@ r = subprocess.run([sys.executable, tool, str(v2), "--dry-run"], capture_output=
 check("dry-run exits 0", r.returncode == 0, r.stdout + r.stderr)
 check("dry-run writes no pending report", not (v2 / ".harvest-pending.md").exists())
 check("dry-run writes no .harvest.done", not (v2 / ".harvest.done").exists())
+check("dry-run writes no provisional marker", not (v2 / ".harvest.done.provisional").exists())
 
 sys.exit(1 if fails else 0)
 PY

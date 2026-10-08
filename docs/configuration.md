@@ -22,6 +22,63 @@ controls.)
 
 ---
 
+## `.env` consumer boundaries
+
+Each loader names its keys explicitly (HIMMEL-4910). The shared shell
+`load_dotenv [--root DIR] KEY...` exports **nothing without a key list**;
+existing non-empty shell values still win. Jira/Bitbucket keep their existing
+nullish precedence (an exported empty string wins). Python credential readers
+keep live values and disable dotenv interpolation. These boundaries govern
+what a file adds, not credentials the launching shell already exported.
+
+**Bun limitation:** Bun can auto-load the working directory's `.env` before
+any explicit reader runs. These consumer allowlists cannot prevent that
+runtime-level import. Auditing Bun launch sites and passing `--no-env-file`
+is tracked separately in **HIMMEL-4915**, outside HIMMEL-4910. No Bun launch
+sites are changed here.
+
+| Consumer | Keys loaded from its file |
+|---|---|
+| Jira / Confluence (`scripts/jira/src/client.ts`) | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_SEVERITY_FIELD`, `JIRA_BOARD_ID`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN` |
+| Bitbucket (`scripts/bitbucket/src/env.ts`) | `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, `BITBUCKET_WORKSPACE`, `BITBUCKET_REPO_SLUG` |
+| Codex launcher (bash/PowerShell), CLI proxy setup | `CLIPROXY_API_KEY` |
+| DeepSeek launcher (bash/PowerShell) | `DEEPSEEK_API_KEY` |
+| GLM launcher (bash/PowerShell), `telegram/glm-env.ts`, graph-map refresh | `ZAI_API_KEY` |
+| OpenRouter launcher (bash/PowerShell), `lanes/openrouter-cost.sh` | `OPENROUTER_API_KEY` |
+| Routed launcher (bash/PowerShell) | `OMNIROUTE_API_KEY` |
+| CR artifact critic / provider-selected panel credentials | `GLM_API_KEY`, `ZAI_API_KEY`, `Z_AI_API_KEY`; panel additionally `CLIPROXY_API_KEY` when Codex is selected |
+| CR policy readers | `CR_PROFILE`, `CR_REQUIRE_CROSS_MODEL`, `CR_FLOOR_FALLBACK`, `HIMMEL_DOC_FRESHNESS` as required by each reader; `pr-check-env.sh` permits only those plus `CR_CLAUDE_AGENTS` |
+| Handover tools, graph cadence, graphify fence, Hermes egress, overnight report, config-ui fleet/legs, statusline, lane-cost rows | `HANDOVER_DIR`; hop, leg-timeline, auto-action and leg-relaunch additionally `USER_SLUG`; console additionally `JIRA_PROJECT_KEY` |
+| GO gate, user-slug setup probe | `USER_SLUG` (GO gate separately reads `HANDOVER_DIR`) |
+| Console ready-check | `TICKET_ID_PATTERN`, `JIRA_PROJECT_KEY` |
+| Commit-message hook | `TICKET_ID_REQUIRED`, `TICKET_ID_PATTERN`, `TICKET_ID_EXEMPT_AUTHORS`, `JIRA_PROJECT_KEY`, `TRACKER` |
+| Session injection hooks | Initiative: `HIMMEL_INITIATIVE`, `HIMMEL_OVERNIGHT`, `HIMMEL_INITIATIVE_OVERNIGHT`; freshness: `HIMMEL_DOC_FRESHNESS`; position: `HIMMEL_WHERE_ARE_WE`, `HIMMEL_WHERE_ARE_WE_STALE_HOURS`; worktree nudge: `HIMMEL_WORKTREE_NUDGE` |
+| Bank preflight | `HIMMEL_FLEET_CAP` |
+| Updater | `HIMMEL_UPDATE_AUTOSTASH`, `LUNA_VAULT_PATH` |
+| Telegram bridge (`poller.ts`, dedicated bridge file) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_AUTO_ACTIONS` (only actions allow a process-env override) |
+| Telegram session-status / luna-sync-alert (dedicated bridge file) | `TELEGRAM_BOT_TOKEN`; notification shell hooks separately load repo `TELEGRAM_GROUP_CHAT_ID` |
+| Jira-nudge hook | `HIMMEL_JIRA_NUDGE`, `HIMMEL_INITIATIVE`, `HIMMEL_INITIATIVE_OVERNIGHT`, `HIMMEL_OVERNIGHT`, `JIRA_PROJECT_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| Upstream watcher | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| Alibaba quota probe | `ALIBABA_QUOTA_AK`, `ALIBABA_QUOTA_SK`, `ALIBABA_QUOTA_PROM_URL`, `ALIBABA_QUOTA_GRANTS` |
+| Alibaba monitoring-key setup | `ALIBABA_QUOTA_AK`, `ALIBABA_QUOTA_SK` (in-process lookup, not blanket export) |
+| VM SDK | The selected VM's registry `pass_env`, and `user_env` only without a literal user; station entries load none |
+| Cloud-init / Ubuntu provisioner | `ubuntu_vm_user`, `ubuntu_vm_pass` |
+| Windows provisioner | `windows_vm_user`, `windows_vm_pass` |
+| VM after-report | `himmel_github_token_vm` |
+| Google Health pull cadence | `GOOGLE_HEALTH_REFRESH_TOKEN` |
+| Chat-note enrichment / graphmap provider selection | Only the selected provider's named key (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ZAI_API_KEY`, or `ANTHROPIC_API_KEY` for chat-note enrichment) |
+| Fetch-health probe lookup | `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, `FIRECRAWL_API_KEY`, `FIRECRAWL_BASE_URL`, `TWITTER_AUTH_TOKEN`, `TWITTER_CT0`, `REDDIT_COOKIE_FILE`, `HIMMEL_MEDIA_COOKIES`, `HIMMEL_FETCH_HEALTH_STATE`, `HIMMEL_FIRECRAWL_LEDGER`, `HIMMEL_IG_PROBE_CACHE`, `HIMMEL_IG_PROBE_TTL_S`, `IG_SCRAPLING_PYTHON`, `X_SCRAPLING_PYTHON`, `YT_SCRAPLING_PYTHON`, and the explicit `FETCH_HEALTH_REDDIT_URL`, `FETCH_HEALTH_FXTWITTER_URL`, `FETCH_HEALTH_INSTAGRAM_EMBED_URL`, `FETCH_HEALTH_INSTAGRAM_MEDIA_URL`, `FETCH_HEALTH_X_MEDIA_URL`, `FETCH_HEALTH_TWITTER_TWEET_ID`, `FETCH_HEALTH_YOUTUBE_URL`, `FETCH_HEALTH_JINA_URL` overrides; file-derived config is not passed wholesale to children |
+| himmelctl privileged installer | `HIMMELCTL_SUDO_PASSWORD` (stdin only, never exported) |
+
+Config-ui and himmelctl configuration/redaction readers intentionally inspect
+all entries **without exporting them**: filtering the redactor would expose
+otherwise unknown secret values in child output. Doctor **C57-dotenv-allowlists**
+warns on recognized blanket loaders or empty shell allowlists and lists unused
+key **names** at INFO severity, never values. Its source-pattern inventory is
+an advisory, not an interpreter: a new loader syntax needs a matching audit
+rule. An unused name can be intentional; `TEST_ANTHROPIC_API_KEY` is reserved
+for the future API lane and is not exported by these loaders.
+
 ## 1. What himmel is
 
 himmel runs Claude Code as a **managed, PR-gated agent**. Instead of trusting

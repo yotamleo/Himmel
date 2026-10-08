@@ -16,7 +16,7 @@ production implementations have source-derived counts instead.
 | Server / client | Owner and repository evidence | SDK version | Transport | Tool count | Migration risk / disposition |
 |---|---|---|---|---|---|
 | `luna-correlate` server | `marketplace/plugins/luna-correlate/{package.json,bun.lock,server.ts,.mcp.json}` | Before: monolith 1.32.1; pilot target: split server **2.3.1** | stdio, Bun | **5** | Low: low-level handlers retain JSON schemas, custom validation and text/error output. Exact pin; regression initializes, lists tools, calls offline `series.load`, rejects bad arguments/unknown tools and checks EOF. |
-| `jira` server | `scripts/jira/{package.json,package-lock.json,src/mcp.ts}`; CLI `mcp` verb | Manifest `^1.32.1`, lock **1.32.1** | stdio, Node | **13** | Medium: Jira writes, attachments, transition and roadmap dispatch. Deferred to **HIMMEL-4864**; preserve all handlers and typed errors. |
+| `jira` server | `scripts/jira/{package.json,package-lock.json,src/mcp.ts}`; CLI `mcp` verb | Before: monolith 1.32.1; now split server **2.3.1** (HIMMEL-4864, spec 2025-11-25) | stdio, Node | **13** | Migrated, low-level `Server` kept: Jira writes, attachments, transition and roadmap dispatch and typed errors unchanged. |
 | `telegram` server | `marketplace/plugins/telegram-himmel/{package.json,bun.lock,server.ts,.mcp.json}` | Before: monolith 1.32.1; now split server **2.3.1** (HIMMEL-4865) | stdio, Bun; Telegram network I/O is not MCP transport | **4** | Migrated, low-level `Server` kept: tools, schemas, notifications, poller gate and EOF shutdown unchanged. `tests/stdio.test.ts` drives a non-owner session with a dummy token and a dead proxy, no live bot. |
 | Obsidian Local REST API embedded server | `templates/luna-second-brain/.obsidian/plugins/obsidian-local-rest-api/{main.js,manifest.json}`; plugin **5.4.0** | Already split `@modelcontextprotocol/server`, `core`, `node` bundle; exact SDK release **not recorded** | Streamable HTTP (`NodeStreamableHTTPServerTransport`), sessionful/sessionless | **17** base + **2** signed-URL tools + **1** event-listener tool when enabled; extensions can add more | Medium: already v2 API (`McpServer.registerTool`, Standard Schema adapter). Re-vendor upstream, do not codemod compiled bundle; unknown exact pin needs upstream evidence. |
 | `fake-mcp` test server | `scripts/testing/fixtures/fake-mcp-server.mjs` | **None**, handwritten JSON-RPC | newline-delimited stdio, Node | **1** (`fake_echo`) | No dependency migration. Credential-free fixture echoes requested protocol; default 2025-06-18 is not a supported-version negotiation implementation. |
@@ -68,10 +68,25 @@ the new stdio test calls no network tool.
 
 ## Staged completion
 
-- **HIMMEL-4864**: Jira CLI server migration.
-- **HIMMEL-4865**: telegram-himmel server migration.
-- **HIMMEL-4866**: doctor/CI lint against new v1 dependencies/imports after
-  remaining first-party migrations, with explicit vendored/external policy.
+- **HIMMEL-4864**: Jira CLI server migration (done, #2140).
+- **HIMMEL-4865**: telegram-himmel server migration (done, #2144).
+- **HIMMEL-4866**: doctor/CI lint against new v1 dependencies/imports, with
+  explicit vendored/external policy (done, see below).
+
+## The v1 gate
+
+`bash scripts/lint/check-mcp-sdk-v1.sh` refuses a tracked `package.json`
+dependency on, a lockfile entry for (npm, bun, yarn, pnpm; direct or
+transitive), or an import/require of `@modelcontextprotocol/sdk`. It runs as
+the `no-mcp-sdk-v1` pre-commit hook, as doctor row **C58-mcp-sdk-v1** (WARN),
+and `scripts/lint/test-check-mcp-sdk-v1.sh` runs it on the real tree in the
+shell suite. Every first-party server is already on v2, so the gate is global.
+
+Vendored third-party bundles (`*/.obsidian/plugins/*`) are not scanned as
+source: a bundle embedding the v1 monolith is refused, and one embedding the
+v2 packages prints a NOTE that its exact version is unknown. Externally
+configured servers (npx, hosted, `.mcp.json`) are not scanned; the gate prints
+a NOTE saying so. Neither is ever reported as compliant.
 
 These follow-ups are linked by comment from **HIMMEL-4819**. Slice 1 does not
 complete the parent ticket. Exact unknown external/bundled versions are not

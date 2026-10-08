@@ -111,6 +111,16 @@ EOF
 rc=$(run_hook "carveout.md")
 assert_rc "T10 RemoteIssueLinks not caught by getJiraIssue" 0 "$rc"
 
+# T11: native dispatch fixture is exempt only at its exact repo-relative path.
+cat > "$TMP/scripts/hooks/wire-hook-bash.test.mjs" <<EOF
+mcp__plugin_atlassian_atlassian__createJiraIssue
+EOF
+rc=$(run_hook "scripts/hooks/wire-hook-bash.test.mjs")
+assert_rc "T11 exempt native dispatch fixture path" 0 "$rc"
+cp "$TMP/scripts/hooks/wire-hook-bash.test.mjs" "$TMP/vendor/evil/wire-hook-bash.test.mjs"
+rc=$(run_hook "vendor/evil/wire-hook-bash.test.mjs")
+assert_rc "T11 native fixture basename, wrong path BLOCKS" 1 "$rc"
+
 if [ "$FAILED" -gt 0 ]; then
     echo "---"
     echo "FAIL $FAILED case(s)"

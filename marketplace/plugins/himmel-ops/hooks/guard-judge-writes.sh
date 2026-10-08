@@ -35,9 +35,13 @@
 #     segment; or it cannot be resolved (readlink -f, then parent + missing
 #     leaf); or the RESOLVED path is outside every allowed place:
 #       - $HOME/.cache/himmel/verdicts/ (the judge's scratch),
-#       - under $HANDOVER_DIR but not inside any inbox/ there, inside a
-#         verdicts/ dir or a file whose basename matches *-judge-*.md (the verdict, its own doc).
-#     With HANDOVER_DIR unset only the cache is allowed.
+#       - /tmp/claude-<uid>/ (judge-dir.sh's j<PR> scratch, the session scratchpad),
+#       - under $HANDOVER_DIR but not inside any inbox/ there: only
+#         verdicts/$HIMMEL_CONSOLE_JUDGE_QID/ and the one file
+#         $HIMMEL_CONSOLE_JUDGE_DOC (HIMMEL-4608; headed-arm-leg.sh --judge exports
+#         both). An unset or malformed binding allows nothing under the root.
+#     With HANDOVER_DIR unset only the cache and /tmp scratch are allowed.
+#     A symlink that does not resolve is denied, never judged by its own path.
 #
 # DEFAULT ACTION: with the marker unset this hook is a silent no-op — the
 # marker check is the FIRST statement, before stdin is read. With the marker
@@ -51,8 +55,7 @@
 # interpreter -c) are not screened at all: the structural fix is HIMMEL-4607
 # (judge-lane sandbox or permission profile). Over-matching (a read whose text
 # merely carries a verb word, e.g. `gh pr view 12 --comments` is fine but
-# `git log --grep push` denies) is the safe direction. Any verdicts/ dir under the handover root is writable,
-# not only this judge's own qid.
+# `git log --grep push` denies) is the safe direction.
 #
 # BYPASS: launch the session without --judge (the marker is then unset). There
 # is no per-call bypass.
@@ -104,6 +107,9 @@ resolve() {
     local p="$1" parent leaf r
     r=$(readlink -f -- "$p" 2>/dev/null) && [ -n "$r" ] && { printf '%s\n' "$r"; return 0; }
     case "$p" in */) return 1 ;; esac
+    # A symlink readlink could not resolve is dangling past a missing parent:
+    # its own path says nothing about where a write would land (HIMMEL-4614 T4).
+    [ -L "$p" ] && return 1
     leaf="${p##*/}"
     parent="${p%/*}"
     [ -n "$parent" ] || parent="/"
@@ -187,15 +193,42 @@ case "$tool" in
         case "$resolved" in
             "$cache"/*) exit 0 ;;
         esac
+        # judge-dir.sh's /tmp/claude-<uid>/j<PR> scratch and the session
+        # scratchpad (HIMMEL-4614 T7).
+        tmpscratch=$(resolve "/tmp/claude-$(id -u 2>/dev/null)") || tmpscratch=""
+        if [ -n "$tmpscratch" ]; then
+            case "$resolved" in
+                "$tmpscratch"/*) exit 0 ;;
+            esac
+        fi
         if [ -n "${HANDOVER_DIR:-}" ]; then
             root=$(resolve "$HANDOVER_DIR") || deny "write-outside" "handover root does not resolve"
+            # The launched judge's own doc and qid (HIMMEL-4608): headed-arm-leg.sh
+            # --judge exports both. A missing or malformed binding allows nothing
+            # under the handover root.
+            own_doc=""
+            case "${HIMMEL_CONSOLE_JUDGE_DOC:-}" in
+                /*) own_doc=$(resolve "$HIMMEL_CONSOLE_JUDGE_DOC") || own_doc="" ;;
+            esac
+            own_qid="${HIMMEL_CONSOLE_JUDGE_QID:-}"
+            case "$own_qid" in
+                "" | *[!A-Za-z0-9._-]* | . | ..) own_qid="" ;;
+            esac
             case "$resolved" in
                 "$root"/inbox/* | "$root"/*/inbox/*) ;;
-                "$root"/*/verdicts/* | "$root"/verdicts/*) exit 0 ;;
+                "$root"/*/verdicts/* | "$root"/verdicts/*)
+                    if [ -n "$own_qid" ]; then
+                        case "$resolved" in
+                            "$root"/*/verdicts/"$own_qid"/* | "$root"/verdicts/"$own_qid"/*) exit 0 ;;
+                        esac
+                    fi
+                    ;;
                 "$root"/*-judge-*.md)
-                    case "${resolved##*/}" in
-                        *-judge-*.md) exit 0 ;;
-                    esac
+                    if [ -n "$own_doc" ] && [ "$resolved" = "$own_doc" ]; then
+                        case "${resolved##*/}" in
+                            *-judge-*.md) exit 0 ;;
+                        esac
+                    fi
                     ;;
             esac
         fi
