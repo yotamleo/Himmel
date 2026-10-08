@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# test-cleanup-old.sh - regression test for cleanup-old.sh
+S="$(dirname "$0")/cleanup-old.sh"
+fail=0
+d="$(mktemp -d)" || exit 1
+touch -d '10 days ago' "$d/old file.log" || exit 1
+touch "$d/new.log"
+bash "$S" "$d" 5
+[ ! -e "$d/old file.log" ] || { echo "FAIL old file with a space survives"; fail=1; }
+[ -e "$d/new.log" ] || { echo "FAIL new file removed"; fail=1; }
+bash "$S" "$d" abc >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 64 ] || { echo "FAIL non-numeric days: rc $rc"; fail=1; }
+rm -rf "$d"
+exit "$fail"
