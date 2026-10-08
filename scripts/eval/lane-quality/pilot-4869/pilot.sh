@@ -196,12 +196,25 @@ cmd_prepare() {
     "HIMMEL-4869-pilot-$row" "$doc" "$ROOT/rows/$row.signal" "$run/$row.log" "$model"
 }
 
-find_transcript() { # $1 worktree -> newest transcript of a session run there
-  local slug d IFS=:
-  slug="$(printf %s "$1" | sed 's#[^A-Za-z0-9]#-#g')"
-  for d in $TRANSCRIPTS; do
-    [ -d "$d/$slug" ] && ls -t "$d/$slug"/*.jsonl 2>/dev/null
-  done | head -1
+find_transcripts() { # $1 lane, $2 worktree, $3 row doc, $4 row transcript dir -> this row's transcripts, one per line
+  local slug d id IFS=:
+  slug="$(printf %s "$2" | sed 's#[^A-Za-z0-9]#-#g')"
+  # A sandboxed row writes only to its own transcript dir, so all of it is its own.
+  if [ "$1" != native ]; then
+    ls -tr "$4/$slug"/*.jsonl 2>/dev/null
+    return 0
+  fi
+  # A native row shares the operator's transcript roots: take only the
+  # sessions the launcher recorded in the row doc's front matter (session_ids:,
+  # one per launch and relaunch), never the newest file by the worktree slug.
+  awk 'NR == 1 && $0 != "---" { exit } NR > 1 && /^---$/ { exit }
+      /^session_ids:/ { sub(/^session_ids:[[:space:]]*/, ""); gsub(/[[:space:]]/, ""); gsub(/,/, "\n"); print }' "$3" |
+  while IFS= read -r id; do
+    printf %s "$id" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || continue
+    for d in $TRANSCRIPTS; do
+      [ -f "$d/$slug/$id.jsonl" ] && { printf '%s\n' "$d/$slug/$id.jsonl"; break; }
+    done
+  done
 }
 
 # Reads outside the worktree that an eval run must never make: the vaults,
@@ -255,8 +268,13 @@ cmd_finish() {
   acc="$(grep -E '^accept: [0-9]+/[0-9]+$' "$ROOT/private/$row.accept.log" | tail -1)"
   git -C "$WT" add -A
   scope="$(git -C "$WT" diff --cached --name-only "$FIX" | grep -v '^lq-work/' | jq -R . | jq -sc .)"
-  # A sandboxed row's transcripts land in its own transcript dir.
-  tr="$(TRANSCRIPTS="$TX:$TRANSCRIPTS" find_transcript "$WT")"
+  # Every session of this row (a relaunch adds one), in launch order, scored as
+  # one transcript so a read in an earlier session still counts.
+  tr=""
+  if [ -n "$(find_transcripts "$LANE" "$WT" "$DOC" "$TX")" ]; then
+    tr="$ROOT/private/$row.transcript.jsonl"
+    find_transcripts "$LANE" "$WT" "$DOC" "$TX" | while IFS= read -r f; do cat "$f"; done >"$tr"
+  fi
   m="$(metrics "$tr" "$rep")"
   pk="$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
   {
