@@ -457,6 +457,55 @@ cmd_stage2=$(neutralize_quoted_separators "$cmd_stage1")
 # and drops the printf fork too.
 cmd_norm=$(tr '\n\r' ';;' <<<"$cmd_stage2")
 
+# HIMMEL-4970: refuse two wait shapes that never end. (1) `until ! pgrep -f
+# <pat>` / `while pgrep -f <pat>` where <pat> matches this command's own text:
+# the harness runs every Bash call as `<shell> -c "... eval '<command>'"`, so
+# the wrapper shell's command line contains <pat> and pgrep -f (which excludes
+# only itself) always finds it. A bracketed pattern (`[c]lear-cr-marker.sh`)
+# does not match its own literal text and passes. (2) a `do :; done` /
+# `do true; done` loop with no sleep, which busy-loops a core.
+# ponytail: the loop gate reads quote-neutralized text, so prose that quotes
+# a whole `until pgrep -f x; do ...` loop can false-positive, and a pgrep
+# option that takes a value (`-u user`) is read as the pattern; tighten with
+# a real shell tokenizer if either shows up.
+PGREP_WAIT_RE='(^|[^[:alnum:]_-])(until|while)[[:space:]][^;]*pgrep[[:space:]]'
+PGREP_ARG_RE="pgrep[[:space:]]+((-[[:alnum:]]+[[:space:]]+)*)('([^']*)'|\"([^\"]*)\"|([^[:space:];&|)]+))"
+BUSY_LOOP_RE='(^|[^[:alnum:]_-])do[[:space:]]+(:|true)[[:space:];]*done([^[:alnum:]_]|$)'
+
+if [[ $cmd_stage2 =~ $PGREP_WAIT_RE ]]; then
+    rest=$cmd_stage1
+    while [[ $rest =~ $PGREP_ARG_RE ]]; do
+        wait_flags=${BASH_REMATCH[1]}
+        wait_pat=${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}
+        rest=${rest#*"${BASH_REMATCH[0]}"}
+        case $wait_flags in *f*) ;; *) continue ;; esac
+        [ -n "$wait_pat" ] || continue
+        if [[ $cmd =~ $wait_pat ]]; then
+            {
+                printf 'require-quiet-run: self-matching pgrep -f wait refused (HIMMEL-4970).\n\n'
+                printf 'The pattern %s occurs in this very command, and the shell running it\n' "$wait_pat"
+                printf 'carries the command line, so pgrep -f always finds its own wrapper and\n'
+                printf 'the loop never ends. Wait on something that cannot match itself:\n\n'
+                printf '  tail --pid=<pid> -f /dev/null     # or: wait <pid>\n'
+                printf '  the background task'"'"'s own output file (until grep -q DONE <file>)\n'
+                printf '  a bracketed pattern: pgrep -f '"'"'[c]lear-cr-marker.sh'"'"'\n\n'
+                printf 'Bypass: QUIET_RUN_BYPASS=1 <launching shell>; a per-call prefix does not work.\n'
+            } >&2
+            exit 2
+        fi
+    done
+fi
+
+if [[ $cmd_stage2 =~ $BUSY_LOOP_RE ]]; then
+    {
+        printf 'require-quiet-run: sleepless busy loop refused (HIMMEL-4970).\n\n'
+        printf 'A loop whose body is only ":" or "true" spins a core at 100%% CPU. Put a\n'
+        printf '"sleep N" in the body, or wait on a pid: tail --pid=<pid> -f /dev/null\n\n'
+        printf 'Bypass: QUIET_RUN_BYPASS=1 <launching shell>; a per-call prefix does not work.\n'
+    } >&2
+    exit 2
+fi
+
 SUITE='(scripts/([[:alnum:]_/-]*/)?test-[[:alnum:]_.-]+\.sh|scripts/ci/run-shell-tests\.sh)'
 QUIET_RUN='scripts/quiet-run\.sh'
 
