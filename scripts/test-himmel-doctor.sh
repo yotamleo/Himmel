@@ -6145,6 +6145,10 @@ while [ \$# -gt 1 ]; do [ "\$1" = -p ] && { port=\$2; shift; }; shift; done
 printf 'user x\nhostname %s\nport %s\n' "\${1#*@}" "\$port"
 STUB
 chmod +x "$c53_t/bin/ssh"
+# A stub timeout: macOS ships none, and the alias rows must not depend on the
+# host having coreutils (HIMMEL-4981). It drops the duration and runs the rest.
+printf '#!/bin/sh\nshift\nexec "$@"\n' > "$c53_t/bin/timeout"
+chmod +x "$c53_t/bin/timeout"
 c53_run() { # <config json> <probe>
     printf '%s\n' "$1" > "$c53_t/home/.himmel/config.json"; : > "$c53_t/probe.log"; : > "$c53_t/ssh.log"
     HIMMEL_DOCTOR_VM_PROBE="$2" PATH="$c53_t/bin:$FAKEBIN:$PATH" CLAUDE_DIR="$c53_t/claude" HOME="$c53_t/home" bash "$DOC" --no-color 2>&1
