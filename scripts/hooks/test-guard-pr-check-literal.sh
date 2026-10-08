@@ -1565,6 +1565,20 @@ for v in \
     'git diff -S -- --ext-diff scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4916 exec control [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
+# HIMMEL-4950: a brace- or glob-expanded option word before a guarded pathspec
+# can expand into an exec-capable git option; the early expansion return in
+# git_mentions_only must flag it unsafe, not let it pass as a mention.
+# shellcheck disable=SC2016 # literal attack payloads, never expanded here
+for v in \
+    'git grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git grep --open-files-in-pager={bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git log -p --ext-d{iff,iff} -- scripts/cr/pr-check-env.sh' \
+    'git diff --ext-di?f -- scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4950 brace option [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# A brace word that is not option-shaped keeps its prior verdict (allow).
+run "HIMMEL-4950 non-option brace word keeps prior verdict" 0 \
+    "$(payload 'git add docs/{a,b}.md scripts/cr/pr-check-env.sh' "$WT")" "$HR"
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo
