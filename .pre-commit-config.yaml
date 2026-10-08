@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       # Vendored Obsidian plugin bundles (minified js/css) and the vendored
       # claude-hud tree (HIMMEL-718, pinned byte-for-byte — drift guard hashes
@@ -31,7 +31,7 @@ repos:
       - id: check-shebang-scripts-are-executable
 
   - repo: https://github.com/shellcheck-py/shellcheck-py
-    rev: v0.10.0.1
+    rev: v0.11.0.1
     hooks:
       # Vendored statusline bar (HIMMEL-331) is third-party code (upstream
       # nilbuild/claude-statusline; the yotamleo fork is archived, HIMMEL-1233)
@@ -176,6 +176,14 @@ repos:
         language: system
         files: test-.*\.sh$
         pass_filenames: true
+
+      - id: no-mcp-sdk-v1
+        name: no new v1 @modelcontextprotocol/sdk dependency or import (himmel-dev only)
+        # HIMMEL-4866
+        entry: bash scripts/lint/check-mcp-sdk-v1.sh
+        language: system
+        files: (package\.json|package-lock\.json|npm-shrinkwrap\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml|\.(ts|tsx|js|jsx|mjs|cjs|mts|cts))$
+        pass_filenames: false
 
       - id: no-ticket-id-in-user-strings
         name: adopter-facing strings stay free of raw ticket IDs (himmel-dev only)

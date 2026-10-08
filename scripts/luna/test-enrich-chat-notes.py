@@ -854,7 +854,7 @@ class TestProviderRegistry(unittest.TestCase):
         c = mod.PROVIDERS["claude"]
         self.assertEqual(c["api_style"], "anthropic")
         self.assertEqual(c["url"], "https://api.anthropic.com/v1/messages")
-        self.assertEqual(c["model"], "claude-haiku-4-5")
+        self.assertEqual(c["model"], "claude-haiku-5-5")
         self.assertEqual(c["key_env"], "ANTHROPIC_API_KEY")
         self.assertEqual(c["egress"], "anthropic")
         self.assertEqual(c["auth"], "x-api-key")
@@ -1098,7 +1098,7 @@ class TestProviderEgressWiring(unittest.TestCase):
             fm, _ = mod.split_frontmatter(
                 (vault / "chats" / "gpt" / "2025-08" / "a.md").read_text(encoding="utf-8"))
             self.assertEqual(mod.fm_value(fm, "enriched"), "true")
-            self.assertEqual(mod.fm_value(fm, "enriched_model"), "claude-haiku-4-5")
+            self.assertEqual(mod.fm_value(fm, "enriched_model"), "claude-haiku-5-5")
             rec = json.loads(led.read_text(encoding="utf-8").strip())
             self.assertEqual(rec["provider"], "anthropic")
 

@@ -779,6 +779,18 @@ check read-clamp Bash 0 "ca""t $RC_SMALL" "allow a file at/under the limit" \
 check read-clamp Bash 0 "ca""t $RC_BIG" "gate off (HIMMEL_CONSOLE_LEG unset) allows" \
     -u HIMMEL_CONSOLE_LEG HIMMEL_READ_CLAMP_LINES=1
 
+# ── memory-bash-line-check.sh — MEMORY.md line rule after Bash (HIMMEL-4891) ─
+# The path token is cut at [[:space:]], which includes CR, so a terminal CR on
+# the command must not leak into the path and make the file read as missing.
+MB_HOME="$TMP/mbl-home"
+MB_IDX="$MB_HOME/.claude/projects/p/memory/MEMORY.md"
+mkdir -p "$MB_HOME/.claude/projects/p/memory"
+printf -- '- %0250d\n' 0 > "$MB_IDX"
+check memory-bash-line-check Bash 2 "cat >> $MB_IDX" "over-long index line flagged" \
+    HOME="$MB_HOME"
+check memory-bash-line-check Bash 0 "echo hi" "command not naming MEMORY.md ignored" \
+    HOME="$MB_HOME"
+
 # ── guard-judge-writes.sh — judge-session fence (HIMMEL-4564) ───────────────
 # The verb match splits the command into words; a terminal CR must not glue
 # itself to the last word and turn "push" into an unknown "push\r".

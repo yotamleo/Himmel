@@ -412,6 +412,29 @@ for (const c of ["luna-personal", "luna-clippings", "handover-state"]) {
   }
 }
 
+// 6. HIMMEL-4938 (operator ruling 2026-10-08): the hosted Atlassian MCP server may
+//    be asked for its published tool catalog (initialize + tools/list) and NOTHING
+//    else. The one allow cell is mcp-tool-catalog x atlassian-mcp x catalog-fetch;
+//    every other purpose, every other corpus and every other provider stays deny.
+assert(evaluate("mcp-tool-catalog", "atlassian-mcp", "catalog-fetch").effective === "allow",
+  "mcp-tool-catalog x atlassian-mcp x catalog-fetch must be allow (HIMMEL-4938)");
+for (const u of purposes.filter(x => x !== "catalog-fetch")) {
+  assert(evaluate("mcp-tool-catalog", "atlassian-mcp", u).effective === "deny",
+    `mcp-tool-catalog x atlassian-mcp x ${u} must stay deny — only tools/list is permitted`);
+}
+// himmel-code included: an explicit himmel-code x atlassian-mcp x * deny sits before
+// the himmel-code x * x * wildcard allow, so that wildcard cannot reach this provider.
+for (const c of corpora.filter(x => x !== "mcp-tool-catalog")) {
+  for (const u of purposes) {
+    assert(evaluate(c, "atlassian-mcp", u).effective === "deny",
+      `${c} x atlassian-mcp x ${u} must be deny — the allow is scoped to the tool catalog`);
+  }
+}
+for (const p of providers.filter(x => x !== "atlassian-mcp")) {
+  assert(evaluate("mcp-tool-catalog", p, "catalog-fetch").effective === "deny",
+    `mcp-tool-catalog x ${p} x catalog-fetch must be deny — the allow is scoped to atlassian-mcp`);
+}
+
 if (failures > 0) {
   console.error(`egress-matrix: ${failures} invariant failure(s)`);
   process.exit(1);

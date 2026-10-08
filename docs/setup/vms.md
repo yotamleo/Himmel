@@ -431,6 +431,17 @@ this lands `docs/setup/settings-template.json` at
 `/tmp/<name>/docs/setup/settings-template.json` for `uninstall-plugins.sh` to
 find.
 
+A rebuilt or snapshot-restored guest has a new host key, so the next ssh to
+port 2222 fails with `REMOTE HOST IDENTIFICATION HAS CHANGED`. known_hosts keys
+the entry by the name you connected with, so remove only that entry:
+`ssh-keygen -R "[127.0.0.1]:2222"` for the examples above, `"[localhost]:2222"`
+for the vm.mode default. Or keep a dedicated known_hosts file for the VM port.
+`scripts/test-install-symmetry-vm.sh` needs the user spelled out
+(`himmel@localhost 2222 ~/.ssh/id_ed25519`): its default host is a bare
+`localhost`, so ssh logs in as your local user, which the guest does not have.
+Wrap a scripted run in `trap '<power off>' EXIT` so the guest always powers
+off.
+
 ### vmsdk.py Python environment
 
 `vmsdk.py` needs `paramiko` + `python-dotenv`. The station's system python is
