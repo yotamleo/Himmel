@@ -70,12 +70,12 @@ export const redactChatId = (chat_id: number): string => {
 // know delivery happened (e.g. luna-sync-alert's cooldown state) can gate on it.
 
 export async function sendMessage(token: string, chat_id: number, text: string,
-    f: F = fetch, sleep: (ms:number)=>Promise<void> = (ms)=>Bun.sleep(ms), receipt?: (messageId: number) => void): Promise<boolean> {
+    f: F = fetch, sleep: (ms:number)=>Promise<void> = (ms)=>Bun.sleep(ms), receipt?: (messageId: number) => void, replyToMessageId?: number): Promise<boolean> {
   for (let attempt = 0; attempt < 5; attempt++) {
     let res: Response;
     try {
       res = await f(API(token, "sendMessage"), { method: "POST",
-        headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text }) });
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text, ...(Number.isSafeInteger(replyToMessageId) && replyToMessageId! > 0 ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {}) }) });
     } catch {
       // A lost response is indistinguishable from a failed send; retrying can duplicate alerts (HIMMEL-1211 / CR #1327).
       console.error(`[telegram] sendMessage transport failure chat=${redactChatId(chat_id)}`);

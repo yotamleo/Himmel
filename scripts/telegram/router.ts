@@ -18,6 +18,8 @@ export type Route =
   | { kind: "auto"; op: "launch-bypass-leg" | "cr-grant-delta"; arg: string; time: string }
   | { kind: "console"; name: string; text: string }
   | { kind: "consoles" }
+  | { kind: "fleet"; verb: "status" | "legs" | "go?" | "push" | "halt"; leg?: string }
+  | { kind: "lockdown" }
   | { kind: "chat"; text: string };
 
 // Structured auto-command (HIMMEL-424 B2): `/arm <ticket|path> [at HH:MM|auto|smart]`.
@@ -76,6 +78,12 @@ const CONSOLE = /^\/console\s+([A-Za-z0-9_.-]+)\s+([\s\S]+)$/;
 
 export function classify(raw: string): Route {
   const t = raw.trim();
+  if (t === "/lockdown") return { kind: "lockdown" };
+  if (t === "/fleet") return { kind: "fleet", verb: "status" };
+  if (t === "/legs") return { kind: "fleet", verb: "legs" };
+  if (t === "/halt") return { kind: "fleet", verb: "halt" };
+  const fleet = t.match(/^\/(go|push|halt) ([A-Za-z0-9_.-]{1,64})$/);
+  if (fleet && !fleet[2].includes("..")) return { kind: "fleet", verb: fleet[1] === "go" ? "go?" : fleet[1] as "push" | "halt", leg: fleet[2] };
   if (t === "status" || t === "sessions") return { kind: "control", verb: t as "status" | "sessions" };
   const stop = t.match(/^stop\s+(\S+)$/i);
   if (stop && KEY.test(stop[1])) return { kind: "control", verb: "stop", ticket: stop[1] };

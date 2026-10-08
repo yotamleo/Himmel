@@ -24,8 +24,9 @@ see below.
 
 ## Typed privileged Telegram ops (HIMMEL-4820)
 
-Both ops are **off by default** and require their individual names in
-`TELEGRAM_AUTO_ACTIONS`; `1`, `all`, `on` and `yes` never enable them.
+The delta-grant op is **off by default** and requires its individual name in
+`TELEGRAM_AUTO_ACTIONS`; `1`, `all`, `on` and `yes` never enable it. The legacy
+launch op is retired and refuses regardless of configuration.
 Only a whole, typed, non-forwarded message from the allowlisted operator in
 an allowed chat enters the trusted bridge path. Captions, forwarded commands,
 non-operators and free text cannot authorize these actions. The agent is not
@@ -34,15 +35,11 @@ with rc=19. **Accepted trust ceiling:** like `merge-public`, this script relies
 on the trusted bridge and the inherited `CLAUDECODE` marker, not cryptographic
 caller provenance. A caller able to remove that marker is outside this check's
 protection. Signed operator approvals via the bus are the HIMMEL-4820 design
-upgrade; both ops stay default-off, with an independent Opus judge before merge.
+upgrade; delta grants stay default-off, with an independent Opus judge before merge.
 
-- `/launch-bypass-leg <absolute-leg-doc.md> HIMMEL_HOOK_INTEGRITY_BYPASS_OK`
-  launches through `headed-arm-leg.sh --profile leg-impl`. This is the only
-  accepted bypass variable. The existing document must be inside the resolved
-  handover root's **operator user bucket**; dot-dot paths and symlink escapes
-  refuse. A supported Tier line selects Sonnet/Opus/Fable; absent Tier uses
-  the launcher's leg default. The op creates its own ready signal, does not
-  skip the launcher's brief lint, and replies with the launcher rc and log path.
+- `/launch-bypass-leg …` is **retired** (HIMMEL-4905): always refuses with
+  rc=19, even when explicitly enabled and without an agent marker. Start hook
+  legs at the station; a Telegram line never authorizes a hook-bypass launch.
 - `/cr-grant-delta <pr> <full-reviewed-head-sha>` grants the operator's
   **post-cap fix delta**, not fresh full review rounds. The SHA must be a prior
   ancestor of the live PR head, with a successful critic review and a fixed
@@ -56,13 +53,15 @@ upgrade; both ops stay default-off, with an independent Opus judge before merge.
   included in the bridge audit line. It never fetches missing commits.
 
 Every executed or forwarded-refused attempt produces the existing bridge
-`auto-action-audit.log` record. Results distinguish `launched`, `delta-granted`,
+`auto-action-audit.log` record. Delta results distinguish `delta-granted`,
 `head-moved` and `error`; replies preserve the executor rc. Bad argument shape
 returns 1, invalid paths/state 3, missing eligible review or pending delta 4,
 local I/O/lock failures 6, PR query/fork refusal 13, non-ancestor/equal or moved
-head 15, and agent-session refusal 19. Launch failures relay the launcher's
-own rc unchanged. Enabling either op is an operator step after security review;
-adding its name to the dispatch table does not enable it.
+head 15, and agent-session refusal 19. Enabling delta grants is an operator
+step after security review; adding the name to the dispatch table does not
+enable it. The launch op always returns 19 with station migration instructions.
+Slash console requests, staleness refusal, emergency `/lockdown` and its
+station-only reset are documented in [the adopter guide](../../docs/telegram-bridge.md#slash-console-requests-and-emergency-lockdown).
 
 ## Human — quick commands (Windows / PowerShell)
 

@@ -88,67 +88,11 @@ if [ "$OP" = "merge-public" ]; then
     exit "$rc"
 fi
 
-# Privileged ops must never turn an agent's shell call into operator authority.
-# Keep CLAUDECODE intact, as on merge-public: the trusted bridge has no agent marker.
-# ponytail: CLAUDECODE absence is not authenticated bridge provenance (same trust
-# model as merge-public); upgrade = signed operator approval via the bus,
-# HIMMEL-4820 design. These ops stay explicit-only/default-off pending that design.
+# A Telegram line never authorizes a hook-bypass launch, even when explicitly
+# enabled and invoked without an agent marker (HIMMEL-4905).
 if [ "$OP" = "launch-bypass-leg" ]; then
-    case "$TIME" in
-        HIMMEL_HOOK_INTEGRITY_BYPASS_OK) ;;
-        *) echo "ERR auto-action: unknown bypass variable" >&2; exit 1 ;;
-    esac
-    case "/$ARG/" in
-        */../*|*/./*) echo "ERR auto-action: non-canonical doc path" >&2; exit 3 ;;
-    esac
-    case "$ARG" in
-        /*.md) ;;
-        *) echo "ERR auto-action: expected absolute .md doc path" >&2; exit 3 ;;
-    esac
-    # shellcheck disable=SC1091
-    . "$SCRIPT_DIR/../lib/load-dotenv.sh"
-    load_dotenv HANDOVER_DIR USER_SLUG 2>/dev/null || true
-    # shellcheck disable=SC1091
-    . "$SCRIPT_DIR/../lib/handover-path.sh"
-    # shellcheck disable=SC1091
-    . "$SCRIPT_DIR/../lib/user-slug.sh"
-    ROOT=$(handover_root) || exit 3
-    USER_BUCKET=$(user_slug) || exit 3
-    case "$USER_BUCKET" in
-        ''|.|..|*[!a-zA-Z0-9_-]*) echo "ERR auto-action: invalid user bucket" >&2; exit 3 ;;
-    esac
-    ROOT=$(realpath "$ROOT") || exit 3
-    DOC=$(realpath "$ARG" 2>/dev/null) || exit 3
-    case "$DOC" in
-        "$ROOT/$USER_BUCKET/"*.md) ;;
-        *) echo "ERR auto-action: doc outside operator handover bucket" >&2; exit 3 ;;
-    esac
-    [ -f "$DOC" ] || exit 3
-    if [ -n "${CLAUDECODE:-}" ]; then
-        echo "ERR auto-action: agent session cannot authorize launch-bypass-leg" >&2
-        exit 19
-    fi
-    MODEL=$(sed -n -E 's/^> \*\*Tier:\*\* ([a-zA-Z0-9.-]+) — .*/\1/p' "$DOC" | head -n 1)
-    case "$MODEL" in
-        '') MODEL_ARGS=() ;;
-        sonnet|claude-sonnet-5-5) MODEL_ARGS=(claude-sonnet-5-5) ;;
-        opus|claude-opus-5-5) MODEL_ARGS=(claude-opus-5-5) ;;
-        fable|claude-fable-5-1) MODEL_ARGS=(claude-fable-5-1) ;;
-        *) echo "ERR auto-action: unsupported Tier model" >&2; exit 1 ;;
-    esac
-    LAUNCH_DIR=$(mktemp -d "${TMPDIR:-/tmp}/telegram-leg.XXXXXXXX") || exit 6
-    LOG="$LAUNCH_DIR/launch.log"
-    SIGNAL="$LAUNCH_DIR/start.signal"
-    touch "$SIGNAL" || exit 6
-    LAUNCH_CMD="${AUTO_ACTION_LAUNCH_CMD:-bash $SCRIPT_DIR/../handover/console-kit/headed-arm-leg.sh}"
-    # Same command+args seam as ARM_CMD; no Telegram text is interpreted as a command.
-    # shellcheck disable=SC2086
-    TELEGRAM_BOT_TOKEN="" TELEGRAM_OWN_POLLER="" HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1 \
-        $LAUNCH_CMD --profile leg-impl "telegram-leg-${LAUNCH_DIR##*.}" "$DOC" "$SIGNAL" "$(date +%s)" "$LAUNCH_DIR/session.log" "${MODEL_ARGS[@]}" >"$LOG" 2>&1
-    rc=$?
-    echo "log=$LOG"
-    echo "rc=$rc"
-    exit "$rc"
+    echo "ERR auto-action: Telegram hook-bypass launch refused; start hook legs at the station" >&2
+    exit 19
 fi
 
 # Operator-only post-cap fix grant. Never reset the full-round counter or
