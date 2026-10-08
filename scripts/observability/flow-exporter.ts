@@ -1985,7 +1985,7 @@ function evalRegressed(spec: EvalSpec | null, base: number | null, cand: number 
   if (cci) return hi ? base > cci.hi + EPS : base < cci.lo - EPS;
   const band = spec.band !== undefined;
   const key = band ? "band" : "band_rel";
-  const raw: unknown = band ? spec.band : spec.band_rel ?? 0;
+  const raw: unknown = band ? spec.band : spec.band_rel === undefined ? 0 : spec.band_rel;
   if (!finiteNumber(raw) || raw < 0) return `${key} ${JSON.stringify(raw)} is not a finite non-negative number`;
   const width = band ? raw : Math.abs(base) * raw;
   return (hi ? base - cand : cand - base) > width + EPS;

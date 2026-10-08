@@ -2180,11 +2180,12 @@ test("eval-runs regression gauge skips a metric whose eval-compare.json band is 
       negative: { higher_is_better: true, band: -0.1 },
       not_a_number: { higher_is_better: true, band: "NaN" },
       negative_rel: { higher_is_better: false, band_rel: -0.5 },
+      null_rel: { higher_is_better: false, band_rel: null },
       valid: { higher_is_better: true, band: 0.15 },
     },
   }));
   const ledger = join(tmp, "eval-runs.jsonl");
-  const metrics = (v: number) => ({ as_string: v, negative: v, not_a_number: v, negative_rel: 1 - v, valid: v });
+  const metrics = (v: number) => ({ as_string: v, negative: v, not_a_number: v, negative_rel: 1 - v, null_rel: 1 - v, valid: v });
   writeFileSync(ledger, [
     evalRow({ run_id: "a1", ts: "2026-07-10T00:00:00Z", metrics: metrics(0.8) }),
     evalRow({ run_id: "a2", ts: "2026-07-12T00:00:00Z", metrics: metrics(0.5) }),
@@ -2199,7 +2200,7 @@ test("eval-runs regression gauge skips a metric whose eval-compare.json band is 
     evalRunsLedgerPath: ledger,
     evalThresholdsPath: thresholds,
   });
-  for (const m of ["as_string", "negative", "not_a_number", "negative_rel"]) {
+  for (const m of ["as_string", "negative", "not_a_number", "negative_rel", "null_rel"]) {
     expect(body).not.toContain(`himmel_eval_metric_regression{eval="lane-quality",metric="${m}"}`);
     expect(body).toContain(`# himmel_eval_metric_regression skipped: eval=lane-quality metric=${m} `);
   }
