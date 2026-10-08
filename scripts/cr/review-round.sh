@@ -73,6 +73,7 @@ fi
 state="$git_dir/cr-review-rounds/$branch.round"
 # HIMMEL-4600: "<from> <to> <trigger>" of the one delta round, once it ran.
 delta_state="$git_dir/cr-review-rounds/$branch.delta"
+delta_run="$git_dir/cr-review-rounds/$branch.delta.run"
 # HIMMEL-4700: "<from> <to> <qid>/<name>", one line per judge-triggered round.
 verdict_state="$git_dir/cr-review-rounds/$branch.verdicts"
 # HIMMEL-4600: the head the last counted round ran on (start --head).
@@ -97,13 +98,14 @@ read_round() {
     return 0
 }
 
-# HIMMEL-4600: ledger_query <avail|finding> <full sha> reads only critic-panel
+# HIMMEL-4600: ledger_query <avail|finding|row> <full sha> reads only critic-panel
 # rows on this branch at that sha (full or >=7-char prefix); claude,
 # claude-floor and codex-adv rows are the session's own and never count (the
 # clear-cr-marker gate 3b exclusion). "avail" prints "ok" when a critic
 # reviewed the sha. "finding" prints "finding" when a critic finding there
 # still asks for a fix: its verdict after amends is agreed, fixed or unset,
-# and no row ever deferred or disproved it.
+# and no row ever deferred or disproved it. "row" (HIMMEL-4638) prints "row"
+# when any critic finding row exists there, whatever its verdict.
 ledger_query() {
     LEDGER="$git_dir/cr-critic-scores.jsonl" BRANCH="$branch" MODE="$1" FROM="$2" node -e '
 const fs = require("fs"), e = process.env;
@@ -111,7 +113,7 @@ let lines = [];
 try { lines = fs.readFileSync(e.LEDGER, "utf8").split("\n").filter(Boolean); } catch { process.exit(0); }
 const at = (h) => { h = String(h || "").toLowerCase(); return h.length >= 7 && e.FROM.startsWith(h); };
 const critic = (m) => m !== "claude" && m !== "claude-floor" && m !== "codex-adv";
-let reviewed = false;
+let reviewed = false, rowed = false;
 const verdicts = new Map(), settled = new Set();
 // HIMMEL-4634: one finding is id + artifact + perspective, as the defer
 // analysis and clear-cr-marker key it; a bare id merges distinct findings.
@@ -125,11 +127,12 @@ for (const line of lines) {
   try { o = JSON.parse(line); } catch { continue; }
   if (!o || o.branch !== e.BRANCH) continue;
   if (o.kind === "avail" && o.status === "ok" && critic(o.model) && at(o.head)) reviewed = true;
-  if (o.kind === "finding" && critic(o.model) && at(o.head)) note(keyOf(o), String(o.verdict || ""));
+  if (o.kind === "finding" && critic(o.model) && at(o.head)) { rowed = true; note(keyOf(o), String(o.verdict || "")); }
   if (o.kind === "amend" && at(o.target_head) && verdicts.has(keyOf(o))
       && o.set && typeof o.set.verdict === "string") note(keyOf(o), o.set.verdict);
 }
 if (e.MODE === "avail") { if (reviewed) process.stdout.write("ok"); }
+else if (e.MODE === "row") { if (rowed) process.stdout.write("row"); }
 else if ([...verdicts].some(([id, v]) => !settled.has(id) && (v === "" || v === "agreed" || v === "fixed"))) process.stdout.write("finding");
 '
 }
@@ -393,7 +396,19 @@ delta_check() {
         if [ -n "$head_sha" ] && [ -n "$pend_from" ] && [ -n "$pend_to" ] \
             && cur_to="$(git rev-parse --verify --quiet "$head_sha^{commit}" 2>/dev/null)" \
             && [ "$cur_to" = "$pend_to" ] \
-            && [ "$(ledger_query avail "$pend_to")" != "ok" ]; then
+            && [ "$(ledger_query avail "$pend_to")" != "ok" ] \
+            && [ "$(ledger_query row "$pend_to")" != "row" ]; then
+            # HIMMEL-4638: the first start's caller is still alive, so its
+            # panel may be running; a second panel would only burn the bank.
+            run_pid=""
+            [ ! -f "$delta_run" ] || read -r run_pid < "$delta_run" || run_pid=""
+            case "$run_pid" in
+                ''|*[!0-9]*) run_pid="" ;;
+            esac
+            if [ -n "$run_pid" ] && [ "$run_pid" != "$PPID" ] && kill -0 "$run_pid" 2>/dev/null; then
+                echo "review-round: the delta round on $branch is already running (start by pid $run_pid) - wait for it" >&2
+                return 8
+            fi
             delta_from="$pend_from"
             delta_to="$pend_to"
             delta_trigger="${pend_trigger:-fix}"
@@ -526,6 +541,7 @@ if [ "$verb" = "start" ]; then
         exit 5
     fi
     delta_from=""
+    delta_reuse=0
     if [ "$round" -ge 3 ]; then
         delta_check
         delta_rc=$?
@@ -600,6 +616,12 @@ if [ "$verb" = "start" ]; then
         || ! printf '%s\n' "$round_head" > "$tmp_head" \
         || ! mv "$tmp_head" "$head_state"; then
         rm -f "$tmp_head" "$head_state"
+    fi
+    if [ -n "$delta_from" ]; then
+        # HIMMEL-4638: written under the counter lock, so the pid check in
+        # delta_check and this claim cannot interleave between two starts.
+        # Best effort - a failed write only loses the guard.
+        printf '%s\n' "$PPID" > "$delta_run" 2>/dev/null || rm -f "$delta_run" 2>/dev/null
     fi
     if ! SHARED_BRANCH_LOCK_NS=himmel-cr-review-round \
         bash "$lock_lib" release-if-owner "." "$branch" "$lock_owner" >/dev/null 2>&1; then

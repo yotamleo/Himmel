@@ -208,8 +208,12 @@ check "two future-dated legs file nothing and log nothing" '[ "$(calls create)" 
 echo "a decision-log write that fails leaves the class unacted, so the next run decides again"
 F6="$TMP/f6"; mkdir -p "$F6/log"
 SAVE="$LED"; LED="$F6/l.jsonl"; row N1 denied/guard-w 1; row N2 denied/guard-w 1; LED="$SAVE"
-python3 "$FR" route --ledger "$F6/l.jsonl" --state "$F6/s.json" --log "$F6/log" --inbox "$F6/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+python3 "$FR" route --ledger "$F6/l.jsonl" --state "$F6/s.json" --log "$F6/log" --inbox "$F6/inbox" --now "$NOW" --jira-bin "$STUB/jira" >"$F6/out" 2>&1; rc6=$?
+# HIMMEL-4743: an absent or unreadable state would also leave no acted legs, so pin the failure to the log write.
+check "the route call exits non-zero with the log-write error" '[ "$rc6" != 0 ] && grep -q "Is a directory" "$F6/out"'
 check "no acted legs are saved for a decision whose log line failed" '[ -z "$(jq -r ".classes[\"denied/guard-w\"].acted // empty" "$F6/s.json" 2>/dev/null)" ]'
+python3 "$FR" route --ledger "$F6/l.jsonl" --state "$F6/s.json" --log "$F6/ok.jsonl" --inbox "$F6/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "a rerun with a writable log decides the class again, with one decision line" '[ "$(dlines "$F6/ok.jsonl")" = 1 ] && decs "$F6/ok.jsonl" | jq -e ".class == \"denied/guard-w\" and .decision == \"filed\"" >/dev/null'
 
 echo "HIMMEL-4754: no send without a logged decision"
 F7="$TMP/f7"; mkdir -p "$F7"

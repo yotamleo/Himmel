@@ -250,8 +250,10 @@ case "$tool" in
             if grep -qE '^[[:space:]]*git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?(add|commit|push|status|rev-parse)([[:space:]]|$)' <<< "$cmd"; then
                 exit 0
             fi
-            # Back to the worktree: one bare cd, nothing chained after it.
-            if grep -qE '^[[:space:]]*cd([[:space:]]+[^[:space:];&|<>]+)?[[:space:]]*$' <<< "$cmd"; then
+            # Back to the worktree: one bare cd, nothing chained after it. The
+            # operand is a literal path: bare, "double" or 'single' quoted;
+            # a $ or backslash in it (a variable target) is refused.
+            if grep -qE "^[[:space:]]*cd([[:space:]]+([^][:space:];&|<>\$\"'\\\\]+|\"[^\"\$\\\\]*\"|'[^']*'))?[[:space:]]*\$" <<< "$cmd"; then
                 exit 0
             fi
         fi

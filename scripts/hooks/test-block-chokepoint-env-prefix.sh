@@ -1810,6 +1810,52 @@ if [ -n "${EPOCHREALTIME:-}" ]; then
 else
     echo "WARN 4399 timing row skipped: no EPOCHREALTIME (bash < 5)"
 fi
+
+# --- HIMMEL-4529 / HIMMEL-4414: linear time. arith_body rescanned to EOF per
+# unclosed `((` (1500 openers = 40 s, past the chain window, so a big command
+# timed out the guard) and unset_add re-split the whole list on every add.
+# Timing rows: allow + rc=0 under a stated bound; the deny rows pin that the
+# linear scan decides exactly like the old one. The nice/prlimit wrapper above
+# turns a regression into a kill, never a hang. ---
+timed_row() {  # timed_row <label> <json> <expect rc> <bound ms>
+    local T0 T1 ms
+    T0=${EPOCHREALTIME/[.,]/}
+    run "$2"
+    T1=${EPOCHREALTIME/[.,]/}
+    ms=$(((T1 - T0) / 1000))
+    CASES=$((CASES + 1))
+    if [ "$RC" = "$3" ] && [ "$ms" -lt "$4" ]; then
+        echo "PASS $1 rc=$RC in $ms ms (bound $4 ms)"
+    else
+        echo "FAIL $1 -- expected rc=$3 under $4 ms, got rc=$RC in $ms ms"
+        FAILED=$((FAILED + 1))
+    fi
+}
+# shellcheck disable=SC2016 # '$((' is the literal text under test, not an expansion
+if [ -n "${EPOCHREALTIME:-}" ]; then
+    timed_row "4529 echo + (( x1500 (unclosed) finishes"      "$(j "echo $(rep '((' 1500)")" 0 3000
+    timed_row "4529 echo + \$(( x1000 (unclosed) finishes"    "$(j "echo $(rep '$((' 1000)")" 0 3000
+    timed_row "4529 echo \"\$(( x1000 (unclosed, quoted) finishes" "$(j "echo \"$(rep '$((' 1000)")" 0 3000
+    timed_row "4414 256 distinct assignment names finish"     "$(j "$(distinct_asg 256)echo ok")" 0 2000
+    timed_row "4414 257 distinct assignment names deny fast"  "$(j "$(distinct_asg 257)echo ok")" 2 2000
+else
+    echo "WARN 4529/4414 timing rows skipped: no EPOCHREALTIME (bash < 5)"
+fi
+# UNSET_COUNT is restored with UNSET_NAMES when a subshell closes: 200 names in
+# a subshell, then 200 different ones outside, never stand at once (<= 256).
+SUBQ=$(distinct_asg 200)
+OUTQ=$(distinct_asg 200 | sed 's/v\([0-9]*\)=/w\1=/g')
+assert_allow "4414 200 names in a subshell then 200 outside: count restored, allowed" "$(j "( $SUBQ); ${OUTQ}echo ok")"
+run "$(j "( $(distinct_asg 257)); echo ok")"
+CASES=$((CASES + 1))
+if [ "$RC" = "2" ] && grep -q "more than 256 distinct" <<<"$ERR"; then
+    echo "PASS 4414 257 names inside one subshell still deny at the cap"
+else
+    echo "FAIL 4414 257 names inside one subshell -- expected rc=2 + cap reason, got rc=$RC"
+    FAILED=$((FAILED + 1))
+fi
+assert_deny  "4529 unclosed ((, then a closed \$(( )) seam assignment, still denies" "$(j "echo (( x; bash $MERGE_ON_GREEN \$(( HIMMEL_CONSOLE_LEG = 0 ))")"
+assert_allow "4529 balanced (( )) comparison stays allowed after unclosed openers" "$(j "echo (( x; (( HIMMEL_CONSOLE_LEG == 0 )); echo ok")"
 HOOK_WRAP=''
 
 CASES=$((CASES + 1))

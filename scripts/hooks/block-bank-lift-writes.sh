@@ -149,12 +149,29 @@ _expand() {
     _norm "$w"
 }
 
-# _glob_from_word <s> -> a [[ ]] pattern: {a,b} becomes *.
+# _glob_from_word <s> -> a [[ ]] pattern (needs extglob): {a,b} becomes @(a|b).
 _glob_from_word() {
-    local s="$1" out=""
+    local s="$1" out="" body
     while :; do
         case "$s" in
-            *'{'*'}'*) out="$out${s%%\{*}*"; s="${s#*\}}" ;;
+            *'{'*'}'*)
+                # HIMMEL-4750: a group with a comma matches ITS alternatives, not
+                # any string, so a JSON argument ({"a":1,"b":2}) is not read as
+                # a glob over the lift name. An alternative holding any glob-active
+                # char (bracket, backslash, * ? ! + @, parens, |, $, backtick) -> old
+                # `*`, never a broken pattern that matches nothing. Quotes and `:`
+                # are literal filename chars here (the tokenizer already unquoted).
+                body="${s#*\{}"; body="${body%%\}*}"
+                # Nested group: fail closed, `*` over the span to the LAST `}`.
+                case "$body" in *'{'*) out="$out${s%%\{*}*"; s="${s##*\}}"; continue ;; esac
+                case "$body" in
+                    *,*) case "$body" in
+                            *'['*|*']'*|*\\*|*'*'*|*'?'*|*'!'*|*'+'*|*'@'*|*'('*|*')'*|*'|'*|*'$'*|*'`'*) body="" ;;
+                            *) body="@(${body//,/|})" ;;
+                         esac ;;
+                    *) body="" ;;
+                esac
+                out="$out${s%%\{*}${body:-*}"; s="${s#*\}}" ;;
             *) out="$out$s"; break ;;
         esac
     done
@@ -171,10 +188,10 @@ _name_matches() {
     case "$c" in *"{"*) c=$(_glob_from_word "$c") ;; esac
     # Case-folded only here: option parsing elsewhere is case-sensitive (-t/-T).
     local r=1
-    shopt -s nocasematch
+    shopt -s nocasematch extglob
     # shellcheck disable=SC2053  # the RHS is deliberately a pattern
     [[ "$2" == $c ]] && r=0
-    shopt -u nocasematch
+    shopt -u nocasematch extglob
     return "$r"
 }
 
@@ -184,7 +201,9 @@ _dir_kind() {
     case "$d" in '?'|'?/'*) echo UNKNOWN; return ;; esac
     if _is_dynamic "$d"; then echo UNKNOWN; return; fi
     last="${d##*/}"; parent="${d%/*}"; parent="${parent##*/}"
-    if [ -n "$last" ] && [ -n "$parent" ] && _name_matches "$parent" .himmel && _name_matches "$last" state; then
+    # HIMMEL-4750: .himmel/state is two components. A slash-less word (a JSON
+    # argument, whose braces glob to `*`) has parent == last == the whole word.
+    if [ -n "$last" ] && [ -n "$parent" ] && [ "$d" != "$last" ] && _name_matches "$parent" .himmel && _name_matches "$last" state; then
         echo STATE; return
     fi
     if [ -d "$d" ] && [ -d "$STATE_REAL" ] && [ "$d" -ef "$STATE_REAL" ]; then echo STATE; return; fi
