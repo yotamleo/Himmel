@@ -29,6 +29,15 @@ export const OPS: Record<string, { script: string | null }> = {
   "restart": { script: null },
   "launch-bypass-leg": { script: "launch-bypass-leg" },
   "cr-grant-delta": { script: "cr-grant-delta" },
+  // HIMMEL-5047 break-glass ops: all executed by break-glass.sh behind auto-action.sh.
+  "station-status": { script: "station-status" },
+  "revert-main": { script: "revert-main" },
+  "repin-hooks": { script: "repin-hooks" },
+  "launch-leg": { script: "launch-leg" },
+  "cr-reset": { script: "cr-reset" },
+  "close-wrapped": { script: "close-wrapped" },
+  "relaunch-console": { script: "relaunch-console" },
+  "restart-bridge": { script: "restart-bridge" },
 };
 export const KNOWN_OPS = new Set(Object.keys(OPS));
 
@@ -44,7 +53,14 @@ export const KNOWN_OPS = new Set(Object.keys(OPS));
 // the ordinary tier, so `=1`/`all` enables it. The DoS shape (a restart loop) is
 // bounded by the same operator-only sender check every auto-command carries, plus
 // the supervisor's POLLER_MAX_FAILS breaker as the backstop.
-export const EXPLICIT_ONLY_OPS = new Set(["merge-public", "launch-bypass-leg", "cr-grant-delta"]);
+// The HIMMEL-5047 break-glass ops are named one by one too, even the read-only
+// /station-status: an operator turns on exactly the station powers they mean to.
+export const BREAK_GLASS_OPS = new Set(["station-status", "revert-main", "repin-hooks", "launch-leg", "cr-reset", "close-wrapped", "relaunch-console", "restart-bridge"]);
+export const EXPLICIT_ONLY_OPS = new Set(["merge-public", "launch-bypass-leg", "cr-grant-delta", ...BREAK_GLASS_OPS]);
+
+// Break-glass ops that change something. Each runs only after the operator sends
+// back the one-time code the bridge replied with (`/confirm <code>`, poller.ts).
+export const CONFIRM_OPS = new Set([...BREAK_GLASS_OPS].filter((op) => op !== "station-status"));
 
 // Ops executed by the poller ITSELF rather than by shelling auto-action.sh.
 // dispatchAutoAction refuses these (they must never be laundered into a script
@@ -175,6 +191,17 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
         : `⚠️ ${route.op} refused/failed (rc=${code}): ${firstLine(stderr) || firstLine(stdout) || `exit ${code}`}${log ? `; log: ${log}` : ""}`,
     };
   }
+  if (BREAK_GLASS_OPS.has(route.op)) {
+    // station-status prints a multi-line report; keep the reply under Telegram's 4096 cap.
+    const out = (stdout || "").trim().slice(0, 3500);
+    const what = `${route.op}${route.arg !== "-" ? ` ${route.arg}` : ""}${route.time === "bypass" ? " --hook-bypass" : ""}`;
+    return {
+      ok: code === 0, rc: code,
+      message: code === 0
+        ? `✅ ${what} (rc=0)${out ? `\n${out}` : ""}`
+        : `⚠️ ${what} refused/failed (rc=${code}): ${firstLine(stderr) || firstLine(stdout) || `exit ${code}`}`,
+    };
+  }
   const resolved = parseResolved(stdout);
   switch (code) {
     case 0:  return { ok: true, rc: 0, resolved, message: `✅ armed: ${resolved ?? route.arg} (${route.time})` };
@@ -193,7 +220,8 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
 // correct. The labels below are the closed union both ops draw from.
 export type AuditResult = "armed" | "already-armed" | "ambiguous" | "refused-forwarded" | "no-match" | "error"
   | "merged" | "not-green" | "head-moved" | "no-open-pr"
-  | "restarting" | "restart-unsupported" | "delta-granted";
+  | "restarting" | "restart-unsupported" | "delta-granted"
+  | "break-glass-ok" | "refused-agent" | "confirm-issued" | "confirm-refused";
 export type AuditFields = {
   chat_id: number; user: number; forwarded: boolean; op: string;
   arg: string; resolved?: string; backups?: string; time: string; rc: number; result: string;

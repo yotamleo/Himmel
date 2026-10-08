@@ -136,7 +136,8 @@ is refused with **“stale, resend”**, preventing outage replay. Missing/inval
 message dates also refuse; up to five seconds of future clock skew is accepted.
 Invalid/nonpositive configuration uses 300 seconds. The same window covers
 free/named `/console`, `/consoles`, trusted console reply threads and typed
-auto-actions (`/arm`, `/mergepub`, `/cr-grant-delta`, `/restart`). `/lockdown`
+auto-actions (`/arm`, `/mergepub`, `/cr-grant-delta`, `/restart`, the
+break-glass ops and `/confirm`). `/lockdown`
 remains narrowing-only even when replayed.
 
 `/lockdown` sets `<bridge root>/lockdown` and confirms it. The operator may also
@@ -169,6 +170,25 @@ boundary. A queued command never carries more authority than free-text
 taken over, `/console` free text, `/mergepub` and `/cr-grant-delta` remain
 one-factor operator authority until lockdown; this slice adds no approval
 capability or second factor.
+
+**Break-glass ops (HIMMEL-5047).** For an operator away from the station:
+`/station-status`, `/revert-main <pr>`, `/repin-hooks`,
+`/launch-leg <N-label> [--hook-bypass]`, `/cr-reset <pr>`,
+`/close-wrapped [<N-label>]`, `/relaunch-console [<name>]` and
+`/restart-bridge`. Each is off until named individually in
+`TELEGRAM_AUTO_ACTIONS`. Every op except `/station-status` runs only after the
+operator sends back a one-time `/confirm <code>`, in the same chat within 5
+minutes.
+
+- `/revert-main` merges its revert with `--admin`: that is break-glass, and it
+  is operator-initiated, confirm-coded and audited.
+- `/launch-leg --hook-bypass` narrowly reverses HIMMEL-4905 for legs. It
+  exports only `HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1`, for a manifest leg or a
+  sha-recorded launcher.
+- Lockout recovery is `/revert-main <pr>` then `/repin-hooks`.
+- `/allow-rule` is deferred to HIMMEL-5048.
+
+Full table: [`scripts/telegram/README.md`](../scripts/telegram/README.md#break-glass-ops-himmel-5047).
 
 After deploying an updated bridge, restart it **at the station** on Linux:
 `bash scripts/telegram/restart-bridge.sh` (do not start a second poller).

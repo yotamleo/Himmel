@@ -16,6 +16,7 @@ export type Route =
   | { kind: "auto"; op: "merge-public"; arg: string; time: string }
   | { kind: "auto"; op: "restart"; arg: string; time: string }
   | { kind: "auto"; op: "launch-bypass-leg" | "cr-grant-delta"; arg: string; time: string }
+  | { kind: "auto"; op: "station-status" | "revert-main" | "repin-hooks" | "launch-leg" | "cr-reset" | "close-wrapped" | "relaunch-console" | "restart-bridge" | "confirm"; arg: string; time: string }
   | { kind: "console"; name: string; text: string }
   | { kind: "consoles" }
   | { kind: "fleet"; verb: "status" | "legs" | "go?" | "push" | "halt"; leg?: string }
@@ -109,6 +110,19 @@ export function classify(raw: string): Route {
   if (launch) return { kind: "auto", op: "launch-bypass-leg", arg: launch[1], time: launch[2] };
   const grant = t.match(/^\/cr-grant-delta\s+#?(\d{1,6})\s+([0-9a-f]{40})$/i);
   if (grant) return { kind: "auto", op: "cr-grant-delta", arg: grant[1], time: grant[2].toLowerCase() };
+  // HIMMEL-5047 break-glass ops: whole-message, closed shapes; "-" fills an
+  // absent arg/time because auto-action.sh requires all three argv slots.
+  if (/^\/(?:station-status|repin-hooks|restart-bridge)$/.test(t)) return { kind: "auto", op: t.slice(1) as "station-status", arg: "-", time: "-" };
+  const pr = t.match(/^\/(revert-main|cr-reset)\s+#?(\d{1,6})$/);
+  if (pr) return { kind: "auto", op: pr[1] as "revert-main" | "cr-reset", arg: pr[2], time: "-" };
+  const leg = t.match(/^\/launch-leg\s+(N\d+[a-z]*)(\s+--hook-bypass)?$/);
+  if (leg) return { kind: "auto", op: "launch-leg", arg: leg[1], time: leg[2] ? "bypass" : "-" };
+  const closeW = t.match(/^\/close-wrapped(?:\s+(N\d+[a-z]*))?$/);
+  if (closeW) return { kind: "auto", op: "close-wrapped", arg: closeW[1] ?? "-", time: "-" };
+  const relaunch = t.match(/^\/relaunch-console(?:\s+([a-z0-9][a-z0-9-]{0,63}))?$/);
+  if (relaunch) return { kind: "auto", op: "relaunch-console", arg: relaunch[1] ?? "-", time: "-" };
+  const confirmCode = t.match(/^\/confirm\s+([0-9a-f]{8})$/);
+  if (confirmCode) return { kind: "auto", op: "confirm", arg: confirmCode[1], time: "-" };
   const restart = t.match(RESTART);
   // Bare `/restart` => rung 1 ("poller"); `/restart full` => rung 2 ("full").
   if (restart) return { kind: "auto", op: "restart", arg: restart[1] ? "full" : "poller", time: "-" };

@@ -63,6 +63,55 @@ enable it. The launch op always returns 19 with station migration instructions.
 Slash console requests, staleness refusal, emergency `/lockdown` and its
 station-only reset are documented in [the adopter guide](../../docs/telegram-bridge.md#slash-console-requests-and-emergency-lockdown).
 
+### Break-glass ops (HIMMEL-5047)
+
+Typed station ops for an operator who is away from the station. They use the
+same trusted path as `/cr-grant-delta`: operator id, allowed chat, a whole
+typed non-forwarded message, the stale window, the `CLAUDECODE` refusal (rc=19)
+and one `auto-action-audit.log` line per attempt. `auto-action.sh` hands them to
+`break-glass.sh`, which owns their rc space. Every op is off by default and
+**must be named individually** in `TELEGRAM_AUTO_ACTIONS`; the `=1`/`all`
+aliases never enable one. The names are: `station-status`, `revert-main`,
+`repin-hooks`, `launch-leg`, `cr-reset`, `close-wrapped`, `relaunch-console`,
+`restart-bridge`.
+
+Every op except `/station-status` is **confirm-coded**. The bridge replies with
+a one-time 8-hex code and runs nothing; the op runs only when the same operator
+sends `/confirm <code>` in the same chat within 5 minutes. A wrong, expired,
+other-chat or other-user `/confirm` burns the code. A replayed code finds
+nothing, and a newer op replaces an older pending code. The code is never
+written to the audit log (results: `confirm-issued`, `confirm-refused`,
+`break-glass-ok`, `refused-agent`, `error`).
+
+| Command | Effect |
+|---|---|
+| `/station-status` | Read-only: host, load, memory, bank, console census, last tick, waiters, primary branch/sha/clean. |
+| `/revert-main <pr>` | Opens GitHub's revert PR for a PR already merged into the default branch, squash-merges it with `--admin`, then fast-forwards the primary. |
+| `/repin-hooks` | Fast-forwards the primary checkout to origin (clean, on the default branch, no divergence), then checks `scripts/hooks` and `scripts/guardrails` match origin (rc 24 if not). |
+| `/launch-leg <N-label> [--hook-bypass]` | Resumes the one fleet-manifest leg with that label in its own linked worktree, or starts a fresh one from `launch-<label>.sh` beside the manifest. A launcher runs only if its sha256 matches `<fleet>.launchers.sha256`, which `gen-briefs.py` writes when it writes the launcher. |
+| `/cr-reset <pr>` | Runs `scripts/cr/cr-reset.sh`. For an open, same-repo PR, under the review-counter lock, it backs up `.head`, `.round` and `.delta` with timestamp suffixes, and that is the reset. |
+| `/close-wrapped [<N-label>]` | Runs `close-wrapped-leg.sh` for that leg, or for every fleet leg. That script's own checks (lock free, tail `WRAPPED`) still decide; no pids are taken. |
+| `/relaunch-console [<name>]` | `console.sh next --arm --name <name>` (default `console`) from the primary. |
+| `/restart-bridge` | Restarts `telegram-bridge.service` (systemd user unit) from a detached transient timer, 3 s later, so the reply goes out first. |
+
+**`--admin` is break-glass.** `/revert-main` bypasses branch protection on the
+revert PR. It is operator-initiated, confirm-coded and audited, and it reverts
+only a PR that is already merged.
+
+**`--hook-bypass` narrowly reverses HIMMEL-4905 for legs.** `/launch-leg` with
+`--hook-bypass` exports only `HIMMEL_HOOK_INTEGRITY_BYPASS_OK=1`. Every other
+`*_OK` variable, `TELEGRAM_BOT_TOKEN` and `TELEGRAM_OWN_POLLER` is scrubbed from
+every child. It cannot name a path: only a label that resolves to one manifest
+leg, or to a hash-recorded launcher. `/relaunch-console` takes no bypass, and
+`/launch-bypass-leg` stays retired.
+
+**Lockout recovery** (a merged hook change locks every tool, as #2202 did):
+send `/revert-main <pr>`, then `/repin-hooks`, then relaunch what died with
+`/launch-leg` or `/relaunch-console`.
+
+`/allow-rule <id>` (apply a pre-reviewed permission rule) is deferred to
+HIMMEL-5048.
+
 ## Human — quick commands (Windows / PowerShell)
 
 ```powershell
