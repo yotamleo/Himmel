@@ -86,7 +86,7 @@ printf '#!/usr/bin/env bash\nlib=/x/handover-path.sh\n. "$(dirname "$lib")/load-
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\n. "$(dirname "$0")/../lib/load-dotenv.sh"\n' > "$FX/scripts/hooks/good.sh"
 if [ -n "$(check_closure "$FX" "$FX/scripts/hooks/bad.sh")" ]; then ok "the #2202 source form is reported unresolved"; else bad "the #2202 source form passed the resolver (suite cannot fail)"; fi
-if [ -z "$(check_closure "$FX" "$FX/scripts/hooks/good.sh")" ]; then ok "a dirname-relative source of a real lib resolves"; else bad "a resolvable source form was flagged"; fi
+if good_out="$(check_closure "$FX" "$FX/scripts/hooks/good.sh" 2>&1)" && [ -z "$good_out" ]; then ok "a dirname-relative source of a real lib resolves"; else bad "a resolvable source form was flagged"; fi
 
 echo "== every wired hook script resolves"
 N=0
