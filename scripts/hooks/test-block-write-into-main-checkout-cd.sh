@@ -604,5 +604,29 @@ check_both "93j fromW: cd wt; cd wt 2>&1 | cat && echo x > a.txt denies" block \
 check_both "93k fromW: cd wt && git status 2>&1 | cat && echo x > a.txt (cd precedes) allows" allow \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && git status 2>&1 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# 94 (HIMMEL-4956): a cd the shell would FAIL (missing dir, extra operands, zsh
+# two-arg form, CDPATH) leaves the real cwd where it was, so the modelled cwd
+# must not move to its target; a later relative write fails closed.
+check_both "94 fromW: cd primary; cd wt/nonexist; echo x > a.txt (missing dir) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt/nonexist; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94b fromW: cd primary; cd wt extra; echo x > a.txt (extra operand) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt extra; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94c fromW: cd primary; cd wt primary && echo x > a.txt (zsh two-arg) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt $FIX/primary && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94d fromW: export CDPATH=primary; cd wt && echo x > a.txt (CDPATH) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"export CDPATH=$FIX/primary; cd wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94e fromW: cd primary; cd wt/nonexist | cat; echo x > a.txt (pipe form) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt/nonexist | cat; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94f fromW: cd primary; cd wt extra | cat; echo x > a.txt (pipe form) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary; cd $FIX/wt extra | cat; echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94g fromW: CDPATH=primary; cd wt && echo x > a.txt (plain assign) denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"CDPATH=$FIX/primary; cd wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94h fromW: cd wt (existing) && echo x > a.txt still allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94i fromW: cd wt 2>/dev/null && echo x > a.txt (redirect is no operand) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt 2>/dev/null && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "94j fromW: cd wt/realsub (existing subdir) && echo x > a.txt allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt/realsub && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
