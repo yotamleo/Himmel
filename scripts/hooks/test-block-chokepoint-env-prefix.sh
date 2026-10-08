@@ -1231,7 +1231,8 @@ assert_deny "4954 then export"                    "$(j "${H4954}; if true; then 
 assert_deny "4954 do export"                      "$(j "${H4954}; for i in 1; do export \"\$n=1\"; done; ${T4954}")"
 assert_deny "4954 negated export"                 "$(j "${H4954}; ! export \"\$n=1\"; ${T4954}")"
 assert_deny "4954 if negated export"              "$(j "${H4954}; if ! export \"\$n=1\"; then :; fi; ${T4954}")"
-assert_deny "4954 else export"                   "$(j "${H4954}; if false; then :; else export \"\$n=1\"; fi; ${T4954}")"
+assert_deny "4954 case arm export"                "$(j "${H4954}; case x in x) export \"\$n=1\";; esac; ${T4954}")"
+assert_deny "4954 else export"                  "$(j "${H4954}; if false; then :; else export \"\$n=1\"; fi; ${T4954}")"
 }
 # GREEN controls: a verb word in argument position stays data after the new heads.
 assert_allow "4954 control: grep export after a newline" "$(j "ls scripts/hooks/*.sh${NL}grep -l export scripts/hooks/g*.sh")"
