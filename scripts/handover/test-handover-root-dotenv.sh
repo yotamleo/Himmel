@@ -108,7 +108,7 @@ if command -v node >/dev/null 2>&1; then
     for f in hooks/auto-arm-on-cap.sh hooks/auto-arm-on-subagent-cap.sh hooks/console-compact-reinject.sh \
              hooks/console-precompact-snapshot.sh hooks/guard-relay-writes.sh hooks/stop-console-idle-guard.sh; do
         un="$(node -e 'const {sourcedClosure}=require(process.argv[1]);const r=sourcedClosure(process.argv[2],process.argv[3]);process.stdout.write(r.unresolved.join("\n"))' \
-            "$SCRIPTS/hooks/hook-integrity.js" "$SCRIPTS/$f" "$(cd "$SCRIPTS/.." && pwd)" 2>&1)"
+            "$SCRIPTS/hooks/hook-integrity.js" "$SCRIPTS/$f" "$(cd "$SCRIPTS/.." && pwd)" 2>&1)" || un="$un [node rc=$?]"
         check "$f: every source statement resolves under hook-integrity" "$un" ""
     done
 else
