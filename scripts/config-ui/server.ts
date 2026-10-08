@@ -19,6 +19,7 @@ import { readBank, readLegs, readMode, readMonitoring, readToolHealth } from "./
 import { appendAudit } from "./audit";
 import { journalStream, resolveJournal } from "./agui/sse";
 import { readFleet } from "./agui/fleet";
+import { legSync, readRoadmap } from "./roadmap";
 
 const LOOPBACK = "127.0.0.1";
 const DEFAULT_IDLE_MS = 30 * 60 * 1000;
@@ -57,6 +58,7 @@ const STATIC: Record<string, [string, string]> = {
   "/render.js": ["render.js", "application/javascript; charset=utf-8"],
   "/health.js": ["health.js", "application/javascript; charset=utf-8"],
   "/tool-health.js": ["tool-health.js", "application/javascript; charset=utf-8"],
+  "/roadmap.js": ["roadmap.js", "application/javascript; charset=utf-8"],
   "/app.css": ["app.css", "text/css; charset=utf-8"],
   // HIMMEL-4711: the rail and theme the AG-UI pages share (agui-web bundles its own copy at build time).
   "/nav.js": ["nav.js", "application/javascript; charset=utf-8"],
@@ -372,6 +374,16 @@ export function startServer(opts: ServerOpts = {}): { server: import("bun").Serv
           readMonitoring(env),
         ]);
         return json(redactOut({ bank, legs, monitoring, mode: readMode(root, env) }));
+      }
+      // HIMMEL-4943: the roadmap, read live from the Jira mirror, the plan dir, the drift log and the legs on every request.
+      // Read-only: the sync list is a plan the console kit executes, never run here.
+      if (path === "/api/roadmap") {
+        if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+        const mirrorDir = env.HIMMEL_JIRA_MIRROR || join(env.HOME || homedir(), ".himmel", "state", "jira-mirror", env.JIRA_PROJECT_KEY || "HIMMEL");
+        const legs = await readLegs(opts.legsScript ?? join(CHECKOUT, "scripts/config-ui/legs.sh"), env, opts.legsTimeoutMs);
+        const driftLog = env.HIMMEL_ROADMAP_DRIFT_LOG || (env.TRACKER_HANDOVERS_DIR ? join(env.TRACKER_HANDOVERS_DIR, "roadmap-drift.tsv") : undefined);
+        const r = readRoadmap({ mirrorDir, planDir: env.HIMMEL_ROADMAP_PLAN_DIR || undefined, driftLog, legs });
+        return json(redactOut({ ...r, sync: legSync(r.tickets) }));
       }
       // HIMMEL-4712: every live session, for the fleet landing at /agui/ with no run. Read-only.
       if (path === "/api/agui/fleet") {

@@ -2,6 +2,7 @@
 import { render, renderNav, renderHeader, renderProbe } from "/render.js";
 import { renderHealth } from "/health.js";
 import { renderToolHealth } from "/tool-health.js";
+import { renderRoadmap } from "/roadmap.js";
 import { fleetDot, navLinks, parseLanding } from "/nav.js";
 
 const $ = (s) => document.querySelector(s);
@@ -27,10 +28,13 @@ let health = null; // GET /api/health, null while loading
 let healthGen = 0; // declared before route() runs: a reload at #/health calls loadHealth() from it
 let toolHealth = null, toolHealthGen = 0;
 const toolFilters = new URLSearchParams();
+let roadmap = null, roadmapGen = 0; // HIMMEL-4943: declared before route() runs, as healthGen is
+const roadmapUi = { version: null, theme: null };
 const PAGES = [
   { id: "config", label: "Config", regions: true, render: (f) => render(f, state) },
   { id: "health", label: "Health", needsFeed: false, render: (f) => renderHealth(f, health), onVisit: () => { if (!health) loadHealth(); } },
   { id: "toolhealth", label: "Tool health", needsFeed: false, render: () => renderToolHealth(toolHealth, token), onVisit: () => { if (!toolHealth) loadToolHealth(); } },
+  { id: "roadmap", label: "Roadmap", needsFeed: false, render: () => renderRoadmap(roadmap, roadmapUi), onVisit: () => { if (!roadmap) loadRoadmap(); } },
 ];
 let currentPage = PAGES[0];
 
@@ -166,7 +170,21 @@ async function loadToolHealth() {
   toolHealth = data;
   if (currentPage.id === "toolhealth") paint();
 }
+// HIMMEL-4943: read live on every load; only the newest call may paint.
+async function loadRoadmap() {
+  const gen = ++roadmapGen;
+  let data;
+  try {
+    const r = await fetch("/api/roadmap", { headers: { "X-Himmel-Token": token }, cache: "no-store" });
+    data = r.ok ? await r.json() : { state: "error", reason: `roadmap failed (${r.status})` };
+  } catch (_) { data = { state: "error", reason: "server unreachable" }; }
+  if (gen !== roadmapGen) return;
+  roadmap = data;
+  if (currentPage.id === "roadmap") paint();
+}
 document.addEventListener("change", (e) => {
+  const f = e.target.dataset.rmFilter;
+  if (f) { roadmapUi[f] = e.target.value === "" ? null : Number(e.target.value); return paint(); }
   const name = e.target.dataset.toolFilter;
   if (!name) return;
   toolFilters.set(name, e.target.value);
@@ -213,6 +231,7 @@ document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-act],[data-go],[data-f]");
   if (!b) return;
   if (b.dataset.act === "refresh-toolhealth") return void loadToolHealth();
+  if (b.dataset.act === "refresh-roadmap") return void loadRoadmap();
   if (b.dataset.act === "refresh-health") { loadHealth(); return void loadFeed(); } // the verdict reads the doctor feed too
   if (b.dataset.act === "open-config") {
     state.filt = { health: null, kind: null, q: b.dataset.id, problems: false };
