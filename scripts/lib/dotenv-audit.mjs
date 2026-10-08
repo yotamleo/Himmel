@@ -59,6 +59,7 @@ export function auditDotenv(root) {
         if (!call) continue;
         const args = call[1].split(/;|\|\||&&/)[0]
           .replace(/--root\s+(?:"\$\([\s\S]*?\)"|"[^"]*"|'[^']*'|\S+)/, '')
+          .replace(/\s+#.*$/, '')
           .replace(/\s*\d*>[^\s]+/g, '').trim();
         if (!args) { warn(path, lineNumber); continue; }
         for (const word of args.matchAll(/\b([A-Z][A-Z0-9_]*|himmel_github_token_vm)\b/g)) {

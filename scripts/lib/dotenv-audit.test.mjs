@@ -23,9 +23,9 @@ test('doctor warns when an empty loader call precedes shell operators', () => {
   const root = mkdtempSync(join(tmpdir(), 'dotenv-audit-'));
   try {
     mkdirSync(join(root, 'scripts'));
-    writeFileSync(join(root, 'scripts/consumer.sh'), 'load_dotenv && true\nload_dotenv || true\nload_dotenv; true\n');
+    writeFileSync(join(root, 'scripts/consumer.sh'), 'load_dotenv && true\nload_dotenv || true\nload_dotenv; true\nload_dotenv # comment\n');
     const rows = audit(root);
-    for (const line of [1, 2, 3]) {
+    for (const line of [1, 2, 3, 4]) {
       assert.ok(rows.some(r => r.sev === 'WARN' && r.msg.endsWith(`consumer.sh:${line}`)));
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
