@@ -6046,12 +6046,14 @@ printf '#!/bin/sh\necho "$1 $2" >> "%s/probe.log"\nexit 1\n' "$c53_t" > "$c53_t/
 chmod +x "$c53_t/up" "$c53_t/down"
 # A stub ssh (HIMMEL-4599): the operator's real ssh would read their real
 # ~/.ssh/config. It answers only -G, from $c53_t/ssh-g.out when that is set,
-# else as an empty config would; any other call is logged and fails.
+# else as an empty config would; any other call is logged and fails, and -G
+# itself fails while $c53_t/ssh-g.fail exists (HIMMEL-4631).
 mkdir -p "$c53_t/bin"
 cat > "$c53_t/bin/ssh" <<STUB
 #!/bin/sh
 echo "\$*" >> "$c53_t/ssh.log"
 [ "\$1" = -G ] || exit 255
+[ -e "$c53_t/ssh-g.fail" ] && exit 255
 [ -s "$c53_t/ssh-g.out" ] && { cat "$c53_t/ssh-g.out"; exit 0; }
 port=22
 while [ \$# -gt 1 ]; do [ "\$1" = -p ] && { port=\$2; shift; }; shift; done
@@ -6087,6 +6089,12 @@ for proxy in 'proxyjump bastion' 'proxycommand ssh -W %h:%p bastion'; do
     if grepq "$out" 'INFO C53-vm-mode' && ! grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F "${proxy%% *}" && [ ! -s "$c53_t/probe.log" ]; then pass "C53 ${proxy%% *} -> INFO, no probe"; else fail "C53 ${proxy%% *} -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
 done
 rm -f "$c53_t/ssh-g.out"
+
+echo "== C53-vm-mode: ssh -G fails -> INFO saying so, not an unreachable WARN, probe gets the host as written (HIMMEL-4631) =="
+: > "$c53_t/ssh-g.fail"
+out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/down")"
+if grepq "$out" 'INFO C53-vm-mode' && ! grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F 'ssh -G failed, probed the configured host as written' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vmalias 2201'; then pass "C53 ssh -G fails -> INFO naming the failed lookup"; else fail "C53 ssh -G fails -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+rm -f "$c53_t/ssh-g.fail"
 
 echo "== C53-vm-mode: none -> INFO, holds need an operator ack, no probe =="
 out="$(c53_run '{"vm":{"mode":"none"}}' "$c53_t/up")"

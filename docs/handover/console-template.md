@@ -22,6 +22,15 @@ Run these, in order, and write the result as the first bullet under
    the handoff claims are alive but are absent here are gone. A handoff's
    "close these windows" list is stale by the time you read it — never relay a
    window as live without checking.
+> **One command for steps 2–6 and 8 (HIMMEL-4902):**
+> `bash "{{KIT}}/action-zero.sh" --doc "<this document>" --root "{{HANDOVER_ROOT}}" --prefix {{PREFIX}} [--acquire]`
+> prints the lock sweep, head/remote, bank, leg processes, C29, load and this
+> document's lock state in one summary (read-only; `--acquire` takes a `free`
+> lock and prints the release token, never a held one). `ListAgents` (step 1),
+> the relays and quote-backs (step 9), LIVE and the waiter (step 10) stay yours.
+> The steps below say what each section means. The predecessor's HANDOFF is
+> pre-filled by `console.sh next`; only its judgement-notes section is prose.
+
 2. **Sweep locks at the ROOT, not your bucket:**
    `HANDOVER_DIR="{{HANDOVER_ROOT}}" bash "{{REPO}}/scripts/handover/queue-lock.sh" status --sweep "{{HANDOVER_ROOT}}"`.
    Sweeping the bucket instead of the root reports a false "no held locks".
@@ -78,7 +87,11 @@ Run these, in order, and write the result as the first bullet under
    HIMMEL-3254). Each inherited leg holds a brief naming the predecessor, and
    you are a different session: until a leg has verified the succession it can
    only refuse you, and once the predecessor has released and left there is
-   nobody who can relay for you. So, per leg: ask the predecessor to re-brief
+   nobody who can relay for you. (The predecessor can send every relay in one
+   command: `relay-batch.sh <its console doc> --successor <you> [--claudex <labels>]`
+   — claudex legs through the inbox, native legs as printed SendMessage lines. It
+   copies the held token, mints nothing, and the quote-backs below still apply.)
+   So, per leg: ask the predecessor to re-brief
    that leg **from its own socket**, naming you (your session name, so the leg
    knows who the relay hands it to) and quoting the leg's current token. That
    relay is complete on its own: it MAY also carry a fresh
@@ -96,6 +109,12 @@ Run these, in order, and write the result as the first bullet under
    release its lock and wrap. Sending `LIVE` first lets the predecessor leave
    before the legs have been re-briefed; the tick then reads
    `nonces=UNCONFIRMED:<leg>`.
+   **Then close the predecessor's window (HIMMEL-4968).** Once its doc's lock is
+   free and its last Results bullet reads `WRAPPED`, run
+   `bash scripts/handover/console-kit/close-wrapped-leg.sh --console <predecessor doc>`
+   (same checks as a leg: it refuses while the lock is held, the tail is not
+   `WRAPPED`, or not exactly one live session carries its name; exit 6 means
+   retry shortly). Left open, the wrapped session is idle-compacted at full cost.
 10. **Start the event waiter now** (HIMMEL-3509; it replaces the `tick` and
     `telegram` Monitor loops). Loops are pure code, never model turns: a
     `Monitor` arm is capped at 30 min, and every expiry woke this full-context
@@ -108,6 +127,9 @@ Run these, in order, and write the result as the first bullet under
     silent while nothing happens and **exits on the first real event**,
     printing one block: `WAKE telegram` plus the operator's line(s), or
     `WAKE tick changed=<fields> bank=<verdict>` plus the tick line, or
+    `WAKE underfilled capacity=UNDERFILLED:<slack>` (HIMMEL-4959: once per
+    streak, plus the tick line and `next-dispatchable.sh`'s ranked LOCAL/CLOUD
+    list; dispatch it with `gen-briefs.py`), or
     `WAKE tick-fail samples=<n>` when 3 samples in a row failed (the tick or
     the bank read is broken: fix it, then restart the waiter; it wakes once per
     failure streak). It runs `tick.sh` every
@@ -120,7 +142,7 @@ Run these, in order, and write the result as the first bullet under
     own render; the key still saves, so a later move to STALE/MISSING wakes
     again) and the
     `bank-preflight.sh` verdict word. Heartbeat, procs, fill, fleet, gql and
-    orphans never wake. An idle console therefore takes **zero** turns.
+    orphans never wake (`capacity=` wakes only through `WAKE underfilled`). An idle console therefore takes **zero** turns.
 
     **Re-start it at the end of the turn that handles each wake** — the waiter
     has exited, so a turn that does not re-start it leaves you deaf to Telegram
@@ -494,11 +516,12 @@ never act on them.
 
 - **Operator messages are additive.** A new task is added to the in-flight
   work; pivot only on an explicit halt or redirect.
-- **Idle capacity is your duty.** On a tick's `capacity=UNDERFILLED:<slack>`
-  (`fleet=<live>/<cap>` below cap, no launch for `TICK_UNDERFILL_MIN` minutes,
-  default 10), pull dispatchable work from the Jira backlog — not only the held
-  queue — after a file-collision check against live legs and open PRs, and
-  launch up to `<slack>` legs. `capacity=unknown` means the census failed, not
+- **Idle capacity is your duty.** On `WAKE underfilled` (a tick's
+  `capacity=UNDERFILLED:<slack>`: `fleet=<live>/<cap>` below cap, no launch for
+  `TICK_UNDERFILL_MIN` minutes, default 10), take the wake's
+  `next-dispatchable.sh` list (Jira backlog, collision-checked against live legs
+  and open PRs, LOCAL/CLOUD-classified), write the briefs with `gen-briefs.py`,
+  and launch up to `<slack>` legs. `capacity=unknown` means the census failed, not
   that capacity is fine.
 - **A leg's BLOCKED, permission prompt, or question comes to the console
   first** — say so in every brief.
@@ -551,6 +574,14 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    the rest of the HANDOFF by hand: current head, operator rulings made
    today, and what wrapped. **The HANDOFF wins over this file's Results
    tail** — write it as the successor's only required read.
+
+   **Handover mode (HIMMEL-4902).** Once the successor validated, `next` writes
+   `<your inbox>.handover`. While that marker is younger than
+   `CONSOLE_WAIT_HANDOVER_MIN` (default 60) your waiter skips tick, bank and
+   page work and wakes only for Telegram and LIVE — so **for up to 60 minutes
+   nobody is paged for classifier denials or tick findings on your side.** The
+   marker expires by age; to end the mute early (the handover is abandoned, or
+   you keep running), `rm <your inbox>.handover`.
 3. `touch` the signal path step 1 printed to fire the arm, and hand your live
    legs to the successor by name.
 4. **Re-brief every live leg yourself, before you release** (HIMMEL-3254). The

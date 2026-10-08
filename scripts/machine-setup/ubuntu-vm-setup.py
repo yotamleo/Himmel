@@ -31,11 +31,16 @@ except ImportError:
     sys.exit("Missing: pip install paramiko")
 
 try:
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values, find_dotenv
 except ImportError:
     sys.exit("Missing: pip install python-dotenv")
 
-load_dotenv()
+DOTENV_KEYS = ("ubuntu_vm_user", "ubuntu_vm_pass")
+_values = dotenv_values(find_dotenv(), interpolate=False)
+for _key in DOTENV_KEYS:
+    if _values.get(_key) is not None:
+        os.environ.setdefault(_key, _values[_key])
+del _values
 
 HOST = "127.0.0.1"
 PORT = 2222

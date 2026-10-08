@@ -638,6 +638,44 @@ _c = mod.build_scrape_chain({}, 5)
 _c.routes = mod.load_backend_routes(vault_with("x.test/** only=firecrawl\n"))
 check("routing: only= never re-adds a backend the key gate dropped", names(_c, "https://x.test/") == [])
 
+# HIMMEL-4851: each spelling (raw + canonical) is routed on its own and the
+# result is their intersection, so a broad-first line never widens the gate.
+def helper_permits(routes, url):
+    """The yt/ig/x helpers' local-headless gate, as in yt-scrapling-meta.py."""
+    hit = routes.match(url)
+    return hit is None or (("local-headless" in hit[1]) == (hit[0] == "only"))
+
+
+YT = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+for label, text in (
+        ("broad skip=firecrawl above www skip=local-headless",
+         "youtube.com skip=firecrawl\nwww.youtube.com/** skip=local-headless\n"),
+        ("broad only=local-headless above an exact-video skip-all",
+         "youtube.com only=local-headless\n"
+         "www.youtube.com/watch?v=dQw4w9WgXcQ skip=local-headless,jina,firecrawl\n")):
+    r = mod.load_backend_routes(vault_with(text))
+    check(f"dual spelling: {label} still refuses local-headless", not helper_permits(r, YT))
+    _c = mod.build_scrape_chain(KEYED, 5)
+    _c.routes = r
+    check(f"dual spelling: {label} chain never holds local-headless", "local-headless" not in names(_c, YT))
+r = mod.load_backend_routes(vault_with("youtube.com skip=firecrawl\nwww.youtube.com/** skip=local-headless\n"))
+_c = mod.build_scrape_chain(KEYED, 5)
+_c.routes = r
+check("dual spelling: the spellings' permitted sets intersect", names(_c, YT) == ["jina"])
+r = mod.load_backend_routes(vault_with("youtube.com skip=local-headless\n"))
+check("dual spelling: a canonical-only host rule still reaches the www spelling", not helper_permits(r, YT))
+
+# S2: canonicalize is idempotent on a crafted %26 video id, so a narrow
+# exact-video rule cannot match a different query on the second pass.
+crafted = "https://www.youtube.com/watch?v=X%26a%3Db"
+once = mod.canonicalize(crafted)
+check("canonicalize: idempotent on an encoded & in the video id", mod.canonicalize(once) == once)
+check("canonicalize: youtu.be with an encoded & matches the watch spelling",
+      mod.canonicalize("https://youtu.be/X%26a%3Db") == once)
+r = mod.load_backend_routes(vault_with("youtube.com/watch?v=X only=jina\n"))
+check("canonicalize: an exact-video only= rule does not match a crafted v=X%26a%3Db",
+      r.match(crafted) is None and r.match(once) is None)
+
 # routing file fails closed
 for label, text in (("unknown backend name", "example.com/** skip=bogus\n"),
                     ("malformed line", "example.com/**\n"),

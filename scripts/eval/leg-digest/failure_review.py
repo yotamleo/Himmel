@@ -164,6 +164,25 @@ def build(a, rows, seen_before, rc, decisions, boxed):
     return "\n".join(out) + "\n", new, n, len(fails), routed, boxed
 
 
+def friction_part(a):
+    """The friction subsection (HIMMEL-4926): refusals by source and class with the 7-day trend, from
+    scripts/eval/friction/friction.py. FAILURE_REVIEW_FRICTION_CMD overrides the command (an empty value
+    turns it off); a failure leaves one line and never fails the review."""
+    cmd = os.environ.get("FAILURE_REVIEW_FRICTION_CMD")
+    if cmd == "":
+        return ""
+    argv = cmd.split() if cmd else [sys.executable, "-I", os.path.join(HERE, "..", "friction", "friction.py"),
+                                     "--repo", os.path.join(HERE, "..", "..", "..")]
+    try:
+        r = subprocess.run(argv + ["--section", "--now", failure_router.iso(a.now)], capture_output=True,
+                           text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        return "\n### Friction\n\n- unavailable: %s\n" % type(e).__name__
+    if r.returncode != 0:
+        return "\n### Friction\n\n- unavailable: rc %d\n" % r.returncode
+    return "\n" + r.stdout
+
+
 def state_file(a):
     return os.path.abspath(a.state or os.environ.get(failure_router.STATE_ENV) or os.path.expanduser(
         "~/.himmel/state/failure-routes.json"))
@@ -263,6 +282,7 @@ def main(argv=None):
     a.ledger = ledger
     rc, decisions, boxed = run_router(a)
     section, new, n, k, routed, boxed = build(a, rows, set(older), rc, decisions, boxed)
+    section += friction_part(a)
     npath = notify_path(a)
     os.makedirs(os.path.dirname(npath), exist_ok=True)
     with open(npath + ".lock", "a") as lock:

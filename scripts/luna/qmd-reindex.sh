@@ -117,6 +117,8 @@
 #      than the configured one (HIMMEL-4232); nothing was run
 #   8  `qmd cleanup` failed (HIMMEL-4860) — vectors ARE complete and the
 #      refresh stamp is written; only the orphaned chunks remain
+#   9  BUSY — another embed process holds the lock after one retry;
+#      completeness is not verified and no refresh stamp is written
 set -euo pipefail
 
 QMD_BIN=""
@@ -170,6 +172,7 @@ Exit: 0 ok | 1 usage | 2 qmd unusable | 3 update failed | 4 embed failed
       6 completeness assert could not read its verifier (qmd output reworded)
       7 model mismatch (index vectors from another embed model; nothing run)
       8 qmd cleanup failed (vectors complete; orphaned chunks remain)
+      9 embed BUSY (another process holds the lock after one retry)
 EOF
 }
 
@@ -183,6 +186,35 @@ run_qmd() {
     else
         qmd_bounded "$(qmd_timeout_secs)" "$QMD_BIN" "$@"
     fi
+}
+
+# The upstream scan counts hashes, not pending chunks (HIMMEL-4897). Keep the
+# diagnostic number, but never present it as an embedding backlog.
+relabel_hash_count() {
+    sed 's/unique hashes need vectors/unique hashes in qmd scan (not a pending chunk count)/g'
+}
+
+# qmd can report contention with either exit 0 or nonzero. Check its BUSY
+# sentinel before exit status, on BOTH the initial and verification passes.
+# Retry once immediately: no scheduler delay or unbounded wait for another job.
+run_embed() {
+    local out rc attempt
+    for attempt in 1 2; do
+        rc=0
+        out=$(run_qmd embed 2>&1) || rc=$?
+        if grep -qF -- 'Another embed process is already running' <<<"$out"; then
+            if [ "$attempt" -eq 1 ]; then
+                echo "qmd-reindex: embed lock held; retrying once" >&2
+                continue
+            fi
+            echo "ERR qmd-reindex: embed BUSY — another embed process is already running after one retry; completeness NOT verified." >&2
+            return 9
+        fi
+        relabel_hash_count <<<"$out"
+        # Normalize ordinary failures so an upstream rc 9 cannot impersonate BUSY.
+        [ "$rc" -eq 0 ] || return 4
+        return 0
+    done
 }
 
 # Human-readable form of the invocation, for logs and --dry-run. Thin alias for
@@ -376,14 +408,18 @@ esac
 
 # --- 1. re-index changed files across every configured collection -----------
 echo "qmd-reindex: [1/3] qmd update"
-if ! run_qmd update; then
+if ! run_qmd update 2>&1 | relabel_hash_count; then
     echo "ERR qmd-reindex: 'qmd update' failed — index NOT refreshed." >&2
     exit 3
 fi
 
 # --- 2. embed whatever the update left without vectors ----------------------
 echo "qmd-reindex: [2/3] qmd embed"
-if ! run_qmd embed; then
+EMBED_RC=0
+run_embed || EMBED_RC=$?
+if [ "$EMBED_RC" -eq 9 ]; then
+    exit 9
+elif [ "$EMBED_RC" -ne 0 ]; then
     echo "ERR qmd-reindex: 'qmd embed' failed — lex index is fresh but vectors are NOT." >&2
     exit 4
 fi
@@ -401,7 +437,11 @@ echo "qmd-reindex: [3/3] verifying embed completeness"
 VERIFY_OUT=""
 for VERIFY_TRY in 1 2; do
     VERIFY_RC=0
-    VERIFY_OUT=$(run_qmd embed 2>&1) || VERIFY_RC=$?
+    VERIFY_OUT=$(run_embed 2>&1) || VERIFY_RC=$?
+    if [ "$VERIFY_RC" -eq 9 ]; then
+        printf '%s\n' "$VERIFY_OUT" >&2
+        exit 9
+    fi
     if [ "$VERIFY_RC" -ne 0 ]; then
         echo "ERR qmd-reindex: completeness re-check ('qmd embed') failed (rc=$VERIFY_RC):" >&2
         printf '%s\n' "$VERIFY_OUT" >&2

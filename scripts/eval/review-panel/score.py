@@ -5,7 +5,7 @@ per class and for the panel as a whole, with n and Wilson 95% intervals; one
 row per sweep into the eval-runs ledger (scripts/eval/lib/eval_runs.py).
 
   score.py lint  [--fixtures DIR] [--key FILE]
-  score.py score --outputs DIR [--fixtures DIR] [--key FILE] [--critics a,b]
+  score.py score --outputs DIR --critics a,b [--fixtures DIR] [--key FILE]
                  [--only case-01,case-02] [--window N] [--json OUT]
                  [--ledger PATH | --no-ledger] [--meta-json J]
 
@@ -88,6 +88,7 @@ SECTION = re.compile(r"^## (Critical Issues|Important Issues|Suggestions|"
                      r"Already Dispositioned Re-raises|Dropped Citations|Note|REVIEW NOT PERFORMED)")
 SEV = {"Critical Issues": "crit", "Important Issues": "imp", "Suggestions": "sug"}
 BULLET = re.compile(r"^- \[([A-Za-z0-9._]+(?:-[A-Za-z0-9._]+)*?)-(\d+)\]: (.*?)\s*\[([^\]\s]+):(\d+)\]\s*$")
+FINDING_SHAPED = re.compile(r"^- \[[A-Za-z0-9._-]+-\d+\]")
 UNAVAILABLE = re.compile(r"^- ([A-Za-z0-9._-]+): unavailable\b")
 
 
@@ -177,7 +178,7 @@ def parse_review(text):
     critic, sev, file, line, text; bullets outside the three severity
     sections (re-raises, dropped citations) are not findings."""
     findings, unavailable, performed, sev, in_note = [], set(), True, None, False
-    declared, counted = {}, {}
+    declared, counted, malformed = {}, {}, 0
     for line in text.splitlines():
         m = SECTION.match(line)
         if m:
@@ -198,20 +199,26 @@ def parse_review(text):
         if u and (in_note or not performed):
             unavailable.add(u.group(1))
             continue
-        if sev and line.startswith("- [") and not line.startswith("- [citation-guard"):
-            counted[sev] += 1
+        # Count only bullets BULLET parses: a malformed one (no [file:line])
+        # leaves the count short of the heading, so the case is unscored
+        # rather than scored with that finding lost.
         b = BULLET.match(line)
         if b and sev:
             critic = b.group(1)
             if critic.startswith("citation-guard"):
                 continue
+            counted[sev] += 1
             findings.append({"critic": critic, "sev": sev, "text": b.group(3),
                              "file": norm_path(b.group(4)), "line": int(b.group(5))})
+        elif sev and FINDING_SHAPED.match(line):
+            # Finding-shaped but rejected by BULLET: flagged apart from the
+            # declared count, which a hand-edited heading can make agree.
+            malformed += 1
     # The panel prints all three severity headings, each with its bullet count,
     # on every completed review; a transcript missing a heading or a bullet was
     # cut short and is not a zero-finding review.
     if not text.lstrip().startswith("# Critic Panel Review") or set(SEV.values()) - set(declared) \
-            or declared != counted:
+            or declared != counted or malformed:
         performed = False
     return findings, unavailable, performed
 
@@ -390,6 +397,10 @@ def main(argv=None):
         if not isinstance(meta, dict):
             raise ValueError("--meta-json must be an object")
         critics = [c for c in a.critics.split(",") if c]
+        # The panel header carries counts, not names: without the roster a
+        # responding critic with zero findings would drop out of the metrics.
+        if not critics:
+            raise ValueError("--critics is required (the panel roster)")
         only = [c for c in a.only.split(",") if c]
         res = score(a.outputs, a.fixtures, a.key, critics, only or None, a.window)
     except (OSError, ValueError) as e:

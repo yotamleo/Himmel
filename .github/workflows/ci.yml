@@ -845,6 +845,22 @@ jobs:
       # unrelated suite reds. Pinned by test-run-shell-tests.sh Case 23f.
       - name: Install obsidian-triage tool deps (marketplace suites)
         run: bash marketplace/plugins/obsidian-triage/tools/ensure-deps.sh
+      # HIMMEL-4802: test-x-media-hls-ffmpeg.sh runs a REAL ffmpeg over the
+      # playlists x-media-fetch.py rewrites (every other suite stubs it). It
+      # SKIPs without ffmpeg, so this step pins the noble 6.1 build and then
+      # sets HIMMEL_REQUIRE_FFMPEG=1, turning that SKIP into a FAIL here. A
+      # runner image that drops the 6.1 package fails this step loudly; re-pin
+      # deliberately. Linux only: the nightly windows leg keeps the SKIP.
+      - name: Install pinned ffmpeg (Linux — obsidian-triage HLS suite)
+        if: runner.os == 'Linux'
+        timeout-minutes: 13
+        run: |
+          if ! sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=60 'ffmpeg=7:6.1.*'; then
+            sudo timeout 300 apt-get update -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120
+            sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 'ffmpeg=7:6.1.*'
+          fi
+          ffmpeg -version | head -n 1
+          echo "HIMMEL_REQUIRE_FFMPEG=1" >> "$GITHUB_ENV"
       # HIMMEL-2223 codex-3: scripts/test-template-nostash-hooks.sh hard-SKIPs
       # (exit 0) without pre-commit on PATH — the exact vacuous-SKIP shape
       # called out for the Windows vault suites above (LUNA-131) — so without

@@ -2068,7 +2068,7 @@ const autoGate = (ops: string[], fired: any[], authorize: (from: number, chat_id
 
 test("handleInbound routes a DM + operator + typed + enabled /arm to the auto fire, NOT run", async () => {
   const r = root(); const fired: any[] = []; let ran = false;
-  await handleInbound(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", forwarded:false, caption:false },
+  await handleInbound(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false },
     async () => { ran = true; }, autoGate(["arm-resume"], fired));
   expect(fired.length).toBe(1);
   expect(fired[0].route.op).toBe("arm-resume");
@@ -2088,7 +2088,7 @@ test("autoGate.authorize composition: operator + allowlisted-chat only (CR S1 se
 test("handleInbound: an OPERATOR /arm in an allowlisted GROUP fires (operator-identity, HIMMEL-424 groups)", async () => {
   const r = root(); const fired: any[] = []; let ran = false;
   // operator (from=5) in a group (chat_id<0); isOperator(5)=true → arms
-  await handleInbound(r, { from:5, chat_id:-50, text:"/arm HIMMEL-1", forwarded:false, caption:false },
+  await handleInbound(r, { from:5, chat_id:-50, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false },
     async () => { ran = true; }, autoGate(["arm-resume"], fired, (from) => from === 5));
   expect(fired.length).toBe(1);
   expect(ran).toBe(false);
@@ -2097,7 +2097,7 @@ test("handleInbound: an OPERATOR /arm in an allowlisted GROUP fires (operator-id
 test("handleInbound: a NON-operator /arm in a shared group falls through to chat, never arms — fix C1", async () => {
   const r = root(); const fired: any[] = []; const ran: string[] = [];
   // a different member (from=9) of the same group; isOperator(9)=false → powerless chat
-  await handleInbound(r, { from:9, chat_id:-50, text:"/arm HIMMEL-1", forwarded:false, caption:false },
+  await handleInbound(r, { from:9, chat_id:-50, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false },
     async (s:string) => { ran.push(s); }, autoGate(["arm-resume"], fired, (from) => from === 5), spawnHighTriage);
   expect(fired.length).toBe(0);
   expect(ran).toEqual(["group_-50"]);   // ordinary chat
@@ -2113,7 +2113,7 @@ test("handleInbound: a media-caption /arm in a DM falls through to chat, never a
 
 test("handleInbound: empty enabledOps (default) → /arm is ordinary chat (inert)", async () => {
   const r = root(); const fired: any[] = []; const ran: string[] = [];
-  await handleInbound(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", forwarded:false, caption:false },
+  await handleInbound(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false },
     async (s:string) => { ran.push(s); }, autoGate([], fired));
   expect(fired.length).toBe(0);
   expect(ran).toEqual(["__chat__"]);
@@ -2121,7 +2121,7 @@ test("handleInbound: empty enabledOps (default) → /arm is ordinary chat (inert
 
 test("handleInbound: a DIFFERENT op enabled but /arm (arm-resume) disabled → chat", async () => {
   const r = root(); const fired: any[] = []; const ran: string[] = [];
-  await handleInbound(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", forwarded:false, caption:false },
+  await handleInbound(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false },
     async (s:string) => { ran.push(s); }, autoGate(["file-ticket"], fired));
   expect(fired.length).toBe(0);
   expect(ran).toEqual(["__chat__"]);
@@ -2148,7 +2148,7 @@ const armRoute = { kind: "auto" as const, op: "arm-resume", arg: "HIMMEL-1", tim
 
 test("handleAutoCommand: a non-forwarded /arm arms, replies success, audits 'armed'", async () => {
   const r = root(); const a = autoDeps();
-  await handleAutoCommand(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", forwarded:false, caption:false }, armRoute, a.deps);
+  await handleAutoCommand(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false }, armRoute, a.deps);
   expect(a.dispatched()).toBe(1);
   expect(a.replies[0].chat).toBe(5);
   expect(a.replies[0].text).toContain("armed");
@@ -2168,7 +2168,7 @@ test("handleAutoCommand: a FORWARDED /arm refuses — NO dispatch, reply + audit
 test("handleAutoCommand: arm-resume dedup (rc 5) audits 'already-armed', no false success", async () => {
   const r = root(); const a = autoDeps();
   const deps = { ...a.deps, runScript: async () => ({ code: 5, stdout: "", stderr: "" }) };
-  await handleAutoCommand(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", forwarded:false, caption:false }, armRoute, deps);
+  await handleAutoCommand(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false }, armRoute, deps);
   expect(a.replies[0].text.toLowerCase()).toContain("already armed");
   expect(a.audits[0].result).toBe("already-armed");
 });
@@ -2192,7 +2192,7 @@ test("handleAutoCommand: a reply-delivery failure does NOT swallow the audit nor
     reply: async () => { throw new Error("telegram down"); },   // reply fails AFTER the arm
     audit: async (f: any) => { audits.push(f); },
   };
-  await handleAutoCommand(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", forwarded:false, caption:false }, armRoute, deps);
+  await handleAutoCommand(r, { from:5, chat_id:5, text:"/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded:false, caption:false }, armRoute, deps);
   expect(audits.length).toBe(1);              // the privileged arm is still durably recorded
   expect(audits[0].result).toBe("armed");
   // and the forwarded-refuse branch likewise audits before the (failing) reply
@@ -2795,7 +2795,7 @@ test("handleInbound: the same operator's UNTAGGED auto-command does fire", async
   const r = root();
   let fired = false;
   const auto = { authorize: () => true, enabledOps: new Set(["arm-resume"]), fire: () => { fired = true; } } as any;
-  await handleInbound(r, { from: 1, chat_id: 7, text: "/arm HIMMEL-1", caption: false },
+  await handleInbound(r, { from: 1, chat_id: 7, text: "/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), caption: false },
     async () => {}, auto, undefined, () => true);
   expect(fired).toBe(true);
 });
@@ -2803,7 +2803,7 @@ test("handleInbound: an untagged auto-command still fires (regression)", async (
   const r = root();
   let fired = false;
   const auto = { authorize: () => true, enabledOps: new Set(["arm-resume"]), fire: () => { fired = true; } } as any;
-  await handleInbound(r, { from: 1, chat_id: 7, text: "/arm HIMMEL-1", caption: false },
+  await handleInbound(r, { from: 1, chat_id: 7, text: "/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), caption: false },
     async () => {}, auto);
   expect(fired).toBe(true);
 });
@@ -3117,7 +3117,7 @@ test("an AUTO-OP is never buffered — it fires immediately even mid-burst", asy
   await handleInbound(r, { from: 7, chat_id: 7, text: "hello", ts: 1, forwarded: false, caption: false } as any, c, auto as any);
   expect(c.isHolding("__chat__")).toBe(true);
   // a privileged op lands DURING the window
-  await handleInbound(r, { from: 7, chat_id: 7, text: "/arm HIMMEL-1", ts: 2, forwarded: false, caption: false } as any, c, auto as any);
+  await handleInbound(r, { from: 7, chat_id: 7, text: "/arm HIMMEL-1", ts: Math.floor(Date.now() / 1000), forwarded: false, caption: false } as any, c, auto as any);
   expect(fired).toEqual(["arm-resume"]); // fired NOW, not at flush time
   expect(runs).toEqual([]);              // and it did not trigger the chat run
 });

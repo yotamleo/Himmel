@@ -47,6 +47,38 @@ test('LOCAL-NATIVE: run-time need (luna / vault / handover state / qmd query, ve
   }
 });
 
+// HIMMEL-4969: fixture text of the real tickets (no live Jira).
+const T4660 = {
+  key: 'HIMMEL-4660', type: 'Task', status: 'To Do', title: 'qmd-quality: backfill baselines into live ledger and arm cadence on a test VM',
+  description: 'Follow-up to HIMMEL-4650 (its Ask items 3 live part and 4).\n1. Run scripts/eval/qmd-quality/backfill-ledger.sh on the stored gemma and qwen outputs under ~/.himmel/eval/qmd-index/out/ (and the wiring-proof run) against the LIVE eval-runs ledger. HIMMEL-4650 rehearsed it on scratch copies and a scratch ledger only, so no live ledger row was written.\n2. Arm the qmd-quality cadence on a test VM first (himmel-ops:vm); the station arm stays an operator step.\nBoth need an operator go (live ledger / VM arming), so they were out of the HIMMEL-4650 PR.',
+};
+const CLOUD_FIXTURES = [
+  { key: 'HIMMEL-4639', title: 'test-check-ci: HIMMEL-4630 comment omits case 104 budget exception', description: 'The HIMMEL-4630 comment block in scripts/test-check-ci.sh (near line 1819) says every cap case uses a 4s budget, but case 104 uses --max-wait 6 (with GH_STUB_CAP_SLEEP=8). Add the case-104 exception to the comment. Comment-only change; no behaviour impact.' },
+  { key: 'HIMMEL-4665', title: 'lane-quality calibration: collision-free second-judge cache key', description: 'What. scripts/eval/lane-quality/run.sh calibration names a stored second-judge result <stem>.judge2.<label>.json.\nAsk. Make the cache key collision-free.\nDone when. A test shows the two colliding configurations each make their own call.' },
+  { key: 'HIMMEL-4673', title: 'trajectory scorer: union test targets across a passing && chain', description: 'scripts/eval/lane-quality/trajectory.py test_target() returns the targets of the first test command in a Bash call only. A passing bash test-a.sh && bash test-b.sh therefore backs a claim about test-a.sh but not test-b.sh.\nAcceptance:\n- A fixture with bash test-a.sh && bash test-b.sh passing scores verify_before_claim true.\n- A failing chain still proves no RED.' },
+  { key: 'HIMMEL-4688', title: 'Scrapling YT/X extraction refinements from PR 1982 round 3', description: 'Follow-up from PR #1982.\n1. Unavailable video without videoDetails (codex-2)\nmarketplace/plugins/obsidian-triage/tools/yt-scrapling-meta.py player_response() accepts a ytInitialPlayerResponse only when its videoDetails.videoId matches.\n2. Non-English caption tracks (codex-3)\nfetch_transcript asks yt-dlp for en.*,en only.\n3. Focal-post media after a quoted post (codex-4)\nmarketplace/plugins/obsidian-triage/tools/x-scrapling-media.py main_article() keeps the focal article only up to its first nested article.' },
+];
+
+test('LOCAL-NATIVE: station-bound ticket (HIMMEL-4660: ~/.himmel state, live ledger, test VM, cadence arming)', () => {
+  const v = classifyTicket(T4660, ctx());
+  assert.equal(v.class, 'LOCAL-NATIVE');
+  assert.match(v.reason, /run-time/);
+});
+
+test('LOCAL-NATIVE: each station-bound shape alone routes local and the reason names the match', () => {
+  const cases = [['reads ~/.himmel/eval/out', '~/.himmel/'], ['reads $HOME/.himmel/x', '$HOME/.himmel/'], ['reads ~/.cache/qmd', '~/.cache/'], ['writes the LIVE eval-runs ledger', 'LIVE eval-runs ledger'], ['runs on a test VM', 'test VM'], ['via himmel-ops:vm', 'himmel-ops:vm'], ['uses vmsdk', 'vmsdk'], ['calls VBoxManage', 'VBoxManage'], ['arm the nightly cadence', 'arm the nightly cadence'], ['arming a cadence', 'arming a cadence'], ['a systemd timer fires it', 'systemd timer'], ['runs atrm on the job', 'atrm']];
+  for (const [need, match] of cases) {
+    const v = classifyTicket(tk({ description: `Edit scripts/a.sh. It ${need}.` }), ctx());
+    assert.equal(v.class, 'LOCAL-NATIVE', need);
+    assert.ok(v.reason.includes(match), `${need}: ${v.reason}`);
+  }
+});
+
+test('CLOUD-OK: the tickets launched with HIMMEL-4660 and a passing VM-suite mention stay cloud', () => {
+  for (const f of CLOUD_FIXTURES) assert.equal(classifyTicket({ type: 'Task', status: 'To Do', ...f }, ctx()).class, 'CLOUD-OK', f.key);
+  for (const t of ['Edit scripts/vm/test-vm-e2e.sh.', 'Fix the cadence field in scripts/a.sh output.', 'It is a live-reload hook in scripts/a.sh.']) assert.equal(classifyTicket(tk({ description: t }), ctx()).class, 'CLOUD-OK', t);
+});
+
 test('CLOUD-OK: graphify and repo-only qmd search no longer route local (HIMMEL-4726: the cloud setup installs both)', () => {
   for (const need of ['It runs graphify update.', 'It calls graphify query at run time.', 'It uses qmd search over the repo docs.', 'It reads the skills/graphify/SKILL.md text.', 'It runs qmd search "cloud" -c himmel.', "It runs qmd search -c 'himmel' x."]) {
     const v = classifyTicket(tk({ description: `Edit scripts/a.sh. ${need}` }), ctx());
@@ -114,6 +146,14 @@ test('explicit files override text extraction', () => {
   const v = classifyTicket(tk({ description: 'Make it better.', files: ['docs/x.md'] }), ctx());
   assert.equal(v.class, 'CLOUD-OK');
   assert.deepEqual(v.files, ['docs/x.md']);
+});
+
+test('brief uses bounded repo-only search and the session checkout graph', () => {
+  const brief = buildBrief(tk({ files: ['docs/x.md'], raw: 'ticket' }), { date: '2026-10-07' });
+  assert.match(brief, /bash scripts\/lib\/qmd-bounded\.sh search "<terms>" -c himmel/);
+  assert.match(brief, /bash scripts\/cloud\/setup-env\.sh/);
+  assert.match(brief, /--graph graphify-out\/graph\.json/);
+  assert.doesNotMatch(brief, /--graph \/tmp\/himmel-setup/);
 });
 
 test('parseJiraGet splits the header and keeps the body verbatim', () => {

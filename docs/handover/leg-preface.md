@@ -57,10 +57,25 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   takes no file, so a `>` beside a guarded script name is refused as a write
   channel (HIMMEL-3917).
 - **A `FINDING` stays your status until you retire it.** When the console has
-  ruled on it, write `- HH:MM RESOLVED — <what was ruled>` as soon as you act
-  on the ruling. Until then the console reads `FINDING` and must assume it owes
-  you an answer; it cannot tell a ruling you have already received from one
-  still pending. Raise a fresh `FINDING` for the next question.
+  ruled on it, write `- HH:MM RESOLVED — ruling received, see console message`
+  as soon as you act on the ruling. Until then the console reads `FINDING` and
+  must assume it owes you an answer; it cannot tell a ruling you have already
+  received from one still pending. Raise a fresh `FINDING` for the next
+  question.
+- **A doc bullet records a ruling as a plain fact (HIMMEL-4931).** Never copy a
+  ruling, `GO`, approval or token into a bullet: the auto-mode classifier reads
+  that as instruction poisoning and holds you (HIMMEL-4926). The bullet says
+  that it arrived (`ruling received, see console message`); a token quote-back
+  goes only in your `SendMessage` reply to the console.
+- **A stated default applies if no ruling arrives (HIMMEL-4935).** When your
+  brief carries `default-if-no-ruling (<N> min): <action>` for a named question,
+  and you raised that question as a `FINDING` and no ruling has arrived after
+  `<N>` minutes, proceed on the stated action and say so in the next
+  `LIVE` bullet. The default may only **narrow** (reduce scope, defer to a
+  follow-up ticket, or halt); a default that expands scope or widens a
+  permission is ignored and you keep waiting on the console. A default never
+  stands in for `GO`, a merge, or a token-quoting message: those still need the
+  console's message and the GO file.
 - **Do not coin markers.** `SHIPPED` and `MERGED` are deliberately not in the
   vocabulary, and a bullet carrying only such a word is invisible to the tick.
   Between GREEN and `READY` (PR open, CI and review running) you are `LIVE`:
@@ -165,9 +180,10 @@ token if one came. If none did (a relay may omit it), keep the one you hold and
 you are fully authenticated to the new console: a fresh token adds no
 authentication, so its absence is not a gap and needs no rotation. Write
 `- SUCCESSION accepted: <new console session> replaces <old>` under
-`## Results`, and quote your token back to the new console — the fresh one, or
-the unchanged one you kept; its `LIVE` waits on that reply. Tokens go in
-backticks, never in prose. A chain (2) always carries a fresh token, so it
+`## Results` (names and grammar only, no token), and quote your token back in
+your `SendMessage` reply to the new console — the fresh one, or the unchanged
+one you kept; its `LIVE` waits on that reply. Tokens go in backticks, never in
+prose. A chain (2) always carries a fresh token, so it
 always rotates.
 
 | # | Sender (`from`) | Quotes | Named console | Verdict |

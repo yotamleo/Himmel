@@ -9,12 +9,8 @@
  * Telegram's Bot API has no history or search. Reply-only tools.
  */
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js'
+import { Server } from '@modelcontextprotocol/server'
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio'
 import { z } from 'zod'
 import { Bot, GrammyError, InlineKeyboard, InputFile, type Context } from 'grammy'
 import type { ReactionTypeEmoji } from 'grammy/types'
@@ -446,16 +442,16 @@ const pendingPermissions = new Map<string, { tool_name: string; description: str
 // "single-user mode for official plugins." Anyone in access.allowFrom
 // already passed explicit pairing; group members haven't.
 mcp.setNotificationHandler(
-  z.object({
-    method: z.literal('notifications/claude/channel/permission_request'),
+  'notifications/claude/channel/permission_request',
+  {
     params: z.object({
       request_id: z.string(),
       tool_name: z.string(),
       description: z.string(),
       input_preview: z.string(),
     }),
-  }),
-  async ({ params }) => {
+  },
+  async params => {
     const { request_id, tool_name, description, input_preview } = params
     pendingPermissions.set(request_id, { tool_name, description, input_preview })
     const access = loadAccess()
@@ -472,7 +468,7 @@ mcp.setNotificationHandler(
   },
 )
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
+mcp.setRequestHandler('tools/list', async () => ({
   tools: [
     {
       name: 'reply',
@@ -546,7 +542,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }))
 
-mcp.setRequestHandler(CallToolRequestSchema, async req => {
+mcp.setRequestHandler('tools/call', async req => {
   const args = (req.params.arguments ?? {}) as Record<string, unknown>
   try {
     switch (req.params.name) {

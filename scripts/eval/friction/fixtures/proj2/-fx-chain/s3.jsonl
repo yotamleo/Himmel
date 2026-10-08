@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"s2","timestamp":"2026-10-07T23:58:00.000Z","message":{"content":[{"type":"tool_result","is_error":true,"content":"Exit code 75\nERR suite-semaphore: all 3 suite slot(s) on this machine are busy (HIMMEL-1818)."}]}}
+{"type":"user","sessionId":"s2","timestamp":"2026-10-08T00:10:00.000Z","message":{"content":[{"type":"tool_result","is_error":false,"content":"ok"}]}}

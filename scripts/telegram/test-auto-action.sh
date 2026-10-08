@@ -205,11 +205,11 @@ assert_rc "T16c chokepoint rc 19 (CLAUDECODE self-refusal) relayed verbatim" 19 
 
 # Privileged typed ops: invalid inputs must fail before any side effect.
 out=$(run launch-bypass-leg "$INSIDE" UNKNOWN_OK); rc=$?
-assert_rc "launch rejects unknown bypass variable" 1 "$rc"
+assert_rc "retired launch rejects unknown bypass variable" 19 "$rc"
 out=$(run launch-bypass-leg "$OUTSIDE" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); rc=$?
-assert_rc "launch rejects outside doc" 3 "$rc"
+assert_rc "retired launch rejects outside doc" 19 "$rc"
 out=$(run launch-bypass-leg "$HANDOVER_DIR/yotam/himmel/../himmel/2026-06-20-himmel-777-resume.md" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); rc=$?
-assert_rc "launch rejects dot-dot even within root" 3 "$rc"
+assert_rc "retired launch rejects dot-dot even within root" 19 "$rc"
 out=$(run cr-grant-delta 123 abcdef123456); rc=$?
 assert_rc "reset requires full SHA" 1 "$rc"
 
@@ -227,19 +227,13 @@ export AUTO_ACTION_LAUNCH_CMD="bash $LAUNCH_STUB"
 export LAUNCH_ARGS_FILE="$TMP/launch-args" LAUNCH_ENV_FILE="$TMP/launch-env"
 launch() { (unset CLAUDECODE; run launch-bypass-leg "$1" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); }
 out=$(launch "$INSIDE"); rc=$?
-assert_rc "launch passes validated doc and touches its signal" 0 "$rc"
-assert_contains "launch returns log path" "log=" "$out"
-assert_contains "launch chooses leg-impl profile" "leg-impl" "$(cat "$LAUNCH_ARGS_FILE" 2>/dev/null)"
-assert_contains "launch only sets closed bypass and strips bridge secrets" "1||" "$(cat "$LAUNCH_ENV_FILE" 2>/dev/null)"
-out=$(LAUNCH_STUB_RC=12 launch "$INSIDE"); rc=$?
-assert_rc "launcher brief-lint refusal is relayed" 12 "$rc"
-ln -s "$OUTSIDE" "$HANDOVER_DIR/yotam/himmel/escape.md"
-out=$(launch "$HANDOVER_DIR/yotam/himmel/escape.md"); rc=$?
-assert_rc "launch rejects symlink escape" 3 "$rc"
-mkdir -p "$HANDOVER_DIR/other/himmel"
-cp "$INSIDE" "$HANDOVER_DIR/other/himmel/leg.md"
-out=$(launch "$HANDOVER_DIR/other/himmel/leg.md"); rc=$?
-assert_rc "launch rejects another user's bucket" 3 "$rc"
+assert_rc "legacy-bypass-without-claim-refused" 19 "$rc"
+assert_contains "launch gives station migration instructions" "start hook legs at the station" "$(cat "$TMP/err")"
+if [ ! -f "$LAUNCH_ARGS_FILE" ] && [ ! -f "$LAUNCH_ENV_FILE" ]; then
+    echo "PASS retired launch never invokes launcher or exports bypass"
+else
+    echo "FAIL retired launch invoked launcher"; FAILED=$((FAILED + 1))
+fi
 rm -f "$LAUNCH_ARGS_FILE"
 out=$(CLAUDECODE=1 run launch-bypass-leg "$INSIDE" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); rc=$?
 assert_rc "launch refuses agent authority" 19 "$rc"

@@ -200,13 +200,16 @@ def _env_path():
     return here.parents[1] / ".env"
 
 
-def _load_dotenv_into_env():
-    """Load the primary .env into os.environ (does not override live values)."""
+def _load_dotenv_into_env(keys):
+    """Load only this VM's credential keys, without overriding live values."""
     try:
-        from dotenv import load_dotenv
+        from dotenv import dotenv_values
     except ImportError:
         raise VMError("missing dependency: pip install python-dotenv")
-    load_dotenv(_env_path())
+    values = dotenv_values(_env_path(), interpolate=False)
+    for key in keys:
+        if values.get(key) is not None:
+            os.environ.setdefault(key, values[key])
 
 
 def _load_registry(path=None):
@@ -261,7 +264,7 @@ class VM:
         else:
             self.port = spec["ssh_port"]
             self.host = HOST
-            _load_dotenv_into_env()
+            _load_dotenv_into_env([spec["pass_env"]] + ([] if spec.get("user") else [spec["user_env"]]))
             # A literal 'user' in the registry entry wins over 'user_env'
             # (HIMMEL-2623): before this fix a VM-kind spec's 'user' key was
             # never even read here (only the station branch above consulted

@@ -716,6 +716,7 @@ qmd_cmd() {
   elif command -v qmd >/dev/null 2>&1; then
     qmd_bounded "$(qmd_timeout_secs)" qmd "$@"
   else
+    echo "qmd-bounded: qmd not found on PATH" >&2
     return 127
   fi
 }

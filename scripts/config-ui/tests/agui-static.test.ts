@@ -227,3 +227,14 @@ test("a directory touched by a temp file but with every built source present is 
   writeFileSync(join(dir, ".agui-sources"), "not json"); // an unreadable list is no evidence
   expect(aguiStaleWarning(dir, w)).toBeNull();
 });
+
+// HIMMEL-4747: the manifest is checked before src is listed, so a whole src directory deleted after the build still
+// marks the page stale (listing a missing src throws, which once read as no evidence).
+test("the whole src directory deleted after the build marks the page stale", async () => {
+  const { dir, web: w } = web(60, 3600);
+  manifest(dir, [join("deep", "App.tsx")], 60);
+  expect(aguiStaleWarning(dir, w)).toBeNull();
+  rmSync(join(w, "src"), { recursive: true });
+  expect(aguiStaleWarning(dir, w)).toMatch(/^himmelctl: ui: the AG-UI page is an old build .*bun run build/);
+  expect(await (await fetch(`${bootWeb(dir, w)}/agui/`)).text()).toContain('id="agui-stale"');
+});

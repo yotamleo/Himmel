@@ -36,6 +36,7 @@ malformed line is skipped, and only these shapes are relied on (Claude Code
 Stdlib only.
 """
 import argparse
+import bisect
 import itertools
 import json
 import os
@@ -205,6 +206,11 @@ def _tokens(seg):
         toks = shlex.split(seg, comments=True)
     except ValueError:
         toks = seg.split()
+    return _strip_prefix(toks)
+
+
+def _strip_prefix(toks):
+    """toks without leading VAR= assignments and WRAPPERS (env, time, ...)."""
     while toks and (re.match(r"^[A-Za-z_]\w*=", toks[0]) or toks[0] in WRAPPERS):
         toks = toks[1:]
     return toks
@@ -230,7 +236,7 @@ def _quiet_run(toks):
     if i is None or i >= len(toks) or os.path.basename(toks[i]) != "quiet-run.sh":
         return None
     rest = toks[i + 1:]
-    inner = rest[rest.index("--") + 1:] if "--" in rest else []
+    inner = _strip_prefix(rest[rest.index("--") + 1:]) if "--" in rest else []  # HIMMEL-4740
     return (rest[0] if rest else ""), inner
 
 
@@ -308,17 +314,28 @@ def claims(report):
 
 
 def denial_list(calls):
-    """[{tool_call_id, recovered, identical}] for each denied call, in issue order."""
-    den = [c for c in calls if denied(c)]
-    out = {d["id"]: {"tool_call_id": d["id"], "recovered": True, "identical": 0} for d in den}
-    for d in den:
-        nxt = next((c for c in calls if c["pos"] > d["result"]["pos"]), None)
-        out[d["id"]]["recovered"] = nxt is None or _canon(nxt) != _canon(d)
-    for c in calls:
-        prior = [d for d in den if d["result"]["pos"] < c["pos"] and _canon(d) == _canon(c)]
-        if prior:
-            out[prior[-1]["id"]]["identical"] += 1
-    return [out[d["id"]] for d in den]
+    """[{tool_call_id, recovered, identical}] for each denied call, in issue order.
+    Near-linear: O((calls + denials) * log n), one bisect and one sort (HIMMEL-4682)."""
+    keys = [_canon(c) for c in calls]
+    di = [i for i, c in enumerate(calls) if denied(c)]
+    den = [calls[i] for i in di]
+    dkeys = [keys[i] for i in di]
+    positions = [c["pos"] for c in calls]
+    out = []
+    for d, dk in zip(den, dkeys):
+        i = bisect.bisect_right(positions, d["result"]["pos"])
+        out.append({"tool_call_id": d["id"], "recovered": i >= len(calls) or keys[i] != dk, "identical": 0})
+    order = sorted(range(len(den)), key=lambda j: den[j]["result"]["pos"])
+    latest, k = {}, 0
+    for i, c in enumerate(calls):
+        while k < len(order) and den[order[k]]["result"]["pos"] < c["pos"]:
+            j = order[k]
+            if latest.get(dkeys[j], -1) < j:
+                latest[dkeys[j]] = j
+            k += 1
+        if keys[i] in latest:
+            out[latest[keys[i]]]["identical"] += 1
+    return out
 
 
 def score_calls(calls, texts, report=None):
@@ -349,15 +366,9 @@ def score_calls(calls, texts, report=None):
         rbg = any(not ok and pos < w for pos, _, ok in runs) and any(ok and pos > w for pos, _, ok in runs)
 
     # denial_recovery, identical_denied_retries
-    den = [c for c in calls if denied(c)]
-    recovered = 0
-    for d in den:
-        nxt = next((c for c in calls if c["pos"] > d["result"]["pos"]), None)
-        if nxt is None or _canon(nxt) != _canon(d):
-            recovered += 1
-    recovery = (recovered / len(den)) if den else None
-    retries = sum(1 for c in calls
-                  if any(d["result"]["pos"] < c["pos"] and _canon(d) == _canon(c) for d in den))
+    dl = denial_list(calls)
+    recovery = (sum(d["recovered"] for d in dl) / len(dl)) if dl else None
+    retries = sum(d["identical"] for d in dl)
 
     # verify_before_claim: the report is the assistant text after the last call
     if report is None:

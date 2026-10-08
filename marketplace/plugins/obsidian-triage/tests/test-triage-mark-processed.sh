@@ -217,6 +217,70 @@ python3 "$TOOL" "$V" "$V/Clippings/c.md" --expect-sha "$(sha_of "$V/Clippings/c.
 assert "held exits 10" "10" "$rc"
 assert "stays in inbox" "yes" "$([ -f "$V/Clippings/c.md" ] && echo yes || echo no)"
 
+echo "Test 17: without PyYAML a malformed frontmatter fails closed (HIMMEL-4690)"
+V="$TMP/v17"; mkdir -p "$V/Clippings" "$TMP/noyaml"
+printf 'raise ImportError("no yaml here")\n' > "$TMP/noyaml/yaml.py"
+printf -- '---\ntitle: [unclosed\ntype: article\n---\nbody\n' > "$V/Clippings/m.md"
+before="$(sha_of "$V/Clippings/m.md")"
+out="$(PYTHONPATH="$TMP/noyaml" python3 "$TOOL" "$V" "$V/Clippings/m.md" --expect-sha "$before" 2>&1)"; rc=$?
+assert "missing PyYAML exits 4" "4" "$rc"
+assert "result line names PyYAML" "yes" "$(case "$out" in SKIP*PyYAML*) echo yes;; *) echo no;; esac)"
+assert "clip untouched" "$before" "$(sha_of "$V/Clippings/m.md")"
+assert "clip not moved" "no" "$([ -e "$V/Clippings/_evidence/m.md" ] && echo yes || echo no)"
+
+echo "Test 18: a double-quoted escaped evidence_origin is decoded (HIMMEL-4691)"
+V="$TMP/v18"; mkdir -p "$V/Clippings/_evidence" "$V/Notes"
+printf -- '---\ntitle: e\ntype: article\nprocessed: true\nevidence_pending: true\nevidence_kind:\n  - article\nevidence_origin: "sub\\/pre"\n---\nbody\n' > "$V/Clippings/_evidence/pre.md"
+printf 'see [[Clippings/sub/pre]]\n' > "$V/Notes/n.md"
+python3 "$TOOL" "$V" "$V/Clippings/_evidence/pre.md" --drain >/dev/null 2>&1; rc=$?
+assert "drain exits 0" "0" "$rc"
+assert "link to the decoded origin rewritten" "yes" "$(grep -qF '[[Clippings/_evidence/pre]]' "$V/Notes/n.md" && echo yes || echo no)"
+V="$TMP/v18b"; mkdir -p "$V/Clippings/_evidence" "$V/Notes"
+printf -- '---\ntitle: e\ntype: article\nprocessed: true\nevidence_pending: true\nevidence_kind:\n  - article\nevidence_origin: %s # legacy\n---\nbody\n' "'sub/pre'" > "$V/Clippings/_evidence/pre.md"
+printf 'see [[Clippings/sub/pre]]\n' > "$V/Notes/n.md"
+python3 "$TOOL" "$V" "$V/Clippings/_evidence/pre.md" --drain >/dev/null 2>&1; rc=$?
+assert "commented origin: drain exits 0" "0" "$rc"
+assert "commented origin: link rewritten" "yes" "$(grep -qF '[[Clippings/_evidence/pre]]' "$V/Notes/n.md" && echo yes || echo no)"
+
+echo "Test 19: an unreadable directory refuses the move, debt kept (HIMMEL-4691)"
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP  root ignores directory permissions"
+else
+    V="$TMP/v19"; mkdir -p "$V/Clippings" "$V/Locked"
+    printf -- '---\ntitle: w\ntype: article\n---\nbody\n' > "$V/Clippings/w.md"
+    printf 'see [[Clippings/w]]\n' > "$V/Locked/n.md"
+    chmod 000 "$V/Locked"
+    out="$(python3 "$TOOL" "$V" "$V/Clippings/w.md" --expect-sha "$(sha_of "$V/Clippings/w.md")" 2>&1)"; rc=$?
+    chmod 755 "$V/Locked"
+    assert "walk error exits 5" "5" "$rc"
+    assert "clip stays in inbox" "yes" "$([ -f "$V/Clippings/w.md" ] && echo yes || echo no)"
+    assert "debt marker kept" "yes" "$(has_line "$V/Clippings/w.md" "evidence_pending: true")"
+fi
+
+echo "Test 20: a note edited between read and replace is not clobbered (HIMMEL-4691)"
+V="$TMP/v20"; mkdir -p "$V/Clippings" "$V/Notes"
+printf 'see [[Clippings/w]]\n' > "$V/Notes/n.md"
+r="$(python3 - "$TOOL" "$V/Notes/n.md" "$V" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("tmp_mod", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+note, vault = sys.argv[2], sys.argv[3]
+real, fired = m.read_text, []
+def racing(path):
+    t = real(path)
+    if path == note and not fired:
+        fired.append(1)
+        with open(note, "a") as fh:
+            fh.write("CONCURRENT\n")
+    return t
+m.read_text = racing
+m.rewrite_links(vault, ["w"], "_evidence/w")
+t = real(note)
+print(("kept" if "CONCURRENT" in t else "lost"), ("rewritten" if "[[Clippings/_evidence/w]]" in t else "stale"))
+PY
+)"
+assert "concurrent edit kept and link rewritten" "kept rewritten" "$r"
+
 echo ""
 echo "Results: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

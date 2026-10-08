@@ -481,6 +481,41 @@ const mergedRows = (mergedPrs || []).map((p) => `<li><b>#${p.number}</b> ${safe(
 const logRows = consoleResults.map((l) => `<li>${safe(l.slice(2), 200)}</li>`).join('\n');
 const panel = (title, body, empty) => `<section><h2>${title}</h2>${body ? `<ul>${body}</ul>` : `<p class="none">${empty}</p>`}</section>`;
 
+// Bank lift (HIMMEL-4877): one read-only line from the lift's `show` output -- the
+// same reason source as the doctor's C34 row. BOARD_BANK_LIFT overrides the script
+// (test seam, mirrors BOARD_LEGID/BOARD_SESSIONS). Never renders the account or any
+// field but until/standing; not part of the fingerprint; never fatal.
+const BANK_LIFT_BIN = process.env.BOARD_BANK_LIFT || join(HERE, '..', '..', 'lib', 'bank-lift.sh');
+const bankLiftLine = (() => {
+    const row = (kind, text) => `<p class="sub" data-bank-lift="${kind}">bank lift: ${text}</p>`;
+    try {
+        let out = '';
+        try {
+            out = execFileSync('bash', [BANK_LIFT_BIN, 'show'], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'] });
+        } catch (e) {
+            out = e && e.stdout ? String(e.stdout) : '';
+        }
+        const lines = out.split('\n').map((l) => l.replace(/\r$/, ''));
+        let status = null;
+        for (const l of lines) { const m = /^bank-lift: (VALID|INVALID: (.+))$/.exec(l); if (m) status = m; }
+        if (!status) return row('?', 'unavailable');
+        if (lines.includes('bank-lift: none') || status[2] === 'missing') return row('none', 'no lift set');
+        if (status[1] !== 'VALID') return row('invalid', `lift set but INVALID: ${safe(status[2], 40)}`);
+        let tail = '';
+        try {
+            const idx = lines.findIndex((l) => l.startsWith('bank-lift:'));
+            const j = JSON.parse(lines.slice(0, idx).join('\n'));
+            if (typeof j.until === 'number' && Number.isFinite(j.until)) {
+                const u = new Date(j.until * 1000);
+                const p2 = (n) => String(n).padStart(2, '0');
+                tail = ` until ${u.getFullYear()}-${p2(u.getMonth() + 1)}-${p2(u.getDate())} ${p2(u.getHours())}:${p2(u.getMinutes())}`;
+            }
+            tail += j.standing === true ? ' · standing' : ' · window';
+        } catch { tail = tail || ' · window'; }
+        return row('valid', `VALID${tail}`);
+    } catch { return row('?', 'unavailable'); }
+})();
+
 // Cost today (HIMMEL-4217): one line from the leg cost ledger close-wrapped-leg.sh
 // appends to (LEG_COST_LEDGER, else $HANDOVER_DIR/.ledger/leg-cost.jsonl). An absent
 // or unreadable ledger, or no usable row dated today, renders nothing and never fails
@@ -615,6 +650,7 @@ ${labelFailure ? `<p class="banner" data-banner="labels-unavailable">leg labels 
 <h2>Fleet</h2>
 ${fleetOk ? `<div class="fleet" data-fleet="${fleetLive}/${fleetCap}">${fleetLive}<small>/${fleetCap} legs live</small></div>${idle ? `<div class="idle" data-idle="${idle}">${idle} idle slot${idle === 1 ? '' : 's'} — underfilled</div>` : ''}` : '<p class="none">fleet unavailable</p>'}
 <p class="sub">bank ${safe(field.bank || '?')} · gql ${safe(field.gql || '?')}</p>
+${bankLiftLine}
 </section>
 <section>
 <h2>Phase ladder</h2>

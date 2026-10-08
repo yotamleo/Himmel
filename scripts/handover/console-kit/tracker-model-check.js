@@ -102,6 +102,8 @@ eq('the what-if shows the target before and after, under its own caps (HIMMEL-39
 eq('a new trail starts empty and keeps its parent caps (HIMMEL-3990)', [M3.whatIf(2, [], -1).to.before.n, M3.whatIf(0, pk.moved, -1).to.after.b], [0, []]);
 eq('decisions: a stopped leg first, the running version cap, then drift and the unplaced (HIMMEL-3990)',
     M3.decisions().map((d) => d.type + ':' + d.band + ':' + (d.p ? d.p[0] : d.i)), ['leg:0:25', 'cap:1:0', 'drift:2:26', 'unplaced:2:1']);
+const M6 = model({ V: ["v1.0.1"], T: ["tooling"], CUR: 0, PIN: [], P: [row(50, 0, 0, 1, 1, 2)], VC: [null], VP: [null], U: [], LEG: {} });
+eq('an open ticket outside the plan is a flag, not a decision (HIMMEL-4930)', M6.decisions().map((d) => d.type), []);
 eq('what we gained lists done work by version, newest first (HIMMEL-3990)', M3.gains().map((g) => [g.i, nums(g.done)]), [[0, [20]]]);
 const M4 = model({ V: ['v1.0.1', 'v1.0.1b'], T: ['tooling'], CUR: 0, P: [row(40, 0, 0, 1, 2), row(41, 0, 1, 1, 5), row(42, 0, 1, 4, 1)],
     VC: [c3, c3], VP: [null, null], U: [], LEG: {} });

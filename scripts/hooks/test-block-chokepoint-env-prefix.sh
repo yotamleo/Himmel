@@ -1088,7 +1088,7 @@ assert_allow "3921 C1 cut -d ANSI-C tab then export"          "$(j 'cut -d$'"'"'
 # r11 (console ruling): the prefix compare is gone, so a scripts/ glob beside a
 # write verb now denies even when unrelated to a chokepoint (over-deny, HIMMEL-3955).
 assert_deny "3921 r11 (was C1 allow) printf over a scripts glob"  "$(j "printf '%s\\n' scripts/hooks/*.sh")"
-assert_deny "3921 r11 (was C1 allow) grep env over a scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
+assert_allow "3921 r11 (was C1 allow) grep env over a scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
 assert_deny "3921 r11 (was C1 allow) git log glob then read"       "$(j "git log -- scripts/hooks/*.sh; read -r x")"
 # 3921 judge I1: clear spellings the first arm missed, beside a chokepoint word.
 assert_deny "3921 I1 declare +x then setsid merge"   "$(j "declare +x HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
@@ -1176,14 +1176,68 @@ assert_allow "4572 env inside a hyphenated file name beside a scripts glob" "$(j
 assert_allow "4572 eval as a directory name" "$(j "cat scripts/eval/*.sh")"
 assert_allow "4572 read inside a hyphenated file name" "$(j "ls scripts/hooks/block-read-secrets*")"
 assert_allow "4572 env inside a dotted file name beside a scripts glob" "$(j "cat scripts/cr/pr-check-env.sh scripts/hooks/g*.sh")"
-assert_deny "4572 find -printf beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf '%p'")"
-assert_deny "4572 stat --printf= beside a scripts glob" "$(j "stat --printf='%n' scripts/hooks/g*.sh")"
-assert_deny "4572 a -printf at a word end beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf")"
+assert_allow "4572 find -printf beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf '%p'")"
+assert_allow "4572 stat --printf= beside a scripts glob" "$(j "stat --printf='%n' scripts/hooks/g*.sh")"
+assert_allow "4572 a -printf at a word end beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf")"
 assert_deny "4572 process.env beside a scripts glob" "$(j "node -e 'process.env.FOO=1' scripts/hooks/g*.sh")"
-assert_deny "4572 a bare .env beside a scripts glob" "$(j "cat .env scripts/hooks/g*.sh")"
-assert_deny "4572 .env.example (one joined side) stays denied" "$(j "cat .env.example scripts/hooks/g*.sh")"
+assert_allow "4572 a bare .env beside a scripts glob" "$(j "cat .env scripts/hooks/g*.sh")"
+assert_allow "4572 .env.example (data in a read-only stage; HIMMEL-4933)" "$(j "cat .env.example scripts/hooks/g*.sh")"
 assert_deny "4572 /usr/bin/env still counts as the env verb" "$(j "/usr/bin/env FOO=1 bash scripts/hooks/g*.sh")"
 assert_deny "4572 eval after a separator still counts" "$(j "true;eval bash scripts/hooks/g*.sh")"
+# HIMMEL-4933: a glob-only scripts/ word whose only seam trigger is a verb word
+# in ARGUMENT position of read-only stages is data, not a seam write. A verb
+# heading a stage, a real NAME= assignment, an env-clearing token or a hard
+# word ($var, //, /., ANSI-C, paren) keeps the deny (fail-closed on any parse
+# the relief cannot prove).
+assert_allow "4933 grep -l export over a scripts glob" "$(j "grep -l export scripts/hooks/*.sh | sort")"
+assert_allow "4933 git grep read over a scripts glob" "$(j "git grep -n read -- 'scripts/*/x.sh'")"
+assert_allow "4933 cat piped to grep eval over a scripts glob" "$(j "cat scripts/hooks/g*.sh | grep eval")"
+# sed keeps the deny: its own options (-i, e) can act on the glob.
+# ponytail: sed over-denies here, the relief for it needs the HIMMEL-3930 structural parse
+assert_deny "4933 control: sed beside a scripts glob keeps the deny" "$(j "sed 1d scripts/hooks/g*.sh | grep eval")"
+assert_allow "4933 grep printf over a scripts glob" "$(j "grep printf scripts/hooks/*.sh | sort")"
+assert_deny "4933 control: real env prefix, quoted glob path" "$(j "BASH_ENV=x bash 'scripts/hooks/g*.sh'")"
+assert_deny "4933 control: real env prefix, ./ glob path" "$(j "BASH_ENV=x bash ./scripts/hooks/g*.sh")"
+assert_deny "4933 control: real env prefix, absolute glob path" "$(j "BASH_ENV=x bash /home/u/h/scripts/hooks/g*.sh")"
+assert_deny "4933 control: export heading a stage beside a scripts glob" "$(j "export FOO=1; ls scripts/hooks/*.sh")"
+assert_deny "4933 control: printf heading a stage beside a scripts glob" "$(j "ls scripts/hooks/*.sh | printf x")"
+# shellcheck disable=SC2016 # the $D is the literal command text under test
+assert_deny "4933 control: a hard \$var path word keeps the deny" "$(j 'grep env scripts/$D/x.sh')"
+assert_deny "4933 control: a // path word keeps the deny" "$(j "grep env scripts//hooks/x.sh")"
+assert_deny "4933 control: a grouped path word keeps the deny" "$(j "grep env scripts/(a|b)/x.sh")"
+assert_deny "4933 control: env -u clear beside a glob keeps the deny" "$(j "grep x scripts/hooks/*.sh; env -u BASH_ENV true")"
+# HIMMEL-4954: vcmd must see a verb that heads a stage after a newline or a
+# keyword/precommand head ({ then do else command builtin time \verb). With a
+# decoy glob-read clause each of these was allowed at the #2133 head: the verb
+# was classed as data and the glob-only relief cleared the call.
+NL=$'\n'
+H4954='n=HIMMEL_CONSOLE_LEG; ls scripts/hooks/*.sh'
+T4954='bash scripts/handover/merge-on-green.sh'
+# shellcheck disable=SC2016 # $n and $x are the literal command text under test
+{
+assert_deny "4954 newline, export \$n=1"          "$(j "${H4954}${NL}export \"\$n=1\"${NL}${T4954}")"
+assert_deny "4954 newline, brace group export"    "$(j "${H4954}${NL}{ export \"\$n=1\"; }${NL}${T4954}")"
+assert_deny "4954 newline, command export"        "$(j "${H4954}${NL}command export \"\$n=1\"${NL}${T4954}")"
+assert_deny "4954 newline, backslash-escaped export" "$(j "${H4954}${NL}\\export \"\$n=1\"${NL}${T4954}")"
+assert_deny "4954 newline, printf -v"             "$(j "${H4954}${NL}printf -v \"\$n\" 1${NL}${T4954}")"
+assert_deny "4954 newline, eval"                  "$(j "${H4954}${NL}eval \"\$x\"${NL}${T4954}")"
+assert_deny "4954 newline, env \$x bash"          "$(j "${H4954}${NL}env \"\$x\" ${T4954}")"
+assert_deny "4954 same line, command export"      "$(j "${H4954}; command export \"\$n=1\"; ${T4954}")"
+assert_deny "4954 same line, builtin export"      "$(j "${H4954}; builtin export \"\$n=1\"; ${T4954}")"
+assert_deny "4954 same line, time eval"           "$(j "${H4954}; time eval \"\$x\"; ${T4954}")"
+assert_deny "4954 same line, brace group export"  "$(j "${H4954}; { export \"\$n=1\"; }; ${T4954}")"
+assert_deny "4954 same line, backslash-escaped export" "$(j "${H4954}; \\export \"\$n=1\"; ${T4954}")"
+assert_deny "4954 then export"                    "$(j "${H4954}; if true; then export \"\$n=1\"; fi; ${T4954}")"
+assert_deny "4954 do export"                      "$(j "${H4954}; for i in 1; do export \"\$n=1\"; done; ${T4954}")"
+assert_deny "4954 negated export"                 "$(j "${H4954}; ! export \"\$n=1\"; ${T4954}")"
+assert_deny "4954 if negated export"              "$(j "${H4954}; if ! export \"\$n=1\"; then :; fi; ${T4954}")"
+assert_deny "4954 escaped command wrapper"        "$(j "${H4954}; \\command export \"\$n=1\"; ${T4954}")"
+assert_deny "4954 case arm export"               "$(j "${H4954}; case x in x) export \"\$n=1\";; esac; ${T4954}")"
+assert_deny "4954 else export"                  "$(j "${H4954}; if false; then :; else export \"\$n=1\"; fi; ${T4954}")"
+}
+# GREEN controls: a verb word in argument position stays data after the new heads.
+assert_allow "4954 control: grep export after a newline" "$(j "ls scripts/hooks/*.sh${NL}grep -l export scripts/hooks/g*.sh")"
+assert_allow "4954 control: command grep export"         "$(j "command grep -l export scripts/hooks/*.sh | sort")"
 assert_deny "4572 printf -v still counts" "$(j "printf -v X 1; bash scripts/hooks/x*.sh")"
 # 4572's own probe shape stays denied by design: the heredoc is written and run
 # in one call, so its printf is live code that can feed a shell. The refusal
@@ -1756,6 +1810,52 @@ if [ -n "${EPOCHREALTIME:-}" ]; then
 else
     echo "WARN 4399 timing row skipped: no EPOCHREALTIME (bash < 5)"
 fi
+
+# --- HIMMEL-4529 / HIMMEL-4414: linear time. arith_body rescanned to EOF per
+# unclosed `((` (1500 openers = 40 s, past the chain window, so a big command
+# timed out the guard) and unset_add re-split the whole list on every add.
+# Timing rows: allow + rc=0 under a stated bound; the deny rows pin that the
+# linear scan decides exactly like the old one. The nice/prlimit wrapper above
+# turns a regression into a kill, never a hang. ---
+timed_row() {  # timed_row <label> <json> <expect rc> <bound ms>
+    local T0 T1 ms
+    T0=${EPOCHREALTIME/[.,]/}
+    run "$2"
+    T1=${EPOCHREALTIME/[.,]/}
+    ms=$(((T1 - T0) / 1000))
+    CASES=$((CASES + 1))
+    if [ "$RC" = "$3" ] && [ "$ms" -lt "$4" ]; then
+        echo "PASS $1 rc=$RC in $ms ms (bound $4 ms)"
+    else
+        echo "FAIL $1 -- expected rc=$3 under $4 ms, got rc=$RC in $ms ms"
+        FAILED=$((FAILED + 1))
+    fi
+}
+# shellcheck disable=SC2016 # '$((' is the literal text under test, not an expansion
+if [ -n "${EPOCHREALTIME:-}" ]; then
+    timed_row "4529 echo + (( x1500 (unclosed) finishes"      "$(j "echo $(rep '((' 1500)")" 0 3000
+    timed_row "4529 echo + \$(( x1000 (unclosed) finishes"    "$(j "echo $(rep '$((' 1000)")" 0 3000
+    timed_row "4529 echo \"\$(( x1000 (unclosed, quoted) finishes" "$(j "echo \"$(rep '$((' 1000)")" 0 3000
+    timed_row "4414 256 distinct assignment names finish"     "$(j "$(distinct_asg 256)echo ok")" 0 2000
+    timed_row "4414 257 distinct assignment names deny fast"  "$(j "$(distinct_asg 257)echo ok")" 2 2000
+else
+    echo "WARN 4529/4414 timing rows skipped: no EPOCHREALTIME (bash < 5)"
+fi
+# UNSET_COUNT is restored with UNSET_NAMES when a subshell closes: 200 names in
+# a subshell, then 200 different ones outside, never stand at once (<= 256).
+SUBQ=$(distinct_asg 200)
+OUTQ=$(distinct_asg 200 | sed 's/v\([0-9]*\)=/w\1=/g')
+assert_allow "4414 200 names in a subshell then 200 outside: count restored, allowed" "$(j "( $SUBQ); ${OUTQ}echo ok")"
+run "$(j "( $(distinct_asg 257)); echo ok")"
+CASES=$((CASES + 1))
+if [ "$RC" = "2" ] && grep -q "more than 256 distinct" <<<"$ERR"; then
+    echo "PASS 4414 257 names inside one subshell still deny at the cap"
+else
+    echo "FAIL 4414 257 names inside one subshell -- expected rc=2 + cap reason, got rc=$RC"
+    FAILED=$((FAILED + 1))
+fi
+assert_deny  "4529 unclosed ((, then a closed \$(( )) seam assignment, still denies" "$(j "echo (( x; bash $MERGE_ON_GREEN \$(( HIMMEL_CONSOLE_LEG = 0 ))")"
+assert_allow "4529 balanced (( )) comparison stays allowed after unclosed openers" "$(j "echo (( x; (( HIMMEL_CONSOLE_LEG == 0 )); echo ok")"
 HOOK_WRAP=''
 
 CASES=$((CASES + 1))

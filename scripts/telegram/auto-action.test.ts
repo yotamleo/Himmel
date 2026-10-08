@@ -11,13 +11,13 @@ import { handleInbound, handleAutoCommand } from "./poller";
 
 test("privileged typed ops never execute for non-operators, disabled ops or forwarded messages; attempts audit once", async () => {
   for (const [text, op, label] of [
-    ["/launch-bypass-leg /handovers/operator/himmel/leg.md HIMMEL_HOOK_INTEGRITY_BYPASS_OK", "launch-bypass-leg", "launched"],
+    ["/launch-bypass-leg /handovers/operator/himmel/leg.md HIMMEL_HOOK_INTEGRITY_BYPASS_OK", "launch-bypass-leg", "error"],
     ["/cr-grant-delta 123 0123456789abcdef0123456789abcdef01234567", "cr-grant-delta", "delta-granted"],
   ]) {
     for (const [from, enabled, want] of [[2, true, false], [1, false, false], [1, true, true]] as const) {
       const root = await mkdtemp(join(tmpdir(), "typed-gate-"));
       let fired = false;
-      await handleInbound(root, { from, chat_id: 7, text, caption: false, forwarded: false }, async () => {}, {
+      await handleInbound(root, { from, chat_id: 7, text, ts: Math.floor(Date.now() / 1000), caption: false, forwarded: false }, async () => {}, {
         authorize: (sender) => sender === 1,
         enabledOps: new Set(enabled ? [op] : []),
         fire: () => { fired = true; },
@@ -34,10 +34,19 @@ test("privileged typed ops never execute for non-operators, disabled ops or forw
         reply: async () => {},
         audit: async (f) => { audits.push(f.result); },
       });
-      expect(ran).toBe(!forwarded);
+      expect(ran).toBe(!forwarded && op !== "launch-bypass-leg");
       expect(audits).toEqual([forwarded ? "refused-forwarded" : label]);
     }
   }
+});
+
+test("judge: retired launch dispatch refuses even a successful script seam", async () => {
+  let ran = false;
+  const result = await dispatchAutoAction({ runScript: async () => { ran = true; return { code: 0, stdout: "log=/tmp/launch.log\n", stderr: "" }; } }, { op: "launch-bypass-leg", arg: "/tmp/leg.md", time: "HIMMEL_HOOK_INTEGRITY_BYPASS_OK" });
+  expect(result.ok).toBe(false);
+  expect(result.rc).toBe(19);
+  expect(result.message).toContain("station");
+  expect(ran).toBe(false);
 });
 
 test("typed privileged ops require individual opt-in and reject forwarded/caption origins", async () => {
@@ -55,11 +64,11 @@ test("typed privileged ops require individual opt-in and reject forwarded/captio
     expect(isExecutableAutoCommand(route, true, false)).toBe(false);
     expect(isExecutableAutoCommand(route, false, true)).toBe(false);
     const ok = await dispatchAutoAction({ runScript: async () => ({ code: 0, stdout: "log=/tmp/launch.log\n", stderr: "" }) }, route);
-    expect(ok.ok).toBe(true);
+    expect(ok.ok).toBe(op !== "launch-bypass-leg");
     expect(ok.message).not.toContain("armed");
     const refused = await dispatchAutoAction({ runScript: async () => ({ code: 15, stdout: "", stderr: "head moved" }) }, route);
     expect(refused.ok).toBe(false);
-    expect(refused.rc).toBe(15);
+    expect(refused.rc).toBe(op === "launch-bypass-leg" ? 19 : 15);
   }
   expect(classify("/cr-grant-delta 123 abcdef123456").kind).toBe("chat");
   expect(classify("prose /launch-bypass-leg /x.md X").kind).toBe("chat");

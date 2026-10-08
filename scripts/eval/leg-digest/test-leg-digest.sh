@@ -52,7 +52,12 @@ check "per-tool calls sum to the session total and unknown lane never comes from
 check "per-tool failures exclude text reports and grep no-match" 'jq -e ".metrics.tool_failures_by_tool.Edit == 1 and .metrics.tool_failures_by_tool.mcp__qmd__query == 1" "$TMP/classes.json" >/dev/null'
 
 echo "2. classifier sub-class: ledger, then the journal bracket against the fixed list"
-check "a ledger row with a listed category keys it" '[ "$(row denied/classifier:merge-without-review | jq -c .tool_call_ids)" = "[\"toolu_c1\"]" ]'
+# HIMMEL-4683: the fixture's ledger row and journal bracket for toolu_c1 share one category, so a broken ledger join
+# would still pass via the bracket fallback. Rewrite the bracket to another listed category; the ledger's must win.
+mkdir -p "$TMP/lw"  # the digest keys the ledger by the journal basename, so the copy keeps "$SID.jsonl"
+sed 's/Reason: \[Merge Without Review\]\./Reason: [Security Weaken]./' "$TMP/$SID.jsonl" >"$TMP/lw/$SID.jsonl"
+digest "$TMP/lw/$SID.jsonl" >"$TMP/ledger-wins.json" 2>/dev/null || bad "the ledger-priority digest exits 0"
+check "a ledger row with a listed category keys it" '[ "$(grep -c "Reason: \[Security Weaken\]" "$TMP/lw/$SID.jsonl")" = 1 ] && [ "$(jq -c "[.failures[] | select(.class | startswith(\"denied/classifier:\")) | [.class, .tool_call_ids]] | map(select(.[1] | index(\"toolu_c1\")))" "$TMP/ledger-wins.json")" = "[[\"denied/classifier:merge-without-review\",[\"toolu_c1\"]]]" ]'
 check "a ledger tag of unknown falls back to the journal bracket on the list" '[ "$(row denied/classifier:out-of-place-publication | jq -c .tool_call_ids)" = "[\"toolu_c2\"]" ]'
 check "an off-list bracket and a malformed bracket are classifier:other" '[ "$(row denied/classifier:other | jq -c .tool_call_ids)" = "[\"toolu_c3\",\"toolu_c4\"]" ]'
 check "another session's ledger row is never joined" 'absent session-transcript-tampering "$TMP/classes.json"'
@@ -154,6 +159,19 @@ check "a missing path is error/Bash:no-such-file in both spellings" '[ "$(berow 
 check "a context-guard refusal is its own denied/ class, three spellings" '[ "$(berow denied/guard-leg-context-handoff | jq -c .tool_call_ids)" = "[\"toolu_c1\",\"toolu_c2\",\"toolu_c3\"]" ]'
 check "an unknown hook is still denied/other" '[ "$(berow denied/other | jq -c .tool_call_ids)" = "[\"toolu_c4\"]" ]'
 check "every sub-class key passes the router alphabet" 'jq -r ".failures[].class" "$TMP/be.json" | grep -Ev "^(denied|suite|blocked|error|run_error|traj)/[A-Za-z0-9._:+-]{1,80}$" | wc -l | grep -qx 0'
+
+echo "10. by-design exit codes come from the registry, not the failure count (HIMMEL-4853)"
+# fixtures/exit-codes.jsonl: 14 non-zero Bash results. Before the registry all 14 were failures (12 error + 2 suite).
+S10=4853c1a5-0000-4000-8000-000000000001
+cp "$FX/exit-codes.jsonl" "$TMP/$S10.jsonl"
+digest "$TMP/$S10.jsonl" >"$TMP/ec.json" 2>"$TMP/ec.err" || bad "digest of exit-codes.jsonl exits 0: $(head -c 300 "$TMP/ec.err")"
+check "result and retry rcs are counted apart: 5 result, 2 retry" 'jq -e ".metrics.ok_result == 5 and .metrics.ok_retry == 2" "$TMP/ec.json" >/dev/null'
+check "only the 7 real failures stay: a check-ci 1, an unlisted rc, a refusal, an unregistered script, two compound chains and a suite red" 'jq -e ".metrics.fail_error == 6 and .metrics.fail_suite == 1 and ([.failures[].count] | add) == 7" "$TMP/ec.json" >/dev/null'
+check "quiet-run 75 (a suite run) is a retry, the same suite's exit 1 is still suite/other" 'jq -e "([.by_design[] | select(.script == \"quiet-run.sh\")] | .[0] | [.rc, .class, .count]) == [\"75\",\"retry\",1] and ([.failures[] | select(.class == \"suite/other\")] | .[0].count) == 1" "$TMP/ec.json" >/dev/null'
+check "by_design rows carry script, rc, class and count only" 'jq -e "[.by_design[] | keys | join(\",\")] | unique == [\"class,count,rc,script\"]" "$TMP/ec.json" >/dev/null'
+check "a compound command stays an error unless every segment resolves: check-ci then queue-lock status at rc 3 or 11 is not by design" 'jq -e "([.by_design[] | select(.script == \"check-ci.sh\" and .rc == \"3\")] | .[0].count) == 1 and ([.by_design[] | select(.script == \"queue-lock.sh\" and .rc == \"11\")] | .[0].count) == 1" "$TMP/ec.json" >/dev/null'
+check "a refusal rc (merge-on-green 17) and an unlisted rc (check-ci 9) stay error/Bash" '[ "$(jq "[.failures[] | select(.class == \"error/Bash\")] | .[0].count" "$TMP/ec.json")" = 6 ]'
+check "no failure row exists for a result or retry rc, so the router never sees one" 'jq -e "[.failures[] | select(.failure == \"error\" or .failure == \"suite\")] | map(.count) | add == 7" "$TMP/ec.json" >/dev/null'
 
 echo "test-leg-digest: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

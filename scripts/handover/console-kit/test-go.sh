@@ -79,8 +79,8 @@ contains() { grepq "$2" -F -e "$3" && echo "ok - $1" || { echo "FAIL - $1: outpu
 # as docs/handover/verdict-template.md lays it out.
 verdict() {
   mkdir -p "$1/$VSCOPE/verdicts/$2"
-  printf '# VERDICT %s - judge\n\n## Reason (scope asked)\n\nq\n\n## Verdict\n\n%s\n\nreason\n\n## Evidence checked\n\ne\n' \
-    "$2" "$3" > "$1/$VSCOPE/verdicts/$2/${4:-HIMMEL-1-judge-$2}.md"
+  printf '# VERDICT %s - judge\n\n## Reason (scope asked)\n\nq\n\n## Verdict\n\n%s\n\npr: %s\n\nreason\n\n## Evidence checked\n\ne\n' \
+    "$2" "$3" "${VPR:-83}" > "$1/$VSCOPE/verdicts/$2/${4:-HIMMEL-1-judge-$2}.md"
 }
 
 # HIMMEL-4589: a trust verdict counts only under <user>/<bucket>, the user slug
@@ -286,6 +286,7 @@ rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" 81 "$SHA" >/dev/null 2>&1 || rc=$?
 MAC_PLAIN=$(sed -n 's/^mac=//p' "$GO13" 2>/dev/null)
 check "3895: an ordinary GO has no trust line" "$(grep -c '^trust-reviewed=' "$GO13" 2>/dev/null)" "0"
 # HIMMEL-3832: a trust-reviewed GO needs the judge's GO verdict for this head.
+VPR=81
 verdict "$ROOT13" judge-N9 "**GO** for head \`$SHA\`."
 verdict "$ROOT13" judge-N8 "**GO** for head \`$SHA\`."
 rc=0; HANDOVER_DIR="$ROOT13" bash "$SCRIPT" --trust-reviewed judge-N9 81 "$SHA" >/dev/null 2>&1 || rc=$?
@@ -303,6 +304,7 @@ MAC_T8=$(sed -n 's/^mac=//p' "$GO13" 2>/dev/null)
 . "$HERE/../../lib/go-gate.sh"
 rc=0; out=$(go_trust_gate 81 "$SHA" "$ROOT13" o/r) || rc=$?
 check "3895: go_trust_gate accepts go.sh's trust GO" "$rc:$out" "0:judge-N8"
+VPR=
 # shellcheck disable=SC2218  # the read-race test below defines a sed() hook; this is the binary
 sed -i.bak 's/^trust-reviewed=.*/trust-reviewed=judge-N7/' "$GO13"
 rc=0; go_trust_gate 81 "$SHA" "$ROOT13" o/r >/dev/null || rc=$?
@@ -392,7 +394,7 @@ rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J12 83 "$SHA" >/dev
 check    "3832: an earlier round's NO-GO on another head is ignored -> exit 0" "$rc" "0"
 mkdir -p "$ROOT15/$VSCOPE/verdicts/J13"
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
-printf '# VERDICT J13 - judge\r\n\r\n## Verdict\r\n\r\n**GO** for head `%s`.\r\n\r\nreason\r\n' "$SHA" \
+printf '# VERDICT J13 - judge\r\n\r\n## Verdict\r\n\r\n**GO** for head `%s`.\r\n\r\npr: 83\r\n\r\nreason\r\n' "$SHA" \
   > "$ROOT15/$VSCOPE/verdicts/J13/HIMMEL-1-judge-J13.md"
 rc=0; HANDOVER_DIR="$ROOT15" bash "$SCRIPT" --trust-reviewed J13 83 "$SHA" >/dev/null 2>&1 || rc=$?
 check    "3832: a CRLF verdict file -> exit 0" "$rc" "0"
@@ -406,10 +408,11 @@ t16() {  # <label> <qid> - expect a refusal, nothing written
   check "4589: $1 -> nothing written" "$(find "$ROOT16/.locks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
 }
 mkdir -p "$ROOT16"
+VPR=84
 other_verdict() {  # <scope> <qid> - a GO for $SHA written under another scope
   mkdir -p "$ROOT16/$1/verdicts/$2"
   # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
-  printf '# VERDICT %s - judge\n\n## Verdict\n\n**GO** for head `%s`.\n' "$2" "$SHA" > "$ROOT16/$1/verdicts/$2/HIMMEL-1-judge-$2.md"
+  printf '# VERDICT %s - judge\n\n## Verdict\n\n**GO** for head `%s`.\n\npr: 84\n' "$2" "$SHA" > "$ROOT16/$1/verdicts/$2/HIMMEL-1-judge-$2.md"
 }
 other_verdict "u/not-this-repo" K1
 t16 "a GO in another repo bucket" K1
@@ -427,6 +430,37 @@ other_verdict "u/$VBUCKET" K5
 rc=0; out="$(USER_SLUG='../x' HANDOVER_DIR="$ROOT16" bash "$SCRIPT" --trust-reviewed K5 84 "$SHA" 2>&1)" || rc=$?
 check "4589: an unresolvable user slug fails closed -> exit 5" "$rc" "5"
 contains "4589: and says the scope cannot resolve" "$out" "cannot resolve this repo's <user>/<bucket> verdict scope"
+
+# --- 17. HIMMEL-4928: a trust verdict counts only for the PR it names -------
+# Two PRs can point at one head; the verdict's pr: line (two lines after the
+# verdict line) must equal go.sh's PR. A verdict with no pr: line fails closed:
+# it was written before the field existed and the judge rewrites it with
+# write-verdict.sh --pr.
+# shellcheck disable=SC2031  # tmp is assigned at the top; the subshell reads are not writes
+ROOT17="$tmp/root17"; mkdir -p "$ROOT17"
+t17() {  # <label> <qid> <pr> <stable text> - expect a refusal, nothing written
+  local rc=0
+  out="$(HANDOVER_DIR="$ROOT17" bash "$SCRIPT" --trust-reviewed "$2" "$3" "$SHA" 2>&1)" || rc=$?
+  check "4928: $1 -> exit 5" "$rc" "5"
+  contains "4928: $1 -> says why" "$out" "$4"
+  check "4928: $1 -> nothing written" "$(find "$ROOT17/.locks" -type f 2>/dev/null | wc -l | tr -d ' ')" "0"
+}
+VPR=90; verdict "$ROOT17" L1 "**GO** for head \`$SHA\`."
+t17 "a GO naming another PR on the same head" L1 91 "names PR #90, not PR #91"
+rc=0; HANDOVER_DIR="$ROOT17" bash "$SCRIPT" --trust-reviewed L1 90 "$SHA" >/dev/null 2>&1 || rc=$?
+check "4928: the same verdict satisfies its own PR -> exit 0" "$rc" "0"
+rm -rf "$ROOT17/.locks"
+mkdir -p "$ROOT17/$VSCOPE/verdicts/L2"
+# shellcheck disable=SC2016  # the backticks are the verdict line literal text
+printf '# VERDICT L2 - judge\n\n## Verdict\n\n**GO** for head `%s`.\n\nreason\n' "$SHA" > "$ROOT17/$VSCOPE/verdicts/L2/HIMMEL-1-judge-L2.md"
+t17 "a legacy GO with no pr: line" L2 90 "names no PR"
+mkdir -p "$ROOT17/$VSCOPE/verdicts/L3"
+# shellcheck disable=SC2016  # the backticks are the verdict line literal text
+printf '# VERDICT L3 - judge\n\n## Verdict\n\n**GO** for head `%s`.\n\nreason\npr: 90\n' "$SHA" > "$ROOT17/$VSCOPE/verdicts/L3/HIMMEL-1-judge-L3.md"
+t17 "a pr: line in the body is not the field" L3 90 "names no PR"
+VPR=90; verdict "$ROOT17" L4 "**NO-GO** for head \`$SHA\`."
+t17 "a NO-GO naming another PR still vetoes" L4 91 "NO-GO for head"
+VPR=
 
 echo "---"
 if [ "$fails" -eq 0 ]; then

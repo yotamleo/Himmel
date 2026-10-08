@@ -28,6 +28,7 @@ const REPO = resolve(import.meta.dir, "../../..");
 const TRAJECTORY = join(REPO, "scripts/eval/lane-quality/trajectory.py");
 const MAX_BYTES = 200 * 1024 * 1024;
 const MAX_IDS = 5;
+const EXIT_CODES = join(REPO, "scripts/observability/exit-codes.json");
 const LEDGER_SLACK_MS = 10_000; // a ledger row joins a classifier refusal logged within this of its result
 
 // Closed vocabularies. Anything outside them is "other".
@@ -93,6 +94,31 @@ const BASH_ERRORS: { sub: string; out: RegExp; cmd?: RegExp }[] = [
 // A grep that matched nothing exits 1 with no output: the compound's answer, not a failure (the HIMMEL-4755 audit's
 // largest error/Bash bucket).
 const NO_MATCH = /^Exit code 1\s*$/;
+// HIMMEL-4853: the exit-code registry maps basename -> rc -> class. A result or retry rc is a by-design answer
+// (quiet-run 75 busy, check-ci 3 review state), counted apart from failures and never routed. Any other rc, an
+// rc a script does not list, or a script not in the registry stays a failure.
+type Registry = Map<string, Map<string, string>>;
+function exitCodes(): Registry | null {
+  try {
+    const reg: Registry = new Map();
+    for (const [path, v] of Object.entries(JSON.parse(readFileSync(EXIT_CODES, "utf8")).scripts as Record<string, { codes: Record<string, { class: string }> }>))
+      reg.set(basename(path), new Map(Object.entries(v.codes).map(([rc, c]) => [rc, c.class])));
+    return reg;
+  } catch { return null; }
+}
+// "result" | "retry" when every registered script named in `cmd` that lists this rc agrees on one of those classes.
+// A compound command (; && || |, newline) must resolve in EVERY segment: the rc belongs to one of them and which is
+// unknowable from the journal, so an unresolved segment stays an error. ponytail: splits on separators even inside
+// quotes (an over-split only keeps a failure), upgrade path is a shell-aware tokenizer if by-design counts undershoot.
+const byDesign = (reg: Registry, cmd: string, text: string): { script: string; rc: string; cls: string } | null => {
+  const rc = /^Exit code (\d+)\b/.exec(text)?.[1];
+  if (!rc) return null;
+  const segs = cmd.split(/[;&|\n]+/).filter((s) => s.trim() !== "");
+  const hits = segs.map((seg) => [...new Set([...seg.matchAll(SCRIPT_NAME)].map((h) => h[1]))]
+    .flatMap((s) => { const c = reg.get(s)?.get(rc); return c ? [{ script: s, rc, cls: c }] : []; }));
+  const all = hits.flat();
+  return hits.length > 0 && hits.every((h) => h.length > 0) && all.every((h) => h.cls === all[0].cls && (h.cls === "result" || h.cls === "retry")) ? all[0] : null;
+};
 // guard-leg-context-handoff words its refusal "leg context checkpoint|hand-off (mode ...)" or "refusing
 // auto-compaction", never "<hook>:", so the hook-name lookup in deniedSub cannot find it.
 const CONTEXT_GUARD = /\bleg context (?:checkpoint|hand-off) \(mode |\brefusing auto-compaction: no CHECKPOINT/;
@@ -214,6 +240,9 @@ async function main() {
   const tests = names?.tests ?? new Set<string>();
   const scripts = names?.scripts ?? new Set<string>();
   const ledger = ledgerRows(o.ledger, session);
+  const registry = exitCodes();
+  if (!registry) lookupsFailed.push("exit-codes");
+  const designed = new Map<string, { script: string; rc: string; class: string; count: number }>();
 
   const agents = new Map<string, Agent>();
   const callAgent = new Map<string, Agent>();
@@ -223,7 +252,7 @@ async function main() {
   const suiteLast = new Map<string, { row: Row; red: boolean }>();
   const mapperDenied = new Set<string>();
   const m = { tool_calls: 0, subagents: 0, turns: 0, fail_denied: 0, fail_suite: 0, fail_blocked: 0, fail_error: 0,
-    run_errors: 0, interrupts: 0, ok_no_match: 0 };
+    run_errors: 0, interrupts: 0, ok_no_match: 0, ok_result: 0, ok_retry: 0 };
   let mainModel: string | null = null;
   const callsByTool: Record<string, number> = Object.create(null);
   const failuresByTool: Record<string, number> = Object.create(null);
@@ -354,6 +383,15 @@ async function main() {
           if (SUITE.test(cmd)) { const s = suiteLast.get(suiteKey(a, cmd)); if (s) s.red = false; }
           break;
         }
+        const by = (e.failure === "suite" || e.failure === "error") && callName.get(e.toolCallId) === "Bash" && registry
+          ? byDesign(registry, cmd, e.content) : null;
+        if (by) {
+          if (by.cls === "result") m.ok_result++; else m.ok_retry++;
+          const d = designed.get(`${by.script}\0${by.rc}`) ?? { script: by.script, rc: by.rc, class: by.cls, count: 0 };
+          d.count++;
+          designed.set(`${by.script}\0${by.rc}`, d);
+          break;
+        }
         if (e.failure === "denied") {
           m.fail_denied++;
           if (a.id === "main") mapperDenied.add(e.toolCallId);
@@ -413,7 +451,7 @@ async function main() {
     tool_health: [...health.values()].map((r) => ({ ...r, agent: agents.get(r.agent.id) ?? r.agent })),
     metrics: { ...m, tool_calls_by_tool: callsByTool, tool_failures_by_tool: failuresByTool, red_before_green: bool(traj.red_before_green), denial_recovery: traj.denial_recovery ?? null,
       identical_denied_retries: traj.identical_denied_retries ?? null, verify_before_claim: bool(traj.verify_before_claim) },
-    agents: [...agents.values()], failures, stats,
+    agents: [...agents.values()], failures, by_design: [...designed.values()], stats,
   };
 }
 

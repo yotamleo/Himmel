@@ -298,6 +298,24 @@ row "cp unrelated"                 allow "cp a.txt b.txt"
 row "redirect unrelated"           allow "echo hi > /tmp/out.txt 2>&1"
 row "git config set"               allow "git config set user.name x"
 row "Read-shaped python"           allow "python3 -c 'print(1)'"
+# HIMMEL-4750: a JSON argument's braces are not a glob over the lift name.
+row "eval_runs.py append JSON (4750)" allow "python3 scripts/eval/lib/eval_runs.py append '{\"ticket\":\"HIMMEL-4746\",\"result\":\"pass\"}'"
+row "interp JSON arg, one key (4750)" allow "python3 x.py '{\"a\":1}'"
+row "brace alt naming the lift still denies (interp)" deny "python3 x.py {bank-lift.json,y}"
+row "brace alt naming the lift still denies (cp)"     deny "cp $T/src/other.txt ~/.himmel/state/{bank-lift.json,y}"
+row "nested brace alt naming the lift still denies"   deny "cp $T/src/other.txt ~/.himmel/state/{bank-{lift,other}.json,y}"
+row "brace alt with quote still denies (interp)"      deny "python3 x.py {bank-lift.json,\\\"}"
+# Judge j2143: an alternative holding a char outside [alnum . _ / -] must fall
+# back to `*`, never build a broken extglob that matches nothing.
+row "tee brace alt with [ (j2143)"   deny "tee ~/.himmel/state/bank-lift{.json,[}"
+row "touch brace alt with [ (j2143)" deny "touch ~/.himmel/state/bank-lift{.json,[}"
+row "brace alt with backslash (j2143)" deny "tee ~/.himmel/state/bank-lift{.json,\\\\}"
+row "mid-name brace alt with [ (j2143)" deny "tee ~/.himmel/state/bank{-lift,[}.json"
+row "suffix brace alt with [ (j2143)" deny "tee ~/.himmel/state/bank-lift.{json,[}"
+for _c in '[' ']' "\\" '*' '?' '!' '+' '@' '$' '"' '#' '~' ':'; do
+    row "alt sweep last  [$_c]" deny "tee ~/.himmel/state/bank-lift{.json,$_c}"
+    row "alt sweep first [$_c]" deny "tee ~/.himmel/state/bank-lift{$_c,.json}"
+done
 row "mv the lift away (over-deny r6)" deny "mv ~/.himmel/state/bank-lift.json /tmp/old-lift.json"
 row "redirect to \$OUT"            allow "echo x > \"\$OUT\""
 row "cd + find -exec {}"           allow "cd foo && find . -name '*.tmp' -exec rm {} \\;"

@@ -18,7 +18,7 @@
 #   capability                 classify this host: build | query | none
 #   set gemma|qwen [--force]   write models.embed into the qmd config
 #   check [--index P]          configured model vs the index's vectors
-#   reembed --model gemma|qwen [--copy F] [--collections a,b] [--qmd-bin P [--qmd-js P]]
+#   reembed --model gemma|qwen [--copy F] [--qmd-bin P [--qmd-js P]]
 #                              build a re-embedded COPY of the index (never the live one)
 #   swap --copy F              swap a re-embedded copy in atomically and flip the config
 #
@@ -26,8 +26,7 @@
 #   build  an NVIDIA GPU with at least 4 GiB of VRAM, or Apple Silicon. Can embed
 #          a whole corpus (about 2 h for ours on an RTX 4090).
 #   query  no such GPU, at least 4 GiB of RAM. Can embed one short query per
-#          search on CPU, so it can SEARCH a Qwen index it receives from
-#          ship-index.sh, but should not build one.
+#          search on CPU, but embedding a whole corpus is slow.
 #   none   less than 4 GiB of RAM. `set qwen` refuses without --force.
 #
 # Exit codes:
@@ -290,7 +289,7 @@ cmd_set() {
         capability
         case "$CAP_CLASS" in
             build) say "capability: build ($CAP_REASON)" ;;
-            query) warn "capability: query only ($CAP_REASON). This host can SEARCH a Qwen index but should not BUILD one: CPU embedding of a whole corpus is slow (see docs/internals/qmd-embed-model.md for the measured cost). Receive the index with ship-index.sh instead." ;;
+            query) warn "capability: query only ($CAP_REASON). This host can SEARCH a Qwen index but should not BUILD one: CPU embedding of a whole corpus is slow (see docs/internals/qmd-embed-model.md for the measured cost). Choose gemma if local corpus embedding is too slow." ;;
             *)
                 if [ "$force" -eq 1 ]; then warn "capability: none ($CAP_REASON); --force given, writing anyway"
                 else die 2 "capability: none ($CAP_REASON). Qwen needs at least 4 GiB of RAM even to embed queries. Pass --force to override."; fi ;;
@@ -308,10 +307,10 @@ cmd_set() {
         fi
         if [ -n "$m" ] && [ "$(printf '%s\n' "$m" | grep -vxF -- "$uri" | head -1)" != "" ]; then
             if [ "$force" -eq 1 ]; then
-                warn "the index at $idx holds vectors from another model; it now MISMATCHES until a matching index is swapped in or shipped here"
+                warn "the index at $idx holds vectors from another model; it now MISMATCHES until a matching re-embedded copy is swapped in"
             else
                 # shellcheck disable=SC2086  # word-split the newline list on purpose
-                die 2 "the index at $idx holds vectors from another model ($(printf '%s ' $m)). Switching the config alone breaks vector search. On a host that builds its index: reembed then swap (swap flips the config). On a receiver about to get a $name index from ship-index.sh: re-run with --force."
+                die 2 "the index at $idx holds vectors from another model ($(printf '%s ' $m)). Switching the config alone breaks vector search. Use reembed then swap (swap flips the config)."
             fi
         fi
     fi
@@ -351,12 +350,11 @@ resolve_qmd() {
 }
 
 cmd_reembed() {
-    local name="" copy="" cols="" live uri rc=0 out
+    local name="" copy="" live uri rc=0 out
     while [ $# -gt 0 ]; do
         case "$1" in
             --model) [ $# -ge 2 ] || die 1 "--model needs gemma or qwen"; name="$2"; shift 2 ;;
             --copy) [ $# -ge 2 ] || die 1 "--copy needs a path"; copy="$2"; shift 2 ;;
-            --collections) [ $# -ge 2 ] || die 1 "--collections needs a list"; cols="$2"; shift 2 ;;
             --qmd-bin) [ $# -ge 2 ] || die 1 "--qmd-bin needs a path"; QMD_BIN="$2"; shift 2 ;;
             --qmd-js) [ $# -ge 2 ] || die 1 "--qmd-js needs a path"; QMD_JS="$2"; shift 2 ;;
             *) die 1 "reembed: unknown arg '$1'" ;;
@@ -374,12 +372,7 @@ cmd_reembed() {
     resolve_qmd
 
     say "[1/4] consistent copy of $live to $copy"
-    if [ -n "$cols" ]; then
-        node "$HERE/prepare-ship-index.mjs" --src "$live" --out "$copy" --collections "$cols" >/dev/null \
-            || die 5 "prepare-ship-index could not build the copy"
-    else
-        sqlite3 -readonly "$live" ".backup '$copy'" || { rm -f "$copy"; die 5 "sqlite3 .backup failed"; }
-    fi
+    sqlite3 -readonly "$live" ".backup '$copy'" || { rm -f "$copy"; die 5 "sqlite3 .backup failed"; }
 
     # qmd reads models.embed from the config BEFORE QMD_EMBED_MODEL, so the
     # override needs its own config dir: a copy of the real one with only

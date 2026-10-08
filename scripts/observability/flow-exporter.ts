@@ -1974,15 +1974,20 @@ function evalSpecFor(table: Record<string, EvalSpec>, metric: string): EvalSpec 
 }
 
 // Port of eval-compare's verdict(): true when the candidate is WORSE than the
-// baseline beyond the noise band. null = not gated (no direction, or a side is missing).
-function evalRegressed(spec: EvalSpec | null, base: number | null, cand: number | null, bci?: EvalBound, cci?: EvalBound): boolean | null {
+// baseline beyond the noise band. null = not gated (no direction, or a side is missing);
+// a string = not gated, the band in eval-compare.json is invalid (HIMMEL-4662).
+function evalRegressed(spec: EvalSpec | null, base: number | null, cand: number | null, bci?: EvalBound, cci?: EvalBound): boolean | null | string {
   const EPS = 1e-9;
   if (base === null || cand === null || !spec || typeof spec.higher_is_better !== "boolean") return null;
   const hi = spec.higher_is_better;
   if (bci && cci) return hi ? cci.hi < bci.lo - EPS : cci.lo > bci.hi + EPS;
   if (bci) return hi ? cand < bci.lo - EPS : cand > bci.hi + EPS;
   if (cci) return hi ? base > cci.hi + EPS : base < cci.lo - EPS;
-  const width = spec.band !== undefined ? Number(spec.band) : Math.abs(base) * Number(spec.band_rel ?? 0);
+  const band = spec.band !== undefined;
+  const key = band ? "band" : "band_rel";
+  const raw: unknown = band ? spec.band : spec.band_rel === undefined ? 0 : spec.band_rel;
+  if (!finiteNumber(raw) || raw < 0) return `${key} ${JSON.stringify(raw)} is not a finite non-negative number`;
+  const width = band ? raw : Math.abs(base) * raw;
   return (hi ? base - cand : cand - base) > width + EPS;
 }
 
@@ -2033,6 +2038,7 @@ function evalRunsMetrics(path: string, thresholdsPath: string, nowMs: number): {
   const samples: string[] = [];
   const age: string[] = [];
   const lastOk: string[] = [];
+  const bandSkips: string[] = [];
   for (const [evalId, rows] of [...byEval.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const evalLabel = sanitizeLabelValue(evalId);
     const newest = rows[rows.length - 1];
@@ -2060,7 +2066,8 @@ function evalRunsMetrics(path: string, thresholdsPath: string, nowMs: number): {
       delta.push(sample("himmel_eval_metric_baseline_delta", labels, v - bv));
       if (!thresholdsOk) continue;
       const bad = evalRegressed(evalSpecFor(table, m), bv, v, base?.ci[m], bound);
-      if (bad !== null) regress.push(sample("himmel_eval_metric_regression", labels, bad ? 1 : 0));
+      if (typeof bad === "string") bandSkips.push(`# himmel_eval_metric_regression skipped: eval=${evalLabel} metric=${sanitizeLabelValue(m)} ${bad}`);
+      else if (bad !== null) regress.push(sample("himmel_eval_metric_regression", labels, bad ? 1 : 0));
     }
   }
 
@@ -2076,6 +2083,7 @@ function evalRunsMetrics(path: string, thresholdsPath: string, nowMs: number): {
   const comments: string[] = [];
   if (skipped > 0) comments.push(`# himmel_eval_* partial: ${skipped} unparseable eval-runs row(s) skipped`);
   if (!thresholdsOk) comments.push("# himmel_eval_metric_regression omitted: eval-compare.json unreadable");
+  comments.push(...bandSkips);
   return { lines, comments };
 }
 

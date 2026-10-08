@@ -48,7 +48,7 @@ import re
 import sys
 from pathlib import Path
 from typing import NamedTuple
-from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote
+from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode, unquote, quote
 
 # Force UTF-8 stdout on Windows so clip filenames + URLs containing
 # non-ASCII (en-dash, arrow, emoji) don't crash the print() pipeline
@@ -208,15 +208,17 @@ def canonicalize(url: str):
             path = m.group(1)
         return urlunparse(("https", "x.com", path, "", "", ""))
 
-    # youtube.com / youtu.be → youtube.com/watch?v=<id>
+    # youtube.com / youtu.be → youtube.com/watch?v=<id>. The id is re-encoded,
+    # so a crafted v=X%26a%3Db stays one value and a second pass is a no-op
+    # (HIMMEL-4851).
     if host in {"youtu.be", "www.youtu.be"}:
-        vid = path.lstrip("/").split("/")[0]
-        return f"https://youtube.com/watch?v={vid}" if vid else url
+        vid = unquote(path.lstrip("/").split("/")[0])
+        return f"https://youtube.com/watch?v={quote(vid, safe='')}" if vid else url
     if host in {"youtube.com", "www.youtube.com", "m.youtube.com"}:
         params = dict(parse_qsl(query))
         vid = params.get("v")
         if vid:
-            return f"https://youtube.com/watch?v={vid}"
+            return f"https://youtube.com/watch?v={quote(vid, safe='')}"
         return url
 
     # github.com — strip /tree/<branch>, KEEP /blob/<branch>/<path>, trailing /, lowercase owner/repo.
@@ -1239,17 +1241,26 @@ class BackendRoutes:
         self.actions = actions or {}
         self.error = error
 
-    def match(self, url: str):
-        """(mode, names) of the FIRST matching line, else None. A line also
-        matches the URL's canonical spelling: the batch routes youtube.com,
-        yt-scrapling-meta.py www.youtube.com, and one rule must reach both
-        (HIMMEL-4803). A route only narrows the chain, so a wider match never
-        re-permits a backend."""
-        cands = [c for u in dict.fromkeys((url, canonicalize(url) or url)) for c in _norm_target(u)]
+    def _first(self, url: str):
+        cands = _norm_target(url)
         for text, rx in self.rules:
             if any(rx.fullmatch(c) for c in cands):
                 return self.actions[text]
         return None
+
+    def match(self, url: str):
+        """(mode, names) of the FIRST matching line, else None. The URL and its
+        canonical spelling are routed separately: the batch routes youtube.com,
+        yt-scrapling-meta.py www.youtube.com, and one rule must reach both
+        (HIMMEL-4803). When the spellings' lines differ, the result is
+        `only=` the backends BOTH permit, so a backend either spelling refuses
+        stays refused whatever the line order (HIMMEL-4851)."""
+        hits = [self._first(u) for u in dict.fromkeys((url, canonicalize(url) or url))]
+        if all(h == hits[0] for h in hits):
+            return hits[0]
+        permitted = [n for n in BACKEND_REGISTRY
+                     if all(h is None or (n in h[1]) == (h[0] == "only") for h in hits)]
+        return ("only", permitted)
 
 
 def load_backend_routes(vault: Path) -> BackendRoutes:
@@ -1885,24 +1896,28 @@ def run_rescan_flags(clips: list, vault: Path, dry_run: bool) -> int:
 
 
 def write_done_marker(vault: Path, clips: list, failed: int) -> None:
-    """harvest-clips.md G-8 (HIMMEL-4684): the batch tool owns .harvest.done.
-    Every PART line it prints is deferred-class, so a run with no FAIL writes
-    the marker (timestamp + batch hash, atomically); a run with a FAIL removes
-    any marker, so downstream stays gated closed."""
+    """harvest-clips.md G-8 (HIMMEL-4684, HIMMEL-4707): the batch tool writes only
+    a PROVISIONAL marker (.harvest.done.provisional, timestamp + batch hash,
+    atomically); the run promotes it at G-8 (a rename). A run that is
+    killed or aborts before G-8 therefore leaves no .harvest.done and downstream
+    stays gated closed. A run with a FAIL removes any marker of either kind."""
     import datetime
     import hashlib
     import os
     marker = vault / ".harvest.done"
+    provisional = vault / ".harvest.done.provisional"
     if failed:
         marker.unlink(missing_ok=True)
+        provisional.unlink(missing_ok=True)
         return
     rels = "\n".join(c.relative_to(vault).as_posix() for c in clips)
     batch_hash = hashlib.sha256(rels.encode("utf-8")).hexdigest()[:16]
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     tmp = vault / f".harvest.done.tmp.{os.getpid()}"
     tmp.write_text(f"{ts} {batch_hash}\n", encoding="utf-8")
-    os.replace(tmp, marker)
-    print(f"harvest-clip-body-batch: wrote .harvest.done ({batch_hash})")
+    os.replace(tmp, provisional)
+    print(f"harvest-clip-body-batch: wrote .harvest.done.provisional ({batch_hash}); "
+          "G-8 renames it to .harvest.done")
 
 
 def main():

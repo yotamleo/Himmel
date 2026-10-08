@@ -358,6 +358,8 @@ def qmd_quality_row(out_dir, golden, modes, scope="all", candidate_limit=40, emb
         "embed_model": embed_model or None,
         "rerank_model": rerank_model or None,
         "golden_sha256": file_sha256(golden),
+        # HIMMEL-4658: the retrieval corpus is the index CONTENT, not its path.
+        "index_sha256": file_sha256(index) if index and os.path.isfile(index) else None,
     }
     m = dict(meta or {})
     if index:

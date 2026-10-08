@@ -209,6 +209,33 @@ export async function read(root, name) {
   });
 }
 
+// Every record of a log from the start, chain-verified, independent of the
+// delivery cursor and with no writes. A broken or unreadable log yields [].
+export async function scan(root, name) {
+  const p = await paths(root, name);
+  return withChainLock(p.lock, async () => {
+    const records = [];
+    let state = initial();
+    try {
+      const bufs = [];
+      for (const [, files] of await segments(root, name)) bufs.push(await segment(files));
+      try { bufs.push(await bytes(p.file)); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      for (const buf of bufs) {
+        state = { ...state, off: 0 };
+        while (state.off < buf.length) {
+          const batch = await readPast(buf, state, 1);
+          if (!batch.records.length) return [];
+          const record = batch.records[0];
+          if (record.n !== state.n + 1 || record.h !== chainHash(state.h, record)) return [];
+          state = batch.next;
+          records.push(record);
+        }
+      }
+      return records;
+    } catch { return []; }
+  });
+}
+
 export async function commit(root, name, next) {
   validateCursor(next);
   if (next.halted !== undefined) throw new Error('invalid bus cursor: delivery cannot halt a log');

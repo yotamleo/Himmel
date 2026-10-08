@@ -119,6 +119,8 @@ rm -f "$FAKE/marketplace/plugins/obsidian-triage/tools/ensure-deps.sh"
 # pin and builds AST-only; qmd indexes this repo as `himmel` and nothing else,
 # BM25 only (no model pull, no embed).
 mkdir -p "$FAKE/scripts/lib"
+cp "$ROOT/scripts/lib/qmd-bounded.sh" "$FAKE/scripts/lib/qmd-bounded.sh"
+printf '%s\n' 'qmd_cmd() { qmd "$@"; }' > "$FAKE/scripts/lib/qmd-bin.sh"
 # shellcheck disable=SC2016  # literal fixture text, expanded by nothing
 printf '%s\n' '_graphify_version() { printf '"'"'%s\n'"'"' "${GRAPHIFY_VERSION:-9.8.7}"; }' > "$FAKE/scripts/lib/graphify-bin.sh"
 run "$EMPTY" --dry-run
@@ -137,6 +139,7 @@ case "$order" in *"graphify graphify-graph "*"qmd qmd-index "*) ok "graph build 
 # present tools skip their install; an existing himmel collection skips the add.
 GQ="$TMP/gq"; mkdir -p "$GQ"; cp "$HAVE"/* "$GQ/"
 ln -s "$(command -v timeout)" "$GQ/timeout"   # the collection probe is timeout-bounded
+ln -s "$(command -v dirname)" "$GQ/dirname"
 printf '#!/bin/sh\nexit 0\n' > "$GQ/graphify"
 # shellcheck disable=SC2016  # $1/$2 belong to the stub script
 printf '#!/bin/sh\n[ "$1 $2" = "collection list" ] && echo "himmel (qmd://himmel/)"\nexit 0\n' > "$GQ/qmd"
@@ -156,6 +159,38 @@ if [ "$RC" -eq 0 ]; then ok "failing graphify install keeps rc 0"; else bad "fai
 case "$OUT" in *"step=graphify FAILED"*) ok "graphify install failure is reported" ;; *) bad "graphify install failure silent: $OUT" ;; esac
 case "$OUT" in *"step=graphify-graph action=skip"*) ok "no graph build without graphify" ;; *) bad "graph build attempted without graphify: $OUT" ;; esac
 case "$OUT" in *"step=qmd-index action=add"*) ok "a failed graphify install does not stop qmd" ;; *) bad "qmd-index not reached after the graphify failure: $OUT" ;; esac
+# HIMMEL-4814: installer succeeds without a qmd shim on PATH. Resolve the
+# installed tool through qmd-bounded, and verify the collection after adding it.
+cp "$ROOT/scripts/lib/qmd-bounded.sh" "$FAKE/scripts/lib/qmd-bounded.sh"
+cat > "$FAKE/scripts/lib/qmd-bin.sh" <<EOF
+qmd_cmd() { /bin/sh "$TMP/installed-qmd" "\$@"; }
+EOF
+cat > "$TMP/installed-qmd" <<EOF
+case "\$1 \$2" in
+  'collection list') [ ! -f "$TMP/qmd-no-register" ] && [ -f "$TMP/qmd-registered" ] && echo 'himmel (qmd://himmel/)' ;;
+  'collection add') printf '%s\\n' "\$3" > "$TMP/qmd-registered" ;;
+esac
+exit 0
+EOF
+rm -f "$GF/qmd"
+for t in dirname sleep mktemp rm; do ln -s "$(command -v "$t")" "$GF/$t"; done
+OUT="$(env -i PATH="$GF" HOME="$TMP/home" HIMMEL_CLOUD_ROOT="$FAKE" TMPDIR="$TMP" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+if [ -f "$TMP/qmd-registered" ] && [ "$(cat "$TMP/qmd-registered")" = "$FAKE" ]; then ok "off-PATH installed qmd registers only the repo"; else bad "off-PATH qmd never registers himmel: $OUT"; fi
+: > "$TMP/qmd-no-register"
+OUT="$(env -i PATH="$GF" HOME="$TMP/home" HIMMEL_CLOUD_ROOT="$FAKE" TMPDIR="$TMP" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+case "$OUT" in *"step=qmd-index FAILED"*"himmel collection missing after setup"*) ok "missing collection fails setup step loudly" ;; *) bad "missing collection silently succeeds: $OUT" ;; esac
+# The same setup runs in the session checkout (4811), never a hardcoded /tmp
+# graph. The graphify stub records the actual cwd and materializes its output.
+rm -f "$TMP/qmd-no-register"
+cat > "$GF/graphify" <<EOF
+#!/bin/sh
+/bin/pwd > "$TMP/graph-cwd"
+mkdir -p graphify-out
+printf '{}\\n' > graphify-out/graph.json
+EOF
+chmod +x "$GF/graphify"
+OUT="$(env -i PATH="$GF" HOME="$TMP/home" HIMMEL_CLOUD_ROOT="$FAKE" TMPDIR="$TMP" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ] && [ "$(cat "$TMP/graph-cwd")" = "$FAKE" ] && [ -f "$FAKE/graphify-out/graph.json" ]; then ok "setup builds graph inside the session checkout"; else bad "graph not built inside checkout: $OUT"; fi
 rm -rf "$FAKE/scripts/jira/dist" "$FAKE/marketplace/plugins/obsidian-triage/tools/node_modules" "$FAKE/scripts/lib"
 
 # 7. an unknown flag is refused (rc 2) rather than silently ignored.
@@ -177,6 +212,34 @@ elif [ -n "$unsafe" ]; then
 else
   ok "every setup paste line ends with '|| true' ($(printf '%s\n' "$pastes" | wc -l | tr -d ' ') lines)"
 fi
+
+# HIMMEL-4811/4813: the operator probe rebuilds in the classified session
+# checkout and searches through the bounded repo-only path.
+recipe_text="$(cat "$RECIPE")"
+case "$recipe_text" in *'bash scripts/cloud/setup-env.sh'*'graphify query "cloud route classification" --graph graphify-out/graph.json'*) ok "probe builds and queries the classified session graph" ;; *) bad "probe still queries the unclassified cached graph" ;; esac
+case "$recipe_text" in *'bash scripts/lib/qmd-bounded.sh search "cloud environment" -c himmel'*) ok "probe searches through bounded repo-only qmd" ;; *) bad "probe does not use bounded scoped search" ;; esac
+
+# 7b. HIMMEL-4744: paths reach `sh -c` as positional args, never interpolated into
+# its source. A clone path with a quote, a space and `$x` must be entered verbatim
+# by both sh -c steps (jira build, graphify update) and must not run as shell.
+HOST="$TMP/it's a \$x dir"
+mkdir -p "$HOST/scripts/jira" "$HOST/scripts/lib" "$HOST/marketplace/plugins/obsidian-triage/tools/node_modules"
+: > "$HOST/scripts/jira/package.json"
+cp "$FAKE/scripts/lib/"* "$HOST/scripts/lib/"
+HB="$TMP/hostile"; mkdir -p "$HB"; cp "$HAVE"/* "$HB/"
+for t in timeout sh tail mkdir bash dirname pwd; do ln -s "$(command -v "$t")" "$HB/$t"; done
+# shellcheck disable=SC2016  # stub script text, expanded when the stub runs
+printf '#!/bin/sh\necho "jira:$(pwd)" >> "$HIMMEL_PWD_LOG"\nexit 0\n' > "$HB/npm"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\necho "graphify:$(pwd)" >> "$HIMMEL_PWD_LOG"\nexit 0\n' > "$HB/graphify"
+printf '#!/bin/sh\nexit 0\n' > "$HB/qmd"
+chmod +x "$HB/npm" "$HB/graphify" "$HB/qmd"
+: > "$TMP/pwd.log"
+OUT="$(env -i PATH="$HB" HIMMEL_CLOUD_ROOT="$HOST" TMPDIR="$TMP" HIMMEL_PWD_LOG="$TMP/pwd.log" "$BASH_BIN" "$SETUP" 2>&1)"; RC=$?
+case "$OUT" in *"step=jira-dist FAILED"*) bad "jira build broke on a hostile clone path: $OUT" ;; *) ok "jira build survives a quote/space/\$ clone path" ;; esac
+case "$OUT" in *"step=graphify-graph FAILED"*) bad "graphify update broke on a hostile clone path: $OUT" ;; *) ok "graphify update survives a quote/space/\$ clone path" ;; esac
+if grep -qxF "graphify:$HOST" "$TMP/pwd.log"; then ok "graphify ran in the verbatim clone path"; else bad "graphify did not run in the verbatim path: $(cat "$TMP/pwd.log")"; fi
+if grep -qxF "jira:$HOST/scripts/jira" "$TMP/pwd.log"; then ok "jira build ran in the verbatim jira dir"; else bad "jira build did not run in the verbatim path: $(cat "$TMP/pwd.log")"; fi
 
 # 8. syntax + lint.
 if bash -n "$SETUP"; then ok "bash -n clean"; else bad "bash -n failed"; fi
