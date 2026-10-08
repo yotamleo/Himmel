@@ -1237,6 +1237,7 @@ readers_only() {
 # instead substituted into the command and the result read again (_resolve_vars).
 DYNCAND=' tmux screen pwsh powershell '
 DYNBODY='(^|[^[:alnum:]_.-])(tmux|screen|pwsh|powershell)(\.exe)?([^[:alnum:]_.-]|$)'
+DYNRUN='^[^;|&(){}<>$`]+'
 VARASSIGN='(^|[;&|[:space:](){])([A-Za-z_][A-Za-z0-9_]*)=("[^"$`\\]*"|'\''[^'\'']*'\''|[^[:space:];&|$`()"'\''\\<>]*)'
 DYNWRAP=' sudo doas nice ionice chrt taskset stdbuf setsid nohup command builtin exec time timeout env xargs if then else elif do while until ! eval watch unbuffer '
 # _dyn_cand WORD — succeed when WORD, path and .exe removed, is one of them.
@@ -1321,6 +1322,15 @@ dyn_check() {
                 continue
                 ;;
         esac
+        # The rest of a plain argument run is no program and holds nothing to
+        # read: take it whole, so padding words cost one match, not a loop each.
+        if [ "$pp" = 0 ] && [ "$al" = 0 ] && [ "$vm" = 0 ] && [[ ${t:i} =~ $DYNRUN ]]; then
+            s=${BASH_REMATCH[0]}
+            case "$s" in
+                *-v*) ;;
+                *) i=$((i + ${#s})); continue ;;
+            esac
+        fi
         j=$i pd=0 bq=0 subs='' s=0 lastd=-1
         while [ "$j" -lt "$n" ]; do
             c=${t:j:1}
