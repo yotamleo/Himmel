@@ -3803,8 +3803,12 @@ check_c53_vm_mode() {
             "docs/setup/vm-mode.md"
         return
     fi
-    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin g k v via="" unresolved=""
-    timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
+    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin="" t g k v via="" unresolved=""
+    # macOS ships no `timeout`; coreutils installs `gtimeout` (as C39 checks).
+    for t in ${HIMMEL_DOCTOR_TIMEOUT_BINS:-timeout gtimeout}; do
+        timeout_bin="$(command -v "$t" 2>/dev/null)" && break
+        timeout_bin=""
+    done
     # A remote target may be an ssh config alias (HIMMEL-4599): `ssh -G` prints
     # the effective config offline, connecting to nothing, so the probe uses
     # its HostName and port; a ProxyJump/ProxyCommand route is one a raw TCP

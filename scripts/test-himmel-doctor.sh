@@ -6167,6 +6167,15 @@ printf 'user ops\nhostname vm.internal.example\nport 2201\n' > "$c53_t/ssh-g.out
 out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/up")"
 if grepq "$out" 'OK   C53-vm-mode' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vm.internal.example 2201' && grepq "$(cat "$c53_t/ssh.log")" -Fx -- '-G -p 2201 ops@vmalias' && [ "$(wc -l < "$c53_t/ssh.log")" -eq 1 ]; then pass "C53 alias -> probes the resolved HostName, ssh only ever -G"; else fail "C53 alias -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log") ssh=$(cat "$c53_t/ssh.log")"; fi
 
+echo "== C53-vm-mode: no GNU 'timeout' (macOS) -> falls back to gtimeout, still resolves the alias (HIMMEL-4981) =="
+printf '#!/bin/sh\necho used >> "%s/gtimeout.log"\nshift\nexec "$@"\n' "$c53_t" > "$c53_t/bin/gtimeout"
+chmod +x "$c53_t/bin/gtimeout"
+: > "$c53_t/gtimeout.log"
+export HIMMEL_DOCTOR_TIMEOUT_BINS="no-such-timeout gtimeout"
+out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/up")"
+unset HIMMEL_DOCTOR_TIMEOUT_BINS
+if grepq "$out" 'OK   C53-vm-mode' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vm.internal.example 2201' && [ -s "$c53_t/gtimeout.log" ]; then pass "C53 gtimeout fallback -> alias resolved"; else fail "C53 gtimeout fallback -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log") gt=$(cat "$c53_t/gtimeout.log")"; fi
+
 echo "== C53-vm-mode: ProxyJump / ProxyCommand -> INFO, not an unreachable WARN, no TCP probe (HIMMEL-4599) =="
 for proxy in 'proxyjump bastion' 'proxycommand ssh -W %h:%p bastion'; do
     printf 'user ops\nhostname vm.internal\nport 22\n%s\n' "$proxy" > "$c53_t/ssh-g.out"
