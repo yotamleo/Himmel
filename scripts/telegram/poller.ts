@@ -453,6 +453,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
     return;
   }
   if (eligible && route.kind === "auto" && route.op === "launch-bypass-leg") {
+    await appendAuditLine(root)({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 19, result: "refused-legacy-bypass" });
     await reply(msg.chat_id, "Telegram hook-bypass launch refused — start hook legs at the station.");
     return;
   }

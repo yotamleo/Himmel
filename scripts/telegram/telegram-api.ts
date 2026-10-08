@@ -75,7 +75,7 @@ export async function sendMessage(token: string, chat_id: number, text: string,
     let res: Response;
     try {
       res = await f(API(token, "sendMessage"), { method: "POST",
-        headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text, ...(Number.isSafeInteger(replyToMessageId) && replyToMessageId! > 0 ? { reply_parameters: { message_id: replyToMessageId } } : {}) }) });
+        headers: { "content-type": "application/json" }, body: JSON.stringify({ chat_id, text, ...(Number.isSafeInteger(replyToMessageId) && replyToMessageId! > 0 ? { reply_parameters: { message_id: replyToMessageId, allow_sending_without_reply: true } } : {}) }) });
     } catch {
       // A lost response is indistinguishable from a failed send; retrying can duplicate alerts (HIMMEL-1211 / CR #1327).
       console.error(`[telegram] sendMessage transport failure chat=${redactChatId(chat_id)}`);

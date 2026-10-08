@@ -11,6 +11,18 @@ test("sendMessage exposes the accepted message id for console reply threading on
   expect(ids).toEqual([777]);
 });
 
+test("threaded reply survives deleted inbound message and retains its receipt", async () => {
+  const ids: number[] = [];
+  const fakeFetch = async (_url: string, init: any) => {
+    const body = JSON.parse(init.body);
+    return body.reply_parameters?.allow_sending_without_reply === true
+      ? Response.json({ ok: true, result: { message_id: 777 } })
+      : Response.json({ ok: false, description: "Bad Request: message to be replied not found" }, { status: 400 });
+  };
+  expect(await sendMessage("T", 1, "queued", fakeFetch as any, async () => {}, id => { ids.push(id); }, 123)).toBe(true);
+  expect(ids).toEqual([777]);
+});
+
 test("sendChatAction posts chat_id + action; failure is swallowed (best-effort)", async () => {
   const bodies: any[] = [];
   const fakeFetch = async (_url: string, init: any) => { bodies.push(JSON.parse(init.body)); return new Response(JSON.stringify({ ok: true })); };

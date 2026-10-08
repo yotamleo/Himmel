@@ -88,6 +88,9 @@ test("legacy-bypass-without-claim-refused in the real inbound handler", async ()
   expect(fired).toEqual([]);
   expect(ran).toEqual([]);
   expect(replies.join("\n")).toContain("station");
+  expect(existsSync(join(r, "auto-action-audit.log"))).toBe(true);
+  expect(readFileSync(join(r, "auto-action-audit.log"), "utf8")).toContain("op=launch-bypass-leg");
+  expect(readFileSync(join(r, "auto-action-audit.log"), "utf8")).toContain("rc=19 result=refused-legacy-bypass");
 });
 
 test("reply-threads-retain-receipt-owner", async () => {
@@ -99,7 +102,7 @@ test("reply-threads-retain-receipt-owner", async () => {
     await sendMessage("T", chat, text, (async (_url, init) => { bodies.push(JSON.parse(String(init?.body))); return Response.json({ ok: true, result: { message_id: 777 } }); }) as typeof fetch, async () => {}, n => { id = n; }, replyTo);
     return id;
   });
-  expect(bodies).toEqual([{ chat_id: 1, text: "answer", reply_parameters: { message_id: 123 } }]);
+  expect(bodies).toEqual([{ chat_id: 1, text: "answer", reply_parameters: { message_id: 123, allow_sending_without_reply: true } }]);
   await inbound(r, fresh("/push N1490", { reply_to_message_id: 777 }));
   expect(readFileSync(f, "utf8")).toContain("] push N1490\n");
   expect(readFileSync(second, "utf8")).toBe("");
