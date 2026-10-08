@@ -1218,9 +1218,173 @@ function firstShellWord(s) {
 function splitRef(expr) {
   const e = unquoteWord(expr);
   const m = e.match(LAST_REF);
-  if (!m) return { ref: null, tail: e };
-  const v = m[0].match(new RegExp(`\\$\\{?(${VAR_NAME})[^}]*\\}?$`));
-  return { ref: v ? v[1] : null, tail: e.slice(m[0].length).replace(/^\/+/, '') };
+  if (!m) return { prefix: '', tail: e };
+  return { prefix: m[0], tail: e.slice(m[0].length).replace(/^\/+/, '') };
+}
+
+// Marks the characters of `text` Bash never runs as a command: the inside of
+// '...' and "..." (but not of a `$( ... )` or backtick span within a double
+// quote) and heredoc bodies (the same exception when the delimiter is
+// unquoted). Returns null on anything it cannot model, so a caller falls back
+// to scanning every character — a parse problem never hides a real statement.
+const HEREDOC_OP = new RegExp(`^<<(-?)[ \\t]*(?:'([^'\\n]*)'|"([^"\\n]*)"|(\\\\?)(${VAR_NAME}))`);
+const BODY_ESCAPE_SPAN = /^\$\(/;
+
+function maskHeredocBody(text, from, to, quoted, mask) {
+  if (quoted) { mask.fill(1, from, to); return true; }
+  for (let i = from; i < to; i++) {
+    const c = text[i];
+    if (c === '\\') { mask[i] = 1; i++; if (i < to) mask[i] = 1; continue; }
+    if (c === '`') {
+      const end = text.indexOf('`', i + 1);
+      if (end < 0 || end >= to) return false;
+      i = end;
+      continue;
+    }
+    if (BODY_ESCAPE_SPAN.test(text.slice(i, i + 2))) {
+      let depth = 0;
+      let j = i + 1;
+      for (; j < to; j++) {
+        if (text[j] === "'" || text[j] === '"') return false;
+        if (text[j] === '(') depth++;
+        else if (text[j] === ')' && --depth === 0) break;
+      }
+      if (j >= to) return false;
+      i = j;
+      continue;
+    }
+    mask[i] = 1;
+  }
+  return true;
+}
+
+function inertMask(text) {
+  const n = text.length;
+  const mask = new Uint8Array(n);
+  const stack = [{ t: 'code' }];
+  const pending = [];
+  let i = 0;
+  while (i < n) {
+    const f = stack[stack.length - 1];
+    const c = text[i];
+    if (f.t === 'sq') {
+      if (c === "'") stack.pop(); else mask[i] = 1;
+      i++;
+      continue;
+    }
+    if (f.t === 'dq') {
+      if (c === '\\') { mask[i] = 1; if (i + 1 < n) mask[i + 1] = 1; i += 2; continue; }
+      if (c === '"') { stack.pop(); i++; continue; }
+      if (c === '$' && text[i + 1] === '(') { stack.push({ t: 'cmd', depth: 0 }); i += 2; continue; }
+      if (c === '`') {
+        const end = text.indexOf('`', i + 1);
+        if (end < 0) return null;
+        i = end + 1;
+        continue;
+      }
+      mask[i] = 1;
+      i++;
+      continue;
+    }
+    // code or cmd
+    if (c === '\\') { i += 2; continue; }
+    if (c === "'") { stack.push({ t: 'sq' }); i++; continue; }
+    if (c === '"') { stack.push({ t: 'dq' }); i++; continue; }
+    if (c === '$' && text[i + 1] === "'") return null;
+    if (c === '$' && text[i + 1] === '(') { stack.push({ t: 'cmd', depth: 0 }); i += 2; continue; }
+    if (c === '#' && (i === 0 || /[\s;&|(]/.test(text[i - 1]))) {
+      while (i < n && text[i] !== '\n') i++;
+      continue;
+    }
+    if (f.t === 'cmd') {
+      if (c === '(') f.depth++;
+      else if (c === ')') { if (f.depth === 0) stack.pop(); else f.depth--; i++; continue; }
+    }
+    // `case` patterns end in an unbalanced `)` that would close a `$( ... )` early.
+    if (stack.length > 1 && c === 'c' && /^case\b/.test(text.slice(i, i + 5)) && (i === 0 || /\W/.test(text[i - 1]))) return null;
+    if (c === '<' && text[i + 1] === '<') {
+      if (text[i + 2] === '<') { i += 3; continue; }
+      const h = text.slice(i, i + 200).match(HEREDOC_OP);
+      if (!h) return null;
+      pending.push({ word: h[2] !== undefined ? h[2] : h[3] !== undefined ? h[3] : h[5], tabs: h[1] === '-', quoted: h[2] !== undefined || h[3] !== undefined || h[4] === '\\' });
+      i += h[0].length;
+      continue;
+    }
+    if (c === '\n' && pending.length) {
+      i++;
+      for (const hd of pending) {
+        const start = i;
+        let found = false;
+        while (i < n) {
+          let e = text.indexOf('\n', i);
+          if (e < 0) e = n;
+          const lineText = hd.tabs ? text.slice(i, e).replace(/^\t+/, '') : text.slice(i, e);
+          if (lineText === hd.word) {
+            if (!maskHeredocBody(text, start, i, hd.quoted, mask)) return null;
+            i = Math.min(e + 1, n);
+            found = true;
+            break;
+          }
+          i = e + 1;
+        }
+        if (!found) return null;
+      }
+      pending.length = 0;
+      continue;
+    }
+    i++;
+  }
+  return stack.length === 1 && !pending.length ? mask : null;
+}
+
+// The directories a sourced path's prefix can stand for, or null when its real
+// value cannot be modelled (HIMMEL-4584). A prefix is one of: nothing (a
+// literal relative tail), a self-dir `$( ... )` (dirname of $0/BASH_SOURCE),
+// CLAUDE_PROJECT_DIR/BASH_SOURCE, or a `$VAR` assigned in this file — which
+// resolves only through its assignments, each prefix checked the same way.
+const SELF_DIR_REFS = new Set(['BASH_SOURCE', 'CLAUDE_PROJECT_DIR']);
+const SIMPLE_REF = new RegExp(`^\\$(?:(${VAR_NAME})|\\{(${VAR_NAME})[^}]*\\})$`);
+
+// A `$( cd ... dirname ... pwd )` over $0/BASH_SOURCE and in-file refs that
+// themselves resolve to a modelled directory.
+function isSelfDirSubst(prefix, fileDir, root, assigns, depth) {
+  if (!/^\$\(/.test(prefix) || !/dirname|\bcd\b/.test(prefix)) return false;
+  const rest = prefix
+    .replace(/\$\{BASH_SOURCE[^}]*\}|\$BASH_SOURCE\b|\$\{0\}|\$0\b/g, '')
+    .replace(new RegExp(`\\$\\{?(${VAR_NAME})\\}?`, 'g'), (all, v) =>
+      (assigns[v] && prefixBases(`$${v}`, fileDir, root, assigns, depth + 1) ? '' : all))
+    .replace(/2>\/dev\/null|\bcd\s+-P\b|\b(?:dirname|cd|pwd)\b|&&|\$\(|[)\s;.\/-]/g, '');
+  return rest === '';
+}
+
+// ponytail: a positional parameter ($1..$9) is caller-supplied and its real
+// value is not modelled, so it resolves like a self-dir; scripts/lib/go-gate.sh
+// sources through one. Upgrade path: pin that call site and drop this form.
+const POSITIONAL_REF = /^\$(?:[1-9]|\{[1-9][^}]*\})$/;
+
+function prefixBases(prefix, fileDir, root, assigns, depth) {
+  if (depth > 4) return null;
+  if (prefix === '' || POSITIONAL_REF.test(prefix)) return [fileDir, root];
+  if (isSelfDirSubst(prefix, fileDir, root, assigns, depth)) return [fileDir, root];
+  const m = prefix.match(SIMPLE_REF);
+  if (!m) return null;
+  const name = m[1] || m[2];
+  if (assigns[name]) {
+    const bases = [];
+    for (const value of assigns[name]) {
+      if (POSITIONAL_REF.test(unquoteWord(value))) { bases.push(fileDir, root); continue; }
+      const sp = splitRef(value);
+      const own = sp.prefix.match(SIMPLE_REF);
+      // `X="${X:-}"` re-reads the environment value, which is the unassigned meaning.
+      const inner = own && (own[1] || own[2]) === name
+        ? (SELF_DIR_REFS.has(name) ? [fileDir, root] : null)
+        : prefixBases(sp.prefix, fileDir, root, assigns, depth + 1);
+      if (!inner) return null;
+      for (const b of inner) bases.push(path.resolve(b, sp.tail));
+    }
+    return bases;
+  }
+  return SELF_DIR_REFS.has(name) ? [fileDir, root] : null;
 }
 
 function isFile(candidate) {
@@ -1231,29 +1395,26 @@ function isFile(candidate) {
   }
 }
 
-// ponytail: resolves by the literal path tail, not the shell value of its prefix
-// (a pinned member sourcing an out-of-tree prefix would verify the in-tree twin),
-// HIMMEL-4584 resolves through the ref's own assignment only.
+// -> { hits: [abs], bad } ; `bad` is set when a spelling's prefix has no
+// modelled real value (see prefixBases), which the caller treats as unresolved.
 function resolveSourceArg(arg, fileDir, root, assigns) {
   const bare = unquoteWord(arg).match(BARE_VAR);
   const exprs = bare
     ? (assigns[bare[1]] || []).filter((v) => /\.sh$/.test(unquoteWord(v)))
     : [arg];
   const found = new Set();
+  let bad = false;
   for (const expr of exprs) {
-    const { ref, tail } = splitRef(expr);
+    const { prefix, tail } = splitRef(expr);
     if (!/\.sh$/.test(tail)) continue;
-    const bases = [fileDir, root];
-    for (const value of (ref && assigns[ref]) || []) {
-      const t = splitRef(value).tail;
-      bases.push(path.resolve(fileDir, t), path.resolve(root, t));
-    }
+    const bases = prefixBases(prefix, fileDir, root, assigns, 0);
+    if (!bases) { bad = true; continue; }
     for (const base of bases) {
       const candidate = path.resolve(base, tail);
       if (isFile(candidate)) found.add(candidate);
     }
   }
-  return [...found];
+  return { hits: [...found], bad };
 }
 
 // sourcedClosure(file, root) -> { libs: [abs], unresolved: [statement] } for
@@ -1261,17 +1422,26 @@ function resolveSourceArg(arg, fileDir, root, assigns) {
 function sourcedClosure(file, root) {
   const text = fs.readFileSync(file, 'utf8');
   const lines = text.split('\n').filter((l) => !/^\s*#/.test(l));
+  // HIMMEL-4585: a statement Bash never runs (quoted text, a heredoc body) is
+  // not a source statement. null (unparseable) leaves every line scanned.
+  const mask = inertMask(lines.join('\n')) || new Uint8Array(lines.join('\n').length);
+  const offsets = [];
+  lines.reduce((at, l) => { offsets.push(at); return at + l.length + 1; }, 0);
   const assigns = {};
-  for (const line of lines) {
-    for (const m of line.matchAll(ASSIGN)) (assigns[m[1]] = assigns[m[1]] || []).push(firstShellWord(m[2]));
-  }
+  lines.forEach((line, n) => {
+    for (const m of line.matchAll(ASSIGN)) {
+      if (mask[offsets[n] + m.index + m[0].length - m[2].length - m[1].length - 1]) continue;
+      (assigns[m[1]] = assigns[m[1]] || []).push(firstShellWord(m[2]));
+    }
+  });
   const fileDir = path.dirname(file);
   const libs = new Set();
   const unresolved = [];
-  for (const line of lines) {
+  lines.forEach((line, n) => {
     // The argument is the whole next shell word, so a `"$(dirname "$0")/x.sh"`
     // prefix is kept rather than cut at its first `)`.
     for (const m of line.matchAll(SOURCE_CMD)) {
+      if (mask[offsets[n] + m.index + m[0].length - m[0].match(/(?:\.|source)\s+$/)[0].length]) continue;
       const arg = firstShellWord(line.slice(m.index + m[0].length));
       const word = unquoteWord(arg);
       if (!word.includes('$') && !/\.sh$/.test(word)) {
@@ -1279,16 +1449,16 @@ function sourcedClosure(file, root) {
         if ([fileDir, root].some((b) => isFile(path.resolve(b, word)))) unresolved.push(line.trim());
         continue;
       }
-      const hits = resolveSourceArg(arg, fileDir, root, assigns);
-      if (!hits.length) unresolved.push(line.trim());
+      const { hits, bad } = resolveSourceArg(arg, fileDir, root, assigns);
+      if (bad || !hits.length) unresolved.push(line.trim());
       for (const h of hits) libs.add(h);
     }
     for (const m of line.matchAll(SOURCE_ANY)) {
       const arg = firstShellWord(line.slice(m.index + m[0].length));
       if (!/\.sh$/.test(unquoteWord(arg))) continue;
-      for (const h of resolveSourceArg(arg, fileDir, root, assigns)) libs.add(h);
+      for (const h of resolveSourceArg(arg, fileDir, root, assigns).hits) libs.add(h);
     }
-  }
+  });
   return { libs: [...libs], unresolved };
 }
 

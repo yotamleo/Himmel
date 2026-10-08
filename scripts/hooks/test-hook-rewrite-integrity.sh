@@ -1518,5 +1518,88 @@ else
   bad "row 46: dispatched closure gaps: $(cat "$T/closure.out")"
 fi
 
+# HIMMEL-4585 / HIMMEL-4584 — the source scan skips quoted spans and heredoc
+# bodies (text Bash never runs as a command) and resolves a sourced path only
+# through the ref's real value. Unit rows against sourcedClosure: a throwaway
+# root with one pinnable lib, one member file per case.
+SC="$T/sc"
+mkdir -p "$SC/scripts/hooks" "$SC/scripts/lib"
+printf '#!/usr/bin/env bash\n: lib\n' > "$SC/scripts/lib/armor.sh"
+sc_case() {   # <label> <want libs> <want unresolved> — the member text is on stdin
+  cat > "$SC/scripts/hooks/m.sh"
+  local got
+  got="$(node -e '
+const m = require(process.argv[1]);
+const r = m.sourcedClosure(process.argv[2] + "/scripts/hooks/m.sh", process.argv[2]);
+console.log(r.libs.length + " " + r.unresolved.length);
+' "$HOOKS_DIR/hook-integrity.js" "$SC" 2>&1)"
+  if [ "$got" = "$2 $3" ]; then ok "$1"; else bad "$1: want libs/unresolved '$2 $3', got '$got'"; fi
+}
+# shellcheck disable=SC2016 # literal shell text for the fixtures, expanded by their reader
+{
+sc_case "row 49: a source inside a single-quoted string is not a source statement" 0 0 <<'E'
+echo 'if source "$MISSING"'
+E
+sc_case "row 49: a source inside a double-quoted string is not a source statement" 0 0 <<'E'
+echo "then source $MISSING_LIB"
+E
+sc_case "row 49: a source inside a quoted heredoc body is not a source statement" 0 0 <<'E'
+cat <<'EOT'
+source "$MISSING"
+. "$ALSO_MISSING"
+EOT
+E
+sc_case "row 49: a source in plain text of an unquoted heredoc body is not a source statement" 0 0 <<'E'
+cat <<-EOT
+	source "$MISSING"
+	EOT
+E
+sc_case "row 49 control: a real command-position source of an unresolvable ref still denies" 0 1 <<'E'
+source "$MISSING"
+E
+sc_case "row 49 control: a source after a heredoc ends is a real statement" 0 1 <<'E'
+cat <<'EOT'
+text
+EOT
+source "$MISSING"
+E
+sc_case "row 49 control: a source inside a command substitution in a double-quoted string still runs, so it denies" 0 1 <<'E'
+x="$(. "$MISSING")"
+E
+sc_case "row 49 control: a source inside a command substitution in an unquoted heredoc body still runs, so it denies" 0 1 <<'E'
+cat <<EOT
+$(. "$MISSING")
+EOT
+E
+sc_case "row 49 control: an unterminated quote is a parse failure, which scans as before and denies" 0 1 <<'E'
+echo 'oops
+source "$MISSING"
+E
+sc_case "row 50: a command-substitution prefix that is not a self-dir form denies" 0 1 <<'E'
+source "$(printf /outside)/scripts/lib/armor.sh"
+E
+sc_case "row 50: a ref neither assigned in-file nor a known self-dir form denies" 0 1 <<'E'
+source "$NOWHERE_REF/scripts/lib/armor.sh"
+E
+sc_case "row 50: a ref assigned a non-self-dir command substitution denies" 0 1 <<'E'
+X="$(printf /outside)"
+source "$X/scripts/lib/armor.sh"
+E
+sc_case "row 50: an assigned ref resolves only through its assignment (no file-dir or root fallback)" 0 1 <<'E'
+X="$(dirname "$0")/nowhere"
+source "$X/scripts/lib/armor.sh"
+E
+sc_case "row 50 control: a ref assigned a self-dir form resolves" 1 0 <<'E'
+D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$D/../lib/armor.sh"
+E
+sc_case "row 50 control: a dirname-of-zero prefix resolves" 1 0 <<'E'
+source "$(dirname "$0")/../lib/armor.sh"
+E
+sc_case "row 50 control: CLAUDE_PROJECT_DIR resolves" 1 0 <<'E'
+source "${CLAUDE_PROJECT_DIR}/scripts/lib/armor.sh"
+E
+}
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
