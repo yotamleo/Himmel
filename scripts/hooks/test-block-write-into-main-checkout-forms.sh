@@ -609,6 +609,14 @@ check_both "4921 C mirror: tar -cf out.tar -C primary . (create, a read) allows"
     "$(_j4921 "tar -cf out.tar -C $FIX/primary ." "$FIX/wt")"
 # D. a /tmp symlink resolving into the primary: the /tmp exemption fired first.
 ln -sfn "$FIX/primary" "$TMPFIX/plink"
+check_both "4921 C tar -xf x.tar -C parent -C primary (cumulative -C) denies" block \
+    "$(_j4921 "tar -xf x.tar -C $FIX -C primary" "$FIX/wt")"
+check_both "4921 C mirror: tar -xf x.tar -C parent -C wt allows" allow \
+    "$(_j4921 "tar -xf x.tar -C $FIX -C wt" "$FIX/wt")"
+check_both "4921 C tar -xzC primary -f x.tar (-C inside a bundle) denies" block \
+    "$(_j4921 "tar -xzC $FIX/primary -f x.tar" "$FIX/wt")"
+check_both "4921 C mirror: tar -cf -x.tar -C primary . (archive named -x.tar) allows" allow \
+    "$(_j4921 "tar -cf -x.tar -C $FIX/primary ." "$FIX/wt")"
 check_both "4921 D echo x > /tmp-symlink-to-primary/f (cwd=wt) denies" block \
     "$(_j4921 "echo x > $TMPFIX/plink/f4921" "$FIX/wt")"
 check_both "4921 D mirror: echo x > plain /tmp dir/f allows" allow \

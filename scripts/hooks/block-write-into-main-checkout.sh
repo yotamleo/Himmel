@@ -6314,14 +6314,33 @@ while IFS= read -r _bwimc_clause; do
                 continue
             fi
             case "$_bwimc_t" in
-                -C|--directory)
+                --directory)
                     _bwimc_i=$((_bwimc_i+1))
                     [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ] && _bwimc_dirs+=("${_bwimc_toks[$_bwimc_i]}") ;;
                 --directory=*) _bwimc_dirs+=("${_bwimc_t#--directory=}") ;;
-                -C?*) _bwimc_dirs+=("${_bwimc_t#-C}") ;;
+                --file) _bwimc_i=$((_bwimc_i+1)) ;;
                 --extract|--get) _bwimc_x=1 ;;
                 --*) : ;;
-                -*x*) _bwimc_x=1 ;;
+                -?*)
+                    # short bundle: letters up to the first value-taking one
+                    # (f archive, C dir, ...); the rest of the token, or the
+                    # next token, is that option's value (never a mode letter).
+                    _bwimc_bk=1
+                    while [ "$_bwimc_bk" -lt "${#_bwimc_t}" ]; do
+                        _bwimc_bc="${_bwimc_t:$_bwimc_bk:1}"
+                        case "$_bwimc_bc" in
+                            x) _bwimc_x=1 ;;
+                            [fCbLNTXFHIKMVg])
+                                _bwimc_rest="${_bwimc_t:$((_bwimc_bk+1))}"
+                                if [ -z "$_bwimc_rest" ]; then
+                                    _bwimc_i=$((_bwimc_i+1))
+                                    [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ] && _bwimc_rest="${_bwimc_toks[$_bwimc_i]}"
+                                fi
+                                [ "$_bwimc_bc" = C ] && [ -n "$_bwimc_rest" ] && _bwimc_dirs+=("$_bwimc_rest")
+                                break ;;
+                        esac
+                        _bwimc_bk=$((_bwimc_bk+1))
+                    done ;;
                 *)
                     # old-style first operand (`tar xf a.tar`): mode letters only.
                     if [ "$_bwimc_i" = 1 ]; then
@@ -6331,8 +6350,15 @@ while IFS= read -r _bwimc_clause; do
             _bwimc_i=$((_bwimc_i+1))
         done
         if [ "$_bwimc_x" = 1 ]; then
+            # tar applies -C cumulatively: a relative -C is joined onto the
+            # previous one, so each destination is checked as accumulated.
+            _bwimc_cum=""
             for _bwimc_t in ${_bwimc_dirs[@]+"${_bwimc_dirs[@]}"}; do
-                _bwimc_cd_guard "$_bwimc_t"; _bwimc_check_target "$_bwimc_t" "$_bwimc_ecwd"
+                case "$_bwimc_t" in
+                    /*|'~'*|'$'*) _bwimc_cum="$_bwimc_t" ;;
+                    *) if [ -n "$_bwimc_cum" ]; then _bwimc_cum="$_bwimc_cum/$_bwimc_t"; else _bwimc_cum="$_bwimc_t"; fi ;;
+                esac
+                _bwimc_cd_guard "$_bwimc_cum"; _bwimc_check_target "$_bwimc_cum" "$_bwimc_ecwd"
             done
         fi
 
