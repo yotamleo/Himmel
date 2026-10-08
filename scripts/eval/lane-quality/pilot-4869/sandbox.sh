@@ -88,10 +88,16 @@ done
 # launcher's rev-parse works; the shared objects, refs and packed-refs come
 # back read-only, and new objects land in the row's own object dir.
 A+=(--ro-bind "$EXPORT" "$REPO")
-mkdir -p "$GITOBJ/info" || die "cannot create $GITOBJ"
-[ -f "$GITOBJ/info/alternates" ] || printf '%s\n' "$REPO/.git/host-objects" >"$GITOBJ/info/alternates"
+# The lane writes the row object dir, so the host never writes into it (a
+# symlink planted there would take the write out of the jail): the alternates
+# file comes from the run dir, read-only, bound over the lane's copy.
+{ [ -d "$GITOBJ" ] && [ ! -L "$GITOBJ" ]; } || die "row object dir $GITOBJ is missing or a symlink (pilot.sh prepare makes it)"
+for p in "$GITOBJ/info" "$GITOBJ/info/alternates"; do [ ! -L "$p" ] || die "$p is a symlink"; done
+[ ! -e "$GITOBJ/info" ] || [ -d "$GITOBJ/info" ] || die "$GITOBJ/info is not a dir"
+printf '%s\n' "$REPO/.git/host-objects" >"$RUN/alternates" || die "cannot write $RUN/alternates"
 mnt "$REPO/.git/host-objects" dir
 A+=(--ro-bind "$REPO/.git/objects" "$REPO/.git/host-objects" --bind "$GITOBJ" "$REPO/.git/objects")
+A+=(--ro-bind "$RUN/alternates" "$REPO/.git/objects/info/alternates")
 A+=(--ro-bind "$REPO/.git/refs" "$REPO/.git/refs")
 if [ -f "$REPO/.git/packed-refs" ]; then mnt "$REPO/.git/packed-refs" file; A+=(--ro-bind "$REPO/.git/packed-refs" "$REPO/.git/packed-refs"); fi
 # The row's git dir is the one prepare recorded (its own shared clone's), never
@@ -100,7 +106,7 @@ if [ -f "$REPO/.git/packed-refs" ]; then mnt "$REPO/.git/packed-refs" file; A+=(
 case "$GITDIR" in */..|*/../*|"$REPO"|"$REPO"/*) die "git dir $GITDIR is not the row's own" ;; /*) ;; *) die "git dir $GITDIR is not absolute" ;; esac
 { [ -d "$GITDIR" ] && [ ! -L "$GITDIR" ]; } || die "git dir $GITDIR is missing or a symlink"
 [ "$(cat "$WT/.git" 2>/dev/null)" = "gitdir: $GITDIR" ] || die "$WT/.git no longer points at $GITDIR"
-[ ! -e "$GITDIR/commondir" ] || die "$GITDIR has a commondir"
+{ [ ! -e "$GITDIR/commondir" ] && [ ! -L "$GITDIR/commondir" ]; } || die "$GITDIR has a commondir"
 mnt "$WT" dir
 A+=(--bind "$WT" "$WT" --bind "$GITDIR" "$GITDIR")
 # The row lives outside the checkout (clean-garden scans .claude/worktrees),

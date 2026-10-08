@@ -283,6 +283,37 @@ R2="$TMP/root/results/p02.json"
 check 'every recorded session is counted and a newer unrecorded one is not' '[ "$(jq -r .tool_calls "$R2")" = 2 ]'
 check 'a vault read in an earlier relaunch still marks the row uncontained' '[ "$(jq -r .contained "$R2")" = false ]'
 
+echo "7. no host-side mode writes through a symlink the lane planted in a writable bind"
+bash "$P" prepare p03 >/dev/null 2>&1
+E3="$TMP/root/rows/p03.env"
+check 'prepare p03 (claudex) exits with a row' '[ -r "$E3" ]'
+V="$TMP/victim"; mkdir -p "$V/dir"
+# Every read-write bind of the jail, and the names a host-side step writes there.
+plant() { # $1 dir in a bind, $2 name -> a dangling symlink out to the victim dir
+  mkdir -p "$1" && rm -rf -- "${1:?}/$2" && ln -s "$V/$(printf %s "$1/$2" | sed 's#[^A-Za-z0-9]#_#g')" "$1/$2"
+}
+(
+  . "$TMP/root/rows/p03.env"
+  plant "$GITOBJ/info" alternates
+  plant "$WT" .git
+  plant "$GITDIR" commondir
+  for n in user-settings.json hosts tunnel.sock alternates; do
+    plant "$(dirname "$DOC")" "$n"; plant "$ROWCONF" "$n"; plant "$TX" "$n"; plant "$WT" "$n"; plant "$GITOBJ" "$n"
+  done
+)
+for m in argv run check; do bash "$HERE/sandbox.sh" "$m" "$E3" true >/dev/null 2>&1; done
+if [ "$live" = 1 ]; then
+  (cd "$(. "$TMP/root/rows/p03.env"; echo "$WT")" && PILOT_SANDBOX_TUNNEL_TARGET=127.0.0.1:1 timeout 30 bash "$HERE/sandbox.sh" launch "$E3" >/dev/null 2>&1) # gnu-ok: Linux-only kit
+fi
+check 'sandbox modes create no file at a planted symlink target' '[ -z "$(ls -A "$V" | grep -vx dir)" ]'
+# The lane can also swap the object dir's info/ for a symlink to a dir it names.
+(. "$TMP/root/rows/p03.env"; rm -rf -- "$GITOBJ/info"; ln -s "$V/dir" "$GITOBJ/info")
+for m in argv run check; do bash "$HERE/sandbox.sh" "$m" "$E3" true >/dev/null 2>&1; done
+check 'sandbox modes write nothing through a symlinked info dir' '[ -z "$(ls -A "$V/dir")" ]'
+bash "$P" finish p03 >/dev/null 2>&1
+check 'finish creates no file at a planted symlink target' '[ -z "$(ls -A "$V" | grep -vx dir)" ] && [ -z "$(ls -A "$V/dir")" ]'
+check 'finish still scores the row' '[ -f "$TMP/root/results/p03.json" ]'
+
 echo
 echo "test-pilot: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

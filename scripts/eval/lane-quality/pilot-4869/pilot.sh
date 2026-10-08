@@ -201,7 +201,7 @@ cmd_prepare() {
   # sandbox.sh binds the recorded git dir and never re-reads the worktree's own
   # .git file, which the lane can rewrite.
   gitdir="$ROOT/git/$row"
-  { mkdir -p "$ROOT/git" && git clone -q --shared --no-checkout --separate-git-dir="$gitdir" "$REPO" "$wt" \
+  { mkdir -p "$ROOT/git" "$ROOT/gitobj/$row/info" && git clone -q --shared --no-checkout --separate-git-dir="$gitdir" "$REPO" "$wt" \
       && git -C "$wt" checkout -q --detach "$BASE_SHA"; } || die "clone failed for $row"
   fix="$(materialize_row "$task" "$wt")" || die "fixture for $row failed"
   fix="$(printf '%s\n' "$fix" | tail -1)"
@@ -252,7 +252,8 @@ restore_git() {
   case "$GITDIR" in */..|*/../*|"$REPO"|"$REPO"/*) die "git dir $GITDIR is not the row's own" ;; /*) ;; *) die "git dir $GITDIR is not absolute" ;; esac
   { [ -d "$GITDIR" ] && [ ! -L "$GITDIR" ] && [ -d "$WT" ] && [ ! -L "$WT" ]; } || die "$WT or $GITDIR is missing or a symlink"
   rm -rf -- "$WT/.git" "$GITDIR/commondir" || die "cannot reset the git pointers of $WT"
-  printf 'gitdir: %s\n' "$GITDIR" >"$WT/.git" || die "cannot restore the git pointers of $WT"
+  # noclobber opens with O_EXCL, so a symlink put back in the gap is never followed.
+  (set -C; printf 'gitdir: %s\n' "$GITDIR" >"$WT/.git") || die "cannot restore the git pointers of $WT"
 }
 
 find_transcripts() { # $1 lane, $2 worktree, $3 row doc, $4 row transcript dir -> this row's transcripts, one per line
