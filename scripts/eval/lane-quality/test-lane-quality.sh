@@ -161,6 +161,21 @@ check "claudex lane runs with CLAUDEX_LANE_OK=1" '[ "$rc" -eq 0 ] && [ "$(wc -l 
 check "claudex rows record token counts" '[ "$(jq -s -r ".[0].tokens | \"\(.input) \(.output) \(.cache_read)\"" "$TMP/out-cx/runs.jsonl")" = "1000 200 3000" ]'
 check "new tasks pass acceptance end to end" '[ "$(jq -s "map(.accept_ok) | all" "$TMP/out-cx/runs.jsonl")" = true ]'
 
+# HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
+printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"
+bash "$RUN" run --lane native --model haiku --config "$TMP/cfg-out.json" --out "$TMP/out-cfg1" >"$TMP/cfg1.log" 2>&1
+rc=$?
+check "--config refuses a tasks_dir outside the harness dir" '[ "$rc" -eq 64 ] && grep -q "must stay under" "$TMP/cfg1.log"'
+printf '{"base_sha":"nothex"}' >"$TMP/cfg-sha.json"
+bash "$RUN" run --lane native --model haiku --config "$TMP/cfg-sha.json" --out "$TMP/out-cfg2" >"$TMP/cfg2.log" 2>&1
+rc=$?
+check "--config refuses a malformed base_sha" '[ "$rc" -eq 64 ] && grep -q "40 hex" "$TMP/cfg2.log"'
+printf '{"tasks_dir":"tasks","base_sha":"%s","transcripts":"%s"}' "$BASE" "$TMP/projects" >"$TMP/cfg-ok.json"
+bash "$RUN" run --lane native --model haiku --tasks cr-fix --no-judge --config "$TMP/cfg-ok.json" --out "$TMP/out-cfg3" >"$TMP/cfg3.log" 2>&1
+rc=$?
+check "--config with a valid tasks_dir, base_sha and transcripts runs" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out-cfg3/runs.jsonl" | tr -d " ")" = 1 ]'
+check "--config base_sha is the one recorded" '[ "$(jq -s -r ".[0].base_sha" "$TMP/out-cfg3/runs.jsonl")" = "$BASE" ]'
+
 # HIMMEL-4459: exported exit/return/unset shadows must never reach the agent or
 # judge launch. The control (no ambient proxy) proves the shadowed runner still
 # launches, so the proxied run staying empty is not vacuous.

@@ -315,14 +315,41 @@ init_env() { # the claude binary, the repo, the bank preflight and the native-au
   . "$HERE/../../lib/native-auth-pin.sh" || die "cannot source native-auth-pin.sh"
 }
 
+# HIMMEL-4906: run --config FILE. A JSON object with optional keys, so a second
+# task set can share this driver without env-prefix knobs:
+#   tasks_dir   task directory, relative to this dir, must stay under it
+#   base_sha    40-hex commit the fixture worktrees are cut from
+#   transcripts transcript root searched for the agent session
+apply_config() {
+  local f="$1" td bs tr_ root
+  [ -f "$f" ] || die "--config: no such file '$f'"
+  jq -e 'type == "object"' "$f" >/dev/null 2>&1 || die "--config: '$f' is not a JSON object"
+  td="$(jq -r '.tasks_dir // empty' "$f")"
+  bs="$(jq -r '.base_sha // empty' "$f")"
+  tr_="$(jq -r '.transcripts // empty' "$f")"
+  if [ -n "$td" ]; then
+    root="$(realpath -m "$HERE")"
+    td="$(realpath -m "$HERE/$td")"
+    case "$td" in "$root"/*) ;; *) die "--config: tasks_dir must stay under $root" ;; esac
+    [ -d "$td" ] || die "--config: tasks_dir '$td' is not a directory"
+    TASKS="$td"
+  fi
+  if [ -n "$bs" ]; then
+    printf '%s' "$bs" | grep -Eq '^[0-9a-f]{40}$' || die "--config: base_sha must be 40 hex characters"
+    BASE_SHA="$bs"
+  fi
+  [ -z "$tr_" ] || TRANSCRIPTS="$tr_"
+}
+
 cmd_run() {
   LANE=""; MODEL=""; TASK_LIST=""; EFFORT=""; MAX_USD=3; TIMEOUT=1800; JUDGE_MODEL=opus
-  NO_JUDGE=0; KEEP=0; OUT=""; REPS=1
+  NO_JUDGE=0; KEEP=0; OUT=""; REPS=1; CONFIG=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --lane|--model|--tasks|--effort|--max-usd|--timeout|--judge-model|--out|--reps)
+      --lane|--model|--tasks|--effort|--max-usd|--timeout|--judge-model|--out|--reps|--config)
         [ $# -ge 2 ] || die "$1 needs a value"
         case "$1" in
+          --config) CONFIG="$2" ;;
           --lane) LANE="$2" ;; --model) MODEL="$2" ;; --tasks) TASK_LIST="$2" ;;
           --effort) EFFORT="$2" ;; --max-usd) MAX_USD="$2" ;; --timeout) TIMEOUT="$2" ;;
           --judge-model) JUDGE_MODEL="$2" ;; --out) OUT="$2" ;; --reps) REPS="$2" ;;
@@ -378,6 +405,7 @@ cmd_run() {
     AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/claude-codex}"
     TRANSCRIPTS="${LQ_TRANSCRIPTS:-$HOME/.claude-codex/projects}"
   fi
+  [ -z "$CONFIG" ] || apply_config "$CONFIG"
   RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$LANE-$(printf '%s' "$MODEL" | tr -c 'A-Za-z0-9.-' '_')"
   OUT="${OUT:-$HOME/.himmel/eval/lane-quality/$RUN_ID}"
   mkdir -p "$OUT" || die "cannot create $OUT"
