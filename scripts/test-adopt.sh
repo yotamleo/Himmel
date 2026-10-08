@@ -2329,8 +2329,8 @@ p4bk="$(jq -r '.pre.backup' <<< "$row")"
 row="$(prov_row "$p4led/provenance.jsonl" /scripts/hooks/block-edit-on-main.sh)"
 [ "$(jq -r '[.op,.pre.state,.class]|join(",")' <<< "$row")" = "create,absent,code" ] \
   || fail "HIMMEL-3332 S4: a copy into a clean target must be a create row: $row"
-[ "$(jq -sr '[.[]|select(.kind=="file" and .manifest_row=="adopter-scripts")]|length' "$p4led/provenance.jsonl")" = "22" ] \
-  || fail "HIMMEL-3332 S4: expected 22 file rows (one per PORTABLE_FILES entry)"
+[ "$(jq -sr '[.[]|select(.kind=="file" and .manifest_row=="adopter-scripts")]|length' "$p4led/provenance.jsonl")" = "23" ] \
+  || fail "HIMMEL-3332 S4: expected 23 file rows (one per PORTABLE_FILES entry)"
 echo "ok: HIMMEL-3332 S4 copy_portable records create + replace rows; the user's bytes and mode are backed up"
 
 # a re-run finds our own bytes already there: noop rows, and NO new backups

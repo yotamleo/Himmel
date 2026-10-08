@@ -348,6 +348,18 @@ grep -q 'REMOTE_DIR="/tmp/himmel-tarball-vm-\$\$' "$DRIVER" && ! grep -q "rm -rf
   && ok "T8 the guest dir is unique per run and never pre-deleted (no cross-run clobbering)" || bad "T8 driver reuses or deletes a shared guest dir"
 grep -q 'sha256sum -c' "$BODY" && grep -q 'converge-check.sh' "$BODY" && ok "T8 the body verifies the checksum and asserts convergence" || bad "T8 body missing sha256sum -c / converge-check"
 
+# --- T9 the AUR container test's converge step is not vacuous (HIMMEL-4994) ---
+# A project install wires settings only, so converge-check exits 3 on hook-less
+# targets (T7). The container test must seed a gate hook per target before the
+# call and report rc 3 as VACUOUS, not as "did not converge". Static: the
+# container itself is not runnable here.
+PKGT="$ROOT/packaging/aur/test-pkgbuild.sh"
+awk '/^  for s in clone tarball aur; do$/{f=1} f&&/\.git\/hooks\/commit-msg/{h=1} f&&/converge-check\.sh/{print h+0; exit}' "$PKGT" | grep -qx 1 \
+  && ok "T9 test-pkgbuild.sh seeds a git hook into every target before converge-check" || bad "T9 test-pkgbuild.sh calls converge-check on hook-less targets (vacuous)"
+grep -q 'VACUOUS (rc 3)' "$PKGT" && ok "T9 test-pkgbuild.sh reports converge-check rc 3 as VACUOUS" || bad "T9 rc 3 is folded into 'did not converge'"
+grep -q '^  useradd -m builder' "$PKGT" && ! grep -q 'useradd -m -d /build' "$PKGT" \
+  && ok "T9 builder's passwd home is outside the /build work dir (real-home check (c) stays armed)" || bad "T9 builder's home contains the work dir"
+
 echo
 echo "RESULT: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

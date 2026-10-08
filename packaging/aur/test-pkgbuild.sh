@@ -220,7 +220,9 @@ fi
 if [ "$mode" = in-container ]; then
   [ "$(id -u)" = 0 ] && [ -d /src ] && [ -d /art ] || { echo "test-pkgbuild: --in-container runs as root in the container, with /src and /art mounted" >&2; exit 2; }
   pacman -Syu --noconfirm --needed git jq nodejs npm python namcap sudo >/tmp/pacman.log 2>&1 || { echo "FAIL  pacman could not install the test deps"; tail -5 /tmp/pacman.log; exit 1; }
-  useradd -m -d /build builder && echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+  # builder's passwd home is NOT /build: uninstall's real-home check (c) refuses any target inside the
+  # real home, and the scratch target repos live under /build/w (HIMMEL-4994).
+  useradd -m builder && install -d -o builder /build && echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
   tgz="$(ls /art/himmel-*-linux.tar.gz)"; name="$(basename "$tgz")"; tag="${name#himmel-}"; tag="${tag%-linux.tar.gz}"
   sum="$(cut -d' ' -f1 < "$tgz.sha256")"
   b=/build/pkg; install -d -o builder "$b"
@@ -246,11 +248,23 @@ if [ "$mode" = in-container ]; then
   inst clone "node $w/clone/scripts/himmelctl/bin.js"
   inst tarball "node $w/tarball/scripts/himmelctl/bin.js"
   inst aur /usr/bin/himmelctl
+  # `install --scope project` wires settings only, so no target has a git hook and converge-check
+  # refuses the run as VACUOUS (rc 3). Seed one identical gate hook per target so the gates section
+  # compares a real artifact (HIMMEL-4994).
+  for s in clone tarball aur; do
+    printf '#!/bin/sh\nexit 0\n' > "$w/target-$s/.git/hooks/commit-msg"; chmod 755 "$w/target-$s/.git/hooks/commit-msg"
+  done
   bash /src/scripts/release/converge-check.sh \
     --a-home "$w/home-clone" --a-prefix "$w/clone" --a-target "$w/target-clone" \
     --b-home "$w/home-tarball" --b-prefix "$w/tarball" --b-target "$w/target-tarball" \
-    --c-home "$w/home-aur" --c-prefix /opt/himmel --c-target "$w/target-aur" \
-    && ok "clone, tarball and AUR installs CONVERGED" || bad "the three installs did not converge"
+    --c-home "$w/home-aur" --c-prefix /opt/himmel --c-target "$w/target-aur" >/tmp/converge.log 2>&1; crc=$?
+  case "$crc" in
+    0) ok "clone, tarball and AUR installs CONVERGED" ;;
+    3) bad "converge-check refused the run as VACUOUS (rc 3)" "$(tail -2 /tmp/converge.log | tr '\n' '|')" ;;
+    *) bad "the three installs did not converge (rc $crc)" "$(tail -3 /tmp/converge.log | tr '\n' '|')" ;;
+  esac
+  # Every lib a hook in the installed project tree sources must be installed with it (HIMMEL-4994).
+  [ -f "$w/target-aur/scripts/hooks/lib/guard-unwrap.sh" ] && ok "the installed project tree carries scripts/hooks/lib/guard-unwrap.sh" || bad "the installed project tree lacks scripts/hooks/lib/guard-unwrap.sh"
 
   su builder -c "HOME=$w/home-aur himmelctl update </dev/null" >/tmp/update.log 2>&1; urc=$?
   [ "$urc" -ne 0 ] && grep -q 'pacman -Syu himmel' /tmp/update.log && ok "himmelctl update on the package refuses and names pacman -Syu" || bad "himmelctl update did not defer to pacman" "rc=$urc"
