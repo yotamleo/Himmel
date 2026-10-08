@@ -298,8 +298,10 @@ hand-rolled `HOME=… cmd`, which keeps every other operator variable.
 **Corpus/replay tests run through the sandbox runner; execution of destructive
 commands is VM-only (HIMMEL-4886).** Use `bash scripts/lib/sandbox-run.sh --
 <command> [args...]` for corpus/replay classification (HIMMEL-4912). A missing
-bubblewrap or unavailable namespace is a refusal, never permission to run
-unsandboxed. The only executing station canary is a harmless touch inside a
+bubblewrap or unavailable namespace on Linux, or missing/unusable sandbox-exec
+profile on Darwin, is a refusal, never permission to run unsandboxed. Darwin
+confines writes to private scratch and denies network; it does not claim Linux
+namespace/resource isolation. The only executing station canary is a harmless touch inside a
 throwaway tmp directory.
 
 **Impacted suites = every suite that references a file you touched**

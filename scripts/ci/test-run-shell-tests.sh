@@ -741,6 +741,38 @@ fi
 rm -rf "$sb13b"
 fi
 
+# Darwin corpus coverage must not become a green capability skip (HIMMEL-4912).
+sb13d=$(mktemp -d "${TMPDIR:-/tmp}/rst-case13d.XXXXXX") || { fail "13d: mktemp failed"; sb13d=""; }
+if [ -n "$sb13d" ]; then
+mkdir -p "$sb13d/bin" "$sb13d/scripts/lib" "$sb13d/scripts/eval/guard-corpus" "$sb13d/scripts/hooks"
+printf '#!/bin/bash\nprintf "Darwin\\n"\n' > "$sb13d/bin/uname"
+printf '#!/bin/bash\nexit 0\n' > "$sb13d/bin/sandbox-exec"
+for suite in lib/test-sandbox-run.sh eval/guard-corpus/test-guard-corpus.sh hooks/test-block-destructive-commands.sh; do
+  printf '#!/bin/bash\nprintf "DARWIN_SUITE_RAN\\n"\nexit 0\n' > "$sb13d/scripts/$suite"
+  chmod +x "$sb13d/scripts/$suite"
+done
+chmod +x "$sb13d/bin/uname" "$sb13d/bin/sandbox-exec"
+# Keep bwrap and host sandbox-exec absent from the PATH fixture. All ordinary
+# runner dependencies remain real; only uname and the OS capability are fake.
+for tool in awk basename bash cat chmod cp cut date dirname env find flock git grep \
+    head hostname mkdir mktemp mv node npm perl pgrep ps python3 readlink realpath rm rmdir sed sh \
+    sha256sum sha1sum md5sum cksum sleep sort stat tail timeout tr uname uniq wc xargs; do
+  [ "$tool" != uname ] || continue
+  tool_path=$(command -v "$tool") || continue
+  ln -s "$tool_path" "$sb13d/bin/$tool"
+done
+out13d=$(PATH="$sb13d/bin" bash "$RUNNER" "$sb13d/scripts" 2>&1); rc13d=$?
+if [ "$rc13d" = 0 ] && grepq "$out13d" 'PASS: 3' && ! grepq "$out13d" 'capability: bwrap'; then
+  pass '13d: all three Darwin corpus suites run, not bwrap capability skip'
+else fail "13d: Darwin coverage lost: rc=$rc13d out: $out13d"; fi
+rm -f "$sb13d/bin/sandbox-exec"
+out13e=$(PATH="$sb13d/bin" bash "$RUNNER" "$sb13d/scripts" 2>&1); rc13e=$?
+if [ "$rc13e" = 125 ] && grepq "$out13e" 'required Darwin sandbox-exec'; then
+  pass '13e: missing Darwin sandbox-exec fails instead of green-skipping'
+else fail "13e: missing Darwin sandbox green-washed: rc=$rc13e out: $out13e"; fi
+rm -rf "$sb13d"
+fi
+
 # --------------------------------------------------------------------------
 # Case 14 — tier suites / SUITE_TIER + SUITE_TIER_MODE (HIMMEL-2120).
 #   The production SUITE_TIER table now carries three extended entries (Task

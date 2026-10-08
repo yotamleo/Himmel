@@ -32,15 +32,26 @@ errors. There is no wholesale host-root bind: read-only socket inodes would stil
 permit IPC. Missing
 bubblewrap, prlimit, or namespace support refuses execution, never falls back to
 the host.
-Outputs leave through stdout/stderr; writable fixtures remain inside tmpfs.
+On Darwin, the same runner uses `sandbox-exec`: a parameterized Seatbelt
+profile denies network and filesystem writes except a canonical private scratch
+root (HOME and TMPDIR) and `/dev/null`. A harmless profile preflight must succeed
+before the payload starts; missing `sandbox-exec` or an unusable profile returns
+125, never an unconfined fallback. This backend has no Linux namespace, runtime
+inode masking, tmpfs sizing or prlimit guarantee: it confines writes/network,
+not reads, Mach services or aggregate resources. Destructive execution remains
+VM-only. Replay creates its handover state under the backend-owned TMPDIR.
+Outputs leave through stdout/stderr; writable fixtures stay inside the backend's
+private scratch (tmpfs on Linux).
 Each invocation checks an absent host-side canary, including non-zero exits.
 The canary's execution control is only a harmless touch in a throwaway tmp dir.
 The CI architecture lint enforces `guard-corpus/diff` and the destructive-command
 hook suite. Other fixture/replay owners currently warn, not certify: migrate the
 hook latency and stack benchmarks, chokepoint registry fixture suite, and Codex
-smoke/PowerShell replay paths before treating those as station-safe. Missing
-bubblewrap is a loud runner-level capability skip on non-Linux CI hosts, never an
-unsandboxed fallback. Resource bounds are per process, not aggregate cgroup
+smoke/PowerShell replay paths before treating those as station-safe. The three
+sandbox/replay/classification suites select `sandbox-exec` on macOS and missing
+confinement fails the run instead of green-skipping coverage. Windows retains a
+loud capability skip while its confinement backend is parked; it never runs
+these payloads unsandboxed. Linux resource bounds are per process, not aggregate cgroup
 limits; do not use this classification runner for stress or destructive exec.
 The inode scans are preflight observations, not atomic filesystem snapshots.
 Concurrent changes to mounted runtime or fixture trees are outside this runner's

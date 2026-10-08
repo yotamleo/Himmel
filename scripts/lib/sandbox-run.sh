@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 # HIMMEL-4912: containment for hook classification, never destructive exec mode.
-# Linux only: missing bubblewrap/namespaces fail closed, never run on the host.
+# Linux namespaces or Darwin sandbox-exec; missing confinement fails closed.
 # Usage: sandbox-run.sh [--canary ABSENT_PATH] [--read-only INPUT]... -- CMD [ARG...]
-# Bind only runtime directories, the worktree and explicit socket-free inputs.
-# HOME and /tmp are bounded tmpfs; host outputs use stdout/stderr only.
+# Linux binds runtime/worktree/socket-free inputs and bounds HOME/tmp in tmpfs.
+# Darwin confines writes to private scratch; outputs use stdout/stderr only.
 set -uo pipefail
 
-if ! command -v bwrap >/dev/null 2>&1; then
-    printf 'sandbox-run: bwrap is required; refusing unsandboxed execution\n' >&2
-    exit 125
-fi
-if ! command -v prlimit >/dev/null 2>&1; then
-    printf 'sandbox-run: prlimit is required; refusing unsandboxed execution\n' >&2
-    exit 125
-fi
-case "$(uname -s)" in
-    Linux) ;;
-    *) printf 'sandbox-run: Linux namespaces are required\n' >&2; exit 125 ;;
+platform=$(uname -s) || exit 125
+case "$platform" in
+    Darwin)
+        sandbox_exec=$(command -v sandbox-exec) || {
+            printf 'sandbox-run: sandbox-exec is required; refusing unsandboxed execution\n' >&2
+            exit 125
+        }
+        ;;
+    Linux)
+        if ! command -v bwrap >/dev/null 2>&1; then
+            printf 'sandbox-run: bwrap is required; refusing unsandboxed execution\n' >&2
+            exit 125
+        fi
+        if ! command -v prlimit >/dev/null 2>&1; then
+            printf 'sandbox-run: prlimit is required; refusing unsandboxed execution\n' >&2
+            exit 125
+        fi
+        ;;
+    *) printf 'sandbox-run: Linux or Darwin confinement is required\n' >&2; exit 125 ;;
 esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd -P)" || exit 125
 canary=''
@@ -30,7 +38,11 @@ while [ "$#" -gt 0 ]; do
             shift 2 ;;
         --read-only)
             [ "$#" -ge 2 ] || exit 125
-            input=$(realpath -e -- "$2") || exit 125
+            if [ "$platform" = Darwin ]; then
+                input=$(python3 -I -c 'import os,sys; p=os.path.realpath(sys.argv[1]); assert os.path.exists(p); print(p)' "$2") || exit 125
+            else
+                input=$(realpath -e -- "$2") || exit 125
+            fi
             case "$input" in
                 /|/tmp|/var|/var/tmp|/home|/run|/run/*|/var/run|/var/run/*|/proc|/proc/*|/dev|/dev/*|/etc|/usr|/bin|/sbin|/lib|/lib64|/sandbox|/sandbox/*)
                     printf 'sandbox-run: refusing broad or namespace input: %s\n' "$input" >&2; exit 125 ;;
@@ -52,6 +64,43 @@ canary="${canary:-$scratch_root/canary}"
 if [ -e "$canary" ] || [ -L "$canary" ]; then
     printf 'sandbox-run: canary already exists; refusing replay\n' >&2
     exit 125
+fi
+
+if [ "$platform" = Darwin ]; then
+    for input in "${inputs[@]}"; do
+        special=$(find "$input" ! -type f ! -type d ! -type l -print -quit) || exit 125
+        if [ -n "$special" ]; then
+            printf 'sandbox-run: refusing socket/device/FIFO input: %s\n' "$special" >&2
+            exit 125
+        fi
+    done
+    # Seatbelt filters use the canonical scratch path as DATA, never SBPL text.
+    scratch_root=$(cd "$scratch_root" && pwd -P) || exit 125
+    writable_root="$scratch_root/work"
+    mkdir -p "$writable_root/home" "$writable_root/tmp" || exit 125
+    profile="$scratch_root/profile.sb"
+    cat > "$profile" <<'PROFILE'
+(version 1)
+(allow default)
+(deny network*)
+(deny file-write*)
+(allow file-write* (subpath (param "SCRATCH")) (literal "/dev/null"))
+PROFILE
+    [ -s "$profile" ] || exit 125
+    darwin_env=(/usr/bin/env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin LANG=C.UTF-8
+        "HOME=$writable_root/home" "TMPDIR=$writable_root/tmp" "SANDBOX_CANARY=$canary")
+    # Profile/setup errors must be rc125, not confused with a hook's denial.
+    if ! "${darwin_env[@]}" "$sandbox_exec" -f "$profile" -D "SCRATCH=$writable_root" -- /usr/bin/true; then
+        printf 'sandbox-run: sandbox-exec profile unusable; refusing execution\n' >&2
+        exit 125
+    fi
+    "${darwin_env[@]}" "$sandbox_exec" -f "$profile" -D "SCRATCH=$writable_root" -- "$@"
+    rc=$?
+    if [ -e "$canary" ] || [ -L "$canary" ]; then
+        printf 'sandbox-run: CANARY CHANGED; replay escaped containment\n' >&2
+        exit 125
+    fi
+    exit "$rc"
 fi
 
 runtime=()

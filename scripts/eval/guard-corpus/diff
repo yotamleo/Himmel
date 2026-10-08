@@ -435,9 +435,9 @@ def run_one_hook(hook_path, tool_name, tool_input, cwd, anchor, home,
     env.pop("TMP", None)
     env.pop("TEMP", None)
     env.pop("PATH", None)
-    env["HANDOVER_DIR"] = "/tmp/handover"
+    env.pop("HANDOVER_DIR", None)
     argv.extend(["--", "/usr/bin/env"] + ["%s=%s" % item for item in env.items()])
-    argv.extend(["bash", "-c", 'mkdir -p "$HANDOVER_DIR"; exec bash "$1"', "sandbox-hook", hook_path])
+    argv.extend(["bash", "-c", 'export HANDOVER_DIR="$TMPDIR/handover"; mkdir -p "$HANDOVER_DIR"; exec bash "$1"', "sandbox-hook", hook_path])
     t0 = time.time()
     # stdout goes to a temp file, not a pipe: a pipe's EOF waits on every
     # process holding the write end, so a hook that backgrounds a child would
