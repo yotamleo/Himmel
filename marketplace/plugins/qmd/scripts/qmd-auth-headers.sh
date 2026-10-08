@@ -17,7 +17,7 @@ set -u
 token_file="${QMD_HTTP_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/qmd/http-token}"
 token=""
 if [ -f "$token_file" ]; then
-  mode="$(stat -c '%a' "$token_file" 2>/dev/null || stat -f '%Lp' "$token_file" 2>/dev/null || echo 777)"
+  mode="$(stat -c '%a' "$token_file" 2>/dev/null || stat -f '%Lp' "$token_file" 2>/dev/null || echo 777)" # gnu-ok: BSD stat -f fallback on the same line
   case "$mode" in
     600|400) token="$(tr -d '[:space:]' <"$token_file")" ;;
   esac

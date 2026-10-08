@@ -17,7 +17,7 @@ helper="$plugin/scripts/qmd-auth-headers.sh"
 ensure="$plugin/scripts/ensure-qmd-daemon.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
-work="$(mktemp -d)" || exit 1
+work="$(mktemp -d "${TMPDIR:-/tmp}/qmd-auth-headers.XXXXXX")" || exit 1
 trap 'rm -rf "$work"' EXIT
 home="$work/home"; mkdir -p "$home"
 tok="$work/http-token"

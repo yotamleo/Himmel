@@ -3,7 +3,7 @@
     "qmd": {
       "type": "http",
       "url": "http://localhost:8181/mcp",
-      "headersHelper": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/qmd-auth-headers.sh"
+      "headersHelper": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/qmd-auth-headers.sh\""
     }
   }
 }

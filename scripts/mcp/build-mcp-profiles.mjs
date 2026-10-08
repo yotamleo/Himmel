@@ -54,15 +54,21 @@ function externalizeSecrets(key, spec) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.chmodSync(secretsRoot, 0o700);
   fs.chmodSync(dir, 0o700);
+  // Drop files for secrets no longer in the source config, so a removed or
+  // renamed key is not injected (and cannot override a non-secret env value).
+  for (const old of fs.readdirSync(dir)) if (!secretNames.includes(old)) fs.rmSync(path.join(dir, old), { force: true });
   const rest = {};
   for (const [n, v] of Object.entries(env)) {
     if (secretNames.includes(n)) {
       const f = path.join(dir, n);
+      fs.rmSync(f, { force: true }); // mode applies at creation: never write into a loosened file
       fs.writeFileSync(f, String(v), { mode: 0o600 });
       fs.chmodSync(f, 0o600);
     } else rest[n] = v;
   }
   const out = { ...spec, command: "node", args: [launcher, key, spec.command, ...(spec.args || [])] };
+  // A non-default secrets root must reach the launcher, or it reads the default dir.
+  if (process.env.HIMMEL_MCP_SECRETS_DIR) rest.HIMMEL_MCP_SECRETS_DIR = process.env.HIMMEL_MCP_SECRETS_DIR;
   if (Object.keys(rest).length) out.env = rest; else delete out.env;
   return out;
 }

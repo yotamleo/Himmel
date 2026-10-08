@@ -4,11 +4,13 @@
 # Platforms tested: linux
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-T="$(mktemp -d)" || exit 1; trap 'rm -rf "$T"' EXIT
+T="$(mktemp -d "${TMPDIR:-/tmp}/build-mcp-profiles.XXXXXX")" || exit 1; trap 'rm -rf "$T"' EXIT
 FAKE="fake-key-$$-not-real"
 pass=0; fail=0
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { fail=$((fail+1)); echo "FAIL $1"; }
+# lacks <needle> <file>...: true only when grep exits 1 (no match); an error (2) is not "clean".
+lacks() { grep -q -- "$@"; [ $? -eq 1 ]; }
 
 mkdir -p "$T/home" "$T/out"
 cat >"$T/home/.claude.json" <<EOF
@@ -19,9 +21,10 @@ export HOME="$T/home" HIMMEL_MCP_PROFILES_OUT="$T/out"
 node "$HERE/build-mcp-profiles.mjs" >"$T/gen.log" 2>&1
 P="$T/out/local.vault.json"
 
-if [ -f "$P" ] && ! grep -q "$FAKE" "$P" "$T/gen.log"; then ok "profile and log carry no secret value"; else bad "secret value leaked into profile or log"; fi
+if [ -f "$P" ] && lacks "$FAKE" "$P" "$T/gen.log"; then ok "profile and log carry no secret value"; else bad "secret value leaked into profile or log"; fi
 S="$T/home/.config/himmel/mcp-secrets/obsidian-vault/OBSIDIAN_API_KEY"
-if [ -f "$S" ] && [ "$(stat -c %a "$S")" = "600" ] && [ "$(cat "$S")" = "$FAKE" ]; then ok "secret stored 0600 under ~/.config"; else bad "secret file missing or not 0600"; fi
+mode="$(stat -c %a "$S")" # gnu-ok: linux-only test
+if [ -f "$S" ] && [ "$mode" = "600" ] && [ "$(cat "$S")" = "$FAKE" ]; then ok "secret stored 0600 under ~/.config"; else bad "secret file missing or not 0600"; fi
 if [ -f "$P" ] && grep -q '"OBSIDIAN_HOST": "127.0.0.1"' "$P"; then ok "non-secret env stays in the profile"; else bad "non-secret env dropped"; fi
 
 # The launcher still hands the secret to the server process.

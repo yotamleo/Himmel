@@ -40,5 +40,6 @@ if (fs.existsSync(dir)) {
 }
 
 const child = spawn(command, args, { stdio: "inherit", env });
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => child.kill(sig));
 child.on("error", (e) => { console.error(`secret-launch: cannot start ${command}: ${e.code || e.message}`); process.exit(127); });
 child.on("exit", (code, sig) => process.exit(code ?? (sig ? 128 : 1)));
