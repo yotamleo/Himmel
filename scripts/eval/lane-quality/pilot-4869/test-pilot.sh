@@ -103,6 +103,7 @@ after() { printf '%s\n' "$argv" | grep -A"$2" -x -- "$1"; } # $1 flag, $2 operan
 check 'sandbox drops a credential and an unlisted variable, keeps PATH and the lane key' 'after --unsetenv 1 | grep -qx LEAK_TOKEN && after --unsetenv 1 | grep -qx LEAK_PLAIN && ! after --unsetenv 1 | grep -qxE "PATH|DEEPSEEK_API_KEY"'
 check 'sandbox hides /home and /tmp' 'after --tmpfs 1 | grep -qx /home && after --tmpfs 1 | grep -qx /tmp'
 check 'sandbox binds the worktree and the row doc dir read-write' 'after --bind 2 | grep -qxF "$wt" && after --bind 2 | grep -qxF "$(dirname "$doc")"'
+check 'sandbox gives the row its own lane config, never the shared one' 'after --bind 2 | grep -qxF "$TMP/root/conf/p01" && ! after --bind 1 | grep -qxF "$HOME/.claude-deepseek"'
 check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qE "Documents/(luna|salus)|/\.claude/projects|/\.himmel/state|$TMP/vault"'
 check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | grep -qxF "$TMP/vault"'
 check 'sandbox masks the primary dotenv file' 'after /dev/null 1 | grep -qxF "$TMP/repo/.env"'

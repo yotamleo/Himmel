@@ -5,8 +5,10 @@
 # root, so the row sees an empty /home, /tmp and /run/user with only these put
 # back:
 #   read-write  the row's worktree (+ its git admin dir), the row doc dir, the
-#               lane config dir (its projects/ replaced by the row's own
-#               transcript dir) - nothing else is writable;
+#               row's OWN lane config dir mounted at the lane's config path (the
+#               launcher seeds it fresh; the shared one never enters the jail)
+#               and the row's transcript dir as its projects/ - nothing else
+#               is writable;
 #   read-only   the repo (its dotenv file masked, handovers/ emptied), the
 #               row's run dir (launch settings and preface), the ~/.claude
 #               items the lane mirror seeds from, the lane's egress config,
@@ -35,7 +37,7 @@ case "${LANE:-}" in
             EGRESS=("$HOME/.config/claude-codex" "$HOME/.config/claude-glm") ;;
   *) die "lane '${LANE:-}' runs unsandboxed; only deepseek and claudex rows have a jail" ;;
 esac
-for v in REPO WT DOC RUN TX; do [ -n "${!v:-}" ] || die "$envf has no $v"; done
+for v in REPO WT DOC RUN TX ROWCONF; do [ -n "${!v:-}" ] || die "$envf has no $v"; done
 
 # Never put back a path that is, or sits under, one of these.
 HIDDEN="(/Documents/(luna|salus)(/|$)|/\.claude/projects(/|$)|/\.himmel(/|$)|/handovers(/|$))"
@@ -71,7 +73,7 @@ done
 gitdir="$(git -C "$WT" rev-parse --absolute-git-dir 2>/dev/null)" || die "$WT is not a git worktree"
 A+=(--bind "$WT" "$WT" --bind "$gitdir" "$gitdir")
 A+=(--bind "$(dirname "$DOC")" "$(dirname "$DOC")" --ro-bind "$RUN" "$RUN")
-A+=(--bind "$CONF" "$CONF" --bind "$TX" "$CONF/projects")
+A+=(--bind "$ROWCONF" "$CONF" --bind "$TX" "$CONF/projects")
 # Every guarded root gets an EMPTY placeholder: the launcher's egress check
 # resolves each one (realpath) and fails closed when it is missing, and an
 # empty mount also hides a guarded root that sits outside the trees above.
@@ -119,7 +121,7 @@ case "$mode" in
   argv) printf '%s\n' bwrap "${A[@]}" ;;
   run) [ $# -gt 0 ] || die "run needs a command"; exec bwrap "${A[@]}" --chdir "$WT" -- "$@" ;;
   launch)
-    mkdir -p "$CONF" "$TX" || die "cannot create $CONF or $TX"
+    mkdir -p "$ROWCONF" "$TX" || die "cannot create $ROWCONF or $TX"
     if [ -z "${!KEY:-}" ]; then
       # shellcheck source=/dev/null
       . "$REPO/scripts/lib/load-dotenv.sh"

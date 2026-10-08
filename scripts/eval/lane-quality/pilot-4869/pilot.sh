@@ -172,13 +172,13 @@ cmd_prepare() {
   fix="$(materialize_row "$task" "$wt")" || die "fixture for $row failed"
   fix="$(printf '%s\n' "$fix" | tail -1)"
   nonce="LQ-$row-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-  # One doc dir, run dir (launch settings, log) and transcript dir per row, so
-  # a sandboxed row sees only its own.
-  doc="$DOCS/$row/HIMMEL-4869-pilot-$row.md"; run="$ROOT/run/$row"; tx="$ROOT/tx/$row"
-  mkdir -p "$DOCS/$row" "$run" "$tx" || die "cannot create the $row dirs"
+  # One doc dir, run dir (launch settings, log), transcript dir and lane config
+  # dir per row, so a sandboxed row sees and writes only its own.
+  doc="$DOCS/$row/HIMMEL-4869-pilot-$row.md"; run="$ROOT/run/$row"; tx="$ROOT/tx/$row"; conf="$ROOT/conf/$row"
+  mkdir -p "$DOCS/$row" "$run" "$tx" "$conf" || die "cannot create the $row dirs"
   write_brief "$row" "$wt" "$task" "$nonce" "$PILOT_CONSOLE" >"$doc"
-  printf 'LANE=%q\nMODEL=%q\nEFFORT=%q\nTASK=%q\nWT=%q\nFIX=%q\nDOC=%q\nSNAP0=%q\nT0=%q\nREPO=%q\nRUN=%q\nTX=%q\n' \
-    "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" "$REPO" "$run" "$tx" >"$ROOT/rows/$row.env"
+  printf 'LANE=%q\nMODEL=%q\nEFFORT=%q\nTASK=%q\nWT=%q\nFIX=%q\nDOC=%q\nSNAP0=%q\nT0=%q\nREPO=%q\nRUN=%q\nTX=%q\nROWCONF=%q\n' \
+    "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" "$REPO" "$run" "$tx" "$conf" >"$ROOT/rows/$row.env"
   prefix=""
   [ "$lane" = deepseek ] && prefix="HIMMEL_DEEPSEEK_INFERENCE_OK=1 "
   [ "$lane" = deepseek ] || prefix="${prefix}LEG_EFFORT=$(printf %q "$effort") "
