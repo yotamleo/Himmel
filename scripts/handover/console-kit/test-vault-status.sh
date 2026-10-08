@@ -69,6 +69,12 @@ check 'a corrupt repo reads unknown, not a failure' 'unknown' "$(TICK_VAULT_DIR=
 TICK_VAULT_DIR="$W/bad" bash "$VS" >/dev/null 2>&1; check 'unknown exits 0' '0' "$?"
 
 # --- bucket-gitleaks.sh -------------------------------------------------------
+if ! command -v gitleaks >/dev/null 2>&1; then
+    # CI runners have no gitleaks: only the absent-binary contract is testable there
+    out="$(bash "$BG" "$W/seed.md")"; rc=$?
+    check 'gitleaks absent prints GITLEAKS error' 'GITLEAKS error: gitleaks not installed' "$out"
+    check 'gitleaks absent exits 2' '2' "$rc"
+else
 cp /dev/null "$W/cfg.toml"
 printf '[extend]\nuseDefault = true\n' > "$W/cfg.toml"
 printf 'plain prose, nothing here\n' > "$W/clean.md"
@@ -85,6 +91,7 @@ check 'a missing file exits 2' '2' "$rc"
 # default config: the resolved vault's .gitleaks.toml
 cp "$W/cfg.toml" "$W/v/.gitleaks.toml"
 check 'the vault .gitleaks.toml is the default config' 'GITLEAKS FINDING generic-api-key' "$(TICK_VAULT_DIR="$W/v" bash "$BG" "$W/fp.md")"
+fi
 
 # HIMMEL-4911 CR round 1: deleted and non-ASCII paths, leading-zero thresholds
 mkvault q
