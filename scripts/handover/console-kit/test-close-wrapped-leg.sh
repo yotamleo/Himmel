@@ -988,6 +988,14 @@ FB_NEXT=4670c3a0-0000-4000-8000-0000000000ee
 sed -e "s/$DG_SID/$FB_NEXT/g" -e 's/2026-10-06T12:00:01/2026-10-25T23:05:00/' "$DG_PROJ/$FB_SLUG/$DG_SID.jsonl" > "$DG_PROJ/$FB_SLUG/$FB_NEXT.jsonl"
 out_fb=$(TZ=Europe/Berlin bash "$STEP" --doc "$FB_DST2" --projects "$DG_PROJ" 2>&1)
 contains "digest-fallback/dst: a midnight early on a 25h day still rolls to the next date" "$out_fb" "$FB_NEXT digest=ok"
+# HIMMEL-4757: a 2h fall-back (Antarctica/Troll, 2026-10-25 03:00 +02 -> 01:00
+# +00) repeats 01:00-03:00 two hours apart. LIVE 02:40 is the first (00:40Z),
+# WRAPPED 01:10 the second (01:10Z) - same day, no midnight.
+mkdir -p "$W/troll"; FB_TROLL="$W/troll/HIMMEL-9-N1-demo-2026-10-25.md"
+{ printf -- '---\nresume_cwd: %s\n---\n# leg\n## Results\n- 02:40 LIVE - go\n- 02:50 READY - PR 9 abc GREEN\n- 01:10 WRAPPED - done\n' "$W/dg-cwd"; } > "$FB_TROLL"
+out_fb=$(TZ=Antarctica/Troll bash "$STEP" --doc "$FB_TROLL" --projects "$DG_PROJ" 2>&1)
+contains "digest-fallback/dst-2h: a session inside the leg is a member" "$out_fb" "$FB_IN digest=ok"
+not_contains "digest-fallback/dst-2h: a 2h fall-back is no midnight - a session after the wrap is not" "$out_fb" "$FB_AFTER"
 # HIMMEL-4786: session_ids: in the front matter (the launcher's record) are
 # digested directly - no resume_cwd and no name match needed (a relaunch).
 dg_ledgers ids
