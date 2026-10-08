@@ -54,7 +54,7 @@ out="$(HOME="$home" MOCK_DIR="$work/mock" QMD_CURL="$mockbin/curl" QMD_HTTP_TOKE
   QMD_MCP_URL="http://127.0.0.1:1/mcp" PATH="$mockbin:/usr/bin:/bin" bash "$ensure" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] || fail "(d) ensure rc $rc: $out"
 grep -q "Authorization: Bearer $SECRET" "$work/mock/stdin" || fail "(d) token not sent on curl stdin"
-if grep -q "$SECRET" "$work/mock/argv"; then fail "(d) token leaked into curl argv"; fi
+grep -q "$SECRET" "$work/mock/argv"; [ $? -eq 1 ] || fail "(d) token leaked into curl argv (or argv capture unreadable)"
 case "$out" in *"$SECRET"*) fail "(d) token leaked into ensure output" ;; esac
 
 # (e) .mcp.json wires the helper and holds no secret

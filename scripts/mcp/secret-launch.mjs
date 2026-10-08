@@ -27,16 +27,20 @@ if (!server || !command || /[\\/]|^\.\.?$/.test(server)) {
 
 const dir = path.join(secretsRoot(), server);
 const env = { ...process.env };
-if (fs.existsSync(dir)) {
-  for (const name of fs.readdirSync(dir)) {
-    const f = path.join(dir, name);
-    // Refuse a group/world-readable secret file rather than trust it.
-    if (process.platform !== "win32" && (fs.statSync(f).mode & 0o077) !== 0) {
-      console.error(`secret-launch: ${f} is not mode 0600 — refusing to read it`);
-      process.exit(1);
-    }
-    env[name] = fs.readFileSync(f, "utf8").replace(/\r?\n$/, "");
+// The generator only wraps a server that has secrets, so a missing dir means
+// they were never written: fail rather than start the server without them.
+if (!fs.existsSync(dir)) {
+  console.error(`secret-launch: ${dir} not found — run build-mcp-profiles.mjs`);
+  process.exit(1);
+}
+for (const name of fs.readdirSync(dir)) {
+  const f = path.join(dir, name);
+  // Refuse a group/world-readable secret file rather than trust it.
+  if (process.platform !== "win32" && (fs.statSync(f).mode & 0o077) !== 0) {
+    console.error(`secret-launch: ${f} is not mode 0600 — refusing to read it`);
+    process.exit(1);
   }
+  env[name] = fs.readFileSync(f, "utf8").replace(/\r?\n$/, "");
 }
 
 const child = spawn(command, args, { stdio: "inherit", env });

@@ -16,6 +16,7 @@ mkdir -p "$T/home" "$T/out"
 cat >"$T/home/.claude.json" <<EOF
 {"mcpServers":{"obsidian-vault":{"type":"stdio","command":"node","args":["-e","process.stdout.write(process.env.OBSIDIAN_API_KEY+'|'+process.env.OBSIDIAN_HOST)"],"env":{"OBSIDIAN_API_KEY":"$FAKE","OBSIDIAN_HOST":"127.0.0.1"}}}}
 EOF
+unset HIMMEL_MCP_SECRETS_DIR # an inherited override could point at the real secret store
 export HOME="$T/home" HIMMEL_MCP_PROFILES_OUT="$T/out"
 
 node "$HERE/build-mcp-profiles.mjs" >"$T/gen.log" 2>&1
