@@ -98,7 +98,7 @@ for (const r of records) {
   const k = [r.head, r.finding_id, r.artifact || "diff", r.perspective || "off"].join(SEP);
   const eff = amends.has(k) ? Object.assign({}, r, amends.get(k)) : r;
   const ts = Date.parse(r.ts);
-  if (!Number.isFinite(ts)) continue;
+  if (!Number.isFinite(ts) || ts > now) continue;   // --now bounds every row, not just the first row of a branch
   let b = branches.get(r.branch);
   if (!b) { b = { name: r.branch, first: ts, heads: new Set(), maxRound: 0, rows: [] }; branches.set(r.branch, b); }
   if (ts < b.first) b.first = ts;
@@ -110,13 +110,23 @@ for (const r of records) {
 }
 
 const ordered = Array.from(branches.values()).sort((a, b) => a.first - b.first);
-const classFirst = new Map();   // class -> {branch, first} of the earliest branch that raised it
+// class -> Map(branch -> earliest row ts of that class on it); a row is a repeat when ANOTHER
+// branch raised the class strictly before this row (not merely started earlier).
+const classBranchFirst = new Map();
+for (const b of ordered) for (const row of b.rows) {
+  let m = classBranchFirst.get(row.cls);
+  if (!m) { m = new Map(); classBranchFirst.set(row.cls, m); }
+  if (!(m.get(b.name) <= row.ts)) m.set(b.name, row.ts);
+}
+function raisedElsewhereBefore(cls, branch, ts) {
+  for (const [name, first] of classBranchFirst.get(cls)) if (name !== branch && first < ts) return true;
+  return false;
+}
 const inWindow = [];
-const bySev = {}, byClass = {}, byVerdict = {};
+const bySev = Object.create(null), byClass = Object.create(null), byVerdict = Object.create(null);
 let total = 0, repeats = 0, knownHit = 0;
-const classStats = {};          // class -> {findings, roundsCaused: Set, repeats}
+const classStats = Object.create(null);          // class -> {findings, roundsCaused: Set, repeats}
 for (const b of ordered) {
-  const seenBefore = new Set(classFirst.keys());   // classes on strictly earlier branches
   const win = b.first >= since && b.first <= now;
   if (win) inWindow.push(b);
   for (const row of b.rows) {
@@ -128,11 +138,10 @@ for (const b of ordered) {
       const s = classStats[row.cls] || (classStats[row.cls] = { findings: 0, rounds: new Set(), repeats: 0 });
       s.findings++;
       if (row.round >= 2) s.rounds.add(b.name + "#" + row.round);
-      if (row.cls !== "other" && seenBefore.has(row.cls)) { repeats++; s.repeats++; b.repeats = (b.repeats || 0) + 1; }
+      if (row.cls !== "other" && raisedElsewhereBefore(row.cls, b.name, row.ts)) { repeats++; s.repeats++; b.repeats = (b.repeats || 0) + 1; }
       if (knownRes.some(re => re.test(row.text))) knownHit++;
     }
   }
-  for (const row of b.rows) if (!classFirst.has(row.cls)) classFirst.set(row.cls, b.name);
 }
 
 function rounds(b) { return b.maxRound || b.heads.size; }
@@ -156,13 +165,13 @@ if (e.GROUPS_FILE) {
     const i = l.indexOf("\t");
     if (i > 0) map.set(l.slice(0, i).trim(), l.slice(i + 1).trim());
   }
-  const acc = {};
+  const acc = Object.create(null);
   for (const b of inWindow) {
     const g = map.get(b.name) || "ungrouped";
     const a = acc[g] || (acc[g] = { rs: [], findings: 0, repeats: 0 });
     a.rs.push(rounds(b)); a.findings += b.rows.length; a.repeats += b.repeats || 0;
   }
-  groups = {};
+  groups = Object.create(null);
   for (const g of Object.keys(acc).sort()) {
     const v = acc[g].rs.sort((x, y) => x - y);
     const p = q => v[Math.max(0, Math.ceil(q * v.length) - 1)];

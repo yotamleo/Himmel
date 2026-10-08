@@ -5,7 +5,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"; CM="$HERE/cr-round-metrics.sh"
-tmp="$(mktemp -d)" || exit 1; trap 'rm -rf "$tmp"' EXIT
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/cr-round-metrics.XXXXXX")" || exit 1; trap 'rm -rf "$tmp"' EXIT
 L="$tmp/ledger.jsonl"; K="$tmp/known.json"
 fails=0
 check() { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
@@ -64,6 +64,25 @@ json="$(CR_LEDGER="$L" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" --grou
 check "group gated p90" "$(q groups.gated.p90)" "3"
 check "group ungrouped cap hits" "$(q groups.ungrouped.cap_hits)" "1"
 check "group gated repeat rate" "$(q groups.gated.repeat_rate)" "0.25"
+
+# --now bounds every row: at 10-05T01:30 fix/b has 2 rows and no cap hit
+json="$(CR_LEDGER="$L" bash "$CM" --now 2026-10-05T01:30:00Z --known "$K" | grep -m1 '^{')"
+check "--now findings total" "$(q findings.total)" "6"
+check "--now cap hits" "$(q cap_hits.count)" "0"
+
+# group names that collide with Object.prototype keys must not crash
+printf 'fix/a\tconstructor\n' > "$tmp/groups2.tsv"
+json="$(CR_LEDGER="$L" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" --groups "$tmp/groups2.tsv" | grep -m1 '^{')"
+check "proto-named group" "$(q groups.constructor.branches)" "1"
+
+# overlapping branches: x starts first but raises nul only AFTER y does, so y is no repeat
+{
+  f 2026-10-02T00:00:00Z fix/x x1 1 c-1 imp 'no timeout bound on the loop; it hangs'
+  f 2026-10-02T09:00:00Z fix/x x2 2 c-2 imp 'NUL-delimited paths are split on newline'
+  f 2026-10-02T05:00:00Z fix/y y1 1 c-1 imp 'NUL-delimited paths are split on newline'
+} > "$tmp/overlap.jsonl"
+json="$(CR_LEDGER="$tmp/overlap.jsonl" bash "$CM" --now 2026-10-09T00:00:00Z --known "$K" | grep -m1 '^{')"
+check "overlap repeat count" "$(q repeat.vs_earlier_prs.count)" "1"
 
 # empty ledger: no crash, zero branches
 : > "$tmp/empty.jsonl"
