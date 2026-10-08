@@ -276,6 +276,15 @@ python3 "$FR" route --ledger "$F11/l.jsonl" --state "$F11/s.json" --log "$F11/lo
 check "a slug collision files nothing, comments nowhere and logs skipped:slug-collision for both" '[ "$(calls create)" = "$n11" ] && [ "$(calls comment)" = "$c11" ] && [ "$(decs "$F11/log" | jq -r .decision | sort -u)" = skipped:slug-collision ] && [ "$(dlines "$F11/log")" = 2 ]'
 rm -f "$STUB/list.fl-denied-guard-q"
 
+F12="$TMP/f12"; mkdir -p "$F12"
+SAVE="$LED"; LED="$F12/l.jsonl"
+row N1 denied/Guard.Q 1; row N2 denied/Guard.Q 1
+LED="$SAVE"
+printf '{"v":1,"classes":{"denied/guard-q":{}},"created":{"day":null,"n":0}}\n' >"$F12/s.json"
+n12="$(calls create)"
+python3 "$FR" route --ledger "$F12/l.jsonl" --state "$F12/s.json" --log "$F12/log" --inbox "$F12/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "a colliding class known only from the state file also files nothing" '[ "$(calls create)" = "$n12" ] && [ "$(decs "$F12/log" | jq -r .decision | sort -u)" = skipped:slug-collision ]'
+
 echo "the routing table is data"
 check "failure-routes.table.json parses and names every spec 4.2 key pattern" 'jq -e "[.routes[].match] | index(\"denied/classifier:*\") and index(\"suite/*\") and index(\"error/*\") and index(\"traj/claim-unverified\")" "$HERE/failure-routes.table.json" >/dev/null'
 check "the window is 14 days and the cap is 3" 'jq -e ".window_days == 14 and .daily_cap == 3" "$HERE/failure-routes.table.json" >/dev/null'
