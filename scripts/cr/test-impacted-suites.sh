@@ -64,6 +64,13 @@ mkf scripts/test-diff-fullpath.sh 'bash scripts/eval/guard-corpus/diff'
 mkf scripts/test-diff-var.sh 'DIFF="$HERE/diff"'
 mkf scripts/claude-fake
 mkf scripts/test-claude-fake.sh "launcher=path.join(scripts,'claude-fake')"
+mkf scripts/test-diff-source.sh 'cd eval/guard-corpus && source diff'
+mkf scripts/test-diff-dot.sh 'cd eval/guard-corpus && . "diff"'
+mkf scripts/test-diff-directive.sh '# shellcheck source=diff'
+mkf scripts/test-diff-plain.sh 'cd eval/guard-corpus && diff a b'
+mkf scripts/test-diff-prose.sh '# the source diff is shown below'
+mkf scripts/diff-helper.sh 'cd eval/guard-corpus && source diff'
+mkf scripts/test-diff-helper.sh 'bash "$d/diff-helper.sh"'
 git -C "$FX" add -A
 git -C "$FX" commit -q -m "chore: base"
 
@@ -188,6 +195,15 @@ change scripts/eval/guard-corpus/diff
 out="$(run_is "$range")"
 # A suite-local variable ($HERE/diff) still ends in /diff, so it stays listed.
 if grepq "$out" '^scripts/test-diff-var\.sh$'; then pass "extensionless diff: a variable-built \$HERE/diff reference stays listed"; else fail "\$HERE/diff suite under-listed: $out"; fi
+
+# --- 11c. a bare source / . / shellcheck source= of a single-word file (HIMMEL-4621) ---
+# After a `cd`, the operand is the bare name with no `/` before it. Only a line
+# that sources it counts: a plain `diff a b` command and prose stay unlisted.
+if grepq "$out" '^scripts/test-diff-source\.sh$'; then pass "bare 'source diff' after a cd is listed"; else fail "source diff suite under-listed: $out"; fi
+if grepq "$out" '^scripts/test-diff-dot\.sh$'; then pass "bare '. \"diff\"' after a cd is listed"; else fail ". diff suite under-listed: $out"; fi
+if grepq "$out" '^scripts/test-diff-directive\.sh$'; then pass "'# shellcheck source=diff' is listed"; else fail "shellcheck source=diff suite under-listed: $out"; fi
+if grepq "$out" '^scripts/test-diff-helper\.sh$'; then pass "a suite reaching diff through a sourcing helper is listed"; else fail "source-closure bare-name suite under-listed: $out"; fi
+if ! grepq "$out" 'test-diff-plain\.sh' && ! grepq "$out" 'test-diff-prose\.sh' && ! grepq "$out" 'test-diff-word\.sh'; then pass "a plain 'diff a b' command and comment prose stay unlisted"; else fail "plain diff over-listed: $out"; fi
 
 # --- 12. the answer does not depend on the cwd it is run from ----------------
 # git ls-tree / git grep are cwd-scoped; from a subdirectory the suites one
