@@ -834,9 +834,9 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # BASH_CMDS, PATH or a var a later ${x@P} or $[x] runs), echo (it expands
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
-PR_GIT_UNSAFE=0
+PR_GIT_UNSAFE=0 PR_TOKFAIL=0
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -859,17 +859,17 @@ git_mentions_only() { # git_mentions_only <command-word index>
         case "$w" in
             --oneline) ;;
             -c* | --config* | --exec* | --upload* | --receive* | ext::* | \
-                --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; return 1 ;;
+                --o* | --ext* | -O* | -[!-]*O*) PR_GIT_UNSAFE=1; bad=1 ;;
         esac
         if [ "$dir" = 1 ]; then
             dir=0
         elif [ -z "$sub" ]; then
-            [ "${ST_Q[j]}" = 0 ] || return 1
+            [ "${ST_Q[j]}" = 0 ] || bad=1
             case "$w" in
                 -C) dir=1 ;;
                 --no-pager) ;;
                 grep|log|show|diff|add|restore|rm) sub=$w ;;
-                *) return 1 ;;
+                *) bad=1 ;;
             esac
         elif [ "$w" = -- ]; then
             # An unknown option may consume -- as its value (-e/-S, ...),
@@ -877,7 +877,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
             if ! [[ ${ST_W[j - 1]} =~ ^-[0-9]+$ ]]; then
                 case "${ST_W[j - 1]}" in
                     --cached|--staged|--oneline|--name-only|--name-status|--follow|--*=*|-n|-p|-A|-a|-u|-w|--stat) ;;
-                    -*) PR_GIT_UNSAFE=1; return 1 ;;
+                    -*) PR_GIT_UNSAFE=1; bad=1 ;;
                 esac
             fi
             paths=1
@@ -886,7 +886,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
         fi
         j=$((j + 1))
     done
-    [ "$xp" = 0 ] && [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
+    [ "$bad" = 0 ] && [ "$xp" = 0 ] && [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
     [ "$sub" != rm ] || [ "$cached" = 1 ]
 }
 readers_only() { # true when every command the command line runs is a reader
@@ -894,7 +894,13 @@ readers_only() { # true when every command the command line runs is a reader
     # HIMMEL-4950: a `${…}` the tokenizer cannot parse (zsh `${=IFS}`) on a git
     # command line may word-split into an exec option; flag it unsafe.
     # shellcheck disable=SC2016 # a literal ${ is matched, never expanded
-    st_tokenize "$cmd" || { case "$cmd" in *git*'${'*) PR_GIT_UNSAFE=1 ;; esac; return 1; }
+    # HIMMEL-4953: any tokenizer bail on a line with a git word fails closed:
+    # no word is known, so no option can be proven a pathspec mention.
+    st_tokenize "$cmd" || {
+        PR_TOKFAIL=1
+        [[ $cmd =~ (^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$) ]] && PR_GIT_UNSAFE=1
+        return 1
+    }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
     k=0
     while [ "$k" -lt "$ST_N" ]; do
@@ -920,6 +926,17 @@ readers_only() { # true when every command the command line runs is a reader
     return 0
 }
 readers_only && exit 0
+# HIMMEL-4953: readers_only returns at the first non-reader, comment, $'…'
+# word, substitution or unknown git global option, before it reaches a later
+# git segment. The option check must not depend on that walk, so scan every
+# git word here; only the PR_GIT_UNSAFE side effect is used. Fails closed.
+if [ "$PR_TOKFAIL" = 0 ]; then
+    k=0
+    while [ "$k" -lt "$ST_N" ]; do
+        [ -n "${ST_RO[k]}" ] || case "${ST_W[k]##*/}" in git) git_mentions_only "$k" || : ;; esac
+        k=$((k + 1))
+    done
+fi
 if [ "$PR_GIT_UNSAFE" = 1 ] && [ "$mentions" = 1 ]; then
     shown=${cmd//$'\n'/ }
     shown=${shown:0:200}

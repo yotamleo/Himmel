@@ -1588,6 +1588,45 @@ run "HIMMEL-4950 brace operand after -- keeps prior verdict" 0 \
 # A brace word that is not option-shaped keeps its prior verdict (allow).
 run "HIMMEL-4950 non-option brace word keeps prior verdict" 0 \
     "$(payload 'git add docs/{a,b}.md scripts/cr/pr-check-env.sh' "$WT")" "$HR"
+# HIMMEL-4953: the git exec/write-option check runs for EVERY git segment and
+# fails closed on a bailed walk. Each payload used to exit 0 because
+# readers_only returned before it reached the git word.
+# shellcheck disable=SC2016 # literal attack payloads, never expanded here
+for v in \
+    'true; git grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'true; git grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'sort | git grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git grep -O{bash,x} -- scripts/cr/pr-check-env.sh # c' \
+    "git grep \$'-O'bash -- scripts/cr/pr-check-env.sh" \
+    "git grep \$'-O'{bash,x} -- scripts/cr/pr-check-env.sh" \
+    "git grep \$'\\x2dObash' -- scripts/cr/pr-check-env.sh" \
+    'git -p grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'git -p grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git --no-pager grep -O{bash,x} -- scripts/cr/pr-check-env.sh' \
+    'git {grep,x} -Obash -- scripts/cr/pr-check-env.sh' \
+    'case x in x) git grep -Obash -- scripts/cr/pr-check-env.sh ;; esac' \
+    'case x in x) git grep -O{bash,x} -- scripts/cr/pr-check-env.sh ;; esac' \
+    'git grep -O$(echo bash) -- scripts/cr/pr-check-env.sh' \
+    'git grep -O`echo bash` -- scripts/cr/pr-check-env.sh' \
+    'git grep -O$((1+1)) -- scripts/cr/pr-check-env.sh' \
+    'echo $(true); git grep -Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e x a$IFS-Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep x${=IFS}-Obash -- scripts/cr/pr-check-env.sh' \
+    'git log HEAD$IFS--output=scripts/cr/pr-check-env.sh # c'; do
+    run "HIMMEL-4953 unwalked git segment [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
+done
+# Pathspec mentions and the HIMMEL-4950 allow cases stay allowed.
+for v in \
+    'git log -- scripts/cr/pr-check-env.sh' \
+    'git log --oneline -- scripts/cr/pr-check-env.sh' \
+    'git grep foo -- scripts/cr/pr-check-env.sh' \
+    'git diff --cached -- scripts/cr/pr-check-env.sh' \
+    'git rm --cached scripts/cr/pr-check-env.sh' \
+    'git show HEAD -- scripts/cr/pr-check-env.sh' \
+    'git add docs/{a,b}.md scripts/cr/pr-check-env.sh' \
+    'git add -- --foo{a,b} scripts/cr/pr-check-env.sh'; do
+    run "HIMMEL-4953 control [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
+done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
 
 echo
