@@ -184,7 +184,7 @@ def render_x(posts):
 
 
 META = re.compile(r'<meta\b[^>]*>', re.S | re.I)
-META_ATTR = re.compile(r'\b([\w:-]+)\s*=\s*"([^"]*)"')
+META_ATTR = re.compile(r'\b([\w:-]+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
 
 
 def render_meta(page_html):
@@ -192,7 +192,7 @@ def render_meta(page_html):
     keep = ("og:title", "og:description", "og:image", "og:video", "og:url")
     seen, out = set(), []
     for m in META.finditer(page_html):
-        a = {k.lower(): htmllib.unescape(v) for k, v in META_ATTR.findall(m.group(0))}
+        a = {k.lower(): htmllib.unescape(dq or sq) for k, dq, sq in META_ATTR.findall(m.group(0))}
         k = a.get("property") or a.get("name")
         if k in keep and a.get("content") and (k, a["content"]) not in seen:
             seen.add((k, a["content"]))
@@ -258,7 +258,11 @@ def main(argv=None):
     if args.from_html:
         print(render_walled(args.from_html.read_text(encoding="utf-8")))
         return 0
-    if not args.url or urlparse(args.url).scheme not in ("http", "https"):
+    try:
+        scheme = urlparse(args.url).scheme if args.url else ""
+    except ValueError:
+        scheme = ""
+    if scheme not in ("http", "https"):
         print("usage: fetch-url.sh <http(s) url>", file=sys.stderr)
         return 2
     if is_walled(args.url):

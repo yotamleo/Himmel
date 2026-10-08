@@ -9,5 +9,6 @@ set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 py="${HOME}/.himmel/scrapling-venv/bin/python"
+[ -x "$py" ] || py="${HOME}/.himmel/scrapling-venv/Scripts/python.exe"
 [ -x "$py" ] || py="$(command -v python3 || command -v python)" || { echo "python not found" >&2; exit 3; }
 exec "$py" -I "$here/fetch_url.py" "$@"

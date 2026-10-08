@@ -53,9 +53,12 @@ echo "== instagram fixture =="
 out="$(python3 -I "$PY" --from-html "$FIX/ig-post.html")"
 has 'og:title: Fixture User on Instagram: "a caption"' "$out" "og:title"
 has "og:image: https://scontent.cdninstagram.com/v/fix.jpg" "$out" "og:image"
+printf "<meta property='og:title' content='single quoted'>" >"$tmp/sq.html"
+has "og:title: single quoted" "$(python3 -I "$PY" --from-html "$tmp/sq.html")" "single-quoted og tag"
 
 echo "== exit codes =="
 python3 -I "$PY" >/dev/null 2>&1; [ $? = 2 ] && ok "no url -> 2" || bad "no url exit"
+python3 -I "$PY" 'https://[' >/dev/null 2>&1; [ $? = 2 ] && ok "malformed url -> 2" || bad "malformed url exit"
 python3 -I "$PY" 'file:///etc/passwd' >/dev/null 2>&1; [ $? = 2 ] && ok "non-http scheme -> 2" || bad "scheme exit"
 mkdir -p "$tmp/home"
 # Hermetic: block the scrapling import in-process, so a host python that has it installed never touches the network.
@@ -77,13 +80,14 @@ third" "$out" "br keeps line breaks in post text"
 echo "== plain host =="
 mkdir -p "$tmp/www"
 printf '<html><head><style>x{}</style></head><body><h1>Hello</h1><p>plain page</p></body></html>' >"$tmp/www/p.html"
-port=$((20000 + RANDOM % 20000))
+port="$(python3 -I -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1])")"
 (cd "$tmp/www" && exec python3 -m http.server "$port" --bind 127.0.0.1 >/dev/null 2>&1) &
 srv=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     python3 -c "import socket,sys; socket.create_connection(('127.0.0.1',$port),0.5)" 2>/dev/null && break
     sleep 0.25
 done
+kill -0 "$srv" 2>/dev/null && ok "local server is up" || bad "local server died (port taken?)"
 out="$(HOME="$tmp/home" bash "$FETCH" "http://127.0.0.1:$port/p.html" 2>&1)"; rc=$?
 [ "$rc" = 0 ] && ok "plain host -> 0" || bad "plain host rc=$rc ($out)"
 has "plain page" "$out" "html rendered to text"
