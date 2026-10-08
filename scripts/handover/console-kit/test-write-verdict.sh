@@ -82,7 +82,7 @@ verdict_rc() {
 }
 
 ev="$evd/evidence.md"
-printf '## Evidence checked\n\n- 1. read the parser\n- the hook never runs unset\n' > "$ev"
+printf 'class: option-parsing\n\n## Evidence checked\n\n- 1. read the parser\n- the hook never runs unset\n' > "$ev"
 # The <user>/<bucket> go.sh reads for this checkout (the bucket follows the
 # primary checkout's directory name, so it is derived, never hardcoded).
 scope=$(
@@ -103,6 +103,12 @@ check "1: go_trust_verdict accepts the GO" "$rc" 0
 rc=0; verdict_rc q1 "$SHA_B" || rc=$?
 check "1: go_trust_verdict refuses another head" "$rc" 2
 contains "1: evidence carried verbatim" "$(cat "$f1")" "- the hook never runs unset"
+
+# HIMMEL-4885: a new NO-GO without a class must not reach disk.
+printf 'the finding has no class\n' > "$evd/classless.md"
+rc=0; out=$(wv classless NO-GO "$SHA_A" --evidence-file "$evd/classless.md" 2>&1) || rc=$?
+check "nogo-without-class-refused" "$rc" 2
+check "classless NO-GO writes nothing" "$([ -e "$scope_dir/classless" ] && echo yes || echo no)" no
 
 # --- 2. NO-GO blocks ------------------------------------------------------
 rc=0; wv q2 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
@@ -274,7 +280,7 @@ mkdir -p "$tmp/bin" && mkdir -m 700 "$fake_scratch" || { echo "FAIL: cannot crea
 trap 'rm -rf "$tmp" "$evd" "$outd" "$fake_scratch"' EXIT
 printf '#!/bin/sh\necho %s\n' "$fake_uid" > "$tmp/bin/id"
 chmod +x "$tmp/bin/id"
-printf 'evidence\n' > "$fake_scratch/evidence.md"
+printf 'class: option-parsing\n\nevidence\n' > "$fake_scratch/evidence.md"
 rc=0; PATH="$tmp/bin:$PATH" wv q13 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
 check "11: control - a 0700 stub root is accepted" "$rc" 0
 chmod 770 "$fake_scratch"
@@ -354,6 +360,22 @@ rc=0; out=$(wv q20 GO "$SHA_B" --evidence-file "$ev" 2>&1) || rc=$?
 check "13: GO on B with judge-<B>.md vetoing C is written rc 0" "$rc" 0
 check "13: it lands at judge-<B>-<B>.md" "$out" "$scope_dir/q20/judge-$SHA_B-$SHA_B.md"
 check "13: the head-C NO-GO in judge-<B>.md is kept" "$(grep -c "^\*\*NO-GO\*\* for head \`$SHA_C\`" "$scope_dir/q20/judge-$SHA_B.md")" 1
+
+# The closed list rejects relabels outside it and empty comma members.
+for bad_class in unknown '' 'option-parsing,' ',other' 'other,,shell-parsing' 'other option-parsing'; do
+    printf 'class: %s\n\nfinding\n' "$bad_class" > "$evd/classes.md"
+    rc=0; wv badclass NO-GO "$SHA_A" --evidence-file "$evd/classes.md" >/dev/null 2>&1 || rc=$?
+    check "invalid class set '$bad_class' refused" "$rc" 2
+done
+printf 'class: other\nclass: option-parsing\n' > "$evd/classes.md"
+rc=0; wv badclass NO-GO "$SHA_A" --evidence-file "$evd/classes.md" >/dev/null 2>&1 || rc=$?
+check "duplicate class fields refused" "$rc" 2
+check "invalid class sets write nothing" "$([ -e "$scope_dir/badclass" ] && echo yes || echo no)" no
+printf 'class: option-parsing, cwd-indirection, shell-parsing, tool-defaults, reader-allowlist, other\n' > "$evd/classes.md"
+rc=0; wv allclasses NO-GO "$SHA_A" --evidence-file "$evd/classes.md" >/dev/null 2>&1 || rc=$?
+check "comma set from the full closed list accepted" "$rc" 0
+rc=0; wv classless GO "$SHA_A" --evidence-file "$evd/classless.md" >/dev/null 2>&1 || rc=$?
+check "GO needs no class" "$rc" 0
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"

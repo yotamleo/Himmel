@@ -290,6 +290,13 @@ gathering, per the rule below.>
 > `merge-on-green.sh`, and you are never asked an authority-adjacent
 > question.
 
+> **NO-GO class (HIMMEL-4885).** Every new NO-GO evidence file carries exactly
+> one `class:` field: a value or comma set from `option-parsing, cwd-indirection,
+> shell-parsing, tool-defaults, reader-allowlist, other`. In a delta brief, keep
+> the earlier class of a repeated finding; do not relabel it to buy another
+> round. A repeat across heads stops this PR for a console layer decision.
+> A same-uid file-access claim goes to the OS layer, not another text round.
+
 > **Lifecycle — the one rule.** Write your verdict file per
 > `docs/handover/verdict-template.md` — for a merge question, through
 > `bash <primary checkout>/scripts/handover/console-kit/write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <scratch file> --judge <your session name>`
