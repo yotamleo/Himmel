@@ -1135,8 +1135,15 @@ assert_file "no arm call on account mismatch" absent "$ARM_LOG"
 # write_cache fixture's 2026-06-13 reset is long past, so bank_lift_valid would
 # reject it). Never the operator's real lift file.
 LIFT_NOW="$(date +%s)"
-LIFT_RESET="$(date -u -d "@$((LIFT_NOW + 259200))" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null)"  # gnu-ok: test fixture
+# GNU date takes -d "@epoch", BSD date takes -r epoch; try both so macOS gets a stamp too.
+LIFT_RESET="$(date -u -d "@$((LIFT_NOW + 259200))" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null || date -u -r "$((LIFT_NOW + 259200))" +%Y-%m-%dT%H:%M:%S+00:00 2>/dev/null)"
+if [ -z "$LIFT_RESET" ]; then
+    echo "FATAL: could not build the lift fixture reset stamp (neither GNU nor BSD date form worked)" >&2
+    exit 1
+fi
 LIFT_FILE="$TMP/lift-fixture.json"
+# Hermetic: an operator's exported values must not steer the lift cases.
+unset CADENCE_BANK_MAX_PCT BANK_LIFT_FILE
 
 write_lift_cache() {  # $1 path, $2 five_hour util, $3 seven_day util
     cat > "$1" <<EOF2
@@ -1161,38 +1168,38 @@ lift_case() {
     rm -f "$ARM_LOG"
 }
 
-echo "Test 42: HIMMEL-4948 valid lift at seven_day 97 with threshold 97 — NO arm"
+echo "Test 51: HIMMEL-4948 valid lift at seven_day 97 with threshold 97 — NO arm"
 write_lift "$((LIFT_NOW + 100000))" "$ACCT" false
 lift_case lift-valid-97 9 97 0 absent
 
-echo "Test 43: valid lift, seven_day 100 — arms (a lift never spends past 100)"
+echo "Test 52: valid lift, seven_day 100 — arms (a lift never spends past 100)"
 lift_case lift-valid-100 9 100 2 present
 
-echo "Test 44: expired lift at 97 — arms (today's threshold)"
+echo "Test 53: expired lift at 97 — arms (today's threshold)"
 write_lift "$((LIFT_NOW - 100))" "$ACCT" false
 lift_case lift-expired-97 9 97 2 present
 
-echo "Test 45: account-mismatched lift at 97 — arms"
+echo "Test 54: account-mismatched lift at 97 — arms"
 write_lift "$((LIFT_NOW + 100000))" "0123456789abcdef" false
 lift_case lift-account-97 9 97 2 present
 
-echo "Test 46: no lift file at 97 — arms"
+echo "Test 55: no lift file at 97 — arms"
 rm -f "$LIFT_FILE"
 lift_case lift-none-97 9 97 2 present
 
-echo "Test 47: unreadable (malformed) lift at 97 — fail-open to today's behaviour, arms"
+echo "Test 56: unreadable (malformed) lift at 97 — fail-open to today's behaviour, arms"
 printf 'not json{' > "$LIFT_FILE"; chmod 600 "$LIFT_FILE"
 lift_case lift-garbage-97 9 97 2 present
 
-echo "Test 48: window lift does NOT lift five_hour — five_hour 97 still arms"
+echo "Test 57: window lift does NOT lift five_hour — five_hour 97 still arms"
 write_lift "$((LIFT_NOW + 100000))" "$ACCT" false
 lift_case lift-window-fh97 97 20 2 present
 
-echo "Test 49: standing lift spends five_hour to 100 too — five_hour 97 does not arm"
+echo "Test 58: standing lift spends five_hour to 100 too — five_hour 97 does not arm"
 write_lift "$((LIFT_NOW + 100000))" "$ACCT" true
 lift_case lift-standing-fh97 97 20 0 absent
 
-echo "Test 50: standing lift with explicit CADENCE_BANK_MAX_PCT keeps five_hour at the threshold — arms"
+echo "Test 59: standing lift with explicit CADENCE_BANK_MAX_PCT keeps five_hour at the threshold — arms"
 S="$TMP/s4948-explicit"; mkdir -p "$S"
 C="$TMP/c4948-explicit.json"; write_lift_cache "$C" 97 20
 rm -f "$ARM_LOG"
