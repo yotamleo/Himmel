@@ -875,6 +875,17 @@ fi
 
 echo "bank-preflight: FLEET native=$fleet_native claudex=$fleet_claudex openrouter=$fleet_openrouter reserved=$fleet_reserved total=$fleet_n/$FLEET_CAP" >&2
 
+# HIMMEL-4904: task 1 exposes credit accounting only. No env opt-in can
+# dispatch API work until the reviewed one-shot launcher/auth isolation ships.
+# Refuse before creating a fleet reservation for a launch that cannot happen.
+if [ "$LANE" = api ] && [ "$LAUNCH_INTENT" = "1" ]; then
+  echo "bank-preflight: api dispatch is OFF (credit accounting only) — leg=$LEG refusing" >&2
+  if [ "$_fleet_admitted" -eq 1 ]; then
+    _fleet_release_admit "$SLOTS/.admit"
+  fi
+  emit SKIPPED-BANK
+fi
+
 if [ "$_fleet_admitted" -eq 0 ]; then
   echo "bank-preflight: could not acquire the fleet admission lock ($SLOTS/.admit) after $_fleet_admit_iters retries — cannot verify the fleet is under cap" >&2
   if [ "${FLEET_CAP_OK:-}" = "1" ]; then
@@ -1030,6 +1041,16 @@ fi
 # refusals above as well as this final one — goes through it.
 if [ "$_fleet_admitted" -eq 1 ]; then
   _fleet_release_admit "$SLOTS/.admit"
+fi
+
+# HIMMEL-4904: a cache-only, secret-free API credit row, never subscription
+# usage or provider authentication. This reader does not reserve paid work.
+if [ "$LANE" = api ]; then
+  _api_verdict="$(HIMMEL_API_CREDIT_FORMAT=bank node "$REPO/scripts/lib/api-credit-state.mjs" status)" || _api_verdict=BANK-UNKNOWN
+  case "$_api_verdict" in
+    PROCEED|SKIPPED-BANK|BANK-STALE|BANK-UNKNOWN) emit "$_api_verdict" ;;
+    *) emit BANK-UNKNOWN ;;
+  esac
 fi
 
 # HIMMEL-4081: use the shared effective balance (credit vs key cap), never
