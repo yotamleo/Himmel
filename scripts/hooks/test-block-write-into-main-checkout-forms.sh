@@ -547,6 +547,43 @@ _r4476 "4476t grep '--filter=…' eval touch primary"              block "grep '
 _r4476 "4476u grep \\-\\-save-config eval touch primary"         block "grep \\-\\-save-config eval 'touch @P@/.github/f'"
 }
 
+# HIMMEL-4598: the `git archive | tar -x -C /tmp/<dir>` relief must not cover a
+# destination at or under the resolved primary when the primary itself lives
+# under /tmp ($TMPFIX/primary, main). From the primary cwd the relief used to
+# allow a write the cwd rule denies; from a /tmp cwd the ratified
+# is_temp_or_devnull exemption (row 28) allows the destination either way, so
+# those rows pin parity with a plain `cat >` into the same primary. The
+# control extracts into a /tmp dir outside any repo (ALLOW from both).
+echo "== HIMMEL-4598: /tmp archive relief excludes a primary under /tmp =="
+_TP="$TMPFIX/primary"
+mkdir -p "$_TP/sub" "$TMPFIX/outside"
+_subst_row "4598a tar -x -C primary-under-tmp, cwd the primary"      block "git archive HEAD | tar -x -C $_TP" "$_TP"
+_subst_row "4598b tar -x -C primary-under-tmp/sub, cwd the primary"  block "git archive HEAD | tar -x -C $_TP/sub" "$_TP"
+_subst_row "4598c tar -x -C primary/new (absent), cwd the primary"   block "git archive HEAD | tar -x -C $_TP/not-yet" "$_TP"
+_subst_row "4598d tar -xf - --directory=primary, cwd the primary"    block "git archive HEAD | tar -xf - --directory=$_TP" "$_TP"
+_subst_row "4598f tar -x -C outside under /tmp (ALLOW), cwd the primary" allow "git archive HEAD | tar -x -C $TMPFIX/outside" "$_TP"
+_subst_row "4598g tar -x -C primary-under-tmp, cwd /tmp (row-28 parity ALLOW)" allow "git archive HEAD | tar -x -C $_TP" /tmp
+_subst_row "4598h cat > primary-under-tmp/f, cwd /tmp (row-28 parity ALLOW)"   allow "cat > $_TP/f" /tmp
+_subst_row "4598e tar -x -C outside under /tmp (ALLOW), cwd /tmp"    allow "git archive HEAD | tar -x -C $TMPFIX/outside" /tmp
+
+# HIMMEL-4591: the scan is linear in the payload. A ~15 KB single command
+# (quoted text, a dq span with a substitution, a heredoc) took ~27 s before
+# the quoted-run fast-forward; it now takes ~1 s. The bound is generous
+# (loaded-CI x2 rule) but far under the old figure. Verdict must stay ALLOW.
+echo "== HIMMEL-4591: large single-command payload is scanned in linear time =="
+_unit="the quick brown fox jumps over the lazy dog 0123456789 "
+_blob=""; while [ ${#_blob} -lt 5000 ]; do _blob="$_blob$_unit"; done
+_big="printf '%s\n' '$_blob' \"$_blob \$(echo hi)\" > $_WR/big.txt"$'\n'"cat <<'EOF' > $_WR/big2.txt"$'\n'"$_blob"$'\n'"EOF"
+_bigj="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$_big" | jq -Rs .),\"cwd\":\"$_WR\"}}"
+_t0=$SECONDS
+_got=$(_run "$DIRECT" "$_bigj" "$_WR")
+_el=$((SECONDS - _t0))
+if [ "$_got" = allow ] && [ "$_el" -le 12 ]; then
+    ok "4591 ${#_big}-byte payload: allow in ${_el}s (bound 12s)"
+else
+    bad "4591 ${#_big}-byte payload: got $_got in ${_el}s (want allow within 12s)"
+fi
+
 echo "== non-command / non-Bash payloads (direct-exec only — sourced covered by test-block-terminal-write-fence.sh) =="
 # HIMMEL-3401 (S6): a Bash payload with no command fails CLOSED.
 check_one "no command -> block" "$DIRECT" block '{"tool_name":"Bash","tool_input":{}}'
