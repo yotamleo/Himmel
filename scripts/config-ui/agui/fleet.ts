@@ -245,11 +245,12 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     const journal = found && "path" in found ? found.path : null;
     let view: View | null = null, tally: Tally | null = null;
     if (journal) {
-      seen.add(journal);
       // Live if any of its files was written recently: a subagent can be busy while the main journal is quiet.
       const { paths } = await sessionFiles(journal);
       const mtimes = await Promise.all(paths.map((p) => stat(p).then((s) => s.mtimeMs, () => 0)));
       if (opts.now - Math.max(0, ...mtimes) > RECENT_MS && roleOf(c.name, c.doc) === "interactive") return null;
+      // Only a listed session keeps its fold: a quiet one left off the page drops out of the cache below.
+      seen.add(journal);
       ({ view, tally } = await fold(journal));
     }
     let doc = "", docAt = opts.now;
