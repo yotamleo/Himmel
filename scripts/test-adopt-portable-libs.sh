@@ -37,7 +37,7 @@ while IFS= read -r hook; do
   for lib in $libs; do
     checked=$((checked + 1))
     case " $OPTIONAL " in *" $lib "*) continue ;; esac
-    printf '%s\n' "$portable" | grep -qxF "$lib" \
+    grep -qxF "$lib" <<< "$portable" \
       || { echo "FAIL: $hook sources $lib, which PORTABLE_FILES does not copy" >&2; fail=1; }
   done
 done <<< "$portable"
