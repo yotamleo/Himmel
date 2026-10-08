@@ -890,6 +890,58 @@ deny "PATH=/tmp; grep 'a|qmd query' f"
 deny "grep() { sh; }; grep 'a|qmd query' f"
 deny "echo 'x; qmd query' | grep x"
 deny "bash -c 'grep x f; qmd query'"
+# HIMMEL-4989: a command word built from a glob, a parameter expansion or a
+# command substitution can be tmux, screen or pwsh, which type or run a string
+# the guard cannot read; a file the command wrote can be run through sh -c, ENV
+# or BASH_ENV; and an alias or function defined in the command can be tmux.
+# Each row below was run in real bash against stub tmux/screen/pwsh programs
+# and ran the program (or the written file).
+deny "/usr/bin/tm?x new 'qmd query x'"
+deny "/usr/bin/t[m]ux new 'qmd query x'"
+deny "/usr/bin/pw?h -c 'qmd query x'"
+deny "/usr/bin/scr*n -dm 'qmd query x'"
+deny '/usr/bin/tm?x send-keys -H 71 6d 64'
+deny "a=tm; \${a}ux new 'qmd query x'"
+deny "a=t b=mux; \$a\$b new 'qmd query x'"
+deny "a=scr; \${a}een -dm 'qmd query x'"
+deny "a=pw; \${a}sh -c 'qmd query x'"
+deny "a=tm; \${a}ux send-keys -H 71 6d 64 20 71 75 65 72 79"
+deny "a=ls; a=tm; \${a}ux send-keys -H 71 6d 64 20 71 75 65 72 79"
+deny "a=ls; b=ux; a=tm; \$a\$b send-keys -H 71 6d 64 20 71 75 65 72 79"
+allow "a=ls; \$a -l; a=tm; echo \$a"
+deny "read x < f; env -u HOME \"\$x\" send-keys -H 71 6d 64 20 71 75 65 72 79"
+deny "read x < f; nice -n 5 \"\$x\" send-keys -H 71 6d 64 20 71 75 65 72 79"
+allow "env -u HOME ls -l; nice -n 5 echo hi"
+deny "alias f='command tmux'; f send-keys -H 71 6d 64 20 71 75 65 72 79"
+allow "alias f='command ls'; f -l"
+deny "\$(printf '\\x74mux') new 'qmd query x'"
+deny "\`printf '\\x74mux'\` new 'qmd query x'"
+deny "\$(echo dG11eA== | base64 -d) new 'qmd query x'"
+deny "\$(rev <<< xumt) new 'qmd query x'"
+deny "\$(printf '\\x74mux') send-keys -H 71 6d 64"
+deny 'echo qmd query x > f; sh -c ". f"'
+deny 'echo qmd query x > f; ENV=f sh -i < /dev/null'
+deny 'echo qmd query x > f; BASH_ENV=f bash -c true'
+deny 'echo qmd query x > f; env BASH_ENV=f bash -c true'
+deny 'echo qmd query x > f; export ENV=./f; sh -i'
+deny "alias f=tmux
+f new 'qmd query x'"
+deny "alias f=tmux; f new 'qmd query x'"
+deny "alias f='tmux new'; f 'qmd query x'"
+deny "f(){ tmux \"\$@\"; }; f new 'qmd query x'"
+deny "f() { /usr/bin/screen \"\$@\"; }; f -dm 'qmd query x'"
+deny "function f { pwsh \"\$@\"; }; f -c 'qmd query x'"
+deny "alias f=tmux; f send-keys -H 71 6d 64"
+# ... while a plain expansion that cannot be one of them, a glob over other
+# programs and a file written without a verb stay allowed.
+allow 'echo $HOME; qmd status'
+allow 'b=/tmp/bin; "$b/tool" go'
+allow 'ls /usr/bin/tm?x-notes'
+allow 'echo hello > f; sh -c ". f"'
+allow 'echo hello > f; ENV=f sh -i < /dev/null'
+allow 'alias ll="ls -l"; ll'
+allow 'f(){ ls "$@"; }; f -l'
+allow 'cd "$(git rev-parse --show-toplevel)" && ls'
 assert_rc "allow: non-Bash tool" 0 \
     "$(run_case '{"tool_name":"Read","tool_input":{"file_path":"/tmp/qmd query"}}')"
 assert_rc "allow: bypass QMD_UNBOUNDED_OK=1" 0 \
