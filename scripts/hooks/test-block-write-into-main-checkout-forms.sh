@@ -617,6 +617,16 @@ check_both "4921 C tar -xzC primary -f x.tar (-C inside a bundle) denies" block 
     "$(_j4921 "tar -xzC $FIX/primary -f x.tar" "$FIX/wt")"
 check_both "4921 C mirror: tar -cf -x.tar -C primary . (archive named -x.tar) allows" allow \
     "$(_j4921 "tar -cf -x.tar -C $FIX/primary ." "$FIX/wt")"
+check_both "4921 C tar -Mx -f x.tar -C primary (-M takes no value) denies" block \
+    "$(_j4921 "tar -Mx -f x.tar -C $FIX/primary" "$FIX/wt")"
+check_both "4921 C mirror: tar -Mx -f x.tar -C wt allows" allow \
+    "$(_j4921 "tar -Mx -f x.tar -C $FIX/wt" "$FIX/wt")"
+check_both "4921 C old-style tar xCf primary x.tar (operands follow) denies" block \
+    "$(_j4921 "tar xCf $FIX/primary x.tar" "$FIX/wt")"
+check_both "4921 C mirror: old-style tar xCf wt x.tar allows" allow \
+    "$(_j4921 "tar xCf $FIX/wt x.tar" "$FIX/wt")"
+check_both "4921 C mirror: old-style tar cCf primary out.tar (create) allows" allow \
+    "$(_j4921 "tar cCf $FIX/primary out.tar ." "$FIX/wt")"
 check_both "4921 D echo x > /tmp-symlink-to-primary/f (cwd=wt) denies" block \
     "$(_j4921 "echo x > $TMPFIX/plink/f4921" "$FIX/wt")"
 check_both "4921 D mirror: echo x > plain /tmp dir/f allows" allow \

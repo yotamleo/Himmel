@@ -6330,7 +6330,7 @@ while IFS= read -r _bwimc_clause; do
                         _bwimc_bc="${_bwimc_t:$_bwimc_bk:1}"
                         case "$_bwimc_bc" in
                             x) _bwimc_x=1 ;;
-                            [fCbLNTXFHIKMVg])
+                            [fCbLNTXFHIKVg])
                                 _bwimc_rest="${_bwimc_t:$((_bwimc_bk+1))}"
                                 if [ -z "$_bwimc_rest" ]; then
                                     _bwimc_i=$((_bwimc_i+1))
@@ -6343,8 +6343,26 @@ while IFS= read -r _bwimc_clause; do
                     done ;;
                 *)
                     # old-style first operand (`tar xf a.tar`): mode letters only.
+                    # Its value-taking letters (f, C, ...) consume the following
+                    # tokens in letter order (`tar xCf DIR a.tar`).
                     if [ "$_bwimc_i" = 1 ]; then
-                        case "$_bwimc_t" in *[!a-zA-Z]*) : ;; *x*) _bwimc_x=1 ;; esac
+                        case "$_bwimc_t" in
+                            *[!a-zA-Z]*) : ;;
+                            *)
+                                _bwimc_bk=0
+                                while [ "$_bwimc_bk" -lt "${#_bwimc_t}" ]; do
+                                    _bwimc_bc="${_bwimc_t:$_bwimc_bk:1}"
+                                    case "$_bwimc_bc" in
+                                        x) _bwimc_x=1 ;;
+                                        [fCbLNTXFHIKVg])
+                                            _bwimc_i=$((_bwimc_i+1))
+                                            if [ "$_bwimc_i" -lt "${#_bwimc_toks[@]}" ]; then
+                                                [ "$_bwimc_bc" = C ] && _bwimc_dirs+=("${_bwimc_toks[$_bwimc_i]}")
+                                            fi ;;
+                                    esac
+                                    _bwimc_bk=$((_bwimc_bk+1))
+                                done ;;
+                        esac
                     fi ;;
             esac
             _bwimc_i=$((_bwimc_i+1))
