@@ -94,6 +94,9 @@ check 'a non-ASCII dirty path is counted, not skipped' 'STALL:50m,1' "$(vs q)"
 git -C "$W/q" checkout -q -- 'ünï.md' 2>/dev/null; git -C "$W/q" rm -q --cached 'ünï.md'; rm -f "$W/q/ünï.md"; touch -d '50 minutes ago' "$W/q/.git/index"  # gnu-ok
 check 'a deleted staged path still reads STALL via the index mtime' 'STALL:50m,1' "$(vs q)"
 check 'a leading-zero threshold is read as decimal' 'STALL:50m,1' "$(TICK_VAULT_STALL_MIN=08 TICK_VAULT_DIR="$W/q" bash "$VS")"
+mkvault r
+tabf="$(printf 'a\tb.md')"; echo t > "$W/r/$tabf"; git -C "$W/r" "${GA[@]}" add -- "$tabf"; git -C "$W/r" "${GA[@]}" commit -q -m t; echo t2 >> "$W/r/$tabf"; touch -d '50 minutes ago' "$W/r/$tabf"  # gnu-ok
+check 'a tab in a path is counted with its real mtime' 'STALL:50m,1' "$(vs r)"
 
 if [ "$fails" -eq 0 ]; then printf 'ALL PASS\n'; exit 0; fi
 printf '%s FAILED\n' "$fails"; exit 1
