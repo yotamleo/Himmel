@@ -166,11 +166,13 @@ if grep -q -- "-X DELETE repos/yotamleo/Himmel/actions/runners/4242" "$TMP/log/g
 else
     bad "no deregister: $(tr '\n' '|' < "$TMP/log/gh.argv")"
 fi
-if grep -rq "JITSECRET" "$TMP" --exclude-dir=log --exclude-dir=bin --exclude=out --exclude=hook.out 2>/dev/null; then
-    bad "JIT config written to a file"
-else
-    ok "JIT config written to no file"
-fi
+grep -rq "JITSECRET" "$TMP" --exclude-dir=log --exclude-dir=bin --exclude=out --exclude=hook.out
+rc=$?
+case "$rc" in
+    1) ok "JIT config written to no file" ;;
+    0) bad "JIT config written to a file" ;;
+    *) bad "file leak scan could not read the tree (grep rc=$rc)" ;;
+esac
 
 echo "T4b an image that reaches the station loopback refuses to serve"
 reset_log

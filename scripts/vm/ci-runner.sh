@@ -160,16 +160,16 @@ build() {
     vm_clone_ensure "$BASE_SNAPSHOT"
     vm_restore "$BASE_SNAPSHOT"
     vm_boot
-    vm_ssh "rm -rf $stage && mkdir -p $stage"
+    vm_ssh "rm -rf $stage && mkdir -p $stage" || die "could not stage in the guest"
     for f in guest-provision.sh job-started-hook.sh; do
         vm_ssh "cat > $stage/$f" < "$REPO_ROOT/scripts/vm/ci-runner/$f" || die "staging $f failed"
     done
     vm_ssh "sudo bash $stage/guest-provision.sh $REPO" || die "guest provisioning failed"
-    vm_ssh "rm -rf $stage"
+    vm_ssh "rm -rf $stage" || die "could not remove the guest staging dir"
     for f in /home /opt /root /tmp; do
         vm_guest_assert_clean vm_ssh_root "$f" full || die "the guest holds a secret-bearing file under $f — not snapshotting"
     done
-    vm_poweroff
+    vm_poweroff || die "$CLONE_NAME did not power off — not snapshotting a running VM"
     (cd "$HOME" && "$VBOXMANAGE" snapshot "$CLONE_NAME" take "$RUNNER_SNAPSHOT" \
         --description "HIMMEL-5037: ephemeral Actions runner image, unregistered") \
         || die "could not take $RUNNER_SNAPSHOT"
