@@ -1229,7 +1229,7 @@ function splitRef(expr) {
 // to scanning every character — a parse problem never hides a real statement.
 const HEREDOC_OP = new RegExp(`^<<(-?)[ \\t]*(?:'([^'\\n]*)'|"([^"\\n]*)"|(\\\\?)(${VAR_NAME}))`);
 const BODY_ESCAPE_SPAN = /^\$\(/;
-const EVAL_BEFORE = /(?:^|[\s;&|(])(?:eval|(?:ba|da|z|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c)\s+$/;
+const EVAL_BEFORE = /(?:^|[\s;&|(])(?:eval(?:\s+--)?|(?:\S*\/)?(?:ba|da|z|k|a)?sh\s+(?:-\S+\s+)*-[A-Za-z]*c[A-Za-z]*(?:\s+--)?)\s+$/;
 
 function maskHeredocBody(text, from, to, quoted, mask) {
   if (quoted) { mask.fill(1, from, to); return true; }

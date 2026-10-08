@@ -1683,6 +1683,15 @@ E
 sc_case "row 58: sh -lc of a double-quoted string runs its source" 0 1 <<'E'
 sh -lc "true; source $MISSING"
 E
+sc_case "row 58: a path-qualified shell -c runs its source" 0 1 <<'E'
+/bin/bash -c 'true; source "$MISSING"'
+E
+sc_case "row 58: a flag cluster after c still runs its source" 0 1 <<'E'
+bash -cl 'true; source "$MISSING"'
+E
+sc_case "row 58: eval after -- runs its source" 0 1 <<'E'
+eval -- 'true; source "$MISSING"'
+E
 sc_case "row 58 control: echo of the same string does not" 0 0 <<'E'
 echo "true; source \"$MISSING\""
 E
