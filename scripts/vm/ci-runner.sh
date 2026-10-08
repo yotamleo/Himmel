@@ -156,7 +156,8 @@ one_job() {
     vm_boot
     # Per boot, not per image: a guest whose egress filter did not load would
     # reach the station LAN.
-    vm_ssh "sudo nft list table inet himmel_egress | grep -q reject" \
+    local lan_reject='192.168.0.0/16.*reject'  # leak-allow: private-lan-ip egress filter range
+    vm_ssh "sudo nft list table inet himmel_egress | grep -q 'hook output' && sudo nft list table inet himmel_egress | grep -q '$lan_reject'" \
         || die "the himmel_egress nft table is not loaded in $CLONE_NAME — not minting a runner"
     { IFS= read -r RUNNER_ID && IFS= read -r jit; } < <(
         gh api -X POST "repos/$REPO/actions/runners/generate-jitconfig" \
