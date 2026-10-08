@@ -15,9 +15,9 @@
 #
 # Env: ADOPT_SH overrides the adopt.sh read (the RED control points it at a copy
 # with the lib removed).
-set -euo pipefail
+set -uo pipefail
 
-repo_root=$(git rev-parse --show-toplevel)
+repo_root=$(git rev-parse --show-toplevel) || { echo "FAIL: not in a git repo" >&2; exit 1; }
 adopt="${ADOPT_SH:-$repo_root/scripts/adopt.sh}"
 OPTIONAL='scripts/lib/load-dotenv.sh'
 
