@@ -82,6 +82,13 @@ put "$r" a.mjs "const m = await import('@modelcontextprotocol/sdk/client/index.j
 run "$r"
 if [ "$RC" -eq 1 ]; then pass "dynamic import refused"; else fail "dynamic import -> rc=$RC: $OUT"; fi
 
+r="$(mkrepo multi)"
+put "$r" a.mjs "const m = await import(
+  '@modelcontextprotocol/sdk/client/index.js'
+)"
+run "$r"
+if [ "$RC" -eq 1 ] && has 'a.mjs:2'; then pass "multiline specifier refused"; else fail "multiline import -> rc=$RC: $OUT"; fi
+
 echo "== 4. npm transitive lock entry =="
 r="$(mkrepo npmlock)"
 put "$r" a/package-lock.json '{"packages":{"node_modules/foo":{"dependencies":{"@modelcontextprotocol/sdk":"^1.0.0"}},"node_modules/@modelcontextprotocol/sdk":{"version":"1.29.0"}}}'

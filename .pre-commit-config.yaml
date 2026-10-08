@@ -182,7 +182,7 @@ repos:
         # HIMMEL-4866
         entry: bash scripts/lint/check-mcp-sdk-v1.sh
         language: system
-        files: (package\.json|package-lock\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml|\.(ts|tsx|js|jsx|mjs|cjs|mts|cts))$
+        files: (package\.json|package-lock\.json|npm-shrinkwrap\.json|bun\.lock|yarn\.lock|pnpm-lock\.yaml|\.(ts|tsx|js|jsx|mjs|cjs|mts|cts))$
         pass_filenames: false
 
       - id: no-ticket-id-in-user-strings
