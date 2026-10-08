@@ -110,6 +110,9 @@ out=$(python3 "$CMP" qmd-quality --ledger "$Q" --thresholds "$TH" --best-of 1 2>
 eq "compare: --best-of 1 is the previous run (0.60, inside the band)" "$rc" "0"
 out=$(python3 "$CMP" qmd-quality --ledger "$Q" --thresholds "$TH" --baseline nope 2>&1); rc=$?
 eq "compare: an unknown --baseline is exit 3" "$rc" "3"
+out=$(python3 "$CMP" qmd-quality --ledger "$Q" --thresholds "$TH" --baseline r4 2>&1); rc=$?
+eq "compare: the candidate as its own --baseline is refused (exit 2)" "$rc" "2"
+has "compare: names the self-baseline" "$out" "own baseline"
 
 row "$Q" qmd-quality r5 "$C" '{"hybrid.mrr":0.58,"hybrid.median_ms":200}'
 out=$(python3 "$CMP" qmd-quality --ledger "$Q" --thresholds "$TH" 2>&1); rc=$?
@@ -232,6 +235,16 @@ eq "qmd adapter: per-collection rows are not run metrics" "$(python3 -c 'import 
 if python3 "$LIB" validate "$QL" >/dev/null 2>&1; then pass "qmd adapter: the row is valid"; else fail "qmd adapter: the row is invalid"; fi
 python3 "$LIB" qmd-quality "$TMP/empty-dir" --ledger "$QL" --golden "$TMP/golden.jsonl" --modes lex >/dev/null 2>&1; rc=$?
 if [ "$rc" -ne 0 ]; then pass "qmd adapter: a dir with no scores.tsv is refused"; else fail "qmd adapter: accepted a dir with no scores.tsv"; fi
+
+# HIMMEL-4658: the retrieval-corpus identity (the index content hash) is in the hashed config.
+printf 'corpus-one' >"$TMP/idx1.sqlite"; printf 'corpus-two' >"$TMP/idx2.sqlite"; cp "$TMP/idx1.sqlite" "$TMP/idx1-copy.sqlite"
+QI="$TMP/qidx.jsonl"
+for ix in idx1 idx2 idx1-copy; do
+  python3 "$LIB" qmd-quality "$QO" --ledger "$QI" --golden "$TMP/golden.jsonl" --modes lex,hybrid --index "$TMP/$ix.sqlite" >/dev/null 2>&1
+done
+h0=$(field "$QI" 0 confighash); h1=$(field "$QI" 1 confighash); h2=$(field "$QI" 2 confighash)
+if [ -n "$h0" ] && [ "$h0" != "$h1" ]; then pass "qmd adapter: a different index content changes confighash"; else fail "qmd adapter: confighash ignores the index content ($h0 vs $h1)"; fi
+eq "qmd adapter: the same content at another path keeps confighash" "$h2" "$h0"
 
 echo "test-eval-runs: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

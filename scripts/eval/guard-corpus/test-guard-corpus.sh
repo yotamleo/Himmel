@@ -94,6 +94,22 @@ else fail "ledger: unexpected rows: $LROWS"; fi
 if python3 "$HERE/../lib/eval_runs.py" validate "$HIMMEL_EVAL_RUNS_LEDGER" >/dev/null 2>&1; then pass "ledger: rows pass validate"
 else fail "ledger: rows fail validate"; fi
 
+# HIMMEL-4659: hook identity is repo-relative. Two hooks that share a basename in
+# one repo differ; the same repo-relative hook at two checkout roots is equal.
+LH="$TMP/hookid.jsonl"
+for r in rootA rootB; do
+  mkdir -p "$TMP/$r/scripts/hooks" "$TMP/$r/other"
+  cp "$TMP/base-hook.sh" "$TMP/$r/scripts/hooks/check.sh"; cp "$TMP/base-hook.sh" "$TMP/$r/other/check.sh"
+done
+hid() { HIMMEL_EVAL_RUNS_LEDGER="$LH" python3 "$DIFF" --repo "$TMP/$1" --base "$TMP/$1/$2" --head "$TMP/$1/$2" \
+          --corpus "$TMP/corpus.jsonl" --jobs 4 >/dev/null 2>&1; }
+hid rootA scripts/hooks/check.sh; hid rootA other/check.sh; hid rootB scripts/hooks/check.sh
+HH=$(python3 -c 'import json,sys
+print(" ".join(json.loads(l)["confighash"] for l in open(sys.argv[1])))' "$LH")
+read -r H1 H2 H3 <<<"$HH"
+if [ -n "$H3" ] && [ "$H1" != "$H2" ]; then pass "hook identity: a/check.sh and b/check.sh differ"; else fail "hook identity: same-basename hooks collide ($HH)"; fi
+if [ -n "$H3" ] && [ "$H1" = "$H3" ]; then pass "hook identity: same relative hook at another checkout root is equal"; else fail "hook identity: differs per checkout root ($HH)"; fi
+
 # --- 3. planted slow stub flagged TIMEOUT RISK --------------------------------
 OUT3=$(python3 "$DIFF" --base "$TMP/base-hook.sh" --head "$TMP/slow-hook.sh" \
         --corpus "$TMP/corpus.jsonl" --jobs 4 --timeout-warn 1 2>&1)
