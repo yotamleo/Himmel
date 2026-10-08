@@ -64,4 +64,17 @@ MEMORY_CAPTURE_OK=1 run Bash "$cmd"; assert_rc "MEMORY_CAPTURE_OK=1 bypass" 0 "$
 rm -f "$IDX"
 run Bash "$cmd"; assert_rc "missing index allowed" 0 "$?"
 
+# 9: a star in the command text must not glob (HIMMEL-4891 judge): bounded run.
+printf -- '- short\n' > "$IDX"
+jq -nc --arg c "echo '/*/*/*/*/*/*/*/.claude/projects/*/memory/MEMORY.md'" \
+  '{tool_name:"Bash",tool_input:{command:$c}}' > "$SB/star.json"
+timeout 20 bash "$HOOK" < "$SB/star.json" >/dev/null 2>&1
+assert_rc "star path does not glob (finishes under 20s)" 0 "$?"
+
+# 10: the same path named repeatedly is reported once.
+printf -- '- short\n%s\n' "$long250" > "$IDX"
+run Bash "cat $IDX; cat $IDX; cat $IDX"; assert_rc "repeated path flagged" 2 "$?"
+n="$(grep -c 'line 2' "$SB/err")"
+if [ "$n" = 1 ]; then echo "PASS repeated path reported once"; else echo "FAIL repeated path reported $n times"; FAILED=1; fi
+
 exit "$FAILED"

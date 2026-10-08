@@ -32,7 +32,11 @@ bad=""
 # Every absolute auto-memory MEMORY.md path the command names (a `~` or `$HOME`
 # spelling expands to one in the shell, so only the literal path is matched here
 # plus the two common home spellings, resolved below).
-for p in $(printf '%s' "$cmd" | grep -oE '[^[:space:]"'"'"'=<>|;&()]*/\.claude/projects/[^[:space:]"'"'"'/]+/memory/MEMORY\.md'); do
+# Read line by line (an unquoted $(...) would glob a `*` in the command text) and
+# dedupe, so a command naming one path 5000 times checks it once.
+paths="$(printf '%s' "$cmd" | grep -oE '[^[:space:]"'"'"'=<>|;&()]*/\.claude/projects/[^[:space:]"'"'"'/]+/memory/MEMORY\.md' | sort -u)"
+while IFS= read -r p; do
+    [ -n "$p" ] || continue
     # shellcheck disable=SC2088,SC2016  # literal command TEXT, deliberately unexpanded
     case "$p" in
         '~/'*) p="${HOME:-}/${p#\~/}" ;;
@@ -44,7 +48,9 @@ for p in $(printf '%s' "$cmd" | grep -oE '[^[:space:]"'"'"'=<>|;&()]*/\.claude/p
     [ -n "$nums" ] || continue
     bad="$bad$p: line $(printf '%s' "$nums" | tr '\n' ' ')
 "
-done
+done <<EOF
+$paths
+EOF
 [ -n "$bad" ] || exit 0
 
 {
