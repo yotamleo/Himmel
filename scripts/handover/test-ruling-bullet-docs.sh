@@ -33,14 +33,26 @@ fi
 # 2. no preface instructs the leg to write GO / approval / token text into a doc bullet
 bad=0
 for f in "$DOCS"/handover/leg-preface*.md; do
-    hit="$(grep -nE '(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}(GO <pr>|approved|authoris|authoriz|token)' "$f" | grep -viE 'never|not ' | head -n 1)"
+    # lines joined so an instruction wrapped across lines is still one sentence
+    if [ ! -r "$f" ]; then fail "$(basename "$f") unreadable"; bad=1; continue; fi
+    joined="$(tr '\n' ' ' < "$f")"
+    # LC_ALL=C: a multibyte [^.]{0,80} exceeds ugrep's complexity limit, and the
+    # resulting rc=2 would otherwise read as "no match" (vacuous pass)
+    found="$(printf '%s\n' "$joined" | LC_ALL=C grep -oE '(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}(GO <pr>|approved|authoris|authoriz|token)[^.]*')"
+    rc=$?
+    if [ "$rc" -gt 1 ]; then fail "$(basename "$f") scan errored (grep rc=$rc)"; bad=1; continue; fi
+    hit="$(printf '%s\n' "$found" | grep -viE 'never|not ' | head -n 1)"
     if [ -n "$hit" ]; then fail "$(basename "$f") tells the leg to write approval/GO/token text into a bullet: $hit"; bad=1; fi
 done
+# positive control: the same scan must catch a wrapped bad instruction
+ctl="$(printf 'Always write the GO into your\nResults bullet along with your\ntoken.\n' | tr '\n' ' ' | LC_ALL=C grep -oE '(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}(GO <pr>|approved|authoris|authoriz|token)[^.]*')"
+if [ -n "$ctl" ]; then pass "scan control: a wrapped GO-into-bullet instruction is caught"; else fail "scan control: a wrapped GO-into-bullet instruction is caught"; fi
 [ "$bad" -eq 0 ] && pass "no leg preface asks for approval/GO/token text in a doc bullet"
 
 # 3. quote-back stays in the reply, stated in the preface
 # shellcheck disable=SC2016  # literal backticks, nothing to expand
-if tr '\n' ' ' < "$PREFACE" | grep -qiE 'quote-back[^.]*goes only in your `SendMessage` reply'; then
+qb="$(tr '\n' ' ' < "$PREFACE" | grep -oiE 'quote-back[^.]*goes only in your `SendMessage` reply')"
+if [ -n "$qb" ]; then
     pass "preface keeps the token quote-back in the reply"
 else
     fail "preface keeps the token quote-back in the reply"
