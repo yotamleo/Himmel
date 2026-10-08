@@ -35,7 +35,7 @@ check() { # check <label> <want-bad 0|1> <file>
     if [ "$bad" = "$2" ]; then echo "PASS $1"; else echo "FAIL $1 - drivers: ${out:-none}"; FAILED=1; fi
 }
 
-TMP=$(mktemp -d) || exit 1
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/gitattr-lint.XXXXXX") || exit 1
 trap 'rm -rf "$TMP"' EXIT
 printf '*.bin filter=lfs diff=lfs merge=lfs -text\n' >"$TMP/ok"
 printf '# filter=evil\n*.md text\n' >"$TMP/comment"
