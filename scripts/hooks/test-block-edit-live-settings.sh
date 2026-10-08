@@ -509,6 +509,15 @@ assert_rc "71 accepted false deny: cat >> other file with settings.json in hered
     "$(bash_rc_of "$PRIMARY" "cat >> /tmp/doc.md <<'EOF'
 - avoided .claude/settings.json
 EOF")"
+# 71m (HIMMEL-4934): the accepted false deny at least names the Write-tool retry.
+MSG71=$(jq -n --arg cmd "cat >> /tmp/doc.md <<'EOF'
+- avoided .claude/settings.json
+EOF" --arg cwd "$PRIMARY" '{tool_name: "Bash", tool_input: {command: $cmd, cwd: $cwd}}' \
+    | bash "$HOOK" 2>&1 >/dev/null)
+case "$MSG71" in
+    *"Write tool"*) assert_rc "71m heredoc-mention deny names the Write-tool retry" 0 0 ;;
+    *) assert_rc "71m heredoc-mention deny names the Write-tool retry" 0 1 ;;
+esac
 assert_rc "72 piped grep naming settings.json from primary allows (HIMMEL-3546; was an accepted false deny)" 0 \
     "$(bash_rc_of "$PRIMARY" "grep -rl x scripts .claude/settings.json docs | head")"
 

@@ -612,7 +612,8 @@ _bwimc_blank_heredocs() {
 # newline, in a command that contains none of: a standalone reserved word (`!`
 # time coproc if then elif else fi while until for select case esac do done
 # function `{` `}` `[[` `]]`), a parenthesis, a single `&` (anything but `&&`
-# or a redirect), or a single `|`. Anything else makes the modelled cwd
+# or a redirect). A single `|` taints only the clause on its left and all later
+# ones (HIMMEL-4934). Anything else makes the modelled cwd
 # UNRESOLVED for the rest of the command (fail closed): _bwimc_text_untrusted
 # prescans the whole text and, when it fires, EVERY clause is emitted with a
 # leading $_BWIMC_PIPE sentinel byte; every consumer strips it with
@@ -649,10 +650,6 @@ _bwimc_text_untrusted() {
                         '>'*|'<'*|*'>'|'&'*|*'&') ;;
                         *) return 0 ;;
                     esac
-                    ;;
-                '|')
-                    nx="${text:$((i+1)):1}"
-                    if [ "$prevact" != '>' ] && [ "$prevact" != '|' ] && [ "$nx" != '|' ]; then return 0; fi
                     ;;
             esac
             case "$c" in
@@ -1242,6 +1239,11 @@ _bwimc_split_clauses() {
                     if [ "$prevact" = '>' ]; then
                         clause="${clause}${c}"
                     else
+                        # HIMMEL-4934: a single `|` makes the clause on its
+                        # left a pipeline member (its cd would run in a
+                        # subshell), so that clause and all after are
+                        # untrusted; earlier clauses stay trusted.
+                        [ "$prevact" = '|' ] || [ "${text:$((i+1)):1}" = '|' ] || _bwimc_sp_pipe=1
                         _bwimc_split_emit "$clause"; _bwimc_sp_pipe=1
                         clause=""
                     fi

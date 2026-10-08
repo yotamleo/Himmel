@@ -752,6 +752,10 @@ launch):
     cd .claude/worktrees/<your-leg>
     # edit .claude/settings.json there
 
+If this is a heredoc that only MENTIONS a settings path in its body (the
+write target is some other file), the guard cannot tell it from a write
+(HIMMEL-3615): write that file with the Write tool instead and retry.
+
 Bypass (single-run, set in the LAUNCHING shell — a per-call prefix cannot
 reach the hook process):
 
