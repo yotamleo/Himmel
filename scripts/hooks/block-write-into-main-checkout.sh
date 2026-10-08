@@ -1215,7 +1215,7 @@ _bwimc_strip_prefix() {
 # substitution (`f$(date)`) stays one token (HIMMEL-4010).
 _bwimc_split_clauses() {
     local text="$1" skel="${2:-}"
-    local i=0 len=${#text} c clause="" prevact="" run
+    local i=0 len=${#text} c clause="" prevact="" run pend=() np=0 k
     _bwimc_sp_pipe=0
     ! _bwimc_text_untrusted "$text" || _bwimc_sp_pipe=1
     _bwimc_scan_init
@@ -1239,16 +1239,31 @@ _bwimc_split_clauses() {
                     if [ "$prevact" = '>' ]; then
                         clause="${clause}${c}"
                     else
-                        # HIMMEL-4934: a single `|` makes the clause on its
-                        # left a pipeline member (its cd would run in a
-                        # subshell), so that clause and all after are
-                        # untrusted; earlier clauses stay trusted.
+                        # HIMMEL-4934: a single `|` makes every piece since
+                        # the last real boundary (`;` `&&` `||` newline, or a
+                        # background `&`) a pipeline member (its cd would run
+                        # in a subshell), so all of them and every later
+                        # clause are untrusted; earlier clauses stay trusted.
+                        pend[np]="$clause"; np=$((np+1)); clause=""
                         [ "$prevact" = '|' ] || [ "${text:$((i+1)):1}" = '|' ] || _bwimc_sp_pipe=1
-                        _bwimc_split_emit "$clause"; _bwimc_sp_pipe=1
-                        clause=""
+                        for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
+                        pend=(); np=0; _bwimc_sp_pipe=1
                     fi
                     ;;
-                ';'|'&'|"$_BWIMC_NL") _bwimc_split_emit "$clause"; clause="" ;;
+                '&')
+                    pend[np]="$clause"; np=$((np+1)); clause=""
+                    # a redirect `&` (`2>&1` `>&2` `2>&-` `&>`) is no boundary:
+                    # its pieces stay pending so a later `|` still taints them.
+                    if [ "$prevact" != '>' ] && [ "$prevact" != '<' ] && [ "${text:$((i+1)):1}" != '>' ]; then
+                        for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
+                        pend=(); np=0
+                    fi
+                    ;;
+                ';'|"$_BWIMC_NL")
+                    pend[np]="$clause"; np=$((np+1)); clause=""
+                    for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
+                    pend=(); np=0
+                    ;;
                 '(')
                     if [ -n "$skel" ] && [ "$prevact" = '$' ] && { [ "${text:$((i+1)):1}" = $'\001' ] || [ "${text:$((i+1)):1}" = $'\005' ]; }; then
                         clause="${clause}${c}"
@@ -1259,7 +1274,7 @@ _bwimc_split_clauses() {
                         clause="${clause}${text:$i:$((_BWIMC_AE - i + 1))}"
                         i=$((_BWIMC_AE + 1)); prevact=')'; continue
                     else
-                        _bwimc_split_emit "$clause"; clause=""
+                        pend[np]="$clause"; np=$((np+1)); clause=""
                     fi
                     ;;
                 *) clause="${clause}${c}" ;;
@@ -1278,7 +1293,8 @@ _bwimc_split_clauses() {
         if [ "$_BWIMC_ACT" = 1 ]; then prevact="$c"; else prevact=""; fi
         i=$((i+1))
     done
-    _bwimc_split_emit "$clause"
+    pend[np]="$clause"; np=$((np+1))
+    for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
 }
 
 # Tokenize a clause into whitespace-separated words, quote-aware (a whole

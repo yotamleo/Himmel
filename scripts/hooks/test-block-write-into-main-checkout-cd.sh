@@ -589,5 +589,20 @@ check_both "93d fromW: cd \$UNSET_VAR && git status | cat && echo x > a.txt (dyn
 check_both "93e fromW: cd primary && git status | cat && echo x > a.txt (cd into primary) denies" block \
     "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/primary \\u0026\\u0026 git status | cat \\u0026\\u0026 echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
 
+# 93f-j (HIMMEL-4934 judge NO-GO): a redirect `&` on the pipe's left member is
+# no boundary, so the whole member (`cd wt 2>&1`) is tainted, not just its tail.
+check_both "93f fromW: cd wt 2>&1 | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt 2>&1 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93g fromW: cd wt &>/dev/null | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt &>/dev/null | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93h fromW: cd wt >&2 | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt >&2 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93i fromW: cd wt 2>&- | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt 2>&- | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93j fromW: cd wt; cd wt 2>&1 | cat && echo x > a.txt denies" block \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt; cd $FIX/wt 2>&1 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+check_both "93k fromW: cd wt && git status 2>&1 | cat && echo x > a.txt (cd precedes) allows" allow \
+    "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cd $FIX/wt && git status 2>&1 | cat && echo x > a.txt\",\"cwd\":\"$FIX/wt\"}}"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
