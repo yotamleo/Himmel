@@ -306,7 +306,7 @@ function FleetRow({ row, live, token, now }: { row: Row; live: Row[]; token: str
         </span>}
         {row.usage?.fill != null
           ? <span className="fleet-context">{`context ${row.usage.fill}% of ${k(row.usage.ceiling)}`}<Meter fill={row.usage.fill} /></span>
-          : <span className="fleet-context">{row.cloud ? "tokens not measured (cloud)" : "context not measured"}</span>}
+          : <span className="fleet-context">{row.cloud ? "tokens not measured (cloud)" : row.usage ? "context unknown (no trusted window)" : "context not measured"}</span>}
         {row.role === "leg" && <a className="fleet-link" href={pageHref({ here: "agui", token, id: "health" })}>legs and bank on Health</a>}
         <details className="fleet-more">
           <summary>{[row.agents.length > 0 && plural(row.agents.length, "subagent"), "usage"].filter(Boolean).join(" · ")}</summary>

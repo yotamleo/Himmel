@@ -93,18 +93,23 @@ function tallyOf(lines: string[]): Tally | null {
   return t.calls ? t : null;
 }
 
-// The ceiling is the session's numeric --autocompact; without one (absent or `auto`) it is the model's window.
-function finish(t: Tally | null, c: { autocompact: string; model: string }): Usage | null {
+// The ceiling is the window the launch declared (HIMMEL-4925: claude-codex's CLAUDE_CODE_MAX_CONTEXT_TOKENS, which a
+// claudex session honours over --autocompact); else the session's numeric --autocompact; else a Claude model's window.
+// A non-Claude model nobody declared a window for, or a fill past 100 % (so the ceiling is wrong), is not measured.
+const num = (s: string | undefined) => (s && /^\d+$/.test(s) ? Number(s) : 0);
+function finish(t: Tally | null, c: { autocompact: string; model: string; window?: string }): Usage | null {
   if (!t) return null;
-  const ac = /^\d+$/.test(c.autocompact) ? Number(c.autocompact) : 0;
-  const ceiling = ac > 0 ? ac : /\[1m\]$/i.test(c.model) ? WINDOW_1M : WINDOW;
+  const declared = num(c.window), ac = num(c.autocompact);
+  const claude = /claude|opus|sonnet|haiku|fable/i.test(c.model) || c.model === "";
+  const ceiling = declared || ac || (/\[1m\]$/i.test(c.model) ? WINDOW_1M : WINDOW);
+  const fill = t.resident === null || (!declared && !ac && !claude) ? null : Math.round((t.resident / ceiling) * 1000) / 10;
   return {
     ...t, costEq: Math.round(t.input * W.input + t.cacheRead * W.cacheRead + t.cacheCreate * W.cacheCreate + t.output * W.output),
-    ceiling, ceilingFrom: ac > 0 ? "autocompact" : "window",
-    fill: t.resident === null ? null : Math.round((t.resident / ceiling) * 1000) / 10,
+    ceiling, ceilingFrom: !declared && ac ? "autocompact" : "window",
+    fill: fill !== null && fill > 100 ? null : fill,
   };
 }
-export const usageOf = (lines: string[], c: { autocompact: string; model: string }) => finish(tallyOf(lines), c);
+export const usageOf = (lines: string[], c: { autocompact: string; model: string; window?: string }) => finish(tallyOf(lines), c);
 
 function runScript(script: string, env: Record<string, string | undefined>): Promise<Census> {
   return new Promise((ok) => {
@@ -274,7 +279,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       ...graph, parent, console: role === "console" ? name : parent, live: c.status !== "WRAPPED", lock: role === "console" ? await lockOf(c.doc, doc, c.status === "WRAPPED") : "unknown",
       lane,
       agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
-      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model }), cloud: null,
+      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model, window: launch.CLAUDE_CODE_MAX_CONTEXT_TOKENS }), cloud: null,
       runtime: runtimeOf(rec.startedAt ?? c.startedAt, edges.get(c.doc)?.at ?? t0, doc, c.status === "WRAPPED", opts.now, docAt),
     };
   }));
