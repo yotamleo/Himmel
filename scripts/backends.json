@@ -1,7 +1,7 @@
 {
   "jira": {
     "enabled": true,
-    "mcp_prefix": "mcp__plugin_atlassian_atlassian__",
+    "mcp_prefixes": ["mcp__plugin_atlassian_atlassian__", "mcp__claude_ai_Atlassian_MCP__"],
     "cli": "scripts/jira/dist/index.js",
     "chain": ["cli", "api", "mcp"]
   },
