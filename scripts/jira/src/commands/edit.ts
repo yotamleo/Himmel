@@ -158,7 +158,7 @@ function verifyReadBack(
   }
   if (o.labels !== undefined) {
     const want = parseLabels(o.labels);
-    if (want.length !== new Set(labels).size || !want.every((l) => labels.includes(l))) {
+    if (new Set(want).size !== new Set(labels).size || !want.every((l) => labels.includes(l))) {
       bad('labels', want.join(', '), labels.join(', '));
     }
   }

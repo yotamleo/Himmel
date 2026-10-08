@@ -430,6 +430,14 @@ describe('edit read-back of every field it sends (HIMMEL-4644)', () => {
       message: /labels was not changed.*a, b.*a, old/s,
     },
     {
+      name: 'labels with a duplicate value (Jira stores it once)',
+      args: ['--labels', 'a,a'],
+      field: 'labels',
+      pass: { labels: ['a'] },
+      fail: { labels: ['old'] },
+      message: /labels was not changed/s,
+    },
+    {
       name: 'add-labels',
       args: ['--add-labels', 'a,b'],
       field: 'labels',
