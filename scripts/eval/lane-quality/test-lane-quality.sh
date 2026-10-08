@@ -195,7 +195,7 @@ rc=$?
 check "api lane stops at the \$1 cap (two 0.5 tasks of three)" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out-api4/runs.jsonl" | tr -d " ")" = 2 ] && grep -q "budget cap reached" "$TMP/api4.log"'
 check "api rows record the lane" '[ "$(jq -s -r "map(.lane) | unique | join(\",\")" "$TMP/out-api4/runs.jsonl")" = api ]'
 check "the launcher gets the key and no OAuth token" 'grep -q "^key=sk-ant-dummy-0000$" "$APIENV" && ! grep -q "oauth-dummy" "$APIENV" && grep -q "^oauth=$" "$APIENV"'
-check "each call has its own job id and a budget at most the cap" '[ "$(grep -c "^job=lq-" "$APIENV")" = 2 ] && [ "$(grep "^job=" "$APIENV" | sort -u | wc -l | tr -d " ")" = 2 ] && ! grep "^args=" "$APIENV" | grep -Eq -- "--max-budget-usd (1\.[1-9]|[2-9])"'
+check "each call has its own job id and a budget at most the cap" '[ "$(grep -c "^job=lq-" "$APIENV")" = 2 ] && [ "$(grep "^job=" "$APIENV" | sort -u | wc -l | tr -d " ")" = 2 ] && awk "{for(i=1;i<NF;i++) if(\$i==\"--max-budget-usd\"){n++; if(\$(i+1)+0>1) bad=1}} END{exit !(n==2 && !bad)}" "$APIENV"'
 check "api rows ignore the native bank for gating" '[ -s "$TMP/out-api4/runs.jsonl" ]'
 : >"$TMP/fake.log"; rm -f "$APIENV"
 LQ_FAKE_TOKEN=SKIPPED-BANK api_run "$TMP/out-api5" --no-judge --tasks cr-fix >"$TMP/api5.log" 2>&1
