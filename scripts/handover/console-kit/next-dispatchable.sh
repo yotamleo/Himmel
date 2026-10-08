@@ -62,7 +62,7 @@ top = int(os.environ['ND_TOP']); mirror = os.environ['ND_MIRROR']
 repo = os.environ['ND_REPO']
 excl = set(filter(None, os.environ.get('NEXT_DISPATCH_EXCLUDE_LABELS',
     'operator-decision,operator,operator-present,blocked,decision,windows-parked,design-deferred,placeholder').split(',')))
-FILE_RE = re.compile(r"(?<![\w./-])((?:scripts|docs|marketplace|templates|tools|\.claude|\.github|\.codex)/[\w.+@-]+(?:/[\w.+@-]+)*/?|CLAUDE\.md|AGENTS\.md|\.pre-commit-config\.yaml)")
+FILE_RE = re.compile(r"(?<![\w./-])((?:scripts|docs|marketplace|plugins|templates|tools|\.claude|\.github|\.codex)/[\w.+@-]+(?:/[\w.+@-]+)*/?|CLAUDE\.md|AGENTS\.md|README\.md|package\.json|package-lock\.json|bun\.lock|uv\.lock|pyproject\.toml|\.gitignore|\.pre-commit-config\.yaml)")
 PRIO = {'Highest': 0, 'Blocker': 0, 'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3, 'Lowest': 4}
 
 def files_in(text):
@@ -136,6 +136,9 @@ cands.sort(key=rank)
 # held files: live legs, open PRs, --held
 held = []
 legs_from = os.environ.get('ND_LEGS_FROM', '')
+legs_unknown = False
+if legs_from and not os.path.isfile(legs_from):
+    legs_unknown = True
 if legs_from and os.path.isfile(legs_from):
     try:
         for leg in json.load(open(legs_from)).get('legs', []):
@@ -145,9 +148,9 @@ if legs_from and os.path.isfile(legs_from):
                     if line.startswith('> **Scope / do not:**') or 'writes confined to' in line:
                         held += [(f, 'live leg %s' % leg.get('label', '?')) for f in files_in(line)]
             except OSError:
-                pass
+                legs_unknown = True
     except (OSError, ValueError):
-        pass
+        legs_unknown = True
 hf = os.environ.get('ND_HELD', '')
 if hf and os.path.isfile(hf):
     held += [(l.strip(), 'held list') for l in open(hf) if l.strip()]
@@ -191,7 +194,7 @@ def classify(batch):
         os.unlink(hfile)
     return cls
 
-print('# next-dispatchable: %d To Do candidate(s), %d collision-free%s' % (len(cands), len(free), ', open PRs unknown (gh failed)' if pr_unknown else ''))
+print('# next-dispatchable: %d To Do candidate(s), %d collision-free%s' % (len(cands), len(free), ', open PRs unknown (gh failed)' if pr_unknown else '') + (', live legs unknown (manifest or leg doc unreadable)' if legs_unknown else ''))
 n = 0
 picked = []
 classified = os.environ.get('ND_CLASSIFY') == '1'

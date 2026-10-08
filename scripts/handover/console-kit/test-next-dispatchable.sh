@@ -143,5 +143,24 @@ has "the top ticket on a shared file is listed" "$sh3" "HIMMEL-30	"
 lacks "a second ticket on the same file is not listed with it" "$sh3" "HIMMEL-31	"
 has "an independent ticket is still listed" "$sh3" "HIMMEL-32	"
 
+# an unreadable manifest is reported, not treated as no live legs
+lu="$(run --legs-from "$WORK/no-such-fleet.json")"
+has "an unreadable manifest is reported in the header" "$lu" "live legs unknown"
+printf '{"schema":1,"legs":[{"doc":"%s/gone.md","label":"N2"}]}\n' "$WORK" > "$WORK/fleet-gone.json"
+lg="$(run --legs-from "$WORK/fleet-gone.json")"
+has "an unreadable leg doc is reported in the header" "$lg" "live legs unknown"
+lacks "a readable manifest is not reported unknown" "$out" "live legs unknown"
+
+# root files and plugins/ take part in the collision check
+M4="$WORK/m4/HIMMEL"; mkdir -p "$M4"
+M_SAVE="$M"; M="$M4"
+mk HIMMEL-40 "To Do" High '[]' '[]' '[]' "touches package.json" "Bump a dep in package.json."
+mk HIMMEL-41 "To Do" High '[]' '[]' '[]' "touches a plugin" "Edit plugins/foo/run.sh."
+M="$M_SAVE"
+printf 'package.json\nplugins/foo\n' > "$WORK/held4.txt"
+rh="$(NEXT_DISPATCH_MIRROR="$M4" NEXT_DISPATCH_GH_CMD="$WORK/gh" NEXT_DISPATCH_CLASSIFY_CMD="$WORK/classify2" bash "$SUT" --held "$WORK/held4.txt" 2>/dev/null)"
+lacks "a held root file excludes a ticket naming it" "$rh" "HIMMEL-40	"
+lacks "a held plugins/ path excludes a ticket naming it" "$rh" "HIMMEL-41	"
+
 printf '\n%d failure(s)\n' "$fails"
 [ "$fails" -eq 0 ]

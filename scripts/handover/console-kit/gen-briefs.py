@@ -64,7 +64,7 @@ def validate(leg, i):
 def render_brief(l, ctx):
     n, keys = l['label'], l['keys']
     gets = ' and '.join('`JIRA_PROJECT_KEY=%s node %s/scripts/jira/dist/index.js get %s`' % (k.split('-')[0], ctx['repo'], k) for k in keys)
-    others = ', '.join('%s (%s)' % (x['label'], x['scope_short']) for x in ctx['legs'])
+    others = ', '.join('%s (%s)' % (x['label'], x['scope_short']) for x in ctx['legs'] if x['label'] != n)
     also = ('; ' + ctx['also_live']) if ctx['also_live'] else ''
     return """---
 resume_cwd: {wt}
@@ -117,7 +117,7 @@ def render_launcher(l, ctx, doc):
         'W=%s' % q(w),
         'mkdir -p "$W"',
         'setsid nohup bash %s --profile leg-impl --console %s %s %s "$W/sig-%s" %s "$W/%s.log" %s > "$W/%s.launch.out" 2>&1 &' % (
-            q(ctx['repo'] + '/scripts/handover/console-kit/headed-arm-leg.sh'), q(ctx['console']), q(stem), q(doc), stem, ctx['deadline'], stem, q(l['model']), stem),
+            q(ctx['repo'] + '/scripts/handover/console-kit/headed-arm-leg.sh'), q(ctx['console']), q(stem), q(doc), stem, q(ctx['deadline']), stem, q(l['model']), stem),
         'sleep 12',
         'tail -n 2 "$W/%s.launch.out"' % stem,
         'touch "$W/sig-%s"' % stem,
@@ -167,6 +167,9 @@ def main():
     labels = [l['label'] for l in legs]
     if len(set(labels)) != len(labels):
         die('duplicate leg labels')
+    branches = [l['branch'] for l in legs]
+    if len(set(branches)) != len(branches):
+        die('duplicate leg branches (two legs would share one worktree)')
 
     work_dir = a.work_dir or os.path.join(os.environ.get('XDG_RUNTIME_DIR') or '/tmp', 'himmel-console', 'gen-briefs')
     deadline = a.deadline or str(int(datetime.now().timestamp()) + 43200)

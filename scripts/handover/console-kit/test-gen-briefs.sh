@@ -97,6 +97,10 @@ mkdir -p "$WORK/b3"; : > "$WORK/b3/launch-N901.sh"
 python3 "$SUT" "$WORK/legs.json" --base 4ccb59d --console BZ --bucket "$WORK/b3" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/coll.err"; rc=$?
 [ "$rc" = 1 ] && grep -q 'launch-N901.sh already exists' "$WORK/coll.err" && [ ! -s "$WORK/b3/launch-N901.sh" ] && ! ls "$WORK/b3"/*.md >/dev/null 2>&1 && pass "an existing launcher is refused before anything is written" || fail "launcher collision rc=$rc"
 
+python3 -I -c 'import json,sys; l=json.load(open(sys.argv[1])); d=dict(l[0]); d["label"]="N999"; d["keys"]=["HIMMEL-9999"]; l.append(d); json.dump(l,open(sys.argv[2],"w"))' "$WORK/legs.json" "$WORK/dupbr.json"
+python3 "$SUT" "$WORK/dupbr.json" --base 4ccb59d --console BZ --bucket "$WORK/b4" --repo "$REPO" --handover-root /h --no-worktree >/dev/null 2>"$WORK/dupbr.err"; rc=$?
+[ "$rc" = 1 ] && grep -q 'duplicate leg branches' "$WORK/dupbr.err" && pass "two legs sharing a branch are refused" || fail "dup branch rc=$rc"
+
 python3 "$SUT" >/dev/null 2>&1; rc=$?
 [ "$rc" = 2 ] && pass "no arguments is a usage error (rc 2)" || fail "usage rc=$rc"
 
