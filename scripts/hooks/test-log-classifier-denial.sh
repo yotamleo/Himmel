@@ -25,11 +25,11 @@ run_hook() {
 }
 
 payload() {
-    # $1=session_id $2=cwd $3=tool $4=command $5=denial_reason
+    # $1=session_id $2=cwd $3=tool $4=command $5=reason (the real PermissionDenied field)
     jq -n -c \
         --arg sid "$1" --arg cwd "$2" --arg tool "$3" \
         --arg cmd "$4" --arg reason "$5" \
-        '{session_id:$sid, cwd:$cwd, tool_name:$tool, tool_input:{command:$cmd}, denial_reason:$reason}'
+        '{session_id:$sid, cwd:$cwd, tool_name:$tool, tool_input:{command:$cmd}, reason:$reason}'
 }
 
 # --- 1. never blocks: rc=0 on a well-formed denial ---
@@ -52,9 +52,31 @@ for field in ts session_id session_title cwd tool reason_tag input_sha input_hea
     fi
 done
 if [ "$(printf '%s' "$row" | jq -r .reason_tag)" = "[Out-of-Place Publication]" ]; then
-    pass "reason_tag parsed from bracketed denial_reason"
+    pass "reason_tag parsed from bracketed reason"
 else
-    fail "reason_tag parsed from bracketed denial_reason (got $(printf '%s' "$row" | jq -r .reason_tag))"
+    fail "reason_tag parsed from bracketed reason (got $(printf '%s' "$row" | jq -r .reason_tag))"
+fi
+
+# --- 2b. HIMMEL-4681: the real PermissionDenied payload shape (hooks reference:
+# the denial text is in `reason`, beside transcript_path / permission_mode /
+# hook_event_name / tool_use_id) yields the bracketed category, not unknown. ---
+LOG2R="$WORKDIR/c2r.jsonl"
+run_hook '{"session_id":"abc123","transcript_path":"/tmp/t.jsonl","cwd":"/tmp/repo","permission_mode":"auto","hook_event_name":"PermissionDenied","tool_name":"Bash","tool_input":{"command":"gh pr create","description":"open"},"tool_use_id":"toolu_01ABC","reason":"[Merge Without Review]"}' "$LOG2R" >/dev/null
+got=$(jq -r .reason_tag "$LOG2R" 2>/dev/null)
+if [ "$got" = "[Merge Without Review]" ]; then
+    pass "real-payload-reason-tag-not-unknown"
+else
+    fail "real-payload-reason-tag-not-unknown (got $got)"
+fi
+
+# A payload carrying no reason text at all still lands a row tagged unknown.
+LOG2U="$WORKDIR/c2u.jsonl"
+run_hook '{"session_id":"abc123","cwd":"/tmp/repo","hook_event_name":"PermissionDenied","tool_name":"Bash","tool_input":{"command":"ls"}}' "$LOG2U" >/dev/null
+got=$(jq -r .reason_tag "$LOG2U" 2>/dev/null)
+if [ "$got" = "unknown" ]; then
+    pass "no reason field yields unknown"
+else
+    fail "no reason field yields unknown (got $got)"
 fi
 
 # --- 3. RED-shaped redaction control: a gitleaks-shaped token must never
