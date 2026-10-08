@@ -156,6 +156,10 @@ def main(argv=None):
             return 3
         label, base_of = args.baseline, None
         fixed = hits[-1]
+        if fixed is cand:
+            print("eval-compare: baseline %s is the candidate itself: a run is not its own baseline"
+                  % args.baseline, file=sys.stderr)
+            return 2
         if fixed["status"] != "ok":
             print("eval-compare: baseline %s is %s, not ok: only ok runs serve as baselines"
                   % (fixed["run_id"], fixed["status"]))

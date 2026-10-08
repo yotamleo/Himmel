@@ -297,8 +297,25 @@ function envMs(name, fallback) {
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
-function memberTimeoutMs() {
-  return envMs('RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS', DEFAULT_MEMBER_TIMEOUT_MS);
+// HIMMEL-4935: a member's cost grows with the hook payload (the chokepoint
+// text guard timed out its 15 s window on ~15 KB heredoc commands: 257 logged
+// denies, nothing ran). The window therefore grows 1 s per KiB of payload past
+// 4 KiB, capped at +30 s. Direction is unchanged: a member that still outruns
+// its window is DENIED (must-run) or skipped (advisory), never allowed. The
+// entry-safe deadline caps the larger window for every member; the chain
+// budget caps it for advisory members only (a must-run member runs on its own
+// window). An explicit RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS pins the window and
+// disables the scaling.
+const SIZE_SCALE_FREE_BYTES = 4096;
+const SIZE_SCALE_MS_PER_KIB = 1000;
+const SIZE_SCALE_MAX_EXTRA_MS = 30_000;
+
+function memberTimeoutMs(payloadBytes = 0) {
+  const pinned = Number(process.env.RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS);
+  if (Number.isFinite(pinned) && pinned > 0) return pinned;
+  const over = Math.max(0, payloadBytes - SIZE_SCALE_FREE_BYTES);
+  const extra = Math.min(SIZE_SCALE_MAX_EXTRA_MS, Math.floor((over / 1024) * SIZE_SCALE_MS_PER_KIB));
+  return DEFAULT_MEMBER_TIMEOUT_MS + extra;
 }
 
 function chainBudgetMs() {
@@ -657,7 +674,8 @@ function runChain(members, lifecycle = false) {
     // Clamped to what is left of the chain budget, but never below the floor:
     // a spent budget must not reduce the remaining guards to a 0ms execution
     // slice — each still gets a real, if small, chance to decide.
-    const budgetBound = Math.max(MIN_MEMBER_TIMEOUT_MS, Math.min(memberTimeoutMs(), chainDeadline - Date.now()));
+    const memberWindow = memberTimeoutMs(Buffer.byteLength(input));
+    const budgetBound = Math.max(MIN_MEMBER_TIMEOUT_MS, Math.min(memberWindow, chainDeadline - Date.now()));
     // HIMMEL-3620 (N2): that floor guards against a spent SHARED budget, but
     // must never push an advisory member's window past the entry-safe
     // deadline itself — several floored members in a row can otherwise add up
@@ -675,7 +693,7 @@ function runChain(members, lifecycle = false) {
     // whole chain OPEN. `starved` records whether the shared clock alone
     // would have clamped this member below its own full window, purely to
     // drive the denial message's diagnostics below.
-    const starved = mustRun && sharedBound < memberTimeoutMs();
+    const starved = mustRun && sharedBound < memberWindow;
     // HIMMEL-3620 (N1): floor the CONFIGURED member timeout at the same
     // MIN_MEMBER_TIMEOUT_MS floor every other member gets before capping by
     // the entry-safe deadline — otherwise a RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS
@@ -684,7 +702,7 @@ function runChain(members, lifecycle = false) {
     // regardless of how much of the real entry deadline was actually left.
     // Capping by entryDeadline afterward is unchanged, so a genuinely
     // exhausted entry deadline still denies exactly as before.
-    const mustRunWindow = Math.min(Math.max(memberTimeoutMs(), MIN_MEMBER_TIMEOUT_MS), entryDeadline - Date.now());
+    const mustRunWindow = Math.min(Math.max(memberWindow, MIN_MEMBER_TIMEOUT_MS), entryDeadline - Date.now());
     const bound = mustRun ? mustRunWindow : sharedBound;
     // HIMMEL-3080 (J1259O F1): even the floor cannot fit before the entry
     // deadline — spawning anyway would either get killed mid-run (still a
@@ -880,6 +898,7 @@ module.exports = {
   DEFAULT_CHAIN_BUDGET_MS,
   MIN_MEMBER_TIMEOUT_MS,
   MUST_RUN_CHAIN_MEMBERS,
+  memberTimeoutMs,
   isKnownBadWindowsBash,
   isRecoverableEpipe,
   isUsable,

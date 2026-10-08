@@ -1,10 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
+import { Server, type Tool } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { agileRequest, request, projectKey, uploadAttachment } from './client.js';
 import { roadmapGet, roadmapSet, type RoadmapSetOptions } from './commands/roadmap.js';
 import { rankIssue } from './commands/rank.js';
@@ -54,7 +50,7 @@ const defaultDeps: ToolDeps = { request, uploadAttachment, agileRequest };
 /** JSON-Schema fragment for a tool's input. */
 type JsonSchema = {
   type: 'object';
-  properties: Record<string, unknown>;
+  properties: NonNullable<Tool['inputSchema']['properties']>;
   required?: string[];
   additionalProperties: false;
 };
@@ -470,7 +466,7 @@ export function buildServer(deps: ToolDeps = defaultDeps): Server {
     { capabilities: { tools: {} } },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler('tools/list', async () => ({
     tools: tools.map((t) => ({
       name: t.name,
       description: t.description,
@@ -478,7 +474,7 @@ export function buildServer(deps: ToolDeps = defaultDeps): Server {
     })),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler('tools/call', async (req) => {
     const tool = tools.find((t) => t.name === req.params.name);
     if (!tool) {
       throw new Error(`Unknown tool: ${req.params.name}`);

@@ -564,6 +564,25 @@ file_literal() {
     fi
 }
 
+src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
+# bare_source_ere <path> — HIMMEL-4621: for a nested single-word extensionless
+# file (the ones file_literal names `/<name>`), two EREs that match a reference
+# with no `/` before the name, which `/<name>` misses: a `source`/`.` operand
+# after a `cd` (`cd dir && source diff`) and `# shellcheck source=diff`. Only a
+# line that sources it counts, so a plain `diff a b` command stays unselected.
+# Prints nothing for any other file.
+# ponytail: `cd dir && bash diff` and "$dir/$f" with f=diff stay unfound (no
+# source keyword to anchor on); upgrade path is a lint on new suites if a
+# --selector-miss row ever names one.
+bare_source_ere() {
+    local f="$1" name="${1##*/}"
+    [ "${f#*/}" != "$f" ] || return 0
+    grep -Eq "$generic_re" <<< "$name" && return 0
+    case "$name" in *[-_.]*) return 0 ;; esac
+    { printf '%s(source|\\.)[[:space:]]+["'"'"']?([^[:space:]"'"'"']*/)?' "$src_lead"; needle_tail_ere "$name"; printf '\n'; } || return 1
+    { printf 'shellcheck[[:space:]]+source=([^[:space:]]*/)?'; needle_tail_ere "$name"; printf '\n'; } || return 1
+}
+
 seen="$work/seen"     # every file already in the source closure (visited set)
 front="$work/front"   # the files whose sourcers the next round looks for
 : > "$seen"
@@ -579,6 +598,7 @@ while IFS= read -r f; do
     fi
     name="${f##*/}"
     add_needle "$(file_literal "$f")"
+    bare_source_ere "$f" >> "$pats" || io_fail "writing a bare source needle"
     printf '%s\n' "$f" >> "$seen" || io_fail "seeding the source closure"
     printf '%s\n' "$f" >> "$front" || io_fail "seeding the source closure"
     case "$f" in
@@ -610,7 +630,7 @@ varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
 # "# Same source and spelling as tick.sh's ...") is prose, never an edge. Only a
 # line whose first non-blank character is `#` is skipped: a `#` later in a line
 # (a quoted string, a trailing comment after a real source) never hides one.
-src_lead='(^[[:space:]]*[({]?|^[[:space:]]*[^#[:space:]].*[[:space:];&|({])'
+# (src_lead is defined above bare_source_ere, which the changed-file loop needs.)
 grep_rc=0
 git -c core.quotepath=off grep -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
@@ -642,6 +662,7 @@ while [ -s "$front" ]; do
         { printf '%s(source|\\.)[[:space:]]%s' "$src_lead" "$src_pre"; needle_tail_ere "$lit"; printf '\n'; } >> "$work/srcpats" || io_fail "writing a source-edge pattern"
         { printf '^[[:space:]]*(export[[:space:]]+|local[[:space:]]+|readonly[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\\+?=.*'; needle_ere "$lit"; printf '\n'; } >> "$work/asgpats" || io_fail "writing an assignment pattern"
         { printf 'shellcheck[[:space:]]+source=%s' "$dir_pre"; needle_tail_ere "$lit"; printf '\n'; } >> "$work/dirpats" || io_fail "writing a directive pattern"
+        bare_source_ere "$f" >> "$work/srcpats" || io_fail "writing a bare source-edge pattern"
     done < "$front"
     closure_grep "$work/srcpats" "$work/hit.src" "walking the source closure"
     closure_grep "$work/dirpats" "$work/hit.dir" "reading shellcheck source directives"

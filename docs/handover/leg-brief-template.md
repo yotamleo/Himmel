@@ -101,6 +101,11 @@ template_version: 3
 > dispatch; an auto-mode inbox EXPANSION needs operator confirmation in-window,
 > not merely a RETASK token.>
 
+> **Default if no ruling (optional, HIMMEL-4935):** `default-if-no-ruling (<N> min):
+> <action>` per question the console can pre-answer. NARROWING only: reduce scope,
+> defer to a named follow-up, or halt; never expand. It never replaces `GO`, a
+> merge, or a token-quoting message. Drop the line if no question is predictable.
+
 > **Guard escape tests (guard/hook tickets only, HIMMEL-4537; drop otherwise):**
 > the leg's escape and variant rows come only from route 1:
 > `scripts/eval/guard-corpus/gen` over the DENY rows the hook's suite already

@@ -612,7 +612,8 @@ _bwimc_blank_heredocs() {
 # newline, in a command that contains none of: a standalone reserved word (`!`
 # time coproc if then elif else fi while until for select case esac do done
 # function `{` `}` `[[` `]]`), a parenthesis, a single `&` (anything but `&&`
-# or a redirect), or a single `|`. Anything else makes the modelled cwd
+# or a redirect). A single `|` taints only the clause on its left and all later
+# ones (HIMMEL-4934). Anything else makes the modelled cwd
 # UNRESOLVED for the rest of the command (fail closed): _bwimc_text_untrusted
 # prescans the whole text and, when it fires, EVERY clause is emitted with a
 # leading $_BWIMC_PIPE sentinel byte; every consumer strips it with
@@ -649,10 +650,6 @@ _bwimc_text_untrusted() {
                         '>'*|'<'*|*'>'|'&'*|*'&') ;;
                         *) return 0 ;;
                     esac
-                    ;;
-                '|')
-                    nx="${text:$((i+1)):1}"
-                    if [ "$prevact" != '>' ] && [ "$prevact" != '|' ] && [ "$nx" != '|' ]; then return 0; fi
                     ;;
             esac
             case "$c" in
@@ -1218,7 +1215,7 @@ _bwimc_strip_prefix() {
 # substitution (`f$(date)`) stays one token (HIMMEL-4010).
 _bwimc_split_clauses() {
     local text="$1" skel="${2:-}"
-    local i=0 len=${#text} c clause="" prevact="" run
+    local i=0 len=${#text} c clause="" prevact="" run pend=() np=0 k
     _bwimc_sp_pipe=0
     ! _bwimc_text_untrusted "$text" || _bwimc_sp_pipe=1
     _bwimc_scan_init
@@ -1242,11 +1239,31 @@ _bwimc_split_clauses() {
                     if [ "$prevact" = '>' ]; then
                         clause="${clause}${c}"
                     else
-                        _bwimc_split_emit "$clause"; _bwimc_sp_pipe=1
-                        clause=""
+                        # HIMMEL-4934: a single `|` makes every piece since
+                        # the last real boundary (`;` `&&` `||` newline, or a
+                        # background `&`) a pipeline member (its cd would run
+                        # in a subshell), so all of them and every later
+                        # clause are untrusted; earlier clauses stay trusted.
+                        pend[np]="$clause"; np=$((np+1)); clause=""
+                        [ "$prevact" = '|' ] || [ "${text:$((i+1)):1}" = '|' ] || _bwimc_sp_pipe=1
+                        for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
+                        pend=(); np=0; _bwimc_sp_pipe=1
                     fi
                     ;;
-                ';'|'&'|"$_BWIMC_NL") _bwimc_split_emit "$clause"; clause="" ;;
+                '&')
+                    pend[np]="$clause"; np=$((np+1)); clause=""
+                    # a redirect `&` (`2>&1` `>&2` `2>&-` `&>`) is no boundary:
+                    # its pieces stay pending so a later `|` still taints them.
+                    if [ "$prevact" != '>' ] && [ "$prevact" != '<' ] && [ "${text:$((i+1)):1}" != '>' ]; then
+                        for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
+                        pend=(); np=0
+                    fi
+                    ;;
+                ';'|"$_BWIMC_NL")
+                    pend[np]="$clause"; np=$((np+1)); clause=""
+                    for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
+                    pend=(); np=0
+                    ;;
                 '(')
                     if [ -n "$skel" ] && [ "$prevact" = '$' ] && { [ "${text:$((i+1)):1}" = $'\001' ] || [ "${text:$((i+1)):1}" = $'\005' ]; }; then
                         clause="${clause}${c}"
@@ -1257,7 +1274,7 @@ _bwimc_split_clauses() {
                         clause="${clause}${text:$i:$((_BWIMC_AE - i + 1))}"
                         i=$((_BWIMC_AE + 1)); prevact=')'; continue
                     else
-                        _bwimc_split_emit "$clause"; clause=""
+                        pend[np]="$clause"; np=$((np+1)); clause=""
                     fi
                     ;;
                 *) clause="${clause}${c}" ;;
@@ -1276,7 +1293,8 @@ _bwimc_split_clauses() {
         if [ "$_BWIMC_ACT" = 1 ]; then prevact="$c"; else prevact=""; fi
         i=$((i+1))
     done
-    _bwimc_split_emit "$clause"
+    pend[np]="$clause"; np=$((np+1))
+    for ((k=0; k<np; k++)); do _bwimc_split_emit "${pend[k]}"; done
 }
 
 # Tokenize a clause into whitespace-separated words, quote-aware (a whole
@@ -2245,6 +2263,34 @@ _bwimc_jail_canon() {
     done
     printf '%s\n' "${cur:-/}"
 }
+# HIMMEL-4956: true when the shell would NOT land a literal `cd`/`pushd` on its
+# target, so the modelled cwd must not move: more than one operand (bash: too
+# many arguments; zsh: two-arg substitution), a relative target while the
+# CDPATH taint is set (the lookup may resolve elsewhere), or a target that is
+# not an existing, searchable directory. Args: ABS(0|1) TARGET BASECWD [EXTRA-TOKENS...];
+# a /dev/null redirection of fd 0-2 is no operand (a larger fd can be out of range). Fail direction: only ever narrows trust.
+_bwimc_cd_would_fail() {
+    local cabs="$1" carg="$2" base="$3" x r
+    shift 3
+    for x in "$@"; do
+        case "$x" in
+            # A /dev/null redirection cannot fail and is no operand; any other
+            # one (a file target, or an fd dup of a possibly closed fd) stops
+            # the cd from running.
+            [0-2][\<\>]/dev/null|[0-2]\>\>/dev/null|\>/dev/null|\>\>/dev/null|\&\>/dev/null|\</dev/null) ;;
+            *) return 0 ;;
+        esac
+    done
+    if [ "$cabs" = 0 ] && [ "${_bwimc_cdpath_taint:-0}" = 1 ]; then
+        case "$carg" in
+            .|..|./*|../*) ;;
+            *) return 0 ;;
+        esac
+    fi
+    r=$(_bwimc_resolve_abs "$carg" "$base") || return 1
+    [ -d "$r" ] && [ -x "$r" ] || return 0
+    return 1
+}
 _bwimc_ecwd_track() {
     local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
@@ -2337,6 +2383,12 @@ _bwimc_ecwd_track() {
                         [ "$tu" = pushd ] && _bwimc_ecwd_pushn=$((_bwimc_ecwd_pushn+1))
                         if [ "$cabs" = 0 ] && [ "$_bwimc_ecwd_unres" = 1 ]; then
                             :
+                        elif _bwimc_cd_would_fail "$cabs" "$carg" "$_bwimc_ecwd" "${toks[@]:$((i+1))}"; then
+                            # HIMMEL-4956: the shell fails this cd (extra
+                            # operand, CDPATH lookup, missing directory) and
+                            # the real cwd stays put - the target is no
+                            # evidence of where a later relative write lands.
+                            _bwimc_ecwd_unres=1
                         elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
                             _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
                         else
@@ -2814,6 +2866,18 @@ if [[ "$cmd" =~ $_bwimc_home_re ]]; then
 else
     case "$cmd" in
         *OME*|*"\$'"*) [[ "$(_bwimc_unq "$cmd")" =~ $_bwimc_home_re ]] && _bwimc_home_taint=1 ;;
+    esac
+fi
+
+# HIMMEL-4956: a CD-search-path assignment (or one inherited by the hook) makes
+# a relative `cd` search elsewhere; same order-blind taint as the HOME one.
+_bwimc_cdpath_taint=0
+_bwimc_cdpath_re='(^|[^A-Za-z0-9_$])CDPATH[+]?='
+if [ -n "${CDPATH:-}" ] || [[ "$cmd" =~ $_bwimc_cdpath_re ]]; then
+    _bwimc_cdpath_taint=1
+else
+    case "$cmd" in
+        *DPATH*|*"\$'"*) [[ "$(_bwimc_unq "$cmd")" =~ $_bwimc_cdpath_re ]] && _bwimc_cdpath_taint=1 ;;
     esac
 fi
 

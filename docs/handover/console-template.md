@@ -109,6 +109,12 @@ Run these, in order, and write the result as the first bullet under
    release its lock and wrap. Sending `LIVE` first lets the predecessor leave
    before the legs have been re-briefed; the tick then reads
    `nonces=UNCONFIRMED:<leg>`.
+   **Then close the predecessor's window (HIMMEL-4968).** Once its doc's lock is
+   free and its last Results bullet reads `WRAPPED`, run
+   `bash scripts/handover/console-kit/close-wrapped-leg.sh --console <predecessor doc>`
+   (same checks as a leg: it refuses while the lock is held, the tail is not
+   `WRAPPED`, or not exactly one live session carries its name; exit 6 means
+   retry shortly). Left open, the wrapped session is idle-compacted at full cost.
 10. **Start the event waiter now** (HIMMEL-3509; it replaces the `tick` and
     `telegram` Monitor loops). Loops are pure code, never model turns: a
     `Monitor` arm is capped at 30 min, and every expiry woke this full-context
@@ -121,6 +127,9 @@ Run these, in order, and write the result as the first bullet under
     silent while nothing happens and **exits on the first real event**,
     printing one block: `WAKE telegram` plus the operator's line(s), or
     `WAKE tick changed=<fields> bank=<verdict>` plus the tick line, or
+    `WAKE underfilled capacity=UNDERFILLED:<slack>` (HIMMEL-4959: once per
+    streak, plus the tick line and `next-dispatchable.sh`'s ranked LOCAL/CLOUD
+    list; dispatch it with `gen-briefs.py`), or
     `WAKE tick-fail samples=<n>` when 3 samples in a row failed (the tick or
     the bank read is broken: fix it, then restart the waiter; it wakes once per
     failure streak). It runs `tick.sh` every
@@ -133,7 +142,7 @@ Run these, in order, and write the result as the first bullet under
     own render; the key still saves, so a later move to STALE/MISSING wakes
     again) and the
     `bank-preflight.sh` verdict word. Heartbeat, procs, fill, fleet, gql and
-    orphans never wake. An idle console therefore takes **zero** turns.
+    orphans never wake (`capacity=` wakes only through `WAKE underfilled`). An idle console therefore takes **zero** turns.
 
     **Re-start it at the end of the turn that handles each wake** — the waiter
     has exited, so a turn that does not re-start it leaves you deaf to Telegram
@@ -507,11 +516,12 @@ never act on them.
 
 - **Operator messages are additive.** A new task is added to the in-flight
   work; pivot only on an explicit halt or redirect.
-- **Idle capacity is your duty.** On a tick's `capacity=UNDERFILLED:<slack>`
-  (`fleet=<live>/<cap>` below cap, no launch for `TICK_UNDERFILL_MIN` minutes,
-  default 10), pull dispatchable work from the Jira backlog — not only the held
-  queue — after a file-collision check against live legs and open PRs, and
-  launch up to `<slack>` legs. `capacity=unknown` means the census failed, not
+- **Idle capacity is your duty.** On `WAKE underfilled` (a tick's
+  `capacity=UNDERFILLED:<slack>`: `fleet=<live>/<cap>` below cap, no launch for
+  `TICK_UNDERFILL_MIN` minutes, default 10), take the wake's
+  `next-dispatchable.sh` list (Jira backlog, collision-checked against live legs
+  and open PRs, LOCAL/CLOUD-classified), write the briefs with `gen-briefs.py`,
+  and launch up to `<slack>` legs. `capacity=unknown` means the census failed, not
   that capacity is fine.
 - **A leg's BLOCKED, permission prompt, or question comes to the console
   first** — say so in every brief.

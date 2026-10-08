@@ -27,7 +27,9 @@
 # can sit comfortably inside the age window - age alone cannot distinguish it
 # from a quiet session - so the lag against the transcript's mtime is the only
 # externally visible signal. 4 = UNKNOWN (no session id, no transcript, no
-# snapshot, or a malformed one). On 3 and 4 stdout stays EMPTY - a caller
+# snapshot, or a malformed one). 5 = ESTIMATE (HIMMEL-4955): STALE as above, but
+# the transcript's latest assistant usage over the snapshot's window gives a
+# labelled "~NN% (est)" - see stale_estimate_or_return(). On 3 and 4 stdout stays EMPTY - a caller
 # capturing "$(context-fill.sh --percent)" gets nothing rather than a
 # fabricated or stale number - the verdict, snapshot age, and (when known) the
 # transcript lag go to stderr.
@@ -86,6 +88,9 @@ spend budget).
                  1-100 = context-fill percent; >100 = input tokens this turn
 
 exit 0 = fresh   exit 3 = STALE   exit 4 = UNKNOWN
+exit 5 = ESTIMATE (HIMMEL-4955): the snapshot is STALE but the session
+         transcript carries usage; stdout is "~NN% (est)" (--percent) or a
+         readout labelled ESTIMATED. Never a measured value.
 stdout is empty on 3 and 4 by design.
 
 env:
@@ -290,6 +295,35 @@ if (latest !== undefined) process.stdout.write(`${latest}\n`);
 NODE
 }
 
+# HIMMEL-4955: a STALE snapshot (aged out, or frozen behind the transcript) is
+# not a dead end when the session transcript still carries usage. Estimate the
+# fill as the latest assistant turn's resident input tokens over the snapshot's
+# context_window_size, print it labelled "~NN% (est)" on stdout and exit 5 - a
+# distinct code, never 0, so a caller that treats rc 0 as "measured" (the leg
+# context guard, tick, /context-hop) never mistakes it for a measurement. When
+# the estimate cannot be formed (no window, no transcript, no complete usage
+# counters) it returns and the caller falls through to the plain STALE exit 3
+# with empty stdout. $window is the snapshot's own window, parsed by then.
+stale_estimate_or_return() {
+  local tr tok est
+  case "${window:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$window" -gt 0 ] || return 0
+  tr="$(resolve_transcript)" || return 0
+  tok="$(last_assistant_input_tokens "$tr")" || return 0
+  [ -n "$tok" ] || return 0
+  est="$(awk -v t="$tok" -v w="$window" 'BEGIN{p = t * 100 / w; if (p > 100) p = 100; printf "%.0f", p}')"
+  printf 'context-fill: ESTIMATE - ~%s%% (est) from %s input tokens on the latest transcript turn over a %s-token window; the HUD snapshot is STALE, so this is not a measured value.\n' \
+    "$est" "$tok" "$window" >&2
+  if [ "$mode" = "percent" ]; then
+    printf '~%s%% (est)\n' "$est"
+  else
+    printf 'context-fill: ~%s%% (est) of the CONTEXT WINDOW used (%s-token window) - ESTIMATED from %s input tokens on the latest transcript turn; the HUD snapshot is STALE\n' \
+      "$est" "$window" "$tok"
+    printf '  NOTE: an estimate, not a measurement; context-window FILL, NOT the <total_tokens> spend budget.\n'
+  fi
+  exit 5
+}
+
 # True when $1 is a plain decimal percentage in 0-100. Used for every percentage
 # this script reports: a number it cannot vouch for is not a measurement.
 valid_pct() { awk -v v="$1" 'BEGIN{ exit !(v ~ /^[0-9]+(\.[0-9]+)?$/ && v+0 >= 0 && v+0 <= 100) }'; }
@@ -437,6 +471,7 @@ if [ "$age" -gt "$MAX_AGE_SECONDS" ]; then
     "$age" "$MAX_AGE_SECONDS" >&2
   printf 'context-fill: last known fill was %s%% of a %s-token window; treat it as UNKNOWN, not as the current fill.\n' \
     "$used_pct" "${window:-unknown}" >&2
+  stale_estimate_or_return
   exit 3
 fi
 
@@ -472,6 +507,7 @@ then
   if [ "$lag" -gt "$MAX_LAG_SECONDS" ]; then
     printf 'context-fill: STALE - the HUD snapshot is frozen: saved_at is %ss old and lags the session transcript by %ss (lag window %ss). The HUD appears to have skipped its cache write for this transcript (a known in-flight-zero condition, HIMMEL-2342) - the live HUD statusline column is the truthful number right now; this snapshot cannot be certified current.\n' \
       "$age" "$lag" "$MAX_LAG_SECONDS" >&2
+    stale_estimate_or_return
     exit 3
   fi
 fi

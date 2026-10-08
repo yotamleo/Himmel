@@ -153,7 +153,8 @@ JIRA_DIR="$ROOT/scripts/jira"
 if [ -f "$JIRA_DIR/dist/index.js" ]; then
   plan jira-dist skip "built"
 else
-  build_step jira-dist build "npm ci + tsc" -- sh -c "cd '$JIRA_DIR' && $TMO 150 npm ci --no-audit --no-fund && $TMO 60 npm run build"
+  # shellcheck disable=SC2016  # $1/$2 are the sh -c positional args (HIMMEL-4744)
+  build_step jira-dist build "npm ci + tsc" -- sh -c 'cd "$1" && "$2" 150 npm ci --no-audit --no-fund && "$2" 60 npm run build' sh "$JIRA_DIR" "$TMO"
 fi
 
 # 6. obsidian-triage tool deps (js-yaml + playwright) the marketplace suites import.
@@ -183,7 +184,8 @@ else
   build_step graphify install "graphifyy==$GV (pip, no backend extra)" -- $TMO 180 python3 -m pip install --disable-pip-version-check --break-system-packages "graphifyy==$GV"
 fi
 if have graphify || [ "$DRY" -eq 1 ]; then
-  build_step graphify-graph build "graphify update . (AST-only, in $ROOT)" -- sh -c "cd '$ROOT' && $TMO 180 graphify update ."
+  # shellcheck disable=SC2016  # $1/$2 are the sh -c positional args (HIMMEL-4744)
+  build_step graphify-graph build "graphify update . (AST-only, in $ROOT)" -- sh -c 'cd "$1" && "$2" 180 graphify update .' sh "$ROOT" "$TMO"
 else
   plan graphify-graph skip "graphify absent"
 fi
