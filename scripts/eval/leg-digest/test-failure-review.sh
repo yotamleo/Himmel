@@ -342,7 +342,9 @@ chmod +x "$STUB/friction-ok" "$STUB/friction-bad"
 FAILURE_REVIEW_FRICTION_CMD="$STUB/friction-ok" review "$CF" >"$CF/run.out" 2>&1
 check "the digest carries the friction subsection" 'digest "$CF" | grep -q "^- hook:x / y: 3 refusals"'
 CG="$TMP/cg"; mkdir -p "$CG"; : >"$CG/ledger.jsonl"
-FAILURE_REVIEW_FRICTION_CMD="$STUB/friction-bad" review "$CG" >"$CG/run.out" 2>&1
+cg_rc=0
+FAILURE_REVIEW_FRICTION_CMD="$STUB/friction-bad" review "$CG" >"$CG/run.out" 2>&1 || cg_rc=$?
+check "a failing friction command does not fail the review" '[ "$cg_rc" -eq 0 ]'
 check "a failing friction command leaves one line and the review still exits 0" 'digest "$CG" | grep -q "unavailable: rc 7"'
 CH="$TMP/ch"; mkdir -p "$CH"; : >"$CH/ledger.jsonl"
 review "$CH" >"$CH/run.out" 2>&1

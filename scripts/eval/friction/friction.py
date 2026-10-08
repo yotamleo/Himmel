@@ -23,7 +23,7 @@ import sys
 
 HOME = os.path.expanduser('~')
 DEFAULT_PROJECTS = [HOME + '/.claude/projects', HOME + '/.claude-codex/projects']
-DEFAULT_DOCS = os.environ.get('HANDOVER_DIR', HOME + '/Documents/luna/handovers') + '/yotamleo/himmel'
+DEFAULT_DOCS = os.environ.get('HANDOVER_DIR', HOME + '/Documents/luna/handovers') + '/' + os.environ.get('USER_SLUG', 'yotamleo') + '/himmel'
 RECOVERY_CAP_S = 1800
 
 # (regex on reason text, class slug, verdict, evidence) per hook; first match wins.
@@ -144,7 +144,7 @@ def block_text(b):
 
 def scan_transcript(path, lane, since, until=None):
     rows = []
-    pending = None  # (row, ts) awaiting the next non-denied tool_result for recovery time
+    pending = []  # (row, ts) pairs awaiting the next non-denied tool_result for recovery time
     try:
         fh = open(path, errors='replace')
     except OSError:
@@ -169,8 +169,9 @@ def scan_transcript(path, lane, since, until=None):
                     refused = classify(block_text(b), o.get('toolDenialKind'))
                 if refused is None:
                     if pending and not b.get('is_error'):
-                        pending[0]['recovery_s'] = min(RECOVERY_CAP_S, (ts - pending[1]).total_seconds())
-                        pending = None
+                        for prow, pts in pending:
+                            prow['recovery_s'] = min(RECOVERY_CAP_S, (ts - pts).total_seconds())
+                        pending = []
                     continue
                 if ts < since or (until is not None and ts >= until):
                     continue
@@ -179,7 +180,7 @@ def scan_transcript(path, lane, since, until=None):
                        'session': o.get('sessionId') or os.path.basename(path), 'lane': lane,
                        'ts': ts.isoformat(), 'snippet': mask(block_text(b)[:300]), 'recovery_s': None}
                 rows.append(row)
-                pending = (row, ts)
+                pending.append((row, ts))
     return rows
 
 
@@ -431,10 +432,14 @@ def main(argv=None):
     ap.add_argument('--md')
     a = ap.parse_args(argv)
     now = parse_ts(a.now) if a.now else dt.datetime.now(dt.timezone.utc)
+    if now is None:
+        ap.error('--now is not an ISO timestamp: %s' % a.now)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.timezone.utc)
     since = now - dt.timedelta(days=a.days)
     names = known_names(a.repo)
     projects = a.projects or DEFAULT_PROJECTS
-    tx = scan_all(projects, since)
+    tx = scan_all(projects, since, now)
     docs = scan_docs(a.docs, since, names)
     if a.section:
         prior = scan_all(projects, since - dt.timedelta(days=a.days), since)
