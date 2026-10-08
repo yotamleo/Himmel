@@ -653,6 +653,50 @@ wait_exit "$WPID"
 check "(l4568) a READY going stale wakes the console (rc 0)" "0" "$rc"
 check "(l4568) the wake names tails" "WAKE tick changed=tails bank=PROCEED" "$(head -n1 "$WORK/l4568.out")"
 
+# --- (u4959) HIMMEL-4959: a sustained capacity=UNDERFILLED wakes, once per streak
+# tick.sh already folds TICK_UNDERFILL_MIN into capacity=; the waiter wakes on the
+# first UNDERFILLED sample, prints the dispatchable list (stubbed here), and a
+# re-arm during the same streak stays quiet until capacity returns to ok.
+cat > "$STUB/dispatch.sh" <<'EOF2'
+#!/usr/bin/env bash
+printf 'LOCAL HIMMEL-9001 stub-ticket\n'
+EOF2
+export CONSOLE_WAIT_DISPATCH="$STUB/dispatch.sh"
+under_line() { sed "s/ capacity=[^ ]*/ capacity=$1/" "$STUB/tick.line" > "$STUB/tick.line.tmp" && mv "$STUB/tick.line.tmp" "$STUB/tick.line"; }
+reset_stub
+I="$(new_inbox u4959)"
+start "$I" "$WORK/u4959.out" --legs "N1.md"
+wait_hb "$I" || fail "(u4959) no baseline heartbeat"
+under_line "UNDERFILLED:12"
+wait_exit "$WPID"
+check "(u4959) a sustained UNDERFILLED capacity wakes the console (rc 0)" "0" "$rc"
+check "(u4959) the wake names the slack" "WAKE underfilled capacity=UNDERFILLED:12" "$(head -n1 "$WORK/u4959.out")"
+check "(u4959) the wake carries the dispatchable list" "yes" "$(grep -q '^LOCAL HIMMEL-9001' "$WORK/u4959.out" && echo yes)"
+timeout 4 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/u4959b.out" 2>/dev/null; rc=$?  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(u4959) the re-arm in the same streak does not wake again" "" "$(cat "$WORK/u4959b.out")"
+check "(u4959) and is still waiting (rc 124)" "124" "$rc"
+under_line "ok"
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/u4959c.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+under_line "UNDERFILLED:5"
+start "$I" "$WORK/u4959d.out" --legs "N1.md"
+wait_exit "$WPID"
+check "(u4959) a new streak after capacity returned to ok wakes again" "WAKE underfilled capacity=UNDERFILLED:5" "$(head -n1 "$WORK/u4959d.out")"
+reset_stub
+I="$(new_inbox u4959u)"
+under_line "unknown"
+timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/u4959e.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
+check "(u4959) capacity=unknown (failed census) never wakes" "" "$(cat "$WORK/u4959e.out")"
+
+# the manifest reaches the dispatch command, so live legs' files join the collision check
+printf '#!/usr/bin/env bash\nprintf "ARGS %%s\\n" "$*"\n' > "$STUB/dispatch.sh"
+reset_stub
+I="$(new_inbox u4959m)"
+start "$I" "$WORK/u4959m.out" --legs-from "$WORK/u4959-fleet.json"
+wait_hb "$I" || fail "(u4959) no baseline heartbeat (manifest)"
+under_line "UNDERFILLED:7"
+wait_exit "$WPID"
+check "(u4959) the dispatch command receives --legs-from" "ARGS --legs-from $WORK/u4959-fleet.json" "$(grep '^ARGS' "$WORK/u4959m.out")"
+
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
 check "(k) no inbox argument is a usage error (rc 2)" "2" "$rc"
