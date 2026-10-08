@@ -60,6 +60,14 @@ for d in "${EGRESS[@]}"; do A+=(--ro-bind-try "$d" "$d"); done
 A+=(--ro-bind "$REPO" "$REPO")
 [ -e "$REPO/.env" ] && A+=(--ro-bind /dev/null "$REPO/.env")
 [ -d "$REPO/handovers" ] && A+=(--tmpfs "$REPO/handovers")
+# Nothing to crib from: the eval kits (acceptors, references, expected
+# outputs), the bench fixtures and every other worktree (the row's own is
+# bound back below). ponytail: the shared object store under $REPO/.git stays
+# readable (the row's worktree needs it), so `git show <ref>:scripts/eval/...`
+# still reaches the kit; the transcript's `peeked` flag DEFERs such a row.
+for d in scripts/eval scripts/lanes/bench/fixtures .claude/worktrees; do
+  [ -d "$REPO/$d" ] && A+=(--tmpfs "$REPO/$d")
+done
 gitdir="$(git -C "$WT" rev-parse --absolute-git-dir 2>/dev/null)" || die "$WT is not a git worktree"
 A+=(--bind "$WT" "$WT" --bind "$gitdir" "$gitdir")
 A+=(--bind "$(dirname "$DOC")" "$(dirname "$DOC")" --ro-bind "$RUN" "$RUN")

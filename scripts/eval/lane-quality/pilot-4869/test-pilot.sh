@@ -79,7 +79,10 @@ check 'launch line carries the opt-in and the pilot handover root' 'printf "%s" 
 check 'a second deepseek row waits for p01 to finish' '! bash "$P" prepare p06 >/dev/null 2>&1'
 line2="$(bash "$P" prepare p02 2>/dev/null)"
 check 'a native row may run beside it' '[ -n "$line2" ]'
+check 'a failed fixture commit stops prepare' '! GIT_AUTHOR_NAME= bash "$P" prepare p04 >/dev/null 2>&1 && [ ! -e "$TMP/root/rows/p04.env" ]'
 SB="$TMP/root/rows/p01.sandbox"
+# What a row could crib from: the eval kits, the bench fixtures, other worktrees.
+mkdir -p "$TMP/repo/scripts/eval" "$TMP/repo/scripts/lanes/bench/fixtures" "$TMP/repo/.claude/worktrees"
 check 'the deepseek launch goes through the row sandbox' 'printf "%s" "$line" | grep -qF "HEADED_ARM_LEG_DEEPSEEK_BIN=$SB " && [ -x "$SB" ]'
 check 'a native launch is not sandboxed' '! printf "%s" "$line2" | grep -q "_BIN="'
 argv="$(bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" 2>&1)"
@@ -89,6 +92,7 @@ check 'sandbox binds the worktree and the row doc dir read-write' 'after --bind 
 check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qE "Documents/(luna|salus)|/\.claude/projects|/\.himmel/state|$TMP/vault"'
 check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | grep -qxF "$TMP/vault"'
 check 'sandbox masks the primary dotenv file' 'after /dev/null 1 | grep -qxF "$TMP/repo/.env"'
+check 'sandbox hides the eval kits, bench fixtures and other worktrees' '(for d in scripts/eval scripts/lanes/bench/fixtures .claude/worktrees; do after --tmpfs 1 | grep -qxF "$TMP/repo/$d" || exit 1; done)'
 check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
 echo secret >"$TMP/secret"
 if bwrap --ro-bind / / true 2>/dev/null; then
@@ -107,9 +111,11 @@ printf -- '- 10:00 WRAPPED — done\n' >>"$doc"
 slug="$(printf %s "$wt" | sed 's#[^A-Za-z0-9]#-#g')"
 mkdir -p "$TMP/transcripts/$slug"
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/home/x/Documents/luna/hot.md"}}]}}\n' >"$TMP/transcripts/$slug/s1.jsonl"
+printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/home/x/.himmel/eval/lane-quality/pilot-4869/handovers/pilot/p01/HIMMEL-4869-pilot-p01.md"}}]}}\n' >>"$TMP/transcripts/$slug/s1.jsonl"
 check 'finish p01 exits 0' 'bash "$P" finish p01 >/dev/null 2>&1'
 R="$TMP/root/results/p01.json"
-check 'transcript found and its tool calls counted' '[ "$(jq -r .tool_calls "$R")" = 1 ]'
+check 'transcript found and its tool calls counted' '[ "$(jq -r .tool_calls "$R")" = 2 ]'
+check 'reading its own brief under the pilot root is not peeking' '[ "$(jq -r .peeked "$R")" = false ]'
 check 'a vault read is flagged as uncontained' '[ "$(jq -r .contained "$R")" = false ]'
 check 'the wrap is recorded' '[ "$(jq -r .wrapped "$R")" = true ]'
 check 'acceptance recorded as passed' '[ "$(jq -r .accept_ok "$R")" = true ]'
@@ -128,6 +134,20 @@ check 'judged refuses a malformed score' '! bash "$P" judged "$pk" "$TMP/jbad.js
 tab="$(bash "$P" table 2>&1)"
 check 'table lists p01 with its scores' 'printf "%s" "$tab" | grep -E "^\| p01 \| deepseek" | grep -q "5/5/4/5"'
 check 'one rep is not enough to ROUTE' 'printf "%s" "$tab" | grep -E "^\| test writing" | grep -q DEFER'
+# Three synthetic claudex doc-plus-code reps; $1 is a jq filter applied to each.
+reps() {
+  for i in 1 2 3; do
+    jq -n --arg i "$i" '{row: "v\($i)", lane: "claudex", task: "doc-plus-code", packet: "pv\($i)", accept: "ok",
+      accept_ok: true, scope_ok: true, contained: true, peeked: false, wrapped: true, red_before_green: null,
+      verify_before_claim: true, identical_denied_retries: 0, tool_calls: 3}' | jq -c "$1" >"$TMP/root/results/v$i.json"
+    cp "$TMP/j.json" "$TMP/root/judged/pv$i.json"
+  done
+  bash "$P" table 2>&1 | grep -E '^\| docs' | awk -F'|' '{gsub(/^ +| +$/, "", $6); print $6}'
+}
+check 'three clean reps ROUTE' '[ "$(reps .)" = ROUTE ]'
+check 'a rep that read the eval kit is DEFER' 'reps "if .row == \"v2\" then .peeked = true else . end" | grep -q DEFER'
+check 'a rep with no retries count is DEFER' 'reps "if .row == \"v2\" then del(.identical_denied_retries) else . end" | grep -q DEFER'
+check 'a rep with no verify-before-claim field is DEFER' 'reps "if .row == \"v2\" then del(.verify_before_claim) else . end" | grep -q DEFER'
 
 echo
 echo "test-pilot: $PASS passed, $FAIL failed"
