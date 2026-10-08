@@ -321,6 +321,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     const name = c.name || (typeof rec.name === "string" ? rec.name : "") || `pid ${c.pid}`;
     const role = roleOf(name, c.doc);
     const ticket = /^([A-Z][A-Z0-9]+-\d+)\b/.exec(name)?.[1] ?? null;
+    // A wrapped leg's window is closed: its codex price must not grow with later account usage (priced only while live).
     const ids = { session: run ?? `pid ${c.pid}`, leg: name, ticket, model: backendModel };
     const graph = graphOf(role, doc);
     // Accepted succession in the doc overrides the original launch environment.
@@ -337,7 +338,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       lane, laneFrom, backendModel, marker: c.status || null, lastSeenAt: c.doc && doc ? docAt : null, prUrl: null,
       agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
       usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model, window: launch.CLAUDE_CODE_MAX_CONTEXT_TOKENS, priced: lane === "native" }), cloud: null,
-      cost: tally ? costRowOf({ ...ids, lane, tally, codexStart: codexStartOf(launch), codexNow: lane === "claudex" ? codex : null }) : null,
+      cost: tally ? costRowOf({ ...ids, lane, tally, codexStart: codexStartOf(launch), codexNow: lane === "claudex" && c.status !== "WRAPPED" ? codex : null }) : null,
       eval: role === "leg" || role === "judge" ? evalRowOf({ ...ids, lane, rounds, view, doc }) : null,
       runtime: runtimeOf(rec.startedAt ?? c.startedAt, edges.get(c.doc)?.at ?? t0, doc, c.status === "WRAPPED", opts.now, docAt),
     };

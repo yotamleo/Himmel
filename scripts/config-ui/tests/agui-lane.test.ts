@@ -60,6 +60,9 @@ test("a claudex cost row is priced from the codex bank delta, never at Claude we
   expect(costRowOf({ ...ID, lane: "claudex", tally: TALLY, codexStart: null, codexNow: bank })).toMatchObject({ priced_by: "unpriced", cost_eq: null, codex_used_pct_delta: null });
   expect(costRowOf({ ...ID, lane: "claudex", tally: TALLY, codexStart: { pct: 40, at: NOW + 1 }, codexNow: bank })).toMatchObject({ priced_by: "unpriced", codex_used_pct_delta: null });
   expect(costRowOf({ ...ID, lane: "claudex", tally: TALLY, codexStart: { pct: 60, at: NOW - 1 }, codexNow: bank })).toMatchObject({ priced_by: "unpriced", codex_used_pct_delta: null });
+  // The start reading predates the current weekly window (it reset, then usage passed the old start): unpriced.
+  const week = 7 * 86400_000;
+  expect(costRowOf({ ...ID, lane: "claudex", tally: TALLY, codexStart: { pct: 10, at: NOW - 2 * week }, codexNow: bank })).toMatchObject({ priced_by: "unpriced", codex_used_pct_delta: null });
   // native keeps the leg-burn weights.
   expect(costRowOf({ ...ID, lane: "native", tally: TALLY, codexStart: null, codexNow: bank })).toMatchObject({ lane: "native", bank: "claude", priced_by: "claude-weights", cost_eq: 30 + 12000 + 1500, codex_used_pct_delta: null });
 });

@@ -76,7 +76,9 @@ export function costRowOf(a: Ids & { lane: Lane; tally: Tally; codexStart: { pct
   if (lane === "openrouter") return { ...base, priced_by: "unpriced", ...counts, cost_eq: null, ...none };
   // A lower end reading means the weekly window reset under the leg: no delta, rather than a negative burn.
   const start = s?.pct ?? null, end = n?.weeklyPct ?? null;
-  const delta = s && n && start !== null && end !== null && n.capturedAt >= s.at && end >= start ? Math.round((end - start) * 100) / 100 : null;
+  // A start reading older than the current weekly window (resetsAt - 7d) was taken before a reset: no delta either.
+  const sameWindow = !!s && !!n && (n.resetsAt === null || s.at >= n.resetsAt - 7 * 86400_000);
+  const delta = s && n && sameWindow && start !== null && end !== null && n.capturedAt >= s.at && end >= start ?Math.round((end - start) * 100) / 100 : null;
   return { ...base, priced_by: delta !== null ? "codex-bank" : "unpriced", ...counts, cost_eq: null,
     codex_used_pct_start: start, codex_used_pct_end: end, codex_used_pct_delta: delta };
 }
