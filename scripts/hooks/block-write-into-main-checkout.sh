@@ -2291,8 +2291,57 @@ _bwimc_cd_would_fail() {
     [ -d "$r" ] && [ -x "$r" ] || return 0
     return 1
 }
+# HIMMEL-4976: paths an earlier clause of THIS command removed, moved or
+# chmod-ed (newline-separated, canonical; a line `*` = unknown). The existence
+# check in _bwimc_cd_would_fail runs before the command does, so a cd whose
+# target (or an ancestor) was touched by then fails closed. _bwimc_fsmut_note
+# TOKENS... records one clause; _bwimc_fsmut_hit ABS tests a cd target.
+_bwimc_fsmut_note() {
+    local t u b verb=0 fnd=0 r c
+    for t in "$@"; do
+        u=$(_bwimc_unq "$t"); b="${u##*/}"
+        if [ "$verb" = 1 ]; then
+            case "$u" in ''|-*) continue ;; esac
+            case "$t" in *'$'*|*'`'*|*[*?[]*|*\\*) _bwimc_fsmut='*'; continue ;; esac
+            if [ "$_bwimc_ecwd_unres" = 1 ] && case "$u" in /*) false ;; *) true ;; esac; then
+                _bwimc_fsmut='*'
+            elif r=$(_bwimc_resolve_abs "$u" "$_bwimc_ecwd"); then
+                c=$(guard_canon_path "$r" 2>/dev/null) || c="$r"
+                _bwimc_fsmut="${_bwimc_fsmut:-}"$'\n'"${r%/}"$'\n'"${c%/}"
+            else
+                _bwimc_fsmut='*'
+            fi
+            continue
+        fi
+        case "$b" in
+            rm|rmdir|mv|chmod|unlink|rename|chown|chgrp|setfacl) verb=1 ;;
+            xargs) _bwimc_fsmut='*' ;;
+            find) fnd=1 ;;
+            -delete|-exec|-execdir|-ok|-okdir) [ "$fnd" = 1 ] && _bwimc_fsmut='*' ;;
+            *)
+                # a verb inside an eval / bash -c string
+                case "$u" in
+                    *[[:space:]]*) [[ "$u" =~ (^|[[:space:];\&\|\(])(rm|rmdir|mv|chmod|unlink|find|xargs)([[:space:];\&\|\)]|$) ]] && _bwimc_fsmut='*' ;;
+                esac
+                ;;
+        esac
+    done
+    return 0
+}
+_bwimc_fsmut_hit() {
+    local c t
+    [ -n "${_bwimc_fsmut:-}" ] || return 1
+    c=$(guard_canon_path "$1" 2>/dev/null) || c="$1"
+    while IFS= read -r t; do
+        [ -n "$t" ] || continue
+        [ "$t" = '*' ] && return 0
+        case "$1/" in "$t"/*) return 0 ;; esac
+        case "$c/" in "$t"/*) return 0 ;; esac
+    done <<< "$_bwimc_fsmut"
+    return 1
+}
 _bwimc_ecwd_track() {
-    local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi
+    local toks=() t tu i n r carg cabs craw piped="${2:-0}" j cmdi cdphys=0
     while IFS= read -r t; do toks+=("$t"); done < <(_bwimc_tokenize "$1")
     n=${#toks[@]}
     # HIMMEL-3685: a cd/pushd/popd that is not the clause's first command word
@@ -2313,7 +2362,8 @@ _bwimc_ecwd_track() {
             i=$((i+1))
             while [ "$i" -lt "$n" ]; do
                 case "$(_bwimc_unq "${toks[$i]}")" in
-                    -L|-P|-e|-@) i=$((i+1)) ;;
+                    -P) cdphys=1; i=$((i+1)) ;;
+                    -L|-e|-@) i=$((i+1)) ;;
                     --) i=$((i+1)); break ;;
                     *) break ;;
                 esac
@@ -2349,22 +2399,16 @@ _bwimc_ecwd_track() {
                         _bwimc_ecwd_unres=1
                         ;;
                     +[0-9]*|-[0-9]*)
-                        if [ "$tu" = pushd ]; then
-                            # HIMMEL-3648 (CR #1307): `pushd +N`/`-N` rotates
-                            # the directory stack this hook does not track —
-                            # fail closed rather than resolve "+N"/"-N" as a
-                            # literal relative path fragment. Not a push of a
-                            # new dir onto the stack, so _bwimc_ecwd_pushn is
-                            # left unchanged.
-                            _bwimc_ecwd_unres=1
-                        else
-                            carg=$(_bwimc_unq "$craw")
-                            if r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
-                                _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
-                            else
-                                _bwimc_ecwd_unres=1
-                            fi
-                        fi
+                        # HIMMEL-3648 (CR #1307): `pushd +N`/`-N` rotates
+                        # the directory stack this hook does not track —
+                        # fail closed rather than resolve "+N"/"-N" as a
+                        # literal relative path fragment. Not a push of a
+                        # new dir onto the stack, so _bwimc_ecwd_pushn is
+                        # left unchanged.
+                        # HIMMEL-4976: `cd +N/..`/`-N/..` is the same: bash
+                        # fails it (or zsh rotates the stack) and the real
+                        # cwd does not follow the literal path.
+                        _bwimc_ecwd_unres=1
                         ;;
                     *)
                         carg=$(_bwimc_unq "$craw")
@@ -2389,9 +2433,16 @@ _bwimc_ecwd_track() {
                             # the real cwd stays put - the target is no
                             # evidence of where a later relative write lands.
                             _bwimc_ecwd_unres=1
-                        elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd"); then
+                        elif [ "$cdphys" = 1 ] && case "/$carg/" in */../*) true ;; *) false ;; esac; then
+                            # HIMMEL-4976: `cd -P` resolves symlinks BEFORE
+                            # `..`, so a link component then `..` lands in
+                            # the link target's parent, not the lexical one.
+                            _bwimc_ecwd_unres=1
+                        elif r=$(_bwimc_resolve_abs "$carg" "$_bwimc_ecwd") && ! _bwimc_fsmut_hit "$r"; then
                             _bwimc_ecwd="$r"; _bwimc_ecwd_unres=0
                         else
+                            # HIMMEL-4976: also reached when an earlier clause
+                            # of this command removed/moved/chmod-ed the target.
                             _bwimc_ecwd_unres=1
                         fi
                         ;;
@@ -2400,6 +2451,7 @@ _bwimc_ecwd_track() {
             ;;
         popd) _bwimc_ecwd_unres=1 ;;
     esac
+    _bwimc_fsmut_note "${toks[@]}"
     # HIMMEL-3685: a cd/pushd/popd reached across a `|`/`||` boundary may not
     # have run (or ran in a pipeline subshell) — whatever it modelled, the
     # real cwd is unknown, so fail closed like an unresolvable cd.
@@ -2872,12 +2924,14 @@ fi
 # HIMMEL-4956: a CD-search-path assignment (or one inherited by the hook) makes
 # a relative `cd` search elsewhere; same order-blind taint as the HOME one.
 _bwimc_cdpath_taint=0
-_bwimc_cdpath_re='(^|[^A-Za-z0-9_$])CDPATH[+]?='
-if [ -n "${CDPATH:-}" ] || [[ "$cmd" =~ $_bwimc_cdpath_re ]]; then
+# HIMMEL-4976: ANY mention of CDPATH taints (read/printf -v/declare/mapfile
+# set it with no `=` beside the name); a quoted spelling is read unquoted.
+if [ -n "${CDPATH:-}" ]; then
     _bwimc_cdpath_taint=1
 else
     case "$cmd" in
-        *DPATH*|*"\$'"*) [[ "$(_bwimc_unq "$cmd")" =~ $_bwimc_cdpath_re ]] && _bwimc_cdpath_taint=1 ;;
+        *CDPATH*) _bwimc_cdpath_taint=1 ;;
+        *\"*|*\'*|*\\*) case "$(_bwimc_unq "$cmd")" in *CDPATH*) _bwimc_cdpath_taint=1 ;; esac ;;
     esac
 fi
 
@@ -3650,6 +3704,7 @@ _BWIMC_NLENC="${_bwimc_rmodes[$_bwimc_ri]}"
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
 _bwimc_ecwd_pushn=0
+_bwimc_fsmut=""
 _bwimc_redir_scan_text "$_bwimc_hb"
 
 # ---- (g) HIMMEL-3401: git commands that rewrite a PROTECTED checkout ----
@@ -5389,6 +5444,7 @@ done < <(_bwimc_verb_clauses "$_bwimc_ghb")
 _bwimc_ecwd="$_bwimc_cwd"
 _bwimc_ecwd_unres=0
 _bwimc_ecwd_pushn=0
+_bwimc_fsmut=""
 _bwimc_spd_on=0
 _bwimc_sub_ecwd=(); _bwimc_sub_unres=(); _bwimc_sub_pushn=(); _bwimc_sub_d=0
 while IFS= read -r _bwimc_clause; do
