@@ -421,6 +421,32 @@ printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
     ${_TIMEOUT_BIN:+"$_TIMEOUT_BIN" -k 5 120} bash "$CHECK_CI" 42 --max-wait 900 >"$CASE_DIR/o.out" 2>"$CASE_DIR/o.err" ); rc=$?
 if [ "$rc" -eq 0 ] && grep -q -- '--watch' "$CASE_DIR/calls.log"; then pass "11 CHECK_CI_CACHE=0 -> legacy gh pr checks --watch, rc 0"; else fail "11 legacy" "rc=$rc"; fi
 
+# 12 — HIMMEL-4890: check-ci prunes aged pr-/run- rows and their .wait heartbeats from the
+# cache dir, and nothing else. Fixtures live under the case dir, never the real cache.
+_age() {   # _age <path> — mtime two hours back (GNU touch -d, BSD touch -t fallback)
+    touch -d '2 hours ago' "$1" 2>/dev/null || touch -t "$(date -v-2H +%Y%m%d%H%M.%S)" "$1"
+}
+new_case
+printf 'pass\tunit-tests\n' > "$CASE_DIR/rows"
+C="$CASE_DIR/cache"; OUT="$CASE_DIR/outside"; echo keep > "$OUT"; _age "$OUT"
+echo x > "$C/pr-1.rows";            _age "$C/pr-1.rows"
+echo x > "$C/pr-1.rows.77.wait";    _age "$C/pr-1.rows.77.wait"
+echo x > "$C/run-2.rows";           _age "$C/run-2.rows"
+echo x > "$C/run-2.rows.88.wait";   _age "$C/run-2.rows.88.wait"
+echo x > "$C/pr-3.rows"                                                  # fresh row
+echo x > "$C/pr-4.rows";            _age "$C/pr-4.rows"                  # aged row, live waiter
+echo x > "$C/pr-4.rows.99.wait"                                          # fresh heartbeat
+echo x > "$C/other.txt";            _age "$C/other.txt"                  # non-matching name
+ln -s "$OUT" "$C/pr-5.rows"                                              # symlink to an outside file
+mkdir "$C/pr-6.rows.lock"; echo x > "$C/pr-6.rows.lock/inner"            # a subdirectory
+_age "$C/pr-6.rows.lock"
+run_ci "$CASE_DIR/pr" 42 --max-wait 900
+gone=""; for f in pr-1.rows pr-1.rows.77.wait run-2.rows run-2.rows.88.wait; do [ -e "$C/$f" ] && gone="$gone $f"; done
+if [ -z "$gone" ]; then pass "12 aged pr-/run- rows and their aged .wait heartbeats are pruned"; else fail "12 prune" "survived:$gone"; fi
+kept=""; for f in pr-3.rows pr-4.rows pr-4.rows.99.wait other.txt pr-6.rows.lock/inner; do [ -e "$C/$f" ] || kept="$kept $f"; done
+if [ -z "$kept" ]; then pass "12b fresh row, live-waiter row, non-matching name and subdirectory survive"; else fail "12b survivors" "removed:$kept"; fi
+if [ -L "$C/pr-5.rows" ] && [ "$(cat "$OUT")" = keep ]; then pass "12c a symlink is neither followed nor removed"; else fail "12c symlink" "link or target lost"; fi
+
 echo
 echo "check-ci-cache: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
