@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "_doc": "HIMMEL-4853. script -> rc -> {class, meaning}. class: result (a state answer, not a failure), retry (try again later), refusal (a gate said no: counted as an error), error. The leg digest (scripts/eval/leg-digest) counts result/retry rcs apart from failures; an rc a script does not list here stays error. 'table': true = the script documents its rcs as '#   <n> - <meaning>' header rows and test-exit-codes.sh fails when a row is missing here; absent = documented in prose, seeded by hand. Basenames must be unique.",
+  "scripts": {
+    "scripts/quiet-run.sh": {
+      "codes": {
+        "75": { "class": "retry", "meaning": "suite budget busy: every slot is taken (SUITE_LOCK_WAIT=<n> waits instead); retry later" }
+      }
+    },
+    "scripts/check-ci.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "all checks green and review state clean" },
+        "1": { "class": "error", "meaning": "at least one check failed" },
+        "2": { "class": "retry", "meaning": "cannot evaluate yet (DEADLINE-PENDING, no checks registered, head moved, gh error); re-invoke" },
+        "3": { "class": "result", "meaning": "checks green but review state blocks the merge (unresolved threads, changes requested, undispositioned finding)" },
+        "4": { "class": "result", "meaning": "retired (HIMMEL-3360), no longer emitted" },
+        "5": { "class": "refusal", "meaning": "GitHub will block the merge: a required check never reported or the required set is unreadable" },
+        "6": { "class": "refusal", "meaning": "GitHub mergeStateStatus refuses the merge (BLOCKED, BEHIND, DIRTY, DRAFT)" },
+        "7": { "class": "retry", "meaning": "DEADLINE-PENDING under CHECK_CI_DISTINCT_DEADLINE=1: nothing failed, checks still pending" },
+        "64": { "class": "error", "meaning": "usage error, no gate ran" }
+      }
+    },
+    "scripts/handover/console-kit/ready-check.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "READY-CHECK PASS" },
+        "1": { "class": "result", "meaning": "READY-CHECK FAIL: one or more checks not yet satisfied (a status answer, e.g. CI pending)" },
+        "2": { "class": "error", "meaning": "usage, or cannot evaluate (gh/jq missing, repo or PR unreadable)" }
+      }
+    },
+    "scripts/handover/console-kit/go.sh": {
+      "codes": {
+        "4": { "class": "result", "meaning": "ready-check did not PASS at this head: no GO written" },
+        "5": { "class": "result", "meaning": "trust-reviewed GO refused: no GO written" }
+      }
+    },
+    "scripts/handover/merge-on-green.sh": {
+      "codes": {
+        "16": { "class": "refusal", "meaning": "endpoint binding refuses (merged branch)" },
+        "17": { "class": "refusal", "meaning": "console-GO gate: no GO file for this head, or go-gate lib missing" },
+        "19": { "class": "refusal", "meaning": "anchor unreadable: fails closed" },
+        "21": { "class": "result", "meaning": "trust-path gate: PR touches a trust path or cannot be proven not to; routed to the console" }
+      }
+    },
+    "scripts/handover/queue-lock.sh": {
+      "codes": {
+        "11": { "class": "result", "meaning": "status: held, fresh" },
+        "12": { "class": "result", "meaning": "status: held, stale (eligible for takeover)" }
+      }
+    },
+    "scripts/cr/file-deferred-issues.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "completed (including all-duplicates, dry-run, issues-disabled degrade)" },
+        "1": { "class": "error", "meaning": "usage or input error" },
+        "2": { "class": "error", "meaning": "required tool missing or environment unusable" },
+        "3": { "class": "error", "meaning": "issue creation failed for at least one finding" },
+        "4": { "class": "error", "meaning": "a dedupe check failed (fail-closed, nothing filed)" }
+      }
+    },
+    "scripts/ci/tmp-sweep.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "swept (or reported, in dry-run)" },
+        "2": { "class": "error", "meaning": "usage error, or the temp root does not look like a temp dir" },
+        "3": { "class": "error", "meaning": "--apply left matched entries behind" }
+      }
+    },
+    "scripts/guardrails/guard-gh.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "proceed" },
+        "1": { "class": "result", "meaning": "proceed with warning" },
+        "2": { "class": "refusal", "meaning": "refuse: do not run the underlying gh" }
+      }
+    },
+    "scripts/hooks/check-hookspath.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "OK or bypassed" },
+        "1": { "class": "refusal", "meaning": "hookspath misconfigured" },
+        "2": { "class": "error", "meaning": "internal error (git, realpath or python unavailable)" }
+      }
+    },
+    "scripts/hooks/check-platforms-tested.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "pass" },
+        "1": { "class": "refusal", "meaning": "sensitive files changed with no Platforms tested attestation" },
+        "2": { "class": "refusal", "meaning": "cannot evaluate: fail-closed block" }
+      }
+    },
+    "scripts/hooks/check-security-reviewed.sh": {
+      "table": true,
+      "codes": {
+        "0": { "class": "result", "meaning": "pass" },
+        "1": { "class": "refusal", "meaning": "code changed with no Security reviewed attestation" },
+        "2": { "class": "refusal", "meaning": "cannot evaluate: fail-closed block" }
+      }
+    }
+  }
+}
