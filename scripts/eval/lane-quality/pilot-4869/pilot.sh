@@ -143,6 +143,33 @@ $(prompt_of "$3")
 EOF
 }
 
+# The jail's read-only view of the repo: the tracked files of the primary
+# checkout's HEAD, never the checkout itself (its untracked MCP profiles, local
+# settings, secrets and logs stay out), minus the eval kits, the bench fixtures
+# and the handover stub. Its .git is an empty repo the sandbox binds the shared
+# objects and refs into.
+ensure_export() {
+  local x="$ROOT/repo" tar="$ROOT/repo.tar"
+  [ -d "$x/.git" ] && return 0
+  rm -rf "$x" "$tar"; mkdir -p "$x" || die "cannot create $x"
+  git -C "$REPO" archive -o "$tar" HEAD || die "cannot export the repo"
+  tar -xf "$tar" -C "$x" || die "cannot unpack the repo export"
+  rm -rf "$tar" "$x/scripts/eval" "$x/scripts/lanes/bench/fixtures" "$x/handovers"
+  git -c init.defaultBranch=main init -q "$x" || die "cannot initialise the export's git stub"
+}
+
+# The pilot guard for a sandboxed row's worktree: every prompt and every tool
+# call refuses unless /run/lq-pilot-jail exists, which only sandbox.sh binds in
+# (the host's /run is root-owned). A launch line run without its sandbox
+# wrapper therefore does nothing.
+write_jail_guard() { # $1 worktree
+  local g='test -e /run/lq-pilot-jail || { echo "HIMMEL-4869 pilot: this row runs only inside its jail (sandbox.sh); refusing" >&2; exit 2; }'
+  mkdir -p "$1/.claude" || return 1
+  jq -n --arg g "$g" '{hooks: {
+      PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $g}]}],
+      UserPromptSubmit: [{hooks: [{type: "command", command: $g}]}]}}' >"$1/.claude/settings.local.json"
+}
+
 cmd_prepare() {
   local row="$1" lane model effort task wt fix doc nonce snap prefix seen est spent r
   cmd_verify >/dev/null
@@ -176,24 +203,31 @@ cmd_prepare() {
   # dir per row, so a sandboxed row sees and writes only its own.
   doc="$DOCS/$row/HIMMEL-4869-pilot-$row.md"; run="$ROOT/run/$row"; tx="$ROOT/tx/$row"; conf="$ROOT/conf/$row"
   mkdir -p "$DOCS/$row" "$run" "$tx" "$conf" || die "cannot create the $row dirs"
+  ensure_export
   write_brief "$row" "$wt" "$task" "$nonce" "$PILOT_CONSOLE" >"$doc"
-  printf 'LANE=%q\nMODEL=%q\nEFFORT=%q\nTASK=%q\nWT=%q\nFIX=%q\nDOC=%q\nSNAP0=%q\nT0=%q\nREPO=%q\nRUN=%q\nTX=%q\nROWCONF=%q\n' \
-    "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" "$REPO" "$run" "$tx" "$conf" >"$ROOT/rows/$row.env"
+  printf 'LANE=%q\nMODEL=%q\nEFFORT=%q\nTASK=%q\nWT=%q\nFIX=%q\nDOC=%q\nSNAP0=%q\nT0=%q\nREPO=%q\nRUN=%q\nTX=%q\nROWCONF=%q\nEXPORT=%q\nGITOBJ=%q\n' \
+    "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" "$REPO" "$run" "$tx" "$conf" \
+    "$ROOT/repo" "$ROOT/gitobj/$row" >"$ROOT/rows/$row.env"
   prefix=""
   [ "$lane" = deepseek ] && prefix="HIMMEL_DEEPSEEK_INFERENCE_OK=1 "
   [ "$lane" = deepseek ] || prefix="${prefix}LEG_EFFORT=$(printf %q "$effort") "
   # deepseek and claudex rows run in the bubblewrap jail (sandbox.sh); native
   # rows run unsandboxed.
   if [ "$lane" != native ]; then
+    write_jail_guard "$wt" || die "cannot write the jail guard for $row"
     printf '#!/usr/bin/env bash\nexec bash %q launch %q "$@"\n' "$HERE/sandbox.sh" "$ROOT/rows/$row.env" >"$ROOT/rows/$row.sandbox"
     chmod +x "$ROOT/rows/$row.sandbox"
     bash "$HERE/sandbox.sh" argv "$ROOT/rows/$row.env" >/dev/null || die "no sandbox for $row; not launchable"
     prefix="${prefix}HEADED_ARM_LEG_$(printf %s "$lane" | tr '[:lower:]' '[:upper:]')_BIN=$(printf %q "$ROOT/rows/$row.sandbox") "
   fi
-  # The console runs this line, so every value is shell-quoted.
-  printf '%sHANDOVER_DIR=%q LEG_REPO=%q setsid nohup bash %q --lane %q --profile console-relay --console %q %q %q %q 1 %q %q >/dev/null 2>&1 &\n' \
+  # The row's whole launch, sandbox prefix included, lives in one wrapper, so
+  # the console's line carries nothing that could be dropped from it.
+  printf '#!/usr/bin/env bash\n%sHANDOVER_DIR=%q LEG_REPO=%q exec bash %q --lane %q --profile console-relay --console %q %q %q %q 1 %q %q\n' \
     "$prefix" "$ROOT/handovers" "$wt" "$REPO/scripts/handover/console-kit/headed-arm-leg.sh" "$lane" "$PILOT_CONSOLE" \
-    "HIMMEL-4869-pilot-$row" "$doc" "$ROOT/rows/$row.signal" "$run/$row.log" "$model"
+    "HIMMEL-4869-pilot-$row" "$doc" "$ROOT/rows/$row.signal" "$run/$row.log" "$model" >"$ROOT/rows/$row.launch"
+  chmod +x "$ROOT/rows/$row.launch"
+  # The console runs this line, so every value is shell-quoted.
+  printf 'setsid nohup bash %q >/dev/null 2>&1 &\n' "$ROOT/rows/$row.launch"
 }
 
 find_transcripts() { # $1 lane, $2 worktree, $3 row doc, $4 row transcript dir -> this row's transcripts, one per line
@@ -242,7 +276,7 @@ metrics() { # $1 transcript or empty, $2 report -> JSON
 }
 
 cmd_finish() {
-  local row="$1" LANE MODEL EFFORT TASK WT FIX DOC SNAP0 T0 REPO TX snap1 usd tr rep acc acc_rc scope wrapped pk m
+  local row="$1" LANE MODEL EFFORT TASK WT FIX DOC SNAP0 T0 REPO TX acc_sh jail snap1 usd tr rep acc acc_rc scope wrapped pk m
   cmd_verify >/dev/null
   load_env
   [ -r "$ROOT/rows/$row.env" ] || die "$row was never prepared"
@@ -260,14 +294,15 @@ cmd_finish() {
   awk '/^## Final report/ { on = 1; next } /^## / { on = 0 } on && !/^- [0-9][0-9]:[0-9][0-9] / { print }' "$DOC" >"$rep"
   wrapped=false
   grep '^- ' "$DOC" | tail -1 | grep -qE '^- [0-9][0-9]:[0-9][0-9] WRAPPED' && wrapped=true
-  if [ "$TASK" = bench-t4 ]; then
-    timeout 120 bash "$HERE/tasks/bench-t4/accept.sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$? # gnu-ok: the pilot is Linux-only (its rows run in a bwrap jail)
-  else
-    timeout 120 bash "$LQ/tasks/$TASK/accept.sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$? # gnu-ok: the pilot is Linux-only (its rows run in a bwrap jail)
-  fi
+  # The acceptor and every git command on the worktree run in the acceptor
+  # jail (no network, no lane config, no key): the session wrote that tree, so
+  # its tests, hooks and git config never run on the host.
+  acc_sh="$LQ/tasks/$TASK/accept.sh"; [ "$TASK" = bench-t4 ] && acc_sh="$HERE/tasks/bench-t4/accept.sh"
+  jail=(bash "$HERE/sandbox.sh" check "$ROOT/rows/$row.env")
+  timeout 120 "${jail[@]}" bash "$acc_sh" "$WT" "$FIX" >"$ROOT/private/$row.accept.log" 2>&1; acc_rc=$? # gnu-ok: the pilot is Linux-only (its rows run in a bwrap jail)
   acc="$(grep -E '^accept: [0-9]+/[0-9]+$' "$ROOT/private/$row.accept.log" | tail -1)"
-  git -C "$WT" add -A
-  scope="$(git -C "$WT" diff --cached --name-only "$FIX" | grep -v '^lq-work/' | jq -R . | jq -sc .)"
+  "${jail[@]}" git add -A -- . ':!.claude/settings.local.json'
+  scope="$("${jail[@]}" git diff --cached --name-only "$FIX" -- . ':!.claude/settings.local.json' | grep -v '^lq-work/' | jq -R . | jq -sc .)"
   # Every session of this row (a relaunch adds one), in launch order, scored as
   # one transcript so a read in an earlier session still counts.
   tr=""
@@ -282,7 +317,7 @@ cmd_finish() {
     printf '\n## Task given to the agent\n\n'
     prompt_of "$TASK"
     printf '\n## The diff it produced\n\n```diff\n'
-    git -C "$WT" diff --cached "$FIX" | head -c 60000
+    "${jail[@]}" git diff --cached "$FIX" -- . ':!.claude/settings.local.json' | head -c 60000
     printf '\n```\n\n## Its final report\n\n'
     cat "$rep"
   } | sed -E 's/(anthropic|claude|opus|sonnet|haiku|fable|gpt[-_.a-z0-9]*|codex|claudex|openai|deepseek|openrouter|gemini|glm|kimi|qwen|llama|mistral)/[redacted]/Ig; s/\bnative\b/[redacted]/Ig;s/\[redacted\]([-_.]*[0-9][-_.0-9]*)?/[redacted]/g' \

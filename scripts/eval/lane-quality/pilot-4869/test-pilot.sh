@@ -29,7 +29,24 @@ echo base >"$TMP/repo/base.txt"
 git -C "$TMP/repo" -c user.name=t -c user.email=t@t add -A
 git -C "$TMP/repo" -c user.name=t -c user.email=t@t commit -qm base
 BASE="$(git -C "$TMP/repo" rev-parse HEAD)"
+# The primary's HEAD (the jail's repo export) also tracks the eval kit, the
+# handover stub and a launcher. The jailed fake launcher reports what it can
+# reach: the API host through the tunnel, and a host port ($1) directly.
+mkdir -p "$TMP/repo/scripts/eval" "$TMP/repo/handovers"
+echo kit >"$TMP/repo/scripts/eval/kit.txt"; echo stub >"$TMP/repo/handovers/stub.md"
+cat >"$TMP/repo/scripts/claude-deepseek" <<'EOF'
+#!/usr/bin/env bash
+if exec 3<>/dev/tcp/api.deepseek.com/443; then echo ping >&3; read -r r <&3; echo "api=$r"; else echo api=closed; fi
+if (exec 4<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then echo host4=open; else echo host4=closed; fi
+if (exec 4<>"/dev/tcp/::1/$1") 2>/dev/null; then echo host6=open; else echo host6=closed; fi
+echo "key=${DEEPSEEK_API_KEY:-unset}"
+EOF
+chmod +x "$TMP/repo/scripts/claude-deepseek"
+git -C "$TMP/repo" -c user.name=t -c user.email=t@t add -A
+git -C "$TMP/repo" -c user.name=t -c user.email=t@t commit -qm head
 echo 'FAKE_KEY=x' >"$TMP/repo/.env" # untracked, as in the primary checkout
+mkdir -p "$TMP/repo/.claude/mcp-profiles"
+echo '{"OBSIDIAN_API_KEY":"x"}' >"$TMP/repo/.claude/mcp-profiles/local.vault.json" # untracked
 
 # The fake launcher answers --version the way scripts/claude-deepseek does.
 cat >"$TMP/fake-deepseek" <<'EOF'
@@ -72,8 +89,9 @@ rm -rf "$TMP/root"; echo 43.77 >"$FAKE_BAL"
 evil="c 1;touch $TMP/pwned"
 bash "$P" init --console "$evil" >/dev/null 2>&1
 check 'pilot.env round-trips a console name with shell metacharacters' '[ "$(bash -c ". \"\$1/pilot.env\"; printf %s \"\$PILOT_CONSOLE\"" _ "$TMP/root")" = "$evil" ] && [ ! -e "$TMP/pwned" ]'
-eline="$(PILOT_WT_ROOT="$TMP/wt-evil" bash "$P" prepare p02 2>/dev/null)"
-check 'the launch line shell-quotes the console name' 'printf "%s" "$eline" | grep -qF -- "--console $(printf %q "$evil") "'
+PILOT_WT_ROOT="$TMP/wt-evil" bash "$P" prepare p02 >/dev/null 2>&1
+elaunch="$(cat "$TMP/root/rows/p02.launch" 2>/dev/null)"
+check 'the launch wrapper shell-quotes the console name' 'printf "%s" "$elaunch" | grep -qF -- "--console $(printf %q "$evil") "'
 git -C "$TMP/repo" worktree remove --force "$TMP/wt-evil/lq-pilot-p02" >/dev/null 2>&1
 rm -rf "$TMP/root"
 bash "$P" init --console c1-console >/dev/null 2>&1
@@ -87,30 +105,61 @@ check 'worktree sits at the recorded fixture commit' '[ "$(git -C "$wt" rev-pars
 doc="$TMP/root/handovers/pilot/p01/HIMMEL-4869-pilot-p01.md"
 check 'brief carries the frozen prompt' 'grep -qF "semver-cmp.sh A B" "$doc"'
 check 'brief names no vault or operator path' '! grep -qiE "luna|salus|Documents/" "$doc"'
-check 'launch line is the deepseek lane, empty-MCP profile' 'printf "%s" "$line" | grep -q -- "--lane deepseek --profile console-relay --console c1-console"'
-check 'launch line carries the opt-in and the pilot handover root' 'printf "%s" "$line" | grep -q "^HIMMEL_DEEPSEEK_INFERENCE_OK=1 .*HANDOVER_DIR=$TMP/root/handovers LEG_REPO=$wt"'
+L1="$TMP/root/rows/p01.launch"
+check 'the launch line runs only the row wrapper' '[ "$line" = "setsid nohup bash $L1 >/dev/null 2>&1 &" ] && [ -x "$L1" ]'
+check 'the wrapper is the deepseek lane, empty-MCP profile' 'grep -q -- "--lane deepseek --profile console-relay --console c1-console" "$L1"'
+check 'the wrapper carries the opt-in and the pilot handover root' 'grep -q "^HIMMEL_DEEPSEEK_INFERENCE_OK=1 .*HANDOVER_DIR=$TMP/root/handovers LEG_REPO=$wt exec bash " "$L1"'
 check 'a second deepseek row waits for p01 to finish' '! bash "$P" prepare p06 >/dev/null 2>&1'
 line2="$(bash "$P" prepare p02 2>/dev/null)"
 check 'a native row may run beside it' '[ -n "$line2" ]'
 check 'a failed fixture commit stops prepare' '! GIT_AUTHOR_NAME= bash "$P" prepare p04 >/dev/null 2>&1 && [ ! -e "$TMP/root/rows/p04.env" ]'
 SB="$TMP/root/rows/p01.sandbox"
-# What a row could crib from: the eval kits, the bench fixtures, other worktrees.
-mkdir -p "$TMP/repo/scripts/eval" "$TMP/repo/scripts/lanes/bench/fixtures" "$TMP/repo/.claude/worktrees"
-check 'the deepseek launch goes through the row sandbox' 'printf "%s" "$line" | grep -qF "HEADED_ARM_LEG_DEEPSEEK_BIN=$SB " && [ -x "$SB" ]'
-check 'a native launch is not sandboxed' '! printf "%s" "$line2" | grep -q "_BIN="'
+check 'the deepseek wrapper goes through the row sandbox' 'grep -qF "HEADED_ARM_LEG_DEEPSEEK_BIN=$SB " "$L1" && [ -x "$SB" ]'
+check 'a native launch is not sandboxed' '! grep -q "_BIN=" "$TMP/root/rows/p02.launch"'
+G="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$wt/.claude/settings.local.json" 2>/dev/null)"
+check 'the deepseek worktree refuses every tool and prompt outside the jail' '[ "$(jq -r ".hooks.PreToolUse[0].matcher" "$wt/.claude/settings.local.json")" = "*" ] && [ "$(jq -r ".hooks.UserPromptSubmit[0].hooks[0].command" "$wt/.claude/settings.local.json")" = "$G" ] && { bash -c "$G" 2>/dev/null; [ $? = 2 ]; }'
+check 'the native worktree has no jail guard' '[ ! -e "$TMP/wt/lq-pilot-p02/.claude/settings.local.json" ]'
+mkdir -p "$TMP/home/.claude/plugins/data/qmd" "$TMP/home/.claude/plugins/marketplaces"
+echo '{"model":"x","enabledPlugins":{"qmd@himmel":true},"mcpServers":{"q":{}},"enabledMcpjsonServers":["q"],"enableAllProjectMcpServers":true}' >"$TMP/home/.claude/settings.json"
+hargv="$(HOME="$TMP/home" bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" 2>&1)"
+check 'the jail user settings carry no plugin or MCP server' 'jq -e "keys == [\"model\"]" "$TMP/root/run/p01/user-settings.json" >/dev/null && printf "%s\n" "$hargv" | grep -A2 -x -- --ro-bind | grep -qxF "$TMP/home/.claude/settings.json"'
+check 'the jail binds the seeded plugin files, never plugins/data' 'printf "%s\n" "$hargv" | grep -qxF "$TMP/home/.claude/plugins/marketplaces" && ! printf "%s\n" "$hargv" | grep -qE "^$TMP/home/.claude/plugins(/data.*)?$"'
 argv="$(LEAK_TOKEN=leak LEAK_PLAIN=x DEEPSEEK_API_KEY=k bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" 2>&1)"
 after() { printf '%s\n' "$argv" | grep -A"$2" -x -- "$1"; } # $1 flag, $2 operand count
 check 'sandbox drops a credential and an unlisted variable, keeps PATH and the lane key' 'after --unsetenv 1 | grep -qx LEAK_TOKEN && after --unsetenv 1 | grep -qx LEAK_PLAIN && ! after --unsetenv 1 | grep -qxE "PATH|DEEPSEEK_API_KEY"'
-check 'sandbox hides /home and /tmp' 'after --tmpfs 1 | grep -qx /home && after --tmpfs 1 | grep -qx /tmp'
+check 'sandbox hides /home, /tmp, /run and /var/log' '(for d in /home /tmp /run /var/log; do after --tmpfs 1 | grep -qxF "$d" || exit 1; done)'
+check 'sandbox has its own network namespace, entered through the tunnel' 'printf "%s\n" "$argv" | grep -qx -- --net && after --unshare-all 0 | grep -q . && printf "%s\n" "$argv" | grep -qx -- --share-net && [ "$(printf "%s\n" "$argv" | grep -x -A1 tunnel | tail -1)" = 443 ]'
 check 'sandbox binds the worktree and the row doc dir read-write' 'after --bind 2 | grep -qxF "$wt" && after --bind 2 | grep -qxF "$(dirname "$doc")"'
 check 'sandbox gives the row its own lane config, never the shared one' 'after --bind 2 | grep -qxF "$TMP/root/conf/p01" && ! after --bind 1 | grep -qxF "$HOME/.claude-deepseek"'
 check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qE "Documents/(luna|salus)|/\.claude/projects|/\.himmel/state|$TMP/vault"'
 check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | grep -qxF "$TMP/vault"'
-check 'sandbox masks the primary dotenv file' 'after /dev/null 1 | grep -qxF "$TMP/repo/.env"'
-check 'sandbox hides the eval kits, bench fixtures and other worktrees' '(for d in scripts/eval scripts/lanes/bench/fixtures .claude/worktrees; do after --tmpfs 1 | grep -qxF "$TMP/repo/$d" || exit 1; done)'
+check 'sandbox never binds the primary checkout; the repo is its tracked export' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qxF "$TMP/repo" && after --ro-bind 2 | grep -qxF "$TMP/root/repo"'
+check 'the export drops the eval kit and the handover stub, keeps the launcher' '[ ! -e "$TMP/root/repo/scripts/eval" ] && [ ! -e "$TMP/root/repo/handovers" ] && [ -f "$TMP/root/repo/scripts/claude-deepseek" ] && [ ! -e "$TMP/root/repo/.env" ]'
 check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
 echo secret >"$TMP/secret"
 if bwrap --ro-bind / / true 2>/dev/null; then
+  R1=(bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env")
+  check 'live: the primary dotenv file is absent in the sandbox' '[ -f "$TMP/repo/.env" ] && "${R1[@]}" test -d "$TMP/repo" && ! "${R1[@]}" test -e "$TMP/repo/.env"'
+  check 'live: the untracked MCP profile is absent in the sandbox' '[ -f "$TMP/repo/.claude/mcp-profiles/local.vault.json" ] && ! "${R1[@]}" test -e "$TMP/repo/.claude/mcp-profiles/local.vault.json"'
+  check 'live: /run holds only the jail marker and /var/log is empty' '[ "$("${R1[@]}" ls -A /run)" = lq-pilot-jail ] && [ -z "$("${R1[@]}" ls -A /var/log)" ] && [ -n "$(ls -A /var/log)" ]'
+  check 'live: the jail guard passes inside the jail' '"${R1[@]}" bash -c "$G"'
+  HP=$((20000 + $$ % 20000))
+  socat TCP-LISTEN:$HP,bind=127.0.0.1,reuseaddr,fork SYSTEM:"echo pong" & S4=$!
+  socat TCP6-LISTEN:$HP,bind='[::1]',reuseaddr,fork SYSTEM:"echo pong" & S6=$!
+  sleep 0.5
+  check 'live: control, the host listeners answer on the host' '(exec 4<>/dev/tcp/127.0.0.1/$HP) 2>/dev/null && (exec 4<>/dev/tcp/::1/$HP) 2>/dev/null'
+  check 'live: host loopback (v4 and v6) is unreachable in the row jail' '! "${R1[@]}" bash -c "(exec 4<>/dev/tcp/127.0.0.1/$HP) || (exec 4<>/dev/tcp/::1/$HP)" 2>/dev/null'
+  C2=(bash "$HERE/sandbox.sh" check "$TMP/root/rows/p02.env")
+  check 'live: the acceptor jail has no network and drops a write outside the worktree' '! "${C2[@]}" bash -c "(exec 4<>/dev/tcp/127.0.0.1/$HP)" 2>/dev/null && "${C2[@]}" touch "$TMP/acc-canary" && [ ! -e "$TMP/acc-canary" ]'
+  out="$(cd "$wt" && DEEPSEEK_API_KEY=k PILOT_SANDBOX_TUNNEL_TARGET="127.0.0.1:$HP" timeout 30 bash "$HERE/sandbox.sh" launch "$TMP/root/rows/p01.env" "$HP" 2>&1)" # gnu-ok: Linux-only kit
+  check 'live: the launched lane reaches its API host only through the tunnel' 'printf "%s\n" "$out" | grep -qx api=pong && printf "%s\n" "$out" | grep -qx host4=closed && printf "%s\n" "$out" | grep -qx host6=closed && printf "%s\n" "$out" | grep -qx key=k'
+  # A pilot root deep enough that a socket under it would pass the 108-byte cap.
+  long="$TMP/root/run/$(printf 'd%.0s' $(seq 1 110))"; mkdir -p "$long"
+  sed "s|^RUN=.*|RUN=$long|" "$TMP/root/rows/p01.env" >"$TMP/long.env"
+  out="$(cd "$wt" && DEEPSEEK_API_KEY=k PILOT_SANDBOX_TUNNEL_TARGET="127.0.0.1:$HP" timeout 30 bash "$HERE/sandbox.sh" launch "$TMP/long.env" "$HP" 2>&1)" # gnu-ok: Linux-only kit
+  check 'live: the tunnel works under a deep pilot root' 'printf "%s\n" "$out" | grep -qx api=pong'
+  check 'live: the tunnel dir is gone after the launch' '[ -z "$(find /tmp -maxdepth 1 -name "lq-tun.*" -newer "$TMP/long.env" 2>/dev/null)" ]'
+  kill "$S4" "$S6" 2>/dev/null
   check 'live: a file outside the binds is invisible in the sandbox' '! bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" cat "$TMP/secret" >/dev/null 2>&1'
   check 'live: the vault root exists but is empty in the sandbox' 'bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" test -d "$TMP/vault" && ! bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" cat "$TMP/vault/hot.md" >/dev/null 2>&1'
   check 'live: a host credential is not in the sandbox environment' '! LEAK_TOKEN=leak bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" env | grep -q LEAK_TOKEN'
@@ -177,7 +226,16 @@ mkdir -p "$TMP/transcripts/$slug2"
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"n1","name":"Read","input":{}}]}}\n' >"$TMP/transcripts/$slug2/$sid1.jsonl"
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"n2","name":"Read","input":{"file_path":"/home/x/Documents/salus/x"}}]}}\n' >"$TMP/transcripts/$slug2/$sid2.jsonl"
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"o%s","name":"Read","input":{}}]}}\n' 1 2 3 >"$TMP/transcripts/$slug2/other.jsonl"
+# The session repoints its worktree at a git dir it wrote, whose config runs a
+# command on `git add` (fsmonitor) and on `git diff` (an external diff).
+git init -q --bare "$wt2/evil.git"
+echo "$TMP/repo/.git/objects" >"$wt2/evil.git/objects/info/alternates"
+git --git-dir="$wt2/evil.git" config core.bare false
+git --git-dir="$wt2/evil.git" config core.fsmonitor "touch $TMP/git-canary #"
+git --git-dir="$wt2/evil.git" config diff.external "touch $TMP/git-canary #"
+echo "gitdir: $wt2/evil.git" >"$wt2/.git"
 check 'finish p02 exits 0' 'bash "$P" finish p02 >/dev/null 2>&1'
+check 'no git config the session wrote runs on the host' '[ ! -e "$TMP/git-canary" ]'
 R2="$TMP/root/results/p02.json"
 check 'every recorded session is counted and a newer unrecorded one is not' '[ "$(jq -r .tool_calls "$R2")" = 2 ]'
 check 'a vault read in an earlier relaunch still marks the row uncontained' '[ "$(jq -r .contained "$R2")" = false ]'
