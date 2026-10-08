@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { createTools, buildServer, type ToolDeps, type JiraTool } from './mcp.js';
 
 // Unit coverage for the MCP surface (HIMMEL-159). We mock the underlying
@@ -103,7 +104,7 @@ describe('MCP server wiring', () => {
     const handler = (server as any)._requestHandlers.get('tools/call');
     expect(handler).toBeDefined();
 
-    const result = await handler({ method: 'tools/call', params: { name: 'get', arguments: { key: 'HIMMEL-1' } } }, {});
+    const result = await handler({ method: 'tools/call', params: { name: 'get', arguments: { key: 'HIMMEL-1' } } }, { mcpReq: { requestState: () => undefined, inputResponses: undefined } });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe('plain string error');
   });
@@ -371,5 +372,20 @@ describe('roadmap + rank tools (HIMMEL-3890)', () => {
       { issues: ['HIMMEL-2'], rankAfterIssue: 'HIMMEL-1' },
     );
     expect(out).toBe('HIMMEL-2 ranked after HIMMEL-1');
+  });
+});
+
+describe('MCP SDK v2 (HIMMEL-4864)', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const src = readFileSync(new URL('./mcp.ts', import.meta.url), 'utf8');
+
+  it('pins the split v2 server package exactly and drops the v1 monolith', () => {
+    expect(pkg.dependencies['@modelcontextprotocol/server']).toBe('2.3.1');
+    expect(pkg.dependencies['@modelcontextprotocol/sdk']).toBeUndefined();
+  });
+
+  it('imports only the v2 server package', () => {
+    expect(src).not.toContain('@modelcontextprotocol/sdk');
+    expect(src).toContain("from '@modelcontextprotocol/server'");
   });
 });
