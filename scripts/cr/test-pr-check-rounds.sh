@@ -1490,6 +1490,16 @@ cm_out="$(start_round "$cm_fix" clean cmok)"; cm_rc=$?
 assert_eq "$cm_rc" "0" "the unspent delta round still buys a fix after clean merges"
 assert_has "$(cat "$git_dir/cr-review-rounds/cmok.delta" 2>/dev/null)" " fix" "that fix records the fix trigger"
 
+# A clean merge over a head with an unresolved finding carries no fix, so it
+# must not spend the delta round on the fix trigger.
+three_rounds cmfind suggestion
+main_commit cm-find-1.txt one
+git -C "$repo" merge -q --no-edit main
+cf_head="$(git -C "$repo" rev-parse cmfind)"
+cf_rc=0; start_round "$cf_head" clean cmfind >/dev/null || cf_rc=$?
+assert_eq "$cf_rc" "0" "a clean merge over an unresolved finding is admitted"
+if [ -e "$git_dir/cr-review-rounds/cmfind.delta" ]; then fail "a clean merge over an unresolved finding leaves the delta round unspent"; else pass "a clean merge over an unresolved finding leaves the delta round unspent"; fi
+
 # Delta already spent: a clean merge is still admitted, one that changes the
 # PR's own diff is not (main lands the same f.txt line the PR appended).
 three_rounds cmused suggestion

@@ -599,18 +599,19 @@ delta_check() {
     delta_verdict="$(judge_nogo_record "$delta_from")"
     judge_rc=$?
     [ "$judge_rc" -ne 8 ] || return 8
+    # HIMMEL-4995: a clean merge-forward is admitted without spending the one
+    # delta round, whether or not it was already used. It is checked before the
+    # fix trigger: a clean merge carries no fix, so it must not spend the round.
+    if clean_merge_forward "$delta_from" "$delta_to"; then
+        delta_trigger="clean-merge"
+        delta_free=1
+        return 0
+    fi
     if [ -z "$delta_used" ]; then
         if [ "$(ledger_query finding "$delta_from")" = "finding" ]; then
             delta_trigger="fix"
             return 0
         fi
-    fi
-    # HIMMEL-4995: a clean merge-forward is admitted without spending the one
-    # delta round, whether or not it was already used.
-    if clean_merge_forward "$delta_from" "$delta_to"; then
-        delta_trigger="clean-merge"
-        delta_free=1
-        return 0
     fi
     if [ -z "$delta_used" ]; then
         # Merge-forward: at least one merge since the reviewed head, every
