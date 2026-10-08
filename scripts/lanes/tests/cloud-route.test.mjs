@@ -164,6 +164,13 @@ test('parseJiraGet splits the header and keeps the body verbatim', () => {
   assert.match(p.description, /Body line/);
 });
 
+test('brief does not promise the context7 MCP (HIMMEL-4971: not enabled in a cloud session)', () => {
+  const t = { ...parseJiraGet('HIMMEL-9001\tTask\tTo Do\tt\n\nFix versions: v1.0.1'), files: ['a.sh'] };
+  const b = buildBrief(t, { date: '2026-10-08' });
+  assert.doesNotMatch(b, /Use the context7 MCP for current library docs\./);
+  assert.match(b, /If the context7 MCP tools are listed in this session, use them for current library docs; otherwise WebFetch the library's own docs\./);
+});
+
 test('brief carries every template section, in order', () => {
   const raw = 'HIMMEL-9001\tTask\tTo Do\ttick relayed results only\n\nFix scripts/lanes/example.sh.\nFix versions: v1.0.1';
   const t = { ...parseJiraGet(raw), files: ['scripts/lanes/example.sh'] };
@@ -171,7 +178,7 @@ test('brief carries every template section, in order', () => {
   const order = [
     'You are working in a cloud clone of the GitHub repo yotamleo/Himmel.',
     'Atlassian MCP connector (the local jira CLI is absent in the cloud)',
-    'context7 MCP',
+    'context7 MCP tools are listed',
     '## Ticket HIMMEL-9001 (verbatim from Jira)',
     raw,
     '## The change',
