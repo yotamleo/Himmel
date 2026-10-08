@@ -88,8 +88,11 @@ function aguiSourceGone(dist: string, web: string): boolean {
   return Array.isArray(listed) && listed.some((f) => typeof f === "string" && !existsSync(join(web, "src", f)));
 }
 function aguiStale(dist: string, web: string): { built: Date; changed: Date } | null {
+  let built: Date;
+  try { built = statSync(join(dist, "index.html")).mtime; } catch { return null; } // no dist is AGUI_MISSING's case
+  // HIMMEL-4747: the manifest is read before src is listed, so a deleted src directory still reads as stale.
+  const gone = aguiSourceGone(dist, web);
   try {
-    const built = statSync(join(dist, "index.html")).mtime;
     const src = readdirSync(join(web, "src"), { recursive: true }).map((f) => join(web, "src", String(f)));
     // HIMMEL-4711: the page also bundles the console's rail and theme from public/.
     const shared = ["nav.js", "theme.css"].map((f) => join(web, "..", "public", f)).filter((f) => existsSync(f));
@@ -97,10 +100,10 @@ function aguiStale(dist: string, web: string): { built: Date; changed: Date } | 
     const newest = (sts: typeof stats) => sts.map((st) => st.mtime).reduce((a, b) => (b > a ? b : a));
     // HIMMEL-4716: a deleted or renamed source leaves no newer mtime, so the build lists its sources in
     // dist/.agui-sources and a listed file that is gone is stale; then the newest directory mtime dates the delete.
-    if (aguiSourceGone(dist, web)) return { built, changed: newest(stats) > built ? newest(stats) : new Date() };
+    if (gone) return { built, changed: newest(stats) > built ? newest(stats) : new Date() };
     const changed = newest(stats.filter((st) => st.isFile())); // a directory's mtime moves on any add, not an edit
     return changed > built ? { built, changed } : null;
-  } catch { return null; } // no dist is AGUI_MISSING's case; unreadable source is no evidence
+  } catch { return gone ? { built, changed: new Date() } : null; } // unreadable source is no evidence unless a built one is gone
 }
 const stamp = (d: Date) => d.toISOString().replace("T", " ").slice(0, 16) + " UTC";
 export function aguiStaleWarning(dist = AGUI_DIST, web = AGUI_WEB): string | null {
