@@ -301,10 +301,11 @@ function envMs(name, fallback) {
 // text guard timed out its 15 s window on ~15 KB heredoc commands: 257 logged
 // denies, nothing ran). The window therefore grows 1 s per KiB of payload past
 // 4 KiB, capped at +30 s. Direction is unchanged: a member that still outruns
-// its window is DENIED (must-run) or skipped (advisory), never allowed; the
-// entry-safe deadline and the chain budget still cap the larger window. An
-// explicit RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS pins the window and disables the
-// scaling.
+// its window is DENIED (must-run) or skipped (advisory), never allowed. The
+// entry-safe deadline caps the larger window for every member; the chain
+// budget caps it for advisory members only (a must-run member runs on its own
+// window). An explicit RUN_HOOK_CHAIN_MEMBER_TIMEOUT_MS pins the window and
+// disables the scaling.
 const SIZE_SCALE_FREE_BYTES = 4096;
 const SIZE_SCALE_MS_PER_KIB = 1000;
 const SIZE_SCALE_MAX_EXTRA_MS = 30_000;
