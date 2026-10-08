@@ -251,14 +251,13 @@ if [ "$mode" = in-container ]; then
   # `install --scope project` wires settings only, so no target has a git hook and converge-check
   # refuses the run as VACUOUS (rc 3). Seed one identical gate hook per target so the gates section
   # compares a real artifact (HIMMEL-4994).
-  for s in clone tarball aur; do
-    mkdir -p "$w/target-$s/.git/hooks"
-    printf '#!/bin/sh\nexit 0\n' > "$w/target-$s/.git/hooks/commit-msg"; chmod 755 "$w/target-$s/.git/hooks/commit-msg"
-  done
-  bash /src/scripts/release/converge-check.sh \
-    --a-home "$w/home-clone" --a-prefix "$w/clone" --a-target "$w/target-clone" \
-    --b-home "$w/home-tarball" --b-prefix "$w/tarball" --b-target "$w/target-tarball" \
-    --c-home "$w/home-aur" --c-prefix /opt/himmel --c-target "$w/target-aur" >/tmp/converge.log 2>&1; crc=$?
+  # Both steps run as builder: root reading builder's repos trips git's dubious-ownership check,
+  # which hides the hooks dir from converge-check.
+  su builder -c "for s in clone tarball aur; do mkdir -p $w/target-\$s/.git/hooks; printf '#!/bin/sh\nexit 0\n' > $w/target-\$s/.git/hooks/commit-msg; chmod 755 $w/target-\$s/.git/hooks/commit-msg; done"
+  su builder -c "bash /src/scripts/release/converge-check.sh \
+    --a-home $w/home-clone --a-prefix $w/clone --a-target $w/target-clone \
+    --b-home $w/home-tarball --b-prefix $w/tarball --b-target $w/target-tarball \
+    --c-home $w/home-aur --c-prefix /opt/himmel --c-target $w/target-aur" >/tmp/converge.log 2>&1; crc=$?
   case "$crc" in
     0) ok "clone, tarball and AUR installs CONVERGED" ;;
     3) bad "converge-check refused the run as VACUOUS (rc 3)" "$(tail -2 /tmp/converge.log | tr '\n' '|')" ;;
@@ -279,7 +278,7 @@ if [ "$mode" = in-container ]; then
   cd "$w/target-aur" && hooks_fail_open project "$w/target-aur/.claude/settings.json" /tmp/hook.env
 
   su builder -c "HOME=$w/home-aur $w/home-aur/.local/bin/himmelctl uninstall --yes </dev/null" >/tmp/uninstall.log 2>&1 \
-    && ok "himmelctl uninstall via the per-user launcher works after pacman -R (~/.himmel/uninstall/ fallback)" || bad "uninstall after removal failed" "$(tail -3 /tmp/uninstall.log | tr '\n' '|')"
+    && ok "himmelctl uninstall via the per-user launcher works after pacman -R (~/.himmel/uninstall/ fallback)" || bad "uninstall after removal failed" "$(grep -E "ERROR|FAIL|halt|HALT|refus" /tmp/uninstall.log | head -6 | tr "\n" "|")"
   ! jq -e '[(.hooks // {}) | .[] | length] | add // 0 | . > 0' "$w/home-aur/.claude/settings.json" >/dev/null 2>&1 \
     && ok "no himmel hooks remain wired after uninstall" || bad "hooks still wired after uninstall"
   finish
