@@ -29,6 +29,7 @@ echo base >"$TMP/repo/base.txt"
 git -C "$TMP/repo" -c user.name=t -c user.email=t@t add -A
 git -C "$TMP/repo" -c user.name=t -c user.email=t@t commit -qm base
 BASE="$(git -C "$TMP/repo" rev-parse HEAD)"
+echo 'FAKE_KEY=x' >"$TMP/repo/.env" # untracked, as in the primary checkout
 
 # The fake launcher answers --version the way scripts/claude-deepseek does.
 cat >"$TMP/fake-deepseek" <<'EOF'
@@ -39,6 +40,8 @@ EOF
 printf '#!/usr/bin/env bash\necho "bank-preflight: leg=unknown five_hour=4.0 seven_day=20.0 extra_usage=n/a"\necho PROCEED\n' >"$TMP/fake-preflight"
 export FAKE_BAL="$TMP/bal"
 export PILOT_REPO="$TMP/repo" PILOT_BASE_SHA="$BASE" PILOT_ROOT="$TMP/root" PILOT_WT_ROOT="$TMP/wt"
+mkdir -p "$TMP/vault"; echo note >"$TMP/vault/hot.md"
+export LUNA_VAULT="$TMP/vault"; unset LUNA_VAULT_PATH
 export PILOT_DEEPSEEK_BIN="$TMP/fake-deepseek" PILOT_PREFLIGHT="$TMP/fake-preflight" PILOT_TRANSCRIPTS="$TMP/transcripts"
 
 echo "1. frozen hashes"
@@ -68,13 +71,33 @@ line="$(bash "$P" prepare p01 2>"$TMP/prep.err")"; rc=$?
 check 'prepare p01 exits 0' '[ "$rc" = 0 ]'
 wt="$TMP/wt/lq-pilot-p01"
 check 'worktree sits at the recorded fixture commit' '[ "$(git -C "$wt" rev-parse HEAD)" = "$(sed -n "s/^FIX=//p" "$TMP/root/rows/p01.env")" ]'
-doc="$TMP/root/handovers/pilot/HIMMEL-4869-pilot-p01.md"
+doc="$TMP/root/handovers/pilot/p01/HIMMEL-4869-pilot-p01.md"
 check 'brief carries the frozen prompt' 'grep -qF "semver-cmp.sh A B" "$doc"'
 check 'brief names no vault or operator path' '! grep -qiE "luna|salus|Documents/" "$doc"'
 check 'launch line is the deepseek lane, empty-MCP profile' 'printf "%s" "$line" | grep -q -- "--lane deepseek --profile console-relay --console c1-console"'
-check 'launch line carries the opt-in and the pilot handover root' 'printf "%s" "$line" | grep -q "HIMMEL_DEEPSEEK_INFERENCE_OK=1 HANDOVER_DIR=$TMP/root/handovers LEG_REPO=$wt"'
+check 'launch line carries the opt-in and the pilot handover root' 'printf "%s" "$line" | grep -q "^HIMMEL_DEEPSEEK_INFERENCE_OK=1 .*HANDOVER_DIR=$TMP/root/handovers LEG_REPO=$wt"'
 check 'a second deepseek row waits for p01 to finish' '! bash "$P" prepare p06 >/dev/null 2>&1'
-check 'a native row may run beside it' 'bash "$P" prepare p02 >/dev/null 2>&1'
+line2="$(bash "$P" prepare p02 2>/dev/null)"
+check 'a native row may run beside it' '[ -n "$line2" ]'
+SB="$TMP/root/rows/p01.sandbox"
+check 'the deepseek launch goes through the row sandbox' 'printf "%s" "$line" | grep -qF "HEADED_ARM_LEG_DEEPSEEK_BIN=$SB " && [ -x "$SB" ]'
+check 'a native launch is not sandboxed' '! printf "%s" "$line2" | grep -q "_BIN="'
+argv="$(bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" 2>&1)"
+after() { printf '%s\n' "$argv" | grep -A"$2" -x -- "$1"; } # $1 flag, $2 operand count
+check 'sandbox hides /home and /tmp' 'after --tmpfs 1 | grep -qx /home && after --tmpfs 1 | grep -qx /tmp'
+check 'sandbox binds the worktree and the row doc dir read-write' 'after --bind 2 | grep -qxF "$wt" && after --bind 2 | grep -qxF "$(dirname "$doc")"'
+check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qE "Documents/(luna|salus)|/\.claude/projects|/\.himmel/state|$TMP/vault"'
+check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | grep -qxF "$TMP/vault"'
+check 'sandbox masks the primary dotenv file' 'after /dev/null 1 | grep -qxF "$TMP/repo/.env"'
+check 'the native row has no sandbox' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p02.env" >/dev/null 2>&1'
+echo secret >"$TMP/secret"
+if bwrap --ro-bind / / true 2>/dev/null; then
+  check 'live: a file outside the binds is invisible in the sandbox' '! bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" cat "$TMP/secret" >/dev/null 2>&1'
+  check 'live: the vault root exists but is empty in the sandbox' 'bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" test -d "$TMP/vault" && ! bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" cat "$TMP/vault/hot.md" >/dev/null 2>&1'
+  check 'live: the worktree is writable in the sandbox' 'bash "$HERE/sandbox.sh" run "$TMP/root/rows/p01.env" touch "$wt/probe" && [ -e "$wt/probe" ] && rm -f "$wt/probe"'
+else
+  echo "  skip live sandbox checks: bwrap cannot create a namespace here"
+fi
 
 echo "5. finish, packet, table"
 bash "$LQ/run.sh" materialize shell-red-green "$wt" --reference >/dev/null

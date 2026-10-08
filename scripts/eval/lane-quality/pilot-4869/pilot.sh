@@ -169,15 +169,26 @@ cmd_prepare() {
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $row"
   fix="$(materialize_row "$task" "$wt" | tail -1)" || die "fixture for $row failed"
   nonce="LQ-$row-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
-  doc="$DOCS/HIMMEL-4869-pilot-$row.md"
+  # One doc dir, run dir (launch settings, log) and transcript dir per row, so
+  # a sandboxed row sees only its own.
+  doc="$DOCS/$row/HIMMEL-4869-pilot-$row.md"; run="$ROOT/run/$row"; tx="$ROOT/tx/$row"
+  mkdir -p "$DOCS/$row" "$run" "$tx" || die "cannot create the $row dirs"
   write_brief "$row" "$wt" "$task" "$nonce" "$PILOT_CONSOLE" >"$doc"
-  printf 'LANE=%s\nMODEL=%s\nEFFORT=%s\nTASK=%s\nWT=%s\nFIX=%s\nDOC=%s\nSNAP0=%s\nT0=%s\n' \
-    "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" >"$ROOT/rows/$row.env"
+  printf 'LANE=%s\nMODEL=%s\nEFFORT=%s\nTASK=%s\nWT=%s\nFIX=%s\nDOC=%s\nSNAP0=%s\nT0=%s\nREPO=%s\nRUN=%s\nTX=%s\n' \
+    "$lane" "$model" "$effort" "$task" "$wt" "$fix" "$doc" "$snap" "$(date +%s)" "$REPO" "$run" "$tx" >"$ROOT/rows/$row.env"
   prefix=""
   [ "$lane" = deepseek ] && prefix="HIMMEL_DEEPSEEK_INFERENCE_OK=1 "
   [ "$lane" = deepseek ] || prefix="${prefix}LEG_EFFORT=$effort "
-  printf '%sHANDOVER_DIR=%s LEG_REPO=%s setsid nohup bash %s/scripts/handover/console-kit/headed-arm-leg.sh --lane %s --profile console-relay --console %s HIMMEL-4869-pilot-%s %s %s/rows/%s.signal 1 %s/rows/%s.log %s >/dev/null 2>&1 &\n' \
-    "$prefix" "$ROOT/handovers" "$wt" "$REPO" "$lane" "$PILOT_CONSOLE" "$row" "$doc" "$ROOT" "$row" "$ROOT" "$row" "$model"
+  # deepseek and claudex rows run in the bubblewrap jail (sandbox.sh); native
+  # rows run unsandboxed.
+  if [ "$lane" != native ]; then
+    printf '#!/usr/bin/env bash\nexec bash %q launch %q "$@"\n' "$HERE/sandbox.sh" "$ROOT/rows/$row.env" >"$ROOT/rows/$row.sandbox"
+    chmod +x "$ROOT/rows/$row.sandbox"
+    bash "$HERE/sandbox.sh" argv "$ROOT/rows/$row.env" >/dev/null || die "no sandbox for $row; not launchable"
+    prefix="${prefix}HEADED_ARM_LEG_$(printf %s "$lane" | tr '[:lower:]' '[:upper:]')_BIN=$ROOT/rows/$row.sandbox "
+  fi
+  printf '%sHANDOVER_DIR=%s LEG_REPO=%s setsid nohup bash %s/scripts/handover/console-kit/headed-arm-leg.sh --lane %s --profile console-relay --console %s HIMMEL-4869-pilot-%s %s %s/rows/%s.signal 1 %s/%s.log %s >/dev/null 2>&1 &\n' \
+    "$prefix" "$ROOT/handovers" "$wt" "$REPO" "$lane" "$PILOT_CONSOLE" "$row" "$doc" "$ROOT" "$row" "$run" "$row" "$model"
 }
 
 find_transcript() { # $1 worktree -> newest transcript of a session run there
@@ -213,7 +224,7 @@ metrics() { # $1 transcript or empty, $2 report -> JSON
 }
 
 cmd_finish() {
-  local row="$1" LANE MODEL EFFORT TASK WT FIX DOC SNAP0 T0 snap1 usd tr rep acc acc_rc scope wrapped pk m
+  local row="$1" LANE MODEL EFFORT TASK WT FIX DOC SNAP0 T0 REPO TX snap1 usd tr rep acc acc_rc scope wrapped pk m
   load_env
   [ -r "$ROOT/rows/$row.env" ] || die "$row was never prepared"
   # shellcheck source=/dev/null
@@ -238,7 +249,8 @@ cmd_finish() {
   acc="$(grep -E '^accept: [0-9]+/[0-9]+$' "$ROOT/private/$row.accept.log" | tail -1)"
   git -C "$WT" add -A
   scope="$(git -C "$WT" diff --cached --name-only "$FIX" | grep -v '^lq-work/' | jq -R . | jq -sc .)"
-  tr="$(find_transcript "$WT")"
+  # A sandboxed row's transcripts land in its own transcript dir.
+  tr="$(TRANSCRIPTS="$TX:$TRANSCRIPTS" find_transcript "$WT")"
   m="$(metrics "$tr" "$rep")"
   pk="$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
   {
