@@ -79,6 +79,11 @@
 #                        Written atomically: temp file in the same dir, then
 #                        `mv`, so a kill mid-write never leaves it torn.
 #   <inbox>.wait.lock    the one-waiter flock (the file stays; the lock does not).
+#   <inbox>.handover     handover mode (HIMMEL-4902): while it is fresh (younger
+#                        than CONSOLE_WAIT_HANDOVER_MIN, default 60) the waiter
+#                        skips tick/bank/page sampling and wakes only on Telegram.
+#                        That mutes classifier-denial pages for up to that long;
+#                        `rm <inbox>.handover` ends the mode early.
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
 # 2 = usage; 3 = another waiter is already live on this inbox (its pid is named).
@@ -383,7 +388,15 @@ while :; do
     elif [ "$rc" -ne 1 ]; then
         exit_reason='inbox-error'; exit 1
     fi
-    if [ "$(date +%s)" -ge "$next_tick" ]; then
+    # HIMMEL-4902: <inbox>.handover (written by `console.sh next` once the
+    # successor validated) puts this waiter in handover mode: no tick, bank or
+    # page work (an outgoing console only waits for LIVE; a tick wake costs it
+    # a full-context turn), while the Telegram check above still wakes it.
+    # The marker only counts while fresh (CONSOLE_WAIT_HANDOVER_MIN, default 60):
+    # a launch that failed or never ran must not leave this console unmonitored.
+    handover_live=""
+    [ -e "$inbox.handover" ] && handover_live="$(find "$inbox.handover" -mmin "-${CONSOLE_WAIT_HANDOVER_MIN:-60}" 2>/dev/null)"
+    if [ -z "$handover_live" ] && [ "$(date +%s)" -ge "$next_tick" ]; then
         next_tick=$(( $(date +%s) + interval ))
         # The Telegram path is blocked while a tick runs (up to twice
         # CONSOLE_WAIT_TICK_TIMEOUT with the bank read); say so in the heartbeat.

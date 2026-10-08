@@ -129,6 +129,37 @@ timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/b2.out" 2>/dev/null; rc=$?  
 check "(b) the re-arm after the wake does not wake again for the same change" "" "$(cat "$WORK/b2.out")"
 check "(b) the re-arm is still waiting when the window closes (rc 124)" "124" "$rc"
 
+# --- (hm) handover mode (HIMMEL-4902): <inbox>.handover stops tick wakes ---
+# console.sh next writes the marker once the successor validated; the outgoing
+# console's waiter then takes no tick/bank/page work, but Telegram still wakes.
+reset_stub
+I="$(new_inbox hm)"
+printf 'DEMO-nextleg-B\n' > "$I.handover"
+# shellcheck disable=SC2016  # $STUB is meant to expand in the generated stub, not here
+printf '#!/usr/bin/env bash\ntouch "%s/hm.ticked"\ncat "$STUB/tick.line"\n' "$WORK" > "$STUB/tick-count.sh"
+CONSOLE_WAIT_TICK="$STUB/tick-count.sh" start "$I" "$WORK/hm.out" --legs "N1.md"
+sleep 1.5
+tick_line "N1:FREE" "ok"
+sleep 2
+check "(hm) handover mode never runs a tick" "no" "$([ -e "$WORK/hm.ticked" ] && echo yes || echo no)"
+check "(hm) a tick-field change does not wake a handover-mode waiter" "running" "$(kill -0 "$WPID" 2>/dev/null && echo running || echo exited)"
+printf -- '- 03:50 [telegram from=1 chat=2] still here\n' >> "$I"
+wait_exit "$WPID"
+check "(hm) Telegram still wakes a handover-mode waiter" "$(printf 'WAKE telegram\n- 03:50 [telegram from=1 chat=2] still here')" "$(cat "$WORK/hm.out")"
+
+# --- (hs) a STALE handover marker is ignored (a failed or never-run launch must
+# not leave the outgoing console unmonitored for good) ---
+reset_stub
+I="$(new_inbox hs)"
+printf 'DEMO-nextleg-B\n' > "$I.handover"
+touch -d '3 hours ago' "$I.handover"  # gnu-ok: Linux-only kit
+# shellcheck disable=SC2016  # $STUB is meant to expand in the generated stub, not here
+printf '#!/usr/bin/env bash\ntouch "%s/hs.ticked"\ncat "$STUB/tick.line"\n' "$WORK" > "$STUB/tick-count.sh"
+CONSOLE_WAIT_TICK="$STUB/tick-count.sh" CONSOLE_WAIT_INTERVAL=1 start "$I" "$WORK/hs.out" --legs "N1.md"
+sleep 3
+check "(hs) a stale handover marker does not suppress ticks" "yes" "$([ -e "$WORK/hs.ticked" ] && echo yes || echo no)"
+kill "$WPID" 2>/dev/null
+
 # --- (b3724) a denials= class change wakes, naming denials (HIMMEL-3724) ---
 reset_stub
 I="$(new_inbox b3724)"

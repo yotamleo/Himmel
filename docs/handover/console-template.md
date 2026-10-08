@@ -22,6 +22,15 @@ Run these, in order, and write the result as the first bullet under
    the handoff claims are alive but are absent here are gone. A handoff's
    "close these windows" list is stale by the time you read it — never relay a
    window as live without checking.
+> **One command for steps 2–6 and 8 (HIMMEL-4902):**
+> `bash "{{KIT}}/action-zero.sh" --doc "<this document>" --root "{{HANDOVER_ROOT}}" --prefix {{PREFIX}} [--acquire]`
+> prints the lock sweep, head/remote, bank, leg processes, C29, load and this
+> document's lock state in one summary (read-only; `--acquire` takes a `free`
+> lock and prints the release token, never a held one). `ListAgents` (step 1),
+> the relays and quote-backs (step 9), LIVE and the waiter (step 10) stay yours.
+> The steps below say what each section means. The predecessor's HANDOFF is
+> pre-filled by `console.sh next`; only its judgement-notes section is prose.
+
 2. **Sweep locks at the ROOT, not your bucket:**
    `HANDOVER_DIR="{{HANDOVER_ROOT}}" bash "{{REPO}}/scripts/handover/queue-lock.sh" status --sweep "{{HANDOVER_ROOT}}"`.
    Sweeping the bucket instead of the root reports a false "no held locks".
@@ -78,7 +87,11 @@ Run these, in order, and write the result as the first bullet under
    HIMMEL-3254). Each inherited leg holds a brief naming the predecessor, and
    you are a different session: until a leg has verified the succession it can
    only refuse you, and once the predecessor has released and left there is
-   nobody who can relay for you. So, per leg: ask the predecessor to re-brief
+   nobody who can relay for you. (The predecessor can send every relay in one
+   command: `relay-batch.sh <its console doc> --successor <you> [--claudex <labels>]`
+   — claudex legs through the inbox, native legs as printed SendMessage lines. It
+   copies the held token, mints nothing, and the quote-backs below still apply.)
+   So, per leg: ask the predecessor to re-brief
    that leg **from its own socket**, naming you (your session name, so the leg
    knows who the relay hands it to) and quoting the leg's current token. That
    relay is complete on its own: it MAY also carry a fresh
@@ -551,6 +564,14 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    the rest of the HANDOFF by hand: current head, operator rulings made
    today, and what wrapped. **The HANDOFF wins over this file's Results
    tail** — write it as the successor's only required read.
+
+   **Handover mode (HIMMEL-4902).** Once the successor validated, `next` writes
+   `<your inbox>.handover`. While that marker is younger than
+   `CONSOLE_WAIT_HANDOVER_MIN` (default 60) your waiter skips tick, bank and
+   page work and wakes only for Telegram and LIVE — so **for up to 60 minutes
+   nobody is paged for classifier denials or tick findings on your side.** The
+   marker expires by age; to end the mute early (the handover is abandoned, or
+   you keep running), `rm <your inbox>.handover`.
 3. `touch` the signal path step 1 printed to fire the arm, and hand your live
    legs to the successor by name.
 4. **Re-brief every live leg yourself, before you release** (HIMMEL-3254). The
