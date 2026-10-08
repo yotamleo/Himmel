@@ -1567,7 +1567,7 @@ pobf_relief() {
 # -i) beside an anchor-less path, and zsh <-> numeric ranges (the tr splits
 # at <); close them with the structural guard once HIMMEL-3930 lands.
 raw_obfuscated() {
-    local t="$1" w rest v wv clr d u kw ov tw='' cw='/.claude/worktrees/' xg=0 write=0 obf=0 pobf=0 so=0 SQ="'"
+    local t="$1" w rest v wv clr d u kw ov tw='' cw='/.claude/worktrees/' xg=0 write=0 obf=0 hard=0 vdata=0 wonly=1 pobf=0 so=0 SQ="'"
     case "$t" in *'('*) xg=1 ;; esac
     wv='(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset|BASH_ENV|BASH_FUNC_[[:alnum:]_]*|SHELLOPTS|BASHOPTS|extdebug)'
     wv="(^|[^[:alnum:]_/-])$wv([^[:alnum:]_]|$)|[/-]$wv([^[:alnum:]_./-]|$)"
@@ -1579,11 +1579,11 @@ raw_obfuscated() {
             # names a path or carries a hex/unicode/octal escape is obfuscation.
             *'$'"$SQ"*)
                 case "$w" in
-                    */*|*.sh*) obf=1 ;;
+                    */*|*.sh*) obf=1; hard=1 ;;
                     # Allowlist: only plain whitespace/quote escapes are benign;
                     # ANY other backslash escape (\x \u \U \c \e octal, future
                     # ones) counts as obfuscation.
-                    *) [[ $w =~ $ansi_esc ]] && obf=1 ;;
+                    *) [[ $w =~ $ansi_esc ]] && { obf=1; hard=1; } ;;
                 esac ;;
             *scripts/*)
                 # Any glob/brace/$var after scripts/ counts, unconditionally: no
@@ -1603,15 +1603,19 @@ raw_obfuscated() {
                 # qualifiers would otherwise look plain (judges J1663, J1663b).
                 # Every other `/.` still counts: /./ /../ a trailing /. or /..,
                 # any other dot directory, and anything quoted or escaped.
-                case "$w" in *//*) obf=1 ;; esac
+                case "$w" in *//*) obf=1; hard=1 ;; esac
                 d=$w
                 if [ "$xg" = 0 ] && [[ $w =~ ^[A-Za-z0-9_./+-]+$ ]]; then
                     d=${w//"$cw"/\/}
                 fi
-                case "$d" in *'/.'*) obf=1 ;; esac
+                case "$d" in *'/.'*) obf=1; hard=1 ;; esac
                 # HIMMEL-4157: zsh extendedglob # ^ ~ count like * ? [ {.
+                # HIMMEL-4933: a glob alone is soft -- the read-only relief at
+                # the deny (pobf_relief) may clear it; a $var, `/.`, `//` or
+                # ANSI-C word is hard and never gets that relief.
                 case "$rest" in
-                    *[\*\?\[\{\$\#^\~]*) obf=1 ;;
+                    *'$'*) obf=1; hard=1 ;;
+                    *[\*\?\[\{\#^\~]*) obf=1 ;;
                 esac ;;
         esac
     done
@@ -1628,7 +1632,7 @@ raw_obfuscated() {
     # leading `~` (home) or `#` (comment) is exempt, and `$(` / `${` are
     # expansions, not groupings (a $var alone stays the ponytail residual).
     for w in $(printf '%s' "$t" | tr ';|&<>' '     '); do
-        case "$w" in *scripts/*) case "${w#*scripts/}" in *'('*) obf=1 ;; esac ;; esac
+        case "$w" in *scripts/*) case "${w#*scripts/}" in *'('*) obf=1; hard=1 ;; esac ;; esac
         case "$w" in */*) ;; *) continue ;; esac
         w=${w//\$\(/}
         w=${w//\$\{/}
@@ -1723,6 +1727,11 @@ raw_obfuscated() {
         tw=${BASH_REMATCH[2]:-${BASH_REMATCH[4]}}
         case "$tw" in BASH_FUNC_*) tw='BASH_FUNC_*' ;; esac
         tw="the word $tw"
+        # HIMMEL-4933: a verb word that heads a stage (export X; unset X; read
+        # x; printf ..) acts; one in argument position (grep env, find -printf)
+        # is data and may get the read-only relief below.
+        vcmd='(^|[;&|(`]|\$\()[[:space:]]*(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset)([^[:alnum:]_]|$)'
+        [[ $t =~ $vcmd ]] || vdata=1
     fi
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
     # or verb): standalone -u*/-i*/--unset*/--ignore-environment/bare -, declare/typeset +x,
@@ -1731,13 +1740,24 @@ raw_obfuscated() {
     # (env_clear_opt, HIMMEL-3955); a seam NAME= counts as an assignment, not
     # as a --long-option's value (seam_assigned).
     # shellcheck disable=SC2016 # ${! is the literal trigger text, not an expansion
-    [[ $t =~ $clr ]] && { write=1; tw=${tw:-'declare +x, export -n, exec - or ${!'}; }
-    env_clear_opt "$t" && { write=1; tw=${tw:-'an env-clearing -u, -i, --unset, --ignore-environment or bare -'}; }
+    [[ $t =~ $clr ]] && { wonly=0; write=1; tw=${tw:-'declare +x, export -n, exec - or ${!'}; }
+    env_clear_opt "$t" && { wonly=0; write=1; tw=${tw:-'an env-clearing -u, -i, --unset, --ignore-environment or bare -'}; }
     for v in $ALL_SEAM_VARS; do
         case "$v" in ''|*[!A-Za-z0-9_]*) continue ;; esac
-        seam_assigned "$t" "$v" && { write=1; tw="the seam variable $v"; }
+        seam_assigned "$t" "$v" && { wonly=0; write=1; tw="the seam variable $v"; }
     done
     [ "$write" = 1 ] || return 0
+    # HIMMEL-4933: a soft (glob-only) path word that sits only in read-only
+    # stages (grep -l export scripts/*/x.sh | sort) is data, not a seam write:
+    # the same relief the anchor-less arm above applies. A hard word, a
+    # shell/source glob operand, or a stage pobf_relief cannot prove read-only
+    # keeps the deny; pobf_relief returns 1 on anything it cannot parse
+    # (fail-closed).
+    if [ "$hard" = 0 ] && [ "$so" = 0 ] && [ "$vdata" = 1 ] && [ "$wonly" = 1 ]; then
+        set -f
+        pobf_relief "$t" && { set +f; return 0; }
+        set +f
+    fi
     deny_text_layer "writes a seam variable beside an obfuscated (glob, brace, ANSI-C or \$var) path under scripts/ (it matched $tw)"
 }
 
