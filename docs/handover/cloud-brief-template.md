@@ -2,8 +2,8 @@
 
 The brief a console hands to `claude --cloud` for a small, well-scoped ticket
 (HIMMEL-4206). A cloud session sees the repo clone plus the claude.ai MCP
-connectors (Atlassian for Jira, context7 for library docs), plus whatever
-plugins the environment's setup script installs (see below). It has no handover
+connectors that are enabled for that session (see "claude.ai connectors in the
+cloud" below), plus whatever plugins the environment's setup script installs (see below). It has no handover
 state and no console inbox. A plugin uploaded on claude.ai (Customize, Plugins)
 does NOT load in a cloud session: it only syncs as `<name>@synced`, and it also
 syncs into every local terminal session, so do not use that route. The brief is
@@ -20,7 +20,7 @@ CLOUD-OK ticket and prints the launch line.
 | The clone's `CLAUDE.md`, `.claude/{skills,agents,commands,rules}`, `.mcp.json` (single-repo session only) | Plugins not in the environment's profile; claude.ai-uploaded plugins (sync as `@synced` only) |
 | The repo's `.claude/settings.json` hooks and permissions | Your local `~/.claude` state; `settings.local.json` |
 | Plugins the environment setup script installs (`--with-plugins` / `--plugins <list>`) and their hooks | Plugin hooks of plugins outside the profile (see [`cloud-hooks-proposal.md`](../internals/cloud-hooks-proposal.md)) |
-| Skills enabled on claude.ai; the Atlassian MCP (full Jira scope: read, comment, file follow-ups, transition) and context7 MCP connectors | The local jira CLI, luna, the console inbox |
+| Skills enabled on claude.ai; claude.ai MCP connectors only when enabled for the session (Atlassian for Jira: read, comment, file follow-ups, transition) | The local jira CLI, luna, the console inbox; context7 by default (see below) |
 | The environment setup script's installs (graphify, AST-only; qmd over the repo only, BM25); `CLAUDE_CODE_REMOTE=true` | Handover state; qmd over any vault; qmd vector search |
 
 So the local shepherd stays mandatory: it runs `/pr-check`, the CR gate and the
@@ -35,6 +35,20 @@ only when `CLOUD-DONE` is already posted, and it is read-only toward the PR. It
 cannot run `/pr-check` (a model-session runbook): with no `ok` CR-ledger row for
 the head it reports `panel: NOT-RUN` and the PR still needs a `/pr-check` round.
 A clean candidate needs no shepherd leg; the console reads the diff, GOs and merges.
+
+## claude.ai connectors in the cloud (probed 2026-10-08, HIMMEL-4971)
+
+Probed from a cloud session launched with the generated brief: `ToolSearch`
+found no `context7` or Atlassian tools, and `SearchMcpRegistry` reported both
+Context7 and Atlassian MCP as `installState: connected` but
+`enabledInChat: false`. A connector connected on the claude.ai account is not
+thereby enabled in a cloud session, so the brief must not assume it:
+
+- **context7: absent.** The brief's context7 line is conditional (use it if
+  listed, else WebFetch the library's docs).
+- **Atlassian: absent in the same probe.** The brief's Jira steps (claim,
+  comment, file follow-ups) could not run; enable the connector for the session
+  before launch, or the session reports the Jira steps as not done in its PR.
 
 ## Plugin hooks in the cloud (probed 2026-10-04, HIMMEL-4273)
 
@@ -131,8 +145,9 @@ below are the background and the plugin-free variant.
    and the repo. You have no local state. Jira is reachable through the Atlassian
    MCP connector (the local jira CLI is absent in the cloud): read the ticket,
    comment, file follow-ups with the fixVersion this brief names, and cite the
-   ticket key in your commits and the PR. Use the context7 MCP for current
-   library docs.`
+   ticket key in your commits and the PR. If the context7 MCP tools are listed
+   in this session, use them for current library docs; otherwise WebFetch the
+   library's own docs.`
 2. **`## Ticket HIMMEL-<n> (verbatim from Jira)`** — key, type, status, title,
    then the description unedited, then `Fix versions:`.
 3. **`## The change`** — what to do, "verified against main on <date>", with line

@@ -112,7 +112,7 @@ export function buildBrief(t, o = {}) {
   const coverage = asks.length ? asks.map((a) => `- ${a.replace(/^\d+[.)]\s*/, '')} — done`).join('\n') : `- ${t.title} — done`;
   const completes = o.completes ?? 'yes';
   const change = o.change ?? "Implement the ticket's asks above, in the named files only.";
-  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief and the repo. You have no local state. Jira is reachable through the Atlassian MCP connector (the local jira CLI is absent in the cloud): read the ticket, comment, file follow-ups with the fixVersion this brief names, and cite the ticket key in your commits and the PR. Use the context7 MCP for current library docs.
+  return `You are working in a cloud clone of the GitHub repo yotamleo/Himmel. This is a small, well-scoped task. Work only from this brief and the repo. You have no local state. Jira is reachable through the Atlassian MCP connector (the local jira CLI is absent in the cloud): read the ticket, comment, file follow-ups with the fixVersion this brief names, and cite the ticket key in your commits and the PR. If the context7 MCP tools are listed in this session, use them for current library docs; otherwise WebFetch the library's own docs.
 
 ## Ticket ${t.key} (verbatim from Jira)
 
