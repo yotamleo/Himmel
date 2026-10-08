@@ -30,6 +30,7 @@ function fixture() {
     source: 'operator-console-snapshot', exclusive_org: true, discrepancy: false,
   }])) };
   const paths = { config: join(dir, 'config.json'), snapshot: join(dir, 'snapshot.json'), state: join(dir, 'ledger.json') };
+  config.ledger_path = paths.state;
   const save = () => {
     writeFileSync(paths.config, JSON.stringify(config));
     writeFileSync(paths.snapshot, JSON.stringify(snapshot));
@@ -61,6 +62,34 @@ test('API dispatch is OFF even when no native evidence exists', () => {
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout.trim(), 'SKIPPED-BANK');
   assert.match(r.stderr, /api.*dispatch.*OFF/);
+});
+
+function bankApi(f, extra = {}) {
+  writeFileSync(join(f.dir, 'ps'), '#!/bin/bash\nexit 0\n', { mode: 0o700 });
+  return spawnSync('bash', [BANK], { encoding: 'utf8', env: {
+    ...f.env, HIMMEL_FLEET_CAP: '4', HIMMEL_FLEET_SLOTS: join(f.dir, 'slots'),
+    FLEET_PS_CMD: join(f.dir, 'ps'), FLEET_PROC: f.dir, CADENCE_BANK_LANE: 'api',
+    CADENCE_BANK_LEDGER: join(f.dir, 'bank-ledger'), CADENCE_BANK_LAUNCH: '1',
+    CADENCE_BANK_LEG: 'HIMMEL-test-api', CADENCE_BANK_SKIP_REFRESH: '1',
+    CADENCE_BANK_CACHE: join(f.dir, 'no-native-cache'), ...extra,
+  } });
+}
+
+// HIMMEL-4985: the launcher opts in with HIMMEL_API_LANE=on; the native bank is irrelevant.
+test('opted-in API launch with a funded account proceeds while the native bank is exhausted', () => {
+  const f = fixture();
+  writeFileSync(join(f.dir, 'native-cache.json'), JSON.stringify({ five_hour: { utilization: 100 }, seven_day: { utilization: 100 } }));
+  const r = bankApi(f, { HIMMEL_API_LANE: 'on', CADENCE_BANK_CACHE: join(f.dir, 'native-cache.json') });
+  assert.equal(r.stdout.trim(), 'PROCEED', r.stderr);
+});
+
+test('opted-in API launch with an empty account refuses although native is funded', () => {
+  const f = fixture();
+  f.snapshot.accounts.A.remaining_usd = '0';
+  f.save();
+  writeFileSync(join(f.dir, 'native-cache.json'), JSON.stringify({ five_hour: { utilization: 1 }, seven_day: { utilization: 1 } }));
+  const r = bankApi(f, { HIMMEL_API_LANE: 'on', CADENCE_BANK_CACHE: join(f.dir, 'native-cache.json') });
+  assert.equal(r.stdout.trim(), 'SKIPPED-BANK', r.stderr);
 });
 
 test('funded account reports precise estimated headroom without writing spend', () => {
@@ -243,6 +272,23 @@ test('deleted initialized ledger cannot erase already reserved credit', () => {
   const f = fixture(); f.call('reserve', ['--id', 'job', '--usd', '1']);
   rmSync(f.paths.state);
   assert.equal(f.call('reserve', ['--id', 'new', '--usd', '1']).verdict, 'BANK-UNKNOWN');
+});
+
+test('deleting both the ledger and its adjacent sentinel still refuses', () => {
+  const f = fixture(); f.call('reserve', ['--id', 'job', '--usd', '1']);
+  rmSync(f.paths.state); rmSync(`${f.paths.state}.initialized`);
+  assert.equal(f.call('reserve', ['--id', 'new', '--usd', '1']).verdict, 'BANK-UNKNOWN');
+  assert.equal(f.call().reason, 'missing-initialized-ledger');
+});
+
+test('ledger path is pinned by the config: env override or HOME cannot select another ledger', () => {
+  const f = fixture(); f.call('reserve', ['--id', 'job', '--usd', '1']);
+  f.env.HIMMEL_API_CREDIT_STATE = join(f.dir, 'other-ledger.json');
+  assert.equal(f.call().reason, 'ledger-path-mismatch');
+  delete f.env.HIMMEL_API_CREDIT_STATE; f.env.HOME = join(f.dir, 'elsewhere');
+  assert.equal(f.call().reserved_usd, '1.000000');
+  delete f.config.ledger_path; f.save();
+  assert.equal(f.call().reason, 'ledger-path-required');
 });
 
 test('zero-cost verified completion releases unknown reservation without grant refill', () => {
