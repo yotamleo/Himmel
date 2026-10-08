@@ -124,7 +124,11 @@ print(json.dumps([out[d["id"]] for d in den]))' "$HERE" "$1"
 den "$TMP/den-small.jsonl" 200
 check "the indexed denial list equals the all-pairs scan on every fixture and a reordered synthetic journal (HIMMEL-4682)" '(for f in "$FX"/*.jsonl "$TMP/den-small.jsonl"; do [ "$(python3 "$TR" score "$f" --denials | jq -c .denials)" = "$(ref "$f" | jq -c .)" ] || exit 1; done)'
 den "$TMP/den-5k.jsonl" 5000
-check "score --denials on a 5k-denial journal finishes well inside 20s (linear, not all-pairs)" 'timeout 20 python3 "$TR" score "$TMP/den-5k.jsonl" --denials >"$TMP/den-5k.json" && jq -e "(.denials | length) == 5000 and ([.denials[].identical] | add) == .identical_denied_retries" "$TMP/den-5k.json" >/dev/null'
+# shellcheck source=../../lib/timeout-bin.sh
+. "$HERE/../../lib/timeout-bin.sh" 2>/dev/null
+if [ -n "$_TIMEOUT_BIN" ]; then
+check "score --denials on a 5k-denial journal finishes well inside 20s (linear, not all-pairs)" '"$_TIMEOUT_BIN" 20 python3 "$TR" score "$TMP/den-5k.jsonl" --denials >"$TMP/den-5k.json" && jq -e "(.denials | length) == 5000 and ([.denials[].identical] | add) == .identical_denied_retries" "$TMP/den-5k.json" >/dev/null'
+else ok "5k-denial timing row skipped: no GNU timeout on PATH"; fi
 
 
 echo "6. quiet-run-wrapped suites and wrap-report phrasing (HIMMEL-4698)"
