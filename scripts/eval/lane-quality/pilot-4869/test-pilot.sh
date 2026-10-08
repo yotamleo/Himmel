@@ -40,6 +40,7 @@ if exec 3<>/dev/tcp/api.deepseek.com/443; then echo ping >&3; read -r r <&3; ech
 if (exec 4<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; then echo host4=open; else echo host4=closed; fi
 if (exec 4<>"/dev/tcp/::1/$1") 2>/dev/null; then echo host6=open; else echo host6=closed; fi
 echo "key=${DEEPSEEK_API_KEY:-unset}"
+echo "cwd=$PWD"
 EOF
 chmod +x "$TMP/repo/scripts/claude-deepseek"
 git -C "$TMP/repo" -c user.name=t -c user.email=t@t add -A
@@ -56,7 +57,7 @@ echo "2.1.0 (Claude Code)"
 EOF
 printf '#!/usr/bin/env bash\necho "bank-preflight: leg=unknown five_hour=4.0 seven_day=20.0 extra_usage=n/a"\necho PROCEED\n' >"$TMP/fake-preflight"
 export FAKE_BAL="$TMP/bal"
-export PILOT_REPO="$TMP/repo" PILOT_BASE_SHA="$BASE" PILOT_ROOT="$TMP/root" PILOT_WT_ROOT="$TMP/wt"
+export PILOT_REPO="$TMP/repo" PILOT_BASE_SHA="$BASE" PILOT_ROOT="$TMP/root"
 mkdir -p "$TMP/vault"; echo note >"$TMP/vault/hot.md"
 export LUNA_VAULT="$TMP/vault"; unset LUNA_VAULT_PATH
 export PILOT_DEEPSEEK_BIN="$TMP/fake-deepseek" PILOT_PREFLIGHT="$TMP/fake-preflight" PILOT_TRANSCRIPTS="$TMP/transcripts"
@@ -89,10 +90,9 @@ rm -rf "$TMP/root"; echo 43.77 >"$FAKE_BAL"
 evil="c 1;touch $TMP/pwned"
 bash "$P" init --console "$evil" >/dev/null 2>&1
 check 'pilot.env round-trips a console name with shell metacharacters' '[ "$(bash -c ". \"\$1/pilot.env\"; printf %s \"\$PILOT_CONSOLE\"" _ "$TMP/root")" = "$evil" ] && [ ! -e "$TMP/pwned" ]'
-PILOT_WT_ROOT="$TMP/wt-evil" bash "$P" prepare p02 >/dev/null 2>&1
+bash "$P" prepare p02 >/dev/null 2>&1
 elaunch="$(cat "$TMP/root/rows/p02.launch" 2>/dev/null)"
 check 'the launch wrapper shell-quotes the console name' 'printf "%s" "$elaunch" | grep -qF -- "--console $(printf %q "$evil") "'
-git -C "$TMP/repo" worktree remove --force "$TMP/wt-evil/lq-pilot-p02" >/dev/null 2>&1
 rm -rf "$TMP/root"
 bash "$P" init --console c1-console >/dev/null 2>&1
 check 'a second init refuses' '! bash "$P" init --console c1-console >/dev/null 2>&1'
@@ -100,7 +100,11 @@ check 'a second init refuses' '! bash "$P" init --console c1-console >/dev/null 
 echo "4. prepare"
 line="$(bash "$P" prepare p01 2>"$TMP/prep.err")"; rc=$?
 check 'prepare p01 exits 0' '[ "$rc" = 0 ]'
-wt="$TMP/wt/lq-pilot-p01"
+wt="$TMP/root/wt/lq-pilot-p01"
+# clean-garden runs git status on every registered worktree and every dir under
+# .claude/worktrees, so a live row must be neither (the lane controls its config).
+check 'the row worktree sits under the pilot root, outside .claude/worktrees' '[ -d "$wt" ] && [ ! -e "$TMP/repo/.claude/worktrees/lq-pilot-p01" ]'
+check 'the row worktree is not registered with the primary checkout' '! git -C "$TMP/repo" worktree list --porcelain | grep -qF "lq-pilot-p01"'
 check 'worktree sits at the recorded fixture commit' '[ "$(git -C "$wt" rev-parse HEAD)" = "$(sed -n "s/^FIX=//p" "$TMP/root/rows/p01.env")" ]'
 doc="$TMP/root/handovers/pilot/p01/HIMMEL-4869-pilot-p01.md"
 check 'brief carries the frozen prompt' 'grep -qF "semver-cmp.sh A B" "$doc"'
@@ -118,7 +122,7 @@ check 'the deepseek wrapper goes through the row sandbox' 'grep -qF "HEADED_ARM_
 check 'a native launch is not sandboxed' '! grep -q "_BIN=" "$TMP/root/rows/p02.launch"'
 G="$(jq -r '.hooks.PreToolUse[0].hooks[0].command' "$wt/.claude/settings.local.json" 2>/dev/null)"
 check 'the deepseek worktree refuses every tool and prompt outside the jail' '[ "$(jq -r ".hooks.PreToolUse[0].matcher" "$wt/.claude/settings.local.json")" = "*" ] && [ "$(jq -r ".hooks.UserPromptSubmit[0].hooks[0].command" "$wt/.claude/settings.local.json")" = "$G" ] && { bash -c "$G" 2>/dev/null; [ $? = 2 ]; }'
-check 'the native worktree has no jail guard' '[ ! -e "$TMP/wt/lq-pilot-p02/.claude/settings.local.json" ]'
+check 'the native worktree has no jail guard' '[ ! -e "$TMP/root/wt/lq-pilot-p02/.claude/settings.local.json" ]'
 mkdir -p "$TMP/home/.claude/plugins/data/qmd" "$TMP/home/.claude/plugins/marketplaces"
 echo '{"model":"x","enabledPlugins":{"qmd@himmel":true},"mcpServers":{"q":{}},"enabledMcpjsonServers":["q"],"enableAllProjectMcpServers":true}' >"$TMP/home/.claude/settings.json"
 hargv="$(HOME="$TMP/home" bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" 2>&1)"
@@ -130,6 +134,7 @@ check 'sandbox drops a credential and an unlisted variable, keeps PATH and the l
 check 'sandbox hides /home, /tmp, /run and /var/log' '(for d in /home /tmp /run /var/log; do after --tmpfs 1 | grep -qxF "$d" || exit 1; done)'
 check 'sandbox has its own network namespace, entered through the tunnel' 'printf "%s\n" "$argv" | grep -qx -- --net && after --unshare-all 0 | grep -q . && printf "%s\n" "$argv" | grep -qx -- --share-net && [ "$(printf "%s\n" "$argv" | grep -x -A1 tunnel | tail -1)" = 443 ]'
 check 'sandbox binds the worktree and the row doc dir read-write' 'after --bind 2 | grep -qxF "$wt" && after --bind 2 | grep -qxF "$(dirname "$doc")"'
+check 'sandbox maps the worktree under the repo, where the lane launcher accepts its corpus' 'after --bind 2 | grep -A1 -xF "$wt" | grep -qxF "$TMP/repo/.claude/worktrees/lq-pilot-p01"'
 check 'sandbox gives the row its own lane config, never the shared one' 'after --bind 2 | grep -qxF "$TMP/root/conf/p01" && ! after --bind 1 | grep -qxF "$HOME/.claude-deepseek"'
 check 'sandbox binds no vault, PHI, memory or state path' '! { after --bind 1; after --ro-bind 1; after --ro-bind-try 1; } | grep -qE "Documents/(luna|salus)|/\.claude/projects|/\.himmel/state|$TMP/vault"'
 check 'the vault root is an empty placeholder in the jail' 'after --tmpfs 1 | grep -qxF "$TMP/vault"'
@@ -142,11 +147,10 @@ cp "$wt/.git" "$TMP/dotgit"
 printf 'gitdir: %s\n' "$TMP/repo/.git" >"$wt/.git"
 check 'a worktree repointed at the primary .git is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
 cp "$TMP/dotgit" "$wt/.git"
-gd="$(git -C "$wt" rev-parse --absolute-git-dir)"
-cp "$gd/commondir" "$TMP/commondir"
-printf '%s\n' "$TMP/elsewhere" >"$gd/commondir"
-check 'a worktree whose commondir was rewritten is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
-cp "$TMP/commondir" "$gd/commondir"
+gd="$(. "$TMP/root/rows/p01.env"; echo "$GITDIR")"
+printf '%s\n' "$TMP/repo/.git" >"$gd/commondir"
+check 'a git dir given a commondir is refused' '! bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
+rm -f "$gd/commondir"
 check 'the restored worktree builds its jail again (control)' 'bash "$HERE/sandbox.sh" argv "$TMP/root/rows/p01.env" >/dev/null 2>&1'
 echo secret >"$TMP/secret"
 if bwrap --ro-bind / / true 2>/dev/null; then
@@ -166,6 +170,7 @@ if bwrap --ro-bind / / true 2>/dev/null; then
   check 'live: the acceptor jail has no network and drops a write outside the worktree' '! "${C2[@]}" bash -c "(exec 4<>/dev/tcp/127.0.0.1/$HP)" 2>/dev/null && "${C2[@]}" touch "$TMP/acc-canary" && [ ! -e "$TMP/acc-canary" ]'
   out="$(cd "$wt" && DEEPSEEK_API_KEY=k PILOT_SANDBOX_TUNNEL_TARGET="127.0.0.1:$HP" timeout 30 bash "$HERE/sandbox.sh" launch "$TMP/root/rows/p01.env" "$HP" 2>&1)" # gnu-ok: Linux-only kit
   check 'live: the launched lane reaches its API host only through the tunnel' 'printf "%s\n" "$out" | grep -qx api=pong && printf "%s\n" "$out" | grep -qx host4=closed && printf "%s\n" "$out" | grep -qx host6=closed && printf "%s\n" "$out" | grep -qx key=k'
+  check 'live: the launched lane starts in the worktree at its path under the repo' 'printf "%s\n" "$out" | grep -qxF "cwd=$TMP/repo/.claude/worktrees/lq-pilot-p01"'
   # A pilot root deep enough that a socket under it would pass the 108-byte cap.
   long="$TMP/root/run/$(printf 'd%.0s' $(seq 1 110))"; mkdir -p "$long"
   sed "s|^RUN=.*|RUN=$long|" "$TMP/root/rows/p01.env" >"$TMP/long.env"
@@ -186,7 +191,7 @@ bash "$LQ/run.sh" materialize shell-red-green "$wt" --reference >/dev/null
 echo 43.52 >"$FAKE_BAL"
 printf '\n## Final report\n\nAdded semver-cmp via deepseek sonnet; RED then GREEN.\n' >>"$doc"
 printf -- '- 10:00 WRAPPED — done\n' >>"$doc"
-slug="$(printf %s "$wt" | sed 's#[^A-Za-z0-9]#-#g')"
+slug="$(printf %s "$TMP/repo/.claude/worktrees/lq-pilot-p01" | sed 's#[^A-Za-z0-9]#-#g')" # its jail path
 # A sandboxed row's transcripts land in its own transcript dir; a newer
 # transcript under the shared root for the same worktree is not its own.
 mkdir -p "$TMP/root/tx/p01/$slug" "$TMP/transcripts/$slug"

@@ -94,17 +94,21 @@ mnt "$REPO/.git/host-objects" dir
 A+=(--ro-bind "$REPO/.git/objects" "$REPO/.git/host-objects" --bind "$GITOBJ" "$REPO/.git/objects")
 A+=(--ro-bind "$REPO/.git/refs" "$REPO/.git/refs")
 if [ -f "$REPO/.git/packed-refs" ]; then mnt "$REPO/.git/packed-refs" file; A+=(--ro-bind "$REPO/.git/packed-refs" "$REPO/.git/packed-refs"); fi
-# The worktree's git dir is the one prepare recorded, never what the
-# worktree's .git file (which the lane can rewrite) says now: a repointed
-# .git or commondir would otherwise bind the primary .git read-write.
-case "$GITDIR" in "$REPO/.git/worktrees/"*/*|*/../*|*/..) die "git dir $GITDIR is not a worktree of $REPO" ;;
-                  "$REPO/.git/worktrees/"?*) ;; *) die "git dir $GITDIR is not a worktree of $REPO" ;; esac
+# The row's git dir is the one prepare recorded (its own shared clone's), never
+# what the worktree's .git file (which the lane can rewrite) says now: a
+# repointed .git or an added commondir would otherwise bind the primary .git.
+case "$GITDIR" in */..|*/../*|"$REPO"|"$REPO"/*) die "git dir $GITDIR is not the row's own" ;; /*) ;; *) die "git dir $GITDIR is not absolute" ;; esac
 { [ -d "$GITDIR" ] && [ ! -L "$GITDIR" ]; } || die "git dir $GITDIR is missing or a symlink"
 [ "$(cat "$WT/.git" 2>/dev/null)" = "gitdir: $GITDIR" ] || die "$WT/.git no longer points at $GITDIR"
-[ "$(cat "$GITDIR/commondir" 2>/dev/null)" = "../.." ] || die "$GITDIR/commondir was rewritten"
-[ "$(cat "$GITDIR/gitdir" 2>/dev/null)" = "$WT/.git" ] || die "$GITDIR/gitdir no longer points at $WT"
-mnt "$WT" dir; mnt "$GITDIR" dir
+[ ! -e "$GITDIR/commondir" ] || die "$GITDIR has a commondir"
+mnt "$WT" dir
 A+=(--bind "$WT" "$WT" --bind "$GITDIR" "$GITDIR")
+# The row lives outside the checkout (clean-garden scans .claude/worktrees),
+# but the lane launcher only serves a cwd under the checkout: the jail shows
+# the row there too, and a launch starts in it.
+JWT="$REPO/.claude/worktrees/${WT##*/}"
+mnt "$JWT" dir
+A+=(--bind "$WT" "$JWT")
 
 if [ "$mode" = check ]; then
   # The acceptor jail: the kit it runs, read-only, and nothing of the lane.
@@ -210,7 +214,8 @@ case "$mode" in
     trap 'kill "$spid" 2>/dev/null; rm -rf "$sockdir"' EXIT
     trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
     n=0; until [ -S "$sock" ]; do n=$((n + 1)); [ "$n" -lt 50 ] || die "the tunnel socket never appeared"; sleep 0.1; done
-    "${L[@]}" --chdir "$PWD" -- "$LAUNCHER" "$@"
+    case "$PWD" in "$WT"|"$WT"/*) cwd="$JWT${PWD#"$WT"}" ;; *) cwd="$PWD" ;; esac
+    "${L[@]}" --chdir "$cwd" -- "$LAUNCHER" "$@"
     exit $? ;;
   *) die "unknown mode '$mode'" ;;
 esac

@@ -30,7 +30,7 @@ die() { echo "pilot: $*" >&2; exit 1; }
 REPO="${PILOT_REPO:-$(dirname "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)")}"
 BASE_SHA="${PILOT_BASE_SHA:-$(cat "$LQ/BASE_SHA")}"
 ROOT="${PILOT_ROOT:-$HOME/.himmel/eval/lane-quality/pilot-4869}"
-WT_ROOT="${PILOT_WT_ROOT:-$REPO/.claude/worktrees}"
+WT_ROOT="${PILOT_WT_ROOT:-$ROOT/wt}"
 DS_BIN="${PILOT_DEEPSEEK_BIN:-$REPO/scripts/claude-deepseek}"
 PREFLIGHT="${PILOT_PREFLIGHT:-$REPO/scripts/lib/bank-preflight.sh}"
 TRANSCRIPTS="${PILOT_TRANSCRIPTS:-$HOME/.claude/projects:$HOME/.claude-deepseek/projects:$HOME/.claude-codex/projects}"
@@ -195,10 +195,14 @@ cmd_prepare() {
     snap="$(bank_five "$lane")"
   fi
   wt="$WT_ROOT/lq-pilot-$row"
-  git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $row"
-  # Recorded now, before any lane runs: sandbox.sh binds this dir and never
-  # re-reads the worktree's own .git file, which the lane can rewrite.
-  gitdir="$(git -C "$wt" rev-parse --absolute-git-dir)" || die "no git dir for $row"
+  # A shared clone with its git dir under the pilot root, not a worktree of
+  # $REPO: clean-garden runs git status on every registered worktree and every
+  # dir under .claude/worktrees, and the lane controls this repo's config.
+  # sandbox.sh binds the recorded git dir and never re-reads the worktree's own
+  # .git file, which the lane can rewrite.
+  gitdir="$ROOT/git/$row"
+  { mkdir -p "$ROOT/git" && git clone -q --shared --no-checkout --separate-git-dir="$gitdir" "$REPO" "$wt" \
+      && git -C "$wt" checkout -q --detach "$BASE_SHA"; } || die "clone failed for $row"
   fix="$(materialize_row "$task" "$wt")" || die "fixture for $row failed"
   fix="$(printf '%s\n' "$fix" | tail -1)"
   nonce="LQ-$row-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
@@ -241,24 +245,23 @@ in_dir() { # $1 path, $2 dir -> 0 when $1 is a regular file, not a symlink, that
   return 1
 }
 
-# The lane can rewrite its worktree's .git file and its git dir's pointers to
-# reach a git config it controls (core.fsmonitor runs on the next host-side
-# git status); put back the values prepare recorded before any git runs.
+# The lane can rewrite its worktree's .git file, or give its git dir a
+# commondir, to point git at a dir it controls; put back the git dir prepare
+# recorded before any git runs.
 restore_git() {
-  case "$GITDIR" in "$REPO/.git/worktrees/"*/*|*/..|*/../*) die "git dir $GITDIR is not a worktree of $REPO" ;;
-                    "$REPO/.git/worktrees/"?*) ;; *) die "git dir $GITDIR is not a worktree of $REPO" ;; esac
+  case "$GITDIR" in */..|*/../*|"$REPO"|"$REPO"/*) die "git dir $GITDIR is not the row's own" ;; /*) ;; *) die "git dir $GITDIR is not absolute" ;; esac
   { [ -d "$GITDIR" ] && [ ! -L "$GITDIR" ] && [ -d "$WT" ] && [ ! -L "$WT" ]; } || die "$WT or $GITDIR is missing or a symlink"
-  rm -rf -- "$WT/.git" "$GITDIR/commondir" "$GITDIR/gitdir" "$GITDIR/config.worktree" || die "cannot reset the git pointers of $WT"
-  if ! { printf 'gitdir: %s\n' "$GITDIR" >"$WT/.git" && printf '../..\n' >"$GITDIR/commondir" && printf '%s\n' "$WT/.git" >"$GITDIR/gitdir"; }; then
-    die "cannot restore the git pointers of $WT"
-  fi
+  rm -rf -- "$WT/.git" "$GITDIR/commondir" || die "cannot reset the git pointers of $WT"
+  printf 'gitdir: %s\n' "$GITDIR" >"$WT/.git" || die "cannot restore the git pointers of $WT"
 }
 
 find_transcripts() { # $1 lane, $2 worktree, $3 row doc, $4 row transcript dir -> this row's transcripts, one per line
   local slug d id IFS=:
   slug="$(printf %s "$2" | sed 's#[^A-Za-z0-9]#-#g')"
-  # A sandboxed row writes only to its own transcript dir, so all of it is its own.
+  # A sandboxed row writes only to its own transcript dir, so all of it is its
+  # own; its session ran at the worktree's jail path (sandbox.sh).
   if [ "$1" != native ]; then
+    slug="$(printf %s "$REPO/.claude/worktrees/${2##*/}" | sed 's#[^A-Za-z0-9]#-#g')"
     ls -tr "$4/$slug"/*.jsonl 2>/dev/null
     return 0
   fi
@@ -368,8 +371,8 @@ cmd_finish() {
       wrapped: $wrapped, transcript: (if $tr == "" then null else $tr end), packet: $pk } + $m' >"$ROOT/results/$row.json" \
     || die "$row: could not write its result"
   # Scored, its diff in the packet: remove the worktree so no later host-side
-  # git (clean-garden scans every worktree) runs on a tree the lane wrote.
-  { rm -rf -- "$WT" "$GITDIR" && git -C "$REPO" worktree prune; } || die "$row: scored, but could not remove $WT"
+  # git runs on a tree the lane wrote.
+  rm -rf -- "$WT" "$GITDIR" || die "$row: scored, but could not remove $WT"
   echo "pilot: $row finished ($acc, scope_ok=$(jq -r .scope_ok "$ROOT/results/$row.json"), packet $pk)"
 }
 
