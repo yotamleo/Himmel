@@ -248,7 +248,7 @@ HOOK_OK=0
 # claim out from under it on its own exit (codex-1).
 WROTE=0
 CLAIMED=0
-# shellcheck disable=SC2317  # invoked indirectly via `trap ... EXIT`
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via `trap ... EXIT`
 __on_exit() {
     local rc=$?
     if [ "$HOOK_OK" -eq 0 ]; then
@@ -269,7 +269,7 @@ trap '__on_exit' EXIT
 # above it to explain — the hook was simply cancelled by its parent (e.g.
 # close-wrapped-leg.sh signalling a closed leg's claude process). Name the
 # real cause and short-circuit __on_exit's generic log via HOOK_OK=1.
-# shellcheck disable=SC2317  # invoked indirectly via `trap ... TERM/INT/HUP`
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via `trap ... TERM/INT/HUP`
 __on_signal() {
     local sig="$1"
     log_msg "cancelled by signal $sig (session ${SESSION_ID:-unknown})"

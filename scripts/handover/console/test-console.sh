@@ -164,7 +164,7 @@ check "4 new renders in bounded time" "$([ $((SECONDS - t4_start)) -lt 20 ] && e
 # HIMMEL-3912: render_template must splice values LITERALLY ('&', backslash,
 # '/', '$', quotes, newline).
 (
-    # shellcheck disable=SC2317  # called by the eval'd render_template
+    # shellcheck disable=SC2317,SC2329  # called by the eval'd render_template
     err() { echo "$@" >&2; }
     eval "$(sed -n '/^render_template() {/,/^}/p' "$C")"
     tpl="$REPO_REAL/docs/handover/console-template.md"
