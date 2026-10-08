@@ -3,7 +3,7 @@
 // Its filters (lane, state, text, finished inline) narrow every section of the fleet page and are kept per viewer;
 // each live console shows its running / waiting / attention / orphan counts, and finished consoles fold under them.
 import { consoleGroups, EMPTY_FILTERS, filtering, orphanReason, rowHref, useFilters, useOpen, visibleRows, type FleetState, type Row, type ViewFilters } from "./Fleet";
-import { fleetSections, isLive, laneOf, NO_FILTERS, type ProcessOrphan } from "./fleet-model";
+import { filterCount, fleetSections, isLive, NO_FILTERS, type ProcessOrphan } from "./fleet-model";
 import { consoleHash } from "./stream";
 
 function SessionLink({ row, token }: { row: Row; token: string }) {
@@ -18,13 +18,11 @@ const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x
 
 function FilterBlock({ rows, procs }: { rows: Row[]; procs: ProcessOrphan[] | null | undefined }) {
   const [f, set] = useFilters();
-  const all = fleetSections(rows, null, NO_FILTERS, procs ?? []);
-  const live = rows.filter((r) => isLive(r));
-  const n: Record<string, number> = {
-    native: live.filter((r) => laneOf(r) === "native").length, claudex: live.filter((r) => laneOf(r) === "claudex").length, cloud: live.filter((r) => laneOf(r) === "cloud").length,
-    running: all.counts.running, waiting: all.counts.waiting, attention: all.counts.attention, orphaned: all.counts.orphaned,
-    idle: all.running.flatMap((g) => g.rows).filter((r) => r.state === "idle" || r.state === "unknown").length,
-  };
+  // Each badge is what that chip alone would show (fleet-model's filterCount: the filter's own predicate).
+  const n: Record<string, number> = Object.fromEntries([
+    ...LANES.map((l) => [l, filterCount(rows, { ...NO_FILTERS, lanes: [l] }, procs ?? [])]),
+    ...STATES.map(([s]) => [s, filterCount(rows, { ...NO_FILTERS, states: [s] }, procs ?? [])]),
+  ]);
   const chip = (v: string, label: string, on: boolean, flip: (f: ViewFilters) => ViewFilters) =>
     <button type="button" key={v} className={`fleet-chip-btn${on ? " on" : ""}`} aria-pressed={on} onClick={() => set(flip(f))}>{label}{v in n && <span className="fleet-count">{n[v]}</span>}</button>;
   return <div className="fleet-filters" role="group" aria-label="Filters">

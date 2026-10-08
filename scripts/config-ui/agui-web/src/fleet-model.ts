@@ -179,6 +179,12 @@ export function fleetSections(all: Row[], selected: string | null = null, filter
   };
 }
 
+// A filter chip's badge: how many sessions (and, for "orphaned", wrappers) that filter alone shows, by the same predicate.
+export function filterCount(rows: Row[], f: Filters, procs: ProcessOrphan[] = []): number {
+  const s = fleetSections(rows, null, f, procs);
+  return s.counts.shown + (f.states.includes("orphaned") ? s.processOrphans.length : 0);
+}
+
 // A session name without its ticket and date: `HIMMEL-4912-N1497-sandbox-runner-2026-10-08` is `N1497 sandbox-runner`,
 // a console `HIMMEL-nextleg-2026-10-08BU-roadmap-console` is `BU-roadmap-console`; anything else is kept whole.
 export function shortName(name: string): string {

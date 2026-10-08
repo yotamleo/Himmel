@@ -2,7 +2,7 @@
 // leg and console chains, the filters, and the short names, over plain rows: the model is dependency-free, so this runs
 // without an install.
 import { expect, test } from "bun:test";
-import { chainKey, cloudPhase, fleetSections, laneOf, NO_FILTERS, orphanReason, shortName, siblingOrder } from "../agui-web/src/fleet-model";
+import { chainKey, cloudPhase, filterCount, fleetSections, laneOf, NO_FILTERS, orphanReason, shortName, siblingOrder } from "../agui-web/src/fleet-model";
 
 const row = (name: string, role: string, console: string | null, extra: any = {}) => ({
   name, role, console, parent: console, live: true, lock: "unknown", lane: "native",
@@ -152,6 +152,14 @@ test("an orphan's own alarm (BLOCKED, high context) still reaches Needs attentio
   const s = fleetSections(withAlarm);
   expect(s.attention.map((a) => [a.row.name, a.why])).toContainEqual(["orphan-leg", "BLOCKED"]);
   expect(s.orphans.map((o) => o.row.name)).toEqual(["orphan-leg"]);
+});
+
+test("a filter chip's badge counts exactly what that filter shows: idle consoles and idle orphans included", () => {
+  const idle = rows.map((r) => (r.name === BU ? { ...r, state: "idle" } : r.name === "orphan-leg" ? { ...r, state: "idle" } : r));
+  const shownBy = (states: string[]) => fleetSections(idle, null, { lanes: [], states, text: "" });
+  expect(filterCount(idle, { lanes: [], states: ["idle"], text: "" })).toBe(shownBy(["idle"]).counts.shown);
+  expect(filterCount(idle, { lanes: [], states: ["idle"], text: "" })).toBe(8);
+  expect(filterCount(rows, { lanes: [], states: ["orphaned"], text: "" }, [{ pid: 7, owner: "orphan", ageMin: 45 }])).toBe(2);
 });
 
 test("sibling order: running, waiting, idle, unknown; newest first; then name", () => {
