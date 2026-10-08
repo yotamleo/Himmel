@@ -105,10 +105,12 @@ mkdir -p "$out_dir" 2>/dev/null || exit 0
 # pass over the listing (it used to be two jq per file, which at ~670 files
 # would have cost SessionStart seconds).
 pins_fresh="$(
-  for dir in scripts/hooks scripts/guardrails scripts/lib scripts/handover; do
+  # HIMMEL-4828: plus the himmel-bus delivery worker's lib (.mjs), which
+  # scripts/hooks/bus-deliver-run.js checks against these pins before importing.
+  for dir in scripts/hooks scripts/guardrails scripts/lib scripts/handover marketplace/plugins/himmel-bus/lib; do
     [ -d "$CLAUDE_PROJECT_DIR/$dir" ] || continue
     git -C "$CLAUDE_PROJECT_DIR" ls-tree -r HEAD -- "$dir" 2>/dev/null
-  done | jq -Rn '[inputs | select(test("\\.sh$")) | split("\t") | select(length >= 2)
+  done | jq -Rn '[inputs | select(test("\\.sh$") or test("\\tmarketplace/plugins/himmel-bus/lib/[^/]+\\.mjs$")) | split("\t") | select(length >= 2)
                   | {key: (.[1:] | join("\t")), value: (.[0] | split(" ") | .[2] // "")}
                   | select(.key != "" and .value != "")] | from_entries'
 )"

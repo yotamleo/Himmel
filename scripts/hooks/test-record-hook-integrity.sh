@@ -996,5 +996,30 @@ else
   bad "row24: rc=$rc24 (want 0) filter=$([ -e "$FILTER_MARKER24" ] && echo 'EXECUTED' || echo absent) sourced=$([ -e "$SRC_MARKER24" ] && echo 'EXECUTED' || echo absent) record=$(cat "$REC24" 2>/dev/null || echo '<NO FILE — integrity system disabled>')"
 fi
 
+# ---------------------------------------------------------------------------
+# Row 25 (HIMMEL-4828): the himmel-bus delivery worker's lib is pinned too, but
+# only its .mjs files -- bus-deliver-run.js compares them to these pins before
+# importing. A .mjs elsewhere, and a non-.mjs file in that lib dir, stay unpinned.
+# ---------------------------------------------------------------------------
+P25="$(new_fixture row25 main)"
+mkdir -p "$P25/marketplace/plugins/himmel-bus/lib" "$P25/marketplace/plugins/himmel-bus/server"
+printf 'export const a = 1;\n' > "$P25/marketplace/plugins/himmel-bus/lib/deliver.mjs"
+printf 'notes\n' > "$P25/marketplace/plugins/himmel-bus/lib/README.md"
+printf 'export const b = 1;\n' > "$P25/marketplace/plugins/himmel-bus/server/index.mjs"
+git -C "$P25" -c user.email=t@t -c user.name=t add -A
+git -C "$P25" -c user.email=t@t -c user.name=t commit -q -m bus
+OUT25="$T/row25/out"
+run_recorder "$P25" "$OUT25" "sess-25"
+REC25="$OUT25/sess-25.json"
+if [ -f "$REC25" ] \
+  && [ "$(jq -r '.pins["marketplace/plugins/himmel-bus/lib/deliver.mjs"] // empty' "$REC25")" \
+     = "$(git -C "$P25" rev-parse HEAD:marketplace/plugins/himmel-bus/lib/deliver.mjs)" ] \
+  && [ -z "$(jq -r '.pins["marketplace/plugins/himmel-bus/lib/README.md"] // empty' "$REC25")" ] \
+  && [ -z "$(jq -r '.pins["marketplace/plugins/himmel-bus/server/index.mjs"] // empty' "$REC25")" ]; then
+  ok "row25: himmel-bus lib .mjs files pinned to their blob sha; other files there and server/ are not"
+else
+  bad "row25: pins=$(jq -c '.pins' "$REC25" 2>/dev/null || echo '<no record>')"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
