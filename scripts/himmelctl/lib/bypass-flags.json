@@ -187,6 +187,14 @@
       "remedy": "HIMMEL_READ_CLAMP_OK=1 claude   # set in the launching shell; a per-call prefix does not reach the hook"
     },
     {
+      "name": "HIMMEL_WEBFETCH_WALLED_OK",
+      "hooks": [
+        "scripts/hooks/redirect-webfetch-walled-hosts.sh"
+      ],
+      "bypasses": "Skips the \"redirect webfetch walled hosts\" guard (scripts/hooks/redirect-webfetch-walled-hosts.sh).",
+      "remedy": "HIMMEL_WEBFETCH_WALLED_OK=1 claude   # set in the launching shell; a per-call prefix does not reach the hook"
+    },
+    {
       "name": "HOOKSPATH_OK",
       "hooks": [
         "scripts/hooks/check-hookspath.ps1",

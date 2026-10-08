@@ -3761,6 +3761,19 @@ on missing `jq`, malformed, or empty stdin. Claude lane only —
 `ScheduleWakeup` is a Claude Code tool, so `.codex/hooks.json` carries no twin.
 Suite: `scripts/hooks/test-guard-leg-wakeup.sh`.
 
+### `redirect-webfetch-walled-hosts.sh` — WebFetch redirect for walled hosts (HIMMEL-4908)
+
+PreToolUse, matcher `WebFetch`. A URL whose host (or a subdomain of it) is on the
+one line of `scripts/web/walled-hosts.conf` (x.com, twitter.com,
+mobile.twitter.com, instagram.com) is denied with the paste-ready, shell-quoted
+`bash scripts/web/fetch-url.sh '<url>'`; the Scrapling stealth fetcher returns
+the page where WebFetch gets HTTP 402. Any other host is allowed silently. A
+workflow convenience, not a fence: it fails open on missing `jq`/conf, malformed
+input or a control character in the URL, and makes no network call. Bypass:
+`HIMMEL_WEBFETCH_WALLED_OK=1` in the launching shell. Codex has no WebFetch
+tool, so there is no `.codex/hooks.json` twin. Suite:
+`scripts/hooks/test-redirect-webfetch-walled-hosts.sh`.
+
 ### `guard-leg-context-handoff.sh` — console-spawned-leg context hand-off (HIMMEL-4569)
 
 Fires on every tool (`*`), keyed on `HIMMEL_CONSOLE_LEG=1` plus a non-empty

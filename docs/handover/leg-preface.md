@@ -224,6 +224,10 @@ for a relay that is not coming.
 - **Search with Bash, not Grep/Glob (HIMMEL-4784).** A leg has no dedicated
   `Grep` or `Glob` tool (a call returns "No such tool available"): search with
   `git grep` / `grep` and list files with `git ls-files` / `find`.
+- **Pasted links: `scripts/web/fetch-url.sh '<url>'` (HIMMEL-4908).** An x.com /
+  instagram.com link gets WebFetch HTTP 402; this fetches it through Scrapling
+  (no cookies) and prints author, handle, date, text and media. Never ask the
+  operator for a paste.
 - **Ship steps are typed exactly as their allow rule is written — no quotes,
   no `VAR=` prefix, no `cd … &&`, no compound operators, no `$(…)`.** A
   relative gate script is `bash scripts/cr/X.sh <args>`, never

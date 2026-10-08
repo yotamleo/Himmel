@@ -131,6 +131,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // `ESCALATION: <reason>` line — HIMMEL-3630's Opus judge default, made
   // structural. Sits beside the Agent-matcher observability hook, un-chained.
   'guard-agent-model.sh',
+  // PreToolUse `WebFetch` — its own matcher (HIMMEL-4908): denies WebFetch on a
+  // login-walled host (x.com / instagram.com, scripts/web/walled-hosts.conf)
+  // and names `bash scripts/web/fetch-url.sh '<url>'`. Fails open.
+  'redirect-webfetch-walled-hosts.sh',
   // PreToolUse, one entry each.
   'block-backend-tier.sh',
   'mcp-policy.sh',
