@@ -79,6 +79,13 @@ export const foldLine = (text: string): string => text.trim().replace(/\r?\n/g, 
 
 const hhmm = (d = new Date()) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
+export function staleConsoleCommand(ts?: number): boolean {
+  const configured = Number(process.env.TELEGRAM_VERB_MAX_AGE_S ?? 300);
+  const maxAge = Number.isSafeInteger(configured) && configured > 0 ? configured : 300;
+  const age = Date.now() / 1000 - (ts ?? 0);
+  return !Number.isSafeInteger(ts) || age < -5 || age > maxAge;
+}
+
 export async function routeFleetCommand(
   root: string,
   msg: { from: number; chat_id: number; ts?: number; message_id?: number; reply_to_message_id?: number },
@@ -87,10 +94,7 @@ export async function routeFleetCommand(
 ): Promise<void> {
   if (!gate.authorize(msg.from, msg.chat_id)) return;
   const reply: ConsoleReplyFn = (chat, text, name) => gate.reply(chat, text, name, msg.message_id);
-  const configured = Number(process.env.TELEGRAM_VERB_MAX_AGE_S ?? 300);
-  const maxAge = Number.isSafeInteger(configured) && configured > 0 ? configured : 300;
-  const age = Date.now() / 1000 - (msg.ts ?? 0);
-  if (!Number.isSafeInteger(msg.ts) || age < 0 || age > maxAge) {
+  if (staleConsoleCommand(msg.ts)) {
     await reply(msg.chat_id, "⚠️ stale, resend — nothing was queued.");
     return;
   }

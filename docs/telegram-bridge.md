@@ -128,16 +128,23 @@ owner. No handler launches a session, runs git, or grants approval.
 
 An inbound command older than `TELEGRAM_VERB_MAX_AGE_S` (default **300 seconds**)
 is refused with **“stale, resend”**, preventing outage replay. Missing/invalid
-or future message dates also refuse; invalid/nonpositive configuration uses
-300 seconds. This window applies to the five console verbs, not existing
-free `/console` text. `/lockdown` remains narrowing-only even when replayed.
+message dates also refuse; up to five seconds of future clock skew is accepted.
+Invalid/nonpositive configuration uses 300 seconds. The same window covers
+free/named `/console`, `/consoles`, trusted console reply threads and typed
+auto-actions (`/arm`, `/mergepub`, `/cr-grant-delta`, `/restart`). `/lockdown`
+remains narrowing-only even when replayed.
 
-`/lockdown` sets `<bridge root>/lockdown` and confirms it. While present, the
-bridge drops console routes (including trusted reply threads), console verbs,
-and all typed auto-actions, including `/mergepub`, `/cr-grant-delta`, `/arm`
-and the retired typed launch. It does not cancel already-running actions or
-disable ordinary chat. The flag survives bridge restart. **Reset at the station
-only**, after securing the Telegram account:
+`/lockdown` sets `<bridge root>/lockdown` and confirms it. The operator may also
+use `/lockdown@<botname>` or a leading `model:` tag: narrowing ignores that
+routing hint, but still requires a typed, unforwarded operator message. A
+noneligible console/lockdown verb is dropped, never handed to an agent.
+While any entry exists at the lockdown path (even a dangling symlink), the
+bridge drops **all Telegram agent dispatch for every sender**: ordinary chat,
+ticket work, followups, console routes/receipt threads and all typed
+auto-actions, including `/restart`. Each inbound refusal replies once:
+**“locked, reset at the station”**. Already-pending/coalesced/retry work cannot
+spawn either. It does not cancel already-running actions. The flag survives
+bridge restart. **Reset at the station only**, after securing the Telegram account:
 
 ```bash
 rm -- "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/lockdown"

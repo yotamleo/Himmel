@@ -161,12 +161,13 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
   // than spawn `auto-action.sh restart …`, which would hit that script's own
   // unknown-op guard anyway — but fail here, at the layer that knows why.
   if (SELF_EXECUTED_OPS.has(route.op)) return { ok: false, rc: 2, message: `⚠️ ${route.op} is not script-dispatched` };
+  if (route.op === "launch-bypass-leg") return { ok: false, rc: 19, message: "Telegram hook-bypass launch refused — start hook legs at the station." };
   const { code, stdout, stderr } = await deps.runScript(route.op, route.arg, route.time);
   if (route.op === "merge-public") return mapMergePublicResult(route.arg, route.time, code, stdout, stderr);
-  if (route.op === "launch-bypass-leg" || route.op === "cr-grant-delta") {
+  if (route.op === "cr-grant-delta") {
     const log = stdout.match(/^log=(.+)$/m)?.[1];
     const backups = [...stdout.matchAll(/^backup=(.+)$/gm)].map((m) => m[1]).join(",") || undefined;
-    const action = route.op === "launch-bypass-leg" ? "launched leg" : `granted fix delta for PR #${route.arg}`;
+    const action = `granted fix delta for PR #${route.arg}`;
     return {
       ok: code === 0, rc: code, backups,
       message: code === 0
@@ -192,7 +193,7 @@ export async function dispatchAutoAction(deps: { runScript: RunScriptFn }, route
 // correct. The labels below are the closed union both ops draw from.
 export type AuditResult = "armed" | "already-armed" | "ambiguous" | "refused-forwarded" | "no-match" | "error"
   | "merged" | "not-green" | "head-moved" | "no-open-pr"
-  | "restarting" | "restart-unsupported" | "launched" | "delta-granted";
+  | "restarting" | "restart-unsupported" | "delta-granted";
 export type AuditFields = {
   chat_id: number; user: number; forwarded: boolean; op: string;
   arg: string; resolved?: string; backups?: string; time: string; rc: number; result: string;

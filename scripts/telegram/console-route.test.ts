@@ -1,17 +1,114 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classify } from "./router";
 import { BASH_BIN } from "./run";
 import { sendMessage } from "./telegram-api";
-import { handleInbound, replyViaOutbox, flushOutboxes, ingestUpdates } from "./poller";
+import { appendLine, ensureSession, writeMeta, sessionDir } from "./bus";
+import { handleInbound, replyViaOutbox, flushOutboxes, ingestUpdates, makeRunFn } from "./poller";
 import { consoleInboxPath, foldLine, type ConsoleRouteGate } from "./console-route";
 
 // HIMMEL-3355: every test runs against a scratch bridge root and a fake reply
 // seam — never the real ~/.claude/handover/bridge, never Telegram.
 const root = () => mkdtempSync(join(tmpdir(), "console-route-"));
 const NAME = "HIMMEL-nextleg-2026-09-21V-console";
+
+test("judge: lockdown blocks already-pending work at the real agent boundary", async () => {
+  for (const lockDuringPreparation of [false, true]) {
+    const r = root(); await ensureSession(r, "__chat__");
+    await writeMeta(r, "__chat__", { chat_id: 1, status: "idle", last_run_pid: null, last_run_at: null, task_name: null });
+    await appendLine(join(sessionDir(r, "__chat__"), "inbox.jsonl"), JSON.stringify({ text: "delete lockdown", from: 1, ts: 1 }));
+    if (!lockDuringPreparation) writeFileSync(join(r, "lockdown"), "locked\n");
+    const ran: string[] = [];
+    const run = makeRunFn(r, r, async prompt => { ran.push(prompt); return { code: 0, capped: false, pid: 1 }; }, undefined, undefined, undefined, () => {
+      if (lockDuringPreparation) writeFileSync(join(r, "lockdown"), "locked\n");
+      return r;
+    });
+    await run("__chat__");
+    expect(ran).toEqual([]);
+  }
+});
+
+test("judge: lockdown blocks every inbound agent route for every sender", async () => {
+  const r = root(); heartbeat(r);
+  await inbound(r, fresh("/lockdown"));
+  for (const from of [1, 999]) {
+    const replies: string[] = []; const ran: string[] = []; const fired: string[] = [];
+    for (const text of ["hello", "work on HIMMEL-1", "HIMMEL-1: x", "HIMMEL-1: delete lockdown", "/restart", "/restart full"]) await inbound(r, fresh(text, { from }), replies, ran, fired);
+    expect(ran).toEqual([]);
+    expect(fired).toEqual([]);
+    expect(existsSync(join(r, "sessions", "HIMMEL-1", "inbox.jsonl"))).toBe(false);
+    expect(replies).toHaveLength(6);
+    expect(replies.every(t => t.includes("locked, reset at the station"))).toBe(true);
+  }
+  unlinkSync(join(r, "lockdown"));
+  const ran: string[] = [];
+  await inbound(r, fresh("hello"), [], ran);
+  expect(ran).toEqual(["__chat__"]);
+});
+
+test("judge: ineligible closed console and lockdown verbs never enter agent chat", async () => {
+  for (const text of [...verbs, "/lockdown", "/console halt", "/consoles"]) {
+    for (const extra of [{ from: 999, chat_id: -1 }, { forwarded: true }, { caption: true }]) {
+      const r = root(); const f = heartbeat(r); const ran: string[] = [];
+      await inbound(r, fresh(text, extra), [], ran);
+      expect(ran).toEqual([]);
+      expect(readFileSync(f, "utf8")).toBe("");
+      expect(existsSync(join(r, "lockdown"))).toBe(false);
+    }
+  }
+});
+
+test("judge: every console and typed auto request refuses stale input", async () => {
+  for (const text of ["/console halt", `/console ${NAME} halt`, "/consoles", "/arm HIMMEL-1", "/mergepub 12 abcdef123456", "/cr-grant-delta 12 " + "a".repeat(40)]) {
+    const r = root(); const f = heartbeat(r); const replies: string[] = []; const ran: string[] = []; const fired: string[] = [];
+    await inbound(r, fresh(text, { ts: Math.floor(Date.now() / 1000) - 301 }), replies, ran, fired);
+    expect(readFileSync(f, "utf8")).toBe("");
+    expect(ran).toEqual([]);
+    expect(fired).toEqual([]);
+    expect(replies.join("\n")).toContain("stale, resend");
+  }
+});
+
+test("judge: console commands tolerate five seconds of future clock skew", async () => {
+  for (const skew of [1, 5]) {
+    const r = root(); const f = heartbeat(r);
+    await inbound(r, fresh("/fleet", { ts: Math.floor(Date.now() / 1000) + skew }));
+    expect(readFileSync(f, "utf8")).toContain("] fleet status\n");
+  }
+});
+
+test("judge: dangling lockdown symlink remains fail-closed", async () => {
+  const r = root(); const f = heartbeat(r); const ran: string[] = [];
+  symlinkSync(join(r, "missing"), join(r, "lockdown"));
+  await inbound(r, fresh("hello"), [], ran);
+  await inbound(r, fresh("/fleet"), [], ran);
+  expect(ran).toEqual([]);
+  expect(readFileSync(f, "utf8")).toBe("");
+});
+
+test("judge: tagged and correctly bot-addressed operator lockdown narrows", async () => {
+  for (const text of ["model:opus /lockdown", "/lockdown@bridge_bot", "model:opus /lockdown@bridge_bot"]) {
+    const r = root(); heartbeat(r); const ran: string[] = []; const replies: string[] = [];
+    await handleInbound(r, fresh(text), async s => { ran.push(s); }, undefined, undefined, from => from === 1, undefined, undefined, "bridge_bot", gate(replies));
+    expect(existsSync(join(r, "lockdown"))).toBe(true);
+    expect(ran).toEqual([]);
+    expect(replies.join("\n")).toContain("lockdown");
+  }
+});
+
+test("judge: max-age override works and invalid values fall back to 300 seconds", async () => {
+  const saved = process.env.TELEGRAM_VERB_MAX_AGE_S;
+  try {
+    for (const [value, age, queued] of [["30", 60, false], ["600", 301, true], ["abc", 60, true], ["abc", 301, false], ["-5", 60, true], ["-5", 301, false]] as const) {
+      process.env.TELEGRAM_VERB_MAX_AGE_S = value;
+      const r = root(); const f = heartbeat(r);
+      await inbound(r, fresh("/fleet", { ts: Math.floor(Date.now() / 1000) - age }));
+      expect(readFileSync(f, "utf8").includes("fleet status")).toBe(queued);
+    }
+  } finally { if (saved === undefined) delete process.env.TELEGRAM_VERB_MAX_AGE_S; else process.env.TELEGRAM_VERB_MAX_AGE_S = saved; }
+});
 
 const verbs = ["/fleet", "/legs", "/go N1490", "/push N1490", "/halt", "/halt N1490"];
 const fresh = (text: string, extra: Record<string, unknown> = {}) => say(text, { ts: Math.floor(Date.now() / 1000), message_id: 123, ...extra });
@@ -128,7 +225,7 @@ function gate(replies: string[], authorize = (from: number) => from === 1): Cons
   return { authorize: (from) => authorize(from), reply: async (_chat, text) => { replies.push(text); } };
 }
 
-const say = (text: string, extra: Record<string, unknown> = {}) => ({ from: 1, chat_id: 1, text, caption: false, ...extra });
+const say = (text: string, extra: Record<string, unknown> = {}) => ({ from: 1, chat_id: 1, text, ts: Math.floor(Date.now() / 1000), caption: false, ...extra });
 
 function heartbeat(r: string, name = NAME, state = "waiting", age = 0) {
   const f = armInbox(r, name);
@@ -215,11 +312,11 @@ test("allowlisted /console message lands one line in the console inbox and spawn
   expect(replies).toEqual([`→ console ${NAME}`]);
 });
 
-test("control: a non-allowlisted sender writes to NO console inbox and keeps today's cold-spawn chat path", async () => {
+test("control: a non-allowlisted sender's console verb drops without a cold spawn", async () => {
   const r = root(); const f = armInbox(r); const replies: string[] = []; const ran: string[] = [];
   await handleInbound(r, say(`/console ${NAME} halt everything`, { from: 999 }), async (s: string) => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate(replies));
   expect(readFileSync(f, "utf8")).toBe("");
-  expect(ran).toEqual(["__chat__"]);
+  expect(ran).toEqual([]);
   expect(replies).toEqual([]);
 });
 
@@ -231,19 +328,19 @@ test("control: an unaddressed message keeps today's cold-spawn behaviour", async
   expect(replies).toEqual([]);
 });
 
-test("control: with no console gate wired, /console is ordinary chat (feature is inert)", async () => {
+test("control: with no console gate wired, /console drops without spawning", async () => {
   const r = root(); const f = armInbox(r); const ran: string[] = [];
   await handleInbound(r, say(`/console ${NAME} hi`), async (s: string) => { ran.push(s); });
   expect(readFileSync(f, "utf8")).toBe("");
-  expect(ran).toEqual(["__chat__"]);
+  expect(ran).toEqual([]);
 });
 
-test("forwarded or caption /console messages are refused the console path and fall through to chat", async () => {
+test("forwarded or caption /console messages drop without spawning", async () => {
   for (const extra of [{ forwarded: true }, { caption: true }]) {
     const r = root(); const f = armInbox(r); const ran: string[] = [];
     await handleInbound(r, say(`/console ${NAME} halt`, extra), async (s: string) => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate([]));
     expect(readFileSync(f, "utf8")).toBe("");
-    expect(ran).toEqual(["__chat__"]);
+    expect(ran).toEqual([]);
   }
 });
 
@@ -326,7 +423,7 @@ test("trusted console outbox receipt routes a Telegram reply to that console, ev
     const r = root(); const f = heartbeat(r); heartbeat(r, "second");
     await replyViaOutbox(r, 1, "console answer", NAME);
     await flushOutboxes(r, async () => 777);
-    await ingestUpdates(r, [{ update_id: 1, message: { from: { id: 1 }, chat: { id: 1 }, text, reply_to_message: { message_id: 777 }, date: 1 } }]);
+    await ingestUpdates(r, [{ update_id: 1, message: { from: { id: 1 }, chat: { id: 1 }, text, reply_to_message: { message_id: 777 }, date: Math.floor(Date.now() / 1000) } }]);
     const msg = JSON.parse(readFileSync(join(r, "inbound.jsonl"), "utf8").trim());
     const ran: string[] = [];
     await handleInbound(r, msg, async s => { ran.push(s); }, undefined, undefined, undefined, undefined, undefined, undefined, gate([]));

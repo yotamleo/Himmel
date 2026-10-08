@@ -1,11 +1,11 @@
 import { readFile, writeFile, rename, mkdir, readdir, unlink, stat, mkdtemp, copyFile, rm } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, lstatSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, repairCursorBeyondEof, truncateFullyConsumed, type Meta, type OnCursorReset } from "./bus";
 import { classify, type Route } from "./router";
-import { routeToConsole, routeFleetCommand, consoleReplyTarget, rememberConsoleReply, type ConsoleRouteGate, type ConsoleReplyFn } from "./console-route";
+import { routeToConsole, routeFleetCommand, staleConsoleCommand, consoleReplyTarget, rememberConsoleReply, type ConsoleRouteGate, type ConsoleReplyFn } from "./console-route";
 import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
 import { getUpdates, getMe, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { installTimestampedLogging } from "./log-timestamp";
@@ -390,6 +390,58 @@ export function mentionsBot(text: string, botUsername: string): boolean {
   return bare.test(text) || cmd.test(text);
 }
 
+function lockdownEnabled(root: string): boolean {
+  try { lstatSync(join(root, "lockdown")); return true; }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; throw e; }
+}
+
+// Closed console verbs never fall through to an agent; lockdown also closes
+// ordinary chat and the auto path. Keep the policy together before dispatch.
+async function handleConsolePolicy(root: string, msg: DeliveredMsg, route: Route, tagged: boolean, consoleRoute?: ConsoleRouteGate, auto?: AutoGate, notifyChat?: NotifyChatFn): Promise<boolean> {
+  const eligible = !tagged && consoleRoute && consoleRoute.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded;
+  const reply: ConsoleReplyFn = (chat, text, name) => consoleRoute!.reply(chat, text, name, msg.message_id);
+  if (route.kind === "lockdown" && consoleRoute?.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded) {
+    await mkdir(root, { recursive: true });
+    await atomicWrite(join(root, "lockdown"), "locked\n");
+    await reply(msg.chat_id, "lockdown enabled — all Telegram agent dispatch dropped until reset at the station.");
+    return true;
+  }
+  // Any entry, even a dangling symlink, locks; reset is station-local.
+  if (lockdownEnabled(root)) {
+    if (consoleRoute) await reply(msg.chat_id, "locked, reset at the station");
+    else if (notifyChat) await notifyChat(msg.chat_id, "locked, reset at the station");
+    return true;
+  }
+  if (["fleet", "lockdown", "console", "consoles"].includes(route.kind) && !eligible) return true;
+  const threadName = eligible && (route.kind === "chat" || route.kind === "followup") && !msg.text.trimStart().startsWith("/") && msg.reply_to_message_id != null
+    ? await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id) : null;
+  const typedAuto = !tagged && route.kind === "auto" && auto?.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded;
+  if ((eligible && (["fleet", "console", "consoles"].includes(route.kind) || threadName) || typedAuto) && staleConsoleCommand(msg.ts)) {
+    if (consoleRoute) await reply(msg.chat_id, "⚠️ stale, resend — nothing was queued.");
+    else if (notifyChat) await notifyChat(msg.chat_id, "⚠️ stale, resend — nothing was queued.");
+    return true;
+  }
+  if (!eligible) return false;
+  if (route.kind === "fleet") {
+    await routeFleetCommand(root, msg, route, consoleRoute);
+    return true;
+  }
+  if (route.kind === "auto" && route.op === "launch-bypass-leg") {
+    await appendAuditLine(root)({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 19, result: "refused-legacy-bypass" });
+    await reply(msg.chat_id, "Telegram hook-bypass launch refused — start hook legs at the station.");
+    return true;
+  }
+  if (route.kind === "console" || route.kind === "consoles") {
+    await routeToConsole(root, msg, route, reply);
+    return true;
+  }
+  if (threadName) {
+    await routeToConsole(root, msg, { kind: "console", name: threadName, text: msg.text, thread: true }, reply);
+    return true;
+  }
+  return false;
+}
+
 export async function handleInbound(root: string, msg: DeliveredMsg, run: InboundRunFn, auto?: AutoGate, triage: TriageFn = (text, sessionLabel, fromOperator) => classifyForSpawn(text, { sessionLabel, fromOperator }), isOperator: OperatorFn = () => false, notifyChat?: NotifyChatFn, requireMention: RequireMentionFn = () => false, botUsername?: string | null, consoleRoute?: ConsoleRouteGate): Promise<void> {
   // OPERATOR-ONLY (CR codex-adv-3). The tag is an operator instruction, and the
   // surrounding code treats it as one — but an allow-listed group WITHOUT a
@@ -404,7 +456,8 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
   const NO_TAG = { model: null as ModelOverride | null, rest: msg.text, unknown: false };
   const tag = fromOperator ? parseModelTag(msg.text) : NO_TAG;
   const tagged = tag.model !== null || tag.unknown;
-  const route = classify(tag.rest);
+  const addressedLockdown = botUsername && tag.rest.trim().toLowerCase() === `/lockdown@${botUsername.toLowerCase()}`;
+  const route = classify(addressedLockdown ? "/lockdown" : tag.rest);
   // Non-DM chats (negative chat_id = group/channel) get their own session keyed
   // by chat_id so meta.chat_id pins replies to that chat, not the operator DM
   // (HIMMEL-238). "_" not ":" — the session id is an NTFS directory name.
@@ -432,31 +485,7 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
     console.error(`[poller] require-mention drop for ${session}`);
     return;
   }
-  const eligible = !tagged && consoleRoute && consoleRoute.authorize(msg.from, msg.chat_id) && msg.caption === false && !msg.forwarded;
-  const reply: ConsoleReplyFn = (chat, text, name) => consoleRoute!.reply(chat, text, name, msg.message_id);
-  if (eligible && route.kind === "lockdown") {
-    await mkdir(root, { recursive: true });
-    await atomicWrite(join(root, "lockdown"), "locked\n");
-    await reply(msg.chat_id, "lockdown enabled — privileged routes dropped until reset at the station.");
-    return;
-  }
-  const threadName = eligible && (route.kind === "chat" || route.kind === "followup") && !msg.text.trimStart().startsWith("/") && msg.reply_to_message_id != null
-    ? await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id) : null;
-  // Check on every message so the station reset takes effect without a restart.
-  const locked = await stat(join(root, "lockdown")).then(() => true, (e: NodeJS.ErrnoException) => { if (e.code === "ENOENT") return false; throw e; });
-  if (locked && (["fleet", "console", "consoles", "auto"].includes(route.kind) || threadName)) {
-    if (eligible) await reply(msg.chat_id, "lockdown — privileged request dropped; reset at the station.");
-    return;
-  }
-  if (eligible && route.kind === "fleet") {
-    await routeFleetCommand(root, msg, route, consoleRoute);
-    return;
-  }
-  if (eligible && route.kind === "auto" && route.op === "launch-bypass-leg") {
-    await appendAuditLine(root)({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 19, result: "refused-legacy-bypass" });
-    await reply(msg.chat_id, "Telegram hook-bypass launch refused — start hook legs at the station.");
-    return;
-  }
+  if (await handleConsolePolicy(root, msg, route, tagged, consoleRoute, auto, notifyChat)) return;
   // control verbs act directly; minimal handling for v2.2 (status/sessions/stop)
   if (route.kind === "control") {
     if (route.verb === "stop" && "ticket" in route) {
@@ -464,26 +493,6 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
       await appendLine(join(sessionDir(root, route.ticket), "stop"), String(msg.ts ?? 0));
     }
     return; // status/sessions reporting is wired in the main loop (replies via outbox)
-  }
-  // Operator -> running console (HIMMEL-3355): `/console <name> <text>` from the
-  // allowlisted operator appends one line to that console's file inbox and NEVER
-  // spawns a cold session. Same eligibility as the auto-command below — global
-  // allowFrom sender in an allowed chat (consoleRoute.authorize), genuinely typed
-  // (caption===false), not forwarded, no leading `model:` tag — and the same
-  // fall-through: any condition false ⇒ ordinary chat, exactly today's path.
-  // gate.ts stays the sole sender gate; the branch is inert unless main() wires it.
-  if (eligible) {
-    if (route.kind === "console" || route.kind === "consoles") {
-      await routeToConsole(root, msg, route, reply);
-      return;
-    }
-    if ((route.kind === "chat" || route.kind === "followup") && !msg.text.trimStart().startsWith("/") && msg.reply_to_message_id != null) {
-      const name = await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id);
-      if (name) {
-        await routeToConsole(root, msg, { kind: "console", name, text: msg.text, thread: true }, reply);
-        return;
-      }
-    }
   }
   // Auto-command (HIMMEL-424 B2): a message AUTHORIZED by auto.authorize(from, chat_id)
   // — the sender is the allowlisted operator (global allowFrom) AND the chat is
@@ -619,9 +628,10 @@ function auditResult(op: string, rc: number): string {
       default: return "error";
     }
   }
-  if (op === "launch-bypass-leg" || op === "cr-grant-delta") {
+  if (op === "launch-bypass-leg") return "error";
+  if (op === "cr-grant-delta") {
     if (rc === 15) return "head-moved";
-    return rc === 0 ? (op === "launch-bypass-leg" ? "launched" : "delta-granted") : "error";
+    return rc === 0 ? "delta-granted" : "error";
   }
   if (op === "merge-public") {
     switch (rc) {
@@ -1281,6 +1291,7 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     catch (e) { console.error("[poller] " + kind + " notify failed for " + session + ": " + e); }
   };
   const runOnce = async (session: string, modelOverride?: ModelOverride): Promise<void> => {
+    if (lockdownEnabled(root)) return;
     const sd = sessionDir(root, session);
     const parked = await readMeta(root, session);
     if (parked?.status === "failed") return;                    // retry cap exhausted — wait for a new message
@@ -1357,7 +1368,12 @@ export function makeRunFn(root: string, repoCwd: string, runImpl: (prompt: strin
     // spawns that most need it.
     const settings = await resolveTelegramProfileSettings(sessionCwd, lanesDir);
     const mcpConfig = await resolveTelegramMcpConfig(repoCwd, lanesDir);
-    const res = await runAndSettle(root, session, () => withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, settings, undefined, extraEnv, mcpConfig), deadlineMs), undefined, retryAt);
+    if (lockdownEnabled(root)) return;
+    const res = await runAndSettle(root, session, () => {
+      // Settlement performs async I/O too: recheck immediately before spawn.
+      if (lockdownEnabled(root)) return Promise.resolve({ code: 1, capped: false, blocked: true, pid: 0, tail: "locked, reset at the station" });
+      return withDeadline(runImpl(buildPrompt(session, paths, filingVault, !!routedCwd), sessionCwd, permissionMode, undefined, modelOverride, settings, undefined, extraEnv, mcpConfig), deadlineMs);
+    }, undefined, retryAt);
     // run.log (HIMMEL-262): persist the run's output tail — before this, a dead
     // run's stdout/stderr vanished and failures were undebuggable
     const logHead = `[${new Date().toISOString()}] session=${session} code=${res.code} capped=${res.capped} blocked=${res.blocked ?? false} pid=${res.pid}\n`;
