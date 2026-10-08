@@ -362,7 +362,9 @@ dispatch_cmd="${CONSOLE_WAIT_DISPATCH:-$HERE/next-dispatchable.sh}"
 underfill_wake() { # prints the WAKE block; fail-open on the dispatchable list
     printf 'WAKE underfilled capacity=%s\n%s\n' "$cap_val" "$tick_line"
     [ -r "$dispatch_cmd" ] || return 0
-    timeout -k 2 "${CONSOLE_WAIT_DISPATCH_TIMEOUT:-60}" bash "$dispatch_cmd" </dev/null 2>/dev/null 9>&- || true  # gnu-ok: Linux-only kit
+    local lf=()
+    [ -z "$legs_from" ] || lf=(--legs-from "$legs_from")  # live legs' files must reach the collision check
+    timeout -k 2 "${CONSOLE_WAIT_DISPATCH_TIMEOUT:-420}" bash "$dispatch_cmd" ${lf[@]+"${lf[@]}"} </dev/null 2>/dev/null 9>&- || true  # gnu-ok: Linux-only kit
 }
 
 saved=""

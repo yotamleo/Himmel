@@ -687,6 +687,16 @@ under_line "unknown"
 timeout 3 bash "$WAIT" "$I" --legs "N1.md" > "$WORK/u4959e.out" 2>/dev/null  # gnu-ok: Linux-only kit; pipefail-ok: none set
 check "(u4959) capacity=unknown (failed census) never wakes" "" "$(cat "$WORK/u4959e.out")"
 
+# the manifest reaches the dispatch command, so live legs' files join the collision check
+printf '#!/usr/bin/env bash\nprintf "ARGS %%s\\n" "$*"\n' > "$STUB/dispatch.sh"
+reset_stub
+I="$(new_inbox u4959m)"
+start "$I" "$WORK/u4959m.out" --legs-from "$WORK/u4959-fleet.json"
+wait_hb "$I" || fail "(u4959) no baseline heartbeat (manifest)"
+under_line "UNDERFILLED:7"
+wait_exit "$WPID"
+check "(u4959) the dispatch command receives --legs-from" "ARGS --legs-from $WORK/u4959-fleet.json" "$(grep '^ARGS' "$WORK/u4959m.out")"
+
 # --- (k) usage ---------------------------------------------------------------
 bash "$WAIT" >/dev/null 2>&1; rc=$?
 check "(k) no inbox argument is a usage error (rc 2)" "2" "$rc"

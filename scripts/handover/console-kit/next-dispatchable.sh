@@ -193,6 +193,7 @@ def classify(batch):
 
 print('# next-dispatchable: %d To Do candidate(s), %d collision-free%s' % (len(cands), len(free), ', open PRs unknown (gh failed)' if pr_unknown else ''))
 n = 0
+picked = []
 classified = os.environ.get('ND_CLASSIFY') == '1'
 # Walk the collision-free list in chunks so BLOCKED rows in an early chunk do not
 # leave the list short while later candidates are dispatchable.
@@ -207,6 +208,10 @@ for start in range(0, len(free), top * 3):
             lane = 'CLOUD' if c == 'CLOUD-OK' else 'LOCAL'
         else:
             lane, c = 'LOCAL?', ''
+        # one writer per file: a listed ticket holds its files against the rest of the list
+        if any(collides(f, h) for f in i['files'] for h in picked):
+            continue
+        picked += i['files']
         print('\t'.join([lane, i['key'], i['prio'] or '-', ','.join(i['ver']) or '-', i['title'], 'files=' + (','.join(i['files']) or '-')] + (['hook'] if c == 'HOOK-BYPASS' else [])))
         n += 1
         if n >= top:

@@ -117,11 +117,11 @@ def render_launcher(l, ctx, doc):
         'W=%s' % q(w),
         'mkdir -p "$W"',
         'setsid nohup bash %s --profile leg-impl --console %s %s %s "$W/sig-%s" %s "$W/%s.log" %s > "$W/%s.launch.out" 2>&1 &' % (
-            q(ctx['repo'] + '/scripts/handover/console-kit/headed-arm-leg.sh'), q(ctx['console']), q(stem), q(doc), n, ctx['deadline'], n, q(l['model']), n),
+            q(ctx['repo'] + '/scripts/handover/console-kit/headed-arm-leg.sh'), q(ctx['console']), q(stem), q(doc), stem, ctx['deadline'], stem, q(l['model']), stem),
         'sleep 12',
-        'tail -n 2 "$W/%s.launch.out"' % n,
-        'touch "$W/sig-%s"' % n,
-        'echo "fired sig-%s"' % n,
+        'tail -n 2 "$W/%s.launch.out"' % stem,
+        'touch "$W/sig-%s"' % stem,
+        'echo "fired sig-%s"' % stem,
     ]
     return '\n'.join(lines) + '\n'
 

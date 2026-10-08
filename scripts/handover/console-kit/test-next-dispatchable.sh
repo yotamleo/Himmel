@@ -131,5 +131,17 @@ ch="$(NEXT_DISPATCH_MIRROR="$M2" NEXT_DISPATCH_GH_CMD="$WORK/gh" NEXT_DISPATCH_C
 has "a BLOCKED first chunk does not hide a later survivor" "$ch" "LOCAL	HIMMEL-23"
 lacks "a ticket with an unknown blocker is excluded" "$ch" "HIMMEL-24	"
 
+# two tickets naming the same file are never listed together
+M3="$WORK/m3/HIMMEL"; mkdir -p "$M3"
+M_SAVE="$M"; M="$M3"
+mk HIMMEL-30 "To Do" Highest '[]' '[]' '[]' "first on shared file" "Edit scripts/lib/shared.sh."
+mk HIMMEL-31 "To Do" High '[]' '[]' '[]' "second on shared file" "Edit scripts/lib/shared.sh too."
+mk HIMMEL-32 "To Do" Medium '[]' '[]' '[]' "independent" "Edit scripts/lib/other.sh."
+M="$M_SAVE"
+sh3="$(NEXT_DISPATCH_MIRROR="$M3" NEXT_DISPATCH_GH_CMD="$WORK/gh" NEXT_DISPATCH_CLASSIFY_CMD="$WORK/classify2" bash "$SUT" 2>/dev/null)"
+has "the top ticket on a shared file is listed" "$sh3" "HIMMEL-30	"
+lacks "a second ticket on the same file is not listed with it" "$sh3" "HIMMEL-31	"
+has "an independent ticket is still listed" "$sh3" "HIMMEL-32	"
+
 printf '\n%d failure(s)\n' "$fails"
 [ "$fails" -eq 0 ]
