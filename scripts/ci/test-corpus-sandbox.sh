@@ -24,6 +24,23 @@ RUNNER="sandbox-run.sh"
 printf '%s' "$input" | bash "$RUNNER" -- bash "$HOOK"
 SH
 if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then ok 'routed launch accepted'; else bad 'routed launch rejected'; fi
+# These are source fixtures scanned as data, never expanded or executed.
+# shellcheck disable=SC2016
+for binding in 'RUNNER="$HOOK"' 'RUNNER="/tmp/not-the-runner.sh"' \
+    'RUNNER="sandbox-run.sh"; RUNNER="$HOOK"' \
+    'RUNNER="sandbox-run.sh"\nRUNNER="$HOOK"' \
+    'if false; then RUNNER="sandbox-run.sh"; fi' \
+    'RUNNER="$(echo sandbox-run.sh)"' ''; do
+    printf '# sandbox-run.sh marker must not certify a binding\n%b\nbash "$RUNNER" -- bash "$HOOK"\n' "$binding" > "$SHELL_FIXTURE"
+    if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then
+        bad "unproven shell runner binding accepted: $binding"
+    else ok "unproven shell runner binding rejected: $binding"; fi
+done
+cat > "$SHELL_FIXTURE" <<'SH'
+RUNNER="$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh"
+bash "$RUNNER" -- bash "$HOOK"
+SH
+if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then ok 'real shell runner binding accepted'; else bad 'real shell runner binding rejected'; fi
 cat >> "$SHELL_FIXTURE" <<'SH'
 printf '%s' "$input" | bash "$HOOK"
 SH
