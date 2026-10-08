@@ -9,9 +9,10 @@ set -u
 WT="$1"
 S="$WT/lq-work/cleanup-old.sh"
 D="$(mktemp -d "${TMPDIR:-/tmp}/lq-cr.XXXXXX")" || { echo "accept: mktemp failed" >&2; exit 1; }
-touch -d '10 days ago' "$D/old file.log" "$D/older.log"
+# gnu-ok: the fixture needs backdated mtimes; abort rather than pass vacuously
+touch -d '10 days ago' "$D/old file.log" "$D/older.log" || { echo "accept: touch -d unsupported" >&2; exit 1; }
 touch "$D/new.log"
-mkdir "$D/olddir"; touch -d '10 days ago' "$D/olddir"
+mkdir "$D/olddir"; touch -d '10 days ago' "$D/olddir" || { echo "accept: touch -d unsupported" >&2; exit 1; }
 
 bash "$S" "$D" 5 >/dev/null 2>&1
 accept_ok r2-space-name-deleted test ! -e "$D/old file.log"

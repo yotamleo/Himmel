@@ -19,7 +19,11 @@ stops() {
   [ "$rc" -ne 0 ] && ! grep -q RAN <<<"$out"
 }
 # runs <script> <args...>: still works on good input
-runs() { bash "$@" 2>/dev/null | grep -q RAN; }
+runs() {
+  local out rc
+  out="$(bash "$@" 2>/dev/null)"; rc=$?
+  [ "$rc" -eq 0 ] && grep -q RAN <<<"$out"
+}
 
 accept_ok a-stops stops "$SW/a.sh" "$NO"
 accept_ok b-stops stops "$SW/b.sh" "$NO"
@@ -28,6 +32,7 @@ accept_ok c-second-cd-stops bash -c 'out="$(bash "$1" "$2" "$3" 2>/dev/null)"; r
 accept_ok d-stops stops "$SW/d.sh" "$NO"
 accept_ok e-stops stops "$SW/e.sh" "$NO"
 accept_ok a-still-works runs "$SW/a.sh" "$G"
+accept_ok b-still-works runs "$SW/b.sh" "$G"
 accept_ok c-still-works runs "$SW/c.sh" "$G" "$G"
 accept_ok d-still-works runs "$SW/d.sh" "$G"
 accept_ok e-still-works runs "$SW/e.sh" "$G"
