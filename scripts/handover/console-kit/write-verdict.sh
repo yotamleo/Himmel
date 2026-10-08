@@ -62,7 +62,8 @@
 # forged or mistaken GO alone on disk. The same answer again, or a verdict
 # for another head, is written. When <name>.md holds a NO-GO for another
 # head, the new ruling is written to <name>-<head>.md instead, so that veto
-# survives the PR returning to its head (HIMMEL-4731).
+# survives the PR returning to its head (HIMMEL-4731). A name over 150 bytes is
+# shortened with a hash suffix so no redirect target can exceed 255 (HIMMEL-4753).
 # ponytail: same-uid ceiling - the symlink and conflict checks run before an
 # atomic rename, so a same-uid process racing the directory can still swap it
 # between check and rename; a separate-uid verdict store is the upgrade path
@@ -142,8 +143,13 @@ fi
 # ponytail: macOS ls prints `@` in place of `+` when a directory has both
 # xattrs and an ACL, so an ACL behind xattrs passes there; the upgrade path is
 # an `ls -lde` ACL read on BSD (HIMMEL-4742).
+#
+# HIMMEL-4753: an `ls -ld` that fails or prints nothing cannot show the root
+# free of an ACL, so it refuses like the stat branch does.
 ev_mode=$(stat -c %a "$SCRATCH" 2>/dev/null) || ev_mode=$(stat -f %Lp "$SCRATCH" 2>/dev/null) || ev_mode=""
-case "$ev_mode:$(ls -ld "$SCRATCH" 2>/dev/null)" in
+ev_ls=$(ls -ld "$SCRATCH" 2>/dev/null) || ev_ls=""
+[ -n "$ev_ls" ] || ev_mode=unreadable
+case "$ev_mode:$ev_ls" in
     700:d?????????+*) ev_mode=acl ;;
 esac
 if [ "$ev_mode" != 700 ]; then
@@ -218,6 +224,16 @@ for seg in "${SCOPE%%/*}" "${SCOPE#*/}" verdicts "$QID"; do
         mkdir "$dir" 2>/dev/null || { echo "write-verdict: cannot create '$dir'" >&2; exit 5; }
     fi
 done
+# HIMMEL-4753: a redirect appends -<40-hex head> to the name, so a long --judge
+# name could push <name>.md past the 255-byte filename limit and lose the
+# ruling. A name over 150 bytes is cut to 100 plus a hash of the full name, so
+# the result is deterministic and every redirect target stays well under 255.
+bound_name() {
+    [ "${#NAME}" -gt 150 ] || return 0
+    nb_h=$(printf '%s' "$NAME" | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null || cksum; } | tr -d ' ' | cut -c1-16)
+    NAME="$(printf '%s' "$NAME" | cut -c1-100)-$nb_h"
+}
+bound_name
 TARGET="$dir/$NAME.md"
 
 # Hold the qid's lock across the scan and the publish: two writers racing on
@@ -262,6 +278,7 @@ while [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; do
         break
     fi
     NAME="$NAME-$HEAD"
+    bound_name
     TARGET="$dir/$NAME.md"
 done
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then

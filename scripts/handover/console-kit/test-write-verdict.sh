@@ -32,6 +32,8 @@
 #      ACL `+` is still refused (HIMMEL-4723)
 #  13. a NO-GO survives the same judge's ruling for another head, which lands
 #      in <name>-<head>.md (HIMMEL-4731)
+#  15. an ls -ld that fails or prints nothing refuses the scratch root (HIMMEL-4753)
+#  16. a long --judge name is bounded so no redirect target exceeds 255 bytes (HIMMEL-4753)
 #
 # Hermetic: temp dir only; the guard scripts are run, never edited.
 # Platform guard: POSIX bash 3.2+.
@@ -414,6 +416,41 @@ printf '# VERDICT q14e - judge\n\nwriter-session: s\nwritten-at: 2026-10-08T00:0
 rc=0; verdict_rc q14e "$SHA_A" || rc=$?
 check "14: a pr: line in the evidence body does not count" "$rc" 2
 VPR=
+
+# --- 15. HIMMEL-4753: the ACL probe fails closed --------------------------
+# A scratch root whose `ls -ld` fails or prints nothing cannot be shown free of
+# an ACL, so the writer refuses (before, the missing `+` let it through).
+mkdir -p "$tmp/failbin" "$tmp/emptybin"
+cp "$tmp/bin/id" "$tmp/failbin/id" && cp "$tmp/bin/id" "$tmp/emptybin/id"
+printf '#!/bin/sh\nexit 1\n' > "$tmp/failbin/ls"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/emptybin/ls"
+chmod +x "$tmp/failbin/ls" "$tmp/emptybin/ls"
+rc=0; PATH="$tmp/failbin:$PATH" wv q21 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "15: a failing ls -ld on a 0700 root refused rc 2" "$rc" 2
+rc=0; PATH="$tmp/emptybin:$PATH" wv q21 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "15: an empty ls -ld on a 0700 root refused rc 2" "$rc" 2
+check "15: nothing written for q21" "$([ -e "$scope_dir/q21" ] && echo yes || echo no)" no
+rc=0; PATH="$tmp/bin:$PATH" wv q21 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "15: control - the real ls -ld on a 0700 root is accepted" "$rc" 0
+
+# --- 16. HIMMEL-4753: a long --judge name never loses a NO-GO -------------
+long=$(printf 'j%.0s' $(seq 1 220))
+wv q22 NO-GO "$SHA_A" --evidence-file "$ev" --judge "$long" >/dev/null 2>&1
+rc=0; out=$(wv q22 NO-GO "$SHA_B" --evidence-file "$ev" --judge "$long" 2>&1) || rc=$?
+check "16: a long-named judge's ruling for head B is written rc 0" "$rc" 0
+check "16: every verdict filename is under 255 bytes" "$(ls "$scope_dir/q22" | awk 'length($0) > 255' | wc -l | tr -d ' ')" 0
+check "16: two verdict files (A kept, B beside it)" "$(ls "$scope_dir/q22" | wc -l | tr -d ' ')" 2
+rc=0; wv q22 GO "$SHA_A" --evidence-file "$ev" --judge second >/dev/null 2>&1 || rc=$?
+check "16: a GO on head A is still vetoed (rc 4)" "$rc" 4
+rc=0; verdict_rc q22 "$SHA_A" || rc=$?
+check "16: go_trust_verdict at head A refuses" "$rc" 2
+rc=0; out2=$(wv q22 NO-GO "$SHA_B" --evidence-file "$ev" --judge "$long" 2>&1) || rc=$?
+check "16: the bounded name is deterministic (same path again)" "$out2" "$out"
+check "16: the header names the file it is in" "$(sed -n 1p "$out")" "# VERDICT q22 - $(basename "$out" .md)"
+SHA_C=fedcba9876543210fedcba9876543210fedcba98
+rc=0; wv q22 NO-GO "$SHA_C" --evidence-file "$ev" --judge "$long" >/dev/null 2>&1 || rc=$?
+check "16: a third head's ruling is written rc 0 (the redirect repeats)" "$rc" 0
+check "16: still every filename under 255 bytes" "$(ls "$scope_dir/q22" | awk 'length($0) > 255' | wc -l | tr -d ' ')" 0
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"
