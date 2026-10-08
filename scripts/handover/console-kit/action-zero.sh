@@ -68,12 +68,13 @@ echo "== LOAD"
 uptime 2>&1 || echo "unavailable"
 
 echo "== LOCK (this document)"
-state="$(env HANDOVER_DIR="$root" bash "$ql" status "$doc" 2>&1)"
+state="$(env HANDOVER_DIR="$root" bash "$ql" status "$doc" 2>&1)"; src=$?
 printf '%s\n' "$state"
 if [ "$acquire" -eq 1 ]; then
-    case "$state" in
-        free*|*"free"*) env HANDOVER_DIR="$root" bash "$ql" acquire "$doc" 2>&1 ;;
-        *) echo "NOT ACQUIRED — the lock is not free: find its holder, do not take it over" ;;
-    esac
+    if [ "$src" -eq 0 ] && [ "$state" = free ]; then
+        env HANDOVER_DIR="$root" bash "$ql" acquire "$doc" 2>&1
+    else
+        echo "NOT ACQUIRED — the lock is not free: find its holder, do not take it over"
+    fi
 fi
 exit 0

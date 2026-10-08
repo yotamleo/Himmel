@@ -41,6 +41,8 @@ done
 if [ -z "$successor" ] || [ ! -f "$doc" ]; then usage; fi
 sender="$(basename "$doc" .md)"
 send="${INBOX_SEND:-$HERE/inbox-send.sh}"
+# shellcheck source=../../lib/leg-identity.sh
+. "$HERE/../../lib/leg-identity.sh"
 manifest="${doc%.md}.fleet.json"
 
 # The legs: block of ## Live state: the legs: line plus the lines wrapped under it.
@@ -49,7 +51,7 @@ entries="$(awk '
     $0 == "## Live state" { s = 1; next }
     s && /^## / { exit }
     s && /^legs:/ { b = 1; print; next }
-    b && (/^[[:space:]]*$/ || /^[A-Za-z][A-Za-z ]*:/ || /^[-*+>#]/) { b = 0 }
+    b && (/^[[:space:]]*$/ || /^[0-9]+\. / || /^[A-Za-z][A-Za-z ]*:/ || /^[-*+>#]/) { b = 0 }
     b { print }
 ' "$doc" | grep -oE '`[A-Za-z0-9_.-]+:[^`:[:space:]]+:[^`:[:space:]]+:[^`:[:space:]]+`' | tr -d '`')"
 [ -n "$entries" ] || { echo "relay-batch: no leg entries in $doc ## Live state" >&2; exit 0; }
@@ -60,7 +62,9 @@ while IFS=: read -r label nonce _lock _pid; do
     ldoc=""
     [ -f "$manifest" ] && ldoc="$(jq -r --arg l "$label" '.legs[] | select(.label == $l) | .doc' "$manifest" 2>/dev/null | head -n 1)"
     if [ -z "$ldoc" ]; then echo "SKIPPED $label (no manifest row)"; continue; fi
-    lsession="$(basename "$ldoc" .md)"
+    # The launcher's session name carries neither the doc's -<date> nor its -RESUME:
+    # leg_identity is the one sanctioned doc -> session mapping (its last name is the launch name).
+    lnames="$(leg_identity "$ldoc")"; lnames="${lnames#*$'\t'}"; lsession="${lnames##*,}"
     text="SUCCESSION relay from $sender: your console is now $successor. Your current token \`$nonce\`. Verify this relay, send your quote-back to $successor, and keep working your sealed scope."
     case "$claudex" in
         *",$label,"*)
@@ -74,4 +78,16 @@ while IFS=: read -r label nonce _lock _pid; do
 done <<EOF
 $entries
 EOF
+# A manifest leg the Live state does not list is reported, never silently dropped.
+if [ -f "$manifest" ]; then
+    mrows="$(jq -r '.legs[] | "\(.label) \(.doc)"' "$manifest" 2>/dev/null)"
+    while read -r mlabel mdoc; do
+        [ -n "$mlabel" ] || continue
+        if ! printf '%s\n' "$entries" | grep -q "^$mlabel:"; then
+            echo "NOT-IN-LIVE-STATE $mlabel ($mdoc) — in the fleet manifest, not in ## Live state legs:; relay by hand if it is live"
+        fi
+    done <<EOF3
+$mrows
+EOF3
+fi
 exit "$rc"

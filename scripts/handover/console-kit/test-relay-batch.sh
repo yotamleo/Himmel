@@ -52,6 +52,32 @@ check "a leg with no manifest row is skipped, not guessed" "1" "$(printf '%s\n' 
 check "no token other than the held ones appears (nothing minted)" "0" "$(printf '%s\n' "$out" | grep -o '`[^`]*`' | grep -vc 'tok-seven\|tok-eight')"
 check "the relay never sends LIVE" "0" "$(printf '%s\n' "$out" | grep -c ' LIVE')"
 check "usage without --successor exits 2" "2" "$(bash "$RB" "$DOC" >/dev/null 2>&1; echo $?)"
+# Leg docs carry -<date> and -RESUME; the launcher's session name has neither (leg_identity).
+LEG3="$WORK/DEMO-3-N10-gamma-2026-10-08.md"
+LEG4="$WORK/DEMO-4-N11-delta-2026-10-08-RESUME.md"
+LEG5="$WORK/DEMO-5-N12-eps.md"
+: > "$LEG3"; : > "$LEG4"; : > "$LEG5"
+DOC2="$WORK/DEMO-nextleg-2026-10-08C-console.md"
+cat > "$DOC2" <<'EOF2'
+# console
+
+## Live state
+
+legs: `N10:tok-ten:lock10:1` `N11:tok-eleven:lock11:2`
+queue: none
+
+## Results
+EOF2
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N10"},{"doc":"%s","label":"N11"},{"doc":"%s","label":"N12"}]}\n' "$LEG3" "$LEG4" "$LEG5" > "${DOC2%.md}.fleet.json"
+: > "$WORK/send.log"
+out2="$(bash "$RB" "$DOC2" --successor S2 --claudex N10,N11 2>&1)"
+check "a dated leg doc is addressed by its undated session" "1" "$(printf '%s\n' "$out2" | grep -c '^SENT-INBOX N10 (DEMO-3-N10-gamma)')"
+check "a dated -RESUME leg doc is addressed by its undated session" "1" "$(printf '%s\n' "$out2" | grep -c '^SENT-INBOX N11 (DEMO-4-N11-delta)')"
+check "inbox-send is handed the real session name" "1" "$(grep -c '^DEMO-3-N10-gamma ' "$WORK/send.log")"
+check "a manifest leg missing from Live state is reported" "1" "$(printf '%s\n' "$out2" | grep -c '^NOT-IN-LIVE-STATE N12')"
+out3="$(bash "$RB" "$DOC2" --successor S2 2>&1)"
+check "native payload uses the undated session too" "1" "$(printf '%s\n' "$out3" | grep -c '^SENDMESSAGE to=DEMO-4-N11-delta ::')"
+
 printf '#!/usr/bin/env bash\nexit 3\n' > "$SEND"
 check "a failed claudex delivery exits 1" "1" "$(bash "$RB" "$DOC" --successor S --claudex N8 >/dev/null 2>&1; echo $?)"
 

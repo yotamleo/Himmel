@@ -564,6 +564,14 @@ At **{{FILL_PERCENT}} % fill or 90 k input in one turn**, hand over:
    the rest of the HANDOFF by hand: current head, operator rulings made
    today, and what wrapped. **The HANDOFF wins over this file's Results
    tail** — write it as the successor's only required read.
+
+   **Handover mode (HIMMEL-4902).** Once the successor validated, `next` writes
+   `<your inbox>.handover`. While that marker is younger than
+   `CONSOLE_WAIT_HANDOVER_MIN` (default 60) your waiter skips tick, bank and
+   page work and wakes only for Telegram and LIVE — so **for up to 60 minutes
+   nobody is paged for classifier denials or tick findings on your side.** The
+   marker expires by age; to end the mute early (the handover is abandoned, or
+   you keep running), `rm <your inbox>.handover`.
 3. `touch` the signal path step 1 printed to fire the arm, and hand your live
    legs to the successor by name.
 4. **Re-brief every live leg yourself, before you release** (HIMMEL-3254). The

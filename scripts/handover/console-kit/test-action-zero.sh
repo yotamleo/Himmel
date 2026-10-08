@@ -40,6 +40,11 @@ out2="$(bash "$AZ" --doc "$DOC" --root "$ROOT" --acquire 2>&1)"
 check "--acquire on a free lock prints the release token" "1" "$(printf '%s\n' "$out2" | grep -c 'release-token')"
 out3="$(bash "$AZ" --doc "$DOC" --root "$ROOT" --acquire 2>&1)"
 check "--acquire on a held lock does not take it over" "1" "$(printf '%s\n' "$out3" | grep -c 'NOT ACQUIRED')"
+# a held lock whose status text merely contains the word "free" is not free
+DOCF="$WORK/DEMO-freedom-console.md"; : > "$DOCF"
+env HANDOVER_DIR="$ROOT" bash "$HERE/../queue-lock.sh" acquire "$DOCF" >/dev/null 2>&1
+out5="$(bash "$AZ" --doc "$DOCF" --root "$ROOT" --acquire 2>&1)"
+check "a held lock with 'free' in its text is not treated as free" "1" "$(printf '%s\n' "$out5" | grep -c 'NOT ACQUIRED')"
 printf '#!/usr/bin/env bash\necho "doctor crashed"\nexit 4\n' > "$WORK/doctor-bad.sh"
 out4="$(ACTION_ZERO_DOCTOR="$WORK/doctor-bad.sh" bash "$AZ" --doc "$DOC" --root "$ROOT" 2>&1)"
 check "a failed doctor reads unavailable, not none" "1" "$(printf '%s\n' "$out4" | sed -n '/^== C29/,/^== LOAD/p' | grep -c '^unavailable')"

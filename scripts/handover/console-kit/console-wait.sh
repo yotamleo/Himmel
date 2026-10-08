@@ -82,6 +82,8 @@
 #   <inbox>.handover     handover mode (HIMMEL-4902): while it is fresh (younger
 #                        than CONSOLE_WAIT_HANDOVER_MIN, default 60) the waiter
 #                        skips tick/bank/page sampling and wakes only on Telegram.
+#                        That mutes classifier-denial pages for up to that long;
+#                        `rm <inbox>.handover` ends the mode early.
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
 # 2 = usage; 3 = another waiter is already live on this inbox (its pid is named).
