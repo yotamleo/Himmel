@@ -147,6 +147,19 @@ printf -- '- 03:50 [telegram from=1 chat=2] still here\n' >> "$I"
 wait_exit "$WPID"
 check "(hm) Telegram still wakes a handover-mode waiter" "$(printf 'WAKE telegram\n- 03:50 [telegram from=1 chat=2] still here')" "$(cat "$WORK/hm.out")"
 
+# --- (hs) a STALE handover marker is ignored (a failed or never-run launch must
+# not leave the outgoing console unmonitored for good) ---
+reset_stub
+I="$(new_inbox hs)"
+printf 'DEMO-nextleg-B\n' > "$I.handover"
+touch -d '3 hours ago' "$I.handover"  # gnu-ok: Linux-only kit
+# shellcheck disable=SC2016  # $STUB is meant to expand in the generated stub, not here
+printf '#!/usr/bin/env bash\ntouch "%s/hs.ticked"\ncat "$STUB/tick.line"\n' "$WORK" > "$STUB/tick-count.sh"
+CONSOLE_WAIT_TICK="$STUB/tick-count.sh" CONSOLE_WAIT_INTERVAL=1 start "$I" "$WORK/hs.out" --legs "N1.md"
+sleep 3
+check "(hs) a stale handover marker does not suppress ticks" "yes" "$([ -e "$WORK/hs.ticked" ] && echo yes || echo no)"
+kill "$WPID" 2>/dev/null
+
 # --- (b3724) a denials= class change wakes, naming denials (HIMMEL-3724) ---
 reset_stub
 I="$(new_inbox b3724)"

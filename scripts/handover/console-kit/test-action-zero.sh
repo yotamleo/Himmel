@@ -40,6 +40,9 @@ out2="$(bash "$AZ" --doc "$DOC" --root "$ROOT" --acquire 2>&1)"
 check "--acquire on a free lock prints the release token" "1" "$(printf '%s\n' "$out2" | grep -c 'release-token')"
 out3="$(bash "$AZ" --doc "$DOC" --root "$ROOT" --acquire 2>&1)"
 check "--acquire on a held lock does not take it over" "1" "$(printf '%s\n' "$out3" | grep -c 'NOT ACQUIRED')"
+printf '#!/usr/bin/env bash\necho "doctor crashed"\nexit 4\n' > "$WORK/doctor-bad.sh"
+out4="$(ACTION_ZERO_DOCTOR="$WORK/doctor-bad.sh" bash "$AZ" --doc "$DOC" --root "$ROOT" 2>&1)"
+check "a failed doctor reads unavailable, not none" "1" "$(printf '%s\n' "$out4" | sed -n '/^== C29/,/^== LOAD/p' | grep -c '^unavailable')"
 check "usage without --root exits 2" "2" "$(bash "$AZ" --doc "$DOC" >/dev/null 2>&1; echo $?)"
 
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

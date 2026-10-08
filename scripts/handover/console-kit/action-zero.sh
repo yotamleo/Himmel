@@ -57,9 +57,12 @@ echo "== PROCS"
 if [ -n "$prefix" ]; then pgrep -af "claude .*-n ${prefix}-" 2>/dev/null || echo "none"; else echo "skipped (no --prefix)"; fi
 
 echo "== C29"
-if [ -n "${ACTION_ZERO_DOCTOR:-}" ]; then out="$(bash "$ACTION_ZERO_DOCTOR" 2>&1)"
-else out="$(bash "$repo/scripts/himmel-doctor.sh" 2>&1)"; fi
-printf '%s\n' "$out" | grep C29 || echo "none"
+if [ -n "${ACTION_ZERO_DOCTOR:-}" ]; then out="$(bash "$ACTION_ZERO_DOCTOR" 2>&1)"; drc=$?
+else out="$(bash "$repo/scripts/himmel-doctor.sh" 2>&1)"; drc=$?; fi
+c29="$(printf '%s\n' "$out" | grep C29)"
+if [ -n "$c29" ]; then printf '%s\n' "$c29"
+elif [ "$drc" -ne 0 ]; then echo "unavailable (doctor exited $drc)"
+else echo "none"; fi
 
 echo "== LOAD"
 uptime 2>&1 || echo "unavailable"
