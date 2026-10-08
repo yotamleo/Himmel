@@ -128,5 +128,28 @@ setup yes ok 0; printf 'not json\n' > "$SHEP_PRJSON"
 out=$(run); rc=$?
 check "(h) unreadable PR exits 2" 2 "$rc"
 
+# (i) impacted-suites failing is not an empty list
+setup yes ok 0
+printf '#!/bin/sh\nexit 1\n' > "$WORK/impacted-stub"
+out=$(run); rc=$?
+check "(i) discovery failure exits 1" 1 "$rc"
+has "(i) suites-discovery-failed reason" "suites-discovery-failed" "$out"
+printf '#!/bin/sh\necho test-a.sh\n' > "$WORK/impacted-stub"
+
+# (j) a reused worktree with local changes is refused, not tested
+setup yes ok 0
+out=$(run); rc=$?
+echo stray > "$WORK/repo/.claude/worktrees/shepherd-7/stray.txt"
+out=$(run); rc=$?
+check "(j) dirty reused worktree exits 2" 2 "$rc"
+has "(j) says local changes" "local changes" "$out"
+
+# (k) a non-avail ledger row at the head is not a panel pass
+setup yes none 0
+printf '{"kind":"finding","head":"%s","status":"ok"}\n' "$HEADSHA" > "$SHEPHERD_LEDGER"
+out=$(run); rc=$?
+check "(k) non-avail row exits 1" 1 "$rc"
+has "(k) panel NOT-RUN stated" "panel: NOT-RUN" "$out"
+
 printf '\n%s failure(s)\n' "$fails"
 [ "$fails" -eq 0 ]

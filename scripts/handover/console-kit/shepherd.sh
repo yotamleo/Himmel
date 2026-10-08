@@ -111,6 +111,10 @@ fi
 common=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || { echo "shepherd: not inside a git repo" >&2; exit 2; }
 WT="$(cd "$common/.." && pwd)/.claude/worktrees/shepherd-$PR"
 if [ -d "$WT" ] && [ "$(git -C "$WT" rev-parse HEAD 2>/dev/null)" = "$HEAD_SHA" ]; then
+    if [ -n "$(git -C "$WT" status --porcelain 2>/dev/null)" ]; then
+        echo "shepherd: $WT has local changes; remove it (git worktree remove --force) and re-run" >&2
+        exit 2
+    fi
     add_line "worktree: reused $WT"
 else
     if [ -d "$WT" ]; then
@@ -138,8 +142,14 @@ if [ -z "$mb" ]; then
     add_line "suites: UNKNOWN (no merge-base with origin/$BASE_REF)"
     add_reason suites-unknown
 else
-    all=$( cd "$WT" && bash "$IMPACTED" "$mb..$HEAD_SHA" 2>/dev/null ) || all=""
-    shell=$( cd "$WT" && bash "$IMPACTED" "$mb..$HEAD_SHA" --shell 2>/dev/null ) || shell=""
+    disc_ok=1
+    all=$( cd "$WT" && bash "$IMPACTED" "$mb..$HEAD_SHA" 2>/dev/null ) || disc_ok=0
+    shell=$( cd "$WT" && bash "$IMPACTED" "$mb..$HEAD_SHA" --shell 2>/dev/null ) || disc_ok=0
+    if [ "$disc_ok" -eq 0 ]; then
+        add_line "suites: UNKNOWN (impacted-suites.sh failed; discovery is not an empty list)"
+        add_reason suites-discovery-failed
+        all=""; shell=""
+    fi
     n_run=0; n_fail=0
     for s in $shell; do
         n_run=$((n_run + 1))
@@ -164,7 +174,7 @@ fi
 
 # ── 6. panel (ledger read only) ─────────────────────────────────────────────
 LEDGER="${SHEPHERD_LEDGER:-$common/cr-critic-scores.jsonl}"
-if [ -f "$LEDGER" ] && jq -e --arg h "$HEAD_SHA" 'select(.head == $h and .status == "ok")' "$LEDGER" >/dev/null 2>&1; then
+if [ -f "$LEDGER" ] && jq -e --arg h "$HEAD_SHA" 'select(.kind == "avail" and .head == $h and .status == "ok")' "$LEDGER" >/dev/null 2>&1; then
     add_line "panel: PASS (ledger has an ok row for the head)"
 else
     add_line "panel: NOT-RUN (no ok ledger row for this head; /pr-check needs a model session)"
