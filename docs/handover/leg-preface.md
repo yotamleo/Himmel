@@ -240,6 +240,10 @@ for a relay that is not coming.
 - **Search with Bash, not Grep/Glob (HIMMEL-4784).** A leg has no dedicated
   `Grep` or `Glob` tool (a call returns "No such tool available"): search with
   `git grep` / `grep` and list files with `git ls-files` / `find`.
+- **Pasted links: `scripts/web/fetch-url.sh '<url>'` (HIMMEL-4908).** An x.com /
+  instagram.com link gets WebFetch HTTP 402; this fetches it through Scrapling
+  (no cookies) and prints author, handle, date, text and media. Never ask the
+  operator for a paste.
 - **Pre-check a bucket file before you write or commit it (HIMMEL-4911).** The
   luna vault's pre-commit runs gitleaks; one generic-api-key false positive on
   prose stalls the vault's auto-commit for every session. Run

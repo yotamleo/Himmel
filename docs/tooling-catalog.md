@@ -577,6 +577,22 @@ REPORT-ONLY Windows evidence collector for the agent-runtime RAM + MCP lifecycle
 
 ---
 
+## fetch-url (`scripts/web/fetch-url.sh`, HIMMEL-4908)
+
+`bash scripts/web/fetch-url.sh '<url>'` fetches a pasted link as text. Hosts in
+`scripts/web/walled-hosts.conf` (x.com, twitter.com, mobile.twitter.com,
+instagram.com — the file's one line) go through Scrapling's stealth fetcher
+(`~/.himmel/scrapling-venv`, no cookies, never a Chrome profile): X prints
+author, handle, date, each post's text in order and media URLs; Instagram prints
+the `og:` tags. Any other host is a plain GET rendered to text. Exit: 0 ok, 2
+usage, 3 scrapling missing (install hint on stderr), 4 fetch failed (status on
+stderr). Companion PreToolUse hook `scripts/hooks/redirect-webfetch-walled-hosts.sh`
+(matcher `WebFetch`) denies WebFetch on a walled host and prints that exact
+command; fail-open, bypass `HIMMEL_WEBFETCH_WALLED_OK=1` in the launching shell.
+Suites: `scripts/web/test-fetch-url.sh`,
+`scripts/hooks/test-redirect-webfetch-walled-hosts.sh`. Codex has no WebFetch
+tool, so `.codex/hooks.json` carries no twin.
+
 ## leg-pr-open (`scripts/lanes/leg-pr-open.sh`, HIMMEL-3031)
 
 Fixed-literal PR-publish utility: `leg-pr-open.sh <title-file> <body-file>
