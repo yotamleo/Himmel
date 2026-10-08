@@ -1717,7 +1717,10 @@ raw_obfuscated() {
     # one, - or / on its left AND - . or / on its right (block-chokepoint-
     # env-prefix, scripts/eval/, pr-check-env.sh). One joined side is not
     # enough: -printf and --printf= are printf options that read escapes,
-    # .env is process.env/os.env, /usr/bin/env is env. A heredoc or quoted body is not
+    # .env is process.env/os.env, /usr/bin/env is env. They still count as
+    # triggers, but HIMMEL-4933 relieves them (vdata) in argument position of
+    # read-only stages beside a glob-only path; heading a stage they deny.
+    # A heredoc or quoted body is not
     # skipped: written and run in one call (cat >f <<EOF .. EOF; bash f) it
     # is live code, and its printf can feed a shell a seam name no other arm
     # sees (printf '\101..=1 ..' | sh), so that deny is intended. The refusal
@@ -1730,7 +1733,13 @@ raw_obfuscated() {
         # HIMMEL-4933: a verb word that heads a stage (export X; unset X; read
         # x; printf ..) acts; one in argument position (grep env, find -printf)
         # is data and may get the read-only relief below.
-        vcmd='(^|[;&|(`]|\$\()[[:space:]]*(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset)([^[:alnum:]_]|$)'
+        # HIMMEL-4954: a stage also starts after a newline or {, after a
+        # then/do/else/elif/if/while/until keyword, and past command/builtin/
+        # time/nohup (with their options) or a \ escape. A wider match only
+        # fails closed: vdata stays 0 and the relief is withheld.
+        vcmd='(^|[;&|(`{'"$NL"']|\$\(|(^|[[:space:]])(then|do|else|elif|if|while|until)[[:space:]])'
+        vcmd+='([[:space:]]*(command|builtin|time|nohup)[[:space:]]+(-[^[:space:]]*[[:space:]]+)*)*'
+        vcmd+='[[:space:]]*\\?(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset)([^[:alnum:]_]|$)'
         [[ $t =~ $vcmd ]] || vdata=1
     fi
     # Any env-CLEARING token anywhere counts too (no anchoring on a program word
