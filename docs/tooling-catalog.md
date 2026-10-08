@@ -1671,6 +1671,15 @@ signalled it. Same runner/scheduler split as the graphify pair above.
   StartWhenAvailable + IgnoreNew XML) / crontab (POSIX); dedup-guarded; hermetic
   test `test-qmd-cadence.sh`. Arming is an operator flip, never auto-armed:
   `bash scripts/luna/qmd-cadence.sh arm` (`--time` / `--force` / `--dry-run`).
+  **Migration after HIMMEL-4896:** an already-armed receiver cadence keeps its
+  persisted runner; a plain `arm` refuses the existing task rather than replacing
+  it. After upgrading, the operator must run
+  `bash scripts/luna/qmd-cadence.sh disarm`, then
+  `bash scripts/luna/qmd-cadence.sh arm` (or replace it directly with
+  `bash scripts/luna/qmd-cadence.sh arm --force`). Supply the previous `--time`,
+  `--hourly`, and `--qmd-bin` settings if needed; do not pass the retired
+  `--ship-to` option. This replaces the old ship runner with local reindexing;
+  upgrading the checkout alone does not migrate scheduled tasks.
 - `scripts/eval/qmd-quality/qmd-quality-cadence.sh run|arm|status|disarm`
   (HIMMEL-4184) — the weekly retrieval-quality drift check. `run` scores the
   private golden set with `qmd-quality.sh --scope golden` (read-only snapshot of
