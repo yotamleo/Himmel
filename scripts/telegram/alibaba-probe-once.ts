@@ -128,12 +128,14 @@ export async function runProbe(opts: {
 // (a worktree's .env is gitignored/absent — the real one lives in the main
 // checkout, resolved via `git rev-parse --git-common-dir`). NOT imported from
 // glm-env.ts to keep this runner self-contained and avoid its spawn-glm deps.
+const DOTENV_KEYS = new Set(['ALIBABA_QUOTA_AK', 'ALIBABA_QUOTA_SK', 'ALIBABA_QUOTA_PROM_URL', 'ALIBABA_QUOTA_GRANTS']);
+
 export function parseDotenv(envFile: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (!existsSync(envFile)) return out;
   for (const raw of readFileSync(envFile, "utf8").split(/\r?\n/)) {
     const m = raw.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
-    if (!m) continue;
+    if (!m || !DOTENV_KEYS.has(m[1])) continue;
     let v = m[2].trim();
     if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) v = v.slice(1, -1);
     if (v) out[m[1]] = v;

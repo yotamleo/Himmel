@@ -114,6 +114,10 @@ fi
 # orchestrating session).
 for v in "${VARS[@]}"; do
     case "$v" in
+        CR_PROFILE|CR_CLAUDE_AGENTS|CR_REQUIRE_CROSS_MODEL|CR_FLOOR_FALLBACK|HIMMEL_DOC_FRESHNESS) : ;;
+        *) echo "pr-check-env: variable is not in the policy allowlist" >&2; exit 2 ;;
+    esac
+    case "$v" in
         [A-Za-z_]*) : ;;
         *) echo "pr-check-env: not a plausible env var name: '$v'" >&2; exit 2 ;;
     esac

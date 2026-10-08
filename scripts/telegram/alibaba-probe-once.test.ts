@@ -80,6 +80,9 @@ test("parseDotenv: reads KEY=VAL; strips one surrounding quote pair; skips blank
     "ALIBABA_QUOTA_SK='real-sk'",
     "ALIBABA_QUOTA_PROM_URL=https://prom.example/api",
     "BLANK=",
+    "TEST_ANTHROPIC_API_KEY=dummy",
+    "UNRELATED_API_KEY=dummy-other",
+    "ALIBABA_QUOTA_GRANTS={}",
     "NOTHING_HERE",
   ].join("\n"));
   try {
@@ -87,6 +90,9 @@ test("parseDotenv: reads KEY=VAL; strips one surrounding quote pair; skips blank
     expect(out.ALIBABA_QUOTA_AK).toBe("real-ak");
     expect(out.ALIBABA_QUOTA_SK).toBe("real-sk");
     expect(out.ALIBABA_QUOTA_PROM_URL).toBe("https://prom.example/api");
+    expect(out.TEST_ANTHROPIC_API_KEY).toBeUndefined();
+    expect(out.UNRELATED_API_KEY).toBeUndefined();
+    expect(out.ALIBABA_QUOTA_GRANTS).toBe("{}"); // consumer-keys-still-load
     expect(out.BLANK).toBeUndefined();          // blank value dropped
     expect(out.NOTHING_HERE).toBeUndefined();   // no `=` -> not a var line
   } finally { unlinkSync(tmp); }

@@ -39,11 +39,16 @@ try:
 except ImportError:
     sys.exit("Missing: python -m pip install paramiko")
 try:
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values, find_dotenv
 except ImportError:
     sys.exit("Missing: python -m pip install python-dotenv")
 
-load_dotenv()
+DOTENV_KEYS = ("windows_vm_user", "windows_vm_pass")
+_values = dotenv_values(find_dotenv(), interpolate=False)
+for _key in DOTENV_KEYS:
+    if _values.get(_key) is not None:
+        os.environ.setdefault(_key, _values[_key])
+del _values
 
 HOST = "127.0.0.1"
 USER = os.environ.get("windows_vm_user") or sys.exit("windows_vm_user not in .env")
