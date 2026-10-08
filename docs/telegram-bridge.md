@@ -113,8 +113,13 @@ These **slash forms only** carry the same authority as free `/console` text:
 | `/halt [<leg>]` | request a halt of that leg, or the wave |
 
 Leg labels are 1–64 ASCII letters, digits, underscores, dots or hyphens; `..`,
-path separators and controls refuse the command shape. Bare `fleet`, `legs`,
-`go`, `push` and `halt` remain chat; existing `status` still reports bridge
+path separators and controls refuse the command shape. A reserved verb
+(`/go`, `/push`, `/halt`, `/fleet`, `/legs`) with any other shape (bad,
+oversized or traversal label, control characters, extra arguments, a missing
+label, wrong case) is a **terminal refusal** ("malformed fleet command —
+nothing was queued"), never agent chat; a nonoperator's malformed shape is
+dropped silently. Bare `fleet`, `legs`,
+`go`, `push` and `halt` (no slash) remain chat; existing `status` still reports bridge
 session status. Messages must pass the existing operator/allowed-chat gate,
 be typed, unforwarded and without a `model:` tag.
 
@@ -141,8 +146,10 @@ noneligible console/lockdown verb is dropped, never handed to an agent.
 While any entry exists at the lockdown path (even a dangling symlink), the
 bridge drops **all Telegram agent dispatch for every sender**: ordinary chat,
 ticket work, followups, console routes/receipt threads and all typed
-auto-actions, including `/restart`. Each inbound refusal replies once:
-**“locked, reset at the station”**. Already-pending/coalesced/retry work cannot
+auto-actions, including `/restart`. Station policy: only the **operator** is
+told, by a reply of **“locked, reset at the station”**; every other sender is
+blocked silently. A lockdown arriving in the final settlement gap before a
+spawn also refuses it without any content-filter notice (no agent ran). Already-pending/coalesced/retry work cannot
 spawn either. It does not cancel already-running actions. The flag survives
 bridge restart. **Reset at the station only**, after securing the Telegram account:
 
