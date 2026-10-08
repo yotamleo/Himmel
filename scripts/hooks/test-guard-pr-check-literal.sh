@@ -1612,7 +1612,16 @@ for v in \
     'echo $(true); git grep -Obash -- scripts/cr/pr-check-env.sh' \
     'git grep -e x a$IFS-Obash -- scripts/cr/pr-check-env.sh' \
     'git grep x${=IFS}-Obash -- scripts/cr/pr-check-env.sh' \
-    'git log HEAD$IFS--output=scripts/cr/pr-check-env.sh # c'; do
+    'git log HEAD$IFS--output=scripts/cr/pr-check-env.sh # c' \
+    'git grep -e x $(printf %s -Obash) -- scripts/cr/pr-check-env.sh' \
+    'git grep -e x "$(printf %s -Obash)" -- scripts/cr/pr-check-env.sh' \
+    'git grep -e x `printf %s -Obash` -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$(printf " ")-Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo`printf " "`-Obash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e echo$((IFS=1))-Obash -- scripts/cr/pr-check-env.sh' \
+    'G=git; $G grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '${G:-git} grep -Obash -- scripts/cr/pr-check-env.sh' \
+    '$(echo git) grep -Obash -- scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4953 unwalked git segment [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # Pathspec mentions and the HIMMEL-4950 allow cases stay allowed.

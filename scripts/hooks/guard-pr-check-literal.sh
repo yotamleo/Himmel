@@ -835,6 +835,8 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 # ${x@P}) or cd (it plants a $(…) in PWD).
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0 PR_TOKFAIL=0
+# A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
+PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 git_mentions_only() { # git_mentions_only <command-word index>
     local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
@@ -898,7 +900,7 @@ readers_only() { # true when every command the command line runs is a reader
     # no word is known, so no option can be proven a pathspec mention.
     st_tokenize "$cmd" || {
         PR_TOKFAIL=1
-        [[ $cmd =~ (^|[^[:alnum:]_.-])git([^[:alnum:]_.-]|$) ]] && PR_GIT_UNSAFE=1
+        [[ $cmd =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
         return 1
     }
     [ "$ST_SUBST$ST_HEREDOC$ST_ANSIC$ST_COMMENT" = 0000 ] || return 1
@@ -931,9 +933,24 @@ readers_only && exit 0
 # git segment. The option check must not depend on that walk, so scan every
 # git word here; only the PR_GIT_UNSAFE side effect is used. Fails closed.
 if [ "$PR_TOKFAIL" = 0 ]; then
-    k=0
+    k=0 sg=-1 cw=-1
+    # A substitution can build an option word or the command word itself
+    # (`$(printf %s -Obash)`, `$G grep`), and no word of it is classified, so
+    # a line that has a git word or a substitution at all fails closed.
+    # Fail direction: closed (deny only when a guarded script is mentioned).
+    if [ "$ST_SUBST" = 1 ]; then
+        [[ $cmd =~ $PR_GITWORD_RE ]] && PR_GIT_UNSAFE=1
+    fi
     while [ "$k" -lt "$ST_N" ]; do
-        [ -n "${ST_RO[k]}" ] || case "${ST_W[k]##*/}" in git) git_mentions_only "$k" || : ;; esac
+        if [ "${ST_S[k]}" != "$sg" ]; then sg=${ST_S[k]}; cw=-1; fi
+        if [ -z "${ST_RO[k]}" ]; then
+            # HIMMEL-4953: an expanded command word may be git (`G=git; $G`).
+            if [ "$cw" -lt 0 ]; then
+                [ "${ST_X[k]}${ST_G[k]}" = 00 ] || [ "${ST_W[k]}" = '{' ] || PR_GIT_UNSAFE=1
+                cw=$k
+            fi
+            case "${ST_W[k]##*/}" in git) git_mentions_only "$k" || : ;; esac
+        fi
         k=$((k + 1))
     done
 fi
