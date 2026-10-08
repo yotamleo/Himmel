@@ -7,7 +7,10 @@
 # doc is free AND its own last Results marker-bullet is WRAPPED. It never
 # kills a pid it cannot independently prove belongs to that leg.
 #
-# Usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>
+# Usage: close-wrapped-leg.sh [--console | --fleet <manifest>] <leg-doc>
+# --console (HIMMEL-4968) closes a wrapped PREDECESSOR console's window: the
+# same lock/WRAPPED/one-session checks and subtree check, then TERM - no cost
+# row, /tmp reap, digest or worktree prune. Run it right after your own LIVE.
 # --fleet removes the doc after a successful close, including benign prune skips.
 # A manifest update failure returns 1 after the session has already closed.
 #
@@ -79,13 +82,16 @@ WRAP_SUBTREE_CHECK="${WRAP_SUBTREE_CHECK_BIN:-$HERE/../wrap-subtree-check.sh}"
 TMP_REAP="${TMP_REAP_BIN:-$HERE/../../tmp-reap.sh}"
 
 usage() {
-    echo "usage: close-wrapped-leg.sh [--fleet <manifest>] <leg-doc>" >&2
+    echo "usage: close-wrapped-leg.sh [--console | --fleet <manifest>] <doc>" >&2
 }
 
 FLEET_MANIFEST=""
+CONSOLE_MODE=0
 if [ "${1:-}" = --fleet ]; then
     if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then usage; exit 2; fi
     FLEET_MANIFEST="$2"; shift 2
+elif [ "${1:-}" = --console ]; then
+    CONSOLE_MODE=1; shift
 fi
 
 # Only successful close exits retire the leg; refusals and failed pruning keep it.
@@ -230,6 +236,19 @@ if [ "$subtree_rc" -ne 0 ]; then
     echo "$subtree_out"
     echo "close-wrapped-leg: refusing to signal pid $matched - wrap-subtree-check.sh did not report CLOSABLE (see above); retry shortly" >&2
     exit 6
+fi
+
+# ---------- --console: a wrapped predecessor console (HIMMEL-4968) -------------
+# Every check above ran unchanged. A console has no worktree, cost row, scratch
+# or failure digest of its own, so the leg-only steps below are skipped: TERM
+# the one proven pid and stop.
+if [ "$CONSOLE_MODE" -eq 1 ]; then
+    if ! "$KILL" -TERM "$matched"; then
+        echo "close-wrapped-leg: failed to send TERM to pid $matched" >&2
+        exit 1
+    fi
+    echo "close-wrapped-leg: sent TERM to pid $matched (console $(leg_label "$DOC"))"
+    exit 0
 fi
 
 # ---------- Leg cost ledger (HIMMEL-4217) ----------------------------------------
