@@ -199,7 +199,7 @@ mkdir -p "$W/console-work/chain"
 # The default stub reset epoch, rendered the way tick.sh renders it (local HH:MM).
 gql_hm="$(date -d @1790000000 +%H:%M 2>/dev/null || date -r 1790000000 +%H:%M)"
 out="$(HIMMEL_CLASSIFIER_DENIALS_LOG="$W/denials-default-missing.jsonl" bash "$SUT")"; rc=$?
-expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip denials=none ciq=unknown plan-index=skip or=skip fails=skip'
+expected='TICK 12:34 hb=ok legs=N61:FRESH,N65:FREE livestate=skip procs=1,unwatched=N9 models=sonnet:1 ceiling=ok atq=2 suites=1alive/0dead prs=#2247,#2250 bank=5h30/wk28/codex=5h12/wk34 fill=28 tails=N61:LIVE,N65:READY inbox=N61:10/4,N65:8/8 tick=UNKNOWN fleet=1/8 capacity=UNDERFILLED:7 gql=4321/'"$gql_hm"' orphans=none nonces=skip legset=skip board=skip tracker=skip vault=skip denials=none ciq=unknown plan-index=skip or=skip fails=skip'
 lines="$(printf '%s\n' "$out" | wc -l | tr -d '[:space:]')"
 if [ "$rc" -eq 0 ] && [ "$lines" = 1 ] && [ "$out" = "$expected" ]; then
     pass 'default run emits exactly the expected one batched line'
@@ -1967,6 +1967,29 @@ rm -f "$LEG_DIGEST_STATE_DIR/skips.jsonl"; mkdir -p "$LEG_DIGEST_STATE_DIR/skips
 same 'fails=? when the skips log is unreadable (HIMMEL-4786)' "$(fails_of "$d4670")" '?'
 rmdir "$LEG_DIGEST_STATE_DIR/skips.jsonl"
 rm -f "$HIMMEL_LEG_FAILURES_LEDGER" "$HIMMEL_EVAL_RUNS_LEDGER" "$HIMMEL_FAILURE_ROUTES_LOG"
+
+# --- HIMMEL-4911: vault=<ok|STALL:<age>,<n>|PUSH-LAG:<age>|skip|unknown> -- the luna
+# vault's commit health, from vault-status.sh. RED control (pre-change tick.sh): the
+# line carries no vault= field, so a stalled vault commit is invisible to the console.
+v4911="$W/vault4911"
+gv4911() { git -C "$v4911" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false "$@"; }
+git init -q -b main "$v4911" && git init -q --bare "$W/vault4911.git"
+git -C "$v4911" remote add origin "$W/vault4911.git"
+echo seed > "$v4911/seed.md"
+git -C "$v4911" add seed.md
+gv4911 commit -q -m seed
+git -C "$v4911" push -q -u origin main
+t4911() { TICK_VAULT_DIR="$1" bash "$SUT" --legs "$W/handover/$b3361.md" "${@:2}"; }
+contains 'no vault configured reads vault=skip (HIMMEL-4911)' "$(t3361)" ' vault=skip'
+contains 'a clean vault reads vault=ok (HIMMEL-4911)' "$(t4911 "$v4911")" ' vault=ok'
+echo staged > "$v4911/a.md"; git -C "$v4911" add a.md
+touch -d '50 minutes ago' "$v4911/a.md"  # gnu-ok: console kit is Linux-only
+contains 'files staged past the threshold read vault=STALL:<age>,<n> (HIMMEL-4911)' "$(t4911 "$v4911")" ' vault=STALL:50m,1'
+contains '--verbose labels the vault (HIMMEL-4911)' "$(t4911 "$v4911" --verbose)" 'vault: STALL:50m,1'
+GIT_COMMITTER_DATE="$(date -d '3 hours ago' +%s) +0000" gv4911 commit -q -m lag  # gnu-ok: console kit is Linux-only
+contains 'an unpushed commit past the threshold reads vault=PUSH-LAG:<age> (HIMMEL-4911)' "$(t4911 "$v4911")" ' vault=PUSH-LAG:3h'
+mkdir -p "$W/vault4911bad/.git"; echo garbage > "$W/vault4911bad/.git/HEAD"
+contains 'a corrupt vault reads vault=unknown and the tick still runs (HIMMEL-4911)' "$(t4911 "$W/vault4911bad")" ' vault=unknown'
 
 if [ "$fails" -eq 0 ]; then
     printf '%s\n' 'PASS - test-tick.sh'

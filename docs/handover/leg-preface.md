@@ -224,6 +224,12 @@ for a relay that is not coming.
 - **Search with Bash, not Grep/Glob (HIMMEL-4784).** A leg has no dedicated
   `Grep` or `Glob` tool (a call returns "No such tool available"): search with
   `git grep` / `grep` and list files with `git ls-files` / `find`.
+- **Pre-check a bucket file before you write or commit it (HIMMEL-4911).** The
+  luna vault's pre-commit runs gitleaks; one generic-api-key false positive on
+  prose stalls the vault's auto-commit for every session. Run
+  `bash scripts/handover/console-kit/bucket-gitleaks.sh <file>`: `GITLEAKS ok`
+  (exit 0), or `GITLEAKS FINDING <rule>` (exit 1) — reword the prose (break the
+  `key = "value"` shape) and re-run. It prints the rule id, never the text.
 - **Ship steps are typed exactly as their allow rule is written — no quotes,
   no `VAR=` prefix, no `cd … &&`, no compound operators, no `$(…)`.** A
   relative gate script is `bash scripts/cr/X.sh <args>`, never

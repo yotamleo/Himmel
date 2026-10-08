@@ -27,6 +27,10 @@
 # The action key is the tick fields a console acts on: legs=, livestate=,
 # prs=, tails=, legset=, board= and tracker= (HIMMEL-3933; class only, the STALE
 # age is dropped; tracker= is absent from an older tick line, never a failure),
+# vault= (HIMMEL-4911; class only, wakes ONLY on a move to STALL or PUSH-LAG --
+# never on a change of its age or count, nor a move back to ok/skip/unknown --
+# and the wake adds a `vault: reproduce with git -C <vault> hook run pre-commit`
+# line; absent from an older tick line, never a failure),
 # denials= (HIMMEL-3724 -- a new leg, a higher count or a higher class
 # (SHIP-STEP > PAUSE-RISK > REPEAT) is exactly the alert this exists to
 # surface; the same denial ageing out of tick.sh's 30-min window, moving it to
@@ -212,15 +216,16 @@ sample() {
     # A failed or garbled bank read is a failed sample, not a verdict.
     bank="$(bank_word)" || { tick_state=fail; return; }
     tick_state=ok
-    for f in legs livestate prs tails legset board tracker denials; do
+    for f in legs livestate prs tails legset board tracker vault denials; do
         v="$(field "$f" "$tick_line")"
         # HIMMEL-3933: tracker= is newer than the other fields; a tick line
         # without it (an older kit) just has no tracker key, not a failed sample.
-        if [ "$f" = tracker ] && [ -z "$v" ]; then continue; fi
+        # vault= (HIMMEL-4911) is newer still, the same way.
+        if { [ "$f" = tracker ] || [ "$f" = vault ]; } && [ -z "$v" ]; then continue; fi
         # A field missing from a malformed/partial tick line is a failed
         # sample, never a key with an empty value baked in.
         if [ -z "$v" ]; then tick_state=fail; key=""; return; fi
-        case "$f" in board|tracker) v="${v%%:*}" ;; esac
+        case "$f" in board|tracker|vault) v="${v%%:*}" ;; esac
         key="$key$f=$v|"
     done
     key="${key}bank=$bank"
@@ -244,12 +249,17 @@ key_field() {
 # itself a wake (only a move to STALE/MISSING is); strip it from a changed=
 # list so a combined change still names its other real fields.
 drop_board_ok() {
-    local board_new tracker_new
+    local board_new tracker_new vault_new
     board_new="$(key_field board "$2")"
     tracker_new="$(key_field tracker "$2")"
+    vault_new="$(key_field vault "$2")"
     printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r f; do
         [ "$f" = board ] && [ "$board_new" = ok ] && continue
         [ "$f" = tracker ] && [ "$tracker_new" = ok ] && continue
+        # HIMMEL-4911: vault= wakes only on a class move TO STALL / PUSH-LAG.
+        if [ "$f" = vault ]; then
+            case "$vault_new" in STALL|PUSH-LAG) ;; *) continue ;; esac
+        fi
         printf '%s\n' "$f"
     done | paste -sd, -
 }
@@ -429,6 +439,11 @@ while :; do
                 else
                     page_denials "$saved" "$key"
                     printf 'WAKE tick changed=%s bank=%s\n%s\n' "$real_changed" "${key##*|bank=}" "$tick_line"
+                    # HIMMEL-4911: a vault wake names how to reproduce the stuck commit.
+                    case ",$real_changed," in *,vault,*)
+                        vault_dir="$(bash "$HERE/vault-status.sh" --path 2>/dev/null)" || vault_dir=""
+                        printf 'vault: reproduce with git -C %s hook run pre-commit\n' "${vault_dir:-<vault>}" ;;
+                    esac
                     save_key "$key"
                     exit_reason='wake-tick'; exit 0
                 fi
