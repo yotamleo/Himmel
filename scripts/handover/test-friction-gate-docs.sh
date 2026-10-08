@@ -46,8 +46,18 @@ if has "$TEMPLATE" 'default-if-no-ruling \(<N> min\)' && has "$TEMPLATE" 'NARROW
 else
     fail "brief template offers the narrowing-only default line"
 fi
-# control: the template must not offer an expanding default
-if has "$TEMPLATE" 'default-if-no-ruling[^.]*(expand|widen|grant)[^.]*(allowed|permitted|ok)'; then
+# control: the template must not offer an expanding default. The matcher gets a
+# positive control (a planted expanding default must match) and the template
+# must be readable, so a grep error or missing file cannot read as "no match".
+EXPAND_RE='default-if-no-ruling[^.]*(expand|widen|grant)[^.]*(allowed|permitted|ok)'
+planted="$(mktemp)" || exit 1
+trap 'rm -f "$planted"' EXIT
+printf 'default-if-no-ruling (5 min): expand scope, allowed.\n' > "$planted"
+if ! has "$planted" "$EXPAND_RE"; then
+    fail "expanding-default matcher detects a planted expanding default"
+elif [ ! -r "$TEMPLATE" ]; then
+    fail "brief template is readable for the expanding-default check"
+elif has "$TEMPLATE" "$EXPAND_RE"; then
     fail "brief template offers an expanding default"
 else
     pass "brief template offers no expanding default"
