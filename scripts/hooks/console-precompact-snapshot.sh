@@ -102,9 +102,6 @@ main() {
     # repo's handovers/), because a console is often launched with no exported
     # HANDOVER_DIR.
     local lock="" root="" lockroot="" gofile="" primary="" candidates="" slug="" owner="" r
-    # HIMMEL-4449: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
-    # shellcheck disable=SC1091
-    if . "$REPO/scripts/lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
     # shellcheck source=scripts/lib/handover-path.sh
     . "$REPO/scripts/lib/handover-path.sh" 2>/dev/null
     # shellcheck source=scripts/handover/queue-lock.sh

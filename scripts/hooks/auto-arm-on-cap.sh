@@ -240,9 +240,6 @@ resolve_snapshot_dir() {
     lib="$hook_dir/../lib/handover-path.sh"
     [ -f "$lib" ] || lib="$project_dir/scripts/lib/handover-path.sh"
     if [ -f "$lib" ]; then
-        # HIMMEL-4449: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
-        # shellcheck disable=SC1091
-        if . "$(dirname "$lib")/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
         # Run handover_root in a subshell that cds to hook_dir first so
         # the Mode A git rev-parse resolves the MAIN REPO root, not the
         # session's cwd (which may be a worktree) — HIMMEL-294.
