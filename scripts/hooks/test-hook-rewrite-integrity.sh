@@ -1828,6 +1828,26 @@ E
 sc_case "row 63 control: a bare source of the same unresolvable ref denies" 0 1 <<'E'
 source $X/y.sh
 E
+sc_case "row 64: a self-dir cd that climbs out of the checkout denies (HIMMEL-4993)" 0 1 <<'E'
+source "$(cd "$(dirname "$0")/../../.." && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 64: a cd - after the self cd denies" 0 1 <<'E'
+source "$(cd "$(dirname "$0")" && cd - && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 64: a bare cd after the self cd denies" 0 1 <<'E'
+source "$(cd "$(dirname "$0")" && cd && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 64: a second assignment on a line is recorded (CLAUDE_PROJECT_DIR outside)" 0 1 <<'E'
+A=1; CLAUDE_PROJECT_DIR=/outside
+source "${CLAUDE_PROJECT_DIR}/scripts/lib/armor.sh"
+E
+sc_case "row 64 control: a self-dir cd that stays inside the checkout resolves" 1 0 <<'E'
+source "$(cd "$(dirname "$0")/../.." && pwd)/scripts/lib/armor.sh"
+E
+sc_case "row 64 control: a harmless first assignment does not hide a self-dir second one" 1 0 <<'E'
+A=1; D="$(dirname "$0")"
+source "$D/../lib/armor.sh"
+E
 }
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
