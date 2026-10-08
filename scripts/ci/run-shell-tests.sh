@@ -295,6 +295,13 @@ _suite_timeout_for() {
       # suite (2026-10-08); twice the loaded figure is 2868s, rounded to 3000.
       # Do not cache scans or drop masks to fit the generic 600s cap.
       printf '3000' ;;
+    scripts/hooks/test-block-destructive-commands.sh|*/scripts/hooks/test-block-destructive-commands.sh)
+      # HIMMEL-4912: every fixture now starts a fresh bwrap sandbox. Linux with
+      # bwrap working measured 263s alone (2026-10-08); the CI shard hit
+      # "CAP EXCEEDED after 603s" while bwrap was failing (AppArmor userns
+      # sysctl missing, fixed in ci.yml). 1200s is ~4.5x the alone figure, so a
+      # slower or loaded runner cannot trip the generic 600s default.
+      printf '1200' ;;
     scripts/handover/test-arm-resume-identity.sh|*/scripts/handover/test-arm-resume-identity.sh)
       # HIMMEL-2120 Task-6 fresh-boot idle benchmark (2026-08-27): new idle
       # 814s, rc=0 (reproduced at 802s, rc=0, same day). The prior 08-26 idle

@@ -834,6 +834,12 @@ jobs:
             sudo timeout 300 apt-get install -y --no-install-recommends -o DPkg::Lock::Timeout=120 at bubblewrap
           fi
           sudo systemctl enable --now atd || sudo service atd start || true
+      # HIMMEL-4912: ubuntu-24.04 refuses unprivileged user namespaces by default
+      # (AppArmor), so bwrap fails with `RTM_NEWADDR: Operation not permitted` and
+      # the sandboxed suites fail or hit their caps. Same step as claude-startup.
+      - name: Allow unprivileged user namespaces (Linux — bwrap sandbox)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       # HIMMEL-2742: same shape as HIMMEL-2587 (lanes-and-trust-suites) — a
       # suite in this corpus (test-wizard-luna-sections.sh) shells out to bun
       # and fails closed ("required test tool not found before PATH scrub:
