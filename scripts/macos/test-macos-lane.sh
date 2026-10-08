@@ -73,6 +73,7 @@ mkdir -p "$W/wt"
 run sync-worktree "$W/wt"
 contains "sync: rsync with delete" "$CALLS" "--delete"
 contains "sync: excludes .git" "$CALLS" "--exclude .git"
+contains "sync: excludes .env" "$CALLS" "--exclude .env"
 contains "sync: target is himmel-work" "$CALLS" "user@127.0.0.1:himmel-work/"
 run sync-worktree "$W/nope"
 eq "sync: missing dir fails" 1 "$RC"
@@ -81,6 +82,9 @@ eq "run-suites: rc 0" 0 "$RC"
 contains "run-suites: first suite" "$CALLS" "bash scripts/test-a.sh"
 contains "run-suites: second suite" "$CALLS" "bash scripts/handover/console-kit/test-b.sh"
 contains "run-suites: suite timeout" "$CALLS" "timeout 900"
+contains "run-suites: guest-side deadline" "$CALLS" "alarm shift; exec @ARGV' 900 bash scripts/test-a.sh"
+# shellcheck disable=SC2016  # the literal text '$rc' is what the remote command carries
+contains "run-suites: suite status returned through ssh" "$CALLS" 'exit $rc'
 STUB_RC=1 run run-suites scripts/test-a.sh
 eq "run-suites: remote failure propagates" 1 "$RC"
 run run-suites '../etc/passwd'

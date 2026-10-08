@@ -90,7 +90,7 @@ cmd_sync_worktree() {
   local src="${1:-}"
   if [ -z "$src" ] || [ ! -d "$src" ]; then die "sync-worktree needs an existing worktree dir"; fi
   # shellcheck disable=SC2046
-  "$TIMEOUT_BIN" "$T_SYNC" "$RSYNC" -a --delete --exclude .git --exclude node_modules \
+  "$TIMEOUT_BIN" "$T_SYNC" "$RSYNC" -a --delete --exclude .git --exclude node_modules --exclude '.env' --exclude '.env.*' \
     -e "$SSH $(ssh_opts)" "${src%/}/" "$SSH_USER@127.0.0.1:$REMOTE_DIR/" || die "rsync in failed"
 }
 
@@ -108,8 +108,10 @@ cmd_run_suites() {
   remote 30 "mkdir -p $REMOTE_RESULTS" || die "cannot create remote results dir"
   for s in "$@"; do
     name=$(printf '%s' "$s" | tr '/' '_')
-    # The remote timeout is the outer ssh timeout; macOS has no coreutils timeout.
-    if remote "$T_SUITE" "cd $REMOTE_DIR && bash $s > ../$REMOTE_RESULTS/$name.log 2>&1; echo \$? > ../$REMOTE_RESULTS/$name.rc"; then
+    # macOS has no coreutils timeout, so the guest-side deadline is perl's alarm
+    # (perl ships with macOS); the outer ssh timeout stays as the backstop. The
+    # suite's own exit status is kept in the .rc file AND returned through ssh.
+    if remote "$T_SUITE" "cd $REMOTE_DIR && perl -e 'alarm shift; exec @ARGV' $T_SUITE bash $s > ../$REMOTE_RESULTS/$name.log 2>&1; rc=\$?; echo \$rc > ../$REMOTE_RESULTS/$name.rc; exit \$rc"; then
       echo "macos-lane: ran $s"
     else
       echo "macos-lane: $s failed or timed out" >&2; rc=1
