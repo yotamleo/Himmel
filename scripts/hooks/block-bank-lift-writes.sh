@@ -157,12 +157,18 @@ _glob_from_word() {
             *'{'*'}'*)
                 # HIMMEL-4750: a group with a comma matches ITS alternatives, not
                 # any string, so a JSON argument ({"a":1,"b":2}) is not read as
-                # a glob over the lift name. Pattern syntax inside -> old `*`.
+                # a glob over the lift name. An alternative holding any glob-active
+                # char (bracket, backslash, * ? ! + @, parens, |, $, backtick) -> old
+                # `*`, never a broken pattern that matches nothing. Quotes and `:`
+                # are literal filename chars here (the tokenizer already unquoted).
                 body="${s#*\{}"; body="${body%%\}*}"
                 # Nested group: fail closed, `*` over the span to the LAST `}`.
                 case "$body" in *'{'*) out="$out${s%%\{*}*"; s="${s##*\}}"; continue ;; esac
                 case "$body" in
-                    *,*) case "$body" in *'('*|*')'*|*'|'*) body="" ;; *) body="@(${body//,/|})" ;; esac ;;
+                    *,*) case "$body" in
+                            *'['*|*']'*|*\\*|*'*'*|*'?'*|*'!'*|*'+'*|*'@'*|*'('*|*')'*|*'|'*|*'$'*|*'`'*) body="" ;;
+                            *) body="@(${body//,/|})" ;;
+                         esac ;;
                     *) body="" ;;
                 esac
                 out="$out${s%%\{*}${body:-*}"; s="${s#*\}}" ;;

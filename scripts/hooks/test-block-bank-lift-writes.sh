@@ -305,6 +305,17 @@ row "brace alt naming the lift still denies (interp)" deny "python3 x.py {bank-l
 row "brace alt naming the lift still denies (cp)"     deny "cp $T/src/other.txt ~/.himmel/state/{bank-lift.json,y}"
 row "nested brace alt naming the lift still denies"   deny "cp $T/src/other.txt ~/.himmel/state/{bank-{lift,other}.json,y}"
 row "brace alt with quote still denies (interp)"      deny "python3 x.py {bank-lift.json,\\\"}"
+# Judge j2143: an alternative holding a char outside [alnum . _ / -] must fall
+# back to `*`, never build a broken extglob that matches nothing.
+row "tee brace alt with [ (j2143)"   deny "tee ~/.himmel/state/bank-lift{.json,[}"
+row "touch brace alt with [ (j2143)" deny "touch ~/.himmel/state/bank-lift{.json,[}"
+row "brace alt with backslash (j2143)" deny "tee ~/.himmel/state/bank-lift{.json,\\\\}"
+row "mid-name brace alt with [ (j2143)" deny "tee ~/.himmel/state/bank{-lift,[}.json"
+row "suffix brace alt with [ (j2143)" deny "tee ~/.himmel/state/bank-lift.{json,[}"
+for _c in '[' ']' "\\" '*' '?' '!' '+' '@' '$' '"' '#' '~' ':'; do
+    row "alt sweep last  [$_c]" deny "tee ~/.himmel/state/bank-lift{.json,$_c}"
+    row "alt sweep first [$_c]" deny "tee ~/.himmel/state/bank-lift{$_c,.json}"
+done
 row "mv the lift away (over-deny r6)" deny "mv ~/.himmel/state/bank-lift.json /tmp/old-lift.json"
 row "redirect to \$OUT"            allow "echo x > \"\$OUT\""
 row "cd + find -exec {}"           allow "cd foo && find . -name '*.tmp' -exec rm {} \\;"
