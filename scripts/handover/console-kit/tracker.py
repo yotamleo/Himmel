@@ -335,8 +335,8 @@ def drift_log(path, drift, unplanned, unthemed):
             pass
     if not rows or rows[-1][1:] != cur[1:] or not fresh:
         try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            new = not os.path.exists(path)
+            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            new =not os.path.exists(path)
             with open(path, 'a', encoding='utf-8') as fh:
                 if new:
                     fh.write('utc\tdrift\tunplanned\tunthemed\n')
@@ -693,10 +693,11 @@ def main():
         lg.append('Drift over time (drift / unplanned / unthemed): ' + ' → '.join('%d/%d/%d' % tuple(x[1:]) for x in dt[-6:]) + '.')
     jt, jc, jn, ja = jira_view(mir, legs, jv, rows[:n_plan], vers)
     p90 = meta.get('version_p90_fw') if isinstance(meta.get('version_p90_fw'), dict) else {}
+    act = actuals()  # before ATS below: it sets ACT_NEWEST
     data = dict(gen=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), mir=upd[:16].replace('T', ' '),
                 sha=meta.get('main_sha_at_build', '')[:9], V=vers, VL=vload, VC=version_caps(rules, vers, {x['n'] for x in jv if x['rel']}), DT=dt,
                 ATS=datetime.fromtimestamp(ACT_NEWEST, timezone.utc).strftime('%Y-%m-%d %H:%M UTC') if ACT_NEWEST else '',
-                LEG={str(n): v for n, v in sorted(legs.items())}, ACT={str(n): v for n, v in sorted(actuals().items())}, L=LAYERS, T=themes, P=rows,
+                LEG={str(n): v for n, v in sorted(legs.items())}, ACT={str(n): v for n, v in sorted(act.items())}, L=LAYERS, T=themes, P=rows,
                 U=unpl, DR=dirs, N=notes, LG=lg, CUR=cur, JV=jv, JT=jt, JC=jc, JN=jn, JA=ja, RU=ru,
                 CAP=dict(total=rules['total'], layers=[(rules['layers'] or {}).get(l) for l in LAYERS],
                          text=capacity_text(rules, [v for v in vers if not TRAIN_RE.match(v)],
