@@ -137,7 +137,9 @@ def test_target(command):
     file (pytest, `npm test`). outcomes says which results the command's exit
     status speaks for: "pass+fail"; "pass" when the test shares an && chain
     with a command other than cd-style setup, whose failure would read the
-    same; "" (masked) when a pipe, ||, & or a later ; command decides it. A
+    same; "" (masked) when a pipe, ||, & or a later ; command decides it. The
+    targets are the union over the test's && chain, so a passing
+    `test-a && test-b` backs both (HIMMEL-4673). A
     quiet-run.sh-wrapped test is "quiet-run:<label>" whatever the separators or
     exit status: the wrapper's OK/ERR line is the outcome (HIMMEL-4698)."""
     if not isinstance(command, str):
@@ -166,6 +168,8 @@ def test_target(command):
             if all(x == "&&" for x in between):
                 if j > i or not _is_setup(s):
                     fail_ok = False
+                if j > i:  # a passing && chain ran every test in it (HIMMEL-4673)
+                    t |= _segment_target(s) or frozenset()
             elif j > i:
                 return t, ""  # `test; cmd`: the exit status is cmd's
         return t, "pass+fail" if fail_ok else "pass"
