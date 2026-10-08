@@ -191,6 +191,14 @@ test('unverified completion keeps the full reservation as unknown', () => {
   assert.equal(error.status().reserved_usd, '0.100000');
 });
 
+test('an argument terminator is refused so the enforced options stay options', () => {
+  const f = fixture();
+  const r = f.run(['-p', '--', 'x', '--model', 'm', '--permission-mode', 'plan', '--max-budget-usd', '0.10']);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /argument terminator/);
+  assert.equal(f.called(), false);
+});
+
 test('a cost above the reservation is recorded as overrun, never as settled', () => {
   const f = fixture();
   const r = f.run(f.good, { STUB_OUT: JSON.stringify({ type: 'result', is_error: false, total_cost_usd: 0.5 }) });

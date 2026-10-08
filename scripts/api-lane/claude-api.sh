@@ -37,6 +37,7 @@ while [ "$#" -gt 0 ]; do
   a="$1"; shift
   case "$a" in
     -p|--print) PRINT=1; ARGS+=("$a"); continue ;;
+    --) refuse "the -- argument terminator would turn the enforced options into positionals" ;;
     --bg|--background|--cloud|--daemon|--dangerously-skip-permissions|--allow-dangerously-skip-permissions)
       refuse "flag $a is not allowed on the api lane" ;;
     --permission-mode|--model|--max-budget-usd|--output-format)
