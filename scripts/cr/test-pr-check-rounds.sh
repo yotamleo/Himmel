@@ -1410,6 +1410,15 @@ judge sd-1 GO "$sd_head"
 start_round "$sd_head" clean scopedup >/dev/null; sd_rc=$?
 assert_eq "$sd_rc" "8" "a scope record with two delta-from lines is refused"
 
+# A test path with a non-ASCII name is still a test path (git would quote it).
+three_rounds scopeuni clean
+su_r3="$cap_r3_head"
+scope_commit scopeuni "tests/test-caf$(printf '\303\251').sh"
+su_head="$scope_head"
+scope_judge su-1 "$su_head" test-only "$su_r3"
+start_round "$su_head" clean scopeuni >/dev/null; su_rc=$?
+assert_eq "$su_rc" "0" "a test-only delta with a non-ASCII test path is admitted"
+
 # lint-only: the judge's record alone admits it (no path rule can tell lint
 # from behaviour).
 three_rounds scopelint clean

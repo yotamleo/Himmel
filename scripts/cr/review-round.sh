@@ -458,7 +458,7 @@ judge_scope_record() (
                         ;;
                 esac
             done <<EOF
-$(git diff --no-renames --name-only "$from" "$want" 2>/dev/null)
+$(git -c core.quotepath=off diff --no-renames --name-only "$from" "$want" 2>/dev/null)
 EOF
         fi
         printf '%s\n' "$hit"
