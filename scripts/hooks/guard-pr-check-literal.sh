@@ -836,11 +836,13 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
         [ "${ST_X[j]}${ST_G[j]}" = 00 ] || return 1
+        # After --, option-shaped words are literal pathspec operands.
+        if [ "$paths" = 1 ]; then j=$((j + 1)); continue; fi
         # Refuse these even when the older text classifier cannot see a
         # runner: git aliases/config and helper options can execute operands.
         case "$w" in
@@ -858,6 +860,16 @@ git_mentions_only() { # git_mentions_only <command-word index>
                 grep|log|show|diff|add|restore|rm) sub=$w ;;
                 *) return 1 ;;
             esac
+        elif [ "$w" = -- ]; then
+            # An unknown option may consume -- as its value (-e/-S, ...),
+            # rather than end options. Keep that ambiguous shape fenced.
+            if ! [[ ${ST_W[j - 1]} =~ ^-[0-9]+$ ]]; then
+                case "${ST_W[j - 1]}" in
+                    --cached|--staged|--oneline|-n|-p|-A|-a|-u|--stat) ;;
+                    -*) PR_GIT_UNSAFE=1; return 1 ;;
+                esac
+            fi
+            paths=1
         elif [ "$w" = --cached ]; then
             cached=1
         fi

@@ -1532,7 +1532,9 @@ for v in \
     'git rm --cached scripts/cr/pr-check-env.sh' \
     'git log -- scripts/cr/pr-check-env.sh' \
     'git show HEAD:scripts/cr/pr-check-env.sh' \
-    'git add "scripts/cr/pr-check-env.sh" docs/a.md'; do
+    'git add "scripts/cr/pr-check-env.sh" docs/a.md' \
+    'git add -- -config.md scripts/cr/pr-check-env.sh' \
+    'git diff -- --ext-diff scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4916 pathspec [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
 # shellcheck disable=SC2016 # literal attack payloads, never expanded here
@@ -1553,7 +1555,9 @@ for v in \
     'git diff --ext-diff -- scripts/cr/pr-check-env.sh' \
     'git diff --upload-pack=scripts/cr/pr-check-env.sh x' \
     'git log ext::scripts/cr/pr-check-env.sh' \
-    'git grep -O bash -- scripts/cr/pr-check-env.sh'; do
+    'git grep -O bash -- scripts/cr/pr-check-env.sh' \
+    'git grep -e -- -O bash -- scripts/cr/pr-check-env.sh' \
+    'git diff -S -- --ext-diff scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-4916 exec control [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 g -C "$WT" checkout -q -- scripts/cr/pr-check-env.sh
