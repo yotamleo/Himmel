@@ -1088,7 +1088,7 @@ assert_allow "3921 C1 cut -d ANSI-C tab then export"          "$(j 'cut -d$'"'"'
 # r11 (console ruling): the prefix compare is gone, so a scripts/ glob beside a
 # write verb now denies even when unrelated to a chokepoint (over-deny, HIMMEL-3955).
 assert_deny "3921 r11 (was C1 allow) printf over a scripts glob"  "$(j "printf '%s\\n' scripts/hooks/*.sh")"
-assert_deny "3921 r11 (was C1 allow) grep env over a scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
+assert_allow "3921 r11 (was C1 allow) grep env over a scripts glob" "$(j "grep -ln env scripts/hooks/*.sh")"
 assert_deny "3921 r11 (was C1 allow) git log glob then read"       "$(j "git log -- scripts/hooks/*.sh; read -r x")"
 # 3921 judge I1: clear spellings the first arm missed, beside a chokepoint word.
 assert_deny "3921 I1 declare +x then setsid merge"   "$(j "declare +x HIMMEL_CONSOLE_LEG; setsid -f bash $MERGE_ON_GREEN")"
@@ -1176,14 +1176,36 @@ assert_allow "4572 env inside a hyphenated file name beside a scripts glob" "$(j
 assert_allow "4572 eval as a directory name" "$(j "cat scripts/eval/*.sh")"
 assert_allow "4572 read inside a hyphenated file name" "$(j "ls scripts/hooks/block-read-secrets*")"
 assert_allow "4572 env inside a dotted file name beside a scripts glob" "$(j "cat scripts/cr/pr-check-env.sh scripts/hooks/g*.sh")"
-assert_deny "4572 find -printf beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf '%p'")"
-assert_deny "4572 stat --printf= beside a scripts glob" "$(j "stat --printf='%n' scripts/hooks/g*.sh")"
-assert_deny "4572 a -printf at a word end beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf")"
+assert_allow "4572 find -printf beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf '%p'")"
+assert_allow "4572 stat --printf= beside a scripts glob" "$(j "stat --printf='%n' scripts/hooks/g*.sh")"
+assert_allow "4572 a -printf at a word end beside a scripts glob" "$(j "find scripts/hooks/g*.sh -printf")"
 assert_deny "4572 process.env beside a scripts glob" "$(j "node -e 'process.env.FOO=1' scripts/hooks/g*.sh")"
-assert_deny "4572 a bare .env beside a scripts glob" "$(j "cat .env scripts/hooks/g*.sh")"
-assert_deny "4572 .env.example (one joined side) stays denied" "$(j "cat .env.example scripts/hooks/g*.sh")"
+assert_allow "4572 a bare .env beside a scripts glob" "$(j "cat .env scripts/hooks/g*.sh")"
+assert_allow "4572 .env.example (data in a read-only stage; HIMMEL-4933)" "$(j "cat .env.example scripts/hooks/g*.sh")"
 assert_deny "4572 /usr/bin/env still counts as the env verb" "$(j "/usr/bin/env FOO=1 bash scripts/hooks/g*.sh")"
 assert_deny "4572 eval after a separator still counts" "$(j "true;eval bash scripts/hooks/g*.sh")"
+# HIMMEL-4933: a glob-only scripts/ word whose only seam trigger is a verb word
+# in ARGUMENT position of read-only stages is data, not a seam write. A verb
+# heading a stage, a real NAME= assignment, an env-clearing token or a hard
+# word ($var, //, /., ANSI-C, paren) keeps the deny (fail-closed on any parse
+# the relief cannot prove).
+assert_allow "4933 grep -l export over a scripts glob" "$(j "grep -l export scripts/hooks/*.sh | sort")"
+assert_allow "4933 git grep read over a scripts glob" "$(j "git grep -n read -- 'scripts/*/x.sh'")"
+assert_allow "4933 cat piped to grep eval over a scripts glob" "$(j "cat scripts/hooks/g*.sh | grep eval")"
+# sed keeps the deny: its own options (-i, e) can act on the glob.
+# ponytail: sed over-denies here, the relief for it needs the HIMMEL-3930 structural parse
+assert_deny "4933 control: sed beside a scripts glob keeps the deny" "$(j "sed 1d scripts/hooks/g*.sh | grep eval")"
+assert_allow "4933 grep printf over a scripts glob" "$(j "grep printf scripts/hooks/*.sh | sort")"
+assert_deny "4933 control: real env prefix, quoted glob path" "$(j "BASH_ENV=x bash 'scripts/hooks/g*.sh'")"
+assert_deny "4933 control: real env prefix, ./ glob path" "$(j "BASH_ENV=x bash ./scripts/hooks/g*.sh")"
+assert_deny "4933 control: real env prefix, absolute glob path" "$(j "BASH_ENV=x bash /home/u/h/scripts/hooks/g*.sh")"
+assert_deny "4933 control: export heading a stage beside a scripts glob" "$(j "export FOO=1; ls scripts/hooks/*.sh")"
+assert_deny "4933 control: printf heading a stage beside a scripts glob" "$(j "ls scripts/hooks/*.sh | printf x")"
+# shellcheck disable=SC2016 # the $D is the literal command text under test
+assert_deny "4933 control: a hard \$var path word keeps the deny" "$(j 'grep env scripts/$D/x.sh')"
+assert_deny "4933 control: a // path word keeps the deny" "$(j "grep env scripts//hooks/x.sh")"
+assert_deny "4933 control: a grouped path word keeps the deny" "$(j "grep env scripts/(a|b)/x.sh")"
+assert_deny "4933 control: env -u clear beside a glob keeps the deny" "$(j "grep x scripts/hooks/*.sh; env -u BASH_ENV true")"
 assert_deny "4572 printf -v still counts" "$(j "printf -v X 1; bash scripts/hooks/x*.sh")"
 # 4572's own probe shape stays denied by design: the heredoc is written and run
 # in one call, so its printf is live code that can feed a shell. The refusal
