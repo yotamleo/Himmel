@@ -233,6 +233,27 @@ cmd_prepare() {
   printf 'setsid nohup bash %q >/dev/null 2>&1 &\n' "$ROOT/rows/$row.launch"
 }
 
+in_dir() { # $1 path, $2 dir -> 0 when $1 is a regular file, not a symlink, that resolves under $2
+  local p d
+  { [ -f "$1" ] && [ ! -L "$1" ]; } || return 1
+  p="$(realpath -e -- "$1")" && d="$(realpath -e -- "$2")" || return 1
+  case "$p" in "$d"/*) return 0 ;; esac
+  return 1
+}
+
+# The lane can rewrite its worktree's .git file and its git dir's pointers to
+# reach a git config it controls (core.fsmonitor runs on the next host-side
+# git status); put back the values prepare recorded before any git runs.
+restore_git() {
+  case "$GITDIR" in "$REPO/.git/worktrees/"*/*|*/..|*/../*) die "git dir $GITDIR is not a worktree of $REPO" ;;
+                    "$REPO/.git/worktrees/"?*) ;; *) die "git dir $GITDIR is not a worktree of $REPO" ;; esac
+  { [ -d "$GITDIR" ] && [ ! -L "$GITDIR" ] && [ -d "$WT" ] && [ ! -L "$WT" ]; } || die "$WT or $GITDIR is missing or a symlink"
+  rm -rf -- "$WT/.git" "$GITDIR/commondir" "$GITDIR/gitdir" "$GITDIR/config.worktree" || die "cannot reset the git pointers of $WT"
+  if ! { printf 'gitdir: %s\n' "$GITDIR" >"$WT/.git" && printf '../..\n' >"$GITDIR/commondir" && printf '%s\n' "$WT/.git" >"$GITDIR/gitdir"; }; then
+    die "cannot restore the git pointers of $WT"
+  fi
+}
+
 find_transcripts() { # $1 lane, $2 worktree, $3 row doc, $4 row transcript dir -> this row's transcripts, one per line
   local slug d id IFS=:
   slug="$(printf %s "$2" | sed 's#[^A-Za-z0-9]#-#g')"
@@ -279,13 +300,24 @@ metrics() { # $1 transcript or empty, $2 report -> JSON
 }
 
 cmd_finish() {
-  local row="$1" LANE MODEL EFFORT TASK WT FIX DOC SNAP0 T0 REPO TX acc_sh jail snap1 usd tr rep acc acc_rc scope wrapped pk m
+  local row="$1" LANE MODEL EFFORT TASK WT FIX DOC SNAP0 T0 REPO TX GITDIR acc_sh jail snap1 usd tr txs f rep acc acc_rc scope wrapped pk m
   cmd_verify >/dev/null
   load_env
   [ -r "$ROOT/rows/$row.env" ] || die "$row was never prepared"
   # shellcheck source=/dev/null
   . "$ROOT/rows/$row.env"
   [ -e "$ROOT/results/$row.json" ] && die "$row already finished"
+  case "$WT" in */lq-pilot-"$row") ;; *) die "$row: worktree $WT is not a pilot row worktree" ;; esac
+  restore_git
+  # The lane wrote its doc and transcript dirs: read nothing on the host that
+  # is a symlink or resolves outside them.
+  in_dir "$DOC" "$(dirname "$DOC")" || die "$row: the row doc $DOC is a symlink or not a file in its own dir"
+  txs="$(find_transcripts "$LANE" "$WT" "$DOC" "$TX")"
+  if [ "$LANE" != native ]; then
+    while IFS= read -r f; do
+      [ -z "$f" ] || in_dir "$f" "$TX" || die "$row: transcript $f is a symlink or leaves $TX"
+    done <<<"$txs"
+  fi
   usd=null
   if [ "$LANE" = deepseek ]; then
     snap1="$(ds_balance)"
@@ -309,9 +341,9 @@ cmd_finish() {
   # Every session of this row (a relaunch adds one), in launch order, scored as
   # one transcript so a read in an earlier session still counts.
   tr=""
-  if [ -n "$(find_transcripts "$LANE" "$WT" "$DOC" "$TX")" ]; then
+  if [ -n "$txs" ]; then
     tr="$ROOT/private/$row.transcript.jsonl"
-    find_transcripts "$LANE" "$WT" "$DOC" "$TX" | while IFS= read -r f; do cat "$f"; done >"$tr"
+    printf '%s\n' "$txs" | while IFS= read -r f; do cat "$f"; done >"$tr"
   fi
   m="$(metrics "$tr" "$rep")"
   pk="$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
@@ -335,6 +367,9 @@ cmd_finish() {
       accept: $acc, accept_ok: ($accrc == 0), scope_ok: ($scope | length == 0), out_of_scope: $scope,
       wrapped: $wrapped, transcript: (if $tr == "" then null else $tr end), packet: $pk } + $m' >"$ROOT/results/$row.json" \
     || die "$row: could not write its result"
+  # Scored, its diff in the packet: remove the worktree so no later host-side
+  # git (clean-garden scans every worktree) runs on a tree the lane wrote.
+  { rm -rf -- "$WT" "$GITDIR" && git -C "$REPO" worktree prune; } || die "$row: scored, but could not remove $WT"
   echo "pilot: $row finished ($acc, scope_ok=$(jq -r .scope_ok "$ROOT/results/$row.json"), packet $pk)"
 }
 

@@ -71,7 +71,8 @@ mnt() { # $1 jail path, $2 dir|file
 }
 
 A=(--die-with-parent --unshare-all --ro-bind / / --dev /dev --proc /proc)
-for d in /home /tmp /var/tmp /run /var/log /mnt /media "$HOME"; do
+# /var/lib holds core dumps (process env tokens), /var/spool the crontabs.
+for d in /home /tmp /var/tmp /run /var/log /var/lib /var/spool /var/cache /mnt /media "$HOME"; do
   [ -d "$d" ] && A+=(--tmpfs "$d")
 done
 A+=(--ro-bind /dev/null /run/lq-pilot-jail)

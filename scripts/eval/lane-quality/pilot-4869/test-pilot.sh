@@ -155,6 +155,7 @@ if bwrap --ro-bind / / true 2>/dev/null; then
   check 'live: the untracked MCP profile is absent in the sandbox' '[ -f "$TMP/repo/.claude/mcp-profiles/local.vault.json" ] && ! "${R1[@]}" test -e "$TMP/repo/.claude/mcp-profiles/local.vault.json"'
   check 'live: /run holds only the jail marker and /var/log is empty' '[ "$("${R1[@]}" ls -A /run)" = lq-pilot-jail ] && [ -z "$("${R1[@]}" ls -A /var/log)" ] && [ -n "$(ls -A /var/log)" ]'
   check 'live: the jail guard passes inside the jail' '"${R1[@]}" bash -c "$G"'
+  check 'live: /var/lib, /var/spool and /var/cache are empty in the jail (core dumps, crontabs)' '[ -n "$(ls -A /var/lib)" ] && (for d in /var/lib /var/spool /var/cache; do [ -z "$("${R1[@]}" ls -A "$d" 2>/dev/null)" ] || exit 1; done)'
   HP=$((20000 + $$ % 20000))
   socat TCP-LISTEN:$HP,bind=127.0.0.1,reuseaddr,fork SYSTEM:"echo pong" & S4=$!
   socat TCP6-LISTEN:$HP,bind='[::1]',reuseaddr,fork SYSTEM:"echo pong" & S6=$!
@@ -192,7 +193,24 @@ mkdir -p "$TMP/root/tx/p01/$slug" "$TMP/transcripts/$slug"
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/home/x/Documents/luna/hot.md"}}]}}\n' >"$TMP/root/tx/p01/$slug/s1.jsonl"
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Read","input":{"file_path":"/home/x/.himmel/eval/lane-quality/pilot-4869/handovers/pilot/p01/HIMMEL-4869-pilot-p01.md"}}]}}\n' >>"$TMP/root/tx/p01/$slug/s1.jsonl"
 printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"d%s","name":"Read","input":{}}]}}\n' 1 2 3 >"$TMP/transcripts/$slug/decoy.jsonl"
+# The lane writes its doc dir and transcript dir: a symlink there out to a
+# host file is refused, never read on the host.
+mv "$doc" "$doc.real"; ln -s "$TMP/secret" "$doc"
+check 'finish refuses a row doc that is a symlink' '! bash "$P" finish p01 >/dev/null 2>&1 && [ ! -e "$TMP/root/results/p01.json" ]'
+rm -f "$doc"; mv "$doc.real" "$doc"
+ln -s "$TMP/secret" "$TMP/root/tx/p01/$slug/s0.jsonl"
+check 'finish refuses a transcript that is a symlink' '! bash "$P" finish p01 >/dev/null 2>&1 && [ ! -e "$TMP/root/results/p01.json" ]'
+rm -f "$TMP/root/tx/p01/$slug/s0.jsonl"
+# The lane can repoint its worktree at a git dir it controls whose config runs
+# a command on the next host-side git status (clean-garden scans worktrees).
+git init -q "$TMP/evilrepo"
+printf '#!/bin/sh\ntouch %s\n' "$TMP/fsmon-pwned" >"$TMP/fsmon.sh"; chmod +x "$TMP/fsmon.sh"
+git -C "$TMP/evilrepo" config core.fsmonitor "$TMP/fsmon.sh"
+printf 'gitdir: %s\n' "$TMP/evilrepo/.git" >"$wt/.git"
 check 'finish p01 exits 0' 'bash "$P" finish p01 >/dev/null 2>&1'
+git -C "$wt" status >/dev/null 2>&1
+check 'after finish a host git status on the row worktree runs no lane code' '[ ! -e "$TMP/fsmon-pwned" ]'
+check 'finish removes the row worktree' '[ ! -e "$wt" ] && ! git -C "$TMP/repo" worktree list | grep -qF "$wt"'
 R="$TMP/root/results/p01.json"
 check 'transcript found and its tool calls counted' '[ "$(jq -r .tool_calls "$R")" = 2 ]'
 check 'reading its own brief under the pilot root is not peeking' '[ "$(jq -r .peeked "$R")" = false ]'
