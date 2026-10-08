@@ -1458,7 +1458,7 @@ DCSW_WANT=$'4|a||é|b\n'
 DCSW_WANT=${DCSW_WANT%$'\n'}
 DCSW_GOT=$(dcsw_run "$DCSW_SRC")
 DCSW_BROKE=$(dcsw_run "$DCSW_BAD")
-if [ -s "$DCSW_BAD" ] && ! cmp -s "$DCSW_SRC" "$DCSW_BAD" && [ "$DCSW_GOT" = "$DCSW_WANT" ] && [ "$DCSW_BROKE" != "$DCSW_WANT" ]; then
+if [ -s "$DCSW_BAD" ] && ! cmp -s "$DCSW_SRC" "$DCSW_BAD" && [ "$DCSW_GOT" = "$DCSW_WANT" ] && [ -n "$DCSW_BROKE" ] && [ "$DCSW_BROKE" != "$DCSW_WANT" ]; then
     echo "PASS 217b _dc_split_words splits every space and a broken split fails the control (got $DCSW_GOT; broken $DCSW_BROKE)"
 else
     echo "FAIL 217b _dc_split_words — want $DCSW_WANT, got $DCSW_GOT; broken variant gave $DCSW_BROKE"
