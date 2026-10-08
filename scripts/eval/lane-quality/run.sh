@@ -175,7 +175,7 @@ transcript_metrics() { # $1 = transcript or empty, $2 = final report file -> JSO
 # judge_call <packet> <out json> <err file> <model> <budget> [effort]: one
 # blind judge call on a stored packet; the result lands in <out json>.
 judge_call() {
-  local packet="$1" out="$2" err="$3" model="$4" budget="$5" effort="${6:-}" jdir
+  local packet="$1" out="$2" err="$3" model="$4" budget="$5" effort="${6:-}" jdir rc
   jdir="$(mktemp -d "${TMPDIR:-/tmp}/lq-judge.XXXXXX")" || return 1
   (
     cd "$jdir" || exit 1
@@ -190,7 +190,9 @@ judge_call() {
       exit 1
     fi
   ) <"$packet" >"$out" 2>"$err"  # opened before the cd, so a relative path still resolves
+  rc=$?  # the judge's status, not the cleanup's (HIMMEL-4667)
   rm -rf "$jdir"
+  return "$rc"
 }
 
 judge_scores() { # $1 judge result json -> the scores plus cost_usd, or null
@@ -498,7 +500,8 @@ cmd_calibration() {
   for d in "${dirs[@]}"; do [ -r "$d/runs.jsonl" ] || die "no runs.jsonl in $d"; done
   [ -z "$j2effort" ] || [ -n "$j2model" ] || die "--judge2-effort needs --judge2-model"
   awk -v m="$MAX_USD" 'BEGIN{exit !(m+0 > 0)}' || die "--max-usd must be a positive number"
-  case "$TIMEOUT" in ''|*[!0-9]*|0) die "--timeout must be positive whole seconds" ;; esac
+  case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be positive whole seconds" ;; esac
+  [ "$((10#$TIMEOUT))" -gt 0 ] || die "--timeout must be positive whole seconds"
   if [ -n "$j2model" ]; then
     label="$(printf '%s%s' "$j2model" "${j2effort:+-$j2effort}" | tr -c 'A-Za-z0-9.-' '_')"
     init_env

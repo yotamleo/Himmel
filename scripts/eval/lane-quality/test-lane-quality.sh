@@ -392,6 +392,15 @@ mkdir -p "$TMP/rel/fxr" && cp "$FX/runs.jsonl" "$FX"/*.judge-packet.md "$TMP/rel
 (cd "$TMP/rel" && bash "$RUN" calibration fxr --judge2-model haiku --json --no-ledger >/dev/null 2>&1)
 rc=$?
 check "a relative run dir still feeds the second judge its packet" '[ "$rc" -eq 0 ] && grep -q "packet b.r2" "$TMP/fake.log.judge"'
+# HIMMEL-4667: a failed judge launch fails judge_call (not the cleanup's rc 0),
+# and --timeout 00 is refused (GNU timeout 00 would disable the cap).
+printf '#!/usr/bin/env bash\necho "judge launch failed" >&2\nexit 3\n' >"$TMP/bin/claude-fail"; chmod +x "$TMP/bin/claude-fail"
+LQ_CLAUDE_BIN="$TMP/bin/claude-fail" bash "$RUN" calibration "$FX" --judge2-model opus --json --no-ledger >/dev/null 2>"$TMP/cal-fail.err"
+rc=$?
+check "a failing second judge makes calibration die with its message" '[ "$rc" -eq 64 ] && grep -q "cannot run the second judge" "$TMP/cal-fail.err"'
+bash "$RUN" calibration "$FX" --timeout 00 --json --no-ledger >/dev/null 2>"$TMP/cal-t00.err"
+rc=$?
+check "calibration refuses --timeout 00" '[ "$rc" -eq 64 ] && grep -q -- "--timeout must be positive" "$TMP/cal-t00.err"'
 check "weighted kappa ignores a pair off the 1..5 scale" '[ "$(kap "[1,2,6]" "[1,2,3]")" = 1.0 ]'
 
 echo "test-lane-quality: $PASS passed, $FAIL failed"
