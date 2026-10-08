@@ -160,6 +160,7 @@ PORTABLE_FILES=(
   scripts/hooks/block-edit-on-main.sh
   scripts/hooks/block-read-secrets.sh
   scripts/hooks/lib/guard-unwrap.sh
+  scripts/hooks/lib/shell-tokenize.sh
   scripts/hooks/check-commit-msg.sh
   scripts/lib/project-mode.sh
   scripts/hooks/check-worktree-isolation.sh

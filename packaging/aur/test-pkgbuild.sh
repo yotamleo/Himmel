@@ -252,6 +252,7 @@ if [ "$mode" = in-container ]; then
   # refuses the run as VACUOUS (rc 3). Seed one identical gate hook per target so the gates section
   # compares a real artifact (HIMMEL-4994).
   for s in clone tarball aur; do
+    mkdir -p "$w/target-$s/.git/hooks"
     printf '#!/bin/sh\nexit 0\n' > "$w/target-$s/.git/hooks/commit-msg"; chmod 755 "$w/target-$s/.git/hooks/commit-msg"
   done
   bash /src/scripts/release/converge-check.sh \

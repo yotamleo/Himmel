@@ -27,12 +27,13 @@ portable=$(awk '/^PORTABLE_FILES=\(/{f=1;next} f&&/^\)/{exit} f{print $1}' "$ado
 
 checked=0
 while IFS= read -r hook; do
-  case "$hook" in scripts/hooks/*.sh) ;; *) continue ;; esac
+  case "$hook" in scripts/hooks/*.sh) ;; *) continue ;; esac  # lib/*.sh too: a lib sourcing a sibling needs it shipped
   src="$repo_root/$hook"
   [ -f "$src" ] || { echo "FAIL: $hook is listed but missing" >&2; fail=1; continue; }
   code=$(grep -vE '^[[:space:]]*#' "$src")
   libs=$({ printf '%s\n' "$code" | grep -oE '\.\./(lib|guardrails)/[A-Za-z0-9_.-]+\.sh' | sed 's|^\.\./|scripts/|' || true
            printf '%s\n' "$code" | grep -oE '[%*}]/lib/[A-Za-z0-9_.-]+\.sh' | sed 's|^.*/lib/|scripts/hooks/lib/|' || true
+           printf '%s\n' "$code" | grep -oE '_dir/[A-Za-z0-9_.-]+\.sh' | sed 's|^_dir/|scripts/hooks/lib/|' || true
          } | sort -u)
   for lib in $libs; do
     checked=$((checked + 1))

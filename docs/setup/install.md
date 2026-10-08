@@ -256,6 +256,7 @@ scripts/hooks/auto-approve-safe-bash.sh
 scripts/hooks/block-edit-on-main.sh
 scripts/hooks/block-read-secrets.sh
 scripts/hooks/lib/guard-unwrap.sh
+scripts/hooks/lib/shell-tokenize.sh
 scripts/guardrails/lib.sh
 scripts/lib/py-armor.sh
 scripts/clean-garden.sh
