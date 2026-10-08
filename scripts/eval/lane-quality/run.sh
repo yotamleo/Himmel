@@ -8,9 +8,9 @@
 #
 # Usage:
 #   run.sh list
-#   run.sh run --lane native|openrouter --model <model> [--tasks a,b] [--effort <level>]
+#   run.sh run --lane native|openrouter|api --model <model> [--tasks a,b] [--effort <level>]
 #              [--reps <n>] [--max-usd <usd>] [--timeout <sec>] [--judge-model <model>]
-#              [--no-judge] [--keep] [--out <dir>]
+#              [--no-judge] [--keep] [--out <dir>] [--config <file>] [--dry-run]
 #   run.sh table <run-dir>...
 #   run.sh calibration <run-dir>... [--judge2-model <model>] [--judge2-effort <level>]
 #              [--max-usd <usd>] [--timeout <sec>] [--json] [--no-ledger]
@@ -48,6 +48,15 @@
 # --max-budget-usd. On a subscription lane that figure is the API-price
 # equivalent, not money spent; the bank reading is the subscription cost.
 #
+# The api lane (HIMMEL-4986): the agent runs through scripts/api-lane/claude-api.sh
+# on the API credit of HIMMEL_API_ACCOUNT, never on subscription auth. It needs
+# HIMMEL_API_LANE=on, HIMMEL_API_ACCOUNT, HIMMEL_API_KEY_ID and ANTHROPIC_API_KEY
+# in the environment, --no-judge (the judge is native, so it would draw the
+# subscription bank), and --max-usd of at most API_PILOT_CAP (default and ceiling
+# $1, enforced here; the launcher also reserves each call's budget in its ledger).
+# The native bank is read for the record but never gates an api run. --dry-run
+# checks all of that and prints the plan and the command, spending nothing.
+#
 # Output: <out>/runs.jsonl (one JSON row per task) plus per-task logs, under
 # ~/.himmel/eval/lane-quality/<run-id>/ by default.
 #
@@ -70,7 +79,7 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TASKS="$HERE/tasks"
 die() { echo "lane-quality: $*" >&2; exit 64; }
-usage() { sed -n '2,56p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 64; }
+usage() { sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 64; }
 command -v jq >/dev/null 2>&1 || die "jq is required"
 
 all_tasks() { for d in "$TASKS"/*/; do [ -f "$d/prompt.md" ] && basename "$d"; done; }
@@ -136,7 +145,7 @@ METERED_MARKUP=1.2
 REPORTED_RATIO=5
 
 agent_cost() { # $1 result json -> the agent's real cost in USD, or null
-  if [ "$LANE" = native ]; then jq -r '.total_cost_usd // null' "$1"; return; fi
+  if [ "$LANE" = native ] || [ "$LANE" = api ]; then jq -r '.total_cost_usd // null' "$1"; return; fi
   if [ "$LANE" = claudex ]; then jq -r '.total_cost_usd // 0' "$1"; return; fi
   jq -r --argjson p "$PRICES" --argjson mk "$METERED_MARKUP" --argjson rr "$REPORTED_RATIO" '
     .total_cost_usd as $rep
@@ -232,7 +241,7 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
   git -C "$REPO" worktree add -q --detach "$wt" "$BASE_SHA" || die "worktree add failed for $task"
   fix="$(materialize "$task" "$wt")" || die "fixture for $task failed"
   bank0="$(bank_read)"
-  if [ "${bank0%% *}" != PROCEED ]; then
+  if [ "${bank0%% *}" != PROCEED ] && [ "$LANE" != api ]; then
     git -C "$REPO" worktree remove --force "$wt" >/dev/null 2>&1
     echo "bank-refused ${bank0%% *}"; return 0
   fi
@@ -242,6 +251,17 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
   start="$(date +%s)"
   (
     cd "$wt" || exit 1
+    if [ "$LANE" = api ]; then
+      # HIMMEL-4986: the launcher keeps the key and removes every other credential source; the
+      # subscription token is dropped here too, so no layer between can hand it to the agent.
+      unset CLAUDE_CODE_OAUTH_TOKEN
+      export HIMMEL_API_JOB_ID="lq-$RUN_ID-$stem"
+      # headless-claude-ok: HIMMEL-4986 lane-quality api agent run, launcher bank gate and ledger reservation, explicit permission mode, budget-capped
+      # launch-profile-ok: HIMMEL-4986 the eval measures the lane's own default config, not a leg profile
+      timeout "$TIMEOUT" "$AGENT_BIN" -p "$(cat "$TASKS/$task/prompt.md")" --model "$MODEL" --permission-mode auto \
+        --output-format json --max-budget-usd "$outer" ${EFFORT:+--effort "$EFFORT"}
+      exit $?
+    fi
     # HIMMEL-4459: the pin's rc is advisory; the keyword-only LAUNCH GATE re-checks.
     native_auth_pin_env
     if [[ -z "${!ANTHROPIC_*}${!anthropic_*}${!CLAUDE_CODE_USE_*}${!claude_code_use_*}" ]]; then
@@ -309,6 +329,24 @@ run_task() { # $1 task, $2 repeat -> appends a row to runs.jsonl, prints the tas
     else $ac + ($j.cost_usd? // 0) end'
 }
 
+API_PILOT_CAP=1  # HIMMEL-4986: the most one api sweep may be given, in USD
+
+# api_dry_run <tasks>: every check an api sweep makes before it spends, plus the
+# plan and the exact command. Spends nothing, starts nothing, prints no key.
+api_dry_run() {
+  [ "${HIMMEL_API_LANE:-}" = on ] || die "api lane is OFF (set HIMMEL_API_LANE=on)"
+  case "${HIMMEL_API_ACCOUNT:-}" in A|B) ;; *) die "HIMMEL_API_ACCOUNT must be A or B" ;; esac
+  [ -n "${HIMMEL_API_KEY_ID:-}" ] || die "HIMMEL_API_KEY_ID is absent"
+  [ -n "${ANTHROPIC_API_KEY:-}" ] || die "ANTHROPIC_API_KEY is absent"
+  [ -x "$AGENT_BIN" ] || die "launcher '$AGENT_BIN' is not executable"
+  local n; n="$(printf '%s' "$1" | tr ',' '\n' | grep -c .)"
+  echo "lane-quality: api dry-run (nothing launched, nothing spent)"
+  echo "  account $HIMMEL_API_ACCOUNT, key id $HIMMEL_API_KEY_ID, model $MODEL${EFFORT:+, effort $EFFORT}"
+  echo "  tasks ($n x $REPS reps): $1 from $TASKS at $BASE_SHA"
+  echo "  cap $MAX_USD USD for the sweep (ceiling $API_PILOT_CAP); each call gets the remainder as --max-budget-usd"
+  echo "  command: $AGENT_BIN -p <task prompt> --model $MODEL --permission-mode auto --output-format json --max-budget-usd <remainder>"
+}
+
 init_env() { # the claude binary, the repo, the bank preflight and the native-auth pin
   CLAUDE_BIN="${LQ_CLAUDE_BIN:-claude}"
   REPO="${LQ_REPO:-$(dirname "$(git -C "$HERE" rev-parse --path-format=absolute --git-common-dir)")}"
@@ -344,8 +382,8 @@ apply_config() {
 }
 
 cmd_run() {
-  LANE=""; MODEL=""; TASK_LIST=""; EFFORT=""; MAX_USD=3; TIMEOUT=1800; JUDGE_MODEL=opus
-  NO_JUDGE=0; KEEP=0; OUT=""; REPS=1; CONFIG=""
+  LANE=""; MODEL=""; TASK_LIST=""; EFFORT=""; MAX_USD=""; TIMEOUT=1800; JUDGE_MODEL=opus
+  NO_JUDGE=0; KEEP=0; OUT=""; REPS=1; CONFIG=""; DRY_RUN=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --lane|--model|--tasks|--effort|--max-usd|--timeout|--judge-model|--out|--reps|--config)
@@ -358,12 +396,19 @@ cmd_run() {
         esac; shift 2 ;;
       --no-judge) NO_JUDGE=1; shift ;;
       --keep) KEEP=1; shift ;;
+      --dry-run) DRY_RUN=1; shift ;;
       *) die "unknown argument '$1'" ;;
     esac
   done
   [ -n "$MODEL" ] || die "--model is required"
   case "$LANE" in
     native|openrouter) ;;
+    api)
+      # HIMMEL-4986: the cap and the no-judge rule are code, not convention.
+      [ "$NO_JUDGE" -eq 1 ] || die "--lane api needs --no-judge (the judge runs native and would draw the subscription bank)"
+      MAX_USD="${MAX_USD:-$API_PILOT_CAP}"
+      awk -v m="$MAX_USD" -v c="$API_PILOT_CAP" 'BEGIN{exit !(m+0 <= c+0)}' \
+        || die "--lane api caps the sweep at $API_PILOT_CAP USD; --max-usd $MAX_USD is above the cap" ;;
     claudex)
       # HIMMEL-4906: the per-dispatch lane opt-in the dispatcher reads.
       if [ "${CLAUDEX_LANE_OK:-}" != 1 ]; then
@@ -375,7 +420,9 @@ cmd_run() {
       exit 3 ;;
     *) die "--lane must be native, openrouter or claudex; got '$LANE'" ;;
   esac
+  MAX_USD="${MAX_USD:-3}"
   awk -v m="$MAX_USD" 'BEGIN{exit !(m+0 > 0)}' || die "--max-usd must be a positive number"
+  [ "$DRY_RUN" -eq 0 ] || [ "$LANE" = api ] || die "--dry-run is for --lane api only"
   case "$TIMEOUT" in ''|*[!0-9]*) die "--timeout must be whole seconds" ;; esac
   [ "$TIMEOUT" -gt 0 ] || die "--timeout must be positive (0 disables timeout)"
   case "$REPS" in ''|*[!0-9]*) die "--reps must be a whole number" ;; esac
@@ -399,6 +446,9 @@ cmd_run() {
     BUDGET_FACTOR=4
     echo "lane-quality: openrouter agent budget factor $BUDGET_FACTOR (Claude Code over-counts the gateway slug; --max-usd counts real spend)" >&2
   fi
+  if [ "$LANE" = api ]; then
+    AGENT_BIN="${LQ_LANE_BIN:-$REPO/scripts/api-lane/claude-api.sh}"
+  fi
   if [ "$LANE" = claudex ]; then
     # The claudex launcher wraps claude, so -p and --output-format json work
     # unchanged. Claude Code cannot price the gpt slug, so the sweep cap counts
@@ -419,6 +469,7 @@ cmd_run() {
   for t in $(printf '%s' "$tasks" | tr ',' ' '); do
     [ -f "$TASKS/$t/prompt.md" ] || die "unknown task '$t'"
   done
+  if [ "$DRY_RUN" -eq 1 ]; then api_dry_run "$tasks"; return 0; fi
   SPENT=0; STATUS=ok
   echo "lane-quality: run $RUN_ID → $OUT"
   # Repeat by repeat, so a sweep cut short still covers every task evenly.
@@ -429,7 +480,7 @@ cmd_run() {
       STATUS=partial; break 2
     fi
     read -r tok _ <<<"$(bank_read)"
-    if [ "$tok" != PROCEED ]; then
+    if [ "$tok" != PROCEED ] && [ "$LANE" != api ]; then  # the api launcher gates its own credit
       echo "lane-quality: bank preflight said $tok; not starting '$t'" >&2
       exit 75
     fi

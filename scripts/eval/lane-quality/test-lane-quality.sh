@@ -161,6 +161,51 @@ check "claudex lane runs with CLAUDEX_LANE_OK=1" '[ "$rc" -eq 0 ] && [ "$(wc -l 
 check "claudex rows record token counts" '[ "$(jq -s -r ".[0].tokens | \"\(.input) \(.output) \(.cache_read)\"" "$TMP/out-cx/runs.jsonl")" = "1000 200 3000" ]'
 check "new tasks pass acceptance end to end" '[ "$(jq -s "map(.accept_ok) | all" "$TMP/out-cx/runs.jsonl")" = true ]'
 
+# HIMMEL-4986: --lane api routes the agent through scripts/api-lane/claude-api.sh with a
+# hard $1 cap in code, no judge, and no subscription OAuth token in the launcher's env.
+cat >"$TMP/bin/claude-api" <<'FAKE'
+#!/usr/bin/env bash
+{ echo "key=${ANTHROPIC_API_KEY:-}"; echo "oauth=${CLAUDE_CODE_OAUTH_TOKEN:-}"; echo "job=${HIMMEL_API_JOB_ID:-}"; echo "args=$*"; } >>"$LQ_FAKE_APIENV"
+[ -z "${LQ_FAKE_API_REFUSE:-}" ] || { echo "claude-api: refused: fake refusal" >&2; exit 2; }
+exec "$LQ_CLAUDE_BIN" "$@"
+FAKE
+chmod +x "$TMP/bin/claude-api"
+APIENV="$TMP/api.env"; : >"$TMP/fake.log"
+api_run() { # api_run <out> <args...>: the lane env the operator would set, plus a poisoned OAuth token
+  local out="$1"; shift
+  HIMMEL_API_LANE=on HIMMEL_API_ACCOUNT=B HIMMEL_API_KEY_ID=key-b ANTHROPIC_API_KEY=sk-ant-dummy-0000 \
+    CLAUDE_CODE_OAUTH_TOKEN=oauth-dummy LQ_LANE_BIN="$TMP/bin/claude-api" LQ_FAKE_APIENV="$APIENV" \
+    bash "$RUN" run --lane api --model claude-sonnet-5-5 --out "$out" "$@"
+}
+api_run "$TMP/out-api0" --no-judge --max-usd 1.5 >"$TMP/api0.log" 2>&1
+rc=$?
+check "api lane refuses a cap above \$1" '[ "$rc" -eq 64 ] && grep -q "cap" "$TMP/api0.log" && [ ! -e "$APIENV" ]'
+api_run "$TMP/out-api1" --tasks cr-fix >"$TMP/api1.log" 2>&1
+rc=$?
+check "api lane refuses a judged run (the judge is native)" '[ "$rc" -eq 64 ] && grep -q "no-judge" "$TMP/api1.log" && [ ! -e "$APIENV" ]'
+api_run "$TMP/out-api2" --no-judge --dry-run --tasks cr-fix,class-sweep >"$TMP/api2.log" 2>&1
+rc=$?
+check "api dry-run exits 0, names the cap and the command, spends nothing" '[ "$rc" -eq 0 ] && grep -q "cap 1 USD" "$TMP/api2.log" && grep -q "claude-api.sh\|claude-api" "$TMP/api2.log" && [ ! -e "$APIENV" ] && [ ! -s "$TMP/fake.log" ] && [ ! -e "$TMP/out-api2/runs.jsonl" ]'
+check "api dry-run never prints the key" '! grep -q "sk-ant-dummy" "$TMP/api2.log"'
+HIMMEL_API_LANE='' bash "$RUN" run --lane api --model m --no-judge --dry-run --out "$TMP/out-api3" >"$TMP/api3.log" 2>&1
+rc=$?
+check "api dry-run refuses while the lane is OFF" '[ "$rc" -ne 0 ] && grep -q "OFF" "$TMP/api3.log"'
+api_run "$TMP/out-api4" --no-judge --tasks cr-fix,class-sweep,shell-red-green >"$TMP/api4.log" 2>&1
+rc=$?
+check "api lane stops at the \$1 cap (two 0.5 tasks of three)" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out-api4/runs.jsonl" | tr -d " ")" = 2 ] && grep -q "budget cap reached" "$TMP/api4.log"'
+check "api rows record the lane" '[ "$(jq -s -r "map(.lane) | unique | join(\",\")" "$TMP/out-api4/runs.jsonl")" = api ]'
+check "the launcher gets the key and no OAuth token" 'grep -q "^key=sk-ant-dummy-0000$" "$APIENV" && ! grep -q "oauth-dummy" "$APIENV" && grep -q "^oauth=$" "$APIENV"'
+check "each call has its own job id and a budget at most the cap" '[ "$(grep -c "^job=lq-" "$APIENV")" = 2 ] && [ "$(grep "^job=" "$APIENV" | sort -u | wc -l | tr -d " ")" = 2 ] && ! grep "^args=" "$APIENV" | grep -Eq -- "--max-budget-usd (1\.[1-9]|[2-9])"'
+check "api rows ignore the native bank for gating" '[ -s "$TMP/out-api4/runs.jsonl" ]'
+: >"$TMP/fake.log"; rm -f "$APIENV"
+LQ_FAKE_TOKEN=SKIPPED-BANK api_run "$TMP/out-api5" --no-judge --tasks cr-fix >"$TMP/api5.log" 2>&1
+rc=$?
+check "a native bank refusal does not block the api lane" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out-api5/runs.jsonl" | tr -d " ")" = 1 ]'
+rm -f "$APIENV"
+LQ_FAKE_API_REFUSE=1 api_run "$TMP/out-api6" --no-judge --tasks cr-fix,class-sweep >"$TMP/api6.log" 2>&1
+rc=$?
+check "a launcher refusal is recorded as an error and stops the sweep" '[ "$(wc -l <"$TMP/out-api6/runs.jsonl" | tr -d " ")" = 1 ] && [ "$(jq -s ".[0].is_error" "$TMP/out-api6/runs.jsonl")" = true ] && grep -q "unknown" "$TMP/api6.log"'
+
 # HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
 printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"
 bash "$RUN" run --lane native --model haiku --config "$TMP/cfg-out.json" --out "$TMP/out-cfg1" >"$TMP/cfg1.log" 2>&1
