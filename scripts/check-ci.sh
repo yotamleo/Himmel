@@ -564,6 +564,28 @@ _cic_get_bounded() {
     cic_get "$1"
 }
 
+# _prune_cache_dir <dir> — HIMMEL-4890: drop aged pr-*/run-* cache rows and their
+# .wait heartbeats. Only REGULAR files directly in <dir> (no recursion, a symlink
+# is never matched or followed), older than the cache TTL plus the longest watch
+# interval a live waiter can go between heartbeats. A row with a fresh .wait
+# heartbeat has a live waiter and stays. Best-effort: never fails the caller.
+_prune_cache_dir() {
+    local dir="$1" mins f w
+    [ -d "$dir" ] || return 0
+    mins=$(( (CACHE_TTL + WATCH_INTERVAL_MAX + 59) / 60 ))
+    while IFS= read -r -d '' f; do
+        case "$f" in
+            *.wait) ;;
+            *) for w in "$f".*.wait; do
+                   [ -f "$w" ] && [ ! -L "$w" ] && [ -z "$(find "$w" -maxdepth 0 -mmin +"$mins" 2>/dev/null)" ] && continue 2
+               done ;;
+        esac
+        rm -f -- "$f" 2>/dev/null
+    done < <(find "$dir" -maxdepth 1 -type f \( -name 'pr-*' -o -name 'run-*' \) -mmin +"$mins" -print0 2>/dev/null)
+    return 0
+}
+if [ "$CACHE_ON" -eq 1 ]; then _prune_cache_dir "${CHECK_CI_CACHE_DIR:-${HOME:-/tmp}/.himmel/state/ci-cache}"; fi
+
 # pr_rows <ttl> — "<bucket>\t<name>" per check. Cached mode reads (or fetches once
 # for the whole fleet) a head-bound snapshot no older than <ttl> seconds; legacy
 # mode is the one direct gh call it always was. rc 1 = unreadable.
