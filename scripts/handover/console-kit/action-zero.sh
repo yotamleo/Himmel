@@ -46,8 +46,10 @@ done
 if [ -z "$doc" ] || [ -z "$root" ]; then usage; fi
 ql="$repo/scripts/handover/queue-lock.sh"
 
-# shellcheck source=../../lib/timeout-bin.sh
-. "$repo/scripts/lib/timeout-bin.sh" 2>/dev/null || _TIMEOUT_BIN=""
+# Resolved in a subshell so no source edge makes shellcheck-pr-range lint
+# timeout-bin.sh's consumers (check-ci-watch.sh) without their own sources.
+tb_lib="$repo/scripts/lib/timeout-bin.sh"
+_TIMEOUT_BIN="$(bash -c '. "$1" >/dev/null 2>&1; printf %s "$_TIMEOUT_BIN"' _ "$tb_lib" 2>/dev/null)"
 bank_t="${ACTION_ZERO_BANK_TIMEOUT:-60}"; doctor_t="${ACTION_ZERO_DOCTOR_TIMEOUT:-120}"
 # bounded <name> <secs> <cmd...>: output on stdout; a timeout prints the TIMEOUT line.
 bounded() {
