@@ -655,14 +655,34 @@ command -v python3 >/dev/null 2>&1 || { warn "MALFUNCTION: python3 missing — u
 # enough). A file redirect never blocks the parent.
 py_err="$STATE_DIR/auto-arm-py-err"
 py_out="$STATE_DIR/auto-arm-py-out"
+# HIMMEL-4948: honor the operator's validated bank lift, the way bank-preflight
+# and guard-implementor-dispatch do. A valid lift spends seven_day to 100; a
+# standing lift also spends five_hour to 100 unless CADENCE_BANK_MAX_PCT is
+# explicit. Anything else (missing, expired, other account, unreadable lib) is
+# no lift: both windows keep $THRESHOLD, exactly as before (fail-open).
+FH_THRESHOLD="$THRESHOLD"
+SD_THRESHOLD="$THRESHOLD"
+_lift_lib="$hook_dir/../lib/bank-lift.sh"
+[ -r "$_lift_lib" ] || _lift_lib="$project_dir/scripts/lib/bank-lift.sh"
+# shellcheck source=../lib/bank-lift.sh
+# shellcheck disable=SC1091
+if { [ -r "$_lift_lib" ] && . "$_lift_lib"; } 2>/dev/null && bank_lift_valid "$CACHE_PATH" 2>/dev/null; then
+    SD_THRESHOLD=100
+    if [ "${BANK_LIFT_STANDING:-}" = true ] && [ -z "${CADENCE_BANK_MAX_PCT:-}" ]; then FH_THRESHOLD=100; fi
+fi
 set +e
-py_armor - "$CACHE_PATH" "$THRESHOLD" <<'PY' >"$py_out" 2>"$py_err"
+py_armor - "$CACHE_PATH" "$THRESHOLD" "$FH_THRESHOLD" "$SD_THRESHOLD" <<'PY' >"$py_out" 2>"$py_err"
 import json, sys, time
 
 try:
     threshold = float(sys.argv[2])
 except Exception:
     sys.exit(3)  # bad threshold = config malfunction, NOT quiet bad-cache
+# HIMMEL-4948: per-window trip thresholds (a valid bank lift raises them to 100).
+try:
+    thresholds = {"five_hour": float(sys.argv[3]), "seven_day": float(sys.argv[4])}
+except Exception:
+    thresholds = {"five_hour": threshold, "seven_day": threshold}
 try:
     with open(sys.argv[1]) as f:
         data = json.load(f)
@@ -708,6 +728,8 @@ for w in ("five_hour", "seven_day"):
         sys.stderr.write(f"auto-arm-on-cap: {w.replace('_','-')} utilization {u:.0f} out of plausible range [0,{SANITY_MAX:.0f}] — treating as UNKNOWN (corrupt cache, e.g. a leaked timestamp)\n")
         continue
     parseable += 1
+    if u < thresholds[w]:
+        continue  # below THIS window's trip point (lifted windows trip at 100)
     if best is None or u > best[0]:
         resets = o.get("resets_at")
         if resets:
@@ -718,9 +740,9 @@ for w in ("five_hour", "seven_day"):
         best = (u, w, display, key)
 if parseable == 0 and unusable_windows:
     sys.exit(4)  # fresh cache but all utilization fields unusable (null or out-of-range) — surface as MALFUNCTION
-if parseable == 0 or best is None:
+if parseable == 0:
     sys.exit(2)  # schema drift / no usable signal — NOT "0%, all fine"
-if best[0] >= threshold:
+if best is not None:
     print(f"TRIP\t{best[0]:.0f}\t{best[1]}\t{best[2]}\t{best[3]}")
 else:
     print("OK")
