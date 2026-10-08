@@ -5500,6 +5500,18 @@ third, by then the rule has lost authority and Claude is rationalising
 bypasses. `default-rule` is fine as the FIRST layer; its next layer after
 drift is structural, not "stronger CLAUDE.md prose." Prose does not enforce.
 
+### himmel-bus delivery hook (HIMMEL-4828)
+
+`bus-deliver-hook.sh` (PostToolUse) and `bus-deliver-sessionstart.sh` deliver
+verified bus records into a session as `additionalContext`. **Dark** unless
+`HIMMEL_BUS_NAME` is set in the session's environment; fail-open on its own
+errors (a nudge, not a fence). Claude Code 2.1.295 caps hook `additionalContext`
+at 8000 chars and 200 lines, so a batch stops at 7500 chars / 190 lines and the
+cursor commits past the emitted records only. `record-hook-integrity.sh` also
+pins `marketplace/plugins/himmel-bus/lib/*.mjs`, and `bus-deliver-run.js` stays
+silent (fails closed) if one differs from its pin. `server/index.mjs` and
+`scripts/telegram/bus.ts` sit outside the pinned dirs (residual).
+
 ### Hook-integrity pin: monotonic re-pin + anchor-tamper fence (HIMMEL-2528)
 
 **What changed.** HIMMEL-1666's `record-hook-integrity.sh` used to pin every
