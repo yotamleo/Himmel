@@ -36,6 +36,19 @@ test('stdio initialize, tools/list, call errors, notifications and EOF shutdown'
       NO_PROXY: '', no_proxy: '',
     },
   })
+  // stderr is drained from spawn so the permission_request send failure, which
+  // is logged asynchronously, can be awaited instead of raced against shutdown.
+  let stderr = ''
+  const stderrDone = (async () => {
+    for await (const chunk of child.stderr.pipeThrough(new TextDecoderStream())) stderr += chunk
+  })()
+  async function waitForStderr(needle: string, ms = 5000) {
+    const deadline = Date.now() + ms
+    while (!stderr.includes(needle)) {
+      if (Date.now() > deadline) throw new Error(`stderr never contained "${needle}" within ${ms}ms; got: ${stderr}`)
+      await new Promise(r => setTimeout(r, 10))
+    }
+  }
   const lines = child.stdout.pipeThrough(new TextDecoderStream()).getReader()
   let buffer = ''
   let id = 0
@@ -100,6 +113,7 @@ test('stdio initialize, tools/list, call errors, notifications and EOF shutdown'
     })
     const after = await request('tools/list', {})
     expect(after.result.tools).toHaveLength(4)
+    await waitForStderr('permission_request send to 4242 failed')
 
     child.stdin.end()
     const code = await Promise.race([
@@ -107,7 +121,8 @@ test('stdio initialize, tools/list, call errors, notifications and EOF shutdown'
       new Promise<string>(r => setTimeout(() => r('timeout'), 5000)),
     ])
     expect(code).toBe(0)
-    expect(await new Response(child.stderr).text()).toContain('permission_request send to 4242 failed')
+    await stderrDone
+    expect(stderr).toContain('permission_request send to 4242 failed')
   } finally {
     child.kill()
     rmSync(state, { recursive: true, force: true })
