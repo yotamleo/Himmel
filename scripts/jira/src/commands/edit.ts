@@ -85,6 +85,98 @@ export function buildAddLabelsUpdate(addLabels: string): { labels: Array<{ add: 
   return { labels: parseLabels(addLabels).map((label) => ({ add: label })) };
 }
 
+// Jira field names edit sends, in read-back order (HIMMEL-4644).
+function readBackFieldNames(o: EditOptions): string[] {
+  const names: string[] = [];
+  if (o.priority) names.push('priority');
+  if (o.severity) {
+    const sev = severityField();
+    if (sev) names.push(sev);
+  }
+  if (o.title !== undefined) names.push('summary');
+  if (o.description !== undefined) names.push('description');
+  if (o.parent) names.push('parent');
+  if (o.labels !== undefined || o.addLabels !== undefined) names.push('labels');
+  if (o.fixVersion !== undefined || o.addFixVersion !== undefined) names.push('fixVersions');
+  return [...new Set(names)];
+}
+
+// Plain text of an ADF node: every `text` leaf, whitespace collapsed. Jira
+// normalises ADF on save, so descriptions are compared as text, not structure.
+function adfText(node: unknown): string {
+  const walk = (n: unknown): string => {
+    if (!n || typeof n !== 'object') return '';
+    const o = n as { text?: unknown; content?: unknown };
+    const own = typeof o.text === 'string' ? o.text : '';
+    const kids = Array.isArray(o.content) ? o.content.map(walk).join('') : '';
+    return own + kids;
+  };
+  return walk(node).replace(/\s+/g, ' ').trim();
+}
+
+// Returns one message per sent field whose read-back value differs.
+function verifyReadBack(
+  key: string,
+  o: EditOptions,
+  sent: Record<string, unknown>,
+  got: Record<string, unknown>,
+): string[] {
+  const out: string[] = [];
+  const bad = (label: string, requested: string, actual: string | undefined): void => {
+    out.push(
+      `Edit ${key}: ${label} was not changed — requested '${requested}' but the issue ` +
+        `still reads '${actual || 'none'}' after the PUT.`,
+    );
+  };
+  const same = (a: string | undefined, b: string): boolean => a?.toLowerCase() === b.toLowerCase();
+  const labels = Array.isArray(got['labels']) ? (got['labels'] as string[]) : [];
+  const versions = Array.isArray(got['fixVersions'])
+    ? (got['fixVersions'] as Array<{ name?: string }>).map((v) => v.name ?? '')
+    : [];
+
+  if (o.priority) {
+    const actual = (got['priority'] as { name?: string } | null | undefined)?.name;
+    if (!same(actual, o.priority)) bad('priority', o.priority, actual);
+  }
+  const sev = severityField();
+  if (o.severity && sev) {
+    const actual = (got[sev] as { value?: string } | null | undefined)?.value;
+    if (!same(actual, o.severity)) bad('severity', o.severity, actual);
+  }
+  if (o.title !== undefined) {
+    const actual = got['summary'] as string | undefined;
+    if (actual?.trim() !== o.title.trim()) bad('title', o.title, actual);
+  }
+  if (o.description !== undefined) {
+    const want = adfText(sent['description']);
+    const actual = adfText(got['description']);
+    if (actual !== want) bad('description', want, actual);
+  }
+  if (o.parent) {
+    const actual = (got['parent'] as { key?: string } | null | undefined)?.key;
+    if (!same(actual, o.parent)) bad('parent', o.parent, actual);
+  }
+  if (o.labels !== undefined) {
+    const want = parseLabels(o.labels);
+    if (want.length !== new Set(labels).size || !want.every((l) => labels.includes(l))) {
+      bad('labels', want.join(', '), labels.join(', '));
+    }
+  }
+  if (o.addLabels !== undefined) {
+    const want = parseLabels(o.addLabels);
+    if (!want.every((l) => labels.includes(l))) bad('add-labels', want.join(', '), labels.join(', '));
+  }
+  if (o.fixVersion !== undefined) {
+    if (versions.length !== 1 || versions[0] !== o.fixVersion) {
+      bad('fix-version', o.fixVersion, versions.join(', '));
+    }
+  }
+  if (o.addFixVersion !== undefined && !versions.includes(o.addFixVersion)) {
+    bad('add-fix-version', o.addFixVersion, versions.join(', '));
+  }
+  return out;
+}
+
 export function registerEdit(program: Command): void {
   program
     .command('edit <key>')
@@ -156,18 +248,15 @@ export function registerEdit(program: Command): void {
       // HIMMEL-4640: a 2xx PUT does not prove the field changed (Jira can drop a
       // field its edit screen or scheme does not take), so read the priority
       // back and fail loud instead of reporting a silent no-op as "edited".
-      if (options.priority) {
-        const got = await request<{ fields?: { priority?: { name?: string } | null } }>(
+      // HIMMEL-4644: same for every other field edit sends — one GET covers all.
+      const names = readBackFieldNames(options);
+      if (names.length > 0) {
+        const got = await request<{ fields?: Record<string, unknown> }>(
           'GET',
-          `/issue/${key}?fields=priority`,
+          `/issue/${key}?fields=${names.join(',')}`,
         );
-        const actual = got.fields?.priority?.name;
-        if (actual?.toLowerCase() !== options.priority.toLowerCase()) {
-          throw new Error(
-            `Edit ${key}: priority was not changed — requested '${options.priority}' but the ` +
-              `issue still reads '${actual ?? 'none'}' after the PUT.`,
-          );
-        }
+        const mismatches = verifyReadBack(key, options, fields, got.fields ?? {});
+        if (mismatches.length > 0) throw new Error(mismatches.join('\n'));
       }
       writeJiraBreadcrumb(key);
       console.log(`${key} edited`);
