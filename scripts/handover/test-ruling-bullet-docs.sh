@@ -30,6 +30,9 @@ else
     pass "RESOLVED rule no longer asks the leg to write what was ruled"
 fi
 
+# approval word may sit before or after the bullet noun; bare GO counts
+KW='(GO( <pr>)?|approved|authoris|authoriz|token)'
+BAD_RE="(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}${KW}[^.]*|(write|record|append)[^.]{0,80}${KW}[^.]{0,80}(bullet|Results)[^.]*"
 # 2. no preface instructs the leg to write GO / approval / token text into a doc bullet
 bad=0
 for f in "$DOCS"/handover/leg-preface*.md; do
@@ -38,15 +41,19 @@ for f in "$DOCS"/handover/leg-preface*.md; do
     joined="$(tr '\n' ' ' < "$f")"
     # LC_ALL=C: a multibyte [^.]{0,80} exceeds ugrep's complexity limit, and the
     # resulting rc=2 would otherwise read as "no match" (vacuous pass)
-    found="$(printf '%s\n' "$joined" | LC_ALL=C grep -oE '(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}(GO <pr>|approved|authoris|authoriz|token)[^.]*')"
+    found="$(printf '%s\n' "$joined" | LC_ALL=C grep -oiE "$BAD_RE")"
     rc=$?
     if [ "$rc" -gt 1 ]; then fail "$(basename "$f") scan errored (grep rc=$rc)"; bad=1; continue; fi
-    hit="$(printf '%s\n' "$found" | grep -viE 'never|not ' | head -n 1)"
+    hit="$(printf '%s\n' "$found" | grep -viE 'never|not |no token|release-token' | head -n 1)"
     if [ -n "$hit" ]; then fail "$(basename "$f") tells the leg to write approval/GO/token text into a bullet: $hit"; bad=1; fi
 done
 # positive control: the same scan must catch a wrapped bad instruction
-ctl="$(printf 'Always write the GO into your\nResults bullet along with your\ntoken.\n' | tr '\n' ' ' | LC_ALL=C grep -oE '(write|record|append)[^.]{0,80}(bullet|Results)[^.]{0,80}(GO <pr>|approved|authoris|authoriz|token)[^.]*')"
-if [ -n "$ctl" ]; then pass "scan control: a wrapped GO-into-bullet instruction is caught"; else fail "scan control: a wrapped GO-into-bullet instruction is caught"; fi
+for c in 'Always write the GO into your\nResults bullet along with your\ntoken.\n' \
+         'Always write GO into your Results bullet.\n' \
+         'Record the approved merge in a Results bullet.\n'; do
+    ctl="$(printf '%b' "$c" | tr '\n' ' ' | LC_ALL=C grep -oiE "$BAD_RE")"
+    if [ -n "$ctl" ]; then pass "scan control caught: $(printf '%b' "$c" | head -n 1)"; else fail "scan control missed: $(printf '%b' "$c" | head -n 1)"; fi
+done
 [ "$bad" -eq 0 ] && pass "no leg preface asks for approval/GO/token text in a doc bullet"
 
 # 3. quote-back stays in the reply, stated in the preface
