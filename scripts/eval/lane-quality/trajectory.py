@@ -315,7 +315,7 @@ def claims(report):
 
 def denial_list(calls):
     """[{tool_call_id, recovered, identical}] for each denied call, in issue order.
-    Linear in calls + denials (HIMMEL-4682)."""
+    Near-linear: O((calls + denials) * log n), one bisect and one sort (HIMMEL-4682)."""
     keys = [_canon(c) for c in calls]
     di = [i for i, c in enumerate(calls) if denied(c)]
     den = [calls[i] for i in di]

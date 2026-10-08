@@ -127,7 +127,7 @@ den "$TMP/den-5k.jsonl" 5000
 # shellcheck source=../../lib/timeout-bin.sh
 . "$HERE/../../lib/timeout-bin.sh" 2>/dev/null
 if [ -n "$_TIMEOUT_BIN" ]; then
-check "score --denials on a 5k-denial journal finishes well inside 20s (linear, not all-pairs)" '"$_TIMEOUT_BIN" 20 python3 "$TR" score "$TMP/den-5k.jsonl" --denials >"$TMP/den-5k.json" && jq -e "(.denials | length) == 5000 and ([.denials[].identical] | add) == .identical_denied_retries" "$TMP/den-5k.json" >/dev/null'
+check "score --denials on a 5k-denial journal finishes well inside 20s (near-linear, not all-pairs)" '"$_TIMEOUT_BIN" 20 python3 "$TR" score "$TMP/den-5k.jsonl" --denials >"$TMP/den-5k.json" && jq -e "(.denials | length) == 5000 and ([.denials[].identical] | add) == .identical_denied_retries" "$TMP/den-5k.json" >/dev/null'
 else ok "5k-denial timing row skipped: no GNU timeout on PATH"; fi
 
 
