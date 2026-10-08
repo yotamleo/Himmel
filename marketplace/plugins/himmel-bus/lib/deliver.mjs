@@ -60,7 +60,11 @@ export async function main(input, { name = process.env.HIMMEL_BUS_NAME } = {}) {
   const peers = await loadPeers(root);
   const owner = peers[name]?.role === 'console' ? undefined : peers[name]?.console;
   const event = input.hook_event_name === 'SessionStart' ? 'SessionStart' : 'PostToolUse';
-  const emit = text => writeSync(1, envelope(event, text) + '\n');
+  // writeSync may write less than asked; loop so a short write is never committed past.
+  const emit = text => {
+    const buf = Buffer.from(envelope(event, text) + '\n');
+    for (let off = 0; off < buf.length;) off += writeSync(1, buf, off);
+  };
 
   const { records, next, cursors, notice } = await store.read(root, name);
   if (notice) {

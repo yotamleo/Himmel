@@ -64,7 +64,8 @@ start_session() {
     "$WORK/bin/claude" -c '
         echo $$ > "$1.pid"
         while read -r f; do
-            HIMMEL_BUS_NAME="$2" bash "$3" < "$f" > "$f.out" 2> "$f.err"
+            h="$3"; [ -f "$f.hook" ] && h="$(cat "$f.hook")"
+            HIMMEL_BUS_NAME="$2" bash "$h" < "$f" > "$f.out" 2> "$f.err"
             echo $? > "$f.rc"
             : > "$f.done"
         done <> "$1.fifo"' _ "$WORK/req/$name" "$name" "$HOOK" > /dev/null 2>&1 &
@@ -80,6 +81,7 @@ run_as() {
     seq_no=$((seq_no + 1))
     f="$WORK/req/$name.$seq_no"
     cp "$in" "$f"
+    if [ -n "${RUN_HOOK:-}" ]; then printf '%s' "$RUN_HOOK" > "$f.hook"; fi
     printf '%s\n' "$f" > "$WORK/req/$name.fifo" &
     local i=0
     while [ ! -e "$f.done" ] && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
@@ -200,7 +202,7 @@ else fail "T6.1 (out='$out')"; fi
 h register leg5 leg con; L5="$(start_session leg5)"; h bind leg5 "$L5"
 h append leg5 '{"f":"con","c":1,"b":"on resume"}'
 printf '{"hook_event_name":"SessionStart","session_id":"s1","source":"resume"}' > "$WORK/in.start"
-run_as leg5 "$WORK/in.start"
+RUN_HOOK="$REPO_ROOT/scripts/hooks/bus-deliver-sessionstart.sh" run_as leg5 "$WORK/in.start"
 if printf '%s' "$out" | grep -q '^bus #1 from con:$' && printf '%s' "$out" | grep -qF '| on resume' && ! printf '%s' "$out" | grep -q 'hookSpecificOutput'; then
     pass "SessionStart: plain-text delivery, no JSON envelope"
 else fail "SessionStart (out='$out')"; fi
