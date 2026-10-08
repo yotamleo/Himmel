@@ -1222,177 +1222,6 @@ function splitRef(expr) {
   return { prefix: m[0], tail: e.slice(m[0].length).replace(/^\/+/, '') };
 }
 
-// Marks the characters of `text` Bash never runs as a command: the inside of
-// '...' and "..." (but not of a `$( ... )` or backtick span within a double
-// quote) and heredoc bodies (the same exception when the delimiter is
-// unquoted). Returns null on anything it cannot model, so a caller falls back
-// to scanning every character — a parse problem never hides a real statement.
-const HEREDOC_OP = new RegExp(`^<<(-?)[ \\t]*(?:'([^'\\n]*)'|"([^"\\n]*)"|(\\\\?)(${VAR_NAME}))`);
-const BODY_ESCAPE_SPAN = /^\$\(/;
-// Quoted and heredoc text is CODE unless its context provably never runs it, so
-// a form this list does not know costs a false deny and never a pass.
-const TAIL_RUNS = /[|<]|>\(|\\\s*$/;
-const ECHO_CMD = /^\s*(?:echo|printf|:)(?:\s|$)/;
-const DATA_USE = /^\s*(?:echo|printf|:|\[\[?|test|return|exit)(?:\s|$)/;
-const ASSIGN_HEAD = new RegExp(`^\\s*(?:(?:local|export|readonly|declare|typeset)\\s+(?:-\\w+\\s+)*)?(${VAR_NAME})=\\S*$`);
-
-// The command text before `i`, back to the last separator.
-function segmentBefore(text, i) {
-  for (let k = i - 1; k >= 0; k--) if (/[\n;&|({]/.test(text[k])) return text.slice(k + 1, i);
-  return text.slice(0, i);
-}
-
-function lineEndFrom(text, i) {
-  const e = text.indexOf('\n', i);
-  return e < 0 ? text.length : e;
-}
-
-// True when every use of $name in the file is an echo/printf/test argument.
-function varOnlyData(text, name) {
-  if (/\$\{!/.test(text) || /\b(?:declare|local|typeset)\s+-\w*n\b/.test(text)) return false;
-  const use = new RegExp(`\\$\\{?${name}(?![A-Za-z0-9_])`, 'g');
-  let m;
-  while ((m = use.exec(text))) {
-    const lineStart = text.lastIndexOf('\n', m.index - 1) + 1;
-    if (TAIL_RUNS.test(text.slice(lineStart, lineEndFrom(text, m.index)))) return false;
-    if (!DATA_USE.test(segmentBefore(text, m.index))) return false;
-  }
-  return true;
-}
-
-// The context of a quote opened at `i`: 'echo' (an argument of echo/printf/:),
-// 'assign' (the value of a plain assignment only ever read as data) or ''
-// (anything else: scanned as code).
-function inertContext(text, i, topLevel) {
-  if (!topLevel) return '';
-  const seg = segmentBefore(text, i);
-  if (ECHO_CMD.test(seg)) return 'echo';
-  const m = seg.match(ASSIGN_HEAD);
-  return m && varOnlyData(text, m[1]) ? 'assign' : '';
-}
-
-// An echo argument stays code when its line pipes or redirects into something
-// that could run it.
-function closeQuote(text, f, i, mask) {
-  if (f.echo && TAIL_RUNS.test(text.slice(i + 1, lineEndFrom(text, i + 1)))) mask.fill(0, f.start, i);
-}
-
-function maskHeredocBody(text, from, to, quoted, mask) {
-  if (quoted) { mask.fill(1, from, to); return true; }
-  for (let i = from; i < to; i++) {
-    const c = text[i];
-    if (c === '\\') { mask[i] = 1; i++; if (i < to) mask[i] = 1; continue; }
-    if (c === '`') {
-      const end = text.indexOf('`', i + 1);
-      if (end < 0 || end >= to) return false;
-      i = end;
-      continue;
-    }
-    if (BODY_ESCAPE_SPAN.test(text.slice(i, i + 2))) {
-      let depth = 0;
-      let j = i + 1;
-      for (; j < to; j++) {
-        if (text[j] === "'" || text[j] === '"') return false;
-        if (text[j] === '(') depth++;
-        else if (text[j] === ')' && --depth === 0) break;
-      }
-      if (j >= to) return false;
-      i = j;
-      continue;
-    }
-    mask[i] = 1;
-  }
-  return true;
-}
-
-function inertMask(text) {
-  const n = text.length;
-  const mask = new Uint8Array(n);
-  const stack = [{ t: 'code' }];
-  const pending = [];
-  let i = 0;
-  while (i < n) {
-    const f = stack[stack.length - 1];
-    const c = text[i];
-    if (f.t === 'sq') {
-      if (c === "'") { stack.pop(); closeQuote(text, f, i, mask); } else if (!f.live) mask[i] = 1;
-      i++;
-      continue;
-    }
-    if (f.t === 'dq') {
-      if (c === '\\') { if (!f.live) { mask[i] = 1; if (i + 1 < n) mask[i + 1] = 1; } i += 2; continue; }
-      if (c === '"') { stack.pop(); closeQuote(text, f, i, mask); i++; continue; }
-      if (c === '$' && text[i + 1] === '(') { stack.push({ t: 'cmd', depth: 0 }); i += 2; continue; }
-      if (c === '`') {
-        const end = text.indexOf('`', i + 1);
-        if (end < 0) return null;
-        i = end + 1;
-        continue;
-      }
-      if (!f.live) mask[i] = 1;
-      i++;
-      continue;
-    }
-    // code or cmd
-    if (c === '\\') { i += 2; continue; }
-    if (c === "'" || c === '"') {
-      const ctx = inertContext(text, i, stack.length === 1);
-      stack.push({ t: c === "'" ? 'sq' : 'dq', live: !ctx, echo: ctx === 'echo', start: i + 1 });
-      i++;
-      continue;
-    }
-    if (c === '$' && text[i + 1] === "'") return null;
-    // A `<<` inside `(( ))` / `$(( ))` is a shift, not a heredoc; this tokenizer does not model it.
-    if ((c === '(' && text[i + 1] === '(') || (c === '$' && text[i + 1] === '(' && text[i + 2] === '(')) {
-      const end = text.indexOf('))', i + 2);
-      if (end < 0 || text.slice(i, end).includes('<<')) return null;
-    }
-    if (c === '$' && text[i + 1] === '(') { stack.push({ t: 'cmd', depth: 0 }); i += 2; continue; }
-    if (c === '#' && (i === 0 || /[\s;&|()<>]/.test(text[i - 1]))) {
-      while (i < n && text[i] !== '\n') i++;
-      continue;
-    }
-    if (f.t === 'cmd') {
-      if (c === '(') f.depth++;
-      else if (c === ')') { if (f.depth === 0) stack.pop(); else f.depth--; i++; continue; }
-    }
-    // `case` patterns end in an unbalanced `)` that would close a `$( ... )` early.
-    if (stack.length > 1 && c === 'c' && /^case\b/.test(text.slice(i, i + 5)) && (i === 0 || /\W/.test(text[i - 1]))) return null;
-    if (c === '<' && text[i + 1] === '<') {
-      if (text[i + 2] === '<') { i += 3; continue; }
-      const h = text.slice(i, i + 200).match(HEREDOC_OP);
-      if (!h) return null;
-      pending.push({ inert: stack.length === 1 && /^\s*(?:cat|tee)(?:\s|$)/.test(segmentBefore(text, i)) && !TAIL_RUNS.test(text.slice(i + h[0].length, lineEndFrom(text, i))), word: h[2] !== undefined ? h[2] : h[3] !== undefined ? h[3] : h[5], tabs: h[1] === '-', quoted: h[2] !== undefined || h[3] !== undefined || h[4] === '\\' });
-      i += h[0].length;
-      continue;
-    }
-    if (c === '\n' && pending.length) {
-      i++;
-      for (const hd of pending) {
-        const start = i;
-        let found = false;
-        while (i < n) {
-          let e = text.indexOf('\n', i);
-          if (e < 0) e = n;
-          const lineText = hd.tabs ? text.slice(i, e).replace(/^\t+/, '') : text.slice(i, e);
-          if (lineText === hd.word) {
-            if (hd.inert && !maskHeredocBody(text, start, i, hd.quoted, mask)) return null;
-            i = Math.min(e + 1, n);
-            found = true;
-            break;
-          }
-          i = e + 1;
-        }
-        if (!found) return null;
-      }
-      pending.length = 0;
-      continue;
-    }
-    i++;
-  }
-  return stack.length === 1 && !pending.length ? mask : null;
-}
-
 // The directories a sourced path's prefix can stand for, or null when its real
 // value cannot be modelled (HIMMEL-4584). A prefix is one of: nothing (a
 // literal relative tail), a self-dir `$( ... )` (dirname of $0/BASH_SOURCE),
@@ -1498,34 +1327,18 @@ function resolveSourceArg(arg, fileDir, root, assigns) {
 // the files `file` itself sources (one level; the caller walks the rest).
 function sourcedClosure(file, root) {
   const text = fs.readFileSync(file, 'utf8');
-  // Every line stays in the text the tokenizer sees: a comment-looking line
-  // inside a quoted string is data, and dropping it would flip quote parity.
-  const lines = text.split('\n');
-  // HIMMEL-4585: a statement Bash never runs (quoted text, a heredoc body) is
-  // not a source statement. null (unparseable) leaves every line scanned.
-  const full = inertMask(text);
-  const mask = full || new Uint8Array(text.length);
-  const offsets = [];
-  lines.reduce((at, l) => { offsets.push(at); return at + l.length + 1; }, 0);
-  // A `#` line is a comment only where the tokenizer did not mask it as quoted data.
-  const isComment = (line, n) => /^\s*#/.test(line) && !(full && mask[offsets[n] + line.search(/\S/)]);
+  const lines = text.split('\n').filter((l) => !/^\s*#/.test(l));
   const assigns = {};
-  lines.forEach((line, n) => {
-    if (isComment(line, n)) return;
-    for (const m of line.matchAll(ASSIGN)) {
-      if (mask[offsets[n] + m.index + m[0].length - m[2].length - m[1].length - 1]) continue;
-      (assigns[m[1]] = assigns[m[1]] || []).push(firstShellWord(m[2]));
-    }
-  });
+  for (const line of lines) {
+    for (const m of line.matchAll(ASSIGN)) (assigns[m[1]] = assigns[m[1]] || []).push(firstShellWord(m[2]));
+  }
   const fileDir = path.dirname(file);
   const libs = new Set();
   const unresolved = [];
-  lines.forEach((line, n) => {
-    if (isComment(line, n)) return;
+  for (const line of lines) {
     // The argument is the whole next shell word, so a `"$(dirname "$0")/x.sh"`
     // prefix is kept rather than cut at its first `)`.
     for (const m of line.matchAll(SOURCE_CMD)) {
-      if (mask[offsets[n] + m.index + m[0].length - m[0].match(/(?:\.|source)\s+$/)[0].length]) continue;
       const arg = firstShellWord(line.slice(m.index + m[0].length));
       const word = unquoteWord(arg);
       if (!word.includes('$') && !/\.sh$/.test(word)) {
@@ -1542,7 +1355,7 @@ function sourcedClosure(file, root) {
       if (!/\.sh$/.test(unquoteWord(arg))) continue;
       for (const h of resolveSourceArg(arg, fileDir, root, assigns).hits) libs.add(h);
     }
-  });
+  }
   return { libs: [...libs], unresolved };
 }
 
