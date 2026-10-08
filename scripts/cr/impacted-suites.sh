@@ -637,21 +637,21 @@ varsrc="$work/varsrc"   # every .sh file that sources a "$variable"
 # (a quoted string, a trailing comment after a real source) never hides one.
 # (src_lead is defined above bare_source_ere, which the changed-file loop needs.)
 grep_rc=0
-git -c core.quotepath=off grep -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
+git grep -z -l -E "${src_lead}"'(source|\.)[[:space:]]+["'"'"']?\$' "$head_sha" -- ':(glob)**/*.sh' > "$work/varsrc.raw" || grep_rc=$?
 if [ "$grep_rc" -gt 1 ]; then
     echo "impacted-suites: git grep failed (rc=$grep_rc) listing variable-sourcing files — cannot tell which suites are impacted" >&2
     exit 2
 fi
-sed "s/^${head_sha}://" "$work/varsrc.raw" > "$varsrc" || io_fail "listing variable-sourcing files"
+tr '\0' '\n' < "$work/varsrc.raw" | sed "s/^${head_sha}://" > "$varsrc" || io_fail "listing variable-sourcing files"
 # closure_grep <patfile> <outfile> <what> — the .sh files at head matching any pattern.
 closure_grep() {
     grep_rc=0
-    git -c core.quotepath=off grep -l -E -f "$1" "$head_sha" -- ':(glob)**/*.sh' > "$2.raw" || grep_rc=$?
+    git grep -z -l -E -f "$1" "$head_sha" -- ':(glob)**/*.sh' > "$2.raw" || grep_rc=$?
     if [ "$grep_rc" -gt 1 ]; then
         echo "impacted-suites: git grep failed (rc=$grep_rc) $3 — cannot tell which suites are impacted" >&2
         exit 2
     fi
-    sed "s/^${head_sha}://" "$2.raw" > "$2" || io_fail "reading $3"
+    tr '\0' '\n' < "$2.raw" | sed "s/^${head_sha}://" > "$2" || io_fail "reading $3"
 }
 while [ -s "$front" ]; do
     : > "$work/srcpats"
@@ -915,16 +915,17 @@ if [ -s "$pats" ]; then
     # rc 1 is "no match"; anything higher is a search that did not run, which
     # must not read as an empty impacted set.
     grep_rc=0
-    # core.quotepath=off like the diff and ls-tree above: a non-ASCII suite path
-    # must come back as itself, not as a quoted "\303\251" the runner cannot open.
-    git -c core.quotepath=off grep -l -E -f "$pats" "$head_sha" -- \
+    # -z like the diff and ls-tree above (HIMMEL-4997): a suite path holding a
+    # non-ASCII byte, double quote, backslash or tab must come back as itself,
+    # not as a quoted "\303\251" the runner cannot open.
+    git grep -z -l -E -f "$pats" "$head_sha" -- \
         ':(glob)**/test-*.sh' ':(glob)**/*.test.mjs' ':(glob)**/*.test.js' ':(glob)**/*.test.ts' \
         > "$work/grep.out" || grep_rc=$?
     if [ "$grep_rc" -gt 1 ]; then
         echo "impacted-suites: git grep failed (rc=$grep_rc) — cannot tell which suites are impacted" >&2
         exit 2
     fi
-    sed "s/^${head_sha}://" "$work/grep.out" >> "$found" || io_fail "reading the search result"
+    tr '\0' '\n' < "$work/grep.out" | sed "s/^${head_sha}://" >> "$found" || io_fail "reading the search result"
 fi
 
 impacted="$work/impacted"

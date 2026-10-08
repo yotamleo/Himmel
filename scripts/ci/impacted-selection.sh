@@ -88,15 +88,21 @@ fi
 
 # ---- decision (running from the base extraction) ----------------------------
 tools="$IMPSEL_BASE_TOOLS"
-if ! changed=$(git -c core.quotepath=off diff --name-only --no-renames "${base_sha}...${head_sha}"); then
+# HIMMEL-4997: -z, because without it git C-quotes a name holding a double quote,
+# backslash or tab, the anchored trust match below misses it and the PR stays on
+# the impacted path. The NUL list feeds the trust match; tr makes the
+# one-per-line copy the verdict prints.
+if ! git diff -z --name-only --no-renames "${base_sha}...${head_sha}" > "$tools/changed.z"; then
   verdict_full "diff-failed" "$base_sha" "$selector_blob"
 fi
-[ -n "$changed" ] || verdict_full "empty-diff" "$base_sha" "$selector_blob"
+[ -s "$tools/changed.z" ] || verdict_full "empty-diff" "$base_sha" "$selector_blob"
+changed=$(tr '\0' '\n' < "$tools/changed.z")
 
 trust_re=$(grep -vE '^[[:space:]]*(#|$)' "$tools/scripts/ci/ci-trust-paths.txt" 2>/dev/null) || trust_re=""
 [ -n "$trust_re" ] || verdict_full "trust-list-empty" "$base_sha" "$selector_blob"
 # grep: 0 = a trust path changed, 1 = none did, anything else = broken list.
-hits=$(grep -E -f <(printf '%s\n' "$trust_re") <<< "$changed"); grc=$?
+grep -z -E -f <(printf '%s\n' "$trust_re") "$tools/changed.z" > "$tools/hits.z"; grc=$?
+hits=$(tr '\0' '\n' < "$tools/hits.z")
 case $grc in
   0) verdict_full "trust-path: ${hits%%$'\n'*}" "$base_sha" "$selector_blob" ;;
   1) ;;
