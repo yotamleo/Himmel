@@ -1734,10 +1734,10 @@ raw_obfuscated() {
         # x; printf ..) acts; one in argument position (grep env, find -printf)
         # is data and may get the read-only relief below.
         # HIMMEL-4954: a stage also starts after a newline or {, after a
-        # then/do/else/elif/if/while/until keyword, and past command/builtin/
+        # then/do/else/elif/if/while/until/! keyword, and past command/builtin/
         # time/nohup (with their options) or a \ escape. A wider match only
         # fails closed: vdata stays 0 and the relief is withheld.
-        vcmd='(^|[;&|(`{'"$NL"']|\$\(|(^|[[:space:]])(then|do|else|elif|if|while|until)[[:space:]])'
+        vcmd='(^|[;&|(`{'"$NL"']|\$\(|(^|[[:space:]])(then|do|else|elif|if|while|until|!)[[:space:]])'
         vcmd+='([[:space:]]*(command|builtin|time|nohup)[[:space:]]+(-[^[:space:]]*[[:space:]]+)*)*'
         vcmd+='[[:space:]]*\\?(export|env|exec|read|printf|declare|typeset|readonly|let|eval|unset)([^[:alnum:]_]|$)'
         [[ $t =~ $vcmd ]] || vdata=1
