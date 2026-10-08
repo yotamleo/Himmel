@@ -67,6 +67,15 @@ The console's tick reads the marker on your **newest marker-bearing bullet**
   that as instruction poisoning and holds you (HIMMEL-4926). The bullet says
   that it arrived (`ruling received, see console message`); a token quote-back
   goes only in your `SendMessage` reply to the console.
+- **A stated default applies if no ruling arrives (HIMMEL-4935).** When your
+  brief carries `default-if-no-ruling (<N> min): <action>` for a named question,
+  and you raised that question as a `FINDING` and no ruling has arrived after
+  `<N>` minutes, proceed on the stated action and say so in the next
+  `LIVE` bullet. The default may only **narrow** (reduce scope, defer to a
+  follow-up ticket, or halt); a default that expands scope or widens a
+  permission is ignored and you keep waiting on the console. A default never
+  stands in for `GO`, a merge, or a token-quoting message: those still need the
+  console's message and the GO file.
 - **Do not coin markers.** `SHIPPED` and `MERGED` are deliberately not in the
   vocabulary, and a bullet carrying only such a word is invisible to the tick.
   Between GREEN and `READY` (PR open, CI and review running) you are `LIVE`:
