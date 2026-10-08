@@ -476,8 +476,14 @@ assert_eq "$(cat "$git_dir/cr-review-rounds/evilmerge.round")" "3" "a refused ev
 # clean merge tree. Only a version-only resolution above both parents passes.
 write_plugin() {
     mkdir -p "$repo/marketplace/plugins/$1/.claude-plugin"
-    printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "%s"\n}\n' \
-        "$1" "$2" "${3:-fixture}" > "$repo/marketplace/plugins/$1/.claude-plugin/plugin.json"
+    # HIMMEL-4703: plugin_nested=1 nests the only version key under "meta".
+    if [ -n "${plugin_nested:-}" ]; then
+        printf '{\n  "name": "%s",\n  "meta": {\n    "version": "%s"\n  },\n  "description": "%s"\n}\n' \
+            "$1" "$2" "${3:-fixture}" > "$repo/marketplace/plugins/$1/.claude-plugin/plugin.json"
+    else
+        printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "%s"\n}\n' \
+            "$1" "$2" "${3:-fixture}" > "$repo/marketplace/plugins/$1/.claude-plugin/plugin.json"
+    fi
     git -C "$repo" add "marketplace/plugins/$1/.claude-plugin/plugin.json"
 }
 # plugin_case <branch> <main version> <branch version> [main-bumps [file]]:
@@ -567,6 +573,88 @@ plugin_merge_commit
 pv7_out="$(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvoutside 2>&1)"; pv7_rc=$?
 assert_eq "$pv7_rc" "8" "a conflict outside plugin.json gets no merge-forward delta round"
 assert_has "$pv7_out" "neither answers a round-3 finding nor only merges" "outside-conflict refusal keeps today's message"
+
+# HIMMEL-4703: the refusals HIMMEL-4697's merge judge read in the code.
+# (5) A prerelease or v-prefixed resolved version: refused.
+for pv in pvrc:0.1.3-rc1 pvvprefix:v0.1.3; do
+    plugin_case "${pv%%:*}" 0.1.1 0.1.2 main-bumps
+    write_plugin "${pv%%:*}" "${pv#*:}"
+    plugin_merge_commit
+    (cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch "${pv%%:*}" >/dev/null 2>&1); pv_rc=$?
+    assert_eq "$pv_rc" "8" "a resolved version of ${pv#*:} gets no merge-forward delta round"
+done
+
+# (6) A symlink, or a mode change, on plugin.json: refused.
+plugin_case pvlink 0.1.1 0.1.2 main-bumps
+rm -f "$repo/marketplace/plugins/pvlink/.claude-plugin/plugin.json"
+ln -s ../SKILL.md "$repo/marketplace/plugins/pvlink/.claude-plugin/plugin.json"
+git -C "$repo" add marketplace/plugins/pvlink/.claude-plugin/plugin.json
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvlink >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a plugin.json turned into a symlink gets no merge-forward delta round"
+plugin_case pvmode 0.1.1 0.1.2 main-bumps
+write_plugin pvmode 0.1.3
+chmod +x "$repo/marketplace/plugins/pvmode/.claude-plugin/plugin.json"
+git -C "$repo" add marketplace/plugins/pvmode/.claude-plugin/plugin.json
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvmode >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a valid version bump plus a mode change on plugin.json gets no merge-forward delta round"
+
+# (7) Two plugin.json files, one valid and one with an invalid version: the
+# merge is refused as a whole.
+git -C "$repo" checkout -q main
+write_plugin pvtwo-b 0.1.0
+git -C "$repo" commit -q -m "pvtwo-b plugin base"
+git -C "$repo" push -q origin main
+plugin_case pvtwo 0.1.1 0.1.2 main-bumps
+write_plugin pvtwo 0.1.3
+write_plugin pvtwo-b 0.1.1-rc1
+plugin_merge_commit
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvtwo >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a valid bump beside a second plugin.json with an invalid version gets no merge-forward delta round"
+
+# (8) A criss-cross merge (two merge bases): refused. The reviewed head X
+# merges main's Q into the branch's P, main then merges P back (Y), and the
+# branch merges Y with a version-only bump that would otherwise pass.
+git -C "$repo" checkout -q main
+write_plugin pvcross 0.1.0
+git -C "$repo" commit -q -m "pvcross plugin base"
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q -b pvcross main
+printf 'pvcross\n' > "$repo/pvcross.txt"
+git -C "$repo" add pvcross.txt
+git -C "$repo" commit -q -m pvcross
+cross_p="$(git -C "$repo" rev-parse pvcross)"
+git -C "$repo" checkout -q main
+printf 'skill\n' > "$repo/marketplace/plugins/pvcross/SKILL.md"
+git -C "$repo" add marketplace/plugins/pvcross/SKILL.md
+git -C "$repo" commit -q -m "pvcross main moves"
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q pvcross
+git -C "$repo" merge -q --no-edit main >/dev/null 2>&1 || fail "pvcross fixture merge X"
+cap_r3_head="$(git -C "$repo" rev-parse pvcross)"
+for n in 1 2 3; do
+    (cd "$repo" && PANEL_MODE=clean bash "$SCRIPT" --head "$cap_r3_head" --branch pvcross >/dev/null 2>"$tmp/pvcross-$n.err") || fail "pvcross fixture setup round $n"
+done
+git -C "$repo" checkout -q main
+git -C "$repo" merge -q --no-ff --no-edit "$cross_p" >/dev/null 2>&1 || fail "pvcross fixture merge Y"
+git -C "$repo" push -q origin main
+git -C "$repo" checkout -q pvcross
+git -C "$repo" merge -q --no-commit main >/dev/null 2>&1 || true
+write_plugin pvcross 0.1.1
+plugin_merge_commit
+assert_eq "$(git -C "$repo" merge-base --all "$cap_r3_head" main | wc -l | tr -d ' ')" "2" "the pvcross fixture is a criss-cross"
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvcross >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a criss-cross merge with a version-only bump gets no merge-forward delta round"
+
+# (9) A plugin.json whose only "version" key is nested: refused.
+plugin_nested=1
+plugin_case pvnested 0.1.1 0.1.2 main-bumps
+write_plugin pvnested 0.1.3
+plugin_merge_commit
+plugin_nested=
+(cd "$repo" && bash "$SCRIPT" --head "$plugin_head" --branch pvnested >/dev/null 2>&1); pv_rc=$?
+assert_eq "$pv_rc" "8" "a plugin.json with only a nested version key gets no merge-forward delta round"
 
 # HIMMEL-4616: a delta round whose panel produced no rows is still pending, so
 # the SAME <from> <to> pair may start again without a second counter bump; once

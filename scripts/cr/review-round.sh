@@ -158,10 +158,17 @@ plugin_json_path() {
 }
 # plugin_version <file>: prints the one "version" value, which must sit alone
 # on its line as plain X.Y.Z; fails on any other shape or a second version key.
+# The key must also be the file's top-level one, not nested (HIMMEL-4703).
+# shellcheck disable=SC2016  # JavaScript source is literal here
 plugin_version() {
     [ "$(awk '/"version"[[:space:]]*:/ { n++ } END { print n + 0 }' "$1")" = "1" ] || return 1
     _pv_v="$(sed -n -E 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9})"[[:space:]]*,?[[:space:]]*$/\1/p' "$1")"
     [ -n "$_pv_v" ] || return 1
+    PV_FILE="$1" PV_WANT="$_pv_v" node -e '
+const fs = require("fs"), e = process.env;
+const o = JSON.parse(fs.readFileSync(e.PV_FILE, "utf8"));
+process.exit(o && typeof o === "object" && !Array.isArray(o) && o.version === e.PV_WANT ? 0 : 1);
+' 2>/dev/null || return 1
     printf '%s\n' "$_pv_v"
 }
 # semver_gt <a> <b>: a > b for two plain X.Y.Z values.
