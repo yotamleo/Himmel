@@ -82,33 +82,19 @@ def python_launches(text):
 
 def shell_launches(text):
     errors = []
-    lines = text.splitlines()
-    # Recognize only the owned harness binding and the literal fixture form.
-    # A marker or variable name is not evidence of what Bash will execute.
-    runner_bindings = [
-        (number, line.strip()) for number, line in enumerate(lines, 1)
-        if not line.lstrip().startswith("#") and re.search(r'\bRUNNER\s*\+?=', line)
-    ]
-    approved = {
-        'RUNNER="sandbox-run.sh"',
-        'RUNNER="$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh"',
-    }
-    runner_line = (runner_bindings[0][0] if len(runner_bindings) == 1
-                   and runner_bindings[0][1] in approved else None)
+    # Require the owned runner path at the call site, never a mutable binding.
+    command = 'bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh"'
     hook = re.compile(r'\bbash\s+[\"\']?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|[\"\']?\$BASH[A-Za-z0-9_]*[\"\']?\s+[\"\']?\$HOOK\b')
-    wrapper = re.compile(r'\bbash\s+[\"\']?\$(?:RUNNER\b|\{RUNNER\})[\"\']?[^;|&]*?\s+--\s')
-    for number, line in enumerate(lines, 1):
+    wrapper = re.compile(re.escape(command) + r'[^;|&]*?\s+--\s')
+    for number, line in enumerate(text.splitlines(), 1):
         if line.lstrip().startswith("#"):
             continue
         for match in hook.finditer(line):
-            if re.search(r'\$(?:RUNNER\b|\{RUNNER\})', match.group()):
-                if runner_line is None or runner_line >= number:
-                    errors.append((number, "shell runner binding is not provable"))
-                continue
             prefix = line[:match.start()]
-            # A wrapper protects only its own simple command, not a later one.
-            prefix = re.split(r'[;|&]', prefix)[-1]
-            if not wrapper.search(prefix):
+            # Ignore operators inside the exact path expression, but a wrapper
+            # protects only its own simple command, never a later one.
+            wrappers = list(wrapper.finditer(prefix))
+            if not wrappers or re.search(r'[;|&]', prefix[wrappers[-1].end():]):
                 errors.append((number, "hook launch bypasses sandbox runner"))
     return errors
 

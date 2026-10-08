@@ -20,8 +20,7 @@ argv = ["--", "bash", hook_path]
 subprocess.Popen(["bash", runner] + argv)
 PY
 cat > "$SHELL_FIXTURE" <<'SH'
-RUNNER="sandbox-run.sh"
-printf '%s' "$input" | bash "$RUNNER" -- bash "$HOOK"
+printf '%s' "$input" | bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" -- bash "$HOOK"
 SH
 if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then ok 'routed launch accepted'; else bad 'routed launch rejected'; fi
 # These are source fixtures scanned as data, never expanded or executed.
@@ -30,6 +29,7 @@ for binding in 'RUNNER="$HOOK"' 'RUNNER="/tmp/not-the-runner.sh"' \
     'RUNNER="sandbox-run.sh"; RUNNER="$HOOK"' \
     'RUNNER="sandbox-run.sh"\nRUNNER="$HOOK"' \
     'if false; then RUNNER="sandbox-run.sh"; fi' \
+    'if false; then\nRUNNER="sandbox-run.sh"\nfi' \
     'RUNNER="$(echo sandbox-run.sh)"' ''; do
     printf '# sandbox-run.sh marker must not certify a binding\n%b\nbash "$RUNNER" -- bash "$HOOK"\n' "$binding" > "$SHELL_FIXTURE"
     if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then
@@ -37,22 +37,19 @@ for binding in 'RUNNER="$HOOK"' 'RUNNER="/tmp/not-the-runner.sh"' \
     else ok "unproven shell runner binding rejected: $binding"; fi
 done
 cat > "$SHELL_FIXTURE" <<'SH'
-RUNNER="$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh"
-bash "$RUNNER" -- bash "$HOOK"
+bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" -- bash "$HOOK"
 SH
-if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then ok 'real shell runner binding accepted'; else bad 'real shell runner binding rejected'; fi
+if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then ok 'immutable shell runner prefix accepted'; else bad 'immutable shell runner prefix rejected'; fi
 cat >> "$SHELL_FIXTURE" <<'SH'
 printf '%s' "$input" | bash "$HOOK"
 SH
 if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then bad 'unwrapped launch hidden by sandbox marker'; else ok 'unwrapped launch rejected despite marker'; fi
 cat > "$SHELL_FIXTURE" <<'SH'
-RUNNER="sandbox-run.sh"
-bash "$RUNNER" -- bash "$HOOK"; bash "$HOOK"
+bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" -- bash "$HOOK"; bash "$HOOK"
 SH
 if python3 -I "$LINT" "$TMP" >/dev/null 2>&1; then bad 'second unsandboxed simple command accepted'; else ok 'second unsandboxed simple command rejected'; fi
 cat > "$SHELL_FIXTURE" <<'SH'
-RUNNER="sandbox-run.sh"
-bash "$RUNNER" -- bash "$HOOK"
+bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" -- bash "$HOOK"
 SH
 cat >> "$PY_FIXTURE" <<'PY'
 subprocess.Popen(["bash", hook_path])

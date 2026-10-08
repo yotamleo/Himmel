@@ -11,16 +11,15 @@ set -uo pipefail
 HOOK="$(cd "$(dirname "$0")" && pwd)/block-destructive-commands.sh"
 [ -x "$HOOK" ] || chmod +x "$HOOK" 2>/dev/null || true
 
-RUNNER="$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh"
 FAILED=0
 
 run_case() {
     local input="$1"
     local env_assign="${2:-}"
     if [ -n "$env_assign" ]; then
-        printf '%s' "$input" | bash "$RUNNER" -- env "$env_assign" bash "$HOOK" >/dev/null 2>&1
+        printf '%s' "$input" | bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" -- env "$env_assign" bash "$HOOK" >/dev/null 2>&1
     else
-        printf '%s' "$input" | bash "$RUNNER" -- bash "$HOOK" >/dev/null 2>&1
+        printf '%s' "$input" | bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" -- bash "$HOOK" >/dev/null 2>&1
     fi
     echo "$?"
 }
@@ -616,7 +615,7 @@ git init -q -b release/stable "$h2054_slash_fixture/work"
     git push -q origin release/stable
     git remote set-head origin release/stable
 ) >/dev/null 2>&1
-h2054_slash_rc=$(cd "$h2054_slash_fixture/work" && printf '%s' "$(j_bash 'git push --force-with-lease origin release/stable')" | bash "$RUNNER" --read-only "$h2054_slash_fixture" -- bash "$HOOK" >/dev/null 2>&1; echo $?)
+h2054_slash_rc=$(cd "$h2054_slash_fixture/work" && printf '%s' "$(j_bash 'git push --force-with-lease origin release/stable')" | bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" --read-only "$h2054_slash_fixture" -- bash "$HOOK" >/dev/null 2>&1; echo $?)
 assert_rc "R13+ lease to default branch containing a slash" 2 "$h2054_slash_rc"
 rm -rf "$h2054_slash_fixture"
 # HIMMEL-2054 CR round 4 (panel): the bare `:` "matching" refspec strips to
@@ -1130,7 +1129,7 @@ fi
 assert_rc "4577 env 'FOO=a b'c xargs rm < list" 2 "$(run_case "$(j_bash "env 'FOO=a b'c xargs rm < list")")"
 nolib=$(mktemp -d "${TMPDIR:-/tmp}/guard-nolib.XXXXXX") || exit 1
 cp "$HOOK" "$nolib/block-destructive-commands.sh"
-assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$RUNNER" --read-only "$nolib" -- bash "$nolib/block-destructive-commands.sh" >/dev/null 2>&1; echo $?)"
+assert_rc "4438 missing guard-unwrap lib denies" 2 "$(printf '%s' "$(j_bash 'ls')" | bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" --read-only "$nolib" -- bash "$nolib/block-destructive-commands.sh" >/dev/null 2>&1; echo $?)"
 rm -rf "$nolib"
 
 # HIMMEL-4626: bash <= 4.3 treats an empty "${arr[@]}" as unbound under set -u, so a
@@ -1139,10 +1138,10 @@ rm -rf "$nolib"
 BASH43="${BASH43:-$HOME/.cache/himmel/verdicts/J1946/oldbash/src/bash-4.3.30/bash}"
 if [ -x "$BASH43" ]; then
     for c in "git push" "git push origin feat/x"; do
-        rc=$(printf '%s' "$(j_bash "$c")" | bash "$RUNNER" --read-only "$BASH43" -- "$BASH43" "$HOOK" >/dev/null 2>&1; echo $?)
+        rc=$(printf '%s' "$(j_bash "$c")" | bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" --read-only "$BASH43" -- "$BASH43" "$HOOK" >/dev/null 2>&1; echo $?)
         assert_rc "4626 bash4.3 '$c' not over-denied" 0 "$rc"
     done
-    rc=$(printf '%s' "$(j_bash 'git push -f origin main')" | bash "$RUNNER" --read-only "$BASH43" -- "$BASH43" "$HOOK" >/dev/null 2>&1; echo $?)
+    rc=$(printf '%s' "$(j_bash 'git push -f origin main')" | bash "$(cd "$(dirname "$HOOK")/../lib" && pwd)/sandbox-run.sh" --read-only "$BASH43" -- "$BASH43" "$HOOK" >/dev/null 2>&1; echo $?)
     assert_rc "4626 bash4.3 force push to main still denied" 2 "$rc"
 else
     echo "SKIP 4626 bash4.3 cases (no binary at $BASH43)"
