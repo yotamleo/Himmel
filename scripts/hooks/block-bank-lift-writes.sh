@@ -149,33 +149,46 @@ _expand() {
     _norm "$w"
 }
 
-# _glob_from_word <s> -> a [[ ]] pattern (needs extglob): {a,b} becomes @(a|b).
-_glob_from_word() {
-    local s="$1" out="" body
-    while :; do
-        case "$s" in
-            *'{'*'}'*)
-                # HIMMEL-4750: a group with a comma matches ITS alternatives, not
-                # any string, so a JSON argument ({"a":1,"b":2}) is not read as
-                # a glob over the lift name. An alternative holding any glob-active
-                # char (bracket, backslash, * ? ! + @, parens, |, $, backtick) -> old
-                # `*`, never a broken pattern that matches nothing. Quotes and `:`
-                # are literal filename chars here (the tokenizer already unquoted).
-                body="${s#*\{}"; body="${body%%\}*}"
-                # Nested group: fail closed, `*` over the span to the LAST `}`.
-                case "$body" in *'{'*) out="$out${s%%\{*}*"; s="${s##*\}}"; continue ;; esac
-                case "$body" in
-                    *,*) case "$body" in
-                            *'['*|*']'*|*\\*|*'*'*|*'?'*|*'!'*|*'+'*|*'@'*|*'('*|*')'*|*'|'*|*'$'*|*'`'*) body="" ;;
-                            *) body="@(${body//,/|})" ;;
-                         esac ;;
-                    *) body="" ;;
-                esac
-                out="$out${s%%\{*}${body:-*}"; s="${s#*\}}" ;;
-            *) out="$out$s"; break ;;
+# HIMMEL-4972: brace expansion works on the ORIGINAL word. The tokenizer marks
+# only UNQUOTED { } , with \003 \004 \005 (quoted or escaped ones stay plain
+# characters), so a "}" or \} or $'\x7d' inside a group does not close it, as
+# in bash. _bx expands the marked word the way bash does; a no-comma group
+# (which bash leaves literal, or a {a..c} sequence) becomes `*`, a superset.
+# It fails closed (BX_FAIL=1) on an unbalanced group, more than BX_MAX words,
+# more than 16 groups or a word over 4096 characters.
+BX_MAX=256
+BXW=(); BX_FAIL=0
+# _bx <marked-word> <groups-resolved>: appends the expansions to BXW.
+_bx() {
+    local s="$1" depth="$2" pre rest c lvl=0 i n alt="" end=-1 commas=0 suf w
+    local -a alts=()
+    [ "$BX_FAIL" = 1 ] && return
+    case "$s" in
+        *$'\003'*) ;;
+        *) s="${s//$'\004'/\}}"; s="${s//$'\005'/,}"
+           if [ "${#BXW[@]}" -ge "$BX_MAX" ]; then BX_FAIL=1; return; fi
+           BXW[${#BXW[@]}]="$s"; return ;;
+    esac
+    if [ "$depth" -ge 16 ] || [ "${#s}" -gt 4096 ]; then BX_FAIL=1; return; fi
+    pre="${s%%$'\003'*}"; rest="${s#*$'\003'}"; n=${#rest}; i=0
+    while [ "$i" -lt "$n" ]; do
+        c="${rest:i:1}"
+        case "$c" in
+            $'\003') lvl=$((lvl+1)); alt="$alt$c" ;;
+            $'\004') if [ "$lvl" = 0 ]; then end=$i; break; fi; lvl=$((lvl-1)); alt="$alt$c" ;;
+            $'\005') if [ "$lvl" = 0 ]; then alts[${#alts[@]}]="$alt"; alt=""; commas=$((commas+1)); else alt="$alt$c"; fi ;;
+            *) alt="$alt$c" ;;
         esac
+        i=$((i+1))
     done
-    printf '%s' "$out"
+    if [ "$end" -lt 0 ]; then BX_FAIL=1; return; fi
+    alts[${#alts[@]}]="$alt"
+    suf="${rest:end+1}"
+    if [ "$commas" = 0 ]; then _bx "$pre*$suf" $((depth+1)); return; fi
+    for w in "${alts[@]}"; do
+        _bx "$pre$w$suf" $((depth+1))
+        [ "$BX_FAIL" = 1 ] && return
+    done
 }
 
 _is_dynamic() { case "$1" in *'$'*|*'`'*) return 0 ;; esac; return 1; }
@@ -183,14 +196,23 @@ _is_dynamic() { case "$1" in *'$'*|*'`'*) return 0 ;; esac; return 1; }
 # _name_matches <component-from-word> <real-name>: the word component could
 # name real-name (literal, glob, brace, case-folded), or is dynamic.
 _name_matches() {
-    local c="$1"
+    local c="$1" w
     _is_dynamic "$c" && return 0
-    case "$c" in *"{"*) c=$(_glob_from_word "$c") ;; esac
+    case "$c" in
+        *$'\003'*)
+            BXW=(); BX_FAIL=0; _bx "$c" 0
+            [ "$BX_FAIL" = 0 ] || return 0
+            for w in "${BXW[@]}"; do _name_match1 "$w" "$2" && return 0; done
+            return 1 ;;
+    esac
+    _name_match1 "$c" "$2"
+}
+_name_match1() {
     # Case-folded only here: option parsing elsewhere is case-sensitive (-t/-T).
     local r=1
     shopt -s nocasematch extglob
     # shellcheck disable=SC2053  # the RHS is deliberately a pattern
-    [[ "$2" == $c ]] && r=0
+    [[ "$2" == $1 ]] && r=0
     shopt -u nocasematch extglob
     return "$r"
 }
@@ -221,6 +243,25 @@ _is_pure_glob() { local t="${1//[\*\?\[\]\{\},]/}"; [ -z "$t" ]; }
 # LIFT = the word may name the lift file itself; the others name an ancestor
 # directory a whole-directory write could put a lift into.
 lift_ref() {
+    local w best=NONE k
+    case "$1" in
+        *$'\003'*) ;;
+        *) _lift_ref1 "$@"; return ;;
+    esac
+    BXW=(); BX_FAIL=0; _bx "$1" 0
+    [ "$BX_FAIL" = 0 ] || { echo LIFT; return; }
+    for w in "${BXW[@]}"; do
+        k=$(_lift_ref1 "$w" "${2:-0}")
+        case "$k" in
+            LIFT) echo LIFT; return ;;
+            STATE) best=STATE ;;
+            HIMMEL) [ "$best" = STATE ] || best=HIMMEL ;;
+            HOME) [ "$best" = NONE ] && best=HOME ;;
+        esac
+    done
+    echo "$best"
+}
+_lift_ref1() {
     local w="$1" depth="${2:-0}" e dir base dk tgt
     [ -n "$w" ] || { echo NONE; return; }
     e=$(_expand "$w")
@@ -292,7 +333,7 @@ CMD="${CMD//$'\r'/}"
 [ -n "$CMD" ] || exit 0
 # The tokenizer marks below start with the control byte \002, so no word of
 # the command can spell one; the byte in the input itself is refused.
-case "$CMD" in *$'\002'*) deny "the command carries a \\x02 control byte (tokenizer sentinel)" ;; esac
+case "$CMD" in *$'\002'*|*$'\003'*|*$'\004'*|*$'\005'*|*$'\036'*|*$'\037'*) deny "the command carries a tokenizer control byte (\\x02-\\x05, \\x1e, \\x1f)" ;; esac
 
 # Tokenizer: shell text -> one CLAUSE per output line, tokens joined by \037,
 # a newline inside a token as \036. Quotes are removed (quoted metachars stay
@@ -308,8 +349,15 @@ case "$CMD" in *$'\002'*) deny "the command carries a \\x02 control byte (tokeni
 # read as one word, spaces included (HIMMEL-4458).
 read -r -d '' TOKENIZER <<'AWK'
 function hexv(c) { return index("0123456789abcdef", tolower(c)) - 1 }
-function addc(c) { if (c == SB) forged = 1; tok = tok c }
+function addc(c) { if (c == SB || c == US || c == NL || c == BO || c == BC || c == CM) forged = 1; tok = tok c }
+# HIMMEL-4972: unquoted { } , carry \003 \004 \005 so a later brace expansion
+# sees which ones are active; a word with no active { gets them back as text.
+function unmark(t) {
+    if (index(t, BO) == 0 || t == BO || t == BC) { gsub(BC, "}", t); gsub(CM, ",", t); gsub(BO, "{", t) }
+    return t
+}
 function emit_tok() {
+    pe = 0; tok = unmark(tok)
     if (tok != "" || quoted) { buf[d] = buf[d] (bn[d]++ ? US : "") tok }
     tok = ""; quoted = 0
 }
@@ -371,7 +419,7 @@ function subs(b,   p, L, j, dep, x, inner, e) {
 }
 { s = (NR > 1 ? s "\n" : "") $0 }
 END {
-    US = "\037"; NL = "\036"; SB = "\002"; forged = 0
+    US = "\037"; NL = "\036"; SB = "\002"; BO = "\003"; BC = "\004"; CM = "\005"; FDRE = "^([0-9]+|" BO "[A-Za-z_][A-Za-z0-9_]*" BC ")$"; forged = 0; pe = 0
     n = length(s); d = 0; mode = "o"; tok = ""; quoted = 0; nhd = 0
     buf[0] = ""; bn[0] = 0
     for (i = 1; i <= n; i++) {
@@ -414,6 +462,7 @@ END {
         if (c == "'") { mode = "s"; quoted = 1; continue }
         if (c == "\"") { mode = "q"; quoted = 1; continue }
         if (c == "$" && c2 == "'") { mode = "a"; quoted = 1; i++; continue }
+        if (c == "$" && c2 == "{") { addc(c); addc(c2); pe = 1; i++; continue }
         if (c == "$" && c2 == "(") { i++; open_sub("p"); continue }
         if (c == "`") { if (d > 0 && typ[d] == "b") close_sub(); else open_sub("b"); continue }
         if (c == "#" && tok == "" && !quoted) {
@@ -429,7 +478,7 @@ END {
         }
         if (c == ";" || c == "&" || c == "|" || c == "(") { flush(); continue }
         if (c == ">") {
-            if (!quoted && tok ~ /^([0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$/) tok = ""
+            if (!quoted && tok ~ FDRE) tok = ""
             j = i + 1
             if (substr(s, j, 1) == ">") j++
             if (substr(s, j, 1) == "|") j++
@@ -443,7 +492,7 @@ END {
             emit_mark(SB "W"); i = j - 1; continue
         }
         if (c == "<") {
-            if (!quoted && tok ~ /^([0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})$/) tok = ""
+            if (!quoted && tok ~ FDRE) tok = ""
             if (c2 == ">") { emit_mark(SB "W"); i++; continue }
             if (c2 == "&") {
                 emit_tok(); i++
@@ -478,6 +527,10 @@ END {
             }
             emit_mark(SB "R"); continue
         }
+        if (pe > 0) { if (c == "{") pe++; else if (c == "}") pe--; addc(c); continue }
+        if (c == "{") { tok = tok BO; continue }
+        if (c == "}") { tok = tok BC; continue }
+        if (c == ",") { tok = tok CM; continue }
         addc(c)
     }
     if (STRICT && (hdbad || mode != "o" || d > 0)) print SB "U"
@@ -686,7 +739,7 @@ whole_command_gate() {
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         case "$line" in
-            $'\002X') deny "the command decodes a \\x02 control byte (tokenizer sentinel)" ;;
+            $'\002X') deny "the command decodes a tokenizer control byte (\\x02-\\x05, \\x1e, \\x1f)" ;;
             $'\002U') deny "a command naming the bank lift cannot be parsed reliably (an unclosed quote or substitution, or a heredoc delimiter whose quote does not close)" ;;
             $'\002B\037'*) continue ;;   # heredoc body: data; its $( ) arrive as S lines
             $'\002S\037'*) line="${line#$'\002S\037'}"; whole_command_gate "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
@@ -1008,7 +1061,7 @@ EOF
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         case "$line" in
-            $'\002X') deny "the command decodes a \\x02 control byte (tokenizer sentinel)" ;;
+            $'\002X') deny "the command decodes a tokenizer control byte (\\x02-\\x05, \\x1e, \\x1f)" ;;
             $'\002B\037'*) bodies="$bodies${line#$'\002B\037'}"$'\n'; continue ;;
             $'\002S\037'*) line="${line#$'\002S\037'}"; analyse "${line//$'\036'/$'\n'}" $((depth+1)); continue ;;
         esac
