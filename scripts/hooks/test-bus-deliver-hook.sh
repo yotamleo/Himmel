@@ -206,9 +206,11 @@ if printf '%s' "$out" | grep -q '^bus #1 from con:$' && printf '%s' "$out" | gre
 else fail "SessionStart (out='$out')"; fi
 
 # --- unbound claude (and an env name it does not own) gets nothing
-h append stranger '{"f":"con","c":1,"b":"not yours"}' 2>/dev/null
-run_as stranger "$(post)"
-if [ -z "$out" ]; then pass "unbound session: silent"; else fail "unbound delivered (out='$out')"; fi
+h register stranger leg con   # registered, never bound to a claude pid
+if h append stranger '{"f":"con","c":1,"b":"not yours"}'; then
+    run_as stranger "$(post)"
+    if [ -z "$out" ]; then pass "unbound session: silent"; else fail "unbound delivered (out='$out')"; fi
+else fail "unbound session: mail could not be queued, row proves nothing"; fi
 
 # --- lib pin: a pinned lib file whose bytes differ delivers nothing (fail closed)
 h register leg6 leg con; L6="$(start_session leg6)"; h bind leg6 "$L6"
