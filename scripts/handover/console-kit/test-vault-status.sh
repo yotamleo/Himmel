@@ -71,7 +71,7 @@ TICK_VAULT_DIR="$W/bad" bash "$VS" >/dev/null 2>&1; check 'unknown exits 0' '0' 
 # --- bucket-gitleaks.sh -------------------------------------------------------
 if ! command -v gitleaks >/dev/null 2>&1; then
     # CI runners have no gitleaks: only the absent-binary contract is testable there
-    out="$(bash "$BG" "$W/seed.md")"; rc=$?
+    out="$(bash "$BG" "$W/v/seed.md")"; rc=$?
     check 'gitleaks absent prints GITLEAKS error' 'GITLEAKS error: gitleaks not installed' "$out"
     check 'gitleaks absent exits 2' '2' "$rc"
 else
