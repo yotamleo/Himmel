@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# HIMMEL-5039: every hook wired in .claude/settings.json and .codex/hooks.json
+# must pass hook-integrity's source resolution, transitively.
+#
+# Why: #2202 added `. "$(dirname "$lib")/load-dotenv.sh"` to 7 hooks.
+# hook-integrity.js could not resolve that statement, so it denied every tool
+# call of every session running main's hooks until an admin revert (#2211). CI,
+# /pr-check and the judge all missed it because nothing ran the REAL hook set
+# through the resolver. This suite does: it enumerates the wired hook scripts,
+# walks each one's sourced closure with hook-integrity's own sourcedClosure()
+# (the function verifyIntegrity uses), and fails on an unresolved source
+# statement or a sourced lib that is missing or outside the project.
+#
+# ponytail: checks the resolution step only, not the per-session pin check
+# (that needs a session record); the pin check can only fail after resolution
+# succeeds. Upgrade path: also drive verifyProjectHookIntegrity with a
+# synthesized record.
+#
+# Usage: bash scripts/hooks/test-wired-hooks-integrity-resolution.sh
+#        bash scripts/hooks/test-wired-hooks-integrity-resolution.sh <tree>   # sweep another tree (RED demos)
+set -uo pipefail
+
+ROOT="${1:-${HOOK_SRC_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}}"
+PASS=0
+FAIL=0
+ok()  { PASS=$((PASS + 1)); echo "  ok   $1"; }
+bad() { FAIL=$((FAIL + 1)); echo "  FAIL $1"; }
+
+# check_closure <root> <script> -> prints one problem per line, nothing when clean
+check_closure() {
+  # shellcheck disable=SC2016  # node source, not shell
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const root = fs.realpathSync(process.argv[1]);
+    const { sourcedClosure } = require(path.join(root, "scripts/hooks/hook-integrity.js"));
+    const queue = [path.resolve(process.argv[2])], seen = new Set(queue);
+    while (queue.length) {
+      const file = queue.shift();
+      let c;
+      try { c = sourcedClosure(file, root); }
+      catch (e) { console.log(`${path.relative(root, file)}: unreadable (${e.code || e.message})`); continue; }
+      for (const u of c.unresolved) console.log(`${path.relative(root, file)}: unresolved source statement: ${u}`);
+      for (const lib of c.libs) {
+        const rel = path.relative(root, lib);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) { console.log(`${path.relative(root, file)}: sourced lib outside project: ${lib}`); continue; }
+        if (!fs.existsSync(lib)) { console.log(`${path.relative(root, file)}: sourced lib missing: ${rel}`); continue; }
+        if (!seen.has(lib)) { seen.add(lib); queue.push(lib); }
+      }
+    }
+  ' "$1" "$2"
+}
+
+# wired_scripts <root> -> repo-relative hook script paths, one per line, deduped
+wired_scripts() {
+  # shellcheck disable=SC2016  # node source, not shell
+  node -e '
+    const fs = require("fs"), path = require("path");
+    const root = process.argv[1], out = new Set();
+    const cmds = (f) => {
+      const p = path.join(root, f);
+      if (!fs.existsSync(p)) return [];
+      const j = JSON.parse(fs.readFileSync(p, "utf8"));
+      const r = [];
+      const walk = (n) => { if (Array.isArray(n)) n.forEach(walk); else if (n && typeof n === "object") { if (typeof n.command === "string") r.push(n.command); Object.values(n).forEach(walk); } };
+      walk(j.hooks || j);
+      return r;
+    };
+    for (const c of cmds(".claude/settings.json"))
+      for (const m of c.matchAll(/\$\{?CLAUDE_PROJECT_DIR\}?\/([^"\s;]+\.(?:sh|js))/g)) out.add(m[1]);
+    for (const c of cmds(".codex/hooks.json")) {
+      const m = c.match(/run-hook\.sh\s+(?:--\S+\s+)*([A-Za-z0-9_.+-]+\.sh(?:\+[A-Za-z0-9_.+-]+\.sh)*)/);
+      if (m) for (const n of m[1].split("+")) out.add("scripts/hooks/" + n);
+    }
+    console.log([...out].sort().join("\n"));
+  ' "$1"
+}
+
+echo "== fixture rows (the resolver must flag what it flagged on 2026-10-08)"
+FX="$(mktemp -d)" || exit 1
+trap 'rm -rf "$FX"' EXIT
+mkdir -p "$FX/scripts/hooks" "$FX/scripts/lib"
+cp "$ROOT/scripts/hooks/hook-integrity.js" "$FX/scripts/hooks/"
+printf '# lib\n' > "$FX/scripts/lib/load-dotenv.sh"
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nlib=/x/handover-path.sh\n. "$(dirname "$lib")/load-dotenv.sh"\n' > "$FX/scripts/hooks/bad.sh"
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\n. "$(dirname "$0")/../lib/load-dotenv.sh"\n' > "$FX/scripts/hooks/good.sh"
+if [ -n "$(check_closure "$FX" "$FX/scripts/hooks/bad.sh")" ]; then ok "the #2202 source form is reported unresolved"; else bad "the #2202 source form passed the resolver (suite cannot fail)"; fi
+if [ -z "$(check_closure "$FX" "$FX/scripts/hooks/good.sh")" ]; then ok "a dirname-relative source of a real lib resolves"; else bad "a resolvable source form was flagged"; fi
+
+echo "== every wired hook script resolves"
+SCRIPTS="$(wired_scripts "$ROOT")"
+N=0
+if [ -z "$SCRIPTS" ]; then bad "no wired hook scripts found in settings.json / hooks.json"; fi
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  case "$rel" in
+    # The launcher itself runs BEFORE hook-integrity (it starts node); it is not
+    # a hook script and is never passed through verifyProjectHookIntegrity.
+    scripts/lib/run-node.sh) continue ;;
+    *.sh) ;;
+    *) continue ;;
+  esac
+  N=$((N + 1))
+  if [ ! -f "$ROOT/$rel" ]; then
+    # run-hook-with-bash treats an absent --optional hook as a no-op; a wired
+    # path with no file is reported, not failed, so an optional carve-out is safe.
+    echo "  skip $rel (not present)"
+    continue
+  fi
+  out="$(check_closure "$ROOT" "$ROOT/$rel")"
+  if [ -z "$out" ]; then ok "$rel"; else bad "$rel"; printf '       %s\n' "$out"; fi
+done <<< "$SCRIPTS"
+if [ "$N" -ge 10 ]; then ok "enumerated $N wired hook scripts"; else bad "only $N wired hook scripts enumerated (parser drift?)"; fi
+
+echo "passed=$PASS failed=$FAIL"
+[ "$FAIL" -eq 0 ]
