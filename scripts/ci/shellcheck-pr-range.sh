@@ -90,6 +90,8 @@ while IFS= read -r f; do
   [ -n "$lines" ] || continue
   # every source line must name a *.sh/*.bash, else the neighbour set is uncertain
   printf '%s\n' "$lines" | grep -qvE '[A-Za-z0-9_.+-]+\.(sh|bash)' && run_all "dynamic source line in $f"
+  # a name glued to a variable expansion ("${D}x.sh", "$N.sh") passes the check above but is dynamic
+  printf '%s\n' "$lines" | grep -qE '(\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*)[A-Za-z0-9_.+-]*\.(sh|bash)' && run_all "variable-glued source name in $f"
   names=$(printf '%s\n' "$lines" | grep -oE '[A-Za-z0-9_.+-]+\.(sh|bash)')
   printf '%s\n' "$names" | while IFS= read -r n; do
     printf '%s\n' "$tracked" | awk -v n="$n" '{ k=split($0,p,"/"); if (p[k]==n) print }'
@@ -97,17 +99,27 @@ while IFS= read -r f; do
 done <<EOF
 $changed
 EOF
-# second hop: an untouched lib's SC2034 verdict depends on ALL its consumers being in the input set
-hop=$(sort -u "$list")
-while IFS= read -r f; do
-  [ -n "$f" ] || continue
-  consumers "$(basename "$f")"
-  rc=$?
-  [ "$rc" -le 1 ] || run_all "git grep failed on $f"
-  cat "$list.n" >> "$list"
-done <<EOF
-$hop
+# closure: an untouched lib's SC2034 verdict depends on ALL its consumers being in the input set,
+# and a consumer's own verdict on ITS consumers -- iterate until no new file appears (bounded)
+done_set=""
+i=0
+while :; do
+  i=$((i + 1))
+  [ "$i" -le 20 ] || run_all "neighbour closure did not converge"
+  cur=$(sort -u "$list")
+  todo=$(printf '%s\n' "$cur" | grep -vxF -e "$done_set" -e '' || true)
+  [ -n "$todo" ] || break
+  done_set=$cur
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    consumers "$(basename "$f")"
+    rc=$?
+    [ "$rc" -le 1 ] || run_all "git grep failed on $f"
+    cat "$list.n" >> "$list"
+  done <<EOF
+$todo
 EOF
+done
 rm -f "$list.n"
 
 # a quoted path (special chars) cannot be matched back to a file: lint everything

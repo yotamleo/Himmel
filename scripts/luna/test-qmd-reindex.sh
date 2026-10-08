@@ -102,6 +102,9 @@ case "${1:-}" in
         fi
         echo "Indexed: 45 new, 22 updated, 14119 unchanged, 20 removed"
         echo "4 collections updated."
+        if [ -e "$STATE/hash-count" ]; then
+            echo "33515 unique hashes need vectors"
+        fi
         ;;
     embed)
         # `grep -c` PRINTS "0" and exits 1 when there are no matches, so a
@@ -111,6 +114,11 @@ case "${1:-}" in
         # (file absent) to 0.
         n=$(grep -c '^embed' "$STATE/calls" 2>/dev/null || :)
         [ -n "$n" ] || n=0
+        if [ -e "$STATE/busy" ] || { [ -e "$STATE/busy-verify" ] && [ "$n" -ge 2 ]; } || { [ -e "$STATE/busy-once" ] && [ "$n" -eq 1 ]; }; then
+            echo "Another embed process is already running" >&2
+            if [ -e "$STATE/busy-nonzero" ]; then exit 1; fi
+            exit 0
+        fi
         if [ -e "$STATE/fail-embed" ] && [ "$n" -eq 1 ]; then
             echo "qmd: embed exploded" >&2
             exit 9
@@ -564,6 +572,43 @@ if [ -f "$HOME/.cache/qmd/refresh-stamp" ]; then
 else
     fail "cleanup failure keeps the refresh stamp (vectors ARE complete)" "no stamp"
 fi
+
+# HIMMEL-4897: busy is contention, not a reworded verifier or embed failure.
+for busy_case in busy busy-verify busy-nonzero; do
+    echo "TEST: $busy_case exits BUSY with bounded retries and no success stamp"
+    reset_state
+    rm -rf "$TMP_ROOT/home/.cache/qmd" 2>/dev/null || true
+    if [ "$busy_case" = busy-nonzero ]; then touch "$STATE/busy"; fi
+    touch "$STATE/$busy_case"
+    rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+    assert_rc "$busy_case rc 9" 9 "$rc"
+    assert_contains "$busy_case named BUSY" "BUSY" "$out"
+    assert_not_contains "$busy_case not unrecognized" "UNRECOGNIZED" "$out"
+    assert_not_contains "$busy_case never claims success" "index refreshed, all content hashes embedded" "$out"
+    got_calls=$(calls | tr '\n' ',')
+    want_calls="update,embed,embed,"
+    if [ "$busy_case" = busy-verify ]; then want_calls="update,embed,embed,embed,"; fi
+    if [ "$got_calls" = "$want_calls" ]; then pass "$busy_case bounded retry, no cleanup"; else fail "$busy_case bounded retry" "$got_calls"; fi
+    if [ ! -e "$HOME/.cache/qmd/refresh-stamp" ]; then pass "$busy_case no stamp"; else fail "$busy_case no stamp"; fi
+done
+
+echo "TEST: contention that clears on retry is verified before success"
+reset_state
+touch "$STATE/busy-once"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "transient busy rc 0" 0 "$rc"
+assert_contains "transient busy reports success" "index refreshed, all content hashes embedded" "$out"
+got_calls=$(calls | tr '\n' ',')
+if [ "$got_calls" = "update,embed,embed,embed,cleanup," ]; then pass "transient busy still verifies"; else fail "transient busy still verifies" "$got_calls"; fi
+
+echo "TEST: upstream hash count is not presented as pending chunk work"
+reset_state
+touch "$STATE/hash-count" "$STATE/did-work"
+rc=0; out=$(bash "$SCRIPT" --qmd-bin "$FAKE_QMD" 2>&1) || rc=$?
+assert_rc "hash count rc 0" 0 "$rc"
+assert_not_contains "hash count does not claim pending vectors" "33515 unique hashes need vectors" "$out"
+assert_contains "hash count explicitly disclaims pending chunk count" "not a pending chunk count" "$out"
+assert_contains "hash count preserves upstream diagnostic count" "33515 unique hashes" "$out"
 
 # HIMMEL-4232: a configured embed model that differs from the index's vectors
 # must FAIL loud before `qmd update`, never embed a mixed index.

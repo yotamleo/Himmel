@@ -20,6 +20,10 @@ HOOK="$SCRIPT_DIR/guard-implementor-dispatch.sh"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/himmel-impl-guard.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
+# HIMMEL-4894: never read the operator's identity or real bank lift.
+mkdir -p "$TMP/home"
+printf '%s\n' '{"oauthAccount":{"accountUuid":"impl-guard-fixture"}}' > "$TMP/home/.claude.json"
+
 pass=0
 fail=0
 
@@ -279,7 +283,7 @@ run_hook() {
     # below re-adds IMPL_GUARD_OK=1 explicitly via "$@" to test the override
     # path on purpose, and that explicit assignment still wins (env applies
     # -u before later NAME=VALUE args in "$@").
-    printf '%s' "$json" | env -u IMPL_GUARD_OK -u IMPL_GUARD_DISABLE CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" IMPL_GUARD_BANK_STATUS_CMD="$BANK_FUNDED_CMD" IMPL_GUARD_READINESS_CMD="$READY_ALL_CMD" "$@" "$BASH_ABS" "$HOOK" \
+    printf '%s' "$json" | env -u IMPL_GUARD_OK -u IMPL_GUARD_DISABLE -u IMPL_GUARD_HARD -u IMPL_GUARD_WARN -u IMPL_GUARD_WEEKLY_HARD -u IMPL_GUARD_WEEKLY_WARN -u CADENCE_BANK_MAX_PCT HOME="$TMP/home" CLAUDE_ACCOUNT_CONFIG="$TMP/home/.claude.json" BANK_LIFT_FILE="$TMP/no-lift.json" CLAUDE_PROJECT_DIR="$REPO_ROOT" LANES_REGISTRY="$registry" PATH="$STUB_BUN_DIR:$PATH" IMPL_GUARD_BANK_STATUS_CMD="$BANK_FUNDED_CMD" IMPL_GUARD_READINESS_CMD="$READY_ALL_CMD" "$@" "$BASH_ABS" "$HOOK" \
         >"$TMP/out-$name" 2>"$TMP/err-$name"
     echo "$?"
 }
@@ -718,7 +722,7 @@ assert_rc "malformed input allows" 0 "$RC14"
 MISSING_ROOT="$TMP/no-repo"
 mkdir -p "$MISSING_ROOT"
 printf '%s' "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code.')" \
-    | env -u IMPL_GUARD_OK -u IMPL_GUARD_DISABLE CLAUDE_PROJECT_DIR="$MISSING_ROOT" LANES_REGISTRY="$REG_CLAUDEX" IMPL_GUARD_CACHE_PATH="$CACHE_LOW" bash "$HOOK" \
+    | env -u IMPL_GUARD_OK -u IMPL_GUARD_DISABLE -u IMPL_GUARD_HARD -u IMPL_GUARD_WARN -u IMPL_GUARD_WEEKLY_HARD -u IMPL_GUARD_WEEKLY_WARN -u CADENCE_BANK_MAX_PCT HOME="$TMP/home" CLAUDE_ACCOUNT_CONFIG="$TMP/home/.claude.json" BANK_LIFT_FILE="$TMP/no-lift.json" CLAUDE_PROJECT_DIR="$MISSING_ROOT" LANES_REGISTRY="$REG_CLAUDEX" IMPL_GUARD_CACHE_PATH="$CACHE_LOW" bash "$HOOK" \
         >"$TMP/out-missing" 2>"$TMP/err-missing"
 RC15=$?
 assert_rc "missing resolver allows when bank cannot be checked" 0 "$RC15"
@@ -726,8 +730,10 @@ assert_contains "missing resolver reports lane fail-open" "lane resolver missing
 
 EMPTY_DIR="$TMP/empty-path"
 mkdir -p "$EMPTY_DIR"
-printf '%s' "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code.')" \
-    | env -u IMPL_GUARD_OK -u IMPL_GUARD_DISABLE PATH="$EMPTY_DIR" "$BASH_ABS" "$HOOK" >"$TMP/out-no-jq" 2>"$TMP/err-no-jq"
+# No producer pipeline: the empty PATH makes cat unavailable, so the hook
+# exits without reading stdin and a producer can fail with SIGPIPE (rc 141).
+env -u IMPL_GUARD_OK -u IMPL_GUARD_DISABLE PATH="$EMPTY_DIR" "$BASH_ABS" "$HOOK" \
+    <<< "$(payload general-purpose sonnet 'Implement HIMMEL-1513' 'Write the code.')" >"$TMP/out-no-jq" 2>"$TMP/err-no-jq"
 RC16=$?
 assert_rc "missing jq allows" 0 "$RC16"
 assert_contains "missing jq reports fail-open" "jq not on PATH" "$(cat "$TMP/err-no-jq")"
@@ -835,6 +841,96 @@ RC30=$(run_hook bank-iso "$REG_NONE" "$(payload general-purpose sonnet 'Implemen
 assert_rc "fractional ISO future resets_at authorizes HARD" 2 "$RC30"
 
 echo ""
+echo "=== HIMMEL-4894: validated operator bank lift ==="
+# Removing lift validation must break the positive cases; accepting an invalid
+# lift must break the negative cases. All policies and identities are scratch.
+# shellcheck source=../lib/usage-cache-identity.sh
+. "$REPO_ROOT/scripts/lib/usage-cache-identity.sh"
+LIFT_ACCOUNT=$(CLAUDE_ACCOUNT_CONFIG="$TMP/home/.claude.json" current_account_hash)
+LIFT_RESET=$(( $(date +%s) + 3600 ))
+LIFT_CACHE="$TMP/lift-cache.json"
+LIFT_POLICY="$TMP/lift-policy.json"
+LIFT_PAYLOAD=$(payload general-purpose sonnet 'Implement the fix' 'Write the code.')
+lift_cache() {
+    printf '{"account":"%s","five_hour":{"utilization":%s,"resets_at":%s},"seven_day":{"utilization":%s,"resets_at":%s}}' \
+        "$LIFT_ACCOUNT" "$1" "$LIFT_RESET" "$2" "$LIFT_RESET" > "$LIFT_CACHE"
+}
+lift_policy() {
+    [ ! -e "$LIFT_POLICY" ] || chmod 600 "$LIFT_POLICY"
+    printf '{"window":"seven_day","until":%s,"account":"%s","standing":%s}' "$1" "$2" "$3" > "$LIFT_POLICY"
+    chmod 600 "$LIFT_POLICY"
+}
+lift_hook() {
+    run_hook "$1" "$REG_NONE" "$LIFT_PAYLOAD" IMPL_GUARD_CACHE_PATH="$LIFT_CACHE" BANK_LIFT_FILE="$LIFT_POLICY" "${@:2}"
+}
+lift_cache 10 90
+lift_policy 1 "$LIFT_ACCOUNT" true
+assert_rc 'standing lift allows weekly 90' 0 "$(lift_hook lift-standing)"
+assert_contains 'standing lift retains weekly WARN' '7-day bank at 90% (>= WARN 70%)' "$(cat "$TMP/out-lift-standing")"
+assert_rc 'explicit weekly HARD overrides standing lift' 2 "$(lift_hook lift-env-weekly IMPL_GUARD_WEEKLY_HARD=85)"
+assert_rc 'no lift retains weekly refusal' 2 "$(lift_hook lift-absent BANK_LIFT_FILE="$TMP/no-lift.json")"
+lift_policy "$LIFT_RESET" deadbeefdeadbeef true
+assert_rc 'other-account lift refuses weekly 90' 2 "$(lift_hook lift-account)"
+assert_contains 'other-account lift is loud' 'bank lift invalid (account)' "$(cat "$TMP/err-lift-account")"
+lift_policy "$LIFT_RESET" "$LIFT_ACCOUNT" true
+chmod 666 "$LIFT_POLICY"
+assert_rc 'untrusted lift refuses weekly 90' 2 "$(lift_hook lift-trust)"
+assert_contains 'untrusted lift is loud' 'bank lift invalid (trust)' "$(cat "$TMP/err-lift-trust")"
+lift_policy 1 "$LIFT_ACCOUNT" false
+assert_rc 'expired window lift refuses weekly 90' 2 "$(lift_hook lift-expired)"
+assert_contains 'expired lift is loud' 'bank lift invalid (expired)' "$(cat "$TMP/err-lift-expired")"
+printf '%s' '{broken' > "$LIFT_POLICY"
+assert_rc 'malformed lift refuses weekly 90' 2 "$(lift_hook lift-parse)"
+assert_contains 'malformed lift is loud' 'bank lift invalid (parse)' "$(cat "$TMP/err-lift-parse")"
+lift_policy "$LIFT_RESET" "$LIFT_ACCOUNT" true
+chmod 000 "$LIFT_POLICY"
+assert_rc 'unreadable lift refuses weekly 90' 2 "$(lift_hook lift-unreadable)"
+assert_contains 'unreadable lift is loud' 'bank lift invalid (parse)' "$(cat "$TMP/err-lift-unreadable")"
+lift_policy "$LIFT_RESET" "$LIFT_ACCOUNT" true
+printf '{"account":"deadbeefdeadbeef","five_hour":{"utilization":10,"resets_at":%s},"seven_day":{"utilization":90,"resets_at":%s}}' "$LIFT_RESET" "$LIFT_RESET" > "$TMP/lift-other-cache.json"
+assert_rc 'standing lift rejects other-account cache' 2 "$(lift_hook lift-cache-account IMPL_GUARD_CACHE_PATH="$TMP/lift-other-cache.json")"
+lift_policy "$LIFT_RESET" "$LIFT_ACCOUNT" false
+assert_rc 'valid window lift allows weekly 90' 0 "$(lift_hook lift-window)"
+lift_cache 90 10
+assert_rc 'window lift leaves five-hour default unchanged' 2 "$(lift_hook lift-window-five)"
+lift_policy 1 "$LIFT_ACCOUNT" true
+assert_rc 'standing lift allows five-hour 90' 0 "$(lift_hook lift-standing-five)"
+assert_rc 'explicit five-hour HARD overrides standing lift' 2 "$(lift_hook lift-env-five IMPL_GUARD_HARD=80)"
+assert_rc 'explicit cadence ceiling controls standing five-hour' 2 "$(lift_hook lift-cadence CADENCE_BANK_MAX_PCT=85)"
+assert_rc 'hook HARD wins over cadence ceiling' 0 "$(lift_hook lift-precedence CADENCE_BANK_MAX_PCT=85 IMPL_GUARD_HARD=95)"
+lift_cache 100 10
+assert_rc 'standing lift still refuses full five-hour bank' 2 "$(lift_hook lift-five-full)"
+lift_cache 10 100
+assert_rc 'standing lift still refuses full weekly bank' 2 "$(lift_hook lift-weekly-full)"
+
+# HIMMEL-4920: a lift library that defines no validator must leave the guard
+# refusing (thresholds stay default), never abort it — an aborted hook exits 1,
+# which Claude Code treats as a non-blocking error, i.e. a fail-OPEN.
+NOVAL_ROOT="$TMP/noval-repo"
+mkdir -p "$NOVAL_ROOT/scripts/hooks" "$NOVAL_ROOT/scripts/lib"
+cp "$HOOK" "$NOVAL_ROOT/scripts/hooks/guard-implementor-dispatch.sh"
+cp "$REPO_ROOT/scripts/lib/py-armor.sh" "$NOVAL_ROOT/scripts/lib/py-armor.sh"
+printf '%s\n' '# fixture: sources fine, defines no bank_lift_valid' > "$NOVAL_ROOT/scripts/lib/bank-lift.sh"
+lift_cache 10 90
+lift_policy 1 "$LIFT_ACCOUNT" true
+REAL_HOOK="$HOOK"
+HOOK="$NOVAL_ROOT/scripts/hooks/guard-implementor-dispatch.sh"
+assert_rc 'lib without validator still refuses weekly 90 (fail closed)' 2 "$(lift_hook lift-noval)"
+HOOK="$REAL_HOOK"
+if grepq "$(cat "$TMP/err-lift-noval")" -F 'unbound variable'; then
+    echo "FAIL lib without validator must not hit an unbound variable"; fail=$((fail + 1))
+else
+    echo "ok   lib without validator has no unbound variable"; pass=$((pass + 1))
+fi
+lift_policy 1 "$LIFT_ACCOUNT" true
+lift_cache 100 10
+assert_rc 'CADENCE_BANK_MAX_PCT=150 clamps to 100 and refuses full five-hour' 2 "$(lift_hook lift-cadence-150 CADENCE_BANK_MAX_PCT=150)"
+lift_cache 90 10
+assert_rc 'CADENCE_BANK_MAX_PCT=-5 falls back to default HARD' 2 "$(lift_hook lift-cadence-neg CADENCE_BANK_MAX_PCT=-5)"
+assert_contains 'negative cadence ceiling warns' 'CADENCE_BANK_MAX_PCT=-5 is not a positive number' "$(cat "$TMP/err-lift-cadence-neg")"
+assert_rc 'CADENCE_BANK_MAX_PCT=abc falls back to default HARD' 2 "$(lift_hook lift-cadence-abc CADENCE_BANK_MAX_PCT=abc)"
+assert_contains 'non-numeric cadence ceiling warns' 'CADENCE_BANK_MAX_PCT=abc is not a positive number' "$(cat "$TMP/err-lift-cadence-abc")"
+
 echo "=== HIMMEL-2653: weekly (seven_day) bank ceiling ==="
 
 # THE headline case: the fleet burned 73% of its weekly bank while five-hour

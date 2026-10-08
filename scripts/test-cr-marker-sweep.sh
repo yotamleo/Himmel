@@ -20,7 +20,7 @@ PASS=0
 FAIL=0
 TMP_ROOT=""
 
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap
 cleanup() {
     if [ -n "$TMP_ROOT" ] && [ -d "$TMP_ROOT" ]; then
         rm -rf "$TMP_ROOT" 2>/dev/null || true

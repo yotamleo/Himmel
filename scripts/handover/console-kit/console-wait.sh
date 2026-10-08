@@ -19,6 +19,11 @@
 #   WAKE tick changed=<f,...>   the tick's ACTION KEY changed and the change
 #     bank=<verdict>            held for two consecutive samples; bank= is the
 #   TICK ...                    bank-preflight verdict word the key carries.
+#   WAKE underfilled capacity=UNDERFILLED:<n>   (HIMMEL-4959) the tick's capacity
+#   <tick line>                 field says live < cap with no launch for
+#   <next-dispatchable.sh out>  TICK_UNDERFILL_MIN; once per streak, with the
+#                               ranked dispatchable list (CONSOLE_WAIT_DISPATCH
+#                               replaces the command, tests; it never launches).
 #   WAKE tick-fail samples=<n>  CONSOLE_WAIT_FAIL_WAKE consecutive samples
 #                               failed (tick or bank read): the monitor is
 #                               broken. Once per streak; the re-arm stays quiet
@@ -27,6 +32,10 @@
 # The action key is the tick fields a console acts on: legs=, livestate=,
 # prs=, tails=, legset=, board= and tracker= (HIMMEL-3933; class only, the STALE
 # age is dropped; tracker= is absent from an older tick line, never a failure),
+# vault= (HIMMEL-4911; class only, wakes ONLY on a move to STALL or PUSH-LAG --
+# never on a change of its age or count, nor a move back to ok/skip/unknown --
+# and the wake adds a `vault: reproduce with git -C <vault> hook run pre-commit`
+# line; absent from an older tick line, never a failure),
 # denials= (HIMMEL-3724 -- a new leg, a higher count or a higher class
 # (SHIP-STEP > PAUSE-RISK > REPEAT) is exactly the alert this exists to
 # surface; the same denial ageing out of tick.sh's 30-min window, moving it to
@@ -79,6 +88,11 @@
 #                        Written atomically: temp file in the same dir, then
 #                        `mv`, so a kill mid-write never leaves it torn.
 #   <inbox>.wait.lock    the one-waiter flock (the file stays; the lock does not).
+#   <inbox>.handover     handover mode (HIMMEL-4902): while it is fresh (younger
+#                        than CONSOLE_WAIT_HANDOVER_MIN, default 60) the waiter
+#                        skips tick/bank/page sampling and wakes only on Telegram.
+#                        That mutes classifier-denial pages for up to that long;
+#                        `rm <inbox>.handover` ends the mode early.
 #
 # Exit: 0 = a WAKE block was printed; 1 = the inbox could not be drained;
 # 2 = usage; 3 = another waiter is already live on this inbox (its pid is named).
@@ -199,7 +213,7 @@ field() { # <name> <tick line>
 # sample: sets tick_line and key (empty on a failed tick).
 sample() {
     local f v raw bank
-    key=""
+    key=""; cap_val=""
     # A tick that exits non-zero failed, whatever it printed first.
     raw="$(timeout -k 5 "$tick_timeout" bash "$tick_cmd" "$@" 2>/dev/null)" || { tick_state=fail; return; }  # gnu-ok: Linux-only kit
     tick_line="$(printf '%s\n' "$raw" | grep '^TICK ' | head -n 1)"
@@ -207,15 +221,17 @@ sample() {
     # A failed or garbled bank read is a failed sample, not a verdict.
     bank="$(bank_word)" || { tick_state=fail; return; }
     tick_state=ok
-    for f in legs livestate prs tails legset board tracker denials; do
+    cap_val="$(field capacity "$tick_line")"
+    for f in legs livestate prs tails legset board tracker vault denials; do
         v="$(field "$f" "$tick_line")"
         # HIMMEL-3933: tracker= is newer than the other fields; a tick line
         # without it (an older kit) just has no tracker key, not a failed sample.
-        if [ "$f" = tracker ] && [ -z "$v" ]; then continue; fi
+        # vault= (HIMMEL-4911) is newer still, the same way.
+        if { [ "$f" = tracker ] || [ "$f" = vault ]; } && [ -z "$v" ]; then continue; fi
         # A field missing from a malformed/partial tick line is a failed
         # sample, never a key with an empty value baked in.
         if [ -z "$v" ]; then tick_state=fail; key=""; return; fi
-        case "$f" in board|tracker) v="${v%%:*}" ;; esac
+        case "$f" in board|tracker|vault) v="${v%%:*}" ;; esac
         key="$key$f=$v|"
     done
     key="${key}bank=$bank"
@@ -239,12 +255,17 @@ key_field() {
 # itself a wake (only a move to STALE/MISSING is); strip it from a changed=
 # list so a combined change still names its other real fields.
 drop_board_ok() {
-    local board_new tracker_new
+    local board_new tracker_new vault_new
     board_new="$(key_field board "$2")"
     tracker_new="$(key_field tracker "$2")"
+    vault_new="$(key_field vault "$2")"
     printf '%s\n' "$1" | tr ',' '\n' | while IFS= read -r f; do
         [ "$f" = board ] && [ "$board_new" = ok ] && continue
         [ "$f" = tracker ] && [ "$tracker_new" = ok ] && continue
+        # HIMMEL-4911: vault= wakes only on a class move TO STALL / PUSH-LAG.
+        if [ "$f" = vault ]; then
+            case "$vault_new" in STALL|PUSH-LAG) ;; *) continue ;; esac
+        fi
         printf '%s\n' "$f"
     done | paste -sd, -
 }
@@ -343,6 +364,19 @@ page_denials() {
     done
 }
 
+# HIMMEL-4959: capacity=UNDERFILLED:<n> (tick.sh already folds TICK_UNDERFILL_MIN
+# into it) wakes once per streak. The marker file outlives the waiter, so a
+# re-arm inside the same streak stays quiet; capacity=ok removes it.
+underfill_file="$inbox.wait.underfill"
+dispatch_cmd="${CONSOLE_WAIT_DISPATCH:-$HERE/next-dispatchable.sh}"
+underfill_wake() { # prints the WAKE block; fail-open on the dispatchable list
+    printf 'WAKE underfilled capacity=%s\n%s\n' "$cap_val" "$tick_line"
+    [ -r "$dispatch_cmd" ] || return 0
+    local lf=()
+    [ -z "$legs_from" ] || lf=(--legs-from "$legs_from")  # live legs' files must reach the collision check
+    timeout -k 2 "${CONSOLE_WAIT_DISPATCH_TIMEOUT:-420}" bash "$dispatch_cmd" ${lf[@]+"${lf[@]}"} </dev/null 2>/dev/null 9>&- || true  # gnu-ok: Linux-only kit
+}
+
 saved=""
 if [ -f "$key_file" ] && [ "$(sed -n 1p "$key_file")" = "$args_hash" ]; then
     saved="$(sed -n 2p "$key_file")"
@@ -383,7 +417,15 @@ while :; do
     elif [ "$rc" -ne 1 ]; then
         exit_reason='inbox-error'; exit 1
     fi
-    if [ "$(date +%s)" -ge "$next_tick" ]; then
+    # HIMMEL-4902: <inbox>.handover (written by `console.sh next` once the
+    # successor validated) puts this waiter in handover mode: no tick, bank or
+    # page work (an outgoing console only waits for LIVE; a tick wake costs it
+    # a full-context turn), while the Telegram check above still wakes it.
+    # The marker only counts while fresh (CONSOLE_WAIT_HANDOVER_MIN, default 60):
+    # a launch that failed or never ran must not leave this console unmonitored.
+    handover_live=""
+    [ -e "$inbox.handover" ] && handover_live="$(find "$inbox.handover" -mmin "-${CONSOLE_WAIT_HANDOVER_MIN:-60}" 2>/dev/null)"
+    if [ -z "$handover_live" ] && [ "$(date +%s)" -ge "$next_tick" ]; then
         next_tick=$(( $(date +%s) + interval ))
         # The Telegram path is blocked while a tick runs (up to twice
         # CONSOLE_WAIT_TICK_TIMEOUT with the bank read); say so in the heartbeat.
@@ -398,6 +440,15 @@ while :; do
         if [ -n "$key" ]; then
             fail_streak=0
             fail_woke && save_key "${saved:-$key}"
+            case "$cap_val" in
+                UNDERFILLED:*)
+                    if [ ! -e "$underfill_file" ]; then
+                        : > "$underfill_file" 2>/dev/null
+                        underfill_wake
+                        exit_reason='wake-underfilled'; exit 0
+                    fi ;;
+                ok) rm -f "$underfill_file" ;;
+            esac
             cur_hash="$(printf '%s' "$key" | sha256sum | cut -c1-16)"  # gnu-ok: Linux-only kit
             if [ -z "$saved" ]; then
                 saved="$key"; save_key "$key"
@@ -416,6 +467,11 @@ while :; do
                 else
                     page_denials "$saved" "$key"
                     printf 'WAKE tick changed=%s bank=%s\n%s\n' "$real_changed" "${key##*|bank=}" "$tick_line"
+                    # HIMMEL-4911: a vault wake names how to reproduce the stuck commit.
+                    case ",$real_changed," in *,vault,*)
+                        vault_dir="$(bash "$HERE/vault-status.sh" --path 2>/dev/null)" || vault_dir=""
+                        printf 'vault: reproduce with git -C %s hook run pre-commit\n' "${vault_dir:-<vault>}" ;;
+                    esac
                     save_key "$key"
                     exit_reason='wake-tick'; exit 0
                 fi

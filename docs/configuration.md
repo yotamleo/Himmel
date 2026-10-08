@@ -22,6 +22,63 @@ controls.)
 
 ---
 
+## `.env` consumer boundaries
+
+Each loader names its keys explicitly (HIMMEL-4910). The shared shell
+`load_dotenv [--root DIR] KEY...` exports **nothing without a key list**;
+existing non-empty shell values still win. Jira/Bitbucket keep their existing
+nullish precedence (an exported empty string wins). Python credential readers
+keep live values and disable dotenv interpolation. These boundaries govern
+what a file adds, not credentials the launching shell already exported.
+
+**Bun limitation:** Bun can auto-load the working directory's `.env` before
+any explicit reader runs. These consumer allowlists cannot prevent that
+runtime-level import. Auditing Bun launch sites and passing `--no-env-file`
+is tracked separately in **HIMMEL-4915**, outside HIMMEL-4910. No Bun launch
+sites are changed here.
+
+| Consumer | Keys loaded from its file |
+|---|---|
+| Jira / Confluence (`scripts/jira/src/client.ts`) | `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT_KEY`, `JIRA_SEVERITY_FIELD`, `JIRA_BOARD_ID`, `CONFLUENCE_EMAIL`, `CONFLUENCE_API_TOKEN` |
+| Bitbucket (`scripts/bitbucket/src/env.ts`) | `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, `BITBUCKET_WORKSPACE`, `BITBUCKET_REPO_SLUG` |
+| Codex launcher (bash/PowerShell), CLI proxy setup | `CLIPROXY_API_KEY` |
+| DeepSeek launcher (bash/PowerShell) | `DEEPSEEK_API_KEY` |
+| GLM launcher (bash/PowerShell), `telegram/glm-env.ts`, graph-map refresh | `ZAI_API_KEY` |
+| OpenRouter launcher (bash/PowerShell), `lanes/openrouter-cost.sh` | `OPENROUTER_API_KEY` |
+| Routed launcher (bash/PowerShell) | `OMNIROUTE_API_KEY` |
+| CR artifact critic / provider-selected panel credentials | `GLM_API_KEY`, `ZAI_API_KEY`, `Z_AI_API_KEY`; panel additionally `CLIPROXY_API_KEY` when Codex is selected |
+| CR policy readers | `CR_PROFILE`, `CR_REQUIRE_CROSS_MODEL`, `CR_FLOOR_FALLBACK`, `HIMMEL_DOC_FRESHNESS` as required by each reader; `pr-check-env.sh` permits only those plus `CR_CLAUDE_AGENTS` |
+| Handover tools, graph cadence, graphify fence, Hermes egress, overnight report, config-ui fleet/legs, statusline, lane-cost rows | `HANDOVER_DIR`; hop, leg-timeline, auto-action and leg-relaunch additionally `USER_SLUG`; console additionally `JIRA_PROJECT_KEY` |
+| GO gate, user-slug setup probe | `USER_SLUG` (GO gate separately reads `HANDOVER_DIR`) |
+| Console ready-check | `TICKET_ID_PATTERN`, `JIRA_PROJECT_KEY` |
+| Commit-message hook | `TICKET_ID_REQUIRED`, `TICKET_ID_PATTERN`, `TICKET_ID_EXEMPT_AUTHORS`, `JIRA_PROJECT_KEY`, `TRACKER` |
+| Session injection hooks | Initiative: `HIMMEL_INITIATIVE`, `HIMMEL_OVERNIGHT`, `HIMMEL_INITIATIVE_OVERNIGHT`; freshness: `HIMMEL_DOC_FRESHNESS`; position: `HIMMEL_WHERE_ARE_WE`, `HIMMEL_WHERE_ARE_WE_STALE_HOURS`; worktree nudge: `HIMMEL_WORKTREE_NUDGE` |
+| Bank preflight | `HIMMEL_FLEET_CAP` |
+| Updater | `HIMMEL_UPDATE_AUTOSTASH`, `LUNA_VAULT_PATH` |
+| Telegram bridge (`poller.ts`, dedicated bridge file) | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_AUTO_ACTIONS` (only actions allow a process-env override) |
+| Telegram session-status / luna-sync-alert (dedicated bridge file) | `TELEGRAM_BOT_TOKEN`; notification shell hooks separately load repo `TELEGRAM_GROUP_CHAT_ID` |
+| Jira-nudge hook | `HIMMEL_JIRA_NUDGE`, `HIMMEL_INITIATIVE`, `HIMMEL_INITIATIVE_OVERNIGHT`, `HIMMEL_OVERNIGHT`, `JIRA_PROJECT_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| Upstream watcher | `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` |
+| Alibaba quota probe | `ALIBABA_QUOTA_AK`, `ALIBABA_QUOTA_SK`, `ALIBABA_QUOTA_PROM_URL`, `ALIBABA_QUOTA_GRANTS` |
+| Alibaba monitoring-key setup | `ALIBABA_QUOTA_AK`, `ALIBABA_QUOTA_SK` (in-process lookup, not blanket export) |
+| VM SDK | The selected VM's registry `pass_env`, and `user_env` only without a literal user; station entries load none |
+| Cloud-init / Ubuntu provisioner | `ubuntu_vm_user`, `ubuntu_vm_pass` |
+| Windows provisioner | `windows_vm_user`, `windows_vm_pass` |
+| VM after-report | `himmel_github_token_vm` |
+| Google Health pull cadence | `GOOGLE_HEALTH_REFRESH_TOKEN` |
+| Chat-note enrichment / graphmap provider selection | Only the selected provider's named key (`DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ZAI_API_KEY`, or `ANTHROPIC_API_KEY` for chat-note enrichment) |
+| Fetch-health probe lookup | `BITBUCKET_EMAIL`, `BITBUCKET_API_TOKEN`, `FIRECRAWL_API_KEY`, `FIRECRAWL_BASE_URL`, `TWITTER_AUTH_TOKEN`, `TWITTER_CT0`, `REDDIT_COOKIE_FILE`, `HIMMEL_MEDIA_COOKIES`, `HIMMEL_FETCH_HEALTH_STATE`, `HIMMEL_FIRECRAWL_LEDGER`, `HIMMEL_IG_PROBE_CACHE`, `HIMMEL_IG_PROBE_TTL_S`, `IG_SCRAPLING_PYTHON`, `X_SCRAPLING_PYTHON`, `YT_SCRAPLING_PYTHON`, and the explicit `FETCH_HEALTH_REDDIT_URL`, `FETCH_HEALTH_FXTWITTER_URL`, `FETCH_HEALTH_INSTAGRAM_EMBED_URL`, `FETCH_HEALTH_INSTAGRAM_MEDIA_URL`, `FETCH_HEALTH_X_MEDIA_URL`, `FETCH_HEALTH_TWITTER_TWEET_ID`, `FETCH_HEALTH_YOUTUBE_URL`, `FETCH_HEALTH_JINA_URL` overrides; file-derived config is not passed wholesale to children |
+| himmelctl privileged installer | `HIMMELCTL_SUDO_PASSWORD` (stdin only, never exported) |
+
+Config-ui and himmelctl configuration/redaction readers intentionally inspect
+all entries **without exporting them**: filtering the redactor would expose
+otherwise unknown secret values in child output. Doctor **C57-dotenv-allowlists**
+warns on recognized blanket loaders or empty shell allowlists and lists unused
+key **names** at INFO severity, never values. Its source-pattern inventory is
+an advisory, not an interpreter: a new loader syntax needs a matching audit
+rule. An unused name can be intentional; `TEST_ANTHROPIC_API_KEY` is reserved
+for the future API lane and is not exported by these loaders.
+
 ## 1. What himmel is
 
 himmel runs Claude Code as a **managed, PR-gated agent**. Instead of trusting
@@ -305,9 +362,19 @@ GitHub quota (5,000/h REST core, 5,000/h GraphQL — `gh pr checks` is GraphQL),
 the wait is cheap by construction: the first waiter in a TTL window fetches a PR's
 checks and every other waiter reads that snapshot from a shared cache (a `cancel`
 bucket is neither red nor pending, as in gh; an unknown bucket is pending); the poll
-interval backs off while the rollup is unchanged; and when the budget runs low it
-sleeps until the reset instead of retrying. **Only cost changes — exit codes and
-every gate decision are unchanged.** All knobs are environment variables (set them
+interval backs off while the rollup is unchanged. **PR polling is REST-first
+(HIMMEL-4857):** latest check runs and combined commit statuses are read by head
+SHA with `If-None-Match`; ETags and validated payloads live beside the cached
+rows. Unchanged responses return `304` without spending primary rate quota.
+GraphQL supplies review/head/base metadata and the required-check producer gate,
+and is the fallback when REST cannot answer (including sets over 100 rows).
+A low core budget switches the rollup to GraphQL, and a low GraphQL budget keeps
+it on REST; a snapshot rotates at most once. Before using GraphQL, the existing
+zero-point header probe verifies its true remaining budget (`rate_limit` can
+misreport it); successful REST polling needs no GraphQL probe. Unreadable responses from both APIs
+fail closed (exit `2`). When both budgets are low, the existing bounded reset wait
+applies. Startup head/base/review/URL fields share one query; post-watch review
+and head verification stay fresh. All knobs are environment variables (set them
 in `.env` or the launching shell):
 
 | Knob | Default | Meaning |
@@ -317,7 +384,7 @@ in `.env` or the launching shell):
 | `CHECK_CI_CACHE_TTL` | `60` | seconds a snapshot serves poll-grade reads |
 | `CHECK_CI_DECIDE_TTL` | `5` | max age of the snapshot a terminal verdict (green/red confirm, required-check gate) may rest on |
 | `CHECK_CI_WATCH_INTERVAL` / `CHECK_CI_WATCH_INTERVAL_MAX` | `30` / `120` | poll-interval floor / ceiling; doubles while the rollup is unchanged, resets on a change |
-| `CHECK_CI_API_FLOOR` | `300` | sleep until the reset when the GraphQL bucket (what `gh pr checks` draws) reports fewer calls than this remaining (or gh answers 403 rate-limit); `0` disables the preemptive check. The wait is bounded by `--max-wait`; past it the gate exits 2 as before |
+| `CHECK_CI_API_FLOOR` | `300` | rotate PR rollup reads to the other API when the preferred bucket has fewer calls remaining; wait only when both are low. Run mode still waits on core. `0` disables preemptive budget reads. Waits are bounded by `--max-wait` |
 | `CHECK_CI_LOCK_WAIT` | `30` | seconds a waiter waits for the fetching peer before fetching itself |
 | `GH_BUDGET_JITTER_MAX` | (existing) | random seconds added to a budget wait so waiters do not wake in lock-step |
 
@@ -338,9 +405,11 @@ bash scripts/check-ci.sh --run 123456 --job 'shell-unit (1)' --max-wait 900
 success requires the workflow and its jobs to finish; with it, only matching
 jobs must finish. A failure exits immediately, even while other jobs run.
 This mode is **not a PR merge certification**: no review-thread or merge gates,
-no `--settle`. Exit `0` means success/neutral/skipped, `1` means failed/cancelled
-(the job and `gh run view <id> --log-failed` command are printed), and `2` means
-an unreadable/unknown response, a missing job in a completed run, or a deadline.
+no `--settle`. Exit `0` means success (whole-run mode also accepts neutral/skipped),
+`1` means failed/cancelled (the job and `gh run view <id> --log-failed` command
+are printed), and `2` means an unreadable/unknown response, a missing job in a
+completed run, a skipped/neutral selected job, or a deadline. A skipped selected
+job is not evidence of success: it may have been skipped because a dependency failed.
 A pending deadline prints `DEADLINE-PENDING`; `CHECK_CI_DISTINCT_DEADLINE=1`
 changes only that verdict to `7`. `--max-wait` defaults to `900`; `0` is unbounded.
 Bounded reads require GNU `timeout`/`gtimeout` (macOS: `brew install coreutils`).
@@ -348,7 +417,8 @@ Bounded reads require GNU `timeout`/`gtimeout` (macOS: `brew install coreutils`)
 Run mode always uses the shared cache, keyed by repository/host/run id, so a
 whole-run waiter and a job waiter share one fetch per TTL. The same adaptive
 backoff and terminal TTL apply. `gh run view` reads REST/core, so the budget
-preflight uses **core**, not GraphQL; this does not change PR-mode reads.
+preflight uses **core**, not GraphQL. Bounded reads use a hard kill at the deadline,
+without a two-second termination grace.
 The heartbeat defaults to a per-process `run-*.rows.<pid>.wait` file under
 `CHECK_CI_CACHE_DIR`; override it with `CHECK_CI_RUN_HEARTBEAT=<path>` (parent
 must exist). It uses console-wait's `hb=<epoch> pid=<pid> key=<run> tick=<ok|fail|->

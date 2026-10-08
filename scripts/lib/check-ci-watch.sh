@@ -3,7 +3,7 @@
 # workflow/job watch (HIMMEL-4856). Both share one adaptive backoff.
 # Usage: check-ci-watch.sh [PR selector]
 #        check-ci-watch.sh --run <id> <job-name-or-empty> <max-wait>
-# PR contract: 0 + success text; 1 + X rows on red, stderr on unreadable.
+# PR contract: 0 + success text; 1 + X rows on red; 2 + stderr on unreadable.
 # Run contract: 0 success; 1 red/cancelled; 2 unreadable/deadline (7 opt-in).
 # Env: CHECK_CI_CACHE_TTL (60), CHECK_CI_DECIDE_TTL (5),
 # CHECK_CI_WATCH_INTERVAL (30), CHECK_CI_WATCH_INTERVAL_MAX (120),
@@ -78,6 +78,9 @@ _classify() {
     ROWS="$CIC_ROWS"
     if [ "$RUN_MODE" = 1 ] && [ -n "$JOB_NAME" ]; then
         ROWS=$(printf '%s\n' "$CIC_ROWS" | CHECK_CI_JOB_NAME="$JOB_NAME" awk -F'\t' '$3 == "job" && $2 == ENVIRON["CHECK_CI_JOB_NAME"]')
+        if printf '%s\n' "$ROWS" | awk -F'\t' '$1 == "skipping" { found=1 } END { exit !found }'; then
+            echo "check-ci: job '$JOB_NAME' was skipped/neutral; cannot certify job success" >&2; exit 2
+        fi
         if [ -z "$ROWS" ]; then
             if [ "$(printf '%s\n' "$CIC_ROWS" | awk -F'\t' '$3 == "run" {print $1}')" != pending ]; then
                 echo "check-ci: job '$JOB_NAME' not found in completed run $CIC_RUN_ID" >&2; exit 2
@@ -103,7 +106,6 @@ _read() {
         if [ "$RUN_MODE" = 1 ] && [ "${CIC_DEADLINE_HIT:-0}" = 1 ] && [ "${PENDING:-0}" -gt 0 ]; then _deadline; fi
         TICK=fail
         echo "check-ci-watch: ${CIC_ERR:-no checks reported}" >&2
-        [ "$RUN_MODE" = 0 ] && exit 1
         exit 2
     fi
     TICK=ok

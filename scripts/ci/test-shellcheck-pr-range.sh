@@ -130,6 +130,35 @@ echo $x
 '; commit_case nl_lead
 verdict nl_lead ALL
 
+# chain3: a three-level source chain -- only the closure reaches the third consumer
+reset; w scripts/zzc/c0.sh '#!/usr/bin/env bash
+ZZC=1
+'; w scripts/zzc/c1.sh '#!/usr/bin/env bash
+. scripts/zzc/c0.sh
+'; w scripts/zzc/c2.sh '#!/usr/bin/env bash
+. scripts/zzc/c1.sh
+'; w scripts/zzc/c3.sh '#!/usr/bin/env bash
+. scripts/zzc/c2.sh
+'; git add -A && git commit -q -m chain_base; CBASE=$(git rev-parse HEAD)
+printf '# touched\n' >> scripts/zzc/c0.sh; commit_case chain3
+BASE=$CBASE verdict chain3 FILES scripts/zzc/c0.sh scripts/zzc/c1.sh scripts/zzc/c2.sh scripts/zzc/c3.sh
+
+# glued_brace / glued_bare: a .sh token glued to a variable expansion is dynamic
+reset; w scripts/zzg.sh '#!/usr/bin/env bash
+. "${ZZ_DIR}zzjlib.sh"
+'; commit_case glued_brace
+verdict glued_brace ALL
+reset; w scripts/zzg.sh '#!/usr/bin/env bash
+. "$ZZ_NAME.sh"
+'; commit_case glued_bare
+verdict glued_bare ALL
+
+# slash_var: `$X/name.sh` keeps a literal basename, which the tracked-name match resolves
+reset; w scripts/zzg.sh '#!/usr/bin/env bash
+. "$ZZ_DIR/zzjlib.sh"
+'; commit_case slash_var
+verdict slash_var FILES scripts/zzg.sh scripts/zzj/zzjlib.sh
+
 # script-absent-at-base: the workflow runs `git show <base>:<script>`; at a base
 # that predates the script it must fail, which drives the --all-files branch
 pre=$(git commit-tree "$(git rev-parse "$BASE^{tree}")" -m pre)

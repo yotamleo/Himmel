@@ -217,8 +217,11 @@ the console's own inbox instead of DMing the operator.
 (bank-preflight's own census: native + claudex + reserved, `HIMMEL_FLEET_CAP`)
 and `capacity=`. On `capacity=UNDERFILLED:<slack>` — live below cap and no leg
 launched for `TICK_UNDERFILL_MIN` minutes (default 10) — pull dispatchable work
-from the Jira backlog, not only the held queue, after a file-collision check
-against live legs and open PRs, and launch up to `<slack>` legs.
+from the Jira backlog, not only the held queue, and launch up to `<slack>` legs.
+`console-wait.sh` wakes on it once per streak (`WAKE underfilled`) and prints
+`console-kit/next-dispatchable.sh`'s ranked, collision-checked LOCAL/CLOUD list;
+`console-kit/gen-briefs.py` writes the briefs and launchers (nothing launches
+itself).
 `capacity=unknown` (`fleet=?`) means the census could not be read, not that
 capacity is fine.
 

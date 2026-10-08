@@ -30,7 +30,7 @@ import { BASH_BIN } from "./run";
 // without a fresh heartbeat; use /consoles before addressing an old identity,
 // or require liveness on named routes if silent old-inbox queues recur.
 
-export type ConsoleReplyFn = (chat_id: number, text: string, consoleName?: string) => Promise<void>;
+export type ConsoleReplyFn = (chat_id: number, text: string, consoleName?: string, replyToMessageId?: number) => Promise<void>;
 export type ConsoleRouteGate = {
   authorize: (from: number, chat_id: number) => boolean;
   reply: ConsoleReplyFn;
@@ -78,6 +78,36 @@ export function consoleInboxPath(root: string, name: string): string | null {
 export const foldLine = (text: string): string => text.trim().replace(/\r?\n/g, " ⏎ ");
 
 const hhmm = (d = new Date()) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+
+export function staleConsoleCommand(ts?: number): boolean {
+  const configured = Number(process.env.TELEGRAM_VERB_MAX_AGE_S ?? 300);
+  const maxAge = Number.isSafeInteger(configured) && configured > 0 ? configured : 300;
+  const age = Date.now() / 1000 - (ts ?? 0);
+  return !Number.isSafeInteger(ts) || age < -5 || age > maxAge;
+}
+
+export async function routeFleetCommand(
+  root: string,
+  msg: { from: number; chat_id: number; ts?: number; message_id?: number; reply_to_message_id?: number },
+  route: Extract<import("./router").Route, { kind: "fleet" }>,
+  gate: ConsoleRouteGate,
+): Promise<void> {
+  if (!gate.authorize(msg.from, msg.chat_id)) return;
+  const reply: ConsoleReplyFn = (chat, text, name) => gate.reply(chat, text, name, msg.message_id);
+  if (staleConsoleCommand(msg.ts)) {
+    await reply(msg.chat_id, "⚠️ stale, resend — nothing was queued.");
+    return;
+  }
+  const pinned = msg.reply_to_message_id == null ? null : await consoleReplyTarget(root, msg.chat_id, msg.reply_to_message_id);
+  const live = await liveConsoles(root);
+  const target = pinned ? live.find(c => c.name === pinned) : live.length === 1 ? live[0] : undefined;
+  if (!target) {
+    await reply(msg.chat_id, pinned ? `⚠️ console ${pinned} is stale or not live — nothing was queued.` : live.length > 1 ? `More than one console is live; reply to its announcement or answer:\n${describeConsoles(live)}` : "⚠️ no live console — nothing was queued.");
+    return;
+  }
+  const text = route.verb === "status" ? "fleet status" : `${route.verb}${route.leg ? ` ${route.leg}` : ""}`;
+  await routeToConsole(root, msg, { kind: "console", name: target.name, text, thread: true }, (chat, ack, name) => reply(chat, name ? `queued ${text} → console ${name}` : ack, name));
+}
 
 export async function routeToConsole(
   root: string,

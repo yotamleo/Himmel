@@ -123,6 +123,20 @@ run_fence() {
 # surviving "http://api.anthropic.com" case just below - see that case's
 # comment for the branch trace. Full per-case table: task-3-report.md under
 # .superpowers/sdd/2026-08-26-himmel-2120-corpus-reduction/.
+# HIMMEL-4811: use the session checkout graph, not the cached /tmp setup
+# graph. Cloud has no configured luna root; even a planted marker stays inert.
+CLOUD_CACHE="$WS/himmel-setup"
+mkdir -p "$CLOUD_CACHE/graphify-out" "$HIMMEL/graphify-out"
+: > "$CLOUD_CACHE/graphify-out/graph.json"
+: > "$HIMMEL/graphify-out/graph.json"
+printf '%s\n' himmel-code > "$CLOUD_CACHE/.graphify-corpus"
+run_fence deny no "$HIMMEL" "cloud cached graph stays denied without luna configuration" \
+    "graphify query question --graph $CLOUD_CACHE/graphify-out/graph.json" LUNA_VAULT_PATH= LUNA_VAULT=
+run_fence allow no "$HIMMEL" "cloud session checkout graph is already classified" \
+    "graphify query question --graph $HIMMEL/graphify-out/graph.json" LUNA_VAULT_PATH= LUNA_VAULT=
+run_fence deny no "$HIMMEL" "cloud unknown graph still denied" \
+    "graphify query question --graph $NOWHERE/graph.json" LUNA_VAULT_PATH= LUNA_VAULT=
+
 echo "== corpus x provider cells (real grammar) =="
 
 # salus + GLM -> hard deny

@@ -13,7 +13,9 @@ Your reporting channel is **your handover document**. Write every milestone
 `WRAPPED`) as a `- ` bullet at the bottom of its `## Results` section, starting
 the bullet with the milestone word. The console polls that document and acts on
 the newest bullet by its leading marker word. Retire a `FINDING` the console
-has ruled on with a `RESOLVED` bullet (until then it reads as unanswered), and
+has ruled on with a `RESOLVED — ruling received, see console message` bullet
+(until then it reads as unanswered; never copy the ruling, a GO or a token into
+a bullet, HIMMEL-4931), and
 coin no other marker (`SHIPPED`, `MERGED`): between GREEN and `READY` you are
 `LIVE`, after the merge `WRAPPED`. Report at milestones only. A BLOCKED, a permission prompt,
 or a question of your own goes to the console through that document FIRST —
@@ -79,8 +81,12 @@ authorization; merge gates and tool permissions are unchanged.
 
 **Lane git (HIMMEL-2953):** never run `git fetch`, `git pull`, or `git rebase`.
 Use `/usr/bin/git` by absolute path for status, diff, add, commit, log, show,
-and ls-files. Make exactly ONE push attempt for your branch. If the lane
-classifier refuses it, post `BLOCKED lane:` with the commit SHA (or
+and ls-files. Make exactly ONE push attempt per head of your branch. A second
+push is allowed only as a same-head fixup (HIMMEL-4935): a plain fast-forward
+whose parent chain contains the head you already pushed (a fixup commit on top,
+for example after a review finding), never a rewritten, rebased, amended or
+different-base head, which stays refused. If the lane
+classifier refuses a push, post `BLOCKED lane:` with the commit SHA (or
 `LIVE PR-READY <head>` if your brief specifies that publication handoff) and
 use the bounded own-inbox hold above. The console owns the next publication
 step and sends a RUN note naming the resume point; wrap only on the hold cap

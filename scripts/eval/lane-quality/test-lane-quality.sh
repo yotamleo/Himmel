@@ -33,7 +33,7 @@ git -C "$TMP/repo" -c user.name=t -c user.email=t@t commit -qm base
 BASE="$(git -C "$TMP/repo" rev-parse HEAD)"
 
 echo "1. acceptance tests discriminate (fixture RED, reference GREEN)"
-for task in shell-red-green doc-plus-code hook-refusal finding-verify; do
+for task in shell-red-green doc-plus-code hook-refusal finding-verify cr-fix class-sweep guard-cmd; do
   wt="$TMP/acc-$task"
   git -C "$TMP/repo" worktree add -q --detach "$wt" "$BASE"
   fix="$(bash "$RUN" materialize "$task" "$wt")"
@@ -41,6 +41,8 @@ for task in shell-red-green doc-plus-code hook-refusal finding-verify; do
     bad "$task: accept passes on the untouched fixture"
   else ok "$task: accept fails on the untouched fixture"; fi
   bash "$RUN" materialize "$task" "$wt" --reference >/dev/null
+  # guard-cmd asks for a commit, so its reference solution is one.
+  [ "$task" != guard-cmd ] || { git -C "$wt" add -A && git -C "$wt" -c user.name=t -c user.email=t@t commit -qm 'docs: [HIMMEL-9999] changelog entry' --no-verify; }
   if bash "$HERE/tasks/$task/accept.sh" "$wt" "$fix" >"$TMP/acc-$task.green" 2>&1; then
     ok "$task: accept passes on the reference"
   else bad "$task: accept fails on the reference: $(grep FAIL "$TMP/acc-$task.green" | tr '\n' ';')"; fi
@@ -62,7 +64,8 @@ esac
 prompt="$2"
 case "$prompt" in
   *semver-cmp*) t=shell-red-green ;; *log-tail*) t=doc-plus-code ;;
-  *block-curl-pipe*) t=hook-refusal ;; *) t=finding-verify ;;
+  *block-curl-pipe*) t=hook-refusal ;; *cleanup-old*) t=cr-fix ;;
+  *sweep/a.sh*) t=class-sweep ;; *CHANGELOG*) t=guard-cmd ;; *) t=finding-verify ;;
 esac
 bash "$LQ_FAKE_RUN" materialize "$t" "$PWD" --reference >/dev/null
 # Misbehaviour knobs: a candidate that hangs, a commit outside lq-work/, and a
@@ -148,6 +151,30 @@ for lane in deepseek claudex; do
   check "$lane lane refused (exit 3)" '[ "$rc" -eq 3 ]'
 done
 check "refused lanes launch nothing" '[ ! -s "$TMP/fake.log" ]'
+# HIMMEL-4906: claudex runs with the per-dispatch opt-in, through its launcher,
+# and an unpriced gpt slug does not stop the sweep.
+cp "$TMP/bin/claude" "$TMP/bin/claude-codex"
+CLAUDEX_LANE_OK=1 LQ_LANE_BIN="$TMP/bin/claude-codex" LQ_FAKE_MU='{"gpt-6.1-sol":{"inputTokens":1000,"outputTokens":200,"cacheReadInputTokens":3000,"cacheCreationInputTokens":0}}' \
+  bash "$RUN" run --lane claudex --model gpt-6.1-sol --tasks cr-fix,class-sweep --no-judge --out "$TMP/out-cx" >"$TMP/run-cx.log" 2>&1
+rc=$?
+check "claudex lane runs with CLAUDEX_LANE_OK=1" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out-cx/runs.jsonl" | tr -d " ")" = 2 ]'
+check "claudex rows record token counts" '[ "$(jq -s -r ".[0].tokens | \"\(.input) \(.output) \(.cache_read)\"" "$TMP/out-cx/runs.jsonl")" = "1000 200 3000" ]'
+check "new tasks pass acceptance end to end" '[ "$(jq -s "map(.accept_ok) | all" "$TMP/out-cx/runs.jsonl")" = true ]'
+
+# HIMMEL-4906: run --config FILE seam (tasks_dir under this dir, base_sha, transcripts).
+printf '{"tasks_dir":"../../../etc"}' >"$TMP/cfg-out.json"
+bash "$RUN" run --lane native --model haiku --config "$TMP/cfg-out.json" --out "$TMP/out-cfg1" >"$TMP/cfg1.log" 2>&1
+rc=$?
+check "--config refuses a tasks_dir outside the harness dir" '[ "$rc" -eq 64 ] && grep -q "must stay under" "$TMP/cfg1.log"'
+printf '{"base_sha":"nothex"}' >"$TMP/cfg-sha.json"
+bash "$RUN" run --lane native --model haiku --config "$TMP/cfg-sha.json" --out "$TMP/out-cfg2" >"$TMP/cfg2.log" 2>&1
+rc=$?
+check "--config refuses a malformed base_sha" '[ "$rc" -eq 64 ] && grep -q "40 hex" "$TMP/cfg2.log"'
+printf '{"tasks_dir":"tasks","base_sha":"%s","transcripts":"%s"}' "$BASE" "$TMP/projects" >"$TMP/cfg-ok.json"
+bash "$RUN" run --lane native --model haiku --tasks cr-fix --no-judge --config "$TMP/cfg-ok.json" --out "$TMP/out-cfg3" >"$TMP/cfg3.log" 2>&1
+rc=$?
+check "--config with a valid tasks_dir, base_sha and transcripts runs" '[ "$rc" -eq 0 ] && [ "$(wc -l <"$TMP/out-cfg3/runs.jsonl" | tr -d " ")" = 1 ]'
+check "--config base_sha is the one recorded" '[ "$(jq -s -r ".[0].base_sha" "$TMP/out-cfg3/runs.jsonl")" = "$BASE" ]'
 
 # HIMMEL-4459: exported exit/return/unset shadows must never reach the agent or
 # judge launch. The control (no ambient proxy) proves the shadowed runner still
@@ -347,15 +374,24 @@ rc=$?
 check "second-judge pass judges every stored packet once" '[ "$rc" -eq 0 ] && [ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 4 ]'
 check "second judge uses the given model and effort, budget-capped, no tools" 'grep -- "--json-schema" "$TMP/fake.log" | grep -- "--model sonnet" | grep -- "--effort low" | grep -q -- "--max-budget-usd"'
 check "second judge rescores the stored packet" 'grep -q "packet a.r2" "$TMP/fake.log.judge"'
-check "second judge result stored per row" '[ -s "$FX/a.r2.judge2.sonnet-low.json" ]'
+check "second judge result stored per row" '[ -s "$FX/a.r2.judge2.sonnet__low.json" ]'
 check "weighted kappa against a constant second judge is 0" 'jq -e ".metrics.kappa_correctness == 0 and .metrics.n_kappa == 4" "$TMP/cal2.json" >/dev/null'
 check "calibration writes a valid eval-runs row" '[ "$(jq -s -r "map(select(.eval == \"lane-quality-calibration\")) | length" "$EL")" = 1 ] && python3 "$HERE/../lib/eval_runs.py" validate "$EL" >/dev/null'
 : >"$TMP/fake.log"
 bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >"$TMP/cal3.json" 2>/dev/null
 check "a stored second-judge result is reused, never re-judged" '! grep -q -- "--json-schema" "$TMP/fake.log" && jq -e ".metrics.n_kappa == 4" "$TMP/cal3.json" >/dev/null'
-: >"$FX/a.r2.judge2.sonnet-low.json"; : >"$TMP/fake.log"
+: >"$FX/a.r2.judge2.sonnet__low.json"; : >"$TMP/fake.log"
 bash "$RUN" calibration "$FX" --judge2-model sonnet --judge2-effort low --json --no-ledger >/dev/null 2>&1
-check "an empty second-judge result is judged again" '[ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 1 ] && [ -s "$FX/a.r2.judge2.sonnet-low.json" ]'
+check "an empty second-judge result is judged again" '[ "$(grep -c -- "--json-schema" "$TMP/fake.log")" = 1 ] && [ -s "$FX/a.r2.judge2.sonnet__low.json" ]'
+# HIMMEL-4665: model "a-b" with no effort and model "a" at effort "b" once
+# shared one label, so the second silently reused the first's scores.
+: >"$TMP/fake.log"
+bash "$RUN" calibration "$FX" --judge2-model a-b --json --no-ledger >/dev/null 2>&1
+bash "$RUN" calibration "$FX" --judge2-model a --judge2-effort b --json --no-ledger >/dev/null 2>&1
+check "colliding second-judge configurations each make their own calls" '[ "$(grep -- "--json-schema" "$TMP/fake.log" | grep -c -- "--model a-b")" = 4 ] && [ "$(grep -- "--json-schema" "$TMP/fake.log" | grep -- "--model a " | grep -c -- "--effort b")" = 4 ]'
+: >"$TMP/fake.log"
+bash "$RUN" calibration "$FX" --judge2-model a --judge2-effort b --json --no-ledger >"$TMP/cal-ab.json" 2>/dev/null
+check "an exact rerun of either configuration reuses its stored result" '! grep -q -- "--json-schema" "$TMP/fake.log" && jq -e ".metrics.n_kappa == 4" "$TMP/cal-ab.json" >/dev/null'
 : >"$TMP/fake.log"
 LQ_FAKE_TOKEN=SKIPPED-BANK bash "$RUN" calibration "$FX" --judge2-model haiku --json --no-ledger >/dev/null 2>&1
 rc=$?
@@ -365,6 +401,15 @@ mkdir -p "$TMP/rel/fxr" && cp "$FX/runs.jsonl" "$FX"/*.judge-packet.md "$TMP/rel
 (cd "$TMP/rel" && bash "$RUN" calibration fxr --judge2-model haiku --json --no-ledger >/dev/null 2>&1)
 rc=$?
 check "a relative run dir still feeds the second judge its packet" '[ "$rc" -eq 0 ] && grep -q "packet b.r2" "$TMP/fake.log.judge"'
+# HIMMEL-4667: a failed judge launch fails judge_call (not the cleanup's rc 0),
+# and --timeout 00 is refused (GNU timeout 00 would disable the cap).
+printf '#!/usr/bin/env bash\necho "judge launch failed" >&2\nexit 3\n' >"$TMP/bin/claude-fail"; chmod +x "$TMP/bin/claude-fail"
+LQ_CLAUDE_BIN="$TMP/bin/claude-fail" bash "$RUN" calibration "$FX" --judge2-model opus --json --no-ledger >/dev/null 2>"$TMP/cal-fail.err"
+rc=$?
+check "a failing second judge makes calibration die with its message" '[ "$rc" -eq 64 ] && grep -q "cannot run the second judge" "$TMP/cal-fail.err"'
+bash "$RUN" calibration "$FX" --timeout 00 --json --no-ledger >/dev/null 2>"$TMP/cal-t00.err"
+rc=$?
+check "calibration refuses --timeout 00" '[ "$rc" -eq 64 ] && grep -q -- "--timeout must be positive" "$TMP/cal-t00.err"'
 check "weighted kappa ignores a pair off the 1..5 scale" '[ "$(kap "[1,2,6]" "[1,2,3]")" = 1.0 ]'
 
 echo "test-lane-quality: $PASS passed, $FAIL failed"

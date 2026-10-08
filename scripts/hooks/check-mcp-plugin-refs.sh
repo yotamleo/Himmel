@@ -7,8 +7,8 @@
 # Claude PreToolUse hook (block-mcp-when-plugin-exists.sh) was bypassed
 # or disabled and an MCP call snuck into a skill / command / script file.
 #
-# The Claude hook itself + its smoke test are the only legitimate places
-# that should reference these names — they're exempted by basename match.
+# Hook implementations and their test fixtures legitimately reference these
+# names — they're exempted by exact repo-relative path match.
 #
 # Exit codes:
 #   0 — clean (no references in staged files or only in exempted files)
@@ -39,6 +39,7 @@ is_exempt() {
         scripts/hooks/test-block-mcp-when-plugin-exists.sh) return 0 ;;
         scripts/hooks/block-backend-tier.sh) return 0 ;;
         scripts/hooks/test-block-backend-tier.sh) return 0 ;;
+        scripts/hooks/wire-hook-bash.test.mjs) return 0 ;;
         scripts/hooks/check-mcp-plugin-refs.sh) return 0 ;;
         scripts/hooks/test-check-mcp-plugin-refs.sh) return 0 ;;
         scripts/hooks/test-block-glm-external-writes.sh) return 0 ;;
@@ -83,6 +84,6 @@ fi
     echo
     echo "Use the himmel-jira plugin instead — see CLAUDE.md 'Jira tooling — prefer plugin over MCP'."
     echo "If this file legitimately needs the raw MCP name (e.g., a hook implementation),"
-    echo "add its basename to the is_exempt allowlist in scripts/hooks/check-mcp-plugin-refs.sh."
+    echo "add its exact repo-relative path to the is_exempt allowlist in scripts/hooks/check-mcp-plugin-refs.sh."
 } >&2
 exit 1

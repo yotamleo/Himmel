@@ -23,6 +23,7 @@ fi
 if [ "$1 $2" != 'run view' ] || [ "$3" != 123 ]; then
     echo "unexpected gh call: $*" >&2; exit 1
 fi
+[ "${IGNORE_TERM:-0}" = 0 ] || trap '' TERM
 n=$(grep -c '^run view' "$CASE/calls")
 if [ "$n" -gt "${SLOW_AFTER:-0}" ] && [ "${SLOW:-0}" != 0 ]; then sleep "$SLOW"; fi
 if [ -f "$CASE/response.$n" ]; then cat "$CASE/response.$n"; else cat "$CASE/response"; fi
@@ -46,7 +47,7 @@ new_case() {
     : > "$CASE/calls"; : > "$CASE/sleeps"
     export CIC_CLOCK_FILE="$CASE/clock" CHECK_CI_CACHE_DIR="$CASE/cache"
     export CHECK_CI_RUN_HEARTBEAT="$CASE/heartbeat"
-    unset CORE GQL SLOW SLOW_AFTER BUDGET_SLOW BUDGET_RESET GH_ERROR CHECK_CI_DISTINCT_DEADLINE
+    unset CORE GQL SLOW SLOW_AFTER BUDGET_SLOW BUDGET_RESET GH_ERROR CHECK_CI_DISTINCT_DEADLINE IGNORE_TERM
 }
 # Complete fixtures: gh run view --json databaseId,status,conclusion,jobs.
 fixture() {
@@ -191,6 +192,21 @@ run --run 123 --max-wait 3
 expect_rc 7 'deadline during pending reread retains distinct deadline exit'
 expect_text DEADLINE-PENDING 'pending reread timeout names the deadline'
 export CHECK_CI_WATCH_SLEEP_CMD=fake_sleep
+
+# HIMMEL-4857: selected skipped work is not evidence that the job passed.
+new_case
+fixture completed failure completed skipped > "$CASE/response"
+run --run 123 --job unit --max-wait 10
+expect_rc 2 'selected skipped job cannot certify success'
+
+# A child ignoring TERM must not consume a kill grace past the deadline.
+new_case
+fixture completed success completed success > "$CASE/response"
+export SLOW=10 IGNORE_TERM=1
+started=$SECONDS
+run --run 123 --max-wait 1
+expect_rc 2 'TERM-resistant read cannot evaluate'
+if [ "$((SECONDS - started))" -le 2 ]; then ok 'hard read deadline has no two-second kill overrun'; else bad 'TERM-resistant child exceeded hard deadline'; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

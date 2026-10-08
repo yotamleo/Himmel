@@ -160,6 +160,12 @@ eq "multi: codex found quoting only" "$(metric "$TMP/s3.json" codex.recall)" "0.
 eq "multi: glm's unavailable case leaves its denominator" "$(metric "$TMP/s3.json" glm.recall)" "1.0"
 eq "multi: glm scored on 1 seeded case" "$(metric "$TMP/s3.json" glm.seeded_scored)" "1"
 eq "multi: the panel union found both" "$(metric "$TMP/s3.json" panel.recall)" "1.0"
+# The roster is required: a responding critic with zero findings stays in the
+# metrics only because the roster names it.
+python3 "$SCORE" score --outputs "$O3" --fixtures "$FIX" --key "$KEY" --only "$LA,$QA" --no-ledger >/dev/null 2>&1; rc=$?
+eq "roster: score without --critics is refused" "$rc" "2"
+python3 "$SCORE" score --outputs "$O3" --fixtures "$FIX" --key "$KEY" --critics codex,glm,kimi --only "$LA,$QA" --no-ledger --json "$TMP/s3r.json" >/dev/null 2>&1
+eq "roster: a zero-finding critic is scored, not dropped" "$(metric "$TMP/s3r.json" kimi.recall)" "0.0"
 
 # Unscored fixtures: a missing output and a REVIEW NOT PERFORMED block.
 O4="$TMP/out4"; mkdir -p "$O4"
@@ -180,6 +186,17 @@ eq "unscored: a truncated transcript and a nonzero rc are both unscored" "$(metr
 printf '# Critic Panel Review (1/1 critics responded)\n\n## Critical Issues (0 found)\n\n## Important Issues (0 found)\n\n## Suggestions (2 found)\n- [codex-1]: off-by-one [%s:%s]\n' "$la_file" "$la_line" > "$O4b/$LA.md"
 python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA" --no-ledger --json "$TMP/s4c.json" >/dev/null 2>&1
 eq "unscored: fewer bullets than a heading declares is unscored" "$(metric "$TMP/s4c.json" unscored)" "1"
+# A bullet BULLET rejects (no [file:line]) is not a parsed finding: the count
+# check must not let it pass as one, or the finding is silently lost.
+printf '# Critic Panel Review (1/1 critics responded)\n\n## Critical Issues (0 found)\n\n## Important Issues (1 found)\n- [codex-1]: off-by-one with no citation\n\n## Suggestions (0 found)\n' > "$O4b/$LA.md"
+python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA" --no-ledger --json "$TMP/s4d.json" >/dev/null 2>&1
+eq "unscored: a declared bullet without [file:line] is unscored" "$(metric "$TMP/s4d.json" unscored)" "1"
+# A finding-shaped bullet BULLET rejects, under a heading whose count omits it
+# ((0 found) + one malformed bullet), would still count 0 == 0: flag it apart
+# from the declared count.
+printf '# Critic Panel Review (1/1 critics responded)\n\n## Critical Issues (0 found)\n\n## Important Issues (0 found)\n- [codex-1]: off-by-one with no citation\n\n## Suggestions (0 found)\n' > "$O4b/$LA.md"
+python3 "$SCORE" score --outputs "$O4b" --fixtures "$FIX" --key "$KEY" --critics codex --only "$LA" --no-ledger --json "$TMP/s4e.json" >/dev/null 2>&1
+eq "unscored: a malformed bullet the heading count omits is unscored" "$(metric "$TMP/s4e.json" unscored)" "1"
 
 # A transcript that touches the key is flagged and the run marked inconclusive.
 O5="$TMP/out5"; mkdir -p "$O5"
@@ -246,6 +263,11 @@ eq "run: a scratch inside a checkout refuses the sweep" "$rc" "2"
 eq "run: no panel call from a scratch inside a checkout" "$(cat "$TMP/stublog/tiers")" ""
 timeout 10 bash "$RUN" --out >/dev/null 2>&1; rc=$?
 eq "run: an option missing its value is a usage error, not a hang" "$rc" "2"
+: > "$TMP/stublog/tiers"
+STUB_LOG_DIR="$TMP/stublog" REVIEW_PANEL_CMD="$TMP/stub-panel.sh" REVIEW_PANEL_SCRATCH="$TMP/scratch" \
+  bash "$RUN" --out "$TMP/run4" --no-ledger --critics codex --only "case-01,case-99" >/dev/null 2>&1; rc=$?
+eq "run: an --only id the key lacks refuses the sweep" "$rc" "2"
+eq "run: no panel call for a mixed valid/unknown --only" "$(cat "$TMP/stublog/tiers")" ""
 
 echo
 echo "test-review-panel: PASS=$PASS FAIL=$FAIL"

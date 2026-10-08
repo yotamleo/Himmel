@@ -537,6 +537,14 @@ if [ "$cmd" = "pr" ] && [ "${2:-}" = "view" ]; then
                 *)          printf 'MPR_OK\noctocat\nfalse\n1\nREADME.md\n' ;;
             esac
             exit 0 ;;
+        *url,reviewDecision,headRefOid,baseRefName*)
+            head=sha1
+            if [ "${GH_STUB_HEAD:-stable}" = moving ]; then
+                h=$(cat "$GH_STUB_HEADC" 2>/dev/null); h=${h:-0}
+                echo $((h+1)) > "$GH_STUB_HEADC"; head="sha$((h+1))"
+            fi
+            printf 'https://github.com/octo/demo/pull/42\t%s\t%s\tmain\n' "${GH_STUB_DECISION:-null}" "$head"
+            exit 0 ;;
         *"baseRefName"*) echo "main"; exit 0 ;;
         # HIMMEL-3473: GitHub's own merge verdict, in check-ci's parsed shape
         # "<head> <state>". GH_STUB_MERGE_STATE is a comma list consumed one
@@ -1821,6 +1829,8 @@ assert_err_has "ending the watch early (HIMMEL-2062)" "96 early-exit message pri
 # and take another path — and asserts the cap message by prefix, since the cap
 # printed is a share of whatever budget is left. The stubs' 3s watch still
 # outlives the largest possible cap (2s), so the cap still has to fire.
+# Exception: case 104 runs a 6s budget against an 8s stub watch
+# (GH_STUB_CAP_SLEEP=8) — see its own comment.
 run blocking-cap-pending --max-wait 4
 assert_rc 2 "97 cap with non-CodeRabbit pending rc 2"
 assert_err_has "watch cap reached (" "97 cap message printed"

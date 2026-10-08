@@ -160,6 +160,10 @@ export const EXPECTED_SCRIPT_ORDER = Object.freeze([
   // dirty via a route block-edit-on-main.sh never sees. Companion to
   // record-primary-baseline.sh below.
   'detect-dirty-primary.sh',
+  // PostToolUse `Bash` — fourth sibling (HIMMEL-4891): re-checks the auto-memory
+  // MEMORY.md routing-line length after a Bash write that guard-memory-capture.sh
+  // (Write/Edit only) never sees.
+  'memory-bash-line-check.sh',
   // PostToolUse `Bash|Edit|Write|MultiEdit|NotebookEdit` — write-time hook-file
   // parse guard, appended after the trust ledger's own (foreign) entry in that
   // block, so the flattened OWNED order below still matches document order.

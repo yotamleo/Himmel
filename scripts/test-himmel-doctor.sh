@@ -6046,12 +6046,14 @@ printf '#!/bin/sh\necho "$1 $2" >> "%s/probe.log"\nexit 1\n' "$c53_t" > "$c53_t/
 chmod +x "$c53_t/up" "$c53_t/down"
 # A stub ssh (HIMMEL-4599): the operator's real ssh would read their real
 # ~/.ssh/config. It answers only -G, from $c53_t/ssh-g.out when that is set,
-# else as an empty config would; any other call is logged and fails.
+# else as an empty config would; any other call is logged and fails, and -G
+# itself fails while $c53_t/ssh-g.fail exists (HIMMEL-4631).
 mkdir -p "$c53_t/bin"
 cat > "$c53_t/bin/ssh" <<STUB
 #!/bin/sh
 echo "\$*" >> "$c53_t/ssh.log"
 [ "\$1" = -G ] || exit 255
+[ -e "$c53_t/ssh-g.fail" ] && exit 255
 [ -s "$c53_t/ssh-g.out" ] && { cat "$c53_t/ssh-g.out"; exit 0; }
 port=22
 while [ \$# -gt 1 ]; do [ "\$1" = -p ] && { port=\$2; shift; }; shift; done
@@ -6087,6 +6089,12 @@ for proxy in 'proxyjump bastion' 'proxycommand ssh -W %h:%p bastion'; do
     if grepq "$out" 'INFO C53-vm-mode' && ! grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F "${proxy%% *}" && [ ! -s "$c53_t/probe.log" ]; then pass "C53 ${proxy%% *} -> INFO, no probe"; else fail "C53 ${proxy%% *} -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
 done
 rm -f "$c53_t/ssh-g.out"
+
+echo "== C53-vm-mode: ssh -G fails -> INFO saying so, not an unreachable WARN, probe gets the host as written (HIMMEL-4631) =="
+: > "$c53_t/ssh-g.fail"
+out="$(c53_run '{"vm":{"mode":"remote","remote":{"ssh":"ops@vmalias","port":2201}}}' "$c53_t/down")"
+if grepq "$out" 'INFO C53-vm-mode' && ! grepq "$out" 'WARN C53-vm-mode' && grepq "$out" -F 'ssh -G failed, probed the configured host as written' && grepq "$(cat "$c53_t/probe.log")" -Fx 'vmalias 2201'; then pass "C53 ssh -G fails -> INFO naming the failed lookup"; else fail "C53 ssh -G fails -> $(printf '%s' "$out" | grep -A1 C53) probe=$(cat "$c53_t/probe.log")"; fi
+rm -f "$c53_t/ssh-g.fail"
 
 echo "== C53-vm-mode: none -> INFO, holds need an operator ack, no probe =="
 out="$(c53_run '{"vm":{"mode":"none"}}' "$c53_t/up")"
@@ -6124,5 +6132,30 @@ rm -f "$c55_t/repo/scripts/lib/project-mode.sh"
 out="$(c55_run)"
 if ! grepq "$out" -F 'C55-project-mode'; then pass "C55 no resolver -> silent"; else fail "C55 no resolver -> $(printf '%s' "$out" | grep -A1 C55)"; fi
 rm -rf "$c55_t"
+
+# --- C58-mcp-sdk-v1 (HIMMEL-4866): the v1 MCP SDK gate row ---
+c58_t="$(mktemp -d "${TMPDIR:-/tmp}/himmel-doctor-c58.XXXXXX")" || { echo "mktemp failed" >&2; exit 1; }
+mkdir -p "$c58_t/repo/scripts/lint" "$c58_t/home"
+cp "$REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" "$c58_t/repo/scripts/lint/check-mcp-sdk-v1.sh"
+git -C "$c58_t/repo" init -q
+c58_run() { (cd "$c58_t/repo" && env HIMMEL_REPO="$c58_t/repo" HIMMEL_DOCTOR_ROOT="$c58_t/repo" CLAUDE_DIR="$c58_t/home/claude" HOME="$c58_t/home" DOCTOR_OBSERVABILITY_SKIP=1 bash "$DOC" --no-color 2>/dev/null); }
+
+echo "== C58-mcp-sdk-v1: a v1 dependency -> WARN naming the file (RED) =="
+printf '%s\n' '{"dependencies":{"@modelcontextprotocol/sdk":"^1.32.1"}}' > "$c58_t/repo/package.json"
+git -C "$c58_t/repo" add package.json
+out="$(c58_run)"
+if grepq "$out" -F 'WARN C58-mcp-sdk-v1' && grepq "$out" -F 'package.json:1'; then pass "C58 v1 dependency -> WARN"; else fail "C58 v1 dependency -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+
+echo "== C58-mcp-sdk-v1: v2 dependency -> OK =="
+printf '%s\n' '{"dependencies":{"@modelcontextprotocol/server":"2.3.1"}}' > "$c58_t/repo/package.json"
+git -C "$c58_t/repo" add package.json
+out="$(c58_run)"
+if grepq "$out" -F 'OK   C58-mcp-sdk-v1'; then pass "C58 v2 -> OK"; else fail "C58 v2 -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+
+echo "== C58-mcp-sdk-v1: a checkout without the gate -> no row =="
+rm -f "$c58_t/repo/scripts/lint/check-mcp-sdk-v1.sh"
+out="$(c58_run)"
+if ! grepq "$out" -F 'C58-mcp-sdk-v1'; then pass "C58 no gate -> silent"; else fail "C58 no gate -> $(printf '%s' "$out" | grep -A1 C57)"; fi
+rm -rf "$c58_t"
 
 if [ "$failures" -eq 0 ]; then echo "ALL PASS"; exit 0; else echo "$failures FAILURE(S)"; exit 1; fi

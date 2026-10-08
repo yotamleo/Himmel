@@ -1419,7 +1419,18 @@ cmd_next() {
     set -C
     if : 2>/dev/null > "$predecessor_handoff"; then
         set +C
+        # HIMMEL-4902: every mechanically derivable field is filled here so the
+        # outgoing console writes only its judgement notes (one Edit), not
+        # ~18 turns of hand derivation. Each fact fails open to "unavailable".
+        local facts="$HERE/../console-kit/handoff-facts.sh"
         render_template "$handoff_template" "$predecessor_handoff" \
+            HEAD_LINE "$(bash "$facts" head "$predecessor_doc" --repo "$repo")" \
+            BANK_LINE "$(bash "$facts" bank "$predecessor_doc" --repo "$repo")" \
+            LEG_LIST "$(bash "$facts" legs "$predecessor_doc" --repo "$repo")" \
+            OPEN_PRS "$(bash "$facts" prs "$predecessor_doc" --repo "$repo")" \
+            SHIFT_SUMMARY "$(bash "$facts" summary "$predecessor_doc" --repo "$repo")" \
+            QUEUE_LINE "$(bash "$facts" queue "$predecessor_doc" --repo "$repo")" \
+            LAST_GO "$(bash "$facts" lastgo "$predecessor_doc" --repo "$repo")" \
             PREDECESSOR_LETTER "$predecessor_letter" \
             LETTER "$successor_letter" \
             PREDECESSOR "$predecessor_base" \
@@ -1453,6 +1464,17 @@ cmd_next() {
     trap - EXIT
     console_metadata "$inbox"
     echo "launch: $launch_line"
+    # HIMMEL-4902: handover mode for the OUTGOING console's waiter, set only now
+    # that the successor doc, HANDOFF and launch line all validated. The marker
+    # sits beside the predecessor's inbox (console-wait.sh reads it): its waiter
+    # keeps delivering Telegram lines but stops tick/bank/page sampling, so an
+    # outgoing console merely waiting for LIVE takes no tick wakes. Best-effort:
+    # a failed write leaves the waiter as it was.
+    local pred_inbox
+    pred_inbox="${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}/consoles/${predecessor_stem}.md"
+    if mkdir -p "$(dirname "$pred_inbox")" 2>/dev/null && printf '%s\n' "$session" > "$pred_inbox.handover" 2>/dev/null; then
+        echo "handover-mode: $pred_inbox.handover"
+    fi
 
     if [ "$ARM" -eq 1 ]; then
         do_arm "$session" "$doc" "$fill_signal" "$log"

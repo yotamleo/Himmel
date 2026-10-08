@@ -106,6 +106,10 @@ contains 'summary counts 2 unplaced (1 unplaced + 1 parked)' "$stdout" '2 unplac
 # Done HIMMEL-5 is unplanned but not counted; open HIMMEL-6 and in-progress HIMMEL-7 are.
 contains 'summary counts only open unplanned tickets (HIMMEL-3954)' "$stdout" ', 2 unplanned,'
 contains 'the Done unplanned ticket still renders in its version tab data' "$html" '"done unplanned"'
+# HIMMEL-4930: unplanned is a flag (row field 7 = 2), never a theme; a ticket with no theme is counted and flagged.
+not_contains 'no "(unplanned)" theme in the page data (HIMMEL-4930)' "$html" '(unplanned)'
+contains 'summary counts the open tickets that have no theme (HIMMEL-4930)' "$stdout" ', 2 unthemed,'
+contains 'the ledger flags open tickets with no theme (HIMMEL-4930)' "$stdout" '2 open tickets have no theme'
 
 # --- HIMMEL-3957: design pass.
 # Ask 1: a row carries user impact, the effort range, readiness, impact, issue_plain and its load (P columns).
@@ -126,7 +130,7 @@ contains 'the ledger names the running version with its progress; Done unplanned
 contains 'the ledger gives whole-train progress (HIMMEL-3957)' "$stdout" \
     'Whole v1.0.x train: 1 of 4 done (25 %), 1 in progress, 2 to do.'
 contains 'the ledger names open unplanned work when non-zero (HIMMEL-3957)' "$stdout" \
-    'Needs attention: 2 open tickets sit in a version but not in the plan.'
+    'Needs attention: 2 open tickets sit in a version but not in the plan; 2 open tickets have no theme.'
 not_contains 'the ledger omits drift when it is zero (HIMMEL-3957)' "$stdout" 'drifted'
 contains 'the page data carries the same ledger (HIMMEL-3957)' "$html" 'Running now: v1.0.1 — 1 of 4 done (25 %)'
 # Ask 5: a Done off-plan ticket still counts in its version; off-plan work adds no budget.
@@ -234,6 +238,7 @@ not_contains 'a leg doc with no held lock is not live (HIMMEL-3990)' "$html6" '"
 contains 'a marker-shaped brief bullet above Results sets neither phase nor PR (HIMMEL-3990)' "$html6" '"9":["N59","LIVE",null]'
 contains 'a wrapped leg counts toward what its ticket took; a gap over 3 h is idle (HIMMEL-3990)' "$html6" '"ACT":{"6":[2,40]'
 contains 'a timestamped line above ## Results is not counted as work (HIMMEL-4441)' "$html6" '"8":[1,10]'
+contains 'the actuals carry the newest wrapped-leg doc stamp (HIMMEL-4930)' "$html6" '"ATS":"20'
 contains 'the live leg counts its ticket in progress in the ledger (HIMMEL-3990)' "$stdout6" '1 of 4 done (25 %), 2 in progress, 1 to do.'
 if [ "$fp4" != "$fp5" ]; then pass 'a leg starting moves the fingerprint (HIMMEL-3990)'; else fail 'a leg starting left the fingerprint'; fi
 printf '%s\n' '- 10:40 READY 1525 abc GREEN' >> "$bk/HIMMEL-1-N55-synthetic-leg-2026-10-01.md"
@@ -352,6 +357,7 @@ jhtml="$(cat "$out" 2>/dev/null)"
 contains 'the default versions file is <mirror-dir>.versions.tsv (HIMMEL-3990)' "$jhtml" \
     '"JV":[{"n":"v1.0.1","rel":true,"date":"2026-10-04"},{"n":"v1.0.2","rel":false,"date":""},{"n":"v1.0.3","rel":false,"date":""}]'
 contains 'a versions file means release state is known (HIMMEL-3990)' "$jhtml" '"RU":false'
+contains 'a released version has no caps: its tickets already shipped (HIMMEL-4930)' "$jhtml" '"VC":[null,'
 not_contains 'a ticket with only v1.0.0 is in no version (HIMMEL-3990)' "$jhtml" '"t":"zero version one"'
 contains 'working on is the earliest unreleased version with open work, not a released one (HIMMEL-3990)' "$jhtml" '"JC":1,'
 contains 'up next is the next unreleased version holding a ticket (HIMMEL-3990)' "$jhtml" '"JN":2,'
@@ -397,6 +403,37 @@ fp_ok 'versions missing' fpd --mirror-dir "$jm"
 if [ "$fpb" != "$fpd" ]; then pass 'a missing versions file differs from a present one (HIMMEL-3990)'; else fail 'a missing versions file left the fingerprint'; fi
 fp_ok 'versions missing again' fpe --mirror-dir "$jm"
 if [ "$fpd" = "$fpe" ]; then pass 'the fingerprint is stable with the versions file missing (HIMMEL-3990)'; else fail 'the fingerprint moved with no input change'; fi
+
+# --- HIMMEL-4930: theme overlay, drift log + trend.
+dl="$W/drift.tsv"
+unthemed_of() { printf '%s' "$1" | sed -n 's/.*drift, \([0-9]*\) unthemed,.*/\1/p'; }
+base_unthemed="$(unthemed_of "$(render --drift-log "$dl")")"
+fpo2=''
+fp_ok 'overlay absent' fpo2
+printf '%s\t%s\t%s\n' key theme source HIMMEL-6 'overlay theme' 'test' HIMMEL-1 'wrong theme' 'test' > "$plan/stage1/themes-overlay.tsv"
+ostdout="$(render --drift-log "$dl")"
+ohtml="$(cat "$out" 2>/dev/null)"
+contains 'the overlay gives an unthemed ticket its theme (HIMMEL-4930)' "$ohtml" '"overlay theme"'
+not_contains 'the overlay never overrides a stage1 theme (HIMMEL-4930)' "$ohtml" '"wrong theme"'
+if [ -n "$base_unthemed" ] && [ "$(unthemed_of "$ostdout")" = "$((base_unthemed - 1))" ]; then pass 'the overlay lowers the unthemed count by one (HIMMEL-4930)'; else fail "unthemed went from '$base_unthemed' to '$(unthemed_of "$ostdout")'"; fi
+fpo1=''
+fp_ok 'overlay present' fpo1
+if [ -n "$fpo1" ] && [ "$fpo1" != "$fpo2" ]; then pass 'the overlay is a fingerprint input (HIMMEL-4930)'; else fail 'the overlay left the fingerprint'; fi
+rm -f "$plan/stage1/themes-overlay.tsv"
+rows_n() { grep -c . "$dl" 2>/dev/null || printf 0; }
+rm -f "$dl"
+render --drift-log "$dl" >/dev/null
+if grep -Eq '^20[0-9-]+T[0-9:]+Z	[0-9]+	[0-9]+	[0-9]+$' "$dl" 2>/dev/null && [ "$(head -1 "$dl")" = "$(printf 'utc\tdrift\tunplanned\tunthemed')" ]; then pass 'a render appends one drift row: stamp, drift, unplanned, unthemed (HIMMEL-4930)'; else fail 'no well-formed drift row'; fi
+n1="$(rows_n)"
+render --drift-log "$dl" >/dev/null
+if [ "$n1" = "$(rows_n)" ] && [ "$n1" -ge 2 ]; then pass 'an unchanged render within the hour adds no drift row (HIMMEL-4930)'; else fail "unchanged render grew the drift log from $n1 to $(rows_n)"; fi
+printf '%s\t%s\t%s\n' key theme source HIMMEL-6 'overlay theme' 'test' > "$plan/stage1/themes-overlay.tsv"
+render --drift-log "$dl" >/dev/null
+if [ "$(rows_n)" -gt "$n1" ]; then pass 'a changed count adds a drift row (HIMMEL-4930)'; else fail 'a changed count left the drift log alone'; fi
+trend="$(render --drift-log "$dl")"
+contains 'stdout prints the drift trend (HIMMEL-4930)' "$trend" 'drift trend:'
+contains 'the page carries the drift trend (HIMMEL-4930)' "$(cat "$out" 2>/dev/null)" '"DT":[['
+rm -f "$plan/stage1/themes-overlay.tsv"
 
 printf '%s\n' "$fails failure(s)"
 [ "$fails" -eq 0 ]

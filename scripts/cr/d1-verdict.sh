@@ -23,10 +23,9 @@
 # This is the record whose ABSENCE means "not PR-eligible" (spec D1.4).
 #
 # Enforcement honesty: writing this record is BEHAVIORALLY enforced v1
-# (validating-session discipline). Nothing structurally requires it until the
-# lane-marker hook (scripts/hooks/block-cheap-lane-pr-without-verdict.sh) is
-# escalated on drift (HIMMEL-195). The CR-marker hook already structurally
-# enforces the panel/CR half; this is the lane-rubric half.
+# (validating-session discipline). Nothing structurally requires it: the
+# unwired GLM lane-marker hook was removed in HIMMEL-4899. The CR-marker hook
+# already structurally enforces the panel/CR half; this is the lane-rubric half.
 #
 # bash 3.2-safe; node is the JSON tool the cr scripts already depend on.
 # Exit codes: 0 — wrote the record; 2 — refusal (fail-closed on verdict axis).

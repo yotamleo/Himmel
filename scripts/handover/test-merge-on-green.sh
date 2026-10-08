@@ -2947,9 +2947,9 @@ TP_SCOPE="u/$(basename "$(dirname "$(git -C "$(dirname "$0")" rev-parse --path-f
 # HIMMEL-3832: a trust-reviewed GO needs the judge's GO verdict for the head.
 mkdir -p "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9"
 # shellcheck disable=SC2016  # literal backticks in the verdict line
-printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_SHA" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/a.md"
+printf '## Verdict\n\n**GO** for head `%s`.\n\npr: 77\n' "$GO_SHA" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/a.md"
 # shellcheck disable=SC2016  # literal backticks in the verdict line
-printf '## Verdict\n\n**GO** for head `%s`.\n' "$GO_OLD" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/b.md"
+printf '## Verdict\n\n**GO** for head `%s`.\n\npr: 77\n' "$GO_OLD" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/b.md"
 tp_run() {
     MOG_ANCHOR_GIT=1 HANDOVER_DIR="$TP_ROOT" STUB_SHA="$GO_SHA" STUB_PR_FILES_JSON="${STUB_PR_FILES_JSON-$TP_CI}" run_mog "$@"
 }

@@ -83,7 +83,9 @@ and the HIMMEL-4216 rerank timeout never fired.
 
 Never re-embed the live index in place: `qmd embed --force` drops every vector
 first, so search is broken for the whole embed (hours). Build a copy instead,
-then swap it in.
+then swap it in. `reembed` consistently backs up the whole local index with
+SQLite's `.backup`; receiver-only `--collections` filtering was retired with
+the ship transport (HIMMEL-4896).
 
 ```bash
 # 0. Is this host build-capable?
@@ -111,32 +113,8 @@ Switching back to gemma is the same procedure with `--model gemma`.
 
 `set gemma|qwen` alone only writes `models.embed` into `~/.config/qmd/index.yml`.
 It refuses when the index holds another model, because the result would be a
-mismatch; `--force` overrides that for a receiving station (below).
-
-## Shared indexes: ship-index.sh
-
-A station that is too slow to build its own index receives one from a builder
-over ssh (`scripts/luna/ship-index.sh`). That transport is unchanged: ssh to the
-operator's own hosts only, and only the collections the receiver configures.
-
-The artifact's embed model must equal the receiver's configured model, which
-ship-index reads from `qmd status` on the receiver. On a mismatch, or when the
-receiver's model cannot be read, the ship refuses before uploading anything
-(exit 9) and names the ways out in one line:
-
-- **switch the receiver** to the artifact's model, if it is query-capable (at
-  least 4 GiB of RAM): on the receiver, `bash scripts/luna/qmd-embed-model.sh set
-  <model> --force`, then ship again;
-- **ship lexical-only**: `bash scripts/luna/ship-index.sh --lexical-only` strips
-  every vector from the artifact (`prepare-ship-index.mjs --strip-vectors`) and
-  drops the vector table, so the receiver's model can recreate it at its own
-  dimension. The
-  receiver gets BM25 search only, until it embeds with its own model or a
-  matching index is shipped. It is never silent: the ship says `LEXICAL-ONLY`,
-  and the receiver's post-swap verify expects zero vectors.
-
-`prepare-ship-index.mjs` also refuses an artifact whose vectors come from more
-than one model.
+mismatch; `--force` overrides the guard, leaving the index mismatched until a
+matching re-embedded copy is swapped in.
 
 ## Egress
 

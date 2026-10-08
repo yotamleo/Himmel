@@ -26,6 +26,16 @@ CLOUD-OK ticket and prints the launch line.
 So the local shepherd stays mandatory: it runs `/pr-check`, the CR gate and the
 merge. The cloud session ships a PR and stops.
 
+The mechanical half of the shepherd is scripted (HIMMEL-4942):
+`bash scripts/handover/console-kit/shepherd.sh <pr>` makes a detached worktree of
+the PR head, runs the coverage lint, the impacted shell suites, `check-ci.sh` and
+`ready-check.sh`, and prints one `SHEPHERD <pr> <head> READY-CANDIDATE|NEEDS-LEG
+<reasons>` block (exit 0 / 1; 2 = usage or infra). It skips `CLOUD-ACK` steering
+only when `CLOUD-DONE` is already posted, and it is read-only toward the PR. It
+cannot run `/pr-check` (a model-session runbook): with no `ok` CR-ledger row for
+the head it reports `panel: NOT-RUN` and the PR still needs a `/pr-check` round.
+A clean candidate needs no shepherd leg; the console reads the diff, GOs and merges.
+
 ## Plugin hooks in the cloud (probed 2026-10-04, HIMMEL-4273)
 
 Probed from a cloud session started in a `--with-plugins` environment:
@@ -135,6 +145,12 @@ below are the background and the plugin-free variant.
       `git worktree add -b <type>/himmel-<n>-<slug> .claude/worktrees/<name> origin/main`,
       and work there (the repo's edit-on-main guard denies edits in the cloud's
       primary clone, even on a feature branch).
+      If repo retrieval is needed, run `bash scripts/cloud/setup-env.sh` inside
+      this worktree first. Query `graphify query "<question>" --graph graphify-out/graph.json`,
+      not the unclassified cached `/tmp` graph. Search with
+      `bash scripts/lib/qmd-bounded.sh search "<terms>" -c himmel`, never bare
+      qmd search or a vault collection. The wrapper finds the installed bun-global
+      tool even without a qmd shim on PATH.
    4. Edit ONLY the named files; keep the diff minimal and in the surrounding style.
    5. Write the new or changed test FIRST and show it RED without the fix, then
       green. Run `shellcheck` on every `.sh` file touched.

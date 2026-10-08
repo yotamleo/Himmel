@@ -53,17 +53,17 @@
 # API cost (HIMMEL-3850): every checks read goes through a shared per-PR cache
 # (scripts/lib/gh-ci-cache.sh) — N concurrent waiters on one PR cost ONE fetch
 # per TTL — and the watch is scripts/lib/check-ci-watch.sh (adaptive interval)
-# instead of gh's own --watch. On a rate-limit 403, or when the remaining
-# budget is under the floor, it sleeps until the reset (bounded by what is left
-# of --max-wait, HIMMEL-4136) and prints one line. Exit codes and gate decisions are unchanged. Knobs (env):
+# instead of gh's own --watch. REST check-runs/status reads use cached ETags;
+# core/GraphQL budgets rotate with at most one fallback per snapshot. Both low
+# use the existing reset wait bounded by --max-wait (HIMMEL-4136). Knobs (env):
 #   CHECK_CI_CACHE=0            legacy path: gh's own --watch, no cache
 #   CHECK_CI_CACHE_DIR          default $HOME/.himmel/state/ci-cache
 #   CHECK_CI_CACHE_TTL          poll-read TTL, default 60
 #   CHECK_CI_DECIDE_TTL         terminal/decide-read TTL, default 5
 #   CHECK_CI_WATCH_INTERVAL     adaptive-interval floor, default 30
 #   CHECK_CI_WATCH_INTERVAL_MAX adaptive-interval ceiling, default 120
-#   CHECK_CI_API_FLOOR          wait for the reset under this many calls left,
-#                               default 300 (0 = only wait on a 403)
+#   CHECK_CI_API_FLOOR          rotate under this many calls left; both low wait,
+#                               default 300 (0 = no preemptive budget read)
 # Details + adopter notes: docs/configuration.md.
 #
 # The green verdict is bound to the PR head SHA: headRefOid is captured before
@@ -192,7 +192,8 @@ usage() {
 usage: check-ci.sh [<pr-number|branch|url>] [--grace <sec>] [--settle <sec>] [--max-wait <sec>] [--threads-only]
        check-ci.sh --run <run-id> [--job <name>] [--max-wait <sec>]
 run mode: foreground workflow/job wait, no PR merge/review gates or settle.
-          0 = success/skipped/neutral, 1 = failed/cancelled, 2 = cannot evaluate.
+          0 = success (whole run also skipped/neutral), 1 = failed/cancelled.
+          2 = cannot evaluate (including a skipped/neutral --job target).
           DEADLINE-PENDING = 2 (7 with CHECK_CI_DISTINCT_DEADLINE=1).
           CHECK_CI_RUN_HEARTBEAT overrides the per-process cache-dir heartbeat.
 exit codes: 0 = checks green + all review threads resolved
@@ -1235,6 +1236,26 @@ watch_round() {
     return 0
 }
 
+# One startup snapshot supplies head, base, URL and the first review decision.
+# Post-watch review and head reads remain fresh: these facts can change while
+# the immutable commit endpoints are being watched.
+initial_pr=$(pr_view --json url,reviewDecision,headRefOid,baseRefName --jq '[.url, (if (.reviewDecision // "") == "" then "null" else .reviewDecision end), .headRefOid, .baseRefName] | @tsv' 2>&1) || {
+    echo "check-ci: cannot resolve the PR — cannot evaluate: $initial_pr" >&2; exit 2
+}
+IFS=$'\t' read -r initial_url initial_decision initial_head initial_base <<EOF
+$initial_pr
+EOF
+case "$initial_url" in
+    https://github.com/*/pull/*) ;;
+    *) echo "check-ci: cannot resolve the PR — cannot evaluate; re-run" >&2; exit 2 ;;
+esac
+if [ -z "$initial_head" ] || [ -z "$initial_base" ] || [ -z "$initial_decision" ]; then
+    echo "check-ci: incomplete PR startup snapshot — cannot evaluate; re-run" >&2; exit 2
+fi
+initial_review=1
+export CHECK_CI_CACHE_REPO="${initial_url#https://github.com/}"
+CHECK_CI_CACHE_REPO="${CHECK_CI_CACHE_REPO%/pull/*}"
+
 if [ "$THREADS_ONLY" -eq 0 ]; then
     # Grace window: probe (non-watch) until the PR has registered checks. gh exit
     # codes on the probe: 0 = all pass, 8 = pending — both mean checks exist, so
@@ -1250,7 +1271,7 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
     # messages are the ones callers already know.
     cache_head=""
     if [ "$CACHE_ON" -eq 1 ]; then
-        cache_head=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
+        cache_head="$initial_head"
         if [ -z "$cache_head" ] || ! cic_init "$selector" "$cache_head"; then CACHE_ON=0; fi
     fi
     while :; do
@@ -1290,7 +1311,7 @@ if [ "$THREADS_ONLY" -eq 0 ]; then
 
     # Bind the verdict to this head: a concurrent push during the run would
     # make the certified commit differ from the one a merge would take.
-    head0=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
+    head0="$initial_head"
     if [ -z "$head0" ]; then
         echo "check-ci: cannot read the PR head SHA — cannot bind the verdict; re-run" >&2
         exit 2
@@ -1311,8 +1332,7 @@ ctx="checks green but "
 [ "$THREADS_ONLY" -eq 1 ] && ctx=""
 # url + reviewDecision in ONE query: url doubles as the success probe, so a
 # failed call can never silently read as "no decision".
-pr_json=$(pr_view --json url,reviewDecision --jq '"\(.url)|\(.reviewDecision)"' 2>/dev/null)
-pr_url=${pr_json%%|*}
+pr_url="$initial_url"
 case "$pr_url" in
     https://github.com/*/pull/*) ;;
     *)
@@ -1340,7 +1360,12 @@ review_state_gate() {
     # gate); only the affirmative "do not merge" signal blocks.
     # Fail CLOSED on a failed/malformed refresh (coderabbit 980-r3): an empty
     # snapshot would otherwise skip the CHANGES_REQUESTED check silently.
-    decision=$(pr_view --json url,reviewDecision --jq '"\(.url)|\(.reviewDecision)"' 2>/dev/null)
+    if [ "$initial_review" = 1 ]; then
+        decision="$initial_url|$initial_decision"
+        initial_review=0
+    else
+        decision=$(pr_view --json url,reviewDecision --jq '"\(.url)|\(.reviewDecision)"' 2>/dev/null)
+    fi
     case "$decision" in
         https://github.com/*/pull/*"|"*) decision=${decision##*|} ;;
         *)
@@ -1718,7 +1743,7 @@ if [ "$THREADS_ONLY" -eq 1 ]; then
     # and /pr-check step 4.8 calling this path must get the SAME body-finding
     # protection as the full run, not just the thread gate.
     if [ "$CR_ARMED" -eq 1 ]; then
-        head0=$(pr_view --json headRefOid --jq .headRefOid 2>/dev/null)
+        head0="$initial_head"
         if [ -z "$head0" ]; then
             echo "check-ci: cannot read the PR head SHA — cannot bind the verdict; re-run" >&2
             exit 2

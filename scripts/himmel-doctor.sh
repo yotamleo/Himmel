@@ -3639,6 +3639,23 @@ check_c55_project_mode() {
     emit OK C55-project-mode "tracker=$tracker forge=$forge ($req)"
 }
 
+# --- C58-mcp-sdk-v1 (HIMMEL-4866): no v1 MCP SDK dependency or import -----------
+# Runs scripts/lint/check-mcp-sdk-v1.sh against the judged checkout. A finding
+# is a WARN naming the hits; the gate is also enforced at commit time. Vendored
+# and externally configured servers are NOTEs of the gate, never a compliance
+# claim. A checkout without the gate gets no row.
+check_c58_mcp_sdk_v1() {
+    local lint="$REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" out rc=0
+    [ -f "$lint" ] || return 0
+    out="$(bash "$lint" "$REPO_ROOT" 2>&1)" || rc=$?
+    case "$rc" in
+        0) emit OK C58-mcp-sdk-v1 "no @modelcontextprotocol/sdk (v1) dependency or import" ;;
+        1) emit WARN C58-mcp-sdk-v1 "v1 MCP SDK in tracked files: $(printf '%s' "$out" | grep -v '^NOTE' | head -n 3 | tr '\n' ';')" \
+               "migrate to @modelcontextprotocol/server 2.3.1 (docs/internals/mcp-servers.md), then: bash $REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" ;;
+        *) emit WARN C58-mcp-sdk-v1 "check-mcp-sdk-v1.sh could not evaluate rc=$rc: ${out:0:160}" ;;
+    esac
+}
+
 # --- C48-tmp-usage: /tmp at 80 % or more (HIMMEL-4224) --------------------------
 # On 2026-10-03 the /tmp tmpfs filled and fleet Bash hit ENOSPC. WARN at >= 80 % used
 # and name scripts/tmp-reap.sh (dry-run by default) as the remedy. Report only.
@@ -3735,7 +3752,8 @@ check_c52_graphify_ollama() {
 # point. For local and remote the probe is a read-only TCP connect to the ssh
 # port; it never starts, stops or logs in to a VM. A down local VM is INFO (it
 # is started on demand); a down remote VM is WARN, and a remote one routed
-# through a ProxyJump/ProxyCommand is INFO (HIMMEL-4599). HIMMEL_DOCTOR_VM_PROBE is a
+# through a ProxyJump/ProxyCommand is INFO (HIMMEL-4599), as is a down remote one
+# whose ssh -G lookup failed (HIMMEL-4631). HIMMEL_DOCTOR_VM_PROBE is a
 # test seam: a command run as `<probe> <host> <port>`; set but not executable =
 # the mode is reported without a probe.
 check_c53_vm_mode() {
@@ -3752,16 +3770,19 @@ check_c53_vm_mode() {
             "docs/setup/vm-mode.md"
         return
     fi
-    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin g k v via=""
+    local host="${VM_MODE_HOST#*@}" port="$VM_MODE_PORT" probe="${HIMMEL_DOCTOR_VM_PROBE:-}" rc=0 timeout_bin g k v via="" unresolved=""
     timeout_bin="$(command -v timeout 2>/dev/null)" || timeout_bin=""
     # A remote target may be an ssh config alias (HIMMEL-4599): `ssh -G` prints
     # the effective config offline, connecting to nothing, so the probe uses
     # its HostName and port; a ProxyJump/ProxyCommand route is one a raw TCP
     # connect cannot follow, so it is reported, not probed. -p mirrors the
     # drivers, which always pass it. Only under timeout: a Match exec in the ssh
-    # config runs a command, which could stall the doctor.
-    if [ "$VM_MODE" = remote ] && [ -n "$timeout_bin" ] && command -v ssh >/dev/null 2>&1 \
-        && g="$("$timeout_bin" 5 ssh -G -p "$VM_MODE_PORT" "$VM_MODE_HOST" 2>/dev/null)"; then
+    # config runs a command, which could stall the doctor. A failed or timed-out
+    # lookup leaves the host as written, possibly an unresolved alias, so the
+    # result says so and a down probe is INFO, not WARN (HIMMEL-4631).
+    if [ "$VM_MODE" = remote ] && [ -n "$timeout_bin" ] && command -v ssh >/dev/null 2>&1; then
+        g="$("$timeout_bin" 5 ssh -G -p "$VM_MODE_PORT" "$VM_MODE_HOST" 2>/dev/null)" \
+            || { g=""; unresolved="; ssh -G failed, probed the configured host as written"; }
         while read -r k v; do
             case "$k" in
                 hostname) [ -n "$v" ] && host="$v" ;;
@@ -3797,7 +3818,10 @@ EOF
         fi
     fi
     if [ "$rc" -eq 0 ]; then
-        emit OK C53-vm-mode "vm.mode=$VM_MODE, VM ssh port reachable at $VM_MODE_HOST:$VM_MODE_PORT$resolved"
+        emit OK C53-vm-mode "vm.mode=$VM_MODE, VM ssh port reachable at $VM_MODE_HOST:$VM_MODE_PORT$resolved$unresolved"
+    elif [ -n "$unresolved" ]; then
+        emit INFO C53-vm-mode "vm.mode=remote, remote VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT$unresolved" \
+            "check the target with: ssh -G -p $VM_MODE_PORT $VM_MODE_HOST, then: ssh -p $VM_MODE_PORT $VM_MODE_HOST true"
     elif [ "$VM_MODE" = local ]; then
         emit INFO C53-vm-mode "vm.mode=local, local test VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT (it is started on demand)" \
             "start it with the himmel-ops:vm skill before a VM-proof step"
@@ -3805,6 +3829,23 @@ EOF
         emit WARN C53-vm-mode "vm.mode=remote, remote VM not reachable at $VM_MODE_HOST:$VM_MODE_PORT$resolved — VM-proof holds cannot be lifted" \
             "check vm.remote in ~/.himmel/config.json and that the VM is up (docs/setup/vm-mode.md)"
     fi
+}
+
+# C57 — every loader must name its own keys; diagnostics never print values.
+check_c57_dotenv_allowlists() {
+    local audit="$REPO_ROOT/scripts/lib/dotenv-audit.mjs" rows sev msg node_bin
+    if [ ! -f "$audit" ]; then
+        emit WARN C57-dotenv-allowlists "dotenv consumer audit is missing" "run himmel-update"
+        return
+    fi
+    if ! node_bin="$(resolve_node 2>/dev/null)" || ! rows="$("$node_bin" "$audit" "$REPO_ROOT" 2>/dev/null)"; then
+        emit WARN C57-dotenv-allowlists "could not audit .env consumer allowlists" "check the Node runtime and scripts/lib/dotenv-audit.mjs"
+        return
+    fi
+    while IFS=$'\t' read -r sev msg; do
+        [ -n "$sev" ] || continue
+        emit "$sev" C57-dotenv-allowlists "$msg" "each loader must name its consumed keys; unused names can be intentional (for example a future API lane)"
+    done <<< "$rows"
 }
 
 # --- run ------------------------------------------------------------------------
@@ -3865,6 +3906,8 @@ check_c52_graphify_ollama
 check_c53_vm_mode
 check_c54_hook_copy_reaper
 check_c55_project_mode
+check_c57_dotenv_allowlists
+check_c58_mcp_sdk_v1
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

@@ -41,12 +41,16 @@ export type FleetRow = {
   runtime: { startedAt: number; endedAt: number | null; elapsedMs: number } | null;
   console: string | null; live: boolean; lock: "held" | "released" | "unknown";
   lane: "native" | "claudex" | "cloud";
+  // HIMMEL-4925: the doc's last Results marker (leg_tail_status), the doc's last write, and the PR's URL.
+  marker: string | null; lastSeenAt: number | null; prUrl: string | null;
 };
+export type ProcessOrphan = { pid: number; owner: string; ageMin: number };
 export type Usage = {
   calls: number; input: number; output: number; cacheRead: number; cacheCreate: number; costEq: number;
   resident: number | null; ceiling: number; ceilingFrom: "autocompact" | "window"; fill: number | null;
 };
-export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[] };
+// processOrphans (HIMMEL-4925): tick's stale shell-tool wrappers; null when the inventory could not be read.
+export type Fleet = { census: "ok" | "degraded" | "unavailable"; generatedAt: number; sessions: FleetRow[]; processOrphans: ProcessOrphan[] | null };
 type CensusRow = { pid: string; name: string; model: string; doc: string; status: string; autocompact?: string; startedAt?: number | null };
 type Census = { census: Fleet["census"]; sessions: CensusRow[]; cloudRoutes?: string[]; manifests?: string[]; consoleDocs?: string[] };
 
@@ -93,18 +97,23 @@ function tallyOf(lines: string[]): Tally | null {
   return t.calls ? t : null;
 }
 
-// The ceiling is the session's numeric --autocompact; without one (absent or `auto`) it is the model's window.
-function finish(t: Tally | null, c: { autocompact: string; model: string }): Usage | null {
+// The ceiling is the window the launch declared (HIMMEL-4925: claude-codex's CLAUDE_CODE_MAX_CONTEXT_TOKENS, which a
+// claudex session honours over --autocompact); else the session's numeric --autocompact; else a Claude model's window.
+// A non-Claude model nobody declared a window for, or a fill past 100 % (so the ceiling is wrong), is not measured.
+const num = (s: string | undefined) => (s && /^\d+$/.test(s) ? Number(s) : 0);
+function finish(t: Tally | null, c: { autocompact: string; model: string; window?: string }): Usage | null {
   if (!t) return null;
-  const ac = /^\d+$/.test(c.autocompact) ? Number(c.autocompact) : 0;
-  const ceiling = ac > 0 ? ac : /\[1m\]$/i.test(c.model) ? WINDOW_1M : WINDOW;
+  const declared = num(c.window), ac = num(c.autocompact);
+  const claude = /claude|opus|sonnet|haiku|fable/i.test(c.model) || c.model === "";
+  const ceiling = declared || ac || (/\[1m\]$/i.test(c.model) ? WINDOW_1M : WINDOW);
+  const fill = t.resident === null || (!declared && !ac && !claude) ? null : Math.round((t.resident / ceiling) * 1000) / 10;
   return {
     ...t, costEq: Math.round(t.input * W.input + t.cacheRead * W.cacheRead + t.cacheCreate * W.cacheCreate + t.output * W.output),
-    ceiling, ceilingFrom: ac > 0 ? "autocompact" : "window",
-    fill: t.resident === null ? null : Math.round((t.resident / ceiling) * 1000) / 10,
+    ceiling, ceilingFrom: !declared && ac ? "autocompact" : "window",
+    fill: fill !== null && fill > 100 ? null : fill,
   };
 }
-export const usageOf = (lines: string[], c: { autocompact: string; model: string }) => finish(tallyOf(lines), c);
+export const usageOf = (lines: string[], c: { autocompact: string; model: string; window?: string }) => finish(tallyOf(lines), c);
 
 function runScript(script: string, env: Record<string, string | undefined>): Promise<Census> {
   return new Promise((ok) => {
@@ -114,6 +123,39 @@ function runScript(script: string, env: Record<string, string | undefined>): Pro
     });
   });
 }
+
+// HIMMEL-4925: the shell-tool wrappers tick reports as orphans, from the console kit's own inventory (`--list`: one
+// `pid=<pid> owner=<session> age=<n>m` row each); read-only, and null when it failed rather than an empty list.
+async function processOrphansOf(opts: { script: string; env: Record<string, string | undefined> }): Promise<ProcessOrphan[] | null> {
+  const script = opts.env.CONFIG_UI_ORPHAN_LOOPS || join(dirname(opts.script), "../handover/console-kit/orphan-loops.sh");
+  return new Promise((ok) => {
+    execFile("bash", [script, "--list"], { env: opts.env as NodeJS.ProcessEnv, timeout: 10_000, maxBuffer: 256 * 1024 }, (err, stdout) => {
+      if (err) return ok(null);
+      ok(stdout.split("\n").flatMap((l) => {
+        const m = /^pid=(\d+) owner=(\S+) age=(\d+)m$/.exec(l.trim());
+        const owner = m && plain(m[2]);
+        return m && owner ? [{ pid: Number(m[1]), owner, ageMin: Number(m[3]) }] : [];
+      }));
+    });
+  });
+}
+
+// HIMMEL-4925: the GitHub repo a PR number belongs to — CONFIG_UI_GITHUB_REPO (owner/name), else this checkout's
+// origin. ponytail: every leg's PR is linked into this checkout's repo; a leg working another repo's PR gets a wrong
+// link, upgrade path: resolve the repo per handover bucket from the registry once legs routinely ship elsewhere.
+const slugs = new Map<string, string | null>();
+async function repoSlugOf(checkout: string, env: Record<string, string | undefined>): Promise<string | null> {
+  const SLUG = /^[\w.-]+\/[\w.-]+$/;
+  if (env.CONFIG_UI_GITHUB_REPO) return SLUG.test(env.CONFIG_UI_GITHUB_REPO) ? env.CONFIG_UI_GITHUB_REPO : null;
+  if (!slugs.has(checkout)) slugs.set(checkout, await new Promise<string | null>((ok) => {
+    execFile("git", ["-C", checkout, "remote", "get-url", "origin"], { timeout: 3000 }, (err, stdout) => {
+      const s = !err && /github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\s*$/.exec(stdout)?.[1];
+      ok(s && SLUG.test(s) ? s : null);
+    });
+  }));
+  return slugs.get(checkout) ?? null;
+}
+const prUrlOf = (slug: string | null, pr: number | null) => (slug && pr !== null ? `https://github.com/${slug}/pull/${pr}` : null);
 
 // The cloud sessions the console buckets' routing logs name, each a row under the console its brief names; a GitHub
 // read that failed leaves every one unknown (no PR, no URL) rather than failing the fleet.
@@ -134,6 +176,7 @@ async function cloudRows(logs: string[], env: Record<string, string | undefined>
       parent: await consoleOf(r), predecessor: null, agents: [], usage: null, cloud: { url: p.url, phase: p.phase },
       runtime: p.phase === "merged" || p.phase === "closed" ? null : { startedAt: r.at, endedAt: null, elapsedMs: Math.max(0, now - r.at) },
       console: await consoleOf(r), live: p.phase !== "merged" && p.phase !== "closed", lock: "unknown", lane: "cloud",
+      marker: null, lastSeenAt: null, prUrl: null,
     };
   }));
 }
@@ -201,7 +244,7 @@ async function fold(journal: string): Promise<Folded> {
 
 export async function readFleet(opts: { script: string; env: Record<string, string | undefined>; home: string; now: number; redact: (s: string) => string }): Promise<Fleet> {
   const census = await runScript(opts.script, opts.env);
-  if (census.census === "unavailable") return { census: "unavailable", generatedAt: opts.now, sessions: [] };
+  if (census.census === "unavailable") return { census: "unavailable", generatedAt: opts.now, sessions: [], processOrphans: await processOrphansOf(opts) };
   const lockOf = (file: string, doc: string, wrapped: boolean): Promise<FleetRow["lock"]> => {
     if (wrapped) return Promise.resolve("released");
     if (!/^- .*\b(?:lock|release-token)\b.*`[^`]+`/m.test(doc)) return Promise.resolve("unknown");
@@ -245,11 +288,12 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
     const journal = found && "path" in found ? found.path : null;
     let view: View | null = null, tally: Tally | null = null;
     if (journal) {
-      seen.add(journal);
       // Live if any of its files was written recently: a subagent can be busy while the main journal is quiet.
       const { paths } = await sessionFiles(journal);
       const mtimes = await Promise.all(paths.map((p) => stat(p).then((s) => s.mtimeMs, () => 0)));
       if (opts.now - Math.max(0, ...mtimes) > RECENT_MS && roleOf(c.name, c.doc) === "interactive") return null;
+      // Only a listed session keeps its fold: a quiet one left off the page drops out of the cache below.
+      seen.add(journal);
       ({ view, tally } = await fold(journal));
     }
     let doc = "", docAt = opts.now;
@@ -272,9 +316,9 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
       subagents: { total: subs.length, running: view ? subs.filter((id) => agentState(view!, id) === "running").length : 0 },
       failures: view?.failures.length ?? 0,
       ...graph, parent, console: role === "console" ? name : parent, live: c.status !== "WRAPPED", lock: role === "console" ? await lockOf(c.doc, doc, c.status === "WRAPPED") : "unknown",
-      lane,
+      lane, marker: c.status || null, lastSeenAt: c.doc && doc ? docAt : null, prUrl: null,
       agents: subs.map((id) => ({ name: opts.redact(view!.agents[id]?.name ?? id).slice(0, 80), role: view!.agents[id]?.role ?? "subagent", state: agentState(view!, id) })),
-      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model }), cloud: null,
+      usage: finish(tally, { autocompact: c.autocompact ?? "", model: c.model, window: launch.CLAUDE_CODE_MAX_CONTEXT_TOKENS }), cloud: null,
       runtime: runtimeOf(rec.startedAt ?? c.startedAt, edges.get(c.doc)?.at ?? t0, doc, c.status === "WRAPPED", opts.now, docAt),
     };
   }));
@@ -292,6 +336,7 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
         subagents: { total: 0, running: 0 }, failures: 0, ...graphOf("console", doc),
         agents: [], usage: null, cloud: null, runtime: null, console: name, live: false,
         lock: await lockOf(file, doc, wrapped), lane: "native",
+        marker: wrapped ? "WRAPPED" : null, lastSeenAt: s.mtimeMs, prUrl: null,
       });
     } catch { /* archived console moved or unreadable */ }
   }
@@ -303,5 +348,8 @@ export async function readFleet(opts: { script: string; env: Record<string, stri
   }
   // Drop the folds of sessions that left the fleet, so the cache does not grow with every session ever seen.
   for (const journal of folds.keys()) if (!seen.has(journal)) folds.delete(journal);
-  return { census: census.census, generatedAt: opts.now, sessions: [...rows.filter((r): r is FleetRow => r !== null), ...cloud] };
+  const sessions = [...rows.filter((r): r is FleetRow => r !== null), ...cloud];
+  const slug = await repoSlugOf(join(dirname(opts.script), "../.."), opts.env);
+  for (const r of sessions) r.prUrl = prUrlOf(slug, r.pr);
+  return { census: census.census, generatedAt: opts.now, sessions, processOrphans: await processOrphansOf(opts) };
 }

@@ -31,6 +31,7 @@ Default ledger: $CR_LEDGER, else <git common dir>/cr-critic-scores.jsonl.
 """
 import argparse
 import collections
+import datetime
 import hashlib
 import json
 import os
@@ -83,9 +84,21 @@ def finding_id(k):
     return hashlib.sha256(k.encode()).hexdigest()[:12]
 
 
+def parse_ts(ts):
+    """An ISO-8601 timestamp as an aware UTC datetime, or None if it does not parse."""
+    try:
+        t = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t.replace(tzinfo=datetime.timezone.utc) if t.tzinfo is None else t
+
+
 def load(path, until):
     if not os.path.isfile(path):
         die("ledger not found: " + path)
+    cut = parse_ts(until) if until else None
+    if until and cut is None:
+        die("--until is not an ISO-8601 timestamp: " + until)
     rows, malformed = [], 0
     with open(path, encoding="utf-8") as fh:
         for line in fh:
@@ -99,7 +112,9 @@ def load(path, until):
             if not isinstance(r, dict):
                 malformed += 1
                 continue
-            if until and str(r.get("ts", "")) > until:
+            # A row whose ts does not parse is kept, as an empty ts always was.
+            ts = parse_ts(r.get("ts", "")) if cut else None
+            if ts is not None and ts > cut:
                 continue
             rows.append(r)
     return rows, malformed
@@ -223,7 +238,7 @@ def coded(findings, path):
     disproved = {f["id"]: f for f in findings if f["bucket"] == "disproved"}
     if not os.path.isfile(path):
         die("coded sample not found: " + path)
-    rows = []
+    rows, seen = [], set()
     with open(path, encoding="utf-8") as fh:
         header = fh.readline().rstrip("\n").split("\t")
         if header[:3] != ["id", "critic", "class"]:
@@ -235,6 +250,9 @@ def coded(findings, path):
             if len(cols) < 3:
                 die("%s:%d: fewer than three columns" % (path, n))
             fid, critic, cls = cols[:3]
+            if fid in seen:
+                die("%s:%d: duplicate finding id %s" % (path, n, fid))
+            seen.add(fid)
             if fid not in disproved:
                 die("%s:%d: %s is not a disproved finding in this ledger cut" % (path, n, fid))
             if disproved[fid]["critic"] != critic:
@@ -300,6 +318,8 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=4482)
     ap.add_argument("--coded", help="coded sample TSV (id, critic, class, note) to check and tally")
     a = ap.parse_args(argv)
+    if a.sample is not None and a.sample < 0:
+        die("--sample must be a non-negative count, not %d" % a.sample)
     rows, malformed = load(a.ledger or default_ledger(), a.until)
     findings = fold(rows)
     if a.sample is not None:

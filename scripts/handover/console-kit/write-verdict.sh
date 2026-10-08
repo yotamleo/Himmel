@@ -7,7 +7,7 @@
 # generates that line itself; the judge's prose comes from a file it wrote to
 # its scratch, so the command a judge types names nothing the guards key on.
 #
-# Usage: write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <path> [--judge <name>]
+# Usage: write-verdict.sh <qid> <GO|NO-GO> <head> --pr <n> --evidence-file <path> [--judge <name>] [--branch <name>]
 #
 # Writes <root>/<user>/<bucket>/verdicts/<qid>/<name>.md (name defaults to
 # `judge`; <name>-<head>.md beside a NO-GO for another head), where <root>
@@ -24,7 +24,16 @@
 #
 #     **GO** for head `<head>`.
 #
+#     pr: <n>
+#     branch: <name>            (only when --branch is given)
+#
 #     <the evidence file, verbatim>
+#
+# HIMMEL-4928: the `pr:` line sits at a fixed place, two lines after the verdict
+# line, where go.sh --trust-reviewed reads it and refuses a verdict naming
+# another PR. review-round.sh reads only the first eight lines, so it is
+# unaffected. A verdict file with no `pr:` line (written before this field
+# existed) is refused by go.sh; the judge rewrites it with --pr.
 #
 # The writer-session stamp is a breadcrumb, not authentication: an in-process
 # judge call shares the console's environment, so it names the session the
@@ -45,12 +54,16 @@
 #     symlink, so the write cannot leave verdicts/<qid>/;
 #   - a GO when verdicts/<qid>/ already holds a NO-GO for the same head, or a
 #     verdict that does not parse (go.sh refuses on either anyway).
-# A NO-GO is always written past those last two (HIMMEL-4714): go.sh treats
+# HIMMEL-4885: a new NO-GO evidence file must carry exactly one class: field,
+# one value or a comma set from option-parsing, cwd-indirection, shell-parsing,
+# tool-defaults, reader-allowlist, other; missing or invalid classes exit 2.
+# A valid NO-GO is always written past those last two (HIMMEL-4714): go.sh treats
 # any NO-GO as a veto, so it only narrows, and refusing it would leave a
 # forged or mistaken GO alone on disk. The same answer again, or a verdict
 # for another head, is written. When <name>.md holds a NO-GO for another
 # head, the new ruling is written to <name>-<head>.md instead, so that veto
-# survives the PR returning to its head (HIMMEL-4731).
+# survives the PR returning to its head (HIMMEL-4731). A name over 150 bytes is
+# shortened with a hash suffix so no redirect target can exceed 255 (HIMMEL-4753).
 # ponytail: same-uid ceiling - the symlink and conflict checks run before an
 # atomic rename, so a same-uid process racing the directory can still swap it
 # between check and rename; a separate-uid verdict store is the upgrade path
@@ -70,7 +83,7 @@ case "${BASH_SOURCE[0]}" in */*) _ah_d="${BASH_SOURCE[0]%/*}" ;; *) _ah_d=. ;; e
 . "$_ah_d/../../cr/anchor-handoff.sh" || exit 2
 
 usage() {
-    echo "usage: write-verdict.sh <qid> <GO|NO-GO> <head> --evidence-file <path> [--judge <name>]" >&2
+    echo "usage: write-verdict.sh <qid> <GO|NO-GO> <head> --pr <n> --evidence-file <path> [--judge <name>] [--branch <name>]" >&2
     exit 2
 }
 seg_ok() {
@@ -80,9 +93,11 @@ seg_ok() {
 [ "$#" -ge 3 ] || usage
 QID=$1 ANSWER=$2 HEAD=$3
 shift 3
-EVIDENCE="" NAME=judge
+EVIDENCE="" NAME=judge PR="" BRANCH=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
+        --pr) [ "$#" -ge 2 ] || usage; PR=$2; shift 2 ;;
+        --branch) [ "$#" -ge 2 ] || usage; BRANCH=$2; shift 2 ;;
         --evidence-file) [ "$#" -ge 2 ] || usage; EVIDENCE=$2; shift 2 ;;
         --judge) [ "$#" -ge 2 ] || usage; NAME=$2; shift 2 ;;
         *) usage ;;
@@ -97,6 +112,14 @@ if [ "$HEAD_OK" -ne 1 ] || [ "${#HEAD}" -ne 40 ]; then
     exit 2
 fi
 [ -n "$EVIDENCE" ] || { echo "write-verdict: --evidence-file <path> is required" >&2; exit 2; }
+# HIMMEL-4928: the verdict names its PR, as go.sh's PR argument is spelled
+# (no leading zero), so two PRs on one head are told apart.
+case "$PR" in
+    ''|0*|*[!0-9]*) echo "write-verdict: --pr <n> is required and must be a PR number without a leading zero (got '$PR')" >&2; exit 2 ;;
+esac
+case "$BRANCH" in
+    *[!A-Za-z0-9._/-]*|*..*|/*|*/) echo "write-verdict: --branch '$BRANCH' is not a plain branch name ([A-Za-z0-9._/-], no '..')" >&2; exit 2 ;;
+esac
 # The evidence must live in this uid's Claude scratch root, reached without a
 # symlink at any step from that root down.
 SCRATCH="/tmp/claude-$(id -u)"
@@ -120,9 +143,18 @@ fi
 # ponytail: macOS ls prints `@` in place of `+` when a directory has both
 # xattrs and an ACL, so an ACL behind xattrs passes there; the upgrade path is
 # an `ls -lde` ACL read on BSD (HIMMEL-4742).
+#
+# HIMMEL-4753: an `ls -ld` that fails or prints nothing cannot show the root
+# free of an ACL, so it refuses like the stat branch does.
 ev_mode=$(stat -c %a "$SCRATCH" 2>/dev/null) || ev_mode=$(stat -f %Lp "$SCRATCH" 2>/dev/null) || ev_mode=""
-case "$ev_mode:$(ls -ld "$SCRATCH" 2>/dev/null)" in
-    700:d?????????+*) ev_mode=acl ;;
+ev_ls=$(ls -ld "$SCRATCH" 2>/dev/null) || ev_ls=""
+# HIMMEL-4962: an `ls` that exits 0 with a non-mode line (garbage, a space) is
+# no better, so the first field must be a directory mode string, `d` and nine
+# permission characters, optionally followed by `+`, `.` or `@`.
+ev_modestr=${ev_ls%%[[:space:]]*}
+[[ $ev_modestr =~ ^d[-rwxsStT]{9}[+.@]?$ ]] || ev_mode=unreadable
+case "$ev_mode:$ev_modestr" in
+    700:*+) ev_mode=acl ;;
 esac
 if [ "$ev_mode" != 700 ]; then
     echo "write-verdict: '$SCRATCH' is accessible to group or other users (want 0700) - refusing" >&2
@@ -142,6 +174,18 @@ done
 if [ ! -f "$EVIDENCE" ] || [ ! -r "$EVIDENCE" ] || [ ! -s "$EVIDENCE" ]; then
     echo "write-verdict: evidence file '$EVIDENCE' is missing, unreadable, not a regular file or empty" >&2
     exit 2
+fi
+# HIMMEL-4885: every new NO-GO names the finding class before it can buy
+# a delta round. GO evidence need not carry a class. Keep one unambiguous
+# field; unknown labels and empty members cannot become a fresh class.
+if [ "$ANSWER" = NO-GO ]; then
+    classes=$(awk '/^class:/ { sub(/^class:[ \t]*/, ""); sub(/[ \t\r]+$/, ""); print }' "$EVIDENCE")
+    class_word='(option-parsing|cwd-indirection|shell-parsing|tool-defaults|reader-allowlist|other)'
+    class_re="^$class_word([[:blank:]]*,[[:blank:]]*$class_word)*$"
+    if [ "$(grep -c '^class:' "$EVIDENCE")" != 1 ] || ! [[ $classes =~ $class_re ]]; then
+        echo "write-verdict: NO-GO requires one class: field, a comma set from option-parsing, cwd-indirection, shell-parsing, tool-defaults, reader-allowlist, other" >&2
+        exit 2
+    fi
 fi
 case "$(printf '%s' "${HIMMEL_CONSOLE_RELAY:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
     ''|0|false|off|no) ;;
@@ -184,6 +228,16 @@ for seg in "${SCOPE%%/*}" "${SCOPE#*/}" verdicts "$QID"; do
         mkdir "$dir" 2>/dev/null || { echo "write-verdict: cannot create '$dir'" >&2; exit 5; }
     fi
 done
+# HIMMEL-4753: a redirect appends -<40-hex head> to the name, so a long --judge
+# name could push <name>.md past the 255-byte filename limit and lose the
+# ruling. A name over 150 bytes is cut to 100 plus a hash of the full name, so
+# the result is deterministic and every redirect target stays well under 255.
+bound_name() {
+    [ "${#NAME}" -gt 150 ] || return 0
+    nb_h=$(printf '%s' "$NAME" | { sha256sum 2>/dev/null || shasum -a 256 2>/dev/null || cksum; } | tr -d ' ' | cut -c1-16)
+    NAME="$(printf '%s' "$NAME" | cut -c1-100)-$nb_h"
+}
+bound_name
 TARGET="$dir/$NAME.md"
 
 # Hold the qid's lock across the scan and the publish: two writers racing on
@@ -228,6 +282,7 @@ while [ -f "$TARGET" ] && [ ! -L "$TARGET" ]; do
         break
     fi
     NAME="$NAME-$HEAD"
+    bound_name
     TARGET="$dir/$NAME.md"
 done
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -f "$TARGET" ]; }; then
@@ -263,6 +318,9 @@ if ! {
     printf 'writer-session: %s\n' "$SESSION" &&
     printf 'written-at: %s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" &&
     printf '## Verdict\n\n**%s** for head `%s`.\n\n' "$ANSWER" "$HEAD" &&
+    printf 'pr: %s\n' "$PR" &&
+    { [ -z "$BRANCH" ] || printf 'branch: %s\n' "$BRANCH"; } &&
+    printf '\n' &&
     cat "$EVIDENCE"
 } > "$tmpf" || ! mv -f "$tmpf" "$TARGET"; then
     echo "write-verdict: writing '$TARGET' failed" >&2

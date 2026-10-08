@@ -239,13 +239,14 @@ if [ -z "$day" ] || [ -z "$live" ] || [ -z "$wrapped" ]; then fb_skip no-window;
 # wall_after <epoch> <HH:MM>: the first instant at or after <epoch> whose local
 # clock reads HH:MM, on that day or the next. A wall time inside a DST fall-back
 # reads twice an hour apart, so a same-day decrease there is no midnight
-# (HIMMEL-4730); a decrease no same-day instant explains is one (HIMMEL-4705).
+# (HIMMEL-4730); candidates are probed +/-2h so a 2h change (Antarctica/Troll)
+# is covered (HIMMEL-4757); a decrease no same-day instant explains is one (HIMMEL-4705).
 wall_after() {
     local d e c best="" today
     today="$(date -d "@$1" +%F)"
     for d in "$today" "$(date -d "$today +1 day" +%F)"; do
         e="$(date -d "$d $2" +%s 2>/dev/null)" || continue
-        for c in $((e - 3600)) $((e - 1800)) "$e" $((e + 1800)) $((e + 3600)); do
+        for c in $((e - 7200)) $((e - 5400)) $((e - 3600)) $((e - 1800)) "$e" $((e + 1800)) $((e + 3600)) $((e + 5400)) $((e + 7200)); do
             [ "$c" -ge "$1" ] || continue
             [ "$(date -d "@$c" '+%F %H:%M')" = "$d $2" ] || continue
             if [ -z "$best" ] || [ "$c" -lt "$best" ]; then best="$c"; fi

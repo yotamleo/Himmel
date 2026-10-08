@@ -219,7 +219,7 @@ fi
 # --- --in-container -----------------------------------------------------------
 if [ "$mode" = in-container ]; then
   [ "$(id -u)" = 0 ] && [ -d /src ] && [ -d /art ] || { echo "test-pkgbuild: --in-container runs as root in the container, with /src and /art mounted" >&2; exit 2; }
-  pacman -Syu --noconfirm --needed git jq nodejs python namcap sudo >/tmp/pacman.log 2>&1 || { echo "FAIL  pacman could not install the test deps"; tail -5 /tmp/pacman.log; exit 1; }
+  pacman -Syu --noconfirm --needed git jq nodejs npm python namcap sudo >/tmp/pacman.log 2>&1 || { echo "FAIL  pacman could not install the test deps"; tail -5 /tmp/pacman.log; exit 1; }
   useradd -m -d /build builder && echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
   tgz="$(ls /art/himmel-*-linux.tar.gz)"; name="$(basename "$tgz")"; tag="${name#himmel-}"; tag="${tag%-linux.tar.gz}"
   sum="$(cut -d' ' -f1 < "$tgz.sha256")"

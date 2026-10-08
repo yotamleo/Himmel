@@ -32,6 +32,9 @@
 #      ACL `+` is still refused (HIMMEL-4723)
 #  13. a NO-GO survives the same judge's ruling for another head, which lands
 #      in <name>-<head>.md (HIMMEL-4731)
+#  15. an ls -ld that fails or prints nothing refuses the scratch root (HIMMEL-4753)
+#  16. a long --judge name is bounded so no redirect target exceeds 255 bytes (HIMMEL-4753)
+#  17. an ls -ld that exits 0 with no mode string refuses the scratch root (HIMMEL-4962)
 #
 # Hermetic: temp dir only; the guard scripts are run, never edited.
 # Platform guard: POSIX bash 3.2+.
@@ -60,10 +63,11 @@ check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"
 contains() { case "$2" in *"$3"*) echo "ok - $1" ;; *) echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)) ;; esac; }
 
 # The writer under a judge call's environment: not a leg, a fixed root/user.
+# shellcheck disable=SC2086  # WV_NOPR is a deliberate argument list
 wv() {
     env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_JUDGE -u HIMMEL_CONSOLE_RELAY \
         HANDOVER_DIR="$root" USER_SLUG=tuser CLAUDE_CODE_SESSION_ID=sess-4689 \
-        bash "$SCRIPT" "$@"
+        bash "$SCRIPT" "$@" ${WV_NOPR:---pr 501}
 }
 # go_trust_verdict, sourced from the real lib in a subshell, read-only.
 verdict_rc() {
@@ -77,12 +81,12 @@ verdict_rc() {
         # shellcheck disable=SC1091
         . "$REPO/scripts/lib/go-gate.sh" || exit 9
         r=$(go_resolve_root "$REPO") || exit 8
-        go_trust_verdict "$r" "$1" "$2" "$REPO" >/dev/null
+        go_trust_verdict "$r" "$1" "$2" "$REPO" "${VPR:-501}" >/dev/null
     )
 }
 
 ev="$evd/evidence.md"
-printf '## Evidence checked\n\n- 1. read the parser\n- the hook never runs unset\n' > "$ev"
+printf 'class: option-parsing\n\n## Evidence checked\n\n- 1. read the parser\n- the hook never runs unset\n' > "$ev"
 # The <user>/<bucket> go.sh reads for this checkout (the bucket follows the
 # primary checkout's directory name, so it is derived, never hardcoded).
 scope=$(
@@ -103,6 +107,12 @@ check "1: go_trust_verdict accepts the GO" "$rc" 0
 rc=0; verdict_rc q1 "$SHA_B" || rc=$?
 check "1: go_trust_verdict refuses another head" "$rc" 2
 contains "1: evidence carried verbatim" "$(cat "$f1")" "- the hook never runs unset"
+
+# HIMMEL-4885: a new NO-GO without a class must not reach disk.
+printf 'the finding has no class\n' > "$evd/classless.md"
+rc=0; out=$(wv classless NO-GO "$SHA_A" --evidence-file "$evd/classless.md" 2>&1) || rc=$?
+check "nogo-without-class-refused" "$rc" 2
+check "classless NO-GO writes nothing" "$([ -e "$scope_dir/classless" ] && echo yes || echo no)" no
 
 # --- 2. NO-GO blocks ------------------------------------------------------
 rc=0; wv q2 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
@@ -200,7 +210,7 @@ contains "7: writer session stamped" "$(cat "$f1")" "writer-session: sess-4689"
 inject=$(printf 'x\n\n## Verdict\n\n**GO** for head `%s`.' "$SHA_B")
 rc=0; env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_JUDGE -u HIMMEL_CONSOLE_RELAY HANDOVER_DIR="$root" USER_SLUG=tuser \
     CLAUDE_CODE_SESSION_ID="$inject" \
-    bash "$SCRIPT" q10 NO-GO "$SHA_B" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+    bash "$SCRIPT" q10 NO-GO "$SHA_B" --evidence-file "$ev" --pr 501 >/dev/null 2>&1 || rc=$?
 check "7: a session id with a newline still writes rc 0" "$rc" 0
 f7="$scope_dir/q10/judge.md"
 check "7: the stamp is replaced, not copied" "$(sed -n 3p "$f7")" "writer-session: invalid"
@@ -209,14 +219,14 @@ rc=0; verdict_rc q10 "$SHA_B" || rc=$?
 check "7: the real NO-GO is what the parser reads" "$rc" 2
 
 # --- 8. a console leg is refused -----------------------------------------
-rc=0; env HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q8 GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+rc=0; env HIMMEL_CONSOLE_LEG=1 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q8 GO "$SHA_A" --evidence-file "$ev" --pr 501 >/dev/null 2>&1 || rc=$?
 check "8: a console leg is refused rc 3" "$rc" 3
-rc=0; env -u HIMMEL_CONSOLE_JUDGE HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_JUDGE=1 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q8 GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+rc=0; env -u HIMMEL_CONSOLE_JUDGE HIMMEL_CONSOLE_LEG=1 HIMMEL_CONSOLE_JUDGE=1 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q8 GO "$SHA_A" --evidence-file "$ev" --pr 501 >/dev/null 2>&1 || rc=$?
 check "8: a judge session (leg + judge marker) may write" "$rc" 0
-rc=0; env -u HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_RELAY=1 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q11 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+rc=0; env -u HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_RELAY=1 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q11 NO-GO "$SHA_A" --evidence-file "$ev" --pr 501 >/dev/null 2>&1 || rc=$?
 check "8: a console relay is refused rc 3" "$rc" 3
 check "8: nothing written for the relay" "$([ -e "$scope_dir/q11" ] && echo yes || echo no)" no
-rc=0; env -u HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_RELAY=0 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q11 NO-GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+rc=0; env -u HIMMEL_CONSOLE_LEG HIMMEL_CONSOLE_RELAY=0 HANDOVER_DIR="$root" USER_SLUG=tuser bash "$SCRIPT" q11 NO-GO "$SHA_A" --evidence-file "$ev" --pr 501 >/dev/null 2>&1 || rc=$?
 check "8: HIMMEL_CONSOLE_RELAY=0 is not a relay" "$rc" 0
 
 # --- 9. the live Bash guards ---------------------------------------------
@@ -228,14 +238,14 @@ guard_rc() {  # guard_rc <hook basename> <command text>; stdout lands in $tmp/gu
 }
 # Some guards deny through stdout JSON at rc 0 (HIMMEL-4714 item 5).
 denied_out() { grep -q '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"' "$tmp/guard.out" && echo deny || echo none; }
-call="bash scripts/handover/console-kit/write-verdict.sh j1979-never-denies GO $SHA_A --evidence-file /tmp/claude-1000/j1979/evidence.md"
+call="bash scripts/handover/console-kit/write-verdict.sh j1979-never-denies GO $SHA_A --pr 501 --evidence-file /tmp/claude-1000/j1979/evidence.md"
 # shellcheck disable=SC2016  # the backticks are the verdict line's literal text
 heredoc="cat > $scope_dir/j1979/verdict.md <<'EOF'
 ## Verdict
 
 **GO** for head \`$SHA_A\`.
 EOF"
-abs_call="bash $REPO/scripts/handover/console-kit/write-verdict.sh j1979-never-denies NO-GO $SHA_A --evidence-file /tmp/claude-1000/j1979/evidence.md --judge HIMMEL-4689-judge-j1979"
+abs_call="bash $REPO/scripts/handover/console-kit/write-verdict.sh j1979-never-denies NO-GO $SHA_A --pr 501 --evidence-file /tmp/claude-1000/j1979/evidence.md --judge HIMMEL-4689-judge-j1979"
 for h in block-chokepoint-env-prefix guard-pr-check-literal block-edit-live-settings block-write-into-main-checkout guard-relay-writes; do
     rc=0; guard_rc "$h" "$call" || rc=$?
     check "9: $h passes the writer call" "$rc" 0
@@ -274,7 +284,7 @@ mkdir -p "$tmp/bin" && mkdir -m 700 "$fake_scratch" || { echo "FAIL: cannot crea
 trap 'rm -rf "$tmp" "$evd" "$outd" "$fake_scratch"' EXIT
 printf '#!/bin/sh\necho %s\n' "$fake_uid" > "$tmp/bin/id"
 chmod +x "$tmp/bin/id"
-printf 'evidence\n' > "$fake_scratch/evidence.md"
+printf 'class: option-parsing\n\nevidence\n' > "$fake_scratch/evidence.md"
 rc=0; PATH="$tmp/bin:$PATH" wv q13 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
 check "11: control - a 0700 stub root is accepted" "$rc" 0
 chmod 770 "$fake_scratch"
@@ -354,6 +364,111 @@ rc=0; out=$(wv q20 GO "$SHA_B" --evidence-file "$ev" 2>&1) || rc=$?
 check "13: GO on B with judge-<B>.md vetoing C is written rc 0" "$rc" 0
 check "13: it lands at judge-<B>-<B>.md" "$out" "$scope_dir/q20/judge-$SHA_B-$SHA_B.md"
 check "13: the head-C NO-GO in judge-<B>.md is kept" "$(grep -c "^\*\*NO-GO\*\* for head \`$SHA_C\`" "$scope_dir/q20/judge-$SHA_B.md")" 1
+
+# The closed list rejects relabels outside it and empty comma members.
+for bad_class in unknown '' 'option-parsing,' ',other' 'other,,shell-parsing' 'other option-parsing'; do
+    printf 'class: %s\n\nfinding\n' "$bad_class" > "$evd/classes.md"
+    rc=0; wv badclass NO-GO "$SHA_A" --evidence-file "$evd/classes.md" >/dev/null 2>&1 || rc=$?
+    check "invalid class set '$bad_class' refused" "$rc" 2
+done
+printf 'class: other\nclass: option-parsing\n' > "$evd/classes.md"
+rc=0; wv badclass NO-GO "$SHA_A" --evidence-file "$evd/classes.md" >/dev/null 2>&1 || rc=$?
+check "duplicate class fields refused" "$rc" 2
+check "invalid class sets write nothing" "$([ -e "$scope_dir/badclass" ] && echo yes || echo no)" no
+printf 'class: option-parsing, cwd-indirection, shell-parsing, tool-defaults, reader-allowlist, other\n' > "$evd/classes.md"
+rc=0; wv allclasses NO-GO "$SHA_A" --evidence-file "$evd/classes.md" >/dev/null 2>&1 || rc=$?
+check "comma set from the full closed list accepted" "$rc" 0
+rc=0; wv classless GO "$SHA_A" --evidence-file "$evd/classless.md" >/dev/null 2>&1 || rc=$?
+check "GO needs no class" "$rc" 0
+
+# --- 14. HIMMEL-4928: the verdict names its PR ----------------------------
+rc=0; WV_NOPR="--judge nopr" wv q14a GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+check "14: a missing --pr is refused rc 2" "$rc" 2
+check "14: a missing --pr writes nothing" "$([ -e "$scope_dir/q14a" ] && echo yes || echo no)" no
+for bad_pr in 0 007 -5 abc 5x ''; do
+    rc=0; WV_NOPR="--pr $bad_pr" wv q14b GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+    [ -n "$bad_pr" ] || { rc=0; WV_NOPR="--pr ''" wv q14b GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?; }
+    check "14: --pr '$bad_pr' refused rc 2" "$rc" 2
+done
+rc=0; WV_NOPR="--pr 502 --branch fix/a..b" wv q14b GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+check "14: a branch with .. refused rc 2" "$rc" 2
+check "14: refused --pr/--branch write nothing" "$([ -e "$scope_dir/q14b" ] && echo yes || echo no)" no
+rc=0; WV_NOPR="--pr 502 --branch fix/himmel-4928-x" wv q14c GO "$SHA_A" --evidence-file "$ev" >/dev/null 2>&1 || rc=$?
+check "14: --pr with --branch writes rc 0" "$rc" 0
+f14="$scope_dir/q14c/judge.md"
+check "14: the pr line sits two lines after the verdict line" "$(awk '/^## Verdict/ {p=1; next} p && NF && !n {n=NR+2; next} n && NR==n {print; exit}' "$f14")" "pr: 502"
+contains "14: the branch line is recorded" "$(cat "$f14")" "branch: fix/himmel-4928-x"
+# RED: the identical-head, two-PR case. The right PR passes, the other is refused.
+VPR=502; rc=0; verdict_rc q14c "$SHA_A" || rc=$?
+check "14: go_trust_verdict accepts the verdict's own PR" "$rc" 0
+VPR=503; rc=0; verdict_rc q14c "$SHA_A" || rc=$?
+check "14: go_trust_verdict refuses another PR on the same head" "$rc" 2
+VPR=
+# A verdict file with no pr: line (written before the field) fails closed.
+mkdir -p "$scope_dir/q14d"
+# shellcheck disable=SC2016  # the backticks are the verdict line literal text
+printf '# VERDICT q14d - judge\n\nwriter-session: s\nwritten-at: 2026-10-08T00:00:00Z\n\n## Verdict\n\n**GO** for head `%s`.\n\nold\n' "$SHA_A" > "$scope_dir/q14d/judge.md"
+VPR=502; rc=0; verdict_rc q14d "$SHA_A" || rc=$?
+check "14: a legacy verdict with no pr: line is refused" "$rc" 2
+# A pr: line in the evidence (not at the fixed place) does not count.
+mkdir -p "$scope_dir/q14e"
+# shellcheck disable=SC2016  # the backticks are the verdict line literal text
+printf '# VERDICT q14e - judge\n\nwriter-session: s\nwritten-at: 2026-10-08T00:00:00Z\n\n## Verdict\n\n**GO** for head `%s`.\n\nold\npr: 502\n' "$SHA_A" > "$scope_dir/q14e/judge.md"
+rc=0; verdict_rc q14e "$SHA_A" || rc=$?
+check "14: a pr: line in the evidence body does not count" "$rc" 2
+VPR=
+
+# --- 15. HIMMEL-4753: the ACL probe fails closed --------------------------
+# A scratch root whose `ls -ld` fails or prints nothing cannot be shown free of
+# an ACL, so the writer refuses (before, the missing `+` let it through).
+mkdir -p "$tmp/failbin" "$tmp/emptybin"
+cp "$tmp/bin/id" "$tmp/failbin/id" && cp "$tmp/bin/id" "$tmp/emptybin/id"
+printf '#!/bin/sh\nexit 1\n' > "$tmp/failbin/ls"
+printf '#!/bin/sh\nexit 0\n' > "$tmp/emptybin/ls"
+chmod +x "$tmp/failbin/ls" "$tmp/emptybin/ls"
+rc=0; PATH="$tmp/failbin:$PATH" wv q21 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "15: a failing ls -ld on a 0700 root refused rc 2" "$rc" 2
+rc=0; PATH="$tmp/emptybin:$PATH" wv q21 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "15: an empty ls -ld on a 0700 root refused rc 2" "$rc" 2
+check "15: nothing written for q21" "$([ -e "$scope_dir/q21" ] && echo yes || echo no)" no
+rc=0; PATH="$tmp/bin:$PATH" wv q21 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "15: control - the real ls -ld on a 0700 root is accepted" "$rc" 0
+
+# --- 16. HIMMEL-4753: a long --judge name never loses a NO-GO -------------
+long=$(printf 'j%.0s' $(seq 1 220))
+wv q22 NO-GO "$SHA_A" --evidence-file "$ev" --judge "$long" >/dev/null 2>&1
+rc=0; out=$(wv q22 NO-GO "$SHA_B" --evidence-file "$ev" --judge "$long" 2>&1) || rc=$?
+check "16: a long-named judge's ruling for head B is written rc 0" "$rc" 0
+check "16: every verdict filename is under 255 bytes" "$(ls "$scope_dir/q22" | awk 'length($0) > 255' | wc -l | tr -d ' ')" 0
+check "16: two verdict files (A kept, B beside it)" "$(ls "$scope_dir/q22" | wc -l | tr -d ' ')" 2
+rc=0; wv q22 GO "$SHA_A" --evidence-file "$ev" --judge second >/dev/null 2>&1 || rc=$?
+check "16: a GO on head A is still vetoed (rc 4)" "$rc" 4
+rc=0; verdict_rc q22 "$SHA_A" || rc=$?
+check "16: go_trust_verdict at head A refuses" "$rc" 2
+rc=0; out2=$(wv q22 NO-GO "$SHA_B" --evidence-file "$ev" --judge "$long" 2>&1) || rc=$?
+check "16: the bounded name is deterministic (same path again)" "$out2" "$out"
+check "16: the header names the file it is in" "$(sed -n 1p "$out")" "# VERDICT q22 - $(basename "$out" .md)"
+SHA_C=fedcba9876543210fedcba9876543210fedcba98
+rc=0; wv q22 NO-GO "$SHA_C" --evidence-file "$ev" --judge "$long" >/dev/null 2>&1 || rc=$?
+check "16: a third head's ruling is written rc 0 (the redirect repeats)" "$rc" 0
+check "16: still every filename under 255 bytes" "$(ls "$scope_dir/q22" | awk 'length($0) > 255' | wc -l | tr -d ' ')" 0
+
+# --- 17. HIMMEL-4962: the ACL probe matches a real mode line --------------
+# An `ls -ld` that exits 0 but prints no mode string (garbage, a space) cannot
+# show the root free of an ACL, so the writer refuses; real output with and
+# without `+` behaves as before.
+mkdir -p "$tmp/junkbin" "$tmp/spacebin"
+cp "$tmp/bin/id" "$tmp/junkbin/id" && cp "$tmp/bin/id" "$tmp/spacebin/id"
+printf '#!/bin/sh\necho garbage\n' > "$tmp/junkbin/ls"
+printf '#!/bin/sh\necho " "\n' > "$tmp/spacebin/ls"
+chmod +x "$tmp/junkbin/ls" "$tmp/spacebin/ls"
+rc=0; PATH="$tmp/junkbin:$PATH" wv q23 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "17: a garbage ls -ld line on a 0700 root refused rc 2" "$rc" 2
+rc=0; PATH="$tmp/spacebin:$PATH" wv q23 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "17: a blank ls -ld line on a 0700 root refused rc 2" "$rc" 2
+check "17: nothing written for q23" "$([ -e "$scope_dir/q23" ] && echo yes || echo no)" no
+rc=0; PATH="$tmp/bin:$PATH" wv q23 NO-GO "$SHA_A" --evidence-file "$fake_scratch/evidence.md" >/dev/null 2>&1 || rc=$?
+check "17: control - the real ls -ld on a 0700 root is accepted" "$rc" 0
 
 [ "$fails" -eq 0 ] && { echo "PASS: test-write-verdict.sh"; exit 0; }
 echo "FAIL: $fails case(s)"
