@@ -62,16 +62,12 @@ fi
 SHA="${run_line%% *}"; rest="${run_line#* }"
 RUN_CONCLUSION="${rest%% *}"; RUN_URL="${rest#* }"
 
-# A cancelled sweep (an operator cancel) says nothing about main's health: the
-# shell-unit aggregator runs under if: always() and fails on a cancelled rollup,
-# so its job conclusion would read as a red. Touch no issue.
-if [ "$RUN_CONCLUSION" = "cancelled" ]; then
-  echo "main-sweep-red-issue: run $RUN_ID was cancelled -- not a verdict on main; nothing to report."
-  exit 0
-fi
-
+# The run's own conclusion is NOT a filter: GitHub reports a run as `cancelled`
+# when one job hits timeout-minutes even though other jobs failed, so skipping
+# cancelled runs would hide a hung shard. An operator cancel of a queued run has
+# no job that ran and is covered by the zero-job guard below.
 if ! gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --paginate \
-    --jq '.jobs[] | "\(.conclusion // "none")\t\(.name)"' > "$TMP/jobs"; then
+    --jq '.jobs[] | "\(.conclusion // "none")\t\(.name)\t\(.id)"' > "$TMP/jobs"; then
   echo "main-sweep-red-issue: could not read the jobs of run $RUN_ID (gh api failed)" >&2
   exit 1
 fi
@@ -80,11 +76,20 @@ fi
 n_jobs=0
 while IFS= read -r line; do
   [ -n "$line" ] || continue
-  concl="${line%%"$tab"*}"; name="${line#*"$tab"}"
+  concl="${line%%"$tab"*}"; name="${line#*"$tab"}"; jid=""
+  case "$name" in
+    *"$tab"*) jid="${name#*"$tab"}"; name="${name%%"$tab"*}" ;;
+  esac
   case "$name" in
     "shell-unit-shard"*|"main-sweep"*) continue ;;
   esac
   n_jobs=$((n_jobs + 1))
+  # A job killed by timeout-minutes concludes `cancelled`; its check-run
+  # annotation says so. That is a hung job, i.e. red, not an operator cancel.
+  if [ "$concl" = "cancelled" ] && [ -n "$jid" ]; then
+    notes="$(gh api "repos/$REPO/check-runs/$jid/annotations" --jq '.[].message' 2>/dev/null)" || notes=""
+    if grep -q 'exceeded the maximum execution time' <<< "$notes"; then concl="timed_out"; fi
+  fi
   case "$concl" in
     failure|timed_out) printf '%s\n' "$name" >> "$TMP/failed" ;;
     success)           printf '%s\n' "$name" >> "$TMP/passed" ;;
@@ -93,6 +98,12 @@ done < "$TMP/jobs"
 
 if [ "$n_jobs" -eq 0 ]; then
   echo "main-sweep-red-issue: run $RUN_ID has no jobs (conclusion=$RUN_CONCLUSION) -- a superseded pending sweep; nothing to report."
+  exit 0
+fi
+# A cancelled run in which no job finished red or green (an operator cancel
+# before anything ran) proves nothing either way.
+if [ "$RUN_CONCLUSION" = "cancelled" ] && [ ! -s "$TMP/failed" ] && [ ! -s "$TMP/passed" ]; then
+  echo "main-sweep-red-issue: run $RUN_ID was cancelled with no job finished -- not a verdict on main; nothing to report."
   exit 0
 fi
 

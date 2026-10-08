@@ -436,8 +436,9 @@ jobs:
   # the required check either way.
   #
   # `shell: bash` because the run lines below chain with `&&` — the default
-  # shell on windows-latest is pwsh. `fail-fast: false` so a red Windows leg
-  # still reports the Linux result instead of cancelling it.
+  # shell on windows-latest is pwsh. The windows leg exists only on `schedule`,
+  # where fail-fast stays false so a red Windows leg still reports the Linux
+  # result instead of cancelling it; a pull_request run stops at its first red leg.
   bun-suites:
     # issues:write (beyond the workflow-level contents:read) is needed only by
     # the windows-nightly-issue.sh steps above/below — scoped to this job
