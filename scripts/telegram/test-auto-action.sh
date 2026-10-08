@@ -239,6 +239,14 @@ out=$(CLAUDECODE=1 run launch-bypass-leg "$INSIDE" HIMMEL_HOOK_INTEGRITY_BYPASS_
 assert_rc "launch refuses agent authority" 19 "$rc"
 [ ! -f "$LAUNCH_ARGS_FILE" ] || FAILED=$((FAILED + 1))
 
+# HIMMEL-4879 M3: the launch refusal precedes handover_root resolution and the
+# dotenv load — an unresolvable root must still yield 19, never 3.
+out=$(HANDOVER_DIR="$TMP/no-such-root" launch "$INSIDE"); rc=$?
+assert_rc "launch refusal precedes handover_root resolution" 19 "$rc"
+assert_not_contains "launch refusal never reaches the resolver" "handover_root unresolved" "$(cat "$TMP/err")"
+out=$(CLAUDECODE=1 HANDOVER_DIR="$TMP/no-such-root" run launch-bypass-leg "$INSIDE" HIMMEL_HOOK_INTEGRITY_BYPASS_OK); rc=$?
+assert_rc "agent launch refusal precedes handover_root resolution" 19 "$rc"
+
 mkdir -p "$TMP/repo" "$TMP/bin"
 git init -q "$TMP/repo"
 git -C "$TMP/repo" checkout -qb feat/example
@@ -310,6 +318,24 @@ cat > "$TMP/repo/.git/cr-critic-scores.jsonl" <<EOF
 EOF
 out=$(grant_delta); rc=$?
 assert_rc "grant honors historical branchless disproval" 4 "$rc"
+# HIMMEL-4879 M1: only an exact 40-hex ledger head counts as a review of the
+# sha; a 7-39 hex prefix row (seeded as a historical snapshot) must not.
+SHORT_REVIEWED=$(printf '%s' "$REVIEWED" | cut -c1-12)
+cat > "$TMP/repo/.git/cr-critic-scores.jsonl" <<EOF
+{"kind":"avail","branch":"feat/example","head":"$SHORT_REVIEWED","model":"codex","status":"ok"}
+{"kind":"finding","branch":"feat/example","head":"$SHORT_REVIEWED","model":"codex","finding_id":"short-1","verdict":"fixed"}
+EOF
+out=$(grant_delta); rc=$?
+assert_rc "grant refuses a short-prefix ledger head as review" 4 "$rc"
+SHORT_PR_HEAD=$(printf '%s' "$PR_HEAD" | cut -c1-12)
+printf '%s %s fix\n' "$REVIEWED" "$PR_HEAD" > "$TMP/repo/.git/cr-review-rounds/feat/example.delta"
+cat > "$TMP/repo/.git/cr-critic-scores.jsonl" <<EOF
+{"kind":"avail","branch":"feat/example","head":"$REVIEWED","model":"codex","status":"ok"}
+{"kind":"finding","branch":"feat/example","head":"$REVIEWED","model":"codex","finding_id":"short-2","verdict":"fixed"}
+{"kind":"avail","branch":"feat/example","head":"$SHORT_PR_HEAD","model":"codex","status":"ok"}
+EOF
+out=$(grant_delta); rc=$?
+assert_rc "grant refuses a short-prefix ledger head as the spent delta review" 4 "$rc"
 rm "$TMP/repo/.git/cr-review-rounds/feat/example.head"
 ln -s "$OUTSIDE" "$TMP/repo/.git/cr-review-rounds/feat/example.head"
 out=$(grant_delta); rc=$?
