@@ -418,7 +418,7 @@ cmd_run() {
     deepseek)
       echo "lane-quality: lane '$LANE' is not enabled (HIMMEL-4090): it needs the operator's go; see docs/internals/lane-calibration.md" >&2
       exit 3 ;;
-    *) die "--lane must be native, openrouter or claudex; got '$LANE'" ;;
+    *) die "--lane must be native, openrouter, api or claudex; got '$LANE'" ;;
   esac
   MAX_USD="${MAX_USD:-3}"
   awk -v m="$MAX_USD" 'BEGIN{exit !(m+0 > 0)}' || die "--max-usd must be a positive number"
