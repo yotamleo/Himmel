@@ -836,7 +836,7 @@ heredoc_data_only() { # true when only heredoc bodies could make $flat look runn
 PR_READERS=' grep egrep fgrep cat head tail wc ls cut tr uniq nl jq '
 PR_GIT_UNSAFE=0
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -849,7 +849,8 @@ git_mentions_only() { # git_mentions_only <command-word index>
             if [ "$paths" != 1 ]; then
                 case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_UNSAFE=1 ;; esac
             fi
-            return 1
+            # Keep scanning: a later word may be an exec option (`docs/{a,b} -O{x,y}`).
+            xp=1; j=$((j + 1)); continue
         fi
         # After --, option-shaped words are literal pathspec operands.
         if [ "$paths" = 1 ]; then j=$((j + 1)); continue; fi
@@ -885,7 +886,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
         fi
         j=$((j + 1))
     done
-    [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
+    [ "$xp" = 0 ] && [ -n "$sub" ] && [ "$dir" = 0 ] || return 1
     [ "$sub" != rm ] || [ "$cached" = 1 ]
 }
 readers_only() { # true when every command the command line runs is a reader
