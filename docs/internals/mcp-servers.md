@@ -78,7 +78,7 @@ the new stdio test calls no network tool.
 `bash scripts/lint/check-mcp-sdk-v1.sh` refuses a tracked `package.json`
 dependency on, a lockfile entry for (npm, bun, yarn, pnpm; direct or
 transitive), or an import/require of `@modelcontextprotocol/sdk`. It runs as
-the `no-mcp-sdk-v1` pre-commit hook, as doctor row **C57-mcp-sdk-v1** (WARN),
+the `no-mcp-sdk-v1` pre-commit hook, as doctor row **C58-mcp-sdk-v1** (WARN),
 and `scripts/lint/test-check-mcp-sdk-v1.sh` runs it on the real tree in the
 shell suite. Every first-party server is already on v2, so the gate is global.
 

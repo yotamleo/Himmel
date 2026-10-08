@@ -57,6 +57,7 @@ The candidate is the eval's newest row. The baseline depends on the flags:
 
 - **No flag:** the newest earlier `ok` row with the same `confighash`.
 - **`--baseline ID`:** that run, whatever its config, if its status is `ok`.
+  The candidate's own id is refused (exit 2): a run is not its own baseline.
 - **`--best-of N`:** per metric, the best value among the last N earlier `ok`
   rows with the same config.
 

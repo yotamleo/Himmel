@@ -1305,6 +1305,43 @@ assert_eq "$(cat "$git_dir/cr-review-rounds/jhscan.round")" "3" "the refused per
 assert_has "$(cat "$git_dir/cr-review-rounds/fixpath.delta")" " fix" "the fix trigger still records fix"
 assert_has "$(cat "$git_dir/cr-review-rounds/feature.delta")" " merge-forward" "the merge-forward trigger still records merge-forward"
 
+# HIMMEL-4638 T1: an inherited delta_reuse never skips the counter bump on a
+# round before the cap (delta_reuse was only initialised inside delta_check).
+git -C "$repo" checkout -q -b t1init main
+(cd "$repo" && delta_reuse=1 bash "$fx/scripts/cr/review-round.sh" start --branch t1init >/dev/null 2>&1); t1_rc=$?
+assert_eq "$t1_rc" "0" "an exported delta_reuse does not break a round-1 start"
+assert_eq "$(cat "$git_dir/cr-review-rounds/t1init.round")" "1" "an exported delta_reuse does not skip the round-1 counter bump"
+
+# HIMMEL-4638 T2: a pending delta pair is reusable only while no critic finding
+# row exists at its head, even if the avail row never landed.
+three_rounds t2row suggestion
+fix_commit t2row
+(start_round "$cap_fix_head" fail t2row >/dev/null) || fail "t2row pending delta setup"
+CR_LEDGER="$git_dir/cr-critic-scores.jsonl" bash "$fx/scripts/cr/ledger-append.sh" finding \
+    --branch t2row --head "$cap_fix_head" --model stub --id stub-t2 \
+    --severity sug --file f.txt --line 2 --verdict "" >/dev/null 2>"$tmp/t2row-finding.err" || fail "t2row finding row setup"
+t2_out="$(start_round "$cap_fix_head" clean t2row)"; t2_rc=$?
+assert_eq "$t2_rc" "8" "a critic finding row at the pending head makes the delta round used"
+assert_has "$t2_out" "delta round was already used" "finding-row refusal names the used delta"
+
+# HIMMEL-4638 T3: a second start on a pending pair whose first start's caller
+# is still alive is refused; once that caller is gone the pair restarts.
+three_rounds t3conc suggestion
+fix_commit t3conc
+(start_round "$cap_fix_head" fail t3conc >/dev/null) || fail "t3conc pending delta setup"
+t3_claim="$(grep -Ec '^[0-9]+$' "$git_dir/cr-review-rounds/t3conc.delta.run" 2>/dev/null)"
+assert_eq "$t3_claim" "1" "a real delta start records its caller pid"
+sleep 60 &
+t3_pid=$!
+printf '%s\n' "$t3_pid" > "$git_dir/cr-review-rounds/t3conc.delta.run"
+t3_out="$(start_round "$cap_fix_head" clean t3conc)"; t3_rc=$?
+assert_eq "$t3_rc" "8" "a concurrent start on a pending delta round is refused"
+assert_has "$t3_out" "already running" "concurrent-start refusal names the running round"
+kill "$t3_pid" 2>/dev/null; wait "$t3_pid" 2>/dev/null
+t3b_out="$(start_round "$cap_fix_head" clean t3conc)"; t3b_rc=$?
+assert_eq "$t3b_rc" "0" "a pending delta round restarts once the earlier start's caller is gone"
+assert_has "$t3b_out" "delta round 4 on t3conc" "the restarted pair is still the delta round"
+
 if [ "$fails" -gt 0 ]; then
     printf 'FAIL test-pr-check-rounds (%s failures)\n' "$fails" >&2
     exit 1

@@ -49,8 +49,10 @@ under `HIMMEL_CONSOLE_RELAY`; `inbox-send.sh` refuses `--token` under
 
 A judge is a **leg kind**: a *judge leg*. A judge session is launched by the
 leg launcher (`console-kit/headed-arm-leg.sh --judge`), runs under the leg
-guards, and carries the same `HIMMEL_CONSOLE_LEG` marker as any leg — there is
-no separate judge marker, and it cannot write its own GO. What differs from a
+guards, and carries the same `HIMMEL_CONSOLE_LEG` marker as any leg, plus a
+`HIMMEL_CONSOLE_JUDGE` marker that `scripts/hooks/guard-judge-writes.sh` reads
+(HIMMEL-4564) to confine its writes to its own doc and qid; it cannot write its
+own GO. What differs from a
 work leg is the job: it reads, verifies, writes one verdict file and stops. It
 does not implement, push or merge.
 

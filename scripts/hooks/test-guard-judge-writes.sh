@@ -27,8 +27,16 @@ trap 'rm -rf "$TMP"' EXIT
 FAKE_HOME="$TMP/home"
 ROOT="$TMP/handovers"
 REPO="$TMP/repo"
-mkdir -p "$FAKE_HOME/.cache/himmel/verdicts/J1/scratch" "$ROOT/u/himmel/verdicts/J1" "$ROOT/inbox" "$ROOT/u/himmel/inbox" "$REPO/scripts"
+mkdir -p "$FAKE_HOME/.cache/himmel/verdicts/J1/scratch" "$ROOT/u/himmel/verdicts/J1" "$ROOT/u/himmel/verdicts/J2" "$ROOT/u/himmel/verdicts/J10" "$ROOT/inbox" "$ROOT/u/himmel/inbox" "$REPO/scripts"
 ln -s "$REPO/scripts" "$ROOT/u/himmel/verdicts/J1/escape"
+# A dangling symlink whose target's parent does not exist (HIMMEL-4614 T4).
+ln -s "$TMP/no-such-dir/x.md" "$ROOT/u/himmel/verdicts/J1/dangling"
+# The launched judge's binding (headed-arm-leg.sh --judge exports both).
+OWN_DOC="$ROOT/u/himmel/HIMMEL-1-judge-J1-2026-10-06.md"
+OWN_QID=J1
+# The /tmp scratch judge-dir.sh and the session scratchpad live under (T7).
+TMP_SCRATCH="/tmp/claude-$(id -u)"
+mkdir -p "$TMP_SCRATCH"
 
 pass=0
 fail=0
@@ -37,12 +45,25 @@ fail=0
 run() {
     local payload="$1" marker="$2" rc
     if [ "$marker" = "1" ]; then
-        printf '%s' "$payload" | env HOME="$FAKE_HOME" HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_JUDGE=1 "$BASH_ABS" "$HOOK" >/dev/null 2>&1
+        printf '%s' "$payload" | env HOME="$FAKE_HOME" HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_JUDGE=1 HIMMEL_CONSOLE_JUDGE_DOC="$OWN_DOC" HIMMEL_CONSOLE_JUDGE_QID="$OWN_QID" "$BASH_ABS" "$HOOK" >/dev/null 2>&1
     else
         printf '%s' "$payload" | env -u HIMMEL_CONSOLE_JUDGE HOME="$FAKE_HOME" HANDOVER_DIR="$ROOT" "$BASH_ABS" "$HOOK" >/dev/null 2>&1
     fi
     rc=$?
     printf '%s' "$rc"
+}
+
+# row_bound <label> <expected rc> <payload-json> <doc> <qid> — judge only, with
+# the binding vars as given (empty = unset-equivalent).
+row_bound() {
+    local got
+    printf '%s' "$3" | env HOME="$FAKE_HOME" HANDOVER_DIR="$ROOT" HIMMEL_CONSOLE_JUDGE=1 HIMMEL_CONSOLE_JUDGE_DOC="$4" HIMMEL_CONSOLE_JUDGE_QID="$5" "$BASH_ABS" "$HOOK" >/dev/null 2>&1
+    got=$?
+    if [ "$got" = "$2" ]; then
+        echo "ok   judge: $1 (rc=$got)"; pass=$((pass + 1))
+    else
+        echo "FAIL judge: $1 — expected rc=$2, got rc=$got"; fail=$((fail + 1))
+    fi
 }
 
 # row <label> <expected rc with marker> <payload-json>
@@ -98,10 +119,21 @@ row "Write into a nested inbox" 2 "$(file_payload Write "$ROOT/u/himmel/inbox/x-
 row "Write through a symlink out of verdicts" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/escape/x.sh")"
 row "Write with a .. segment" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/../../x.md")"
 row "malformed payload" 2 'not json'
+# --- binding: only the launched judge's own doc and qid (HIMMEL-4608) ---
+row "another judge's doc" 2 "$(file_payload Write "$ROOT/u/himmel/HIMMEL-2-judge-J2-2026-10-06.md")"
+row "another qid's verdict file" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J2/HIMMEL-2-judge-J2.md")"
+row "a qid that only prefixes the own one" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J10/x.md")"
+row_bound "missing doc binding denies the own doc" 2 "$(file_payload Write "$OWN_DOC")" "" "$OWN_QID"
+row_bound "missing qid binding denies the own verdict" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/v.md")" "$OWN_DOC" ""
+row_bound "a qid with a slash denies" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/v.md")" "$OWN_DOC" "J1/.."
+row_bound "a relative doc binding denies" 2 "$(file_payload Write "$OWN_DOC")" "HIMMEL-1-judge-J1-2026-10-06.md" "$OWN_QID"
+# --- dangling symlink (HIMMEL-4614 T4) ---
+row "Write to a dangling symlink" 2 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/dangling")"
 # --- what a judge must still be able to do ---
 row "verdict file write" 0 "$(file_payload Write "$ROOT/u/himmel/verdicts/J1/HIMMEL-1-judge-J1.md")"
 row "scratch write under ~/.cache" 0 "$(file_payload Write "$FAKE_HOME/.cache/himmel/verdicts/J1/scratch/notes.md")"
 row "own judge doc write" 0 "$(file_payload Edit "$ROOT/u/himmel/HIMMEL-1-judge-J1-2026-10-06.md")"
+row "scratch write under /tmp/claude-<uid>" 0 "$(file_payload Write "$TMP_SCRATCH/judge-guard-test-$$.md")"
 row "git log read" 0 "$(bash_payload 'git log -1 --format=%H')"
 row "gh pr view read" 0 "$(bash_payload 'gh pr view 12 --json state')"
 row "gh pr diff read" 0 "$(bash_payload 'gh pr diff 12')"

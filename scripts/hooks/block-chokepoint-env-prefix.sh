@@ -357,28 +357,37 @@ split_bytes() {
 # documented determined-bypass residual, same posture as the header's
 # string-reconstruction note). Reads segment_cmd's byte array SC (its only
 # caller), so <index> is a byte offset into <text>.
+# HIMMEL-4529: the body ends at the first `)` that is unmatched since
+# <index>, which is exactly the stack match of the `(` just before it. One
+# stack pass over SC (first call per segment_cmd text) records every `(`'s
+# match in segment_cmd's AMATCH, so each call is an O(1) lookup: it used to
+# rescan to EOF per unclosed `((` (1500 openers = 40 s, past the hook budget).
 arith_body() {
-    local s="$1" i="$2" n start="$2" d=0 c
+    local i="$2" j k=0 c
+    local -a stk=()
     ARITH_BODY=''
-    n=${#s}
-    while [ "$i" -lt "$n" ]; do
-        c=${SC[i]-}
-        case "$c" in
-        '(') d=$((d + 1)) ;;
-        ')')
-            if [ "$d" -gt 0 ]; then
-                d=$((d - 1))
-            elif [ "${SC[i + 1]-}" = ")" ]; then
-                ARITH_BODY=${s:start:$((i - start))}
-                return 0
-            else
-                return 1
-            fi
-            ;;
-        esac
-        i=$((i + 1))
-    done
-    return 1
+    if [ "$AMATCH_BUILT" = "0" ]; then
+        AMATCH_BUILT=1
+        AMATCH=()
+        while [ "$k" -lt "${#SC[@]}" ]; do
+            c=${SC[k]-}
+            case "$c" in
+            '(') stk[${#stk[@]}]=$k ;;
+            ')')
+                if [ "${#stk[@]}" -gt 0 ]; then
+                    AMATCH[${stk[${#stk[@]} - 1]}]=$k
+                    unset "stk[${#stk[@]} - 1]"
+                fi
+                ;;
+            esac
+            k=$((k + 1))
+        done
+    fi
+    j=${AMATCH[i - 1]-}
+    [ -n "$j" ] || return 1
+    [ "${SC[j + 1]-}" = ")" ] || return 1
+    ARITH_BODY=${1:i:$((j - i))}
+    return 0
 }
 
 # arith_fold <arithmetic body> -- fold every registered seam name the body
@@ -501,8 +510,8 @@ arith_fold() {
 segment_cmd() {
     local s="$1" seg='' c i n sub pdepth=0 confused=0 no_scope="${2:-0}" bdepth=0
     local cmdpos=1 kind='' lb='' nx='' ro=0
-    local -a pkind SC
-    local ptop=0 LC_ALL=C
+    local -a pkind SC AMATCH
+    local ptop=0 LC_ALL=C AMATCH_BUILT=0
     n=${#s}
     split_bytes "$s" "$n"
     i=0
@@ -1883,16 +1892,23 @@ UNSET_NAMES=''
 # ponytail: 256 distinct names is a fixed ceiling (a longer genuine list
 # over-denies), raise UNSET_CAP if a real payload trips it.
 UNSET_CAP=256
+# HIMMEL-4414: UNSET_COUNT is the number of words in UNSET_NAMES, kept in step
+# by unset_add (and restored with UNSET_NAMES by scan_text's subshell
+# snapshot), so an add is a membership test plus an increment instead of a
+# re-split of the whole list. The cap counts every distinct name in the
+# payload so far, INHERITED ones included (scan_text seeds scan_segment from
+# $inames $UNSET_NAMES): "distinct names seen", not "names cleared".
+UNSET_COUNT=0
 unset_add() {  # unset_add <word>...
     local arg n
-    local -a ws all
+    local -a ws
     for arg in "$@"; do
         IFS=$' \t\n' read -r -d '' -a ws <<<"$arg"
         for n in ${ws[@]+"${ws[@]}"}; do
             case " $UNSET_NAMES " in *" $n "*) continue ;; esac
             UNSET_NAMES="$UNSET_NAMES $n"
-            IFS=$' \t\n' read -r -d '' -a all <<<"$UNSET_NAMES"
-            [ "${#all[@]}" -le "$UNSET_CAP" ] || deny_unset_cap
+            UNSET_COUNT=$((UNSET_COUNT + 1))
+            [ "$UNSET_COUNT" -le "$UNSET_CAP" ] || deny_unset_cap
         done
     done
 }
@@ -1903,8 +1919,10 @@ deny_unset_cap() {  # OUR text only, never raw command text (HIMMEL-4399).
 
     This guard tracks every name a command assigns or clears in the current
     shell so a later segment cannot run a sanctioned chokepoint with a
-    cleared seam variable. Past $UNSET_CAP names it fails closed rather than
-    track an unbounded list. Split the command into smaller ones.
+    cleared seam variable. The count covers every distinct name the command
+    has assigned or cleared so far, inherited ones included. Past $UNSET_CAP
+    names it fails closed rather than track an unbounded list. Split the
+    command into smaller ones.
 
     To bypass this guard intentionally, set ENV_PREFIX_GUARD_OK=1 in the
     shell that launched Claude Code (a per-call prefix does not reach a
@@ -2796,7 +2814,7 @@ scan_segment() {
 # of what that string itself contains (CodeRabbit, PR #643 @ 5ce5bbed).
 scan_text() {
     local text="$1" inames="$2" depth="$3" line pdepth seg cur=0 force=0
-    local -a PSNAP
+    local -a PSNAP PSNAPN
     # HIMMEL-1813: past the depth cap a chokepoint mention denies (fail-closed).
     [ "$depth" -le 5 ] || { raw_mention "$text" 1; return 0; }
     [ "$depth" -gt 0 ] && force=1
@@ -2804,10 +2822,10 @@ scan_text() {
         pdepth=${line%%$'\t'*}
         seg=${line#*$'\t'}
         if [ "$pdepth" -gt "$cur" ]; then
-            PSNAP[pdepth]="$UNSET_NAMES"
+            PSNAP[pdepth]="$UNSET_NAMES"; PSNAPN[pdepth]=$UNSET_COUNT
             cur=$pdepth
         elif [ "$pdepth" -lt "$cur" ]; then
-            UNSET_NAMES="${PSNAP[$((pdepth + 1))]}"
+            UNSET_NAMES="${PSNAP[$((pdepth + 1))]}"; UNSET_COUNT=${PSNAPN[$((pdepth + 1))]}
             cur=$pdepth
         fi
         [[ $seg =~ [^[:space:]] ]] || continue

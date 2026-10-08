@@ -46,6 +46,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    import yaml  # type: ignore
+except ImportError:
+    yaml = None
+
 DELIM = re.compile(r"^---\s*$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 SUMMARY_BASES = ("url-only",)
@@ -73,9 +78,10 @@ def read_text(path):
     return Path(path).read_bytes().decode("utf-8", "surrogateescape")
 
 
-def write_text(path, text):
+def write_text(path, text, expect=None):
     """Write via a sibling temp file + rename, so a crash never leaves a
-    half-written clip or note."""
+    half-written clip or note. With `expect` (the text the caller edited from),
+    the rename is skipped and False returned if the file changed meanwhile."""
     p = Path(path)
     tmp = p.with_name(f".{p.name}.triage-tmp-{os.getpid()}")
     tmp.write_bytes(text.encode("utf-8", "surrogateescape"))
@@ -83,7 +89,14 @@ def write_text(path, text):
         os.chmod(tmp, os.stat(p).st_mode & 0o7777)
     except OSError:
         pass
+    # ponytail: the re-read and the rename are not atomic, so an edit landing
+    # between them is still lost; writers outside this tool (Obsidian) take no
+    # lock, so the window can only be narrowed, not closed (HIMMEL-4691).
+    if expect is not None and read_text(p) != expect:
+        os.unlink(tmp)
+        return False
     os.replace(tmp, p)
+    return True
 
 
 def split_fm(text):
@@ -163,15 +176,11 @@ def drop_keys(text, keys):
 
 
 def yaml_ok(text):
-    """Parse-before-write. PyYAML is optional (same stance as
-    harvest-clip-body-batch.py): without it, the structural checks stand."""
+    """Parse-before-write. main() has already refused to run without PyYAML
+    (HIMMEL-4690): a structural check alone passes malformed frontmatter."""
     fm = split_fm(text)
     if fm is None:
         return False
-    try:
-        import yaml  # type: ignore
-    except ImportError:
-        return True
     try:
         return isinstance(yaml.safe_load("".join(fm[0][1:fm[1]])), dict)
     except Exception:
@@ -179,10 +188,6 @@ def yaml_ok(text):
 
 
 def yaml_scalar(text, key):
-    try:
-        import yaml  # type: ignore
-    except ImportError:
-        return fm_scalar(split_fm(text), key)
     fm = split_fm(text)
     return (yaml.safe_load("".join(fm[0][1:fm[1]])) or {}).get(key)
 
@@ -202,8 +207,13 @@ def six_forms(ident):
     return [base + "]]", base + "|", base + "#", base + ".md]]", base + ".md|", base + ".md#"]
 
 
+def walk_error(e):
+    # An unreadable directory hides links: 0 found would clear the debt marker.
+    raise skip8(f"cannot read {e.filename} ({e.strerror}); will resume next run (evidence_pending set)")
+
+
 def vault_md_files(vault):
-    for root, dirs, files in os.walk(vault):
+    for root, dirs, files in os.walk(vault, onerror=walk_error):
         dirs[:] = [d for d in dirs if d != ".git"]
         for f in files:
             if f.endswith(".md"):
@@ -222,13 +232,16 @@ def count_links(vault, members):
 
 def rewrite_links(vault, members, new):
     for f in vault_md_files(vault):
-        t = read_text(f)
-        out = t
-        for m in members:
-            for old_form, new_form in zip(six_forms(m), six_forms(new)):
-                out = out.replace(old_form, new_form)
-        if out != t:
-            write_text(f, out)
+        for _ in range(3):
+            t = read_text(f)
+            out = t
+            for m in members:
+                for old_form, new_form in zip(six_forms(m), six_forms(new)):
+                    out = out.replace(old_form, new_form)
+            if out == t or write_text(f, out, expect=t):
+                break
+        else:
+            raise skip8(f"{f} kept changing during the link rewrite; will resume next run (evidence_pending set)")
 
 
 # ── the move (ln, then unlink; never overwrite) ─────────────────────────────
@@ -312,7 +325,11 @@ def phase8(vault, clip, dry_run, tools_dir):
     in_evidence = os.path.abspath(os.path.dirname(clip)) == os.path.abspath(evidence)
     cur_id = os.path.relpath(clip, clippings).replace(os.sep, "/")[:-3]
     new = "_evidence/" + basename[:-3]
-    origin = fm_scalar(fm, "evidence_origin")
+    if not yaml_ok(text):
+        raise skip8("frontmatter is not valid YAML; will resume next run (evidence_pending set)")
+    origin = yaml_scalar(text, "evidence_origin") if fm_has(fm, "evidence_origin") else None
+    if origin is not None and not isinstance(origin, str):
+        raise skip8("evidence_origin is not a string; needs a manual Phase 8")
 
     if in_evidence and origin is None:
         raise skip8("evidence_origin missing; needs a manual Phase 8")
@@ -429,6 +446,9 @@ def main(argv):
         return usage(f"clip is not under {clippings}")
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", a.today):
         return usage("--today must be YYYY-MM-DD")
+    if yaml is None:
+        print("SKIP phase-7-mark: PyYAML is not importable; the parse-before-write check cannot run (pip install pyyaml)")
+        return 4
 
     # Parallel workers own disjoint clips but share every note that links to
     # one, other clips included: every read-modify-replace this run makes

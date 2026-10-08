@@ -3639,20 +3639,20 @@ check_c55_project_mode() {
     emit OK C55-project-mode "tracker=$tracker forge=$forge ($req)"
 }
 
-# --- C57-mcp-sdk-v1 (HIMMEL-4866): no v1 MCP SDK dependency or import -----------
+# --- C58-mcp-sdk-v1 (HIMMEL-4866): no v1 MCP SDK dependency or import -----------
 # Runs scripts/lint/check-mcp-sdk-v1.sh against the judged checkout. A finding
 # is a WARN naming the hits; the gate is also enforced at commit time. Vendored
 # and externally configured servers are NOTEs of the gate, never a compliance
 # claim. A checkout without the gate gets no row.
-check_c57_mcp_sdk_v1() {
+check_c58_mcp_sdk_v1() {
     local lint="$REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" out rc=0
     [ -f "$lint" ] || return 0
     out="$(bash "$lint" "$REPO_ROOT" 2>&1)" || rc=$?
     case "$rc" in
-        0) emit OK C57-mcp-sdk-v1 "no @modelcontextprotocol/sdk (v1) dependency or import" ;;
-        1) emit WARN C57-mcp-sdk-v1 "v1 MCP SDK in tracked files: $(printf '%s' "$out" | grep -v '^NOTE' | head -n 3 | tr '\n' ';')" \
+        0) emit OK C58-mcp-sdk-v1 "no @modelcontextprotocol/sdk (v1) dependency or import" ;;
+        1) emit WARN C58-mcp-sdk-v1 "v1 MCP SDK in tracked files: $(printf '%s' "$out" | grep -v '^NOTE' | head -n 3 | tr '\n' ';')" \
                "migrate to @modelcontextprotocol/server 2.3.1 (docs/internals/mcp-servers.md), then: bash $REPO_ROOT/scripts/lint/check-mcp-sdk-v1.sh" ;;
-        *) emit WARN C57-mcp-sdk-v1 "check-mcp-sdk-v1.sh could not evaluate rc=$rc: ${out:0:160}" ;;
+        *) emit WARN C58-mcp-sdk-v1 "check-mcp-sdk-v1.sh could not evaluate rc=$rc: ${out:0:160}" ;;
     esac
 }
 
@@ -3831,6 +3831,23 @@ EOF
     fi
 }
 
+# C57 — every loader must name its own keys; diagnostics never print values.
+check_c57_dotenv_allowlists() {
+    local audit="$REPO_ROOT/scripts/lib/dotenv-audit.mjs" rows sev msg node_bin
+    if [ ! -f "$audit" ]; then
+        emit WARN C57-dotenv-allowlists "dotenv consumer audit is missing" "run himmel-update"
+        return
+    fi
+    if ! node_bin="$(resolve_node 2>/dev/null)" || ! rows="$("$node_bin" "$audit" "$REPO_ROOT" 2>/dev/null)"; then
+        emit WARN C57-dotenv-allowlists "could not audit .env consumer allowlists" "check the Node runtime and scripts/lib/dotenv-audit.mjs"
+        return
+    fi
+    while IFS=$'\t' read -r sev msg; do
+        [ -n "$sev" ] || continue
+        emit "$sev" C57-dotenv-allowlists "$msg" "each loader must name its consumed keys; unused names can be intentional (for example a future API lane)"
+    done <<< "$rows"
+}
+
 # --- run ------------------------------------------------------------------------
 echo "himmel-doctor — $(uname -s 2>/dev/null || echo ?) — checkout: $REPO_ROOT"
 echo
@@ -3889,7 +3906,8 @@ check_c52_graphify_ollama
 check_c53_vm_mode
 check_c54_hook_copy_reaper
 check_c55_project_mode
-check_c57_mcp_sdk_v1
+check_c57_dotenv_allowlists
+check_c58_mcp_sdk_v1
 echo
 printf 'Summary: %s%d FAIL%s  %s%d WARN%s  %s%d INFO%s\n' "$C_RED" "$n_fail" "$C_0" "$C_YEL" "$n_warn" "$C_0" "$C_DIM" "$n_info" "$C_0"
 

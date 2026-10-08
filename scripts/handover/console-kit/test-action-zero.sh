@@ -50,4 +50,22 @@ out4="$(ACTION_ZERO_DOCTOR="$WORK/doctor-bad.sh" bash "$AZ" --doc "$DOC" --root 
 check "a failed doctor reads unavailable, not none" "1" "$(printf '%s\n' "$out4" | sed -n '/^== C29/,/^== LOAD/p' | grep -c '^unavailable')"
 check "usage without --root exits 2" "2" "$(bash "$AZ" --doc "$DOC" >/dev/null 2>&1; echo $?)"
 
+# HIMMEL-4919: a hung probe is bounded, prints a stable TIMEOUT line, and the
+# remaining sections still run. The stubs sleep as a grandchild (no exec), the
+# shape that holds a $(...) pipe open if only the parent is killed.
+# Resolved in a subshell: a source edge would pull check-ci-watch.sh into the lint set.
+_TIMEOUT_BIN="$(bash -c '. "$1" >/dev/null 2>&1; printf %s "$_TIMEOUT_BIN"' _ "$HERE/../../lib/timeout-bin.sh" 2>/dev/null)"
+if [ -n "${_TIMEOUT_BIN:-}" ]; then
+    printf '#!/usr/bin/env bash\nsleep 30\necho late\n' > "$WORK/hang.sh"
+    t0=$SECONDS
+    out6="$(ACTION_ZERO_BANK="$WORK/hang.sh" ACTION_ZERO_DOCTOR="$WORK/hang.sh" ACTION_ZERO_BANK_TIMEOUT=1 ACTION_ZERO_DOCTOR_TIMEOUT=1 "$_TIMEOUT_BIN" -k 2 25 bash "$AZ" --doc "$DOC" --root "$ROOT" 2>&1)"
+    el=$((SECONDS - t0))
+    check "hung probes finish inside the bound" "1" "$([ "$el" -lt 15 ] && echo 1 || echo 0)"
+    check "bank hang prints TIMEOUT bank after 1s" "1" "$(printf '%s\n' "$out6" | sed -n '/^== BANK/,/^== PROCS/p' | grep -c '^TIMEOUT bank after 1s$')"
+    check "doctor hang prints TIMEOUT doctor after 1s" "1" "$(printf '%s\n' "$out6" | sed -n '/^== C29/,/^== LOAD/p' | grep -c '^TIMEOUT doctor after 1s$')"
+    check "sections after a hang still run" "1" "$(printf '%s\n' "$out6" | grep -c '^== LOCK (this document)')"
+else
+    echo "SKIP: hang rows (no timeout binary)"
+fi
+
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; exit 1; fi

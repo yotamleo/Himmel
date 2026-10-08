@@ -1279,7 +1279,18 @@ lf_run() {
     bash -c '. "$1/graphify-bin.sh"; graphify_update; echo "RC=$?"' _ "$SCRIPT_DIR" 2>&1
 }
 lf_live_version() { PATH="$lf_bin:$utils_bin" GRAPHIFY_NO_AUTO_REFRESH=1 graphify --version 2>/dev/null; }
-lf_tmp_empty() { [ -z "$(ls -A "$lf_tmp" 2>/dev/null)" ]; }
+lf_tmp_empty() { local l; [ -d "$lf_tmp" ] || return 1; l="$(ls -A "$lf_tmp" 2>/dev/null)" || return 1; [ -z "$l" ]; }
+
+echo "[test-graphify-bin] lf_tmp_empty: passes only on a listable, empty scratch dir (HIMMEL-4539)"
+lf_tmp_not_empty() { ! lf_tmp_empty; }
+_lf_tmp_save="${lf_tmp:-}"
+lf_tmp="$tmpdir/lf-probe-missing"
+assert "lf_tmp_empty fails on a missing dir" lf_tmp_not_empty
+lf_tmp="$tmpdir/lf-probe-full"; mkdir -p "$lf_tmp"; : > "$lf_tmp/leftover"
+assert "lf_tmp_empty fails on a non-empty dir" lf_tmp_not_empty
+lf_tmp="$tmpdir/lf-probe-empty"; mkdir -p "$lf_tmp"
+assert "lf_tmp_empty passes on an empty dir" lf_tmp_empty
+lf_tmp="$_lf_tmp_save"
 
 echo "[test-graphify-bin] _graphify_extras_with_ollama: preserved extras UNION ollama, deduplicated"
 for _c in "[all]=[all,ollama]" "=[ollama]" "[ollama]=[ollama]" "[pdf,ollama]=[pdf,ollama]" "[ollama,pdf]=[ollama,pdf]"; do
