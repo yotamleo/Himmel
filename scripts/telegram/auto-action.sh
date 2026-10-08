@@ -157,7 +157,9 @@ if (fs.existsSync(deltaFile)) {
 }
 let lines;
 try { lines = fs.readFileSync(file, "utf8").split("\n"); } catch { process.exit(1); }
-const at = (h) => typeof h === "string" && /^[0-9a-f]{7,40}$/.test(h) && head.startsWith(h);
+// Exact 40-hex only (HIMMEL-4879): a short prefix row is not a review of this sha.
+const exact = (h, sha) => typeof h === "string" && /^[0-9a-f]{40}$/.test(h) && h === sha;
+const at = (h) => exact(h, head);
 const critic = (m) => typeof m === "string" && !["claude", "claude-floor", "codex-adv"].includes(m);
 const key = (o) => [String(o.finding_id), o.artifact || "diff", o.perspective || "off"].join("\u001f");
 const verdicts = new Map(), settled = new Set();
@@ -170,7 +172,7 @@ for (const line of lines) {
   if (!o || (o.branch !== branch && !(o.kind === "amend" && !o.branch))) continue;
   if (o.kind === "avail" && o.status === "ok" && critic(o.model)) {
     if (at(o.head)) reviewed = true;
-    if (typeof o.head === "string" && /^[0-9a-f]{7,40}$/.test(o.head) && deltaTo.startsWith(o.head)) spent = true;
+    if (exact(o.head, deltaTo)) spent = true;
   }
   if (o.kind === "finding" && critic(o.model) && at(o.head)) note(key(o), String(o.verdict || ""));
   if (o.kind === "amend" && at(o.target_head) && verdicts.has(key(o)) && typeof o.set?.verdict === "string") note(key(o), o.set.verdict);
