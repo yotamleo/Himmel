@@ -14,6 +14,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# HIMMEL-4449: handover_root reads only the live env; feed it the .env HANDOVER_DIR first.
+# shellcheck disable=SC1091
+if . "$HERE/../../lib/load-dotenv.sh" 2>/dev/null; then load_dotenv HANDOVER_DIR 2>/dev/null || true; fi
 # shellcheck source=../../lib/handover-path.sh
 . "$HERE/../../lib/handover-path.sh"
 # shellcheck source=../../lib/leg-identity.sh
