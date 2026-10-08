@@ -220,6 +220,16 @@ hasnt "issue comment" "$log" "a cancelled run comments on no issue"
 hasnt "issue close" "$log" "a cancelled run closes no issue"
 hasnt "issue list" "$log" "a cancelled run does not even look up the issue"
 
+# 12. One red shard plus siblings cancelled by fail-fast: the RUN concludes
+# `failure`, so it must read as red (an issue opens), never as a cancelled no-op.
+newcase failfast-red
+printf 'failure%sshell-unit-shard (ubuntu-latest, 3)\ncancelled%sshell-unit-shard (ubuntu-latest, 4)\ncancelled%sshell-unit-shard (ubuntu-latest, 5)\nfailure%sshell-unit (ubuntu-latest)\n' "$tab" "$tab" "$tab" "$tab" > "$STUB/jobs.tsv"
+sweep
+if [ "$rc" -eq 0 ]; then ok "fail-fast red run exits 0"; else bad "fail-fast red run exits $rc: $out"; fi
+has "gh issue create" "$log" "a failed run with cancelled sibling shards opens the issue"
+has "failed: shell-unit (ubuntu-latest)" "$out" "the aggregator is reported failed"
+hasnt "failed: shell-unit-shard (ubuntu-latest, 4)" "$out" "a cancelled sibling is not reported as the failure"
+
 echo ""
 if [ "$fails" -ne 0 ]; then echo "$fails check(s) failed."; exit 1; fi
 echo "all checks passed."

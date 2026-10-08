@@ -460,7 +460,9 @@ jobs:
       group: bun-suites-${{ matrix.os }}-${{ matrix.os == 'windows-latest' && 'shared' || github.ref }}
       cancel-in-progress: false
     strategy:
-      fail-fast: false
+      # HIMMEL-5036: PR-only fail-fast; the windows leg only exists on schedule,
+      # where this stays false so a red Windows leg still reports Linux.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         os: ${{ github.event_name == 'schedule'
                && fromJSON('["ubuntu-latest","windows-latest"]')
@@ -774,7 +776,10 @@ jobs:
   # check-run context branch protection names.
   shell-unit-shard:
     strategy:
-      fail-fast: false
+      # HIMMEL-5036: a PR stops at its first red shard (siblings are cancelled and
+      # the shell-unit aggregator reads the rollup as failure); push-to-main and
+      # the nightly keep the full red set so a red stays attributable.
+      fail-fast: ${{ github.event_name == 'pull_request' }}
       matrix:
         os: ${{ github.event_name == 'schedule'
                && fromJSON('["ubuntu-latest","windows-latest"]')
