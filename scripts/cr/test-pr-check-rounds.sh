@@ -1098,6 +1098,30 @@ for consumed_case in consumed-qid-repeat-refused consumed-qid-layer-unlocks; do
         assert_has "$cq_out" "layer-decision:" "$consumed_case names class remedy"
     fi
 done
+# HIMMEL-4945: a git error (exit 128: the earlier head is missing from this
+# clone) is not proof the earlier NO-GO is off this PR. The record must keep
+# its class veto; only a clean exit 1 drops it.
+three_rounds ancestry-error-keeps-record clean
+ae_first="$cap_r3_head"
+fix_commit ancestry-error-keeps-record
+ae_second="$cap_fix_head"
+printf 'class: cwd-indirection\n\nfirst finding\n' > "$jev/judge-evidence.md"
+judge ancestry-error-first NO-GO "$ae_first"
+ae_out="$(start_round "$ae_second" clean ancestry-error-keeps-record)"; ae_rc=$?
+assert_eq "$ae_rc" "0" "ancestry-error first round setup"
+printf 'next fix\n' >> "$repo/ancestry-error-keeps-record.txt"
+git -C "$repo" commit -q -am "ancestry-error next fix"
+ae_third="$(git -C "$repo" rev-parse ancestry-error-keeps-record)"
+ae_missing="$(printf 'b%.0s' $(seq 1 40))"
+printf 'class: option-parsing\n\nearlier head absent from this clone\n' > "$jev/judge-evidence.md"
+judge ancestry-error-candidate NO-GO "$ae_missing"
+printf 'class: option-parsing\n\ncurrent repeat\n' > "$jev/judge-evidence.md"
+judge ancestry-error-candidate NO-GO "$ae_second"
+ae_out="$(start_round "$ae_third" clean ancestry-error-keeps-record)"; ae_rc=$?
+assert_eq "$ae_rc" "8" "a git error on the ancestry check keeps the earlier NO-GO"
+assert_has "$ae_out" "ancestry check could not run" "git-error line is stable and names the check"
+assert_has "$ae_out" "option-parsing" "git-error refusal names the retained class"
+
 three_rounds same-head-not-a-repeat clean
 sh_first="$cap_r3_head"
 fix_commit same-head-not-a-repeat
