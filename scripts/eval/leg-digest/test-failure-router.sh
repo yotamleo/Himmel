@@ -264,6 +264,27 @@ check "a plain error/Bash and error/Edit still route through the generic row" 'w
 check "the context-guard denial is routed as its own named hook" 'wf10 denied/guard-leg-context-handoff'
 check "ok/no-match is never a routable class: the ledger refuses it and the table has no ticket row for it" '! grep -q "\"ok/" "$DRY10" && ! python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import failure_router as f, json; t = json.load(open(sys.argv[2])); sys.exit(0 if any(r[\"route\"] == \"ticket\" and f.fits(r[\"match\"], \"ok/no-match\") for r in t[\"routes\"]) else 1)" "$HERE" "$HERE/failure-routes.table.json"'
 
+echo "HIMMEL-4741: two classes sharing one fl-<slug> label never adopt each other's ticket"
+F11="$TMP/f11"; mkdir -p "$F11"
+SAVE="$LED"; LED="$F11/l.jsonl"
+row N1 denied/Guard.Q 1; row N2 denied/Guard.Q 1; row N1 denied/guard-q 1; row N2 denied/guard-q 1
+LED="$SAVE"
+check "the two class names really share one slug" 'python3 -c "import sys; sys.path.insert(0, sys.argv[1]); import failure_router as f; sys.exit(0 if f.slug(\"denied/Guard.Q\") == f.slug(\"denied/guard-q\") else 1)" "$HERE"'
+printf 'HIMMEL-8888\tTask\tTo Do\tthe other class\n' >"$STUB/list.fl-denied-guard-q"
+n11="$(calls create)"; c11="$(calls comment)"
+python3 "$FR" route --ledger "$F11/l.jsonl" --state "$F11/s.json" --log "$F11/log" --inbox "$F11/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "a slug collision files nothing, comments nowhere and logs skipped:slug-collision for both" '[ "$(calls create)" = "$n11" ] && [ "$(calls comment)" = "$c11" ] && [ "$(decs "$F11/log" | jq -r .decision | sort -u)" = skipped:slug-collision ] && [ "$(dlines "$F11/log")" = 2 ]'
+rm -f "$STUB/list.fl-denied-guard-q"
+
+F12="$TMP/f12"; mkdir -p "$F12"
+SAVE="$LED"; LED="$F12/l.jsonl"
+row N1 denied/Guard.Q 1; row N2 denied/Guard.Q 1
+LED="$SAVE"
+printf '{"v":1,"classes":{"denied/guard-q":{}},"created":{"day":null,"n":0}}\n' >"$F12/s.json"
+n12="$(calls create)"
+python3 "$FR" route --ledger "$F12/l.jsonl" --state "$F12/s.json" --log "$F12/log" --inbox "$F12/inbox" --now "$NOW" --jira-bin "$STUB/jira" >/dev/null 2>&1
+check "a colliding class known only from the state file also files nothing" '[ "$(calls create)" = "$n12" ] && [ "$(decs "$F12/log" | jq -r .decision | sort -u)" = skipped:slug-collision ]'
+
 echo "the routing table is data"
 check "failure-routes.table.json parses and names every spec 4.2 key pattern" 'jq -e "[.routes[].match] | index(\"denied/classifier:*\") and index(\"suite/*\") and index(\"error/*\") and index(\"traj/claim-unverified\")" "$HERE/failure-routes.table.json" >/dev/null'
 check "the window is 14 days and the cap is 3" 'jq -e ".window_days == 14 and .daily_cap == 3" "$HERE/failure-routes.table.json" >/dev/null'

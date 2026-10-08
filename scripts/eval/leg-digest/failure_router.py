@@ -38,7 +38,10 @@ a --jql label search over every status before any create, one Task per class wit
 labels failure-loop + fl-<slug> and no fixVersion, at most one comment a day per
 ticket, at most daily_cap creates a UTC day. A Done ticket is never reopened or
 re-filed. FAIL CLOSED: an unreadable state file, a search error, a CLI error or a
-body outside the alphabet files nothing and logs skipped:<why>.
+body outside the alphabet files nothing and logs skipped:<why>. slug() is lossy (case,
+punctuation, past char 60), so a class with no ticket of its own whose fl-<slug> is
+shared with another known class (ledger window or state) logs skipped:slug-collision
+rather than adopt the other class's ticket (HIMMEL-4741).
 
 --dry-run reads only: it prints the would-be decisions and writes no file and makes
 no Jira call, the search included.
@@ -293,7 +296,7 @@ def acted(c, legs):
     c["acted"] = sorted(set(c.get("acted", [])) | set(legs))
 
 
-def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project, intent):
+def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project, intent, collide=False):
     """(decision, ticket). Mutates the class entry c and the state's create count.
 
     intent(kind) logs the send before it happens and returns False when the log write failed:
@@ -303,6 +306,9 @@ def decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, pro
         return "skipped:state-unreadable", None
     if c.get("ticket") and c.get("last_comment_day") == today:
         return "skipped:comment-daily", c["ticket"]
+    if collide and not c.get("ticket"):
+        # The label search would match the other class's ticket too: never adopt it (HIMMEL-4741).
+        return "skipped:slug-collision", None
     if a.dry_run:
         cap = state["created"]["n"] if state["created"].get("day") == today else 0
         return ("would-comment" if c.get("ticket") else "would-cap" if cap >= table["daily_cap"]
@@ -376,6 +382,9 @@ def route(a):
         fcntl.flock(lock, fcntl.LOCK_EX)
     try:
         state, state_ok = load_state(a.state)
+        slugs = {}
+        for k in set(by) | set(state["classes"] if state_ok else ()):
+            slugs.setdefault(slug(k), set()).add(k)
         decisions = 0
         for cls in sorted(by):
             fire = firing(table, cls, by[cls])
@@ -404,7 +413,8 @@ def route(a):
                     print("failure-router: cannot log the intent, nothing sent: %s" % e, file=sys.stderr)
                     return False
 
-            dec, ticket = decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project, intent)
+            dec, ticket = decide(a, table, cls, t, legs, counted, c, state, state_ok, today, jbin, project, intent,
+                                 len(slugs[slug(cls)]) > 1)
             if a.dry_run:
                 print(json.dumps({"class": cls, "legs": n, "decision": dec, "ticket": ticket,
                                   "inbox": bool(inbox)}, separators=(",", ":")))
