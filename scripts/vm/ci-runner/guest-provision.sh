@@ -89,7 +89,7 @@ cat > /usr/local/sbin/himmel-ci-run-job <<'EOF'
 # One job as `runner`. Arg: max seconds. Stdin: the single-use JIT config.
 set -eu
 max="${1:?max seconds}"
-case "$max" in ''|*[!0-9]*) echo "himmel-ci-run-job: bad max '$max'" >&2; exit 2 ;; esac
+case "$max" in ''|*[!0-9]*|0*) echo "himmel-ci-run-job: bad max '$max'" >&2; exit 2 ;; esac
 IFS= read -r jit
 [ -n "$jit" ] || { echo "himmel-ci-run-job: empty JIT config on stdin" >&2; exit 2; }
 cd /opt/actions-runner

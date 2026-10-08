@@ -68,7 +68,12 @@ else
     localhost_unreachable() {
         (cd "$HOME" && "$VBOXMANAGE" showvminfo "$CLONE_NAME" --machinereadable) | grep -qx 'localhostReachable="0"'
     }
-    vm_poweroff() { vbox_py 'vbox.power_off(sys.argv[1], graceful=False)' "$CLONE_NAME" >/dev/null 2>&1 || true; }
+    # Succeeds only once the clone is really off: the lock must never be
+    # released over a VM that is still running a job.
+    vm_poweroff() {
+        vbox_py 'vbox.power_off(sys.argv[1], graceful=False)' "$CLONE_NAME" >/dev/null 2>&1
+        (cd "$HOME" && "$VBOXMANAGE" showvminfo "$CLONE_NAME" --machinereadable) | grep -qx 'VMState="poweroff"'
+    }
 fi
 fail() { die "$1"; }
 # The secret scan runs as root: the login user cannot read runner's home or /root.
@@ -89,19 +94,32 @@ preflight() {
 }
 
 RUNNER_ID=""
+JOB_PID=""
 LOCKED=0
 cleanup() {
+    if [ -n "$JOB_PID" ]; then
+        kill "$JOB_PID" 2>/dev/null
+        JOB_PID=""
+    fi
     if [ -n "$RUNNER_ID" ]; then
         gh api -X DELETE "repos/$REPO/actions/runners/$RUNNER_ID" >/dev/null 2>&1 || true
         RUNNER_ID=""
     fi
     if [ "$LOCKED" = 1 ]; then
-        vm_poweroff
-        vm_lock_release "$CLONE_NAME"
         LOCKED=0
+        if ! vm_poweroff; then
+            echo "ci-runner: $CLONE_NAME still running after power-off — keeping its vm-lock; power it off by hand, then release the lock" >&2
+            return 1
+        fi
+        vm_lock_release "$CLONE_NAME"
     fi
 }
+# A signal exits through the EXIT trap, so a killed loop still deregisters its
+# runner and powers the VM off.
 trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 lock_clone() {
     vm_lock_acquire_waiting "$CLONE_NAME" || die "could not take the vm-lock on $CLONE_NAME"
@@ -109,7 +127,7 @@ lock_clone() {
 }
 
 one_job() {
-    local jit=""
+    local jit="" rc
     lock_clone
     vm_restore "$RUNNER_SNAPSHOT"
     nat_localhost_off || die "could not make the station loopback unreachable from $CLONE_NAME"
@@ -123,10 +141,16 @@ one_job() {
     case "$RUNNER_ID" in ''|*[!0-9]*) RUNNER_ID=""; die "could not mint a JIT runner config for $REPO" ;; esac
     [ -n "$jit" ] || die "JIT runner $RUNNER_ID came back with no config"
     echo "ci-runner: runner $RUNNER_ID registered on $REPO ($LABEL); waiting for one job (max ${JOB_MAX}s)"
-    printf '%s\n' "$jit" | vm_ssh sudo /usr/local/sbin/himmel-ci-run-job "$JOB_MAX"
-    echo "ci-runner: runner $RUNNER_ID done (rc=$?)"
+    # In the background so a signal interrupts the wait at once, not after the job.
+    printf '%s\n' "$jit" | vm_ssh sudo /usr/local/sbin/himmel-ci-run-job "$JOB_MAX" &
+    JOB_PID=$!
     jit=""
-    cleanup
+    wait "$JOB_PID"
+    rc=$?
+    JOB_PID=""
+    echo "ci-runner: runner $RUNNER_ID done (rc=$rc)"
+    cleanup || exit 1
+    return "$rc"
 }
 
 build() {
@@ -153,14 +177,18 @@ build() {
 }
 
 run() {
-    local once=0
+    local once=0 rc
     [ "${1:-}" = "--once" ] && once=1
+    case "$JOB_MAX" in
+        ''|*[!0-9]*|0*) die "HIMMEL_CI_RUNNER_JOB_MAX='$JOB_MAX' is not a positive number of seconds" 2 ;;
+    esac
     vm_env_init
     while :; do
         kill_switch_on || exit 0
         preflight
         one_job
-        [ "$once" = 1 ] && exit 0
+        rc=$?
+        [ "$once" = 1 ] && exit "$rc"
     done
 }
 

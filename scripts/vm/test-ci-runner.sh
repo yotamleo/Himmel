@@ -82,13 +82,17 @@ chmod +x "$TMP/bin/gh"
 cat > "$TMP/vmlib.sh" <<'EOF'
 vm_env_init()  { :; }
 vm_lock_acquire_waiting() { :; }
-vm_lock_release() { :; }
+vm_lock_release() { echo "release" >> "$STUB_LOG/vm.calls"; }
 vm_restore()   { echo "restore $1" >> "$STUB_LOG/vm.calls"; PORT=2299; }
 vm_boot()      { echo "boot" >> "$STUB_LOG/vm.calls"; }
-vm_poweroff()  { echo "poweroff" >> "$STUB_LOG/vm.calls"; }
+vm_poweroff()  { echo "poweroff" >> "$STUB_LOG/vm.calls"; return "${STUB_POWEROFF_RC:-0}"; }
 nat_localhost_off() { echo "nat-localhost-off" >> "$STUB_LOG/vm.calls"; }
 localhost_unreachable() { [ -z "${STUB_LOCALHOST_REACHABLE:-}" ]; }
-vm_ssh()       { printf '%s\n' "$*" >> "$STUB_LOG/ssh.argv"; cat >> "$STUB_LOG/ssh.stdin"; }
+vm_ssh() {
+    printf '%s\n' "$*" >> "$STUB_LOG/ssh.argv"; cat >> "$STUB_LOG/ssh.stdin"
+    [ -z "${STUB_SSH_SLEEP:-}" ] || sleep "$STUB_SSH_SLEEP"
+    return "${STUB_SSH_RC:-0}"
+}
 EOF
 
 run_loop() {
@@ -135,8 +139,8 @@ reset_log
 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then ok "run --once exits 0"; else bad "run --once rc=$rc: $(cat "$TMP/out")"; fi
-if [ "$(tr '\n' '|' < "$TMP/log/vm.calls" 2>/dev/null)" = "restore ci-runner-v1|nat-localhost-off|boot|poweroff|" ]; then
-    ok "restored ci-runner-v1, hid the station loopback, booted, powered off"
+if [ "$(tr '\n' '|' < "$TMP/log/vm.calls" 2>/dev/null)" = "restore ci-runner-v1|nat-localhost-off|boot|poweroff|release|" ]; then
+    ok "restored ci-runner-v1, hid the station loopback, booted, powered off, released the lock"
 else
     bad "vm calls: $(tr '\n' '|' < "$TMP/log/vm.calls" 2>/dev/null)"
 fi
@@ -145,11 +149,13 @@ if grep -q "JITSECRET" "$TMP/log/ssh.stdin" 2>/dev/null; then
 else
     bad "JIT config never reached the guest"
 fi
-if grep -q "JITSECRET" "$TMP/log/ssh.argv" "$TMP/log/gh.argv" "$TMP/out"; then
-    bad "JIT config leaked into an argv or the log"
-else
-    ok "JIT config absent from every argv and the output"
-fi
+grep -q "JITSECRET" "$TMP/log/ssh.argv" "$TMP/log/gh.argv" "$TMP/out"
+rc=$?
+case "$rc" in
+    1) ok "JIT config absent from every argv and the output" ;;
+    0) bad "JIT config leaked into an argv or the log" ;;
+    *) bad "leak scan could not read its inputs (grep rc=$rc)" ;;
+esac
 if grep -q -- "generate-jitconfig" "$TMP/log/gh.argv" && grep -q "labels\[\]=himmel-vm" "$TMP/log/gh.argv"; then
     ok "minted a repo-level JIT runner labelled himmel-vm"
 else
@@ -175,6 +181,58 @@ if [ "$rc" -ne 0 ] && ! grep -q generate-jitconfig "$TMP/log/gh.argv" && grep -q
 else
     bad "loopback-reachable image: rc=$rc, gh=$(tr '\n' '|' < "$TMP/log/gh.argv")"
 fi
+
+echo "T4c a failed guest job fails run --once, and still cleans up"
+reset_log
+STUB_SSH_RC=7 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -eq 7 ] && grep -q -- "-X DELETE" "$TMP/log/gh.argv" && grep -qx poweroff "$TMP/log/vm.calls"; then
+    ok "guest job rc=7 propagated; runner deregistered, VM powered off"
+else
+    bad "failed job: rc=$rc, vm=$(tr '\n' '|' < "$TMP/log/vm.calls")"
+fi
+
+echo "T4d a power-off that fails keeps the vm-lock"
+reset_log
+STUB_POWEROFF_RC=1 GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
+rc=$?
+if [ "$rc" -ne 0 ] && ! grep -qx release "$TMP/log/vm.calls" && grep -q "still running" "$TMP/out"; then
+    ok "power-off failure: lock kept, run fails (rc=$rc)"
+else
+    bad "power-off failure: rc=$rc, vm=$(tr '\n' '|' < "$TMP/log/vm.calls")"
+fi
+
+echo "T4e SIGTERM mid-job still deregisters and powers off"
+reset_log
+# Not through run_loop: $! must be the loop's own pid, not a wrapper subshell's.
+STUB_SSH_SLEEP=5 GH_KILL=on STUB_LOG="$TMP/log" PATH="$TMP/bin:$PATH" CI_RUNNER_VM_LIB="$TMP/vmlib.sh" \
+    HIMMEL_CI_RUNNER_REPO=yotamleo/Himmel HIMMEL_CI_RUNNER_STOP_FILE="$TMP/stop" \
+    bash "$LOOP" run --once >"$TMP/out" 2>&1 &
+loop_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    [ -s "$TMP/log/ssh.argv" ] && break
+    sleep 0.2
+done
+kill -TERM "$loop_pid" 2>/dev/null
+wait "$loop_pid"
+rc=$?
+if [ "$rc" -ne 0 ] && grep -q -- "-X DELETE" "$TMP/log/gh.argv" && grep -qx poweroff "$TMP/log/vm.calls"; then
+    ok "SIGTERM: runner deregistered, VM powered off (rc=$rc)"
+else
+    bad "SIGTERM: rc=$rc, gh=$(tr '\n' '|' < "$TMP/log/gh.argv"), vm=$(tr '\n' '|' < "$TMP/log/vm.calls" 2>/dev/null)"
+fi
+
+echo "T4f a zero or non-numeric job bound is refused before any mint"
+for m in 0 abc; do
+    reset_log
+    HIMMEL_CI_RUNNER_JOB_MAX="$m" GH_KILL=on run_loop run --once >"$TMP/out" 2>&1
+    rc=$?
+    if [ "$rc" -eq 2 ] && ! grep -q generate-jitconfig "$TMP/log/gh.argv"; then
+        ok "JOB_MAX='$m' refused (rc=$rc)"
+    else
+        bad "JOB_MAX='$m': rc=$rc"
+    fi
+done
 
 echo "T5 guest provisioner refuses bare metal"
 cat > "$TMP/bin/systemd-detect-virt" <<'EOF'
