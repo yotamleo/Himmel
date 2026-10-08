@@ -17,6 +17,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034  # PLUGIN_DIR used in Test 6 (Task 7 adds that block)
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TOOLS_DIR="$(cd "$SCRIPT_DIR/../tools" && pwd)"
+
+# HIMMEL-4850: tools/node_modules is gitignored, so a fresh worktree has no
+# js-yaml and every node-driven case fails. CI runs ensure-deps.sh before the
+# shards; do the same here (no-op when present, loud non-zero on failure).
+bash "$TOOLS_DIR/ensure-deps.sh" || { echo "ensure-deps.sh failed; cannot run" >&2; exit 1; }
 # shellcheck disable=SC2034  # SCRIPT used in Test 1/2/4/5 (Tasks 4-6 add those blocks)
 SCRIPT="$TOOLS_DIR/component-scan.mjs"
 LIB="$TOOLS_DIR/lib/component-extract.mjs"
