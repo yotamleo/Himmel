@@ -1645,6 +1645,73 @@ E
 sc_case "row 55 control: a nested-quote dirname of $0 resolves" 1 0 <<'E'
 source "$(cd "$(dirname "$0")" && pwd)/../lib/armor.sh"
 E
+sc_case "row 56: an apostrophe in a comment after a case-arm paren does not mask a later real source" 0 1 <<'E'
+case $x in
+x)# don't
+source "$MISSING" ;;
+y)# won't
+esac
+E
+sc_case "row 56: the same with a command-substitution operand outside the checkout" 0 1 <<'E'
+case $x in
+x)# don't
+source "$(printf /outside)/scripts/lib/armor.sh" ;;
+y)# won't
+esac
+E
+sc_case "row 56: a comment after a redirection operator is a comment" 0 1 <<'E'
+true >/dev/null <# don't
+source "$MISSING"
+true >/dev/null <# won't
+E
+sc_case "row 57: a left shift inside (( )) is not a heredoc (parse failure scans every line)" 0 1 <<'E'
+(( n = 1 << b ))
+source "$MISSING"
+b
+E
+sc_case "row 57: a left shift inside an arithmetic substitution is not a heredoc" 0 1 <<'E'
+x=$(( 1 << b ))
+source "$MISSING"
+b
+E
+sc_case "row 58: eval of a double-quoted string runs its source" 0 1 <<'E'
+eval "true; source \"$MISSING\""
+E
+sc_case "row 58: bash -c of a single-quoted string runs its source" 0 1 <<'E'
+bash -c 'true; source "$MISSING"'
+E
+sc_case "row 58: sh -lc of a double-quoted string runs its source" 0 1 <<'E'
+sh -lc "true; source $MISSING"
+E
+sc_case "row 58 control: echo of the same string does not" 0 0 <<'E'
+echo "true; source \"$MISSING\""
+E
+sc_case "row 59: a heredoc with a double-quoted delimiter is data" 0 0 <<'E'
+cat <<"EOT"
+source "$MISSING"
+EOT
+E
+sc_case "row 59: a heredoc with a backslash delimiter is data" 0 0 <<'E'
+cat <<\EOT
+source "$MISSING"
+EOT
+E
+sc_case "row 60: a source in a backtick span inside double quotes runs" 0 1 <<'E'
+x="`true; source $MISSING`"
+E
+sc_case "row 60: a source in a backtick span in an unquoted heredoc body runs" 0 1 <<'E'
+cat <<EOT
+`true; source $MISSING`
+EOT
+E
+sc_case "row 61: an assignment inside quoted text is not an assignment" 0 1 <<'E'
+echo 'D="$(cd "$(dirname "$0")" && pwd)"'
+source "$D/../lib/armor.sh"
+E
+sc_case "row 61 control: a real assignment after a quoted word on the same line is one" 1 0 <<'E'
+echo 'x'; D="$(dirname "$0")"
+source "$D/../lib/armor.sh"
+E
 }
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

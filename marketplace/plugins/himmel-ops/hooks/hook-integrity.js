@@ -1229,6 +1229,7 @@ function splitRef(expr) {
 // to scanning every character — a parse problem never hides a real statement.
 const HEREDOC_OP = new RegExp(`^<<(-?)[ \\t]*(?:'([^'\\n]*)'|"([^"\\n]*)"|(\\\\?)(${VAR_NAME}))`);
 const BODY_ESCAPE_SPAN = /^\$\(/;
+const EVAL_BEFORE = /(?:^|[\s;&|(])(?:eval|(?:ba|da|z|k)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c)\s+$/;
 
 function maskHeredocBody(text, from, to, quoted, mask) {
   if (quoted) { mask.fill(1, from, to); return true; }
@@ -1268,12 +1269,12 @@ function inertMask(text) {
     const f = stack[stack.length - 1];
     const c = text[i];
     if (f.t === 'sq') {
-      if (c === "'") stack.pop(); else mask[i] = 1;
+      if (c === "'") stack.pop(); else if (!f.live) mask[i] = 1;
       i++;
       continue;
     }
     if (f.t === 'dq') {
-      if (c === '\\') { mask[i] = 1; if (i + 1 < n) mask[i + 1] = 1; i += 2; continue; }
+      if (c === '\\') { if (!f.live) { mask[i] = 1; if (i + 1 < n) mask[i + 1] = 1; } i += 2; continue; }
       if (c === '"') { stack.pop(); i++; continue; }
       if (c === '$' && text[i + 1] === '(') { stack.push({ t: 'cmd', depth: 0 }); i += 2; continue; }
       if (c === '`') {
@@ -1282,17 +1283,27 @@ function inertMask(text) {
         i = end + 1;
         continue;
       }
-      mask[i] = 1;
+      if (!f.live) mask[i] = 1;
       i++;
       continue;
     }
     // code or cmd
     if (c === '\\') { i += 2; continue; }
-    if (c === "'") { stack.push({ t: 'sq' }); i++; continue; }
-    if (c === '"') { stack.push({ t: 'dq' }); i++; continue; }
+    if (c === "'" || c === '"') {
+      // The argument of `eval` / `sh -c` is code Bash runs, so it stays scanned.
+      const before = text.slice(text.lastIndexOf('\n', i - 1) + 1, i);
+      stack.push({ t: c === "'" ? 'sq' : 'dq', live: EVAL_BEFORE.test(before) });
+      i++;
+      continue;
+    }
     if (c === '$' && text[i + 1] === "'") return null;
+    // A `<<` inside `(( ))` / `$(( ))` is a shift, not a heredoc; this tokenizer does not model it.
+    if ((c === '(' && text[i + 1] === '(') || (c === '$' && text[i + 1] === '(' && text[i + 2] === '(')) {
+      const end = text.indexOf('))', i + 2);
+      if (end < 0 || text.slice(i, end).includes('<<')) return null;
+    }
     if (c === '$' && text[i + 1] === '(') { stack.push({ t: 'cmd', depth: 0 }); i += 2; continue; }
-    if (c === '#' && (i === 0 || /[\s;&|(]/.test(text[i - 1]))) {
+    if (c === '#' && (i === 0 || /[\s;&|()<>]/.test(text[i - 1]))) {
       while (i < n && text[i] !== '\n') i++;
       continue;
     }
