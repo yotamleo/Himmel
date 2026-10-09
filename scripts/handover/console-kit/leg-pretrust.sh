@@ -73,21 +73,36 @@ esac
 # Jailed rows (HIMMEL-5068, pilot p20): claude runs inside a bwrap jail where the
 # worktree is bound at another path and ~/.claude-<lane> is a per-row copy, so the
 # flag must land in THAT config under THAT path. LEG_PRETRUST_CONFIG names the
-# config file and LEG_PRETRUST_KEY the project key; both are optional, and the
-# directory is still checked above. The key must be absolute, newline-free and end
-# in the same last component as the checked directory (the jail re-binds the same
-# worktree, it never trusts a different one).
+# config file and LEG_PRETRUST_KEY the project key; the directory is still checked
+# above. The jail can write the row's config dir, so in that mode nothing in it is
+# trusted: the config, its sidecar and its lock must not be symlinks (the host would
+# write through them), the dir must be ours, and the config must not be a real lane
+# config. The key is honoured only with the config, as <repo>/.claude/worktrees/<same
+# last component as the checked dir> with no empty or dot segment (the jail re-binds
+# the same worktree, it never trusts a different one).
+if [ -n "${LEG_PRETRUST_KEY:-}" ] && [ -z "${LEG_PRETRUST_CONFIG:-}" ]; then
+    refuse "LEG_PRETRUST_KEY is honoured only together with LEG_PRETRUST_CONFIG"
+fi
 if [ -n "${LEG_PRETRUST_CONFIG:-}" ]; then
     case "$LEG_PRETRUST_CONFIG" in
         /*/.claude.json) cfg="$LEG_PRETRUST_CONFIG" ;;
         *) echo "leg-pretrust: LEG_PRETRUST_CONFIG must be an absolute path ending in /.claude.json" >&2; exit 2 ;;
     esac
+    cfgdir="$(cd -P "$(dirname "$cfg")" 2>/dev/null && pwd -P)" || cfgdir=""
+    [ -n "$cfgdir" ] || { echo "leg-pretrust: lane config dir absent (launcher not seeded yet): $(dirname "$cfg")" >&2; exit 4; }
+    case "$cfgdir" in
+        "$home"|"$home/.claude-codex"|"$home/.claude-openrouter"|"$home/.claude-deepseek") refuse "LEG_PRETRUST_CONFIG is a real lane config" ;;
+    esac
+    [ -O "$cfgdir" ] || refuse "LEG_PRETRUST_CONFIG dir is not owned by the current user"
+    for f in "$cfg" "$cfg.lock" "$cfg.leg-pretrust.owner"; do
+        [ ! -L "$f" ] || refuse "$f is a symlink (a jailed lane could point it outside the row)"
+    done
 fi
 if [ -n "${LEG_PRETRUST_KEY:-}" ]; then
     case "$LEG_PRETRUST_KEY" in
-        *$'\n'*|*/|/*/..|/*/../*|/*/./*) refuse "LEG_PRETRUST_KEY has a newline, trailing / or dot segment" ;;
-        /*/"${abs##*/}") abs="$LEG_PRETRUST_KEY" ;;
-        *) refuse "LEG_PRETRUST_KEY must be absolute and end in /${abs##*/}" ;;
+        *$'\n'*|*/|*//*|*/./*|*/.|*/../*|*/..) refuse "LEG_PRETRUST_KEY has a newline, trailing /, empty or dot segment" ;;
+        /*/.claude/worktrees/"${abs##*/}") abs="$LEG_PRETRUST_KEY" ;;
+        *) refuse "LEG_PRETRUST_KEY must be <repo>/.claude/worktrees/${abs##*/}" ;;
     esac
 fi
 # Never create a lane config dir: the lane launcher seeds it, and a dir it did not
@@ -124,7 +139,10 @@ until mkdir "$lock" 2>/dev/null; do
     [ "$waited" -le "$tries" ] || { echo "leg-pretrust: lock timeout: $lock" >&2; exit 5; }
     sleep 0.1
 done
-echo "$$" > "$owner" 2>/dev/null || true
+# The sidecar may be stale or a planted symlink: drop it (rm never follows) and create
+# it O_EXCL (noclobber), so the pid is never written through a link.
+rm -f "$owner" 2>/dev/null
+( set -C; echo "$$" > "$owner" ) 2>/dev/null || true
 # Release only a lock we still own: a reclaimed-then-retaken lock is the successor's.
 trap '[ "$(cat "$owner" 2>/dev/null)" = "$$" ] && { rm -f "$owner"; rmdir "$lock" 2>/dev/null; }; true' EXIT
 
@@ -165,7 +183,7 @@ for (let attempt = 0; attempt < 5; attempt++) {
     let mode = 0o600;
     try { mode = fs.statSync(p).mode & 0o777; } catch (_) {}
     try {
-        fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n", { mode: 0o600 });
+        fs.writeFileSync(tmp, JSON.stringify(j, null, 2) + "\n", { mode: 0o600, flag: "wx" });
         fs.chmodSync(tmp, mode);
         if (sig() !== before) { fs.unlinkSync(tmp); continue; }
         fs.renameSync(tmp, p);

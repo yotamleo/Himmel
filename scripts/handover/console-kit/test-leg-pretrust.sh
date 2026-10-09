@@ -192,6 +192,45 @@ sb="$HERE/../../eval/lane-quality/pilot-4869/sandbox.sh"
 check "10a sandbox.sh launch seeds \$JWT into \$ROWCONF" "$(grep -c 'LEG_PRETRUST_CONFIG="$ROWCONF/.claude.json" LEG_PRETRUST_KEY="$JWT"' "$sb")" "1"
 check "10b only one pretrust call in sandbox.sh" "$(grep -c 'leg-pretrust.sh' "$sb")" "1"
 
+# 11. (HIMMEL-5068, judge j2228a B1) the jail can write the row's config dir, so in seam
+# mode a symlinked config, sidecar or lock is refused (exit 3) and nothing outside is touched.
+ewt="$LEG_PRETRUST_HOME/.himmel/eval/lane-quality/pilot/wt/lq-p20"
+jc="$tmp/jailconf"; vic="$tmp/victim"; rm -rf "$jc" "$vic"; mkdir -p "$jc" "$vic"
+vsum() { cat "$vic/v.json" "$vic/v.txt" 2>/dev/null | cksum; }
+printf '%s' '{"keep":"me"}' > "$vic/v.json"; printf 'precious\n' > "$vic/v.txt"; want="$(vsum)"
+ln -s "$vic/v.json" "$jc/.claude.json"
+rc=0; LEG_PRETRUST_CONFIG="$jc/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+check "11a seam + symlinked config: exit 3" "$rc" "3"
+check "11a victim untouched" "$(vsum)" "$want"
+rm -f "$jc/.claude.json"; printf '%s' '{}' > "$jc/.claude.json"; ln -s "$vic/v.txt" "$jc/.claude.json.leg-pretrust.owner"
+rc=0; LEG_PRETRUST_CONFIG="$jc/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+check "11b seam + symlinked sidecar: exit 3" "$rc" "3"
+check "11b victim untouched" "$(vsum)" "$want"
+rm -f "$jc/.claude.json.leg-pretrust.owner"; ln -s "$vic" "$jc/.claude.json.lock"
+rc=0; LEG_PRETRUST_CONFIG="$jc/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+check "11c seam + symlinked lock: exit 3" "$rc" "3"
+rm -f "$jc/.claude.json.lock"
+rc=0; LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+check "11d key without config: exit 3" "$rc" "3"
+rm -f "$LEG_PRETRUST_HOME/.claude-deepseek/.claude.json"
+rc=0; LEG_PRETRUST_CONFIG="$LEG_PRETRUST_HOME/.claude-deepseek/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+check "11e config is a real lane config: exit 3" "$rc" "3"
+check "11e real lane config not created" "$([ -e "$LEG_PRETRUST_HOME/.claude-deepseek/.claude.json" ] && echo yes || echo no)" "no"
+for badkey in "/../x/.claude/worktrees/lq-p20" "//x/.claude/worktrees/lq-p20" "/./x/.claude/worktrees/lq-p20" "/x/./.claude/worktrees/lq-p20" "/x/.claude/worktrees/lq-p20/" "$LEG_PRETRUST_HOME/lq-p20"; do
+  rc=0; LEG_PRETRUST_CONFIG="$jc/.claude.json" LEG_PRETRUST_KEY="$badkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+  check "11f bad key $badkey: exit 3" "$rc" "3"
+done
+# the happy path still works in the same dir, and a stale sidecar symlink is never written through
+printf '%s' '{}' > "$jc/.claude.json"
+rc=0; LEG_PRETRUST_CONFIG="$jc/.claude.json" LEG_PRETRUST_KEY="$jkey" bash "$SCRIPT" deepseek "$ewt" >/dev/null 2>&1 || rc=$?
+check "11g seam happy path: exit 0" "$rc" "0"
+check "11g trusted" "$(trusted "$jc/.claude.json" "$jkey")" "true"
+rm -f "$cfg"; printf '%s' '{}' > "$cfg"; ln -s "$vic/v.txt" "$cfg.leg-pretrust.owner"
+rc=0; bash "$SCRIPT" native "$primary/.claude/worktrees/wt1" >/dev/null 2>&1 || rc=$?
+check "11h native + symlinked sidecar: exit 0" "$rc" "0"
+check "11h victim untouched" "$(vsum)" "$want"
+rm -f "$cfg.leg-pretrust.owner"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "PASS - test-leg-pretrust.sh"; exit 0; fi
 echo "FAIL - test-leg-pretrust.sh ($fails failure(s))"; exit 1
