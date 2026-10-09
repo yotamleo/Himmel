@@ -57,8 +57,28 @@
 #       scripts/handover/pr-merge.sh, and scripts/<dir>/test-*.sh.
 #     A backslash-separated Windows path is a documented miss — nothing here
 #     writes one, and a miss forfeits guidance only.
+#   * HIMMEL-2082: ALSO DENY a registered gate followed by a later segment
+#     (`gate; echo done`, `gate && x`, `gate || x`) anywhere in the command,
+#     newline and lone `&` separators included; each `$(...)`/backtick body is its
+#     own unit. A gate must be the final segment so the task exit status is the
+#     gate's (twice a background check-ci.sh exit 3 was reported as exit 0).
+#     Allowed: the gate as the last segment, a gate followed only by a redirect,
+#     later segments that are all gates joined by `&&`, `gate || exit <nonzero>`,
+#     the segment RIGHT AFTER the gate surfacing its status (`echo`/`printf`/
+#     `exit` of an unescaped `$?`, `${?}`, `$PIPESTATUS[` or `${PIPESTATUS[`; the
+#     prescribed `gate > f 2>&1; echo "RC=$?"` shape; `rc=$?` needs a later
+#     echo/exit reading `$rc` back), a gate that is an `if`/`elif`/`while`/
+#     `until` condition, `bash -n <gate>` (not a run), and closing keywords
+#     (`done`, `fi`). `quiet-run.sh <label> -- <gate>` and a `case` arm prefix are
+#     stepped over. The scan is linear (per-statement flags, a backward suffix
+#     array), in-process, no forks. An arm of a multi-arm `case` followed by
+#     another arm, and an `else` arm after a gate, are denied (fail closed).
+#     Checked on the ORIGINAL text only (GUARD_UNWRAP_DEPTH=0).
+#     ponytail: a gate inside a `bash -c`/`eval` payload is not covered by the
+#     trailing rule (guard_unwrap's rendered children skip it), upgrade path
+#     HIMMEL-5105.
 #   * Everything else is untouched: `git log | tail`, a bare `tail -f file`, and
-#     the CORRECT shape `gate > out 2>&1; tail out` (no pipe) all pass.
+#     the CORRECT shape `gate > out 2>&1; echo "RC=$?"; tail out` all pass.
 #   * Fail OPEN (exit 0) on anything unevaluable — missing jq, empty or
 #     unparseable stdin, a non-Bash tool, a command containing an UNQUOTED
 #     heredoc (`<<`), whose body text a scanner this flat cannot tell from syntax
@@ -80,8 +100,8 @@
 #     prescribes redirect-to-file over `${PIPESTATUS[0]}`. The deny message says
 #     "unless the shell has pipefail set" rather than claiming otherwise.
 #
-# BYPASS: a same-line `# tail-pipe-ok: <reason>` marker on the offending logical
-# line — for the genuine case where the exit code really does not matter. It
+# BYPASS: a same-line `# tail-pipe-ok: <reason>` marker on the offending
+# physical line — for the genuine case where the exit code really does not matter. It
 # mirrors the existing `# headless-claude-ok:` convention and is deliberately NOT
 # an env prefix (the shape scripts/hooks/CLAUDE.md documents for PreToolUse
 # bypasses): a `VAR=1 bash scripts/…` prefix on a sanctioned chokepoint is itself
@@ -205,10 +225,21 @@ GATE_RE='(^|/)scripts/(cr/clear-cr-marker\.sh|ci/run-shell-tests\.sh|check-ci\.s
 # scan_line treats it as a gate match without consulting GATE_RE.
 ENV_SPLIT_SENTINEL='<env-split-string>'
 NL=$'\n'
+LIFT=$'\001'    # prefixes each lifted $(...) body line, so a unit boundary is visible
+C_AND=$'\002'   # scan_unit: line prefixes recording WHICH separator preceded a statement
+C_OR=$'\003'
+C_SEMI=$'\004'
+# GATE_RE without its anchors: a cheap in-process pre-filter for "mentions a gate".
+GATE_ANY=${GATE_RE#'(^|/)'}
+GATE_ANY=${GATE_ANY%'$'}
+IP=''           # invoked_program_v's result
+SG=0            # stmt_gate_flag's result
+SURF_VAR=''     # status_surfaced's result
 TAB=$'\t'
 MARK='#tail-pipe-ok:'      # the opt-out, reduced to one operator-free token
 HEREDOC_MARK='HEREDOCSEEN' # an UNQUOTED `<<`; the guard withdraws on it
 offender=""
+kind=pipe     # pipe: gate | tail/head; trailing: gate followed by a later segment (HIMMEL-2082)
 
 # Cost bound. The normaliser below is a character walk, and bash string slicing
 # turns it superlinear on large inputs — measured on Git Bash: ~0.55s at 8KB but
@@ -277,7 +308,7 @@ normalise() {
                     esac
                     j=$((j + 1))
                 done
-                extra+="$NL$(normalise "${s:$((i + 1)):$((j - i - 1))}")"
+                extra+="$NL$LIFT$(normalise "${s:$((i + 1)):$((j - i - 1))}")"
             elif [ "$c" = '$' ] && [ "${SC[i + 1]-}" = '(' ]; then
                 # `$((…))` is ARITHMETIC, not a command: its body must not be
                 # scanned as shell (an `x << 2` shift there used to read as a
@@ -308,11 +339,11 @@ normalise() {
                     ctext=${s:$((i + 2)):$((j - i - 1))}
                     ctext=${ctext//</ }
                     ctext=${ctext//>/ }
-                    extra+="$NL$(normalise "$ctext")"
+                    extra+="$NL$LIFT$(normalise "$ctext")"
                     out=${out}ARITH
                     p=' '; i=$((j + 1)); continue
                 fi
-                extra+="$NL$(normalise "${s:$((i + 2)):$((j - i - 2))}")"
+                extra+="$NL$LIFT$(normalise "${s:$((i + 2)):$((j - i - 2))}")"
             fi
             if [ "$j" -ge 0 ]; then
                 out=${out}SUBST
@@ -334,6 +365,9 @@ normalise() {
                 case $c in
                     '|' | ';' | '&' | "$NL") c=' ' ;;
                     '"' | "'") c='_' ;;
+                    # An escaped `$` is text: keep the backslash so the trailing
+                    # scan can tell `"\$?"` from a real status read (HIMMEL-2082).
+                    '$') c='\$' ;;
                 esac
                 out+=$c; p=$c; i=$((i + 2)); continue
             fi
@@ -395,6 +429,7 @@ normalise() {
                     # the same reason, and emitting it raw unbalanced the same
                     # later walks (HIMMEL-1979).
                     ' ' | "$TAB" | '"' | "'") out+="_" ;;
+                    '$') out+='\$' ;;
                     *) out+=${SC[i + 1]-} ;;
                 esac
                 # `p` records the previous character for the word-initial test
@@ -437,8 +472,12 @@ normalise() {
 # The program a pipeline stage actually RUNS: first token that is neither a
 # leading `VAR=value` assignment, a grouping/negation prefix, nor a known
 # launcher or compound-command keyword. Empty when there is none.
-invoked_program() {
+# invoked_program_v sets IP (no subshell: the HIMMEL-2082 trailing scan calls it
+# once per statement, and a fork each made a 10 KB chain quadratic-feeling slow);
+# invoked_program is the printing wrapper every older caller uses.
+invoked_program_v() {
     local tok stripped base skip_next=0 pending='' dq sq launcher='' pos_skip=0
+    IP=''
     for tok in $1; do
         if [ -n "$pending" ]; then pending="$pending $tok"; else pending=$tok; fi
         # A quoted span containing spaces arrives as SEVERAL whitespace-split
@@ -525,6 +564,8 @@ invoked_program() {
                 bash | sh | zsh)
                     case $stripped in
                         -c | -o | -O | --rcfile | --init-file) skip_next=1; continue ;;
+                        # `-n` only PARSES the script; nothing runs.
+                        -n) return 0 ;;
                     esac ;;
                 sudo)
                     # Bare flags here (`-E`, `-n`, `-S`, `-i`) take NO operand —
@@ -589,7 +630,7 @@ invoked_program() {
                     case $stripped in
                         -u | -C | -a) skip_next=1; continue ;;
                         -S | -S*)
-                            printf '%s' "$ENV_SPLIT_SENTINEL"
+                            IP=$ENV_SPLIT_SENTINEL
                             return 0 ;;
                         -[iv0]*)
                             # Bare-flag bundle: walk the letters after the
@@ -621,12 +662,12 @@ invoked_program() {
                                 guard_idx=$((guard_idx + 1))
                             done
                             if [ "$guard_is_split" = 1 ]; then
-                                printf '%s' "$ENV_SPLIT_SENTINEL"
+                                IP=$ENV_SPLIT_SENTINEL
                                 return 0
                             fi ;;
                         --*)
                             if guard_is_long_abbrev "split-string" "$stripped"; then
-                                printf '%s' "$ENV_SPLIT_SENTINEL"
+                                IP=$ENV_SPLIT_SENTINEL
                                 return 0
                             fi
                             if guard_is_long_abbrev "unset" "$stripped" \
@@ -701,9 +742,13 @@ invoked_program() {
             case $stripped in -*) continue ;; esac
             if [ "$pos_skip" -gt 0 ]; then pos_skip=$((pos_skip - 1)); continue; fi
         fi
-        printf '%s' "$stripped"
+        IP=$stripped
         return 0
     done
+}
+invoked_program() {
+    invoked_program_v "$1"
+    printf '%s' "$IP"
 }
 
 # HIMMEL-3677 (J1314O): whether STAGE contains an unquoted `<`/`>` ANYWHERE —
@@ -752,6 +797,210 @@ stage_mentions_gate() {
         grep -qE "$GATE_RE" <<<"$stripped" && return 0
     done
     return 1
+}
+
+# stage_runs_gate STAGE -- 0 when the pipeline stage STAGE runs a registered gate
+# at command position (HIMMEL-2082). No subshell: the trailing scan asks this once
+# per statement, and a fork each made a 10 KB chain take a minute. Unlike
+# stage_invokes_gate it does not fall back to "a redirect plus a gate-looking
+# word", so a READ of a gate script that carries a redirect
+# (`cat scripts/check-ci.sh > x`) is not a gate run.
+stage_runs_gate() {
+    local st=$1 w after
+    st=${st#"${st%%[![:space:]]*}"}
+    # `case X in` and a `pattern)` arm prefix lead the command they introduce.
+    case $st in 'case '*' in '*) st=${st#*' in '} ;; esac
+    st=${st#"${st%%[![:space:]]*}"}
+    w=${st%%[[:space:]]*}
+    case $w in
+        *')') [[ $w =~ $GATE_ANY ]] || st=${st#"$w"} ;;
+    esac
+    while :; do
+        invoked_program_v "$st"
+        [ -n "$IP" ] && [ "$IP" != "$ENV_SPLIT_SENTINEL" ] || return 1
+        case ${IP##*/} in
+            # The quiet-run.sh wrapper runs the command after its label and an
+            # optional `--`; step over both and walk the command it wraps.
+            quiet-run.sh)
+                after=${st#*quiet-run.sh}
+                after=${after#"${after%%[![:space:]]*}"}
+                case $after in
+                    *' -- '*) st=${after#*' -- '} ;;
+                    *) st=${after#*[[:space:]]} ;;
+                esac
+                continue ;;
+        esac
+        [[ $IP =~ $GATE_RE ]]
+        return
+    done
+}
+
+# stmt_gate_flag STMT -- sets SG=1 when any pipeline stage of STMT runs a
+# registered gate. A statement with no gate-looking text anywhere is rejected by
+# one in-process regex before any stage is walked.
+stmt_gate_flag() {
+    local rest=$1 q st
+    SG=0
+    q=${rest//\"/}
+    q=${q//\'/}
+    [[ $q =~ $GATE_ANY ]] || return 0
+    while :; do
+        st=${rest%%|*}; st=${st#&}
+        if stage_runs_gate "$st"; then SG=1; return 0; fi
+        case "$rest" in *'|'*) rest=${rest#*|} ;; *) return 0 ;; esac
+    done
+}
+
+# status_surfaced STATEMENT -- 0 when STATEMENT, the one right after a gate,
+# SURFACES the gate's status: `echo`/`printf`/`exit` of an unescaped `$?` (or
+# PIPESTATUS element), or an assignment of it (`rc=$?`), which scan_unit then
+# requires a later echo/exit to read back. Sets SURF_VAR to that variable.
+status_surfaced() {
+    local sq=$1 pre post fw
+    SURF_VAR=''
+    # A single-quoted span is text, and so is an escaped dollar.
+    while :; do
+        case $sq in
+            *\'*\'*) pre=${sq%%\'*}; post=${sq#*\'}; sq=$pre${post#*\'} ;;
+            *) break ;;
+        esac
+    done
+    sq=${sq//\\\$/}
+    # shellcheck disable=SC2016 # literal `$?` / `${PIPESTATUS[` are what is looked for
+    case $sq in
+        *'$?'* | *'${?}'* | *'$PIPESTATUS['* | *'${PIPESTATUS['*) ;;
+        *) return 1 ;;
+    esac
+    fw=${sq%%[[:space:]]*}
+    case $fw in
+        echo | printf | exit) return 0 ;;
+        [A-Za-z_]*=*) SURF_VAR=${fw%%=*}; return 0 ;;
+    esac
+    return 1
+}
+
+# exit_nonzero STATEMENT -- 0 for `exit`, `exit $?` or `exit <nonzero digits>`:
+# the shapes that keep a failing gate's failure (`gate || exit 1`).
+exit_nonzero() {
+    local s=$1
+    s=${s%"${s##*[![:space:]]}"}
+    # shellcheck disable=SC2016 # literal `$?`
+    case $s in
+        'exit' | 'exit $?' | 'exit "$?"' | 'exit ${?}') return 0 ;;
+    esac
+    [[ $s =~ ^exit[[:space:]]+[1-9][0-9]*$ ]]
+}
+
+# scan_unit TEXT -- HIMMEL-2082. 0 (and sets offender/kind) when a gate
+# statement of one command unit is followed by a later segment, so the unit's
+# exit status is the later segment's and not the gate's. A unit is the whole
+# command with its newlines and lone `&` separators (not one physical line), or
+# one $(...)/backtick body. Not a trailing segment:
+#   * a closing keyword (`done`, `fi`, `}`);
+#   * later segments that are all gates joined by `&&` (the first failure stops
+#     the chain, so the status is still a gate's);
+#   * `gate || exit <nonzero>`, which keeps the failure;
+#   * the segment right after the gate surfacing its status (status_surfaced);
+#   * a gate that is an `if`/`elif`/`while`/`until` condition (the shell consumes
+#     it), or whose physical line carries `# tail-pipe-ok:`.
+# An arm of a multi-arm `case` followed by another arm is denied too (accepted:
+# fail closed on a shape this scanner cannot parse).
+scan_unit() {
+    local t=$1 line st ks kd w n=0 i j nm after in_cond=0 ln=-1
+    local -a S K G R L ML
+    S=(); K=(); G=(); R=(); L=(); ML=()
+    t=${t//&&/$NL$C_AND}
+    t=${t//||/$NL$C_OR}
+    t=${t//;/$NL$C_SEMI}
+    while IFS= read -r line; do
+        kd=N
+        case $line in
+            "$C_AND"*) kd=A; line=${line#?} ;;
+            "$C_OR"*) kd=O; line=${line#?} ;;
+            "$C_SEMI"*) kd=S; line=${line#?} ;;
+            *) ln=$((ln + 1)) ;;
+        esac
+        st=${line#"${line%%[![:space:]]*}"}
+        st=${st%"${st##*[![:space:]]}"}
+        [ -n "$st" ] || continue
+        case $st in *"$MARK"*) ML[ln]=1 ;; esac
+        [ "$st" = "$MARK" ] && continue
+        [[ $st =~ ^([[:space:]]*(done|fi|esac|\}|\)))+[[:space:]]*$ ]] && continue
+        ks=$st
+        while :; do
+            case $ks in
+                '('* | '{'* | '!'*) ks=${ks#?}; ks=${ks#"${ks%%[![:space:]]*}"} ;;
+                *) break ;;
+            esac
+        done
+        case $ks in
+            'if '* | 'elif '* | 'while '* | 'until '*) in_cond=1 ;;
+            'then' | 'then '* | 'do' | 'do '* | 'else' | 'else '*) in_cond=0 ;;
+        esac
+        stmt_gate_flag "$st"
+        S[n]=$st; K[n]=$kd; L[n]=$ln; R[n]=$SG
+        if [ "$in_cond" = 1 ]; then G[n]=0; else G[n]=$SG; fi
+        n=$((n + 1))
+    done <<EOF
+$t
+EOF
+    # T[i]=1: statements i..end are all gates, each joined to the one before by
+    # `&&`. Filled from the end so each gate is decided in O(1).
+    local -a T
+    i=$((n - 1))
+    while [ "$i" -ge 0 ]; do
+        if [ "${R[i]}" = 1 ] && { [ "$i" -eq "$((n - 1))" ] || { [ "${K[i + 1]}" = A ] && [ "${T[i + 1]}" = 1 ]; }; }; then
+            T[i]=1
+        else
+            T[i]=0
+        fi
+        i=$((i - 1))
+    done
+    i=0
+    while [ "$((i + 1))" -lt "$n" ]; do
+        if [ "${G[i]}" = 1 ] && [ "${T[i]}" = 0 ] && [ -z "${ML[${L[i]}]-}" ]; then
+            if [ "${K[i + 1]}" = O ] && exit_nonzero "${S[i + 1]}"; then
+                i=$((i + 1)); continue
+            fi
+            if status_surfaced "${S[i + 1]}"; then
+                if [ -z "$SURF_VAR" ]; then i=$((i + 1)); continue; fi
+                # `rc=$?` keeps the status only if a later segment reads it back
+                # (before the next gate).
+                nm=$SURF_VAR; j=$((i + 2))
+                while [ "$j" -lt "$n" ] && [ "${R[j]}" = 0 ]; do
+                    w=${S[j]%%[[:space:]]*}
+                    after=${S[j]#"$w"}
+                    case $w in
+                        echo | printf | exit)
+                            case $after in *"\$$nm"* | *"\${$nm}"*) i=$((i + 1)); continue 2 ;; esac ;;
+                    esac
+                    j=$((j + 1))
+                done
+            fi
+            offender=${S[i]}; kind=trailing
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# scan_trailing_all NORMALISED -- HIMMEL-2082. Splits the normalised command
+# into its units (normalise() prefixes every lifted $(...) body with LIFT) and
+# scans each with scan_unit.
+scan_trailing_all() {
+    local line unit=''
+    while IFS= read -r line; do
+        case $line in
+            "$LIFT"*)
+                if [ -n "$unit" ]; then scan_unit "$unit" && return 0; fi
+                unit=${line#"$LIFT"} ;;
+            *) unit="$unit$NL$line" ;;
+        esac
+    done <<EOF
+$1
+EOF
+    [ -z "$unit" ] || scan_unit "$unit"
 }
 
 scan_line() {
@@ -823,8 +1072,18 @@ normalised=$(normalise "$cmd")
 # whose only `| tail` is data. Same posture as the other fail-open branches.
 case $normalised in *"$HEREDOC_MARK"*) exit 0 ;; esac
 
+# HIMMEL-2082: a gate followed by a later segment loses its status too. Decided
+# over the WHOLE command (newlines and lone `&` included), once, before the
+# per-line pipe scan. Original text only: guard_unwrap's rendered children drop
+# the `if`/`then` keywords, so a gate that is a condition would read as a bare
+# gate there.
+if [ "${GUARD_UNWRAP_DEPTH:-0}" = 0 ]; then
+    scan_trailing_all "$normalised" || true
+fi
+
 logical=""
-while IFS= read -r raw; do
+while [ -z "$offender" ] && IFS= read -r raw; do
+    raw=${raw#"$LIFT"}
     rstripped=${raw%"${raw##*[![:space:]]}"}
     case "$rstripped" in
         *'|' | *'|&') logical="$logical$rstripped "; continue ;;
@@ -838,6 +1097,17 @@ EOF
 [ -z "$offender" ] && [ -n "$logical" ] && scan_line "$logical"
 
 [ -n "$offender" ] || exit 0
+
+if [ "$kind" = trailing ]; then
+    printf '%s\n' \
+      "block-tail-pipe-on-gates: DENIED — a gate must be the final segment so the task exit status is the gate's. A later \`;\`/\`&&\`/\`||\` segment replaces \$?, so a failing gate (e.g. check-ci.sh exit 3) is reported as the later command's exit 0 (HIMMEL-2082)." \
+      "Offending segment:" \
+      "    $(printf '%s' "$offender" | sed 's/^[[:space:]]*//')" \
+      "Make the gate the LAST segment, or capture its status in the same command:" \
+      "    <gate> > <file> 2>&1; echo \"RC=\$?\"; tail -80 <file>" \
+      "If the exit code genuinely does not matter here, add a same-line marker: \`# tail-pipe-ok: <reason>\`." >&2
+    exit 2
+fi
 
 # printf, not echo: echo joins its arguments with a space, which would leave a
 # stray space at the head of every continuation line in this multi-line message.

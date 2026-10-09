@@ -1388,6 +1388,14 @@ folded first; the correct shape it prescribes is
 `${PIPESTATUS[0]}`). Fails OPEN on anything unevaluable. Bypass: a **same-line**
 `# tail-pipe-ok: <reason>` marker (mirrors `# headless-claude-ok:`) — not an env
 prefix, which `block-chokepoint-env-prefix.sh` would itself deny.
+HIMMEL-2082 extends it to the trailing-segment shape: a gate followed by a later
+`;`/`&&`/`||`, newline or `&` segment anywhere in the command
+(`check-ci.sh 12; echo done`) is denied too — a gate must be the final segment so
+the task exit status is the gate's. Allowed: gate last, gate then only a
+redirect, the next segment being an `echo`/`printf`/`exit` that reads `$?` or
+`${PIPESTATUS[`, later gates joined by `&&`, `gate || exit 1`, and a gate used as
+an `if`/`while` condition. A gate inside a `bash -c`/`eval` payload is not
+covered yet (HIMMEL-5105).
 Spec: `scripts/hooks/test-block-tail-pipe-on-gates.sh`.
 
 ### `block-edit-on-main.sh` — pre-edit guard
