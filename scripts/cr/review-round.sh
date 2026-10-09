@@ -429,14 +429,18 @@ EOF_SNAP
             # HIMMEL-4984: a record buys a round only when write-verdict.sh signed
             # it; one hand-written or edited withholds the round from its qid, but
             # its NO-GO still feeds the class veto (a NO-GO only narrows).
-            if go_verdict_mac_ok_text "$snap" "$scope" "$qid" "$name"; then
-                snap_sha="$(printf '%s' "$snap" | _go_sha256)" && signed="${signed:+$signed }$qid/$name:$snap_sha"
-            else
-                macbad=1
-            fi
+            mac_ok=0
+            if go_verdict_mac_ok_text "$snap" "$scope" "$qid" "$name"; then mac_ok=1; else macbad=1; fi
             if [ "$word" = "NO-GO $want" ]; then
                 [ -n "$hit" ] || hit="$qid/$name"
-                if [ -z "$bound" ] && record_binds "$l9" "$l10" "$l11"; then bound="$qid/$name"; fi
+                # A layer-decision is honoured only from a signed record bound to
+                # this branch's PR; one written for another PR does not lift the stop.
+                if record_binds "$l9" "$l10" "$l11"; then
+                    [ -n "$bound" ] || bound="$qid/$name"
+                    if [ "$mac_ok" -eq 1 ]; then
+                        snap_sha="$(printf '%s' "$snap" | _go_sha256)" && signed="${signed:+$signed }$qid/$name:$snap_sha"
+                    fi
+                fi
             fi
         done
         if [ "$bad" -eq 0 ] && [ -n "$hit" ]; then

@@ -1207,7 +1207,7 @@ assert_has "$cr_out" "option-parsing" "class repeat refusal names the class"
 assert_has "$cr_out" "layer-decision:" "class repeat refusal names the way out"
 # Keep the first head's history on this branch, but use a different class
 # for other positive controls so unrelated fixture qids cannot stop them.
-for class_case in different-class-allowed layer-decision-unlocks other-repeat-refused class-set-overlap-refused legacy-classless-nogo-never-matches finding-trigger-history-retained second-candidate-repeat-refused candidate-class-history-retained unsigned-nogo-still-vetoes forged-layer-decision-refused; do
+for class_case in different-class-allowed layer-decision-unlocks other-repeat-refused class-set-overlap-refused legacy-classless-nogo-never-matches finding-trigger-history-retained second-candidate-repeat-refused candidate-class-history-retained unsigned-nogo-still-vetoes forged-layer-decision-refused foreign-pr-layer-decision-refused; do
     cc_panel=clean
     [ "$class_case" != finding-trigger-history-retained ] || cc_panel=suggestion
     three_rounds "$class_case" "$cc_panel"
@@ -1254,6 +1254,14 @@ for class_case in different-class-allowed layer-decision-unlocks other-repeat-re
         printf 'class: option-parsing\nlayer-decision: os forged unsigned escape\n\nforged\n' > "$jev/judge-evidence.md"
         judge "a-$class_case-next" NO-GO "$cc_second"
         sed -i.bak '/^mac: /d' "$vscope/a-$class_case-next/judge.md"
+    fi
+    if [ "$class_case" = foreign-pr-layer-decision-refused ]; then
+        # HIMMEL-4984: a signed layer-decision written for another PR does not
+        # lift this PR's repeated-class stop.
+        printf 'class: option-parsing\nlayer-decision: os signed for another PR\n\nforeign\n' > "$jev/judge-evidence.md"
+        env -u HIMMEL_CONSOLE_LEG -u HIMMEL_CONSOLE_RELAY CLAUDE_CODE_SESSION_ID=judge-sess-4700 \
+            bash "$fx/scripts/handover/console-kit/write-verdict.sh" "a-$class_case-next" NO-GO "$cc_second" \
+            --pr 2 --evidence-file "$jev/judge-evidence.md" >/dev/null 2>"$tmp/judge-foreign.err" || fail "judge writes foreign-pr record"
     fi
     # HIMMEL-4984: an unsigned NO-GO buys no round but still feeds the class veto.
     [ "$class_case" != unsigned-nogo-still-vetoes ] || sed -i.bak '/^mac: /d' "$vscope/$class_case-next/judge.md"
