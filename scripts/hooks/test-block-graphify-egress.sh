@@ -383,5 +383,26 @@ else
     bad "time -p echo graphify: rc=$rc out=$out"
 fi
 
+# HIMMEL-4321: the shared EXEPFX stops at a `)` before `{`, a stop justified by
+# the `){` anchor in guard_cmdpos_grammar's own CMDPOS. This hook rebuilds CMDPOS
+# locally, so without that anchor a program path with `){` in its directory part
+# no longer reached the fence (main reached it: rc 0 + FENCE_INVOKED).
+while IFS= read -r shape; do
+    out="$(run_hook "$shape update $T/luna/journal.md --backend claude" 2>&1)"; rc=$?
+    if [ "$rc" -eq 0 ] && grep -q FENCE_INVOKED <<<"$out"; then
+        ok "a ){-bearing program path reaches the fence: $shape"
+    else
+        bad "){ program path: $shape rc=$rc out=$out"
+    fi
+done <<'SHAPES_EOF'
+/tmp/a){/graphify
+"/tmp/a){/graphify"
+'/tmp/a){/graphify'
+c:/a){/graphify
+sudo /tmp/a){/graphify
+env FOO=1 /tmp/a){/graphify
+echo a ; /tmp/a){/graphify
+SHAPES_EOF
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
