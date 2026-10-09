@@ -5,6 +5,7 @@
 # Same fixtures + harness as the parent suite via lib-test-write-fence.sh;
 # the FIXTURE RULE lives in test-block-write-into-main-checkout.sh.
 # shellcheck disable=SC2154  # pass/fail are defined by the sourced lib
+# shellcheck disable=SC2016  # the fixture commands carry literal $( in single quotes
 # shellcheck source=lib-test-write-fence.sh
 . "$(dirname "$0")/lib-test-write-fence.sh"
 
@@ -335,6 +336,95 @@ _subst_row "76zzd raw 0x05 behind a \$(…) redirect (DENY)"  block "echo \$(tru
 _subst_row "76zze raw 0x0e in a verb target (DENY)"         block "touch $_WR/sl"$'\016'"/n"
 _subst_row "76zzf decoy sl_ itself stays a worktree path (ALLOW)" allow "touch $_WR/sl_/n"
 
+echo "== HIMMEL-4397: a large heredoc commit message stays linear =="
+# A 10 KB `git commit -m "$(cat <<'EOF' …)"` took ~10 s idle (12-13 s under
+# load in J1672c) because every raw reading char-scanned the whole body; the
+# member timeout is 15 s. Budget = measured loaded figure x2 (~1 s idle, 3 s
+# loaded), never an idle one. Each shape: verdict ALLOW (worktree cwd) in both
+# lanes, direct-exec inside the budget.
+_big=$(head -c 10000 /dev/zero | tr '\0' x | fold -w 78)
+_now_us() { # EPOCHREALTIME is bash 5+; bash 3.2 falls back to whole seconds
+    if [ -n "${EPOCHREALTIME:-}" ]; then local t="${EPOCHREALTIME/[.,]/}"; printf '%s' "$t"
+    else printf '%s' "$(( $(date +%s) * 1000000 ))"; fi
+}
+_perf_row() { # label first-body-line opener
+    local cmd j t0 t1 got
+    cmd=$(printf 'git commit -m "$(cat %s\n%s\n\n%s\nEOF\n)"' "$3" "$2" "$_big")
+    j="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .),\"cwd\":\"$_WR\"}}"
+    t0=$(_now_us)
+    got=$(_run "$DIRECT" "$j")
+    t1=$(_now_us)
+    if [ "$got" = allow ] && [ $(( (t1 - t0) / 1000 )) -lt 6000 ]; then ok "$1 (direct-exec, $(( (t1 - t0) / 1000 )) ms)"
+    else bad "$1 (direct-exec) — expected allow under 6000 ms, got $got in $(( (t1 - t0) / 1000 )) ms"; fi
+    got=$(_run "$FENCE" "$j")
+    if [ "$got" = allow ]; then ok "$1 (sourced/codex)"; else bad "$1 (sourced/codex) — expected allow got $got"; fi
+}
+_perf_row "4397a 10 KB message, quoted 'EOF' opener (ALLOW, linear)"   "fix: msg"      "<<'EOF'"
+_perf_row "4397b 10 KB message, backslash \\EOF opener (ALLOW, linear)" "fix: msg"      '<<\EOF'
+_perf_row "4397c 10 KB message with a \$' on its first line (ALLOW, linear)" "fix: msg \$'a" "<<'EOF'"
+# The drop of the raw readings must not hide a write: an unquoted delimiter
+# expands $(…) in its body, a write after the substitution is still command
+# text, and a primary-aimed redirect inside an unquoted body's $(…) denies.
+_subst_row "4397d unquoted EOF body \$(touch primary file) inside the message (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<EOF\n$(touch %s/a.txt)\nEOF\n)"' "$_PR")"
+_subst_row "4397e quoted 'EOF' message, then a write into the primary (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: msg\nEOF\n)" && echo x > %s/a.txt' "$_PR")"
+_subst_row "4397f quoted 'EOF' message, then a write into the worktree (ALLOW)" allow \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: msg\nEOF\n)" && echo x > %s/z.txt' "$_WR")"
+_subst_row "4397g backslash \\EOF message, then a write into the primary (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<\\EOF\nfix: msg\nEOF\n)" && echo x > %s/a.txt' "$_PR")"
+# Only a `git commit -m` message body is inert. A quoted heredoc fed to
+# bash -c / eval is CODE, so the flat reading must keep scanning it.
+_subst_row "4397h bash -c quoted-heredoc body writes into the primary (DENY)" block \
+    "$(printf 'bash -c "$(cat <<'"'"'EOF'"'"'\ntouch %s/a.txt\nEOF\n)"' "$_PR")"
+_subst_row "4397i eval quoted-heredoc body writes into the primary (DENY)" block \
+    "$(printf 'eval "$(cat <<'"'"'EOF'"'"'\ntouch %s/a.txt\nEOF\n)"' "$_PR")"
+# J2249a: a `<<` whose delimiter the opener regex cannot parse (dash, dot,
+# digit-led) is never counted, so its body is scanned as code; a lone quote in
+# that body must not let the fast path swallow a later real redirect.
+_gm=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: msg\nEOF\n)"')
+_subst_row "4397j dashed 'E-X' heredoc with a lone quote, then a primary write (DENY)" block \
+    "$(printf '%s\ncat <<'"'"'E-X'"'"'\nit'"'"'s\nE-X\necho x > %s/a.txt' "$_gm" "$_PR")"
+_subst_row "4397k dotted \"a.b\" heredoc with a lone quote, then a primary write (DENY)" block \
+    "$(printf '%s\ncat <<"a.b"\nsay "hi\na.b\necho x > %s/a.txt' "$_gm" "$_PR")"
+_subst_row "4397l digit-led '1Z' heredoc after && with a lone quote, then a primary write (DENY)" block \
+    "$(printf '%s && cat <<'"'"'1Z'"'"'\nit'"'"'s\n1Z\necho x > %s/a.txt' "$_gm" "$_PR")"
+_subst_row "4397m CONTROL: dashed heredoc with a lone quote, then a worktree write (ALLOW)" allow \
+    "$(printf '%s\ncat <<'"'"'E-X'"'"'\nit'"'"'s\nE-X\necho x > %s/z.txt' "$_gm" "$_WR")"
+_subst_row "4397n CONTROL: dashed heredoc, no git commit, primary write (DENY)" block \
+    "$(printf 'cat <<'"'"'E-X'"'"'\nit'"'"'s\nE-X\necho x > %s/a.txt' "$_PR")"
+# J2249b: a SECOND `<<` on the physical line of a recognised opener is not
+# counted (one terminator is tracked per line), so its body is scanned as code.
+_subst_row "4397o git-commit opener first, second '<<Y' on the same line with a lone quote, then a primary write (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt' "$_PR")"
+_subst_row "4397p second opener after a plain one on the same line, git-commit opener last, lone quote, primary write (DENY)" block \
+    "$(printf 'cat <<'"'"'Y'"'"' ; git commit -m "$(cat <<'"'"'EOF'"'"'\nit'"'"'s\nY\nfix: msg\nEOF\n)"\necho x > %s/a.txt' "$_PR")"
+_subst_row "4397q CONTROL: same-line second opener, lone quote, worktree write (ALLOW)" allow \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/z.txt' "$_WR")"
+_subst_row "4397r git-commit opener first, same-line second opener, lone quote closed after a primary write (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho it'"'"'s' "$_PR")"
+_subst_row "4397s plain opener then git-commit opener on one line, lone quote closed after a primary write (DENY)" block \
+    "$(printf 'cat <<'"'"'Y'"'"' ; git commit -m "$(cat <<'"'"'EOF'"'"'\nit'"'"'s\nY\nfix: msg\nEOF\n)"\necho x > %s/a.txt\necho it'"'"'s' "$_PR")"
+# J2249c: the walk only sees a `<<` while no heredoc is active, so a second
+# opener on the opener's line is never counted; a final line holding a `)`
+# rebalances the walk and the fast path swallowed the primary redirect between.
+_subst_row "4397t two quoted openers on one git commit, lone quote in the second body, primary write, then a line with a ) (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397u here-string beside the git commit opener, lone quote, primary write, then a line with a ) (DENY, over-block row)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<< x\nfix: msg\nEOF\nit'"'"'s\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397v unquoted second opener beside the git commit opener, lone quote, primary write, then a line with a ) (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<Y\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397w CONTROL: two quoted openers, lone quote, worktree write, then a line with a ) (ALLOW)" allow \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/z.txt\necho "it'"'"'s )"' "$_WR")"
+# J2249d: bash joins a backslash-newline before it reads `<`, so a second opener
+# split as `<\` + newline + `<'Y'` is the heredoc <<'Y'; the flat count must
+# drop every backslash-newline pair first or it misses that opener.
+_subst_row "4397x second opener split by a backslash-newline, lone quote, primary write, then a line with a ) (DENY)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <\\\n<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397y here-string split by a backslash-newline (<\\ then <<x), lone quote, primary write, then a line with a ) (DENY, over-block row)" block \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <\\\n<<x\nfix: msg\nEOF\nit'"'"'s\n)"\necho x > %s/a.txt\necho "it'"'"'s )"' "$_PR")"
+_subst_row "4397z CONTROL: backslash-newline split second opener, worktree write (ALLOW)" allow \
+    "$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"' <\\\n<'"'"'Y'"'"'\nfix: msg\nEOF\nit'"'"'s\nY\n)"\necho x > %s/z.txt\necho "it'"'"'s )"' "$_WR")"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
