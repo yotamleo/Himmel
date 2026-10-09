@@ -91,7 +91,7 @@ IMPRUN="$SB/scripts/ci/run-shell-tests.sh"
 : > "$IMP_LOG"
 
 # --- 24a. the far-away suite runs; the unrelated one is skipped ------------
-out=$(bash "$IMPRUN" --impacted "$CODE_RANGE" 2>&1); rc=$?
+out=$(bash "$IMPRUN" --scan-repo-of-script --impacted "$CODE_RANGE" 2>&1); rc=$?
 ran=$(cat "$IMP_LOG")
 if [ "$rc" -eq 0 ] && [ "$ran" = "uninstall" ]; then
   pass "24a: --impacted runs test-uninstall.sh and nothing else (rc 0)"
@@ -113,7 +113,7 @@ fi
 
 # --- 24c. an impacted suite that fails fails the run ------------------------
 : > "$IMP_LOG"
-out=$(IMP_FAIL=1 bash "$IMPRUN" --impacted "$CODE_RANGE" 2>&1); rc=$?
+out=$(IMP_FAIL=1 bash "$IMPRUN" --scan-repo-of-script --impacted "$CODE_RANGE" 2>&1); rc=$?
 ran=$(cat "$IMP_LOG")
 if [ "$rc" -eq 1 ] && [ "$ran" = "uninstall" ]; then
   pass "24c: a failing impacted suite RAN and fails the run -> rc 1"
@@ -123,7 +123,7 @@ fi
 
 # --- 24d. an unresolvable range is refused, never "nothing impacted" --------
 : > "$IMP_LOG"
-out=$(bash "$IMPRUN" --impacted nope..alsonope 2>&1); rc=$?
+out=$(bash "$IMPRUN" --scan-repo-of-script --impacted nope..alsonope 2>&1); rc=$?
 ran=$(cat "$IMP_LOG")
 if [ "$rc" -eq 2 ] && [ -z "$ran" ]; then
   pass "24d: unresolvable range -> rc 2, no suite ran"
@@ -132,7 +132,7 @@ else
 fi
 
 # --- 24e. docs-only range: a clean, stated zero ----------------------------
-out=$(bash "$IMPRUN" --impacted "$DOCS_RANGE" 2>&1); rc=$?
+out=$(bash "$IMPRUN" --scan-repo-of-script --impacted "$DOCS_RANGE" 2>&1); rc=$?
 ran=$(cat "$IMP_LOG")
 if [ "$rc" -eq 0 ] && [ -z "$ran" ] && grepq "$out" '0 impacted shell suites'; then
   pass "24e: docs-only range -> rc 0, '0 impacted', nothing ran"
@@ -141,7 +141,7 @@ else
 fi
 
 # --- 24f. --list plans only the impacted suite, runs nothing ----------------
-out=$(bash "$IMPRUN" --list --impacted "$CODE_RANGE" 2>&1); rc=$?
+out=$(bash "$IMPRUN" --scan-repo-of-script --list --impacted "$CODE_RANGE" 2>&1); rc=$?
 ran=$(cat "$IMP_LOG")
 if [ "$rc" -eq 0 ] && [ -z "$ran" ] && grepq "$out" 'test-uninstall\.sh' \
    && grepq "$out" '\[SKIP\].*test-unrelated\.sh'; then
@@ -151,7 +151,7 @@ else
 fi
 
 # --- 24g. a missing value is refused ---------------------------------------
-out=$(bash "$IMPRUN" --impacted 2>&1); rc=$?
+out=$(bash "$IMPRUN" --scan-repo-of-script --impacted 2>&1); rc=$?
 if [ "$rc" -eq 2 ]; then pass "24g: --impacted with no value -> rc 2"; else fail "24g: rc=$rc output: $out"; fi
 
 rst_tally

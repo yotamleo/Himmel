@@ -82,13 +82,13 @@ VERIFY="$SRC_ROOT/scripts/ci/shard-manifest-verify.sh"
 # shard_run <k> <n> — one CI shard: prints the runner's output, sets $rc.
 shard_run() {
   out=$(SUITE_IMPACTED_FROM_BASE="$BASE" SUITE_MANIFEST="$SB/m/manifest-shard$1.txt" \
-        bash "$RUN" --shard "$1/$2" . 2>&1); rc=$?
+        bash "$RUN" --scan-repo-of-script --shard "$1/$2" . 2>&1); rc=$?
 }
 # aggregate <n> — the aggregator, as ci.yml runs it: recompute the selection,
 # list discovery, verify manifests.
 aggregate() {
   (cd "$SB" && bash scripts/ci/impacted-selection.sh "$BASE" HEAD) > "$SB/sel.txt"
-  bash "$RUN" --list . > "$SB/disc.txt" 2>&1
+  bash "$RUN" --scan-repo-of-script --list . > "$SB/disc.txt" 2>&1
   vout=$(bash "$VERIFY" --dir "$SB/m" --shards "$1" --selection "$SB/sel.txt" \
          --discovered "$SB/disc.txt" 2>&1); vrc=$?
 }

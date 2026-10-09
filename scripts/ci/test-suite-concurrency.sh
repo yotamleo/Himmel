@@ -241,7 +241,7 @@ lock_scripts=$(lock_path_for scripts)
 mkdir -p "$lock_scripts"
 printf 'pid=%s\nhost=%s\nstarted=%s\nscan=scripts\n' \
   "$$" "$(this_host)" "$(date +%s)" > "$lock_scripts/owner"
-out1b3=$(env -u SUITE_LOCK_DIR TMPDIR="$sb1b/tmp" bash "$fake1b/scripts/ci/run-shell-tests.sh" . 2>&1)
+out1b3=$(env -u SUITE_LOCK_DIR TMPDIR="$sb1b/tmp" bash "$fake1b/scripts/ci/run-shell-tests.sh" --scan-repo-of-script . 2>&1)
 rc1b3=$?
 if [ "$rc1b3" -eq 2 ]; then
   pass "scan root '.' shares the 'scripts' lock (held scripts lock -> rc 2)"
@@ -251,7 +251,7 @@ fi
 # Control: with the scripts lock released, the same fake-root `.` run proceeds
 # and covers all four trees — so the rc 2 above was the lock, not a broken root.
 rm -rf "$lock_scripts"
-out1b4=$(env -u SUITE_LOCK_DIR TMPDIR="$sb1b/tmp" bash "$fake1b/scripts/ci/run-shell-tests.sh" . 2>&1)
+out1b4=$(env -u SUITE_LOCK_DIR TMPDIR="$sb1b/tmp" bash "$fake1b/scripts/ci/run-shell-tests.sh" --scan-repo-of-script . 2>&1)
 rc1b4=$?
 if [ "$rc1b4" -eq 0 ] && [ "$(grep -c '^\[PASS\]' <<< "$out1b4")" -eq 4 ]; then
   pass "scan root '.' free of the lock runs all four trees (4 PASS, rc 0)"
