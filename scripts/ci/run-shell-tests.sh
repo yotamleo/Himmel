@@ -194,10 +194,11 @@ REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # cwd away (HIMMEL-2504): the scan-root guard after arg parsing compares it with
 # REPO_ROOT. Empty when the caller is not inside a work tree. Physical (-P) form
 # on both sides so a symlinked spelling of the same tree is not a mismatch.
-# An exported GIT_DIR / GIT_WORK_TREE would redirect every git call below (the
-# caller's tree, REPORT_HEAD, the scanning line) and the suites inherit it too;
-# the runner always means the repo of its own cwd, so drop them (HIMMEL-5104).
-unset GIT_DIR GIT_WORK_TREE
+# An exported GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR would redirect every git
+# call below (the caller's tree, REPORT_HEAD, the scanning line) and the suites
+# inherit it too; the runner always means the repo of its own cwd, so drop them
+# (HIMMEL-5104).
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
 caller_top=$(git rev-parse --show-toplevel 2>/dev/null) && caller_top=$(cd "$caller_top" 2>/dev/null && pwd -P) || caller_top=""
 cd "$REPO_ROOT" || exit 1
 

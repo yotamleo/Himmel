@@ -18,6 +18,7 @@
 #   26f  the --pr SUMMARY body carries the scanning line
 #   26g  an absolute scan root inside ANOTHER work tree -> rc 6, runs nothing
 #   26h  an exported GIT_DIR cannot redirect the scanning line or the head
+#   26i  an exported GIT_COMMON_DIR cannot either
 #
 # Platform guard: bash-only, like every suite in this family, and no .ps1
 # twin — it runs under Git Bash on Windows as well as Linux.
@@ -152,6 +153,16 @@ if [ "$rc" -eq 0 ] && grepq "$body" "head: $want_head" && grepq "$body" "sha=$wa
   pass "26h: GIT_DIR=<foreign repo> leaves head and scanning sha on the scanned tree"
 else
   fail "26h: rc=$rc body: $body output: $out"
+fi
+
+# --- 26i. an exported GIT_COMMON_DIR cannot redirect them either ----------------
+rm -f "$GH_BODY"
+out=$(cd "$SRC_ROOT" && env -u SUITE_TIER_MODE GIT_COMMON_DIR="$FOREIGN/.git" GH_CMD="$GH_STUB" GH_BODY_FILE="$GH_BODY" bash "$RUNNER" --pr 1 "$SCANDIR" 2>&1); rc=$?
+body=$(cat "$GH_BODY" 2>/dev/null || true)
+if [ "$rc" -eq 0 ] && grepq "$body" "head: $want_head" && grepq "$body" "sha=$want_sha"; then
+  pass "26i: GIT_COMMON_DIR=<foreign repo> leaves head and scanning sha on the scanned tree"
+else
+  fail "26i: rc=$rc body: $body output: $out"
 fi
 rm -f "$GH_STUB" "$GH_BODY"
 
