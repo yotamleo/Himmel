@@ -104,9 +104,10 @@ for _ in 1 2 3; do
 done
 if [ "$bus_rc" -eq 0 ] && cmp -s "$tmp/doc-bus.md" "$tmp/doc-ref.md" && grep -q 'from=con rule one' "$tmp/doc-bus.md"; then pass "--doc mirror is byte-identical to inbox-send.sh --doc"; else fail "--doc mirror differs (rc=$bus_rc)"; diff "$tmp/doc-bus.md" "$tmp/doc-ref.md"; fi
 check "--doc leaves no inbox file in the real handover root" test -z "$(ls -A "$HANDOVER_DIR")"
+n0=$(lib "console.log((await store.scan(root, 'legA')).length)")
 out=$(as con send legA "$tmp/body" --doc "$tmp/no-such-doc.md" 2>&1); rc=$?
 n=$(lib "console.log((await store.scan(root, 'legA')).length)")
-if [ "$rc" -ne 0 ] && [ "$n" = 3 ]; then pass "a missing --doc refuses before anything is sent"; else fail "missing --doc (rc=$rc, legA log=$n): $out"; fi
+if [ "$rc" -ne 0 ] && [ "$n" = "$n0" ]; then pass "a missing --doc refuses before anything is sent"; else fail "missing --doc (rc=$rc, legA log=$n): $out"; fi
 
 echo "== gc =="
 # Rotate legB's log into segments 0 and 1 (each record ~1.4 KB).
@@ -123,7 +124,7 @@ if [ -e "$seg0" ] && printf '%s' "$out" | grep -q 'kept legB.0 (undelivered)'; t
 lib "const r = await store.read(root, 'legB'); await store.commit(root, 'legB', r.next);"
 touch -d '29 days ago' "$seg0"
 out=$("$BUS" gc 2>&1)
-if [ -e "$seg0" ]; then pass "gc keeps a delivered segment younger than 30 days"; else fail "gc removed a 29-day segment: $out"; fi
+if [ -e "$seg0" ] && ! printf '%s' "$out" | grep -q 'would remove legB.0'; then pass "gc keeps a delivered segment younger than 30 days"; else fail "gc removed a 29-day segment: $out"; fi
 touch -d '31 days ago' "$seg0"
 out=$("$BUS" gc 2>&1)
 if [ -e "$seg0" ] && printf '%s' "$out" | grep -q 'would remove legB.0' && printf '%s' "$out" | grep -q 'HIMMEL-5072'; then pass "gc is report-only: names a delivered 31-day segment and the follow-up, deletes nothing"; else fail "gc delivered: $out"; fi
