@@ -57,7 +57,15 @@ case "$1 $2" in
             git -C "$GH_ADVANCE" commit -q --allow-empty -m advance && git -C "$GH_ADVANCE" push -q origin main
         fi
         printf '%s\n' "${GH_REVERT_NUM:-77}"; exit 0 ;;
-    "pr merge") exit "${GH_MERGE_RC:-0}" ;;
+    "pr merge")
+        # GH_MERGE_ADVANCE: the first attempt fails (mergeability not computed
+        # yet) and main moves on before the retry.
+        if [ -n "${GH_MERGE_ADVANCE:-}" ] && [ ! -e "$GH_LOG.advanced" ]; then
+            : > "$GH_LOG.advanced"
+            git -C "$GH_MERGE_ADVANCE" commit -q --allow-empty -m "other work (#13)" && git -C "$GH_MERGE_ADVANCE" push -q origin main
+            exit 1
+        fi
+        exit "${GH_MERGE_RC:-0}" ;;
 esac
 exit 0
 EOF
@@ -154,7 +162,7 @@ out=$(GH_VIEW="$MV12" BREAK_GLASS_PRIMARY="$TMP/primary2" bg revert-main 12 -)
 assert_not_contains "V26 another checkout's revert record is not this one's" "already reverted" "$out"
 assert_contains "V27 so that checkout reverts its own PR 12" "graphql" "$(cat "$GH_LOG")"
 rm -rf "$TMP/primary2"
-rm -f "$HOME"/.himmel/state/break-glass/revert-*-12.done
+rm -rf "$HOME/.himmel/state/break-glass"
 echo local > "$PRIMARY/local.txt"; git -C "$PRIMARY" add local.txt; git -C "$PRIMARY" commit -qm local
 GH_VIEW="$MV12" bg revert-main 12 - >/dev/null; rc=$?
 assert_rc "V17 a revert whose primary sync fails keeps the sync rc" 22 "$rc"
@@ -164,7 +172,7 @@ GH_VIEW="$MV12" bg revert-main 12 - >/dev/null
 assert_contains "V19 the retry after a failed sync never reverts again" "already reverted (revert PR 77), sync failed" "$(cat "$TMP/err")"
 assert_not_contains "V20 no second revert mutation" "graphql" "$(cat "$GH_LOG")"
 git -C "$PRIMARY" reset -q --hard "$TIP"
-rm -f "$HOME"/.himmel/state/break-glass/revert-*-12.done
+rm -rf "$HOME/.himmel/state/break-glass"
 : > "$TMP/notadir"
 GH_VIEW="$MV12" BREAK_GLASS_STATE="$TMP/notadir/x" bg revert-main 12 - >/dev/null
 assert_rc "V21 a merged revert that cannot be recorded is not success" 25 "$?"
@@ -176,6 +184,14 @@ assert_not_contains "V24 and the revert PR is left open, never --admin merged" "
 assert_contains "V25 the refusal says main moved" "moved" "$(cat "$TMP/err")"
 git -C "$TMP/seed" reset -q --hard "$TIP"; git -C "$TMP/seed" push -qf origin main
 git -C "$PRIMARY" fetch -q origin
+: > "$GH_LOG"; rm -f "$GH_LOG.advanced"
+GH_VIEW="$MV12" GH_MERGE_ADVANCE="$TMP/seed" bg revert-main 12 - >/dev/null
+assert_rc "V28 main moving between merge attempts is refused" 12 "$?"
+assert_contains "V29 the refusal says main moved and the PR is left open" "moved past PR 12 before the merge; revert PR 77 left open" "$(cat "$TMP/err")"
+n=$(grep -c '^pr merge' "$GH_LOG")
+[ "$n" = 1 ] && echo "PASS V30 no --admin merge attempt after main moved" || { echo "FAIL V30 expected 1 merge attempt, got $n"; FAILED=$((FAILED + 1)); }
+git -C "$TMP/seed" reset -q --hard "$TIP"; git -C "$TMP/seed" push -qf origin main
+git -C "$PRIMARY" fetch -q origin; rm -f "$GH_LOG.advanced"
 
 # --- /launch-leg -------------------------------------------------------------
 git -C "$PRIMARY" worktree add -q "$TMP/wt" -b feat/leg-x
@@ -265,6 +281,16 @@ assert_rc "C5 a named leg that is not wrapped is refused" 1 "$rc"
 assert_contains "C6 with the closer's reason" "last marker is LIVE" "$out"
 bg close-wrapped N5 - >/dev/null; assert_rc "C7 a label naming two legs is refused" 23 "$?"
 bg close-wrapped N7 - >/dev/null; assert_rc "C8 a named wrapped leg closes" 0 "$?"
+BAD="$TMP/bad/HIMMEL-nextleg-2026-10-09ZX-roadmap-console.fleet.json"; mkdir -p "${BAD%/*}"; echo '{"legs":[' > "$BAD"
+: > "$CLOSE_LOG"
+BREAK_GLASS_FLEET="$BAD" bg close-wrapped - - >/dev/null
+assert_rc "C9 a malformed manifest refuses the fleet-wide close" 23 "$?"
+assert_contains "C10 it says the manifest is unreadable" "cannot read" "$(cat "$TMP/err")"
+BREAK_GLASS_FLEET="$BAD" bg close-wrapped N7 - >/dev/null
+assert_contains "C11 and a named close says so too" "cannot read" "$(cat "$TMP/err")"
+BREAK_GLASS_FLEET="$BAD" bg launch-leg N7 - >/dev/null
+assert_rc "C12 launch-leg on a malformed manifest is refused" 23 "$?"
+assert_contains "C13 without falling through to a launcher" "cannot read" "$(cat "$TMP/err")"
 
 # --- /relaunch-console -------------------------------------------------------
 export BREAK_GLASS_CONSOLE_CMD="$TMP/bin/record" RECORD="$TMP/console.rec"
@@ -300,6 +326,14 @@ GH_VIEW='{"headRefName":"feat/unmapped","isCrossRepository":false,"state":"OPEN"
 assert_rc "Z4 a branch with no review-round state is refused" 12 "$?"
 crr 5x >/dev/null; assert_rc "Z5 a non-numeric PR is bad input" 1 "$?"
 [ -f "$STATE/feat/leg-x.round" ] && echo "PASS Z6 refusals leave the counters alone" || { echo "FAIL Z6 counters touched"; FAILED=$((FAILED + 1)); }
+cat > "$TMP/badlock.sh" <<'EOF'
+case "$1" in status) echo garbage ;; esac
+exit 0
+EOF
+(unset CLAUDECODE; GH_VIEW='{"headRefName":"feat/leg-x","isCrossRepository":false,"state":"OPEN"}' CR_RESET_PRIMARY="$PRIMARY" \
+    CR_RESET_GH="$TMP/bin/gh" CR_RESET_LOCK_LIB="$TMP/badlock.sh" bash "$CRR" 5) >/dev/null 2>"$TMP/err"
+assert_rc "Z15 an unreadable counter-lock owner is refused" 5 "$?"
+[ -f "$STATE/feat/leg-x.round" ] && echo "PASS Z16 and no counter moved" || { echo "FAIL Z16 counters moved under an unreadable lock owner"; FAILED=$((FAILED + 1)); }
 out=$(GH_VIEW='{"headRefName":"feat/leg-x","isCrossRepository":false,"state":"OPEN"}' crr 5); rc=$?
 assert_rc "Z7 an open same-repo PR with state is reset" 0 "$rc"
 [ ! -e "$STATE/feat/leg-x.round" ] && [ ! -e "$STATE/feat/leg-x.head" ] && [ ! -e "$STATE/feat/leg-x.delta" ] \

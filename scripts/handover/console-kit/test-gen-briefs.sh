@@ -73,9 +73,10 @@ has "the launcher is syntactically valid bash" "$(bash -n "$BUCKET/launch-N901.s
 has "it prints one manifest add per leg" "$out" "fleet-manifest.sh add $WORK/fleet.json $D2"
 # HIMMEL-5047: the sidecar Telegram /launch-leg checks is written with the launcher.
 side="$(cat "$WORK/fleet.launchers.sha256" 2>/dev/null)"
-has "the sha256 sidecar records launcher 1 at write time" "$side" "$(sha256sum "$BUCKET/launch-N901.sh" | cut -d' ' -f1)  $BUCKET/launch-N901.sh"
-has "and launcher 2" "$side" "$(sha256sum "$BUCKET/launch-N902.sh" | cut -d' ' -f1)  $BUCKET/launch-N902.sh"
-has "the sidecar passes sha256sum -c" "$(sha256sum -c "$WORK/fleet.launchers.sha256" 2>&1)" "launch-N902.sh: OK"
+# hashlib, not sha256sum: macOS ships shasum only.
+sha_of() { python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"; }
+has "the sha256 sidecar records launcher 1 at write time" "$side" "$(sha_of "$BUCKET/launch-N901.sh")  $BUCKET/launch-N901.sh"
+has "and launcher 2" "$side" "$(sha_of "$BUCKET/launch-N902.sh")  $BUCKET/launch-N902.sh"
 has "it created both worktrees via the seam" "$(paste -sd, "$WORK/wt.log")" "fix/himmel-9001-plain-fix,fix/himmel-9002-hook-fix"
 [ -f "$WORK/legs.json.out" ] && pass "the .out file records the nonces" || fail "no .out file"
 has "nothing was launched (no signal files)" "$(ls "$WORK/w" 2>&1)" "No such file"

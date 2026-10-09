@@ -11,9 +11,11 @@
 # Ops (arg "-" means none):
 #   station-status    -        read-only snapshot: load, memory, bank, consoles,
 #                              last tick, waiter heartbeats, primary state
-#   revert-main       <pr>     open GitHub's revert PR for a merged PR, merge it
-#                              with --admin (break-glass: operator-initiated,
-#                              confirm-coded, audited), then sync the primary
+#   revert-main       <pr>     open GitHub's revert PR for the PR that is the
+#                              default branch's HEAD, merge it with --admin
+#                              (break-glass: operator-initiated, confirm-coded,
+#                              audited) while it is still HEAD, then sync the
+#                              primary
 #   repin-hooks       -        fast-forward the primary to origin/<default>; the
 #                              HIMMEL-2528 monotonic re-pin heals each session's
 #                              hook-integrity pin once its hooks equal the tip
@@ -38,6 +40,7 @@
 #   0 done / 1 bad input (close-wrapped: a named close refused) / 2 unknown
 #   op / 5, 12, 13 also relayed from cr-reset.sh / 12 PR not revertable (not merged, or
 #   not on the default branch) / 13 gh or fetch failed / 18 merge or ff failed
+#   / 25 revert merged but its record could not be written
 #   / 19 agent marker (CLAUDECODE) / 20 prerequisite missing (unit, script) /
 #   21 primary not on the default branch or has tracked changes / 22 primary
 #   diverged from origin / 23 leg label does not resolve to exactly one leg
@@ -209,17 +212,21 @@ op_revert_main() {
         || { echo "ERR break-glass: revertPullRequest failed for PR $pr" >&2; return 13; }
     case "$rnum" in ''|*[!0-9]*) echo "ERR break-glass: no revert PR number returned" >&2; return 13 ;; esac
     echo "revert_pr=$rnum"
-    # Main may have moved while the revert PR was opened: then this is no longer
-    # a HEAD revert, so the revert PR is left open for a normal reviewed merge.
-    git -C "$PRIMARY" fetch --quiet origin "$def" || { echo "ERR break-glass: fetch origin $def failed; revert PR $rnum left open" >&2; return 13; }
-    if [ "$(git -C "$PRIMARY" rev-parse "origin/$def" 2>/dev/null)" != "$tip" ]; then
-        echo "ERR break-glass: $def moved past PR $pr before the merge; revert PR $rnum left open for review" >&2
-        return 12
-    fi
     tries="${BREAK_GLASS_MERGE_TRIES:-10}"
     i=0
     # The revert PR is mergeable only once GitHub has computed it; retry briefly.
-    until (cd "$PRIMARY" && "$GH" pr merge "$rnum" --squash --admin >/dev/null 2>&1); do
+    # Main may move meanwhile (another merge, a second /revert-main): HEAD is
+    # re-checked before EVERY attempt, and if it moved this is no longer a HEAD
+    # revert, so the revert PR is left open for a normal reviewed merge.
+    # ponytail: a sub-second window between the check and the merge remains (gh
+    # pins only the PR head, not the base), upgrade path: a base-sha-pinned merge API.
+    while :; do
+        git -C "$PRIMARY" fetch --quiet origin "$def" || { echo "ERR break-glass: fetch origin $def failed; revert PR $rnum left open" >&2; return 13; }
+        if [ "$(git -C "$PRIMARY" rev-parse "origin/$def" 2>/dev/null)" != "$tip" ]; then
+            echo "ERR break-glass: $def moved past PR $pr before the merge; revert PR $rnum left open for review" >&2
+            return 12
+        fi
+        (cd "$PRIMARY" && "$GH" pr merge "$rnum" --squash --admin >/dev/null 2>&1) && break
         i=$((i + 1))
         if [ "$i" -ge "$tries" ]; then
             echo "ERR break-glass: merge of revert PR $rnum failed; it is left open" >&2
@@ -301,7 +308,8 @@ op_launch_leg() {
     valid_label "$label" || { echo "ERR break-glass: bad leg label: '$label'" >&2; return 1; }
     case "$bypass" in bypass|-) ;; *) echo "ERR break-glass: bad bypass flag: '$bypass'" >&2; return 1 ;; esac
     fleet="$(fleet_manifest)" || return 23
-    docs="$(jq -r --arg l "$label" '.legs[]? | select(.label == $l) | .doc' "$fleet" 2>/dev/null)"
+    docs="$(jq -r --arg l "$label" '.legs[]? | select(.label == $l) | .doc' "$fleet" 2>/dev/null)" \
+        || { echo "ERR break-glass: cannot read $(basename "$fleet")" >&2; return 23; }
     n="$(printf '%s' "$docs" | grep -c .)"
     if [ "$n" -eq 0 ]; then
         launch_from_launcher "$label" "$bypass" "$fleet"
@@ -366,9 +374,11 @@ op_close_wrapped() {
     fi
     fleet="$(fleet_manifest)" || return 23
     if [ "$label" = "-" ]; then
-        docs="$(jq -r '.legs[]?.doc' "$fleet" 2>/dev/null)"
+        docs="$(jq -r '.legs[]?.doc' "$fleet" 2>/dev/null)" \
+            || { echo "ERR break-glass: cannot read $(basename "$fleet")" >&2; return 23; }
     else
-        docs="$(jq -r --arg l "$label" '.legs[]? | select(.label == $l) | .doc' "$fleet" 2>/dev/null)"
+        docs="$(jq -r --arg l "$label" '.legs[]? | select(.label == $l) | .doc' "$fleet" 2>/dev/null)" \
+            || { echo "ERR break-glass: cannot read $(basename "$fleet")" >&2; return 23; }
         if [ "$(printf '%s' "$docs" | grep -c .)" -ne 1 ]; then
             echo "ERR break-glass: $label does not name exactly one leg in $(basename "$fleet")" >&2
             return 23

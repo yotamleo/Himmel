@@ -68,6 +68,12 @@ if ! (cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round SHARED_BRANC
     exit 5
 fi
 owner="$(cd "$PRIMARY" && SHARED_BRANCH_LOCK_NS=himmel-cr-review-round bash "$LOCK_LIB" status "." "$branch" 2>/dev/null)"
+# As review-round.sh: no readable holder record means the lock cannot be
+# released as ours, so nothing moves.
+case "$owner" in
+    '{"pid":'*) ;;
+    *) echo "ERR cr-reset: counter lock holder state for $branch is missing or unreadable; refusing" >&2; exit 5 ;;
+esac
 
 # The pid suffix keeps two resets in the same second from overwriting a backup.
 ts="$(date +%Y%m%dT%H%M%S)-$$"
