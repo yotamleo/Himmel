@@ -141,24 +141,44 @@ sync_primary() {
 }
 
 op_station_status() {
-    local f bank
+    local f bank now hb st age live=0 stale=0 oldest=0 lines=""
     echo "host $(hostname 2>/dev/null) up $(cut -d' ' -f1 /proc/uptime 2>/dev/null)s"
     echo "load $(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)"
     echo "mem $(awk '/^MemAvailable:/{printf "%d MiB available", $2/1024}' /proc/meminfo 2>/dev/null)"
+    # The primary line comes before every unbounded section: a truncated reply
+    # (HIMMEL-5091) must never drop it.
+    echo "primary $(git -C "$PRIMARY" symbolic-ref --quiet --short HEAD 2>/dev/null || echo detached)" \
+        "$(git -C "$PRIMARY" rev-parse --short HEAD 2>/dev/null)" \
+        "$( [ -z "$(git -C "$PRIMARY" status --porcelain --untracked-files=no 2>/dev/null)" ] && echo clean || echo dirty)"
     bank="${BREAK_GLASS_BANK_CMD:-bash $PRIMARY/scripts/lib/bank-preflight.sh}"
     echo "bank:"
     # shellcheck disable=SC2086 # the seam is a command line by design
     timeout 20 $bank 2>&1 | head -n 8 | sed 's/^/  /' # gnu-ok: the bridge runs only on the Linux station
     echo "consoles:"
-    bash "$PRIMARY/scripts/telegram/console-census.sh" 2>/dev/null | head -n 10 | sed 's/^/  /'
+    # A row with no session name is labelled, never printed blank.
+    bash "$PRIMARY/scripts/telegram/console-census.sh" 2>/dev/null | head -n 10 \
+        | awk -F'\t' '{ if ($2 == "") $2 = "(unnamed)"; print $1 " " $2 " " $3 " " $4 }' | sed 's/^/  /'
     echo "last tick: $(age_of "$HOME/.himmel/state/tick-ciq-last") ago"
+    now="$(date +%s)"
     for f in "${BRIDGE_ROOT:-$HOME/.claude/handover/bridge}"/consoles/*.md.wait; do
         [ -e "$f" ] || continue
-        echo "waiter $(basename "$f" .md.wait): $(age_of "$f") ago"
+        hb="$(sed -n 's/^hb=\([0-9][0-9]*\) .*/\1/p' "$f" 2>/dev/null | head -n 1)"
+        st="$(sed -n 's/.* state=\([a-z]*\).*/\1/p' "$f" 2>/dev/null | head -n 1)"
+        age=$(( now - 10#${hb:-0} ))
+        case "$st" in
+            waiting|sampling)
+                if [ -n "$hb" ] && [ "$age" -ge 0 ] && [ "$age" -lt 600 ]; then
+                    live=$((live + 1))
+                    [ "$live" -le 8 ] && lines="$lines""waiter $(basename "$f" .md.wait): ${age}s ago
+"
+                    continue
+                fi ;;
+        esac
+        stale=$((stale + 1))
+        [ "${hb:-0}" -gt 0 ] && [ "$age" -gt "$oldest" ] && oldest=$age
     done
-    echo "primary $(git -C "$PRIMARY" symbolic-ref --quiet --short HEAD 2>/dev/null || echo detached)" \
-        "$(git -C "$PRIMARY" rev-parse --short HEAD 2>/dev/null)" \
-        "$( [ -z "$(git -C "$PRIMARY" status --porcelain --untracked-files=no 2>/dev/null)" ] && echo clean || echo dirty)"
+    echo "waiters: $live live, $stale stale (oldest ${oldest}s)"
+    [ -z "$lines" ] || printf '%s' "$lines"
     return 0
 }
 

@@ -88,7 +88,7 @@ written to the audit log (results: `confirm-issued`, `confirm-refused`,
 
 | Command | Effect |
 |---|---|
-| `/station-status` | Read-only: host, load, memory, bank, console census, last tick, waiters, primary branch/sha/clean. |
+| `/station-status` | Read-only: host, load, memory, primary branch/sha/clean, bank, console census (unnamed rows labelled), last tick, and live waiters (heartbeat under 10 min) plus one stale-waiter summary line. Bounded well under 40 lines. |
 | `/revert-main <pr>` | Only for the PR whose merge commit is the default branch's current HEAD (any other PR is refused, naming the HEAD PR, and it is checked again before every merge attempt, retries included: if main moved, the revert PR is left open). Opens GitHub's revert PR, squash-merges it with `--admin`, then fast-forwards the primary. A repeat for the same PR never reverts again: it only re-syncs, and a failed sync says "already reverted, sync failed". |
 | `/repin-hooks` | Fast-forwards the primary checkout to origin (clean, on the default branch, no divergence), then checks `scripts/hooks` and `scripts/guardrails` match origin (rc 24 if not). |
 | `/launch-leg <N-label> [--hook-bypass]` | Resumes the one fleet-manifest leg with that label in its own linked worktree, or starts a fresh one from the `launch-<label>.sh` that `<fleet>.launchers.sha256` records (`gen-briefs.py` writes that line when it writes the launcher into its bucket). A launcher runs only if its sha256 still matches, and only a linked worktree of the primary checkout is resumed. `--hook-bypass` is accepted only for a sha256-recorded launcher; a manifest leg is refused with it. |
