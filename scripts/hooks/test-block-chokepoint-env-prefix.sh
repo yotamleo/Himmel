@@ -1672,6 +1672,7 @@ ls () { bash \"\$@\"; }
 EOT
 $pre ls $GP")"
     assert_deny "4454 source /dev/fd/0 here-string [$pre]" "$(j "source /dev/fd/0 <<<'ls () { bash \"\$@\"; }'; $pre ls $GP")"
+    assert_deny "4454 . /dev/stdin after a keyword [$pre]" "$(j "if true; then . /dev/stdin <<<'ls () { bash \"\$@\"; }'; fi; $pre ls $GP")"
     assert_allow "4454 control: a quoted 'eval' is not a word [$pre]" "$(j "$pre ls /r/w/docs/*.md | grep 'eval'")"
     assert_allow "4454 control: evaluate/medieval are other words [$pre]" "$(j "evaluate=1; medieval=1; $pre ls /r/w/docs/*.md")"
 done
