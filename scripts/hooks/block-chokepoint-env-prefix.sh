@@ -1352,8 +1352,9 @@ pobf_relief() {
     # scan above cannot see: an eval command word, or a source / command-word
     # `.` beside a here-string, here-doc, /dev or /proc path, or a quoted word
     # (the path may be quoted). Process substitution is refused above.
-    local re_ev="(^|[;&|({${NL}]|[[:blank:]](then|do|else|elif|builtin|command|exec|time)[[:blank:]])[[:blank:]]*eval([^[:alnum:]_]|\$)"
-    local re_sr="(^|[^[:alnum:]_.])source([^[:alnum:]_]|\$)|(^|[;&|(${NL}]|[[:blank:]](then|do|else|elif|builtin|command|exec|time)[[:blank:]])[[:blank:]]*\\.[[:blank:]]"
+    local re_cp="(^|[;&|({!${NL}]|(^|[[:blank:]])(then|do|else|elif|builtin|command|exec|time|coproc|noglob|nocorrect|eval)[[:blank:]])[[:blank:]]*"
+    local re_ev="${re_cp}eval([^[:alnum:]_]|\$)"
+    local re_sr="(^|[^[:alnum:]_.])source([^[:alnum:]_]|\$)|${re_cp}\\.[[:blank:]]"
     [[ $F =~ $re_ev ]] && return 1
     if [[ $F =~ $re_sr ]]; then
         case "$F" in *'<<'*|*/dev/*|*/proc/*|*"$T1"*) return 1 ;; esac
