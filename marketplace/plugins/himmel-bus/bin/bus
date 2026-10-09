@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { openChainFile, withChainLock } from '../../../../scripts/telegram/bus.ts';
 import * as store from '../lib/store.mjs';
 import * as identity from '../lib/identity.mjs';
@@ -21,7 +22,7 @@ const USAGE = `usage: bus register <name> --role leg|console|judge|consult [--co
 const MAX_BODY = 64 * 1024, INLINE_CAP = 1500, MAX_SUMMARY = 300;
 const GC_AGE_MS = 30 * 24 * 3600e3;
 const EXPIRY_MS = 4 * 3600e3;
-const INBOX_SEND = new URL('../../../../scripts/handover/console-kit/inbox-send.sh', import.meta.url).pathname;
+const INBOX_SEND = fileURLToPath(new URL('../../../../scripts/handover/console-kit/inbox-send.sh', import.meta.url));
 
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 function ulid(now = Date.now()) {
@@ -49,11 +50,14 @@ async function writeAck(root, acker, row) {
 // inbox-send.sh itself (its writer and doc hash-lock), with its own inbox
 // pointed at a scratch dir (delivery is the bus's job) and its author set to
 // the bus identity instead of the CLAUDE_PID/-n recovery.
-async function mirror(from, to, bodyFile, doc) {
+async function mirror(from, to, body, doc) {
   const scratch = await mkdtemp(join(tmpdir(), 'bus-doc-'));
   try {
     const cmdline = join(scratch, 'cmdline');
     await writeFile(cmdline, `claude\0-n\0${from}\0`);
+    // The body already committed to the bus, not a re-read of the caller's file.
+    const bodyFile = join(scratch, 'body');
+    await writeFile(bodyFile, body);
     const env = { ...process.env, HANDOVER_DIR: scratch, CLAUDE_PID: '1', SESSION_NAME_CMDLINE_FILE: cmdline };
     const r = spawnSync('bash', [INBOX_SEND, to, '--file', bodyFile, '--doc', doc], { env, encoding: 'utf8' });
     if (r.status !== 0) throw new Error(`doc mirror failed (rc=${r.status}): ${(r.stderr || '').trim()}`);
@@ -91,7 +95,7 @@ async function send(root, to, file, { re, summary, doc }) {
     catch (error) { console.error(`bus: sent, but ack not recorded: ${error.message}`); process.exitCode = 1; }
   }
   if (doc !== undefined) {
-    try { await mirror(me, to, file, doc); }
+    try { await mirror(me, to, b, doc); }
     catch (error) { console.error(`bus: sent #${stamped.n}, but ${error.message}`); process.exitCode = 1; }
   }
 }
