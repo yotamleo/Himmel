@@ -95,6 +95,25 @@ test('events: send, delivered, acked, kind, ordering and since', async t => {
   assert.deepEqual(ops(later).filter(o => /^\/bus\/msgs\/[A-Z0-9]+$/.test(o.path)).map(o => o.value.i).sort(), ['C1']);
 });
 
+test('a send and its ack with equal timestamps emit the parent first', async t => {
+  const { store, agui, root } = await fixture(t);
+  await store.append(root, 'leg', rec({ i: 'P1', t: 5000 }));
+  await writeFile(join(root, 'ack/leg.jsonl'), JSON.stringify({ i: 'P1', re: 'X', t: 5000 }) + '\n');
+  const paths = ops(await collect(agui, root)).map(o => o.path);
+  assert.ok(paths.indexOf('/bus/msgs/P1') < paths.indexOf('/bus/msgs/P1/acked'));
+});
+
+test('an ack after the expiry window keeps the historical expired event', async t => {
+  const { store, agui, root } = await fixture(t);
+  await store.append(root, 'leg', rec({ i: 'E1', t: 1000, c: 1, b: 'GO' }));
+  await store.append(root, 'leg', rec({ i: 'E2', t: 1000, c: 1, b: 'GO' }));
+  const late = 1000 + agui.EXPIRY_MS + 10;
+  await writeFile(join(root, 'ack/leg.jsonl'), JSON.stringify({ i: 'E1', re: 'X', t: late }) + '\n' + JSON.stringify({ i: 'E2', re: 'X', t: 2000 }) + '\n');
+  const paths = ops(await collect(agui, root, { now: late + 1 })).map(o => o.path);
+  assert.ok(paths.includes('/bus/msgs/E1/expired'));
+  assert.ok(!paths.includes('/bus/msgs/E2/expired'));
+});
+
 test('a token-shaped body makes a c=1 message a ruling', async t => {
   const { store, agui, root } = await fixture(t);
   await store.append(root, 'leg', rec({ i: 'T1', c: 1, b: `GO 5 abc with R-${mintRetaskNonce()}` }));

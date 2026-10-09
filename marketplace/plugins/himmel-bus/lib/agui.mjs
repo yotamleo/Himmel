@@ -67,9 +67,9 @@ const delta = (timestamp, op, path, value) => ({ type: 'STATE_DELTA', delta: [{ 
 // not stored in phase 1, so no `refused` event is produced.
 export async function* busEvents(root, { since = 0, now = Date.now() } = {}) {
   const events = [];
-  const acked = new Set();
+  const acked = new Map();
   for (const row of await acks(root)) {
-    acked.add(row.i);
+    acked.set(row.i, Math.min(row.t, acked.get(row.i) ?? Infinity));
     events.push(delta(row.t, 'add', `/bus/msgs/${row.i}/acked`, { t: row.t, by: row.by }));
   }
   for (const name of await logNames(root)) {
@@ -79,9 +79,11 @@ export async function* busEvents(root, { since = 0, now = Date.now() } = {}) {
       if (rec.re !== undefined) value.re = rec.re;
       events.push(delta(rec.t, 'add', `/bus/msgs/${rec.i}`, value));
       if (rec.n <= done.n) events.push(delta(done.at, 'add', `/bus/msgs/${rec.i}/delivered`, done.at));
-      if (rec.c === 1 && !acked.has(rec.i) && now - rec.t > EXPIRY_MS) events.push(delta(rec.t + EXPIRY_MS, 'add', `/bus/msgs/${rec.i}/expired`, rec.t + EXPIRY_MS));
+      // An ack that lands after the window does not erase the expiry already shown to live consumers.
+      if (rec.c === 1 && (acked.get(rec.i) ?? Infinity) > rec.t + EXPIRY_MS && now - rec.t > EXPIRY_MS) events.push(delta(rec.t + EXPIRY_MS, 'add', `/bus/msgs/${rec.i}/expired`, rec.t + EXPIRY_MS));
     }
   }
-  events.sort((a, b) => a.timestamp - b.timestamp);
+  // Equal timestamps: the parent `/bus/msgs/<id>` sorts before its `/delivered|/acked|/expired` children.
+  events.sort((a, b) => a.timestamp - b.timestamp || a.delta[0].path.length - b.delta[0].path.length);
   for (const event of events) if (event.timestamp > since) yield event;
 }
