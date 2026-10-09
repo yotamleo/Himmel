@@ -605,8 +605,25 @@ jq -n --arg p "$LIVE_PID" '{id:"reuse", role:"r", worktree:"w", ticket:"t", stat
 cap1_run "$W/artifact23.txt"; RC23=$?
 check "23 pid reused with a different start time is reaped" "0" "$RC23"
 check "23 reused-pid row is marked interrupted" "interrupted" "$(jq -r '.status' "$LIVE_DIR/reuse.json" 2>/dev/null)"
-kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
 rm -f "$LIVE_DIR"/*.json
 
-echo "--- $PASS passed, $FAIL failed, $SKIP skipped ---"
+# 24: the wrapper is dead but the claude worker it launched survived (SIGKILL of
+# the wrapper alone). The slot stays held while the worker lives; once it is gone
+# too, the row is reaped.
+jq -n --arg d "$DEAD_PID" --arg w "$LIVE_PID" --arg s "$(proc_start "$LIVE_PID")" '{id:"orphan", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($d|tonumber), pid_start:"Thu Jan 1 00:00:00 1970", worker_pid:($w|tonumber), worker_start:$s}' > "$LIVE_DIR/orphan.json"
+cap1_run "$W/artifact24.txt"; RC24=$?
+check "24 dead wrapper, live worker: slot still held (cap refuses)" "1" "$RC24"
+check "24 dead wrapper, live worker: row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/orphan.json" 2>/dev/null)"
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
+cap1_run "$W/artifact24b.txt"; RC24B=$?
+check "24 wrapper and worker both gone: reaped, admission succeeds" "0" "$RC24B"
+check "24 both-gone row is marked interrupted" "interrupted" "$(jq -r '.status' "$LIVE_DIR/orphan.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+
+# 25: a real dispatch records the launched worker's pid on its row.
+run_sut "$FAKE_OK" "$W/artifact25.txt" >/dev/null 2>&1
+check "25 dispatch row records the worker pid" "number" "$(jq -r '.worker_pid | type' "$LIVE_DIR"/*.json 2>/dev/null | head -n1)"
+rm -f "$LIVE_DIR"/*.json
+
+echo "---$PASS passed, $FAIL failed, $SKIP skipped ---"
 [ "$FAIL" -eq 0 ]

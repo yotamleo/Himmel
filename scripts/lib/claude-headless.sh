@@ -156,22 +156,30 @@ proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $
 
 # HIMMEL-2197: a dispatched/running row whose wrapper died without running
 # finalize_on_exit (SIGKILL, host death) would count against the cap forever.
-# True when the row recorded a wrapper pid and that process is gone, or is alive
-# with a different start time (pid reuse). A row with no recorded pid, or a live
-# matching one, is never reaped; so a live holder is never reaped. Called only
-# under the admission lock.
+# True when the row recorded a wrapper pid and that process is gone (or reused
+# with a different start time), AND the launched claude worker, when its pid was
+# recorded, is gone too: SIGKILL of the wrapper alone leaves the worker running,
+# and its slot must stay held. A row with no recorded pid, or a live matching
+# one, is never reaped. Called only under the admission lock.
+pid_gone() { # <pid> <recorded start>
+  local cur
+  cur="$(proc_start "$1")"
+  if [ -z "$cur" ]; then
+    kill -0 "$1" 2>/dev/null && return 1
+    return 0
+  fi
+  [ -n "$2" ] && [ "$2" != "$cur" ]
+}
+
 row_holder_dead() {
-  local pid recorded cur
+  local pid wpid
   command -v ps >/dev/null 2>&1 || return 1
   pid="$(jq -r '.pid // empty' "$1" 2>/dev/null)"
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  cur="$(proc_start "$pid")"
-  if [ -z "$cur" ]; then
-    kill -0 "$pid" 2>/dev/null && return 1
-    return 0
-  fi
-  recorded="$(jq -r '.pid_start // empty' "$1" 2>/dev/null)"
-  [ -n "$recorded" ] && [ "$recorded" != "$cur" ]
+  pid_gone "$pid" "$(jq -r '.pid_start // empty' "$1" 2>/dev/null)" || return 1
+  wpid="$(jq -r '.worker_pid // empty' "$1" 2>/dev/null)"
+  case "$wpid" in ''|*[!0-9]*) return 0 ;; esac
+  pid_gone "$wpid" "$(jq -r '.worker_start // empty' "$1" 2>/dev/null)"
 }
 
 count_active() {
@@ -182,9 +190,15 @@ count_active() {
     case "$status" in
       dispatched|running)
         if row_holder_dead "$f"; then
-          jq --arg terminal_at "$(now_iso)" '.status = "interrupted" | .terminal_at = $terminal_at' "$f" > "$f.tmp" 2>/dev/null \
-            && mv "$f.tmp" "$f" 2>/dev/null
-          echo "claude-headless.sh: reaped dead dispatched row $f" >&2
+          if jq --arg terminal_at "$(now_iso)" '.status = "interrupted" | .terminal_at = $terminal_at' "$f" > "$f.tmp" 2>/dev/null \
+              && mv "$f.tmp" "$f" 2>/dev/null; then
+            echo "claude-headless.sh: reaped dead dispatched row $f" >&2
+          else
+            # Fail closed: an unpersisted reap keeps the slot held.
+            rm -f "$f.tmp" 2>/dev/null
+            echo "claude-headless.sh: could not reap dead dispatched row $f (write failed); slot kept" >&2
+            n=$((n + 1))
+          fi
         else
           n=$((n + 1))
         fi
@@ -622,6 +636,13 @@ DEDUPED_PATH="$(dedupe_path "$PATH")"
 # write failure) would have finalize_on_exit read the ambient value and
 # kill_tree the session that launched this wrapper, not the child it spawned.
 _LAUNCHED_CLAUDE_PID=$!
+# HIMMEL-2197: record the worker so a SIGKILLed wrapper's surviving worker keeps
+# its slot (row_holder_dead). Best effort: a failed write leaves the row as is.
+if [ -n "${ROW:-}" ] && [ -f "$ROW" ]; then
+  jq --arg wpid "$_LAUNCHED_CLAUDE_PID" --arg wstart "$(proc_start "$_LAUNCHED_CLAUDE_PID")" \
+    '.worker_pid = ($wpid|tonumber) | .worker_start = $wstart' "$ROW" > "$ROW.tmp" 2>/dev/null \
+    && mv "$ROW.tmp" "$ROW" 2>/dev/null
+fi
 wait "$_LAUNCHED_CLAUDE_PID"
 RC=$?
 ENVELOPE="$(cat "$STDOUT_FILE" 2>/dev/null)"
