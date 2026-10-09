@@ -538,6 +538,10 @@ _bwimc_blank_heredocs() {
                                 if [ -n "${BASH_REMATCH[1]}" ]; then dashmode=1; else dashmode=0; fi
                                 active=1
                                 [[ "${line:0:$i}" =~ $gitmsg_re ]] || allgit=0
+                            else
+                                # a `<<` whose delimiter the regex cannot parse (dash, dot,
+                                # digit-led) is uncounted and its body is scanned as code
+                                allgit=0
                             fi
                             fi
                         fi
@@ -599,7 +603,9 @@ _bwimc_blank_heredocs() {
     # delimiter was quoted, so no body expands anything, and every opener is a
     # `git commit -m "$(cat <<'X'` message (inert text, never run as code: a
     # `bash -c "$(cat <<'X'` body is code and keeps the flat reading).
-    [ -z "$nest" ] || [ "$nopen" -eq 0 ] || [ "$allq" -eq 0 ] || [ "$allgit" -eq 0 ] || return 7
+    # An quote still open at the end of the walk means a phantom quote may have
+    # swallowed a later real redirect, so the mode-0 reading is kept.
+    [ -z "$nest" ] || [ "$nopen" -eq 0 ] || [ "$allq" -eq 0 ] || [ "$allgit" -eq 0 ] || [ -n "$_BWIMC_Q" ] || return 7
     return 0
 }
 

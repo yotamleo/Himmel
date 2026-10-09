@@ -375,6 +375,20 @@ _subst_row "4397h bash -c quoted-heredoc body writes into the primary (DENY)" bl
     "$(printf 'bash -c "$(cat <<'"'"'EOF'"'"'\ntouch %s/a.txt\nEOF\n)"' "$_PR")"
 _subst_row "4397i eval quoted-heredoc body writes into the primary (DENY)" block \
     "$(printf 'eval "$(cat <<'"'"'EOF'"'"'\ntouch %s/a.txt\nEOF\n)"' "$_PR")"
+# J2249a: a `<<` whose delimiter the opener regex cannot parse (dash, dot,
+# digit-led) is never counted, so its body is scanned as code; a lone quote in
+# that body must not let the fast path swallow a later real redirect.
+_gm=$(printf 'git commit -m "$(cat <<'"'"'EOF'"'"'\nfix: msg\nEOF\n)"')
+_subst_row "4397j dashed 'E-X' heredoc with a lone quote, then a primary write (DENY)" block \
+    "$(printf '%s\ncat <<'"'"'E-X'"'"'\nit'"'"'s\nE-X\necho x > %s/a.txt' "$_gm" "$_PR")"
+_subst_row "4397k dotted \"a.b\" heredoc with a lone quote, then a primary write (DENY)" block \
+    "$(printf '%s\ncat <<"a.b"\nsay "hi\na.b\necho x > %s/a.txt' "$_gm" "$_PR")"
+_subst_row "4397l digit-led '1Z' heredoc after && with a lone quote, then a primary write (DENY)" block \
+    "$(printf '%s && cat <<'"'"'1Z'"'"'\nit'"'"'s\n1Z\necho x > %s/a.txt' "$_gm" "$_PR")"
+_subst_row "4397m CONTROL: dashed heredoc with a lone quote, then a worktree write (ALLOW)" allow \
+    "$(printf '%s\ncat <<'"'"'E-X'"'"'\nit'"'"'s\nE-X\necho x > %s/z.txt' "$_gm" "$_WR")"
+_subst_row "4397n CONTROL: dashed heredoc, no git commit, primary write (DENY)" block \
+    "$(printf 'cat <<'"'"'E-X'"'"'\nit'"'"'s\nE-X\necho x > %s/a.txt' "$_PR")"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
