@@ -1300,6 +1300,21 @@ row "5094 r5 python3 -m tarfile -l (ctrl)"      allow "python3 -m tarfile -l /tm
 row "5094 r5 python3 -m tarfile --list (ctrl)"  allow "python3 -m tarfile --list /tmp/a.tar"
 row "5094 r5 python3 -m zipfile -t (ctrl)"      allow "python3 -m zipfile -t /tmp/a.zip"
 row "5094 r5 python3 -m json.tool (ctrl)"       allow "python3 -Im json.tool /tmp/a.json"
+# j2243d: the variable-held command word uses the literal path's cwd verdict
+# (backslash-newline cd, find -execdir), env/sudo -C/-D in any flag cluster is
+# read on the whole text, and tarfile*/zipfile* or a computed module name denies.
+row "5094 r6 E03 backslash-newline cd"          deny  $'T=tar; c\\\nd; $T xf /tmp/a.tar'
+row "5094 r6 E04 backslash-newline pushd"       deny  $'T=tar; pu\\\nshd ../../..; $T xf /tmp/a.tar'
+row "5094 r6 E21 env -iC"                       deny  "T=tar; env -iC ../../.. \$T xf /tmp/a.tar"
+row "5094 r6 E21e env -0C"                      deny  "T=tar; env -0C ../../.. \$T xf /tmp/a.tar"
+row "5094 r6 E28 find -execdir"                 deny  "T=tar; find ~ -maxdepth 0 -execdir \$T xf /tmp/a.tar \\;"
+row "5094 r6 F01 zipfile.__main__"              deny  "python3 -m zipfile.__main__ -e /tmp/a.zip ~"
+row "5094 r6 F01b zipfile.__main__ attached"    deny  "python3 -mzipfile.__main__ -e /tmp/a.zip ~"
+row "5094 r6 F14 uv run zipfile.__main__"       deny  "uv run python -m zipfile.__main__ -e /tmp/a.zip ~"
+row "5094 r6 F04 computed module"               deny  "M=tarfile; python3 -m \$M -e /tmp/a.tar ~"
+row "5094 r6 F05 computed module quoted"        deny  "M=zipfile; python3 -m \"\$M\" -e /tmp/a.zip ~"
+row "5094 r6 env -C literal tar (ctrl)"         allow "env -C /tmp/w tar tf /tmp/a.tar"
+row "5094 r6 computed module, no archive (ctrl)" allow "M=json.tool; python3 -m \$M /tmp/a.json"
 
 echo "== generated write-verb axis (shared write-fence grammar) =="
 # The verb x spelling axis the main-checkout fence suite enumerates, rendered

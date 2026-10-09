@@ -1500,7 +1500,13 @@ check_interp_archive() {
             -*) n=1 ;;
         esac
     done
-    case "$mod" in tarfile|zipfile) ;; *) return 0 ;; esac
+    # Any module named tarfile* or zipfile* (zipfile.__main__), or a computed
+    # module name beside an archive word, may be the archive CLI (fail closed).
+    case "$mod" in
+        tarfile*|zipfile*) ;;
+        *'$'*|*'`'*) [[ "$CMD" =~ $EXTRACT_WORD_RE ]] || return 0 ;;
+        *) return 0 ;;
+    esac
     # Only a pure list/test passes: every other option (-e and its
     # abbreviations, a combined cluster, --filter VALUE, create) denies, with no
     # operand modelling (fail closed).
@@ -1535,10 +1541,11 @@ _text_names_home() {
     return 1
 }
 
-# DYN_DIR_RE: a directory-changing word (cd, pushd, popd, chdir, a CDPATH
-# assignment, env -C/--chdir, sudo -D/-C). It is read on the text with its
-# quotes and backslashes removed too, so 'cd', c\d and "c"d count (HIMMEL-5094).
-DYN_DIR_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)|CDPATH|chdir|(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[A-Za-z]*[CD]'
+ENVC_RE='(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[^[:space:];&|]*[CD]'
+# DYN_DIR_RE: env/sudo -C/-D inside any flag cluster (-iC, -0C), read on the
+# whole text independent of the wrapper parse; the other directory-changing
+# words come from the literal path's verdict (CWD_UNPROVEN, HIMMEL-5094).
+DYN_DIR_RE='(^|[^A-Za-z0-9_.-])(cd|pushd|popd)([^A-Za-z0-9_.-]|$)|CDPATH|chdir|(^|[^A-Za-z0-9_.-])(env|sudo)([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[^[:space:];&|]*[CD]'
 
 # _dyn_ctx: classify the whole command ONCE (cached in DYN_CTX): no archive
 # word (none), a cwd at HOME or the bank-lift dir (cwd), any directory-changing
@@ -1552,8 +1559,10 @@ _dyn_ctx() {
     [[ "$CMD" =~ $EXTRACT_WORD_RE ]] || return 0
     DYN_CTX=arc
     case "$(_dir_kind "$CWD")" in HOME|HIMMEL|STATE) DYN_CTX=cwd; return 0 ;; esac
-    local bare="${CMD//[\\\"\']/}"
-    if [[ "$CMD" =~ $DYN_DIR_RE ]] || [[ "$bare" =~ $DYN_DIR_RE ]]; then DYN_CTX=dir; fi
+    # The literal path's cwd verdict (CWD_UNPROVEN: DIRWORD_RE over the raw text
+    # and the dequoted tokens), plus env/sudo -C/-D in any flag cluster.
+    local wt="${WTOK//$SEP/ }"
+    if [ "$CWD_UNPROVEN" = 1 ] || [[ "$CMD" =~ $DYN_DIR_RE ]] || [[ "$wt" =~ $DYN_DIR_RE ]]; then DYN_CTX=dir; fi
     return 0
 }
 
@@ -1969,6 +1978,15 @@ case "$cwd_hits" in ''|0) ;; *) CWD_UNPROVEN=1 ;; esac
 xenv_hits=$(printf '%s\n%s' "$CMD" "${WTOK//$'\037'/ }" | grep -Ec "$XENV_RE")
 case "$xenv_hits" in ''|0) ;; *) XENV_SET=1 ;; esac
 if names_lift "$CMD" || names_lift "$WTOK"; then whole_command_gate "$CMD" 0; fi
+# HIMMEL-5094: env/sudo -C/-D in any flag cluster (-iC, -0C), read on the whole
+# text independent of the wrapper parse, beside an archive word and a computed
+# word: the parse may mistake the directory for the command, so the computed
+# word is never read as the extractor. Fail closed.
+if [[ "$CMD" =~ $ENVC_RE ]] || [[ "${WTOK//$'\037'/ }" =~ $ENVC_RE ]]; then
+    if [[ "$CMD" =~ $EXTRACT_WORD_RE ]] && [[ "$CMD" == *['$`']* ]]; then
+        deny "env/sudo with a -C/-D directory option beside an archive tool and a computed word: the cwd is unknown and the computed word may be the extractor; name the command and destination literally"
+    fi
+fi
 analyse "$CMD" 0
 # HIMMEL-4530: an extraction and a symlink creation in one command, in any
 # order, can send members through the planted link into HOME.
