@@ -148,6 +148,11 @@ bash "$SCRIPT" add "$m6" --lane native "$l2" >/dev/null 2>&1; rc=$?
 check '7c. an old manifest still takes an add' 0 "$rc"
 check '7c. the old row keeps no lane key' null "$(jq -r '.legs[0].lane // "null"' "$m6")"
 
+m7="$tmp/m7.json"
+bash "$SCRIPT" add "$m7" $'/a/x.md\n/b/y.md' >/dev/null 2>&1; rc=$?
+check '7c. a doc argument holding a newline is refused (rc 2), not split into two rows' 2 "$rc"
+check '7c. a newline-holding argument adds no row' 0 "$(jq -r '.legs | length' "$m7" 2>/dev/null || echo 0)"
+
 # 8. usage.
 bash "$SCRIPT" >/dev/null 2>&1; rc=$?
 check '8. no verb is a usage error (rc 2)' 2 "$rc"

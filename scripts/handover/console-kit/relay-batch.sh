@@ -103,10 +103,15 @@ EOR
     if [ -z "$ldoc" ]; then echo "SKIPPED $label (no manifest row)"; continue; fi
     # A lockless row has no token to quote: the LOCKLESS section below carries it.
     [ "$lockless" != true ] || continue
-    if [ "$lane" = unknown ]; then
-        echo "UNRESOLVED-LANE $label (manifest lane unknown, nothing sent) — fleet-manifest.sh remove it, then add it with --lane, or relay by hand"
-        continue
-    fi
+    case "$lane" in
+        native|claudex) ;;
+        unknown)
+            echo "UNRESOLVED-LANE $label (manifest lane unknown, nothing sent) — fleet-manifest.sh remove it, then add it with --lane, or relay by hand"
+            continue ;;
+        *)
+            echo "UNRESOLVED-LANE $label (lane $lane has no relay path, nothing sent) — relay by hand"
+            continue ;;
+    esac
     # The session name is read from the live census, never guessed: a leg launches under
     # its full doc stem (dated, even -RESUME) or an undated name. Candidates: the full
     # stem first, then leg_identity's names; exactly one live match is the session.

@@ -93,7 +93,11 @@ if [ "$verb" = add ]; then
                 esac
                 lane="$2"; shift 2 ;;
             --lockless) lockless=true; shift ;;
-            *) docs_only="$docs_only$1"$'\n'; shift ;;
+            *)
+                case "$1" in
+                    *$'\n'*) echo "fleet-manifest: leg doc must not contain a newline: $1" >&2; exit 2 ;;
+                esac
+                docs_only="$docs_only$1"$'\n'; shift ;;
         esac
     done
     set --

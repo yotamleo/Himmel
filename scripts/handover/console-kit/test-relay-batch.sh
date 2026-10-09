@@ -148,6 +148,14 @@ check "a refused --claudex mismatch sends nothing" "0" "$(printf '%s\n' "$out6" 
 out7="$(bash "$RB" "$DOC4" --successor S4 --claudex N99 2>&1)"; rc7=$?
 check "--claudex omitting the manifest's claudex leg is refused (rc 1)" "1" "$rc7"
 check "the refusal names the disagreement" "1" "$(printf '%s\n' "$out7" | grep -c 'disagrees with the fleet manifest')"
+# a non-lockless leg on a lane with no relay path is UNRESOLVED-LANE, never relayed as native
+DOC6="$WORK/DEMO-nextleg-2026-10-09C-console.md"
+# shellcheck disable=SC2016  # the backticks are literal Live state markers
+printf '# console\n\n## Live state\n\nlegs: `N30:tok-thirty:lock30:1`\nqueue: none\n\n## Results\n' > "$DOC6"
+printf '{"schema":1,"legs":[{"doc":"%s","label":"N30","lane":"deepseek"}]}\n' "$LEGN" > "${DOC6%.md}.fleet.json"
+out9="$(bash "$RB" "$DOC6" --successor S6 2>&1)"
+check "an unsupported lane is UNRESOLVED-LANE" "1" "$(printf '%s\n' "$out9" | grep -c '^UNRESOLVED-LANE N30 (lane deepseek')"
+check "an unsupported lane is never printed as a SendMessage" "0" "$(printf '%s\n' "$out9" | grep -c '^SENDMESSAGE')"
 # a console whose Live state lists no legs but whose manifest has a lockless row still reports it
 DOC5="$WORK/DEMO-nextleg-2026-10-09B-console.md"
 printf '# console\n\n## Live state\n\nlegs: none\nqueue: none\n\n## Results\n' > "$DOC5"
