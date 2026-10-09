@@ -50,12 +50,12 @@ else
   ncrons="$(grep -c . <<< "$crons")"
   if [ "$ncrons" -eq 2 ]; then ok "exactly two schedule crons"
   else bad "expected exactly two schedule crons, got $ncrons: $crons"; fi
-  case "$(awk '{print $1 "|" $3 " " $4 " " $5}' <<< "$main_cron")" in
-    [0-9]*"|* * *") ok "main-sweep cron fires daily at a fixed minute" ;;
-    *) bad "main-sweep cron is not daily (day/month/weekday must be * * *): '$main_cron'" ;;
-  esac
+  if grep -Eqx '([0-9]|[1-5][0-9]) [^ ]+ \* \* \*' <<< "$main_cron"; then
+    ok "main-sweep cron fires daily at a single fixed minute"
+  else bad "main-sweep cron is not daily at one numeric minute (0-59, day/month/weekday * * *): '$main_cron'"; fi
   case "$hours" in
     *[!0-9,]*|'') bad "main-sweep cron hours field is not a plain comma list: '$hours'" ;;
+    *[0-9][0-9][0-9]*|*2[4-9]*|*[3-9][0-9]*) bad "main-sweep cron hours field has an hour above 23: '$hours'" ;;
     *)
       maxgap="$(printf '%s\n' "$hours" | tr ',' '\n' | sort -n | awk '
         { h[NR] = $1 }
