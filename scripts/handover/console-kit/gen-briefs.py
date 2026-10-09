@@ -23,11 +23,13 @@ Worktrees: `scripts/clean-garden.sh <branch> --no-prune` from --repo
 (GEN_BRIEFS_WORKTREE_CMD replaces it, called as `$CMD <branch>`, tests;
 --no-worktree skips it). Output files, in --bucket: the brief
 `<KEY>-<label>-<slug>-<date>.md`, the launcher `launch-<label>.sh`, and
-`<input>.out` (the input plus each leg's nonce and doc stem).
+`<input>.out` (the input plus each leg's nonce and doc stem). With --manifest,
+each launcher's sha256 is appended to `<manifest stem>.launchers.sha256` beside
+the manifest (sha256sum format), which Telegram /launch-leg checks (HIMMEL-5047).
 
 Exit: 0 ok; 1 a leg is invalid or a worktree failed (nothing written for it); 2 usage.
 """
-import argparse, json, os, re, secrets, shlex, subprocess, sys
+import argparse, hashlib, json, os, re, secrets, shlex, subprocess, sys
 from datetime import date as _date, datetime
 
 REQUIRED = ['label', 'keys', 'slug', 'branch', 'title', 'desc', 'why', 'prior', 'scope', 'scope_short', 'commit']
@@ -211,6 +213,13 @@ def main():
         with open(launcher, 'w') as f:
             f.write(render_launcher(l, ctx, doc))
         os.chmod(launcher, 0o755)
+        if a.manifest:
+            # HIMMEL-5047: the Telegram /launch-leg op runs a launcher only when
+            # its sha256 matches the one recorded here at write time.
+            with open(launcher, 'rb') as f:
+                digest = hashlib.sha256(f.read()).hexdigest()
+            with open(re.sub(r'\.json$', '', a.manifest) + '.launchers.sha256', 'a') as f:
+                f.write('%s  %s\n' % (digest, os.path.abspath(launcher)))
 
     json.dump(legs, open(a.legs + '.out', 'w'), indent=1)
     for l in legs:

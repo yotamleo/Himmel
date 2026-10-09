@@ -93,7 +93,7 @@ test("delta grant carries backup names through result and sanitized audit", asyn
 });
 
 test("OPS table seeds the closed op allow-list", () => {
-  expect([...KNOWN_OPS].sort()).toEqual(["arm-resume", "cr-grant-delta", "launch-bypass-leg", "merge-public", "restart"]);
+  expect([...KNOWN_OPS].sort()).toEqual(["arm-resume", "close-wrapped", "cr-grant-delta", "cr-reset", "launch-bypass-leg", "launch-leg", "merge-public", "relaunch-console", "repin-hooks", "restart", "restart-bridge", "revert-main", "station-status"]);
   expect(OPS["arm-resume"].script).toBe("arm-resume");
   expect(OPS["merge-public"].script).toBe("merge-public");
 });

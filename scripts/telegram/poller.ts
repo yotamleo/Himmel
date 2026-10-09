@@ -6,7 +6,8 @@ import { homedir, tmpdir } from "node:os";
 import { appendLine, atomicWrite, bridgeRoot, ensureSession, readMeta, writeMeta, sessionDir, readNewLines, repairCursorBeyondEof, truncateFullyConsumed, type Meta, type OnCursorReset } from "./bus";
 import { classify, type Route } from "./router";
 import { routeToConsole, routeFleetCommand, staleConsoleCommand, consoleReplyTarget, rememberConsoleReply, type ConsoleRouteGate, type ConsoleReplyFn } from "./console-route";
-import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
+import { dispatchAutoAction, describeEnabledOps, KNOWN_OPS, CONFIRM_OPS, BREAK_GLASS_OPS, appendAuditLine, type RunScriptFn, type AuditFields } from "./auto-action";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { getUpdates, getMe, sendMessage, sendChatAction, getFile, downloadFile } from "./telegram-api";
 import { installTimestampedLogging } from "./log-timestamp";
 import { cwdForChat, isAllowed, isGroupAllowed, isOperatorIdentity, loadAccess, operatorChatId, requireMentionForChat, vaultForChat, type Access } from "./gate";
@@ -514,7 +515,11 @@ export async function handleInbound(root: string, msg: DeliveredMsg, run: Inboun
   // counts as a whole message. A tagged auto-command falls through to ordinary
   // chat instead — the tag is an agent-routing hint, never an entry to the
   // trusted path.
-  if (!tagged && route.kind === "auto" && auto && auto.authorize(msg.from, msg.chat_id) && msg.caption === false && auto.enabledOps.has(route.op)) {
+  // `/confirm` (HIMMEL-5047) is not an op of its own: it is live while any
+  // confirm-coded op is enabled, and it can only run what that op issued.
+  const opEnabled = auto && (auto.enabledOps.has(route.kind === "auto" ? route.op : "")
+    || (route.kind === "auto" && route.op === "confirm" && [...CONFIRM_OPS].some((op) => auto.enabledOps.has(op))));
+  if (!tagged && route.kind === "auto" && auto && auto.authorize(msg.from, msg.chat_id) && msg.caption === false && opEnabled) {
     auto.fire(msg, route);
     return;
   }
@@ -635,6 +640,7 @@ function auditResult(op: string, rc: number): string {
     }
   }
   if (op === "launch-bypass-leg") return "error";
+  if (BREAK_GLASS_OPS.has(op)) return rc === 0 ? "break-glass-ok" : rc === 19 ? "refused-agent" : "error";
   if (op === "cr-grant-delta") {
     if (rc === 15) return "head-moved";
     return rc === 0 ? "delta-granted" : "error";
@@ -676,7 +682,44 @@ export type AutoCommandDeps = {
   audit: (f: AuditFields) => Promise<void>;
   restart?: RestartFn;
   scheduleWatchdog?: ScheduleWatchdogFn;
+  now?: () => number;   // ms clock for the break-glass confirm expiry (tests inject it)
+  // The ops enabled NOW: /confirm refuses a pending op that was disabled since
+  // its code was issued (the pending file outlives a restart). Absent = none.
+  enabledOps?: Set<string>;
 };
+
+// Break-glass confirm codes (HIMMEL-5047). One pending challenge per bridge
+// root, bound to the chat and the operator that asked, valid 5 minutes. A new
+// op replaces it. Any /confirm consumes it first (rename, read, unlink), so a
+// wrong code burns it and a right one can never run twice.
+export const CONFIRM_TTL_MS = 5 * 60_000;
+type PendingConfirm = { code: string; chat_id: number; user: number; op: string; arg: string; time: string; expires: number };
+const pendingPath = (root: string) => join(root, "break-glass-pending.json");
+
+async function issueConfirm(root: string, msg: DeliveredMsg, route: { op: string; arg: string; time: string }, now: number): Promise<string> {
+  const code = randomBytes(4).toString("hex");
+  const p: PendingConfirm = { code, chat_id: msg.chat_id, user: msg.from, op: route.op, arg: route.arg, time: route.time, expires: now + CONFIRM_TTL_MS };
+  await mkdir(root, { recursive: true });
+  const tmp = `${pendingPath(root)}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(tmp, JSON.stringify(p), { encoding: "utf8", mode: 0o600 });
+  await rename(tmp, pendingPath(root));
+  return code;
+}
+
+async function takeConfirm(root: string): Promise<PendingConfirm | null> {
+  const taken = `${pendingPath(root)}.${randomBytes(4).toString("hex")}.taken`;
+  try { await rename(pendingPath(root), taken); }
+  catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") return null; throw e; }
+  try { return JSON.parse(await readFile(taken, "utf8")) as PendingConfirm; }
+  catch { return null; }
+  finally { await unlink(taken).catch(() => {}); }
+}
+
+function confirmMatches(p: PendingConfirm | null, msg: DeliveredMsg, code: string, now: number): p is PendingConfirm {
+  if (!p || typeof p.code !== "string" || p.code.length !== code.length) return false;
+  if (p.chat_id !== msg.chat_id || p.user !== msg.from || !(now <= p.expires)) return false;
+  return timingSafeEqual(Buffer.from(p.code), Buffer.from(code)) && CONFIRM_OPS.has(p.op);
+}
 
 // The auto-command flow (HIMMEL-424 B2). Run FIRE-AND-FORGET off the ingest loop (via
 // the gate's `fire`) so a slow `--time smart` arm can't stall polling. A FORWARDED /arm
@@ -684,7 +727,7 @@ export type AutoCommandDeps = {
 // otherwise the bridge invokes auto-action.sh and relays the result. Every attempt —
 // executed OR refused — is audited.
 export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: Extract<Route, { kind: "auto" }>, deps: AutoCommandDeps): Promise<void> {
-  void root;
+  const nowMs = deps.now ?? (() => Date.now());
   // The AUDIT is the security event and is written FIRST; the operator reply is
   // best-effort and must NEVER swallow the audit (CR I1: a reply-delivery failure
   // after a successful privileged arm would otherwise leave no durable record).
@@ -695,6 +738,15 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
   if (msg.forwarded === true) {
     await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: true, op: route.op, arg: route.arg, time: route.time, rc: -1, result: "refused-forwarded" });
     await reply("⚠️ forwarded commands are not executed");
+    return;
+  }
+  // Break-glass ops and their /confirm are DM-only (HIMMEL-5047 judge ruling): a
+  // private chat is the one where chat_id === from. A group /confirm still burns
+  // the pending code, so a code seen in a group can never be replayed.
+  if ((BREAK_GLASS_OPS.has(route.op) || route.op === "confirm") && msg.chat_id !== msg.from) {
+    if (route.op === "confirm") await takeConfirm(root);
+    await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: -1, result: "refused-group" });
+    await reply("⚠️ break-glass ops run only in your private chat with the bot; nothing ran");
     return;
   }
   // restart (HIMMEL-1272) is executed IN THIS PROCESS, not by auto-action.sh: rung 1
@@ -740,6 +792,23 @@ export async function handleAutoCommand(root: string, msg: DeliveredMsg, route: 
       });
     }
     return;
+  }
+  // Break-glass (HIMMEL-5047): a confirm-coded op only issues a code here; the
+  // code is never audited. `/confirm` runs the op the code was issued for.
+  if (CONFIRM_OPS.has(route.op)) {
+    const code = await issueConfirm(root, msg, route, nowMs());
+    await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, time: route.time, rc: 0, result: "confirm-issued" });
+    await reply(`🔐 ${route.op}${route.arg !== "-" ? ` ${route.arg}` : ""}${route.time === "bypass" ? " --hook-bypass" : ""}: send /confirm ${code} within 5 minutes to run it. Any other /confirm cancels it.`);
+    return;
+  }
+  if (route.op === "confirm") {
+    const p = await takeConfirm(root);
+    if (!confirmMatches(p, msg, route.arg, nowMs()) || !deps.enabledOps?.has(p.op)) {
+      await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: p?.op ?? "confirm", arg: p?.arg ?? "-", time: p?.time ?? "-", rc: -1, result: "confirm-refused" });
+      await reply("⚠️ confirm refused — no matching pending command (wrong, expired or already used). Nothing ran; send the command again for a new code.");
+      return;
+    }
+    route = { kind: "auto", op: p.op as "revert-main", arg: p.arg, time: p.time };
   }
   const res = await dispatchAutoAction({ runScript: deps.runScript }, route);
   await deps.audit({ chat_id: msg.chat_id, user: msg.from, forwarded: false, op: route.op, arg: route.arg, resolved: res.resolved, backups: res.backups, time: route.time, rc: res.rc, result: auditResult(route.op, res.rc) });
@@ -2155,7 +2224,7 @@ export async function main(): Promise<void> {
   // long before the timer fires, and a ref'd timer would hold it open in between.
   const scheduleWatchdog: ScheduleWatchdogFn = (afterMs, fire) => { setTimeout(fire, afterMs).unref?.(); };
   const autoFire: AutoFire = (msg, route) => {
-    void handleAutoCommand(root, msg, route, { runScript, reply: (chat, text) => replyViaOutbox(root, chat, text), audit: auditFn, restart, scheduleWatchdog })
+    void handleAutoCommand(root, msg, route, { runScript, reply: (chat, text) => replyViaOutbox(root, chat, text), audit: auditFn, restart, scheduleWatchdog, enabledOps })
       .catch((e) => console.error(`[poller] auto-action failed for op ${route.op}: ${e}`));
   };
   // authorize = operator-identity (global allowFrom) AND chat-allowlisted (makeAllow):
