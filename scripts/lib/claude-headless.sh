@@ -38,6 +38,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # shellcheck source=scripts/lib/kill-tree.sh
 . "$SCRIPT_DIR/kill-tree.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/kill-tree.sh" >&2; exit 1; }
+# shellcheck source=scripts/lib/proc-tree.sh
+. "$SCRIPT_DIR/proc-tree.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/proc-tree.sh" >&2; exit 1; }
 # shellcheck source=scripts/lib/dedupe-path.sh
 . "$SCRIPT_DIR/dedupe-path.sh" || { echo "claude-headless.sh: cannot source $SCRIPT_DIR/dedupe-path.sh" >&2; exit 1; }
 
@@ -151,10 +153,10 @@ fi
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # Process start time of <pid> ("" when it is gone or ps is unavailable). Paired
-# with the pid it identifies one process even after the pid is reused. LC_ALL=C:
-# lstart is locale-dependent and a row may be recorded and read under different
-# locales.
-proc_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+# with the pid it identifies one process even after the pid is reused. TZ=UTC
+# LC_ALL=C (as proc-tree.sh does, HIMMEL-3791): lstart is printed in the caller's
+# TZ and locale, and a row may be recorded and read under different ones.
+proc_start() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
 
 # HIMMEL-2197: a dispatched/running row whose wrapper died without running
 # finalize_on_exit (SIGKILL, host death) would count against the cap forever.
@@ -164,11 +166,15 @@ proc_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^
 # and its slot must stay held. A row with no recorded pid, or a live matching
 # one, is never reaped. Called only under the admission lock.
 pid_gone() { # <pid> <recorded start>
-  local cur
+  local cur alive_rc=0
   cur="$(proc_start "$1")"
   if [ -z "$cur" ]; then
-    kill -0 "$1" 2>/dev/null && return 1
-    return 0
+    # No start time from ps: only a confirmed ESRCH (rc 1) proves the pid gone.
+    # EPERM, a pid namespace boundary or any other probe failure is unknown
+    # (rc 2) and keeps the slot.
+    proc_tree_process_alive "$1" || alive_rc=$?
+    [ "$alive_rc" -eq 1 ]
+    return
   fi
   [ -n "$2" ] && [ "$2" != "$cur" ]
 }
@@ -387,7 +393,8 @@ lock_release() {
 # death, which needs no heartbeat. A SIGKILL skips this trap, so the row also
 # records pid + pid_start and the next admission reaps it (count_active,
 # HIMMEL-2197). ponytail: no heartbeat/TTL, so a wedged-but-alive worker still
-# holds its slot; upgrade path is Chain 4 heartbeats (architecture doc §3).
+# holds its slot; upgrade path is HIMMEL-5119 (Chain 4 heartbeats, architecture
+# doc §3).
 #
 # codex-1 follow-up: marking the row terminal is not enough on its own — the
 # actual claude session runs as a BACKGROUND child (_LAUNCHED_CLAUDE_PID, set
@@ -617,7 +624,7 @@ DEDUPED_PATH="$(dedupe_path "$PATH")"
 # HIMMEL-2197: mark the row BEFORE the fork. A wrapper SIGKILLed between the
 # fork and the worker_pid write below must not look launch-free to the reaper.
 # ponytail: such a row keeps its slot forever (no heartbeat/TTL), upgrade path
-# is Chain 4 heartbeats.
+# is HIMMEL-5119.
 if [ -n "${ROW:-}" ] && [ -f "$ROW" ]; then
   if ! { jq '.launching = true' "$ROW" > "$ROW.tmp" 2>/dev/null && mv "$ROW.tmp" "$ROW" 2>/dev/null; }; then
     rm -f "$ROW.tmp" 2>/dev/null

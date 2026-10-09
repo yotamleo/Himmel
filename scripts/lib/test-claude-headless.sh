@@ -585,7 +585,7 @@ check "20 missing --model: no registry row written" "0" "$(ls "$LIVE_DIR"/*.json
 # finalize_on_exit (SIGKILL, host death) must stop counting against the cap.
 # The row records the wrapper pid and its start time; the next admission reaps a
 # row whose pid is gone, or alive with a different start time (pid reuse).
-proc_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+proc_start() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
 cap1_run() { HIMMEL_DISPATCH_MAX_CONCURRENT=1 run_sut "$FAKE_OK" "$1" >/dev/null 2>&1; }
 ( : ) & DEAD_PID=$!; wait "$DEAD_PID" 2>/dev/null
 jq -n --arg p "$DEAD_PID" '{id:"dead", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:"Thu Jan 1 00:00:00 1970"}' > "$LIVE_DIR/dead.json"
@@ -631,6 +631,45 @@ jq -n --arg d "$DEAD_PID" '{id:"launching", role:"r", worktree:"w", ticket:"t", 
 cap1_run "$W/artifact26.txt"; RC26=$?
 check "26 dead wrapper, launching row without worker pid: slot kept" "1" "$RC26"
 check "26 launching row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/launching.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+
+# 27: lstart prints in the caller's TZ. The row was recorded under UTC (the
+# wrapper pins it); a contender running under another TZ must still see the live
+# holder as live, or two dispatches run at cap 1.
+sleep 60 & LIVE_PID=$!
+jq -n --arg p "$LIVE_PID" --arg s "$(proc_start "$LIVE_PID")" '{id:"tz", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:$s}' > "$LIVE_DIR/tz.json"
+TZ=XXX-9 cap1_run "$W/artifact27.txt"; RC27=$?
+check "27 live holder read under another TZ is not reaped: cap refuses" "1" "$RC27"
+check "27 cross-TZ live holder row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/tz.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+
+# 28: an empty recorded start is unknown, never proof of death.
+jq -n --arg p "$LIVE_PID" '{id:"nostart", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:""}' > "$LIVE_DIR/nostart.json"
+cap1_run "$W/artifact28.txt"; RC28=$?
+check "28 live holder with empty recorded start is not reaped" "1" "$RC28"
+rm -f "$LIVE_DIR"/*.json
+
+# 29-31: ps yields no start time (unavailable, or a pid namespace boundary). Only
+# kill -0 ESRCH proves a holder gone: a live pid, and an EPERM pid (1, init), keep
+# their slot; a truly dead pid is still reaped.
+FAKEPS="$W/fakeps"; mkdir -p "$FAKEPS"
+REAL_PS="$(command -v ps)"
+# shellcheck disable=SC2016
+printf '#!/bin/sh\nfor a in "$@"; do [ "$a" = "lstart=" ] && exit 1; done\n%s "$@"\n' "$REAL_PS" > "$FAKEPS/ps"
+chmod +x "$FAKEPS/ps"
+jq -n --arg p "$LIVE_PID" '{id:"psnone", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:"Thu Jan 1 00:00:00 1970"}' > "$LIVE_DIR/psnone.json"
+PATH="$FAKEPS:$PATH" cap1_run "$W/artifact29.txt"; RC29=$?
+check "29 ps empty, pid alive (kill -0 ok): slot kept" "1" "$RC29"
+rm -f "$LIVE_DIR"/*.json
+jq -n '{id:"eperm", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:1, pid_start:"Thu Jan 1 00:00:00 1970"}' > "$LIVE_DIR/eperm.json"
+PATH="$FAKEPS:$PATH" cap1_run "$W/artifact30.txt"; RC30=$?
+check "30 ps empty, pid 1 (EPERM or alive): unknown keeps the slot" "1" "$RC30"
+check "30 pid 1 row stays dispatched" "dispatched" "$(jq -r '.status' "$LIVE_DIR/eperm.json" 2>/dev/null)"
+rm -f "$LIVE_DIR"/*.json
+jq -n --arg p "$DEAD_PID" '{id:"psdead", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:"Thu Jan 1 00:00:00 1970"}' > "$LIVE_DIR/psdead.json"
+PATH="$FAKEPS:$PATH" cap1_run "$W/artifact31.txt"; RC31=$?
+check "31 ps empty, pid confirmed gone (ESRCH): reaped" "0" "$RC31"
+kill "$LIVE_PID" 2>/dev/null; wait "$LIVE_PID" 2>/dev/null
 rm -f "$LIVE_DIR"/*.json
 
 echo "---$PASS passed, $FAIL failed, $SKIP skipped ---"

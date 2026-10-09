@@ -157,7 +157,7 @@ echo "== H claude-headless.sh end to end: seam + fake bank, zero spend =="
 # The real chokepoint wrapper runs claude against the mock. bank-preflight is NOT
 # edited or stubbed: its own cache/ledger/fleet seams are pointed at hermetic
 # files (a PROCEED cache for a synthetic account), the same way
-# scripts/lib/test-claude-headless.sh does. ANTHROPIC_MODEL is a canary the pin
+# scripts/lib/test-claude-headless.sh does. ANTHROPIC_DEFAULT_SONNET_MODEL is a canary the pin
 # must still strip; the base URL + key survive only through the loopback seam.
 if command -v jq >/dev/null 2>&1; then
   H="$WORK/h"; mkdir -p "$H/home" "$H/cfg" "$H/wt" "$H/reg" "$H/slots"
@@ -182,7 +182,7 @@ node "$MOCK" --fixture "$H/fixture.json" --port-file "$H/port" --log "$H/mock.lo
 i=0; while [ ! -s "$H/port" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 [ -s "$H/port" ] || { kill "$m" 2>/dev/null; exit 97; }
 ANTHROPIC_BASE_URL="http://127.0.0.1:$(cat "$H/port")"; export ANTHROPIC_BASE_URL
-printf 'say hi' | bash "$REPO/scripts/lib/claude-headless.sh" --role mock-turn --model test-model --ticket HIMMEL-4411 \
+printf 'say hi' | bash "$REPO/scripts/lib/claude-headless.sh" --role mock-turn --model sonnet --ticket HIMMEL-4411 \
   --worktree "$H/wt" --artifact "$H/wt/artifact.txt" --permission-mode default --max-turns 4 \
   --allowed-tools 'Bash' >"$H/headless.out" 2>"$H/headless.err"
 echo $? >"$H/headless.rc"
@@ -191,7 +191,7 @@ HEOF
   # headless-claude-ok: mock-backed — fake key, loopback-only netns, zero spend; bank-preflight faked through its own cache seams (HIMMEL-4411)
   env -i PATH="$(dirname "$(command -v claude)"):$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin" \
     HOME="$H/home" CLAUDE_CONFIG_DIR="$H/cfg" REPO="$REPO" MOCK="$MOCK" H="$H" \
-    ANTHROPIC_API_KEY="$FAKEKEY_KEY" ANTHROPIC_MODEL=canary-model-must-be-stripped \
+    ANTHROPIC_API_KEY="$FAKEKEY_KEY" ANTHROPIC_DEFAULT_SONNET_MODEL=canary-model-must-be-stripped \
     NATIVE_AUTH_PIN_KEEP_LOOPBACK_MOCK=1 \
     HIMMEL_REGISTRY_DIR="$H/reg" HIMMEL_FLEET_SLOTS="$H/slots" HIMMEL_FLEET_CAP=4 CADENCE_BANK_LANE=native \
     CADENCE_BANK_CACHE="$H/bank-cache.json" CADENCE_BANK_SKIP_REFRESH=1 CADENCE_BANK_LEDGER="$H/bank-ledger.jsonl" \
@@ -203,8 +203,8 @@ HEOF
     skip "H run from inside a Claude Code session: bank-preflight's seam guard refuses across the netns (runs in CI, or detached from the session)"
   else
   if [ "$(cat "$H/wt/artifact.txt" 2>/dev/null)" = headless-ok ]; then pass "H1 wrapper run on the mock completed the Bash tool call (artifact written)"; else fail "H1 no artifact ($(head -c 300 "$H/headless.err" 2>/dev/null) $(head -c 300 "$H/outer.out" 2>/dev/null))"; fi
-  if [ -s "$H/mock.log" ] && [ "$(jsonl_q "$H/mock.log" 'rows.filter(r=>r.path==="/v1/messages").length>=2&&rows.every(r=>!r.body||!r.body.model||r.body.model!=="canary-model-must-be-stripped")')" = true ]; then
-    pass "H2 the pin stripped ANTHROPIC_MODEL while the seam kept the loopback base URL (mock saw the turns)"
+  if [ -s "$H/mock.log" ] && [ "$(jsonl_q "$H/mock.log" 'rows.filter(r=>r.path==="/v1/messages").length>=2&&rows.filter(r=>r.path==="/v1/messages").every(r=>r.body&&r.body.model&&r.body.model!=="canary-model-must-be-stripped")')" = true ]; then
+    pass "H2 the pin stripped the ANTHROPIC_DEFAULT_SONNET_MODEL canary (--model sonnet resolved to a real model) while the seam kept the loopback base URL (mock saw the turns)"
   else fail "H2 request log missing or the canary model leaked"; fi
   fi
 else
