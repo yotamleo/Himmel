@@ -47,6 +47,17 @@ filled this, HIMMEL-4902):
 **Held queue:** {{QUEUE_LINE}}
 **Last GO:** {{LAST_GO}}
 
+**Open judge calls** (HIMMEL-5071). Subagents still running in this session
+when `console.sh next` ran:
+
+{{JUDGE_CALLS}}
+
+<One line per judge qid this shift dispatched: `<qid> — pending | GO | NO-GO`,
+read from its `verdicts/<qid>/` file (every judge call persists through
+`write-verdict.sh`; no file = pending). The successor reads `verdicts/<qid>/`
+before it re-dispatches a judge and never re-runs one whose verdict is written.
+`console.sh wrap` refuses while any judge child above is still running.>
+
 ## This shift (the console's last Results bullets)
 
 {{SHIFT_SUMMARY}}

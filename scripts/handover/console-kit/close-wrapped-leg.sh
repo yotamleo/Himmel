@@ -69,6 +69,9 @@
 #   5  refused - 0 or >1 live sessions matched the leg's names
 #   6  refused - the matched session still has a non-harness process alive
 #      (wrap-subtree-check.sh reported WITHHELD, or could not prove CLOSABLE)
+#   7  refused - the matched session still has a live in-process subagent (an
+#      Agent-tool child, e.g. a console's judge call), or live-subagents.sh
+#      could not prove it has none (HIMMEL-5071); retry once they finish
 #
 # Platform guard: Linux bash 3.2+ (depends on /proc via claude-sessions.sh;
 # no .ps1 twin - konsole legs are Linux/KDE-only, same guard as
@@ -80,6 +83,7 @@ KILL="${KILL_BIN:-kill}"
 CLEAN_SH="${CLEAN_SH_BIN:-$HERE/../../clean.sh}"
 WRAP_SUBTREE_CHECK="${WRAP_SUBTREE_CHECK_BIN:-$HERE/../wrap-subtree-check.sh}"
 TMP_REAP="${TMP_REAP_BIN:-$HERE/../../tmp-reap.sh}"
+LIVE_SUBAGENTS="${LIVE_SUBAGENTS_BIN:-$HERE/live-subagents.sh}"
 
 usage() {
     echo "usage: close-wrapped-leg.sh [--console | --fleet <manifest>] <doc>" >&2
@@ -238,6 +242,37 @@ if [ "$subtree_rc" -ne 0 ]; then
     exit 6
 fi
 
+# ---------- Session id (HIMMEL-4670 P3, HIMMEL-5071) ---------------------------
+# Captured BEFORE the TERM, while the session's own record still exists: the
+# live pid's ~/.claude/sessions/<pid>.json names its sessionId. Unreadable or
+# not a UUID: the transcript resolved above supplies it. The subagent gate
+# below and the leg's digest step both use it.
+digest_sid=""
+sessions_json="${CLOSE_WRAPPED_LEG_SESSIONS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions}/$matched.json"
+digest_sid=$(jq -r '.sessionId // empty' "$sessions_json" 2>/dev/null)
+case "$digest_sid" in
+    ????????-????-????-????-????????????) ;;
+    *) digest_sid="$(transcript_sid "${TRANSCRIPT:-none}")" ;;
+esac
+
+# ---------- Live in-process subagents (HIMMEL-5071) ----------------------------
+# An Agent-tool child is not a process, so the subtree check above cannot see
+# it: TERMing its parent kills it and loses its result (a console's judge
+# verdict). live-subagents.sh reads the session's subagent registry against its
+# transcript; anything but "none running" (a live child, or no way to tell)
+# refuses - retry once the children finish, like exit 6.
+subagents_out=$(bash "$LIVE_SUBAGENTS" --session "$digest_sid" --projects "$PROJECTS_DIR" 2>&1)
+subagents_rc=$?
+if [ "$subagents_rc" -ne 0 ]; then
+    echo "$subagents_out"
+    if [ "$subagents_rc" -eq 1 ]; then
+        echo "close-wrapped-leg: refusing to signal pid $matched - session $digest_sid has live subagents (above); retry once they finish" >&2
+    else
+        echo "close-wrapped-leg: refusing to signal pid $matched - cannot prove session '$digest_sid' has no live subagents (above); retry shortly" >&2
+    fi
+    exit 7
+fi
+
 # ---------- --console: a wrapped predecessor console (HIMMEL-4968) -------------
 # Every check above ran unchanged. A console has no worktree, cost row, scratch
 # or failure digest of its own, so the leg-only steps below are skipped: TERM
@@ -270,18 +305,6 @@ if [ -n "$TRANSCRIPT" ]; then
         echo "close-wrapped-leg: WARN cannot write $ledger - no cost ledger row" >&2
     fi
 fi
-
-# ---------- Session id for the digest step (HIMMEL-4670 P3) ------------------
-# Captured BEFORE the TERM, while the session's own record still exists: the
-# live pid's ~/.claude/sessions/<pid>.json names its sessionId. Unreadable or
-# not a UUID: the transcript resolved above supplies it, else the digest skips.
-digest_sid=""
-sessions_json="${CLOSE_WRAPPED_LEG_SESSIONS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/sessions}/$matched.json"
-digest_sid=$(jq -r '.sessionId // empty' "$sessions_json" 2>/dev/null)
-case "$digest_sid" in
-    ????????-????-????-????-????????????) ;;
-    *) digest_sid="$(transcript_sid "${TRANSCRIPT:-none}")" ;;
-esac
 
 if ! "$KILL" -TERM "$matched"; then
     echo "close-wrapped-leg: failed to send TERM to pid $matched" >&2
