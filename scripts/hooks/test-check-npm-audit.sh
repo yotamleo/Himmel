@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # Smoke test for scripts/hooks/check-npm-audit.sh.
 #
 # Scope: the package-DISCOVERY logic, which is the thing the HIMMEL-179

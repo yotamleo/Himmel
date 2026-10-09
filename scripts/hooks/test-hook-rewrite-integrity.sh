@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # E2E coverage for the HIMMEL-1666 rewrite-vector fix: a dispatched worker with
 # Edit(<worktree>) can rewrite a project-local guard's ON-DISK content (not
 # just delete it — the vector HIMMEL-1649 already closed). This proves

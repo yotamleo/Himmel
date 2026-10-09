@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # Tests for scripts/cr/anchor-handoff.sh (HIMMEL-3395): a gate writer entered
 # by a RELATIVE path from a non-anchor tree runs the anchor's copy; an
 # absolute entry runs the local copy; the relative door fails closed.

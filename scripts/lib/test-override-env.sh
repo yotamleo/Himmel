@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # scripts/lib/test-override-env.sh -- suite for scripts/lib/override-env.sh
 # (HIMMEL-3092): the guard-override list, the scrub, the drift gate that keeps
 # the list complete, and the runner wiring that applies it to every suite.

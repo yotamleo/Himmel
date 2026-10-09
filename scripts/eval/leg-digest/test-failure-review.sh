@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # scripts/eval/leg-digest/test-failure-review.sh - hermetic suite for the daily failure review (HIMMEL-4713 P5b).
 # Scratch ledger, state, out dir, vault, a stub Jira, a stub notifier and a stub crontab only; never ~/.himmel,
 # never a real Jira write, never a real Telegram send, never the real crontab. No model call.

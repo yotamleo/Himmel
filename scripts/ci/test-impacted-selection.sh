@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# selector: tree-scan
 # scripts/ci/test-impacted-selection.sh — scripts/ci/impacted-selection.sh
 # (HIMMEL-3897): the BASE-sourced full-vs-impacted verdict every PR shell-unit
 # shard and the aggregator print as their manifest header.
@@ -16,6 +17,12 @@
 #   IS8  the selector runs from the BASE: a head that guts impacted-suites.sh
 #        (outside this fixture's trust list) still gets the base's selection
 #   IS9  an unresolvable head is rc 2, never a verdict
+#   IS11 a PR that only ADDS an unreferenced file selects the `# selector:
+#        tree-scan` suite (HIMMEL-5114); an unmarked suite is not selected
+#   IS12 a PR that deletes a file selects it
+#   IS13 a PR that renames a file selects it
+#   IS14 a PR that only modifies an existing file does not select it
+#   IS15 lint: a suite that walks the real tree without the marker is flagged
 #
 # Platform guard: bash-only, no .ps1 twin; git + tar, Linux CI is the caller.
 #
@@ -52,6 +59,7 @@ mkdir -p "$SB/scripts/ci" "$SB/scripts/cr" "$SB/scripts/tools" "$SB/docs"
 printf '# tool\n' > "$SB/scripts/tools/foo.sh"
 printf '#!/usr/bin/env bash\n# drives tools/foo.sh\nexit 0\n' > "$SB/scripts/test-foo.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/scripts/test-bar.sh"
+printf '#!/usr/bin/env bash\n# selector: tree-scan\nexit 0\n' > "$SB/scripts/test-tree.sh"
 printf '# doc\n' > "$SB/docs/note.md"
 g add -A; g commit -q -m "chore: pre-selector"
 PRE=$(g rev-parse HEAD)
@@ -88,6 +96,19 @@ g checkout -q -B onoff "$OFF"
 printf '# edit\n' >> "$SB/scripts/tools/foo.sh"
 g commit -q -am "code on off"
 H_ONOFF=$(g rev-parse HEAD)
+# HIMMEL-5114: a diff that adds / deletes / renames a file no suite names.
+g checkout -q -B added "$BASE"
+printf '# new\n' > "$SB/scripts/tools/brand-new.sh"
+g add -A; g commit -q -m "add an unreferenced file"
+H_ADD=$(g rev-parse HEAD)
+g checkout -q -B deleted "$BASE"
+g rm -q "$SB/scripts/tools/foo.sh"
+g commit -q -m "delete a file"
+H_DEL=$(g rev-parse HEAD)
+g checkout -q -B renamed "$BASE"
+g mv "$SB/scripts/tools/foo.sh" "$SB/scripts/tools/foo2.sh"
+g commit -q -m "rename a file"
+H_REN=$(g rev-parse HEAD)
 g checkout -q "$BASE" 2>/dev/null
 
 sel() { (cd "$SB" && bash "$SEL" "$@" 2>&1); }
@@ -170,5 +191,53 @@ for name in 'scripts/ci/we"ird.sh' 'scripts/ci/back\slash.sh' $'scripts/ci/ta\tb
   else fail "IS10.$n: rc=$rc out: $out"; fi
 done
 g checkout -q "$BASE" 2>/dev/null
+
+# --- IS11 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_ADD"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \
+   && grepq "$out" -x 'suite scripts/test-tree.sh' \
+   && ! grepq "$out" -x 'suite scripts/test-bar.sh'; then
+  pass "IS11: an added file selects the tree-scan suite, not an unmarked one"
+else fail "IS11: rc=$rc out: $out"; fi
+
+# --- IS12 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_DEL"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'suite scripts/test-tree.sh'; then
+  pass "IS12: a deleted file selects the tree-scan suite"
+else fail "IS12: rc=$rc out: $out"; fi
+
+# --- IS13 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_REN"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'suite scripts/test-tree.sh'; then
+  pass "IS13: a renamed file selects the tree-scan suite"
+else fail "IS13: rc=$rc out: $out"; fi
+
+# --- IS14 -------------------------------------------------------------------
+out=$(sel "$BASE" "$H_CODE"); rc=$?
+if [ "$rc" -eq 0 ] && grepq "$out" -x 'mode impacted' \
+   && ! grepq "$out" -x 'suite scripts/test-tree.sh'; then
+  pass "IS14: a content-only edit does not select the tree-scan suite"
+else fail "IS14: rc=$rc out: $out"; fi
+
+# --- IS15 -------------------------------------------------------------------
+# Lint: a suite that enumerates the REAL repo tree (git ls-files / ls-tree /
+# find rooted at the repo variable) must carry the marker, or an added file it
+# never names breaks it while the selector skips it. A tripwire, not a parser:
+# it reads uncommented lines naming REPO / REPO_ROOT / SRC_ROOT / `repo,`.
+unmarked=""
+while IFS= read -r ts; do
+  [ -n "$ts" ] || continue
+  grep -qx '# selector: tree-scan' "$SRC_ROOT/$ts" && continue
+  if grep -vE '^[[:space:]]*#' "$SRC_ROOT/$ts" \
+       | grep -E '(ls-files|ls-tree|find )' \
+       | grep -vE 'ls-files -s|--error-unmatch' \
+       | grep -qE '\$\{?(REPO|REPO_ROOT|SRC_ROOT)\}?|, *repo\b'; then
+    unmarked="$unmarked $ts"
+  fi
+done < <(git -C "$SRC_ROOT" ls-files -- 'scripts/**/test-*.sh' 'scripts/test-*.sh' \
+           'templates/**/test-*.sh' 'marketplace/**/test-*.sh')
+if [ -z "$unmarked" ]; then
+  pass "IS15: every suite that walks the real tree carries '# selector: tree-scan'"
+else fail "IS15: tree-walking suite(s) without the marker:$unmarked"; fi
 
 rst_tally
