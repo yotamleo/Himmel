@@ -838,7 +838,7 @@ PR_GIT_UNSAFE=0 PR_TOKFAIL=0 PR_GIT_EXEC=0
 # A git word, also as the default of a `${G:-git}` expansion (HIMMEL-4953).
 PR_GITWORD_RE='(^|[^[:alnum:]_.-]|:-)git([^[:alnum:]_.-]|$)'
 git_mentions_only() { # git_mentions_only <command-word index>
-    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0
+    local j=$(( $1 + 1 )) sg=${ST_S[$1]} w sub='' cached=0 dir=0 paths=0 xp=0 bad=0 xk
     while [ "$j" -lt "$ST_N" ] && [ "${ST_S[j]}" = "$sg" ]; do
         w=${ST_W[j]}
         if [ -n "${ST_RO[j]}" ]; then j=$((j + 1)); continue; fi
@@ -871,8 +871,11 @@ git_mentions_only() { # git_mentions_only <command-word index>
             # -O runs a pager only for grep; diff/log/show take it as an orderfile.
             -O* | -[!-]*O*) case "$sub" in diff | log | show) ;; *) PR_GIT_EXEC=1 ;; esac ;;
             -c* | --config*)
-                case "$w ${ST_W[j + 1]:-}" in
-                    *'!'* | *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshCommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
+                # Match the config KEY (git folds its case), never the value.
+                case "$w" in -c) xk=${ST_W[j + 1]:-} ;; -c*) xk=${w#-c} ;; *) xk=$w ;; esac
+                xk=$(printf '%s' "${xk%%=*}" | tr '[:upper:]' '[:lower:]')
+                case "$xk" in
+                    *pager* | *alias.* | *filter.* | *textconv* | *fsmonitor* | *sshcommand* | *.command* | *external*) PR_GIT_EXEC=1 ;;
                 esac ;;
         esac
         if [ "$dir" = 1 ]; then

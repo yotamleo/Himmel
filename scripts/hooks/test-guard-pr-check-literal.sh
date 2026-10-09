@@ -1656,7 +1656,8 @@ for v in \
     'git diff --ext-diff -- scripts/cr/' \
     'git log --output=out.txt' \
     'git log --output=out.txt -- scripts/cr/' \
-    "git -c diff.x.command=bash diff"; do
+    "git -c diff.x.command=bash diff" \
+    'git -c core.PAGER=bash grep -e .'; do
     run "HIMMEL-4958 exec option any pathspec [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 for v in \
@@ -1665,6 +1666,7 @@ for v in \
     'git log --oneline -3' \
     'git diff --stat' \
     'git diff -Oorderfile' \
+    "git -c user.name='pager duty' grep -e ." \
     'git log -Oorderfile --oneline' \
     'git grep --only-matching -e .' \
     'git -c user.name=t -c user.email=t@t commit -m x'; do
