@@ -759,6 +759,8 @@ scripts/guardrails/* scripts/hooks/test-wired-hooks-integrity-resolution.sh
 scripts/handover/queue-lock.sh scripts/hooks/test-wired-hooks-integrity-resolution.sh
 .claude/settings.json scripts/hooks/test-wired-hooks-integrity-resolution.sh
 .codex/hooks.json scripts/hooks/test-wired-hooks-integrity-resolution.sh
+marketplace/plugins/*/hooks/* scripts/hooks/test-wired-hooks-integrity-resolution.sh
+marketplace/plugins/*/scripts/* scripts/hooks/test-wired-hooks-integrity-resolution.sh
 scripts/guardrails/* scripts/lib/test-override-env.sh
 scripts/lib/* scripts/lib/test-override-env.sh
 marketplace/plugins/himmel-ops/hooks/* scripts/lib/test-override-env.sh

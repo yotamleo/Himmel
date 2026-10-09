@@ -94,6 +94,17 @@ wired_scripts() {
       const m = c.match(/run-hook\.sh\s+(?:--\S+\s+)*([A-Za-z0-9_.+-]+\.sh(?:\+[A-Za-z0-9_.+-]+\.sh)*)/);
       if (m) for (const n of m[1].split("+")) out.add("scripts/hooks/" + n);
     }
+    // HIMMEL-5085: plugin hooks.json commands. CLAUDE_PLUGIN_ROOT is the plugin dir,
+    // marketplace/plugins/<name>, in this tree; CLAUDE_PROJECT_DIR is the project root.
+    const pdir = path.join(root, "marketplace/plugins");
+    if (fs.existsSync(pdir)) for (const name of fs.readdirSync(pdir).sort()) {
+      const rel = "marketplace/plugins/" + name + "/hooks/hooks.json";
+      if (!fs.existsSync(path.join(root, rel))) continue;
+      for (const c of cmds(rel)) {
+        for (const m of c.matchAll(/\$\{?CLAUDE_PLUGIN_ROOT\}?\/([^"\s;]+\.(?:sh|js))/g)) out.add("marketplace/plugins/" + name + "/" + m[1]);
+        for (const m of c.matchAll(/\$\{?CLAUDE_PROJECT_DIR\}?\/([^"\s;]+\.(?:sh|js))/g)) out.add(m[1]);
+      }
+    }
     console.log([...out].sort().join("\n"));
   ' "$1"
 }
@@ -115,6 +126,16 @@ if good_out="$(check_closure "$FX" "$FX/scripts/hooks/good.sh" 2>&1)" && [ -z "$
 printf 'scripts/lib/x.sh\nscripts/newdir/x.sh\n' > "$FX/paths"
 if [ "$(uncovered "$ROOT" "$FX/paths")" = "scripts/newdir/x.sh" ]; then ok "an uncovered closure directory is reported, a covered one is not"; else bad "closure-coverage check cannot fail"; fi
 
+# HIMMEL-5085: a plugin hooks.json command (${CLAUDE_PLUGIN_ROOT}/...) must be enumerated
+# and held to the same resolution + coverage as a repo hook.
+PX="$FX/plug"; mkdir -p "$PX/.claude" "$PX/.codex" "$PX/marketplace/plugins/p/hooks"
+printf '{"hooks":{}}\n' > "$PX/.claude/settings.json"; printf '{"hooks":{}}\n' > "$PX/.codex/hooks.json"
+# shellcheck disable=SC2016
+printf '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"bash \\"${CLAUDE_PLUGIN_ROOT}/hooks/a.sh\\""}]}]}}\n' > "$PX/marketplace/plugins/p/hooks/hooks.json"
+if [ "$(wired_scripts "$PX" 2>&1)" = "marketplace/plugins/p/hooks/a.sh" ]; then ok "a plugin hooks.json command is enumerated under its plugin dir"; else bad "plugin hooks.json commands are not enumerated"; fi
+printf 'marketplace/plugins/p/weird/x.sh\n' > "$FX/ppaths"
+if [ "$(uncovered "$ROOT" "$FX/ppaths")" = "marketplace/plugins/p/weird/x.sh" ]; then ok "a plugin hook in an unscanned dir is reported uncovered"; else bad "plugin hook in an unscanned dir passes coverage"; fi
+
 echo "== every wired hook script resolves"
 N=0
 CL="$FX/closure"; : > "$CL"; export CLOSURE_OUT="$CL"
@@ -125,7 +146,7 @@ while IFS= read -r rel; do
   case "$rel" in
     # The launcher itself runs BEFORE hook-integrity (it starts node); it is not
     # a hook script and is never passed through verifyProjectHookIntegrity.
-    scripts/lib/run-node.sh) continue ;;
+    scripts/lib/run-node.sh|marketplace/plugins/*/hooks/run-node.sh) continue ;;
     *.sh) ;;
     *) continue ;;
   esac
