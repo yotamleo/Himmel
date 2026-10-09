@@ -1734,6 +1734,12 @@ trap '@@' RETURN
 mapfile -C '@@' -c 1 a </dev/null
 readarray -C '@@' -c 1 a </dev/null
 emulate zsh -c '@@'
+0<&0 ev\al '@@'
+2>&1 ev\al '@@'
+>&/dev/null ev\al '@@'
+&>/dev/null ev\al '@@'
+<&- ev\al '@@'
+>&2 . /dev/stdin <<<'@@'
 FORMS
     assert_allow "4454b control: trap on EXIT is not a run-time definer [$pre]" "$(j "trap 'echo bye' EXIT; $pre ls /r/w/docs/*.md")"
     assert_allow "4454b control: mapfile without -C [$pre]" "$(j "mapfile -t a </dev/null; $pre ls /r/w/docs/*.md")"

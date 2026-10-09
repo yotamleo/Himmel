@@ -1369,12 +1369,14 @@ pobf_relief() {
     local re_ec='[[:blank:]]-[[:alnum:]]*c'
     # Backticks pair up (an escaped one is not a delimiter): the text after a
     # closing one continues the same command, so its first line is no stage.
-    local cw sk bj skf G
+    local cw sk bj skf G sg
     local -a bqs
     G=${F//\\$BQ/$'\004'}
     IFS=$BQ read -r -d '' -a bqs <<< "$G" || :
     for bj in "${!bqs[@]}"; do
         skf=0; [ "$bj" -gt 0 ] && [ $((bj % 2)) = 0 ] && skf=1
+        # >&, <& and &> are redirects, not a stage break: fold them first.
+        sg=${bqs[bj]//>&/>}; sg=${sg//<&/<}; sg=${sg//&>/>}
         while IFS= read -r L; do
             [ "$skf" = 1 ] && { skf=0; continue; }
             cw=''; sk=0
@@ -1396,7 +1398,7 @@ pobf_relief() {
                 mapfile|readarray) [[ $L =~ $re_mc ]] && return 1 ;;
                 emulate) [[ $L =~ $re_ec ]] && return 1 ;;
             esac
-        done <<< "${bqs[bj]//[;&|()]/$NL}"
+        done <<< "${sg//[;&|()]/$NL}"
     done
     [[ $F =~ $re_ep || $F =~ $re_fp || $F =~ $re_sa ]] && return 1
     [[ $F =~ $re_eq || $F =~ $re_pa || $F =~ $re_dw || $F =~ $re_as ]] && return 1
