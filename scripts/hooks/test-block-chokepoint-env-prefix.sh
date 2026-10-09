@@ -1740,7 +1740,35 @@ emulate zsh -c '@@'
 &>/dev/null ev\al '@@'
 <&- ev\al '@@'
 >&2 . /dev/stdin <<<'@@'
+if [[ -n x ]] then "eval" '@@'; fi
+if [[ -n x ]] then $'.' /dev/stdin <<<'@@'; fi
+while [[ -n x ]] do \eval '@@'; break; done
+until [[ -z x ]] do ev\al '@@'; break; done
+if [[ -n x ]] then trap '@@' DEBUG; :; fi
+coproc N { \eval '@@'; }
+coproc N { "eval" '@@'; }
+coproc N { $'.' /dev/stdin <<<'@@'; }
+if [[ -n x ]] eval '@@'
+if [[ -n x ]] { \eval '@@' }
+while [[ -n x ]] { \eval '@@'; break }
+until [[ -z x ]] { \eval '@@'; break }
+{ :; } always { \eval '@@'; }
+if [[ -n x ]] then . /dev/stdin <<<'@@'; fi
+elif [[ -n x ]] { \eval '@@' }
+if (( 1 )) then \eval '@@'; fi
+for i in 1; do \eval '@@'; done
+select i in 1; do \eval '@@'; break; done
+foreach i (1) \eval '@@' end
+f() { \eval '@@'; }
+function f { \eval '@@'; }
+! \eval '@@'
+d="$(true)" $(echo eval) '@@'
+d="$(true)" \eval '@@'
+"$(echo eval)" '@@'
 FORMS
+    assert_allow "4454b control: quoted command substitution assigned [$pre]" "$(j "d=\"\$(git rev-parse --show-toplevel)\"; $pre ls /r/w/docs/*.md")"
+    assert_allow "4454b control: quoted wc substitution assigned [$pre]" "$(j "n=\"\$(wc -l < a)\"; $pre ls /r/w/docs/*.md")"
+    assert_allow "4454b control: two quoted substitutions as arguments [$pre]" "$(j "echo \"\$(date)\" \"\$(pwd)\"; $pre ls /r/w/docs/*.md")"
     assert_allow "4454b control: trap on EXIT is not a run-time definer [$pre]" "$(j "trap 'echo bye' EXIT; $pre ls /r/w/docs/*.md")"
     assert_allow "4454b control: mapfile without -C [$pre]" "$(j "mapfile -t a </dev/null; $pre ls /r/w/docs/*.md")"
 done
