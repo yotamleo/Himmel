@@ -34,7 +34,9 @@ check_file() {
     grep -qE '^[[:space:]]+branches:[[:space:]]*\[main\]' <<< "$s" || echo "push-not-main"
     grep -qE "^[[:space:]]+paths:[[:space:]]*\\['docs/\\*\\*'\\]" <<< "$s" || echo "paths-not-docs"
     grep -qE '^[[:space:]]+workflow_dispatch:' <<< "$s" || echo "no-dispatch"
-    grep -qE '^[[:space:]]+(pull_request|pull_request_target|schedule|release|workflow_run|tags|branches-ignore):' <<< "$s" && echo "extra-trigger"
+    events=$(awk '/^on:/{f=1;next} /^[^[:space:]]/{f=0} f && /^  [a-z_]+:/{sub(/:.*/,"");gsub(/ /,"");print}' <<< "$s" | sort | tr '\n' ' ') # pipefail-ok: small input
+    [ "$events" = "push workflow_dispatch " ] || echo "extra-trigger"
+    grep -qE '^[[:space:]]+(tags|branches-ignore):' <<< "$s" && echo "extra-trigger"
     grep -qE '^[[:space:]]+pages:[[:space:]]*write' <<< "$s" || echo "no-pages-write"
     grep -qE '^[[:space:]]+id-token:[[:space:]]*write' <<< "$s" || echo "no-id-token"
     grep -qE '^[[:space:]]+contents:[[:space:]]*read' <<< "$s" || echo "no-contents-read"
@@ -63,7 +65,8 @@ if [ -f "$WF" ]; then
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/pages-wf.XXXXXX") || exit 1; trap 'rm -rf "$tmp"' EXIT
     mutate() { # <name> <sed-expr>
         sed -e "$2" "$WF" > "$tmp/m.yml"
-        if check_file "$tmp/m.yml" | grep -qx "$1"; then ok "control: $1 detected"; else bad "control: $1 NOT detected"; fi
+        out=$(check_file "$tmp/m.yml")
+        if grep -qx "$1" <<< "$out"; then ok "control: $1 detected"; else bad "control: $1 NOT detected"; fi
     }
     mutate paths-not-docs "s#docs/\*\*#**#"
     mutate push-not-main "s#\[main\]#[main, dev]#"
@@ -73,6 +76,8 @@ if [ -f "$WF" ]; then
     mutate no-deploy-pages "s#actions/deploy-pages@#actions/other@#"
     mutate name-not-Pages "s#^name: Pages#name: CI#"
     mutate extra-trigger "s#^  workflow_dispatch:#  workflow_run:\n  workflow_dispatch:#"
+    mutate extra-trigger "s#^  workflow_dispatch:#  create:\n  workflow_dispatch:#"
+    mutate extra-trigger "s#^  push:#  pull_request:#"
     mutate extra-write-permission "s#^  contents: read#  contents: read\n  issues: write#"
 fi
 
