@@ -1705,6 +1705,7 @@ for v in \
     'git grep --extended -e . -- scripts/cr/pr-check-env.sh'; do
     run "HIMMEL-5095 attached O in a value [$v] -> allow" 0 "$(payload "$v" "$WT")" "$HR"
 done
+# shellcheck disable=SC2016 # the $ words are literal hook input
 for v in \
     'git grep -iO -e x' \
     'git grep -iOe x' \
@@ -1725,7 +1726,22 @@ for v in \
     'git myalias -cObash x' \
     'git --no-pager myalias -oObash x' \
     'git -C . myalias -FObash x' \
-    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.g GIT_CONFIG_VALUE_0=grep git g -oObash x'; do
+    'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.g GIT_CONFIG_VALUE_0=grep git g -oObash x' \
+    'git -C ~/w zz -oObash -e x' \
+    'git -C "$D" zz -oObash -e x' \
+    'git -C $D grep -oObash -e x' \
+    'git $S -oObash -e x' \
+    'git "$S" -oObash -e x' \
+    'git g?ep -oObash -e x' \
+    'git gr*p -oObash -e x' \
+    'git {grep,} -oObash -e x' \
+    'git --git-dir $D zz -oObash -e x' \
+    'git --no-pager $S -oObash -e x' \
+    'git -C . $S -oObash -e x' \
+    'S=grep; git $S -oObash -e x' \
+    'git $S -Obash -e x' \
+    'git "grep" -oObash x' \
+    'git -C "a b" grep -oObash x'; do
     run "HIMMEL-5095 O before any value letter [$v] -> deny" 2 "$(payload "$v" "$WT")" "$HR"
 done
 # Accepted over-deny (HIMMEL-4953 judge ruling): any substitution beside a

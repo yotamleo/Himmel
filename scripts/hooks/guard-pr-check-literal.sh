@@ -873,6 +873,11 @@ git_mentions_only() { # git_mentions_only <command-word index>
                 case "$w" in -* | '{'* | '$'* | '*'* | '?'* | '['* | '~'* | *'$'*) PR_GIT_UNSAFE=1 ;; esac
             fi
             # Keep scanning: a later word may be an exec option (`docs/{a,b} -O{x,y}`).
+            # HIMMEL-5095: an expanded word before the subcommand is a global
+            # option's value or the subcommand itself (`$S`, `g?ep`): either way
+            # the subcommand is unknowable, so only a positively identified
+            # literal one may take the relaxed reading.
+            if [ -z "$sub" ]; then sub='*'; dir=0; fi
             xp=1; j=$((j + 1)); continue
         fi
         # After --, option-shaped words are literal pathspec operands.
@@ -923,6 +928,7 @@ git_mentions_only() { # git_mentions_only <command-word index>
         esac
         if [ "$dir" = 1 ]; then
             dir=0
+            [ "${ST_Q[j]}" = 0 ] || sub='*'
         elif [ -z "$sub" ]; then
             [ "${ST_Q[j]}" = 0 ] || bad=1
             # HIMMEL-5095: a global option's separate value is not the subcommand
@@ -950,6 +956,8 @@ git_mentions_only() { # git_mentions_only <command-word index>
                     bad=1; nsub=1 ;;
                 *) bad=1; [ "$nsub" = 1 ] || sub='*' ;;
             esac
+            # A quoted word is not positively identified either.
+            [ "${ST_Q[j]}" = 0 ] || sub='*'
         elif [ "$w" = -- ]; then
             # An unknown option may consume -- as its value (-e/-S, ...),
             # rather than end options. Keep that ambiguous shape fenced.
