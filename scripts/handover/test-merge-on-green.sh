@@ -2950,6 +2950,13 @@ mkdir -p "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9"
 printf '## Verdict\n\n**GO** for head `%s`.\n\npr: 77\n' "$GO_SHA" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/a.md"
 # shellcheck disable=SC2016  # literal backticks in the verdict line
 printf '## Verdict\n\n**GO** for head `%s`.\n\npr: 77\n' "$GO_OLD" > "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/b.md"
+# HIMMEL-4984: a verdict counts only with write-verdict.sh's mac under the GO key.
+mkdir -p "$HOME/.config/himmel"
+[ -s "$HOME/.config/himmel/go-hmac.key" ] || printf '%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef > "$HOME/.config/himmel/go-hmac.key"
+for tp_v in a b; do
+    tp_mac="$(cat "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/$tp_v.md" | bash -c '. "$1"; go_verdict_mac "$2" "$3" "$4"' _ "$(dirname "$0")/../lib/go-gate.sh" "$TP_SCOPE" judge-N9 "$tp_v")" || echo "FAIL: cannot sign verdict $tp_v" >&2
+    printf 'mac: %s\n' "$tp_mac" >> "$TP_ROOT/$TP_SCOPE/verdicts/judge-N9/$tp_v.md"
+done
 tp_run() {
     MOG_ANCHOR_GIT=1 HANDOVER_DIR="$TP_ROOT" STUB_SHA="$GO_SHA" STUB_PR_FILES_JSON="${STUB_PR_FILES_JSON-$TP_CI}" run_mog "$@"
 }

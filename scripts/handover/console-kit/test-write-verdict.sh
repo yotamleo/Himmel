@@ -58,6 +58,12 @@ tmp="$(cd "$tmp" && pwd -P)"
 root="$tmp/root"
 mkdir -p "$root" || exit 1
 export USER_SLUG=tuser
+# HIMMEL-4984: the writer signs with the GO key under $HOME/.config/himmel; a
+# scratch HOME with a fixed key keeps the run off the operator's real one.
+KEYHOME="$tmp/home"
+mkdir -p "$KEYHOME/.config/himmel" || exit 1
+printf '%s\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef > "$KEYHOME/.config/himmel/go-hmac.key"
+export HOME="$KEYHOME"
 fails=0
 check()    { [ "$2" = "$3" ] && echo "ok - $1" || { echo "FAIL - $1: [$2]!=[$3]"; fails=$((fails+1)); }; }
 contains() { case "$2" in *"$3"*) echo "ok - $1" ;; *) echo "FAIL - $1: output does not contain [$3]"; fails=$((fails+1)) ;; esac; }
@@ -140,6 +146,12 @@ check "3: missing evidence refused rc 2" "$rc" 2
 : > "$evd/empty.md"
 rc=0; wv q3 GO "$SHA_A" --evidence-file "$evd/empty.md" >/dev/null 2>&1 || rc=$?
 check "3: empty evidence refused rc 2" "$rc" 2
+printf 'evidence\0tail\n' > "$evd/nul.md"
+rc=0; wv q3 GO "$SHA_A" --evidence-file "$evd/nul.md" >/dev/null 2>&1 || rc=$?
+check "3: NUL-bearing evidence refused rc 2 (HIMMEL-4984)" "$rc" 2
+printf 'evidence\033[31mred\n' > "$evd/ctl.md"
+rc=0; wv q3 GO "$SHA_A" --evidence-file "$evd/ctl.md" >/dev/null 2>&1 || rc=$?
+check "3: control-byte evidence refused rc 2 (HIMMEL-4984)" "$rc" 2
 rc=0; wv q3 GO "$SHA_A" >/dev/null 2>&1 || rc=$?
 check "3: no --evidence-file refused rc 2" "$rc" 2
 rc=0; wv q3 GO "$SHA_A" --evidence-file "$ev" --judge '../x' >/dev/null 2>&1 || rc=$?

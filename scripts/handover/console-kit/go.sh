@@ -109,7 +109,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # gate against, so it must use their exact rule, not a hand-rolled copy of it.
 # Fail closed: this write is sensitive enough that a broken/missing shared lib
 # must never be read as "not a leg".
-unset -f console_leg go_gate _go_gate_verify go_trust_gate go_trust_id_ok go_trust_verdict go_verdict_scope go_mac go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
+unset -f console_leg go_gate _go_gate_verify go_trust_gate go_trust_id_ok go_trust_verdict go_verdict_scope go_mac go_msg_mac go_verdict_mac go_verdict_mac_ok _go_sha256 go_key_file go_resolve_root _go_in_harness 2>/dev/null || true
 # shellcheck source=scripts/lib/go-gate.sh
 # shellcheck disable=SC1091
 if ! . "$HERE/../../lib/go-gate.sh" 2>/dev/null || ! declare -F console_leg >/dev/null 2>&1 \
