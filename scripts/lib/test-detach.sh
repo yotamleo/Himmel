@@ -13,9 +13,12 @@
 #   2. The child STILL RUNS to completion after the caller returns (detach must
 #      not drop the work — the refresh/crystallization has to land).
 #
-# Timing uses the bash `SECONDS` builtin (integer, portable — avoids macOS
-# `date +%N` which BSD date does not support). A working detach returns in 0-1s
-# even with a multi-second child; a blocking one returns in ~CHILD_SECS.
+# The caller-returns cases assert ORDERING, not a wall-clock bound (HIMMEL-2472):
+# the child is held on a release file the test only creates AFTER the caller has
+# come back, so "the caller did not wait" reads as "the child's completion marker
+# is still absent on return". A blocking detach never sees the release, so the
+# child times out and writes its marker BEFORE the caller returns — the case
+# fails the same on an idle or a loaded host.
 #
 # Exit: 0 = all pass, 1 = at least one failed.
 set -uo pipefail
@@ -32,18 +35,21 @@ fail() { echo "FAIL $1"; FAILED=$((FAILED + 1)); }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-CHILD_SECS=4
+# Held child: polls for the release file $1 (at most HOLD_TICKS * 0.1s, so a
+# blocking detach is bounded), then drops the completion marker $2.
+HOLD_TICKS=300
+HELD="i=0; while [ ! -e \"\$1\" ] && [ \"\$i\" -lt $HOLD_TICKS ]; do sleep 0.1; i=\$((i + 1)); done; : > \"\$2\""
 MARKER="$TMP/child-done"
+RELEASE="$TMP/release"
 
-# --- Case 1: detach_run returns fast, independent of child duration ----------
-SECONDS=0
-detach_run sh -c "sleep $CHILD_SECS; : > '$MARKER'"
-elapsed=$SECONDS
-if [ "$elapsed" -lt 2 ]; then
-    pass "detach_run returns immediately (${elapsed}s) with a ${CHILD_SECS}s child"
+# --- Case 1: detach_run returns before the child completes -------------------
+detach_run sh -c "$HELD" held "$RELEASE" "$MARKER"
+if [ ! -e "$MARKER" ]; then
+    pass "detach_run returned while the held child was still running"
 else
-    fail "detach_run blocked ${elapsed}s on a ${CHILD_SECS}s child (HIMMEL-623 regression)"
+    fail "detach_run waited for the child to complete (HIMMEL-623 regression)"
 fi
+: > "$RELEASE"
 
 # --- Case 2: the detached child still completes after the caller returns ------
 i=0
@@ -64,14 +70,14 @@ fi
 # shell never exit-waits, so this passes either way there; on Windows/macOS it is
 # the case that actually distinguishes the fix from the old exit-wait bug.)
 MARKER3="$TMP/exit-child-done"
-SECONDS=0
-DETACH_NO_SETSID=1 bash -c ". '$LIB_DIR/detach.sh'; detach_run sh -c \"sleep $CHILD_SECS; : > '$MARKER3'\""
-exit_elapsed=$SECONDS
-if [ "$exit_elapsed" -lt 2 ]; then
-    pass "caller shell exits immediately (${exit_elapsed}s), not waiting for the ${CHILD_SECS}s child"
+RELEASE3="$TMP/exit-release"
+DETACH_NO_SETSID=1 HELD="$HELD" bash -c ". '$LIB_DIR/detach.sh'; detach_run sh -c \"\$HELD\" held '$RELEASE3' '$MARKER3'"
+if [ ! -e "$MARKER3" ]; then
+    pass "caller shell exited while the held child was still running"
 else
-    fail "caller shell blocked ${exit_elapsed}s at exit on a ${CHILD_SECS}s child (HIMMEL-623 regression)"
+    fail "caller shell waited for the child at exit (HIMMEL-623 regression)"
 fi
+: > "$RELEASE3"
 i=0
 while [ ! -e "$MARKER3" ] && [ "$i" -lt 60 ]; do sleep 0.2; i=$((i + 1)); done
 if [ -e "$MARKER3" ]; then
