@@ -19,6 +19,10 @@
 #     or CGNAT range — so no station LAN. The host loop additionally sets
 #     `--nat-localhostreachable1 off` after every restore, so 10.0.2.2 is not  # leak-allow: private-lan-ip VBox NAT address
 #     the station's loopback either.
+#   - no VirtualBox Guest Additions userspace: the base image carries
+#     virtualbox-guest-utils (clipboard and drag-and-drop services), which a
+#     job must not have a channel through; nothing the shell-unit shards run
+#     needs it. The host also sets both off as machine config.
 #   - the packages the ubuntu shell-unit shard otherwise installs with sudo
 #     (at/atd, ffmpeg 6.1, pre-commit 4.6.2), since `runner` has no sudo.
 # ponytail: egress is a deny-private list, not a GitHub/mirror allow-list (IPs
@@ -49,6 +53,9 @@ apt-get update -o Acquire::Retries=3
 apt-get install -y --no-install-recommends ca-certificates curl git jq unzip rsync \
     nftables at 'ffmpeg=7:6.1.*' python3-venv
 systemctl enable atd
+if dpkg -s virtualbox-guest-utils >/dev/null 2>&1 || dpkg -s virtualbox-guest-x11 >/dev/null 2>&1; then
+    apt-get purge -y virtualbox-guest-utils virtualbox-guest-x11
+fi
 python3 -m venv /opt/pre-commit
 /opt/pre-commit/bin/pip install --disable-pip-version-check pre-commit==4.6.2
 ln -sf /opt/pre-commit/bin/pre-commit /usr/local/bin/pre-commit
@@ -86,7 +93,10 @@ chmod 0644 /opt/himmel-ci/repo
 
 cat > /usr/local/sbin/himmel-ci-run-job <<'EOF'
 #!/usr/bin/env bash
-# One job as `runner`. Arg: max seconds. Stdin: the single-use JIT config.
+# One job as `runner`. Arg: max seconds. Stdin: the single-use JIT config,
+# handed to the runner through its ACTIONS_RUNNER_INPUT_JITCONFIG environment
+# variable (the runner reads every ACTIONS_RUNNER_INPUT_<arg> as that arg), so
+# it never sits in a process listing the way an argv does.
 set -eu
 max="${1:?max seconds}"
 case "$max" in ''|*[!0-9]*|0*) echo "himmel-ci-run-job: bad max '$max'" >&2; exit 2 ;; esac
@@ -95,10 +105,12 @@ IFS= read -r jit
 cd /opt/actions-runner
 # The hook is set here, not in the runner's .env: a root-owned wrapper the
 # job cannot rewrite, and no .env for the guest secret scan to trip on.
-exec timeout --kill-after=30 "$max" runuser -u runner -- env \
+export ACTIONS_RUNNER_INPUT_JITCONFIG="$jit"
+unset jit
+exec timeout --kill-after=30 "$max" runuser -w ACTIONS_RUNNER_INPUT_JITCONFIG -u runner -- env \
     ACTIONS_RUNNER_HOOK_JOB_STARTED=/opt/himmel-ci/job-started-hook.sh \
     HIMMEL_CI_RUNNER_REPO="$(cat /opt/himmel-ci/repo)" \
-    ./run.sh --jitconfig "$jit"
+    ./run.sh
 EOF
 chmod 0755 /usr/local/sbin/himmel-ci-run-job
 
