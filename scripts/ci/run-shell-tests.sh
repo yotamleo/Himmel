@@ -291,10 +291,15 @@ _suite_timeout_for() {
   case "${1#./}" in
     scripts/eval/guard-corpus/test-guard-corpus.sh|*/scripts/eval/guard-corpus/test-guard-corpus.sh)
       # HIMMEL-4912: runtime IPC masking scans before every fresh hook sandbox.
-      # Linux measured 1407s sequential, 1434s alongside the classification
-      # suite (2026-10-08); twice the loaded figure is 2868s, rounded to 3000.
-      # Do not cache scans or drop masks to fit the generic 600s cap.
-      printf '3000' ;;
+      # Full replay: 1407s local sequential, 1437s timed (2026-10-08); PR CI
+      # killed it at 3000s with the replay unfinished (run 37840193447, shard
+      # 6), so the CI figure is ~6x local (~8600s). Fast tier (PR CI) runs the
+      # suite's subset: 117s local, ~700s on CI; the cap kills a regression at
+      # 1200s so a hung subset cannot hold a shard. Do not cache scans or drop
+      # masks to fit the generic 600s cap.
+      # ponytail: the full-tier cap is the CI estimate x1.25 and unmeasured on
+      # CI, upgrade path: shard the full replay and re-measure (HIMMEL-5055).
+      if [ "${SUITE_TIER_MODE:-all}" = fast ]; then printf '1200'; else printf '10800'; fi ;;
     scripts/hooks/test-block-destructive-commands.sh|*/scripts/hooks/test-block-destructive-commands.sh)
       # HIMMEL-4912: every fixture now starts a fresh bwrap sandbox. Linux with
       # bwrap working measured 263s alone (2026-10-08). On the CI runner (bwrap

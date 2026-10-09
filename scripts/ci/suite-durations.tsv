@@ -189,6 +189,7 @@ scripts/cr/test-write-verdicts.sh	0
 scripts/docs/test-adoption-trail.sh	0
 scripts/docs/test-check-doc-terms.sh	2
 scripts/docs/test-check-llms-links.sh	1
+scripts/eval/guard-corpus/test-guard-corpus.sh	700
 scripts/eval/test-cache-probe.sh	0
 scripts/git/test-classify-branches.sh	1
 scripts/git/test-restore-to-head.sh	1
@@ -348,7 +349,7 @@ scripts/hooks/test-block-backend-tier.sh	3
 scripts/hooks/test-block-bare-qmd-query.sh	1
 scripts/hooks/test-block-cheap-lane-pr-without-verdict.sh	1
 scripts/hooks/test-block-chokepoint-env-prefix.sh	24
-scripts/hooks/test-block-destructive-commands.sh	5
+scripts/hooks/test-block-destructive-commands.sh	1500
 scripts/hooks/test-block-docker-privesc.sh	1
 scripts/hooks/test-block-edit-live-settings.sh	32
 scripts/hooks/test-block-edit-on-main.sh	5

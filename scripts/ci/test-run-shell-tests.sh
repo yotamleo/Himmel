@@ -1071,14 +1071,14 @@ fn2267=$(awk '/^_suite_timeout_for\(\) \{/{f=1} f{print} f && /^}/{exit}' "$RUNN
 if [ -z "$fn2267" ]; then
   fail "2267: could not extract _suite_timeout_for() from $RUNNER"
 else
-  check_timeout_2267() {  # $1=suite path as passed to _suite_timeout_for; $2=expected timeout
+  check_timeout_2267() {  # $1=suite path as passed to _suite_timeout_for; $2=expected timeout; $3=SUITE_TIER_MODE (default all)
     local got
-    # shellcheck disable=SC2034 # SUITE_TIMEOUT/SUITE_TIMEOUT_EXPLICIT are read by the eval-defined _suite_timeout_for, invisible to static analysis
-    got=$(eval "$fn2267"; SUITE_TIMEOUT=600; SUITE_TIMEOUT_EXPLICIT=''; _suite_timeout_for "$1")
+    # shellcheck disable=SC2034 # SUITE_TIMEOUT/SUITE_TIMEOUT_EXPLICIT/SUITE_TIER_MODE are read by the eval-defined _suite_timeout_for, invisible to static analysis
+    got=$(eval "$fn2267"; SUITE_TIMEOUT=600; SUITE_TIMEOUT_EXPLICIT=''; SUITE_TIER_MODE="${3:-all}"; _suite_timeout_for "$1")
     if [ "$got" = "$2" ]; then
-      pass "2267: _suite_timeout_for '$1' -> ${2}s"
+      pass "2267: _suite_timeout_for '$1' (tier ${3:-all}) -> ${2}s"
     else
-      fail "2267: _suite_timeout_for '$1' expected ${2}s got '$got'"
+      fail "2267: _suite_timeout_for '$1' (tier ${3:-all}) expected ${2}s got '$got'"
     fi
   }
   check_timeout_2267 "scripts/test-propagate-public.sh" "2700"
@@ -1087,9 +1087,14 @@ else
   check_timeout_2267 "/repo/scripts/ci/test-suite-concurrency.sh" "1500"
 
   # HIMMEL-4912: per-hook namespace/runtime inspection measured 1407s alone
-  # and 1434s with another suite; 3000s clears twice the loaded completion.
-  check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "3000"
-  check_timeout_2267 "/repo/scripts/eval/guard-corpus/test-guard-corpus.sh" "3000"
+  # and 1434s with another suite (full replay, ~6x on CI). PR CI runs the fast
+  # subset (117s local) under a 1200s cap; the nightly keeps the full cap.
+  check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "1200" fast
+  check_timeout_2267 "/repo/scripts/eval/guard-corpus/test-guard-corpus.sh" "1200" fast
+  check_timeout_2267 "scripts/eval/guard-corpus/test-guard-corpus.sh" "10800" all
+  check_timeout_2267 "/repo/scripts/eval/guard-corpus/test-guard-corpus.sh" "10800"
+  check_timeout_2267 "scripts/hooks/test-block-destructive-commands.sh" "3000"
+  check_timeout_2267 "/repo/scripts/hooks/test-block-destructive-commands.sh" "3000"
 
   # HIMMEL-3175 (nightly #843): the 1879 suite previously had no dedicated arm,
   # so the 600s default killed it on every OS (603s on ubuntu). Its tier comment
