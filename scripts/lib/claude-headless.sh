@@ -151,8 +151,10 @@ fi
 now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # Process start time of <pid> ("" when it is gone or ps is unavailable). Paired
-# with the pid it identifies one process even after the pid is reused.
-proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+# with the pid it identifies one process even after the pid is reused. LC_ALL=C:
+# lstart is locale-dependent and a row may be recorded and read under different
+# locales.
+proc_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
 
 # HIMMEL-2197: a dispatched/running row whose wrapper died without running
 # finalize_on_exit (SIGKILL, host death) would count against the cap forever.

@@ -585,7 +585,7 @@ check "20 missing --model: no registry row written" "0" "$(ls "$LIVE_DIR"/*.json
 # finalize_on_exit (SIGKILL, host death) must stop counting against the cap.
 # The row records the wrapper pid and its start time; the next admission reaps a
 # row whose pid is gone, or alive with a different start time (pid reuse).
-proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+proc_start() { LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
 cap1_run() { HIMMEL_DISPATCH_MAX_CONCURRENT=1 run_sut "$FAKE_OK" "$1" >/dev/null 2>&1; }
 ( : ) & DEAD_PID=$!; wait "$DEAD_PID" 2>/dev/null
 jq -n --arg p "$DEAD_PID" '{id:"dead", role:"r", worktree:"w", ticket:"t", status:"dispatched", pid:($p|tonumber), pid_start:"Thu Jan 1 00:00:00 1970"}' > "$LIVE_DIR/dead.json"
