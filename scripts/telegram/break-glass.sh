@@ -468,14 +468,14 @@ op_allow_rule() {
     fi
     reg="${BREAK_GLASS_ALLOW_REGISTRY:-$SCRIPT_DIR/allow-rules.json}"
     [ -f "$reg" ] || { echo "ERR break-glass: allow-rule registry not found: $reg" >&2; return 20; }
-    rule="$(jq -r --arg id "$id" 'if type == "object" and (.[$id] | type) == "string" then .[$id] else empty end' "$reg" 2>/dev/null)" \
+    rule="$(jq -r --arg id "$id" 'if type == "object" and (.[$id] | type) == "string" and (.[$id] | test("\\p{Cc}") | not) then .[$id] else empty end' "$reg" 2>/dev/null)" \
         || { echo "ERR break-glass: cannot read the allow-rule registry" >&2; return 20; }
     if [ -z "$rule" ] || [[ "$rule" =~ [[:cntrl:]] ]]; then
         echo "ERR break-glass: no reviewed rule for id '$id'" >&2
         return 26
     fi
     tgt="${BREAK_GLASS_ALLOW_TARGET:-$PRIMARY/.claude/settings.local.json}"
-    if [ -e "$tgt" ] && ! jq -e 'type == "object" and ((.permissions // {}) | type == "object") and ((.permissions.allow // []) | type == "array")' "$tgt" >/dev/null 2>&1; then
+    if [ -e "$tgt" ] && ! jq -e 'type == "object" and ((.permissions // {}) | type == "object") and ((.permissions // {}) | (if has("allow") then .allow else [] end) | type == "array")' "$tgt" >/dev/null 2>&1; then
         echo "ERR break-glass: $tgt is not a settings object with an allow list; left alone" >&2
         return 27
     fi

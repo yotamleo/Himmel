@@ -340,7 +340,7 @@ SYSTEMCTL_CAT_RC=1 bg restart-bridge - - >/dev/null; assert_rc "X3 a missing uni
 # --- /allow-rule ---------------------------------------------------------------
 # The registry and the target are fixtures; nothing here touches a live settings file.
 RULE='Bash(bash scripts/example/reviewed.sh:*)'
-jq -n --arg r "$RULE" '{"reviewed-one":$r,"multi-line":"Bash(a)\nBash(b)","not-string":7}' > "$TMP/rules.json"
+jq -n --arg r "$RULE" '{"reviewed-one":$r,"multi-line":"Bash(a)\nBash(b)","trailing-nl":"Bash(a)\n","not-string":7}' > "$TMP/rules.json"
 AR_TARGET="$TMP/ar/fixture-allow.json"
 export BREAK_GLASS_ALLOW_REGISTRY="$TMP/rules.json" BREAK_GLASS_ALLOW_TARGET="$AR_TARGET"
 mkdir -p "$TMP/ar"
@@ -375,6 +375,10 @@ bg allow-rule reviewed-one - >/dev/null; assert_rc "A15 an unparseable target is
 [ "$(cat "$AR_TARGET")" = "not json" ] && echo "PASS A16 and left untouched" || { echo "FAIL A16 target rewritten"; FAILED=$((FAILED + 1)); }
 printf '{"permissions":{"allow":"oops"}}\n' > "$AR_TARGET"
 bg allow-rule reviewed-one - >/dev/null; assert_rc "A17 a non-array allow list is refused" 27 "$?"
+printf '{"permissions":{"allow":false}}\n' > "$AR_TARGET"
+bg allow-rule reviewed-one - >/dev/null; assert_rc "A21 a false allow list is refused, not replaced" 27 "$?"
+[ "$(jq -c '.permissions.allow' "$AR_TARGET")" = "false" ] && echo "PASS A22 and left untouched" || { echo "FAIL A22 false allow replaced"; FAILED=$((FAILED + 1)); }
+bg allow-rule trailing-nl - >/dev/null; assert_rc "A23 a trailing newline in a registry entry is refused" 26 "$?"
 # Default target: the primary's untracked local file, never the tracked one.
 unset BREAK_GLASS_ALLOW_TARGET
 mkdir -p "$PRIMARY/.claude"
